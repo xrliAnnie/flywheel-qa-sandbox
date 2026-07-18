@@ -51,6 +51,19 @@ interface WorkflowLaunchOwnerReader {
 	): WorkflowLaunchDeliveryEvidence | undefined;
 }
 
+/** Return only a launch owner whose current generation is durably delivered. */
+export function getGeneralizedLaunchDelivery(
+	store: WorkflowLaunchOwnerReader,
+	executionId: string,
+): WorkflowLaunchDeliveryEvidence | undefined {
+	const owner = store.getWorkflowLaunchOwner(executionId);
+	return owner &&
+		owner.committed_generation === owner.owner_generation &&
+		owner.delivery_state === "delivered"
+		? owner
+		: undefined;
+}
+
 interface WorkflowLaunchDeliveryWaitOptions {
 	timeoutMs?: number;
 	intervalMs?: number;
@@ -71,14 +84,8 @@ export async function waitForGeneralizedLaunchDelivery(
 			new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
-		const owner = store.getWorkflowLaunchOwner(executionId);
-		if (
-			owner &&
-			owner.committed_generation === owner.owner_generation &&
-			owner.delivery_state === "delivered"
-		) {
-			return owner;
-		}
+		const delivered = getGeneralizedLaunchDelivery(store, executionId);
+		if (delivered) return delivered;
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) return undefined;
 		await sleep(Math.min(intervalMs, remaining));

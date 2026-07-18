@@ -115,6 +115,16 @@ function makeRuntime(projectName: string): [string, ProjectRuntime] {
 	];
 }
 
+class CleanupObservingRunDispatcher extends RunDispatcher {
+	cleanupCalls = 0;
+
+	protected override preRegisterCommDb(): void {}
+
+	protected override cleanupPreRegistration(): void {
+		this.cleanupCalls += 1;
+	}
+}
+
 describe("RunDispatcher", () => {
 	it("FLY-1244 admits durable QA before spawn and passes its scoped credential", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
@@ -163,6 +173,7 @@ describe("RunDispatcher", () => {
 
 	it("FLY-1244 fails closed before Blueprint when durable QA admission fails", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
+		const onSpawnFailed = vi.fn();
 		const dispatcher = new RunDispatcher(
 			new Map([[name, runtime]]),
 			[],
@@ -171,7 +182,7 @@ describe("RunDispatcher", () => {
 			undefined,
 			undefined,
 			undefined,
-			undefined,
+			{ commitLaunch: vi.fn(async () => ({ ok: true })), onSpawnFailed },
 			{ onSpawnDispatch: vi.fn(), onDispatchFailed: vi.fn() },
 			{
 				admit: vi.fn(() => {
@@ -193,6 +204,7 @@ describe("RunDispatcher", () => {
 			(runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }).run,
 		).not.toHaveBeenCalled();
 		expect(dispatcher.getInflightCount()).toBe(0);
+		expect(onSpawnFailed).toHaveBeenCalledOnce();
 	});
 
 	it("start() returns executionId and issueId", async () => {
@@ -210,6 +222,39 @@ describe("RunDispatcher", () => {
 
 		expect(result.executionId).toBeDefined();
 		expect(result.issueId).toBe("GEO-1");
+	});
+
+	it("clears guarded inflight state when setup throws before Blueprint.run", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const onSpawnFailed = vi.fn();
+		const resumeComputer = vi
+			.fn()
+			.mockImplementationOnce(() => {
+				throw new Error("resume probe exploded");
+			})
+			.mockReturnValue(null);
+		const dispatcher = new CleanupObservingRunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+			undefined,
+			undefined,
+			resumeComputer,
+			undefined,
+			{ commitLaunch: vi.fn(async () => ({ ok: true })), onSpawnFailed },
+		);
+
+		await expect(
+			dispatcher.start({ issueId: "GEO-SETUP", projectName: "TestProject" }),
+		).rejects.toThrow("resume probe exploded");
+		expect(dispatcher.getInflightCount()).toBe(0);
+		expect(dispatcher.cleanupCalls).toBe(1);
+		expect(onSpawnFailed).toHaveBeenCalledOnce();
+
+		await expect(
+			dispatcher.start({ issueId: "GEO-SETUP", projectName: "TestProject" }),
+		).resolves.toMatchObject({ issueId: "GEO-SETUP" });
+		expect(runtime.blueprint.run).toHaveBeenCalledOnce();
 	});
 
 	it("FLY-1279 uses a caller-prebound successor execution id", async () => {

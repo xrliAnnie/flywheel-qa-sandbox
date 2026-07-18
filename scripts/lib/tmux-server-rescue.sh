@@ -37,11 +37,169 @@ EOF
   [ "$owner" = "$current_uid" ] && _tmux_rescue_mode_is_safe "$mode"
 }
 
+_tmux_rescue_total_budget() {
+  local raw="${FLYWHEEL_TMUX_RESCUE_TOTAL_BUDGET_SEC:-}"
+  awk -v raw="$raw" 'BEGIN {
+    if (raw ~ /^[0-9]+$/ && (raw + 0) >= 1) print raw
+    else print 60
+  }'
+}
+
+_tmux_rescue_load_factor_max() {
+  local raw="${FLYWHEEL_TMUX_RESCUE_LOAD_FACTOR_MAX:-}"
+  awk -v raw="$raw" 'BEGIN {
+    if (raw ~ /^[0-9]+$/ && (raw + 0) >= 1) printf "%.0f\n", raw + 0
+    else print 4
+  }'
+}
+
+_tmux_rescue_sample_load() {
+  local platform load1 load_row ncpu
+  platform="$(uname -s 2>/dev/null)" || return 1
+  case "$platform" in
+    Darwin)
+      load_row="$(sysctl -n vm.loadavg 2>/dev/null)" || return 1
+      read -r load1 _ <<EOF
+${load_row#*\{}
+EOF
+      ncpu="$(sysctl -n hw.ncpu 2>/dev/null)" || return 1
+      ;;
+    Linux)
+      load_row="$(cat /proc/loadavg 2>/dev/null)" || return 1
+      read -r load1 _ <<EOF
+$load_row
+EOF
+      ncpu="$(nproc 2>/dev/null)" || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  printf '%s %s\n' "$load1" "$ncpu"
+}
+
+_tmux_rescue_load_factor() {
+  if [ -n "${_TMUX_RESCUE_CACHED_LOAD_FACTOR:-}" ]; then
+    printf '%s\n' "$_TMUX_RESCUE_CACHED_LOAD_FACTOR"
+    return 0
+  fi
+
+  command -v awk >/dev/null 2>&1 || {
+    printf '1\n'
+    return 0
+  }
+
+  local max override sampled load1 ncpu
+  max="$(_tmux_rescue_load_factor_max)"
+  override="${FLYWHEEL_TMUX_RESCUE_LOAD_FACTOR:-}"
+  case "$override" in
+    ''|*[!0-9]*) override="" ;;
+    *)
+      if ! awk -v value="$override" 'BEGIN { exit !((value + 0) >= 1) }'; then
+        override=""
+      fi
+      ;;
+  esac
+
+  if [ -n "$override" ]; then
+    awk -v value="$override" -v max="$max" 'BEGIN {
+      factor = value + 0
+      if (factor < 1) factor = 1
+      if (factor > max) factor = max
+      printf "%.0f\n", factor
+    }'
+    return 0
+  fi
+
+  sampled="$(_tmux_rescue_sample_load 2>/dev/null)" || {
+    printf '1\n'
+    return 0
+  }
+  read -r load1 ncpu <<EOF
+$sampled
+EOF
+  awk -v load="$load1" -v cores="$ncpu" -v max="$max" 'BEGIN {
+    if (load !~ /^[0-9]+([.][0-9]+)?$/ || cores !~ /^[0-9]+([.][0-9]+)?$/ || cores + 0 <= 0) {
+      print 1
+      exit
+    }
+    factor = int((load + 0) / (cores + 0))
+    if (factor * (cores + 0) < (load + 0)) factor++
+    if (factor < 1) factor = 1
+    if (factor > max) factor = max
+    printf "%.0f\n", factor
+  }'
+}
+
+_tmux_rescue_prepare_load_factor() {
+  [ -n "${_TMUX_RESCUE_CACHED_LOAD_FACTOR:-}" ] \
+    || _TMUX_RESCUE_CACHED_LOAD_FACTOR="$(_tmux_rescue_load_factor)"
+}
+
+_tmux_rescue_prepare_runtime() {
+  _tmux_rescue_prepare_load_factor
+  [ -n "${_TMUX_RESCUE_TOTAL_BUDGET:-}" ] \
+    || _TMUX_RESCUE_TOTAL_BUDGET="$(_tmux_rescue_total_budget)"
+  [ -n "${_TMUX_RESCUE_BUDGET_ANCHOR:-}" ] \
+    || _TMUX_RESCUE_BUDGET_ANCHOR=$SECONDS
+}
+
+_tmux_rescue_remaining_budget() {
+  _tmux_rescue_prepare_runtime
+  local elapsed=$((SECONDS - _TMUX_RESCUE_BUDGET_ANCHOR))
+  awk -v total="$_TMUX_RESCUE_TOTAL_BUDGET" -v elapsed="$elapsed" 'BEGIN {
+    remaining = (total + 0) - (elapsed + 0)
+    if (remaining <= 0) print 0
+    else printf "%.10g\n", remaining
+  }'
+}
+
+_tmux_rescue_budget_exhausted() {
+  local remaining
+  remaining="$(_tmux_rescue_remaining_budget)"
+  awk -v remaining="$remaining" 'BEGIN { exit !((remaining + 0) <= 0) }'
+}
+
+_tmux_rescue_effective_timeout() {
+  local kind="$1" raw fallback factor
+  case "$kind" in
+    inspect)
+      raw="${FLYWHEEL_TMUX_RESCUE_INSPECT_TIMEOUT_SEC:-}"
+      fallback=6
+      ;;
+    command)
+      raw="${FLYWHEEL_TMUX_RESCUE_COMMAND_TIMEOUT_SEC:-}"
+      fallback=5
+      ;;
+    lock)
+      raw="${FLYWHEEL_TMUX_RESCUE_LOCK_TIMEOUT_SEC:-}"
+      fallback=5
+      ;;
+    *) return 64 ;;
+  esac
+  factor="$(_tmux_rescue_load_factor)"
+  awk -v raw="$raw" -v fallback="$fallback" -v factor="$factor" 'BEGIN {
+    base = fallback
+    if (raw ~ /^[0-9]+([.][0-9]+)?$/ && raw + 0 > 0) base = raw + 0
+    value = base * (factor + 0)
+    printf "%.10g\n", value
+  }'
+}
+
 _tmux_rescue_bounded_exec() {
-  local timeout_sec="$1"
+  local timeout_sec="$1" remaining
   shift
   [ "$#" -gt 0 ] || return 64
   [ -x /usr/bin/python3 ] || return 125
+  remaining="$(_tmux_rescue_remaining_budget)"
+  timeout_sec="$(awk -v requested="$timeout_sec" -v remaining="$remaining" 'BEGIN {
+    if (remaining + 0 <= 0) {
+      print 0
+      exit
+    }
+    effective = requested + 0
+    if (effective <= 0 || effective > remaining + 0) effective = remaining + 0
+    printf "%.10g\n", effective
+  }')"
+  awk -v timeout="$timeout_sec" 'BEGIN { exit !((timeout + 0) <= 0) }' && return 124
   /usr/bin/python3 - "$timeout_sec" "$@" <<'PY'
 import os
 import signal
@@ -93,12 +251,14 @@ _tmux_rescue_normalize_socket() {
 }
 
 _tmux_rescue_pid_has_socket() {
-  local pid="$1" socket_path="$2" output rc line reported normalized
+  local pid="$1" socket_path="$2" output rc line reported normalized timeout
   command -v lsof >/dev/null 2>&1 || return 2
-  output="$(_tmux_rescue_bounded_exec "${FLYWHEEL_TMUX_RESCUE_INSPECT_TIMEOUT_SEC:-3}" \
+  timeout="$(_tmux_rescue_effective_timeout inspect)"
+  output="$(_tmux_rescue_bounded_exec "$timeout" \
     lsof -a -p "$pid" -U -Fn 2>/dev/null)"
   rc=$?
 	if [ "$rc" -ne 0 ]; then
+		if [ "$rc" -eq 124 ] || [ "$rc" -eq 125 ]; then return 3; fi
 		# lsof uses 1 for a complete "no matching descriptor" result. Accept it
 		# only while the candidate identity still exists; permission/tool errors
 		# remain incomplete evidence.
@@ -120,12 +280,14 @@ EOF
 }
 
 _tmux_rescue_server_pids() {
-  local output rc current_uid argv0
+  local output rc current_uid argv0 timeout
   command -v ps >/dev/null 2>&1 || return 1
 	current_uid="$(id -u 2>/dev/null)" || return 1
-  output="$(_tmux_rescue_bounded_exec "${FLYWHEEL_TMUX_RESCUE_INSPECT_TIMEOUT_SEC:-3}" \
+  timeout="$(_tmux_rescue_effective_timeout inspect)"
+  output="$(_tmux_rescue_bounded_exec "$timeout" \
     ps axww -o uid= -o pid= -o ppid= -o command= 2>/dev/null)"
   rc=$?
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 125 ]; then return 3; fi
   [ "$rc" -eq 0 ] || return 1
   printf '%s\n' "$output" | while read -r uid pid ppid command; do
 		[ "$uid" = "$current_uid" ] || continue
@@ -145,20 +307,26 @@ _tmux_rescue_server_pids() {
 
 tmux_socket_inspect() {
   local requested="$1" socket_path socket_present=false reachable_pid="null"
-  local scan_complete=true candidates="" pid rc
+  local scan_complete=true timed_out=false candidates="" pid rc inspect_timeout
+
+  _tmux_rescue_prepare_runtime
+  inspect_timeout="$(_tmux_rescue_effective_timeout inspect)"
 
   socket_path="$(_tmux_rescue_normalize_socket "$requested")" || {
-    printf '{"verdict":"unknown","socketPresent":false,"socketPath":"","reachablePid":null,"candidatePids":[],"scanComplete":false}\n'
+    printf '{"verdict":"unknown","socketPresent":false,"socketPath":"","reachablePid":null,"candidatePids":[],"scanComplete":false,"timedOut":false}\n'
     return 0
   }
   [ -e "$socket_path" ] && socket_present=true
 
-  pid="$(_tmux_rescue_bounded_exec "${FLYWHEEL_TMUX_RESCUE_INSPECT_TIMEOUT_SEC:-3}" \
+  pid="$(_tmux_rescue_bounded_exec "$inspect_timeout" \
     tmux -S "$socket_path" display-message -p '#{pid}' 2>/dev/null)"
   rc=$?
   [ "$rc" -eq 0 ] || {
     pid=""
-    if [ "$rc" -eq 124 ] || [ "$rc" -eq 125 ]; then scan_complete=false; fi
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 125 ]; then
+      scan_complete=false
+      timed_out=true
+    fi
   }
   case "$pid" in
     ''|*[!0-9]*) ;;
@@ -166,7 +334,12 @@ tmux_socket_inspect() {
   esac
 
   local server_pids
-  server_pids="$(_tmux_rescue_server_pids)" || scan_complete=false
+  server_pids="$(_tmux_rescue_server_pids)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    scan_complete=false
+    [ "$rc" -eq 3 ] && timed_out=true
+  fi
   for pid in $server_pids; do
     [ "$reachable_pid" != "null" ] && [ "$pid" = "$reachable_pid" ] && continue
     _tmux_rescue_pid_has_socket "$pid" "$socket_path"
@@ -176,6 +349,9 @@ tmux_socket_inspect() {
       candidates="${candidates}${pid}"
     elif [ "$rc" -eq 2 ]; then
       scan_complete=false
+    elif [ "$rc" -eq 3 ]; then
+      scan_complete=false
+      timed_out=true
     fi
   done
 
@@ -200,8 +376,8 @@ tmux_socket_inspect() {
       verdict="missing_single_orphan"
     fi
   fi
-  printf '{"verdict":"%s","socketPresent":%s,"socketPath":"%s","reachablePid":%s,"candidatePids":[%s],"scanComplete":%s}\n' \
-    "$verdict" "$socket_present" "$socket_path" "$reachable_pid" "$candidates" "$scan_complete"
+  printf '{"verdict":"%s","socketPresent":%s,"socketPath":"%s","reachablePid":%s,"candidatePids":[%s],"scanComplete":%s,"timedOut":%s}\n' \
+    "$verdict" "$socket_present" "$socket_path" "$reachable_pid" "$candidates" "$scan_complete" "$timed_out"
 }
 
 _tmux_rescue_json_field() {
@@ -280,14 +456,17 @@ _tmux_socket_ensure_locked() {
   _tmux_rescue_validate_argv "$socket_path" "${verify_argv[@]}" || return 64
   _tmux_rescue_validate_argv "$socket_path" "${create_argv[@]}" || return 64
 	_tmux_rescue_write_owner_metadata "$socket_path" || true
+	_tmux_rescue_prepare_runtime
 
-  local before verdict server_pid after after_verdict after_pid create_stdout recovery recovery_rc command_rc
+  local before before_timed_out verdict server_pid after after_verdict after_pid create_stdout recovery recovery_rc command_rc command_timeout reason
   local -a guarded_create=()
+  command_timeout="$(_tmux_rescue_effective_timeout command)"
   before="$(tmux_socket_inspect "$socket_path")"
   verdict="$(_tmux_rescue_json_field "$before" verdict)"
+  before_timed_out="$(_tmux_rescue_json_field "$before" timedOut)"
   server_pid="$(_tmux_rescue_json_field "$before" reachablePid)"
   if [ "$verdict" = "reachable" ]; then
-    _tmux_rescue_bounded_exec "${FLYWHEEL_TMUX_RESCUE_COMMAND_TIMEOUT_SEC:-5}" \
+    _tmux_rescue_bounded_exec "$command_timeout" \
       "${verify_argv[@]}" >/dev/null 2>&1
     command_rc=$?
     if [ "$command_rc" -eq 124 ] || [ "$command_rc" -eq 125 ]; then
@@ -308,7 +487,7 @@ _tmux_socket_ensure_locked() {
 			return 4
 		fi
     guarded_create=("${create_argv[0]}" -N "${create_argv[@]:1}")
-    create_stdout="$(_tmux_rescue_bounded_exec "${FLYWHEEL_TMUX_RESCUE_COMMAND_TIMEOUT_SEC:-5}" \
+    create_stdout="$(_tmux_rescue_bounded_exec "$command_timeout" \
       "${guarded_create[@]}" 2>/dev/null)"
     command_rc=$?
     if [ "$command_rc" -eq 124 ] || [ "$command_rc" -eq 125 ]; then
@@ -330,7 +509,7 @@ _tmux_socket_ensure_locked() {
       after="$(tmux_socket_inspect "$socket_path")"
       after_verdict="$(_tmux_rescue_json_field "$after" verdict)"
       after_pid="$(_tmux_rescue_json_field "$after" reachablePid)"
-      _tmux_rescue_bounded_exec "${FLYWHEEL_TMUX_RESCUE_COMMAND_TIMEOUT_SEC:-5}" \
+      _tmux_rescue_bounded_exec "$command_timeout" \
         "${verify_argv[@]}" >/dev/null 2>&1
       command_rc=$?
       if [ "$after_verdict" = "reachable" ] && [ "$after_pid" = "$server_pid" ] \
@@ -344,7 +523,7 @@ _tmux_socket_ensure_locked() {
 			printf '{"action":"hold_unknown","evidence":{"reason":"dry_run_create_suppressed"}}\n'
 			return 4
 		fi
-    create_stdout="$(_tmux_rescue_bounded_exec "${FLYWHEEL_TMUX_RESCUE_COMMAND_TIMEOUT_SEC:-5}" \
+    create_stdout="$(_tmux_rescue_bounded_exec "$command_timeout" \
       "${create_argv[@]}" 2>/dev/null)"
     command_rc=$?
     if [ "$command_rc" -eq 124 ] || [ "$command_rc" -eq 125 ]; then
@@ -369,7 +548,7 @@ _tmux_socket_ensure_locked() {
       return "$recovery_rc"
     fi
     server_pid="$(_tmux_rescue_json_field "$recovery" reachablePid)"
-    _tmux_rescue_bounded_exec "${FLYWHEEL_TMUX_RESCUE_COMMAND_TIMEOUT_SEC:-5}" \
+    _tmux_rescue_bounded_exec "$command_timeout" \
       "${verify_argv[@]}" >/dev/null 2>&1
     command_rc=$?
     if [ "$command_rc" -eq 124 ] || [ "$command_rc" -eq 125 ]; then
@@ -390,7 +569,7 @@ _tmux_socket_ensure_locked() {
 			return 4
 		fi
     guarded_create=("${create_argv[0]}" -N "${create_argv[@]:1}")
-    create_stdout="$(_tmux_rescue_bounded_exec "${FLYWHEEL_TMUX_RESCUE_COMMAND_TIMEOUT_SEC:-5}" \
+    create_stdout="$(_tmux_rescue_bounded_exec "$command_timeout" \
       "${guarded_create[@]}" 2>/dev/null)"
     command_rc=$?
     if [ "$command_rc" -eq 124 ] || [ "$command_rc" -eq 125 ]; then
@@ -418,16 +597,24 @@ _tmux_socket_ensure_locked() {
       return 3
       ;;
     *)
-      printf '{"action":"hold_unknown","evidence":{"reason":"%s"}}\n' "$verdict"
+      reason="$verdict"
+      [ "$before_timed_out" = "true" ] && reason="inspect_timeout"
+      printf '{"action":"hold_unknown","evidence":{"reason":"%s"}}\n' "$reason"
       return 4
       ;;
   esac
 }
 
 _tmux_socket_recover_locked() {
-  local socket_path="$1" inspection verdict server_pid candidate before_signal
+  local socket_path="$1" inspection timed_out verdict server_pid candidate before_signal reason
 	_tmux_rescue_write_owner_metadata "$socket_path" || true
+  _tmux_rescue_prepare_runtime
+  if _tmux_rescue_budget_exhausted; then
+    printf '{"action":"hold_unknown","evidence":{"reason":"rescue_failed"}}\n'
+    return 4
+  fi
   inspection="$(tmux_socket_inspect "$socket_path")"
+  timed_out="$(_tmux_rescue_json_field "$inspection" timedOut)"
   verdict="$(_tmux_rescue_json_field "$inspection" verdict)"
   server_pid="$(_tmux_rescue_json_field "$inspection" reachablePid)"
   case "$verdict" in
@@ -454,7 +641,15 @@ _tmux_socket_recover_locked() {
       }
       # Signal-time revalidation: repeat the full ps+lsof scan immediately
       # before the destructive signal and require the exact same sole orphan.
+      if _tmux_rescue_budget_exhausted; then
+        printf '{"action":"hold_unknown","evidence":{"reason":"rescue_failed"}}\n'
+        return 4
+      fi
       before_signal="$(tmux_socket_inspect "$socket_path")"
+      if _tmux_rescue_budget_exhausted; then
+        printf '{"action":"hold_unknown","evidence":{"reason":"rescue_failed"}}\n'
+        return 4
+      fi
       [ "$(_tmux_rescue_json_field "$before_signal" verdict)" = "missing_single_orphan" ] \
         && [ "$(_tmux_rescue_single_candidate "$before_signal")" = "$candidate" ] || {
           printf '{"action":"hold_unknown","evidence":{"reason":"candidate_changed_before_signal"}}\n'
@@ -471,7 +666,15 @@ _tmux_socket_recover_locked() {
 
       local attempt=0 max_attempts="${FLYWHEEL_TMUX_RESCUE_RECOVER_ATTEMPTS:-20}"
       while [ "$attempt" -lt "$max_attempts" ]; do
+        if _tmux_rescue_budget_exhausted; then
+          printf '{"action":"hold_unknown","evidence":{"reason":"rescue_failed"}}\n'
+          return 4
+        fi
         inspection="$(tmux_socket_inspect "$socket_path")"
+        if _tmux_rescue_budget_exhausted; then
+          printf '{"action":"hold_unknown","evidence":{"reason":"rescue_failed"}}\n'
+          return 4
+        fi
         verdict="$(_tmux_rescue_json_field "$inspection" verdict)"
         server_pid="$(_tmux_rescue_json_field "$inspection" reachablePid)"
         if [ "$verdict" = "reachable" ] && [ "$server_pid" = "$candidate" ]; then
@@ -485,7 +688,9 @@ _tmux_socket_recover_locked() {
       return 4
       ;;
   esac
-  printf '{"action":"hold_unknown","evidence":{"reason":"%s"}}\n' "$verdict"
+  reason="$verdict"
+  [ "$timed_out" = "true" ] && reason="inspect_timeout"
+  printf '{"action":"hold_unknown","evidence":{"reason":"%s"}}\n' "$reason"
   return 4
 }
 
@@ -592,7 +797,9 @@ _tmux_rescue_run_with_lock() {
     return 5
   }
   lock_file="${lock_dir}/tmux-${lock_hash}.lockf"
-  timeout="${FLYWHEEL_TMUX_RESCUE_LOCK_TIMEOUT_SEC:-5}"
+  _tmux_rescue_prepare_load_factor
+  export _TMUX_RESCUE_CACHED_LOAD_FACTOR
+  timeout="$(_tmux_rescue_effective_timeout lock)"
   backend="$(_tmux_rescue_select_lock_backend)" || {
     printf '{"action":"hold_lock_unavailable","evidence":{"reason":"capability_missing"}}\n'
     return 5

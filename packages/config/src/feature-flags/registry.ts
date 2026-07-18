@@ -2243,6 +2243,26 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "readonly",
 	},
+	{
+		name: "ghost_guard_wait_ms",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_GHOST_GUARD_WAIT_MS",
+		polarity: "default_on",
+		valueKind: "value",
+		default: "90000",
+		description:
+			"FLY-1336: generalized launch delivery/session confirmation guard (ms; default 90s; captured when the Bridge loads the runs route)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/runs-route.ts",
+				"GHOST_GUARD_SESSION_WAIT_MS",
+				"bridge_boot",
+			),
+		],
+		toggleable: "readonly",
+	},
 
 	// ─── governance gates → ALWAYS readonly (default-enable-policy hard exemption) ───
 	{

@@ -33,6 +33,7 @@ import { AUTO_CLOSE_STATES, closeRunner } from "./close-runner.js";
 import { finalizeCommDbSession } from "./commdb-session-prune.js";
 import type { EventFilter } from "./EventFilter.js";
 import {
+	getGeneralizedLaunchDelivery,
 	probeGeneralizedLaunchLiveness,
 	waitForGeneralizedLaunchDelivery,
 } from "./generalized-launch-recovery.js";
@@ -1162,32 +1163,48 @@ async function handleRetry(
 			return { success: false, message: `Retry dispatch failed: ${msg}` };
 		}
 	}
-	if (predecessorBinding) {
-		const delivered = await waitForGeneralizedLaunchDelivery(
-			store,
-			result.newExecutionId,
-		);
-		if (!delivered) {
-			return {
-				success: false,
-				message:
-					"Retry dispatch held: generalized launch delivery was not durably committed",
-			};
-		}
-	}
-
 	// ── Post-dispatch: the Runner is starting; the successor is bound. Any error
 	//    from here is best-effort bookkeeping and must NOT flip the result to a
 	//    "not dispatched" failure (R2 MED-6). ───────────────────────────────────
 	try {
-		// Link predecessor → successor
 		store.setRetrySuccessor(executionId, result.newExecutionId);
-		// FLY-245 D2: blueprint.run() kicked off — flip the WAL to 'dispatched'
-		// (informational; recovery still trusts only started evidence).
-		if (gatewayDispatch) {
+	} catch (err) {
+		console.error(
+			`[retry] post-dispatch lineage write failed for successor ${result.newExecutionId} ` +
+				`(the Runner is already starting): ${(err as Error).message}`,
+		);
+	}
+	if (gatewayDispatch) {
+		try {
 			store.markRetryDispatchDispatched(gatewayDispatch.gatewayRequestId);
+		} catch (err) {
+			console.error(
+				`[retry] post-dispatch WAL write failed for successor ${result.newExecutionId} ` +
+					`(the Runner is already starting): ${(err as Error).message}`,
+			);
 		}
+	}
 
+	let launchPending = false;
+	if (predecessorBinding) {
+		try {
+			let delivered = await waitForGeneralizedLaunchDelivery(
+				store,
+				result.newExecutionId,
+			);
+			// Close the same wait-boundary race as /api/runs/start.
+			delivered ??= getGeneralizedLaunchDelivery(store, result.newExecutionId);
+			launchPending = !delivered;
+		} catch (err) {
+			launchPending = true;
+			console.error(
+				`[retry] generalized launch delivery check failed for successor ${result.newExecutionId} ` +
+					`(reporting accepted-pending): ${(err as Error).message}`,
+			);
+		}
+	}
+
+	try {
 		// FLY-137 Phase 5: persist codex_skip + agent_name + agent_match_method
 		// on the NEW session row so event-route stage_changed reads the right
 		// values for the retried Runner (instead of inheriting from the old row).
@@ -1254,6 +1271,14 @@ async function handleRetry(
 			`[retry] post-dispatch bookkeeping failed for successor ${result.newExecutionId} ` +
 				`(the Runner is already starting — NOT reporting as not-dispatched): ${(err as Error).message}`,
 		);
+	}
+
+	if (launchPending) {
+		return {
+			success: true,
+			pending: true,
+			message: `${session.issue_identifier ?? executionId} retry accepted → ${result.newExecutionId}; generalized launch delivery confirmation is pending`,
+		};
 	}
 
 	return {
@@ -1756,8 +1781,9 @@ export function createActionRouter(
 							: undefined,
 					);
 					if (retryResult.success) {
-						res.json({
+						res.status(retryResult.pending ? 202 : 200).json({
 							success: true,
+							...(retryResult.pending ? { pending: true } : {}),
 							message: retryResult.message,
 							action: "retry",
 						});

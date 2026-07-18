@@ -79,5 +79,47 @@ else
   bad "lock remained unavailable after SIGKILL: rc=$NEXT_RC elapsed=$ELAPSED"
 fi
 
+echo "[TEST] SIGKILL of the rescue shell does not release the lock ahead of its bounded child"
+BOUNDED="$TMP_DIR/bounded.sh"
+# Distinctive sleep duration so the poll below can target the fd-holding child
+# precisely (its own marker) instead of the transient awk/sysctl subprocesses
+# _tmux_rescue_bounded_exec now spawns for budget/load-factor math.
+printf '%s\n' '#!/bin/bash' \
+  'source "$1"' \
+  'printf "%s" "$$" > "$2"' \
+  '_tmux_rescue_bounded_exec 2 /bin/sleep 313360' > "$BOUNDED"
+chmod +x "$BOUNDED"
+BOUNDED_OWNER_FILE="$TMP_DIR/bounded-owner"
+_tmux_rescue_python_lock 3 "$TMP_DIR/bounded.lockf" \
+  "$BOUNDED" "$LIB" "$BOUNDED_OWNER_FILE" &
+BOUNDED_WRAPPER_PID=$!
+for _ in $(seq 1 50); do [ -s "$BOUNDED_OWNER_FILE" ] && break; sleep 0.02; done
+BOUNDED_OWNER_PID="$(cat "$BOUNDED_OWNER_FILE" 2>/dev/null)"
+# FLY-1336 QA: the scenario under test is "SIGKILL the rescue shell WHILE a bounded
+# critical child is in flight". That requires the fd-holding child to already be
+# spawned. The owner file is written before _tmux_rescue_bounded_exec, which now
+# does load-factor/budget awk + sysctl work (several short-lived subprocesses)
+# before spawning the fd-holding child — under a saturated host a fixed
+# `sleep 0.1` reliably fires the SIGKILL during that pre-spawn window (child not
+# yet holding the fd → EARLY_RC=0, a false failure). Synchronize on the actual
+# bounded sleep child (its distinctive marker) rather than guessing a delay or
+# matching the transient awk/sysctl subprocesses.
+for _ in $(seq 1 400); do
+  pgrep -f 'sleep 313360' >/dev/null 2>&1 && break
+  sleep 0.02
+done
+kill -9 "$BOUNDED_OWNER_PID" 2>/dev/null || true
+_tmux_rescue_python_lock 0.2 "$TMP_DIR/bounded.lockf" /usr/bin/true
+EARLY_RC=$?
+sleep 2.2
+_tmux_rescue_python_lock 1 "$TMP_DIR/bounded.lockf" /usr/bin/true
+LATE_RC=$?
+wait "$BOUNDED_WRAPPER_PID" 2>/dev/null || true
+if [ "$EARLY_RC" -eq 75 ] && [ "$LATE_RC" -eq 0 ]; then
+  ok "the inherited lock survives only until the bounded critical child is reaped"
+else
+  bad "outer SIGKILL lock lifetime drifted: early=$EARLY_RC late=$LATE_RC"
+fi
+
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

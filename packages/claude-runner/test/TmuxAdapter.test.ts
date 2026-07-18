@@ -2144,6 +2144,89 @@ describe("ensureRunnerSession (FLY-758)", () => {
 		expect(renameCalls(calls)).toHaveLength(0);
 	});
 
+	it("uses the 90s per-attempt cap by default", async () => {
+		const seenTimeouts: Array<number | undefined> = [];
+		const fn: ExecFileFn = () => ({ stdout: "" });
+		const asyncFn: AsyncExecFileFn = async (_cmd, _args, opts) => {
+			seenTimeouts.push(opts?.timeoutMs);
+			return {
+				stdout: JSON.stringify({
+					action: "verified",
+					createStdout: "",
+					reachablePid: 100,
+				}),
+				stderr: "",
+			};
+		};
+		await ensureRunnerSession(fn, "runner-test", { asyncExecFileFn: asyncFn });
+		expect(seenTimeouts[0]).toBe(90_000);
+	});
+
+	it("honors an injected per-attempt cap and a self-consistent non-default budget tuple", async () => {
+		const seenTimeouts: Array<number | undefined> = [];
+		const fn: ExecFileFn = () => ({ stdout: "" });
+		const asyncFn: AsyncExecFileFn = async (_cmd, _args, opts) => {
+			seenTimeouts.push(opts?.timeoutMs);
+			return {
+				stdout: JSON.stringify({
+					action: "verified",
+					createStdout: "",
+					reachablePid: 100,
+				}),
+				stderr: "",
+			};
+		};
+		const lockBaseSec = 5;
+		const factorMax = 8;
+		const totalBudgetSec = 100;
+		const startupMarginSec = 5;
+		const attemptCapMs = 150_000;
+		const deadlineMs = 321_000;
+		expect(attemptCapMs).toBeGreaterThanOrEqual(
+			(lockBaseSec * factorMax + totalBudgetSec + startupMarginSec) * 1_000,
+		);
+		expect(deadlineMs).toBeGreaterThan(2 * attemptCapMs + 1_000);
+		await ensureRunnerSession(fn, "runner-test", {
+			asyncExecFileFn: asyncFn,
+			attemptCapMs,
+			deadlineMs,
+		});
+		expect(seenTimeouts[0]).toBe(attemptCapMs);
+	});
+
+	it("defaults the overall ensure deadline to 210s", async () => {
+		vi.useFakeTimers();
+		const previous = process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS;
+		delete process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS;
+		try {
+			const fn: ExecFileFn = () => ({ stdout: "" });
+			const asyncFn: AsyncExecFileFn = () => new Promise(() => {});
+			let state: "pending" | "rejected" = "pending";
+			const observed = ensureRunnerSession(fn, "runner-test", {
+				asyncExecFileFn: asyncFn,
+				attemptCapMs: 300_000,
+				retryDelayMs: 0,
+			}).then(
+				() => undefined,
+				() => {
+					state = "rejected";
+				},
+			);
+			await vi.advanceTimersByTimeAsync(100_000);
+			expect(state).toBe("pending");
+			await vi.advanceTimersByTimeAsync(111_000);
+			await observed;
+			expect(state).toBe("rejected");
+		} finally {
+			if (previous === undefined) {
+				delete process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS;
+			} else {
+				process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS = previous;
+			}
+			vi.useRealTimers();
+		}
+	});
+
 	it("never renames a non-runner session's scaffold (but still guards it)", async () => {
 		const { fn, asyncFn, calls } = mockExec({
 			sessionExists: false,

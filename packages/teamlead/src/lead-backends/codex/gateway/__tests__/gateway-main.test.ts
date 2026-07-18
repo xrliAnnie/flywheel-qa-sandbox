@@ -116,6 +116,21 @@ describe("mapHttpDispatchOutcome (F-a)", () => {
 		).toEqual({ kind: "success" });
 	});
 
+	it("202 + success:true accepted-pending is dispatched and must not be re-driven", () => {
+		expect(
+			mapHttpDispatchOutcome({
+				kind: "response",
+				status: 202,
+				successFlag: true,
+				body: JSON.stringify({
+					success: true,
+					pending: true,
+					code: "GENERALIZED_LAUNCH_PENDING",
+				}),
+			}),
+		).toEqual({ kind: "success" });
+	});
+
 	it("2xx with success:false → not_dispatched (the Bridge refused)", () => {
 		expect(
 			mapHttpDispatchOutcome({

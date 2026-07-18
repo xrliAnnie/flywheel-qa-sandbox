@@ -55,6 +55,7 @@ import {
 	resolveFounderFacingUx,
 } from "./founder-ux/trigger.js";
 import {
+	getGeneralizedLaunchDelivery,
 	probeGeneralizedLaunchLiveness,
 	waitForGeneralizedLaunchDelivery,
 } from "./generalized-launch-recovery.js";
@@ -78,9 +79,18 @@ const THREAD_POLL_MAX_MS = 5000;
  * races dispatcher.start()'s immediate return, and a slow Codex spawn blocks
  * the event loop AFTER the row exists, so a live runner registers well within
  * this window while a genuine ghost (threw before emitStarted) correctly
- * times out. 30s headroom over the codex spawn latency QA measured (~3.4s).
+ * times out. The default is deliberately above the saturated-host launch
+ * delivery observed in FLY-1336; operators can tune it only at process start.
  */
-const GHOST_GUARD_SESSION_WAIT_MS = 30_000;
+function positiveInt(raw: string | undefined, fallback: number): number {
+	const parsed = Number(raw);
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const GHOST_GUARD_SESSION_WAIT_MS = positiveInt(
+	process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS,
+	90_000,
+);
 
 function secureTokenEqual(
 	actual: string | undefined,
@@ -1070,17 +1080,33 @@ export function createRunsRouter(
 					}
 				}
 			}
-			const committedOwner = await waitForGeneralizedLaunchDelivery(
+			let committedOwner = await waitForGeneralizedLaunchDelivery(
 				store,
 				generalizedSelection.executionId,
 				{ timeoutMs: GHOST_GUARD_SESSION_WAIT_MS },
 			);
 			if (!committedOwner) {
-				res.status(409).json({
-					success: false,
-					code: "GENERALIZED_LAUNCH_NOT_COMMITTED",
-					reason:
-						"positive session evidence exists but the durable launch fence is not committed",
+				// Close the wait-boundary race before degrading to accepted-pending. A
+				// launch can become delivered after the helper's last read but before its
+				// deadline branch returns; the final durable read must win in that case.
+				committedOwner = getGeneralizedLaunchDelivery(
+					store,
+					generalizedSelection.executionId,
+				);
+			}
+			if (!committedOwner) {
+				// The run and launch owner are already durable, so reporting failure here
+				// invites a duplicate caller retry. Do not cache this transitional reply:
+				// the same idempotency key must be able to upgrade to the delivered 200.
+				res.status(202).json({
+					success: true,
+					pending: true,
+					code: "GENERALIZED_LAUNCH_PENDING",
+					executionId: generalizedSelection.executionId,
+					issueId,
+					workflowRunId: generalizedSelection.runId,
+					workflowNodeId: generalizedSelection.nodeId,
+					message: `Runner launch accepted for ${issueId}; delivery confirmation is pending.`,
 				});
 				return;
 			}

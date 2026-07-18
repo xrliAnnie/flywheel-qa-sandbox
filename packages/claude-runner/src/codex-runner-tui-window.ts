@@ -127,33 +127,114 @@ function tmuxSocketPath(): string {
 	return join(tmp, `tmux-${uid}`, "default");
 }
 
-function defaultEnsureSession(tmuxSession: string): boolean {
+type EnsureSessionSpawnResult = {
+	status: number | null;
+	stdout?: string | Buffer;
+};
+
+export interface EnsureSessionWithRetryOptions {
+	spawn: (
+		cmd: string,
+		args: string[],
+		options: {
+			stdio: ["ignore", "pipe", "ignore"];
+			encoding: "utf8";
+			timeout: number;
+		},
+	) => EnsureSessionSpawnResult;
+	sleep: (ms: number) => void;
+	now: () => number;
+	log?: (message: string) => void;
+	deadlineMs: number;
+	attemptCapMs: number;
+	cliPath: string;
+	socket: string;
+	session: string;
+}
+
+/** Retry the guarded session ensure within one shared deadline. */
+export function ensureSessionWithRetry(
+	options: EnsureSessionWithRetryOptions,
+): boolean {
+	const startedAt = options.now();
+	const args = [
+		"ensure",
+		options.socket,
+		"--verify",
+		"tmux",
+		"-S",
+		options.socket,
+		"has-session",
+		"-t",
+		`=${options.session}`,
+		"--create",
+		"tmux",
+		"-S",
+		options.socket,
+		"new-session",
+		"-Ad",
+		"-s",
+		options.session,
+	];
+	let attempt = 0;
+	while (true) {
+		const remaining = options.deadlineMs - (options.now() - startedAt);
+		if (remaining <= 0) return false;
+		attempt += 1;
+		try {
+			const result = options.spawn(options.cliPath, args, {
+				stdio: ["ignore", "pipe", "ignore"],
+				encoding: "utf8",
+				timeout: Math.min(options.attemptCapMs, remaining),
+			});
+			if (result.status === 0) return true;
+			const stdout = result.stdout?.toString().trim() ?? "";
+			const tail = stdout.length > 500 ? stdout.slice(-500) : stdout;
+			safeLog(
+				options.log,
+				`runner-tui-window: guarded session ensure attempt ${attempt} held (status=${result.status ?? "null"})${tail ? `: ${tail}` : ""}`,
+			);
+		} catch (error) {
+			safeLog(
+				options.log,
+				`runner-tui-window: guarded session ensure attempt ${attempt} failed: ${errMessage(error)}`,
+			);
+		}
+		const afterAttemptRemaining =
+			options.deadlineMs - (options.now() - startedAt);
+		if (afterAttemptRemaining <= 0) return false;
+		options.sleep(Math.min(1_000, afterAttemptRemaining));
+	}
+}
+
+function positiveInt(raw: string | undefined, fallback: number): number {
+	const value = Number(raw);
+	return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function defaultEnsureSession(
+	tmuxSession: string,
+	log?: (message: string) => void,
+): boolean {
 	const socket = tmuxSocketPath();
 	const cli = join(homedir(), ".flywheel", "bin", "tmux-server-rescue");
-	const result = spawnSync(
-		cli,
-		[
-			"ensure",
-			socket,
-			"--verify",
-			"tmux",
-			"-S",
-			socket,
-			"has-session",
-			"-t",
-			`=${tmuxSession}`,
-			"--create",
-			"tmux",
-			"-S",
-			socket,
-			"new-session",
-			"-Ad",
-			"-s",
-			tmuxSession,
-		],
-		{ stdio: "ignore", timeout: 90_000 },
-	);
-	return result.status === 0;
+	return ensureSessionWithRetry({
+		spawn: (cmd, args, options) => spawnSync(cmd, args, options),
+		sleep: defaultSleep,
+		now: Date.now,
+		log,
+		deadlineMs: positiveInt(
+			process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS,
+			210_000,
+		),
+		attemptCapMs: positiveInt(
+			process.env.FLYWHEEL_TMUX_ENSURE_ATTEMPT_TIMEOUT_MS,
+			90_000,
+		),
+		cliPath: cli,
+		socket,
+		session: tmuxSession,
+	});
 }
 
 function defaultExec(cmd: string, args: string[]): { ok: boolean } {
@@ -302,7 +383,7 @@ export function ensureRunnerTuiWindow(
 		(deps.exec
 			? (session: string) =>
 					exec("tmux", ["new-session", "-Ad", "-s", session]).ok
-			: defaultEnsureSession);
+			: (session: string) => defaultEnsureSession(session, deps.log));
 	assertShellSafe("tmuxSession", spec.tmuxSession, SAFE_NAME);
 	assertShellSafe("windowName", spec.windowName, SAFE_NAME);
 	try {

@@ -53,6 +53,7 @@ export type AsyncExecFileFn = (
 
 export interface EnsureRunnerSessionOptions {
 	asyncExecFileFn?: AsyncExecFileFn;
+	attemptCapMs?: number;
 	deadlineMs?: number;
 	retryDelayMs?: number;
 	rescueCliPath?: string;
@@ -1394,7 +1395,10 @@ export async function ensureRunnerSession(
 	const asyncExecFileFn = options.asyncExecFileFn ?? defaultAsyncExecFile;
 	const deadlineMs =
 		options.deadlineMs ??
-		positiveInt(process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS, 90_000);
+		positiveInt(process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS, 210_000);
+	const attemptCapMs =
+		options.attemptCapMs ??
+		positiveInt(process.env.FLYWHEEL_TMUX_ENSURE_ATTEMPT_TIMEOUT_MS, 90_000);
 	const retryDelayMs = options.retryDelayMs ?? 1_000;
 	const rescueCliPath =
 		options.rescueCliPath ??
@@ -1433,12 +1437,13 @@ export async function ensureRunnerSession(
 	});
 	while (Date.now() - startedAt < deadlineMs) {
 		const remaining = Math.max(1, deadlineMs - (Date.now() - startedAt));
+		const attemptTimeoutMs = Math.min(attemptCapMs, remaining);
 		try {
 			const result = await deadlineRace(
 				asyncExecFileFn(rescueCliPath, args, {
-					timeoutMs: Math.min(10_000, remaining),
+					timeoutMs: attemptTimeoutMs,
 				}),
-				remaining,
+				attemptTimeoutMs,
 			);
 			const parsed = JSON.parse(result.stdout) as {
 				action?: string;

@@ -14,8 +14,19 @@ import { type ProjectRuntime, RetryDispatcher } from "../run-dispatcher.js";
 
 /** preRegisterCommDb writes to the real ~/.flywheel/comm — no-op it in tests. */
 class TestRetryDispatcher extends RetryDispatcher {
-	protected override preRegisterCommDb(): void {}
-	protected override cleanupPreRegistration(): void {}
+	failNextPreRegistration = false;
+	cleanupCalls = 0;
+
+	protected override preRegisterCommDb(): void {
+		if (this.failNextPreRegistration) {
+			this.failNextPreRegistration = false;
+			throw new Error("pre-registration exploded");
+		}
+	}
+
+	protected override cleanupPreRegistration(): void {
+		this.cleanupCalls += 1;
+	}
 }
 
 describe("RetryDispatcher pre-bound successor id (D2)", () => {
@@ -80,6 +91,32 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 		expect(res.newExecutionId).toBe("succ-9");
 		await d.drain();
 		expect(captured[0]?.executionId).toBe("succ-9");
+	});
+
+	it("clears guarded retry inflight state when setup throws before Blueprint.run", async () => {
+		const onSpawnFailed = vi.fn();
+		const d = new TestRetryDispatcher(
+			new Map([["proj", makeRuntime()]]),
+			[],
+			undefined,
+			undefined,
+			undefined,
+			{ commitLaunch: vi.fn(async () => ({ ok: true })), onSpawnFailed },
+		);
+		d.failNextPreRegistration = true;
+
+		await expect(
+			d.dispatch({ ...baseReq, successorExecutionId: "succ-setup" }),
+		).rejects.toThrow("pre-registration exploded");
+		expect(d.hasInflightForRole(baseReq.issueId, "main")).toBe(false);
+		expect(d.cleanupCalls).toBe(1);
+		expect(onSpawnFailed).toHaveBeenCalledOnce();
+
+		await expect(
+			d.dispatch({ ...baseReq, successorExecutionId: "succ-setup" }),
+		).resolves.toMatchObject({ newExecutionId: "succ-setup" });
+		await d.drain();
+		expect(captured).toHaveLength(1);
 	});
 
 	it("threads only pinned generalized retry identity, capabilities, agent, and capability tickets", async () => {

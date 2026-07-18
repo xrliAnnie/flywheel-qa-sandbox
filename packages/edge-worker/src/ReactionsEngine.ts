@@ -7,6 +7,8 @@ export interface ActionHandler {
 export interface ActionResult {
 	success: boolean;
 	message: string;
+	/** The action is durably accepted but asynchronous confirmation is pending. */
+	pending?: true;
 	alreadyResponded?: boolean;
 	/** FLY-58: true if CommDB gate was successfully unblocked */
 	gateUnblocked?: boolean;

@@ -341,6 +341,7 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		expect(db.getSession(successorExecutionId)).toBeUndefined();
 		db.close();
 		expect(onSpawnFailed).toHaveBeenCalledWith(successorExecutionId);
+		expect(onSpawnFailed).toHaveBeenCalledOnce();
 		expect(commitLaunch).not.toHaveBeenCalled();
 	});
 

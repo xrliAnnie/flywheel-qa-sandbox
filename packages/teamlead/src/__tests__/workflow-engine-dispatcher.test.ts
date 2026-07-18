@@ -15,6 +15,24 @@ import { WorkflowEngineDispatcher } from "../bridge/workflow-engine-dispatcher.j
 import { StateStore } from "../StateStore.js";
 import { loadBundledWorkflowSeeds } from "../workflow-template.js";
 
+const generalizedRecoveryMocks = vi.hoisted(() => ({
+	waitForDelivery: vi.fn(),
+}));
+
+vi.mock("../bridge/generalized-launch-recovery.js", async (importOriginal) => {
+	const actual =
+		await importOriginal<
+			typeof import("../bridge/generalized-launch-recovery.js")
+		>();
+	generalizedRecoveryMocks.waitForDelivery.mockImplementation(
+		actual.waitForGeneralizedLaunchDelivery,
+	);
+	return {
+		...actual,
+		waitForGeneralizedLaunchDelivery: generalizedRecoveryMocks.waitForDelivery,
+	};
+});
+
 const HEAD = "a".repeat(40);
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -382,6 +400,120 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(store.listWorkflowSideEffects("run-1")[0]?.state).toBe("started");
 		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
 		expect(fake.start).toHaveBeenCalledTimes(1);
+		store.close();
+	});
+
+	it("closes a delivery wait-boundary race with one final durable owner read", async () => {
+		const store = await storeWithIntent("implement");
+		const fake = fakeStartDispatcher(store);
+		generalizedRecoveryMocks.waitForDelivery.mockResolvedValueOnce(undefined);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1336-engine-boundary-")),
+			env: WORKFLOW_ON,
+			resolvePredecessorHead: async () => HEAD,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(fake.start).toHaveBeenCalledOnce();
+		expect(store.listWorkflowSideEffects("run-1")[0]?.state).toBe("started");
+		store.close();
+	});
+
+	it("keeps a foreign live launch owner held without dispatch", async () => {
+		const store = await storeWithIntent("implement");
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-1",
+				nodeId: "implement",
+				executionId: "implement-1",
+				attempt: 1,
+				now: "2026-07-16T00:06:00.000Z",
+				expiresAt: "2026-07-16T00:20:00.000Z",
+				absoluteDeadlineAt: "2026-07-16T01:00:00.000Z",
+				env: WORKFLOW_ON,
+			}),
+		).toMatchObject({ ok: true });
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly1336-engine-busy-"));
+		expect(
+			store.recoverOrAcquireWorkflowLaunch({
+				executionId: "implement-1",
+				ownerId: "foreign-live-owner",
+				now: "2026-07-16T00:06:00.000Z",
+				leaseExpiresAt: "2026-07-16T00:30:00.000Z",
+				markerPath: join(stateRoot, "implement-1"),
+			}).status,
+		).toBe("acquired");
+		const start = vi.fn();
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: {
+				start,
+				getInflightCount: () => 0,
+				validateAgentName: () => ({ ok: true as const }),
+			} as IStartDispatcher,
+			stateRoot,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-16T00:07:00.000Z"),
+			resolvePredecessorHead: async () => HEAD,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(start).not.toHaveBeenCalled();
+		store.close();
+	});
+
+	it("does not repair a committed launch without positive dead evidence", async () => {
+		const store = await storeWithIntent("implement");
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-1",
+				nodeId: "implement",
+				executionId: "implement-1",
+				attempt: 1,
+				now: "2026-07-16T00:06:00.000Z",
+				expiresAt: "2026-07-16T00:20:00.000Z",
+				absoluteDeadlineAt: "2026-07-16T01:00:00.000Z",
+				env: WORKFLOW_ON,
+			}),
+		).toMatchObject({ ok: true });
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly1336-engine-unknown-"));
+		const launch = store.recoverOrAcquireWorkflowLaunch({
+			executionId: "implement-1",
+			ownerId: "completed-owner",
+			now: "2026-07-16T00:06:00.000Z",
+			leaseExpiresAt: "2026-07-16T00:30:00.000Z",
+			markerPath: join(stateRoot, "implement-1"),
+		});
+		if (launch.status !== "acquired") throw new Error("launch not acquired");
+		expect(
+			store.fencedCommitWorkflowLaunch({
+				executionId: "implement-1",
+				ownerId: "completed-owner",
+				generation: launch.generation,
+				deliveryAttempt: launch.deliveryAttempt,
+				markerPath: join(stateRoot, "implement-1"),
+				now: "2026-07-16T00:06:30.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		const start = vi.fn();
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: {
+				start,
+				getInflightCount: () => 0,
+				validateAgentName: () => ({ ok: true as const }),
+			} as IStartDispatcher,
+			stateRoot,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-16T00:07:00.000Z"),
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness: async () => "unknown",
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(start).not.toHaveBeenCalled();
 		store.close();
 	});
 

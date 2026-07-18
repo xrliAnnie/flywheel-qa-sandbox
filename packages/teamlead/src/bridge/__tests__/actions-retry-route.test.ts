@@ -12,20 +12,104 @@
  * retry-dispatch-wal.test.ts / started-evidence.test.ts; real-machine
  * convergence is §8.1 QA8.)
  */
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
+import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import { createActionRouter } from "../actions.js";
 import type { IRetryDispatcher, RetryRequest } from "../retry-dispatcher.js";
+
+const generalizedRecoveryMocks = vi.hoisted(() => ({
+	waitForDelivery: vi.fn(),
+}));
+
+vi.mock("../generalized-launch-recovery.js", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../generalized-launch-recovery.js")>();
+	return {
+		...actual,
+		waitForGeneralizedLaunchDelivery: generalizedRecoveryMocks.waitForDelivery,
+	};
+});
 
 let store: StateStore;
 let server: Server;
 let baseUrl: string;
 let dispatched: RetryRequest[];
 let dispatchImpl: (req: RetryRequest) => Promise<{ newExecutionId: string }>;
+let generalizedRoot: string | undefined;
 const originalDesignFlag = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
+let savedHome: string | undefined;
+
+const WORKFLOW_ON = {
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+};
+let savedWorkflowFlags: Record<keyof typeof WORKFLOW_ON, string | undefined>;
+
+function bindPredecessorToGeneralizedWorkflow(): void {
+	for (const [name, value] of Object.entries(WORKFLOW_ON)) {
+		process.env[name] = value;
+	}
+	generalizedRoot = mkdtempSync(join(tmpdir(), "fly1336-actions-pending-"));
+	process.env.HOME = generalizedRoot;
+	mkdirSync(join(generalizedRoot, "agents"));
+	writeFileSync(
+		join(generalizedRoot, "agents", "generic-executor.md"),
+		"Execute the pinned node.\n",
+	);
+	const seed = loadBundledWorkflowSeeds().find(
+		(candidate) => candidate.templateId === "tpl_product_v1",
+	)!;
+	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
+	store.materializeWorkflowRun({
+		runId: "retry-run-1",
+		issueId: "issue-1",
+		projectName: "fly245-d2-route-test",
+		taskCategory: "product",
+		templateId: seed.templateId,
+		claimsReadEnrolled: true,
+		actor: "test",
+		canonicalRoot: generalizedRoot,
+		env: WORKFLOW_ON,
+		startReservation: {
+			idempotencyKey: "retry-start-1",
+			selectionDigest: "retry-selection-1",
+			nodeId: "research",
+			attempt: 1,
+			executionId: "pred-1",
+			createdAt: "2026-07-17T00:00:00.000Z",
+		},
+	});
+	expect(
+		store.admitGeneralizedWorkflowExecution({
+			runId: "retry-run-1",
+			nodeId: "research",
+			executionId: "pred-1",
+			attempt: 1,
+			now: "2026-07-17T00:00:01.000Z",
+			expiresAt: "2026-07-17T00:15:00.000Z",
+			absoluteDeadlineAt: "2026-07-17T01:00:00.000Z",
+			env: WORKFLOW_ON,
+			idempotencyKey: "retry-start-1",
+		}),
+	).toMatchObject({ ok: true });
+	// Engine-owned generalized retries consume a pre-reserved successor attempt.
+	store.upsertWorkflowRunNode({
+		runId: "retry-run-1",
+		nodeId: "research",
+		attempt: 2,
+		state: "pending",
+		executionId: "11111111-2222-3333-4444-555555555555",
+	});
+}
 
 function makeStubDispatcher(): IRetryDispatcher {
 	return {
@@ -55,6 +139,10 @@ async function postRetry(body: Record<string, unknown>) {
 }
 
 beforeEach(async () => {
+	savedHome = process.env.HOME;
+	savedWorkflowFlags = Object.fromEntries(
+		Object.keys(WORKFLOW_ON).map((name) => [name, process.env[name]]),
+	) as Record<keyof typeof WORKFLOW_ON, string | undefined>;
 	store = await StateStore.create(":memory:");
 	store.upsertSession({
 		execution_id: "pred-1",
@@ -63,6 +151,10 @@ beforeEach(async () => {
 		status: "failed",
 	});
 	dispatched = [];
+	generalizedRoot = undefined;
+	generalizedRecoveryMocks.waitForDelivery
+		.mockReset()
+		.mockResolvedValue(undefined);
 	dispatchImpl = async (req) => {
 		const id = req.successorExecutionId ?? `gen-${dispatched.length}`;
 		// Simulate Blueprint creating the successor row (waitForSession target).
@@ -94,10 +186,23 @@ afterEach(async () => {
 		server.close((e) => (e ? rej(e) : res())),
 	);
 	vi.restoreAllMocks();
+	store.close();
+	if (generalizedRoot) {
+		rmSync(generalizedRoot, { recursive: true, force: true });
+	}
+	if (savedHome === undefined) delete process.env.HOME;
+	else process.env.HOME = savedHome;
 	if (originalDesignFlag === undefined) {
 		delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
 	} else {
 		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = originalDesignFlag;
+	}
+	for (const name of Object.keys(WORKFLOW_ON) as Array<
+		keyof typeof WORKFLOW_ON
+	>) {
+		const saved = savedWorkflowFlags[name];
+		if (saved === undefined) delete process.env[name];
+		else process.env[name] = saved;
 	}
 });
 
@@ -242,6 +347,69 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 		expect(r.json.success).toBe(true);
 		expect(dispatched).toHaveLength(1); // the dispatch DID happen
 		expect(dispatched[0]?.successorExecutionId).toBe(SUCC);
+	});
+
+	it("returns 202 pending only after healthy lineage and WAL writes are durable", async () => {
+		bindPredecessorToGeneralizedWorkflow();
+		const r = await postRetry({ execution_id: "pred-1", ...gw });
+		expect(r.status, JSON.stringify(r.json)).toBe(202);
+		expect(r.json).toMatchObject({ success: true, pending: true });
+		expect(dispatched).toHaveLength(1);
+		expect(store.getSession("pred-1")?.retry_successor).toBe(SUCC);
+		expect(store.getRetryDispatchIntent("gwreq-12345")?.state).toBe(
+			"dispatched",
+		);
+		expect(store.getSession("pred-1")?.status).toBe("failed");
+	});
+
+	it("still attempts the WAL write and returns accepted-pending when lineage persistence throws", async () => {
+		bindPredecessorToGeneralizedWorkflow();
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(store, "setRetrySuccessor").mockImplementation(() => {
+			throw new Error("lineage unavailable");
+		});
+		const mark = vi.spyOn(store, "markRetryDispatchDispatched");
+		const r = await postRetry({ execution_id: "pred-1", ...gw });
+		expect(r.status, JSON.stringify(r.json)).toBe(202);
+		expect(r.json).toMatchObject({ success: true, pending: true });
+		expect(mark).toHaveBeenCalledWith("gwreq-12345");
+		expect(dispatched).toHaveLength(1);
+	});
+
+	it("returns accepted-pending without redispatch when the WAL dispatched write throws", async () => {
+		bindPredecessorToGeneralizedWorkflow();
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(store, "markRetryDispatchDispatched").mockImplementation(() => {
+			throw new Error("WAL unavailable");
+		});
+		const lineage = vi.spyOn(store, "setRetrySuccessor");
+		const r = await postRetry({ execution_id: "pred-1", ...gw });
+		expect(r.status, JSON.stringify(r.json)).toBe(202);
+		expect(r.json).toMatchObject({ success: true, pending: true });
+		expect(lineage).toHaveBeenCalledWith("pred-1", SUCC);
+		expect(dispatched).toHaveLength(1);
+	});
+
+	it("uses a final durable read to return normal success at the delivery wait boundary", async () => {
+		bindPredecessorToGeneralizedWorkflow();
+		dispatchImpl = async (req) => {
+			const id = req.successorExecutionId!;
+			store.upsertSession({
+				execution_id: id,
+				issue_id: req.issueId,
+				project_name: req.projectName,
+				status: "running",
+			});
+			expect(req.generalizedExecution?.commitWorkflowLaunch?.()).toMatchObject({
+				ok: true,
+			});
+			return { newExecutionId: id };
+		};
+		const r = await postRetry({ execution_id: "pred-1", ...gw });
+		expect(r.status, JSON.stringify(r.json)).toBe(200);
+		expect(r.json).toMatchObject({ success: true });
+		expect(r.json.pending).toBeUndefined();
+		expect(dispatched).toHaveLength(1);
 	});
 
 	it("MED-6: a PRE-dispatch failure still terminalizes cleanly (4xx, nothing started)", async () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	buildRunnerTuiCommand,
 	ensureRunnerTuiWindow,
+	ensureSessionWithRetry,
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
 	type RunnerTuiWindowSpec,
@@ -18,6 +19,63 @@ const spec: RunnerTuiWindowSpec = {
 	threadId: "019f5740-57f6-76e1-9526-7f37de6c997c",
 	codexBin: "/bin/codex",
 };
+
+describe("ensureSessionWithRetry", () => {
+	it("retries transient rescue holds until the third attempt succeeds", () => {
+		let now = 0;
+		let attempts = 0;
+		const timeouts: number[] = [];
+		const logs: string[] = [];
+		const result = ensureSessionWithRetry({
+			spawn: (_cmd, _args, options) => {
+				attempts += 1;
+				timeouts.push(options.timeout);
+				return {
+					status: attempts === 3 ? 0 : 4,
+					stdout: attempts === 3 ? "" : `hold ${attempts}`,
+				};
+			},
+			sleep: (ms) => {
+				now += ms;
+			},
+			now: () => now,
+			log: (message) => logs.push(message),
+			deadlineMs: 5_000,
+			attemptCapMs: 2_000,
+			cliPath: "/tmp/tmux-server-rescue",
+			socket: "/tmp/tmux/default",
+			session: "flywheel",
+		});
+		expect(result).toBe(true);
+		expect(attempts).toBe(3);
+		expect(timeouts).toEqual([2_000, 2_000, 2_000]);
+		expect(logs).toHaveLength(2);
+		expect(logs[0]).toContain("hold 1");
+	});
+
+	it("clips each attempt to the remaining deadline and returns false when exhausted", () => {
+		let now = 0;
+		const timeouts: number[] = [];
+		const result = ensureSessionWithRetry({
+			spawn: (_cmd, _args, options) => {
+				timeouts.push(options.timeout);
+				return { status: 4, stdout: "held" };
+			},
+			sleep: (ms) => {
+				now += ms;
+			},
+			now: () => now,
+			log: () => {},
+			deadlineMs: 2_500,
+			attemptCapMs: 2_000,
+			cliPath: "/tmp/tmux-server-rescue",
+			socket: "/tmp/tmux/default",
+			session: "flywheel",
+		});
+		expect(result).toBe(false);
+		expect(timeouts).toEqual([2_000, 1_500, 500]);
+	});
+});
 
 describe("buildRunnerTuiCommand", () => {
 	it("resumes the daemon's SHORT socket with workspace-write + no-approval, on the given thread", () => {

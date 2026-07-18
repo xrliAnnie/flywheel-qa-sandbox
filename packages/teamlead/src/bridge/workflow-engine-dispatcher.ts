@@ -10,6 +10,7 @@ import {
 import { workflowTemplateDispatchBlockReason } from "../workflow-template-dispatch.js";
 import {
 	type GeneralizedLaunchLiveness,
+	getGeneralizedLaunchDelivery,
 	probeGeneralizedLaunchLiveness,
 	waitForGeneralizedLaunchDelivery,
 } from "./generalized-launch-recovery.js";
@@ -490,10 +491,11 @@ export class WorkflowEngineDispatcher {
 				commitWorkflowLaunch,
 			},
 		});
-		const delivered = await waitForGeneralizedLaunchDelivery(
+		let delivered = await waitForGeneralizedLaunchDelivery(
 			store,
 			intent.execution_id,
 		);
+		delivered ??= getGeneralizedLaunchDelivery(store, intent.execution_id);
 		if (!delivered) return false;
 		// A deterministic/fresh-spawn runner can finish before start() returns.
 		// Never let launch bookkeeping regress its committed terminal projection.
