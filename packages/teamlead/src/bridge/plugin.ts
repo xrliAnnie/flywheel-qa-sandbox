@@ -16,6 +16,10 @@ import {
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
+import {
+	sweepStaleSyncOpMarkers,
+	syncOpMarkerPath,
+} from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
 import {
 	defaultGateMarkerDir,
@@ -165,10 +169,12 @@ import { runBootShaCheck } from "./boot-sha-check.js";
 import { makeShipRemoteBranchCleanup } from "./branch-cleanup.js";
 // FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
 import {
-	abnormalExitEpisodeSignature,
 	abnormalExitTicketEventId,
 	bridgeMarkerPath,
+	buildAbnormalExitAlertContent,
+	findWatchdogStallForExit,
 	latchPreviousMarker,
+	watchdogLogPath,
 	writeCleanMarker,
 	writeRunningMarker,
 } from "./bridge-exit-marker.js";
@@ -3668,6 +3674,7 @@ export async function startBridge(
 			"No projects configured — check FLYWHEEL_PROJECTS or project config",
 		);
 	}
+	const bridgeBootTs = Date.now();
 
 	// FLY-1082 (Task 1.1): fail-loud kind-contract validation — every alert
 	// kind must have an owner + an explicit ARC posture, or the Bridge REFUSES
@@ -3681,8 +3688,9 @@ export async function startBridge(
 	// the boot self-check ticket for it is emitted after the alert sink exists.
 	const bridgeMarker = bridgeMarkerPath(process.env);
 	const prevExitMarker = latchPreviousMarker(bridgeMarker);
+	sweepStaleSyncOpMarkers({ env: process.env });
 	try {
-		writeRunningMarker(bridgeMarker, process.pid, Date.now());
+		writeRunningMarker(bridgeMarker, process.pid, bridgeBootTs);
 	} catch (err) {
 		console.warn(
 			`[bridge-exit-marker] running-marker write failed (non-fatal): ${(err as Error).message}`,
@@ -7094,6 +7102,9 @@ export async function startBridge(
 	// (the dedicated watchdog tests exercise the real worker directly).
 	const bridgeWatchdog = new BridgeEventLoopWatchdog({
 		enabled: !process.env.VITEST,
+		bootTs: bridgeBootTs,
+		pid: process.pid,
+		syncOpMarkerPath: syncOpMarkerPath(process.pid, process.env),
 	});
 	bridgeWatchdog.start();
 	if (bridgeWatchdog.isEnabled()) {
@@ -9189,15 +9200,23 @@ export async function startBridge(
 	// wrapper page already fired Bridge-independently with its OWN dedup id;
 	// both legs share the episode signature for correlation).
 	if (prevExitMarker?.state === "running") {
-		const episode = abnormalExitEpisodeSignature(prevExitMarker);
+		const watchdogStall = findWatchdogStallForExit(
+			watchdogLogPath(process.env),
+			prevExitMarker,
+			bridgeBootTs,
+		);
+		const alertContent = buildAbnormalExitAlertContent(
+			prevExitMarker,
+			watchdogStall,
+		);
 		void routedAlertSink
 			.alert({
 				leadId: "bridge",
 				projectName: FLEET_ALERT_PROJECT,
 				eventId: abnormalExitTicketEventId(prevExitMarker),
 				eventType: "bridge_abnormal_exit",
-				title: "Bridge 非正常退出 — 复活对账中",
-				body: `上一代 Bridge (PID ${prevExitMarker.pid}, boot ${prevExitMarker.bootTs}) 没有 clean shutdown 就退出了（episode ${episode}；wrapper 直发 page 同一 episode）。launchd 已复活本进程；boot 对账完成后本工单安静 resolve。`,
+				title: alertContent.title,
+				body: alertContent.body,
 				severity: "severe",
 			})
 			.catch((err: Error) =>

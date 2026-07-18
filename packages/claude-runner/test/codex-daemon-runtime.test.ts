@@ -12,12 +12,88 @@ import {
 	assertSocketPathFitsSunLen,
 	buildDaemonEffortArgs,
 	buildDaemonSandboxArgs,
+	codexDaemonExitWaitMs,
+	createDefaultKillGroup,
 	type DaemonChild,
 	daemonSocketDir,
 	resolveDaemonSocketPath,
 	SUN_PATH_MAX,
 	spawnCodexDaemon,
 } from "../src/codex-daemon-runtime.js";
+
+describe("daemon group-kill safety", () => {
+	it("refuses the Bridge's actual process group and caches the lookup", () => {
+		const kill = vi.fn();
+		const processGroupOf = vi.fn(() => 777);
+		const logger = vi.fn();
+		const killGroup = createDefaultKillGroup({
+			pid: 123,
+			ppid: 12,
+			processGroupOf,
+			kill,
+			logger,
+		});
+
+		killGroup(777, "SIGKILL");
+		killGroup(777, "SIGTERM");
+
+		expect(kill).not.toHaveBeenCalled();
+		expect(processGroupOf).toHaveBeenCalledTimes(1);
+		expect(logger).toHaveBeenCalledWith(expect.stringContaining("REFUSING"));
+	});
+
+	it("preserves the proven-group kill when own PGID lookup is unavailable", () => {
+		const kill = vi.fn();
+		const logger = vi.fn();
+		const killGroup = createDefaultKillGroup({
+			pid: 123,
+			ppid: 12,
+			processGroupOf: () => undefined,
+			kill,
+			logger,
+		});
+
+		killGroup(777, "SIGKILL");
+
+		expect(kill).toHaveBeenCalledWith(-777, "SIGKILL");
+		expect(logger).toHaveBeenCalledWith(
+			expect.stringContaining("signal=SIGKILL"),
+		);
+	});
+
+	it("uses the daemon's negative PGID for a normal isolated group", () => {
+		const kill = vi.fn();
+		const killGroup = createDefaultKillGroup({
+			pid: 123,
+			ppid: 12,
+			processGroupOf: () => 321,
+			kill,
+		});
+
+		killGroup(777, "SIGTERM");
+
+		expect(kill).toHaveBeenCalledWith(-777, "SIGTERM");
+	});
+});
+
+describe("codexDaemonExitWaitMs", () => {
+	it("defaults daemon exit confirmation to 10 seconds", () => {
+		expect(codexDaemonExitWaitMs({})).toBe(10_000);
+	});
+
+	it("accepts a positive integer env override and rejects unsafe values", () => {
+		expect(
+			codexDaemonExitWaitMs({ FLYWHEEL_CODEX_DAEMON_EXIT_WAIT_MS: "12345" }),
+		).toBe(12_345);
+		for (const value of ["", "0", "-1", "1.5", "Infinity", "wat"]) {
+			expect(
+				codexDaemonExitWaitMs({
+					FLYWHEEL_CODEX_DAEMON_EXIT_WAIT_MS: value,
+				}),
+			).toBe(10_000);
+		}
+	});
+});
 
 // ── FLY-1188 M4c — daemon spawn + socket lifecycle (OS effects injected) ──
 
@@ -349,6 +425,26 @@ describe("spawnCodexDaemon", () => {
 		}
 		expect(killedAnything).toBe(false); // never SIGKILLed an unproven pid
 		expect(spawned).toBe(false); // never clobbered a live daemon
+	});
+
+	it("bounds the socket-holder process-group proof loop to ten probes", async () => {
+		const child = new FakeChild();
+		let groupProbes = 0;
+		await expect(
+			spawnCodexDaemon({
+				...baseOpts(child),
+				reapOrphanPid: 99999,
+				socketHolderPids: () =>
+					Array.from({ length: 100 }, (_, index) => 10_000 + index),
+				processGroupOf: () => {
+					groupProbes += 1;
+					return 12345;
+				},
+				socketExists: () => true,
+				isSocketLive: () => Promise.resolve(true),
+			}),
+		).rejects.toThrow(/live codex daemon is already listening/);
+		expect(groupProbes).toBe(10);
 	});
 
 	it("HIGH-3: still REFUSES to clobber when the PROVEN orphan survives the reap (socket stays live)", async () => {

@@ -715,7 +715,9 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		windowAliveReturns = false; // the old remote TUI exited when its socket closed
 		runtime = new FakeRuntime(async (input) => {
 			input.onThreadReady?.(THREAD_ID, 0); // first start → open
+			await Promise.resolve();
 			input.onThreadReady?.(THREAD_ID, 1); // daemon restart → pane dead → reopen
+			await Promise.resolve();
 			return complete();
 		});
 		await makeAdapter().execute(ctx());
@@ -732,6 +734,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			];
 			runtime = new FakeRuntime(async (input) => {
 				input.onThreadReady?.(THREAD_ID, 0);
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
 				return complete();
 			});
 			const res = await makeAdapter().execute(ctx());
@@ -743,6 +746,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			ensureWindowSeq = [{ created: false, reason: "died" }]; // sticky: always dies
 			runtime = new FakeRuntime(async (input) => {
 				input.onThreadReady?.(THREAD_ID, 0);
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
 				return complete();
 			});
 			await makeAdapter().execute(ctx());
@@ -868,6 +872,127 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			expect(ensureWindowCalls.length).toBe(before); // runEnded guard held
 		});
 
+		it("cleans a window created after the in-flight ensure outlives teardown join", async () => {
+			const events: string[] = [];
+			let releaseEnsure!: (outcome: RunnerTuiWindowOutcome) => void;
+			const deferred = new Promise<RunnerTuiWindowOutcome>((resolve) => {
+				releaseEnsure = resolve;
+			});
+			const deps = makeDeps();
+			deps.ensureWindow = (async () => {
+				events.push("ensure-start");
+				const result = await deferred;
+				events.push("ensure-settled");
+				return result;
+			}) as CodexDaemonAdapterDeps["ensureWindow"];
+			deps.killWindow = (() => {
+				events.push("terminal-kill");
+			}) as CodexDaemonAdapterDeps["killWindow"];
+			deps.cleanupWindows = (async () => {
+				events.push("late-cleanup");
+			}) as CodexDaemonAdapterDeps["cleanupWindows"];
+			deps.tuiJoinTimeoutMs = 1;
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				return complete();
+			});
+			const adapter = new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				deps,
+			);
+
+			const result = await adapter.execute(ctx());
+			expect(result.success).toBe(true);
+			expect(events).toEqual(["ensure-start", "terminal-kill"]);
+			releaseEnsure({ created: true });
+			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+			expect(events).toEqual([
+				"ensure-start",
+				"terminal-kill",
+				"ensure-settled",
+				"late-cleanup",
+			]);
+		});
+
+		it("also cleans a late-created window during request-bound controlled shutdown", async () => {
+			const events: string[] = [];
+			let releaseEnsure!: (outcome: RunnerTuiWindowOutcome) => void;
+			let rejectGoal!: (error: Error) => void;
+			const deferred = new Promise<RunnerTuiWindowOutcome>((resolve) => {
+				releaseEnsure = resolve;
+			});
+			const controlledRuntime: CodexDaemonGoalRuntimeLike = {
+				runGoal: (input) => {
+					input.onThreadReady?.(THREAD_ID, 0);
+					return new Promise((_resolve, reject) => {
+						rejectGoal = reject;
+					});
+				},
+				stop: () =>
+					rejectGoal(new GoalRunError("controlled", "transport_closed")),
+				drained: async () => {},
+			};
+			const lifecycle = {
+				start: vi.fn(async () => {}),
+				stopIntake: vi.fn(async () => {}),
+				stop: vi.fn(async () => {}),
+				waitForShutdown: vi.fn(async () => ({ requestId: "shutdown-late" })),
+				observe: vi.fn(() => null),
+				getPhaseHold: vi.fn(() => null),
+				enterHold: vi.fn(async () => {}),
+				confirmHoldPaused: vi.fn(async () => {}),
+				waitForActivity: vi.fn(async () => {}),
+				leaveHold: vi.fn(async () => {}),
+				markWakeStarted: vi.fn(),
+				finishWake: vi.fn(),
+				ackShutdown: vi.fn(),
+			};
+			const deps = makeDeps();
+			deps.runtimeFactory = () => controlledRuntime;
+			deps.phaseLifecycleFactory = () => lifecycle;
+			deps.ensureWindow = (async () => {
+				events.push("ensure-start");
+				const result = await deferred;
+				events.push("ensure-settled");
+				return result;
+			}) as CodexDaemonAdapterDeps["ensureWindow"];
+			deps.killWindow = (() => {
+				events.push("terminal-kill");
+			}) as CodexDaemonAdapterDeps["killWindow"];
+			deps.cleanupWindows = (async () => {
+				events.push("late-cleanup");
+			}) as CodexDaemonAdapterDeps["cleanupWindows"];
+			deps.tuiJoinTimeoutMs = 1;
+			const adapter = new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				deps,
+			);
+
+			const result = await adapter.execute(
+				ctx({ phaseKeepAlive: { role: "implement" } }),
+			);
+			expect(result.success).toBe(true);
+			expect(events).toEqual(["ensure-start", "terminal-kill"]);
+			releaseEnsure({ created: true });
+			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+			expect(events).toEqual([
+				"ensure-start",
+				"terminal-kill",
+				"ensure-settled",
+				"late-cleanup",
+			]);
+		});
+
 		// ── Codex code review R1 MED-2: queued/interleaving + fail-open proofs ──
 		it("died→died→created through a QUEUED scheduler drained one callback at a time", async () => {
 			const queue: Array<() => void> = [];
@@ -878,7 +1003,10 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 					if (i >= 0) queue.splice(i, 1);
 				};
 			};
-			const drainOne = () => queue.shift()?.();
+			const drainOne = async () => {
+				queue.shift()?.();
+				await Promise.resolve();
+			};
 			ensureWindowSeq = [
 				{ created: false, reason: "died" },
 				{ created: false, reason: "died" },
@@ -886,9 +1014,9 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			];
 			runtime = new FakeRuntime(async (input) => {
 				input.onThreadReady?.(THREAD_ID, 0); // queues attempt 1 (not yet run)
-				drainOne(); // attempt 1: died → queues attempt 2
-				drainOne(); // attempt 2: died → queues attempt 3
-				drainOne(); // attempt 3: created → latched, no re-queue
+				await drainOne(); // attempt 1: died → queues attempt 2
+				await drainOne(); // attempt 2: died → queues attempt 3
+				await drainOne(); // attempt 3: created → latched, no re-queue
 				return complete();
 			});
 			const res = await makeAdapter().execute(ctx());
@@ -908,7 +1036,10 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				input.onThreadReady?.(THREAD_ID, 0);
 				// drain the whole queue (each died re-queues the next until the cap)
 				let guard = 0;
-				while (queue.length && guard++ < 50) queue.shift()?.();
+				while (queue.length && guard++ < 50) {
+					queue.shift()?.();
+					await Promise.resolve();
+				}
 				return complete();
 			});
 			await makeAdapter().execute(ctx());
@@ -933,7 +1064,9 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				input.onThreadReady?.(THREAD_ID, 1); // restart WHILE opening — must NOT queue a 2nd chain
 				expect(queue.length).toBe(1); // single-flight: still just one pending attempt
 				queue.shift()?.(); // attempt 1 → died → re-queue attempt 2
+				await Promise.resolve();
 				queue.shift()?.(); // attempt 2 → created
+				await Promise.resolve();
 				return complete();
 			});
 			await makeAdapter().execute(ctx());

@@ -11,7 +11,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -88,6 +88,9 @@ describe("BridgeEventLoopWatchdog (main-side mechanics, injected worker)", () =>
 		let captured: { eval: true; workerData: WatchdogWorkerData } | null = null;
 		const wd = new BridgeEventLoopWatchdog({
 			enabled: true,
+			bootTs: 9_000,
+			pid: 321,
+			syncOpMarkerPath: "/tmp/bridge-syncop.321.json",
 			heartbeatIntervalMs: 1000,
 			now: () => mockNow,
 			ensureDir: () => {},
@@ -103,6 +106,11 @@ describe("BridgeEventLoopWatchdog (main-side mechanics, injected worker)", () =>
 		expect(captured).not.toBeNull();
 		expect(captured?.workerData.testMode).toBe(false);
 		expect(captured?.workerData.sab).toBeInstanceOf(SharedArrayBuffer);
+		expect(captured?.workerData.pid).toBe(321);
+		expect(captured?.workerData.bootTs).toBe(9_000);
+		expect(captured?.workerData.syncOpMarkerPath).toBe(
+			"/tmp/bridge-syncop.321.json",
+		);
 
 		mockNow = 11_000;
 		vi.advanceTimersByTime(1000);
@@ -158,6 +166,54 @@ describe("BridgeEventLoopWatchdog (main-side mechanics, injected worker)", () =>
 });
 
 describe("BridgeEventLoopWatchdog (real worker)", () => {
+	it("forensic line carries generation and the bounded per-pid sync-op breadcrumb", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1365-wd-"));
+		try {
+			const pid = 456;
+			const bootTs = Date.now() - 700_000;
+			const lastBeat = Date.now() - 600_000;
+			const markerPath = join(dir, `bridge-syncop.${pid}.json`);
+			const logPath = join(dir, "watchdog.log");
+			writeFileSync(
+				markerPath,
+				JSON.stringify({
+					label: "codex-adapter:resolve-git-dirs",
+					startedAt: lastBeat + 10,
+					pid,
+					token: "token",
+				}),
+			);
+			const sab = new SharedArrayBuffer(8);
+			Atomics.store(new BigInt64Array(sab), 0, BigInt(lastBeat));
+			const worker = new Worker(WATCHDOG_WORKER_SOURCE, {
+				eval: true,
+				workerData: {
+					sab,
+					stallThresholdMs: 60_000,
+					checkIntervalMs: 10,
+					logPath,
+					testMode: true,
+					pid,
+					bootTs,
+					syncOpMarkerPath: markerPath,
+				} satisfies WatchdogWorkerData,
+			});
+			await new Promise<void>((resolve, reject) => {
+				worker.on("error", reject);
+				worker.on("exit", () => resolve());
+			});
+			const line = JSON.parse(readFileSync(logPath, "utf8").trim());
+			expect(line).toMatchObject({
+				event: "bridge_event_loop_stall",
+				pid,
+				bootTs,
+				last_sync_op: "codex-adapter:resolve-git-dirs",
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("cross-thread: a stale heartbeat triggers a 'stall' message (testMode)", async () => {
 		const sab = new SharedArrayBuffer(8);
 		const view = new BigInt64Array(sab);
@@ -172,6 +228,9 @@ describe("BridgeEventLoopWatchdog (real worker)", () => {
 				checkIntervalMs: 10,
 				logPath: "",
 				testMode: true,
+				pid: process.pid,
+				bootTs: Date.now() - 700_000,
+				syncOpMarkerPath: "",
 			} satisfies WatchdogWorkerData,
 		});
 
@@ -211,7 +270,7 @@ const view = new BigInt64Array(sab);
 Atomics.store(view, 0, BigInt(Date.now() - 10_000_000));
 new Worker(source, {
   eval: true,
-  workerData: { sab, stallThresholdMs: 1000, checkIntervalMs: 10, logPath: "", testMode: false },
+  workerData: { sab, stallThresholdMs: 1000, checkIntervalMs: 10, logPath: "", testMode: false, pid: process.pid, bootTs: Date.now() - 1000, syncOpMarkerPath: "" },
 });
 // Keep the host main loop alive so the worker is the one that ends it.
 setInterval(() => {}, 1000);

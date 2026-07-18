@@ -3,7 +3,14 @@
  * overwrite, clean flip on close, and the two legs' distinct dedup ids over
  * one shared episode signature.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,7 +18,10 @@ import {
 	abnormalExitEpisodeSignature,
 	abnormalExitTicketEventId,
 	bridgeMarkerPath,
+	buildAbnormalExitAlertContent,
+	findWatchdogStallForExit,
 	latchPreviousMarker,
+	watchdogLogPath,
 	writeCleanMarker,
 	writeRunningMarker,
 } from "../bridge-exit-marker.js";
@@ -92,5 +102,103 @@ describe("bridge-exit-marker (Task 2.4)", () => {
 				FLYWHEEL_STATE_DIR: "/tmp/qa-state",
 			} as unknown as NodeJS.ProcessEnv),
 		).toBe("/tmp/qa-state/state/bridge-running-marker.json");
+	});
+
+	it("attributes a dirty exit only to an exact pid + boot generation inside its lifetime", () => {
+		const log = join(dir, "watchdog.log");
+		const prev = { pid: 111, bootTs: 1000, state: "running" as const };
+		writeFileSync(
+			log,
+			`${[
+				JSON.stringify({
+					event: "bridge_event_loop_stall",
+					pid: 999,
+					bootTs: 900,
+					stall_age_ms: 61_000,
+					at: new Date(1500).toISOString(),
+				}),
+				JSON.stringify({
+					event: "bridge_event_loop_stall",
+					pid: 111,
+					bootTs: 1000,
+					stall_age_ms: 65_432,
+					last_sync_op: "codex-tui:tmux-exec",
+					at: new Date(1900).toISOString(),
+				}),
+				// A later shared/QA record must not hide the exact prior generation.
+				JSON.stringify({
+					event: "bridge_event_loop_stall",
+					pid: 222,
+					bootTs: 1950,
+					stall_age_ms: 62_000,
+					at: new Date(2100).toISOString(),
+				}),
+			].join("\n")}\n`,
+		);
+
+		const stall = findWatchdogStallForExit(log, prev, 2000);
+		expect(stall).toMatchObject({
+			pid: 111,
+			bootTs: 1000,
+			stall_age_ms: 65_432,
+			last_sync_op: "codex-tui:tmux-exec",
+		});
+		const alert = buildAbnormalExitAlertContent(prev, stall);
+		expect(alert.title).toContain("event loop");
+		expect(alert.body).toContain("65432ms");
+		expect(alert.body).toContain("codex-tui:tmux-exec");
+	});
+
+	it.each([
+		["pid mismatch", { pid: 112, bootTs: 1000, at: 1500 }],
+		["generation mismatch", { pid: 111, bootTs: 999, at: 1500 }],
+		["before prior boot", { pid: 111, bootTs: 1000, at: 999 }],
+		["at current boot", { pid: 111, bootTs: 1000, at: 2000 }],
+	])("rejects watchdog attribution on %s", (_name, sample) => {
+		const log = join(dir, "watchdog.log");
+		const prev = { pid: 111, bootTs: 1000, state: "running" as const };
+		writeFileSync(
+			log,
+			`${JSON.stringify({
+				event: "bridge_event_loop_stall",
+				pid: sample.pid,
+				bootTs: sample.bootTs,
+				stall_age_ms: 61_000,
+				at: new Date(sample.at).toISOString(),
+			})}\n`,
+		);
+		expect(findWatchdogStallForExit(log, prev, 2000)).toBeNull();
+		expect(buildAbnormalExitAlertContent(prev, null).title).toBe(
+			"Bridge 非正常退出 — 复活对账中",
+		);
+	});
+
+	it("defensively rejects malformed, symlinked, FIFO, and oversized watchdog logs", () => {
+		const prev = { pid: 111, bootTs: 1000, state: "running" as const };
+		const log = join(dir, "watchdog.log");
+		writeFileSync(log, "not json\n");
+		expect(findWatchdogStallForExit(log, prev, 2000)).toBeNull();
+
+		const target = join(dir, "target.log");
+		writeFileSync(target, "{}\n");
+		rmSync(log, { force: true });
+		symlinkSync(target, log);
+		expect(findWatchdogStallForExit(log, prev, 2000)).toBeNull();
+
+		rmSync(log, { force: true });
+		execFileSync("mkfifo", [log]);
+		expect(findWatchdogStallForExit(log, prev, 2000)).toBeNull();
+
+		rmSync(log, { force: true });
+		writeFileSync(log, "x".repeat(256 * 1024 + 1));
+		expect(findWatchdogStallForExit(log, prev, 2000)).toBeNull();
+	});
+
+	it("watchdog log path honors QA isolation", () => {
+		expect(
+			watchdogLogPath({
+				FLYWHEEL_BRIDGE_WATCHDOG_LOG: "/tmp/qa/watchdog.log",
+			} as unknown as NodeJS.ProcessEnv),
+		).toBe("/tmp/qa/watchdog.log");
 	});
 });

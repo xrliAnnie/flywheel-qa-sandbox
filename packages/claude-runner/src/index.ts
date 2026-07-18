@@ -57,6 +57,8 @@ export {
 	type AcquireDaemonLockFn,
 	assertSocketPathFitsSunLen,
 	buildDaemonSandboxArgs,
+	codexDaemonExitWaitMs,
+	createDefaultKillGroup,
 	type DaemonChild,
 	type DaemonHandle,
 	type DaemonLock,
@@ -95,12 +97,15 @@ export {
 export {
 	buildRunnerTuiCommand,
 	ensureRunnerTuiWindow,
+	ensureSessionWithRetryAsync,
 	errMessage as runnerTuiErrMessage,
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
 	type RunnerTuiWindowDeps,
 	type RunnerTuiWindowOutcome, // FLY-1239
 	type RunnerTuiWindowSpec,
+	scanAndKillSameNameWindows,
+	spawnCommandAsync,
 } from "./codex-runner-tui-window.js"; // FLY-1188 M4c-3
 export {
 	availableTools,
@@ -117,6 +122,15 @@ export {
 	type IMessageFormatter,
 } from "./formatter.js";
 export { KimiTmuxAdapter } from "./KimiTmuxAdapter.js"; // FLY-494
+export {
+	clearSyncOp,
+	markSyncOp,
+	readSyncOpMarker,
+	type SyncOpMarker,
+	sweepStaleSyncOpMarkers,
+	syncOpMarkerPath,
+	withSyncOpMarker,
+} from "./sync-op-marker.js";
 export { TmuxAdapter } from "./TmuxAdapter.js";
 export type { ExecFileFn } from "./TmuxRunner.js";
 export { TmuxRunner } from "./TmuxRunner.js";

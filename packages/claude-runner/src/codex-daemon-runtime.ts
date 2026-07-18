@@ -37,6 +37,7 @@ import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stripInheritedSecretEnv } from "./codex-home.js";
+import { withSyncOpMarker } from "./sync-op-marker.js";
 
 /** macOS sockaddr_un.sun_path is 104 bytes; keep a byte of headroom. */
 export const SUN_PATH_MAX = 103;
@@ -268,7 +269,7 @@ export interface SpawnCodexDaemonOptions {
 	socketWaitTimeoutMs?: number;
 	/** Socket poll interval (default 200ms). */
 	socketPollMs?: number;
-	/** Bounded wait for the child to exit during failure cleanup (default 2s). */
+	/** Bounded wait for child exit/socket shutdown (default 10s; env-overridable). */
 	childExitWaitMs?: number;
 	logger?: (m: string) => void;
 }
@@ -335,10 +336,14 @@ export async function spawnCodexDaemon(
 	// killGroup there is NO group to signal — a made-up pid must never be able to
 	// reach `process.kill(-pid)` and take out an unrelated group on this machine.
 	const killGroup =
-		opts.killGroup ?? (opts.spawnFn ? undefined : defaultKillGroup);
+		opts.killGroup ??
+		(opts.spawnFn
+			? undefined
+			: createDefaultKillGroup({ processGroupOf, logger: log }));
 	const timeoutMs = opts.socketWaitTimeoutMs ?? 30_000;
 	const pollMs = opts.socketPollMs ?? 200;
-	const childExitWaitMs = opts.childExitWaitMs ?? 2_000;
+	const childExitWaitMs =
+		opts.childExitWaitMs ?? codexDaemonExitWaitMs(process.env);
 
 	ensureDir(dirnameOf(opts.socketPath));
 
@@ -397,9 +402,17 @@ export async function spawnCodexDaemon(
 				// LEADER (the shim), and the socket is held by the app-server. A group
 				// leader is in its own group, so the two-fact rule subsumes the
 				// identity case anyway; `ps` failing simply means NO proof → refuse.
-				const provenHolder =
-					opts.reapOrphanPid !== undefined &&
-					holders.some((h) => processGroupOf(h) === opts.reapOrphanPid);
+				const proofDeadline = now() + 20_000;
+				let provenHolder = false;
+				if (opts.reapOrphanPid !== undefined) {
+					for (const holder of holders.slice(0, 10)) {
+						if (now() >= proofDeadline) break;
+						if (processGroupOf(holder) === opts.reapOrphanPid) {
+							provenHolder = true;
+							break;
+						}
+					}
+				}
 				if (opts.reapOrphanPid !== undefined && provenHolder) {
 					log(
 						`reaping proven orphan (group=${opts.reapOrphanPid} holds ${opts.socketPath}, holders=[${holders.join(",")}]) to reclaim the socket`,
@@ -668,10 +681,50 @@ function defaultSpawnFn(
  * says pid H holds it; ps says H is in that group). Neither can be a production
  * process's group. "Destructive op not provable = don't act."
  */
-function defaultKillGroup(pgid: number, signal: NodeJS.Signals): void {
-	if (!Number.isInteger(pgid) || pgid <= 1) return;
-	if (pgid === process.pid || pgid === process.ppid) return;
-	process.kill(-pgid, signal);
+export function createDefaultKillGroup(options: {
+	processGroupOf: (pid: number) => number | undefined;
+	kill?: (pid: number, signal: NodeJS.Signals) => void;
+	pid?: number;
+	ppid?: number;
+	logger?: (message: string) => void;
+}): (pgid: number, signal: NodeJS.Signals) => void {
+	const pid = options.pid ?? process.pid;
+	const ppid = options.ppid ?? process.ppid;
+	const kill =
+		options.kill ?? ((target, signal) => process.kill(target, signal));
+	const logger = options.logger ?? (() => {});
+	let ownPgidResolved = false;
+	let ownPgid: number | undefined;
+	return (pgid, signal) => {
+		if (!Number.isInteger(pgid) || pgid <= 1) return;
+		if (pgid === pid || pgid === ppid) {
+			logger(
+				`[CodexDaemon] REFUSING group signal to protected pid-derived PGID ${pgid} (signal=${signal})`,
+			);
+			return;
+		}
+		if (!ownPgidResolved) {
+			ownPgid = options.processGroupOf(pid);
+			ownPgidResolved = true;
+		}
+		if (ownPgid !== undefined && pgid === ownPgid) {
+			logger(
+				`[CodexDaemon] REFUSING group signal to Bridge process group ${pgid} (signal=${signal})`,
+			);
+			return;
+		}
+		logger(`[CodexDaemon] group signal pgid=${pgid} signal=${signal}`);
+		kill(-pgid, signal);
+	};
+}
+
+export function codexDaemonExitWaitMs(
+	env: NodeJS.ProcessEnv = process.env,
+): number {
+	const configured = env.FLYWHEEL_CODEX_DAEMON_EXIT_WAIT_MS?.trim();
+	if (!configured) return 10_000;
+	const parsed = Number(configured);
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 10_000;
 }
 
 /**
@@ -682,11 +735,13 @@ function defaultKillGroup(pgid: number, signal: NodeJS.Signals): void {
  */
 function defaultProcessGroupOf(pid: number): number | undefined {
 	try {
-		const out = execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], {
-			encoding: "utf8",
-			timeout: 2000,
-			stdio: ["ignore", "pipe", "ignore"],
-		});
+		const out = withSyncOpMarker("codex-daemon:ps-pgid", () =>
+			execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], {
+				encoding: "utf8",
+				timeout: 2000,
+				stdio: ["ignore", "pipe", "ignore"],
+			}),
+		);
 		const pgid = Number.parseInt(out.trim(), 10);
 		return Number.isInteger(pgid) && pgid > 0 ? pgid : undefined;
 	} catch {
@@ -703,11 +758,13 @@ function defaultProcessGroupOf(pid: number): number | undefined {
  */
 function defaultSocketHolderPids(p: string): number[] {
 	try {
-		const out = execFileSync("lsof", ["-t", "--", p], {
-			encoding: "utf8",
-			timeout: 2000,
-			stdio: ["ignore", "pipe", "ignore"],
-		});
+		const out = withSyncOpMarker("codex-daemon:lsof-socket", () =>
+			execFileSync("lsof", ["-t", "--", p], {
+				encoding: "utf8",
+				timeout: 2000,
+				stdio: ["ignore", "pipe", "ignore"],
+			}),
+		);
 		return out
 			.split("\n")
 			.map((line) => Number.parseInt(line.trim(), 10))

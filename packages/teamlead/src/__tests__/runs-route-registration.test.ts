@@ -15,6 +15,8 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 // Mock heavy dependencies to keep the test lightweight
 vi.mock("flywheel-claude-runner", () => ({
 	AnthropicLLMClient: vi.fn(),
+	sweepStaleSyncOpMarkers: vi.fn(),
+	syncOpMarkerPath: vi.fn((pid: number) => `/tmp/bridge-syncop.${pid}.json`),
 	TmuxAdapter: vi.fn().mockImplementation(() => ({
 		type: "claude-tmux",
 		checkEnvironment: vi.fn().mockResolvedValue({ ready: true }),

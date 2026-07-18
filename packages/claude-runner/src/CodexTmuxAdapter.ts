@@ -98,6 +98,7 @@ import {
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
 	errMessage as safeErr,
+	scanAndKillSameNameWindows,
 } from "./codex-runner-tui-window.js";
 
 /**
@@ -113,6 +114,7 @@ import {
 export const TUI_OPEN_MAX_ATTEMPTS = 8; // per open-chain (includes the first attempt)
 export const TUI_OPEN_RETRY_GAP_MS = 900;
 
+import { withSyncOpMarker } from "./sync-op-marker.js";
 import type { ExecFileFn } from "./TmuxAdapter.js";
 import { defaultExecFile } from "./TmuxAdapter.js";
 
@@ -163,6 +165,10 @@ export interface CodexDaemonAdapterDeps {
 	ensureWindow?: typeof ensureRunnerTuiWindow;
 	/** Tear the founder window down on terminal (fail-open). */
 	killWindow?: typeof killRunnerTuiWindow;
+	/** Pure terminal cleanup for a window that commits after the first kill. */
+	cleanupWindows?: typeof scanAndKillSameNameWindows;
+	/** Bounded join for an in-flight async ensure before terminal cleanup. */
+	tuiJoinTimeoutMs?: number;
 	/** Is the founder window's pane still alive? (restart-reopen probe.) */
 	windowAlive?: (windowName: string) => boolean;
 	/** FLY-1239: schedule a founder-window reopen attempt (the rollout-race
@@ -200,6 +206,8 @@ export class CodexTmuxAdapter implements IAdapter {
 	>;
 	private readonly ensureWindow: typeof ensureRunnerTuiWindow;
 	private readonly killWindow: typeof killRunnerTuiWindow;
+	private readonly cleanupWindows: typeof scanAndKillSameNameWindows;
+	private readonly tuiJoinTimeoutMs: number;
 	private readonly windowAliveFn: (windowName: string) => boolean;
 	private readonly scheduleReopen: (fn: () => void, ms: number) => () => void;
 	private readonly phaseLifecycleFactory: NonNullable<
@@ -230,6 +238,8 @@ export class CodexTmuxAdapter implements IAdapter {
 			deps.runtimeFactory ?? ((opts) => new CodexDaemonGoalRuntime(opts));
 		this.ensureWindow = deps.ensureWindow ?? ensureRunnerTuiWindow;
 		this.killWindow = deps.killWindow ?? killRunnerTuiWindow;
+		this.cleanupWindows = deps.cleanupWindows ?? scanAndKillSameNameWindows;
+		this.tuiJoinTimeoutMs = deps.tuiJoinTimeoutMs ?? 2_000;
 		this.windowAliveFn =
 			deps.windowAlive ??
 			((windowName) =>
@@ -264,8 +274,12 @@ export class CodexTmuxAdapter implements IAdapter {
 		// in a git worktree (WorktreeManager) or the project root (git repo),
 		// so this holds; any future non-git execution path must address it.
 		try {
-			const tmux = this.execFileFn("tmux", ["-V"]).stdout.trim();
-			const codex = this.execFileFn("codex", ["--version"]).stdout.trim();
+			const tmux = withSyncOpMarker("codex-adapter:health-tmux", () =>
+				this.execFileFn("tmux", ["-V"], { timeoutMs: 10_000 }),
+			).stdout.trim();
+			const codex = withSyncOpMarker("codex-adapter:health-codex", () =>
+				this.execFileFn("codex", ["--version"], { timeoutMs: 10_000 }),
+			).stdout.trim();
 			// FLY-123 WS-B (R1 LOW #6): runners use the repo-owned, CODEX_HOME-
 			// aware rotation shim (via FLYWHEEL_CODEX_BIN), NOT Annie's global
 			// codex-with-fallback. Health-check the actual shim is executable —
@@ -301,7 +315,9 @@ export class CodexTmuxAdapter implements IAdapter {
 	): string | undefined {
 		let token: string;
 		try {
-			token = this.execFileFn("gh", ["auth", "token"]).stdout.trim();
+			token = withSyncOpMarker("codex-adapter:gh-token", () =>
+				this.execFileFn("gh", ["auth", "token"], { timeoutMs: 10_000 }),
+			).stdout.trim();
 		} catch {
 			console.warn(
 				`[CodexTmuxAdapter] gh auth token unavailable for ${ctx.executionId} — Codex runner will not be able to push/open PRs (fail-closed at push).`,
@@ -320,20 +336,32 @@ export class CodexTmuxAdapter implements IAdapter {
 		// is an ssh remote — the ssh agent socket is sandbox-blocked, so ssh
 		// can never work for a Codex runner. Scoped to github.com; best-effort.
 		try {
-			this.execFileFn("git", [
-				"-C",
-				ctx.cwd,
-				"config",
-				"credential.https://github.com.helper",
-				"!gh auth git-credential",
-			]);
-			this.execFileFn("git", [
-				"-C",
-				ctx.cwd,
-				"config",
-				"url.https://github.com/.insteadOf",
-				"git@github.com:",
-			]);
+			withSyncOpMarker("codex-adapter:git-credential", () =>
+				this.execFileFn(
+					"git",
+					[
+						"-C",
+						ctx.cwd,
+						"config",
+						"credential.https://github.com.helper",
+						"!gh auth git-credential",
+					],
+					{ timeoutMs: 10_000 },
+				),
+			);
+			withSyncOpMarker("codex-adapter:git-url-rewrite", () =>
+				this.execFileFn(
+					"git",
+					[
+						"-C",
+						ctx.cwd,
+						"config",
+						"url.https://github.com/.insteadOf",
+						"git@github.com:",
+					],
+					{ timeoutMs: 10_000 },
+				),
+			);
 		} catch (err) {
 			console.warn(
 				`[CodexTmuxAdapter] failed to set git credential config for ${ctx.executionId}: ${(err as Error).message}`,
@@ -344,8 +372,12 @@ export class CodexTmuxAdapter implements IAdapter {
 
 	async execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
 		if (!this.preflightDone) {
-			this.execFileFn("tmux", ["-V"]);
-			this.execFileFn("codex", ["--version"]);
+			withSyncOpMarker("codex-adapter:preflight-tmux", () =>
+				this.execFileFn("tmux", ["-V"], { timeoutMs: 10_000 }),
+			);
+			withSyncOpMarker("codex-adapter:preflight-codex", () =>
+				this.execFileFn("codex", ["--version"], { timeoutMs: 10_000 }),
+			);
 			this.preflightDone = true;
 		}
 
@@ -387,6 +419,8 @@ export class CodexTmuxAdapter implements IAdapter {
 		let threadReadySeen = false; // did the authoritative onThreadReady hook ever fire?
 		let runEnded = false; // set in `finally` — stops any pending reopen from spawning
 		let cancelReopen: (() => void) | undefined; // cancel the latest scheduled reopen
+		let activeTuiAttempt: Promise<void> | undefined;
+		let activeTuiAbort: AbortController | undefined;
 		let outcome: RunGoalOutcome | undefined;
 		let caughtError: unknown;
 		let teardownError: unknown;
@@ -534,15 +568,24 @@ export class CodexTmuxAdapter implements IAdapter {
 			// and lands the rollout between attempts. Wrapped in a no-throw boundary:
 			// an async retry callback that threw would be an uncaught exception and
 			// could crash the process — window failure must never break the run.
-			const attemptOpen = (threadId: string, n: number): void => {
+			const attemptOpen = async (
+				threadId: string,
+				n: number,
+				signal: AbortSignal,
+			): Promise<void> => {
 				try {
-					if (runEnded || tuiOpened) {
+					if (runEnded || tuiOpened || signal.aborted) {
 						tuiOpening = false;
 						return;
 					}
-					const result = this.ensureWindow(buildSpec(threadId), {
+					const result = await this.ensureWindow(buildSpec(threadId), {
 						log: (m) => this.log(m),
+						signal,
 					});
+					if (runEnded || signal.aborted) {
+						tuiOpening = false;
+						return;
+					}
 					if (result.created) {
 						wireCreated();
 						tuiOpening = false;
@@ -553,10 +596,9 @@ export class CodexTmuxAdapter implements IAdapter {
 						n < TUI_OPEN_MAX_ATTEMPTS &&
 						!runEnded
 					) {
-						cancelReopen = this.scheduleReopen(
-							() => attemptOpen(threadId, n + 1),
-							TUI_OPEN_RETRY_GAP_MS,
-						);
+						cancelReopen = this.scheduleReopen(() => {
+							launchAttempt(threadId, n + 1);
+						}, TUI_OPEN_RETRY_GAP_MS);
 						return; // still opening — chain continues on the next tick
 					}
 					if (result.reason === "died") {
@@ -577,6 +619,24 @@ export class CodexTmuxAdapter implements IAdapter {
 				}
 			};
 
+			const launchAttempt = (threadId: string, n: number): void => {
+				if (runEnded || tuiOpened) {
+					tuiOpening = false;
+					return;
+				}
+				const controller = new AbortController();
+				activeTuiAbort = controller;
+				const promise = attemptOpen(threadId, n, controller.signal);
+				activeTuiAttempt = promise;
+				const clear = (): void => {
+					if (activeTuiAttempt === promise) activeTuiAttempt = undefined;
+					if (activeTuiAbort === controller) activeTuiAbort = undefined;
+				};
+				// Consume both branches explicitly. Do not use a bare `.finally()` here:
+				// its returned rejected promise would be an unhandled rejection.
+				void promise.then(clear, clear);
+			};
+
 			// Start a single-flight reopen chain. The FIRST attempt is scheduled too
 			// (0 ms) so `onThreadReady` returns and `setGoal` is sent BEFORE any TUI
 			// settle blocks the event loop (Codex R1 MED-2).
@@ -584,7 +644,10 @@ export class CodexTmuxAdapter implements IAdapter {
 				if (tuiOpened || tuiOpening || runEnded) return;
 				tuiOpening = true;
 				try {
-					cancelReopen = this.scheduleReopen(() => attemptOpen(threadId, 1), 0);
+					cancelReopen = this.scheduleReopen(
+						() => launchAttempt(threadId, 1),
+						0,
+					);
 				} catch (err) {
 					tuiOpening = false;
 					this.log(
@@ -749,7 +812,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			// catch, where classifyGoalOutcome would let it override a successful goal.
 			if (!threadReadySeen && !tuiOpened && outcome?.threadId) {
 				try {
-					const o = this.ensureWindow(buildSpec(outcome.threadId), {
+					const o = await this.ensureWindow(buildSpec(outcome.threadId), {
 						log: (m) => this.log(m),
 					});
 					if (o.created) wireCreated();
@@ -775,6 +838,42 @@ export class CodexTmuxAdapter implements IAdapter {
 				this.log(
 					`runner-tui-window: reopen cancel threw (non-fatal, teardown continues): ${safeErr(err)}`,
 				);
+			}
+			activeTuiAbort?.abort();
+			const attemptAtTeardown = activeTuiAttempt;
+			if (attemptAtTeardown) {
+				let settledBeforeJoin = false;
+				await new Promise<void>((resolveJoin) => {
+					const timer = setTimeout(resolveJoin, this.tuiJoinTimeoutMs);
+					const settled = (): void => {
+						settledBeforeJoin = true;
+						clearTimeout(timer);
+						resolveJoin();
+					};
+					void attemptAtTeardown.then(settled, settled);
+				});
+				if (!settledBeforeJoin) {
+					const cleanupLateWindow = async (): Promise<void> => {
+						try {
+							await this.cleanupWindows({
+								tmuxSession: this.sessionName,
+								windowName,
+							});
+						} catch (err) {
+							this.log(
+								`runner-tui-window: late cleanup failed (non-fatal): ${safeErr(err)}`,
+							);
+						}
+					};
+					// Consume resolve and reject, then run a pure cleanup after the in-flight
+					// create can no longer commit. cleanupLateWindow catches its own errors.
+					void attemptAtTeardown
+						.then(cleanupLateWindow, cleanupLateWindow)
+						.then(
+							() => {},
+							() => {},
+						);
+				}
 			}
 			stopGateWatcher();
 			if (phaseLifecycle) {
@@ -1394,13 +1493,19 @@ export class CodexTmuxAdapter implements IAdapter {
 	 */
 	private resolveWindowId(windowName: string): string | undefined {
 		try {
-			const out = this.execFileFn("tmux", [
-				"display-message",
-				"-p",
-				"-t",
-				`=${this.sessionName}:=${windowName}`,
-				"#{window_id}",
-			]).stdout.trim();
+			const out = withSyncOpMarker("codex-adapter:resolve-window-id", () =>
+				this.execFileFn(
+					"tmux",
+					[
+						"display-message",
+						"-p",
+						"-t",
+						`=${this.sessionName}:=${windowName}`,
+						"#{window_id}",
+					],
+					{ timeoutMs: 5_000 },
+				),
+			).stdout.trim();
 			return out || undefined;
 		} catch {
 			return undefined;
@@ -1427,14 +1532,20 @@ export class CodexTmuxAdapter implements IAdapter {
 	private resolveGitWritableDirs(cwd: string): string[] {
 		let stdout: string;
 		try {
-			stdout = this.execFileFn("git", [
-				"-C",
-				cwd,
-				"rev-parse",
-				"--path-format=absolute",
-				"--git-dir",
-				"--git-common-dir",
-			]).stdout;
+			stdout = withSyncOpMarker("codex-adapter:resolve-git-dirs", () =>
+				this.execFileFn(
+					"git",
+					[
+						"-C",
+						cwd,
+						"rev-parse",
+						"--path-format=absolute",
+						"--git-dir",
+						"--git-common-dir",
+					],
+					{ timeoutMs: 10_000 },
+				),
+			).stdout;
 		} catch (err) {
 			throw new Error(
 				`[CodexTmuxAdapter] cannot resolve git metadata dirs for ${cwd} — a codex runner that cannot commit is crippled; refusing to spawn: ${(err as Error).message}`,

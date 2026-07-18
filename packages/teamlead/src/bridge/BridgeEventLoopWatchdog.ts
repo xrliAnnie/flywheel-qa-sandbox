@@ -52,6 +52,9 @@ export interface WatchdogWorkerData {
 	logPath: string;
 	/** Test-only: postMessage("stall") + stop instead of killing the process. */
 	testMode: boolean;
+	pid: number;
+	bootTs: number;
+	syncOpMarkerPath: string;
 }
 
 /**
@@ -66,19 +69,53 @@ export interface WatchdogWorkerData {
 export const WATCHDOG_WORKER_SOURCE = `
 const { workerData, parentPort } = require("node:worker_threads");
 const fs = require("node:fs");
-const { sab, stallThresholdMs, checkIntervalMs, logPath, testMode } = workerData;
-const view = new BigInt64Array(sab);
-const timer = setInterval(() => {
-	const lastBeat = Number(Atomics.load(view, 0));
-	const age = Date.now() - lastBeat;
-	if (age <= stallThresholdMs) return;
-	clearInterval(timer);
-	const line = JSON.stringify({
-		event: "bridge_event_loop_stall",
-		stall_age_ms: age,
-		threshold_ms: stallThresholdMs,
-		at: new Date().toISOString(),
-	}) + "\\n";
+	const { sab, stallThresholdMs, checkIntervalMs, logPath, testMode, pid, bootTs, syncOpMarkerPath } = workerData;
+	const view = new BigInt64Array(sab);
+	function readSyncOp(lastBeat, now) {
+		if (!syncOpMarkerPath) return undefined;
+		let fd;
+		try {
+			fd = fs.openSync(
+				syncOpMarkerPath,
+				fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+			);
+			const stat = fs.fstatSync(fd);
+			if (!stat.isFile() || stat.size <= 0 || stat.size > 4096) return undefined;
+			const buffer = Buffer.alloc(stat.size);
+			const count = fs.readSync(fd, buffer, 0, stat.size, 0);
+			const marker = JSON.parse(buffer.subarray(0, count).toString("utf8"));
+			if (
+				marker && marker.pid === pid && typeof marker.label === "string" &&
+				marker.label.length > 0 && marker.label.length <= 256 &&
+				Number.isFinite(marker.startedAt) && marker.startedAt >= lastBeat &&
+				marker.startedAt <= now
+			) return marker.label;
+		} catch (e) {
+			return undefined;
+		} finally {
+			if (fd !== undefined) {
+				try { fs.closeSync(fd); } catch (e) { /* best-effort */ }
+			}
+		}
+		return undefined;
+	}
+	const timer = setInterval(() => {
+		const lastBeat = Number(Atomics.load(view, 0));
+		const now = Date.now();
+		const age = now - lastBeat;
+		if (age <= stallThresholdMs) return;
+		clearInterval(timer);
+		const forensic = {
+			event: "bridge_event_loop_stall",
+			stall_age_ms: age,
+			threshold_ms: stallThresholdMs,
+			at: new Date().toISOString(),
+			pid,
+			bootTs,
+		};
+		const lastSyncOp = readSyncOp(lastBeat, now);
+		if (lastSyncOp) forensic.last_sync_op = lastSyncOp;
+		const line = JSON.stringify(forensic) + "\\n";
 	if (logPath) {
 		try { fs.appendFileSync(logPath, line); } catch (e) { /* best-effort */ }
 	}
@@ -126,6 +163,10 @@ export interface BridgeEventLoopWatchdogOptions {
 	) => WorkerLike;
 	/** Injectable parent-dir ensure (testing); defaults to fs.mkdirSync. */
 	ensureDir?: (path: string) => void;
+	bootTs?: number;
+	pid?: number;
+	syncOpMarkerPath?: string;
+	testMode?: boolean;
 }
 
 export class BridgeEventLoopWatchdog {
@@ -139,6 +180,10 @@ export class BridgeEventLoopWatchdog {
 		BridgeEventLoopWatchdogOptions["createWorker"]
 	>;
 	private readonly ensureDir: (path: string) => void;
+	private readonly bootTs: number;
+	private readonly pid: number;
+	private readonly syncOpMarkerPath: string;
+	private readonly testMode: boolean;
 
 	private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 	private worker: WorkerLike | null = null;
@@ -172,6 +217,10 @@ export class BridgeEventLoopWatchdog {
 			((path) => {
 				mkdirSync(dirname(path), { recursive: true });
 			});
+		this.bootTs = options.bootTs ?? Date.now();
+		this.pid = options.pid ?? process.pid;
+		this.syncOpMarkerPath = options.syncOpMarkerPath ?? "";
+		this.testMode = options.testMode ?? false;
 	}
 
 	/** True unless the `=0` ops kill-switch or `enabled: false` disables it. */
@@ -212,7 +261,10 @@ export class BridgeEventLoopWatchdog {
 				stallThresholdMs: this.stallThresholdMs,
 				checkIntervalMs: this.checkIntervalMs,
 				logPath: this.logPath,
-				testMode: false,
+				testMode: this.testMode,
+				pid: this.pid,
+				bootTs: this.bootTs,
+				syncOpMarkerPath: this.syncOpMarkerPath,
 			},
 		});
 		this.worker.unref();

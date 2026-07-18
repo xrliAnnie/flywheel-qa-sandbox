@@ -1,11 +1,17 @@
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	buildRunnerTuiCommand,
 	ensureRunnerTuiWindow,
 	ensureSessionWithRetry,
+	ensureSessionWithRetryAsync,
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
 	type RunnerTuiWindowSpec,
+	scanAndKillSameNameWindows,
+	spawnCommandAsync,
 } from "../src/codex-runner-tui-window.js";
 
 // ── FLY-1188 M4c-3 — founder-facing cmux TUI window (exec injected) ───────
@@ -74,6 +80,139 @@ describe("ensureSessionWithRetry", () => {
 		});
 		expect(result).toBe(false);
 		expect(timeouts).toEqual([2_000, 1_500, 500]);
+	});
+});
+
+describe("ensureSessionWithRetryAsync", () => {
+	it("preserves retry semantics without blocking the event loop", async () => {
+		let now = 0;
+		let attempts = 0;
+		const timeouts: number[] = [];
+		const logs: string[] = [];
+		let timerFired = false;
+		setTimeout(() => {
+			timerFired = true;
+		}, 0);
+
+		const result = await ensureSessionWithRetryAsync({
+			spawn: async (_cmd, _args, options) => {
+				attempts += 1;
+				timeouts.push(options.timeout);
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
+				return {
+					status: attempts === 3 ? 0 : 5,
+					stdout: attempts === 3 ? "" : `hold ${attempts}`,
+				};
+			},
+			sleep: async (ms) => {
+				now += ms;
+				await Promise.resolve();
+			},
+			now: () => now,
+			log: (message) => logs.push(message),
+			deadlineMs: 5_000,
+			attemptCapMs: 2_000,
+			cliPath: "/tmp/tmux-server-rescue",
+			socket: "/tmp/tmux/default",
+			session: "flywheel",
+		});
+
+		expect(result).toBe(true);
+		expect(timerFired).toBe(true);
+		expect(attempts).toBe(3);
+		expect(timeouts).toEqual([2_000, 2_000, 2_000]);
+		expect(logs).toHaveLength(2);
+		expect(logs[0]).toContain("status=5");
+	});
+
+	it("clips attempts to the shared deadline", async () => {
+		let now = 0;
+		const timeouts: number[] = [];
+		const result = await ensureSessionWithRetryAsync({
+			spawn: async (_cmd, _args, options) => {
+				timeouts.push(options.timeout);
+				return { status: 4, stdout: "held" };
+			},
+			sleep: async (ms) => {
+				now += ms;
+			},
+			now: () => now,
+			deadlineMs: 2_500,
+			attemptCapMs: 2_000,
+			cliPath: "/tmp/tmux-server-rescue",
+			socket: "/tmp/tmux/default",
+			session: "flywheel",
+		});
+
+		expect(result).toBe(false);
+		expect(timeouts).toEqual([2_000, 1_500, 500]);
+	});
+});
+
+describe("spawnCommandAsync", () => {
+	it("preserves complete stdout for callers that parse multi-line command output", async () => {
+		const result = await spawnCommandAsync(
+			process.execPath,
+			["-e", 'process.stdout.write("x".repeat(1200))'],
+			{
+				stdio: ["ignore", "pipe", "ignore"],
+				encoding: "utf8",
+				timeout: 5_000,
+			},
+		);
+		expect(result.status).toBe(0);
+		expect(result.stdout?.toString()).toHaveLength(1200);
+	});
+
+	it("sends SIGTERM on timeout and reports signal-style status null", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1365-child-"));
+		const proof = join(dir, "signal.txt");
+		try {
+			const result = await spawnCommandAsync(
+				process.execPath,
+				[
+					"-e",
+					`process.on("SIGTERM",()=>{setTimeout(()=>{require("node:fs").writeFileSync(${JSON.stringify(proof)},"SIGTERM");process.exit(0)},100)});setInterval(()=>{},1000)`,
+				],
+				{
+					stdio: ["ignore", "pipe", "ignore"],
+					encoding: "utf8",
+					timeout: 1_000,
+				},
+			);
+			expect(result.status).toBeNull();
+			// Promise settlement must happen after the child actually closes, not merely
+			// after SIGTERM is sent, or adapter late-cleanup can race a late tmux commit.
+			expect(existsSync(proof)).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("aborts a live child with status null and settles an error/close race once", async () => {
+		const controller = new AbortController();
+		const pending = spawnCommandAsync(
+			process.execPath,
+			["-e", "setInterval(()=>{},1000)"],
+			{
+				stdio: ["ignore", "pipe", "ignore"],
+				encoding: "utf8",
+				timeout: 5_000,
+				signal: controller.signal,
+			},
+		);
+		controller.abort();
+		await expect(pending).resolves.toMatchObject({ status: null });
+
+		await expect(
+			spawnCommandAsync("flywheel-command-that-does-not-exist", [], {
+				stdio: ["ignore", "pipe", "ignore"],
+				encoding: "utf8",
+				timeout: 1_000,
+			}),
+		).rejects.toMatchObject({ code: "ENOENT" });
+		// The child may emit `close` after `error`; the settled latch must consume it.
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
 	});
 });
 
@@ -234,10 +373,34 @@ function fakeTmux(
 }
 
 describe("ensureRunnerTuiWindow", () => {
-	it("routes both session ensures through the guarded rescue seam", () => {
+	it("uses async collaborators so a slow tmux attempt does not block timers", async () => {
+		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] });
+		let timerFired = false;
+		setTimeout(() => {
+			timerFired = true;
+		}, 0);
+		const outcomePromise = ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+			execAsync: async (cmd, args) => {
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
+				return t.exec(cmd, args);
+			},
+			execOutAsync: async (cmd, args) => t.execOut(cmd, args),
+			ensureSessionAsync: async () => true,
+			sleepAsync: async () => {},
+		});
+
+		const outcome = await outcomePromise;
+		expect(outcome).toEqual({ created: true });
+		expect(timerFired).toBe(true);
+	});
+
+	it("routes both session ensures through the guarded rescue seam", async () => {
 		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] });
 		let ensures = 0;
-		const outcome = ensureRunnerTuiWindow(spec, {
+		const outcome = await ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
@@ -251,9 +414,9 @@ describe("ensureRunnerTuiWindow", () => {
 		expect(t.verbs()).not.toContain("new-session");
 	});
 
-	it("probes tmux, ensures the session, purges + re-ensures + verifies, then creates the window", () => {
+	it("probes tmux, ensures the session, purges + re-ensures + verifies, then creates the window", async () => {
 		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] }); // clean session, no stale FLY-1188
-		const outcome = ensureRunnerTuiWindow(spec, {
+		const outcome = await ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
@@ -274,41 +437,41 @@ describe("ensureRunnerTuiWindow", () => {
 		expect(t.pileUp).toBe(false);
 	});
 
-	it("returns tmux-absent when tmux is unavailable — the run is unaffected", () => {
+	it("returns tmux-absent when tmux is unavailable — the run is unaffected", async () => {
 		const t = fakeTmux({ tmuxAvailable: false });
-		expect(
+		await expect(
 			ensureRunnerTuiWindow(spec, { exec: t.exec, execOut: t.execOut }),
-		).toEqual({ created: false, reason: "tmux-absent" });
+		).resolves.toEqual({ created: false, reason: "tmux-absent" });
 		expect(t.execCalls).toHaveLength(1); // only the -V probe
 		expect(t.newWindowCalled()).toBe(false);
 	});
 
-	it("returns create-failed (non-fatal) when window creation fails", () => {
+	it("returns create-failed (non-fatal) when window creation fails", async () => {
 		const t = fakeTmux({
 			initial: [{ id: "@0", name: "zsh" }],
 			createOk: false,
 		});
-		expect(
+		await expect(
 			ensureRunnerTuiWindow(spec, {
 				exec: t.exec,
 				execOut: t.execOut,
 				sleep: t.sleep,
 			}),
-		).toEqual({ created: false, reason: "create-failed" });
+		).resolves.toEqual({ created: false, reason: "create-failed" });
 	});
 
-	it("returns died when the pane dies during settle (the rollout-landing race)", () => {
+	it("returns died when the pane dies during settle (the rollout-landing race)", async () => {
 		const t = fakeTmux({
 			initial: [{ id: "@0", name: "zsh" }],
 			paneAlive: false, // window created but the TUI exited immediately
 		});
-		expect(
+		await expect(
 			ensureRunnerTuiWindow(spec, {
 				exec: t.exec,
 				execOut: t.execOut,
 				sleep: t.sleep,
 			}),
-		).toEqual({ created: false, reason: "died" });
+		).resolves.toEqual({ created: false, reason: "died" });
 	});
 
 	it("rejects a shell-unsafe session/window name up front", () => {
@@ -322,19 +485,53 @@ describe("ensureRunnerTuiWindow", () => {
 	});
 });
 
+describe("scanAndKillSameNameWindows", () => {
+	it("is a pure terminal cleanup primitive that never recreates the session", async () => {
+		const t = fakeTmux({
+			initial: [
+				{ id: "@0", name: "zsh" },
+				{ id: "@1", name: spec.windowName },
+			],
+		});
+
+		await scanAndKillSameNameWindows(spec, {
+			exec: async (cmd, args) => t.exec(cmd, args),
+			execOut: async (cmd, args) => t.execOut(cmd, args),
+		});
+
+		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@1"]);
+		expect(t.verbs()).not.toContain("new-session");
+		expect(t.verbs()).not.toContain("new-window");
+		expect(t.sameNameNow).toBe(0);
+	});
+
+	it("refuses malformed window ids instead of letting tmux reinterpret them", async () => {
+		const kills: string[][] = [];
+		await scanAndKillSameNameWindows(spec, {
+			exec: async (_cmd, args) => {
+				kills.push(args);
+				return { ok: true };
+			},
+			execOut: async () => `2 ${spec.windowName}\n@9 other`,
+		});
+
+		expect(kills).toEqual([]);
+	});
+});
+
 // ── FLY-1239 — the founder must NEVER see a pile-up of same-named dead panes ──
 // (Lead hard requirement; Codex R1 HIGH-1 + R2 MED-1). These use the STATEFUL
 // fake so duplicates are representable and the "kill last window destroys the
 // session" rule is modeled — the properties a Set-by-name fake could not test.
 describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
-	it("kills a single stale same-named window by immutable id, verifies clean, then creates", () => {
+	it("kills a single stale same-named window by immutable id, verifies clean, then creates", async () => {
 		const t = fakeTmux({
 			initial: [
 				{ id: "@0", name: "zsh" },
 				{ id: "@1", name: spec.windowName }, // a stale dead-pane leftover
 			],
 		});
-		const outcome = ensureRunnerTuiWindow(spec, {
+		const outcome = await ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
@@ -347,7 +544,7 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 		expect(t.sameNameNow).toBe(1);
 	});
 
-	it("purges PRE-EXISTING DUPLICATES (both same-named) by id before creating", () => {
+	it("purges PRE-EXISTING DUPLICATES (both same-named) by id before creating", async () => {
 		const t = fakeTmux({
 			initial: [
 				{ id: "@0", name: "zsh" },
@@ -355,7 +552,7 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 				{ id: "@2", name: spec.windowName }, // tmux permits duplicate names
 			],
 		});
-		const outcome = ensureRunnerTuiWindow(spec, {
+		const outcome = await ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
@@ -367,11 +564,11 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 		expect(t.maxSameName).toBeLessThanOrEqual(1);
 	});
 
-	it("re-ensures the session when the stale window was the session's ONLY window (kill destroys session)", () => {
+	it("re-ensures the session when the stale window was the session's ONLY window (kill destroys session)", async () => {
 		const t = fakeTmux({
 			initial: [{ id: "@1", name: spec.windowName }], // the ONLY window
 		});
-		const outcome = ensureRunnerTuiWindow(spec, {
+		const outcome = await ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
@@ -383,7 +580,7 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 		expect(t.maxSameName).toBeLessThanOrEqual(1);
 	});
 
-	it("refuses to create (create-failed) when a same-named window CANNOT be proven gone", () => {
+	it("refuses to create (create-failed) when a same-named window CANNOT be proven gone", async () => {
 		const t = fakeTmux({
 			initial: [
 				{ id: "@0", name: "zsh" },
@@ -391,7 +588,7 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 			],
 			killEffective: false, // simulate a kill that does not remove the window
 		});
-		const outcome = ensureRunnerTuiWindow(spec, {
+		const outcome = await ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
@@ -402,9 +599,29 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 		expect(t.createdOverResidual).toBe(false);
 	});
 
-	it("refuses to create (create-failed) when the session cannot be listed", () => {
+	it("refuses malformed matching window ids and therefore cannot claim purge success", async () => {
+		const calls: string[][] = [];
+		const outcome = await ensureRunnerTuiWindow(spec, {
+			exec: (cmd, args) => {
+				calls.push([cmd, ...args]);
+				return { ok: true };
+			},
+			execOut: (_cmd, args) =>
+				args.includes("list-windows")
+					? `2 ${spec.windowName}\n@9 other`
+					: undefined,
+			ensureSession: () => true,
+			sleep: () => {},
+		});
+
+		expect(outcome).toEqual({ created: false, reason: "create-failed" });
+		expect(calls.some((call) => call.includes("kill-window"))).toBe(false);
+		expect(calls.some((call) => call.includes("new-window"))).toBe(false);
+	});
+
+	it("refuses to create (create-failed) when the session cannot be listed", async () => {
 		const t = fakeTmux({ listFails: true });
-		const outcome = ensureRunnerTuiWindow(spec, {
+		const outcome = await ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
@@ -413,7 +630,7 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 		expect(t.newWindowCalled()).toBe(false);
 	});
 
-	it("refuses to create when the VERIFY listing fails (first list ok, second fails) — Codex code R1 LOW-3", () => {
+	it("refuses to create when the VERIFY listing fails (first list ok, second fails) — Codex code R1 LOW-3", async () => {
 		const t = fakeTmux({
 			initial: [
 				{ id: "@0", name: "zsh" },
@@ -421,7 +638,7 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 			],
 			verifyListFails: true, // purge succeeds, but the re-list to PROVE it fails
 		});
-		const outcome = ensureRunnerTuiWindow(spec, {
+		const outcome = await ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
@@ -431,7 +648,7 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 		expect(t.newWindowCalled()).toBe(false);
 	});
 
-	it("parses window names WITH SPACES and kills only the EXACT-name target id — Codex code R1 LOW-3", () => {
+	it("parses window names WITH SPACES and kills only the EXACT-name target id — Codex code R1 LOW-3", async () => {
 		const t = fakeTmux({
 			initial: [
 				{ id: "@0", name: "zsh -l" }, // a name with a space
@@ -440,7 +657,7 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 				{ id: "@3", name: `${spec.windowName}-other` }, // a prefix, NOT an exact match
 			],
 		});
-		const outcome = ensureRunnerTuiWindow(spec, {
+		const outcome = await ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
@@ -609,7 +826,7 @@ describe("killRunnerTuiWindow", () => {
 // makes stdout a PIPE, and a TUI refuses to render without a real TTY. The
 // daemon may keep using the shim (`app-server` needs no TTY); the TUI may not.
 describe("QA FLY-1188: the founder TUI must actually be RUNNING, not just spawned", () => {
-	it("reports died when the window dies immediately (tmux new-window 'succeeds' regardless)", () => {
+	it("reports died when the window dies immediately (tmux new-window 'succeeds' regardless)", async () => {
 		// tmux accepts every command and the purge/verify pass, but the window never
 		// comes up — exactly what a TUI that exits 1 on 'stdout is not a terminal' (or
 		// the FLY-1239 'no rollout found' race) looks like from outside.
@@ -617,7 +834,7 @@ describe("QA FLY-1188: the founder TUI must actually be RUNNING, not just spawne
 			initial: [{ id: "@0", name: "zsh" }],
 			paneAlive: false,
 		});
-		const outcome = ensureRunnerTuiWindow(spec, {
+		const outcome = await ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
