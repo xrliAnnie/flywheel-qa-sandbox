@@ -74,6 +74,11 @@ const ENV_KEYS = [
 	// FLY-871 — the real `use` now runs the freshness guard; inject a stub so the
 	// real seam doesn't make a live OAuth call with dummy pool credentials.
 	"FLYWHEEL_CLAUDE_FRESHNESS_BIN",
+	// FLY-1182 — isolate identity probing + audit from real machine state.
+	"FLYWHEEL_PROFILE_CURL_BIN",
+	"FLYWHEEL_PROFILE_IDENTITY_ENDPOINT",
+	"FLYWHEEL_PROFILE_AUDIT_LOG",
+	"FAKE_IDENTITY_CURL_ARGV_LOG",
 ] as const;
 
 // FLY-865: the target account's display identity, snapshotted in the pool.
@@ -108,6 +113,34 @@ beforeEach(() => {
 	writeFileSync(join(pool, "school", ".credentials.json"), SECRET_B, {
 		mode: 0o600,
 	});
+	writeFileSync(
+		join(pool, "personal", "identity-anchor.json"),
+		JSON.stringify({
+			accountUuid: "uuid-personal",
+			email: "personal@example.com",
+			anchoredAt: "2026-07-16T00:00:00.000Z",
+			anchoredBy: "test",
+			confirmedBy: "test-evidence",
+		}),
+		{ mode: 0o600 },
+	);
+	writeFileSync(
+		join(pool, "school", "identity-anchor.json"),
+		JSON.stringify({
+			accountUuid: "uuid-school",
+			email: "school@example.com",
+			anchoredAt: "2026-07-16T00:00:00.000Z",
+			anchoredBy: "test",
+			confirmedBy: "test-evidence",
+		}),
+		{ mode: 0o600 },
+	);
+	writeFileSync(join(pool, ".active"), "personal", { mode: 0o600 });
+	writeFileSync(
+		join(pool, "personal", "oauthAccount.json"),
+		JSON.stringify({ accountUuid: "u-personal", emailAddress: "p@x.com" }),
+		{ mode: 0o600 },
+	);
 	// FLY-865: school has a captured display identity; personal does not.
 	writeFileSync(
 		join(pool, "school", "oauthAccount.json"),
@@ -131,6 +164,23 @@ beforeEach(() => {
 	// that exercise the stale path override FLYWHEEL_CLAUDE_FRESHNESS_BIN.
 	const freshBin = join(tmp, "fake-freshness");
 	writeFileSync(freshBin, "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+	const identityCurlBin = join(tmp, "fake-identity-curl");
+	const identityCurlArgvLog = join(tmp, "identity-curl-argv.log");
+	writeFileSync(identityCurlArgvLog, "");
+	writeFileSync(
+		identityCurlBin,
+		`#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FAKE_IDENTITY_CURL_ARGV_LOG"
+cfg=$(cat)
+case "$cfg" in
+  *sk-ant-oat01-INT-A*) printf '%s' '{"account":{"uuid":"uuid-personal","email":"personal@example.com"}}' ;;
+  *sk-ant-oat01-INT-B*) printf '%s' '{"account":{"uuid":"uuid-school","email":"school@example.com"}}' ;;
+  *) exit 22 ;;
+esac
+`,
+		{ mode: 0o755 },
+	);
 	writeStore(
 		{
 			generation: 1,
@@ -164,6 +214,11 @@ beforeEach(() => {
 	process.env.FAKE_SEC_STATE = stateFile;
 	process.env.FAKE_SEC_ARGV_LOG = argvLog;
 	process.env.FLYWHEEL_CLAUDE_FRESHNESS_BIN = freshBin;
+	process.env.FLYWHEEL_PROFILE_CURL_BIN = identityCurlBin;
+	process.env.FLYWHEEL_PROFILE_IDENTITY_ENDPOINT =
+		"https://identity.test/oauth/profile";
+	process.env.FLYWHEEL_PROFILE_AUDIT_LOG = join(tmp, "profile-audit.log");
+	process.env.FAKE_IDENTITY_CURL_ARGV_LOG = identityCurlArgvLog;
 });
 
 afterEach(() => {
@@ -250,12 +305,13 @@ describe("switchAccount ↔ flywheel-claude-profile seam (REAL lock + REAL scrip
 		expect(readFileSync(process.env.FAKE_SEC_STATE as string, "utf-8")).toBe(
 			SECRET_A,
 		);
-		// .active was never committed
+		// .active was never changed
 		expect(
-			existsSync(
+			readFileSync(
 				join(process.env.FLYWHEEL_CLAUDE_PROFILES_DIR as string, ".active"),
+				"utf8",
 			),
-		).toBe(false);
+		).toBe("personal");
 		// the stale account was flagged authExpired (persisted in-lock)
 		const store = readStore(storePath);
 		expect(store.accounts.find((a) => a.name === "school")?.authExpired).toBe(

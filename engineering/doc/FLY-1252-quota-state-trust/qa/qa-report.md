@@ -18,7 +18,7 @@ Issue: FLY-1252 (https://linear.app/geoforge3d/issue/FLY-1252)
 **回归**: FLY-1252 改写了该循环的非-EEXIST 分支。
 - **改前**(merge-base `3d862dea2`):`if (code !== "EEXIST") throw err;` —— 任何非-EEXIST 错误
   (含 ENOENT=父目录缺失)**立即抛出** = 有界、fail-loud、0% CPU 浪费。
-- **改后**(本分支): 
+- **改后**(本分支):
   ```
   if (code !== "EEXIST") {
     try { rmdirSync(lockPath); } catch {}

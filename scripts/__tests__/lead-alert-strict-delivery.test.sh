@@ -7,10 +7,10 @@
 # isolated FLYWHEEL_* dirs + shimmed osascript, no network / no real
 # ~/.flywheel):
 #   1. All five strict results, one scenario each:
-#        sent · duplicate · queued_transient · dead_lettered · config_error
+#        sent · duplicate(active lease) · queued_transient · dead_lettered · config_error
 #      (config_error covers BOTH pure config exits AND no-token — plan §4)
-#   2. duplicate is emitted on a second call with the SAME signature (and the
-#      claim-precedes-delivery caveat means strict callers must deny on it).
+#   2. A duplicate WITH a sent/queued receipt returns that proven result; a bare
+#      legacy claim is leased and retried instead of being mistaken for delivery.
 #   3. Reverse-compat: WITHOUT the flag, stdout is byte-empty and exit codes
 #      are unchanged for the same scenarios.
 #   4. Kind face parity: restart_guard_bypass is accepted by lead-alert.sh
@@ -38,6 +38,7 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/curl" <<'FAKE'
 #!/bin/bash
+printf 'call\n' >> "${CURL_CALLS:?}"
 printf '%s' "${CURL_HTTP_CODE:-200}"
 exit 0
 FAKE
@@ -75,6 +76,7 @@ run_alert() {
   # $1 = http code for fake curl, remaining = extra args. Isolated env.
   local http="$1"; shift
   PATH="$TMP/bin:$PATH" \
+  CURL_CALLS="$TMP/curl.calls" \
   CURL_HTTP_CODE="$http" \
   FLYWHEEL_PROJECTS_FILE="$PROJECTS_FILE" \
   FLYWHEEL_CLAIMS_DB="$TMP/claims.db" \
@@ -90,16 +92,65 @@ run_alert() {
 OUT=$(run_alert 200 --lead flywheel-eng-lead --signature sig-sent --strict-delivery 2>/dev/null); RC=$?
 if [ "$RC" = "0" ] && [ "$OUT" = "sent" ]; then ok "strict: HTTP 200 → sent (exit 0)"; else bad "sent: rc=$RC out='$OUT'"; fi
 
-# ── 2. duplicate (same signature again; claim row already present) ───────────
+# ── 2. sent receipt (same signature again; no second POST) ───────────────────
+CALLS_BEFORE=$(wc -l < "$TMP/curl.calls" | tr -d ' ')
 OUT=$(run_alert 200 --lead flywheel-eng-lead --signature sig-sent --strict-delivery 2>/dev/null); RC=$?
-if [ "$RC" = "0" ] && [ "$OUT" = "duplicate" ]; then ok "strict: re-claimed signature → duplicate (exit 0)"; else bad "duplicate: rc=$RC out='$OUT'"; fi
+CALLS_AFTER=$(wc -l < "$TMP/curl.calls" | tr -d ' ')
+if [ "$RC" = "0" ] && [ "$OUT" = "sent" ] && [ "$CALLS_BEFORE" = "$CALLS_AFTER" ]; then ok "strict: duplicate with sent receipt → sent without re-POST"; else bad "sent receipt: rc=$RC out='$OUT' calls=$CALLS_BEFORE/$CALLS_AFTER"; fi
+
+# ── 2b. bare legacy claim is retried; active lease is not ────────────────────
+event_id() {
+  LC_ALL=C printf '%s|%s|%s|%s' flywheel flywheel-eng-lead restart_guard_bypass "$1" \
+    | LC_ALL=C shasum -a 1 | awk '{print $1}'
+}
+BARE_ID=$(event_id sig-bare)
+sqlite3 "$TMP/claims.db" "INSERT INTO alert_claims VALUES ('$BARE_ID','flywheel-eng-lead','restart_guard_bypass',strftime('%s','now'));"
+OUT=$(run_alert 200 --lead flywheel-eng-lead --signature sig-bare --strict-delivery 2>/dev/null); RC=$?
+if [ "$RC" = "0" ] && [ "$OUT" = "sent" ]; then ok "strict: bare legacy claim → leased retry → sent"; else bad "bare claim: rc=$RC out='$OUT'"; fi
+
+LEASE_ID=$(event_id sig-lease)
+sqlite3 "$TMP/claims.db" "INSERT INTO alert_claims VALUES ('$LEASE_ID','flywheel-eng-lead','restart_guard_bypass',strftime('%s','now')); INSERT INTO alert_deliveries(event_id,state,lease_token,lease_until,attempt_count,updated_at,last_error) VALUES ('$LEASE_ID','leased','other',strftime('%s','now')+60,1,strftime('%s','now'),NULL);"
+CALLS_BEFORE=$(wc -l < "$TMP/curl.calls" | tr -d ' ')
+OUT=$(run_alert 200 --lead flywheel-eng-lead --signature sig-lease --strict-delivery 2>/dev/null); RC=$?
+CALLS_AFTER=$(wc -l < "$TMP/curl.calls" | tr -d ' ')
+if [ "$RC" = "0" ] && [ "$OUT" = "duplicate" ] && [ "$CALLS_BEFORE" = "$CALLS_AFTER" ]; then ok "strict: active delivery lease → duplicate/unconfirmed without POST"; else bad "active lease: rc=$RC out='$OUT' calls=$CALLS_BEFORE/$CALLS_AFTER"; fi
+sqlite3 "$TMP/claims.db" "UPDATE alert_deliveries SET lease_until=0 WHERE event_id='$LEASE_ID';"
+OUT=$(run_alert 200 --lead flywheel-eng-lead --signature sig-lease --strict-delivery 2>/dev/null); RC=$?
+if [ "$RC" = "0" ] && [ "$OUT" = "sent" ]; then ok "strict: stale lease → takeover → sent"; else bad "stale lease: rc=$RC out='$OUT'"; fi
+
+# POST success followed by receipt-write failure stays unconfirmed. Replay may
+# duplicate the Discord post, but the stable event id converges to sent.
+CRASH_ID=$(event_id sig-post-receipt-crash)
+sqlite3 "$TMP/claims.db" "CREATE TRIGGER fail_sent_receipt BEFORE UPDATE OF state ON alert_deliveries WHEN NEW.event_id='$CRASH_ID' AND NEW.state='sent' BEGIN SELECT RAISE(ABORT,'injected receipt crash'); END;"
+OUT=$(run_alert 200 --lead flywheel-eng-lead --signature sig-post-receipt-crash --strict-delivery 2>/dev/null); RC=$?
+if [ "$RC" = "0" ] && [ "$OUT" = "duplicate" ]; then ok "strict: POST without durable receipt → duplicate/unconfirmed"; else bad "receipt crash: rc=$RC out='$OUT'"; fi
+sqlite3 "$TMP/claims.db" "DROP TRIGGER fail_sent_receipt; UPDATE alert_deliveries SET lease_until=0 WHERE event_id='$CRASH_ID';"
+OUT=$(run_alert 200 --lead flywheel-eng-lead --signature sig-post-receipt-crash --strict-delivery 2>/dev/null); RC=$?
+CRASH_STATE=$(sqlite3 "$TMP/claims.db" "SELECT state FROM alert_deliveries WHERE event_id='$CRASH_ID';")
+if [ "$RC" = "0" ] && [ "$OUT" = "sent" ] && [ "$CRASH_STATE" = "sent" ]; then ok "strict: unreceipted POST replay → stable-id sent receipt"; else bad "receipt recovery: rc=$RC out='$OUT' state=$CRASH_STATE"; fi
 
 # ── 3. queued_transient (HTTP 500 → spill to queue) ──────────────────────────
 OUT=$(run_alert 500 --lead flywheel-eng-lead --signature sig-q --strict-delivery 2>/dev/null); RC=$?
 NQUEUE=$(ls "$TMP/queue" 2>/dev/null | wc -l | tr -d ' ')
-if [ "$RC" = "2" ] && [ "$OUT" = "queued_transient" ] && [ "$NQUEUE" = "1" ]; then
-  ok "strict: HTTP 500 → queued_transient (exit 2, queue file written)"
+# GNU stat accepts BSD's `-f` but prints filesystem data instead of failing, so
+# prefer GNU `-c` and fall back to BSD/macOS `-f`.
+QMODE=$(stat -c '%a' "$TMP/queue"/*.json 2>/dev/null || stat -f '%Lp' "$TMP/queue"/*.json 2>/dev/null)
+NTMP=$(find "$TMP/queue" -maxdepth 1 -name '*.tmp.*' | wc -l | tr -d ' ')
+if [ "$RC" = "2" ] && [ "$OUT" = "queued_transient" ] && [ "$NQUEUE" = "1" ] && [ "$QMODE" = "600" ] && [ "$NTMP" = "0" ]; then
+  ok "strict: HTTP 500 → durably queued (0600 temp+fsync+rename)"
 else bad "queued_transient: rc=$RC out='$OUT' nqueue=$NQUEUE"; fi
+CALLS_BEFORE=$(wc -l < "$TMP/curl.calls" | tr -d ' ')
+OUT=$(run_alert 500 --lead flywheel-eng-lead --signature sig-q --strict-delivery 2>/dev/null); RC=$?
+CALLS_AFTER=$(wc -l < "$TMP/curl.calls" | tr -d ' ')
+NQUEUE_AFTER=$(ls "$TMP/queue" 2>/dev/null | wc -l | tr -d ' ')
+if [ "$RC" = "2" ] && [ "$OUT" = "queued_transient" ] && [ "$NQUEUE_AFTER" = "$NQUEUE" ] && [ "$CALLS_BEFORE" = "$CALLS_AFTER" ]; then ok "strict: duplicate with queued receipt → queued without re-POST"; else bad "queued receipt: rc=$RC out='$OUT' queue=$NQUEUE/$NQUEUE_AFTER calls=$CALLS_BEFORE/$CALLS_AFTER"; fi
+
+QUEUE_CRASH_ID=$(event_id sig-queue-receipt-crash)
+sqlite3 "$TMP/claims.db" "CREATE TRIGGER fail_queued_receipt BEFORE UPDATE OF state ON alert_deliveries WHEN NEW.event_id='$QUEUE_CRASH_ID' AND NEW.state='queued' BEGIN SELECT RAISE(ABORT,'injected queued receipt crash'); END;"
+OUT=$(run_alert 500 --lead flywheel-eng-lead --signature sig-queue-receipt-crash --strict-delivery 2>/dev/null); RC=$?
+QUEUE_CRASH_STATE=$(sqlite3 "$TMP/claims.db" "SELECT state FROM alert_deliveries WHERE event_id='$QUEUE_CRASH_ID';")
+if [ "$RC" = "2" ] && [ "$OUT" = "duplicate" ] && [ "$QUEUE_CRASH_STATE" = "leased" ]; then ok "strict: durable queue without receipt → duplicate/unconfirmed, not dead-lettered"; else bad "queued receipt crash: rc=$RC out='$OUT' state=$QUEUE_CRASH_STATE"; fi
+sqlite3 "$TMP/claims.db" "DROP TRIGGER fail_queued_receipt;"
 
 # ── 4. dead_lettered (permanent HTTP 403) ────────────────────────────────────
 OUT=$(run_alert 403 --lead flywheel-eng-lead --signature sig-dl --strict-delivery 2>/dev/null); RC=$?

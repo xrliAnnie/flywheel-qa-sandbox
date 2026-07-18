@@ -50,16 +50,37 @@ describe("loadQuotaMonitorConfig", () => {
 			minSwitchIntervalMinutes: 15,
 			order: [],
 			writeStatuslineCache: true,
+			paneScanSeconds: 60,
+			confirmDelayMinutes: 7,
 			degradedSwitch: false,
 			episodeRealertMinutes: 30,
 		});
 	});
 
-	it("loads an existing enabled config with safe defaults for new controls", () => {
+	it("loads the legacy enabled config with safe defaults for new controls", () => {
 		write(enabledConfig);
 		expect(loadQuotaMonitorConfig(path)).toEqual({
 			config: {
 				...enabledConfig,
+				paneScanSeconds: 60,
+				confirmDelayMinutes: 7,
+				degradedSwitch: false,
+				episodeRealertMinutes: 30,
+			},
+			monitorOnly: false,
+		});
+	});
+
+	it("accepts bounded explicit pane and confirmation clock overrides", () => {
+		write({
+			...enabledConfig,
+			paneScanSeconds: 2,
+			confirmDelayMinutes: 5,
+		});
+		expect(loadQuotaMonitorConfig(path)).toMatchObject({
+			config: {
+				paneScanSeconds: 2,
+				confirmDelayMinutes: 5,
 				degradedSwitch: false,
 				episodeRealertMinutes: 30,
 			},
@@ -116,6 +137,14 @@ describe("loadQuotaMonitorConfig", () => {
 		[
 			"unbounded interval",
 			JSON.stringify({ ...enabledConfig, basePollMinutes: 1_441 }),
+		],
+		[
+			"zero pane scan",
+			JSON.stringify({ ...enabledConfig, paneScanSeconds: 0 }),
+		],
+		[
+			"confirmation outside 5-10 minute product window",
+			JSON.stringify({ ...enabledConfig, confirmDelayMinutes: 11 }),
 		],
 		[
 			"invalid degraded switch",

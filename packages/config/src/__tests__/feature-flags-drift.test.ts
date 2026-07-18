@@ -85,6 +85,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: crash-recoverable Claude Keychain transition journal path (FLY-1252)",
 	FLYWHEEL_CLAUDE_PROFILES_DIR:
 		"plumbing: claude profile pool directory (FLY-1256 daemon reuses the existing credential pool)",
+	FLYWHEEL_CLAUDE_JSON:
+		"plumbing: machine claude identity json path (FLY-865; scratch override for FLY-1182 QA)",
 	FLYWHEEL_ACCOUNT_PENDING_PATH:
 		"plumbing: account_switch_pending store path (FLY-696)",
 	FLYWHEEL_CLAUDE_PROFILE_BIN:
@@ -120,16 +122,40 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: external quota-monitor singleton pidfile path (FLY-1256)",
 	FLYWHEEL_QUOTA_RUN_MARKER:
 		"plumbing: external quota-monitor graceful-exit marker path (FLY-1256)",
+	FLYWHEEL_QUOTA_HEALTH_MARKER:
+		"plumbing: external quota-monitor completed-tick evidence path (FLY-1182)",
 	FLYWHEEL_QUOTA_MONITOR_CONFIG:
 		"config value: external quota-monitor runtime config path (FLY-1256)",
+	FLYWHEEL_QUOTA_MONITOR_DIST:
+		"plumbing: deployed quota-monitor entrypoint path (FLY-1256 wrapper; FLY-1182 rebuild daemon-identity check)",
+	FLYWHEEL_POOL_REBUILD_JOURNAL:
+		"plumbing: restart-safe Claude pool rebuild journal path (FLY-1182)",
+	FLYWHEEL_POOL_REBUILD_LOCK:
+		"plumbing: Claude pool rebuild generation-claim directory (FLY-1182)",
+	FLYWHEEL_POOL_REBUILD_CONFIG_PREIMAGE:
+		"plumbing: frozen quota config rollback preimage path (FLY-1182)",
+	FLYWHEEL_PROFILE_IDENTITY_MAP:
+		"plumbing: canonical Claude profile identity-map path (FLY-1182)",
+	FLYWHEEL_CLAUDE_JSON_LOCK:
+		"plumbing: machine Claude display-identity lock path (FLY-1182)",
+	FLYWHEEL_QUOTA_LAUNCH_LABEL:
+		"config value: external quota-monitor launchd service label (FLY-1182)",
+	FLYWHEEL_QUOTA_PLIST_DEST:
+		"plumbing: external quota-monitor LaunchAgent plist path (FLY-1182)",
+	FLYWHEEL_QUOTA_LAUNCHCTL_BIN:
+		"plumbing: launchctl executable override for hermetic pool-rebuild QA (FLY-1182)",
 	FLYWHEEL_QUOTA_STATUSLINE_CACHE:
 		"plumbing: statusline usage cache output path (FLY-1256)",
 	FLYWHEEL_QUOTA_TMUX_SOCKET:
 		"plumbing: tmux socket name for isolated quota revive scans (FLY-1256)",
 	FLYWHEEL_QUOTA_STATE_PATH:
 		"plumbing: external quota-monitor durable state path (FLY-1256)",
+	FLYWHEEL_QUOTA_CONFIRMATION_DIR:
+		"plumbing: durable quota-switch confirmation evidence directory (FLY-1182)",
 	FLYWHEEL_QUOTA_API_BASE:
 		"config value: OAuth usage API base URL override (FLY-1256; local mock in QA)",
+	FLYWHEEL_QUOTA_QA_INJECTION:
+		"internal QA-only safety lever: explicit env=1 plus an isolated-pane marker enables deterministic fault injection (FLY-1182)",
 	FLYWHEEL_QUOTA_ALERT_MENTION_USER:
 		"config value: Discord user id mentioned by actionable quota alerts (FLY-1252)",
 	FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID:
@@ -225,6 +251,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: three-stage QA fix-loop round cap, default 3 (FLY-859)",
 	FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS:
 		"tuning knob: dead auto-QA recovery reconcile cadence (FLY-1279 D3b)",
+	FLYWHEEL_POOL_REBUILD_TIMEOUT_MS:
+		"tuning knob: pool-rebuild launchd transition and health wait timeout (FLY-1182)",
 	// FLY-927 infra-alert ticket-queue rollout levers (all default-off = current
 	// behavior; ops-flipped in ~/.flywheel/.env + Bridge restart, NOT founder
 	// dashboard toggles yet — same class as the internal ops levers above). When

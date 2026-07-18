@@ -1,0 +1,18 @@
+FLY-1182 — 检测覆盖缺口铁证 (2026-07-12, 今晚 Fable-5 事故现场)
+
+== 1. 今晚 runner 卡死的真实 pane 文本 (模型级) ==
+   You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.
+   出现在 pane: %559 %592 %93 %589 %346 %338 (≥4 个 runner)
+
+== 2. 同一时刻账号级 gauge (引擎唯一看的信号) ==
+   5h 10% / 44% / 56% / 62% / 67% / 75%   |   7d 25% / 47% / 63% / 74% / 80% / 88%
+   → 全部 < 100% → 账号级未封顶
+
+== 3. 引擎的封顶判据 (usage-gauge.ts:238-243) ==
+   scope = fiveh>=100 && weekly>=100 ? both : fiveh>=100 ? 5h : weekly>=100 ? weekly : null
+   scope===null → account-limit.ts:42 return null → 不 enqueue → 不切
+
+== 4. 全代码库有没有模型级识别器? ==
+
+== 5. 台账证据:引擎从没记录过任何一次封顶 ==
+{"activeAccount":"business","generation":1,"exhausted":[{"name":"business","quotaExhaustedUntil":null},{"name":"personal","quotaExhaustedUntil":null},{"name":"school","quotaExhaustedUntil":null},{"name":"shopping","quotaExhaustedUntil":null}]}

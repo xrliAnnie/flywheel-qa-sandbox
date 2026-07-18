@@ -1,0 +1,8 @@
+=== FLY-1182 Track B — phase=switch ===
+profile bin: /Users/xiaorongli/Dev/flywheel/packages/claude-runner/bin/flywheel-claude-profile
+[PRE ] ledger.active=business generation=1 | pool.active=business | claude.json=xrliannie.b@gmail.com
+
+SWITCH RESULT: {"outcome":"switched","from":"business","to":"personal","generation":2}
+
+[POST] ledger.active=personal generation=2 | pool.active=personal | claude.json=xrliannie@gmail.com
+OK — real production Keychain switch committed.

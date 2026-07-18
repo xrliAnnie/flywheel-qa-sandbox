@@ -28,15 +28,15 @@ import {
 	writeStore,
 } from "./account-store.js";
 import type { AccountsLock } from "./accounts-lock.js";
+import type { MachineAccountResolution } from "./machine-account.js";
 import { type LeaseProof, validateLeaseProof } from "./mkdir-lock.js";
+import { computeModelCapTtlMs } from "./model-cap.js";
+import { type CanonicalModels, canonicalizeModels } from "./quota-trigger.js";
 
-export interface SwitchInput {
-	scope: "5h" | "weekly" | "both";
+interface SwitchInputBase {
 	/** The account observed as capped at detection (CAS key). */
 	observedAccount: string;
 	observedGeneration: number;
-	/** ISO reset instant of the hit window — recorded as the account's cooldown. */
-	resetAt: string;
 	now: Date;
 	/** Quota-verified target ranking; when present, unlisted accounts are excluded. */
 	preferredOrder?: string[];
@@ -45,6 +45,18 @@ export interface SwitchInput {
 	/** Whether the bash apply may skip its independent live quota guard. */
 	quotaPreverified?: boolean;
 }
+
+export type SwitchInput =
+	| (SwitchInputBase & {
+			scope: "5h" | "weekly" | "both";
+			/** ISO reset instant of the hit account window. */
+			resetAt: string;
+	  })
+	| (SwitchInputBase & {
+			scope: "model";
+			/** Canonicalized again under the account lock before use. */
+			models: CanonicalModels;
+	  });
 
 export interface SwitchDeps {
 	storePath?: string;
@@ -57,10 +69,12 @@ export interface SwitchDeps {
 	applyProfile: (
 		name: string,
 		context: { lease: LeaseProof; signal: AbortSignal },
-		// biome-ignore lint/suspicious/noConfusingVoidType: existing adapters return Promise<void>; reports are an additive channel.
-	) => Promise<ApplyProfileReport | void>;
+		// biome-ignore lint/suspicious/noConfusingVoidType: existing adapters return Promise<void>; identity-sync + reports are additive channels.
+	) => Promise<void | ({ identitySynced: boolean } & ApplyProfileReport)>;
 	/** The account the real profile is currently active on (crash-recovery authority). */
 	readActiveProfile: () => Promise<string | null>;
+	/** Shared fail-closed authority. Production always supplies this. */
+	resolveMachineAccount?: (store: AccountStore) => MachineAccountResolution;
 	/** Parent-side final fence seam. Defaults to marker-token validation. */
 	validateLease?: (lease: LeaseProof) => boolean;
 	/** Renewal cadence while the detached mutation process group is alive. */
@@ -88,7 +102,13 @@ export interface ApplyProfileReport {
 }
 
 type SwitchOutcome =
-	| { outcome: "switched"; from: string; to: string; generation: number }
+	| {
+			outcome: "switched";
+			from: string;
+			to: string;
+			generation: number;
+			benchUntilByModel?: Record<string, string>;
+	  }
 	| { outcome: "noop_already_switched"; activeAccount: string }
 	| { outcome: "noop_reconciled"; activeAccount: string; generation: number }
 	| {
@@ -107,6 +127,8 @@ type SwitchOutcome =
 			reasonCode:
 				| "freshness_unavailable"
 				| "apply_failed"
+				| "machine_account_conflict"
+				| "invalid_model_trigger"
 				| "keychain_readback_mismatch"
 				| "identity_rollback_failed"
 				| "lock_lease_lost"
@@ -290,21 +312,34 @@ function commitSwitch(
 	store: AccountStore,
 	input: SwitchInput,
 	to: string,
+	identitySynced: boolean,
+	benchUntilByModel: Record<string, string> | null,
 ): AccountStore {
-	const isWeekly = input.scope === "weekly" || input.scope === "both";
-	const accounts = store.accounts.map((a) =>
-		a.name === input.observedAccount
-			? {
-					...a,
-					quotaExhaustedUntil: input.resetAt,
-					switchCooldownUntil: input.resetAt,
-					...(isWeekly ? { weeklyResetAt: input.resetAt } : {}),
-				}
-			: a,
-	);
+	const accounts = store.accounts.map((account) => {
+		if (account.name !== input.observedAccount) return account;
+		if (input.scope === "model") {
+			if (benchUntilByModel === null) return account;
+			const modelCaps = { ...account.modelCaps };
+			for (const [model, until] of Object.entries(benchUntilByModel)) {
+				modelCaps[model] = {
+					until,
+					backoffMs: Date.parse(until) - input.now.getTime(),
+				};
+			}
+			return { ...account, modelCaps };
+		}
+		const isWeekly = input.scope === "weekly" || input.scope === "both";
+		return {
+			...account,
+			quotaExhaustedUntil: input.resetAt,
+			switchCooldownUntil: input.resetAt,
+			...(isWeekly ? { weeklyResetAt: input.resetAt } : {}),
+		};
+	});
 	return {
 		generation: store.generation + 1,
 		activeAccount: to,
+		identityStale: !identitySynced,
 		accounts,
 	};
 }
@@ -337,8 +372,8 @@ export async function switchAccount(
 			);
 		const applyWithHeartbeat = async (
 			name: string,
-			// biome-ignore lint/suspicious/noConfusingVoidType: the injected apply contract remains backward-compatible.
-		): Promise<ApplyProfileReport | void> => {
+			// biome-ignore lint/suspicious/noConfusingVoidType: the injected apply contract remains backward-compatible; identity-sync + reports are additive.
+		): Promise<void | ({ identitySynced: boolean } & ApplyProfileReport)> => {
 			const controller = new AbortController();
 			let lost = false;
 			const timer = setInterval(() => {
@@ -347,10 +382,11 @@ export async function switchAccount(
 				controller.abort(new LockLeaseLostError(lockPath));
 			}, deps.heartbeatMs ?? 1_000);
 			try {
-				return await deps.applyProfile(name, {
+				const result = await deps.applyProfile(name, {
 					lease,
 					signal: controller.signal,
 				});
+				return result;
 			} catch (error) {
 				if (lost || error instanceof LockLeaseLostError) {
 					throw new LockLeaseLostError(lockPath);
@@ -362,8 +398,46 @@ export async function switchAccount(
 			if (lost) throw new LockLeaseLostError(lockPath);
 		};
 		let store = readStore(storePath);
-		// Crash recovery: the real profile's active account wins over stale JSON.
-		const realActive = await deps.readActiveProfile();
+		const models =
+			input.scope === "model" ? canonicalizeModels(input.models) : null;
+		if (input.scope === "model" && models === null) {
+			return {
+				outcome: "failed",
+				reason: "model trigger must contain at least one non-empty model",
+				reasonCode: "invalid_model_trigger",
+			};
+		}
+		const outgoing = store.accounts.find(
+			(account) => account.name === input.observedAccount,
+		);
+		const benchUntilByModel =
+			input.scope === "model" && models !== null
+				? Object.fromEntries(
+						models.map((model) => {
+							const ttl = computeModelCapTtlMs(
+								outgoing?.modelCaps?.[model],
+								input.now,
+							);
+							return [model, new Date(input.now.getTime() + ttl).toISOString()];
+						}),
+					)
+				: null;
+
+		const authority = deps.resolveMachineAccount?.(store);
+		if (authority && authority.kind !== "resolved") {
+			return {
+				outcome: "failed",
+				reason: `machine account authority is ${authority.kind}; refusing to switch`,
+				reasonCode: "machine_account_conflict",
+			};
+		}
+
+		// Crash recovery: the shared authority wins; legacy callers retain the
+		// pre-FLY-1182 profile marker fallback.
+		const realActive =
+			authority?.kind === "resolved"
+				? authority.name
+				: await deps.readActiveProfile();
 		if (realActive !== null && realActive !== store.activeAccount) {
 			store = { ...store, activeAccount: realActive };
 		}
@@ -408,6 +482,7 @@ export async function switchAccount(
 		// size as a backstop.
 		let working = store;
 		let applied: string | null = null;
+		let identitySynced = true;
 		let targetStaleSeen = false;
 		let targetQuotaSeen = false;
 		let targetIdentityMismatchSeen = false;
@@ -419,6 +494,7 @@ export async function switchAccount(
 			if (!fence()) return leaseLost();
 			const next = selectNextAccount(working, {
 				scope: input.scope,
+				models: models ?? undefined,
 				currentName: input.observedAccount,
 				now: input.now,
 				preferredOrder: input.preferredOrder,
@@ -456,8 +532,9 @@ export async function switchAccount(
 			}
 			attemptedNames.add(next);
 			try {
-				const report = await applyWithHeartbeat(next);
-				appendReport(applyReports, report);
+				const applyResult = await applyWithHeartbeat(next);
+				identitySynced = applyResult?.identitySynced ?? true;
+				appendReport(applyReports, applyResult);
 				// The child may settle in the gap before the next heartbeat. Re-proof
 				// after the entire process group has exited and before any parent write.
 				if (!fence()) return leaseLost();
@@ -558,7 +635,13 @@ export async function switchAccount(
 			);
 		}
 
-		const updated = commitSwitch(working, input, applied);
+		const updated = commitSwitch(
+			working,
+			input,
+			applied,
+			identitySynced,
+			benchUntilByModel,
+		);
 		writeStore(updated, storePath);
 		return withReports(
 			{
@@ -566,6 +649,7 @@ export async function switchAccount(
 				from: input.observedAccount,
 				to: applied,
 				generation: updated.generation,
+				...(benchUntilByModel === null ? {} : { benchUntilByModel }),
 			},
 			applyReports,
 		);

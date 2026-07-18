@@ -209,10 +209,18 @@ export const ALERT_EVENT_TYPES = [
 	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
 	"deploy_failed",
 	"deploy_degraded",
-	// FLY-1256: emitted by the external quota monitor. account_switched is a
-	// successful state-change notice; the other five are actionable failures.
+	// FLY-1256/FLY-1182: emitted by the external quota monitor. Successful,
+	// transient-unknown, and confirmation notices are root-only informational;
+	// conflict/persistent-unknown/malformed/choice and legacy failures ticket.
 	"account_switched",
 	"account_switch_degraded",
+	"machine_account_conflict",
+	"model_cap_switched",
+	"model_cap_unknown",
+	"model_cap_persistent_unknown",
+	"model_bench_malformed",
+	"quota_choice",
+	"quota_switch_confirmation",
 	"quota_no_target",
 	"quota_blocked_recovered",
 	"quota_read_blind",
@@ -300,6 +308,9 @@ export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];
 /** Root-only notices that must never open a ticket/thread/ARC lifecycle. */
 export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"account_switched",
+	"model_cap_switched",
+	"model_cap_unknown",
+	"quota_switch_confirmation",
 	"quota_blocked_recovered",
 ]);
 

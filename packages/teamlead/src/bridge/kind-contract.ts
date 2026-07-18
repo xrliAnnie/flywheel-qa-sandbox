@@ -162,6 +162,16 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	// the switch/revive. Bridge ARC would duplicate an external safety action.
 	account_switched: { owner: "claude", arc: "human_by_design" },
 	account_switch_degraded: { owner: "claude", arc: "human_by_design" },
+	machine_account_conflict: { owner: "claude", arc: "human_by_design" },
+	model_cap_switched: { owner: "claude", arc: "human_by_design" },
+	model_cap_unknown: { owner: "claude", arc: "human_by_design" },
+	model_cap_persistent_unknown: {
+		owner: "claude",
+		arc: "human_by_design",
+	},
+	model_bench_malformed: { owner: "claude", arc: "human_by_design" },
+	quota_choice: { owner: "founder_direct", arc: "human_by_design" },
+	quota_switch_confirmation: { owner: "claude", arc: "human_by_design" },
 	quota_no_target: { owner: "claude", arc: "human_by_design" },
 	quota_blocked_recovered: { owner: "claude", arc: "human_by_design" },
 	quota_read_blind: { owner: "claude", arc: "human_by_design" },

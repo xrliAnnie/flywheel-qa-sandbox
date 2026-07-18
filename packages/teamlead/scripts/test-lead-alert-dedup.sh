@@ -12,7 +12,8 @@
 #   * exactly 1 worker spilled a payload — queued (transient: curl 000/5xx) OR
 #     dead-lettered (permanent: Discord 401 with the bogus token). FLY-182 made
 #     this network-independent by counting both.
-#   * the remaining workers logged "already claimed" and exited 0
+#   * the remaining workers observed the winner's active delivery lease (or
+#     the legacy "already claimed" result) and exited 0
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -92,8 +93,9 @@ QUEUED=$(find "$TMPROOT/.flywheel/alert-queue" -maxdepth 1 -name '*.json' -type 
 # assertion is not network-dependent — the invariant is "exactly one spill".
 DEADLETTERED=$(find "$TMPROOT/.flywheel/alert-deadletter" -maxdepth 1 -name '*.json' -type f 2>/dev/null | wc -l | tr -d ' ')
 SPILLED=$((QUEUED + DEADLETTERED))
-SKIPPED=$(grep -l "already claimed" "${tmpout}"/*.err 2>/dev/null | wc -l | tr -d ' ')
-WINNERS=$(grep -L "already claimed" "${tmpout}"/*.err 2>/dev/null | wc -l | tr -d ' ')
+SKIP_PATTERN="active delivery lease|already claimed"
+SKIPPED=$(grep -El "$SKIP_PATTERN" "${tmpout}"/*.err 2>/dev/null | wc -l | tr -d ' ')
+WINNERS=$(grep -EL "$SKIP_PATTERN" "${tmpout}"/*.err 2>/dev/null | wc -l | tr -d ' ')
 
 echo "claims.db rows: $CLAIM_COUNT"
 echo "queue files:    $QUEUED"

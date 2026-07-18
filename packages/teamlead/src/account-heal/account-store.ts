@@ -32,6 +32,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { MAX_MODEL_CAP_TTL_MS, type ModelCapState } from "./model-cap.js";
 
 export interface AccountEntry {
 	name: string;
@@ -51,6 +52,8 @@ export interface AccountEntry {
 	authExpired?: boolean;
 	refreshTokenInvalid?: boolean;
 	profileVerifyFailed?: boolean;
+	/** Per-model finite retry benches. Missing means no model-specific bench. */
+	modelCaps?: Record<string, ModelCapState>;
 	/** Trusted operator-provided identity expectation; never learned from a probe. */
 	identity?: { email: string; uuid?: string; setAt: string };
 	/** Identity-domain exclusion marker; does not change switch generation. */
@@ -66,13 +69,16 @@ export interface AccountStore {
 	generation: number;
 	/** The pool account currently written into the machine credential source. */
 	activeAccount: string | null;
+	/** Recorded fact: the last profile switch could not sync display identity. */
+	identityStale?: boolean;
 	accounts: AccountEntry[];
 }
 
 export interface SelectInput {
-	scope: "5h" | "weekly" | "both" | null;
+	scope: "5h" | "weekly" | "both" | "model" | null;
 	currentName: string;
 	now: Date;
+	models?: readonly string[];
 	/** Authoritative quota-verified ranking. Present means unlisted accounts are ineligible. */
 	preferredOrder?: string[];
 	/** Start instant of the live verification round that produced preferredOrder. */
@@ -123,6 +129,107 @@ export function isQuotaUsable(a: AccountEntry, nowMs: number): boolean {
 	return Number.isNaN(until) || until <= nowMs;
 }
 
+export type ModelSetBenchVerdict =
+	| { state: "clear" }
+	| { state: "benched"; retryAt: string }
+	| { state: "malformed"; reason: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function inspectModelSetBench(
+	a: AccountEntry,
+	models: readonly string[],
+	nowMs: number,
+): ModelSetBenchVerdict {
+	if (models.length === 0) return { state: "clear" };
+	const raw: unknown = (a as { modelCaps?: unknown }).modelCaps;
+	if (raw === undefined) return { state: "clear" };
+	if (!isRecord(raw)) {
+		return { state: "malformed", reason: "modelCaps is not an object" };
+	}
+
+	const parsed = new Map<string, ModelCapState>();
+	for (const [model, value] of Object.entries(raw)) {
+		if (
+			model.length === 0 ||
+			model.trim() !== model ||
+			!isRecord(value) ||
+			Object.keys(value).some(
+				(key) => key !== "until" && key !== "backoffMs",
+			) ||
+			typeof value.until !== "string" ||
+			!Number.isFinite(Date.parse(value.until)) ||
+			typeof value.backoffMs !== "number" ||
+			!Number.isFinite(value.backoffMs) ||
+			value.backoffMs <= 0 ||
+			value.backoffMs > MAX_MODEL_CAP_TTL_MS
+		) {
+			return {
+				state: "malformed",
+				reason: `invalid model bench for ${model || "<empty>"}`,
+			};
+		}
+		parsed.set(model, {
+			until: value.until,
+			backoffMs: value.backoffMs,
+		});
+	}
+
+	let retryAtMs = Number.NEGATIVE_INFINITY;
+	for (const model of models) {
+		const cap = parsed.get(model);
+		if (cap === undefined) continue;
+		const until = Date.parse(cap.until);
+		if (until > nowMs) retryAtMs = Math.max(retryAtMs, until);
+	}
+	return retryAtMs === Number.NEGATIVE_INFINITY
+		? { state: "clear" }
+		: { state: "benched", retryAt: new Date(retryAtMs).toISOString() };
+}
+
+export function isModelSetUsable(
+	a: AccountEntry,
+	models: readonly string[],
+	nowMs: number,
+): boolean {
+	return inspectModelSetBench(a, models, nowMs).state === "clear";
+}
+
+export function summarizeModelBenchPool(
+	accounts: readonly AccountEntry[],
+	models: readonly string[],
+	nowMs: number,
+): {
+	eligibleAccounts: string[];
+	nextRetryAt: string | null;
+	hasUnknown: boolean;
+} {
+	const eligibleAccounts: string[] = [];
+	let nextRetryMs = Number.POSITIVE_INFINITY;
+	let hasUnknown = false;
+	for (const account of accounts) {
+		const verdict = inspectModelSetBench(account, models, nowMs);
+		if (verdict.state === "clear") {
+			eligibleAccounts.push(account.name);
+			continue;
+		}
+		if (verdict.state === "malformed") {
+			hasUnknown = true;
+			continue;
+		}
+		nextRetryMs = Math.min(nextRetryMs, Date.parse(verdict.retryAt));
+	}
+	return {
+		eligibleAccounts,
+		nextRetryAt: Number.isFinite(nextRetryMs)
+			? new Date(nextRetryMs).toISOString()
+			: null,
+		hasUnknown,
+	};
+}
+
 export function isSwitchCooldownActive(
 	a: AccountEntry,
 	nowMs: number,
@@ -155,6 +262,7 @@ export function selectNextAccount(
 					account.name === input.currentName ||
 					input.excludeNames?.has(account.name) ||
 					isAuthUnusable(account) ||
+					!isModelSetUsable(account, input.models ?? [], nowMs) ||
 					!rank.has(account.name)
 				) {
 					return false;
@@ -179,7 +287,8 @@ export function selectNextAccount(
 			a.name !== input.currentName &&
 			!input.excludeNames?.has(a.name) &&
 			!isAuthUnusable(a) &&
-			isQuotaUsable(a, nowMs),
+			isQuotaUsable(a, nowMs) &&
+			isModelSetUsable(a, input.models ?? [], nowMs),
 	);
 	if (candidates.length === 0) return null;
 

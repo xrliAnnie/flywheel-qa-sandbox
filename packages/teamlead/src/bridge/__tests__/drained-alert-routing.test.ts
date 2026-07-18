@@ -15,38 +15,55 @@ function payload(eventType: AlertPayload["eventType"]): AlertPayload {
 }
 
 describe("FLY-1256 drained alert routing", () => {
-	it("account_switched stays root-only: no Hub thread/ticket/ARC dispatch", async () => {
-		const attachThreadForDelivered = vi.fn(async () => {});
-		await attachDeliveredAlertLifecycles(
-			[
-				{
-					payload: payload("account_switched" as AlertPayload["eventType"]),
-					channelId: "ops",
-					messageId: "root-info",
-				},
-			],
-			{ attachThreadForDelivered },
-		);
-		expect(attachThreadForDelivered).not.toHaveBeenCalled();
-	});
+	it.each([
+		"account_switched",
+		"model_cap_switched",
+		"model_cap_unknown",
+		"quota_switch_confirmation",
+	] as const)(
+		"%s stays root-only: no Hub thread/ticket/ARC dispatch",
+		async (kind) => {
+			const attachThreadForDelivered = vi.fn(async () => {});
+			await attachDeliveredAlertLifecycles(
+				[
+					{
+						payload: payload(kind as AlertPayload["eventType"]),
+						channelId: "ops",
+						messageId: "root-info",
+					},
+				],
+				{ attachThreadForDelivered },
+			);
+			expect(attachThreadForDelivered).not.toHaveBeenCalled();
+		},
+	);
 
-	it("actionable quota kinds still enter the normal Hub lifecycle", async () => {
-		const attachThreadForDelivered = vi.fn(async () => {});
-		const actionable = payload("quota_no_target" as AlertPayload["eventType"]);
-		await attachDeliveredAlertLifecycles(
-			[
-				{
-					payload: actionable,
-					channelId: "ops",
-					messageId: "root-actionable",
-				},
-			],
-			{ attachThreadForDelivered },
-		);
-		expect(attachThreadForDelivered).toHaveBeenCalledExactlyOnceWith(
-			actionable,
-			"ops",
-			"root-actionable",
-		);
-	});
+	it.each([
+		"quota_no_target",
+		"machine_account_conflict",
+		"model_cap_persistent_unknown",
+		"model_bench_malformed",
+		"quota_choice",
+	] as const)(
+		"actionable %s still enters the normal Hub lifecycle",
+		async (kind) => {
+			const attachThreadForDelivered = vi.fn(async () => {});
+			const actionable = payload(kind as AlertPayload["eventType"]);
+			await attachDeliveredAlertLifecycles(
+				[
+					{
+						payload: actionable,
+						channelId: "ops",
+						messageId: "root-actionable",
+					},
+				],
+				{ attachThreadForDelivered },
+			);
+			expect(attachThreadForDelivered).toHaveBeenCalledExactlyOnceWith(
+				actionable,
+				"ops",
+				"root-actionable",
+			);
+		},
+	);
 });

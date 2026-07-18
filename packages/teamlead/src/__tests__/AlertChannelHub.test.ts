@@ -130,6 +130,22 @@ describe("AlertChannelHub (FLY-368)", () => {
 		expect(discord.created).toHaveLength(0);
 	});
 
+	it.each([
+		"account_switched",
+		"model_cap_switched",
+		"model_cap_unknown",
+		"quota_switch_confirmation",
+	] as const)(
+		"informational %s direct delivery stays root-only",
+		async (eventType) => {
+			const discord = makeDiscord();
+			const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
+			const hub = new AlertChannelHub({ store, notifier, discord });
+			await hub.handle(payload({ eventType }));
+			expect(discord.created).toHaveLength(0);
+		},
+	);
+
 	it("runs the auto-repair bot and records its outcome when present", async () => {
 		const discord = makeDiscord();
 		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };

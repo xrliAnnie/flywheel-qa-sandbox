@@ -6,9 +6,11 @@ import {
 	selectNextAccount,
 } from "../account-heal/account-store.js";
 import {
+	formatModelBenchRetryNote,
 	pollOnce,
 	type QuotaMonitorAlert,
 	type QuotaMonitorDeps,
+	verifyAndRankCandidates,
 } from "../account-heal/quota-monitor.js";
 import type { DeliveryReport } from "../account-heal/quota-monitor-alert.js";
 import {
@@ -16,6 +18,10 @@ import {
 	type LoadedQuotaMonitorConfig,
 } from "../account-heal/quota-monitor-config.js";
 import { emptyQuotaMonitorState } from "../account-heal/quota-monitor-state.js";
+import type {
+	QuotaPaneRef,
+	QuotaPaneSnapshot,
+} from "../account-heal/quota-revive-scan.js";
 import type { AccountUsageResult } from "../account-heal/quota-usage-api.js";
 import type { SwitchResult } from "../account-heal/switch-executor.js";
 
@@ -67,6 +73,35 @@ function loadedConfig(
 }
 
 type Harness = ReturnType<typeof harness>;
+
+function paneRef(index: number): QuotaPaneRef {
+	return {
+		paneId: `%${index}`,
+		panePid: 4_000 + index,
+		sessionName: "flywheel",
+		windowName: `FLY-${100 + index}-claude-runner`,
+		currentCommand: "2.1.211",
+		dead: false,
+		qaInjection: false,
+	};
+}
+
+function paneSnapshot(models: string[] = []): QuotaPaneSnapshot {
+	return {
+		socket: "flywheel",
+		capturedAt: NOW,
+		listedCount: models.length,
+		complete: true,
+		omittedPanes: [],
+		observations: models.map((model, index) => ({
+			pane: paneRef(index + 1),
+			capture: `model cap ${model}`,
+			managed: true,
+			quotaClass: "other",
+			modelVerdict: { state: "capped", model },
+		})),
+	};
+}
 
 function harness() {
 	let now = NOW;
@@ -136,8 +171,12 @@ function harness() {
 			generation: 5,
 		};
 	});
-	const reviveScan = vi.fn(
-		async (state: ReturnType<typeof emptyQuotaMonitorState>) => {
+	const scanPanes = vi.fn(async () => paneSnapshot());
+	const reviveSnapshot = vi.fn(
+		async (
+			state: ReturnType<typeof emptyQuotaMonitorState>,
+			_snapshot: QuotaPaneSnapshot,
+		) => {
 			expect(lockDepth).toBe(0);
 			events.push("revive");
 			return {
@@ -145,6 +184,12 @@ function harness() {
 				summary: { revived: 1, pending: 0, loginExpired: 0 },
 			};
 		},
+	);
+	const confirmSnapshot = vi.fn(
+		async (
+			state: ReturnType<typeof emptyQuotaMonitorState>,
+			_snapshot: QuotaPaneSnapshot,
+		) => state,
 	);
 	const alertImpl = vi.fn(
 		async (): Promise<DeliveryReport> => ({
@@ -205,7 +250,9 @@ function harness() {
 			persisted.push(structuredClone(state));
 		},
 		switchAccount: switchImpl,
-		reviveScan,
+		scanPanes,
+		reviveSnapshot,
+		confirmSnapshot,
 		alert: async (alert) => {
 			expect(lockDepth).toBe(0);
 			events.push(`alert:${alert.kind}`);
@@ -229,7 +276,9 @@ function harness() {
 		verifyCandidate,
 		recordObservation,
 		switchImpl,
-		reviveScan,
+		scanPanes,
+		reviveSnapshot,
+		confirmSnapshot,
 		reconcileActive,
 		alertImpl,
 		setIdentity(name: string, nextGeneration = generation) {
@@ -260,6 +309,100 @@ afterEach(() => {
 });
 
 describe("pollOnce", () => {
+	it("describes model bench expiry as a retry boundary, never a quota recovery promise", () => {
+		const accountStore = store();
+		accountStore.accounts = accountStore.accounts.map((account) =>
+			account.name === "school"
+				? {
+						...account,
+						modelCaps: {
+							"Fable 5": {
+								until: new Date(NOW + 45 * 60_000).toISOString(),
+								backoffMs: 45 * 60_000,
+							},
+						},
+					}
+				: account,
+		);
+
+		const finite = formatModelBenchRetryNote(
+			accountStore.accounts.filter((account) => account.name === "school"),
+			["Fable 5"],
+			NOW,
+		);
+		expect(finite).toContain("next retry / revalidation after");
+		expect(finite).toContain("2026-07-14T20:45:00.000Z");
+		expect(finite).toContain("not a quota recovery guarantee");
+
+		const malformed = formatModelBenchRetryNote(
+			[
+				{
+					...accountStore.accounts[0],
+					modelCaps: {
+						"Fable 5": { until: "unknown", backoffMs: -1 },
+					},
+				},
+			],
+			["Fable 5"],
+			NOW,
+		);
+		expect(malformed).toBe(
+			"next retry / revalidation unknown; malformed model bench state requires manual inspection; this is not a quota recovery guarantee",
+		);
+	});
+
+	it("filters active and malformed model benches before freshness or usage I/O", async () => {
+		const accountStore = store();
+		accountStore.accounts = accountStore.accounts.map((account) => {
+			if (account.name === "school") {
+				return {
+					...account,
+					modelCaps: {
+						"Fable 5": {
+							until: new Date(NOW + 30 * 60_000).toISOString(),
+							backoffMs: 30 * 60_000,
+						},
+					},
+				};
+			}
+			if (account.name === "business") {
+				return {
+					...account,
+					modelCaps: {
+						"Fable 5": { until: "malformed", backoffMs: -1 },
+					},
+				};
+			}
+			return account;
+		});
+
+		const candidates = await verifyAndRankCandidates(
+			h.deps,
+			{
+				activeName: "shopping",
+				store: accountStore,
+				activeCredential: h.credentials.shopping,
+				poolAccounts: ["shopping", "school", "business"],
+			},
+			["Fable 5"],
+		);
+
+		expect(candidates.ranked).toEqual([]);
+		expect(candidates.panorama).toEqual([
+			expect.objectContaining({
+				name: "school",
+				status: expect.stringContaining("model_benched_until"),
+			}),
+			expect.objectContaining({
+				name: "business",
+				status: expect.stringContaining("model_bench_malformed"),
+			}),
+		]);
+		expect(candidates.malformedModelBenches).toEqual(["business"]);
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
+		expect(h.fetchUsage).not.toHaveBeenCalled();
+	});
+
 	it("active identity mismatch is terminal before usage projection or switching", async () => {
 		process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK = "1";
 		const next = store();
@@ -561,7 +704,12 @@ describe("pollOnce", () => {
 			blockedEpisode: null,
 			pendingSwitchFailure: null,
 		});
-		expect(h.reviveScan).not.toHaveBeenCalled();
+		expect(h.reviveSnapshot).toHaveBeenCalledTimes(1);
+		expect(h.reviveSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({ reviveEpoch: null }),
+			expect.objectContaining({ observations: [] }),
+			true,
+		);
 		expect(h.alerts).toHaveLength(0);
 		expect(h.events.slice(0, 2)).toEqual(["reconcile", "persist:0"]);
 	});
@@ -595,6 +743,7 @@ describe("pollOnce", () => {
 			lastSuccessfulUsageAt: NOW,
 			errorStreak: 0,
 			tier: "base",
+			nextUsageDueAt: NOW + h.deps.config.config.basePollMinutes * 60_000,
 			observedGeneration: 4,
 		});
 		expect(h.fetchUsage).toHaveBeenCalledTimes(1);
@@ -610,6 +759,7 @@ describe("pollOnce", () => {
 			"persist:1",
 			"lock:end",
 			"record:shopping",
+			"revive",
 		]);
 		expect(h.observations).toEqual([
 			{
@@ -665,6 +815,7 @@ describe("pollOnce", () => {
 		let result = await pollOnce(h.deps);
 		expect(result.outcome).toBe("backoff");
 		expect(result.state.backoffUntilMs).toBe(NOW + 300_000);
+		expect(result.state.nextUsageDueAt).toBe(NOW + 300_000);
 
 		h = harness();
 		h.deps.state = {
@@ -676,6 +827,427 @@ describe("pollOnce", () => {
 		expect(h.fetchUsage).not.toHaveBeenCalled();
 	});
 
+	it("runs the local pane/revive tick without usage work while nextUsageDueAt is backed off", async () => {
+		h.deps.state = {
+			...emptyQuotaMonitorState(4),
+			backoffUntilMs: NOW + 15 * 60_000,
+			nextUsageDueAt: NOW + 15 * 60_000,
+			nextPaneScanDueAt: NOW,
+			reviveEpoch: {
+				open: true,
+				sourceAccount: "shopping",
+				generation: 4,
+				openedAt: NOW - 60_000,
+				expiresAt: NOW + 60_000,
+				panes: {},
+			},
+		};
+		h.deps.reviveSnapshot = vi.fn(async (state) => ({
+			state: {
+				...state,
+				reviveEpoch: state.reviveEpoch && {
+					...state.reviveEpoch,
+					panes: {
+						"fleet:%12:4321": { attempts: 1, lastAttemptAt: NOW },
+					},
+				},
+			},
+			summary: { revived: 1, pending: 0, loginExpired: 0 },
+		}));
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("local_scan");
+		expect(h.deps.reviveSnapshot).toHaveBeenCalledTimes(1);
+		expect(h.fetchUsage).not.toHaveBeenCalled();
+		expect(result.state.reviveEpoch?.panes).toEqual({
+			"fleet:%12:4321": { attempts: 1, lastAttemptAt: NOW },
+		});
+		expect(result.state.nextPaneScanDueAt).toBe(
+			NOW + h.deps.config.config.paneScanSeconds * 1_000,
+		);
+	});
+
+	it("runs pane detection on its own deadline even before any revive epoch exists", async () => {
+		h.deps.state = {
+			...emptyQuotaMonitorState(4),
+			nextUsageDueAt: NOW + 15 * 60_000,
+			nextPaneScanDueAt: NOW,
+			reviveEpoch: null,
+		};
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("local_scan");
+		expect(h.reviveSnapshot).toHaveBeenCalledTimes(1);
+		expect(h.fetchUsage).not.toHaveBeenCalled();
+	});
+
+	it("uses one snapshot to persist a canonical model detection, switch, open the bounded epoch, and revive", async () => {
+		const snapshot = paneSnapshot(["Sonnet 5", "Fable 5", "Fable 5"]);
+		h.scanPanes.mockResolvedValueOnce(snapshot);
+		h.deps.state = {
+			...emptyQuotaMonitorState(4),
+			nextUsageDueAt: NOW + 15 * 60_000,
+			nextPaneScanDueAt: NOW,
+		};
+		h.switchImpl.mockImplementationOnce(async (input) => {
+			expect(
+				h.persisted.some(
+					(item) =>
+						(item as ReturnType<typeof emptyQuotaMonitorState>)
+							.pendingDetection !== null,
+				),
+			).toBe(true);
+			return {
+				outcome: "switched",
+				from: "shopping",
+				to: input.preferredOrder?.[0] ?? "school",
+				generation: 5,
+				benchUntilByModel: {
+					"Fable 5": new Date(NOW + 30 * 60_000).toISOString(),
+					"Sonnet 5": new Date(NOW + 45 * 60_000).toISOString(),
+				},
+			};
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(h.scanPanes).toHaveBeenCalledTimes(1);
+		expect(h.switchImpl).toHaveBeenCalledWith(
+			expect.objectContaining({
+				scope: "model",
+				models: ["Fable 5", "Sonnet 5"],
+				observedAccount: "shopping",
+				observedGeneration: 4,
+				preferredOrder: ["school", "business"],
+			}),
+		);
+		expect(result.state).toMatchObject({
+			observedGeneration: 5,
+			pendingDetection: null,
+			confirmation: {
+				generation: 5,
+				models: ["Fable 5", "Sonnet 5"],
+			},
+			reviveEpoch: {
+				generation: 5,
+				expiresAt: NOW + 75 * 60_000,
+				trigger: { kind: "model", models: ["Fable 5", "Sonnet 5"] },
+			},
+		});
+		expect(result.state.alertOutbox).toEqual([
+			expect.objectContaining({
+				alert: expect.objectContaining({ kind: "model_cap_switched" }),
+			}),
+		]);
+		expect(h.reviveSnapshot).toHaveBeenCalledTimes(1);
+		expect(h.reviveSnapshot.mock.calls[0]?.[1]).toBe(snapshot);
+		expect(h.reviveSnapshot.mock.calls[0]?.[0].reviveEpoch).toMatchObject({
+			trigger: { kind: "model", models: ["Fable 5", "Sonnet 5"] },
+		});
+	});
+
+	it("does not attribute a switched pane's stale model cap to the new machine account", async () => {
+		const nextStore = store();
+		nextStore.generation = 5;
+		nextStore.activeAccount = "school";
+		h.setIdentity("school", 5);
+		h.setStore(nextStore);
+		h.scanPanes.mockResolvedValueOnce(paneSnapshot(["Fable 5"]));
+		h.deps.state = {
+			...emptyQuotaMonitorState(5),
+			nextUsageDueAt: NOW,
+			nextPaneScanDueAt: NOW,
+			modelPaneSuppressions: {
+				"flywheel:%1:4001": { models: ["Fable 5"], lastSeenAt: NOW - 1 },
+			},
+		};
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("observed");
+		expect(result.state.pendingDetection).toBeNull();
+		expect(result.state.modelPaneSuppressions).toEqual({
+			"flywheel:%1:4001": { models: ["Fable 5"], lastSeenAt: NOW },
+		});
+		expect(h.switchImpl).not.toHaveBeenCalled();
+	});
+
+	it("releases a clear pane suppression even when an unrelated pane makes the fleet snapshot incomplete", async () => {
+		const clear = paneSnapshot();
+		clear.listedCount = 1;
+		clear.complete = false;
+		clear.omittedPanes = [paneRef(2)];
+		clear.observations = [
+			{
+				pane: paneRef(1),
+				capture: "healthy runner",
+				managed: true,
+				quotaClass: "other",
+				modelVerdict: { state: "clear" },
+			},
+		];
+		h.scanPanes.mockResolvedValueOnce(clear);
+		h.deps.state = {
+			...emptyQuotaMonitorState(5),
+			nextUsageDueAt: NOW + 60_000,
+			nextPaneScanDueAt: NOW,
+			modelPaneSuppressions: {
+				"flywheel:%1:4001": { models: ["Fable 5"], lastSeenAt: NOW - 1 },
+			},
+		};
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("local_scan");
+		expect(result.state.modelPaneSuppressions).toEqual({});
+		expect(h.switchImpl).not.toHaveBeenCalled();
+	});
+
+	it("lets an account-level threshold dominate simultaneous model caps and clears the model intent before switching", async () => {
+		const snapshot = paneSnapshot(["Fable 5", "Sonnet 5"]);
+		h.scanPanes.mockResolvedValueOnce(snapshot);
+		h.usages.set("secret-shopping", usage(95, 20));
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(h.switchImpl).toHaveBeenCalledWith(
+			expect.objectContaining({ scope: "5h", resetAt: FIVE_RESET }),
+		);
+		expect(h.switchImpl).not.toHaveBeenCalledWith(
+			expect.objectContaining({ scope: "model" }),
+		);
+		expect(result.state.pendingDetection).toBeNull();
+		expect(result.state.alertOutbox).toEqual([]);
+		expect(h.alerts.at(-1)?.kind).toBe("account_switched");
+		expect(h.reviveSnapshot.mock.calls[0]?.[1]).toBe(snapshot);
+	});
+
+	it("an account-level switch retires any older-generation model confirmation", async () => {
+		h.usages.set("secret-shopping", usage(95, 20));
+		h.deps.state = {
+			...emptyQuotaMonitorState(4),
+			confirmDueAt: NOW + 5 * 60_000,
+			confirmation: {
+				eventId: "model-cap-g3-old:confirm",
+				generation: 4,
+				dueAt: NOW + 5 * 60_000,
+				sourceAccount: "personal",
+				targetAccount: "shopping",
+				models: ["Fable 5"],
+				affectedPanes: [
+					{
+						socket: "flywheel",
+						paneId: "%1",
+						panePid: 4_001,
+						sessionName: "flywheel",
+						windowName: "FLY-101-claude-runner",
+					},
+				],
+			},
+		};
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(result.state.observedGeneration).toBe(5);
+		expect(result.state.confirmation).toBeNull();
+		expect(result.state.confirmDueAt).toBeNull();
+	});
+
+	it("persists a model detection but never switches or opens an epoch while active usage is blind", async () => {
+		const snapshot = paneSnapshot(["Fable 5"]);
+		h.scanPanes.mockResolvedValueOnce(snapshot);
+		h.usages.set("secret-shopping", { error: "unauthorized" });
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("blind");
+		expect(result.state.pendingDetection).toMatchObject({
+			sourceAccount: "shopping",
+			models: ["Fable 5"],
+		});
+		expect(result.state.reviveEpoch).toBeNull();
+		expect(h.switchImpl).not.toHaveBeenCalled();
+		expect(h.alerts.at(-1)?.kind).toBe("quota_read_blind");
+		expect(h.reviveSnapshot.mock.calls[0]?.[1]).toBe(snapshot);
+	});
+
+	it("disables every revive action when the machine account witnesses conflict", async () => {
+		const snapshot = paneSnapshot(["Fable 5"]);
+		h.scanPanes.mockResolvedValueOnce(snapshot);
+		const readSnapshot = h.deps.readSnapshot;
+		h.deps.readSnapshot = async () => ({
+			...(await readSnapshot()),
+			authority: {
+				kind: "conflict" as const,
+				activeMarker: "shopping",
+				identityAccount: "school",
+				ledgerAccount: "shopping",
+			},
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("identity_conflict");
+		expect(h.switchImpl).not.toHaveBeenCalled();
+		expect(h.reviveSnapshot).toHaveBeenCalledWith(
+			expect.anything(),
+			snapshot,
+			false,
+		);
+		expect(result.state.pendingDetection).toBeNull();
+	});
+
+	it("retains a pending detection across an incomplete scan and clears it only after a complete clear snapshot", async () => {
+		h.scanPanes.mockResolvedValueOnce(paneSnapshot(["Fable 5"]));
+		h.usages.set("secret-shopping", { error: "unauthorized" });
+		let result = await pollOnce(h.deps);
+		expect(result.state.pendingDetection).not.toBeNull();
+
+		h.deps.state = {
+			...result.state,
+			nextUsageDueAt: NOW + 15 * 60_000,
+			nextPaneScanDueAt: NOW,
+		};
+		h.scanPanes.mockResolvedValueOnce({
+			...paneSnapshot(),
+			complete: false,
+			listError: "tmux unavailable",
+		});
+		result = await pollOnce(h.deps);
+		expect(result.state.pendingDetection).not.toBeNull();
+
+		h.deps.state = {
+			...result.state,
+			nextUsageDueAt: NOW + 15 * 60_000,
+			nextPaneScanDueAt: NOW,
+		};
+		h.scanPanes.mockResolvedValueOnce(paneSnapshot());
+		result = await pollOnce(h.deps);
+		expect(result.state.pendingDetection).toBeNull();
+	});
+
+	it("warns on malformed model benches, performs zero candidate I/O, and reports only a retry boundary", async () => {
+		const accountStore = store();
+		accountStore.accounts = accountStore.accounts.map((account) => {
+			if (account.name === "school") {
+				return {
+					...account,
+					modelCaps: {
+						"Fable 5": {
+							until: new Date(NOW + 30 * 60_000).toISOString(),
+							backoffMs: 30 * 60_000,
+						},
+					},
+				};
+			}
+			if (account.name === "business") {
+				return {
+					...account,
+					modelCaps: {
+						"Fable 5": { until: "malformed", backoffMs: -1 },
+					},
+				};
+			}
+			return account;
+		});
+		h.setStore(accountStore);
+		h.scanPanes.mockResolvedValueOnce(paneSnapshot(["Fable 5"]));
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("no_target");
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
+		expect(h.fetchUsage).toHaveBeenCalledTimes(1);
+		expect(h.switchImpl).not.toHaveBeenCalled();
+		expect(h.alerts).toContainEqual(
+			expect.objectContaining({
+				kind: "model_bench_malformed",
+				body: expect.stringContaining("business"),
+			}),
+		);
+		const noTarget = h.alerts.find((alert) => alert.kind === "quota_no_target");
+		expect(noTarget?.body).toContain("next retry / revalidation after");
+		expect(noTarget?.body).toContain("not a quota recovery guarantee");
+		expect(noTarget?.body).not.toContain("quota recovered");
+	});
+
+	it("fails closed before candidate or switch I/O when the durable model-switch outbox has no capacity", async () => {
+		h.scanPanes.mockResolvedValueOnce(paneSnapshot(["Fable 5"]));
+		h.deps.state = {
+			...emptyQuotaMonitorState(4),
+			alertOutbox: Array.from({ length: 64 }, (_, index) => ({
+				eventId: `existing-${index}`,
+				generation: 4,
+				createdAt: NOW - index,
+				alert: {
+					kind: "model_cap_switched",
+					severity: "info" as const,
+					title: "existing",
+					body: "existing",
+					signature: `existing-${index}`,
+				},
+			})),
+		};
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("error");
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
+		expect(h.switchImpl).not.toHaveBeenCalled();
+		expect(h.alerts.at(-1)).toMatchObject({
+			kind: "quota_monitor_down",
+			severity: "severe",
+			body: expect.stringContaining("outbox=64/64"),
+		});
+		expect(result.state.pendingDetection).not.toBeNull();
+	});
+
+	it("wakes on confirmation independently and passes the exact same snapshot to revive and confirmation", async () => {
+		const snapshot = paneSnapshot();
+		h.scanPanes.mockResolvedValueOnce(snapshot);
+		const affected = {
+			socket: "flywheel",
+			paneId: "%1",
+			panePid: 4_001,
+			sessionName: "flywheel",
+			windowName: "FLY-101-claude-runner",
+		};
+		h.deps.state = {
+			...emptyQuotaMonitorState(5),
+			nextUsageDueAt: NOW + 15 * 60_000,
+			nextPaneScanDueAt: NOW + 15 * 60_000,
+			confirmDueAt: NOW,
+			confirmation: {
+				eventId: "model-cap-g4-test:confirm",
+				generation: 5,
+				dueAt: NOW,
+				sourceAccount: "shopping",
+				targetAccount: "school",
+				models: ["Fable 5"],
+				affectedPanes: [affected],
+			},
+		};
+		h.confirmSnapshot.mockImplementationOnce(async (state, received) => {
+			expect(received).toBe(snapshot);
+			return { ...state, confirmDueAt: null, confirmation: null };
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("local_scan");
+		expect(h.scanPanes).toHaveBeenCalledTimes(1);
+		expect(h.reviveSnapshot.mock.calls[0]?.[1]).toBe(snapshot);
+		expect(h.confirmSnapshot).toHaveBeenCalledTimes(1);
+		expect(result.state.confirmDueAt).toBeNull();
+		expect(result.state.confirmation).toBeNull();
+		expect(h.fetchUsage).not.toHaveBeenCalled();
+	});
+
 	it("accelerates above the configured watermark and sweeps candidates without probe-refresh", async () => {
 		h.usages.set("secret-shopping", usage(71, 20));
 		h.credentials.business.expiresAt = NOW - 1;
@@ -683,6 +1255,9 @@ describe("pollOnce", () => {
 		const result = await pollOnce(h.deps);
 
 		expect(result.state.tier).toBe("accelerated");
+		expect(result.state.nextUsageDueAt).toBe(
+			NOW + h.deps.config.config.acceleratedPollMinutes * 60_000,
+		);
 		expect(result.state.lastCandidateSweepAt).toBe(NOW);
 		expect(h.verifyCandidate).not.toHaveBeenCalled();
 		expect(h.fetchUsage.mock.calls.map(([token]) => token)).toEqual([
@@ -1071,7 +1646,7 @@ describe("pollOnce", () => {
 
 		expect(result.outcome).toBe("switched");
 		const firstSwitchPersist = h.events.findIndex((e) => e === "persist:0");
-		const revive = h.events.indexOf("revive");
+		const revive = h.events.lastIndexOf("revive");
 		const alert = h.events.indexOf("alert:account_switched");
 		const newPoll = h.events.lastIndexOf("fetch:school");
 		expect(firstSwitchPersist).toBeGreaterThanOrEqual(0);
@@ -1159,7 +1734,7 @@ describe("pollOnce", () => {
 			...result.state,
 			backoffUntilMs: NOW + 10 * 60_000,
 		};
-		h.setNow(NOW + 60_000);
+		h.setNow(NOW + 59_000);
 		result = await pollOnce(h.deps);
 
 		expect(result.outcome).toBe("backoff");
@@ -1199,7 +1774,7 @@ describe("pollOnce", () => {
 		let result = await pollOnce(h.deps);
 		h.deps.state = result.state;
 		h.usages.set("secret-shopping", usage(40, 20));
-		h.setNow(NOW + 60_000);
+		h.setNow(result.state.nextUsageDueAt);
 		result = await pollOnce(h.deps);
 
 		expect(result.outcome).toBe("observed");
@@ -1245,7 +1820,7 @@ describe("pollOnce", () => {
 			...result.state,
 			backoffUntilMs: NOW + 10 * 60_000,
 		};
-		h.setNow(NOW + 60_000);
+		h.setNow(NOW + 59_000);
 		result = await pollOnce(h.deps);
 
 		expect(result.outcome).toBe("backoff");

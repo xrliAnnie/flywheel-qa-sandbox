@@ -11,9 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	computeModelReviveExpiresAt,
 	emptyQuotaMonitorState,
 	loadQuotaMonitorState,
 	type QuotaMonitorState,
+	updateUnknownPaneObservations,
 	writeQuotaMonitorState,
 } from "../account-heal/quota-monitor-state.js";
 
@@ -119,6 +121,182 @@ describe("quota monitor persistent state", () => {
 		expect(statSync(path).mode & 0o777).toBe(0o600);
 		expect(readdirSync(dir)).toEqual(["quota-monitor-state.json"]);
 		expect(readFileSync(path, "utf8").toLowerCase()).not.toContain("token");
+	});
+
+	it("round-trips the v2 detection, outbox, confirmation, and bounded unknown ledger", () => {
+		const state = populatedState();
+		state.pendingDetection = {
+			eventId: "model-cap-g7-0123456789abcdef",
+			observedGeneration: 7,
+			observedAt: NOW,
+			sourceAccount: "shopping",
+			models: ["Fable 5"],
+			affectedPanes: [
+				{
+					socket: "flywheel",
+					paneId: "%12",
+					panePid: 4_321,
+					sessionName: "flywheel",
+					windowName: "FLY-1182-claude-runner",
+				},
+			],
+		};
+		state.alertOutbox = [
+			{
+				eventId: "model-cap-g7-0123456789abcdef:switch",
+				generation: 8,
+				createdAt: NOW + 1,
+				alert: {
+					kind: "model_cap_switched",
+					severity: "info",
+					title: "Claude model-cap account switched",
+					body: "shopping->school",
+					signature: "model-cap-switch-8",
+				},
+			},
+		];
+		state.confirmation = {
+			eventId: "model-cap-g7-0123456789abcdef:confirm",
+			generation: 8,
+			dueAt: NOW + 7 * 60_000,
+			sourceAccount: "shopping",
+			targetAccount: "school",
+			models: ["Fable 5"],
+			affectedPanes: state.pendingDetection.affectedPanes,
+		};
+		state.unknownPanes = {
+			"flywheel:%12:4321": { count: 2, lastSeenAt: NOW },
+		};
+		state.modelPaneSuppressions = {
+			"flywheel:%12:4321": { models: ["Fable 5"], lastSeenAt: NOW },
+		};
+
+		writeQuotaMonitorState(state, path);
+		expect(
+			loadQuotaMonitorState(path, { nowMs: NOW, storeGeneration: 7 }),
+		).toEqual({ state });
+	});
+
+	it("explicitly migrates a legacy v1 file, defaults new ledgers, and then round-trips as v2", () => {
+		const scheduled = {
+			...populatedState(),
+			nextUsageDueAt: NOW + 300_000,
+			nextPaneScanDueAt: NOW + 60_000,
+			confirmDueAt: NOW + 420_000,
+		};
+		writeQuotaMonitorState(scheduled, path);
+		expect(
+			loadQuotaMonitorState(path, { nowMs: NOW, storeGeneration: 7 }).state,
+		).toMatchObject({
+			nextUsageDueAt: NOW + 300_000,
+			nextPaneScanDueAt: NOW + 60_000,
+			confirmDueAt: NOW + 420_000,
+		});
+
+		const {
+			pendingDetection: _pendingDetection,
+			alertOutbox: _alertOutbox,
+			confirmation: _confirmation,
+			unknownPanes: _unknownPanes,
+			modelPaneSuppressions: _modelPaneSuppressions,
+			nextUsageDueAt: _nextUsageDueAt,
+			nextPaneScanDueAt: _nextPaneScanDueAt,
+			confirmDueAt: _confirmDueAt,
+			version: _version,
+			...legacy
+		} = populatedState();
+		writeFileSync(path, JSON.stringify({ ...legacy, version: 1 }), {
+			mode: 0o600,
+		});
+		const migrated = loadQuotaMonitorState(path, {
+			nowMs: NOW,
+			storeGeneration: 7,
+		});
+		expect(migrated).toMatchObject({
+			recovery: "migrated_v1",
+			state: {
+				version: 2,
+				nextUsageDueAt: 0,
+				nextPaneScanDueAt: 0,
+				confirmDueAt: null,
+				pendingDetection: null,
+				alertOutbox: [],
+				confirmation: null,
+				unknownPanes: {},
+				modelPaneSuppressions: {},
+			},
+		});
+		writeQuotaMonitorState(migrated.state, path);
+		expect(
+			loadQuotaMonitorState(path, { nowMs: NOW, storeGeneration: 7 }),
+		).toEqual({ state: migrated.state });
+	});
+
+	it("ignores an interrupted pre-rename temp file and preserves the last committed state", () => {
+		const committed = populatedState();
+		writeQuotaMonitorState(committed, path);
+		writeFileSync(`${path}.tmp.crashed`, '{"version":2', { mode: 0o600 });
+
+		expect(
+			loadQuotaMonitorState(path, { nowMs: NOW, storeGeneration: 7 }),
+		).toEqual({ state: committed });
+		expect(statSync(path).mode & 0o777).toBe(0o600);
+	});
+
+	it("bounds persistent unknown streaks by pane instance and clears discontinuous observations", () => {
+		const previous = {
+			"flywheel:%1:4001": { count: 2, lastSeenAt: NOW - 60_000 },
+			"flywheel:%2:4002": { count: 2, lastSeenAt: NOW - 60_000 },
+		};
+		const observed = [
+			"flywheel:%1:4001",
+			...Array.from(
+				{ length: 80 },
+				(_, index) => `flywheel:%${index + 10}:${index + 5_000}`,
+			),
+		];
+
+		const next = updateUnknownPaneObservations(previous, observed, NOW);
+		expect(Object.keys(next)).toHaveLength(64);
+		expect(next["flywheel:%1:4001"]).toEqual({ count: 3, lastSeenAt: NOW });
+		expect(next["flywheel:%2:4002"]).toBeUndefined();
+		expect(updateUnknownPaneObservations(next, [], NOW + 60_000)).toEqual({});
+	});
+
+	it("round-trips a model revive authorization with the exact max-bench plus grace expiry", () => {
+		const benchUntilByModel = {
+			"Fable 5": new Date(NOW + 30 * 60_000).toISOString(),
+			"Sonnet 5": new Date(NOW + 60 * 60_000).toISOString(),
+		};
+		const expiresAt = computeModelReviveExpiresAt(benchUntilByModel, NOW);
+		expect(expiresAt).toBe(NOW + 90 * 60_000);
+		const state = populatedState();
+		state.reviveEpoch = {
+			open: true,
+			sourceAccount: "shopping",
+			generation: 7,
+			openedAt: NOW,
+			expiresAt: expiresAt as number,
+			trigger: { kind: "model", models: ["Fable 5", "Sonnet 5"] },
+			panes: {},
+		};
+		writeQuotaMonitorState(state, path);
+		expect(
+			loadQuotaMonitorState(path, { nowMs: NOW, storeGeneration: 7 }),
+		).toEqual({ state });
+	});
+
+	it("refuses an empty, malformed, or unbounded model revive deadline", () => {
+		expect(computeModelReviveExpiresAt({}, NOW)).toBeNull();
+		expect(
+			computeModelReviveExpiresAt({ "Fable 5": "not-a-date" }, NOW),
+		).toBeNull();
+		expect(
+			computeModelReviveExpiresAt(
+				{ "Fable 5": new Date(NOW - 60 * 60_000).toISOString() },
+				NOW,
+			),
+		).toBeNull();
 	});
 
 	it("loads legacy state without episode fields as empty episodes", () => {

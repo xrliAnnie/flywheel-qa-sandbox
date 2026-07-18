@@ -78,8 +78,23 @@ describe("FLY-1256 shell alert rendering", () => {
 		return JSON.parse(readFileSync(capture, "utf-8")).content as string;
 	}
 
-	it("account_switched posts a root message without a ticket header", () => {
-		expect(send("account_switched", "info")).not.toContain("🎫");
+	it.each([
+		"account_switched",
+		"model_cap_switched",
+		"model_cap_unknown",
+		"quota_switch_confirmation",
+	])("%s posts a root message without a ticket header", (kind) => {
+		expect(send(kind, `info-${kind}`)).not.toContain("🎫");
+	});
+
+	it.each([
+		"machine_account_conflict",
+		"model_cap_persistent_unknown",
+		"model_bench_malformed",
+		"quota_choice",
+		"quota_no_target",
+	])("actionable %s keeps the normal ticket header", (kind) => {
+		expect(send(kind, `actionable-${kind}`)).toContain("🎫");
 	});
 
 	it("quota_blocked_recovered posts a root message without a ticket header", () => {

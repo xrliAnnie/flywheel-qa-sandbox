@@ -1,0 +1,9 @@
+⏺ Bash(git status)
+  ⎿  You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── @product-lead ──
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 4.8/xhigh | ⚡product-lead | ~/.flywheel/lead-workspace/product-lead | ctx 47% ██████████
+  5h █░░░░░░░░░ 10% reset today 23:09  |  7d ███████░░░ 74% reset Thu 22:59
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

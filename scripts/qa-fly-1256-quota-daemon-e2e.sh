@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FLY-1256 M6: hermetic on-machine E2E for the Claude-external quota daemon.
+# FLY-1256 M6 / FLY-1182: hermetic on-machine E2E for the Claude-external quota daemon.
 #
 # This launches the real compiled daemon against a local OAuth/usage server, a
 # scratch Keychain adapter, the real flywheel-claude-profile switch script, an
@@ -7,19 +7,32 @@
 # tmux server, alert channel, config, store, cache, or lock is reachable.
 set -euo pipefail
 
+QA_MODE="${1:-account}"
+case "$QA_MODE" in
+  account|model|rate-limit|unmanaged-model) ;;
+  *) echo "usage: $0 [account|model|rate-limit|unmanaged-model]" >&2; exit 2 ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEAMLEAD_DIR="$REPO_DIR/packages/teamlead"
 DAEMON_BIN="$TEAMLEAD_DIR/bin/flywheel-quota-monitor"
 PROFILE_BIN="$REPO_DIR/packages/claude-runner/bin/flywheel-claude-profile"
 FRESHNESS_BIN="$TEAMLEAD_DIR/bin/flywheel-claude-freshness"
-PANE_FIXTURE="$TEAMLEAD_DIR/src/__tests__/fixtures/lead-panes/usage-limit-real.txt"
-ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fly1256-e2e.XXXXXX")"
-TMUX_SOCKET="fly1256-e2e-$$"
+if [[ "$QA_MODE" == "model" || "$QA_MODE" == "unmanaged-model" ]]; then
+  PANE_FIXTURE="$TEAMLEAD_DIR/src/__tests__/fixtures/lead-panes/model-limit-real.txt"
+  PANE_MATCH='reached your Fable 5 limit'
+else
+  PANE_FIXTURE="$TEAMLEAD_DIR/src/__tests__/fixtures/lead-panes/usage-limit-real.txt"
+  PANE_MATCH='Claude usage limit reached'
+fi
+RECOVERED_FIXTURE="$TEAMLEAD_DIR/src/__tests__/fixtures/lead-panes/idle-product-lead.txt"
+ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fly1256-${QA_MODE}-e2e.XXXXXX")"
+TMUX_SOCKET="fly1256-${QA_MODE}-e2e-$$"
 SERVER_PID="" DAEMON_PID=""
 
-log() { echo "[FLY-1256 E2E] $*"; }
-fail() { echo "[FLY-1256 E2E] FAIL: $*" >&2; exit 1; }
+log() { echo "[FLY-1256 ${QA_MODE} E2E] $*"; }
+fail() { echo "[FLY-1256 ${QA_MODE} E2E] FAIL: $*" >&2; exit 1; }
 cleanup() {
   [[ -n "$DAEMON_PID" ]] && kill -TERM "$DAEMON_PID" 2>/dev/null || true
   [[ -n "$DAEMON_PID" ]] && wait "$DAEMON_PID" 2>/dev/null || true
@@ -34,7 +47,7 @@ cleanup() {
 }
 on_error() {
   rc=$?
-  echo "[FLY-1256 E2E] diagnostic tail:" >&2
+  echo "[FLY-1256 ${QA_MODE} E2E] diagnostic tail:" >&2
   tail -40 "$ROOT/daemon.log" "$ROOT/http.log" "$ROOT/alerts.log" 2>/dev/null >&2 || true
   exit "$rc"
 }
@@ -46,7 +59,8 @@ for tool in node pnpm jq tmux ps; do
 done
 [[ -x "$DAEMON_BIN" && -x "$PROFILE_BIN" && -x "$FRESHNESS_BIN" ]] \
   || fail "quota/profile/freshness launchers must be executable"
-[[ -f "$PANE_FIXTURE" ]] || fail "quota pane fixture missing: $PANE_FIXTURE"
+[[ -f "$PANE_FIXTURE" && -f "$RECOVERED_FIXTURE" ]] \
+  || fail "quota/recovered pane fixture missing"
 
 log "building the production daemon entry"
 pnpm --dir "$TEAMLEAD_DIR" build >/dev/null
@@ -61,23 +75,40 @@ PIDFILE="$ROOT/home/.flywheel/quota-monitor.pid"
 CACHE="$ROOT/home/.claude/usage-api-cache.json"
 KEYCHAIN_STATE="$ROOT/keychain-state.json"
 
-make_credential() { # profile access refresh
-  local profile="$1" access="$2" refresh="$3"
+make_credential() { # profile access refresh canonical-email
+  local profile="$1" access="$2" refresh="$3" email="$4"
   mkdir -p "$POOL/$profile"
   jq -cn --arg access "$access" --arg refresh "$refresh" \
     '{claudeAiOauth:{accessToken:$access,refreshToken:$refresh,expiresAt:4102444800000}}' \
     > "$POOL/$profile/.credentials.json"
   chmod 600 "$POOL/$profile/.credentials.json"
-  jq -cn --arg suffix "$profile" \
-    '{accountUuid:("uuid-"+$suffix),emailAddress:($suffix+"@example.test"),organizationUuid:("org-"+$suffix),organizationName:("Org "+$suffix)}' \
+  jq -cn --arg suffix "$profile" --arg email "$email" \
+    '{accountUuid:("uuid-"+$suffix),emailAddress:$email,organizationUuid:("org-"+$suffix),organizationName:("Org "+$suffix)}' \
     > "$POOL/$profile/oauthAccount.json"
   chmod 600 "$POOL/$profile/oauthAccount.json"
+  jq -cn --arg suffix "$profile" --arg email "$email" \
+    '{accountUuid:("uuid-"+$suffix),email:$email,anchoredAt:"2026-07-16T00:00:00.000Z",anchoredBy:"fly1256-hermetic-e2e",confirmedBy:"scratch-fixture"}' \
+    > "$POOL/$profile/identity-anchor.json"
+  chmod 600 "$POOL/$profile/identity-anchor.json"
 }
-make_credential shopping shopping-active shopping-refresh
-make_credential school school-old school-refresh
-make_credential backup backup-old backup-refresh
+make_credential shopping shopping-active shopping-refresh xrliannie.shopping@gmail.com
+make_credential school school-old school-refresh xiaorongli2011@u.northwestern.edu
+make_credential backup backup-old backup-refresh backup@example.test
+jq -n '{
+  version:1,
+  artifactId:"fly1256-hermetic-identity-map",
+  confirmedAt:"2026-07-16T00:00:00.000Z",
+  labels:{
+    business:"xrliannie.b@gmail.com",
+    personal:"xrliannie@gmail.com",
+    personal1:"xrliannie.1@gmail.com",
+    school:"xiaorongli2011@u.northwestern.edu",
+    shopping:"xrliannie.shopping@gmail.com"
+  }
+}' > "$POOL/identity-map.json"
+chmod 600 "$POOL/identity-map.json"
 printf 'shopping\n' > "$POOL/.active"
-cp "$POOL/shopping/.credentials.json" "$KEYCHAIN_STATE"
+printf '%s' "$(cat "$POOL/shopping/.credentials.json")" > "$KEYCHAIN_STATE"
 chmod 600 "$KEYCHAIN_STATE"
 jq -n '{generation:0,activeAccount:"shopping",accounts:["shopping","school","backup"]|map({name:.,quotaExhaustedUntil:null,weeklyResetAt:null})}' > "$STORE"
 chmod 600 "$STORE"
@@ -89,7 +120,9 @@ jq -n '{
   candidateSweepMinutes:60,
   minSwitchIntervalMinutes:1,
   order:["shopping","school","backup"],
-  writeStatuslineCache:true
+  writeStatuslineCache:true,
+  paneScanSeconds:1,
+  confirmDelayMinutes:5
 }' > "$CONFIG"
 chmod 600 "$CONFIG"
 cp "$POOL/shopping/oauthAccount.json" "$ROOT/active-identity.json"
@@ -111,7 +144,12 @@ case "${1:-}" in
     command_text="$(cat)"
     value="$(printf '%s' "$command_text" | sed -n 's/.* -w \([^ ]*\).*/\1/p')"
     [[ -n "$value" ]] || exit 2
-    printf '%s' "$value" > "$FAKE_SECURITY_STATE"
+    if [[ -f "${FAKE_SECURITY_CORRUPT_NEXT_WRITE_FILE:-}" ]]; then
+      rm -f "$FAKE_SECURITY_CORRUPT_NEXT_WRITE_FILE"
+      printf '%s' '{"corrupted":true}' > "$FAKE_SECURITY_STATE"
+    else
+      printf '%s' "$value" > "$FAKE_SECURITY_STATE"
+    fi
     ;;
   *) exit 2 ;;
 esac
@@ -140,7 +178,7 @@ cat > "$ROOT/mock-server.mjs" <<'MOCK'
 import { appendFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
-const [portFile, logFile] = process.argv.slice(2);
+const [portFile, logFile, mode] = process.argv.slice(2);
 let refreshCounter = 0;
 const record = (line) => appendFileSync(logFile, `${line}\n`);
 const json = (res, status, body) => {
@@ -149,15 +187,28 @@ const json = (res, status, body) => {
   res.end(raw);
 };
 const usage = (account) => ({
-  five_hour: { utilization: account === "shopping" ? 92 : account === "school" ? 3 : 4, resets_at: "2099-01-01T00:00:00.000Z" },
+  five_hour: { utilization: account === "shopping" ? (mode.includes("model") ? 20 : 92) : account === "school" ? 3 : 4, resets_at: "2099-01-01T00:00:00.000Z" },
   seven_day: { utilization: account === "shopping" ? 20 : 10, resets_at: "2099-01-07T00:00:00.000Z" },
 });
 const server = createServer((req, res) => {
+  if (req.method === "GET" && req.url === "/v1/oauth/profile") {
+    const auth = String(req.headers.authorization ?? "");
+    const account = auth.includes("shopping-") ? "shopping" : auth.includes("school-") ? "school" : auth.includes("backup-") ? "backup" : "unknown";
+    const emails = {
+      shopping: "xrliannie.shopping@gmail.com",
+      school: "xiaorongli2011@u.northwestern.edu",
+      backup: "backup@example.test",
+    };
+    record(`identity:${account}`);
+    if (account === "unknown") return json(res, 401, { error: "unauthorized" });
+    return json(res, 200, { account: { uuid: `uuid-${account}`, email: emails[account] } });
+  }
   if (req.method === "GET" && req.url === "/api/oauth/usage") {
     const auth = String(req.headers.authorization ?? "");
     const account = auth.includes("shopping-") ? "shopping" : auth.includes("school-") ? "school" : auth.includes("backup-") ? "backup" : "unknown";
     record(`usage:${account}`);
     if (account === "unknown") return json(res, 401, { error: "unauthorized" });
+    if (mode === "rate-limit" && account === "shopping") return json(res, 529, { error: "overloaded" });
     return json(res, 200, usage(account));
   }
   if (req.method === "POST" && req.url === "/v1/oauth/token") {
@@ -189,30 +240,44 @@ server.listen(0, "127.0.0.1", () => {
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
 MOCK
 : > "$ROOT/http.log"
-node "$ROOT/mock-server.mjs" "$ROOT/http-port" "$ROOT/http.log" > "$ROOT/mock.log" 2>&1 &
+node "$ROOT/mock-server.mjs" "$ROOT/http-port" "$ROOT/http.log" "$QA_MODE" > "$ROOT/mock.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 50); do [[ -s "$ROOT/http-port" ]] && break; sleep 0.1; done
 [[ -s "$ROOT/http-port" ]] || fail "mock server did not bind"
 PORT="$(cat "$ROOT/http-port")"
 
-# The pane is deliberately only a shell reading stdin: it renders the captured
-# quota fixture but no Claude process exists to help the daemon recover it.
+# The pane is deliberately only a shell reading stdin. It becomes eligible only
+# through the two-key QA seam: a pane-local marker plus the isolated daemon env
+# gate below. No production pane or ordinary shell can inherit this authority.
 cat > "$ROOT/quota-pane.sh" <<PANE
 #!/usr/bin/env bash
 cat "$PANE_FIXTURE"
 IFS= read -r response
 printf '%s\n' "\$response" > "$ROOT/pane-response"
+if [[ "$QA_MODE" == "model" ]]; then
+  while [[ ! -e "$ROOT/allow-pane-recovery" ]]; do sleep 0.05; done
+  printf '\033[2J\033[H'
+  cat "$RECOVERED_FIXTURE"
+fi
 while :; do sleep 60; done
 PANE
 chmod +x "$ROOT/quota-pane.sh"
 # Match a real Lead pane width so the audited cap sentence remains one line;
 # the classifier deliberately rejects a sentence wrapped before its period.
-tmux -L "$TMUX_SOCKET" new-session -d -x 220 -y 20 -s quota-dead "$ROOT/quota-pane.sh"
+tmux -L "$TMUX_SOCKET" new-session -d -x 220 -y 20 \
+  -s flywheel-quota-qa -n FLY-1182-quota-dead "$ROOT/quota-pane.sh"
+PANE_TARGET='flywheel-quota-qa:FLY-1182-quota-dead.0'
+if [[ "$QA_MODE" != "unmanaged-model" ]]; then
+  tmux -L "$TMUX_SOCKET" set-option -p -t "$PANE_TARGET" \
+    @flywheel_quota_qa 1
+fi
 for _ in $(seq 1 50); do
-  tmux -L "$TMUX_SOCKET" capture-pane -p -t quota-dead 2>/dev/null | grep -q 'Claude usage limit reached' && break
+  tmux -L "$TMUX_SOCKET" capture-pane -p -t "$PANE_TARGET" 2>/dev/null \
+    | grep -q "$PANE_MATCH" && break
   sleep 0.1
 done
-tmux -L "$TMUX_SOCKET" capture-pane -p -t quota-dead | grep -q 'Claude usage limit reached' \
+tmux -L "$TMUX_SOCKET" capture-pane -p -t "$PANE_TARGET" \
+  | grep -q "$PANE_MATCH" \
   || fail "isolated tmux pane never rendered the quota fixture"
 
 export HOME="$ROOT/home"
@@ -221,8 +286,10 @@ export FLYWHEEL_QUOTA_MONITOR_CONFIG="$CONFIG"
 export FLYWHEEL_QUOTA_API_BASE="http://127.0.0.1:$PORT"
 export FLYWHEEL_QUOTA_STATUSLINE_CACHE="$CACHE"
 export FLYWHEEL_QUOTA_TMUX_SOCKET="$TMUX_SOCKET"
+export FLYWHEEL_QUOTA_QA_INJECTION=1
 export FLYWHEEL_QUOTA_STATE_PATH="$STATE"
 export FLYWHEEL_QUOTA_PIDFILE="$PIDFILE"
+export FLYWHEEL_QUOTA_CONFIRMATION_DIR="$ROOT/confirmations"
 export FLYWHEEL_CLAUDE_PROFILES_DIR="$POOL"
 export FLYWHEEL_CLAUDE_ACCOUNTS_PATH="$STORE"
 export FLYWHEEL_CLAUDE_ACCOUNTS_LOCK="$LOCK"
@@ -232,13 +299,50 @@ export FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT="fly1256-e2e"
 export FLYWHEEL_CLAUDE_PROFILE_BIN="$PROFILE_BIN"
 export FLYWHEEL_CLAUDE_FRESHNESS_BIN="$FRESHNESS_BIN"
 export FLYWHEEL_CLAUDE_OAUTH_ENDPOINT="http://127.0.0.1:$PORT/v1/oauth/token"
+export FLYWHEEL_PROFILE_IDENTITY_ENDPOINT="http://127.0.0.1:$PORT/v1/oauth/profile"
+export FLYWHEEL_PROFILE_IDENTITY_MAP="$POOL/identity-map.json"
 export FLYWHEEL_CLAUDE_JSON="$ROOT/home/.claude.json"
 export FLYWHEEL_CLAUDE_JSON_LOCK="$ROOT/home/.claude.json.lock"
 export FLYWHEEL_LEAD_ALERT_BIN="$ROOT/bin/lead-alert"
 export FAKE_SECURITY_STATE="$KEYCHAIN_STATE"
 export FAKE_SECURITY_ARGV_LOG="$ROOT/security-argv.log"
+export FAKE_SECURITY_CORRUPT_NEXT_WRITE_FILE="$ROOT/corrupt-next-security-write"
 export FAKE_ALERT_LOG="$ROOT/alerts.log"
 export CLAUDE_PARTICIPATION_LOG="$ROOT/claude-participation.log"
+
+# Centralized zero-pollution gate: every mutable/read-sensitive seam must stay
+# under the one scratch root before the production entrypoint may start.
+assert_scratch_path() {
+  case "$1" in "$ROOT"/*) ;; *) fail "non-scratch path refused: $1" ;; esac
+}
+for scratch_path in \
+  "$HOME" "$CONFIG" "$CACHE" "$STATE" "$PIDFILE" "$FLYWHEEL_QUOTA_CONFIRMATION_DIR" \
+  "$POOL" "$STORE" "$LOCK" "$KEYCHAIN_STATE" "$FLYWHEEL_CLAUDE_SECURITY_BIN" \
+  "$FLYWHEEL_CLAUDE_JSON" "$FLYWHEEL_CLAUDE_JSON_LOCK" "$FLYWHEEL_LEAD_ALERT_BIN"; do
+  assert_scratch_path "$scratch_path"
+done
+[[ "$FLYWHEEL_QUOTA_API_BASE" == http://127.0.0.1:* ]] || fail "usage API is not loopback"
+[[ "$FLYWHEEL_CLAUDE_OAUTH_ENDPOINT" == http://127.0.0.1:* ]] || fail "OAuth endpoint is not loopback"
+[[ "$FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE" == "FLY-1256 Scratch-credentials" ]] \
+  || fail "scratch Keychain service guard failed"
+[[ "$FLYWHEEL_QUOTA_QA_INJECTION" == "1" && "$TMUX_SOCKET" == fly1256-*-e2e-* ]] \
+  || fail "QA injection/socket guard failed"
+
+if [[ "$QA_MODE" == "model" ]]; then
+  cp "$KEYCHAIN_STATE" "$ROOT/keychain-before-rollback.json"
+  : > "$FAKE_SECURITY_CORRUPT_NEXT_WRITE_FILE"
+  if "$PROFILE_BIN" use school > "$ROOT/rollback.log" 2>&1; then
+    fail "profile switch unexpectedly committed after a corrupted Keychain write"
+  fi
+  [[ ! -e "$FAKE_SECURITY_CORRUPT_NEXT_WRITE_FILE" ]] \
+    || fail "rollback injection was not consumed; profile failed before the Keychain write"
+  cmp -s "$KEYCHAIN_STATE" "$ROOT/keychain-before-rollback.json" \
+    || fail "verify-before-commit did not restore the prior scratch credential"
+  [[ "$(cat "$POOL/.active")" == "shopping" ]] \
+    || fail "failed profile verification changed .active"
+  grep -q 'rolled back and verified the previous Keychain state' "$ROOT/rollback.log" \
+    || fail "profile failure did not report a successful rollback"
+fi
 
 log "starting real daemon with Claude absent"
 "$DAEMON_BIN" > "$ROOT/daemon.log" 2>&1 &
@@ -260,10 +364,45 @@ else
   ps_proof="pidfile+exec-sentinel (ps unavailable)"
 fi
 
+if [[ "$QA_MODE" == "rate-limit" || "$QA_MODE" == "unmanaged-model" ]]; then
+  for _ in $(seq 1 100); do
+    if [[ "$QA_MODE" == "rate-limit" ]]; then
+      [[ "$(jq -r '.errorStreak' "$STATE" 2>/dev/null || true)" =~ ^[1-9][0-9]*$ ]] && break
+    else
+      [[ "$(jq -r '.lastSuccessfulUsageAt != null' "$STATE" 2>/dev/null || true)" == "true" ]] && break
+    fi
+    sleep 0.1
+  done
+  [[ "$(cat "$POOL/.active")" == "shopping" ]] || fail "negative case switched the profile"
+  [[ "$(jq -r '.generation' "$STORE")" == "0" ]] || fail "negative case changed the account generation"
+  [[ "$(jq -r '.pendingDetection' "$STATE")" == "null" ]] || fail "negative case persisted a model detection"
+  [[ ! -e "$ROOT/pane-response" ]] || fail "negative case sent continue to the pane"
+  if grep -Eq -- '--kind (account_switched|model_cap_switched)' "$ROOT/alerts.log"; then
+    fail "negative case emitted a switch alert"
+  fi
+  [[ ! -s "$ROOT/claude-participation.log" ]] || fail "a Claude executable participated"
+  kill -TERM "$DAEMON_PID"
+  wait "$DAEMON_PID"
+  DAEMON_PID=""
+  [[ ! -e "$PIDFILE" ]] || fail "graceful shutdown left the singleton pidfile behind"
+  if [[ "$QA_MODE" == "rate-limit" ]]; then
+    log "PASS: live HTTP 529 produced no switch, no generation change, and no pane keystroke"
+  else
+    log "PASS: an unmarked shell rendering the real model-cap fixture produced no detection, switch, or keystroke"
+  fi
+  exit 0
+fi
+
+if [[ "$QA_MODE" == "model" ]]; then
+  SWITCH_KIND="model_cap_switched"
+else
+  SWITCH_KIND="account_switched"
+fi
 for _ in $(seq 1 300); do
   [[ "$(cat "$POOL/.active" 2>/dev/null || true)" == "school" ]] \
     && [[ "$(cat "$ROOT/pane-response" 2>/dev/null || true)" == "continue" ]] \
-    && grep -q -- '--kind account_switched' "$ROOT/alerts.log" 2>/dev/null \
+    && grep -q -- "--kind $SWITCH_KIND" "$ROOT/alerts.log" 2>/dev/null \
+    && [[ "$(jq -r '[.reviveEpoch.panes[].attempts] | max // 0' "$STATE" 2>/dev/null || true)" == "1" ]] \
     && break
   sleep 0.1
 done
@@ -272,20 +411,69 @@ done
 [[ "$(jq -r '.activeAccount' "$STORE")" == "school" ]] || fail "CAS store did not commit school"
 [[ "$(jq -r '.generation' "$STORE")" == "1" ]] || fail "CAS generation did not increment exactly once"
 [[ "$(cat "$ROOT/pane-response")" == "continue" ]] || fail "quota-stuck pane was not revived with literal continue+Enter"
-grep -q -- '--kind account_switched' "$ROOT/alerts.log" || fail "isolated alert sink missed account_switched"
+grep -q -- "--kind $SWITCH_KIND" "$ROOT/alerts.log" || fail "isolated alert sink missed $SWITCH_KIND"
 grep -q -- '--strict-delivery' "$ROOT/alerts.log" || fail "alert did not use strict delivery"
 [[ "$(jq -r '.five_hour.utilization' "$CACHE")" == "3" ]] || fail "statusline cache was not refreshed from new account"
 [[ "$(jq -r '[.reviveEpoch.panes[].attempts] | max' "$STATE")" == "1" ]] || fail "revive attempt was not durably recorded"
 [[ "$(jq -r '.claudeAiOauth.accessToken | startswith("school-rotated-")' "$KEYCHAIN_STATE")" == "true" ]] \
   || fail "scratch Keychain was not switched to refreshed school credential"
 
+if [[ "$QA_MODE" == "model" ]]; then
+  : > "$ROOT/allow-pane-recovery"
+  for _ in $(seq 1 100); do
+    tmux -L "$TMUX_SOCKET" capture-pane -p -t "$PANE_TARGET" 2>/dev/null \
+      | grep -q "$PANE_MATCH" || break
+    sleep 0.1
+  done
+fi
+
 school_line="$(grep -n -m1 '^refresh:school$' "$ROOT/http.log" | cut -d: -f1)"
 backup_line="$(grep -n -m1 '^refresh:backup$' "$ROOT/http.log" | cut -d: -f1)"
 [[ -n "$school_line" && -n "$backup_line" && "$school_line" -lt "$backup_line" ]] \
   || fail "candidate validation did not follow school before backup"
 
+if [[ "$QA_MODE" == "model" ]]; then
+  [[ "$(jq -r '.accounts[] | select(.name == "shopping") | .quotaExhaustedUntil' "$STORE")" == "null" ]] \
+    || fail "model cap incorrectly benched the whole shopping account"
+  [[ "$(jq -r '.accounts[] | select(.name == "shopping") | .modelCaps["Fable 5"].backoffMs' "$STORE")" == "1800000" ]] \
+    || fail "model bench was not committed with the bounded base backoff"
+  [[ "$(jq -r '.confirmation.generation' "$STATE")" == "1" ]] \
+    || fail "delayed model confirmation was not durably scheduled"
+  grep -q -- 'FLY-1182-quota-dead' "$ROOT/alerts.log" \
+    || fail "model switch alert omitted the affected pane list"
+  if tmux -L "$TMUX_SOCKET" capture-pane -p -t "$PANE_TARGET" | grep -q "$PANE_MATCH"; then
+    fail "model-cap pane remained visibly capped after continue"
+  fi
+
+  # Crash after the committed switch and its durable confirmation intent, then
+  # advance only the scratch intent deadline. A fresh real daemon must reclaim
+  # the stale pidfile, scan the recovered pane, post confirmation, and drain the
+  # durable outbox. This avoids adding a production timing bypass.
+  kill -KILL "$DAEMON_PID"
+  wait "$DAEMON_PID" 2>/dev/null || true
+  DAEMON_PID=""
+  jq '(.confirmation.dueAt)=0 | .confirmDueAt=0 | .nextPaneScanDueAt=0' "$STATE" > "$ROOT/state-restart.json"
+  chmod 600 "$ROOT/state-restart.json"
+  mv "$ROOT/state-restart.json" "$STATE"
+  "$DAEMON_BIN" >> "$ROOT/daemon.log" 2>&1 &
+  DAEMON_PID=$!
+  for _ in $(seq 1 100); do
+    grep -q -- '--kind quota_switch_confirmation' "$ROOT/alerts.log" 2>/dev/null \
+      && [[ "$(jq -r '.confirmation' "$STATE" 2>/dev/null || true)" == "null" ]] \
+      && [[ "$(jq -r '.alertOutbox | length' "$STATE" 2>/dev/null || true)" == "0" ]] \
+      && break
+    sleep 0.1
+  done
+  grep -q -- '--kind quota_switch_confirmation' "$ROOT/alerts.log" \
+    || fail "restart did not deliver the delayed confirmation alert"
+  evidence_file="$(find "$FLYWHEEL_QUOTA_CONFIRMATION_DIR" -type f -name '*.json' -print -quit 2>/dev/null || true)"
+  [[ -n "$evidence_file" ]] || fail "restart did not write confirmation evidence"
+  [[ "$(jq -r '[.recovered,.total,.panes[0].status] | @tsv' "$evidence_file")" == $'1\t1\trecovered' ]] \
+    || fail "confirmation evidence did not prove the affected pane recovered"
+fi
+
 [[ ! -s "$ROOT/claude-participation.log" ]] || fail "a Claude executable participated"
-pane_pid="$(tmux -L "$TMUX_SOCKET" list-panes -t quota-dead -F '#{pane_pid}')"
+pane_pid="$(tmux -L "$TMUX_SOCKET" list-panes -t "$PANE_TARGET" -F '#{pane_pid}')"
 if pane_comm="$(ps -p "$pane_pid" -o comm= 2>/dev/null | sed 's|.*/||' | tr -d ' ')" \
   && [[ -n "$pane_comm" ]]; then
   [[ "$pane_comm" != "claude" ]] || fail "quota fixture pane unexpectedly runs Claude"
@@ -305,5 +493,9 @@ wait "$DAEMON_PID"
 DAEMON_PID=""
 [[ ! -e "$PIDFILE" ]] || fail "graceful shutdown left the singleton pidfile behind"
 
-log "PASS: cache updated, school validated before backup, Keychain/store switched, quota pane revived, alert isolated"
+if [[ "$QA_MODE" == "model" ]]; then
+  log "PASS: real model-cap fixture detected, scratch Keychain/store switched, affected pane revived, crash/restart confirmation recovered"
+else
+  log "PASS: cache updated, school validated before backup, Keychain/store switched, quota pane revived, alert isolated"
+fi
 log "PASS: daemon=$daemon_comm pane=$pane_comm proof=$ps_proof; fake claude invocation count=0"

@@ -86,7 +86,10 @@ describe("makeClaudeProfileSwitchDeps", () => {
 				"Warning: profile 'school' has no captured display identity — new claude /status may show a stale account. To fix: capture school",
 		}));
 		const warns: string[] = [];
-		await deps(execFile, (m) => warns.push(m)).applyProfile("school");
+		const result = await deps(execFile, (m) => warns.push(m)).applyProfile(
+			"school",
+		);
+		expect(result).toEqual({ identitySynced: false, identityChecks: [] });
 		expect(warns).toHaveLength(1);
 		expect(warns[0]).toContain("use school");
 		expect(warns[0]).toContain("no captured display identity");
@@ -108,7 +111,10 @@ describe("makeClaudeProfileSwitchDeps", () => {
 				"Updated ~/.claude.json display identity to 'school' (email: s@x.com)",
 		}));
 		const warns: string[] = [];
-		await deps(execFile, (m) => warns.push(m)).applyProfile("school");
+		const result = await deps(execFile, (m) => warns.push(m)).applyProfile(
+			"school",
+		);
+		expect(result).toEqual({ identitySynced: true, identityChecks: [] });
 		expect(warns).toHaveLength(0);
 	});
 
@@ -195,9 +201,10 @@ describe("makeClaudeProfileSwitchDeps", () => {
 			return { stdout: "Switched", stderr: "" };
 		});
 
-		await expect(deps(execFile).applyProfile("school")).resolves.toEqual(
-			REPORT,
-		);
+		await expect(deps(execFile).applyProfile("school")).resolves.toEqual({
+			...REPORT,
+			identitySynced: true,
+		});
 	});
 
 	it.each(["missing", "malformed"])(
@@ -214,9 +221,10 @@ describe("makeClaudeProfileSwitchDeps", () => {
 				return { stdout: "Switched", stderr: "" };
 			});
 
-			await expect(
-				deps(execFile).applyProfile("school"),
-			).resolves.toBeUndefined();
+			await expect(deps(execFile).applyProfile("school")).resolves.toEqual({
+				identitySynced: true,
+				identityChecks: [],
+			});
 		},
 	);
 
@@ -407,6 +415,27 @@ describe("makeClaudeProfileSwitchDeps", () => {
 			const callEnv = execFile.mock.calls[0][2].env as Record<string, string>;
 			expect(callEnv[KEY]).toBeUndefined(); // the bypass NEVER reaches bash automatically
 			// the legitimate delegated-lock env is still passed
+			expect(callEnv.FLYWHEEL_CLAUDE_LOCK_DELEGATED).toBe(String(process.pid));
+		});
+	});
+
+	describe("FLY-1182 identity bypass env scrub", () => {
+		const KEY = "FLYWHEEL_PROFILE_IDENTITY_BYPASS";
+		let saved: string | undefined;
+		afterEach(() => {
+			if (saved === undefined) delete process.env[KEY];
+			else process.env[KEY] = saved;
+		});
+
+		it("scrubs a polluted identity bypass from every automatic delegated switch", async () => {
+			saved = process.env[KEY];
+			process.env[KEY] = "1";
+			const execFile = vi.fn(async () => ({ stdout: "Switched", stderr: "" }));
+
+			await deps(execFile).applyProfile("school");
+
+			const callEnv = execFile.mock.calls[0][2].env as Record<string, string>;
+			expect(callEnv[KEY]).toBeUndefined();
 			expect(callEnv.FLYWHEEL_CLAUDE_LOCK_DELEGATED).toBe(String(process.pid));
 		});
 	});

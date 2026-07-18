@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016 # Single-quoted blocks below are JavaScript source for node -e.
 # FLY-696 M1/⑤ (C1): machine-level Claude account rotation over the macOS
 # Keychain — the switch executor's `applyProfile`/`readActiveProfile` backend.
 #
@@ -79,6 +80,10 @@ KEYCHAIN="${FLYWHEEL_CLAUDE_KEYCHAIN:-}"
 LOCK_TIMEOUT_MS="${FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS:-30000}"
 PS_BIN="${FLYWHEEL_CLAUDE_PS_BIN:-/bin/ps}"
 ACTIVE_FILE="$POOL_DIR/.active"
+IDENTITY_ENDPOINT="${FLYWHEEL_PROFILE_IDENTITY_ENDPOINT:-https://api.anthropic.com/api/oauth/profile}"
+CURL_BIN="${FLYWHEEL_PROFILE_CURL_BIN:-curl}"
+IDENTITY_MAP_FILE="${FLYWHEEL_PROFILE_IDENTITY_MAP:-$POOL_DIR/identity-map.json}"
+AUDIT_LOG="${FLYWHEEL_PROFILE_AUDIT_LOG:-$HOME/.flywheel/claude-profile-audit.log}"
 ACCOUNTS_STORE="${FLYWHEEL_CLAUDE_ACCOUNTS_PATH:-$HOME/.flywheel/claude-accounts.json}"
 TRANSITION_JOURNAL="${FLYWHEEL_CLAUDE_TRANSITION_JOURNAL:-$HOME/.flywheel/claude-account-transition.json}"
 NODE_BIN="${FLYWHEEL_NODE_BIN:-node}"
@@ -110,6 +115,10 @@ Commands:
   use <name>      Swap the machine Keychain to pool profile <name>
   next            Rotate to the next pool profile (sorted round-robin)
   capture <name>  Save the CURRENT Keychain credential into pool/<name>/
+  anchor <name> --migrate|--replace [--evidence /absolute/identity-map.json]
+                  Create or explicitly replace a slot identity anchor
+  verify <name> --source keychain|pool
+                  Probe a credential and compare it with its identity anchor
 EOF
   exit 1
 }
@@ -119,6 +128,75 @@ fail() { echo "Error: $*" >&2; exit 1; }
 # unavailable) so the Node switch executor can distinguish freshness failures
 # from other failures and drive the candidate loop / fail-closed accordingly.
 fail_code() { local code="$1"; shift; echo "Error: $*" >&2; exit "$code"; }
+
+# ------------------------------------------------------- append-only audit (FLY-1182)
+AUDIT_ENABLED=0
+AUDIT_CMD=""
+AUDIT_PROFILE=""
+AUDIT_SUMMARY="pending"
+AUDIT_DETAILS_JSON="null"
+
+audit_append() { # $1=phase $2=exit-code|null $3=summary
+  local phase="$1" exit_code="$2" summary="$3" actor="${FLYWHEEL_AUDIT_ACTOR:-ppid:$PPID}"
+  node -e '
+const { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, writeSync } = require("node:fs");
+const { dirname } = require("node:path");
+const [path, phase, exitRaw, cmd, profileRaw, summary, actor, detailsRaw] = process.argv.slice(1);
+const uid = process.getuid?.();
+if (uid === undefined) throw new Error("audit owner identity unavailable");
+mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+const validateStat = (stat) => {
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o777) !== 0o600)
+    throw new Error("unsafe audit file (must be same-owner regular 0600 file)");
+};
+if (existsSync(path)) validateStat(lstatSync(path));
+const flags = constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0);
+const fd = openSync(path, flags, 0o600);
+try {
+  const opened = fstatSync(fd);
+  validateStat(opened);
+  if (existsSync(path)) {
+    const named = lstatSync(path);
+    validateStat(named);
+    if (named.dev !== opened.dev || named.ino !== opened.ino) throw new Error("audit file changed during open");
+  }
+  const record = {
+    ts: new Date().toISOString(),
+    cmd,
+    profile: profileRaw || null,
+    phase,
+    probeSummary: summary,
+    actor,
+    actorTrust: "untrusted_hint",
+    exitCode: exitRaw === "null" ? null : Number(exitRaw),
+    details: JSON.parse(detailsRaw),
+  };
+  const line = `${JSON.stringify(record)}\n`;
+  const bytes = Buffer.byteLength(line);
+  if (writeSync(fd, line) !== bytes) throw new Error("short audit append");
+  fsyncSync(fd);
+} finally {
+  closeSync(fd);
+}
+' "$AUDIT_LOG" "$phase" "$exit_code" "$AUDIT_CMD" "$AUDIT_PROFILE" "$summary" "$actor" "$AUDIT_DETAILS_JSON"
+}
+
+begin_audit() { # $1=cmd $2=profile(optional) $3=summary
+  AUDIT_CMD="$1"
+  AUDIT_PROFILE="$2"
+  AUDIT_SUMMARY="$3"
+  audit_append entry null "$AUDIT_SUMMARY" || fail "cannot safely append entry audit to $AUDIT_LOG — refusing mutation"
+  AUDIT_ENABLED=1
+}
+
+set_anchor_audit_details() { # $1=old|null $2=new $3=artifact $4=mapSha $5=confirmation
+  AUDIT_DETAILS_JSON=$(node -e '
+const [oldRaw, newRaw, artifactId, identityMapSha256, confirmationReference] = process.argv.slice(1);
+const oldAnchor = oldRaw === "null" ? null : JSON.parse(oldRaw);
+const newAnchor = JSON.parse(newRaw);
+process.stdout.write(JSON.stringify({ oldAnchor, newAnchor, artifactId, identityMapSha256, confirmationReference }));
+' "$1" "$2" "$3" "$4" "$5") || AUDIT_DETAILS_JSON="null"
+}
 
 # Cross-platform stat (BSD/macOS `-f`, GNU/Linux `-c`) — CI runs Linux.
 # GNU treats `-f` as FILESYSTEM stat and exits 0 with junk for unknown
@@ -318,10 +396,32 @@ renew_lock_or_fail() {
 # read). Nesting order is always accounts-lock → claude-json-lock; inject/
 # teardown take ONLY the claude-json lock, so there is no deadlock cycle.
 CLAUDE_JSON_LOCK_HELD=0
+ACTIVE_CHILD_PID=""
+ACTIVE_TEMP_FILE=""
+ACTIVE_SECRET_TEMP=""
 release_claude_json_lock() {
   if [[ "$CLAUDE_JSON_LOCK_HELD" -eq 1 ]]; then
     rmdir "$CLAUDE_JSON_LOCK" 2>/dev/null || true
     CLAUDE_JSON_LOCK_HELD=0
+  fi
+}
+stop_active_child() {
+  if [[ -n "$ACTIVE_CHILD_PID" ]]; then
+    # The display patch runs as the actual child process (not behind a shell
+    # subshell), so an abnormal shell exit can stop it before releasing the
+    # lock. KILL is intentional here: after SIGINT/SIGTERM no writer may keep
+    # mutating ~/.claude.json after the mutex has been released.
+    kill -KILL "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    wait "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    ACTIVE_CHILD_PID=""
+  fi
+  if [[ -n "$ACTIVE_TEMP_FILE" ]]; then
+    rm -f "$ACTIVE_TEMP_FILE" 2>/dev/null || true
+    ACTIVE_TEMP_FILE=""
+  fi
+  if [[ -n "$ACTIVE_SECRET_TEMP" ]]; then
+    rm -f "$ACTIVE_SECRET_TEMP" 2>/dev/null || true
+    ACTIVE_SECRET_TEMP=""
   fi
 }
 # Release BOTH locks. Armed as a GLOBAL `trap cleanup_locks EXIT` below (before
@@ -332,6 +432,17 @@ cleanup_locks() {
   release_lock
   release_claude_json_lock
   flush_manual_identity_report
+}
+
+finalize() {
+  local rc=$?
+  trap - EXIT
+  stop_active_child
+  if [[ "$AUDIT_ENABLED" -eq 1 ]]; then
+    audit_append exit "$rc" "$AUDIT_SUMMARY" >/dev/null 2>&1 || true
+  fi
+  cleanup_locks
+  exit "$rc"
 }
 
 acquire_claude_json_lock() { # returns non-zero on timeout (caller warns, best-effort)
@@ -454,7 +565,211 @@ require_pool_entry() { # $1 = name; refuses symlinks, requires an owner-only fil
   esac
 }
 
+# ------------------------------------------------ identity proof (FLY-1182)
+# The OAuth access token is extracted from the compact credential on stdin and
+# passed to curl only through `--config -`; it never appears in process argv.
+identity_probe() { # $1 = compact credential JSON; stdout = "uuid<TAB>email"
+  local credential="$1" token response parsed
+  token=$(printf '%s' "$credential" | node -e '
+let raw=""; process.stdin.setEncoding("utf8");
+process.stdin.on("data", c => raw += c);
+process.stdin.on("end", () => {
+  try {
+    const value = JSON.parse(raw);
+    const token = value?.claudeAiOauth?.accessToken;
+    if (typeof token !== "string" || !/^[A-Za-z0-9._~+\/=\-]+$/.test(token)) process.exit(1);
+    process.stdout.write(token);
+  } catch { process.exit(1); }
+});
+') || return 88
+  [[ -n "$token" ]] || return 88
+  [[ -x "$CURL_BIN" ]] || command -v "$CURL_BIN" >/dev/null 2>&1 || return 88
+  response=$(
+    printf 'header = "Authorization: Bearer %s"\nheader = "anthropic-beta: oauth-2025-04-20"\n' "$token" |
+      "$CURL_BIN" --silent --show-error --fail --max-time 10 --config - "$IDENTITY_ENDPOINT" 2>/dev/null
+  ) || return 88
+  parsed=$(printf '%s' "$response" | node -e '
+let raw=""; process.stdin.setEncoding("utf8");
+process.stdin.on("data", c => raw += c);
+process.stdin.on("end", () => {
+  try {
+    const value = JSON.parse(raw);
+    const uuid = value?.account?.uuid;
+    const email = value?.account?.email;
+    if (typeof uuid !== "string" || uuid.length === 0 || typeof email !== "string" || email.length === 0) process.exit(1);
+    if (/[\u0000-\u001f\u007f]/.test(uuid) || /[\u0000-\u001f\u007f]/.test(email)) process.exit(1);
+    process.stdout.write(`${uuid}\t${email}`);
+  } catch { process.exit(1); }
+});
+') || return 88
+  [[ -n "$parsed" ]] || return 88
+  printf '%s' "$parsed"
+}
+
+read_identity_anchor() { # $1 = name; stdout = "uuid<TAB>email"
+  local name="$1" file="$POOL_DIR/$1/identity-anchor.json" perms owner current_uid
+  [[ -L "$file" ]] && return 87
+  [[ -f "$file" ]] || return 87
+  perms=$(stat_perms "$file") || return 87
+  case "$perms" in 600|400) : ;; *) return 87 ;; esac
+  owner=$(stat_num %u %u "$file") || return 87
+  current_uid=$(id -u)
+  [[ "$owner" == "$current_uid" ]] || return 87
+  node -e '
+const { readFileSync } = require("node:fs");
+try {
+  const value = JSON.parse(readFileSync(process.argv[1], "utf8"));
+  const keys = Object.keys(value).sort();
+  const expected = ["accountUuid", "anchoredAt", "anchoredBy", "confirmedBy", "email"].sort();
+  if (keys.length !== expected.length || keys.some((key, i) => key !== expected[i])) process.exit(1);
+  for (const key of expected) {
+    if (typeof value[key] !== "string" || value[key].length === 0 || /[\u0000-\u001f\u007f]/.test(value[key])) process.exit(1);
+  }
+  process.stdout.write(`${value.accountUuid}\t${value.email}`);
+} catch { process.exit(1); }
+' "$file" || return 87
+}
+
+redact_email() {
+  node -e '
+const email = process.argv[1] ?? "";
+const at = email.indexOf("@");
+if (at <= 0) process.stdout.write("***");
+else process.stdout.write(`${email[0]}***${email.slice(at)}`);
+' "$1"
+}
+
+identity_assert_value() { # $1=name $2=credential; stdout is a stable tab record
+  local name="$1" credential="$2" anchor observed expected_uuid expected_email observed_uuid observed_email
+  anchor=$(read_identity_anchor "$name") || {
+    printf 'untracked\tnull\tnull\tnull'
+    return 87
+  }
+  observed=$(identity_probe "$credential") || {
+    IFS=$'\t' read -r expected_uuid expected_email <<<"$anchor"
+    printf 'unavailable\t%s\tnull\tnull' "$expected_uuid"
+    return 88
+  }
+  IFS=$'\t' read -r expected_uuid expected_email <<<"$anchor"
+  IFS=$'\t' read -r observed_uuid observed_email <<<"$observed"
+  if [[ "$observed_uuid" == "$expected_uuid" && "$observed_email" == "$expected_email" ]]; then
+    printf 'match\t%s\t%s\t%s' "$expected_uuid" "$observed_uuid" "$observed_email"
+    return 0
+  fi
+  printf 'mismatch\t%s\t%s\t%s' "$expected_uuid" "$observed_uuid" "$observed_email"
+  return 86
+}
+
+emit_identity_drift() { # $1=reason $2=label $3=expectedUuid|null $4=observedEmail|null
+  local reason="$1" label="$2" expected="$3" observed_email="$4" redacted="null"
+  if [[ "$observed_email" != "null" ]]; then redacted=$(redact_email "$observed_email"); fi
+  node -e '
+const reason = process.argv[1];
+const label = process.argv[2];
+const expectedUuid = process.argv[3] === "null" ? null : process.argv[3];
+const observedEmailRedacted = process.argv[4] === "null" ? null : process.argv[4];
+process.stderr.write(`FLYWHEEL_ACTIVE_IDENTITY_DRIFT ${JSON.stringify({ version: 1, reason, label, expectedUuid, observedEmailRedacted })}\n`);
+' "$reason" "$label" "$expected" "$redacted"
+}
+
+read_identity_map_label() { # $1=label $2=map path; stdout = artifactId<TAB>email<TAB>sha256
+  local label="$1" file="$2" perms owner current_uid
+  [[ "$file" == /* ]] || return 1
+  [[ -L "$file" ]] && return 1
+  [[ -f "$file" ]] || return 1
+  perms=$(stat_perms "$file") || return 1
+  case "$perms" in 600|400) : ;; *) return 1 ;; esac
+  owner=$(stat_num %u %u "$file") || return 1
+  current_uid=$(id -u)
+  [[ "$owner" == "$current_uid" ]] || return 1
+  node -e '
+const { readFileSync } = require("node:fs");
+const { createHash } = require("node:crypto");
+const label = process.argv[2];
+try {
+  const bytes = readFileSync(process.argv[1]);
+  const value = JSON.parse(bytes.toString("utf8"));
+const rootKeys = Object.keys(value).sort();
+const expectedRoot = ["artifactId", "confirmedAt", "labels", "version"].sort();
+const labels = ["business", "personal", "personal1", "school", "shopping"];
+const canonicalEmails = {
+  business: "xrliannie.b@gmail.com",
+  personal: "xrliannie@gmail.com",
+  personal1: "xrliannie.1@gmail.com",
+  school: "xiaorongli2011@u.northwestern.edu",
+  shopping: "xrliannie.shopping@gmail.com",
+};
+  if (rootKeys.length !== expectedRoot.length || rootKeys.some((key, i) => key !== expectedRoot[i])) process.exit(1);
+  if (value.version !== 1 || typeof value.artifactId !== "string" || !value.artifactId || typeof value.confirmedAt !== "string" || !value.confirmedAt) process.exit(1);
+  if (!value.labels || typeof value.labels !== "object" || Array.isArray(value.labels)) process.exit(1);
+  const actualLabels = Object.keys(value.labels).sort();
+  if (actualLabels.length !== labels.length || actualLabels.some((key, i) => key !== labels.sort()[i])) process.exit(1);
+  for (const key of labels) {
+    if (value.labels[key] !== canonicalEmails[key] || /[\u0000-\u001f\u007f]/.test(value.labels[key])) process.exit(1);
+  }
+  if (!labels.includes(label)) process.exit(1);
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  process.stdout.write(`${value.artifactId}\t${value.labels[label]}\t${sha256}`);
+} catch { process.exit(1); }
+' "$file" "$label"
+}
+
+read_display_identity() { # stdout = uuid<TAB>email
+  [[ -L "$CLAUDE_JSON" ]] && return 1
+  [[ -f "$CLAUDE_JSON" ]] || return 1
+  node -e '
+const { readFileSync } = require("node:fs");
+try {
+  const value = JSON.parse(readFileSync(process.argv[1], "utf8"));
+  const identity = value.oauthAccount;
+  for (const key of ["accountUuid", "emailAddress", "organizationUuid", "organizationName"])
+    if (typeof identity?.[key] !== "string" || !identity[key]) process.exit(1);
+  if (/[\u0000-\u001f\u007f]/.test(identity.accountUuid) || /[\u0000-\u001f\u007f]/.test(identity.emailAddress)) process.exit(1);
+  process.stdout.write(`${identity.accountUuid}\t${identity.emailAddress}`);
+} catch { process.exit(1); }
+' "$CLAUDE_JSON"
+}
+
+write_identity_anchor() { # $1=name $2=uuid $3=email $4=confirmedBy
+  local name="$1" uuid="$2" email="$3" confirmed_by="$4" dir="$POOL_DIR/$1" file="$POOL_DIR/$1/identity-anchor.json"
+  [[ -L "$dir" || -L "$file" ]] && return 1
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  node -e '
+const { closeSync, constants, fsyncSync, openSync, renameSync, unlinkSync, writeSync } = require("node:fs");
+const { dirname } = require("node:path");
+const [file, accountUuid, email, confirmedBy, anchoredBy] = process.argv.slice(1);
+const tmp = `${file}.tmp.${process.pid}`;
+const value = { accountUuid, email, anchoredAt: new Date().toISOString(), anchoredBy, confirmedBy };
+let fd;
+try {
+  fd = openSync(tmp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+  writeSync(fd, `${JSON.stringify(value)}\n`);
+  fsyncSync(fd);
+  closeSync(fd); fd = undefined;
+  renameSync(tmp, file);
+  const dirFd = openSync(dirname(file), constants.O_RDONLY);
+  try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+} finally {
+  if (fd !== undefined) closeSync(fd);
+  try { unlinkSync(tmp); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+}
+' "$file" "$uuid" "$email" "$confirmed_by" "${FLYWHEEL_AUDIT_ACTOR:-manual:$PPID}"
+}
+
 # ------------------------------------------------------- keychain primitives
+require_credential_value() { # $1 = compact credential JSON
+  local secret="$1"
+  [[ -z "$secret" ]] && fail "empty credential — refusing to write"
+  case "$secret" in
+    "{"*) : ;;
+    *) fail "credential is not a JSON object — refusing to write" ;;
+  esac
+  case "$secret" in
+    *[[:space:]]*) fail "credential contains whitespace — refusing (security -i single-token rule)" ;;
+  esac
+}
+
 kc_read() { # → stdout: current item value (non-zero when item missing)
   if [[ -n "$KEYCHAIN" ]]; then
     "$SEC_BIN" find-generic-password -a "$ACCT" -s "$SERVICE" -w "$KEYCHAIN"
@@ -465,14 +780,7 @@ kc_read() { # → stdout: current item value (non-zero when item missing)
 
 kc_write() { # $1 = secret. NO-ARGV path: command incl. value goes via stdin (-i).
   local secret="$1"
-  [[ -z "$secret" ]] && fail "empty credential — refusing to write"
-  case "$secret" in
-    "{"*) : ;;
-    *) fail "credential is not a JSON object — refusing to write" ;;
-  esac
-  case "$secret" in
-    *[[:space:]]*) fail "credential contains whitespace — refusing (security -i single-token rule)" ;;
-  esac
+  require_credential_value "$secret"
   lease_fence_or_fail
   # printf is a bash BUILTIN: the secret never appears in any process argv.
   if [[ -n "$KEYCHAIN" ]]; then
@@ -482,6 +790,34 @@ kc_write() { # $1 = secret. NO-ARGV path: command incl. value goes via stdin (-i
     printf 'add-generic-password -U -a "%s" -s "%s" -w %s\n' \
       "$ACCT" "$SERVICE" "$secret" | "$SEC_BIN" -i >/dev/null
   fi
+}
+
+kc_delete() { # Restore a previously missing item; no credential crosses argv.
+  if [[ -n "$KEYCHAIN" ]]; then
+    "$SEC_BIN" delete-generic-password -a "$ACCT" -s "$SERVICE" "$KEYCHAIN" >/dev/null
+  else
+    "$SEC_BIN" delete-generic-password -a "$ACCT" -s "$SERVICE" >/dev/null
+  fi
+}
+
+restore_keychain_preimage() { # $1 = previous value; $2 = 1 when item existed, 0 when proven absent
+  local previous="$1" existed="$2" restored="" delete_rc=0 read_rc=0
+  if [[ "$existed" -eq 1 ]]; then
+    kc_write "$previous" 2>/dev/null || return 1
+    restored=$(kc_read 2>/dev/null) || return 1
+    [[ "$restored" == "$previous" ]]
+    return
+  fi
+  # The destructive branch is legal only when the preimage read proved the
+  # item absent with security(1)'s not-found exit 44. A lock/read error must
+  # never be collapsed into "missing" and turned into a credential deletion.
+  kc_delete 2>/dev/null || delete_rc=$?
+  case "$delete_rc" in
+    0|44) : ;;
+    *) return 1 ;;
+  esac
+  kc_read >/dev/null 2>&1 || read_rc=$?
+  [[ "$read_rc" -eq 44 ]]
 }
 
 # ------------------------------------------------- freshness guard (FLY-871 R1)
@@ -858,7 +1194,7 @@ capture_back() {
   case "$value" in
     *[[:space:]]*) echo "Warning: skipping capture-back for '$active' (value has whitespace)" >&2; return 0 ;;
   esac
-  local dir="$POOL_DIR/$active" file="$POOL_DIR/$active/.credentials.json"
+  local dir="$POOL_DIR/$active" file="$POOL_DIR/$active/.credentials.json" tmp=""
   [[ -L "$POOL_DIR" ]] && { echo "Warning: pool dir is a symlink — skipping capture-back" >&2; return 0; }
   [[ -L "$dir" ]] && { echo "Warning: profile dir $dir is a symlink — skipping capture-back" >&2; return 0; }
   [[ -d "$dir" ]] || { echo "Warning: active profile dir $dir missing — skipping capture-back for '$active'" >&2; return 0; }
@@ -869,9 +1205,12 @@ capture_back() {
     return 0
   fi
   lease_fence_or_fail
-  ( umask 077; printf '%s' "$value" > "$file.tmp" ) || { echo "Warning: capture-back write failed for '$active'" >&2; return 0; }
+  tmp=$(umask 077; mktemp "$file.tmp.XXXXXX") || { echo "Warning: capture-back temp creation failed for '$active'" >&2; return 0; }
+  ACTIVE_SECRET_TEMP="$tmp"
+  printf '%s' "$value" > "$tmp" || { echo "Warning: capture-back write failed for '$active'" >&2; rm -f "$tmp" 2>/dev/null || true; ACTIVE_SECRET_TEMP=""; return 0; }
   lease_fence_or_fail
-  mv "$file.tmp" "$file" 2>/dev/null || { echo "Warning: capture-back rename failed for '$active'" >&2; rm -f "$file.tmp" 2>/dev/null || true; return 0; }
+  mv "$tmp" "$file" 2>/dev/null || { echo "Warning: capture-back rename failed for '$active'" >&2; rm -f "$tmp" 2>/dev/null || true; ACTIVE_SECRET_TEMP=""; return 0; }
+  ACTIVE_SECRET_TEMP=""
   chmod 600 "$file" 2>/dev/null || true
   echo "Captured-back current credential for active profile '$active' before switch" >&2
 }
@@ -1066,9 +1405,10 @@ reconcile_before_capture() { # <capture name>
 # is authoritative, so a failed identity read/write only warns and returns 0 —
 # it must NEVER turn a committed token switch into a non-zero exit (the Node
 # switch executor treats non-zero `use` as "switch failed, state untouched").
-# The opaque token cannot be decoded to an identity, so capture/restore is the
-# only mechanism; we NEVER clear oauthAccount (undocumented refetch + risks the
-# "never break the claude login" red line).
+# OAuth profile probing now proves the token's account UUID/email, but it does
+# not return the complete four-field display block (including organization).
+# Therefore capture/restore remains the display mechanism; we NEVER clear
+# oauthAccount (undocumented refetch + risks the "never break login" red line).
 
 # require_identity_entry: 0 ok, 1 present-but-unusable (symlink / non-file /
 # not 0600-0400; warns), 2 missing (caller emits the re-capture hint).
@@ -1120,7 +1460,7 @@ NODE
 # applied email on stdout. Non-zero (target byte-untouched) on any failure.
 # MUST be called with CLAUDE_JSON_LOCK held.
 patch_claude_json_identity() {
-  node --input-type=module - "$1" "$2" <<'NODE'
+  node --input-type=module - "$1" "$2" <<'NODE' &
 import { readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, unlinkSync } from "node:fs";
 const [src, target] = process.argv.slice(2);
 const REQ = ["accountUuid", "emailAddress", "organizationUuid", "organizationName"];
@@ -1162,6 +1502,17 @@ try {
 } catch { process.stderr.write(`post-write verify read failed\n`); process.exit(1); }
 process.stdout.write(`${identity.emailAddress}\n`);
 NODE
+  ACTIVE_CHILD_PID=$!
+  local patch_rc=0
+  # Bash can defer a trapped signal while blocked in a foreground child (and
+  # some versions also defer it in a long `wait`). Polling through a short
+  # sleep bounds TERM/INT cleanup latency while preserving the child's status.
+  while kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null; do
+    sleep 0.05
+  done
+  wait "$ACTIVE_CHILD_PID" || patch_rc=$?
+  ACTIVE_CHILD_PID=""
+  return "$patch_rc"
 }
 
 # capture_identity <name>: snapshot the CURRENT ~/.claude.json oauthAccount beside
@@ -1197,7 +1548,7 @@ capture_identity() {
 sync_identity() {
   # Separate declarations (ShellCheck SC2318): a combined local with `$name` in
   # the RHS would read the caller's dynamically-scoped `name`, not this one.
-  local name="$1" rc=0 email=""
+  local name="$1" rc=0 email="" email_file=""
   local src="$POOL_DIR/$name/oauthAccount.json"
   # `; rc=$?` would let set -e abort on a non-zero return before capturing it.
   require_identity_entry "$src" || rc=$?
@@ -1218,10 +1569,22 @@ sync_identity() {
     return 0
   fi
   lease_fence_or_fail
-  if email=$(patch_claude_json_identity "$src" "$CLAUDE_JSON"); then
+  email_file=$(mktemp "${CLAUDE_JSON}.fly865.email.XXXXXX") || {
+    release_claude_json_lock
+    echo "Warning: could not create display identity result file for '$name' (token switched OK)." >&2
+    return 0
+  }
+  chmod 600 "$email_file"
+  ACTIVE_TEMP_FILE="$email_file"
+  if patch_claude_json_identity "$src" "$CLAUDE_JSON" >"$email_file"; then
+    email=$(cat "$email_file")
+    rm -f "$email_file"
+    ACTIVE_TEMP_FILE=""
     release_claude_json_lock
     echo "Updated ~/.claude.json display identity to '$name' (email: ${email:-unknown})" >&2
   else
+    rm -f "$email_file"
+    ACTIVE_TEMP_FILE=""
     release_claude_json_lock
     echo "Warning: failed to update ~/.claude.json display identity for '$name' (token switched OK; a new claude '/status' may show a stale account)." >&2
   fi
@@ -1250,15 +1613,127 @@ show_status() {
   [[ -z "$active" ]] && echo "No active profile set." || echo "Active profile: $active"
 }
 
-prepare_profile_locked() { # <name> <active>; returns 0/30/31/32/33
-  local name="$1" active="$2" rc=0
+verify_profile() {
+  local name="$1" source="$2" credential anchor observed expected_uuid expected_email observed_uuid observed_email redacted
+  require_valid_name "$name"
+  case "$source" in
+    pool)
+      require_pool_entry "$name"
+      credential=$(cat "$POOL_DIR/$name/.credentials.json")
+      ;;
+    keychain)
+      credential=$(kc_read 2>/dev/null) || fail_code 88 "identity probe unavailable for keychain credential"
+      ;;
+    *) fail "verify source must be keychain or pool" ;;
+  esac
+  anchor=$(read_identity_anchor "$name") || {
+    echo "profile=$name source=$source verdict=untracked email=***"
+    exit 87
+  }
+  observed=$(identity_probe "$credential") || {
+    echo "profile=$name source=$source verdict=unavailable email=***"
+    exit 88
+  }
+  IFS=$'\t' read -r expected_uuid expected_email <<<"$anchor"
+  IFS=$'\t' read -r observed_uuid observed_email <<<"$observed"
+  redacted=$(redact_email "$observed_email")
+  if [[ "$observed_uuid" == "$expected_uuid" && "$observed_email" == "$expected_email" ]]; then
+    echo "profile=$name source=$source verdict=match email=$redacted"
+    return 0
+  fi
+  echo "profile=$name source=$source verdict=mismatch email=$redacted"
+  exit 86
+}
+
+anchor_profile() {
+  local name="$1" mode="$2" evidence="$3" dir="$POOL_DIR/$1" anchor_file="$POOL_DIR/$1/identity-anchor.json"
+  require_valid_name "$name"
+  [[ "$evidence" == /* ]] || fail "identity evidence path must be absolute"
+  acquire_lock
+
+  local old_anchor="null" confirmation_reference=""
+  case "$mode" in
+    --migrate)
+      [[ ! -e "$anchor_file" && ! -L "$anchor_file" ]] || fail "profile '$name' already has an identity anchor"
+      require_pool_entry "$name"
+      require_identity_entry "$dir/oauthAccount.json" || fail_code 87 "legacy profile '$name' must have valid oauthAccount.json before migration"
+      ;;
+    --replace)
+      read_identity_anchor "$name" >/dev/null || fail_code 87 "profile '$name' has no valid identity anchor to replace"
+      [[ "${FLYWHEEL_PROFILE_REANCHOR_CONFIRM:-}" == "$name" ]] || fail "re-anchor confirmation missing: set FLYWHEEL_PROFILE_REANCHOR_CONFIRM=$name"
+      old_anchor=$(cat "$anchor_file")
+      confirmation_reference="env:FLYWHEEL_PROFILE_REANCHOR_CONFIRM=$name"
+      ;;
+    *) fail "anchor mode must be --migrate or --replace" ;;
+  esac
+
+  local mapping cur observed display artifact_id mapped_email map_sha observed_uuid observed_email display_uuid display_email new_anchor
+  mapping=$(read_identity_map_label "$name" "$evidence") || { AUDIT_SUMMARY="untracked"; fail_code 87 "identity evidence is missing or invalid — refusing anchor change"; }
+  cur=$(kc_read 2>/dev/null) || { AUDIT_SUMMARY="unavailable"; fail_code 88 "no Keychain credential available for identity proof"; }
+  observed=$(identity_probe "$cur") || { AUDIT_SUMMARY="unavailable"; fail_code 88 "identity probe unavailable — refusing anchor change"; }
+  display=$(read_display_identity) || { AUDIT_SUMMARY="untracked"; fail_code 87 "display identity is missing or invalid — refusing anchor change"; }
+  IFS=$'\t' read -r artifact_id mapped_email map_sha <<<"$mapping"
+  IFS=$'\t' read -r observed_uuid observed_email <<<"$observed"
+  IFS=$'\t' read -r display_uuid display_email <<<"$display"
+  if [[ "$observed_uuid" != "$display_uuid" || "$observed_email" != "$display_email" || "$observed_email" != "$mapped_email" ]]; then
+    AUDIT_SUMMARY="mismatch"
+    fail_code 86 "token, display identity, and canonical mapping do not agree for '$name' — refusing anchor change"
+  fi
+  write_identity_anchor "$name" "$observed_uuid" "$observed_email" "$artifact_id" || fail "failed to write identity anchor for '$name'"
+  new_anchor=$(cat "$anchor_file")
+  AUDIT_SUMMARY="match"
+  [[ -n "$confirmation_reference" ]] || confirmation_reference="canonical:$artifact_id"
+  set_anchor_audit_details "$old_anchor" "$new_anchor" "$artifact_id" "$map_sha" "$confirmation_reference"
+  echo "Anchored profile '$name' to verified identity $(redact_email "$observed_email") ($mode)"
+}
+
+IDENTITY_BYPASS=0
+configure_identity_bypass() {
+  IDENTITY_BYPASS=0
+  if [[ "${FLYWHEEL_PROFILE_IDENTITY_BYPASS:-}" == "1" ]]; then
+    if [[ -n "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" || "$DELEGATED_LOCK_ACCEPTED" -eq 1 ]]; then
+      AUDIT_SUMMARY="bypass_denied"
+      fail_code 88 "FLYWHEEL_PROFILE_IDENTITY_BYPASS is forbidden on delegated automatic switches"
+    fi
+    IDENTITY_BYPASS=1
+    AUDIT_SUMMARY="bypass_requested"
+    echo "Warning: FLYWHEEL_PROFILE_IDENTITY_BYPASS=1 — SKIPPING OAuth identity assertions for this manual switch; emergency founder-only escape hatch." >&2
+  fi
+}
+
+prepare_profile_locked() { # <name> <active>; returns 0/30/31/32/33/39
+  local name="$1" active="$2" rc=0 new identity_rc=0
   require_pool_entry "$name"
+  # FLY-871 R1/C2+C3 — freshness guard: before writing a NON-ACTIVE target to the
+  # Keychain, verify its pooled token is fresh (probe-refresh). The ACTIVE account
+  # is never pool-refreshed (its live session owns the token family). On a stale
+  # target (exit 30) or a missing helper (exit 31) we bail with the Keychain and
+  # .active UNTOUCHED — the 2026-07-04 incident root-cure. Re-selecting the current
+  # active (name == active) skips the probe (it re-writes the same account).
   if [[ "$name" != "$active" ]]; then
     freshness_check "$name" "$active" || rc=$?
     [[ "$rc" -eq 0 ]] || return "$rc"
   fi
   quota_check "$name" || rc=$?
-  return "$rc"
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  # RE-READ after the guard — freshness_guard's helper may have written a ROTATED
+  # credential back to the pool, and we must switch to the fresh one.
+  new=$(cat "$POOL_DIR/$name/.credentials.json")
+  require_credential_value "$new"
+
+  # FLY-1182 assertion C: a target is eligible only when its actual OAuth
+  # identity matches the immutable slot anchor. This is before every Keychain,
+  # .active, display, or capture-back mutation.
+  if [[ "$IDENTITY_BYPASS" -eq 0 ]]; then
+    identity_assert_value "$name" "$new" >/dev/null || identity_rc=$?
+    case "$identity_rc" in
+      0) AUDIT_SUMMARY="match" ;;
+      86) AUDIT_SUMMARY="mismatch"; fail_code 86 "target profile '$name' identity does not match its anchor — refusing switch" ;;
+      87) AUDIT_SUMMARY="untracked"; fail_code 87 "target profile '$name' has no valid identity anchor — refusing switch" ;;
+      *) AUDIT_SUMMARY="unavailable"; fail_code 88 "target profile '$name' identity probe unavailable — refusing switch" ;;
+    esac
+  fi
+  return 0
 }
 
 # Commit boundary: no probes here. The caller has prepared exactly once and
@@ -1266,19 +1741,56 @@ prepare_profile_locked() { # <name> <active>; returns 0/30/31/32/33
 # rotated the pooled credential.
 commit_profile_locked() { # <name> <active>
   local name="$1" active="$2"
-  local new backup="" got rollback_got="" journal_op sync_rc=0 identity_rc=0
+  local new backup="" backup_present=0 backup_rc=0 got rollback_got="" journal_op sync_rc=0 identity_rc=0 active_tmp=""
   require_pool_entry "$name"
   new=$(cat "$POOL_DIR/$name/.credentials.json")
+  require_credential_value "$new"
   renew_lock_or_fail
   # Snapshot the current value so a failed verify can roll back — the red line
   # is "switching must never leave the claude login broken".
-  backup=$(kc_read 2>/dev/null || true)
-
-  # FLY-871 R1/C1 — capture-back the OLD active account's current Keychain value
-  # into its pool slot before we overwrite it (best-effort; see capture_back).
-  if [[ -n "$active" && "$active" != "$name" ]]; then
-    capture_back "$active" "$backup"
+  if backup=$(kc_read 2>/dev/null); then
+    backup_present=1
+  else
+    backup_rc=$?
+    if [[ "$backup_rc" -ne 44 ]]; then
+      fail "cannot read the current Keychain credential (exit $backup_rc) — refusing any mutation"
+    fi
   fi
+  # Rollback uses the same stdin-only security(1) grammar as a normal write.
+  # Prove the preimage is representable before the first mutation so a later
+  # failure can never strand an un-restorable replacement in Keychain.
+  if [[ "$backup_present" -eq 1 ]]; then
+    require_credential_value "$backup"
+  fi
+
+  # FLY-1182 assertion B: capture-back is allowed ONLY when the current
+  # Keychain token matches the active slot's anchor. Drift/untracked/outage is
+  # repaired by continuing with the already-verified target, but the unverified
+  # current token is never copied into a slot and a stable marker is emitted.
+  if [[ -n "$active" && "$active" != "$name" ]]; then
+    local active_result="" active_rc=0 reason expected_uuid observed_uuid observed_email
+    if [[ "$IDENTITY_BYPASS" -eq 1 ]]; then
+      capture_back "$active" "$backup"
+    else
+      active_result=$(identity_assert_value "$active" "$backup") || active_rc=$?
+      if [[ "$active_rc" -eq 0 ]]; then
+        capture_back "$active" "$backup"
+      else
+        IFS=$'\t' read -r reason expected_uuid observed_uuid observed_email <<<"$active_result"
+        [[ -n "$expected_uuid" ]] || expected_uuid="null"
+        [[ -n "$observed_email" ]] || observed_email="null"
+        AUDIT_SUMMARY="$reason"
+        emit_identity_drift "$reason" "$active" "$expected_uuid" "$observed_email"
+      fi
+    fi
+  fi
+
+  # Pre-create the non-secret marker temp before touching Keychain. This turns
+  # unwritable/path failures into a zero-Keychain-mutation failure. The rename
+  # itself is still checked below and rolls Keychain back if it fails.
+  active_tmp=$(umask 077; mktemp "$ACTIVE_FILE.tmp.XXXXXX") || fail "cannot create active marker temp"
+  ACTIVE_TEMP_FILE="$active_tmp"
+  printf '%s' "$name" > "$active_tmp" || fail "cannot write active marker temp"
 
   # Exact-payload pre-write gate. Unknown endpoint families warn and allow the
   # switch; positive mismatch and profile unauthorized refuse this candidate.
@@ -1295,7 +1807,14 @@ commit_profile_locked() { # <name> <active>
     while [[ ! -e "${FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL}.continue" ]]; do sleep 0.01; done
   fi
   lease_fence_or_fail
-  kc_write "$new" # fail-closed: any non-zero aborts (set -e), .active untouched
+  local write_rc=0
+  kc_write "$new" || write_rc=$?
+  if [[ "$write_rc" -ne 0 ]]; then
+    if restore_keychain_preimage "$backup" "$backup_present"; then
+      fail "Keychain write failed (exit $write_rc) — rolled back and verified the previous Keychain state; .active unchanged"
+    fi
+    fail "Keychain write failed (exit $write_rc) AND rollback could not be verified — Keychain may be inconsistent for service '$SERVICE'; manual check required"
+  fi
 
   lease_fence_or_fail
   got=$(kc_read 2>/dev/null || true)
@@ -1318,9 +1837,15 @@ commit_profile_locked() { # <name> <active>
   fi
 
   lease_fence_or_fail
-  printf '%s' "$name" > "$ACTIVE_FILE.tmp"
-  lease_fence_or_fail
-  mv "$ACTIVE_FILE.tmp" "$ACTIVE_FILE"
+  if ! mv "$active_tmp" "$ACTIVE_FILE"; then
+    rm -f "$active_tmp" 2>/dev/null || true
+    ACTIVE_TEMP_FILE=""
+    if restore_keychain_preimage "$backup" "$backup_present"; then
+      fail "active marker commit failed — rolled back and verified the previous Keychain state"
+    fi
+    fail "active marker commit failed AND Keychain rollback could not be verified; manual check required"
+  fi
+  ACTIVE_TEMP_FILE=""
   active_sync_store "$name" || sync_rc=$?
   [[ "$sync_rc" -eq 39 ]] && exit 39
   # FLY-865: swap the DISPLAY identity too (best-effort; never fails the switch).
@@ -1340,6 +1865,7 @@ use_profile() {
   local name="$1" active rc=0
   acquire_lock
   reconcile_after_acquire
+  configure_identity_bypass
   lease_fence_or_fail
   mkdir -p "$POOL_DIR"
   chmod 700 "$POOL_DIR" 2>/dev/null || true
@@ -1353,6 +1879,7 @@ next_profile() {
   local active profiles=() name rc=0
   acquire_lock
   reconcile_after_acquire
+  configure_identity_bypass
   lease_fence_or_fail
   mkdir -p "$POOL_DIR"
   chmod 700 "$POOL_DIR" 2>/dev/null || true
@@ -1383,6 +1910,7 @@ next_profile() {
     prepare_profile_locked "$candidate" "$active" || rc=$?
     case "$rc" in
       0)
+        AUDIT_PROFILE="$candidate"
         renew_lock_or_fail
         rc=0
         commit_profile_locked "$candidate" "$active" || rc=$?
@@ -1416,7 +1944,7 @@ next_profile() {
 capture_profile() {
   local name="$1"
   require_valid_name "$name"
-  local dir="$POOL_DIR/$name" cur identity_rc=0
+  local dir="$POOL_DIR/$name" cur credential_tmp="" identity_rc=0
   [[ -L "$POOL_DIR" ]] && fail "pool dir $POOL_DIR is a symlink — refusing"
   [[ -L "$dir" ]] && fail "profile dir $dir is a symlink — refusing"
   acquire_lock
@@ -1424,19 +1952,50 @@ capture_profile() {
   lease_fence_or_fail
   cur=$(kc_read) || fail "no Keychain item for service '$SERVICE' — nothing to capture"
   [[ -z "$cur" ]] && fail "Keychain item for service '$SERVICE' is empty — refusing to capture"
-  identity_verify_payload "$name" "$cur" capture pool_write || identity_rc=$?
-  if [[ "$identity_rc" -ne 0 ]]; then
-    echo "Error: refusing capture into '$name' because identity verification returned $identity_rc" >&2
-    return "$identity_rc"
+  require_credential_value "$cur"
+
+  local anchor_file="$dir/identity-anchor.json" credential_file="$dir/.credentials.json" identity_file="$dir/oauthAccount.json"
+  local identity_rc=0
+  if [[ ! -e "$anchor_file" && ! -L "$anchor_file" ]]; then
+    # Bootstrap is reserved for a truly empty slot. Any legacy credential or
+    # display metadata requires the explicit `anchor --migrate` path.
+    if [[ -e "$credential_file" || -L "$credential_file" || -e "$identity_file" || -L "$identity_file" ]]; then
+      AUDIT_SUMMARY="untracked"
+      fail_code 87 "profile '$name' is a legacy slot without an identity anchor; run anchor '$name' --migrate first"
+    fi
+    local mapping observed display artifact_id mapped_email map_sha observed_uuid observed_email display_uuid display_email
+    mapping=$(read_identity_map_label "$name" "$IDENTITY_MAP_FILE") || { AUDIT_SUMMARY="untracked"; fail_code 87 "canonical identity map is missing or invalid — refusing bootstrap"; }
+    observed=$(identity_probe "$cur") || { AUDIT_SUMMARY="unavailable"; fail_code 88 "identity probe unavailable — refusing bootstrap"; }
+    display=$(read_display_identity) || { AUDIT_SUMMARY="untracked"; fail_code 87 "display identity is missing or invalid — refusing bootstrap"; }
+    IFS=$'\t' read -r artifact_id mapped_email map_sha <<<"$mapping"
+    IFS=$'\t' read -r observed_uuid observed_email <<<"$observed"
+    IFS=$'\t' read -r display_uuid display_email <<<"$display"
+    if [[ "$observed_uuid" != "$display_uuid" || "$observed_email" != "$display_email" || "$observed_email" != "$mapped_email" ]]; then
+      AUDIT_SUMMARY="mismatch"
+      fail_code 86 "token, display identity, and canonical mapping do not agree for '$name' — refusing bootstrap"
+    fi
+    write_identity_anchor "$name" "$observed_uuid" "$observed_email" "$artifact_id" || fail "failed to write identity anchor for '$name'"
+    set_anchor_audit_details "null" "$(cat "$anchor_file")" "$artifact_id" "$map_sha" "canonical:$artifact_id"
+    AUDIT_SUMMARY="match"
+  else
+    identity_assert_value "$name" "$cur" >/dev/null || identity_rc=$?
+    case "$identity_rc" in
+      0) AUDIT_SUMMARY="match" ;;
+      86) AUDIT_SUMMARY="mismatch"; fail_code 86 "current Keychain identity does not match '$name' anchor — refusing capture" ;;
+      87) AUDIT_SUMMARY="untracked"; fail_code 87 "profile '$name' has no valid identity anchor — refusing capture" ;;
+      *) AUDIT_SUMMARY="unavailable"; fail_code 88 "current Keychain identity probe unavailable — refusing capture" ;;
+    esac
   fi
-  lease_fence_or_fail
   mkdir -p "$dir"
   chmod 700 "$POOL_DIR" "$dir"
   [[ -L "$dir/.credentials.json" ]] && fail "credential file is a symlink — refusing"
   lease_fence_or_fail
-  ( umask 077; printf '%s' "$cur" > "$dir/.credentials.json.tmp" )
+  credential_tmp=$(umask 077; mktemp "$dir/.credentials.json.tmp.XXXXXX") || fail "cannot create credential temp for '$name'"
+  ACTIVE_SECRET_TEMP="$credential_tmp"
+  printf '%s' "$cur" > "$credential_tmp"
   lease_fence_or_fail
-  mv "$dir/.credentials.json.tmp" "$dir/.credentials.json"
+  mv "$credential_tmp" "$dir/.credentials.json"
+  ACTIVE_SECRET_TEMP=""
   chmod 600 "$dir/.credentials.json"
   echo "Captured current Keychain credential into pool profile '$name'"
   # FLY-865: snapshot the account's DISPLAY identity beside the token (or clear a
@@ -1464,14 +2023,41 @@ reconcile_journal_command() {
 # accounts lock or the shared ~/.claude.json.lock. Both releases no-op when
 # their *_HELD flag is 0, so this is safe in delegated mode (parent owns the
 # accounts lock; child never touches it).
-trap cleanup_locks EXIT
+trap finalize EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 case "${1:-}" in
   list)    list_profiles ;;
   status)  show_status ;;
-  use)     [[ -n "${2:-}" ]] || usage; use_profile "$2" ;;
-  next)    next_profile ;;
-  capture) [[ -n "${2:-}" ]] || usage; capture_profile "$2" ;;
+  use)
+    [[ -n "${2:-}" ]] || usage
+    begin_audit use "$2" identity_check_pending
+    use_profile "$2"
+    ;;
+  next)
+    begin_audit next "" identity_check_pending
+    next_profile
+    ;;
+  capture)
+    [[ -n "${2:-}" ]] || usage
+    begin_audit capture "$2" identity_check_pending
+    capture_profile "$2"
+    ;;
+  anchor)
+    [[ -n "${2:-}" && -n "${3:-}" ]] || usage
+    evidence="$IDENTITY_MAP_FILE"
+    if [[ -n "${4:-}" ]]; then
+      [[ "${4:-}" == "--evidence" && -n "${5:-}" && -z "${6:-}" ]] || usage
+      evidence="$5"
+    fi
+    begin_audit anchor "$2" "${3#--}_pending"
+    anchor_profile "$2" "$3" "$evidence"
+    ;;
+  verify)
+    [[ -n "${2:-}" && "${3:-}" == "--source" && -n "${4:-}" && -z "${5:-}" ]] || usage
+    verify_profile "$2" "$4"
+    ;;
   reconcile-journal) reconcile_journal_command ;;
   *)       usage ;;
 esac

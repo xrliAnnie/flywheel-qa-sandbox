@@ -205,6 +205,8 @@ write_default_config() {
     acceleratedPollMinutes:10,
     candidateSweepMinutes:60,
     minSwitchIntervalMinutes:15,
+    paneScanSeconds:60,
+    confirmDelayMinutes:7,
     order:$order,
     writeStatuslineCache:true,
     degradedSwitch:false,
@@ -236,6 +238,8 @@ if ! jq -e '
   (.acceleratedPollMinutes <= .basePollMinutes) and
   (.candidateSweepMinutes | type == "number" and . > 0 and . <= 10080) and
   (.minSwitchIntervalMinutes | type == "number" and . > 0 and . <= 1440) and
+  ((.paneScanSeconds // 60) | type == "number" and . >= 1 and . <= 3600) and
+  ((.confirmDelayMinutes // 7) | type == "number" and . >= 5 and . <= 10) and
   (.writeStatuslineCache | type == "boolean") and
   ((.degradedSwitch // false) | type == "boolean") and
   ((.episodeRealertMinutes // 30) | type == "number" and . >= 5 and . <= 1440) and

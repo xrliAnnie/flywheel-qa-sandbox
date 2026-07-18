@@ -26,11 +26,14 @@ import {
 	applyObservation,
 	earliestReset,
 	emptyStore,
+	inspectModelSetBench,
 	isAuthUnusable,
+	isModelSetUsable,
 	isQuotaUsable,
 	readStore,
 	recordObservationInStore,
 	selectNextAccount,
+	summarizeModelBenchPool,
 	syncActiveAccountInStore,
 	writeStore,
 } from "../account-heal/account-store.js";
@@ -318,6 +321,119 @@ describe("selectNextAccount", () => {
 				NOW.getTime(),
 			),
 		).toBe(false);
+	});
+
+	it("model selection excludes a candidate when any model in the canonical set is still benched", () => {
+		const future = new Date(NOW.getTime() + 60 * 60_000).toISOString();
+		const s = store(
+			[
+				acct("personal"),
+				acct("school", {
+					modelCaps: {
+						"Fable 5": { until: future, backoffMs: 30 * 60_000 },
+					},
+				}),
+				acct("business", {
+					modelCaps: {
+						"Sonnet 5": { until: future, backoffMs: 30 * 60_000 },
+					},
+				}),
+				acct("shopping"),
+			],
+			"personal",
+		);
+		expect(
+			selectNextAccount(s, {
+				scope: "model",
+				models: ["Fable 5", "Sonnet 5"],
+				currentName: "personal",
+				now: NOW,
+				preferredOrder: ["school", "business", "shopping"],
+			}),
+		).toBe("shopping");
+	});
+
+	it("validates the whole modelCaps object and fails closed on malformed state while missing state remains compatible", () => {
+		expect(isModelSetUsable(acct("school"), ["Fable 5"], NOW.getTime())).toBe(
+			true,
+		);
+		const malformed = acct("school", {
+			modelCaps: {
+				"Fable 5": { until: "not-a-date", backoffMs: 30 * 60_000 },
+			},
+		});
+		expect(inspectModelSetBench(malformed, ["Fable 5"], NOW.getTime())).toEqual(
+			expect.objectContaining({ state: "malformed" }),
+		);
+		expect(isModelSetUsable(malformed, ["Fable 5"], NOW.getTime())).toBe(false);
+
+		const unrelatedCorruption = acct("business", {
+			modelCaps: {
+				"Fable 5": {
+					until: new Date(NOW.getTime() - 1).toISOString(),
+					backoffMs: 30 * 60_000,
+				},
+				Broken: { until: "never", backoffMs: -1 },
+			},
+		});
+		expect(
+			inspectModelSetBench(unrelatedCorruption, ["Fable 5"], NOW.getTime()),
+		).toMatchObject({ state: "malformed" });
+	});
+
+	it("computes pool retry as max per account then min across accounts", () => {
+		const at = (minutes: number) =>
+			new Date(NOW.getTime() + minutes * 60_000).toISOString();
+		const accounts = [
+			acct("school", {
+				modelCaps: {
+					"Fable 5": { until: at(30), backoffMs: 30 * 60_000 },
+					"Sonnet 5": { until: at(60), backoffMs: 60 * 60_000 },
+				},
+			}),
+			acct("business", {
+				modelCaps: {
+					"Fable 5": { until: at(45), backoffMs: 45 * 60_000 },
+					"Sonnet 5": { until: at(40), backoffMs: 40 * 60_000 },
+				},
+			}),
+		];
+
+		expect(
+			summarizeModelBenchPool(accounts, ["Fable 5", "Sonnet 5"], NOW.getTime()),
+		).toEqual({
+			eligibleAccounts: [],
+			nextRetryAt: at(45),
+			hasUnknown: false,
+		});
+	});
+
+	it("keeps malformed benches at infinity without hiding another account's finite retry", () => {
+		const finite = new Date(NOW.getTime() + 45 * 60_000).toISOString();
+		const malformed = acct("school", {
+			modelCaps: {
+				"Fable 5": { until: "unknown", backoffMs: 30 * 60_000 },
+			},
+		});
+		const valid = acct("business", {
+			modelCaps: {
+				"Fable 5": { until: finite, backoffMs: 45 * 60_000 },
+			},
+		});
+		expect(
+			summarizeModelBenchPool([malformed, valid], ["Fable 5"], NOW.getTime()),
+		).toEqual({
+			eligibleAccounts: [],
+			nextRetryAt: finite,
+			hasUnknown: true,
+		});
+		expect(
+			summarizeModelBenchPool([malformed], ["Fable 5"], NOW.getTime()),
+		).toEqual({
+			eligibleAccounts: [],
+			nextRetryAt: null,
+			hasUnknown: true,
+		});
 	});
 });
 

@@ -50,12 +50,12 @@ function seed(store: AccountStore): void {
 function deps(over: Partial<SwitchDeps> = {}): SwitchDeps {
 	return {
 		storePath,
+		applyProfile: vi.fn(async () => ({ identitySynced: true })),
 		withLock: async (lockPath, fn) => ({
 			kind: "ok",
 			value: await fn({ ...lease, lockPath }),
 		}),
 		renewLock: vi.fn(() => true),
-		applyProfile: vi.fn(async () => {}),
 		readActiveProfile: async () => readStore(storePath).activeAccount,
 		validateLease: vi.fn(() => true),
 		...over,
@@ -71,6 +71,95 @@ const input = {
 };
 
 describe("switchAccount", () => {
+	it("model trigger canonicalizes the set, benches every model independently in one commit, and leaves account quota fields untouched", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{
+					name: "personal",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: null,
+					modelCaps: {
+						"Sonnet 5": {
+							until: new Date(NOW.getTime() - 5 * 60_000).toISOString(),
+							backoffMs: 30 * 60_000,
+						},
+					},
+				},
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+		});
+
+		const result = await switchAccount(
+			{
+				scope: "model",
+				models: [" Sonnet   5 ", "Fable 5", "Sonnet 5"],
+				observedAccount: "personal",
+				observedGeneration: 1,
+				now: NOW,
+			},
+			deps(),
+		);
+
+		expect(result).toMatchObject({
+			outcome: "switched",
+			from: "personal",
+			to: "school",
+			benchUntilByModel: {
+				"Fable 5": new Date(NOW.getTime() + 30 * 60_000).toISOString(),
+				"Sonnet 5": new Date(NOW.getTime() + 60 * 60_000).toISOString(),
+			},
+		});
+		const personal = readStore(storePath).accounts.find(
+			(account) => account.name === "personal",
+		);
+		expect(personal).toMatchObject({
+			quotaExhaustedUntil: null,
+			weeklyResetAt: null,
+			modelCaps: {
+				"Fable 5": {
+					until: new Date(NOW.getTime() + 30 * 60_000).toISOString(),
+					backoffMs: 30 * 60_000,
+				},
+				"Sonnet 5": {
+					until: new Date(NOW.getTime() + 60 * 60_000).toISOString(),
+					backoffMs: 60 * 60_000,
+				},
+			},
+		});
+	});
+
+	it("rejects an empty model trigger before selecting or writing a profile", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+		});
+		const d = deps();
+
+		const result = await switchAccount(
+			{
+				scope: "model",
+				models: [] as unknown as [string, ...string[]],
+				observedAccount: "personal",
+				observedGeneration: 1,
+				now: NOW,
+			},
+			d,
+		);
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "invalid_model_trigger",
+		});
+		expect(d.applyProfile).not.toHaveBeenCalled();
+		expect(readStore(storePath).generation).toBe(1);
+	});
+
 	it("happy path: applies next profile, marks old exhausted, bumps generation", async () => {
 		seed({
 			generation: 1,
@@ -231,6 +320,67 @@ describe("switchAccount", () => {
 		expect(d.applyProfile).not.toHaveBeenCalled();
 	});
 
+	it("fails closed before selection or apply when the shared machine authority conflicts", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+		});
+		const d = deps({
+			resolveMachineAccount: () => ({
+				kind: "conflict" as const,
+				activeMarker: "school",
+				identityAccount: "personal",
+				ledgerAccount: "personal",
+			}),
+		});
+
+		await expect(switchAccount(input, d)).resolves.toMatchObject({
+			outcome: "failed",
+			reasonCode: "machine_account_conflict",
+		});
+		expect(d.applyProfile).not.toHaveBeenCalled();
+		expect(readStore(storePath).generation).toBe(1);
+	});
+
+	it.each([
+		[false, true, false],
+		[true, false, true],
+	] as const)(
+		"records identity-sync fact after a committed switch (before=%s synced=%s stale=%s)",
+		async (before, identitySynced, expectedStale) => {
+			seed({
+				generation: 1,
+				activeAccount: "personal",
+				identityStale: before,
+				accounts: [
+					{
+						name: "personal",
+						quotaExhaustedUntil: null,
+						weeklyResetAt: null,
+					},
+					{
+						name: "school",
+						quotaExhaustedUntil: null,
+						weeklyResetAt: null,
+					},
+				],
+			});
+			const result = await switchAccount(
+				input,
+				deps({
+					applyProfile: async () => ({ identitySynced }),
+				}),
+			);
+
+			expect(result.outcome).toBe("switched");
+			expect(readStore(storePath).identityStale).toBe(expectedStale);
+		},
+	);
+
 	// ─────────────────────────────────────────────────────────────────────────
 	// FLY-871 R1/C3 — freshness candidate loop. `applyProfile` (the bash `use`)
 	// now verifies the target's pooled token is fresh BEFORE the Keychain write.
@@ -256,6 +406,7 @@ describe("switchAccount", () => {
 		// selectNextAccount is deterministic alphabetical for 5h: business first.
 		const applyProfile = vi.fn(async (name: string) => {
 			if (name === "business") throw new TargetStaleError("business");
+			return { identitySynced: true };
 		});
 		const res = await switchAccount(input, deps({ applyProfile }));
 		expect(res).toMatchObject({ outcome: "switched", to: "school" });
@@ -284,6 +435,7 @@ describe("switchAccount", () => {
 			if (name === "school") throw new TargetStaleError("school");
 			// "personal" is currentName (excluded); with only 3 accounts and 2
 			// stale, no candidate remains → no_account. Add a 4th usable account.
+			return { identitySynced: true };
 		});
 		// add a 4th account so a third distinct candidate exists
 		const s = threeAccountStore();
@@ -538,7 +690,7 @@ describe("switchAccount", () => {
 
 	it("preferredOrder is passed through on every candidate selection and excludes unverified accounts", async () => {
 		seed(threeAccountStore());
-		const applyProfile = vi.fn(async () => {});
+		const applyProfile = vi.fn(async () => ({ identitySynced: true }));
 		const res = await switchAccount(
 			{ ...input, preferredOrder: ["school"] },
 			deps({ applyProfile }),
@@ -558,6 +710,7 @@ describe("switchAccount", () => {
 		seed(s);
 		const applyProfile = vi.fn(async (name: string) => {
 			if (name === "school") throw new TargetStaleError(name);
+			return { identitySynced: true };
 		});
 		const res = await switchAccount(
 			{ ...input, preferredOrder: ["school", "shopping"] },

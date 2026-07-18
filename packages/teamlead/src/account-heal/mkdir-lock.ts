@@ -37,6 +37,8 @@ export interface MkdirLockOpts {
 	retryMs?: number;
 	/** Age fallback for an empty or malformed/no-PID marker (default 120s). */
 	staleMs?: number;
+	/** Keep the lock directory empty for legacy shell peers that release with rmdir(1). */
+	bare?: boolean;
 	now?: () => number;
 	sleep?: (ms: number) => Promise<void>;
 	/** Deterministic concurrency seam used by adversarial lock tests. */
@@ -310,9 +312,13 @@ export async function withMkdirLock<T>(
 	const now = opts.now ?? Date.now;
 	const sleep = opts.sleep ?? defaultSleep;
 	const readStart = opts.readProcessStartTime ?? processStartTime;
+	const bare = opts.bare ?? false;
 
 	const deadline = now() + timeoutMs;
-	let owned: { markerPath: string; token: string; dev: number; ino: number };
+	let owned:
+		| { markerPath: string; token: string; dev: number; ino: number }
+		| undefined;
+	let bareOwned: { dev: number; ino: number } | undefined;
 	for (;;) {
 		try {
 			mkdirSync(lockPath);
@@ -333,6 +339,11 @@ export async function withMkdirLock<T>(
 			}
 			await sleep(retryMs);
 			continue;
+		}
+		if (bare) {
+			const dirStat = statSync(lockPath);
+			bareOwned = { dev: dirStat.dev, ino: dirStat.ino };
+			break;
 		}
 
 		const token = randomBytes(12).toString("hex");
@@ -387,23 +398,43 @@ export async function withMkdirLock<T>(
 		}
 	}
 
+	let value: T | undefined;
+	let criticalError: unknown;
 	try {
-		return await fn();
-	} finally {
-		opts.beforeRelease?.();
-		const current = ownedMarkers.get(lockPath);
-		if (current === owned) {
-			removeSnapshot(lockPath, {
-				kind: "holder",
-				holder: {
-					markerPath: owned.markerPath,
-					pid: process.pid,
-					token: owned.token,
-					dev: owned.dev,
-					ino: owned.ino,
-				},
-			});
-			ownedMarkers.delete(lockPath);
-		}
+		value = await fn();
+	} catch (error) {
+		criticalError = error;
 	}
+	try {
+		opts.beforeRelease?.();
+		if (bareOwned !== undefined) {
+			if (!sameInode(lockPath, bareOwned.dev, bareOwned.ino)) {
+				throw new Error(
+					`withMkdirLock: refusing to release replaced bare lock ${lockPath}`,
+				);
+			}
+			rmdirSync(lockPath);
+		} else {
+			const current = ownedMarkers.get(lockPath);
+			if (owned !== undefined && current === owned) {
+				removeSnapshot(lockPath, {
+					kind: "holder",
+					holder: {
+						markerPath: owned.markerPath,
+						pid: process.pid,
+						token: owned.token,
+						dev: owned.dev,
+						ino: owned.ino,
+					},
+				});
+				ownedMarkers.delete(lockPath);
+			}
+		}
+	} catch (releaseError) {
+		// A release failure is actionable only when it is the sole failure. Never
+		// mask the critical section's original exception with cleanup fallout.
+		if (criticalError === undefined) throw releaseError;
+	}
+	if (criticalError !== undefined) throw criticalError;
+	return value as T;
 }

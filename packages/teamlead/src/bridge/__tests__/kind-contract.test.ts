@@ -16,6 +16,7 @@ import {
 	ALERT_EVENT_TYPES,
 	INFORMATIONAL_KINDS,
 } from "../../LeadAlertNotifier.js";
+import { QUOTA_MONITOR_MANUAL_TICKET_KINDS } from "../AlertChannelHub.js";
 import {
 	escalatesAtEnqueue,
 	KIND_CONTRACTS,
@@ -39,6 +40,13 @@ const FLEET_KINDS = [
 
 const QUOTA_MONITOR_KINDS = [
 	"account_switched",
+	"machine_account_conflict",
+	"model_cap_switched",
+	"model_cap_unknown",
+	"model_cap_persistent_unknown",
+	"model_bench_malformed",
+	"quota_choice",
+	"quota_switch_confirmation",
 	"account_switch_degraded",
 	"quota_no_target",
 	"quota_blocked_recovered",
@@ -49,6 +57,13 @@ const QUOTA_MONITOR_KINDS = [
 	"quota_monitor_down",
 ] as const;
 
+const QUOTA_INFORMATIONAL_KINDS = new Set([
+	"account_switched",
+	"model_cap_switched",
+	"model_cap_unknown",
+	"quota_switch_confirmation",
+	"quota_blocked_recovered",
+]);
 const QUOTA_GUARD_KINDS = ["quota_guard_bypassed"] as const;
 
 const REVIEW_GOVERNANCE_KINDS = [
@@ -107,13 +122,20 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		});
 	});
 
-	it("FLY-1256 quota-monitor kinds have the exact approved no-ARC contracts", () => {
+	it("FLY-1182 quota-monitor kinds have explicit no-ARC contracts and quota choice stays human-owned", () => {
 		for (const kind of QUOTA_MONITOR_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);
-			expect(KIND_CONTRACTS[kind]).toEqual({
-				owner: "claude",
-				arc: "human_by_design",
-			});
+			if (kind === "quota_choice") {
+				expect(KIND_CONTRACTS[kind]).toEqual({
+					owner: "founder_direct",
+					arc: "human_by_design",
+				});
+			} else {
+				expect(KIND_CONTRACTS[kind]).toEqual({
+					owner: "claude",
+					arc: "human_by_design",
+				});
+			}
 		}
 	});
 
@@ -138,9 +160,17 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		}
 	});
 
-	it("FLY-1252 marks successful switch and blocked recovery informational", () => {
-		expect(INFORMATIONAL_KINDS).toEqual(
-			new Set(["account_switched", "quota_blocked_recovered"]),
+	it("FLY-1182 keeps only successful/transient/confirmation quota notices informational", () => {
+		expect(INFORMATIONAL_KINDS).toEqual(QUOTA_INFORMATIONAL_KINDS);
+	});
+
+	it("FLY-1182 explicitly classifies every actionable quota kind as a manual daemon-state ticket", () => {
+		expect(QUOTA_MONITOR_MANUAL_TICKET_KINDS).toEqual(
+			new Set(
+				QUOTA_MONITOR_KINDS.filter(
+					(kind) => !QUOTA_INFORMATIONAL_KINDS.has(kind),
+				),
+			),
 		);
 	});
 
@@ -304,7 +334,7 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 		}
 	});
 
-	it("the shell leg can emit all PR-A quota-monitor kinds", () => {
+	it("the shell leg can emit every quota-monitor kind", () => {
 		const allow = shellAllowlist();
 		for (const kind of QUOTA_MONITOR_KINDS) {
 			expect(allow.has(kind), `shell allowlist missing "${kind}"`).toBe(true);

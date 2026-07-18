@@ -3,6 +3,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -16,6 +17,7 @@ import {
 	installWakeCapability,
 	resolveOwnProcessStartTime,
 	runQuotaMonitorLoop,
+	writeCompletedTickMarker,
 } from "../account-heal/quota-monitor-cli.js";
 import { DEFAULT_QUOTA_MONITOR_CONFIG } from "../account-heal/quota-monitor-config.js";
 import { emptyQuotaMonitorState } from "../account-heal/quota-monitor-state.js";
@@ -171,6 +173,27 @@ describe("atomic singleton pidfile", () => {
 });
 
 describe("daemon scheduler", () => {
+	it("publishes an owner-only marker only after a tick has completed", () => {
+		const marker = join(dir, "quota.health.json");
+		writeCompletedTickMarker(marker, {
+			version: 1,
+			pid: 123,
+			processStartTime: "start-123",
+			runtimeTreeSha256: "a".repeat(64),
+			completedAt: 456,
+			outcome: "observed",
+		});
+		expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual({
+			version: 1,
+			pid: 123,
+			processStartTime: "start-123",
+			runtimeTreeSha256: "a".repeat(64),
+			completedAt: 456,
+			outcome: "observed",
+		});
+		expect(statSync(marker).mode & 0o777).toBe(0o600);
+	});
+
 	it("publishes wake capability only inside the installed SIGUSR1 handler lifetime", () => {
 		const events: string[] = [];
 		const release = installWakeCapability({
@@ -220,26 +243,32 @@ describe("daemon scheduler", () => {
 		expect(existsSync(marker)).toBe(false);
 	});
 
-	it("respects the larger of the current tier interval and persisted backoff", () => {
+	it("wakes at the earliest independent usage, pane-scan, or confirmation deadline", () => {
 		const now = 1_000_000;
-		expect(
-			computeNextDelay(
-				{ ...emptyQuotaMonitorState(), tier: "base" },
-				DEFAULT_QUOTA_MONITOR_CONFIG,
-				now,
-			),
-		).toBe(20 * 60_000);
 		expect(
 			computeNextDelay(
 				{
 					...emptyQuotaMonitorState(),
-					tier: "accelerated",
+					nextUsageDueAt: now + 20 * 60_000,
+					nextPaneScanDueAt: now + 60_000,
+				},
+				DEFAULT_QUOTA_MONITOR_CONFIG,
+				now,
+			),
+		).toBe(60_000);
+		expect(
+			computeNextDelay(
+				{
+					...emptyQuotaMonitorState(),
+					nextUsageDueAt: now + 15 * 60_000,
+					nextPaneScanDueAt: now + 60_000,
+					confirmDueAt: now + 30_000,
 					backoffUntilMs: now + 15 * 60_000,
 				},
 				DEFAULT_QUOTA_MONITOR_CONFIG,
 				now,
 			),
-		).toBe(15 * 60_000);
+		).toBe(30_000);
 	});
 
 	it("re-loads config/state for every tick and stops without scheduling another tick", async () => {
@@ -259,7 +288,11 @@ describe("daemon scheduler", () => {
 			poll: async () => {
 				polls.push(polls.length + 1);
 				if (polls.length === 2) stop = true;
-				return emptyQuotaMonitorState();
+				return {
+					...emptyQuotaMonitorState(),
+					nextUsageDueAt: 20 * 60_000,
+					nextPaneScanDueAt: 60_000,
+				};
 			},
 			now: () => 0,
 			wait: vi.fn(async (delay: number) => {
@@ -268,6 +301,6 @@ describe("daemon scheduler", () => {
 		});
 		expect(loads).toEqual([1, 2]);
 		expect(polls).toEqual([1, 2]);
-		expect(delays).toEqual([20 * 60_000]);
+		expect(delays).toEqual([60_000]);
 	});
 });

@@ -1,0 +1,63 @@
+=== FLY-1182 track C — autonomous model-cap absorption ===
+
+S1  the 2026-07-11 pane is now recognised (it used to be invisible)
+  ✅ cap detected (was: null → silence → 4 runners wedged)
+  ✅ scope = model
+  ✅ model = Fable 5
+  ✅ observedAccount = business
+  ✅ resetAt is a BOUNDED ttl from now — NOT the 5h gauge reset (23:09)
+
+S2  autonomous chain: detect → enqueue → switch (no human)
+  ✅ canAttempt = true (an available target exists)
+  ✅ enqueued a durable pending record
+  ✅ the founder-facing ack names the MODEL, not a time window
+  ✅ pending carries the model dimension
+  ✅ switch executed
+  ✅ the Keychain write really fired once
+  ✅ switched away from the capped account
+  ✅ generation bumped (CAS token)
+
+S3  only the CAPPED MODEL is benched — not the whole account
+  ✅ business.modelCaps['Fable 5'] recorded
+  ✅ business.quotaExhaustedUntil UNTOUCHED (its Opus/Sonnet stay usable)
+  ✅ the bench is FINITE (never disables an account forever)
+
+S4  the target is picked because THAT model is free
+  ✅ skipped personal (its Fable is benched) → picked school
+
+S5  an ACCOUNT-level 100% gauge still dominates (byte-compat)
+  ✅ scope = 5h (not model)
+  ✅ no model dimension on an account cap
+
+S6  transient 529 → still silent (never a switch)
+  ✅ 529 pane → null (no cap, no enqueue, no switch)
+
+S7  ledger stale after an out-of-band login → reconciled, not dropped
+  ✅ observedAccount = personal (machine truth), NOT the stale ledger's business
+  ✅ the switch actually FIRES (CAS agrees) — the cap is not silently dropped
+
+S8  a still-model-capped runner is NOT mistaken for recovered
+  ✅ the wedged runner's pane reads CAPPED (it used to read 'clear' → resolved + abandoned)
+  ✅ a recovered pane still reads clear (no false 'still capped' → no rescue loop)
+  ✅ a transient 529 still reads unknown (fail-closed, never a blind close)
+
+S9  the revive DECISION on the incident pane: still-capped → close+dispatch is invoked
+  ✅ the live re-check says STILL CAPPED (it used to say 'recovered')
+  ✅ close+dispatch was invoked exactly once, with the quota_stuck reason (the seam itself is stubbed — see the header)
+  ✅ the rescue reports ok and targets the right execution (a REAL successor process is NOT proven here — stubbed seam)
+
+S10 fail-safe: a HEALTHY session with a stale cap line in scrollback is NOT killed
+  ✅ a stale cap line does NOT make a healthy runner look capped
+  ✅ the healthy session is NEVER closed (zero terminate/close)
+
+S11 cannot tell (pane capture failed) → refuse + escalate, never close
+  ✅ refused (did not guess) — ok:false with a stated reason
+  ✅ nothing was closed
+  ✅ it escalated rather than silently dropping
+
+E   production state untouched
+  ✅ untouched: ~/.flywheel/claude-accounts.json
+  ✅ untouched: ~/.flywheel/claude-profiles/.active
+  ✅ untouched: ~/.claude.json oauthAccount (the account block — the file's other fields churn under any live claude session)
+
+=== 36 passed, 0 failed ===

@@ -6,6 +6,10 @@ import type {
 	QuotaMonitorAlert,
 	QuotaMonitorAlertKind,
 } from "./quota-monitor.js";
+import type {
+	DurableAlertIntent,
+	QuotaMonitorState,
+} from "./quota-monitor-state.js";
 
 const execFileAsync = promisify(nodeExecFile);
 
@@ -43,6 +47,13 @@ type RoutingPolicy = { mention: boolean; severe: boolean };
 const ROUTING = {
 	account_switched: { mention: true, severe: false },
 	account_switch_degraded: { mention: true, severe: true },
+	machine_account_conflict: { mention: true, severe: true },
+	model_cap_switched: { mention: true, severe: false },
+	model_cap_unknown: { mention: false, severe: false },
+	model_cap_persistent_unknown: { mention: true, severe: true },
+	model_bench_malformed: { mention: true, severe: true },
+	quota_choice: { mention: true, severe: true },
+	quota_switch_confirmation: { mention: false, severe: false },
 	quota_no_target: { mention: true, severe: true },
 	account_identity_mismatch: { mention: true, severe: true },
 	quota_blocked_recovered: { mention: false, severe: false },
@@ -99,7 +110,7 @@ async function attemptDelivery(
 }
 
 function alertArgs(
-	alert: QuotaMonitorAlert,
+	alert: QuotaMonitorAlert | DurableAlertIntent["alert"],
 	project: string,
 	mentionUser?: string,
 	signature = alert.signature,
@@ -126,7 +137,7 @@ function alertArgs(
 }
 
 export async function sendQuotaMonitorAlert(
-	alert: QuotaMonitorAlert,
+	alert: QuotaMonitorAlert | DurableAlertIntent["alert"],
 	opts: QuotaMonitorAlertOptions = {},
 ): Promise<DeliveryReport> {
 	const exec = opts.execFile ?? (execFileAsync as ExecFileFn);
@@ -138,7 +149,10 @@ export async function sendQuotaMonitorAlert(
 			alert.body,
 		)
 			? { mention: true, severe: true }
-			: ROUTING[alert.kind];
+			: ((ROUTING as Record<string, RoutingPolicy>)[alert.kind] ?? {
+					mention: true,
+					severe: true,
+				});
 	const mentionUser = policy.mention
 		? process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER
 		: undefined;
@@ -161,4 +175,31 @@ export async function sendQuotaMonitorAlert(
 		{ ...process.env, FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: severeChannel },
 	);
 	return { primary, secondary };
+}
+
+export async function drainQuotaMonitorAlertOutbox(
+	inputState: QuotaMonitorState,
+	deps: {
+		send: (alert: DurableAlertIntent["alert"]) => Promise<StrictDeliveryResult>;
+		persistState: (state: QuotaMonitorState) => Promise<void>;
+	},
+): Promise<{
+	state: QuotaMonitorState;
+	result: "empty" | "sent" | "queued" | "unconfirmed";
+}> {
+	const pending = inputState.alertOutbox[0];
+	if (pending === undefined) return { state: inputState, result: "empty" };
+	const delivery = await deps.send(pending.alert);
+	if (delivery !== "sent" && delivery !== "queued_transient") {
+		return { state: inputState, result: "unconfirmed" };
+	}
+	const state = structuredClone(inputState);
+	state.alertOutbox = state.alertOutbox.filter(
+		(item) => item.eventId !== pending.eventId,
+	);
+	await deps.persistState(state);
+	return {
+		state,
+		result: delivery === "sent" ? "sent" : "queued",
+	};
 }

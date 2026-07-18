@@ -59,6 +59,54 @@ describe("withMkdirLock", () => {
 		expect(existsSync(lock)).toBe(false);
 	});
 
+	it("bare mode stays byte-compatible with shell mkdir/rmdir lock holders", async () => {
+		await withMkdirLock(
+			lock,
+			async () => {
+				expect(readdirSync(lock)).toEqual([]);
+			},
+			{ bare: true },
+		);
+		expect(existsSync(lock)).toBe(false);
+	});
+
+	it("bare release never masks the critical section's original failure", async () => {
+		await expect(
+			withMkdirLock(
+				lock,
+				async () => {
+					writeFileSync(join(lock, "unexpected-child"), "left behind");
+					throw new Error("critical section failed");
+				},
+				{ bare: true },
+			),
+		).rejects.toThrow("critical section failed");
+	});
+
+	it("bare mode backs off and times out on a stale legacy non-empty lock", async () => {
+		mkdirSync(lock);
+		writeFileSync(
+			join(lock, "holder"),
+			JSON.stringify({ pid: process.pid, at: 0 }),
+		);
+		let clock = 10;
+		let sleeps = 0;
+		await expect(
+			withMkdirLock(lock, async () => "never", {
+				bare: true,
+				staleMs: 1,
+				timeoutMs: 2,
+				retryMs: 1,
+				now: () => clock,
+				sleep: async (ms) => {
+					sleeps++;
+					clock += ms;
+				},
+			}),
+		).rejects.toThrow(/timeout/);
+		expect(sleeps).toBeGreaterThan(0);
+	});
+
 	it("times out when the lock is held by a live holder", async () => {
 		// Simulate a live holder: create the lock dir + a fresh marker for THIS pid.
 		mkdirSync(lock);

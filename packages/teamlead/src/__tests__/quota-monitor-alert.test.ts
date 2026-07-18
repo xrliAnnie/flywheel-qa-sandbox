@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type DeliveryReport,
+	drainQuotaMonitorAlertOutbox,
 	sendQuotaMonitorAlert,
 } from "../account-heal/quota-monitor-alert.js";
+import { emptyQuotaMonitorState } from "../account-heal/quota-monitor-state.js";
 
 const alert = {
 	kind: "quota_monitor_down" as const,
@@ -80,6 +82,46 @@ describe("sendQuotaMonitorAlert", () => {
 			).resolves.toEqual({ primary: delivery });
 		},
 	);
+
+	it("accepts a proven durable queue receipt even though lead-alert exits 2", async () => {
+		await expect(
+			sendQuotaMonitorAlert(alert, {
+				execFile: async () => {
+					throw Object.assign(new Error("exit 2"), {
+						stdout: "queued_transient\n",
+						stderr: "queued",
+					});
+				},
+			}),
+		).resolves.toEqual({ primary: "queued_transient" });
+	});
+
+	it("clears the durable outbox only for sent or durably queued receipts", async () => {
+		const state = emptyQuotaMonitorState(8);
+		state.alertOutbox = [
+			{
+				eventId: "event-1",
+				generation: 8,
+				createdAt: 1,
+				alert,
+			},
+		];
+		const persistState = vi.fn(async () => {});
+
+		const unconfirmed = await drainQuotaMonitorAlertOutbox(state, {
+			send: async () => "duplicate",
+			persistState,
+		});
+		expect(unconfirmed.state.alertOutbox).toHaveLength(1);
+		expect(persistState).not.toHaveBeenCalled();
+
+		const queued = await drainQuotaMonitorAlertOutbox(state, {
+			send: async () => "queued_transient",
+			persistState,
+		});
+		expect(queued.state.alertOutbox).toEqual([]);
+		expect(persistState).toHaveBeenCalledWith(queued.state);
+	});
 
 	it.each([
 		[

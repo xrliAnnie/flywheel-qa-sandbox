@@ -78,6 +78,8 @@ const NO_OWNER_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>([
 	// FLY-1285: choosing between conflicting tmux generations is explicitly a
 	// founder decision; neither infra bot may guess and signal a candidate.
 	"tmux_split_brain",
+	// Paid-model choices are intentionally never delegated to an infra bot.
+	"quota_choice",
 ]);
 
 /**

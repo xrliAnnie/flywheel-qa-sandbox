@@ -1,0 +1,23 @@
+FLY-1182 QA phase — #flywheel-notify 真实送达证据(Tadashi 拍板选项 b)
+日期: 2026-07-16
+
+发送(驱动生产同款代码路径,非裸 curl):
+  P-identity      : resolveInfraNotifyIdentity(env) 满足(真 CLAUDE_INFRA_BOT_TOKEN, len=72)
+  channel         : 1521630422918758472  (= 生产 FLYWHEEL_NOTIFY_CHANNEL)
+  sender          : postDiscordMessageToChannel(..., origin:"automation")
+  send result     : {"ok":true,"messageIds":["1527461745709551616"]}
+
+独立回读(不信 send 的 ok,按 id 从 Discord 拉回来):
+  GET /channels/1521630422918758472/messages/1527461745709551616 -> HTTP 200
+  author          : claw-infra-bot (bot=true)
+  channel_id      : 1521630422918758472  (与预期一致)
+  timestamp       : 2026-07-16T23:47:39.044000+00:00
+  首行            : 🤖[自动] 🧪 [QA 演练 · 非真实切换] FLY-1182 通道验证帖,引擎仍处冻结,未发生任何真实切号
+
+与 Tadashi 指令的一处偏差(如实报,非漏标):
+  他要求「首行必须是『🧪 [QA 演练 · 非真实切换]...』」。实际首行前面多了 `🤖[自动] `,
+  因为生产 sender 的 origin:"automation" 会经 markAutomatedDiscordText 自动前置该标记。
+  标注文案逐字在首行内,标注意图(不误导)成立;这恰恰是生产路径的真实行为 —— 而验证
+  生产路径正是本次演练的目的。故未改代码去迎合措辞。
+
+结论: 真 token + 真 channel + 真送达 + 独立回读确认 = #flywheel-notify 通道 PASS。

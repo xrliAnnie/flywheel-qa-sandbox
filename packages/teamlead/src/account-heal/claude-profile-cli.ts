@@ -24,10 +24,16 @@ import { lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { AccountStore } from "./account-store.js";
 import {
 	reconcileTransitionJournal,
 	withAccountsLock,
 } from "./accounts-lock.js";
+import {
+	defaultClaudeJsonPath,
+	defaultMachinePoolDir,
+	resolveMachineAccount,
+} from "./machine-account.js";
 import { type LeaseProof, renewMkdirLock } from "./mkdir-lock.js";
 import {
 	type ApplyProfileIdentityCheck,
@@ -146,6 +152,8 @@ export interface ClaudeProfileCliDeps {
 	 * Defaults to console.warn.
 	 */
 	onWarn?: (message: string) => void;
+	poolDir?: string;
+	claudeJsonPath?: string;
 }
 
 /** Default script path (override via FLYWHEEL_CLAUDE_PROFILE_BIN). */
@@ -171,11 +179,16 @@ export function makeClaudeProfileSwitchDeps(
 	return {
 		withLock,
 		renewLock: renewMkdirLock,
+		resolveMachineAccount: (store: AccountStore) =>
+			resolveMachineAccount({
+				poolDir: deps.poolDir ?? defaultMachinePoolDir(),
+				claudeJsonPath: deps.claudeJsonPath ?? defaultClaudeJsonPath(),
+				store,
+			}),
 		async applyProfile(
 			name: string,
 			context?: { lease: LeaseProof; signal: AbortSignal },
-			// biome-ignore lint/suspicious/noConfusingVoidType: existing adapters remain valid while reports are additive.
-		): Promise<ApplyProfileReport | void> {
+		): Promise<{ identitySynced: boolean } & ApplyProfileReport> {
 			// FLY-852 (QA-caught self-deadlock): switchAccount calls this INSIDE its
 			// withMkdirLock critical section, and the bash script takes the SAME
 			// lock — the child would wait on its own parent until timeout. Delegate:
@@ -200,6 +213,7 @@ export function makeClaudeProfileSwitchDeps(
 				childEnv.FLYWHEEL_LEASE_PROOF = JSON.stringify(context.lease);
 			}
 			delete childEnv.FLYWHEEL_CLAUDE_FRESHNESS_BYPASS;
+			delete childEnv.FLYWHEEL_PROFILE_IDENTITY_BYPASS;
 			delete childEnv.FLYWHEEL_CLAUDE_QUOTA_BYPASS;
 			delete childEnv.FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED;
 			if (deps.quotaPreverified === true) {
@@ -293,7 +307,10 @@ export function makeClaudeProfileSwitchDeps(
 				.join("\n")
 				.trim();
 			if (warning) onWarn(`[flywheel-claude-profile use ${name}] ${warning}`);
-			return report;
+			return {
+				identitySynced: !/display identity/i.test(warning),
+				identityChecks: report?.identityChecks ?? [],
+			};
 		},
 		async readActiveProfile(): Promise<string | null> {
 			try {

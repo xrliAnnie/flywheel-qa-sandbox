@@ -63,6 +63,17 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		"auto_qa_stuck",
 		"codex_gate_blocked",
 		"bridge_wrapper_fail",
+		// FLY-1182 actionable quota-monitor tickets. Informational quota notices
+		// bypass lifecycle in AlertChannelHub/isInformationalKind.
+		"machine_account_conflict",
+		"model_cap_persistent_unknown",
+		"model_bench_malformed",
+		"quota_choice",
+		"quota_no_target",
+		"quota_read_blind",
+		"account_switch_failed",
+		"quota_revive_stuck",
+		"quota_monitor_down",
 		// FLY-1082: fleet-failure kinds — the responder is an infra bot (owner
 		// per bridge/kind-contract.ts), so they queue as tickets like the rest
 		// of the process-health family.

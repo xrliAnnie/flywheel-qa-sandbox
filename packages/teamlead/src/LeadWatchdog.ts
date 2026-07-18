@@ -1135,6 +1135,20 @@ function titleFor(kind: AlertEventType): string {
 			return "Claude account switched";
 		case "account_switch_degraded":
 			return "Claude account switched with degraded verification";
+		case "machine_account_conflict":
+			return "Claude account identity conflict";
+		case "model_cap_switched":
+			return "Claude model-cap account switched";
+		case "model_cap_unknown":
+			return "Claude model cap temporarily ambiguous";
+		case "model_cap_persistent_unknown":
+			return "Claude model cap persistently ambiguous";
+		case "model_bench_malformed":
+			return "Claude model bench state malformed";
+		case "quota_choice":
+			return "Claude requires a manual model choice";
+		case "quota_switch_confirmation":
+			return "Claude quota switch recovery confirmation";
 		case "quota_no_target":
 			return "No Claude account has quota";
 		case "quota_blocked_recovered":
@@ -1317,6 +1331,20 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "The external quota monitor switched Claude accounts after verifying the target account had fresh quota.";
 		case "account_switch_degraded":
 			return "The external quota monitor switched Claude accounts using the controlled degraded-verification fallback; inspect the supplied panorama evidence.";
+		case "machine_account_conflict":
+			return "The external quota monitor found conflicting active-account witnesses and refused all quota actions.";
+		case "model_cap_switched":
+			return "The external quota monitor switched accounts for a verified model-specific cap and recorded the affected panes.";
+		case "model_cap_unknown":
+			return "A managed Claude pane may show a model cap, but its live state is still ambiguous; no keys were sent.";
+		case "model_cap_persistent_unknown":
+			return "A managed Claude pane remained ambiguous across repeated model-cap scans; no keys were sent and a human should inspect it.";
+		case "model_bench_malformed":
+			return "The external quota monitor found malformed per-model bench state and excluded that account fail-closed.";
+		case "quota_choice":
+			return "Claude is asking for a paid-model choice. The monitor will not choose or send keys; a human must decide.";
+		case "quota_switch_confirmation":
+			return "The external quota monitor rechecked every recorded affected pane after the switch and reported the five-state recovery result.";
 		case "quota_no_target":
 			return "The external quota monitor found no fresh, usable target account under the configured thresholds.";
 		case "quota_blocked_recovered":

@@ -90,6 +90,12 @@ if run_setup default >/dev/null 2>&1; then
   else
     fail "default order" "$order"
   fi
+  if [[ "$(jq -r '.paneScanSeconds' "$ROOT/default/home/.flywheel/quota-monitor.json")" == "60" ]] \
+    && [[ "$(jq -r '.confirmDelayMinutes' "$ROOT/default/home/.flywheel/quota-monitor.json")" == "7" ]]; then
+    pass "default install writes local-loop clock defaults"
+  else
+    fail "default clock knobs" "$(cat "$ROOT/default/home/.flywheel/quota-monitor.json")"
+  fi
   if grep -q '^FLYWHEEL_QUOTA_DAEMON_CUTOVER=1$' "$ROOT/default/home/.flywheel/.env" \
     && head -1 "$ROOT/default/restart.log" | grep -q '^FLYWHEEL_QUOTA_DAEMON_CUTOVER=1$'; then
     pass "health succeeds before CUTOVER is persisted and Bridge restarted"
@@ -104,6 +110,25 @@ if run_setup default >/dev/null 2>&1; then
   fi
 else
   fail "default install" "setup exited non-zero"
+fi
+
+make_fixture legacy_config
+jq -n '{
+  trigger5hPct:90,
+  basePollMinutes:20,
+  acceleratePct:70,
+  acceleratedPollMinutes:10,
+  candidateSweepMinutes:60,
+  minSwitchIntervalMinutes:15,
+  order:["shopping","school","alpha","zeta"],
+  writeStatuslineCache:true
+}' > "$ROOT/legacy_config/home/.flywheel/quota-monitor.json"
+chmod 600 "$ROOT/legacy_config/home/.flywheel/quota-monitor.json"
+if run_setup legacy_config >/dev/null 2>&1 \
+  && [[ "$(jq -r '.order | length' "$ROOT/legacy_config/home/.flywheel/quota-monitor.json")" == "4" ]]; then
+  pass "re-running setup accepts the legacy eight-key production config"
+else
+  fail "legacy config rerun" "setup rejected a previously valid enabled config"
 fi
 
 old_state_json() { # generation

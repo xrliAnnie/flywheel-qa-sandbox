@@ -1,12 +1,23 @@
-import { existsSync, lstatSync, unlinkSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	fsyncSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	renameSync,
+	unlinkSync,
+	writeSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
 	acquireSingletonPidfile,
 	resolveOwnProcessStartTime,
 	type SingletonPidfileDeps,
 } from "./pidfile.js";
+import type { PollOutcome } from "./quota-monitor.js";
 import { sendQuotaMonitorAlert } from "./quota-monitor-alert.js";
 import {
 	loadQuotaMonitorConfig,
@@ -14,6 +25,7 @@ import {
 } from "./quota-monitor-config.js";
 import { makeQuotaMonitorRuntime } from "./quota-monitor-runtime.js";
 import type { QuotaMonitorState } from "./quota-monitor-state.js";
+import { runtimeTreeSha256 } from "./runtime-tree-hash.js";
 
 export type {
 	OwnProcessStartTimeDeps,
@@ -28,16 +40,69 @@ export {
 	safeOwnedRegularFile,
 } from "./pidfile.js";
 
+interface CompletedTickMarker {
+	version: 1;
+	pid: number;
+	processStartTime: string;
+	runtimeTreeSha256: string;
+	completedAt: number;
+	outcome: PollOutcome;
+}
+
+export function writeCompletedTickMarker(
+	path: string,
+	marker: CompletedTickMarker,
+): void {
+	const uid = process.getuid?.() ?? -1;
+	if (uid < 0) throw new Error("health marker owner identity unavailable");
+	if (existsSync(path)) {
+		const existing = lstatSync(path);
+		if (
+			!existing.isFile() ||
+			existing.isSymbolicLink() ||
+			existing.uid !== uid ||
+			!([0o600, 0o400] as number[]).includes(existing.mode & 0o777)
+		) {
+			throw new Error("unsafe existing quota health marker");
+		}
+	}
+	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
+	let fd: number | undefined;
+	try {
+		fd = openSync(tmp, "wx", 0o600);
+		const bytes = Buffer.from(`${JSON.stringify(marker)}\n`);
+		if (writeSync(fd, bytes) !== bytes.length) {
+			throw new Error("short quota health marker write");
+		}
+		fsyncSync(fd);
+		closeSync(fd);
+		fd = undefined;
+		renameSync(tmp, path);
+		const dirFd = openSync(dirname(path), "r");
+		try {
+			fsyncSync(dirFd);
+		} finally {
+			closeSync(dirFd);
+		}
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+		try {
+			unlinkSync(tmp);
+		} catch {
+			// Best effort after rename or a failed temp write.
+		}
+	}
+}
+
 export function computeNextDelay(
 	state: QuotaMonitorState,
-	config: QuotaMonitorConfig,
+	_config: QuotaMonitorConfig,
 	nowMs: number,
 ): number {
-	const interval =
-		(state.tier === "accelerated"
-			? config.acceleratedPollMinutes
-			: config.basePollMinutes) * 60_000;
-	return Math.max(interval, Math.max(0, state.backoffUntilMs - nowMs));
+	const deadlines = [state.nextUsageDueAt, state.nextPaneScanDueAt];
+	if (state.confirmDueAt !== null) deadlines.push(state.confirmDueAt);
+	return Math.max(0, Math.min(...deadlines) - nowMs);
 }
 
 export interface QuotaMonitorLoopOptions {
@@ -110,6 +175,13 @@ function gracefulMarkerPath(): string {
 	);
 }
 
+function completedTickMarkerPath(): string {
+	return (
+		process.env.FLYWHEEL_QUOTA_HEALTH_MARKER ??
+		join(homedir(), ".flywheel", "quota-monitor.health.json")
+	);
+}
+
 function removeOwnRegularFile(path: string): void {
 	if (!existsSync(path)) return;
 	try {
@@ -170,14 +242,29 @@ export function installWakeCapability(deps: WakeCapabilityDeps): () => void {
 
 /** Production daemon entry. Signals interrupt the current timer, never a poll. */
 export async function main(): Promise<void> {
+	const ownStartTime = resolveOwnProcessStartTime();
+	const ownRuntimeTreeSha256 = runtimeTreeSha256(
+		dirname(fileURLToPath(import.meta.url)),
+	);
 	let wakeWaiter: (() => void) | null = null;
-	const wake = () => wakeWaiter?.();
+	let wakeGeneration = 0;
+	const wake = () => {
+		wakeGeneration++;
+		wakeWaiter?.();
+	};
 	const releaseWakeCapability = installWakeCapability({
 		pidfilePath: defaultPidfilePath(),
 		handler: wake,
 	});
 	const runtime = makeQuotaMonitorRuntime({
 		alert: (alert) => sendQuotaMonitorAlert(alert),
+		deliverAlert: async (alert) => {
+			const { primary } = await sendQuotaMonitorAlert(alert);
+			if (primary === "process_error" || primary === "invalid_result") {
+				throw new Error(`quota alert delivery was not accepted: ${primary}`);
+			}
+			return primary;
+		},
 		log: (message) => structuredLog("info", message),
 	});
 	let stopping = false;
@@ -192,8 +279,18 @@ export async function main(): Promise<void> {
 
 	try {
 		while (!stopping) {
+			const wakeBeforeTick = wakeGeneration;
 			const polled = await runtime.tick();
+			writeCompletedTickMarker(completedTickMarkerPath(), {
+				version: 1,
+				pid: process.pid,
+				processStartTime: ownStartTime,
+				runtimeTreeSha256: ownRuntimeTreeSha256,
+				completedAt: Date.now(),
+				outcome: polled.outcome,
+			});
 			if (stopping) break;
+			if (wakeGeneration !== wakeBeforeTick) continue;
 			const config = loadQuotaMonitorConfig().config;
 			const delay = computeNextDelay(polled.state, config, Date.now());
 			await new Promise<void>((resolve) => {

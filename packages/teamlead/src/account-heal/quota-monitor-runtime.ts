@@ -34,6 +34,12 @@ import {
 	type FreshnessVerdict,
 } from "./freshness.js";
 import {
+	defaultClaudeJsonPath,
+	resolveMachineAccount,
+} from "./machine-account.js";
+import { finalizeConfirmationFromSnapshot } from "./quota-confirmation.js";
+import { recoverCommittedModelSwitchIncident } from "./quota-incident.js";
+import {
 	type MonitorCredential,
 	type PollOnceResult,
 	pollOnce,
@@ -43,16 +49,20 @@ import {
 } from "./quota-monitor.js";
 import type { DeliveryReport } from "./quota-monitor-alert.js";
 import {
+	drainQuotaMonitorAlertOutbox,
+	type StrictDeliveryResult,
+} from "./quota-monitor-alert.js";
+import {
 	defaultQuotaMonitorConfigPath,
 	loadQuotaMonitorConfig,
 } from "./quota-monitor-config.js";
 import {
 	listPoolAccounts,
-	readActiveProfileName,
 	readKeychainMonitorCredential,
 	readPoolMonitorCredential,
 } from "./quota-monitor-credentials.js";
 import {
+	type DurableAlertIntent,
 	defaultQuotaMonitorStatePath,
 	loadQuotaMonitorState,
 	writeQuotaMonitorState,
@@ -60,6 +70,7 @@ import {
 import {
 	makeTmuxReviveDeps,
 	reviveScan,
+	scanQuotaPanes,
 	type TmuxReviveOptions,
 } from "./quota-revive-scan.js";
 import {
@@ -81,6 +92,8 @@ export interface QuotaMonitorPaths {
 	storePath: string;
 	cachePath: string;
 	lockPath: string;
+	claudeJsonPath: string;
+	confirmationEvidenceDir: string;
 }
 
 export interface TmuxReviveDeps {
@@ -106,7 +119,10 @@ export interface QuotaMonitorRuntimeOptions {
 	) => Promise<RecordObservationResult>;
 	switchAccount?: (input: SwitchInput) => Promise<SwitchResult>;
 	tmux?: TmuxReviveDeps;
-	alert: (alert: QuotaMonitorAlert) => Promise<DeliveryReport>;
+	alert: (alert: QuotaMonitorAlert) => Promise<void | DeliveryReport>;
+	deliverAlert?: (
+		alert: DurableAlertIntent["alert"],
+	) => Promise<StrictDeliveryResult>;
 	log?: (message: string) => void;
 }
 
@@ -124,6 +140,10 @@ export function defaultQuotaMonitorPaths(): QuotaMonitorPaths {
 			process.env.FLYWHEEL_QUOTA_STATUSLINE_CACHE ??
 			join(homedir(), ".claude", "usage-api-cache.json"),
 		lockPath: process.env.FLYWHEEL_CLAUDE_ACCOUNTS_LOCK ?? defaultLockPath(),
+		claudeJsonPath: defaultClaudeJsonPath(),
+		confirmationEvidenceDir:
+			process.env.FLYWHEEL_QUOTA_CONFIRMATION_DIR ??
+			join(homedir(), ".flywheel", "quota-confirmations"),
 	};
 }
 
@@ -146,11 +166,18 @@ function writeStatuslineCache(raw: ValidatedUsagePayload, path: string): void {
 	renameSync(tmp, path);
 }
 
+function confirmationEvidencePath(dir: string, eventId: string): string {
+	const safeEventId = eventId.replace(/[^A-Za-z0-9._-]+/g, "-");
+	return join(dir, `${safeEventId}.json`);
+}
+
 export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 	tick: () => Promise<PollOnceResult>;
 } {
 	const now = opts.now ?? Date.now;
 	const paths = resolvePaths(opts.paths);
+	const emitAlert = async (alert: QuotaMonitorAlert): Promise<DeliveryReport> =>
+		(await opts.alert(alert)) ?? { primary: "sent" };
 	const runAccountsLock = <T>(fn: () => Promise<T>) =>
 		acquireAccountsLock(paths.lockPath, async () => fn(), {
 			reconcile: (lease) =>
@@ -194,6 +221,8 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 				input,
 				makeClaudeProfileSwitchDeps({
 					binPath: claudeProfileBinPath(),
+					poolDir: paths.poolDir,
+					claudeJsonPath: paths.claudeJsonPath,
 					quotaPreverified: input.quotaPreverified === true,
 				}),
 			));
@@ -202,6 +231,7 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 		makeTmuxReviveDeps({
 			socket: process.env.FLYWHEEL_QUOTA_TMUX_SOCKET ?? "",
 		} satisfies TmuxReviveOptions);
+	const tmuxSocket = process.env.FLYWHEEL_QUOTA_TMUX_SOCKET ?? "default";
 	let projectionFailureStreak = 0;
 	const recordObservation = async (
 		name: string,
@@ -226,7 +256,7 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 			projectionFailureStreak += 1;
 			if (projectionFailureStreak >= 3) {
 				try {
-					await opts.alert({
+					await emitAlert({
 						kind: "quota_monitor_down",
 						severity: "severe",
 						title: "Claude quota store projection is failing",
@@ -246,12 +276,16 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 	return {
 		async tick(): Promise<PollOnceResult> {
 			const config = loadQuotaMonitorConfig(paths.configPath);
-			const initialLock = await runAccountsLock(
-				async () => readStore(paths.storePath).generation,
+			const initialLock = await runAccountsLock(async () =>
+				readStore(paths.storePath),
 			);
-			const storeGeneration =
+			const currentStore =
 				initialLock.kind === "ok"
 					? initialLock.value
+					: readStore(paths.storePath);
+			const storeGeneration =
+				initialLock.kind === "ok"
+					? initialLock.value.generation
 					: initialLock.kind === "reconciled"
 						? initialLock.generation
 						: 0;
@@ -259,19 +293,49 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 				nowMs: now(),
 				storeGeneration,
 			});
+			let state = loadedState.state;
 			if (
 				initialLock.kind !== "blocked" &&
 				(loadedState.recovery === "corrupt" ||
 					loadedState.recovery === "generation_advanced")
 			) {
-				await opts.alert({
+				await emitAlert({
 					kind: "quota_monitor_down",
 					severity: "warning",
 					title: "Claude quota monitor state recovered conservatively",
 					body: `recovery=${loadedState.recovery}; cooldown restarted; revive epoch closed`,
 					signature: `quota-monitor-state-${loadedState.recovery}-${new Date(now()).toISOString().slice(0, 10)}`,
 				});
-				writeQuotaMonitorState(loadedState.state, paths.statePath);
+				writeQuotaMonitorState(state, paths.statePath);
+			} else if (loadedState.recovery === "migrated_v1") {
+				writeQuotaMonitorState(state, paths.statePath);
+			}
+
+			const recovered = recoverCommittedModelSwitchIncident(
+				state,
+				currentStore,
+				{
+					nowMs: now(),
+					confirmDelayMs: config.config.confirmDelayMinutes * 60_000,
+				},
+			);
+			if (recovered.recovered) {
+				state = recovered.state;
+				writeQuotaMonitorState(state, paths.statePath);
+			}
+			if (opts.deliverAlert && state.alertOutbox.length > 0) {
+				try {
+					const drained = await drainQuotaMonitorAlertOutbox(state, {
+						send: opts.deliverAlert,
+						persistState: async (next) =>
+							writeQuotaMonitorState(next, paths.statePath),
+					});
+					state = drained.state;
+				} catch (error) {
+					(opts.log ?? (() => undefined))(
+						`quota alert outbox retained after delivery error: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
 			}
 
 			const lockInterruptionResult = (
@@ -292,7 +356,7 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 			const baseDeps = {
 				now,
 				config,
-				state: loadedState.state,
+				state,
 				reconcileActive: async (): Promise<ReconcileActiveResult> => {
 					if (initialLock.kind !== "ok") {
 						return lockInterruptionResult(initialLock);
@@ -300,10 +364,16 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 					try {
 						const result = await runAccountsLock<ReconcileActiveResult>(
 							async () => {
-								const activeName = readActiveProfileName(paths.poolDir);
-								if (activeName === null) {
+								const store = readStore(paths.storePath);
+								const authority = resolveMachineAccount({
+									poolDir: paths.poolDir,
+									claudeJsonPath: paths.claudeJsonPath,
+									store,
+								});
+								if (authority.kind !== "resolved") {
 									return { result: "invalid_name", generation: null };
 								}
+								const activeName = authority.name;
 								if (readStoreStrict(paths.storePath) === null) {
 									return { result: "invalid_store", generation: null };
 								}
@@ -329,16 +399,33 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 					}
 				},
 				withAccountsLock,
-				readSnapshot: async () => ({
-					activeName: readActiveProfileName(paths.poolDir),
-					store: readStore(paths.storePath),
-					activeCredential: await readKeychain(),
-					poolAccounts: listPoolAccounts(paths.poolDir),
-				}),
-				readIdentity: async () => ({
-					activeName: readActiveProfileName(paths.poolDir),
-					storeGeneration: readStore(paths.storePath).generation,
-				}),
+				readSnapshot: async () => {
+					const store = readStore(paths.storePath);
+					const authority = resolveMachineAccount({
+						poolDir: paths.poolDir,
+						claudeJsonPath: paths.claudeJsonPath,
+						store,
+					});
+					return {
+						activeName: authority.kind === "resolved" ? authority.name : null,
+						authority,
+						store,
+						activeCredential: await readKeychain(),
+						poolAccounts: listPoolAccounts(paths.poolDir),
+					};
+				},
+				readIdentity: async () => {
+					const store = readStore(paths.storePath);
+					const authority = resolveMachineAccount({
+						poolDir: paths.poolDir,
+						claudeJsonPath: paths.claudeJsonPath,
+						store,
+					});
+					return {
+						activeName: authority.kind === "resolved" ? authority.name : null,
+						storeGeneration: store.generation,
+					};
+				},
 				readPoolCredential: async (name) =>
 					readPoolMonitorCredential(paths.poolDir, name),
 				verifyCandidate,
@@ -350,31 +437,71 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 				persistState: async (state) =>
 					writeQuotaMonitorState(state, paths.statePath),
 				switchAccount,
-				reviveScan: async (state) =>
+				scanPanes: async () =>
+					scanQuotaPanes({
+						nowMs: now(),
+						socket: tmuxSocket,
+						qaInjectionEnabled: process.env.FLYWHEEL_QUOTA_QA_INJECTION === "1",
+						listPanes: tmux.listPanes,
+						capturePane: tmux.capturePane,
+					}),
+				reviveSnapshot: async (state, snapshot, actionsAllowed) =>
 					reviveScan({
 						state,
 						nowMs: now(),
-						socket: process.env.FLYWHEEL_QUOTA_TMUX_SOCKET ?? "default",
-						monitorOnly: config.monitorOnly,
+						socket: tmuxSocket,
+						monitorOnly: config.monitorOnly || !actionsAllowed,
+						qaInjectionEnabled: process.env.FLYWHEEL_QUOTA_QA_INJECTION === "1",
 						...tmux,
+						snapshot,
 						persistState: async (next) =>
 							writeQuotaMonitorState(next, paths.statePath),
 						alert: async (alert) => {
-							await opts.alert(alert);
+							await emitAlert(alert);
 						},
 					}),
-				alert: opts.alert,
+				confirmSnapshot: async (state, snapshot) => {
+					const confirmation = state.confirmation;
+					if (confirmation === null) return state;
+					const next = finalizeConfirmationFromSnapshot(state, snapshot, {
+						nowMs: now(),
+						evidencePath: confirmationEvidencePath(
+							paths.confirmationEvidenceDir,
+							confirmation.eventId,
+						),
+					});
+					writeQuotaMonitorState(next, paths.statePath);
+					return next;
+				},
+				alert: emitAlert,
 				log: opts.log ?? (() => undefined),
 			} satisfies QuotaMonitorDeps;
+			let polled: PollOnceResult;
 			try {
-				return await pollOnce(baseDeps);
+				polled = await pollOnce(baseDeps);
 			} catch (error) {
 				if (!(error instanceof AccountLockInterrupted)) throw error;
-				return pollOnce({
+				polled = await pollOnce({
 					...baseDeps,
 					reconcileActive: async () => lockInterruptionResult(error.result),
 				});
 			}
+			state = polled.state;
+			if (opts.deliverAlert && state.alertOutbox.length > 0) {
+				try {
+					const drained = await drainQuotaMonitorAlertOutbox(state, {
+						send: opts.deliverAlert,
+						persistState: async (next) =>
+							writeQuotaMonitorState(next, paths.statePath),
+					});
+					state = drained.state;
+				} catch (error) {
+					(opts.log ?? (() => undefined))(
+						`quota alert outbox retained after delivery error: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+			return { ...polled, state };
 		},
 	};
 }

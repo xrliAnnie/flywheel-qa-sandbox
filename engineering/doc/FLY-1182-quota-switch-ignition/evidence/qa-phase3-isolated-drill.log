@@ -1,0 +1,37 @@
+── isolation guard ──
+✅ isolation guard: every knob points at scratch, not production (incl. #618 quota store + guard bin + transition journal)
+
+── S1: verify + commit (happy path) ──
+✅ S1 commit: rc=0, keychain=bravo credential, .active=bravo
+
+── S2: rollback (verify-before-commit fails) ──
+✅ S2 precondition: a real Keychain write happened (2 '-i' write(s)) and the corrupt-once marker was consumed
+✅ S2 rollback: refused with non-zero exit (rc=1)
+✅ S2 rollback: keychain restored byte-identical to the preimage (login NOT broken)
+✅ S2 rollback: .active unchanged (alpha)
+   · refusal message: rolled back and verified the previous Keychain state; .active unchanged
+
+── S3: argv hygiene (no credential in any security(1) argv) ──
+✅ S3: zero credential markers in 8 logged security argv lines
+✅ S3 positive control: security(1) really ran (8 argv lines, 'find-generic-password' present)
+
+── S4: production untouched ──
+✅ S4: 3 production sentinels byte-identical (quota-monitor.json / claude-accounts.json / pool .active)
+✅ S4: no production transition-journal residue (belt; the clean case is prevented by the scratch injection asserted in the guard)
+
+── S5: ~/.claude.json isolation (proved positively, not by byte-identity) ──
+✅ S5: the identity write landed in the SCRATCH claude.json — FLYWHEEL_CLAUDE_JSON redirect is real
+   · scratch a7be814ba931… → a8f1d857f5fd…
+   · prod    99eaf2b21201… → 4a691e173e28… (drifts on its own; live fleet writes it — NOT a drill signal)
+
+── S6: NEW quota gate (#618) — an EXHAUSTED target is refused, keychain untouched ──
+✅ S6: exhausted target refused with non-zero exit (rc=32)
+✅ S6: keychain + .active unchanged (the exhausted target never landed)
+✅ S6: refusal names the reason (exhausted)
+
+── S7: NEW quota gate (#618) — evidence UNAVAILABLE is fail-closed, keychain untouched ──
+✅ S7: evidence-unavailable refused with non-zero exit (rc=33) — fail-closed
+✅ S7: keychain + .active unchanged
+✅ S7 positive control: a HEALTHY guard (rc=0) DOES allow the switch — the gate is not a blanket block
+
+════════ RESULT: 17 passed, 0 failed ════════

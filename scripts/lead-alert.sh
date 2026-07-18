@@ -117,7 +117,7 @@ MENTION_USER=""
 
 # FLY-1256 mirror of LeadAlertNotifier.INFORMATIONAL_KINDS. These kinds still
 # post a root message, but never render the unified ticket header.
-INFORMATIONAL_KINDS="account_switched quota_blocked_recovered"
+INFORMATIONAL_KINDS="account_switched model_cap_switched model_cap_unknown quota_switch_confirmation quota_blocked_recovered"
 is_informational_kind() {
   case " ${INFORMATIONAL_KINDS} " in
     *" $1 "*) return 0 ;;
@@ -182,7 +182,7 @@ case "$KIND" in
   # on this leg (the wrapper preflight dirty-marker page fires while the Bridge
   # is down); the other four are added for face parity with the TS union
   # (kind-contract.test.ts is the drift guard on both faces).
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_switch_degraded|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift) ;;
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_switch_degraded|machine_account_conflict|model_cap_switched|model_cap_unknown|model_cap_persistent_unknown|model_bench_malformed|quota_choice|quota_switch_confirmation|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"
@@ -208,7 +208,7 @@ if [ -n "$MENTION_USER" ] && ! printf '%s' "$MENTION_USER" | grep -Eq '^[0-9]{17
 fi
 
 # ── Tool preflight ──────────────────────────────────────────
-for tool in jq sqlite3 curl shasum; do
+for tool in jq sqlite3 curl shasum node; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     log "ERROR: required tool '$tool' not found in PATH"
     emit_result "config_error"
@@ -368,11 +368,24 @@ if [ -z "$EVENT_ID" ]; then
   exit 3
 fi
 
-# ── Cross-process claim via claims.db ──────────────────────
-# Single sqlite3 connection + BEGIN IMMEDIATE + SELECT changes() in the
-# same transaction. Fresh sqlite3 invocations would each see changes()=0.
+# ── Cross-process claim + delivery lease via claims.db ───────────────────────
+# alert_claims intentionally remains the shared four-column compatibility
+# table. alert_deliveries is a companion receipt table: a bare claim never
+# proves delivery, while sent/queued receipts do. A stale lease may be taken
+# over, preserving at-least-once delivery if a process dies after claiming.
 CLAIMS_DB="${FLYWHEEL_CLAIMS_DB:-${HOME}/.flywheel/alerts/claims.db}"
 mkdir -p "$(dirname "$CLAIMS_DB")"
+
+LEASE_SECONDS="${FLYWHEEL_ALERT_DELIVERY_LEASE_SECONDS:-60}"
+case "$LEASE_SECONDS" in
+  *[!0-9]*|'') LEASE_SECONDS=60 ;;
+esac
+if [ "$LEASE_SECONDS" -lt 1 ] || [ "$LEASE_SECONDS" -gt 3600 ]; then
+  LEASE_SECONDS=60
+fi
+LEASE_NOW=$(date +%s)
+LEASE_UNTIL=$((LEASE_NOW + LEASE_SECONDS))
+LEASE_TOKEN="${LEASE_NOW}-$$-${RANDOM}"
 
 CLAIM_SQL=$(cat <<SQL
 .timeout 5000
@@ -382,30 +395,95 @@ CREATE TABLE IF NOT EXISTS alert_claims (
   event_type TEXT NOT NULL,
   claimed_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS alert_deliveries (
+  event_id TEXT PRIMARY KEY,
+  state TEXT NOT NULL CHECK (state IN ('leased','sent','queued','dead_lettered')),
+  lease_token TEXT,
+  lease_until INTEGER,
+  attempt_count INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_error TEXT
+);
 BEGIN IMMEDIATE;
 INSERT OR IGNORE INTO alert_claims VALUES ('${EVENT_ID}', '$(sql_quote "$LEAD_ID")', '${KIND}', strftime('%s','now'));
-SELECT changes();
+INSERT OR IGNORE INTO alert_deliveries
+  (event_id, state, lease_token, lease_until, attempt_count, updated_at, last_error)
+  VALUES ('${EVENT_ID}', 'leased', '${LEASE_TOKEN}', ${LEASE_UNTIL}, 1, ${LEASE_NOW}, NULL);
+UPDATE alert_deliveries
+   SET state='leased', lease_token='${LEASE_TOKEN}', lease_until=${LEASE_UNTIL},
+       attempt_count=attempt_count+1, updated_at=${LEASE_NOW}, last_error=NULL
+ WHERE event_id='${EVENT_ID}' AND state='leased'
+   AND lease_until <= ${LEASE_NOW} AND lease_token <> '${LEASE_TOKEN}';
+SELECT state || '|' || COALESCE(lease_token,'')
+  FROM alert_deliveries WHERE event_id='${EVENT_ID}';
 COMMIT;
 SQL
 )
 
+DELIVERY_DB_OK=1
 CLAIM_RESULT=$(sqlite3 "$CLAIMS_DB" <<<"$CLAIM_SQL" 2>&1) || {
-  log "WARNING: sqlite3 claim failed: $CLAIM_RESULT"
-  # If claim infrastructure is broken, fall through and try to post anyway —
-  # a duplicate alert is better than a silent failure.
-  CLAIM_RESULT="1"
+  log "WARNING: sqlite3 delivery lease failed: $CLAIM_RESULT"
+  # Fall through and try to deliver, but strict callers receive no positive
+  # receipt and must retain/replay their outbox.
+  DELIVERY_DB_OK=0
+  CLAIM_RESULT="leased|${LEASE_TOKEN}"
 }
 
-# Last non-empty stdout line is the SELECT changes() result.
-CLAIMED=$(printf '%s\n' "$CLAIM_RESULT" | awk 'NF' | tail -n 1)
-if [ "$CLAIMED" != "1" ]; then
-  log "already claimed event_id=$EVENT_ID lead=$LEAD_ID kind=$KIND signature=$SIGNATURE, skipping"
-  # NOTE (FLY-913 / Codex R2 #1): a claim row is written BEFORE the delivery
-  # attempt, so `duplicate` does NOT prove the earlier alert was ever sent or
-  # queued — strict callers must treat it as NOT-delivered.
-  emit_result "duplicate"
-  exit 0
-fi
+# Last non-empty stdout line is the companion delivery state and lease owner.
+DELIVERY_ROW=$(printf '%s\n' "$CLAIM_RESULT" | awk 'NF' | tail -n 1)
+DELIVERY_STATE=${DELIVERY_ROW%%|*}
+DELIVERY_TOKEN=${DELIVERY_ROW#*|}
+case "$DELIVERY_STATE" in
+  sent)
+    log "delivery receipt already sent event_id=$EVENT_ID"
+    emit_result "sent"
+    exit 0
+    ;;
+  queued)
+    log "delivery receipt already durably queued event_id=$EVENT_ID"
+    emit_result "queued_transient"
+    exit 2
+    ;;
+  dead_lettered)
+    log "delivery receipt is dead-lettered event_id=$EVENT_ID"
+    emit_result "dead_lettered"
+    exit 2
+    ;;
+  leased)
+    if [ "$DELIVERY_TOKEN" != "$LEASE_TOKEN" ]; then
+      log "active delivery lease event_id=$EVENT_ID, skipping this attempt"
+      emit_result "duplicate"
+      exit 0
+    fi
+    ;;
+  *)
+    log "WARNING: invalid delivery receipt '$DELIVERY_ROW'; delivering without proof"
+    DELIVERY_DB_OK=0
+    ;;
+esac
+
+record_delivery() {
+  # $1 = sent|queued|dead_lettered, $2 = optional reason
+  local state="$1" reason="${2:-}" result changed
+  [ "$DELIVERY_DB_OK" = "1" ] || return 1
+  result=$(sqlite3 "$CLAIMS_DB" <<SQL 2>&1
+.timeout 5000
+BEGIN IMMEDIATE;
+UPDATE alert_deliveries
+   SET state='${state}', lease_token=NULL, lease_until=NULL,
+       updated_at=strftime('%s','now'), last_error='$(sql_quote "$reason")'
+ WHERE event_id='${EVENT_ID}' AND state='leased'
+   AND lease_token='${LEASE_TOKEN}';
+SELECT changes();
+COMMIT;
+SQL
+  ) || {
+    log "WARNING: failed to persist delivery receipt state=${state}: $result"
+    return 1
+  }
+  changed=$(printf '%s\n' "$result" | awk 'NF' | tail -n 1)
+  [ "$changed" = "1" ]
+}
 
 # ── Build Discord message payload ──────────────────────────
 case "$SEVERITY" in
@@ -467,8 +545,24 @@ write_record() {
     > "$1"
 }
 
+atomic_write_record() {
+  # $1 = target path, $2 = reason. Same-directory 0600 temp + fsync + rename.
+  local target="$1" reason="$2" tmp="${1}.tmp.$$"
+  rm -f "$tmp"
+  if ! (umask 077; write_record "$tmp" "$reason") \
+    || ! chmod 600 "$tmp" \
+    || ! node -e 'const fs=require("fs"); const fd=fs.openSync(process.argv[1],"r"); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }' "$tmp" \
+    || ! mv "$tmp" "$target"; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
 enqueue() {
-  write_record "$QUEUE_PATH" "$1"
+  if ! atomic_write_record "$QUEUE_PATH" "$1"; then
+    log "ERROR: durable queue write failed for $QUEUE_PATH (reason=$1)"
+    return 1
+  fi
   log "queued to $QUEUE_PATH (reason=$1)"
 }
 
@@ -482,8 +576,11 @@ dead_letter() {
   mkdir -p "$DEAD_LETTER_DIR"
   # FLY-1081 (Codex R1#6): same EVENT_ID-suffixed shape as QUEUE_PATH.
   local dl_path="${DEAD_LETTER_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${LEAD_ID}-${KIND}-${EVENT_ID:0:12}.json"
-  write_record "$dl_path" "$reason"
-  log "dead-lettered to $dl_path (reason=$reason)"
+  if atomic_write_record "$dl_path" "$reason"; then
+    log "dead-lettered to $dl_path (reason=$reason)"
+  else
+    log "ERROR: dead-letter audit write failed for $dl_path (reason=$reason)"
+  fi
   fire_meta_alert \
     "alert_dead_lettered" \
     "LeadAlert dropped (shell path)" \
@@ -492,11 +589,13 @@ dead_letter() {
 
 if [ -z "$CHANNEL_ID" ]; then
   dead_letter "no-channel"
+  record_delivery "dead_lettered" "no-channel" || true
   emit_result "config_error"
   exit 2
 fi
 if [ -z "$TOKEN" ]; then
   dead_letter "no-token"
+  record_delivery "dead_lettered" "no-token" || true
   emit_result "config_error"
   exit 2
 fi
@@ -515,8 +614,17 @@ if [ -n "$RATE_LIMIT" ]; then
   RATE_COUNT=$(cat "$RATE_FILE" 2>/dev/null || echo 0)
   case "$RATE_COUNT" in (*[!0-9]*|'') RATE_COUNT=0 ;; esac
   if [ "$RATE_COUNT" -ge "$RATE_LIMIT" ] 2>/dev/null; then
-    enqueue "rate-limited"
-    emit_result "queued_transient"
+    if enqueue "rate-limited"; then
+      if record_delivery "queued" "rate-limited"; then
+        emit_result "queued_transient"
+      else
+        emit_result "duplicate"
+      fi
+    else
+      dead_letter "queue-write-failed"
+      record_delivery "dead_lettered" "queue-write-failed" || true
+      emit_result "dead_lettered"
+    fi
     exit 2
   fi
   echo $((RATE_COUNT + 1)) > "$RATE_FILE"
@@ -551,7 +659,13 @@ HTTP_CODE=$(post_discord 2>/dev/null || echo "000")
 if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] 2>/dev/null; then
   rm -f /tmp/lead-alert-$$.out
   log "sent lead=$LEAD_ID kind=$KIND channel=$CHANNEL_ID (HTTP $HTTP_CODE)"
-  emit_result "sent"
+  if record_delivery "sent"; then
+    emit_result "sent"
+  else
+    # POST may have landed, but without a durable receipt the daemon must keep
+    # its outbox and replay. A duplicate post is preferable to silent loss.
+    emit_result "duplicate"
+  fi
   exit 0
 fi
 
@@ -566,10 +680,20 @@ log "Discord POST failed HTTP=$HTTP_CODE body=$RESP_BODY"
 #     → dead-letter + meta-alert (retry is pointless).
 if [ "$HTTP_CODE" -ge 500 ] 2>/dev/null \
   || [ "$HTTP_CODE" = "429" ] || [ "$HTTP_CODE" = "000" ]; then
-  enqueue "discord-${HTTP_CODE}"
-  emit_result "queued_transient"
+  if enqueue "discord-${HTTP_CODE}"; then
+    if record_delivery "queued" "discord-${HTTP_CODE}"; then
+      emit_result "queued_transient"
+    else
+      emit_result "duplicate"
+    fi
+  else
+    dead_letter "queue-write-failed"
+    record_delivery "dead_lettered" "queue-write-failed" || true
+    emit_result "dead_lettered"
+  fi
   exit 2
 fi
 dead_letter "discord-${HTTP_CODE}"
+record_delivery "dead_lettered" "discord-${HTTP_CODE}" || true
 emit_result "dead_lettered"
 exit 2

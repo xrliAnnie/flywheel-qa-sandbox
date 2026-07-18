@@ -10,6 +10,7 @@
 		"flywheel-claude-freshness": "bin/flywheel-claude-freshness",
 		"flywheel-claude-quota-guard": "bin/flywheel-claude-quota-guard",
 		"flywheel-account-summary": "bin/flywheel-account-summary",
+		"flywheel-claude-pool-rebuild": "bin/flywheel-claude-pool-rebuild",
 		"flywheel-rescue-lead": "bin/flywheel-rescue-lead",
 		"flywheel-quota-monitor": "bin/flywheel-quota-monitor"
 	},

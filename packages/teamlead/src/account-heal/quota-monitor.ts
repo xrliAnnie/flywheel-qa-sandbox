@@ -5,15 +5,24 @@ import {
 	type ProfileIdentityResult,
 } from "./account-identity.js";
 import {
+	type AccountEntry,
 	type AccountQuotaObservation,
 	type AccountStore,
+	inspectModelSetBench,
 	isAuthUnusable,
 	isQuotaUsable,
 	isSwitchCooldownActive,
 	type RecordObservationResult,
 	type SyncActiveAccountResult,
+	summarizeModelBenchPool,
 } from "./account-store.js";
 import type { FreshnessVerdict } from "./freshness.js";
+import type { MachineAccountResolution } from "./machine-account.js";
+import {
+	createModelDetectionIntent,
+	finalizeModelSwitchIncident,
+	type ModelPaneDetection,
+} from "./quota-incident.js";
 import type { DeliveryReport } from "./quota-monitor-alert.js";
 import type { LoadedQuotaMonitorConfig } from "./quota-monitor-config.js";
 import type {
@@ -22,6 +31,7 @@ import type {
 	PendingSwitchFailure,
 	QuotaMonitorState,
 } from "./quota-monitor-state.js";
+import type { QuotaPaneSnapshot } from "./quota-revive-scan.js";
 import type {
 	AccountUsageResult,
 	ValidatedUsagePayload,
@@ -30,6 +40,7 @@ import type { SwitchInput, SwitchResult } from "./switch-executor.js";
 
 const REVIVE_GRACE_MS = 30 * 60_000;
 const MONITOR_DOWN_STREAK = 6;
+const MODEL_PANE_SUPPRESSION_MAX_UNSEEN_MS = 24 * 60 * 60_000;
 
 export interface MonitorCredential {
 	accessToken: string;
@@ -38,6 +49,8 @@ export interface MonitorCredential {
 
 export interface AccountSnapshot {
 	activeName: string | null;
+	/** Present in production; omitted only by legacy/unit harnesses. */
+	authority?: MachineAccountResolution;
 	store: AccountStore;
 	activeCredential: MonitorCredential | null;
 	poolAccounts: string[];
@@ -57,6 +70,13 @@ export type QuotaMonitorAlertKind =
 	| "account_switch_failed"
 	| "quota_revive_stuck"
 	| "quota_monitor_down"
+	| "machine_account_conflict"
+	| "model_cap_switched"
+	| "model_cap_unknown"
+	| "model_cap_persistent_unknown"
+	| "model_bench_malformed"
+	| "quota_choice"
+	| "quota_switch_confirmation"
 	| "account_identity_mismatch";
 
 export interface QuotaMonitorAlert {
@@ -112,16 +132,26 @@ export interface QuotaMonitorDeps {
 	writeStatuslineCache: (raw: ValidatedUsagePayload) => Promise<void>;
 	persistState: (state: QuotaMonitorState) => Promise<void>;
 	switchAccount: (input: SwitchInput) => Promise<SwitchResult>;
-	reviveScan?: (state: QuotaMonitorState) => Promise<{
+	scanPanes?: () => Promise<QuotaPaneSnapshot>;
+	reviveSnapshot?: (
+		state: QuotaMonitorState,
+		snapshot: QuotaPaneSnapshot,
+		actionsAllowed: boolean,
+	) => Promise<{
 		state: QuotaMonitorState;
 		summary: ReviveScanSummary;
 	}>;
+	confirmSnapshot?: (
+		state: QuotaMonitorState,
+		snapshot: QuotaPaneSnapshot,
+	) => Promise<QuotaMonitorState>;
 	alert: (alert: QuotaMonitorAlert) => Promise<DeliveryReport>;
 	log: (message: string) => void;
 }
 
 export type PollOutcome =
 	| "observed"
+	| "local_scan"
 	| "stale_snapshot"
 	| "blind"
 	| "backoff"
@@ -130,6 +160,7 @@ export type PollOutcome =
 	| "no_target"
 	| "switched"
 	| "switch_failed"
+	| "identity_conflict"
 	| "noop_already_switched"
 	| "identity_mismatch_active";
 
@@ -353,6 +384,8 @@ type PanoramaStatus =
 	| "not_in_store"
 	| "auth_unusable"
 	| "switch_cooldown"
+	| `model_bench_malformed: ${string}`
+	| `model_benched_until=${string}`
 	| `usage_${UsageError}`;
 type PanoramaClass = "usable" | "exhausted" | "unverifiable" | "ineligible";
 
@@ -375,13 +408,40 @@ const PANORAMA_CLASS = {
 	not_in_store: "ineligible",
 	auth_unusable: "ineligible",
 	switch_cooldown: "ineligible",
-} satisfies Record<PanoramaStatus, PanoramaClass>;
+} satisfies Partial<Record<PanoramaStatus, PanoramaClass>>;
+
+function panoramaClass(status: PanoramaStatus): PanoramaClass {
+	if (status.startsWith("model_")) return "ineligible";
+	return (
+		(PANORAMA_CLASS as Partial<Record<PanoramaStatus, PanoramaClass>>)[
+			status
+		] ?? "ineligible"
+	);
+}
 
 type PanoramaEntry = {
 	name: string;
 	status: PanoramaStatus;
 	usage?: SuccessfulUsage;
 };
+
+export function formatModelBenchRetryNote(
+	accounts: readonly AccountEntry[],
+	models: readonly string[],
+	nowMs: number,
+): string {
+	const summary = summarizeModelBenchPool(accounts, models, nowMs);
+	if (summary.nextRetryAt !== null) {
+		const unknownSuffix = summary.hasUnknown
+			? "; some malformed model bench state has unknown timing"
+			: "";
+		return `next retry / revalidation after ${summary.nextRetryAt}${unknownSuffix}; this is not a quota recovery guarantee`;
+	}
+	const reason = summary.hasUnknown
+		? "malformed model bench state requires manual inspection"
+		: "no finite model bench deadline is available";
+	return `next retry / revalidation unknown; ${reason}; this is not a quota recovery guarantee`;
+}
 
 type IdentityMismatchFact = {
 	label: string;
@@ -394,13 +454,15 @@ function identityCheckEnabled(): boolean {
 	return process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK === "1";
 }
 
-async function verifyAndRankCandidates(
+export async function verifyAndRankCandidates(
 	deps: QuotaMonitorDeps,
 	snapshot: AccountSnapshot,
+	models: readonly string[] = [],
 ): Promise<{
 	ranked: string[];
 	panorama: PanoramaEntry[];
 	usageByName: Map<string, SuccessfulUsage>;
+	malformedModelBenches: string[];
 	verifiedAt: string;
 	identityMismatches: IdentityMismatchFact[];
 	identityMatches: string[];
@@ -420,6 +482,7 @@ async function verifyAndRankCandidates(
 		orderIndex: number;
 	}> = [];
 	const usageByName = new Map<string, SuccessfulUsage>();
+	const malformedModelBenches: string[] = [];
 	const identityMismatches: IdentityMismatchFact[] = [];
 	const identityMatches: string[] = [];
 
@@ -442,6 +505,22 @@ async function verifyAndRankCandidates(
 		}
 		if (isSwitchCooldownActive(entry, now)) {
 			panorama.push({ name, status: "switch_cooldown" });
+			continue;
+		}
+		const modelBench = inspectModelSetBench(entry, models, now);
+		if (modelBench.state === "malformed") {
+			malformedModelBenches.push(name);
+			panorama.push({
+				name,
+				status: `model_bench_malformed: ${modelBench.reason}`,
+			});
+			continue;
+		}
+		if (modelBench.state === "benched") {
+			panorama.push({
+				name,
+				status: `model_benched_until=${modelBench.retryAt}`,
+			});
 			continue;
 		}
 		const checked = await readCandidateCredential(deps, name, true);
@@ -552,6 +631,7 @@ async function verifyAndRankCandidates(
 		ranked: [...tier0, ...tier1].map((entry) => entry.name),
 		panorama,
 		usageByName,
+		malformedModelBenches,
 		verifiedAt,
 		identityMismatches,
 		identityMatches,
@@ -567,7 +647,7 @@ function degradedOrder(
 		deps.config.config.order.map((name, index) => [name, index]),
 	);
 	return panorama
-		.filter((entry) => PANORAMA_CLASS[entry.status] === "unverifiable")
+		.filter((entry) => panoramaClass(entry.status) === "unverifiable")
 		.map((entry) =>
 			snapshot.store.accounts.find((account) => account.name === entry.name),
 		)
@@ -1070,24 +1150,82 @@ async function refreshNewActive(
 	}
 }
 
-async function runOpenReviveEpoch(
-	deps: QuotaMonitorDeps,
+const EMPTY_REVIVE_SUMMARY: ReviveScanSummary = {
+	revived: 0,
+	pending: 0,
+	loginExpired: 0,
+};
+
+function cappedModelDetections(
+	snapshot: QuotaPaneSnapshot | null,
 	state: QuotaMonitorState,
-): Promise<{ state: QuotaMonitorState; summary: ReviveScanSummary }> {
-	if (state.reviveEpoch === null) {
-		return { state, summary: { revived: 0, pending: 0, loginExpired: 0 } };
+): ModelPaneDetection[] {
+	if (snapshot === null) return [];
+	return snapshot.observations.flatMap((observation) =>
+		observation.managed &&
+		observation.modelVerdict.state === "capped" &&
+		!(
+			state.modelPaneSuppressions[
+				`${snapshot.socket}:${observation.pane.paneId}:${observation.pane.panePid}`
+			]?.models.includes(observation.modelVerdict.model) ?? false
+		)
+			? [{ pane: observation.pane, model: observation.modelVerdict.model }]
+			: [],
+	);
+}
+
+function reconcileModelPaneSuppressions(
+	state: QuotaMonitorState,
+	snapshot: QuotaPaneSnapshot | null,
+): void {
+	if (snapshot === null) return;
+	const observations = new Map(
+		snapshot.observations.map((observation) => [
+			`${snapshot.socket}:${observation.pane.paneId}:${observation.pane.panePid}`,
+			observation,
+		]),
+	);
+	const present = new Set(observations.keys());
+	for (const pane of snapshot.omittedPanes) {
+		present.add(`${snapshot.socket}:${pane.paneId}:${pane.panePid}`);
 	}
-	if (state.reviveEpoch.expiresAt <= deps.now()) {
-		state.reviveEpoch = null;
-		await deps.persistState(state);
-		return { state, summary: { revived: 0, pending: 0, loginExpired: 0 } };
+	for (const key of Object.keys(state.modelPaneSuppressions)) {
+		const suppression = state.modelPaneSuppressions[key];
+		if (suppression === undefined) continue;
+		const observation = observations.get(key);
+		if (
+			observation !== undefined &&
+			observation.capture !== null &&
+			observation.managed &&
+			observation.modelVerdict.state === "clear"
+		) {
+			delete state.modelPaneSuppressions[key];
+			continue;
+		}
+		if (present.has(key)) {
+			state.modelPaneSuppressions[key] = {
+				...suppression,
+				lastSeenAt: Math.max(suppression.lastSeenAt, snapshot.capturedAt),
+			};
+			continue;
+		}
+		if (
+			snapshot.complete ||
+			snapshot.capturedAt - suppression.lastSeenAt >
+				MODEL_PANE_SUPPRESSION_MAX_UNSEEN_MS
+		) {
+			delete state.modelPaneSuppressions[key];
+		}
 	}
-	if (!deps.reviveScan) {
-		return { state, summary: { revived: 0, pending: 0, loginExpired: 0 } };
-	}
-	const scanned = await deps.reviveScan(state);
-	await deps.persistState(scanned.state);
-	return scanned;
+}
+
+function modelSnapshotIsUncertain(snapshot: QuotaPaneSnapshot): boolean {
+	return (
+		!snapshot.complete ||
+		snapshot.observations.some(
+			(observation) => observation.modelVerdict.state === "unknown",
+		)
+	);
 }
 
 export async function pollOnce(
@@ -1104,11 +1242,52 @@ export async function pollOnce(
 	};
 	const now = deps.now();
 	let state = structuredClone(deps.state);
-	state.lastPollAt = now;
 	const attemptedKinds = new Set<QuotaMonitorAlertKind>();
 	const attemptedIdentityLabels = new Set<string>();
 	let panorama: string[] = [];
-	const finish = (outcome: PollOutcome): PollOnceResult => {
+	const paneScanDue = state.nextPaneScanDueAt <= now;
+	const confirmationDue =
+		state.confirmation !== null && state.confirmation.dueAt <= now;
+	let paneSnapshot: QuotaPaneSnapshot | null = null;
+	if ((paneScanDue || confirmationDue) && deps.scanPanes) {
+		paneSnapshot = await deps.scanPanes();
+	}
+	if (paneScanDue) {
+		state.nextPaneScanDueAt = now + deps.config.config.paneScanSeconds * 1_000;
+	}
+	reconcileModelPaneSuppressions(state, paneSnapshot);
+	const detectedModels = cappedModelDetections(paneSnapshot, state);
+	let localProcessed = false;
+	const processLocalSnapshot = async (
+		actionsAllowed = true,
+	): Promise<ReviveScanSummary> => {
+		if (localProcessed || paneSnapshot === null) return EMPTY_REVIVE_SUMMARY;
+		let summary = EMPTY_REVIVE_SUMMARY;
+		if (deps.reviveSnapshot) {
+			const revived = await deps.reviveSnapshot(
+				state,
+				paneSnapshot,
+				actionsAllowed,
+			);
+			state = revived.state;
+			summary = revived.summary;
+		}
+		if (
+			confirmationDue &&
+			state.confirmation !== null &&
+			state.confirmation.dueAt <= now &&
+			deps.confirmSnapshot
+		) {
+			state = await deps.confirmSnapshot(state, paneSnapshot);
+		}
+		localProcessed = true;
+		return summary;
+	};
+	const finish = async (
+		outcome: PollOutcome,
+		actionsAllowed = true,
+	): Promise<PollOnceResult> => {
+		await processLocalSnapshot(actionsAllowed);
 		if (outcome !== "observed") {
 			deps.log(
 				JSON.stringify({
@@ -1121,6 +1300,7 @@ export async function pollOnce(
 		}
 		return result(outcome, state, deps.config.config);
 	};
+
 	const reconciled = await deps.reconcileActive();
 	if (
 		reconciled.result === "transition_journal_conflict" ||
@@ -1148,17 +1328,39 @@ export async function pollOnce(
 		state.identityAlertCursor = null;
 		await deps.persistState(state);
 	}
-
-	// Delivery retries are independent of observation health and must run before
-	// backoff/blind/error early returns, but only after active reconciliation has
-	// invalidated episodes owned by a previous account generation.
 	await attemptBlockedDelivery(deps, state, attemptedKinds);
 	await attemptSwitchFailureDelivery(deps, state, attemptedKinds);
 	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
 
-	// Local tmux recovery remains live even while usage polling is backed off.
-	({ state } = await runOpenReviveEpoch(deps, state));
+	if (
+		state.nextUsageDueAt > now &&
+		detectedModels.length === 0 &&
+		paneSnapshot !== null &&
+		!modelSnapshotIsUncertain(paneSnapshot) &&
+		state.pendingDetection !== null
+	) {
+		const identity = await deps.withAccountsLock(() => deps.readIdentity());
+		if (
+			state.pendingDetection.observedGeneration === identity.storeGeneration &&
+			state.pendingDetection.sourceAccount === identity.activeName
+		) {
+			state.pendingDetection = null;
+		}
+	}
+	if (state.nextUsageDueAt > now && detectedModels.length === 0) {
+		await processLocalSnapshot();
+		await deps.persistState(state);
+		return result(
+			state.backoffUntilMs > now && !paneScanDue && !confirmationDue
+				? "backoff"
+				: "local_scan",
+			state,
+			deps.config.config,
+		);
+	}
 
+	state.lastPollAt = now;
+	state.nextUsageDueAt = now + pollIntervalMs(state, deps.config.config);
 	if (deps.config.error) {
 		await deps.alert({
 			kind: "quota_monitor_down",
@@ -1169,12 +1371,49 @@ export async function pollOnce(
 		});
 	}
 
+	const snapshot = await deps.withAccountsLock(() => deps.readSnapshot());
+	if (snapshot.authority && snapshot.authority.kind !== "resolved") {
+		await deps.alert({
+			kind: "machine_account_conflict",
+			severity: "severe",
+			title: "Claude machine account witnesses disagree",
+			body: `authority=${snapshot.authority.kind}; refusing usage attribution or account switch`,
+			signature: `machine-account-${snapshot.authority.kind}-${day(now)}`,
+		});
+		await deps.persistState(state);
+		return finish("identity_conflict", false);
+	}
+
+	let modelDetection =
+		detectedModels.length > 0 && snapshot.activeName !== null
+			? createModelDetectionIntent({
+					socket: paneSnapshot?.socket ?? "",
+					observedGeneration: snapshot.store.generation,
+					observedAt: paneSnapshot?.capturedAt ?? now,
+					sourceAccount: snapshot.activeName,
+					detections: detectedModels,
+				})
+			: null;
+	if (modelDetection !== null) {
+		state.pendingDetection = modelDetection;
+		state.observedGeneration = snapshot.store.generation;
+		await deps.persistState(state);
+	} else if (
+		paneSnapshot !== null &&
+		!modelSnapshotIsUncertain(paneSnapshot) &&
+		state.pendingDetection !== null &&
+		state.pendingDetection.observedGeneration === snapshot.store.generation &&
+		state.pendingDetection.sourceAccount === snapshot.activeName
+	) {
+		state.pendingDetection = null;
+		await deps.persistState(state);
+	}
+
 	if (state.backoffUntilMs > now) {
+		state.nextUsageDueAt = state.backoffUntilMs;
 		await deps.persistState(state);
 		return finish("backoff");
 	}
-
-	const snapshot = await deps.withAccountsLock(() => deps.readSnapshot());
 	if (
 		snapshot.activeName === null ||
 		snapshot.activeCredential === null ||
@@ -1242,6 +1481,7 @@ export async function pollOnce(
 				now +
 				(currentUsage.retryAfterMs ??
 					deps.config.config.basePollMinutes * 60_000);
+			state.nextUsageDueAt = state.backoffUntilMs;
 			await deps.persistState(state);
 			return finish("backoff");
 		}
@@ -1272,6 +1512,7 @@ export async function pollOnce(
 		currentUsage.ok.fiveH.pct > deps.config.config.acceleratePct
 			? "accelerated"
 			: "base";
+	state.nextUsageDueAt = now + pollIntervalMs(state, deps.config.config);
 	const committed = await commitSuccessfulObservation(
 		deps,
 		snapshot,
@@ -1280,7 +1521,7 @@ export async function pollOnce(
 	);
 	if (!committed) {
 		deps.log("quota observation discarded: account identity changed");
-		return finish("stale_snapshot");
+		return finish("stale_snapshot", false);
 	}
 	await projectObservation(
 		deps,
@@ -1294,15 +1535,20 @@ export async function pollOnce(
 	);
 
 	const scope = triggerScope(currentUsage.ok, deps.config.config.trigger5hPct);
+	if (scope !== null && state.pendingDetection !== null) {
+		state.pendingDetection = null;
+		modelDetection = null;
+		await deps.persistState(state);
+	}
 	const sweepDue =
 		state.tier === "accelerated" &&
 		(state.lastCandidateSweepAt === null ||
 			now - state.lastCandidateSweepAt >=
 				deps.config.config.candidateSweepMinutes * 60_000);
-	if (scope === null && sweepDue) {
+	if (scope === null && modelDetection === null && sweepDue) {
 		await sweepCandidates(deps, snapshot, state, attemptedIdentityLabels);
 	}
-	if (scope === null) {
+	if (scope === null && modelDetection === null) {
 		if (state.pendingSwitchFailure !== null) {
 			state.pendingSwitchFailure = null;
 			await deps.persistState(state);
@@ -1325,17 +1571,49 @@ export async function pollOnce(
 	}
 
 	if (deps.config.monitorOnly) {
-		await openBlockedEpisode(
-			deps,
-			state,
-			scope,
-			attemptedKinds,
-			`scope=${scope}; monitor-only: configured account order is empty or invalid`,
-		);
+		if (modelDetection === null) {
+			if (scope === null) throw new Error("missing quota trigger scope");
+			await openBlockedEpisode(
+				deps,
+				state,
+				scope,
+				attemptedKinds,
+				`scope=${scope}; monitor-only: configured account order is empty or invalid`,
+			);
+		} else {
+			await deps.alert({
+				kind: "quota_no_target",
+				severity: "severe",
+				title: "Claude model-cap trigger reached in monitor-only mode",
+				body: `models=${modelDetection.models.join(",")}; monitor-only: configured account order is empty or invalid`,
+				signature: `quota-no-target-model-${modelDetection.models.join("+")}-${day(now)}`,
+			});
+		}
 		return finish("no_target");
 	}
+	if (
+		modelDetection !== null &&
+		state.alertOutbox.length >= 64 &&
+		!state.alertOutbox.some(
+			(item) => item.eventId === `${modelDetection.eventId}:switch`,
+		)
+	) {
+		await deps.alert({
+			kind: "quota_monitor_down",
+			severity: "severe",
+			title: "Claude quota monitor durable alert outbox is full",
+			body: `outbox=${state.alertOutbox.length}/64; models=${modelDetection.models.join(",")}; switch refused before candidate or credential mutation`,
+			signature: `quota-alert-outbox-full-g${state.observedGeneration}-${day(now)}`,
+		});
+		return finish("error");
+	}
 
-	const candidates = await verifyAndRankCandidates(deps, snapshot);
+	const triggerModels = modelDetection?.models ?? [];
+	const candidates = await verifyAndRankCandidates(
+		deps,
+		snapshot,
+		triggerModels,
+	);
 	for (const name of candidates.identityMatches) {
 		// A candidate can only reach this point after an audit has cleared any
 		// sticky identityMismatch marker and a fresh profile probe has confirmed
@@ -1349,9 +1627,20 @@ export async function pollOnce(
 	}
 	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
 	panorama = candidates.panorama.map(({ name, status }) => `${name}:${status}`);
+	if (modelDetection !== null && candidates.malformedModelBenches.length > 0) {
+		const malformed = [...candidates.malformedModelBenches].sort();
+		await deps.alert({
+			kind: "model_bench_malformed",
+			severity: "warning",
+			title: "Claude model bench state is malformed",
+			body: `accounts=${malformed.join(",")}; models=${modelDetection.models.join(",")}; excluded fail-closed before credential or usage I/O`,
+			signature: `model-bench-malformed-${malformed.join("+")}-${modelDetection.models.join("+")}-${day(now)}`,
+		});
+	}
 	let preferredOrder = candidates.ranked;
 	let degraded = false;
 	if (
+		modelDetection === null &&
 		preferredOrder.length === 0 &&
 		deps.config.config.degradedSwitch &&
 		process.env.FLYWHEEL_QUOTA_DEGRADED_SWITCH !== "0"
@@ -1360,27 +1649,58 @@ export async function pollOnce(
 		degraded = preferredOrder.length > 0;
 	}
 	if (preferredOrder.length === 0) {
-		await openBlockedEpisode(
-			deps,
-			state,
-			scope,
-			attemptedKinds,
-			`scope=${scope}\n${panoramaBody(candidates.panorama)}`,
+		const candidateAccounts = snapshot.store.accounts.filter(
+			(account) =>
+				account.name !== snapshot.activeName &&
+				deps.config.config.order.includes(account.name) &&
+				snapshot.poolAccounts.includes(account.name),
 		);
+		if (modelDetection === null) {
+			if (scope === null) throw new Error("missing quota trigger scope");
+			await openBlockedEpisode(
+				deps,
+				state,
+				scope,
+				attemptedKinds,
+				`scope=${scope}\n${panoramaBody(candidates.panorama)}`,
+			);
+		} else {
+			await deps.alert({
+				kind: "quota_no_target",
+				severity: "severe",
+				title: "No verified Claude account has quota",
+				body: `models=${modelDetection.models.join(",")}\n${panoramaBody(candidates.panorama)}\n${formatModelBenchRetryNote(candidateAccounts, modelDetection.models, now)}`,
+				signature: `quota-no-target-model-${modelDetection.models.join("+")}-${day(now)}`,
+			});
+		}
 		return finish("no_target");
 	}
 
-	const resetAt = operativeResetAt(currentUsage.ok, scope);
-	const switched = await deps.switchAccount({
-		scope,
-		observedAccount: snapshot.activeName,
-		observedGeneration: snapshot.store.generation,
-		resetAt,
-		now: new Date(now),
-		preferredOrder,
-		verifiedAt: candidates.verifiedAt,
-		quotaPreverified: !degraded,
-	});
+	const resetAt =
+		scope === null ? null : operativeResetAt(currentUsage.ok, scope);
+	const switchInput: SwitchInput =
+		modelDetection === null
+			? {
+					scope: scope as "5h" | "weekly" | "both",
+					observedAccount: snapshot.activeName,
+					observedGeneration: snapshot.store.generation,
+					resetAt: resetAt as string,
+					now: new Date(now),
+					preferredOrder,
+					verifiedAt: candidates.verifiedAt,
+					quotaPreverified: !degraded,
+				}
+			: {
+					scope: "model",
+					models: modelDetection.models,
+					observedAccount: snapshot.activeName,
+					observedGeneration: snapshot.store.generation,
+					now: new Date(now),
+					preferredOrder,
+					verifiedAt: candidates.verifiedAt,
+					quotaPreverified: true,
+				};
+	const switched = await deps.switchAccount(switchInput);
 	await consumeApplyIdentityReports(deps, state, switched.applyReports);
 	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
 
@@ -1398,7 +1718,7 @@ export async function pollOnce(
 		await deps.persistState(state);
 		return finish("noop_already_switched");
 	}
-	if (degraded && switched.outcome === "no_account") {
+	if (degraded && switched.outcome === "no_account" && scope !== null) {
 		await openBlockedEpisode(
 			deps,
 			state,
@@ -1410,30 +1730,53 @@ export async function pollOnce(
 	}
 	if (switched.outcome === "no_account" || switched.outcome === "failed") {
 		const reasonCode = switched.reasonCode;
-		await openSwitchFailureEpisode(
-			deps,
-			state,
-			reasonCode,
-			degraded,
-			attemptedKinds,
-		);
+		if (modelDetection === null) {
+			await openSwitchFailureEpisode(
+				deps,
+				state,
+				reasonCode,
+				degraded,
+				attemptedKinds,
+			);
+		} else {
+			await deps.alert({
+				kind: "account_switch_failed",
+				severity: "severe",
+				title: "Claude model-cap account switch failed",
+				body: `account=${snapshot.activeName}; trigger=models:${modelDetection.models.join(",")}; reason=${reasonCode}`,
+				signature: `account-switch-failed-${reasonCode}-${day(now)}`,
+			});
+		}
 		return finish("switch_failed");
+	}
+	if (modelDetection !== null) {
+		state = finalizeModelSwitchIncident(state, {
+			detectionEventId: modelDetection.eventId,
+			switched,
+			finalizedAt: now,
+			confirmDelayMs: deps.config.config.confirmDelayMinutes * 60_000,
+		});
+		await deps.persistState(state);
+		await processLocalSnapshot();
+		await refreshNewActive(deps, state, switched.to);
+		return finish("switched");
 	}
 
 	state.lastSwitchAt = now;
 	state.observedGeneration = switched.generation;
+	state.confirmation = null;
+	state.confirmDueAt = null;
 	state.pendingSwitchFailure = null;
 	state.reviveEpoch = {
 		open: true,
 		sourceAccount: switched.from,
 		generation: switched.generation,
 		openedAt: now,
-		expiresAt: Date.parse(resetAt) + REVIVE_GRACE_MS,
+		expiresAt: Date.parse(resetAt as string) + REVIVE_GRACE_MS,
 		panes: {},
 	};
 	await deps.persistState(state);
-	const revived = await runOpenReviveEpoch(deps, state);
-	state = revived.state;
+	const revived = await processLocalSnapshot();
 
 	const targetUsage = candidates.usageByName.get(switched.to);
 	await deps.alert({
@@ -1442,7 +1785,7 @@ export async function pollOnce(
 		title: degraded
 			? "Claude account switched in degraded verification mode"
 			: "Claude account switched before quota exhaustion",
-		body: `${switched.from}->${switched.to}; scope=${scope}; degraded=${degraded}; from5h=${currentUsage.ok.fiveH.pct}; from7d=${currentUsage.ok.sevenD.pct}; to5h=${targetUsage?.fiveH.pct ?? "unknown"}; to7d=${targetUsage?.sevenD.pct ?? "unknown"}; revived=${revived.summary.revived}; pending=${revived.summary.pending}; login_expired=${revived.summary.loginExpired}`,
+		body: `${switched.from}->${switched.to}; scope=${scope}; degraded=${degraded}; from5h=${currentUsage.ok.fiveH.pct}; from7d=${currentUsage.ok.sevenD.pct}; to5h=${targetUsage?.fiveH.pct ?? "unknown"}; to7d=${targetUsage?.sevenD.pct ?? "unknown"}; revived=${revived.revived}; pending=${revived.pending}; login_expired=${revived.loginExpired}`,
 		signature: `account-switched-${switched.from}-${switched.to}-${switched.generation}`,
 	});
 	await openBlockedRecovery(

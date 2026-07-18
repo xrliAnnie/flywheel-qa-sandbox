@@ -905,44 +905,62 @@ describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", ()
 		expect(body.allowed_mentions).toEqual({ parse: [] });
 	});
 
-	it("FLY-1256: informational account_switched direct POST has no 🎫 header", async () => {
-		const fetchFn = okFetch();
-		await makeNotifier(fetchFn, { tickets: true }).alert(
-			buildPayload({
-				eventType: "account_switched" as AlertPayload["eventType"],
-				title: "Account switched",
-				body: "shopping → school",
-			}),
-		);
-		const body = JSON.parse(
-			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
-		);
-		expect(body.content).toBe(
-			"🤖[自动] ⚠️ **Account switched** (cos-lead / account_switched)\nshopping → school",
-		);
-	});
-
-	it("FLY-1256: informational account_switched queue replay has no 🎫 header", async () => {
-		writeFileSync(
-			join(queueDir, "20260714T120000Z-account_switched.json"),
-			JSON.stringify({
-				...buildPayload({
-					eventType: "account_switched" as AlertPayload["eventType"],
+	it.each([
+		"account_switched",
+		"model_cap_switched",
+		"model_cap_unknown",
+		"quota_switch_confirmation",
+	] as const)(
+		"FLY-1182: informational %s direct POST has no 🎫 header",
+		async (eventType) => {
+			const fetchFn = okFetch();
+			await makeNotifier(fetchFn, { tickets: true }).alert(
+				buildPayload({
+					eventType: eventType as AlertPayload["eventType"],
 					title: "Account switched",
 					body: "shopping → school",
 				}),
-				queuedAt: new Date().toISOString(),
-				queueReason: "discord-503",
-			}),
-		);
-		const fetchFn = okFetch();
-		const result = await makeNotifier(fetchFn, { tickets: true }).drainQueue();
-		const body = JSON.parse(
-			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
-		);
-		expect(body.content).not.toContain("🎫");
-		expect(result.delivered[0]?.payload.eventType).toBe("account_switched");
-	});
+			);
+			const body = JSON.parse(
+				(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+			);
+			expect(body.content).toBe(
+				`🤖[自动] ⚠️ **Account switched** (cos-lead / ${eventType})\nshopping → school`,
+			);
+		},
+	);
+
+	it.each([
+		"account_switched",
+		"model_cap_switched",
+		"model_cap_unknown",
+		"quota_switch_confirmation",
+	] as const)(
+		"FLY-1182: informational %s queue replay has no 🎫 header",
+		async (eventType) => {
+			writeFileSync(
+				join(queueDir, `20260714T120000Z-${eventType}.json`),
+				JSON.stringify({
+					...buildPayload({
+						eventType: eventType as AlertPayload["eventType"],
+						title: "Account switched",
+						body: "shopping → school",
+					}),
+					queuedAt: new Date().toISOString(),
+					queueReason: "discord-503",
+				}),
+			);
+			const fetchFn = okFetch();
+			const result = await makeNotifier(fetchFn, {
+				tickets: true,
+			}).drainQueue();
+			const body = JSON.parse(
+				(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+			);
+			expect(body.content).not.toContain("🎫");
+			expect(result.delivered[0]?.payload.eventType).toBe(eventType);
+		},
+	);
 
 	it("tickets ON + owner snowflake → <@id> in 🎫 line AND allowed_mentions.users", async () => {
 		const fetchFn = okFetch();

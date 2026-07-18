@@ -68,6 +68,17 @@ const SECRET_DRIFT =
 // FLY-871: what a "refreshing" freshness helper writes back to the pool.
 const SECRET_ROTATED =
 	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-ROTATED","refreshToken":"rR"}}';
+const SECRET_PERSONAL_REFRESHED =
+	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-PERSONAL-REFRESHED","refreshToken":"rPR"}}';
+const SECRET_BIZ =
+	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-BIZ","refreshToken":"rBiz"}}';
+const EMAILS = {
+	business: "xrliannie.b@gmail.com",
+	personal: "xrliannie@gmail.com",
+	personal1: "xrliannie.1@gmail.com",
+	school: "xiaorongli2011@u.northwestern.edu",
+	shopping: "xrliannie.shopping@gmail.com",
+} as const;
 
 let tmp: string;
 let pool: string;
@@ -79,6 +90,12 @@ let stubBin: string;
 // `use` tests keep passing; freshLog records its argv for the invocation assertion.
 let freshBin: string;
 let freshLog: string;
+// FLY-1182: fake OAuth identity probe. The stub reads curl config from stdin,
+// records argv separately (the access token must never appear there), and
+// returns a profile based on the bearer token in the stdin-only header.
+let identityCurlBin: string;
+let identityCurlArgvLog: string;
+let auditLog: string;
 // FLY-1252: live quota guard + bypass-alert stubs. Existing profile tests use
 // an always-healthy guard; focused tests override it to exercise 32/33.
 let quotaBin: string;
@@ -95,7 +112,7 @@ let claudeJsonLock: string;
 // A representative oauthAccount identity block (non-secret: email/org/uuid).
 const IDENTITY_SHOP = {
 	accountUuid: "uuid-shop",
-	emailAddress: "shop@example.com",
+	emailAddress: EMAILS.shopping,
 	organizationUuid: "org-shop",
 	organizationName: "Shop Org",
 	displayName: "Shopper",
@@ -103,11 +120,34 @@ const IDENTITY_SHOP = {
 };
 const IDENTITY_BIZ = {
 	accountUuid: "uuid-biz",
-	emailAddress: "biz@example.com",
+	emailAddress: EMAILS.business,
 	organizationUuid: "org-biz",
 	organizationName: "Biz Org",
 	displayName: "Biz",
 	organizationRole: "admin",
+};
+
+const IDENTITY_PROFILES: Record<string, { uuid: string; email: string }> = {
+	"sk-ant-oat01-AAA": { uuid: "uuid-personal", email: EMAILS.personal },
+	"sk-ant-oat01-PERSONAL-RELOGIN": {
+		uuid: "uuid-personal",
+		email: EMAILS.personal,
+	},
+	"sk-ant-oat01-BBB": { uuid: "uuid-school", email: EMAILS.school },
+	"sk-ant-oat01-CURRENT": {
+		uuid: "uuid-current",
+		email: "current@example.com",
+	},
+	"sk-ant-oat01-DRIFT": { uuid: "uuid-drift", email: "drift@example.com" },
+	"sk-ant-oat01-ROTATED": {
+		uuid: "uuid-school",
+		email: EMAILS.school,
+	},
+	"sk-ant-oat01-PERSONAL-REFRESHED": {
+		uuid: "uuid-personal",
+		email: EMAILS.personal,
+	},
+	"sk-ant-oat01-BIZ": { uuid: "uuid-biz", email: EMAILS.business },
 };
 
 /** A full-ish ~/.claude.json shape (many top-level keys + nested) to prove the
@@ -177,6 +217,10 @@ function env(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
 		// FLY-865 SAFETY: never let a test touch the real ~/.claude.json.
 		FLYWHEEL_CLAUDE_JSON: claudeJson,
 		FLYWHEEL_CLAUDE_JSON_LOCK: claudeJsonLock,
+		FLYWHEEL_PROFILE_CURL_BIN: identityCurlBin,
+		FLYWHEEL_PROFILE_IDENTITY_ENDPOINT: "https://identity.test/oauth/profile",
+		FLYWHEEL_PROFILE_AUDIT_LOG: auditLog,
+		FAKE_IDENTITY_CURL_ARGV_LOG: identityCurlArgvLog,
 		...extra,
 	};
 }
@@ -235,6 +279,39 @@ function seedProfile(name: string, secret: string): void {
 	writeFileSync(join(pool, name, ".credentials.json"), secret, { mode: 0o600 });
 }
 
+function seedAnchor(name: string, accountUuid: string, email: string): void {
+	mkdirSync(join(pool, name), { recursive: true });
+	writeFileSync(
+		join(pool, name, "identity-anchor.json"),
+		JSON.stringify({
+			accountUuid,
+			email,
+			anchoredAt: "2026-07-16T00:00:00.000Z",
+			anchoredBy: "test",
+			confirmedBy: "test-evidence",
+		}),
+		{ mode: 0o600 },
+	);
+}
+
+function seedIdentityMap(
+	overrides: Partial<Record<string, string>> = {},
+): void {
+	writeFileSync(
+		join(pool, "identity-map.json"),
+		JSON.stringify({
+			version: 1,
+			artifactId: "identity-map-test-v1",
+			confirmedAt: "2026-07-16T00:00:00.000Z",
+			labels: {
+				...EMAILS,
+				...overrides,
+			},
+		}),
+		{ mode: 0o600 },
+	);
+}
+
 function digest(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
@@ -288,6 +365,28 @@ beforeEach(() => {
 		{ mode: 0o755 },
 	);
 	writeFileSync(freshLog, "");
+	identityCurlBin = join(tmp, "fake-identity-curl");
+	identityCurlArgvLog = join(tmp, "identity-curl-argv.log");
+	auditLog = join(tmp, "claude-profile-audit.log");
+	writeFileSync(identityCurlArgvLog, "");
+	writeFileSync(
+		identityCurlBin,
+		`#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FAKE_IDENTITY_CURL_ARGV_LOG"
+cfg=$(cat)
+case "$cfg" in
+${Object.entries(IDENTITY_PROFILES)
+	.map(
+		([token, profile]) =>
+			`  *${token}*) printf '%s' '${JSON.stringify({ account: profile })}' ;;`,
+	)
+	.join("\n")}
+  *) printf '%s' '{"error":"unknown token"}'; exit 22 ;;
+esac
+`,
+		{ mode: 0o755 },
+	);
 	writeFileSync(
 		quotaBin,
 		'#!/usr/bin/env bash\nset -u\nprintf \'%s\\n\' "$*" >> "$QUOTA_ARGV_LOG"\nexit 0\n',
@@ -307,6 +406,8 @@ beforeEach(() => {
 	mkdirSync(pool, { recursive: true });
 	seedProfile("personal", SECRET_A);
 	seedProfile("school", SECRET_B);
+	seedAnchor("personal", "uuid-personal", EMAILS.personal);
+	seedAnchor("school", "uuid-school", EMAILS.school);
 	// current machine credential (what a rollback must restore)
 	writeFileSync(stateFile, SECRET_CUR);
 	// A scratch ~/.claude.json whose oauthAccount = the "shop" identity.
@@ -340,6 +441,32 @@ describe("flywheel-claude-profile", () => {
 		expect(log).not.toContain("accessToken");
 	});
 
+	it("active-marker temp preflight fails before any Keychain mutation", () => {
+		const binDir = join(tmp, "mktemp-fail-bin");
+		mkdirSync(binDir);
+		writeFileSync(
+			join(binDir, "mktemp"),
+			`#!/bin/sh
+case "$1" in
+  *.active.tmp.*) exit 9 ;;
+esac
+exec "$REAL_MKTEMP" "$@"
+`,
+			{ mode: 0o755 },
+		);
+		const realMktemp = execFileSync("which", ["mktemp"], {
+			encoding: "utf8",
+		}).trim();
+		const result = runExpectFail(["use", "personal"], {
+			PATH: `${binDir}:${process.env.PATH ?? ""}`,
+			REAL_MKTEMP: realMktemp,
+		});
+		expect(result.status).not.toBe(0);
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+		expect(readFileSync(argvLog, "utf8")).not.toMatch(/^-i$/m);
+	});
+
 	it("RED LINE: verify-fail rolls back to the previous credential, .active untouched", () => {
 		// First write corrupts (stub corrupt mode ON) → read-back mismatch. The
 		// rollback write must restore SECRET_CUR — but corrupt mode would corrupt
@@ -349,6 +476,120 @@ describe("flywheel-claude-profile", () => {
 		// still exit non-zero and leave .active untouched (worst-case honesty).
 		const { status, stderr } = runExpectFail(["use", "personal"], {
 			FAKE_SEC_CORRUPT: "1",
+		});
+		expect(status).toBe(37);
+		expect(stderr).toContain("verify-before-commit failed");
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+	});
+
+	it("RED LINE: a failed Keychain write still restores and verifies the previous credential", () => {
+		const partialWriteStub = join(tmp, "fake-security-partial-write");
+		const marker = join(tmp, "fail-write-once");
+		writeFileSync(
+			partialWriteStub,
+			`#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  find-generic-password) [[ -f "$FAKE_SEC_STATE" ]] || exit 44; cat "$FAKE_SEC_STATE" ;;
+  -i)
+    cmd=$(cat)
+    val=$(printf '%s' "$cmd" | sed -n 's/.* -w \\([^ ]*\\).*/\\1/p')
+    if [[ -f "${marker}" ]]; then
+      rm -f "${marker}"
+      printf '%s' "$val" > "$FAKE_SEC_STATE"
+      exit 9
+    fi
+    printf '%s' "$val" > "$FAKE_SEC_STATE"
+    ;;
+  *) exit 2 ;;
+esac
+`,
+			{ mode: 0o755 },
+		);
+		writeFileSync(marker, "");
+
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_SECURITY_BIN: partialWriteStub,
+		});
+		expect(status).not.toBe(0);
+		expect(stderr).toContain("Keychain write failed");
+		expect(stderr).toContain("rolled back");
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+	});
+
+	it("RED LINE: an unreadable Keychain preimage aborts before write or delete", () => {
+		const unreadableStub = join(tmp, "fake-security-unreadable");
+		writeFileSync(
+			unreadableStub,
+			`#!/usr/bin/env bash
+set -u
+printf '%s\\n' "$*" >> "$FAKE_SEC_ARGV_LOG"
+case "\${1:-}" in
+  find-generic-password) exit 63 ;;
+  -i) cat >/dev/null; printf '%s' BROKEN > "$FAKE_SEC_STATE" ;;
+  delete-generic-password) rm -f "$FAKE_SEC_STATE" ;;
+  *) exit 2 ;;
+esac
+`,
+			{ mode: 0o755 },
+		);
+
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_SECURITY_BIN: unreadableStub,
+		});
+		expect(status).not.toBe(0);
+		expect(stderr).toContain("cannot read the current Keychain credential");
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
+		expect(readFileSync(argvLog, "utf8")).not.toMatch(
+			/^-i$|^delete-generic-password/m,
+		);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+	});
+
+	it("RED LINE: a non-restorable Keychain preimage aborts before mutation", () => {
+		const pretty =
+			'{ "claudeAiOauth": { "accessToken": "sk-ant-oat01-CURRENT", "refreshToken": "rC" } }';
+		writeFileSync(stateFile, pretty);
+
+		const { status, stderr } = runExpectFail(["use", "personal"]);
+
+		expect(status).not.toBe(0);
+		expect(stderr).toContain("whitespace");
+		expect(readFileSync(stateFile, "utf8")).toBe(pretty);
+		expect(readFileSync(argvLog, "utf8")).not.toMatch(
+			/^-i$|^delete-generic-password/m,
+		);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+	});
+
+	it("RED LINE: an absent preimage with a corrupt read-back fails closed (37), .active untouched", () => {
+		const absentStub = join(tmp, "fake-security-absent-preimage");
+		const corruptOnce = join(tmp, "corrupt-once-absent");
+		rmSync(stateFile);
+		writeFileSync(corruptOnce, "");
+		writeFileSync(
+			absentStub,
+			`#!/usr/bin/env bash
+set -u
+printf '%s\\n' "$*" >> "$FAKE_SEC_ARGV_LOG"
+case "\${1:-}" in
+  find-generic-password) [[ -f "$FAKE_SEC_STATE" ]] || exit 44; cat "$FAKE_SEC_STATE" ;;
+  -i)
+    cmd=$(cat)
+    val=$(printf '%s' "$cmd" | sed -n 's/.* -w \\([^ ]*\\).*/\\1/p')
+    if [[ -f "${corruptOnce}" ]]; then rm -f "${corruptOnce}"; val=CORRUPTED; fi
+    printf '%s' "$val" > "$FAKE_SEC_STATE"
+    ;;
+  delete-generic-password) rm -f "$FAKE_SEC_STATE" ;;
+  *) exit 2 ;;
+esac
+`,
+			{ mode: 0o755 },
+		);
+
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_SECURITY_BIN: absentStub,
 		});
 		expect(status).toBe(37);
 		expect(stderr).toContain("verify-before-commit failed");
@@ -460,12 +701,23 @@ esac
 	});
 
 	it("`capture` snapshots the current keychain into the pool with 0600/0700", () => {
-		const out = run(["capture", "current"]);
+		writeFileSync(stateFile, SECRET_A);
+		writeFileSync(
+			claudeJson,
+			claudeJsonWith({
+				accountUuid: "uuid-personal",
+				emailAddress: EMAILS.personal,
+				organizationUuid: "org-personal",
+				organizationName: "Personal Org",
+			}),
+		);
+		chmodSync(join(pool, "personal"), 0o755);
+		const out = run(["capture", "personal"]);
 		expect(out).toContain("Captured");
-		const file = join(pool, "current", ".credentials.json");
-		expect(readFileSync(file, "utf-8")).toBe(SECRET_CUR);
+		const file = join(pool, "personal", ".credentials.json");
+		expect(readFileSync(file, "utf-8")).toBe(SECRET_A);
 		expect(statSync(file).mode & 0o777).toBe(0o600);
-		expect(statSync(join(pool, "current")).mode & 0o777).toBe(0o700);
+		expect(statSync(join(pool, "personal")).mode & 0o777).toBe(0o700);
 	});
 
 	it("status/list reflect the active profile", () => {
@@ -812,6 +1064,466 @@ node -e 'const fs=require("fs"); const [path,name]=process.argv.slice(1); const 
 	});
 });
 
+describe("flywheel-claude-profile — identity proof (FLY-1182)", () => {
+	it("verify pool probes the token against its anchor without exposing the token in curl argv", () => {
+		seedAnchor("personal", "uuid-personal", EMAILS.personal);
+
+		const { stdout } = runBoth(["verify", "personal", "--source", "pool"]);
+
+		expect(stdout).toContain("match");
+		expect(stdout).toContain("x***@gmail.com");
+		const argv = readFileSync(identityCurlArgvLog, "utf-8");
+		expect(argv).toContain("--config -");
+		expect(argv).not.toContain("sk-ant-oat01");
+	});
+
+	it("target identity assertion C maps mismatch/untracked/unavailable to 86/87/88 with zero mutation", () => {
+		const beforeDisplay = readFileSync(claudeJson, "utf-8");
+
+		seedAnchor("personal", "wrong-uuid", "wrong@example.com");
+		let result = runExpectFail(["use", "personal"]);
+		expect(result.status).toBe(86);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+		expect(readFileSync(claudeJson, "utf-8")).toBe(beforeDisplay);
+
+		rmSync(join(pool, "personal", "identity-anchor.json"));
+		result = runExpectFail(["use", "personal"]);
+		expect(result.status).toBe(87);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+
+		seedAnchor("personal", "uuid-personal", EMAILS.personal);
+		const unavailableCurl = join(tmp, "identity-curl-unavailable");
+		writeFileSync(unavailableCurl, "#!/bin/sh\ncat >/dev/null\nexit 22\n", {
+			mode: 0o755,
+		});
+		result = runExpectFail(["use", "personal"], {
+			FLYWHEEL_PROFILE_CURL_BIN: unavailableCurl,
+		});
+		expect(result.status).toBe(88);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+		expect(readFileSync(claudeJson, "utf-8")).toBe(beforeDisplay);
+	});
+
+	it("active identity assertion B captures only matches and emits one stable marker for every non-match branch", () => {
+		// match → capture-back is allowed
+		writeFileSync(join(pool, ".active"), "personal");
+		writeFileSync(stateFile, SECRET_PERSONAL_REFRESHED);
+		let switched = runBoth(["use", "school"]);
+		expect(switched.stderr).not.toContain("FLYWHEEL_ACTIVE_IDENTITY_DRIFT");
+		expect(
+			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_PERSONAL_REFRESHED);
+
+		// mismatch → skip capture-back, repair drift by writing verified target
+		writeFileSync(join(pool, ".active"), "personal");
+		writeFileSync(join(pool, "personal", ".credentials.json"), SECRET_A);
+		writeFileSync(stateFile, SECRET_DRIFT);
+		switched = runBoth(["use", "school"]);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("school");
+		expect(
+			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_A);
+		let markers = switched.stderr
+			.split("\n")
+			.filter((line) => line.startsWith("FLYWHEEL_ACTIVE_IDENTITY_DRIFT "));
+		expect(markers).toHaveLength(1);
+		expect(JSON.parse(markers[0].split(" ", 2)[1])).toEqual({
+			version: 1,
+			reason: "mismatch",
+			label: "personal",
+			expectedUuid: "uuid-personal",
+			observedEmailRedacted: "d***@example.com",
+		});
+
+		// untracked → skip capture-back, expectedUuid is explicitly null
+		writeFileSync(join(pool, ".active"), "personal");
+		writeFileSync(stateFile, SECRET_A);
+		rmSync(join(pool, "personal", "identity-anchor.json"));
+		switched = runBoth(["use", "school"]);
+		markers = switched.stderr
+			.split("\n")
+			.filter((line) => line.startsWith("FLYWHEEL_ACTIVE_IDENTITY_DRIFT "));
+		expect(markers).toHaveLength(1);
+		expect(JSON.parse(markers[0].split(" ", 2)[1])).toMatchObject({
+			version: 1,
+			reason: "untracked",
+			label: "personal",
+			expectedUuid: null,
+		});
+		expect(
+			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_A);
+
+		// unavailable → C succeeds first, B probe fails second; switch still repairs
+		seedAnchor("personal", "uuid-personal", EMAILS.personal);
+		writeFileSync(join(pool, ".active"), "personal");
+		writeFileSync(stateFile, SECRET_A);
+		const callCount = join(tmp, "identity-curl-call-count");
+		const secondCallFails = join(tmp, "identity-curl-second-call-fails");
+		writeFileSync(
+			secondCallFails,
+			`#!/usr/bin/env bash
+set -euo pipefail
+n=0; [[ -f "${callCount}" ]] && n=$(cat "${callCount}")
+n=$((n + 1)); printf '%s' "$n" > "${callCount}"
+cat >/dev/null
+if [[ "$n" -eq 1 ]]; then printf '%s' '${JSON.stringify({ account: IDENTITY_PROFILES["sk-ant-oat01-BBB"] })}'; else exit 22; fi
+`,
+			{ mode: 0o755 },
+		);
+		switched = runBoth(["use", "school"], {
+			FLYWHEEL_PROFILE_CURL_BIN: secondCallFails,
+		});
+		markers = switched.stderr
+			.split("\n")
+			.filter((line) => line.startsWith("FLYWHEEL_ACTIVE_IDENTITY_DRIFT "));
+		expect(markers).toHaveLength(1);
+		expect(JSON.parse(markers[0].split(" ", 2)[1])).toEqual({
+			version: 1,
+			reason: "unavailable",
+			label: "personal",
+			expectedUuid: "uuid-personal",
+			observedEmailRedacted: null,
+		});
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+	});
+
+	it("capture bootstraps only a truly empty mapped slot and refuses legacy credentials without an anchor", () => {
+		seedIdentityMap();
+		writeFileSync(stateFile, SECRET_BIZ);
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_BIZ));
+
+		run(["capture", "business"]);
+		expect(
+			JSON.parse(
+				readFileSync(join(pool, "business", "identity-anchor.json"), "utf-8"),
+			),
+		).toMatchObject({
+			accountUuid: "uuid-biz",
+			email: EMAILS.business,
+			confirmedBy: "identity-map-test-v1",
+		});
+		expect(
+			readFileSync(join(pool, "business", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_BIZ);
+		expect(
+			JSON.parse(
+				readFileSync(join(pool, "business", "oauthAccount.json"), "utf-8"),
+			).accountUuid,
+		).toBe("uuid-biz");
+
+		// Existing credential + display metadata but missing anchor is a legacy
+		// migration state, never a bootstrap state.
+		writeFileSync(join(pool, "personal", "oauthAccount.json"), "{}", {
+			mode: 0o600,
+		});
+		rmSync(join(pool, "personal", "identity-anchor.json"));
+		const beforeCredential = readFileSync(
+			join(pool, "personal", ".credentials.json"),
+			"utf-8",
+		);
+		const result = runExpectFail(["capture", "personal"]);
+		expect(result.status).toBe(87);
+		expect(
+			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
+		).toBe(beforeCredential);
+		expect(existsSync(join(pool, "personal", "identity-anchor.json"))).toBe(
+			false,
+		);
+
+		// Both bootstrap proofs are mandatory. A display/token mismatch fails
+		// before even creating the new slot.
+		const shoppingDir = join(pool, "shopping");
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_BIZ));
+		const displayMismatch = runExpectFail(["capture", "shopping"]);
+		expect(displayMismatch.status).toBe(86);
+		expect(existsSync(shoppingDir)).toBe(false);
+
+		// Even when display and token agree, the canonical label mapping must too.
+		seedIdentityMap({ shopping: "not-current@example.com" });
+		writeFileSync(
+			claudeJson,
+			claudeJsonWith({
+				accountUuid: "uuid-current",
+				emailAddress: "current@example.com",
+				organizationUuid: "org-current",
+				organizationName: "Current Org",
+			}),
+		);
+		const mappingMismatch = runExpectFail(["capture", "shopping"]);
+		expect(mappingMismatch.status).toBe(87);
+		expect(existsSync(shoppingDir)).toBe(false);
+	});
+
+	it("anchor migration and replacement require live proof, canonical evidence, and explicit replacement confirmation", () => {
+		seedIdentityMap();
+		writeFileSync(stateFile, SECRET_A);
+		writeFileSync(
+			claudeJson,
+			claudeJsonWith({
+				accountUuid: "uuid-personal",
+				emailAddress: EMAILS.personal,
+				organizationUuid: "org-personal",
+				organizationName: "Personal Org",
+			}),
+		);
+		writeFileSync(
+			join(pool, "personal", "oauthAccount.json"),
+			JSON.stringify({
+				accountUuid: "legacy",
+				emailAddress: "legacy@example.com",
+				organizationUuid: "legacy-org",
+				organizationName: "Legacy Org",
+			}),
+			{ mode: 0o600 },
+		);
+		rmSync(join(pool, "personal", "identity-anchor.json"));
+
+		run(["anchor", "personal", "--migrate"]);
+		let anchor = JSON.parse(
+			readFileSync(join(pool, "personal", "identity-anchor.json"), "utf-8"),
+		);
+		expect(anchor).toMatchObject({
+			accountUuid: "uuid-personal",
+			email: EMAILS.personal,
+			confirmedBy: "identity-map-test-v1",
+		});
+		const migratedAnchor = anchor;
+
+		// Existing anchors cannot be silently re-anchored.
+		let result = runExpectFail(["anchor", "personal", "--replace"]);
+		expect(result.status).not.toBe(0);
+		expect(
+			JSON.parse(
+				readFileSync(join(pool, "personal", "identity-anchor.json"), "utf-8"),
+			),
+		).toEqual(anchor);
+
+		run(["anchor", "personal", "--replace"], {
+			FLYWHEEL_PROFILE_REANCHOR_CONFIRM: "personal",
+		});
+		anchor = JSON.parse(
+			readFileSync(join(pool, "personal", "identity-anchor.json"), "utf-8"),
+		);
+		expect(anchor.accountUuid).toBe("uuid-personal");
+		expect(anchor.email).toBe(EMAILS.personal);
+		const replacementAudit = readFileSync(auditLog, "utf-8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line))
+			.at(-1);
+		expect(replacementAudit).toMatchObject({
+			probeSummary: "match",
+			details: {
+				oldAnchor: migratedAnchor,
+				newAnchor: anchor,
+				artifactId: "identity-map-test-v1",
+				confirmationReference: "env:FLYWHEEL_PROFILE_REANCHOR_CONFIRM=personal",
+			},
+		});
+		expect(replacementAudit.details.identityMapSha256).toMatch(
+			/^[a-f0-9]{64}$/,
+		);
+
+		result = runExpectFail(
+			["anchor", "personal", "--replace", "--evidence", "relative-map.json"],
+			{
+				FLYWHEEL_PROFILE_REANCHOR_CONFIRM: "personal",
+			},
+		);
+		expect(result.status).not.toBe(0);
+	});
+
+	it("canonical identity maps and anchors reject schema drift, wide modes, and symlinks", () => {
+		seedIdentityMap();
+		writeFileSync(stateFile, SECRET_A);
+		writeFileSync(
+			claudeJson,
+			claudeJsonWith({
+				accountUuid: "uuid-personal",
+				emailAddress: EMAILS.personal,
+				organizationUuid: "org-personal",
+				organizationName: "Personal Org",
+			}),
+		);
+		writeFileSync(join(pool, "personal", "oauthAccount.json"), "{}", {
+			mode: 0o600,
+		});
+		rmSync(join(pool, "personal", "identity-anchor.json"));
+		const mapPath = join(pool, "identity-map.json");
+
+		const mapWithExtra = JSON.parse(readFileSync(mapPath, "utf-8"));
+		mapWithExtra.labels.unknown = "unknown@example.com";
+		writeFileSync(mapPath, JSON.stringify(mapWithExtra), { mode: 0o600 });
+		expect(runExpectFail(["anchor", "personal", "--migrate"]).status).toBe(87);
+
+		seedIdentityMap();
+		chmodSync(mapPath, 0o644);
+		expect(runExpectFail(["anchor", "personal", "--migrate"]).status).toBe(87);
+
+		const realMap = join(tmp, "real-identity-map.json");
+		seedIdentityMap();
+		writeFileSync(realMap, readFileSync(mapPath), { mode: 0o600 });
+		rmSync(mapPath);
+		symlinkSync(realMap, mapPath);
+		expect(runExpectFail(["anchor", "personal", "--migrate"]).status).toBe(87);
+
+		// An anchor with any extra key is untracked, never partially accepted.
+		rmSync(mapPath);
+		seedAnchor("personal", "uuid-personal", EMAILS.personal);
+		const anchorPath = join(pool, "personal", "identity-anchor.json");
+		const anchorWithExtra = JSON.parse(readFileSync(anchorPath, "utf-8"));
+		anchorWithExtra.note = "unexpected";
+		writeFileSync(anchorPath, JSON.stringify(anchorWithExtra), { mode: 0o600 });
+		expect(
+			runExpectFail(["verify", "personal", "--source", "pool"]).status,
+		).toBe(87);
+		chmodSync(anchorPath, 0o644);
+		expect(
+			runExpectFail(["verify", "personal", "--source", "pool"]).status,
+		).toBe(87);
+	});
+
+	it("mutating commands append safe entry+exit audit records and refuse an unsafe audit target before mutation", () => {
+		run(["use", "personal"], {
+			FLYWHEEL_AUDIT_ACTOR: "operator\ncontrolled-line",
+		});
+		const raw = readFileSync(auditLog, "utf-8");
+		const lines = raw.trim().split("\n");
+		expect(lines).toHaveLength(2);
+		const records = lines.map((line) => JSON.parse(line));
+		expect(records.map((record) => record.phase)).toEqual(["entry", "exit"]);
+		expect(records[0]).toMatchObject({
+			cmd: "use",
+			profile: "personal",
+			actor: "operator\ncontrolled-line",
+		});
+		expect(records[1]).toMatchObject({
+			cmd: "use",
+			profile: "personal",
+			exitCode: 0,
+		});
+		expect(statSync(auditLog).mode & 0o777).toBe(0o600);
+		expect(raw).not.toContain("sk-ant-oat01");
+		expect(raw).not.toContain("accessToken");
+		writeFileSync(auditLog, "", { mode: 0o600 });
+		run(["next"]);
+		const nextRecords = readFileSync(auditLog, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(nextRecords).toHaveLength(2);
+		// Candidate loops do not know which profile will pass live quota until
+		// after the entry audit. The exit record carries the actual committed one.
+		expect(nextRecords[0]).toMatchObject({ cmd: "next", profile: null });
+		expect(nextRecords[1]).toMatchObject({
+			cmd: "next",
+			profile: "school",
+			exitCode: 0,
+		});
+
+		// Existing wide-mode files are not grandfathered by umask: entry audit
+		// must fail before a mutating command can touch the Keychain.
+		writeFileSync(stateFile, SECRET_CUR);
+		rmSync(join(pool, ".active"), { force: true });
+		chmodSync(auditLog, 0o644);
+		const result = runExpectFail(["use", "personal"]);
+		expect(result.status).not.toBe(0);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+
+		// A symlink target is equally unsafe and its referent remains untouched.
+		const referent = join(tmp, "audit-referent");
+		writeFileSync(referent, "sentinel", { mode: 0o600 });
+		rmSync(auditLog);
+		symlinkSync(referent, auditLog);
+		const symlinked = runExpectFail(["use", "personal"]);
+		expect(symlinked.status).not.toBe(0);
+		expect(readFileSync(referent, "utf-8")).toBe("sentinel");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+	});
+
+	it("EXIT audit failure preserves the original failure code and still releases the lock", () => {
+		seedAnchor("personal", "wrong-uuid", EMAILS.personal);
+		const binDir = join(tmp, "audit-exit-stubbin");
+		mkdirSync(binDir);
+		writeFileSync(
+			join(binDir, "node"),
+			`#!/bin/sh
+case "$*" in
+  *"$FLYWHEEL_PROFILE_AUDIT_LOG exit "*) exit 70 ;;
+esac
+exec "$FLYWHEEL_REAL_NODE" "$@"
+`,
+			{ mode: 0o755 },
+		);
+		const result = runExpectFail(["use", "personal"], {
+			FLYWHEEL_REAL_NODE: process.execPath,
+			PATH: `${binDir}:${process.env.PATH ?? ""}`,
+		});
+		expect(result.status).toBe(86);
+		expect(existsSync(lockDir)).toBe(false);
+		const records = readFileSync(auditLog, "utf-8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(records).toHaveLength(1);
+		expect(records[0].phase).toBe("entry");
+	});
+
+	it("identity bypass is a loud manual-only escape hatch and is denied on delegated automatic switches", () => {
+		// Human/manual path: old behavior is available explicitly even when the
+		// target cannot be anchored/probed.
+		rmSync(join(pool, "personal", "identity-anchor.json"));
+		const unavailableCurl = join(tmp, "identity-bypass-unavailable-curl");
+		writeFileSync(unavailableCurl, "#!/bin/sh\ncat >/dev/null\nexit 22\n", {
+			mode: 0o755,
+		});
+		const manual = runBoth(["use", "personal"], {
+			FLYWHEEL_PROFILE_IDENTITY_BYPASS: "1",
+			FLYWHEEL_PROFILE_CURL_BIN: unavailableCurl,
+		});
+		expect(manual.stderr).toMatch(/IDENTITY_BYPASS|identity.*bypass/i);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A);
+		const manualAudit = readFileSync(auditLog, "utf-8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(manualAudit.at(-1).probeSummary).toBe("bypass_requested");
+
+		// Automatic/delegated path: even inherited bypass=1 is rejected before
+		// Keychain mutation and leaves an auditable denied result.
+		writeFileSync(stateFile, SECRET_CUR);
+		rmSync(join(pool, ".active"), { force: true });
+		writeFileSync(auditLog, "", { mode: 0o600 });
+		mkdirSync(lockDir, { recursive: true });
+		writeFileSync(
+			join(lockDir, "holder"),
+			JSON.stringify({ pid: process.pid, at: Date.now() }),
+		);
+		const denied = runExpectFail(["use", "personal"], {
+			FLYWHEEL_PROFILE_IDENTITY_BYPASS: "1",
+			FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
+		});
+		expect(denied.status).toBe(88);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+		const deniedAudit = readFileSync(auditLog, "utf-8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(deniedAudit.at(-1)).toMatchObject({
+			probeSummary: "bypass_denied",
+			exitCode: 88,
+		});
+		rmSync(lockDir, { recursive: true, force: true });
+	});
+});
+
 /**
  * FLY-865 — the switch must ALSO swap the display identity: `use` writes the
  * captured `oauthAccount` back into ~/.claude.json (the source /status reads),
@@ -832,23 +1544,26 @@ describe("flywheel-claude-profile — display identity sync (FLY-865)", () => {
 
 	it("`capture` snapshots the current ~/.claude.json oauthAccount beside the token (0600) + echoes email", () => {
 		// scratch ~/.claude.json currently holds the BIZ identity.
+		seedIdentityMap();
+		writeFileSync(stateFile, SECRET_BIZ);
 		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_BIZ));
 		const { stdout, stderr } = runBoth(["capture", "business"]);
 		// token still captured (existing behavior):
 		expect(
 			readFileSync(join(pool, "business", ".credentials.json"), "utf-8"),
-		).toBe(SECRET_CUR);
+		).toBe(SECRET_BIZ);
 		// identity captured beside it, 0600:
 		expect(JSON.parse(readFileSync(identityFile("business"), "utf-8"))).toEqual(
 			IDENTITY_BIZ,
 		);
 		expect(statSync(identityFile("business")).mode & 0o777).toBe(0o600);
 		// the email is echoed for operator eyeballing (stdout or stderr):
-		expect(stdout + stderr).toContain("biz@example.com");
+		expect(stdout + stderr).toContain(EMAILS.business);
 	});
 
 	it("`capture` with no/invalid target oauthAccount DELETES any stale identity file (no stale pairing) + still captures token + exit 0", () => {
 		// business already has a (stale) identity from a prior capture…
+		seedAnchor("business", "uuid-current", "current@example.com");
 		seedIdentity("business", IDENTITY_BIZ);
 		// …but the current ~/.claude.json has NO oauthAccount now.
 		writeFileSync(claudeJson, JSON.stringify({ numStartups: 1 }));
@@ -1012,7 +1727,15 @@ describe("flywheel-claude-profile — display identity sync (FLY-865)", () => {
 		const stubPidFile = join(tmp, "stub.pid");
 		writeFileSync(
 			join(binDir, "node"),
-			'#!/bin/sh\necho $$ > "$FLY865_STUB_PID"\nexec sleep 20\n',
+			`#!/bin/sh
+	last=""
+	for arg in "$@"; do last="$arg"; done
+	if test "$last" = "$FLYWHEEL_CLAUDE_JSON"; then
+	  echo $$ > "$FLY865_STUB_PID"
+	  exec sleep 20
+	fi
+	exec "$FLY865_REAL_NODE" "$@"
+	`,
 			{ mode: 0o755 },
 		);
 		// Delegated: pre-hold the ACCOUNTS lock as THIS process so the child's
@@ -1022,13 +1745,18 @@ describe("flywheel-claude-profile — display identity sync (FLY-865)", () => {
 			join(lockDir, "holder"),
 			JSON.stringify({ pid: process.pid, at: Date.now() }),
 		);
+		let childStderr = "";
 		const child = spawn("bash", [PROFILE_BIN, "use", "personal"], {
 			env: env({
 				FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
 				FLY865_STUB_PID: stubPidFile,
+				FLY865_REAL_NODE: process.execPath,
 				PATH: `${binDir}:${process.env.PATH ?? ""}`,
 			}),
-			stdio: "ignore",
+			stdio: ["ignore", "ignore", "pipe"],
+		});
+		child.stderr?.on("data", (chunk) => {
+			childStderr += String(chunk);
 		});
 		const waitFor = async (cond: () => boolean): Promise<boolean> => {
 			for (let i = 0; i < 250; i++) {
@@ -1037,8 +1765,13 @@ describe("flywheel-claude-profile — display identity sync (FLY-865)", () => {
 			}
 			return cond();
 		};
-		// Script acquired `lock`, then stalled in the sleeping node patch.
-		expect(await waitFor(() => existsSync(lock))).toBe(true);
+		// Wait for the sleeping patch child, not merely the mkdir. The lock becomes
+		// visible a few instructions before the script records it as owned; using
+		// directory existence alone made this test race the acquisition boundary.
+		const reachedPatch = await waitFor(
+			() => existsSync(lock) && existsSync(stubPidFile),
+		);
+		expect(reachedPatch, childStderr).toBe(true);
 		child.kill("SIGTERM"); // just the shell
 		// The global EXIT trap must have released the lock despite delegated mode.
 		expect(await waitFor(() => !existsSync(lock))).toBe(true);
@@ -1173,14 +1906,15 @@ exit 0
 		).toBe(SECRET_ROTATED);
 	});
 
-	it("CAPTURE-BACK: the OLD active account's DRIFTED Keychain value is snapshotted into its pool slot", () => {
+	it("CAPTURE-BACK: identity drift is not copied into the active slot", () => {
 		run(["use", "personal"]); // active=personal, kc=SECRET_A
 		// claude auto-refreshed the live token → the Keychain drifted:
 		writeFileSync(stateFile, SECRET_DRIFT);
-		run(["use", "school"]); // switching away captures personal's drifted value back
+		const { stderr } = runBoth(["use", "school"]);
 		expect(
 			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
-		).toBe(SECRET_DRIFT);
+		).toBe(SECRET_A);
+		expect(stderr).toContain("FLYWHEEL_ACTIVE_IDENTITY_DRIFT");
 		// the new target still switched normally
 		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
 		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("school");
@@ -1192,6 +1926,18 @@ exit 0
 		expect(
 			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
 		).toBe(SECRET_A);
+	});
+
+	it("capture-back ignores a predictable legacy temp symlink", () => {
+		writeFileSync(join(pool, ".active"), "personal");
+		writeFileSync(stateFile, SECRET_PERSONAL_REFRESHED);
+		const credential = join(pool, "personal", ".credentials.json");
+		const referent = join(tmp, "legacy-temp-referent");
+		writeFileSync(referent, "sentinel", { mode: 0o600 });
+		symlinkSync(referent, `${credential}.tmp`);
+		run(["use", "school"]);
+		expect(readFileSync(referent, "utf8")).toBe("sentinel");
+		expect(readFileSync(credential, "utf8")).toBe(SECRET_PERSONAL_REFRESHED);
 	});
 
 	it("re-selecting the CURRENT active (name == active) does NOT probe-refresh it (never refresh the active family)", () => {
@@ -1208,7 +1954,7 @@ exit 0
 		writeFileSync(outside, SECRET_CUR);
 		rmSync(join(pool, "personal", ".credentials.json"), { force: true });
 		symlinkSync(outside, join(pool, "personal", ".credentials.json"));
-		writeFileSync(stateFile, SECRET_DRIFT);
+		writeFileSync(stateFile, SECRET_PERSONAL_REFRESHED);
 		const { stderr } = runBoth(["use", "school"]);
 		// the symlink target OUTSIDE the pool was NOT written through
 		expect(readFileSync(outside, "utf-8")).toBe(SECRET_CUR);
@@ -1623,50 +2369,47 @@ esac
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 	});
 
-	it("capture_back mismatch skips the pool write but still switches and reports the fact", () => {
+	it("capture_back mismatch skips the pool write but still switches to the verified target (anti-contamination)", () => {
+		// FLY-1182 assertion B (deployed anchor behavior, per Lead ruling: capture
+		// uses the always-on anchor model, and capture_back keeps its shipped
+		// anti-contamination semantics). The outgoing account's live Keychain token
+		// drifted from its anchor, so it is NEVER copied back into its pool slot —
+		// but the switch to the already-verified target still completes (a drifted
+		// outgoing account must not strand the user on a bad account). The drift is
+		// surfaced as a single stable marker, not silently swallowed.
 		writeFileSync(join(pool, ".active"), "personal", { mode: 0o600 });
+		writeFileSync(join(pool, "personal", ".credentials.json"), SECRET_A);
 		writeFileSync(stateFile, SECRET_DRIFT);
-		const report = join(tmp, "capture-back-report.json");
-		const guard = identityGuard(
-			`if [[ "$name" == "personal" ]]; then
-  echo "identity verify: mismatch expectedKey=${EXPECTED} actualDigest=${ACTUAL}" >&2
-  exit 34
-fi
-echo "identity verify: match expectedKey=${EXPECTED}" >&2
-exit 0`,
-		);
 
-		run(["use", "school"], {
-			FLYWHEEL_ACCOUNT_IDENTITY_CHECK: "1",
-			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: guard,
-			FLYWHEEL_APPLY_REPORT_FILE: report,
-		});
+		const switched = runBoth(["use", "school"]);
 
+		// the switch to the verified target completed
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_B);
+		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("school");
+		// the drifted outgoing token was NOT written back into its pool slot
 		expect(
 			readFileSync(join(pool, "personal", ".credentials.json"), "utf8"),
 		).toBe(SECRET_A);
-		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_B);
-		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("school");
-		expect(
-			JSON.parse(readFileSync(report, "utf8")).identityChecks[0],
-		).toMatchObject({
+		// exactly one stable drift marker surfaced the capture-back mismatch
+		const markers = switched.stderr
+			.split("\n")
+			.filter((line) => line.startsWith("FLYWHEEL_ACTIVE_IDENTITY_DRIFT "));
+		expect(markers).toHaveLength(1);
+		expect(JSON.parse(markers[0].split(" ", 2)[1])).toMatchObject({
+			reason: "mismatch",
 			label: "personal",
-			checkpoint: "capture_back",
-			verdict: "mismatch",
+			expectedUuid: "uuid-personal",
 		});
 	});
 
-	it("manual capture mismatch exits 34 without creating the labeled pool slot", () => {
-		const guard = identityGuard(
-			`echo "identity verify: mismatch expectedKey=${EXPECTED} actualDigest=${ACTUAL}" >&2
-exit 34`,
-		);
-		const { status } = runExpectFail(["capture", "current"], {
-			FLYWHEEL_ACCOUNT_IDENTITY_CHECK: "1",
-			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: guard,
-			FLYWHEEL_APPLY_REPORT_FILE: join(tmp, "capture-report.json"),
-		});
-		expect(status).toBe(34);
+	it("manual capture without an identity anchor fails closed (anchor 87), creating no labeled pool slot", () => {
+		// FLY-1182 migration (Lead ruling: capture uses the always-on anchor
+		// model, not the env-gated probe). A fresh label with neither an identity
+		// anchor nor a canonical identity map cannot bootstrap, so the pool write
+		// is refused before any slot is created — the anti-contamination guarantee
+		// this issue was filed for. Exit 87 = untracked/unbootstrappable.
+		const { status } = runExpectFail(["capture", "current"]);
+		expect(status).toBe(87);
 		expect(existsSync(join(pool, "current", ".credentials.json"))).toBe(false);
 	});
 
@@ -1699,18 +2442,20 @@ exit 38`,
 		]);
 	}, 15_000);
 
-	it("identity policy OFF preserves switch and capture behavior without identity probes", () => {
-		run(["use", "personal"]);
-		writeFileSync(quotaLog, "");
-		writeFileSync(stateFile, SECRET_DRIFT);
-		run(["use", "school"]);
-		run(["capture", "off-capture"]);
-		expect(readFileSync(quotaLog, "utf8")).not.toContain("identity-verify");
-		expect(
-			readFileSync(join(pool, "personal", ".credentials.json"), "utf8"),
-		).toBe(SECRET_DRIFT);
-		expect(
-			readFileSync(join(pool, "off-capture", ".credentials.json"), "utf8"),
-		).toBe(SECRET_B);
+	it("legacy identity policy env off does NOT exempt capture — the anchor gate stays enforced", () => {
+		// FLY-1182 migration + ruling 3 (Lead): the anchor layer is the single
+		// identity truth and has NO env door. Even with the contamination-era
+		// policy-off passthrough (FLYWHEEL_ACCOUNT_IDENTITY_CHECK unset — model B's
+		// exemption), a capture into an unanchored label without a canonical
+		// identity map is still refused closed (87) and creates no pool slot. That
+		// passthrough is exactly the zero-verification pool-write behavior this
+		// issue kills. (The env-gated probe layer still governs switch pre-write;
+		// its policy-off passthrough is covered by the dedicated FLY-1252 switch
+		// tests, which this migration deliberately leaves untouched.)
+		const { status } = runExpectFail(["capture", "off-capture"]);
+		expect(status).toBe(87);
+		expect(existsSync(join(pool, "off-capture", ".credentials.json"))).toBe(
+			false,
+		);
 	}, 15_000);
 });

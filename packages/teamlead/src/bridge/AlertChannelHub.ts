@@ -17,10 +17,11 @@
  * `duplicate` with no active thread degrades to ROOT-ONLY — no thread/ack/bot.
  */
 
-import type {
-	AlertEventType,
-	AlertPayload,
-	AlertResult,
+import {
+	type AlertEventType,
+	type AlertPayload,
+	type AlertResult,
+	isInformationalKind,
 } from "../LeadAlertNotifier.js";
 import {
 	classifyLeadAlertPane,
@@ -300,6 +301,28 @@ const LEAD_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"pane_error_stalled",
 ]);
 
+/**
+ * Quota-monitor tickets are machine-daemon state, not a Lead-pane or fleet
+ * sensor condition. They therefore stay open for explicit human disposition;
+ * successful/transient/confirmation notices are informational and never enter
+ * this lifecycle. Keeping this set explicit prevents a future quota kind from
+ * silently inheriting an invalid Lead-pane recovery probe.
+ */
+export const QUOTA_MONITOR_MANUAL_TICKET_KINDS: ReadonlySet<AlertEventType> =
+	new Set([
+		"account_identity_mismatch",
+		"account_switch_degraded",
+		"machine_account_conflict",
+		"model_cap_persistent_unknown",
+		"model_bench_malformed",
+		"quota_choice",
+		"quota_no_target",
+		"quota_read_blind",
+		"account_switch_failed",
+		"quota_revive_stuck",
+		"quota_monitor_down",
+	]);
+
 export function correlationKeyFor(p: {
 	projectName: string;
 	leadId: string;
@@ -323,6 +346,7 @@ export class AlertChannelHub {
 	/** The watchdog notifier points here in unified+threading mode. */
 	async handle(payload: AlertPayload): Promise<AlertResult> {
 		const result = await this.deps.notifier.alert(payload);
+		if (isInformationalKind(payload.eventType)) return result;
 		// Degrade to root-only on duplicate/queued (Codex R1 MEDIUM-5).
 		if (result.skipped === "duplicate" || result.queued) return result;
 		if (!result.sent || !result.channelId || !result.messageId) return result;
@@ -734,6 +758,14 @@ export class AlertChannelHub {
 		const active = this.deps.store.listActiveAlertThreads();
 		for (const row of active) {
 			try {
+				if (
+					QUOTA_MONITOR_MANUAL_TICKET_KINDS.has(
+						row.event_type as AlertEventType,
+					)
+				) {
+					await this.reconcileTicket(row);
+					continue;
+				}
 				if (
 					row.session_key &&
 					(row.event_type === "runner_stuck_unhandled" ||
