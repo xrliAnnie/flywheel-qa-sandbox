@@ -1,0 +1,295 @@
+# FLY-1323 · one-time distribution ACTIVATION — the deliberate, reviewed
+# reversal of the "credentials never in CI" posture (FLY-1062 底线一/二/三).
+# Annie's direction (2026-07-18): one-time tokenization — she creates two
+# vendor tokens once; every execution (including npm publish) is CI from
+# then on, zero founder involvement per release.
+#
+# NEW SECURITY POSTURE — "merge gate = publish gate" (design doc:
+# engineering/doc/FLY-1323-npm-distribution-activation/ci-activation-design.md):
+#   * both vendor secrets (CLOUDFLARE_API_TOKEN, NPM_PUBLISH_TOKEN) live in
+#     the GitHub Environment `release`, whose deployment branch policy allows
+#     ONLY main — a PR / branch / fork workflow cannot resolve them;
+#   * this job declares `environment: release` AND refuses any non-main ref,
+#     so the only path to these secrets is code that already passed the
+#     founder-gated merge to main;
+#   * release-workflows-structure.test.sh machine-enforces exactly this shape
+#     (a vendor-credential reference in a workflow WITHOUT environment:
+#     release fails the structure lint — the old blanket ban became a
+#     scoped-allowlist contract, not a free-for-all).
+#
+# TWO MODES — npm publish must ship a REVIEWED tree, and the real workers.dev
+# URL is only knowable after the first deploy, so infra and publish are split
+# by the DEFAULT_ENDPOINT PR in between:
+#   infra   — R2 bucket + Worker deploy + beta-capability sha stamp +
+#             manifest init. Prints the endpoint URL. No publish.
+#   publish — preflight + `npm publish` of @flywheel-ai/onboard. Refuses to
+#             run while DEFAULT_ENDPOINT is still the .invalid placeholder,
+#             so it can only fire AFTER the real-URL PR merged.
+name: Payload Distribution Activation
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "type ACTIVATE to confirm (touches the real Cloudflare account / npm registry)"
+        required: true
+        type: string
+      mode:
+        description: "infra = bucket/Worker/manifest · publish = npm publish the shell"
+        required: true
+        type: choice
+        options:
+          - infra
+          - publish
+      workers-subdomain:
+        description: "OPTIONAL (infra only): register this workers.dev subdomain if the account has none — it appears in customer URLs, the founder picks the name"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# single-flight with every other payload publish operation — also what makes
+# a per-run capability-stamp race impossible (design §4).
+concurrency:
+  group: payload-release
+
+jobs:
+  activate:
+    name: Activate distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # JOB-LEVEL gate (Codex R1 HIGH-2): environment branch policies match on
+    # GITHUB_REF, and a pull_request_target event runs with ref = the default
+    # branch — so a future trigger edit could satisfy the branch policy from a
+    # fork PR. This if refuses to start the job at all unless the event is a
+    # real workflow_dispatch on main; no step (and no secret use) can precede
+    # a job-level condition.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    # THE gate: the secrets below resolve ONLY because this job runs on main
+    # inside the `release` environment (deployment branch policy: main).
+    environment: release
+    env:
+      # Annie's Cloudflare account (activation checklist §0c) — an id, not a
+      # secret; kept as a repo variable so later release workflows share it.
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Guards (main-only + explicit ACTIVATE confirm)
+        env:
+          GH_REF: ${{ github.ref }}
+          CONFIRM_INPUT: ${{ inputs.confirm }}
+        run: |
+          if [ "$GH_REF" != "refs/heads/main" ]; then
+            echo "::error::activation may only run from main (got $GH_REF)"
+            exit 1
+          fi
+          if [ "$CONFIRM_INPUT" != "ACTIVATE" ]; then
+            echo "::error::confirm input must be exactly ACTIVATE"
+            exit 1
+          fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::CLOUDFLARE_ACCOUNT_ID repo variable is not set"
+            exit 1
+          fi
+
+      # actions pinned to full commit SHAs (Codex R1 MED-3): a moving tag on a
+      # privileged job is a supply-chain hole — full SHA is the only immutable
+      # action reference.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          # wires .npmrc to NODE_AUTH_TOKEN for the publish step; inert in
+          # infra mode (no npm auth is used there).
+          registry-url: https://registry.npmjs.org
+
+      # wrangler comes from the REVIEWED lockfile (root devDependency, exact
+      # 4.111.0) via a frozen install — not a floating npx fetch. pnpm 10's
+      # onlyBuiltDependencies allowlist already refuses arbitrary dependency
+      # build scripts, so this install runs no unreviewed code.
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      # ── mode: infra ────────────────────────────────────────────────────────
+      # workers.dev subdomain is ACCOUNT-wide and appears in customer URLs —
+      # if none is registered, `wrangler deploy` cannot prompt in CI. Verify
+      # first; register only a founder-chosen name (never invent one here).
+      - name: workers.dev subdomain (verify; register only a founder-chosen name)
+        if: inputs.mode == 'infra'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SUBDOMAIN_INPUT: ${{ inputs.workers-subdomain }}
+        run: |
+          set -o pipefail
+          RESP="$(curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain")"
+          SUB="$(printf '%s' "$RESP" | jq -r '.result.subdomain // empty')"
+          if [ -n "$SUB" ]; then
+            echo "workers.dev subdomain already registered: $SUB"
+          elif [ -n "$SUBDOMAIN_INPUT" ]; then
+            REG="$(curl -sS -X PUT -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H 'content-type: application/json' \
+              --data "$(jq -n --arg s "$SUBDOMAIN_INPUT" '{subdomain:$s}')" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain")"
+            printf '%s' "$REG" | jq -e '.success == true' >/dev/null \
+              || { echo "::error::subdomain registration failed"; printf '%s' "$REG" | jq -c '{success, errors}'; exit 1; }
+            echo "registered workers.dev subdomain: $SUBDOMAIN_INPUT"
+          else
+            echo "::error::this account has no workers.dev subdomain and none was supplied — the name appears in customer URLs, so the FOUNDER picks it. Re-dispatch with the workers-subdomain input."
+            exit 1
+          fi
+
+      - name: Create R2 bucket (tolerates already-exists = resume)
+        if: inputs.mode == 'infra'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set +e
+          OUT="$(pnpm exec wrangler r2 bucket create flywheel-payloads 2>&1)"; RC=$?
+          set -e
+          printf '%s\n' "$OUT"
+          if [ "$RC" -ne 0 ]; then
+            printf '%s' "$OUT" | grep -qi "already exists" \
+              || { echo "::error::bucket create failed (exit $RC)"; exit 1; }
+            echo "bucket flywheel-payloads already exists — resume OK"
+          fi
+
+      - name: Deploy Worker + capture endpoint URL
+        id: deploy
+        if: inputs.mode == 'infra'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          pnpm exec wrangler deploy --config packages/payload-endpoint/wrangler.toml 2>&1 | tee /tmp/deploy.out
+          URL="$(grep -oE 'https://flywheel-onboard-endpoint\.[a-zA-Z0-9-]+\.workers\.dev' /tmp/deploy.out | head -1)"
+          if [ -z "$URL" ]; then
+            echo "::error::could not find the workers.dev URL in the deploy output"
+            exit 1
+          fi
+          echo "endpoint=$URL" >> "$GITHUB_OUTPUT"
+          echo "deployed: $URL"
+
+      # per design §4 the Worker stores ONLY the sha256 of a capability token.
+      # The beta token is the app-level capability CI was ALWAYS allowed to
+      # hold (internal-beta blast radius — original plan §3). Derive its sha
+      # in-run so the repo secret and the Worker can never drift apart.
+      # customer-release / ops-admin shas are NOT stamped here: absent secret
+      # = fail-closed 401 on those capabilities until their own workflows
+      # land and stamp per-run ephemeral tokens (design §4/§5).
+      - name: Stamp beta capability sha256 into the Worker
+        if: inputs.mode == 'infra'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          FW_BETA_PUBLISH_TOKEN: ${{ secrets.FW_BETA_PUBLISH_TOKEN }}
+        run: |
+          set -o pipefail
+          if [ -z "$FW_BETA_PUBLISH_TOKEN" ]; then
+            echo "::error::FW_BETA_PUBLISH_TOKEN secret missing"
+            exit 1
+          fi
+          SHA="$(printf '%s' "$FW_BETA_PUBLISH_TOKEN" | sha256sum | cut -d' ' -f1)"
+          printf '%s' "$SHA" | pnpm exec wrangler secret put FW_BETA_PUBLISH_TOKEN_SHA256 \
+            --config packages/payload-endpoint/wrangler.toml
+          echo "beta capability sha256 stamped (the sha itself is not a secret — the Worker stores exactly this)"
+
+      - name: Initialize manifest (conditional create, resume-safe)
+        if: inputs.mode == 'infra'
+        env:
+          FW_BETA_PUBLISH_TOKEN: ${{ secrets.FW_BETA_PUBLISH_TOKEN }}
+          FW_ENDPOINT_URL: ${{ steps.deploy.outputs.endpoint }}
+        run: |
+          node --input-type=module - <<'JS'
+          const url = `${process.env.FW_ENDPOINT_URL}/admin/manifest`;
+          const auth = { authorization: `Bearer ${process.env.FW_BETA_PUBLISH_TOKEN}` };
+          const manifest = {
+            schemaVersion: 1,
+            channels: { "internal-beta": { latest: null }, "customer-release": { latest: null } },
+            versions: {},
+            releaseOps: {},
+            releaseLedger: {},
+            tombstones: [],
+          };
+          const post = await fetch(url, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ baseEtag: null, manifest }),
+          });
+          if (post.status === 200) {
+            console.log("manifest initialized (conditional create → 200)");
+            process.exit(0);
+          }
+          // 412 = the null-etag conditional create found an existing object.
+          // Verify it is a sane manifest and treat as resume — anything else
+          // is a real failure (401 = capability sha mismatch, etc).
+          const get = await fetch(url, { headers: auth });
+          if (post.status === 412 && get.status === 200) {
+            const m = await get.json();
+            if (m && m.schemaVersion === 1) {
+              console.log("manifest already initialized (resume) — OK");
+              process.exit(0);
+            }
+          }
+          console.error(`manifest init failed: POST ${post.status}, GET ${get.status}`);
+          process.exit(1);
+          JS
+
+      - name: Report endpoint URL
+        if: inputs.mode == 'infra'
+        env:
+          FW_ENDPOINT_URL: ${{ steps.deploy.outputs.endpoint }}
+        run: |
+          {
+            echo "## Distribution infra is up"
+            echo ""
+            echo "Endpoint: $FW_ENDPOINT_URL"
+            echo ""
+            echo "Next: PR the real URL into DEFAULT_ENDPOINT, merge, then re-dispatch this workflow with mode=publish."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "ENDPOINT_URL=$FW_ENDPOINT_URL"
+
+      # ── mode: publish ──────────────────────────────────────────────────────
+      - name: Refuse placeholder endpoint (publish ships a REVIEWED tree only)
+        if: inputs.mode == 'publish'
+        run: |
+          if grep -q 'flywheel\.invalid' packages/onboard-shell/lib/config.mjs; then
+            echo "::error::DEFAULT_ENDPOINT is still the .invalid placeholder — merge the real-URL PR first, then re-dispatch mode=publish"
+            exit 1
+          fi
+          echo "DEFAULT_ENDPOINT is real — proceeding"
+
+      - name: Publish preflight (explicit — prepublishOnly reruns it as the backstop)
+        if: inputs.mode == 'publish'
+        run: bash scripts/release/shell-publish-preflight.sh --founder-local
+
+      - name: npm publish @flywheel-ai/onboard
+        if: inputs.mode == 'publish'
+        working-directory: packages/onboard-shell
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
+        run: npm publish --access public
+
+      - name: Verify the published version is live on the registry
+        if: inputs.mode == 'publish'
+        working-directory: packages/onboard-shell
+        run: |
+          LOCAL_V="$(node -p "require('./package.json').version")"
+          for i in 1 2 3 4 5 6; do
+            PUB_V="$(npm view "@flywheel-ai/onboard@$LOCAL_V" version 2>/dev/null || true)"
+            if [ "$PUB_V" = "$LOCAL_V" ]; then
+              echo "published and visible: @flywheel-ai/onboard@$LOCAL_V"
+              {
+                echo "## Shell published"
+                echo ""
+                echo "@flywheel-ai/onboard@$LOCAL_V is live on registry.npmjs.org"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "not yet visible (attempt $i/6) — waiting 10s"
+            sleep 10
+          done
+          echo "::error::@flywheel-ai/onboard@$LOCAL_V did not become visible after publish"
+          exit 1
