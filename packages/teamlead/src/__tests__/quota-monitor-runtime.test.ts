@@ -642,4 +642,43 @@ describe("makeQuotaMonitorRuntime", () => {
 			}),
 		]);
 	});
+
+	// FLY-1366: switching onto an idle account makes the next statusline cache
+	// carry `resets_at: null`. Pin that round-trip — the statusline reader treats
+	// it as absent (`jq ... // empty`), so the null must survive verbatim rather
+	// than being dropped, stringified, or replaced with a fabricated instant.
+	it("round-trips an unopened window's null reset through the statusline cache", async () => {
+		writeConfig(99);
+		const runtime = makeQuotaMonitorRuntime({
+			now: () => NOW,
+			paths: {
+				poolDir,
+				configPath,
+				statePath,
+				storePath,
+				cachePath,
+				lockPath,
+				claudeJsonPath,
+			},
+			readKeychainCredential: async () => ({
+				accessToken: "active-secret",
+				expiresAt: NOW + 3_600_000,
+			}),
+			fetchUsage: async () => usageResult(0, 12, { five: null }),
+			tmux: {
+				listPanes: async () => [],
+				capturePane: async () => "",
+				sendContinue: async () => ({ sent: true }),
+			},
+			alert: async () => ({ primary: "sent" }),
+			log: vi.fn(),
+		});
+
+		const result = await runtime.tick();
+
+		expect(result.outcome).toBe("observed");
+		const cached = JSON.parse(readFileSync(cachePath, "utf8"));
+		expect(cached.five_hour).toEqual({ utilization: 0, resets_at: null });
+		expect(cached.seven_day.resets_at).toBe("2026-07-21T14:00:00.000Z");
+	});
 });

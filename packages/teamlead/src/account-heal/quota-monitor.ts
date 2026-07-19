@@ -242,7 +242,7 @@ function triggerScope(
 function operativeResetAt(
 	usage: SuccessfulUsage,
 	scope: "5h" | "weekly" | "both",
-): string {
+): string | null {
 	return scope === "5h" ? usage.fiveH.resetsAt : usage.sevenD.resetsAt;
 }
 
@@ -301,7 +301,12 @@ async function readCandidateCredential(
 		if (refresh) {
 			const verdict = await deps.verifyCandidate(name, identity.activeName);
 			if (verdict.fresh === "stale") {
-				return { credential: null, reason: "freshness_stale" };
+				// Keep the refusal reason: a bare "freshness_stale" told an operator
+				// nothing about whether the token family was dead or the probe failed.
+				return {
+					credential: null,
+					reason: `freshness_stale: ${verdict.reason}`,
+				};
 			}
 		}
 		const credential = await deps.readPoolCredential(name);
@@ -377,6 +382,7 @@ type PanoramaStatus =
 	| "identity_unauthorized"
 	| "quota_exhausted"
 	| "freshness_stale"
+	| `freshness_stale: ${string}`
 	| "credential_missing"
 	| "credential_unavailable"
 	| "became_active"
@@ -412,6 +418,9 @@ const PANORAMA_CLASS = {
 
 function panoramaClass(status: PanoramaStatus): PanoramaClass {
 	if (status.startsWith("model_")) return "ineligible";
+	// `freshness_stale` now carries a reason suffix; match on the prefix so the
+	// class stays `unverifiable` instead of falling through to `ineligible`.
+	if (status.startsWith("freshness_stale")) return "unverifiable";
 	return (
 		(PANORAMA_CLASS as Partial<Record<PanoramaStatus, PanoramaClass>>)[
 			status
@@ -529,7 +538,7 @@ export async function verifyAndRankCandidates(
 				name,
 				status:
 					(checked.reason as
-						| "freshness_stale"
+						| `freshness_stale: ${string}`
 						| "credential_missing"
 						| "became_active"
 						| undefined) ?? "credential_unavailable",
@@ -597,7 +606,12 @@ export async function verifyAndRankCandidates(
 			});
 			continue;
 		}
-		const resetMs = Date.parse(candidateUsage.ok.sevenD.resetsAt);
+		// An unopened weekly window has nothing to wait for, so it sorts ahead of
+		// every dated reset. NaN would poison the comparator instead.
+		const resetMs =
+			candidateUsage.ok.sevenD.resetsAt === null
+				? Number.NEGATIVE_INFINITY
+				: Date.parse(candidateUsage.ok.sevenD.resetsAt);
 		if (candidateUsage.ok.fiveH.pct < deps.config.config.trigger5hPct) {
 			panorama.push({
 				name,
@@ -1535,6 +1549,40 @@ export async function pollOnce(
 	);
 
 	const scope = triggerScope(currentUsage.ok, deps.config.config.trigger5hPct);
+	// A triggering window is by definition open, so it must carry a reset instant.
+	// Null here is an API contract violation — fail closed before any early exit
+	// (cooldown / monitor-only / no_target) can route around this check, and before
+	// any candidate or switch I/O. Both downstream consumers (SwitchInput.resetAt
+	// and reviveEpoch.expiresAt) read the narrowed value below, so neither can ever
+	// see a fabricated timestamp.
+	let accountTrigger: {
+		scope: "5h" | "weekly" | "both";
+		resetAt: string;
+	} | null = null;
+	if (scope !== null) {
+		const resetAt = operativeResetAt(currentUsage.ok, scope);
+		if (resetAt === null) {
+			deps.log(
+				JSON.stringify({
+					event: "usage_reset_missing",
+					account: snapshot.activeName,
+					scope,
+				}),
+			);
+			await deps.alert({
+				kind: "quota_monitor_down",
+				severity: "severe",
+				title: "Claude quota trigger window reported no reset instant",
+				body: `account=${snapshot.activeName}; scope=${scope}; triggering window has no resets_at; refused before candidate or switch I/O`,
+				// Own namespace: the consecutive-usage-failure path already holds
+				// `quota-monitor-down-<day>`, and lead-alert.sh dedupes on
+				// project|lead|kind|signature — a shared signature would swallow one.
+				signature: `quota-usage-reset-missing-${snapshot.activeName}-${scope}-${day(now)}`,
+			});
+			return finish("error");
+		}
+		accountTrigger = { scope, resetAt };
+	}
 	if (scope !== null && state.pendingDetection !== null) {
 		state.pendingDetection = null;
 		modelDetection = null;
@@ -1676,30 +1724,33 @@ export async function pollOnce(
 		return finish("no_target");
 	}
 
-	const resetAt =
-		scope === null ? null : operativeResetAt(currentUsage.ok, scope);
-	const switchInput: SwitchInput =
-		modelDetection === null
-			? {
-					scope: scope as "5h" | "weekly" | "both",
-					observedAccount: snapshot.activeName,
-					observedGeneration: snapshot.store.generation,
-					resetAt: resetAt as string,
-					now: new Date(now),
-					preferredOrder,
-					verifiedAt: candidates.verifiedAt,
-					quotaPreverified: !degraded,
-				}
-			: {
-					scope: "model",
-					models: modelDetection.models,
-					observedAccount: snapshot.activeName,
-					observedGeneration: snapshot.store.generation,
-					now: new Date(now),
-					preferredOrder,
-					verifiedAt: candidates.verifiedAt,
-					quotaPreverified: true,
-				};
+	let switchInput: SwitchInput;
+	if (modelDetection === null) {
+		// Narrowed by the fail-closed guard above rather than cast: an account-level
+		// trigger without a reset instant already returned `error`.
+		if (accountTrigger === null) throw new Error("missing quota trigger scope");
+		switchInput = {
+			scope: accountTrigger.scope,
+			observedAccount: snapshot.activeName,
+			observedGeneration: snapshot.store.generation,
+			resetAt: accountTrigger.resetAt,
+			now: new Date(now),
+			preferredOrder,
+			verifiedAt: candidates.verifiedAt,
+			quotaPreverified: !degraded,
+		};
+	} else {
+		switchInput = {
+			scope: "model",
+			models: modelDetection.models,
+			observedAccount: snapshot.activeName,
+			observedGeneration: snapshot.store.generation,
+			now: new Date(now),
+			preferredOrder,
+			verifiedAt: candidates.verifiedAt,
+			quotaPreverified: true,
+		};
+	}
 	const switched = await deps.switchAccount(switchInput);
 	await consumeApplyIdentityReports(deps, state, switched.applyReports);
 	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
@@ -1762,6 +1813,9 @@ export async function pollOnce(
 		return finish("switched");
 	}
 
+	// Only the account-level path reaches here — the model-cap path returned above
+	// — so the same guarded trigger backs the revive deadline. No cast, no NaN.
+	if (accountTrigger === null) throw new Error("missing quota trigger scope");
 	state.lastSwitchAt = now;
 	state.observedGeneration = switched.generation;
 	state.confirmation = null;
@@ -1772,7 +1826,7 @@ export async function pollOnce(
 		sourceAccount: switched.from,
 		generation: switched.generation,
 		openedAt: now,
-		expiresAt: Date.parse(resetAt as string) + REVIVE_GRACE_MS,
+		expiresAt: Date.parse(accountTrigger.resetAt) + REVIVE_GRACE_MS,
 		panes: {},
 	};
 	await deps.persistState(state);

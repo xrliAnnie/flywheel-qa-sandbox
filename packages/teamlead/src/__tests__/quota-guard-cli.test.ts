@@ -43,15 +43,23 @@ function writePoolCredential(name: string, token: string): void {
 	);
 }
 
-function usage(fiveHPct: number, sevenDPct: number): AccountUsageResult {
+function usage(
+	fiveHPct: number,
+	sevenDPct: number,
+	// `null` means the window has not opened yet (FLY-1366), so default only on
+	// `undefined` — `??` would swap an explicit null back to a timestamp.
+	resets: { five?: string | null; seven?: string | null } = {},
+): AccountUsageResult {
+	const five = resets.five === undefined ? FIVE_RESET : resets.five;
+	const seven = resets.seven === undefined ? WEEK_RESET : resets.seven;
 	return {
 		ok: {
 			raw: {
-				five_hour: { utilization: fiveHPct, resets_at: FIVE_RESET },
-				seven_day: { utilization: sevenDPct, resets_at: WEEK_RESET },
+				five_hour: { utilization: fiveHPct, resets_at: five },
+				seven_day: { utilization: sevenDPct, resets_at: seven },
 			},
-			fiveH: { pct: fiveHPct, resetsAt: FIVE_RESET },
-			sevenD: { pct: sevenDPct, resetsAt: WEEK_RESET },
+			fiveH: { pct: fiveHPct, resetsAt: five },
+			sevenD: { pct: sevenDPct, resetsAt: seven },
 		},
 	};
 }
@@ -618,6 +626,34 @@ describe("runQuotaGuardCli", () => {
 			observedSevenDPct: 17,
 		});
 		expect(output.join("\n")).not.toContain(TOKEN);
+	});
+
+	// FLY-1366: an idle account reports `resets_at: null`. That is healthy, not a
+	// refusal — the guard must let the run through and never invent exhaustion.
+	it("returns 0 for an idle account whose 5h window has not opened", async () => {
+		const code = await run(usage(0, 12, { five: null }));
+
+		expect(code).toBe(0);
+		expect(
+			readStore(storePath).accounts.find((entry) => entry.name === "business"),
+		).toMatchObject({
+			quotaExhaustedUntil: null,
+			weeklyResetAt: WEEK_RESET,
+			observedFiveHPct: 0,
+		});
+		expect(output.join("\n")).not.toContain("REFUSED");
+	});
+
+	// Exhausted AND null is a contract violation, not an idle account: stay
+	// fail-closed on 32 but say plainly that the reset instant is missing.
+	it("stays fail-closed with a truthful message when an exhausted window has no reset", async () => {
+		const code = await run(usage(100, 12, { five: null }));
+		const text = output.join("\n");
+
+		expect(code).toBe(32);
+		expect(text).toContain("REFUSED: target 'business' has no quota");
+		expect(text).toContain("reset unavailable");
+		expect(text).not.toContain("5h resets null");
 	});
 
 	it("returns 32 for weekly exhaustion, records reset, and prints an actionable safe suggestion", async () => {

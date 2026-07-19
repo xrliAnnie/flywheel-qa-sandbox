@@ -15,6 +15,29 @@ const VALID_USAGE = {
 	limits: [{ kind: "session", percent: 91.5 }],
 };
 
+/**
+ * Shape recorded 2026-07-18 from a live read-only GET /api/oauth/usage against the
+ * idle `school` pool account (engineering/doc/FLY-1366-quota-probe-panorama-fix/
+ * exploration.md). An account with no active 5h window reports `resets_at: null`,
+ * and the dollar fields alongside it are null too. Every field this validator reads
+ * is reproduced verbatim from that capture.
+ */
+const IDLE_FIVE_HOUR_USAGE = {
+	five_hour: {
+		utilization: 0,
+		resets_at: null,
+		limit_dollars: null,
+		spend_dollars: null,
+	},
+	seven_day: {
+		utilization: 88,
+		resets_at: "2026-07-20T15:59:59Z",
+		limit_dollars: null,
+		spend_dollars: null,
+	},
+	limits: [{ kind: "session", percent: 0 }],
+};
+
 afterEach(() => {
 	if (ORIGINAL_QUOTA_API_BASE === undefined) {
 		delete process.env.FLYWHEEL_QUOTA_API_BASE;
@@ -75,6 +98,49 @@ describe("fetchAccountUsage", () => {
 			expect.any(Object),
 		);
 	});
+
+	it("accepts an idle account whose 5h window has not opened (resets_at null) and passes the null through", async () => {
+		const fetchFn = vi.fn(
+			async () =>
+				new Response(JSON.stringify(IDLE_FIVE_HOUR_USAGE), { status: 200 }),
+		);
+
+		const result = await fetchAccountUsage(TOKEN, {
+			fetchFn: fetchFn as typeof fetch,
+		});
+
+		expect(result).toEqual({
+			ok: {
+				raw: IDLE_FIVE_HOUR_USAGE,
+				fiveH: { pct: 0, resetsAt: null },
+				sevenD: { pct: 88, resetsAt: "2026-07-20T15:59:59Z" },
+			},
+		});
+	});
+
+	it.each([
+		["a numeric reset", 1_784_456_950_522],
+		["an unparseable reset string", "whenever"],
+		["a boolean reset", false],
+		["an object reset", { at: "2026-07-20T15:59:59Z" }],
+	])(
+		"still rejects a five-hour window carrying %s",
+		async (_label, resets_at) => {
+			const fetchFn = vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							...IDLE_FIVE_HOUR_USAGE,
+							five_hour: { ...IDLE_FIVE_HOUR_USAGE.five_hour, resets_at },
+						}),
+						{ status: 200 },
+					),
+			);
+			expect(
+				await fetchAccountUsage(TOKEN, { fetchFn: fetchFn as typeof fetch }),
+			).toEqual({ error: "malformed" });
+		},
+	);
 
 	it("classifies unauthorized responses without exposing response details", async () => {
 		const fetchFn = vi.fn(

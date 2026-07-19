@@ -5,7 +5,12 @@ const MAX_RETRY_AFTER_MS = 30 * 60_000;
 
 export interface QuotaWindow {
 	utilization: number;
-	resets_at: string;
+	/**
+	 * `null` when the window has not opened yet — the API's normal shape for an
+	 * idle account (FLY-1366). Never fabricate an instant for it; downstream
+	 * consumers must stay null-safe.
+	 */
+	resets_at: string | null;
 }
 
 export type ValidatedUsagePayload = Record<string, unknown> & {
@@ -17,8 +22,8 @@ export type AccountUsageResult =
 	| {
 			ok: {
 				raw: ValidatedUsagePayload;
-				fiveH: { pct: number; resetsAt: string };
-				sevenD: { pct: number; resetsAt: string };
+				fiveH: { pct: number; resetsAt: string | null };
+				sevenD: { pct: number; resetsAt: string | null };
 			};
 	  }
 	| {
@@ -38,10 +43,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isQuotaWindow(value: unknown): value is QuotaWindow {
 	if (!isRecord(value)) return false;
+	if (
+		typeof value.utilization !== "number" ||
+		!Number.isFinite(value.utilization) ||
+		value.utilization < 0
+	) {
+		return false;
+	}
+	// An unopened window reports `resets_at: null`; anything other than null or a
+	// parseable instant is still a contract violation.
+	if (value.resets_at === null) return true;
 	return (
-		typeof value.utilization === "number" &&
-		Number.isFinite(value.utilization) &&
-		value.utilization >= 0 &&
 		typeof value.resets_at === "string" &&
 		!Number.isNaN(Date.parse(value.resets_at))
 	);

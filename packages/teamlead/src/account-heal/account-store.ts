@@ -90,8 +90,9 @@ export interface SelectInput {
 export interface AccountQuotaObservation {
 	fiveHPct: number;
 	sevenDPct: number;
-	fiveHResetAt: string;
-	sevenDResetAt: string;
+	/** `null` when the window has not opened yet (FLY-1366). */
+	fiveHResetAt: string | null;
+	sevenDResetAt: string | null;
 	observedAt: string;
 }
 
@@ -383,8 +384,13 @@ export function writeStore(
 	renameSync(tmp, path);
 }
 
-function validFutureReset(resetAt: string, observedAtMs: number): boolean {
-	const resetMs = Date.parse(resetAt);
+function validFutureReset(
+	resetAt: string | null,
+	observedAtMs: number,
+): boolean {
+	// A null reset parses to NaN and falls through the existing guard: an
+	// unopened window can never stamp an exhaustion deadline.
+	const resetMs = Date.parse(resetAt ?? "");
 	return (
 		!Number.isNaN(observedAtMs) &&
 		!Number.isNaN(resetMs) &&
@@ -404,7 +410,7 @@ export function applyObservation(
 	const fiveHExhausted =
 		observation.fiveHPct >= 100 &&
 		validFutureReset(observation.fiveHResetAt, observedAtMs);
-	const parsedWeeklyReset = Date.parse(observation.sevenDResetAt);
+	const parsedWeeklyReset = Date.parse(observation.sevenDResetAt ?? "");
 
 	return {
 		...entry,

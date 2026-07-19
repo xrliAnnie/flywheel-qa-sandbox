@@ -526,6 +526,43 @@ describe("quota observation projection", () => {
 		expect(after.quotaExhaustedUntil).toBeNull();
 		expect(after.weeklyResetAt).toBe(base.weeklyResetAt);
 	});
+
+	// FLY-1366: an idle account reports `resets_at: null` for an unopened window.
+	it("projects an idle account's null resets without inventing exhaustion", () => {
+		const after = applyObservation(
+			base,
+			observation({ fiveHPct: 0, sevenDPct: 0, fiveHResetAt: null }),
+		);
+
+		expect(after.quotaExhaustedUntil).toBeNull();
+		expect(after.weeklyResetAt).toBe("2026-07-08T14:00:00Z");
+		expect(after.observedFiveHPct).toBe(0);
+	});
+
+	it("keeps the prior weekly reset when the weekly window has not opened", () => {
+		const after = applyObservation(
+			base,
+			observation({ sevenDPct: 0, sevenDResetAt: null }),
+		);
+
+		expect(after.weeklyResetAt).toBe(base.weeklyResetAt);
+		expect(after.quotaExhaustedUntil).toBeNull();
+	});
+
+	it("never marks exhaustion from a null reset even at 100 percent", () => {
+		const after = applyObservation(
+			base,
+			observation({
+				fiveHPct: 100,
+				sevenDPct: 100,
+				fiveHResetAt: null,
+				sevenDResetAt: null,
+			}),
+		);
+
+		expect(after.quotaExhaustedUntil).toBeNull();
+		expect(after.weeklyResetAt).toBe(base.weeklyResetAt);
+	});
 });
 
 describe("earliestReset", () => {

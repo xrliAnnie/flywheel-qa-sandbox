@@ -290,4 +290,81 @@ describe("sendQuotaMonitorAlert", () => {
 
 		expect(execFile.mock.calls[0]?.[1]).not.toContain("--mention-user");
 	});
+
+	// FLY-1366: during the incident neither quota mention env was set on the
+	// daemon, so quota_no_target reached #flywheel-alerts with no @ and the
+	// founder never saw it. FLYWHEEL_FOUNDER_USER_ID was present all along.
+	describe("mention fallback to the founder", () => {
+		const noTarget = {
+			kind: "quota_no_target" as const,
+			severity: "severe" as const,
+			title: "No verified Claude account has quota",
+			body: "scope=5h",
+			signature: "quota-no-target-2026-07-18",
+		};
+
+		afterEach(() => {
+			delete process.env.FLYWHEEL_FOUNDER_USER_ID;
+		});
+
+		it.each([
+			["unset", undefined],
+			["empty", ""],
+			["whitespace only", "   "],
+		])(
+			"falls back to the founder when the quota mention env is %s",
+			async (_label, configured) => {
+				if (configured !== undefined) {
+					process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER = configured;
+				}
+				process.env.FLYWHEEL_FOUNDER_USER_ID = "1138241636057481306";
+				const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+				await sendQuotaMonitorAlert(noTarget, { execFile });
+
+				expect(execFile.mock.calls[0]?.[1]).toEqual(
+					expect.arrayContaining(["--mention-user", "1138241636057481306"]),
+				);
+			},
+		);
+
+		it("prefers an explicitly configured quota mention over the founder", async () => {
+			process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER = "123456789";
+			process.env.FLYWHEEL_FOUNDER_USER_ID = "1138241636057481306";
+			const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+			await sendQuotaMonitorAlert(noTarget, { execFile });
+
+			expect(execFile.mock.calls[0]?.[1]).toEqual(
+				expect.arrayContaining(["--mention-user", "123456789"]),
+			);
+		});
+
+		it("never mentions on a non-mention alert kind even with a founder id set", async () => {
+			process.env.FLYWHEEL_FOUNDER_USER_ID = "1138241636057481306";
+			const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+			await sendQuotaMonitorAlert(
+				{
+					kind: "quota_blocked_recovered",
+					severity: "info",
+					title: "Recovered",
+					body: "healthy",
+					signature: "recovered-2",
+				},
+				{ execFile },
+			);
+
+			expect(execFile.mock.calls[0]?.[1]).not.toContain("--mention-user");
+		});
+
+		it("sends without a mention when neither env is usable", async () => {
+			process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER = "  ";
+			const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+			await sendQuotaMonitorAlert(noTarget, { execFile });
+
+			expect(execFile.mock.calls[0]?.[1]).not.toContain("--mention-user");
+		});
+	});
 });

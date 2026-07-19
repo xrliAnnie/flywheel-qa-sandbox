@@ -32,10 +32,12 @@ const WEEK_RESET = "2026-07-21T14:00:00.000Z";
 function usage(
 	fivePct: number,
 	sevenPct: number,
-	resets: { five?: string; seven?: string } = {},
+	// `null` is a meaningful value (an unopened window), so default only on
+	// `undefined` — `??` would silently swap an explicit null back to a timestamp.
+	resets: { five?: string | null; seven?: string | null } = {},
 ): Extract<AccountUsageResult, { ok: unknown }> {
-	const five = resets.five ?? FIVE_RESET;
-	const seven = resets.seven ?? WEEK_RESET;
+	const five = resets.five === undefined ? FIVE_RESET : resets.five;
+	const seven = resets.seven === undefined ? WEEK_RESET : resets.seven;
 	const raw = {
 		five_hour: { utilization: fivePct, resets_at: five },
 		seven_day: { utilization: sevenPct, resets_at: seven },
@@ -1999,5 +2001,157 @@ describe("pollOnce", () => {
 			],
 		});
 		expect(lines[0]).not.toContain("secret-");
+	});
+
+	// FLY-1366: an account with no open window reports `resets_at: null`. The old
+	// validator called that malformed, so every idle standby read as unverifiable
+	// and a 100%-quota active account had "no target" to switch to.
+	it("switches to an idle candidate whose 5h window has not opened yet", async () => {
+		h.usages.set("secret-shopping", usage(95, 20));
+		h.usages.set("secret-school", usage(0, 88, { five: null }));
+		h.usages.set("secret-business", usage(100, 20));
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(h.switchImpl).toHaveBeenCalledWith(
+			expect.objectContaining({
+				scope: "5h",
+				resetAt: FIVE_RESET,
+				preferredOrder: ["school"],
+				quotaPreverified: true,
+			}),
+		);
+		const line = vi
+			.mocked(h.deps.log)
+			.mock.calls.map(([entry]) => entry)
+			.find((entry) => entry.includes('"event":"quota_poll"'));
+		expect(JSON.parse(line ?? "{}").panorama).toEqual([
+			"school:qualified",
+			"business:quota_exhausted",
+		]);
+	});
+
+	it("projects an unopened window as a null reset rather than a fabricated instant", async () => {
+		h.usages.set("secret-shopping", usage(0, 10, { five: null }));
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("observed");
+		expect(h.observations).toContainEqual(
+			expect.objectContaining({
+				name: "shopping",
+				observation: expect.objectContaining({
+					fiveHPct: 0,
+					fiveHResetAt: null,
+					sevenDResetAt: WEEK_RESET,
+				}),
+			}),
+		);
+		expect(h.cacheWrites).toEqual([
+			expect.objectContaining({
+				five_hour: { utilization: 0, resets_at: null },
+			}),
+		]);
+	});
+
+	it("ranks a candidate whose weekly window has not opened ahead of one that resets soonest", async () => {
+		h.usages.set("secret-shopping", usage(95, 20));
+		// `school` sorts first by config order, so only a real -Infinity ranking for
+		// `business` can put the unopened weekly window in front of it.
+		h.usages.set(
+			"secret-school",
+			usage(10, 20, { seven: "2026-07-19T14:00:00.000Z" }),
+		);
+		h.usages.set("secret-business", usage(10, 0, { seven: null }));
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(h.switchImpl).toHaveBeenCalledWith(
+			expect.objectContaining({ preferredOrder: ["business", "school"] }),
+		);
+	});
+
+	it("carries the freshness refusal reason into the panorama and keeps the candidate unverifiable", async () => {
+		h.usages.set("secret-shopping", usage(95, 20));
+		h.usages.set("secret-business", usage(100, 20));
+		h.verifyCandidate.mockImplementation(async (name: string) => {
+			if (name === "school") {
+				return {
+					fresh: "stale" as const,
+					reason: "refresh refused (HTTP 403)",
+				};
+			}
+			return { fresh: "refreshed" as const, expiresAt: NOW + 3_600_000 };
+		});
+		// degradedSwitch consumes the `unverifiable` class; if the reason suffix had
+		// demoted school to `ineligible`, this fallback would find no candidate.
+		h.deps.config = loadedConfig({ degradedSwitch: true });
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(h.switchImpl).toHaveBeenCalledWith(
+			expect.objectContaining({
+				preferredOrder: ["school"],
+				quotaPreverified: false,
+			}),
+		);
+		const line = vi
+			.mocked(h.deps.log)
+			.mock.calls.map(([entry]) => entry)
+			.find((entry) => entry.includes('"event":"quota_poll"'));
+		expect(JSON.parse(line ?? "{}").panorama).toContain(
+			"school:freshness_stale: refresh refused (HTTP 403)",
+		);
+	});
+
+	it("fails closed before candidate or switch I/O when a triggering window reports no reset instant", async () => {
+		// pct >= trigger means the window IS active, so a null reset is a contract
+		// violation, not an idle account. Never fabricate a revive deadline from it.
+		h.usages.set("secret-shopping", usage(95, 20, { five: null }));
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("error");
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
+		expect(h.switchImpl).not.toHaveBeenCalled();
+		expect(h.events.filter((event) => event.startsWith("fetch:"))).toEqual([
+			"fetch:shopping",
+		]);
+		expect(result.state.reviveEpoch).toBeNull();
+		expect(h.alerts).toEqual([
+			expect.objectContaining({
+				kind: "quota_monitor_down",
+				// Distinct namespace: the usage-failure path already owns
+				// `quota-monitor-down-<day>`, and lead-alert.sh dedupes on
+				// project|lead|kind|signature — a shared signature would swallow one.
+				signature: "quota-usage-reset-missing-shopping-5h-2026-07-14",
+			}),
+		]);
+		const reported = vi
+			.mocked(h.deps.log)
+			.mock.calls.map(([entry]) => entry)
+			.filter((entry) => entry.includes("usage_reset_missing"));
+		expect(reported).toHaveLength(1);
+		expect(JSON.parse(reported[0] ?? "{}")).toMatchObject({
+			event: "usage_reset_missing",
+			account: "shopping",
+			scope: "5h",
+		});
+	});
+
+	it("keeps failing closed on a missing reset even when the switch cooldown would have returned first", async () => {
+		h.usages.set("secret-shopping", usage(95, 20, { five: null }));
+		h.deps.state = {
+			...emptyQuotaMonitorState(4),
+			lastSwitchAt: NOW - 60_000,
+		};
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("error");
+		expect(h.alerts.map((alert) => alert.kind)).toEqual(["quota_monitor_down"]);
 	});
 });

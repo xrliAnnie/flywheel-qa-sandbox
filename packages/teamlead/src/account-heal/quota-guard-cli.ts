@@ -454,10 +454,12 @@ function refusalMessage(
 	nowMs: number,
 ): string {
 	const store = readStore(storePath);
+	// Reached only when a window is at 100%, so an open window is implied and a
+	// null reset is a contract violation — say so instead of printing "null".
 	const window =
 		usage.sevenD.pct >= 100
-			? `weekly resets ${usage.sevenD.resetsAt}`
-			: `5h resets ${usage.fiveH.resetsAt}`;
+			? `weekly resets ${usage.sevenD.resetsAt ?? "reset unavailable"}`
+			: `5h resets ${usage.fiveH.resetsAt ?? "reset unavailable"}`;
 	const lines = [
 		`REFUSED: target '${name}' has no quota — 5h ${usage.fiveH.pct}% / 7d ${usage.sevenD.pct}% (${window})`,
 		"Pool status (last observed by quota daemon or guard):",

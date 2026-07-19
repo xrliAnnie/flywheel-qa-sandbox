@@ -109,6 +109,25 @@ async function attemptDelivery(
 	}
 }
 
+/**
+ * Who to @ on a mention-policy alert. FLY-1366: the daemon ran with no quota
+ * mention configured, so `quota_no_target` landed in the alert channel with no
+ * ping and the founder never saw the account pool was stuck. Fall back to the
+ * founder id the daemon already carries. Not `A ?? B` — an env set to an empty
+ * or whitespace-only string must not suppress the fallback (and would in turn be
+ * dropped by the falsy check in `alertArgs`, mentioning nobody).
+ */
+function resolveMentionUser(): string | undefined {
+	for (const candidate of [
+		process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER,
+		process.env.FLYWHEEL_FOUNDER_USER_ID,
+	]) {
+		const trimmed = candidate?.trim();
+		if (trimmed) return trimmed;
+	}
+	return undefined;
+}
+
 function alertArgs(
 	alert: QuotaMonitorAlert | DurableAlertIntent["alert"],
 	project: string,
@@ -153,9 +172,7 @@ export async function sendQuotaMonitorAlert(
 					mention: true,
 					severe: true,
 				});
-	const mentionUser = policy.mention
-		? process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER
-		: undefined;
+	const mentionUser = policy.mention ? resolveMentionUser() : undefined;
 	const primary = await attemptDelivery(
 		exec,
 		binPath,
