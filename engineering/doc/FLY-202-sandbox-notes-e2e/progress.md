@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 1/6
-updated: 2026-07-19T16:28:01.478Z
-nextStep: "execute C2: append the live 17-directory Markdown table"
+phaseCursor: 2/6
+updated: 2026-07-19T16:28:29.053Z
+nextStep: "execute C3: append an approximately 10-bullet qa-framework README summary"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (1/6)
-**next**: execute C2: append the live 17-directory Markdown table
+**phase**: implement (2/6)
+**next**: execute C3: append an approximately 10-bullet qa-framework README summary
