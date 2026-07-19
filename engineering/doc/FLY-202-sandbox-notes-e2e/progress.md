@@ -1,15 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 2/3
-updated: 2026-07-19T16:22:28.997Z
-nextStep: "inbox check, then complete --route phase_design_complete + park
-  (note: remote slot branch was stale prior round, reset via force-with-lease
-  @208524bb)"
+phaseCursor: 3/3
+updated: 2026-07-19T16:22:44.291Z
+nextStep: design complete; implement node executes C1-C6 per plan.md on this branch
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (2/3)
-**next**: inbox check, then complete --route phase_design_complete + park (note: remote slot branch was stale prior round, reset via force-with-lease @208524bb)
+**phase**: design (3/3)
+**next**: design complete; implement node executes C1-C6 per plan.md on this branch
