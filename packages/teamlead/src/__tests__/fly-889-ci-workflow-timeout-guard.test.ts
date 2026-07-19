@@ -1,5 +1,5 @@
 /**
- * FLY-889 regression guard — the Build & Test job's `timeout-minutes` gave
+ * FLY-889 regression guard — the original Build & Test job's `timeout-minutes` gave
  * near-zero headroom at 10 (the suite runs ~10-11min), so ~half of runs got
  * force-cancelled by the runner, not by a real test failure — and that
  * cancellation MASKED a real bug once (FLY-882: retry-after-cancel is what
@@ -9,7 +9,10 @@
  * are pure YAML-structure invariants with no runtime code path, so this test
  * parses the repo's real `.github/workflows/ci.yml` (not a synthetic fixture)
  * to catch a silent revert — mirrors the R4-2 pattern in
- * `workflow-permissions.test.ts`.
+ * `workflow-permissions.test.ts`. FLY-1338 split that serial job into
+ * independently scheduled unit and shell jobs, so this guard now follows the
+ * long-running work and also proves the new shell structure guard stays wired
+ * into CI.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -29,7 +32,7 @@ function findRepoRoot(): string | undefined {
 	return undefined;
 }
 
-function loadBuildAndTestJob(): Record<string, unknown> | undefined {
+function loadCiJobs(): Record<string, unknown> | undefined {
 	const root = findRepoRoot();
 	if (!root) return undefined;
 	const content = readFileSync(
@@ -37,29 +40,34 @@ function loadBuildAndTestJob(): Record<string, unknown> | undefined {
 		"utf8",
 	);
 	const doc = parseYaml(content) as Record<string, unknown>;
-	const jobs = doc.jobs as Record<string, unknown> | undefined;
-	return jobs?.["build-and-test"] as Record<string, unknown> | undefined;
+	return doc.jobs as Record<string, unknown> | undefined;
 }
 
 describe("FLY-889 regression guard — CI job timeout headroom + merged apt-get", () => {
-	it("timeout-minutes stays at/above the 15min floor (pre-FLY-889 10min caused ~50% timeout-cancel)", () => {
-		const job = loadBuildAndTestJob();
-		if (!job) {
+	it("unit-tests and script-tests stay at/above the 15min timeout floor", () => {
+		const jobs = loadCiJobs();
+		if (!jobs) {
 			// Sparse/standalone checkout without .github — nothing to regress here.
 			expect(true).toBe(true);
 			return;
 		}
-		expect(typeof job["timeout-minutes"]).toBe("number");
-		expect(job["timeout-minutes"] as number).toBeGreaterThanOrEqual(15);
+		for (const jobId of ["unit-tests", "script-tests"]) {
+			const job = jobs[jobId] as Record<string, unknown> | undefined;
+			expect(job, `ci.yml exists but jobs.${jobId} is missing`).toBeDefined();
+			expect(typeof job?.["timeout-minutes"]).toBe("number");
+			expect(job?.["timeout-minutes"] as number).toBeGreaterThanOrEqual(15);
+		}
 	});
 
-	it("tmux/lsof/sqlite3 stay merged into ONE apt-get install (not re-fragmented into 3 separate `apt-get update` calls)", () => {
-		const job = loadBuildAndTestJob();
-		if (!job) {
+	it("script-tests keeps tmux/lsof/sqlite3 merged into one apt-get install", () => {
+		const jobs = loadCiJobs();
+		if (!jobs) {
 			expect(true).toBe(true);
 			return;
 		}
-		const steps = (job.steps ?? []) as Array<Record<string, unknown>>;
+		const job = jobs["script-tests"] as Record<string, unknown> | undefined;
+		expect(job, "ci.yml exists but jobs.script-tests is missing").toBeDefined();
+		const steps = (job?.steps ?? []) as Array<Record<string, unknown>>;
 		const updateSteps = steps.filter((s) =>
 			/apt-get\s+update/.test(String(s.run ?? "")),
 		);
@@ -71,5 +79,27 @@ describe("FLY-889 regression guard — CI job timeout headroom + merged apt-get"
 		for (const pkg of ["tmux", "lsof", "sqlite3"]) {
 			expect(run).toMatch(new RegExp(`\\b${pkg}\\b`));
 		}
+	});
+
+	it("script-tests runs the FLY-1338 structure guard as a required step", () => {
+		const jobs = loadCiJobs();
+		if (!jobs) {
+			expect(true).toBe(true);
+			return;
+		}
+		const job = jobs["script-tests"] as Record<string, unknown> | undefined;
+		expect(job, "ci.yml exists but jobs.script-tests is missing").toBeDefined();
+		const steps = (job?.steps ?? []) as Array<Record<string, unknown>>;
+		const guardSteps = steps.filter((step) =>
+			/\bbash\s+scripts\/__tests__\/ci-structure\.test\.sh\b/.test(
+				String(step.run ?? ""),
+			),
+		);
+		expect(
+			guardSteps,
+			"expected exactly one required CI structure guard step",
+		).toHaveLength(1);
+		expect(guardSteps[0]).not.toHaveProperty("if");
+		expect(guardSteps[0]).not.toHaveProperty("continue-on-error");
 	});
 });

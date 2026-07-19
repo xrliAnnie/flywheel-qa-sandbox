@@ -21,16 +21,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
-    name: Build & Test
+  quick-gate:
+    name: Quick Gate (build + typecheck + lint)
     runs-on: ubuntu-latest
-    # FLY-889: 10 → 20. The suite runs ~750s (the single `Test` step alone is
-    # 446-467s, dominated by the teamlead package's 349 test files sitting last
-    # in the pnpm workspace topo order). 10min gave near-zero headroom, so ~half
-    # of non-superseded runs hit the wall and were force-cancelled — NOT a test
-    # failure, and it masks real failures (see FLY-882). 20min gives ~60%+
-    # headroom without shaving the suite itself (that's FLY-889-B, a follow-up).
-    timeout-minutes: 20
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+  unit-tests:
+    name: Unit (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: teamlead 1 of 3
+            cmd: pnpm --filter flywheel-teamlead test:run --shard=1/3
+          - name: teamlead 2 of 3
+            cmd: pnpm --filter flywheel-teamlead test:run --shard=2/3
+          - name: teamlead 3 of 3
+            cmd: pnpm --filter flywheel-teamlead test:run --shard=3/3
+          - name: heavy
+            cmd: pnpm --filter flywheel-claude-runner --filter flywheel-comm --filter flywheel-edge-worker test:run
+          - name: light
+            cmd: pnpm --filter './packages/*' --filter '!flywheel-teamlead' --filter '!flywheel-claude-runner' --filter '!flywheel-comm' --filter '!flywheel-edge-worker' test:run
     steps:
       - uses: actions/checkout@v4
 
@@ -55,14 +89,40 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Typecheck
-        run: pnpm typecheck
+      - name: Run matrix tests
+        run: ${{ matrix.cmd }}
 
-      - name: Lint
-        run: pnpm lint
+  script-tests:
+    name: Script Tests (shell suites)
+    runs-on: ubuntu-latest
+    # FLY-889: long-running test jobs stay well under this 15min ceiling, leaving
+    # roughly 3x headroom so runner timeouts cannot mask real failures. FLY-1338
+    # moved package tests into the sharded unit matrix above; this job retains
+    # the ordered shell suites.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Test
-        run: pnpm test:packages:run
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@flywheel.dev"
+          git config --global user.name "Flywheel CI"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install better-sqlite3 prebuilt binary
+        run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
+
+      - name: Build
+        run: pnpm build
 
       # FLY-889: tmux/lsof/sqlite3 are each needed by a later hermetic test step
       # (cmux-sync / FLY-183 orphan-reaper / FLY-697 codex-log-guard). Installing
@@ -177,7 +237,7 @@ jobs:
       # verbatim-monorepo reverse-compat sentinel), and the P2 prebuilt
       # provisioning / setup-artifact branches. Needs the built dist +
       # node_modules/typescript (pnpm build above).
-      - name: Test — FLY-1062 packaging pipeline + packaged-mode seams
+      - name: Test — NPM packaging pipeline + packaged-mode seams
         run: |
           bash scripts/__tests__/package-onboard.test.sh
           bash scripts/__tests__/packaged-seams.test.sh
@@ -192,7 +252,7 @@ jobs:
       # compat mirror → bare-import matrix → better-sqlite3 native load →
       # packaged Bridge serves /health → Lead launcher dry-run. "Installs ≠
       # boots" is the acceptance bar; SLOW + network.
-      - name: Test — FLY-1062 payload real-install smoke
+      - name: Test — payload real-install smoke
         run: bash scripts/__tests__/package-onboard-smoke.test.sh
 
       # FLY-1062 PR2: public onboard-shell (@flywheel-ai/onboard). Hermetic — a
@@ -202,7 +262,7 @@ jobs:
       # matrix, and the shell's own publish content gate. The qa-gaps suite is
       # the QA-phase regression net for the three untested edges (protocol-error
       # message routing, degraded update rollback, persistKey symlink refusal).
-      - name: Test — FLY-1062 PR2 onboard-shell
+      - name: Test — onboard-shell public install chain
         run: |
           bash packages/onboard-shell/__tests__/onboard-shell-install.test.sh
           bash packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh
@@ -287,13 +347,24 @@ jobs:
           # --lead deploy call form — infra identity used, no Simba fallback.
           bash scripts/__tests__/qa-fly1081-notify-identity.test.sh
 
+      - name: Test — FLY-1338 CI structure guard
+        run: bash scripts/__tests__/ci-structure.test.sh
+
+      # FLY-1338 QA: the structure guard above reasons about the matrix filter
+      # STRINGS; this one asks pnpm what they actually resolve to on the real
+      # workspace, so "the sharded matrix still covers every packages/* package,
+      # exactly once" survives future filter edits AND package renames/additions.
+      - name: Test — FLY-1338 matrix coverage parity (QA)
+        run: bash scripts/__tests__/ci-matrix-coverage.test.sh
+
   # FLY-1062 PR3/PR4: the gated distribution layer — ISOLATED job (the
-  # build-and-test job above is byte-untouched). Hermetic: the pure endpoint
-  # handler + its in-process serve shell + the release/ops scripts + the PR2
-  # contract-consistency rerun + the workflow structure lint. Zero wrangler,
-  # zero vendor credentials, zero network beyond loopback.
+  # original Build & Test job above was split by FLY-1338; this payload job
+  # mapping remains byte-untouched. Hermetic: the pure endpoint handler + its
+  # in-process serve shell + the release/ops scripts + the PR2 contract-
+  # consistency rerun + the workflow structure lint. Zero wrangler, zero vendor
+  # credentials, zero network beyond loopback.
   payload-distribution:
-    name: FLY-1062 payload distribution (endpoint + release pipeline)
+    name: NPM payload distribution (endpoint + release pipeline)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -349,3 +420,15 @@ jobs:
 
       - name: Customer E2E acceptance (real endpoint + real release scripts + tarball-installed shell)
         run: bash scripts/__tests__/customer-e2e-acceptance.test.sh
+
+  ci-ok:
+    name: CI OK
+    runs-on: ubuntu-latest
+    needs: [quick-gate, unit-tests, script-tests, payload-distribution]
+    if: ${{ always() && !cancelled() }}
+    steps:
+      - name: Verify all jobs passed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          printf '%s\n' "$NEEDS_JSON" | jq -e 'all(.[]; .result == "success")'

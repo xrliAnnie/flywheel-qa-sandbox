@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -79,6 +79,13 @@ describe("SqliteOutboundDedupStore — durable across reopen + handler integrati
 			messageId: "msg-77",
 		});
 		s2.close();
+	});
+
+	it("creates a missing parent directory on a fresh Bridge host", () => {
+		const path = join(dir, "fresh-home", ".flywheel", "dedup.db");
+		const freshStore = new SqliteOutboundDedupStore(path);
+		expect(existsSync(path)).toBe(true);
+		freshStore.close();
 	});
 
 	it("drives the handler exactly-once on the sqlite store (no re-send on repeat)", async () => {
