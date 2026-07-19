@@ -250,3 +250,11 @@ agents:
 pipeline:
   three_stage: true
   three_stage_channels: ["1516209714097291335"] # #flywheel-engineer
+  # FLY-1372 / Annie 2026-07-18: DAG dispatch enrollment — a fresh main
+  # master-auth dispatch on this project routes into the workflow-template
+  # (DAG) engine instead of three-stage/single-session, provided the DAG
+  # feature flags pass (workflow_template_dispatch + claims write/read).
+  # Grayscale: flywheel ONLY for the pilot. Rollback: delete this key (next
+  # request) or `flywheel-comm feature-flags apply --name
+  # workflow_template_dispatch --to off` (immediate) — no code rollback.
+  dag: true

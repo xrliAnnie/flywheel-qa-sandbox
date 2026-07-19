@@ -123,3 +123,14 @@ The exact difficulty→tier boundaries are **not yet fixed** — the founder wil
 tune them with real examples and an eval of each model's capability. For now,
 **trust your judgment** with the signals above; do not hard-code thresholds in
 your head. This will get sharper over time.
+
+## DAG-enrolled projects (FLY-1372)
+
+When a project is DAG-enrolled (`pipeline.dag: true` + the workflow dispatch
+flags ON), a fresh dispatch runs the workflow-template (DAG) engine and the
+TEMPLATE pins each node's vendor/model (the same phase-model sovereignty the
+three-stage phase table already has). **Keep passing `model` as usual** — it
+is accepted, recorded for audit, and explicitly echoed back as overridden
+(`templateAuthority.overrode` in the response). Nothing breaks; the template
+simply wins, exactly as the three-stage design phase already overrides the
+sorter's pin today.

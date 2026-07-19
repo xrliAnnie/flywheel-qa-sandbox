@@ -1556,6 +1556,40 @@ describe("ConfigLoader — pipeline (FLY-793 three-stage)", () => {
 		);
 	});
 
+	// FLY-1372: pipeline.dag — project-level DAG dispatch enrollment.
+	it("parses pipeline.dag: true", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  dag: true\n`,
+		);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline?.dag).toBe(true);
+	});
+
+	it("parses pipeline.dag: false", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  dag: false\n`,
+		);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline?.dag).toBe(false);
+	});
+
+	it("leaves pipeline.dag undefined when absent (byte-compat, DAG entry off)", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n`,
+		);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline?.dag).toBeUndefined();
+	});
+
+	it("throws when pipeline.dag is not a boolean", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  dag: "yes"\n`,
+		);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/pipeline\.dag must be a boolean/,
+		);
+	});
+
 	// FLY-887 R2 Step 3: three_stage_channels validation matrix.
 	it("parses a valid three_stage_channels list of quoted channel-id strings", async () => {
 		readFile.mockResolvedValue(

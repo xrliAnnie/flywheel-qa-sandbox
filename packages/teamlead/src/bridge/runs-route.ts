@@ -19,6 +19,7 @@ import { Router } from "express";
 import type {
 	DesignBackend,
 	PhaseDispatchVendor,
+	PipelineConfig,
 	PonytailInput,
 	RoleEffort,
 } from "flywheel-config";
@@ -43,11 +44,17 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
-import { workflowNodeAgentContent } from "../workflow-run-snapshot.js";
 import {
+	parseWorkflowRunSnapshot,
+	workflowNodeAgentContent,
+} from "../workflow-run-snapshot.js";
+import { workflowTemplateDispatchBlockReason } from "../workflow-template-dispatch.js";
+import {
+	recoverWorkflowStartSelection,
 	resolveWorkflowTemplateCandidateSchema,
 	resolveWorkflowTemplateSelection,
 	type WorkflowRequestAuthKind,
+	type WorkflowTemplateSelectionResult,
 } from "../workflow-template-selection.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
 import {
@@ -64,6 +71,7 @@ import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
 import { loadPipelineConfigByProject } from "./three-stage-config-source.js";
 import {
+	NO_THREE_STAGE_LABEL,
 	resolveGlobalThreeStageKillSwitch,
 	resolveThreeStageEntry,
 } from "./three-stage-policy.js";
@@ -699,6 +707,182 @@ export function createRunsRouter(
 			normalizedIssueLabels,
 		);
 
+		// ── FLY-1372 问题⓪ (part 1): DAG recovery-domain classification. Runs
+		// BEFORE the candidate preflight — recovery depends only on the active
+		// run + reservation + pinned snapshot, so a corrupted CURRENT binding/
+		// template must never strand a recoverable run (Codex design R3-2).
+		// The classification key is the durable `entry_kind='pipeline_dag_v1'`
+		// provenance marker — NOT `engine_owned`, which every start-reservation
+		// run (existing v2 / explicit-v1) also carries (R3-1). Unmarked runs
+		// fall through to today's paths byte-identically.
+		let mainPipelineConfig: PipelineConfig | undefined;
+		let mainPipelineConfigLoaded = false;
+		const loadMainPipelineConfig = async () => {
+			if (!mainPipelineConfigLoaded) {
+				mainPipelineConfigLoaded = true;
+				const proj = projects.find((p) => p.projectName === projectName);
+				mainPipelineConfig = proj
+					? (await loadPipelineConfigByProject([proj])).get(projectName)
+					: undefined;
+			}
+			return mainPipelineConfig;
+		};
+		// Shared DAG request validation (Codex design R3-4): both the fresh and
+		// the recovery domain run it BEFORE any cache/selection — an explicit
+		// param the template overrides hard must 400, never be silently
+		// swallowed by a cached replay. Responds and returns false on reject.
+		const validateDagRequestParameters = (): boolean => {
+			if (requestedDesignBackend) {
+				res.status(400).json({
+					success: false,
+					code: "DESIGN_BACKEND_NOT_APPLICABLE",
+					reason: "dag_dispatch",
+					requested: requestedDesignBackend,
+					silent: false,
+				});
+				return false;
+			}
+			if (agentName !== undefined) {
+				const validation = startDispatcher.validateAgentName(
+					projectName,
+					agentName,
+				);
+				if (!validation.ok) {
+					if (validation.reason === "project_unknown") {
+						res.status(404).json({
+							success: false,
+							message: `Project "${projectName}" is not registered with the Bridge runtime`,
+						});
+						return false;
+					}
+					res.status(400).json({
+						success: false,
+						code: "INVALID_AGENT_NAME",
+						reason: "unknown_agent",
+						available: validation.available,
+						silent: false,
+					});
+					return false;
+				}
+			}
+			return true;
+		};
+		let dagEntry = false;
+		let dagRecovery: WorkflowTemplateSelectionResult | undefined;
+		let hadDagRun = false;
+		{
+			// Codex code R2 #1: the marked-run invariant is classified for EVERY
+			// same-issue start, independent of role/auth — a master qa-role or a
+			// scoped main request could otherwise skip both DAG domains AND the
+			// main-only three-stage block, get a silent null from selection, and
+			// start an unbound legacy session beside the active DAG run. Recovery
+			// stays main+master; everything else answers a typed 409 while the
+			// marker is active. Never-enrolled projects have no marked runs (zero
+			// behavior change), and real auto-QA dispatches on a SEPARATE QA·issue.
+			const activeRun = store.getActiveWorkflowRunForIssue(issueId);
+			const dagRun =
+				activeRun?.entry_kind === "pipeline_dag_v1" ? activeRun : undefined;
+			if (dagRun) {
+				hadDagRun = true;
+				if (role !== "main" || requestAuthKind !== "master") {
+					res.status(409).json({
+						success: false,
+						code: "DAG_RUN_ACTIVE",
+						reason: `issue ${issueId} has an active pipeline-dag run (${dagRun.run_id}) — only a master main-role request may re-drive it; let the engine converge it or terminate the run first`,
+					});
+					return;
+				}
+				const pipelineConfig = await loadMainPipelineConfig();
+				const reservation = store.getWorkflowStartReservationForRun(
+					dagRun.run_id,
+				);
+				if (!reservation) {
+					res.status(409).json({
+						success: false,
+						code: "DAG_RUN_STATE_CORRUPT",
+						reason: `active pipeline-dag run ${dagRun.run_id} has no start reservation`,
+					});
+					return;
+				}
+				if (!validateDagRequestParameters()) return;
+				let runSchema: 1 | 2;
+				try {
+					runSchema = parseWorkflowRunSnapshot(
+						dagRun.snapshot ?? "",
+					).schema_version;
+				} catch (err) {
+					res.status(409).json({
+						success: false,
+						code: "DAG_RUN_STATE_CORRUPT",
+						reason: `active pipeline-dag run ${dagRun.run_id} snapshot unreadable: ${(err as Error).message}`,
+					});
+					return;
+				}
+				if (
+					workflowTemplateDispatchBlockReason(runSchema, process.env) !==
+						undefined ||
+					pipelineConfig?.dag !== true
+				) {
+					// Rollback window: never resume the run past the kill switch,
+					// and never let legacy start beside a partial engine run
+					// (Codex design R2-2b). Operators restore the flags/config to
+					// converge the run, or explicitly finalize it first.
+					res.status(409).json({
+						success: false,
+						code: "ACTIVE_DAG_RUN_RECOVERY_HELD",
+						reason: `issue ${issueId} has an active pipeline-dag run (${dagRun.run_id}) but DAG dispatch is currently disabled — restore workflow flags + pipeline.dag to converge it, or finalize/terminate the run before dispatching legacy`,
+					});
+					return;
+				}
+				if (
+					requestedStartKey &&
+					requestedStartKey !== reservation.idempotency_key
+				) {
+					// Codex code R1 #1: a DIFFERENT explicit key must never fall
+					// through — the normal selection path can silently return null
+					// (v1 gates) and start legacy beside the marked run. Any start
+					// for this issue while the marked run is active must go through
+					// its reservation; answer loudly.
+					res.status(409).json({
+						success: false,
+						code: "DAG_RUN_KEY_MISMATCH",
+						reason: `issue ${issueId} has an active pipeline-dag run bound to a different start reservation — retry keyless (recovery) or with the original idempotencyKey, or finalize/terminate the run first`,
+					});
+					return;
+				}
+				{
+					// Keyless (or matching-key) re-drive: mirror exactSchemaV1Replay —
+					// the start execution itself replays; a live SUCCESSOR phase means
+					// the run is mid-flight and a new dispatch is a double-start.
+					const activePhase = store.getActivePhaseSessionForIssue(issueId);
+					if (
+						activePhase &&
+						activePhase.execution_id !== reservation.execution_id
+					) {
+						res.status(409).json({
+							success: false,
+							message: `Issue ${issueId} already has an active DAG phase (${activePhase.session_role}, ${activePhase.execution_id}, status: ${activePhase.status}). The engine advances the run — do not start a second run; let it converge or terminate it first.`,
+						});
+						return;
+					}
+					try {
+						dagRecovery = recoverWorkflowStartSelection(store, {
+							issueId,
+							projectName,
+							authKind: requestAuthKind,
+						});
+					} catch (err) {
+						res.status(409).json({
+							success: false,
+							code: "DAG_RUN_STATE_CORRUPT",
+							reason: (err as Error).message,
+						});
+						return;
+					}
+				}
+			}
+		}
+
 		const templateCandidateInput = {
 			project: projectName,
 			taskCategory:
@@ -711,18 +895,77 @@ export function createRunsRouter(
 					: undefined,
 		};
 		let candidateSchemaAtEntry: 1 | 2 | null;
-		try {
-			candidateSchemaAtEntry = resolveWorkflowTemplateCandidateSchema(
-				store,
-				templateCandidateInput,
-			);
-		} catch (err) {
-			res.status(409).json({
-				success: false,
-				code: "GENERALIZED_WORKFLOW_REJECTED",
-				reason: (err as Error).message,
-			});
-			return;
+		if (dagRecovery) {
+			// FLY-1372 (Codex design R3-2): the recovery domain is CANDIDATE-FREE.
+			// The current resolver can throw on a corrupted/nonexistent current
+			// template — that must never strand a run with a good pinned snapshot,
+			// so it is not even consulted on the recovery path (the value is unused
+			// there: three-stage and selection are both bypassed).
+			candidateSchemaAtEntry = null;
+		} else {
+			try {
+				candidateSchemaAtEntry = resolveWorkflowTemplateCandidateSchema(
+					store,
+					templateCandidateInput,
+				);
+			} catch (err) {
+				res.status(409).json({
+					success: false,
+					code: "GENERALIZED_WORKFLOW_REJECTED",
+					reason: (err as Error).message,
+				});
+				return;
+			}
+		}
+
+		// ── FLY-1372 问题⓪ (part 2): DAG fresh domain. Only when NO marked run
+		// exists; consumes the candidate resolved just above. Flags outrank the
+		// candidate-missing 409 (flags OFF = the sanctioned rollback lever →
+		// byte-identical legacy), and only a schema-1 candidate enters — the
+		// pilot is v1-only, schema-2 keeps today's explicit path untouched.
+		if (
+			!dagRecovery &&
+			!hadDagRun &&
+			role === "main" &&
+			requestAuthKind === "master"
+		) {
+			const pipelineConfig = await loadMainPipelineConfig();
+			if (
+				pipelineConfig?.dag === true &&
+				!normalizedIssueLabels.includes(NO_THREE_STAGE_LABEL)
+			) {
+				const dagBlock = workflowTemplateDispatchBlockReason(
+					candidateSchemaAtEntry ?? 1,
+					process.env,
+				);
+				if (dagBlock === undefined) {
+					if (candidateSchemaAtEntry === null) {
+						// Enrolled + flags ON + no candidate = broken configuration.
+						// Fail loud — a silent legacy fallback here is exactly the
+						// incident class this entry exists to kill (FLY-802).
+						res.status(409).json({
+							success: false,
+							code: "DAG_TEMPLATE_CANDIDATE_MISSING",
+							reason: `project ${projectName} is DAG-enrolled with dispatch flags ON but no workflow template candidate resolves (binding/template missing)`,
+						});
+						return;
+					}
+					if (candidateSchemaAtEntry === 1) {
+						if (!validateDagRequestParameters()) return;
+						const activePhase = store.getActivePhaseSessionForIssue(issueId);
+						if (activePhase) {
+							// No marked run exists, so this is a parked LEGACY phase
+							// session — a new DAG run must not collide with it (A7).
+							res.status(409).json({
+								success: false,
+								message: `Issue ${issueId} already has an active legacy phase session (${activePhase.session_role}, ${activePhase.execution_id}, status: ${activePhase.status}). Let it hand off or terminate it before dispatching into the DAG.`,
+							});
+							return;
+						}
+						dagEntry = true;
+					}
+				}
+			}
 		}
 
 		// FLY-793 (Step 4 ENTRY): resolve the trusted three-stage policy before
@@ -734,11 +977,16 @@ export function createRunsRouter(
 		let dispatchVendor: PhaseDispatchVendor | undefined;
 		let dispatchEffort: RoleEffort | undefined;
 		let effectiveDesignBackend: DesignBackend | undefined;
-		if (role === "main" && candidateSchemaAtEntry !== 2) {
+		// FLY-1372: a DAG entry / recovery短路s the whole three-stage block — the
+		// DAG run carries design→implement→qa itself; no role rewrite here.
+		if (
+			!dagEntry &&
+			!dagRecovery &&
+			role === "main" &&
+			candidateSchemaAtEntry !== 2
+		) {
 			const proj = projects.find((p) => p.projectName === projectName);
-			const pipelineConfig = proj
-				? (await loadPipelineConfigByProject([proj])).get(projectName)
-				: undefined;
+			const pipelineConfig = await loadMainPipelineConfig();
 			const dispatchChannelId = leadId
 				? proj?.leads.find((l) => l.agentId === leadId)?.chatChannel
 				: undefined;
@@ -791,34 +1039,118 @@ export function createRunsRouter(
 			}
 		}
 
+		// FLY-1372 §2.5: start-snapshot helpers shared by the DAG entry and the
+		// legacy path. The legacy call sites keep their original positions —
+		// identical values, byte-identical persistence timing when DAG is off.
+		//
+		// codexSkip — FLY-137 Phase 5: "label the issue before triggering; if you
+		// forgot, cancel + retry" (no mid-run Linear refresh).
+		// founderFacingUx — FLY-598/FLY-869: default-ON, exempt only via the
+		// project's configured exempt labels (canonical `.flywheel/config.yaml`)
+		// or a `QA · <ident>` title; FAIL-CLOSED on a label-read failure (an
+		// unreadable label set must never read as "not founder-facing"). Inert
+		// unless founder_ux_gate.mode != off.
+		const computeStartBehaviorSnapshot = async () => {
+			const codexSkip = normalizedIssueLabels.includes("codex-skip");
+			const founderUxProject = projects.find(
+				(p) => p.projectName === projectName,
+			);
+			const founderUxExemptLabels =
+				await loadFounderUxExemptLabels(founderUxProject);
+			const founderFacingUx = resolveFounderFacingUx(
+				normalizedIssueLabels,
+				issueLabelsFetchFailed,
+				founderUxExemptLabels,
+				isQaIssueTitle(issueTitle),
+			);
+			return { codexSkip, founderFacingUx };
+		};
+		const buildPonytailInput = (): PonytailInput => {
+			const rawPonytail = (req.body as { ponytail?: unknown }).ponytail;
+			const ponytailRunOverride =
+				rawPonytail === "on" || rawPonytail === "off"
+					? (rawPonytail as "on" | "off")
+					: undefined;
+			return {
+				kind: "start_signal",
+				signal: {
+					...(ponytailRunOverride && { runOverride: ponytailRunOverride }),
+					labels: normalizedIssueLabels,
+					labelStatus: issueLabelsFetchFailed ? "unreadable" : "readable",
+				},
+			};
+		};
+		// FLY-1372 §2.5: request-scoped advisory echo — the durable authority is
+		// the pinned run snapshot itself. `model`/`agentName` are accepted (Lead
+		// shared rules require them on every dispatch; three-stage entry already
+		// overrides the sorter model unconditionally — same sovereignty, made
+		// explicit) but the template pins per-node vendor/model/agent. ponytail
+		// rides the legacy-identical ladder and is NOT in this list.
+		const dagAuthority =
+			dagEntry || dagRecovery
+				? {
+						templateAuthority: {
+							overrode: [
+								...(rawModel != null ? ["model"] : []),
+								...(agentName !== undefined ? ["agentName"] : []),
+							],
+						},
+					}
+				: {};
+
 		const generalizedProject = projects.find(
 			(project) => project.projectName === projectName,
 		);
+		// FLY-1372: the DAG entry synthesizes a start key when the Lead sent none
+		// (random — a deterministic per-issue key would forever replay the FIRST
+		// run's cached response on later fresh dispatches). Keyless RETRY safety
+		// comes from the recovery domain above, not from key determinism.
+		const effectiveStartKey =
+			requestedStartKey ?? (dagEntry ? `dag-auto-${randomUUID()}` : undefined);
 		let generalizedSelection:
 			| ReturnType<typeof resolveWorkflowTemplateSelection>
 			| undefined;
-		try {
-			generalizedSelection = resolveWorkflowTemplateSelection(store, {
-				...templateCandidateInput,
-				issueId,
-				leadReason:
-					typeof req.body.selectionReason === "string"
-						? req.body.selectionReason
-						: undefined,
-				selectedBy: leadId ?? "unassigned",
-				actor: requestAuthKind,
-				authKind: requestAuthKind,
-				canonicalRoot: generalizedProject?.projectRoot ?? "",
-				idempotencyKey: requestedStartKey,
-				allowSchemaV1Dispatch: role === "design" && shareParentBranch === true,
-				candidateSchemaAtEntry,
-				env: process.env,
-			});
-		} catch (err) {
+		if (dagRecovery) {
+			generalizedSelection = dagRecovery;
+		} else {
+			try {
+				generalizedSelection = resolveWorkflowTemplateSelection(store, {
+					...templateCandidateInput,
+					issueId,
+					leadReason:
+						typeof req.body.selectionReason === "string"
+							? req.body.selectionReason
+							: undefined,
+					selectedBy: leadId ?? "unassigned",
+					actor: requestAuthKind,
+					authKind: requestAuthKind,
+					canonicalRoot: generalizedProject?.projectRoot ?? "",
+					idempotencyKey: effectiveStartKey,
+					allowSchemaV1Dispatch:
+						dagEntry || (role === "design" && shareParentBranch === true),
+					candidateSchemaAtEntry,
+					...(dagEntry ? { entryKind: "pipeline_dag_v1" as const } : {}),
+					env: process.env,
+				});
+			} catch (err) {
+				res.status(409).json({
+					success: false,
+					code: "GENERALIZED_WORKFLOW_REJECTED",
+					reason: (err as Error).message,
+				});
+				return;
+			}
+		}
+		// FLY-1372 fail-closed: the DAG entry decided to dispatch but selection
+		// yielded nothing (a flag flipped mid-request via the direct-toggle flag
+		// console, or the binding vanished between reads). NEVER fall through to
+		// legacy silently — that is the FLY-802 incident class.
+		if (dagEntry && !generalizedSelection) {
 			res.status(409).json({
 				success: false,
-				code: "GENERALIZED_WORKFLOW_REJECTED",
-				reason: (err as Error).message,
+				code: "DAG_ENTRY_NOT_MATERIALIZED",
+				reason:
+					"dag entry selected no workflow candidate (flag flipped mid-request or binding removed) — refusing silent legacy fallback",
 			});
 			return;
 		}
@@ -878,7 +1210,17 @@ export function createRunsRouter(
 			let commitWorkflowLaunch:
 				| (() => { ok: boolean; reason?: string })
 				| undefined;
-			if (!startedSession) {
+			// Codex code R1 #2: a session row alone is NOT launch evidence —
+			// Blueprint creates it BEFORE the adapter's launch commit, so a crash
+			// between the two would otherwise answer 202 forever without ever
+			// re-entering the owner state machine. Only a durably DELIVERED
+			// generation short-circuits; otherwise run the machine (typed 409 hold
+			// inside the live lease, reacquire + re-drive after expiry).
+			const priorDelivery = getGeneralizedLaunchDelivery(
+				store,
+				generalizedSelection.executionId,
+			);
+			if (!startedSession || !priorDelivery) {
 				const launchOwnerId = randomUUID();
 				const launchMarkerPath = join(
 					process.env.HOME ?? homedir(),
@@ -1031,6 +1373,14 @@ export function createRunsRouter(
 					)
 						? generalizedSelection.node.type
 						: "main";
+					// FLY-1372 §2.5: DAG starts carry the EFFECTIVE behavior snapshot
+					// (docTier defaulted, founder-ux computed, ponytail ladder input)
+					// so the durable emitStarted seam persists them with the session
+					// row. Non-DAG generalized starts keep today's exact shape.
+					const dagBehavior =
+						dagEntry || dagRecovery
+							? await computeStartBehaviorSnapshot()
+							: undefined;
 					await startDispatcher.start({
 						issueId,
 						projectName,
@@ -1041,8 +1391,14 @@ export function createRunsRouter(
 						shareParentBranch: workflowRole === "main" ? undefined : true,
 						issueLabels: normalizedIssueLabels,
 						owningDept,
-						codexSkip: normalizedIssueLabels.includes("codex-skip"),
-						docTier,
+						codexSkip:
+							dagBehavior?.codexSkip ??
+							normalizedIssueLabels.includes("codex-skip"),
+						docTier: dagBehavior ? (docTier ?? "full") : docTier,
+						...(dagBehavior && {
+							founderFacingUx: dagBehavior.founderFacingUx,
+							ponytailInput: buildPonytailInput(),
+						}),
 						issueUrl,
 						generalizedExecution: {
 							engineOwned: true,
@@ -1078,6 +1434,22 @@ export function createRunsRouter(
 						});
 						return;
 					}
+					// FLY-1372 §2.5: audit-only fields (best-effort, fresh path only —
+					// a replay must never overwrite the original request's audit trail).
+					if (dagEntry && !generalizedSelection.replayed) {
+						const audit: {
+							dispatch_model?: string;
+							agent_name?: string;
+						} = {};
+						if (dispatchModel) audit.dispatch_model = dispatchModel;
+						if (agentName) audit.agent_name = agentName;
+						if (Object.keys(audit).length > 0) {
+							store.patchSessionMetadata(
+								generalizedSelection.executionId,
+								audit,
+							);
+						}
+					}
 				}
 			}
 			let committedOwner = await waitForGeneralizedLaunchDelivery(
@@ -1106,6 +1478,8 @@ export function createRunsRouter(
 					issueId,
 					workflowRunId: generalizedSelection.runId,
 					workflowNodeId: generalizedSelection.nodeId,
+					// FLY-1372: 202 carries the same advisory echo as the 200.
+					...dagAuthority,
 					message: `Runner launch accepted for ${issueId}; delivery confirmation is pending.`,
 				});
 				return;
@@ -1121,6 +1495,7 @@ export function createRunsRouter(
 				generalized: true,
 				workflowRunId: generalizedSelection.runId,
 				workflowNodeId: generalizedSelection.nodeId,
+				...dagAuthority,
 				message: `Runner started for ${issueId}`,
 			};
 			store.recordWorkflowStartResponse({
@@ -1136,34 +1511,12 @@ export function createRunsRouter(
 		// if you forgot, cancel + retry." Bridge persists this on the session
 		// row so event-route's stage_changed handler can check it without
 		// touching Linear at transition time.
-		const codexSkip = normalizedIssueLabels.includes("codex-skip");
-
-		// FLY-598 / FLY-869: snapshot the founder-facing-ux flag at run start
-		// (same "label-before-trigger" semantics as codex-skip). FLY-869 flips
-		// this default-ON: every issue is in scope UNLESS it carries one of the
-		// project's configured exempt labels (default `["brainstorm-exempt"]`,
-		// resolved from `.flywheel/config.yaml`'s `founder_ux_gate.exempt_labels`
-		// via `resolveEffectiveFounderUxConfig`). A Runner can also self-declare
-		// later via `declare-founder-ux`. The flag is inert unless
-		// founder_ux_gate.mode resolves to something other than "off".
-		//
-		// FLY-598 (Codex R1 MEDIUM): fail-closed on a label-read failure. If we
-		// could not read the issue's labels we cannot prove it is exempt, so
-		// treat it AS in scope (the trigger must never fail-open on a Linear
-		// outage). This only has teeth when the gate is enabled (mode != off).
-		const founderUxProject = projects.find(
-			(p) => p.projectName === projectName,
-		);
-		const founderUxExemptLabels =
-			await loadFounderUxExemptLabels(founderUxProject);
-		const founderFacingUx = resolveFounderFacingUx(
-			normalizedIssueLabels,
-			issueLabelsFetchFailed,
-			founderUxExemptLabels,
-			// FLY-869 (Lead 2ee06754): a `QA · <ident>` verification issue is auto-exempt
-			// from the brainstorm gate — no manual label. (QA·867 / FLY-873 was the case.)
-			isQaIssueTitle(issueTitle),
-		);
+		// FLY-137 Phase 5 (codex-skip) + FLY-598/FLY-869 (founder-facing-ux):
+		// label snapshots at run start. Computation extracted to the shared
+		// `computeStartBehaviorSnapshot` helper (FLY-1372 §2.5) — this call site
+		// keeps its original position, so the flags-OFF legacy persistence timing
+		// is byte-identical. See the helper for the fail-closed label semantics.
+		const { codexSkip, founderFacingUx } = await computeStartBehaviorSnapshot();
 
 		// FLY-137 v1.27.2 (Codex Track A #2): validate `agentName` SYNCHRONOUSLY
 		// before kicking off any async work. Without this, InvalidAgentNameError
@@ -1204,19 +1557,9 @@ export function createRunsRouter(
 			// non-collapsed start_signal (run-param + labels + read status) so
 			// Blueprint resolves it against project config. Invalid values are
 			// ignored (treated as no override → label/project layers decide).
-			const rawPonytail = (req.body as { ponytail?: unknown }).ponytail;
-			const ponytailRunOverride =
-				rawPonytail === "on" || rawPonytail === "off"
-					? (rawPonytail as "on" | "off")
-					: undefined;
-			const ponytailInput: PonytailInput = {
-				kind: "start_signal",
-				signal: {
-					...(ponytailRunOverride && { runOverride: ponytailRunOverride }),
-					labels: normalizedIssueLabels,
-					labelStatus: issueLabelsFetchFailed ? "unreadable" : "readable",
-				},
-			};
+			// (FLY-1372: build extracted to the shared `buildPonytailInput` helper;
+			// this call site keeps its original position — identical value/shape.)
+			const ponytailInput: PonytailInput = buildPonytailInput();
 
 			const result = await startDispatcher.start({
 				issueId,

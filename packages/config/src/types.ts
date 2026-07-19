@@ -304,6 +304,15 @@ export interface PipelineConfig {
 	 * a quoting hint.
 	 */
 	three_stage_channels?: string[];
+	/**
+	 * FLY-1372: project-level DAG dispatch enrollment. When true AND the DAG
+	 * feature flags pass `workflowTemplateDispatchBlockReason`, a fresh `main`
+	 * master-auth dispatch is routed into the workflow-template (DAG) engine
+	 * instead of the three-stage/single-session legacy paths. Absent or false
+	 * → OFF (byte-compatible; legacy routing untouched). Read from the
+	 * project's CANONICAL root only, like `three_stage`.
+	 */
+	dag?: boolean;
 }
 
 /**

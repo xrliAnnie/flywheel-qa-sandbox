@@ -3162,6 +3162,27 @@ export class StateStore {
 					session.workflow_node_id ?? null,
 				],
 			);
+			// FLY-1372 (Codex design R4-1): the two NOT NULL DEFAULT 0 behavior
+			// columns are deliberately NOT in the fixed column list above — an
+			// `undefined` input must never overwrite an existing value, and the
+			// INSERT default (0) already covers the fresh-undefined case. Defined
+			// inputs land here, inside the SAME transaction as row creation, so
+			// there is no crash cut between the row and its behavior metadata.
+			if (session.codex_skip !== undefined) {
+				this.db.run(
+					"UPDATE sessions SET codex_skip = ? WHERE execution_id = ?",
+					[session.codex_skip ? 1 : 0, session.execution_id],
+				);
+			}
+			if (session.founder_facing_ux !== undefined) {
+				// Keep-high: a Runner self-declaration (founder_facing_ux=1) must
+				// never be downgraded by a repeated started upsert carrying the
+				// stale computed value.
+				this.db.run(
+					"UPDATE sessions SET founder_facing_ux = MAX(founder_facing_ux, ?) WHERE execution_id = ?",
+					[session.founder_facing_ux ? 1 : 0, session.execution_id],
+				);
+			}
 			this.applyTerminalTimestamp(
 				session.execution_id,
 				existing?.status,
@@ -12087,6 +12108,12 @@ export class StateStore {
 			"selected_by TEXT",
 			"selection_reason TEXT",
 			"engine_owned INTEGER NOT NULL DEFAULT 0",
+			// FLY-1372: durable entry provenance. ONLY the pipeline.dag dispatch
+			// entry writes 'pipeline_dag_v1' (atomically in the materialize
+			// transaction); existing v2 / explicit-v1 runs stay NULL, so the DAG
+			// recovery domain can never intercept them (engine_owned is NOT a
+			// provenance — every start-reservation run has it).
+			"entry_kind TEXT",
 		]) {
 			try {
 				this.db.run(`ALTER TABLE workflow_run ADD COLUMN ${column}`);
@@ -13086,6 +13113,12 @@ export class StateStore {
 			executionId: string;
 			createdAt: string;
 		};
+		/**
+		 * FLY-1372: durable entry provenance. Set ONLY by the pipeline.dag
+		 * dispatch entry; the DAG recovery domain filters on this marker so it
+		 * can never intercept existing v2 / explicit-v1 runs (NULL).
+		 */
+		entryKind?: "pipeline_dag_v1";
 		env?: Record<string, string | undefined>;
 	}): WorkflowRunRow {
 		const binding = input.templateId
@@ -13172,8 +13205,8 @@ export class StateStore {
 				`INSERT INTO workflow_run
 				 (run_id, issue_id, project_name, template_id, template_revision,
 				  snapshot, claims_read_enrolled, engine_owned, current_node_id,
-				  selection_source, selected_by, selection_reason)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  selection_source, selected_by, selection_reason, entry_kind)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					input.runId,
 					input.issueId,
@@ -13187,6 +13220,8 @@ export class StateStore {
 					input.selection?.source ?? null,
 					input.selection?.selectedBy ?? null,
 					input.selection?.reason ?? null,
+					// FLY-1372: entry provenance, pinned in the same transaction.
+					input.entryKind ?? null,
 				],
 			);
 			if (input.startReservation) {
@@ -13323,7 +13358,38 @@ export class StateStore {
 			status: r.status as string,
 			claims_read_enrolled: Number(r.claims_read_enrolled ?? 0),
 			engine_owned: Number(r.engine_owned ?? 0),
+			entry_kind: (r.entry_kind as string) ?? null,
 			created_at: r.created_at as string,
+		};
+	}
+
+	/**
+	 * FLY-1372: read-only recovery accessor — the pipeline.dag entry re-drives
+	 * a materialized-but-unresponded run by recovering its original start
+	 * reservation from the active run (`run_id` is UNIQUE on the append-only
+	 * reservation table).
+	 */
+	getWorkflowStartReservationForRun(
+		runId: string,
+	): WorkflowStartReservationRow | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT r.*, s.stage, s.updated_at AS stage_updated_at
+			   FROM workflow_start_reservation r
+			   JOIN workflow_start_stage s USING (idempotency_key)
+			  WHERE r.run_id = ?`,
+			[runId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			idempotency_key: row.idempotency_key as string,
+			selection_digest: row.selection_digest as string,
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			execution_id: row.execution_id as string,
+			created_at: row.created_at as string,
+			stage: row.stage as WorkflowStartStage,
+			stage_updated_at: row.stage_updated_at as string,
 		};
 	}
 
@@ -18503,6 +18569,9 @@ export interface WorkflowRunRow {
 	claims_read_enrolled: number;
 	/** Snapshot interpreter ownership; written only by reserved engine starts. */
 	engine_owned: number;
+	/** FLY-1372: entry provenance — 'pipeline_dag_v1' only for pipeline.dag
+	 * entry runs; NULL for existing v2 / explicit-v1 shapes (recovery filter). */
+	entry_kind?: string | null;
 	created_at: string;
 }
 

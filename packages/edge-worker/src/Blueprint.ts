@@ -208,6 +208,15 @@ export interface BlueprintContext {
 	// FLY-205 — Lead-judged doc tier. Defaults to "full" when omitted
 	// (fail-safe: no Lead signal → full docs, never silently fewer).
 	docTier?: DocTier;
+	/**
+	 * FLY-1372 §2.5: Bridge-computed behavior snapshots (codex-skip label +
+	 * founder-facing-ux). Threaded ONLY by the pipeline.dag entry / engine
+	 * successor dispatch so the durable emitStarted seam persists them with the
+	 * session row (Direct sink only — never over HTTP). Absent on every legacy
+	 * dispatch (byte-compatible: the route patch keeps its original timing).
+	 */
+	codexSkip?: boolean;
+	founderFacingUx?: boolean;
 	// FLY-59 — Session role for multi-session-per-issue support
 	sessionRole?: string;
 	/** FLY-1259: effective design vendor locked at three-stage admission. */
@@ -676,6 +685,19 @@ export class Blueprint {
 			...(ctx.runnerModel && { runnerModel: ctx.runnerModel }),
 			// FLY-615: persisted ponytail condition (→ session.ponytail_condition).
 			...(ponytailCondition && { ponytailCondition }),
+			// FLY-1372 §2.5: Bridge-trusted behavior fields ride session creation
+			// ONLY for engine-owned generalized (pipeline.dag) starts — legacy
+			// dispatches keep the route-patch persistence timing byte-identical
+			// (Codex design R3-3b). Persisted by the Direct sink only; the HTTP
+			// client never transmits them (see EventEnvelope authority note).
+			...(ctx.generalizedExecutionContext && {
+				...(ctx.docTier && { docTier: ctx.docTier }),
+				...(ctx.issueUrl && { issueUrl: ctx.issueUrl }),
+				...(ctx.codexSkip !== undefined && { codexSkip: ctx.codexSkip }),
+				...(ctx.founderFacingUx !== undefined && {
+					founderFacingUx: ctx.founderFacingUx,
+				}),
+			}),
 		};
 
 		// Fire-and-forget started event (labels now populated)

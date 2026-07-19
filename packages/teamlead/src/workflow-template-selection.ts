@@ -99,6 +99,11 @@ export function resolveWorkflowTemplateSelection(
 		allowSchemaV1Dispatch?: boolean;
 		/** Candidate schema observed before the route's entry-policy await. */
 		candidateSchemaAtEntry?: 1 | 2 | null;
+		/**
+		 * FLY-1372: durable entry provenance, set ONLY by the pipeline.dag
+		 * dispatch entry — pinned atomically in the materialize transaction.
+		 */
+		entryKind?: "pipeline_dag_v1";
 		env?: Record<string, string | undefined>;
 		idFactory?: () => string;
 		now?: string;
@@ -216,6 +221,7 @@ export function resolveWorkflowTemplateSelection(
 		claimsReadEnrolled: true,
 		actor: input.actor,
 		canonicalRoot: input.canonicalRoot,
+		...(input.entryKind ? { entryKind: input.entryKind } : {}),
 		selection: {
 			source: selectionSource,
 			selectedBy: input.selectedBy,
@@ -246,5 +252,67 @@ export function resolveWorkflowTemplateSelection(
 		idempotencyKey: key,
 		node,
 		replayed: false,
+	};
+}
+
+/**
+ * FLY-1372: recover the start selection of an ACTIVE `pipeline_dag_v1` run
+ * from its pinned snapshot + start reservation — the keyless re-drive path
+ * for a materialized-but-unresponded entry (crash / timeout between
+ * materialization and response).
+ *
+ * Deliberately read-only and CANDIDATE-FREE: it never consults the current
+ * binding / template / published revision, so binding deletion, a rebind, a
+ * revision advance, an auto-resolved Lead change, or a corrupted current
+ * template cannot strand a run that has a perfectly good pinned snapshot
+ * (Codex design R2-2a / R3-2). Throws on any inconsistency — the caller maps
+ * to a machine-readable 409, never a silent legacy fallback.
+ */
+export function recoverWorkflowStartSelection(
+	store: StateStore,
+	input: {
+		issueId: string;
+		projectName: string;
+		authKind: WorkflowRequestAuthKind;
+	},
+): WorkflowTemplateSelectionResult {
+	if (input.authKind !== "master") {
+		throw new Error("workflow start recovery requires master auth");
+	}
+	const run = store.getActiveWorkflowRunForIssue(input.issueId);
+	if (!run || run.entry_kind !== "pipeline_dag_v1") {
+		throw new Error("no active pipeline-dag run to recover for this issue");
+	}
+	if (run.project_name !== input.projectName) {
+		throw new Error("active pipeline-dag run belongs to a different project");
+	}
+	if (!run.snapshot) {
+		throw new Error("active pipeline-dag run has no pinned snapshot");
+	}
+	const reservation = store.getWorkflowStartReservationForRun(run.run_id);
+	if (!reservation) {
+		throw new Error("active pipeline-dag run has no start reservation");
+	}
+	const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+	const node = snapshot.resolved.nodes.find(
+		(candidate) => candidate.id === reservation.node_id,
+	);
+	if (!node) {
+		throw new Error("active pipeline-dag run start node missing from snapshot");
+	}
+	const selectionSource =
+		run.selection_source === "lead" || run.selection_source === "binding"
+			? run.selection_source
+			: "default";
+	return {
+		runId: run.run_id,
+		executionId: reservation.execution_id,
+		nodeId: reservation.node_id,
+		attempt: 1,
+		snapshotDigest: snapshot.snapshot_digest,
+		selectionSource,
+		idempotencyKey: reservation.idempotency_key,
+		node,
+		replayed: true,
 	};
 }

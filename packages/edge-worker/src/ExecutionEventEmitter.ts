@@ -49,6 +49,23 @@ export interface EventEnvelope {
 	 * (byte-compatible).
 	 */
 	ponytailCondition?: string;
+	/**
+	 * FLY-1372 §2.5: Bridge-TRUSTED behavior fields, set only for engine-owned
+	 * generalized (pipeline.dag) starts so they land in the session row at
+	 * creation time (crash-convergent, no post-start patch window).
+	 *
+	 * AUTHORITY BOUNDARY (Codex design R3-3): these are SERVER-computed gate
+	 * inputs. Only the Bridge-local DirectEventSink persists them.
+	 * `TeamLeadClient.emitStarted` must NEVER transmit them — the shared HTTP
+	 * `/events` ingest token is runner-visible and cannot carry Bridge
+	 * authority (same red line as the worktree binding note below) — and the
+	 * `/events` session_started handler must ignore any same-named runner
+	 * payload fields.
+	 */
+	docTier?: string;
+	issueUrl?: string;
+	codexSkip?: boolean;
+	founderFacingUx?: boolean;
 }
 
 /**

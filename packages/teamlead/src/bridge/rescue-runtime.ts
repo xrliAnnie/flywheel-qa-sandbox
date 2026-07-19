@@ -202,6 +202,15 @@ export interface CloseAndDispatchDeps {
 	 * Returns the new execution id; THROWS on failure / duplicate inflight.
 	 */
 	startSuccessor: (session: Session) => Promise<string>;
+	/**
+	 * FLY-1372 (Codex code R1 #4): engine-ownership probe. A generalized
+	 * (pipeline.dag) execution is bound to a workflow run/node — the legacy
+	 * rescue lane must NEVER terminate it and respawn an UNBOUND legacy
+	 * successor (the run would stay bound to the dead execution while the
+	 * replacement can neither submit for nor advance the node). Absent →
+	 * treated as unknown → fail closed for safety only when the probe throws.
+	 */
+	isEngineOwnedExecution?: (executionId: string) => boolean;
 	log?: (msg: string) => void;
 }
 
@@ -264,6 +273,28 @@ export function makeCloseAndDispatchSuccessor(
 		if (!session) {
 			deps.log?.(`[rescue] session ${executionId} not found — refusing`);
 			return null;
+		}
+		// FLY-1372 (Codex code R1 #4): an engine-owned generalized execution is
+		// NOT a legacy rescue target — refuse BEFORE any destructive step and
+		// leave recovery to the workflow launch/delivery machinery (the entry's
+		// recovery domain / WorkflowEngineDispatcher). Probe failure fails
+		// closed: an ownership-read outage must never license a legacy respawn.
+		if (deps.isEngineOwnedExecution) {
+			let engineOwned: boolean;
+			try {
+				engineOwned = deps.isEngineOwnedExecution(executionId);
+			} catch (err) {
+				deps.log?.(
+					`[rescue] engine ownership lookup failed for ${executionId}: ${(err as Error).message} — refusing (fail closed)`,
+				);
+				return null;
+			}
+			if (engineOwned) {
+				deps.log?.(
+					`[rescue] session ${executionId} is an engine-owned workflow execution — refusing legacy rescue (escalate: recover via the DAG entry / engine, or terminate the run explicitly)`,
+				);
+				return null;
+			}
 		}
 		// Only a still-`running` (kicked-out) session is a rescue target. Any
 		// terminal / awaiting state is NOT a logged-out running runner → refuse

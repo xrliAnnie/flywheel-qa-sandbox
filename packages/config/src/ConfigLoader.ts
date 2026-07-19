@@ -417,6 +417,11 @@ export class ConfigLoader {
 			) {
 				throw new Error("pipeline.three_stage must be a boolean");
 			}
+			// FLY-1372: dag — project-level DAG dispatch enrollment (mirrors
+			// three_stage: boolean-only, absent → off, malformed fails loudly).
+			if (pipeline.dag != null && typeof pipeline.dag !== "boolean") {
+				throw new Error("pipeline.dag must be a boolean");
+			}
 			// FLY-887 R2: three_stage_channels — channel allowlist for three-stage
 			// entry. Items must be QUOTED strings: a bare YAML number would
 			// silently lose precision on 19-digit Discord snowflakes and the gate

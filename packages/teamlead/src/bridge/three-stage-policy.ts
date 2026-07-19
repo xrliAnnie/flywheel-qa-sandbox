@@ -69,7 +69,10 @@ export type ThreeStageNotEnteredReasonCode =
 	| ThreeStageDisabledReasonCode
 	| "non_main_role";
 
-const NO_THREE_STAGE_LABEL = "no-three-stage";
+/** Per-issue opt-out label. FLY-1372: also exempts the DAG dispatch entry —
+ * the v1 DAG template IS the engine implementation of three-stage, and the
+ * label's meaning is "run this issue as a single session". */
+export const NO_THREE_STAGE_LABEL = "no-three-stage";
 
 /**
  * FLY-1259: the ONE three-stage block that is safe to decide before the Linear

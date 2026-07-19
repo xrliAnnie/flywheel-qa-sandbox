@@ -174,6 +174,29 @@ describe("makeCloseAndDispatchSuccessor (W4)", () => {
 		};
 	}
 
+	it("FLY-1372: refuses an engine-owned generalized execution BEFORE any destructive step (fail closed on probe error too)", async () => {
+		const d = deps({ isEngineOwnedExecution: vi.fn(() => true) });
+		const fn = makeCloseAndDispatchSuccessor(d);
+		expect(await fn("exec-1")).toBeNull();
+		expect(d.terminateForRescue).not.toHaveBeenCalled();
+		expect(d.closeRunner).not.toHaveBeenCalled();
+		expect(d.startSuccessor).not.toHaveBeenCalled();
+
+		const throwing = deps({
+			isEngineOwnedExecution: vi.fn(() => {
+				throw new Error("ownership read outage");
+			}),
+		});
+		const fn2 = makeCloseAndDispatchSuccessor(throwing);
+		expect(await fn2("exec-1")).toBeNull();
+		expect(throwing.terminateForRescue).not.toHaveBeenCalled();
+
+		// A plain legacy session (probe says false) still rescues normally.
+		const legacy = deps({ isEngineOwnedExecution: vi.fn(() => false) });
+		const fn3 = makeCloseAndDispatchSuccessor(legacy);
+		expect(await fn3("exec-1")).toBe("exec-2");
+	});
+
 	it("terminates → closes → dispatches a resumed successor (in order)", async () => {
 		const order: string[] = [];
 		const d = deps({

@@ -474,6 +474,12 @@ export class WorkflowEngineDispatcher {
 			...(predecessor?.codex_skip !== undefined && {
 				codexSkip: predecessor.codex_skip,
 			}),
+			// FLY-1372 §2.5: propagate the founder-ux snapshot hop-by-hop — the
+			// successor session row must carry it (via the emitStarted seam) or
+			// hop-2 would copy nothing and the gate would misread the run.
+			...(predecessor?.founder_facing_ux !== undefined && {
+				founderFacingUx: !!predecessor.founder_facing_ux,
+			}),
 			generalizedExecution: {
 				engineOwned: true,
 				executionId: intent.execution_id,

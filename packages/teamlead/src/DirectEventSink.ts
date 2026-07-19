@@ -250,6 +250,21 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// FLY-614 token accounting + FLY-616 quality eval). HTTP /events path
 			// persists the same field.
 			ponytail_condition: env.ponytailCondition,
+			// FLY-1372 §2.5: Bridge-trusted behavior fields — set ONLY on engine-
+			// owned generalized (pipeline.dag) starts, persisted atomically with
+			// row creation (upsertSession leaves them untouched when undefined).
+			// This in-process sink is the ONLY writer; the HTTP client never
+			// transmits them and /events ignores same-named runner payload fields.
+			doc_tier: env.docTier,
+			issue_url: env.issueUrl,
+			codex_skip:
+				env.codexSkip === undefined ? undefined : env.codexSkip ? 1 : 0,
+			founder_facing_ux:
+				env.founderFacingUx === undefined
+					? undefined
+					: env.founderFacingUx
+						? 1
+						: 0,
 			workflow_node_id: workflowNodeId,
 		});
 

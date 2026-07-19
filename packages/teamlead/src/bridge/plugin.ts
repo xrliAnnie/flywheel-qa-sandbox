@@ -8595,6 +8595,11 @@ export async function startBridge(
 			// dispatch a resumed successor (start() runs the FLY-795 resume-computer).
 			closeAndDispatchSuccessor: makeCloseAndDispatchSuccessor({
 				getSession: (id) => store.getSession(id),
+				// FLY-1372 (Codex code R1 #4): same ownership source as the
+				// PhaseOrchestrator guard — an engine-owned generalized execution
+				// is never a legacy rescue target.
+				isEngineOwnedExecution: (id) =>
+					store.isWorkflowEngineOwnedExecution(id),
 				terminateForRescue: (s) => {
 					const tr = applyTransition(
 						transitionOpts,

@@ -845,6 +845,13 @@ export function createEventRouter(
 				// persist it too, or a runner started via /events loses the signal that
 				// routes its thread to the phase side-table.
 				const eventChatThreadRole = asString(payload.chatThreadRole) ?? "main";
+				// FLY-1372 §2.5 AUTHORITY BOUNDARY (Codex design R3-3): the Bridge-
+				// trusted behavior fields (docTier / issueUrl / codexSkip /
+				// founderFacingUx) are deliberately NOT read from this payload — the
+				// /events ingest token is runner-visible, so a runner could spoof
+				// them (e.g. founderFacingUx:false to dodge the gate). They are
+				// persisted ONLY by the in-process DirectEventSink. Do not add them
+				// to this mapping.
 
 				if (transitionOpts) {
 					const result = applyTransition(
