@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FLY-1343 Cycle-Time 时间线 — 样子稿</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#d2d2d7;--sketch:#b0b0b8}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.5}
+.wrap{max-width:1100px;margin:0 auto;padding:20px 18px 120px}
+.sketchbanner{background:repeating-linear-gradient(45deg,#fff4e0 0 12px,#ffedcc 12px 24px);border:1.5px dashed #E0A458;border-radius:10px;padding:10px 14px;font-size:13px;color:#8a5a1a;margin-bottom:16px}
+h1{font-size:22px;margin:0 0 4px}.sub{color:var(--dim);font-size:13px;margin-bottom:14px}
+.tabbar{display:flex;gap:2px;border-bottom:1.5px solid var(--line);margin-bottom:18px;font-size:13px}
+.tab{padding:7px 14px;color:var(--dim);border:1px solid transparent}
+.tab.active{color:var(--ink);font-weight:600;border:1px solid var(--line);border-bottom:2px solid #6B8FC7;border-radius:8px 8px 0 0;background:#fff}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.vh{font-size:15px;font-weight:600;margin:0 0 2px}.vd{font-size:12.5px;color:var(--dim);margin:0 0 14px}
+.verdict{display:inline-block;background:#fff4e0;border:1px solid #E0A458;color:#8a5a1a;border-radius:20px;padding:3px 12px;font-size:12.5px;font-weight:600}
+.legend{display:flex;flex-wrap:wrap;gap:10px 14px;margin:0 0 14px;font-size:11.5px;color:var(--dim)}
+.lg{display:flex;align-items:center;gap:5px}.lg i{width:11px;height:11px;border-radius:3px;display:inline-block}
+.issrow{display:grid;grid-template-columns:220px 1fr 92px;gap:12px;align-items:center;padding:8px 0;border-top:1px solid #eee}
+.issrow.inflight{background:linear-gradient(90deg,#fffaf0,transparent 40%)}
+.issmeta{min-width:0}.issid{font-size:12.5px;font-weight:600;font-family:"SF Mono",ui-monospace,monospace}
+.isstitle{font-size:11.5px;color:#444;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.isstag{font-size:10.5px;color:var(--dim);margin-top:1px}
+.badge{font-size:10px;padding:1px 6px;border-radius:10px;font-weight:600;vertical-align:middle}
+.badge.live{background:#ffe9cc;color:#b5651d}.badge.done{background:#e7f3ea;color:#3a7d4e}
+.issbarwrap{background:#f0f0f2;border-radius:5px;overflow:hidden}.issbar{display:flex;height:22px;min-width:2px}.seg{height:100%;display:inline-block}
+.isswall{font-size:12.5px;font-weight:600;text-align:right}.wsub{display:block;font-size:9.5px;color:var(--dim);font-weight:400}
+.plot{width:100%;height:auto;background:#fcfcfd;border-radius:8px;border:1px solid #eee}
+.grid{stroke:#eee;stroke-width:1}.axlbl{fill:#86868b;font-size:11px}.dotlbl{fill:#666;font-size:9.5px;text-anchor:middle}
+.anchor{stroke:#D16666;stroke-width:1.5;stroke-dasharray:5 4}.anchorlbl{fill:#D16666;font-size:11px;font-weight:600}
+.noteC{background:#fbfbfc;border:1px dashed var(--sketch);border-radius:8px;padding:26px;text-align:center;color:var(--dim);font-size:13px}
+.drow{display:grid;grid-template-columns:230px 1fr 108px;gap:10px;align-items:center;padding:5px 0}
+.dlbl{font-size:12px}.hole{display:block;font-size:10px;color:#b5651d}.dbarwrap{background:#f0f0f2;border-radius:4px;overflow:hidden}.dbar{height:16px}
+.dval{font-size:11.5px;color:#444;text-align:right;font-family:"SF Mono",ui-monospace,monospace}
+.foot{font-size:11.5px;color:var(--dim);line-height:1.7}.foot b{color:#444}
+.dualcol{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.cbox{margin-top:12px;border-top:1px dashed #e3d9c4;padding-top:10px;background:#fffdf8;border-radius:0 0 8px 8px}
+.clabel{font-size:11px;color:#b5651d;font-weight:600;margin-bottom:5px}
+.cchoice{display:flex;gap:14px;font-size:11.5px;color:#555;margin-bottom:6px}.cchoice label{display:flex;align-items:center;gap:4px;cursor:pointer}
+.cta{width:100%;font-family:inherit;font-size:12px;border:1px solid var(--line);border-radius:7px;padding:7px 9px;resize:vertical;background:#fff}
+.signoff{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:8px}
+.signoff input[type=text]{font-family:inherit;font-size:12.5px;border:1px solid var(--line);border-radius:7px;padding:6px 9px}
+.copybar{position:sticky;bottom:0;background:rgba(255,255,255,.96);border-top:1px solid var(--line);padding:12px 18px;margin:18px -18px -20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;box-shadow:0 -2px 8px rgba(0,0,0,.04)}
+.btn{background:#1a365d;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer}
+.btn:active{opacity:.85}.toast{font-size:12px;color:#3a7d4e}
+@media(max-width:720px){.issrow{grid-template-columns:1fr}.issbarwrap{order:3}.dualcol{grid-template-columns:1fr}.drow{grid-template-columns:1fr}}
+</style></head>
+<body><div class="wrap">
+
+<div class="sketchbanner"><b>⚠ 样子稿(shape mockup)</b> —— 供 Annie 评审「页面有哪几个视图 / 每个视图的轴和元素 / 放哪」。<b>柱子里是 8 张真实 issue 的真实分段</b>(2026-07-17 快照,经 FLY-1327 已测采集工具跑出),<b>不是</b>最终数据链路、不是最终配色。每节下方有留言框,底部一键复制全部反馈回传。</div>
+
+<h1>Cycle-Time 时间线 · dashboard</h1>
+<div class="sub">FLY-1343 · 每张 issue 的时间都花在哪 · 常驻管理台,修复上线后曲线可及时反映</div>
+<div class="tabbar"><span class="tab">总览</span><span class="tab">会话</span><span class="tab">Fleet</span><span class="tab active">时间线 / Cycle-Time</span><span class="tab">Flags</span></div>
+
+<div class="card">
+  <div class="vh">视图 A · 每单时间线 <span class="verdict">这 8 张样本:慢主要在「机制」(空转/等待远大于返工)</span></div>
+  <div class="vd">每行一张 issue,横条 = 开单→ship 墙钟(按最长单等比缩放,越长越宽);分段着色 = 那段时间在干什么;斜纹 = 仍在进行(as-of 截断)。点段看证据(样子稿:悬停显示时长)。默认最长在上,在跑单高亮。</div>
+  <div class="legend"><span class="lg"><i style="background:#7CA982"></i>工作(设计/实现)</span><span class="lg"><i style="background:#8FB8DE"></i>CI 等待</span><span class="lg"><i style="background:#6B8FC7"></i>审查(Codex)</span><span class="lg"><i style="background:#5FB3A9"></i>QA 运行</span><span class="lg"><i style="background:#E0A458"></i>空转/排队等待</span><span class="lg"><i style="background:#C1666B"></i>基建事故</span><span class="lg"><i style="background:#D16666"></i>返工循环</span><span class="lg"><i style="background:#A98FC7"></i>等人(闸门)</span><span class="lg"><i style="background:#C9C9C9"></i>不可测</span></div>
+  
+  <div class="issrow">
+    <div class="issmeta">
+      <div class="issid">FLY-1252 <span class="badge done">已完成</span></div>
+      <div class="isstitle" title="[infra] claude-accounts.json 配额状态过期/不可信 → 切号器切到已耗尽账号,拖垮 Lead">[infra] claude-accounts.json 配额状态过期/不可信 → …</div>
+      <div class="isstag">主导:机制浪费 · 机制浪费 70%</div>
+    </div>
+    <div class="issbarwrap"><div class="issbar" style="width:100.00%"><span class="seg" style="width:60.499%;background:#E0A458;" title="空转/排队等待 · 排队/待派发 · 35h00"></span><span class="seg" style="width:0.460%;background:#7CA982;" title="工作(设计/实现) · 设计 · 16m"></span><span class="seg" style="width:1.610%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 56m"></span><span class="seg" style="width:1.544%;background:#7CA982;" title="工作(设计/实现) · 实现 · 54m"></span><span class="seg" style="width:0.723%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 25m"></span><span class="seg" style="width:0.494%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 17m"></span><span class="seg" style="width:8.542%;background:#5FB3A9;" title="QA 运行 · 4h57"></span><span class="seg" style="width:0.875%;background:#7CA982;" title="工作(设计/实现) · 设计 · 30m"></span><span class="seg" style="width:3.316%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 1h55"></span><span class="seg" style="width:0.647%;background:#7CA982;" title="工作(设计/实现) · 设计 · 22m"></span><span class="seg" style="width:3.041%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 1h46"></span><span class="seg" style="width:2.199%;background:#7CA982;" title="工作(设计/实现) · 实现 · 1h16"></span><span class="seg" style="width:0.412%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 14m"></span><span class="seg" style="width:0.586%;background:#D16666;" title="返工循环 · 审查返工 · 20m"></span><span class="seg" style="width:0.761%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 26m"></span><span class="seg" style="width:0.506%;background:#D16666;" title="返工循环 · 审查返工 · 18m"></span><span class="seg" style="width:0.278%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 10m"></span><span class="seg" style="width:0.221%;background:#8FB8DE;" title="CI 等待 · 8m"></span><span class="seg" style="width:2.595%;background:#5FB3A9;" title="QA 运行 · 1h30"></span><span class="seg" style="width:7.802%;background:#5FB3A9;" title="QA 运行 · 4h31"></span><span class="seg" style="width:0.527%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 18m"></span><span class="seg" style="width:1.907%;background:#5FB3A9;" title="QA 运行 · 1h06"></span></div></div>
+    <div class="isswall">57h52<span class="wsub">开单→ship</span></div>
+  </div>
+  <div class="issrow">
+    <div class="issmeta">
+      <div class="issid">FLY-1272 <span class="badge done">已完成</span></div>
+      <div class="isstitle" title="fix · cmux tab 名↔pane 内容串台 — 一个 tab 显示错的会话（Codex 单显示成 Claude husk），今晚坑 founder 2 次（1264/1259）">fix · cmux tab 名↔pane 内容串台 — 一个 tab 显示错的会话…</div>
+      <div class="isstag">主导:机制浪费 · 机制浪费 88%</div>
+    </div>
+    <div class="issbarwrap"><div class="issbar" style="width:77.86%"><span class="seg" style="width:50.797%;background:#E0A458;" title="空转/排队等待 · 排队/待派发 · 29h24"></span><span class="seg" style="width:0.662%;background:#7CA982;" title="工作(设计/实现) · 设计 · 23m"></span><span class="seg" style="width:12.762%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 7h23"></span><span class="seg" style="width:2.262%;background:#7CA982;" title="工作(设计/实现) · 实现 · 1h19"></span><span class="seg" style="width:0.339%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 12m"></span><span class="seg" style="width:1.390%;background:#7CA982;" title="工作(设计/实现) · 设计 · 48m"></span><span class="seg" style="width:0.498%;background:#7CA982;" title="工作(设计/实现) · 设计 · 17m"></span><span class="seg" style="width:0.313%;background:#7CA982;" title="工作(设计/实现) · 设计 · 11m"></span><span class="seg" style="width:0.530%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 18m"></span><span class="seg" style="width:0.628%;background:#7CA982;" title="工作(设计/实现) · 实现 · 22m"></span><span class="seg" style="width:0.298%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 10m"></span><span class="seg" style="width:0.282%;background:#D16666;" title="返工循环 · 审查返工 · 10m"></span><span class="seg" style="width:0.227%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 8m"></span><span class="seg" style="width:0.244%;background:#8FB8DE;" title="CI 等待 · 8m"></span><span class="seg" style="width:2.035%;background:#5FB3A9;" title="QA 运行 · 1h11"></span><span class="seg" style="width:0.441%;background:#8FB8DE;" title="CI 等待 · 15m"></span><span class="seg" style="width:3.843%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 2h13"></span></div></div>
+    <div class="isswall">45h03<span class="wsub">开单→ship</span></div>
+  </div>
+  <div class="issrow">
+    <div class="issmeta">
+      <div class="issid">FLY-1307 <span class="badge done">已完成</span></div>
+      <div class="isstitle" title="build · DAG 模板引擎 子单D（原⑦⑧ 收尾）：注册表迁移 + orchestrator 按 snapshot 解释 + 模板派发启用">build · DAG 模板引擎 子单D（原⑦⑧ 收尾）：注册表迁移 + orche…</div>
+      <div class="isstag">主导:必要流程 · 机制浪费 8%</div>
+    </div>
+    <div class="issbarwrap"><div class="issbar" style="width:56.06%"><span class="seg" style="width:0.388%;background:#7CA982;" title="工作(设计/实现) · 设计 · 13m"></span><span class="seg" style="width:1.324%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 46m"></span><span class="seg" style="width:2.711%;background:#7CA982;" title="工作(设计/实现) · 实现 · 1h34"></span><span class="seg" style="width:0.548%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 19m"></span><span class="seg" style="width:17.878%;background:#5FB3A9;" title="QA 运行 · 10h21"></span><span class="seg" style="width:1.444%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 50m"></span><span class="seg" style="width:0.382%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 13m"></span><span class="seg" style="width:0.407%;background:#8FB8DE;" title="CI 等待 · 14m"></span><span class="seg" style="width:2.109%;background:#5FB3A9;" title="QA 运行 · 1h13"></span><span class="seg" style="width:0.919%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 32m"></span><span class="seg" style="width:1.502%;background:#7CA982;" title="工作(设计/实现) · 实现 · 52m"></span><span class="seg" style="width:0.401%;background:#8FB8DE;" title="CI 等待 · 14m"></span><span class="seg" style="width:0.289%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 10m"></span><span class="seg" style="width:0.197%;background:#D16666;" title="返工循环 · 审查返工 · 7m"></span><span class="seg" style="width:0.246%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 9m"></span><span class="seg" style="width:0.257%;background:#8FB8DE;" title="CI 等待 · 9m"></span><span class="seg" style="width:0.374%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 13m"></span><span class="seg" style="width:4.585%;background:#5FB3A9;" title="QA 运行 · 2h39"></span><span class="seg" style="width:0.817%;background:#D16666;" title="返工循环 · 审查返工 · 28m"></span><span class="seg" style="width:18.637%;background:#5FB3A9;" title="QA 运行 · 10h47"></span></div></div>
+    <div class="isswall">32h26<span class="wsub">开单→ship</span></div>
+  </div>
+  <div class="issrow inflight">
+    <div class="issmeta">
+      <div class="issid">FLY-1314 <span class="badge live">● 在跑</span></div>
+      <div class="isstitle" title="[infra] gate 卫生根治 — 旧 gate 自动作废,founder 回复稳定绑定">[infra] gate 卫生根治 — 旧 gate 自动作废,founder 回复…</div>
+      <div class="isstag">主导:机制浪费 · 机制浪费 82%</div>
+    </div>
+    <div class="issbarwrap"><div class="issbar" style="width:40.46%"><span class="seg" style="width:14.212%;background:#E0A458;" title="空转/排队等待 · 排队/待派发 · 8h13"></span><span class="seg" style="width:0.322%;background:#7CA982;" title="工作(设计/实现) · 设计 · 11m"></span><span class="seg" style="width:0.332%;background:#7CA982;" title="工作(设计/实现) · 设计 · 12m"></span><span class="seg" style="width:1.919%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 1h07"></span><span class="seg" style="width:2.359%;background:#7CA982;" title="工作(设计/实现) · 实现 · 1h22"></span><span class="seg" style="width:0.160%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 6m"></span><span class="seg" style="width:0.551%;background:#8FB8DE;" title="CI 等待 · 19m"></span><span class="seg" style="width:1.366%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 47m"></span><span class="seg" style="width:0.253%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 9m"></span><span class="seg" style="width:0.755%;background:#D16666;" title="返工循环 · 审查返工 · 26m"></span><span class="seg" style="width:0.753%;background:#D16666;" title="返工循环 · 审查返工 · 26m"></span><span class="seg" style="width:0.153%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 5m"></span><span class="seg" style="width:0.824%;background:#D16666;" title="返工循环 · 审查返工 · 29m"></span><span class="seg" style="width:15.546%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 9h00"></span><span class="seg" style="width:0.222%;background:#7CA982;background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.45) 0 3px,transparent 3px 6px);" title="工作(设计/实现) · 设计 · 8m"></span></div></div>
+    <div class="isswall">23h25<span class="wsub">至今(未收口)</span></div>
+  </div>
+  <div class="issrow inflight">
+    <div class="issmeta">
+      <div class="issid">FLY-1319 <span class="badge live">● 在跑</span></div>
+      <div class="isstitle" title="[infra] founder 本地时区 — 让所有 Lead 知道 Annie 的 local time(非 UTC),理想自动跟设备">[infra] founder 本地时区 — 让所有 Lead 知道 Annie 的…</div>
+      <div class="isstag">主导:价值工作 · 机制浪费 15%</div>
+    </div>
+    <div class="issbarwrap"><div class="issbar" style="width:28.24%"><span class="seg" style="width:2.140%;background:#E0A458;" title="空转/排队等待 · 排队/待派发 · 1h14"></span><span class="seg" style="width:0.325%;background:#7CA982;" title="工作(设计/实现) · 设计 · 11m"></span><span class="seg" style="width:0.245%;background:#7CA982;" title="工作(设计/实现) · 设计 · 9m"></span><span class="seg" style="width:1.243%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 43m"></span><span class="seg" style="width:1.490%;background:#7CA982;" title="工作(设计/实现) · 实现 · 52m"></span><span class="seg" style="width:0.321%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 11m"></span><span class="seg" style="width:0.156%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 5m"></span><span class="seg" style="width:0.409%;background:#8FB8DE;" title="CI 等待 · 14m"></span><span class="seg" style="width:2.243%;background:#5FB3A9;" title="QA 运行 · 1h18"></span><span class="seg" style="width:0.237%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 8m"></span><span class="seg" style="width:0.802%;background:#5FB3A9;" title="QA 运行 · 28m"></span><span class="seg" style="width:0.525%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 18m"></span><span class="seg" style="width:0.577%;background:#8FB8DE;background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.45) 0 3px,transparent 3px 6px);" title="CI 等待 · 20m"></span><span class="seg" style="width:2.233%;background:#7CA982;background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.45) 0 3px,transparent 3px 6px);" title="工作(设计/实现) · 实现 · 1h18"></span><span class="seg" style="width:0.371%;background:#5FB3A9;background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.45) 0 3px,transparent 3px 6px);" title="QA 运行 · 13m"></span><span class="seg" style="width:14.606%;background:#7CA982;background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.45) 0 3px,transparent 3px 6px);" title="工作(设计/实现) · 实现 · 8h27"></span></div></div>
+    <div class="isswall">16h20<span class="wsub">至今(未收口)</span></div>
+  </div>
+  <div class="issrow inflight">
+    <div class="issmeta">
+      <div class="issid">FLY-1333 <span class="badge live">● 在跑</span></div>
+      <div class="isstitle" title="research · 小红书用户反馈夜巡 — OpenClaw/Hermes/沉浸式翻译等个人 AI agent:用户最喜欢/最不喜欢什么(纯浏览,晨会 report)">research · 小红书用户反馈夜巡 — OpenClaw/Hermes/沉浸式…</div>
+      <div class="isstag">主导:机制浪费 · 机制浪费 89%</div>
+    </div>
+    <div class="issbarwrap"><div class="issbar" style="width:17.04%"><span class="seg" style="width:1.226%;background:#A98FC7;" title="等人(闸门) · brainstorm 闸门 · 43m"></span><span class="seg" style="width:0.526%;background:#7CA982;" title="工作(设计/实现) · 实现 · 18m"></span><span class="seg" style="width:15.176%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 8h47"></span></div></div>
+    <div class="isswall">9h52<span class="wsub">至今(未收口)</span></div>
+  </div>
+  <div class="issrow inflight">
+    <div class="issmeta">
+      <div class="issid">FLY-1334 <span class="badge live">● 在跑</span></div>
+      <div class="isstitle" title="research · Reddit 用户反馈夜巡 — OpenClaw/Hermes/Immersive Translate 等个人 AI agent:用户最喜欢/最不喜欢什么(纯浏览,晨会 report)">research · Reddit 用户反馈夜巡 — OpenClaw/Hermes…</div>
+      <div class="isstag">主导:机制浪费 · 机制浪费 87%</div>
+    </div>
+    <div class="issbarwrap"><div class="issbar" style="width:17.02%"><span class="seg" style="width:1.168%;background:#A98FC7;" title="等人(闸门) · brainstorm 闸门 · 41m"></span><span class="seg" style="width:0.697%;background:#7CA982;" title="工作(设计/实现) · 实现 · 24m"></span><span class="seg" style="width:12.915%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 7h28"></span><span class="seg" style="width:0.303%;background:#7CA982;" title="工作(设计/实现) · 实现 · 11m"></span><span class="seg" style="width:1.787%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 1h02"></span></div></div>
+    <div class="isswall">9h51<span class="wsub">至今(未收口)</span></div>
+  </div>
+  <div class="issrow">
+    <div class="issmeta">
+      <div class="issid">FLY-1309 <span class="badge done">已完成</span></div>
+      <div class="isstitle" title="fix · Lead 身份唯一性 — 双进程互斥 + 同身份并存检测（1229 改写，今晚双 Lead 事故根治）">fix · Lead 身份唯一性 — 双进程互斥 + 同身份并存检测（1229 改写…</div>
+      <div class="isstag">主导:机制浪费 · 机制浪费 47%</div>
+    </div>
+    <div class="issbarwrap"><div class="issbar" style="width:15.71%"><span class="seg" style="width:0.625%;background:#7CA982;" title="工作(设计/实现) · 设计 · 22m"></span><span class="seg" style="width:3.960%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 2h18"></span><span class="seg" style="width:3.704%;background:#7CA982;" title="工作(设计/实现) · 实现 · 2h09"></span><span class="seg" style="width:3.282%;background:#E0A458;" title="空转/排队等待 · 阶段交接 · 1h54"></span><span class="seg" style="width:0.481%;background:#6B8FC7;" title="审查(Codex) · 代码审查 · 17m"></span><span class="seg" style="width:0.199%;background:#8FB8DE;" title="CI 等待 · 7m"></span><span class="seg" style="width:0.430%;background:#8FB8DE;" title="CI 等待 · 15m"></span><span class="seg" style="width:2.771%;background:#5FB3A9;" title="QA 运行 · 1h36"></span></div></div>
+    <div class="isswall">9h06<span class="wsub">开单→ship</span></div>
+  </div>
+  <div class="cbox">
+    <div class="clabel">💬 留言 / 反馈</div>
+    <div class="cchoice" data-cid="vA"><label><input type="radio" name="ch-vA" value="建"> 建</label><label><input type="radio" name="ch-vA" value="不建"> 不建</label><label><input type="radio" name="ch-vA" value="待定"> 待定</label></div>
+    <textarea class="cta" data-cid="vA" rows="2" placeholder="在这节写你的意见…(自动保存)"></textarea>
+  </div>
+</div>
+
+<div class="dualcol">
+  <div class="card">
+    <div class="vh">视图 B · 趋势 & 改进单前后对比</div>
+    <div class="vd">X=按 ship / as-of 日期,Y=总墙钟(小时)。竖红线 = 某改进单上线锚点(示例);上线后新单落在右侧 → 肉眼看断点。<b>核心用户故事:Tadashi 修了机制,几天内曲线上看到效果。</b>(当前 8 点为真实历史;7 张改进单尚未 ship,断点待数据累积)</div>
+    <svg viewBox="0 0 900 300" class="plot" preserveAspectRatio="xMidYMid meet"><line x1="48" y1="266" x2="884" y2="266" class="grid"/><text x="40" y="270.0" class="axlbl" text-anchor="end">0h</text><line x1="48" y1="218.8678011661282" x2="884" y2="218.8678011661282" class="grid"/><text x="40" y="222.9" class="axlbl" text-anchor="end">12h</text><line x1="48" y1="171.7356023322564" x2="884" y2="171.7356023322564" class="grid"/><text x="40" y="175.7" class="axlbl" text-anchor="end">24h</text><line x1="48" y1="124.60340349838461" x2="884" y2="124.60340349838461" class="grid"/><text x="40" y="128.6" class="axlbl" text-anchor="end">36h</text><line x1="48" y1="77.47120466451278" x2="884" y2="77.47120466451278" class="grid"/><text x="40" y="81.5" class="axlbl" text-anchor="end">48h</text><line x1="48" y1="30.339005830640986" x2="884" y2="30.339005830640986" class="grid"/><text x="40" y="34.3" class="axlbl" text-anchor="end">60h</text><line x1="884.0" y1="16" x2="884.0" y2="266" class="anchor"/><text x="878.0" y="28" class="anchorlbl" text-anchor="end">示例:某改进单上线锚点 →</text><circle cx="884.0" cy="227.3" r="6" fill="#E0A458" stroke="#fff" stroke-width="1.5"><title>FLY-1334 · 9.8h</title></circle><text x="884.0" y="217.3" class="dotlbl">1334</text><circle cx="884.0" cy="227.3" r="6" fill="#E0A458" stroke="#fff" stroke-width="1.5"><title>FLY-1333 · 9.9h</title></circle><text x="884.0" y="217.3" class="dotlbl">1333</text><circle cx="884.0" cy="201.8" r="6" fill="#E0A458" stroke="#fff" stroke-width="1.5"><title>FLY-1319 · 16.3h</title></circle><text x="884.0" y="191.8" class="dotlbl">1319</text><circle cx="884.0" cy="174.1" r="6" fill="#E0A458" stroke="#fff" stroke-width="1.5"><title>FLY-1314 · 23.4h</title></circle><text x="884.0" y="164.1" class="dotlbl">1314</text><circle cx="48.0" cy="230.3" r="6" fill="#6B8FC7" stroke="#fff" stroke-width="1.5"><title>FLY-1309 · 9.1h</title></circle><text x="48.0" y="220.3" class="dotlbl">1309</text><circle cx="851.0" cy="138.6" r="6" fill="#6B8FC7" stroke="#fff" stroke-width="1.5"><title>FLY-1307 · 32.4h</title></circle><text x="851.0" y="128.6" class="dotlbl">1307</text><circle cx="275.9" cy="89.0" r="6" fill="#6B8FC7" stroke="#fff" stroke-width="1.5"><title>FLY-1272 · 45.1h</title></circle><text x="275.9" y="79.0" class="dotlbl">1272</text><circle cx="524.8" cy="38.7" r="6" fill="#6B8FC7" stroke="#fff" stroke-width="1.5"><title>FLY-1252 · 57.9h</title></circle><text x="524.8" y="28.7" class="dotlbl">1252</text><text x="48" y="292" class="axlbl">← 早</text><text x="884" y="292" class="axlbl" text-anchor="end">按 ship / as-of 日期 → 晚</text></svg>
+    <div class="cbox">
+    <div class="clabel">💬 留言 / 反馈</div>
+    <div class="cchoice" data-cid="vB"><label><input type="radio" name="ch-vB" value="建"> 建</label><label><input type="radio" name="ch-vB" value="不建"> 不建</label><label><input type="radio" name="ch-vB" value="待定"> 待定</label></div>
+    <textarea class="cta" data-cid="vB" rows="2" placeholder="在这节写你的意见…(自动保存)"></textarea>
+  </div>
+  </div>
+  <div class="card">
+    <div class="vh">视图 C · 并发 × 机器 load</div>
+    <div class="vd">共享时间轴双曲线:active-work session 数(并发)+ 机器 load_1m;与段时长关联,回答「甜点并发数」。</div>
+    <div class="noteC">📊 <b>样本累积中 · 暂不定量</b><br><span style="font-size:11.5px">定量门槛:每并发档需 ≥60 覆盖分钟且 ≥2 个独立 issue。<br>常驻采集满足门槛后此处自动出「并发 N 时 load / 段时长如何变化」的分箱图。<br>(诚实边界沿用 FLY-1327 冻结口径,绝不用单日样本编方向性数字)</span></div>
+    <div class="cbox">
+    <div class="clabel">💬 留言 / 反馈</div>
+    <div class="cchoice" data-cid="vC"><label><input type="radio" name="ch-vC" value="建"> 建</label><label><input type="radio" name="ch-vC" value="不建"> 不建</label><label><input type="radio" name="ch-vC" value="待定"> 待定</label></div>
+    <textarea class="cta" data-cid="vC" rows="2" placeholder="在这节写你的意见…(自动保存)"></textarea>
+  </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="vh">视图 D · 瓶颈排行(最近窗口,看机制不合理处)</div>
+  <div class="vd">最近 8 单各段吃掉的总墙钟排行 —— 一眼定位「现在最该砍哪块」。右侧标注 = 映射到 Tadashi 的六大时间黑洞人话名。趋势箭头(改善/恶化)待持续采集后填。</div>
+  <div class="drow">
+      <div class="dlbl">空转/排队等待<span class="hole">= 黑洞#1 交接空窗(最大头)</span></div>
+      <div class="dbarwrap"><div class="dbar" style="width:100.0%;background:#E0A458"></div></div>
+      <div class="dval">125h46 · 62%</div>
+    </div><div class="drow">
+      <div class="dlbl">QA 运行</div>
+      <div class="dbarwrap"><div class="dbar" style="width:33.3%;background:#5FB3A9"></div></div>
+      <div class="dval">41h51 · 21%</div>
+    </div><div class="drow">
+      <div class="dlbl">工作(设计/实现)</div>
+      <div class="dbarwrap"><div class="dbar" style="width:20.5%;background:#7CA982"></div></div>
+      <div class="dval">25h44 · 13%</div>
+    </div><div class="drow">
+      <div class="dlbl">审查(Codex)<span class="hole">= 黑洞#4 review 返工的一部分</span></div>
+      <div class="dbarwrap"><div class="dbar" style="width:2.7%;background:#6B8FC7"></div></div>
+      <div class="dval">3h26 · 2%</div>
+    </div><div class="drow">
+      <div class="dlbl">返工循环<span class="hole">= 黑洞#4 review 串行返工</span></div>
+      <div class="dbarwrap"><div class="dbar" style="width:2.2%;background:#D16666"></div></div>
+      <div class="dval">2h49 · 1%</div>
+    </div><div class="drow">
+      <div class="dlbl">CI 等待<span class="hole">= 黑洞#5 CI 全量重跑</span></div>
+      <div class="dbarwrap"><div class="dbar" style="width:2.1%;background:#8FB8DE"></div></div>
+      <div class="dval">2h40 · 1%</div>
+    </div><div class="drow">
+      <div class="dlbl">等人(闸门)<span class="hole">= 黑洞#3 head 漂移使批准作废(部分)</span></div>
+      <div class="dbarwrap"><div class="dbar" style="width:1.3%;background:#A98FC7"></div></div>
+      <div class="dval">1h39 · 1%</div>
+    </div>
+  <div style="font-size:11.5px;color:#86868b;margin-top:10px">👀 头号「空转/排队等待」= Tadashi 黑洞 #1「交接空窗」(phase 完成后等下一段 spawn/唤醒)—— 实测数据与工程直觉互证。直接指向改进单 1339(交接接力)+ 1336(spawn 基建)+ 1345(重启事务化)。</div>
+  <div class="cbox">
+    <div class="clabel">💬 留言 / 反馈</div>
+    <div class="cchoice" data-cid="vD"><label><input type="radio" name="ch-vD" value="建"> 建</label><label><input type="radio" name="ch-vD" value="不建"> 不建</label><label><input type="radio" name="ch-vD" value="待定"> 待定</label></div>
+    <textarea class="cta" data-cid="vD" rows="2" placeholder="在这节写你的意见…(自动保存)"></textarea>
+  </div>
+</div>
+
+<div class="card">
+  <div class="vh">放哪 · 呈现载体</div>
+  <div class="vd">提议:折进现有<b>管理台(Bridge GET / :9876,localhost)新增「时间线 / Cycle-Time」页签</b>(见顶部 tab),复用现有 Apple 浅色 + live SSE + versioned snapshot,不新起站;趋势摘要可同时进每日 digest 作补充。这样修复上线后曲线常驻可及时观察、坏了立刻看得见(抗静默退化)。</div>
+  <div class="cbox">
+    <div class="clabel">💬 留言 / 反馈</div>
+    <div class="cchoice" data-cid="where"><label><input type="radio" name="ch-where" value="认同(就放管理台页签)"> 认同(就放管理台页签)</label><label><input type="radio" name="ch-where" value="换个地方"> 换个地方</label><label><input type="radio" name="ch-where" value="待定"> 待定</label></div>
+    <textarea class="cta" data-cid="where" rows="2" placeholder="在这节写你的意见…(自动保存)"></textarea>
+  </div>
+</div>
+
+<div class="card foot">
+  <div class="vh" style="color:#1d1d1f">诚实边界(会写进 PRD)</div>
+  • 「空转/排队等待」含:开单后排队待派发、阶段间交接、park 等唤醒、干完后空等下一步。其中「等 founder ship / 合理睡觉等待」vs「机制卡住」的进一步拆分,是 PRD 要细化的度量口径(当前统一归空转)。<br>
+  • 在跑单(斜纹)用 as-of 截断,进行中的段不算进「已完成占比」结论;它们是 Annie 最想当场看见的(如正跑十几小时的 1314)。<br>
+  • 数据源 = 5 源融合(Linear / teamlead / CommDB / GitHub / system-health),非只用 DAG 节点耗时(见 PRD 数据源节)。<br>
+  • 采集失败 / 覆盖率低于阈值 → 页面显式「数据不可用+原因」,绝不静默出空图或旧图(回应 FLY-614 静默退化教训)。<br>
+  <div class="cbox">
+    <div class="clabel">💬 留言 / 反馈</div>
+    
+    <textarea class="cta" data-cid="honesty" rows="2" placeholder="在这节写你的意见…(自动保存)"></textarea>
+  </div>
+</div>
+
+<div class="card">
+  <div class="vh">总评</div>
+  <div class="vd">整体形状 OK 吗?哪个视图最有用 / 想砍掉哪个 / 还缺什么。</div>
+  <div class="cbox">
+    <div class="clabel">💬 留言 / 反馈</div>
+    
+    <textarea class="cta" data-cid="overall" rows="2" placeholder="在这节写你的意见…(自动保存)"></textarea>
+  </div>
+  <div class="signoff"><span style="font-size:12px;color:#555">签名:</span><input type="text" id="signoff-name" placeholder="Annie"><input type="text" id="signoff-date" placeholder="日期(可选)"></div>
+</div>
+
+<div style="font-size:11px;color:#b0b0b8;margin-top:8px">样子稿由 8 张真实 issue(1314/1307/1319/1252/1309/1334/1333/1272)的真实分段生成 · as-of 2026-07-17 · 非最终数据链路</div>
+
+<div class="copybar"><button class="btn" id="copybtn" type="button">📋 复制全部反馈(回传给我)</button><span class="toast" id="toast"></span><span style="font-size:11px;color:#86868b">留言自动保存在本地浏览器;复制后粘回聊天即可</span></div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var PFX="fly1343-";
+  var SECTIONS=[["vA","视图A 每单时间线"],["vB","视图B 趋势/前后"],["vC","视图C 并发×load"],["vD","视图D 瓶颈排行"],["where","放哪(呈现载体)"],["honesty","诚实边界"],["overall","总评"]];
+  function load(){
+    var tas=document.querySelectorAll(".cta");
+    for(var i=0;i<tas.length;i++){var id=tas[i].getAttribute("data-cid");var v=localStorage.getItem(PFX+id);if(v!=null)tas[i].value=v;tas[i].addEventListener("input",function(e){localStorage.setItem(PFX+e.target.getAttribute("data-cid"),e.target.value);});}
+    var chs=document.querySelectorAll(".cchoice");
+    for(var j=0;j<chs.length;j++){(function(box){var id=box.getAttribute("data-cid");var sv=localStorage.getItem(PFX+"ch-"+id);var rs=box.querySelectorAll("input");for(var k=0;k<rs.length;k++){if(sv&&rs[k].value===sv)rs[k].checked=true;rs[k].addEventListener("change",function(e){localStorage.setItem(PFX+"ch-"+id,e.target.value);});}})(chs[j]);}
+    var n=localStorage.getItem(PFX+"signoff-name");if(n)document.getElementById("signoff-name").value=n;
+    var d=localStorage.getItem(PFX+"signoff-date");if(d)document.getElementById("signoff-date").value=d;
+    document.getElementById("signoff-name").addEventListener("input",function(e){localStorage.setItem(PFX+"signoff-name",e.target.value);});
+    document.getElementById("signoff-date").addEventListener("input",function(e){localStorage.setItem(PFX+"signoff-date",e.target.value);});
+  }
+  function gather(){
+    var out=["FLY-1343 时间线 dashboard 样子稿 — 形状反馈"];
+    var nm=(document.getElementById("signoff-name").value||"").trim();
+    var dt=(document.getElementById("signoff-date").value||"").trim();
+    if(nm||dt)out.push("签名: "+nm+(dt?" · "+dt:""));
+    out.push("");
+    for(var i=0;i<SECTIONS.length;i++){
+      var id=SECTIONS[i][0],name=SECTIONS[i][1];
+      var ch=localStorage.getItem(PFX+"ch-"+id);
+      var ta=document.querySelector('.cta[data-cid="'+id+'"]');
+      var txt=ta?ta.value.trim():"";
+      if(!ch&&!txt)continue;
+      out.push("【"+name+"】"+(ch?" 选择: "+ch:""));
+      if(txt)out.push(txt);
+      out.push("");
+    }
+    if(out.length<=3)out.push("(尚无留言)");
+    return out.join("\n");
+  }
+  function copy(){
+    var text=gather();var toast=document.getElementById("toast");
+    function ok(){toast.textContent="✓ 已复制,粘回聊天给我";setTimeout(function(){toast.textContent="";},4000);}
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(ok,fallback);}else{fallback();}
+    function fallback(){var t=document.createElement("textarea");t.value=text;t.style.position="fixed";t.style.opacity="0";document.body.appendChild(t);t.select();try{document.execCommand("copy");ok();}catch(e){toast.textContent="复制失败,请手动选择";}document.body.removeChild(t);}
+  }
+  if(document.readyState!=="loading")load();else document.addEventListener("DOMContentLoaded",load);
+  document.getElementById("copybtn").addEventListener("click",copy);
+})();
+</script>
+</body></html>
