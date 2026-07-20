@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1391 现状图 · 目标图 · 还得留几个看门的</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; padding:0 16px 170px; background:#f5f5f7; color:#1d1d1f;
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.62; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:880px; margin:0 auto; }
+  header.top { padding:36px 0 6px; }
+  h1 { font-size:24px; margin:0 0 7px; letter-spacing:-0.02em; }
+  .sub { color:#86868b; font-size:15px; margin:0; }
+  .howto { background:#eaf3ff; border:1px solid #cfe3ff; border-radius:12px; padding:14px 18px; margin:22px 0 18px; font-size:15px; color:#1d3a5f; }
+  .block { background:#fff; border-radius:14px; padding:20px 22px 16px; margin:0 0 22px; box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid #007aff; }
+  .block.red { border-left-color:#ff3b30; }
+  .block.amber { border-left-color:#ff9500; }
+  .block.green { border-left-color:#34c759; }
+  .block h2 { font-size:18px; margin:0 0 4px; }
+  .cnum { color:#86868b; font-size:13px; font-weight:600; letter-spacing:.02em; }
+  .p { font-size:15px; margin:9px 0 4px; color:#333; }
+  .p b { color:#1a365d; }
+  ul.pts { margin:8px 0; padding-left:20px; font-size:14.5px; color:#333; }
+  ul.pts li { margin:6px 0; }
+  .dia { background:#fbfbfd; border:1px solid #e6e6ea; border-radius:12px; padding:16px 14px; margin:14px 0 6px; overflow-x:auto; }
+  .row { display:flex; align-items:center; gap:8px; min-width:560px; margin:0 0 10px; }
+  .node { flex:1; border-radius:10px; padding:9px 11px; font-size:13.5px; text-align:center; border:1.5px solid; }
+  .n-a { background:#fff2e0; border-color:#ffd39b; color:#8a4b00; }
+  .n-l { background:#e9f8ee; border-color:#b6e6c6; color:#166b31; }
+  .n-r { background:#eef4ff; border-color:#b9d1ff; color:#123a72; }
+  .n-x { background:#ffecea; border-color:#ffc2bb; color:#b3241a; }
+  .arrow { flex:0 0 16px; text-align:center; color:#9a9aa0; font-size:16px; }
+  .lbl { font-size:12.5px; color:#86868b; margin:0 0 6px; font-weight:600; }
+  table.mini { width:100%; border-collapse:collapse; font-size:14px; margin:10px 0 4px; }
+  table.mini th, table.mini td { text-align:left; padding:7px 9px; border-bottom:1px solid #ededf0; vertical-align:top; }
+  table.mini th { color:#86868b; font-weight:600; font-size:13px; }
+  .tag { display:inline-block; font-size:12px; font-weight:700; border-radius:999px; padding:2px 10px; margin-right:6px; }
+  .t-keep { background:#ffe5e3; color:#c0271c; }
+  .t-gone { background:#e3f9e9; color:#1a7f37; }
+  textarea.cmt { width:100%; min-height:46px; resize:vertical; border:1.5px solid #ffcf5c; border-radius:10px; background:#fffdf5;
+    padding:9px 12px; font-family:inherit; font-size:15px; color:#1d1d1f; margin-top:10px; }
+  textarea.cmt:focus { outline:none; border-color:#d9a400; background:#fffef9; box-shadow:0 0 0 3px rgba(255,207,92,0.28); }
+  textarea.cmt::placeholder { color:#b8a25a; }
+  .choose { display:flex; align-items:center; flex-wrap:wrap; gap:9px 12px; margin:12px 0 2px; }
+  label.mini { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:14px; border:1px solid #e3e3e6; border-radius:999px; padding:5px 13px; }
+  label.mini input { width:17px; height:17px; margin:0; accent-color:#007aff; cursor:pointer; }
+  label.mini:has(input:checked) { border-color:#007aff; background:#eaf3ff; font-weight:600; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(255,255,255,0.97); backdrop-filter:blur(8px); border-top:1px solid #ddd; padding:10px 16px; box-shadow:0 -2px 10px rgba(0,0,0,0.06); }
+  .barin { max-width:880px; margin:0 auto; display:flex; flex-direction:column; gap:7px; }
+  #genbtn { background:#007aff; color:#fff; border:none; border-radius:10px; padding:12px; font-size:16px; font-weight:650; cursor:pointer; }
+  #out { width:100%; border:1px solid #ccc; border-radius:8px; padding:9px; font-size:13px; font-family:'SF Mono',ui-monospace,monospace; resize:vertical; display:none; min-height:120px; background:#fff; color:#1d1d1f; }
+  #hint { font-size:12px; color:#86868b; text-align:center; }
+  .foot { margin-top:26px; font-size:13px; color:#86868b; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>你要的实现级图 · 现状 → 目标 🗺️</h1>
+  <p class="sub">FLY-1391 · 2026-07-20 · 仍是只读设计,没动任何代码</p>
+</header>
+
+<div class="howto">
+  <b>你拍了方向一 = ②回归主管唯一枢纽。</b>这份把它画成了可实现的样子,并且<b>把代价也写清楚了</b> ——
+  这个改动在可靠性上是<b>负债</b>,不是白拿的好处。<br>
+  另外有<b>两处我原本想错了、查证后改了</b>,在第②③段,我觉得那两处才是这份东西真正的价值。<br>
+  每段下面有框,随手写,拉到底一键复制。
+</div>
+
+<!-- 1 -->
+<div class="block">
+  <div class="cnum">① 你拍的那个改动,具体长什么样</div>
+  <h2>不是加一层,是把「例外」变成「主路」</h2>
+  <div class="dia">
+    <p class="lbl">现在</p>
+    <div class="row">
+      <div class="node n-a">你</div><div class="arrow">→</div>
+      <div class="node n-r">工程师</div><div class="arrow">·</div>
+      <div class="node n-l" style="opacity:.5">主管(只在系统<br>搞不定时才出现)</div>
+    </div>
+    <p class="lbl">目标</p>
+    <div class="row">
+      <div class="node n-a">你</div><div class="arrow">→</div>
+      <div class="node n-l">主管(唯一枢纽)</div><div class="arrow">→</div>
+      <div class="node n-r">工程师</div>
+    </div>
+  </div>
+  <div class="p"><b>关键:改的是路由,不是权限。</b>批准 ship 仍然<b>只有你能给</b>,主管<b>不能</b>代批
+  —— 现有那道「主管说批准也不算数」的拦截保留不动。主管在这里是<b>接线员 + 判断这句话是回哪件事的人</b>,不是审批人。</div>
+  <div class="p"><b>为什么这么改真的解决问题:</b>现在主管只在系统猜不出你答的是哪件事时才出现。
+  后果是 —— 猜错了没人兜、主管对这张单发生过什么根本没看全、而且「催了 N 次还没人管就升级给你」这条链里<b>压根没有主管这一环</b>。</div>
+  <textarea class="cmt" id="c1" placeholder="这个理解跟你想的一致吗…"></textarea>
+</div>
+
+<!-- 2 -->
+<div class="block amber">
+  <div class="cnum">② 我原本想错的第一处(重要)</div>
+  <h2>回执分三档 —— 中间那档<b>以前有过、被拆掉了</b>(但它不等于「已处理」)</h2>
+  <div class="p">你要的两级回执是「<b>已送达</b>」和「<b>已处理</b>」。现状只有第一级,而且它比听起来弱:
+  所谓「已送达」= <b>往一个文件里写了一行,写成功了</b>,跟主管有没有看见没关系。</div>
+  <div class="p"><b>我一开始的判断是:</b>「让 AI 自己报『我处理了』不可信,所以只能靠系统观察副作用来推断。」<br>
+  <b>查证后发现这是个假二分。</b>中间还有一档,而且 <b>这一档以前真的建过</b> ——
+  给每条消息发一个<b>一次性令牌</b>,回执必须带对令牌才算数。<b>令牌藏在消息正文里,所以能回对令牌就证明它真的读了这条消息。</b>
+  这不是荣誉制度。</div>
+  <div class="p">这套东西在上一次投递系统改造里<b>被整体退役了</b>,换成了现在这个「文件写成功」的弱回执。
+  发送那一半没删 —— 工具还在、写入函数还在,<b>想用不必从零造</b>。
+  (<b>但「装回去就能用」我没验证过</b> —— 那个工具现在还会不会被告诉给运行中的主管,文档里标了未验证。)</div>
+  <div class="p"><b>⚠️ 复核让我把这一档降了一级,这个更正重要:</b>令牌只能证明「<b>它读到了这条消息</b>」,
+  <b>证明不了「它真的把事办了」</b> —— 一个有权限的主管完全可以先回执、再什么都不干。
+  所以它只能当「<b>已读</b>」,<b>不能</b>当「已处理」。<b>「已处理」只能靠系统自己看到那件事真的发生了。</b></div>
+  <table class="mini">
+    <tr><th>强度</th><th>机制</th><th>能当「已处理」吗</th></tr>
+    <tr><td>最强</td><td>系统自己观察到「你要的那件事发生了」</td><td>✅ <b>只有这档可以</b></td></tr>
+    <tr><td>中</td><td>带令牌的回执 —— 只证明<b>读到了</b></td><td>⚠️ 只能当「已读」·<b>不能</b>当「已处理」</td></tr>
+    <tr><td>最弱</td><td>裸自己报「我做了」</td><td>❌ 不用(荣誉制度)</td></tr>
+  </table>
+  <textarea class="cmt" id="c2" placeholder="想说什么写这儿…"></textarea>
+</div>
+
+<!-- 3 -->
+<div class="block amber">
+  <div class="cnum">③ 我原本想错的第二处</div>
+  <h2>「催已经过了的门」这个 bug,在新设计里<b>不可能存在</b></h2>
+  <div class="p">你今早撞到的那个 —— 系统催一件已经办完的事。现在它的判断依据是<b>「这条记录躺了几分钟」</b>,
+  从不回头看一眼现在什么情况。</div>
+  <div class="p"><b>新设计里它消失不是因为调了参数,是因为结构变了:</b>催办的触发条件变成「<b>没有处理回执</b>」,
+  而事情办完了就等于有回执 —— <b>办完的事产生不出催办</b>。这类 bug 从「要小心别再犯」变成「犯不了」。</div>
+  <div class="p"><b>⚠️ 但这句有前提,复核抓出来了:</b>「真的去办」和「记下办了」这两步,
+  必须<b>要么同一笔事务一起落库,要么让重做一遍是安全的</b>(二选一,不能都不做)。
+  否则系统崩在中间 —— 办了但没记上 → 再办一遍;记上了但没办 → 永远以为办完了。
+  <b>这个前提没解决之前,不能说这类 bug 已经不可能发生。</b>工程稿把它列成了承重墙级的要求。</div>
+  <div class="p">同理消失的还有:捞回丢件的巡逻(改成<b>一开始就不允许发给不存在的人</b>)、
+  盯着主管有没有压着不答的巡逻(变成队列自己的一个字段)。</div>
+  <textarea class="cmt" id="c3" placeholder="想说什么写这儿…"></textarea>
+</div>
+
+<!-- 4 -->
+<div class="block green">
+  <div class="cnum">④ 你的「两级规则」怎么落</div>
+  <h2>N 不是一个数,是按事情种类分的</h2>
+  <table class="mini">
+    <tr><th>哪类事</th><th>缓冲</th><th>什么时候找你</th></tr>
+    <tr><td><b>只有你能定的</b>(批 ship、产品方向)</td><td><b>0</b></td><td>立刻给你,主管只负责送到和判断这是回哪件事,<b>不拦</b></td></tr>
+    <tr><td><b>主管能动手的</b>(工程师卡住、丢件、review 没收敛)</td><td><b>30 分钟</b></td><td>窗口内没处理回执 → 升级给你</td></tr>
+    <tr><td><b>纯遥测</b>(状态心跳这类)</td><td>—</td><td><b>永远不升级</b> —— 送到就算完,不要求「已处理」</td></tr>
+  </table>
+  <div class="p">这就是你当天说的那个二分 —— 需要你决策的零缓冲,主管能动手的给他 30 分钟止损。<br>
+  另外<b>升级只升一次</b>:这套「只报一次、恢复前静音」的机制现有代码里已经写好了(只是现在关着),
+  <b>直接复用,不重新发明。</b></div>
+  <textarea class="cmt" id="c4" placeholder="30 分钟这个窗口合适吗…"></textarea>
+</div>
+
+<!-- 5 -->
+<div class="block red">
+  <div class="cnum">⑤ 你问的「还得留几个看门的」</div>
+  <h2>四个。第一个的理由一句话就够</h2>
+  <div class="p" style="font-size:16px"><b>死掉的进程,发不出「我死了」这条消息。</b></div>
+  <div class="p">回执机制再好,前提都是「对方还能做事」。一个已经死了的进程既不会回执、也不会喊救命 ——
+  <b>系统只能看到「没有回执」,而「没有回执」分不清是死了、在忙、还是卡住了。这个歧义只能靠从外面探一眼来消解。</b></div>
+  <div class="p" style="color:#86868b">补一句让你放心:这不是我为了保住 watchdog 编的理由 ——
+  代码库里<b>白纸黑字写过同样的话</b>,而且是因为真出过事(曾经因为一个弱信号看起来像死亡,<b>销毁了一个活着的会话</b>)。</div>
+  <table class="mini">
+    <tr><th>留</th><th>为什么消息覆盖不了</th></tr>
+    <tr><td><span class="tag t-keep">1</span>进程还活着吗</td><td>死的发不出消息</td></tr>
+    <tr><td><span class="tag t-keep">2</span>送信机制自己还活着吗</td><td>送信的死了,就没法用送信来报告自己死了</td></tr>
+    <tr><td><span class="tag t-keep">3</span>外面的世界变了吗</td><td>Discord / GitHub 不会主动通知我们</td></tr>
+    <tr><td><span class="tag t-keep">4</span>活着但干不了活</td><td>额度用尽 / 卡住 —— 想报也报不出来</td></tr>
+    <tr><td style="opacity:.55"><span class="tag t-gone">删</span>崩溃后对账</td><td style="opacity:.55"><b>我写错了,复核把它删掉了</b> —— 这本来就是正经消息队列该自带的能力,不是非得有人巡逻</td></tr>
+  </table>
+  <div class="p"><span class="tag t-gone">会消失</span>捞回丢件 · 催主管 · 门过期清理 · 按时间催办 · 投递重试巡逻 · 缺口扫描
+  —— 这些都变成队列自己的属性,<b>不需要有人去巡逻</b>。</div>
+  <div class="p"><b>⚠️ 第 4 个我要提醒你:它是历史上刷屏最凶的那个</b>(误报把你烦过好几次)。
+  留它就等于继承它的误报史,所以设计里给它套了三条硬约束。<br>
+  <b>前三条是结构性必需,没得选;只有这第 4 条我建议交给你拍</b> —— 因为它是「误报烦人」对「漏报慢」的权衡。<br>
+  <b>砍掉的后果是「慢 30 分钟」,不是「永远发现不了」</b>:主管静默瘫痪时,等上面那个 30 分钟窗口过完,
+  照样会因为「没有处理回执」升级到你。所以选「宁可漏也不要吵」是<b>可接受的取舍,不是安全事故</b>。</div>
+  <div class="choose">
+    <label class="mini"><input type="radio" name="w4" value="留着+三条约束">留着(带约束)</label>
+    <label class="mini"><input type="radio" name="w4" value="砍掉宁可漏">砍掉</label>
+    <label class="mini"><input type="radio" name="w4" value="再聊">再聊</label>
+  </div>
+  <textarea class="cmt" id="c5" placeholder="第 4 个怎么处理…"></textarea>
+</div>
+
+<!-- 6 -->
+<div class="block">
+  <div class="cnum">⑥ 代价 · 我必须说的那个</div>
+  <h2>「主管唯一枢纽」在可靠性上是<b>负债</b></h2>
+  <div class="p">所有东西都过主管 ⇒ <b>主管挂了,你和工程师之间就断了</b>。现在不会,因为现在批准是直连的。</div>
+  <div class="p">换来的是:<b>判断「这句话回的是哪件事」不再是系统的一次字符串赌博,而是主管的一次明确决定</b>,
+  而且升级链条终于完整。</div>
+  <div class="p"><b>⚠️ 这里我原本写错了,必须更正:</b>我说上面第 1、2 个看门的能「兜住」这个单点 —— <b>不能</b>。
+  它们只能<b>告诉你主管死了</b>,<b>没法把你和工程师之间的路接回去</b>。
+  而且还有一条已核实的现状问题:<b>那个「送信机制还活着吗」的检查,现在跑在 Bridge 自己进程里</b> ——
+  Bridge 整个死了,它也不会喊。</div>
+  <div class="p">⇒ <b>真要走这条路,得同时给三样</b>:① 一个独立于 Bridge 的看护进程(能自动重启)
+  ② 主管挂了时你仍能直达的<b>应急通道</b> ③ 说清枢纽不可用时消息是排队等还是回落直连。<br>
+  <b>这三样不一起做,这个设计就是不完整的。</b><b>这个取舍值不值,是你的决定</b> —— 我的工作是把两边摆出来,不是替你选。</div>
+  <div class="p" style="color:#86868b">还有一条<b>我不知道</b>:多这一跳到底会不会让批准变慢 —— <b>我没测过,所以不给你任何说法</b>。
+  设计上大部分中转是代码干的、不烧主管的脑子,<b>但那只是理由,不是数据</b>。真做的时候必须实测。</div>
+  <textarea class="cmt" id="c6" placeholder="这个代价你接受吗…"></textarea>
+</div>
+
+<div class="foot">只读设计 · 没动代码 · 不替你决定<br>
+工程版三份(现状图 / 目标图 / 看门清单,每条带文件行号)在 engineering/doc/FLY-1391-message-architecture-audit/</div>
+
+</div>
+
+<div class="bar"><div class="barin">
+  <button id="genbtn">✅ 生成我的反馈(一键复制)</button>
+  <textarea id="out" readonly></textarea>
+  <div id="hint">看完点这个 → 自动复制 → 粘贴发回给我</div>
+</div></div>
+
+<script nonce="__CSP_NONCE__">
+document.getElementById("genbtn").addEventListener("click", function () {
+  var secs = [
+    { cmt: "c1", label: "① 主管唯一枢纽的具体形状" },
+    { cmt: "c2", label: "② 回执三档(中间那档只能当已读)" },
+    { cmt: "c3", label: "③ 催已过门结构性消失" },
+    { cmt: "c4", label: "④ 两级规则 / 30 分钟窗口" },
+    { cmt: "c5", label: "⑤ 四个看门的", radio: "w4" },
+    { cmt: "c6", label: "⑥ 单点故障这个代价" }
+  ];
+  var lines = ["FLY-1391 现状/目标架构 — Annie 的反馈:", ""];
+  secs.forEach(function (s) {
+    var parts = [];
+    if (s.radio) {
+      var r = document.querySelector('input[name="' + s.radio + '"]:checked');
+      if (r) parts.push("选:" + r.value);
+    }
+    var c = document.getElementById(s.cmt);
+    if (c && c.value.trim()) parts.push(c.value.trim());
+    if (parts.length) lines.push("## " + s.label + "\n" + parts.join(" — "));
+  });
+  if (lines.length === 2) lines.push("(没填写内容)");
+  var text = lines.join("\n\n");
+  var out = document.getElementById("out");
+  out.value = text;
+  out.style.display = "block";
+  out.select();
+  var hint = document.getElementById("hint");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(
+      function () { hint.textContent = "✅ 已复制,粘贴发回给我就行"; },
+      function () { hint.textContent = "上面框里已生成,长按全选复制"; }
+    );
+  } else {
+    hint.textContent = "上面框里已生成,长按全选复制";
+  }
+});
+</script>
+</body>
+</html>
