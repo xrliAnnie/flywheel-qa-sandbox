@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>FLY-1390 · DAG-only 清算裁定</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --navy:#1a365d;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de;
+    --line:rgba(0,0,0,.08);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,system-ui,"Helvetica Neue",Arial,"PingFang SC","Hiragino Sans GB",sans-serif;
+    line-height:1.62;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:960px;margin:0 auto;padding:40px 20px 72px}
+  header{margin-bottom:28px}
+  h1{font-size:30px;line-height:1.25;letter-spacing:-.02em;margin:0 0 8px}
+  .sub{color:var(--dim);font-size:15px}
+  .sub a{color:var(--blue);text-decoration:none}
+  .lede{background:var(--card);border-radius:12px;padding:22px 24px;margin:24px 0 32px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--navy)}
+  .lede h2{font-size:17px;margin:0 0 12px;letter-spacing:-.01em}
+  .lede ol{margin:0;padding-left:20px}
+  .lede li{margin:9px 0}
+  .section{margin:36px 0 0}
+  .section-title{display:flex;align-items:center;gap:9px;font-size:19px;font-weight:600;
+    letter-spacing:-.01em;margin:0 0 14px}
+  .count{color:var(--dim);font-size:14px;font-weight:400}
+  .card{background:var(--card);border-radius:12px;padding:18px 20px;margin-bottom:12px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--dim)}
+  .card.red{border-left-color:var(--red)} .card.amber{border-left-color:var(--amber)}
+  .card.blue{border-left-color:var(--blue)} .card.green{border-left-color:var(--green)}
+  .card.purple{border-left-color:var(--purple)}
+  .card-header{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:7px}
+  .issue-id{font-family:"SF Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:13px;font-weight:600;color:var(--navy);text-decoration:none}
+  .badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;
+    letter-spacing:.02em;white-space:nowrap}
+  .b-keep{background:rgba(52,199,89,.14);color:#1f8f3f}
+  .b-rescope{background:rgba(255,149,0,.16);color:#9a5a00}
+  .b-drop{background:rgba(255,59,48,.13);color:#b3271f}
+  .b-split{background:rgba(175,82,222,.14);color:#7a2ea8}
+  .b-hl{background:rgba(0,122,255,.12);color:#0058b8}
+  .b-flag{background:rgba(255,59,48,.13);color:#b3271f}
+  .card-title{font-weight:600;font-size:15.5px;margin-bottom:5px;letter-spacing:-.01em}
+  .row{font-size:14.5px;margin:5px 0}
+  .row .k{color:var(--dim);display:inline-block;min-width:4.6em}
+  .verdict{margin-top:9px;padding-top:9px;border-top:1px solid var(--line);
+    font-size:14.5px;font-weight:500}
+  .risk{color:#8a5a00;background:rgba(255,149,0,.07);border-radius:7px;
+    padding:8px 11px;margin-top:9px;font-size:13.5px}
+  code{font-family:"SF Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:.88em;background:rgba(0,0,0,.05);padding:1px 5px;border-radius:4px}
+  .callout{background:var(--card);border-radius:12px;padding:20px 22px;margin:14px 0;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--red)}
+  .callout h3{margin:0 0 9px;font-size:16px;letter-spacing:-.01em}
+  .callout p{margin:8px 0}
+  .steps{background:var(--card);border-radius:12px;padding:20px 24px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  .steps ol{margin:0;padding-left:20px} .steps li{margin:7px 0;font-size:14.5px}
+  footer{margin-top:40px;color:var(--dim);font-size:13px;border-top:1px solid var(--line);padding-top:18px}
+  footer ul{padding-left:18px;margin:8px 0}
+  @media (max-width:640px){
+    .wrap{padding:26px 15px 52px} h1{font-size:24px}
+    .row .k{display:block;min-width:0}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>DAG-only 清算 — 逐单裁定</h1>
+  <div class="sub">
+    FLY-1390 · 2026-07-20 · 只读审计,未动代码、未关任何单<br>
+    对象:4 个停在 gate 的 PR · 3 张 watchdog 单 · 5 张基建单 · 2 个候选缺陷
+  </div>
+</header>
+
+<div class="card amber" style="margin:24px 0 0;border-left-width:4px">
+  <div class="card-header"><span class="badge b-rescope">评审状态</span></div>
+  <div class="card-title">这份裁定还欠一道 Codex 评审</div>
+  <div class="row">Codex 五个账号当前全部 auth 过期(全队级,不只这一单),所以
+    <strong>Codex design review 还没跑,欠着</strong> —— auth 和额度恢复后补跑。</div>
+  <div class="row">这份裁定<strong>已经过一轮独立对抗性复核</strong>(逐条回核高风险的
+    file:line 引用,并专门试图证伪其中的主论点),<strong>但那不等于 Codex 门</strong>。</div>
+  <div class="row" style="color:var(--dim)">⇒ 拍板前请知道:证据是核过的,但评审流程还差这一道。</div>
+</div>
+
+<div class="lede">
+  <h2>先说三件事</h2>
+  <ol>
+    <li><strong>冻结令能落地,但四批里只有一批是真 legacy。</strong>逐调用链核完:watchdog 三单、
+      基建五单、qa-result 缺陷 <strong>都不是</strong> legacy。真正随 legacy 退役的,主要是
+      PR&nbsp;#642 的大部分,和 PR&nbsp;#648 的一小部分。</li>
+    <li><strong>有两条发现方向和预期相反。</strong>PR&nbsp;#648 不是「整体过时」——它约
+      85% 是全队共用的唤醒基建;qa-result 那个缺陷不是 legacy 的,<strong>它是 DAG 路径自己的
+      bug</strong>,而现在的绕法恰恰是退回 legacy。按原计划一刀切会把一个活着的 DAG bug 一起埋掉。</li>
+    <li><strong>顺手挖出一个会卡住你的现存缺陷</strong>(下面红框),跟冻结令无关,但更急。</li>
+  </ol>
+</div>
+
+<div class="callout">
+  <h3>🚩 现在就该知道的一件事</h3>
+  <p>PR&nbsp;#648 里新加的唤醒总账默认是<strong>开着</strong>的,但有一个文件没跟着改
+    (<code>founder-reply-deliverer.ts</code>)。结果是:<strong>你在 ship gate 里的回复,
+    会被判定成「没送到」,然后无限重试卡住。</strong></p>
+  <p>这条路径跟三段式/DAG 都无关,是你和 runner 之间的直连通道 —— <strong>DAG-only 之后照样会卡</strong>。
+    建议把它列成 #648 合并前必须先修的条件,不用单开一张单。</p>
+</div>
+
+<div class="callout" style="border-left-color:var(--purple)">
+  <h3>🔍 最值钱的一条结论:DAG 引擎分不清「主动停下」和「真卡死」</h3>
+  <p>引擎知道的一切,都来自 <strong>runner 自己写进去的那行记录</strong>。而一个已经死掉或卡住的
+    runner,<strong>恰恰就是写不出那行记录的那个</strong>。</p>
+  <p>引擎唯一能看到真实世界的地方,只读「窗格是不是还开着」这一个位,而且只在一种特殊情况下才跑。
+    就算跑了,对「主动停下等指令的 runner」和「冻在半路的 runner」<strong>一律返回『活着』</strong>。</p>
+  <p><strong>所以:「判死不能只听它自己申报」这条原则,在 DAG 之后不但没过时,反而更需要。</strong>
+    FLY-1385 那个节点永远卡在 running 的毛病,就是这件事的现场证据。
+    ⇒ watchdog 三单<strong>不该因为上了 DAG 就砍掉</strong>。</p>
+</div>
+
+<div class="section">
+  <div class="section-title"><span style="color:var(--red)">●</span> A · 停在 gate 的四个 PR <span class="count">4</span></div>
+
+  <div class="card green">
+    <div class="card-header">
+      <a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-1340">FLY-1340</a>
+      <span class="badge b-keep">照做</span><span class="badge" style="background:rgba(0,0,0,.05);color:var(--dim)">PR #647</span>
+    </div>
+    <div class="card-title">Code review 第一轮先看架构</div>
+    <div class="row"><span class="k">做什么</span>让代码审查第一轮就带上设计文档,先查架构和耦合,小毛病往后排。</div>
+    <div class="row"><span class="k">证据</span>改的那个文件里,「三段式 / phase / workflow」<strong>一个字都没有</strong>;
+      入口是通用接口不是阶段流转;而且 DAG 派给 Codex 的活<strong>必然</strong>走这里。</div>
+    <div class="verdict">✅ <strong>四个 PR 里最干净的一个,原样合并。</strong>只改 44 行,有一键回退开关。</div>
+    <div class="risk">小尾巴:它假设设计文档在 PR 分支上能读到,而 DAG 会把文档写到另一个地方 →
+      那种情况下审查会「正确但空转」(不会出错,只是少查一层)。建议开张小单补上。</div>
+  </div>
+
+  <div class="card amber">
+    <div class="card-header">
+      <a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-1342">FLY-1342</a>
+      <span class="badge b-rescope">设计仍有效 · 局部改</span><span class="badge" style="background:rgba(0,0,0,.05);color:var(--dim)">PR #641</span>
+    </div>
+    <div class="card-title">head-churn 治理设计 + 给你看的 HTML</div>
+    <div class="row"><span class="k">做什么</span>治「过程文件(QA 报告、进度账本)提交后把 PR 头动了,导致你的批准绑空」。</div>
+    <div class="row"><span class="k">证据</span>7/17 就是按你「并进 DAG」的要求写的,<strong>已独立核实属实</strong>:
+      主体用的全是 DAG 原生概念,三条绑定都锚在 PR 头而非阶段 —— DAG 下原样成立。</div>
+    <div class="verdict">✅ <strong>主体保留。</strong>只有其中「过渡期规矩包」那一节是在修理已冻结的老协调器 → 砍掉。</div>
+    <div class="risk">⚠️ 给你的那份 HTML 里有一个决策项(过渡期规矩包)<strong>必须先拿掉再给你看</strong> ——
+      它现在是在请你批准对一条已经冻结的流水线施工。其余 6 项不受影响。</div>
+  </div>
+
+  <div class="card blue">
+    <div class="card-header">
+      <a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-1339">FLY-1339</a>
+      <span class="badge b-rescope">保主体 · 剥掉 15%</span><span class="badge" style="background:rgba(0,0,0,.05);color:var(--dim)">PR #648</span>
+    </div>
+    <div class="card-title">阶段交接 / park 唤醒自动接力</div>
+    <div class="row"><span class="k">做什么</span>让「一段干完自动叫下一段」和「停泊的 runner 被可靠叫醒」不再靠 Lead 人肉盯。</div>
+    <div class="row"><span class="k">证据</span><strong>和单子自己写的相反。</strong>单子说「引擎化后这层由引擎负责」,
+      但源码里约 <strong>85% 根本不是阶段层的东西</strong> —— 是全队共用的唤醒总账:Lead 发指令、
+      gate 回答、<strong>你的 ship 回复</strong>,全都走它。真正属于阶段交接的只有约 15%。</div>
+    <div class="verdict">✅ <strong>唤醒基建主体保留并合并</strong>,剥掉阶段交接那 15%。</div>
+    <div class="risk">合并前两件事:① 先修上面红框那个缺陷;② 它对一张表做了破坏性重建,
+      而另一处代码正在写那张表 —— <strong>在飞的任务会不会受影响还没核实</strong>,合并前必须核。</div>
+  </div>
+
+  <div class="card purple">
+    <div class="card-header">
+      <a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-1293">FLY-1293</a>
+      <span class="badge b-split">弃主体 · 拆出 3 件</span><span class="badge" style="background:rgba(0,0,0,.05);color:var(--dim)">PR #642</span>
+    </div>
+    <div class="card-title">三段式协调器交接完整性批修</div>
+    <div class="row"><span class="k">做什么</span>五条缺陷批修:手动派单入册、接力棒对账、QA 记录入账、任务清单串台、显示错位。</div>
+    <div class="row"><span class="k">证据</span><strong>约 80% 只在三段式下才跑得到</strong> —— 入册那块代码
+      明确把 DAG 排除在外,协调器还会主动拒绝处理 DAG 的数据。</div>
+    <div class="verdict">🟣 <strong>主体弃掉,但有 3 件东西值得拆出来单独做</strong>(跟流水线无关):
+      ① 防重复启动的去重(DAG 走同一个入口,这是真 bug)② 一个 DAG 以后也要用的启动边界钩子
+      ③ <strong>Lead 的任务清单串进 runner 会话</strong>那个修复 —— 这条在烧 token,跟流水线完全无关。</div>
+    <div class="risk">如果整体弃掉不拆,第 ③ 条会继续影响<strong>所有</strong> runner。</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title"><span style="color:var(--blue)">●</span> B · Honey Lemon 的 watchdog 三单 <span class="count">3 · 均需与 HL 协调</span></div>
+
+  <div class="card blue">
+    <div class="card-header"><span class="badge b-hl">需与 HL 协调</span><span class="badge b-rescope">三单全保留 · 性质改写</span></div>
+    <div class="card-title">结论:跟 FLY-1385 几乎零重叠,可以并行;但整批该从「造」改成「打开 + 搬家」</div>
+    <div class="row"><span class="k">分层</span>FLY-1385 在<strong>引擎记账层</strong>(改数据库行);
+      1386/1387 在<strong>它下面一层</strong>(读进程和窗格的真实状态);
+      1388 在<strong>它上面一层</strong>(往 Discord 发通知)。三层之间<strong>没有任何共享代码</strong>。</div>
+    <div class="row"><span class="k">大发现</span><strong>这三单要的东西,约 70% 已经写好了,只是默认关着。</strong>
+      三态判定(在跑/停泊/卡死)的代码、只对可疑情况才叫 LLM 的机制、零成本的廉价扫描 —— 全都在,
+      是之前一次改造把整个检测栈扫进了一条「退役通道」。</div>
+    <div class="verdict">📌 <strong>建议:三单都保留,但把 scope 从「build」改成「重新启用 + 从退役通道搬到新通道 + 三件真新增」。</strong></div>
+    <div class="risk">⚠️ 「打开开关就能用」<strong>没验证</strong> —— 它是在切换期间被停用的,通知出口可能还指着旧通道,
+      需要搬家而不是单纯翻个开关。</div>
+  </div>
+
+  <div class="card red">
+    <div class="card-header">
+      <a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-1388">FLY-1388</a>
+      <span class="badge b-hl">需与 HL 协调</span><span class="badge b-flag">含真实缺口</span>
+    </div>
+    <div class="card-title">统一升级流 —— 里面藏着你亲历过的那个坑</div>
+    <div class="row"><span class="k">已核实</span>「<strong>你在 issue 里的回复,送不到负责的 Lead</strong>」这条
+      是真实、且代码里完全没覆盖的缺口。现在的设计是:你的回复自动投给<strong>停泊的 runner</strong>,
+      而且注释里写明了原因是「Lead 从来不会转达回来」。<strong>只有在内容有歧义时 Lead 才会被告知。</strong></div>
+    <div class="verdict">📌 这正是 7/18 那次你等了约 40 分钟没人认领的成因。<strong>建议把这条单独拎出来先做</strong> ——
+      它不依赖另外两单。</div>
+  </div>
+
+  <div class="card amber">
+    <div class="card-header">
+      <a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-1386">FLY-1386</a>
+      <a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-1387">FLY-1387</a>
+      <span class="badge b-hl">需与 HL 协调</span><span class="badge b-rescope">重述</span>
+    </div>
+    <div class="card-title">三态判定(1386) / 检测节奏(1387)</div>
+    <div class="row"><span class="k">1387</span>「1 小时才扫一次,却要求 30 分钟内升级」这条<strong>算术矛盾已确认属实</strong>。
+      修它的廉价扫描已经写好了,只是频率被设成了 100 倍间隔、且整条通道默认关闭。<strong>这是三单里最便宜的一张。</strong></div>
+    <div class="row"><span class="k">1386</span>三件是真新增:单帧误判的修复、错误串扩充、
+      「主动停泊且写明了唤醒条件的 runner 必须判成停泊」的验收用例。</div>
+    <div class="verdict">📌 都保留,scope 改写。</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title"><span style="color:var(--green)">●</span> C · 基建五单 <span class="count">5 · 全部与三段式无关</span></div>
+
+  <div class="card green">
+    <div class="card-header">
+      <a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-1363">FLY-1363</a>
+      <span class="badge b-keep">照做</span>
+      <a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-1375">FLY-1375</a>
+      <span class="badge b-keep">照做</span>
+    </div>
+    <div class="card-title">每天 6 点自动重启失败(1363) / ship 后全自动收尾(1375)</div>
+    <div class="row"><span class="k">1363</span><strong>根因还活着</strong>,只是被一个「只在这台机器生效」的临时办法压住了 ——
+      换台机器或重新 clone 就复发。而且失败是<strong>静默的</strong>(要连续失败 10 次才告警)。
+      好消息:已经有一份过了 7 轮评审的设计停在分支上,落地很便宜。</div>
+    <div class="row"><span class="k">1375</span>单子自己就写了「land 作为 DAG 模板的最后一个节点」⇒ 天然就是 DAG 语境,冻结令伤不到它。</div>
+    <div class="verdict">✅ 两张原样保留。1363 优先级可以提。</div>
+  </div>
+
+  <div class="card amber">
+    <div class="card-header">
+      <a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-1374">FLY-1374</a>
+      <span class="badge b-rescope">重述 · 主体已被做掉了</span>
+    </div>
+    <div class="card-title">Discord 显示和实际状态对不上</div>
+    <div class="row"><span class="k">证据</span><strong>这张单的四条事实前提全部过期了。</strong>
+      它要的两个对账器<strong>都已经上线</strong>;它说「半截没建完」的那个字段,其实
+      建表、迁移、读、写、测试全齐;而且真正做掉它的,<strong>不是单子里写的那两张单</strong>。</div>
+    <div class="verdict">🟠 <strong>不要照原样派单。</strong>剩下真正要做的只有一件:
+      Discord 标题的前缀现在是从「三段式阶段」推出来的 —— <strong>DAG 之后这个推导会失准</strong>,需要换成 DAG 原生的算法。</div>
+    <div class="risk">这是 C 批里唯一和三段式有耦合的地方,而且恰好在已经上线的那一半里。建议单独拎出来做。</div>
+  </div>
+
+  <div class="card amber">
+    <div class="card-header">
+      <a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-1364">FLY-1364</a>
+      <span class="badge b-rescope">重述 · 指错文件了</span>
+      <a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-802">FLY-802</a>
+      <span class="badge b-rescope">重述 · 规格变了</span>
+    </div>
+    <div class="card-title">cmux 死 tab 不清理(1364) / roundtable 线程 1 小时归档(802)</div>
+    <div class="row"><span class="k">1364</span>现象是真的,但<strong>单子点名的那个文件里根本没有它说的逻辑</strong>。
+      真正的位置在别处。而且 ⚠️ <strong>那个「验证不了就当锁着」的保守方向是故意的</strong>,是一个防回归的守卫 ——
+      <strong>直接反过来会把它当初防住的问题放回来</strong>。诉求应改成「加一个有上限的放行口」。</div>
+    <div class="row"><span class="k">802</span>代码<strong>已经上线了</strong>,但 7/17 你换了规格
+      (读频道自己的设置、<strong>不要在代码里写死频道</strong>)—— 而已上线的代码正是写死了一个常数。
+      所以不是「已完成」,是<strong>要按新规格重做</strong>。</div>
+    <div class="risk">802 的对账器 ⚠️ <strong>必须由有 Manage Threads 权限的 bot 来跑</strong>,
+      Lead bot 没这个权限,跑了必然失败。claw-infra-bot 有。</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title"><span style="color:var(--amber)">●</span> D · 两个候选缺陷 <span class="count">2</span></div>
+
+  <div class="card red">
+    <div class="card-header"><span class="badge b-flag">不可按 legacy 关闭</span></div>
+    <div class="card-title">qa-result 凭据邮路 —— 方向和预期相反</div>
+    <div class="row"><span class="k">证据</span>原本以为「DAG 天然绕开,所以不用修」。
+      实际是:<strong>那 7 个报错分支全都长在 DAG 端点上</strong>,凭据也只在 DAG 路径注入。
+      现在的绕法(把凭据去掉)<strong>等于从 DAG 降级回 legacy</strong>。</div>
+    <div class="verdict">🔴 <strong>保留,重新定性为 DAG 缺陷。</strong>下一步只需一件事:
+      拿到生产的错误原文,就能定它是可重试的竞态,还是一个真 bug。</div>
+    <div class="risk">若按原计划「不修,随 legacy 退役」→ <strong>会连带埋掉一个活着的 DAG bug</strong>。</div>
+  </div>
+
+  <div class="card green">
+    <div class="card-header"><span class="badge b-drop">可关(先核一次)</span></div>
+    <div class="card-title">qa_required 快照接线 —— 确实是 legacy-only</div>
+    <div class="row"><span class="k">证据</span>唯一的写入方是老协调器,DAG 侧零调用;
+      DAG 的写入代码还<strong>明确声明这块不归它管</strong>;读的那头有两道独立的引擎旁路。</div>
+    <div class="verdict">✅ <strong>可以按「不修,随 legacy 退役」关掉</strong> —— 但先做一次核查(见右)。</div>
+    <div class="risk">⚠️ 那条旁路的判断依据是「角色字段等于 qa」而不是「是不是引擎跑的」。
+      如果 DAG 没把角色字段都设对,还是会掉回老路径。<strong>这和上面那条是同一类假设,建议一起核一次再关。</strong></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title"><span style="color:var(--navy)">●</span> 建议的执行顺序</div>
+  <div class="steps">
+    <ol>
+      <li><strong>先修红框那条</strong>(它卡的是你自己的 ship 回复,且是 #648 合并的前提)</li>
+      <li><strong>#647 原样合并</strong> —— 四个里最干净的</li>
+      <li><strong>#641 拿掉那个决策项之后</strong>,再把 HTML 给你</li>
+      <li><strong>#648</strong>:核破坏性迁移 → 剥掉阶段部分 → 合并唤醒主体</li>
+      <li><strong>#642</strong>:弃主体,拆 3 件成小单</li>
+      <li>1363 / 1375 照做;1374 / 1364 / 802 按重述后的 scope 重新派</li>
+      <li><strong>B 批和 HL 对齐后再动</strong> —— 三单都保留,性质改成「打开 + 搬家 + 三件新增」</li>
+      <li>D 组两条一起核一次角色字段假设,再决定关不关</li>
+    </ol>
+  </div>
+</div>
+
+<footer>
+  <strong>这份审计明确没做的事:</strong>
+  <ul>
+    <li>没动任何代码、没关任何单、没改任何 Linear 状态(纯只读)</li>
+    <li>没碰 FLY-1356(E2E 进行中)和 FLY-1335(已 QA PASS 停 gate,你已单独认可)</li>
+    <li>没有代 Honey Lemon 决定 B 批的任何一单</li>
+    <li>有 7 项属于「推断而非核实」,凡依赖它们的地方都已在对应卡片的风险栏标出 —— 那些<strong>不应被当作已定论</strong></li>
+  </ul>
+  FLY-1390 · 证据卷见 <code>engineering/doc/FLY-1390-dag-only-audit/research.md</code>(每条结论带 file:line)
+</footer>
+
+</div>
+</body>
+</html>
