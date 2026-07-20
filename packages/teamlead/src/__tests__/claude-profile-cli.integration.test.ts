@@ -37,6 +37,8 @@ const PROFILE_BIN = join(
 
 const SECRET_A =
 	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-INT-A","refreshToken":"rA"}}';
+const SECRET_A_REFRESHED =
+	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-INT-A-REFRESHED","refreshToken":"rAR"}}';
 const SECRET_B =
 	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-INT-B","refreshToken":"rB"}}';
 
@@ -61,6 +63,7 @@ esac
 const ENV_KEYS = [
 	"FLYWHEEL_CLAUDE_PROFILES_DIR",
 	"FLYWHEEL_CLAUDE_ACCOUNTS_LOCK",
+	"FLYWHEEL_CLAUDE_ACCOUNTS_PATH",
 	"FLYWHEEL_CLAUDE_TRANSITION_JOURNAL",
 	"FLYWHEEL_CLAUDE_SECURITY_BIN",
 	"FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE",
@@ -88,6 +91,13 @@ const SCHOOL_IDENTITY = {
 	organizationUuid: "org-school",
 	organizationName: "School Org",
 	displayName: "Scholar",
+};
+const PERSONAL_IDENTITY = {
+	accountUuid: "uuid-personal",
+	emailAddress: "personal@example.com",
+	organizationUuid: "org-personal",
+	organizationName: "Personal Org",
+	displayName: "Personal",
 };
 
 let tmp: string;
@@ -138,7 +148,7 @@ beforeEach(() => {
 	writeFileSync(join(pool, ".active"), "personal", { mode: 0o600 });
 	writeFileSync(
 		join(pool, "personal", "oauthAccount.json"),
-		JSON.stringify({ accountUuid: "u-personal", emailAddress: "p@x.com" }),
+		JSON.stringify(PERSONAL_IDENTITY),
 		{ mode: 0o600 },
 	);
 	// FLY-865: school has a captured display identity; personal does not.
@@ -153,7 +163,7 @@ beforeEach(() => {
 		claudeJson,
 		JSON.stringify({
 			numStartups: 7,
-			oauthAccount: { accountUuid: "u-personal", emailAddress: "p@x.com" },
+			oauthAccount: PERSONAL_IDENTITY,
 		}),
 	);
 	writeFileSync(stubBin, STUB, { mode: 0o755 });
@@ -174,6 +184,7 @@ set -euo pipefail
 printf '%s\\n' "$*" >> "$FAKE_IDENTITY_CURL_ARGV_LOG"
 cfg=$(cat)
 case "$cfg" in
+  *sk-ant-oat01-INT-A-REFRESHED*) printf '%s' '{"account":{"uuid":"uuid-personal","email":"personal@example.com"}}' ;;
   *sk-ant-oat01-INT-A*) printf '%s' '{"account":{"uuid":"uuid-personal","email":"personal@example.com"}}' ;;
   *sk-ant-oat01-INT-B*) printf '%s' '{"account":{"uuid":"uuid-school","email":"school@example.com"}}' ;;
   *) exit 22 ;;
@@ -199,6 +210,7 @@ esac
 	for (const k of ENV_KEYS) saved[k] = process.env[k];
 	process.env.FLYWHEEL_CLAUDE_PROFILES_DIR = pool;
 	process.env.FLYWHEEL_CLAUDE_ACCOUNTS_LOCK = lockPath; // SAME lock as Node's
+	process.env.FLYWHEEL_CLAUDE_ACCOUNTS_PATH = storePath;
 	process.env.FLYWHEEL_CLAUDE_TRANSITION_JOURNAL = join(
 		tmp,
 		"claude-account-transition.json",
@@ -275,7 +287,82 @@ describe("switchAccount ↔ flywheel-claude-profile seam (REAL lock + REAL scrip
 		expect(cj.numStartups).toBe(7); // untouched
 		// No stray identity-write temp files left behind.
 		expect(existsSync(`${claudeJson}.lock`)).toBe(false);
-	});
+	}, 10_000);
+
+	it("repairs delegated UUID-only display drift without mutating the Node store during apply", async () => {
+		const pool = process.env.FLYWHEEL_CLAUDE_PROFILES_DIR as string;
+		writeFileSync(process.env.FAKE_SEC_STATE as string, SECRET_A_REFRESHED);
+		writeFileSync(
+			claudeJson,
+			JSON.stringify({
+				numStartups: 7,
+				oauthAccount: {
+					...PERSONAL_IDENTITY,
+					accountUuid: "uuid-stale-display",
+				},
+			}),
+		);
+
+		const baseDeps = makeClaudeProfileSwitchDeps({ binPath: PROFILE_BIN });
+		const applySnapshots: Array<{
+			before: { activeAccount: string | null; generation: number };
+			after: { activeAccount: string | null; generation: number };
+		}> = [];
+		const deps = {
+			...baseDeps,
+			applyProfile: async (
+				...args: Parameters<NonNullable<typeof baseDeps.applyProfile>>
+			) => {
+				const before = readStore(storePath);
+				const result = await baseDeps.applyProfile(...args);
+				const after = readStore(storePath);
+				applySnapshots.push({
+					before: {
+						activeAccount: before.activeAccount,
+						generation: before.generation,
+					},
+					after: {
+						activeAccount: after.activeAccount,
+						generation: after.generation,
+					},
+				});
+				return result;
+			},
+		};
+
+		const result = await switchAccount(
+			{
+				scope: "5h",
+				observedAccount: "personal",
+				observedGeneration: 1,
+				resetAt: "2026-07-05T02:30:00.000Z",
+				now: new Date("2026-07-04T20:00:00Z"),
+			},
+			{ storePath, lockPath, ...deps },
+		);
+
+		expect(result).toMatchObject({
+			outcome: "switched",
+			from: "personal",
+			to: "school",
+		});
+		expect(applySnapshots).toEqual([
+			{
+				before: { activeAccount: "personal", generation: 1 },
+				after: { activeAccount: "personal", generation: 1 },
+			},
+		]);
+		expect(
+			readFileSync(join(pool, "personal", ".credentials.json"), "utf8"),
+		).toBe(SECRET_A_REFRESHED);
+		expect(readStore(storePath)).toMatchObject({
+			activeAccount: "school",
+			generation: 2,
+		});
+		expect(JSON.parse(readFileSync(claudeJson, "utf8")).oauthAccount).toEqual(
+			SCHOOL_IDENTITY,
+		);
+	}, 15_000);
 
 	// FLY-871 R1/C3 — the freshness guard end-to-end through the REAL seam: a stale
 	// target (real bash `use` exit 30) must reach real Node as TargetStaleError,

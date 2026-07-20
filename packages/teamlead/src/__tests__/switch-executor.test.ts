@@ -15,6 +15,7 @@ import {
 } from "../account-heal/account-store.js";
 import type { LeaseProof } from "../account-heal/mkdir-lock.js";
 import {
+	ActiveMarkerDriftError,
 	type ApplyProfileReport,
 	FreshnessUnavailableError,
 	IdentityRollbackFailedError,
@@ -624,6 +625,28 @@ describe("switchAccount", () => {
 		expect(after.generation).toBe(1);
 		// no account was flagged authExpired
 		expect(after.accounts.every((a) => !a.authExpired)).toBe(true);
+	});
+
+	it("active marker drift is environmental: fail closed without flagging or trying another candidate", async () => {
+		seed(threeAccountStore());
+		const applyProfile = vi.fn(async () => {
+			throw new ActiveMarkerDriftError("marker/token witnesses disagree");
+		});
+
+		const result = await switchAccount(input, deps({ applyProfile }));
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "active_marker_drift",
+		});
+		expect(applyProfile).toHaveBeenCalledTimes(1);
+		const after = readStore(storePath);
+		expect(after.activeAccount).toBe("personal");
+		expect(after.generation).toBe(1);
+		expect(after.accounts.every((account) => !account.authExpired)).toBe(true);
+		expect(after.accounts.every((account) => !account.identityMismatch)).toBe(
+			true,
+		);
 	});
 
 	it("non-stale, non-freshness error keeps the current single fail-closed behavior", async () => {

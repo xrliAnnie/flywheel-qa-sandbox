@@ -36,6 +36,7 @@ import {
 } from "./machine-account.js";
 import { type LeaseProof, renewMkdirLock } from "./mkdir-lock.js";
 import {
+	ActiveMarkerDriftError,
 	type ApplyProfileIdentityCheck,
 	type ApplyProfileReport,
 	FreshnessUnavailableError,
@@ -248,6 +249,19 @@ export function makeClaudeProfileSwitchDeps(
 				// failure rethrows unchanged (existing fail-closed behavior).
 				const e = err as { code?: number | string; stderr?: string };
 				const errText = String(e.stderr ?? "");
+				// FLY-1201: classify active-marker reconciliation before the older
+				// account-specific identity markers. Strict capture may emit an inner
+				// target-identity marker before the outer repair failure; that must not
+				// poison or rotate the requested target account.
+				if (
+					e.code === 46 ||
+					e.code === 47 ||
+					/FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE|FLYWHEEL_STALE_ACTIVE_REPAIR_FAILED/.test(
+						errText,
+					)
+				) {
+					throw new ActiveMarkerDriftError(errText.trim() || undefined);
+				}
 				if (
 					e.code === 34 ||
 					/FLYWHEEL_TARGET_IDENTITY_MISMATCH/.test(errText)

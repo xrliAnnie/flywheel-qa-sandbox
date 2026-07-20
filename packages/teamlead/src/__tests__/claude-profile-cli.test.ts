@@ -11,6 +11,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeClaudeProfileSwitchDeps } from "../account-heal/claude-profile-cli.js";
 import {
+	ActiveMarkerDriftError,
 	type ApplyProfileReport,
 	FreshnessUnavailableError,
 	IdentityRollbackFailedError,
@@ -396,6 +397,65 @@ describe("makeClaudeProfileSwitchDeps", () => {
 			await expect(
 				deps(execFile).applyProfile("school"),
 			).rejects.not.toBeInstanceOf(TargetStaleError);
+		});
+	});
+
+	describe("FLY-1201 stale active marker exit-code mapping", () => {
+		it.each([46, 47])(
+			"exit %s maps to ActiveMarkerDriftError before account-specific identity errors",
+			async (code) => {
+				const execFile = vi.fn(async () => {
+					throw Object.assign(new Error("stale active repair failed"), {
+						code,
+						stderr:
+							"FLYWHEEL_TARGET_IDENTITY_MISMATCH school\nFLYWHEEL_STALE_ACTIVE_REPAIR_FAILED personal\n",
+					});
+				});
+				await expect(
+					deps(execFile).applyProfile("school"),
+				).rejects.toBeInstanceOf(ActiveMarkerDriftError);
+			},
+		);
+
+		it.each([
+			"FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE personal",
+			"FLYWHEEL_STALE_ACTIVE_REPAIR_FAILED personal",
+		])("maps terminal marker fallback %s", async (stderr) => {
+			const execFile = vi.fn(async () => {
+				throw Object.assign(new Error("signal-shaped failure"), {
+					code: "SIGTERM",
+					stderr,
+				});
+			});
+			await expect(
+				deps(execFile).applyProfile("school"),
+			).rejects.toBeInstanceOf(ActiveMarkerDriftError);
+		});
+
+		it("keeps exit 30 as TargetStaleError when reconciliation success markers precede it", async () => {
+			const execFile = vi.fn(async () => {
+				throw Object.assign(new Error("target stale"), {
+					code: 30,
+					stderr:
+						"FLYWHEEL_STALE_ACTIVE_MARKER business\nFLYWHEEL_STALE_ACTIVE_RECONCILED business shopping\nFLYWHEEL_TARGET_STALE business\n",
+				});
+			});
+			await expect(
+				deps(execFile).applyProfile("business"),
+			).rejects.toBeInstanceOf(TargetStaleError);
+		});
+
+		it("does not forward reconciliation success markers as warnings", async () => {
+			const warns: string[] = [];
+			const execFile = vi.fn(async () => ({
+				stdout: "Switched",
+				stderr:
+					"FLYWHEEL_STALE_ACTIVE_MARKER business\nFLYWHEEL_STALE_ACTIVE_RECONCILED business shopping\n",
+			}));
+			await deps(execFile, (message) => warns.push(message)).applyProfile(
+				"shopping",
+			);
+			expect(warns).toEqual([]);
 		});
 	});
 

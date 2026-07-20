@@ -126,6 +126,7 @@ type SwitchOutcome =
 			reason: string;
 			reasonCode:
 				| "freshness_unavailable"
+				| "active_marker_drift"
 				| "apply_failed"
 				| "machine_account_conflict"
 				| "invalid_model_trigger"
@@ -177,6 +178,22 @@ export class FreshnessUnavailableError extends Error {
 			}`,
 		);
 		this.name = "FreshnessUnavailableError";
+	}
+}
+
+/**
+ * FLY-1201 — `.active` cannot be proven to describe the live Keychain token,
+ * or the safe reconciliation prefix could not be completed. This is machine
+ * state/environmental, never evidence that the selected target account is bad.
+ */
+export class ActiveMarkerDriftError extends Error {
+	constructor(detail?: string) {
+		super(
+			`active Claude profile marker could not be safely reconciled${
+				detail ? `: ${detail}` : ""
+			}`,
+		);
+		this.name = "ActiveMarkerDriftError";
 	}
 }
 
@@ -591,6 +608,16 @@ export async function switchAccount(
 							outcome: "failed",
 							reason: err.message,
 							reasonCode: "freshness_unavailable",
+						},
+						applyReports,
+					);
+				}
+				if (err instanceof ActiveMarkerDriftError) {
+					return withReports(
+						{
+							outcome: "failed",
+							reason: err.message,
+							reasonCode: "active_marker_drift",
 						},
 						applyReports,
 					);

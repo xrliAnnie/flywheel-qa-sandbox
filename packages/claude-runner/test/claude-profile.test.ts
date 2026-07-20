@@ -72,6 +72,10 @@ const SECRET_PERSONAL_REFRESHED =
 	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-PERSONAL-REFRESHED","refreshToken":"rPR"}}';
 const SECRET_BIZ =
 	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-BIZ","refreshToken":"rBiz"}}';
+const SECRET_SHOPPING_SNAPSHOT =
+	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-SHOPPING-SNAPSHOT","refreshToken":"rShopOld"}}';
+const SECRET_SHOPPING_LIVE =
+	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-SHOPPING-LIVE","refreshToken":"rShopLive"}}';
 const EMAILS = {
 	business: "xrliannie.b@gmail.com",
 	personal: "xrliannie@gmail.com",
@@ -126,6 +130,24 @@ const IDENTITY_BIZ = {
 	displayName: "Biz",
 	organizationRole: "admin",
 };
+const IDENTITY_PERSONAL = {
+	accountUuid: "uuid-personal",
+	emailAddress: EMAILS.personal,
+	organizationUuid: "org-personal",
+	organizationName: "Personal Org",
+};
+const IDENTITY_SCHOOL = {
+	accountUuid: "uuid-school",
+	emailAddress: EMAILS.school,
+	organizationUuid: "org-school",
+	organizationName: "School Org",
+};
+const IDENTITY_CURRENT = {
+	accountUuid: "uuid-current",
+	emailAddress: "current@example.com",
+	organizationUuid: "org-current",
+	organizationName: "Current Org",
+};
 
 const IDENTITY_PROFILES: Record<string, { uuid: string; email: string }> = {
 	"sk-ant-oat01-AAA": { uuid: "uuid-personal", email: EMAILS.personal },
@@ -148,6 +170,14 @@ const IDENTITY_PROFILES: Record<string, { uuid: string; email: string }> = {
 		email: EMAILS.personal,
 	},
 	"sk-ant-oat01-BIZ": { uuid: "uuid-biz", email: EMAILS.business },
+	"sk-ant-oat01-SHOPPING-SNAPSHOT": {
+		uuid: "uuid-shop",
+		email: EMAILS.shopping,
+	},
+	"sk-ant-oat01-SHOPPING-LIVE": {
+		uuid: "uuid-shop",
+		email: EMAILS.shopping,
+	},
 };
 
 /** A full-ish ~/.claude.json shape (many top-level keys + nested) to prove the
@@ -294,6 +324,14 @@ function seedAnchor(name: string, accountUuid: string, email: string): void {
 	);
 }
 
+function seedCoherentActive(name: "personal" | "school"): void {
+	const secret = name === "personal" ? SECRET_A : SECRET_B;
+	const identity = name === "personal" ? IDENTITY_PERSONAL : IDENTITY_SCHOOL;
+	writeFileSync(join(pool, ".active"), name, { mode: 0o600 });
+	writeFileSync(stateFile, secret);
+	writeFileSync(claudeJson, claudeJsonWith(identity));
+}
+
 function seedIdentityMap(
 	overrides: Partial<Record<string, string>> = {},
 ): void {
@@ -408,10 +446,22 @@ esac
 	seedProfile("school", SECRET_B);
 	seedAnchor("personal", "uuid-personal", EMAILS.personal);
 	seedAnchor("school", "uuid-school", EMAILS.school);
-	// current machine credential (what a rollback must restore)
-	writeFileSync(stateFile, SECRET_CUR);
-	// A scratch ~/.claude.json whose oauthAccount = the "shop" identity.
-	writeFileSync(claudeJson, claudeJsonWith(IDENTITY_SHOP));
+	writeFileSync(
+		join(pool, "personal", "oauthAccount.json"),
+		JSON.stringify(IDENTITY_PERSONAL),
+		{ mode: 0o600 },
+	);
+	writeFileSync(
+		join(pool, "school", "oauthAccount.json"),
+		JSON.stringify(IDENTITY_SCHOOL),
+		{ mode: 0o600 },
+	);
+	// Default to a proven blank-machine bootstrap. Tests that exercise rollback,
+	// capture-back, or stale-marker repair seed an explicit live preimage and
+	// coherent active-account evidence for that scenario.
+	// Healthy default: display, sidecar, and anchor agree with the account most
+	// legacy tests activate first. Drift tests override this explicitly.
+	writeFileSync(claudeJson, claudeJsonWith(IDENTITY_PERSONAL));
 });
 
 afterEach(() => {
@@ -462,18 +512,15 @@ exec "$REAL_MKTEMP" "$@"
 			REAL_MKTEMP: realMktemp,
 		});
 		expect(result.status).not.toBe(0);
-		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 		expect(readFileSync(argvLog, "utf8")).not.toMatch(/^-i$/m);
 	});
 
 	it("RED LINE: verify-fail rolls back to the previous credential, .active untouched", () => {
 		// First write corrupts (stub corrupt mode ON) → read-back mismatch. The
-		// rollback write must restore SECRET_CUR — but corrupt mode would corrupt
-		// the rollback too, so flip corruption off after the first write via a
-		// one-shot marker the stub honors… simpler: corrupt mode ON corrupts every
-		// write, so the rollback ALSO stores CORRUPTED ≠ backup → the script must
-		// still exit non-zero and leave .active untouched (worst-case honesty).
+		// With a proven-absent preimage, a corrupt write must fail closed and the
+		// rollback must remove the newly created item again.
 		const { status, stderr } = runExpectFail(["use", "personal"], {
 			FAKE_SEC_CORRUPT: "1",
 		});
@@ -483,6 +530,7 @@ exec "$REAL_MKTEMP" "$@"
 	});
 
 	it("RED LINE: a failed Keychain write still restores and verifies the previous credential", () => {
+		seedCoherentActive("personal");
 		const partialWriteStub = join(tmp, "fake-security-partial-write");
 		const marker = join(tmp, "fail-write-once");
 		writeFileSync(
@@ -508,17 +556,18 @@ esac
 		);
 		writeFileSync(marker, "");
 
-		const { status, stderr } = runExpectFail(["use", "personal"], {
+		const { status, stderr } = runExpectFail(["use", "school"], {
 			FLYWHEEL_CLAUDE_SECURITY_BIN: partialWriteStub,
 		});
 		expect(status).not.toBe(0);
 		expect(stderr).toContain("Keychain write failed");
 		expect(stderr).toContain("rolled back");
-		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
-		expect(existsSync(join(pool, ".active"))).toBe(false);
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_A);
+		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
 	});
 
 	it("RED LINE: an unreadable Keychain preimage aborts before write or delete", () => {
+		seedCoherentActive("personal");
 		const unreadableStub = join(tmp, "fake-security-unreadable");
 		writeFileSync(
 			unreadableStub,
@@ -535,24 +584,25 @@ esac
 			{ mode: 0o755 },
 		);
 
-		const { status, stderr } = runExpectFail(["use", "personal"], {
+		const { status, stderr } = runExpectFail(["use", "school"], {
 			FLYWHEEL_CLAUDE_SECURITY_BIN: unreadableStub,
 		});
 		expect(status).not.toBe(0);
 		expect(stderr).toContain("cannot read the current Keychain credential");
-		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_A);
 		expect(readFileSync(argvLog, "utf8")).not.toMatch(
 			/^-i$|^delete-generic-password/m,
 		);
-		expect(existsSync(join(pool, ".active"))).toBe(false);
+		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
 	});
 
 	it("RED LINE: a non-restorable Keychain preimage aborts before mutation", () => {
+		seedCoherentActive("personal");
 		const pretty =
 			'{ "claudeAiOauth": { "accessToken": "sk-ant-oat01-CURRENT", "refreshToken": "rC" } }';
 		writeFileSync(stateFile, pretty);
 
-		const { status, stderr } = runExpectFail(["use", "personal"]);
+		const { status, stderr } = runExpectFail(["use", "school"]);
 
 		expect(status).not.toBe(0);
 		expect(stderr).toContain("whitespace");
@@ -560,13 +610,13 @@ esac
 		expect(readFileSync(argvLog, "utf8")).not.toMatch(
 			/^-i$|^delete-generic-password/m,
 		);
-		expect(existsSync(join(pool, ".active"))).toBe(false);
+		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
 	});
 
 	it("RED LINE: an absent preimage with a corrupt read-back fails closed (37), .active untouched", () => {
 		const absentStub = join(tmp, "fake-security-absent-preimage");
 		const corruptOnce = join(tmp, "corrupt-once-absent");
-		rmSync(stateFile);
+		rmSync(stateFile, { force: true });
 		writeFileSync(corruptOnce, "");
 		writeFileSync(
 			absentStub,
@@ -597,6 +647,7 @@ esac
 	});
 
 	it("verify-fail with a WORKING rollback restores the previous credential", () => {
+		seedCoherentActive("school");
 		// Corrupt exactly the first -i write: the stub corrupts while the marker
 		// file exists (then deletes it) — the rollback write goes through clean.
 		const oneShotStub = join(tmp, "fake-security-oneshot");
@@ -625,15 +676,15 @@ esac
 		expect(status).toBe(36);
 		expect(stderr).toContain("rolled back");
 		// the machine credential is back to what it was — login never broken
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
-		expect(existsSync(join(pool, ".active"))).toBe(false);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("school");
 	});
 
 	it("`use` refuses a missing profile", () => {
 		const { status, stderr } = runExpectFail(["use", "ghost"]);
 		expect(status).not.toBe(0);
 		expect(stderr).toContain("not found");
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR); // untouched
+		expect(existsSync(stateFile)).toBe(false); // untouched
 	});
 
 	it("`use` refuses a symlinked credential file", () => {
@@ -652,7 +703,7 @@ esac
 		const { status, stderr } = runExpectFail(["use", "spacey"]);
 		expect(status).not.toBe(0);
 		expect(stderr).toContain("whitespace");
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 	});
 
 	it("refuses path-traversal / reserved profile names (use + capture)", () => {
@@ -663,7 +714,7 @@ esac
 		}
 		const { status } = runExpectFail(["capture", "../evil"]);
 		expect(status).not.toBe(0);
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR); // untouched
+		expect(existsSync(stateFile)).toBe(false); // untouched
 	});
 
 	it("refuses a group/world-readable credential file (must be 0600/0400)", () => {
@@ -674,7 +725,7 @@ esac
 		const { status, stderr } = runExpectFail(["use", "loose"]);
 		expect(status).not.toBe(0);
 		expect(stderr).toContain("must be 600/400");
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 	});
 
 	it("refuses a non-JSON-object credential", () => {
@@ -766,7 +817,7 @@ esac
 		});
 		expect(status).not.toBe(0);
 		expect(stderr).toContain("timeout acquiring lock");
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR); // untouched
+		expect(existsSync(stateFile)).toBe(false); // untouched
 		rmSync(lockDir, { recursive: true, force: true });
 	});
 
@@ -782,7 +833,7 @@ esac
 		});
 		expect(status).not.toBe(0);
 		expect(stderr).toContain("timeout acquiring lock");
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR); // untouched
+		expect(existsSync(stateFile)).toBe(false); // untouched
 		rmSync(lockDir, { recursive: true, force: true });
 	});
 
@@ -797,7 +848,7 @@ esac
 		});
 		expect(status).not.toBe(0);
 		expect(stderr).toContain("timeout acquiring lock");
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR); // untouched
+		expect(existsSync(stateFile)).toBe(false); // untouched
 	});
 
 	it("lock: stale holder (dead pid) is broken and the switch proceeds", () => {
@@ -844,7 +895,7 @@ fi
 
 		expect(status).not.toBe(0);
 		expect(stderr).toContain("timeout acquiring lock");
-		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 		expect(existsSync(lockDir)).toBe(true);
 	});
 
@@ -863,6 +914,7 @@ fi
 		});
 
 		it("clears an abandoned journal when Keychain still has the old digest", () => {
+			writeFileSync(stateFile, SECRET_CUR);
 			seedTransitionJournal();
 			const result = JSON.parse(run(["reconcile-journal"]).trim());
 			expect(result).toEqual({ outcome: "cleared" });
@@ -1083,14 +1135,14 @@ describe("flywheel-claude-profile — identity proof (FLY-1182)", () => {
 		seedAnchor("personal", "wrong-uuid", "wrong@example.com");
 		let result = runExpectFail(["use", "personal"]);
 		expect(result.status).toBe(86);
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 		expect(readFileSync(claudeJson, "utf-8")).toBe(beforeDisplay);
 
 		rmSync(join(pool, "personal", "identity-anchor.json"));
 		result = runExpectFail(["use", "personal"]);
 		expect(result.status).toBe(87);
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 
 		seedAnchor("personal", "uuid-personal", EMAILS.personal);
@@ -1102,94 +1154,71 @@ describe("flywheel-claude-profile — identity proof (FLY-1182)", () => {
 			FLYWHEEL_PROFILE_CURL_BIN: unavailableCurl,
 		});
 		expect(result.status).toBe(88);
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 		expect(readFileSync(claudeJson, "utf-8")).toBe(beforeDisplay);
 	});
 
-	it("active identity assertion B captures only matches and emits one stable marker for every non-match branch", () => {
+	it("active identity reconciliation captures only verified matches and fails closed for every unresolved branch", () => {
 		// match → capture-back is allowed
 		writeFileSync(join(pool, ".active"), "personal");
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_PERSONAL));
 		writeFileSync(stateFile, SECRET_PERSONAL_REFRESHED);
-		let switched = runBoth(["use", "school"]);
-		expect(switched.stderr).not.toContain("FLYWHEEL_ACTIVE_IDENTITY_DRIFT");
+		const switched = runBoth(["use", "school"]);
+		expect(switched.stderr).not.toContain("FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE");
 		expect(
 			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
 		).toBe(SECRET_PERSONAL_REFRESHED);
 
-		// mismatch → skip capture-back, repair drift by writing verified target
+		// A live identity with no unique anchored slot is unresolved. It must not
+		// be copied into the marker slot or allow the requested switch to proceed.
 		writeFileSync(join(pool, ".active"), "personal");
 		writeFileSync(join(pool, "personal", ".credentials.json"), SECRET_A);
 		writeFileSync(stateFile, SECRET_DRIFT);
-		switched = runBoth(["use", "school"]);
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
-		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("school");
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_SHOP));
+		let refused = runExpectFail(["use", "school"]);
+		expect(refused.status).toBe(46);
+		expect(refused.stderr).toContain(
+			"FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE personal",
+		);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_DRIFT);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("personal");
 		expect(
 			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
 		).toBe(SECRET_A);
-		let markers = switched.stderr
-			.split("\n")
-			.filter((line) => line.startsWith("FLYWHEEL_ACTIVE_IDENTITY_DRIFT "));
-		expect(markers).toHaveLength(1);
-		expect(JSON.parse(markers[0].split(" ", 2)[1])).toEqual({
-			version: 1,
-			reason: "mismatch",
-			label: "personal",
-			expectedUuid: "uuid-personal",
-			observedEmailRedacted: "d***@example.com",
-		});
 
-		// untracked → skip capture-back, expectedUuid is explicitly null
+		// A marker slot without a valid anchor is also unresolved.
 		writeFileSync(join(pool, ".active"), "personal");
 		writeFileSync(stateFile, SECRET_A);
 		rmSync(join(pool, "personal", "identity-anchor.json"));
-		switched = runBoth(["use", "school"]);
-		markers = switched.stderr
-			.split("\n")
-			.filter((line) => line.startsWith("FLYWHEEL_ACTIVE_IDENTITY_DRIFT "));
-		expect(markers).toHaveLength(1);
-		expect(JSON.parse(markers[0].split(" ", 2)[1])).toMatchObject({
-			version: 1,
-			reason: "untracked",
-			label: "personal",
-			expectedUuid: null,
-		});
+		refused = runExpectFail(["use", "school"]);
+		expect(refused.status).toBe(46);
+		expect(refused.stderr).toContain(
+			"active slot has no valid identity anchor",
+		);
 		expect(
 			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
 		).toBe(SECRET_A);
 
-		// unavailable → C succeeds first, B probe fails second; switch still repairs
+		// If the authoritative token probe is unavailable, reconciliation cannot
+		// safely infer the machine account from display state alone.
 		seedAnchor("personal", "uuid-personal", EMAILS.personal);
 		writeFileSync(join(pool, ".active"), "personal");
 		writeFileSync(stateFile, SECRET_A);
-		const callCount = join(tmp, "identity-curl-call-count");
-		const secondCallFails = join(tmp, "identity-curl-second-call-fails");
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_SHOP));
+		const unavailable = join(tmp, "identity-curl-unavailable-for-active");
 		writeFileSync(
-			secondCallFails,
-			`#!/usr/bin/env bash
-set -euo pipefail
-n=0; [[ -f "${callCount}" ]] && n=$(cat "${callCount}")
-n=$((n + 1)); printf '%s' "$n" > "${callCount}"
-cat >/dev/null
-if [[ "$n" -eq 1 ]]; then printf '%s' '${JSON.stringify({ account: IDENTITY_PROFILES["sk-ant-oat01-BBB"] })}'; else exit 22; fi
-`,
+			unavailable,
+			"#!/usr/bin/env bash\ncat >/dev/null\nexit 22\n",
 			{ mode: 0o755 },
 		);
-		switched = runBoth(["use", "school"], {
-			FLYWHEEL_PROFILE_CURL_BIN: secondCallFails,
+		refused = runExpectFail(["use", "school"], {
+			FLYWHEEL_PROFILE_CURL_BIN: unavailable,
 		});
-		markers = switched.stderr
-			.split("\n")
-			.filter((line) => line.startsWith("FLYWHEEL_ACTIVE_IDENTITY_DRIFT "));
-		expect(markers).toHaveLength(1);
-		expect(JSON.parse(markers[0].split(" ", 2)[1])).toEqual({
-			version: 1,
-			reason: "unavailable",
-			label: "personal",
-			expectedUuid: "uuid-personal",
-			observedEmailRedacted: null,
-		});
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+		expect(refused.status).toBe(46);
+		expect(refused.stderr).toContain("current account cannot be verified");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("personal");
 	});
 
 	it("capture bootstraps only a truly empty mapped slot and refuses legacy credentials without an anchor", () => {
@@ -1562,6 +1591,7 @@ describe("flywheel-claude-profile — display identity sync (FLY-865)", () => {
 	});
 
 	it("`capture` with no/invalid target oauthAccount DELETES any stale identity file (no stale pairing) + still captures token + exit 0", () => {
+		writeFileSync(stateFile, SECRET_CUR);
 		// business already has a (stale) identity from a prior capture…
 		seedAnchor("business", "uuid-current", "current@example.com");
 		seedIdentity("business", IDENTITY_BIZ);
@@ -1601,6 +1631,7 @@ describe("flywheel-claude-profile — display identity sync (FLY-865)", () => {
 	});
 
 	it("`use` with NO captured identity: loud warn, ~/.claude.json untouched, token switched, exit 0 (RED LINE: no regression)", () => {
+		rmSync(identityFile("personal"), { force: true });
 		const before = readFileSync(claudeJson, "utf-8");
 		const { stdout, stderr } = runBoth(["use", "personal"]);
 		expect(stdout).toContain(
@@ -1636,6 +1667,7 @@ describe("flywheel-claude-profile — display identity sync (FLY-865)", () => {
 		// symlinked identity file:
 		seedIdentity("real", IDENTITY_BIZ);
 		mkdirSync(join(pool, "personal"), { recursive: true });
+		rmSync(identityFile("personal"), { force: true });
 		symlinkSync(identityFile("real"), identityFile("personal"));
 		const before = readFileSync(claudeJson, "utf-8");
 		const r1 = runBoth(["use", "personal"]);
@@ -1791,6 +1823,420 @@ describe("flywheel-claude-profile — display identity sync (FLY-865)", () => {
 	}, 15000);
 });
 
+describe("flywheel-claude-profile — stale active reconciliation (FLY-1201)", () => {
+	function syncingQuotaStub(): string {
+		const syncingQuota = join(tmp, "fake-quota-guard-syncing");
+		writeFileSync(
+			syncingQuota,
+			`#!/usr/bin/env bash
+set -euo pipefail
+cmd="\${1:-}"; shift || true
+name=""; store=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --name) name="$2"; shift 2 ;;
+    --store) store="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [[ "$cmd" == "active-sync" ]]; then
+  node -e 'const fs=require("fs"); const [path,name]=process.argv.slice(1); const value=JSON.parse(fs.readFileSync(path,"utf8")); value.activeAccount=name; value.generation+=1; fs.writeFileSync(path,JSON.stringify(value));' "$store" "$name"
+fi
+exit 0
+`,
+			{ mode: 0o755 },
+		);
+		return syncingQuota;
+	}
+
+	function staleFreshnessStub(): string {
+		const staleBusiness = join(tmp, "fake-freshness-business-stale");
+		writeFileSync(
+			staleBusiness,
+			'#!/usr/bin/env bash\nset -u\nprintf \'%s\\n\' "$*" >> "$FRESH_ARGV_LOG"\nexit 30\n',
+			{ mode: 0o755 },
+		);
+		return staleBusiness;
+	}
+
+	function seedShoppingMachine(active: "business" | null): void {
+		seedProfile("business", SECRET_BIZ);
+		seedAnchor("business", "uuid-biz", EMAILS.business);
+		seedProfile("shopping", SECRET_SHOPPING_SNAPSHOT);
+		seedAnchor("shopping", "uuid-shop", EMAILS.shopping);
+		if (active !== null) {
+			writeFileSync(join(pool, ".active"), active, { mode: 0o600 });
+		}
+		writeFileSync(stateFile, SECRET_SHOPPING_LIVE);
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_SHOP));
+		writeFileSync(
+			accountsStore,
+			JSON.stringify({
+				generation: 4,
+				activeAccount: "business",
+				accounts: [{ name: "business" }, { name: "shopping" }],
+			}),
+		);
+	}
+
+	it("preserves the live credential and refresh-checks the requested stale-marker profile", () => {
+		seedShoppingMachine("business");
+
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "business"], {
+			env: env({
+				FLYWHEEL_CLAUDE_FRESHNESS_BIN: staleFreshnessStub(),
+				FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub(),
+			}),
+			encoding: "utf-8",
+		});
+
+		expect(result.status).toBe(30);
+		expect(String(result.stderr)).toContain(
+			"FLYWHEEL_STALE_ACTIVE_MARKER business",
+		);
+		expect(String(result.stderr)).toContain(
+			"FLYWHEEL_STALE_ACTIVE_RECONCILED business shopping",
+		);
+		expect(String(result.stderr)).toContain("FLYWHEEL_TARGET_STALE business");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_SHOPPING_LIVE);
+		expect(
+			readFileSync(join(pool, "shopping", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_SHOPPING_LIVE);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("shopping");
+		expect(JSON.parse(readFileSync(accountsStore, "utf-8")).activeAccount).toBe(
+			"shopping",
+		);
+	});
+
+	it("rebuilds an absent marker from a uniquely identified live credential before switching", () => {
+		seedShoppingMachine(null);
+
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "business"], {
+			env: env({
+				FLYWHEEL_CLAUDE_FRESHNESS_BIN: staleFreshnessStub(),
+				FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub(),
+			}),
+			encoding: "utf-8",
+		});
+
+		expect(result.status).toBe(30);
+		expect(String(result.stderr)).toContain(
+			"FLYWHEEL_STALE_ACTIVE_RECONCILED absent shopping",
+		);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_SHOPPING_LIVE);
+		expect(
+			readFileSync(join(pool, "shopping", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_SHOPPING_LIVE);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("shopping");
+	});
+
+	it("allows an absent-marker bootstrap only when Keychain proves the item is missing", () => {
+		rmSync(stateFile, { force: true });
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "personal"], {
+			env: env(),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(0);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("personal");
+	});
+
+	it("fails closed with 46 when an absent marker is paired with an unreadable Keychain", () => {
+		const unreadableSecurity = join(tmp, "fake-security-unreadable");
+		writeFileSync(
+			unreadableSecurity,
+			`#!/usr/bin/env bash\n[[ "\${1:-}" == "find-generic-password" ]] && exit 63\nexit 2\n`,
+			{ mode: 0o755 },
+		);
+		const beforePool = readFileSync(
+			join(pool, "personal", ".credentials.json"),
+		);
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "personal"], {
+			env: env({ FLYWHEEL_CLAUDE_SECURITY_BIN: unreadableSecurity }),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(46);
+		expect(String(result.stderr)).toContain(
+			"FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE absent",
+		);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+		expect(readFileSync(join(pool, "personal", ".credentials.json"))).toEqual(
+			beforePool,
+		);
+	});
+
+	it("rejects a newline-tainted active marker before any journal recovery or credential mutation", () => {
+		seedShoppingMachine("business");
+		writeFileSync(join(pool, ".active"), "business\n", { mode: 0o600 });
+		const beforeCredential = readFileSync(stateFile);
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "business"], {
+			env: env(),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(46);
+		expect(readFileSync(stateFile)).toEqual(beforeCredential);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("business\n");
+	});
+
+	it.each(["pool", "slot"] as const)(
+		"rejects a group/world-writable %s directory before credential or store mutation",
+		(scope) => {
+			seedShoppingMachine("business");
+			chmodSync(scope === "pool" ? pool : join(pool, "business"), 0o777);
+			const beforeCredential = readFileSync(stateFile);
+			const beforeSnapshot = readFileSync(
+				join(pool, "shopping", ".credentials.json"),
+			);
+			const beforeStore = readFileSync(accountsStore);
+			const result = spawnSync("bash", [PROFILE_BIN, "use", "business"], {
+				env: env(),
+				encoding: "utf-8",
+			});
+			expect(result.status).toBe(46);
+			expect(String(result.stderr)).toContain(
+				"FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE business",
+			);
+			expect(readFileSync(stateFile)).toEqual(beforeCredential);
+			expect(readFileSync(join(pool, ".active"), "utf8")).toBe("business");
+			expect(readFileSync(join(pool, "shopping", ".credentials.json"))).toEqual(
+				beforeSnapshot,
+			);
+			expect(readFileSync(accountsStore)).toEqual(beforeStore);
+		},
+	);
+
+	it("re-selecting the live account after reconciliation is a safe real no-op", () => {
+		seedShoppingMachine("business");
+		const result = spawnSync("/bin/bash", [PROFILE_BIN, "use", "shopping"], {
+			env: env({ FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub() }),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(0);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_SHOPPING_LIVE);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("shopping");
+		expect(
+			readFileSync(join(pool, "shopping", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_SHOPPING_LIVE);
+	});
+
+	it("uses the reconciled account for capture-back when switching to a third account", () => {
+		seedShoppingMachine("business");
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "school"], {
+			env: env({ FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub() }),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(0);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("school");
+		expect(
+			readFileSync(join(pool, "shopping", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_SHOPPING_LIVE);
+	});
+
+	it("next selects from the reconciled active account instead of the stale marker", () => {
+		seedShoppingMachine("business");
+		const result = spawnSync("bash", [PROFILE_BIN, "next"], {
+			env: env({
+				FLYWHEEL_CLAUDE_FRESHNESS_BIN: staleFreshnessStub(),
+				FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub(),
+			}),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(30);
+		expect(String(result.stderr)).toContain("FLYWHEEL_TARGET_STALE business");
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("shopping");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_SHOPPING_LIVE);
+	});
+
+	it("treats display-only drift as a recoverable witness mismatch", () => {
+		writeFileSync(join(pool, ".active"), "personal", { mode: 0o600 });
+		writeFileSync(stateFile, SECRET_PERSONAL_REFRESHED);
+		writeFileSync(
+			accountsStore,
+			JSON.stringify({
+				generation: 2,
+				activeAccount: "personal",
+				accounts: [{ name: "personal" }, { name: "school" }],
+			}),
+		);
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "school"], {
+			env: env({ FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub() }),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(0);
+		expect(
+			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_PERSONAL_REFRESHED);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("school");
+	});
+
+	it("fails closed when the probed live identity matches more than one anchored slot", () => {
+		seedShoppingMachine("business");
+		seedProfile("shopping-copy", SECRET_SHOPPING_SNAPSHOT);
+		seedAnchor("shopping-copy", "uuid-shop", EMAILS.shopping);
+		const before = readFileSync(stateFile);
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "school"], {
+			env: env({ FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub() }),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(46);
+		expect(readFileSync(stateFile)).toEqual(before);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("business");
+	});
+
+	it("delegated mode detects true marker drift but performs zero repair mutation", () => {
+		seedShoppingMachine("business");
+		mkdirSync(lockDir, { recursive: true });
+		writeFileSync(
+			join(lockDir, "holder"),
+			JSON.stringify({ pid: process.pid, at: Date.now() }),
+		);
+		const beforePool = readFileSync(
+			join(pool, "shopping", ".credentials.json"),
+		);
+		const beforeStore = readFileSync(accountsStore);
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "school"], {
+			env: env({
+				FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
+				FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub(),
+			}),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(46);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_SHOPPING_LIVE);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("business");
+		expect(readFileSync(join(pool, "shopping", ".credentials.json"))).toEqual(
+			beforePool,
+		);
+		expect(readFileSync(accountsStore)).toEqual(beforeStore);
+		rmSync(lockDir, { recursive: true, force: true });
+	});
+
+	it("returns ordinary 47 after a pre-commit marker failure while preserving Keychain and the old marker", () => {
+		seedShoppingMachine("business");
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "school"], {
+			env: env({
+				FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub(),
+				FLYWHEEL_TEST_FAIL_ACTIVE_MARKER_WRITE: "1",
+			}),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(47);
+		expect(String(result.stderr)).toContain(
+			"FLYWHEEL_STALE_ACTIVE_REPAIR_FAILED business",
+		);
+		expect(String(result.stderr)).not.toContain("state is uncertain");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_SHOPPING_LIVE);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("business");
+		expect(JSON.parse(readFileSync(accountsStore, "utf-8")).activeAccount).toBe(
+			"shopping",
+		);
+	});
+
+	it("treats a post-rename helper error as committed when destination proves the target", () => {
+		seedShoppingMachine("business");
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "business"], {
+			env: env({
+				FLYWHEEL_CLAUDE_FRESHNESS_BIN: staleFreshnessStub(),
+				FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub(),
+				FLYWHEEL_TEST_ACTIVE_MARKER_POST_COMMIT_ERROR: "1",
+			}),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(30);
+		expect(String(result.stderr)).toContain(
+			"FLYWHEEL_STALE_ACTIVE_RECONCILED business shopping",
+		);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("shopping");
+	});
+
+	it("refuses an unsafe credential destination without leaking the live secret into temp residue", () => {
+		seedShoppingMachine("business");
+		rmSync(join(pool, "shopping", ".credentials.json"));
+		mkdirSync(join(pool, "shopping", ".credentials.json"));
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "school"], {
+			env: env({ FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub() }),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(47);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_SHOPPING_LIVE);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("business");
+		const residue = readdirSync(join(pool, "shopping", ".credentials.json"));
+		expect(residue).toEqual([]);
+	});
+
+	it("returns 47 before marker mutation when strict account-store sync cannot be read back", () => {
+		seedShoppingMachine("business");
+		const failingSync = join(tmp, "fake-quota-guard-sync-fails");
+		writeFileSync(
+			failingSync,
+			`#!/usr/bin/env bash\n[[ "\${1:-}" == "active-sync" ]] && exit 7\nexit 0\n`,
+			{ mode: 0o755 },
+		);
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "school"], {
+			env: env({ FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: failingSync }),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(47);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_SHOPPING_LIVE);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("business");
+	});
+
+	it("identity bypass cannot skip structural validation of an unsafe marker", () => {
+		seedShoppingMachine("business");
+		writeFileSync(join(pool, ".active"), "business\n", { mode: 0o600 });
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "school"], {
+			env: env({ FLYWHEEL_PROFILE_IDENTITY_BYPASS: "1" }),
+			encoding: "utf-8",
+		});
+		expect(result.status).toBe(46);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_SHOPPING_LIVE);
+	});
+
+	it.each([
+		["third_party", "school", 0],
+		["ghost", "ghost", 46],
+		["unsafe_directory", null, 46],
+	] as const)(
+		"classifies %s destination replacement as marker_commit_uncertain",
+		(mode, expectedMarker, rerunStatus) => {
+			seedShoppingMachine("business");
+			const result = spawnSync("bash", [PROFILE_BIN, "use", "school"], {
+				env: env({
+					FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub(),
+					FLYWHEEL_TEST_ACTIVE_MARKER_RENAME_MODE: mode,
+				}),
+				encoding: "utf-8",
+			});
+			expect(result.status).toBe(47);
+			expect(String(result.stderr)).toContain(
+				"active marker commit state is uncertain",
+			);
+			expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_SHOPPING_LIVE);
+			if (expectedMarker !== null) {
+				expect(readFileSync(join(pool, ".active"), "utf-8")).toBe(
+					expectedMarker,
+				);
+			} else {
+				expect(statSync(join(pool, ".active")).isDirectory()).toBe(true);
+			}
+			const audit = readFileSync(auditLog, "utf-8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line));
+			expect(audit.at(-1)?.probeSummary).toBe(
+				"stale_active_marker_commit_uncertain",
+			);
+
+			const rerun = spawnSync("bash", [PROFILE_BIN, "use", "school"], {
+				env: env({ FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub() }),
+				encoding: "utf-8",
+			});
+			expect(rerun.status).toBe(rerunStatus);
+		},
+	);
+});
+
 /**
  * FLY-871 R1 — token freshness guard + capture-back. Before writing a NON-ACTIVE
  * target to the Keychain, `use` probe-refreshes its pooled token via a small Node
@@ -1825,7 +2271,7 @@ describe("flywheel-claude-profile — freshness guard + capture-back (FLY-871)",
 		});
 		expect(status).toBe(30);
 		expect(stderr).toContain("FLYWHEEL_TARGET_STALE personal");
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR); // never written
+		expect(existsSync(stateFile)).toBe(false); // never written
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 	});
 
@@ -1835,7 +2281,7 @@ describe("flywheel-claude-profile — freshness guard + capture-back (FLY-871)",
 		});
 		expect(status).toBe(31);
 		expect(stderr).toContain("FLYWHEEL_FRESHNESS_UNAVAILABLE personal");
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 	});
 
@@ -1845,7 +2291,7 @@ describe("flywheel-claude-profile — freshness guard + capture-back (FLY-871)",
 		});
 		expect(status).toBe(31);
 		expect(stderr).toContain("FLYWHEEL_FRESHNESS_UNAVAILABLE personal");
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 	});
 
 	it("EMERGENCY bypass (non-delegated): missing helper + BYPASS=1 → switch proceeds with a loud warning", () => {
@@ -1873,7 +2319,7 @@ describe("flywheel-claude-profile — freshness guard + capture-back (FLY-871)",
 			FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid), // …but delegated refuses it
 		});
 		expect(status).toBe(31); // bypass ignored → fail-closed
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 		rmSync(lockDir, { recursive: true, force: true });
 	});
 
@@ -1906,18 +2352,19 @@ exit 0
 		).toBe(SECRET_ROTATED);
 	});
 
-	it("CAPTURE-BACK: identity drift is not copied into the active slot", () => {
+	it("CAPTURE-BACK: unresolved identity drift fails closed before the active slot or target changes", () => {
 		run(["use", "personal"]); // active=personal, kc=SECRET_A
 		// claude auto-refreshed the live token → the Keychain drifted:
 		writeFileSync(stateFile, SECRET_DRIFT);
-		const { stderr } = runBoth(["use", "school"]);
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_SHOP));
+		const { status, stderr } = runExpectFail(["use", "school"]);
+		expect(status).toBe(46);
 		expect(
 			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
 		).toBe(SECRET_A);
-		expect(stderr).toContain("FLYWHEEL_ACTIVE_IDENTITY_DRIFT");
-		// the new target still switched normally
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
-		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("school");
+		expect(stderr).toContain("FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE personal");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_DRIFT);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("personal");
 	});
 
 	it("CAPTURE-BACK is skipped on the FIRST switch (no prior active) and never poisons the pool", () => {
@@ -1947,7 +2394,7 @@ exit 0
 		expect(readFileSync(freshLog, "utf-8").trim()).toBe(""); // helper NOT invoked
 	});
 
-	it("capture-back refuses a symlinked active pool credential file (never follow a symlink)", () => {
+	it("capture-back fails closed on a symlinked active pool credential file (never follow a symlink)", () => {
 		run(["use", "personal"]); // active=personal
 		// Replace personal's credential file with a symlink to an outside target.
 		const outside = join(tmp, "outside-cred");
@@ -1955,12 +2402,15 @@ exit 0
 		rmSync(join(pool, "personal", ".credentials.json"), { force: true });
 		symlinkSync(outside, join(pool, "personal", ".credentials.json"));
 		writeFileSync(stateFile, SECRET_PERSONAL_REFRESHED);
-		const { stderr } = runBoth(["use", "school"]);
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_SHOP));
+		const { status, stderr } = runExpectFail(["use", "school"]);
+		expect(status).toBe(47);
 		// the symlink target OUTSIDE the pool was NOT written through
 		expect(readFileSync(outside, "utf-8")).toBe(SECRET_CUR);
-		expect(stderr).toMatch(/symlink/i);
-		// the switch itself still succeeded
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+		expect(stderr).toContain("FLYWHEEL_STALE_ACTIVE_REPAIR_FAILED personal");
+		// strict reconciliation refuses to switch after the capture failure
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_PERSONAL_REFRESHED);
+		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
 	});
 });
 
@@ -1990,7 +2440,10 @@ describe("flywheel-claude-profile — live quota guard (FLY-1252)", () => {
 
 	function seedBusinessActive(): void {
 		seedProfile("business", SECRET_CUR);
+		seedAnchor("business", "uuid-current", "current@example.com");
 		writeFileSync(join(pool, ".active"), "business", { mode: 0o600 });
+		writeFileSync(stateFile, SECRET_CUR);
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_CURRENT));
 	}
 
 	it("`use` invokes freshness/check exactly once and active-sync after committing", () => {
@@ -2021,7 +2474,7 @@ describe("flywheel-claude-profile — live quota guard (FLY-1252)", () => {
 		});
 		expect(status).toBe(32);
 		expect(stderr).toContain("FLYWHEEL_TARGET_QUOTA_EXHAUSTED personal");
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 		expect(
 			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
@@ -2034,7 +2487,7 @@ describe("flywheel-claude-profile — live quota guard (FLY-1252)", () => {
 		});
 		expect(status).toBe(33);
 		expect(stderr).toContain("FLYWHEEL_QUOTA_UNAVAILABLE personal");
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 	});
 
 	it("a missing quota helper is unavailable (33), never fail-open manually", () => {
@@ -2043,7 +2496,7 @@ describe("flywheel-claude-profile — live quota guard (FLY-1252)", () => {
 		});
 		expect(status).toBe(33);
 		expect(stderr).toContain("FLYWHEEL_QUOTA_UNAVAILABLE personal");
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 	});
 
 	it("manual quota bypass is loud, alerts once, and proceeds without probing", () => {
@@ -2071,7 +2524,7 @@ describe("flywheel-claude-profile — live quota guard (FLY-1252)", () => {
 			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaStub(32),
 		});
 		expect(status).toBe(32);
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 	});
 
 	it("authenticated delegated + PREVERIFIED skips the duplicate quota probe", () => {
@@ -2118,7 +2571,7 @@ describe("flywheel-claude-profile — live quota guard (FLY-1252)", () => {
 			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaStub(32),
 		});
 		expect(status).toBe(32);
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 		rmSync(lockDir, { recursive: true, force: true });
 	});
 
@@ -2211,7 +2664,7 @@ exit 0
 		});
 		expect(status).not.toBe(0);
 		expect(stderr).toMatch(/lease|ownership|lock/i);
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 		expect(existsSync(lockDir)).toBe(true);
 		expect(
 			readFileSync(join(lockDir, "holder.replacement"), "utf-8"),
@@ -2265,7 +2718,7 @@ exit 34`,
 
 		expect(status).toBe(34);
 		expect(stderr).toContain("FLYWHEEL_TARGET_IDENTITY_MISMATCH personal");
-		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 		const calls = readFileSync(quotaLog, "utf8");
 		expect(calls).toContain("identity-verify --name personal");
@@ -2365,44 +2818,35 @@ esac
 		});
 		expect(status).toBe(38);
 		expect(stderr).toContain("FLYWHEEL_TARGET_IDENTITY_UNVERIFIABLE personal");
-		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
+		expect(existsSync(stateFile)).toBe(false);
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 	});
 
-	it("capture_back mismatch skips the pool write but still switches to the verified target (anti-contamination)", () => {
-		// FLY-1182 assertion B (deployed anchor behavior, per Lead ruling: capture
-		// uses the always-on anchor model, and capture_back keeps its shipped
-		// anti-contamination semantics). The outgoing account's live Keychain token
-		// drifted from its anchor, so it is NEVER copied back into its pool slot —
-		// but the switch to the already-verified target still completes (a drifted
-		// outgoing account must not strand the user on a bad account). The drift is
-		// surfaced as a single stable marker, not silently swallowed.
+	it("capture_back mismatch preserves the pool and fails closed before switching", () => {
+		// Once marker reconciliation is part of the mandatory preflight, a live
+		// identity that matches no anchored slot cannot be treated as the marker
+		// account and cannot be skipped on the way to another target.
 		writeFileSync(join(pool, ".active"), "personal", { mode: 0o600 });
 		writeFileSync(join(pool, "personal", ".credentials.json"), SECRET_A);
 		writeFileSync(stateFile, SECRET_DRIFT);
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_SHOP));
 
-		const switched = runBoth(["use", "school"]);
+		const refused = runExpectFail(["use", "school"]);
 
-		// the switch to the verified target completed
-		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_B);
-		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("school");
+		expect(refused.status).toBe(46);
+		expect(refused.stderr).toContain(
+			"FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE personal",
+		);
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_DRIFT);
+		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
 		// the drifted outgoing token was NOT written back into its pool slot
 		expect(
 			readFileSync(join(pool, "personal", ".credentials.json"), "utf8"),
 		).toBe(SECRET_A);
-		// exactly one stable drift marker surfaced the capture-back mismatch
-		const markers = switched.stderr
-			.split("\n")
-			.filter((line) => line.startsWith("FLYWHEEL_ACTIVE_IDENTITY_DRIFT "));
-		expect(markers).toHaveLength(1);
-		expect(JSON.parse(markers[0].split(" ", 2)[1])).toMatchObject({
-			reason: "mismatch",
-			label: "personal",
-			expectedUuid: "uuid-personal",
-		});
 	});
 
 	it("manual capture without an identity anchor fails closed (anchor 87), creating no labeled pool slot", () => {
+		writeFileSync(stateFile, SECRET_CUR);
 		// FLY-1182 migration (Lead ruling: capture uses the always-on anchor
 		// model, not the env-gated probe). A fresh label with neither an identity
 		// anchor nor a canonical identity map cannot bootstrap, so the pool write
@@ -2415,7 +2859,10 @@ esac
 
 	it("next skips identity mismatch and unauthorized candidates exactly once", () => {
 		seedProfile("business", SECRET_CUR);
+		seedAnchor("business", "uuid-current", "current@example.com");
 		writeFileSync(join(pool, ".active"), "business", { mode: 0o600 });
+		writeFileSync(stateFile, SECRET_CUR);
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_CURRENT));
 		const guard = identityGuard(
 			`case "$name" in
   personal) echo "identity verify: mismatch expectedKey=${EXPECTED} actualDigest=${ACTUAL}" >&2; exit 34 ;;
@@ -2443,6 +2890,7 @@ exit 38`,
 	}, 15_000);
 
 	it("legacy identity policy env off does NOT exempt capture — the anchor gate stays enforced", () => {
+		writeFileSync(stateFile, SECRET_CUR);
 		// FLY-1182 migration + ruling 3 (Lead): the anchor layer is the single
 		// identity truth and has NO env door. Even with the contamination-era
 		// policy-off passthrough (FLYWHEEL_ACCOUNT_IDENTITY_CHECK unset — model B's
