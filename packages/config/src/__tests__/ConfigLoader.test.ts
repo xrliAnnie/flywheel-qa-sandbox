@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigLoader } from "../ConfigLoader.js";
 
 // Minimal valid config for testing
@@ -503,6 +503,76 @@ agents:
 		const config = await loader.load("/p/config.yaml");
 		expect(config.agents).toBeUndefined();
 		expect(config.default_agent).toBeUndefined();
+	});
+
+	// ─── FLY-1335: empty match.labels warning (empty array is NOT a wildcard) ───
+
+	describe("FLY-1335 empty match.labels warning", () => {
+		afterEach(() => {
+			vi.restoreAllMocks();
+		});
+
+		it("warns when an agent has empty match.labels and is not default_agent", async () => {
+			const warnSpy = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  general:
+    agent_file: .flywheel/agents/general-executor.md
+    match:
+      labels: []
+`;
+			readFile.mockResolvedValue(yaml);
+			const config = await loader.load("/p/config.yaml");
+			// load succeeds — warn, don't throw (boot continuity, FLY-159 precedent)
+			expect(config.agents!.general).toBeDefined();
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringMatching(
+					/agents\.general\.match\.labels is empty.*not a wildcard/i,
+				),
+			);
+		});
+
+		it("does NOT warn when the empty-labels agent IS the declared default_agent", async () => {
+			const warnSpy = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  general:
+    agent_file: .flywheel/agents/general-executor.md
+    match:
+      labels: []
+default_agent: general
+`;
+			readFile.mockResolvedValue(yaml);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.default_agent).toBe("general");
+			const fly1335 = warnSpy.mock.calls.filter((args) =>
+				String(args[0]).includes("match.labels is empty"),
+			);
+			expect(fly1335).toEqual([]);
+		});
+
+		it("does NOT warn for agents with non-empty labels", async () => {
+			const warnSpy = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    match:
+      labels: ["backend"]
+`;
+			readFile.mockResolvedValue(yaml);
+			await loader.load("/p/config.yaml");
+			const fly1335 = warnSpy.mock.calls.filter((args) =>
+				String(args[0]).includes("match.labels is empty"),
+			);
+			expect(fly1335).toEqual([]);
+		});
 	});
 
 	it("throws when agent_file is missing", async () => {

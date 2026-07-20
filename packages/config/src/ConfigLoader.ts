@@ -841,6 +841,30 @@ export class ConfigLoader {
 				throw new Error(`default_agent "${defaultAgent}" not found in agents`);
 			}
 		}
+
+		// FLY-1335: an empty match.labels array NEVER wins label matching
+		// (AgentDispatcher.labelsMatch returns false on an empty array — empty is
+		// NOT a wildcard). Such an agent is selected only by an explicit agentName
+		// override, or — when its name is declared as `default_agent` — via the
+		// Step-3a unmatched-label fallback. This warning fires for empty-labels
+		// agents that are NOT the default_agent: they are name-only, and if the
+		// author meant "catch-all", that intent silently doesn't work. Warn, don't
+		// throw — boot continuity for existing configs (FLY-159 precedent);
+		// name-only agents stay legitimate.
+		if (agents && typeof agents === "object") {
+			for (const [name, agentRaw] of Object.entries(agents)) {
+				const match = (agentRaw as Record<string, unknown>).match as {
+					labels: string[];
+				};
+				if (match.labels.length === 0 && name !== defaultAgent) {
+					console.warn(
+						`[ConfigLoader] agents.${name}.match.labels is empty — an empty array is NOT a wildcard; ` +
+							`label dispatch will never select this agent (it is name-only). ` +
+							`For a "no label matched" catch-all, declare default_agent: ${name} (FLY-1335).`,
+					);
+				}
+			}
+		}
 	}
 
 	private validateAgentPath(relativePath: string, fieldName: string): void {

@@ -27,7 +27,7 @@ describe("designer agent dispatch (FLY-1059, real .flywheel/config.yaml)", () =>
 		const loader = new ConfigLoader((p) => readFile(p, "utf-8"));
 		const config = await loader.load(CONFIG_PATH);
 		agents = config.agents ?? {};
-		dispatcher = new AgentDispatcher(agents, undefined, REPO_ROOT);
+		dispatcher = new AgentDispatcher(agents, config.default_agent, REPO_ROOT);
 	});
 
 	it("designer is dual-registered [engineering, product]", () => {

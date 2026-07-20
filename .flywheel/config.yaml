@@ -229,12 +229,20 @@ agents:
     # precondition: one executor-family label per issue. FLY-1089.)
     match:
       labels: ["designer", "mockup"]
-  # Top-level catch-all (no department). Used when the Lead passes agentName:"general"
-  # or no executor label matches.
+  # Top-level entry (no department). An empty labels array NEVER wins label
+  # matching (FLY-1335 — empty is not a wildcard). This entry is reached two
+  # ways: (1) the Lead passes agentName:"general" explicitly, or (2) via the
+  # `default_agent` declaration below — any issue whose labels match no
+  # executor above falls through to it (AgentDispatcher Step 3a).
   general:
     agent_file: .flywheel/agents/general-executor.md
     match:
       labels: []
+
+# FLY-1335: the real catch-all wiring. Label dispatch that matches nothing in
+# `agents` falls through to `general` (instead of the shipped
+# agents/generic-executor.md). ConfigLoader validates the name exists.
+default_agent: general
 
 # FLY-793 / Annie 2026-07-04: enable the three-stage pipeline (Design→Implement→QA)
 # for the flywheel project ONLY — "我们现在开始用三段式真正干活，这个只需要开在 flywheel".

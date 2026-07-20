@@ -157,6 +157,12 @@ export interface AgentConfig {
 		/**
 		 * Linear labels that map to this agent (case-insensitive). Multiple entries =
 		 * multi-alias (e.g. `["designer", "design", "ui", "ux"]` — any label hit matches).
+		 *
+		 * FLY-1335: an EMPTY array NEVER wins label matching (empty is not a
+		 * wildcard). Such an agent is reachable via an explicit agentName override,
+		 * and additionally via the Step-3a fallback when its name is declared as
+		 * `default_agent`. To express a "no label matched" catch-all, declare the
+		 * agent as `default_agent` — an empty labels array alone does nothing.
 		 */
 		labels: string[];
 		/**
@@ -631,7 +637,12 @@ export interface FlywheelConfig {
 	skills?: SkillsConfig;
 	/** Agent dispatch rules (project-aware). Optional for backward compat. */
 	agents?: Record<string, AgentConfig>;
-	/** Default agent name when no match. Falls back to generic prompt if undefined. */
+	/**
+	 * Default agent when no label matches — the mechanism for expressing an
+	 * unmatched-label catch-all (an empty match.labels alone is name-only and
+	 * never a wildcard; FLY-1335). Falls back to the shipped generic prompt
+	 * when undefined.
+	 */
 	default_agent?: string;
 	/** Checkpoint gates — human-in-the-loop confirmation points */
 	checkpoints?: CheckpointsConfig;

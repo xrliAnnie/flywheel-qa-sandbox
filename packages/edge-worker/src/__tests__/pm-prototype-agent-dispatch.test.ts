@@ -36,7 +36,7 @@ describe("pm + prototype agent dispatch (FLY-1089, real .flywheel/config.yaml)",
 		const loader = new ConfigLoader((p) => readFile(p, "utf-8"));
 		const config = await loader.load(CONFIG_PATH);
 		agents = config.agents ?? {};
-		dispatcher = new AgentDispatcher(agents, undefined, REPO_ROOT);
+		dispatcher = new AgentDispatcher(agents, config.default_agent, REPO_ROOT);
 	});
 
 	it("pm and prototype are dual-registered [engineering, product]", () => {
@@ -116,15 +116,18 @@ describe("pm + prototype agent dispatch (FLY-1089, real .flywheel/config.yaml)",
 			});
 			expect(`${label}→${r.agentName}`).toBe(`${label}→qa`);
 		}
-		// qa is engineering-only (not dual-registered) → unreachable from product scope
+		// qa is engineering-only (not dual-registered) → unreachable from product
+		// scope; post-FLY-1335 the miss lands on the project catch-all, NOT on qa.
 		const fromProduct = dispatcher.dispatch({
 			issueLabels: ["qa"],
 			owningDept: "product",
 		});
-		expect(fromProduct.matchMethod).toBe("shipped-generic");
+		expect(fromProduct.agentName).not.toBe("qa");
+		expect(fromProduct.agentName).toBe("general");
+		expect(fromProduct.matchMethod).toBe("default");
 	});
 
-	it("`poc` is NOT an alias — it appears in no agent's labels and falls to shipped-generic", () => {
+	it("`poc` is NOT an alias — it appears in no agent's labels and falls to general via default_agent", () => {
 		//去黑话 (Codex R1#3 / R2#1): poc was deliberately NOT kept as an alias.
 		for (const cfg of Object.values(agents)) {
 			expect(
@@ -135,8 +138,11 @@ describe("pm + prototype agent dispatch (FLY-1089, real .flywheel/config.yaml)",
 			issueLabels: ["poc"],
 			owningDept: "product",
 		});
-		expect(r.agentName).toBe("generic");
-		expect(r.matchMethod).toBe("shipped-generic");
+		// poc is not an alias for prototype; post-FLY-1335 the miss lands on the
+		// project catch-all instead of the shipped generic.
+		expect(r.agentName).not.toBe("prototype");
+		expect(r.agentName).toBe("general");
+		expect(r.matchMethod).toBe("default");
 	});
 
 	it("a MULTI-label issue first-matches by YAML order (NOT order-independent — precondition: one executor-family label per issue)", () => {

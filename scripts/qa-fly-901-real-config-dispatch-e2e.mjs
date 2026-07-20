@@ -47,7 +47,11 @@ check(
 	config.agents?.["product-designer"],
 );
 
-const dispatcher = new AgentDispatcher(config.agents, undefined, ROOT);
+const dispatcher = new AgentDispatcher(
+	config.agents,
+	config.default_agent,
+	ROOT,
+);
 
 // ── Scenario 1 (Honey Lemon / product Lead): Flywheel-Product issue, label "product" ──
 // The original FLY-901 bug: a product-labeled issue dispatched by the product Lead
@@ -103,14 +107,17 @@ for (const dept of ["product", "engineering"]) {
 		);
 	}
 }
-// 去黑话 (FLY-1089): `poc` is NOT an alias — unknown label falls to shipped-generic.
+// 去黑话 (FLY-1089): `poc` is NOT an alias — post-FLY-1335 an unmatched label
+// falls to the project catch-all (`general` via default_agent), not to prototype.
 const rPoc = dispatcher.dispatch({
 	issueLabels: ["poc"],
 	owningDept: "product",
 });
 check(
-	"S1b2: label 'poc' -> shipped-generic (not an alias for prototype)",
-	rPoc.matchMethod === "shipped-generic",
+	"S1b2: label 'poc' -> general via default_agent (not an alias for prototype)",
+	rPoc.agentName === "general" &&
+		rPoc.matchMethod === "default" &&
+		rPoc.agentName !== "prototype",
 	rPoc,
 );
 
@@ -195,8 +202,11 @@ check(
 // ── Scenario 3: no cross-dept leak for a dept NOT in product-designer.departments ──
 const r3 = dispatcher.dispatch({ issueLabels: ["product"], owningDept: "ops" });
 check(
-	"S3: ops Lead (unlisted dept) + label 'product' -> falls to shipped-generic (no leak)",
-	r3.matchMethod === "shipped-generic",
+	"S3: ops Lead (unlisted dept) + label 'product' -> no leak; falls to general via default_agent",
+	r3.agentName !== "product-designer" &&
+		r3.agentName !== "pm" &&
+		r3.agentName === "general" &&
+		r3.matchMethod === "default",
 	r3,
 );
 
