@@ -230,6 +230,26 @@ jobs:
           bash scripts/__tests__/qa-fly-1189-assert.test.sh
           bash scripts/__tests__/qa-fly-1189-driver.test.sh
 
+      # FLY-1389: 529-Room repair batch — path-hygiene predicates (bash host;
+      # the TS host runs in the teamlead vitest shards), write-time guards on
+      # every global-persistence writer (converge / cmux-install /
+      # install-hooks / provisioner), converge symlink health + hygiene
+      # mount, the read-only global scanner, the managed local-marketplace
+      # entrance transaction, the resume-recovery window fix (mutation-
+      # guarded), and the test-deploy Lead-ful + --no-lead hermetic E2Es
+      # (stub claude-lead / gh / pnpm / npx-bridge / tmux; local bare
+      # sandbox remote; fake HOMEs — never a real slot).
+      - name: Test — FLY-1389 path-hygiene + 529-Room repair batch
+        run: |
+          bash scripts/__tests__/path-hygiene.test.sh
+          bash scripts/__tests__/converge-flywheel-bin.test.sh
+          bash scripts/__tests__/converge-fly1389.test.sh
+          bash scripts/__tests__/check-global-path-hygiene.test.sh
+          bash scripts/__tests__/install-hooks-fly1389.test.sh
+          bash scripts/__tests__/register-local-marketplace.test.sh
+          bash packages/teamlead/scripts/__tests__/claude-lead-resume-recovery.test.sh
+          bash scripts/__tests__/test-deploy-fly1389.test.sh
+
       # FLY-1062: npm distribution layer — hermetic suites: the packaging
       # pipeline over a fixture mini-monorepo (assembly / dependency union /
       # release gates with injection negatives / compat mirror / audit-table

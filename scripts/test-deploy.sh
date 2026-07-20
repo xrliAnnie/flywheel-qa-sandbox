@@ -143,6 +143,14 @@ LEAD_LABEL=""             # FLY-1189: --lead-label <deptLabel> narrows the MAIN 
 DETECTION_LEAD_GRACE_MS="" # FLY-1189: --detection-lead-grace-ms <ms> appends
                           # detection.lead_grace_ms to the generated canonical
                           # .flywheel/config.yaml (PR-C per-project override seam).
+LEAD_READY_TIMEOUT_ARG="" # FLY-1389 P2-a: --lead-ready-timeout <sec> overrides the
+                          # 120s Lead inbox-ready wait (cold Lead on a loaded
+                          # shared machine can legitimately exceed 120s). Env
+                          # fallback: FLYWHEEL_TEST_LEAD_READY_TIMEOUT_SEC.
+NO_LEAD=0                 # FLY-1389 P2-b: --no-lead skips identity staging + Lead
+                          # startup entirely — Bridge-only deploy for pure
+                          # Bridge/API/DB QA suites (Discord-Lead suites must
+                          # NOT use it).
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-branch)
@@ -171,6 +179,12 @@ while [[ $# -gt 0 ]]; do
       DETECTION_LEAD_GRACE_MS="${2:?--detection-lead-grace-ms requires a value}"; shift 2 ;;
     --detection-lead-grace-ms=*)
       DETECTION_LEAD_GRACE_MS="${1#*=}"; shift ;;
+    --lead-ready-timeout)
+      LEAD_READY_TIMEOUT_ARG="${2:?--lead-ready-timeout requires seconds}"; shift 2 ;;
+    --lead-ready-timeout=*)
+      LEAD_READY_TIMEOUT_ARG="${1#*=}"; shift ;;
+    --no-lead)
+      NO_LEAD=1; shift ;;
     -h|--help)
       sed -n '2,12p' "$0"; exit 0 ;;
     [0-9]*)
@@ -216,6 +230,18 @@ if [[ "$MODE" == "mirror" ]]; then
         ;;
     esac
   fi
+fi
+
+# ── FLY-1389 P2: lead-ready timeout + --no-lead validation (BEFORE preflight) ──
+# Resolve + validate the knob NOW so an invalid value fails in milliseconds
+# instead of after gh/pnpm preflight (same discipline as mirror validation).
+LEAD_READY_TIMEOUT_SEC=$(qa_room_resolve_lead_ready_timeout \
+  "$LEAD_READY_TIMEOUT_ARG" "${FLYWHEEL_TEST_LEAD_READY_TIMEOUT_SEC:-}") || exit 1
+# 2s poll cadence → ceil(timeout/2) iterations.
+LEAD_READY_POLL_ITERS=$(( (LEAD_READY_TIMEOUT_SEC + 1) / 2 ))
+if [[ "$NO_LEAD" == "1" && ${#EXTRA_LEAD_SPECS[@]} -gt 0 ]]; then
+  echo "ERROR: --no-lead and --extra-lead are mutually exclusive (a campaign is Lead-centric)" >&2
+  exit 1
 fi
 
 # ── FLY-1189: multi-Lead campaign validation (BEFORE expensive preflight) ──
@@ -817,6 +843,17 @@ cat > "${SLOT_DIR}/discord-state/access.json" <<EOF
 EOF
 log "access.json allowBots: $(echo "$ALLOWBOTS_JSON" | jq -c .) groups: $(echo "$GROUPS_JSON" | jq -c 'keys')"
 
+# ── FLY-1389 P2-b: identity + shared-rules staging are Lead-only inputs ──
+# (identity.md → AGENT_SOURCE for claude-lead.sh; .lead/shared → read by
+# claude-lead.sh). The Bridge consumes neither. --no-lead skips the whole
+# section — this is also what lets a host WITHOUT ~/Dev/GeoForge3D run a
+# Bridge-only slot (the PROD_IDENTITY existence check below would exit 1).
+# NOTE: the body below is intentionally NOT re-indented (heredoc terminators
+# must stay at column 0).
+if [[ "$NO_LEAD" == "1" ]]; then
+  log "--no-lead: skipping test identity generation + shared Lead rules staging (Bridge-only deploy)"
+else
+
 # ── Generate test identity.md from production template ──
 # FLY-96 QA bug fix: 4-line identity.md didn't define announce behavior
 # (session_started / completed / failed message templates), so test Leads
@@ -980,6 +1017,8 @@ else
   log "WARN: ${SHARED_SRC} not found — test Lead will miss shared rules"
 fi
 
+fi  # end --no-lead skip (identity + shared rules)
+
 # ── Generate FLYWHEEL_PROJECTS JSON ───────────────────
 # FLY-115 v1.24.2 Gap 1: Use `jq -n` to build FLYWHEEL_PROJECTS so that
 # `botTokenEnv` is always present → Lead/Bridge resolve token via the per-slot
@@ -1038,15 +1077,42 @@ FLYWHEEL_PROJECTS_FILE="${SLOT_DIR}/flywheel-projects.json"
 echo "$FLYWHEEL_PROJECTS" > "$FLYWHEEL_PROJECTS_FILE"
 log "Wrote ${FLYWHEEL_PROJECTS_FILE}"
 
+# ── FLY-1389 P0-d: test slots are FRESH by definition — unconditionally drop
+# any stale session-id left by a prior round. A stale id makes every
+# `claude --resume` fail deterministically (transcript for the old workspace
+# slug does not exist); teardown normally removes it, but a crashed deploy
+# skips teardown — exactly the 529 Room incident (9 resume crashes, 0
+# successes, lease never appeared).
+rm -f "${HOME}/.flywheel/claude-sessions/${TEST_PROJECT_NAME}-${AGENT_ID}.session-id"
+
+# FLY-1389 P2-b: Lead-path variables must exist (set -u) on the --no-lead
+# path too — Bridge failure handling + the output JSON reference them.
+LEAD_BG_PID=""
+LEAD_LOG=""
+
+if [[ "$NO_LEAD" == "1" ]]; then
+  log "--no-lead: skipping Lead startup + dev-channels confirm + lease wait (Bridge-only deploy)"
+else
+
 log "Starting test Lead: ${AGENT_ID} (project: ${TEST_PROJECT_NAME}, mode=${MODE}, channel=${EFFECTIVE_CHANNEL_LABEL}=${CHAT_CHANNEL_ID})"
 
 # ── Step 1: Start test Lead (background) ─────────────
 # env -u clears inherited production token, then sets test token explicitly (D8)
+# FLY-1389 P0-a: also clear the caller-shell leak set. LEAD_WORKSPACE is the
+# highest-priority escape hatch in claude-lead.sh (GEO-285/286) — inherited
+# from a production shell it put the test Lead INSIDE a production Lead's
+# workspace (Belle's personal-assistant, 529 Room incident) and mis-slugged
+# its transcripts. CLAUDE_CONFIG_DIR / FLYWHEEL_LEAD_MODEL / _EFFORT are the
+# same leak class. LEAD_WORKSPACE is then pinned to a slot-local dir.
 # FLY-115 fix: redirect Lead stdout/stderr to a per-slot log so the caller's
 # `| tail -40` doesn't stay attached to the backgrounded Lead's stdout — that
 # kept the pipe open and made the caller hang forever.
 LEAD_LOG="${SLOT_DIR}/lead.log"
 env -u DISCORD_BOT_TOKEN \
+  -u LEAD_WORKSPACE \
+  -u CLAUDE_CONFIG_DIR \
+  -u FLYWHEEL_LEAD_MODEL \
+  -u FLYWHEEL_LEAD_EFFORT \
   DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
   DISCORD_GUILD_ID="${GUILD_ID}" \
   BRIDGE_URL="http://localhost:${SLOT_PORT}" \
@@ -1055,6 +1121,7 @@ env -u DISCORD_BOT_TOKEN \
   FLYWHEEL_LEAD_ROLE="${SLOT_ROLE}" \
   TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
   FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
+  LEAD_WORKSPACE="${SLOT_DIR}/lead-workspace" \
   ${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"} \
   bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
     "${AGENT_ID}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" \
@@ -1117,12 +1184,14 @@ else
 fi
 
 # ── Step 2: Wait for Lead inbox-ready lease ───────────
+# FLY-1389 P2-a: budget is LEAD_READY_TIMEOUT_SEC (default 120s; flag/env
+# knob resolved before preflight) — 2s poll → LEAD_READY_POLL_ITERS.
 LEASE_DIR="${HOME}/.flywheel/comm/${TEST_PROJECT_NAME}"
 LEASE_FILE="${LEASE_DIR}/.inbox-ready-${AGENT_ID}"
-log "Waiting for lease: ${LEASE_FILE}"
+log "Waiting for lease: ${LEASE_FILE} (budget ${LEAD_READY_TIMEOUT_SEC}s)"
 
 LEAD_READY=false
-for i in $(seq 1 60); do
+for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
   if [[ -f "$LEASE_FILE" ]]; then
     LEASE_PID=$(jq -r '.pid' "$LEASE_FILE" 2>/dev/null || echo "")
     if [[ -n "$LEASE_PID" ]] && kill -0 "$LEASE_PID" 2>/dev/null; then
@@ -1141,11 +1210,13 @@ for i in $(seq 1 60); do
 done
 
 if [[ "$LEAD_READY" != "true" ]]; then
-  log "ERROR: Lead did not become ready within 120 seconds"
+  log "ERROR: Lead did not become ready within ${LEAD_READY_TIMEOUT_SEC} seconds"
   kill "$LEAD_BG_PID" 2>/dev/null || true
   rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
   exit 1
 fi
+
+fi  # end --no-lead skip (Lead startup + dev-channels confirm + lease wait)
 
 # ── FLY-1189 Step 2b: Start extra test Leads (campaign mode only) ──────────
 # Each extra Lead = another slot's bot + channel, attached to THIS slot's
@@ -1226,7 +1297,7 @@ if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
       pidFile: ($home + "/.flywheel/pids/" + $pn + "-" + .agentId + ".pid"),
       sessionIdFile: ($home + "/.flywheel/claude-sessions/" + $pn + "-" + .agentId + ".session-id"),
       leadManifest: ($home + "/.flywheel/manifests/" + $pn + "-" + .agentId + ".json"),
-      leadWorkspace: ($home + "/.flywheel/lead-workspace/" + .agentId)
+      leadWorkspace: ($slotdir + "/extra-leads/slot-" + (.slotId | tostring) + "/lead-workspace")
     })' <<<"$EXTRA_LEADS_JSON")
   jq -n \
     --arg cid "$CAMPAIGN_ID" \
@@ -1322,7 +1393,16 @@ EOF
     XLEAD_LOG="${XDIR}/lead.log"
     XLEAD_ENV=(${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"} "${XTOKEN_ENV_NAME}=${XTOKEN}")
     log "Starting extra test Lead: ${XAGENT} (slot ${XSID} bot, label ${XLABEL}, channel ${XCHANNEL})"
+    # FLY-1389 P0-d: extra Leads are fresh too — drop any stale session-id.
+    rm -f "${HOME}/.flywheel/claude-sessions/${TEST_PROJECT_NAME}-${XAGENT}.session-id"
+    # FLY-1389 P0-a: same caller-shell leak clearing as the main Lead;
+    # LEAD_WORKSPACE pinned under XDIR so the campaign manifest's
+    # leadWorkspace field (teardown consumer) and reality never fork.
     env -u DISCORD_BOT_TOKEN \
+      -u LEAD_WORKSPACE \
+      -u CLAUDE_CONFIG_DIR \
+      -u FLYWHEEL_LEAD_MODEL \
+      -u FLYWHEEL_LEAD_EFFORT \
       DISCORD_BOT_TOKEN="${XTOKEN}" \
       DISCORD_GUILD_ID="${GUILD_ID}" \
       BRIDGE_URL="http://localhost:${SLOT_PORT}" \
@@ -1331,6 +1411,7 @@ EOF
       FLYWHEEL_LEAD_ROLE="${XROLE}" \
       TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
       FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
+      LEAD_WORKSPACE="${XDIR}/lead-workspace" \
       "${XLEAD_ENV[@]}" \
       bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
         "${XAGENT}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" \
@@ -1342,7 +1423,7 @@ EOF
 
     XLEASE_FILE="${LEASE_DIR}/.inbox-ready-${XAGENT}"
     XLEAD_READY=false
-    for i in $(seq 1 60); do
+    for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
       if [[ -f "$XLEASE_FILE" ]]; then
         XLEASE_PID=$(jq -r '.pid' "$XLEASE_FILE" 2>/dev/null || echo "")
         if [[ -n "$XLEASE_PID" ]] && kill -0 "$XLEASE_PID" 2>/dev/null; then
@@ -1352,7 +1433,7 @@ EOF
       fi
       sleep 2
     done
-    [[ "$XLEAD_READY" == "true" ]] || campaign_abort "extra Lead ${XAGENT} did not become ready within 120s (log: ${XLEAD_LOG})"
+    [[ "$XLEAD_READY" == "true" ]] || campaign_abort "extra Lead ${XAGENT} did not become ready within ${LEAD_READY_TIMEOUT_SEC}s (log: ${XLEAD_LOG})"
     log "Extra Lead ${XAGENT} ready (lease alive)"
   done < <(jq -c '.[]' <<<"$EXTRA_LEADS_JSON")
 
@@ -1392,6 +1473,10 @@ log "Starting test Bridge on port ${SLOT_PORT} (from-branch=${FROM_BRANCH})"
 # single-slot test but masks a real misconfiguration (wrong tokenEnvVar,
 # wrong .env key). Exporting both keeps botTokenEnv load-bearing.
 if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+  # FLY-1389 P1-a: FLYWHEEL_BIN_DIR / FLYWHEEL_HOOKS_DIR pin the slot Bridge's
+  # runtime deploy (sync-flywheel-hooks.ts seams, "for test slots" by design)
+  # to slot-local dirs — without them every slot Bridge boot rewrote the
+  # GLOBAL ~/.flywheel/bin symlinks to this checkout's dist.
   env \
     TEAMLEAD_PORT="${SLOT_PORT}" \
     DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
@@ -1402,6 +1487,8 @@ if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
+    FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
+    FLYWHEEL_HOOKS_DIR="${SLOT_DIR}/hooks" \
     TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
     TEAMLEAD_CHAT_THREADS_ENABLED=true \
     TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true \
@@ -1417,6 +1504,8 @@ else
   # inherits REPLY_BY_ISSUE_ENABLED=true with no token and loadConfig() fatals
   # ("requires TEAMLEAD_API_TOKEN") — which broke every deploy from a sourced-env
   # runner until this QA run caught it.
+  # FLY-1389 P1-a: same slot-local FLYWHEEL_BIN_DIR / FLYWHEEL_HOOKS_DIR
+  # isolation on the default (reply-by-issue OFF) branch.
   env -u TEAMLEAD_API_TOKEN \
     -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
     -u TEAMLEAD_REPLY_GUARD_ENABLED \
@@ -1429,6 +1518,8 @@ else
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
+    FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
+    FLYWHEEL_HOOKS_DIR="${SLOT_DIR}/hooks" \
     ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
     npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" \
     > "${SLOT_DIR}/bridge.log" 2>&1 &
@@ -1505,7 +1596,15 @@ log "Wrote ${SLOT_DIR}/launch-manifest.json"
 # Lead supervisor PID is written by claude-lead.sh to:
 #   ~/.flywheel/pids/<project-name>-<lead-id>.pid
 # We also record Bridge PID locally.
-LEAD_PID_FILE="${HOME}/.flywheel/pids/${TEST_PROJECT_NAME}-${AGENT_ID}.pid"
+# FLY-1389 P2-b: no-lead deploys have no Lead artifacts — empty strings in
+# the output JSON (guarded consumers; schema keys stay present).
+if [[ "$NO_LEAD" == "1" ]]; then
+  LEAD_PID_FILE=""
+  NO_LEAD_JSON=true
+else
+  LEAD_PID_FILE="${HOME}/.flywheel/pids/${TEST_PROJECT_NAME}-${AGENT_ID}.pid"
+  NO_LEAD_JSON=false
+fi
 
 log "Test environment ready!"
 log "  Slot: ${SLOT}"
@@ -1522,6 +1621,7 @@ cat <<EOF
 {
   "slot": ${SLOT},
   "mode": "${MODE}",
+  "noLead": ${NO_LEAD_JSON},
   "mirrorChannelId": "${MIRROR_CHANNEL_ID}",
   "port": ${SLOT_PORT},
   "agentId": "${AGENT_ID}",

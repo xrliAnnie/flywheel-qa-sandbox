@@ -88,12 +88,30 @@ source "$SCRIPT_DIR/lib/supervisor.sh"
 source "$SCRIPT_DIR/lib/platform-deps.sh"
 # shellcheck source=lib/script-sanity.sh
 source "$SCRIPT_DIR/lib/script-sanity.sh"
+# shellcheck source=lib/path-hygiene.sh
+source "$SCRIPT_DIR/lib/path-hygiene.sh"
 
 # ── helpers ───────────────────────────────────────────────────────────────
 log()  { echo "[provision] $*"; }
 plan() { echo "[dry-run] would: $*"; }
 warn() { echo "[provision][warn] $*" >&2; }
 die()  { echo "[provision][error] $*" >&2; exit 1; }
+
+# ── FLY-1389 P1-b: temp/worktree source guard on the EFFECTIVE-GLOBAL
+# destination. The provisioner writes global content (bin scripts, hooks,
+# LaunchAgents) sourced from REPO_ROOT — provisioning the real ~/.flywheel
+# from a temp/worktree checkout persists soon-to-vanish paths. Judged on the
+# RESOLVED destination, not the call shape: an explicit fake --home stays
+# allowed, and so does a fully-sandboxed run (hermetic suites fake HOME too
+# — a destination that is itself a temp path is a test sandbox, not this
+# machine's global config). Dry-run writes nothing → not guarded.
+_fw_canon="$(path_hygiene_canonicalize "$FW" 2>/dev/null || echo "")"
+if [ "$DRY_RUN" -eq 0 ] \
+   && path_hygiene_same_path "$FW" "$HOME/.flywheel" \
+   && { [ -z "$_fw_canon" ] || ! path_hygiene_is_temp_path "$_fw_canon"; } \
+   && is_temp_or_worktree_root "$REPO_ROOT"; then
+  die "refusing to provision the effective-global $FW from temp/worktree checkout $REPO_ROOT — global config must come from the main checkout (FLY-1389)"
+fi
 
 # FLY-954: the provisioner is a WRITER — it must not trust env vars designed
 # for runtime READERS (the wrappers). Incident 2026-07-06: a runner-born

@@ -310,6 +310,60 @@ scripts/qa-fly-529-alert-smoke.sh 1          # AC4 channel + AC5 two-path isolat
   `scripts/__tests__/lead-alert-dirs.test.sh`).
 - Suite: `suites/fly-529-alert-mirror.md`.
 
+## Cold-Lead Knobs + Bridge-Only Deploys (FLY-1389)
+
+Two independent escape paths for the historical "Lead not ready within 120
+seconds" hard-fail (a cold Lead on a loaded shared machine can legitimately
+exceed 120s; a poisoned session-id used to make it *never* ready — that root
+cause is fixed separately by the resume-recovery window + session-id
+pre-delete, same issue):
+
+```bash
+# Knob: widen the Lead inbox-ready wait budget (flag > env > default 120s;
+# strict integer 1..3600, validated BEFORE the expensive preflight).
+scripts/test-deploy.sh 1 --lead-ready-timeout 300
+FLYWHEEL_TEST_LEAD_READY_TIMEOUT_SEC=300 scripts/test-deploy.sh 1
+
+# Bridge-only deploy: skip identity staging + Lead startup + lease wait
+# entirely. For pure Bridge/API/DB suites — a Discord-Lead-behavior suite
+# must NOT use it. Also runs on hosts without ~/Dev/GeoForge3D.
+scripts/test-deploy.sh 1 --no-lead
+```
+
+- `--no-lead` output JSON carries `"noLead": true` with empty `leadPidFile` /
+  `leadLog`; `--extra-lead` is mutually exclusive (campaigns are Lead-centric).
+- Slot Bridges now always run with slot-local `FLYWHEEL_BIN_DIR` /
+  `FLYWHEEL_HOOKS_DIR` — a slot deploy never rewrites the global
+  `~/.flywheel/bin` symlinks (FLY-1389 write-time guard is the second net:
+  see `doc/engineer/implementation/global-bin-symlink-discipline.md`).
+- The Lead env is sanitized against caller-shell leaks (`LEAD_WORKSPACE`,
+  `CLAUDE_CONFIG_DIR`, `FLYWHEEL_LEAD_MODEL/_EFFORT` are cleared;
+  `LEAD_WORKSPACE` is pinned to `<slot>/lead-workspace`).
+
+## 529-Room Token Accounting (FLY-1389 §P3 — by design, not a bug)
+
+`packages/token-usage/src/classifier.ts` deliberately buckets any session
+whose cwd contains `flywheel-test-slot` (also `/scratchpad`, `claude-501`)
+as `kind:"sandbox"`; the aggregator surfaces the `(sandbox)` bucket instead
+of hiding it. QA burn is visible but never pollutes per-project production
+numbers. There is no per-slot token API.
+
+When a QA needs exact test-room token evidence, use the transcript
+direct-read recipe (practiced in FLY-1356): find the slot session's
+transcript under `~/.claude/projects/<slug>/*.jsonl` (slug = the workspace
+absolute path with `/` and `.` replaced by `-`), then sum
+`message.usage.{input_tokens,output_tokens,cache_*}` across entries —
+ground truth, no classifier in the loop.
+
+## Auto-QA Is OFF in Test Rooms (by design)
+
+The canonical slot config written by test-deploy
+(`qa_multilead_config_yaml`) contains no `qa:` block, and `qa.auto`
+defaults to off (`packages/config/src/ConfigLoader.ts`) — so a 529-Room
+Bridge never spawns its own auto-QA sessions. Room QA is suite-driven by
+definition; a QA that tests the auto-QA machinery itself opts in by adding
+`qa.auto` to the generated config in its own harness.
+
 ## Contracts
 
 - `contracts/PLAN_SOURCE_CONTRACT.md` — How QA agents obtain plan files across worktrees

@@ -77,6 +77,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: publish-approval Discord channel id (FLY-1062)",
 	FLYWHEEL_FLEET_SANITIZE:
 		"plumbing: fleet-sanitize.sh scanner path override (FLY-1062 broker gate; tests point it at stubs)",
+	FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT:
+		"plumbing: deliberate operator override of the FLY-1389 global-bin write-time guard (temp/worktree repoRoot refusal in syncFlywheelCliBin) — an escape hatch, not a rollout gate",
 	FLYWHEEL_CLAUDE_ACCOUNTS_PATH:
 		"plumbing: claude account-state json path (FLY-696)",
 	FLYWHEEL_CLAUDE_ACCOUNTS_LOCK:

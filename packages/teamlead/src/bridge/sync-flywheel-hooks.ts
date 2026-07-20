@@ -45,6 +45,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isGlobalBinDir, isTempOrWorktreeRoot } from "./path-hygiene.js";
 
 /** Hooks that this module is allowed to write into the runtime directory. */
 const HOOKS_TO_DEPLOY = ["inbox-check.sh"] as const;
@@ -291,6 +292,8 @@ export async function syncFlywheelCliBin(opts?: {
 	binDir?: string;
 	bins?: readonly CliBinSpec[];
 	log?: (msg: string) => void;
+	/** Test seam: what counts as the global bin (default ~/.flywheel/bin). */
+	globalBinDir?: string;
 }): Promise<SyncFlywheelCliBinResult> {
 	const repoRoot = opts?.repoRoot ?? defaultRepoRoot();
 	const binDir = opts?.binDir ?? defaultBinDir();
@@ -303,6 +306,29 @@ export async function syncFlywheelCliBin(opts?: {
 		missingSource: [],
 		errors: [],
 	};
+
+	// FLY-1389 P1-b: write-time guard — the GLOBAL bin must never point into
+	// a temp/worktree checkout. 529 Room incident: a worktree Bridge rewrote
+	// ~/.flywheel/bin/agent-team-transport to its own dist, the worktree was
+	// later cleaned, and every new Lead start died FATAL at the transport
+	// preflight. Slot Bridges pass FLYWHEEL_BIN_DIR (non-global) and are not
+	// affected; the refusal keeps the soft-fail shape (errors + loud log, no
+	// throw). Deliberate override: FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT=1.
+	if (
+		process.env.FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT !== "1" &&
+		isGlobalBinDir(
+			binDir,
+			opts?.globalBinDir ? { globalBinDir: opts.globalBinDir } : undefined,
+		) &&
+		isTempOrWorktreeRoot(repoRoot)
+	) {
+		const reason = `refused: repoRoot '${repoRoot}' is a temp/worktree checkout and binDir '${binDir}' is the global bin — global bin links must point at the main checkout only (FLY-1389; set FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT=1 to override deliberately)`;
+		for (const spec of bins) {
+			result.errors.push({ name: spec.name, error: reason });
+		}
+		log(`ERROR: ${reason}`);
+		return result;
+	}
 
 	if (!existsSync(binDir)) {
 		await mkdir(binDir, { recursive: true });

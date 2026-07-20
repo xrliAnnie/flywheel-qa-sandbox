@@ -22,6 +22,7 @@ scripts/flywheel-bridge-wrapper.sh
 scripts/flywheel-lead-wrapper.sh
 scripts/update-flywheel.sh
 scripts/converge-flywheel-bin.sh
+scripts/check-global-path-hygiene.sh
 scripts/linux-preflight.sh
 scripts/materialize-lead-manifests.sh
 scripts/com.flywheel.daily-standup.plist
@@ -33,6 +34,7 @@ scripts/lib/fleet-sanitize.sh
 scripts/lib/host-config.sh
 scripts/lib/platform-deps.sh
 scripts/lib/script-sanity.sh
+scripts/lib/path-hygiene.sh
 scripts/lib/supervisor.sh
 scripts/lib/bridge-port.sh
 scripts/lib/tmux-server-rescue.sh
@@ -64,6 +66,7 @@ node_modules/flywheel-teamlead/scripts/inbox-ack-rule.md
 node_modules/flywheel-teamlead/scripts/screencapture-l3-skill.md
 node_modules/flywheel-teamlead/scripts/expect-dev-channels.exp
 node_modules/flywheel-teamlead/scripts/lib/lead-identity-preflight.sh
+node_modules/flywheel-teamlead/scripts/lib/resume-recovery.sh
 node_modules/flywheel-teamlead/scripts/lib/mcp-inherit.sh
 node_modules/flywheel-teamlead/scripts/lib/reap-orphan-adapters.sh
 node_modules/flywheel-teamlead/scripts/lib/tmux-supervisor-guard.sh

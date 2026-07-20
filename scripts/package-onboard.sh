@@ -72,7 +72,8 @@ teamlead:scripts/expect-dev-channels.exp
 teamlead:scripts/lib/lead-identity-preflight.sh
 teamlead:scripts/lib/mcp-inherit.sh
 teamlead:scripts/lib/reap-orphan-adapters.sh
-teamlead:scripts/lib/tmux-supervisor-guard.sh"}
+teamlead:scripts/lib/tmux-supervisor-guard.sh
+teamlead:scripts/lib/resume-recovery.sh"}
 
 # Curated scripts/ whitelist — EXPLICIT file list, not an ignore list. Every
 # entry here must have a row in the packaged-path audit table
@@ -87,6 +88,7 @@ flywheel-bridge-wrapper.sh
 flywheel-lead-wrapper.sh
 update-flywheel.sh
 converge-flywheel-bin.sh
+check-global-path-hygiene.sh
 linux-preflight.sh
 materialize-lead-manifests.sh
 com.flywheel.daily-standup.plist
@@ -98,6 +100,7 @@ lib/fleet-sanitize.sh
 lib/host-config.sh
 lib/platform-deps.sh
 lib/script-sanity.sh
+lib/path-hygiene.sh
 lib/supervisor.sh
 lib/bridge-port.sh
 lib/tmux-server-rescue.sh

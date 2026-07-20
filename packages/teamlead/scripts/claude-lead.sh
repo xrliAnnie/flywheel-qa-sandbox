@@ -218,6 +218,11 @@ source "${SCRIPT_DIR}/lib/tmux-supervisor-guard.sh"
 # after the tmux guard so the production guard can consume the shared matcher.
 # shellcheck source=lib/lead-identity-preflight.sh
 source "${SCRIPT_DIR}/lib/lead-identity-preflight.sh"
+# FLY-1389: resume-failure classification (pure functions) + resume transcript
+# diagnostic. Deterministic resume failures (10-15s deaths on a stale
+# session-id) must reach the fresh-start fallback instead of resetting it.
+# shellcheck source=lib/resume-recovery.sh
+source "${SCRIPT_DIR}/lib/resume-recovery.sh"
 # FLY-83: Ensure all alert-path directories exist before anything can fail.
 # - blocked/  : marker files pausing supervisor until Annie clears them
 # - alert-queue/ : LeadAlertNotifier spills here when Discord POST fails
@@ -2900,6 +2905,11 @@ while true; do
     SESSION_ID=$(cat "$SESSION_ID_FILE")
     log "[restart #${RESTART_COUNT}] Resuming session ${SESSION_ID}..."
     log "(To force fresh start: rm ${SESSION_ID_FILE})"
+    # FLY-1389 P0-b: diagnostic ONLY — log whether the transcript this resume
+    # needs exists. The slug rule is a Claude Code internal convention (no
+    # stable contract), so nothing is ever deleted based on this; deletion
+    # authority is the P0-c counter below + test-deploy's pre-delete.
+    log "$(resume_transcript_diagnose "${CLAUDE_CONFIG_DIR:-}" "$LEAD_WORKSPACE" "$SESSION_ID")"
 
     # Final SIGTERM gate — must be right before fork to close the race window
     if [ "$SHOULD_EXIT" -ne 0 ]; then break; fi
@@ -3009,28 +3019,27 @@ while true; do
   CRASH_COUNT=$((CRASH_COUNT + 1))
   log "Claude crashed (exit code ${CLAUDE_EXIT}) after ${DURATION}s. Crash count: ${CRASH_COUNT}"
 
-  # Resume failure heuristic: retry-before-delete.
-  # Only applies to resume path (IS_RESUME=1). Quick exit (<10s) on resume
-  # MAY indicate session corruption, but could also be a transient fault.
-  # Delete session file only after RESUME_FAIL_THRESHOLD consecutive failures.
-  if [ "$IS_RESUME" -eq 1 ] && [ "$DURATION" -lt 10 ]; then
-    RESUME_FAIL_COUNT=$((RESUME_FAIL_COUNT + 1))
-    log "Quick exit on resume (${DURATION}s) — possible failure (${RESUME_FAIL_COUNT}/${RESUME_FAIL_THRESHOLD})."
-    if [ "$RESUME_FAIL_COUNT" -ge "$RESUME_FAIL_THRESHOLD" ]; then
-      log "Consecutive resume failures reached threshold. Deleting session file for fresh start."
+  # Resume failure heuristic: retry-before-delete (FLY-1389 P0-c).
+  # Extracted to lib/resume-recovery.sh. Window is now <60s (was <10s): a
+  # deterministic resume failure on a stale session-id dies in 10-15s, which
+  # the old window classified as healthy and RESET the counter — the
+  # fresh-start fallback never fired (529 Room incident: 9 resume crashes,
+  # 0 successes). The >60s healthy-run crash-count reset lives in the same
+  # decision (verbatim semantics).
+  _rr_out="$(resume_recovery_decide "$IS_RESUME" "$DURATION" "$RESUME_FAIL_COUNT" "$RESUME_FAIL_THRESHOLD" "$CRASH_COUNT")"
+  _rr_action="${_rr_out%% *}"
+  _rr_rest="${_rr_out#* }"
+  RESUME_FAIL_COUNT="${_rr_rest%% *}"
+  CRASH_COUNT="${_rr_rest##* }"
+  case "$_rr_action" in
+    delete_session)
+      log "Quick exit on resume (${DURATION}s < ${RESUME_FAIL_WINDOW_SECONDS}s) reached ${RESUME_FAIL_THRESHOLD} consecutive failures. Deleting session file for fresh start."
       rm -f "$SESSION_ID_FILE"
-      RESUME_FAIL_COUNT=0
-    fi
-  else
-    # Successful run (>10s) or fresh start — reset resume failure count
-    RESUME_FAIL_COUNT=0
-  fi
-
-  # Reset crash count if Claude ran for a meaningful duration (>60s).
-  # This prevents crash count from accumulating across unrelated failures.
-  if [ "$DURATION" -gt 60 ]; then
-    CRASH_COUNT=1
-  fi
+      ;;
+    count_resume_fail)
+      log "Quick exit on resume (${DURATION}s < ${RESUME_FAIL_WINDOW_SECONDS}s) — possible failure (${RESUME_FAIL_COUNT}/${RESUME_FAIL_THRESHOLD})."
+      ;;
+  esac
 
   # Exponential backoff
   BACKOFF_IDX=$((CRASH_COUNT - 1))

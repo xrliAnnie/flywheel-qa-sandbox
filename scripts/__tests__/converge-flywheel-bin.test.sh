@@ -14,9 +14,13 @@ fail() { FAILED=$((FAILED+1)); echo "[TEST] ✗ $1"; }
 REAL_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SB="$(mktemp -d -t fly954-converge-XXXXXX)"; trap 'rm -rf "$SB"' EXIT
 
-# fake repo with sane sources + the REAL converge script + the REAL lib
+# fake repo with sane sources + the REAL converge script + the REAL libs
+# (path-hygiene.sh added by FLY-1389 — converge sources it at startup; this
+# mktemp fake repo is a temp root, so the FLY-1389 guard/symlink sections
+# self-disable and C1-C8 exercise the FLY-954 wrapper loop verbatim).
 FR="$SB/repo"; mkdir -p "$FR/scripts/lib"
 cp "$REAL_REPO_ROOT/scripts/lib/script-sanity.sh" "$FR/scripts/lib/"
+cp "$REAL_REPO_ROOT/scripts/lib/path-hygiene.sh" "$FR/scripts/lib/"
 cp "$REAL_REPO_ROOT/scripts/converge-flywheel-bin.sh" "$FR/scripts/"
 CONVERGE="$FR/scripts/converge-flywheel-bin.sh"
 for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh; do
@@ -114,11 +118,14 @@ else fail "C8: absent source was tolerated (rc=$RC)"; cat "$SB/out.log" "$SB/ale
 
 # C7: the PRODUCTION shape (STATE_DIR == $HOME/.flywheel) must NOT be prefixed
 # — simulated with a fake HOME inside the sandbox (never the real one).
+# FLY-1389: this shape (temp fake repo + effective-global bin) is now
+# refused by the write-time guard; the deliberate override keeps C7 on its
+# original target (drill-prefix behavior of the repair alert).
 FH="$SB/fakehome"; mkdir -p "$FH/.flywheel/bin"
 : > "$SB/alerts.log"
 echo '#!/bin/bash' > "$FH/.flywheel/bin/flywheel-lead-wrapper.sh"   # drift
 ALERT_LOG="$SB/alerts.log" HOME="$FH" FLYWHEEL_STATE_DIR="$FH/.flywheel" \
-FLYWHEEL_CONVERGE_ALERT_BIN="$ALERT" \
+FLYWHEEL_CONVERGE_ALERT_BIN="$ALERT" FLYWHEEL_CONVERGE_ALLOW_TEMP_ROOT=1 \
   bash "$CONVERGE" >"$SB/out7.log" 2>&1
 RC=$?
 if [ "$RC" -eq 0 ] && grep -q '^ALERT' "$SB/alerts.log" \

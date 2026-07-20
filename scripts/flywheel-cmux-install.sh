@@ -11,6 +11,19 @@ ZSHRC="$HOME/.zshrc"
 MARKER_START="# >>> flywheel cmux integration >>>"
 MARKER_END="# <<< flywheel cmux integration <<<"
 
+# FLY-1389 P1-b: this installer symlinks GLOBAL bin entries at REPO_DIR —
+# run once from a temp/worktree checkout and ~/.flywheel/bin permanently
+# points at a directory that will be cleaned (the 529 Room broken-link
+# incident class). Refuse before ANY global write.
+# shellcheck source=lib/path-hygiene.sh
+source "$REPO_DIR/scripts/lib/path-hygiene.sh"
+if is_temp_or_worktree_root "$REPO_DIR"; then
+  echo "[install] ERROR: refusing to install global cmux integration from temp/worktree checkout: $REPO_DIR" >&2
+  echo "[install]   Global bin links must point at the main checkout only (FLY-1389)." >&2
+  echo "[install]   Run this installer from the main flywheel checkout." >&2
+  exit 1
+fi
+
 echo "[install] Installing flywheel-cmux integration..."
 
 # 1. Ensure install directory

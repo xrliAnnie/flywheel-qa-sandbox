@@ -25,7 +25,8 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -657,3 +658,108 @@ function dirOf(path: string): string {
 	const lastSlash = path.lastIndexOf("/");
 	return lastSlash === -1 ? "." : path.slice(0, lastSlash);
 }
+
+// ============================================================================
+// FLY-1389 P1-b: write-time path-hygiene guard on syncFlywheelCliBin
+// ============================================================================
+//
+// Fixtures live under the REPO checkout (not tmpdir): the guard's temp-prefix
+// judgment would otherwise depend on where the runner points TMPDIR, and a
+// trusted-root (.git directory) fixture is impossible under /tmp by
+// definition. The predicate inspects only the fixture's OWN .git entry.
+describe("syncFlywheelCliBin path-hygiene guard (FLY-1389)", () => {
+	const HERE = dirname(fileURLToPath(import.meta.url));
+	let root: string;
+	let globalBin: string;
+
+	const makeRepo = async (kind: "worktree" | "main") => {
+		const repoRoot = join(root, `${kind}-repo`);
+		const distBin = join(
+			repoRoot,
+			"packages",
+			"agent-team-transport",
+			"dist",
+			"bin",
+		);
+		await mkdir(distBin, { recursive: true });
+		await writeFile(
+			join(distBin, "agent-team-transport-cli.js"),
+			"#!/usr/bin/env node\nconsole.log('cli');\n",
+		);
+		if (kind === "worktree") {
+			await writeFile(
+				join(repoRoot, ".git"),
+				"gitdir: /main/.git/worktrees/x\n",
+			);
+		} else {
+			await mkdir(join(repoRoot, ".git"), { recursive: true });
+		}
+		return repoRoot;
+	};
+
+	beforeEach(async () => {
+		root = await mkdtemp(join(HERE, ".tmp-sync-bin-guard-"));
+		globalBin = join(root, "fakehome", ".flywheel", "bin");
+	});
+
+	afterEach(async () => {
+		delete process.env.FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT;
+		await rm(root, { recursive: true, force: true });
+	});
+
+	it("refuses to write the GLOBAL bin from a worktree root (errors per bin, zero writes)", async () => {
+		const repoRoot = await makeRepo("worktree");
+		const result = await syncFlywheelCliBin({
+			repoRoot,
+			binDir: globalBin,
+			globalBinDir: globalBin,
+			log: () => {},
+		});
+		expect(result.synced).toEqual([]);
+		expect(result.errors.length).toBeGreaterThan(0);
+		for (const e of result.errors) {
+			expect(e.error).toContain("FLY-1389");
+			expect(e.error).toContain("temp/worktree");
+		}
+		// Zero writes: the global bin dir was never even created.
+		await expect(lstat(globalBin)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("a main checkout root (.git directory) writes the global bin normally", async () => {
+		const repoRoot = await makeRepo("main");
+		const result = await syncFlywheelCliBin({
+			repoRoot,
+			binDir: globalBin,
+			globalBinDir: globalBin,
+			log: () => {},
+		});
+		expect(result.errors).toEqual([]);
+		expect(result.synced).toContain("agent-team-transport");
+	});
+
+	it("a NON-global binDir (slot isolation) is not blocked even from a worktree root", async () => {
+		const repoRoot = await makeRepo("worktree");
+		const slotBin = join(root, "slot-bin");
+		const result = await syncFlywheelCliBin({
+			repoRoot,
+			binDir: slotBin,
+			globalBinDir: globalBin,
+			log: () => {},
+		});
+		expect(result.errors).toEqual([]);
+		expect(result.synced).toContain("agent-team-transport");
+	});
+
+	it("FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT=1 deliberately bypasses the guard", async () => {
+		const repoRoot = await makeRepo("worktree");
+		process.env.FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT = "1";
+		const result = await syncFlywheelCliBin({
+			repoRoot,
+			binDir: globalBin,
+			globalBinDir: globalBin,
+			log: () => {},
+		});
+		expect(result.errors).toEqual([]);
+		expect(result.synced).toContain("agent-team-transport");
+	});
+});
