@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 4/5
-updated: 2026-07-20T20:44:15.272Z
-nextStep: commit + push + open PR
+phaseCursor: 5/5
+updated: 2026-07-20T20:45:25.862Z
+nextStep: "flywheel-land: CI probe + approve gate"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (4/5)
-**next**: commit + push + open PR
+**phase**: implement (5/5)
+**next**: flywheel-land: CI probe + approve gate
