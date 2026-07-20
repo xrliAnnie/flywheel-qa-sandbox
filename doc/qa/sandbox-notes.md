@@ -9,7 +9,7 @@
 
 QA slot harness 会用 `scripts/test-deploy.sh` 把该仓库 clone 到 `/tmp/flywheel-test-slot-<N>/project-slot-<N>`，启动隔离的 test Bridge 与 test Lead，再由 `scripts/inject-linear-issue.sh` 调用 `POST /api/runs/start`。Bridge 会通过 PreHydrator 校验真实 Linear issue，并在独立 worktree 中启动真实 Runner，完整覆盖 onboard、实现、PR、review gate 和 ship 等路径；框架不提供 synthetic 或 fixture Runner 模式。
 
-FLY-202 本身就是这条链路的稳定输入：它替代文档中曾引用但实际不存在的 `FLY-SBX-1`，让 sandbox Runner 获得一个小而多步、容易观察中间进度的任务。本 issue 只供 test-slot harness 使用，生产 Lead 和 Runner 不应认领。
+FLY-202 本身就是这条链路的稳定输入：FLY-197 曾发现文档引用的 `FLY-SBX-1` 在当时并不存在，FLY-202 因此补上了 slot harness 真实派发所需的 fixture issue，让 sandbox Runner 获得一个小而多步、容易观察中间进度的任务。注意它并不取代 `FLY-SBX-1` —— FLY-60 hard-gate suite 的 driver 至今仍以 `FLY-SBX-1` 作为自己的 preflight fixture 引用，两者服务于不同 suite。本 issue 只供 test-slot harness 使用，生产 Lead 和 Runner 不应认领。
 
 ## Top-Level Directories
 
@@ -39,12 +39,13 @@ FLY-202 本身就是这条链路的稳定输入：它替代文档中曾引用但
 - 它采用两层结构：框架层提供 agents、skills、orchestrator 与 TypeScript config loader，项目层提供 `.claude/qa-config.yaml` 和项目测试套件。
 - Quick Start 是复制模板配置、填写 domains/API/test skills、创建 test suite，然后由 QA agent 按配置执行。
 - 核心流程分为五步：Onboard、Analyze + Plan、Research、Write + Execute、Finalize。
-- 完整 config schema 在 `templates/qa-config.yaml`，`QaConfig` 提供 TypeScript 类型，`examples/geoforge3d/` 提供完整示例。
-- Test Slot Framework 会并行启动隔离环境，并对 `xrliAnnie/flywheel-qa-sandbox` 运行真实 Runner；不支持 synthetic 或 fixture mode。
+- 完整 config schema 在 `packages/qa-framework/templates/qa-config.yaml`，`QaConfig` 提供 TypeScript 类型，`packages/qa-framework/examples/geoforge3d/` 提供完整示例。
+- Test Slot Framework（FLY-96 + FLY-115）会并行启动隔离环境，并对 `xrliAnnie/flywheel-qa-sandbox` 运行真实 Runner；不支持 synthetic 或 fixture mode。
 - 三个生命周期脚本分别负责部署 slot、注入真实 Linear issue，以及清理 Runner/Lead/Bridge/worktree/CommDB。
 - 运行前需要 `LINEAR_API_KEY`、可向 sandbox push 的 `gh` 登录状态和可用目标分支；`FLYWHEEL_RUNNER_START_POINT` 只由 test Bridge 设置，生产默认行为不变。
-- Mirror、Roundtable Mirror 与 Alert Mirror 为共享频道、圆桌和告警路径提供隔离测试拓扑，并明确限制不适用的 Runner E2E 场景。
-- 框架用 `PLAN_SOURCE_CONTRACT.md` 约束跨 worktree 的 plan 获取，用 `SKILL_INTERFACE.md` 约束 QA test skill 接口，并链接 real-Runner 与 sandbox lifecycle guides。
+- FLY-60 Hard Gate Enforcement E2E 复用 slot 框架，以 1 happy path + 6 variants 的手动触发 suite 端到端验证 G1/G2/G3 硬门，并回归 sprint v26 trust gates。
+- Mirror（FLY-153）、Roundtable Mirror 与 Alert Mirror（均 FLY-529）为共享频道、圆桌和告警路径提供隔离测试拓扑，并明确限制不适用的 Runner E2E 场景。
+- 框架用 `packages/qa-framework/contracts/PLAN_SOURCE_CONTRACT.md` 约束跨 worktree 的 plan 获取，用 `packages/qa-framework/skills/SKILL_INTERFACE.md` 约束 QA test skill 接口，并链接 real-Runner 与 sandbox lifecycle guides。
 
 ## `ls -R doc/ | head -50` Output
 
