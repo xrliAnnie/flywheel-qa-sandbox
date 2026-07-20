@@ -375,6 +375,52 @@ describe("Event route", () => {
 		expect(store.getSession("exec-1")?.design_backend).toBeUndefined();
 	});
 
+	it("FLY-1356: started events persist skill_framework_mode/_via behind closed-enum guards", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					payload: {
+						issueIdentifier: "GEO-95",
+						skillFrameworkMode: "bare",
+						skillFrameworkModeVia: "hash",
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+		const session = store.getSession("exec-1")!;
+		expect(session.skill_framework_mode).toBe("bare");
+		expect(session.skill_framework_mode_via).toBe("hash");
+	});
+
+	it("FLY-1356 (R1#7): garbage skill-framework values on the untrusted wire are REJECTED", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					payload: {
+						issueIdentifier: "GEO-95",
+						skillFrameworkMode: "rm -rf /",
+						skillFrameworkModeVia: "made-up",
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+		const session = store.getSession("exec-1")!;
+		expect(session.skill_framework_mode).toBeUndefined();
+		expect(session.skill_framework_mode_via ?? undefined).toBeUndefined();
+	});
+
 	it("POST /events with session_completed (needs_review) sets awaiting_review", async () => {
 		// First create session
 		await fetch(`${baseUrl}/events`, {

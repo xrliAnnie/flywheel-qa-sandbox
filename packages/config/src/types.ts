@@ -227,6 +227,18 @@ export interface DocFlowConfig {
 }
 
 /**
+ * FLY-1356: per-project skill-framework split participation (the project OPT-OUT
+ * lever, not an enable switch). Only consulted when the Bridge-global flag
+ * `FLYWHEEL_SKILL_FRAMEWORK_MODE=split`: `split: false` pins this project's
+ * Runners to the A arm (superpowers) with via=`project_opt_out`. Absent → the
+ * project participates (default true). Re-read at every dispatch resolution so
+ * a Lead's opt-out takes effect immediately, no restart.
+ */
+export interface SkillFrameworkConfig {
+	split?: boolean;
+}
+
+/**
  * FLY-579 / FLY-752: auto-QA pipeline policy (per project). The Bridge loads this
  * from the project's CANONICAL / mainline root only (never an implementation PR's
  * worktree) so a runner cannot edit its own config to skip its QA.
@@ -655,6 +667,8 @@ export interface FlywheelConfig {
 	roles?: RoleBackendMap;
 	/** FLY-205: department-first doc-flow baseline. Absent = off. */
 	doc_flow?: DocFlowConfig;
+	/** FLY-1356: split participation opt-out lever. Absent = participate. */
+	skill_framework?: SkillFrameworkConfig;
 	/** FLY-579: auto-QA pipeline policy. Absent or auto:false = off (byte-compatible). */
 	qa?: QaConfig;
 	/** FLY-1048 PR-C: per-project detection-escalation knobs. Absent = globals apply. */

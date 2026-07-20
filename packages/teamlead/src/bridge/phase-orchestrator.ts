@@ -33,6 +33,8 @@ import {
 	type PhaseDispatchVendor,
 	type RoleEffort,
 	resolvePhaseDispatch,
+	type SkillFrameworkMode,
+	type SkillFrameworkVia,
 	type ThreeStagePhase,
 } from "flywheel-config";
 import { REVIEW_BINDING_UNBOUND } from "../StateStore.js";
@@ -69,6 +71,9 @@ export interface PhaseSession {
 	review_question_id?: string;
 	/** FLY-1259: run-level effective design backend copied across phase rows. */
 	design_backend?: DesignBackend;
+	/** FLY-1356: effective skill-framework arm + attribution (split eval). */
+	skill_framework_mode?: SkillFrameworkMode;
+	skill_framework_mode_via?: SkillFrameworkVia;
 	/**
 	 * FLY-869: the durable merged-but-unapproved park marker (`merge_block`).
 	 * FLY-1050 F9: an implement stuck at awaiting_review whose PR already
@@ -671,6 +676,13 @@ export class PhaseOrchestrator {
 				...(session.design_backend && {
 					designBackend: session.design_backend,
 				}),
+				// FLY-1356: a 529 forced arm (via==="override") stays forced across
+				// every phase successor; sticky/hash paths ride the dispatcher's
+				// stamp lookup instead (R1#4).
+				...(session.skill_framework_mode_via === "override" &&
+					session.skill_framework_mode && {
+						skillFrameworkMode: session.skill_framework_mode,
+					}),
 				dispatchModel: dispatch.model,
 				dispatchVendor: dispatch.vendor,
 				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
@@ -1449,6 +1461,13 @@ export class PhaseOrchestrator {
 				...(session.design_backend && {
 					designBackend: session.design_backend,
 				}),
+				// FLY-1356: a 529 forced arm (via==="override") stays forced across
+				// every phase successor; sticky/hash paths ride the dispatcher's
+				// stamp lookup instead (R1#4).
+				...(session.skill_framework_mode_via === "override" &&
+					session.skill_framework_mode && {
+						skillFrameworkMode: session.skill_framework_mode,
+					}),
 				dispatchModel: dispatch.model,
 				dispatchVendor: dispatch.vendor,
 				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
@@ -1652,6 +1671,13 @@ export class PhaseOrchestrator {
 				...(session.design_backend && {
 					designBackend: session.design_backend,
 				}),
+				// FLY-1356: a 529 forced arm (via==="override") stays forced across
+				// every phase successor; sticky/hash paths ride the dispatcher's
+				// stamp lookup instead (R1#4).
+				...(session.skill_framework_mode_via === "override" &&
+					session.skill_framework_mode && {
+						skillFrameworkMode: session.skill_framework_mode,
+					}),
 				dispatchModel: dispatch.model,
 				dispatchVendor: dispatch.vendor,
 				...(dispatch.effort && { dispatchEffort: dispatch.effort }),
@@ -2077,6 +2103,11 @@ export class PhaseOrchestrator {
 				...(prev.design_backend && {
 					designBackend: prev.design_backend,
 				}),
+				// FLY-1356: forced-arm continuation (see the sibling sites above).
+				...(prev.skill_framework_mode_via === "override" &&
+					prev.skill_framework_mode && {
+						skillFrameworkMode: prev.skill_framework_mode,
+					}),
 				dispatchModel: dispatch.model,
 				dispatchVendor: dispatch.vendor,
 				...(dispatch.effort && { dispatchEffort: dispatch.effort }),

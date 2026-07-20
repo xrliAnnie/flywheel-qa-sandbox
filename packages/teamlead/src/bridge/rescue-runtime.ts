@@ -16,6 +16,7 @@ import {
 	type PhaseDispatchVendor,
 	type RoleEffort,
 	resolvePhaseDispatch,
+	type SkillFrameworkMode,
 } from "flywheel-config";
 import type { AlertThreadRow, Session } from "../StateStore.js";
 import {
@@ -229,17 +230,29 @@ export interface CloseAndDispatchDeps {
 export function buildRescueSuccessorDispatchFields(
 	s: Pick<
 		Session,
-		"chat_thread_role" | "session_role" | "dispatch_model" | "design_backend"
+		| "chat_thread_role"
+		| "session_role"
+		| "dispatch_model"
+		| "design_backend"
+		| "skill_framework_mode"
+		| "skill_framework_mode_via"
 	>,
 ): {
 	sessionRole?: string;
 	designBackend?: DesignBackend;
+	skillFrameworkMode?: SkillFrameworkMode;
 	dispatchModel?: string;
 	dispatchVendor?: PhaseDispatchVendor;
 	dispatchEffort?: RoleEffort;
 	ignoreRunnerLabelSelection?: true;
 	shareParentBranch?: true;
 } {
+	// FLY-1356: a 529 forced arm (via==="override") stays forced across the
+	// rescue successor; sticky/hash paths ride the dispatcher's stamp lookup.
+	const skillOverride =
+		s.skill_framework_mode_via === "override" && s.skill_framework_mode
+			? { skillFrameworkMode: s.skill_framework_mode }
+			: {};
 	const phaseRole = isThreeStagePhaseRole(s.chat_thread_role)
 		? s.chat_thread_role
 		: undefined;
@@ -247,6 +260,7 @@ export function buildRescueSuccessorDispatchFields(
 		return {
 			sessionRole: s.session_role ?? undefined,
 			dispatchModel: s.dispatch_model ?? undefined,
+			...skillOverride,
 		};
 	}
 	const designOverride =
@@ -257,6 +271,7 @@ export function buildRescueSuccessorDispatchFields(
 	return {
 		sessionRole: phaseRole,
 		...(s.design_backend && { designBackend: s.design_backend }),
+		...skillOverride,
 		dispatchModel: dispatch.model,
 		dispatchVendor: dispatch.vendor,
 		dispatchEffort: dispatch.effort,

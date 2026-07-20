@@ -81,6 +81,34 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 		expect(view.error).toContain("bogus");
 	});
 
+	// FLY-1356 (Bar-Raiser R1#8): a generic enum flag must never present a raw
+	// value outside its enumValues as a valid effective state — the owning code
+	// fails closed on garbage, so the console must show an explicit error, not
+	// the garbage string dressed up as the current mode.
+	it("R1#8: enum flag with raw outside enumValues → explicit error, not fake effective", () => {
+		const s = spec("issue_gate_supersede_mode");
+		expect(resolveFlag(s, { env: {} }).effective).toBe("enforce");
+		expect(
+			resolveFlag(s, { env: { FLYWHEEL_ISSUE_GATE_SUPERSEDE: "observe" } })
+				.effective,
+		).toBe("observe");
+		const bad = resolveFlag(s, {
+			env: { FLYWHEEL_ISSUE_GATE_SUPERSEDE: "garbage" },
+		});
+		expect(bad.effective).toBeUndefined();
+		expect(bad.error).toMatch(/invalid/);
+		expect(bad.error).toContain("garbage");
+	});
+
+	it("R1#8: enum flag with empty-string raw displays the default (unset-equivalent)", () => {
+		const s = spec("issue_gate_supersede_mode");
+		const view = resolveFlag(s, {
+			env: { FLYWHEEL_ISSUE_GATE_SUPERSEDE: "" },
+		});
+		expect(view.effective).toBe("enforce");
+		expect(view.error).toBeUndefined();
+	});
+
 	// FLY-1329 A2 (Codex R2 LOW): the activity window is runtime-sanitized. The
 	// resolver must report the SANITIZED value, not the raw env string, so the
 	// dashboard never shows a value the runtime does not actually use.

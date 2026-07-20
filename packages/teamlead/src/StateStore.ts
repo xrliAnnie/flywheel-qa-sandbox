@@ -15,6 +15,10 @@ import {
 	crossFamilyReviewSatisfied,
 	type DesignBackend,
 	isDesignBackend,
+	isSkillFrameworkMode,
+	isSkillFrameworkVia,
+	type SkillFrameworkMode,
+	type SkillFrameworkVia,
 } from "flywheel-config";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
@@ -632,6 +636,10 @@ export interface SessionUpsert {
 	design_backend?: DesignBackend;
 	/** FLY-615: resolved ponytail condition (A/B join key for FLY-614/616). */
 	ponytail_condition?: string;
+	/** FLY-1356: effective skill-framework arm (A/B/C split attribution). */
+	skill_framework_mode?: SkillFrameworkMode;
+	/** FLY-1356: how the arm was decided (hash/sticky/override/... join key). */
+	skill_framework_mode_via?: SkillFrameworkVia;
 	run_attempt?: number;
 	retry_predecessor?: string;
 	retry_successor?: string;
@@ -736,6 +744,10 @@ export interface Session {
 	design_backend?: DesignBackend;
 	/** FLY-615: resolved ponytail condition (A/B join key for FLY-614/616). */
 	ponytail_condition?: string;
+	/** FLY-1356: effective skill-framework arm (A/B/C split attribution). */
+	skill_framework_mode?: SkillFrameworkMode;
+	/** FLY-1356: how the arm was decided (hash/sticky/override/... join key). */
+	skill_framework_mode_via?: SkillFrameworkVia;
 	run_attempt?: number;
 	retry_predecessor?: string;
 	retry_successor?: string;
@@ -1416,6 +1428,25 @@ export class StateStore {
 		try {
 			// FLY-615: ponytail A/B condition (join key for FLY-614/616).
 			this.db.run("ALTER TABLE sessions ADD COLUMN ponytail_condition TEXT");
+		} catch {
+			// Column already exists — ignore
+		}
+		try {
+			// FLY-1356: effective skill-framework arm + attribution (split eval
+			// join keys; absent = the flag sat at its default when the run resolved).
+			this.db.run("ALTER TABLE sessions ADD COLUMN skill_framework_mode TEXT");
+		} catch {
+			// Column already exists — ignore
+		}
+		// FLY-1356 (Bar-Raiser MED-1): the sticky-stamp lookup filters on
+		// issue_id — index it so the split-mode per-dispatch read is not a scan.
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_sessions_issue_id ON sessions (issue_id)",
+		);
+		try {
+			this.db.run(
+				"ALTER TABLE sessions ADD COLUMN skill_framework_mode_via TEXT",
+			);
 		} catch {
 			// Column already exists — ignore
 		}
@@ -3066,11 +3097,11 @@ export class StateStore {
 				last_error, decision_route, decision_reasoning,
 				cost_usd, commit_count, files_changed, lines_added, lines_removed,
 				summary, diff_summary, commit_messages, changed_file_paths,
-				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, design_backend, ponytail_condition, run_attempt,
+				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, design_backend, ponytail_condition, skill_framework_mode, skill_framework_mode_via, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role,
 				doc_tier, issue_url, chat_thread_role, workflow_node_id
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -3101,6 +3132,8 @@ export class StateStore {
 				dispatch_model = COALESCE(excluded.dispatch_model, dispatch_model),
 				design_backend = COALESCE(design_backend, excluded.design_backend),
 				ponytail_condition = COALESCE(excluded.ponytail_condition, ponytail_condition),
+				skill_framework_mode = COALESCE(excluded.skill_framework_mode, skill_framework_mode),
+				skill_framework_mode_via = COALESCE(excluded.skill_framework_mode_via, skill_framework_mode_via),
 				run_attempt = COALESCE(excluded.run_attempt, run_attempt),
 				retry_predecessor = COALESCE(excluded.retry_predecessor, retry_predecessor),
 				retry_successor = COALESCE(excluded.retry_successor, retry_successor),
@@ -3147,6 +3180,8 @@ export class StateStore {
 					session.dispatch_model ?? null,
 					session.design_backend ?? null,
 					session.ponytail_condition ?? null,
+					session.skill_framework_mode ?? null,
+					session.skill_framework_mode_via ?? null,
 					session.run_attempt ?? null,
 					session.retry_predecessor ?? null,
 					session.retry_successor ?? null,
@@ -3296,11 +3331,11 @@ export class StateStore {
 				last_error, decision_route, decision_reasoning,
 				cost_usd, commit_count, files_changed, lines_added, lines_removed,
 				summary, diff_summary, commit_messages, changed_file_paths,
-				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, design_backend, ponytail_condition, run_attempt,
+				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, design_backend, ponytail_condition, skill_framework_mode, skill_framework_mode_via, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role,
 				doc_tier, issue_url, chat_thread_role, workflow_node_id
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				status = excluded.status,
 				issue_id = COALESCE(excluded.issue_id, issue_id),
@@ -3331,6 +3366,8 @@ export class StateStore {
 				dispatch_model = COALESCE(excluded.dispatch_model, dispatch_model),
 				design_backend = COALESCE(design_backend, excluded.design_backend),
 				ponytail_condition = COALESCE(excluded.ponytail_condition, ponytail_condition),
+				skill_framework_mode = COALESCE(excluded.skill_framework_mode, skill_framework_mode),
+				skill_framework_mode_via = COALESCE(excluded.skill_framework_mode_via, skill_framework_mode_via),
 				run_attempt = COALESCE(excluded.run_attempt, run_attempt),
 				retry_predecessor = COALESCE(excluded.retry_predecessor, retry_predecessor),
 				retry_successor = COALESCE(excluded.retry_successor, retry_successor),
@@ -3377,6 +3414,8 @@ export class StateStore {
 					fields.dispatch_model ?? null,
 					fields.design_backend ?? null,
 					fields.ponytail_condition ?? null,
+					fields.skill_framework_mode ?? null,
+					fields.skill_framework_mode_via ?? null,
 					fields.run_attempt ?? null,
 					fields.retry_predecessor ?? null,
 					fields.retry_successor ?? null,
@@ -3489,6 +3528,8 @@ export class StateStore {
 			runner_model: "runner_model",
 			dispatch_model: "dispatch_model",
 			ponytail_condition: "ponytail_condition",
+			skill_framework_mode: "skill_framework_mode",
+			skill_framework_mode_via: "skill_framework_mode_via",
 			run_attempt: "run_attempt",
 			retry_predecessor: "retry_predecessor",
 			retry_successor: "retry_successor",
@@ -3653,6 +3694,28 @@ export class StateStore {
 		}
 		stmt.free();
 		return undefined;
+	}
+
+	/**
+	 * FLY-1356 (R1#4): sticky-stamp lookup — the most recently recorded
+	 * skill-framework arm for an issue. The hash only fires on an issue's FIRST
+	 * admission; every later dispatch (retry / successor / re-dispatch) rides
+	 * this stamp so identifier-source instability (UUID vs FLY-XXXX) can never
+	 * split one issue across arms. Garbage column values are ignored
+	 * (fail-closed to "no stamp" → resolver falls through normally).
+	 */
+	getSkillFrameworkStamp(issueId: string): SkillFrameworkMode | undefined {
+		const stmt = this.db.prepare(
+			"SELECT skill_framework_mode FROM sessions WHERE issue_id = ? AND skill_framework_mode IS NOT NULL ORDER BY last_activity_at DESC LIMIT 1",
+		);
+		stmt.bind([issueId]);
+		let mode: unknown;
+		if (stmt.step()) {
+			mode = (stmt.getAsObject() as Record<string, unknown>)
+				.skill_framework_mode;
+		}
+		stmt.free();
+		return isSkillFrameworkMode(mode) ? mode : undefined;
 	}
 
 	/** FLY-1185 (Codex R2#4) — EVERY session in a non-terminal status
@@ -8031,6 +8094,14 @@ export class StateStore {
 				? row.design_backend
 				: undefined,
 			ponytail_condition: (row.ponytail_condition as string) ?? undefined,
+			skill_framework_mode: isSkillFrameworkMode(row.skill_framework_mode)
+				? row.skill_framework_mode
+				: undefined,
+			skill_framework_mode_via: isSkillFrameworkVia(
+				row.skill_framework_mode_via,
+			)
+				? row.skill_framework_mode_via
+				: undefined,
 			run_attempt: (row.run_attempt as number) ?? undefined,
 			retry_predecessor: (row.retry_predecessor as string) ?? undefined,
 			retry_successor: (row.retry_successor as string) ?? undefined,

@@ -1310,4 +1310,83 @@ pipeline:
 			expect(startReq.projectName).toBe("TestProject");
 		}, 15_000);
 	});
+
+	// FLY-1356 — per-dispatch skill-framework arm (529 eval forced-arm). The
+	// boundary mirrors designBackend: validated synchronously, fail-loud, and
+	// ONLY accepted while the Bridge flag is `split` (kill-switch precedence).
+	describe("FLY-1356 — per-dispatch skillFrameworkMode", () => {
+		let savedFlag: string | undefined;
+
+		beforeEach(() => {
+			savedFlag = process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
+			delete process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
+		});
+
+		afterEach(() => {
+			if (savedFlag === undefined) {
+				delete process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
+			} else {
+				process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = savedFlag;
+			}
+		});
+
+		async function postArm(skillFrameworkMode: unknown): Promise<Response> {
+			return fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-FLY1356",
+					projectName: "TestProject",
+					...(skillFrameworkMode !== undefined ? { skillFrameworkMode } : {}),
+				}),
+			});
+		}
+
+		it.each([42, true, "split", "SUPERPOWERS", "garbage", ""])(
+			"rejects invalid arm %# before dispatch (split is env-only, not a per-dispatch arm)",
+			async (arm) => {
+				process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = "split";
+				const res = await postArm(arm);
+				expect(res.status).toBe(400);
+				expect(await res.json()).toEqual({
+					success: false,
+					code: "INVALID_SKILL_FRAMEWORK_MODE",
+					reason: "unknown_mode",
+					allowed: ["superpowers", "matt", "bare"],
+					silent: false,
+				});
+				expect(mockDispatcher.start).not.toHaveBeenCalled();
+			},
+			15_000,
+		);
+
+		it("valid arm while the flag is NOT split → bounded 400 (kill-switch in effect)", async () => {
+			const res = await postArm("bare");
+			expect(res.status).toBe(400);
+			expect(await res.json()).toEqual({
+				success: false,
+				code: "SKILL_FRAMEWORK_MODE_NOT_APPLICABLE",
+				reason: "flag_not_split",
+				requested: "bare",
+				silent: false,
+			});
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		}, 15_000);
+
+		it("valid arm under split → dispatched with skillFrameworkMode", async () => {
+			process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = "split";
+			const res = await postArm("bare");
+			expect(res.status).toBe(200);
+			expect(mockDispatcher.start).toHaveBeenCalledWith(
+				expect.objectContaining({ skillFrameworkMode: "bare" }),
+			);
+		}, 15_000);
+
+		it("absent arm → request carries NO skillFrameworkMode (byte-compatible)", async () => {
+			const res = await postArm(undefined);
+			expect(res.status).toBe(200);
+			const startReq = mockDispatcher.start.mock.calls[0]![0];
+			expect("skillFrameworkMode" in startReq).toBe(false);
+		}, 15_000);
+	});
 });

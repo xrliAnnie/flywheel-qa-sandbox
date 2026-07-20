@@ -806,6 +806,22 @@ function createFlagWriter(
 						"flag registry marks target readonly",
 				);
 			}
+			// FLY-1356: enum direct flags take a string ∈ enumValues; bool flags
+			// keep the boolean-only contract (byte-compat).
+			const pfName = directFlagName(target.targetId);
+			const pfSpec = FEATURE_FLAGS.find((c) => c.name === pfName);
+			if (pfSpec?.valueKind === "enum") {
+				if (
+					typeof desiredValue !== "string" ||
+					!pfSpec.enumValues?.includes(desiredValue)
+				) {
+					return rejectedPreflight(
+						"invalid_desired_value",
+						`enum flag desired value must be one of ${(pfSpec.enumValues ?? []).join("|")}`,
+					);
+				}
+				return preparedChange({ writer, target, newValue: desiredValue });
+			}
 			if (typeof desiredValue !== "boolean") {
 				return rejectedPreflight(
 					"invalid_desired_value",
@@ -846,15 +862,23 @@ function createFlagWriter(
 				};
 			}
 			const rawFrom = authorityEnv[spec.envVar] ?? null;
-			const desired = change.newValue as boolean;
-			const rawTo =
-				spec.polarity === "default_on"
-					? desired
-						? null
-						: "0"
-					: desired
-						? "1"
-						: null;
+			// FLY-1356: enum flags write the target value ITSELF (always explicit,
+			// never delete — matches the flag-routes stage policy). Bool flags keep
+			// the per-polarity delete-on-default policy byte-identically.
+			let rawTo: string | null;
+			if (spec.valueKind === "enum") {
+				rawTo = String(change.newValue);
+			} else {
+				const desired = change.newValue as boolean;
+				rawTo =
+					spec.polarity === "default_on"
+						? desired
+							? null
+							: "0"
+						: desired
+							? "1"
+							: null;
+			}
 			const result = applyFlagToggle(
 				{
 					envPath: deps.envPath,

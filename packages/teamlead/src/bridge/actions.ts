@@ -1106,6 +1106,12 @@ async function handleRetry(
 				...(phaseRole && session.design_backend
 					? { designBackend: session.design_backend }
 					: {}),
+				// FLY-1356: forced-arm continuation on retry (via==="override" only;
+				// sticky/hash ride the dispatcher's stamp lookup — R1#4).
+				...(session.skill_framework_mode_via === "override" &&
+					session.skill_framework_mode && {
+						skillFrameworkMode: session.skill_framework_mode,
+					}),
 				// FLY-1224 (R1 #1, settles FLY-840): a PHASE-row retry keeps its
 				// shared-branch identity — without this the retried implement rebuilds
 				// an independent branch instead of branch B, making the codex-retry /

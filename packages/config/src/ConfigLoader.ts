@@ -346,6 +346,27 @@ export class ConfigLoader {
 			}
 		}
 
+		// skill_framework (optional — FLY-1356). The split-participation OPT-OUT
+		// lever. Shape validated whenever PRESENT: a non-bool `split` must fail
+		// at load (loud), never silently coerce — the Blueprint-side reader fails
+		// closed (pins the project to A) on any load error.
+		const skillFramework = c.skill_framework as
+			| Record<string, unknown>
+			| undefined;
+		if (skillFramework != null) {
+			if (typeof skillFramework !== "object" || Array.isArray(skillFramework)) {
+				throw new Error(
+					"skill_framework must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (
+				skillFramework.split != null &&
+				typeof skillFramework.split !== "boolean"
+			) {
+				throw new Error("skill_framework.split must be a boolean when set");
+			}
+		}
+
 		// qa (optional — FLY-579). Absent or auto:false → off (byte-compatible).
 		// Shape validated whenever PRESENT so a malformed config fails loudly.
 		const qa = c.qa as Record<string, unknown> | undefined;

@@ -1,0 +1,175 @@
+/**
+ * FLY-1356 — skill_framework_mode three-way switch (single source of truth).
+ *
+ * Three mutually-exclusive Runner skill-framework arms:
+ *   A `superpowers` — status quo (default + kill-switch target)
+ *   B `matt`        — mattpocock/skills 6-skill subset (vendored plugin)
+ *   C `bare`        — neither framework installed
+ * plus the env-only meta value `split` (per-issue stable-hash bucketing).
+ *
+ * This module owns the RESOLUTION semantics (plan §0 table). The apply layer
+ * (Blueprint: matt readiness probe, plugin/prompt effect, `noop_backend` marking
+ * for non-claude-tmux backends) lives in edge-worker — not here.
+ *
+ * The resolver is a TOTAL function (Bar-Raiser R1#1): every input combination
+ * returns `{mode, via}` and it never throws. In particular a stale per-dispatch
+ * override colliding with a kill (env no longer `split`) is IGNORED with a
+ * console.warn — never an error that would break an in-flight successor
+ * pipeline. Any parse doubt fails closed to `superpowers` (red line #2).
+ */
+
+import { createHash } from "node:crypto";
+
+export const SKILL_FRAMEWORK_MODES = ["superpowers", "matt", "bare"] as const;
+export type SkillFrameworkMode = (typeof SKILL_FRAMEWORK_MODES)[number];
+
+/** env-only meta value: per-issue stable-hash split across the three arms. */
+export const SKILL_FRAMEWORK_SPLIT = "split";
+export const SKILL_FRAMEWORK_MODE_ENV = "FLYWHEEL_SKILL_FRAMEWORK_MODE";
+
+/** How the effective mode was decided — the attribution join key's second half. */
+export const SKILL_FRAMEWORK_VIAS = [
+	"default", // env unset or invalid (fail-closed)
+	"forced", // env explicitly one of the three modes (global force / kill)
+	"project_opt_out", // split, but project config skill_framework.split=false
+	"inherited", // split, auto-QA session inherits its parent session's mode
+	"override", // split, per-dispatch override (529 eval; successor-carried)
+	"sticky", // split, same issue already stamped (sessions lookup by issue_id)
+	"hash", // split, first admission → stable hash bucket
+	"fallback_superpowers", // matt readiness probe failed (Blueprint layer)
+	"noop_backend", // backend ≠ claude-tmux: mode recorded, mechanically no-op
+] as const;
+export type SkillFrameworkVia = (typeof SKILL_FRAMEWORK_VIAS)[number];
+
+export function isSkillFrameworkVia(v: unknown): v is SkillFrameworkVia {
+	return (
+		typeof v === "string" &&
+		(SKILL_FRAMEWORK_VIAS as readonly string[]).includes(v)
+	);
+}
+
+/** Real-machine spike values (research.md S2). */
+export const SUPERPOWERS_PLUGIN_KEY = "superpowers@superpowers-dev";
+export const MATT_SKILLS_PLUGIN_KEY = "matt-skills@matt-skills";
+
+export function isSkillFrameworkMode(v: unknown): v is SkillFrameworkMode {
+	return (
+		typeof v === "string" &&
+		(SKILL_FRAMEWORK_MODES as readonly string[]).includes(v)
+	);
+}
+
+/**
+ * Stable per-issue bucket: sha256(identifier) first 4 bytes as a big-endian
+ * uint32, % 3, bucket order fixed [superpowers, matt, bare]. Deterministic —
+ * the same identifier always lands in the same arm.
+ */
+export function hashModeBucket(identifier: string): SkillFrameworkMode {
+	const digest = createHash("sha256").update(identifier).digest();
+	// % 3 is always in range; the cast satisfies noUncheckedIndexedAccess.
+	return SKILL_FRAMEWORK_MODES[
+		digest.readUInt32BE(0) % SKILL_FRAMEWORK_MODES.length
+	] as SkillFrameworkMode;
+}
+
+export interface SkillFrameworkResolveArgs {
+	/** The Bridge-global env (call_time read → direct-toggleable). */
+	env: Record<string, string | undefined>;
+	/** Linear identifier (e.g. "FLY-1356"); hash input on first admission. */
+	issueIdentifier: string;
+	/** Per-dispatch override (529 eval / successor-carried). split-only. */
+	override?: SkillFrameworkMode;
+	/** Existing sessions stamp for this issue_id (sticky, R1#4). split-only. */
+	priorStamp?: SkillFrameworkMode;
+	/**
+	 * The sticky-stamp lookup THREW (store read failure) — Codex R1 HIGH-2.
+	 * Under `split` this blocks the hash fallthrough: a broken read must fail
+	 * closed to A, never land the issue in an experimental arm. split-only.
+	 */
+	priorStampReadFailed?: boolean;
+	/** Parent session's mode for an auto-QA spawn (inherited, R1#3). split-only. */
+	parentMode?: SkillFrameworkMode;
+	/** Project participation (skill_framework.split); default true. */
+	projectSplitParticipation?: boolean;
+}
+
+/** Validate an optional mode-ish input; junk → undefined + warn (fail-closed). */
+function sanitizeMode(
+	value: unknown,
+	label: string,
+): SkillFrameworkMode | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (isSkillFrameworkMode(value)) return value;
+	console.warn(
+		`[skill-framework-mode] ignoring invalid ${label}: ${String(value)}`,
+	);
+	return undefined;
+}
+
+/**
+ * Plan §0 priority table (high → low). Total function — never throws.
+ * The matt readiness fallback and `noop_backend` marking are the Blueprint
+ * apply layer's job and deliberately NOT handled here.
+ */
+export function resolveSkillFrameworkMode(args: SkillFrameworkResolveArgs): {
+	mode: SkillFrameworkMode;
+	via: SkillFrameworkVia;
+} {
+	const raw = args.env[SKILL_FRAMEWORK_MODE_ENV];
+	const override = sanitizeMode(args.override, "override");
+	const priorStamp = sanitizeMode(args.priorStamp, "priorStamp");
+	const parentMode = sanitizeMode(args.parentMode, "parentMode");
+
+	// env unset → default A. A stale override outside `split` is ignored (R1#1).
+	if (raw === undefined || raw === "") {
+		if (override) {
+			console.warn(
+				`[skill-framework-mode] override "${override}" ignored: ${SKILL_FRAMEWORK_MODE_ENV} is unset (kill/default in effect)`,
+			);
+		}
+		return { mode: "superpowers", via: "default" };
+	}
+
+	// Global force (also the kill-switch position: set back to "superpowers").
+	if (isSkillFrameworkMode(raw)) {
+		if (override && override !== raw) {
+			console.warn(
+				`[skill-framework-mode] override "${override}" ignored: flag is forced to "${raw}" (kill-switch semantics — in-flight pipelines proceed as forced)`,
+			);
+		}
+		return { mode: raw, via: "forced" };
+	}
+
+	if (raw === SKILL_FRAMEWORK_SPLIT) {
+		// Project opt-out lever: false pins the project to A under split.
+		if (args.projectSplitParticipation === false) {
+			return { mode: "superpowers", via: "project_opt_out" };
+		}
+		// Auto-QA inherits the implement arm — one issue, one arm end to end.
+		if (parentMode) return { mode: parentMode, via: "inherited" };
+		// Explicit per-dispatch arm (529 eval), sticky for the whole pipeline.
+		if (override) return { mode: override, via: "override" };
+		// Same issue already admitted → keep its bucket (identifier drift-proof).
+		if (priorStamp) return { mode: priorStamp, via: "sticky" };
+		// Codex R1 HIGH-2: a FAILED stamp read must never fall through to the
+		// hash — the issue may already be stamped in another arm (hashing here
+		// could split it), and an infrastructure fault must never push an issue
+		// INTO an experimental arm. Fail closed to A with the same safety-pin
+		// via as the matt readiness fallback (eval hygiene already excludes
+		// fallback_superpowers rows — runbook §5). Deliberately AFTER the
+		// sticky check: a successfully read stamp is authoritative.
+		if (args.priorStampReadFailed) {
+			console.warn(
+				"[skill-framework-mode] sticky-stamp read failed — failing closed to superpowers (never hash on a broken read)",
+			);
+			return { mode: "superpowers", via: "fallback_superpowers" };
+		}
+		return { mode: hashModeBucket(args.issueIdentifier), via: "hash" };
+	}
+
+	// Unknown env value → fail closed to A (never silently enter an arm).
+	console.warn(
+		`[skill-framework-mode] invalid ${SKILL_FRAMEWORK_MODE_ENV}="${raw}" — failing closed to superpowers`,
+	);
+	return { mode: "superpowers", via: "default" };
+}

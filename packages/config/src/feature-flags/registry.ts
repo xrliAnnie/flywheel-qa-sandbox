@@ -2432,6 +2432,65 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		// FLY-1356: the three-way skill-framework switch (A=superpowers status
+		// quo / B=matt / C=bare) + the env-only meta value `split` (per-issue
+		// stable-hash bucketing). KILL SEMANTICS: set back to "superpowers" (or
+		// delete the key) → every NEW dispatch resolves A immediately, no Bridge
+		// restart (call_time read + direct toggle). In-flight B/C sessions are
+		// NOT retro-changed (spawn-time plugin state persists; use close-runner
+		// to clear the floor — see the runbook). Resolution priority lives in
+		// resolveSkillFrameworkMode (plan §0).
+		name: "skill_framework_mode",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SKILL_FRAMEWORK_MODE",
+		polarity: "default_on",
+		valueKind: "enum",
+		enumValues: ["superpowers", "matt", "bare", "split"],
+		default: "superpowers",
+		description:
+			"FLY-1356: Runner skill 框架三选一（superpowers=A 现状默认 / matt=B / bare=C / split=按 issue 稳定哈希分流）。kill = 设回 superpowers，秒级生效不重启；存量 in-flight session 不追改",
+		readSites: [
+			envSite(
+				"packages/edge-worker/src/Blueprint.ts",
+				"resolveSkillFrameworkForRun",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"resolve.direct-toggle.test:skill_framework_mode live-observe (enum)",
+	},
+	{
+		// FLY-1356: the project OPT-OUT lever (not an enable switch). Only
+		// consulted when the Bridge-global flag skill_framework_mode = "split":
+		// `skill_framework.split: false` pins that project's Runners to the A
+		// arm (superpowers) with via=project_opt_out. Re-read at every dispatch
+		// resolution (Tadashi: Leads can pull their project out immediately);
+		// a config read failure fails closed → project pinned to A + warn.
+		name: "skill_framework_split_participation",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		configKey: "skill_framework.split",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1356: split 分流下该项目是否参与实验臂（false = 项目钉回 A/superpowers，via 记 project_opt_out；这是退出杠杆，不是启用开关）",
+		readSites: [
+			{
+				file: "packages/edge-worker/src/Blueprint.ts",
+				symbol: "skillFrameworkParticipation",
+				pattern: "config",
+				timing: "call_time",
+			},
+		],
+		toggleable: "readonly",
+	},
+	{
 		name: "proofshot",
 		category: "feature",
 		source: "project_config",

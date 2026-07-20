@@ -167,6 +167,12 @@ jobs:
           bash scripts/__tests__/provision-fleet-host.test.sh
           bash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'
 
+      # FLY-1356: skill-framework arm definitions are FROZEN artifacts — the
+      # matt-skills vendor structure + B/C prompt-variant contracts (bare arm
+      # Superpowers grep-zero with positive controls; baselines stay on A).
+      - name: Test — FLY-1356 skill-framework vendor + variant contracts
+        run: bash scripts/__tests__/skill-framework-variants.test.sh
+
       # FLY-648: one-command setup wizard (flywheel-setup.sh). Hermetic —
       # fixture HOMEs + stubbed curl/systemctl/loginctl + guided inputs via
       # the FLYWHEEL_SETUP_ANSWER_* automation seam. Needs the built teamlead

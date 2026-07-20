@@ -1261,6 +1261,12 @@ export class AutoQaCoordinator {
 				shareParentBranch: false,
 				successorExecutionId: opts?.retryAttemptId,
 				startPoint: sha,
+				// FLY-1356 (R1#3): the QA runner inherits the implement session's arm
+				// — one issue, one arm end to end; the separate QA·issue must never
+				// hash itself into a different bucket.
+				...(session.skill_framework_mode && {
+					skillFrameworkModeParent: session.skill_framework_mode,
+				}),
 				qaContext,
 			});
 			if (opts?.retryAttemptId && result.executionId !== opts.retryAttemptId) {

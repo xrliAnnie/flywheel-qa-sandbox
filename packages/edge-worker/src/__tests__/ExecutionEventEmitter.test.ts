@@ -105,6 +105,40 @@ describe("TeamLeadClient", () => {
 		expect(payload.runnerModel).toBeUndefined();
 	});
 
+	// FLY-1356 (Codex R1 HIGH-3 — the FLY-793 lesson caught again one field
+	// down): the arm attribution must survive REAL serialization. These
+	// assertions read the actual HTTP body a live server received, so a
+	// payload literal that forgets the fields cannot pass — mocking the whole
+	// envelope would prove nothing about the wire bytes event-route.ts reads.
+	it("emitStarted carries skillFrameworkMode + skillFrameworkModeVia on the wire", async () => {
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitStarted(
+			makeEnvelope({
+				skillFrameworkMode: "matt",
+				skillFrameworkModeVia: "hash",
+			}),
+		);
+		await client.flush();
+
+		expect(receivedBodies).toHaveLength(1);
+		const body = receivedBodies[0] as Record<string, unknown>;
+		expect(body.event_type).toBe("session_started");
+		const payload = body.payload as Record<string, unknown>;
+		expect(payload.skillFrameworkMode).toBe("matt");
+		expect(payload.skillFrameworkModeVia).toBe("hash");
+	});
+
+	it("emitStarted omits BOTH skill-framework keys when the envelope has none (byte-compat)", async () => {
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitStarted(makeEnvelope());
+		await client.flush();
+
+		const payload = (receivedBodies[0] as Record<string, unknown>)
+			.payload as Record<string, unknown>;
+		expect("skillFrameworkMode" in payload).toBe(false);
+		expect("skillFrameworkModeVia" in payload).toBe(false);
+	});
+
 	it("FLY-1259: emitStarted carries designBackend in the payload", async () => {
 		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
 		await client.emitStarted(makeEnvelope({ designBackend: "claude" }));

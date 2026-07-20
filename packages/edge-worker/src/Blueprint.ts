@@ -10,16 +10,23 @@ import type {
 	FounderUxGateConfig,
 	PonytailConfig,
 	PonytailInput,
+	SkillFrameworkMode,
+	SkillFrameworkVia,
 	SkillsConfig,
 } from "flywheel-config";
 import {
 	DEFAULT_GATE_TIMEOUT_MS,
 	isFounderUxGateEnabled,
 	isUiDesignFlavored,
+	MATT_SKILLS_PLUGIN_KEY,
 	PONYTAIL_CONFLICT,
 	PONYTAIL_PLUGIN,
 	PONYTAIL_SELECTOR_UNAVAILABLE,
 	resolvePonytailRequested,
+	resolveSkillFrameworkMode,
+	SKILL_FRAMEWORK_MODE_ENV,
+	SKILL_FRAMEWORK_SPLIT,
+	SUPERPOWERS_PLUGIN_KEY,
 	toPonytailCondition,
 } from "flywheel-config";
 import type {
@@ -167,6 +174,39 @@ export function defaultPonytailReadiness(backend: string): boolean {
 	return ready;
 }
 
+/**
+ * FLY-1356: matt-skills readiness cache — caches ONLY positive (ready)
+ * results, mirroring the ponytail probe (defaultPonytailReadiness above). A
+ * negative result is re-probed on the next matt-resolved run so an operator
+ * running `scripts/setup-matt-skills.sh` mid-lifetime is picked up without a
+ * Bridge restart.
+ */
+const mattSkillsReadyBackends = new Set<string>();
+
+/**
+ * FLY-1356: default matt-skills (B arm) readiness probe. Only claude-tmux can
+ * consume the plugin; the caller only probes when the resolved mode is `matt`
+ * AND the backend is claude-tmux. Any error (claude missing, plugin absent)
+ * → not ready → the caller falls back to superpowers with
+ * via=`fallback_superpowers` (red line #2: never silently run a crippled B).
+ */
+export function defaultMattSkillsReadiness(backend: string): boolean {
+	if (backend !== "claude-tmux") return false;
+	if (mattSkillsReadyBackends.has(backend)) return true;
+	let ready = false;
+	try {
+		execFileSync("claude", ["plugin", "details", MATT_SKILLS_PLUGIN_KEY], {
+			stdio: "ignore",
+			timeout: 20_000,
+		});
+		ready = true;
+	} catch {
+		ready = false;
+	}
+	if (ready) mattSkillsReadyBackends.add(backend);
+	return ready;
+}
+
 /** Runtime context for a single Blueprint execution */
 export interface BlueprintContext {
 	teamName: string;
@@ -221,6 +261,19 @@ export interface BlueprintContext {
 	sessionRole?: string;
 	/** FLY-1259: effective design vendor locked at three-stage admission. */
 	designBackend?: DesignBackend;
+	// FLY-1356 — skill_framework_mode inputs (all optional; absent = resolve
+	// from env/hash alone, byte-compatible). Threaded on the designBackend rails:
+	/** Explicit per-dispatch arm (529 eval / successor-carried). split-only. */
+	skillFrameworkModeOverride?: SkillFrameworkMode;
+	/** Same-issue prior stamp from sessions (sticky, R1#4). split-only. */
+	skillFrameworkModePrior?: SkillFrameworkMode;
+	/**
+	 * The dispatcher's sticky-stamp lookup THREW (Codex R1 HIGH-2). Resolver
+	 * fails closed to A — never the hash bucket — on a broken read. split-only.
+	 */
+	skillFrameworkModeStampReadFailed?: boolean;
+	/** Parent session's recorded mode for an auto-QA spawn (R1#3). split-only. */
+	skillFrameworkModeParent?: SkillFrameworkMode;
 	// FLY-793 — Bridge-INTERNAL three-stage flag (PhaseOrchestrator only; never
 	// from /api/runs/start or runner payload). When set, the Design/Implement/QA
 	// phase-sessions share ONE branch B (worktree key = parent main key,
@@ -627,6 +680,20 @@ export class Blueprint {
 		private ponytailReadiness: (
 			backend: string,
 		) => boolean = defaultPonytailReadiness,
+		// FLY-1356 — per-project split-participation reader (fresh read each
+		// resolution so a Lead's opt-out takes effect immediately). Consulted
+		// ONLY when the env flag is `split`. Absent → participate (default).
+		// A reader that THROWS is fail-closed: the project is pinned to A with
+		// via=project_opt_out + console.warn (red line #2).
+		private skillFrameworkParticipation?: (
+			projectName: string | undefined,
+		) => boolean,
+		// FLY-1356 — matt-skills (B arm) readiness probe; injectable for tests.
+		// Negative results are never cached (setup-matt-skills.sh mid-lifetime
+		// is picked up by the next run, no Bridge restart).
+		private skillFrameworkReadiness: (
+			backend: string,
+		) => boolean = defaultMattSkillsReadiness,
 	) {}
 
 	async run(
@@ -649,6 +716,12 @@ export class Blueprint {
 		// project-on) and readiness failure both yield an `unavailable` condition
 		// (no --settings, recorded for audit, excluded from 614/616).
 		const ponytailCondition = this.resolvePonytailCondition(ctx, hydrated);
+
+		// FLY-1356: resolve the skill-framework arm BEFORE the event envelope so
+		// session_started carries `skill_framework_mode`/`_via` (the attribution
+		// join key). Returns undefined when the flag sits at its default —
+		// envelope stays byte-identical (red line #1).
+		const skillFramework = this.resolveSkillFrameworkForRun(ctx, hydrated);
 
 		const env: EventEnvelope = {
 			executionId,
@@ -685,6 +758,13 @@ export class Blueprint {
 			...(ctx.runnerModel && { runnerModel: ctx.runnerModel }),
 			// FLY-615: persisted ponytail condition (→ session.ponytail_condition).
 			...(ponytailCondition && { ponytailCondition }),
+			// FLY-1356: persisted skill-framework arm + attribution (→
+			// session.skill_framework_mode/_via). Absent when the flag sits at
+			// its default — envelope byte-identical (red line #1).
+			...(skillFramework && {
+				skillFrameworkMode: skillFramework.mode,
+				skillFrameworkModeVia: skillFramework.via,
+			}),
 			// FLY-1372 §2.5: Bridge-trusted behavior fields ride session creation
 			// ONLY for engine-owned generalized (pipeline.dag) starts — legacy
 			// dispatches keep the route-patch persistence timing byte-identical
@@ -760,6 +840,74 @@ export class Blueprint {
 		return toPonytailCondition(requested, ready).encoded;
 	}
 
+	/**
+	 * FLY-1356: resolve this run's skill-framework arm (plan §0 table).
+	 * Returns undefined when the env flag sits at its default (unset/invalid)
+	 * — envelope, spawn args and prompt all stay byte-identical (red line #1).
+	 * Non-default resolutions record `{mode, via}`:
+	 *  - backend ≠ claude-tmux → via overwritten to `noop_backend` (mode still
+	 *    recorded; plugin/prompt effects are mechanically no-op — R1#7)
+	 *  - resolved `matt` whose readiness probe fails → superpowers +
+	 *    `fallback_superpowers` (never silently run a crippled B — red line #2)
+	 */
+	private resolveSkillFrameworkForRun(
+		ctx: BlueprintContext,
+		hydrated: HydratedContext,
+	): { mode: SkillFrameworkMode; via: SkillFrameworkVia } | undefined {
+		// Participation is only meaningful under `split`; skip the config read
+		// entirely otherwise (default path stays zero-IO). The env read here is
+		// FLYWHEEL_SKILL_FRAMEWORK_MODE at call time (direct-toggle live).
+		let participation: boolean | undefined;
+		if (
+			process.env[SKILL_FRAMEWORK_MODE_ENV] === SKILL_FRAMEWORK_SPLIT &&
+			this.skillFrameworkParticipation
+		) {
+			try {
+				participation = this.skillFrameworkParticipation(ctx.projectName);
+			} catch (err) {
+				// Fail-closed: any doubt about the project's participation pins it
+				// to the A arm (recorded as project_opt_out via participation=false).
+				console.warn(
+					`[Blueprint] skill_framework participation read failed for ${ctx.projectName ?? "?"} — pinning to superpowers (project_opt_out): ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+				participation = false;
+			}
+		}
+		// FLY-272-aligned identifier semantics (|| + trim): empty/whitespace
+		// falls through; ultimate fallback is the raw issue id (R1#4 — the hash
+		// only fires on FIRST admission; later dispatches ride the sticky stamp).
+		const identifier =
+			ctx.issueIdentifier?.trim() ||
+			hydrated.issueIdentifier?.trim() ||
+			hydrated.issueId;
+		const resolved = resolveSkillFrameworkMode({
+			env: process.env,
+			issueIdentifier: identifier,
+			override: ctx.skillFrameworkModeOverride,
+			priorStamp: ctx.skillFrameworkModePrior,
+			priorStampReadFailed: ctx.skillFrameworkModeStampReadFailed,
+			parentMode: ctx.skillFrameworkModeParent,
+			projectSplitParticipation: participation,
+		});
+		// Flag at default (unset or invalid) → record nothing (byte-compat).
+		if (resolved.via === "default") return undefined;
+		const backend = ctx.runnerBackend ?? "claude-tmux";
+		if (backend !== "claude-tmux") {
+			// Mode recorded for attribution completeness; mechanically no-op for
+			// this backend (codex/agy/kimi don't consume claude plugins/variants).
+			return { mode: resolved.mode, via: "noop_backend" };
+		}
+		if (resolved.mode === "matt" && !this.skillFrameworkReadiness(backend)) {
+			console.warn(
+				`[Blueprint] matt-skills plugin not ready for ${hydrated.issueId} — falling back to superpowers (run scripts/setup-matt-skills.sh to enable the B arm)`,
+			);
+			return { mode: "superpowers", via: "fallback_superpowers" };
+		}
+		return resolved;
+	}
+
 	private async runInner(
 		node: DagNode,
 		projectRoot: string,
@@ -782,6 +930,21 @@ export class Blueprint {
 		// BLOCKING gate text for exactly those combos — text a codex exec
 		// runner can never satisfy (it cannot sit inside a blocking process).
 		const isCodexRunner = (ctx.runnerBackend ?? "claude-tmux") === "codex-tmux";
+		// FLY-1356: the effective skill-framework arm for this run (resolved in
+		// run(), recorded on the envelope). Plugin + prompt-variant effects fire
+		// ONLY for claude-tmux (non-claude backends carry via=noop_backend and
+		// stay mechanically untouched). Default/absent → superpowers → zero
+		// contribution everywhere (byte-compat sentinel).
+		const skillFrameworkMode: SkillFrameworkMode =
+			env.skillFrameworkMode ?? "superpowers";
+		const skillModeActive =
+			(ctx.runnerBackend ?? "claude-tmux") === "claude-tmux" &&
+			skillFrameworkMode !== "superpowers";
+		const modeDisabledPlugins = skillModeActive ? [SUPERPOWERS_PLUGIN_KEY] : [];
+		const modeEnabledPluginsExtra =
+			skillModeActive && skillFrameworkMode === "matt"
+				? [MATT_SKILLS_PLUGIN_KEY]
+				: [];
 		const startTime = Date.now();
 		const executionId = env.executionId;
 		let cwd = projectRoot;
@@ -2016,9 +2179,14 @@ export class Blueprint {
 						`Update the construction site to pass flywheelRepoRoot (FLY-137 v1.27.2).`,
 				);
 			}
-			const agentContent = await readAgentFile(
+			// FLY-1356: B/C arms read the `<agent-file>.{matt,bare}.md` variant
+			// when it exists, falling back to the baseline file (arm definition
+			// frozen in the variants; A arm = baseline, byte-untouched).
+			// domain_file and the generalized-workflow path get NO variants.
+			const agentContent = await readAgentFileWithSkillVariant(
 				agentFileBaseDir ?? cwd,
 				dispatchResult.agentConfig.agent_file,
+				skillModeActive ? skillFrameworkMode : undefined,
 			);
 			if (agentContent) {
 				// FLY-1188: role files are written ONCE for all runners and read
@@ -2122,12 +2290,35 @@ export class Blueprint {
 				...(ctx.runnerEffort !== undefined && { effort: ctx.runnerEffort }),
 				// FLY-751: per-runner MCP slim profile → adapter --settings/--no-chrome.
 				// Absent/null stays absent (byte-compat spawn).
+				// FLY-1356: the skill-framework arm's plugin contributions merge into
+				// the SAME fields (TmuxAdapter already folds both into one --settings
+				// map): bare/matt disable superpowers; matt additionally enables the
+				// vendored matt-skills plugin. mode=superpowers contributes NOTHING —
+				// with no mcpProfile the fields stay entirely absent (sentinel).
 				...(ctx.runnerMcpProfile && {
-					disabledPlugins: ctx.runnerMcpProfile.disabledPlugins,
+					disabledPlugins: [
+						...ctx.runnerMcpProfile.disabledPlugins,
+						...modeDisabledPlugins,
+					],
 					disableChrome: ctx.runnerMcpProfile.disableChrome,
 					// FLY-1185 §2.7: positive opt-ins ride the same profile.
-					enabledPluginsExtra: ctx.runnerMcpProfile.enabledPluginsExtra,
+					enabledPluginsExtra:
+						ctx.runnerMcpProfile.enabledPluginsExtra !== undefined ||
+						modeEnabledPluginsExtra.length > 0
+							? [
+									...(ctx.runnerMcpProfile.enabledPluginsExtra ?? []),
+									...modeEnabledPluginsExtra,
+								]
+							: undefined,
 				}),
+				...(!ctx.runnerMcpProfile && modeDisabledPlugins.length > 0
+					? {
+							disabledPlugins: modeDisabledPlugins,
+							...(modeEnabledPluginsExtra.length > 0 && {
+								enabledPluginsExtra: modeEnabledPluginsExtra,
+							}),
+						}
+					: {}),
 				...(phaseKeepAlive && { phaseKeepAlive }),
 				timeoutMs,
 				sessionDisplayName: `${displayId} ${cleanIssueTitle(hydrated.issueTitle)}`,
@@ -2418,6 +2609,26 @@ export class Blueprint {
 			);
 		}
 	}
+}
+
+/**
+ * FLY-1356: mode-variant agent-file resolution. For the matt/bare arms, try
+ * `<agent-file sans .md>.<mode>.md` first; fall back to the baseline file when
+ * the variant is absent (a project without variants runs its baseline prompt
+ * in every arm — arm-internal consistency is preserved by the shipped-generic
+ * + designer variants; see plan Task 8). mode undefined → baseline directly.
+ */
+async function readAgentFileWithSkillVariant(
+	repoRoot: string,
+	relativePath: string,
+	mode: SkillFrameworkMode | undefined,
+): Promise<string | null> {
+	if ((mode === "matt" || mode === "bare") && relativePath.endsWith(".md")) {
+		const variantPath = `${relativePath.slice(0, -3)}.${mode}.md`;
+		const variant = await readAgentFile(repoRoot, variantPath);
+		if (variant) return variant;
+	}
+	return readAgentFile(repoRoot, relativePath);
 }
 
 /**

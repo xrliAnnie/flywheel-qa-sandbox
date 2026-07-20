@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { DesignBackend } from "flywheel-config";
+import type {
+	DesignBackend,
+	SkillFrameworkMode,
+	SkillFrameworkVia,
+} from "flywheel-config";
 import type { TerminalFailureInfo } from "flywheel-core";
 import type { BlueprintResult } from "./Blueprint.js";
 
@@ -49,6 +53,15 @@ export interface EventEnvelope {
 	 * (byte-compatible).
 	 */
 	ponytailCondition?: string;
+	/**
+	 * FLY-1356: the EFFECTIVE skill-framework arm for this run (post matt
+	 * readiness fallback) + how it was decided. Persisted as
+	 * `sessions.skill_framework_mode` / `skill_framework_mode_via` — the
+	 * attribution join key for the A/B/C split eval. Absent → the flag sat at
+	 * its default when this run resolved (byte-compatible; no columns written).
+	 */
+	skillFrameworkMode?: SkillFrameworkMode;
+	skillFrameworkModeVia?: SkillFrameworkVia;
 	/**
 	 * FLY-1372 §2.5: Bridge-TRUSTED behavior fields, set only for engine-owned
 	 * generalized (pipeline.dag) starts so they land in the session row at
@@ -148,6 +161,13 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				runnerModel: env.runnerModel,
 				// FLY-615: ponytail condition → persisted as session.ponytail_condition.
 				ponytailCondition: env.ponytailCondition,
+				// FLY-1356 (Codex R1 HIGH-3 — the FLY-793 lesson, one field down):
+				// the arm attribution must ride the HTTP payload too. The /events
+				// sink records only what is actually on the wire (event-route
+				// requires BOTH enums valid before persisting), so omitting these
+				// here silently drops the A/B/C eval join key for any HTTP emitter.
+				skillFrameworkMode: env.skillFrameworkMode,
+				skillFrameworkModeVia: env.skillFrameworkModeVia,
 			},
 		});
 		this.track(p);

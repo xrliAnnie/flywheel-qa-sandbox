@@ -8,6 +8,7 @@ import type {
 	PhaseDispatchVendor,
 	PonytailInput,
 	RoleEffort,
+	SkillFrameworkMode,
 } from "flywheel-config";
 import type { QaContext } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { WorkflowShadowContext } from "./workflow-shadow-writer.js";
@@ -104,6 +105,13 @@ export interface RetryRequest {
 	dispatchEffort?: RoleEffort;
 	/** FLY-1259: effective design backend locked at three-stage admission. */
 	designBackend?: DesignBackend;
+	/**
+	 * FLY-1356: per-dispatch skill-framework arm continuation. Set ONLY when the
+	 * predecessor session was itself explicitly overridden (via === "override")
+	 * — a 529 forced arm stays forced for the whole retry/successor pipeline.
+	 * The resolver ignores it outside `split` (kill total-semantics, R1#1).
+	 */
+	skillFrameworkMode?: SkillFrameworkMode;
 	/**
 	 * FLY-245 D2 (plan §5.2.1): gateway pre-bound successor execution id.
 	 * When present the dispatcher MUST use it instead of generating a fresh
@@ -220,6 +228,18 @@ export interface StartRequest {
 	dispatchEffort?: RoleEffort;
 	/** FLY-1259: effective design backend locked at three-stage admission. */
 	designBackend?: DesignBackend;
+	/**
+	 * FLY-1356: explicit per-dispatch skill-framework arm (529 eval forced-arm).
+	 * Validated at the runs-route boundary (∈ three modes AND flag === split).
+	 * Sticky for the whole pipeline via the session-row via="override" record.
+	 */
+	skillFrameworkMode?: SkillFrameworkMode;
+	/**
+	 * FLY-1356 (R1#3): the parent implement session's recorded arm, set ONLY by
+	 * the Auto-QA coordinator (Bridge-internal, never from the HTTP body) — the
+	 * QA runner inherits the implement arm instead of hashing its own QA issue.
+	 */
+	skillFrameworkModeParent?: SkillFrameworkMode;
 	/**
 	 * FLY-579: explicit git start point for the worktree (a commit SHA / ref).
 	 * Threaded to `WorktreeManager.create({ startPoint })`. The Auto-QA

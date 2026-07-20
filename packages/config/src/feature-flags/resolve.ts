@@ -115,10 +115,20 @@ function resolveEnvEffective(
 	env: Record<string, string | undefined>,
 ): boolean | string {
 	const raw = spec.envVar ? env[spec.envVar] : undefined;
-	// enum / value: surface the raw value (or default). DECISION_MODE's real-parser
-	// path (which throws on invalid) is handled in resolveFlag so a malformed value
-	// becomes an explicit `error`, never a fake "valid" effective state.
-	if (spec.valueKind === "enum" || spec.valueKind === "value") {
+	// enum: a raw value outside enumValues THROWS (FLY-1356 R1#8) — the callers
+	// (resolveFlag / withEnvSources) turn it into an explicit display-only
+	// `error`, never a fake "valid" effective state. Empty string is treated as
+	// unset (default), matching the owning parsers' fail-closed semantics.
+	// DECISION_MODE's real-parser path is handled separately in resolveFlag.
+	if (spec.valueKind === "enum") {
+		if (raw === undefined || raw === "") return String(spec.default);
+		if (spec.enumValues && !spec.enumValues.includes(raw)) {
+			throw new Error(`invalid enum value: ${raw}`);
+		}
+		return raw;
+	}
+	// value: surface the raw value (or default).
+	if (spec.valueKind === "value") {
 		return raw ?? String(spec.default);
 	}
 	// bool: reuse the two idioms exactly.
@@ -263,7 +273,19 @@ export function resolveFlag(
 				isDefault: effective === String(spec.default),
 			};
 		}
-		const effective = resolveEnvEffective(spec, env);
+		// FLY-1356 R1#8: an enum raw outside enumValues throws in
+		// resolveEnvEffective — surface it as an explicit display-only error so
+		// the console never shows garbage as the current mode while the owning
+		// code actually runs its fail-closed default.
+		let effective: boolean | string;
+		try {
+			effective = resolveEnvEffective(spec, env);
+		} catch {
+			return {
+				...base,
+				error: `invalid ${spec.envVar}: ${env[spec.envVar ?? ""]}`,
+			};
+		}
 		return withEnvSources(base, spec, effective, ctx);
 	}
 

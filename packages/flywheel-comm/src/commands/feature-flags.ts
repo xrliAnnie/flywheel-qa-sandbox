@@ -93,12 +93,17 @@ export async function runFeatureFlags(
 	if (sub === "apply") {
 		const name = flagVal(rest, "--name");
 		const toStr = flagVal(rest, "--to");
-		if (!name || (toStr !== "on" && toStr !== "off")) {
+		// FLY-1356: bool flags keep on|off; enum flags (skill_framework_mode)
+		// take the target value itself (e.g. --to split). The server validates
+		// enum membership and 400s unknown values — the CLI only shapes the type.
+		if (!name || !toStr) {
 			errorLog(
-				"usage: flywheel-comm feature-flags apply --name <flag> --to on|off [--bridge-url <url>]",
+				"usage: flywheel-comm feature-flags apply --name <flag> --to on|off|<enum-value> [--bridge-url <url>]",
 			);
 			return exit(1);
 		}
+		const toValue: boolean | string =
+			toStr === "on" ? true : toStr === "off" ? false : toStr;
 		const httpJson =
 			deps.httpJson ??
 			((
@@ -114,7 +119,7 @@ export async function runFeatureFlags(
 			const sres = await httpJson(`${bridgeUrl}/api/fleet/flag/stage`, {
 				method: "POST",
 				headers: hdr,
-				body: JSON.stringify({ name, to: toStr === "on" }),
+				body: JSON.stringify({ name, to: toValue }),
 			});
 			if (!sres.ok) {
 				errorLog(`feature-flags apply: stage failed (${sres.status})`);

@@ -196,6 +196,21 @@ function renderFlagControl(flag: FlagView, mode: FlagControlMode): string {
 	if (mode === "none" || flag.divergence || !isFlagViewDirectToggleable(flag)) {
 		return "";
 	}
+	// FLY-1356: enum direct flags (skill_framework_mode) get a value dropdown
+	// instead of an on/off control. The phone copy-paste script turns a changed
+	// select into a `feature-flags apply --name <flag> --to <value>` line.
+	if (flag.valueKind === "enum") {
+		const current = String(
+			flag.displayEffective ?? flag.effective ?? flag.default,
+		);
+		const opts = (flag.enumValues ?? [])
+			.map(
+				(v) =>
+					`<option value="${esc(v)}"${v === current ? " selected" : ""}>${esc(v)}</option>`,
+			)
+			.join("");
+		return `<select class="ffc-select" data-ff-enum data-ff-name="${esc(flag.name)}" data-current="${esc(current)}">${opts}</select>`;
+	}
 	const on = (flag.displayEffective ?? flag.effective) === true;
 	const to = on ? "off" : "on";
 	if (mode === "console") {

@@ -189,6 +189,24 @@ export {
 	DEFAULT_RUNNER_DISABLED_PLUGINS,
 	resolveRunnerMcpProfile,
 } from "./runner-mcp-profile.js";
+// FLY-1356: skill_framework_mode three-way switch (A/superpowers, B/matt, C/bare).
+export type {
+	SkillFrameworkMode,
+	SkillFrameworkResolveArgs,
+	SkillFrameworkVia,
+} from "./skill-framework-mode.js";
+export {
+	hashModeBucket,
+	isSkillFrameworkMode,
+	isSkillFrameworkVia,
+	MATT_SKILLS_PLUGIN_KEY,
+	resolveSkillFrameworkMode,
+	SKILL_FRAMEWORK_MODE_ENV,
+	SKILL_FRAMEWORK_MODES,
+	SKILL_FRAMEWORK_SPLIT,
+	SKILL_FRAMEWORK_VIAS,
+	SUPERPOWERS_PLUGIN_KEY,
+} from "./skill-framework-mode.js";
 // FLY-793: three-stage pipeline phase model tiers.
 // FLY-1224: per-phase vendor dispatch table (vendor + model + effort).
 export type {
@@ -241,6 +259,7 @@ export type {
 	RoleEffort,
 	RoleName,
 	RunnerConfig,
+	SkillFrameworkConfig,
 	SkillsConfig,
 	TeamConfig,
 	TimeoutBehavior,

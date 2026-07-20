@@ -1180,6 +1180,74 @@ describe("FLY-1188: pre-registration vendor", () => {
 	});
 });
 
+// FLY-1356 fix round 2 (Codex R1 HIGH-2): a THROWING sticky-stamp lookup must
+// surface as readFailed on the Blueprint ctx (resolver fails closed to A) —
+// never be swallowed into "no stamp" (which would hash the issue into an
+// experimental arm on a broken read).
+describe("FLY-1356 — sticky-stamp lookup failure surfaces readFailed", () => {
+	afterEach(() => {
+		delete process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
+	});
+
+	async function dispatchWithLookup(
+		lookup: (issueId: string) => "superpowers" | "matt" | "bare" | undefined,
+	): Promise<Record<string, unknown>> {
+		const [name, runtime] = makeRuntime("TestProject");
+		const dispatcher = new RunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			lookup,
+		);
+		await dispatcher.start({
+			issueId: "FLY-1356",
+			projectName: "TestProject",
+		});
+		return (runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> })
+			.run.mock.calls[0]?.[2] as Record<string, unknown>;
+	}
+
+	it("a THROWING lookup under split → ctx.skillFrameworkModeStampReadFailed, dispatch survives", async () => {
+		process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = "split";
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const ctx = await dispatchWithLookup(() => {
+				throw new Error("db exploded");
+			});
+			expect(ctx.skillFrameworkModeStampReadFailed).toBe(true);
+			expect("skillFrameworkModePrior" in ctx).toBe(false);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it("a stamp under split threads through as skillFrameworkModePrior (no readFailed)", async () => {
+		process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = "split";
+		const ctx = await dispatchWithLookup(() => "matt");
+		expect(ctx.skillFrameworkModePrior).toBe("matt");
+		expect("skillFrameworkModeStampReadFailed" in ctx).toBe(false);
+	});
+
+	it("outside split the lookup is never consulted (zero-IO default path)", async () => {
+		delete process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
+		const lookup = vi.fn((): "matt" => {
+			throw new Error("must not be called");
+		});
+		const ctx = await dispatchWithLookup(lookup);
+		expect(lookup).not.toHaveBeenCalled();
+		expect("skillFrameworkModeStampReadFailed" in ctx).toBe(false);
+		expect("skillFrameworkModePrior" in ctx).toBe(false);
+	});
+});
+
 describe("FLY-1188: preRegistrationVendor()", () => {
 	it("maps transport mode / vendor to the pre-registration value", () => {
 		expect(preRegistrationVendor({ runnerTransportMode: "none" })).toBe("none");

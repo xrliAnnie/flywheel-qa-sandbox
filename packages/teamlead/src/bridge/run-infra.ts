@@ -77,6 +77,7 @@ import {
 	type WorkflowClaimsAdmissionSeam,
 } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
+import { makeSkillFrameworkParticipationReader } from "./skill-framework-participation.js";
 import type { TerminalCommDbSync } from "./terminal-commdb-sync.js";
 import type { BridgeConfig } from "./types.js";
 import type { WorkflowShadowRuntime } from "./workflow-shadow-writer.js";
@@ -239,6 +240,7 @@ async function createRunBlueprint(
 	founderUxGateConfig?: FounderUxGateConfig, // FLY-598: founder-UX gate prompt injection when mode != off
 	ponytailConfig?: PonytailConfig, // FLY-615: per-project ponytail rollout layer
 	ownerStateDbPath?: string, // FLY-766: this Bridge's actual StateStore db path → claude-tmux owner marker
+	skillFrameworkParticipation?: (projectName: string | undefined) => boolean, // FLY-1356: fresh per-dispatch split-participation read (project opt-out lever)
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
@@ -484,6 +486,8 @@ async function createRunBlueprint(
 			docFlowConfig, // FLY-205
 			founderUxGateConfig, // FLY-598
 			ponytailConfig, // FLY-615: per-project ponytail rollout layer
+			undefined, // ponytailReadiness — use Blueprint's default probe
+			skillFrameworkParticipation, // FLY-1356: split-participation reader
 		);
 
 		const cleanup = async () => {
@@ -656,6 +660,8 @@ export function createRunInfraDispatcher(input: {
 		input.workflowShadow,
 		createRunInfraWorkflowClaimsAdmission(input.store),
 		input.phaseRetryStartPointComputer,
+		// FLY-1356 (R1#4): sticky-stamp lookup — same issue keeps its arm.
+		(issueId) => input.store.getSkillFrameworkStamp(issueId),
 	);
 }
 
@@ -865,6 +871,14 @@ export async function setupRunInfrastructure(
 				flywheelRepoRoot,
 			);
 
+			// FLY-1356: split-participation reader (extracted for direct unit
+			// testing — Codex R1 HIGH-1: a non-mapping `skill_framework` must
+			// THROW → Blueprint fails closed, never read as participate=true).
+			// Fresh config read at every dispatch resolution; ENOENT / absent
+			// key → participate (default true).
+			const skillFrameworkParticipation =
+				makeSkillFrameworkParticipationReader(configPath);
+
 			const { blueprint, cleanup } = await createRunBlueprint(
 				tmuxSessionName,
 				fetchIssue,
@@ -879,6 +893,7 @@ export async function setupRunInfrastructure(
 				effectiveFounderUxGateConfig, // FLY-598/869: EFFECTIVE config (absent → enforce)
 				ponytailConfig, // FLY-615: per-project ponytail rollout layer
 				store.getDbPath(), // FLY-766: owner marker db-path truth
+				skillFrameworkParticipation, // FLY-1356
 			);
 
 			projectRuntimes.set(project.projectName, {

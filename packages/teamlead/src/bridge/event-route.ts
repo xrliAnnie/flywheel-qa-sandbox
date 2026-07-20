@@ -7,8 +7,12 @@ import type { FounderUxGateMode } from "flywheel-config";
 import {
 	isDesignBackend,
 	isFounderUxGateEnabled,
+	isSkillFrameworkMode,
+	isSkillFrameworkVia,
 	isThreeStagePhaseRole,
 	resolveCompletionSessionRole,
+	type SkillFrameworkMode,
+	type SkillFrameworkVia,
 } from "flywheel-config";
 import type { TerminalFailureInfo } from "flywheel-core";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
@@ -840,6 +844,21 @@ export function createEventRouter(
 					: undefined;
 				// FLY-615: persist the resolved ponytail condition (A/B join key).
 				const eventPonytailCondition = asString(payload.ponytailCondition);
+				// FLY-1356 (R1#7): accept ONLY the closed enums on the untrusted
+				// event wire — the /events ingest token is runner-visible, and the
+				// attribution columns must never hold arbitrary strings. BOTH must
+				// be valid to record EITHER (Bar-Raiser LOW-4: a valid mode with a
+				// garbage via would land a NULL-via row that silently drops out of
+				// the runbook's via-filtered GROUP BY).
+				const bothSkillEnumsValid =
+					isSkillFrameworkMode(payload.skillFrameworkMode) &&
+					isSkillFrameworkVia(payload.skillFrameworkModeVia);
+				const eventSkillFrameworkMode = bothSkillEnumsValid
+					? (payload.skillFrameworkMode as SkillFrameworkMode)
+					: undefined;
+				const eventSkillFrameworkVia = bothSkillEnumsValid
+					? (payload.skillFrameworkModeVia as SkillFrameworkVia)
+					: undefined;
 				// FLY-793 (Step 11): persist the chat-thread role (computed at dispatch
 				// as shareParentBranch ? role : 'main'). This HTTP started path must
 				// persist it too, or a runner started via /events loses the signal that
@@ -878,6 +897,10 @@ export function createEventRouter(
 							...(eventPonytailCondition && {
 								ponytail_condition: eventPonytailCondition,
 							}),
+							...(eventSkillFrameworkMode && {
+								skill_framework_mode: eventSkillFrameworkMode,
+								skill_framework_mode_via: eventSkillFrameworkVia,
+							}),
 							workflow_node_id: workflowNodeId,
 						},
 					);
@@ -910,6 +933,10 @@ export function createEventRouter(
 						}),
 						...(eventPonytailCondition && {
 							ponytail_condition: eventPonytailCondition,
+						}),
+						...(eventSkillFrameworkMode && {
+							skill_framework_mode: eventSkillFrameworkMode,
+							skill_framework_mode_via: eventSkillFrameworkVia,
 						}),
 						workflow_node_id: workflowNodeId,
 					});

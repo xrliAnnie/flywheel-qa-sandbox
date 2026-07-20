@@ -1170,6 +1170,65 @@ checkpoints:
 		});
 	});
 
+	// FLY-1356: skill_framework validation (split-participation opt-out lever)
+	describe("skill_framework validation", () => {
+		const withSkillFramework = (yaml: string) => `
+${MINIMAL_CONFIG_YAML}
+${yaml}
+`;
+
+		it("accepts absent skill_framework (participate by default)", async () => {
+			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.skill_framework).toBeUndefined();
+		});
+
+		it("accepts split: false (project opt-out)", async () => {
+			readFile.mockResolvedValue(
+				withSkillFramework(`
+skill_framework:
+  split: false
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.skill_framework?.split).toBe(false);
+		});
+
+		it("accepts split: true (explicit participate)", async () => {
+			readFile.mockResolvedValue(
+				withSkillFramework(`
+skill_framework:
+  split: true
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.skill_framework?.split).toBe(true);
+		});
+
+		it("rejects non-mapping skill_framework", async () => {
+			readFile.mockResolvedValue(
+				withSkillFramework(`
+skill_framework: "no"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/skill_framework must be a YAML mapping/,
+			);
+		});
+
+		it("rejects non-boolean split (fail loud at load, never coerce)", async () => {
+			readFile.mockResolvedValue(
+				withSkillFramework(`
+skill_framework:
+  split: "false"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/skill_framework\.split must be a boolean/,
+			);
+		});
+	});
+
 	// FLY-205: doc_flow validation
 	describe("doc_flow validation", () => {
 		const withDocFlow = (docFlowYaml: string) => `

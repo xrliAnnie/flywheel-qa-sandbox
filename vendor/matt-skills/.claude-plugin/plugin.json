@@ -1,0 +1,20 @@
+{
+	"name": "matt-skills",
+	"version": "1.2.0-fly1356",
+	"description": "FLY-1356 B-arm frozen vendor: 6-skill subset of mattpocock/skills @ 9603c1c (tdd, code-review, grilling, diagnosing-bugs, to-spec, to-tickets). See VENDOR.md for provenance and the frontmatter diff.",
+	"author": {
+		"name": "Matt Pocock",
+		"url": "https://www.aihero.dev"
+	},
+	"repository": "https://github.com/mattpocock/skills",
+	"license": "MIT",
+	"keywords": ["engineering", "skills", "tdd", "code-review", "grilling"],
+	"skills": [
+		"./skills/tdd",
+		"./skills/code-review",
+		"./skills/grilling",
+		"./skills/diagnosing-bugs",
+		"./skills/to-spec",
+		"./skills/to-tickets"
+	]
+}

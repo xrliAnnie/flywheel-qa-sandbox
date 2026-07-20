@@ -22,15 +22,20 @@ import type {
 	PipelineConfig,
 	PonytailInput,
 	RoleEffort,
+	SkillFrameworkMode,
 } from "flywheel-config";
 import {
 	ACCEPTED_DISPATCH_MODELS,
 	ConfigLoader,
 	DESIGN_BACKENDS,
 	isDesignBackend,
+	isSkillFrameworkMode,
 	isThreeStagePhaseRole,
 	normalizeDispatchModel,
 	resolveEffectiveFounderUxConfig,
+	SKILL_FRAMEWORK_MODE_ENV,
+	SKILL_FRAMEWORK_MODES,
+	SKILL_FRAMEWORK_SPLIT,
 } from "flywheel-config";
 import {
 	DOC_TIERS,
@@ -353,6 +358,41 @@ export function createRunsRouter(
 			return;
 		} else {
 			requestedDesignBackend = rawDesignBackend;
+		}
+
+		// FLY-1356: optional per-dispatch skill-framework arm (529 eval forced
+		// arm). Validated synchronously at the boundary like designBackend —
+		// never let a bad enum reach Blueprint. Accepted ONLY while the Bridge
+		// flag is `split`: outside split an explicit arm answers a bounded 400
+		// (the kill-switch is in effect); a successor-carried override hitting
+		// a kill mid-pipeline is absorbed by the resolver's total semantics
+		// instead (R1#1) — this 400 only guards NEW runs at the HTTP edge.
+		const rawSkillFrameworkMode = req.body.skillFrameworkMode;
+		let requestedSkillFrameworkMode: SkillFrameworkMode | undefined;
+		if (rawSkillFrameworkMode === undefined || rawSkillFrameworkMode === null) {
+			requestedSkillFrameworkMode = undefined;
+		} else if (!isSkillFrameworkMode(rawSkillFrameworkMode)) {
+			res.status(400).json({
+				success: false,
+				code: "INVALID_SKILL_FRAMEWORK_MODE",
+				reason: "unknown_mode",
+				allowed: [...SKILL_FRAMEWORK_MODES],
+				silent: false,
+			});
+			return;
+		} else if (
+			process.env[SKILL_FRAMEWORK_MODE_ENV] !== SKILL_FRAMEWORK_SPLIT
+		) {
+			res.status(400).json({
+				success: false,
+				code: "SKILL_FRAMEWORK_MODE_NOT_APPLICABLE",
+				reason: "flag_not_split",
+				requested: rawSkillFrameworkMode,
+				silent: false,
+			});
+			return;
+		} else {
+			requestedSkillFrameworkMode = rawSkillFrameworkMode;
 		}
 
 		// FLY-728 Part C: optional per-run `model` param — the difficulty-sorter's
@@ -1595,6 +1635,10 @@ export function createRunsRouter(
 				dispatchEffort,
 				...(effectiveDesignBackend && {
 					designBackend: effectiveDesignBackend,
+				}),
+				// FLY-1356: explicit per-dispatch arm (validated above; split-only)
+				...(requestedSkillFrameworkMode && {
+					skillFrameworkMode: requestedSkillFrameworkMode,
 				}),
 			});
 

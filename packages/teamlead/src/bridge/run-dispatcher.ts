@@ -17,12 +17,15 @@ import type {
 	RoleBackendMap,
 	RoleEffort,
 	RunnerModelDisplay,
+	SkillFrameworkMode,
 } from "flywheel-config";
 import {
 	adapterTypeToFamily,
 	isThreeStagePhaseRole,
 	renderRunnerModelDisplay,
 	resolveRunnerMcpProfile,
+	SKILL_FRAMEWORK_MODE_ENV,
+	SKILL_FRAMEWORK_SPLIT,
 } from "flywheel-config";
 import { openTmuxViewer } from "flywheel-core";
 import type { AgentDispatcher } from "flywheel-edge-worker";
@@ -457,7 +460,56 @@ export class RetryDispatcher implements IRetryDispatcher {
 		protected lifecycleLaunchGuard?: LifecycleLaunchGuard,
 		/** FLY-1257 M3: recover the shared branch tip before a phase retry. */
 		protected phaseRetryStartPointComputer?: PhaseRetryStartPointComputer,
+		/**
+		 * FLY-1356 (R1#4): sticky-stamp lookup (production: store.
+		 * getSkillFrameworkStamp). The hash only fires on an issue's FIRST
+		 * admission; later dispatches carry the prior arm so identifier-source
+		 * instability can never split one issue across arms. Undefined ⇒ no
+		 * stamp threaded (byte-compatible; resolver falls through normally).
+		 */
+		protected skillFrameworkStampLookup?: (
+			issueId: string,
+		) => SkillFrameworkMode | undefined,
 	) {}
+
+	/**
+	 * FLY-1356 (Bar-Raiser MED-1 + Codex R1 HIGH-2): sticky-stamp read,
+	 * consulted ONLY under `split` — the default path stays zero-IO (no
+	 * per-dispatch table scan). A store throw must never fail the dispatch,
+	 * but it must equally never be swallowed into "no stamp": the resolver
+	 * would hash the issue into an experimental arm on a broken read. It
+	 * surfaces as `readFailed` and the resolver fails closed to superpowers.
+	 */
+	protected skillFrameworkPrior(
+		issueId: string,
+	): { stamp: SkillFrameworkMode } | { readFailed: true } | undefined {
+		if (process.env[SKILL_FRAMEWORK_MODE_ENV] !== SKILL_FRAMEWORK_SPLIT) {
+			return undefined;
+		}
+		try {
+			const stamp = this.skillFrameworkStampLookup?.(issueId);
+			return stamp ? { stamp } : undefined;
+		} catch (err) {
+			console.warn(
+				`[dispatcher] skill-framework stamp lookup failed for ${issueId} — failing closed to superpowers (resolver pins A, never the hash): ${(err as Error).message}`,
+			);
+			return { readFailed: true };
+		}
+	}
+
+	/** Spread-shape helper for the two ctx build sites (start / retry). */
+	protected skillFrameworkPriorCtx(
+		issueId: string,
+	):
+		| { skillFrameworkModePrior: SkillFrameworkMode }
+		| { skillFrameworkModeStampReadFailed: true }
+		| Record<string, never> {
+		const prior = this.skillFrameworkPrior(issueId);
+		if (!prior) return {};
+		return "stamp" in prior
+			? { skillFrameworkModePrior: prior.stamp }
+			: { skillFrameworkModeStampReadFailed: true };
+	}
 
 	/** Shared admission gate — throws LifecycleParkedError on refusal. */
 	protected async admitLifecycle(input: {
@@ -728,6 +780,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 				leadId: req.leadId,
 				sessionRole: req.sessionRole,
 				...(req.designBackend && { designBackend: req.designBackend }),
+				// FLY-1356: forced-arm continuation + sticky stamp (see StartRequest
+				// docs; the resolver owns precedence and kill semantics).
+				...(req.skillFrameworkMode && {
+					skillFrameworkModeOverride: req.skillFrameworkMode,
+				}),
+				...this.skillFrameworkPriorCtx(req.issueId),
 				// FLY-793: three-stage phases share one branch B (Bridge-internal).
 				shareParentBranch: req.shareParentBranch,
 				// FLY-1257 M3: found branch B tip; absent only when branch absence was
@@ -1026,6 +1084,10 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		private workflowClaimsAdmission?: WorkflowClaimsAdmissionSeam,
 		/** FLY-1257 M3: retry branch-tip recovery seam (production: run-infra). */
 		phaseRetryStartPointComputer?: PhaseRetryStartPointComputer,
+		/** FLY-1356 (R1#4): sticky-stamp lookup (see the base-class field docs). */
+		skillFrameworkStampLookup?: (
+			issueId: string,
+		) => SkillFrameworkMode | undefined,
 	) {
 		super(
 			blueprintsByProject,
@@ -1035,6 +1097,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			lifecycleAdmission,
 			lifecycleLaunchGuard,
 			phaseRetryStartPointComputer,
+			skillFrameworkStampLookup,
 		);
 	}
 
@@ -1316,6 +1379,15 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				leadId: req.leadId,
 				sessionRole: req.sessionRole,
 				...(req.designBackend && { designBackend: req.designBackend }),
+				// FLY-1356: explicit per-dispatch arm (529) + auto-QA parent inherit
+				// + sticky stamp. The resolver owns precedence and kill semantics.
+				...(req.skillFrameworkMode && {
+					skillFrameworkModeOverride: req.skillFrameworkMode,
+				}),
+				...(req.skillFrameworkModeParent && {
+					skillFrameworkModeParent: req.skillFrameworkModeParent,
+				}),
+				...this.skillFrameworkPriorCtx(req.issueId),
 				// FLY-793: three-stage phases share one branch B (Bridge-internal).
 				// FLY-795: a resume also shares branch B (reuse the same mechanism).
 				shareParentBranch: req.shareParentBranch ?? (resume ? true : undefined),

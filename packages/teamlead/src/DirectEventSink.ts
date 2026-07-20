@@ -253,6 +253,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// FLY-614 token accounting + FLY-616 quality eval). HTTP /events path
 			// persists the same field.
 			ponytail_condition: env.ponytailCondition,
+			// FLY-1356: persist the effective skill-framework arm + attribution
+			// (A/B/C split eval join keys). Absent when the flag sat at its
+			// default (upsertSession leaves the columns untouched when undefined).
+			// HTTP /events path persists the same fields behind closed-enum guards.
+			skill_framework_mode: env.skillFrameworkMode,
+			skill_framework_mode_via: env.skillFrameworkModeVia,
 			// FLY-1372 §2.5: Bridge-trusted behavior fields — set ONLY on engine-
 			// owned generalized (pipeline.dag) starts, persisted atomically with
 			// row creation (upsertSession leaves them untouched when undefined).

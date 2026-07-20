@@ -26,7 +26,11 @@ import type { ConfirmTokenStore } from "./fleet-admin.js";
 import { newBatchId } from "./fleet-admin.js";
 import type { FleetAdminAudit } from "./fleet-admin-audit.js";
 
-/** The full re-verifiable flag change (raw env values + effective booleans). */
+/**
+ * The full re-verifiable flag change (raw env values + effective values).
+ * FLY-1356: effective values widened to `boolean | string` — enum direct flags
+ * (skill_framework_mode) stage a string target from enumValues.
+ */
 export interface FlagCanonical {
 	kind: "flag";
 	batchId: string;
@@ -35,8 +39,8 @@ export interface FlagCanonical {
 	rawFrom: string | null;
 	rawTo: string | null;
 	fileSha: string;
-	effectiveFrom: boolean;
-	effectiveTo: boolean;
+	effectiveFrom: boolean | string;
+	effectiveTo: boolean | string;
 }
 
 export interface FlagRouteDeps {
@@ -64,28 +68,50 @@ export function flagCanonicalSha(c: FlagCanonical): string {
  * Raw write policy (plan §4.2): the non-default state is written explicitly, the
  * default state deletes the line. default_on → off writes "0", on deletes;
  * opt_in → on writes "1", off deletes.
+ * FLY-1356 enum policy: rawTo = the target value ITSELF, always explicit —
+ * target === default writes the default value, never deletes the key (the
+ * explicit line is the kill-switch audit trail Annie reads in .env).
  */
-function computeRawTo(spec: FeatureFlagSpec, to: boolean): string | null {
+function computeRawTo(
+	spec: FeatureFlagSpec,
+	to: boolean | string,
+): string | null {
+	if (spec.valueKind === "enum") return String(to);
 	if (spec.polarity === "default_on") return to ? null : "0";
 	return to ? "1" : null;
 }
 
-function effectiveOf(spec: FeatureFlagSpec, raw: string | null): boolean {
+function effectiveOf(
+	spec: FeatureFlagSpec,
+	raw: string | null,
+): boolean | string {
+	if (spec.valueKind === "enum") {
+		// Garbage / empty raw displays as the default (the owning resolver fails
+		// closed the same way — R1#8 display honesty).
+		if (raw !== null && raw !== "" && spec.enumValues?.includes(raw)) {
+			return raw;
+		}
+		return String(spec.default);
+	}
 	return spec.polarity === "default_on" ? raw !== "0" : raw === "1";
 }
 
 export function handleFlagStage(
 	deps: FlagRouteDeps,
-	input: { name: string; to: boolean },
+	input: { name: string; to: boolean | string },
 	origin: string,
 ): RouteResult {
 	// Validate the JSON boundary — `input` is untyped `req.body`. A non-boolean
 	// `to` (e.g. the string "off", which is truthy) would otherwise stage the
 	// WRONG target via `computeRawTo`'s truthiness. Reject fail-closed.
-	if (typeof input?.name !== "string" || typeof input?.to !== "boolean") {
+	// FLY-1356: enum flags take a STRING `to` that must be one of enumValues.
+	if (
+		typeof input?.name !== "string" ||
+		(typeof input?.to !== "boolean" && typeof input?.to !== "string")
+	) {
 		return {
 			code: 400,
-			body: { error: "name (string) and to (boolean) are required" },
+			body: { error: "name (string) and to (boolean|string) are required" },
 		};
 	}
 	const spec = FEATURE_FLAGS.find((f) => f.name === input.name);
@@ -93,6 +119,22 @@ export function handleFlagStage(
 		return {
 			code: 400,
 			body: { error: `${input.name} is not direct-toggleable` },
+		};
+	}
+	if (spec.valueKind === "enum") {
+		if (typeof input.to !== "string" || !spec.enumValues?.includes(input.to)) {
+			return {
+				code: 400,
+				body: {
+					error: `invalid target value for ${spec.name}`,
+					allowed: spec.enumValues ?? [],
+				},
+			};
+		}
+	} else if (typeof input.to !== "boolean") {
+		return {
+			code: 400,
+			body: { error: `${spec.name} takes a boolean target` },
 		};
 	}
 	const env = deps.env ?? process.env;

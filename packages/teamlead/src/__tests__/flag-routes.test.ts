@@ -126,6 +126,67 @@ describe("handleFlagApply", () => {
 		expect(r.code).toBe(401);
 	});
 
+	// FLY-1356: enum direct flag (skill_framework_mode) — string target values.
+	it("enum flag: stages a string target from enumValues; rawTo is always explicit", () => {
+		const deps = makeDeps();
+		const r = handleFlagStage(
+			deps,
+			{ name: "skill_framework_mode", to: "split" },
+			"o",
+		);
+		expect(r.code).toBe(200);
+		const body = r.body as { canonical: FlagCanonical; confirmToken: string };
+		expect(body.canonical.envVar).toBe("FLYWHEEL_SKILL_FRAMEWORK_MODE");
+		expect(body.canonical.rawTo).toBe("split");
+		expect(body.canonical.effectiveFrom).toBe("superpowers");
+		expect(body.canonical.effectiveTo).toBe("split");
+	});
+
+	it("enum flag: kill position (back to superpowers) writes the default EXPLICITLY, never deletes", () => {
+		const deps = makeDeps({ env: { FLYWHEEL_SKILL_FRAMEWORK_MODE: "split" } });
+		const staged = handleFlagStage(
+			deps,
+			{ name: "skill_framework_mode", to: "superpowers" },
+			"o",
+		).body as { canonical: FlagCanonical; confirmToken: string };
+		expect(staged.canonical.rawTo).toBe("superpowers");
+		expect(staged.canonical.effectiveFrom).toBe("split");
+		const r = handleFlagApply(deps, staged.canonical, staged.confirmToken, "o");
+		expect(r.code).toBe(200);
+		expect(deps.env.FLYWHEEL_SKILL_FRAMEWORK_MODE).toBe("superpowers");
+	});
+
+	it("enum flag: target outside enumValues / boolean target → 400", () => {
+		const deps = makeDeps();
+		const bad = handleFlagStage(
+			deps,
+			{ name: "skill_framework_mode", to: "garbage" },
+			"o",
+		);
+		expect(bad.code).toBe(400);
+		expect((bad.body as { allowed: string[] }).allowed).toContain("split");
+		expect(
+			handleFlagStage(
+				deps,
+				{ name: "skill_framework_mode", to: true as never },
+				"o",
+			).code,
+		).toBe(400);
+	});
+
+	it("enum flag: full stage→apply flips split live (the directToggleProof path)", () => {
+		const deps = makeDeps();
+		const staged = handleFlagStage(
+			deps,
+			{ name: "skill_framework_mode", to: "split" },
+			"o",
+		).body as { canonical: FlagCanonical; confirmToken: string };
+		const r = handleFlagApply(deps, staged.canonical, staged.confirmToken, "o");
+		expect(r.code).toBe(200);
+		expect(deps.env.FLYWHEEL_SKILL_FRAMEWORK_MODE).toBe("split");
+		expect(deps.writeFile).toHaveBeenCalledTimes(1);
+	});
+
 	it("flag canonical SHA is stable + change-sensitive", () => {
 		const c: FlagCanonical = {
 			kind: "flag",

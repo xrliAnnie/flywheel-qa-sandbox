@@ -1,0 +1,17 @@
+{
+	"name": "matt-skills",
+	"owner": {
+		"name": "Flywheel (frozen vendor of mattpocock/skills)",
+		"url": "https://github.com/mattpocock/skills"
+	},
+	"description": "FLY-1356 local marketplace exposing the frozen matt-skills B-arm plugin (install key: matt-skills@matt-skills).",
+	"plugins": [
+		{
+			"name": "matt-skills",
+			"source": "./",
+			"description": "Frozen 6-skill subset of mattpocock/skills for the FLY-1356 B arm.",
+			"category": "engineering",
+			"keywords": ["engineering", "skills", "tdd"]
+		}
+	]
+}
