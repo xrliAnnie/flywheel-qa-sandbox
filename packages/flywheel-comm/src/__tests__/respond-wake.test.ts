@@ -9,7 +9,7 @@
  * Harness mirrors send-mailbox.test.ts: isolated CLAUDE_CONFIG_DIR sandbox.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -78,34 +78,25 @@ describe("respond bypass wake (FLY-191 Phase 2)", () => {
 		expect(GATED_CHECKPOINTS.has("approve_to_ship")).toBe(true);
 	});
 
-	it("bypass write sends a mailbox wake whose text denies its own authority", async () => {
+	it("rejects Lead approval before the emergency bypass can write", async () => {
 		const qid = setupGateQuestion();
 
-		await respond({
-			questionId: qid,
-			fromAgent: LEAD,
-			answer: JSON.stringify({ approved: true }),
-			dbPath,
-			env: {
-				FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
-				FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH: auditPath,
-			} as NodeJS.ProcessEnv,
-		});
-
-		// Response written
+		await expect(
+			respond({
+				questionId: qid,
+				fromAgent: LEAD,
+				answer: JSON.stringify({ approved: true }),
+				dbPath,
+				env: {
+					FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
+					FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH: auditPath,
+				} as NodeJS.ProcessEnv,
+			}),
+		).rejects.toThrow("lead_ack_rejected");
 		const db = new CommDB(dbPath);
-		const resp = db.getResponse(qid);
+		expect(db.getResponse(qid)).toBeUndefined();
 		db.close();
-		expect(resp?.content).toBe(JSON.stringify({ approved: true }));
-
-		// Mailbox wake landed at the derived inbox path
-		expect(existsSync(inboxPath())).toBe(true);
-		const entries = JSON.parse(readFileSync(inboxPath(), "utf-8")) as Array<{
-			text: string;
-		}>;
-		expect(entries).toHaveLength(1);
-		expect(entries[0]?.text).toContain("verify-approval");
-		expect(entries[0]?.text).toContain("NOT authorization");
+		expect(existsSync(inboxPath())).toBe(false);
 	});
 
 	it("non-gated checkpoint respond does NOT send a wake (blocking gates poll for their answer)", async () => {
@@ -127,7 +118,7 @@ describe("respond bypass wake (FLY-191 Phase 2)", () => {
 		expect(existsSync(inboxPath())).toBe(false);
 	});
 
-	it("wake failure does not undo the response write (best-effort)", async () => {
+	it("rejection happens before a sabotaged wake path is reached", async () => {
 		const qid = setupGateQuestion();
 		// Sabotage the mailbox dir: make the inbox path's parent a FILE so the
 		// transport write fails.
@@ -138,21 +129,20 @@ describe("respond bypass wake (FLY-191 Phase 2)", () => {
 		const { writeFileSync } = await import("node:fs");
 		writeFileSync(join(tmpDir, "not-a-dir-parent"), "block");
 
-		await respond({
-			questionId: qid,
-			fromAgent: LEAD,
-			answer: JSON.stringify({ approved: true }),
-			dbPath,
-			env: {
-				FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
-				FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH: auditPath,
-			} as NodeJS.ProcessEnv,
-		});
-
-		// Response still written despite wake failure
+		await expect(
+			respond({
+				questionId: qid,
+				fromAgent: LEAD,
+				answer: JSON.stringify({ approved: true }),
+				dbPath,
+				env: {
+					FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
+					FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH: auditPath,
+				} as NodeJS.ProcessEnv,
+			}),
+		).rejects.toThrow("lead_ack_rejected");
 		const db = new CommDB(dbPath);
-		const resp = db.getResponse(qid);
+		expect(db.getResponse(qid)).toBeUndefined();
 		db.close();
-		expect(resp?.content).toBe(JSON.stringify({ approved: true }));
 	});
 });

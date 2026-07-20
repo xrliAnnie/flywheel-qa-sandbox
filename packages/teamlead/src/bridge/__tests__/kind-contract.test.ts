@@ -221,6 +221,7 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 			"runner_lead_pending_unhandled",
 			"zombie_session_backlog",
 			"delivery_dead_letter",
+			"inbox_loop_stalled",
 		]);
 		for (const kind of ALERT_EVENT_TYPES) {
 			expect(escalatesAtEnqueue(kind), kind).toBe(expected.has(kind));

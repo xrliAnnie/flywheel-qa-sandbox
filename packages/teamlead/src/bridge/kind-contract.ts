@@ -104,6 +104,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	detection_fleet_aggregate: { owner: "claude", arc: "human_by_design" },
 	detection_page_undeliverable: { owner: "claude", arc: "human_by_design" },
 	delivery_dead_letter: { owner: "founder_direct", arc: "none_escalate" },
+	inbox_loop_stalled: { owner: "founder_direct", arc: "none_escalate" },
 	runner_stuck_unhandled: {
 		owner: "claude",
 		arc: "auto",

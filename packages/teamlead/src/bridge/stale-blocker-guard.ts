@@ -481,6 +481,7 @@ export async function alertStaleBlockerToLead(
 	);
 	const envelope: LeadEventEnvelope = {
 		seq,
+		eventId,
 		event: payload,
 		sessionKey,
 		leadId,
@@ -489,7 +490,7 @@ export async function alertStaleBlockerToLead(
 	try {
 		const result = await deps.deliver(leadId, envelope);
 		if (result.delivered) deps.store.markLeadEventDelivered(seq);
-		else
+		else if (!(result as { queued?: boolean }).queued)
 			deps.store.recordDeliveryFailure(
 				seq,
 				result.error ?? "deliver returned false",

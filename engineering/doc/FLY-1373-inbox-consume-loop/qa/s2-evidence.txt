@@ -1,0 +1,19 @@
+FLY-1373 场景② 混合优先级并发 burst — 真机证据
+====================================================
+入队(对抗性构造:先低后高,让 FIFO 与优先级给出相反预测)
+  20:18:01.949  10 条 LOW  (p3 stage_changed)   → seq 24-32 (+seq23 先行)
+  20:18:02.327  10 条 HIGH (p1 runner_question) → seq 33-42
+  全部 HTTP 200,窗口 < 1s
+
+销账(comm.db lead_inbox, seq>22)
+  total=20  consumed=20  pending=0        → 零丢
+
+实际投递顺序(来源:Lead session transcript 原始消息,非 Lead 转述)
+  位置 1      : Event #23  stage_changed  (p3, 属更早批次 60dae85c,不在争用集)
+  位置 2-11   : Event #33-42 runner_question (p1)  ← 后入队,先投递
+  位置 12-20  : Event #24-32 stage_changed  (p3)  ← 先入队,后投递
+  组内 seq 严格单调 → 优先级内 FIFO 保持
+
+判定:PASS
+  优先级排序真实生效。因入队顺序与优先级顺序相反,该结果无法由 FIFO 解释。
+  批量投递:20 个成员合为 Lead 的一条消息 = 一个 turn。

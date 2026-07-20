@@ -75,6 +75,9 @@ const NO_OWNER_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>([
 	// FLY-1279: the canonical founder issue-thread page already landed before
 	// this best-effort mirror fires; no infra bot should re-own the occurrence.
 	"delivery_dead_letter",
+	// FLY-1373: the alert is already founder-directed; no infra bot should
+	// create a second response loop for the consume loop itself.
+	"inbox_loop_stalled",
 	// FLY-1285: choosing between conflicting tmux generations is explicitly a
 	// founder decision; neither infra bot may guess and signal a candidate.
 	"tmux_split_brain",

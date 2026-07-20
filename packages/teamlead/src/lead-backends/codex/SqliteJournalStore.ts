@@ -19,6 +19,7 @@
 
 import Database from "better-sqlite3";
 import {
+	type BatchAcceptResult,
 	type JournalEntry,
 	type JournalState,
 	type JournalStore,
@@ -100,6 +101,15 @@ export class SqliteJournalStore implements JournalStore {
 				updated_at INTEGER NOT NULL
 			);
 			CREATE INDEX IF NOT EXISTS journal_state_idx ON journal(state);
+			CREATE TABLE IF NOT EXISTS journal_member (
+				entry_id TEXT NOT NULL,
+				delivery_id TEXT NOT NULL UNIQUE,
+				member_index INTEGER NOT NULL,
+				PRIMARY KEY (entry_id, delivery_id),
+				FOREIGN KEY (entry_id) REFERENCES journal(id)
+			);
+			CREATE INDEX IF NOT EXISTS journal_member_entry_idx
+				ON journal_member(entry_id, member_index);
 		`);
 		this.migrate();
 	}
@@ -172,6 +182,66 @@ export class SqliteJournalStore implements JournalStore {
 			);
 		}
 		return { inserted: false, entry: existing };
+	}
+
+	insertAcceptedBatch(
+		entry: JournalEntry,
+		memberIds: readonly string[],
+	): BatchAcceptResult {
+		const accept = this.db.transaction((): BatchAcceptResult => {
+			const existingByKey = this.getByIdempotencyKey(entry.idempotencyKey);
+			if (existingByKey) {
+				return {
+					status:
+						existingByKey.payload === entry.payload &&
+						sameOrderedMembers(this.listMemberIds(existingByKey.id), memberIds)
+							? "accepted_duplicate_same_membership"
+							: "membership_conflict",
+					entry: existingByKey,
+				};
+			}
+
+			if (memberIds.length > 0) {
+				const placeholders = memberIds.map(() => "?").join(",");
+				const collision = this.db
+					.prepare(
+						`SELECT entry_id FROM journal_member
+						  WHERE delivery_id IN (${placeholders}) LIMIT 1`,
+					)
+					.get(...memberIds) as { entry_id: string } | undefined;
+				if (collision) {
+					return {
+						status: "membership_conflict",
+						entry: this.getById(collision.entry_id) ?? entry,
+					};
+				}
+			}
+
+			const inserted = this.insertAccepted(entry);
+			if (!inserted.inserted) {
+				return { status: "membership_conflict", entry: inserted.entry };
+			}
+			const insertMember = this.db.prepare(
+				`INSERT INTO journal_member (entry_id, delivery_id, member_index)
+				 VALUES (?, ?, ?)`,
+			);
+			memberIds.forEach((memberId, index) =>
+				insertMember.run(entry.id, memberId, index),
+			);
+			return { status: "accepted_new", entry: inserted.entry };
+		});
+		return accept.immediate();
+	}
+
+	listMemberIds(entryId: string): string[] {
+		return (
+			this.db
+				.prepare(
+					`SELECT delivery_id FROM journal_member
+					  WHERE entry_id = ? ORDER BY member_index`,
+				)
+				.all(entryId) as Array<{ delivery_id: string }>
+		).map(({ delivery_id }) => delivery_id);
 	}
 
 	getById(id: string): JournalEntry | undefined {
@@ -251,6 +321,13 @@ export class SqliteJournalStore implements JournalStore {
 			.all(...terminal) as Row[];
 		return rows.map(rowToEntry);
 	}
+}
+
+function sameOrderedMembers(
+	a: readonly string[],
+	b: readonly string[],
+): boolean {
+	return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 /** id + idempotencyKey are immutable; never let a patch change them. */

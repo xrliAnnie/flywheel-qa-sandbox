@@ -186,7 +186,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 		return {
 			questionId,
 			leadId: LEAD_ID,
-			answer: JSON.stringify({ approved: true }),
+			answer: JSON.stringify({ approved: false, feedback: "lease test" }),
 			executionId: "exec-1",
 			leaseClaim: { leaseKey: LEAD_KEY, generation: 1 },
 			provenance: {
@@ -230,7 +230,9 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 			writer_pid: 999,
 			writer_start: "cli-writer-start",
 		});
-		expect(db.listWorkflowSourceEvents()).toHaveLength(1);
+		// Feedback is not a founder approval source event; this test only proves
+		// the preserved Lead requester was authorized before attribution rewrite.
+		expect(db.listWorkflowSourceEvents()).toEqual([]);
 		db.close();
 	});
 

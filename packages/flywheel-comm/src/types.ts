@@ -8,6 +8,8 @@ export interface Message {
 	read_at: string | null;
 	created_at: string;
 	expires_at: string;
+	/** Queue-native SLA; strict UTC ISO when present. */
+	deadline_at: string | null;
 	relay_state: "open" | "protected" | "terminal_disposed";
 	/**
 	 * FLY-1328: how this question was disposed of — 'owner_closed' (the owning

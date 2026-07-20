@@ -119,7 +119,7 @@ describe("gate-response-router (Surface B)", () => {
 				{
 					questionId: qid,
 					leadId: "lead-x",
-					answer: '{"approved":true}',
+					answer: "changes requested",
 					executionId: "exec-1",
 				},
 			);
@@ -142,13 +142,13 @@ describe("gate-response-router (Surface B)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: "approved",
+				answer: "changes requested",
 				executionId: "exec-1",
 			},
 		);
 		expect(res.status).toBe(200);
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe("approved");
+		expect(db.getResponse(qid)?.content).toBe("changes requested");
 		db.close();
 	});
 
@@ -161,7 +161,7 @@ describe("gate-response-router (Surface B)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: "approved",
+				answer: "changes requested",
 				executionId: "exec-1",
 			},
 		);
@@ -180,13 +180,13 @@ describe("gate-response-router (Surface B)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: "approved",
+				answer: "changes requested",
 				executionId: "exec-1",
 			},
 		);
 		expect(res.status).toBe(200);
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe("approved");
+		expect(db.getResponse(qid)?.content).toBe("changes requested");
 		db.close();
 	});
 
@@ -198,7 +198,7 @@ describe("gate-response-router (Surface B)", () => {
 		await request("POST", "/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: true }),
+			answer: JSON.stringify({ approved: false }),
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
@@ -212,7 +212,7 @@ describe("gate-response-router (Surface B)", () => {
 		await request("POST", "/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: true }),
+			answer: JSON.stringify({ approved: false }),
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
@@ -232,7 +232,7 @@ describe("gate-response-router (Surface B)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: JSON.stringify({ approved: true }),
+				answer: JSON.stringify({ approved: false }),
 				executionId: "exec-1",
 			},
 		);
@@ -248,7 +248,7 @@ describe("gate-response-router (Surface B)", () => {
 		await request("POST", "/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: true }),
+			answer: JSON.stringify({ approved: false }),
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
@@ -379,7 +379,7 @@ describe("gate-response-router (Surface B)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: "approved",
+				answer: "changes requested",
 				executionId: "exec-1",
 			},
 		);
@@ -387,7 +387,7 @@ describe("gate-response-router (Surface B)", () => {
 		expect(write).toHaveBeenCalledOnce();
 		expect((res.body as { passthrough?: boolean }).passthrough).toBe(true);
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe("approved");
+		expect(db.getResponse(qid)?.content).toBe("changes requested");
 		db.close();
 	});
 });
@@ -397,9 +397,9 @@ describe("gate-response-router (Surface B)", () => {
 // Production incident: the Lead replied `APPROVE — founder 批准在案...` to an
 // approve_to_ship gate; only JSON {"approved": true} approves, so the text
 // was silently recorded as feedback → verify-approval refused → ratify retry
-// loop. The router now flags the intent in the HTTP response (the respond CLI
-// prints it to stderr); the write behavior is deliberately unchanged.
-describe("gate-response-router — approval-intent warning (FLY-208 6b)", () => {
+// loop. FLY-1373 closes that API surface entirely: a Lead approval attempt is
+// rejected before pass-through, evaluator, or idempotent-write logic.
+describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 	function mkPassthroughServer() {
 		const app = express();
 		app.use(express.json());
@@ -417,7 +417,7 @@ describe("gate-response-router — approval-intent warning (FLY-208 6b)", () => 
 		server.listen(0);
 	}
 
-	it("pass-through + plain-text APPROVE → warning, still written as feedback", async () => {
+	it("pass-through rejects plain-text APPROVE without writing", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkPassthroughServer();
 		const res = await request(
@@ -430,18 +430,14 @@ describe("gate-response-router — approval-intent warning (FLY-208 6b)", () => 
 				executionId: "exec-1",
 			},
 		);
-		expect(res.status).toBe(200);
-		const body = res.body as { warning?: string };
-		expect(body.warning).toContain("Recorded as FEEDBACK");
-		expect(body.warning).toContain('{"approved": true}');
-		expect(body.warning).toContain("re-request review");
-		// Write behavior unchanged: the text landed verbatim.
+		expect(res.status).toBe(403);
+		expect((res.body as { error?: string }).error).toBe("lead_ack_rejected");
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toContain("APPROVE — founder");
+		expect(db.getResponse(qid)).toBeUndefined();
 		db.close();
 	});
 
-	it("pass-through + JSON approval → NO warning", async () => {
+	it("pass-through rejects structured approval", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkPassthroughServer();
 		const res = await request(
@@ -454,8 +450,8 @@ describe("gate-response-router — approval-intent warning (FLY-208 6b)", () => 
 				executionId: "exec-1",
 			},
 		);
-		expect(res.status).toBe(200);
-		expect((res.body as { warning?: string }).warning).toBeUndefined();
+		expect(res.status).toBe(403);
+		expect((res.body as { error?: string }).error).toBe("lead_ack_rejected");
 	});
 
 	it("pass-through + ordinary feedback text → NO warning", async () => {
@@ -475,7 +471,7 @@ describe("gate-response-router — approval-intent warning (FLY-208 6b)", () => 
 		expect((res.body as { warning?: string }).warning).toBeUndefined();
 	});
 
-	it("evaluator-allow path + plain-text approval intent → warning", async () => {
+	it("evaluator-allow cannot override Lead approval rejection", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("allow"));
 		const res = await request(
@@ -488,26 +484,16 @@ describe("gate-response-router — approval-intent warning (FLY-208 6b)", () => 
 				executionId: "exec-1",
 			},
 		);
-		expect(res.status).toBe(200);
-		expect((res.body as { warning?: string }).warning).toContain(
-			"Recorded as FEEDBACK",
-		);
+		expect(res.status).toBe(403);
+		expect((res.body as { error?: string }).error).toBe("lead_ack_rejected");
 	});
 
-	it("alreadyResponded retry surfaces the warning for an approval-intent prior answer", async () => {
+	it("an idempotent retry cannot grandfather a legacy Lead approval", async () => {
 		const qid = seedQuestion("approve_to_ship");
+		const seed = new CommDB(commDbPath, false);
+		seed.insertResponse(qid, "lead-x", "APPROVE — ship it");
+		seed.close();
 		mkPassthroughServer();
-		const first = await request(
-			"POST",
-			"/api/founder-consent/runner-gate-response",
-			{
-				questionId: qid,
-				leadId: "lead-x",
-				answer: "APPROVE — ship it",
-				executionId: "exec-1",
-			},
-		);
-		expect(first.status).toBe(200);
 		const retry = await request(
 			"POST",
 			"/api/founder-consent/runner-gate-response",
@@ -518,12 +504,7 @@ describe("gate-response-router — approval-intent warning (FLY-208 6b)", () => 
 				executionId: "exec-1",
 			},
 		);
-		expect(retry.status).toBe(200);
-		expect(
-			(retry.body as { alreadyResponded?: boolean }).alreadyResponded,
-		).toBe(true);
-		expect((retry.body as { warning?: string }).warning).toContain(
-			"Recorded as FEEDBACK",
-		);
+		expect(retry.status).toBe(403);
+		expect((retry.body as { error?: string }).error).toBe("lead_ack_rejected");
 	});
 });

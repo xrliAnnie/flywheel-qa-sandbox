@@ -18,6 +18,7 @@
 
 import type { DetectionEscalationRow, StateStore } from "../StateStore.js";
 import type { HookPayload } from "./hook-payload.js";
+import { dispatchLeadEventCompat } from "./runtime-registry.js";
 
 export interface DetectionEscalationInput {
 	/** execId (runner) or `<project>:<leadId>` state key (lead). */
@@ -57,6 +58,14 @@ export interface NotifyLeadFirstDeps {
 		| "recordDeliveryFailure"
 	>;
 	runtimeRegistry: {
+		dispatchLeadEvent?(env: {
+			seq: number;
+			eventId?: string;
+			event: HookPayload;
+			sessionKey: string;
+			leadId: string;
+			timestamp: string;
+		}): Promise<{ delivered: boolean; queued?: true; error?: string }>;
 		getForLead(leadId: string):
 			| {
 					deliver(env: {
@@ -206,15 +215,21 @@ export async function notifyLeadFirst(
 	try {
 		const runtime = deps.runtimeRegistry.getForLead(owner.leadId);
 		if (runtime) {
-			const result = await runtime.deliver({
+			const envelope = {
 				seq,
+				eventId,
 				event: payload,
 				sessionKey: input.executionId,
 				leadId: owner.leadId,
 				timestamp: new Date(nowMs).toISOString(),
-			});
+			};
+			const result = await dispatchLeadEventCompat(
+				deps.runtimeRegistry,
+				runtime,
+				envelope,
+			);
 			if (result.delivered) deps.store.markLeadEventDelivered(seq);
-			else
+			else if (!(result as { queued?: boolean }).queued)
 				deps.store.recordDeliveryFailure(
 					seq,
 					result.error ?? "deliver returned false",

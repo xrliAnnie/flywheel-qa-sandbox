@@ -1138,7 +1138,12 @@ describe("LeadWatchdog — FLY-220 episode dedup + recovery (real block alerts o
 	};
 	const recovered = `⏺ Recovered, back to work.\n${BOX}\n❯\n${STATUS}`;
 
-	const makeWd = (notifier: NotifierStub, captureFn: () => string) =>
+	const makeWd = (
+		notifier: NotifierStub,
+		captureFn: () => string,
+		legacyDeliveryWatchdogsEnabled = true,
+		onPollComplete?: () => void,
+	) =>
 		new LeadWatchdog({
 			pollIntervalMs: 30_000,
 			paneHashStuckCycles: 2,
@@ -1156,7 +1161,30 @@ describe("LeadWatchdog — FLY-220 episode dedup + recovery (real block alerts o
 			blockedMarkerReader: async () => [],
 			now: () => 1_700_000_000_000,
 			suppressIdleHealthy: true,
+			legacyDeliveryWatchdogsEnabled,
+			onPollComplete,
 		});
+
+	it("reverse flag suppresses frozen-pane lanes while blocked alerts and poll callbacks stay live", async () => {
+		const frozenNotifier = makeNotifier();
+		const onPollComplete = vi.fn();
+		const frozen = makeWd(
+			frozenNotifier,
+			() => "unclassified frozen lead pane",
+			false,
+			onPollComplete,
+		);
+		for (let i = 0; i < 4; i++) await frozen.pollOnce();
+		expect(frozenNotifier.alert).not.toHaveBeenCalled();
+		expect(onPollComplete).toHaveBeenCalledTimes(4);
+
+		const blockedNotifier = makeNotifier();
+		const blocked = makeWd(blockedNotifier, () => realBlock(0), false);
+		await blocked.pollOnce();
+		await blocked.pollOnce();
+		expect(blockedNotifier.results).toHaveLength(1);
+		expect(blockedNotifier.results[0]?.eventType).toBe("rate_limit");
+	});
 
 	it("a persistent real block + churning echoes fires EXACTLY ONCE", async () => {
 		const notifier = makeNotifier();

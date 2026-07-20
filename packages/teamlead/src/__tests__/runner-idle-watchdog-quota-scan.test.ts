@@ -55,6 +55,8 @@ function createMockStore(sessions: Session[]) {
 
 function createWatchdog(opts: {
 	scan?: (session: Session, pane: string) => void | Promise<void>;
+	stuckDetector?: IdleWatchdogConfig["stuckDetector"];
+	legacyDeliveryWatchdogsEnabled?: boolean;
 	statusResponse: {
 		result: { status: string; reason: string };
 		captureErrorStatus?: number;
@@ -87,6 +89,12 @@ function createWatchdog(opts: {
 			projectName: "geo",
 		})) as any,
 		...(opts.scan !== undefined && { runnerQuotaScan: opts.scan }),
+		...(opts.stuckDetector !== undefined && {
+			stuckDetector: opts.stuckDetector,
+		}),
+		...(opts.legacyDeliveryWatchdogsEnabled !== undefined && {
+			legacyDeliveryWatchdogsEnabled: opts.legacyDeliveryWatchdogsEnabled,
+		}),
 	};
 
 	const watchdog = new RunnerIdleWatchdog(config);
@@ -94,13 +102,13 @@ function createWatchdog(opts: {
 		query: vi.fn(async () => opts.statusResponse),
 		stopEviction: vi.fn(),
 	};
-	return watchdog;
+	return { watchdog, store };
 }
 
 describe("RunnerIdleWatchdog runnerQuotaScan piggyback (FLY-696 M1/③)", () => {
 	it("calls the scan once with the session + the SAME captured pane", async () => {
 		const scan = vi.fn();
-		const watchdog = createWatchdog({
+		const { watchdog } = createWatchdog({
 			scan,
 			statusResponse: {
 				result: { status: "executing", reason: "active" },
@@ -117,7 +125,7 @@ describe("RunnerIdleWatchdog runnerQuotaScan piggyback (FLY-696 M1/③)", () => 
 
 	it("skips the scan on a capture infra error (no valid pane)", async () => {
 		const scan = vi.fn();
-		const watchdog = createWatchdog({
+		const { watchdog } = createWatchdog({
 			scan,
 			statusResponse: {
 				result: { status: "unknown", reason: "capture failed" },
@@ -133,7 +141,7 @@ describe("RunnerIdleWatchdog runnerQuotaScan piggyback (FLY-696 M1/③)", () => 
 		const scan = vi.fn(() => {
 			throw new Error("scan exploded");
 		});
-		const watchdog = createWatchdog({
+		const { watchdog } = createWatchdog({
 			scan,
 			statusResponse: {
 				result: { status: "executing", reason: "active" },
@@ -145,12 +153,33 @@ describe("RunnerIdleWatchdog runnerQuotaScan piggyback (FLY-696 M1/③)", () => 
 	});
 
 	it("absent scan (self-heal off) — poll runs unchanged (byte-compat)", async () => {
-		const watchdog = createWatchdog({
+		const { watchdog } = createWatchdog({
 			statusResponse: {
 				result: { status: "executing", reason: "active" },
 				output: "PANE",
 			},
 		});
 		await expect(watchdog.pollOnce()).resolves.toBeUndefined();
+	});
+
+	it("reverse flag keeps the shared capture callback alive but suppresses idle/stuck emissions", async () => {
+		const scan = vi.fn();
+		const stuckDetector = {
+			checkSession: vi.fn(async () => undefined),
+			pruneInactive: vi.fn(),
+		};
+		const { watchdog, store } = createWatchdog({
+			scan,
+			stuckDetector: stuckDetector as any,
+			legacyDeliveryWatchdogsEnabled: false,
+			statusResponse: {
+				result: { status: "idle", reason: "idle" },
+				output: "PANE-CONTENT",
+			},
+		});
+		await watchdog.pollOnce();
+		expect(scan).toHaveBeenCalledOnce();
+		expect(stuckDetector.checkSession).not.toHaveBeenCalled();
+		expect(store.appendLeadEvent).not.toHaveBeenCalled();
 	});
 });

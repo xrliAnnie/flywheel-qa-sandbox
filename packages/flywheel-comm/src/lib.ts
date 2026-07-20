@@ -43,6 +43,19 @@ export {
 	FOUNDER_CONSENT_AUDIT_SCHEMA,
 	FounderConsentAuditStore,
 } from "./founder-consent-audit.js";
+export type { LeadInboxNudgeArgs } from "./lead-inbox-nudge.js";
+export { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
+export type {
+	EnqueueLeadInboxInput,
+	LeadInboxMessageClass,
+	LeadInboxPriority,
+	LeadInboxRow,
+} from "./lead-inbox-queue.js";
+export {
+	assertUtcIsoTimestamp,
+	LEAD_INBOX_SCHEMA,
+	LeadInboxQueue,
+} from "./lead-inbox-queue.js";
 export type {
 	ArtifactFile,
 	SelectionResult,

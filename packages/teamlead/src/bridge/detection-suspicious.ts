@@ -14,6 +14,7 @@
 import { createHash } from "node:crypto";
 import { SUSPICIOUS_QUOTE_PREFIX } from "./error-signatures.js";
 import type { HookPayload } from "./hook-payload.js";
+import { dispatchLeadEventCompat } from "./runtime-registry.js";
 
 export interface SuspiciousReport {
 	targetKind: "runner" | "lead";
@@ -128,6 +129,14 @@ export interface SuspiciousDeliveryStore {
 export interface SuspiciousDeliveryDeps {
 	store: SuspiciousDeliveryStore;
 	runtimeRegistry: {
+		dispatchLeadEvent?(env: {
+			seq: number;
+			eventId?: string;
+			event: HookPayload;
+			sessionKey: string;
+			leadId: string;
+			timestamp: string;
+		}): Promise<{ delivered: boolean; queued?: true; error?: string }>;
 		getForLead(leadId: string):
 			| {
 					deliver(env: {
@@ -222,15 +231,21 @@ export async function deliverSuspiciousReport(
 	try {
 		const runtime = deps.runtimeRegistry.getForLead(owner.leadId);
 		if (runtime) {
-			const result = await runtime.deliver({
+			const envelope = {
 				seq,
+				eventId,
 				event: payload,
 				sessionKey: executionId,
 				leadId: owner.leadId,
 				timestamp: new Date(deps.now?.() ?? Date.now()).toISOString(),
-			});
+			};
+			const result = await dispatchLeadEventCompat(
+				deps.runtimeRegistry,
+				runtime,
+				envelope,
+			);
 			if (result.delivered) deps.store.markLeadEventDelivered(seq);
-			else
+			else if (!(result as { queued?: boolean }).queued)
 				deps.store.recordDeliveryFailure(
 					seq,
 					result.error ?? "deliver returned false",

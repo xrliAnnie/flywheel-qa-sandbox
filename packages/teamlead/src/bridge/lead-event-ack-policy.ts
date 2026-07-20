@@ -1,33 +1,24 @@
 import type { HookPayload } from "./hook-payload.js";
+import { legacyDeliveryWatchdogsEnabled } from "./legacy-delivery-watchdog-policy.js";
 
 export type LeadEventAckPolicy =
 	| "question_response"
 	| "explicit_receipt"
 	| "founder_surface_confirmed";
 
-const DEFAULT_ACK_TYPES = new Set([
-	"gate_question",
-	"runner_question",
-	"runner_park_notice",
-	"gate_timed_out",
-	"session_failed",
-]);
-
 export function deliveryAckEnabled(
 	env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-	return env.FLYWHEEL_DELIVERY_ACK !== "0";
+	return (
+		legacyDeliveryWatchdogsEnabled(env) && env.FLYWHEEL_DELIVERY_ACK !== "0"
+	);
 }
 
-function configuredAckTypes(env: NodeJS.ProcessEnv): Set<string> {
-	const raw = env.FLYWHEEL_DELIVERY_ACK_TYPES?.trim();
-	if (!raw) return DEFAULT_ACK_TYPES;
-	return new Set(
-		raw
-			.split(",")
-			.map((item) => item.trim())
-			.filter(Boolean),
-	);
+/** Reverse feature flag for the superseded scanner/redelivery cohort. */
+export function legacyLeadWatchdogEnabled(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return legacyDeliveryWatchdogsEnabled(env);
 }
 
 export function ackPolicyForLeadEvent(
@@ -35,17 +26,13 @@ export function ackPolicyForLeadEvent(
 	payload: HookPayload,
 	env: NodeJS.ProcessEnv = process.env,
 ): LeadEventAckPolicy | null {
-	if (!deliveryAckEnabled(env) || !configuredAckTypes(env).has(eventType)) {
-		return null;
-	}
-	if (eventType === "runner_question") return "question_response";
-	if (eventType === "gate_question") {
-		return payload.checkpoint === "approve_to_ship" ||
-			payload.checkpoint === "brainstorm"
-			? "founder_surface_confirmed"
-			: "question_response";
-	}
-	return "explicit_receipt";
+	// FLY-1373 cutover: legacy=1 revives the scanner for already-persisted ACK
+	// rows only. New events always use the durable inbox receipt and never mint a
+	// second acknowledgement protocol.
+	void eventType;
+	void payload;
+	void env;
+	return null;
 }
 
 export interface LeadEventRoutingSnapshot {

@@ -102,6 +102,27 @@ describe("SqliteJournalStore — in-memory", () => {
 		});
 		expect(store.listUnfinished().map((e) => e.id)).toEqual(["a", "c"]);
 	});
+
+	it("atomically persists journal_member rows and rejects overlapping membership", () => {
+		const first = store.insertAcceptedBatch(entry(), ["A", "B"]);
+		expect(first.status).toBe("accepted_new");
+		expect(store.listMemberIds("id-1")).toEqual(["A", "B"]);
+		expect(
+			store.insertAcceptedBatch(entry({ id: "id-2" }), ["A", "B"]),
+		).toMatchObject({ status: "accepted_duplicate_same_membership" });
+		expect(
+			store.insertAcceptedBatch(
+				entry({ id: "id-payload", payload: "changed" }),
+				["A", "B"],
+			),
+		).toMatchObject({ status: "membership_conflict" });
+		expect(
+			store.insertAcceptedBatch(
+				entry({ id: "id-3", idempotencyKey: "batch-2" }),
+				["B", "C"],
+			),
+		).toMatchObject({ status: "membership_conflict" });
+	});
 });
 
 describe("SqliteJournalStore — persistence + LeadJournal integration", () => {
@@ -127,6 +148,31 @@ describe("SqliteJournalStore — persistence + LeadJournal integration", () => {
 		expect(e?.state).toBe("dispatching");
 		expect(e?.clientCorrelationId).toBe("c");
 		s2.close();
+	});
+
+	it("commit-before-reply retry returns duplicate after reopen; C remains a new batch", () => {
+		const path = join(dir, "batch-retry.db");
+		const first = new SqliteJournalStore(path);
+		expect(first.insertAcceptedBatch(entry(), ["A", "B"]).status).toBe(
+			"accepted_new",
+		);
+		first.close();
+
+		const recovered = new SqliteJournalStore(path);
+		expect(
+			recovered.insertAcceptedBatch(entry({ id: "lost-reply-retry" }), [
+				"A",
+				"B",
+			]),
+		).toMatchObject({ status: "accepted_duplicate_same_membership" });
+		expect(
+			recovered.insertAcceptedBatch(
+				entry({ id: "id-c", idempotencyKey: "batch-c" }),
+				["C"],
+			),
+		).toMatchObject({ status: "accepted_new" });
+		expect(recovered.listMemberIds("id-c")).toEqual(["C"]);
+		recovered.close();
 	});
 
 	it("cross-connection CAS: only one transition wins on the same file", () => {

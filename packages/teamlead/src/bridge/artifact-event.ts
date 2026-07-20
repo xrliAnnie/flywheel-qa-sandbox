@@ -35,7 +35,10 @@ import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope, LeadRuntime } from "./lead-runtime.js";
 import { getProofShotParams, patchSessionParams } from "./proofshot-session.js";
-import type { RuntimeRegistry } from "./runtime-registry.js";
+import {
+	dispatchLeadEventCompat,
+	type RuntimeRegistry,
+} from "./runtime-registry.js";
 
 /** Subset of IngestEvent we need — avoids depending on the full type. */
 export interface ArtifactEmittedEvent {
@@ -141,6 +144,7 @@ export async function handleArtifactEvent(
 	// Build envelope manually — appendLeadEvent returns numeric seq, not envelope.
 	const envelope: LeadEventEnvelope = {
 		seq,
+		eventId,
 		event: hookPayload,
 		sessionKey,
 		leadId: leadAgentId,
@@ -166,7 +170,7 @@ export async function handleArtifactEvent(
 
 	let result: { delivered: boolean; error?: string };
 	try {
-		result = await runtime.deliver(envelope);
+		result = await dispatchLeadEventCompat(registry, runtime, envelope);
 	} catch (err) {
 		store.recordDeliveryFailure(
 			seq,
@@ -175,34 +179,23 @@ export async function handleArtifactEvent(
 		return { handled: true, seq, delivered: false };
 	}
 
+	if ((result as { queued?: boolean }).queued) {
+		markMatchingProofShotRunCompleted(
+			store,
+			event.execution_id,
+			dedupKey,
+			attempt,
+		);
+		return { handled: true, seq, delivered: false };
+	}
 	if (result.delivered === true) {
 		store.markLeadEventDelivered(seq);
-		// Advance run state to completed — ONLY when attempt matches the run
-		// record (defends against stale artifacts from earlier attempts).
-		if (dedupKey != null && attempt != null) {
-			patchSessionParams(store, event.execution_id, (cur) => {
-				const proofs = getProofShotParams(cur);
-				const runs = proofs.runs ?? {};
-				const run = runs[dedupKey];
-				if (!run) return cur; // unknown dedupKey — ignore
-				if (run.attempt !== attempt) return cur; // stale artifact, leave alone
-				if (run.state !== "pending" && run.state !== "running") return cur;
-				return {
-					...cur,
-					proofshot: {
-						...proofs,
-						runs: {
-							...runs,
-							[dedupKey]: {
-								...run,
-								state: "completed",
-								updatedAt: Date.now(),
-							},
-						},
-					},
-				};
-			});
-		}
+		markMatchingProofShotRunCompleted(
+			store,
+			event.execution_id,
+			dedupKey,
+			attempt,
+		);
 		return { handled: true, seq, delivered: true };
 	}
 
@@ -211,4 +204,35 @@ export async function handleArtifactEvent(
 		result.error ?? "runtime returned {delivered:false}",
 	);
 	return { handled: true, seq, delivered: false };
+}
+
+function markMatchingProofShotRunCompleted(
+	store: StateStore,
+	executionId: string,
+	dedupKey: string | undefined,
+	attempt: number | undefined,
+): void {
+	if (dedupKey == null || attempt == null) return;
+	patchSessionParams(store, executionId, (cur) => {
+		const proofs = getProofShotParams(cur);
+		const runs = proofs.runs ?? {};
+		const run = runs[dedupKey];
+		if (!run) return cur;
+		if (run.attempt !== attempt) return cur;
+		if (run.state !== "pending" && run.state !== "running") return cur;
+		return {
+			...cur,
+			proofshot: {
+				...proofs,
+				runs: {
+					...runs,
+					[dedupKey]: {
+						...run,
+						state: "completed",
+						updatedAt: Date.now(),
+					},
+				},
+			},
+		};
+	});
 }

@@ -91,6 +91,12 @@ describe("resolveTicketOwner (PRD CH-1 whitelist matrix)", () => {
 		);
 	});
 
+	it("inbox_loop_stalled has NO bot owner after its founder alert", () => {
+		expect(resolveTicketOwner("inbox_loop_stalled", "unknown", FULL)).toEqual({
+			kind: "none",
+		});
+	});
+
 	it("registry unset ⇒ userId null (label-only, no ping, no T2 fallback)", () => {
 		expect(resolveTicketOwner("usage_limit", "claude", EMPTY)).toEqual({
 			kind: "infra_bot",

@@ -305,6 +305,7 @@ import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { GatePoller } from "./gate-poller.js";
 import { buildSessionKey } from "./hook-payload.js";
+import { InboxLoopHealthChecker } from "./inbox-loop-health-checker.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
 	formatAccountCapOwnerAssignment,
@@ -339,7 +340,6 @@ import {
 	type LeadScanTarget,
 	LeaseAuditOutbox,
 } from "./lead-dual-active-scan.js";
-import { deliveryAckEnabled } from "./lead-event-ack-policy.js";
 import {
 	createLeadEventDeadLetterHandler,
 	LeadEventDeliveryCoordinator,
@@ -349,6 +349,7 @@ import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
 import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
+import { legacyDeliveryWatchdogsEnabled } from "./legacy-delivery-watchdog-policy.js";
 import { reconcileLegacyPhaseThreads } from "./legacy-phase-thread-sweep.js";
 import { assertIssueNotLifecycleClosed } from "./lifecycle-admission.js";
 import {
@@ -723,7 +724,11 @@ export async function createLeadRuntime(
 	const { homedir } = await import("node:os");
 	const { existsSync, readFileSync } = await import("node:fs");
 
-	const backend = resolveCommBackend();
+	// Use the source binding inside this module. Importing the full Bridge under
+	// a transport mock can expose the legacy plugin <-> run-dispatcher cycle;
+	// the re-exported const is then still in its TDZ even though the shared
+	// config binding is already initialized.
+	const backend = resolveCommBackendShared();
 
 	if (backend === "mailbox") {
 		// Mailbox path — no CommDB / inbox-mcp lease check needed. Lead's
@@ -2071,6 +2076,29 @@ export function createBridgeApp(
 	}
 
 	// GEO-270: Close stale tmux session (resource cleanup, no status change)
+	// FLY-1373 doorbell: a best-effort latency hint only. comm.db remains the
+	// authority, so a lost/duplicate nudge cannot lose or duplicate delivery.
+	app.post(
+		"/api/lead-inbox/nudge",
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+		(req, res) => {
+			const { leadId, project } = (req.body ?? {}) as {
+				leadId?: unknown;
+				project?: unknown;
+			};
+			if (typeof leadId !== "string" || !leadId.trim()) {
+				res.status(400).json({ error: "leadId is required" });
+				return;
+			}
+			const projectName = typeof project === "string" ? project : undefined;
+			if (!registry?.nudgeLeadInbox(leadId, projectName)) {
+				res.status(404).json({ error: "Lead inbox loop not found" });
+				return;
+			}
+			res.status(202).json({ ok: true });
+		},
+	);
+
 	// FLY-224: Codex Lead outbound — apiToken-guarded reserved endpoint the Codex
 	// Lead runtime POSTs its replies to (durable idempotencyKey dedup → exactly-once
 	// Discord delivery via the per-Lead bot token). Additive; registered only when
@@ -2478,17 +2506,25 @@ export function createBridgeApp(
 					);
 
 					const runtime = registry?.getForLead(leadId);
-					if (runtime) {
+					if (registry && runtime) {
 						const envelope: import("./lead-runtime.js").LeadEventEnvelope = {
+							eventId,
 							seq,
 							event: payload,
 							sessionKey: "stale-patrol",
 							leadId,
 							timestamp: new Date().toISOString(),
 						};
-						const result = await runtime.deliver(envelope);
+						const result = await registry.dispatchLeadEvent(envelope);
 						if (result.delivered) {
 							store.markLeadEventDelivered(seq);
+							notifications.push({
+								leadId,
+								chatChannel: lead.chatChannel,
+								sessionCount: leadSessions.length,
+								sent: true,
+							});
+						} else if (result.queued) {
 							notifications.push({
 								leadId,
 								chatChannel: lead.chatChannel,
@@ -3436,8 +3472,9 @@ export function createBridgeApp(
 					},
 					deliver: async (leadId, envelope) => {
 						const runtime = registry?.getForLead(leadId);
-						if (!runtime) return { delivered: false, error: "no lead runtime" };
-						return runtime.deliver(envelope);
+						if (!registry || !runtime)
+							return { delivered: false, error: "no lead runtime" };
+						return registry.dispatchLeadEvent(envelope);
 					},
 					isoNow: () => new Date().toISOString(),
 					log: (m) => console.log(m),
@@ -3675,6 +3712,7 @@ export async function startBridge(
 		);
 	}
 	const bridgeBootTs = Date.now();
+	const legacyDeliveryWatchdogsOn = legacyDeliveryWatchdogsEnabled(process.env);
 
 	// FLY-1082 (Task 1.1): fail-loud kind-contract validation — every alert
 	// kind must have an owner + an explicit ARC posture, or the Bridge REFUSES
@@ -4232,12 +4270,6 @@ export async function startBridge(
 			`[Bridge] RuntimeRegistry: ${registry.size} lead runtime(s) registered`,
 		);
 	}
-
-	const deliveryDeadLetterAlertHolder: {
-		current?: (
-			row: NonNullable<ReturnType<StateStore["getLeadEventBySeq"]>>,
-		) => Promise<boolean>;
-	} = {};
 	const testDeliverySecret = process.env.VITEST
 		? { secretId: "vitest-delivery-secret", key: randomBytes(32) }
 		: null;
@@ -4245,7 +4277,7 @@ export async function startBridge(
 		? { getActive: () => testDeliverySecret }
 		: new FileDeliverySecretProvider({ store });
 	let deliverySecretBootError: string | undefined;
-	if (deliveryAckEnabled()) {
+	if (legacyDeliveryWatchdogsOn && process.env.FLYWHEEL_DELIVERY_ACK !== "0") {
 		try {
 			deliverySecretProvider.getActive();
 		} catch (error) {
@@ -4256,6 +4288,35 @@ export async function startBridge(
 			);
 		}
 	}
+
+	// FLY-1373: comm.db is now the one durable Lead-delivery authority. Start
+	// every per-Lead consumer before mounting the app so the nudge route and all
+	// producer seams are live together; mount-time start performs the first pull.
+	// Keep the cutover assembly lazy: createLeadRuntime is also imported by
+	// lightweight preflight callers, which must not load the entire inbox stack
+	// (or its transport adapter) just to select a legacy runtime.
+	const { LeadInboxRuntime } = await import("./lead-inbox-runtime.js");
+	const leadInboxRuntime = new LeadInboxRuntime({
+		projects,
+		store,
+		registry,
+		commDbPathForProject,
+		chatThreadsEnabled: config.chatThreadsEnabled,
+		secretProvider: deliverySecretProvider,
+	});
+	registry.setLeadEventEnqueuer((envelope, content) =>
+		leadInboxRuntime.enqueueLeadEvent(envelope, content),
+	);
+	registry.setLeadInboxNudge((leadId, projectName) =>
+		leadInboxRuntime.nudge(leadId, projectName),
+	);
+	leadInboxRuntime.start();
+
+	const deliveryDeadLetterAlertHolder: {
+		current?: (
+			row: NonNullable<ReturnType<StateStore["getLeadEventBySeq"]>>,
+		) => Promise<boolean>;
+	} = {};
 	const leadEventDelivery = new LeadEventDeliveryCoordinator({
 		store,
 		runtimeForLead: (leadId) => registry.getRawForLead(leadId),
@@ -4264,6 +4325,8 @@ export async function startBridge(
 		secretProvider: deliverySecretProvider,
 		onDeadLetter: async (row) =>
 			deliveryDeadLetterAlertHolder.current?.(row) ?? false,
+		enabled:
+			legacyDeliveryWatchdogsOn && process.env.FLYWHEEL_DELIVERY_ACK !== "0",
 	});
 	registry.setDeliveryInterceptor((runtime, envelope) =>
 		leadEventDelivery.deliver(envelope, runtime),
@@ -5458,6 +5521,14 @@ export async function startBridge(
 	const stuckConfirmHolder: {
 		current: ((session: Session) => Promise<StuckConfirmResult>) | null;
 	} = { current: null };
+	const inboxLoopAlertHolder: {
+		current?: { alert: (payload: AlertPayload) => Promise<unknown> };
+	} = {};
+	const inboxLoopHealthChecker = new InboxLoopHealthChecker({
+		targets: leadInboxRuntime.healthTargets(),
+		alert: (payload) =>
+			(inboxLoopAlertHolder.current ?? leadAlertNotifier).alert(payload),
+	});
 
 	const heartbeatService = new HeartbeatService(
 		store,
@@ -5571,6 +5642,9 @@ export async function startBridge(
 		// heartbeat interval); single-flight + detached inside HeartbeatService.
 		// Tick 0 = the boot pass (orphan reap + first sweep).
 		async (tick) => {
+			// FLY-1373: the sole retained Lead-delivery alarm rides the existing
+			// heartbeat cadence; it is per-Lead and deadline-aware.
+			await inboxLoopHealthChecker.check();
 			// FLY-1066: ~hourly residue convergence rides this existing tick and is
 			// deliberately independent of the worktree-autoclean kill-switch.
 			if (residueHarvester) {
@@ -5648,6 +5722,7 @@ export async function startBridge(
 		},
 		// FLY-1234: heartbeat session_stuck confirm layer (late-bound above).
 		stuckConfirmHolder,
+		legacyDeliveryWatchdogsOn,
 	);
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
@@ -6935,10 +7010,13 @@ export async function startBridge(
 		projects,
 		store,
 		runtimeRegistry: registry,
+		legacyDeliveryWatchdogsEnabled: legacyDeliveryWatchdogsOn,
 		ensureShipRelevantDiff,
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
-		onDeliveryReconcileTick: () => leadEventDelivery.reconcile(),
-		onParkWatchTick: parkWatchTick,
+		onDeliveryReconcileTick: legacyDeliveryWatchdogsOn
+			? () => leadEventDelivery.reconcile()
+			: undefined,
+		onParkWatchTick: legacyDeliveryWatchdogsOn ? parkWatchTick : undefined,
 		parkWatchEveryNTicks: (() => {
 			const n = Number.parseInt(
 				process.env.FLYWHEEL_PARK_WATCH_EVERY_N_TICKS ?? "",
@@ -6958,7 +7036,7 @@ export async function startBridge(
 			return Number.isFinite(n) && n > 0 ? n : undefined;
 		})(),
 		// FLY-1048 (A6): gap-scan piggyback (zero new timer; env-gated inside).
-		onGapScanTick: gapScanTick,
+		onGapScanTick: legacyDeliveryWatchdogsOn ? gapScanTick : undefined,
 		gapScanEveryNTicks: (() => {
 			const n = Number.parseInt(
 				process.env.FLYWHEEL_GAP_SCAN_EVERY_N_TICKS ?? "",
@@ -6968,7 +7046,9 @@ export async function startBridge(
 		})(),
 		// FLY-1048 (PR-C): detection-escalation reconcile piggyback (zero new
 		// timer; env-gated inside the tick — unset flag = complete no-op).
-		onDetectionReconcileTick: detectionReconcileTick,
+		onDetectionReconcileTick: legacyDeliveryWatchdogsOn
+			? detectionReconcileTick
+			: undefined,
 		// FLY-1282 Part D: disposition-receipt delivery — its OWN stage, NOT
 		// under detectionReconcileEveryNTicks (cadence 0 must not become a
 		// hidden receipt kill switch). FLYWHEEL_DISPOSITION_RECEIPT is checked
@@ -6994,8 +7074,10 @@ export async function startBridge(
 					: Promise.resolve({ skipped: "unknown-lead" } as AlertResult),
 		},
 		chatThreadsEnabled: config.chatThreadsEnabled,
-		transport: misroutePatrolTransport,
-		misrouteArchiveDir,
+		transport: legacyDeliveryWatchdogsOn ? misroutePatrolTransport : undefined,
+		misrouteArchiveDir: legacyDeliveryWatchdogsOn
+			? misrouteArchiveDir
+			: undefined,
 		// FLY-907 (Step 4.5): issue-display reconcile sweep — piggybacked on this
 		// existing poll tick (zero new timer). The holder is populated post-listen;
 		// an empty holder / flag=0 makes the tick a no-op.
@@ -8973,6 +9055,7 @@ export async function startBridge(
 		},
 	};
 	routedAlertSinkHolder.current = routedAlertSink;
+	inboxLoopAlertHolder.current = routedAlertSink;
 
 	// FLY-1204: now that the routed alert sink exists, back the late-bound
 	// orphan-parked alert closure the HeartbeatService reclaim patrol calls. It
@@ -9311,6 +9394,7 @@ export async function startBridge(
 		captureSessionFn: defaultCaptureSession,
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		stuckDetector,
+		legacyDeliveryWatchdogsEnabled: legacyDeliveryWatchdogsOn,
 		// FLY-626: shared quiet-signal probe (defined above with HeartbeatService).
 		quietSignalsProbe,
 		// FLY-623 (Codex R2 HIGH-3): suppress idle/stuck signals for a Runner that
@@ -9547,6 +9631,7 @@ export async function startBridge(
 		captureFn: leadPaneCaptureFn,
 		claimsReader,
 		blockedMarkerReader,
+		legacyDeliveryWatchdogsEnabled: legacyDeliveryWatchdogsOn,
 		// FLY-368: real-time recovery → resolve the matching alert thread (an
 		// optimization; the reconcile pass below is the restart-safe truth source).
 		onRecovery: alertHub
@@ -9873,6 +9958,7 @@ export async function startBridge(
 		// the in-flight pass) BEFORE store.close() below — a pass writing
 		// archived_at into a closed store would throw.
 		await doneThreadReconcile.stop();
+		leadInboxRuntime.close();
 		await registry.shutdownAll();
 		broadcaster.destroy();
 		await new Promise<void>((resolve, reject) => {

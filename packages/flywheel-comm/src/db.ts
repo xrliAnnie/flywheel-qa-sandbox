@@ -6,6 +6,10 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
+import {
+	assertUtcIsoTimestamp,
+	LEAD_INBOX_SCHEMA,
+} from "./lead-inbox-queue.js";
 import type {
 	Message,
 	MessageProvenance,
@@ -25,6 +29,7 @@ CREATE TABLE IF NOT EXISTS messages (
   read_at     DATETIME,
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
   expires_at  DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
+  deadline_at TEXT,
   relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed')),
   resolved_via TEXT,
   logical_event_id TEXT,
@@ -125,6 +130,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runner_phase_wakes_source
   ON runner_phase_wakes(execution_id, source_instruction_id)
   WHERE source_instruction_id IS NOT NULL;
+${LEAD_INBOX_SCHEMA}
 `;
 
 /**
@@ -343,6 +349,17 @@ export class CommDB {
 
 		if (!columns.some((c) => c.name === "read_at")) {
 			this.db.exec("ALTER TABLE messages ADD COLUMN read_at DATETIME");
+		}
+		if (!columns.some((c) => c.name === "deadline_at")) {
+			try {
+				this.db.exec("ALTER TABLE messages ADD COLUMN deadline_at TEXT");
+			} catch (error) {
+				if (
+					!/duplicate column name: deadline_at/i.test((error as Error).message)
+				) {
+					throw error;
+				}
+			}
 		}
 		if (!columns.some((c) => c.name === "checkpoint")) {
 			this.db.exec("ALTER TABLE messages ADD COLUMN checkpoint TEXT");
@@ -575,6 +592,7 @@ export class CommDB {
 					  read_at DATETIME,
 					  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 					  expires_at DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
+					  deadline_at TEXT,
 					  checkpoint TEXT,
 					  content_ref TEXT,
 					  content_type TEXT DEFAULT 'text',
@@ -594,13 +612,13 @@ export class CommDB {
 					);
 					INSERT INTO messages (
 					  id, from_agent, to_agent, type, content, parent_id, read_at,
-					  created_at, expires_at, checkpoint, content_ref, content_type,
+					  created_at, expires_at, deadline_at, checkpoint, content_ref, content_type,
 					  resolved_at, delivered_at, attachments, kind, relay_state,
 					  logical_event_id, sender_lease_key, sender_generation,
 					  sender_holder_pid, sender_holder_start, writer_pid, writer_start
 					)
 					SELECT id, from_agent, to_agent, type, content, parent_id, read_at,
-					  created_at, expires_at, checkpoint, content_ref, content_type,
+					  created_at, expires_at, deadline_at, checkpoint, content_ref, content_type,
 					  resolved_at, delivered_at, attachments, kind, relay_state,
 					  logical_event_id, sender_lease_key, sender_generation,
 					  sender_holder_pid, sender_holder_start, writer_pid, writer_start
@@ -760,17 +778,22 @@ export class CommDB {
 			 * founder-reply binding candidate set; all other question semantics
 			 * (relay, pending, liveness) unchanged. */
 			kind?: "report";
+			/** Queue-native SLA copied into lead_inbox during admission. */
+			deadlineAt?: string;
 		},
 	): string {
 		const id = randomUUID();
 		const ttl = opts?.ttlSeconds;
 		const customTtl =
 			typeof ttl === "number" && Number.isFinite(ttl) && ttl > 0;
+		if (opts?.deadlineAt) {
+			assertUtcIsoTimestamp(opts.deadlineAt, "deadlineAt");
+		}
 		if (customTtl) {
 			this.db
 				.prepare(
-					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type, kind, expires_at)
-         VALUES (?, ?, ?, 'question', ?, ?, ?, ?, ?, datetime('now', ?))`,
+					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type, kind, deadline_at, expires_at)
+		 VALUES (?, ?, ?, 'question', ?, ?, ?, ?, ?, ?, datetime('now', ?))`,
 				)
 				.run(
 					id,
@@ -781,14 +804,15 @@ export class CommDB {
 					opts?.contentRef ?? null,
 					opts?.contentType ?? "text",
 					opts?.kind ?? null,
+					opts?.deadlineAt ?? null,
 					`+${Math.floor(ttl as number)} seconds`,
 				);
 		} else {
 			// Default-TTL path (byte-compat with the pre-FLY-245 schema default).
 			this.db
 				.prepare(
-					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type, kind)
-         VALUES (?, ?, ?, 'question', ?, ?, ?, ?, ?)`,
+					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type, kind, deadline_at)
+		 VALUES (?, ?, ?, 'question', ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					id,
@@ -799,6 +823,7 @@ export class CommDB {
 					opts?.contentRef ?? null,
 					opts?.contentType ?? "text",
 					opts?.kind ?? null,
+					opts?.deadlineAt ?? null,
 				);
 		}
 		return id;

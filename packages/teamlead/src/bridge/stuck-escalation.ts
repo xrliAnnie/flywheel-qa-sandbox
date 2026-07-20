@@ -33,7 +33,10 @@ import type { HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { parseSessionLabels } from "./lead-scope.js";
 import type { QuietSignals } from "./quiet-classifier.js";
-import type { RuntimeRegistry } from "./runtime-registry.js";
+import {
+	dispatchLeadEventCompat,
+	type RuntimeRegistry,
+} from "./runtime-registry.js";
 import {
 	type CommSignals,
 	LEAD_GRACE_MS,
@@ -403,15 +406,22 @@ export function createStuckEscalationEmitter(
 		const runtime = wiring.runtimeRegistry.getForLead(lead.agentId);
 		if (runtime) {
 			const envelope: LeadEventEnvelope = {
+				eventId,
 				seq,
 				event,
 				sessionKey: session.execution_id,
 				leadId: lead.agentId,
 				timestamp: new Date().toISOString(),
 			};
-			const result = await runtime.deliver(envelope);
+			const result = await dispatchLeadEventCompat(
+				wiring.runtimeRegistry,
+				runtime,
+				envelope,
+			);
 			if (result.delivered) {
 				wiring.store.markLeadEventDelivered(seq);
+			} else if ((result as { queued?: boolean }).queued) {
+				// Durable inbox loop owns the delivery receipt.
 			} else {
 				wiring.store.recordDeliveryFailure(
 					seq,

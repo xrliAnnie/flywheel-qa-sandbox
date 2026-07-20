@@ -1,0 +1,119 @@
+FLY-1373 场景⑤ — 真双-Lead N-to-N + layers 6/7 出站验证
+日期: 2026-07-19 23:0x–23:3x PDT
+执行: 独立 QA runner a643fd05-b1f6-47bc-9554-07182f278920
+
+═══════════════════════════════════════════════════════════════
+房间构造
+═══════════════════════════════════════════════════════════════
+Lead-A = flywheel-test-2  chat=1493080993173737583  (原 slot-2,一直在)
+Lead-B = flywheel-test-3  chat=1493080995862413439  (#ops-lead-test)
+         接线 = /tmp/flywheel-test-slot-2/extra-leads/slot-3/
+                discord-state/{.env(0600),access.json} + test-identity.md
+         照抄 test-deploy.sh --extra-lead 块(1253-1340),不自创
+Bridge = localhost:19872,单进程带两个 Lead
+         FLYWHEEL_PROJECTS_FILE=flywheel-projects-2lead.json
+
+腾身份:停掉 idle 的 slot-3 Lead(它的 TEST_BOT_TOKEN_3 给 Lead-B 用)
+  被杀: supervisor pid 16727 (flywheel-FLY-1307 worktree 的 claude-lead.sh)
+        claude    pid 48423
+  记录: /tmp/q13/fly1373-e2e/slot3-killed.txt
+
+slot-3 确实空闲(动手前实测,不是假设):
+  - lead.log 最后写入 16:03,动手时 23:17 → 静默 7h13m
+  - supervisor 自 16:03 起卡在 tmux lock:
+    "tmux hold (lock_unavailable) while waiting for @1629; retrying in 24s"
+  - runner-test-slot-3 tmux session 不存在(它的 runner 全没了)
+  - bridge.log 5 秒内 0 字节增长;尾部是重复错误循环
+  - 无 comm.db(Jul-17 老代码部署,还没有 lead_inbox)
+  ⚠️ 我最初记的"messages=0 所以 idle"是查错了表得到的空 —— 空≠零。
+     上面这五条才是真凭据。
+
+═══════════════════════════════════════════════════════════════
+layers 6/7 —— 真 Discord 往返(PASS)
+═══════════════════════════════════════════════════════════════
+驱动方式: Annie 本人的 Discord 账号(Claude-in-Chrome)在 #ops-lead-test
+          发一个真问题,不是注入合成事件。
+
+  入站 msg 1528649035353690266
+     author xrliannie_96634  id=1138241636057481306  bot=false
+     ts    2026-07-20T06:25:30.954Z
+     "你现在在线吗?这个测试槽刚被重新接线过,我需要你自己确认一下:
+      你的 leadId 是什么、你在监听哪个频道、现在手上有没有在跑的 runner。"
+
+  出站 msg 1528649149329965127
+     author flywheel-test-3  id=1493075160025272452  bot=true   ← Lead-B 的 bot app id
+     ts    2026-07-20T06:25:58.128Z
+     "在线。自检结果: leadId: flywheel-test-3 / 监听范围: 仅 #ops-lead-test
+      本频道 + 该频道下的 thread / runner 状态: 阔查了一遍 runner_terminal_list,
+      active_only=false,running+parked-alive+dead 全量,No sessions found"
+
+  往返 = 27.174 秒
+
+作者身份用 Discord API 的 author.id 核的,不是看显示名 ——
+Discord UI 上显示的是服务器昵称「Tadashi-QA」,只看昵称会判错。
+(参见 reference_lead_manifest_bottokenenv_identity_mixup)
+
+Lead-B pane 侧佐证: "Called flywheel-terminal, plugin:discord:discord 2 times"
+但 pane 自述不作为证据 —— 证据是上面那条 API 查出来的 author.id。
+
+═══════════════════════════════════════════════════════════════
+N-to-N 队列隔离(PASS)
+═══════════════════════════════════════════════════════════════
+两 Lead 同房、共用同一个 project comm.db 期间:
+  sqlite> SELECT to_lead, COUNT(*), SUM(consumed_at IS NOT NULL) ...
+  flywheel-test-2 | 94 | 94 | pending 0
+  flywheel-test-3 |  0 |    |
+→ 无串道。
+
+loop_owner 是 per-DB 单例(无 lead 列)。查代码而非从表结构推断:
+  packages/teamlead/src/bridge/lead-inbox-runtime.ts:67-92
+    for (const project of opts.projects) {
+      const queue = new LeadInboxQueue(commDbPathForProject(project.projectName))
+      for (const lead of project.leads) {
+        const loop = new LeadInboxLoop({ queue, leadId: lead.agentId,
+                                         ownerEpoch: this.ownerEpoch, ... })
+→ comm.db 按 project 分;每 Lead 一个 loop 共用该 queue;
+  全部共享 Bridge 进程的单个 ownerEpoch。
+  所以 loop_owner 单例 = 给"第二个 Bridge 进程"做 fencing,
+  不是给 Lead 之间仲裁。Lead 间隔离靠 claim 的 to_lead 谓词。
+  → 按设计如此,不是缺陷。
+
+lead_inbox 的真实生成器(那 94 行的 source/type,证明不是我一个人灌的):
+  lead_event:*  session_started / stage_changed / auto_qa_stuck /
+                session_monitoring_reestablished  → priority 3
+  question:*    runner_question → priority 1(一条 p2)、gate_question → p1
+  与 priorityForLeadEvent(lead-event-queue.ts:17)一致。
+
+═══════════════════════════════════════════════════════════════
+没验到的(不要被上面盖过)
+═══════════════════════════════════════════════════════════════
+6/7 是 Discord 插件**直投**驱动的,不是 lead_inbox 事件驱动的。
+Discord 聊天消息按设计绕开 lead_inbox —— Lead-B 启动横幅原话:
+  "Channels (experimental) messages from plugin:discord@claude-plugins-official,
+   server:flywheel-inbox inject directly in this session"
+lead_inbox 走的是 Bridge 事件。
+
+所以:
+  1-5 层  = verified(②③④)
+  6-7 层  = verified(本文件)
+  "lead_inbox 事件 → Lead → Discord 出站"作为一条连续链 = **未驱动**
+  要驱动它需要一个绑在 Lead-B 上的真 runner 产生真 Bridge 事件;本次没有。
+
+═══════════════════════════════════════════════════════════════
+我造成的副作用(如实登记)
+═══════════════════════════════════════════════════════════════
+1. 生产脏行:~/.flywheel/comm/flywheel/comm.db 的 messages 表
+   id=35721e28-94df-41e3-97b2-580a8f9404df  runner → flywheel-test-3  "test"
+   起因:我以为 `flywheel-comm ask` 不给参数会报错退出(当探针用),
+   实际它执行了并写了持久行。nudge 返回 404(生产没有这个 lead),
+   无人消费 = 惰性。**未自行删除** —— 再写一次生产去掩盖第一次更糟,交 Tadashi 定夺。
+2. 停了 slot-3 Lead(见上,可复原,清单在 slot3-killed.txt);
+   它的 tmux 窗口故意保留给 owner 看。
+   slot-3 的 Bridge 仍在跑(我没动),它一直在刷
+   "ACTIVE delivery secret 46bc7ee8-... is missing" —— 这是我来之前就有的,不是我造成的,
+   但值得单独看一眼(FLY-1279 delivery reconcile)。
+3. 重启了 slot-2 Bridge(双 Lead 配置);起了 Lead-B。
+4. 按 Escape 取消了 Lead-A 上一个卡死的 AskUserQuestion 弹窗 —— 那个弹窗是我自己
+   之前的提问造成的,取消 ≠ 批准。
+5. 误建后已删:/tmp/flywheel-test-slot-2/comm.db 的 0 字节空文件
+   (sqlite3 打开不存在路径会创建文件;真 DB 在 ~/.flywheel/comm/test-slot-2/)。

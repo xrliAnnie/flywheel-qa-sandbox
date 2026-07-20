@@ -36,6 +36,10 @@ import {
 	CodexDiscordGateway,
 	type DiscordInboundMessage,
 } from "./CodexDiscordGateway.js";
+import {
+	CodexLeadInboxServer,
+	resolveCodexLeadInboxSocketPath,
+} from "./CodexLeadInboxSocket.js";
 import { CodexLeadProcess, CodexLeadProcessError } from "./CodexLeadProcess.js";
 import { CodexLeadRuntime, type RuntimeWiring } from "./CodexLeadRuntime.js";
 import { CodexOutboundSender } from "./CodexOutboundSender.js";
@@ -589,6 +593,12 @@ function buildTuiGeneration(
 									}
 								: {}),
 						});
+						const inboxServer = new CodexLeadInboxServer({
+							socketPath: resolveCodexLeadInboxSocketPath(config.stateDir),
+							leadId: config.leadId,
+							router,
+							authSecret: config.botToken,
+						});
 						// FLY-267 判 + 回: mirror the headless mention-gate + reply-routing so
 						// the TUI runtime does NOT spam shared channels and routes replies back
 						// to the source channel. No cross-dept → neither hook → byte-compat.
@@ -722,11 +732,15 @@ function buildTuiGeneration(
 								// source.onMessage handler is installed before discovery's
 								// addChannel() can drain a resumed thread (else downtime thread
 								// messages are dropped + cursor advances past them).
+								// FLY-1373: open Bridge batch ingress only AFTER journal recovery
+								// (CodexLeadRuntime orders recover() before startGateway()).
+								await inboxServer.listen();
 								await gateway.start();
 								await replyInThread?.start();
 							},
 							stopGateway: async () => {
-								// Stop discovery first (no addChannel mid-shutdown), then gateway.
+								// Stop both intake surfaces before tearing down their shared router.
+								await inboxServer.close();
 								await replyInThread?.stop();
 								// FLY-404 (Codex review LOW): close the typing keepalive in a
 								// `finally` so a throwing gateway.stop() can never leak the

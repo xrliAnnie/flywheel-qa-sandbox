@@ -65,6 +65,7 @@ import { xhsAnalysis } from "./commands/xhs-analysis.js";
 import { xhsState } from "./commands/xhs-state.js";
 import { xhsValidateFinal } from "./commands/xhs-validate-final.js";
 import { CommDB } from "./db.js";
+import { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
 import { resolveDbPath } from "./resolve-db-path.js";
 
 function printUsage(): void {
@@ -181,13 +182,13 @@ async function main(): Promise<void> {
 
 	switch (command) {
 		case "ask":
-			runAsk(commandArgs);
+			await runAsk(commandArgs);
 			break;
 		case "check":
 			runCheck(commandArgs);
 			break;
 		case "ack-event":
-			runAckEvent(commandArgs);
+			await runAckEvent(commandArgs);
 			break;
 		case "gate":
 			await runGate(commandArgs);
@@ -324,7 +325,7 @@ async function main(): Promise<void> {
 	}
 }
 
-function runAckEvent(args: string[]): void {
+async function runAckEvent(args: string[]): Promise<void> {
 	const { values, positionals } = parseArgs({
 		args,
 		options: {
@@ -351,6 +352,12 @@ function runAckEvent(args: string[]): void {
 		eventSeq,
 		ackToken: readFileSync(0, "utf8").trim(),
 		leadId: values.lead ?? process.env.FLYWHEEL_LEAD_ID ?? "lead",
+	});
+	await nudgeLeadInboxBestEffort({
+		bridgeUrl: process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL,
+		leadId: values.lead ?? process.env.FLYWHEEL_LEAD_ID ?? "lead",
+		project: values.project,
+		apiToken: process.env.TEAMLEAD_API_TOKEN,
 	});
 	if (values.json)
 		console.log(JSON.stringify({ receipt_id: receiptId, event_seq: eventSeq }));
@@ -381,7 +388,7 @@ async function runCodexResume(args: string[]): Promise<void> {
 	process.exit(exitCode);
 }
 
-function runAsk(args: string[]): void {
+async function runAsk(args: string[]): Promise<void> {
 	const { values, positionals } = parseArgs({
 		args,
 		options: {
@@ -393,6 +400,7 @@ function runAsk(args: string[]): void {
 			// FLY-1041: fire-and-forget status report — excluded from the
 			// founder-reply binding candidate set (Lead relay unchanged).
 			report: { type: "boolean", default: false },
+			deadline: { type: "string" },
 		},
 		allowPositionals: true,
 	});
@@ -413,6 +421,13 @@ function runAsk(args: string[]): void {
 		question,
 		dbPath,
 		report: values.report,
+		deadlineAt: values.deadline,
+	});
+	await nudgeLeadInboxBestEffort({
+		bridgeUrl: process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL,
+		leadId: values.lead,
+		project: values.project,
+		apiToken: process.env.TEAMLEAD_API_TOKEN,
 	});
 
 	if (values.json) {
@@ -1576,6 +1591,7 @@ async function runGate(args: string[]): Promise<void> {
 			// goes idle instead of freezing in the poll loop). Output is always
 			// structured JSON in this mode so the runner can log the questionId.
 			"no-block": { type: "boolean", default: false },
+			deadline: { type: "string" },
 		},
 		allowPositionals: true,
 	});
@@ -1644,6 +1660,14 @@ async function runGate(args: string[]): Promise<void> {
 		timeoutBehavior,
 		timeoutBehaviorSource,
 		cleanupTtlHours,
+		deadlineAt: values.deadline,
+		nudge: () =>
+			nudgeLeadInboxBestEffort({
+				bridgeUrl: process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL,
+				leadId: values.lead as string,
+				project: values.project,
+				apiToken: process.env.TEAMLEAD_API_TOKEN,
+			}),
 		stage: values.stage,
 		noBlock: values["no-block"],
 	});

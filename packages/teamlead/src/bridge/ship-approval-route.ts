@@ -31,6 +31,10 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import type { HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope, LeadRuntime } from "./lead-runtime.js";
+import {
+	dispatchLeadEventCompat,
+	type LeadEventDispatcher,
+} from "./runtime-registry.js";
 
 const REQUESTER = "gemini-agent";
 const SUMMARY_MAX = 2000;
@@ -42,7 +46,7 @@ export const SHIP_REQUEST_NOTE =
 	"Ship approval requested. Nothing has been merged; founder approval and the owning runner's verified ship flow are still required.";
 
 /** Minimal registry slice — resolves the runtime for an explicit leadId. */
-export interface ShipApprovalRuntimeResolver {
+export interface ShipApprovalRuntimeResolver extends LeadEventDispatcher {
 	getForLead(agentId: string): LeadRuntime | undefined;
 }
 
@@ -200,6 +204,7 @@ export function createShipApprovalHandler(
 		// by the HeartbeatService redelivery loop (③), the request is already
 		// accepted (durably queued).
 		const envelope: LeadEventEnvelope = {
+			eventId,
 			seq,
 			event: payload,
 			sessionKey: "",
@@ -214,9 +219,15 @@ export function createShipApprovalHandler(
 					`no runtime registered for lead ${leadId}`,
 				);
 			} else {
-				const result = await runtime.deliver(envelope);
+				const result = await dispatchLeadEventCompat(
+					deps.registry,
+					runtime,
+					envelope,
+				);
 				if (result.delivered) {
 					deps.store.markLeadEventDelivered(seq);
+				} else if ((result as { queued?: boolean }).queued) {
+					// Durable inbox loop owns the delivery receipt.
 				} else {
 					deps.store.recordDeliveryFailure(
 						seq,

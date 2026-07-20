@@ -82,7 +82,6 @@ import {
 	emitIssueThreadInfraNotification,
 } from "./founder-thread-notifier.js";
 import type { HookPayload } from "./hook-payload.js";
-import { deliveryAckEnabled } from "./lead-event-ack-policy.js";
 import {
 	computeStuckKey,
 	decideLeadNudge,
@@ -95,7 +94,10 @@ import type { MergedGateGuard } from "./merged-gate-guard.js";
 import { decideMilestoneReport } from "./milestone-report-policy.js";
 import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
 import { sendRunnerWake } from "./runner-wake.js";
-import type { RuntimeRegistry } from "./runtime-registry.js";
+import {
+	dispatchLeadEventCompat as dispatchLeadEvent,
+	type RuntimeRegistry,
+} from "./runtime-registry.js";
 import { defaultGetCommDbPath } from "./session-capture.js";
 import {
 	DEFAULT_REWAKE_BACKOFF_MS,
@@ -146,6 +148,8 @@ export interface GatePollerConfig {
 	projects: ProjectEntry[];
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
+	/** FLY-1373: boot-captured reverse gate for superseded alert lanes. */
+	legacyDeliveryWatchdogsEnabled?: boolean;
 	/** FLY-1251: async producer for the exact-head ship-diff hold snapshot. */
 	ensureShipRelevantDiff?: (session: Session) => Promise<void> | void;
 	/** FLY-91: Enable per-issue chat thread hints in gate_question payloads. */
@@ -522,6 +526,10 @@ export class GatePoller {
 		});
 	}
 
+	private legacyWatchdogsEnabled(): boolean {
+		return this.config.legacyDeliveryWatchdogsEnabled !== false;
+	}
+
 	/**
 	 * FLY-1251 R2: a code-bearing or unclassifiable PR stays founder-hidden.
 	 * The caller has already refreshed the server-owned classifier; emit a
@@ -595,10 +603,12 @@ export class GatePoller {
 			// interval callback's OUTERMOST layer — a pass hung inside poll()
 			// leaves `polling` true forever, so poll() itself would never observe
 			// it; this cheap clock check still runs every tick.
-			try {
-				this.founderReplyWatchdog.checkHang(Date.now());
-			} catch {
-				/* the watchdog must never break the poll loop */
+			if (this.legacyWatchdogsEnabled()) {
+				try {
+					this.founderReplyWatchdog.checkHang(Date.now());
+				} catch {
+					/* the watchdog must never break the poll loop */
+				}
 			}
 			void this.poll().catch((err) => {
 				console.error(
@@ -897,7 +907,18 @@ export class GatePoller {
 							// fallback get SEPARATE try/catch so a Lead-runtime throw from the
 							// relay never prevents the post-grace fallback for this question.
 							try {
-								await this.relayToLead(lead, session, question, dbPath);
+								// FLY-1373: the 1s LeadInboxLoop owns admission + delivery. This
+								// legacy direct relay remains only as a test/rollback fallback when
+								// no loop was registered; production nudge returns true and never
+								// touches runtime.deliver here.
+								if (
+									!this.config.runtimeRegistry.nudgeLeadInbox(
+										lead.agentId,
+										project.projectName,
+									)
+								) {
+									await this.relayToLead(lead, session, question, dbPath);
+								}
 							} catch (relayErr) {
 								relayFailed = true;
 								console.warn(
@@ -988,7 +1009,7 @@ export class GatePoller {
 					// (which may have just opened the circuit) skips the patrol for
 					// this lead too — the patrol also touches sql.js StateStore, so
 					// running it after the failure would not isolate a poisoned heap.
-					if (patrolDue && !relayFailed) {
+					if (this.legacyWatchdogsEnabled() && patrolDue && !relayFailed) {
 						try {
 							await this.misroutePatrol(project, lead);
 						} catch (err) {
@@ -1030,6 +1051,7 @@ export class GatePoller {
 			// (no open circuit / failed poll this tick), so a transiently-unread lead
 			// never loses its backoff state. Empty seen-set ⇒ clear all.
 			if (
+				this.legacyWatchdogsEnabled() &&
 				leadPendingEscalationEnabled() &&
 				leadPendingPollComplete &&
 				this.tickCount % this.leadPendingPruneEveryNTicks() === 1
@@ -1108,14 +1130,16 @@ export class GatePoller {
 				}
 				// FLY-1099 §7.2: watchdog detector tick (pin / unreachable / pass-dead
 				// latch maintenance) — durable-table driven, cheap.
-				try {
-					await this.founderReplyWatchdog.tick(Date.now());
-				} catch (err) {
-					console.warn(
-						"[GatePoller] founder-reply watchdog tick error:",
-						err instanceof Error ? err.message : String(err),
-					);
-					this.maybeRecoverStore(err);
+				if (this.legacyWatchdogsEnabled()) {
+					try {
+						await this.founderReplyWatchdog.tick(Date.now());
+					} catch (err) {
+						console.warn(
+							"[GatePoller] founder-reply watchdog tick error:",
+							err instanceof Error ? err.message : String(err),
+						);
+						this.maybeRecoverStore(err);
+					}
 				}
 			}
 
@@ -1602,13 +1626,19 @@ export class GatePoller {
 		);
 		if (!runtime) return false;
 		const envelope: LeadEventEnvelope = {
+			eventId,
 			seq,
 			event: payload,
 			sessionKey: payload.execution_id,
 			leadId: lead.agentId,
 			timestamp: new Date().toISOString(),
 		};
-		const result = await runtime.deliver(envelope);
+		const result = await dispatchLeadEvent(
+			this.config.runtimeRegistry,
+			runtime,
+			envelope,
+		);
+		if (result.queued) return false;
 		if (result.delivered) {
 			this.config.store.markLeadEventDelivered(seq);
 			return true;
@@ -1748,23 +1778,22 @@ export class GatePoller {
 			JSON.stringify(payload),
 			session.execution_id,
 		);
-		if (deliveryAckEnabled()) {
-			const commDb = new CommDB(dbPath, false);
-			try {
-				if (!commDb.markQuestionProtected(question.id, String(seq))) {
-					console.warn(
-						`[GatePoller] question ${question.id} could not bind to lead event seq ${seq}; relay continues without protection`,
-					);
-				}
-			} finally {
-				commDb.close();
+		const commDb = new CommDB(dbPath, false);
+		try {
+			if (!commDb.markQuestionProtected(question.id, String(seq))) {
+				console.warn(
+					`[GatePoller] question ${question.id} could not bind to lead event seq ${seq}; relay continues without protection`,
+				);
 			}
+		} finally {
+			commDb.close();
 		}
 
 		// Deliver to Lead via the runtime (CommDB instruction or mailbox).
 		const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
 		if (runtime) {
 			const envelope: LeadEventEnvelope = {
+				eventId,
 				seq,
 				event: payload,
 				sessionKey: session.execution_id,
@@ -1772,10 +1801,16 @@ export class GatePoller {
 				timestamp: new Date().toISOString(),
 			};
 
-			const result = await runtime.deliver(envelope);
+			const result = await dispatchLeadEvent(
+				this.config.runtimeRegistry,
+				runtime,
+				envelope,
+			);
 
 			if (result.delivered) {
 				this.config.store.markLeadEventDelivered(seq);
+			} else if (result.queued) {
+				// Durable inbox loop owns the delivery receipt.
 			} else {
 				this.config.store.recordDeliveryFailure(
 					seq,
@@ -1843,7 +1878,8 @@ export class GatePoller {
 		session: Session,
 		question: PendingQuestion,
 	): Promise<void> {
-		if (!leadPendingEscalationEnabled()) return;
+		if (!this.legacyWatchdogsEnabled() || !leadPendingEscalationEnabled())
+			return;
 		if (question.checkpoint !== "question") return; // blocking lead-facing only
 		if (!ACTIVE_SESSION_STATUSES.has(session.status)) return;
 		try {
@@ -1983,15 +2019,22 @@ export class GatePoller {
 		);
 		const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
 		if (runtime) {
-			const result = await runtime.deliver({
-				seq,
-				event: payload,
-				sessionKey: session.execution_id,
-				leadId: lead.agentId,
-				timestamp: new Date().toISOString(),
-			});
+			const result = await dispatchLeadEvent(
+				this.config.runtimeRegistry,
+				runtime,
+				{
+					eventId,
+					seq,
+					event: payload,
+					sessionKey: session.execution_id,
+					leadId: lead.agentId,
+					timestamp: new Date().toISOString(),
+				},
+			);
 			if (result.delivered) this.config.store.markLeadEventDelivered(seq);
-			else
+			else if (result.queued) {
+				// Durable inbox loop owns the delivery receipt.
+			} else
 				this.config.store.recordDeliveryFailure(
 					seq,
 					result.error ?? "deliver returned false",
@@ -2157,22 +2200,29 @@ export class GatePoller {
 				);
 				const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
 				if (runtime) {
-					const result = await runtime.deliver({
-						seq,
-						event: {
-							event_type: "checkpoint_park_nudge",
-							execution_id: session.execution_id,
-							issue_id: session.issue_id,
-							project_name: session.project_name,
-							status: session.status,
-							summary: ownerAsk,
-						} as HookPayload,
-						sessionKey: session.execution_id,
-						leadId: lead.agentId,
-						timestamp: new Date().toISOString(),
-					});
+					const result = await dispatchLeadEvent(
+						this.config.runtimeRegistry,
+						runtime,
+						{
+							eventId: `checkpoint-park-lead-${question.id}`,
+							seq,
+							event: {
+								event_type: "checkpoint_park_nudge",
+								execution_id: session.execution_id,
+								issue_id: session.issue_id,
+								project_name: session.project_name,
+								status: session.status,
+								summary: ownerAsk,
+							} as HookPayload,
+							sessionKey: session.execution_id,
+							leadId: lead.agentId,
+							timestamp: new Date().toISOString(),
+						},
+					);
 					if (result.delivered) this.config.store.markLeadEventDelivered(seq);
-					else
+					else if (result.queued) {
+						// Durable inbox loop owns the delivery receipt.
+					} else
 						this.config.store.recordDeliveryFailure(
 							seq,
 							result.error ?? "deliver returned false",
@@ -3540,7 +3590,9 @@ export class GatePoller {
 
 	/** §5: zombie gate hygiene (Z1 guarded retire + Z2 unreachable detection). */
 	private async zombieGateHygienePass(): Promise<void> {
-		const watchdogOn = process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG !== "0";
+		const watchdogOn =
+			this.legacyWatchdogsEnabled() &&
+			process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG !== "0";
 		const askOn = askHygieneEnabled();
 		// FLY-1328: the pass now hosts three capabilities — only skip it when ALL
 		// are off, or the ask sweep would be silently swallowed by the old flags.
@@ -3860,13 +3912,18 @@ export class GatePoller {
 			);
 			const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
 			if (!runtime) return false;
-			const result = await runtime.deliver({
-				seq,
-				event: hookPayload,
-				sessionKey: issueId,
-				leadId: lead.agentId,
-				timestamp: new Date().toISOString(),
-			});
+			const result = await dispatchLeadEvent(
+				this.config.runtimeRegistry,
+				runtime,
+				{
+					eventId,
+					seq,
+					event: hookPayload,
+					sessionKey: issueId,
+					leadId: lead.agentId,
+					timestamp: new Date().toISOString(),
+				},
+			);
 			if (result.delivered) {
 				this.config.store.markLeadEventDelivered(seq);
 				// FLY-605 (Codex code-review #2): force the lead_events append +
@@ -3878,6 +3935,7 @@ export class GatePoller {
 				this.config.store.flush();
 				return true;
 			}
+			if (result.queued) return false;
 			this.config.store.recordDeliveryFailure(
 				seq,
 				result.error ?? "deliver returned false",

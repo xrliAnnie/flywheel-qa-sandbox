@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { hasApprovalIntent } from "../approval-intent.js";
 import { CommDB } from "../db.js";
 import { isReservedApprovalAttribution } from "../founder-attribution.js";
 import { FounderConsentAuditStore } from "../founder-consent-audit.js";
@@ -77,6 +78,11 @@ export async function respond(args: RespondArgs): Promise<void> {
 					`flywheel-comm: "${args.fromAgent}" is a RESERVED approval attribution ` +
 						"(bridge / bridge-founder-consent / a Discord-snowflake founder id) — " +
 						"a Lead cannot respond to an approve_to_ship gate under that name.",
+				);
+			}
+			if (hasApprovalIntent(args.answer)) {
+				throw new Error(
+					"flywheel-comm: lead_ack_rejected — Lead approval cannot resolve a founder-bound gate; only the trusted founder writer may approve.",
 				);
 			}
 			const bridgeUrl =

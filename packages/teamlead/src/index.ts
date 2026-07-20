@@ -104,15 +104,18 @@ async function main() {
 				sessionKey,
 			);
 			const envelope: LeadEventEnvelope = {
+				eventId,
 				seq,
 				event: hookPayload,
 				sessionKey,
 				leadId: config.defaultLeadAgentId,
 				timestamp: new Date().toISOString(),
 			};
-			runtime
-				.deliver(envelope)
-				.then(() => store.markLeadEventDelivered(seq))
+			registry
+				.dispatchLeadEvent(envelope)
+				.then((result) => {
+					if (result.delivered) store.markLeadEventDelivered(seq);
+				})
 				.catch(() => {});
 		});
 	}

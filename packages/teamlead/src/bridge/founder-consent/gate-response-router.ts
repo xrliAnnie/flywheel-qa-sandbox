@@ -16,6 +16,7 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import path, { join, resolve } from "node:path";
 import { type Request, type Response, Router } from "express";
+import { hasApprovalIntent } from "flywheel-comm/approval-intent";
 import { CommDB } from "flywheel-comm/db";
 import { isReservedApprovalAttribution } from "flywheel-comm/founder-attribution";
 import type {
@@ -250,6 +251,14 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 				res.status(400).json({
 					error:
 						"wrapper only handles approve_to_ship; other gates use the legacy direct CLI path",
+				});
+				return;
+			}
+			if (hasApprovalIntent(answer)) {
+				res.status(403).json({
+					error: "lead_ack_rejected",
+					detail:
+						"Lead approval cannot resolve a founder-bound gate; only the trusted founder writer may approve.",
 				});
 				return;
 			}

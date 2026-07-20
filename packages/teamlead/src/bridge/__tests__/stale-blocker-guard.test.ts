@@ -321,6 +321,7 @@ describe("finalizeStaleBlocker (fail-closed teardown + double re-read)", () => {
 function makeAlertDeps(over: {
 	claimed?: boolean;
 	delivered?: boolean;
+	queued?: boolean;
 	deliverThrows?: boolean;
 	leadId?: string | undefined;
 }) {
@@ -342,7 +343,10 @@ function makeAlertDeps(over: {
 		),
 		deliver: vi.fn(async () => {
 			if (over.deliverThrows) throw new Error("transport down");
-			return { delivered: over.delivered ?? true };
+			return {
+				delivered: over.delivered ?? !over.queued,
+				...(over.queued ? { queued: true as const } : {}),
+			};
 		}),
 		isoNow: () => "2026-07-01T00:00:00.000Z",
 	};
@@ -373,6 +377,18 @@ describe("alertStaleBlockerToLead (durable + deduped)", () => {
 		await alertStaleBlockerToLead(session({ pr_number: 83 }), "open", 24, deps);
 		expect(failures).toHaveLength(1);
 		expect(failures[0]?.seq).toBe(42);
+	});
+
+	it("durably queued delivery is accepted without recording a false failure", async () => {
+		const { deps, failures } = makeAlertDeps({ claimed: true, queued: true });
+		await alertStaleBlockerToLead(session({ pr_number: 83 }), "open", 24, deps);
+		expect(failures).toEqual([]);
+		expect(deps.deliver).toHaveBeenCalledWith(
+			"lead-a",
+			expect.objectContaining({
+				eventId: expect.stringContaining("scheduled-run-blocked:exec-1:"),
+			}),
+		);
 	});
 
 	it("deliver throws → recordDeliveryFailure", async () => {

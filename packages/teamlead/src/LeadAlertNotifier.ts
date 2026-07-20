@@ -292,6 +292,9 @@ export const ALERT_EVENT_TYPES = [
 	"detection_page_undeliverable",
 	// FLY-1279: an ACK-required Lead event exhausted its bounded delivery budget.
 	"delivery_dead_letter",
+	// FLY-1373: the sole retained delivery watchdog — a per-Lead consume-loop
+	// stall and any queue-native deadline breach are reported in one incident.
+	"inbox_loop_stalled",
 	// FLY-1309: Lead identity uniqueness, lease control, and carrier drift.
 	"lead_dual_active",
 	"lead_dual_active_sensor_degraded",

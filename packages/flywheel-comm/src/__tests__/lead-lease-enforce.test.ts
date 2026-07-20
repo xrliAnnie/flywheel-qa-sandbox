@@ -257,7 +257,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await respond({
 			questionId,
 			fromAgent: "eng-lead",
-			answer: '{"approved":true}',
+			answer: '{"approved":false}',
 			dbPath,
 			env,
 			bridgeUrl: "http://127.0.0.1:9876",
@@ -268,7 +268,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			JSON.stringify({
 				questionId,
 				leadId: "eng-lead",
-				answer: '{"approved":true}',
+				answer: '{"approved":false}',
 				executionId: "runner-1",
 			}),
 		);
@@ -721,7 +721,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await respond({
 			questionId,
 			fromAgent: "eng-lead",
-			answer: '{"approved":true}',
+			answer: '{"approved":false}',
 			dbPath,
 			env,
 			authorizationDeps,
@@ -785,7 +785,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await respond({
 			questionId: safeQuestion,
 			fromAgent: "eng-lead",
-			answer: '{"approved":true}',
+			answer: '{"approved":false}',
 			dbPath,
 			env,
 			authorizationDeps,
@@ -800,7 +800,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			respond({
 				questionId: unsafeQuestion,
 				fromAgent: "eng-lead",
-				answer: '{"approved":true}',
+				answer: '{"approved":false}',
 				dbPath,
 				env,
 				authorizationDeps,

@@ -22,7 +22,10 @@
 		"./verify-lifecycle-consent": "./dist/commands/verify-lifecycle-consent.js",
 		"./founder-attribution": "./dist/founder-attribution.js",
 		"./lead-lease": "./dist/lead-lease.js",
-		"./canonical-lead": "./dist/canonical-lead.js"
+		"./canonical-lead": "./dist/canonical-lead.js",
+		"./lead-inbox-queue": "./dist/lead-inbox-queue.js",
+		"./lead-inbox-nudge": "./dist/lead-inbox-nudge.js",
+		"./approval-intent": "./dist/approval-intent.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"

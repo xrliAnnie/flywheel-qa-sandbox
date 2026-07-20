@@ -71,6 +71,39 @@ describe("LeadJournal — idempotent intake", () => {
 			journal.accept({ idempotencyKey: "", source: "mailbox", payload: "x" }),
 		).toThrow(/idempotencyKey/);
 	});
+
+	it("accepts a frozen mailbox batch once and dedupes every member", () => {
+		const { journal } = makeJournal();
+		const first = journal.acceptBatch({
+			batchId: "batch-1",
+			memberIds: ["question:lead:q1", "question:lead:q2"],
+			payload: "combined turn",
+		});
+		expect(first.status).toBe("accepted_new");
+		const duplicate = journal.acceptBatch({
+			batchId: "batch-1",
+			memberIds: ["question:lead:q1", "question:lead:q2"],
+			payload: "combined turn",
+		});
+		expect(duplicate).toMatchObject({
+			status: "accepted_duplicate_same_membership",
+			entry: { id: first.entry.id },
+		});
+		expect(
+			journal.acceptBatch({
+				batchId: "batch-1",
+				memberIds: ["question:lead:q1", "question:lead:q2"],
+				payload: "changed payload",
+			}).status,
+		).toBe("membership_conflict");
+		expect(
+			journal.acceptBatch({
+				batchId: "batch-1",
+				memberIds: ["question:lead:q1"],
+				payload: "changed",
+			}).status,
+		).toBe("membership_conflict");
+	});
 });
 
 describe("LeadJournal — happy-path transitions", () => {

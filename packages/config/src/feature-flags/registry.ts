@@ -102,6 +102,29 @@ function envSite(
 }
 
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
+	// ─── FLY-1373: superseded delivery watchdog alert lanes ───
+	{
+		name: "legacy_delivery_watchdogs",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"旧 Lead 投递 watchdog 告警巷(默认关闭;=1 仅用于回开旧 cohort,新 comm.db 消费循环及其心跳不受影响)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/legacy-delivery-watchdog-policy.ts",
+				"legacyDeliveryWatchdogsEnabled",
+				"bridge_boot",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "Bridge boot 时捕获;修改后需重启 Bridge。",
+	},
 	// ─── FLY-1329: session lifecycle floor — liveness never authorizes alone ───
 	{
 		// FLY-1329 (A1): the FLY-1319 incident. `handoff()` read liveness `absent`
@@ -2986,28 +3009,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/teamlead/src/bridge/lead-event-delivery.ts",
 				"LeadEventDeliveryCoordinator constructor",
 				"object_construction",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "delivery_ack_types",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DELIVERY_ACK_TYPES",
-		polarity: "opt_in",
-		valueKind: "value",
-		default:
-			"gate_question,runner_question,runner_park_notice,gate_timed_out,session_failed",
-		description:
-			"FLY-1279: enqueue-time event-type cohort for durable ACK semantics; historical rows are never reinterpreted",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/lead-event-ack-policy.ts",
-				"configuredAckTypes",
-				"call_time",
-				"env-param",
 			),
 		],
 		toggleable: "conversational",

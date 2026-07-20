@@ -15,6 +15,8 @@ export interface AskArgs {
 	 * (the FLY-910 `founder_reply_ambiguous` noise source).
 	 */
 	report?: boolean;
+	/** Queue-native SLA copied to lead_inbox by the Bridge admission pass. */
+	deadlineAt?: string;
 	/** Injectable for tests. */
 	env?: NodeJS.ProcessEnv;
 }
@@ -37,7 +39,12 @@ export function ask(args: AskArgs): string {
 			fromAgent,
 			args.lead,
 			args.question,
-			args.report ? { kind: "report" } : undefined,
+			args.report || args.deadlineAt
+				? {
+						...(args.report ? { kind: "report" as const } : {}),
+						...(args.deadlineAt ? { deadlineAt: args.deadlineAt } : {}),
+					}
+				: undefined,
 		);
 
 		// FLY-142 (Option Y): mirror the FLY-123 gate-marker. When

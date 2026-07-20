@@ -109,7 +109,11 @@ function okFetch() {
 	})) as unknown as typeof fetch;
 }
 
-function makePoller(store: GatePollerConfig["store"], fetchImpl: typeof fetch) {
+function makePoller(
+	store: GatePollerConfig["store"],
+	fetchImpl: typeof fetch,
+	legacyDeliveryWatchdogsEnabled?: boolean,
+) {
 	return new GatePoller({
 		pollIntervalMs: 3_000,
 		projects: PROJECTS,
@@ -120,6 +124,9 @@ function makePoller(store: GatePollerConfig["store"], fetchImpl: typeof fetch) {
 		chatThreadsEnabled: true,
 		discordOwnerUserId: OWNER,
 		fetchImpl,
+		...(legacyDeliveryWatchdogsEnabled === undefined
+			? {}
+			: { legacyDeliveryWatchdogsEnabled }),
 	});
 }
 
@@ -178,6 +185,18 @@ describe("FLY-927 checkpoint-park patrol", () => {
 			makeQuestion({ created_at: sqliteAgo(30 * 60_000) }),
 		);
 		expect(events).toHaveLength(0);
+	});
+
+	it("remains active under its own switch when legacy delivery watchdogs are disabled", async () => {
+		const { store, events } = makeStore();
+		await patrol(
+			makePoller(store, okFetch(), false),
+			makeSession(),
+			makeQuestion(),
+		);
+		expect(
+			events.some((event) => event.event_type === "checkpoint_park_nudged"),
+		).toBe(true);
 	});
 
 	it("EVIDENCE gate: a successful founder delivery for this gate → silent", async () => {

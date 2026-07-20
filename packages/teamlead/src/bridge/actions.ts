@@ -122,7 +122,7 @@ function sendActionHook(
 	if (!session) return;
 	try {
 		const labels = store.getSessionLabels(executionId);
-		const { runtime, lead } = registry.resolveWithLead(
+		const { lead } = registry.resolveWithLead(
 			projects,
 			session.project_name,
 			labels,
@@ -176,13 +176,14 @@ function sendActionHook(
 			);
 			const envelope: LeadEventEnvelope = {
 				seq,
+				eventId,
 				event: hookPayload,
 				sessionKey,
 				leadId: lead.agentId,
 				timestamp: new Date().toISOString(),
 			};
-			await runtime.deliver(envelope);
-			store.markLeadEventDelivered(seq);
+			const result = await registry.dispatchLeadEvent(envelope);
+			if (result.delivered) store.markLeadEventDelivered(seq);
 		};
 		doDeliver().catch((err) => {
 			console.warn(
@@ -1590,6 +1591,16 @@ export function createActionRouter(
 				const { execution_id, identifier } = req.body ?? {};
 				if (!execution_id || typeof execution_id !== "string") {
 					res.status(400).json({ error: "execution_id is required" });
+					return;
+				}
+				if (typeof leadId === "string" && leadId.trim()) {
+					res.status(403).json({
+						success: false,
+						error: "lead_ack_rejected",
+						message:
+							"Lead-attributed approval cannot resolve a founder-bound gate",
+						action: "approve",
+					});
 					return;
 				}
 				{

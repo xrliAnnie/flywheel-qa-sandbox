@@ -24,6 +24,7 @@
  */
 
 import type {
+	BatchAcceptStatus,
 	JournalEntry,
 	LeadJournal,
 	RecoveryAction,
@@ -102,6 +103,15 @@ export interface LeadInput {
 	/** FLY-314 Phase 2: durable reply-in-thread route (set by the gateway for a
 	 * roundtable top-level message whose topic thread must be ensured before delivery). */
 	replyRoute?: RoundtableReplyRoute;
+}
+
+export interface LeadInputBatch {
+	/** Stable idempotency key for the whole immutable batch. */
+	batchId: string;
+	/** Ordered durable delivery ids. Membership is immutable once accepted. */
+	memberIds: readonly string[];
+	/** One packaged model input containing every regular member. */
+	payload: string;
 }
 
 export interface LeadInputRouterOptions {
@@ -185,6 +195,24 @@ export class LeadInputRouter {
 			void this.pump();
 		}
 		return { accepted, entryId: entry.id };
+	}
+
+	/**
+	 * Durably accept one mailbox batch and queue exactly one model turn. The
+	 * journal transaction binds every member before this method returns, so the
+	 * upstream inbox may be consumed only for `accepted_new` or the exact-member
+	 * duplicate outcome. Membership conflicts fail closed and are never queued.
+	 */
+	submitBatch(input: LeadInputBatch): {
+		status: BatchAcceptStatus;
+		entryId: string;
+	} {
+		const result = this.journal.acceptBatch(input);
+		if (result.status === "accepted_new") {
+			this.queue.push(result.entry.id);
+			void this.pump();
+		}
+		return { status: result.status, entryId: result.entry.id };
 	}
 
 	/** Await the queue draining (no in-flight + empty). Test/shutdown helper. */

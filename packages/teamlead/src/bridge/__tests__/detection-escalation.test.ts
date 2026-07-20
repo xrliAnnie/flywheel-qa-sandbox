@@ -98,37 +98,27 @@ describe("notifyLeadFirst (FLY-1048 C2)", () => {
 		expect(env.event.event_type).toBe("detection_escalation");
 	});
 
-	it("park episode queues runner_park_notice in the durable explicit-ACK cohort", async () => {
-		const previousAckFlag = process.env.FLYWHEEL_DELIVERY_ACK;
-		process.env.FLYWHEEL_DELIVERY_ACK = "1";
-		try {
-			const store = await freshStore();
-			const { deps, calls } = makeDeps(store);
-			const outcome = await notifyLeadFirst(deps, {
-				...INPUT,
-				kind: "park:blocked",
-				episodeFingerprint: "park:blocked:exec-1",
-			});
-			expect(outcome).toBe("notified");
+	it("park episode queues runner_park_notice without minting a new legacy ACK", async () => {
+		const store = await freshStore();
+		const { deps, calls } = makeDeps(store);
+		const outcome = await notifyLeadFirst(deps, {
+			...INPUT,
+			kind: "park:blocked",
+			episodeFingerprint: "park:blocked:exec-1",
+		});
+		expect(outcome).toBe("notified");
 
-			const env = calls.find((call) => call.kind === "deliver")!.args[0] as {
-				seq: number;
-				event: HookPayload;
-			};
-			expect(env.event.event_type).toBe("runner_park_notice");
-			expect(env.event.waited_ms).toBe(49_000);
-			expect(store.getLeadEventBySeq(env.seq)).toMatchObject({
-				event_type: "runner_park_notice",
-				ack_required: true,
-				ack_policy: "explicit_receipt",
-			});
-		} finally {
-			if (previousAckFlag === undefined) {
-				delete process.env.FLYWHEEL_DELIVERY_ACK;
-			} else {
-				process.env.FLYWHEEL_DELIVERY_ACK = previousAckFlag;
-			}
-		}
+		const env = calls.find((call) => call.kind === "deliver")!.args[0] as {
+			seq: number;
+			event: HookPayload;
+		};
+		expect(env.event.event_type).toBe("runner_park_notice");
+		expect(env.event.waited_ms).toBe(49_000);
+		expect(store.getLeadEventBySeq(env.seq)).toMatchObject({
+			event_type: "runner_park_notice",
+			ack_required: false,
+			ack_policy: undefined,
+		});
 	});
 
 	it("second call for the SAME episode is a no-op (already_notified) — no double post, no timer slide", async () => {

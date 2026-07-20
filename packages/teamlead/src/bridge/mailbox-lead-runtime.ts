@@ -86,7 +86,7 @@ export class MailboxLeadRuntime implements LeadRuntime {
 
 	async deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult> {
 		const content = appendLeadEventAckInstructions(
-			this.formatEnvelope(envelope),
+			this.renderEnvelope(envelope),
 			envelope,
 		);
 		const payload: MailboxPayload = {
@@ -210,6 +210,10 @@ export class MailboxLeadRuntime implements LeadRuntime {
 	 * CommDBLeadRuntime.formatEnvelope so Lead-side prompts that key off
 	 * `[Event #N]` etc. continue to work without modification.
 	 */
+	renderEnvelope(env: LeadEventEnvelope): string {
+		return this.formatEnvelope(env);
+	}
+
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
 

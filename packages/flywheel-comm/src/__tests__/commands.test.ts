@@ -105,6 +105,23 @@ describe("commands round-trip", () => {
 		expect(pendingQs[0]!.from_agent).toBe("runner");
 	});
 
+	it("persists a queue-native UTC deadline on an ask", () => {
+		const deadlineAt = "2026-07-20T08:30:00.000Z";
+		const questionId = ask({
+			lead: "product-lead",
+			execId: "exec-deadline",
+			question: "urgent question",
+			dbPath,
+			deadlineAt,
+		});
+		const db = new CommDB(dbPath);
+		try {
+			expect(db.getMessageById(questionId)?.deadline_at).toBe(deadlineAt);
+		} finally {
+			db.close();
+		}
+	});
+
 	it("should throw when responding to non-existent question", async () => {
 		// FLY-175: respond() is now async (gated checkpoints route via Bridge).
 		await expect(

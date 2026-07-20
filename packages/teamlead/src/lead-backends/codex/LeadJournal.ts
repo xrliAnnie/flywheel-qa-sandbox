@@ -142,6 +142,13 @@ export interface JournalStore {
 		inserted: boolean;
 		entry: JournalEntry;
 	};
+	/** Atomically bind one journal turn to every immutable delivery member. */
+	insertAcceptedBatch(
+		entry: JournalEntry,
+		memberIds: readonly string[],
+	): BatchAcceptResult;
+	/** Ordered delivery ids bound to an entry. */
+	listMemberIds(entryId: string): string[];
 	/** Returns a COPY, or undefined. */
 	getById(id: string): JournalEntry | undefined;
 	/** Returns a COPY, or undefined. */
@@ -159,6 +166,16 @@ export interface JournalStore {
 	}): JournalEntry;
 	/** Non-terminal entries (crash recovery), oldest first — COPIES. */
 	listUnfinished(): JournalEntry[];
+}
+
+export type BatchAcceptStatus =
+	| "accepted_new"
+	| "accepted_duplicate_same_membership"
+	| "membership_conflict";
+
+export interface BatchAcceptResult {
+	status: BatchAcceptStatus;
+	entry: JournalEntry;
 }
 
 /** Recommended recovery action for an entry found unfinished at startup. */
@@ -218,6 +235,38 @@ export class LeadJournal {
 		};
 		const { inserted, entry } = this.store.insertAccepted(candidate);
 		return { accepted: inserted, entry };
+	}
+
+	acceptBatch(args: {
+		batchId: string;
+		memberIds: readonly string[];
+		payload: string;
+	}): BatchAcceptResult {
+		if (!args.batchId.trim())
+			throw new Error("LeadJournal.acceptBatch: batchId is required");
+		if (args.memberIds.length === 0)
+			throw new Error("LeadJournal.acceptBatch: memberIds are required");
+		if (
+			args.memberIds.some((id) => !id.trim()) ||
+			new Set(args.memberIds).size !== args.memberIds.length
+		) {
+			throw new Error(
+				"LeadJournal.acceptBatch: memberIds must be non-empty and unique",
+			);
+		}
+		const ts = this.now();
+		return this.store.insertAcceptedBatch(
+			{
+				id: this.idFactory(),
+				idempotencyKey: args.batchId,
+				source: "mailbox",
+				payload: args.payload,
+				state: "accepted",
+				createdAt: ts,
+				updatedAt: ts,
+			},
+			args.memberIds,
+		);
 	}
 
 	/** FLY-259 PR-D (plan D5): record a founder-terminal turn as an
@@ -331,6 +380,8 @@ export class InMemoryJournalStore implements JournalStore {
 	private readonly byKey = new Map<string, string>(); // idempotencyKey → id
 	private readonly seqOf = new Map<string, number>();
 	private seq = 0;
+	private readonly membersByEntry = new Map<string, string[]>();
+	private readonly entryByMember = new Map<string, string>();
 
 	insertAccepted(entry: JournalEntry): {
 		inserted: boolean;
@@ -346,6 +397,45 @@ export class InMemoryJournalStore implements JournalStore {
 		this.byKey.set(stored.idempotencyKey, stored.id);
 		this.seqOf.set(stored.id, this.seq++);
 		return { inserted: true, entry: copyEntry(stored) };
+	}
+
+	insertAcceptedBatch(
+		entry: JournalEntry,
+		memberIds: readonly string[],
+	): BatchAcceptResult {
+		const existingByKey = this.getByIdempotencyKey(entry.idempotencyKey);
+		if (existingByKey) {
+			const existingMembers = this.listMemberIds(existingByKey.id);
+			return {
+				status:
+					existingByKey.payload === entry.payload &&
+					sameOrderedMembers(existingMembers, memberIds)
+						? "accepted_duplicate_same_membership"
+						: "membership_conflict",
+				entry: existingByKey,
+			};
+		}
+		for (const memberId of memberIds) {
+			const collisionId = this.entryByMember.get(memberId);
+			if (collisionId) {
+				return {
+					status: "membership_conflict",
+					entry: this.getById(collisionId) ?? entry,
+				};
+			}
+		}
+		const inserted = this.insertAccepted(entry);
+		if (!inserted.inserted) {
+			return { status: "membership_conflict", entry: inserted.entry };
+		}
+		const frozen = [...memberIds];
+		this.membersByEntry.set(entry.id, frozen);
+		for (const memberId of frozen) this.entryByMember.set(memberId, entry.id);
+		return { status: "accepted_new", entry: inserted.entry };
+	}
+
+	listMemberIds(entryId: string): string[] {
+		return [...(this.membersByEntry.get(entryId) ?? [])];
 	}
 
 	getById(id: string): JournalEntry | undefined {
@@ -391,4 +481,11 @@ export class InMemoryJournalStore implements JournalStore {
 			.sort((a, b) => (this.seqOf.get(a.id) ?? 0) - (this.seqOf.get(b.id) ?? 0))
 			.map(copyEntry);
 	}
+}
+
+function sameOrderedMembers(
+	a: readonly string[],
+	b: readonly string[],
+): boolean {
+	return a.length === b.length && a.every((value, index) => value === b[index]);
 }

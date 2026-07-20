@@ -44,7 +44,10 @@ import {
 	getProofShotParams,
 	patchSessionParams,
 } from "./bridge/proofshot-session.js";
-import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
+import {
+	dispatchLeadEventCompat,
+	type RuntimeRegistry,
+} from "./bridge/runtime-registry.js";
 import { STAGE_ORDER } from "./bridge/stage-utils.js";
 import type { TerminalCommDbSync } from "./bridge/terminal-commdb-sync.js";
 import type { BridgeConfig } from "./bridge/types.js";
@@ -1362,13 +1365,18 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				);
 				const envelope: LeadEventEnvelope = {
 					seq,
+					eventId,
 					event: hookPayload,
 					sessionKey,
 					leadId: lead.agentId,
 					timestamp: new Date().toISOString(),
 				};
-				await runtime.deliver(envelope);
-				this.store.markLeadEventDelivered(seq);
+				const result = await dispatchLeadEventCompat(
+					this.registry!,
+					runtime,
+					envelope,
+				);
+				if (result.delivered) this.store.markLeadEventDelivered(seq);
 			};
 
 			this.pending.push(

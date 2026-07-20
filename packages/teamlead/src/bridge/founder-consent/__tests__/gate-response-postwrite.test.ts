@@ -22,6 +22,7 @@ import {
 } from "../gate-response-router.js";
 
 const PROJECT = "TestProj";
+const FEEDBACK = JSON.stringify({ approved: false, feedback: "fix tests" });
 let dir: string;
 let commDbPath: string;
 let server: Server;
@@ -120,7 +121,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const res = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: true }),
+			answer: FEEDBACK,
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(200);
@@ -133,7 +134,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		};
 		expect(info.executionId).toBe("exec-1");
 		expect(info.questionId).toBe(qid);
-		expect(info.answer).toBe(JSON.stringify({ approved: true }));
+		expect(info.answer).toBe(FEEDBACK);
 	});
 
 	it("ALLOW (enforce): hook invoked after the consent-allowed write", async () => {
@@ -144,7 +145,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const res = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: true }),
+			answer: FEEDBACK,
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(200);
@@ -159,7 +160,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const res = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: true }),
+			answer: FEEDBACK,
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(403);
@@ -180,7 +181,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const res = await request("/api/founder-consent/runner-gate-response", {
 			questionId: staleQ,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: true }),
+			answer: FEEDBACK,
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(409);
@@ -207,7 +208,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const res = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: true }),
+			answer: FEEDBACK,
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(200);
@@ -224,7 +225,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const body = {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: true }),
+			answer: FEEDBACK,
 			executionId: "exec-1",
 		};
 		const r1 = await request("/api/founder-consent/runner-gate-response", body);
@@ -241,7 +242,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		expect(hook).toHaveBeenCalledTimes(2); // recovery hook re-ran
 	});
 
-	it("retry with a CONFLICTING answer (approval vs feedback) → 409 question_already_answered", async () => {
+	it("different feedback text is an idempotent changes-requested retry", async () => {
 		const qid = seedQuestion();
 		const hook = vi.fn(async () => {});
 		mkServer({ evaluator: undefined, onResponseWritten: hook });
@@ -255,14 +256,14 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const r2 = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: true }),
+			answer: "changes requested: use the other implementation",
 			executionId: "exec-1",
 		});
-		expect(r2.status).toBe(409);
-		expect((r2.body as { error?: string }).error).toBe(
-			"question_already_answered",
+		expect(r2.status).toBe(200);
+		expect((r2.body as { alreadyResponded?: boolean }).alreadyResponded).toBe(
+			true,
 		);
-		expect(hook).toHaveBeenCalledTimes(1); // only the first write ran it
+		expect(hook).toHaveBeenCalledTimes(2);
 	});
 
 	it("hook failure does NOT fail the request — response row stays durable", async () => {
@@ -275,15 +276,13 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const res = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: true }),
+			answer: FEEDBACK,
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(200);
 
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe(
-			JSON.stringify({ approved: true }),
-		);
+		expect(db.getResponse(qid)?.content).toBe(FEEDBACK);
 		db.close();
 	});
 });

@@ -34,6 +34,8 @@ export interface LeadEventDeliveryCoordinatorOptions {
 	maxTransportFailures?: number;
 	lateAckWindowMs?: number;
 	onDeadLetter?: (row: LeadEventRow) => Promise<boolean>;
+	/** Boot-captured FLY-1373 reverse flag for the legacy cohort scanner. */
+	enabled?: boolean;
 }
 
 function positiveInt(value: number | undefined, fallback: number): number {
@@ -60,7 +62,7 @@ export function deriveLeadEventAckToken(
 	return createHmac("sha256", secret.key).update(canonical).digest("base64url");
 }
 
-function tokenMatches(actual: string, expected: string): boolean {
+export function tokenMatches(actual: string, expected: string): boolean {
 	const a = Buffer.from(actual);
 	const b = Buffer.from(expected);
 	return a.length === b.length && timingSafeEqual(a, b);
@@ -74,8 +76,10 @@ export class LeadEventDeliveryCoordinator {
 	private readonly maxTransportFailures: number;
 	private readonly lateAckWindowMs: number;
 	private reconciling = false;
+	private readonly enabled: boolean;
 
 	constructor(private readonly options: LeadEventDeliveryCoordinatorOptions) {
+		this.enabled = options.enabled ?? deliveryAckEnabled();
 		this.now = options.now ?? Date.now;
 		this.ackTimeoutMs = positiveInt(
 			options.ackTimeoutMs,
@@ -101,7 +105,7 @@ export class LeadEventDeliveryCoordinator {
 		runtime?: LeadRuntime,
 	): Promise<DeliveryResult> {
 		const row = this.options.store.getLeadEventBySeq(envelope.seq);
-		if (!row?.ack_required || !deliveryAckEnabled()) {
+		if (!row?.ack_required || !this.enabled) {
 			const target = runtime ?? this.options.runtimeForLead(envelope.leadId);
 			return target
 				? target.deliver(envelope)
@@ -111,7 +115,7 @@ export class LeadEventDeliveryCoordinator {
 	}
 
 	async reconcile(): Promise<void> {
-		if (!deliveryAckEnabled() || this.reconciling) return;
+		if (!this.enabled || this.reconciling) return;
 		this.reconciling = true;
 		try {
 			this.consumeAckReceipts();

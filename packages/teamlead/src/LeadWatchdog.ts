@@ -153,6 +153,8 @@ export interface LeadWatchdogConfig {
 	 * only. Best-effort: a throwing sink must never break the tick.
 	 */
 	onSuspicious?: (report: SuspiciousReport) => void | Promise<void>;
+	/** FLY-1373: boot-captured reverse gate for frozen-pane alert lanes only. */
+	legacyDeliveryWatchdogsEnabled?: boolean;
 }
 
 interface LeadState {
@@ -514,13 +516,15 @@ export class LeadWatchdog {
 					state.lastSuspiciousHash !== liveHash
 				) {
 					state.lastSuspiciousHash = liveHash;
-					this.fireSuspicious(
-						projectName,
-						leadId,
-						latest.text,
-						liveHash,
-						window,
-					);
+					if (this.config.legacyDeliveryWatchdogsEnabled !== false) {
+						this.fireSuspicious(
+							projectName,
+							leadId,
+							latest.text,
+							liveHash,
+							window,
+						);
+					}
 				}
 			}
 			state.state = "Healthy";
@@ -554,6 +558,13 @@ export class LeadWatchdog {
 		kind: AlertEventType,
 		liveHash: string,
 	): Promise<void> {
+		if (
+			this.config.legacyDeliveryWatchdogsEnabled === false &&
+			(kind === "pane_hash_stuck" || kind === "pane_error_stalled")
+		) {
+			state.state = "Silent";
+			return;
+		}
 		// Fix 3: signature-based eventId. Computed from the FULL pane (FLY-220:
 		// NOT the live-state `liveHash` used for change-detection) so it stays
 		// byte-for-byte in sync with `scripts/lead-alert.sh` (cross-process
@@ -1029,6 +1040,8 @@ function titleFor(kind: AlertEventType): string {
 			return "Detection founder-page undeliverable";
 		case "delivery_dead_letter":
 			return "Lead delivery dead-lettered";
+		case "inbox_loop_stalled":
+			return "Lead inbox consume loop stalled";
 		// FLY-195: never emitted by LeadWatchdog (the stuck-runner detector owns
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_stuck_unhandled":
@@ -1245,6 +1258,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A detection founder page could not be addressed or posted (no session, no thread binding, or the POST failed). The episode stays LEAD_NOTIFIED and keeps retrying; fix the thread binding / bot token / routing.";
 		case "delivery_dead_letter":
 			return "A Lead-directed event exhausted bounded transport or acknowledgement retries. The founder was paged because the owning Lead path did not consume it.";
+		case "inbox_loop_stalled":
+			return "A Lead inbox consume loop stopped completing or has queue-native deadlines overdue. Inspect that Lead's loop heartbeat and pending comm.db rows.";
 		// FLY-195: never emitted by LeadWatchdog (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";

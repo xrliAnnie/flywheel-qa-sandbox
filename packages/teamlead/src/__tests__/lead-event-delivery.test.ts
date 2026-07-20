@@ -40,10 +40,13 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 	let nowMs: number;
 	let priorAck: string | undefined;
 	let priorTypes: string | undefined;
+	let priorLegacyWatchdog: string | undefined;
 
 	beforeEach(async () => {
 		priorAck = process.env.FLYWHEEL_DELIVERY_ACK;
 		priorTypes = process.env.FLYWHEEL_DELIVERY_ACK_TYPES;
+		priorLegacyWatchdog = process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS;
+		process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS = "1";
 		process.env.FLYWHEEL_DELIVERY_ACK = "1";
 		delete process.env.FLYWHEEL_DELIVERY_ACK_TYPES;
 		store = await StateStore.create(":memory:");
@@ -62,6 +65,9 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 		if (priorTypes === undefined)
 			delete process.env.FLYWHEEL_DELIVERY_ACK_TYPES;
 		else process.env.FLYWHEEL_DELIVERY_ACK_TYPES = priorTypes;
+		if (priorLegacyWatchdog === undefined)
+			delete process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS;
+		else process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS = priorLegacyWatchdog;
 	});
 
 	function appendQuestionEvent(
@@ -76,12 +82,48 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 			question_id: questionId,
 			comm_db_path: commDbPath,
 		};
-		return store.appendLeadEvent(
+		const seq = store.appendLeadEvent(
 			"lead-1",
 			`${type}-${questionId}`,
 			type,
 			JSON.stringify(payload),
 			"exec-1",
+		);
+		if (process.env.FLYWHEEL_DELIVERY_ACK !== "0") {
+			seedLegacyAck(seq, "question_response", payload);
+		}
+		return seq;
+	}
+
+	function seedLegacyAck(
+		seq: number,
+		policy: "question_response" | "founder_surface_confirmed",
+		payload: {
+			project_name: string;
+			question_id: string;
+			comm_db_path: string;
+			issue_id: string;
+		},
+	): void {
+		const internal = store as unknown as {
+			db: { run(sql: string, params: unknown[]): void };
+		};
+		internal.db.run(
+			`UPDATE lead_events SET ack_required = 1, ack_policy = ?,
+			 ack_protocol_version = 1, routing_snapshot = ?, ack_owner_lead_id = ?
+			 WHERE seq = ?`,
+			[
+				policy,
+				JSON.stringify({
+					projectName: payload.project_name,
+					commDbPath: payload.comm_db_path,
+					questionId: payload.question_id,
+					issueId: payload.issue_id,
+					ownerLeadId: "lead-1",
+				}),
+				"lead-1",
+				seq,
+			],
 		);
 	}
 
@@ -130,7 +172,7 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 		});
 	}
 
-	it("persists the ACK cohort and immutable routing snapshot at enqueue", () => {
+	it("reads a persisted legacy ACK cohort and immutable routing snapshot", () => {
 		const seq = appendQuestionEvent("q-1");
 		expect(store.getLeadEventBySeq(seq)).toMatchObject({
 			ack_required: true,
@@ -204,22 +246,26 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 	});
 
 	it("auto-ACKs a founder gate only from a confirmed posted marker", async () => {
-		const appendFounderGate = (questionId: string, executionId: string) =>
-			store.appendLeadEvent(
+		const appendFounderGate = (questionId: string, executionId: string) => {
+			const payload = {
+				event_type: "gate_question",
+				execution_id: executionId,
+				issue_id: "issue-1",
+				project_name: "flywheel",
+				question_id: questionId,
+				comm_db_path: commDbPath,
+				checkpoint: "approve_to_ship",
+			};
+			const seq = store.appendLeadEvent(
 				"lead-1",
 				`gate-question-${questionId}`,
 				"gate_question",
-				JSON.stringify({
-					event_type: "gate_question",
-					execution_id: executionId,
-					issue_id: "issue-1",
-					project_name: "flywheel",
-					question_id: questionId,
-					comm_db_path: commDbPath,
-					checkpoint: "approve_to_ship",
-				}),
+				JSON.stringify(payload),
 				executionId,
 			);
+			seedLegacyAck(seq, "founder_surface_confirmed", payload);
+			return seq;
+		};
 		const failedSeq = appendFounderGate("q-failed", "exec-failed");
 		const postedSeq = appendFounderGate("q-posted", "exec-posted");
 		expect(store.getLeadEventBySeq(postedSeq)?.ack_policy).toBe(

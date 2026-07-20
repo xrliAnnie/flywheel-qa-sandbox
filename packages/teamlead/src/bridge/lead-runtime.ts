@@ -52,6 +52,9 @@ export const RETRYABLE_LEAD_EVENT_TYPES = new Set<string>([
 /** Monotonically sequenced event envelope for lead delivery. */
 export interface LeadEventEnvelope {
 	seq: number;
+	/** Canonical StateStore event id. New queue producers should always set it;
+	 * legacy callers fall back to the durable seq during cutover. */
+	eventId?: string;
 	event: HookPayload;
 	sessionKey: string;
 	leadId: string;
@@ -184,6 +187,8 @@ export interface LeadRuntimeHealth {
 export interface LeadRuntime {
 	readonly type: string;
 	deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult>;
+	/** Pure prompt renderer reused by the durable queue producer seam. */
+	renderEnvelope?(envelope: LeadEventEnvelope): string;
 	sendBootstrap(snapshot: LeadBootstrap): Promise<void>;
 	health(): Promise<LeadRuntimeHealth>;
 	shutdown(): Promise<void>;

@@ -2505,7 +2505,7 @@ export function createEventRouter(
 						: Array.isArray(payload.labels)
 							? (payload.labels as string[])
 							: [];
-				const { runtime, lead } = registry.resolveWithLead(
+				const { lead } = registry.resolveWithLead(
 					projects,
 					event.project_name,
 					labels,
@@ -2608,6 +2608,7 @@ export function createEventRouter(
 						sessionKey,
 					);
 					const envelope: LeadEventEnvelope = {
+						eventId: event.event_id,
 						seq,
 						event: hookPayload,
 						sessionKey,
@@ -2622,11 +2623,13 @@ export function createEventRouter(
 					// (HeartbeatService.retryUndeliveredGuardrailEvents) would never see
 					// these rows. Pattern mirrors HeartbeatService.ts:416.
 					const isGuardrail = GUARDRAIL_EVENT_TYPES.has(event.event_type);
-					runtime
-						.deliver(envelope)
+					registry
+						.dispatchLeadEvent(envelope)
 						.then((result) => {
 							if (result.delivered) {
 								store.markLeadEventDelivered(seq);
+							} else if (result.queued) {
+								// The durable inbox loop owns receipt, audit, and consume.
 							} else if (isGuardrail) {
 								store.recordDeliveryFailure(
 									seq,

@@ -41,6 +41,10 @@ export interface GateArgs {
 	noBlock?: boolean;
 	/** Test seam; production probes the current branch's GitHub PR. */
 	shipCiProbe?: () => ShipCiGuardResult;
+	/** Best-effort queue doorbell; durable DB state remains authoritative. */
+	nudge?: () => Promise<void>;
+	/** Queue-native SLA copied to lead_inbox by the Bridge admission pass. */
+	deadlineAt?: string;
 }
 
 export interface GateResult {
@@ -126,6 +130,7 @@ async function gateInner(
 			checkpoint: args.checkpoint,
 			contentRef,
 			contentType: useRef ? "ref" : "text",
+			...(args.deadlineAt ? { deadlineAt: args.deadlineAt } : {}),
 		});
 	} finally {
 		db.close();
@@ -133,6 +138,7 @@ async function gateInner(
 
 	// Notify outer scope that question was created (for cleanup on error)
 	onQuestionCreated(questionId);
+	await args.nudge?.();
 
 	// Phase 1b: Report stage if configured (best-effort — don't block on error)
 	if (args.stage) {

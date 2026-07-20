@@ -152,6 +152,26 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
+	it("FLY-1373 registers legacy delivery watchdogs as a boot-captured opt-in", () => {
+		const flag = FEATURE_FLAGS.find(
+			(f) => f.name === "legacy_delivery_watchdogs",
+		);
+		expect(flag).toMatchObject({
+			category: "kill_switch",
+			envVar: "FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS",
+			polarity: "opt_in",
+			default: false,
+			toggleable: "readonly",
+		});
+		expect(flag?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/teamlead/src/bridge/legacy-delivery-watchdog-policy.ts",
+				symbol: "legacyDeliveryWatchdogsEnabled",
+				timing: "bridge_boot",
+			}),
+		]);
+	});
+
 	it("FLY-1314 registers gate-hygiene rollback controls", () => {
 		const issueGateSupersede = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_ISSUE_GATE_SUPERSEDE",

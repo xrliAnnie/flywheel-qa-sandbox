@@ -171,6 +171,7 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	// value config (non-boolean)
 	FLYWHEEL_PROJECTS: "config value: inline projects json (env-pin)",
 	FLYWHEEL_COMM_BACKEND: "config value: comm backend",
+	FLYWHEEL_LEAD_BACKEND: "config value: Lead runtime backend",
 	FLYWHEEL_MEMORY_MODEL: "config value: memory model",
 	FLYWHEEL_LEAD_MODEL: "config value: per-lead model (fleet)",
 	FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "config value: alert channel id",

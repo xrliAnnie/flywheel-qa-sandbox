@@ -1737,6 +1737,8 @@ export class StateStore {
 				ack_token_valid_until TEXT,
 				ack_token_consumed_at TEXT,
 				ingress_disposed_at TEXT,
+				ack_retired_at TEXT,
+				ack_retired_reason TEXT,
 				routing_snapshot TEXT,
 				ack_owner_lead_id TEXT,
 				ack_owner_epoch INTEGER NOT NULL DEFAULT 0,
@@ -8361,11 +8363,63 @@ export class StateStore {
 		return row ? mapLeadEventRow(row) : null;
 	}
 
+	listUndeliveredLeadEvents(limit = 10_000): LeadEventRow[] {
+		return (
+			this.db.raw
+				.prepare(
+					`SELECT * FROM lead_events
+					 WHERE delivered_at IS NULL ORDER BY seq LIMIT ?`,
+				)
+				.all(limit) as Record<string, unknown>[]
+		).map(mapLeadEventRow);
+	}
+
+	/** FLY-1373 cutover: permanently retire the superseded ACK state machine. */
+	retireOpenLeadEventAcks(nowIso: string, reason: string): number {
+		let retired = 0;
+		this.db.transaction(() => {
+			const rows = this.db.raw
+				.prepare(
+					`SELECT seq FROM lead_events
+					 WHERE ack_required = 1 AND acked_at IS NULL
+					   AND ack_retired_at IS NULL`,
+				)
+				.all() as Array<{ seq: number }>;
+			if (rows.length === 0) return;
+			const seqs = rows.map(({ seq }) => seq);
+			// Stay well below every supported SQLite variable limit. A long-lived
+			// deployment can have far more than 999 open legacy rows at cutover.
+			for (let offset = 0; offset < seqs.length; offset += 500) {
+				const chunk = seqs.slice(offset, offset + 500);
+				const placeholders = chunk.map(() => "?").join(",");
+				retired += this.db.raw
+					.prepare(
+						`UPDATE lead_events SET
+						   ack_retired_at = ?, ack_retired_reason = ?,
+						   pending_delivery_reason = NULL,
+						   dead_letter_pending_at = NULL,
+						   page_claim_token = NULL,
+						   page_claim_lease_expires_at = NULL
+						 WHERE seq IN (${placeholders}) AND ack_retired_at IS NULL`,
+					)
+					.run(nowIso, reason, ...chunk).changes;
+				this.db.raw
+					.prepare(
+						`UPDATE lead_event_delivery_attempts SET retired_at = COALESCE(retired_at, ?)
+						 WHERE event_seq IN (${placeholders}) AND retired_at IS NULL`,
+					)
+					.run(nowIso, ...chunk);
+			}
+		});
+		return retired;
+	}
+
 	listOpenAckLeadEvents(limit = 100): LeadEventRow[] {
 		const rows = this.db.raw
 			.prepare(
 				`SELECT * FROM lead_events
 				 WHERE ack_required = 1 AND ack_protocol_version IS NOT NULL
+				   AND ack_retired_at IS NULL
 				   AND acked_at IS NULL AND dead_lettered_at IS NULL
 				 ORDER BY seq LIMIT ?`,
 			)
@@ -8378,6 +8432,7 @@ export class StateStore {
 			.prepare(
 				`SELECT * FROM lead_events
 				 WHERE ack_required = 1 AND ack_protocol_version IS NOT NULL
+				   AND ack_retired_at IS NULL
 				   AND acked_at IS NULL AND dead_lettered_at IS NOT NULL
 				   AND ack_token_valid_until > ?
 				 ORDER BY seq LIMIT ?`,
@@ -8391,6 +8446,7 @@ export class StateStore {
 			.prepare(
 				`SELECT * FROM lead_events
 				 WHERE ack_required = 1 AND dead_lettered_at IS NOT NULL
+				   AND ack_retired_at IS NULL
 				   AND ack_token_valid_until <= ? AND ingress_disposed_at IS NULL
 				 ORDER BY seq LIMIT ?`,
 			)
@@ -8404,6 +8460,7 @@ export class StateStore {
 				.prepare(
 					`UPDATE lead_events SET ingress_disposed_at = ?
 					 WHERE seq = ? AND dead_lettered_at IS NOT NULL
+					   AND ack_retired_at IS NULL
 					   AND ingress_disposed_at IS NULL`,
 				)
 				.run(nowIso, seq).changes === 1
@@ -8481,6 +8538,7 @@ export class StateStore {
 			   pending_delivery_reason = 'secret_rotation',
 			   ack_deadline_at = datetime('now')
 			 WHERE ack_required = 1 AND acked_at IS NULL
+			   AND ack_retired_at IS NULL
 			   AND dead_lettered_at IS NULL`,
 		);
 		this.db.run(
@@ -8506,6 +8564,7 @@ export class StateStore {
 					   ack_owner_lead_id = ?, ack_owner_epoch = ack_owner_epoch + 1,
 					   pending_delivery_reason = 'owner_transfer', ack_deadline_at = ?
 					 WHERE seq = ? AND ack_required = 1 AND acked_at IS NULL
+					   AND ack_retired_at IS NULL
 					   AND dead_lettered_at IS NULL AND ack_owner_lead_id <> ?`,
 				)
 				.run(newLeadId, nowIso, seq, newLeadId);
@@ -8564,6 +8623,7 @@ export class StateStore {
 			const event = this.getLeadEventBySeq(input.eventSeq);
 			if (
 				!event?.ack_required ||
+				event.ack_retired_at ||
 				event.acked_at ||
 				event.dead_lettered_at ||
 				!event.ack_owner_lead_id ||
@@ -8660,6 +8720,7 @@ export class StateStore {
 			const attempt = this.db.raw
 				.prepare(
 					`SELECT a.*, e.ack_owner_epoch, e.acked_at, e.dead_lettered_at,
+					        e.ack_retired_at,
 					        s.active_secret_id
 					 FROM lead_event_delivery_attempts a
 					 JOIN lead_events e ON e.seq = a.event_seq
@@ -8672,11 +8733,13 @@ export class StateStore {
 						ack_owner_epoch: number;
 						acked_at: string | null;
 						dead_lettered_at: string | null;
+						ack_retired_at: string | null;
 						active_secret_id: string | null;
 				  })
 				| undefined;
 			if (
 				!attempt ||
+				attempt.ack_retired_at ||
 				attempt.acked_at ||
 				attempt.dead_lettered_at ||
 				attempt.owner_epoch_at_claim !== attempt.ack_owner_epoch ||
@@ -8718,9 +8781,11 @@ export class StateStore {
 						     ack_deadline_at = ?, last_delivery_error = NULL,
 						     pending_delivery_reason = NULL
 						   WHERE seq = ? AND acked_at IS NULL AND dead_lettered_at IS NULL
+						     AND ack_retired_at IS NULL
 						     AND ack_owner_epoch = ?`
 						: `UPDATE lead_events SET last_delivery_error = ?
 						   WHERE seq = ? AND acked_at IS NULL AND dead_lettered_at IS NULL
+						     AND ack_retired_at IS NULL
 						     AND ack_owner_epoch = ?`,
 				)
 				.run(
@@ -8755,6 +8820,7 @@ export class StateStore {
 					`UPDATE lead_events SET
 					   acked_at = ?, ack_token_consumed_at = ?
 					 WHERE seq = ? AND ack_required = 1 AND acked_at IS NULL
+					   AND ack_retired_at IS NULL
 					   AND (dead_lettered_at IS NULL OR ack_token_valid_until > ?)`,
 				)
 				.run(nowIso, nowIso, seq, nowIso);
@@ -8776,6 +8842,7 @@ export class StateStore {
 				.prepare(
 					`UPDATE lead_events SET dead_letter_pending_at = COALESCE(dead_letter_pending_at, ?)
 					 WHERE seq = ? AND ack_required = 1 AND acked_at IS NULL
+					   AND ack_retired_at IS NULL
 					   AND dead_lettered_at IS NULL`,
 				)
 				.run(nowIso, seq).changes === 1
@@ -8794,6 +8861,7 @@ export class StateStore {
 					`UPDATE lead_events SET
 					   page_claim_token = ?, page_claim_lease_expires_at = ?
 					 WHERE seq = ? AND dead_letter_pending_at IS NOT NULL
+					   AND ack_retired_at IS NULL
 					   AND acked_at IS NULL AND dead_lettered_at IS NULL
 					   AND (page_claim_token IS NULL OR page_claim_lease_expires_at <= ?)`,
 				)
@@ -8814,6 +8882,7 @@ export class StateStore {
 					`UPDATE lead_events SET
 					   dead_lettered_at = ?, ack_token_valid_until = ?
 					 WHERE seq = ? AND page_claim_token = ?
+					   AND ack_retired_at IS NULL
 					   AND page_claim_lease_expires_at > ?
 					   AND acked_at IS NULL AND dead_lettered_at IS NULL`,
 				)
@@ -11042,6 +11111,8 @@ export class StateStore {
 			["ack_token_valid_until", "TEXT"],
 			["ack_token_consumed_at", "TEXT"],
 			["ingress_disposed_at", "TEXT"],
+			["ack_retired_at", "TEXT"],
+			["ack_retired_reason", "TEXT"],
 			["routing_snapshot", "TEXT"],
 			["ack_owner_lead_id", "TEXT"],
 			["ack_owner_epoch", "INTEGER NOT NULL DEFAULT 0"],
@@ -19097,6 +19168,8 @@ export interface LeadEventRow {
 	ack_token_valid_until?: string;
 	ack_token_consumed_at?: string;
 	ingress_disposed_at?: string;
+	ack_retired_at?: string;
+	ack_retired_reason?: string;
 	routing_snapshot?: string;
 	ack_owner_lead_id?: string;
 	ack_owner_epoch?: number;
@@ -19168,6 +19241,8 @@ function mapLeadEventRow(row: Record<string, unknown>): LeadEventRow {
 			(row.ack_token_consumed_at as string | null) ?? undefined,
 		ingress_disposed_at:
 			(row.ingress_disposed_at as string | null) ?? undefined,
+		ack_retired_at: (row.ack_retired_at as string | null) ?? undefined,
+		ack_retired_reason: (row.ack_retired_reason as string | null) ?? undefined,
 		routing_snapshot: (row.routing_snapshot as string | null) ?? undefined,
 		ack_owner_lead_id: (row.ack_owner_lead_id as string | null) ?? undefined,
 		ack_owner_epoch: Number(row.ack_owner_epoch ?? 0),

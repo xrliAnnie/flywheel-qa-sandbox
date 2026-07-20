@@ -36,7 +36,7 @@ const testProjects: ProjectEntry[] = [
 
 interface MockDeliver {
 	calls: Array<{ envelope: unknown }>;
-	nextResult: { delivered: boolean; error?: string };
+	nextResult: { delivered: boolean; queued?: boolean; error?: string };
 	nextThrow?: Error;
 }
 
@@ -180,6 +180,38 @@ describe("handleArtifactEvent (GEO-151 A6)", () => {
 		const proofs = getProofShotParams(params);
 		const run = proofs.runs?.["exec-ae-1|test|ui"];
 		expect(run?.state).toBe("completed");
+	});
+
+	it("durably queued delivery advances the matching run without a false failure", async () => {
+		await seedSession(store, "exec-ae-1", {
+			proofshot: {
+				runs: {
+					"exec-ae-1|test|ui": {
+						state: "pending",
+						dedupKey: "exec-ae-1|test|ui",
+						attempt: 1,
+						updatedAt: Date.now(),
+						lastError: null,
+					},
+				},
+			},
+		});
+		deliver.nextResult = { delivered: false, queued: true };
+		const result = await handleArtifactEvent(
+			store,
+			testProjects,
+			registry,
+			makeEvent(),
+		);
+		expect(result).toEqual(
+			expect.objectContaining({ handled: true, delivered: false }),
+		);
+		expect(
+			getProofShotParams(store.getSessionParams("exec-ae-1")).runs?.[
+				"exec-ae-1|test|ui"
+			]?.state,
+		).toBe("completed");
+		expect(store.getLeadEventBySeq(result.seq!)?.last_error).toBeUndefined();
 	});
 
 	it("AC7: stale-artifact (attempt mismatch) does NOT mark completed", async () => {

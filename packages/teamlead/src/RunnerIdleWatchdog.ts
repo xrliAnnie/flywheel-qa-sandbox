@@ -19,7 +19,10 @@ import {
 	quietFingerprint,
 } from "./bridge/quiet-classifier.js";
 import { createStatusQuery } from "./bridge/runner-status.js";
-import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
+import {
+	dispatchLeadEventCompat,
+	type RuntimeRegistry,
+} from "./bridge/runtime-registry.js";
 import type {
 	CaptureOutcome,
 	StuckRunnerDetector,
@@ -77,6 +80,8 @@ export interface IdleWatchdogConfig {
 	 * pane is idle.)
 	 */
 	runnerQuotaScan?: (session: Session, pane: string) => void | Promise<void>;
+	/** FLY-1373: boot-captured reverse gate for idle/stuck alert lanes. */
+	legacyDeliveryWatchdogsEnabled?: boolean;
 }
 
 type IdleStatus = "waiting" | "idle" | "unknown";
@@ -141,7 +146,9 @@ export class RunnerIdleWatchdog {
 				if (!activeIds.has(key)) this.stateMap.delete(key);
 			}
 			// FLY-195: stuck episodes for gone executions are dropped the same way.
-			this.config.stuckDetector?.pruneInactive(activeIds);
+			if (this.config.legacyDeliveryWatchdogsEnabled !== false) {
+				this.config.stuckDetector?.pruneInactive(activeIds);
+			}
 			// FLY-637 #4: prune persistent quiet-wake dedup rows for sessions no
 			// longer in THIS watchdog's running surface (idle source). Empty set ⇒
 			// all idle rows cleared (no `IN ()`); the store handles the guard.
@@ -191,7 +198,10 @@ export class RunnerIdleWatchdog {
 			// problem (infra error or tmux-unreachable "unknown") is handed over as
 			// { ok: false } so the detector fails closed (skips without touching
 			// the episode clock).
-			if (this.config.stuckDetector) {
+			if (
+				this.config.legacyDeliveryWatchdogsEnabled !== false &&
+				this.config.stuckDetector
+			) {
 				const outcome: CaptureOutcome =
 					captureErrorStatus === undefined && output !== undefined
 						? { ok: true, output }
@@ -241,6 +251,10 @@ export class RunnerIdleWatchdog {
 				);
 				return;
 			}
+
+			// The capture and non-alert piggyback callbacks above remain alive when
+			// legacy delivery watchdogs are off; only idle/stuck emissions stop.
+			if (this.config.legacyDeliveryWatchdogsEnabled === false) return;
 
 			const state = this.stateMap.get(session.execution_id) ?? {
 				lastStatus: "executing",
@@ -454,15 +468,20 @@ export class RunnerIdleWatchdog {
 		if (runtime) {
 			const envelope: LeadEventEnvelope = {
 				seq,
+				eventId,
 				event: payload,
 				sessionKey: session.execution_id,
 				leadId: lead.agentId,
 				timestamp: new Date().toISOString(),
 			};
-			const result = await runtime.deliver(envelope);
+			const result = await dispatchLeadEventCompat(
+				this.config.runtimeRegistry,
+				runtime,
+				envelope,
+			);
 			if (result.delivered) {
 				this.config.store.markLeadEventDelivered(seq);
-			} else {
+			} else if (!(result as { queued?: boolean }).queued) {
 				this.config.store.recordDeliveryFailure(
 					seq,
 					result.error ?? "deliver returned false",

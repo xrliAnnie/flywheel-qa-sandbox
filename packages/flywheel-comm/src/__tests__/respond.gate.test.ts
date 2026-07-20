@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { respond } from "../commands/respond.js";
 import { CommDB } from "../db.js";
-import { FounderConsentAuditStore } from "../founder-consent-audit.js";
 
 let dir: string;
 let dbPath: string;
@@ -50,7 +49,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 			respond({
 				questionId: qid,
 				fromAgent: "lead-x",
-				answer: "approved",
+				answer: "changes requested",
 				dbPath,
 				env: {},
 			}),
@@ -64,7 +63,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 			respond({
 				questionId: qid,
 				fromAgent: "lead-x",
-				answer: "approved",
+				answer: "changes requested",
 				dbPath,
 				bridgeUrl: "http://localhost:9999",
 				env: {},
@@ -83,7 +82,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		await respond({
 			questionId: qid,
 			fromAgent: "lead-x",
-			answer: "approved",
+			answer: "changes requested",
 			dbPath,
 			projectName: "Proj",
 			bridgeUrl: "http://localhost:9999",
@@ -99,20 +98,11 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		expect(hasResponse(qid)).toBe(false);
 	});
 
-	it("FLY-208 6b: bridge response warning is printed to stderr", async () => {
+	it("rejects Lead approval intent before contacting the Bridge", async () => {
 		const qid = seed("approve_to_ship");
-		const warning =
-			"Recorded as FEEDBACK, not approval — only the exact JSON ...";
-		const fetchImpl = vi.fn(async () => ({
-			ok: true,
-			status: 200,
-			json: async () => ({ success: true, passthrough: true, warning }),
-		})) as unknown as typeof fetch;
-		const stderrSpy = vi
-			.spyOn(process.stderr, "write")
-			.mockImplementation(() => true);
-		try {
-			await respond({
+		const fetchImpl = vi.fn();
+		await expect(
+			respond({
 				questionId: qid,
 				fromAgent: "lead-x",
 				answer: "APPROVE — looks good",
@@ -120,14 +110,11 @@ describe("respond() fail-closed gate (§11.2)", () => {
 				projectName: "Proj",
 				bridgeUrl: "http://localhost:9999",
 				env: { TEAMLEAD_API_TOKEN: "tok" },
-				fetchImpl,
-			});
-			const writes = stderrSpy.mock.calls.map((c) => String(c[0])).join("");
-			expect(writes).toContain("WARNING");
-			expect(writes).toContain("Recorded as FEEDBACK");
-		} finally {
-			stderrSpy.mockRestore();
-		}
+				fetchImpl: fetchImpl as typeof fetch,
+			}),
+		).rejects.toThrow(/lead_ack_rejected/);
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(hasResponse(qid)).toBe(false);
 	});
 
 	it("FLY-208 6b: no warning in bridge response → nothing extra on stderr", async () => {
@@ -144,7 +131,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 			await respond({
 				questionId: qid,
 				fromAgent: "lead-x",
-				answer: '{"approved": true}',
+				answer: "changes requested",
 				dbPath,
 				projectName: "Proj",
 				bridgeUrl: "http://localhost:9999",
@@ -169,7 +156,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 			respond({
 				questionId: qid,
 				fromAgent: "lead-x",
-				answer: "approved",
+				answer: "changes requested",
 				dbPath,
 				bridgeUrl: "http://localhost:9999",
 				env: { TEAMLEAD_API_TOKEN: "tok" },
@@ -179,28 +166,23 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		expect(hasResponse(qid)).toBe(false);
 	});
 
-	it("approve_to_ship + FLYWHEEL_COMM_BYPASS_BRIDGE=1 → writes + loud audit row", async () => {
+	it("rejects Lead approval intent even with the emergency bypass enabled", async () => {
 		const qid = seed("approve_to_ship");
-		await respond({
-			questionId: qid,
-			fromAgent: "lead-x",
-			answer: "approved",
-			dbPath,
-			projectName: "Proj",
-			env: {
-				FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
-				FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH: auditPath,
-			},
-		});
-		expect(hasResponse(qid)).toBe(true);
-		const store = new FounderConsentAuditStore(auditPath);
-		const rows = store.queryRecent(10);
-		store.close();
-		expect(rows).toHaveLength(1);
-		expect((rows[0] as Record<string, unknown>).decision).toBe("bypass");
-		expect((rows[0] as Record<string, unknown>).decision_source).toBe(
-			"bypass_env_cli",
-		);
+		await expect(
+			respond({
+				questionId: qid,
+				fromAgent: "lead-x",
+				answer: "approved",
+				dbPath,
+				projectName: "Proj",
+				env: {
+					FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
+					FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH: auditPath,
+				},
+			}),
+		).rejects.toThrow(/lead_ack_rejected/);
+		expect(hasResponse(qid)).toBe(false);
+		expect(existsSync(auditPath)).toBe(false);
 	});
 
 	it("a superseded gate rejects the emergency bypass without audit or wake side effects", async () => {
@@ -221,7 +203,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 			respond({
 				questionId: oldGate,
 				fromAgent: "lead-x",
-				answer: "approved",
+				answer: "changes requested",
 				dbPath,
 				projectName: "Proj",
 				env: {

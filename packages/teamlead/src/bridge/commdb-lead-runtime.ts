@@ -45,7 +45,7 @@ export class CommDBLeadRuntime implements LeadRuntime {
 	async deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult> {
 		try {
 			const content = appendLeadEventAckInstructions(
-				this.formatEnvelope(envelope),
+				this.renderEnvelope(envelope),
 				envelope,
 			);
 			if (envelope.deliveryAttemptId) {
@@ -83,6 +83,10 @@ export class CommDBLeadRuntime implements LeadRuntime {
 
 	async shutdown(): Promise<void> {
 		this.commDb.close();
+	}
+
+	renderEnvelope(env: LeadEventEnvelope): string {
+		return this.formatEnvelope(env);
 	}
 
 	private formatEnvelope(env: LeadEventEnvelope): string {

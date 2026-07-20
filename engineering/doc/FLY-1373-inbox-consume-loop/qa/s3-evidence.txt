@@ -1,0 +1,32 @@
+FLY-1373 场景③ 崩溃后重投 — 真机 kill -9 证据
+==================================================
+崩溃注入
+  20:22:50.747  入队 15 条 (runner_question, seq 43-57)
+  20:22:51.169  kill -9 全部 Bridge PID (入队后 ~420ms)
+  20:22:52     确认 Bridge 已死(health 拒绝连接)
+
+崩溃瞬间队列快照(核心)
+  total=15  consumed=0  unconsumed=15
+  claimed_but_unconsumed = 1   ← seq 43,已认领但 consumed_at 未写 = 真·投递途中
+  (这条正是"崩溃丢不丢"的分水岭)
+
+复活后
+  15/15 全部销账,22s(含 Bridge 冷启 ~19s)
+  seq 43 最终态: claimed=0  consumed=1  disposition=delivered  → 认领已释放,消息未丢
+
+投递次数(来源:Lead session transcript,逐事件计数)
+  #43 = 2 次  ← 恰为那条在途消息
+  #44-57 = 各 1 次
+  收到 15/15,重复 1 条
+
+判定:PASS
+  零丢达成。重复投递不是缺陷 —— lead-inbox-loop.ts:2 明确声明
+  "per-Lead **at-least-once** inbox consumption loop"。
+  at-least-once 的定义就是"不丢,但崩溃窗口内可能重投"。
+  实测重复被精确限制在唯一那条在途消息,不是重复风暴。
+  Lead 层按事件号识别重复(其 pane 原话:"已识别为重复投递,不重复计数")。
+
+已知特性(NOT a bug,建议随 PR 记录)
+  consumed_at 仅在 adapter durable 收妥后才写 —— 这正是"不丢"的来源,
+  代价是 adapter 已收到但 consumed_at 未落盘的窗口内崩溃 → 该条必然重投一次。
+  想消除需与 transport 做两阶段提交,当前设计不做,是有意取舍。

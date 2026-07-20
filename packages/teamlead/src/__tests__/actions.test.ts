@@ -1097,6 +1097,23 @@ describe("GEO-259: leadId scope check on actions", () => {
 		expect(body.success).toBe(true);
 	});
 
+	it("POST /api/actions/approve rejects Lead-attributed self approval", async () => {
+		const res = await fetch(`${baseUrl}/api/actions/approve`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				execution_id: "prod-exec",
+				leadId: "product-lead",
+			}),
+		});
+		expect(res.status).toBe(403);
+		await expect(res.json()).resolves.toMatchObject({
+			success: false,
+			error: "lead_ack_rejected",
+		});
+		expect(store.getSession("prod-exec")?.status).toBe("awaiting_review");
+	});
+
 	it("POST /api/actions/reject with mismatching leadId returns 403", async () => {
 		const res = await fetch(`${baseUrl}/api/actions/reject`, {
 			method: "POST",

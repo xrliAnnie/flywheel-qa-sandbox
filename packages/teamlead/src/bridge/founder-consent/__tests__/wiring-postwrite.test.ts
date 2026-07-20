@@ -2,10 +2,8 @@
  * FLY-191 Phase 2 — wiring `onResponseWritten` behavior, integration through
  * the REAL gateRouter in pass-through (DECISION_MODE=off) mode:
  *
- *  - structured {"approved": true} answer → FSM flips awaiting_review →
- *    approved_to_ship (Codex R2 MEDIUM-1 parity with /api/actions/approve)
- *    + an approval wake whose text mandates verify-approval;
- *  - any other answer (changes_requested feedback) → status UNCHANGED
+ *  - structured {"approved": true} from a Lead is rejected before write/FSM/wake;
+ *  - changes_requested feedback → status UNCHANGED
  *    (NOT terminal, plan §3.2(ii)) + a feedback wake telling the runner to
  *    fix + re-request review.
  */
@@ -153,7 +151,7 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("approval answer flips awaiting_review → approved_to_ship + approval wake", async () => {
+	it("Lead approval is rejected before FSM mutation or wake", async () => {
 		const qid = seedQuestion();
 		const res = await post({
 			questionId: qid,
@@ -161,19 +159,10 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 			answer: JSON.stringify({ approved: true }),
 			executionId: EXEC,
 		});
-		expect(res.status).toBe(200);
-
-		// R2 MEDIUM-1: status flipped — no "approved but Bridge shows
-		// awaiting_review" split-brain.
-		expect(store.getSession(EXEC)?.status).toBe("approved_to_ship");
-
-		// Approval wake delivered, text mandates verify-approval and denies
-		// its own authority.
-		expect(existsSync(inboxPath())).toBe(true);
-		const entries = readInbox();
-		expect(entries).toHaveLength(1);
-		expect(entries[0]?.text).toContain("verify-approval");
-		expect(entries[0]?.text).toContain("NOT authorization");
+		expect(res.status).toBe(403);
+		expect((res.body as { error?: string }).error).toBe("lead_ack_rejected");
+		expect(store.getSession(EXEC)?.status).toBe("awaiting_review");
+		expect(existsSync(inboxPath())).toBe(false);
 	});
 
 	it("feedback answer keeps awaiting_review (NOT terminal) + feedback wake CARRIES the feedback", async () => {
@@ -211,7 +200,7 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		expect(store.getSession(EXEC)?.status).toBe("awaiting_review");
 	});
 
-	it("idempotent approval retry through the FULL wiring: second respond converges (Codex R2 HIGH-2)", async () => {
+	it("approval retries remain rejected with zero durable response or wake", async () => {
 		const qid = seedQuestion();
 		const body = {
 			questionId: qid,
@@ -220,18 +209,15 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 			executionId: EXEC,
 		};
 		const r1 = await post(body);
-		expect(r1.status).toBe(200);
-		expect(store.getSession(EXEC)?.status).toBe("approved_to_ship");
+		expect(r1.status).toBe(403);
+		expect(store.getSession(EXEC)?.status).toBe("awaiting_review");
 
-		// Retry after the transition already completed: 200 alreadyResponded,
-		// status untouched, wake re-delivered (second inbox entry).
 		const r2 = await post(body);
-		expect(r2.status).toBe(200);
-		expect((r2.body as { alreadyResponded?: boolean }).alreadyResponded).toBe(
-			true,
-		);
-		expect(store.getSession(EXEC)?.status).toBe("approved_to_ship");
-		expect(readInbox()).toHaveLength(2);
+		expect(r2.status).toBe(403);
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)).toBeUndefined();
+		db.close();
+		expect(existsSync(inboxPath())).toBe(false);
 	});
 
 	it("answers to a SUPERSEDED question are rejected once the binding moved (Codex PR R1 CRITICAL)", async () => {
@@ -244,7 +230,7 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		const res = await post({
 			questionId: staleQ,
 			leadId: LEAD,
-			answer: JSON.stringify({ approved: true }),
+			answer: "changes requested: update the current review",
 			executionId: EXEC,
 		});
 		expect(res.status).toBe(409);
