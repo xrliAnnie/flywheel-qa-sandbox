@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1397 · Pi Agent 评估 — 要不要接进 Flywheel</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --card: #ffffff; --ink: #1d1d1f; --dim: #86868b;
+    --red: #ff3b30; --amber: #ff9500; --blue: #007aff; --green: #34c759;
+    --purple: #af52de; --navy: #1a365d;
+    --line: #e5e5ea;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, system-ui, "SF Pro Text", "PingFang SC", sans-serif;
+    line-height: 1.62; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 40px 22px 72px; }
+  code, .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 0.9em; }
+  h1 { font-size: 30px; letter-spacing: -0.02em; margin: 0 0 6px; }
+  .sub { color: var(--dim); font-size: 15px; margin-bottom: 26px; }
+  .sub a { color: var(--blue); text-decoration: none; }
+  h2 { font-size: 21px; letter-spacing: -0.01em; margin: 40px 0 14px; display:flex; align-items:center; gap:9px; }
+  h2 .dot { width: 11px; height: 11px; border-radius: 50%; flex:none; }
+  h3 { font-size: 16px; margin: 20px 0 8px; }
+  p { margin: 10px 0; }
+  .card {
+    background: var(--card); border-radius: 12px; padding: 18px 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin: 14px 0; border-left: 4px solid var(--line);
+  }
+  .card.green  { border-left-color: var(--green); }
+  .card.amber  { border-left-color: var(--amber); }
+  .card.blue   { border-left-color: var(--blue); }
+  .card.red    { border-left-color: var(--red); }
+  .card.purple { border-left-color: var(--purple); }
+  .card.navy   { border-left-color: var(--navy); }
+  .tldr { background: #fff; border-radius: 14px; padding: 22px 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.07); border-left: 5px solid var(--navy); }
+  .tldr h2 { margin-top: 0; font-size: 18px; }
+  .tldr ul { margin: 8px 0 0; padding-left: 20px; }
+  .tldr li { margin: 7px 0; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; vertical-align: middle; letter-spacing: 0.02em; }
+  .b-fact    { background: #e6f8ea; color: #1a7a33; }
+  .b-unknown { background: #fff2e0; color: #b25f00; }
+  .b-ours    { background: #efe6fb; color: #7a3fb0; }
+  .b-safety  { background: #ffe5e3; color: #c0271c; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14.5px; background:#fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+  th, td { text-align: left; padding: 11px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: #fafafc; font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  .num { font-weight: 700; color: var(--navy); }
+  .opt-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  .opt { background:#fff; border-radius: 12px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-top: 4px solid var(--blue); }
+  .opt.a { border-top-color: var(--dim); }
+  .opt.b { border-top-color: var(--green); }
+  .opt.c { border-top-color: var(--purple); }
+  .opt h3 { margin-top: 0; }
+  .pro { color: #1a7a33; } .con { color: #c0271c; }
+  .opt ul { padding-left: 18px; margin: 6px 0; }
+  .callout { background: #fff; border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+  .q { font-weight: 600; color: var(--navy); }
+  .footer-note { margin-top: 36px; padding: 18px 20px; background:#fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-left: 4px solid var(--purple); }
+  .src { font-size: 12.5px; color: var(--dim); }
+  .src a { color: var(--blue); text-decoration: none; }
+  .kicker { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+  /* ⑥ architecture diagram (pure CSS, no JS) */
+  .arch { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:18px; margin:14px 0; overflow-x:auto; }
+  .arch-layer { border-radius:10px; padding:12px 14px; margin:10px 0; }
+  .arch-in  { border:2px solid var(--green); background:#f2fbf4; }
+  .arch-out { border:2px solid var(--red); background:#fff5f4; }
+  .arch-title { font-weight:700; font-size:14px; margin-bottom:8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .arch-title .tag { font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px; }
+  .tag-green { background:#d6f5df; color:#1a7a33; } .tag-red { background:#ffddd9; color:#c0271c; }
+  .arch-row { display:flex; flex-wrap:wrap; gap:8px; }
+  .node { border:1px solid var(--line); border-radius:8px; padding:7px 10px; font-size:12.5px; background:#fff; min-width:0; }
+  .node .fl { display:block; color:var(--dim); font-size:11px; font-family:"SF Mono",ui-monospace,monospace; margin-top:2px; }
+  .node-pi { border:1px dashed var(--purple); background:#faf6fe; }
+  .arch-arrow { text-align:center; color:var(--dim); font-size:18px; line-height:1; margin:2px 0; }
+  .arch-out .node { border-color:#ffb3ab; }
+  @media (max-width: 640px) { .wrap { padding: 24px 14px 48px; } h1 { font-size: 24px; } table { font-size: 13px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="kicker">FLY-1397 · 研究 explainer</div>
+  <h1>Pi Agent — 要不要接进我们自己的系统？</h1>
+  <div class="sub">
+    你问的:<em>「值得开个 issue 研究一下,要不要把 Pi Agent 放到我们自己系统里去?」</em><br>
+    这份摆<strong>事实 + 选项 + 取舍</strong>,<strong>不替你下「接/不接」的结论</strong> —— 决定权归你。查不到的标 <span class="badge b-unknown">UNKNOWN</span>,来源可追。
+  </div>
+
+  <!-- TL;DR -->
+  <div class="tldr">
+    <h2>一眼看懂(30 秒)</h2>
+    <ul>
+      <li><strong>Pi 不是一个模型,是一个「执行器」(harness)</strong> —— 跟我们现在用的 Claude Code / Codex 是<strong>同一层</strong>的东西,它自己去驱动模型。</li>
+      <li><strong>它是我们自己血缘里的近亲</strong>:Pi 就是 OpenClaw 里那个极简 agent,而 Flywheel 最早就搭在 OpenClaw 上。这不是「引入一个陌生外部工具」,是「要不要回头用我们出身里那个更省的执行器」。</li>
+      <li><strong>Databricks 一个独立测试的头条:执行器本身能省一大截钱。</strong> 同一个模型,换到 Pi 这个执行器上,<strong>成本能差 2 倍、质量不变</strong> —— 因为 Pi 每轮喂给模型的内容少约 3 倍。<span class="badge b-unknown">但这是在他们私有代码库上测的,我们这边没验过</span></li>
+      <li><strong>第一道门不是省钱,是安全。</strong> Pi <strong>没有内置权限系统</strong>。「接进我们系统」要先回答:谁给它兜安全、它认不认我们的 founder 审批。</li>
+      <li>三条路可选:<strong>替换 / 并列(加成第 7 个执行器)/ 借鉴(把 Pi 的省钱手法用到我们现有执行器上)</strong> —— 我把取舍摆清楚,你来选。</li>
+      <li><strong>你后来把这题升级了(见 ⑤)</strong>:从「要不要用 Pi」→「让 Lead↔Runner 变得跟模型无关:一层统一的执行器抽象,<strong>Pi 做新厂商(Kimi/Gemini/…)的通用 wrapper</strong>,Claude Code + Codex 留着吃自家模型的深度适配」。</li>
+      <li><strong>诚实修正(你给的 Codex 反例,见 ⑥)</strong>:我上一版说「这层已建 80%」是过度声称。准确说:<strong>干净的只是「执行器选择层」;一个厂商的完整集成面散在选择层之外的 ~25 个文件里</strong>(提示词/派发/数据库/QA 门/报告)——<strong>你加 Codex 一层层手补,撞的正是这些。你是对的。</strong></li>
+    </ul>
+  </div>
+
+  <!-- Q1 -->
+  <h2><span class="dot" style="background:var(--blue)"></span>① Pi 到底是什么</h2>
+
+  <div class="card blue">
+    <p><strong>一句话:Pi 是一个极简的 coding agent「执行器」(harness),不是模型,MIT 开源。</strong> 它自己接 15+ 家模型提供商(Anthropic / OpenAI / Google…),在终端里跑。作者是 <strong>Mario Zechner</strong>(游戏引擎 libGDX 的作者),挂在 Earendil Inc. 下。</p>
+    <p>关键理解:它跟我们现在的 Claude Code / Codex <strong>是同一个角色</strong> —— 都是「拿到任务 → 驱动模型 → 读写代码 → 交活」的那层壳。所以「接进 Flywheel」这个问题,天然落在我们<strong>已经有的「执行器」槽位</strong>上(我们现在有 6 种:Claude、Codex、Gemini、Cursor、以及最近刚加的 antigravity、kimi)。</p>
+  </div>
+
+  <table>
+    <tr><th style="width:26%">维度</th><th>事实</th></tr>
+    <tr><td>形态</td><td>极简 agent 执行器(CLI + 工具库)<span class="badge b-fact">事实</span></td></tr>
+    <tr><td>开源</td><td>MIT 开源,仓库 <code>earendil-works/pi</code></td></tr>
+    <tr><td>成熟度</td><td><span class="num">73.5k</span> stars、迭代极快(<span class="num">247</span> 个版本、5000+ 次提交,最新 v0.80.10 @ 2026-07-16)—— 是个活跃项目,不是玩具</td></tr>
+    <tr><td>怎么跑</td><td>交互终端;也能<strong>无人值守 / 被程序驱动</strong>(<code>pi -p</code> 命令行、JSON 事件流、stdin/stdout 的 RPC、以及一个 SDK)</td></tr>
+    <tr><td>设计哲学</td><td>极简主义:只留 4 个核心工具(读/写/改/跑命令)、系统提示词 &lt;1000 token、默认砍掉子 agent / 计划模式 / 权限弹窗。主张「模型已经够强,重脚手架反而添乱、遮蔽上下文」。</td></tr>
+    <tr><td>安全</td><td><strong>无内置权限系统</strong>。隔离靠「跑在容器里」或自建确认流程。<span class="badge b-safety">这是接入前提,见 ③</span></td></tr>
+    <tr><td>血缘</td><td><strong>Pi 就是 OpenClaw 里的那个 minimal agent</strong> —— 而 Flywheel 最早就搭在 OpenClaw 上。</td></tr>
+  </table>
+
+  <!-- Q2 -->
+  <h2><span class="dot" style="background:var(--green)"></span>② Databricks 那个 benchmark 说了什么</h2>
+
+  <div class="card green">
+    <p>Databricks(独立第三方)在自己<strong>百万行的私有代码库</strong>上,拿真实的、人写的、已合并的 PR 当任务,测各种 coding agent。用<strong>真实测试套件判对错</strong>(不是让 AI 当裁判),还封存 git 历史防作弊。这套方法论本身对我们「怎么在大代码库上评测 agent」很有借鉴。</p>
+  </div>
+
+  <h3>模型层的数字(供参考)</h3>
+  <table>
+    <tr><th>模型</th><th>每个任务成本</th><th>完成率</th><th>备注</th></tr>
+    <tr><td>Opus 4.8</td><td class="num">$1.94</td><td class="num">87%</td><td>质量顶档</td></tr>
+    <tr><td>Sonnet 5</td><td class="num">$2.09</td><td class="num">81%</td><td>比 Opus 还贵、还低 6 分</td></tr>
+    <tr><td>GLM 5.2</td><td class="num">$1.28</td><td>—</td><td>质量与 Opus <strong>统计上并列</strong>、更便宜</td></tr>
+    <tr><td>GPT-5.5 / 5.4 Mini</td><td colspan="2"><span class="badge b-unknown">精确数字 UNKNOWN</span></td><td>有提及,原文未给全</td></tr>
+  </table>
+  <p class="src">方法论金句:<strong>「token 单价是端到端真实成本的差指标」</strong> —— 要按「一个任务花多少」测,不是按「一个 token 多少钱」。</p>
+
+  <h3>执行器层的数字(这单的核心)</h3>
+  <div class="card green">
+    <p style="font-size:15.5px"><strong>「同一个模型、一样的思考力度,换两个不同执行器(Claude Code/Codex vs Pi),每个任务成本能差 2 倍以上,而质量不变。Pi 每轮少发约 3 倍的内容,working set 更紧,用更少轮次完成。极简的 Pi 拿到跟大厂执行器一样的成功率,但成本少 2 倍。」</strong></p>
+    <p style="margin-bottom:0">Databricks CEO 的一句总结:<strong>「执行器就是运行时(The harness is the runtime)。同样的模型、同样的代码库,成本/表现天差地别」</strong> —— 因为执行器决定了怎么搜代码、上下文卫生、选哪些文件、工具编排、测试/修复循环、跨轮记忆。</p>
+  </div>
+  <div class="card amber">
+    <span class="badge b-unknown">诚实边界</span>
+    <p style="margin-bottom:4px">两点必须标清楚,别让「省 2 倍」变成事实:</p>
+    <ul style="margin:4px 0 0">
+      <li>这个 2 倍是在 <strong>Databricks 自己的私有代码库</strong>上测的,<strong>不可复现、我们这边没验过</strong>。它是「他们测出、我们待验」。</li>
+      <li>Databricks 原文里的「Pi」<strong>没注明出处</strong> —— 把它等同于 pi.dev 的 Pi,是二手报道 + 业界理解连起来的(可信度高,但不是原文一手确认)。</li>
+    </ul>
+  </div>
+
+  <!-- Q3 -->
+  <h2><span class="dot" style="background:var(--red)"></span>③ 接进 Flywheel:先过安全门,再谈三条路</h2>
+
+  <div class="card red">
+    <span class="badge b-safety">接入前提 · 不是脚注</span>
+    <h3 style="margin-top:8px">第一道门:安全 —— 谁给 Pi 兜底</h3>
+    <p>「接进我们系统」的第一问不是省不省钱,是<strong>它认不认我们的 founder 审批合同、谁来兜安全</strong>。Pi <strong>没有内置权限系统</strong>,官方答案是「不放心就跑在容器里」,而不是程序化的前置审批闸。</p>
+    <p><strong>好消息(已核我们代码):最便宜的接法,恰好也是最安全的。</strong> 我们最近给系统加 antigravity、kimi 两个执行器时,它们走的是「只 build + 开 PR,然后交回给人,<strong>由你手动 ship</strong>」的模式 —— 执行器<strong>拿不到合并/上线的权限</strong>,你的 founder 审批完整保留。Pi 走同一条路的话,安全边界不动。</p>
+    <p style="margin-bottom:0"><strong>风险点:</strong>一旦想让 Pi「接得更深」(自动 ship),安全这条就会咬回来 —— 谁监督沙箱里的 Pi?这跟我们「自治车队、你不在每个动作旁边」的处境是个<span class="q">开放张力</span>,留给你判。</p>
+  </div>
+
+  <div class="callout" style="margin-top:14px">
+    <span class="badge b-ours">我方读法</span>
+    <h3 style="margin-top:8px">一个反直觉的取舍(值不值的关键不确定性)</h3>
+    <p style="margin-bottom:0">Pi 省钱,靠的是它<strong>自己那套极简纪律</strong>(上下文紧、工具少、提示词短)。而我们的车队会往执行器里<strong>塞一大坨自己的流程说明 + 三段式审批</strong>。<strong>把 Pi 包进我们这套重壳里,很可能把它省钱的本事给抵消掉</strong> —— 那正是它便宜的来源。换句话说:<strong>「Pi 裸跑省 2 倍」不自动等于「我们系统里的 Pi 省 2 倍」。</strong> 这也是为什么「并列做个 opt-in、在我们自己库上真 A/B 一把」比「直接相信数字」更靠谱。</p>
+  </div>
+
+  <div class="callout" style="margin-top:14px">
+    <span class="badge b-ours">值得点出</span> Pi 比我们最近加的 antigravity/kimi <strong>更值得认真接</strong> 的一点:那两个只是普通 CLI,只能「build 完交回人」。Pi 有 RPC / JSON / SDK,<strong>能接得更深</strong>(中途唤醒、甚至自动 ship)—— 天花板更高。当然,接得越深,上面那道安全门就越要认真答。
+  </div>
+
+  <h3 style="margin-top:26px">三条路 + 取舍(不下结论)</h3>
+  <div class="opt-grid">
+    <div class="opt a">
+      <h3>路 A · 替换</h3>
+      <p style="color:var(--dim);font-size:13.5px;margin-top:0">用 Pi 顶掉 Claude Code / Codex 当主执行器</p>
+      <p class="pro">✓ 若省钱成立,整个车队都受益</p>
+      <p class="con">✗ 丢掉 Claude/Codex 的成熟度和更强的协作通道;省钱在我们库上<strong>未验</strong>;高风险,不该轻试</p>
+    </div>
+    <div class="opt b">
+      <h3>路 B · 并列(加成第 7 个执行器)</h3>
+      <p style="color:var(--dim);font-size:13.5px;margin-top:0">Pi 做一个可选执行器,按需逐个任务开(跟 antigravity/kimi 一样)</p>
+      <p class="pro">✓ 便宜、低风险、可逆、默认不影响现状;<strong>能在我们自己代码库上真 A/B,验证那个「省 2 倍」到底成不成立</strong>;走「只 build+PR」模式,安全边界不动</p>
+      <p class="con">✗ 若被我们的重壳抵消,A/B 可能测不出优势 —— 要设计公平的对照</p>
+    </div>
+    <div class="opt c">
+      <h3>路 C · 借鉴</h3>
+      <p style="color:var(--dim);font-size:13.5px;margin-top:0">不接 Pi,把它的省钱手法(每轮上下文更紧、工具更少、提示词更短)用到我们<strong>现有</strong>的 Claude/Codex 执行器上</p>
+      <p class="pro">✓ 省钱是「执行器手法」、<strong>可移植</strong>;可能<strong>最高杠杆</strong> —— 不引第三方,全车队立刻受益</p>
+      <p class="con">✗ 要先搞清我们执行器的上下文膨胀在哪;动的是核心代码,不像加个可选执行器那么可逆</p>
+    </div>
+  </div>
+  <p style="margin-top:14px"><span class="badge b-ours">我方读法</span> 三条路<strong>不互斥</strong>:比如可以先走 B(做个可选 Pi 执行器,在我们库上实测「省 2 倍」是否成立),同时琢磨 C(把 Pi 的瘦身纪律搬进现有执行器)。用哪条、要不要,归你。</p>
+
+  <!-- Q4 -->
+  <h2><span class="dot" style="background:var(--amber)"></span>④ 诚实边界(查不到的不编)</h2>
+  <div class="card amber">
+    <ul style="margin:0">
+      <li><strong>「省 2 倍」= 他们测出、我们待验</strong> —— Databricks 私有库、不可复现,我们没跑过。</li>
+      <li><strong>Databricks 的「Pi」无一手归属</strong> —— =pi.dev 是二手连起来的。</li>
+      <li><strong>Pi 在我们重壳下还省不省 = UNKNOWN</strong>(我方假设可能被抵消)。</li>
+      <li><strong>Pi 面向无人值守车队的成熟度 UNKNOWN</strong> —— 作者明说它的语境是「人在旁边的本地结对」,无人值守他建议「跑容器里」;我们是你不在每个动作旁的自治车队,落差是开放问题。</li>
+      <li>GPT-5.5 精确数字、benchmark 任务条数:原文未给。HN 上的批判讨论:抓取被限流,未取回(不编造)。</li>
+    </ul>
+  </div>
+
+  <!-- Q5 reframe -->
+  <h2><span class="dot" style="background:var(--purple)"></span>⑤ 你的 reframe:统一执行器层 + Pi 做通用 wrapper</h2>
+
+  <div class="card purple">
+    <p><strong>你把这题从「要不要用 Pi」升级成了一个更有野心的架构问题:</strong> 让 Lead↔Runner 变得<strong>跟具体模型无关</strong> —— 一层统一的「执行器」抽象,<strong>Pi 做新厂商(Kimi / Gemini / …)的通用 wrapper</strong>,而 Claude Code + Codex 留着吃它们自家模型的深度适配。</p>
+    <p style="margin-bottom:0">我照你说的深挖了三条,证据优先、能标 UNKNOWN 就标、不下结论。</p>
+  </div>
+
+  <div class="card green">
+    <span class="badge b-fact">已核代码</span>
+    <h3 style="margin-top:8px">发现:执行器「选择层」很干净(但这只是选择层)</h3>
+    <p>我读了真实的派发代码。我们现在<strong>已经</strong>把三件事分开了:<strong>①执行器(壳)②Lead↔Runner 通道 ③模型</strong>。派发时按角色选执行器,模型是独立叠上去的。<strong>Pi 就是这层上的一个新执行器</strong> —— 跟我们最近加 antigravity、kimi 是完全一样的接法。</p>
+    <p style="margin-bottom:0"><strong>杠杆在这:</strong> 我们今天是「一个厂商写一个适配器」。你的 reframe = <strong>一个 Pi 适配器顶掉未来 N 个</strong> —— 因为 Pi 自带 15+ 家厂商。<span class="badge b-safety">但见 ⑥</span> <strong>「选择层干净」不等于「加一个厂商就零改动」</strong> —— 你加 Codex 撞的那些手补,落在选择层<strong>之外</strong>。⑥ 把这条边界画清。</p>
+  </div>
+
+  <h3 style="margin-top:24px">三条张力(供你判,不下结论)</h3>
+  <table>
+    <tr><th style="width:20%">问题</th><th>已知</th><th style="width:34%">要你判 / UNKNOWN</th></tr>
+    <tr>
+      <td><strong>① 留 CC+Codex 到底真不真值</strong></td>
+      <td>CC/Codex 确实为自家模型做真事(会话续接、内置工具权限、thinking / reasoning 档)。<strong>但</strong> Databricks 的证据显示:<strong>在成本上,是「壳的纪律」赢了,不是「自家适配」赢</strong> —— 同模型下 Pi 反而更省。</td>
+      <td>是真优势,还是我们只是<strong>习惯了 CC/Codex 的成熟壳</strong>(锁定)?Pi 有没有吃到 prompt 缓存 / thinking = <span class="badge b-unknown">UNKNOWN</span>。要在我们自己库上 A/B(Pi+同模型 vs CC+同模型)才知道。<strong>别默认「留着 = 有优势」成立。</strong></td>
+    </tr>
+    <tr>
+      <td><strong>② 权限怎么包</strong></td>
+      <td>Pi 没有内置权限。<strong>但我们真正的红线闸(合并/上线/开关 runner)本来就在 runner 外面</strong> —— 任何厂商的 runner 都拿不到这些权限,只能产 PR、你来 ship。所以最便宜的接法(Pi 跑容器里 + 只 build+PR)<strong>零新增安全接线</strong>。</td>
+      <td>只有当你想让 Pi「接得更深」(中途自动执行保留动作)时,才需要把 Pi 的确认流接到我们的闸上。<span class="badge b-ours">我方读法</span> v1 不必做这步。</td>
+    </tr>
+    <tr>
+      <td><strong>③ 怎么嵌进派发</strong></td>
+      <td>派发链(谁派给谁、任务归类、worktree)<strong>大部分不用动</strong> —— 都跟「用哪个壳」无关,Pi 直接继承(kimi 就是这么零改动继承的)。要动的是加性的:一个 Pi 适配器 + 把「壳」和「模型」解耦(现在模型反推壳是 1:1 绑死的,Gemini/Cursor 模型今天其实<strong>压根跑不了</strong>,正好是 Pi 要填的洞)。</td>
+      <td>解耦「壳↔模型」的具体配置形态;Pi 的通道选「只 build+PR」还是走它的 RPC 接更深。<span class="badge b-unknown">设计待定</span></td>
+    </tr>
+  </table>
+  <p><span class="badge b-ours">一句话</span> 你的 reframe 不是从零造 —— 是<strong>在我们已有的执行器层上，把「一厂一适配器」换成「一个 Pi 顶多家」</strong>,再决定 CC+Codex 值不值得单独留。三条张力都摆上了,怎么走归你。</p>
+
+  <!-- Q6 technical architecture + boundary -->
+  <h2><span class="dot" style="background:var(--navy)"></span>⑥ 技术架构 + 覆盖边界(你给的 Codex 反例)</h2>
+
+  <div class="card red">
+    <span class="badge b-safety">诚实修正</span>
+    <p style="margin-bottom:0">你说得对:你在把 Codex 加进更多项目,发现<strong>很多意想不到的地方没做 Codex 适配、要一层层手补</strong>。我全仓 grep 核过了 —— <strong>我上一版「已建 80%」是过度声称。</strong> 准确的边界:<strong>干净的只是「执行器选择层」;一个厂商的完整集成面散在选择层之外的 ~25 个文件里,你的痛正落在那儿。</strong> 下面按真实代码画清,不替 80% 辩护。</p>
+  </div>
+
+  <div class="arch">
+    <div class="arch-layer arch-in">
+      <div class="arch-title"><span class="tag tag-green">干净 · 加性</span> 执行器「选择层」(≈ 我说的那 80% 的真实所指)</div>
+      <div class="arch-row">
+        <div class="node">按角色选执行器 + 通道 + 模型<span class="fl">role-adapter-resolver.ts:180</span></div>
+        <div class="node">执行器→通道映射<span class="fl">:49 EXECUTOR_TO_TRANSPORT</span></div>
+        <div class="node">厂商→执行器映射<span class="fl">:59 VENDOR_TO_EXECUTOR</span></div>
+        <div class="node">label/model 解析<span class="fl">runner-label.ts:134</span></div>
+      </div>
+      <div class="arch-row" style="margin-top:8px">
+        <div class="node">claude-tmux<span class="fl">TmuxAdapter</span></div>
+        <div class="node">codex-tmux<span class="fl">CodexTmuxAdapter</span></div>
+        <div class="node">kimi / agy<span class="fl">Kimi/Antigravity Adapter</span></div>
+        <div class="node node-pi">pi-tmux?<span class="fl">新增一个瘦子类</span></div>
+      </div>
+      <div style="font-size:12.5px;color:var(--dim);margin-top:8px">→ 加一个厂商到<strong>这层</strong>:加几个 map 条目 + 一个 adapter。<strong>确实近乎加性。</strong></div>
+    </div>
+
+    <div class="arch-arrow">▲ 干净到此为止 ▲<br>▼ 之外全是 vendor 分支 ▼</div>
+
+    <div class="arch-layer arch-out">
+      <div class="arch-title"><span class="tag tag-red">vendor-fork · 你的痛</span> 执行 / 生命周期 / 持久化 / QA / 报告(散在 ~25 文件)</div>
+      <div class="arch-row">
+        <div class="node"><strong>runner 提示词</strong>按 harness 能力分叉 ~15 处(无 mailbox→poll、gate 律、「环境翻译」整段、pr_handoff 终态)<span class="fl">Blueprint.ts:932/1276/1780/2199/1965</span></div>
+        <div class="node"><strong>派发强制回退</strong>:需 mailbox 的 lane 遇 transport=none → 强改回 claude<span class="fl">run-dispatcher.ts:302 (FLY-752)</span></div>
+        <div class="node"><strong>数据库</strong>:Codex 自己的表/列(review 记录、thread id、nudge 队列、skip)<span class="fl">StateStore.ts:2173/935/337/661</span></div>
+        <div class="node"><strong>QA 硬门</strong>:整套 Codex code-review 门 + hold 是 codex 专属<span class="fl">codex-gate.ts:75 · auto-qa-coordinator.ts:711</span></div>
+        <div class="node"><strong>fleet 能力</strong>:codex-app-server 特判 + effort 选项<span class="fl">fleet-capabilities.ts:103/169</span></div>
+        <div class="node"><strong>DAG 节点→agent 识别</strong>:节点用哪个 agent 的识别/校验(你「3B DAG 只认 Claude、加 Codex 开新 issue」)<span class="fl">workflow-run-snapshot.ts:357 · StateStore.ts:14859</span></div>
+        <div class="node"><strong>Lead→agent 绑定</strong>:换 Lead 从 Claude 到 Codex(平行 seam + 跨字段约束 + 独立 launcher/plist)<span class="fl">ProjectConfig.ts:125/723 · lead-lease:841 · FLY-398</span></div>
+        <div class="node"><strong>生命周期 / 报告</strong>:daemon 关停、session 分析、报告展示、事件路由<span class="fl">codex-phase-shutdown.ts:82 · dashboard-html · event-route …</span></div>
+      </div>
+      <div style="font-size:12.5px;color:var(--dim);margin-top:8px">→ 加 Codex 要一层层手补 = <strong>这些地方</strong>。且 Codex 是最贵的那种(自带 daemon 通道),所以分支最多(光 Blueprint 就 40 处命中)。</div>
+    </div>
+  </div>
+
+  <h3 style="margin-top:24px">层级图 —— 一眼看清:只有最上面几层被抽象,其余每加一个自带 agent 的新 model 都要手补</h3>
+  <p style="font-size:13.5px;color:var(--dim);margin-top:0">你的总结原话:「每加一个用自己 agent 的新 model 都是<strong>非常多工作量、散在很多层</strong>」。逐层坐实如下(✓=已抽象、几乎不用改;✗=每个 vendor 手补):</p>
+  <table>
+    <tr><th style="width:34%">层</th><th style="width:14%">状态</th><th>代码位</th></tr>
+    <tr><td>DAG 依赖解析</td><td style="color:#1a7a33"><strong>✓ 已抽象</strong></td><td class="mono">dag-resolver/types.ts:5(节点=id+依赖,不认 agent)</td></tr>
+    <tr><td>Runner 执行器<strong>选择</strong></td><td style="color:#1a7a33"><strong>✓ 干净</strong></td><td class="mono">role-adapter-resolver.ts:180 · :59</td></tr>
+    <tr><td>Runner adapter</td><td style="color:#b25f00"><strong>~ 写一个瘦子类</strong></td><td class="mono">KimiTmuxAdapter 等</td></tr>
+    <tr><td><strong>DAG 节点→agent 识别</strong>(你的痛①)</td><td class="con"><strong>✗ 手补</strong></td><td class="mono">workflow-run-snapshot.ts:357 · StateStore.ts:14859 · dashboard</td></tr>
+    <tr><td><strong>Runner 提示词</strong>(按 harness 能力分叉 ~15 处)</td><td class="con"><strong>✗ 手补</strong></td><td class="mono">Blueprint.ts:932/1276/2199</td></tr>
+    <tr><td>dispatch mailbox 回退</td><td class="con"><strong>✗ 手补</strong></td><td class="mono">run-dispatcher.ts:302</td></tr>
+    <tr><td><strong>数据库</strong>(vendor 专属表/列)</td><td class="con"><strong>✗ 手补</strong></td><td class="mono">StateStore.ts:2173/935/337</td></tr>
+    <tr><td><strong>QA / code-review 门</strong></td><td class="con"><strong>✗ 手补</strong></td><td class="mono">codex-gate.ts:75 · auto-qa-coordinator.ts:711</td></tr>
+    <tr><td><strong>Lead→agent 绑定</strong>(你的痛②)</td><td class="con"><strong>✗ 手补</strong></td><td class="mono">ProjectConfig.ts:125/723(平行 seam)</td></tr>
+    <tr><td><strong>Lead launcher / 运行时</strong></td><td class="con"><strong>✗ 手补</strong></td><td class="mono">claude-lead.sh vs codex TUI+plist(FLY-398)</td></tr>
+    <tr><td>Lead 漂移检测</td><td class="con"><strong>✗ 手补</strong></td><td class="mono">lead-lease.ts:841 lead_backend_drift</td></tr>
+    <tr><td>fleet 能力 / 控制台</td><td class="con"><strong>✗ 手补</strong></td><td class="mono">fleet-capabilities.ts:103</td></tr>
+    <tr><td>生命周期 / 报告</td><td class="con"><strong>✗ 手补</strong></td><td class="mono">codex-phase-shutdown.ts:82 · dashboard-html · event-route</td></tr>
+  </table>
+  <div class="card red" style="margin-top:12px">
+    <p style="margin:0"><strong>一眼结论:被抽象的只有最上面 2–3 层</strong>(DAG 解析 + 执行器选择 + 写一个 adapter);<strong>其余 ~10 层,每加一个自带 agent 的新 model 都要手补。</strong> 这就是你说的「散在很多层」—— 现在用真实 file:line 坐实了,不是感觉。</p>
+  </div>
+
+  <div class="callout">
+    <span class="badge b-ours">Pi 对照 · 诚实判(不 hand-wave)</span>
+    <p style="margin:8px 0 4px">这些分支是按 <strong>harness 能力</strong>分叉的(有没有 mailbox、怎么等 gate、要不要环境翻译),<strong>不是按模型</strong>。所以:</p>
+    <p class="con" style="margin:4px 0">✗ <strong>Pi 不解决「加 Codex 很痛」这个具体问题</strong> —— 那是 Codex 那条最贵通道的复杂度,跟 Pi 正交;Pi 一处都不回头清理。</p>
+    <p class="con" style="margin:4px 0">✗ <strong>Pi 自己也不是零改动</strong> —— 它落在便宜的 transport=none(像 kimi),复用已铺好的分支,但仍要一个适配器 + 提示词/持久化那一份。</p>
+    <p class="pro" style="margin:4px 0">✓ <strong>Pi 真正的价值 = 折叠「模型轴」</strong>:今天每加一个新模型厂商当独立执行器都要一套;Pi(一个壳驱动 15+ 家)把 <strong>N 个新模型集成折成 1 个</strong>,且落在便宜那条。</p>
+    <p style="margin:8px 0 0"><strong>一句话:</strong> Pi 让<strong>未来加新模型</strong>变便宜(N 厂→1 wrapper);它<strong>不</strong>消除现有的 vendor-fork、<strong>不</strong>治你现在的 Codex 痛。要不要为「未来模型广度便宜」买单,归你。<span class="badge b-unknown">每处「必改 vs 可选」的精确清单要一次工程 spike 才能定档</span></p>
+  </div>
+
+  <!-- Decision -->
+  <div class="footer-note">
+    <h3 style="margin-top:0">决定权归你 —— 我不替你拍</h3>
+    <p>这份到此为止只摆事实和选项。你可能想先回答的几个问题:</p>
+    <p class="q">· <strong>看清 ⑥ 的边界后</strong>:Pi 的真实价值是「未来加新模型便宜」,它<strong>不治</strong>你现在的 Codex 手补痛 —— 这个价值对你值不值得现在投?</p>
+    <p class="q">· <strong>reframe 的方向对不对</strong>(⑤):要不要往「一个 Pi 顶多家厂商 + CC/Codex 留自家」这个方向走?</p>
+    <p class="q">· 先小成本验证(在我们库上 A/B Pi vs CC 同模型),还是先放着?</p>
+    <p class="q">· 安全那道门 —— 你能接受 Pi 走「跑容器里、只 build+PR、你手动 ship」的模式吗?这是最省事也最安全的接法。</p>
+    <p style="margin-bottom:0">你说个方向,我再往下走(细化某条路、做 A/B 的可行性 spike、或把 ⑤ 拆成给工程的 build 计划)。</p>
+  </div>
+
+  <div class="src" style="margin-top:26px">
+    <strong>来源:</strong>
+    <a href="https://www.databricks.com/blog/benchmarking-coding-agents-databricks-multi-million-line-codebase">Databricks benchmark 博客</a> ·
+    <a href="https://pi.dev/">pi.dev</a> ·
+    <a href="https://github.com/earendil-works/pi">github.com/earendil-works/pi</a> ·
+    <a href="https://mariozechner.at/posts/2025-11-30-pi-coding-agent/">Mario Zechner 博文</a> ·
+    <a href="https://lucumr.pocoo.org/2026/1/31/pi/">Armin Ronacher: Pi = OpenClaw 内的 minimal agent</a> ·
+    <a href="https://x.com/paddix/status/2075015398995472613">Databricks CEO「harness is the runtime」</a> ·
+    Flywheel 代码(已核:role-adapter-resolver 选择层 / ⑥ 边界全仓 grep ~25 文件 vendor 分支:Blueprint 提示词 40 处 · run-dispatcher:302 强制回退 · StateStore codex 表列 · codex-gate/auto-qa 硬门 · fleet-capabilities · codex-phase-shutdown)·
+    前置研究 FLY-1230(拐杖 vs 地基 哲学层)
+    <br><br>FLY-1397 · 研究 explainer · 事实与选项,不含结论
+  </div>
+
+</div>
+</body>
+</html>
