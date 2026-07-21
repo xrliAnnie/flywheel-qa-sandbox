@@ -110,6 +110,15 @@ export const ALERT_EVENT_TYPES = [
 	// FLY-1279: shared branch-B takeover was refused (dirty/head drift). Separate
 	// from generic handoff failures so the Lead sees the exact recovery class.
 	"three_stage_takeover_failed",
+	// FLY-1385: the workflow engine exhausted dead-execution recovery, found a
+	// non-retryable quota/auth failure, or used the one approved design fallback.
+	// The run/node has already been durably held or reassigned; this alert gives
+	// the Lead/founder the explicit operational receipt and recovery lever.
+	"workflow_engine_escalation",
+	// FLY-1385 founder A-strengthening: the issue-thread half of the dual
+	// misclassification/repeated-death alert. The escalation half keeps using
+	// workflow_engine_escalation so the Lead chain also receives it.
+	"workflow_engine_issue_alert",
 	// FLY-637-ext: the owning Lead did not answer a runner's BLOCKING question
 	// gate after the configured number of backoff nudges → page Annie ONCE
 	// (final fallback). DISTINCT from runner_stuck_unhandled: the runner is fine,
@@ -335,6 +344,19 @@ export type AlertSeverity = "info" | "warning" | "severe";
  * out of the eventId string (Codex design R1 HIGH-2).
  */
 export interface AlertMetadata {
+	workflowEngine?: {
+		runId: string;
+		issueId: string;
+		nodeId: string;
+		executionId: string;
+		disposition:
+			| "held"
+			| "design_fallback"
+			| "probe_unknown"
+			| "dead_execution_activity_after_replacement"
+			| "repeated_dead_execution_pattern";
+		leadResolution: "resolved" | "fallback";
+	};
 	runnerStuck?: {
 		executionId: string;
 		episodeFingerprint: string;

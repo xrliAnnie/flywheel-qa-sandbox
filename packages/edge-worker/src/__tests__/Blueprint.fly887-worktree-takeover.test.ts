@@ -34,12 +34,17 @@ function makeHydrator() {
 		labels: [],
 	}));
 }
-function makeGitChecker(opts: { clean: boolean; head: string }) {
+function makeGitChecker(opts: {
+	clean: boolean;
+	head: string;
+	ancestor?: boolean;
+}) {
 	return {
 		assertCleanTree: vi.fn(async () => {
 			if (!opts.clean) throw new Error("dirty tree");
 		}),
 		captureBaseline: vi.fn(async () => opts.head),
+		isAncestorOf: vi.fn(async () => opts.ancestor ?? false),
 		check: vi.fn(async () => ({
 			hasNewCommits: true,
 			commitCount: 1,
@@ -173,6 +178,29 @@ describe("FLY-887 worktree in-place takeover", () => {
 			{ sessionRole: "qa", shareParentBranch: true, startPoint: HEAD },
 		);
 		expect(result.success).toBe(true);
+		expect(wt.create).not.toHaveBeenCalled();
+	});
+
+	it("clean descendant HEAD fast-forwards the frozen startPoint and reuses in place", async () => {
+		const path = makeRealWorktree();
+		created.push(path);
+		const wt = makeWtManager({ registered: true, path });
+		const gitChecker = makeGitChecker({
+			clean: true,
+			head: `fedcba98${"0".repeat(32)}`,
+			ancestor: true,
+		});
+		const { result } = await run(wt, gitChecker, {
+			sessionRole: "implement",
+			shareParentBranch: true,
+			startPoint: HEAD,
+		});
+		expect(result.success).toBe(true);
+		expect(gitChecker.isAncestorOf).toHaveBeenCalledWith(
+			path,
+			HEAD,
+			`fedcba98${"0".repeat(32)}`,
+		);
 		expect(wt.create).not.toHaveBeenCalled();
 	});
 

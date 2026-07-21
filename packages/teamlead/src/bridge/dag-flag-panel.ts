@@ -1,18 +1,13 @@
 import type { FlagView } from "flywheel-config";
 
 export type DagControlName =
-	| "workflow_force_legacy"
 	| "workflow_claims_write"
 	| "workflow_claims_read"
 	| "workflow_generalized_templates"
 	| "workflow_template_dispatch";
 
 export type DagDispatchState = "ready" | "off" | "degraded";
-export type DagShipReader =
-	| "forced_legacy"
-	| "claims"
-	| "blocked_fail_closed"
-	| "degraded";
+export type DagShipReader = "claims" | "blocked_fail_closed" | "degraded";
 
 export interface DagDispatchFact {
 	state: DagDispatchState;
@@ -40,7 +35,6 @@ export interface DagFlagPanel {
 }
 
 export const DAG_CONTROL_NAMES: readonly DagControlName[] = [
-	"workflow_force_legacy",
 	"workflow_claims_write",
 	"workflow_claims_read",
 	"workflow_generalized_templates",
@@ -97,9 +91,6 @@ function enablePreset(
 		commands.push(applyCommand("workflow_template_dispatch", false));
 		levers = { ...levers, workflow_template_dispatch: false };
 	}
-	if (levers.workflow_force_legacy !== true) {
-		commands.push(applyCommand("workflow_force_legacy", true));
-	}
 	for (const name of [
 		"workflow_claims_write",
 		"workflow_claims_read",
@@ -110,18 +101,7 @@ function enablePreset(
 	if (levers.workflow_template_dispatch !== true) {
 		commands.push(applyCommand("workflow_template_dispatch", true));
 	}
-	return {
-		enabled: true,
-		phase1Command: commands.join(" && "),
-		// This appears only on a refreshed state that proves claims-read is ON
-		// while the legacy fallback is still holding the ship reader safe.
-		...(levers.workflow_force_legacy === true &&
-		levers.workflow_claims_read === true
-			? {
-					phase2Command: applyCommand("workflow_force_legacy", false),
-				}
-			: {}),
-	};
+	return { enabled: true, phase1Command: commands.join(" && ") };
 }
 
 function disablePreset(
@@ -137,7 +117,6 @@ function disablePreset(
 	}
 	const commands: string[] = [];
 	for (const [name, target] of [
-		["workflow_force_legacy", true],
 		["workflow_template_dispatch", false],
 		["workflow_claims_write", false],
 		["workflow_claims_read", false],
@@ -164,13 +143,8 @@ export function buildDagFlagPanel(flags: readonly FlagView[]): DagFlagPanel {
 	}
 	const degraded = new Set(degradedFlags);
 	let shipReader: DagShipReader;
-	if (
-		degraded.has("workflow_force_legacy") ||
-		degraded.has("workflow_claims_read")
-	) {
+	if (degraded.has("workflow_claims_read")) {
 		shipReader = "degraded";
-	} else if (levers.workflow_force_legacy) {
-		shipReader = "forced_legacy";
 	} else if (levers.workflow_claims_read) {
 		shipReader = "claims";
 	} else {

@@ -76,7 +76,7 @@ describe("workflow template selection", () => {
 		const store = await StateStore.create(":memory:");
 		const root = setupRoot();
 		expect(
-			resolveWorkflowTemplateSelection(store, {
+			await resolveWorkflowTemplateSelection(store, {
 				project: "flywheel",
 				issueId: "FLY-X",
 				taskCategory: "research",
@@ -108,7 +108,7 @@ describe("workflow template selection", () => {
 			}),
 		).toBe(1);
 		expect(
-			resolveWorkflowTemplateSelection(store, {
+			await resolveWorkflowTemplateSelection(store, {
 				project: "flywheel",
 				issueId: "FLY-X",
 				taskCategory: "research",
@@ -141,7 +141,7 @@ describe("workflow template selection", () => {
 		const root = setupRoot();
 
 		expect(
-			resolveWorkflowTemplateSelection(store, {
+			await resolveWorkflowTemplateSelection(store, {
 				project: "flywheel",
 				issueId: "FLY-V1-POLICY-OFF",
 				selectedBy: "eng-lead",
@@ -154,7 +154,7 @@ describe("workflow template selection", () => {
 			}),
 		).toBeNull();
 		expect(
-			resolveWorkflowTemplateSelection(store, {
+			await resolveWorkflowTemplateSelection(store, {
 				project: "flywheel",
 				issueId: "FLY-V1-NO-KEY",
 				selectedBy: "eng-lead",
@@ -169,7 +169,7 @@ describe("workflow template selection", () => {
 			store.getActiveWorkflowRunForIssue("FLY-V1-POLICY-OFF"),
 		).toBeUndefined();
 		expect(store.getActiveWorkflowRunForIssue("FLY-V1-NO-KEY")).toBeUndefined();
-		expect(() =>
+		await expect(
 			resolveWorkflowTemplateSelection(store, {
 				project: "flywheel",
 				issueId: "FLY-V1-DRIFT",
@@ -182,7 +182,7 @@ describe("workflow template selection", () => {
 				candidateSchemaAtEntry: 2,
 				env: enabled,
 			}),
-		).toThrow(/candidate changed/i);
+		).rejects.toThrow(/candidate changed/i);
 		store.close();
 	});
 
@@ -205,7 +205,7 @@ describe("workflow template selection", () => {
 			});
 			const env = { ...enabled };
 			delete env[missing];
-			expect(() =>
+			await expect(
 				resolveWorkflowTemplateSelection(store, {
 					project: "flywheel",
 					issueId: `FLY-V1-${missing}`,
@@ -218,7 +218,7 @@ describe("workflow template selection", () => {
 					allowSchemaV1Dispatch: true,
 					env,
 				}),
-			).toThrow(
+			).rejects.toThrow(
 				new RegExp(
 					missing.includes("WRITE") ? "claims write" : "claims read",
 					"i",
@@ -246,7 +246,7 @@ describe("workflow template selection", () => {
 			updatedBy: "lead",
 		});
 		const values = ["run-v1", "exec-design"];
-		const selected = resolveWorkflowTemplateSelection(store, {
+		const selected = await resolveWorkflowTemplateSelection(store, {
 			project: "flywheel",
 			issueId: "FLY-V1-ON",
 			taskCategory: "engineering",
@@ -302,7 +302,7 @@ describe("workflow template selection", () => {
 		});
 		const values = ["run-default", "exec-default"];
 		expect(
-			resolveWorkflowTemplateSelection(store, {
+			await resolveWorkflowTemplateSelection(store, {
 				project: "flywheel",
 				issueId: "FLY-V1-DEFAULT",
 				taskCategory: "engineering",
@@ -325,10 +325,6 @@ describe("workflow template selection", () => {
 	});
 
 	it.each([
-		[
-			"FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH",
-			/template dispatch|dispatch.*disabled/i,
-		],
 		["FLYWHEEL_WORKFLOW_CLAIMS_WRITE", /claims write/i],
 		["FLYWHEEL_WORKFLOW_CLAIMS_READ", /claims read/i],
 		["FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES", /generalized.*disabled/i],
@@ -347,7 +343,7 @@ describe("workflow template selection", () => {
 			});
 			const env = { ...enabled };
 			delete env[missing];
-			expect(() =>
+			await expect(
 				resolveWorkflowTemplateSelection(store, {
 					project: "flywheel",
 					issueId: `FLY-V2-${missing}`,
@@ -359,7 +355,7 @@ describe("workflow template selection", () => {
 					idempotencyKey: `v2-${missing}`,
 					env,
 				}),
-			).toThrow(expected);
+			).rejects.toThrow(expected);
 			expect(
 				store.getActiveWorkflowRunForIssue(`FLY-V2-${missing}`),
 			).toBeUndefined();
@@ -371,6 +367,38 @@ describe("workflow template selection", () => {
 			store.close();
 		},
 	);
+
+	it("returns null for a v2 candidate when the primary dispatch flag is off", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = v2Seed();
+		store.importWorkflowTemplateSeed(seed, enabled);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "research",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		expect(
+			await resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-V2-DISPATCH-OFF",
+				taskCategory: "research",
+				selectedBy: "research-lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: setupRoot(),
+				idempotencyKey: "v2-dispatch-off",
+				env: {
+					...enabled,
+					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "0",
+				},
+			}),
+		).toBeNull();
+		expect(
+			store.getActiveWorkflowRunForIssue("FLY-V2-DISPATCH-OFF"),
+		).toBeUndefined();
+		store.close();
+	});
 
 	it("materializes a bound v2 template with selection provenance and exact idempotent replay", async () => {
 		const store = await StateStore.create(":memory:");
@@ -392,6 +420,7 @@ describe("workflow template selection", () => {
 			authKind: "master" as const,
 			canonicalRoot: root,
 			idempotencyKey: "start-key-1",
+			entryKind: "workflow_v2" as const,
 			env: enabled,
 			idFactory: (() => {
 				const values = ["run-1", "exec-1"];
@@ -399,7 +428,7 @@ describe("workflow template selection", () => {
 			})(),
 			now: "2026-07-15T00:00:00.000Z",
 		};
-		const selected = resolveWorkflowTemplateSelection(store, input);
+		const selected = await resolveWorkflowTemplateSelection(store, input);
 		expect(selected).toMatchObject({
 			runId: "run-1",
 			executionId: "exec-1",
@@ -409,11 +438,12 @@ describe("workflow template selection", () => {
 		expect(store.getWorkflowRun("run-1")).toMatchObject({
 			selection_source: "binding",
 			selected_by: "research-lead",
+			entry_kind: "workflow_v2",
 		});
 		expect(store.getWorkflowStartReservation("start-key-1")?.stage).toBe(
 			"materialized",
 		);
-		const replay = resolveWorkflowTemplateSelection(store, {
+		const replay = await resolveWorkflowTemplateSelection(store, {
 			...input,
 			idFactory: () => {
 				throw new Error("must not allocate on replay");
@@ -434,7 +464,7 @@ describe("workflow template selection", () => {
 			templateId: seed.templateId,
 			updatedBy: "lead",
 		});
-		const selected = resolveWorkflowTemplateSelection(store, {
+		const selected = await resolveWorkflowTemplateSelection(store, {
 			project: "flywheel",
 			issueId: "FLY-X",
 			taskCategory: "research",
@@ -505,7 +535,377 @@ describe("workflow template selection", () => {
 		store.close();
 	});
 
-	it("requires master auth, reason for lead choice, flags, and a v2 idempotency key", async () => {
+	it("atomically supersedes a quiescent legacy shadow run when starting the engine", async () => {
+		const store = await StateStore.create(":memory:");
+		const root = setupRoot();
+		const seed = v2Seed();
+		store.importWorkflowTemplateSeed(seed, enabled);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "research",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		store.applyWorkflowShadowBatch({
+			projectName: "flywheel",
+			issueId: "FLY-X",
+			newRunId: "shadow-run",
+			ops: [
+				{
+					op: "dispatch",
+					node: "main",
+					attempt: 1,
+					executionId: "shadow-dead",
+				},
+			],
+		});
+		store.upsertSession({
+			execution_id: "shadow-dead",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "failed",
+		});
+
+		const selected = await resolveWorkflowTemplateSelection(store, {
+			project: "flywheel",
+			issueId: "FLY-X",
+			taskCategory: "research",
+			selectedBy: "research-lead",
+			actor: "master",
+			authKind: "master",
+			canonicalRoot: root,
+			idempotencyKey: "supersede-start",
+			env: enabled,
+			idFactory: (() => {
+				const values = ["engine-run", "engine-exec"];
+				return () => values.shift()!;
+			})(),
+			now: "2026-07-20T00:10:00.000Z",
+			probeRunExecutionLiveness: async () => "dead",
+		});
+
+		expect(selected).toMatchObject({
+			runId: "engine-run",
+			executionId: "engine-exec",
+		});
+		expect(store.getWorkflowRun("shadow-run")?.status).toBe("terminated");
+		expect(store.getWorkflowRun("engine-run")?.status).toBe("active");
+		expect(
+			store
+				.listWorkflowRunEvents("shadow-run")
+				.filter((event) => event.kind === "run_terminated_by_supersession"),
+		).toHaveLength(1);
+		store.close();
+	});
+
+	// FLY-1385 QA: the supersession guard's safety direction. Terminating a shadow
+	// run whose runner is still working would strand live work and let a second
+	// runner take the same issue, so anything short of terminal-plus-dead evidence
+	// must leave the shadow untouched. Removing the guard leaves the happy-path
+	// supersession test green, so these two lock the refusal explicitly.
+	for (const probe of ["alive", "unknown"] as const) {
+		it(`refuses to supersede a shadow run whose execution probes ${probe}`, async () => {
+			const store = await StateStore.create(":memory:");
+			const root = setupRoot();
+			const seed = v2Seed();
+			store.importWorkflowTemplateSeed(seed, enabled);
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory: "research",
+				templateId: seed.templateId,
+				updatedBy: "lead",
+			});
+			store.applyWorkflowShadowBatch({
+				projectName: "flywheel",
+				issueId: "FLY-X",
+				newRunId: "shadow-run",
+				ops: [
+					{
+						op: "dispatch",
+						node: "main",
+						attempt: 1,
+						executionId: "shadow-exec",
+					},
+				],
+			});
+			store.upsertSession({
+				execution_id: "shadow-exec",
+				issue_id: "FLY-X",
+				project_name: "flywheel",
+				// A terminal session alone must not authorize supersession: only a
+				// terminal session AND a dead probe together prove quiescence.
+				status: probe === "alive" ? "running" : "failed",
+			});
+
+			await expect(
+				resolveWorkflowTemplateSelection(store, {
+					project: "flywheel",
+					issueId: "FLY-X",
+					taskCategory: "research",
+					selectedBy: "research-lead",
+					actor: "master",
+					authKind: "master",
+					canonicalRoot: root,
+					idempotencyKey: "supersede-live",
+					env: enabled,
+					now: "2026-07-20T00:10:00.000Z",
+					probeRunExecutionLiveness: async () => probe,
+				}),
+			).rejects.toThrow(/shadow_run_live/);
+
+			// The shadow keeps the issue's active slot and gains no audit trail.
+			expect(store.getWorkflowRun("shadow-run")?.status).toBe("active");
+			expect(
+				store
+					.listWorkflowRunEvents("shadow-run")
+					.filter((event) => event.kind === "run_terminated_by_supersession"),
+			).toHaveLength(0);
+			// No half-built engine run or reservation may survive the refusal.
+			expect(store.getActiveWorkflowRunForIssue("FLY-X")?.run_id).toBe(
+				"shadow-run",
+			);
+			expect(store.getWorkflowStartReservation("supersede-live")).toBeFalsy();
+			store.close();
+		});
+	}
+
+	it("refuses a publication race at the final materialization boundary", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = v2Seed();
+		store.importWorkflowTemplateSeed(seed, enabled);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "research",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		const originalMaterialize = store.materializeWorkflowRun.bind(store);
+		let raced = false;
+		store.materializeWorkflowRun = ((input) => {
+			if (!raced) {
+				raced = true;
+				expect(
+					store.createAndPublishWorkflowTemplateRevision({
+						templateId: seed.templateId,
+						manifest: {
+							...seed.manifest,
+							nodes: seed.manifest.nodes.map((node) =>
+								node.id === "research"
+									? { ...node, effort: "medium" as const }
+									: node,
+							),
+						},
+						expectedRevision: 1,
+						createdBy: "founder",
+					}),
+				).toMatchObject({ status: "published", revision: 2 });
+			}
+			return originalMaterialize(input);
+		}) as typeof store.materializeWorkflowRun;
+
+		await expect(
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-PUBLISH-RACE",
+				taskCategory: "research",
+				selectedBy: "research-lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: setupRoot(),
+				idempotencyKey: "publication-race",
+				entryKind: "workflow_v2",
+				env: enabled,
+			}),
+		).rejects.toThrow(/candidate changed during materialization/i);
+		expect(
+			store.getActiveWorkflowRunForIssue("FLY-PUBLISH-RACE"),
+		).toBeUndefined();
+		expect(
+			store.getWorkflowStartReservation("publication-race"),
+		).toBeUndefined();
+		store.close();
+	});
+
+	it("linearizes legacy and engine entry so exactly one mode can claim an issue", async () => {
+		const root = setupRoot();
+		const makeStore = async () => {
+			const store = await StateStore.create(":memory:");
+			const seed = v2Seed();
+			store.importWorkflowTemplateSeed(seed, enabled);
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory: "research",
+				templateId: seed.templateId,
+				updatedBy: "lead",
+			});
+			return store;
+		};
+
+		const legacyFirst = await makeStore();
+		expect(
+			legacyFirst.claimLegacyWorkflowEntry({
+				issueId: "FLY-LEGACY-WINS",
+				projectName: "flywheel",
+				executionId: "legacy-exec",
+				role: "main",
+			}),
+		).toEqual({ ok: true });
+		await expect(
+			resolveWorkflowTemplateSelection(legacyFirst, {
+				project: "flywheel",
+				issueId: "FLY-LEGACY-WINS",
+				taskCategory: "research",
+				selectedBy: "lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: root,
+				idempotencyKey: "engine-loses",
+				entryKind: "workflow_v2",
+				env: enabled,
+			}),
+		).rejects.toThrow(/legacy_entry_already_claimed/);
+		expect(
+			legacyFirst.getActiveWorkflowRunForIssue("FLY-LEGACY-WINS"),
+		).toBeUndefined();
+		legacyFirst.close();
+
+		const engineFirst = await makeStore();
+		await resolveWorkflowTemplateSelection(engineFirst, {
+			project: "flywheel",
+			issueId: "FLY-ENGINE-WINS",
+			taskCategory: "research",
+			selectedBy: "lead",
+			actor: "master",
+			authKind: "master",
+			canonicalRoot: root,
+			idempotencyKey: "engine-wins",
+			entryKind: "workflow_v2",
+			env: enabled,
+		});
+		expect(
+			engineFirst.claimLegacyWorkflowEntry({
+				issueId: "FLY-ENGINE-WINS",
+				projectName: "flywheel",
+				executionId: "legacy-loses",
+				role: "main",
+			}),
+		).toEqual({ ok: false, reason: "active_engine_run" });
+		expect(engineFirst.getLaunchClaim("legacy-loses")).toBeUndefined();
+		engineFirst.close();
+	});
+
+	it("scopes legacy claims by lifecycle root and role while ignoring terminal owners", async () => {
+		const store = await StateStore.create(":memory:");
+		expect(
+			store.claimLegacyWorkflowEntry({
+				issueId: "FLY-CHILD",
+				rootKey: "FLY-ROOT",
+				projectName: "flywheel",
+				executionId: "main-old",
+				role: "main",
+			}),
+		).toEqual({ ok: true });
+		store.upsertSession({
+			execution_id: "main-old",
+			issue_id: "FLY-CHILD",
+			project_name: "flywheel",
+			status: "failed",
+		});
+		expect(
+			store.claimLegacyWorkflowEntry({
+				issueId: "FLY-CHILD",
+				rootKey: "FLY-ROOT",
+				projectName: "flywheel",
+				executionId: "main-retry",
+				role: "main",
+			}),
+		).toEqual({ ok: true });
+		expect(store.getLaunchClaim("main-old")?.state).toBe("closed");
+		expect(
+			store.claimLegacyWorkflowEntry({
+				issueId: "FLY-CHILD",
+				rootKey: "FLY-ROOT",
+				projectName: "flywheel",
+				executionId: "qa-live",
+				role: "qa",
+			}),
+		).toEqual({ ok: true });
+		store.close();
+	});
+
+	it("uses the lifecycle root namespace when engine materialization arbitrates a legacy claim", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = v2Seed();
+		store.importWorkflowTemplateSeed(seed, enabled);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "research",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		expect(
+			store.claimLegacyWorkflowEntry({
+				issueId: "FLY-SIBLING-A",
+				rootKey: "FLY-ROOT",
+				projectName: "flywheel",
+				executionId: "legacy-root-owner",
+				role: "main",
+			}),
+		).toEqual({ ok: true });
+
+		await expect(
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-SIBLING-B",
+				entryRootKey: "FLY-ROOT",
+				taskCategory: "research",
+				selectedBy: "lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: setupRoot(),
+				idempotencyKey: "root-conflict",
+				entryKind: "workflow_v2",
+				env: enabled,
+			}),
+		).rejects.toThrow(/legacy_entry_already_claimed/);
+		expect(store.getActiveWorkflowRunForIssue("FLY-SIBLING-B")).toBeUndefined();
+		store.close();
+
+		const engineFirst = await StateStore.create(":memory:");
+		engineFirst.importWorkflowTemplateSeed(seed, enabled);
+		engineFirst.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "research",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		await resolveWorkflowTemplateSelection(engineFirst, {
+			project: "flywheel",
+			issueId: "FLY-ALIAS",
+			entryRootKey: "11111111-1111-4111-8111-111111111111",
+			taskCategory: "research",
+			selectedBy: "lead",
+			actor: "master",
+			authKind: "master",
+			canonicalRoot: setupRoot(),
+			idempotencyKey: "engine-alias-owner",
+			entryKind: "workflow_v2",
+			env: enabled,
+		});
+		expect(
+			engineFirst.claimLegacyWorkflowEntry({
+				issueId: "11111111-1111-4111-8111-111111111111",
+				issueAliases: ["FLY-ALIAS"],
+				rootKey: "11111111-1111-4111-8111-111111111111",
+				projectName: "flywheel",
+				executionId: "legacy-alias-loser",
+				role: "main",
+			}),
+		).toEqual({ ok: false, reason: "active_engine_run" });
+		engineFirst.close();
+	});
+
+	it("requires master auth, reason for lead choice, and a v2 idempotency key", async () => {
 		const store = await StateStore.create(":memory:");
 		const root = setupRoot();
 		const seed = v2Seed();
@@ -519,7 +919,7 @@ describe("workflow template selection", () => {
 			actor: "master",
 			canonicalRoot: root,
 		};
-		expect(() =>
+		await expect(
 			resolveWorkflowTemplateSelection(store, {
 				...base,
 				authKind: "scoped",
@@ -527,24 +927,15 @@ describe("workflow template selection", () => {
 				idempotencyKey: "k",
 				env: enabled,
 			}),
-		).toThrow(/master/i);
-		expect(() =>
+		).rejects.toThrow(/master/i);
+		await expect(
 			resolveWorkflowTemplateSelection(store, {
 				...base,
 				authKind: "master",
 				idempotencyKey: "k",
 				env: enabled,
 			}),
-		).toThrow(/reason/i);
-		expect(() =>
-			resolveWorkflowTemplateSelection(store, {
-				...base,
-				authKind: "master",
-				leadReason: "lighter bounded chain",
-				idempotencyKey: "k",
-				env: {},
-			}),
-		).toThrow(/disabled|flag/i);
+		).rejects.toThrow(/reason/i);
 		expect(store.getActiveWorkflowRunForIssue("FLY-X")).toBeUndefined();
 		store.close();
 	});

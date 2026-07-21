@@ -90,6 +90,24 @@ export class GitResultChecker {
 		return result.stdout.trim();
 	}
 
+	/** True only when git proves `ancestor` is reachable from `head`. */
+	async isAncestorOf(
+		cwd: string,
+		ancestor: string,
+		head: string,
+	): Promise<boolean> {
+		try {
+			await this.execFile(
+				"git",
+				["-C", cwd, "merge-base", "--is-ancestor", ancestor, head],
+				cwd,
+			);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	/**
 	 * Check for new commits since baseSha.
 	 */

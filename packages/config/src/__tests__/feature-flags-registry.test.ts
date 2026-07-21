@@ -259,6 +259,28 @@ describe("feature-flag registry invariants", () => {
 		});
 	});
 
+	it("FLY-1385 registers the dead-exec sweep as a live default-on kill switch", () => {
+		const flag = FEATURE_FLAGS.find(
+			(candidate) => candidate.envVar === "FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP",
+		);
+		expect(flag).toMatchObject({
+			name: "engine_dead_exec_sweep",
+			category: "kill_switch",
+			scope: "bridge_global",
+			polarity: "default_on",
+			default: true,
+			toggleable: "direct",
+		});
+		expect(flag?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
+				symbol: "reconcile",
+				timing: "call_time",
+			}),
+		]);
+		expect(flag?.directToggleProof).toMatch(/live-sweep-flag/i);
+	});
+
 	it("FLY-1066 terminal CommDB sync is a registered default-on Bridge kill-switch", () => {
 		const flag = FEATURE_FLAGS.find((f) => f.name === "terminal_commdb_sync");
 		expect(flag).toMatchObject({
@@ -361,7 +383,7 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
-	it("FLY-1344 enrolls the five DAG controls with exact hot read-site timings", () => {
+	it("FLY-1344 enrolls the four DAG controls with exact hot read-site timings", () => {
 		const expected = {
 			workflow_template_dispatch: [
 				["packages/teamlead/src/workflow-template-dispatch.ts", "call_time"],
@@ -383,10 +405,6 @@ describe("feature-flag registry invariants", () => {
 					"dotenv_live",
 				],
 			],
-			workflow_force_legacy: [
-				["packages/flywheel-comm/src/ship-eligibility.ts", "call_time"],
-				["packages/flywheel-comm/src/ship-eligibility.ts", "dotenv_live"],
-			],
 		} as const;
 		for (const [name, readSites] of Object.entries(expected)) {
 			const flag = FEATURE_FLAGS.find((candidate) => candidate.name === name);
@@ -397,13 +415,31 @@ describe("feature-flag registry invariants", () => {
 				default: false,
 				toggleable: "direct",
 			});
-			expect(flag?.category).toBe(
-				name === "workflow_force_legacy" ? "kill_switch" : "feature",
-			);
+			expect(flag?.category).toBe("feature");
 			expect(flag?.readSites.map((site) => [site.file, site.timing])).toEqual(
 				readSites,
 			);
 		}
+	});
+
+	it("FLY-1385 registers vendor-at-dispatch as a hot default-on escape switch", () => {
+		const flag = FEATURE_FLAGS.find(
+			(candidate) => candidate.name === "workflow_vendor_at_dispatch",
+		);
+		expect(flag).toMatchObject({
+			category: "kill_switch",
+			envVar: "FLYWHEEL_VENDOR_AT_DISPATCH",
+			polarity: "default_on",
+			default: true,
+			toggleable: "direct",
+		});
+		expect(flag?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/teamlead/src/workflow-dispatch-resolution.ts",
+				symbol: "resolveNodeDispatchAtLaunch",
+				timing: "call_time",
+			}),
+		]);
 	});
 
 	it("FLY-1344 leaves true authorization surfaces governance-readonly", () => {

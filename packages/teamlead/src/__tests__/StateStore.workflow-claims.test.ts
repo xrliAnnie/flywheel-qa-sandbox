@@ -8,7 +8,6 @@ import { StateStore } from "../StateStore.js";
 import {
 	isWorkflowClaimsReadEnabled,
 	isWorkflowClaimsWriteEnabled,
-	isWorkflowLegacyForced,
 } from "../workflow-claims.js";
 
 /**
@@ -971,19 +970,15 @@ describe("substrate hardening — fail-closed timestamps + identity derivation (
 	});
 });
 
-describe("workflow flags — three independent DEFAULT-OFF switches (plan §3.2)", () => {
-	it("write / read / emergency-legacy flags are default-off and independent", () => {
+describe("workflow flags — independent DEFAULT-OFF switches (plan §3.2)", () => {
+	it("write / read flags are default-off and independent", () => {
 		expect(isWorkflowClaimsWriteEnabled({})).toBe(false);
 		expect(isWorkflowClaimsReadEnabled({})).toBe(false);
-		expect(isWorkflowLegacyForced({})).toBe(false);
 		expect(
 			isWorkflowClaimsWriteEnabled({ FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" }),
 		).toBe(true);
 		expect(
 			isWorkflowClaimsReadEnabled({ FLYWHEEL_WORKFLOW_CLAIMS_READ: "1" }),
-		).toBe(true);
-		expect(
-			isWorkflowLegacyForced({ FLYWHEEL_WORKFLOW_FORCE_LEGACY: "1" }),
 		).toBe(true);
 		expect(
 			isWorkflowClaimsWriteEnabled({ FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "0" }),

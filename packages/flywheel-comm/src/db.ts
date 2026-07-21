@@ -1996,6 +1996,18 @@ export class CommDB {
 		return row !== undefined;
 	}
 
+	/**
+	 * Monotonic, execution-bound activity cursor. Dead-execution tripwires take a
+	 * baseline count at replacement time and alert only when this exact sender's
+	 * count advances; no wall-clock parsing or shared-worktree attribution.
+	 */
+	countMessagesFrom(execId: string): number {
+		const row = this.db
+			.prepare("SELECT COUNT(*) AS count FROM messages WHERE from_agent = ?")
+			.get(execId) as { count: number };
+		return Number(row.count);
+	}
+
 	// ── FLY-626: Runner self-declared state (park / busy / unpark) ──
 
 	/**

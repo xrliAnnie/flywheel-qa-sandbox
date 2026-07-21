@@ -5113,6 +5113,12 @@ export async function startBridge(
 			);
 		}
 	}
+	// FLY-1385: constructed before the routed notifier, populated at the notifier
+	// wiring point below. The workflow outbox stays pending during this short boot
+	// window and is explicitly drained once the holder is live.
+	const workflowEngineAlertHolder: {
+		current?: { alert: (payload: AlertPayload) => Promise<AlertResult> };
+	} = {};
 	const workflowEngineDispatcher = startDispatcher
 		? new WorkflowEngineDispatcher({
 				store,
@@ -5131,6 +5137,29 @@ export async function startBridge(
 						);
 						return undefined;
 					}
+				},
+				alertSink: workflowEngineAlertHolder,
+				resolveRunAlertIdentity: (projectName, issueId) => {
+					const session = store.getSessionByIssue(issueId);
+					if (session?.project_name === projectName) {
+						try {
+							const labels = store.getSessionLabels(session.execution_id);
+							return {
+								leadId: resolveLeadForIssue(projects, projectName, labels).lead
+									.agentId,
+								projectName,
+								leadResolution: "resolved" as const,
+							};
+						} catch {
+							// Fall through to the project-level default; alert delivery must not
+							// depend on the dead execution retaining a session row.
+						}
+					}
+					return {
+						leadId: config.defaultLeadAgentId,
+						projectName,
+						leadResolution: "fallback" as const,
+					};
 				},
 				log: (message) => console.warn(`[workflow-engine] ${message}`),
 				materializedHeadAuthority,
@@ -9055,6 +9084,14 @@ export async function startBridge(
 		},
 	};
 	routedAlertSinkHolder.current = routedAlertSink;
+	workflowEngineAlertHolder.current = routedAlertSink;
+	void workflowEngineDispatcher
+		?.reconcileWorkflowEngineAlerts()
+		.catch((error) =>
+			console.warn(
+				`[workflow-engine] boot alert reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
+			),
+		);
 	inboxLoopAlertHolder.current = routedAlertSink;
 
 	// FLY-1204: now that the routed alert sink exists, back the late-bound

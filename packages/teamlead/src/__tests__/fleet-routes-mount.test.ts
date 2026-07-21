@@ -256,7 +256,8 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		expect(html).toContain("DAG 控制");
 		expect(html).toContain("v1 dispatch");
 		expect(html).toContain("data-dag-copy");
-		expect(html).toContain("workflow_force_legacy --to on");
+		expect(html).toContain("workflow_claims_write --to on");
+		expect(html).not.toContain("workflow_force_legacy");
 		expect(html).toContain(" &amp;&amp; ");
 	});
 

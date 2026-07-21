@@ -342,7 +342,7 @@ describe("FLY-1372 DAG recovery domain", () => {
 		expect(retry.json.code).toBe("DAG_RUN_STATE_CORRUPT");
 	});
 
-	it("#14 an UNMARKED active engine-owned run is never intercepted by the recovery domain", async () => {
+	it("#14 an unmarked schema-v1 engine run fails closed and cannot leak into legacy", async () => {
 		const h = await startHarness();
 		// Same shape existing v2/explicit-v1 runs have: start reservation set
 		// (engine_owned=1) but NO entry_kind marker.
@@ -363,18 +363,17 @@ describe("FLY-1372 DAG recovery domain", () => {
 				createdAt: "2026-07-18T00:00:00.000Z",
 			},
 		});
-		// dag:true + flags ON, keyless: the fresh domain sees the active run via
-		// selection's reconciliation hold — loud 409, but NEVER a DAG_* code.
+		// The W8 compatibility classifier intentionally recognizes only unmarked
+		// schema-v2 reservations. Unmarked v1 is ambiguous, so every policy state
+		// fails closed rather than opening a legacy runner beside it.
 		const withFlags = await post(h.url);
 		expect(withFlags.status).toBe(409);
-		expect(withFlags.json.code).toBe("GENERALIZED_WORKFLOW_REJECTED");
-		expect(String(withFlags.json.reason)).toContain("reconciliation hold");
-		// Rollback (dispatch off): byte-identical legacy — today's behavior for
-		// unmarked runs, still no DAG_* interception.
+		expect(withFlags.json.code).toBe("ACTIVE_ENGINE_RUN_UNCLASSIFIED");
 		delete process.env.FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH;
 		const rolledBack = await post(h.url);
-		expect(rolledBack.status).toBe(200);
-		expect(rolledBack.json.generalized).toBeUndefined();
+		expect(rolledBack.status).toBe(409);
+		expect(rolledBack.json.code).toBe("ACTIVE_ENGINE_RUN_UNCLASSIFIED");
+		expect(h.calls).toHaveLength(0);
 	});
 
 	it("crash-cut A (Codex code R1 #2): session alive but delivery uncommitted → 202; in-lease keyless retry → typed 409 HELD (a session row is NOT launch evidence); lease expiry → route converges 200, one session", async () => {

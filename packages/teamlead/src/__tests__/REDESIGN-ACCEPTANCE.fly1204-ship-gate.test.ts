@@ -117,11 +117,8 @@ describe("FLY-1204 REDESIGN ACCEPTANCE — the ship gate must refuse a head whos
 			execId: "qa-phase",
 			prHead: H2,
 			stateDbPath: dbPath,
-			// Pin the rollback switch so a developer's live ~/.flywheel/.env cannot
-			// substitute production emergency state for this acceptance fact.
 			env: {
 				FLYWHEEL_QA_DONE_GATE: "1",
-				FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 			},
 		});
 

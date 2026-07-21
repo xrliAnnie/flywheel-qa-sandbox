@@ -2,12 +2,27 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isThreeStagePhaseRole } from "flywheel-config";
-import type { StateStore, WorkflowSideEffectRow } from "../StateStore.js";
+import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
+import {
+	isStateStoreIrreversibleTerminalForZombie,
+	type StateStore,
+	type WorkflowDeadExecutionActivityBaseline,
+	type WorkflowDeadExecutionActivityEvidence,
+	type WorkflowDeadExecutionWatchRow,
+	type WorkflowEngineAlertIdentity,
+	type WorkflowSideEffectRow,
+} from "../StateStore.js";
+import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import {
 	parseWorkflowRunSnapshot,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
 import { workflowTemplateDispatchBlockReason } from "../workflow-template-dispatch.js";
+import {
+	captureDeadExecutionActivityBaseline,
+	probeDeadExecutionActivity,
+} from "./dead-exec-activity.js";
+import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 import {
 	type GeneralizedLaunchLiveness,
 	getGeneralizedLaunchDelivery,
@@ -38,11 +53,43 @@ interface WorkflowEngineDispatcherOptions {
 		executionId: string,
 		projectName: string,
 	) => Promise<GeneralizedLaunchLiveness>;
+	captureDeadExecutionActivityBaseline?: (
+		executionId: string,
+		projectName: string,
+		sessionCommitCount: number | null,
+	) => Promise<WorkflowDeadExecutionActivityBaseline>;
+	probeDeadExecutionActivity?: (
+		watch: WorkflowDeadExecutionWatchRow,
+		sessionCommitCount: number | null,
+	) => Promise<WorkflowDeadExecutionActivityEvidence | null>;
+	alertSink?: {
+		current?: { alert: (payload: AlertPayload) => Promise<AlertResult> };
+	};
+	resolveRunAlertIdentity?: (
+		projectName: string,
+		issueId: string,
+	) => WorkflowEngineAlertIdentity;
 }
 
 export interface WorkflowEngineReconcileResult {
 	started: number;
 	held: number;
+}
+
+const NON_RETRYABLE_RESOURCE_FAILURE =
+	/\b(quota|billing|usage\s+limit|credit(?:s)?\s+(?:exhausted|depleted)|auth(?:entication|orization)?\s+(?:failed|expired|required)|login\s+expired|unauthorized|forbidden)\b/i;
+
+const APPROVED_FABLE_UNAVAILABILITY =
+	/\b(?:fable|model|provider|service)\b[^.;\n]*\b(?:(?:temporarily|currently)\s+)?unavailable\b|\b(?:provider\s+outage|service\s+down)\b/i;
+
+export const DEAD_EXECUTION_WATCH_TTL_MS = 24 * 60 * 60 * 1_000;
+
+function isNonRetryableResourceFailure(error: string | undefined): boolean {
+	return !!error && NON_RETRYABLE_RESOURCE_FAILURE.test(error);
+}
+
+function isApprovedFableUnavailability(error: string | undefined): boolean {
+	return !!error && APPROVED_FABLE_UNAVAILABILITY.test(error);
 }
 
 /**
@@ -65,9 +112,28 @@ export class WorkflowEngineDispatcher {
 		executionId: string,
 		projectName: string,
 	) => Promise<GeneralizedLaunchLiveness>;
+	private readonly captureDeadExecutionActivityBaseline: NonNullable<
+		WorkflowEngineDispatcherOptions["captureDeadExecutionActivityBaseline"]
+	>;
+	private readonly probeDeadExecutionActivity: NonNullable<
+		WorkflowEngineDispatcherOptions["probeDeadExecutionActivity"]
+	>;
+	private readonly alertSink: WorkflowEngineDispatcherOptions["alertSink"];
+	private readonly resolveRunAlertIdentity: NonNullable<
+		WorkflowEngineDispatcherOptions["resolveRunAlertIdentity"]
+	>;
+	private readonly unknownLivenessCounts = new Map<string, number>();
+	private deadExecutionWatchCursor:
+		| { observedAt: string; deadExecutionId: string }
+		| undefined;
 	private readonly ownerId = randomUUID();
 	private timer: NodeJS.Timeout | undefined;
 	private reconciling = false;
+
+	/** Default-on, call-time read so the direct flag console needs no restart. */
+	private deadExecutionSweepEnabled(): boolean {
+		return this.env.FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP !== "0";
+	}
 
 	constructor(private readonly options: WorkflowEngineDispatcherOptions) {
 		this.env = options.env ?? process.env;
@@ -87,6 +153,31 @@ export class WorkflowEngineDispatcher {
 			options.materializedHeadAuthority ?? unavailableMaterializedHeadAuthority;
 		this.probeLaunchLiveness =
 			options.probeLaunchLiveness ?? probeGeneralizedLaunchLiveness;
+		this.captureDeadExecutionActivityBaseline =
+			options.captureDeadExecutionActivityBaseline ??
+			((executionId, projectName, sessionCommitCount) =>
+				captureDeadExecutionActivityBaseline({
+					executionId,
+					projectName,
+					markerPath: join(this.stateRoot, executionId),
+					sessionCommitCount,
+				}));
+		this.probeDeadExecutionActivity =
+			options.probeDeadExecutionActivity ??
+			((watch, sessionCommitCount) =>
+				probeDeadExecutionActivity({
+					watch,
+					markerPath: join(this.stateRoot, watch.dead_execution_id),
+					sessionCommitCount,
+				}));
+		this.alertSink = options.alertSink;
+		this.resolveRunAlertIdentity =
+			options.resolveRunAlertIdentity ??
+			((projectName) => ({
+				leadId: "unassigned",
+				projectName,
+				leadResolution: "fallback",
+			}));
 	}
 
 	start(intervalMs = 1_000): void {
@@ -116,10 +207,39 @@ export class WorkflowEngineDispatcher {
 		this.reconciling = true;
 		const result = { started: 0, held: 0 };
 		try {
+			await this.reconcileWorkflowEngineAlerts();
+			this.reconcileWorkflowDivergence();
+			await this.reconcileDeadExecutionTripwires();
+			if (this.deadExecutionSweepEnabled()) {
+				await this.reconcileDeadExecutions();
+			}
 			for (const intent of this.options.store.listNonTerminalWorkflowSideEffects()) {
 				if (intent.kind !== "dispatch") continue;
 				const run = this.options.store.getWorkflowRun(intent.run_id);
 				if (!run || run.engine_owned !== 1) continue;
+				const siblingLaunches = this.options.store
+					.listWorkflowSideEffects(intent.run_id)
+					.filter(
+						(row) =>
+							row.kind === "dispatch" &&
+							row.node_id === intent.node_id &&
+							row.attempt === intent.attempt,
+					);
+				const latestOrdinal = siblingLaunches.reduce(
+					(max, row) => Math.max(max, row.launch_ordinal),
+					0,
+				);
+				const node = this.options.store.getWorkflowRunNode(
+					intent.run_id,
+					intent.node_id,
+					intent.attempt,
+				);
+				if (
+					intent.launch_ordinal !== latestOrdinal ||
+					node?.execution_id !== intent.execution_id
+				) {
+					continue;
+				}
 				try {
 					const started = await this.consume(intent);
 					if (started) result.started += 1;
@@ -144,16 +264,366 @@ export class WorkflowEngineDispatcher {
 		}
 	}
 
+	private async reconcileDeadExecutionTripwires(): Promise<void> {
+		const store = this.options.store;
+		if (typeof store.pruneWorkflowDeadExecutionWatches === "function") {
+			const pruned = store.pruneWorkflowDeadExecutionWatches({
+				now: this.now().toISOString(),
+				ttlMs: DEAD_EXECUTION_WATCH_TTL_MS,
+				limit: 200,
+			});
+			if (pruned > 0) {
+				this.log(
+					`workflow engine pruned ${pruned} dead-exec tripwire watch(es)`,
+				);
+			}
+		}
+		if (
+			typeof store.listActiveWorkflowDeadExecutionWatches !== "function" ||
+			typeof store.tripWorkflowDeadExecutionWatch !== "function"
+		) {
+			return;
+		}
+		let watches = store.listActiveWorkflowDeadExecutionWatches(
+			200,
+			this.deadExecutionWatchCursor,
+		);
+		if (watches.length === 0 && this.deadExecutionWatchCursor) {
+			this.deadExecutionWatchCursor = undefined;
+			watches = store.listActiveWorkflowDeadExecutionWatches(200);
+		}
+		const lastWatch = watches.at(-1);
+		if (lastWatch) {
+			this.deadExecutionWatchCursor = {
+				observedAt: lastWatch.observed_at,
+				deadExecutionId: lastWatch.dead_execution_id,
+			};
+		}
+		for (const watch of watches) {
+			const session = store.getSession(watch.dead_execution_id);
+			const sessionCommitCount =
+				typeof session?.commit_count === "number" ? session.commit_count : null;
+			let evidence: WorkflowDeadExecutionActivityEvidence | null;
+			try {
+				evidence = await this.probeDeadExecutionActivity(
+					watch,
+					sessionCommitCount,
+				);
+			} catch (error) {
+				this.log(
+					`workflow engine dead-exec tripwire held for ${watch.dead_execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				continue;
+			}
+			if (!evidence) continue;
+			if (evidence.kind === "tmux_output") {
+				this.log(
+					`workflow engine dead-exec tripwire tmux-only activity logged for ${watch.dead_execution_id}: ${evidence.detail}`,
+				);
+				continue;
+			}
+			const tripped = store.tripWorkflowDeadExecutionWatch({
+				deadExecutionId: watch.dead_execution_id,
+				evidence,
+				alertIdentity: this.resolveRunAlertIdentity(
+					watch.project_name,
+					watch.issue_id,
+				),
+				now: this.now().toISOString(),
+			});
+			if (!tripped.ok) {
+				this.log(
+					`workflow engine dead-exec tripwire commit held for ${watch.dead_execution_id}: ${tripped.reason}`,
+				);
+			}
+		}
+	}
+
+	async reconcileWorkflowEngineAlerts(max = 20): Promise<number> {
+		const sink = this.alertSink?.current;
+		if (!sink) return 0;
+		let finalized = 0;
+		for (let index = 0; index < max; index += 1) {
+			const now = this.now();
+			const claim = this.options.store.claimNextWorkflowAlert({
+				ownerId: this.ownerId,
+				now: now.toISOString(),
+				leaseExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
+			});
+			if (!claim) break;
+			try {
+				const delivery = await sink.alert({
+					...claim.payload,
+					// ClaimsDB is claim-before-send, so each outbox attempt needs a
+					// distinct transport identity or a failed attempt would suppress retry.
+					eventId: `${claim.escalationUid}:${claim.attempt}`,
+				});
+				const accepted = delivery.sent === true || delivery.queued === true;
+				this.options.store.finishWorkflowAlertDelivery({
+					escalationUid: claim.escalationUid,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					outcome: accepted ? "sent" : "failed",
+					...(accepted
+						? {}
+						: { error: delivery.skipped ?? "alert_not_delivered" }),
+					now: this.now().toISOString(),
+				});
+				finalized += 1;
+			} catch (error) {
+				this.options.store.finishWorkflowAlertDelivery({
+					escalationUid: claim.escalationUid,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					outcome: "failed",
+					error: error instanceof Error ? error.message : String(error),
+					now: this.now().toISOString(),
+				});
+				finalized += 1;
+			}
+		}
+		return finalized;
+	}
+
+	private reconcileWorkflowDivergence(): void {
+		if (
+			typeof this.options.store.listWorkflowDivergenceCandidates !== "function"
+		) {
+			return;
+		}
+		for (const candidate of this.options.store.listWorkflowDivergenceCandidates()) {
+			try {
+				this.options.store.commitWorkflowDivergenceObservation({
+					runId: candidate.runId,
+					nodeId: candidate.nodeId,
+					attempt: candidate.attempt,
+					executionId: candidate.executionId,
+					observedStatus: candidate.sessionStatus,
+					observedLifecycleRevision: candidate.lifecycleRevision,
+					now: this.now().toISOString(),
+				});
+			} catch (error) {
+				this.log(
+					`workflow divergence observation held for ${candidate.executionId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+	}
+
+	private async reconcileDeadExecutions(): Promise<void> {
+		const store = this.options.store;
+		const runs =
+			typeof store.listActiveWorkflowRuns === "function"
+				? store.listActiveWorkflowRuns()
+				: [];
+		for (const run of runs) {
+			if (run.engine_owned !== 1 || !run.snapshot) continue;
+			let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+			try {
+				snapshot = parseWorkflowRunSnapshot(run.snapshot);
+			} catch (error) {
+				this.log(
+					`workflow engine dead-exec sweep held for ${run.run_id}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				continue;
+			}
+			for (const workflowNode of snapshot.resolved.nodes) {
+				for (const node of store.listWorkflowRunNodes(
+					run.run_id,
+					workflowNode.id,
+				)) {
+					if (node.state !== "running" || !node.execution_id) continue;
+					const session = store.getSession(node.execution_id);
+					if (
+						!isStateStoreIrreversibleTerminalForZombie(session?.status) &&
+						!store.hasWorkflowExecutionTeardownFact(
+							run.run_id,
+							workflowNode.id,
+							node.execution_id,
+						)
+					) {
+						continue;
+					}
+					if (
+						store.getWorkflowNodeCompletion(
+							run.run_id,
+							workflowNode.id,
+							node.attempt,
+						)
+					) {
+						continue;
+					}
+					const launches = store
+						.listWorkflowSideEffects(run.run_id)
+						.filter(
+							(row) =>
+								row.kind === "dispatch" &&
+								row.node_id === workflowNode.id &&
+								row.attempt === node.attempt,
+						);
+					const latest = launches.reduce<WorkflowSideEffectRow | undefined>(
+						(current, row) =>
+							!current || row.launch_ordinal > current.launch_ordinal
+								? row
+								: current,
+						undefined,
+					);
+					if (!latest || latest.execution_id !== node.execution_id) continue;
+					const resourceFailure = isNonRetryableResourceFailure(
+						session?.last_error,
+					);
+					const runtime = store.getWorkflowExecutionRuntime(node.execution_id);
+					const approvedDesignFallback =
+						!resourceFailure &&
+						isApprovedFableUnavailability(session?.last_error) &&
+						workflowNode.type === "design" &&
+						runtime?.vendor === "claude" &&
+						runtime.model === "claude-fable-5";
+					const retryDelaysMs = [60_000, 5 * 60_000, 15 * 60_000];
+					if (
+						!resourceFailure &&
+						!approvedDesignFallback &&
+						launches.length < 4
+					) {
+						const delay = retryDelaysMs[Math.max(0, launches.length - 1)]!;
+						const launchedAt = parseSqliteUtcMs(latest.created_at);
+						if (
+							launchedAt !== null &&
+							this.now().getTime() - launchedAt < delay
+						) {
+							continue;
+						}
+					}
+					let liveness: GeneralizedLaunchLiveness;
+					try {
+						liveness = await this.probeLaunchLiveness(
+							node.execution_id,
+							run.project_name,
+						);
+					} catch (error) {
+						this.log(
+							`workflow engine dead-exec probe held for ${node.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						continue;
+					}
+					if (liveness !== "dead") {
+						if (liveness === "unknown") {
+							const key = `${run.run_id}:${workflowNode.id}:${node.attempt}:${node.execution_id}`;
+							const count = (this.unknownLivenessCounts.get(key) ?? 0) + 1;
+							this.unknownLivenessCounts.set(key, count);
+							if (count === 3) {
+								const identity = this.resolveRunAlertIdentity(
+									run.project_name,
+									run.issue_id,
+								);
+								const uid = `probe_unknown:${run.run_id}:${workflowNode.id}:${node.attempt}:${node.execution_id}`;
+								store.enqueueWorkflowEngineAlert({
+									escalationUid: uid,
+									runId: run.run_id,
+									now: this.now().toISOString(),
+									payload: {
+										leadId: identity.leadId,
+										projectName: identity.projectName,
+										eventId: uid,
+										eventType: "workflow_engine_escalation",
+										severity: "severe",
+										sessionKey: `wf:${run.run_id}`,
+										title: `Workflow liveness is unknown for ${run.issue_id}`,
+										body: `Run ${run.run_id} node ${workflowNode.id} has a terminal session without a completion receipt, but process liveness remained unknown for three probes. The engine kept the node unchanged.`,
+										metadata: {
+											workflowEngine: {
+												runId: run.run_id,
+												issueId: run.issue_id,
+												nodeId: workflowNode.id,
+												executionId: node.execution_id,
+												disposition: "probe_unknown",
+												leadResolution: identity.leadResolution,
+											},
+										},
+									},
+								});
+							}
+						}
+						continue;
+					}
+					this.unknownLivenessCounts.delete(
+						`${run.run_id}:${workflowNode.id}:${node.attempt}:${node.execution_id}`,
+					);
+					const observedAt = this.now().toISOString();
+					const disposition = approvedDesignFallback
+						? "design_fallback"
+						: resourceFailure
+							? "hold"
+							: "retry";
+					let activityBaseline:
+						| WorkflowDeadExecutionActivityBaseline
+						| undefined;
+					if (disposition !== "hold") {
+						try {
+							activityBaseline =
+								await this.captureDeadExecutionActivityBaseline(
+									node.execution_id,
+									run.project_name,
+									typeof session?.commit_count === "number"
+										? session.commit_count
+										: null,
+								);
+						} catch (error) {
+							// A replacement without a trustworthy baseline would disable the
+							// founder's false-positive tripwire. Hold this tick and retry.
+							this.log(
+								`workflow engine dead-exec activity baseline held for ${node.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+							continue;
+						}
+					}
+					const recovered = store.rollbackDeadWorkflowNodeExecution({
+						runId: run.run_id,
+						nodeId: workflowNode.id,
+						attempt: node.attempt,
+						deadExecutionId: node.execution_id,
+						newExecutionId: randomUUID(),
+						reason: approvedDesignFallback
+							? "design_fable_unavailable_fallback_to_gpt_5_6"
+							: resourceFailure
+								? "quota_or_auth_failure"
+								: "terminal_session_and_dead_probe",
+						retryDisposition: disposition,
+						activityBaseline,
+						alertIdentity: this.resolveRunAlertIdentity(
+							run.project_name,
+							run.issue_id,
+						),
+						livenessEvidence: { liveness: "dead", observedAt },
+						now: observedAt,
+					});
+					if (!recovered.ok) {
+						this.log(
+							`workflow engine dead-exec recovery held for ${node.execution_id}: ${recovered.reason}`,
+						);
+					}
+				}
+			}
+		}
+	}
+
 	private markStarted(
 		intent: WorkflowSideEffectRow,
 		options: { preserveTerminalNode?: boolean } = {},
-	): void {
+	): boolean {
 		const run = this.options.store.getWorkflowRun(intent.run_id);
 		if (!run) throw new Error("engine_run_not_found");
+		const currentNode = this.options.store.getWorkflowRunNode(
+			intent.run_id,
+			intent.node_id,
+			intent.attempt,
+		);
+		if (currentNode?.execution_id !== intent.execution_id) return false;
 		this.options.store.applyWorkflowShadowBatch({
 			projectName: run.project_name,
 			issueId: run.issue_id,
 			runId: run.run_id,
+			expectedEngineOwned: 1,
 			ops: [
 				{
 					op: "side_effect",
@@ -173,6 +643,27 @@ export class WorkflowEngineDispatcher {
 				executionId: intent.execution_id,
 			});
 		}
+		return true;
+	}
+
+	private adoptKnownSession(
+		intent: WorkflowSideEffectRow,
+	): boolean | undefined {
+		const store = this.options.store;
+		const session = store.getSession(intent.execution_id);
+		if (!session) return undefined;
+		if (isStateStoreIrreversibleTerminalForZombie(session.status)) {
+			const receipt = store.getWorkflowNodeCompletion(
+				intent.run_id,
+				intent.node_id,
+				intent.attempt,
+			);
+			if (receipt?.execution_id !== intent.execution_id) {
+				throw new Error("engine_execution_dead");
+			}
+			return this.markStarted(intent, { preserveTerminalNode: true });
+		}
+		return this.markStarted(intent);
 	}
 
 	private async consume(intent: WorkflowSideEffectRow): Promise<boolean> {
@@ -193,13 +684,10 @@ export class WorkflowEngineDispatcher {
 			store.getWorkflowRunNode(intent.run_id, intent.node_id, intent.attempt)
 				?.state === "done"
 		) {
-			this.markStarted(intent, { preserveTerminalNode: true });
-			return true;
+			return this.markStarted(intent, { preserveTerminalNode: true });
 		}
-		if (store.getSession(intent.execution_id)) {
-			this.markStarted(intent);
-			return true;
-		}
+		const adopted = this.adoptKnownSession(intent);
+		if (adopted !== undefined) return adopted;
 		const node = snapshot.resolved.nodes.find(
 			(candidate) => candidate.id === intent.node_id,
 		);
@@ -214,16 +702,20 @@ export class WorkflowEngineDispatcher {
 					outcome?: unknown;
 			  }
 			| undefined;
-		const transition = [...store.listWorkflowRunEvents(intent.run_id)]
-			.reverse()
-			.find((event) => {
+		const events = [...store.listWorkflowRunEvents(intent.run_id)].reverse();
+		let transition: (typeof events)[number] | undefined;
+		let transitionExecutionId = intent.execution_id;
+		const visitedExecutionIds = new Set<string>();
+		while (!visitedExecutionIds.has(transitionExecutionId)) {
+			visitedExecutionIds.add(transitionExecutionId);
+			transition = events.find((event) => {
 				if (event.kind !== "edge_traversed") return false;
 				try {
 					const payload =
 						typeof event.payload === "string"
 							? (JSON.parse(event.payload) as typeof transitionPayload)
 							: (event.payload as typeof transitionPayload);
-					if (payload?.successorExecutionId !== intent.execution_id)
+					if (payload?.successorExecutionId !== transitionExecutionId)
 						return false;
 					transitionPayload = payload;
 					return true;
@@ -231,11 +723,39 @@ export class WorkflowEngineDispatcher {
 					return false;
 				}
 			});
-		const predecessor = transition?.execution_id
-			? store.getSession(transition.execution_id)
+			if (transition) break;
+			const rollback = events.find((event) => {
+				if (event.kind !== "execution_dead_rolled_back") return false;
+				try {
+					const payload =
+						typeof event.payload === "string"
+							? (JSON.parse(event.payload) as { newExecutionId?: unknown })
+							: (event.payload as { newExecutionId?: unknown });
+					return payload?.newExecutionId === transitionExecutionId;
+				} catch {
+					return false;
+				}
+			});
+			if (!rollback?.execution_id) break;
+			transitionExecutionId = rollback.execution_id;
+		}
+		const startReservation = store.getWorkflowStartReservationForRun(
+			intent.run_id,
+		);
+		const startRetryExecutionId =
+			!transition &&
+			startReservation?.node_id === intent.node_id &&
+			startReservation.attempt === intent.attempt &&
+			startReservation.execution_id === transitionExecutionId
+				? transitionExecutionId
+				: undefined;
+		const predecessorExecutionId =
+			transition?.execution_id ?? startRetryExecutionId;
+		const predecessor = predecessorExecutionId
+			? store.getSession(predecessorExecutionId)
 			: undefined;
-		const leadId = transition?.execution_id
-			? this.resolveLeadId(transition.execution_id)
+		const leadId = predecessorExecutionId
+			? this.resolveLeadId(predecessorExecutionId)
 			: undefined;
 		const loopIteration = Number(transitionPayload?.loopIteration);
 		const phaseFixContext =
@@ -251,12 +771,12 @@ export class WorkflowEngineDispatcher {
 				: undefined;
 		let startPoint: string | undefined;
 		if (isThreeStagePhaseRole(node.type)) {
-			if (!transition?.execution_id || !predecessor) {
+			if (!predecessorExecutionId || !predecessor) {
 				throw new Error("engine_predecessor_unavailable");
 			}
 			startPoint = (
 				await this.resolvePredecessorHead(
-					transition.execution_id,
+					predecessorExecutionId,
 					run.project_name,
 				)
 			)
@@ -293,6 +813,29 @@ export class WorkflowEngineDispatcher {
 			}
 		}
 		const now = this.now();
+		const approvedDesignFallback = store
+			.listWorkflowRunEvents(intent.run_id)
+			.some((event) => {
+				if (event.kind !== "execution_dead_rolled_back") return false;
+				try {
+					const payload =
+						typeof event.payload === "string"
+							? (JSON.parse(event.payload) as Record<string, unknown>)
+							: (event.payload as Record<string, unknown>);
+					return (
+						payload.newExecutionId === intent.execution_id &&
+						payload.retryDisposition === "design_fallback"
+					);
+				} catch {
+					return false;
+				}
+			});
+		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
+			runId: intent.run_id,
+			nodeId: intent.node_id,
+			env: this.env,
+			approvedDesignFallback,
+		});
 		const admitted = store.admitGeneralizedWorkflowExecution({
 			runId: intent.run_id,
 			nodeId: intent.node_id,
@@ -304,10 +847,22 @@ export class WorkflowEngineDispatcher {
 				now.getTime() + 24 * 60 * 60_000,
 			).toISOString(),
 			env: this.env,
+			dispatchResolution,
 		});
 		if (!admitted.ok) {
 			throw new Error(`engine_admission_${admitted.reason}`);
 		}
+		const runtime = store.getWorkflowExecutionRuntime(intent.execution_id);
+		if (!runtime) throw new Error("engine_runtime_dispatch_missing");
+		const runtimeDispatch = {
+			vendor: runtime.vendor as "claude" | "codex",
+			model: runtime.model,
+			...(runtime.effort
+				? {
+						effort: runtime.effort as "low" | "medium" | "high" | "xhigh",
+					}
+				: {}),
+		};
 
 		const ownerId = this.ownerId;
 		const markerPath = join(this.stateRoot, intent.execution_id);
@@ -325,10 +880,8 @@ export class WorkflowEngineDispatcher {
 			| { generation: number; attempt: number; ownerId: string }
 			| undefined;
 		if (launch.status === "committed") {
-			if (store.getSession(intent.execution_id)) {
-				this.markStarted(intent);
-				return true;
-			}
+			const committedSession = this.adoptKnownSession(intent);
+			if (committedSession !== undefined) return committedSession;
 			const liveness = await this.probeLaunchLiveness(
 				intent.execution_id,
 				run.project_name,
@@ -487,7 +1040,7 @@ export class WorkflowEngineDispatcher {
 				nodeId: intent.node_id,
 				attempt: intent.attempt,
 				snapshotDigest: snapshot.snapshot_digest,
-				dispatch: node.dispatch,
+				dispatch: runtimeDispatch,
 				capabilities: { ...node.capabilities },
 				agentContent,
 				outputCredential,
@@ -505,12 +1058,11 @@ export class WorkflowEngineDispatcher {
 		if (!delivered) return false;
 		// A deterministic/fresh-spawn runner can finish before start() returns.
 		// Never let launch bookkeeping regress its committed terminal projection.
-		this.markStarted(intent, {
+		return this.markStarted(intent, {
 			preserveTerminalNode:
 				store.getWorkflowRunNode(intent.run_id, intent.node_id, intent.attempt)
 					?.state === "done",
 		});
-		return true;
 	}
 
 	private qaFixSummary(executionId: string): string {

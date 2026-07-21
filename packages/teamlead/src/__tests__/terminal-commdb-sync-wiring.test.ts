@@ -44,7 +44,7 @@ describe("FLY-1066 terminal CommDB sync production inventory", () => {
 		);
 		expect(
 			directSink.match(/this\.enqueueTerminalCommDbStatus\(/g),
-		).toHaveLength(2);
+		).toHaveLength(3);
 		expect(marker).toContain(
 			"args.onTerminalStatusPersisted(\n\t\t\t\targs.executionId",
 		);

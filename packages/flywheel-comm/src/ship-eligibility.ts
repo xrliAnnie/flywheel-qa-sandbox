@@ -38,7 +38,6 @@ const FULL_SHA_RE = /^[0-9a-f]{40}$/;
 const MERGE_APPROVAL_GATE_KEY = "FLYWHEEL_MERGE_APPROVAL_GATE";
 const QA_DONE_GATE_KEY = "FLYWHEEL_QA_DONE_GATE";
 const WORKFLOW_CLAIMS_READ_KEY = "FLYWHEEL_WORKFLOW_CLAIMS_READ";
-const WORKFLOW_FORCE_LEGACY_KEY = "FLYWHEEL_WORKFLOW_FORCE_LEGACY";
 
 /**
  * Resolve a DEFAULT-ON gate flag with the FLY-827 live-`.env` semantics:
@@ -268,15 +267,6 @@ export function evaluateQaShipGate(args: QaShipGateArgs): QaShipGateResult {
 		dotenvPath: args.qaDotenvPath,
 	});
 	if (!gateOn) return { passed: true, reason: "qa_gate_off" };
-	// Emergency rollback must be resolved from the live dotenv BEFORE any
-	// claims-ledger query. This preserves an immediate recovery path for a
-	// long-lived runner while keeping the switch independently default-off.
-	const forceLegacy = resolveDefaultOffGate(WORKFLOW_FORCE_LEGACY_KEY, {
-		argsEnv: args.env,
-		processEnv: env,
-		dotenvPath: args.qaDotenvPath,
-	});
-
 	const prHead = args.prHead.trim().toLowerCase();
 	if (!FULL_SHA_RE.test(prHead)) {
 		return { passed: false, reason: "invalid_pr_head_format" };
@@ -299,7 +289,7 @@ export function evaluateQaShipGate(args: QaShipGateArgs): QaShipGateResult {
 			if (!row) return { passed: false, reason: "session_not_found" };
 			const durableQa =
 				row.session_role === "qa" && row.chat_thread_role === "qa";
-			if (durableQa && !forceLegacy) {
+			if (durableQa) {
 				if (
 					!resolveWorkflowClaimsReadEnabled({
 						env: args.env,

@@ -1442,6 +1442,28 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"resolve.direct-toggle.test:quiet_persist_dedup live-observe",
 	},
+	{
+		name: "engine_dead_exec_sweep",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"DAG terminal dead-execution recovery sweep (OFF pauses new replacement decisions)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
+				"reconcile",
+				"call_time",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"workflow-engine-dispatcher.test:live-sweep-flag same-instance OFF-to-ON",
+	},
 
 	// ─── env features/kill-switches captured at boot/construction → RESTART ───
 	{
@@ -2845,6 +2867,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "FLY-1344 founder-controlled DAG v2 lever (FLY-1307/1281 lineage). A v2 start still requires template dispatch + claims WRITE + READ.",
 	},
 	{
+		name: "workflow_vendor_at_dispatch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_VENDOR_AT_DISPATCH",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1385: resolve each workflow node from the current approved phase/template dispatch at launch time; =0 immediately returns to the pinned snapshot.",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/workflow-dispatch-resolution.ts",
+				"resolveNodeDispatchAtLaunch",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"workflow-dispatch-resolution tests: the next node resolution observes =0 and returns the pinned snapshot without an audit event",
+		note: "Emergency escape only. Current configured dispatch remains authoritative; automatic replacement is limited to the separately enforced design Fable to GPT-5.6 exception.",
+	},
+	{
 		name: "workflow_claims_write",
 		category: "feature",
 		source: "env",
@@ -2921,36 +2967,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"ship-eligibility + verify-approval tests: Bridge env and CLI dotenv readers observe one apply",
 		note: "FLY-1344 founder-controlled DAG claims-read lever (FLY-1307/1244 lineage). Bridge and CLI are both live authoritative consumers; explicit run enrollment remains required.",
-	},
-	{
-		name: "workflow_force_legacy",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_WORKFLOW_FORCE_LEGACY",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1244: emergency live-.env fallback that forces the legacy ship-eligibility reader before claims queries.",
-		readSites: [
-			envSite(
-				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"resolveDefaultOffGate argsEnv-wins Bridge caller",
-				"call_time",
-				"env-param",
-			),
-			envSite(
-				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"resolveDefaultOffGate live dotenv CLI fallback",
-				"dotenv_live",
-				"dynamic",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"ship-eligibility tests: Bridge env and CLI dotenv readers observe one apply",
-		note: "FLY-1344 founder-controlled emergency ship-reader fallback (FLY-1307/1244 lineage); independent of template dispatch and resolved before claims table access.",
 	},
 	{
 		name: "delivery_ack",

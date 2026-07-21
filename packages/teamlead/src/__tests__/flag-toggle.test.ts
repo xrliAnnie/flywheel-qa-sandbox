@@ -53,11 +53,11 @@ describe("isDirectToggleable", () => {
 describe("applyFlagToggle", () => {
 	it("a successful apply heals a pre-existing live/file divergence", () => {
 		const spec = FEATURE_FLAGS.find(
-			(flag) => flag.name === "workflow_force_legacy",
+			(flag) => flag.name === "workflow_claims_read",
 		)!;
-		let file = "FLYWHEEL_WORKFLOW_FORCE_LEGACY=0\n";
+		let file = "FLYWHEEL_WORKFLOW_CLAIMS_READ=0\n";
 		const d = deps({
-			env: { FLYWHEEL_WORKFLOW_FORCE_LEGACY: "1" },
+			env: { FLYWHEEL_WORKFLOW_CLAIMS_READ: "1" },
 			readFile: () => file,
 			writeFile: vi.fn((_path: string, content: string) => {
 				file = content;

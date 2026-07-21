@@ -177,7 +177,6 @@ describe("FLY-869 ship-eligibility", () => {
 
 	const on = {
 		FLYWHEEL_QA_DONE_GATE: "1",
-		FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 	} as NodeJS.ProcessEnv;
 
 	describe("evaluateQaShipGate", () => {
@@ -372,7 +371,7 @@ describe("FLY-869 ship-eligibility", () => {
 			expect(r).toMatchObject({ passed: true, reason: "qa_claim_ok" });
 		});
 
-		it("FORCE_LEGACY is live-.env and resolves before claims tables", () => {
+		it("durable QA ignores the retired force-legacy env and fails closed without claims read", () => {
 			writeSession({ qa_required: 0, pr_number: 5, durableQa: true });
 			const dotenvPath = join(tmpDir, ".env");
 			writeFileSync(dotenvPath, "FLYWHEEL_WORKFLOW_FORCE_LEGACY=1\n");
@@ -383,7 +382,10 @@ describe("FLY-869 ship-eligibility", () => {
 				env: { FLYWHEEL_QA_DONE_GATE: "1" } as NodeJS.ProcessEnv,
 				qaDotenvPath: dotenvPath,
 			});
-			expect(r).toMatchObject({ passed: true, reason: "qa_not_required" });
+			expect(r).toMatchObject({
+				passed: false,
+				reason: "qa_claim_gate_unenrolled_failclosed",
+			});
 		});
 
 		it("NULL snapshot + no PR / no-code route → exempt", () => {

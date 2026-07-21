@@ -25,6 +25,7 @@ const BLOCKER = {
 // Only getActiveSessions() is reached before the 409 / admission branch.
 const fakeStore = {
 	getActiveSessions: () => [BLOCKER],
+	getActiveWorkflowRunForIssue: () => undefined,
 	getWorkflowStartReservation: (key: string) =>
 		key === "legacy-replay"
 			? { execution_id: "old-exec", run_id: "legacy-run" }

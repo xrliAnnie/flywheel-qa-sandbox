@@ -367,7 +367,6 @@ try {
 	const gateEnv = {
 		FLYWHEEL_QA_DONE_GATE: "1",
 		FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-		FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 	};
 	const h1Gate = ship.evaluateQaShipGate({
 		execId: "qa-e2e-1",
@@ -516,7 +515,6 @@ try {
 		observed_key_names: [
 			"FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
 			"FLYWHEEL_WORKFLOW_CLAIMS_READ",
-			"FLYWHEEL_WORKFLOW_FORCE_LEGACY",
 			"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
 		],
 		known_accepted_residuals: {

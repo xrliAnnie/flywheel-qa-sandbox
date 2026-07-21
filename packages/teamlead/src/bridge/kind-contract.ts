@@ -124,6 +124,16 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	review_ruling_notify_failed: { owner: "claude", arc: "human_by_design" },
 	three_stage_stuck: { owner: "claude", arc: "human_by_design" },
 	three_stage_takeover_failed: { owner: "claude", arc: "human_by_design" },
+	workflow_engine_escalation: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "FLY-1385 run hold/terminate API",
+	},
+	workflow_engine_issue_alert: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "FLY-1385 dead-execution activity tripwire",
+	},
 	founder_milestone_undelivered: { owner: "claude", arc: "human_by_design" },
 	tui_window_lost: { owner: "claude", arc: "human_by_design" },
 	restart_guard_bypass: { owner: "claude", arc: "human_by_design" },

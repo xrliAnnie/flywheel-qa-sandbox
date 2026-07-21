@@ -153,12 +153,16 @@ describe("Event route", () => {
 		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		process.env.FLYWHEEL_QA_DONE_GATE = "0";
+		// FLY-1385: this block exercises legacy event semantics. The retired
+		// FORCE_LEGACY switch can no longer mask a host-level claims-read setting.
+		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 	});
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_QA_DONE_GATE;
+		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -267,7 +271,43 @@ describe("Event route", () => {
 		expect(lifecycle[0]?.event_id).toMatch(/^wfca:/);
 	});
 
-	it("holds generalized teardown without a receipt and does not persist its lifecycle audit", async () => {
+	it("settles a stale generalized completion after the node execution was replaced", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		store.upsertWorkflowRunNode({
+			runId: "run-exec-1",
+			nodeId: "execute",
+			attempt: 1,
+			state: "pending",
+			executionId: "exec-retry",
+		});
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "stale-completion-1",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: { decision: { route: "no_code" } },
+				}),
+			),
+		});
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({
+			ok: true,
+			generalized: true,
+			settled: "stale_execution_superseded",
+		});
+		expect(
+			store.getWorkflowNodeCompletion("run-exec-1", "execute", 1),
+		).toBeUndefined();
+	});
+
+	it("records generalized teardown without a receipt and settles the HTTP signal", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
@@ -284,12 +324,26 @@ describe("Event route", () => {
 				}),
 			),
 		});
-		expect(res.status).toBe(409);
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({
+			ok: true,
+			generalized: true,
+			teardown: "held_recorded",
+		});
+		expect(store.getSession("exec-1")).toMatchObject({
+			status: "completed",
+			workflow_node_id: "execute",
+		});
 		expect(
 			store
 				.getEventsByExecution("exec-1")
 				.some((event) => event.event_id === "teardown-complete-1"),
-		).toBe(false);
+		).toBe(true);
+		expect(
+			store
+				.listWorkflowRunEvents("run-exec-1")
+				.filter((event) => event.kind === "generalized_teardown_recorded"),
+		).toHaveLength(1);
 	});
 
 	// FLY-728: the loopback /events session_started handler persists the resolved
@@ -680,12 +734,15 @@ describe("Event route — structured hook payload", () => {
 		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		process.env.FLYWHEEL_QA_DONE_GATE = "0";
+		// FLY-1385: keep this legacy FSM suite independent of the host rollout.
+		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 	});
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_QA_DONE_GATE;
+		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -854,12 +911,14 @@ describe("Event route — EventFilter integration", () => {
 		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		process.env.FLYWHEEL_QA_DONE_GATE = "0";
+		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 	});
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_QA_DONE_GATE;
+		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -1103,12 +1162,14 @@ describe("Event route — GEO-292 stage tracking", () => {
 		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		process.env.FLYWHEEL_QA_DONE_GATE = "0";
+		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 	});
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_QA_DONE_GATE;
+		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		delete process.env.FLYWHEEL_COMM_DIR;
 		if (a5CommRoot) rmSync(a5CommRoot, { recursive: true, force: true });
 		await new Promise<void>((resolve, reject) => {

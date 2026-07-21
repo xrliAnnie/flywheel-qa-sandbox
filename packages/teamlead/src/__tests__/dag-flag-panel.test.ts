@@ -6,7 +6,6 @@ import {
 } from "../bridge/dag-flag-panel.js";
 
 const NAMES: DagControlName[] = [
-	"workflow_force_legacy",
 	"workflow_claims_write",
 	"workflow_claims_read",
 	"workflow_generalized_templates",
@@ -53,9 +52,6 @@ describe("DAG flag panel view model", () => {
 		});
 		expect(off.shipReader).toBe("blocked_fail_closed");
 
-		const legacy = state(0);
-		legacy.workflow_force_legacy = true;
-		expect(buildDagFlagPanel(flags(legacy)).shipReader).toBe("forced_legacy");
 		const claims = state(0);
 		claims.workflow_claims_read = true;
 		expect(buildDagFlagPanel(flags(claims)).shipReader).toBe("claims");
@@ -79,18 +75,15 @@ describe("DAG flag panel view model", () => {
 	it("builds fail-stop enable/disable commands in the locked safe order", () => {
 		const off = buildDagFlagPanel(flags(state(0)));
 		expect(off.presets.enableV2.phase1Command).toBe(
-			"flywheel-comm feature-flags apply --name workflow_force_legacy --to on && " +
-				"flywheel-comm feature-flags apply --name workflow_claims_write --to on && " +
+			"flywheel-comm feature-flags apply --name workflow_claims_write --to on && " +
 				"flywheel-comm feature-flags apply --name workflow_claims_read --to on && " +
 				"flywheel-comm feature-flags apply --name workflow_generalized_templates --to on && " +
 				"flywheel-comm feature-flags apply --name workflow_template_dispatch --to on",
 		);
 
-		const allOn = state(31);
-		allOn.workflow_force_legacy = false;
+		const allOn = state(15);
 		expect(buildDagFlagPanel(flags(allOn)).presets.disable.phase1Command).toBe(
-			"flywheel-comm feature-flags apply --name workflow_force_legacy --to on && " +
-				"flywheel-comm feature-flags apply --name workflow_template_dispatch --to off && " +
+			"flywheel-comm feature-flags apply --name workflow_template_dispatch --to off && " +
 				"flywheel-comm feature-flags apply --name workflow_claims_write --to off && " +
 				"flywheel-comm feature-flags apply --name workflow_claims_read --to off && " +
 				"flywheel-comm feature-flags apply --name workflow_generalized_templates --to off",
@@ -107,8 +100,8 @@ describe("DAG flag panel view model", () => {
 		]);
 	});
 
-	it("every enable prefix keeps template dispatch prerequisites complete across all 32 initial states", () => {
-		for (let mask = 0; mask < 32; mask += 1) {
+	it("every enable prefix keeps template dispatch prerequisites complete across all 16 initial states", () => {
+		for (let mask = 0; mask < 16; mask += 1) {
 			for (const target of ["enableV1", "enableV2"] as const) {
 				const current = state(mask);
 				const command = buildDagFlagPanel(flags(current)).presets[target]
@@ -129,19 +122,15 @@ describe("DAG flag panel view model", () => {
 		}
 	});
 
-	it("offers phase two only after refresh confirms claims reader under forced legacy", () => {
-		const ready = state(31);
-		expect(buildDagFlagPanel(flags(ready)).presets.enableV2.phase2Command).toBe(
-			"flywheel-comm feature-flags apply --name workflow_force_legacy --to off",
-		);
-		ready.workflow_claims_read = false;
+	it("has no retired force-legacy phase two command", () => {
+		const ready = state(15);
 		expect(
 			buildDagFlagPanel(flags(ready)).presets.enableV2.phase2Command,
 		).toBeUndefined();
 	});
 
-	it("failure injection covers every command position from all 32 initial states", () => {
-		for (let mask = 0; mask < 32; mask += 1) {
+	it("failure injection covers every command position from all 16 initial states", () => {
+		for (let mask = 0; mask < 16; mask += 1) {
 			for (const target of ["enableV1", "enableV2"] as const) {
 				const initial = state(mask);
 				const command = buildDagFlagPanel(flags(initial)).presets[target]
@@ -175,21 +164,6 @@ describe("DAG flag panel view model", () => {
 							expect(after).toEqual(initial);
 						}
 					}
-					const targetReady =
-						after.workflow_template_dispatch &&
-						after.workflow_claims_write &&
-						after.workflow_claims_read &&
-						(target === "enableV1" || after.workflow_generalized_templates);
-					if (!targetReady && !after.workflow_force_legacy) {
-						// The only pre-legacy prefix allowed is the repair-first template-off
-						// normalization required for an already-unsafe initial state.
-						expect(
-							changes
-								.slice(0, failedAt)
-								.every(([name]) => name === "workflow_template_dispatch"),
-							`${mask}/${target}/${failedAt}`,
-						).toBe(true);
-					}
 				}
 			}
 
@@ -203,11 +177,8 @@ describe("DAG flag panel view model", () => {
 					if (index === failedAt) break;
 					after[name] = value;
 				}
-				if (failedAt > 0 || initial.workflow_force_legacy) {
-					expect(
-						after.workflow_force_legacy,
-						`${mask}/disable/${failedAt}`,
-					).toBe(true);
+				if (failedAt > 0) {
+					expect(after.workflow_template_dispatch).toBe(false);
 				}
 			}
 		}

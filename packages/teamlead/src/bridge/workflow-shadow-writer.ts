@@ -254,6 +254,12 @@ export class WorkflowShadowWriter implements WorkflowShadowHooks {
 		try {
 			const run = this.deps.store.getActiveWorkflowRunForIssue(issueId);
 			if (!run) return 1;
+			if (run.engine_owned !== 0) {
+				this.warn(
+					`[workflow-shadow] currentAttempt ignored engine-owned run ${run.run_id}`,
+				);
+				return 1;
+			}
 			// max() of the two run-scoped round sources (R2 #4): the shadow's own
 			// loop events (covers the legacy belt, which has no durable record)
 			// and the durable fix-round events ATTRIBUTED to this run's executions
@@ -399,6 +405,12 @@ export class WorkflowShadowWriter implements WorkflowShadowHooks {
 				args.issueId,
 			);
 			if (!run) return;
+			if (run.engine_owned !== 0) {
+				this.warn(
+					`[workflow-shadow] onShipFinalized ignored engine-owned run ${run.run_id}`,
+				);
+				return;
+			}
 			this.deps.store.applyWorkflowShadowBatch({
 				projectName: args.projectName,
 				issueId: args.issueId,
@@ -519,6 +531,7 @@ export class WorkflowShadowWriter implements WorkflowShadowHooks {
 						projectName: r.project_name,
 						issueId: r.issue_id,
 						runId: r.run_id, // explicit — the run may already be completed
+						expectedEngineOwned: 0,
 						ops: [
 							{
 								op: "side_effect",
@@ -563,6 +576,7 @@ export class WorkflowShadowWriter implements WorkflowShadowHooks {
 			return;
 		}
 		for (const run of runs) {
+			if (run.engine_owned !== 0) continue;
 			this.safe("reconcileOnStartup", { issueId: run.issue_id }, () => {
 				const store = this.deps.store;
 				const issueId = run.issue_id;

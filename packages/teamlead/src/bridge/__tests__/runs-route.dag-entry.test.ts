@@ -20,7 +20,10 @@ import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
+import {
+	loadBundledWorkflowSeeds,
+	workflowSeedContentHash,
+} from "../../workflow-template.js";
 import type { IStartDispatcher, StartRequest } from "../retry-dispatcher.js";
 import { createRunsRouter } from "../runs-route.js";
 
@@ -60,6 +63,43 @@ const savedEnv: Record<string, string | undefined> = {};
 const cleanups: Array<() => void> = [];
 let server: Server | undefined;
 
+function v2Seed() {
+	const seed = {
+		templateId: "tpl_fly1385_v2_entry",
+		name: "FLY-1385 v2 entry",
+		projectScope: "global",
+		manifest: {
+			schema_version: 2 as const,
+			nodes: [
+				{
+					id: "research",
+					type: "generic" as const,
+					vendor: "codex" as const,
+					model: "gpt-5.6-sol",
+					effort: "low" as const,
+					agent_file: "agents/generic.md",
+				},
+				{ id: "founder_gate", type: "gate" as const },
+			],
+			edges: [
+				{
+					id: "done",
+					from: "research",
+					to: "founder_gate",
+					condition: "node_done" as const,
+				},
+			],
+			loops: [],
+			terminal_gate: {
+				node: "founder_gate",
+				predicate: "founder_approved" as const,
+			},
+			ship_claims: ["founder_approved" as const],
+		},
+	};
+	return { ...seed, contentHash: workflowSeedContentHash(seed) };
+}
+
 beforeEach(() => {
 	for (const key of [
 		...Object.keys(DAG_ENV),
@@ -96,6 +136,7 @@ async function startHarness(options: {
 	env?: Partial<Record<keyof typeof DAG_ENV, string>>;
 	configYaml?: string;
 	seedBinding?: boolean;
+	templateSchema?: 1 | 2;
 }): Promise<Harness> {
 	// Isolate HOME so launch-commit markers never touch the real ~/.flywheel.
 	const home = mkdtempSync(join(tmpdir(), "fly1372-home-"));
@@ -106,6 +147,8 @@ async function startHarness(options: {
 		rmSync(projectRoot, { recursive: true, force: true });
 	});
 	mkdirSync(join(projectRoot, ".flywheel"), { recursive: true });
+	mkdirSync(join(projectRoot, "agents"), { recursive: true });
+	writeFileSync(join(projectRoot, "agents", "generic.md"), "Do the work.\n");
 	writeFileSync(
 		join(projectRoot, ".flywheel", "config.yaml"),
 		options.configYaml ?? `${CONFIG_BASE}pipeline:\n  dag: true\n`,
@@ -118,10 +161,13 @@ async function startHarness(options: {
 	const store = await StateStore.create(":memory:");
 	cleanups.push(() => store.close());
 	if (options.seedBinding !== false) {
-		const seed = loadBundledWorkflowSeeds().find(
-			(candidate) => candidate.templateId === "tpl_eng_heavy",
-		)!;
-		store.importWorkflowTemplateSeed(seed);
+		const seed =
+			options.templateSchema === 2
+				? v2Seed()
+				: loadBundledWorkflowSeeds().find(
+						(candidate) => candidate.templateId === "tpl_eng_heavy",
+					)!;
+		store.importWorkflowTemplateSeed(seed, process.env);
 		store.bindWorkflowCategory({
 			project: "flywheel",
 			taskCategory: "*",
@@ -348,5 +394,156 @@ describe("FLY-1372 DAG dispatch entry — fresh domain", () => {
 			kind: "start_signal",
 			signal: { runOverride: "on" },
 		});
+	});
+});
+
+describe("FLY-1385 schema-v2 entry compatibility", () => {
+	it("starts a keyless master v2 request with a synthetic durable entry key", async () => {
+		const h = await startHarness({
+			templateSchema: 2,
+			configYaml: `${CONFIG_BASE}pipeline:\n  dag: false\n`,
+		});
+		const { status, json } = await post(h.url, {});
+		expect(status).toBe(200);
+		expect(json.generalized).toBe(true);
+		const run = h.store.getWorkflowRun(json.workflowRunId as string)!;
+		expect(run).toMatchObject({ engine_owned: 1, entry_kind: "workflow_v2" });
+		const reservation = h.store.getWorkflowStartReservationForRun(run.run_id)!;
+		expect(reservation.idempotency_key).toMatch(/^wf2-auto-/);
+		expect(json.templateAuthority).toBeUndefined();
+	});
+
+	it("routes a v2 binding through incumbent three-stage when dispatch is off", async () => {
+		const h = await startHarness({
+			templateSchema: 2,
+			env: { FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: undefined },
+			configYaml: `${CONFIG_BASE}pipeline:\n  three_stage: true\n`,
+		});
+		const { status, json } = await post(h.url, {});
+		expect(status).toBe(200);
+		expect(json.generalized).toBeUndefined();
+		expect(h.calls[0]).toMatchObject({
+			sessionRole: "design",
+			shareParentBranch: true,
+		});
+		expect(h.store.getActiveWorkflowRunForIssue("FLY-802")).toBeUndefined();
+	});
+
+	it("treats a fresh no-three-stage request as candidate-free", async () => {
+		const h = await startHarness({ seedBinding: false });
+		linearMock.labels = ["no-three-stage"];
+		const { status, json } = await post(h.url, {});
+		expect(status).toBe(200);
+		expect(json.generalized).toBeUndefined();
+		expect(h.calls[0]!.sessionRole).toBe("main");
+		expect(h.store.getActiveWorkflowRunForIssue("FLY-802")).toBeUndefined();
+	});
+
+	it("recovers a marked v2 run without pipeline.dag or DAG-only authority", async () => {
+		const h = await startHarness({
+			templateSchema: 2,
+			configYaml: `${CONFIG_BASE}pipeline:\n  dag: false\n`,
+		});
+		const first = await post(h.url, {});
+		expect(first.status).toBe(200);
+		const second = await post(h.url, {});
+		expect(second.status).toBe(200);
+		expect(second.json.workflowRunId).toBe(first.json.workflowRunId);
+		expect(second.json.templateAuthority).toBeUndefined();
+	});
+
+	it("narrowly recovers an unmarked stored v2 reservation and never lets opt-out bypass it", async () => {
+		const h = await startHarness({
+			templateSchema: 2,
+			configYaml: `${CONFIG_BASE}pipeline:\n  dag: false\n`,
+		});
+		h.store.materializeWorkflowRun({
+			runId: "unmarked-v2",
+			issueId: "FLY-802",
+			projectName: "flywheel",
+			taskCategory: "*",
+			claimsReadEnrolled: true,
+			actor: "legacy-v2",
+			canonicalRoot: h.projectRoot,
+			startReservation: {
+				idempotencyKey: "unmarked-v2-key",
+				selectionDigest: "legacy-selection",
+				nodeId: "research",
+				attempt: 1,
+				executionId: "unmarked-v2-exec",
+				createdAt: "2026-07-20T00:00:00.000Z",
+			},
+			env: DAG_ENV,
+		});
+		linearMock.labels = ["no-three-stage"];
+		const recovered = await post(h.url, {});
+		expect(recovered.status).toBe(200);
+		expect(recovered.json).toMatchObject({
+			generalized: true,
+			workflowRunId: "unmarked-v2",
+			executionId: "unmarked-v2-exec",
+		});
+		expect(h.calls).toHaveLength(1);
+	});
+
+	it("holds an active v2 run when dispatch is disabled and rejects non-master recovery", async () => {
+		const h = await startHarness({
+			templateSchema: 2,
+			configYaml: `${CONFIG_BASE}pipeline:\n  dag: false\n`,
+		});
+		const first = await post(h.url, {});
+		expect(first.status).toBe(200);
+		const scoped = await post(h.url, {}, SCOPED);
+		expect(scoped.status).toBe(409);
+		expect(scoped.json.code).toBe("WORKFLOW_RUN_ACTIVE");
+		delete process.env.FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH;
+		const held = await post(h.url, {});
+		expect(held.status).toBe(409);
+		expect(held.json.code).toBe("ACTIVE_WORKFLOW_RUN_RECOVERY_HELD");
+		expect(h.calls).toHaveLength(1);
+	});
+});
+
+describe("FLY-1385 operator run management", () => {
+	it("requires master auth and idempotently holds then terminates a quiescent run", async () => {
+		const h = await startHarness({});
+		h.store.materializeWorkflowRun({
+			runId: "operator-run",
+			issueId: "FLY-OPERATOR",
+			projectName: "flywheel",
+			taskCategory: "*",
+			claimsReadEnrolled: false,
+			actor: "test",
+		});
+		const invoke = (action: "hold" | "terminate", token: string, id: string) =>
+			fetch(`${h.url}/api/runs/operator-run/${action}`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					authorization: `Bearer ${token}`,
+				},
+				body: JSON.stringify({
+					reason: "operator recovery",
+					clientRequestId: id,
+				}),
+			});
+
+		expect((await invoke("hold", SCOPED, "deny")).status).toBe(403);
+		const held = await invoke("hold", MASTER, "hold-1");
+		expect(held.status).toBe(200);
+		expect(await held.json()).toMatchObject({
+			status: "held",
+			idempotentReplay: false,
+		});
+		const replay = await invoke("hold", MASTER, "hold-1");
+		expect(replay.status).toBe(200);
+		expect(await replay.json()).toMatchObject({
+			status: "held",
+			idempotentReplay: true,
+		});
+		const terminated = await invoke("terminate", MASTER, "terminate-1");
+		expect(terminated.status).toBe(200);
+		expect(await terminated.json()).toMatchObject({ status: "terminated" });
+		expect(h.store.getWorkflowRun("operator-run")?.status).toBe("terminated");
 	});
 });

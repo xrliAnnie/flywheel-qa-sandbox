@@ -86,8 +86,11 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 	beforeEach(async () => {
 		// FLY-869: these FSM-mapping tests bypass the new merge/QA ship gates (the
 		// approval gate is covered by ship-eligibility + dedicated integration tests).
-		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
+		vi.stubEnv("FLYWHEEL_MERGE_APPROVAL_GATE", "0");
+		vi.stubEnv("FLYWHEEL_QA_DONE_GATE", "0");
+		// These are legacy-session FSM tests. Keep the host Bridge's generalized
+		// claims rollout from changing their completion-path assertions.
+		vi.stubEnv("FLYWHEEL_WORKFLOW_CLAIMS_READ", "0");
 		runPostShipSpy.mockClear();
 		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
@@ -108,8 +111,7 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
-		delete process.env.FLYWHEEL_QA_DONE_GATE;
+		vi.unstubAllEnvs();
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});

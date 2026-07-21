@@ -502,13 +502,19 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
 			env.executionId,
 		);
-		const generalizedTeardown = this.store.observeEnrolledTeardown({
-			executionId: env.executionId,
-		});
-		if (generalizedTeardown.enrolled) {
-			if (generalizedTeardown.held) {
+		const generalizedExecution =
+			this.store.getGeneralizedWorkflowNodeForExecution(env.executionId);
+		if (generalizedExecution) {
+			const recorded = this.store.recordEnrolledTerminalSignal({
+				executionId: env.executionId,
+				sourceEventId: randomUUID(),
+				signal: "completed",
+				source: "direct-event-sink",
+				now,
+			});
+			if (!recorded.ok) {
 				console.error(
-					`[DirectEventSink] generalized completion held for ${env.executionId}: explicit completion receipt missing`,
+					`[DirectEventSink] generalized completion persistence refused for ${env.executionId}: ${recorded.reason}`,
 				);
 			}
 			return;
@@ -1112,15 +1118,29 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
 			env.executionId,
 		);
-		const generalizedTeardown = this.store.observeEnrolledTeardown({
-			executionId: env.executionId,
-		});
-		if (generalizedTeardown.enrolled) {
-			if (generalizedTeardown.held) {
+		const generalizedExecution =
+			this.store.getGeneralizedWorkflowNodeForExecution(env.executionId);
+		if (generalizedExecution) {
+			const recorded = this.store.recordEnrolledTerminalSignal({
+				executionId: env.executionId,
+				sourceEventId: randomUUID(),
+				signal: "failed",
+				failureKind: failure?.failureKind,
+				lastError: terminalError,
+				source: "direct-event-sink",
+				now,
+			});
+			if (!recorded.ok) {
 				console.error(
-					`[DirectEventSink] generalized failure held for ${env.executionId}: explicit completion receipt missing`,
+					`[DirectEventSink] generalized failure persistence refused for ${env.executionId}: ${recorded.reason}`,
 				);
+				return;
 			}
+			this.enqueueTerminalCommDbStatus(
+				env.executionId,
+				recorded.status === "blocked" ? "blocked" : "failed",
+				env.projectName,
+			);
 			return;
 		}
 		// FLY-793: pre-failure snapshot so a failure signal doesn't downgrade a

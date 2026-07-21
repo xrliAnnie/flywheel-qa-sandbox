@@ -22,7 +22,6 @@ import { computeEnvSha } from "../bridge/env-file-writer.js";
 import { applyFlagToggle } from "../bridge/flag-toggle.js";
 
 const LEVERS: DagControlName[] = [
-	"workflow_force_legacy",
 	"workflow_claims_write",
 	"workflow_claims_read",
 	"workflow_generalized_templates",
@@ -106,28 +105,24 @@ function templateOnWithoutPrereqs(p: ReturnType<EnvWorld["panel"]>): boolean {
 }
 
 describe("FLY-1344 QA — founder DAG apply pipeline (real toggle → resolver → panel)", () => {
-	it("production initial state reads forced_legacy with dispatch off", () => {
-		// The real production shape this PR ships against: force_legacy ON, four OFF.
+	it("production initial state is fail-closed with dispatch off", () => {
 		const world = new EnvWorld({
-			workflow_force_legacy: true,
 			workflow_claims_write: false,
 			workflow_claims_read: false,
 			workflow_generalized_templates: false,
 			workflow_template_dispatch: false,
 		});
 		const panel = world.panel();
-		expect(panel.shipReader).toBe("forced_legacy");
+		expect(panel.shipReader).toBe("blocked_fail_closed");
 		expect(panel.v1Dispatch.state).toBe("off");
 		expect(panel.v2Dispatch.state).toBe("off");
 		expect(panel.degradedFlags).toEqual([]);
 		expect(panel.presets.enableV1.enabled).toBe(true);
-		// From this state claims_read is still OFF → no phase-2 unlock yet.
 		expect(panel.presets.enableV1.phase2Command).toBeUndefined();
 	});
 
-	it("walking the enable-v1 sequence keeps the ship reader safe and dispatch consistent at every step", () => {
+	it("walking the enable-v1 sequence keeps dispatch consistent and ends on claims", () => {
 		const world = new EnvWorld({
-			workflow_force_legacy: true,
 			workflow_claims_write: false,
 			workflow_claims_read: false,
 			workflow_generalized_templates: false,
@@ -141,42 +136,30 @@ describe("FLY-1344 QA — founder DAG apply pipeline (real toggle → resolver �
 			const panel = world.panel();
 			// INVARIANT ①: template dispatch never turns on before both claims levers.
 			expect(templateOnWithoutPrereqs(panel), command).toBe(false);
-			// INVARIANT ②: until phase 2, the legacy fallback still guards ship.
-			expect(panel.shipReader, command).toBe("forced_legacy");
 			// dual-write keeps the two sources in agreement → never degraded mid-run.
 			expect(panel.degradedFlags, command).toEqual([]);
 		}
 
 		const done = world.panel();
 		expect(done.v1Dispatch.state).toBe("ready");
-		// claims_read is now confirmed ON under forced legacy → phase-2 unlock appears.
-		expect(done.presets.enableV1.phase2Command).toBe(
-			"flywheel-comm feature-flags apply --name workflow_force_legacy --to off",
-		);
+		expect(done.shipReader).toBe("claims");
+		expect(done.presets.enableV1.phase2Command).toBeUndefined();
 	});
 
-	it("phase-2 flips the ship reader from legacy fallback to claims with no divergence", () => {
+	it("fully enabled v1 reads claims with no second phase", () => {
 		const world = new EnvWorld({
-			workflow_force_legacy: true,
 			workflow_claims_write: true,
 			workflow_claims_read: true,
 			workflow_generalized_templates: false,
 			workflow_template_dispatch: true,
 		});
-		// v1 is fully enabled but legacy is still the reader (safe end of phase 1).
-		expect(world.panel().shipReader).toBe("forced_legacy");
-		const phase2 = world.panel().presets.enableV1.phase2Command;
-		expect(phase2).toBeTruthy();
-		world.apply(phase2 as string);
-		const after = world.panel();
-		expect(after.shipReader).toBe("claims");
-		expect(after.degradedFlags).toEqual([]);
-		expect(after.levers.workflow_force_legacy).toBe(false);
+		expect(world.panel().shipReader).toBe("claims");
+		expect(world.panel().presets.enableV1.phase2Command).toBeUndefined();
+		expect(world.panel().degradedFlags).toEqual([]);
 	});
 
-	it("the disable sequence restores the legacy fallback before tearing dispatch down", () => {
+	it("the disable sequence turns dispatch off before removing prerequisites", () => {
 		const world = new EnvWorld({
-			workflow_force_legacy: false, // claims-reader mode, DAG fully on
 			workflow_claims_write: true,
 			workflow_claims_read: true,
 			workflow_generalized_templates: true,
@@ -184,17 +167,17 @@ describe("FLY-1344 QA — founder DAG apply pipeline (real toggle → resolver �
 		});
 		expect(world.panel().shipReader).toBe("claims");
 		const commands = world.presetCommands("disable");
-		// First command must re-arm the legacy fallback (ship stays readable throughout).
+		// Dispatch is the first lever removed, so later prerequisite changes cannot
+		// leave an enabled but incomplete engine.
 		expect(commands[0]).toBe(
-			"flywheel-comm feature-flags apply --name workflow_force_legacy --to on",
+			"flywheel-comm feature-flags apply --name workflow_template_dispatch --to off",
 		);
 		for (const command of commands) {
 			world.apply(command);
-			// once force_legacy is back on it stays the reader for the rest of the teardown.
-			expect(world.panel().shipReader, command).not.toBe("blocked_fail_closed");
+			expect(templateOnWithoutPrereqs(world.panel()), command).toBe(false);
 		}
 		const done = world.panel();
-		expect(done.shipReader).toBe("forced_legacy");
+		expect(done.shipReader).toBe("blocked_fail_closed");
 		expect(done.v1Dispatch.state).toBe("off");
 		expect(done.v2Dispatch.state).toBe("off");
 	});

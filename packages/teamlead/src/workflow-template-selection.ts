@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { canonicalSubmissionDigest } from "flywheel-config";
+import {
+	collectRunQuiescenceEvidence,
+	type RunExecutionLivenessProbe,
+} from "./bridge/run-quiescence.js";
 import type { StateStore } from "./StateStore.js";
 import {
 	parseWorkflowRunSnapshot,
@@ -82,11 +86,13 @@ export function resolveWorkflowTemplateCandidateSchema(
  * legacy start path; a schema-v2 candidate either fully materializes or fails
  * closed without creating a run.
  */
-export function resolveWorkflowTemplateSelection(
+export async function resolveWorkflowTemplateSelection(
 	store: StateStore,
 	input: {
 		project: string;
 		issueId: string;
+		entryIssueAliases?: string[];
+		entryRootKey?: string;
 		taskCategory?: string;
 		leadTemplateId?: string;
 		leadReason?: string;
@@ -103,12 +109,13 @@ export function resolveWorkflowTemplateSelection(
 		 * FLY-1372: durable entry provenance, set ONLY by the pipeline.dag
 		 * dispatch entry — pinned atomically in the materialize transaction.
 		 */
-		entryKind?: "pipeline_dag_v1";
+		entryKind?: "pipeline_dag_v1" | "workflow_v2";
 		env?: Record<string, string | undefined>;
 		idFactory?: () => string;
 		now?: string;
+		probeRunExecutionLiveness?: RunExecutionLivenessProbe;
 	},
-): WorkflowTemplateSelectionResult | null {
+): Promise<WorkflowTemplateSelectionResult | null> {
 	const candidate = resolveWorkflowTemplateCandidate(store, input);
 	if (
 		Object.hasOwn(input, "candidateSchemaAtEntry") &&
@@ -121,9 +128,10 @@ export function resolveWorkflowTemplateSelection(
 	if (!candidate) return null;
 	const { category, binding, templateId, revision, schemaVersion } = candidate;
 	const env = input.env ?? process.env;
-	// Candidate-first compatibility: v1 remains exact legacy while dispatch is
-	// off. A v2 candidate never falls back to legacy.
-	if (schemaVersion === 1 && !isWorkflowTemplateDispatchEnabled(env)) {
+	// The primary dispatch flag is the rollback lever for BOTH schemas. When it
+	// is off, this function must not materialize an engine run; the route resumes
+	// the incumbent legacy policy (including three-stage entry) byte-for-byte.
+	if (!isWorkflowTemplateDispatchEnabled(env)) {
 		return null;
 	}
 	const blocked = workflowTemplateDispatchBlockReason(schemaVersion, env);
@@ -165,8 +173,9 @@ export function resolveWorkflowTemplateSelection(
 		reason,
 	});
 	const key = input.idempotencyKey.trim();
-	const prior = store.getWorkflowStartReservation(key);
-	if (prior) {
+	const resolveReplay = (
+		prior: NonNullable<ReturnType<StateStore["getWorkflowStartReservation"]>>,
+	): WorkflowTemplateSelectionResult => {
 		if (prior.selection_digest !== selectionDigest) {
 			throw new Error("workflow start idempotency key payload mismatch");
 		}
@@ -189,12 +198,72 @@ export function resolveWorkflowTemplateSelection(
 			node,
 			replayed: true,
 		};
-	}
+	};
+	const prior = store.getWorkflowStartReservation(key);
+	if (prior) return resolveReplay(prior);
+	let supersedeShadow:
+		| {
+				runId: string;
+				evidence: Awaited<ReturnType<typeof collectRunQuiescenceEvidence>>;
+				now: string;
+		  }
+		| undefined;
 	const active = store.getActiveWorkflowRunForIssue(input.issueId);
 	if (active) {
-		throw new Error(
-			`active workflow run reconciliation hold: ${active.run_id} is not this idempotent start`,
+		if (active.engine_owned !== 0) {
+			throw new Error(
+				`active workflow run reconciliation hold: ${active.run_id} is not this idempotent start`,
+			);
+		}
+		const evidence = await collectRunQuiescenceEvidence(
+			store,
+			active.run_id,
+			input.probeRunExecutionLiveness,
+			input.now ? () => new Date(input.now!) : undefined,
 		);
+		const racedReservation = store.getWorkflowStartReservation(key);
+		if (racedReservation) return resolveReplay(racedReservation);
+		const refreshedCandidate = resolveWorkflowTemplateCandidate(store, input);
+		const refreshedSelectionSource = input.leadTemplateId
+			? "lead"
+			: refreshedCandidate?.binding?.task_category === "*"
+				? "default"
+				: "binding";
+		const refreshedReason =
+			input.leadReason?.trim() ||
+			`${refreshedSelectionSource}:${refreshedCandidate?.binding?.task_category ?? category}`;
+		const refreshedSelectionDigest = refreshedCandidate
+			? canonicalSubmissionDigest({
+					project: input.project,
+					issueId: input.issueId,
+					category: refreshedCandidate.category,
+					templateId: refreshedCandidate.templateId,
+					revision: refreshedCandidate.revision.revision,
+					selectionSource: refreshedSelectionSource,
+					selectedBy: input.selectedBy,
+					reason: refreshedReason,
+				})
+			: undefined;
+		if (
+			!refreshedCandidate ||
+			refreshedCandidate.category !== category ||
+			refreshedCandidate.templateId !== templateId ||
+			refreshedCandidate.revision.revision !== revision.revision ||
+			refreshedCandidate.revision.manifest_digest !==
+				revision.manifest_digest ||
+			refreshedCandidate.schemaVersion !== schemaVersion ||
+			refreshedSelectionSource !== selectionSource ||
+			refreshedSelectionDigest !== selectionDigest
+		) {
+			throw new Error(
+				"workflow template candidate changed during shadow supersession probe",
+			);
+		}
+		supersedeShadow = {
+			runId: active.run_id,
+			evidence,
+			now: input.now ?? new Date().toISOString(),
+		};
 	}
 
 	const manifest = validateWorkflowManifest(JSON.parse(revision.manifest));
@@ -215,6 +284,8 @@ export function resolveWorkflowTemplateSelection(
 	const run = store.materializeWorkflowRun({
 		runId,
 		issueId: input.issueId,
+		entryIssueAliases: input.entryIssueAliases,
+		entryRootKey: input.entryRootKey,
 		projectName: input.project,
 		taskCategory: category,
 		templateId,
@@ -222,6 +293,7 @@ export function resolveWorkflowTemplateSelection(
 		actor: input.actor,
 		canonicalRoot: input.canonicalRoot,
 		...(input.entryKind ? { entryKind: input.entryKind } : {}),
+		...(supersedeShadow ? { supersedeShadow } : {}),
 		selection: {
 			source: selectionSource,
 			selectedBy: input.selectedBy,
@@ -234,6 +306,14 @@ export function resolveWorkflowTemplateSelection(
 			attempt: 1,
 			executionId,
 			createdAt: now,
+		},
+		expectedSelection: {
+			templateId,
+			revision: revision.revision,
+			manifestDigest: revision.manifest_digest,
+			schemaVersion,
+			selectionSource,
+			selectionDigest,
 		},
 		env: input.env,
 	});
@@ -274,31 +354,39 @@ export function recoverWorkflowStartSelection(
 		issueId: string;
 		projectName: string;
 		authKind: WorkflowRequestAuthKind;
+		runId?: string;
 	},
 ): WorkflowTemplateSelectionResult {
 	if (input.authKind !== "master") {
 		throw new Error("workflow start recovery requires master auth");
 	}
-	const run = store.getActiveWorkflowRunForIssue(input.issueId);
-	if (!run || run.entry_kind !== "pipeline_dag_v1") {
-		throw new Error("no active pipeline-dag run to recover for this issue");
+	const run = input.runId
+		? store.getWorkflowRun(input.runId)
+		: store.getActiveWorkflowRunForIssue(input.issueId);
+	if (!run || run.status !== "active" || run.engine_owned !== 1) {
+		throw new Error(
+			"no active engine-owned workflow run to recover for this issue",
+		);
+	}
+	if (run.issue_id !== input.issueId) {
+		throw new Error("active workflow run belongs to a different issue");
 	}
 	if (run.project_name !== input.projectName) {
-		throw new Error("active pipeline-dag run belongs to a different project");
+		throw new Error("active workflow run belongs to a different project");
 	}
 	if (!run.snapshot) {
-		throw new Error("active pipeline-dag run has no pinned snapshot");
+		throw new Error("active workflow run has no pinned snapshot");
 	}
 	const reservation = store.getWorkflowStartReservationForRun(run.run_id);
 	if (!reservation) {
-		throw new Error("active pipeline-dag run has no start reservation");
+		throw new Error("active workflow run has no start reservation");
 	}
 	const snapshot = parseWorkflowRunSnapshot(run.snapshot);
 	const node = snapshot.resolved.nodes.find(
 		(candidate) => candidate.id === reservation.node_id,
 	);
 	if (!node) {
-		throw new Error("active pipeline-dag run start node missing from snapshot");
+		throw new Error("active workflow run start node missing from snapshot");
 	}
 	const selectionSource =
 		run.selection_source === "lead" || run.selection_source === "binding"

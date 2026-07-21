@@ -474,6 +474,19 @@ describe("CommDB", () => {
 		});
 	});
 
+	describe("countMessagesFrom", () => {
+		it("returns an identity-bound activity cursor across message types", () => {
+			expect(db.countMessagesFrom("exec-cursor")).toBe(0);
+			const qId = db.insertQuestion("exec-cursor", "sub-lead", "Q?");
+			expect(db.countMessagesFrom("exec-cursor")).toBe(1);
+			db.insertResponse(qId, "sub-lead", "A");
+			expect(db.countMessagesFrom("exec-cursor")).toBe(1);
+			const inbound = db.insertQuestion("sub-lead", "exec-cursor", "reply?");
+			db.insertResponse(inbound, "exec-cursor", "receipt");
+			expect(db.countMessagesFrom("exec-cursor")).toBe(2);
+		});
+	});
+
 	describe("session CRUD", () => {
 		it("FLY-1066: migrates the blocked-era sessions schema and persists failed", () => {
 			const legacyPath = join(tmpDir, "fly1066-legacy.db");

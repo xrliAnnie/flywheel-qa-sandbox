@@ -11983,6 +11983,115 @@ export class StateStore {
 		this.save();
 	}
 
+	/**
+	 * FLY-1385 W8: durable legacy half of the workflow entry arbitration.
+	 * The matching engine half rechecks this claim in the same transaction that
+	 * materializes its run + start reservation. SQLite's writer serialization is
+	 * the linearization point; no mutex is held across the physical spawn.
+	 */
+	claimLegacyWorkflowEntry(input: {
+		issueId: string;
+		issueAliases?: string[];
+		rootKey?: string;
+		projectName: string;
+		executionId: string;
+		role?: string;
+	}):
+		| { ok: true }
+		| {
+				ok: false;
+				reason: "active_engine_run" | "legacy_entry_already_claimed";
+		  } {
+		let result:
+			| { ok: true }
+			| {
+					ok: false;
+					reason: "active_engine_run" | "legacy_entry_already_claimed";
+			  } = { ok: true };
+		this.db.transaction(() => {
+			const issueKeys = [
+				...new Set([input.issueId, ...(input.issueAliases ?? [])]),
+			];
+			const issuePlaceholders = issueKeys.map(() => "?").join(",");
+			const activeEngine = this.workflowSelectAll(
+				`SELECT run_id FROM workflow_run
+				  WHERE project_name = ? AND issue_id IN (${issuePlaceholders})
+				    AND status = 'active'
+				    AND engine_owned = 1 LIMIT 1`,
+				[input.projectName, ...issueKeys],
+			)[0];
+			if (activeEngine) {
+				result = { ok: false, reason: "active_engine_run" };
+				return;
+			}
+			const terminalPlaceholders = ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES.map(
+				() => "?",
+			).join(",");
+			this.db.run(
+				`UPDATE lifecycle_launch_claims
+				    SET state = 'closed', updated_at = datetime('now')
+				  WHERE root_uuid = ? AND project = ?
+				    AND COALESCE(role, 'main') = ?
+				    AND state IN ('starting', 'active') AND execution_id <> ?
+				    AND EXISTS (
+				      SELECT 1 FROM sessions s
+				       WHERE s.execution_id = lifecycle_launch_claims.execution_id
+				         AND s.status IN (${terminalPlaceholders})
+				    )`,
+				[
+					input.rootKey ?? input.issueId,
+					input.projectName,
+					input.role ?? "main",
+					input.executionId,
+					...ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES,
+				],
+			);
+			const competingClaim = this.workflowSelectAll(
+				`SELECT c.execution_id FROM lifecycle_launch_claims c
+				  LEFT JOIN sessions s ON s.execution_id = c.execution_id
+				  WHERE c.root_uuid = ? AND c.project = ?
+				    AND COALESCE(c.role, 'main') = ?
+				    AND c.state IN ('starting', 'active') AND c.execution_id <> ?
+				    AND (s.execution_id IS NULL OR s.status NOT IN (${terminalPlaceholders}))
+				  LIMIT 1`,
+				[
+					input.rootKey ?? input.issueId,
+					input.projectName,
+					input.role ?? "main",
+					input.executionId,
+					...ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES,
+				],
+			)[0];
+			if (competingClaim) {
+				result = { ok: false, reason: "legacy_entry_already_claimed" };
+				return;
+			}
+			this.db.run(
+				`INSERT INTO lifecycle_launch_claims
+				   (execution_id, root_uuid, project, role, state)
+				 VALUES (?, ?, ?, ?, 'starting')
+				 ON CONFLICT(execution_id) DO UPDATE SET
+				   root_uuid = excluded.root_uuid,
+				   project = excluded.project,
+				   role = excluded.role,
+				   state = CASE
+				     WHEN lifecycle_launch_claims.state IN ('closed', 'cancelled')
+				       THEN lifecycle_launch_claims.state
+				     ELSE 'starting'
+				   END,
+				   updated_at = datetime('now')`,
+				[
+					input.executionId,
+					input.rootKey ?? input.issueId,
+					input.projectName,
+					input.role ?? null,
+				],
+			);
+		});
+		this.save();
+		return result;
+	}
+
 	/** starting → active (session row + binding durably visible) or → closed. */
 	setLaunchClaimState(
 		executionId: string,
@@ -12290,6 +12399,63 @@ export class StateStore {
 				UNIQUE (run_id, seq)
 			)
 		`);
+		// FLY-1385: alert delivery is a durable outbox, not a best-effort side
+		// effect of the state transition. A lease generation fences late send
+		// results from an earlier worker; three failed attempts dead-letter.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_alert_outbox (
+				escalation_uid TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				state TEXT NOT NULL DEFAULT 'pending'
+				  CHECK (state IN ('pending','delivering','sent','failed')),
+				attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+				lease_owner TEXT,
+				lease_expires_at TEXT,
+				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_alert_delivery ON workflow_alert_outbox(state, lease_expires_at, created_at)",
+		);
+		// Founder A-strengthening: a successful dead-execution replacement leaves
+		// a durable identity-bound watch. It survives Bridge restarts; the patrol
+		// deletes it when its run stops being active or its bounded TTL expires.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_dead_execution_watch (
+				dead_execution_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL,
+				new_execution_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				observed_at TEXT NOT NULL,
+				baseline_json TEXT NOT NULL,
+				state TEXT NOT NULL DEFAULT 'active'
+				  CHECK (state IN ('active','tripped')),
+				tripped_at TEXT,
+				evidence_json TEXT
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_dead_execution_watch_active ON workflow_dead_execution_watch(state, observed_at)",
+		);
+		// Cursor by physical execution + lifecycle revision. The divergence sweep
+		// advances this in the same transaction as any emitted event.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_divergence_check (
+				execution_id TEXT PRIMARY KEY,
+				checked_lifecycle_revision INTEGER NOT NULL,
+				checked_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_sessions_status_revision ON sessions(status, lifecycle_revision)",
+		);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_decision_capability (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -13235,6 +13401,8 @@ export class StateStore {
 	materializeWorkflowRun(input: {
 		runId: string;
 		issueId: string;
+		entryIssueAliases?: string[];
+		entryRootKey?: string;
 		projectName: string;
 		taskCategory: string;
 		templateId?: string;
@@ -13255,12 +13423,25 @@ export class StateStore {
 			executionId: string;
 			createdAt: string;
 		};
+		expectedSelection?: {
+			templateId: string;
+			revision: number;
+			manifestDigest: string;
+			schemaVersion: 1 | 2;
+			selectionSource: "lead" | "binding" | "default";
+			selectionDigest: string;
+		};
 		/**
 		 * FLY-1372: durable entry provenance. Set ONLY by the pipeline.dag
 		 * dispatch entry; the DAG recovery domain filters on this marker so it
 		 * can never intercept existing v2 / explicit-v1 runs (NULL).
 		 */
-		entryKind?: "pipeline_dag_v1";
+		entryKind?: "pipeline_dag_v1" | "workflow_v2";
+		supersedeShadow?: {
+			runId: string;
+			evidence: RunQuiescenceEvidence[];
+			now: string;
+		};
 		env?: Record<string, string | undefined>;
 	}): WorkflowRunRow {
 		const binding = input.templateId
@@ -13343,6 +13524,141 @@ export class StateStore {
 					...(applied.override ? { override: applied.override } : {}),
 				});
 		this.db.transaction(() => {
+			if (input.expectedSelection) {
+				const expected = input.expectedSelection;
+				const currentTemplate = this.getWorkflowTemplate(expected.templateId);
+				const currentRevision = this.getWorkflowTemplateRevision(
+					expected.templateId,
+					expected.revision,
+				);
+				let currentSource: "lead" | "binding" | "default" | undefined;
+				let currentTemplateId: string | undefined;
+				if (expected.selectionSource === "lead") {
+					currentSource = input.templateId ? "lead" : undefined;
+					currentTemplateId = input.templateId;
+				} else {
+					const currentBinding = this.getWorkflowCategoryBinding(
+						input.projectName,
+						input.taskCategory,
+					);
+					currentSource = currentBinding
+						? currentBinding.task_category === "*"
+							? "default"
+							: "binding"
+						: undefined;
+					currentTemplateId = currentBinding?.template_id;
+				}
+				const currentSelectionDigest = canonicalSubmissionDigest({
+					project: input.projectName,
+					issueId: input.issueId,
+					category: input.taskCategory,
+					templateId: expected.templateId,
+					revision: expected.revision,
+					selectionSource: expected.selectionSource,
+					selectedBy: input.selection?.selectedBy,
+					reason: input.selection?.reason,
+				});
+				if (
+					!input.startReservation ||
+					input.startReservation.selectionDigest !== expected.selectionDigest ||
+					currentSelectionDigest !== expected.selectionDigest ||
+					currentTemplateId !== expected.templateId ||
+					currentSource !== expected.selectionSource ||
+					currentTemplate?.current_published_revision !== expected.revision ||
+					currentRevision?.manifest_digest !== expected.manifestDigest ||
+					currentRevision?.schema_version !== expected.schemaVersion
+				) {
+					throw new Error(
+						"workflow template candidate changed during materialization",
+					);
+				}
+			}
+			const supersededExecutions = input.supersedeShadow
+				? new Set(this.listRunAttributedExecutions(input.supersedeShadow.runId))
+				: new Set<string>();
+			if (input.startReservation) {
+				// FLY-1385 W8: engine half of the shared entry arbitration. Recheck
+				// durable legacy sessions + pre-spawn launch claims in THIS transaction,
+				// immediately before run/reservation creation. A quiescent shadow's own
+				// attributed executions are excluded because the same transaction below
+				// supersedes that observation-only run.
+				const entryIssueKeys = [
+					...new Set([input.issueId, ...(input.entryIssueAliases ?? [])]),
+				];
+				const entryIssuePlaceholders = entryIssueKeys.map(() => "?").join(",");
+				const competingLegacySession = this.workflowSelectAll(
+					`SELECT execution_id, status FROM sessions
+					  WHERE issue_id IN (${entryIssuePlaceholders})
+					     OR issue_identifier IN (${entryIssuePlaceholders})`,
+					[...entryIssueKeys, ...entryIssueKeys],
+				).find(
+					(row) =>
+						!supersededExecutions.has(row.execution_id as string) &&
+						!isStateStoreIrreversibleTerminalForZombie(row.status as string),
+				);
+				if (competingLegacySession) {
+					throw new Error(
+						`legacy_entry_already_claimed:${competingLegacySession.execution_id as string}`,
+					);
+				}
+				const competingLegacyClaim = this.workflowSelectAll(
+					`SELECT execution_id FROM lifecycle_launch_claims
+					  WHERE root_uuid = ? AND project = ?
+					    AND state IN ('starting', 'active')`,
+					[input.entryRootKey ?? input.issueId, input.projectName],
+				).find((row) => {
+					const executionId = row.execution_id as string;
+					if (supersededExecutions.has(executionId)) return false;
+					const session = this.getSession(executionId);
+					return (
+						!session ||
+						!isStateStoreIrreversibleTerminalForZombie(session.status)
+					);
+				});
+				if (competingLegacyClaim) {
+					throw new Error(
+						`legacy_entry_already_claimed:${competingLegacyClaim.execution_id as string}`,
+					);
+				}
+			}
+			if (input.supersedeShadow) {
+				const shadow = this.getWorkflowRun(input.supersedeShadow.runId);
+				if (
+					!shadow ||
+					shadow.status !== "active" ||
+					shadow.engine_owned !== 0 ||
+					shadow.project_name !== input.projectName ||
+					shadow.issue_id !== input.issueId
+				) {
+					throw new Error("active_run_not_shadow");
+				}
+				const quiescence = this.validateRunQuiescenceEvidenceTx(
+					shadow.run_id,
+					input.supersedeShadow.evidence,
+					input.supersedeShadow.now,
+				);
+				if (!quiescence.ok) {
+					throw new Error(
+						`shadow_run_live:${quiescence.executionIds.join(",")}`,
+					);
+				}
+				this.db.run(
+					"UPDATE workflow_run SET status = 'terminated' WHERE run_id = ? AND status = 'active' AND engine_owned = 0",
+					[shadow.run_id],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("shadow_run_state_changed");
+				}
+				this.appendWorkflowRunEventCheckedTx({
+					runId: shadow.run_id,
+					eventUid: `run_terminated:${shadow.run_id}:supersession`,
+					kind: "run_terminated_by_supersession",
+					payload: {
+						reason: "superseded_by_engine_start",
+						at: input.supersedeShadow.now,
+					},
+				});
+			}
 			this.db.run(
 				`INSERT INTO workflow_run
 				 (run_id, issue_id, project_name, template_id, template_revision,
@@ -13391,6 +13707,21 @@ export class StateStore {
 						input.startReservation.createdAt,
 					],
 				);
+				if (input.entryKind) {
+					this.allocateWorkflowLaunchOrdinalTx(
+						input.runId,
+						input.startReservation.nodeId,
+						input.startReservation.attempt,
+						input.startReservation.executionId,
+					);
+					this.upsertWorkflowRunNodeTx({
+						runId: input.runId,
+						nodeId: input.startReservation.nodeId,
+						attempt: input.startReservation.attempt,
+						state: "pending",
+						executionId: input.startReservation.executionId,
+					});
+				}
 			}
 			if (applied.override) {
 				this.db.run(
@@ -13982,7 +14313,7 @@ export class StateStore {
 					input.absoluteDeadlineAt,
 				],
 			);
-			this.appendWorkflowRunEventTx({
+			this.appendWorkflowRunEventCheckedTx({
 				runId: context.binding.run_id,
 				eventUid: `output_credential_rotated:${input.executionId}:${input.generation}:${input.now}`,
 				kind: "output_credential_rotated",
@@ -14797,6 +15128,19 @@ export class StateStore {
 		now?: string;
 		env?: Record<string, string | undefined>;
 		idempotencyKey?: string;
+		dispatchResolution?: {
+			dispatch: {
+				vendor: "claude" | "codex";
+				model: string;
+				effort?: "low" | "medium" | "high" | "xhigh";
+			};
+			source:
+				| "current_config"
+				| "live_template"
+				| "snapshot_fallback"
+				| "approved_design_fallback";
+			audit: boolean;
+		};
 	}): GeneralizedWorkflowAdmissionResult {
 		const env = input.env ?? process.env;
 		const now = input.now ?? new Date().toISOString();
@@ -14834,6 +15178,8 @@ export class StateStore {
 		if (!node.dispatch || node.type === "gate") {
 			return { ok: false, reason: "not_start_node" };
 		}
+		const resolvedDispatch =
+			input.dispatchResolution?.dispatch ?? node.dispatch;
 		if (
 			node.capabilities.qa_verdict_emitter &&
 			node.capabilities.produces_output
@@ -14856,7 +15202,18 @@ export class StateStore {
 			) {
 				return { ok: false, reason: "review_output_producer_required" };
 			}
-			if (producers[0].dispatch.vendor === node.dispatch.vendor) {
+			const producerAttempt = this.listWorkflowRunNodes(
+				input.runId,
+				producers[0].id,
+			)
+				.filter((candidate) => candidate.execution_id)
+				.sort((left, right) => right.attempt - left.attempt)[0];
+			const producerRuntime = producerAttempt?.execution_id
+				? this.getWorkflowExecutionRuntime(producerAttempt.execution_id)
+				: undefined;
+			const producerVendor =
+				producerRuntime?.vendor ?? producers[0].dispatch.vendor;
+			if (producerVendor === resolvedDispatch.vendor) {
 				return { ok: false, reason: "same_vendor_review" };
 			}
 		}
@@ -14947,14 +15304,28 @@ export class StateStore {
 					input.runId,
 					input.nodeId,
 					input.attempt,
-					node.dispatch!.vendor,
-					node.dispatch!.model,
-					node.dispatch!.effort ?? "",
-					node.dispatch!.vendor,
+					resolvedDispatch.vendor,
+					resolvedDispatch.model,
+					resolvedDispatch.effort ?? "",
+					resolvedDispatch.vendor,
 					canonicalSubmissionDigest(node.capabilities),
 					now,
 				],
 			);
+			if (input.dispatchResolution?.audit) {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `vendor_resolved:${input.runId}:${input.nodeId}:${input.attempt}:${input.executionId}`,
+					kind: "dispatch_vendor_resolved",
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					payload: {
+						attempt: input.attempt,
+						dispatch: resolvedDispatch,
+						source: input.dispatchResolution.source,
+					},
+				});
+			}
 			if (node.capabilities.produces_output) {
 				this.db.run(
 					`UPDATE workflow_output_credential
@@ -15218,6 +15589,1310 @@ export class StateStore {
 			);
 	}
 
+	/**
+	 * Persist the terminal signal for an enrolled execution without invoking
+	 * any legacy completion hooks. The lifecycle event, fixed terminal session
+	 * projection, and teardown fact share one SQLite commit.
+	 */
+	recordEnrolledTerminalSignal(input: {
+		executionId: string;
+		sourceEventId: string;
+		signal: "completed" | "failed";
+		failureKind?: string;
+		lastError?: string;
+		source: string;
+		now?: string;
+	}):
+		| {
+				ok: true;
+				idempotentReplay: boolean;
+				status: "completed" | "failed" | "blocked";
+				runId: string;
+				nodeId: string;
+		  }
+		| { ok: false; reason: string } {
+		const now = input.now ?? new Date().toISOString();
+		if (
+			!input.executionId ||
+			!input.sourceEventId ||
+			!input.source ||
+			!StateStore.workflowFiniteTimestamp(now)
+		) {
+			return { ok: false, reason: "invalid_terminal_signal" };
+		}
+		const context = this.generalizedExecutionContext(input.executionId);
+		if (!context) return { ok: false, reason: "not_enrolled" };
+		const status: "completed" | "failed" | "blocked" =
+			input.signal === "completed"
+				? "completed"
+				: input.failureKind === "goal_blocked"
+					? "blocked"
+					: "failed";
+		const eventType =
+			input.signal === "completed" ? "session_completed" : "session_failed";
+		let idempotentReplay = false;
+		let refusal: string | undefined;
+		this.db.transaction(() => {
+			const priorEvent = this.workflowSelectAll(
+				"SELECT * FROM session_events WHERE event_id = ?",
+				[input.sourceEventId],
+			)[0];
+			if (priorEvent) {
+				let priorPayload: Record<string, unknown> | undefined;
+				try {
+					priorPayload = JSON.parse(
+						String(priorEvent.payload ?? "null"),
+					) as Record<string, unknown>;
+				} catch {
+					priorPayload = undefined;
+				}
+				if (
+					priorEvent.execution_id !== input.executionId ||
+					priorEvent.event_type !== eventType ||
+					priorEvent.source !== input.source ||
+					!priorPayload ||
+					(priorPayload.failureKind ?? null) !== (input.failureKind ?? null) ||
+					(priorPayload.lastError ?? null) !== (input.lastError ?? null)
+				) {
+					refusal = "terminal_signal_conflict";
+					return;
+				}
+				idempotentReplay = true;
+				return;
+			} else {
+				this.db.run(
+					`INSERT INTO session_events
+					   (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
+					 VALUES (?, ?, ?, ?, ?, 'info', ?, ?)`,
+					[
+						input.sourceEventId,
+						input.executionId,
+						context.run.issue_id,
+						context.run.project_name,
+						eventType,
+						JSON.stringify({
+							failureKind: input.failureKind ?? null,
+							lastError: input.lastError ?? null,
+						}),
+						input.source,
+					],
+				);
+			}
+
+			const previousStatus = this.getSession(input.executionId)?.status;
+			this.db.run(
+				`INSERT INTO sessions
+				   (execution_id, issue_id, project_name, status, last_activity_at,
+				    last_error, chat_thread_role, workflow_node_id)
+				 VALUES (?, ?, ?, ?, ?, ?, 'main', ?)
+				 ON CONFLICT(execution_id) DO UPDATE SET
+				   status = excluded.status,
+				   last_activity_at = excluded.last_activity_at,
+				   last_error = COALESCE(excluded.last_error, sessions.last_error),
+				   workflow_node_id = CASE
+				     WHEN sessions.workflow_node_id IS NULL THEN excluded.workflow_node_id
+				     ELSE sessions.workflow_node_id END`,
+				[
+					input.executionId,
+					context.run.issue_id,
+					context.run.project_name,
+					status,
+					now,
+					input.lastError ?? null,
+					context.binding.node_id,
+				],
+			);
+			this.applyTerminalTimestamp(input.executionId, previousStatus, status);
+			if (previousStatus && previousStatus !== status) {
+				this.bumpLifecycleRevision(input.executionId);
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: context.binding.run_id,
+				eventUid: `teardown_recorded:${context.binding.run_id}:${input.executionId}:${input.sourceEventId}`,
+				kind: "generalized_teardown_recorded",
+				nodeId: context.binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					sourceEventId: input.sourceEventId,
+					signal: input.signal,
+					status,
+					failureKind: input.failureKind ?? null,
+					at: now,
+				},
+			});
+		});
+		if (refusal) return { ok: false, reason: refusal };
+		this.save();
+		return {
+			ok: true,
+			idempotentReplay,
+			status,
+			runId: context.binding.run_id,
+			nodeId: context.binding.node_id,
+		};
+	}
+
+	hasWorkflowExecutionTeardownFact(
+		runId: string,
+		nodeId: string,
+		executionId: string,
+	): boolean {
+		return (
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_run_event
+				  WHERE run_id = ? AND node_id = ? AND execution_id = ?
+				    AND kind = 'generalized_teardown_recorded' LIMIT 1`,
+				[runId, nodeId, executionId],
+			).length > 0
+		);
+	}
+
+	listRunAttributedExecutions(runId: string): string[] {
+		return this.workflowSelectAll(
+			`SELECT execution_id FROM (
+			   SELECT execution_id FROM workflow_run_node
+			    WHERE run_id = ? AND execution_id IS NOT NULL
+			   UNION
+			   SELECT execution_id FROM workflow_side_effect_ledger
+			    WHERE run_id = ?
+			   UNION
+			   SELECT execution_id FROM workflow_execution_binding
+			    WHERE run_id = ?
+			 ) ORDER BY execution_id`,
+			[runId, runId, runId],
+		).map((row) => row.execution_id as string);
+	}
+
+	private validateRunQuiescenceEvidenceTx(
+		runId: string,
+		evidence: RunQuiescenceEvidence[],
+		now: string,
+	): { ok: true } | { ok: false; executionIds: string[] } {
+		const attributed = this.listRunAttributedExecutions(runId);
+		const byExecution = new Map(
+			evidence.map((item) => [item.executionId, item]),
+		);
+		const live = new Set<string>();
+		for (const executionId of attributed) {
+			const observed = byExecution.get(executionId);
+			const observedMs = observed ? Date.parse(observed.observedAt) : NaN;
+			const ageMs = Date.parse(now) - observedMs;
+			if (
+				!observed ||
+				!Number.isFinite(observedMs) ||
+				ageMs < 0 ||
+				ageMs > 30_000
+			) {
+				live.add(executionId);
+				continue;
+			}
+			const session = this.getSession(executionId);
+			if (!session) {
+				if (
+					observed.sessionStatus !== null ||
+					observed.lifecycleRevision !== null ||
+					observed.liveness !== "dead"
+				) {
+					live.add(executionId);
+				}
+				continue;
+			}
+			if (
+				observed.sessionStatus !== session.status ||
+				observed.lifecycleRevision !== session.lifecycle_revision ||
+				!isStateStoreIrreversibleTerminalForZombie(session.status)
+			) {
+				live.add(executionId);
+				continue;
+			}
+			let trustedZombie = false;
+			if (observed.trustedZombieEventUid) {
+				const marker = this.workflowSelectAll(
+					"SELECT payload FROM lead_events WHERE event_id = ? LIMIT 1",
+					[observed.trustedZombieEventUid],
+				)[0];
+				try {
+					const payload = marker?.payload
+						? (JSON.parse(marker.payload as string) as Record<string, unknown>)
+						: undefined;
+					trustedZombie =
+						observed.trustedZombieEventUid === `zombie-${executionId}` &&
+						(payload?.executionId === executionId ||
+							payload?.execution_id === executionId);
+				} catch {
+					trustedZombie = false;
+				}
+			}
+			if (observed.liveness !== "dead" && !trustedZombie) {
+				live.add(executionId);
+			}
+		}
+		for (const executionId of byExecution.keys()) {
+			if (!attributed.includes(executionId)) live.add(executionId);
+		}
+		return live.size === 0
+			? { ok: true }
+			: { ok: false, executionIds: [...live].sort() };
+	}
+
+	private changeWorkflowRunStateByOperator(input: {
+		runId: string;
+		reason: string;
+		clientRequestId: string;
+		principal: string;
+		evidence: RunQuiescenceEvidence[];
+		now: string;
+		target: "held" | "terminated";
+	}): WorkflowRunOperatorResult {
+		if (
+			!input.runId ||
+			!input.reason ||
+			input.reason.length > 500 ||
+			!input.clientRequestId ||
+			!input.principal ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_operator_request" };
+		}
+		let result: WorkflowRunOperatorResult = {
+			ok: false,
+			reason: "operator_change_not_committed",
+		};
+		this.db.transaction(() => {
+			const eventUid = `run_${input.target === "held" ? "held_by_operator" : "terminated"}:${input.runId}:${input.clientRequestId}`;
+			const prior = this.workflowSelectAll(
+				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			)[0];
+			if (prior) {
+				try {
+					const payload = JSON.parse(prior.payload as string) as Record<
+						string,
+						unknown
+					>;
+					if (
+						payload.reason !== input.reason ||
+						payload.principal !== input.principal ||
+						payload.status !== input.target
+					) {
+						result = { ok: false, reason: "operator_request_conflict" };
+						return;
+					}
+					result = {
+						ok: true,
+						status: input.target,
+						idempotentReplay: true,
+					};
+					return;
+				} catch {
+					result = { ok: false, reason: "operator_request_conflict" };
+					return;
+				}
+			}
+			const run = this.getWorkflowRun(input.runId);
+			const allowed =
+				input.target === "held"
+					? run?.status === "active"
+					: run?.status === "active" || run?.status === "held";
+			if (!run || !allowed) {
+				result = { ok: false, reason: "run_not_manageable" };
+				return;
+			}
+			const quiescence = this.validateRunQuiescenceEvidenceTx(
+				input.runId,
+				input.evidence,
+				input.now,
+			);
+			if (!quiescence.ok) {
+				result = {
+					ok: false,
+					reason: "run_has_live_executions",
+					executionIds: quiescence.executionIds,
+				};
+				return;
+			}
+			this.db.run(
+				"UPDATE workflow_run SET status = ? WHERE run_id = ? AND status = ?",
+				[input.target, input.runId, run.status],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "run_state_changed" };
+				return;
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid,
+				kind:
+					input.target === "held"
+						? "run_held_by_operator"
+						: "run_terminated_by_operator",
+				payload: {
+					reason: input.reason,
+					principal: input.principal,
+					status: input.target,
+					at: input.now,
+				},
+			});
+			result = {
+				ok: true,
+				status: input.target,
+				idempotentReplay: false,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	holdWorkflowRunByOperator(
+		input: Omit<
+			Parameters<StateStore["changeWorkflowRunStateByOperator"]>[0],
+			"target"
+		>,
+	): WorkflowRunOperatorResult {
+		return this.changeWorkflowRunStateByOperator({ ...input, target: "held" });
+	}
+
+	terminateWorkflowRunByOperator(
+		input: Omit<
+			Parameters<StateStore["changeWorkflowRunStateByOperator"]>[0],
+			"target"
+		>,
+	): WorkflowRunOperatorResult {
+		return this.changeWorkflowRunStateByOperator({
+			...input,
+			target: "terminated",
+		});
+	}
+
+	private enqueueWorkflowEngineAlertTx(input: {
+		escalationUid: string;
+		runId: string;
+		payload: WorkflowEngineAlertPayload;
+		now: string;
+	}): void {
+		const payloadJson = JSON.stringify(input.payload);
+		const existing = this.workflowSelectAll(
+			"SELECT run_id, payload_json FROM workflow_alert_outbox WHERE escalation_uid = ?",
+			[input.escalationUid],
+		)[0];
+		if (existing) {
+			if (
+				existing.run_id !== input.runId ||
+				existing.payload_json !== payloadJson
+			) {
+				throw new Error(`workflow_alert_uid_conflict:${input.escalationUid}`);
+			}
+			return;
+		}
+		this.db.run(
+			`INSERT INTO workflow_alert_outbox
+			   (escalation_uid, run_id, payload_json, state, attempt, generation,
+			    created_at, updated_at)
+			 VALUES (?, ?, ?, 'pending', 0, 0, ?, ?)`,
+			[input.escalationUid, input.runId, payloadJson, input.now, input.now],
+		);
+	}
+
+	enqueueWorkflowEngineAlert(input: {
+		escalationUid: string;
+		runId: string;
+		payload: WorkflowEngineAlertPayload;
+		now?: string;
+	}): void {
+		const now = input.now ?? new Date().toISOString();
+		this.db.transaction(() => {
+			this.enqueueWorkflowEngineAlertTx({ ...input, now });
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `alert_enqueued:${input.escalationUid}`,
+				kind: "workflow_engine_alert_enqueued",
+				payload: { escalationUid: input.escalationUid },
+			});
+		});
+		this.save();
+	}
+
+	private workflowEngineAlertPayload(input: {
+		escalationUid: string;
+		runId: string;
+		issueId: string;
+		nodeId: string;
+		executionId: string;
+		reason: string;
+		disposition: "held" | "design_fallback";
+		identity: WorkflowEngineAlertIdentity;
+	}): WorkflowEngineAlertPayload {
+		const fallback = input.disposition === "design_fallback";
+		return {
+			leadId: input.identity.leadId,
+			projectName: input.identity.projectName,
+			eventId: input.escalationUid,
+			eventType: "workflow_engine_escalation",
+			severity: "severe",
+			sessionKey: `wf:${input.runId}`,
+			title: fallback
+				? `Workflow design fallback used for ${input.issueId}`
+				: `Workflow run held for ${input.issueId}`,
+			body: fallback
+				? `Run ${input.runId} node ${input.nodeId}: Fable was unavailable; the one approved fallback to GPT-5.6 was selected. Reason: ${input.reason}.`
+				: `Run ${input.runId} node ${input.nodeId} was held after execution ${input.executionId}. Reason: ${input.reason}. Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`,
+			metadata: {
+				workflowEngine: {
+					runId: input.runId,
+					issueId: input.issueId,
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					disposition: input.disposition,
+					leadResolution: input.identity.leadResolution,
+				},
+			},
+		};
+	}
+
+	private workflowDeadExecutionAlertPayload(input: {
+		escalationUid: string;
+		eventType: "workflow_engine_escalation" | "workflow_engine_issue_alert";
+		runId: string;
+		issueId: string;
+		nodeId: string;
+		executionId: string;
+		disposition:
+			| "dead_execution_activity_after_replacement"
+			| "repeated_dead_execution_pattern";
+		body: string;
+		identity: WorkflowEngineAlertIdentity;
+	}): WorkflowEngineAlertPayload {
+		const falsePositive =
+			input.disposition === "dead_execution_activity_after_replacement";
+		return {
+			leadId: input.identity.leadId,
+			projectName: input.identity.projectName,
+			eventId: input.escalationUid,
+			eventType: input.eventType,
+			severity: "severe",
+			sessionKey: `wf:${input.runId}`,
+			title: falsePositive
+				? `FALSE-POSITIVE dead execution detected for ${input.issueId}`
+				: `Repeated dead executions detected for ${input.issueId}`,
+			body: input.body,
+			metadata: {
+				workflowEngine: {
+					runId: input.runId,
+					issueId: input.issueId,
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					disposition: input.disposition,
+					leadResolution: input.identity.leadResolution,
+				},
+			},
+		};
+	}
+
+	private workflowDeadExecutionWatchRow(
+		row: Record<string, unknown>,
+	): WorkflowDeadExecutionWatchRow {
+		return {
+			dead_execution_id: row.dead_execution_id as string,
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			new_execution_id: row.new_execution_id as string,
+			project_name: row.project_name as string,
+			issue_id: row.issue_id as string,
+			observed_at: row.observed_at as string,
+			baseline: JSON.parse(
+				row.baseline_json as string,
+			) as WorkflowDeadExecutionActivityBaseline,
+			state: row.state as "active" | "tripped",
+			tripped_at: (row.tripped_at as string) ?? null,
+			evidence: row.evidence_json
+				? (JSON.parse(
+						row.evidence_json as string,
+					) as WorkflowDeadExecutionActivityEvidence)
+				: null,
+		};
+	}
+
+	getWorkflowDeadExecutionWatch(
+		deadExecutionId: string,
+	): WorkflowDeadExecutionWatchRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_dead_execution_watch WHERE dead_execution_id = ?",
+			[deadExecutionId],
+		)[0];
+		return row ? this.workflowDeadExecutionWatchRow(row) : undefined;
+	}
+
+	listActiveWorkflowDeadExecutionWatches(
+		limit = 200,
+		after?: { observedAt: string; deadExecutionId: string },
+	): WorkflowDeadExecutionWatchRow[] {
+		const bounded = Math.max(1, Math.min(200, Math.floor(limit)));
+		const afterClause = after
+			? "AND (observed_at > ? OR (observed_at = ? AND dead_execution_id > ?))"
+			: "";
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_dead_execution_watch
+			  WHERE state = 'active' ${afterClause}
+			  ORDER BY observed_at, dead_execution_id LIMIT ?`,
+			after
+				? [after.observedAt, after.observedAt, after.deadExecutionId, bounded]
+				: [bounded],
+		).map((row) => this.workflowDeadExecutionWatchRow(row));
+	}
+
+	pruneWorkflowDeadExecutionWatches(input: {
+		now: string;
+		ttlMs: number;
+		limit?: number;
+	}): number {
+		const nowMs = Date.parse(input.now);
+		if (
+			!Number.isFinite(nowMs) ||
+			!Number.isFinite(input.ttlMs) ||
+			input.ttlMs <= 0
+		) {
+			throw new Error("invalid_dead_execution_watch_ttl");
+		}
+		const bounded = Math.max(1, Math.min(200, Math.floor(input.limit ?? 200)));
+		const cutoff = new Date(nowMs - input.ttlMs).toISOString();
+		const expired = this.workflowSelectAll(
+			`SELECT w.dead_execution_id
+			   FROM workflow_dead_execution_watch w
+			   LEFT JOIN workflow_run r ON r.run_id = w.run_id
+			  WHERE datetime(w.observed_at) <= datetime(?)
+			     OR r.run_id IS NULL
+			     OR r.status != 'active'
+			  ORDER BY CASE WHEN r.run_id IS NULL OR r.status != 'active' THEN 0 ELSE 1 END,
+			           w.observed_at, w.dead_execution_id
+			  LIMIT ?`,
+			[cutoff, bounded],
+		).map((row) => row.dead_execution_id as string);
+		if (expired.length === 0) return 0;
+		const placeholders = expired.map(() => "?").join(", ");
+		this.db.run(
+			`DELETE FROM workflow_dead_execution_watch
+			  WHERE dead_execution_id IN (${placeholders})`,
+			expired,
+		);
+		const pruned = this.db.getRowsModified();
+		if (pruned > 0) this.save();
+		return pruned;
+	}
+
+	tripWorkflowDeadExecutionWatch(input: {
+		deadExecutionId: string;
+		evidence: WorkflowDeadExecutionActivityEvidence;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.deadExecutionId ||
+			!input.evidence.detail ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_dead_execution_activity" };
+		}
+		if (input.evidence.kind === "tmux_output") {
+			return { ok: false, reason: "weak_dead_execution_activity" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "watch_not_found",
+		};
+		this.db.transaction(() => {
+			const row = this.workflowSelectAll(
+				"SELECT * FROM workflow_dead_execution_watch WHERE dead_execution_id = ?",
+				[input.deadExecutionId],
+			)[0];
+			if (!row) return;
+			if (row.state === "tripped") {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			const evidenceJson = JSON.stringify(input.evidence);
+			this.db.run(
+				`UPDATE workflow_dead_execution_watch
+				    SET state = 'tripped', tripped_at = ?, evidence_json = ?
+				  WHERE dead_execution_id = ? AND state = 'active'`,
+				[input.now, evidenceJson, input.deadExecutionId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "watch_transition_raced" };
+				return;
+			}
+			const escalationUid = `dead_activity:${row.run_id}:${row.node_id}:${row.attempt}:${input.deadExecutionId}`;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: row.run_id as string,
+				eventUid: escalationUid,
+				kind: "dead_execution_activity_after_replacement",
+				nodeId: row.node_id as string,
+				executionId: input.deadExecutionId,
+				payload: {
+					attempt: Number(row.attempt),
+					newExecutionId: row.new_execution_id as string,
+					evidence: input.evidence,
+					at: input.now,
+				},
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid,
+				runId: row.run_id as string,
+				now: input.now,
+				payload: this.workflowDeadExecutionAlertPayload({
+					escalationUid,
+					eventType: "workflow_engine_escalation",
+					runId: row.run_id as string,
+					issueId: row.issue_id as string,
+					nodeId: row.node_id as string,
+					executionId: input.deadExecutionId,
+					disposition: "dead_execution_activity_after_replacement",
+					body: `Execution ${input.deadExecutionId} was replaced as dead, then produced new ${input.evidence.kind} activity (${input.evidence.detail}). Treat the prior death verdict as a confirmed false positive and inspect both executions immediately.`,
+					identity: input.alertIdentity,
+				}),
+			});
+			const issueAlertUid = `${escalationUid}:issue`;
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: issueAlertUid,
+				runId: row.run_id as string,
+				now: input.now,
+				payload: this.workflowDeadExecutionAlertPayload({
+					escalationUid: issueAlertUid,
+					eventType: "workflow_engine_issue_alert",
+					runId: row.run_id as string,
+					issueId: row.issue_id as string,
+					nodeId: row.node_id as string,
+					executionId: input.deadExecutionId,
+					disposition: "dead_execution_activity_after_replacement",
+					body: `Execution ${input.deadExecutionId} was replaced as dead, then produced new ${input.evidence.kind} activity (${input.evidence.detail}). Treat the prior death verdict as a confirmed false positive and inspect both executions immediately.`,
+					identity: input.alertIdentity,
+				}),
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	getWorkflowAlertOutbox(
+		escalationUid: string,
+	): WorkflowAlertOutboxRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_alert_outbox WHERE escalation_uid = ?",
+			[escalationUid],
+		)[0];
+		return row ? workflowAlertOutboxRow(row) : undefined;
+	}
+
+	listWorkflowAlertOutbox(): WorkflowAlertOutboxRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_alert_outbox ORDER BY created_at, escalation_uid",
+			[],
+		).map(workflowAlertOutboxRow);
+	}
+
+	claimNextWorkflowAlert(input: {
+		ownerId: string;
+		now: string;
+		leaseExpiresAt: string;
+	}): WorkflowAlertDeliveryClaim | undefined {
+		if (
+			!input.ownerId ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.leaseExpiresAt) ||
+			Date.parse(input.leaseExpiresAt) <= Date.parse(input.now)
+		) {
+			throw new Error("invalid_workflow_alert_lease");
+		}
+		let claimed: WorkflowAlertDeliveryClaim | undefined;
+		this.db.transaction(() => {
+			const candidate = this.workflowSelectAll(
+				`SELECT * FROM workflow_alert_outbox
+				  WHERE attempt < 3 AND (
+				    state = 'pending' OR
+				    (state = 'delivering' AND lease_expires_at <= ?)
+				  )
+				  ORDER BY created_at, escalation_uid LIMIT 1`,
+				[input.now],
+			)[0];
+			if (!candidate) return;
+			const generation = Number(candidate.generation) + 1;
+			this.db.run(
+				`UPDATE workflow_alert_outbox
+				    SET state = 'delivering', attempt = attempt + 1,
+				        lease_owner = ?, lease_expires_at = ?, generation = ?,
+				        updated_at = ?, last_error = NULL
+				  WHERE escalation_uid = ? AND generation = ? AND attempt < 3
+				    AND (state = 'pending' OR
+				         (state = 'delivering' AND lease_expires_at <= ?))`,
+				[
+					input.ownerId,
+					input.leaseExpiresAt,
+					generation,
+					input.now,
+					candidate.escalation_uid,
+					candidate.generation,
+					input.now,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			claimed = {
+				escalationUid: candidate.escalation_uid as string,
+				runId: candidate.run_id as string,
+				payload: JSON.parse(candidate.payload_json as string),
+				attempt: Number(candidate.attempt) + 1,
+				generation,
+				ownerId: input.ownerId,
+			};
+		});
+		if (claimed) this.save();
+		return claimed;
+	}
+
+	finishWorkflowAlertDelivery(input: {
+		escalationUid: string;
+		ownerId: string;
+		generation: number;
+		outcome: "sent" | "failed";
+		error?: string;
+		now: string;
+	}):
+		| { ok: true; state: "pending" | "sent" | "failed" }
+		| { ok: false; reason: string } {
+		let result:
+			| { ok: true; state: "pending" | "sent" | "failed" }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_alert_delivery_generation",
+		};
+		this.db.transaction(() => {
+			const row = this.workflowSelectAll(
+				"SELECT * FROM workflow_alert_outbox WHERE escalation_uid = ?",
+				[input.escalationUid],
+			)[0];
+			if (
+				!row ||
+				row.state !== "delivering" ||
+				row.lease_owner !== input.ownerId ||
+				Number(row.generation) !== input.generation
+			) {
+				return;
+			}
+			const attempt = Number(row.attempt);
+			const state =
+				input.outcome === "sent" ? "sent" : attempt >= 3 ? "failed" : "pending";
+			this.db.run(
+				`UPDATE workflow_alert_outbox
+				    SET state = ?, lease_owner = NULL, lease_expires_at = NULL,
+				        last_error = ?, updated_at = ?
+				  WHERE escalation_uid = ? AND state = 'delivering'
+				    AND lease_owner = ? AND generation = ?`,
+				[
+					state,
+					input.outcome === "failed"
+						? (input.error ?? "delivery_failed")
+						: null,
+					input.now,
+					input.escalationUid,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			if (state === "sent") {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: row.run_id as string,
+					eventUid: `alert_posted:${input.escalationUid}`,
+					kind: "workflow_engine_alert_posted",
+					payload: {
+						escalationUid: input.escalationUid,
+						attempt,
+					},
+				});
+			}
+			result = { ok: true, state };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	listWorkflowDivergenceCandidates(limit = 200): WorkflowDivergenceCandidate[] {
+		const bounded = Math.max(1, Math.min(200, Math.floor(limit)));
+		const statuses = ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES.map(() => "?").join(
+			",",
+		);
+		return this.workflowSelectAll(
+			`SELECT n.run_id, n.node_id, n.attempt, n.execution_id,
+			        s.status AS session_status, s.lifecycle_revision
+			   FROM workflow_run_node n
+			   JOIN workflow_run r ON r.run_id = n.run_id AND r.engine_owned = 1
+			   JOIN sessions s ON s.execution_id = n.execution_id
+			   LEFT JOIN workflow_divergence_check c
+			     ON c.execution_id = n.execution_id
+			  WHERE n.state = 'done'
+			    AND s.status IN (${statuses})
+			    AND s.lifecycle_revision > COALESCE(c.checked_lifecycle_revision, -1)
+			  ORDER BY s.lifecycle_revision, n.execution_id
+			  LIMIT ?`,
+			[...ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES, bounded],
+		).map((row) => ({
+			runId: row.run_id as string,
+			nodeId: row.node_id as string,
+			attempt: Number(row.attempt),
+			executionId: row.execution_id as string,
+			sessionStatus: row.session_status as string,
+			lifecycleRevision: Number(row.lifecycle_revision),
+		}));
+	}
+
+	commitWorkflowDivergenceObservation(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		observedStatus: string;
+		observedLifecycleRevision: number;
+		now: string;
+	}):
+		| { ok: true; divergence: boolean; deduped: boolean }
+		| { ok: false; reason: string } {
+		let result:
+			| { ok: true; divergence: boolean; deduped: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_divergence_observation",
+		};
+		this.db.transaction(() => {
+			const node = this.getWorkflowRunNode(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+			);
+			const session = this.getSession(input.executionId);
+			if (
+				node?.state !== "done" ||
+				node.execution_id !== input.executionId ||
+				!session ||
+				session.status !== input.observedStatus ||
+				session.lifecycle_revision !== input.observedLifecycleRevision ||
+				!isStateStoreIrreversibleTerminalForZombie(session.status)
+			) {
+				return;
+			}
+			let deduped = false;
+			if (session.status !== "completed") {
+				const appended = this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `divergence:${input.runId}:${input.nodeId}:${input.attempt}`,
+					kind: "workflow_node_session_divergence",
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					payload: {
+						nodeState: "done",
+						sessionStatus: session.status,
+						lifecycleRevision: session.lifecycle_revision,
+					},
+				});
+				deduped = appended.deduped;
+			}
+			this.db.run(
+				`INSERT INTO workflow_divergence_check
+				   (execution_id, checked_lifecycle_revision, checked_at)
+				 VALUES (?, ?, ?)
+				 ON CONFLICT(execution_id) DO UPDATE SET
+				   checked_lifecycle_revision = MAX(
+				     workflow_divergence_check.checked_lifecycle_revision,
+				     excluded.checked_lifecycle_revision
+				   ),
+				   checked_at = CASE
+				     WHEN excluded.checked_lifecycle_revision >= workflow_divergence_check.checked_lifecycle_revision
+				     THEN excluded.checked_at ELSE workflow_divergence_check.checked_at END`,
+				[input.executionId, input.observedLifecycleRevision, input.now],
+			);
+			result = {
+				ok: true,
+				divergence: session.status !== "completed",
+				deduped,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	/**
+	 * Replace one proven-dead physical launch without rewriting its immutable
+	 * launch history. The node attempt stays the same; only its execution owner
+	 * and the appended launch ordinal advance.
+	 */
+	rollbackDeadWorkflowNodeExecution(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		deadExecutionId: string;
+		newExecutionId: string;
+		reason: string;
+		livenessEvidence: { liveness: "dead"; observedAt: string };
+		activityBaseline?: WorkflowDeadExecutionActivityBaseline;
+		retryDisposition?: "retry" | "hold" | "design_fallback";
+		alertIdentity?: WorkflowEngineAlertIdentity;
+		now?: string;
+	}):
+		| { ok: true; idempotentReplay: boolean; launchOrdinal: number }
+		| { ok: false; reason: string } {
+		const now = input.now ?? new Date().toISOString();
+		if (
+			!input.runId ||
+			!input.nodeId ||
+			!input.deadExecutionId ||
+			!input.newExecutionId ||
+			!input.reason ||
+			!Number.isInteger(input.attempt) ||
+			input.attempt < 1 ||
+			input.livenessEvidence.liveness !== "dead" ||
+			!StateStore.workflowFiniteTimestamp(input.livenessEvidence.observedAt) ||
+			!StateStore.workflowFiniteTimestamp(now)
+		) {
+			return { ok: false, reason: "invalid_dead_execution_rollback" };
+		}
+
+		let result:
+			| { ok: true; idempotentReplay: boolean; launchOrdinal: number }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "rollback_not_committed",
+		};
+		this.db.transaction(() => {
+			const eventUid = `dead_rollback:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`;
+			const prior = this.workflowSelectAll(
+				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			)[0];
+			if (prior) {
+				let payload: Record<string, unknown>;
+				try {
+					payload = JSON.parse(prior.payload as string) as Record<
+						string,
+						unknown
+					>;
+				} catch {
+					result = { ok: false, reason: "rollback_receipt_corrupt" };
+					return;
+				}
+				if (
+					prior.kind !== "execution_dead_rolled_back" ||
+					payload.newExecutionId !== input.newExecutionId ||
+					payload.reason !== input.reason ||
+					payload.retryDisposition !== (input.retryDisposition ?? "retry") ||
+					payload.at !== now ||
+					canonicalSubmissionDigest(payload.livenessEvidence) !==
+						canonicalSubmissionDigest(input.livenessEvidence) ||
+					!Number.isInteger(payload.launchOrdinal)
+				) {
+					result = { ok: false, reason: "rollback_receipt_conflict" };
+					return;
+				}
+				result = {
+					ok: true,
+					idempotentReplay: true,
+					launchOrdinal: Number(payload.launchOrdinal),
+				};
+				return;
+			}
+			const run = this.getWorkflowRun(input.runId);
+			if (!run || run.engine_owned !== 1 || run.status !== "active") {
+				result = { ok: false, reason: "engine_run_not_active" };
+				return;
+			}
+			const enqueueAlert = (
+				escalationUid: string,
+				disposition: "held" | "design_fallback",
+				reason: string,
+			): void => {
+				if (!input.alertIdentity) return;
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: input.runId,
+					now,
+					payload: this.workflowEngineAlertPayload({
+						escalationUid,
+						runId: input.runId,
+						issueId: run.issue_id,
+						nodeId: input.nodeId,
+						executionId: input.deadExecutionId,
+						reason,
+						disposition,
+						identity: input.alertIdentity,
+					}),
+				});
+			};
+			const node = this.getWorkflowRunNode(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+			);
+			if (
+				!node ||
+				node.state !== "running" ||
+				node.execution_id !== input.deadExecutionId
+			) {
+				result = { ok: false, reason: "node_execution_not_current" };
+				return;
+			}
+			if (
+				this.getWorkflowNodeCompletion(input.runId, input.nodeId, input.attempt)
+			) {
+				result = { ok: false, reason: "receipt_exists" };
+				return;
+			}
+			const session = this.getSession(input.deadExecutionId);
+			if (
+				!isStateStoreIrreversibleTerminalForZombie(session?.status) &&
+				!this.hasWorkflowExecutionTeardownFact(
+					input.runId,
+					input.nodeId,
+					input.deadExecutionId,
+				)
+			) {
+				result = { ok: false, reason: "execution_not_terminal" };
+				return;
+			}
+			if (input.retryDisposition === "hold") {
+				const escalationUid = `nonretryable:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`;
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+					[input.runId],
+				);
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: escalationUid,
+					kind: "non_retryable_execution_failure",
+					nodeId: input.nodeId,
+					executionId: input.deadExecutionId,
+					payload: {
+						attempt: input.attempt,
+						reason: input.reason,
+						livenessEvidence: input.livenessEvidence,
+						at: now,
+					},
+				});
+				enqueueAlert(escalationUid, "held", input.reason);
+				result = { ok: false, reason: "non_retryable_execution_failure" };
+				return;
+			}
+			const outputExists =
+				this.workflowSelectAll(
+					`SELECT 1 AS present FROM workflow_node_outputs
+					  WHERE run_id = ? AND node_id = ? AND attempt = ? LIMIT 1`,
+					[input.runId, input.nodeId, input.attempt],
+				).length > 0 ||
+				this.workflowSelectAll(
+					`SELECT 1 AS present FROM workflow_output_credential
+					  WHERE run_id = ? AND node_id = ? AND attempt = ?
+					    AND consumed_at IS NOT NULL LIMIT 1`,
+					[input.runId, input.nodeId, input.attempt],
+				).length > 0;
+			if (outputExists) {
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+					[input.runId],
+				);
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `dead_after_output:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`,
+					kind: "dead_execution_after_output",
+					nodeId: input.nodeId,
+					executionId: input.deadExecutionId,
+					payload: {
+						attempt: input.attempt,
+						reason: input.reason,
+						livenessEvidence: input.livenessEvidence,
+						at: now,
+					},
+				});
+				enqueueAlert(
+					`dead_after_output:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`,
+					"held",
+					"dead_execution_after_output",
+				);
+				result = { ok: false, reason: "dead_execution_after_output" };
+				return;
+			}
+			const launchCount = Number(
+				this.workflowSelectAll(
+					`SELECT COUNT(*) AS count FROM workflow_side_effect_ledger
+					  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'`,
+					[input.runId, input.nodeId, input.attempt],
+				)[0]?.count ?? 0,
+			);
+			if (launchCount >= 4) {
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+					[input.runId],
+				);
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `retry_limit:${input.runId}:${input.nodeId}:${input.attempt}:${launchCount}`,
+					kind: "retry_limit_escalated",
+					nodeId: input.nodeId,
+					executionId: input.deadExecutionId,
+					payload: {
+						attempt: input.attempt,
+						maxLaunchOrdinal: launchCount,
+						reason: input.reason,
+						livenessEvidence: input.livenessEvidence,
+						at: now,
+					},
+				});
+				enqueueAlert(
+					`retry_limit:${input.runId}:${input.nodeId}:${input.attempt}:${launchCount}`,
+					"held",
+					"retry_limit_exceeded",
+				);
+				result = { ok: false, reason: "retry_limit_exceeded" };
+				return;
+			}
+			const priorDeadReplacementCount = Number(
+				this.workflowSelectAll(
+					`SELECT COUNT(*) AS count FROM workflow_dead_execution_watch
+					  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+					[input.runId, input.nodeId, input.attempt],
+				)[0]?.count ?? 0,
+			);
+
+			for (const table of [
+				"workflow_output_credential",
+				"workflow_submission_credential",
+			]) {
+				this.db.run(
+					`UPDATE ${table}
+					    SET revoked = 1, revoked_reason = 'dead_execution_rolled_back'
+					  WHERE run_id = ? AND node_id = ? AND attempt = ?
+					    AND execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+					[input.runId, input.nodeId, input.attempt, input.deadExecutionId],
+				);
+			}
+			const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+				input.newExecutionId,
+			);
+			this.upsertWorkflowRunNodeTx({
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+				state: "pending",
+				executionId: input.newExecutionId,
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid,
+				kind: "execution_dead_rolled_back",
+				nodeId: input.nodeId,
+				executionId: input.deadExecutionId,
+				payload: {
+					attempt: input.attempt,
+					newExecutionId: input.newExecutionId,
+					launchOrdinal,
+					reason: input.reason,
+					retryDisposition: input.retryDisposition ?? "retry",
+					livenessEvidence: input.livenessEvidence,
+					at: now,
+				},
+			});
+			const activityBaseline: WorkflowDeadExecutionActivityBaseline =
+				input.activityBaseline ?? {
+					commitMarker: { state: "unknown" },
+					commDbMessageCount: null,
+					tmuxTarget: session?.tmux_session ?? null,
+					tmuxOutputDigest: null,
+					sessionCommitCount:
+						typeof session?.commit_count === "number"
+							? session.commit_count
+							: null,
+				};
+			this.db.run(
+				`INSERT INTO workflow_dead_execution_watch
+				   (dead_execution_id, run_id, node_id, attempt, new_execution_id,
+				    project_name, issue_id, observed_at, baseline_json, state)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+				[
+					input.deadExecutionId,
+					input.runId,
+					input.nodeId,
+					input.attempt,
+					input.newExecutionId,
+					run.project_name,
+					run.issue_id,
+					input.livenessEvidence.observedAt,
+					JSON.stringify(activityBaseline),
+				],
+			);
+			if (priorDeadReplacementCount > 0 && input.alertIdentity) {
+				const deathNumber = priorDeadReplacementCount + 1;
+				const escalationUid = `repeated_dead:${input.runId}:${input.nodeId}:${input.attempt}:${deathNumber}`;
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: escalationUid,
+					kind: "repeated_dead_execution_pattern",
+					nodeId: input.nodeId,
+					executionId: input.deadExecutionId,
+					payload: {
+						attempt: input.attempt,
+						deathNumber,
+						newExecutionId: input.newExecutionId,
+						at: now,
+					},
+				});
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: input.runId,
+					now,
+					payload: this.workflowDeadExecutionAlertPayload({
+						escalationUid,
+						eventType: "workflow_engine_escalation",
+						runId: input.runId,
+						issueId: run.issue_id,
+						nodeId: input.nodeId,
+						executionId: input.deadExecutionId,
+						disposition: "repeated_dead_execution_pattern",
+						body: `Run ${input.runId} node ${input.nodeId} has now required ${deathNumber} dead-execution replacements in the same logical attempt. Inspect the liveness classifier and replacement chain; automatic retry remains bounded by the existing ladder.`,
+						identity: input.alertIdentity,
+					}),
+				});
+				const issueAlertUid = `${escalationUid}:issue`;
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid: issueAlertUid,
+					runId: input.runId,
+					now,
+					payload: this.workflowDeadExecutionAlertPayload({
+						escalationUid: issueAlertUid,
+						eventType: "workflow_engine_issue_alert",
+						runId: input.runId,
+						issueId: run.issue_id,
+						nodeId: input.nodeId,
+						executionId: input.deadExecutionId,
+						disposition: "repeated_dead_execution_pattern",
+						body: `Run ${input.runId} node ${input.nodeId} has now required ${deathNumber} dead-execution replacements in the same logical attempt. Inspect the liveness classifier and replacement chain; automatic retry remains bounded by the existing ladder.`,
+						identity: input.alertIdentity,
+					}),
+				});
+			}
+			if (input.retryDisposition === "design_fallback") {
+				enqueueAlert(
+					`design_fallback:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`,
+					"design_fallback",
+					input.reason,
+				);
+			}
+			result = { ok: true, idempotentReplay: false, launchOrdinal };
+		});
+		this.save();
+		return result;
+	}
+
 	/** Startup safety collector: record durable holds, never dispatch successors. */
 	holdStrandedGeneralizedExecutions(): string[] {
 		const rows = this.workflowSelectAll(
@@ -15274,33 +16949,14 @@ export class StateStore {
 			clientRequestId: input.clientRequestId,
 			payload: parsedPayload,
 		});
-		const credential = this.workflowSelectAll(
+		const credentialPreview = this.workflowSelectAll(
 			"SELECT * FROM workflow_output_credential WHERE credential_hash = ?",
 			[hashCapabilityToken(input.token)],
 		)[0];
-		if (!credential) return { ok: false, reason: "credential_not_found" };
-		if (credential.consumed_at != null) {
-			if (
-				credential.consumed_submission_digest === submissionDigest &&
-				credential.consumed_client_request_id === input.clientRequestId &&
-				credential.output_id != null
-			) {
-				return {
-					ok: true,
-					outputId: Number(credential.output_id),
-					idempotentReplay: true,
-				};
-			}
-			return { ok: false, reason: "replay_payload_mismatch" };
-		}
-		if (Number(credential.revoked) === 1) {
-			return { ok: false, reason: "credential_revoked" };
-		}
-		if (StateStore.workflowExpired(credential.expires_at as string, now)) {
-			return { ok: false, reason: "credential_expired" };
-		}
+		if (!credentialPreview)
+			return { ok: false, reason: "credential_not_found" };
 		const context = this.generalizedExecutionContext(
-			credential.execution_id as string,
+			credentialPreview.execution_id as string,
 		);
 		if (
 			!context ||
@@ -15313,9 +16969,52 @@ export class StateStore {
 		if (byteSize > context.node.output.max_bytes) {
 			return { ok: false, reason: "output_too_large" };
 		}
-		let outputId = 0;
-		let refusal: "output_already_exists" | "stale_output_attempt" | undefined;
+		let result: WorkflowOutputSubmissionResult | undefined;
 		this.db.transaction(() => {
+			const credential = this.workflowSelectAll(
+				"SELECT * FROM workflow_output_credential WHERE credential_hash = ?",
+				[hashCapabilityToken(input.token)],
+			)[0];
+			if (!credential) {
+				result = { ok: false, reason: "credential_not_found" };
+				return;
+			}
+			if (credential.consumed_at != null) {
+				result =
+					credential.consumed_submission_digest === submissionDigest &&
+					credential.consumed_client_request_id === input.clientRequestId &&
+					credential.output_id != null
+						? {
+								ok: true,
+								outputId: Number(credential.output_id),
+								idempotentReplay: true,
+							}
+						: { ok: false, reason: "replay_payload_mismatch" };
+				return;
+			}
+			if (Number(credential.revoked) === 1) {
+				result = { ok: false, reason: "credential_revoked" };
+				return;
+			}
+			if (StateStore.workflowExpired(credential.expires_at as string, now)) {
+				result = { ok: false, reason: "credential_expired" };
+				return;
+			}
+			const currentOwner = this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_run_node
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND execution_id = ? AND state IN ('admitted','running')`,
+				[
+					credential.run_id as string,
+					credential.node_id as string,
+					Number(credential.attempt),
+					credential.execution_id as string,
+				],
+			)[0];
+			if (!currentOwner) {
+				result = { ok: false, reason: "credential_revoked" };
+				return;
+			}
 			const prior = this.workflowSelectAll(
 				`SELECT * FROM workflow_node_outputs
 				  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
@@ -15326,7 +17025,7 @@ export class StateStore {
 				],
 			)[0];
 			if (prior) {
-				refusal = "output_already_exists";
+				result = { ok: false, reason: "output_already_exists" };
 				return;
 			}
 			const current = this.workflowSelectAll(
@@ -15334,7 +17033,18 @@ export class StateStore {
 				[credential.run_id as string, credential.node_id as string],
 			)[0];
 			if (current && Number(current.attempt) >= Number(credential.attempt)) {
-				refusal = "stale_output_attempt";
+				result = { ok: false, reason: "stale_output_attempt" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_output_credential
+				    SET consumed_at = ?, consumed_client_request_id = ?,
+				        consumed_submission_digest = ?
+				  WHERE id = ? AND consumed_at IS NULL AND revoked = 0`,
+				[now, input.clientRequestId, submissionDigest, credential.id],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "credential_revoked" };
 				return;
 			}
 			this.db.run(
@@ -15355,7 +17065,7 @@ export class StateStore {
 					now,
 				],
 			);
-			outputId = Number(
+			const outputId = Number(
 				this.workflowSelectAll("SELECT last_insert_rowid() AS id", [])[0]?.id,
 			);
 			this.db.run(
@@ -15376,10 +17086,9 @@ export class StateStore {
 			);
 			this.db.run(
 				`UPDATE workflow_output_credential
-				    SET consumed_at = ?, consumed_client_request_id = ?,
-				        consumed_submission_digest = ?, output_id = ?
+				    SET output_id = ?
 				  WHERE id = ?`,
-				[now, input.clientRequestId, submissionDigest, outputId, credential.id],
+				[outputId, credential.id],
 			);
 			this.appendWorkflowRunEventTx({
 				runId: credential.run_id as string,
@@ -15389,10 +17098,12 @@ export class StateStore {
 				executionId: credential.execution_id as string,
 				payload: { attempt: Number(credential.attempt), outputId },
 			});
+			result = { ok: true, outputId, idempotentReplay: false };
 		});
-		if (refusal) return { ok: false, reason: refusal };
-		this.save();
-		return { ok: true, outputId, idempotentReplay: false };
+		if (!result)
+			throw new Error("workflow output submission produced no result");
+		if (result.ok && !result.idempotentReplay) this.save();
+		return result;
 	}
 
 	private projectGeneralizedCompletionTx(input: {
@@ -15490,6 +17201,14 @@ export class StateStore {
 				eventUid: existing.event_uid as string,
 				idempotentReplay: true,
 			};
+		}
+		const currentNode = this.getWorkflowRunNode(
+			context.binding.run_id,
+			context.binding.node_id,
+			context.binding.attempt,
+		);
+		if (currentNode?.execution_id !== context.binding.execution_id) {
+			return { ok: false, reason: "stale_execution_superseded" };
 		}
 		if (context.node.capabilities.produces_output) {
 			const current = this.workflowSelectAll(
@@ -16417,6 +18136,66 @@ export class StateStore {
 		this.save();
 		if (!result) throw new Error("workflow event append produced no result");
 		return result;
+	}
+
+	/**
+	 * Append an event with content-addressed replay semantics. A duplicate UID is
+	 * idempotent only when every immutable event field is identical.
+	 */
+	appendWorkflowRunEventChecked(input: {
+		runId: string;
+		eventUid: string;
+		kind: string;
+		nodeId?: string;
+		edgeId?: string;
+		executionId?: string;
+		payload?: unknown;
+	}): { seq: number; deduped: boolean } {
+		let result: { seq: number; deduped: boolean } | undefined;
+		this.db.transaction(() => {
+			result = this.appendWorkflowRunEventCheckedTx(input);
+		});
+		this.save();
+		if (!result)
+			throw new Error("workflow checked event append produced no result");
+		return result;
+	}
+
+	private appendWorkflowRunEventCheckedTx(input: {
+		runId: string;
+		eventUid: string;
+		kind: string;
+		nodeId?: string;
+		edgeId?: string;
+		executionId?: string;
+		payload?: unknown;
+	}): { seq: number; deduped: boolean } {
+		const existing = this.workflowSelectAll(
+			`SELECT run_id, seq, kind, node_id, edge_id, execution_id, payload
+			   FROM workflow_run_event WHERE event_uid = ?`,
+			[input.eventUid],
+		)[0];
+		if (!existing) return this.appendWorkflowRunEventTx(input);
+		let existingPayload: unknown = null;
+		try {
+			existingPayload = existing.payload
+				? JSON.parse(existing.payload as string)
+				: null;
+		} catch {
+			throw new Error(`workflow_event_uid_conflict:${input.eventUid}`);
+		}
+		const matches =
+			existing.run_id === input.runId &&
+			existing.kind === input.kind &&
+			(existing.node_id ?? null) === (input.nodeId ?? null) &&
+			(existing.edge_id ?? null) === (input.edgeId ?? null) &&
+			(existing.execution_id ?? null) === (input.executionId ?? null) &&
+			canonicalSubmissionDigest(existingPayload) ===
+				canonicalSubmissionDigest(input.payload ?? null);
+		if (!matches) {
+			throw new Error(`workflow_event_uid_conflict:${input.eventUid}`);
+		}
+		return { seq: Number(existing.seq), deduped: true };
 	}
 
 	/** Transaction body — callers already inside a transaction use this. */
@@ -18301,7 +20080,7 @@ export class StateStore {
 					);
 				}
 				const row = this.workflowSelectAll(
-					"SELECT run_id, project_name, issue_id FROM workflow_run WHERE run_id = ?",
+					"SELECT run_id, project_name, issue_id, engine_owned FROM workflow_run WHERE run_id = ?",
 					[input.runId],
 				)[0];
 				if (!row) {
@@ -18317,15 +20096,32 @@ export class StateStore {
 						`workflow shadow batch identity mismatch: run ${input.runId} belongs to ${row.project_name}/${row.issue_id}, not ${input.projectName}/${input.issueId}`,
 					);
 				}
+				if (
+					input.expectedEngineOwned !== undefined &&
+					Number(row.engine_owned) !== input.expectedEngineOwned
+				) {
+					throw new Error(
+						`workflow shadow ownership mismatch: run ${input.runId} engine_owned=${Number(row.engine_owned)} expected=${input.expectedEngineOwned}`,
+					);
+				}
 				runId = input.runId;
 			} else {
 				const existing = this.workflowSelectAll(
-					"SELECT run_id FROM workflow_run WHERE project_name = ? AND issue_id = ? AND status = 'active'",
+					"SELECT run_id FROM workflow_run WHERE project_name = ? AND issue_id = ? AND status = 'active' AND engine_owned = 0",
 					[input.projectName, input.issueId],
 				)[0];
 				if (existing) {
 					runId = existing.run_id as string;
 				} else {
+					const engine = this.workflowSelectAll(
+						"SELECT run_id FROM workflow_run WHERE project_name = ? AND issue_id = ? AND status = 'active' AND engine_owned = 1 LIMIT 1",
+						[input.projectName, input.issueId],
+					)[0];
+					if (engine) {
+						throw new Error(
+							`workflow_shadow_engine_owned_active:${engine.run_id as string}`,
+						);
+					}
 					if (!input.newRunId) {
 						throw new Error(
 							`no active shadow run for ${input.projectName}/${input.issueId} and no newRunId supplied (fail-closed)`,
@@ -18901,6 +20697,7 @@ export type WorkflowOutputSubmissionResult =
 export type WorkflowCompletionResult =
 	| { ok: true; eventUid: string; idempotentReplay: boolean }
 	| { ok: false; reason: "missing_output"; retryable: true }
+	| { ok: false; reason: "stale_execution_superseded" }
 	| {
 			ok: false;
 			reason:
@@ -18910,6 +20707,124 @@ export type WorkflowCompletionResult =
 				| "completion_conflict"
 				| "transition_refused";
 	  };
+
+export interface RunQuiescenceEvidence {
+	executionId: string;
+	sessionStatus: string | null;
+	lifecycleRevision: number | null;
+	liveness: "alive" | "dead" | "unknown";
+	observedAt: string;
+	trustedZombieEventUid?: string;
+}
+
+export type WorkflowRunOperatorResult =
+	| {
+			ok: true;
+			status: "held" | "terminated";
+			idempotentReplay: boolean;
+	  }
+	| {
+			ok: false;
+			reason: string;
+			executionIds?: string[];
+	  };
+
+export interface WorkflowEngineAlertIdentity {
+	leadId: string;
+	projectName: string;
+	leadResolution: "resolved" | "fallback";
+}
+
+export type WorkflowDeadExecutionCommitMarkerBaseline =
+	| { state: "present"; mtimeMs: number }
+	| { state: "absent" }
+	| { state: "unknown" };
+
+export interface WorkflowDeadExecutionActivityBaseline {
+	commitMarker: WorkflowDeadExecutionCommitMarkerBaseline;
+	commDbMessageCount: number | null;
+	tmuxTarget: string | null;
+	tmuxOutputDigest: string | null;
+	sessionCommitCount: number | null;
+}
+
+export interface WorkflowDeadExecutionActivityEvidence {
+	kind: "commit_marker" | "session_commit" | "commdb_write" | "tmux_output";
+	detail: string;
+}
+
+export interface WorkflowDeadExecutionWatchRow {
+	dead_execution_id: string;
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	new_execution_id: string;
+	project_name: string;
+	issue_id: string;
+	observed_at: string;
+	baseline: WorkflowDeadExecutionActivityBaseline;
+	state: "active" | "tripped";
+	tripped_at: string | null;
+	evidence: WorkflowDeadExecutionActivityEvidence | null;
+}
+
+export interface WorkflowEngineAlertPayload {
+	leadId: string;
+	projectName: string;
+	eventId: string;
+	eventType: "workflow_engine_escalation" | "workflow_engine_issue_alert";
+	title: string;
+	body: string;
+	severity: "severe";
+	sessionKey: string;
+	metadata: {
+		workflowEngine: {
+			runId: string;
+			issueId: string;
+			nodeId: string;
+			executionId: string;
+			disposition:
+				| "held"
+				| "design_fallback"
+				| "probe_unknown"
+				| "dead_execution_activity_after_replacement"
+				| "repeated_dead_execution_pattern";
+			leadResolution: "resolved" | "fallback";
+		};
+	};
+}
+
+export interface WorkflowAlertOutboxRow {
+	escalation_uid: string;
+	run_id: string;
+	payload: WorkflowEngineAlertPayload;
+	state: "pending" | "delivering" | "sent" | "failed";
+	attempt: number;
+	lease_owner: string | null;
+	lease_expires_at: string | null;
+	generation: number;
+	last_error: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface WorkflowAlertDeliveryClaim {
+	escalationUid: string;
+	runId: string;
+	payload: WorkflowEngineAlertPayload;
+	attempt: number;
+	generation: number;
+	ownerId: string;
+}
+
+export interface WorkflowDivergenceCandidate {
+	runId: string;
+	nodeId: string;
+	attempt: number;
+	executionId: string;
+	sessionStatus: string;
+	lifecycleRevision: number;
+}
 
 export interface WorkflowSubmissionCredentialRow {
 	id: number;
@@ -19207,6 +21122,9 @@ export interface WorkflowShadowBatchInput {
 	/** Explicit run targeting (ANY status; never creates) — the evidence
 	 * reconcile's path onto rows whose run already completed (R1 #3). */
 	runId?: string;
+	/** Ownership fence for an explicit run. Engine dispatcher passes 1; the
+	 * observation-only shadow reconciler passes 0. */
+	expectedEngineOwned?: 0 | 1;
 	ops: WorkflowShadowOp[];
 }
 
@@ -19411,6 +21329,26 @@ export interface AlertThreadRow {
 	attempt_count: number;
 	first_seen_at: string | null;
 	acked_at: string | null;
+}
+
+function workflowAlertOutboxRow(
+	row: Record<string, unknown>,
+): WorkflowAlertOutboxRow {
+	return {
+		escalation_uid: row.escalation_uid as string,
+		run_id: row.run_id as string,
+		payload: JSON.parse(
+			row.payload_json as string,
+		) as WorkflowEngineAlertPayload,
+		state: row.state as WorkflowAlertOutboxRow["state"],
+		attempt: Number(row.attempt),
+		lease_owner: (row.lease_owner as string) ?? null,
+		lease_expires_at: (row.lease_expires_at as string) ?? null,
+		generation: Number(row.generation),
+		last_error: (row.last_error as string) ?? null,
+		created_at: row.created_at as string,
+		updated_at: row.updated_at as string,
+	};
 }
 
 /**

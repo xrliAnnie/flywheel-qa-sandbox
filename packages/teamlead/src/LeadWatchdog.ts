@@ -1059,6 +1059,10 @@ function titleFor(kind: AlertEventType): string {
 			return "Three-stage pipeline stuck";
 		case "three_stage_takeover_failed":
 			return "Three-stage worktree takeover failed";
+		case "workflow_engine_escalation":
+			return "Workflow engine recovery escalated";
+		case "workflow_engine_issue_alert":
+			return "Workflow dead-execution safety alert";
 		// FLY-637-ext: never emitted by LeadWatchdog (the lead-pending escalation
 		// builds its own title); case exists for switch exhaustiveness.
 		case "runner_lead_pending_unhandled":
@@ -1278,6 +1282,10 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A three-stage pipeline phase handoff (Design→Implement→QA) could not proceed (head-SHA capture failed, the previous phase runner would not close, or the next phase dispatch threw). The next phase was NOT started; investigate the phase Runner.";
 		case "three_stage_takeover_failed":
 			return "A shared branch-B worktree was dirty or at an unexpected HEAD, so Flywheel refused the in-place phase takeover. Inspect and preserve the parked phase's work before retrying.";
+		case "workflow_engine_escalation":
+			return "A workflow execution died without a completion receipt. The engine either held the run after a non-retryable/exhausted failure or used the approved design Fable→GPT-5.6 fallback. Inspect the run audit and use the quiescence-gated hold/terminate endpoints.";
+		case "workflow_engine_issue_alert":
+			return "A replaced execution showed later activity, or the same workflow node was repeatedly classified dead. Inspect the issue thread and both execution identities immediately; the Lead escalation copy was emitted separately.";
 		// FLY-637-ext: never emitted by LeadWatchdog (the lead-pending escalation builds its own body).
 		case "runner_lead_pending_unhandled":
 			return "A runner has been blocked waiting on the Lead to answer its question, and the Lead did not respond after several reminders. Poke the Lead — the runner itself is fine.";

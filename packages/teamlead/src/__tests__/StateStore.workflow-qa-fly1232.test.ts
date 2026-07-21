@@ -9,7 +9,6 @@ import { StateStore } from "../StateStore.js";
 import {
 	isWorkflowClaimsReadEnabled,
 	isWorkflowClaimsWriteEnabled,
-	isWorkflowLegacyForced,
 } from "../workflow-claims.js";
 
 /**
@@ -27,7 +26,7 @@ import {
  *   B6   applyWorkflowShadowBatch is atomic on a REAL file store: a batch whose
  *        later op is invalid persists NOTHING, and a subsequent valid batch
  *        replays cleanly (no torn run / node / event residue).
- *   A10/B1 the three rollout switches default OFF and the writer factory is
+ *   A10/B1 the two remaining rollout switches default OFF and the writer factory is
  *        undefined unless FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1 (byte-compat seam).
  */
 
@@ -408,10 +407,9 @@ describe("FLY-1232 QA · B6 — applyWorkflowShadowBatch is atomic on a real fil
 });
 
 describe("FLY-1232 QA · A10/B1 — rollout switches default OFF (byte-compat seam)", () => {
-	it("the three flags are independent and OFF unless explicitly '1'", async () => {
+	it("the two remaining flags are independent and OFF unless explicitly '1'", async () => {
 		expect(isWorkflowClaimsWriteEnabled({})).toBe(false);
 		expect(isWorkflowClaimsReadEnabled({})).toBe(false);
-		expect(isWorkflowLegacyForced({})).toBe(false);
 		// Only the literal "1" enables — "true"/"0"/"yes" do not.
 		expect(
 			isWorkflowClaimsWriteEnabled({ FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "true" }),

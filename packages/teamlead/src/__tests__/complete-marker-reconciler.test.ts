@@ -39,6 +39,7 @@ function makeStore(initial: Record<string, SessionRow> = {}) {
 		getGeneralizedWorkflowNodeForExecution: vi.fn(() => undefined),
 		getWorkflowNodeCompletion: vi.fn(() => undefined),
 		getEventPayloadById: vi.fn(() => undefined),
+		setMergeBlock: vi.fn(() => true),
 		forceStatus: vi.fn(
 			(id: string, status: string, _now: string, lastError?: string) => {
 				const cur = sessions.get(id) ?? {};

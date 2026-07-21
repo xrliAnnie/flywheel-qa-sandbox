@@ -61,31 +61,47 @@ export interface InfraAlertRoutingDeps {
 export function buildInfraAlertRouting(
 	deps: InfraAlertRoutingDeps,
 ): AlertSinkLike {
+	const configuredLead = (payload: AlertPayload) =>
+		deps.projects
+			.find((project) => project.projectName === payload.projectName)
+			?.leads.find((lead) => lead.agentId === payload.leadId);
+
 	const resolveBoundIssueThread = (
 		payload: AlertPayload,
 	): BoundIssueThread | null => {
-		// The three issue-progress emitters all carry the execution id in
-		// sessionKey (gate-poller lead-pending/undelivered escalations + the
-		// three-stage stuck alert). No sessionKey / unknown session ⇒ unbound.
-		const executionId = payload.sessionKey;
+		// Ordinary issue-progress emitters carry the execution id in sessionKey.
+		// Workflow alerts keep `wf:<run>` there for outbox/ticket grouping, so their
+		// issue-thread copy resolves through the identity-bound metadata instead.
+		// Their pinned issue + Lead identity keeps routing possible even when the
+		// dead execution never had (or no longer has) a session row.
+		const workflowEngine =
+			payload.eventType === "workflow_engine_issue_alert"
+				? payload.metadata?.workflowEngine
+				: undefined;
+		const executionId = workflowEngine?.executionId ?? payload.sessionKey;
 		if (!executionId) return null;
-		const session = deps.store.getSession(executionId);
-		if (!session) return null;
-		const { lead } = resolveLeadForIssue(
-			deps.projects,
-			session.project_name,
-			parseLabels(session.issue_labels),
-		);
-		const thread = deps.store.getChatThreadByIssue(
-			session.issue_id,
-			lead.chatChannel,
-		);
+		const session =
+			deps.store.getSession(executionId) ??
+			(workflowEngine?.issueId
+				? deps.store.getSessionByIssue(workflowEngine.issueId)
+				: undefined);
+		const issueId = workflowEngine?.issueId ?? session?.issue_id;
+		if (!issueId) return null;
+		const lead = session
+			? resolveLeadForIssue(
+					deps.projects,
+					session.project_name,
+					parseLabels(session.issue_labels),
+				).lead
+			: configuredLead(payload);
+		if (!lead) return null;
+		const thread = deps.store.getChatThreadByIssue(issueId, lead.chatChannel);
 		if (!thread?.thread_id) return null;
 		return {
 			threadId: thread.thread_id,
 			channelId: thread.channel_id,
-			issueId: session.issue_id,
-			issueIdentifier: session.issue_identifier ?? undefined,
+			issueId,
+			issueIdentifier: session?.issue_identifier ?? undefined,
 			executionId,
 		};
 	};
@@ -94,12 +110,17 @@ export function buildInfraAlertRouting(
 		payload: AlertPayload,
 		thread: BoundIssueThread,
 	): Promise<AlertResult> => {
-		const session = deps.store.getSession(thread.executionId);
-		const { lead } = resolveLeadForIssue(
-			deps.projects,
-			payload.projectName,
-			parseLabels(session?.issue_labels),
-		);
+		const session =
+			deps.store.getSession(thread.executionId) ??
+			deps.store.getSessionByIssue(thread.issueId);
+		const lead = session
+			? resolveLeadForIssue(
+					deps.projects,
+					payload.projectName,
+					parseLabels(session.issue_labels),
+				).lead
+			: configuredLead(payload);
+		if (!lead) return deps.rawSink.alert(payload);
 		const sev =
 			payload.severity === "severe"
 				? "🚨"

@@ -547,6 +547,7 @@ export async function tryReconcileComplete(
 				warning?: string;
 				reason?: string;
 				retryable?: boolean;
+				settled?: string;
 		  }
 		| undefined;
 	try {
@@ -597,6 +598,10 @@ export async function tryReconcileComplete(
 	}
 
 	if (generalizedBinding) {
+		if (json?.settled === "stale_execution_superseded") {
+			safeUnlink(markerPath, log);
+			return { kind: "reconciled", status: "stale_execution_superseded" };
+		}
 		const receipt = deps.store.getWorkflowNodeCompletion(
 			generalizedBinding.run_id,
 			generalizedBinding.node_id,

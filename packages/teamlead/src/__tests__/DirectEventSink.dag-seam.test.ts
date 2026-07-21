@@ -15,11 +15,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import type { EventEnvelope } from "flywheel-edge-worker/dist/ExecutionEventEmitter.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BridgeConfig } from "../bridge/plugin.js";
 import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import { loadBundledWorkflowSeeds } from "../workflow-template.js";
 
 const testProjects = [
 	{
@@ -129,5 +130,194 @@ describe("FLY-1372 DirectEventSink behavior-field seam", () => {
 			codex_skip: 1,
 			founder_facing_ux: 1,
 		});
+	});
+});
+
+describe("FLY-1385 enrolled teardown seam", () => {
+	it("persists a failed signal and returns before legacy terminal hooks", async () => {
+		const { store, sink } = await harness();
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!;
+		const env = {
+			FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+		};
+		store.importWorkflowTemplateSeed(seed);
+		store.materializeWorkflowRun({
+			runId: "run-teardown",
+			issueId: "FLY-1335",
+			projectName: "flywheel",
+			taskCategory: "code",
+			templateId: seed.templateId,
+			claimsReadEnrolled: true,
+			actor: "lead",
+			env,
+			startReservation: {
+				idempotencyKey: "teardown-start",
+				selectionDigest: "teardown-selection",
+				nodeId: "design",
+				attempt: 1,
+				executionId: "teardown-exec",
+				createdAt: "2026-07-20T00:00:00.000Z",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-teardown",
+			nodeId: "design",
+			attempt: 1,
+			state: "running",
+			executionId: "teardown-exec",
+		});
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-teardown",
+				nodeId: "design",
+				executionId: "teardown-exec",
+				attempt: 1,
+				now: "2026-07-20T00:01:00.000Z",
+				expiresAt: "2026-07-20T01:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-21T00:00:00.000Z",
+				env,
+			}),
+		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "teardown-exec",
+			issue_id: "FLY-1335",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "design",
+		});
+		const enqueue = vi.fn();
+		const displayEnqueue = vi.fn();
+		sink.terminalCommDbSync = { enqueue };
+		sink.issueDisplayRefresh = {
+			current: {
+				enqueue: displayEnqueue,
+				refresh: vi.fn(async () => {}),
+			},
+		};
+
+		await sink.emitFailed(
+			{
+				executionId: "teardown-exec",
+				issueId: "FLY-1335",
+				projectName: "flywheel",
+				sessionRole: "design",
+			},
+			"runner process disappeared",
+		);
+
+		expect(store.getSession("teardown-exec")).toMatchObject({
+			status: "failed",
+			last_error: "runner process disappeared",
+			workflow_node_id: "design",
+		});
+		expect(
+			store
+				.getEventsByExecution("teardown-exec")
+				.filter((event) => event.event_type === "session_failed"),
+		).toHaveLength(1);
+		expect(
+			store
+				.listWorkflowRunEvents("run-teardown")
+				.filter((event) => event.kind === "generalized_teardown_recorded"),
+		).toHaveLength(1);
+		expect(enqueue).toHaveBeenCalledWith("teardown-exec", "failed", "flywheel");
+		expect(displayEnqueue).not.toHaveBeenCalled();
+	});
+
+	it("persists a completed signal without invoking legacy completion hooks", async () => {
+		const { store, sink } = await harness();
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!;
+		const env = {
+			FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+		};
+		store.importWorkflowTemplateSeed(seed);
+		store.materializeWorkflowRun({
+			runId: "run-completed-teardown",
+			issueId: "FLY-1335",
+			projectName: "flywheel",
+			taskCategory: "code",
+			templateId: seed.templateId,
+			claimsReadEnrolled: true,
+			actor: "lead",
+			env,
+			startReservation: {
+				idempotencyKey: "completed-teardown-start",
+				selectionDigest: "completed-teardown-selection",
+				nodeId: "design",
+				attempt: 1,
+				executionId: "completed-teardown-exec",
+				createdAt: "2026-07-20T00:00:00.000Z",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-completed-teardown",
+			nodeId: "design",
+			attempt: 1,
+			state: "running",
+			executionId: "completed-teardown-exec",
+		});
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-completed-teardown",
+				nodeId: "design",
+				executionId: "completed-teardown-exec",
+				attempt: 1,
+				now: "2026-07-20T00:01:00.000Z",
+				expiresAt: "2026-07-20T01:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-21T00:00:00.000Z",
+				env,
+			}),
+		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "completed-teardown-exec",
+			issue_id: "FLY-1335",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "design",
+		});
+		const displayEnqueue = vi.fn();
+		sink.issueDisplayRefresh = {
+			current: {
+				enqueue: displayEnqueue,
+				refresh: vi.fn(async () => {}),
+			},
+		};
+
+		await sink.emitCompleted(
+			{
+				executionId: "completed-teardown-exec",
+				issueId: "FLY-1335",
+				projectName: "flywheel",
+				sessionRole: "design",
+			},
+			{
+				success: true,
+				decision: { route: "phase_design_complete", reasoning: "done" },
+			},
+		);
+
+		expect(store.getSession("completed-teardown-exec")).toMatchObject({
+			status: "completed",
+			workflow_node_id: "design",
+		});
+		expect(
+			store
+				.getEventsByExecution("completed-teardown-exec")
+				.filter((event) => event.event_type === "session_completed"),
+		).toHaveLength(1);
+		expect(
+			store
+				.listWorkflowRunEvents("run-completed-teardown")
+				.filter((event) => event.kind === "generalized_teardown_recorded"),
+		).toHaveLength(1);
+		expect(displayEnqueue).not.toHaveBeenCalled();
 	});
 });

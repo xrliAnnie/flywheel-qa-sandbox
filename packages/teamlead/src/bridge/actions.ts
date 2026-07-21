@@ -19,6 +19,7 @@ import {
 	type Session,
 	type StateStore,
 } from "../StateStore.js";
+import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import {
 	parseWorkflowRunSnapshot,
 	workflowNodeAgentContent,
@@ -901,6 +902,11 @@ async function handleRetry(
 		const successorExecutionId =
 			gatewayDispatch?.successorExecutionId ?? randomUUID();
 		const now = new Date();
+		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
+			runId: predecessorBinding.run_id,
+			nodeId: predecessorBinding.node_id,
+			env: process.env,
+		});
 		const admitted = store.admitGeneralizedWorkflowExecution({
 			runId: predecessorBinding.run_id,
 			nodeId: predecessorBinding.node_id,
@@ -909,6 +915,7 @@ async function handleRetry(
 			expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
 			absoluteDeadlineAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
 			now: now.toISOString(),
+			dispatchResolution,
 		});
 		if (!admitted.ok) {
 			return {
@@ -916,6 +923,22 @@ async function handleRetry(
 				message: `Retry dispatch failed: generalized admission ${admitted.reason}`,
 			};
 		}
+		const runtime = store.getWorkflowExecutionRuntime(successorExecutionId);
+		if (!runtime) {
+			return {
+				success: false,
+				message: "Retry dispatch failed: generalized runtime dispatch missing",
+			};
+		}
+		const runtimeDispatch = {
+			vendor: runtime.vendor as "claude" | "codex",
+			model: runtime.model,
+			...(runtime.effort
+				? {
+						effort: runtime.effort as "low" | "medium" | "high" | "xhigh",
+					}
+				: {}),
+		};
 		const launchOwnerId = randomUUID();
 		const launchMarkerPath = join(
 			process.env.HOME ?? homedir(),
@@ -1056,7 +1079,7 @@ async function handleRetry(
 				nodeId: predecessorBinding.node_id,
 				attempt: predecessorBinding.attempt + 1,
 				snapshotDigest: snapshot.snapshot_digest,
-				dispatch: node.dispatch,
+				dispatch: runtimeDispatch,
 				capabilities: { ...node.capabilities },
 				agentContent,
 				outputCredential,

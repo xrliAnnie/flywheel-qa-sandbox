@@ -286,10 +286,10 @@ describe("existing management writer adapters", () => {
 		const flagProvider = createManagementFlagProvider({
 			views: () =>
 				resolveAllFlags({
-					env: { FLYWHEEL_WORKFLOW_FORCE_LEGACY: "1" },
+					env: { FLYWHEEL_WORKFLOW_CLAIMS_READ: "1" },
 					envFile: {
 						status: "readable",
-						content: "FLYWHEEL_WORKFLOW_FORCE_LEGACY=0\n",
+						content: "FLYWHEEL_WORKFLOW_CLAIMS_READ=0\n",
 					},
 					projectConfigs: configs(),
 				}),
@@ -299,7 +299,7 @@ describe("existing management writer adapters", () => {
 		const value = flagProvider
 			.read()
 			.fragment.flags?.find(
-				(flag) => flag.name === "workflow_force_legacy",
+				(flag) => flag.name === "workflow_claims_read",
 			)?.global;
 		expect(value?.current).toBeNull();
 		expect(value?.writeCapability).toMatchObject({
@@ -317,9 +317,9 @@ describe("existing management writer adapters", () => {
 		"localhost flag DTO explains %s with the observable sources and no write capability",
 		(divergence, message) => {
 			const base = resolveAllFlags({ env: {} }).find(
-				(flag) => flag.name === "workflow_force_legacy",
+				(flag) => flag.name === "workflow_claims_read",
 			);
-			if (!base) throw new Error("missing workflow_force_legacy");
+			if (!base) throw new Error("missing workflow_claims_read");
 			const flagProvider = createManagementFlagProvider({
 				views: () => [
 					{

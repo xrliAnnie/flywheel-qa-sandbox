@@ -182,8 +182,8 @@ describe("renderFlagReport interactive=true (phone copy-paste)", () => {
 		expect(html).toContain(" &amp;&amp; ");
 		expect(html).toContain("&amp;&amp; flywheel-comm feature-flags report");
 		expect(html).toContain("命令末尾自动重发本报告");
-		expect(html).toContain("完成后打开新链接");
-		expect(html).toContain("第二阶段需打开新报告确认 claims reader");
+		expect(html).not.toContain("完成后打开新链接");
+		expect(html).not.toContain("第二阶段需打开新报告确认 claims reader");
 	});
 
 	it("only lists direct-toggleable flags as controls", () => {

@@ -143,6 +143,17 @@ describe("createInfraAlertSink (routing wrapper)", () => {
 		expect(deliver).not.toHaveBeenCalled();
 	});
 
+	it("workflow dead-exec issue alerts use the bound issue thread", async () => {
+		const { sink, rawSink, resolve, deliver } = makeDeps({
+			resolve: () => THREAD,
+		});
+		const p = payload("workflow_engine_issue_alert");
+		await sink.alert(p);
+		expect(resolve).toHaveBeenCalledExactlyOnceWith(p);
+		expect(deliver).toHaveBeenCalledExactlyOnceWith(p, THREAD);
+		expect(rawSink.alert).not.toHaveBeenCalled();
+	});
+
 	it("issue-progress kind + bound thread → issue-thread leg, NOT rawSink", async () => {
 		const { sink, rawSink, deliver } = makeDeps({ resolve: () => THREAD });
 		const p = payload("three_stage_stuck");

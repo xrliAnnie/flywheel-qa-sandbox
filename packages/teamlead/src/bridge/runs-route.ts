@@ -49,11 +49,15 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import {
 	parseWorkflowRunSnapshot,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
-import { workflowTemplateDispatchBlockReason } from "../workflow-template-dispatch.js";
+import {
+	isWorkflowTemplateDispatchEnabled,
+	workflowTemplateDispatchBlockReason,
+} from "../workflow-template-dispatch.js";
 import {
 	recoverWorkflowStartSelection,
 	resolveWorkflowTemplateCandidateSchema,
@@ -71,7 +75,9 @@ import {
 	probeGeneralizedLaunchLiveness,
 	waitForGeneralizedLaunchDelivery,
 } from "./generalized-launch-recovery.js";
+import { resolveLifecycleRootKey } from "./lifecycle-root-key.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
+import { collectRunQuiescenceEvidence } from "./run-quiescence.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
 import { loadPipelineConfigByProject } from "./three-stage-config-source.js";
@@ -209,6 +215,93 @@ export function createRunsRouter(
 	// request through the same `projects` reference. Bridge restart picks up
 	// new project config; runtime toggles use the env-var flag instead.
 	const departmentRegistry = new DepartmentRegistry(projects);
+
+	const registerRunManagementRoute = (action: "hold" | "terminate") => {
+		router.post(`/:runId/${action}`, async (req, res) => {
+			const bearer =
+				typeof req.headers.authorization === "string" &&
+				req.headers.authorization.startsWith("Bearer ")
+					? req.headers.authorization.slice("Bearer ".length)
+					: undefined;
+			if (!secureTokenEqual(bearer, auth?.masterToken)) {
+				res.status(403).json({
+					success: false,
+					code: "MASTER_AUTH_REQUIRED",
+				});
+				return;
+			}
+			const runId = String(req.params.runId ?? "");
+			const reason = req.body?.reason;
+			const clientRequestId = req.body?.clientRequestId;
+			if (
+				typeof reason !== "string" ||
+				!reason.trim() ||
+				reason.length > 500 ||
+				typeof clientRequestId !== "string" ||
+				!clientRequestId.trim()
+			) {
+				res.status(400).json({
+					success: false,
+					code: "INVALID_RUN_MANAGEMENT_REQUEST",
+				});
+				return;
+			}
+			if (!store.getWorkflowRun(runId)) {
+				res.status(404).json({ success: false, code: "RUN_NOT_FOUND" });
+				return;
+			}
+			try {
+				const evidence = await collectRunQuiescenceEvidence(
+					store,
+					runId,
+					probeGeneralizedLaunchLiveness,
+				);
+				const now = new Date().toISOString();
+				const request = {
+					runId,
+					reason: reason.trim(),
+					clientRequestId: clientRequestId.trim(),
+					principal: "master",
+					evidence,
+					now,
+				};
+				const result =
+					action === "hold"
+						? store.holdWorkflowRunByOperator(request)
+						: store.terminateWorkflowRunByOperator(request);
+				if (!result.ok) {
+					res
+						.status(result.reason === "invalid_operator_request" ? 400 : 409)
+						.json({
+							success: false,
+							code:
+								result.reason === "run_has_live_executions"
+									? "RUN_HAS_LIVE_EXECUTIONS"
+									: "RUN_MANAGEMENT_REFUSED",
+							reason: result.reason,
+							...(result.executionIds
+								? { executionIds: result.executionIds }
+								: {}),
+						});
+					return;
+				}
+				res.json({
+					success: true,
+					runId,
+					status: result.status,
+					idempotentReplay: result.idempotentReplay,
+				});
+			} catch (error) {
+				res.status(503).json({
+					success: false,
+					code: "RUN_LIVENESS_UNAVAILABLE",
+					message: error instanceof Error ? error.message : String(error),
+				});
+			}
+		});
+	};
+	registerRunManagementRoute("hold");
+	registerRunManagementRoute("terminate");
 
 	router.post("/start", async (req, res) => {
 		// GEO-267: LINEAR_API_KEY is required for issue hydration (PreHydrator).
@@ -502,6 +595,14 @@ export function createRunsRouter(
 		const replayReservation = requestedStartKey
 			? store.getWorkflowStartReservation(requestedStartKey)
 			: undefined;
+		const activeEngineRunAtDedup = store.getActiveWorkflowRunForIssue(issueId);
+		const activeEngineStartReservation =
+			activeEngineRunAtDedup?.engine_owned === 1
+				? store.getWorkflowStartReservationForRun(activeEngineRunAtDedup.run_id)
+				: undefined;
+		const exactActiveEngineStartSession =
+			activeEngineStartReservation?.execution_id ===
+			alreadyActive?.execution_id;
 		const exactGeneralizedReplay =
 			requestAuthKind === "master" &&
 			replayReservation?.execution_id === alreadyActive?.execution_id &&
@@ -510,7 +611,11 @@ export function createRunsRouter(
 					? store.getWorkflowRun(replayReservation.run_id)?.snapshot
 					: undefined,
 			);
-		if (alreadyActive && !exactGeneralizedReplay) {
+		if (
+			alreadyActive &&
+			!exactGeneralizedReplay &&
+			!exactActiveEngineStartSession
+		) {
 			// FLY-742: a done-but-parked blocker (finished, PR merged/closed, never
 			// emitted `completed`) would silently block this scheduled/cron run
 			// forever. The guard either auto-finalizes such a blocker (freeing the
@@ -567,6 +672,7 @@ export function createRunsRouter(
 		// Also captures title/identifier for session metadata patching (FLY-24 Bug 1)
 		// and the issue URL for DOC-FLOW header continuity (FLY-205).
 		let issueTitle: string | undefined;
+		let issueUuid: string | undefined;
 		let issueIdentifier: string | undefined;
 		let issueUrl: string | undefined;
 		// FLY-127: labels are needed by both the FLY-80 auto-resolve path AND the
@@ -590,6 +696,7 @@ export function createRunsRouter(
 				return;
 			}
 			issueTitle = issue.title;
+			issueUuid = typeof issue.id === "string" ? issue.id : undefined;
 			issueIdentifier = issue.identifier;
 			issueUrl = issue.url;
 
@@ -808,72 +915,114 @@ export function createRunsRouter(
 			return true;
 		};
 		let dagEntry = false;
-		let dagRecovery: WorkflowTemplateSelectionResult | undefined;
-		let hadDagRun = false;
+		let engineRecovery: WorkflowTemplateSelectionResult | undefined;
+		let engineRecoveryKind: "pipeline_dag_v1" | "workflow_v2" | undefined;
 		{
-			// Codex code R2 #1: the marked-run invariant is classified for EVERY
-			// same-issue start, independent of role/auth — a master qa-role or a
-			// scoped main request could otherwise skip both DAG domains AND the
-			// main-only three-stage block, get a silent null from selection, and
-			// start an unbound legacy session beside the active DAG run. Recovery
-			// stays main+master; everything else answers a typed 409 while the
-			// marker is active. Never-enrolled projects have no marked runs (zero
-			// behavior change), and real auto-QA dispatches on a SEPARATE QA·issue.
+			// FLY-1385 W8: classify every active engine run BEFORE opt-out and
+			// candidate resolution. New runs carry an explicit entry marker; old v2
+			// runs are recognized narrowly by engine ownership + reservation + pinned
+			// schema 2. An unclassified engine run fails closed rather than allowing a
+			// parallel legacy start.
 			const activeRun = store.getActiveWorkflowRunForIssue(issueId);
-			const dagRun =
-				activeRun?.entry_kind === "pipeline_dag_v1" ? activeRun : undefined;
-			if (dagRun) {
-				hadDagRun = true;
-				if (role !== "main" || requestAuthKind !== "master") {
-					res.status(409).json({
-						success: false,
-						code: "DAG_RUN_ACTIVE",
-						reason: `issue ${issueId} has an active pipeline-dag run (${dagRun.run_id}) — only a master main-role request may re-drive it; let the engine converge it or terminate the run first`,
-					});
-					return;
-				}
-				const pipelineConfig = await loadMainPipelineConfig();
+			if (
+				activeRun &&
+				(activeRun.engine_owned === 1 ||
+					activeRun.entry_kind === "pipeline_dag_v1" ||
+					activeRun.entry_kind === "workflow_v2")
+			) {
 				const reservation = store.getWorkflowStartReservationForRun(
-					dagRun.run_id,
+					activeRun.run_id,
 				);
-				if (!reservation) {
+				if (
+					!reservation &&
+					(activeRun.entry_kind === "pipeline_dag_v1" ||
+						activeRun.entry_kind === "workflow_v2")
+				) {
 					res.status(409).json({
 						success: false,
-						code: "DAG_RUN_STATE_CORRUPT",
-						reason: `active pipeline-dag run ${dagRun.run_id} has no start reservation`,
+						code:
+							activeRun.entry_kind === "pipeline_dag_v1"
+								? "DAG_RUN_STATE_CORRUPT"
+								: "WORKFLOW_RUN_STATE_CORRUPT",
+						reason: `active engine run ${activeRun.run_id} has no start reservation`,
 					});
 					return;
 				}
-				if (!validateDagRequestParameters()) return;
 				let runSchema: 1 | 2;
 				try {
 					runSchema = parseWorkflowRunSnapshot(
-						dagRun.snapshot ?? "",
+						activeRun.snapshot ?? "",
 					).schema_version;
 				} catch (err) {
 					res.status(409).json({
 						success: false,
-						code: "DAG_RUN_STATE_CORRUPT",
-						reason: `active pipeline-dag run ${dagRun.run_id} snapshot unreadable: ${(err as Error).message}`,
+						code: "WORKFLOW_RUN_STATE_CORRUPT",
+						reason: `active engine run ${activeRun.run_id} snapshot unreadable: ${(err as Error).message}`,
+					});
+					return;
+				}
+				const classifiedKind =
+					activeRun.entry_kind === "pipeline_dag_v1" && runSchema === 1
+						? "pipeline_dag_v1"
+						: activeRun.entry_kind === "workflow_v2" && runSchema === 2
+							? "workflow_v2"
+							: activeRun.entry_kind == null && reservation && runSchema === 2
+								? "workflow_v2"
+								: undefined;
+				if (!classifiedKind) {
+					res.status(409).json({
+						success: false,
+						code: "ACTIVE_ENGINE_RUN_UNCLASSIFIED",
+						reason: `issue ${issueId} has an active engine-owned run (${activeRun.run_id}) whose entry provenance cannot be recovered safely`,
+					});
+					return;
+				}
+				if (role !== "main" || requestAuthKind !== "master") {
+					res.status(409).json({
+						success: false,
+						code:
+							classifiedKind === "pipeline_dag_v1"
+								? "DAG_RUN_ACTIVE"
+								: "WORKFLOW_RUN_ACTIVE",
+						reason: `issue ${issueId} has an active engine run (${activeRun.run_id}) — only a master main-role request may re-drive it; let the engine converge it or terminate the run first`,
+					});
+					return;
+				}
+				if (!reservation) {
+					res.status(409).json({
+						success: false,
+						code:
+							classifiedKind === "pipeline_dag_v1"
+								? "DAG_RUN_STATE_CORRUPT"
+								: "WORKFLOW_RUN_STATE_CORRUPT",
+						reason: `active engine run ${activeRun.run_id} has no start reservation`,
+					});
+					return;
+				}
+				const pipelineConfig =
+					classifiedKind === "pipeline_dag_v1"
+						? await loadMainPipelineConfig()
+						: undefined;
+				if (
+					workflowTemplateDispatchBlockReason(runSchema, process.env) !==
+						undefined ||
+					(classifiedKind === "pipeline_dag_v1" && pipelineConfig?.dag !== true)
+				) {
+					res.status(409).json({
+						success: false,
+						code:
+							classifiedKind === "pipeline_dag_v1"
+								? "ACTIVE_DAG_RUN_RECOVERY_HELD"
+								: "ACTIVE_WORKFLOW_RUN_RECOVERY_HELD",
+						reason: `issue ${issueId} has an active ${classifiedKind} run (${activeRun.run_id}) but its dispatch policy is currently disabled — restore the workflow flags${classifiedKind === "pipeline_dag_v1" ? " + pipeline.dag" : ""} to converge it, or finalize/terminate the run before dispatching legacy`,
 					});
 					return;
 				}
 				if (
-					workflowTemplateDispatchBlockReason(runSchema, process.env) !==
-						undefined ||
-					pipelineConfig?.dag !== true
-				) {
-					// Rollback window: never resume the run past the kill switch,
-					// and never let legacy start beside a partial engine run
-					// (Codex design R2-2b). Operators restore the flags/config to
-					// converge the run, or explicitly finalize it first.
-					res.status(409).json({
-						success: false,
-						code: "ACTIVE_DAG_RUN_RECOVERY_HELD",
-						reason: `issue ${issueId} has an active pipeline-dag run (${dagRun.run_id}) but DAG dispatch is currently disabled — restore workflow flags + pipeline.dag to converge it, or finalize/terminate the run before dispatching legacy`,
-					});
+					classifiedKind === "pipeline_dag_v1" &&
+					!validateDagRequestParameters()
+				)
 					return;
-				}
 				if (
 					requestedStartKey &&
 					requestedStartKey !== reservation.idempotency_key
@@ -885,8 +1034,11 @@ export function createRunsRouter(
 					// its reservation; answer loudly.
 					res.status(409).json({
 						success: false,
-						code: "DAG_RUN_KEY_MISMATCH",
-						reason: `issue ${issueId} has an active pipeline-dag run bound to a different start reservation — retry keyless (recovery) or with the original idempotencyKey, or finalize/terminate the run first`,
+						code:
+							classifiedKind === "pipeline_dag_v1"
+								? "DAG_RUN_KEY_MISMATCH"
+								: "WORKFLOW_RUN_KEY_MISMATCH",
+						reason: `issue ${issueId} has an active engine run bound to a different start reservation — retry keyless (recovery) or with the original idempotencyKey, or finalize/terminate the run first`,
 					});
 					return;
 				}
@@ -901,20 +1053,28 @@ export function createRunsRouter(
 					) {
 						res.status(409).json({
 							success: false,
-							message: `Issue ${issueId} already has an active DAG phase (${activePhase.session_role}, ${activePhase.execution_id}, status: ${activePhase.status}). The engine advances the run — do not start a second run; let it converge or terminate it first.`,
+							message:
+								classifiedKind === "pipeline_dag_v1"
+									? `Issue ${issueId} already has an active DAG phase (${activePhase.session_role}, ${activePhase.execution_id}, status: ${activePhase.status}). The engine advances the run — do not start a second run; let it converge or terminate it first.`
+									: `Issue ${issueId} already has an active workflow successor (${activePhase.session_role}, ${activePhase.execution_id}, status: ${activePhase.status}). The engine advances the run — do not start a second run; let it converge or terminate it first.`,
 						});
 						return;
 					}
 					try {
-						dagRecovery = recoverWorkflowStartSelection(store, {
+						engineRecovery = recoverWorkflowStartSelection(store, {
 							issueId,
 							projectName,
 							authKind: requestAuthKind,
+							runId: activeRun.run_id,
 						});
+						engineRecoveryKind = classifiedKind;
 					} catch (err) {
 						res.status(409).json({
 							success: false,
-							code: "DAG_RUN_STATE_CORRUPT",
+							code:
+								classifiedKind === "pipeline_dag_v1"
+									? "DAG_RUN_STATE_CORRUPT"
+									: "WORKFLOW_RUN_STATE_CORRUPT",
 							reason: (err as Error).message,
 						});
 						return;
@@ -934,9 +1094,23 @@ export function createRunsRouter(
 					? req.body.templateId
 					: undefined,
 		};
+		const workflowDispatchEnabled = isWorkflowTemplateDispatchEnabled(
+			process.env,
+		);
+		const freshNoThreeStageLegacy =
+			!engineRecovery &&
+			!replayReservation &&
+			role === "main" &&
+			normalizedIssueLabels.includes(NO_THREE_STAGE_LABEL);
 		let candidateSchemaAtEntry: 1 | 2 | null;
-		if (dagRecovery) {
-			// FLY-1372 (Codex design R3-2): the recovery domain is CANDIDATE-FREE.
+		if (
+			engineRecovery ||
+			freshNoThreeStageLegacy ||
+			(!workflowDispatchEnabled && !replayReservation)
+		) {
+			// Recovery, the dispatch rollback lever, and a fresh explicit opt-out are
+			// candidate-free. A bad current binding/revision cannot strand recovery or
+			// turn a legacy request into a generalized 409.
 			// The current resolver can throw on a corrupted/nonexistent current
 			// template — that must never strand a run with a good pinned snapshot,
 			// so it is not even consulted on the recovery path (the value is unused
@@ -964,8 +1138,8 @@ export function createRunsRouter(
 		// byte-identical legacy), and only a schema-1 candidate enters — the
 		// pilot is v1-only, schema-2 keeps today's explicit path untouched.
 		if (
-			!dagRecovery &&
-			!hadDagRun &&
+			!engineRecovery &&
+			!freshNoThreeStageLegacy &&
 			role === "main" &&
 			requestAuthKind === "master"
 		) {
@@ -1021,9 +1195,9 @@ export function createRunsRouter(
 		// DAG run carries design→implement→qa itself; no role rewrite here.
 		if (
 			!dagEntry &&
-			!dagRecovery &&
+			!engineRecovery &&
 			role === "main" &&
-			candidateSchemaAtEntry !== 2
+			(!workflowDispatchEnabled || candidateSchemaAtEntry !== 2)
 		) {
 			const proj = projects.find((p) => p.projectName === projectName);
 			const pipelineConfig = await loadMainPipelineConfig();
@@ -1127,7 +1301,7 @@ export function createRunsRouter(
 		// explicit) but the template pins per-node vendor/model/agent. ponytail
 		// rides the legacy-identical ladder and is NOT in this list.
 		const dagAuthority =
-			dagEntry || dagRecovery
+			dagEntry || engineRecoveryKind === "pipeline_dag_v1"
 				? {
 						templateAuthority: {
 							overrode: [
@@ -1141,22 +1315,59 @@ export function createRunsRouter(
 		const generalizedProject = projects.find(
 			(project) => project.projectName === projectName,
 		);
+		const entryRootResolution = resolveLifecycleRootKey(
+			store,
+			issueId,
+			[issueUuid, issueIdentifier].filter(
+				(alias): alias is string => typeof alias === "string",
+			),
+		);
+		if (
+			!entryRootResolution.ok &&
+			entryRootResolution.reason === "uuid_conflict"
+		) {
+			res.status(409).json({
+				success: false,
+				code: "WORKFLOW_ENTRY_ROOT_CONFLICT",
+				reason: "uuid_conflict",
+			});
+			return;
+		}
+		const workflowEntryRootKey = entryRootResolution.ok
+			? entryRootResolution.rootKey
+			: issueId;
+		const workflowEntryAliases = entryRootResolution.aliasKeys;
 		// FLY-1372: the DAG entry synthesizes a start key when the Lead sent none
 		// (random — a deterministic per-issue key would forever replay the FIRST
 		// run's cached response on later fresh dispatches). Keyless RETRY safety
 		// comes from the recovery domain above, not from key determinism.
+		const v2Entry =
+			!engineRecovery &&
+			!freshNoThreeStageLegacy &&
+			workflowDispatchEnabled &&
+			candidateSchemaAtEntry === 2;
 		const effectiveStartKey =
-			requestedStartKey ?? (dagEntry ? `dag-auto-${randomUUID()}` : undefined);
+			requestedStartKey ??
+			(dagEntry
+				? `dag-auto-${randomUUID()}`
+				: v2Entry
+					? `wf2-auto-${randomUUID()}`
+					: undefined);
 		let generalizedSelection:
-			| ReturnType<typeof resolveWorkflowTemplateSelection>
+			| WorkflowTemplateSelectionResult
+			| null
 			| undefined;
-		if (dagRecovery) {
-			generalizedSelection = dagRecovery;
+		if (engineRecovery) {
+			generalizedSelection = engineRecovery;
+		} else if (freshNoThreeStageLegacy || !workflowDispatchEnabled) {
+			generalizedSelection = null;
 		} else {
 			try {
-				generalizedSelection = resolveWorkflowTemplateSelection(store, {
+				generalizedSelection = await resolveWorkflowTemplateSelection(store, {
 					...templateCandidateInput,
 					issueId,
+					entryIssueAliases: workflowEntryAliases,
+					entryRootKey: workflowEntryRootKey,
 					leadReason:
 						typeof req.body.selectionReason === "string"
 							? req.body.selectionReason
@@ -1169,7 +1380,11 @@ export function createRunsRouter(
 					allowSchemaV1Dispatch:
 						dagEntry || (role === "design" && shareParentBranch === true),
 					candidateSchemaAtEntry,
-					...(dagEntry ? { entryKind: "pipeline_dag_v1" as const } : {}),
+					...(dagEntry
+						? { entryKind: "pipeline_dag_v1" as const }
+						: v2Entry
+							? { entryKind: "workflow_v2" as const }
+							: {}),
 					env: process.env,
 				});
 			} catch (err) {
@@ -1204,6 +1419,11 @@ export function createRunsRouter(
 				return;
 			}
 			const now = new Date();
+			const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
+				runId: generalizedSelection.runId,
+				nodeId: generalizedSelection.nodeId,
+				env: process.env,
+			});
 			const workflowAdmission = store.admitGeneralizedWorkflowExecution({
 				runId: generalizedSelection.runId,
 				nodeId: generalizedSelection.nodeId,
@@ -1216,6 +1436,7 @@ export function createRunsRouter(
 				).toISOString(),
 				env: process.env,
 				idempotencyKey: generalizedSelection.idempotencyKey,
+				dispatchResolution,
 			});
 			if (!workflowAdmission.ok) {
 				res.status(409).json({
@@ -1225,6 +1446,29 @@ export function createRunsRouter(
 				});
 				return;
 			}
+			const workflowRuntime = store.getWorkflowExecutionRuntime(
+				generalizedSelection.executionId,
+			);
+			if (!workflowRuntime) {
+				res.status(409).json({
+					success: false,
+					code: "GENERALIZED_RUNTIME_DISPATCH_MISSING",
+				});
+				return;
+			}
+			const workflowRuntimeDispatch = {
+				vendor: workflowRuntime.vendor as "claude" | "codex",
+				model: workflowRuntime.model,
+				...(workflowRuntime.effort
+					? {
+							effort: workflowRuntime.effort as
+								| "low"
+								| "medium"
+								| "high"
+								| "xhigh",
+						}
+					: {}),
+			};
 			if (!generalizedSelection.node.dispatch) {
 				res.status(409).json({
 					success: false,
@@ -1418,7 +1662,7 @@ export function createRunsRouter(
 					// so the durable emitStarted seam persists them with the session
 					// row. Non-DAG generalized starts keep today's exact shape.
 					const dagBehavior =
-						dagEntry || dagRecovery
+						dagEntry || engineRecoveryKind === "pipeline_dag_v1"
 							? await computeStartBehaviorSnapshot()
 							: undefined;
 					await startDispatcher.start({
@@ -1447,7 +1691,7 @@ export function createRunsRouter(
 							nodeId: generalizedSelection.nodeId,
 							attempt: 1,
 							snapshotDigest: generalizedSelection.snapshotDigest,
-							dispatch: generalizedSelection.node.dispatch,
+							dispatch: workflowRuntimeDispatch,
 							capabilities: { ...generalizedSelection.node.capabilities },
 							agentContent: workflowAgentContent,
 							outputCredential: workflowOutputCredential,
@@ -1524,6 +1768,37 @@ export function createRunsRouter(
 				});
 				return;
 			}
+			if (
+				store
+					.listWorkflowSideEffects(generalizedSelection.runId)
+					.some(
+						(effect) =>
+							effect.execution_id === generalizedSelection.executionId,
+					)
+			) {
+				store.applyWorkflowShadowBatch({
+					projectName,
+					issueId,
+					runId: generalizedSelection.runId,
+					expectedEngineOwned: 1,
+					ops: [
+						{
+							op: "side_effect",
+							node: generalizedSelection.nodeId,
+							attempt: 1,
+							executionId: generalizedSelection.executionId,
+							to: "started",
+						},
+					],
+				});
+				store.upsertWorkflowRunNode({
+					runId: generalizedSelection.runId,
+					nodeId: generalizedSelection.nodeId,
+					attempt: 1,
+					state: "running",
+					executionId: generalizedSelection.executionId,
+				});
+			}
 			store.advanceWorkflowStartStage(
 				generalizedSelection.idempotencyKey,
 				"launch_committed",
@@ -1590,6 +1865,24 @@ export function createRunsRouter(
 			}
 		}
 
+		const legacyEntryExecutionId = randomUUID();
+		const legacyEntryClaim = store.claimLegacyWorkflowEntry({
+			issueId,
+			issueAliases: workflowEntryAliases,
+			rootKey: workflowEntryRootKey,
+			projectName,
+			executionId: legacyEntryExecutionId,
+			role,
+		});
+		if (!legacyEntryClaim.ok) {
+			res.status(409).json({
+				success: false,
+				code: "WORKFLOW_ENTRY_CONFLICT",
+				reason: legacyEntryClaim.reason,
+			});
+			return;
+		}
+
 		try {
 			// FLY-24: Pass pre-fetched title/identifier so Blueprint's EventEnvelope
 			// uses real metadata (PreHydrator may fail Linear API and fall back to stub title).
@@ -1604,6 +1897,7 @@ export function createRunsRouter(
 			const result = await startDispatcher.start({
 				issueId,
 				projectName,
+				successorExecutionId: legacyEntryExecutionId,
 				leadId,
 				issueTitle,
 				issueIdentifier,
@@ -1694,6 +1988,16 @@ export function createRunsRouter(
 					// choice — never a removed label's or a stale project default's model.
 					dispatch_model: dispatchModel,
 				});
+				if (result.executionId !== legacyEntryExecutionId) {
+					// Test doubles / legacy custom dispatchers may ignore the pre-bound id.
+					// Production RunDispatcher honors it; never leave our provisional claim
+					// behind when an alternate durable execution became authoritative.
+					store.casLaunchClaimState(
+						legacyEntryExecutionId,
+						"starting",
+						"cancelled",
+					);
+				}
 			}
 
 			// FLY-80: Verify session was actually registered (detect ghost starts).
@@ -1721,6 +2025,11 @@ export function createRunsRouter(
 				timeoutMs: GHOST_GUARD_SESSION_WAIT_MS,
 			});
 			if (!finalSession) {
+				store.casLaunchClaimState(
+					legacyEntryExecutionId,
+					"starting",
+					"cancelled",
+				);
 				res.status(500).json({
 					success: false,
 					message: `Runner failed to start — session not registered after ${GHOST_GUARD_SESSION_WAIT_MS}ms. Check Bridge logs for errors.`,
@@ -1739,6 +2048,11 @@ export function createRunsRouter(
 					: {}),
 			});
 		} catch (err) {
+			store.casLaunchClaimState(
+				legacyEntryExecutionId,
+				"starting",
+				"cancelled",
+			);
 			// FLY-137 v1.27.2: InvalidAgentNameError thrown from AgentDispatcher
 			// when Lead override `agentName` doesn't match any configured agent.
 			// Map to FLY-127-shaped machine-only diagnostic.

@@ -133,6 +133,51 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 
+	it("resolves a workflow issue alert by its dead execution metadata, not the wf run sessionKey", async () => {
+		const sink = makeSink(true);
+		const p: AlertPayload = {
+			...payload("workflow_engine_issue_alert"),
+			sessionKey: "wf:run-1385",
+			metadata: {
+				workflowEngine: {
+					runId: "run-1385",
+					issueId: "issue-uuid-927",
+					nodeId: "implement",
+					executionId: EXEC,
+					disposition: "dead_execution_activity_after_replacement",
+					leadResolution: "resolved",
+				},
+			},
+		};
+		await sink.alert(p);
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		expect(rawSink.alert).not.toHaveBeenCalled();
+	});
+
+	it("still resolves the issue thread when the dead execution has no session row", async () => {
+		store.close();
+		store = await StateStore.create(":memory:");
+		store.upsertChatThread("thread-927", "chan-eng", "issue-uuid-927");
+		const sink = makeSink(true);
+		const p: AlertPayload = {
+			...payload("workflow_engine_issue_alert"),
+			sessionKey: "wf:run-1385",
+			metadata: {
+				workflowEngine: {
+					runId: "run-1385",
+					issueId: "issue-uuid-927",
+					nodeId: "implement",
+					executionId: "missing-dead-exec",
+					disposition: "dead_execution_activity_after_replacement",
+					leadResolution: "resolved",
+				},
+			},
+		};
+		await sink.alert(p);
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		expect(rawSink.alert).not.toHaveBeenCalled();
+	});
+
 	it("issue-thread delivery failure routes the ORIGINAL alert to the raw sink (never silent)", async () => {
 		fetchImpl.mockImplementation(async () => ({
 			ok: false,

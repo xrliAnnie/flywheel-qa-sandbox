@@ -30,6 +30,7 @@ import {
 vi.mock("@linear/sdk", () => ({
 	LinearClient: vi.fn().mockImplementation(() => ({
 		issue: vi.fn().mockResolvedValue({
+			id: "11111111-1111-4111-8111-111111111111",
 			title: "Test Issue",
 			identifier: "GEO-TEST",
 			// FLY-205: issue URL captured at preflight for DOC-FLOW header continuity
@@ -100,13 +101,14 @@ function createMockStartDispatcher(store: StateStore): IStartDispatcher & {
 				projectName: req.projectName,
 			});
 			mock._inflightCount++;
-			const executionId = `exec-${req.issueId}`;
+			const executionId = req.successorExecutionId ?? `exec-${req.issueId}`;
 			// FLY-80: Ghost start detection expects session to exist in StateStore
 			store.upsertSession({
 				execution_id: executionId,
 				issue_id: req.issueId,
 				project_name: req.projectName,
 				status: "running",
+				session_role: req.sessionRole ?? "main",
 			});
 			return { executionId, issueId: req.issueId };
 		}),
@@ -179,7 +181,10 @@ describe("Start API E2E", () => {
 			executionId: string;
 		};
 		expect(body.success).toBe(true);
-		expect(body.executionId).toBe("exec-GEO-TEST");
+		expect(body.executionId).toMatch(/^[0-9a-f-]{36}$/);
+		expect(body.executionId).toBe(
+			mockDispatcher.start.mock.calls[0]?.[0].successorExecutionId,
+		);
 		expect(mockDispatcher.start).toHaveBeenCalledOnce();
 	}, 15_000);
 
@@ -217,6 +222,7 @@ describe("Start API E2E", () => {
 		expect(mockDispatcher.start).toHaveBeenCalledWith({
 			issueId: "GEO-LEAD",
 			projectName: "TestProject",
+			successorExecutionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
 			leadId: "product-lead",
 			issueTitle: "Test Issue",
 			issueIdentifier: "GEO-TEST",
@@ -242,6 +248,41 @@ describe("Start API E2E", () => {
 				signal: { labels: ["product"], labelStatus: "readable" },
 			},
 		});
+	}, 15_000);
+
+	it("releases a terminal same-role legacy entry while preserving per-role concurrency", async () => {
+		const start = (sessionRole?: "main" | "qa") =>
+			fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-ENTRY",
+					projectName: "TestProject",
+					...(sessionRole ? { sessionRole } : {}),
+				}),
+			});
+
+		const main = await start();
+		expect(main.status).toBe(200);
+		const mainExecutionId = ((await main.json()) as { executionId: string })
+			.executionId;
+		expect(store.getLaunchClaim(mainExecutionId)?.rootUuid).toBe(
+			"11111111-1111-4111-8111-111111111111",
+		);
+		const qa = await start("qa");
+		expect(qa.status).toBe(200);
+		store.upsertSession({
+			execution_id: mainExecutionId,
+			issue_id: "GEO-ENTRY",
+			project_name: "TestProject",
+			status: "failed",
+		});
+		const retriedMain = await start();
+		const retriedMainBody = await retriedMain.clone().text();
+		expect(retriedMain.status, retriedMainBody).toBe(200);
+		expect(
+			((await retriedMain.json()) as { executionId: string }).executionId,
+		).not.toBe(mainExecutionId);
 	}, 15_000);
 
 	it("POST missing issueId → 400", async () => {
@@ -661,7 +702,9 @@ describe("Start API E2E", () => {
 			const startReq = mockDispatcher.start.mock.calls[0]![0];
 			expect(startReq.docTier).toBe("plan_only");
 			expect(startReq.issueUrl).toBe("https://linear.app/test/issue/GEO-TEST");
-			const session = store.getSession("exec-GEO-TEST");
+			const session = store.getSession(
+				mockDispatcher.start.mock.calls[0]![0].successorExecutionId!,
+			);
 			expect(session?.doc_tier).toBe("plan_only");
 			expect(session?.issue_url).toBe("https://linear.app/test/issue/GEO-TEST");
 		}, 15_000);
@@ -700,7 +743,9 @@ describe("Start API E2E", () => {
 			expect(startReq.docTier).toBeUndefined();
 			// EFFECTIVE tier persisted: retry must reuse "full" explicitly,
 			// never re-default (Codex design R2 #1).
-			const session = store.getSession("exec-GEO-TEST");
+			const session = store.getSession(
+				mockDispatcher.start.mock.calls[0]![0].successorExecutionId!,
+			);
 			expect(session?.doc_tier).toBe("full");
 		}, 15_000);
 	});
@@ -721,9 +766,11 @@ describe("Start API E2E", () => {
 			const startReq = mockDispatcher.start.mock.calls[0]![0];
 			expect(startReq.dispatchModel).toBe("claude-fable-5");
 			// FLY-728: persisted as the source-honest retry input dispatch_model.
-			expect(store.getSession("exec-GEO-TEST")?.dispatch_model).toBe(
-				"claude-fable-5",
-			);
+			expect(
+				store.getSession(
+					mockDispatcher.start.mock.calls[0]![0].successorExecutionId!,
+				)?.dispatch_model,
+			).toBe("claude-fable-5");
 		}, 15_000);
 
 		it("a bare alias is normalized to the canonical id before dispatch", async () => {
@@ -891,7 +938,7 @@ pipeline:
 			expect(res.status).toBe(200);
 			expect(await res.json()).toEqual({
 				success: true,
-				executionId: "exec-GEO-FLY1259",
+				executionId: expect.any(String),
 				issueId: "GEO-FLY1259",
 				message: "Runner started for GEO-FLY1259",
 				designBackend: "codex",
@@ -913,7 +960,7 @@ pipeline:
 			expect(res.status).toBe(200);
 			expect(await res.json()).toEqual({
 				success: true,
-				executionId: "exec-GEO-FLY1259",
+				executionId: expect.any(String),
 				issueId: "GEO-FLY1259",
 				message: "Runner started for GEO-FLY1259",
 				designBackend: "claude",
@@ -938,7 +985,7 @@ pipeline:
 				const body = await res.json();
 				expect(body).toEqual({
 					success: true,
-					executionId: "exec-GEO-FLY1259",
+					executionId: expect.any(String),
 					issueId: "GEO-FLY1259",
 					message: "Runner started for GEO-FLY1259",
 				});

@@ -632,6 +632,14 @@ export function createEventRouter(
 					!(completion.ok === false && completion.reason === "not_enrolled")
 				) {
 					if (!completion.ok) {
+						if (completion.reason === "stale_execution_superseded") {
+							res.json({
+								ok: true,
+								generalized: true,
+								settled: "stale_execution_superseded",
+							});
+							return;
+						}
 						res.status(409).json({
 							error:
 								completion.reason === "missing_output"
@@ -661,32 +669,64 @@ export function createEventRouter(
 					return;
 				}
 			} else {
-				const teardown = store.observeEnrolledTeardown({
-					executionId: event.execution_id,
-				});
-				if (teardown.enrolled) {
-					if (teardown.held) {
+				const generalized = store.getGeneralizedWorkflowNodeForExecution(
+					event.execution_id,
+				);
+				if (generalized) {
+					const recorded = store.recordEnrolledTerminalSignal({
+						executionId: event.execution_id,
+						sourceEventId: event.event_id,
+						signal: "completed",
+						source:
+							typeof event.source === "string" ? event.source : "orchestrator",
+					});
+					if (!recorded.ok) {
 						res.status(409).json({
-							error: "workflow_completion_receipt_required",
+							error: "workflow_teardown_record_rejected",
+							reason: recorded.reason,
 						});
-					} else {
-						res.json({ ok: true, generalized: true, teardown: true });
+						return;
 					}
+					res.json({
+						ok: true,
+						generalized: true,
+						teardown: "held_recorded",
+						duplicate: recorded.idempotentReplay,
+					});
 					return;
 				}
 			}
 		} else if (event.event_type === "session_failed") {
-			const teardown = store.observeEnrolledTeardown({
-				executionId: event.execution_id,
-			});
-			if (teardown.enrolled) {
-				if (teardown.held) {
+			const generalized = store.getGeneralizedWorkflowNodeForExecution(
+				event.execution_id,
+			);
+			if (generalized) {
+				const failure = asTerminalFailureInfo(event.payload?.failure);
+				const recorded = store.recordEnrolledTerminalSignal({
+					executionId: event.execution_id,
+					sourceEventId: event.event_id,
+					signal: "failed",
+					failureKind: failure?.failureKind,
+					lastError:
+						failure?.failureKind === "goal_blocked"
+							? failure.failureReason
+							: asString(event.payload?.error),
+					source:
+						typeof event.source === "string" ? event.source : "orchestrator",
+				});
+				if (!recorded.ok) {
 					res.status(409).json({
-						error: "workflow_completion_receipt_required",
+						error: "workflow_teardown_record_rejected",
+						reason: recorded.reason,
 					});
-				} else {
-					res.json({ ok: true, generalized: true, teardown: true });
+					return;
 				}
+				res.json({
+					ok: true,
+					generalized: true,
+					teardown: "held_recorded",
+					duplicate: recorded.idempotentReplay,
+				});
 				return;
 			}
 		}

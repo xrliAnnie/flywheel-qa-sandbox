@@ -33,28 +33,23 @@ export function renderDagFlagPanelHtml(
 	interactive: boolean,
 ): string {
 	const readerLabel = {
-		forced_legacy: "legacy（应急回退生效）",
 		claims: "claims",
 		blocked_fail_closed: "无 reader（fail-closed）",
 		degraded: "DEGRADED（来源分歧）",
 	}[panel.shipReader];
-	const phase2 = panel.presets.enableV2.phase2Command;
 	const actions = interactive
 		? [
 				'<div class="dag-actions">',
 				presetButton("开 DAG v1 · 第一阶段", panel.presets.enableV1),
 				presetButton("开 DAG v2 · 第一阶段", panel.presets.enableV2),
 				presetButton("彻底关 DAG", panel.presets.disable),
-				phase2
-					? `<button type="button" class="dag-command dag-phase2" data-dag-copy="${esc(`${phase2} && flywheel-comm feature-flags report`)}">确认 claims 后关闭 legacy 回退 · 第二阶段</button>`
-					: '<button type="button" class="dag-command dag-phase2" disabled>第二阶段需打开新报告确认 claims reader</button>',
 				"</div>",
-				'<p class="dag-help">第一阶段命令使用 <code>&amp;&amp;</code> 失败即停；命令末尾自动重发本报告，完成后打开新链接，确认 ship reader=claims，再复制第二阶段。</p>',
+				'<p class="dag-help">命令使用 <code>&amp;&amp;</code> 失败即停；命令末尾自动重发本报告。</p>',
 			].join("")
 		: "";
 	return [
 		'<section class="dag-panel">',
-		'<div class="dag-title"><h2>DAG 控制</h2><span>五杆三事实</span></div>',
+		'<div class="dag-title"><h2>DAG 控制</h2><span>四杆三事实</span></div>',
 		dispatchLabel("v1 dispatch", panel.v1Dispatch),
 		dispatchLabel("v2 dispatch", panel.v2Dispatch),
 		`<div class="dag-fact"><strong>ship reader</strong><span class="dag-state">${esc(readerLabel)}</span></div>`,

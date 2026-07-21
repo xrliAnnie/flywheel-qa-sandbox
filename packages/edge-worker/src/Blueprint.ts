@@ -1176,7 +1176,16 @@ export class Blueprint {
 				} catch {
 					head = null;
 				}
-				if (!clean || !ctx.startPoint || head !== ctx.startPoint) {
+				const reusableHead =
+					!!ctx.startPoint &&
+					!!head &&
+					(head === ctx.startPoint ||
+						(await this.gitChecker.isAncestorOf(
+							expected.path,
+							ctx.startPoint,
+							head,
+						)));
+				if (!clean || !reusableHead) {
 					const failureReason = `worktree_takeover_failed: shared branch-B worktree ${expected.path} is not reusable in place (clean=${clean}, head=${head ?? "?"}, expected=${ctx.startPoint ?? "?"}) — refusing to reuse an active phase worktree; a parked phase may hold uncommitted work`;
 					return {
 						success: false,
