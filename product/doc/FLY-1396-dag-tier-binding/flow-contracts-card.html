@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>产品部三种活,各走各的流程 — 请你拍一下</title>
+<style>
+  :root { --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --gray:#86868b; --navy:#1a365d; --ink:#1d1d1f; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#f5f5f7; color:var(--ink); font-family:-apple-system, system-ui, sans-serif; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:960px; margin:0 auto; padding:34px 20px 80px; }
+  .kicker { color:var(--gray); font-size:13px; margin:0 0 8px; }
+  h1 { font-size:27px; font-weight:800; letter-spacing:-0.02em; margin:0 0 10px; line-height:1.3; }
+  .sub { color:var(--gray); font-size:15px; margin:0 0 26px; }
+  .card { background:#fff; border-radius:14px; padding:18px 20px 20px; box-shadow:0 1px 3px rgba(0,0,0,0.06); margin-bottom:16px; border-left:4px solid var(--gray); }
+  .card.prd{border-left-color:var(--blue)} .card.des{border-left-color:var(--purple)} .card.pro{border-left-color:var(--green)}
+  .card.why{border-left-color:var(--gray)} .card.note{border-left-color:var(--amber); background:#fffdf5;}
+  .card h2 { font-size:19px; font-weight:750; margin:0 0 4px; display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; }
+  .card h2 .tag { font-size:12px; font-weight:700; padding:2px 9px; border-radius:20px; }
+  .prd .tag{background:#e8f1ff;color:#0057c8} .des .tag{background:#f6ebfb;color:#7b2fa8} .pro .tag{background:#e8f9ee;color:#1a7f37}
+  .oneline { color:var(--gray); font-size:14px; margin:0 0 14px; }
+  .steps { display:flex; flex-wrap:wrap; gap:7px; align-items:center; margin:0 0 15px; font-size:14px; }
+  .step { background:#fafafa; border:1px solid #ececef; border-radius:8px; padding:5px 11px; white-space:nowrap; }
+  .step.you { background:#fff6e5; border-color:#ffd88a; font-weight:700; }
+  .arr { color:var(--gray); }
+  dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:7px 14px; font-size:14.5px; align-items:baseline; }
+  dt { color:var(--gray); white-space:nowrap; }
+  dd { margin:0; }
+  .youbadge { display:inline-block; background:#fff6e5; color:#a15c00; font-size:11px; font-weight:700; padding:1px 7px; border-radius:20px; margin-left:5px; }
+  .cbox { margin-top:16px; padding-top:14px; border-top:1px dashed #e3e3e6; }
+  .cbox label { display:block; font-size:12.5px; color:var(--gray); font-weight:600; margin-bottom:6px; }
+  textarea { width:100%; min-height:58px; border:1.5px solid #e3e3e6; border-radius:10px; padding:10px 12px; font-family:inherit; font-size:14.5px; resize:vertical; background:#fff; }
+  textarea:focus { outline:none; border-color:var(--blue); }
+  .saved { font-size:12.5px; color:var(--green); font-weight:700; margin-top:6px; min-height:17px; }
+  .ask { background:#fff; border-radius:16px; padding:20px 22px; box-shadow:0 2px 10px rgba(0,0,0,0.08); border:2px solid var(--blue); margin-top:26px; }
+  .ask h2 { font-size:19px; font-weight:800; margin:0 0 6px; color:#0057c8; }
+  .ask ul { margin:10px 0 0; padding-left:20px; }
+  .ask li { margin:7px 0; font-size:15px; }
+  .sum { background:#fff; border-radius:16px; padding:20px 22px; box-shadow:0 2px 10px rgba(0,0,0,0.08); border:2px solid var(--green); margin-top:22px; }
+  .sum h2 { font-size:18px; font-weight:800; margin:0 0 4px; color:#1a7f37; }
+  .sum p { font-size:14px; color:var(--gray); margin:0 0 12px; }
+  .sum textarea { min-height:120px; font-size:13.5px; background:#fafafa; }
+  .btnrow { display:flex; gap:10px; align-items:center; margin-top:11px; flex-wrap:wrap; }
+  button { font-family:inherit; font-size:14px; font-weight:700; padding:9px 18px; border-radius:10px; border:none; cursor:pointer; background:var(--blue); color:#fff; }
+  button.ghost { background:#f0f0f2; color:var(--ink); }
+  button:active { transform:translateY(1px); }
+  .copied { font-size:13px; font-weight:700; color:var(--green); min-height:18px; }
+  .empty { color:var(--gray); font-style:italic; }
+  .foot { color:var(--gray); font-size:12px; text-align:center; margin-top:32px; }
+  @media (max-width:560px){ dl{grid-template-columns:1fr; gap:2px 0} dt{margin-top:8px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="kicker">FLY-1396 · 最后一个要你拍的东西</p>
+  <h1>产品部这三种活,流程形状不一样 —— 请你看一眼对不对</h1>
+  <p class="sub">机制部分已经全部定完了。剩下这一件:这三套流程各自长什么样。<br>每一节下面都有留言框,想到什么随手写,底部能一键汇总。</p>
+
+  <div class="card why">
+    <h2>为什么要分三套</h2>
+    <p style="margin:8px 0;">是你说的 ——「我们还是必须得有 designer 和 prototype 的模板吧,因为它和产品出 PRD 完全是不一样的 flow 呀」。</p>
+    <p style="margin:8px 0;">所以判据不是「模板越少越好」,而是:<b>只差用哪个模型的合并;流程形状不同的分开。</b>下面三套就是形状不同的那三种。</p>
+    <div class="cbox">
+      <label for="c-why">对这个判据有什么要补的</label>
+      <textarea id="c-why" data-section="为什么要分三套" placeholder="写这里(可选)…"></textarea>
+      <div class="saved" data-for="c-why"></div>
+    </div>
+  </div>
+
+  <div class="card prd">
+    <h2>写 PRD <span class="tag">最常见</span></h2>
+    <p class="oneline">把一件事想清楚,写成工程能照着做的东西。</p>
+    <div class="steps">
+      <span class="step">研究</span><span class="arr">→</span>
+      <span class="step">写</span><span class="arr">→</span>
+      <span class="step">评审</span><span class="arr">→</span>
+      <span class="step you">你拍板</span>
+    </div>
+    <dl>
+      <dt>做出来的东西</dt><dd>研究记录 → PRD 稿 → 评审记录</dd>
+      <dt>谁拍板</dt><dd>评审过了之后,<b>终态你拍</b><span class="youbadge">你</span></dd>
+      <dt>不过怎么办</dt><dd>评审不过 → <b>回去改稿</b></dd>
+      <dt>最多来回几次</dt><dd>评审最多 3 轮</dd>
+    </dl>
+    <div class="cbox">
+      <label for="c-prd">对「写 PRD」这套有什么要改的</label>
+      <textarea id="c-prd" data-section="写 PRD" placeholder="写这里(可选)…"></textarea>
+      <div class="saved" data-for="c-prd"></div>
+    </div>
+  </div>
+
+  <div class="card des">
+    <h2>designer <span class="tag">先确认方向,再花力气</span></h2>
+    <p class="oneline">先给你看粗略的样子,方向对了再做精细的。</p>
+    <div class="steps">
+      <span class="step">粗略草图</span><span class="arr">→</span>
+      <span class="step you">你确认方向</span><span class="arr">→</span>
+      <span class="step">做精细版</span><span class="arr">→</span>
+      <span class="step">评审</span><span class="arr">→</span>
+      <span class="step you">你拍板</span>
+    </div>
+    <dl>
+      <dt>做出来的东西</dt><dd>粗略草图 → 方向确认 → 精细版(或能点的原型)→ 评审记录</dd>
+      <dt>谁拍板</dt><dd><b>方向你拍,之后来回磨到你说「定了」也你拍</b><span class="youbadge">你 · 多次</span></dd>
+      <dt>不过怎么办</dt><dd>精细版或评审不过 → <b>退回粗略草图那一步重来</b>。<br><span style="color:var(--gray)">方向错了就回到最便宜的那步,不在精细版上反复磨。</span></dd>
+      <dt>来回几次</dt><dd><b>不设上限</b> —— 方向定了之后,细节可以来来回回磨(你说的:三四次五六次十次都可能)。<b>你说「定了」才算完</b>;<b>你没回不等于自动通过</b>,它会等你,不会替你定稿。<br><span style="color:var(--gray)">这跟「方向错了退回最粗那步」是两回事:那是推倒重来,这是方向对、细节磨。</span></dd>
+    </dl>
+    <div class="cbox">
+      <label for="c-des">对「designer」这套有什么要改的</label>
+      <textarea id="c-des" data-section="designer" placeholder="写这里(可选)…"></textarea>
+      <div class="saved" data-for="c-des"></div>
+    </div>
+  </div>
+
+  <div class="card pro">
+    <h2>prototype <span class="tag">做出来给你亲手试</span></h2>
+    <p class="oneline">搭一个真能跑的东西,让你自己上手,然后判定这条路走不走得通。</p>
+    <div class="steps">
+      <span class="step">搭一个能跑的</span><span class="arr">→</span>
+      <span class="step you">你亲手试</span><span class="arr">→</span>
+      <span class="step you">你判定</span>
+    </div>
+    <dl>
+      <dt>做出来的东西</dt><dd>一条命令能跑起来的原型 → 你的实际体感 → 判定结论</dd>
+      <dt>谁拍板</dt><dd><b>试和判定都是你</b><span class="youbadge">你</span></dd>
+      <dt>跑不起来怎么办</dt><dd><b>先修到能跑,不许拿给你试。</b><br><span style="color:var(--gray)">不能让你去试一个跑不起来的东西。</span></dd>
+      <dt>最多来回几次</dt><dd>修最多 2 轮</dd>
+      <dt>结局</dt><dd><b>「能做」和「不能做」都算成功收工</b><br><span style="color:var(--gray)">能做 → 交给工程去产品化;不能做 → 停掉,并写清楚为什么。</span></dd>
+    </dl>
+    <div class="cbox">
+      <label for="c-pro">对「prototype」这套有什么要改的</label>
+      <textarea id="c-pro" data-section="prototype" placeholder="写这里(可选)…"></textarea>
+      <div class="saved" data-for="c-pro"></div>
+    </div>
+  </div>
+
+  <div class="card note">
+    <h2>一处诚实边界</h2>
+    <p style="margin:8px 0;">上面写的「最多几轮」是提案值,<b>不是算出来的</b>。真跑起来如果发现太紧或太松,是可以调的 —— 不用现在就定死。</p>
+    <div class="cbox">
+      <label for="c-note">这几个轮次你有想法就写</label>
+      <textarea id="c-note" data-section="轮次上限" placeholder="写这里(可选)…"></textarea>
+      <div class="saved" data-for="c-note"></div>
+    </div>
+  </div>
+
+  <div class="ask" id="widget">
+    <h2>要你回的就一件事</h2>
+    <p style="margin:0;">这三套的<b>形状</b>对不对 —— 尤其这三处,它们决定了你会被打断几次、在哪被打断:</p>
+    <ul>
+      <li><b>designer 是开放来回,你说「定了」才收敛</b> —— 按你说的,方向对了细节可能磨很多次,不设固定轮数 ✓(已按你定的改)</li>
+      <li><b>designer 做砸了退回最粗那一步</b>,而不是在精细版上改 —— 同意吗?</li>
+      <li><b>prototype 的「不能做」也算成功收工</b> —— 这条你认吗?</li>
+    </ul>
+    <div class="cbox">
+      <label for="c-ask">这三个问题的答复</label>
+      <textarea id="c-ask" data-section="三个问题的答复" placeholder="写这里…" style="min-height:80px;"></textarea>
+      <div class="saved" data-for="c-ask"></div>
+    </div>
+  </div>
+
+  <div class="sum">
+    <h2>把所有留言汇总起来</h2>
+    <p>汇总下面这块,复制给 Honey Lemon 就行。你打字它会自动更新。</p>
+    <textarea id="summary" readonly></textarea>
+    <div class="btnrow">
+      <button id="copybtn" type="button">复制全部留言</button>
+      <button id="clearbtn" type="button" class="ghost">清空全部</button>
+      <span class="copied" id="copied"></span>
+    </div>
+  </div>
+
+  <p class="foot">你拍完这一件,FLY-1396 就齐了。</p>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+  (function () {
+    var KEY = "fly1396-flow-contracts-v2";
+    var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-section]"));
+    var summary = document.getElementById("summary");
+    var copybtn = document.getElementById("copybtn");
+    var clearbtn = document.getElementById("clearbtn");
+    var copied = document.getElementById("copied");
+    if (!boxes.length || !summary) return;
+
+    function savedEl(box) {
+      return document.querySelector('.saved[data-for="' + box.id + '"]');
+    }
+
+    function readStore() {
+      try {
+        var raw = localStorage.getItem(KEY);
+        if (!raw) return {};
+        var data = JSON.parse(raw);
+        return data && typeof data === "object" ? data : {};
+      } catch (e) { return {}; }
+    }
+
+    function writeStore(data) {
+      try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (e) { /* ignore */ }
+    }
+
+    function buildSummary() {
+      var parts = [];
+      boxes.forEach(function (box) {
+        var text = box.value.trim();
+        if (text) parts.push("【" + box.getAttribute("data-section") + "】\n" + text);
+      });
+      if (!parts.length) {
+        summary.value = "";
+        summary.setAttribute("placeholder", "还没有留言 — 在上面任意一节写点什么,这里会自动汇总。");
+        return false;
+      }
+      summary.value = "FLY-1396 三套 flow 合同 — Annie 的留言\n\n" + parts.join("\n\n");
+      return true;
+    }
+
+    function markSaved(box) {
+      var el = savedEl(box);
+      if (el) el.textContent = box.value.trim() ? "已保存 ✓" : "";
+    }
+
+    function onInput(e) {
+      var box = e.target;
+      var data = readStore();
+      data[box.id] = box.value;
+      writeStore(data);
+      markSaved(box);
+      buildSummary();
+      copied.textContent = "";
+    }
+
+    function load() {
+      var data = readStore();
+      boxes.forEach(function (box) {
+        if (typeof data[box.id] === "string") box.value = data[box.id];
+        markSaved(box);
+        box.addEventListener("input", onInput);
+      });
+      buildSummary();
+    }
+
+    copybtn.addEventListener("click", function () {
+      if (!buildSummary()) { copied.textContent = "还没有留言可复制"; return; }
+      summary.removeAttribute("readonly");
+      summary.select();
+      summary.setSelectionRange(0, summary.value.length);
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      summary.setAttribute("readonly", "readonly");
+      if (ok) {
+        copied.textContent = "已复制 ✓";
+      } else if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(summary.value).then(function () {
+          copied.textContent = "已复制 ✓";
+        }, function () {
+          copied.textContent = "复制失败 — 上面已经选中了,按 Cmd+C";
+        });
+      } else {
+        copied.textContent = "复制失败 — 上面已经选中了,按 Cmd+C";
+      }
+    });
+
+    clearbtn.addEventListener("click", function () {
+      boxes.forEach(function (box) { box.value = ""; markSaved(box); });
+      writeStore({});
+      buildSummary();
+      copied.textContent = "已清空";
+    });
+
+    load();
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAG 分档 — 就缺一根线</title>
+<style>
+  :root { --red:#ff3b30; --green:#34c759; --gray:#86868b; --navy:#1a365d; --ink:#1d1d1f; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#f5f5f7; color:var(--ink); font-family:-apple-system, system-ui, sans-serif; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:960px; margin:0 auto; padding:40px 22px 64px; }
+  .kicker { color:var(--gray); font-size:14px; margin:0 0 10px; }
+  h1 { font-size:34px; line-height:1.2; font-weight:800; letter-spacing:-0.02em; margin:0 0 28px; }
+  h1 .hl { color:var(--red); }
+
+  /* rail */
+  .rail { display:flex; align-items:stretch; justify-content:center; gap:0; flex-wrap:wrap; margin:8px 0 10px; }
+  .node { background:#fff; border-radius:16px; box-shadow:0 1px 4px rgba(0,0,0,0.07); padding:20px 18px; flex:1 1 200px; min-width:190px; text-align:center; display:flex; flex-direction:column; justify-content:center; }
+  .node .tag { font-size:12px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; margin-bottom:8px; }
+  .node .big { font-size:21px; font-weight:800; line-height:1.25; }
+  .node .small { font-size:13.5px; color:#555; margin-top:8px; line-height:1.4; }
+  .node.done { border:2px solid var(--green); }
+  .node.done .tag { color:var(--green); }
+  .node.broken { border:2px solid var(--red); }
+  .node.broken .tag { color:var(--red); }
+  .node.plain { border:2px solid #e3e3e6; }
+  .node.plain .tag { color:var(--gray); }
+
+  .arrow { display:flex; align-items:center; justify-content:center; font-size:26px; color:var(--gray); padding:0 4px; flex:0 0 auto; }
+
+  /* the broken cut — hero */
+  .cut { flex:0 0 auto; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:0 6px; position:relative; }
+  .cut .scis { font-size:40px; line-height:1; }
+  .cut .brokenline { font-size:30px; color:var(--red); letter-spacing:-2px; font-weight:900; }
+  .cut .caption { margin-top:8px; background:var(--red); color:#fff; font-weight:800; font-size:14px; padding:5px 12px; border-radius:20px; white-space:nowrap; box-shadow:0 2px 8px rgba(255,59,48,0.35); }
+
+  .fix { text-align:center; margin:30px 0 6px; font-size:20px; font-weight:800; }
+  .fix .green { color:var(--green); }
+  .core { background:#fff; border-left:5px solid var(--navy); border-radius:14px; padding:20px 22px; box-shadow:0 1px 4px rgba(0,0,0,0.07); font-size:18px; line-height:1.55; margin:22px 0 30px; }
+  .core b { color:var(--navy); }
+  .core .no { color:var(--red); font-weight:800; }
+  .core .yes { color:var(--green); font-weight:800; }
+
+  /* mapping table */
+  .maptitle { font-size:14px; color:var(--gray); font-weight:700; margin:0 0 10px; text-align:center; }
+  .map { display:flex; gap:12px; justify-content:center; flex-wrap:wrap; }
+  .chip { background:#fff; border-radius:14px; box-shadow:0 1px 4px rgba(0,0,0,0.07); padding:16px 20px; text-align:center; flex:1 1 180px; min-width:170px; }
+  .chip .dept { font-size:17px; font-weight:800; }
+  .chip .to { color:var(--gray); font-size:20px; margin:4px 0; }
+  .chip .tpl { font-size:15px; font-weight:600; }
+  .chip.eng { border-top:4px solid #007aff; }
+  .chip.eng .dept { color:#007aff; }
+  .chip.prod { border-top:4px solid #af52de; }
+  .chip.prod .dept { color:#af52de; }
+  .chip.rest { border-top:4px solid var(--gray); }
+  .chip.rest .dept { color:var(--gray); }
+
+  .foot { text-align:center; color:var(--gray); font-size:12.5px; margin-top:34px; }
+
+  @media (max-width:680px) {
+    h1 { font-size:27px; }
+    .arrow { transform:rotate(90deg); padding:6px 0; }
+    .cut { padding:10px 0; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="kicker">FLY-1396 · 一眼看懂关系</p>
+  <h1>部门早就算好了。<br>就缺 <span class="hl">一根线</span> 把它接到「挑模板」。</h1>
+
+  <div class="rail">
+    <div class="node plain">
+      <div class="tag">来一件活</div>
+      <div class="big">issue + 标签</div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="node done">
+      <div class="tag">已有 ✓</div>
+      <div class="big">算好它归<br>哪个部门</div>
+      <div class="small">系统一看标签就知道,早做好了</div>
+    </div>
+
+    <div class="cut">
+      <div class="scis">✂️</div>
+      <div class="brokenline">– – –</div>
+      <div class="caption">缺的就是这一根</div>
+    </div>
+
+    <div class="node broken">
+      <div class="tag">断了</div>
+      <div class="big">挑模板</div>
+      <div class="small">现在挑模板<b>根本不看部门</b>,只看一个<b>没人填的空字段</b> → 所有单全落最重的 eng-heavy</div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="node plain">
+      <div class="tag">然后</div>
+      <div class="big">跑模板</div>
+    </div>
+  </div>
+
+  <div class="fix">接上这根线 <span class="green">+</span> 一张对照表 = 好了</div>
+
+  <div class="core">
+    <b>不是</b>重新<span class="no">做部门</span>,<b>不是</b>重新<span class="no">造模板</span> —— 这两样<span class="yes">都已经有了</span>。<br>
+    要做的只是把它俩<span class="yes">接上一根线</span> + 配一张<span class="yes">小对照表</span>。就这么点。
+  </div>
+
+  <p class="maptitle">那张小对照表</p>
+  <div class="map">
+    <div class="chip eng">
+      <div class="dept">工程 的活</div>
+      <div class="to">↓</div>
+      <div class="tpl">eng 模板<br>(1 套 + 旋钮)</div>
+    </div>
+    <div class="chip prod">
+      <div class="dept">产品 的活</div>
+      <div class="to">↓</div>
+      <div class="tpl">产品模板</div>
+    </div>
+    <div class="chip rest">
+      <div class="dept">其余</div>
+      <div class="to">↓</div>
+      <div class="tpl">generic<br>(最轻)</div>
+    </div>
+  </div>
+
+  <p class="foot">这一步做完,不同部门的活就走对应的模板,不再一律走重型工程流水线。</p>
+
+</div>
+</body>
+</html>

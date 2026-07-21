@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAG 分档 binding — 机制(FLY-1396)</title>
+<style>
+  :root { --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --gray:#86868b; --navy:#1a365d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system, system-ui, sans-serif; line-height:1.55; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:980px; margin:0 auto; padding:32px 20px 72px; }
+  h1 { font-size:26px; font-weight:700; margin:0 0 6px; letter-spacing:-0.02em; }
+  .sub { color:var(--gray); font-size:14px; margin:0 0 20px; }
+  .okpill { display:inline-block; background:#e8f9ee; color:#1a7f37; font-weight:700; font-size:12px; padding:2px 10px; border-radius:20px; margin-bottom:14px; }
+  .lead { background:#fff; border-radius:12px; padding:18px 20px; box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid var(--navy); font-size:16px; margin-bottom:14px; }
+  .lead b { color:var(--navy); }
+  .section { margin:30px 0 12px; }
+  .section-title { font-size:19px; font-weight:700; margin:0 0 6px; display:flex; align-items:center; gap:8px; }
+  .section-title .dot { font-size:13px; }
+  .section-note { color:var(--gray); font-size:13px; margin:0 0 14px; }
+  .card { background:#fff; border-radius:12px; padding:16px 18px; box-shadow:0 1px 3px rgba(0,0,0,0.06); margin-bottom:12px; border-left:4px solid var(--gray); font-size:14.5px; }
+  .card.blue { border-left-color:var(--blue); }
+  .card.green { border-left-color:var(--green); }
+  .card.amber { border-left-color:var(--amber); }
+  .card.red { border-left-color:var(--red); }
+  .card b { color:var(--navy); }
+  .mono { font-family:'SF Mono', ui-monospace, monospace; font-size:0.88em; background:#f0f0f3; padding:1px 5px; border-radius:4px; }
+  .steps { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid var(--blue); padding:6px 20px 6px 20px; }
+  .steps ol { margin:14px 0; padding-left:20px; }
+  .steps li { margin:11px 0; font-size:14.5px; }
+  .steps li b { color:var(--navy); }
+  .built { color:#1a7f37; font-weight:700; }
+  .gap { color:var(--red); font-weight:700; }
+  .diagram { text-align:center; font-family:'SF Mono', ui-monospace, monospace; font-size:13px; background:#fff; border-radius:12px; padding:18px 10px; box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid var(--green); line-height:2; overflow-x:auto; }
+  .diagram .arm { color:var(--blue); font-weight:700; }
+  .diagram .miss { color:var(--red); font-weight:700; }
+  .tblwrap { overflow-x:auto; background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); }
+  table { border-collapse:collapse; width:100%; font-size:14px; min-width:640px; }
+  th, td { text-align:left; padding:12px 15px; border-bottom:1px solid #ececef; vertical-align:top; }
+  th { background:#fafafa; font-weight:600; color:var(--navy); }
+  td.dep { font-weight:700; white-space:nowrap; }
+  tr.eng td.dep { color:var(--blue); }
+  tr.prod td.dep { color:var(--purple); }
+  tr.rest td.dep { color:var(--gray); }
+  .lbl { font-family:'SF Mono', ui-monospace, monospace; font-size:11px; background:#eef1f6; color:#334; padding:1px 6px; border-radius:5px; }
+  .tpl { font-family:'SF Mono', ui-monospace, monospace; font-size:12px; }
+  .frame { counter-reset:f; list-style:none; margin:0; padding:0; }
+  .frame li { background:#fff; border-radius:12px; padding:14px 18px 14px 50px; box-shadow:0 1px 3px rgba(0,0,0,0.06); margin-bottom:10px; border-left:4px solid var(--amber); position:relative; font-size:14px; }
+  .frame li::before { counter-increment:f; content:counter(f); position:absolute; left:15px; top:14px; width:23px; height:23px; background:var(--amber); color:#fff; border-radius:50%; text-align:center; line-height:23px; font-weight:700; font-size:12px; }
+  .frame li b { color:var(--navy); }
+  .note { color:var(--gray); font-size:12.5px; }
+  .foot { margin-top:32px; color:var(--gray); font-size:12px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>DAG 分档 binding — 真正的核心是「怎么判部门」</h1>
+  <p class="sub">FLY-1396 · Annie 两条修正后 · 2026-07-20 · dispatch 代码行号实扒</p>
+
+  <span class="okpill">✓ 已扒真实派发代码</span>
+
+  <div class="lead">
+    上一版把重点放错在「一张部门→模板表」上。<b>Annie 点破:表是简单的 30%;难的 70% 是「一件活在派发那刻,凭什么被判成某个部门」。</b><br>
+    好消息 —— <b>去扒代码发现:这个「判部门」的机制其实<span class="built">已经建好在跑了</span>,只是它的结果没接到模板选择上。</b>
+  </div>
+
+  <!-- CORRECTION 1 -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:var(--purple)">●</span> 先纠一层:部门是「活」的属性,不是「项目」的</div>
+  </div>
+  <div class="card purple" style="border-left-color:var(--purple)">
+    同一个项目下可以<b>同时</b>有不同部门的活。实证(生产配置):<b>flywheel 这一个项目</b>里 —— 带 <span class="lbl">Flywheel</span> 标签的活归<b>工程部</b>(Tadashi),带 <span class="lbl">Flywheel-Product</span> 标签的活归<b>产品部</b>(我)。<br>
+    <b>所以绑定看的是「这件活属于哪个部门」,跟它在哪个项目无关。</b><span class="note"> 本单 FLY-1396 就带 Flywheel-Product → 产品部。</span>
+  </div>
+
+  <!-- MECHANISM (CORE) -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:var(--blue)">●</span> 核心机制:一件活怎么在派发那刻被判成某部门</div>
+    <p class="section-note">这才是 PRD 的核心(不是那张表)。下面是扒完代码的真实情况。</p>
+  </div>
+  <div class="diagram">
+    派发一件活 &nbsp;→&nbsp; <span class="arm">看它的标签 / 派发它的 Lead</span> &nbsp;→&nbsp; <span class="built">已算出「归哪个部门」✓</span><br>
+    <span class="miss">✗ 断在这里 →</span> 部门这个结果<b>没被拿去选模板</b> &nbsp;→&nbsp; 模板还是默认 <span class="arm">eng-heavy</span>
+  </div>
+  <div class="steps">
+    <ol>
+      <li><b><span class="built">已建好:</span>「活 → 部门」的判定。</b> 系统在派发那刻已经算出这件活归哪个部门(依据 = 它的标签,或派发它的 Lead 本身就带部门;flywheel-product-lead = 产品部)。这套判定<b>已经在跑</b>(用来决定归谁管)。</li>
+      <li><b><span class="gap">缺的一根线:</span></b> 这个「部门」结果<b>没有被接到「选哪套模板」那一步</b>。选模板时系统只看一个没人填的字段,填空 → 默认落 eng-heavy。<b>这就是为什么讲过很多遍、系统还是全走 eng-heavy</b> —— 不是判部门没建,是判出来的部门没接上模板。</li>
+      <li><b>要做的:</b> 把已算出的部门接到选模板那一步 + 一张小小的「部门 → 模板」对照 + 允许 Lead 每单手动指定覆盖。<b>难度远小于「从头造一个分类器」—— 分类器已经在跑。</b></li>
+    </ol>
+  </div>
+
+  <!-- MAP -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:var(--green)">●</span> 那张小对照:部门 → 模板</div>
+    <p class="section-note">这是简单的 30%。看「活的部门」,不看项目。</p>
+  </div>
+  <div class="tblwrap">
+    <table>
+      <thead><tr><th>活的部门</th><th>模板</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr class="eng"><td class="dep">工程</td><td class="tpl">eng(1 套 + 旋钮)+ generic</td><td>真建代码走 eng(重/中/轻合并成 1 套 + model 旋钮);其余走 generic</td></tr>
+        <tr class="prod"><td class="dep">产品</td><td class="tpl">PRD + designer + prototype-engineer + generic</td><td>= 三个产品角色各一套 + generic 兜底</td></tr>
+        <tr class="rest"><td class="dep">其余 / 判不出</td><td class="tpl">generic</td><td>单 session、最轻,不套重型流水线</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card green" style="margin-top:12px;">
+    <b>generic</b> = 一个 session、agent 直接做、不塞一堆阶段 prompt。<b>大多数活的默认 + 所有部门的兜底 + 判不出部门时的落点</b>。绝不再默认落 eng-heavy。<span class="note"> 砍掉了 research-light / ops-light / qa-only / doc 那些专门轻模板 —— 能 generic 就 generic。</span>
+  </div>
+
+  <!-- FRAMING -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:var(--amber)">●</span> 三条 framing</div>
+  </div>
+  <ol class="frame">
+    <li><b>临时默认,不是永久硬规则。</b> 这套「部门 → 模板」是起步默认;<b>Lead 派单可以每单覆盖</b>(能力已有)。不是「这个部门永远只能这套」。</li>
+    <li><b>终态是动态 DAG。</b> agent file 都备好,Lead 按任务当场组图;静态模板 = 动态 DAG 的默认层 / 积木。现在建 = 铺底、非弯路。<span class="note">(动态 DAG 形态另开方向,这里只点一句。)</span></li>
+    <li><b>为什么现在做:</b> 立刻止住「全走 eng-heavy」的浪费,<b>不等</b>动态 DAG。</li>
+  </ol>
+
+  <p class="foot">代码可行性已钉实(部门判定已在跑,缺的是接线)。等你确认这个机制方向 + 拉 Tadashi 核代码实情,我再补全 PRD → Codex 设计评审 → 工程交 FLY-1380。</p>
+
+</div>
+</body>
+</html>

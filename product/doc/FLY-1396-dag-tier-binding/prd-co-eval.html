@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1396 分档 binding PRD — 按你选的 B 改完了</title>
+<style>
+  :root { --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --gray:#86868b; --navy:#1a365d; --ink:#1d1d1f; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#f5f5f7; color:var(--ink); font-family:-apple-system, system-ui, sans-serif; line-height:1.55; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:920px; margin:0 auto; padding:34px 20px 72px; }
+  .kicker { color:var(--gray); font-size:13px; margin:0 0 8px; }
+  h1 { font-size:28px; font-weight:800; letter-spacing:-0.02em; margin:0 0 8px; }
+  .okpill { display:inline-block; background:#e8f9ee; color:#1a7f37; font-weight:700; font-size:12px; padding:2px 10px; border-radius:20px; }
+  .sub { color:var(--gray); font-size:14px; margin:8px 0 24px; }
+  .card { background:#fff; border-radius:14px; padding:18px 20px; box-shadow:0 1px 3px rgba(0,0,0,0.06); margin-bottom:14px; border-left:4px solid var(--gray); }
+  .card h2 { font-size:18px; font-weight:700; margin:0 0 10px; display:flex; align-items:center; gap:8px; }
+  .card h2 .n { background:var(--navy); color:#fff; width:24px; height:24px; border-radius:50%; text-align:center; line-height:24px; font-size:13px; flex:0 0 auto; }
+  .card.blue{border-left-color:var(--blue)} .card.green{border-left-color:var(--green)} .card.amber{border-left-color:var(--amber)} .card.purple{border-left-color:var(--purple)} .card.red{border-left-color:var(--red)} .card.navy{border-left-color:var(--navy)}
+  p { margin:8px 0; font-size:15px; }
+  .flow { text-align:center; font-family:'SF Mono', ui-monospace, monospace; font-size:13px; background:#fafafa; border-radius:10px; padding:12px; margin:10px 0; line-height:2; overflow-x:auto; }
+  .flow .g{color:var(--green);font-weight:700} .flow .r{color:var(--red);font-weight:700} .flow .b{color:var(--blue);font-weight:700}
+  .tblwrap { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; min-width:420px; margin-top:6px; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid #ececef; vertical-align:top; }
+  th { background:#fafafa; color:var(--navy); font-weight:600; }
+  td.k{font-weight:700;white-space:nowrap}
+  .eng td.k{color:var(--blue)} .prod td.k{color:var(--purple)} .rest td.k{color:var(--gray)}
+  .new { display:inline-block; background:#fff4e0; color:#a15c00; font-size:11px; font-weight:700; padding:1px 7px; border-radius:20px; margin-left:5px; }
+  ul{margin:8px 0;padding-left:20px} li{margin:5px 0;font-size:14.5px}
+  .quote { background:#f6ebfb; border-left:4px solid var(--purple); border-radius:8px; padding:11px 14px; font-size:14.5px; margin:10px 0; }
+  .honest { background:#fffdf5; }
+  .decided { background:#fff; border-radius:16px; padding:20px 22px; box-shadow:0 2px 10px rgba(0,0,0,0.08); border:2px solid var(--green); margin-top:26px; }
+  .decided h2 { font-size:20px; font-weight:800; margin:0 0 8px; color:#1a7f37; }
+  textarea { width:100%; min-height:70px; border:1.5px solid #e3e3e6; border-radius:10px; padding:11px 13px; font-family:inherit; font-size:14.5px; resize:vertical; margin-top:8px; }
+  textarea:focus { outline:none; border-color:var(--blue); }
+  .saved { font-size:13px; color:var(--green); font-weight:700; margin-top:8px; min-height:18px; }
+  .foot { color:var(--gray); font-size:12px; text-align:center; margin-top:30px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="kicker">FLY-1396 · DAG 分档 binding</p>
+  <h1>按你选的 <span style="color:var(--green)">B</span> 改完了 <span class="okpill">机制已核过代码</span></h1>
+  <p class="sub">产品部的三种活流程不一样 → 三套模板。下面是改完后的样子。</p>
+
+  <div class="card red">
+    <h2><span class="n">1</span> 问题</h2>
+    <p>现在<b>所有</b>走 DAG 的单 —— 哪怕只写份报告 —— 都被塞进最重的工程流水线（设计→实现→QA），中间很多废阶段。活样本 FLY-1378 一份研究报告因此跑了 3 轮设计 + 3 轮代码评审。</p>
+  </div>
+
+  <div class="card purple">
+    <h2><span class="n">2</span> 你定的判据：什么该合、什么该分</h2>
+    <div class="quote">你说的：「我们还是必须得有 designer 和 prototype 的模板吧，因为它和产品出 PRD 完全是不一样的 flow 呀」</div>
+    <p>写进 PRD 当原则了 —— <b>不是模板越少越好</b>：</p>
+    <ul>
+      <li><b>只差「用哪个模型」的 → 合并</b>：工程的重/中/轻三档流程完全一样，只是每步换模型 → 合成<b>一套工程模板 + 一个模型旋钮</b>。</li>
+      <li><b>流程「形状不同」的 → 分开</b>：产品部三种活形状根本不同 → <b>三套</b>，不是重复。</li>
+    </ul>
+    <div class="tblwrap"><table>
+      <thead><tr><th>产品部的角色</th><th>它的流程形状</th></tr></thead>
+      <tbody>
+        <tr><td class="k">写 PRD</td><td>研究 → 写 → 评审 → 过闸</td></tr>
+        <tr><td class="k">designer</td><td>低保真 mockup → 确认方向 → 再往下</td></tr>
+        <tr><td class="k">prototype</td><td>搭一个能点的东西去验证</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="card blue">
+    <h2><span class="n">3</span> 改完后：哪种活走哪套模板</h2>
+    <p>部门是<b>每件活的属性</b>（看它的标签），不是项目 —— 同一个项目里工程的活和产品的活各走各的。</p>
+    <div class="tblwrap"><table>
+      <thead><tr><th>活是什么</th><th>走哪套模板</th></tr></thead>
+      <tbody>
+        <tr class="eng"><td class="k">工程</td><td><b>工程模板</b>（一套 + 轻/中/重模型旋钮）</td></tr>
+        <tr class="prod"><td class="k">产品 · 写 PRD</td><td><b>产品-PRD 模板</b>（现有那套，直接用）</td></tr>
+        <tr class="prod"><td class="k">产品 · designer</td><td><b>产品-designer 模板</b><span class="new">要新建</span></td></tr>
+        <tr class="prod"><td class="k">产品 · prototype</td><td><b>产品-prototype 模板</b><span class="new">要新建</span></td></tr>
+        <tr class="rest"><td class="k">其余 / 认不出角色</td><td><b>通用模板</b>（最轻，一个 session 直接做）</td></tr>
+        <tr class="rest"><td class="k">连部门都判不出</td><td>不猜 —— <b>退回 triage</b>（不静默塞进最重的）</td></tr>
+      </tbody>
+    </table></div>
+    <p style="margin-top:10px;"><b>模板总数：现在 6 套 → 改完 5 套</b>（工程 3 合 1 省了 2、产品新建 2、研究并进通用省了 1）。</p>
+  </div>
+
+  <div class="card green">
+    <h2><span class="n">4</span> 机制怎么落</h2>
+    <div class="flow">
+      一件活 <span class="arrow">→</span> <span class="g">部门早就算好了 ✓</span> <span class="r">✂ 缺这一根 ✂</span> <span class="b">→ 挑模板</span>
+    </div>
+    <p>系统在派发那刻<b>早就算好这件活归哪个部门</b>，只是这个结果<b>没接到「挑模板」那一步</b>。要做的就是接上这根线 + 一张对照表 + 允许每单手动指定。</p>
+    <p><b>新增的一层：怎么知道是 designer 还是 PRD？</b> 我去核了代码和你的真单 —— <b>角色现在只在标题前缀里</b>（你的单都是 <b>[PRD·HL]</b> / <b>[Designer·HL]</b> / <b>[Research·HL]</b>，标签里只有部门、没有角色）。所以取角色按这个优先级：<b>派单时直接指定 &gt; 标题前缀 &gt; 角色标签 &gt; 都没有就走通用模板</b>。（标题这条系统里已经有同款先例在用。）</p>
+  </div>
+
+  <div class="card navy">
+    <h2><span class="n">5</span> 怎么上线（安全顺序）</h2>
+    <ul>
+      <li>先把 5 套模板都建好、装进库（含新建的 designer / prototype 两套）。</li>
+      <li>再把旧的「一律最重」默认改成通用模板 + 给每种活补上对应的行（你手动改过的不动）。</li>
+      <li>再接那根线 + 旋钮。</li>
+      <li>全部验收通过前，<b>DAG 一直关着</b>，最后才单独开。</li>
+    </ul>
+  </div>
+
+  <div class="card amber honest">
+    <h2><span class="n">6</span> 一条诚实边界</h2>
+    <p>「研究单自动走最轻的」<b>不是靠部门就能自动保证的</b> —— 工程部内部，系统分不清「建代码」和「写研究」。要让研究单走轻，得在建单/triage 时给它对的部门或角色。没夸大成全自动。</p>
+  </div>
+
+  <div class="decided" id="widget">
+    <h2>✅ 已记录：你选了 B</h2>
+    <p>designer / prototype 模板从「以后再说」提回<b>必须有</b>，PRD 已按这个改完（含上面的判据原则、5 套库存、角色怎么取）。</p>
+    <p style="margin-top:12px;"><b>接下来还要你过一眼的</b>：designer 和 prototype 这两套模板<b>各自的流程形状</b>（每套具体几步、卡在哪）—— 这个我不替你定，等做的时候单独跟你过。</p>
+    <textarea id="comment" placeholder="对上面有什么要补的（可选）…"></textarea>
+    <div class="saved" id="saved"></div>
+  </div>
+
+  <p class="foot">你留的话我这边收得到 → Honey Lemon 收敛后交 Tadashi 落地。</p>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+  (function () {
+    var KEY = "fly1396-b-followup-v1";
+    var comment = document.getElementById("comment");
+    var saved = document.getElementById("saved");
+    if (!comment || !saved) return;
+
+    function load() {
+      try {
+        var raw = localStorage.getItem(KEY);
+        if (!raw) return;
+        var data = JSON.parse(raw);
+        if (data && typeof data.comment === "string" && data.comment) {
+          comment.value = data.comment;
+          saved.textContent = "已保存你的留言 ✓";
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    function save() {
+      var payload = { comment: comment.value, ts: new Date().toISOString() };
+      try { localStorage.setItem(KEY, JSON.stringify(payload)); } catch (e) { /* ignore */ }
+      saved.textContent = comment.value ? "已保存你的留言 ✓" : "";
+    }
+
+    comment.addEventListener("input", save);
+    load();
+  })();
+</script>
+</body>
+</html>
