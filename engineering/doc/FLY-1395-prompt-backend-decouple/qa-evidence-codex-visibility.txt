@@ -1,0 +1,149 @@
+[QA] Step 1 — provision A/B/C through production code into /Users/xiaorongli/.flywheel/runner-state/5a1d7e8b-6120-4379-8338-e67245f37d0a/browser-tmp/fly1395-codex-qa.YuKcnZ/homes
+[QA] one-pass disable list entries: 14
+[QA] ✓ A static: config has zero managed skill delta
+[QA] ✓ B static: superpowers disable entries rendered
+[QA] ✓ C static: superpowers disable entries rendered
+[QA] ✓ B static: all six matt skills copied into the per-runner home
+[QA] ✓ C static: no matt skill directory
+[QA] Step 2 — strict-config oracle for the pinned skills.config surface
+[QA] ✓ strict-config accepts the pinned skills.config surface
+[QA] Step 3 — real Codex process visibility (positive control first)
+      A → SUPERPOWERS=YES MATT=NO
+[QA] ✓ A behavior: superpowers=YES
+[QA] ✓ A behavior: matt=NO
+      B → SUPERPOWERS=NO MATT=YES
+[QA] ✓ B behavior: superpowers=NO
+[QA] ✓ B behavior: matt=YES
+      C → SUPERPOWERS=NO MATT=NO
+[QA] ✓ C behavior: superpowers=NO
+[QA] ✓ C behavior: matt=NO
+[QA] Step 4 — process-level static evidence
+      B config managed blocks:
+# >>> flywheel-managed skills (FLY-1395) — do not edit >>>
+[[skills.config]]
+name = "superpowers:brainstorming"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:dispatching-parallel-agents"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:executing-plans"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:finishing-a-development-branch"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:receiving-code-review"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:requesting-code-review"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:subagent-driven-development"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:systematic-debugging"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:test-driven-development"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:using-git-worktrees"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:using-superpowers"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:verification-before-completion"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:writing-plans"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:writing-skills"
+enabled = false
+# <<< flywheel-managed skills (FLY-1395) <<<
+      B skills listing:
+/Users/xiaorongli/.flywheel/runner-state/5a1d7e8b-6120-4379-8338-e67245f37d0a/browser-tmp/fly1395-codex-qa.YuKcnZ/homes/arm-b/skills/.system/imagegen/SKILL.md
+/Users/xiaorongli/.flywheel/runner-state/5a1d7e8b-6120-4379-8338-e67245f37d0a/browser-tmp/fly1395-codex-qa.YuKcnZ/homes/arm-b/skills/.system/openai-docs/SKILL.md
+/Users/xiaorongli/.flywheel/runner-state/5a1d7e8b-6120-4379-8338-e67245f37d0a/browser-tmp/fly1395-codex-qa.YuKcnZ/homes/arm-b/skills/.system/plugin-creator/SKILL.md
+/Users/xiaorongli/.flywheel/runner-state/5a1d7e8b-6120-4379-8338-e67245f37d0a/browser-tmp/fly1395-codex-qa.YuKcnZ/homes/arm-b/skills/.system/skill-creator/SKILL.md
+/Users/xiaorongli/.flywheel/runner-state/5a1d7e8b-6120-4379-8338-e67245f37d0a/browser-tmp/fly1395-codex-qa.YuKcnZ/homes/arm-b/skills/.system/skill-installer/SKILL.md
+/Users/xiaorongli/.flywheel/runner-state/5a1d7e8b-6120-4379-8338-e67245f37d0a/browser-tmp/fly1395-codex-qa.YuKcnZ/homes/arm-b/skills/matt-skills:code-review/SKILL.md
+/Users/xiaorongli/.flywheel/runner-state/5a1d7e8b-6120-4379-8338-e67245f37d0a/browser-tmp/fly1395-codex-qa.YuKcnZ/homes/arm-b/skills/matt-skills:diagnosing-bugs/SKILL.md
+/Users/xiaorongli/.flywheel/runner-state/5a1d7e8b-6120-4379-8338-e67245f37d0a/browser-tmp/fly1395-codex-qa.YuKcnZ/homes/arm-b/skills/matt-skills:grilling/SKILL.md
+/Users/xiaorongli/.flywheel/runner-state/5a1d7e8b-6120-4379-8338-e67245f37d0a/browser-tmp/fly1395-codex-qa.YuKcnZ/homes/arm-b/skills/matt-skills:tdd/SKILL.md
+/Users/xiaorongli/.flywheel/runner-state/5a1d7e8b-6120-4379-8338-e67245f37d0a/browser-tmp/fly1395-codex-qa.YuKcnZ/homes/arm-b/skills/matt-skills:to-spec/SKILL.md
+/Users/xiaorongli/.flywheel/runner-state/5a1d7e8b-6120-4379-8338-e67245f37d0a/browser-tmp/fly1395-codex-qa.YuKcnZ/homes/arm-b/skills/matt-skills:to-tickets/SKILL.md
+      C config managed blocks:
+# >>> flywheel-managed skills (FLY-1395) — do not edit >>>
+[[skills.config]]
+name = "superpowers:brainstorming"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:dispatching-parallel-agents"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:executing-plans"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:finishing-a-development-branch"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:receiving-code-review"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:requesting-code-review"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:subagent-driven-development"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:systematic-debugging"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:test-driven-development"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:using-git-worktrees"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:using-superpowers"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:verification-before-completion"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:writing-plans"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:writing-skills"
+enabled = false
+# <<< flywheel-managed skills (FLY-1395) <<<
+[QA] 12 passed, 0 failed

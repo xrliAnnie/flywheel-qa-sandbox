@@ -399,6 +399,15 @@ export class CodexTmuxAdapter implements IAdapter {
 		const codexHome = provisionCodexHome({
 			executionId: ctx.executionId,
 			ghToken,
+			...(ctx.skillFrameworkMode && {
+				skillFrameworkMode: ctx.skillFrameworkMode,
+			}),
+			...(ctx.codexSkillDisableNames && {
+				codexSkillDisableNames: ctx.codexSkillDisableNames,
+			}),
+			...(ctx.codexMattSkillsSourceDir && {
+				codexMattSkillsSourceDir: ctx.codexMattSkillsSourceDir,
+			}),
 		});
 
 		// Founder cmux window name (a Linear identifier, FLY-272).

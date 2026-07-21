@@ -10,13 +10,15 @@
  *    (red line #2: never silently run a crippled B)
  *  - split: hash / override / sticky / inherited / project_opt_out vias
  *  - participation reader throwing → fail-closed pin to A (project_opt_out)
- *  - backend ≠ claude-tmux → via=noop_backend, zero plugin/prompt effect (R1#7)
+ *  - capability=none backend → via=noop_backend, zero plugin/prompt effect
+ *  - Claude and Codex preserve one arm while applying backend-native assembly
  *  - FLY-751 mcpProfile merge: mode contributions ride the same fields;
  *    profile alone (default env) stays byte-identical
  *  - prompt layer: `<agent-file>.{matt,bare}.md` variant wins when present,
  *    baseline fallback when absent; A arm always reads the baseline
  */
 
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -34,11 +36,16 @@ import type {
 import type { DagNode } from "flywheel-dag-resolver";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentDispatcher } from "../AgentDispatcher.js";
-import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
-import { Blueprint } from "../Blueprint.js";
+import type {
+	BlueprintContext,
+	CodexSkillAssemblyProbe,
+	ShellRunner,
+} from "../Blueprint.js";
+import { Blueprint, defaultCodexSkillAssemblyProbe } from "../Blueprint.js";
 import type { EventEnvelope } from "../ExecutionEventEmitter.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
+import type { WorktreeManager } from "../WorktreeManager.js";
 
 const ID = "FLY-1356";
 
@@ -94,6 +101,7 @@ interface RunOpts {
 	ctxExtra?: Partial<BlueprintContext>;
 	participation?: (projectName: string | undefined) => boolean;
 	readiness?: (backend: string) => boolean;
+	codexProbe?: CodexSkillAssemblyProbe;
 	agentDispatcher?: AgentDispatcher;
 	projectRoot?: string;
 }
@@ -110,6 +118,30 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 		process.env[SKILL_FRAMEWORK_MODE_ENV] = opts.envValue;
 	}
 	const adapter = makeMockAdapter();
+	let projectRoot = opts.projectRoot;
+	const isCodex = opts.ctxExtra?.runnerBackend === "codex-tmux";
+	if (!projectRoot && isCodex) {
+		projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fly1395-codex-"));
+		execFileSync("git", ["init", "-q"], { cwd: projectRoot });
+	}
+	const worktreeManager =
+		isCodex && projectRoot
+			? {
+					expectedWorktree: vi.fn(() => ({
+						path: projectRoot,
+						branch: "flywheel-FLY-1395",
+					})),
+					isRegistered: vi.fn(async () => false),
+					removeIfExists: vi.fn(async () => true),
+					create: vi.fn(async () => ({
+						projectName: "testproj",
+						issueId: ID,
+						worktreePath: projectRoot,
+						branch: "flywheel-FLY-1395",
+						mainRepoPath: "/tmp/fly1395-main",
+					})),
+				}
+			: undefined;
 	const envelopes: EventEnvelope[] = [];
 	const eventEmitter = {
 		emitStarted: vi.fn(async (env: EventEnvelope) => {
@@ -124,7 +156,7 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 		makeMockGitChecker(),
 		() => adapter,
 		makeMockShell(),
-		undefined,
+		worktreeManager as unknown as WorktreeManager | undefined,
 		undefined,
 		undefined,
 		undefined,
@@ -139,6 +171,7 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 		undefined, // ponytailReadiness (default)
 		opts.participation, // FLY-1356 participation reader
 		opts.readiness ?? (() => true), // FLY-1356 matt readiness (default ready)
+		opts.codexProbe,
 	);
 	const ctx: BlueprintContext = {
 		teamName: "eng",
@@ -149,7 +182,7 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 	};
 	await blueprint.run(
 		makeNode(),
-		opts.projectRoot ?? "/tmp/fly1356-blueprint-test",
+		projectRoot ?? "/tmp/fly1356-blueprint-test",
 		ctx,
 	);
 	const execArgs = (adapter.execute as ReturnType<typeof vi.fn>).mock
@@ -160,6 +193,131 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 afterEach(() => {
 	delete process.env[SKILL_FRAMEWORK_MODE_ENV];
 	vi.restoreAllMocks();
+});
+
+describe("FLY-1395 default Codex skill assembly probe", () => {
+	function writeSkill(root: string, directory: string, name = directory): void {
+		const dir = path.join(root, directory);
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(
+			path.join(dir, "SKILL.md"),
+			`---\nname: ${name}\ndescription: fixture\n---\n`,
+		);
+	}
+
+	function writeMattFixture(root: string): void {
+		for (const name of [
+			"code-review",
+			"diagnosing-bugs",
+			"grilling",
+			"tdd",
+			"to-spec",
+			"to-tickets",
+		]) {
+			writeSkill(root, name);
+		}
+	}
+
+	it("scans each superpowers skill once and emits directory plus distinct frontmatter names", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "fly1395-scan-"));
+		const superpowersRoot = path.join(root, "superpowers");
+		writeSkill(superpowersRoot, "alpha");
+		writeSkill(superpowersRoot, "beta-dir", "beta-frontmatter");
+		const result = defaultCodexSkillAssemblyProbe({
+			mode: "bare",
+			agentsSkillsDir: root,
+			mattSkillsSourceDir: path.join(root, "unused-matt"),
+		});
+		expect(result).toEqual({
+			disableNames: [
+				"superpowers:alpha",
+				"superpowers:beta-dir",
+				"superpowers:beta-frontmatter",
+			],
+		});
+	});
+
+	it("treats a missing machine-global superpowers root as an empty valid list", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "fly1395-missing-"));
+		expect(
+			defaultCodexSkillAssemblyProbe({
+				mode: "bare",
+				agentsSkillsDir: path.join(root, "does-not-exist"),
+				mattSkillsSourceDir: path.join(root, "unused-matt"),
+			}),
+		).toEqual({ disableNames: [] });
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("superpowers root is absent"),
+		);
+	});
+
+	it("fails loudly on non-ENOENT scan errors", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "fly1395-error-"));
+		const notDirectory = path.join(root, "not-a-directory");
+		fs.writeFileSync(notDirectory, "fixture");
+		expect(() =>
+			defaultCodexSkillAssemblyProbe({
+				mode: "bare",
+				agentsSkillsDir: notDirectory,
+				mattSkillsSourceDir: path.join(root, "unused-matt"),
+			}),
+		).toThrow();
+	});
+
+	it("matt verifies all six vendored skills and returns their source", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "fly1395-matt-"));
+		const mattSkillsSourceDir = path.join(root, "matt");
+		writeMattFixture(mattSkillsSourceDir);
+		expect(
+			defaultCodexSkillAssemblyProbe({
+				mode: "matt",
+				agentsSkillsDir: path.join(root, "missing-superpowers"),
+				mattSkillsSourceDir,
+			}),
+		).toEqual({ disableNames: [], mattSkillsSourceDir });
+	});
+
+	it("matt fails loudly when any required vendored skill is missing", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "fly1395-matt-bad-"));
+		const mattSkillsSourceDir = path.join(root, "matt");
+		writeSkill(mattSkillsSourceDir, "tdd");
+		expect(() =>
+			defaultCodexSkillAssemblyProbe({
+				mode: "matt",
+				agentsSkillsDir: path.join(root, "missing-superpowers"),
+				mattSkillsSourceDir,
+			}),
+		).toThrow(/missing required vendored skill/);
+	});
+
+	it("matt frontmatter drift falls back to superpowers before provisioning", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "fly1395-matt-drift-"));
+		const mattSkillsSourceDir = path.join(root, "matt");
+		writeMattFixture(mattSkillsSourceDir);
+		writeSkill(mattSkillsSourceDir, "tdd", "drifted-tdd");
+
+		const { envelope, execArgs } = await runBlueprint({
+			envValue: "matt",
+			ctxExtra: { runnerBackend: "codex-tmux" },
+			codexProbe: (args) =>
+				defaultCodexSkillAssemblyProbe({
+					...args,
+					agentsSkillsDir: path.join(root, "missing-superpowers"),
+					mattSkillsSourceDir,
+				}),
+		});
+
+		expect(envelope.skillFrameworkMode).toBe("superpowers");
+		expect(envelope.skillFrameworkModeVia).toBe("fallback_superpowers");
+		expect(execArgs.skillFrameworkMode).toBe("superpowers");
+		expect(execArgs.codexSkillDisableNames).toBeUndefined();
+		expect(execArgs.codexMattSkillsSourceDir).toBeUndefined();
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("frontmatter name"),
+		);
+	});
 });
 
 describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
@@ -299,15 +457,153 @@ describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
 		expect(participation).not.toHaveBeenCalled();
 	});
 
-	it("backend ≠ claude-tmux: mode recorded with via=noop_backend, zero plugin effect (R1#7)", async () => {
+	it.each(["antigravity-tmux", "kimi-tmux"] as const)(
+		"none-capability backend %s records noop_backend with zero plugin effect",
+		async (runnerBackend) => {
+			const { envelope, execArgs } = await runBlueprint({
+				envValue: "bare",
+				ctxExtra: { runnerBackend },
+			});
+			expect(envelope.skillFrameworkMode).toBe("bare");
+			expect(envelope.skillFrameworkModeVia).toBe("noop_backend");
+			expect("disabledPlugins" in execArgs).toBe(false);
+			expect("enabledPluginsExtra" in execArgs).toBe(false);
+		},
+	);
+
+	it.each([
+		["hash", {}, undefined],
+		["override", { skillFrameworkModeOverride: "bare" }, "bare"],
+		["sticky", { skillFrameworkModePrior: "bare" }, "bare"],
+		[
+			"inherited",
+			{ skillFrameworkModeParent: "bare", sessionRole: "implement" },
+			"bare",
+		],
+	] as const)(
+		"codex-tmux preserves resolver via=%s instead of noop_backend",
+		async (expectedVia, ctxExtra, expectedMode) => {
+			const { envelope, execArgs } = await runBlueprint({
+				envValue: "split",
+				ctxExtra: { runnerBackend: "codex-tmux", ...ctxExtra },
+			});
+			expect(envelope.skillFrameworkMode).toBe(
+				expectedMode ?? hashModeBucket(ID),
+			);
+			expect(envelope.skillFrameworkModeVia).toBe(expectedVia);
+			// Claude's plugin mechanism remains backend-specific.
+			expect("disabledPlugins" in execArgs).toBe(false);
+		},
+	);
+
+	it("codex bare scans once and threads the exact disable list to the adapter", async () => {
+		const codexProbe = vi.fn(() => ({
+			disableNames: [
+				"superpowers:brainstorming",
+				"superpowers:test-driven-development",
+			],
+		}));
 		const { envelope, execArgs } = await runBlueprint({
 			envValue: "bare",
-			ctxExtra: { runnerBackend: "kimi-tmux" },
+			ctxExtra: { runnerBackend: "codex-tmux" },
+			codexProbe,
 		});
+		expect(codexProbe).toHaveBeenCalledTimes(1);
 		expect(envelope.skillFrameworkMode).toBe("bare");
-		expect(envelope.skillFrameworkModeVia).toBe("noop_backend");
-		expect("disabledPlugins" in execArgs).toBe(false);
-		expect("enabledPluginsExtra" in execArgs).toBe(false);
+		expect(envelope.skillFrameworkModeVia).toBe("forced");
+		expect(execArgs.skillFrameworkMode).toBe("bare");
+		expect(execArgs.codexSkillDisableNames).toEqual([
+			"superpowers:brainstorming",
+			"superpowers:test-driven-development",
+		]);
+		expect(execArgs.codexMattSkillsSourceDir).toBeUndefined();
+	});
+
+	it("codex matt threads the same scan result plus the verified vendor source", async () => {
+		const codexProbe = vi.fn(() => ({
+			disableNames: ["superpowers:using-superpowers"],
+			mattSkillsSourceDir: "/repo/vendor/matt-skills/skills",
+		}));
+		const { envelope, execArgs } = await runBlueprint({
+			envValue: "matt",
+			ctxExtra: { runnerBackend: "codex-tmux" },
+			codexProbe,
+		});
+		expect(codexProbe).toHaveBeenCalledTimes(1);
+		expect(envelope.skillFrameworkMode).toBe("matt");
+		expect(envelope.skillFrameworkModeVia).toBe("forced");
+		expect(execArgs.skillFrameworkMode).toBe("matt");
+		expect(execArgs.codexSkillDisableNames).toEqual([
+			"superpowers:using-superpowers",
+		]);
+		expect(execArgs.codexMattSkillsSourceDir).toBe(
+			"/repo/vendor/matt-skills/skills",
+		);
+	});
+
+	it("one inherited arm applies backend-native assembly in Claude design and Codex implement", async () => {
+		const design = await runBlueprint({ envValue: "matt" });
+		const implement = await runBlueprint({
+			envValue: "split",
+			ctxExtra: {
+				runnerBackend: "codex-tmux",
+				sessionRole: "implement",
+				skillFrameworkModeParent: design.envelope.skillFrameworkMode,
+			},
+			codexProbe: () => ({
+				disableNames: ["superpowers:using-superpowers"],
+				mattSkillsSourceDir: "/repo/vendor/matt-skills/skills",
+			}),
+		});
+
+		expect(design.envelope.skillFrameworkMode).toBe("matt");
+		expect(design.execArgs.disabledPlugins).toContain(SUPERPOWERS_PLUGIN_KEY);
+		expect(design.execArgs.enabledPluginsExtra).toContain(
+			MATT_SKILLS_PLUGIN_KEY,
+		);
+		expect(implement.envelope.skillFrameworkMode).toBe("matt");
+		expect(implement.envelope.skillFrameworkModeVia).toBe("inherited");
+		expect(implement.execArgs.disabledPlugins).toBeUndefined();
+		expect(implement.execArgs.skillFrameworkMode).toBe("matt");
+		expect(implement.execArgs.codexSkillDisableNames).toEqual([
+			"superpowers:using-superpowers",
+		]);
+		expect(implement.execArgs.codexMattSkillsSourceDir).toBe(
+			"/repo/vendor/matt-skills/skills",
+		);
+	});
+
+	it("codex probe ambiguity fails closed to A with honest attribution", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const codexProbe = vi.fn(() => {
+			throw new Error("EACCES while scanning superpowers");
+		});
+		const { envelope, execArgs } = await runBlueprint({
+			envValue: "bare",
+			ctxExtra: { runnerBackend: "codex-tmux" },
+			codexProbe,
+		});
+		expect(envelope.skillFrameworkMode).toBe("superpowers");
+		expect(envelope.skillFrameworkModeVia).toBe("fallback_superpowers");
+		expect(execArgs.skillFrameworkMode).toBe("superpowers");
+		expect(execArgs.codexSkillDisableNames).toBeUndefined();
+		expect(execArgs.codexMattSkillsSourceDir).toBeUndefined();
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("Codex skill assembly probe failed"),
+		);
+	});
+
+	it("codex A arm performs no probe and contributes no Codex skill fields", async () => {
+		const codexProbe = vi.fn(() => ({ disableNames: ["should:not-run"] }));
+		const { execArgs } = await runBlueprint({
+			envValue: "superpowers",
+			ctxExtra: { runnerBackend: "codex-tmux" },
+			codexProbe,
+		});
+		expect(codexProbe).not.toHaveBeenCalled();
+		expect(execArgs.skillFrameworkMode).toBe("superpowers");
+		expect(execArgs.codexSkillDisableNames).toBeUndefined();
+		expect(execArgs.codexMattSkillsSourceDir).toBeUndefined();
 	});
 
 	it("FLY-751 profile + forced matt: mode contributions MERGE into the same fields", async () => {
@@ -429,7 +725,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		expect(execArgs.appendSystemPrompt).not.toContain("MATT-VARIANT-MARKER");
 	});
 
-	it("non-claude backend never reads variants (noop_backend)", async () => {
+	it("none-capability backend never reads variants (noop_backend)", async () => {
 		const root = makeProjectWithAgent({
 			"exec.md": "BASELINE-MARKER",
 			"exec.bare.md": "BARE-VARIANT-MARKER",
@@ -442,5 +738,45 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		});
 		expect(execArgs.appendSystemPrompt).toContain("BASELINE-MARKER");
 		expect(execArgs.appendSystemPrompt).not.toContain("BARE-VARIANT-MARKER");
+	});
+
+	it.each([
+		["bare", "BARE-VARIANT-MARKER"],
+		["matt", "MATT-VARIANT-MARKER"],
+	] as const)(
+		"codex %s arm reads the matching prompt variant",
+		async (envValue, expectedMarker) => {
+			const root = makeProjectWithAgent({
+				"exec.md": "BASELINE-MARKER",
+				"exec.bare.md": "BARE-VARIANT-MARKER",
+				"exec.matt.md": "MATT-VARIANT-MARKER",
+			});
+			const { execArgs } = await runBlueprint({
+				envValue,
+				agentDispatcher: makeDispatcher(),
+				projectRoot: root,
+				ctxExtra: { runnerBackend: "codex-tmux" },
+				codexProbe: () => ({
+					disableNames: ["superpowers:fixture"],
+					...(envValue === "matt" && {
+						mattSkillsSourceDir: "/repo/vendor/matt-skills/skills",
+					}),
+				}),
+			});
+			expect(execArgs.appendSystemPrompt).toContain(expectedMarker);
+			expect(execArgs.appendSystemPrompt).not.toContain("BASELINE-MARKER");
+		},
+	);
+
+	it("codex variant absence falls back to the baseline prompt", async () => {
+		const root = makeProjectWithAgent({ "exec.md": "BASELINE-MARKER" });
+		const { execArgs } = await runBlueprint({
+			envValue: "bare",
+			agentDispatcher: makeDispatcher(),
+			projectRoot: root,
+			ctxExtra: { runnerBackend: "codex-tmux" },
+			codexProbe: () => ({ disableNames: ["superpowers:fixture"] }),
+		});
+		expect(execArgs.appendSystemPrompt).toContain("BASELINE-MARKER");
 	});
 });

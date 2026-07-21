@@ -191,11 +191,14 @@ export {
 } from "./runner-mcp-profile.js";
 // FLY-1356: skill_framework_mode three-way switch (A/superpowers, B/matt, C/bare).
 export type {
+	BackendSkillAssembly,
 	SkillFrameworkMode,
 	SkillFrameworkResolveArgs,
 	SkillFrameworkVia,
 } from "./skill-framework-mode.js";
 export {
+	BACKEND_SKILL_ASSEMBLY,
+	defaultAgentsSkillsDir,
 	hashModeBucket,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
@@ -205,6 +208,7 @@ export {
 	SKILL_FRAMEWORK_MODES,
 	SKILL_FRAMEWORK_SPLIT,
 	SKILL_FRAMEWORK_VIAS,
+	SUPERPOWERS_CODEX_NAMESPACE,
 	SUPERPOWERS_PLUGIN_KEY,
 } from "./skill-framework-mode.js";
 // FLY-793: three-stage pipeline phase model tiers.

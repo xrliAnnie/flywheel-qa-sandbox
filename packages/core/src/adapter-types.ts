@@ -168,6 +168,12 @@ export interface AdapterExecutionContext {
 	 * (byte-compatible spawn).
 	 */
 	enablePonytail?: boolean;
+	/** FLY-1395: resolved prompt/skill arm for a Codex runner. */
+	skillFrameworkMode?: "superpowers" | "matt" | "bare";
+	/** Fully-qualified machine-global Codex skill names disabled for this run. */
+	codexSkillDisableNames?: string[];
+	/** Verified vendored matt-skills source copied into this run's CODEX_HOME. */
+	codexMattSkillsSourceDir?: string;
 	/**
 	 * FLY-751: per-runner MCP slimming. Marketplace-qualified plugin keys to
 	 * disable for THIS launch (merged into the same `--settings enabledPlugins`

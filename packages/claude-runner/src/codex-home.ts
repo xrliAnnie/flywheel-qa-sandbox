@@ -24,6 +24,7 @@ import {
 	accessSync,
 	chmodSync,
 	copyFileSync,
+	cpSync,
 	existsSync,
 	constants as fsConstants,
 	mkdirSync,
@@ -47,6 +48,50 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{1,255}$/;
 const MANAGED_BEGIN =
 	"# >>> flywheel-managed credential (FLY-123) — do not edit >>>";
 const MANAGED_END = "# <<< flywheel-managed credential (FLY-123) <<<";
+const MANAGED_SKILLS_BEGIN =
+	"# >>> flywheel-managed skills (FLY-1395) — do not edit >>>";
+const MANAGED_SKILLS_END = "# <<< flywheel-managed skills (FLY-1395) <<<";
+const CODEX_SKILL_NAME_RE = /^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$/;
+const MATT_CODEX_SKILL_DIRS = [
+	"code-review",
+	"diagnosing-bugs",
+	"grilling",
+	"tdd",
+	"to-spec",
+	"to-tickets",
+] as const;
+
+function namespaceMattSkill(contents: string, skillDir: string): string {
+	const lineEnding = contents.startsWith("---\r\n") ? "\r\n" : "\n";
+	if (!contents.startsWith(`---${lineEnding}`)) {
+		throw new Error(
+			`provisionCodexHome: matt skill ${skillDir} has no YAML frontmatter`,
+		);
+	}
+	const bodyStart = `---${lineEnding}`.length;
+	const frontmatterEnd = contents.indexOf(`${lineEnding}---`, bodyStart);
+	if (frontmatterEnd < 0) {
+		throw new Error(
+			`provisionCodexHome: matt skill ${skillDir} has unterminated YAML frontmatter`,
+		);
+	}
+	const frontmatter = contents.slice(bodyStart, frontmatterEnd);
+	const nameMatch =
+		/^name:\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([A-Za-z0-9._-]+))\s*$/m.exec(
+			frontmatter,
+		);
+	const sourceName = nameMatch?.[1] ?? nameMatch?.[2] ?? nameMatch?.[3];
+	if (!nameMatch || sourceName !== skillDir) {
+		throw new Error(
+			`provisionCodexHome: matt skill ${skillDir} frontmatter name must be ${skillDir}`,
+		);
+	}
+	const namespacedFrontmatter = frontmatter.replace(
+		nameMatch[0],
+		`name: matt-skills:${skillDir}`,
+	);
+	return `${contents.slice(0, bodyStart)}${namespacedFrontmatter}${contents.slice(frontmatterEnd)}`;
+}
 
 /**
  * FLY-123 WS-C (Codex code review R1 HIGH): GitHub-token env names that must
@@ -351,6 +396,19 @@ function stripManagedBlock(toml: string): string {
 	return toml.replace(re, "\n");
 }
 
+/** Remove any prior flywheel-managed skill block (idempotent). */
+function stripManagedSkillsBlock(toml: string): string {
+	const re = new RegExp(
+		`\n*${escapeRegExp(MANAGED_SKILLS_BEGIN)}[\\s\\S]*?${escapeRegExp(MANAGED_SKILLS_END)}\n?`,
+		"g",
+	);
+	return toml.replace(re, "\n");
+}
+
+export interface RenderCodexHomeConfigOptions {
+	skillDisableNames?: string[];
+}
+
 /**
  * Render a per-runner config.toml = base config (the seeded global) + the
  * flywheel-managed GH_TOKEN block. WS-C delivery contract:
@@ -367,9 +425,17 @@ function stripManagedBlock(toml: string): string {
 export function renderCodexHomeConfig(
 	baseToml: string,
 	ghToken?: string,
+	opts: RenderCodexHomeConfigOptions = {},
 ): string {
-	const base = stripManagedBlock(baseToml).trimEnd();
-	if (!ghToken) return base ? `${base}\n` : "";
+	const base = stripManagedSkillsBlock(stripManagedBlock(baseToml)).trimEnd();
+	const skillDisableNames = [...new Set(opts.skillDisableNames ?? [])].sort();
+	for (const name of skillDisableNames) {
+		if (!CODEX_SKILL_NAME_RE.test(name)) {
+			throw new Error(
+				`renderCodexHomeConfig: invalid Codex skill name ${JSON.stringify(name)}`,
+			);
+		}
+	}
 	// Conservative TOML guard (R1 LOW #5): reject ANY non-comment line that
 	// declares the shell_environment_policy namespace — table header
 	// (`[shell_environment_policy...]`, incl. spaced), OR dotted/inline key
@@ -377,6 +443,7 @@ export function renderCodexHomeConfig(
 	// Without a full TOML parser this prevents emitting a duplicate/conflicting
 	// definition; the seeded global config is verified not to declare it.
 	if (
+		ghToken &&
 		/^[ \t]*(?:\[[ \t]*shell_environment_policy\b|shell_environment_policy[ \t]*[.=])/m.test(
 			base,
 		)
@@ -388,8 +455,34 @@ export function renderCodexHomeConfig(
 				"conflicting definition.",
 		);
 	}
-	const block = `${MANAGED_BEGIN}\n[shell_environment_policy.set]\nGH_TOKEN = "${ghToken}"\n${MANAGED_END}`;
-	return base ? `${base}\n\n${block}\n` : `${block}\n`;
+	if (
+		skillDisableNames.length > 0 &&
+		/^[ \t]*(?:\[\[?[ \t]*skills\b|skills[ \t]*[.=])/m.test(base)
+	) {
+		throw new Error(
+			"renderCodexHomeConfig: base config.toml already declares the " +
+				"skills namespace — TOML-aware merge required; refusing to emit a " +
+				"conflicting definition.",
+		);
+	}
+
+	const blocks: string[] = [];
+	if (ghToken) {
+		blocks.push(
+			`${MANAGED_BEGIN}\n[shell_environment_policy.set]\nGH_TOKEN = "${ghToken}"\n${MANAGED_END}`,
+		);
+	}
+	if (skillDisableNames.length > 0) {
+		const entries = skillDisableNames.map(
+			(name) => `[[skills.config]]\nname = "${name}"\nenabled = false`,
+		);
+		blocks.push(
+			`${MANAGED_SKILLS_BEGIN}\n${entries.join("\n\n")}\n${MANAGED_SKILLS_END}`,
+		);
+	}
+	if (blocks.length === 0) return base ? `${base}\n` : "";
+	const managed = blocks.join("\n\n");
+	return base ? `${base}\n\n${managed}\n` : `${managed}\n`;
 }
 
 export interface ProvisionCodexHomeOptions {
@@ -399,6 +492,12 @@ export interface ProvisionCodexHomeOptions {
 	env?: NodeJS.ProcessEnv;
 	/** FLY-1188: contract source override (tests). Default: the package-shipped file. */
 	contractSourcePath?: string;
+	/** FLY-1395: resolved arm; absent keeps the pre-FLY-1395 call shape. */
+	skillFrameworkMode?: "superpowers" | "matt" | "bare";
+	/** Fully-qualified names disabled through [[skills.config]]. */
+	codexSkillDisableNames?: string[];
+	/** Verified source containing the six vendored Matt skill directories. */
+	codexMattSkillsSourceDir?: string;
 }
 
 /**
@@ -424,6 +523,32 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 		);
 	}
 	const contract = readFileSync(contractSrc, "utf-8");
+	const namespacedMattSkills = new Map<string, string>();
+	if (opts.skillFrameworkMode === "matt") {
+		if (!opts.codexMattSkillsSourceDir) {
+			throw new Error(
+				"provisionCodexHome: matt skills source is required for the matt arm",
+			);
+		}
+		for (const skillDir of MATT_CODEX_SKILL_DIRS) {
+			const skillFile = join(
+				opts.codexMattSkillsSourceDir,
+				skillDir,
+				"SKILL.md",
+			);
+			try {
+				accessSync(skillFile, fsConstants.R_OK);
+			} catch (err) {
+				throw new Error(
+					`provisionCodexHome: matt skills source missing ${skillFile}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+			namespacedMattSkills.set(
+				skillDir,
+				namespaceMattSkill(readFileSync(skillFile, "utf-8"), skillDir),
+			);
+		}
+	}
 	const home = codexHomeDir(opts.executionId, env);
 	const src = sourceCodexDir(env);
 	mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -448,27 +573,67 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 		? readFileSync(srcConfig, "utf-8")
 		: "";
 	const cfgPath = join(home, "config.toml");
-	writeFileSync(cfgPath, renderCodexHomeConfig(baseToml, opts.ghToken), {
-		encoding: "utf-8",
-		mode: 0o600,
-	});
-	chmodSync(cfgPath, 0o600); // repair mode if the file pre-existed
+	try {
+		writeFileSync(
+			cfgPath,
+			renderCodexHomeConfig(baseToml, opts.ghToken, {
+				skillDisableNames: opts.codexSkillDisableNames,
+			}),
+			{
+				encoding: "utf-8",
+				mode: 0o600,
+			},
+		);
+		chmodSync(cfgPath, 0o600); // repair mode if the file pre-existed
 
-	// FLY-1188: materialize the runner behavior contract as the home's
-	// AGENTS.md — codex reads $CODEX_HOME/AGENTS.md on EVERY process, so this
-	// is the persistent instruction layer (the dynamic per-execution layer
-	// stays on stdin). The source was read + validated ABOVE, before any
-	// home/credential write (fail-loud with zero residue): a codex runner
-	// without its contract would silently run on whatever global AGENTS.md
-	// content leaked into the seed — worse than not spawning.
-	const agentsPath = join(home, "AGENTS.md");
-	writeFileSync(
-		agentsPath,
-		`<!-- flywheel-managed (FLY-1188): materialized from ${contractSrc} at provisioning; do not edit — changes belong in the source file -->\n${contract}`,
-		{ encoding: "utf-8", mode: 0o600 },
-	);
-	chmodSync(agentsPath, 0o600); // repair mode if the file pre-existed
-	return home;
+		// FLY-1395: these paths are Flywheel-owned inside the per-runner home. Codex
+		// discovers direct $CODEX_HOME/skills children and uses each SKILL.md name,
+		// so install stable namespaced copies rather than a nested collection (which
+		// Codex flattens to collision-prone names such as `tdd`). Clear both the
+		// current layout and the early nested-layout artifact on every provision.
+		const skillsRoot = join(home, "skills");
+		rmSync(join(skillsRoot, "matt-skills"), { recursive: true, force: true });
+		for (const skillDir of MATT_CODEX_SKILL_DIRS) {
+			rmSync(join(skillsRoot, `matt-skills:${skillDir}`), {
+				recursive: true,
+				force: true,
+			});
+		}
+		if (opts.skillFrameworkMode === "matt" && opts.codexMattSkillsSourceDir) {
+			mkdirSync(skillsRoot, { recursive: true });
+			for (const skillDir of MATT_CODEX_SKILL_DIRS) {
+				const destination = join(skillsRoot, `matt-skills:${skillDir}`);
+				cpSync(join(opts.codexMattSkillsSourceDir, skillDir), destination, {
+					recursive: true,
+					force: true,
+				});
+				writeFileSync(
+					join(destination, "SKILL.md"),
+					namespacedMattSkills.get(skillDir)!,
+					"utf-8",
+				);
+			}
+		}
+
+		// FLY-1188: materialize the runner behavior contract as the home's
+		// AGENTS.md — codex reads $CODEX_HOME/AGENTS.md on EVERY process, so this
+		// is the persistent instruction layer (the dynamic per-execution layer
+		// stays on stdin). The source was read + validated ABOVE, before any
+		// home/credential write (fail-loud with zero residue): a codex runner
+		// without its contract would silently run on whatever global AGENTS.md
+		// content leaked into the seed — worse than not spawning.
+		const agentsPath = join(home, "AGENTS.md");
+		writeFileSync(
+			agentsPath,
+			`<!-- flywheel-managed (FLY-1188): materialized from ${contractSrc} at provisioning; do not edit — changes belong in the source file -->\n${contract}`,
+			{ encoding: "utf-8", mode: 0o600 },
+		);
+		chmodSync(agentsPath, 0o600); // repair mode if the file pre-existed
+		return home;
+	} catch (err) {
+		scrubCodexHomeCredential(opts.executionId, env);
+		throw err;
+	}
 }
 
 /**

@@ -7,6 +7,7 @@ import type {
 	CheckpointsConfig,
 	DesignBackend,
 	DocFlowConfig,
+	ExecutorBackend,
 	FounderUxGateConfig,
 	PonytailConfig,
 	PonytailInput,
@@ -15,7 +16,9 @@ import type {
 	SkillsConfig,
 } from "flywheel-config";
 import {
+	BACKEND_SKILL_ASSEMBLY,
 	DEFAULT_GATE_TIMEOUT_MS,
+	defaultAgentsSkillsDir,
 	isFounderUxGateEnabled,
 	isUiDesignFlavored,
 	MATT_SKILLS_PLUGIN_KEY,
@@ -26,6 +29,7 @@ import {
 	resolveSkillFrameworkMode,
 	SKILL_FRAMEWORK_MODE_ENV,
 	SKILL_FRAMEWORK_SPLIT,
+	SUPERPOWERS_CODEX_NAMESPACE,
 	SUPERPOWERS_PLUGIN_KEY,
 	toPonytailCondition,
 } from "flywheel-config";
@@ -207,6 +211,120 @@ export function defaultMattSkillsReadiness(backend: string): boolean {
 	return ready;
 }
 
+const MATT_CODEX_SKILL_DIRS = [
+	"code-review",
+	"diagnosing-bugs",
+	"grilling",
+	"tdd",
+	"to-spec",
+	"to-tickets",
+] as const;
+
+export interface CodexSkillAssemblyProbeArgs {
+	mode: "matt" | "bare";
+	agentsSkillsDir: string;
+	mattSkillsSourceDir: string;
+}
+
+export interface CodexSkillAssemblyProbeResult {
+	disableNames: string[];
+	mattSkillsSourceDir?: string;
+}
+
+export type CodexSkillAssemblyProbe = (
+	args: CodexSkillAssemblyProbeArgs,
+) => CodexSkillAssemblyProbeResult;
+
+function skillFrontmatterName(content: string): string | undefined {
+	const lines = content.split(/\r?\n/);
+	if (lines[0]?.trim() !== "---") return undefined;
+	for (let index = 1; index < lines.length; index++) {
+		const line = lines[index]?.trim();
+		if (line === "---") return undefined;
+		const match = line?.match(/^name\s*:\s*(.+)$/);
+		if (!match?.[1]) continue;
+		return match[1].trim().replace(/^(?:"([^"]*)"|'([^']*)')$/, "$1$2");
+	}
+	return undefined;
+}
+
+/**
+ * FLY-1395: inspect Codex's machine-global superpowers discovery root once,
+ * producing the exact fully-qualified denylist later applied to this run's
+ * isolated CODEX_HOME. A missing root is a valid empty set; every other read
+ * ambiguity fails loudly so the resolver can pin the run back to A.
+ */
+export const defaultCodexSkillAssemblyProbe: CodexSkillAssemblyProbe = (
+	args,
+) => {
+	const superpowersRoot = path.join(
+		args.agentsSkillsDir,
+		SUPERPOWERS_CODEX_NAMESPACE,
+	);
+	let entries: fs.Dirent[];
+	try {
+		entries = fs.readdirSync(superpowersRoot, { withFileTypes: true });
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+			console.warn(
+				`[Blueprint] Codex superpowers root is absent at ${superpowersRoot}; disable list is empty`,
+			);
+			entries = [];
+		} else {
+			throw err;
+		}
+	}
+
+	const disableNames = new Set<string>();
+	for (const entry of entries) {
+		if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+		const content = fs.readFileSync(
+			path.join(superpowersRoot, entry.name, "SKILL.md"),
+			"utf-8",
+		);
+		disableNames.add(`${SUPERPOWERS_CODEX_NAMESPACE}:${entry.name}`);
+		const frontmatterName = skillFrontmatterName(content);
+		if (frontmatterName) {
+			disableNames.add(`${SUPERPOWERS_CODEX_NAMESPACE}:${frontmatterName}`);
+		}
+	}
+
+	const result: CodexSkillAssemblyProbeResult = {
+		disableNames: [...disableNames].sort(),
+	};
+	if (args.mode === "matt") {
+		for (const skillDir of MATT_CODEX_SKILL_DIRS) {
+			const skillFile = path.join(
+				args.mattSkillsSourceDir,
+				skillDir,
+				"SKILL.md",
+			);
+			try {
+				const content = fs.readFileSync(skillFile, "utf-8");
+				const frontmatterName = skillFrontmatterName(content);
+				if (frontmatterName !== skillDir) {
+					throw new Error(
+						`frontmatter name must equal directory ${skillDir}, got ${frontmatterName ?? "missing"}`,
+					);
+				}
+			} catch (err) {
+				throw new Error(
+					`missing required vendored skill ${skillDir} at ${skillFile}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		}
+		result.mattSkillsSourceDir = args.mattSkillsSourceDir;
+	}
+	return result;
+};
+
+interface ResolvedSkillFrameworkForRun {
+	mode: SkillFrameworkMode;
+	via: SkillFrameworkVia;
+	codexSkillDisableNames?: string[];
+	codexMattSkillsSourceDir?: string;
+}
+
 /** Runtime context for a single Blueprint execution */
 export interface BlueprintContext {
 	teamName: string;
@@ -361,7 +479,7 @@ export interface BlueprintContext {
 	 * in the dispatcher: `"claude-tmux"` | `"codex-tmux"`. Absent →
 	 * `"claude-tmux"` (byte-compat default).
 	 */
-	runnerBackend?: string;
+	runnerBackend?: ExecutorBackend;
 	/** Optional model override resolved alongside the backend (label/roles). */
 	runnerModel?: string;
 	/**
@@ -694,6 +812,9 @@ export class Blueprint {
 		private skillFrameworkReadiness: (
 			backend: string,
 		) => boolean = defaultMattSkillsReadiness,
+		// FLY-1395 — one-shot Codex assembly probe. Its returned list is carried
+		// unchanged to the adapter so attribution and application share evidence.
+		private codexSkillAssemblyProbe: CodexSkillAssemblyProbe = defaultCodexSkillAssemblyProbe,
 	) {}
 
 	async run(
@@ -784,7 +905,14 @@ export class Blueprint {
 		this.eventEmitter?.emitStarted(env).catch(() => {});
 
 		try {
-			const result = await this.runInner(node, projectRoot, ctx, env, hydrated);
+			const result = await this.runInner(
+				node,
+				projectRoot,
+				ctx,
+				env,
+				hydrated,
+				skillFramework,
+			);
 			await this.emitTerminal(env, result);
 			return result;
 		} catch (err) {
@@ -845,15 +973,15 @@ export class Blueprint {
 	 * Returns undefined when the env flag sits at its default (unset/invalid)
 	 * — envelope, spawn args and prompt all stay byte-identical (red line #1).
 	 * Non-default resolutions record `{mode, via}`:
-	 *  - backend ≠ claude-tmux → via overwritten to `noop_backend` (mode still
-	 *    recorded; plugin/prompt effects are mechanically no-op — R1#7)
+	 *  - backend assembly capability `none` → via overwritten to
+	 *    `noop_backend` (mode still recorded; effects are mechanically no-op)
 	 *  - resolved `matt` whose readiness probe fails → superpowers +
 	 *    `fallback_superpowers` (never silently run a crippled B — red line #2)
 	 */
 	private resolveSkillFrameworkForRun(
 		ctx: BlueprintContext,
 		hydrated: HydratedContext,
-	): { mode: SkillFrameworkMode; via: SkillFrameworkVia } | undefined {
+	): ResolvedSkillFrameworkForRun | undefined {
 		// Participation is only meaningful under `split`; skip the config read
 		// entirely otherwise (default path stays zero-IO). The env read here is
 		// FLYWHEEL_SKILL_FRAMEWORK_MODE at call time (direct-toggle live).
@@ -894,16 +1022,52 @@ export class Blueprint {
 		// Flag at default (unset or invalid) → record nothing (byte-compat).
 		if (resolved.via === "default") return undefined;
 		const backend = ctx.runnerBackend ?? "claude-tmux";
-		if (backend !== "claude-tmux") {
+		if (BACKEND_SKILL_ASSEMBLY[backend] === "none") {
 			// Mode recorded for attribution completeness; mechanically no-op for
-			// this backend (codex/agy/kimi don't consume claude plugins/variants).
+			// backends that have not implemented an assembly adapter (agy/kimi).
 			return { mode: resolved.mode, via: "noop_backend" };
 		}
-		if (resolved.mode === "matt" && !this.skillFrameworkReadiness(backend)) {
+		if (
+			backend === "claude-tmux" &&
+			resolved.mode === "matt" &&
+			!this.skillFrameworkReadiness(backend)
+		) {
 			console.warn(
 				`[Blueprint] matt-skills plugin not ready for ${hydrated.issueId} — falling back to superpowers (run scripts/setup-matt-skills.sh to enable the B arm)`,
 			);
 			return { mode: "superpowers", via: "fallback_superpowers" };
+		}
+		if (
+			backend === "codex-tmux" &&
+			(resolved.mode === "matt" || resolved.mode === "bare")
+		) {
+			const repoRoot =
+				this.flywheelRepoRoot ??
+				path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+			try {
+				const probe = this.codexSkillAssemblyProbe({
+					mode: resolved.mode,
+					agentsSkillsDir: defaultAgentsSkillsDir(),
+					mattSkillsSourceDir: path.join(
+						repoRoot,
+						"vendor",
+						"matt-skills",
+						"skills",
+					),
+				});
+				return {
+					...resolved,
+					codexSkillDisableNames: probe.disableNames,
+					...(probe.mattSkillsSourceDir && {
+						codexMattSkillsSourceDir: probe.mattSkillsSourceDir,
+					}),
+				};
+			} catch (err) {
+				console.warn(
+					`[Blueprint] Codex skill assembly probe failed for ${hydrated.issueId} — falling back to superpowers: ${err instanceof Error ? err.message : String(err)}`,
+				);
+				return { mode: "superpowers", via: "fallback_superpowers" };
+			}
 		}
 		return resolved;
 	}
@@ -914,6 +1078,7 @@ export class Blueprint {
 		ctx: BlueprintContext,
 		env: EventEnvelope,
 		hydrated: HydratedContext,
+		skillFramework: ResolvedSkillFrameworkForRun | undefined,
 	): Promise<BlueprintResult> {
 		// FLY-615: enable ponytail for this run iff the resolved condition is
 		// effectively on (encoded "on:<source>"). unavailable/off → no enablement.
@@ -930,19 +1095,23 @@ export class Blueprint {
 		// BLOCKING gate text for exactly those combos — text a codex exec
 		// runner can never satisfy (it cannot sit inside a blocking process).
 		const isCodexRunner = (ctx.runnerBackend ?? "claude-tmux") === "codex-tmux";
-		// FLY-1356: the effective skill-framework arm for this run (resolved in
-		// run(), recorded on the envelope). Plugin + prompt-variant effects fire
-		// ONLY for claude-tmux (non-claude backends carry via=noop_backend and
-		// stay mechanically untouched). Default/absent → superpowers → zero
-		// contribution everywhere (byte-compat sentinel).
+		// FLY-1356/1395: the effective skill-framework arm for this run. Claude's
+		// plugin flags remain Claude-only, while prompt variants apply to every
+		// backend with native assembly capability (Claude + Codex). Default/absent
+		// → superpowers → zero contribution everywhere.
 		const skillFrameworkMode: SkillFrameworkMode =
 			env.skillFrameworkMode ?? "superpowers";
-		const skillModeActive =
+		const claudePluginAssembly =
 			(ctx.runnerBackend ?? "claude-tmux") === "claude-tmux" &&
 			skillFrameworkMode !== "superpowers";
-		const modeDisabledPlugins = skillModeActive ? [SUPERPOWERS_PLUGIN_KEY] : [];
+		const variantAssembly =
+			BACKEND_SKILL_ASSEMBLY[ctx.runnerBackend ?? "claude-tmux"] === "native" &&
+			skillFrameworkMode !== "superpowers";
+		const modeDisabledPlugins = claudePluginAssembly
+			? [SUPERPOWERS_PLUGIN_KEY]
+			: [];
 		const modeEnabledPluginsExtra =
-			skillModeActive && skillFrameworkMode === "matt"
+			claudePluginAssembly && skillFrameworkMode === "matt"
 				? [MATT_SKILLS_PLUGIN_KEY]
 				: [];
 		const startTime = Date.now();
@@ -2186,7 +2355,7 @@ export class Blueprint {
 			const agentContent = await readAgentFileWithSkillVariant(
 				agentFileBaseDir ?? cwd,
 				dispatchResult.agentConfig.agent_file,
-				skillModeActive ? skillFrameworkMode : undefined,
+				variantAssembly ? skillFrameworkMode : undefined,
 			);
 			if (agentContent) {
 				// FLY-1188: role files are written ONCE for all runners and read
@@ -2198,7 +2367,7 @@ export class Blueprint {
 					? [
 							"## Environment Translation (codex runner)",
 							"The role instructions below are written for a Claude Code runner. Fixed translation rules:",
-							'- Skill / slash-command / Superpowers references ("run the X skill", "/some-command"): you have no Skill tool — perform the same steps manually in the same shape, following the skill\'s stated intent.',
+							'- Skill / slash-command / Superpowers references ("run the X skill", "/some-command"): if the corresponding skill appears in your Available skills catalog, use it natively; otherwise perform the same steps manually in the same shape, following the skill\'s stated intent.',
 							"- References to teammate-messaging tools, browser automation, or context-compaction commands: not available in your environment — reports go through `ask --report`, verification uses terminal tooling, and when an instruction depends on a capability you genuinely lack, say so explicitly in your report instead of silently skipping or improvising.",
 							"- Where the role text conflicts with this translation, your persistent contract (AGENTS.md), or the dynamic instructions in this prompt, those win.",
 							"",
@@ -2281,6 +2450,20 @@ export class Blueprint {
 				appendSystemPrompt: systemPrompt,
 				// FLY-615: enable ponytail for this run (backend decides how).
 				...(enablePonytail && { enablePonytail: true }),
+				// FLY-1395: Codex receives the resolved arm plus the exact one-pass
+				// probe result. Default env leaves every field absent.
+				...(isCodexRunner && skillFramework
+					? {
+							skillFrameworkMode: skillFramework.mode,
+							...(skillFramework.codexSkillDisableNames && {
+								codexSkillDisableNames: skillFramework.codexSkillDisableNames,
+							}),
+							...(skillFramework.codexMattSkillsSourceDir && {
+								codexMattSkillsSourceDir:
+									skillFramework.codexMattSkillsSourceDir,
+							}),
+						}
+					: {}),
 				// FLY-123: model override resolved by RoleAdapterResolver
 				// (label / roles config). Claude path previously passed no
 				// model — absent stays absent (byte-compat).

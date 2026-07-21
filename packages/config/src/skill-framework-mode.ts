@@ -8,8 +8,9 @@
  * plus the env-only meta value `split` (per-issue stable-hash bucketing).
  *
  * This module owns the RESOLUTION semantics (plan §0 table). The apply layer
- * (Blueprint: matt readiness probe, plugin/prompt effect, `noop_backend` marking
- * for non-claude-tmux backends) lives in edge-worker — not here.
+ * (Blueprint: per-backend readiness probes, plugin/prompt effect,
+ * `noop_backend` marking for backends without an assembly adapter) lives in
+ * edge-worker — not here.
  *
  * The resolver is a TOTAL function (Bar-Raiser R1#1): every input combination
  * returns `{mode, via}` and it never throws. In particular a stale per-dispatch
@@ -19,6 +20,9 @@
  */
 
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { ExecutorBackend } from "./types.js";
 
 export const SKILL_FRAMEWORK_MODES = ["superpowers", "matt", "bare"] as const;
 export type SkillFrameworkMode = (typeof SKILL_FRAMEWORK_MODES)[number];
@@ -37,7 +41,7 @@ export const SKILL_FRAMEWORK_VIAS = [
 	"sticky", // split, same issue already stamped (sessions lookup by issue_id)
 	"hash", // split, first admission → stable hash bucket
 	"fallback_superpowers", // matt readiness probe failed (Blueprint layer)
-	"noop_backend", // backend ≠ claude-tmux: mode recorded, mechanically no-op
+	"noop_backend", // backend capability=none: mode recorded, mechanically no-op
 ] as const;
 export type SkillFrameworkVia = (typeof SKILL_FRAMEWORK_VIAS)[number];
 
@@ -51,6 +55,30 @@ export function isSkillFrameworkVia(v: unknown): v is SkillFrameworkVia {
 /** Real-machine spike values (research.md S2). */
 export const SUPERPOWERS_PLUGIN_KEY = "superpowers@superpowers-dev";
 export const MATT_SKILLS_PLUGIN_KEY = "matt-skills@matt-skills";
+
+/**
+ * FLY-1395 — whether a Runner backend can apply a skill-framework arm.
+ * Every executor backend must opt in explicitly so adding a backend cannot
+ * silently escape the experiment.
+ */
+export type BackendSkillAssembly = "native" | "none";
+export const BACKEND_SKILL_ASSEMBLY: Record<
+	ExecutorBackend,
+	BackendSkillAssembly
+> = {
+	"claude-tmux": "native",
+	"codex-tmux": "native",
+	"antigravity-tmux": "none",
+	"kimi-tmux": "none",
+};
+
+/** Namespace produced by ~/.agents/skills/superpowers in Codex discovery. */
+export const SUPERPOWERS_CODEX_NAMESPACE = "superpowers";
+
+/** Codex's HOME-scoped shared skill root; home override keeps tests hermetic. */
+export function defaultAgentsSkillsDir(home: string = homedir()): string {
+	return join(home, ".agents", "skills");
+}
 
 export function isSkillFrameworkMode(v: unknown): v is SkillFrameworkMode {
 	return (

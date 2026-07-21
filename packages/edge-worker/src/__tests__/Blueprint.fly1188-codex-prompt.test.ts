@@ -344,6 +344,12 @@ describe("FLY-1188 M2 — role-file ENVIRONMENT TRANSLATION header (codex only)"
 		expect(roleIdx).toBeGreaterThan(headerIdx);
 		// role text stays VERBATIM (translation is a header, not a rewrite)
 		expect(prompt).toContain("Use the Skill tool and SendMessage as usual.");
+		expect(prompt).toContain(
+			"appears in your Available skills catalog, use it natively",
+		);
+		expect(prompt).not.toContain(
+			"you have no Skill tool — perform the same steps manually",
+		);
 	});
 
 	it("claude: no translation header (byte-compat)", async () => {

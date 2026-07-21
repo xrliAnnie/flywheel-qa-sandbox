@@ -586,6 +586,75 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(o.socketPath).toContain("/cdx-sock/");
 	});
 
+	it("FLY-1395 threads the bare-arm disable list into the provisioned CODEX_HOME", async () => {
+		await makeAdapter().execute(
+			ctx({
+				skillFrameworkMode: "bare",
+				codexSkillDisableNames: ["superpowers:brainstorming"],
+			}),
+		);
+		const config = readFileSync(
+			join(homesRoot, execId, "config.toml"),
+			"utf-8",
+		);
+		expect(config).toContain('name = "superpowers:brainstorming"');
+		expect(existsSync(join(homesRoot, execId, "skills", "matt-skills"))).toBe(
+			false,
+		);
+		expect(
+			existsSync(join(homesRoot, execId, "skills", "matt-skills:to-spec")),
+		).toBe(false);
+	});
+
+	it("FLY-1395 threads the matt source into the provisioned CODEX_HOME", async () => {
+		const source = join(dir, "matt-source");
+		for (const name of [
+			"code-review",
+			"diagnosing-bugs",
+			"grilling",
+			"tdd",
+			"to-spec",
+			"to-tickets",
+		]) {
+			const skillDir = join(source, name);
+			mkdirSync(skillDir, { recursive: true });
+			writeFileSync(join(skillDir, "SKILL.md"), `---\nname: ${name}\n---\n`);
+		}
+		await makeAdapter().execute(
+			ctx({
+				skillFrameworkMode: "matt",
+				codexSkillDisableNames: ["superpowers:using-superpowers"],
+				codexMattSkillsSourceDir: source,
+			}),
+		);
+		const skillFile = join(
+			homesRoot,
+			execId,
+			"skills",
+			"matt-skills:to-spec",
+			"SKILL.md",
+		);
+		expect(existsSync(skillFile)).toBe(true);
+		expect(readFileSync(skillFile, "utf-8")).toContain(
+			"name: matt-skills:to-spec",
+		);
+	});
+
+	it("FLY-1395 default context leaves the CODEX_HOME free of managed skill state", async () => {
+		await makeAdapter().execute(ctx());
+		const config = readFileSync(
+			join(homesRoot, execId, "config.toml"),
+			"utf-8",
+		);
+		expect(config).not.toContain("flywheel-managed skills (FLY-1395)");
+		expect(existsSync(join(homesRoot, execId, "skills", "matt-skills"))).toBe(
+			false,
+		);
+		expect(
+			existsSync(join(homesRoot, execId, "skills", "matt-skills:to-spec")),
+		).toBe(false);
+	});
+
 	it("the daemon env carries the FLYWHEEL_* protocol vars + codex vendor", async () => {
 		await makeAdapter().execute(
 			ctx({ bridgeUrl: "http://b", progressPath: "/p" }),

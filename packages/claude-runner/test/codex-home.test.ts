@@ -14,7 +14,8 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	codexHomeDir,
@@ -152,9 +153,88 @@ describe("renderCodexHomeConfig (WS-C delivery)", () => {
 			),
 		).not.toThrow();
 	});
+
+	it("FLY-1395 renders deterministic Codex skill-disable blocks", () => {
+		const out = renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN, {
+			skillDisableNames: [
+				"superpowers:test-driven-development",
+				"superpowers:brainstorming",
+				"superpowers:brainstorming",
+			],
+		});
+		expect(out).toContain(
+			'# >>> flywheel-managed skills (FLY-1395) — do not edit >>>\n[[skills.config]]\nname = "superpowers:brainstorming"\nenabled = false\n\n[[skills.config]]\nname = "superpowers:test-driven-development"\nenabled = false\n# <<< flywheel-managed skills (FLY-1395) <<<',
+		);
+		expect(out).toContain(`GH_TOKEN = "${TOKEN}"`);
+	});
+
+	it("FLY-1395 skill rendering is idempotent and does not stack blocks", () => {
+		const opts = {
+			skillDisableNames: ["superpowers:brainstorming"],
+		};
+		const once = renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN, opts);
+		const twice = renderCodexHomeConfig(once, TOKEN, opts);
+		expect(twice).toBe(once);
+		expect(twice.match(/flywheel-managed skills \(FLY-1395\)/g)).toHaveLength(
+			2,
+		);
+	});
+
+	it("FLY-1395 A arm opts absent remains byte-identical", () => {
+		expect(renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN)).toBe(
+			`${GLOBAL_CONFIG.trimEnd()}\n\n# >>> flywheel-managed credential (FLY-123) — do not edit >>>\n[shell_environment_policy.set]\nGH_TOKEN = "${TOKEN}"\n# <<< flywheel-managed credential (FLY-123) <<<\n`,
+		);
+	});
+
+	it("FLY-1395 fails loudly when base config already declares the skills namespace", () => {
+		for (const declaration of [
+			"[skills]",
+			"[[skills.config]]",
+			'skills.config = [{ name = "x", enabled = true }]',
+			"skills = { config = [] }",
+		]) {
+			expect(() =>
+				renderCodexHomeConfig(`${GLOBAL_CONFIG}\n${declaration}\n`, TOKEN, {
+					skillDisableNames: ["superpowers:brainstorming"],
+				}),
+			).toThrow(/skills namespace/);
+		}
+		expect(() =>
+			renderCodexHomeConfig(
+				`${GLOBAL_CONFIG}\n# [skills] is managed per runner\n`,
+				TOKEN,
+				{ skillDisableNames: ["superpowers:brainstorming"] },
+			),
+		).not.toThrow();
+	});
+
+	it("FLY-1395 rejects unsafe skill names before emitting TOML", () => {
+		expect(() =>
+			renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN, {
+				skillDisableNames: ['superpowers:bad"\nenabled = true'],
+			}),
+		).toThrow(/invalid Codex skill name/);
+	});
 });
 
 describe("provisionCodexHome (WS-A)", () => {
+	function makeMattSkillsSource(): string {
+		const source = join(tmp, "matt-skills-source");
+		for (const name of [
+			"code-review",
+			"diagnosing-bugs",
+			"grilling",
+			"tdd",
+			"to-spec",
+			"to-tickets",
+		]) {
+			const dir = join(source, name);
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "SKILL.md"), `---\nname: ${name}\n---\n`);
+		}
+		return source;
+	}
+
 	it("creates the home, seeds auth.json (0600) and config.toml (0600) with the token", () => {
 		const home = provisionCodexHome({
 			executionId: "exec-1",
@@ -191,6 +271,165 @@ describe("provisionCodexHome (WS-A)", () => {
 		const home = provisionCodexHome({ executionId: "exec-3", env });
 		const cfg = readFileSync(join(home, "config.toml"), "utf-8");
 		expect(cfg).not.toContain("GH_TOKEN");
+	});
+
+	it("FLY-1395 bare provisions the disable config without a skills directory", () => {
+		const home = provisionCodexHome({
+			executionId: "exec-bare",
+			env,
+			skillFrameworkMode: "bare",
+			codexSkillDisableNames: ["superpowers:brainstorming"],
+		});
+		const config = readFileSync(join(home, "config.toml"), "utf-8");
+		expect(config).toContain('name = "superpowers:brainstorming"');
+		expect(existsSync(join(home, "skills", "matt-skills"))).toBe(false);
+	});
+
+	it("FLY-1395 matt installs all six vendored skills with stable namespace names and is idempotent", () => {
+		const source = makeMattSkillsSource();
+		const opts = {
+			executionId: "exec-matt",
+			env,
+			skillFrameworkMode: "matt" as const,
+			codexSkillDisableNames: ["superpowers:brainstorming"],
+			codexMattSkillsSourceDir: source,
+		};
+		const home = provisionCodexHome(opts);
+		provisionCodexHome(opts);
+		for (const name of [
+			"code-review",
+			"diagnosing-bugs",
+			"grilling",
+			"tdd",
+			"to-spec",
+			"to-tickets",
+		]) {
+			const skillFile = join(home, "skills", `matt-skills:${name}`, "SKILL.md");
+			expect(existsSync(skillFile)).toBe(true);
+			expect(readFileSync(skillFile, "utf-8")).toContain(
+				`name: matt-skills:${name}`,
+			);
+		}
+		expect(existsSync(join(home, "skills", "matt-skills"))).toBe(false);
+		expect(readFileSync(join(home, "config.toml"), "utf-8")).toContain(
+			'name = "superpowers:brainstorming"',
+		);
+	});
+
+	it("FLY-1395 removes stale managed Matt skills when reprovisioned as bare", () => {
+		const source = makeMattSkillsSource();
+		const mattHome = provisionCodexHome({
+			executionId: "exec-rearm",
+			env,
+			skillFrameworkMode: "matt",
+			codexSkillDisableNames: ["superpowers:brainstorming"],
+			codexMattSkillsSourceDir: source,
+		});
+		expect(
+			existsSync(join(mattHome, "skills", "matt-skills:tdd", "SKILL.md")),
+		).toBe(true);
+		const home = provisionCodexHome({
+			executionId: "exec-rearm",
+			env,
+			skillFrameworkMode: "bare",
+			codexSkillDisableNames: ["superpowers:brainstorming"],
+		});
+		expect(existsSync(join(home, "skills", "matt-skills:tdd"))).toBe(false);
+	});
+
+	it("FLY-1395 matt source failure is loud and leaves no runner home", () => {
+		expect(() =>
+			provisionCodexHome({
+				executionId: "exec-matt-bad",
+				env,
+				skillFrameworkMode: "matt",
+				codexSkillDisableNames: ["superpowers:brainstorming"],
+				codexMattSkillsSourceDir: join(tmp, "missing-matt"),
+			}),
+		).toThrow(/matt skills source/);
+		expect(existsSync(join(tmp, "homes", "exec-matt-bad"))).toBe(false);
+	});
+
+	it("FLY-1395 scrubs the live token when Matt skill copying fails", () => {
+		const source = makeMattSkillsSource();
+		const home = codexHomeDir("exec-matt-copy-fails", env);
+		const skillsRoot = join(home, "skills");
+		mkdirSync(skillsRoot, { recursive: true });
+		chmodSync(skillsRoot, 0o500);
+		try {
+			expect(() =>
+				provisionCodexHome({
+					executionId: "exec-matt-copy-fails",
+					ghToken: TOKEN,
+					env,
+					skillFrameworkMode: "matt",
+					codexSkillDisableNames: ["superpowers:brainstorming"],
+					codexMattSkillsSourceDir: source,
+				}),
+			).toThrow();
+			const configPath = join(home, "config.toml");
+			const config = existsSync(configPath)
+				? readFileSync(configPath, "utf-8")
+				: "";
+			expect(config).not.toContain(TOKEN);
+			expect(config).not.toContain("GH_TOKEN");
+		} finally {
+			chmodSync(skillsRoot, 0o700);
+		}
+	});
+
+	// FLY-1395 QA: every existing matt test uses a SYNTHETIC fixture whose
+	// frontmatter name is written to equal its directory (so namespaceMattSkill's
+	// `sourceName === skillDir` invariant is trivially satisfied). None exercises
+	// the REAL vendored artifact. If an upstream matt-skills sync renames a
+	// SKILL.md `name:` field, or drops/renames a skill directory, the matt arm
+	// would throw at provision time in production while every fixture test stays
+	// green. This guard drives production provisionCodexHome against the actual
+	// git-tracked vendor/matt-skills/skills so that drift fails in CI, not on a
+	// real Codex implement runner.
+	it("FLY-1395 provisions the matt arm from the REAL vendored skills (drift guard)", () => {
+		const repoRoot = resolve(
+			dirname(fileURLToPath(import.meta.url)),
+			"..",
+			"..",
+			"..",
+		);
+		const vendorSkills = join(repoRoot, "vendor", "matt-skills", "skills");
+		// Fail loud, not vacuously skip, if the vendored artifact is missing —
+		// its absence is itself a shippable defect for the matt arm.
+		expect(
+			existsSync(vendorSkills),
+			`vendored matt skills missing at ${vendorSkills}`,
+		).toBe(true);
+
+		const home = provisionCodexHome({
+			executionId: "exec-matt-vendor",
+			env,
+			skillFrameworkMode: "matt",
+			codexSkillDisableNames: ["superpowers:brainstorming"],
+			codexMattSkillsSourceDir: vendorSkills,
+		});
+
+		for (const name of [
+			"code-review",
+			"diagnosing-bugs",
+			"grilling",
+			"tdd",
+			"to-spec",
+			"to-tickets",
+		]) {
+			const skillFile = join(home, "skills", `matt-skills:${name}`, "SKILL.md");
+			expect(existsSync(skillFile), `missing installed ${name}`).toBe(true);
+			// namespaceMattSkill only rewrites to `matt-skills:<dir>` when the real
+			// vendored frontmatter name already equals <dir> — this assertion is the
+			// drift detector for that invariant against the shipped artifact.
+			expect(readFileSync(skillFile, "utf-8")).toContain(
+				`name: matt-skills:${name}`,
+			);
+		}
+		// No nested-collection artifact leaks (Codex would flatten those to
+		// collision-prone bare names such as `tdd`).
+		expect(existsSync(join(home, "skills", "matt-skills"))).toBe(false);
 	});
 
 	it("rejects a malformed token", () => {

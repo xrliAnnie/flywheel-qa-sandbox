@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	BACKEND_SKILL_ASSEMBLY,
+	defaultAgentsSkillsDir,
 	hashModeBucket,
 	MATT_SKILLS_PLUGIN_KEY,
 	resolveSkillFrameworkMode,
 	SKILL_FRAMEWORK_MODE_ENV,
 	SKILL_FRAMEWORK_MODES,
+	SUPERPOWERS_CODEX_NAMESPACE,
 	SUPERPOWERS_PLUGIN_KEY,
 } from "../skill-framework-mode.js";
+import { EXECUTOR_BACKENDS } from "../types.js";
 
 // FLY-1356 — single-truth resolver for the three-way skill-framework switch.
 // Semantics under test = plan §0 mode table, row by row. The resolver is a
@@ -27,6 +31,23 @@ describe("constants", () => {
 	it("plugin keys match the real-machine spike values (research.md S2)", () => {
 		expect(SUPERPOWERS_PLUGIN_KEY).toBe("superpowers@superpowers-dev");
 		expect(MATT_SKILLS_PLUGIN_KEY).toBe("matt-skills@matt-skills");
+	});
+	it("declares assembly capability for every executor backend", () => {
+		expect(Object.keys(BACKEND_SKILL_ASSEMBLY).sort()).toEqual(
+			[...EXECUTOR_BACKENDS].sort(),
+		);
+		expect(BACKEND_SKILL_ASSEMBLY).toEqual({
+			"claude-tmux": "native",
+			"codex-tmux": "native",
+			"antigravity-tmux": "none",
+			"kimi-tmux": "none",
+		});
+	});
+	it("exposes the Codex superpowers namespace and injectable agents-skills root", () => {
+		expect(SUPERPOWERS_CODEX_NAMESPACE).toBe("superpowers");
+		expect(defaultAgentsSkillsDir("/tmp/fly1395-home")).toBe(
+			"/tmp/fly1395-home/.agents/skills",
+		);
 	});
 });
 

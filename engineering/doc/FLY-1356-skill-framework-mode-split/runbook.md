@@ -21,6 +21,10 @@ Issue: FLY-1356 (URL 不可得,只写 issue 号)
 3. **workflow 模板 flag 保持 OFF**(generalized-workflow 评测期不进臂,纪律项)。
 4. `scripts/qa-fly-1356-mode-visibility.sh` 4/4 PASS(阳性对照 + bare 无注入 +
    matt 无 Superpowers 注入 + matt catalog 可见)。
+5. Codex 原生装配前置全绿:`~/.agents/skills/superpowers` 存在且非空,且
+   `scripts/qa-fly-1395-codex-mode-visibility.sh` PASS。该探针会用真实
+   `codex exec` 验证 A=`superpowers` 可见、B=六项 Matt 技能可见且
+   Superpowers 被禁用、C=Superpowers 被禁用且不复制 Matt 技能。
 
 ## 1. 开启 split(生产分流)
 
@@ -82,7 +86,7 @@ project_opt_out/fallback_superpowers/noop_backend)。样例 SQL(直查
 SELECT skill_framework_mode AS arm, COUNT(*) AS runs
 FROM sessions
 WHERE skill_framework_mode IS NOT NULL
-  AND skill_framework_mode_via NOT IN ('noop_backend')      -- codex/agy/kimi 机制 no-op
+  AND skill_framework_mode_via NOT IN ('noop_backend')      -- agy/kimi 机制 no-op
   AND (session_role IS NULL OR session_role != 'qa')         -- QA 行是 inherited,不重复计臂
 GROUP BY arm;
 
@@ -103,13 +107,23 @@ token(session usage 四类分记)、纪律违规(事件轨迹 + git 提交序)�
 **返工轮数**(FLY-616 `reworkRounds` = auto_qa_record fail 计数,`sqlite-reader.ts:100`,
 独立呈报 —— 不并进 token、不折进完成率)。四观测量数据呈 Annie。
 
+实验期所有臂使用同一套固定 phase 模型配置(`DEFAULT_PHASE_DISPATCH`:design =
+Fable、implement = GPT、QA = Opus),因此模型是臂间常量,四观测量可直接按臂
+分组比较,无需按模型分层。这个结论 **conditional on 当前固定配置**:若以后
+任一 phase 的模型配置变化,必须先做抽查复验,并继续保留 `adapter_type` 作为
+诊断维度。
+
 ## 6. 已知边界
 
 - **休眠 EdgeWorker webhook 通道**(`EdgeWorker.ts:971` 直接 `new ClaudeRunner`,
   不经 Blueprint;生产 Bridge 无消费者)在本治理之外 —— 该通道若复活需补接
   skill-framework 解析(R1#6)。
-- 非 claude-tmux 后端(codex/agy/kimi):mode/via 照记(via=`noop_backend`),
-  插件与 prompt 变体机制上 no-op;评测分析按 `adapter_type` 分层。
+- Codex 在 FLY-1395 后完整参与 A/B/C:同一臂通过 Codex 原生 skill catalog
+  装配与对应 prompt 变体落地,归因记录真实 via,不再记 `noop_backend`。
+- agy/kimi 仍显式 no-op(mode/via 照记为 `noop_backend`),后续可通过同一
+  backend capability/adapter seam 接入,无需改分臂协议。
+- 各后端未被本实验控制的全局/内建技能保持为所有臂共同常量;实验问题只比较
+  Superpowers / Matt / bare 这一维的增量装配。
 - Lead session / Bridge / CLI 不读本 flag —— 只作用 Runner spawn 路径。
 - generalized-workflow(pipeline.dag 模板)路径不做 prompt 变体(模板评测期
   OFF;开旗属 FLY-1299 之后)。
