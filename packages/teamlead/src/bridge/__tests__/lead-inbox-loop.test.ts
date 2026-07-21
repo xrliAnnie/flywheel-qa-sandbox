@@ -67,6 +67,31 @@ function loop(
 }
 
 describe("LeadInboxLoop", () => {
+	it("QA fault seam pauses after last_started_at but before success", async () => {
+		const queue = makeQueue();
+		let release!: () => void;
+		const paused = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const consumer = loop(
+			queue,
+			{ deliverBatch: vi.fn(async (batch) => receipt(batch)) },
+			{ afterTickStarted: () => paused },
+		);
+		const ticking = consumer.tick();
+		await vi.waitFor(() =>
+			expect(queue.getHeartbeat("lead-a")?.last_started_at).toBe(
+				"2026-07-19T12:00:00.000Z",
+			),
+		);
+		expect(queue.getHeartbeat("lead-a")?.last_success_at).toBeNull();
+		release();
+		expect((await ticking).ok).toBe(true);
+		expect(queue.getHeartbeat("lead-a")?.last_success_at).toBe(
+			"2026-07-19T12:00:00.000Z",
+		);
+	});
+
 	it("does not consume until a durable adapter receipt and audit commit", async () => {
 		const queue = makeQueue();
 		enqueueModel(queue, "A");

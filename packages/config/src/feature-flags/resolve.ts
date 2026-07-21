@@ -91,6 +91,7 @@ export interface FlagView {
 	 */
 	error?: string;
 	note?: string;
+	retiring?: string;
 }
 
 /** Navigate a dot path (e.g. "qa.auto") on a plain object; undefined if absent. */
@@ -237,6 +238,7 @@ export function resolveFlag(
 		default: spec.default,
 		dormant: spec.dormant,
 		note: spec.note,
+		retiring: spec.retiring,
 	};
 
 	if (spec.scope === "bridge_global") {

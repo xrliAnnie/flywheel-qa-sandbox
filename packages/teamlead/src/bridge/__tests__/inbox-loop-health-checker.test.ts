@@ -19,6 +19,24 @@ afterEach(() => {
 });
 
 describe("InboxLoopHealthChecker", () => {
+	it("loop-heartbeat kill-switch gates before claiming an episode", async () => {
+		queue.recordTickStarted("lead-failed", "2026-07-19T00:00:00.000Z");
+		const alert = vi.fn(async () => undefined);
+		const checker = new InboxLoopHealthChecker({
+			targets: [{ projectName: "project", leadId: "lead-failed", queue }],
+			alert,
+			enabled: false,
+			startedAtMs: Date.parse("2026-07-19T00:00:00.000Z"),
+			stallMs: 10 * 60_000,
+			startupGraceMs: 5 * 60_000,
+			now: () => Date.parse("2026-07-19T00:11:00.000Z"),
+		});
+
+		await checker.check();
+		expect(alert).not.toHaveBeenCalled();
+		expect(queue.getHeartbeat("lead-failed")?.stall_episode_at).toBeNull();
+	});
+
 	it("alerts for the failed Lead when a sibling Lead is healthy", async () => {
 		queue.recordTickStarted("lead-healthy", "2026-07-19T00:09:00.000Z");
 		queue.recordTickSuccess("lead-healthy", "2026-07-19T00:09:00.000Z");

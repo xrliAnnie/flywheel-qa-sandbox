@@ -825,7 +825,7 @@ describe("GatePoller (FLY-161)", () => {
 		recoverSpy.mockRestore();
 	});
 
-	it("FLY-1257: zombie candidate mapping preserves CommDB created_at", async () => {
+	it("FLY-1393: retired zombie gate env cannot revive the production wrapper", async () => {
 		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "1";
 		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
 		insertSession("exec-chronology", {
@@ -869,7 +869,7 @@ describe("GatePoller (FLY-161)", () => {
 			}
 		).zombieGateHygienePass();
 
-		expect(pendingFor("product-lead")).toHaveLength(0);
+		expect(pendingFor("product-lead")).toHaveLength(1);
 		delete process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE;
 		delete process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG;
 	});

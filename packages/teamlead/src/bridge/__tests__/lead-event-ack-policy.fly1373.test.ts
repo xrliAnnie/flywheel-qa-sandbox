@@ -6,7 +6,7 @@ import {
 } from "../lead-event-ack-policy.js";
 
 describe("FLY-1373 legacy delivery watchdog reverse flag", () => {
-	it("is disabled by default and requires an explicit legacy=1 opt-in", () => {
+	it("is hard-off even when the retired legacy flag is set", () => {
 		expect(legacyLeadWatchdogEnabled({})).toBe(false);
 		expect(deliveryAckEnabled({ FLYWHEEL_DELIVERY_ACK: "1" })).toBe(false);
 		expect(
@@ -14,7 +14,7 @@ describe("FLY-1373 legacy delivery watchdog reverse flag", () => {
 				FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS: "1",
 				FLYWHEEL_DELIVERY_ACK: "1",
 			}),
-		).toBe(true);
+		).toBe(false);
 		expect(
 			deliveryAckEnabled({
 				FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS: "1",

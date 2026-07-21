@@ -130,6 +130,21 @@ describe("HeartbeatService", () => {
 		);
 	});
 
+	it("FLYWHEEL_WATCHDOG_BLOCKED=0 gates before notifier and dedup mutations", async () => {
+		const previous = process.env.FLYWHEEL_WATCHDOG_BLOCKED;
+		process.env.FLYWHEEL_WATCHDOG_BLOCKED = "0";
+		try {
+			store.getStuckSessions.mockReturnValue([makeSession()]);
+			await service.check();
+			expect(notifier.onSessionStuck).not.toHaveBeenCalled();
+			expect(store.recordQuietWakeNotified).not.toHaveBeenCalled();
+			expect(store.pruneQuietWakeNotifiedNotIn).not.toHaveBeenCalled();
+		} finally {
+			if (previous === undefined) delete process.env.FLYWHEEL_WATCHDOG_BLOCKED;
+			else process.env.FLYWHEEL_WATCHDOG_BLOCKED = previous;
+		}
+	});
+
 	it("check() skips already-notified stuck sessions", async () => {
 		const session = makeSession();
 		store.getStuckSessions.mockReturnValue([session]);

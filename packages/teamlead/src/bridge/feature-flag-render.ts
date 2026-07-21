@@ -193,7 +193,12 @@ export type FlagControlMode = "none" | "console" | "phone";
 
 /** The in-card control for a direct-toggleable flag (console button / phone checkbox). */
 function renderFlagControl(flag: FlagView, mode: FlagControlMode): string {
-	if (mode === "none" || flag.divergence || !isFlagViewDirectToggleable(flag)) {
+	if (
+		mode === "none" ||
+		flag.retiring ||
+		flag.divergence ||
+		!isFlagViewDirectToggleable(flag)
+	) {
 		return "";
 	}
 	// FLY-1356: enum direct flags (skill_framework_mode) get a value dropdown
@@ -245,6 +250,9 @@ export function renderFlagCard(
 		'<div class="ffc-foot">',
 		`<span class="ff-badge ${catClass}">${esc(cat)}</span>`,
 		`<span class="ff-badge ff-eff">${esc(effectLabel(flag))}</span>`,
+		flag.retiring
+			? `<span class="ff-badge ff-retiring">退役中 ${esc(flag.retiring)}</span>`
+			: "",
 		control,
 		"</div>",
 		"</div>",
@@ -287,6 +295,7 @@ export const FEATURE_FLAG_CSS = `
 .ff-kill{background:#fff3e0;color:#c66a00}
 .ff-gov{background:#f3e8fe;color:#8944ab}
 .ff-eff{background:#f5f5f7;color:#48484a}
+.ff-retiring{background:#fff0f0;color:#c40018}
 .ff-proj{display:inline-block;margin-right:8px}
 .ff-divergence{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
 `;

@@ -32,6 +32,9 @@ import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import { resolveLeadForIssue } from "./ProjectConfig.js";
 import type { Session, StateStore } from "./StateStore.js";
 
+/** Preserve the pre-FLY-1393 expensive runner quota/auth scan cadence. */
+export const DEFAULT_RUNNER_QUOTA_SCAN_INTERVAL_MS = 60 * 60_000;
+
 export interface IdleWatchdogConfig {
 	pollIntervalMs: number;
 	waitingThresholdCycles: number;
@@ -80,8 +83,15 @@ export interface IdleWatchdogConfig {
 	 * pane is idle.)
 	 */
 	runnerQuotaScan?: (session: Session, pane: string) => void | Promise<void>;
+	/** Independent cadence for the expensive quota/auth callback. */
+	runnerQuotaScanIntervalMs?: number;
+	/** Deterministic clock for cadence tests. */
+	now?: () => number;
 	/** FLY-1373: boot-captured reverse gate for idle/stuck alert lanes. */
 	legacyDeliveryWatchdogsEnabled?: boolean;
+	/** FLY-1393: independent W-1 process-liveness lane (idle only). */
+	watchdogLivenessEnabled?: boolean;
+	watchdogTracker?: { started(): void; completed(): void };
 }
 
 type IdleStatus = "waiting" | "idle" | "unknown";
@@ -98,6 +108,7 @@ export class RunnerIdleWatchdog {
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
 	private polling = false;
 	private statusQuery: ReturnType<typeof createStatusQuery>;
+	private lastRunnerQuotaScanAtMs = new Map<string, number>();
 
 	constructor(private config: IdleWatchdogConfig) {
 		this.statusQuery = createStatusQuery(config.captureSessionFn);
@@ -135,6 +146,7 @@ export class RunnerIdleWatchdog {
 	private async poll(): Promise<void> {
 		if (this.polling) return;
 		this.polling = true;
+		this.config.watchdogTracker?.started();
 		try {
 			const sessions = this.config.store
 				.getActiveSessions()
@@ -144,6 +156,9 @@ export class RunnerIdleWatchdog {
 			const activeIds = new Set(sessions.map((s) => s.execution_id));
 			for (const key of this.stateMap.keys()) {
 				if (!activeIds.has(key)) this.stateMap.delete(key);
+			}
+			for (const key of this.lastRunnerQuotaScanAtMs.keys()) {
+				if (!activeIds.has(key)) this.lastRunnerQuotaScanAtMs.delete(key);
 			}
 			// FLY-195: stuck episodes for gone executions are dropped the same way.
 			if (this.config.legacyDeliveryWatchdogsEnabled !== false) {
@@ -175,6 +190,7 @@ export class RunnerIdleWatchdog {
 				this.config.store.recoverFromCorruption(err);
 			}
 		} finally {
+			this.config.watchdogTracker?.completed();
 			this.polling = false;
 		}
 	}
@@ -216,14 +232,15 @@ export class RunnerIdleWatchdog {
 				}
 			}
 
-			// FLY-696 M1/③: piggyback this SAME capture for runner-side quota
-			// detection (no new timer). Only on a valid capture (no infra error,
-			// output present). Best-effort — a throwing scan must never break the
-			// idle poll. Absent scan (self-heal off) ⇒ byte-compat no-op.
+			// FLY-696 M1/③: reuse a valid capture for runner-side quota detection,
+			// but claim the classifier's independent cadence before invoking it. The
+			// 3-second W-1 probe must not multiply token-expensive auth/classifier work.
+			// Best-effort — a throwing scan must never break the idle poll.
 			if (
 				this.config.runnerQuotaScan &&
 				captureErrorStatus === undefined &&
-				output !== undefined
+				output !== undefined &&
+				this.claimRunnerQuotaScan(session.execution_id)
 			) {
 				try {
 					await this.config.runnerQuotaScan(session, output);
@@ -254,7 +271,12 @@ export class RunnerIdleWatchdog {
 
 			// The capture and non-alert piggyback callbacks above remain alive when
 			// legacy delivery watchdogs are off; only idle/stuck emissions stop.
-			if (this.config.legacyDeliveryWatchdogsEnabled === false) return;
+			if (
+				this.config.legacyDeliveryWatchdogsEnabled === false &&
+				(this.config.watchdogLivenessEnabled === false ||
+					result.status !== "idle")
+			)
+				return;
 
 			const state = this.stateMap.get(session.execution_id) ?? {
 				lastStatus: "executing",
@@ -377,6 +399,18 @@ export class RunnerIdleWatchdog {
 		} else {
 			state.notifiedForStatus = idleStatus;
 		}
+	}
+
+	private claimRunnerQuotaScan(executionId: string): boolean {
+		const nowMs = (this.config.now ?? Date.now)();
+		const lastAtMs = this.lastRunnerQuotaScanAtMs.get(executionId);
+		const intervalMs =
+			this.config.runnerQuotaScanIntervalMs ?? this.config.pollIntervalMs;
+		if (lastAtMs !== undefined && nowMs - lastAtMs < intervalMs) return false;
+		// Claim before invoking the callback so a throwing classifier cannot turn the
+		// 3-second W-1 loop into a retry storm.
+		this.lastRunnerQuotaScanAtMs.set(executionId, nowMs);
+		return true;
 	}
 
 	/**

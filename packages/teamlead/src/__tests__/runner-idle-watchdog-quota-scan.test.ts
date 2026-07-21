@@ -55,8 +55,11 @@ function createMockStore(sessions: Session[]) {
 
 function createWatchdog(opts: {
 	scan?: (session: Session, pane: string) => void | Promise<void>;
+	scanIntervalMs?: number;
+	now?: () => number;
 	stuckDetector?: IdleWatchdogConfig["stuckDetector"];
 	legacyDeliveryWatchdogsEnabled?: boolean;
+	watchdogLivenessEnabled?: boolean;
 	statusResponse: {
 		result: { status: string; reason: string };
 		captureErrorStatus?: number;
@@ -89,11 +92,18 @@ function createWatchdog(opts: {
 			projectName: "geo",
 		})) as any,
 		...(opts.scan !== undefined && { runnerQuotaScan: opts.scan }),
+		...(opts.scanIntervalMs !== undefined && {
+			runnerQuotaScanIntervalMs: opts.scanIntervalMs,
+		}),
+		...(opts.now !== undefined && { now: opts.now }),
 		...(opts.stuckDetector !== undefined && {
 			stuckDetector: opts.stuckDetector,
 		}),
 		...(opts.legacyDeliveryWatchdogsEnabled !== undefined && {
 			legacyDeliveryWatchdogsEnabled: opts.legacyDeliveryWatchdogsEnabled,
+		}),
+		...(opts.watchdogLivenessEnabled !== undefined && {
+			watchdogLivenessEnabled: opts.watchdogLivenessEnabled,
 		}),
 	};
 
@@ -121,6 +131,29 @@ describe("RunnerIdleWatchdog runnerQuotaScan piggyback (FLY-696 M1/③)", () => 
 			expect.objectContaining({ execution_id: "exec-1" }),
 			"PANE-CONTENT",
 		);
+	});
+
+	it("keeps the expensive quota/auth scan on its own slow cadence while W-1 polls fast", async () => {
+		let now = 1_000_000;
+		const scan = vi.fn();
+		const { watchdog } = createWatchdog({
+			scan,
+			scanIntervalMs: 60_000,
+			now: () => now,
+			statusResponse: {
+				result: { status: "executing", reason: "active" },
+				output: "PANE-CONTENT",
+			},
+		});
+
+		await watchdog.pollOnce();
+		now += 3_000;
+		await watchdog.pollOnce();
+		expect(scan).toHaveBeenCalledTimes(1);
+
+		now += 57_000;
+		await watchdog.pollOnce();
+		expect(scan).toHaveBeenCalledTimes(2);
 	});
 
 	it("skips the scan on a capture infra error (no valid pane)", async () => {
@@ -162,7 +195,7 @@ describe("RunnerIdleWatchdog runnerQuotaScan piggyback (FLY-696 M1/③)", () => 
 		await expect(watchdog.pollOnce()).resolves.toBeUndefined();
 	});
 
-	it("reverse flag keeps the shared capture callback alive but suppresses idle/stuck emissions", async () => {
+	it("both alert switches off keep the shared capture callback alive but suppress emissions", async () => {
 		const scan = vi.fn();
 		const stuckDetector = {
 			checkSession: vi.fn(async () => undefined),
@@ -172,6 +205,7 @@ describe("RunnerIdleWatchdog runnerQuotaScan piggyback (FLY-696 M1/③)", () => 
 			scan,
 			stuckDetector: stuckDetector as any,
 			legacyDeliveryWatchdogsEnabled: false,
+			watchdogLivenessEnabled: false,
 			statusResponse: {
 				result: { status: "idle", reason: "idle" },
 				output: "PANE-CONTENT",
@@ -180,6 +214,49 @@ describe("RunnerIdleWatchdog runnerQuotaScan piggyback (FLY-696 M1/③)", () => 
 		await watchdog.pollOnce();
 		expect(scan).toHaveBeenCalledOnce();
 		expect(stuckDetector.checkSession).not.toHaveBeenCalled();
+		expect(store.appendLeadEvent).not.toHaveBeenCalled();
+	});
+
+	it("legacy hard-off + liveness on emits ONLY bare-shell idle, never waiting/unknown", async () => {
+		for (const status of ["waiting", "unknown"] as const) {
+			const { watchdog, store } = createWatchdog({
+				legacyDeliveryWatchdogsEnabled: false,
+				watchdogLivenessEnabled: true,
+				statusResponse: {
+					result: { status, reason: status },
+					output: "PANE-CONTENT",
+				},
+			});
+			await watchdog.pollOnce();
+			expect(store.appendLeadEvent, status).not.toHaveBeenCalled();
+		}
+
+		const { watchdog, store } = createWatchdog({
+			legacyDeliveryWatchdogsEnabled: false,
+			watchdogLivenessEnabled: true,
+			statusResponse: {
+				result: { status: "idle", reason: "bare shell" },
+				output: "PANE-CONTENT",
+			},
+		});
+		await watchdog.pollOnce();
+		expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
+		expect(JSON.parse(store.appendLeadEvent.mock.calls[0]![3])).toMatchObject({
+			event_type: "runner_idle_detected",
+			status: "idle",
+		});
+	});
+
+	it("liveness kill-switch silences the bare-shell idle lane", async () => {
+		const { watchdog, store } = createWatchdog({
+			legacyDeliveryWatchdogsEnabled: false,
+			watchdogLivenessEnabled: false,
+			statusResponse: {
+				result: { status: "idle", reason: "bare shell" },
+				output: "PANE-CONTENT",
+			},
+		});
+		await watchdog.pollOnce();
 		expect(store.appendLeadEvent).not.toHaveBeenCalled();
 	});
 });

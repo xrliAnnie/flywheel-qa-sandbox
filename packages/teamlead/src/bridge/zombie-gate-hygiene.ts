@@ -35,6 +35,8 @@ import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
 export function zombieGateResolveEnabled(
 	env: Record<string, string | undefined> = process.env,
 ): boolean {
+	// The low-level algorithm remains directly testable for historical audit
+	// replay. Production GatePoller passes an explicit OFF policy in FLY-1393.
 	return env.FLYWHEEL_ZOMBIE_GATE_RESOLVE !== "0";
 }
 

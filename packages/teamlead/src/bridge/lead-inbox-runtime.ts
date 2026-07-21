@@ -45,6 +45,10 @@ export interface LeadInboxRuntimeOptions {
 	) => LeadDeliveryAdapter;
 	/** Test seam for the one-shot boot cutover. */
 	runLegacyCutover?: () => void | Promise<void>;
+	afterTickStartedForLead?: (
+		projectName: string,
+		leadId: string,
+	) => Promise<void>;
 }
 
 export class LeadInboxRuntime {
@@ -128,6 +132,13 @@ export class LeadInboxRuntime {
 						opts.store.markLeadEventDelivered(Number(match[1]));
 					},
 					logger: console,
+					afterTickStarted: opts.afterTickStartedForLead
+						? () =>
+								opts.afterTickStartedForLead?.(
+									project.projectName,
+									lead.agentId,
+								) ?? Promise.resolve()
+						: undefined,
 				});
 				this.loops.set(this.key(project.projectName, lead.agentId), loop);
 			}

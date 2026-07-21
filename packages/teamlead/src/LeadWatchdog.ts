@@ -2,17 +2,18 @@
  * FLY-83: Bridge-side Lead liveness watchdog.
  *
  * External observation: never prompt the Lead, never rely on its own
- * heartbeat. Poll tmux `capture-pane` text every 30s, hash it, and watch for
+ * heartbeat. Poll tmux `capture-pane` text on the configured per-Lead cadence,
+ * hash it, and watch for
  * a pane that has been frozen.
  *
  * Two alert paths:
  *   - **Pattern-first** (Fix 1): if the captured pane matches a known stuck
  *     pattern (rate_limit / usage_limit / login_expired / permission_blocked)
  *     AND the pane has been stable for at least `paneHashStuckCycles` cycles
- *     (default 2 → ~60s confirmation), fire that classified alert
+ *     (default 2 → two per-Lead observations), fire that classified alert
  *     immediately. Skips the longer 3-cycle wait used for unknown freezes.
  *   - **Pane-hash stuck** (legacy): for unknown freezes (no pattern match),
- *     wait for `paneHashAlertCycles` (default 3 → ~90s) before alerting
+ *     wait for `paneHashAlertCycles` (default 3 observations) before alerting
  *     with `pane_hash_stuck`.
  *
  * Dedup happens in two layers:
@@ -61,6 +62,18 @@ import type { ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
 
 export { ALERT_ECHO_START };
+
+export const DEFAULT_LEAD_WATCHDOG_INTERVAL_MS = 10 * 60_000;
+
+/** FLY-1393: Annie-approved W-4 cadence, boot-captured and env-tunable. */
+export function leadWatchdogIntervalMs(
+	env: Record<string, string | undefined> = process.env,
+): number {
+	const value = Number(env.FLYWHEEL_LEAD_WATCHDOG_INTERVAL_MS);
+	return Number.isFinite(value) && value > 0
+		? Math.floor(value)
+		: DEFAULT_LEAD_WATCHDOG_INTERVAL_MS;
+}
 
 export type LeadWatchdogState =
 	| "AwaitingFirstCapture"
@@ -118,8 +131,8 @@ export interface LeadWatchdogConfig {
 		recoveredKind: AlertEventType,
 	) => void;
 	/**
-	 * FLY-368: called once at the end of every poll cycle so a reconcile pass can
-	 * piggyback this 30s cadence WITHOUT adding a second timer (FLY-169 discipline).
+	 * FLY-368: called once at the end of every full fleet cycle so a reconcile pass
+	 * can piggyback this cadence WITHOUT adding a second timer (FLY-169 discipline).
 	 * Wrapped fail-safe by the caller; errors must not wedge the poll loop.
 	 */
 	onPollComplete?: () => Promise<void> | void;
@@ -155,6 +168,9 @@ export interface LeadWatchdogConfig {
 	onSuspicious?: (report: SuspiciousReport) => void | Promise<void>;
 	/** FLY-1373: boot-captured reverse gate for frozen-pane alert lanes only. */
 	legacyDeliveryWatchdogsEnabled?: boolean;
+	/** FLY-1393 W-4: boot-captured gate for recognized blocked conditions. */
+	watchdogBlockedEnabled?: boolean;
+	watchdogTracker?: { started(): void; completed(): void };
 }
 
 interface LeadState {
@@ -218,7 +234,9 @@ function stateKey(projectName: string, leadId: string): string {
 
 export class LeadWatchdog {
 	private leadStates = new Map<string, LeadState>();
-	private timerHandle: ReturnType<typeof setInterval> | null = null;
+	private timerHandle: ReturnType<typeof setTimeout> | null = null;
+	private started = false;
+	private staggerCursor = 0;
 	private polling = false;
 	private readonly now: () => number;
 	private readonly logger: (msg: string) => void;
@@ -235,15 +253,15 @@ export class LeadWatchdog {
 	}
 
 	start(): void {
-		if (this.timerHandle) return;
-		this.timerHandle = setInterval(() => {
-			void this.poll();
-		}, this.config.pollIntervalMs);
+		if (this.started) return;
+		this.started = true;
+		this.scheduleNextStaggeredPoll();
 	}
 
 	stop(): void {
+		this.started = false;
 		if (this.timerHandle) {
-			clearInterval(this.timerHandle);
+			clearTimeout(this.timerHandle);
 			this.timerHandle = null;
 		}
 	}
@@ -267,19 +285,70 @@ export class LeadWatchdog {
 		return "AwaitingFirstCapture";
 	}
 
-	private async poll(): Promise<void> {
+	private projectsSnapshot(): ProjectEntry[] {
+		return this.config.projectsProvider
+			? this.config.projectsProvider()
+			: this.config.projects;
+	}
+
+	private scheduleNextStaggeredPoll(): void {
+		if (!this.started) return;
+		let count = 1;
+		try {
+			count = Math.max(
+				1,
+				this.projectsSnapshot().reduce(
+					(total, project) => total + project.leads.length,
+					0,
+				),
+			);
+		} catch (error) {
+			// A transient config snapshot failure must not break the recursive timer
+			// chain. Fall back to one full cadence, then retry on the next tick.
+			this.logger(
+				`staggered schedule snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		const delayMs = Math.max(1, Math.floor(this.config.pollIntervalMs / count));
+		this.timerHandle = setTimeout(() => {
+			this.timerHandle = null;
+			void this.poll(true)
+				.catch((error) => {
+					this.logger(
+						`staggered poll failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				})
+				.finally(() => this.scheduleNextStaggeredPoll());
+		}, delayMs);
+	}
+
+	private async poll(staggered = false): Promise<void> {
 		if (this.polling) return;
 		this.polling = true;
+		this.config.watchdogTracker?.started();
 		try {
-			const projects = this.config.projectsProvider
-				? this.config.projectsProvider()
-				: this.config.projects;
+			const projects = this.projectsSnapshot();
 			const membership = new Set<string>();
+			const targets: Array<{ projectName: string; leadId: string }> = [];
 			for (const project of projects) {
 				for (const lead of project.leads) {
 					membership.add(stateKey(project.projectName, lead.agentId));
-					await this.tickLead(project.projectName, lead.agentId);
+					targets.push({
+						projectName: project.projectName,
+						leadId: lead.agentId,
+					});
 				}
+			}
+			let scanTargets = targets;
+			let cycleCompleted = true;
+			if (staggered && targets.length > 0) {
+				const index = this.staggerCursor % targets.length;
+				scanTargets = [targets[index]!];
+				this.staggerCursor = (index + 1) % targets.length;
+				cycleCompleted = this.staggerCursor === 0;
+			}
+			for (const target of scanTargets) {
+				await this.tickLead(target.projectName, target.leadId);
 			}
 			// FLY-247 R3#4: drop state for removed/excluded leads so a
 			// re-included lead starts fresh and same-name leads across
@@ -292,8 +361,9 @@ export class LeadWatchdog {
 			// FLY-1048 (A4): frame windows follow the same membership lifecycle.
 			if (this.config.multiFrame) this.frames.prune(membership);
 			// FLY-368: run the reconcile pass (or any post-poll work) on the SAME
-			// 30s cadence — no second timer. Wrapped so it can never wedge the poll.
-			if (this.config.onPollComplete) {
+			// per-Lead cadence — no second timer. On a staggered fleet, post-poll work
+			// runs once after the complete fleet cycle, never once per Lead slice.
+			if (cycleCompleted && this.config.onPollComplete) {
 				try {
 					await this.config.onPollComplete();
 				} catch (err) {
@@ -301,6 +371,7 @@ export class LeadWatchdog {
 				}
 			}
 		} finally {
+			this.config.watchdogTracker?.completed();
 			this.polling = false;
 		}
 	}
@@ -370,6 +441,15 @@ export class LeadWatchdog {
 		// the condition that opened it, or a real new block of the same kind is
 		// silenced forever).
 		const kind = classify(pane);
+		// FLY-1393 W-4: gate recognized block alerts before recovery, cooldown,
+		// episode, or fingerprint state can be opened or mutated. The retired
+		// unclassified frozen-pane lane remains controlled independently below.
+		if (
+			kind !== "pane_hash_stuck" &&
+			this.config.watchdogBlockedEnabled === false
+		) {
+			return;
+		}
 		if (state.episodeKind !== null && state.episodeKind !== kind) {
 			// FLY-368: a blocked episode just cleared → fire the recovery hook once.
 			this.fireRecovery(projectName, leadId, state, state.episodeKind);
@@ -1045,6 +1125,8 @@ function titleFor(kind: AlertEventType): string {
 		// FLY-1402: emitted only by the Claude launcher through lead-alert.sh.
 		case "rules_bundle_legacy":
 			return "Lead rules bundle legacy mode";
+		case "stale_approved_ship_dead":
+			return "Approved ship runner is dead";
 		// FLY-195: never emitted by LeadWatchdog (the stuck-runner detector owns
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_stuck_unhandled":
@@ -1271,6 +1353,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// real shell alert body; this keeps the shared kind switch exhaustive.
 		case "rules_bundle_legacy":
 			return "A Claude Lead launched with the emergency legacy last-one-wins rule-loading path. Restore bundle mode and restart the Lead after investigating the compatibility override.";
+		case "stale_approved_ship_dead":
+			return "An approved_to_ship runner was proven dead through its exact tmux target. Resume the execution through the durable recovery path; this watchdog never self-ships.";
 		// FLY-195: never emitted by LeadWatchdog (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";

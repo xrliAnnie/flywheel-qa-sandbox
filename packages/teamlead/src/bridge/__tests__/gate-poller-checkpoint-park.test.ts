@@ -187,16 +187,15 @@ describe("FLY-927 checkpoint-park patrol", () => {
 		expect(events).toHaveLength(0);
 	});
 
-	it("remains active under its own switch when legacy delivery watchdogs are disabled", async () => {
+	it("retired env cannot revive the checkpoint patrol", async () => {
 		const { store, events } = makeStore();
 		await patrol(
 			makePoller(store, okFetch(), false),
 			makeSession(),
 			makeQuestion(),
 		);
-		expect(
-			events.some((event) => event.event_type === "checkpoint_park_nudged"),
-		).toBe(true);
+		expect(events).toHaveLength(0);
+		expect(wakeCalls).toHaveLength(0);
 	});
 
 	it("EVIDENCE gate: a successful founder delivery for this gate → silent", async () => {
@@ -212,17 +211,12 @@ describe("FLY-927 checkpoint-park patrol", () => {
 		expect(wakeCalls).toHaveLength(0);
 	});
 
-	it("FIRST window, no evidence → owner wake (runner + lead) + durable marker; truthful wording", async () => {
+	it("FIRST window remains silent after formal retirement", async () => {
 		const { store, events, leadEvents } = makeStore();
 		await patrol(makePoller(store, okFetch()), makeSession(), makeQuestion());
-		expect(wakeCalls).toHaveLength(1);
-		expect(String(wakeCalls[0]!.content)).toContain("停在approve");
-		expect(String(wakeCalls[0]!.content)).toContain("待你拍板");
-		expect(String(wakeCalls[0]!.content).toLowerCase()).not.toContain(
-			"code review",
-		);
-		expect(leadEvents).toEqual(["test-lead:checkpoint-park-lead-q1"]);
-		expect(events.map((e) => e.event_type)).toEqual(["checkpoint_park_nudged"]);
+		expect(wakeCalls).toHaveLength(0);
+		expect(leadEvents).toEqual([]);
+		expect(events).toEqual([]);
 	});
 
 	it("re-run within the second window → dedup (no double nudge, no page yet)", async () => {
@@ -240,7 +234,7 @@ describe("FLY-927 checkpoint-park patrol", () => {
 		expect(events).toHaveLength(1);
 	});
 
-	it("SECOND full window past the nudge, still no evidence → founder page in the ISSUE thread + page marker", async () => {
+	it("SECOND full window cannot page after formal retirement", async () => {
 		const { store, events } = makeStore([
 			{
 				event_id: "checkpoint-park-nudged-q1",
@@ -253,16 +247,8 @@ describe("FLY-927 checkpoint-park patrol", () => {
 		]);
 		const fetchImpl = okFetch();
 		await patrol(makePoller(store, fetchImpl), makeSession(), makeQuestion());
-		const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock
-			.calls[0] as [string, RequestInit];
-		expect(url).toContain("/channels/T1/messages");
-		const body = JSON.parse(init.body as string);
-		expect(body.content).toContain("停在approve");
-		expect(body.content).toContain("待你拍板");
-		expect(body.allowed_mentions).toEqual({ users: [OWNER] });
-		expect(events.some((e) => e.event_type === "checkpoint_park_paged")).toBe(
-			true,
-		);
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(events).toHaveLength(1);
 	});
 
 	it("page dedup: an existing page marker → no second page", async () => {

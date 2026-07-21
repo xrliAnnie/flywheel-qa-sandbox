@@ -308,6 +308,9 @@ export const ALERT_EVENT_TYPES = [
 	// last-one-wins compatibility path instead of the single-file rules bundle.
 	// Shell-emitted only, but kept in the shared face so queued alerts drain.
 	"rules_bundle_legacy",
+	// FLY-1393 W-1: exact-target process evidence proved an approved ship runner
+	// dead; stable event id, one durable alert per execution.
+	"stale_approved_ship_dead",
 	// FLY-1309: Lead identity uniqueness, lease control, and carrier drift.
 	"lead_dual_active",
 	"lead_dual_active_sensor_degraded",

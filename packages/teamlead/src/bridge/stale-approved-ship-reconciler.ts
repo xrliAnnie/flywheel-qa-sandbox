@@ -21,6 +21,7 @@
 
 import { REVIEW_BINDING_UNBOUND } from "../StateStore.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
+import type { RunnerLiveness } from "./tmux-lookup.js";
 
 /** Default: a session idle in approved_to_ship this long is "stranded". */
 export const DEFAULT_REWAKE_GRACE_MS = 5 * 60_000;
@@ -67,12 +68,48 @@ export interface ReconcileStaleApprovedShipDeps {
 	backoff: Map<string, number>;
 	/** execIds already dead-alerted (survives across passes; caller-owned). */
 	deadAlerted: Set<string>;
-	/** True iff the runner process/tmux is still alive. */
-	isAlive: (session: RewakeSessionProbe) => Promise<boolean>;
+	/** Exact-target, three-state process evidence. */
+	probe: (
+		session: RewakeSessionProbe,
+	) => Promise<"alive" | "dead" | "indeterminate">;
 	/** Re-send the approval wake to a live runner. */
 	reWake: (session: RewakeSessionProbe) => Promise<void>;
 	/** One-time alert for a truly-dead stranded ship (defer to FLY-795). */
-	alertDead: (session: RewakeSessionProbe) => Promise<void>;
+	/** True only when the alert sink durably accepted the event. */
+	alertDead: (session: RewakeSessionProbe) => Promise<boolean>;
+	/** Best-effort visibility for evidence that cannot authorize an action. */
+	diagnose?: (
+		session: RewakeSessionProbe,
+		reason: "indeterminate" | "probe_error",
+	) => void | Promise<void>;
+}
+
+/**
+ * Translate exact-target tmux evidence into the reconciler's action vocabulary.
+ * Only a persisted window whose panes are all dead is positive death evidence.
+ * `absent` may instead mean a stale CommDB target, so it must stay diagnostic
+ * and take the same harmless, idempotent re-wake path as an indeterminate probe.
+ */
+export function classifyStaleShipRunnerLiveness(
+	verdict: RunnerLiveness,
+): "alive" | "dead" | "indeterminate" {
+	if (verdict === "alive") return "alive";
+	if (verdict === "dead_pin") return "dead";
+	return "indeterminate";
+}
+
+export function deadAlertAccepted(result: {
+	sent?: boolean;
+	queued?: boolean;
+	dmSent?: boolean;
+	skipped?: string;
+}): boolean {
+	return Boolean(
+		result.sent ||
+			result.queued ||
+			result.dmSent ||
+			result.skipped === "duplicate",
+	);
 }
 
 export async function reconcileStaleApprovedShip(
@@ -96,16 +133,24 @@ export async function reconcileStaleApprovedShip(
 		if (deps.nowMs < nextAt) continue;
 		deps.backoff.set(session.execution_id, deps.nowMs + deps.backoffMs);
 
-		let alive: boolean;
+		let verdict: "alive" | "dead" | "indeterminate";
 		try {
-			alive = await deps.isAlive(session);
+			verdict = await deps.probe(session);
 		} catch {
-			// A probe failure is inconclusive — treat as alive (re-wake is
-			// idempotent + harmless) rather than falsely alerting a dead runner.
-			alive = true;
+			await deps.diagnose?.(session, "probe_error");
+			await deps.reWake(session);
+			rewoken.push(session.execution_id);
+			continue;
 		}
 
-		if (alive) {
+		if (verdict === "indeterminate") {
+			await deps.diagnose?.(session, "indeterminate");
+			await deps.reWake(session);
+			rewoken.push(session.execution_id);
+			continue;
+		}
+
+		if (verdict === "alive") {
 			await deps.reWake(session);
 			rewoken.push(session.execution_id);
 			continue;
@@ -113,9 +158,11 @@ export async function reconcileStaleApprovedShip(
 
 		// Dead: alert ONCE (do not spam every backoff window), defer to FLY-795.
 		if (!deps.deadAlerted.has(session.execution_id)) {
-			deps.deadAlerted.add(session.execution_id);
-			await deps.alertDead(session);
-			deadAlerted.push(session.execution_id);
+			const accepted = await deps.alertDead(session);
+			if (accepted) {
+				deps.deadAlerted.add(session.execution_id);
+				deadAlerted.push(session.execution_id);
+			}
 		}
 	}
 

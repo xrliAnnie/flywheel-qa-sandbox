@@ -151,6 +151,7 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 		onDeadLetter?: (seq: number) => Promise<boolean>;
 	}): LeadEventDeliveryCoordinator {
 		return new LeadEventDeliveryCoordinator({
+			enabled: true,
 			store,
 			runtimeForLead: (leadId) => (leadId === "lead-1" ? runtime : undefined),
 			commDbPaths: () => [commDbPath],
@@ -320,6 +321,7 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 			key: Buffer.from("01234567890123456789012345678901"),
 		};
 		const delivery = new LeadEventDeliveryCoordinator({
+			enabled: true,
 			store,
 			runtimeForLead: () => runtime,
 			commDbPaths: () => [commDbPath],
@@ -353,6 +355,7 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 	it("owner transfer fences the old attempt and immediately delivers to the new Lead", async () => {
 		const secondRuntime = new RecordingRuntime();
 		const delivery = new LeadEventDeliveryCoordinator({
+			enabled: true,
 			store,
 			runtimeForLead: (leadId) =>
 				leadId === "lead-1" ? runtime : secondRuntime,
@@ -451,6 +454,7 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 		const deadLetters: number[] = [];
 		const seq = appendQuestionEvent("q-4");
 		const delivery = new LeadEventDeliveryCoordinator({
+			enabled: true,
 			store,
 			runtimeForLead: () => undefined,
 			commDbPaths: () => [commDbPath],
@@ -551,6 +555,7 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 		expect(protectedDb.markQuestionProtected(qid, String(seq))).toBe(true);
 		protectedDb.close();
 		const delivery = new LeadEventDeliveryCoordinator({
+			enabled: true,
 			store,
 			runtimeForLead: () => undefined,
 			commDbPaths: () => [commDbPath],

@@ -54,6 +54,7 @@ import {
 	probeRunnerProcessLiveness,
 	probeTmuxServer,
 } from "./bridge/tmux-lookup.js";
+import { watchdogBlockedEnabled } from "./bridge/watchdog-minimum-set.js";
 import {
 	inspectWorktreeForUnpushedWork,
 	type WorktreeInspection,
@@ -531,6 +532,8 @@ export class HeartbeatService implements ReconnectController {
 		},
 		/** FLY-1373: boot-captured reverse gate for legacy delivery alert lanes. */
 		private legacyDeliveryWatchdogsEnabled: boolean = true,
+		/** FLY-1393: W-4 health tracker; optional for compatibility tests. */
+		private watchdogBlockedTracker?: { started(): void; completed(): void },
 	) {}
 
 	private maintenanceInFlight = false;
@@ -1829,6 +1832,19 @@ export class HeartbeatService implements ReconnectController {
 		zombieHeld: ReadonlySet<string> = EMPTY_SET,
 		tmuxHeld: ReadonlySet<string> = new Set(),
 	): Promise<void> {
+		if (!watchdogBlockedEnabled(process.env)) return;
+		this.watchdogBlockedTracker?.started();
+		try {
+			await this.checkStuckTracked(zombieHeld, tmuxHeld);
+		} finally {
+			this.watchdogBlockedTracker?.completed();
+		}
+	}
+
+	private async checkStuckTracked(
+		zombieHeld: ReadonlySet<string>,
+		tmuxHeld: ReadonlySet<string>,
+	): Promise<void> {
 		const confirmEngaged =
 			this.stuckConfirmHolder !== undefined && this.stuckConfirmEnabled();
 		if (!confirmEngaged) {
@@ -1858,6 +1874,9 @@ export class HeartbeatService implements ReconnectController {
 		zombieHeld: ReadonlySet<string> = EMPTY_SET,
 		tmuxHeld: ReadonlySet<string> = new Set(),
 	): Promise<void> {
+		// FLY-1393 W-4: call-time kill switch, before querying or mutating any
+		// stuck-episode/dedup state. Other heartbeat duties remain independent.
+		if (!watchdogBlockedEnabled(process.env)) return;
 		const stuck = this.store.getStuckSessions(this.thresholdMinutes);
 
 		// Prune notified set: remove entries for sessions no longer stuck

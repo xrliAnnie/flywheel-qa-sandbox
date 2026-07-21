@@ -172,6 +172,19 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
+	it("FLY-1393 records both W-4 read timings instead of advertising a fake live toggle", () => {
+		const flag = FEATURE_FLAGS.find((f) => f.name === "watchdog_blocked");
+		expect(flag).toMatchObject({
+			envVar: "FLYWHEEL_WATCHDOG_BLOCKED",
+			default: true,
+			toggleable: "readonly",
+		});
+		expect(flag?.readSites.map((site) => site.timing)).toEqual([
+			"bridge_boot",
+			"call_time",
+		]);
+	});
+
 	it("FLY-1314 registers gate-hygiene rollback controls", () => {
 		const issueGateSupersede = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_ISSUE_GATE_SUPERSEDE",

@@ -100,18 +100,20 @@ import {
 } from "./runtime-registry.js";
 import { defaultGetCommDbPath } from "./session-capture.js";
 import {
+	classifyStaleShipRunnerLiveness,
 	DEFAULT_REWAKE_BACKOFF_MS,
 	DEFAULT_REWAKE_GRACE_MS,
+	deadAlertAccepted,
 	type RewakeSessionProbe,
 	reconcileStaleApprovedShip,
 } from "./stale-approved-ship-reconciler.js";
 import type { UnhandledAlertSink } from "./stuck-escalation.js";
-import { isTmuxSessionAlive } from "./tmux-lookup.js";
+import { lookupTmuxTarget, probeRunnerProcessLiveness } from "./tmux-lookup.js";
+import { retiredWatchdogLaneEnabled } from "./watchdog-minimum-set.js";
 import {
 	askHygieneEnabled,
 	runZombieGateHygiene,
 	type ZombieCommDb,
-	zombieGateResolveEnabled,
 } from "./zombie-gate-hygiene.js";
 
 /**
@@ -150,6 +152,8 @@ export interface GatePollerConfig {
 	runtimeRegistry: RuntimeRegistry;
 	/** FLY-1373: boot-captured reverse gate for superseded alert lanes. */
 	legacyDeliveryWatchdogsEnabled?: boolean;
+	/** FLY-1393: independent W-1 human-alert lane. */
+	watchdogLivenessEnabled?: boolean;
 	/** FLY-1251: async producer for the exact-head ship-diff hold snapshot. */
 	ensureShipRelevantDiff?: (session: Session) => Promise<void> | void;
 	/** FLY-91: Enable per-issue chat thread hints in gate_question payloads. */
@@ -2101,7 +2105,12 @@ export class GatePoller {
 	// no new timer (FLY-169).
 
 	private checkpointWatchdogEnabled(): boolean {
-		return process.env.FLYWHEEL_CHECKPOINT_WATCHDOG === "1";
+		// FLY-1393: retired lane is policy-hard-off. The env key remains in the
+		// registry only so truth checks can identify stale operator config.
+		return retiredWatchdogLaneEnabled(
+			process.env,
+			"FLYWHEEL_CHECKPOINT_WATCHDOG",
+		);
 	}
 
 	/** FLYWHEEL_CHECKPOINT_STUCK_MS — default 1h (FLY-912: 3h was too slow). */
@@ -3590,18 +3599,25 @@ export class GatePoller {
 
 	/** §5: zombie gate hygiene (Z1 guarded retire + Z2 unreachable detection). */
 	private async zombieGateHygienePass(): Promise<void> {
+		// FLY-1393: Z1 is formally retired. Keep the low-level audit algorithm
+		// testable, but production policy is an unconditional OFF that env cannot
+		// revive. ASK hygiene and W-2 bookkeeping remain independent.
+		const zombieOn = retiredWatchdogLaneEnabled(
+			process.env,
+			"FLYWHEEL_ZOMBIE_GATE_RESOLVE",
+		);
 		const watchdogOn =
 			this.legacyWatchdogsEnabled() &&
 			process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG !== "0";
 		const askOn = askHygieneEnabled();
 		// FLY-1328: the pass now hosts three capabilities — only skip it when ALL
 		// are off, or the ask sweep would be silently swallowed by the old flags.
-		if (!zombieGateResolveEnabled() && !watchdogOn && !askOn) return;
+		if (!zombieOn && !watchdogOn && !askOn) return;
 		// The unreachable-sweep bookkeeping belongs to the Z1/Z2 capabilities. In
 		// an ASK-only configuration we must not touch it: begin/end would clear the
 		// watchdog's in-memory unreachable episodes without either capability
 		// having looked for them.
-		const sweepBookkeeping = zombieGateResolveEnabled() || watchdogOn;
+		const sweepBookkeeping = zombieOn || watchdogOn;
 		if (sweepBookkeeping) this.founderReplyWatchdog.beginUnreachableSweep();
 		for (const project of this.config.projects) {
 			for (const lead of project.leads) {
@@ -3645,6 +3661,10 @@ export class GatePoller {
 							kind: q.kind,
 						})),
 						db: db as unknown as ZombieCommDb,
+						env: {
+							...process.env,
+							FLYWHEEL_ZOMBIE_GATE_RESOLVE: "0",
+						},
 						noteUnreachableRunner: watchdogOn
 							? (a) => this.founderReplyWatchdog.noteUnreachableRunner(a)
 							: undefined,
@@ -3802,6 +3822,7 @@ export class GatePoller {
 	 * to FLY-795. Re-wake-only — never self-ships, never reads 795's progress.md.
 	 */
 	private async staleApprovedShipReconcilePass(): Promise<void> {
+		if (this.config.watchdogLivenessEnabled === false) return;
 		const sessions = this.config.store
 			.getActiveSessions()
 			.filter((s) => s.status === "approved_to_ship");
@@ -3814,13 +3835,13 @@ export class GatePoller {
 			backoffMs: DEFAULT_REWAKE_BACKOFF_MS,
 			backoff: this.staleShipRewakeBackoff,
 			deadAlerted: this.staleShipDeadAlerted,
-			isAlive: async (s) => {
-				if (!s.tmux_session) return true; // can't probe → treat as live (re-wake harmless)
-				try {
-					return await isTmuxSessionAlive(s.tmux_session);
-				} catch {
-					return true;
-				}
+			probe: async (s) => {
+				const target = lookupTmuxTarget(s.execution_id, s.project_name);
+				if (target.kind !== "found") return "indeterminate";
+				const verdict = await probeRunnerProcessLiveness(
+					target.target.tmuxWindow,
+				);
+				return classifyStaleShipRunnerLiveness(verdict);
 			},
 			reWake: async (s) => {
 				const dbPath = defaultGetCommDbPath(s.project_name);
@@ -3862,8 +3883,31 @@ export class GatePoller {
 						},
 					});
 				} catch {
-					// durable dead-alert event is best-effort
+					// The external alert remains retryable if the audit store is unavailable.
 				}
+				const resolved = this.resolveAlertRoute(s.project_name, s.execution_id);
+				const route = resolved
+					? { leadId: resolved.leadId, projectName: s.project_name }
+					: this.infraAlertRoute();
+				if (!route || !this.config.leadAlertSink) return false;
+				const result = await this.config.leadAlertSink.alert({
+					leadId: route.leadId,
+					projectName: route.projectName,
+					eventId: `stale-approved-ship-dead:${s.execution_id}`,
+					eventType: "stale_approved_ship_dead",
+					title: `Approved ship runner dead — ${s.issue_id}`,
+					body:
+						`Execution ${s.execution_id} was stranded in approved_to_ship and its exact tmux target is proven dead. ` +
+						"The watchdog did not self-ship; use the durable recovery path.",
+					severity: "severe",
+					sessionKey: s.execution_id,
+				});
+				return deadAlertAccepted(result);
+			},
+			diagnose: (s, reason) => {
+				console.warn(
+					`[GatePoller] FLY-1393 W-1 indeterminate for ${s.execution_id}: ${reason}; harmless re-wake only, no death alert`,
+				);
 			},
 		});
 	}

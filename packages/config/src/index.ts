@@ -39,8 +39,12 @@ export type {
 export {
 	FEATURE_FLAGS,
 	isDirectToggleMetadata,
+	NON_FLAG_ALLOWLIST,
+	RETIRED_FLAGS,
 	resolveAllFlags,
 	resolveFlag,
+	validateFlagTruthEnvironment,
+	validateWatchdogManifest,
 } from "./feature-flags/index.js";
 export type {
 	FounderTimezoneResolver,

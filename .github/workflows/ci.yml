@@ -124,6 +124,11 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # FLY-1393: prove the operator-facing flag-truth CLI is directly
+      # executable and that its retired-switch positive control fails closed.
+      - name: Test — FLY-1393 flag truth CLI
+        run: bash scripts/__tests__/check-flag-truth.test.sh
+
       # FLY-889: tmux/lsof/sqlite3 are each needed by a later hermetic test step
       # (cmux-sync / FLY-183 orphan-reaper / FLY-697 codex-log-guard). Installing
       # all three here in one apt-get avoids repeating `apt-get update` three

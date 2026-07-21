@@ -97,6 +97,7 @@ import {
 	isSafeResumeMenuForEnter,
 	isTransientThrottlePane,
 	LeadWatchdog,
+	leadWatchdogIntervalMs,
 } from "../LeadWatchdog.js";
 import { locateLeadWindow } from "../LeadWindowLocator.js";
 import { CodexLeadOutboundHandler } from "../lead-backends/codex/CodexLeadOutboundHandler.js";
@@ -119,7 +120,10 @@ import {
 	parseAndValidateProjects,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
-import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
+import {
+	DEFAULT_RUNNER_QUOTA_SCAN_INTERVAL_MS,
+	RunnerIdleWatchdog,
+} from "../RunnerIdleWatchdog.js";
 import {
 	OUTCOME_STATUSES,
 	REVIEW_BINDING_UNBOUND,
@@ -305,7 +309,10 @@ import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { GatePoller } from "./gate-poller.js";
 import { buildSessionKey } from "./hook-payload.js";
-import { InboxLoopHealthChecker } from "./inbox-loop-health-checker.js";
+import {
+	InboxLoopHealthChecker,
+	inboxLoopStallMs,
+} from "./inbox-loop-health-checker.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
 	formatAccountCapOwnerAssignment,
@@ -576,6 +583,10 @@ import { createTriageTemplateRouter } from "./triage-template-route.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { createVoiceRouter } from "./voice-routes.js";
 import {
+	buildWatchdogManifest,
+	WatchdogCheckTracker,
+} from "./watchdog-health.js";
+import {
 	createWatchdogJudge,
 	routeSuspiciousReport,
 } from "./watchdog-judge.js";
@@ -583,6 +594,13 @@ import {
 	createJudgeRoutingDepsFactory,
 	createStuckConfirmRunner,
 } from "./watchdog-judge-assembly.js";
+import {
+	qaStallInboxLoopLead,
+	retiredWatchdogLaneEnabled,
+	watchdogBlockedEnabled,
+	watchdogLivenessEnabled,
+	watchdogLoopHeartbeatEnabled,
+} from "./watchdog-minimum-set.js";
 import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
 import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
@@ -1119,6 +1137,8 @@ export interface BridgeAppOptions {
 	 * shuttingDown:false (byte-compat). Mirrors stuckDetectorHolder.
 	 */
 	shutdownStateHolder?: { shuttingDown: boolean };
+	/** FLY-1393: late-bound minimum-set watchdog health manifest. */
+	watchdogHealthProvider?: { current?: () => unknown };
 	/**
 	 * FLY-253 L2: TTL for execution-scoped latches, parsed ONCE from
 	 * `FLYWHEEL_STUCK_LATCH_TTL_MS` at startup (Codex R2 #5) and injected
@@ -1322,6 +1342,21 @@ export function createBridgeApp(
 		// double-start. Read at request time via the late-bound holder (mirrors
 		// stuckDetectorHolder); absent (standalone createBridgeApp) ⇒ false.
 		const shuttingDown = opts?.shutdownStateHolder?.shuttingDown === true;
+		let watchdogs: unknown;
+		if (opts?.watchdogHealthProvider?.current) {
+			try {
+				watchdogs = opts.watchdogHealthProvider.current();
+			} catch (error) {
+				console.warn(
+					"[health] watchdog manifest unavailable:",
+					error instanceof Error ? error.message : String(error),
+				);
+				watchdogs = {
+					degraded: true,
+					reason: "manifest_provider_error",
+				};
+			}
+		}
 		res.json({
 			// `ok` is byte-compatible (true in steady state); it flips false during
 			// shutdown so the deploy health check + wrapper preflight treat a
@@ -1330,6 +1365,7 @@ export function createBridgeApp(
 			shuttingDown,
 			uptime: process.uptime(),
 			sessions_count: active.length,
+			...(watchdogs === undefined ? {} : { watchdogs }),
 		});
 	});
 
@@ -3713,6 +3749,52 @@ export async function startBridge(
 	}
 	const bridgeBootTs = Date.now();
 	const legacyDeliveryWatchdogsOn = legacyDeliveryWatchdogsEnabled(process.env);
+	const watchdogFlags = {
+		liveness: watchdogLivenessEnabled(process.env),
+		loopHeartbeat: watchdogLoopHeartbeatEnabled(process.env),
+		blocked: watchdogBlockedEnabled(process.env),
+	};
+	const retiredCheckpointEnabled = retiredWatchdogLaneEnabled(
+		process.env,
+		"FLYWHEEL_CHECKPOINT_WATCHDOG",
+	);
+	const retiredZombieEnabled = retiredWatchdogLaneEnabled(
+		process.env,
+		"FLYWHEEL_ZOMBIE_GATE_RESOLVE",
+	);
+	const retiringWatchdogEnabled = {
+		legacy_delivery_watchdogs: legacyDeliveryWatchdogsOn,
+		misroute_patrol: legacyDeliveryWatchdogsOn,
+		founder_reply_watchdog: legacyDeliveryWatchdogsOn,
+		lead_pending_escalation: legacyDeliveryWatchdogsOn,
+		park_watch: legacyDeliveryWatchdogsOn,
+		stuck_detect: legacyDeliveryWatchdogsOn,
+		stuck_founder_page_killswitch: legacyDeliveryWatchdogsOn,
+		zombie_gate_resolve: retiredZombieEnabled,
+		checkpoint_watchdog: retiredCheckpointEnabled,
+	};
+	const leadWatchdogPollIntervalMs = leadWatchdogIntervalMs(process.env);
+	const watchdogTrackers = {
+		liveness: new WatchdogCheckTracker({ cadenceMs: idleWatchdogPollMs() }),
+		loopHeartbeat: new WatchdogCheckTracker({
+			cadenceMs: config.stuckCheckIntervalMs,
+		}),
+		blockedLead: new WatchdogCheckTracker({
+			cadenceMs: leadWatchdogPollIntervalMs,
+		}),
+		blockedRunner: new WatchdogCheckTracker({
+			cadenceMs: config.stuckCheckIntervalMs,
+		}),
+	};
+	// Live registration truth for /health. These bits flip only after the
+	// corresponding tracker has actually been handed to its runtime component.
+	const watchdogWiring = {
+		liveness: false,
+		loopHeartbeat: false,
+		externalDrift: true,
+		blockedLead: false,
+		blockedRunner: false,
+	};
 
 	// FLY-1082 (Task 1.1): fail-loud kind-contract validation — every alert
 	// kind must have an owner + an explicit ARC posture, or the Bridge REFUSES
@@ -4296,6 +4378,12 @@ export async function startBridge(
 	// lightweight preflight callers, which must not load the entire inbox stack
 	// (or its transport adapter) just to select a legacy runtime.
 	const { LeadInboxRuntime } = await import("./lead-inbox-runtime.js");
+	const qaStallLeadId = qaStallInboxLoopLead(process.env);
+	if (process.env.FLYWHEEL_QA_STALL_INBOX_LOOP_LEAD && !qaStallLeadId) {
+		console.warn(
+			"[FLY-1393 QA] refusing inbox-loop stall injection unless the effective FLYWHEEL_COMM_ROOT/FLYWHEEL_COMM_DIR is inside the process temp root and outside ~/.flywheel",
+		);
+	}
 	const leadInboxRuntime = new LeadInboxRuntime({
 		projects,
 		store,
@@ -4303,6 +4391,17 @@ export async function startBridge(
 		commDbPathForProject,
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		secretProvider: deliverySecretProvider,
+		...(qaStallLeadId
+			? {
+					afterTickStartedForLead: async (
+						_projectName: string,
+						leadId: string,
+					) => {
+						if (leadId !== qaStallLeadId) return;
+						await new Promise<never>(() => undefined);
+					},
+				}
+			: {}),
 	});
 	registry.setLeadEventEnqueuer((envelope, content) =>
 		leadInboxRuntime.enqueueLeadEvent(envelope, content),
@@ -4311,6 +4410,18 @@ export async function startBridge(
 		leadInboxRuntime.nudge(leadId, projectName),
 	);
 	leadInboxRuntime.start();
+	const watchdogHealthProvider: { current?: () => unknown } = {
+		current: () =>
+			buildWatchdogManifest({
+				bridgeStartedAtMs: bridgeBootTs,
+				flags: watchdogFlags,
+				wiring: watchdogWiring,
+				trackers: watchdogTrackers,
+				loopStallMs: inboxLoopStallMs(process.env),
+				loopTargets: leadInboxRuntime.healthTargets(),
+				retiringEnabled: retiringWatchdogEnabled,
+			}),
+	};
 
 	const deliveryDeadLetterAlertHolder: {
 		current?: (
@@ -5335,6 +5446,7 @@ export async function startBridge(
 			manualQaTokens: fleetConsole?.tokens ?? new ConfirmTokenStore(),
 			// FLY-516: /health reads this; close() flips it at teardown start.
 			shutdownStateHolder,
+			watchdogHealthProvider,
 			// FLY-623: event router reads this to clear reconnecting on a real event.
 			reconnectHolder,
 			// FLY-579: event router reads this to drive the auto-QA pipeline.
@@ -5557,7 +5669,10 @@ export async function startBridge(
 		targets: leadInboxRuntime.healthTargets(),
 		alert: (payload) =>
 			(inboxLoopAlertHolder.current ?? leadAlertNotifier).alert(payload),
+		enabled: watchdogFlags.loopHeartbeat,
+		tracker: watchdogTrackers.loopHeartbeat,
 	});
+	watchdogWiring.loopHeartbeat = true;
 
 	const heartbeatService = new HeartbeatService(
 		store,
@@ -5752,7 +5867,9 @@ export async function startBridge(
 		// FLY-1234: heartbeat session_stuck confirm layer (late-bound above).
 		stuckConfirmHolder,
 		legacyDeliveryWatchdogsOn,
+		watchdogTrackers.blockedRunner,
 	);
+	watchdogWiring.blockedRunner = true;
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
 	// router + idle watchdog via the late-bound holder, now that HeartbeatService
@@ -6642,19 +6759,17 @@ export async function startBridge(
 	// after seedReconnecting() (see the marker comment there).
 	heartbeatService.start();
 
-	// FLY-1048 (A6): cheap gap/state scan — OBSERVE ONLY in PR-A (in-process
-	// registry + debug log; the notification leg arrives with PR-C). Zero pane
-	// capture, zero tokens: StateStore sessions + readonly per-project CommDB.
-	// FLY-1243: the gap scan is固化 default-on (the FLYWHEEL_DETECTION_GAP_SCAN flip
-	// applies without a restart; unset = the tick returns immediately.
+	// FLY-1048 (A6): retired gap/state scan implementation retained until Batch 2.
+	// FLY-1393 hard-disconnects its scheduler through legacyDeliveryWatchdogsOn;
+	// the fake FLYWHEEL_DETECTION_GAP_SCAN switch has been removed.
 	const gapSuspicionRegistry = createSuspicionRegistry();
 
-	// FLY-1048 (A7): focused frames for gap-scan suspects. Every successful
+	// FLY-1048 (A7): retired focused frames for gap-scan suspects. Every successful
 	// capture ALSO feeds the existing stuck-runner detector (checkSession with
 	// a precaptured outcome) — its hard gates + dispositions stay the single
 	// escalation authority, it just accumulates episode time at the focused
-	// cadence (~4min) instead of the 1h fleet sweep. Unclear windows go
-	// fail-suspicious (A5); the ~1h sweep default is deliberately untouched.
+	// cadence (~4min). Unclear windows go fail-suspicious (A5). Batch 1 keeps this
+	// implementation inert; Batch 2 deletes it after FLY-1392 plus observation.
 	const focusedFrames = createFocusedFrameScheduler({
 		capture: async (t) => {
 			const res = await defaultCaptureSession(t.targetKey, t.projectName, 200);
@@ -7040,6 +7155,7 @@ export async function startBridge(
 		store,
 		runtimeRegistry: registry,
 		legacyDeliveryWatchdogsEnabled: legacyDeliveryWatchdogsOn,
+		watchdogLivenessEnabled: watchdogFlags.liveness,
 		ensureShipRelevantDiff,
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onDeliveryReconcileTick: legacyDeliveryWatchdogsOn
@@ -9386,8 +9502,8 @@ export async function startBridge(
 		});
 	}
 
-	// FLY-92: Runner idle watchdog — detects stuck Runners via tmux capture-pane.
-	// FLY-195: also drives the stuck-runner detector from the SAME 30s poll
+	// FLY-92 / FLY-1393 W-1: Runner process-liveness via tmux capture-pane.
+	// FLY-195: the retired frozen-pane detector still shares the SAME poll
 	// (no new periodic timer, FLY-169) using the SAME per-session capture.
 	// Created after leadAlertNotifier because the detector's Q7 fallback
 	// (runner_stuck_unhandled) pages Annie through it.
@@ -9413,14 +9529,10 @@ export async function startBridge(
 	// remanage router already captured — re_arm can now reach the in-memory
 	// episode map. Stays null when detection is disabled.
 	stuckDetectorHolder.current = stuckDetector;
-	// FLY-628 band-aid: stretch the poll cadence (was a 30s hardcode) to ~1h so
-	// parked / long-running Runners stop tripping false idle alerts that wake the
-	// Lead and burn tokens. Env-tunable; the same poll still drives the FLY-195
-	// stuck detector, so genuine-stuck detection survives (FLY-369), just at ~1h.
-	// waitingThresholdCycles stays 2 (Annie's call): a "waiting" Runner is only
-	// alerted after two consecutive ~1h polls (~2h), which is the accepted trade
-	// — quieter alerts beat faster waiting-state detection. A smarter recognizer
-	// (parked-aware / cheap probe / backoff) is the FLY-626 follow-up.
+	// FLY-1393: only the idle/dead W-1 lane remains active when the legacy delivery
+	// cohort is hard-off, so the old FLY-628 one-hour false-positive band-aid no
+	// longer applies. Restore a 3s default for process-liveness; waiting/unknown
+	// and frozen-pane signals remain silent. Env-tunable for fault injection.
 	const idlePollMs = idleWatchdogPollMs();
 	const idleWatchdog = new RunnerIdleWatchdog({
 		pollIntervalMs: idlePollMs,
@@ -9432,6 +9544,8 @@ export async function startBridge(
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		stuckDetector,
 		legacyDeliveryWatchdogsEnabled: legacyDeliveryWatchdogsOn,
+		watchdogLivenessEnabled: watchdogFlags.liveness,
+		watchdogTracker: watchdogTrackers.liveness,
 		// FLY-626: shared quiet-signal probe (defined above with HeartbeatService).
 		quietSignalsProbe,
 		// FLY-623 (Codex R2 HIGH-3): suppress idle/stuck signals for a Runner that
@@ -9440,10 +9554,11 @@ export async function startBridge(
 		// live HeartbeatService set via the holder; null/kill-switch → no suppression.
 		isReconnecting: (execId) =>
 			reconnectHolder.current?.isReconnecting(execId) ?? false,
-		// FLY-696 M1/③: runner-side quota scan, piggybacked on this poll's capture
-		// (no new timer). Legacy mode preserves the pool gate byte-for-byte; CUTOVER
-		// deliberately keeps this detector alive while omitting accountSwitchRepair,
-		// so a cap still alerts but can no longer enqueue a Bridge-side switch.
+		// FLY-696 M1/③: runner-side quota scan reuses this poll's capture, but its
+		// classifier remains on the pre-FLY-1393 one-hour cadence. Legacy mode
+		// preserves the pool gate byte-for-byte; CUTOVER deliberately keeps this
+		// detector alive while omitting accountSwitchRepair, so a cap still alerts
+		// but can no longer enqueue a Bridge-side switch.
 		runnerQuotaScan: quotaBridgeMode.runRunnerQuotaScan
 			? (() => {
 					const quotaScan = makeRunnerQuotaScan({
@@ -9479,7 +9594,9 @@ export async function startBridge(
 					};
 				})()
 			: undefined,
+		runnerQuotaScanIntervalMs: DEFAULT_RUNNER_QUOTA_SCAN_INTERVAL_MS,
 	});
+	watchdogWiring.liveness = true;
 	idleWatchdog.start();
 	console.log(
 		`[Bridge] RunnerIdleWatchdog started (${Math.round(idlePollMs / 1000)}s poll${stuckDetector ? ", FLY-195 stuck detection ON" : ", FLY-195 stuck detection OFF (FLYWHEEL_STUCK_DETECT=0)"})`,
@@ -9629,7 +9746,7 @@ export async function startBridge(
 	};
 
 	const leadWatchdog = new LeadWatchdog({
-		pollIntervalMs: 30_000,
+		pollIntervalMs: leadWatchdogPollIntervalMs,
 		paneHashStuckCycles: 2,
 		paneHashAlertCycles: 3,
 		cooldownMs: 30 * 60_000,
@@ -9669,6 +9786,8 @@ export async function startBridge(
 		claimsReader,
 		blockedMarkerReader,
 		legacyDeliveryWatchdogsEnabled: legacyDeliveryWatchdogsOn,
+		watchdogBlockedEnabled: watchdogFlags.blocked,
+		watchdogTracker: watchdogTrackers.blockedLead,
 		// FLY-368: real-time recovery → resolve the matching alert thread (an
 		// optimization; the reconcile pass below is the restart-safe truth source).
 		onRecovery: alertHub
@@ -9676,8 +9795,9 @@ export async function startBridge(
 					void alertHub.onLeadRecovery(projectName, leadId, recoveredKind);
 				}
 			: undefined,
-		// FLY-368: piggyback the 30s poll to run the alert-thread reconcile pass
-		// (no new timer). FLY-863: the SAME tick also re-scans for codex-holds that
+		// FLY-368: piggyback the completed per-Lead cycle to run the alert-thread
+		// reconcile pass (now default 10min; no new timer). FLY-863: the SAME tick
+		// also re-scans for codex-holds that
 		// crossed the stuck-duration threshold since the last pass. FLY-696: the
 		// SAME tick also drives the account-switch watchdog (due pending switches
 		// M1-only / bot fallback M2), posting results to the unified Alerts
@@ -9811,9 +9931,10 @@ export async function startBridge(
 		// owner resolver with the focused-frame unclear path.
 		onSuspicious: deliverSuspicious,
 	});
+	watchdogWiring.blockedLead = true;
 	leadWatchdog.start();
 	console.log(
-		"[Bridge] LeadWatchdog started (30s poll, pattern-first alert + 3-cycle pane-hash)",
+		`[Bridge] LeadWatchdog started (${leadWatchdogPollIntervalMs}ms per-Lead staggered poll, pattern-first alert + 3-cycle pane-hash)`,
 	);
 
 	// FLY-83: drain alert queue every 60s so spills from shell path (lead-alert.sh)

@@ -58,6 +58,8 @@ export interface LeadInboxLoopOptions {
 	setTimer?: (fn: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
 	clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
 	logger?: { warn: (message: string, context?: unknown) => void };
+	/** FLY-1393 QA seam: stall after the heartbeat is durably started. */
+	afterTickStarted?: () => Promise<void>;
 }
 
 export class LeadInboxLoop {
@@ -125,6 +127,7 @@ export class LeadInboxLoop {
 	async tick(): Promise<LeadInboxTickResult> {
 		const startedAt = this.isoNow();
 		this.opts.queue.recordTickStarted(this.opts.leadId, startedAt);
+		await this.opts.afterTickStarted?.();
 		let protocolConsumed = 0;
 		let modelConsumed = 0;
 		try {

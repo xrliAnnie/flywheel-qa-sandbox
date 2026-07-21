@@ -11,6 +11,8 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
+	classifyStaleShipRunnerLiveness,
+	deadAlertAccepted,
 	isRewakeCandidate,
 	reconcileStaleApprovedShip,
 } from "../stale-approved-ship-reconciler.js";
@@ -81,9 +83,10 @@ describe("reconcileStaleApprovedShip", () => {
 			backoffMs: 5 * 60_000,
 			backoff: new Map<string, number>(),
 			deadAlerted: new Set<string>(),
-			isAlive: vi.fn().mockResolvedValue(true),
+			probe: vi.fn().mockResolvedValue("alive"),
 			reWake: vi.fn().mockResolvedValue(undefined),
-			alertDead: vi.fn().mockResolvedValue(undefined),
+			alertDead: vi.fn().mockResolvedValue(true),
+			diagnose: vi.fn(),
 			...over,
 		};
 	}
@@ -97,7 +100,7 @@ describe("reconcileStaleApprovedShip", () => {
 	});
 
 	it("dead runner → alerts once (defer to 795), never re-wakes", async () => {
-		const d = deps({ isAlive: vi.fn().mockResolvedValue(false) });
+		const d = deps({ probe: vi.fn().mockResolvedValue("dead") });
 		const r = await reconcileStaleApprovedShip(d as never);
 		expect(r.deadAlerted).toEqual(["E-1"]);
 		expect(d.reWake).not.toHaveBeenCalled();
@@ -107,13 +110,13 @@ describe("reconcileStaleApprovedShip", () => {
 	it("dead runner alerted only ONCE across passes (no spam)", async () => {
 		const shared = { deadAlerted: new Set<string>() };
 		const d1 = deps({
-			isAlive: vi.fn().mockResolvedValue(false),
+			probe: vi.fn().mockResolvedValue("dead"),
 			deadAlerted: shared.deadAlerted,
 			backoff: new Map<string, number>(),
 		});
 		await reconcileStaleApprovedShip(d1 as never);
 		const d2 = deps({
-			isAlive: vi.fn().mockResolvedValue(false),
+			probe: vi.fn().mockResolvedValue("dead"),
 			deadAlerted: shared.deadAlerted, // survives across passes
 			backoff: new Map<string, number>(),
 		});
@@ -137,6 +140,74 @@ describe("reconcileStaleApprovedShip", () => {
 		});
 		const r = await reconcileStaleApprovedShip(d as never);
 		expect(r.rewoken).toEqual([]);
-		expect(d.isAlive).not.toHaveBeenCalled();
+		expect(d.probe).not.toHaveBeenCalled();
+	});
+
+	it("does not dedup a dead alert until the sink durably accepts it", async () => {
+		const deadAlerted = new Set<string>();
+		const first = deps({
+			probe: vi.fn().mockResolvedValue("dead"),
+			deadAlerted,
+			alertDead: vi.fn().mockResolvedValue(false),
+		});
+		const r1 = await reconcileStaleApprovedShip(first as never);
+		expect(r1.deadAlerted).toEqual([]);
+		expect(deadAlerted.size).toBe(0);
+
+		const second = deps({
+			probe: vi.fn().mockResolvedValue("dead"),
+			deadAlerted,
+			alertDead: vi.fn().mockResolvedValue(true),
+		});
+		const r2 = await reconcileStaleApprovedShip(second as never);
+		expect(r2.deadAlerted).toEqual(["E-1"]);
+		expect(deadAlerted.has("E-1")).toBe(true);
+	});
+
+	it("indeterminate liveness is observable and takes the harmless re-wake path without declaring death", async () => {
+		const d = deps({ probe: vi.fn().mockResolvedValue("indeterminate") });
+		const r = await reconcileStaleApprovedShip(d as never);
+		expect(r).toEqual({ rewoken: ["E-1"], deadAlerted: [] });
+		expect(d.reWake).toHaveBeenCalledOnce();
+		expect(d.alertDead).not.toHaveBeenCalled();
+		expect(d.diagnose).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "E-1" }),
+			"indeterminate",
+		);
+	});
+
+	it("a probe error also fails open only to the idempotent re-wake", async () => {
+		const d = deps({
+			probe: vi.fn().mockRejectedValue(new Error("probe unavailable")),
+		});
+		const r = await reconcileStaleApprovedShip(d as never);
+		expect(r).toEqual({ rewoken: ["E-1"], deadAlerted: [] });
+		expect(d.reWake).toHaveBeenCalledOnce();
+		expect(d.alertDead).not.toHaveBeenCalled();
+		expect(d.diagnose).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "E-1" }),
+			"probe_error",
+		);
+	});
+});
+
+describe("classifyStaleShipRunnerLiveness", () => {
+	it.each([
+		["alive", "alive"],
+		["dead_pin", "dead"],
+		["absent", "indeterminate"],
+		["indeterminate", "indeterminate"],
+	] as const)("maps exact-target %s evidence to %s", (evidence, expected) => {
+		expect(classifyStaleShipRunnerLiveness(evidence)).toBe(expected);
+	});
+});
+
+describe("deadAlertAccepted", () => {
+	it("treats a claims-dedup duplicate as durable acceptance", () => {
+		expect(deadAlertAccepted({ skipped: "duplicate" })).toBe(true);
+	});
+
+	it("does not turn an undeliverable skip into acceptance", () => {
+		expect(deadAlertAccepted({ skipped: "no-channel" })).toBe(false);
 	});
 });

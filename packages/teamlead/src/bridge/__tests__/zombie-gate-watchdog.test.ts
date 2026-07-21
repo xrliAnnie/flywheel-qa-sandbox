@@ -642,7 +642,7 @@ describe("Codex code R1 MED-1: dangling-intent reconcile", () => {
 });
 
 describe("Codex code R8 MED-1: GatePoller wrapper — empty filtered candidate set still reconciles dangling intents", () => {
-	it("only eviction-tracked pending gates + a dangling intent → reconcile runs (outcome landed), tracked gate untouched, zero getSession", async () => {
+	it("formal retirement leaves dangling legacy intent untouched and never touches the tracked gate", async () => {
 		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "1";
 		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
 		const originalHome = process.env.HOME;
@@ -703,15 +703,11 @@ describe("Codex code R8 MED-1: GatePoller wrapper — empty filtered candidate s
 				poller as unknown as { zombieGateHygienePass: () => Promise<void> }
 			).zombieGateHygienePass();
 
-			// Reconcile converged despite the empty filtered candidate set.
+			// FLY-1393: the production wrapper no longer runs Z1 reconciliation.
 			const outcome = store
 				.getEventsByExecution("E-1")
 				.find((e) => e.event_type === "founder_gate_zombie_resolved");
-			expect(outcome?.payload).toMatchObject({
-				questionId: "Q-crash",
-				outcome: "purged_after_retire",
-				reconciled: true,
-			});
+			expect(outcome).toBeUndefined();
 			// The eviction-tracked gate was NOT zombie-handled: still pending, no
 			// intent written for it, and — the Case 8c contract — zero getSession.
 			const verify = new CommDB(dbPath, false);

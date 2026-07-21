@@ -18,3 +18,9 @@ export type {
 	FlagView,
 } from "./resolve.js";
 export { resolveAllFlags, resolveFlag } from "./resolve.js";
+export {
+	NON_FLAG_ALLOWLIST,
+	RETIRED_FLAGS,
+	validateFlagTruthEnvironment,
+	validateWatchdogManifest,
+} from "./truth.js";

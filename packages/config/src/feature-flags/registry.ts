@@ -89,6 +89,8 @@ export interface FeatureFlagSpec {
 	dormant?: boolean;
 	/** Optional note (e.g. Annie-exception). */
 	note?: string;
+	/** Policy retirement marker; the flag remains discoverable but cannot revive. */
+	retiring?: string;
 }
 
 // Helper builders keep the big table terse and consistent.
@@ -102,9 +104,102 @@ function envSite(
 }
 
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
+	// ─── FLY-1393: independent watchdog minimum-set controls ───
+	{
+		name: "watchdog_liveness",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WATCHDOG_LIVENESS",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description: "W-1 进程存活探测(Bridge 启动时读取;=0 关闭人工告警)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/watchdog-minimum-set.ts",
+				"watchdogLivenessEnabled",
+				"bridge_boot",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "Bridge boot 时捕获;修改后需重启 Bridge。",
+	},
+	{
+		name: "watchdog_loop_heartbeat",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WATCHDOG_LOOP_HEARTBEAT",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description: "W-2 Lead inbox 投递循环独立心跳(=0 关闭独立循环告警)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/watchdog-minimum-set.ts",
+				"watchdogLoopHeartbeatEnabled",
+				"bridge_boot",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "Bridge boot 时捕获;修改后需重启 Bridge。",
+	},
+	{
+		name: "watchdog_blocked",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WATCHDOG_BLOCKED",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"W-4 活着但干不了活:block 关键字(启动时读取)与 session_stuck(调用时读取;默认开启)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/watchdog-minimum-set.ts",
+				"watchdogBlockedEnabled (LeadWatchdog boot capture)",
+				"bridge_boot",
+				"env-param",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/watchdog-minimum-set.ts",
+				"watchdogBlockedEnabled (HeartbeatService live read)",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "Annie 裁定保留且默认开:宁愿误报,不希望不报。Lead blocked-marker 修改后需重启;Runner session_stuck 下一次检查即生效。",
+	},
+	{
+		name: "checkpoint_watchdog",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CHECKPOINT_WATCHDOG",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description: "已退役 checkpoint-park 巡检;变量仅保留作真值迁移提示",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/watchdog-minimum-set.ts",
+				"retiredWatchdogLaneEnabled",
+				"bridge_boot",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		retiring: "FLY-1393",
+	},
 	// ─── FLY-1373: superseded delivery watchdog alert lanes ───
 	{
 		name: "legacy_delivery_watchdogs",
+		retiring: "FLY-1393",
 		category: "kill_switch",
 		source: "env",
 		scope: "bridge_global",
@@ -989,6 +1084,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	{
 		name: "misroute_patrol",
+		retiring: "FLY-1393",
 		category: "kill_switch",
 		source: "env",
 		scope: "bridge_global",
@@ -1280,6 +1376,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	{
 		name: "founder_reply_watchdog",
+		retiring: "FLY-1393",
 		category: "kill_switch",
 		source: "env",
 		scope: "bridge_global",
@@ -1300,6 +1397,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	{
 		name: "zombie_gate_resolve",
+		retiring: "FLY-1393",
 		category: "kill_switch",
 		source: "env",
 		scope: "bridge_global",
@@ -1830,6 +1928,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	{
 		name: "lead_pending_escalation",
+		retiring: "FLY-1393",
 		category: "feature",
 		source: "env",
 		scope: "bridge_global",
@@ -2122,6 +2221,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	//     timing → not direct. ───
 	{
 		name: "stuck_detect",
+		retiring: "FLY-1393",
 		category: "feature",
 		source: "env",
 		scope: "bridge_global",
@@ -2666,6 +2766,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	{
 		name: "stuck_founder_page_killswitch",
+		retiring: "FLY-1393",
 		category: "kill_switch",
 		source: "env",
 		scope: "bridge_global",
@@ -3110,6 +3211,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	{
 		name: "park_watch",
+		retiring: "FLY-1393",
 		category: "kill_switch",
 		source: "env",
 		scope: "bridge_global",

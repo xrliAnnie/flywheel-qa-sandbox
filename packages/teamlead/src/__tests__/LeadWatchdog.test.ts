@@ -5,9 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AlertPayload } from "../LeadAlertNotifier.js";
 import {
 	computeEventId,
+	DEFAULT_LEAD_WATCHDOG_INTERVAL_MS,
 	isIdleHealthyPane,
 	isTransientThrottlePane,
 	LeadWatchdog,
+	leadWatchdogIntervalMs,
 } from "../LeadWatchdog.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -72,6 +74,16 @@ function makeNotifier(): NotifierStub {
 }
 
 describe("LeadWatchdog", () => {
+	it("defaults the Lead scan cadence to 10min and accepts a positive ms override", () => {
+		expect(DEFAULT_LEAD_WATCHDOG_INTERVAL_MS).toBe(10 * 60_000);
+		expect(leadWatchdogIntervalMs({})).toBe(10 * 60_000);
+		expect(
+			leadWatchdogIntervalMs({ FLYWHEEL_LEAD_WATCHDOG_INTERVAL_MS: "42000" }),
+		).toBe(42_000);
+		expect(
+			leadWatchdogIntervalMs({ FLYWHEEL_LEAD_WATCHDOG_INTERVAL_MS: "0" }),
+		).toBe(10 * 60_000);
+	});
 	let store: StateStore;
 
 	beforeEach(async () => {
@@ -595,6 +607,71 @@ describe("LeadWatchdog", () => {
 			const calls = locateWindowFn.mock.calls.length;
 			await vi.advanceTimersByTimeAsync(120_000);
 			expect(locateWindowFn.mock.calls.length).toBe(calls);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a transient projectsProvider error cannot permanently stop the stagger timer", async () => {
+		vi.useFakeTimers();
+		try {
+			const locateWindowFn = vi.fn(async () => null);
+			const projectsProvider = vi
+				.fn<() => ProjectEntry[]>()
+				.mockImplementationOnce(() => {
+					throw new Error("snapshot temporarily unavailable");
+				})
+				.mockReturnValue(projects);
+			const wd = new LeadWatchdog({
+				pollIntervalMs: 30_000,
+				paneHashStuckCycles: 2,
+				paneHashAlertCycles: 3,
+				cooldownMs: 300_000,
+				projects,
+				projectsProvider,
+				store,
+				notifier: makeNotifier().alert,
+				locateWindowFn,
+				captureFn: async () => "",
+				claimsReader: async () => new Set(),
+				blockedMarkerReader: async () => [],
+			});
+
+			expect(() => wd.start()).not.toThrow();
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(locateWindowFn).toHaveBeenCalled();
+			wd.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("stagger-schedules multiple Leads so each is scanned once per full cadence", async () => {
+		vi.useFakeTimers();
+		try {
+			const seen: string[] = [];
+			const wd = new LeadWatchdog({
+				pollIntervalMs: 300_000,
+				paneHashStuckCycles: 2,
+				paneHashAlertCycles: 3,
+				cooldownMs: 300_000,
+				projects: multiLeadProjects,
+				store,
+				notifier: makeNotifier().alert,
+				locateWindowFn: async (_project, leadId) => {
+					seen.push(leadId);
+					return null;
+				},
+				captureFn: async () => "",
+				claimsReader: async () => new Set(),
+				blockedMarkerReader: async () => [],
+			});
+			wd.start();
+			await vi.advanceTimersByTimeAsync(150_000);
+			expect(seen).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(150_000);
+			expect(new Set(seen)).toEqual(new Set(["cos-lead", "product-lead"]));
+			wd.stop();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1143,6 +1220,7 @@ describe("LeadWatchdog — FLY-220 episode dedup + recovery (real block alerts o
 		captureFn: () => string,
 		legacyDeliveryWatchdogsEnabled = true,
 		onPollComplete?: () => void,
+		watchdogBlockedEnabled = true,
 	) =>
 		new LeadWatchdog({
 			pollIntervalMs: 30_000,
@@ -1162,6 +1240,7 @@ describe("LeadWatchdog — FLY-220 episode dedup + recovery (real block alerts o
 			now: () => 1_700_000_000_000,
 			suppressIdleHealthy: true,
 			legacyDeliveryWatchdogsEnabled,
+			watchdogBlockedEnabled,
 			onPollComplete,
 		});
 
@@ -1184,6 +1263,23 @@ describe("LeadWatchdog — FLY-220 episode dedup + recovery (real block alerts o
 		await blocked.pollOnce();
 		expect(blockedNotifier.results).toHaveLength(1);
 		expect(blockedNotifier.results[0]?.eventType).toBe("rate_limit");
+	});
+
+	it("blocked kill-switch gates before opening an episode or recovery state", async () => {
+		const notifier = makeNotifier();
+		const onPollComplete = vi.fn();
+		const blockedOff = makeWd(
+			notifier,
+			() => realBlock(0),
+			false,
+			onPollComplete,
+			false,
+		);
+		await blockedOff.pollOnce();
+		await blockedOff.pollOnce();
+		expect(notifier.alert).not.toHaveBeenCalled();
+		expect(blockedOff.getState("cos-lead")).toBe("AwaitingFirstCapture");
+		expect(onPollComplete).toHaveBeenCalledTimes(2);
 	});
 
 	it("a persistent real block + churning echoes fires EXACTLY ONCE", async () => {

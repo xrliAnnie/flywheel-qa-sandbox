@@ -497,23 +497,24 @@ describe("env knobs (plan §3.7)", () => {
 		}
 	});
 
-	// FLY-628: idle-watchdog poll cadence — band-aid default stretched to ~1h.
-	it("idleWatchdogPollMs defaults to ~1h and honors a valid override", () => {
-		expect(DEFAULT_IDLE_POLL_MS).toBe(3_600_000);
-		expect(idleWatchdogPollMs({} as NodeJS.ProcessEnv)).toBe(3_600_000);
+	// FLY-1393 W-1: the old 1h false-positive band-aid is retired; only idle
+	// process-liveness stays on this lane, so observation returns to 3s.
+	it("idleWatchdogPollMs defaults to 3s and honors a valid override", () => {
+		expect(DEFAULT_IDLE_POLL_MS).toBe(3_000);
+		expect(idleWatchdogPollMs({} as NodeJS.ProcessEnv)).toBe(3_000);
 		expect(
 			idleWatchdogPollMs({
 				FLYWHEEL_IDLE_POLL_MS: "120000",
 			} as NodeJS.ProcessEnv),
 		).toBe(120_000);
-		// junk / non-positive falls back to the ~1h default (a 0 must not turn
+		// junk / non-positive falls back to the 3s default (a 0 must not turn
 		// the watchdog into a hot 0ms loop).
 		for (const bad of ["abc", "-5", "0", ""]) {
 			expect(
 				idleWatchdogPollMs({
 					FLYWHEEL_IDLE_POLL_MS: bad,
 				} as NodeJS.ProcessEnv),
-			).toBe(3_600_000);
+			).toBe(3_000);
 		}
 	});
 

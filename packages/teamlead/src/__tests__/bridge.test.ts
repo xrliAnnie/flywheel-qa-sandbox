@@ -87,6 +87,57 @@ describe("Bridge scaffold", () => {
 		store.close();
 	});
 
+	it("GET /health reads the watchdog manifest from a late-bound provider", async () => {
+		const store = await StateStore.create(":memory:");
+		const holder: { current?: () => unknown } = {};
+		const app = createBridgeApp(
+			store,
+			[],
+			makeConfig(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ watchdogHealthProvider: holder },
+		);
+		const url = await startAndGetUrl(app, "/health");
+		expect((await (await fetch(url)).json()).watchdogs).toBeUndefined();
+
+		holder.current = () => ({
+			schema_version: 1,
+			components: {},
+			retiring: [],
+		});
+		expect((await (await fetch(url)).json()).watchdogs).toEqual({
+			schema_version: 1,
+			components: {},
+			retiring: [],
+		});
+
+		holder.current = () => {
+			throw new Error("queue closed during teardown");
+		};
+		const degradedRes = await fetch(url);
+		expect(degradedRes.status).toBe(200);
+		expect(await degradedRes.json()).toMatchObject({
+			ok: true,
+			watchdogs: {
+				degraded: true,
+				reason: "manifest_provider_error",
+			},
+		});
+		store.close();
+	});
+
 	it("Unknown routes return 404", async () => {
 		const store = await StateStore.create(":memory:");
 		const app = createBridgeApp(store, [], makeConfig());
