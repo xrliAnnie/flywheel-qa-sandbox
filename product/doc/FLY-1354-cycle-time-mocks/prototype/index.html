@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FLY-1354 · Cycle-Time mocks 索引</title>
+<style>
+body{margin:0;background:#f5f5f7;color:#1d1d1f;font-family:-apple-system,system-ui,'PingFang SC',sans-serif;line-height:1.55}
+.wrap{max-width:760px;margin:0 auto;padding:40px 20px}
+h1{font-size:24px;margin:0 0 6px;letter-spacing:-.02em}.sub{color:#86868b;font-size:14px;margin-bottom:26px}
+.card{display:block;background:#fff;border:1px solid #d2d2d7;border-radius:14px;padding:20px 22px;margin-bottom:16px;text-decoration:none;color:inherit;box-shadow:0 1px 3px rgba(0,0,0,.05);transition:box-shadow .15s,transform .15s}
+.card:hover{box-shadow:0 6px 22px rgba(0,0,0,.09);transform:translateY(-1px)}
+.card h2{font-size:17px;margin:0 0 4px}.card p{font-size:13px;color:#555;margin:0}
+.n{font-size:11px;color:#86868b;margin-top:8px}
+.foot{font-size:12px;color:#86868b;margin-top:22px;line-height:1.7}
+</style></head>
+<body><div class="wrap">
+<h1>FLY-1354 · 每日报告 & 大 Dashboard — 样子稿(已拆开)</h1>
+<div class="sub">designer mock(低保真)· Annie co-eval:「把每日报告和 Dashboard 拆开」→ 两个<b>独立</b>交付。每块下有留言框 + 底部一键复制回传</div>
+
+<a class="card" href="daily-report.html">
+  <h2>☀️ 每日报告 v2 · 现有 Token Dashboard + 两处增补 <span style="font-size:11px;color:#1155cc">← 本单主交付</span></h2>
+  <p>Annie co-eval 后重构:<b>不新建报告</b>,沿用现有 FLY-614 Token Dashboard(已 review·不改),只加两块:①做了哪些事(digest,FLY-727 形状)②每单花了多少时间(cycle-time,接现有 per-issue token+cost 旁)。已砍上一版重复的「Token 全景」。</p>
+  <div class="n">周期时间/分段/等待干活比 = 真值(FLY-1327 采集)· token/日期/route/PR = MOCK</div>
+</a>
+
+<a class="card" href="cycle-time-dashboard.html">
+  <h2>📈 大 Cycle-Time Dashboard(面 1)· 新单种子 <span style="font-size:11px;color:#86868b">← 冻结·另立</span></h2>
+  <p>P50/P90 · 趋势&改进单前后断点(「是不是省了时间」)· 瓶颈排行 · 并发×load · 在跑单 live。内容独立、要自己一轮 co-eval → 已定<b>开新单</b>(Tadashi 记入重启后队列),本页留作<b>新单种子样子稿</b>。</p>
+  <div class="n">周期时间/分段 = 真值(8 真实单)· token/日期/箭头/锚点 = MOCK · 不放逐单历史</div>
+</a>
+
+<div class="foot">
+  数据模型见上游 FLY-1343 prd.md §4.1(cycle_time_snapshot 表 + 度量最小集)· 视觉沿用 FLY-1038 管理台 cool-slate + FLY-1343 mockup 9 色分类。<br>
+  交互契约:FLY-930 nonce(script nonce=__CSP_NONCE__ + addEventListener,零 inline handler)· Apple 浅色零暗色。
+</div>
+</div></body></html>

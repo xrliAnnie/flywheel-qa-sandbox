@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>每日报告 · 多-agent — FLY-1354 mock</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#f5f5f7;color:#1d1d1f;font-family:-apple-system,system-ui,sans-serif;line-height:1.5;padding:28px 16px}
+.wrap{max-width:980px;margin:0 auto}
+h1{font-size:25px;font-weight:700;letter-spacing:-.02em}
+.sub{color:#86868b;font-size:14px;margin-top:4px}
+.pill{display:inline-block;background:#34c759;color:#fff;font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;vertical-align:middle}
+.bigdate{font-size:26px;font-weight:800;color:#1a365d;letter-spacing:-.01em;margin:10px 0 2px}
+.bigdate small{font-size:14px;font-weight:600;color:#86868b;margin-left:8px}
+.card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 20px;overflow:hidden;margin-top:16px}
+.card h2{font-size:13px;font-weight:600;color:#86868b;text-transform:uppercase;letter-spacing:.04em;margin-bottom:12px;display:flex;justify-content:space-between;gap:8px}
+.card h2 span{font-weight:500;text-transform:none;letter-spacing:0}
+.big{font-size:31px;font-weight:700;letter-spacing:-.02em}.big small{font-size:14px;color:#86868b;font-weight:500}
+.split{display:flex;height:14px;border-radius:7px;overflow:hidden;margin:10px 0 4px}
+.legend{display:flex;gap:14px;font-size:11px;color:#86868b;flex-wrap:wrap;margin-top:6px}.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px}
+.cmp{display:grid;grid-template-columns:1fr auto 1fr}.cmp .col{padding:12px 16px}.cmp .before{background:#fbfbfd;border-radius:10px}.cmp .after{background:#f0faf2;border-radius:10px}.cmp .after-neutral{background:#fbfbfd;border-radius:10px}
+.cmp .mid{display:flex;flex-direction:column;justify-content:center;align-items:center;padding:0 14px}.cmp .tag{font-size:10.5px;color:#86868b;text-transform:uppercase}
+.cmp .num{font-size:24px;font-weight:700;margin:3px 0}.cmp .num small{font-size:12px;color:#86868b;font-weight:500}.cmp .cost{font-size:11.5px;color:#86868b;margin-top:5px}
+.delta{font-size:23px;font-weight:700}.delta.good{color:#34c759}.delta.bad{color:#ff3b30}
+.pbarw{flex:1;background:#f0f0f2;border-radius:5px;height:12px;overflow:hidden;display:flex}.pseg{display:block;height:100%}
+.srow{display:flex;align-items:center;gap:8px;font-size:12.5px;margin:5px 0}.sk{width:170px;flex:0 0 170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sk a{color:#007aff;text-decoration:none}.sk a:hover{text-decoration:underline}
+.sbar{flex:1;background:#f5f5f7;border-radius:4px;height:7px;overflow:hidden;display:flex}.sbar span{display:block;height:100%}
+.sv{width:96px;flex:0 0 96px;text-align:right;font-family:'SF Mono',monospace;font-size:11.5px}.su{width:52px;flex:0 0 52px;text-align:right;color:#86868b;font-size:10.5px}
+.empty{color:#c7c7cc;font-size:12px;padding:4px 0}.muted{color:#86868b;font-size:11.5px;margin-top:10px;padding-top:8px;border-top:1px solid #f0f0f2}
+.foot{color:#86868b;font-size:11px;margin-top:22px;text-align:center}
+.tchart{margin-top:10px}.tlabel{font-size:12px;font-weight:600;color:#1d1d1f;margin:6px 0}
+.mockmark{display:inline-block;background:#fff3e0;color:#9a6700;border:1px solid #ffd699;font-size:11px;font-weight:600;padding:2px 9px;border-radius:8px;margin-bottom:8px}
+/* 第一层 tab:今日完成工作 | Token 使用 */
+.l1bar{position:sticky;top:0;z-index:6;display:flex;gap:6px;background:#f5f5f7;padding:12px 0 0;margin-top:10px;border-bottom:2px solid #e2e2e6}
+.l1tab{cursor:pointer;user-select:none;font-size:15px;font-weight:700;color:#86868b;padding:9px 20px;border-radius:10px 10px 0 0;border:1px solid transparent;border-bottom:none;position:relative;top:2px}
+.l1tab:hover{color:#1d1d1f}
+.l1tab.active{background:#fff;color:#1a365d;border-color:#e2e2e6;box-shadow:0 -1px 3px rgba(0,0,0,.04)}
+/* 第二层 tab(Token 使用内):按 agent */
+.filterbar{position:sticky;top:52px;z-index:5;display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#f5f5f7;padding:10px 0 6px;margin-top:8px;border-bottom:1px solid #e8e8ea}
+.filterbar .flabel{font-size:11px;color:#86868b;text-transform:uppercase;letter-spacing:.04em;margin-right:2px}
+.ftab{cursor:pointer;border:1px solid #d9d9de;background:#fff;border-radius:20px;padding:5px 13px;font-size:12.5px;font-weight:600;color:#1d1d1f;display:inline-flex;align-items:center;gap:6px;user-select:none}
+.ftab i{width:9px;height:9px;border-radius:2px;display:inline-block}
+.ftab.active{background:#1a365d;color:#fff;border-color:#1a365d}
+.ftab.active i{outline:1px solid rgba(255,255,255,.6)}
+/* tier headers */
+.tier{display:flex;align-items:center;gap:12px;margin:28px 4px 2px}
+.tiernum{font-size:15px;font-weight:800;color:#fff;background:#1a365d;width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex:0 0 28px}
+.tiertitle{font-size:17px;font-weight:700;letter-spacing:-.01em}.tiersub{font-size:12px;color:#86868b;margin-top:1px}
+/* per-agent split rows (④ 四色拆) */
+.arow{display:flex;align-items:center;gap:8px;margin:8px 0}
+.aname{width:150px;flex:0 0 150px;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:6px}.aname i{width:9px;height:9px;border-radius:2px;display:inline-block}
+.achip{display:inline-block;font-size:9.5px;font-weight:600;padding:1px 6px;border-radius:10px;margin-left:6px;color:#fff}
+/* ① 按项目展开(对齐真实 FLY-614:项目 → Leads + 已完成 issues) */
+.two{display:grid;grid-template-columns:1fr;gap:16px}
+.pcard .phead{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.pn{font-size:16px;font-weight:700;width:150px;flex:0 0 150px}
+.pt{font-family:'SF Mono',monospace;font-size:14px;font-weight:600;white-space:nowrap}.pt small{color:#86868b;font-weight:400;font-size:12px}
+.pinner{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.ph2{font-size:11px;color:#86868b;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;border-bottom:1px solid #f0f0f2;padding-bottom:4px}
+/* ② 今日完成工作 */
+.wcard{padding:14px 20px}
+.wproj{font-size:15px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+.wcount{font-size:11px;font-weight:500;color:#86868b;background:#f0f0f2;border-radius:10px;padding:1px 8px}
+.wrow{padding:9px 0;border-top:1px solid #f4f4f6}
+.wtop{display:flex;align-items:center;gap:8px}
+.wid{font-size:13px;font-weight:600;flex:0 0 auto}.wid a{color:#007aff;text-decoration:none}.wid a:hover{text-decoration:underline}
+.wchips{display:inline-flex;gap:3px;align-items:center}.agi{width:10px;height:10px;border-radius:2px;display:inline-block}
+.wwho{color:#86868b;font-size:11px;white-space:nowrap}
+.wt{margin-left:auto;font-family:'SF Mono',monospace;font-size:12px;font-weight:600;white-space:nowrap}
+.wwall{color:#1a365d;font-size:11px;font-weight:600;width:56px;text-align:right;flex:0 0 56px}
+.did{font-size:12px;color:#555;margin:4px 0 0 0;line-height:1.5}
+.honest{font-size:11.5px;color:#9a6700;background:#fff9ed;border-left:3px solid #ffd699;border-radius:6px;padding:8px 12px;line-height:1.6}
+/* comment widget */
+.copybar{display:flex;align-items:center;gap:12px;margin-top:12px}
+.btn{cursor:pointer;background:#1a365d;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;font-weight:600;font-family:inherit}
+.toast{font-size:12px;color:#34c759;font-weight:600}
+.cbox{margin-top:4px}.clabel{font-size:12px;font-weight:600;color:#1d1d1f;margin-bottom:6px}
+.cchoice{display:flex;gap:16px;margin:6px 0;font-size:12.5px}.cchoice label{cursor:pointer}
+.cta{width:100%;font-family:inherit;font-size:12.5px;border:1px solid #d2d2d7;border-radius:8px;padding:8px;resize:vertical}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="mockmark">样子稿 · designer mock · 数字为示意（结构=真报告）</div>
+  <h1>每日报告 <span class="pill">多-agent</span></h1>
+  <div class="bigdate" id="hdate"></div>
+  <div class="sub">两个页签：<b>今日完成工作</b>（按 issue，每个只列一次）· <b>Token 使用</b>（按 agent 记账，进去后可再按 agent 切）· 全 fleet</div>
+  <div id="app"></div>
+
+  <div class="card">
+    <div class="cbox">
+      <div class="clabel">💬 留言 / 反馈</div>
+      <div class="cchoice" id="ch-overall">
+        <label><input type="radio" name="ch-overall" value="建"> 建</label>
+        <label><input type="radio" name="ch-overall" value="不建"> 不建</label>
+        <label><input type="radio" name="ch-overall" value="待定"> 待定</label>
+      </div>
+      <textarea class="cta" id="cta-overall" rows="2" placeholder="意见…(自动保存)"></textarea>
+    </div>
+    <div style="margin-top:8px;font-size:12px;color:#555">签名:<input id="signoff-name" placeholder="Annie" style="font-family:inherit;font-size:12.5px;border:1px solid #d2d2d7;border-radius:7px;padding:6px 9px;margin-left:6px"></div>
+    <div class="copybar"><button class="btn" id="copybtn" type="button">📋 复制全部反馈</button><span class="toast" id="toast"></span></div>
+  </div>
+
+  <div class="foot" id="foot"></div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+"use strict";
+var B=1e9,M=1e6;
+// ---- agent-agnostic data model (加 agent = 前端零改) ----
+var DATA={
+  reportDay:"2026-07-16", timezone:"America/Los_Angeles",
+  agents:[
+    {id:"claude", label:"Claude Code", color:"#007aff"},
+    {id:"codex",  label:"Codex",       color:"#af52de"},
+    {id:"kimi",   label:"Kimi",        color:"#ff9500"}
+  ],
+  // ① 当日总量:每 agent 四色桶(桶和=该 agent 当日总量)
+  totals:{
+    claude:{input:720*M, output:180*M, cacheRead:3.60*B, cacheWrite:300*M, cost:0.008},
+    codex: {input:16*M,  output:1.3*M, cacheRead:262*M,  cacheWrite:0.7*M, cost:0.28},
+    kimi:  {input:40*M,  output:30*M,  cacheRead:48*M,   cacheWrite:2*M,   cost:0.09}
+  },
+  comparison:{ before:{label:"前一周", avgTokens:4.70*B, avgCost:0.009}, after:{label:"本周", avgTokens:5.20*B, avgCost:0.010} },
+  days:["07-04","07-05","07-06","07-07","07-08","07-09","07-10","07-11","07-12","07-13","07-14","07-15","07-16"],
+  trend:{
+    claude:[3.20,3.99,4.17,3.67,3.07,3.03,3.70,4.57,4.95,4.61,3.96,3.72,4.80],
+    codex: [0.15,0.19,0.22,0.14,0.11,0.10,0.17,0.23,0.28,0.25,0.19,0.17,0.28],
+    kimi:  [0.02,0.03,0.04,0.03,0.02,0.02,0.05,0.08,0.10,0.09,0.07,0.06,0.12]
+  },
+  // 按项目:每项目按 agent 的 token(纯账,①用);issues 单独在 ②
+  projects:[
+    {name:"flywheel", byAgent:{claude:2.10*B, codex:0.28*B},
+     leads:[{name:"Tadashi",tokens:600*M,cost:0.006},{name:"Honey Lemon",tokens:400*M,cost:0.004},{name:"Aunt Cass",tokens:200*M,cost:0.002}],
+     issues:[
+       {id:"FLY-1252",wall:"57h52",byAgent:{claude:280*M},
+        desc:"修配额巡检:claude-accounts.json 配额状态过期/不可信,切号器把 Lead 切到已耗尽账号、拖垮 Lead;改成可信配额源 + 巡检自愈。已合并。"},
+       {id:"FLY-1307",wall:"32h26",byAgent:{claude:160*M,codex:180*M},
+        desc:"DAG 模板引擎子单D:注册表迁移到 snapshot、orchestrator 改按 snapshot 解释执行、模板派发启用。已上线。"},
+       {id:"FLY-1272",wall:"45h03",byAgent:{claude:210*M},
+        desc:"cmux tab 名↔pane 内容串台修复:一个 tab 显示错的会话(Codex 显示成 Claude husk),当晚坑 founder 两次;修 tab↔pane 绑定。已合并。"},
+       {id:"FLY-1309",wall:"9h06",byAgent:{claude:90*M},
+        desc:"Lead 身份唯一性:双进程互斥 + 同身份并存检测,根治当晚双 Lead 事故。已上线。"}
+     ],
+     inprog:{count:3, tokens:0.4*B}},
+    {name:"geoforge3d", byAgent:{claude:1.10*B},
+     leads:[{name:"Peter",tokens:300*M,cost:0.003},{name:"Hiro-geo",tokens:200*M,cost:0.002}],
+     issues:[
+       {id:"GEO-412",wall:"18h44",byAgent:{claude:220*M},desc:"地形导出管线并发上限:批量导出把 worker 打满,加背压 + 队列上限。已上线。"},
+       {id:"GEO-419",wall:"11h20",byAgent:{claude:140*M},desc:"材质预览缓存键漏了 LOD 维度→切 LOD 命中错缓存;修缓存键。已合并。"}
+     ],
+     inprog:{count:2, tokens:0.2*B}},
+    {name:"tidal-echo", byAgent:{claude:0.60*B},
+     leads:[{name:"Ariel",tokens:150*M,cost:0.0015},{name:"Triton",tokens:100*M,cost:0.001}],
+     issues:[{id:"TIDE-88",wall:"7h30",byAgent:{claude:120*M},desc:"内容研究管线:抓取源去重 + 引用回填。已上线。"}],
+     inprog:{count:1, tokens:0.08*B}},
+    {name:"growth", byAgent:{claude:0.40*B},
+     leads:[{name:"Mufasa",tokens:150*M,cost:0.0015}],
+     issues:[{id:"GROW-31",wall:"6h12",byAgent:{claude:90*M},desc:"陪练 persona 记忆延续:thread resume 保上下文。已上线。"}],
+     inprog:{count:1, tokens:0.05*B}},
+    {name:"personal-assistant", byAgent:{claude:0.30*B},
+     leads:[{name:"Belle",tokens:100*M,cost:0.001}], issues:[], inprog:{count:0, tokens:0}},
+    {name:"joycon-typeless", byAgent:{claude:0.20*B, kimi:0.12*B},
+     leads:[{name:"Hiro",tokens:80*M,cost:0.0008}],
+     issues:[
+       {id:"JOY-17",wall:"4h05",byAgent:{kimi:60*M},
+        desc:"输入法候选排序:高频词权重 —— 由 Kimi runner 实现(演示第三个 agent)。已合并。"}
+     ],
+     inprog:{count:1, tokens:0.06*B}},
+    {name:"polaris", byAgent:{claude:0.10*B},
+     leads:[{name:"Rafiki",tokens:40*M,cost:0.0004}], issues:[], inprog:{count:0, tokens:0}}
+  ],
+  leads:[
+    {name:"Tadashi",tokens:600*M,cost:0.006},{name:"Honey Lemon",tokens:400*M,cost:0.004},
+    {name:"Peter",tokens:300*M,cost:0.003},{name:"Aunt Cass",tokens:200*M,cost:0.002},
+    {name:"Hiro-geo",tokens:200*M,cost:0.002},{name:"Ariel",tokens:150*M,cost:0.0015},
+    {name:"Mufasa",tokens:150*M,cost:0.0015},{name:"Belle",tokens:100*M,cost:0.001},
+    {name:"Triton",tokens:100*M,cost:0.001},{name:"Hiro",tokens:80*M,cost:0.0008},
+    {name:"Rafiki",tokens:40*M,cost:0.0004}
+  ],
+  codexReviewRow:{name:"Codex（design/code review · 全 fleet）",tokens:280*M,cost:0.28},
+  models:[
+    {name:"Opus 4.8", agent:"claude", color:"#ff3b30", tokens:2.10*B, cost:0.004},
+    {name:"Fable 5",  agent:"claude", color:"#34c759", tokens:1.70*B, cost:0.003},
+    {name:"Sonnet 5", agent:"claude", color:"#0a84ff", tokens:0.70*B, cost:0.001},
+    {name:"Haiku 4.5",agent:"claude", color:"#af52de", tokens:0.30*B, cost:0.0005},
+    {name:"gpt-5.6-sol",agent:"codex", color:"#5856d6", tokens:190*M, cost:0.19},
+    {name:"gpt-5-codex",agent:"codex", color:"#8e8e93", tokens:90*M,  cost:0.09},
+    {name:"kimi-k2",   agent:"kimi",  color:"#ff9500", tokens:120*M, cost:0.09}
+  ]
+};
+
+// ---------- helpers ----------
+function fmtTok(n){ if(n>=1e9)return (n/1e9).toFixed(2)+"B"; if(n>=1e6)return Math.round(n/1e6)+"M"; if(n>=1e3)return Math.round(n/1e3)+"K"; return String(Math.round(n)); }
+function usd(n){ if(n>0&&n<0.01)return "<$0.01"; return "$"+n.toFixed(2); }
+function esc(s){ return String(s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }
+function agentById(id){ for(var i=0;i<DATA.agents.length;i++){ if(DATA.agents[i].id===id)return DATA.agents[i]; } return null; }
+function agentsInView(){ return state.agent==="all" ? DATA.agents.slice() : DATA.agents.filter(function(a){return a.id===state.agent;}); }
+function totalTokensOf(t){ return t.input+t.output+t.cacheRead+t.cacheWrite; }
+function issueUrl(id){ return /^[A-Z]+-\d+$/.test(id) ? "https://linear.app/geoforge3d/issue/"+id : null; }
+var state={ tab:"work", agent:"all" };
+
+// ---------- A · Type 过滤(从 DATA.agents distinct 自动生成 → E)----------
+// 第一层 tab:今日完成工作 | Token 使用(不再一条长滚动)
+function l1TabBar(){
+  var t=[{id:"work",label:"今日完成工作"},{id:"token",label:"Token 使用"}];
+  return '<div class="l1bar">'+t.map(function(x){
+    return '<span class="l1tab '+(state.tab===x.id?"active":"")+'" data-tab="'+x.id+'">'+esc(x.label)+'</span>';
+  }).join("")+'</div>';
+}
+// 第二层 tab(只在 Token 使用内):按 agent 分 —— 从 DATA.agents distinct 自动生成,加 agent 前端零改(E)
+function agentTabBar(){
+  var tabs='<span class="ftab '+(state.agent==="all"?"active":"")+'" data-agent="all">全部</span>';
+  DATA.agents.forEach(function(a){
+    tabs+='<span class="ftab '+(state.agent===a.id?"active":"")+'" data-agent="'+a.id+'"><i style="background:'+a.color+'"></i>'+esc(a.label)+'</span>';
+  });
+  return '<div class="filterbar"><span class="flabel">按 agent</span>'+tabs+'<span style="flex:1"></span><span class="flabel">'+agentsInView().length+' / '+DATA.agents.length+' agent</span></div>';
+}
+function tierHeader(num,title,sub){ return '<div class="tier"><span class="tiernum">'+num+'</span><div><div class="tiertitle">'+title+'</div><div class="tiersub">'+esc(sub)+'</div></div></div>'; }
+
+// ========== 层 ① Token 用量报告(纯按 agent 账) ==========
+function heroCard(){
+  var b=DATA.comparison.before, a=DATA.comparison.after;
+  var pct=b.avgTokens?((a.avgTokens-b.avgTokens)/b.avgTokens*100):0;
+  var good=pct<=0, arrow=good?"▼":"▲";
+  return '<div class="card"><h2>改动前后用量对比 <span>核心视图 · 全 fleet 平均/天</span></h2>'
+    +'<div class="cmp"><div class="col before"><div class="tag">'+esc(b.label)+'</div><div class="num">'+fmtTok(b.avgTokens)+'<small> tok/天</small></div><div class="cost">'+usd(b.avgCost)+'/天 成本估算</div></div>'
+    +'<div class="mid"><div class="delta '+(good?"good":"bad")+'">'+arrow+Math.abs(pct).toFixed(0)+'%</div><div class="tag">用量变化</div></div>'
+    +'<div class="col '+(good?"after":"after-neutral")+'"><div class="tag">'+esc(a.label)+'</div><div class="num">'+fmtTok(a.avgTokens)+'<small> tok/天</small></div><div class="cost">'+usd(a.avgCost)+'/天 成本估算</div></div></div></div>';
+}
+function trendStacked(){
+  var W=900,H=182,pad=22,topPad=34,botPad=28;
+  var ags=agentsInView(), days=DATA.days, n=days.length;
+  var totals=days.map(function(d,i){ var s=0; ags.forEach(function(a){ s+=(DATA.trend[a.id]||[])[i]||0; }); return s; });
+  var mx=Math.max.apply(null,totals.concat([0.1]));
+  var bw=(W-2*pad)/n, barAreaH=H-topPad-botPad;
+  var parts=['<text x="'+pad+'" y="11" font-size="9" fill="#86868b">峰值 '+mx.toFixed(2)+'B tokens</text>'];
+  days.forEach(function(d,i){
+    var x=pad+i*bw, cx=x+bw*0.35, isDay=(i===n-1), y0=H-botPad, acc=0;
+    ags.forEach(function(a){
+      var v=(DATA.trend[a.id]||[])[i]||0; if(v<=0)return;
+      var h=(v/mx)*barAreaH, y=y0-acc-h; acc+=h;
+      parts.push('<rect x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+(bw*0.7).toFixed(1)+'" height="'+Math.max(h,0).toFixed(1)+'" rx="1.5" fill="'+a.color+'" opacity="'+(isDay?"1":"0.82")+'"><title>'+d+' · '+esc(a.label)+': '+v.toFixed(2)+'B</title></rect>');
+    });
+    parts.push('<text x="'+cx.toFixed(1)+'" y="'+(y0-acc-4).toFixed(1)+'" font-size="7.5" fill="'+(isDay?"#1a365d":"#86868b")+'" font-weight="'+(isDay?"700":"400")+'" text-anchor="middle">'+totals[i].toFixed(2)+'</text>');
+    parts.push('<text x="'+cx.toFixed(1)+'" y="'+(H-13)+'" font-size="8" fill="'+(isDay?"#007aff":"#86868b")+'" font-weight="'+(isDay?"600":"400")+'" text-anchor="middle">'+d+'</text>');
+  });
+  var leg=ags.map(function(a){return '<span><i style="background:'+a.color+'"></i>'+esc(a.label)+'</span>';}).join("");
+  return '<div class="tchart"><svg viewBox="0 0 '+W+' '+H+'" width="100%">'+parts.join("")+'</svg></div><div class="legend">'+leg+'</div>';
+}
+function trendLines(){
+  var W=900,H=200,leftPad=54,rightPad=10,topPad=14,botPad=32;
+  var days=DATA.days, n=days.length, ags=agentsInView();
+  var PROJ=["#007aff","#34c759","#ff9500","#af52de","#ff3b30","#5ac8fa","#8e8e93"];
+  var series=DATA.projects.map(function(p){ var tot=0; ags.forEach(function(a){ tot+=(p.byAgent[a.id]||0); }); return {name:p.name, total:tot}; }).filter(function(s){return s.total>0;});
+  var mx=Math.max.apply(null,series.map(function(s){return s.total;}).concat([1]));
+  var X=function(i){ return leftPad+(n>1?i*((W-leftPad-rightPad)/(n-1)):0); };
+  var Y=function(v){ return topPad+(1-v/mx)*(H-topPad-botPad); };
+  var parts=[];
+  [0,0.25,0.5,0.75,1].forEach(function(f){ var v=mx*f,yy=Y(v);
+    parts.push('<line x1="'+leftPad+'" y1="'+yy.toFixed(1)+'" x2="'+(W-rightPad)+'" y2="'+yy.toFixed(1)+'" stroke="#eef0f3" stroke-width="1"/>');
+    parts.push('<text x="'+(leftPad-6)+'" y="'+(yy+3).toFixed(1)+'" font-size="8" fill="#86868b" text-anchor="end">'+fmtTok(v)+'</text>'); });
+  series.forEach(function(s,j){ var pts=days.map(function(d,i){ var frac=0.62+0.34*(i/(n-1)); return X(i).toFixed(1)+","+Y(s.total*frac).toFixed(1); }).join(" ");
+    parts.push('<polyline points="'+pts+'" fill="none" stroke="'+PROJ[j%PROJ.length]+'" stroke-width="2" opacity="0.9"/>'); });
+  days.forEach(function(d,i){ if(i%2===0||i===n-1){ parts.push('<text x="'+X(i).toFixed(1)+'" y="'+(H-14)+'" font-size="8" fill="#86868b" text-anchor="middle">'+d+'</text>'); } });
+  var leg=series.map(function(s,j){ return '<span><i style="background:'+PROJ[j%PROJ.length]+'"></i>'+esc(s.name)+'<small style="color:#86868b"> '+fmtTok(s.total)+'</small></span>'; }).join("");
+  return '<div class="tlabel">维度② 每个项目各自随时间（Y 轴 = token 量级）</div><div class="tchart"><svg viewBox="0 0 '+W+' '+H+'" width="100%">'+parts.join("")+'</svg></div><div class="legend">'+leg+'</div>';
+}
+function trendCard(){ return '<div class="card"><h2>总用量随时间 <span>维度① 每日按 agent 堆叠 · 维度② 每项目折线</span></h2>'+trendStacked()+trendLines()+'</div>'; }
+function splitBar(t){
+  var tot=totalTokensOf(t)||1;
+  function seg(v,c){ return '<span style="width:'+(v/tot*100)+'%;background:'+c+'"></span>'; }
+  return '<div class="split">'+seg(t.input,"#007aff")+seg(t.output,"#34c759")+seg(t.cacheRead,"#d2d2d7")+seg(t.cacheWrite,"#ff9500")+'</div>'
+    +'<div class="legend"><span><i style="background:#007aff"></i>input '+fmtTok(t.input)+'</span><span><i style="background:#34c759"></i>output '+fmtTok(t.output)+'</span><span><i style="background:#d2d2d7"></i>cache read '+fmtTok(t.cacheRead)+'</span><span><i style="background:#ff9500"></i>cache write '+fmtTok(t.cacheWrite)+'</span></div>';
+}
+function summaryCard(){
+  var ags=agentsInView();
+  var comb={input:0,output:0,cacheRead:0,cacheWrite:0,cost:0};
+  ags.forEach(function(a){ var t=DATA.totals[a.id]; comb.input+=t.input;comb.output+=t.output;comb.cacheRead+=t.cacheRead;comb.cacheWrite+=t.cacheWrite;comb.cost+=t.cost; });
+  var head='<div class="card"><h2>当日总用量 <span>'+esc(DATA.reportDay)+' · '+esc(DATA.timezone)+' · 每 agent 四色拆</span></h2>'
+    +'<div class="big">'+fmtTok(totalTokensOf(comb))+' <small>tokens</small> <span style="color:#86868b;font-size:18px">· '+usd(comb.cost)+' 成本估算</span></div>';
+  var rows="";
+  ags.forEach(function(a){ var t=DATA.totals[a.id];
+    rows+='<div class="arow"><div class="aname"><i style="background:'+a.color+'"></i>'+esc(a.label)+'</div><div style="flex:1">'+splitBar(t)
+      +'</div></div><div style="text-align:right;font-family:\'SF Mono\',monospace;font-size:12px;color:#86868b;margin:-6px 0 6px">'+fmtTok(totalTokensOf(t))+' · '+usd(t.cost)+'</div>'; });
+  return head+rows+'</div>';
+}
+function modelCard(){
+  var agIds=agentsInView().map(function(a){return a.id;});
+  var ms=DATA.models.filter(function(m){return agIds.indexOf(m.agent)>=0;}).slice().sort(function(a,b){return b.tokens-a.tokens;});
+  var mx=Math.max.apply(null,ms.map(function(m){return m.tokens;}).concat([1]));
+  var tot=ms.reduce(function(s,m){return s+m.tokens;},0)||1;
+  var rows=ms.map(function(m){ var ag=agentById(m.agent);
+    return '<div class="srow"><span class="sk">'+esc(m.name)+'<span class="achip" style="background:'+(ag?ag.color:"#86868b")+'">'+esc(ag?ag.label:m.agent)+'</span></span>'
+      +'<span class="sbar"><span style="width:'+(m.tokens/mx*100).toFixed(0)+'%;background:'+m.color+'"></span></span>'
+      +'<span class="sv">'+fmtTok(m.tokens)+' · '+(m.tokens/tot*100).toFixed(0)+'%</span><span class="su">'+usd(m.cost)+'</span></div>'; }).join("");
+  return '<div class="card"><h2>按模型 <span>每 model 标 agent</span></h2>'+rows+'</div>';
+}
+function leadsCard(){
+  if(state.agent==="kimi"){
+    return '<div class="card"><h2>Leads 排名（全 fleet）<span>—</span></h2><div class="empty">Kimi 无 Lead 概念 —— 用量见 ①按模型/按项目 + ②今日完成工作</div></div>';
+  }
+  var rows=[];
+  if(state.agent==="all"||state.agent==="claude"){ rows=DATA.leads.slice(); }
+  if(state.agent==="all"||state.agent==="codex"){ rows=rows.concat([DATA.codexReviewRow]); }
+  rows.sort(function(a,b){return b.tokens-a.tokens;});
+  var mx=Math.max.apply(null,rows.map(function(r){return r.tokens;}).concat([1]));
+  var tot=rows.reduce(function(s,l){return s+l.tokens;},0), totc=rows.reduce(function(s,l){return s+l.cost;},0);
+  var body=rows.map(function(l){ return '<div class="srow"><span class="sk" title="'+esc(l.name)+'">'+esc(l.name)+'</span><span class="sbar"><span style="width:'+(l.tokens/mx*100).toFixed(0)+'%;background:#34c759"></span></span><span class="sv">'+fmtTok(l.tokens)+'</span><span class="su">'+usd(l.cost)+'</span></div>'; }).join("");
+  return '<div class="card"><h2>Leads 排名（全 fleet）<span>各 Lead 已计入其项目总量 · '+fmtTok(tot)+' · '+usd(totc)+'</span></h2>'+body
+    +'<div class="muted">Lead↔项目 一对多。Codex/Kimi 等 non-Claude agent 无 Lead 概念（Codex 以『design/code review·全 fleet』单行计入）。</div></div>';
+}
+// 通用横条行(Leads / issues 共用):label + 条 + token +(可选)成本。cost 省略时不渲染成本列。
+function bars(rows,color){
+  if(!rows.length)return '<div class="empty">—</div>';
+  var mx=Math.max.apply(null,rows.map(function(r){return r.tokens;}).concat([1]));
+  return rows.map(function(r){
+    var lbl=r.href?'<a href="'+esc(r.href)+'" target="_blank" rel="noopener">'+esc(r.label)+'</a>':esc(r.label);
+    return '<div class="srow"><span class="sk" title="'+esc(r.label)+'">'+lbl+'</span><span class="sbar"><span style="width:'+(r.tokens/mx*100).toFixed(0)+'%;background:'+color+'"></span></span><span class="sv">'+fmtTok(r.tokens)+'</span><span class="su">'+(r.cost===undefined?"":usd(r.cost))+'</span></div>';
+  }).join("");
+}
+
+// ① 账层的【按项目展开】—— 对齐真实 FLY-614:项目总量 → 其下 Leads(本项目) + 当天已完成 issues 的用量。
+// 【跟随二级 agent 页签】:切某 agent 看它在这些 Lead/issue 上的量,切「全部」看合计。
+// 这里只有【数字/条】,不带工作描述 —— 描述归「今日完成工作」。两边不重复:①=账,②=叙述。
+function projectAccountSection(){
+  var ags=agentsInView();
+  var cards=DATA.projects.map(function(p){
+    var tot=0; ags.forEach(function(a){ tot+=(p.byAgent[a.id]||0); });
+    if(tot<=0)return "";
+    var bar=ags.map(function(a){ var v=p.byAgent[a.id]||0; if(v<=0)return ""; return '<span class="pseg" style="width:'+(v/tot*100)+'%;background:'+a.color+'" title="'+esc(a.label)+' '+fmtTok(v)+'"></span>'; }).join("");
+    var head='<div class="phead"><span class="pn">'+esc(p.name)+'</span><span class="pbarw">'+bar+'</span><span class="pt">'+fmtTok(tot)+'<small> · 含 Leads</small></span></div>';
+    // Leads(本项目):Lead 是 Claude Code 侧的概念;看非-Claude agent 时如实说明
+    var leadCol;
+    if(state.agent==="all"||state.agent==="claude"){
+      leadCol=bars((p.leads||[]).map(function(l){return {label:l.name,tokens:l.tokens,cost:l.cost};}),"#34c759");
+    }else{
+      leadCol='<div class="empty">— '+esc((agentById(state.agent)||{}).label||state.agent)+' 无 Lead 概念</div>';
+    }
+    // 当天已完成 issues:每单用了多少(跟随 agent 页签),纯数字无描述
+    var iss=(p.issues||[]).map(function(it){
+      var v=0; ags.forEach(function(a){ v+=(it.byAgent[a.id]||0); });
+      return {label:it.id, tokens:v, href:issueUrl(it.id)};
+    }).filter(function(x){return x.tokens>0;}).sort(function(a,b){return b.tokens-a.tokens;});
+    var inner='<div class="pinner"><div class="pcol"><div class="ph2">Leads（本项目）</div>'+leadCol+'</div>'
+      +'<div class="pcol"><div class="ph2">已完成 Issues（当天用量）</div>'+bars(iss,"#007aff")+'</div></div>';
+    var foot=(p.inprog&&p.inprog.count&&(state.agent==="all"||state.agent==="claude"))
+      ?'<div class="muted">+ '+p.inprog.count+' 个进行中 issue 用了 '+fmtTok(p.inprog.tokens)+'（完成后才计入）</div>':'';
+    return '<div class="card pcard">'+head+inner+foot+'</div>';
+  }).join("");
+  var hdr='<h2 style="font-size:13px;color:#86868b;text-transform:uppercase;letter-spacing:.04em;margin:22px 4px 0">按项目展开（项目总量 → 其下 Leads + 当天已完成 issues 的用量）</h2>';
+  var note='<div class="card"><div class="honest"><b>每 issue 用量口径</b>：这里是<b>账</b>（项目 → issue → 数字），工作描述在「今日完成工作」页签，两边不重复。当前<b>只有 Claude Code 的 per-issue 用量是真实采集的</b>；Codex / Kimi 的 per-issue 用量、以及<b>按 agent 切到单个 issue</b>，都要等后端并入 + 加 agent 维度（FLY-714），此处按<b>设计目标 / 示意</b>呈现，不代表已有真数据。</div></div>';
+  return hdr+'<div class="two">'+cards+'</div>'+note;
+}
+
+// ========== 层 ② 今日完成工作(按 issue,每个只一次) ==========
+function completedWorkSection(){
+  var blocks="";
+  DATA.projects.forEach(function(p){
+    // ② 是 issue 视角:每个 issue 只列一次,不按 agent 过滤(按 agent 的账在「Token 使用」页签)
+    var issues=(p.issues||[]);
+    if(!issues.length)return;
+    var rows=issues.map(function(it){
+      // ② 是【叙述】层:做了什么 + 谁做 + 墙钟 + 该单总 token。按 agent 拆的账在 ①(不在这重复)。
+      // 【三段式按段 token 仍然不做】—— 后端确实没有(plan R8 审计)。
+      var who=DATA.agents.filter(function(a){return (it.byAgent[a.id]||0)>0;});
+      var itot=0; DATA.agents.forEach(function(a){ itot+=(it.byAgent[a.id]||0); });
+      var chips=who.map(function(a){ return '<i class="agi" style="background:'+a.color+'" title="'+esc(a.label)+'"></i>'; }).join("");
+      var names=who.map(function(a){ return esc(a.label); }).join(" · ");
+      var href=issueUrl(it.id); var lbl=href?'<a href="'+esc(href)+'" target="_blank" rel="noopener">'+esc(it.id)+'</a>':esc(it.id);
+      return '<div class="wrow"><div class="wtop"><span class="wid">'+lbl+'</span><span class="wchips">'+chips+'</span><span class="wwho">'+names+'</span><span class="wt">'+fmtTok(itot)+'</span><span class="wwall">'+esc(it.wall||"")+'</span></div><div class="did">'+esc(it.desc||"")+'</div></div>';
+    }).join("");
+    blocks+='<div class="card wcard"><div class="wproj">'+esc(p.name)+'<span class="wcount">'+issues.length+' 单完成</span></div>'+rows+'</div>';
+  });
+  var note='<div class="card"><div class="honest"><b>每单 token 口径</b>：这单用掉的总量。当前<b>只有 Claude Code 的 per-issue 用量是真实采集的</b>；Codex / Kimi 的 per-issue 用量后端<b>尚未并入</b>（FLY-714），此处按<b>设计目标 / 示意</b>呈现，不代表已有真数据。按 agent 的完整 token 账见「Token 使用」页签。</div></div>';
+  return (blocks || '<div class="card"><div class="empty">今日无完成单</div></div>')+note;
+}
+
+// ---------- render ----------
+function render(){
+  var html;
+  if(state.tab==="work"){
+    html=l1TabBar()
+      +tierHeader("✓","今日完成工作","按 issue · 每个只列一次（不管几个 agent 干的）· 这单用了多少 token + 谁做的 + 墙钟 + 描述 + 可点跳 Linear")
+      +completedWorkSection();
+  }else{
+    html=l1TabBar()
+      +tierHeader("Σ","Token 使用","按 agent 记账 · 下面二级页签按 agent 分（从数据自动生成，加 agent 前端零改）· 同一 issue 两个 agent 都用、各自计入这层=对的（是账，不是重复）")
+      +agentTabBar()
+      +heroCard()+trendCard()+summaryCard()+modelCard()+leadsCard()+projectAccountSection();
+  }
+  document.getElementById("app").innerHTML=html;
+}
+
+// ---------- interactions:第一层 tab + 第二层 agent tab(事件委托,存活 re-render)----------
+document.getElementById("app").addEventListener("click",function(e){
+  var l1=e.target.closest?e.target.closest(".l1tab"):null;
+  if(l1){ state.tab=l1.getAttribute("data-tab"); render(); window.scrollTo(0,0); return; }
+  var tab=e.target.closest?e.target.closest(".ftab"):null;
+  if(tab){ state.agent=tab.getAttribute("data-agent"); render(); return; }
+});
+
+// ---------- comment widget (nonce, localStorage, copy-fallback 已修) ----------
+(function(){
+  var P="fly1354-2t-";
+  var ta=document.getElementById("cta-overall"), nm=document.getElementById("signoff-name"), toast=document.getElementById("toast");
+  var v=localStorage.getItem(P+"overall"); if(v!=null)ta.value=v;
+  ta.addEventListener("input",function(){ localStorage.setItem(P+"overall",ta.value); });
+  var ch=localStorage.getItem(P+"ch");
+  var radios=document.querySelectorAll('#ch-overall input');
+  for(var i=0;i<radios.length;i++){ if(ch&&radios[i].value===ch)radios[i].checked=true;
+    radios[i].addEventListener("change",function(e){ localStorage.setItem(P+"ch",e.target.value); }); }
+  var nv=localStorage.getItem(P+"nm"); if(nv)nm.value=nv;
+  nm.addEventListener("input",function(){ localStorage.setItem(P+"nm",nm.value); });
+  function done(){ toast.style.color="#34c759"; toast.textContent="✓ 已复制"; setTimeout(function(){toast.textContent="";},3000); }
+  function fail(){ toast.style.color="#ff3b30"; toast.textContent="复制失败,请手动选择"; setTimeout(function(){toast.textContent="";toast.style.color="#34c759";},3000); }
+  document.getElementById("copybtn").addEventListener("click",function(){
+    var o=["FLY-1354 多-agent 报告反馈"];
+    var name=(nm.value||"").trim(); if(name)o.push("签名: "+name);
+    var sel=localStorage.getItem(P+"ch"); if(sel)o.push("选择: "+sel);
+    var tx=(ta.value||"").trim(); if(tx)o.push(tx);
+    if(o.length<2)o.push("(尚无留言)");
+    var text=o.join("\n");
+    if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(done,fb); } else fb();
+    function fb(){
+      var e=document.createElement("textarea"); e.value=text; e.style.position="fixed"; e.style.opacity="0";
+      document.body.appendChild(e); e.select(); var okc=false;
+      try{ okc=document.execCommand("copy"); }catch(x){}
+      document.body.removeChild(e); if(okc)done(); else fail();
+    }
+  });
+})();
+
+document.getElementById("hdate").innerHTML="📅 2026年7月16日 周四<small>"+esc(DATA.reportDay)+" · 昨日完整一天 · "+esc(DATA.timezone)+"</small>";
+document.getElementById("foot").textContent="多-agent 每日报告 mock · 两个页签:【今日完成工作】按 issue 每个只列一次(这单 token + 谁做 + 墙钟 + 描述 + 跳链) · 【Token 使用】按 agent 记账,二级页签按 agent 切(从数据 distinct 自动生成,加 agent 前端零改) · 底=真实 FLY-614 报告结构 · 数据=示意;per-issue 只有 Claude Code 是真采集,Codex/Kimi 待 FLY-714 并入 · 【不做三段式按段 token】后端确无此粒度(plan R8 审计) · USD=公开单价×用量参考估算(订阅制非账单) · 口径细节见 plan.md";
+
+render();
+})();
+</script>
+</body>
+</html>

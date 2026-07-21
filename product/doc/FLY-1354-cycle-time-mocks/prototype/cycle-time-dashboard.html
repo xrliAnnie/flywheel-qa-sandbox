@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FLY-1354 · Cycle-Time Dashboard 页签 — 样子稿</title>
+<style>
+:root{
+  /* cool-slate console (复用 FLY-1038 管理台) */
+  --bg:#eef0f4;--paper:#fff;--nav:#f7f8fb;--ink:#191b22;--dim:#656a75;--faint:#9aa0ac;
+  --line:#e4e6ec;--line2:#d0d3dc;--soft:#eff1f5;
+  --blue:#5646d6;--blue-soft:#ecebfb;--blue-line:#d3cff4;
+  --green:#1f9d47;--amber:#e8850c;--red:#d1382b;
+  /* FLY-1343 分类段 9 色(数据语义色,跨两处一致) */
+  --c-work:#7CA982;--c-ci:#8FB8DE;--c-review:#6B8FC7;--c-qa:#5FB3A9;
+  --c-idle:#E0A458;--c-infra:#C1666B;--c-rework:#D16666;--c-gate:#A98FC7;--c-unknown:#C9C9C9;
+  --sans:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,'PingFang SC',sans-serif;
+  --mono:'SF Mono',ui-monospace,Menlo,monospace;
+  --shadow:0 1px 2px rgba(24,27,40,.05),0 8px 26px rgba(24,27,40,.06);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:20px 18px 40px}
+.sketchbanner{background:repeating-linear-gradient(45deg,#fff4e0 0 12px,#ffedcc 12px 24px);border:1.5px dashed #E0A458;border-radius:10px;padding:10px 14px;font-size:13px;color:#8a5a1a;margin-bottom:14px}
+.sketchbanner b{color:#7a4d12}
+.realkey{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:11.5px;color:var(--dim);margin:8px 0 16px}
+.realkey b{color:var(--ink)}
+.tagreal{display:inline-block;background:#e7f3ea;color:#2f7d46;border:1px solid #b7e0c2;border-radius:6px;padding:0 6px;font-size:10.5px;font-weight:700}
+.tagmock{display:inline-block;background:#fdeede;color:#b5651d;border:1px solid #f0cfa0;border-radius:6px;padding:0 6px;font-size:10.5px;font-weight:700}
+
+.frame{background:var(--paper);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+.barw{display:flex;align-items:center;gap:7px;padding:9px 14px;background:#f6f6f8;border-bottom:1px solid var(--line)}
+.barw .d{width:11px;height:11px;border-radius:50%}.barw .r{background:#ff5f57}.barw .y{background:#febc2e}.barw .g{background:#28c840}
+.barw .u{margin-left:8px;font-family:var(--mono);font-size:.73rem;color:var(--dim);background:#fff;border:1px solid var(--line);border-radius:7px;padding:3px 10px}
+.app{display:grid;grid-template-columns:158px 1fr;min-height:560px}
+.side{background:var(--nav);border-right:1px solid var(--line);padding:14px 9px}
+.brand{font-weight:750;font-size:.92rem;padding:2px 8px 14px;letter-spacing:-.01em}.brand .fw{color:var(--blue)}
+.nv{display:flex;align-items:center;gap:8px;padding:9px 11px;border-radius:8px;font-size:.86rem;font-weight:560;color:var(--dim);margin-bottom:3px;cursor:pointer;user-select:none;border-left:3px solid transparent;transition:background .12s}
+.nv:hover{background:var(--soft);color:var(--ink)}
+.nv.sel{background:var(--blue-soft);color:var(--blue);font-weight:700;border-left-color:var(--blue)}
+.main{overflow:auto;padding:18px 20px 8px}
+.pagenote{font-size:.82rem;color:var(--faint);font-style:italic;padding:40px 8px;text-align:center}
+.hidden{display:none}
+
+.ph{font-size:1.28rem;font-weight:730;letter-spacing:-.015em;margin:2px 0 1px}
+.psub{font-size:.8rem;color:var(--dim);margin-bottom:16px}
+
+.kpirow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+.kpi{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:13px 15px;box-shadow:0 1px 2px rgba(24,27,40,.03)}
+.kpi .kl{font-size:.72rem;color:var(--dim);font-weight:600;display:flex;align-items:center;gap:6px}
+.kpi .kv{font-size:1.72rem;font-weight:740;letter-spacing:-.02em;font-variant-numeric:tabular-nums;margin-top:3px}
+.kpi .kv small{font-size:.9rem;font-weight:600;color:var(--dim)}
+.kpi .ks{font-size:.68rem;color:var(--faint);margin-top:2px}
+.delta{font-size:.72rem;font-weight:700}.delta.dn{color:var(--green)}.delta.up{color:var(--red)}
+
+.card{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:15px 17px;margin-bottom:16px;box-shadow:0 1px 2px rgba(24,27,40,.03)}
+.vh{font-size:.98rem;font-weight:670;margin:0 0 2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.vd{font-size:.78rem;color:var(--dim);margin:0 0 13px;line-height:1.55}
+.vd b{color:var(--ink)}
+.pill{font-size:.64rem;font-weight:700;border-radius:999px;padding:2px 9px;letter-spacing:.02em}
+.pill.core{color:var(--blue);background:var(--blue-soft);border:1px solid var(--blue-line)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 13px;margin:0 0 12px;font-size:11px;color:var(--dim)}
+.lg{display:flex;align-items:center;gap:5px}.lg i{width:11px;height:11px;border-radius:3px;display:inline-block}
+.plot{width:100%;height:auto;background:#fcfcfd;border-radius:8px;border:1px solid var(--line)}
+.grid{stroke:#eef;stroke:#edeef2;stroke-width:1}.axlbl{fill:#8a90a0;font-size:11px}.dotlbl{fill:#666;font-size:9.5px;text-anchor:middle}
+.anchor{stroke:#D16666;stroke-width:1.5;stroke-dasharray:5 4}.anchorlbl{fill:#D16666;font-size:11px;font-weight:600}
+.yswitch{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 2px}
+.ysw{font-size:.72rem;border:1px solid var(--line2);border-radius:7px;padding:3px 10px;background:#fff;color:var(--dim);cursor:pointer}
+.ysw.on{background:var(--blue-soft);color:var(--blue);border-color:var(--blue-line);font-weight:700}
+
+.drow{display:grid;grid-template-columns:220px 1fr 112px;gap:10px;align-items:center;padding:5px 0}
+.dlbl{font-size:12.5px}.dlbl .hole{display:block;font-size:10px;color:#8a6a2a}
+.dbarwrap{background:#f0f1f4;border-radius:5px;overflow:hidden}.dbar{height:17px;border-radius:5px}
+.dval{font-size:11.5px;color:#444;text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.darrow{font-size:.66rem;color:var(--faint)}
+
+.twocol{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.noteC{background:#fbfbfc;border:1px dashed var(--line2);border-radius:8px;padding:24px 18px;text-align:center;color:var(--dim);font-size:12.5px;line-height:1.7}
+.noteC b{color:#8a6a2a}
+
+.iflist{margin-top:2px}
+.ifrow{display:grid;grid-template-columns:96px 1fr 74px;gap:9px;align-items:center;padding:7px 0;border-top:1px solid var(--line)}
+.ifrow:first-child{border-top:none}
+.ifid{font-family:var(--mono);font-size:12px;font-weight:640}
+.ifbarwrap{background:#f0f1f4;border-radius:4px;overflow:hidden}.ifbar{display:flex;height:15px}.ifbar .seg{height:100%}
+.ifw{font-size:11.5px;text-align:right;font-variant-numeric:tabular-nums;color:#444}.ifw small{display:block;font-size:9px;color:var(--faint)}
+.ifdom{font-size:10px;color:var(--dim);margin-top:1px}
+.livedot{width:7px;height:7px;border-radius:50%;background:var(--amber);display:inline-block;box-shadow:0 0 0 3px rgba(232,133,12,.16);margin-right:5px}
+
+.cbox{margin-top:13px;border-top:1px dashed #e3d9c4;padding-top:10px;background:#fffdf8;border-radius:0 0 8px 8px}
+.clabel{font-size:11px;color:#b5651d;font-weight:700;margin-bottom:5px}
+.cchoice{display:flex;gap:14px;font-size:11.5px;color:#555;margin-bottom:6px}.cchoice label{display:flex;align-items:center;gap:4px;cursor:pointer}
+.cta{width:100%;font-family:inherit;font-size:12px;border:1px solid var(--line2);border-radius:7px;padding:7px 9px;resize:vertical;background:#fff;color:var(--ink)}
+.cta:focus{outline:none;border-color:var(--blue-line);box-shadow:0 0 0 3px var(--blue-soft)}
+.signoff{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:8px}
+.signoff input{font-family:inherit;font-size:12.5px;border:1px solid var(--line2);border-radius:7px;padding:6px 9px}
+.copybar{position:sticky;bottom:0;background:rgba(247,248,251,.97);border-top:1px solid var(--line);padding:12px 16px;margin:14px -20px -8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.btn{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:640;cursor:pointer}
+.btn:active{opacity:.85}.toast{font-size:12px;color:var(--green)}
+.foot{font-size:11.5px;color:var(--dim);line-height:1.75}.foot b{color:#444}
+@media(max-width:820px){.kpirow{grid-template-columns:1fr 1fr}.twocol{grid-template-columns:1fr}.app{grid-template-columns:1fr}.side{display:none}.drow,.ifrow{grid-template-columns:1fr}}
+</style></head>
+<body data-palette="#7CA982,#8FB8DE,#6B8FC7,#5FB3A9,#E0A458,#C1666B,#D16666,#A98FC7">
+<div class="wrap">
+
+<div class="sketchbanner"><b>⚠ 样子稿(低保真 · shape mockup)</b> — 供 Annie 评审「Cycle-Time 页签折进管理台长啥样 / 哪几块 / 每块画什么」。<b>周期时间 + 分段占比是 8 张真实 issue 的真值</b>(2026-07-17 快照,FLY-1327 采集工具跑出);<b>token/日期/环比箭头/在跑当前态/改进单锚点</b>都是 <span class="tagmock">MOCK</span>示意。非最终数据链路、非最终配色。每块下有留言框,底部一键复制回传。</div>
+
+<div class="realkey">
+  <span><span class="tagreal">真值</span> = 周期时间(开单→ship 墙钟)· 各分段/占比 · 机制浪费占比 · 瓶颈排行</span>
+  <span><span class="tagmock">MOCK</span> = 每单 token · 日期分组 · P50/P90 环比 · 趋势箭头 · 在跑单当前态 · 改进单上线锚点</span>
+</div>
+
+<div class="frame">
+  <div class="barw"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="u">localhost:9876 — Flywheel 管理台</span></div>
+  <div class="app">
+    <div class="side">
+      <div class="brand"><span class="fw">◆</span> Flywheel</div>
+      <div class="nv" data-nav="instance">🗂 实例</div>
+      <div class="nv" data-nav="flags">🚩 Feature Flags</div>
+      <div class="nv sel" data-nav="cycle">📈 周期时间</div>
+    </div>
+    <div class="main">
+
+      <!-- 其它页(占位,表示这是折进现有 console) -->
+      <div class="pagenote hidden" data-page="instance">🗂 实例页(现有管理台页签)—— 本 mock 聚焦「周期时间」,此页从略。</div>
+      <div class="pagenote hidden" data-page="flags">🚩 Feature Flags 页(现有管理台页签)—— 本 mock 聚焦「周期时间」,此页从略。</div>
+
+      <div data-page="cycle">
+      <div class="ph">周期时间 · Cycle-Time</div>
+      <div class="psub">每张 issue 的时间都花在哪 · 常驻管理台,修复上线后趋势可及时反映 · 只放统计维度(逐单明细在每日报告那份)</div>
+
+      <!-- KPI 条 -->
+      <div class="kpirow">
+        <div class="kpi"><div class="kl">周期时间 P50</div><div class="kv">38.8<small>h</small></div><div class="ks"><span class="tagreal">真值</span> 近 7 天完成单 · <span class="delta dn">↓ 环比 MOCK</span></div></div>
+        <div class="kpi"><div class="kl">周期时间 P90</div><div class="kv">54.1<small>h</small></div><div class="ks"><span class="tagreal">真值</span> 同总墙钟列 90 分位 · <span class="delta dn">↓ 环比 MOCK</span></div></div>
+        <div class="kpi"><div class="kl">机制浪费占比</div><div class="kv">63<small>%</small></div><div class="ks"><span class="tagreal">真值</span> 近 7 天 · 空转+CI+基建 ÷ 总</div></div>
+        <div class="kpi"><div class="kl">在跑单数</div><div class="kv">4</div><div class="ks"><span class="tagmock">MOCK</span> live 计数(见下「在跑单」)</div></div>
+      </div>
+
+      <!-- 视图 B 核心 -->
+      <div class="card">
+        <div class="vh">趋势 & 改进单前后对比 <span class="pill core">核心:是不是省了时间</span></div>
+        <div class="vd">X=ship 日期,Y=总墙钟(小时)。每点一单(真实周期时间)。<b>竖红虚线 = 某改进单上线锚点(<span class="tagmock">MOCK 示意</span>)</b> —— 上线后新单落在右侧,若真省了时间,点会掉到线下方 → 断点肉眼可见。<b>这是「Tadashi 修了机制,几天内曲线上看到效果」的核心视图。</b>(当前 8 点为真实历史;7 张改进单尚未 ship,锚点与断点为示意,待数据累积。)</div>
+        <svg viewBox="0 0 900 300" class="plot" preserveAspectRatio="xMidYMid meet" role="img" aria-label="周期时间趋势散点(真实周期时间,MOCK 日期与锚点)">
+          <line x1="48" y1="266" x2="884" y2="266" class="grid"/><text x="42" y="270" class="axlbl" text-anchor="end">0h</text>
+          <line x1="48" y1="207" x2="884" y2="207" class="grid"/><text x="42" y="211" class="axlbl" text-anchor="end">15h</text>
+          <line x1="48" y1="148" x2="884" y2="148" class="grid"/><text x="42" y="152" class="axlbl" text-anchor="end">30h</text>
+          <line x1="48" y1="89" x2="884" y2="89" class="grid"/><text x="42" y="93" class="axlbl" text-anchor="end">45h</text>
+          <line x1="48" y1="30" x2="884" y2="30" class="grid"/><text x="42" y="34" class="axlbl" text-anchor="end">60h</text>
+          <!-- MOCK 锚点线(近右侧,示意未来上线) -->
+          <line x1="792" y1="18" x2="792" y2="266" class="anchor"/><text x="786" y="28" class="anchorlbl" text-anchor="end">MOCK·示意锚点:某改进单上线 →</text>
+          <!-- 8 真实点(周期时间真值;X=MOCK 日期序) -->
+          <circle cx="120" cy="38.2" r="6" fill="#6B8FC7" stroke="#fff" stroke-width="1.5"><title>FLY-1252 · 57.9h(真值)</title></circle><text x="120" y="28" class="dotlbl">1252</text>
+          <circle cx="230" cy="88.6" r="6" fill="#6B8FC7" stroke="#fff" stroke-width="1.5"><title>FLY-1272 · 45.1h(真值)</title></circle><text x="230" y="78.6" class="dotlbl">1272</text>
+          <circle cx="360" cy="138.6" r="6" fill="#6B8FC7" stroke="#fff" stroke-width="1.5"><title>FLY-1307 · 32.4h(真值)</title></circle><text x="360" y="128.6" class="dotlbl">1307</text>
+          <circle cx="470" cy="230.2" r="6" fill="#6B8FC7" stroke="#fff" stroke-width="1.5"><title>FLY-1309 · 9.1h(真值)</title></circle><text x="470" y="220.2" class="dotlbl">1309</text>
+          <circle cx="560" cy="174.0" r="6" fill="#E0A458" stroke="#fff" stroke-width="1.5"><title>FLY-1314 · 23.4h(在跑·as-of)</title></circle><text x="560" y="164" class="dotlbl">1314</text>
+          <circle cx="650" cy="201.9" r="6" fill="#E0A458" stroke="#fff" stroke-width="1.5"><title>FLY-1319 · 16.3h(在跑·as-of)</title></circle><text x="650" y="191.9" class="dotlbl">1319</text>
+          <circle cx="720" cy="227.1" r="6" fill="#E0A458" stroke="#fff" stroke-width="1.5"><title>FLY-1333 · 9.9h(在跑·as-of)</title></circle><text x="720" y="217.1" class="dotlbl">1333</text>
+          <circle cx="760" cy="227.5" r="6" fill="#E0A458" stroke="#fff" stroke-width="1.5"><title>FLY-1334 · 9.8h(在跑·as-of)</title></circle><text x="762" y="243" class="dotlbl">1334</text>
+          <text x="48" y="292" class="axlbl">← 早</text><text x="884" y="292" class="axlbl" text-anchor="end">ship 日期(MOCK)→ 晚</text>
+        </svg>
+        <div class="yswitch">
+          <span class="ysw on">总周期时间</span><span class="ysw">空转 idle_gap 中位</span><span class="ysw">CI 等待中位</span><span class="ysw">返工中位</span>
+          <span style="font-size:.68rem;color:var(--faint);align-self:center">(切 Y = 同源分段的窗口分位;示意)</span>
+        </div>
+        <div class="cbox"><div class="clabel">💬 留言 / 反馈</div>
+          <div class="cchoice" data-cid="vB"><label><input type="radio" name="ch-vB" value="建"> 建</label><label><input type="radio" name="ch-vB" value="不建"> 不建</label><label><input type="radio" name="ch-vB" value="待定"> 待定</label></div>
+          <textarea class="cta" data-cid="vB" rows="2" placeholder="这块(核心趋势视图)意见…(自动保存)"></textarea></div>
+      </div>
+
+      <!-- 视图 D 瓶颈排行 -->
+      <div class="card">
+        <div class="vh">瓶颈排行 <span class="pill core">现在最该砍哪块</span></div>
+        <div class="vd">最近 7 天(本样本 8 单)各 <b>label 段</b>吃掉的总墙钟排行(<span class="tagreal">真值</span>)。右侧注 = Tadashi 六大时间黑洞人话名。趋势箭头(本 7 天 vs 前 7 天)待持续采集(<span class="tagmock">MOCK</span>)。</div>
+        <div class="drow"><div class="dlbl">空转 / 排队等待<span class="hole">= 黑洞#1 交接空窗(最大头)</span></div><div class="dbarwrap"><div class="dbar" style="width:100%;background:var(--c-idle)"></div></div><div class="dval">125h46 · 62% <span class="darrow">→ MOCK</span></div></div>
+        <div class="drow"><div class="dlbl">QA 运行</div><div class="dbarwrap"><div class="dbar" style="width:33.3%;background:var(--c-qa)"></div></div><div class="dval">41h51 · 21% <span class="darrow">→ MOCK</span></div></div>
+        <div class="drow"><div class="dlbl">工作(设计/实现)</div><div class="dbarwrap"><div class="dbar" style="width:20.5%;background:var(--c-work)"></div></div><div class="dval">25h44 · 13% <span class="darrow">→ MOCK</span></div></div>
+        <div class="drow"><div class="dlbl">审查(Codex)<span class="hole">= 黑洞#4 review 返工一部分</span></div><div class="dbarwrap"><div class="dbar" style="width:2.7%;background:var(--c-review)"></div></div><div class="dval">3h26 · 2% <span class="darrow">→ MOCK</span></div></div>
+        <div class="drow"><div class="dlbl">返工循环<span class="hole">= 黑洞#4 review 串行返工</span></div><div class="dbarwrap"><div class="dbar" style="width:2.2%;background:var(--c-rework)"></div></div><div class="dval">2h49 · 1% <span class="darrow">→ MOCK</span></div></div>
+        <div class="drow"><div class="dlbl">CI 等待<span class="hole">= 黑洞#5 CI 全量重跑</span></div><div class="dbarwrap"><div class="dbar" style="width:2.1%;background:var(--c-ci)"></div></div><div class="dval">2h40 · 1% <span class="darrow">→ MOCK</span></div></div>
+        <div class="drow"><div class="dlbl">等人(闸门)<span class="hole">= 黑洞#3 head 漂移使批准作废(部分)</span></div><div class="dbarwrap"><div class="dbar" style="width:1.3%;background:var(--c-gate)"></div></div><div class="dval">1h39 · 1% <span class="darrow">→ MOCK</span></div></div>
+        <div style="font-size:11.5px;color:var(--dim);margin-top:9px">👀 头号「空转/排队等待」= 交接空窗(phase 完成后等下一段 spawn/唤醒)—— 实测与工程直觉互证,直指改进单 1339(交接接力)+ 1336(spawn 基建)+ 1345(重启事务化)。</div>
+        <div class="cbox"><div class="clabel">💬 留言 / 反馈</div>
+          <div class="cchoice" data-cid="vD"><label><input type="radio" name="ch-vD" value="建"> 建</label><label><input type="radio" name="ch-vD" value="不建"> 不建</label><label><input type="radio" name="ch-vD" value="待定"> 待定</label></div>
+          <textarea class="cta" data-cid="vD" rows="2" placeholder="这块(瓶颈排行)意见…(自动保存)"></textarea></div>
+      </div>
+
+      <div class="twocol">
+        <!-- 视图 C 并发×load(诚实占位) -->
+        <div class="card">
+          <div class="vh">并发 × 机器 load</div>
+          <div class="vd">共享时间轴:active-work session 数(并发)+ 机器 load_1m,回答「甜点并发数」。</div>
+          <div class="noteC">📊 <b>样本累积中 · 暂不定量</b><br><span style="font-size:11px">定量门槛:每并发档 ≥60 覆盖分钟且 ≥2 个独立 issue。<br>常驻采集满足门槛后自动出分箱图,<b>绝不用单日样本编方向性数字</b>(沿用 FLY-1327 冻结口径)。<br>(建造侧:并发与 load 是两个量纲,做两张图/共基指数,不并成双 Y 轴。)</span></div>
+          <div class="cbox"><div class="clabel">💬 留言 / 反馈</div>
+            <div class="cchoice" data-cid="vC"><label><input type="radio" name="ch-vC" value="建"> 建</label><label><input type="radio" name="ch-vC" value="不建"> 不建</label><label><input type="radio" name="ch-vC" value="待定"> 待定</label></div>
+            <textarea class="cta" data-cid="vC" rows="2" placeholder="这块(并发×load)意见…(自动保存)"></textarea></div>
+        </div>
+        <!-- 在跑单 live 条 -->
+        <div class="card">
+          <div class="vh"><span class="livedot"></span>在跑单 · 实时(as-of 截断)</div>
+          <div class="vd">当前 running 单(天然少数,<b>非 1000+ 历史逐单</b>)—— Annie 明确要「正跑十几小时的单当场看得见」。每行:单号 + 至今墙钟 + 主导分类。<span class="tagmock">MOCK</span> 当前态。</div>
+          <div class="iflist">
+            <div class="ifrow"><div class="ifid">FLY-1314</div><div class="ifbarwrap"><div class="ifbar"><span class="seg" style="width:82%;background:var(--c-idle)"></span><span class="seg" style="width:10%;background:var(--c-work)"></span><span class="seg" style="width:8%;background:var(--c-rework)"></span></div><div class="ifdom">主导:机制浪费 82%</div></div><div class="ifw">23h25<small>至今</small></div></div>
+            <div class="ifrow"><div class="ifid">FLY-1319</div><div class="ifbarwrap"><div class="ifbar"><span class="seg" style="width:55%;background:var(--c-work)"></span><span class="seg" style="width:30%;background:var(--c-idle)"></span><span class="seg" style="width:15%;background:var(--c-qa)"></span></div><div class="ifdom">主导:价值工作 · 机制浪费 15%</div></div><div class="ifw">16h20<small>至今</small></div></div>
+            <div class="ifrow"><div class="ifid">FLY-1333</div><div class="ifbarwrap"><div class="ifbar"><span class="seg" style="width:89%;background:var(--c-idle)"></span><span class="seg" style="width:7%;background:var(--c-gate)"></span><span class="seg" style="width:4%;background:var(--c-work)"></span></div><div class="ifdom">主导:机制浪费 89%</div></div><div class="ifw">9h52<small>至今</small></div></div>
+            <div class="ifrow"><div class="ifid">FLY-1334</div><div class="ifbarwrap"><div class="ifbar"><span class="seg" style="width:87%;background:var(--c-idle)"></span><span class="seg" style="width:7%;background:var(--c-gate)"></span><span class="seg" style="width:6%;background:var(--c-work)"></span></div><div class="ifdom">主导:机制浪费 87%</div></div><div class="ifw">9h51<small>至今</small></div></div>
+          </div>
+          <div class="cbox"><div class="clabel">💬 留言 / 反馈(这条形态 OK 吗?留/改/去)</div>
+            <div class="cchoice" data-cid="inflight"><label><input type="radio" name="ch-inflight" value="留"> 留</label><label><input type="radio" name="ch-inflight" value="改"> 改</label><label><input type="radio" name="ch-inflight" value="去"> 去</label></div>
+            <textarea class="cta" data-cid="inflight" rows="2" placeholder="在跑单条意见…(自动保存)"></textarea></div>
+        </div>
+      </div>
+
+      <!-- 图例 -->
+      <div class="card">
+        <div class="vh" style="font-size:.86rem">分段图例(9 色 · 数据语义色)</div>
+        <div class="legend">
+          <span class="lg"><i style="background:var(--c-work)"></i>工作(设计/实现)</span>
+          <span class="lg"><i style="background:var(--c-ci)"></i>CI 等待</span>
+          <span class="lg"><i style="background:var(--c-review)"></i>审查(Codex)</span>
+          <span class="lg"><i style="background:var(--c-qa)"></i>QA 运行</span>
+          <span class="lg"><i style="background:var(--c-idle)"></i>空转/排队等待</span>
+          <span class="lg"><i style="background:var(--c-infra)"></i>基建事故</span>
+          <span class="lg"><i style="background:var(--c-rework)"></i>返工循环</span>
+          <span class="lg"><i style="background:var(--c-gate)"></i>等人(闸门)</span>
+          <span class="lg"><i style="background:var(--c-unknown)"></i>不可测</span>
+        </div>
+      </div>
+
+      <div class="card foot">
+        <div class="vh" style="font-size:.86rem;color:var(--ink)">诚实边界</div>
+        • 周期时间 / 各分段 / 占比 / 瓶颈排行 = <b>真值</b>(8 真实单,FLY-1327 采集);token / 日期 / P50-P90 环比 / 趋势箭头 / 在跑当前态 / 改进单锚点 = <b>MOCK 示意</b>。<br>
+        • 「空转/排队等待」含:排队待派发、阶段交接、park 等唤醒、干完空等下一步 —— 其中「等 founder ship / 合理夜间」vs「机制卡住」的进一步拆分是建造侧度量口径(当前统一归空转)。<br>
+        • 采集失败 / 覆盖率低于阈值 → 显式「数据不可用 + 原因」,绝不静默出空图或旧图(FLY-614 静默退化教训)。<br>
+        • 数据源 = 5 源融合(Linear/teamlead/CommDB/GitHub/system-health),非只用 DAG 节点耗时。
+        <div class="cbox"><div class="clabel">💬 留言 / 反馈</div>
+          <textarea class="cta" data-cid="honesty" rows="2" placeholder="诚实边界意见…(自动保存)"></textarea></div>
+      </div>
+
+      <div class="card">
+        <div class="vh" style="font-size:.9rem">总评</div>
+        <div class="vd">整体形状 OK 吗?折进管理台的方式对吗?哪个视图最有用 / 想砍哪个 / 还缺什么。</div>
+        <div class="cbox"><div class="clabel">💬 留言 / 反馈</div>
+          <textarea class="cta" data-cid="overall" rows="2" placeholder="总评…(自动保存)"></textarea></div>
+        <div class="signoff"><span style="font-size:12px;color:#555">签名:</span><input type="text" id="signoff-name" placeholder="Annie"><input type="text" id="signoff-date" placeholder="日期(可选)"></div>
+      </div>
+
+      <div class="copybar"><button class="btn" id="copybtn" type="button">📋 复制全部反馈(回传给我)</button><span class="toast" id="toast"></span><span style="font-size:11px;color:var(--faint)">留言自动存本地浏览器;复制后粘回聊天即可</span></div>
+
+      </div><!-- /cycle page -->
+    </div><!-- /main -->
+  </div><!-- /app -->
+</div><!-- /frame -->
+
+<div style="font-size:11px;color:var(--faint);margin-top:8px">FLY-1354 样子稿 · 折进 FLY-1038 管理台的「周期时间」页签 · 真实分段来自 8 单(1252/1272/1307/1309/1314/1319/1333/1334)as-of 2026-07-17 · 非最终数据链路</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var PFX="fly1354-dash-";
+  var SECTIONS=[["vB","趋势/前后对比"],["vD","瓶颈排行"],["vC","并发×load"],["inflight","在跑单 live 条"],["honesty","诚实边界"],["overall","总评"]];
+  function load(){
+    var tas=document.querySelectorAll(".cta");
+    for(var i=0;i<tas.length;i++){var id=tas[i].getAttribute("data-cid");var v=localStorage.getItem(PFX+id);if(v!=null)tas[i].value=v;tas[i].addEventListener("input",function(e){localStorage.setItem(PFX+e.target.getAttribute("data-cid"),e.target.value);});}
+    var chs=document.querySelectorAll(".cchoice");
+    for(var j=0;j<chs.length;j++){(function(box){var id=box.getAttribute("data-cid");var sv=localStorage.getItem(PFX+"ch-"+id);var rs=box.querySelectorAll("input");for(var k=0;k<rs.length;k++){if(sv&&rs[k].value===sv)rs[k].checked=true;rs[k].addEventListener("change",function(e){localStorage.setItem(PFX+"ch-"+id,e.target.value);});}})(chs[j]);}
+    var n=localStorage.getItem(PFX+"signoff-name");if(n)document.getElementById("signoff-name").value=n;
+    var d=localStorage.getItem(PFX+"signoff-date");if(d)document.getElementById("signoff-date").value=d;
+    document.getElementById("signoff-name").addEventListener("input",function(e){localStorage.setItem(PFX+"signoff-name",e.target.value);});
+    document.getElementById("signoff-date").addEventListener("input",function(e){localStorage.setItem(PFX+"signoff-date",e.target.value);});
+    // nav 切换(演示折进 console;其它页占位)
+    var navs=document.querySelectorAll(".nv");
+    for(var a=0;a<navs.length;a++){navs[a].addEventListener("click",function(e){
+      var t=e.currentTarget.getAttribute("data-nav");
+      var ns=document.querySelectorAll(".nv");for(var b=0;b<ns.length;b++)ns[b].classList.remove("sel");
+      e.currentTarget.classList.add("sel");
+      document.querySelector('[data-page="cycle"]').classList.toggle("hidden",t!=="cycle");
+      document.querySelector('[data-page="instance"]').classList.toggle("hidden",t!=="instance");
+      document.querySelector('[data-page="flags"]').classList.toggle("hidden",t!=="flags");
+    });}
+    // Y 切换(纯视觉演示)
+    var ysw=document.querySelectorAll(".ysw");
+    for(var y=0;y<ysw.length;y++){ysw[y].addEventListener("click",function(e){var all=document.querySelectorAll(".ysw");for(var z=0;z<all.length;z++)all[z].classList.remove("on");e.currentTarget.classList.add("on");});}
+  }
+  function gather(){
+    var out=["FLY-1354 Cycle-Time Dashboard 页签 样子稿 — 形状反馈"];
+    var nm=(document.getElementById("signoff-name").value||"").trim();
+    var dt=(document.getElementById("signoff-date").value||"").trim();
+    if(nm||dt)out.push("签名: "+nm+(dt?" · "+dt:""));
+    out.push("");
+    for(var i=0;i<SECTIONS.length;i++){
+      var id=SECTIONS[i][0],name=SECTIONS[i][1];
+      var ch=localStorage.getItem(PFX+"ch-"+id);
+      var ta=document.querySelector('.cta[data-cid="'+id+'"]');
+      var txt=ta?ta.value.trim():"";
+      if(!ch&&!txt)continue;
+      out.push("【"+name+"】"+(ch?" 选择: "+ch:""));
+      if(txt)out.push(txt);
+      out.push("");
+    }
+    if(out.length<=3)out.push("(尚无留言)");
+    return out.join("\n");
+  }
+  function copy(){
+    var text=gather();var toast=document.getElementById("toast");
+    function ok(){toast.textContent="✓ 已复制,粘回聊天给我";setTimeout(function(){toast.textContent="";},4000);}
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(ok,fallback);}else{fallback();}
+    function fallback(){var t=document.createElement("textarea");t.value=text;t.style.position="fixed";t.style.opacity="0";document.body.appendChild(t);t.select();try{document.execCommand("copy");ok();}catch(e){toast.textContent="复制失败,请手动选择";}document.body.removeChild(t);}
+  }
+  if(document.readyState!=="loading")load();else document.addEventListener("DOMContentLoaded",load);
+  document.getElementById("copybtn").addEventListener("click",copy);
+})();
+</script>
+</body></html>
