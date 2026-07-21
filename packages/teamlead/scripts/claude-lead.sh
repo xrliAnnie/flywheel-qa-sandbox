@@ -223,6 +223,26 @@ source "${SCRIPT_DIR}/lib/lead-identity-preflight.sh"
 # session-id) must reach the fresh-start fallback instead of resetting it.
 # shellcheck source=lib/resume-recovery.sh
 source "${SCRIPT_DIR}/lib/resume-recovery.sh"
+# FLY-1402: Claude CLI treats repeated --append-system-prompt-file flags as
+# last-one-wins. Collect every selected rule and materialize one prompt bundle.
+# shellcheck source=lead-rules-bundle.sh
+source "${SCRIPT_DIR}/lead-rules-bundle.sh"
+
+_rules_bundle_mode_raw="${FLYWHEEL_LEAD_RULES_BUNDLE:-bundle}"
+_rules_bundle_mode_raw="${_rules_bundle_mode_raw#"${_rules_bundle_mode_raw%%[![:space:]]*}"}"
+_rules_bundle_mode_raw="${_rules_bundle_mode_raw%"${_rules_bundle_mode_raw##*[![:space:]]}"}"
+_rules_bundle_mode_raw="$(printf '%s' "$_rules_bundle_mode_raw" | tr '[:upper:]' '[:lower:]')"
+case "$_rules_bundle_mode_raw" in
+  ''|bundle) RULES_BUNDLE_MODE="bundle" ;;
+  legacy) RULES_BUNDLE_MODE="legacy" ;;
+  *)
+    printf '[lead] WARNING: invalid FLYWHEEL_LEAD_RULES_BUNDLE=%s; defaulting to bundle\n' \
+      "$_rules_bundle_mode_raw" >&2
+    RULES_BUNDLE_MODE="bundle"
+    ;;
+esac
+unset _rules_bundle_mode_raw
+rules_bundle_reset
 # FLY-83: Ensure all alert-path directories exist before anything can fail.
 # - blocked/  : marker files pausing supervisor until Annie clears them
 # - alert-queue/ : LeadAlertNotifier spills here when Discord POST fails
@@ -2090,7 +2110,7 @@ if [ "$INBOX_MCP_ENABLED" = "true" ]; then
   # otherwise.
   INBOX_ACK_RULE="${SCRIPT_DIR}/inbox-ack-rule.md"
   if [ -f "$INBOX_ACK_RULE" ] && [ -r "$INBOX_ACK_RULE" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$INBOX_ACK_RULE")
+    rules_bundle_add "$INBOX_ACK_RULE" launcher
     log "Appending inbox ack rule: ${INBOX_ACK_RULE}"
   else
     log "WARNING: inbox ack rule missing at ${INBOX_ACK_RULE} — Lead may not ack channel messages"
@@ -2163,7 +2183,7 @@ if [ "$IS_EXTERNAL_ROLE" = true ]; then
   # session without its boundary).
   BASE_EXTERNAL_CONTRACT="${BASE_RULES_DIR}/external-agent-contract.md"
   if [ -f "$BASE_EXTERNAL_CONTRACT" ] && [ -r "$BASE_EXTERNAL_CONTRACT" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_EXTERNAL_CONTRACT")
+    rules_bundle_add "$BASE_EXTERNAL_CONTRACT" base
     log "Appending external agent contract: ${BASE_EXTERNAL_CONTRACT}"
   else
     log "ERROR: external agent contract missing/unreadable at ${BASE_EXTERNAL_CONTRACT}"
@@ -2181,7 +2201,7 @@ elif [ "$IS_COMPANION_ROLE" = true ]; then
   # (companion is in #leads-roundtable) — see the universal block further down.
   BASE_COMPANION_SAFETY="${BASE_RULES_DIR}/companion-safety-contract.md"
   if [ -f "$BASE_COMPANION_SAFETY" ] && [ -r "$BASE_COMPANION_SAFETY" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_COMPANION_SAFETY")
+    rules_bundle_add "$BASE_COMPANION_SAFETY" base
     log "Appending companion safety contract: ${BASE_COMPANION_SAFETY}"
   else
     # FLY-231 (Codex code-review HIGH-2): fail-STOP, do NOT start. The companion
@@ -2198,7 +2218,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # Department Lead base: Action Gate + Multi-Lead Mentions + Bridge rejection diagnostics
   BASE_DEPT_RULES="${BASE_RULES_DIR}/department-lead-rules.md"
   if [ -f "$BASE_DEPT_RULES" ] && [ -r "$BASE_DEPT_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DEPT_RULES")
+    rules_bundle_add "$BASE_DEPT_RULES" base
     log "Appending base dept-lead rules: ${BASE_DEPT_RULES}"
   fi
   # FLY-142 PR #186 Codex Round 1 HIGH: dept leads spawn + DM Runners, so
@@ -2221,7 +2241,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   if [ "$_runnermsg_backend" != "commdb" ]; then
     BASE_RUNNER_MSG_RULES="${BASE_RULES_DIR}/runner-messaging-rules.md"
     if [ -f "$BASE_RUNNER_MSG_RULES" ] && [ -r "$BASE_RUNNER_MSG_RULES" ]; then
-      CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_RUNNER_MSG_RULES")
+      rules_bundle_add "$BASE_RUNNER_MSG_RULES" base
       log "Appending base runner-messaging rules: ${BASE_RUNNER_MSG_RULES}"
     fi
   else
@@ -2239,7 +2259,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # base file is a no-op (backward compat with older flywheel checkouts).
   BASE_EXECUTOR_ROUTING_RULES="${BASE_RULES_DIR}/executor-routing.md"
   if [ -f "$BASE_EXECUTOR_ROUTING_RULES" ] && [ -r "$BASE_EXECUTOR_ROUTING_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_EXECUTOR_ROUTING_RULES")
+    rules_bundle_add "$BASE_EXECUTOR_ROUTING_RULES" base
     log "Appending base executor-routing rules: ${BASE_EXECUTOR_ROUTING_RULES}"
   fi
 
@@ -2251,7 +2271,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # Runners load it. Optional — missing base file is a no-op (backward compat).
   BASE_MODEL_ROUTING_RULES="${BASE_RULES_DIR}/model-routing.md"
   if [ -f "$BASE_MODEL_ROUTING_RULES" ] && [ -r "$BASE_MODEL_ROUTING_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_MODEL_ROUTING_RULES")
+    rules_bundle_add "$BASE_MODEL_ROUTING_RULES" base
     log "Appending base model-routing rules: ${BASE_MODEL_ROUTING_RULES}"
   fi
 
@@ -2264,7 +2284,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # Optional — missing base file is a no-op (backward compat).
   BASE_STUCK_REMANAGE_RULES="${BASE_RULES_DIR}/stuck-runner-remanage.md"
   if [ -f "$BASE_STUCK_REMANAGE_RULES" ] && [ -r "$BASE_STUCK_REMANAGE_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_STUCK_REMANAGE_RULES")
+    rules_bundle_add "$BASE_STUCK_REMANAGE_RULES" base
     log "Appending base stuck-runner-remanage rules: ${BASE_STUCK_REMANAGE_RULES}"
   fi
 
@@ -2275,7 +2295,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # — missing base file is a no-op (backward compat).
   BASE_REENGAGE_RULES="${BASE_RULES_DIR}/runner-reengage-rules.md"
   if [ -f "$BASE_REENGAGE_RULES" ] && [ -r "$BASE_REENGAGE_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_REENGAGE_RULES")
+    rules_bundle_add "$BASE_REENGAGE_RULES" base
     log "Appending base runner-reengage rules: ${BASE_REENGAGE_RULES}"
   fi
 
@@ -2290,7 +2310,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # to FLY-271 / FLY-368. Optional — missing base file is a no-op (backward compat).
   BASE_PATROL_RULES="${BASE_RULES_DIR}/runner-patrol-rules.md"
   if [ -f "$BASE_PATROL_RULES" ] && [ -r "$BASE_PATROL_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_PATROL_RULES")
+    rules_bundle_add "$BASE_PATROL_RULES" base
     log "Appending base runner-patrol rules: ${BASE_PATROL_RULES}"
   fi
 
@@ -2303,7 +2323,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # Optional — missing base file is a no-op (backward compat).
   BASE_DOC_FLOW_RULES="${BASE_RULES_DIR}/doc-flow-rules.md"
   if [ -f "$BASE_DOC_FLOW_RULES" ] && [ -r "$BASE_DOC_FLOW_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DOC_FLOW_RULES")
+    rules_bundle_add "$BASE_DOC_FLOW_RULES" base
     log "Appending base doc-flow rules: ${BASE_DOC_FLOW_RULES}"
   fi
 
@@ -2315,7 +2335,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # is a no-op (backward compat with older flywheel checkouts).
   BASE_AUTO_QA_RULES="${BASE_RULES_DIR}/auto-qa-pipeline.md"
   if [ -f "$BASE_AUTO_QA_RULES" ] && [ -r "$BASE_AUTO_QA_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_AUTO_QA_RULES")
+    rules_bundle_add "$BASE_AUTO_QA_RULES" base
     log "Appending base auto-QA pipeline rules: ${BASE_AUTO_QA_RULES}"
   fi
 
@@ -2328,7 +2348,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # base file is a no-op (backward compat with older flywheel checkouts).
   BASE_DEFAULT_ENABLE_RULES="${BASE_RULES_DIR}/default-enable-policy.md"
   if [ -f "$BASE_DEFAULT_ENABLE_RULES" ] && [ -r "$BASE_DEFAULT_ENABLE_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DEFAULT_ENABLE_RULES")
+    rules_bundle_add "$BASE_DEFAULT_ENABLE_RULES" base
     log "Appending base default-enable policy: ${BASE_DEFAULT_ENABLE_RULES}"
   fi
 
@@ -2344,14 +2364,14 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # no-op (backward compat with older flywheel checkouts).
   BASE_XHS_MEMORY_RULES="${BASE_RULES_DIR}/xiaohongshu-memory-rules.md"
   if [ -f "$BASE_XHS_MEMORY_RULES" ] && [ -r "$BASE_XHS_MEMORY_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_XHS_MEMORY_RULES")
+    rules_bundle_add "$BASE_XHS_MEMORY_RULES" base
     log "Appending base xiaohongshu-memory rules: ${BASE_XHS_MEMORY_RULES}"
   fi
 else
   # Cos-lead base: Department Routing Discipline (one Lead per spawn message)
   BASE_COS_RULES="${BASE_RULES_DIR}/cos-lead-rules.md"
   if [ -f "$BASE_COS_RULES" ] && [ -r "$BASE_COS_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_COS_RULES")
+    rules_bundle_add "$BASE_COS_RULES" base
     log "Appending base cos-lead rules: ${BASE_COS_RULES}"
   fi
 fi
@@ -2360,7 +2380,7 @@ fi
 # External customer-facing agents intentionally keep their narrower contract.
 BASE_FOUNDER_LOCAL_TIME_RULES="${BASE_RULES_DIR}/founder-local-time.md"
 if [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_FOUNDER_LOCAL_TIME_RULES" ] && [ -r "$BASE_FOUNDER_LOCAL_TIME_RULES" ]; then
-  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_LOCAL_TIME_RULES")
+  rules_bundle_add "$BASE_FOUNDER_LOCAL_TIME_RULES" base
   log "Appending founder-local time rules: ${BASE_FOUNDER_LOCAL_TIME_RULES}"
 fi
 
@@ -2374,7 +2394,7 @@ if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "
   # FLY-231/FLY-879: companion AND external skip this 20KB reserved-action contract
   # — the short companion-safety-contract.md / external-agent-contract.md (above)
   # covers each one's boundary in a non-engineering tone.
-  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_AUTH_RULES")
+  rules_bundle_add "$BASE_FOUNDER_AUTH_RULES" base
   log "Appending base founder-only-authority rules: ${BASE_FOUNDER_AUTH_RULES}"
 fi
 
@@ -2420,7 +2440,7 @@ if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "
   # isFounderUxGateEnabled (=== "1"). Disabled → the Lead is not handed the
   # founder-ux rules at all.
   if [ "${FLYWHEEL_FOUNDER_UX_GATE_ENABLED:-}" = "1" ] && [ "$FOUNDER_UX_MODE" != "off" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_UX_RULES")
+    rules_bundle_add "$BASE_FOUNDER_UX_RULES" base
     log "Appending base founder-ux rules (founder_ux_gate.mode=${FOUNDER_UX_MODE}): ${BASE_FOUNDER_UX_RULES}"
   fi
 fi
@@ -2433,7 +2453,7 @@ fi
 BASE_HTML_DELIVERY_RULES="${BASE_RULES_DIR}/founder-html-delivery.md"
 if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_HTML_DELIVERY_RULES" ] && [ -r "$BASE_HTML_DELIVERY_RULES" ]; then
   # FLY-231/FLY-879: companion + external produce no founder HTML reports — skip.
-  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_HTML_DELIVERY_RULES")
+  rules_bundle_add "$BASE_HTML_DELIVERY_RULES" base
   log "Appending base founder-html-delivery rules: ${BASE_HTML_DELIVERY_RULES}"
 fi
 
@@ -2449,7 +2469,7 @@ BASE_CROSS_DEPT_RULES="${BASE_RULES_DIR}/cross-dept-channel-rules.md"
 # internal Lead roster / cross-dept coordination surface — skip (companion keeps it,
 # it IS a roundtable member). This is why external ≠ "companion with a different name".
 if [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_CROSS_DEPT_RULES" ] && [ -r "$BASE_CROSS_DEPT_RULES" ]; then
-  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_CROSS_DEPT_RULES")
+  rules_bundle_add "$BASE_CROSS_DEPT_RULES" base
   log "Appending base cross-dept-channel rules: ${BASE_CROSS_DEPT_RULES}"
 fi
 
@@ -2465,7 +2485,7 @@ BASE_DISCORD_REPLY_CONTRACT="${BASE_RULES_DIR}/discord-reply-contract.md"
 # (the discord-reply-enforcer Stop hook — installed for EVERY role incl. external —
 # is the real, effort-independent reply-leak defense; the prose is redundant here).
 if [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_DISCORD_REPLY_CONTRACT" ] && [ -r "$BASE_DISCORD_REPLY_CONTRACT" ]; then
-  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DISCORD_REPLY_CONTRACT")
+  rules_bundle_add "$BASE_DISCORD_REPLY_CONTRACT" base
   log "Appending base discord-reply-contract rules: ${BASE_DISCORD_REPLY_CONTRACT}"
 fi
 
@@ -2481,7 +2501,7 @@ if [ "$IS_EXTERNAL_ROLE" != true ] && [ -d "$LEAD_RULES_DIR" ]; then
     echo "[lead] Source should be: ${SHARED_RULES_DIR}/common-rules.md"
     exit 1
   fi
-  CLAUDE_ARGS+=(--append-system-prompt-file "$COMMON_RULES")
+  rules_bundle_add "$COMMON_RULES" project
   log "Appending common rules: ${COMMON_RULES}"
 
   # Department lead rules — only for non-cos roles (manage Runners). Cos-lead
@@ -2495,7 +2515,7 @@ if [ "$IS_EXTERNAL_ROLE" != true ] && [ -d "$LEAD_RULES_DIR" ]; then
       echo "[lead] Source should be: ${SHARED_RULES_DIR}/department-lead-rules.md"
       exit 1
     fi
-    CLAUDE_ARGS+=(--append-system-prompt-file "$DEPT_RULES")
+    rules_bundle_add "$DEPT_RULES" project
     log "Appending department lead rules: ${DEPT_RULES}"
   fi
 fi
@@ -2522,7 +2542,7 @@ if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
 elif [ "${LEAD_DISABLE_SCREENCAPTURE_SKILL:-0}" != "1" ]; then
   SCREENCAP_SKILL="${SCRIPT_DIR}/screencapture-l3-skill.md"
   if [ -f "$SCREENCAP_SKILL" ] && [ -r "$SCREENCAP_SKILL" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$SCREENCAP_SKILL")
+    rules_bundle_add "$SCREENCAP_SKILL" launcher
     log "Appending L3 screencapture skill: ${SCREENCAP_SKILL}"
   else
     log "WARNING: L3 screencapture skill missing at ${SCREENCAP_SKILL} — screencapture skill not loaded"
@@ -2530,6 +2550,67 @@ elif [ "${LEAD_DISABLE_SCREENCAPTURE_SKILL:-0}" != "1" ]; then
 else
   log "L3 screencapture skill disabled via LEAD_DISABLE_SCREENCAPTURE_SKILL=1"
 fi
+
+# ── FLY-1402: one immutable per-supervisor rules bundle ─────────────────────
+# The CLI currently keeps only the final repeated --append-system-prompt-file.
+# Materialize after every role/project/launcher selection has run, then append
+# exactly one target. Legacy mode remains a loud, explicit compatibility valve.
+if [ "$IS_EXTERNAL_ROLE" = true ]; then
+  RULES_BUNDLE_ROLE="external"
+elif [ "$IS_COMPANION_ROLE" = true ]; then
+  RULES_BUNDLE_ROLE="companion"
+elif [ "$IS_COS_ROLE" = true ]; then
+  RULES_BUNDLE_ROLE="cos"
+else
+  RULES_BUNDLE_ROLE="dept"
+fi
+
+_RULES_BUNDLE_COMMITTED=0
+RULES_BUNDLE_PATH=""
+RULES_BUNDLE_SHA=""
+RULES_BUNDLE_GENERATION_NONCE=""
+RULES_BUNDLE_STATE_DIR="${HOME}/.flywheel/lead-rules-bundles"
+# Consumed by _rules_bundle_write_receipt in the sourced bundle library.
+# shellcheck disable=SC2034
+RULES_BUNDLE_RECEIPT_PATH="${RULES_BUNDLE_STATE_DIR}/${PROJECT_NAME}-${LEAD_ID}.active.json"
+
+# Compute this once and reuse it for filename, receipt, cleanup, and FLY-1309.
+LEAD_LEASE_SUPERVISOR_START="$(tmux_supervisor_process_start_identity "$$" || true)"
+if [ -n "$LEAD_LEASE_SUPERVISOR_START" ]; then
+  _rules_bundle_generation="$$-lstart-$(_rules_bundle_start_hash "$LEAD_LEASE_SUPERVISOR_START")"
+else
+  RULES_BUNDLE_GENERATION_NONCE="$(_rules_bundle_random_nonce)"
+  if [ -z "$RULES_BUNDLE_GENERATION_NONCE" ]; then
+    log "FATAL: could not generate rules-bundle generation nonce"
+    exit 1
+  fi
+  _rules_bundle_generation="$$-nonce-${RULES_BUNDLE_GENERATION_NONCE}"
+fi
+
+if [ "$RULES_BUNDLE_MODE" = "bundle" ]; then
+  RULES_BUNDLE_PATH="${RULES_BUNDLE_STATE_DIR}/${PROJECT_NAME}-${LEAD_ID}.${_rules_bundle_generation}.md"
+  if ! _rules_bundle_result="$(rules_bundle_materialize \
+    "$RULES_BUNDLE_PATH" "$RULES_BUNDLE_ROLE" "$LEAD_ID" "$PROJECT_NAME")" \
+    || [ "$_rules_bundle_result" != "$RULES_BUNDLE_PATH" ]; then
+    log "FATAL: failed to materialize Lead rules bundle at ${RULES_BUNDLE_PATH}"
+    _rules_bundle_uncommitted_cleanup
+    exit 1
+  fi
+  RULES_BUNDLE_SHA="$(sed -n 's/^RULES_BUNDLE_SHA=\([^ ]*\) FILES=.*/\1/p' "$RULES_BUNDLE_PATH" | head -1)"
+  if [ -z "$RULES_BUNDLE_SHA" ]; then
+    log "FATAL: materialized rules bundle is missing its sentinel"
+    _rules_bundle_uncommitted_cleanup
+    exit 1
+  fi
+  CLAUDE_ARGS+=(--append-system-prompt-file "$RULES_BUNDLE_PATH")
+  log "Appending consolidated rules bundle: ${RULES_BUNDLE_PATH} (${#RULES_BUNDLE_FILES[@]} files)"
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
+    trap _rules_bundle_uncommitted_cleanup EXIT
+  fi
+else
+  log "WARNING: running LEGACY last-one-wins mode, rules NOT bundled (FLYWHEEL_LEAD_RULES_BUNDLE=legacy)"
+fi
+unset _rules_bundle_generation _rules_bundle_result
 
 # ════════════════════════════════════════════════════════════════
 # FLY-142 PR 1.2: Vendor-neutral Agent Team transport wiring
@@ -2784,7 +2865,8 @@ LEAD_LEASE_KEY=""
 LEAD_LEASE_GENERATION=""
 LEAD_LEASE_DEGRADED=""
 LEAD_LEASE_HOLD_REASON=""
-LEAD_LEASE_SUPERVISOR_START="$(tmux_supervisor_process_start_identity "$$" || true)"
+# FLY-1402 computed this once before rules materialization; the lease, bundle
+# generation, receipt, and cleanup proof must all consume the identical value.
 LEAD_ALERT_SH="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
 
 _lead_identity_alert() {
@@ -2892,6 +2974,15 @@ while true; do
       "${PROJECT_NAME}/${LEAD_ID} could not read the process table and is held before launch."
     interruptible_sleep "$TMUX_HOLD_BACKOFF"
     continue
+  fi
+
+  # FLY-1402 launch-ownership commit point: lease acquisition, tmux takeover,
+  # and exact-process preflight have all allowed this generation. Receipt write
+  # is fail-STOP before any Claude child; the helper is idempotent across crash
+  # recovery iterations, so neither receipt nor legacy alert repeats.
+  if ! _rules_bundle_commit_once; then
+    log "FATAL: failed to commit active Lead rules receipt; refusing child launch"
+    exit 1
   fi
 
   CLAUDE_EXIT=0

@@ -1,11 +1,14 @@
 #!/bin/bash
 # FLY-26: Tests for Lead agent rules splitting changes in claude-lead.sh.
 # Tests identity.md priority, shared rule file sync (atomic replacement),
-# and --append-system-prompt-file args construction.
+# and consolidated --append-system-prompt-file bundle construction.
 # Run: bash packages/teamlead/scripts/test-fly26-rules-split.sh
 set -euo pipefail
 
 PASS=0; FAIL=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lead-rules-bundle.sh
+source "${SCRIPT_DIR}/lead-rules-bundle.sh"
 assert_eq() {
   if [ "$1" = "$2" ]; then
     PASS=$((PASS+1)); echo "  PASS: $3"
@@ -251,90 +254,60 @@ assert_eq "$SHARED_RULES_COUNT" "0" "Empty shared dir → 0 files staged"
 assert_dir_not_exists "$LEAD_RULES_DIR" "No target dir created for 0 files"
 
 # ═══════════════════════════════════════════════════════════════
-# Test Group 3: --append-system-prompt-file args construction
+# Test Group 3: one --append-system-prompt-file bundle construction
 # ═══════════════════════════════════════════════════════════════
 echo ""
-echo "=== Test Group 3: --append-system-prompt-file args ==="
+echo "=== Test Group 3: one --append-system-prompt-file bundle ==="
 
-# Test 3.1: Peter loads both common + department rules
-echo "--- Test 3.1: Peter loads common + department rules ---"
+build_project_bundle() {
+  local lead_id="$1" lead_rules_dir="$2" out="$3" role=dept
+  [ "$lead_id" = "cos-lead" ] && role=cos
+  RULES_BUNDLE_MODE=bundle
+  CLAUDE_ARGS=(--agent "$lead_id" --permission-mode bypassPermissions)
+  rules_bundle_reset
+  if [ -d "$lead_rules_dir" ]; then
+    COMMON_RULES="${lead_rules_dir}/common-rules.md"
+    if [ -f "$COMMON_RULES" ] && [ -r "$COMMON_RULES" ]; then
+      rules_bundle_add "$COMMON_RULES" project
+    fi
+    if [ "$lead_id" != "cos-lead" ]; then
+      DEPT_RULES="${lead_rules_dir}/department-lead-rules.md"
+      if [ -f "$DEPT_RULES" ] && [ -r "$DEPT_RULES" ]; then
+        rules_bundle_add "$DEPT_RULES" project
+      fi
+    fi
+  fi
+  if [ "${#RULES_BUNDLE_FILES[@]}" -gt 0 ]; then
+    rules_bundle_materialize "$out" "$role" "$lead_id" fixture >/dev/null
+    CLAUDE_ARGS+=(--append-system-prompt-file "$out")
+  fi
+}
+
 LEAD_RULES_DIR="$TMPDIR/args-test-1"
 mkdir -p "$LEAD_RULES_DIR"
 echo "# Common" > "$LEAD_RULES_DIR/common-rules.md"
 echo "# Department" > "$LEAD_RULES_DIR/department-lead-rules.md"
-LEAD_ID="product-lead"
 
-CLAUDE_ARGS=(--agent "$LEAD_ID" --permission-mode bypassPermissions)
-if [ -d "$LEAD_RULES_DIR" ]; then
-  COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
-  if [ -f "$COMMON_RULES" ] && [ -r "$COMMON_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$COMMON_RULES")
-  fi
-  if [ "$LEAD_ID" != "cos-lead" ]; then
-    DEPT_RULES="${LEAD_RULES_DIR}/department-lead-rules.md"
-    if [ -f "$DEPT_RULES" ] && [ -r "$DEPT_RULES" ]; then
-      CLAUDE_ARGS+=(--append-system-prompt-file "$DEPT_RULES")
-    fi
-  fi
-fi
+for LEAD_ID in product-lead ops-lead; do
+  echo "--- Test 3: ${LEAD_ID} loads common + department in one bundle ---"
+  BUNDLE_PATH="$TMPDIR/${LEAD_ID}-project-bundle.md"
+  build_project_bundle "$LEAD_ID" "$LEAD_RULES_DIR" "$BUNDLE_PATH"
+  assert_eq "$(printf '%s\n' "${CLAUDE_ARGS[@]}" | grep -c '^--append-system-prompt-file$')" "1" "${LEAD_ID} gets exactly one append flag"
+  assert_contains "$(sed '/^═══ RULE SOURCE \[/,$d' "$BUNDLE_PATH")" "project/common-rules.md" "${LEAD_ID} bundle gets common rules"
+  assert_contains "$(sed '/^═══ RULE SOURCE \[/,$d' "$BUNDLE_PATH")" "project/department-lead-rules.md" "${LEAD_ID} bundle gets department rules"
+done
 
-ARGS_STR="${CLAUDE_ARGS[*]}"
-assert_contains "$ARGS_STR" "common-rules.md" "Peter gets common rules"
-assert_contains "$ARGS_STR" "department-lead-rules.md" "Peter gets department rules"
+echo "--- Test 3.3: cos-lead loads only project common in one bundle ---"
+BUNDLE_PATH="$TMPDIR/cos-project-bundle.md"
+build_project_bundle cos-lead "$LEAD_RULES_DIR" "$BUNDLE_PATH"
+assert_eq "$(printf '%s\n' "${CLAUDE_ARGS[@]}" | grep -c '^--append-system-prompt-file$')" "1" "cos-lead gets exactly one append flag"
+BUNDLE_HEADER="$(sed '/^═══ RULE SOURCE \[/,$d' "$BUNDLE_PATH")"
+assert_contains "$BUNDLE_HEADER" "project/common-rules.md" "cos-lead gets common rules"
+assert_not_contains "$BUNDLE_HEADER" "project/department-lead-rules.md" "cos-lead does NOT get department rules"
 
-# Test 3.2: Oliver loads both common + department rules
-echo "--- Test 3.2: Oliver loads common + department rules ---"
-LEAD_ID="ops-lead"
-CLAUDE_ARGS=(--agent "$LEAD_ID" --permission-mode bypassPermissions)
-if [ -d "$LEAD_RULES_DIR" ]; then
-  COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
-  if [ -f "$COMMON_RULES" ] && [ -r "$COMMON_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$COMMON_RULES")
-  fi
-  if [ "$LEAD_ID" != "cos-lead" ]; then
-    DEPT_RULES="${LEAD_RULES_DIR}/department-lead-rules.md"
-    if [ -f "$DEPT_RULES" ] && [ -r "$DEPT_RULES" ]; then
-      CLAUDE_ARGS+=(--append-system-prompt-file "$DEPT_RULES")
-    fi
-  fi
-fi
-ARGS_STR="${CLAUDE_ARGS[*]}"
-assert_contains "$ARGS_STR" "common-rules.md" "Oliver gets common rules"
-assert_contains "$ARGS_STR" "department-lead-rules.md" "Oliver gets department rules"
-
-# Test 3.3: Simba loads ONLY common rules (no department)
-echo "--- Test 3.3: Simba loads only common rules ---"
-LEAD_ID="cos-lead"
-CLAUDE_ARGS=(--agent "$LEAD_ID" --permission-mode bypassPermissions)
-if [ -d "$LEAD_RULES_DIR" ]; then
-  COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
-  if [ -f "$COMMON_RULES" ] && [ -r "$COMMON_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$COMMON_RULES")
-  fi
-  if [ "$LEAD_ID" != "cos-lead" ]; then
-    DEPT_RULES="${LEAD_RULES_DIR}/department-lead-rules.md"
-    if [ -f "$DEPT_RULES" ] && [ -r "$DEPT_RULES" ]; then
-      CLAUDE_ARGS+=(--append-system-prompt-file "$DEPT_RULES")
-    fi
-  fi
-fi
-ARGS_STR="${CLAUDE_ARGS[*]}"
-assert_contains "$ARGS_STR" "common-rules.md" "Simba gets common rules"
-assert_not_contains "$ARGS_STR" "department-lead-rules.md" "Simba does NOT get department rules"
-
-# Test 3.4: No LEAD_RULES_DIR → no append args (backward compat)
-echo "--- Test 3.4: No rules dir → no append args ---"
-LEAD_ID="product-lead"
-LEAD_RULES_DIR="$TMPDIR/nonexistent-dir"
-CLAUDE_ARGS=(--agent "$LEAD_ID" --permission-mode bypassPermissions)
-if [ -d "$LEAD_RULES_DIR" ]; then
-  COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
-  if [ -f "$COMMON_RULES" ] && [ -r "$COMMON_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$COMMON_RULES")
-  fi
-fi
-ARGS_STR="${CLAUDE_ARGS[*]}"
-assert_not_contains "$ARGS_STR" "append-system-prompt-file" "No rules dir → no append args"
+echo "--- Test 3.4: no rules dir → no append args ---"
+build_project_bundle product-lead "$TMPDIR/nonexistent-dir" "$TMPDIR/no-rules-bundle.md"
+assert_not_contains "${CLAUDE_ARGS[*]}" "append-system-prompt-file" "No rules dir → no append args"
 
 # ═══════════════════════════════════════════════════════════════
 # Test Group 4: Stale cache cleanup
@@ -695,10 +668,9 @@ else
   FAIL=$((FAIL+1)); echo "  FAIL: Test 6.6: project-common < project-dept (PCOM=$PCOM_POS PDEP=$PDEP_POS)"
 fi
 
-# Test 6.7 (Codex round 1): generic-voice scan — base files must NOT contain
-# project-specific names or hardcoded Discord IDs. Lives in flywheel base —
-# anyone editing should see this fail loudly if they leak project data.
-echo "--- Test 6.7: generic-voice scan — base files contain no project-specific names or hardcoded IDs ---"
+# Test 6.7: base files may now use fleet persona names in pedagogical examples,
+# but must not leak a project/repository identity or hardcoded Discord IDs.
+echo "--- Test 6.7: base files contain no project identity or hardcoded IDs ---"
 BASE_FILES_DIR="$(cd "$(dirname "$0")/../lead-rules-base" && pwd)"
 if [ ! -d "$BASE_FILES_DIR" ]; then
   FAIL=$((FAIL+1)); echo "  FAIL: Test 6.7 setup: base dir not found at $BASE_FILES_DIR"
@@ -712,23 +684,23 @@ else
   # per-project layer to instantiate it). Adding it here would fail by design;
   # its extensibility contract (add-a-Lead = one roster row) lives in that file.
   RULE_FILES=("$BASE_FILES_DIR/department-lead-rules.md" "$BASE_FILES_DIR/cos-lead-rules.md" "$BASE_FILES_DIR/founder-only-authority.md" "$BASE_FILES_DIR/executor-routing.md" "$BASE_FILES_DIR/founder-html-delivery.md")
-  # Names that should never appear in base rule files (examples of project
-  # concretes that belong in the project layer).
-  FORBIDDEN_NAMES_RE='\b(Peter|Oliver|Simba|Annie)\b'
+  # Current base contracts intentionally name fleet personas in examples. The
+  # forbidden boundary is a concrete project/repository identity.
+  FORBIDDEN_PROJECT_RE='\b(GeoForge3D|geoforge3d)\b'
   # Hardcoded Discord IDs (17-20 digit @-mentions or bare 17-20 digit IDs)
   FORBIDDEN_IDS_RE='<@[0-9]{17,20}>|"id":\s*"?[0-9]{17,20}"?'
-  any_name_leak=false
+  any_project_leak=false
   any_id_leak=false
   for rf in "${RULE_FILES[@]}"; do
     if [ -f "$rf" ]; then
-      if grep -qE "$FORBIDDEN_NAMES_RE" "$rf"; then any_name_leak=true; fi
+      if grep -qE "$FORBIDDEN_PROJECT_RE" "$rf"; then any_project_leak=true; fi
       if grep -qE "$FORBIDDEN_IDS_RE" "$rf"; then any_id_leak=true; fi
     fi
   done
-  if [ "$any_name_leak" = false ]; then
-    PASS=$((PASS+1)); echo "  PASS: Test 6.7: base rule files contain no project-specific names (Peter/Oliver/Simba/Annie)"
+  if [ "$any_project_leak" = false ]; then
+    PASS=$((PASS+1)); echo "  PASS: Test 6.7: base rule files contain no project/repository identity"
   else
-    FAIL=$((FAIL+1)); echo "  FAIL: Test 6.7: base rule files leak project-specific names. Run: grep -nE '$FORBIDDEN_NAMES_RE' ${RULE_FILES[*]}"
+    FAIL=$((FAIL+1)); echo "  FAIL: Test 6.7: base rule files leak project identity. Run: grep -nE '$FORBIDDEN_PROJECT_RE' ${RULE_FILES[*]}"
   fi
   if [ "$any_id_leak" = false ]; then
     PASS=$((PASS+1)); echo "  PASS: Test 6.7: base rule files contain no hardcoded Discord IDs (17-20 digit)"
@@ -972,7 +944,7 @@ assert_not_contains "$ARGS_617_COS" "$BASE_DIR_617/executor-routing.md" "Test 6.
 # ═══════════════════════════════════════════════════════════════
 # Test 6.18 (FLY-203): founder-html-delivery.md — universal load for BOTH
 # roles, silent skip when missing, ordered BEFORE project-side rules, and
-# the SHIPPED file carries the canonical command + no-local-path anchors.
+# the SHIPPED file carries the canonical skill + no-local-path anchors.
 # ═══════════════════════════════════════════════════════════════
 echo "--- Test 6.18: FLY-203 founder-html-delivery — both roles, missing-skip, ordering, content sentinel ---"
 BASE_DIR_618="$TMPDIR/base-618"
@@ -1001,8 +973,8 @@ ARGS_618_MISSING=$(simulate_append_logic "$BASE_DIR_618" "$PROJECT_DIR_618" "pro
 assert_not_contains "$ARGS_618_MISSING" "founder-html-delivery.md" "Test 6.18: missing founder-html-delivery silently skipped"
 # Content sentinel on the SHIPPED file
 SHIPPED_618="$BASE_FILES_DIR/founder-html-delivery.md"
-if [ -f "$SHIPPED_618" ] && grep -q "flywheel-comm publish-report" "$SHIPPED_618" && grep -qi "Never post a local file path" "$SHIPPED_618"; then
-  PASS=$((PASS+1)); echo "  PASS: Test 6.18: shipped founder-html-delivery.md has canonical command + no-local-path anchors"
+if [ -f "$SHIPPED_618" ] && grep -q 'founder-html-delivery.*skill' "$SHIPPED_618" && grep -qi "NEVER post a local file path" "$SHIPPED_618"; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.18: shipped founder-html-delivery.md has canonical skill + no-local-path anchors"
 else
   FAIL=$((FAIL+1)); echo "  FAIL: Test 6.18: shipped founder-html-delivery.md missing or lacks canonical anchors"
 fi

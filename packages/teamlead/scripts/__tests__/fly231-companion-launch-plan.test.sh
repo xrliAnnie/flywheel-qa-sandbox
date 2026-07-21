@@ -72,7 +72,21 @@ run_dry() {
     bash "$LEAD_SH" "$lead" "$pdir" "$pname" 2>&1
 }
 
-plan_of() { sed -n '/LAUNCH_PLAN_BEGIN/,/LAUNCH_PLAN_END/p'; }
+# FLY-1402 LEGITIMATE RETARGET: argv now carries one generated bundle. Preserve
+# this test's selected-rule assertions by appending only that bundle's manifest
+# header (never the rule bodies) to the structured launch plan.
+plan_of() {
+  local plan target
+  plan="$(sed -n '/LAUNCH_PLAN_BEGIN/,/LAUNCH_PLAN_END/p')"
+  printf '%s\n' "$plan"
+  target="$(printf '%s\n' "$plan" | awk -F'\t' '
+    $1 == "ARG" && previous == "--append-system-prompt-file" { print $2 }
+    $1 == "ARG" { previous = $2 }
+  ')"
+  if [ -n "$target" ] && [ -r "$target" ]; then
+    sed '/^═══ RULE SOURCE \[/,$d' "$target"
+  fi
+}
 has()  { grep -qF "$1"; }
 
 # ───────────────────────────────────────────────────────────── T1: companion
@@ -192,7 +206,12 @@ normalize_plan() {
   awk -F'\t' '
     $1=="ROLE"{print "role="$2}
     $1=="ARG" && $2=="--effort"{print "flag=--effort"}
-    $1=="ARG" && prev=="--append-system-prompt-file"{n=split($2,a,"/"); print "rule="a[n]}
+    $0 ~ /^  [0-9]+\. [^\/]+\// {
+      line=$0
+      sub(/^  [0-9]+\. [^\/]+\//, "", line)
+      sub(/ — .*/, "", line)
+      print "rule="line
+    }
     $1=="ARG"{prev=$2}
     $1=="PANE_ENV"{print "env="$2"="$3}
     $1=="MCP_SERVER"{print "mcp="$2}

@@ -18,7 +18,8 @@
 # maps), which stays launcher/project-specific (a Codex Lead carries that concrete
 # context in its identity.md persona instead).
 #
-# Pure: no side effects beyond stdout (the ordered paths) / stderr (diagnostics).
+# The resolver functions are pure (ordered paths on stdout, diagnostics on
+# stderr). The FLY-1402 materializer below writes one caller-selected bundle.
 
 # Emit <path> on stdout iff it exists + is readable. When <required>=1 and the file
 # is missing, print MISSING_REQUIRED:<path> to stderr and return 10 (fail-closed).
@@ -33,6 +34,294 @@ _lrb_emit() {
     return 10
   fi
   return 0
+}
+
+# FLY-1402: collect the exact ordered rule sources selected by claude-lead.sh.
+# Explicit initialization is required for bash 3.2 callers running with set -u.
+rules_bundle_reset() {
+  RULES_BUNDLE_FILES=()
+  RULES_BUNDLE_LABELS=()
+}
+
+# rules_bundle_add <absolute-source-path> <layer-label>
+rules_bundle_add() {
+  RULES_BUNDLE_FILES+=("$1")
+  RULES_BUNDLE_LABELS+=("$2")
+  # Emergency compatibility valve: preserve today's argv byte-for-byte while
+  # still recording the selected sources for the active receipt/truth checker.
+  # CLAUDE_ARGS is owned by the sourcing launcher (bash dynamic/global scope).
+  if [ "${RULES_BUNDLE_MODE:-bundle}" = "legacy" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$1")
+  fi
+}
+
+# rules_bundle_materialize <output-path> <role> <lead-id> <project>
+# On success stdout contains only the final path. Diagnostics are stderr-only so
+# callers may safely capture the result with command substitution.
+rules_bundle_materialize() {
+  local out_path="$1" role="$2" lead_id="$3" project="$4"
+  local count="${#RULES_BUNDLE_FILES[@]}"
+  [ "$count" -eq 0 ] && return 0
+
+  local out_dir body_tmp final_tmp sha generated_at
+  out_dir="$(dirname "$out_path")" || return 1
+  if ! mkdir -p "$out_dir" || ! chmod 0700 "$out_dir"; then
+    return 1
+  fi
+  body_tmp="$(mktemp "${out_dir}/.rules-bundle-body.XXXXXX")" || return 1
+  final_tmp=""
+
+  local i path label basename last_byte
+  i=0
+  while [ "$i" -lt "$count" ]; do
+    path="${RULES_BUNDLE_FILES[$i]}"
+    label="${RULES_BUNDLE_LABELS[$i]}"
+    basename="${path##*/}"
+    if ! printf '═══ RULE SOURCE [%s/%s]: %s/%s ═══\n' \
+      "$((i + 1))" "$count" "$label" "$basename" >>"$body_tmp" ||
+      ! cat "$path" >>"$body_tmp"; then
+      rm -f "$body_tmp"
+      return 1
+    fi
+    last_byte="$(tail -c 1 "$path" 2>/dev/null | od -An -t u1 | tr -d '[:space:]')"
+    if [ "$last_byte" = "10" ]; then
+      printf '\n' >>"$body_tmp" || {
+        rm -f "$body_tmp"
+        return 1
+      }
+    else
+      printf '\n\n' >>"$body_tmp" || {
+        rm -f "$body_tmp"
+        return 1
+      }
+    fi
+    i=$((i + 1))
+  done
+
+  if command -v shasum >/dev/null 2>&1; then
+    sha="$(shasum -a 256 "$body_tmp" | awk '{print $1}')" || {
+      rm -f "$body_tmp"
+      return 1
+    }
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha="$(sha256sum "$body_tmp" | awk '{print $1}')" || {
+      rm -f "$body_tmp"
+      return 1
+    }
+  else
+    sha="unavailable"
+    printf 'WARNING: no SHA-256 tool available; rules bundle sentinel is unavailable\n' >&2
+  fi
+
+  generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" || {
+    rm -f "$body_tmp"
+    return 1
+  }
+  final_tmp="$(mktemp "${out_dir}/.rules-bundle-final.XXXXXX")" || {
+    rm -f "$body_tmp"
+    return 1
+  }
+  if ! {
+    printf '# Flywheel Lead Rules Bundle (FLY-1402)\n'
+    printf 'RULES_BUNDLE_SHA=%s FILES=%s\n' "$sha" "$count"
+    printf 'ROLE=%s LEAD_ID=%s PROJECT=%s GENERATED_AT=%s\n' \
+      "$role" "$lead_id" "$project" "$generated_at"
+    printf 'MANIFEST:\n'
+    i=0
+    while [ "$i" -lt "$count" ]; do
+      path="${RULES_BUNDLE_FILES[$i]}"
+      label="${RULES_BUNDLE_LABELS[$i]}"
+      basename="${path##*/}"
+      printf '  %s. %s/%s — %s\n' "$((i + 1))" "$label" "$basename" "$path"
+      i=$((i + 1))
+    done
+    printf 'PROBE: If asked to read back your rules bundle sentinel, quote the\n'
+    printf 'RULES_BUNDLE_SHA line above verbatim (the whole line, exactly).\n\n'
+    cat "$body_tmp"
+  } >"$final_tmp"; then
+    rm -f "$body_tmp" "$final_tmp"
+    return 1
+  fi
+  if ! chmod 0600 "$final_tmp" || ! mv "$final_tmp" "$out_path"; then
+    rm -f "$body_tmp" "$final_tmp"
+    return 1
+  fi
+  rm -f "$body_tmp"
+  printf '%s\n' "$out_path"
+}
+
+# FLY-1402 launcher lifecycle helpers. They intentionally consume caller-owned
+# globals (selected arrays, role/mode/path, lease start identity, Lead ids) so
+# claude-lead.sh can keep the ownership commit at its real pre-launch seam while
+# this source-only library remains independently harnessable.
+_rules_bundle_start_hash() {
+  local value="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$value" | shasum -a 256 | awk '{print substr($1, 1, 16)}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$value" | sha256sum | awk '{print substr($1, 1, 16)}'
+  else
+    printf '%s' "$value" | cksum | awk '{print $1}'
+  fi
+}
+
+_rules_bundle_random_nonce() {
+  od -An -N12 -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]'
+}
+
+_rules_bundle_uncommitted_cleanup() {
+  if [ "${_RULES_BUNDLE_COMMITTED:-0}" != "1" ] \
+    && [ "${RULES_BUNDLE_MODE:-bundle}" = "bundle" ] \
+    && [ -n "${RULES_BUNDLE_PATH:-}" ]; then
+    rm -f -- "$RULES_BUNDLE_PATH" 2>/dev/null || true
+  fi
+}
+
+_rules_bundle_selected_sources_json() {
+  local result='[]' i=0 path label basename
+  while [ "$i" -lt "${#RULES_BUNDLE_FILES[@]}" ]; do
+    path="${RULES_BUNDLE_FILES[$i]}"
+    label="${RULES_BUNDLE_LABELS[$i]}"
+    basename="${path##*/}"
+    result="$(printf '%s' "$result" | jq \
+      --arg label "$label" --arg basename "$basename" --arg path "$path" \
+      '. + [{label:$label, basename:$basename, path:$path}]')" || return 1
+    i=$((i + 1))
+  done
+  printf '%s\n' "$result"
+}
+
+_rules_bundle_append_targets_json() {
+  local result='[]' i=0
+  if [ "$RULES_BUNDLE_MODE" = "bundle" ]; then
+    jq -n --arg path "$RULES_BUNDLE_PATH" '[$path]'
+    return
+  fi
+  while [ "$i" -lt "${#RULES_BUNDLE_FILES[@]}" ]; do
+    result="$(printf '%s' "$result" | jq --arg path "${RULES_BUNDLE_FILES[$i]}" \
+      '. + [$path]')" || return 1
+    i=$((i + 1))
+  done
+  printf '%s\n' "$result"
+}
+
+_rules_bundle_write_receipt() {
+  local selected append_targets generated_at tmp bundle_path_json sha_json
+  selected="$(_rules_bundle_selected_sources_json)" || return 1
+  append_targets="$(_rules_bundle_append_targets_json)" || return 1
+  generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" || return 1
+  mkdir -p "$RULES_BUNDLE_STATE_DIR" || return 1
+  chmod 0700 "$RULES_BUNDLE_STATE_DIR" || return 1
+  tmp="$(mktemp "${RULES_BUNDLE_STATE_DIR}/.active-receipt.XXXXXX")" || return 1
+  if [ "$RULES_BUNDLE_MODE" = "bundle" ]; then
+    bundle_path_json="$(jq -n --arg value "$RULES_BUNDLE_PATH" '$value')" || {
+      rm -f "$tmp"
+      return 1
+    }
+    sha_json="$(jq -n --arg value "$RULES_BUNDLE_SHA" '$value')" || {
+      rm -f "$tmp"
+      return 1
+    }
+  else
+    bundle_path_json="null"
+    sha_json="null"
+  fi
+  if [ -n "$LEAD_LEASE_SUPERVISOR_START" ]; then
+    if ! jq -n \
+      --arg mode "$RULES_BUNDLE_MODE" \
+      --argjson bundlePath "$bundle_path_json" \
+      --argjson pid "$$" \
+      --arg supervisorStart "$LEAD_LEASE_SUPERVISOR_START" \
+      --argjson sha "$sha_json" \
+      --arg role "$RULES_BUNDLE_ROLE" \
+      --arg generatedAt "$generated_at" \
+      --argjson selectedSources "$selected" \
+      --argjson appendTargets "$append_targets" \
+      --argjson files "${#RULES_BUNDLE_FILES[@]}" \
+      '{mode:$mode,bundlePath:$bundlePath,pid:$pid,supervisorStart:$supervisorStart,sha:$sha,role:$role,generatedAt:$generatedAt,selectedSources:$selectedSources,appendTargets:$appendTargets,files:$files}' \
+      > "$tmp"; then
+      rm -f "$tmp"
+      return 1
+    fi
+  else
+    if ! jq -n \
+      --arg mode "$RULES_BUNDLE_MODE" \
+      --argjson bundlePath "$bundle_path_json" \
+      --argjson pid "$$" \
+      --argjson supervisorStart null \
+      --arg generationNonce "$RULES_BUNDLE_GENERATION_NONCE" \
+      --argjson sha "$sha_json" \
+      --arg role "$RULES_BUNDLE_ROLE" \
+      --arg generatedAt "$generated_at" \
+      --argjson selectedSources "$selected" \
+      --argjson appendTargets "$append_targets" \
+      --argjson files "${#RULES_BUNDLE_FILES[@]}" \
+      '{mode:$mode,bundlePath:$bundlePath,pid:$pid,supervisorStart:$supervisorStart,generationNonce:$generationNonce,sha:$sha,role:$role,generatedAt:$generatedAt,selectedSources:$selectedSources,appendTargets:$appendTargets,files:$files}' \
+      > "$tmp"; then
+      rm -f "$tmp"
+      return 1
+    fi
+  fi
+  if ! chmod 0600 "$tmp" || ! mv "$tmp" "$RULES_BUNDLE_RECEIPT_PATH"; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+_rules_bundle_cleanup_stale_generations() {
+  local candidate name generation pid suffix actual_start actual_hash
+  [ "$RULES_BUNDLE_MODE" = "bundle" ] || return 0
+  # PROJECT_NAME and LEAD_ID are launcher-owned globals in this sourced library.
+  # shellcheck disable=SC2153
+  for candidate in "${RULES_BUNDLE_STATE_DIR}/${PROJECT_NAME}-${LEAD_ID}."*.md; do
+    [ -f "$candidate" ] && [ ! -L "$candidate" ] || continue
+    [ "$candidate" != "$RULES_BUNDLE_PATH" ] || continue
+    name="$(basename "$candidate")"
+    generation="${name#"${PROJECT_NAME}"-"${LEAD_ID}".}"
+    generation="${generation%.md}"
+    pid="${generation%%-*}"
+    suffix="${generation#*-}"
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    case "$suffix" in
+      lstart-*)
+        actual_start="$(tmux_supervisor_process_start_identity "$pid" || true)"
+        if [ -z "$actual_start" ]; then
+          rm -f -- "$candidate" 2>/dev/null || true
+          continue
+        fi
+        actual_hash="$(_rules_bundle_start_hash "$actual_start")"
+        if [ "$suffix" != "lstart-${actual_hash}" ]; then
+          rm -f -- "$candidate" 2>/dev/null || true
+        fi
+        ;;
+      # No lstart proof exists for nonce generations; PID-only deletion is
+      # forbidden because it can erase a different launcher after PID reuse.
+      nonce-*) ;;
+    esac
+  done
+}
+
+_rules_bundle_legacy_alert() {
+  [ -x "${LEAD_ALERT_SH:-}" ] || return 0
+  "$LEAD_ALERT_SH" \
+    --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+    --kind rules_bundle_legacy --severity warning \
+    --title "Lead rules bundle legacy mode" \
+    --body "${PROJECT_NAME}/${LEAD_ID} launched with FLYWHEEL_LEAD_RULES_BUNDLE=legacy; Claude CLI last-one-wins semantics mean only the final repeated rules file is effective. Remove the compatibility override and restart." \
+    || log "WARNING: rules_bundle_legacy alert failed"
+}
+
+_rules_bundle_commit_once() {
+  [ "$_RULES_BUNDLE_COMMITTED" = "1" ] && return 0
+  _rules_bundle_write_receipt || return 1
+  if [ "$RULES_BUNDLE_MODE" = "bundle" ]; then
+    trap - EXIT
+  fi
+  _RULES_BUNDLE_COMMITTED=1
+  _rules_bundle_cleanup_stale_generations
+  if [ "$RULES_BUNDLE_MODE" = "legacy" ]; then
+    _rules_bundle_legacy_alert
+  fi
 }
 
 # compute_lead_rule_bundle <role> <base_rules_dir> <comm_backend> <governance_required>

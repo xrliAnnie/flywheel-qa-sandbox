@@ -155,6 +155,12 @@ jobs:
       - name: Test — Discord adapter orphan reaper (FLY-183)
         run: bash packages/teamlead/scripts/__tests__/adapter-reap.test.sh
 
+      # FLY-1402: Claude CLI is last-one-wins for repeated prompt-file flags.
+      # Exercise the real launcher under isolated HOMEs across dept/CoS/
+      # companion/external + explicit legacy, then prove receipt lifecycle.
+      - name: Test — Lead rules single-bundle load chain (FLY-1402)
+        run: bash packages/teamlead/scripts/__tests__/fly1402-single-bundle.test.sh
+
       # FLY-519: fleet provisioning toolchain — hermetic tests for the secret
       # sanitizer, capture, and provision scripts, PLUS the zero-secret gate at
       # the git boundary. `scan_for_secrets fleet/` fails CI if the committed

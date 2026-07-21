@@ -5,7 +5,8 @@
 tmux_supervisor_process_start_identity() {
   local pid="$1"
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  ps -p "$pid" -o lstart= 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+  LC_ALL=C ps -p "$pid" -o lstart= 2>/dev/null \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
 _tmux_supervisor_process_command() {

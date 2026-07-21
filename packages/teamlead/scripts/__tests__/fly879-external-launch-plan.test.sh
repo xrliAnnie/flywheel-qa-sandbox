@@ -76,13 +76,31 @@ run_dry() {
     bash "$LEAD_SH" "$lead" "$pdir" "$pname" 2>&1
 }
 
-plan_of() { sed -n '/LAUNCH_PLAN_BEGIN/,/LAUNCH_PLAN_END/p'; }
+# FLY-1402 LEGITIMATE RETARGET: the one argv target is now a generated bundle.
+# Attach its manifest header so the existing role-surface assertions continue
+# proving the selected sources without reading arbitrary rule prose.
+plan_of() {
+  local plan target
+  plan="$(sed -n '/LAUNCH_PLAN_BEGIN/,/LAUNCH_PLAN_END/p')"
+  printf '%s\n' "$plan"
+  target="$(printf '%s\n' "$plan" | awk -F'\t' '
+    $1 == "ARG" && previous == "--append-system-prompt-file" { print $2 }
+    $1 == "ARG" { previous = $2 }
+  ')"
+  if [ -n "$target" ] && [ -r "$target" ]; then
+    sed '/^═══ RULE SOURCE \[/,$d' "$target"
+  fi
+}
 has()  { grep -qF "$1"; }
 # Count the appended rule basenames in a plan.
 rule_names() {
-  awk -F'\t' '
-    $1=="ARG" && prev=="--append-system-prompt-file"{n=split($2,a,"/"); print a[n]}
-    $1=="ARG"{prev=$2}
+  awk '
+    $0 ~ /^  [0-9]+\. [^\/]+\// {
+      line=$0
+      sub(/^  [0-9]+\. [^\/]+\//, "", line)
+      sub(/ — .*/, "", line)
+      print line
+    }
   '
 }
 

@@ -23,6 +23,30 @@ fi
 source "$LIB"
 
 ARCHIVE="$TMP_DIR/lead.tmux"
+
+echo "[TEST] process start identity pins ps output to the C locale"
+LOCALE_BIN="$TMP_DIR/locale-bin"
+mkdir -p "$LOCALE_BIN"
+# This single-quoted line is emitted verbatim into the ps shim for runtime expansion.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/bin/sh' \
+  '[ "${LC_ALL:-}" = "C" ] || { printf "wrong LC_ALL=%s\n" "${LC_ALL:-unset}" >&2; exit 17; }' \
+  'printf "Tue Jul 21 08:00:00 2026\n"' \
+  > "$LOCALE_BIN/ps"
+chmod +x "$LOCALE_BIN/ps"
+LOCALE_START="$(
+  export LC_ALL=en_US.UTF-8
+  export PATH="$LOCALE_BIN:$PATH"
+  tmux_supervisor_process_start_identity 4242
+)"
+LOCALE_RC=$?
+if [ "$LOCALE_RC" -eq 0 ] && [ "$LOCALE_START" = "Tue Jul 21 08:00:00 2026" ]; then
+  ok "start-identity producer overrides ambient locale with LC_ALL=C"
+else
+  bad "start-identity producer inherited ambient locale: rc=$LOCALE_RC output=$LOCALE_START"
+fi
+
 echo "[TEST] archive atomically preserves the server/pane generation tuple"
 tmux_supervisor_archive_write "$ARCHIVE" 4100 4200 "start identity" '@7'
 if tmux_supervisor_archive_read "$ARCHIVE" \

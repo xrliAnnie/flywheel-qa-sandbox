@@ -150,6 +150,16 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		}
 	});
 
+	it("FLY-1402 legacy rules loading is a Claude-owned human audit event", () => {
+		expect(ALERT_EVENT_TYPES).toContain("rules_bundle_legacy");
+		expect(
+			(KIND_CONTRACTS as Record<string, KindContract>).rules_bundle_legacy,
+		).toEqual({
+			owner: "claude",
+			arc: "human_by_design",
+		});
+	});
+
 	it("routes review governance audit events to a human-owned contract", () => {
 		for (const kind of REVIEW_GOVERNANCE_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);

@@ -295,6 +295,10 @@ export const ALERT_EVENT_TYPES = [
 	// FLY-1373: the sole retained delivery watchdog — a per-Lead consume-loop
 	// stall and any queue-native deadline breach are reported in one incident.
 	"inbox_loop_stalled",
+	// FLY-1402: a Claude Lead was explicitly launched through the emergency
+	// last-one-wins compatibility path instead of the single-file rules bundle.
+	// Shell-emitted only, but kept in the shared face so queued alerts drain.
+	"rules_bundle_legacy",
 	// FLY-1309: Lead identity uniqueness, lease control, and carrier drift.
 	"lead_dual_active",
 	"lead_dual_active_sensor_degraded",

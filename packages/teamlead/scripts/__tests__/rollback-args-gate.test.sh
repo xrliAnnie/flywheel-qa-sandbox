@@ -4,7 +4,7 @@
 # `FLYWHEEL_COMM_BACKEND=commdb`.
 #
 # Two surfaces are gated on the backend, both must skip on commdb:
-#   1. `runner-messaging-rules.md` (--append-system-prompt-file)
+#   1. `runner-messaging-rules.md` (selected into the FLY-1402 bundle)
 #   2. `FLYWHEEL_AGENT_TEAM_ARGS` (--agent-id / --agent-name / --team-name)
 #
 # Without this gating, Lead would advertise itself as a claude-code
@@ -33,7 +33,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 # ─────────────────────────────────────────────────────────────────────────
 # Helper: mirror the runner-messaging-rules gate from claude-lead.sh.
-# Sets CLAUDE_ARGS_OUT (array) based on the gate outcome.
+# Sets RULES_SELECTED_OUT (array) based on the gate outcome.
 # ─────────────────────────────────────────────────────────────────────────
 normalize_comm_backend() {
   # Mirrors the production helper at the top of claude-lead.sh: default,
@@ -45,11 +45,11 @@ normalize_comm_backend() {
 }
 
 runner_msg_gate_fragment() {
-  CLAUDE_ARGS_OUT=()
+  RULES_SELECTED_OUT=()
   local backend
   backend=$(normalize_comm_backend)
   if [ "$backend" != "commdb" ]; then
-    CLAUDE_ARGS_OUT+=(--append-system-prompt-file "/fake/runner-messaging-rules.md")
+    RULES_SELECTED_OUT+=("/fake/runner-messaging-rules.md:base")
   fi
 }
 
@@ -71,7 +71,7 @@ agent_team_args_gate_fragment() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════
-# Test 1 — runner-messaging-rules on mailbox (default): rule IS appended.
+# Test 1 — runner-messaging-rules on mailbox (default): rule IS selected.
 # ═══════════════════════════════════════════════════════════════════════
 test_runner_msg_mailbox_includes() {
   local result
@@ -80,17 +80,17 @@ test_runner_msg_mailbox_includes() {
     unset FLYWHEEL_COMM_BACKEND
     $(declare -f runner_msg_gate_fragment)
     runner_msg_gate_fragment
-    printf '%s\n' "${CLAUDE_ARGS_OUT[@]:-}"
+    printf '%s\n' "${RULES_SELECTED_OUT[@]:-}"
   )
   if printf '%s\n' "$result" | grep -q "runner-messaging-rules.md"; then
-    pass "default backend (mailbox): runner-messaging-rules.md appended"
+    pass "default backend (mailbox): runner-messaging-rules.md selected for bundle"
   else
-    fail "default backend should append rule, got: '$result'"
+    fail "default backend should select rule, got: '$result'"
   fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════
-# Test 2 — runner-messaging-rules on commdb: rule NOT appended.
+# Test 2 — runner-messaging-rules on commdb: rule NOT selected.
 # ═══════════════════════════════════════════════════════════════════════
 test_runner_msg_commdb_skips() {
   local result
@@ -99,17 +99,17 @@ test_runner_msg_commdb_skips() {
     export FLYWHEEL_COMM_BACKEND=commdb
     $(declare -f runner_msg_gate_fragment)
     runner_msg_gate_fragment
-    printf '%s\n' "${CLAUDE_ARGS_OUT[@]:-}"
+    printf '%s\n' "${RULES_SELECTED_OUT[@]:-}"
   )
   if printf '%s\n' "$result" | grep -q "runner-messaging-rules.md"; then
-    fail "commdb backend should NOT append rule, got: '$result'"
+    fail "commdb backend should NOT select rule, got: '$result'"
   else
-    pass "commdb backend (rollback): runner-messaging-rules.md NOT appended"
+    pass "commdb backend (rollback): runner-messaging-rules.md NOT selected"
   fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════
-# Test 3 — runner-messaging-rules on COMMDB (case insensitive): NOT appended.
+# Test 3 — runner-messaging-rules on COMMDB (case insensitive): NOT selected.
 # ═══════════════════════════════════════════════════════════════════════
 test_runner_msg_commdb_case_insensitive() {
   local result
@@ -118,7 +118,7 @@ test_runner_msg_commdb_case_insensitive() {
     export FLYWHEEL_COMM_BACKEND=COMMDB
     $(declare -f runner_msg_gate_fragment)
     runner_msg_gate_fragment
-    printf '%s\n' "${CLAUDE_ARGS_OUT[@]:-}"
+    printf '%s\n' "${RULES_SELECTED_OUT[@]:-}"
   )
   if printf '%s\n' "$result" | grep -q "runner-messaging-rules.md"; then
     fail "COMMDB (uppercase) should NOT append rule, got: '$result'"
@@ -179,7 +179,7 @@ test_production_has_both_gates() {
     return
   fi
   # runner-messaging-rules gate: "_runnermsg_backend" assignment must guard
-  # the BASE_RUNNER_MSG_RULES append.
+  # the BASE_RUNNER_MSG_RULES bundle selection.
   if ! grep -qE 'BASE_RUNNER_MSG_RULES.*runner-messaging-rules' "$lead"; then
     fail "claude-lead.sh missing BASE_RUNNER_MSG_RULES assignment"
     return
@@ -210,10 +210,10 @@ test_runner_msg_commdb_whitespace_trimmed() {
     $(declare -f normalize_comm_backend)
     $(declare -f runner_msg_gate_fragment)
     runner_msg_gate_fragment
-    printf '%s\n' "${CLAUDE_ARGS_OUT[@]:-}"
+    printf '%s\n' "${RULES_SELECTED_OUT[@]:-}"
   )
   if printf '%s\n' "$result" | grep -q "runner-messaging-rules.md"; then
-    fail "whitespace-padded commdb should NOT append rule, got: '$result'"
+    fail "whitespace-padded commdb should NOT select rule, got: '$result'"
   else
     pass "FLYWHEEL_COMM_BACKEND=\" commdb \" trimmed correctly → no rule"
   fi
