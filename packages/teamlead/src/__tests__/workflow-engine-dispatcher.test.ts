@@ -44,6 +44,22 @@ const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
 };
 
+// FLY-1417: the dead-exec sweep's replacement backoff
+// (workflow-engine-dispatcher §reconcileDeadExecutions) spaces retries by comparing
+// the injected engine clock against workflow_side_effect_ledger.created_at — which
+// SQLite fills with `datetime('now')` (the REAL UTC wall clock) at insert time and
+// exposes no injectable seam. A hard-coded calendar date for the engine clock is
+// therefore a time bomb: once the real wall clock passes it, `now - created_at` goes
+// negative, the ladder wrongly holds, and the dead-exec replacement never fires
+// (started: 0). Anchor the engine clock to the real clock plus a wide margin (well
+// beyond the 15-minute top ladder tier) so the elapsed always clears the ladder,
+// deterministically, in any zone or on any calendar day — mirroring the retry-ladder
+// test in this file, which already anchors to `Date.now()` for the same reason.
+const DEAD_EXEC_ENGINE_CLOCK_MARGIN_MS = 6 * 60 * 60 * 1000; // 6h ≫ 15-min top tier
+function deadExecEngineClockBaseMs(): number {
+	return Date.now() + DEAD_EXEC_ENGINE_CLOCK_MARGIN_MS;
+}
+
 async function storeWithIntent(target: "design" | "implement" | "qa") {
 	const store = await StateStore.create(":memory:");
 	const seed = loadBundledWorkflowSeeds().find(
@@ -875,12 +891,13 @@ describe("WorkflowEngineDispatcher", () => {
 	it("replaces a started execution whose terminal session and liveness prove it dead", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);
+		const base = deadExecEngineClockBaseMs();
 		const dispatcher = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-dead-sweep-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-22T00:00:00.000Z"),
+			now: () => new Date(base),
 			resolvePredecessorHead: async () => HEAD,
 			probeLaunchLiveness: async () => "dead",
 		});
@@ -913,12 +930,13 @@ describe("WorkflowEngineDispatcher", () => {
 			FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 		};
 		const probeLaunchLiveness = vi.fn(async () => "dead" as const);
+		const base = deadExecEngineClockBaseMs();
 		const dispatcher = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-live-sweep-flag-")),
 			env,
-			now: () => new Date("2026-07-22T00:00:00.000Z"),
+			now: () => new Date(base),
 			resolvePredecessorHead: async () => HEAD,
 			probeLaunchLiveness,
 		});
@@ -956,12 +974,13 @@ describe("WorkflowEngineDispatcher", () => {
 		const captureDeadExecutionActivityBaseline = vi.fn(async () => {
 			throw new Error("commdb_unreadable");
 		});
+		const base = deadExecEngineClockBaseMs();
 		const dispatcher = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-baseline-fail-safe-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-22T00:00:00.000Z"),
+			now: () => new Date(base),
 			resolvePredecessorHead: async () => HEAD,
 			probeLaunchLiveness: async () => "dead",
 			captureDeadExecutionActivityBaseline,
@@ -1069,12 +1088,13 @@ describe("WorkflowEngineDispatcher", () => {
 			tmuxOutputDigest: "before",
 			sessionCommitCount: 1,
 		};
+		const base = deadExecEngineClockBaseMs();
 		const first = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-tripwire-first-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-22T00:00:00.000Z"),
+			now: () => new Date(base),
 			resolvePredecessorHead: async () => HEAD,
 			probeLaunchLiveness: async () => "dead",
 			captureDeadExecutionActivityBaseline: async () => baseline,
@@ -1101,7 +1121,7 @@ describe("WorkflowEngineDispatcher", () => {
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-tripwire-restart-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-22T00:01:00.000Z"),
+			now: () => new Date(base + 60_000),
 			resolvePredecessorHead: async () => HEAD,
 			probeDeadExecutionActivity: async () => ({
 				kind: "commdb_write" as const,
@@ -1152,12 +1172,13 @@ describe("WorkflowEngineDispatcher", () => {
 	it("logs tmux-only activity without paging or consuming the durable watch", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);
+		const base = deadExecEngineClockBaseMs();
 		const first = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-tmux-weak-first-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-22T00:00:00.000Z"),
+			now: () => new Date(base),
 			resolvePredecessorHead: async () => HEAD,
 			probeLaunchLiveness: async () => "dead",
 			captureDeadExecutionActivityBaseline: async () => ({
@@ -1185,7 +1206,7 @@ describe("WorkflowEngineDispatcher", () => {
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-tmux-weak-restart-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-22T00:01:00.000Z"),
+			now: () => new Date(base + 60_000),
 			resolvePredecessorHead: async () => HEAD,
 			probeDeadExecutionActivity: async () => ({
 				kind: "tmux_output" as const,
@@ -1211,12 +1232,13 @@ describe("WorkflowEngineDispatcher", () => {
 	it("prunes a 24-hour dead-execution watch before the tripwire patrol probes it", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);
+		const base = deadExecEngineClockBaseMs();
 		const first = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-watch-ttl-first-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-22T00:00:00.000Z"),
+			now: () => new Date(base),
 			resolvePredecessorHead: async () => HEAD,
 			probeLaunchLiveness: async () => "dead",
 			captureDeadExecutionActivityBaseline: async () => ({
@@ -1248,7 +1270,7 @@ describe("WorkflowEngineDispatcher", () => {
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-watch-ttl-restart-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-23T00:00:00.000Z"),
+			now: () => new Date(base + 24 * 60 * 60_000),
 			resolvePredecessorHead: async () => HEAD,
 			probeDeadExecutionActivity,
 		});
@@ -1263,12 +1285,13 @@ describe("WorkflowEngineDispatcher", () => {
 	it("alerts when the same node needs a second dead-execution replacement", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);
+		const base = deadExecEngineClockBaseMs();
 		const dispatcher = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-repeat-death-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-22T00:00:00.000Z"),
+			now: () => new Date(base),
 			resolvePredecessorHead: async () => HEAD,
 			probeLaunchLiveness: async () => "dead",
 			captureDeadExecutionActivityBaseline: async () => ({
@@ -1322,7 +1345,8 @@ describe("WorkflowEngineDispatcher", () => {
 	it("keeps an unknown-liveness terminal execution in place and alerts on the third probe", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);
-		let now = new Date("2026-07-22T00:00:00.000Z");
+		const base = deadExecEngineClockBaseMs();
+		let now = new Date(base);
 		const dispatcher = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
@@ -1344,7 +1368,7 @@ describe("WorkflowEngineDispatcher", () => {
 			project_name: "flywheel",
 			status: "failed",
 		});
-		now = new Date("2026-07-22T00:02:00.000Z");
+		now = new Date(base + 120_000);
 
 		await dispatcher.reconcile();
 		await dispatcher.reconcile();
