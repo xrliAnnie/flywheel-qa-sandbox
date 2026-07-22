@@ -59,8 +59,13 @@ describe("GitWorkflowDocsGit", () => {
 					{ op: "delete" as const, path: "product/doc/existing.md" },
 					{
 						op: "write" as const,
-						path: "product/doc/prd.md",
-						content: "PRD\n",
+						path: "docs/prototype/index.html",
+						content: "<button>Try it</button>\n",
+					},
+					{
+						op: "write" as const,
+						path: "docs/prototype/README.md",
+						content: "Open with: open docs/prototype/index.html\n",
 					},
 				],
 			},
@@ -72,9 +77,12 @@ describe("GitWorkflowDocsGit", () => {
 		expect(
 			readFileSync(join(work, "product", "doc", "existing.md"), "utf8"),
 		).toBe("base\n");
-		expect(git(work, ["show", `${first.commitHead}:product/doc/prd.md`])).toBe(
-			"PRD",
-		);
+		expect(
+			git(work, ["show", `${first.commitHead}:docs/prototype/index.html`]),
+		).toBe("<button>Try it</button>");
+		expect(
+			git(work, ["show", `${first.commitHead}:docs/prototype/README.md`]),
+		).toContain("open docs/prototype/index.html");
 		expect(() =>
 			git(work, [
 				"cat-file",

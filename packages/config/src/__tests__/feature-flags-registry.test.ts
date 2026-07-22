@@ -557,6 +557,11 @@ describe("feature-flag registry invariants", () => {
 				toggleable: "direct",
 			});
 			expect(flag?.category).toBe("feature");
+			if (name === "workflow_generalized_templates") {
+				expect(flag?.description).toMatch(
+					/bundled v2 seed installation\/publication stays always-on and dormant/i,
+				);
+			}
 			expect(flag?.readSites.map((site) => [site.file, site.timing])).toEqual(
 				readSites,
 			);

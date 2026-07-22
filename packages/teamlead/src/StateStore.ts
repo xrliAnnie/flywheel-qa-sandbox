@@ -2805,7 +2805,10 @@ export class StateStore {
 				at TEXT NOT NULL DEFAULT (datetime('now')),
 				actor TEXT NOT NULL,
 				action TEXT NOT NULL CHECK (
-					action IN ('seed_import','publish','rebind','create','run_override')
+					action IN (
+						'seed_import','publish','rebind','create','run_override',
+						'template_retire'
+					)
 				),
 				template_id TEXT,
 				revision INTEGER,
@@ -2813,6 +2816,48 @@ export class StateStore {
 				detail JSON
 			)
 		`);
+		const workflowTemplateAuditSql = (
+			this.db.raw
+				.prepare(
+					"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_template_audit'",
+				)
+				.get() as { sql?: string } | undefined
+		)?.sql;
+		if (
+			workflowTemplateAuditSql &&
+			!workflowTemplateAuditSql.includes("template_retire")
+		) {
+			this.db.raw.transaction(() => {
+				this.db.raw.exec(`
+					DROP TRIGGER IF EXISTS workflow_template_audit_no_update;
+					DROP TRIGGER IF EXISTS workflow_template_audit_no_delete;
+					DROP TRIGGER IF EXISTS workflow_template_audit_no_replace;
+					DROP INDEX IF EXISTS idx_workflow_template_audit_template;
+					CREATE TABLE workflow_template_audit_next (
+						id INTEGER PRIMARY KEY AUTOINCREMENT,
+						at TEXT NOT NULL DEFAULT (datetime('now')),
+						actor TEXT NOT NULL,
+						action TEXT NOT NULL CHECK (
+							action IN (
+								'seed_import','publish','rebind','create','run_override',
+								'template_retire'
+							)
+						),
+						template_id TEXT,
+						revision INTEGER,
+						run_id TEXT,
+						detail JSON
+					);
+					INSERT INTO workflow_template_audit_next
+						(id, at, actor, action, template_id, revision, run_id, detail)
+					SELECT id, at, actor, action, template_id, revision, run_id, detail
+					FROM workflow_template_audit;
+					DROP TABLE workflow_template_audit;
+					ALTER TABLE workflow_template_audit_next
+						RENAME TO workflow_template_audit;
+				`);
+			})();
+		}
 		for (const table of [
 			"workflow_template_revision",
 			"workflow_template_publication",
@@ -13484,12 +13529,9 @@ export class StateStore {
 	/** Boot seed import: content-hash idempotent and founder-owned rows never move. */
 	importWorkflowTemplateSeed(
 		seed: LoadedWorkflowSeed,
-		env: Record<string, string | undefined> = process.env,
+		_env: Record<string, string | undefined> = process.env,
 	): WorkflowTemplateSeedImportResult {
 		const manifest = validateWorkflowManifest(seed.manifest);
-		if (manifest.schema_version === 2 && !isGeneralizedTemplatesEnabled(env)) {
-			throw new Error("generalized workflow templates are disabled by flag");
-		}
 		const digest = canonicalSubmissionDigest(manifest);
 		const seedDigest = workflowSeedContentHash({ ...seed, manifest });
 		if (seed.contentHash !== seedDigest) {
@@ -13588,6 +13630,71 @@ export class StateStore {
 		return { status: existing ? "updated" : "imported", revision };
 	}
 
+	retireWorkflowTemplate(input: {
+		templateId: string;
+		actor: string;
+		reason: string;
+	}): WorkflowTemplateRetireResult {
+		const actor = input.actor.trim();
+		if (!actor) {
+			throw new Error("workflow template retire actor must be non-empty");
+		}
+		const reason = input.reason.trim();
+		if (!reason) {
+			throw new Error("workflow template retire reason must be non-empty");
+		}
+
+		let result: WorkflowTemplateRetireResult = { status: "not_found" };
+		this.db.transaction(() => {
+			const template = this.getWorkflowTemplate(input.templateId);
+			if (!template) return;
+
+			const refs = this.workflowSelectAll(
+				`SELECT project, task_category
+				 FROM workflow_category_binding
+				 WHERE template_id = ?
+				 ORDER BY project, task_category`,
+				[input.templateId],
+			).map((row) => ({
+				project: String(row.project),
+				taskCategory: String(row.task_category),
+			}));
+			if (refs.length > 0) {
+				result = { status: "refused_bound", refs };
+				return;
+			}
+			if (template.retired_at !== null) {
+				result = { status: "already_retired" };
+				return;
+			}
+
+			this.db.run(
+				`UPDATE workflow_template SET retired_at = datetime('now')
+				 WHERE template_id = ? AND retired_at IS NULL`,
+				[input.templateId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error(
+					`workflow template retire lost update: ${input.templateId}`,
+				);
+			}
+			this.db.run(
+				`INSERT INTO workflow_template_audit
+				 (actor, action, template_id, revision, detail)
+				 VALUES (?, 'template_retire', ?, ?, ?)`,
+				[
+					actor,
+					input.templateId,
+					template.current_published_revision,
+					JSON.stringify({ reason }),
+				],
+			);
+			result = { status: "retired" };
+		});
+		this.save();
+		return result;
+	}
+
 	bindWorkflowCategory(input: {
 		project: string;
 		taskCategory?: string;
@@ -13597,6 +13704,14 @@ export class StateStore {
 		const template = this.getWorkflowTemplate(input.templateId);
 		if (!template) {
 			throw new Error(`workflow template not found: ${input.templateId}`);
+		}
+		if (
+			template.current_published_revision === null ||
+			template.retired_at !== null
+		) {
+			throw new Error(
+				`workflow template must be published and not retired: ${input.templateId}`,
+			);
 		}
 		if (
 			template.project_scope !== "global" &&
@@ -22766,7 +22881,13 @@ export interface WorkflowTemplateAuditRow {
 	id: number;
 	at: string;
 	actor: string;
-	action: "seed_import" | "publish" | "rebind" | "create" | "run_override";
+	action:
+		| "seed_import"
+		| "publish"
+		| "rebind"
+		| "create"
+		| "run_override"
+		| "template_retire";
 	template_id: string | null;
 	revision: number | null;
 	run_id: string | null;
@@ -22777,6 +22898,15 @@ export type WorkflowTemplatePublishResult =
 	| { status: "published"; revision: number }
 	| { status: "conflict"; currentRevision: number | null }
 	| { status: "not_found" };
+
+export type WorkflowTemplateRetireResult =
+	| { status: "retired" }
+	| { status: "already_retired" }
+	| { status: "not_found" }
+	| {
+			status: "refused_bound";
+			refs: Array<{ project: string; taskCategory: string }>;
+	  };
 
 export type WorkflowTemplateSeedImportResult = {
 	status: "imported" | "updated" | "unchanged" | "refused";

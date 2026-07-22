@@ -689,7 +689,7 @@ pipeline:
 		issueId: "FLY-1244",
 		projectName: PROJECT,
 		leadId: LEAD,
-		templateId: "tpl_ops_light",
+		templateId: "tpl_generic",
 		selectionReason: "dispatch-off fail-closed sentinel",
 		idempotencyKey: "fly1307-e2e-off-v2",
 	});

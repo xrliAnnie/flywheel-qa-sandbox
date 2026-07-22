@@ -3064,7 +3064,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		valueKind: "bool",
 		default: false,
 		description:
-			"FLY-1281: schema-v2 generalized workflow templates and per-Lead/per-category selection. Default off for byte compatibility. V2 admission also requires workflow_claims_write, and workflow_claims_write must not be enabled before the pinned real fresh-spawn E2E passes.",
+			"FLY-1281: gates schema-v2 selection, admission, and submission; bundled v2 seed installation/publication stays always-on and dormant until explicitly bound. Default off for byte-compatible routing. V2 admission also requires workflow_claims_write, and workflow_claims_write must not be enabled before the pinned real fresh-spawn E2E passes.",
 		readSites: [
 			envSite(
 				"packages/teamlead/src/workflow-template.ts",

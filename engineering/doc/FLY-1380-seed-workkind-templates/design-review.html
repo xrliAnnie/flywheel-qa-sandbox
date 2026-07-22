@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1380 设计方案 — 给每种活配对应的流水线(只建不激活)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.6; padding: 24px 16px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .sub { color: #86868b; font-size: 14px; margin-bottom: 24px; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 0.92em; }
+  .section { margin-bottom: 28px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 18px 20px; margin-bottom: 14px; }
+  .card.blue { border-left: 4px solid #007aff; }
+  .card.green { border-left: 4px solid #34c759; }
+  .card.amber { border-left: 4px solid #ff9500; }
+  .card.red { border-left: 4px solid #ff3b30; }
+  .card.purple { border-left: 4px solid #af52de; }
+  .card.gray { border-left: 4px solid #86868b; }
+  .card-title { font-weight: 700; font-size: 16px; margin-bottom: 6px; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 10px; margin-right: 6px; vertical-align: middle; }
+  .badge.new { background: #e8f8ee; color: #1d8a43; }
+  .badge.keep { background: #eef2f7; color: #5a6b7f; }
+  .badge.v1 { background: #eaf3ff; color: #0a63c9; }
+  .badge.v2 { background: #f5ecfc; color: #8e3fc4; }
+  .badge.warn { background: #fff3e0; color: #c46a00; }
+  .lede { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; font-size: 16.5px; margin-bottom: 28px; border-left: 4px solid #007aff; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); font-size: 14px; }
+  th { background: #1a365d; color: #fff; text-align: left; padding: 10px 12px; font-weight: 600; }
+  td { padding: 10px 12px; border-top: 1px solid #f0f0f2; vertical-align: top; }
+  .flow { display: flex; align-items: stretch; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+  .step { background: #eaf3ff; color: #0a63c9; border-radius: 8px; padding: 8px 12px; font-size: 13.5px; font-weight: 600; display: flex; align-items: center; text-align: center; }
+  .step.gate { background: #fff3e0; color: #c46a00; }
+  .step.founder { background: #f5ecfc; color: #8e3fc4; }
+  .arrow { display: flex; align-items: center; color: #86868b; font-weight: 700; }
+  .loop { font-size: 12.5px; color: #86868b; margin-top: 6px; }
+  .note { font-size: 13.5px; color: #6e6e73; margin-top: 8px; }
+  .ok { color: #1d8a43; font-weight: 700; }
+  .no { color: #ff3b30; font-weight: 700; }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 4px 14px; font-size: 14px; }
+  .kv .k { color: #86868b; }
+  @media (max-width: 640px) { .kv { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-1380 设计方案 · 给每种活配上对应的流水线</h1>
+<div class="sub">只建不激活 —— FLY-1396 产品方案落地的第一步 · 2026-07-22 · Codex 设计评审 4 轮 APPROVED(11 项意见全部采纳)</div>
+
+<div class="lede">
+<b>一句话:</b>现在所有走流水线的单子,不管是写代码、写 PRD 还是做设计,都被塞进同一条「重型工程流水线」。这一单把 <b>5 种活各自该有的流水线模板</b>先造出来、放进仓库里<b>备用</b> —— 但<b>不接线、不激活</b>:哪个单子走哪条流水线的「接线」动作,留给后面带安全闸的切换单独立完成。造好之后,系统今天的行为<b>一个字节都不变</b>。
+</div>
+
+<!-- ============ 五种活 ============ -->
+<div class="section">
+<div class="section-title">① 五种活 → 五条流水线(本单造的东西)</div>
+
+<div class="card blue">
+  <div class="card-title"><span class="badge new">新建</span><span class="badge v1">工程线</span>写代码(code)→ <span class="mono">tpl_eng</span></div>
+  <div class="flow">
+    <div class="step">设计</div><div class="arrow">→</div>
+    <div class="step">实现</div><div class="arrow">→</div>
+    <div class="step">QA</div><div class="arrow">→</div>
+    <div class="step founder">founder 批准</div>
+  </div>
+  <div class="loop">QA 不过 → 打回实现,最多 3 轮。另建自动合并版孪生 <span class="mono">tpl_eng_land_v1</span>(批准后自动合并)。</div>
+  <div class="note"><b>把原来的重/中/轻三套合成一套</b>:流程一模一样,只差每步用什么模型 —— 现在做成一个「档位旋钮」(重/中/轻三档,默认重档),派单时拨一下就行。三个档位的效果和旧三套<b>逐字一致</b>(有测试钉死)。</div>
+</div>
+
+<div class="card green">
+  <div class="card-title"><span class="badge keep">已有</span><span class="badge v2">产品线</span>写 PRD(prd)→ <span class="mono">tpl_product_v1</span></div>
+  <div class="flow">
+    <div class="step">研究</div><div class="arrow">→</div>
+    <div class="step">写稿</div><div class="arrow">→</div>
+    <div class="step">评审</div><div class="arrow">→</div>
+    <div class="step founder">founder 批准</div>
+  </div>
+  <div class="loop">评审不过 → 打回重写,最多 3 轮。没有写代码、没有 code review —— 写文档的单不再陪跑工程流程。</div>
+</div>
+
+<div class="card purple">
+  <div class="card-title"><span class="badge new">新建</span><span class="badge v2">产品线</span>做设计(designer)→ <span class="mono">tpl_product_designer</span></div>
+  <div class="flow">
+    <div class="step">低保真草图<br>+ 你确认方向<br>+ 细节来回磨</div><div class="arrow">→</div>
+    <div class="step">高保真</div><div class="arrow">→</div>
+    <div class="step">评审</div><div class="arrow">→</div>
+    <div class="step founder">founder 批准</div>
+  </div>
+  <div class="loop">你确认方向、每一轮改稿,都是<b>先发布成在线链接、由 Lead 投给你</b>,收到投递回执才继续;你不回复<b>绝不算默认同意</b>。细节打磨<b>不设轮数上限</b>,只认你明确说「定了」。</div>
+</div>
+
+<div class="card purple">
+  <div class="card-title"><span class="badge new">新建</span><span class="badge v2">产品线</span>做原型(prototype)→ <span class="mono">tpl_product_prototype</span></div>
+  <div class="flow">
+    <div class="step">搭可点原型<br>自己先验证能打开</div><div class="arrow">→</div>
+    <div class="step">评审复跑<br>确认真能打开</div><div class="arrow">→</div>
+    <div class="step founder">founder 试用 + 判定</div>
+  </div>
+  <div class="loop">打不开 → 打回修,最多 2 轮 —— 绝不让你试一个打不开的东西。「能做 / 不能做」都是合法结论。</div>
+</div>
+
+<div class="card gray">
+  <div class="card-title"><span class="badge new">新建</span><span class="badge v2">通用线</span>研究/杂活(research 及兜底)→ <span class="mono">tpl_generic</span></div>
+  <div class="flow">
+    <div class="step">单个执行者直接干</div><div class="arrow">→</div>
+    <div class="step founder">founder 批准</div>
+  </div>
+  <div class="loop">一步到位,没有中间环节 —— 研究报告类的单不再跑 3 轮设计评审 + 3 轮代码评审。</div>
+</div>
+</div>
+
+<!-- ============ 库存变化 ============ -->
+<div class="section">
+<div class="section-title">② 模板库存怎么变(结构模型)</div>
+<table>
+<tr><th>现在(生产实测)</th><th>本单之后</th><th>激活切换之后(另一单)</th></tr>
+<tr>
+  <td>只有 3 套工程模板(重/中/轻)+ 3 套自动合并孪生;<br>6 个项目全部是「<span class="mono">任何单 → 重型工程线</span>」一条规则</td>
+  <td>新增 6 套已发布模板(上面 5 条 + land 孪生)<b>躺在库里备用</b>;<br><b>路由规则一条不动</b>,所有单照旧走老路</td>
+  <td>每个项目逐个接线:5 种活各指向对应模板;旧模板(重/中/轻 + 两个从未启用的旧件)确认零引用后退休</td>
+</tr>
+</table>
+<div class="note">「退休」的开关(给模板打退休标记、打了就不能再被选中/绑定)本单一并造好,但<b>不按下</b> —— 按下的时机在切换成功之后,而且造了双保险:还被任何规则引用的模板拒绝退休、已退休的模板拒绝再被绑定。</div>
+</div>
+
+<!-- ============ 安全边界 ============ -->
+<div class="section">
+<div class="section-title">③ 为什么敢说「今天什么都不变」</div>
+<div class="card green">
+<ul>
+  <li><b>只造模板,不写路由规则</b> —— 单子走哪条线由「规则表」决定,本单对规则表<b>零写入</b>;新模板没有任何规则指向它,等于展厅里的样品车。</li>
+  <li><b>重启不会偷偷激活</b> —— 系统重启时的自动播种只对「一条规则都没有」的新项目生效,生产 6 个项目全都有规则,重启零写入;并加了一条<b>哨兵测试</b>:自动播种清单里永远不许出现新的 5 种活(想加就编译红)。</li>
+  <li><b>验收拿生产库验</b> —— 部署重启后,对比路由规则表逐行一致(不是只在干净测试库里验)。</li>
+  <li><b>总开关照旧关着</b> —— 新一代模板的总开关(生产实测:关)本单不碰;开着的只有既有的老流水线。</li>
+</ul>
+</div>
+</div>
+
+<!-- ============ 关键取舍 ============ -->
+<div class="section">
+<div class="section-title">④ 关键取舍(和被否掉的方案)</div>
+<table>
+<tr><th style="width:34%">选了什么</th><th>为什么 / 否掉了什么</th></tr>
+<tr><td><b>三套工程模板合成一套 + 档位旋钮</b></td><td>三套流程完全一样、只差模型 —— 留三套就是三份重复维护。否:给每档单独留模板。</td></tr>
+<tr><td><b>设计/原型的「你来确认」放进执行环节内部</b>,流水线只画可审计的骨架</td><td>现有流水线图纸格式表达不了「中途停下等 founder」和「不限轮数的打磨循环」;硬改图纸格式 = 大动干戈的引擎工程。执行者用现成的「提问-等答复」机制找你确认,这套机制已在生产验证过。否:为此扩展引擎。</td></tr>
+<tr><td><b>给你看的每一版设计稿都走「发布在线链接 → Lead 投递 → 收到回执才继续」</b></td><td>评审抠出来的实况:发布命令本身<b>不会</b>截图也<b>不会</b>投递 —— 所以协议写成两段,执行者拿链接、Lead 负责投递,拿到投递回执才开下一步。否:假设发布=送达。</td></tr>
+<tr><td><b>解开「安装闸门」,但路由/选择闸门原样不动</b></td><td>新模板过去被总开关连「入库」都挡住,永远发布不了;现在允许入库(对行为无影响),选用仍被开关和规则双重挡住。否:再造一条单独的「安装命令」(多一个控制面,多一处会撒谎的开关)。</td></tr>
+<tr><td><b>两个从未启用的旧模板直接从清单移除</b></td><td>生产从未安装过它们,移除后永远不会出现「生完就退休」的僵尸;引用它们的 QA 脚本逐个改造(不许留假可执行的脚本)。</td></tr>
+</table>
+</div>
+
+<!-- ============ 诚实边界 ============ -->
+<div class="section">
+<div class="section-title">⑤ 诚实边界 — 本设计不做什么、什么还不存在</div>
+<div class="card amber">
+<ul>
+  <li><b>不做接线</b>:哪个项目哪种活走哪条线,是后面切换单的事,而且有前置闸:三套产品流程你已批准 ✅;「绕过流水线」标签的语义(§5.3)<b>还等你拍板</b> 🟡。</li>
+  <li><b>原型线有两个「还不存在」的能力</b>,造好前<b>原型这一类不许接线</b>(已写成切换前置):
+    ① 你判「不能做」时,流水线目前没有合法的负向收尾方式(只能批准或一直挂着);
+    ② 你「试用」需要有人把原型以可访问链接投到你面前 —— 目前收尾卡片只有一串代码版本号,没有可点的东西。</li>
+  <li><b>原型 v1 只承诺「可点」</b>(自包含网页类)。要装依赖、起服务的「真跑」型原型,现有发布通道装不下,已登记为后续引擎能力,不假装现在能。</li>
+  <li><b>设计/原型执行者文件本单只放进 flywheel 仓库</b> —— 其它项目要用,得先把文件铺到各自仓库(已写进切换前的逐项目检查单,缺文件会当场报错而不是悄悄跑错)。</li>
+</ul>
+</div>
+</div>
+
+<!-- ============ 评审 ============ -->
+<div class="section">
+<div class="section-title">⑥ 评审记录</div>
+<div class="card blue">
+<div class="kv">
+  <div class="k">设计评审</div><div>Codex 4 轮,R4 APPROVED(2026-07-22)</div>
+  <div class="k">意见处理</div><div>11 项全部采纳、零豁免。三个最值钱的抓漏:新模板「装得上但跑不起来」(缺参数 + 同厂商评审被引擎拒)、产物发布协议与真实命令行为不符、原型「不能做」终态在现有引擎里根本不存在</div>
+  <div class="k">上游依据</div><div>FLY-1396 PRD(已合并)· FLY-1407 引擎面(已合并)· §7 三套流程合同(你已批准 2026-07-21)</div>
+</div>
+</div>
+</div>
+
+</div>
+</body>
+</html>

@@ -40,6 +40,7 @@ const ORIGINAL_ENV = Object.fromEntries(
 );
 const PROJECT = "flywheel-e2e";
 const LEAD = "flywheel-eng-lead";
+const OUTPUT_TEMPLATE_ID = "tpl_fly1281_output_probe";
 const MASTER_TOKEN = `fly1281-master-${process.pid}`;
 const TMUX_SESSION = `qa-fly1281-${process.pid}`;
 const EVIDENCE_DIR = join(
@@ -164,16 +165,62 @@ try {
 	const stateDbPath = join(ROOT, "state", "teamlead.db");
 	store = await teamlead.StateStore.create(stateDbPath);
 	templates.importBundledWorkflowSeeds(store, process.env, () => {});
+	const outputSeed = {
+		templateId: OUTPUT_TEMPLATE_ID,
+		name: "FLY-1281 output reconciliation probe",
+		projectScope: "global",
+		manifest: {
+			schema_version: 2,
+			nodes: [
+				{
+					id: "produce",
+					type: "generic",
+					vendor: "codex",
+					model: "gpt-5.6-sol",
+					effort: "low",
+					agent_file: "agents/generic-executor.md",
+					produces_output: true,
+					output: { schema: "json_v1", max_bytes: 262144 },
+				},
+				{ id: "founder_gate", type: "gate" },
+			],
+			edges: [
+				{
+					id: "produce_done",
+					from: "produce",
+					to: "founder_gate",
+					condition: "node_done",
+				},
+			],
+			loops: [],
+			terminal_gate: {
+				node: "founder_gate",
+				predicate: "founder_approved",
+			},
+			ship_claims: ["founder_approved"],
+		},
+	};
+	store.importWorkflowTemplateSeed({
+		...outputSeed,
+		contentHash: templates.workflowSeedContentHash(outputSeed),
+	});
 	record(
 		"v2_seeds_imported_under_flag",
-		["tpl_product_v1", "tpl_research_light", "tpl_ops_light"].every(
+		[
+			"tpl_product_v1",
+			"tpl_product_designer",
+			"tpl_product_prototype",
+			"tpl_generic",
+		].every(
 			(id) => store.getWorkflowTemplate(id)?.current_published_revision === 1,
-		),
+		) &&
+			store.getWorkflowTemplate(OUTPUT_TEMPLATE_ID)
+				?.current_published_revision === 1,
 	);
 	store.bindWorkflowCategory({
 		project: PROJECT,
 		taskCategory: "research-e2e",
-		templateId: "tpl_research_light",
+		templateId: OUTPUT_TEMPLATE_ID,
 		updatedBy: LEAD,
 	});
 
@@ -339,8 +386,8 @@ try {
 		issueId: "FLY-1281",
 		projectName: PROJECT,
 		leadId: LEAD,
-		templateId: "tpl_ops_light",
-		selectionReason: "real-machine lead-selected light operations chain",
+		templateId: "tpl_generic",
+		selectionReason: "real-machine lead-selected generic chain",
 		idempotencyKey: "fly1281-e2e-lead",
 	});
 	const bindingStart = await postStart({
@@ -499,14 +546,14 @@ try {
 		issueId: "FLY-1232",
 		projectName: PROJECT,
 		leadId: LEAD,
-		templateId: "tpl_ops_light",
+		templateId: "tpl_generic",
 		selectionReason: "flag-off sentinel",
 		idempotencyKey: "fly1281-e2e-off-lead",
 	});
 	store.bindWorkflowCategory({
 		project: PROJECT,
 		taskCategory: "off-binding",
-		templateId: "tpl_research_light",
+		templateId: OUTPUT_TEMPLATE_ID,
 		updatedBy: LEAD,
 	});
 	const offBinding = await postStart({
@@ -523,13 +570,14 @@ try {
 		() => {},
 	);
 	record(
-		"flag_off_rejects_lead_binding_and_boot_import_without_side_effects",
+		"flag_off_rejects_starts_but_keeps_bundled_v2_seeds_dormant",
 		beforeOff === undefined &&
 			offLead.status === 409 &&
 			offBinding.status === 409 &&
 			store.getActiveWorkflowRunForIssue("FLY-1232") === undefined &&
 			store.getActiveWorkflowRunForIssue("FLY-1224") === undefined &&
-			offStore.getWorkflowTemplate("tpl_ops_light") === undefined &&
+			offStore.getWorkflowTemplate("tpl_generic")
+				?.current_published_revision === 1 &&
 			physicalSpawnCount === 2,
 	);
 	offStore.close();

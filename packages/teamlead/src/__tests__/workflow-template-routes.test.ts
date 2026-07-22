@@ -4,7 +4,10 @@ import express from "express";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkflowTemplateRouter } from "../bridge/workflow-template-routes.js";
 import { StateStore } from "../StateStore.js";
-import { importBundledWorkflowSeeds } from "../workflow-template.js";
+import {
+	importBundledWorkflowSeeds,
+	loadBundledWorkflowSeeds,
+} from "../workflow-template.js";
 
 const close: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -39,7 +42,15 @@ describe("workflow template read model", () => {
 		const list = await fetch(`${base}/api/workflow/templates`).then((res) =>
 			res.json(),
 		);
-		expect(list.templates).toHaveLength(6);
+		expect(
+			list.templates.map(
+				(template: { template_id: string }) => template.template_id,
+			),
+		).toEqual(
+			loadBundledWorkflowSeeds()
+				.map((seed) => seed.templateId)
+				.sort(),
+		);
 		const detail = await fetch(
 			`${base}/api/workflow/templates/tpl_eng_heavy`,
 		).then((res) => res.json());

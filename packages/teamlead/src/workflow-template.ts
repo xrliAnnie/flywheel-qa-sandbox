@@ -1268,13 +1268,16 @@ const BUNDLED_SEED_FILES = [
 	"tpl_eng_light.yaml",
 	"tpl_eng_trivial.yaml",
 	"tpl_product_v1.yaml",
-	"tpl_research_light.yaml",
-	"tpl_ops_light.yaml",
-	// Append additive variants so the historical bundled-seed ordering remains
-	// stable for callers that persisted or display that order.
 	"tpl_eng_heavy_land_v1.yaml",
 	"tpl_eng_light_land_v1.yaml",
 	"tpl_eng_trivial_land_v1.yaml",
+	// Additive identities remain append-only. Removed dormant identities are not
+	// retained merely to preserve their former array positions.
+	"tpl_eng.yaml",
+	"tpl_eng_land_v1.yaml",
+	"tpl_product_designer.yaml",
+	"tpl_product_prototype.yaml",
+	"tpl_generic.yaml",
 ] as const;
 
 export function loadBundledWorkflowSeeds(): LoadedWorkflowSeed[] {
@@ -1305,25 +1308,16 @@ export function loadBundledWorkflowSeeds(): LoadedWorkflowSeed[] {
 export function importBundledWorkflowSeeds(
 	store: Pick<StateStore, "importWorkflowTemplateSeed">,
 	env: EnvLike = process.env,
-	log: (message: string) => void = (message) => console.log(message),
+	_log: (message: string) => void = (message) => console.log(message),
 ): void {
 	for (const seed of loadBundledWorkflowSeeds()) {
-		if (
-			seed.manifest.schema_version === 2 &&
-			!isGeneralizedTemplatesEnabled(env)
-		) {
-			log(
-				`[workflow-template] generalized seed skipped (flag off): ${seed.templateId}`,
-			);
-			continue;
-		}
 		store.importWorkflowTemplateSeed(seed, env);
 	}
 }
 
 export const DEFAULT_BUNDLED_WORKFLOW_TEMPLATE_ID = "tpl_eng_heavy";
 
-const DEFAULT_ENGINEERING_WORKFLOW_BINDINGS = [
+export const DEFAULT_ENGINEERING_WORKFLOW_BINDINGS = [
 	{ taskCategory: "*", templateId: "tpl_eng_heavy" },
 	{ taskCategory: "light", templateId: "tpl_eng_light" },
 	{ taskCategory: "trivial", templateId: "tpl_eng_trivial" },

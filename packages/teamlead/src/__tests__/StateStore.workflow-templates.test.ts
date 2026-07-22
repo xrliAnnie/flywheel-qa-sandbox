@@ -235,23 +235,30 @@ describe("StateStore workflow templates", () => {
 		store.close();
 	});
 
-	it("boot import skips v2 while off and imports the full optional set while on", async () => {
+	it("boot import installs and publishes every bundled seed while generalized routing is off", async () => {
 		const offStore = await StateStore.create(":memory:");
 		const skipped: string[] = [];
 		importBundledWorkflowSeeds(offStore, {}, (message) =>
 			skipped.push(message),
 		);
+		const bundledIds = loadBundledWorkflowSeeds()
+			.map((seed) => seed.templateId)
+			.sort();
 		expect(
 			offStore.listWorkflowTemplates().map((row) => row.template_id),
-		).toEqual([
-			"tpl_eng_heavy",
-			"tpl_eng_heavy_land_v1",
-			"tpl_eng_light",
-			"tpl_eng_light_land_v1",
-			"tpl_eng_trivial",
-			"tpl_eng_trivial_land_v1",
-		]);
-		expect(skipped).toHaveLength(3);
+		).toEqual(bundledIds);
+		expect(skipped).toEqual([]);
+		const offAuditCount = offStore.listWorkflowTemplateAudit().length;
+		importBundledWorkflowSeeds(offStore, {}, (message) =>
+			skipped.push(message),
+		);
+		expect(offStore.listWorkflowTemplateAudit()).toHaveLength(offAuditCount);
+		for (const row of offStore.listWorkflowTemplates()) {
+			expect(
+				offStore.listWorkflowTemplateRevisions(row.template_id),
+			).toHaveLength(1);
+			expect(row.current_published_revision).toBe(1);
+		}
 		offStore.close();
 
 		const onStore = await StateStore.create(":memory:");
@@ -259,17 +266,7 @@ describe("StateStore workflow templates", () => {
 		importBundledWorkflowSeeds(onStore, env, () => {});
 		expect(
 			onStore.listWorkflowTemplates().map((row) => row.template_id),
-		).toEqual([
-			"tpl_eng_heavy",
-			"tpl_eng_heavy_land_v1",
-			"tpl_eng_light",
-			"tpl_eng_light_land_v1",
-			"tpl_eng_trivial",
-			"tpl_eng_trivial_land_v1",
-			"tpl_ops_light",
-			"tpl_product_v1",
-			"tpl_research_light",
-		]);
+		).toEqual(bundledIds);
 		importBundledWorkflowSeeds(onStore, env, () => {});
 		for (const row of onStore.listWorkflowTemplates()) {
 			expect(
@@ -289,14 +286,10 @@ describe("StateStore workflow templates", () => {
 			"Execute the bounded ops task.\n",
 		);
 		const seed = generalizedOpsSeed();
-		expect(() => store.importWorkflowTemplateSeed(seed)).toThrow(
-			/generalized.*disabled|flag/i,
-		);
-		expect(
-			store.importWorkflowTemplateSeed(seed, {
-				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-			}),
-		).toMatchObject({ status: "imported", revision: 1 });
+		expect(store.importWorkflowTemplateSeed(seed)).toMatchObject({
+			status: "imported",
+			revision: 1,
+		});
 
 		expect(() =>
 			store.createWorkflowTemplateRevision({
@@ -467,6 +460,267 @@ describe("StateStore workflow templates", () => {
 				.run(),
 		).toThrow(/append-only/i);
 		raw.close();
+	});
+
+	it("retires only unbound templates and keeps retired or unpublished templates out of bindings", async () => {
+		const store = await StateStore.create(":memory:");
+		const [boundSeed, retiredSeed, unpublishedSeed] =
+			loadBundledWorkflowSeeds();
+		store.importWorkflowTemplateSeed(boundSeed!);
+		store.importWorkflowTemplateSeed(retiredSeed!);
+		store.importWorkflowTemplateSeed(unpublishedSeed!);
+
+		expect(
+			store.retireWorkflowTemplate({
+				templateId: "missing",
+				actor: "operator",
+				reason: "cleanup",
+			}),
+		).toEqual({ status: "not_found" });
+		expect(() =>
+			store.retireWorkflowTemplate({
+				templateId: retiredSeed!.templateId,
+				actor: "   ",
+				reason: "cleanup",
+			}),
+		).toThrow(/actor.*non-empty/i);
+		expect(() =>
+			store.retireWorkflowTemplate({
+				templateId: retiredSeed!.templateId,
+				actor: "operator",
+				reason: "   ",
+			}),
+		).toThrow(/reason.*non-empty/i);
+
+		for (const [project, taskCategory] of [
+			["z-project", "*"],
+			["a-project", "z-code"],
+			["a-project", "a-code"],
+		] as const) {
+			store.bindWorkflowCategory({
+				project,
+				taskCategory,
+				templateId: boundSeed!.templateId,
+				updatedBy: "operator",
+			});
+		}
+		const expectedRefs = [
+			{ project: "a-project", taskCategory: "a-code" },
+			{ project: "a-project", taskCategory: "z-code" },
+			{ project: "z-project", taskCategory: "*" },
+		];
+		expect(
+			store.retireWorkflowTemplate({
+				templateId: boundSeed!.templateId,
+				actor: "operator",
+				reason: "still live",
+			}),
+		).toEqual({ status: "refused_bound", refs: expectedRefs });
+
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_template SET retired_at = datetime('now') WHERE template_id = ?",
+			[boundSeed!.templateId],
+		);
+		expect(
+			store.retireWorkflowTemplate({
+				templateId: boundSeed!.templateId,
+				actor: "operator",
+				reason: "surface corrupt legacy state",
+			}),
+		).toEqual({ status: "refused_bound", refs: expectedRefs });
+
+		expect(
+			store.retireWorkflowTemplate({
+				templateId: retiredSeed!.templateId,
+				actor: "  operator  ",
+				reason: "  replaced by tpl_eng  ",
+			}),
+		).toEqual({ status: "retired" });
+		expect(
+			store.getWorkflowTemplate(retiredSeed!.templateId)?.retired_at,
+		).toEqual(expect.any(String));
+		expect(
+			store.listWorkflowTemplateAudit(retiredSeed!.templateId),
+		).toContainEqual(
+			expect.objectContaining({
+				action: "template_retire",
+				actor: "operator",
+				detail: JSON.stringify({ reason: "replaced by tpl_eng" }),
+			}),
+		);
+		expect(
+			store.retireWorkflowTemplate({
+				templateId: retiredSeed!.templateId,
+				actor: "operator",
+				reason: "repeat",
+			}),
+		).toEqual({ status: "already_retired" });
+
+		const bindingCount = store.listWorkflowCategoryBindings().length;
+		const auditCount = store.listWorkflowTemplateAudit().length;
+		expect(() =>
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory: "retired",
+				templateId: retiredSeed!.templateId,
+				updatedBy: "operator",
+			}),
+		).toThrow(/published and not retired/i);
+		expect(store.listWorkflowCategoryBindings()).toHaveLength(bindingCount);
+		expect(store.listWorkflowTemplateAudit()).toHaveLength(auditCount);
+
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_template SET current_published_revision = NULL WHERE template_id = ?",
+			[unpublishedSeed!.templateId],
+		);
+		expect(() =>
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory: "unpublished",
+				templateId: unpublishedSeed!.templateId,
+				updatedBy: "operator",
+			}),
+		).toThrow(/published and not retired/i);
+		store.close();
+	});
+
+	it("migrates the audit action check exactly once while preserving rows, triggers, and index", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "flywheel-audit-migration-"));
+		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+		const dbPath = join(dir, "state.db");
+		const legacy = new BetterSqlite3(dbPath);
+		legacy.exec(`
+			CREATE TABLE workflow_template_audit (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				at TEXT NOT NULL DEFAULT (datetime('now')),
+				actor TEXT NOT NULL,
+				action TEXT NOT NULL CHECK (
+					action IN ('seed_import','publish','rebind','create','run_override')
+				),
+				template_id TEXT,
+				revision INTEGER,
+				run_id TEXT,
+				detail JSON
+			);
+			CREATE TRIGGER workflow_template_audit_no_update
+			BEFORE UPDATE ON workflow_template_audit
+			BEGIN SELECT RAISE(ABORT, 'workflow_template_audit is append-only'); END;
+			CREATE TRIGGER workflow_template_audit_no_delete
+			BEFORE DELETE ON workflow_template_audit
+			BEGIN SELECT RAISE(ABORT, 'workflow_template_audit is append-only'); END;
+			CREATE TRIGGER workflow_template_audit_no_replace
+			BEFORE INSERT ON workflow_template_audit
+			WHEN NEW.id IS NOT NULL AND EXISTS (
+				SELECT 1 FROM workflow_template_audit WHERE id = NEW.id
+			)
+			BEGIN SELECT RAISE(ABORT, 'workflow_template_audit is append-only'); END;
+			CREATE INDEX idx_workflow_template_audit_template
+			ON workflow_template_audit(template_id, id);
+		`);
+		legacy
+			.prepare(
+				`INSERT INTO workflow_template_audit
+				 (id, at, actor, action, template_id, revision, run_id, detail)
+				 VALUES (7, '2026-07-21 00:00:00', 'system', 'seed_import',
+				         'legacy-template', 1, NULL, '{"status":"imported"}')`,
+			)
+			.run();
+		legacy.close();
+
+		const first = await StateStore.create(dbPath);
+		first.close();
+		const migrated = new BetterSqlite3(dbPath);
+		const table = migrated
+			.prepare(
+				"SELECT sql, rootpage FROM sqlite_master WHERE type='table' AND name='workflow_template_audit'",
+			)
+			.get() as { sql: string; rootpage: number };
+		expect(table.sql).toContain("template_retire");
+		expect(
+			migrated
+				.prepare(
+					`SELECT id, at, actor, action, template_id, revision, run_id, detail
+					 FROM workflow_template_audit`,
+				)
+				.all(),
+		).toEqual([
+			{
+				id: 7,
+				at: "2026-07-21 00:00:00",
+				actor: "system",
+				action: "seed_import",
+				template_id: "legacy-template",
+				revision: 1,
+				run_id: null,
+				detail: '{"status":"imported"}',
+			},
+		]);
+		expect(
+			migrated
+				.prepare(
+					`SELECT type, name FROM sqlite_master
+					 WHERE name IN (
+					   'workflow_template_audit_no_update',
+					   'workflow_template_audit_no_delete',
+					   'workflow_template_audit_no_replace',
+					   'idx_workflow_template_audit_template'
+					 ) ORDER BY name`,
+				)
+				.all(),
+		).toEqual([
+			{ type: "index", name: "idx_workflow_template_audit_template" },
+			{ type: "trigger", name: "workflow_template_audit_no_delete" },
+			{ type: "trigger", name: "workflow_template_audit_no_replace" },
+			{ type: "trigger", name: "workflow_template_audit_no_update" },
+		]);
+		expect(() =>
+			migrated.prepare("UPDATE workflow_template_audit SET actor='x'").run(),
+		).toThrow(/append-only/i);
+		expect(() =>
+			migrated.prepare("DELETE FROM workflow_template_audit").run(),
+		).toThrow(/append-only/i);
+		expect(() =>
+			migrated
+				.prepare(
+					`INSERT OR REPLACE INTO workflow_template_audit
+					 (id, actor, action) VALUES (7, 'replacement', 'template_retire')`,
+				)
+				.run(),
+		).toThrow(/append-only/i);
+		expect(
+			migrated
+				.prepare("SELECT actor FROM workflow_template_audit WHERE id=7")
+				.get(),
+		).toEqual({ actor: "system" });
+		const migratedRootpage = table.rootpage;
+		migrated.close();
+
+		const second = await StateStore.create(dbPath);
+		second.close();
+		const reopened = new BetterSqlite3(dbPath);
+		expect(
+			(
+				reopened
+					.prepare(
+						"SELECT rootpage FROM sqlite_master WHERE type='table' AND name='workflow_template_audit'",
+					)
+					.get() as { rootpage: number }
+			).rootpage,
+		).toBe(migratedRootpage);
+		expect(
+			reopened
+				.prepare("SELECT COUNT(*) AS count FROM workflow_template_audit")
+				.get(),
+		).toEqual({ count: 1 });
+		reopened.close();
 	});
 
 	it("imports a changed system seed as a new published revision", async () => {

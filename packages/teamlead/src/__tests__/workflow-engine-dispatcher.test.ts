@@ -401,6 +401,54 @@ async function storeWithProductOutputIntent() {
 	return { store, canonicalRoot, env };
 }
 
+async function storeWithBundledOutputFirstIntent(input: {
+	templateId: "tpl_product_designer" | "tpl_product_prototype";
+	runId: string;
+}) {
+	const store = await StateStore.create(":memory:");
+	const canonicalRoot = mkdtempSync(join(tmpdir(), `${input.runId}-agent-`));
+	mkdirSync(join(canonicalRoot, "agents"));
+	const seed = loadBundledWorkflowSeeds().find(
+		(candidate) => candidate.templateId === input.templateId,
+	)!;
+	const producer = seed.manifest.nodes.find(
+		(node) => node.type === "generic" && node.produces_output === true,
+	)!;
+	if (!producer.agent_file) throw new Error("output producer agent missing");
+	writeFileSync(
+		join(canonicalRoot, producer.agent_file),
+		"Produce a pinned docs_v1 artifact.\n",
+	);
+	const env = { ...WORKFLOW_ON };
+	store.importWorkflowTemplateSeed(seed, env);
+	store.materializeWorkflowRun({
+		runId: input.runId,
+		issueId: "FLY-1380",
+		projectName: "flywheel",
+		taskCategory: input.templateId,
+		templateId: seed.templateId,
+		claimsReadEnrolled: true,
+		actor: "lead",
+		canonicalRoot,
+		env,
+		startReservation: {
+			idempotencyKey: `${input.runId}-start`,
+			selectionDigest: `${input.runId}-selection`,
+			nodeId: producer.id,
+			attempt: 1,
+			executionId: `${input.runId}-produce-1`,
+			createdAt: "2026-07-22T00:00:00.000Z",
+		},
+	});
+	return {
+		store,
+		canonicalRoot,
+		env,
+		producer,
+		review: seed.manifest.nodes.find((node) => node.type === "review")!,
+	};
+}
+
 function fakeStartDispatcher(store: StateStore) {
 	const requests: StartRequest[] = [];
 	const start = vi.fn(async (request: StartRequest) => {
@@ -1994,6 +2042,133 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 		rmSync(canonicalRoot, { recursive: true, force: true });
 	});
+
+	it.each([
+		{
+			templateId: "tpl_product_designer" as const,
+			runId: "designer-run",
+			artifactDir: "designer",
+		},
+		{
+			templateId: "tpl_product_prototype" as const,
+			runId: "prototype-run",
+			artifactDir: "prototype",
+		},
+	])(
+		"admits $templateId producer, materializes docs_v1, then admits cross-vendor review at the exact head",
+		async ({ templateId, runId, artifactDir }) => {
+			const { store, canonicalRoot, env, producer, review } =
+				await storeWithBundledOutputFirstIntent({ templateId, runId });
+			const producerAdmission = store.admitGeneralizedWorkflowExecution({
+				runId,
+				nodeId: producer.id,
+				executionId: `${runId}-produce-1`,
+				attempt: 1,
+				now: "2026-07-22T00:01:00.000Z",
+				expiresAt: "2027-07-22T00:01:00.000Z",
+				absoluteDeadlineAt: "2027-07-23T00:01:00.000Z",
+				env,
+			});
+			expect(producerAdmission).toMatchObject({
+				ok: true,
+				outputCredential: expect.any(String),
+			});
+			const outputToken =
+				producerAdmission.ok && producerAdmission.outputCredential;
+			const payload = {
+				kind: "docs_v1" as const,
+				operations: [
+					{
+						op: "write" as const,
+						path: `docs/${artifactDir}/index.html`,
+						content: `<h1>${artifactDir}</h1>\n`,
+					},
+					{
+						op: "write" as const,
+						path: `docs/${artifactDir}/README.md`,
+						content: `Open with: open docs/${artifactDir}/index.html\n`,
+					},
+				],
+			};
+			expect(
+				store.submitWorkflowNodeOutput({
+					token: outputToken!,
+					clientRequestId: `${runId}-output-1`,
+					payload: JSON.stringify(payload),
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.commitWorkflowTransitionTx({
+					runId,
+					nodeId: producer.id,
+					attempt: 1,
+					executionId: `${runId}-produce-1`,
+					outcome: "node_done",
+					successorExecutionId: `${runId}-review-1`,
+					now: "2026-07-22T00:10:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+
+			let remoteHead: string | undefined;
+			let preparedPayload: unknown;
+			const materializer = new WorkflowDocsMaterializer({
+				store,
+				projects: [
+					{
+						projectName: "flywheel",
+						projectRoot: canonicalRoot,
+						projectRepo: "xrliAnnie/flywheel",
+						leads: [],
+					},
+				],
+				withRepoLock: async (_root, fn) => fn(),
+				git: {
+					resolveBaseHead: async () => "b".repeat(40),
+					prepareOrAdoptCommit: async (input) => {
+						preparedPayload = input.payload;
+						return { treeHead: "c".repeat(40), commitHead: HEAD };
+					},
+					readRemoteHead: async () => remoteHead,
+					pushCommit: async () => {
+						remoteHead = HEAD;
+					},
+				},
+			});
+			expect(await materializer.reconcile()).toEqual({
+				materialized: 1,
+				held: 0,
+			});
+			expect(preparedPayload).toEqual(payload);
+
+			const reviewDispatch = fakeStartDispatcher(store);
+			const reviewDispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: reviewDispatch.dispatcher,
+				stateRoot: mkdtempSync(join(tmpdir(), `${runId}-review-`)),
+				env,
+				materializedHeadAuthority:
+					receiptBackedMaterializedHeadAuthority(store),
+			});
+			expect(await reviewDispatcher.reconcile()).toEqual({
+				started: 1,
+				held: 0,
+			});
+			expect(reviewDispatch.requests[0]).toMatchObject({
+				successorExecutionId: `${runId}-review-1`,
+				startPoint: HEAD,
+				generalizedExecution: {
+					dispatch: {
+						vendor: review.vendor,
+						model: review.model,
+						effort: review.effort,
+					},
+				},
+			});
+			expect(review.vendor).not.toBe(producer.vendor);
+			store.close();
+			rmSync(canonicalRoot, { recursive: true, force: true });
+		},
+	);
 
 	it("rotates a lost output credential under the committed delivery-repair fence", async () => {
 		const { store, canonicalRoot, env } = await storeWithProductOutputIntent();

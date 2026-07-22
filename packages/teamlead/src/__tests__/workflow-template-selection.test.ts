@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import {
+	importBundledWorkflowSeeds,
 	loadBundledWorkflowSeeds,
 	workflowSeedContentHash,
 } from "../workflow-template.js";
@@ -212,6 +213,46 @@ describe("workflow template selection", () => {
 				env: enabled,
 			}),
 		).rejects.toThrow(/candidate changed/i);
+		store.close();
+	});
+
+	it("keeps wildcard v1 selection unchanged with dormant bundled v2 seeds installed and generalized routing off", async () => {
+		const store = await StateStore.create(":memory:");
+		const off = {
+			...enabled,
+			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "0",
+		};
+		importBundledWorkflowSeeds(store, off);
+		expect(
+			store.getWorkflowTemplate("tpl_generic")?.current_published_revision,
+		).toBe(1);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "*",
+			templateId: "tpl_eng_heavy",
+			updatedBy: "system:bundled-default",
+		});
+		const ids = ["wildcard-v1-run", "wildcard-v1-exec"];
+		expect(
+			await resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-WILDCARD-V1-OFF",
+				taskCategory: "engineering",
+				selectedBy: "eng-lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: setupRoot(),
+				idempotencyKey: "wildcard-v1-off",
+				allowSchemaV1Dispatch: true,
+				env: off,
+				idFactory: () => ids.shift()!,
+			}),
+		).toMatchObject({
+			runId: "wildcard-v1-run",
+			executionId: "wildcard-v1-exec",
+			selectionSource: "default",
+			nodeId: "design",
+		});
 		store.close();
 	});
 
@@ -428,6 +469,67 @@ describe("workflow template selection", () => {
 		).toBeUndefined();
 		store.close();
 	});
+
+	it.each([
+		["binding", true],
+		["direct", true],
+		["binding", false],
+		["direct", false],
+	] as const)(
+		"keeps installed v2 %s selection dormant=%s until the generalized flag is enabled",
+		async (selection, flagOn) => {
+			const store = await StateStore.create(":memory:");
+			const seed = v2Seed();
+			const env = {
+				...enabled,
+				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: flagOn ? "1" : "0",
+			};
+			expect(store.importWorkflowTemplateSeed(seed, env)).toMatchObject({
+				status: "imported",
+			});
+			if (selection === "binding") {
+				store.bindWorkflowCategory({
+					project: "flywheel",
+					taskCategory: "research",
+					templateId: seed.templateId,
+					updatedBy: "lead",
+				});
+			}
+			const ids = [`${selection}-run`, `${selection}-exec`];
+			const resolve = () =>
+				resolveWorkflowTemplateSelection(store, {
+					project: "flywheel",
+					issueId: `FLY-V2-${selection}-${flagOn ? "ON" : "OFF"}`,
+					...(selection === "binding"
+						? { taskCategory: "research" }
+						: {
+								leadTemplateId: seed.templateId,
+								leadReason: "bounded direct research",
+							}),
+					selectedBy: "research-lead",
+					actor: "master",
+					authKind: "master" as const,
+					canonicalRoot: setupRoot(),
+					idempotencyKey: `${selection}-${flagOn ? "on" : "off"}`,
+					env,
+					idFactory: () => ids.shift()!,
+				});
+			if (flagOn) {
+				await expect(resolve()).resolves.toMatchObject({
+					selectionSource: selection === "binding" ? "binding" : "lead",
+					nodeId: "research",
+				});
+			} else {
+				await expect(resolve()).rejects.toThrow(/generalized.*disabled/i);
+				expect(
+					store.getActiveWorkflowRunForIssue(
+						`FLY-V2-${selection}-${flagOn ? "ON" : "OFF"}`,
+					),
+				).toBeUndefined();
+			}
+			store.close();
+		},
+	);
 
 	it("materializes a bound v2 template with selection provenance and exact idempotent replay", async () => {
 		const store = await StateStore.create(":memory:");

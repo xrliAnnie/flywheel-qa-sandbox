@@ -1,0 +1,46 @@
+template_id: tpl_product_prototype
+name: Product prototype flow
+project_scope: global
+manifest:
+  schema_version: 2
+  nodes:
+    - id: build
+      type: generic
+      vendor: codex
+      model: gpt-5.6-sol
+      effort: high
+      agent_file: agents/prototype-executor.md
+      produces_output: true
+      output:
+        schema: json_v1
+        max_bytes: 262144
+    - id: review
+      type: review
+      vendor: claude
+      model: claude-opus-4-8
+      effort: high
+    - id: founder_gate
+      type: gate
+  edges:
+    - id: build_done
+      from: build
+      to: review
+      condition: node_done
+    - id: review_passed
+      from: review
+      to: founder_gate
+      condition: review_pass
+  loops:
+    - id: review_kickback
+      from: review
+      to: build
+      loop_when: review_fail
+      exit_when: review_pass
+      max_iterations: 2
+      on_limit: escalate
+  terminal_gate:
+    node: founder_gate
+    predicate: founder_approved
+  ship_claims:
+    - design_review_approved
+    - founder_approved
