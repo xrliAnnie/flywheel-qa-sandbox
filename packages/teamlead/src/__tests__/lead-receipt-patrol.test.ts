@@ -5,7 +5,10 @@ import Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
 import { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LeadReceiptPatrol } from "../bridge/lead-receipt-patrol.js";
+import {
+	LeadReceiptPatrol,
+	normalizeUnprocessedReceiptAlertProject,
+} from "../bridge/lead-receipt-patrol.js";
 
 const T0 = Date.parse("2026-07-20T12:00:00.000Z");
 const WINDOW_MS = 30 * 60_000;
@@ -202,5 +205,110 @@ describe("LeadReceiptPatrol", () => {
 		} finally {
 			raw.close();
 		}
+	});
+
+	it("repairs only an unknown receipt payload project from patrol authority", () => {
+		const unknown = {
+			rootId: "chat:lead-a:1001",
+			episodeId: "episode-1",
+			targetKey: "unknown:lead-a",
+			toLead: "lead-a",
+			type: "external_delivery",
+			projectName: "unknown",
+			issueId: "unknown",
+			executionId: "lead-a:receipt",
+			firstDeliveredAt: new Date(T0).toISOString(),
+			resendRound: 2,
+			contentSummary: "founder task",
+		};
+		expect(
+			normalizeUnprocessedReceiptAlertProject(unknown, "flywheel"),
+		).toMatchObject({
+			projectName: "flywheel",
+			targetKey: "flywheel:lead-a",
+		});
+		expect(
+			normalizeUnprocessedReceiptAlertProject(
+				{ ...unknown, projectName: "geoforge", targetKey: "geoforge:lead-a" },
+				"flywheel",
+			),
+		).toMatchObject({
+			projectName: "geoforge",
+			targetKey: "geoforge:lead-a",
+		});
+		expect(
+			normalizeUnprocessedReceiptAlertProject(unknown, "unknown"),
+		).toBeNull();
+	});
+
+	it("quarantines stale chat pending rows fairly per Lead across bounded passes", async () => {
+		const createdAt = new Date(T0 - 2 * 60 * 60_000).toISOString();
+		for (let i = 1; i <= 5; i++) {
+			queue.enqueue({
+				id: `chat:lead-a:${1000 + i}`,
+				toLead: "lead-a",
+				source: "discord_chat",
+				type: "external_delivery",
+				msgClass: "model",
+				priority: 1,
+				content: `lead-a-${i}`,
+				createdAt,
+				carrier: "external",
+			});
+		}
+		queue.enqueue({
+			id: "chat:lead-b:2001",
+			toLead: "lead-b",
+			source: "discord_chat",
+			type: "external_delivery",
+			msgClass: "model",
+			priority: 1,
+			content: "lead-b-1",
+			createdAt,
+			carrier: "external",
+		});
+		const notifyAdvisory = vi.fn(async () => true);
+		const patrol = new LeadReceiptPatrol({
+			projectNames: ["flywheel"],
+			leadIdsForProject: () => ["lead-a", "lead-b"],
+			commDbPathForProject: () => dbPath,
+			receiptFoundationEnabled: () => true,
+			ownerEpoch: () => "epoch-a",
+			now: () => T0,
+			windowMs: WINDOW_MS,
+			resendCap: 2,
+			chatPendingQuarantineAfterMs: 60 * 60_000,
+			chatPendingQuarantineLimitPerLead: 2,
+			notifyUnprocessed: vi.fn(async () => true),
+			notifyAdvisory,
+		});
+
+		await patrol.pass();
+		expect(queue.getById("chat:lead-a:1001")?.disposition).toBe(
+			"delivery_quarantined",
+		);
+		expect(queue.getById("chat:lead-a:1002")?.disposition).toBe(
+			"delivery_quarantined",
+		);
+		expect(queue.getById("chat:lead-a:1003")?.disposition).toBeNull();
+		// lead-a's backlog cannot consume lead-b's independent share.
+		expect(queue.getById("chat:lead-b:2001")?.disposition).toBe(
+			"delivery_quarantined",
+		);
+
+		await patrol.pass();
+		expect(queue.getById("chat:lead-a:1003")?.disposition).toBe(
+			"delivery_quarantined",
+		);
+		expect(queue.getById("chat:lead-a:1004")?.disposition).toBe(
+			"delivery_quarantined",
+		);
+		expect(queue.getById("chat:lead-a:1005")?.disposition).toBeNull();
+
+		await patrol.pass();
+		expect(queue.getById("chat:lead-a:1005")?.disposition).toBe(
+			"delivery_quarantined",
+		);
+		expect(notifyAdvisory).toHaveBeenCalledTimes(6);
 	});
 });

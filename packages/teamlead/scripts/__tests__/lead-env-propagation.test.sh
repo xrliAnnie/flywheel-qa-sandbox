@@ -88,6 +88,23 @@ for var in DISCORD_BOT_TOKEN FLYWHEEL_LEAD_ID FLYWHEEL_COMM_DB PATH HOME; do
   fi
 done
 
+# FLY-1426: the Discord plugin and the Lead pane must read the same rollout
+# switch and priority windows. The plugin runs in the Lead process, after the
+# tmux -e barrier, so inherited launcher-shell values are not sufficient.
+log_test "_launch_claude forwards the Discord chat receipt rollout contract"
+for var in \
+  FLYWHEEL_CHAT_RECEIPTS \
+  FLYWHEEL_RECEIPT_WINDOW_P0_MIN \
+  FLYWHEEL_RECEIPT_WINDOW_P1_MIN \
+  FLYWHEEL_RECEIPT_WINDOW_P2_MIN \
+  FLYWHEEL_RECEIPT_WINDOW_P3_MIN; do
+  if echo "$BLOCK" | grep -qE "^[[:space:]]*-e[[:space:]]+\"$var="; then
+    log_pass "$var present in env_args"
+  else
+    log_fail "$var missing from env_args — chat receipt rollout would drift inside the Lead pane"
+  fi
+done
+
 # ─── Test 3: tmux integration — propagation survives the real barrier ──
 log_test "tmux new-window -e propagates FLYWHEEL_TEAMLEAD_SCRIPT_DIR to child pane"
 if ! command -v tmux >/dev/null 2>&1; then

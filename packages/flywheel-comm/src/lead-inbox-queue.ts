@@ -18,6 +18,9 @@ export const DEFAULT_RECEIPT_PRIORITY_WINDOWS_MS: ReceiptPriorityWindowsMs = [
 	24 * 60 * 60_000,
 ];
 
+export const CHAT_DELIVERY_UNCONFIRMED_REASON =
+	"chat_delivery_unconfirmed" as const;
+
 export function receiptPriorityWindowsMs(
 	env: Record<string, string | undefined> = process.env,
 ): ReceiptPriorityWindowsMs {
@@ -736,6 +739,67 @@ export class LeadInboxQueue {
 				  ORDER BY seq ASC LIMIT ?`,
 			)
 			.all(input.before, limit) as LeadInboxRow[];
+	}
+
+	/**
+	 * Stable, SQL-filtered pagination for one external receipt producer lane.
+	 * The lane owns redelivery, so already delivered/settled/disposed rows never
+	 * consume its bounded scan budget.
+	 */
+	listExternalPendingForLane(input: {
+		toLead: string;
+		idPrefix: string;
+		cursorSeq?: number;
+		limit?: number;
+		createdBefore?: string;
+		excludeQuarantined?: boolean;
+	}): LeadInboxRow[] {
+		const toLead = requiredText(input.toLead, "toLead");
+		const idPrefix = requiredText(input.idPrefix, "idPrefix");
+		const cursorSeq = input.cursorSeq ?? 0;
+		const limit = input.limit ?? 100;
+		if (!Number.isSafeInteger(cursorSeq) || cursorSeq < 0) {
+			throw new Error("cursorSeq must be a non-negative safe integer");
+		}
+		if (!Number.isSafeInteger(limit) || limit <= 0) {
+			throw new Error("limit must be a positive safe integer");
+		}
+		if (input.createdBefore) {
+			assertUtcIsoTimestamp(input.createdBefore, "createdBefore");
+		}
+
+		const predicates = [
+			"carrier = 'external'",
+			"delivered_at IS NULL",
+			"disposed_at IS NULL",
+			"processed_at IS NULL",
+			"to_lead = ?",
+			"substr(id, 1, length(?)) = ?",
+			"seq > ?",
+		];
+		const values: Array<string | number> = [
+			toLead,
+			idPrefix,
+			idPrefix,
+			cursorSeq,
+		];
+		if (input.createdBefore) {
+			predicates.push("created_at <= ?");
+			values.push(input.createdBefore);
+		}
+		if (input.excludeQuarantined) {
+			predicates.push(
+				"(disposition IS NULL OR disposition <> 'delivery_quarantined')",
+			);
+		}
+		values.push(limit);
+		return this.db
+			.prepare(
+				`SELECT * FROM lead_inbox
+				  WHERE ${predicates.join(" AND ")}
+				  ORDER BY seq ASC LIMIT ?`,
+			)
+			.all(...values) as LeadInboxRow[];
 	}
 
 	getLatestReceiptActivation():

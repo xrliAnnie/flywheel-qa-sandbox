@@ -260,6 +260,74 @@ describe("FLY-1373 lead inbox queue", () => {
 		}
 	});
 
+	it("filters external pending rows by Lead, lane, terminal state, age, quarantine, and cursor in SQL", () => {
+		const queue = new LeadInboxQueue(dbPath);
+		try {
+			const enqueue = (
+				id: string,
+				toLead = "lead-a",
+				createdAt = "2026-07-21T10:00:00.000Z",
+			) =>
+				queue.enqueue({
+					id,
+					toLead,
+					source: "discord_chat",
+					type: "external_delivery",
+					msgClass: "model",
+					priority: 1,
+					content: id,
+					carrier: "external",
+					createdAt,
+				});
+			const first = enqueue("chat:lead-a:1001");
+			enqueue("xdept:lead-a:1002");
+			enqueue("chat:lead-b:1003", "lead-b");
+			enqueue("chat:lead-a:1004", "lead-a", "2026-07-21T13:00:00.000Z");
+			enqueue("chat:lead-a:1005");
+			enqueue("chat:lead-a:1006");
+			queue.markProcessed("chat:lead-a:1005", {
+				now: "2026-07-21T10:05:00.000Z",
+				evidence: {
+					v: 1,
+					kind: "discord_explicit_reply",
+					ref: "reply-1005",
+					actor: "lead-a",
+					actor_kind: "lead",
+					fence: { chatReplyTo: "1005" },
+				},
+			});
+			queue.quarantineExternalDelivery("chat:lead-a:1006", {
+				now: "2026-07-21T11:00:00.000Z",
+				reason: "chat_delivery_unconfirmed",
+			});
+
+			expect(
+				queue
+					.listExternalPendingForLane({
+						toLead: "lead-a",
+						idPrefix: "chat:lead-a:",
+						createdBefore: "2026-07-21T12:00:00.000Z",
+						excludeQuarantined: true,
+						cursorSeq: 0,
+						limit: 20,
+					})
+					.map((row) => row.id),
+			).toEqual(["chat:lead-a:1001"]);
+			expect(
+				queue
+					.listExternalPendingForLane({
+						toLead: "lead-a",
+						idPrefix: "chat:lead-a:",
+						cursorSeq: first.seq,
+						limit: 20,
+					})
+					.map((row) => row.id),
+			).toEqual(["chat:lead-a:1004", "chat:lead-a:1006"]);
+		} finally {
+			queue.close();
+		}
+	});
+
 	it("claims by priority then FIFO and only the owning epoch can consume", () => {
 		const queue = new LeadInboxQueue(dbPath);
 		try {

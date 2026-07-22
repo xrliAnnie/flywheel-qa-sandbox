@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { DetectionEscalationRow, StateStore } from "../StateStore.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 import { addThreadMember } from "./chat-thread-utils.js";
 import { emitIssueThreadInfraNotification } from "./founder-thread-notifier.js";
 import { parseSessionLabels } from "./lead-scope.js";
@@ -75,6 +76,45 @@ export interface FounderPagerDeps {
 	emit?: typeof emitIssueThreadInfraNotification;
 	/** Test seam. Defaults to the real Discord thread-member add. */
 	addMember?: typeof addThreadMember;
+	/** Test seam for the lane-limited top-level chat fallback. */
+	postChat?: (input: {
+		channelId: string;
+		content: string;
+		botToken: string;
+		ownerUserId: string;
+	}) => Promise<boolean>;
+}
+
+async function postFounderChatFallback(
+	input: {
+		channelId: string;
+		content: string;
+		botToken: string;
+		ownerUserId: string;
+	},
+	deps: Pick<FounderPagerDeps, "fetchImpl">,
+): Promise<boolean> {
+	if (!/^\d+$/.test(input.ownerUserId)) return false;
+	try {
+		const response = await (deps.fetchImpl ?? fetch)(
+			`https://discord.com/api/v10/channels/${input.channelId}/messages`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bot ${input.botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(input.content),
+					allowed_mentions: { users: [input.ownerUserId] },
+				}),
+				signal: AbortSignal.timeout(5_000),
+			},
+		);
+		return response.ok;
+	} catch {
+		return false;
+	}
 }
 
 /** Stable, restart-durable page id for one episode (founder_page_ledger key). */
@@ -207,6 +247,8 @@ export function createFounderPager(
 ): (row: DetectionEscalationRow) => Promise<boolean> {
 	const emit = deps.emit ?? emitIssueThreadInfraNotification;
 	const addMember = deps.addMember ?? addThreadMember;
+	const postChat =
+		deps.postChat ?? ((input) => postFounderChatFallback(input, deps));
 	const logger =
 		deps.logger ??
 		((m: string) => console.log(`[detection-escalation-sinks] ${m}`));
@@ -243,6 +285,27 @@ export function createFounderPager(
 			target.issueId,
 			target.chatChannel,
 		);
+		if (
+			row.kind === "receipt_unprocessed" &&
+			row.episode_fingerprint.startsWith("chat:") &&
+			!thread?.thread_id
+		) {
+			const posted = Boolean(
+				target.botToken &&
+					deps.discordOwnerUserId &&
+					(await postChat({
+						channelId: target.chatChannel,
+						content: `<@${deps.discordOwnerUserId}> ${content}`,
+						botToken: target.botToken,
+						ownerUserId: deps.discordOwnerUserId,
+					})),
+			);
+			if (!posted) {
+				await deps.onUndeliverable(row, "chat_fallback_failed");
+			}
+			deps.store.recordFounderPaged(eventId, posted);
+			return posted;
+		}
 
 		// FLY-1189: on a PRIVATE issue thread a <@founder> mention only pushes a
 		// notification if the founder is a MEMBER. Add them via the OWNER-LEAD bot

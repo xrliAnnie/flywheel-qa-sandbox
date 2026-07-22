@@ -109,8 +109,10 @@ export class ExternalReceiptSaga {
 			quarantined: 0,
 			deferred: 0,
 		};
-		const rows = this.options.queue.listExternalDeliveryPending({
-			before: input.olderThan,
+		const rows = this.options.queue.listExternalPendingForLane({
+			toLead: this.options.leadId,
+			idPrefix: `xdept:${this.options.leadId}:`,
+			createdBefore: input.olderThan,
 			...(input.limit === undefined ? {} : { limit: input.limit }),
 		});
 		for (const row of rows) {

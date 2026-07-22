@@ -21,6 +21,7 @@ import {
 	applyReceiptFoundationMigrations,
 	assertProcessedEvidence,
 	assertUtcIsoTimestamp,
+	CHAT_DELIVERY_UNCONFIRMED_REASON,
 	LEAD_INBOX_SCHEMA,
 	LeadInboxQueue,
 } from "./lead-inbox-queue.js";
@@ -1921,6 +1922,44 @@ export class CommDB {
 
 	enqueueFounderHubRoot(input: EnqueueFounderHubRootInput): LeadInboxRow {
 		return new LeadInboxQueue(this.db).enqueueHubRoot(input);
+	}
+
+	/** SQL-bounded seam used by the Discord chat recovery worker and patrol. */
+	listChatReceiptPending(input: {
+		toLead: string;
+		cursorSeq?: number;
+		limit?: number;
+		createdBefore?: string;
+		excludeQuarantined?: boolean;
+	}): LeadInboxRow[] {
+		return new LeadInboxQueue(this.db).listExternalPendingForLane({
+			...input,
+			idPrefix: `chat:${input.toLead}:`,
+		});
+	}
+
+	/**
+	 * Quarantine is visibility, never disposal: later redelivery may still mark
+	 * the same external row delivered. The fixed reason keeps retries idempotent.
+	 */
+	quarantineChatReceipt(input: { receiptId: string; now: string }): boolean {
+		const queue = new LeadInboxQueue(this.db);
+		queue.quarantineExternalDelivery(input.receiptId, {
+			now: input.now,
+			reason: CHAT_DELIVERY_UNCONFIRMED_REASON,
+		});
+		const row = queue.getById(input.receiptId);
+		const alert = queue.getReceiptAlertOutbox(
+			`external_saga_unknown:${input.receiptId}`,
+		);
+		return Boolean(
+			row?.carrier === "external" &&
+				row.delivered_at === null &&
+				row.disposed_at === null &&
+				row.disposition === "delivery_quarantined" &&
+				row.last_error === CHAT_DELIVERY_UNCONFIRMED_REASON &&
+				alert?.kind === "external_saga_unknown",
+		);
 	}
 
 	/**

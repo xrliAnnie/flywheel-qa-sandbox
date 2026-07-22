@@ -370,7 +370,10 @@ import {
 } from "./lead-event-delivery.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
-import { LeadReceiptPatrol } from "./lead-receipt-patrol.js";
+import {
+	LeadReceiptPatrol,
+	normalizeUnprocessedReceiptAlertProject,
+} from "./lead-receipt-patrol.js";
 import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
@@ -7811,6 +7814,10 @@ export async function startBridge(
 	});
 	const leadReceiptPatrol = new LeadReceiptPatrol({
 		projectNames: projects.map((project) => project.projectName),
+		leadIdsForProject: (projectName) =>
+			projects
+				.find((project) => project.projectName === projectName)
+				?.leads.map((lead) => lead.agentId) ?? [],
 		commDbPathForProject,
 		receiptFoundationEnabled: () => receiptFoundationEnabled(),
 		ownerEpoch: () => leadInboxRuntime.receiptOwnerEpoch(),
@@ -7828,24 +7835,29 @@ export async function startBridge(
 			);
 			return Number.isSafeInteger(value) && value > 0 ? value : 2;
 		})(),
-		notifyUnprocessed: async ({ payload }) => {
+		notifyUnprocessed: async ({ projectName, payload }) => {
 			const kind = "receipt_unprocessed";
 			if (!receiptDetectionKindSet.has(kind)) return false;
-			const firstDetectedAtMs = Date.parse(payload.firstDeliveredAt);
+			const routedPayload = normalizeUnprocessedReceiptAlertProject(
+				payload,
+				projectName,
+			);
+			if (!routedPayload) return false;
+			const firstDetectedAtMs = Date.parse(routedPayload.firstDeliveredAt);
 			const input: DetectionEscalationInput = {
-				targetKey: payload.targetKey,
+				targetKey: routedPayload.targetKey,
 				kind,
-				episodeFingerprint: payload.rootId,
-				executionId: payload.executionId,
-				issueId: payload.issueId,
-				issueIdentifier: payload.issueIdentifier,
-				projectName: payload.projectName,
+				episodeFingerprint: routedPayload.rootId,
+				executionId: routedPayload.executionId,
+				issueId: routedPayload.issueId,
+				issueIdentifier: routedPayload.issueIdentifier,
+				projectName: routedPayload.projectName,
 				firstDetectedAtMs: Number.isFinite(firstDetectedAtMs)
 					? firstDetectedAtMs
 					: Date.now(),
 				reason:
-					`消息已送达并重发 ${payload.resendRound} 次,仍无已处理收据` +
-					`(${payload.contentSummary})`,
+					`消息已送达并重发 ${routedPayload.resendRound} 次,仍无已处理收据` +
+					`(${routedPayload.contentSummary})`,
 				nextStep: "Lead 立即完成路由副作用或说明阻塞原因",
 			};
 			if (!resolveDetectionOwner(input)) return false;

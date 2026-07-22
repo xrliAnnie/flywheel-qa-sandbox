@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1426 设计 — Chat 消息从此都有收据</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,system-ui,sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.6; padding:24px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:24px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 24px; margin-bottom:20px; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.red { border-left:4px solid #ff3b30; }
+  .card.purple { border-left:4px solid #af52de; }
+  h2 { font-size:18px; color:#1a365d; margin-bottom:12px; }
+  p { margin-bottom:10px; font-size:15px; }
+  .big { font-size:17px; font-weight:600; }
+  .dim { color:#86868b; font-size:13px; }
+  .mono { font-family:'SF Mono',monospace; font-size:13px; background:#f5f5f7; padding:1px 6px; border-radius:4px; }
+  /* 流程图 */
+  .flow { display:flex; flex-direction:column; gap:0; margin:16px 0; }
+  .frow { display:flex; align-items:stretch; gap:10px; flex-wrap:wrap; }
+  .fbox { flex:1; min-width:150px; background:#f5f5f7; border-radius:10px; padding:12px 14px; text-align:center; font-size:14px; border:1.5px solid #e2e2e7; }
+  .fbox b { display:block; font-size:14px; margin-bottom:2px; }
+  .fbox.hot { background:#eaf3ff; border-color:#007aff; }
+  .fbox.ok { background:#eafbf0; border-color:#34c759; }
+  .fbox.warn { background:#fff4e5; border-color:#ff9500; }
+  .fbox.alarm { background:#ffecea; border-color:#ff3b30; }
+  .arrow { text-align:center; color:#86868b; font-size:18px; line-height:1.4; padding:2px 0; }
+  .branch { display:flex; gap:10px; flex-wrap:wrap; margin-top:0; }
+  .branch > div { flex:1; min-width:220px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; margin:10px 0; }
+  th { text-align:left; color:#86868b; font-weight:600; font-size:13px; padding:8px 10px; border-bottom:2px solid #e2e2e7; }
+  td { padding:9px 10px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  .state { display:inline-block; padding:2px 10px; border-radius:20px; font-size:12px; font-weight:600; }
+  .s1 { background:#eaf3ff; color:#007aff; }
+  .s2 { background:#fff4e5; color:#c77700; }
+  .s3 { background:#eafbf0; color:#1e8e3e; }
+  .s4 { background:#ffecea; color:#d32f2f; }
+  ul { margin:6px 0 10px 20px; }
+  li { margin-bottom:6px; font-size:14.5px; }
+  .no { color:#d32f2f; font-weight:600; }
+  .yes { color:#1e8e3e; font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Chat 消息从此都有收据</h1>
+  <div class="sub">FLY-1426 设计 · 2026-07-22 · 设计已过 4 轮独立评审（全部意见已吸收）</div>
+
+  <!-- ① 一句话 -->
+  <div class="card blue">
+    <h2>① 一句话</h2>
+    <p class="big">你在 Discord chat 里跟 Lead 说的每一句话，先记进那本已经在用的收据账本，再进 Lead 的脑子——办了才销账，没办就催，催不动就来找你。</p>
+    <p class="dim">你拍的「所有消息都进 queue、都有收据」：Runner 的汇报和提问去年底已经有账（FLY-1392）；这次补上最后一块——你和其他 Lead 在 chat 里说的话。补完后所有进 Lead 的消息就是同一套规矩。</p>
+  </div>
+
+  <!-- ② 核心流程 -->
+  <div class="card green">
+    <h2>② 核心流程</h2>
+    <div class="flow">
+      <div class="frow">
+        <div class="fbox hot"><b>你在 chat 发消息</b>「更新一下 batch 报告」</div>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="frow">
+        <div class="fbox hot"><b>第 1 步：先记账</b>消息先写进收据账本（durable，一行一条）<br><span class="dim">写账失败也不拦你的消息，同时留底稍后补账</span></div>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="frow">
+        <div class="fbox"><b>第 2 步：再进对话</b>消息照常出现在 Lead 面前（你现在看到的体验不变）</div>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="branch">
+        <div>
+          <div class="fbox ok"><b>Lead 办了</b>回复你（引用你那条）或明确销账<br>→ <span class="yes">收据关闭 ✓</span></div>
+        </div>
+        <div>
+          <div class="fbox warn"><b>30 分钟没动静</b>系统自动把这条消息<b>重新塞回</b> Lead 的收件箱提醒（最多催 2 轮）</div>
+          <div class="arrow">↓</div>
+          <div class="fbox alarm"><b>还是没人办</b>升级到你：就在你发消息的那个 chat 频道 @你<br><span class="dim">「你 X 分钟前交代的事，Lead 至今没处理」</span></div>
+        </div>
+      </div>
+    </div>
+    <p class="dim">上次的事故（你交代更新报告、Lead 转头忘了、你追问才发现）在这套流程里走不通：没销账的消息 30 分钟就会自己冒出来催，最后会来找你。</p>
+  </div>
+
+  <!-- ③ 数据模型 -->
+  <div class="card purple">
+    <h2>③ 账本长什么样</h2>
+    <p>不建新系统——直接用 FLY-1392 已经在生产跑的那本账（每个项目一个库里的 <span class="mono">lead_inbox</span> 表）。催办、升级、销账的机器全是现成的，这次只是把 chat 消息接进去。每条消息一行，四个状态：</p>
+    <table>
+      <tr><th>状态</th><th>含义</th><th>谁来推进</th></tr>
+      <tr><td><span class="state s1">已入账</span></td><td>消息落了账，还没确认送进对话</td><td>插件送达后自动推进；卡住了有兜底巡检报警</td></tr>
+      <tr><td><span class="state s2">已送达</span></td><td>消息已在 Lead 面前，计时开始（你的消息 30 分钟）</td><td>Lead 办事</td></tr>
+      <tr><td><span class="state s3">已办结</span></td><td>Lead 引用你的消息回复了，或明确销账</td><td>销账证据留档，可查</td></tr>
+      <tr><td><span class="state s4">超时催办</span></td><td>到点没办 → 自动重发提醒 → 再不办升级到你</td><td>系统自动，每件事只升级一次，不轰炸</td></tr>
+    </table>
+    <p class="dim">优先级：你的消息 = 最高级 P0（30 分钟窗）；其他 Lead 的消息 = P1。想查任何一条消息的下落，账本里一行就是答案。</p>
+  </div>
+
+  <!-- ④ 取舍 -->
+  <div class="card amber">
+    <h2>④ 关键取舍（和被否掉的路）</h2>
+    <ul>
+      <li><b>在哪儿记账？——消息进门的那道闸口（Discord 插件里）。</b>只有那里能百分百复现「哪些消息真的进了 Lead 的脑子」。被否：让 Bridge 另开一只眼睛去盯 Discord（两只眼睛看到的会不一样，早晚对不上账）；把整条 chat 通路重造（动静太大，会破坏你现在的聊天体验）。</li>
+      <li><b>记账坏了怎么办？——放行消息，绝不拦路。</b>你跟 Lead 说话永远是第一优先；记账失败就本地留底、事后补账、补不上会明着告诉你，绝不悄悄丢。</li>
+      <li><b>什么算「办了」？——只认硬证据。</b>Lead 引用你那条消息回复 = 自动销账；其他情况必须明确销账。被否：「同频道回了句话就算办了」——那是把碰巧当证据，会假销账。</li>
+      <li><b>催几次？——重发 2 轮就升级，每件事只找你一次。</b>宁可你多看一眼，不让系统刷屏（之前告警风暴的教训都吸收在现成机器里）。</li>
+    </ul>
+  </div>
+
+  <!-- ⑤ 诚实边界 -->
+  <div class="card red">
+    <h2>⑤ 这套设计不管什么（诚实边界）</h2>
+    <ul>
+      <li><b>Lead 整个下线期间发的消息</b>：插件跟 Lead 同生共死，下线窗口里的消息到不了记账闸口。这是下一步单独立项（给 Claude Lead 补断线回捞，Codex Lead 已经有）。</li>
+      <li><b>陪伴型 Lead（Belle / Mufasa 的私聊）</b>：他们刻意与工程系统隔离、没有账本可写，这次不覆盖。要不要覆盖、怎么覆盖，等你拍。</li>
+      <li><b>收据只证明「办了这个动作」，不证明办得好不好</b>——质量还是靠人和评审。</li>
+      <li><b>Bridge 挂了催办会停</b>（记账不停，Bridge 回来接着催）——和现有系统同一条边界。</li>
+      <li>升级找你的时效受巡检节奏影响，约一分钟粒度，不是秒级。</li>
+    </ul>
+  </div>
+
+  <div class="dim" style="text-align:center; margin-top:8px;">设计文档：engineering/doc/FLY-1426-inbound-message-receipts/ · 评审记录 4 轮全留档</div>
+</div>
+</body>
+</html>

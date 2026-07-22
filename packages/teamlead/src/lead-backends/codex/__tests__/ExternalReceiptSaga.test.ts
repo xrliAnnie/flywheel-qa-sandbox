@@ -142,4 +142,38 @@ describe("ExternalReceiptSaga", () => {
 			"delivery_quarantined",
 		);
 	});
+
+	it("never reconciles another external producer lane", () => {
+		const receipts = queue();
+		receipts.enqueue({
+			id: "chat:lead-a:100000000000000001",
+			toLead: "lead-a",
+			source: "discord_chat",
+			type: "external_delivery",
+			msgClass: "model",
+			priority: 0,
+			content: "founder task",
+			refMessageId: null,
+			createdAt: "2026-07-21T10:00:00.000Z",
+			carrier: "external",
+		});
+		const saga = new ExternalReceiptSaga({
+			leadId: "lead-a",
+			queue: receipts,
+			journal: { getByIdempotencyKey: () => undefined },
+			receiptWindowsMs: WINDOWS,
+			now: () => "2026-07-21T12:00:00.000Z",
+		});
+
+		expect(
+			saga.reconcile({
+				olderThan: "2026-07-21T11:00:00.000Z",
+				absenceProvenThroughMessageId: "999999999999999999",
+			}),
+		).toEqual({ delivered: 0, aborted: 0, quarantined: 0, deferred: 0 });
+		expect(receipts.getById("chat:lead-a:100000000000000001")).toMatchObject({
+			disposition: null,
+			last_error: null,
+		});
+	});
 });

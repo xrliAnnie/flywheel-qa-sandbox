@@ -66,6 +66,12 @@ async function pagerHarness(
 			deps?: unknown,
 		) => Promise<"added" | "transient" | "permanent">;
 		bindThreadId?: string;
+		postChat?: (input: {
+			channelId: string;
+			content: string;
+			botToken: string;
+			ownerUserId: string;
+		}) => Promise<boolean>;
 	} = {},
 ) {
 	const store = await StateStore.create(":memory:");
@@ -101,6 +107,7 @@ async function pagerHarness(
 		},
 		emit: emit as never,
 		addMember: over.addMember as never,
+		postChat: over.postChat,
 		now: () => 1_000 + 1_800_000,
 	});
 	return { store, pageFounder, undeliverable, emitted, emit };
@@ -215,6 +222,48 @@ describe("FLY-1048 C3-w createFounderPager", () => {
 		});
 		await expect(h.pageFounder(row())).resolves.toBe(false);
 		expect(h.undeliverable).toEqual(["no_chat_thread"]);
+	});
+
+	it("routes only an unthreaded chat receipt escalation to the Lead chat channel", async () => {
+		const postChat = vi.fn(async () => true);
+		const h = await pagerHarness({ postChat });
+		await expect(
+			h.pageFounder(
+				row({
+					target_key: "flywheel:flywheel-eng-lead",
+					kind: "receipt_unprocessed",
+					episode_fingerprint: "chat:flywheel-eng-lead:100000000000000003",
+					issue_id: "unknown",
+				}),
+			),
+		).resolves.toBe(true);
+		expect(postChat).toHaveBeenCalledWith(
+			expect.objectContaining({
+				channelId: "chan-1",
+				botToken: "bot-token",
+				ownerUserId: "1234567890123456789",
+				content: expect.stringContaining("<@1234567890123456789>"),
+			}),
+		);
+		expect(h.emit).not.toHaveBeenCalled();
+		expect(h.undeliverable).toEqual([]);
+	});
+
+	it("falls back to the existing ticket lane when the chat receipt venue fails", async () => {
+		const postChat = vi.fn(async () => false);
+		const h = await pagerHarness({ postChat });
+		await expect(
+			h.pageFounder(
+				row({
+					target_key: "flywheel:flywheel-eng-lead",
+					kind: "receipt_unprocessed",
+					episode_fingerprint: "chat:flywheel-eng-lead:100000000000000003",
+					issue_id: "unknown",
+				}),
+			),
+		).resolves.toBe(false);
+		expect(h.emit).not.toHaveBeenCalled();
+		expect(h.undeliverable).toEqual(["chat_fallback_failed"]);
 	});
 
 	it("dedups: a second page for the same episode short-circuits to true without re-posting", async () => {

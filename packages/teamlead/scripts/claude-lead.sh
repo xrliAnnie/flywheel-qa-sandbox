@@ -1436,6 +1436,14 @@ _launch_claude() {
     -e "FLYWHEEL_LEAD_ID=${LEAD_ID}"
     -e "FLYWHEEL_COMM_DB=${_cz_comm_db}"
     -e "FLYWHEEL_COMM_CLI=${_cz_comm_cli}"
+    # FLY-1426: Discord inbound receipts and their priority windows must cross
+    # tmux's explicit -e barrier. Keeping these values identical in the plugin
+    # and CommDB activation path prevents delivery/expiry SLA drift.
+    -e "FLYWHEEL_CHAT_RECEIPTS=${FLYWHEEL_CHAT_RECEIPTS:-}"
+    -e "FLYWHEEL_RECEIPT_WINDOW_P0_MIN=${FLYWHEEL_RECEIPT_WINDOW_P0_MIN:-}"
+    -e "FLYWHEEL_RECEIPT_WINDOW_P1_MIN=${FLYWHEEL_RECEIPT_WINDOW_P1_MIN:-}"
+    -e "FLYWHEEL_RECEIPT_WINDOW_P2_MIN=${FLYWHEEL_RECEIPT_WINDOW_P2_MIN:-}"
+    -e "FLYWHEEL_RECEIPT_WINDOW_P3_MIN=${FLYWHEEL_RECEIPT_WINDOW_P3_MIN:-}"
     -e "PROJECT_NAME=${PROJECT_NAME}"
     -e "FLYWHEEL_PROJECT_NAME=${PROJECT_NAME}"
     # FLY-205: project root path for the doc-flow Lead rule's config self-check

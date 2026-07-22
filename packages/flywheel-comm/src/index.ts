@@ -14,6 +14,13 @@ import { ackEvent } from "./commands/ack-event.js";
 import { ask } from "./commands/ask.js";
 import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
+import {
+	beginChatReceipt,
+	completeChatReceipt,
+	listPendingChatReceipts,
+	quarantineChatReceipt,
+	settleChatReceipt,
+} from "./commands/chat-receipt.js";
 import { check } from "./commands/check.js";
 import { cleanupMessages } from "./commands/cleanup-messages.js";
 import { codexResume } from "./commands/codex-resume.js";
@@ -93,6 +100,7 @@ Commands:
   route-founder-reply  Handle a founder receipt: relay its original text to an
             eligible pending question, or explicitly close it as no-route (Lead use)
   handle-receipt  Category-agnostic Lead action: ack/no-route/relay/respond a receipt
+  chat-receipt  Durable Discord-chat receipt producer (begin|complete|settle|pending|quarantine)
   send      Send an instruction to a runner (Lead use)
   lead-lease  Manage the Lead identity lease (acquire|bind|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
@@ -209,6 +217,9 @@ async function main(): Promise<void> {
 			break;
 		case "handle-receipt":
 			runHandleReceipt(commandArgs);
+			break;
+		case "chat-receipt":
+			runChatReceipt(commandArgs);
 			break;
 		case "send":
 			await runSend(commandArgs);
@@ -653,6 +664,154 @@ function runHandleReceipt(args: string[]): void {
 			? JSON.stringify(result)
 			: `Handled ${result.receiptId} with ${result.action}`,
 	);
+}
+
+function runChatReceipt(args: string[]): void {
+	const { values, positionals } = parseArgs({
+		args,
+		options: {
+			lead: { type: "string" },
+			"chat-id": { type: "string" },
+			"origin-channel-id": { type: "string" },
+			"message-id": { type: "string" },
+			"author-id": { type: "string" },
+			"author-name": { type: "string" },
+			priority: { type: "string" },
+			ts: { type: "string" },
+			"msg-kind": { type: "string" },
+			"attachments-json": { type: "string" },
+			"content-stdin": { type: "boolean", default: false },
+			"reply-id": { type: "string" },
+			cursor: { type: "string" },
+			limit: { type: "string" },
+			"created-before": { type: "string" },
+			"exclude-quarantined": { type: "boolean", default: false },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: true,
+	});
+	const subcommand = positionals[0];
+	if (
+		subcommand !== "begin" &&
+		subcommand !== "complete" &&
+		subcommand !== "settle" &&
+		subcommand !== "pending" &&
+		subcommand !== "quarantine"
+	) {
+		throw new Error(
+			"chat-receipt requires begin, complete, settle, pending, or quarantine",
+		);
+	}
+	if (positionals.length !== 1) {
+		throw new Error("chat-receipt accepts exactly one subcommand");
+	}
+	if (!values.lead) throw new Error("--lead is required");
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const requireValue = (name: keyof typeof values): string => {
+		const value = values[name];
+		if (typeof value !== "string" || !value) {
+			throw new Error(`--${String(name)} is required`);
+		}
+		return value;
+	};
+	const parseInteger = (
+		value: string | undefined,
+		name: string,
+		fallback?: number,
+	): number => {
+		if (value === undefined && fallback !== undefined) return fallback;
+		if (value === undefined || !/^\d+$/.test(value)) {
+			throw new Error(`--${name} must be a non-negative integer`);
+		}
+		return Number.parseInt(value, 10);
+	};
+	const output = (result: unknown, summary: string): void => {
+		console.log(values.json ? JSON.stringify(result) : summary);
+	};
+
+	if (subcommand === "begin") {
+		if (!values["content-stdin"]) {
+			throw new Error("begin requires --content-stdin");
+		}
+		let parsedAttachments: unknown = [];
+		try {
+			parsedAttachments = JSON.parse(values["attachments-json"] ?? "[]");
+		} catch (error) {
+			throw new Error(
+				`--attachments-json must be valid JSON: ${(error as Error).message}`,
+			);
+		}
+		const priority = parseInteger(values.priority, "priority");
+		const result = beginChatReceipt({
+			dbPath,
+			leadId: values.lead,
+			chatId: requireValue("chat-id"),
+			originChannelId: requireValue("origin-channel-id"),
+			messageId: requireValue("message-id"),
+			authorId: requireValue("author-id"),
+			authorName: requireValue("author-name"),
+			priority: priority as 0 | 1,
+			ts: requireValue("ts"),
+			msgKind: requireValue("msg-kind") as "dm" | "guild" | "roundtable",
+			attachments: parsedAttachments as Array<{
+				name: string;
+				type: string;
+				sizeKb: number;
+			}>,
+			text: readFileSync(0, "utf8"),
+		});
+		output(result, result.receiptId);
+		return;
+	}
+
+	if (subcommand === "complete") {
+		const result = completeChatReceipt({
+			dbPath,
+			leadId: values.lead,
+			messageId: requireValue("message-id"),
+			now: new Date().toISOString(),
+			env: process.env,
+		});
+		output(result, result.receiptId);
+		return;
+	}
+
+	if (subcommand === "settle") {
+		const result = settleChatReceipt({
+			dbPath,
+			leadId: values.lead,
+			messageId: requireValue("message-id"),
+			replyId: requireValue("reply-id"),
+			now: new Date().toISOString(),
+		});
+		output(result, result.receiptId);
+		return;
+	}
+
+	if (subcommand === "pending") {
+		const result = listPendingChatReceipts({
+			dbPath,
+			leadId: values.lead,
+			cursorSeq: parseInteger(values.cursor, "cursor", 0),
+			limit: parseInteger(values.limit, "limit", 20),
+			...(values["created-before"]
+				? { createdBefore: values["created-before"] }
+				: {}),
+			excludeQuarantined: values["exclude-quarantined"],
+		});
+		output(result, `${result.rows.length} pending chat receipt(s)`);
+		return;
+	}
+
+	const result = quarantineChatReceipt({
+		dbPath,
+		leadId: values.lead,
+		messageId: requireValue("message-id"),
+		now: new Date().toISOString(),
+	});
+	output(result, result.receiptId);
 }
 
 async function runSend(args: string[]): Promise<void> {

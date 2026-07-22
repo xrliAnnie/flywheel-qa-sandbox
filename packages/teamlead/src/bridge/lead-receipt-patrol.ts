@@ -8,6 +8,7 @@ import { msToSnowflakeLowerBound } from "./founder-notify-utils.js";
 
 export interface LeadReceiptPatrolOptions {
 	projectNames: readonly string[];
+	leadIdsForProject?: (projectName: string) => readonly string[];
 	commDbPathForProject: (projectName: string) => string;
 	receiptFoundationEnabled: () => boolean;
 	ownerEpoch: () => string;
@@ -16,6 +17,8 @@ export interface LeadReceiptPatrolOptions {
 	receiptWindowsMs?: ReceiptPriorityWindowsMs;
 	activationDryRun?: () => boolean;
 	resendCap: number;
+	chatPendingQuarantineAfterMs?: number;
+	chatPendingQuarantineLimitPerLead?: number;
 	notifyUnprocessed: (input: {
 		projectName: string;
 		alert: ReceiptAlertOutboxRow;
@@ -29,6 +32,21 @@ export interface LeadReceiptPatrolOptions {
 	logger?: (message: string) => void;
 }
 
+/** Restore project authority lost by ref-less external receipt rows. */
+export function normalizeUnprocessedReceiptAlertProject(
+	payload: UnprocessedReceiptAlertPayload,
+	patrolProjectName: string,
+): UnprocessedReceiptAlertPayload | null {
+	if (payload.projectName !== "unknown") return payload;
+	const projectName = patrolProjectName.trim();
+	if (!projectName || projectName === "unknown") return null;
+	return {
+		...payload,
+		projectName,
+		targetKey: `${projectName}:${payload.toLead}`,
+	};
+}
+
 /**
  * The Lead-facing half of FLY-1392's receipt patrol. GatePoller supplies the
  * cadence; comm.db supplies every cursor, retry round, and outbox claim.
@@ -36,6 +54,7 @@ export interface LeadReceiptPatrolOptions {
 export class LeadReceiptPatrol {
 	private readonly openDb: (path: string) => CommDB;
 	private readonly logger: (message: string) => void;
+	private readonly chatPendingCursor = new Map<string, number>();
 
 	constructor(private readonly options: LeadReceiptPatrolOptions) {
 		this.openDb = options.openDb ?? ((path) => new CommDatabase(path, false));
@@ -88,11 +107,65 @@ export class LeadReceiptPatrol {
 						: {}),
 					resendCap: this.options.resendCap,
 				});
+				this.quarantineStaleChatReceipts(db, projectName, nowMs);
 				await this.drainAlerts(db, projectName, nowMs);
 			} catch (error) {
 				this.logger(`${projectName}: ${(error as Error).message}`);
 			} finally {
 				db?.close();
+			}
+		}
+	}
+
+	private quarantineStaleChatReceipts(
+		db: CommDB,
+		projectName: string,
+		nowMs: number,
+	): void {
+		const ageMs = this.options.chatPendingQuarantineAfterMs ?? 60 * 60_000;
+		const limit = this.options.chatPendingQuarantineLimitPerLead ?? 20;
+		if (!Number.isSafeInteger(ageMs) || ageMs <= 0) {
+			throw new Error(
+				"chatPendingQuarantineAfterMs must be a positive safe integer",
+			);
+		}
+		if (!Number.isSafeInteger(limit) || limit <= 0) {
+			throw new Error(
+				"chatPendingQuarantineLimitPerLead must be a positive safe integer",
+			);
+		}
+		const createdBefore = new Date(nowMs - ageMs).toISOString();
+		for (const leadId of this.options.leadIdsForProject?.(projectName) ?? []) {
+			const key = `${projectName}:${leadId}`;
+			try {
+				const cursorSeq = this.chatPendingCursor.get(key) ?? 0;
+				const rows = db.listChatReceiptPending({
+					toLead: leadId,
+					cursorSeq,
+					limit,
+					createdBefore,
+					excludeQuarantined: true,
+				});
+				for (const row of rows) {
+					if (
+						!db.quarantineChatReceipt({
+							receiptId: row.id,
+							now: new Date(nowMs).toISOString(),
+						})
+					) {
+						this.logger(
+							`${projectName}/${leadId} could not quarantine ${row.id}`,
+						);
+					}
+				}
+				this.chatPendingCursor.set(
+					key,
+					rows.length === limit ? (rows.at(-1)?.seq ?? cursorSeq) : 0,
+				);
+			} catch (error) {
+				this.logger(
+					`${projectName}/${leadId} chat quarantine deferred: ${(error as Error).message}`,
+				);
 			}
 		}
 	}
