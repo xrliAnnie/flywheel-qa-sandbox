@@ -30,7 +30,10 @@ export type ChatThreadRef = NonNullable<
 	ReturnType<StateStore["getChatThreadByIssue"]>
 >;
 
-export type FounderGateCheckpoint = "brainstorm" | "approve_to_ship";
+export type FounderGateCheckpoint =
+	| "brainstorm"
+	| "approve_to_ship"
+	| "ship_ready";
 
 export interface FounderThreadNotifyOpts {
 	questionId: string;
@@ -115,6 +118,16 @@ function buildBody(opts: FounderThreadNotifyOpts): string {
 			// spell out the two binding actions + the ✅ receipt promise so a short
 			// reply elsewhere in the thread is never mistaken for the protocol.
 			"直接**回复这条消息**或点 ✅ 即批准；其它回复不会被当成批准。批准绑定后我会在你的消息上点 ✅ 确认。",
+		].join("\n");
+	}
+	if (opts.checkpoint === "ship_ready") {
+		return [
+			`${prefix}🚀 **Ship 就绪** — ${identifier}`,
+			owner,
+			"",
+			summary,
+			"",
+			"Lead 已同步收到。要 ship 请在本 thread 表态，由 Lead 执行合并；此卡为通知，回复/✅ 不会自动记为批准。",
 		].join("\n");
 	}
 	return [

@@ -1209,6 +1209,49 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"resolve.direct-toggle.test:founder_thread_notify live-observe",
 	},
+	// ─── FLY-1424: non-land workflow gate ship-ready declaration ───
+	{
+		name: "ship_ready_notify",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SHIP_READY_NOTIFY",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"非 land 工程 workflow 停在 founder gate 时向 owning Lead 与 founder thread 双路宣告 ship-ready",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/workflow-ship-ready.ts",
+				"shipReadyNotifyEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"workflow-ship-ready.test:reads the default-on notify switch at call time",
+	},
+	{
+		name: "ship_ready_remind_ms",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SHIP_READY_REMIND_MS",
+		polarity: "default_on",
+		valueKind: "value",
+		default: "1800000",
+		description:
+			"ship-ready founder gate 未处理时提醒 Lead 的停留阈值(默认 30 分钟)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/workflow-ship-ready.ts",
+				"shipReadyRemindMs",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+	},
 	// ─── FLY-799: founder-in-thread ship approval + auto-finalize ───
 	{
 		name: "founder_auto_approve",

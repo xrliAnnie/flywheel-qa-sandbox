@@ -17,6 +17,13 @@ import {
 	parseWorkflowRunSnapshot,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
+import {
+	shipReadyNotifyEnabled,
+	shipReadyRemindMs,
+	type WorkflowShipReadyArm,
+	type WorkflowShipReadyNotice,
+	workflowShipReadyUid,
+} from "../workflow-ship-ready.js";
 import { workflowApprovalGate } from "../workflow-template.js";
 import {
 	isLandNodeEnabled,
@@ -78,6 +85,7 @@ interface WorkflowEngineDispatcherOptions {
 		status: "completed" | "busy" | "partial" | "held";
 		reason?: string;
 	}>;
+	shipReadyArm?: WorkflowShipReadyArm;
 }
 
 export interface WorkflowEngineReconcileResult {
@@ -92,6 +100,10 @@ const APPROVED_FABLE_UNAVAILABILITY =
 	/\b(?:fable|model|provider|service)\b[^.;\n]*\b(?:(?:temporarily|currently)\s+)?unavailable\b|\b(?:provider\s+outage|service\s+down)\b/i;
 
 export const DEAD_EXECUTION_WATCH_TTL_MS = 24 * 60 * 60 * 1_000;
+const SHIP_READY_MAX_PER_TICK = 3;
+const SHIP_READY_FOUNDER_RETRY_BASE_MS = 30_000;
+const SHIP_READY_FOUNDER_RETRY_CAP_MS = 5 * 60_000;
+const SHIP_READY_FOUNDER_BUDGET_MS = 45 * 60_000;
 
 function isNonRetryableResourceFailure(error: string | undefined): boolean {
 	return !!error && NON_RETRYABLE_RESOURCE_FAILURE.test(error);
@@ -132,6 +144,10 @@ export class WorkflowEngineDispatcher {
 		WorkflowEngineDispatcherOptions["resolveRunAlertIdentity"]
 	>;
 	private readonly unknownLivenessCounts = new Map<string, number>();
+	private readonly shipReadyFounderRetries = new Map<
+		string,
+		{ attempts: number; nextAttemptAtMs: number }
+	>();
 	private deadExecutionWatchCursor:
 		| { observedAt: string; deadExecutionId: string }
 		| undefined;
@@ -262,6 +278,7 @@ export class WorkflowEngineDispatcher {
 					);
 				}
 			}
+			await this.reconcileWorkflowShipReady();
 			return result;
 		} catch (error) {
 			this.log(
@@ -271,6 +288,222 @@ export class WorkflowEngineDispatcher {
 		} finally {
 			this.reconciling = false;
 		}
+	}
+
+	private async reconcileWorkflowShipReady(): Promise<void> {
+		const arm = this.options.shipReadyArm;
+		if (!arm || !shipReadyNotifyEnabled(this.env)) return;
+		const store = this.options.store;
+		const now = this.now();
+		const nowIso = now.toISOString();
+		const nowMs = now.getTime();
+
+		try {
+			const ready = store.listWorkflowShipReadyGates({ now: nowIso });
+			const active = new Set(
+				ready.map((notice) => workflowShipReadyUid(notice)),
+			);
+			for (const uid of this.shipReadyFounderRetries.keys()) {
+				if (!active.has(uid)) this.shipReadyFounderRetries.delete(uid);
+			}
+			const selected: Array<{
+				notice: WorkflowShipReadyNotice;
+				founderDue: boolean;
+			}> = [];
+			for (const notice of ready) {
+				const uid = workflowShipReadyUid(notice);
+				const retry = this.shipReadyFounderRetries.get(uid);
+				const founderDue =
+					notice.pending.founder && (!retry || nowMs >= retry.nextAttemptAtMs);
+				if (!notice.pending.lead && !founderDue) continue;
+				selected.push({ notice, founderDue });
+				if (selected.length >= SHIP_READY_MAX_PER_TICK) break;
+			}
+
+			for (const { notice, founderDue } of selected) {
+				try {
+					if (notice.pending.lead) {
+						try {
+							const queued = await arm.queueLeadNotice(notice);
+							if (!queued.queued) {
+								throw new Error("lead_queue_not_durable");
+							}
+							store.recordWorkflowShipReadyFact({
+								runId: notice.runId,
+								gateNodeId: notice.gateNodeId,
+								attempt: notice.attempt,
+								path: "lead",
+								now: nowIso,
+							});
+						} catch (error) {
+							this.log(
+								`ship-ready Lead arm held for ${workflowShipReadyUid(notice)}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					}
+
+					if (founderDue) {
+						try {
+							const outcome = await arm.postFounderCard(notice);
+							if (outcome.kind === "posted") {
+								store.recordWorkflowShipReadyFact({
+									runId: notice.runId,
+									gateNodeId: notice.gateNodeId,
+									attempt: notice.attempt,
+									path: "founder",
+									now: nowIso,
+								});
+								this.shipReadyFounderRetries.delete(
+									workflowShipReadyUid(notice),
+								);
+							} else if (outcome.kind === "permanent") {
+								this.recordWorkflowShipReadyDeliveryFailure(
+									notice,
+									outcome.reason,
+									nowIso,
+								);
+							} else {
+								this.deferWorkflowShipReadyFounder(
+									notice,
+									outcome.reason,
+									outcome.retryAfterMs,
+									nowMs,
+									nowIso,
+								);
+							}
+						} catch (error) {
+							this.deferWorkflowShipReadyFounder(
+								notice,
+								error instanceof Error ? error.message : String(error),
+								undefined,
+								nowMs,
+								nowIso,
+							);
+						}
+					}
+				} catch (error) {
+					this.log(
+						`ship-ready candidate held for ${workflowShipReadyUid(notice)}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+		} catch (error) {
+			this.log(
+				`ship-ready readiness scan held: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+
+		let stalled: WorkflowShipReadyNotice[];
+		try {
+			stalled = store.listWorkflowShipReadyStalled({
+				now: nowIso,
+				remindAfterMs: shipReadyRemindMs(this.env),
+			});
+		} catch (error) {
+			this.log(
+				`ship-ready stalled scan held: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return;
+		}
+
+		let handled: Awaited<
+			ReturnType<WorkflowShipReadyArm["classifyShipHandled"]>
+		>;
+		try {
+			handled = await arm.classifyShipHandled(stalled);
+		} catch (error) {
+			this.log(
+				`ship-ready handled guard held: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return;
+		}
+		for (const notice of stalled) {
+			try {
+				const outcome = handled.get(workflowShipReadyUid(notice));
+				if (!outcome || outcome.kind === "unknown") continue;
+				if (outcome.kind === "handled") {
+					if (outcome.reason === "pr_merged") {
+						store.recordWorkflowShipReadyHandledObserved({
+							runId: notice.runId,
+							gateNodeId: notice.gateNodeId,
+							attempt: notice.attempt,
+							reason: "pr_merged",
+							now: nowIso,
+						});
+					}
+					continue;
+				}
+				store.recordWorkflowShipReadyStalledAlert({
+					runId: notice.runId,
+					gateNodeId: notice.gateNodeId,
+					attempt: notice.attempt,
+					gateOpenedAt: notice.gateOpenedAt,
+					sourceExecutionId: notice.sourceExecutionId,
+					alertIdentity: this.resolveRunAlertIdentity(
+						notice.projectName,
+						notice.issueId,
+					),
+					now: nowIso,
+				});
+			} catch (error) {
+				this.log(
+					`ship-ready stalled candidate held for ${workflowShipReadyUid(notice)}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+	}
+
+	private deferWorkflowShipReadyFounder(
+		notice: WorkflowShipReadyNotice,
+		reason: string,
+		retryAfterMs: number | undefined,
+		nowMs: number,
+		nowIso: string,
+	): void {
+		const gateOpenedMs = Date.parse(notice.gateOpenedAt);
+		if (
+			!Number.isFinite(gateOpenedMs) ||
+			nowMs - gateOpenedMs > SHIP_READY_FOUNDER_BUDGET_MS
+		) {
+			this.recordWorkflowShipReadyDeliveryFailure(
+				notice,
+				`retry_budget_exhausted:${reason}`,
+				nowIso,
+			);
+			return;
+		}
+		const uid = workflowShipReadyUid(notice);
+		const attempts = (this.shipReadyFounderRetries.get(uid)?.attempts ?? 0) + 1;
+		const exponential = Math.min(
+			SHIP_READY_FOUNDER_RETRY_CAP_MS,
+			SHIP_READY_FOUNDER_RETRY_BASE_MS * 2 ** (attempts - 1),
+		);
+		this.shipReadyFounderRetries.set(uid, {
+			attempts,
+			nextAttemptAtMs:
+				nowMs + Math.max(exponential, retryAfterMs ?? exponential),
+		});
+	}
+
+	private recordWorkflowShipReadyDeliveryFailure(
+		notice: WorkflowShipReadyNotice,
+		reason: string,
+		now: string,
+	): void {
+		this.options.store.recordWorkflowShipReadyDeliveryFailure({
+			runId: notice.runId,
+			gateNodeId: notice.gateNodeId,
+			attempt: notice.attempt,
+			reason,
+			gateOpenedAt: notice.gateOpenedAt,
+			sourceExecutionId: notice.sourceExecutionId,
+			alertIdentity: this.resolveRunAlertIdentity(
+				notice.projectName,
+				notice.issueId,
+			),
+			now,
+		});
+		this.shipReadyFounderRetries.delete(workflowShipReadyUid(notice));
 	}
 
 	private async reconcileDeadExecutionTripwires(): Promise<void> {

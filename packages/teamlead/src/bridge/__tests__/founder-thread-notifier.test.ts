@@ -586,3 +586,91 @@ describe("FLY-1041 Chunk 6: ship card carries the binding guidance line", () => 
 		expect(content).not.toContain("回复这条消息");
 	});
 });
+
+describe("FLY-1424 ship-ready card", () => {
+	it("renders PR and QA evidence while making notification non-authoritative", async () => {
+		const { store, events } = makeStore();
+		const fetchImpl = vi.fn(async () => res(200));
+		await emitFounderThreadNotification(
+			baseOpts({
+				checkpoint: "ship_ready",
+				summary:
+					"PR #1424 (head aaaaaaaa) · QA passed\n引擎已走完 tpl_eng_heavy 流程，停在 founder gate 等 ship。",
+			}),
+			{ store, fetchImpl: fetchImpl as unknown as typeof fetch },
+		);
+		const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+		const content = JSON.parse(init.body as string).content as string;
+		expect(content).toBe(
+			[
+				"🤖[自动] 🚀 **Ship 就绪** — FLY-605",
+				`<@${OWNER}>`,
+				"",
+				"PR #1424 (head aaaaaaaa) · QA passed",
+				"引擎已走完 tpl_eng_heavy 流程，停在 founder gate 等 ship。",
+				"",
+				"Lead 已同步收到。要 ship 请在本 thread 表态，由 Lead 执行合并；此卡为通知，回复/✅ 不会自动记为批准。",
+			].join("\n"),
+		);
+		expect(
+			events.some(
+				(event) =>
+					event.event_type === "founder_thread_notified" &&
+					(event.payload as { checkpoint?: string }).checkpoint ===
+						"ship_ready",
+			),
+		).toBe(true);
+	});
+
+	it("renders the explicit missing-evidence warning without implying approval", async () => {
+		const { store } = makeStore();
+		const fetchImpl = vi.fn(async () => res(200));
+		await emitFounderThreadNotification(
+			baseOpts({
+				checkpoint: "ship_ready",
+				summary:
+					"⚠️ 证据缺失（无 qa_passed claim）\n引擎已走完 tpl_eng_heavy 流程，停在 founder gate 等 ship。",
+			}),
+			{ store, fetchImpl: fetchImpl as unknown as typeof fetch },
+		);
+		const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+		const content = JSON.parse(init.body as string).content as string;
+		expect(content).toContain("⚠️ 证据缺失（无 qa_passed claim）");
+		expect(content).toContain("此卡为通知");
+		expect(content).toContain("不会自动记为批准");
+	});
+
+	it("keeps the existing brainstorm and approval bodies byte-stable", async () => {
+		const captured: string[] = [];
+		const { store } = makeStore();
+		const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+			captured.push(JSON.parse(init.body as string).content as string);
+			return res(200);
+		});
+		for (const checkpoint of ["brainstorm", "approve_to_ship"] as const) {
+			await emitFounderThreadNotification(baseOpts({ checkpoint }), {
+				store,
+				fetchImpl: fetchImpl as unknown as typeof fetch,
+			});
+		}
+		expect(captured).toEqual([
+			[
+				"🤖[自动] 🧠 **Brainstorm gate 等你确认** — FLY-605",
+				`<@${OWNER}>`,
+				"",
+				"my understanding…",
+				"",
+				"已等 12 分钟没人答（Lead 可能漏转）。在本 thread 回复确认/纠正。",
+			].join("\n"),
+			[
+				"🤖[自动] 🚀 **Ship gate 等你批准** — FLY-605",
+				`<@${OWNER}>`,
+				"",
+				"my understanding…",
+				"",
+				"…实现 + code-review 完成、等你 ship。",
+				"直接**回复这条消息**或点 ✅ 即批准；其它回复不会被当成批准。批准绑定后我会在你的消息上点 ✅ 确认。",
+			].join("\n"),
+		]);
+	});
+});

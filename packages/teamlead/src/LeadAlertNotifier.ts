@@ -365,7 +365,9 @@ export interface AlertMetadata {
 			| "design_fallback"
 			| "probe_unknown"
 			| "dead_execution_activity_after_replacement"
-			| "repeated_dead_execution_pattern";
+			| "repeated_dead_execution_pattern"
+			| "ship_ready_stalled"
+			| "ship_ready_delivery_failed";
 		leadResolution: "resolved" | "fallback";
 	};
 	runnerStuck?: {

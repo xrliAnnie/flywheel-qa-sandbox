@@ -272,7 +272,10 @@ import {
 import { attachDeliveredAlertLifecycles } from "./drained-alert-routing.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
-import { createExternalMergeReconciler } from "./external-merge-reconcile.js";
+import {
+	checkPrMergeViaGh,
+	createExternalMergeReconciler,
+} from "./external-merge-reconcile.js";
 import { ProjectConfigCache } from "./feature-flag-config-source.js";
 import { renderFlagReport } from "./feature-flag-report-html.js";
 import {
@@ -625,6 +628,7 @@ import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
 import { drainWorkflowRouteReminders } from "./workflow-route-reminder-drain.js";
 import { createWorkflowShadowRuntimeFromEnv } from "./workflow-shadow-writer.js";
+import { createWorkflowShipReadyArm } from "./workflow-ship-ready-arm.js";
 import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
 import {
 	gitWorktreeClean,
@@ -5367,6 +5371,34 @@ export async function startBridge(
 				}
 			},
 		});
+	const workflowShipReadyArm = createWorkflowShipReadyArm({
+		store,
+		resolveLead: (notice) => {
+			const source = store.getSession(notice.sourceExecutionId);
+			const labels = source
+				? store.getSessionLabels(notice.sourceExecutionId)
+				: [];
+			const { lead } = resolveLeadForIssue(
+				projects,
+				notice.projectName,
+				labels,
+			);
+			return {
+				leadId: lead.agentId,
+				chatChannel: lead.chatChannel,
+				botToken: lead.botToken ?? config.discordBotToken,
+			};
+		},
+		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
+		emitFounderThreadNotification: (options) =>
+			emitFounderThreadNotification(options, { store }),
+		ownerUserId: config.discordOwnerUserId,
+		projectRootFor: (projectName) =>
+			projects.find((project) => project.projectName === projectName)
+				?.projectRoot,
+		checkPrMerge: checkPrMergeViaGh,
+		log: (message) => console.warn(`[workflow-ship-ready] ${message}`),
+	});
 	const workflowEngineDispatcher = startDispatcher
 		? new WorkflowEngineDispatcher({
 				store,
@@ -5412,6 +5444,7 @@ export async function startBridge(
 				log: (message) => console.warn(`[workflow-engine] ${message}`),
 				materializedHeadAuthority,
 				landExecutor,
+				shipReadyArm: workflowShipReadyArm,
 			})
 		: undefined;
 	workflowEngineDispatcher?.start();

@@ -217,6 +217,33 @@ describe("feature-flag registry invariants", () => {
 		);
 	});
 
+	it("FLY-1424 registers ship-ready notification and reminder controls", () => {
+		const notify = FEATURE_FLAGS.find(
+			(flag) => flag.envVar === "FLYWHEEL_SHIP_READY_NOTIFY",
+		);
+		expect(notify).toMatchObject({
+			name: "ship_ready_notify",
+			category: "feature",
+			polarity: "default_on",
+			valueKind: "bool",
+			default: true,
+			toggleable: "direct",
+		});
+		expect(notify?.directToggleProof).toContain("workflow-ship-ready.test");
+
+		const remind = FEATURE_FLAGS.find(
+			(flag) => flag.envVar === "FLYWHEEL_SHIP_READY_REMIND_MS",
+		);
+		expect(remind).toMatchObject({
+			name: "ship_ready_remind_ms",
+			category: "feature",
+			polarity: "default_on",
+			valueKind: "value",
+			default: "1800000",
+			toggleable: "readonly",
+		});
+	});
+
 	it("FLY-1392 registers the receipt foundation as a default-on kill switch", () => {
 		const flag = FEATURE_FLAGS.find(
 			(candidate) => candidate.name === "receipt_foundation",

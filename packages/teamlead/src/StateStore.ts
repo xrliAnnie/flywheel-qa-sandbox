@@ -54,6 +54,11 @@ import {
 	parseWorkflowRunSnapshot,
 } from "./workflow-run-snapshot.js";
 import {
+	type ShipReadyMarkerPayload,
+	type WorkflowShipReadyNotice,
+	workflowShipReadyUid,
+} from "./workflow-ship-ready.js";
+import {
 	applyWorkflowOverride,
 	isGeneralizedTemplatesEnabled,
 	isWorkflowManifestV1Land,
@@ -20234,6 +20239,438 @@ export class StateStore {
 			.filter((r): r is WorkflowRunRow => r !== undefined);
 	}
 
+	/**
+	 * FLY-1424: active engineering runs whose v1 terminal gate is waiting for
+	 * founder ship approval. Delivery-path facts are projected independently so
+	 * one successful arm never hides the other arm's unfinished work.
+	 */
+	listWorkflowShipReadyGates(input: {
+		now: string;
+	}): WorkflowShipReadyNotice[] {
+		const rows = this.listWorkflowShipReadyCandidates(input).filter(
+			(row) => row.pending.lead || row.pending.founder,
+		);
+		this.warnWorkflowShipReadyCardinality("ready", rows.length);
+		return rows;
+	}
+
+	/**
+	 * Reminder candidates deliberately ignore delivery facts: notification is
+	 * not approval, so a delivered card can still be stalled and actionable.
+	 */
+	listWorkflowShipReadyStalled(input: {
+		now: string;
+		remindAfterMs: number;
+	}): WorkflowShipReadyNotice[] {
+		if (
+			!Number.isSafeInteger(input.remindAfterMs) ||
+			input.remindAfterMs <= 0
+		) {
+			throw new Error(
+				"workflow ship-ready reminder threshold must be positive",
+			);
+		}
+		const nowMs = StateStore.workflowShipReadyTimestampMs(input.now);
+		if (!Number.isFinite(nowMs)) {
+			throw new Error("workflow ship-ready now timestamp invalid");
+		}
+		const rows = this.listWorkflowShipReadyCandidates({
+			now: input.now,
+		}).filter((row) => {
+			const uid = workflowShipReadyUid({
+				runId: row.runId,
+				gateNodeId: row.gateNodeId,
+				attempt: row.attempt,
+			});
+			const facts = new Set(
+				this.listWorkflowRunEvents(row.runId).map((event) => event.event_uid),
+			);
+			return (
+				nowMs - StateStore.workflowShipReadyTimestampMs(row.gateOpenedAt) >
+					input.remindAfterMs &&
+				!facts.has(`ship_ready_stalled_alerted:${uid}`) &&
+				!facts.has(`ship_ready_handled_observed:${uid}`)
+			);
+		});
+		this.warnWorkflowShipReadyCardinality("stalled", rows.length);
+		return rows;
+	}
+
+	recordWorkflowShipReadyFact(input: {
+		runId: string;
+		gateNodeId: string;
+		attempt: number;
+		path: "lead" | "founder";
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } {
+		this.validateWorkflowShipReadyMarker(input);
+		const uid = workflowShipReadyUid(input);
+		const kind =
+			input.path === "lead"
+				? "ship_ready_lead_queued"
+				: "ship_ready_founder_posted";
+		let idempotentReplay = false;
+		this.db.transaction(() => {
+			const marker: ShipReadyMarkerPayload = {
+				path: input.path,
+				at: input.now,
+			};
+			idempotentReplay = this.appendWorkflowRunEventTx({
+				runId: input.runId,
+				eventUid: `${kind}:${uid}`,
+				kind,
+				nodeId: input.gateNodeId,
+				payload: marker,
+			}).deduped;
+		});
+		this.save();
+		return { ok: true, idempotentReplay };
+	}
+
+	recordWorkflowShipReadyHandledObserved(input: {
+		runId: string;
+		gateNodeId: string;
+		attempt: number;
+		reason: "pr_merged";
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } {
+		this.validateWorkflowShipReadyMarker(input);
+		const uid = workflowShipReadyUid(input);
+		let idempotentReplay = false;
+		this.db.transaction(() => {
+			idempotentReplay = this.appendWorkflowRunEventTx({
+				runId: input.runId,
+				eventUid: `ship_ready_handled_observed:${uid}`,
+				kind: "ship_ready_handled_observed",
+				nodeId: input.gateNodeId,
+				payload: { reason: input.reason, at: input.now },
+			}).deduped;
+		});
+		this.save();
+		return { ok: true, idempotentReplay };
+	}
+
+	recordWorkflowShipReadyDeliveryFailure(input: {
+		runId: string;
+		gateNodeId: string;
+		attempt: number;
+		reason: string;
+		gateOpenedAt: string;
+		sourceExecutionId: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } {
+		return this.recordWorkflowShipReadyAlert({
+			...input,
+			kind: "ship_ready_delivery_failed",
+			disposition: "ship_ready_delivery_failed",
+		});
+	}
+
+	recordWorkflowShipReadyStalledAlert(input: {
+		runId: string;
+		gateNodeId: string;
+		attempt: number;
+		gateOpenedAt: string;
+		sourceExecutionId: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } {
+		return this.recordWorkflowShipReadyAlert({
+			...input,
+			reason: "founder_gate_review_timeout",
+			kind: "ship_ready_stalled_alerted",
+			disposition: "ship_ready_stalled",
+		});
+	}
+
+	private recordWorkflowShipReadyAlert(input: {
+		runId: string;
+		gateNodeId: string;
+		attempt: number;
+		reason: string;
+		gateOpenedAt: string;
+		sourceExecutionId: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+		kind: "ship_ready_delivery_failed" | "ship_ready_stalled_alerted";
+		disposition: "ship_ready_delivery_failed" | "ship_ready_stalled";
+	}): { ok: true; idempotentReplay: boolean } {
+		this.validateWorkflowShipReadyMarker(input);
+		if (!input.reason.trim() || !input.sourceExecutionId.trim()) {
+			throw new Error("workflow ship-ready alert attribution invalid");
+		}
+		if (
+			!Number.isFinite(
+				StateStore.workflowShipReadyTimestampMs(input.gateOpenedAt),
+			)
+		) {
+			throw new Error("workflow ship-ready gate timestamp invalid");
+		}
+		const uid = workflowShipReadyUid(input);
+		const escalationUid =
+			input.disposition === "ship_ready_delivery_failed"
+				? `ship_ready_delivery_failed:${uid}`
+				: `ship_ready_stalled:${uid}`;
+		let idempotentReplay = false;
+		this.db.transaction(() => {
+			const marker: ShipReadyMarkerPayload = {
+				path: "failed",
+				reason: input.reason,
+				at: input.now,
+			};
+			const event = this.appendWorkflowRunEventTx({
+				runId: input.runId,
+				eventUid: `${input.kind}:${uid}`,
+				kind: input.kind,
+				nodeId: input.gateNodeId,
+				executionId: input.sourceExecutionId,
+				payload: marker,
+			});
+			idempotentReplay = event.deduped;
+			if (event.deduped) return;
+			const run = this.getWorkflowRun(input.runId);
+			if (!run) throw new Error(`workflow run not found: ${input.runId}`);
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid,
+				runId: input.runId,
+				payload: this.workflowShipReadyAlertPayload({
+					escalationUid,
+					runId: input.runId,
+					issueId: run.issue_id,
+					nodeId: input.gateNodeId,
+					executionId: input.sourceExecutionId,
+					reason: input.reason,
+					gateOpenedAt: input.gateOpenedAt,
+					disposition: input.disposition,
+					identity: input.alertIdentity,
+				}),
+				now: input.now,
+			});
+		});
+		this.save();
+		return { ok: true, idempotentReplay };
+	}
+
+	private workflowShipReadyAlertPayload(input: {
+		escalationUid: string;
+		runId: string;
+		issueId: string;
+		nodeId: string;
+		executionId: string;
+		reason: string;
+		gateOpenedAt: string;
+		disposition: "ship_ready_delivery_failed" | "ship_ready_stalled";
+		identity: WorkflowEngineAlertIdentity;
+	}): WorkflowEngineAlertPayload {
+		const stalled = input.disposition === "ship_ready_stalled";
+		return {
+			leadId: input.identity.leadId,
+			projectName: input.identity.projectName,
+			eventId: input.escalationUid,
+			eventType: "workflow_engine_issue_alert",
+			severity: "severe",
+			sessionKey: `wf:${input.runId}`,
+			title: stalled
+				? `Founder ship gate stalled for ${input.issueId}`
+				: `Founder ship-ready delivery failed for ${input.issueId}`,
+			body: stalled
+				? `Run ${input.runId} has waited at ${input.nodeId} since ${input.gateOpenedAt} without founder approval or a merged PR. Please inspect the issue thread and ship decision.`
+				: `Run ${input.runId} reached ${input.nodeId} at ${input.gateOpenedAt}, but direct founder notification permanently failed. Reason: ${input.reason}. Lead delivery remains independent; please notify the founder manually.`,
+			metadata: {
+				workflowEngine: {
+					runId: input.runId,
+					issueId: input.issueId,
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					disposition: input.disposition,
+					leadResolution: input.identity.leadResolution,
+				},
+			},
+		};
+	}
+
+	private listWorkflowShipReadyCandidates(input: {
+		now: string;
+	}): WorkflowShipReadyNotice[] {
+		const nowMs = StateStore.workflowShipReadyTimestampMs(input.now);
+		if (!Number.isFinite(nowMs)) {
+			throw new Error("workflow ship-ready now timestamp invalid");
+		}
+		const engineeringTemplates = new Set([
+			"tpl_eng_heavy",
+			"tpl_eng_light",
+			"tpl_eng_trivial",
+		]);
+		const notices: WorkflowShipReadyNotice[] = [];
+		for (const run of this.listActiveWorkflowRuns()) {
+			if (run.engine_owned !== 1 || !run.snapshot) continue;
+			let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+			try {
+				snapshot = parseWorkflowRunSnapshot(run.snapshot);
+			} catch {
+				continue;
+			}
+			if (
+				snapshot.schema_version !== 1 ||
+				isWorkflowManifestV1Land(snapshot.manifest) ||
+				!engineeringTemplates.has(snapshot.template.id) ||
+				!snapshot.manifest.ship_claims.includes("qa_passed")
+			) {
+				continue;
+			}
+			const gateNodeId = workflowApprovalGate(snapshot.manifest).node;
+			if (
+				run.current_node_id !== gateNodeId ||
+				snapshot.resolved.nodes.find((node) => node.id === gateNodeId)?.type !==
+					"gate" ||
+				this.hasWorkflowShipReadyFounderApproval(run.run_id)
+			) {
+				continue;
+			}
+			const gate = this.listWorkflowRunNodes(run.run_id, gateNodeId).at(-1);
+			if (!gate || gate.state !== "review") continue;
+			const gateOpenedAt = StateStore.workflowShipReadyTimestampIso(
+				gate.started_at,
+			);
+			const gateOpenedMs =
+				StateStore.workflowShipReadyTimestampMs(gateOpenedAt);
+			if (!Number.isFinite(gateOpenedMs)) continue;
+
+			const uid = workflowShipReadyUid({
+				runId: run.run_id,
+				gateNodeId,
+				attempt: gate.attempt,
+			});
+			const events = this.listWorkflowRunEvents(run.run_id);
+			const facts = new Set(events.map((event) => event.event_uid));
+			let entry: WorkflowRunEventRow | undefined;
+			for (let index = events.length - 1; index >= 0; index -= 1) {
+				const candidate = events[index];
+				if (candidate?.kind !== "edge_traversed") continue;
+				const payload = candidate.payload as
+					| Record<string, unknown>
+					| undefined;
+				if (
+					payload?.targetNodeId === gateNodeId &&
+					Number(payload.targetAttempt) === gate.attempt
+				) {
+					entry = candidate;
+					break;
+				}
+			}
+			const qaNodeId = snapshot.resolved.nodes.find(
+				(node) => node.type === "qa",
+			)?.id;
+			const latestQa = qaNodeId
+				? this.listWorkflowRunNodes(run.run_id, qaNodeId).at(-1)
+				: undefined;
+			const sourceExecutionId =
+				entry?.execution_id ?? latestQa?.execution_id ?? run.run_id;
+			const qaClaim = qaNodeId
+				? this.workflowSelectAll(
+						`SELECT c.subject_digest
+						   FROM workflow_claims c
+						   LEFT JOIN workflow_claim_revocation r ON r.claim_id = c.id
+						  WHERE c.workflow_run_id = ? AND c.node_id = ?
+						    AND c.attempt = ? AND c.predicate = 'qa_passed'
+						    AND r.claim_id IS NULL
+						  ORDER BY c.server_seq DESC LIMIT 1`,
+						[run.run_id, qaNodeId, latestQa?.attempt ?? -1],
+					)[0]
+				: undefined;
+			const headSha =
+				typeof qaClaim?.subject_digest === "string" &&
+				/^[0-9a-f]{40}$/i.test(qaClaim.subject_digest)
+					? qaClaim.subject_digest
+					: undefined;
+			const prNumber = headSha
+				? this.getWorkflowRunPrNumber(run.run_id, headSha)
+				: undefined;
+			const sourceSession = this.getSession(sourceExecutionId);
+			notices.push({
+				runId: run.run_id,
+				issueId: run.issue_id,
+				...(sourceSession?.issue_identifier
+					? { issueIdentifier: sourceSession.issue_identifier }
+					: {}),
+				projectName: run.project_name,
+				templateId: snapshot.template.id,
+				gateNodeId,
+				attempt: gate.attempt,
+				gateOpenedAt,
+				sourceExecutionId,
+				ageMinutes: Math.max(0, Math.floor((nowMs - gateOpenedMs) / 60_000)),
+				evidence: {
+					...(headSha ? { headSha } : {}),
+					...(prNumber ? { prNumber } : {}),
+					qaPassed: qaClaim !== undefined,
+				},
+				pending: {
+					lead: !facts.has(`ship_ready_lead_queued:${uid}`),
+					founder:
+						!facts.has(`ship_ready_founder_posted:${uid}`) &&
+						!facts.has(`ship_ready_delivery_failed:${uid}`),
+				},
+			});
+		}
+		return notices.sort(
+			(left, right) =>
+				StateStore.workflowShipReadyTimestampMs(left.gateOpenedAt) -
+					StateStore.workflowShipReadyTimestampMs(right.gateOpenedAt) ||
+				workflowShipReadyUid(left).localeCompare(workflowShipReadyUid(right)),
+		);
+	}
+
+	hasWorkflowShipReadyFounderApproval(runId: string): boolean {
+		return (
+			this.workflowSelectAll(
+				`SELECT 1 AS present
+				   FROM workflow_claims c
+				   LEFT JOIN workflow_claim_revocation r ON r.claim_id = c.id
+				  WHERE c.workflow_run_id = ? AND c.predicate = 'founder_approved'
+				    AND r.claim_id IS NULL
+				  LIMIT 1`,
+				[runId],
+			).length > 0
+		);
+	}
+
+	private validateWorkflowShipReadyMarker(input: {
+		runId: string;
+		gateNodeId: string;
+		attempt: number;
+		now: string;
+	}): void {
+		if (
+			!input.runId.trim() ||
+			!input.gateNodeId.trim() ||
+			!Number.isSafeInteger(input.attempt) ||
+			input.attempt <= 0 ||
+			!Number.isFinite(StateStore.workflowShipReadyTimestampMs(input.now))
+		) {
+			throw new Error("workflow ship-ready marker invalid");
+		}
+	}
+
+	private warnWorkflowShipReadyCardinality(
+		kind: "ready" | "stalled",
+		count: number,
+	): void {
+		if (count <= 500) return;
+		console.warn(
+			`[workflow-engine] ship-ready ${kind} scan returned ${count} rows (diagnostic guard 500); preserving the complete result to avoid starvation`,
+		);
+	}
+
+	private static workflowShipReadyTimestampIso(value: string): string {
+		return value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
+	}
+
+	private static workflowShipReadyTimestampMs(value: string): number {
+		return Date.parse(StateStore.workflowShipReadyTimestampIso(value));
+	}
+
 	/** Newest ACTIVE shadow run for an issue (an issue lives in one project;
 	 * rowid tiebreak keeps the theoretical cross-project case deterministic). */
 	getActiveWorkflowRunForIssue(issueId: string): WorkflowRunRow | undefined {
@@ -22611,7 +23048,9 @@ export interface WorkflowEngineAlertPayload {
 				| "design_fallback"
 				| "probe_unknown"
 				| "dead_execution_activity_after_replacement"
-				| "repeated_dead_execution_pattern";
+				| "repeated_dead_execution_pattern"
+				| "ship_ready_stalled"
+				| "ship_ready_delivery_failed";
 			leadResolution: "resolved" | "fallback";
 		};
 	};

@@ -65,14 +65,33 @@ function legacyPriorityForEvent(eventType: string): 0 | 1 | 2 | 3 {
 	return 3;
 }
 
-function sqliteTimestampToIso(value: string): string {
+export function sqliteTimestampToIso(value: string): string {
 	const normalized = value.includes("T")
 		? value
 		: `${value.replace(" ", "T")}Z`;
 	const parsed = new Date(normalized);
 	return Number.isFinite(parsed.getTime())
 		? parsed.toISOString()
-		: new Date().toISOString();
+		: "1970-01-01T00:00:00.000Z";
+}
+
+/**
+ * Rebuild the canonical delivery envelope from the journal row, never from a
+ * caller's newer in-memory payload. That makes append→crash→retry byte-stable.
+ */
+export function leadEventEnvelopeFromJournalRow(
+	row: LeadEventRow,
+	priority?: LeadEventEnvelope["priority"],
+): LeadEventEnvelope {
+	return {
+		seq: row.seq,
+		eventId: row.event_id,
+		event: JSON.parse(row.payload),
+		sessionKey: row.session_key ?? "",
+		leadId: row.lead_id,
+		timestamp: sqliteTimestampToIso(row.created_at),
+		...(priority !== undefined ? { priority } : {}),
+	};
 }
 
 export class LegacyLeadEventReconciler {
@@ -90,14 +109,7 @@ export class LegacyLeadEventReconciler {
 			const queue = this.opts.queueForLead(row.lead_id);
 			const runtime = this.opts.registry.getRawForLead(row.lead_id);
 			if (!queue || !runtime) continue;
-			const envelope: LeadEventEnvelope = {
-				seq: row.seq,
-				eventId: row.event_id,
-				event: JSON.parse(row.payload),
-				sessionKey: row.session_key ?? "",
-				leadId: row.lead_id,
-				timestamp: sqliteTimestampToIso(row.created_at),
-			};
+			const envelope = leadEventEnvelopeFromJournalRow(row);
 			const id = canonicalLeadEventDeliveryId(envelope);
 			const existing = queue.getById(id);
 			if (existing?.consumed_at) {

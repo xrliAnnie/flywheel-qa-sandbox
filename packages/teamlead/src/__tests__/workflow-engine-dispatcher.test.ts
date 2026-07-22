@@ -17,6 +17,11 @@ import {
 	type WorkflowDeadExecutionWatchRow,
 } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../workflow-run-snapshot.js";
+import type {
+	ShipReadyHandledOutcome,
+	WorkflowShipReadyArm,
+	WorkflowShipReadyNotice,
+} from "../workflow-ship-ready.js";
 import {
 	isWorkflowManifestV1Land,
 	loadBundledWorkflowSeeds,
@@ -47,6 +52,71 @@ const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
 };
+
+function shipReadyNotice(
+	overrides: Partial<WorkflowShipReadyNotice> = {},
+): WorkflowShipReadyNotice {
+	return {
+		runId: "ship-run-1",
+		issueId: "issue-1424",
+		issueIdentifier: "FLY-1424",
+		projectName: "flywheel",
+		templateId: "tpl_eng_heavy",
+		gateNodeId: "founder_gate",
+		attempt: 1,
+		gateOpenedAt: "2026-07-22T01:00:00.000Z",
+		sourceExecutionId: "qa-ship-1",
+		ageMinutes: 1,
+		evidence: { headSha: HEAD, prNumber: 1424, qaPassed: true },
+		pending: { lead: true, founder: true },
+		...overrides,
+	};
+}
+
+function shipReadyOnlyStore(input: {
+	ready?: () => WorkflowShipReadyNotice[];
+	stalled?: (threshold: number) => WorkflowShipReadyNotice[];
+}) {
+	return {
+		listNonTerminalWorkflowSideEffects: vi.fn(() => []),
+		listWorkflowShipReadyGates: vi.fn(() => input.ready?.() ?? []),
+		listWorkflowShipReadyStalled: vi.fn(
+			(options: { remindAfterMs: number }) =>
+				input.stalled?.(options.remindAfterMs) ?? [],
+		),
+		recordWorkflowShipReadyFact: vi.fn(() => ({
+			ok: true as const,
+			idempotentReplay: false,
+		})),
+		recordWorkflowShipReadyDeliveryFailure: vi.fn(() => ({
+			ok: true as const,
+			idempotentReplay: false,
+		})),
+		recordWorkflowShipReadyHandledObserved: vi.fn(() => ({
+			ok: true as const,
+			idempotentReplay: false,
+		})),
+		recordWorkflowShipReadyStalledAlert: vi.fn(() => ({
+			ok: true as const,
+			idempotentReplay: false,
+		})),
+	} as unknown as StateStore & {
+		listWorkflowShipReadyGates: ReturnType<typeof vi.fn>;
+		listWorkflowShipReadyStalled: ReturnType<typeof vi.fn>;
+		recordWorkflowShipReadyFact: ReturnType<typeof vi.fn>;
+		recordWorkflowShipReadyDeliveryFailure: ReturnType<typeof vi.fn>;
+		recordWorkflowShipReadyHandledObserved: ReturnType<typeof vi.fn>;
+		recordWorkflowShipReadyStalledAlert: ReturnType<typeof vi.fn>;
+	};
+}
+
+function inertStartDispatcher(): IStartDispatcher {
+	return {
+		start: vi.fn(),
+		getInflightCount: () => 0,
+		validateAgentName: () => ({ ok: true as const }),
+	} as unknown as IStartDispatcher;
+}
 
 // FLY-1417: the dead-exec sweep's replacement backoff
 // (workflow-engine-dispatcher §reconcileDeadExecutions) spaces retries by comparing
@@ -1982,5 +2052,480 @@ describe("WorkflowEngineDispatcher", () => {
 		);
 		store.close();
 		rmSync(canonicalRoot, { recursive: true, force: true });
+	});
+});
+
+describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
+	it("runs only after dispatch consumption", async () => {
+		const store = await storeWithIntent("implement");
+		const order: string[] = [];
+		const fake = fakeStartDispatcher(store);
+		const startDispatcher = {
+			...fake.dispatcher,
+			start: async (request: StartRequest) => {
+				order.push("dispatch");
+				return fake.dispatcher.start(request);
+			},
+		} as IStartDispatcher;
+		vi.spyOn(store, "listWorkflowShipReadyGates").mockReturnValue([
+			shipReadyNotice({
+				runId: "run-1",
+				pending: { lead: true, founder: false },
+			}),
+		]);
+		vi.spyOn(store, "listWorkflowShipReadyStalled").mockReturnValue([]);
+		const arm: WorkflowShipReadyArm = {
+			queueLeadNotice: vi.fn(async () => {
+				order.push("ship-ready");
+				return { queued: true };
+			}),
+			postFounderCard: vi.fn(),
+			classifyShipHandled: vi.fn(async () => new Map()),
+		};
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1424-ordering-")),
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
+				FLYWHEEL_SHIP_READY_NOTIFY: "1",
+			},
+			resolvePredecessorHead: async () => HEAD,
+			shipReadyArm: arm,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(order).toEqual(["dispatch", "ship-ready"]);
+		expect(store.listWorkflowRunEvents("run-1")).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ kind: "ship_ready_lead_queued" }),
+			]),
+		);
+		store.close();
+	});
+
+	it("isolates Lead and founder arm failures in both directions", async () => {
+		for (const failing of ["lead", "founder"] as const) {
+			const item = shipReadyNotice();
+			const store = shipReadyOnlyStore({ ready: () => [item] });
+			const queueLeadNotice = vi.fn(async () => {
+				if (failing === "lead") throw new Error("lead queue down");
+				return { queued: true };
+			});
+			const postFounderCard = vi.fn(async () => {
+				if (failing === "founder") throw new Error("Discord down");
+				return { kind: "posted" as const };
+			});
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				env: {
+					...WORKFLOW_ON,
+					FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
+				},
+				now: () => new Date("2026-07-22T01:01:00.000Z"),
+				shipReadyArm: {
+					queueLeadNotice,
+					postFounderCard,
+					classifyShipHandled: vi.fn(async () => new Map()),
+				},
+			});
+
+			await dispatcher.reconcile();
+			expect(queueLeadNotice).toHaveBeenCalledOnce();
+			expect(postFounderCard).toHaveBeenCalledOnce();
+			expect(store.recordWorkflowShipReadyFact).toHaveBeenCalledTimes(1);
+			expect(store.recordWorkflowShipReadyFact).toHaveBeenCalledWith(
+				expect.objectContaining({
+					path: failing === "lead" ? "founder" : "lead",
+				}),
+			);
+		}
+	});
+
+	it.each(["same_process", "restart"] as const)(
+		"redrives a durable Lead queue tail after the fact write crashes (%s)",
+		async (mode) => {
+			const item = shipReadyNotice({
+				pending: { lead: true, founder: false },
+			});
+			let factPersisted = false;
+			const store = shipReadyOnlyStore({
+				ready: () => (factPersisted ? [] : [item]),
+			});
+			store.recordWorkflowShipReadyFact
+				.mockImplementationOnce(() => {
+					throw new Error("crash after durable enqueue");
+				})
+				.mockImplementation(() => {
+					factPersisted = true;
+					return { ok: true, idempotentReplay: false };
+				});
+			const queueLeadNotice = vi.fn(async () => ({ queued: true }));
+			const options = {
+				store,
+				startDispatcher: inertStartDispatcher(),
+				env: {
+					...WORKFLOW_ON,
+					FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
+				},
+				shipReadyArm: {
+					queueLeadNotice,
+					postFounderCard: vi.fn(),
+					classifyShipHandled: vi.fn(async () => new Map()),
+				},
+			};
+			const first = new WorkflowEngineDispatcher(options);
+			await first.reconcile();
+			expect(queueLeadNotice).toHaveBeenCalledOnce();
+			const redriver =
+				mode === "restart" ? new WorkflowEngineDispatcher(options) : first;
+			await redriver.reconcile();
+			expect(queueLeadNotice).toHaveBeenCalledTimes(2);
+			await redriver.reconcile();
+			expect(queueLeadNotice).toHaveBeenCalledTimes(2);
+		},
+	);
+
+	it("backs off only the founder arm while Lead delivery remains eligible", async () => {
+		let pending = { lead: false, founder: true };
+		const item = () => shipReadyNotice({ pending });
+		const store = shipReadyOnlyStore({ ready: () => [item()] });
+		const queueLeadNotice = vi.fn(async () => ({ queued: true }));
+		const postFounderCard = vi.fn(async () => ({
+			kind: "transient" as const,
+			reason: "rate_limited",
+		}));
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
+			},
+			now: () => new Date("2026-07-22T01:01:00.000Z"),
+			shipReadyArm: {
+				queueLeadNotice,
+				postFounderCard,
+				classifyShipHandled: vi.fn(async () => new Map()),
+			},
+		});
+
+		await dispatcher.reconcile();
+		await dispatcher.reconcile();
+		expect(postFounderCard).toHaveBeenCalledTimes(1);
+		pending = { lead: true, founder: true };
+		await dispatcher.reconcile();
+		expect(queueLeadNotice).toHaveBeenCalledOnce();
+		expect(postFounderCard).toHaveBeenCalledTimes(1);
+		expect(store.recordWorkflowShipReadyFact).toHaveBeenCalledWith(
+			expect.objectContaining({ path: "lead" }),
+		);
+	});
+
+	it("honors Retry-After and then advances the 30s exponential retry ladder", async () => {
+		let nowMs = Date.parse("2026-07-22T01:01:00.000Z");
+		const item = shipReadyNotice({ pending: { lead: false, founder: true } });
+		const store = shipReadyOnlyStore({ ready: () => [item] });
+		const postFounderCard = vi
+			.fn<WorkflowShipReadyArm["postFounderCard"]>()
+			.mockResolvedValueOnce({
+				kind: "transient",
+				reason: "rate_limited",
+				retryAfterMs: 90_000,
+			})
+			.mockResolvedValueOnce({ kind: "transient", reason: "server_error" })
+			.mockResolvedValue({ kind: "posted" });
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
+			},
+			now: () => new Date(nowMs),
+			shipReadyArm: {
+				queueLeadNotice: vi.fn(),
+				postFounderCard,
+				classifyShipHandled: vi.fn(async () => new Map()),
+			},
+		});
+
+		await dispatcher.reconcile();
+		nowMs += 89_999;
+		await dispatcher.reconcile();
+		expect(postFounderCard).toHaveBeenCalledTimes(1);
+		nowMs += 1;
+		await dispatcher.reconcile();
+		expect(postFounderCard).toHaveBeenCalledTimes(2);
+		nowMs += 59_999;
+		await dispatcher.reconcile();
+		expect(postFounderCard).toHaveBeenCalledTimes(2);
+		nowMs += 1;
+		await dispatcher.reconcile();
+		expect(postFounderCard).toHaveBeenCalledTimes(3);
+	});
+
+	it("scans past founder-backoff rows and caps each tick at three eligible notices", async () => {
+		const all = Array.from({ length: 4 }, (_, index) =>
+			shipReadyNotice({
+				runId: `run-${index + 1}`,
+				pending: { lead: false, founder: true },
+			}),
+		);
+		const store = shipReadyOnlyStore({ ready: () => all });
+		const posted: string[] = [];
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
+			},
+			now: () => new Date("2026-07-22T01:01:00.000Z"),
+			shipReadyArm: {
+				queueLeadNotice: vi.fn(),
+				postFounderCard: vi.fn(async (item) => {
+					posted.push(item.runId);
+					return { kind: "transient" as const, reason: "rate_limited" };
+				}),
+				classifyShipHandled: vi.fn(async () => new Map()),
+			},
+		});
+
+		await dispatcher.reconcile();
+		expect(posted).toEqual(["run-1", "run-2", "run-3"]);
+		await dispatcher.reconcile();
+		expect(posted).toEqual(["run-1", "run-2", "run-3", "run-4"]);
+	});
+
+	it("terminalizes permanent failures and transient attempts beyond the durable 45-minute budget", async () => {
+		for (const outcome of [
+			{ kind: "permanent" as const, reason: "bad_owner" },
+			{ kind: "transient" as const, reason: "Discord down" },
+		]) {
+			const item = shipReadyNotice({
+				gateOpenedAt: "2026-07-22T01:00:00.000Z",
+				pending: { lead: false, founder: true },
+			});
+			const store = shipReadyOnlyStore({ ready: () => [item] });
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				env: {
+					...WORKFLOW_ON,
+					FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
+				},
+				now: () => new Date("2026-07-22T01:46:00.000Z"),
+				resolveRunAlertIdentity: (projectName) => ({
+					leadId: "flywheel-eng-lead",
+					projectName,
+					leadResolution: "resolved",
+				}),
+				shipReadyArm: {
+					queueLeadNotice: vi.fn(),
+					postFounderCard: vi.fn(async () => outcome),
+					classifyShipHandled: vi.fn(async () => new Map()),
+				},
+			});
+			await dispatcher.reconcile();
+			expect(store.recordWorkflowShipReadyDeliveryFailure).toHaveBeenCalledWith(
+				expect.objectContaining({
+					runId: item.runId,
+					reason:
+						outcome.kind === "transient"
+							? "retry_budget_exhausted:Discord down"
+							: "bad_owner",
+				}),
+			);
+		}
+	});
+
+	it("classifies the full stalled batch and only alerts definitive unhandled rows", async () => {
+		const stalled = ["merged", "approved", "unknown", "unhandled"].map(
+			(runId) => shipReadyNotice({ runId }),
+		);
+		let current = stalled;
+		const store = shipReadyOnlyStore({ stalled: () => current });
+		const outcomes = new Map<string, ShipReadyHandledOutcome>([
+			["merged:founder_gate:1", { kind: "handled", reason: "pr_merged" }],
+			[
+				"approved:founder_gate:1",
+				{ kind: "handled", reason: "founder_approved" },
+			],
+			["unknown:founder_gate:1", { kind: "unknown" }],
+			["unhandled:founder_gate:1", { kind: "unhandled" }],
+		]);
+		const classifyShipHandled = vi.fn(async () => outcomes);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
+				FLYWHEEL_SHIP_READY_REMIND_MS: "1000",
+			},
+			now: () => new Date("2026-07-22T01:31:00.000Z"),
+			resolveRunAlertIdentity: (projectName) => ({
+				leadId: "flywheel-eng-lead",
+				projectName,
+				leadResolution: "resolved",
+			}),
+			shipReadyArm: {
+				queueLeadNotice: vi.fn(),
+				postFounderCard: vi.fn(),
+				classifyShipHandled,
+			},
+		});
+
+		await dispatcher.reconcile();
+		expect(classifyShipHandled).toHaveBeenCalledWith(stalled);
+		expect(store.recordWorkflowShipReadyHandledObserved).toHaveBeenCalledTimes(
+			1,
+		);
+		expect(store.recordWorkflowShipReadyHandledObserved).toHaveBeenCalledWith(
+			expect.objectContaining({ runId: "merged", reason: "pr_merged" }),
+		);
+		expect(store.recordWorkflowShipReadyStalledAlert).toHaveBeenCalledTimes(1);
+		expect(store.recordWorkflowShipReadyStalledAlert).toHaveBeenCalledWith(
+			expect.objectContaining({ runId: "unhandled" }),
+		);
+
+		current = [];
+		await dispatcher.reconcile();
+		expect(classifyShipHandled).toHaveBeenLastCalledWith([]);
+	});
+
+	it("contains a poison ready candidate so the following candidate still completes both paths", async () => {
+		const poison = shipReadyNotice({ runId: "poison" });
+		const healthy = shipReadyNotice({ runId: "healthy" });
+		const store = shipReadyOnlyStore({ ready: () => [poison, healthy] });
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
+			},
+			now: () => new Date("2026-07-22T01:01:00.000Z"),
+			shipReadyArm: {
+				queueLeadNotice: vi.fn(async (item) => {
+					if (item.runId === "poison") throw new Error("queue poison");
+					return { queued: true };
+				}),
+				postFounderCard: vi.fn(async (item) => {
+					if (item.runId === "poison") throw new Error("post poison");
+					return { kind: "posted" as const };
+				}),
+				classifyShipHandled: vi.fn(async () => new Map()),
+			},
+		});
+		await dispatcher.reconcile();
+		expect(store.recordWorkflowShipReadyFact).toHaveBeenCalledWith(
+			expect.objectContaining({ runId: "healthy", path: "lead" }),
+		);
+		expect(store.recordWorkflowShipReadyFact).toHaveBeenCalledWith(
+			expect.objectContaining({ runId: "healthy", path: "founder" }),
+		);
+	});
+
+	it("does not treat a failed readiness or stalled query as an empty lifecycle batch", async () => {
+		const item = shipReadyNotice({ pending: { lead: false, founder: true } });
+		let readyFails = false;
+		let readyEmpty = false;
+		let stalledFails = false;
+		const store = shipReadyOnlyStore({
+			ready: () => {
+				if (readyFails) throw new Error("ready DB unavailable");
+				return readyEmpty ? [] : [item];
+			},
+			stalled: () => {
+				if (stalledFails) throw new Error("stalled DB unavailable");
+				return [];
+			},
+		});
+		const postFounderCard = vi.fn(async () => ({
+			kind: "transient" as const,
+			reason: "rate_limited",
+		}));
+		const classifyShipHandled = vi.fn(async () => new Map());
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
+			},
+			now: () => new Date("2026-07-22T01:01:00.000Z"),
+			shipReadyArm: {
+				queueLeadNotice: vi.fn(),
+				postFounderCard,
+				classifyShipHandled,
+			},
+		});
+		await dispatcher.reconcile();
+		expect(postFounderCard).toHaveBeenCalledOnce();
+		expect(classifyShipHandled).toHaveBeenLastCalledWith([]);
+
+		readyFails = true;
+		stalledFails = true;
+		await dispatcher.reconcile();
+		expect(postFounderCard).toHaveBeenCalledOnce();
+		expect(classifyShipHandled).toHaveBeenCalledTimes(1);
+
+		readyFails = false;
+		stalledFails = false;
+		await dispatcher.reconcile();
+		expect(postFounderCard).toHaveBeenCalledOnce();
+		expect(classifyShipHandled).toHaveBeenCalledTimes(2);
+
+		readyEmpty = true;
+		await dispatcher.reconcile();
+		readyEmpty = false;
+		await dispatcher.reconcile();
+		expect(postFounderCard).toHaveBeenCalledTimes(2);
+	});
+
+	it("reads notify and reminder flags at call time on the same instance", async () => {
+		const env = {
+			...WORKFLOW_ON,
+			FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
+			FLYWHEEL_SHIP_READY_NOTIFY: "0",
+			FLYWHEEL_SHIP_READY_REMIND_MS: "2500",
+		};
+		const item = shipReadyNotice({ pending: { lead: true, founder: false } });
+		const thresholds: number[] = [];
+		const store = shipReadyOnlyStore({
+			ready: () => [item],
+			stalled: (threshold) => {
+				thresholds.push(threshold);
+				return [];
+			},
+		});
+		const queueLeadNotice = vi.fn(async () => ({ queued: true }));
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			env,
+			shipReadyArm: {
+				queueLeadNotice,
+				postFounderCard: vi.fn(),
+				classifyShipHandled: vi.fn(async () => new Map()),
+			},
+		});
+		await dispatcher.reconcile();
+		expect(queueLeadNotice).not.toHaveBeenCalled();
+
+		env.FLYWHEEL_SHIP_READY_NOTIFY = "1";
+		await dispatcher.reconcile();
+		expect(queueLeadNotice).toHaveBeenCalledOnce();
+		expect(thresholds).toEqual([2_500]);
+		env.FLYWHEEL_SHIP_READY_REMIND_MS = "invalid";
+		await dispatcher.reconcile();
+		expect(thresholds).toEqual([2_500, 1_800_000]);
+		env.FLYWHEEL_SHIP_READY_NOTIFY = "0";
+		await dispatcher.reconcile();
+		expect(queueLeadNotice).toHaveBeenCalledTimes(2);
 	});
 });
