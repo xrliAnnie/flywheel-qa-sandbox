@@ -20,6 +20,7 @@ import {
 	attachTargetMatchesIssue,
 	computeSessionsFingerprint,
 	IssueDisplayRefresher,
+	parseWorkflowRouteSummary,
 } from "../issue-display-refresher.js";
 import type { BridgeConfig } from "../types.js";
 
@@ -28,6 +29,24 @@ const IDENT = "FLY-907";
 const CH = "chan-1";
 const THREAD = "thread-1";
 const PROJECT = "proj";
+
+it("reads only a valid founder-visible route summary from session params", () => {
+	expect(
+		parseWorkflowRouteSummary(
+			JSON.stringify({
+				workflowRoute: {
+					summary: "🧭 **Route**: `generic` · source `default_fallback`",
+				},
+			}),
+		),
+	).toContain("default_fallback");
+	expect(parseWorkflowRouteSummary("{")).toBeUndefined();
+	expect(
+		parseWorkflowRouteSummary(
+			JSON.stringify({ workflowRoute: { summary: 1 } }),
+		),
+	).toBeUndefined();
+});
 
 function makeProjects(): ProjectEntry[] {
 	return [

@@ -627,6 +627,35 @@ describe("Blueprint", () => {
 		);
 	});
 
+	it("copies the Bridge route summary into the direct session_started envelope", async () => {
+		const emitStarted = vi.fn(async () => {});
+		const emitter: ExecutionEventEmitter = {
+			emitStarted,
+			emitWorktreeReady: vi.fn(async () => {}),
+			emitCompleted: vi.fn(async () => {}),
+			emitFailed: vi.fn(async () => {}),
+			emitHeartbeat: vi.fn(async () => {}),
+			flush: vi.fn(async () => {}),
+		};
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker(),
+			() => makeMockAdapter(),
+			makeMockShell(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			emitter,
+		);
+		const routeSummary = "🧭 **Route**: `generic` · source `default_fallback`";
+		await blueprint.run(makeNode(), "/project", makeContext({ routeSummary }));
+		expect(emitStarted).toHaveBeenCalledWith(
+			expect.objectContaining({ routeSummary }),
+		);
+	});
+
 	it("does not set runnerModel in the envelope when ctx has none (byte-compat)", async () => {
 		const emitStarted = vi.fn(async () => {});
 		const emitter: ExecutionEventEmitter = {

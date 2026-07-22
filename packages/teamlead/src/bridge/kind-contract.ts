@@ -106,6 +106,10 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	delivery_dead_letter: { owner: "founder_direct", arc: "none_escalate" },
 	inbox_loop_stalled: { owner: "founder_direct", arc: "none_escalate" },
 	rules_bundle_legacy: { owner: "claude", arc: "human_by_design" },
+	workflow_route_input_rejected: {
+		owner: "claude",
+		arc: "human_by_design",
+	},
 	stale_approved_ship_dead: {
 		owner: "founder_direct",
 		arc: "none_escalate",

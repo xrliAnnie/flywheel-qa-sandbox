@@ -308,6 +308,9 @@ export const ALERT_EVENT_TYPES = [
 	// last-one-wins compatibility path instead of the single-file rules bundle.
 	// Shell-emitted only, but kept in the shared face so queued alerts drain.
 	"rules_bundle_legacy",
+	// FLY-1407: a work-kind dispatch carried an invalid explicit input. The
+	// request itself failed loud; this is the durable, deduplicated Lead notice.
+	"workflow_route_input_rejected",
 	// FLY-1393 W-1: exact-target process evidence proved an approved ship runner
 	// dead; stable event id, one durable alert per execution.
 	"stale_approved_ship_dead",
@@ -334,6 +337,7 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"model_cap_unknown",
 	"quota_switch_confirmation",
 	"quota_blocked_recovered",
+	"workflow_route_input_rejected",
 ]);
 
 export function isInformationalKind(kind: AlertEventType): boolean {

@@ -105,6 +105,19 @@ describe("TeamLeadClient", () => {
 		expect(payload.runnerModel).toBeUndefined();
 	});
 
+	it("never sends the Bridge-owned route summary over runner-authenticated HTTP", async () => {
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitStarted(
+			makeEnvelope({
+				routeSummary: "🧭 **Route**: `generic` · source `default_fallback`",
+			}),
+		);
+		await client.flush();
+		const payload = (receivedBodies[0] as Record<string, unknown>)
+			.payload as Record<string, unknown>;
+		expect(payload.routeSummary).toBeUndefined();
+	});
+
 	// FLY-1356 (Codex R1 HIGH-3 — the FLY-793 lesson caught again one field
 	// down): the arm attribution must survive REAL serialization. These
 	// assertions read the actual HTTP body a live server received, so a

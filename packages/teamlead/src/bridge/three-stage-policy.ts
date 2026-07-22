@@ -50,6 +50,15 @@ export interface ThreeStagePolicyInput {
 	 * `pipeline.three_stage_channels` is defined.
 	 */
 	dispatchChannelId?: string;
+	/**
+	 * FLY-1407 dispatch-time authority for the no-three-stage behavior.
+	 * Undefined preserves every existing caller's stored-label behavior.
+	 */
+	noThreeStageSignal?:
+		| "label"
+		| "dispatch_override"
+		| "generic_fallback"
+		| "suppressed";
 }
 
 export interface ThreeStagePolicyDecision {
@@ -62,6 +71,8 @@ export interface ThreeStagePolicyDecision {
 export type ThreeStageDisabledReasonCode =
 	| "global_disabled"
 	| "no_three_stage_label"
+	| "no_three_stage_override"
+	| "work_kind_default_fallback"
 	| "channel_not_allowed"
 	| "policy_disabled";
 
@@ -117,7 +128,25 @@ export function resolveThreeStagePolicy(
 	}
 
 	const labels = input.issueLabels.map((l) => l.toLowerCase());
-	if (labels.includes(NO_THREE_STAGE_LABEL)) {
+	if (input.noThreeStageSignal === "dispatch_override") {
+		return {
+			enabled: false,
+			reasonCode: "no_three_stage_override",
+			reason: "dispatch override requested no-three-stage",
+		};
+	}
+	if (input.noThreeStageSignal === "generic_fallback") {
+		return {
+			enabled: false,
+			reasonCode: "work_kind_default_fallback",
+			reason: "work-kind absent; use generic single-session fallback",
+		};
+	}
+	if (
+		input.noThreeStageSignal === "label" ||
+		(input.noThreeStageSignal !== "suppressed" &&
+			labels.includes(NO_THREE_STAGE_LABEL))
+	) {
 		return {
 			enabled: false,
 			reasonCode: "no_three_stage_label",
@@ -195,6 +224,12 @@ export interface ThreeStageEntryInput {
 	 * for the trust chain). Only consulted when the allowlist is defined.
 	 */
 	dispatchChannelId?: string;
+	/** Forwarded unchanged to resolveThreeStagePolicy (FLY-1407). */
+	noThreeStageSignal?:
+		| "label"
+		| "dispatch_override"
+		| "generic_fallback"
+		| "suppressed";
 	/** Optional public admission override for this run's design author. */
 	designBackend?: DesignBackend;
 }
@@ -256,6 +291,7 @@ export function resolveThreeStageEntry(
 		issueLabels: input.issueLabels,
 		env: input.env,
 		dispatchChannelId: input.dispatchChannelId,
+		noThreeStageSignal: input.noThreeStageSignal,
 	});
 	if (!policy.enabled) {
 		return {

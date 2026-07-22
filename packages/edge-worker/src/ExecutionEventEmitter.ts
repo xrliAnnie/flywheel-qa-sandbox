@@ -13,6 +13,8 @@ export interface EventEnvelope {
 	projectName: string;
 	issueIdentifier?: string;
 	issueTitle?: string;
+	/** Bridge-derived founder-visible route line. Direct sink only; never HTTP. */
+	routeSummary?: string;
 	retryPredecessor?: string;
 	runAttempt?: number;
 	/** GEO-152: Linear issue labels for multi-lead routing */

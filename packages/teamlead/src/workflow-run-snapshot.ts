@@ -6,6 +6,14 @@ import {
 	type WorkflowNodeCapabilities,
 } from "flywheel-config";
 import {
+	CATEGORY_SOURCES,
+	type CategorySource,
+	ENG_TIERS,
+	type EngTier,
+	WORK_KIND_CATEGORIES,
+	type WorkKindCategory,
+} from "./work-kind.js";
+import {
 	validatePinnedWorkflowManifest,
 	validateWorkflowManifest,
 	type WorkflowEffort,
@@ -15,6 +23,12 @@ import {
 	type WorkflowOutputContract,
 	type WorkflowVendor,
 } from "./workflow-template.js";
+
+interface WorkflowSnapshotWorkKind {
+	task_category?: WorkKindCategory;
+	category_source?: CategorySource;
+	tier?: EngTier;
+}
 
 export interface ResolvedWorkflowNode {
 	id: string;
@@ -29,7 +43,7 @@ export interface ResolvedWorkflowNode {
 	agent?: { content: string; digest: string };
 }
 
-export interface WorkflowRunSnapshotV2 {
+export interface WorkflowRunSnapshotV2 extends WorkflowSnapshotWorkKind {
 	schema_version: 2;
 	template: { id: string; revision: number };
 	manifest: WorkflowManifestV2;
@@ -38,7 +52,7 @@ export interface WorkflowRunSnapshotV2 {
 	snapshot_digest: string;
 }
 
-export interface WorkflowRunSnapshotV1 {
+export interface WorkflowRunSnapshotV1 extends WorkflowSnapshotWorkKind {
 	schema_version: 1;
 	template: { id: string; revision: number };
 	manifest: WorkflowManifestV1;
@@ -146,6 +160,11 @@ export function workflowNodeAgentContent(
 export function buildWorkflowRunSnapshotV1(input: {
 	template: { id: string; revision: number };
 	manifest: unknown;
+	workKind?: {
+		taskCategory?: WorkKindCategory;
+		categorySource: CategorySource;
+		tier?: EngTier;
+	};
 }): WorkflowRunSnapshotV1 {
 	const validated = validateWorkflowManifest(input.manifest);
 	if (validated.schema_version !== 1) {
@@ -184,6 +203,15 @@ export function buildWorkflowRunSnapshotV1(input: {
 		manifest: validated,
 		manifest_digest: canonicalSubmissionDigest(validated),
 		resolved: { nodes: resolved },
+		...(input.workKind
+			? {
+					...(input.workKind.taskCategory
+						? { task_category: input.workKind.taskCategory }
+						: {}),
+					category_source: input.workKind.categorySource,
+					...(input.workKind.tier ? { tier: input.workKind.tier } : {}),
+				}
+			: {}),
 	});
 	return { ...body, snapshot_digest: canonicalSubmissionDigest(body) };
 }
@@ -193,6 +221,11 @@ export function buildWorkflowRunSnapshotV2(input: {
 	template: { id: string; revision: number };
 	manifest: unknown;
 	canonicalRoot: string;
+	workKind?: {
+		taskCategory?: WorkKindCategory;
+		categorySource: CategorySource;
+		tier?: EngTier;
+	};
 }): WorkflowRunSnapshotV2 {
 	const validated = validateWorkflowManifest(input.manifest);
 	if (validated.schema_version !== 2) {
@@ -244,6 +277,15 @@ export function buildWorkflowRunSnapshotV2(input: {
 		manifest: validated,
 		manifest_digest: canonicalSubmissionDigest(validated),
 		resolved: { nodes: resolved },
+		...(input.workKind
+			? {
+					...(input.workKind.taskCategory
+						? { task_category: input.workKind.taskCategory }
+						: {}),
+					category_source: input.workKind.categorySource,
+					...(input.workKind.tier ? { tier: input.workKind.tier } : {}),
+				}
+			: {}),
 	});
 	return { ...body, snapshot_digest: canonicalSubmissionDigest(body) };
 }
@@ -306,12 +348,51 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 			"manifest_digest",
 			"resolved",
 			"snapshot_digest",
+			"task_category",
+			"category_source",
+			"tier",
 		],
 		"workflow snapshot",
 	);
 	if (root.schema_version !== 1 && root.schema_version !== 2) {
 		throw new Error("workflow snapshot schema_version must be 1 or 2");
 	}
+	const taskCategory =
+		root.task_category === undefined
+			? undefined
+			: nonempty(root.task_category, "workflow snapshot.task_category");
+	if (
+		taskCategory !== undefined &&
+		!WORK_KIND_CATEGORIES.includes(taskCategory as WorkKindCategory)
+	) {
+		throw new Error("workflow snapshot.task_category is unknown");
+	}
+	const categorySource = root.category_source;
+	if (
+		categorySource !== undefined &&
+		!CATEGORY_SOURCES.includes(categorySource as CategorySource)
+	) {
+		throw new Error("workflow snapshot.category_source is unknown");
+	}
+	if (categorySource === "task_category" && taskCategory === undefined) {
+		throw new Error(
+			"workflow snapshot.task_category is required for task_category provenance",
+		);
+	}
+	const tier = root.tier;
+	if (tier !== undefined && !ENG_TIERS.includes(tier as EngTier)) {
+		throw new Error("workflow snapshot.tier is unknown");
+	}
+	const workKind =
+		categorySource === undefined
+			? {}
+			: {
+					...(taskCategory
+						? { task_category: taskCategory as WorkKindCategory }
+						: {}),
+					category_source: categorySource as CategorySource,
+					...(tier ? { tier: tier as EngTier } : {}),
+				};
 	// The manifest is already pinned. Parse its structure without consulting the
 	// mutable live node registry; capability invariants are checked below from
 	// the snapshot's pinned resolved nodes.
@@ -478,6 +559,7 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 					manifest,
 					manifest_digest: manifestDigest,
 					resolved: { nodes: resolved },
+					...workKind,
 				})
 			: snapshotBody({
 					schema_version: 2 as const,
@@ -485,6 +567,7 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 					manifest: manifest as WorkflowManifestV2,
 					manifest_digest: manifestDigest,
 					resolved: { nodes: resolved },
+					...workKind,
 				});
 	const digest = nonempty(
 		root.snapshot_digest,

@@ -30,6 +30,13 @@ import {
 import type { LeadNudgeRow } from "./bridge/lead-pending-escalation.js";
 import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-policy.js";
 import {
+	buildWorkflowSelectionDigestBody,
+	type CategorySource,
+	type EngTier,
+	type RoutingOverride,
+	type WorkKindCategory,
+} from "./work-kind.js";
+import {
 	generateCapabilityToken,
 	hashCapabilityToken,
 	PASSING_PREDICATES,
@@ -2677,10 +2684,16 @@ export class StateStore {
 				seed_owner TEXT NOT NULL DEFAULT 'system'
 					CHECK (seed_owner IN ('system','founder')),
 				seed_content_hash TEXT,
+				retired_at TEXT,
 				FOREIGN KEY (template_id, current_published_revision)
 					REFERENCES workflow_template_revision(template_id, revision)
 			)
 		`);
+		try {
+			this.db.run("ALTER TABLE workflow_template ADD COLUMN retired_at TEXT");
+		} catch {
+			/* column already exists */
+		}
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_template_revision (
 				template_id TEXT NOT NULL,
@@ -12375,6 +12388,9 @@ export class StateStore {
 			"selection_source TEXT",
 			"selected_by TEXT",
 			"selection_reason TEXT",
+			"task_category TEXT",
+			"category_source TEXT",
+			"tier TEXT",
 			"engine_owned INTEGER NOT NULL DEFAULT 0",
 			// FLY-1372: durable entry provenance. ONLY the pipeline.dag dispatch
 			// entry writes 'pipeline_dag_v1' (atomically in the materialize
@@ -12815,6 +12831,74 @@ export class StateStore {
 				FOREIGN KEY (idempotency_key) REFERENCES workflow_start_reservation(idempotency_key)
 			)
 		`);
+		// FLY-1407: dispatch route receipts live outside workflow_run because an
+		// explicit no-three-stage bypass is forbidden from creating a workflow
+		// run/reservation. The immutable digest makes a decided claim resumable;
+		// status records the later durable launch evidence.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_route_decision (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				project TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				status TEXT NOT NULL CHECK(status IN ('decided','launched','rejected')),
+				route TEXT NOT NULL CHECK(route IN
+				 ('workflow_v2','pipeline_dag_v1','legacy','bypass_override','generic_fallback','rejected')),
+				idempotency_key TEXT,
+				execution_id TEXT,
+				run_id TEXT,
+				node_id TEXT,
+				route_digest TEXT NOT NULL,
+				task_category TEXT,
+				category_source TEXT CHECK(category_source IS NULL OR category_source IN
+				 ('task_category','template_override','default_fallback')),
+				tier TEXT CHECK(tier IS NULL OR tier IN ('trivial','light','heavy')),
+				routing_override TEXT CHECK(routing_override IS NULL OR routing_override = 'no-three-stage'),
+				selection_reason TEXT,
+				selected_by TEXT,
+				owning_dept TEXT,
+				suggested_category TEXT,
+				label_documentation_intent INTEGER NOT NULL DEFAULT 0,
+				created_by_switch_state TEXT NOT NULL DEFAULT 'work_kind_on',
+				error_code TEXT,
+				payload_hash TEXT,
+				dedup_key TEXT,
+				created_at TEXT NOT NULL,
+				launched_at TEXT
+			)
+		`);
+		this.db.run(
+			"CREATE UNIQUE INDEX IF NOT EXISTS ux_workflow_route_decision_key ON workflow_route_decision(idempotency_key) WHERE idempotency_key IS NOT NULL",
+		);
+		this.db.run(
+			"CREATE UNIQUE INDEX IF NOT EXISTS ux_workflow_route_decision_execution ON workflow_route_decision(execution_id) WHERE execution_id IS NOT NULL",
+		);
+		this.db.run(
+			"CREATE UNIQUE INDEX IF NOT EXISTS ux_workflow_route_decision_rejected ON workflow_route_decision(dedup_key) WHERE dedup_key IS NOT NULL",
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_route_reminder_outbox (
+				dedup_key TEXT PRIMARY KEY,
+				decision_id INTEGER NOT NULL UNIQUE,
+				project TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				error_code TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				recipient_lead_id TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'pending'
+				 CHECK(status IN ('pending','accepted','dead_letter')),
+				attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+				claim_owner TEXT,
+				claim_expires_at TEXT,
+				accepted_at TEXT,
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (decision_id) REFERENCES workflow_route_decision(id)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_route_reminder_pending ON workflow_route_reminder_outbox(status, claim_expires_at, created_at)",
+		);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_launch_owner (
 				execution_id TEXT PRIMARY KEY,
@@ -13421,7 +13505,7 @@ export class StateStore {
 		entryIssueAliases?: string[];
 		entryRootKey?: string;
 		projectName: string;
-		taskCategory: string;
+		taskCategory?: string;
 		templateId?: string;
 		claimsReadEnrolled: boolean;
 		override?: WorkflowTemplateOverride;
@@ -13432,6 +13516,8 @@ export class StateStore {
 			selectedBy: string;
 			reason: string;
 		};
+		categorySource?: CategorySource;
+		tier?: "trivial" | "light" | "heavy";
 		startReservation?: {
 			idempotencyKey: string;
 			selectionDigest: string;
@@ -13463,7 +13549,10 @@ export class StateStore {
 	}): WorkflowRunRow {
 		const binding = input.templateId
 			? undefined
-			: this.getWorkflowCategoryBinding(input.projectName, input.taskCategory);
+			: this.getWorkflowCategoryBinding(
+					input.projectName,
+					input.taskCategory ?? "*",
+				);
 		const selectedTemplateId = input.templateId ?? binding?.template_id;
 		if (!selectedTemplateId)
 			throw new Error("workflow template category binding not found");
@@ -13516,6 +13605,15 @@ export class StateStore {
 									"generalized workflow materialization requires canonicalRoot",
 								);
 							})(),
+						...(input.categorySource
+							? {
+									workKind: {
+										taskCategory: input.taskCategory as never,
+										categorySource: input.categorySource,
+										...(input.tier ? { tier: input.tier } : {}),
+									},
+								}
+							: {}),
 					})
 				: undefined;
 		const engineSnapshot =
@@ -13526,6 +13624,15 @@ export class StateStore {
 							revision: template.current_published_revision,
 						},
 						manifest: applied.manifest,
+						...(input.categorySource
+							? {
+									workKind: {
+										taskCategory: input.taskCategory as never,
+										categorySource: input.categorySource,
+										...(input.tier ? { tier: input.tier } : {}),
+									},
+								}
+							: {}),
 					})
 				: generalizedSnapshot;
 		const snapshot = engineSnapshot
@@ -13556,7 +13663,7 @@ export class StateStore {
 				} else {
 					const currentBinding = this.getWorkflowCategoryBinding(
 						input.projectName,
-						input.taskCategory,
+						input.taskCategory ?? "*",
 					);
 					currentSource = currentBinding
 						? currentBinding.task_category === "*"
@@ -13565,16 +13672,26 @@ export class StateStore {
 						: undefined;
 					currentTemplateId = currentBinding?.template_id;
 				}
-				const currentSelectionDigest = canonicalSubmissionDigest({
-					project: input.projectName,
-					issueId: input.issueId,
-					category: input.taskCategory,
-					templateId: expected.templateId,
-					revision: expected.revision,
-					selectionSource: expected.selectionSource,
-					selectedBy: input.selection?.selectedBy,
-					reason: input.selection?.reason,
-				});
+				const currentSelectionDigest = canonicalSubmissionDigest(
+					buildWorkflowSelectionDigestBody(
+						{
+							project: input.projectName,
+							issueId: input.issueId,
+							category: input.taskCategory ?? "*",
+							templateId: expected.templateId,
+							revision: expected.revision,
+							selectionSource: expected.selectionSource,
+							selectedBy: input.selection?.selectedBy ?? "",
+							reason: input.selection?.reason ?? "",
+						},
+						input.categorySource
+							? {
+									categorySource: input.categorySource,
+									tier: input.tier,
+								}
+							: undefined,
+					),
+				);
 				if (
 					!input.startReservation ||
 					input.startReservation.selectionDigest !== expected.selectionDigest ||
@@ -13680,8 +13797,9 @@ export class StateStore {
 				`INSERT INTO workflow_run
 				 (run_id, issue_id, project_name, template_id, template_revision,
 				  snapshot, claims_read_enrolled, engine_owned, current_node_id,
-				  selection_source, selected_by, selection_reason, entry_kind)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  selection_source, selected_by, selection_reason, entry_kind,
+				  task_category, category_source, tier)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					input.runId,
 					input.issueId,
@@ -13697,6 +13815,9 @@ export class StateStore {
 					input.selection?.reason ?? null,
 					// FLY-1372: entry provenance, pinned in the same transaction.
 					input.entryKind ?? null,
+					input.categorySource ? (input.taskCategory ?? null) : null,
+					input.categorySource ?? null,
+					input.tier ?? null,
 				],
 			);
 			if (input.startReservation) {
@@ -13842,6 +13963,9 @@ export class StateStore {
 			selection_source: (r.selection_source as string) ?? null,
 			selected_by: (r.selected_by as string) ?? null,
 			selection_reason: (r.selection_reason as string) ?? null,
+			task_category: (r.task_category as string) ?? null,
+			category_source: (r.category_source as string) ?? null,
+			tier: (r.tier as string) ?? null,
 			current_node_id: (r.current_node_id as string) ?? null,
 			current_qa_attempt:
 				r.current_qa_attempt == null ? null : Number(r.current_qa_attempt),
@@ -13988,6 +14112,368 @@ export class StateStore {
 			[idempotencyKey],
 		)[0];
 		return row ? JSON.parse(row.response_json as string) : undefined;
+	}
+
+	private getWorkflowRouteDecisionByIdentity(input: {
+		idempotencyKey?: string;
+		executionId?: string;
+	}): WorkflowRouteDecisionRow | undefined {
+		const row = input.idempotencyKey
+			? this.workflowSelectAll(
+					"SELECT * FROM workflow_route_decision WHERE idempotency_key = ?",
+					[input.idempotencyKey],
+				)[0]
+			: input.executionId
+				? this.workflowSelectAll(
+						"SELECT * FROM workflow_route_decision WHERE execution_id = ?",
+						[input.executionId],
+					)[0]
+				: undefined;
+		return row as unknown as WorkflowRouteDecisionRow | undefined;
+	}
+
+	claimWorkflowRouteDecision(
+		input: WorkflowRouteDecisionClaimInput,
+	): WorkflowRouteDecisionClaimResult {
+		if (!!input.idempotencyKey === !!input.executionId) {
+			throw new Error(
+				"workflow route decision requires exactly one idempotencyKey or executionId",
+			);
+		}
+		const existing = this.getWorkflowRouteDecisionByIdentity(input);
+		if (existing) {
+			if (existing.route_digest !== input.routeDigest) {
+				return { status: "conflict", decision: existing };
+			}
+			return {
+				status:
+					existing.status === "launched"
+						? "already_launched"
+						: "resume_decided",
+				decision: existing,
+			};
+		}
+		const now = input.now ?? new Date().toISOString();
+		this.db.run(
+			`INSERT INTO workflow_route_decision
+			 (project, issue_id, status, route, idempotency_key, execution_id,
+			  run_id, node_id, route_digest, task_category, category_source, tier,
+			  routing_override, selection_reason, selected_by, owning_dept,
+			  suggested_category, label_documentation_intent,
+			  created_by_switch_state, created_at)
+			 VALUES (?, ?, 'decided', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				input.project,
+				input.issueId,
+				input.route,
+				input.idempotencyKey ?? null,
+				input.executionId ?? null,
+				input.runId ?? null,
+				input.nodeId ?? null,
+				input.routeDigest,
+				input.taskCategory ?? null,
+				input.categorySource ?? null,
+				input.tier ?? null,
+				input.override ?? null,
+				input.selectionReason ?? null,
+				input.selectedBy ?? null,
+				input.owningDept ?? null,
+				input.suggestedCategory ?? null,
+				input.labelDocumentationIntent ? 1 : 0,
+				input.createdBySwitchState ?? "work_kind_on",
+				now,
+			],
+		);
+		this.save();
+		return {
+			status: "inserted",
+			decision: this.getWorkflowRouteDecisionByIdentity(input)!,
+		};
+	}
+
+	markWorkflowRouteDecisionLaunched(input: {
+		idempotencyKey?: string;
+		executionId?: string;
+		now?: string;
+	}): boolean {
+		const decision = this.getWorkflowRouteDecisionByIdentity(input);
+		if (!decision || decision.status === "rejected") return false;
+		if (decision.status === "launched") return true;
+		let hasEvidence = false;
+		if (decision.idempotency_key) {
+			const reservation = this.getWorkflowStartReservation(
+				decision.idempotency_key,
+			);
+			hasEvidence =
+				reservation?.stage === "launch_committed" ||
+				reservation?.stage === "responded";
+		} else if (decision.execution_id) {
+			const session = this.getSession(decision.execution_id);
+			const claim = this.workflowSelectAll(
+				`SELECT state FROM lifecycle_launch_claims
+				  WHERE execution_id = ? AND state IN ('starting','active')`,
+				[decision.execution_id],
+			)[0];
+			hasEvidence = !!session && !!claim;
+		}
+		if (!hasEvidence) return false;
+		this.db.run(
+			`UPDATE workflow_route_decision
+			    SET status = 'launched', launched_at = ?
+			  WHERE id = ? AND status = 'decided'`,
+			[input.now ?? new Date().toISOString(), decision.id],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		this.save();
+		return changed;
+	}
+
+	insertRejectedRouteDecisionWithReminder(input: {
+		project: string;
+		issueId: string;
+		errorCode: string;
+		payload: unknown;
+		recipientLeadId: string;
+		owningDept?: string;
+		selectedBy?: string;
+		now?: string;
+	}): { inserted: boolean; dedupKey: string } {
+		const now = input.now ?? new Date().toISOString();
+		const payloadHash = canonicalSubmissionDigest(input.payload);
+		const dedupKey = canonicalSubmissionDigest({
+			project: input.project,
+			issueId: input.issueId,
+			errorCode: input.errorCode,
+			payloadHash,
+		});
+		let inserted = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_route_decision
+				 (project, issue_id, status, route, route_digest, selected_by,
+				  owning_dept, error_code, payload_hash, dedup_key, created_at)
+				 VALUES (?, ?, 'rejected', 'rejected', ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.project,
+					input.issueId,
+					payloadHash,
+					input.selectedBy ?? null,
+					input.owningDept ?? null,
+					input.errorCode,
+					payloadHash,
+					dedupKey,
+					now,
+				],
+			);
+			inserted = this.db.getRowsModified() === 1;
+			if (!inserted) return;
+			const decision = this.workflowSelectAll(
+				"SELECT id FROM workflow_route_decision WHERE dedup_key = ?",
+				[dedupKey],
+			)[0];
+			this.db.run(
+				`INSERT INTO workflow_route_reminder_outbox
+				 (dedup_key, decision_id, project, issue_id, error_code,
+				  payload_json, recipient_lead_id, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					dedupKey,
+					Number(decision!.id),
+					input.project,
+					input.issueId,
+					input.errorCode,
+					JSON.stringify(input.payload),
+					input.recipientLeadId,
+					now,
+					now,
+				],
+			);
+		});
+		this.save();
+		return { inserted, dedupKey };
+	}
+
+	insertWorkflowRouteDecisionReminder(input: {
+		idempotencyKey?: string;
+		executionId?: string;
+		code: string;
+		payload: unknown;
+		recipientLeadId: string;
+		now?: string;
+	}): { inserted: boolean; dedupKey: string } {
+		const decision = this.getWorkflowRouteDecisionByIdentity(input);
+		if (!decision || decision.status === "rejected") {
+			throw new Error("workflow route reminder requires a successful decision");
+		}
+		const now = input.now ?? new Date().toISOString();
+		const payloadHash = canonicalSubmissionDigest(input.payload);
+		const dedupKey = canonicalSubmissionDigest({
+			decisionId: decision.id,
+			project: decision.project,
+			issueId: decision.issue_id,
+			code: input.code,
+			payloadHash,
+		});
+		this.db.run(
+			`INSERT OR IGNORE INTO workflow_route_reminder_outbox
+			 (dedup_key, decision_id, project, issue_id, error_code,
+			  payload_json, recipient_lead_id, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				dedupKey,
+				decision.id,
+				decision.project,
+				decision.issue_id,
+				input.code,
+				JSON.stringify(input.payload),
+				input.recipientLeadId,
+				now,
+				now,
+			],
+		);
+		const inserted = this.db.getRowsModified() === 1;
+		this.save();
+		return { inserted, dedupKey };
+	}
+
+	listWorkflowRouteDecisions(): WorkflowRouteDecisionRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_route_decision ORDER BY id",
+			[],
+		) as unknown as WorkflowRouteDecisionRow[];
+	}
+
+	listWorkflowRouteReminderOutbox(): WorkflowRouteReminderOutboxRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_route_reminder_outbox ORDER BY created_at, dedup_key",
+			[],
+		) as unknown as WorkflowRouteReminderOutboxRow[];
+	}
+
+	claimWorkflowRouteReminder(input: {
+		owner: string;
+		now: string;
+		leaseExpiresAt: string;
+		maxAttempts?: number;
+	}): WorkflowRouteReminderClaim | undefined {
+		if (
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.leaseExpiresAt) ||
+			Date.parse(input.leaseExpiresAt) <= Date.parse(input.now)
+		) {
+			throw new Error("invalid workflow route reminder lease");
+		}
+		const maxAttempts = input.maxAttempts ?? 3;
+		let claimed: WorkflowRouteReminderClaim | undefined;
+		this.db.transaction(() => {
+			const candidate = this.workflowSelectAll(
+				`SELECT * FROM workflow_route_reminder_outbox
+				  WHERE status = 'pending'
+				    AND attempts < ?
+				    AND (claim_expires_at IS NULL OR claim_expires_at <= ?)
+				  ORDER BY created_at, dedup_key
+				  LIMIT 1`,
+				[maxAttempts, input.now],
+			)[0] as unknown as WorkflowRouteReminderOutboxRow | undefined;
+			if (!candidate) return;
+			const attempt = Number(candidate.attempts) + 1;
+			this.db.run(
+				`UPDATE workflow_route_reminder_outbox
+				    SET attempts = ?, claim_owner = ?, claim_expires_at = ?,
+				        updated_at = ?
+				  WHERE dedup_key = ? AND status = 'pending' AND attempts = ?
+				    AND (claim_expires_at IS NULL OR claim_expires_at <= ?)`,
+				[
+					attempt,
+					input.owner,
+					input.leaseExpiresAt,
+					input.now,
+					candidate.dedup_key,
+					candidate.attempts,
+					input.now,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			claimed = {
+				dedupKey: candidate.dedup_key,
+				attempt,
+				eventId: `${candidate.dedup_key}#${attempt}`,
+				project: candidate.project,
+				issueId: candidate.issue_id,
+				errorCode: candidate.error_code,
+				payload: JSON.parse(candidate.payload_json) as unknown,
+				recipientLeadId: candidate.recipient_lead_id,
+			};
+		});
+		if (claimed) this.save();
+		return claimed;
+	}
+
+	completeWorkflowRouteReminder(input: {
+		dedupKey: string;
+		owner: string;
+		attempt: number;
+		outcome: "accepted" | "retry";
+		error?: string;
+		now?: string;
+		maxAttempts?: number;
+	}): boolean {
+		const now = input.now ?? new Date().toISOString();
+		const maxAttempts = input.maxAttempts ?? 3;
+		const status =
+			input.outcome === "accepted"
+				? "accepted"
+				: input.attempt >= maxAttempts
+					? "dead_letter"
+					: "pending";
+		this.db.run(
+			`UPDATE workflow_route_reminder_outbox
+			    SET status = ?, accepted_at = ?, last_error = ?,
+			        claim_owner = NULL, claim_expires_at = NULL, updated_at = ?
+			  WHERE dedup_key = ? AND status = 'pending'
+			    AND claim_owner = ? AND attempts = ?`,
+			[
+				status,
+				status === "accepted" ? now : null,
+				input.error ?? null,
+				now,
+				input.dedupKey,
+				input.owner,
+				input.attempt,
+			],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
+	}
+
+	summarizeCategorySuggestionAlignment(
+		project?: string,
+	): WorkflowCategorySuggestionSummary[] {
+		const rows = this.workflowSelectAll(
+			`SELECT project, owning_dept,
+			        COUNT(*) AS total,
+			        SUM(CASE WHEN task_category = suggested_category THEN 1 ELSE 0 END) AS matches
+			   FROM workflow_route_decision
+			  WHERE status = 'launched'
+			    AND category_source = 'task_category'
+			    AND suggested_category IS NOT NULL
+			    ${project ? "AND project = ?" : ""}
+			  GROUP BY project, owning_dept
+			  ORDER BY project, owning_dept`,
+			project ? [project] : [],
+		);
+		return rows.map((row) => {
+			const total = Number(row.total);
+			const matches = Number(row.matches);
+			return {
+				project: row.project as string,
+				owningDept: (row.owning_dept as string | null) ?? null,
+				total,
+				matches,
+				ratio: total === 0 ? 0 : matches / total,
+			};
+		});
 	}
 
 	private static workflowLaunchToken(
@@ -20447,6 +20933,107 @@ export class StateStore {
 
 // ── FLY-1244: workflow template + claims row/result types ──────────────────
 
+export type WorkflowRouteDecisionRoute =
+	| "workflow_v2"
+	| "pipeline_dag_v1"
+	| "legacy"
+	| "bypass_override"
+	| "generic_fallback";
+
+export interface WorkflowRouteDecisionClaimInput {
+	project: string;
+	issueId: string;
+	idempotencyKey?: string;
+	executionId?: string;
+	runId?: string;
+	nodeId?: string;
+	route: WorkflowRouteDecisionRoute;
+	routeDigest: string;
+	taskCategory?: WorkKindCategory;
+	categorySource?: CategorySource;
+	tier?: EngTier;
+	override?: RoutingOverride;
+	selectionReason?: string;
+	selectedBy?: string;
+	owningDept?: string;
+	suggestedCategory?: WorkKindCategory;
+	labelDocumentationIntent?: boolean;
+	createdBySwitchState?: string;
+	now?: string;
+}
+
+export interface WorkflowRouteDecisionRow {
+	id: number;
+	project: string;
+	issue_id: string;
+	status: "decided" | "launched" | "rejected";
+	route: WorkflowRouteDecisionRoute | "rejected";
+	idempotency_key: string | null;
+	execution_id: string | null;
+	run_id: string | null;
+	node_id: string | null;
+	route_digest: string;
+	task_category: string | null;
+	category_source: CategorySource | null;
+	tier: EngTier | null;
+	routing_override: RoutingOverride | null;
+	selection_reason: string | null;
+	selected_by: string | null;
+	owning_dept: string | null;
+	suggested_category: string | null;
+	label_documentation_intent: number;
+	created_by_switch_state: string;
+	error_code: string | null;
+	payload_hash: string | null;
+	dedup_key: string | null;
+	created_at: string;
+	launched_at: string | null;
+}
+
+export type WorkflowRouteDecisionClaimResult =
+	| {
+			status: "inserted" | "resume_decided" | "already_launched";
+			decision: WorkflowRouteDecisionRow;
+	  }
+	| { status: "conflict"; decision: WorkflowRouteDecisionRow };
+
+export interface WorkflowRouteReminderOutboxRow {
+	dedup_key: string;
+	decision_id: number;
+	project: string;
+	issue_id: string;
+	error_code: string;
+	payload_json: string;
+	recipient_lead_id: string;
+	status: "pending" | "accepted" | "dead_letter";
+	attempts: number;
+	claim_owner: string | null;
+	claim_expires_at: string | null;
+	accepted_at: string | null;
+	last_error: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface WorkflowRouteReminderClaim {
+	dedupKey: string;
+	attempt: number;
+	eventId: string;
+	project: string;
+	issueId: string;
+	errorCode: string;
+	payload: unknown;
+	recipientLeadId: string;
+}
+
+export interface WorkflowCategorySuggestionSummary {
+	project: string;
+	owningDept: string | null;
+	total: number;
+	matches: number;
+	ratio: number;
+}
+
 export interface WorkflowTemplateRow {
 	template_id: string;
 	name: string;
@@ -20456,6 +21043,7 @@ export interface WorkflowTemplateRow {
 	created_at: string;
 	seed_owner: "system" | "founder";
 	seed_content_hash: string | null;
+	retired_at: string | null;
 }
 
 export interface WorkflowTemplateRevisionRow {
@@ -20515,6 +21103,9 @@ export interface WorkflowRunRow {
 	selection_source: string | null;
 	selected_by: string | null;
 	selection_reason: string | null;
+	task_category: string | null;
+	category_source: string | null;
+	tier: string | null;
 	current_node_id: string | null;
 	/** Explicit run-level authority for the QA attempt allowed to satisfy ship. */
 	current_qa_attempt: number | null;

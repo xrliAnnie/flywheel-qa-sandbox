@@ -443,6 +443,19 @@ export class ConfigLoader {
 			if (pipeline.dag != null && typeof pipeline.dag !== "boolean") {
 				throw new Error("pipeline.dag must be a boolean");
 			}
+			// FLY-1407: shared consumers must not lose the whole pipeline block when
+			// only the new work-kind key is malformed. Fresh /api/runs/start requests
+			// have a narrow strict reader that reports INVALID_WORK_KIND_CONFIG; this
+			// loader deliberately drops only this key and preserves three_stage/dag.
+			if (
+				Object.hasOwn(pipeline, "work_kind") &&
+				typeof pipeline.work_kind !== "boolean"
+			) {
+				console.warn(
+					"[ConfigLoader] pipeline.work_kind must be a boolean — dropping only work_kind; other pipeline settings remain active",
+				);
+				delete pipeline.work_kind;
+			}
 			// FLY-887 R2: three_stage_channels — channel allowlist for three-stage
 			// entry. Items must be QUOTED strings: a bare YAML number would
 			// silently lose precision on 19-digit Discord snowflakes and the gate

@@ -289,6 +289,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// event does NOT clobber existing `proofshot.runs` or `last_artifact`
 		// state from prior captures in the same execution (Bridge restart safety).
 		this.persistProofShotConfig(env.executionId);
+		if (env.routeSummary) {
+			patchSessionParams(this.store, env.executionId, (cur) => ({
+				...cur,
+				workflowRoute: { summary: env.routeSummary },
+			}));
+		}
 
 		// FLY-598: snapshot founder_ux_gate.mode onto the session (a dedicated
 		// column, not session_params) so the Layer B stage guard reads the run's
@@ -327,6 +333,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 							issueId: env.issueId,
 							issueIdentifier: env.issueIdentifier,
 							issueTitle: resolvedTitle,
+							routeSummary: env.routeSummary,
 							botToken,
 							leadId: ctLead.agentId,
 							ownerUserId: this.config.discordOwnerUserId,

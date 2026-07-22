@@ -435,4 +435,54 @@ describe("workflow template manifest v2", () => {
 			}),
 		).toThrow(/cannot skip.*research.*output|output.*research/i);
 	});
+
+	it("validates tier presets and applies vendor plus model atomically", () => {
+		const base = generalizedManifest();
+		const manifest = validateWorkflowManifest({
+			...base,
+			tier_presets: {
+				heavy: {
+					reason: "heavy tier",
+					nodes: {
+						produce: {
+							vendor: "claude",
+							model: "claude-opus-4-8",
+							effort: "high",
+						},
+					},
+				},
+			},
+		});
+		expect(manifest.tier_presets?.heavy).toMatchObject({
+			reason: "heavy tier",
+		});
+		const applied = applyWorkflowOverride(
+			manifest,
+			manifest.tier_presets!.heavy!,
+		);
+		expect(applied.manifest.nodes[0]).toMatchObject({
+			vendor: "claude",
+			model: "claude-opus-4-8",
+			effort: "high",
+		});
+		expect(() =>
+			applyWorkflowOverride(base, {
+				reason: "vendor cannot drift alone",
+				nodes: { produce: { vendor: "claude" } },
+			}),
+		).toThrow(/vendor.*model|model.*vendor/i);
+		expect(() =>
+			validateWorkflowManifest({
+				...base,
+				tier_presets: {
+					heavy: {
+						reason: "invalid cross-vendor pair",
+						nodes: {
+							produce: { vendor: "claude", model: "gpt-5.6-sol" },
+						},
+					},
+				},
+			}),
+		).toThrow(/incompatible/i);
+	});
 });

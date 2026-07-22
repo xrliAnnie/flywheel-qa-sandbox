@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FLY-1407 设计说明 — 派发时决定 work-kind</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1d1d1f;
+      --muted: #6e6e73;
+      --paper: #ffffff;
+      --wash: #f5f5f7;
+      --blue: #0a66c2;
+      --green: #248a3d;
+      --orange: #c75300;
+      --red: #b42318;
+      --purple: #7a3db8;
+      --line: #d9d9de;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--wash);
+      color: var(--ink);
+      font: 16px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 980px; margin: 0 auto; padding: 34px 18px 72px; }
+    h1 { margin: 0 0 6px; color: #17365d; font-size: clamp(28px, 5vw, 44px); line-height: 1.15; }
+    h2 { margin: 0 0 14px; color: #17365d; font-size: 21px; }
+    p { margin: 8px 0; }
+    .meta { color: var(--muted); margin-bottom: 26px; }
+    .card {
+      margin: 18px 0;
+      padding: 22px 24px;
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--blue);
+      border-radius: 16px;
+      background: var(--paper);
+      box-shadow: 0 6px 24px rgba(0, 0, 0, .05);
+    }
+    .green { border-left-color: var(--green); }
+    .orange { border-left-color: var(--orange); }
+    .purple { border-left-color: var(--purple); }
+    .red { border-left-color: var(--red); }
+    .lead { font-size: 21px; line-height: 1.5; }
+    .eyebrow { color: var(--muted); font-size: 13px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, auto));
+      align-items: center;
+      gap: 9px;
+      margin: 18px 0;
+    }
+    .node {
+      min-height: 88px;
+      display: grid;
+      place-items: center;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fafafa;
+      text-align: center;
+      font-size: 14px;
+    }
+    .node.decision { background: #eaf4ff; border-color: #69a7df; }
+    .node.engine { background: #edf8ef; border-color: #68ad76; }
+    .node.bypass { background: #fff5e8; border-color: #dc984a; }
+    .arrow { color: var(--muted); font-size: 22px; text-align: center; }
+    .lanes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
+    .lane { padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: #fafafa; }
+    .lane strong { display: block; margin-bottom: 6px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+    th, td { padding: 10px 9px; border-bottom: 1px solid #ececf0; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+    code { padding: 1px 5px; border-radius: 5px; background: #f0f0f2; font-size: .92em; }
+    ul { padding-left: 21px; }
+    li { margin: 7px 0; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .yes { color: #116329; background: #e5f5e9; }
+    .no { color: #8b241d; background: #fdecea; }
+    .warn { color: #8a4300; background: #fff0dc; }
+    .model {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-top: 15px;
+    }
+    .entity { padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #fafafa; }
+    .entity b { display: block; color: #17365d; margin-bottom: 7px; }
+    .entity span { display: block; color: var(--muted); font-size: 13px; }
+    .foot { color: var(--muted); font-size: 13px; }
+    @media (max-width: 760px) {
+      .flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .lanes, .model { grid-template-columns: 1fr; }
+      .card { padding: 19px 17px; }
+      table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>派发时决定 work-kind，不再从旧标签猜</h1>
+  <div class="meta">FLY-1407 设计说明 · 2026-07-21 · 已通过 5 轮设计评审 · 开关默认关闭</div>
+
+  <section class="card">
+    <div class="eyebrow">1 · 一句话</div>
+    <p class="lead">这次给引擎补上一个明确的派发入口：Lead 在每次派发时说清这单是 <b>PRD、设计、原型、代码还是研究</b>；引擎校验、选模板、记录来源并把结果原样回显。旧项目默认完全不变，可逐项目切换。</p>
+  </section>
+
+  <section class="card green">
+    <div class="eyebrow">2 · 核心流程图</div>
+    <h2>一次 fresh 派发怎样走</h2>
+    <div class="flow" aria-label="work-kind dispatch flow">
+      <div class="node">Lead 发起派发<br><code>taskCategory</code><br>或 <code>templateId</code></div>
+      <div class="arrow">→</div>
+      <div class="node decision">先读两道开关<br>主 flag + 项目 work_kind</div>
+      <div class="arrow">→</div>
+      <div class="node">校验词表 / tier / override<br>错误立即返回稳定码</div>
+      <div class="arrow">→</div>
+      <div class="node engine">exact binding → 物化<br>记录 kind / tier / 来源<br>启动一个 Runner</div>
+    </div>
+    <div class="lanes">
+      <div class="lane"><strong>紧急回滚 / 未切换项目</strong>只要任一道开关关闭，整条新校验链都不运行；包括今天会被静默忽略的输入，仍保持今天的字节行为。</div>
+      <div class="lane"><strong>显式 no-three-stage</strong>在任何模板选择和物化之前短路到单 session；只留 route-decision 收据，不制造 workflow run、reservation 或 pinned snapshot。</div>
+    </div>
+  </section>
+
+  <section class="card purple">
+    <div class="eyebrow">3 · 数据 / 结构模型</div>
+    <h2>把「决定、启动、回放」拆开记清楚</h2>
+    <div class="model">
+      <div class="entity"><b>项目配置</b><span><code>pipeline.work_kind</code></span><span>逐项目、免重启、默认 off</span></div>
+      <div class="entity"><b>route decision</b><span>decided → launched</span><span>category、tier、source、override、digest</span></div>
+      <div class="entity"><b>workflow run</b><span>只属于 generalized 路径</span><span>snapshot 固定 category/source/tier</span></div>
+      <div class="entity"><b>reminder outbox</b><span>非法显式输入去重</span><span>请求级一次、传输 at-least-once</span></div>
+    </div>
+    <table>
+      <tr><th>来源</th><th>记录值</th><th>含义</th></tr>
+      <tr><td>Lead 传 <code>taskCategory</code></td><td><code>task_category</code></td><td>必须命中 exact binding；<code>*</code> 不进入切换后的 v2 路径。</td></tr>
+      <tr><td>Lead 传 <code>templateId</code></td><td><code>template_override</code></td><td>跳过 binding，但模板必须已发布、未退休，并带非空理由。</td></tr>
+      <tr><td>显式 <code>no-three-stage</code></td><td><code>bypass_override</code></td><td>只授权这一次 fresh dispatch；后续派发不会继承。</td></tr>
+    </table>
+  </section>
+
+  <section class="card orange">
+    <div class="eyebrow">4 · 关键取舍</div>
+    <h2>选了什么，也明确否掉什么</h2>
+    <table>
+      <tr><th>决定</th><th>结论</th><th>原因</th></tr>
+      <tr><td>项目开关，而非全局开关</td><td><span class="pill yes">选定</span></td><td>不同项目的模板与 founder 批准进度不同步，必须能逐项目切换和回滚。</td></tr>
+      <tr><td>缺 kind 时服务端猜默认</td><td><span class="pill no">否决</span></td><td>切换后缺值就是拒绝；否则「默认」最终会变成唯一真实路径，分类门形同虚设。</td></tr>
+      <tr><td>残留 issue label 继续决定 no-three-stage</td><td><span class="pill no">否决</span></td><td>这是这一次怎么用，不是 issue 永久身份；切换后只认本次请求的 override。</td></tr>
+      <tr><td>非法输入只写 audit</td><td><span class="pill no">否决</span></td><td>没人看的 audit 不是可见性；稳定错误码必须当场返回，指定错误还会进入幂等提醒 outbox。</td></tr>
+      <tr><td>提醒传输追求假「恰一次」</td><td><span class="pill warn">宁重不丢</span></td><td>请求记录严格去重；崩溃窗口允许同一条提醒可辨认地重复，避免静默漏发。</td></tr>
+    </table>
+  </section>
+
+  <section class="card red">
+    <div class="eyebrow">5 · 诚实边界</div>
+    <h2>这张单做什么、不做什么</h2>
+    <ul>
+      <li><span class="pill yes">做</span> 落引擎机制：入口校验、exact binding、tier/preset、provenance、route receipt、回显、no-three-stage 短路与提醒 outbox。</li>
+      <li><span class="pill yes">做</span> 守住旧世界：默认 off；主 flag off、recovery、QA、scoped、tokenless、retry 与其它 label 行为都不被新合同碰到。</li>
+      <li><span class="pill no">不做</span> 不在这张单写生产 binding，也不让默认 seeder 静默激活任何项目。</li>
+      <li><span class="pill no">不做</span> 不在这张单修改 Claude/Gemini 派发提示或两个 runtime agent markdown；它们属于 founder-gated cutover 窗。</li>
+      <li><span class="pill no">不做</span> 不把 direct template override 的正当跨 kind 行为算进「建议值对齐」指标分母。</li>
+      <li><span class="pill warn">上线前置</span> FLY-1380 负责种模板与迁移工具；另一个 cutover 单负责 binding、rules、Gemini schema、prompt 资产与开关的同窗翻转。</li>
+    </ul>
+    <p class="foot">完整逐条合同仍以 <code>product/doc/FLY-1396-dag-tier-binding/fly1385-addendum.md</code> 为唯一权威；本页只把已批准的工程设计翻译成 founder 可快速审阅的形状。</p>
+  </section>
+</main>
+</body>
+</html>

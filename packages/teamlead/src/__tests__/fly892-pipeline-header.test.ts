@@ -13,7 +13,12 @@ import {
 import { StateStore } from "../StateStore.js";
 
 describe("buildPipelineHeaderContent (FLY-892 Step 4)", () => {
-	const ctx = { issueId: "FLY-892", issueIdentifier: "FLY-892" };
+	const ctx = {
+		issueId: "FLY-892",
+		issueIdentifier: "FLY-892",
+		routeSummary:
+			"🧭 **Route**: `code` → `pipeline_dag_v1` · tier `heavy` · source `task_category`",
+	};
 
 	it("renders all three states: ✅+exec+cmd / ▶+exec+cmd / ◾ pending (FLY-907 vocabulary — grey ◾, not white ⬜)", () => {
 		const phases: PhaseHeaderRow[] = [
@@ -32,6 +37,9 @@ describe("buildPipelineHeaderContent (FLY-892 Step 4)", () => {
 			{ label: "[QA·Sonnet]", status: "pending", plannedModel: "Sonnet" },
 		];
 		const out = buildPipelineHeaderContent(ctx, phases);
+		expect(out.startsWith("🧭 **Route**: `code` → `pipeline_dag_v1`")).toBe(
+			true,
+		);
 		expect(out).toContain("📌 **[FLY-892] 三段流水线**");
 		expect(out).toContain("**[设计·Fable]** ✅ 完成 · exec `1a2b3c4d`");
 		expect(out).toContain("`tmux attach -t runner-design`");

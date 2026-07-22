@@ -130,6 +130,8 @@ export interface ChatThreadContext {
 	leadId?: string;
 	/** Discord user ID to auto-add as thread member (for sidebar visibility). */
 	ownerUserId?: string;
+	/** Founder-visible route line; rendered in messages/pins, never the title. */
+	routeSummary?: string;
 	/**
 	 * FLY-755/1255: the resolved model's display marker, stamped as a FRONT
 	 * bracket marker (`[F] ` or `[Model GPT-5.6] ` between the stage badge and
@@ -245,12 +247,15 @@ export interface PhaseHeaderRow {
  * usability-driven, this reads CommDB only and never touches 887's lifecycle.
  */
 export function buildPipelineHeaderContent(
-	ctx: Pick<ChatThreadContext, "issueId" | "issueIdentifier">,
+	ctx: Pick<ChatThreadContext, "issueId" | "issueIdentifier" | "routeSummary">,
 	phases: PhaseHeaderRow[],
 ): string {
 	const key = effectiveIssueKey(ctx);
 	const label = key ? `[${key}]` : ctx.issueId;
-	const lines: string[] = [`📌 **${label} 三段流水线**`];
+	const lines: string[] = [
+		...(ctx.routeSummary ? [ctx.routeSummary] : []),
+		`📌 **${label} 三段流水线**`,
+	];
 	for (const p of phases) {
 		const head = `**${p.label}** ${PHASE_DISPLAY_GLYPHS[p.status]}`;
 		if (p.status === "pending") {
@@ -372,9 +377,12 @@ export class ChatThreadCreator {
 		);
 
 		const issueKey = effectiveIssueKey(ctx);
-		const messageContent = issueKey
+		const issueMessage = issueKey
 			? `🧵 **${issueKey}** — ${ctx.issueTitle ?? "Runner session"}`
 			: `🧵 ${ctx.issueTitle ?? ctx.issueId}`;
+		const messageContent = ctx.routeSummary
+			? `${ctx.routeSummary}\n${issueMessage}`
+			: issueMessage;
 
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
@@ -876,6 +884,7 @@ export class ChatThreadCreator {
 		const key = effectiveIssueKey(ctx);
 		const label = key ? `[${key}]` : (ctx.issueTitle ?? ctx.issueId);
 		const content =
+			`${ctx.routeSummary ? `${ctx.routeSummary}\n` : ""}` +
 			`📌 **${label} Runner terminal** — _（终端待解析）_\n` +
 			"_当前 tmux 目标与本 issue 不符，已暂不显示 attach 命令；解析恢复后自动更新。_";
 		return this.enqueueAttachPin(
@@ -969,6 +978,7 @@ export class ChatThreadCreator {
 		const key = effectiveIssueKey(ctx);
 		const label = key ? `[${key}]` : (ctx.issueTitle ?? ctx.issueId);
 		return (
+			`${ctx.routeSummary ? `${ctx.routeSummary}\n` : ""}` +
 			`📌 **${label} Runner terminal** — copy & run to attach to this issue's runner:\n` +
 			"```\n" +
 			`${command}\n` +
@@ -1324,7 +1334,10 @@ export class ChatThreadCreator {
 		const label = ctx.issueIdentifier
 			? `**${ctx.issueIdentifier}** — ${ctx.issueTitle ?? "Runner session"}`
 			: (ctx.issueTitle ?? ctx.issueId);
-		const content = `🧵 ${label} — <#${threadId}>`;
+		const threadLink = `🧵 ${label} — <#${threadId}>`;
+		const content = ctx.routeSummary
+			? `${ctx.routeSummary}\n${threadLink}`
+			: threadLink;
 
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);

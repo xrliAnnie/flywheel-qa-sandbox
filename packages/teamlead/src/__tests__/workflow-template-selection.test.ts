@@ -64,6 +64,35 @@ function v2Seed() {
 	return { ...seed, contentHash: workflowSeedContentHash(seed) };
 }
 
+function v2TierSeed() {
+	const seed = v2Seed();
+	return {
+		...seed,
+		templateId: "tpl_research_tier_test",
+		manifest: {
+			...seed.manifest,
+			tier_presets: {
+				trivial: {
+					reason: "trivial tier",
+					nodes: {
+						research: { model: "gpt-5.5", effort: "low" as const },
+					},
+				},
+				heavy: {
+					reason: "heavy tier",
+					nodes: {
+						research: {
+							vendor: "claude" as const,
+							model: "claude-opus-4-8",
+							effort: "high" as const,
+						},
+					},
+				},
+			},
+		},
+	};
+}
+
 const enabled = {
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
 	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
@@ -450,6 +479,112 @@ describe("workflow template selection", () => {
 			},
 		});
 		expect(replay).toMatchObject({ runId: "run-1", executionId: "exec-1" });
+		store.close();
+	});
+
+	it("applies the default heavy tier preset and pins tier provenance", async () => {
+		const store = await StateStore.create(":memory:");
+		const root = setupRoot();
+		const seed = v2TierSeed();
+		store.importWorkflowTemplateSeed(
+			{ ...seed, contentHash: workflowSeedContentHash(seed) },
+			enabled,
+		);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "research",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		const values = ["tier-run", "tier-exec"];
+		const selected = await resolveWorkflowTemplateSelection(store, {
+			project: "flywheel",
+			issueId: "FLY-TIER",
+			taskCategory: "research",
+			selectedBy: "research-lead",
+			actor: "master",
+			authKind: "master",
+			canonicalRoot: root,
+			idempotencyKey: "tier-key",
+			entryKind: "workflow_v2",
+			workKindEnforced: true,
+			categorySource: "task_category",
+			env: enabled,
+			idFactory: () => values.shift()!,
+		});
+		expect(selected).toMatchObject({ tier: "heavy" });
+		expect(selected?.node.dispatch).toMatchObject({
+			vendor: "claude",
+			model: "claude-opus-4-8",
+			effort: "high",
+		});
+		const run = store.getWorkflowRun("tier-run")!;
+		expect(run).toMatchObject({ tier: "heavy" });
+		expect(parseWorkflowRunSnapshot(run.snapshot!)).toMatchObject({
+			tier: "heavy",
+			category_source: "task_category",
+		});
+		store.close();
+	});
+
+	it("rejects an explicit tier when the selected template has no presets", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = v2Seed();
+		store.importWorkflowTemplateSeed(seed, enabled);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "research",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		await expect(
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-NO-TIER",
+				taskCategory: "research",
+				selectedBy: "lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: setupRoot(),
+				idempotencyKey: "no-tier-key",
+				workKindEnforced: true,
+				categorySource: "task_category",
+				tier: "light",
+				env: enabled,
+			}),
+		).rejects.toMatchObject({ code: "TIER_NOT_SUPPORTED" });
+		expect(store.getActiveWorkflowRunForIssue("FLY-NO-TIER")).toBeUndefined();
+		store.close();
+	});
+
+	it("rejects a retired direct template while leaving pinned recovery candidate-free", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = v2Seed();
+		store.importWorkflowTemplateSeed(seed, enabled);
+		const internal = store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		internal.db.run(
+			"UPDATE workflow_template SET retired_at = ? WHERE template_id = ?",
+			["2026-07-21T00:00:00.000Z", seed.templateId],
+		);
+		await expect(
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-RETIRED",
+				leadTemplateId: seed.templateId,
+				leadReason: "explicit research flow",
+				selectedBy: "lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: setupRoot(),
+				idempotencyKey: "retired-key",
+				workKindEnforced: true,
+				categorySource: "template_override",
+				env: enabled,
+			}),
+		).rejects.toMatchObject({ code: "TEMPLATE_NOT_FRESH_ELIGIBLE" });
+		expect(store.getActiveWorkflowRunForIssue("FLY-RETIRED")).toBeUndefined();
 		store.close();
 	});
 

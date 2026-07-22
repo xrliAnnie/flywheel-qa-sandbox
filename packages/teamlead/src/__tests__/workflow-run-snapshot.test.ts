@@ -186,6 +186,33 @@ describe("typed generalized workflow snapshot", () => {
 		expect(execute?.agent?.content).toBe("Do the bounded task.\n");
 	});
 
+	it("pins and parses work-kind provenance while old snapshots stay field-free", () => {
+		const { root, manifest } = fixture();
+		const legacy = buildWorkflowRunSnapshotV2({
+			template: { id: "tpl_ops", revision: 1 },
+			manifest,
+			canonicalRoot: root,
+		});
+		expect(legacy).not.toHaveProperty("task_category");
+		expect(parseWorkflowRunSnapshot(JSON.stringify(legacy))).toEqual(legacy);
+
+		const withKind = buildWorkflowRunSnapshotV2({
+			template: { id: "tpl_ops", revision: 1 },
+			manifest,
+			canonicalRoot: root,
+			workKind: {
+				taskCategory: "research",
+				categorySource: "task_category",
+				tier: "heavy",
+			},
+		});
+		expect(parseWorkflowRunSnapshot(JSON.stringify(withKind))).toMatchObject({
+			task_category: "research",
+			category_source: "task_category",
+			tier: "heavy",
+		});
+	});
+
 	it("pins a built-in verdict role for review nodes without an agent file", () => {
 		const { root } = fixture();
 		const snapshot = buildWorkflowRunSnapshotV2({

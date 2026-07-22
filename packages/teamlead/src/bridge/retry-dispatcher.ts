@@ -170,6 +170,8 @@ export interface StartRequest {
 	issueTitle?: string;
 	/** FLY-24: Pre-fetched issue identifier (e.g. "GEO-304") from runs-route Linear pre-flight */
 	issueIdentifier?: string;
+	/** Bridge-derived founder-visible route line; never accepted from HTTP input. */
+	routeSummary?: string;
 	/** FLY-59: Session role for multi-session-per-issue support */
 	sessionRole?: string;
 	/** FLY-137 v1.27.2: explicit Lead override (bypasses label match in AgentDispatcher) */

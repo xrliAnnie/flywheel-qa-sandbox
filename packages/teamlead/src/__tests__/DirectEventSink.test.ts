@@ -718,6 +718,30 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 		},
 	);
 
+	it("persists and forwards the founder-visible route summary on session start", async () => {
+		const contexts: Array<Record<string, unknown>> = [];
+		const creator = {
+			ensureChatThread: vi.fn(async (ctx: Record<string, unknown>) => {
+				contexts.push(ctx);
+				return { created: true, threadId: "thread-route" };
+			}),
+		};
+		const sink = new DirectEventSink(
+			store,
+			makeConfig({ chatThreadsEnabled: true }),
+			testProjects,
+			undefined,
+			undefined,
+			creator as never,
+		);
+		const routeSummary = "🧭 **Route**: `generic` · source `default_fallback`";
+		await sink.emitStarted(makeEnvelope({ labels: ["Product"], routeSummary }));
+		expect(contexts[0]?.routeSummary).toBe(routeSummary);
+		expect(store.getSessionParams("exec-1")?.workflowRoute).toEqual({
+			summary: routeSummary,
+		});
+	});
+
 	it("awaiting_review + route=pr_handoff → status unchanged (skipped, no strand-clear)", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",

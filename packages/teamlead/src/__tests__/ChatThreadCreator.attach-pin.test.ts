@@ -20,6 +20,7 @@ const ctx = {
 	issueIdentifier: "FLY-560",
 	issueTitle: "Some title",
 	botToken: "bot-token",
+	routeSummary: "🧭 **Route**: `generic` · source `default_fallback`",
 };
 const NOW = () => "2026-06-27T12:00:00Z";
 const CMD = "env -u TMUX tmux attach -t '=cmux-FLY-560-x'";
@@ -83,6 +84,9 @@ describe("ChatThreadCreator.ensureRunnerAttachPin (FLY-560)", () => {
 		const post = mockFetch.mock.calls.find((c) => c[1].method === "POST")!;
 		const body = JSON.parse(post[1].body);
 		expect(body.content).toMatch(/^🤖\[自动\] /);
+		expect(body.content.indexOf("🧭 **Route**")).toBeLessThan(
+			body.content.indexOf("📌"),
+		);
 		expect(body.content).toContain(CMD);
 		expect(body.content).toContain("FLY-560");
 		expect(body.allowed_mentions).toEqual({ parse: [] });

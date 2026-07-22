@@ -1426,6 +1426,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				// FLY-24: Pass pre-fetched metadata so Blueprint/EventEnvelope uses real title
 				issueTitle: req.issueTitle,
 				issueIdentifier: req.issueIdentifier,
+				routeSummary: req.routeSummary,
 				// FLY-137 v1.27.2: thread Lead override + dispatch context (runs-route resolves)
 				agentName: req.agentName,
 				issueLabels: req.issueLabels,

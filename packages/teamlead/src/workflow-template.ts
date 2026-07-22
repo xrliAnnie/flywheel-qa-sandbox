@@ -9,6 +9,7 @@ import {
 } from "flywheel-config";
 import { parse } from "yaml";
 import type { StateStore } from "./StateStore.js";
+import { ENG_TIERS, type EngTier } from "./work-kind.js";
 
 export const WORKFLOW_MANIFEST_SCHEMA_VERSION = 1 as const;
 export const GENERALIZED_WORKFLOW_MANIFEST_SCHEMA_VERSION = 2 as const;
@@ -86,6 +87,7 @@ export interface WorkflowManifestV1 {
 	loops: WorkflowManifestLoop[];
 	terminal_gate: { node: string; predicate: "founder_approved" };
 	ship_claims: Array<"qa_passed" | "founder_approved">;
+	tier_presets?: Partial<Record<EngTier, WorkflowTemplateOverride>>;
 }
 
 export interface WorkflowManifestV2 {
@@ -97,6 +99,7 @@ export interface WorkflowManifestV2 {
 	ship_claims: Array<
 		"qa_passed" | "design_review_approved" | "founder_approved"
 	>;
+	tier_presets?: Partial<Record<EngTier, WorkflowTemplateOverride>>;
 }
 
 export type WorkflowManifest = WorkflowManifestV1 | WorkflowManifestV2;
@@ -105,7 +108,12 @@ export interface WorkflowTemplateOverride {
 	reason: string;
 	nodes?: Record<
 		string,
-		{ model?: string; effort?: WorkflowEffort; skip?: boolean }
+		{
+			vendor?: WorkflowVendor;
+			model?: string;
+			effort?: WorkflowEffort;
+			skip?: boolean;
+		}
 	>;
 }
 
@@ -221,6 +229,24 @@ function assertAcyclic(nodes: string[], edges: WorkflowManifestEdge[]): void {
 	for (const node of nodes) visit(node);
 }
 
+function validateTierPresets(
+	manifest: WorkflowManifest,
+	value: unknown,
+): Partial<Record<EngTier, WorkflowTemplateOverride>> | undefined {
+	if (value === undefined) return undefined;
+	const presets = record(value, "manifest.tier_presets");
+	exactKeys(presets, ENG_TIERS, "manifest.tier_presets");
+	if (!Object.hasOwn(presets, "heavy")) {
+		throw new Error("manifest.tier_presets must define the default heavy tier");
+	}
+	const normalized: Partial<Record<EngTier, WorkflowTemplateOverride>> = {};
+	for (const tier of ENG_TIERS) {
+		if (presets[tier] === undefined) continue;
+		normalized[tier] = applyWorkflowOverride(manifest, presets[tier]).override;
+	}
+	return normalized;
+}
+
 /** Strict schema + semantic graph validation. Unknown keys fail at every level. */
 function validateWorkflowManifestV1(
 	value: unknown,
@@ -236,6 +262,7 @@ function validateWorkflowManifestV1(
 			"loops",
 			"terminal_gate",
 			"ship_claims",
+			"tier_presets",
 		],
 		"manifest",
 	);
@@ -524,7 +551,7 @@ function validateWorkflowManifestV1(
 		}
 	}
 
-	return {
+	const manifest: WorkflowManifestV1 = {
 		schema_version: 1,
 		nodes,
 		edges,
@@ -532,6 +559,8 @@ function validateWorkflowManifestV1(
 		terminal_gate: terminalGate,
 		ship_claims: shipClaims,
 	};
+	const tierPresets = validateTierPresets(manifest, root.tier_presets);
+	return tierPresets ? { ...manifest, tier_presets: tierPresets } : manifest;
 }
 
 function assertSafeAgentFile(value: unknown, path: string): string {
@@ -561,6 +590,7 @@ function validateWorkflowManifestV2(
 			"loops",
 			"terminal_gate",
 			"ship_claims",
+			"tier_presets",
 		],
 		"manifest",
 	);
@@ -944,7 +974,7 @@ function validateWorkflowManifestV2(
 		}
 	}
 
-	return {
+	const manifest: WorkflowManifestV2 = {
 		schema_version: 2,
 		nodes,
 		edges,
@@ -952,6 +982,8 @@ function validateWorkflowManifestV2(
 		terminal_gate: terminalGate,
 		ship_claims: shipClaims,
 	};
+	const tierPresets = validateTierPresets(manifest, root.tier_presets);
+	return tierPresets ? { ...manifest, tier_presets: tierPresets } : manifest;
 }
 
 /** Strict version dispatch. V1 retains canonical-registry validation. */
@@ -995,27 +1027,47 @@ export function applyWorkflowOverride(
 			? {}
 			: record(override.nodes, "override.nodes");
 	const next = structuredClone(manifest);
+	// A materialized override resolves one concrete manifest. Preset definitions
+	// are authoring metadata and must not be re-applied or revalidated against
+	// the already-overridden node set (a heavy cross-vendor preset must not make
+	// a sibling trivial preset appear incompatible).
+	delete next.tier_presets;
 	for (const [nodeId, raw] of Object.entries(nodeOverrides)) {
 		const nodeOverride = record(raw, `override.nodes.${nodeId}`);
 		exactKeys(
 			nodeOverride,
-			["model", "effort", "skip"],
+			["vendor", "model", "effort", "skip"],
 			`override.nodes.${nodeId}`,
 		);
 		const node = next.nodes.find((candidate) => candidate.id === nodeId);
 		if (!node) throw new Error(`override references unknown node: ${nodeId}`);
 		if (node.type === "gate")
 			throw new Error(`gate node ${nodeId} cannot be overridden`);
+		let overrideVendor: WorkflowVendor | undefined;
+		if (nodeOverride.vendor !== undefined) {
+			overrideVendor = oneOf(
+				nodeOverride.vendor,
+				["claude", "codex"] as const,
+				`override.nodes.${nodeId}.vendor`,
+			);
+			if (nodeOverride.model === undefined) {
+				throw new Error(
+					`override.nodes.${nodeId}.vendor requires a paired model`,
+				);
+			}
+		}
 		if (nodeOverride.model !== undefined) {
 			const model = nonempty(
 				nodeOverride.model,
 				`override.nodes.${nodeId}.model`,
 			);
-			if (!node.vendor || !compatibleModel(node.vendor, model)) {
+			const vendor = overrideVendor ?? node.vendor;
+			if (!vendor || !compatibleModel(vendor, model)) {
 				throw new Error(
 					`node ${nodeId} vendor is incompatible with override model ${model}`,
 				);
 			}
+			node.vendor = vendor;
 			node.model = model;
 		}
 		if (nodeOverride.effort !== undefined) {

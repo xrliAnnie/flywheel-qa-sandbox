@@ -391,6 +391,7 @@ describe("StateStore workflow templates", () => {
 			"created_at",
 			"seed_owner",
 			"seed_content_hash",
+			"retired_at",
 		]);
 		expect(
 			raw

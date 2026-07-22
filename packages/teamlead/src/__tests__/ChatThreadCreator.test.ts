@@ -42,6 +42,8 @@ describe("FLY-91: ChatThreadCreator", () => {
 			issueIdentifier: "FLY-91",
 			issueTitle: "Discord thread reply",
 			botToken: "bot-token",
+			routeSummary:
+				"🧭 **Route**: `code` → `pipeline_dag_v1` · tier `heavy` · source `task_category`",
 		});
 
 		expect(result.created).toBe(true);
@@ -53,6 +55,12 @@ describe("FLY-91: ChatThreadCreator", () => {
 		expect(msgOpts.method).toBe("POST");
 		const msgBody = JSON.parse(msgOpts.body);
 		expect(msgBody.content).toMatch(/^🤖\[自动\] /);
+		expect(msgBody.content).toContain(
+			"🧭 **Route**: `code` → `pipeline_dag_v1`",
+		);
+		expect(msgBody.content.indexOf("🧭 **Route**")).toBeLessThan(
+			msgBody.content.indexOf("🧵"),
+		);
 		expect(msgBody.content).toContain("FLY-91");
 
 		// Verify Step 2: POST thread from message
@@ -158,6 +166,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			issueIdentifier: "GEO-312",
 			issueTitle: "Test issue",
 			botToken: "bot-token",
+			routeSummary: "🧭 **Route**: `generic` · source `default_fallback`",
 		});
 
 		expect(result.created).toBe(false);
@@ -172,6 +181,12 @@ describe("FLY-91: ChatThreadCreator", () => {
 			"https://discord.com/api/v10/channels/ch-123/messages",
 		);
 		const notifBody = JSON.parse(notifOpts.body);
+		expect(notifBody.content).toContain(
+			"🧭 **Route**: `generic` · source `default_fallback`",
+		);
+		expect(notifBody.content.indexOf("🧭 **Route**")).toBeLessThan(
+			notifBody.content.indexOf("🧵"),
+		);
 		expect(notifBody.content).toContain("GEO-312");
 		expect(notifBody.content).toContain("<#thread-existing>");
 	});

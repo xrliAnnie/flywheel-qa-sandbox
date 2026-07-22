@@ -6,10 +6,19 @@ import {
 } from "./bridge/run-quiescence.js";
 import type { StateStore } from "./StateStore.js";
 import {
+	buildWorkflowSelectionDigestBody,
+	type CategorySource,
+	DEFAULT_ENG_TIER,
+	type EngTier,
+} from "./work-kind.js";
+import {
 	parseWorkflowRunSnapshot,
 	type ResolvedWorkflowNodeV2,
 } from "./workflow-run-snapshot.js";
-import { validateWorkflowManifest } from "./workflow-template.js";
+import {
+	validateWorkflowManifest,
+	type WorkflowTemplateOverride,
+} from "./workflow-template.js";
 import {
 	isWorkflowTemplateDispatchEnabled,
 	workflowTemplateDispatchBlockMessage,
@@ -28,6 +37,22 @@ export interface WorkflowTemplateSelectionResult {
 	idempotencyKey: string;
 	node: ResolvedWorkflowNodeV2;
 	replayed: boolean;
+	taskCategory?: string;
+	categorySource?: CategorySource;
+	tier?: EngTier;
+}
+
+export class WorkKindRouteError extends Error {
+	constructor(
+		public readonly code:
+			| "WORK_KIND_BINDING_MISSING"
+			| "TEMPLATE_NOT_FRESH_ELIGIBLE"
+			| "TIER_NOT_SUPPORTED",
+		message: string,
+	) {
+		super(message);
+		this.name = "WorkKindRouteError";
+	}
 }
 
 function resolveWorkflowTemplateCandidate(
@@ -36,6 +61,7 @@ function resolveWorkflowTemplateCandidate(
 		project: string;
 		taskCategory?: string;
 		leadTemplateId?: string;
+		workKindEnforced?: boolean;
 	},
 ) {
 	const category = input.taskCategory?.trim() || "*";
@@ -43,8 +69,30 @@ function resolveWorkflowTemplateCandidate(
 		? undefined
 		: store.getWorkflowCategoryBinding(input.project, category);
 	const templateId = input.leadTemplateId?.trim() || binding?.template_id;
+	if (
+		input.workKindEnforced &&
+		!input.leadTemplateId &&
+		(!binding || binding.task_category !== category)
+	) {
+		throw new WorkKindRouteError(
+			"WORK_KIND_BINDING_MISSING",
+			`project ${input.project} has no exact work-kind binding for ${category}`,
+		);
+	}
 	if (!templateId) return null;
 	const template = store.getWorkflowTemplate(templateId);
+	if (
+		input.workKindEnforced &&
+		input.leadTemplateId &&
+		(!template ||
+			template.retired_at != null ||
+			!template.current_published_revision)
+	) {
+		throw new WorkKindRouteError(
+			"TEMPLATE_NOT_FRESH_ELIGIBLE",
+			`workflow template ${templateId} is not active, published, and fresh-eligible`,
+		);
+	}
 	if (!template?.current_published_revision) {
 		throw new Error("workflow template candidate has no published revision");
 	}
@@ -76,6 +124,7 @@ export function resolveWorkflowTemplateCandidateSchema(
 		project: string;
 		taskCategory?: string;
 		leadTemplateId?: string;
+		workKindEnforced?: boolean;
 	},
 ): 1 | 2 | null {
 	return resolveWorkflowTemplateCandidate(store, input)?.schemaVersion ?? null;
@@ -114,6 +163,9 @@ export async function resolveWorkflowTemplateSelection(
 		idFactory?: () => string;
 		now?: string;
 		probeRunExecutionLiveness?: RunExecutionLivenessProbe;
+		workKindEnforced?: boolean;
+		categorySource?: CategorySource;
+		tier?: EngTier;
 	},
 ): Promise<WorkflowTemplateSelectionResult | null> {
 	const candidate = resolveWorkflowTemplateCandidate(store, input);
@@ -162,16 +214,47 @@ export async function resolveWorkflowTemplateSelection(
 	const reason =
 		input.leadReason?.trim() ||
 		`${selectionSource}:${binding?.task_category ?? category}`;
-	const selectionDigest = canonicalSubmissionDigest({
-		project: input.project,
-		issueId: input.issueId,
-		category,
-		templateId,
-		revision: revision.revision,
-		selectionSource,
-		selectedBy: input.selectedBy,
-		reason,
-	});
+	const manifest = validateWorkflowManifest(JSON.parse(revision.manifest));
+	if (manifest.schema_version !== revision.schema_version) {
+		throw new Error("workflow template stored schema does not match manifest");
+	}
+	let effectiveTier: EngTier | undefined;
+	let tierPreset: WorkflowTemplateOverride | undefined;
+	if (manifest.tier_presets) {
+		effectiveTier = input.tier ?? DEFAULT_ENG_TIER;
+		tierPreset = manifest.tier_presets[effectiveTier];
+		if (!tierPreset) {
+			throw new WorkKindRouteError(
+				"TIER_NOT_SUPPORTED",
+				`workflow template ${templateId} does not support tier ${effectiveTier}`,
+			);
+		}
+	} else if (input.tier) {
+		throw new WorkKindRouteError(
+			"TIER_NOT_SUPPORTED",
+			`workflow template ${templateId} does not declare tier presets`,
+		);
+	}
+	const reportedCategory = input.leadTemplateId
+		? input.taskCategory?.trim() || undefined
+		: category;
+	const selectionDigest = canonicalSubmissionDigest(
+		buildWorkflowSelectionDigestBody(
+			{
+				project: input.project,
+				issueId: input.issueId,
+				category,
+				templateId,
+				revision: revision.revision,
+				selectionSource,
+				selectedBy: input.selectedBy,
+				reason,
+			},
+			input.categorySource
+				? { categorySource: input.categorySource, tier: effectiveTier }
+				: undefined,
+		),
+	);
 	const key = input.idempotencyKey.trim();
 	const resolveReplay = (
 		prior: NonNullable<ReturnType<StateStore["getWorkflowStartReservation"]>>,
@@ -197,6 +280,13 @@ export async function resolveWorkflowTemplateSelection(
 			idempotencyKey: key,
 			node,
 			replayed: true,
+			...(input.categorySource
+				? {
+						...(reportedCategory ? { taskCategory: reportedCategory } : {}),
+						categorySource: input.categorySource,
+						...(effectiveTier ? { tier: effectiveTier } : {}),
+					}
+				: {}),
 		};
 	};
 	const prior = store.getWorkflowStartReservation(key);
@@ -233,16 +323,26 @@ export async function resolveWorkflowTemplateSelection(
 			input.leadReason?.trim() ||
 			`${refreshedSelectionSource}:${refreshedCandidate?.binding?.task_category ?? category}`;
 		const refreshedSelectionDigest = refreshedCandidate
-			? canonicalSubmissionDigest({
-					project: input.project,
-					issueId: input.issueId,
-					category: refreshedCandidate.category,
-					templateId: refreshedCandidate.templateId,
-					revision: refreshedCandidate.revision.revision,
-					selectionSource: refreshedSelectionSource,
-					selectedBy: input.selectedBy,
-					reason: refreshedReason,
-				})
+			? canonicalSubmissionDigest(
+					buildWorkflowSelectionDigestBody(
+						{
+							project: input.project,
+							issueId: input.issueId,
+							category: refreshedCandidate.category,
+							templateId: refreshedCandidate.templateId,
+							revision: refreshedCandidate.revision.revision,
+							selectionSource: refreshedSelectionSource,
+							selectedBy: input.selectedBy,
+							reason: refreshedReason,
+						},
+						input.categorySource
+							? {
+									categorySource: input.categorySource,
+									tier: effectiveTier,
+								}
+							: undefined,
+					),
+				)
 			: undefined;
 		if (
 			!refreshedCandidate ||
@@ -266,10 +366,6 @@ export async function resolveWorkflowTemplateSelection(
 		};
 	}
 
-	const manifest = validateWorkflowManifest(JSON.parse(revision.manifest));
-	if (manifest.schema_version !== revision.schema_version) {
-		throw new Error("workflow template stored schema does not match manifest");
-	}
 	const incoming = new Map(manifest.nodes.map((node) => [node.id, 0]));
 	for (const edge of manifest.edges) {
 		incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
@@ -287,7 +383,7 @@ export async function resolveWorkflowTemplateSelection(
 		entryIssueAliases: input.entryIssueAliases,
 		entryRootKey: input.entryRootKey,
 		projectName: input.project,
-		taskCategory: category,
+		taskCategory: reportedCategory,
 		templateId,
 		claimsReadEnrolled: true,
 		actor: input.actor,
@@ -299,6 +395,9 @@ export async function resolveWorkflowTemplateSelection(
 			selectedBy: input.selectedBy,
 			reason,
 		},
+		categorySource: input.categorySource,
+		tier: effectiveTier,
+		override: tierPreset,
 		startReservation: {
 			idempotencyKey: key,
 			selectionDigest,
@@ -332,6 +431,13 @@ export async function resolveWorkflowTemplateSelection(
 		idempotencyKey: key,
 		node,
 		replayed: false,
+		...(input.categorySource
+			? {
+					...(reportedCategory ? { taskCategory: reportedCategory } : {}),
+					categorySource: input.categorySource,
+					...(effectiveTier ? { tier: effectiveTier } : {}),
+				}
+			: {}),
 	};
 }
 
@@ -402,5 +508,17 @@ export function recoverWorkflowStartSelection(
 		idempotencyKey: reservation.idempotency_key,
 		node,
 		replayed: true,
+		...(run.category_source === "task_category" ||
+		run.category_source === "template_override"
+			? {
+					...(run.task_category ? { taskCategory: run.task_category } : {}),
+					categorySource: run.category_source,
+					...(run.tier === "trivial" ||
+					run.tier === "light" ||
+					run.tier === "heavy"
+						? { tier: run.tier }
+						: {}),
+				}
+			: {}),
 	};
 }

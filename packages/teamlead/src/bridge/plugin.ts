@@ -610,6 +610,7 @@ import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
 import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
+import { drainWorkflowRouteReminders } from "./workflow-route-reminder-drain.js";
 import { createWorkflowShadowRuntimeFromEnv } from "./workflow-shadow-writer.js";
 import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
 import {
@@ -7712,6 +7713,17 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
+	// FLY-1407: boot redrive closes the rejected-receipt→notify crash window.
+	// The periodic pass below piggybacks the existing LeadAlert drain timer, so
+	// this durable outbox adds no independent interval.
+	void drainWorkflowRouteReminders({
+		store,
+		notifier: leadAlertNotifier,
+	}).catch((error: Error) => {
+		console.warn(
+			`[Bridge] workflow route reminder boot drain failed: ${error.message}`,
+		);
+	});
 	deliveryDeadLetterAlertHolder.current = createLeadEventDeadLetterHandler({
 		pageFounder: detectionPageFounder,
 		mirror: async (row) => {
@@ -10322,6 +10334,18 @@ export async function startBridge(
 		leadAlertNotifier
 			.drainQueue()
 			.then(async ({ sent, remaining, deadLettered, delivered }) => {
+				const routeReminderResult = await drainWorkflowRouteReminders({
+					store,
+					notifier: leadAlertNotifier,
+				});
+				if (
+					routeReminderResult.accepted > 0 ||
+					routeReminderResult.failed > 0
+				) {
+					console.log(
+						`[Bridge] workflow route reminder drain attempted=${routeReminderResult.attempted} accepted=${routeReminderResult.accepted} failed=${routeReminderResult.failed}`,
+					);
+				}
 				if (sent > 0 || remaining > 0 || deadLettered > 0) {
 					console.log(
 						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining} deadLettered=${deadLettered}`,

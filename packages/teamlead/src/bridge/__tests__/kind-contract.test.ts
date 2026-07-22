@@ -63,6 +63,7 @@ const QUOTA_INFORMATIONAL_KINDS = new Set([
 	"model_cap_unknown",
 	"quota_switch_confirmation",
 	"quota_blocked_recovered",
+	"workflow_route_input_rejected",
 ]);
 const QUOTA_GUARD_KINDS = ["quota_guard_bypassed"] as const;
 
@@ -362,5 +363,13 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 
 	it("TS and shell informational-kind mirrors stay exactly in sync", () => {
 		expect(shellInformationalKinds()).toEqual(INFORMATIONAL_KINDS);
+	});
+
+	it("registers work-kind input reminders as Claude-owned informational notices", () => {
+		expect(KIND_CONTRACTS.workflow_route_input_rejected).toEqual({
+			owner: "claude",
+			arc: "human_by_design",
+		});
+		expect(INFORMATIONAL_KINDS.has("workflow_route_input_rejected")).toBe(true);
 	});
 });

@@ -27,6 +27,7 @@ import type {
 import {
 	ACCEPTED_DISPATCH_MODELS,
 	ConfigLoader,
+	canonicalSubmissionDigest,
 	DESIGN_BACKENDS,
 	isDesignBackend,
 	isSkillFrameworkMode,
@@ -49,6 +50,17 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import {
+	canonicalizeEngTier,
+	canonicalizeRoutingOverrides,
+	canonicalizeWorkKind,
+	DEPT_SUGGESTED_CATEGORY,
+	ENG_TIERS,
+	type EngTier,
+	formatWorkflowRouteVisibility,
+	WORK_KIND_CATEGORIES,
+	type WorkKindCategory,
+} from "../work-kind.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import {
 	parseWorkflowRunSnapshot,
@@ -64,6 +76,7 @@ import {
 	resolveWorkflowTemplateSelection,
 	type WorkflowRequestAuthKind,
 	type WorkflowTemplateSelectionResult,
+	WorkKindRouteError,
 } from "../workflow-template-selection.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
 import {
@@ -80,7 +93,10 @@ import type { IStartDispatcher } from "./retry-dispatcher.js";
 import { collectRunQuiescenceEvidence } from "./run-quiescence.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
-import { loadPipelineConfigByProject } from "./three-stage-config-source.js";
+import {
+	loadPipelineConfigByProject,
+	loadWorkKindConfigStrict,
+} from "./three-stage-config-source.js";
 import {
 	NO_THREE_STAGE_LABEL,
 	resolveGlobalThreeStageKillSwitch,
@@ -302,6 +318,30 @@ export function createRunsRouter(
 	};
 	registerRunManagementRoute("hold");
 	registerRunManagementRoute("terminate");
+
+	router.get("/route-decisions/summary", (req, res) => {
+		const bearer =
+			typeof req.headers.authorization === "string" &&
+			req.headers.authorization.startsWith("Bearer ")
+				? req.headers.authorization.slice("Bearer ".length)
+				: undefined;
+		if (!secureTokenEqual(bearer, auth?.masterToken)) {
+			res.status(403).json({
+				success: false,
+				code: "MASTER_AUTH_REQUIRED",
+			});
+			return;
+		}
+		const project =
+			typeof req.query.project === "string" && req.query.project.trim()
+				? resolveCanonicalProjectName(projects, req.query.project.trim())
+				: undefined;
+		res.json({
+			success: true,
+			consumer: "product_lead_periodic_review",
+			rows: store.summarizeCategorySuggestionAlignment(project),
+		});
+	});
 
 	router.post("/start", async (req, res) => {
 		// GEO-267: LINEAR_API_KEY is required for issue hydration (PreHydrator).
@@ -853,6 +893,47 @@ export function createRunsRouter(
 			projectName,
 			normalizedIssueLabels,
 		);
+		const resolveWorkKindReminderRecipient = (): string => {
+			const project = projects.find(
+				(candidate) => candidate.projectName === projectName,
+			);
+			const departmentLead =
+				typeof owningDept === "string"
+					? project?.leads.find(
+							(candidate) => candidate.department === owningDept,
+						)?.agentId
+					: undefined;
+			const cosLead = project?.leads.find(
+				(candidate) => candidate.agentId === "cos-lead",
+			)?.agentId;
+			return leadId ?? departmentLead ?? cosLead ?? "cos-lead";
+		};
+		const rejectWorkKindRequest = (input: {
+			status: number;
+			code: string;
+			reason?: string;
+			response?: Record<string, unknown>;
+			payload: unknown;
+			remind: boolean;
+		}): void => {
+			if (input.remind) {
+				store.insertRejectedRouteDecisionWithReminder({
+					project: projectName,
+					issueId,
+					errorCode: input.code,
+					payload: input.payload,
+					recipientLeadId: resolveWorkKindReminderRecipient(),
+					...(typeof owningDept === "string" ? { owningDept } : {}),
+					selectedBy: leadId ?? "unassigned",
+				});
+			}
+			res.status(input.status).json({
+				success: false,
+				code: input.code,
+				...(input.reason ? { reason: input.reason } : {}),
+				...input.response,
+			});
+		};
 
 		// ── FLY-1372 问题⓪ (part 1): DAG recovery-domain classification. Runs
 		// BEFORE the candidate preflight — recovery depends only on the active
@@ -1083,28 +1164,130 @@ export function createRunsRouter(
 			}
 		}
 
+		// FLY-1407: the fleet-wide dispatch flag is the FIRST rollback lever.
+		// When it is off we deliberately skip strict config parsing and every new
+		// input check, preserving today's request bytes and error ordering.
+		const workflowDispatchEnabled = isWorkflowTemplateDispatchEnabled(
+			process.env,
+		);
+		const freshMasterMain =
+			!engineRecovery &&
+			!replayReservation &&
+			role === "main" &&
+			requestAuthKind === "master";
+		const freshLegacyEntry =
+			!engineRecovery &&
+			!replayReservation &&
+			(role !== "main" || requestAuthKind !== "master");
+		let workKindActiveAtEntry = false;
+		let canonicalTaskCategory: WorkKindCategory | undefined;
+		let canonicalTier: EngTier | undefined;
+		let noThreeStageOverride = false;
+		let genericFallback = false;
+		if (workflowDispatchEnabled && freshMasterMain) {
+			const project = projects.find((p) => p.projectName === projectName);
+			if (project) {
+				const strict = loadWorkKindConfigStrict(project);
+				if (!strict.ok) {
+					res.status(400).json({
+						success: false,
+						code: "INVALID_WORK_KIND_CONFIG",
+						reason: strict.cause,
+						silent: false,
+					});
+					return;
+				}
+				workKindActiveAtEntry = strict.workKind;
+			}
+		}
+		if (workKindActiveAtEntry) {
+			const overrides = canonicalizeRoutingOverrides(req.body.routingOverrides);
+			if (overrides.status === "invalid") {
+				rejectWorkKindRequest({
+					status: 400,
+					code: "INVALID_ROUTING_OVERRIDE",
+					reason: overrides.reason,
+					response: { allowed: ["no-three-stage"], silent: false },
+					payload: { routingOverrides: req.body.routingOverrides },
+					remind: true,
+				});
+				return;
+			}
+			noThreeStageOverride = overrides.overrides.includes("no-three-stage");
+			const parsed = canonicalizeWorkKind(req.body.taskCategory);
+			if (parsed.status === "invalid") {
+				rejectWorkKindRequest({
+					status: 400,
+					code: "INVALID_TASK_CATEGORY",
+					reason: parsed.reason,
+					response: { allowed: [...WORK_KIND_CATEGORIES], silent: false },
+					payload: { taskCategory: req.body.taskCategory },
+					remind: true,
+				});
+				return;
+			}
+			canonicalTaskCategory =
+				parsed.status === "valid" ? parsed.category : undefined;
+			const parsedTier = canonicalizeEngTier(req.body.tier);
+			if (parsedTier.status === "invalid") {
+				rejectWorkKindRequest({
+					status: 400,
+					code: "INVALID_TIER",
+					reason: parsedTier.reason,
+					response: { allowed: [...ENG_TIERS], silent: false },
+					payload: { tier: req.body.tier },
+					remind: true,
+				});
+				return;
+			}
+			canonicalTier =
+				parsedTier.status === "valid" ? parsedTier.tier : undefined;
+			const hasTemplateOverride =
+				typeof req.body.templateId === "string" &&
+				req.body.templateId.trim().length > 0;
+			if (
+				noThreeStageOverride &&
+				(hasTemplateOverride || canonicalTaskCategory !== undefined)
+			) {
+				res.status(400).json({
+					success: false,
+					code: "ROUTING_CONFLICT_CONFIRM_REQUIRED",
+					silent: false,
+				});
+				return;
+			}
+			// Founder correction: an omitted work kind is a soft, observable
+			// generic fallback. It must never inherit the engineering-heavy default.
+			genericFallback =
+				!noThreeStageOverride &&
+				!hasTemplateOverride &&
+				canonicalTaskCategory === undefined;
+		}
+
 		const templateCandidateInput = {
 			project: projectName,
-			taskCategory:
-				typeof req.body.taskCategory === "string"
+			taskCategory: workKindActiveAtEntry
+				? canonicalTaskCategory
+				: typeof req.body.taskCategory === "string"
 					? req.body.taskCategory
 					: undefined,
 			leadTemplateId:
 				typeof req.body.templateId === "string"
 					? req.body.templateId
 					: undefined,
+			workKindEnforced: workKindActiveAtEntry,
 		};
-		const workflowDispatchEnabled = isWorkflowTemplateDispatchEnabled(
-			process.env,
-		);
 		const freshNoThreeStageLegacy =
 			!engineRecovery &&
 			!replayReservation &&
 			role === "main" &&
-			normalizedIssueLabels.includes(NO_THREE_STAGE_LABEL);
+			(workKindActiveAtEntry
+				? noThreeStageOverride || genericFallback
+				: normalizedIssueLabels.includes(NO_THREE_STAGE_LABEL));
 		let candidateSchemaAtEntry: 1 | 2 | null;
 		if (
 			engineRecovery ||
+			freshLegacyEntry ||
 			freshNoThreeStageLegacy ||
 			(!workflowDispatchEnabled && !replayReservation)
 		) {
@@ -1123,6 +1306,22 @@ export function createRunsRouter(
 					templateCandidateInput,
 				);
 			} catch (err) {
+				if (err instanceof WorkKindRouteError) {
+					rejectWorkKindRequest({
+						status: 409,
+						code: err.code,
+						reason: err.message,
+						payload: {
+							taskCategory: req.body.taskCategory,
+							templateId: req.body.templateId,
+							tier: req.body.tier,
+						},
+						remind:
+							err.code === "TEMPLATE_NOT_FRESH_ELIGIBLE" ||
+							err.code === "TIER_NOT_SUPPORTED",
+					});
+					return;
+				}
 				res.status(409).json({
 					success: false,
 					code: "GENERALIZED_WORKFLOW_REJECTED",
@@ -1146,7 +1345,8 @@ export function createRunsRouter(
 			const pipelineConfig = await loadMainPipelineConfig();
 			if (
 				pipelineConfig?.dag === true &&
-				!normalizedIssueLabels.includes(NO_THREE_STAGE_LABEL)
+				(workKindActiveAtEntry ||
+					!normalizedIssueLabels.includes(NO_THREE_STAGE_LABEL))
 			) {
 				const dagBlock = workflowTemplateDispatchBlockReason(
 					candidateSchemaAtEntry ?? 1,
@@ -1208,6 +1408,13 @@ export function createRunsRouter(
 				requestRole: role,
 				pipelineConfig,
 				issueLabels: normalizedIssueLabels,
+				noThreeStageSignal: workKindActiveAtEntry
+					? genericFallback
+						? "generic_fallback"
+						: noThreeStageOverride
+							? "dispatch_override"
+							: "suppressed"
+					: undefined,
 				env: process.env,
 				dispatchChannelId,
 				designBackend: requestedDesignBackend,
@@ -1343,6 +1550,7 @@ export function createRunsRouter(
 		// comes from the recovery domain above, not from key determinism.
 		const v2Entry =
 			!engineRecovery &&
+			!freshLegacyEntry &&
 			!freshNoThreeStageLegacy &&
 			workflowDispatchEnabled &&
 			candidateSchemaAtEntry === 2;
@@ -1359,7 +1567,11 @@ export function createRunsRouter(
 			| undefined;
 		if (engineRecovery) {
 			generalizedSelection = engineRecovery;
-		} else if (freshNoThreeStageLegacy || !workflowDispatchEnabled) {
+		} else if (
+			freshLegacyEntry ||
+			freshNoThreeStageLegacy ||
+			!workflowDispatchEnabled
+		) {
 			generalizedSelection = null;
 		} else {
 			try {
@@ -1380,6 +1592,13 @@ export function createRunsRouter(
 					allowSchemaV1Dispatch:
 						dagEntry || (role === "design" && shareParentBranch === true),
 					candidateSchemaAtEntry,
+					workKindEnforced: workKindActiveAtEntry,
+					categorySource: workKindActiveAtEntry
+						? req.body.templateId
+							? "template_override"
+							: "task_category"
+						: undefined,
+					tier: workKindActiveAtEntry ? canonicalTier : undefined,
 					...(dagEntry
 						? { entryKind: "pipeline_dag_v1" as const }
 						: v2Entry
@@ -1388,6 +1607,22 @@ export function createRunsRouter(
 					env: process.env,
 				});
 			} catch (err) {
+				if (err instanceof WorkKindRouteError) {
+					rejectWorkKindRequest({
+						status: 409,
+						code: err.code,
+						reason: err.message,
+						payload: {
+							taskCategory: req.body.taskCategory,
+							templateId: req.body.templateId,
+							tier: req.body.tier,
+						},
+						remind:
+							err.code === "TEMPLATE_NOT_FRESH_ELIGIBLE" ||
+							err.code === "TIER_NOT_SUPPORTED",
+					});
+					return;
+				}
 				res.status(409).json({
 					success: false,
 					code: "GENERALIZED_WORKFLOW_REJECTED",
@@ -1408,6 +1643,69 @@ export function createRunsRouter(
 					"dag entry selected no workflow candidate (flag flipped mid-request or binding removed) — refusing silent legacy fallback",
 			});
 			return;
+		}
+		if (workKindActiveAtEntry && v2Entry && !generalizedSelection) {
+			res.status(409).json({
+				success: false,
+				code: "WORK_KIND_ENTRY_NOT_MATERIALIZED",
+				reason:
+					"work-kind entry selected no workflow candidate (flag flipped mid-request or binding removed) — refusing silent legacy fallback",
+			});
+			return;
+		}
+		if (generalizedSelection?.categorySource) {
+			const reservation = store.getWorkflowStartReservation(
+				generalizedSelection.idempotencyKey,
+			);
+			const route =
+				dagEntry || engineRecoveryKind === "pipeline_dag_v1"
+					? "pipeline_dag_v1"
+					: "workflow_v2";
+			const routeDigest = canonicalSubmissionDigest({
+				route,
+				selectionDigest: reservation?.selection_digest,
+				runId: generalizedSelection.runId,
+				nodeId: generalizedSelection.nodeId,
+				taskCategory: generalizedSelection.taskCategory,
+				categorySource: generalizedSelection.categorySource,
+				tier: generalizedSelection.tier,
+			});
+			const claimed = store.claimWorkflowRouteDecision({
+				project: projectName,
+				issueId,
+				idempotencyKey: generalizedSelection.idempotencyKey,
+				runId: generalizedSelection.runId,
+				nodeId: generalizedSelection.nodeId,
+				route,
+				routeDigest,
+				...(generalizedSelection.taskCategory
+					? {
+							taskCategory:
+								generalizedSelection.taskCategory as WorkKindCategory,
+						}
+					: {}),
+				categorySource: generalizedSelection.categorySource,
+				tier: generalizedSelection.tier,
+				selectionReason:
+					store.getWorkflowRun(generalizedSelection.runId)?.selection_reason ??
+					undefined,
+				selectedBy: leadId ?? "unassigned",
+				...(typeof owningDept === "string" ? { owningDept } : {}),
+				...(typeof owningDept === "string" &&
+				DEPT_SUGGESTED_CATEGORY[owningDept]
+					? { suggestedCategory: DEPT_SUGGESTED_CATEGORY[owningDept] }
+					: {}),
+				labelDocumentationIntent:
+					normalizedIssueLabels.includes(NO_THREE_STAGE_LABEL),
+			});
+			if (claimed.status === "conflict") {
+				res.status(409).json({
+					success: false,
+					code: "WORK_KIND_ROUTE_DECISION_CONFLICT",
+					reason: "idempotency key is bound to a different route decision",
+				});
+				return;
+			}
 		}
 
 		if (generalizedSelection) {
@@ -1665,12 +1963,26 @@ export function createRunsRouter(
 						dagEntry || engineRecoveryKind === "pipeline_dag_v1"
 							? await computeStartBehaviorSnapshot()
 							: undefined;
+					const routeSummary = generalizedSelection.categorySource
+						? formatWorkflowRouteVisibility({
+								route:
+									dagEntry || engineRecoveryKind === "pipeline_dag_v1"
+										? "pipeline_dag_v1"
+										: "workflow_v2",
+								category: generalizedSelection.taskCategory ?? null,
+								source: generalizedSelection.categorySource,
+								...(generalizedSelection.tier
+									? { tier: generalizedSelection.tier }
+									: {}),
+							})
+						: undefined;
 					await startDispatcher.start({
 						issueId,
 						projectName,
 						leadId,
 						issueTitle,
 						issueIdentifier,
+						routeSummary,
 						sessionRole: workflowRole,
 						shareParentBranch: workflowRole === "main" ? undefined : true,
 						issueLabels: normalizedIssueLabels,
@@ -1764,6 +2076,17 @@ export function createRunsRouter(
 					workflowNodeId: generalizedSelection.nodeId,
 					// FLY-1372: 202 carries the same advisory echo as the 200.
 					...dagAuthority,
+					...(generalizedSelection.categorySource
+						? {
+								workKind: {
+									category: generalizedSelection.taskCategory ?? null,
+									source: generalizedSelection.categorySource,
+									...(generalizedSelection.tier
+										? { tier: generalizedSelection.tier }
+										: {}),
+								},
+							}
+						: {}),
 					message: `Runner launch accepted for ${issueId}; delivery confirmation is pending.`,
 				});
 				return;
@@ -1803,6 +2126,18 @@ export function createRunsRouter(
 				generalizedSelection.idempotencyKey,
 				"launch_committed",
 			);
+			if (
+				generalizedSelection.categorySource !== undefined &&
+				!store.markWorkflowRouteDecisionLaunched({
+					idempotencyKey: generalizedSelection.idempotencyKey,
+				})
+			) {
+				res.status(409).json({
+					success: false,
+					code: "WORK_KIND_ROUTE_LAUNCH_EVIDENCE_MISSING",
+				});
+				return;
+			}
 			const response = {
 				success: true,
 				executionId: generalizedSelection.executionId,
@@ -1811,6 +2146,17 @@ export function createRunsRouter(
 				workflowRunId: generalizedSelection.runId,
 				workflowNodeId: generalizedSelection.nodeId,
 				...dagAuthority,
+				...(generalizedSelection.categorySource
+					? {
+							workKind: {
+								category: generalizedSelection.taskCategory ?? null,
+								source: generalizedSelection.categorySource,
+								...(generalizedSelection.tier
+									? { tier: generalizedSelection.tier }
+									: {}),
+							},
+						}
+					: {}),
 				message: `Runner started for ${issueId}`,
 			};
 			store.recordWorkflowStartResponse({
@@ -1882,6 +2228,68 @@ export function createRunsRouter(
 			});
 			return;
 		}
+		const legacyWorkKindRoute = genericFallback
+			? "generic_fallback"
+			: "bypass_override";
+		const legacyRouteSummary = workKindActiveAtEntry
+			? formatWorkflowRouteVisibility(
+					genericFallback
+						? {
+								route: "generic_fallback",
+								source: "default_fallback",
+							}
+						: {
+								route: "bypass_override",
+								override: "no-three-stage",
+							},
+				)
+			: undefined;
+		if (workKindActiveAtEntry) {
+			const routeDigest = canonicalSubmissionDigest({
+				route: legacyWorkKindRoute,
+				...(noThreeStageOverride ? { override: "no-three-stage" } : {}),
+				...(genericFallback ? { source: "default_fallback" } : {}),
+				project: projectName,
+				issueId,
+				selectedBy: leadId ?? "unassigned",
+			});
+			const claimed = store.claimWorkflowRouteDecision({
+				project: projectName,
+				issueId,
+				executionId: legacyEntryExecutionId,
+				route: legacyWorkKindRoute,
+				routeDigest,
+				...(noThreeStageOverride
+					? { override: "no-three-stage" as const }
+					: {}),
+				...(genericFallback
+					? { categorySource: "default_fallback" as const }
+					: {}),
+				selectionReason: genericFallback
+					? "default_fallback:generic"
+					: "dispatch_override:no-three-stage",
+				selectedBy: leadId ?? "unassigned",
+				...(typeof owningDept === "string" ? { owningDept } : {}),
+				...(typeof owningDept === "string" &&
+				DEPT_SUGGESTED_CATEGORY[owningDept]
+					? { suggestedCategory: DEPT_SUGGESTED_CATEGORY[owningDept] }
+					: {}),
+				labelDocumentationIntent:
+					normalizedIssueLabels.includes(NO_THREE_STAGE_LABEL),
+			});
+			if (claimed.status === "conflict") {
+				store.casLaunchClaimState(
+					legacyEntryExecutionId,
+					"starting",
+					"cancelled",
+				);
+				res.status(409).json({
+					success: false,
+					code: "WORK_KIND_ROUTE_DECISION_CONFLICT",
+				});
+				return;
+			}
+		}
 
 		try {
 			// FLY-24: Pass pre-fetched title/identifier so Blueprint's EventEnvelope
@@ -1901,6 +2309,7 @@ export function createRunsRouter(
 				leadId,
 				issueTitle,
 				issueIdentifier,
+				routeSummary: legacyRouteSummary,
 				sessionRole: role,
 				// FLY-793 (Step 4 ENTRY): Bridge-INTERNAL, set ONLY by the server-side
 				// three-stage entry above (never from the request body). Undefined for
@@ -2036,6 +2445,29 @@ export function createRunsRouter(
 				});
 				return;
 			}
+			if (
+				workKindActiveAtEntry &&
+				!store.markWorkflowRouteDecisionLaunched({
+					executionId: legacyEntryExecutionId,
+				})
+			) {
+				res.status(409).json({
+					success: false,
+					code: "WORK_KIND_ROUTE_LAUNCH_EVIDENCE_MISSING",
+				});
+				return;
+			}
+			if (genericFallback) {
+				store.insertWorkflowRouteDecisionReminder({
+					executionId: legacyEntryExecutionId,
+					code: "WORK_KIND_DEFAULT_FALLBACK",
+					payload: {
+						taskCategory: null,
+						fallback: "generic",
+					},
+					recipientLeadId: resolveWorkKindReminderRecipient(),
+				});
+			}
 
 			res.json({
 				success: true,
@@ -2045,6 +2477,20 @@ export function createRunsRouter(
 				message: `Runner started for ${issueId}`,
 				...(requestedDesignBackend && effectiveDesignBackend
 					? { designBackend: effectiveDesignBackend }
+					: {}),
+				...(workKindActiveAtEntry
+					? {
+							workKind: {
+								category: canonicalTaskCategory ?? null,
+								source: genericFallback
+									? "default_fallback"
+									: canonicalTaskCategory
+										? "task_category"
+										: null,
+								...(genericFallback ? { fallback: "generic" } : {}),
+								...(noThreeStageOverride ? { override: "no-three-stage" } : {}),
+							},
+						}
 					: {}),
 			});
 		} catch (err) {

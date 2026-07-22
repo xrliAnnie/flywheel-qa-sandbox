@@ -1719,6 +1719,33 @@ describe("ConfigLoader — pipeline (FLY-793 three-stage)", () => {
 		);
 	});
 
+	// FLY-1407: work-kind migration enrollment is lenient at the shared-loader
+	// seam. The strict /api/runs/start reader owns fail-loud enforcement; shared
+	// handoff callers must retain every unrelated pipeline field.
+	it.each([true, false])("parses pipeline.work_kind: %s", async (workKind) => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  dag: true\n  work_kind: ${workKind}\n`,
+		);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline?.work_kind).toBe(workKind);
+		expect(config.pipeline?.dag).toBe(true);
+	});
+
+	it("drops only malformed pipeline.work_kind and preserves handoff config", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n  dag: true\n  work_kind: "yes"\n`,
+		);
+
+		const config = await loader.load("/p/config.yaml");
+
+		expect(config.pipeline).toEqual({ three_stage: true, dag: true });
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("pipeline.work_kind must be a boolean"),
+		);
+		warn.mockRestore();
+	});
+
 	// FLY-887 R2 Step 3: three_stage_channels validation matrix.
 	it("parses a valid three_stage_channels list of quoted channel-id strings", async () => {
 		readFile.mockResolvedValue(

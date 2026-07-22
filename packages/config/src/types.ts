@@ -331,6 +331,14 @@ export interface PipelineConfig {
 	 * project's CANONICAL root only, like `three_stage`.
 	 */
 	dag?: boolean;
+	/**
+	 * FLY-1407: opt a project into dispatch-time work-kind enforcement.
+	 * Absent or false keeps the legacy route byte-compatible. The shared config
+	 * loader leniently drops malformed values so unrelated pipeline consumers
+	 * (notably three-stage handoff) retain their configuration; the fresh-start
+	 * route uses its own strict reader to fail loudly when the main flag is on.
+	 */
+	work_kind?: boolean;
 }
 
 /**

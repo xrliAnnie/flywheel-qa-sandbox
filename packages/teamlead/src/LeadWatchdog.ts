@@ -1129,6 +1129,8 @@ function titleFor(kind: AlertEventType): string {
 		// FLY-1402: emitted only by the Claude launcher through lead-alert.sh.
 		case "rules_bundle_legacy":
 			return "Lead rules bundle legacy mode";
+		case "workflow_route_input_rejected":
+			return "Work-kind dispatch input rejected";
 		case "stale_approved_ship_dead":
 			return "Approved ship runner is dead";
 		// FLY-195: never emitted by LeadWatchdog (the stuck-runner detector owns
@@ -1357,6 +1359,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// real shell alert body; this keeps the shared kind switch exhaustive.
 		case "rules_bundle_legacy":
 			return "A Claude Lead launched with the emergency legacy last-one-wins rule-loading path. Restore bundle mode and restart the Lead after investigating the compatibility override.";
+		case "workflow_route_input_rejected":
+			return "A fresh work-kind dispatch was rejected because an explicit category, tier, routing override, or template override was invalid. Correct the request and dispatch again; the dedup key in the notice identifies retries of the same input.";
 		case "stale_approved_ship_dead":
 			return "An approved_to_ship runner was proven dead through its exact tmux target. Resume the execution through the durable recovery path; this watchdog never self-ships.";
 		case "receipt_foundation_off":

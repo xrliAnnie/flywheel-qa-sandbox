@@ -158,6 +158,48 @@ describe("resolveThreeStageEntry (FLY-793 Step 4 ENTRY)", () => {
 		expect(e.notEnteredDetail).toMatch(/no-three-stage/i);
 	});
 
+	it("a dispatch-time override opts out even without a stored label", () => {
+		const e = resolveThreeStageEntry({
+			requestRole: "main",
+			pipelineConfig: { three_stage: true },
+			issueLabels: [],
+			noThreeStageSignal: "dispatch_override",
+			env: noEnv,
+		});
+		expect(e).toMatchObject({
+			enteredThreeStage: false,
+			role: "main",
+			notEnteredReasonCode: "no_three_stage_override",
+		});
+	});
+
+	it("the absent-kind generic fallback short-circuits three-stage", () => {
+		const e = resolveThreeStageEntry({
+			requestRole: "main",
+			pipelineConfig: { three_stage: true },
+			issueLabels: [],
+			noThreeStageSignal: "generic_fallback",
+			env: noEnv,
+		});
+		expect(e).toMatchObject({
+			enteredThreeStage: false,
+			role: "main",
+			notEnteredReasonCode: "work_kind_default_fallback",
+		});
+	});
+
+	it("suppressed ignores only the stored no-three-stage label", () => {
+		const e = resolveThreeStageEntry({
+			requestRole: "main",
+			pipelineConfig: { three_stage: true },
+			issueLabels: ["no-three-stage", "no-qa"],
+			noThreeStageSignal: "suppressed",
+			env: noEnv,
+		});
+		expect(e.enteredThreeStage).toBe(true);
+		expect(e.role).toBe("design");
+	});
+
 	it("`FLYWHEEL_THREE_STAGE=0` kill-switch keeps a fresh dispatch as `main`", () => {
 		const e = resolveThreeStageEntry({
 			requestRole: "main",
@@ -238,6 +280,16 @@ describe("resolveThreeStagePolicy (FLY-793)", () => {
 			env: noEnv,
 		});
 		expect(d.enabled).toBe(false);
+	});
+
+	it("global disable retains precedence over a dispatch override", () => {
+		const d = resolveThreeStagePolicy({
+			pipelineConfig: { three_stage: true },
+			issueLabels: [],
+			noThreeStageSignal: "dispatch_override",
+			env: { FLYWHEEL_THREE_STAGE: "0" },
+		});
+		expect(d.reasonCode).toBe("global_disabled");
 	});
 });
 

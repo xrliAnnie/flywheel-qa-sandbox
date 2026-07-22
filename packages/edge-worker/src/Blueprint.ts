@@ -359,6 +359,8 @@ export interface BlueprintContext {
 	// FLY-24 — Pre-fetched issue metadata (overrides PreHydrator on conflict)
 	issueTitle?: string;
 	issueIdentifier?: string;
+	/** Bridge-derived founder-visible route line; omitted from runner HTTP. */
+	routeSummary?: string;
 	// FLY-205 — Linear issue URL from runs-route preflight (start) or session
 	// row (retry). Baked into the DOC-FLOW header line; absent → key-only
 	// degraded header.
@@ -877,6 +879,7 @@ export class Blueprint {
 			// (PreHydrator may fail Linear API and fall back to stub title)
 			issueIdentifier: ctx.issueIdentifier ?? hydrated.issueIdentifier,
 			issueTitle: ctx.issueTitle ?? hydrated.issueTitle,
+			...(ctx.routeSummary && { routeSummary: ctx.routeSummary }),
 			// FLY-807: caller-provided labels (e.g. auto-QA's parent-issue labels, which
 			// drive Discord chat-thread routing via resolveLeadForIssue) take precedence
 			// over a fresh Linear re-fetch of THIS run's own issue — matching the same

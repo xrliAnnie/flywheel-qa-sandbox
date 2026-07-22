@@ -97,6 +97,24 @@ export function parseIssueLabels(raw: string | undefined): string[] {
 	}
 }
 
+/** Read the Bridge-owned route visibility payload from session_params. */
+export function parseWorkflowRouteSummary(
+	raw: string | undefined,
+): string | undefined {
+	if (!raw) return undefined;
+	try {
+		const parsed = JSON.parse(raw) as {
+			workflowRoute?: { summary?: unknown };
+		};
+		return typeof parsed.workflowRoute?.summary === "string" &&
+			parsed.workflowRoute.summary.trim().length > 0
+			? parsed.workflowRoute.summary
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * FLY-560 UX iteration: emoji-only vs emoji+word badge mode. Default emoji+word
  * (Annie's feedback — emoji alone is hard to memorise); set
@@ -243,6 +261,7 @@ export function pinRunnerAttachForSession(
 		issueTitle: session.issue_title,
 		botToken: resolvedToken,
 		leadId,
+		routeSummary: parseWorkflowRouteSummary(session.session_params),
 	};
 	const headerBotToken =
 		resolveAnnouncerBotToken(deps.projects, session.project_name) ??
@@ -702,6 +721,7 @@ export class IssueDisplayRefresher {
 			botToken,
 			leadId,
 			modelMarker: sessionModelDisplay(badgeSession)?.threadMarker ?? null,
+			routeSummary: parseWorkflowRouteSummary(anySession.session_params),
 		};
 
 		let resultA: DisplayWriteResult = "noop";
