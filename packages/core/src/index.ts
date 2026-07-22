@@ -289,6 +289,7 @@ export {
 	ACTION_DEFINITIONS,
 	allowedActionsForState,
 	getActionTarget,
+	isNoOutEdgeTerminalStatus,
 	WORKFLOW_TRANSITIONS,
 	WorkflowFSM,
 } from "./workflow-fsm.js";

@@ -144,6 +144,14 @@ export const WORKFLOW_TRANSITIONS = {
     shelved: [],
     terminated: [],
 };
+/**
+ * FLY-1427: a persisted status is overwrite-immune exactly when the canonical
+ * workflow transition map gives it no outgoing edges. Unknown or absent
+ * statuses fail open because their terminal semantics cannot be proven.
+ */
+export function isNoOutEdgeTerminalStatus(status) {
+    return (status !== undefined && (WORKFLOW_TRANSITIONS[status]?.length ?? -1) === 0);
+}
 export const ACTION_DEFINITIONS = [
     {
         action: "approve",

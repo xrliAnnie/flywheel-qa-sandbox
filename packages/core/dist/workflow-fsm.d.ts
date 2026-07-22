@@ -36,6 +36,12 @@ export declare class WorkflowFSM {
     canTransition(from: string, to: string): boolean;
 }
 export declare const WORKFLOW_TRANSITIONS: Record<string, string[]>;
+/**
+ * FLY-1427: a persisted status is overwrite-immune exactly when the canonical
+ * workflow transition map gives it no outgoing edges. Unknown or absent
+ * statuses fail open because their terminal semantics cannot be proven.
+ */
+export declare function isNoOutEdgeTerminalStatus(status: string | undefined): boolean;
 export interface ActionDefinition {
     action: string;
     fromStates: string[];

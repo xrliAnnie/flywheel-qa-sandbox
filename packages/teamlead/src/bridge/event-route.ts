@@ -683,6 +683,14 @@ export function createEventRouter(
 							});
 							return;
 						}
+						if (completion.reason === "terminal_status_immune") {
+							res.json({
+								ok: true,
+								generalized: true,
+								settled: "terminal_status_immune",
+							});
+							return;
+						}
 						res.status(409).json({
 							error:
 								completion.reason === "missing_output"
@@ -735,6 +743,7 @@ export function createEventRouter(
 						generalized: true,
 						teardown: "held_recorded",
 						duplicate: recorded.idempotentReplay,
+						statusPreserved: recorded.statusPreserved,
 					});
 					return;
 				}
@@ -769,6 +778,7 @@ export function createEventRouter(
 					generalized: true,
 					teardown: "held_recorded",
 					duplicate: recorded.idempotentReplay,
+					statusPreserved: recorded.statusPreserved,
 				});
 				return;
 			}

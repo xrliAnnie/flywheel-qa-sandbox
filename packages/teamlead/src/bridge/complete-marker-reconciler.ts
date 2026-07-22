@@ -45,6 +45,7 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { canonicalSubmissionDigest } from "flywheel-config";
+import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -628,6 +629,20 @@ export async function tryReconcileComplete(
 		if (json?.settled === "stale_execution_superseded") {
 			safeUnlink(markerPath, log);
 			return { kind: "reconciled", status: "stale_execution_superseded" };
+		}
+		if (json?.settled === "terminal_status_immune") {
+			const verifiedStatus = deps.store.getSession(execId)?.status;
+			if (
+				isNoOutEdgeTerminalStatus(verifiedStatus) &&
+				verifiedStatus !== "completed"
+			) {
+				safeUnlink(markerPath, log);
+				return { kind: "reconciled", status: "terminal_status_immune" };
+			}
+			return {
+				kind: "transient_failed",
+				error: "terminal_status_immune status verification failed",
+			};
 		}
 		const receipt = deps.store.getWorkflowNodeCompletion(
 			generalizedBinding.run_id,

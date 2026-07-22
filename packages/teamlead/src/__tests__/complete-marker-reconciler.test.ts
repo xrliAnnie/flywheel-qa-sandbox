@@ -452,6 +452,90 @@ describe("tryReconcileComplete", () => {
 		expect(existsSync(quarantineDir)).toBe(false);
 	});
 
+	it("FLY-1427 deletes a terminal-immune generalized marker only after terminal verification", async () => {
+		writeMarker(markerDir, "exec-terminal-immune", {
+			payload: { decision: { route: "no_code" }, evidence: {} },
+		});
+		const store = makeStore({
+			"exec-terminal-immune": { status: "terminated" },
+		});
+		Object.assign(store, {
+			getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
+				binding: {
+					execution_id: "exec-terminal-immune",
+					run_id: "run-1",
+					node_id: "execute",
+					attempt: 1,
+				},
+			})),
+		});
+		const fetchFn = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						ok: true,
+						settled: "terminal_status_immune",
+					}),
+					{ status: 200 },
+				),
+		);
+
+		const result = await tryReconcileComplete(
+			"exec-terminal-immune",
+			baseDeps(store, fetchFn as never),
+		);
+
+		expect(result).toEqual({
+			kind: "reconciled",
+			status: "terminal_status_immune",
+		});
+		expect(existsSync(join(markerDir, "exec-terminal-immune.json"))).toBe(
+			false,
+		);
+	});
+
+	it("FLY-1427 keeps a terminal-immune marker when the session verification is not terminal", async () => {
+		writeMarker(markerDir, "exec-terminal-immune-invalid", {
+			payload: { decision: { route: "no_code" }, evidence: {} },
+		});
+		const store = makeStore({
+			"exec-terminal-immune-invalid": { status: "running" },
+		});
+		Object.assign(store, {
+			getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
+				binding: {
+					execution_id: "exec-terminal-immune-invalid",
+					run_id: "run-1",
+					node_id: "execute",
+					attempt: 1,
+				},
+			})),
+		});
+		const fetchFn = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						ok: true,
+						settled: "terminal_status_immune",
+					}),
+					{ status: 200 },
+				),
+		);
+
+		const result = await tryReconcileComplete(
+			"exec-terminal-immune-invalid",
+			baseDeps(store, fetchFn as never),
+		);
+
+		expect(result).toEqual({
+			kind: "transient_failed",
+			error: "terminal_status_immune status verification failed",
+		});
+		expect(
+			existsSync(join(markerDir, "exec-terminal-immune-invalid.json")),
+		).toBe(true);
+	});
+
 	it("generalized replay deletes the marker only after its receipt is visible", async () => {
 		writeMarker(markerDir, "exec-receipt", {
 			payload: { decision: { route: "no_code" }, evidence: {} },

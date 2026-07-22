@@ -12,7 +12,10 @@ import {
 	resolveCompletionSessionRole,
 	type SkillsConfig,
 } from "flywheel-config";
-import { type TerminalFailureInfo, WORKFLOW_TRANSITIONS } from "flywheel-core";
+import {
+	isNoOutEdgeTerminalStatus,
+	type TerminalFailureInfo,
+} from "flywheel-core";
 import type {
 	EventEnvelope,
 	ExecutionEventEmitter,
@@ -539,6 +542,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				console.error(
 					`[DirectEventSink] generalized completion persistence refused for ${env.executionId}: ${recorded.reason}`,
 				);
+			} else if (recorded.statusPreserved) {
+				console.warn(
+					`[DirectEventSink] FLY-1427 terminal-immune: ignored generalized completion overwrite for ${env.executionId}; effective status remains ${recorded.effectiveStatus}`,
+				);
 			}
 			return;
 		}
@@ -775,7 +782,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// patchSessionMetadata / markEvidenceGapCompletion), so it is unaffected.
 		if (
 			preExistingSession &&
-			(WORKFLOW_TRANSITIONS[preExistingSession.status]?.length ?? -1) === 0
+			isNoOutEdgeTerminalStatus(preExistingSession.status)
 		) {
 			console.warn(
 				`[DirectEventSink] ignoring duplicate/spurious "${status}" completion for already-terminal ${env.executionId} ` +
@@ -1155,6 +1162,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			if (!recorded.ok) {
 				console.error(
 					`[DirectEventSink] generalized failure persistence refused for ${env.executionId}: ${recorded.reason}`,
+				);
+				return;
+			}
+			if (recorded.statusPreserved) {
+				console.warn(
+					`[DirectEventSink] FLY-1427 terminal-immune: ignored generalized failure overwrite for ${env.executionId}; effective status remains ${recorded.effectiveStatus}`,
 				);
 				return;
 			}

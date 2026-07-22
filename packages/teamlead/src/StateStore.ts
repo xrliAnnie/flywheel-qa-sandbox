@@ -20,6 +20,7 @@ import {
 	type SkillFrameworkMode,
 	type SkillFrameworkVia,
 } from "flywheel-config";
+import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
 import {
@@ -292,6 +293,18 @@ export const ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES = [
 	"rejected",
 	"deferred",
 	"shelved",
+] as const;
+
+// FLY-1427: the bounded production incident set. These five DAG executions
+// were correctly terminated by the FSM and then overwritten to completed by
+// the enrolled closeout writer on 2026-07-22. Keep this list explicit so a
+// future regression is visible instead of silently healed by a broad scan.
+const FLY1427_OVERWRITTEN_EXECUTIONS = [
+	"88d06933-5795-4d21-aea0-db51930d7171", // FLY-1412
+	"57e09567-68ba-49de-9448-9bcbc143c1d5", // FLY-1412
+	"a955657f-010b-4527-99c4-5c0ef6714e8d", // FLY-1414
+	"7b76d2a0-5a0a-45f1-9d29-09f14b57846c", // FLY-1413
+	"c80fad41-998b-4843-b756-8886547049a8", // FLY-1414
 ] as const;
 
 export function isStateStoreIrreversibleTerminalForZombie(
@@ -2677,6 +2690,51 @@ export class StateStore {
 		this.migrateChatThreadsDisplayFingerprintColumns();
 		// FLY-643: qa_issue_* columns on auto_qa_record (separate QA issue)
 		this.migrateAutoQaRecordQaIssueColumns();
+		this.migrateFly1427TerminalStatusCorrections();
+	}
+
+	/**
+	 * FLY-1427 one-shot data correction. The status predicate makes the write
+	 * idempotent; lifecycle_revision stays monotonic, while terminal_at and
+	 * session_stage intentionally retain the original terminate-time facts.
+	 */
+	private migrateFly1427TerminalStatusCorrections(): void {
+		for (const executionId of FLY1427_OVERWRITTEN_EXECUTIONS) {
+			this.db.transaction(() => {
+				const row = this.workflowSelectAll(
+					`SELECT issue_id, project_name, status FROM sessions
+					  WHERE execution_id = ?`,
+					[executionId],
+				)[0];
+				if (!row || row.status !== "completed") return;
+				this.db.run(
+					`UPDATE sessions
+					    SET status = 'terminated',
+					        lifecycle_revision = COALESCE(lifecycle_revision, 0) + 1
+					  WHERE execution_id = ? AND status = 'completed'`,
+					[executionId],
+				);
+				if (this.db.getRowsModified() !== 1) return;
+				this.db.run(
+					`INSERT OR IGNORE INTO session_events
+					   (event_id, execution_id, issue_id, project_name, event_type,
+					    severity, payload, source)
+					 VALUES (?, ?, ?, ?, 'state_correction', 'info', ?,
+					         'fly-1427-backfill')`,
+					[
+						`fly1427:${executionId}`,
+						executionId,
+						row.issue_id,
+						row.project_name,
+						JSON.stringify({
+							from: "completed",
+							to: "terminated",
+							reason: "FLY-1427",
+						}),
+					],
+				);
+			});
+		}
 	}
 
 	private migrateWorkflowTemplates(): void {
@@ -16213,6 +16271,9 @@ export class StateStore {
 				ok: true;
 				idempotentReplay: boolean;
 				status: "completed" | "failed" | "blocked";
+				attemptedStatus: "completed" | "failed" | "blocked";
+				effectiveStatus: string;
+				statusPreserved: boolean;
 				runId: string;
 				nodeId: string;
 		  }
@@ -16238,6 +16299,8 @@ export class StateStore {
 			input.signal === "completed" ? "session_completed" : "session_failed";
 		let idempotentReplay = false;
 		let refusal: string | undefined;
+		let effectiveStatus: string = status;
+		let statusPreserved = false;
 		this.db.transaction(() => {
 			const priorEvent = this.workflowSelectAll(
 				"SELECT * FROM session_events WHERE event_id = ?",
@@ -16264,6 +16327,10 @@ export class StateStore {
 					return;
 				}
 				idempotentReplay = true;
+				const currentStatus = this.getSession(input.executionId)?.status;
+				effectiveStatus = currentStatus ?? status;
+				statusPreserved =
+					isNoOutEdgeTerminalStatus(currentStatus) && currentStatus !== status;
 				return;
 			} else {
 				this.db.run(
@@ -16286,8 +16353,16 @@ export class StateStore {
 			}
 
 			const previousStatus = this.getSession(input.executionId)?.status;
-			this.db.run(
-				`INSERT INTO sessions
+			statusPreserved =
+				isNoOutEdgeTerminalStatus(previousStatus) && previousStatus !== status;
+			effectiveStatus = statusPreserved ? (previousStatus ?? status) : status;
+			if (statusPreserved) {
+				console.warn(
+					`[StateStore] FLY-1427 terminal-immune: refused ${previousStatus} → ${status} for ${input.executionId}; status preserved, teardown fact still recorded`,
+				);
+			} else {
+				this.db.run(
+					`INSERT INTO sessions
 				   (execution_id, issue_id, project_name, status, last_activity_at,
 				    last_error, chat_thread_role, workflow_node_id)
 				 VALUES (?, ?, ?, ?, ?, ?, 'main', ?)
@@ -16298,19 +16373,20 @@ export class StateStore {
 				   workflow_node_id = CASE
 				     WHEN sessions.workflow_node_id IS NULL THEN excluded.workflow_node_id
 				     ELSE sessions.workflow_node_id END`,
-				[
-					input.executionId,
-					context.run.issue_id,
-					context.run.project_name,
-					status,
-					now,
-					input.lastError ?? null,
-					context.binding.node_id,
-				],
-			);
-			this.applyTerminalTimestamp(input.executionId, previousStatus, status);
-			if (previousStatus && previousStatus !== status) {
-				this.bumpLifecycleRevision(input.executionId);
+					[
+						input.executionId,
+						context.run.issue_id,
+						context.run.project_name,
+						status,
+						now,
+						input.lastError ?? null,
+						context.binding.node_id,
+					],
+				);
+				this.applyTerminalTimestamp(input.executionId, previousStatus, status);
+				if (previousStatus && previousStatus !== status) {
+					this.bumpLifecycleRevision(input.executionId);
+				}
 			}
 			this.appendWorkflowRunEventCheckedTx({
 				runId: context.binding.run_id,
@@ -16322,6 +16398,9 @@ export class StateStore {
 					sourceEventId: input.sourceEventId,
 					signal: input.signal,
 					status,
+					attemptedStatus: status,
+					effectiveStatus,
+					statusPreserved,
 					failureKind: input.failureKind ?? null,
 					at: now,
 				},
@@ -16333,6 +16412,9 @@ export class StateStore {
 			ok: true,
 			idempotentReplay,
 			status,
+			attemptedStatus: status,
+			effectiveStatus,
+			statusPreserved,
 			runId: context.binding.run_id,
 			nodeId: context.binding.node_id,
 		};
@@ -17729,6 +17811,15 @@ export class StateStore {
 			  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
 			[input.completedAt, binding.run_id, binding.node_id, binding.attempt],
 		);
+		const statusImmune =
+			isNoOutEdgeTerminalStatus(previousStatus) &&
+			previousStatus !== "completed";
+		if (statusImmune) {
+			console.warn(
+				`[StateStore] FLY-1427 terminal-immune: generalized completion projection kept ${binding.execution_id} at ${previousStatus}; node completion ledger still projected`,
+			);
+			return;
+		}
 		this.db.run(
 			`INSERT INTO sessions
 			   (execution_id, issue_id, project_name, status, last_activity_at,
@@ -17847,8 +17938,17 @@ export class StateStore {
 							? "node_done"
 							: undefined;
 		let transitionRefusal: string | undefined;
+		let terminalImmuneRefusal = false;
 		try {
 			this.db.transaction(() => {
+				const sessionStatus = this.getSession(input.executionId)?.status;
+				if (
+					isNoOutEdgeTerminalStatus(sessionStatus) &&
+					sessionStatus !== "completed"
+				) {
+					terminalImmuneRefusal = true;
+					throw new Error("engine_completion_terminal_immune");
+				}
 				this.db.run(
 					`INSERT INTO workflow_node_completion
 				   (run_id, node_id, attempt, execution_id, route, event_uid,
@@ -17902,6 +18002,9 @@ export class StateStore {
 				}
 			});
 		} catch (error) {
+			if (terminalImmuneRefusal) {
+				return { ok: false, reason: "terminal_status_immune" };
+			}
 			if (transitionRefusal) {
 				return { ok: false, reason: "transition_refused" };
 			}
@@ -22964,6 +23067,7 @@ export type WorkflowCompletionResult =
 				| "not_enrolled"
 				| "route_mismatch"
 				| "completion_conflict"
+				| "terminal_status_immune"
 				| "transition_refused";
 	  };
 

@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FLY-1427 设计说明 — 叫停的任务不许再被记成「完成」</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1d1d1f;
+      --muted: #6e6e73;
+      --paper: #ffffff;
+      --wash: #f5f5f7;
+      --blue: #0a66c2;
+      --green: #248a3d;
+      --orange: #c75300;
+      --red: #b42318;
+      --purple: #7a3db8;
+      --line: #d9d9de;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--wash); color: var(--ink); font: 16px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 980px; margin: 0 auto; padding: 34px 18px 72px; }
+    h1 { margin: 0 0 6px; color: #17365d; font-size: clamp(26px, 5vw, 40px); line-height: 1.18; }
+    h2 { margin: 0 0 14px; color: #17365d; font-size: 21px; }
+    p { margin: 8px 0; }
+    .meta { color: var(--muted); margin-bottom: 26px; }
+    .card { margin: 18px 0; padding: 22px 24px; border: 1px solid var(--line); border-left: 5px solid var(--blue); border-radius: 16px; background: var(--paper); box-shadow: 0 6px 24px rgba(0,0,0,.05); }
+    .green { border-left-color: var(--green); }
+    .orange { border-left-color: var(--orange); }
+    .purple { border-left-color: var(--purple); }
+    .red { border-left-color: var(--red); }
+    .lead { font-size: 20px; line-height: 1.55; }
+    .eyebrow { color: var(--muted); font-size: 13px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 6px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+    th, td { padding: 10px 9px; border-bottom: 1px solid #ececf0; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+    code { padding: 1px 5px; border-radius: 5px; background: #f0f0f2; font-size: .92em; }
+    ul { padding-left: 21px; }
+    li { margin: 7px 0; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .bad { color: #8f2011; background: #fdebe8; }
+    .good { color: #116329; background: #e5f5e9; }
+    .dim { color: var(--muted); }
+    .flowline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: stretch; gap: 8px; margin: 16px 0; }
+    .node { display: grid; place-items: center; min-height: 84px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #fafafa; text-align: center; font-size: 14px; }
+    .node b { display: block; margin-bottom: 3px; }
+    .node.stop { background: #fdebe8; border-color: #d98b7e; }
+    .node.ok { background: #edf8ef; border-color: #68ad76; }
+    .node.warn { background: #fff5e8; border-color: #dc984a; }
+    .node.gate { background: #eaf4ff; border-color: #69a7df; }
+    .arrow { align-self: center; color: var(--muted); font-size: 20px; text-align: center; }
+    .twocol { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+    .panel { padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: #fafafa; }
+    .panel strong { display: block; margin-bottom: 8px; }
+    .panel.before { border-color: #d98b7e; background: #fff7f5; }
+    .panel.after { border-color: #68ad76; background: #f4fbf5; }
+    @media (max-width: 700px) { .flowline, .twocol { grid-template-columns: 1fr; } .arrow { transform: rotate(90deg); } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>FLY-1427 · 叫停的任务，不许再被记成「完成」</h1>
+  <p class="meta">设计说明 · 2026-07-22 · engine·bug5（五连修之五）· Codex 设计评审两轮通过</p>
+
+  <div class="card">
+    <div class="eyebrow">一句话</div>
+    <p class="lead">昨晚被手动叫停的 5 个 DAG 任务，2 秒后被收尾流程盖章成「成功完成」——报表会把停掉的活当成干完的活。这次修法：<b>终态只有一扇门能写，写下「叫停」之后，任何人再喊「完成了」都被拦住</b>；那 5 行历史脏数据也定点改回来。</p>
+  </div>
+
+  <div class="card red">
+    <h2>出了什么事（生产库铁证）</h2>
+    <p>叫停动作本身记对了——状态机正确写下「已叫停」。问题在 2 秒后：runner 进程被杀死时，DAG 收尾流程照常喊了一声「完成了」，而这条路<b>绕过了状态机的大门</b>，直接把「已叫停」覆盖成「已完成」。</p>
+    <table>
+      <tr><th>时间</th><th>发生了什么</th><th>库里的记录</th></tr>
+      <tr><td>06:57:04</td><td>人叫停任务</td><td><span class="pill good">已叫停 ✓</span>（状态机正门，记对）</td></tr>
+      <tr><td>06:57:06</td><td>进程死掉，收尾流程照常喊「完成」</td><td><span class="pill bad">被盖成已完成 ✗</span>（旁门，无守卫）</td></tr>
+    </table>
+    <p style="margin-top:12px">影响范围已钉死：那晚共 323 个「先叫停、后收到完成信号」的任务，<b>只有 5 个被盖掉，全部走的是 DAG 收尾这条旁门</b>（FLY-1412×2 / FLY-1413 / FLY-1414×2）；300 个走正门的全记对。这是新引入的洞，不是历史积弊。</p>
+  </div>
+
+  <div class="card">
+    <h2>核心流程（修复前 → 修复后）</h2>
+    <div class="flowline">
+      <div class="node stop"><span><b>人叫停任务</b>状态机正门写下<br>「已叫停」（终态）</span></div>
+      <div class="arrow">→</div>
+      <div class="node warn"><span><b>进程被杀死</b>DAG 收尾照常<br>喊一声「完成了」</span></div>
+      <div class="arrow">→</div>
+      <div class="node gate"><span><b>新增守卫（本次修复）</b>写入前先看一眼：<br>已是终态？→ 拦下，状态保留</span></div>
+    </div>
+    <div class="twocol">
+      <div class="panel before"><strong>修复前</strong>「完成了」直接覆盖「已叫停」——收尾流程有两条旁门（进程内收尾 + 完成上报），都不看当前状态就写。</div>
+      <div class="panel after"><strong>修复后</strong>两条旁门装上同一把锁：终态（完成 / 叫停 / 搁置 / 批准）一旦落定，谁也盖不掉。收尾该记的账（进程确实死了）照记，只是不许改结论。</div>
+    </div>
+  </div>
+
+  <div class="card purple">
+    <h2>数据与结构模型</h2>
+    <p>任务状态是一张单向地图：进行中可以走向完成、叫停、失败等；但四个<b>终点站</b>（已完成、已叫停、已搁置、已批准）没有任何出路——到站即定稿。这张地图就是唯一裁判。</p>
+    <ul>
+      <li><b>正门</b>（所有人工动作、绝大多数系统动作）：一直按地图走，从来没错过。</li>
+      <li><b>两条旁门</b>（仅 DAG 任务走）：① 进程死掉时的收尾信号；② 任务自己上报的「完成提交」。修复 = 在这两扇门内部装上与地图同源的检查——<b>不另立规则，就用同一张地图判「终点站不许再动」</b>。</li>
+      <li><b>「完成提交」被拒时的语义</b>：被叫停的任务，产出不入账，DAG 也不推进——人叫停就是不算数。上报方会收到明确的「已裁决」回执，不会反复重试。</li>
+      <li><b>存量修复</b>：那 5 行定点改回「已叫停」，带审计记录、跑多少遍都安全；故意<b>不做</b>自动全库扫描修复——如果未来再有新旁门破洞，静默自愈会把 bug 藏起来。</li>
+    </ul>
+  </div>
+
+  <div class="card orange">
+    <h2>关键取舍（否决了什么，为什么）</h2>
+    <table>
+      <tr><th>备选</th><th>为什么不选</th></tr>
+      <tr><td>把旁门改道，全部走状态机正门</td><td>正门在上层、旁门在底层存储里是一笔多表原子账，改道要么拆散原子性、要么把状态机整个搬进存储层——动静大，收益一样。取地图的<b>规则</b>，不搬它的机器。</td></tr>
+      <tr><td>更严的全量规则校验（任何不合地图的写都拒）</td><td>比事故需要的更宽,可能把「从未启动就被清理」这类边角流程卡死。证据只支持「终点站被覆盖」这一类事故,守卫就只锁终点站。</td></tr>
+      <tr><td>在数据库底层加硬性禁写触发器</td><td>仓里零先例;出错时从「可处理的返回值」变成「异常炸穿所有调用方」,连人工修数据的口子也被堵死。</td></tr>
+      <tr><td>历史数据用规则自动全库自愈</td><td>会掩盖未来的新 bug（见上）。改为定点修 5 行 + 验收时用规则查询确认归零。</td></tr>
+    </table>
+  </div>
+
+  <div class="card green">
+    <h2>修完之后的验收</h2>
+    <ul>
+      <li>注入实测：DAG 任务跑一半叫停 → 库里保持「已叫停」，收尾信号拦截记录在案。</li>
+      <li>5 个事故场景按当晚真实事件时序逐一回放 → 最终状态全部「已叫停」。</li>
+      <li>生产库体检查询归零：修复部署后，「已叫停却显示完成」的行数从 5 → 0；另有独立 QA 复核，不由实现者自报。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>诚实边界（这次不做什么）</h2>
+    <ul>
+      <li><b>另外 27 行「显示完成但进度从没走过」</b>——那是另一类陈旧数据（没有叫停记录），另行判断是否立单，本次不碰。</li>
+      <li><b>那 3 个被叫停的 DAG run 本身</b>（FLY-1412/1413/1414）——状态改对之后,它们停在「挂起」等人处置;要不要重跑由 Lead/你决定,写进 ship runbook,不自动推进。</li>
+      <li><b>「失败→完成」这类不合地图但不涉终点站的写</b>——现状保留为已知边界（证据显示从未出事）,留作观察项,防止守卫过宽引入新的卡死。</li>
+      <li>部署只需重启一次 Bridge,不动任何 Lead / Runner。</li>
+    </ul>
+  </div>
+
+  <p class="dim">依据：engineering/doc/FLY-1427-terminal-single-writer/{exploration,research,plan}.md · Codex 设计评审 R1 五项全采纳、R2 APPROVED</p>
+</main>
+</body>
+</html>
