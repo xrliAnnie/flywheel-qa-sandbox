@@ -116,6 +116,10 @@ describe("Blueprint Design phase — mockup-first (FLY-1059)", () => {
 		expect(system).toContain("codex-image");
 		expect(system).toContain("gemini-image");
 		expect(system).toContain("phase_design_complete");
+		expect(system).toContain("Founder design HTML (MANDATORY)");
+		expect(system).toContain("--publish-only");
+		expect(system).toContain("5) honest boundary");
+		expect(system).toContain("DESIGN-HTML ready:");
 		// it is NOT the generic text-design phase, and never the implement/land steps
 		expect(system).not.toContain(
 			"brainstorm → research → plan → design review",
@@ -136,6 +140,7 @@ describe("Blueprint Design phase — mockup-first (FLY-1059)", () => {
 		expect(system).toContain("DESIGN phase");
 		expect(system).toContain("brainstorm → research → plan → design review");
 		expect(system).toContain("phase_design_complete");
+		expect(system).toContain("Founder design HTML (MANDATORY)");
 		// none of the mockup-first anchors leak in
 		expect(prompt).not.toContain("mockup-first");
 		expect(system).not.toContain("mockup-first Designer workflow");

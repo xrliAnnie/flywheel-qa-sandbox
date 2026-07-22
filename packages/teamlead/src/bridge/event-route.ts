@@ -42,6 +42,10 @@ import {
 } from "./codex-instruction.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import {
+	DESIGN_HTML_EVIDENCE_ERROR,
+	validateDesignHtmlCompletion,
+} from "./design-html-admission.js";
+import {
 	hasPendingCompleteMarker,
 	isDoneButRunning,
 } from "./done-running-reconciler.js";
@@ -611,6 +615,45 @@ export function createEventRouter(
 					detail: (err as Error).message,
 				});
 				return;
+			}
+		}
+
+		if (event.event_type === "session_completed") {
+			const decision =
+				event.payload?.decision &&
+				typeof event.payload.decision === "object" &&
+				!Array.isArray(event.payload.decision)
+					? (event.payload.decision as Record<string, unknown>)
+					: undefined;
+			const route = asString(decision?.route);
+			const existingIdentifier = store.getSession(
+				event.execution_id,
+			)?.issue_identifier;
+			const authoritativeIssueIdentifier =
+				typeof existingIdentifier === "string" &&
+				/^[A-Z]+-\d+$/.test(existingIdentifier)
+					? existingIdentifier
+					: /^[A-Z]+-\d+$/.test(event.issue_id)
+						? event.issue_id
+						: undefined;
+			const designHtmlAdmission = validateDesignHtmlCompletion({
+				route,
+				payload: event.payload,
+				authoritativeIssueIdentifier,
+				gateDisabled: process.env.FLYWHEEL_DESIGN_HTML_GATE === "0",
+			});
+			if (!designHtmlAdmission.ok) {
+				res.status(409).json({
+					error: DESIGN_HTML_EVIDENCE_ERROR,
+					reason: designHtmlAdmission.reason,
+					remediation: designHtmlAdmission.remediation,
+				});
+				return;
+			}
+			if (designHtmlAdmission.disabled) {
+				console.warn(
+					"[event-route] design-HTML gate DISABLED via FLYWHEEL_DESIGN_HTML_GATE=0 — skipping founder design HTML validation",
+				);
 			}
 		}
 

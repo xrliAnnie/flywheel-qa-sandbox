@@ -174,7 +174,13 @@ beforeEach(async () => {
 	app.use(express.json());
 	app.use(
 		"/api/actions",
-		createActionRouter(store, [], undefined, undefined, makeStubDispatcher()),
+		createActionRouter(
+			store,
+			[],
+			undefined,
+			{ defaultLeadAgentId: "flywheel-eng-lead" } as never,
+			makeStubDispatcher(),
+		),
 	);
 	server = createServer(app);
 	await new Promise<void>((res) => server.listen(0, res));
@@ -435,6 +441,47 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
  * Non-phase rows (`chat_thread_role='main'`, incl. auto-QA): byte-compatible.
  */
 describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => {
+	it("rejects a design retry without a Lead before closing its preserved runner", async () => {
+		store.upsertSession({
+			execution_id: "phase-design-no-lead",
+			issue_id: "issue-no-lead",
+			project_name: "fly245-d2-route-test",
+			status: "failed",
+			chat_thread_role: "design",
+		});
+		const app = express();
+		app.use(express.json());
+		app.use(
+			"/api/actions",
+			createActionRouter(store, [], undefined, undefined, makeStubDispatcher()),
+		);
+		const noLeadServer = createServer(app);
+		await new Promise<void>((resolve) => noLeadServer.listen(0, resolve));
+		try {
+			const url = `http://127.0.0.1:${(noLeadServer.address() as AddressInfo).port}`;
+			const response = await fetch(`${url}/api/actions/retry`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ execution_id: "phase-design-no-lead" }),
+			});
+			const body = (await response.json()) as { message?: string };
+			expect(response.status).toBe(400);
+			expect(body.message).toMatch(
+				/resolved Lead.*preserved runner left intact/i,
+			);
+			expect(dispatched).toHaveLength(0);
+			expect(
+				store
+					.getEventsByExecution("phase-design-no-lead")
+					.some((event) => event.event_type.startsWith("lead_close_runner")),
+			).toBe(false);
+		} finally {
+			await new Promise<void>((resolve, reject) =>
+				noLeadServer.close((error) => (error ? reject(error) : resolve())),
+			);
+		}
+	});
+
 	it("FLY-1259: locked codex beats a disabled global design switch", async () => {
 		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "0";
 		store.upsertSession({

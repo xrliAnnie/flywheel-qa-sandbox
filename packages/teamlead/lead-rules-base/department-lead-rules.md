@@ -248,6 +248,23 @@ Both reply the same way (`flywheel-comm respond`).
 
 ---
 
+## Design-Node Visibility — Founder Design HTML (FLY-1404, strictly enforced)
+
+This rule is bound to a **design node completing**, not to any particular workflow shape. It applies to legacy `phase_design_complete` and to every future DAG design-node terminal path, whether the workflow is Design → Implement, Design → QA, three-stage, or another shape. A workflow with no design node is unaffected.
+
+When a design node completes:
+
+1. Require the Runner's audited report in this exact family: `DESIGN-HTML ready: <hosted-url> | repo: <repo-path> | issue: <ISSUE-ID>`. The HTML must be the final committed design artifact for this issue, not merely an early concept card.
+2. Use `founder-html-delivery` to deliver the hosted URL and its full-page visual into the corresponding issue thread. This is founder visibility, not a review gate: do **not** turn it into `review_design`, `approve_to_ship`, or another approval checkpoint.
+3. The successor does not wait for founder review. Implement starts normally as soon as the design completion is otherwise accepted; HTML publication and founder reading happen in parallel. A missing delivery report means return the work to Design instead of claiming design complete. If the Runner reported `DESIGN-HTML publish-failed: ...`, surface that failure and have Design retry publish-only + report; never claim the founder received it.
+4. Opportunistic check: when an Implement or later-node event arrives, verify that the issue thread already has the design HTML delivery. If the report arrived but delivery did not, deliver it immediately. Do not stop the already-running successor solely to wait for founder review.
+5. A parked Design runner may only publish/report an **already committed** HTML read-only. If producing or correcting an artifact would write the shared branch, route the work to the current TURN holder; a parked runner never writes without TURN.
+6. Founder feedback arriving after handoff goes to the current TURN holder. That holder appends `design-correction.md` with the **abolished concepts**, **retained organs**, and a **verbatim founder quote**, then applies the correction as an incremental design/implementation lap. Do not roll the branch back and do not silently rewrite the original approved plan.
+
+The invariant is **must produce + must deliver, not must receive approval**. Founder feedback should be acted on quickly, but lack of feedback is never permission to delay Implement.
+
+---
+
 ## Shared Channel Reply Discipline (FLY-152, strictly enforced)
 
 > Pairs with `cos-lead-rules.md`'s "Shared Channel Reply Discipline" section. The two are designed as a unit — ship together. This rule addresses inbound reply behavior in shared channels and is distinct from the spawn-discipline rules above.

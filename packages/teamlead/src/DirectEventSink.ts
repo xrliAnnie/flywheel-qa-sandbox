@@ -499,6 +499,22 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		summary?: string,
 	): Promise<void> {
 		const now = sqliteDatetime();
+		// FLY-1404: this in-process carrier has no field that can hold the
+		// CLI-minted, git-proven designHtmlEvidence attestation. Never fabricate a
+		// positive state here: design-node completion must arrive through the HTTP
+		// or marker carrier. The operational escape hatch is deliberately loud.
+		const route: string | undefined = result.decision?.route;
+		if (route === "phase_design_complete") {
+			if (process.env.FLYWHEEL_DESIGN_HTML_GATE !== "0") {
+				console.warn(
+					`[DirectEventSink] founder design HTML evidence unavailable for ${env.executionId}; refusing design-node completion (use the flywheel-comm HTTP/marker path)`,
+				);
+				return;
+			}
+			console.warn(
+				"[DirectEventSink] design-HTML gate DISABLED via FLYWHEEL_DESIGN_HTML_GATE=0 — skipping founder design HTML validation",
+			);
+		}
 		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
 			env.executionId,
 		);
@@ -538,7 +554,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// runner-emitted completion route, not a Decision Layer output — so we do
 		// not pollute that type; the HTTP `/events` sink already reads route as a
 		// plain string for the same reason.
-		const route: string | undefined = result.decision?.route;
 		const landingStatus = result.evidence?.landingStatus as
 			| { status?: string }
 			| undefined;

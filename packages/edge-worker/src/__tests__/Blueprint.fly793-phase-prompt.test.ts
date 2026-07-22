@@ -69,6 +69,7 @@ function makeMockAdapter(): IAdapter {
 
 async function buildPrompt(
 	ctxOverrides: Partial<BlueprintContext> = {},
+	nodeId = "FLY-793",
 ): Promise<string> {
 	const adapter = makeMockAdapter();
 	const blueprint = new Blueprint(
@@ -91,7 +92,7 @@ async function buildPrompt(
 		leadId: "product-lead",
 		...ctxOverrides,
 	};
-	await blueprint.run(makeNode(), "/tmp/fly793-blueprint-test", ctx);
+	await blueprint.run(makeNode(nodeId), "/tmp/fly793-blueprint-test", ctx);
 	const call = (adapter.execute as ReturnType<typeof vi.fn>).mock
 		.calls[0]![0] as AdapterExecutionContext;
 	return call.appendSystemPrompt ?? "";
@@ -105,6 +106,17 @@ describe("Blueprint three-stage phase prompt (FLY-793)", () => {
 		});
 		expect(p).toContain("DESIGN phase");
 		expect(p).toContain("phase_design_complete");
+		expect(p).toContain("Founder design HTML (MANDATORY)");
+		expect(p).toContain("1) one-sentence summary");
+		expect(p).toContain("2) core flow diagram");
+		expect(p).toContain("3) data / structure model");
+		expect(p).toContain("4) key tradeoffs and rejected alternatives");
+		expect(p).toContain("5) honest boundary");
+		expect(p).toContain("doc/FLY-793-<slug>/");
+		expect(p).toContain("--publish-only");
+		expect(p).toContain("--lead product-lead");
+		expect(p).toContain("DESIGN-HTML ready:");
+		expect(p).toContain("does NOT wait for founder review");
 		// design does NOT get the default implement step (step 6 controls this)
 		expect(p).not.toContain("Create a feature branch");
 		// NOTE: the shared LEAD-REPORT-BACK / approve-gate contract still appears
@@ -112,6 +124,21 @@ describe("Blueprint three-stage phase prompt (FLY-793)", () => {
 		// to the orchestration flow (approve fires after QA, not at Design) →
 		// completed in Step 7 (PhaseOrchestrator). Design's explicit "do NOT PR/ship"
 		// step overrides in the meantime, and three_stage is off by default.
+	});
+
+	it("Design phase: uses the human issue identifier when the canonical issue id is a UUID", async () => {
+		const p = await buildPrompt(
+			{
+				sessionRole: "design",
+				shareParentBranch: true,
+				issueIdentifier: "FLY-1404",
+			},
+			"71abbe4c-117d-475c-8adc-ce4d0dba9e84",
+		);
+
+		expect(p).toContain("doc/FLY-1404-<slug>/");
+		expect(p).toContain("issue: FLY-1404");
+		expect(p).not.toContain("doc/71abbe4c-117d-475c-8adc-ce4d0dba9e84-");
 	});
 
 	it("Implement phase: reads committed design, does the PR", async () => {
@@ -122,6 +149,7 @@ describe("Blueprint three-stage phase prompt (FLY-793)", () => {
 		expect(p).toContain("IMPLEMENT phase");
 		expect(p).toContain("committed design");
 		expect(p).toContain("create a GitHub PR");
+		expect(p).not.toContain("Founder design HTML (MANDATORY)");
 	});
 
 	it("QA phase: writer on the shared branch, emits qa-result, does NOT open a second PR", async () => {

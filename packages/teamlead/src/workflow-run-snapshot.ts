@@ -121,6 +121,20 @@ function builtInAgent(type: WorkflowNodeType) {
 		: undefined;
 }
 
+function assertDesignNodeCompletionCapabilities(
+	capabilities: WorkflowNodeCapabilities,
+	path: string,
+): void {
+	if (
+		capabilities.completion_route === "phase_design_complete" &&
+		capabilities.shared_branch_writer !== true
+	) {
+		throw new Error(
+			`${path}: design-node completion requires a shared branch writer for its committed founder HTML`,
+		);
+	}
+}
+
 /** Resolve the immutable role text delivered with a typed execution. */
 export function workflowNodeAgentContent(
 	node: Pick<ResolvedWorkflowNode, "type" | "agent">,
@@ -141,6 +155,10 @@ export function buildWorkflowRunSnapshotV1(input: {
 		const capabilities = {
 			...getNodeTypeRegistryEntry(node.type).capabilities,
 		};
+		assertDesignNodeCompletionCapabilities(
+			capabilities,
+			`workflow node ${node.id}`,
+		);
 		if (node.type === "gate") {
 			return { id: node.id, type: node.type, capabilities };
 		}
@@ -193,6 +211,10 @@ export function buildWorkflowRunSnapshotV2(input: {
 				`workflow node ${node.id} cannot emit QA verdicts and produce output`,
 			);
 		}
+		assertDesignNodeCompletionCapabilities(
+			capabilities,
+			`workflow node ${node.id}`,
+		);
 		if (node.type === "gate") {
 			return { id: node.id, type: node.type, capabilities };
 		}
@@ -341,6 +363,7 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 				nodeRaw.capabilities,
 				`${path}.capabilities`,
 			);
+			assertDesignNodeCompletionCapabilities(capabilities, path);
 			if (manifestNode.type === "gate") {
 				if (
 					nodeRaw.dispatch !== undefined ||

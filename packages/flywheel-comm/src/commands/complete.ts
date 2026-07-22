@@ -17,6 +17,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "../db.js";
+import {
+	type DesignHtmlEvidence,
+	findDesignHtmlPaths,
+} from "../design-html-evidence.js";
 
 // FLY-222 #1: `no_code` is the terminal route for a runner-driven no-code /
 // no-merge clean success (e.g. the scheduled learning Runner — reads, analyzes,
@@ -80,6 +84,8 @@ type Payload = {
 	 * review_question_id; verify-approval honors a response ONLY on it.
 	 */
 	reviewQuestionId?: string;
+	/** FLY-1404: minted only after the CLI proves committed issue-scoped HTML. */
+	designHtmlEvidence?: DesignHtmlEvidence;
 };
 
 export interface CompleteOpts {
@@ -195,6 +201,10 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		merged: opts.merged,
 		pr: opts.pr,
 	});
+	const designHtmlEvidence =
+		opts.route === "phase_design_complete"
+			? collectDesignHtmlEvidence({ baseRef, issueIdentifier, evidence })
+			: undefined;
 	// FLY-493: pr_handoff carries `ready_to_merge` landing evidence (the OPEN PR
 	// the founder will ship). Fail-closed: if a land-status file is present
 	// (FLYWHEEL_LAND_STATUS_PATH), its prNumber MUST match --pr — a mismatch is a
@@ -213,6 +223,7 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	};
 	if (summary) payload.summary = summary;
 	if (issueIdentifier) payload.issueIdentifier = issueIdentifier;
+	if (designHtmlEvidence) payload.designHtmlEvidence = designHtmlEvidence;
 	// FLY-191 Phase 2: only meaningful for review requests; pass through as-is
 	// (Bridge validates + fail-closes on absence for needs_review).
 	if (opts.questionId?.trim())
@@ -298,6 +309,77 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	process.exit(1);
 }
 
+function collectDesignHtmlEvidence(args: {
+	baseRef: string;
+	issueIdentifier: string | undefined;
+	evidence: Evidence;
+}): DesignHtmlEvidence | undefined {
+	if (process.env.FLYWHEEL_DESIGN_HTML_GATE === "0") {
+		console.error(
+			"[complete] design-HTML gate DISABLED via FLYWHEEL_DESIGN_HTML_GATE=0 — skipping founder design HTML validation; the Bridge process must also have FLYWHEEL_DESIGN_HTML_GATE=0 or it will reject this attestation-less completion",
+		);
+		return undefined;
+	}
+	const issueIdentifier = args.issueIdentifier;
+	if (!issueIdentifier) {
+		failDesignHtmlCompletion(
+			"the current branch name does not contain a canonical issue token (for example feat-FLY-123)",
+			undefined,
+		);
+	}
+	const headSha = args.evidence.headSha;
+	if (!headSha) {
+		failDesignHtmlCompletion(
+			"the committed HEAD SHA could not be proven",
+			issueIdentifier,
+		);
+	}
+	const range = `${args.baseRef}..${headSha}`;
+	const changed = git([
+		"diff",
+		"--name-only",
+		"--diff-filter=ACMR",
+		range,
+	]).trim();
+	const candidates = findDesignHtmlPaths(
+		changed ? changed.split("\n") : [],
+		issueIdentifier,
+	).filter((path) => gitObjectExists(headSha, path));
+	if (candidates.length === 0) {
+		failDesignHtmlCompletion(
+			`no committed .html exists under doc/${issueIdentifier}-<slug>/ in ${range}`,
+			issueIdentifier,
+		);
+	}
+	return {
+		version: 1,
+		issueIdentifier,
+		paths: candidates,
+		headSha,
+	};
+}
+
+function failDesignHtmlCompletion(
+	reason: string,
+	issueIdentifier: string | undefined,
+): never {
+	const issue = issueIdentifier ?? "<ISSUE-ID>";
+	const project = process.env.FLYWHEEL_PROJECT_NAME ?? "<project>";
+	const execId = process.env.FLYWHEEL_EXEC_ID ?? "<exec-id>";
+	const lead = process.env.FLYWHEEL_LEAD_ID ?? "<lead-id>";
+	console.error(
+		`[complete] FLY-1404 founder design HTML is required before phase_design_complete: ${reason}.\n` +
+			`Remediation: create doc/${issue}-<slug>/design.html with all five sections: ` +
+			"① one-sentence summary ② core flow diagram/before-after ③ data and structure ④ key tradeoffs and rejected alternatives ⑤ honest boundaries (done/not done). " +
+			"Commit and push the HTML, then publish without Discord delivery:\n" +
+			`  node "$FLYWHEEL_COMM_CLI" publish-report --html <absolute-html-path> --project ${project} --publish-only\n` +
+			"Report the hosted URL to the Lead (or publish-failed plus repo path):\n" +
+			`  node "$FLYWHEEL_COMM_CLI" ask --lead ${lead} --exec-id ${execId} --report \"DESIGN-HTML ready: <hosted-url> | repo: <repo-path> | issue: ${issue}\"\n` +
+			'Then re-run `node "$FLYWHEEL_COMM_CLI" complete --route phase_design_complete`. Emergency operator escape only: FLYWHEEL_DESIGN_HTML_GATE=0.',
+	);
+	process.exit(1);
+}
+
 function requireEnv(name: string): string {
 	const v = process.env[name];
 	if (!v) {
@@ -332,7 +414,15 @@ function collectEvidence(args: {
 	pr?: number;
 }): Evidence {
 	const { baseRef, merged, pr } = args;
-	const range = `${baseRef}..HEAD`;
+	// Capture HEAD exactly once, before any diff/object reads. Every evidence
+	// query below and the FLY-1404 HTML attestation use this immutable object id,
+	// so a concurrent branch update cannot mix content from one commit with the
+	// headSha of another.
+	const parsedHeadSha = git(["rev-parse", "HEAD"]).trim().toLowerCase();
+	const headSha = /^[0-9a-f]{40}$/.test(parsedHeadSha)
+		? parsedHeadSha
+		: undefined;
+	const range = `${baseRef}..${headSha ?? "HEAD"}`;
 
 	const commitCount = parseInt(
 		git(["rev-list", "--count", range]).trim() || "0",
@@ -372,8 +462,7 @@ function collectEvidence(args: {
 	// FLY-191 Phase 2: bind this completion to the exact head being submitted
 	// for review. Full sha only; on git failure leave the field absent
 	// (verify-approval fail-closes on a missing persisted sha — never guess).
-	const headSha = git(["rev-parse", "HEAD"]).trim().toLowerCase();
-	if (/^[0-9a-f]{40}$/.test(headSha)) {
+	if (headSha) {
 		evidence.headSha = headSha;
 	}
 	if (merged && pr !== undefined) {
@@ -419,6 +508,18 @@ function git(args: string[]): string {
 		});
 	} catch {
 		return "";
+	}
+}
+
+/** True only when git proves that ref:path exists. Empty stdout is success. */
+export function gitObjectExists(ref: string, path: string): boolean {
+	try {
+		execFileSync("git", ["cat-file", "-e", `${ref}:${path}`], {
+			stdio: ["ignore", "ignore", "ignore"],
+		});
+		return true;
+	} catch {
+		return false;
 	}
 }
 

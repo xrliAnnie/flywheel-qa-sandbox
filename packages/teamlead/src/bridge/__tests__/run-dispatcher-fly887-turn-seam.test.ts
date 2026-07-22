@@ -82,6 +82,7 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 			runAttempt: 2,
 			sessionRole: "design",
 			shareParentBranch: true,
+			leadId: "flywheel-eng-lead",
 			...overrides,
 		};
 	}
@@ -111,6 +112,7 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 			projectName: "proj",
 			sessionRole: "design",
 			shareParentBranch: true,
+			leadId: "flywheel-eng-lead",
 		});
 		await dispatcher.drain();
 		// The runner observed the TURN already granted to itself at launch time.
@@ -139,6 +141,7 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 			projectName: "proj",
 			sessionRole: "design",
 			shareParentBranch: true,
+			leadId: "flywheel-eng-lead",
 			generalizedExecution: {
 				engineOwned: true,
 				executionId: "engine-design",
@@ -147,7 +150,10 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 				attempt: 1,
 				snapshotDigest: "snapshot",
 				dispatch: { vendor: "codex", model: "gpt-5.6-sol" },
-				capabilities: { completion_route: "phase_design_complete" },
+				capabilities: {
+					completion_route: "phase_design_complete",
+					shared_branch_writer: true,
+				},
 				agentContent: "Design the change.",
 				idempotencyKey: "engine:run:design:1",
 			},

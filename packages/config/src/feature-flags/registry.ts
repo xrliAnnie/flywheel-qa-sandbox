@@ -735,6 +735,46 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "A 与 B（FLYWHEEL_MERGE_APPROVAL_GATE）独立开关（R2 HIGH-3）；Bridge caller 与 CLI live-.env 均在下一次调用生效,分歧时可能 split-brain；授权面保持 readonly。",
 	},
 	{
+		// FLY-1404: every design node — independent of DAG shape — must attach
+		// committed, issue-scoped founder design HTML evidence before completion.
+		// The CLI mints the attestation and every completion ingress validates it.
+		// `=0` is an operator-only emergency escape, never a product toggle.
+		name: "design_html_gate",
+		category: "governance_gate",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DESIGN_HTML_GATE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"design node 完成前必须提交 issue-scoped founder 设计 HTML 并携带 HEAD 绑定的可信证据；=0 仅作 operator 应急放行，与 DAG 是否三段式无关 (FLY-1404)",
+		readSites: [
+			envSite(
+				"packages/flywheel-comm/src/commands/complete.ts",
+				"collectDesignHtmlEvidence",
+				"cli_invocation",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/event-route.ts",
+				"POST /events completion admission",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/DirectEventSink.ts",
+				"emitCompleted",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/complete-marker-reconciler.ts",
+				"tryReconcileComplete",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "CLI 每次调用即时读取；Bridge 进程在每次 completion admission 读取 process.env，但修改共享 .env 后仍需重启 Bridge。",
+	},
+	{
 		// FLY-793: global hard kill-switch for the three-stage pipeline
 		// (Design→Implement→QA). The PRIMARY toggle is the per-project
 		// `pipeline.three_stage` config key; this env is a fleet-wide emergency OFF

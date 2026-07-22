@@ -728,6 +728,31 @@ export function resolveBridgeUrl(
 	return `http://${hostForUrl}:${port}`;
 }
 
+function founderDesignHtmlDeliveryLines(input: {
+	issueIdentifier: string;
+	projectName: string;
+	executionId: string;
+	leadId: string;
+	commCliPath: string;
+}): string[] {
+	const docFolder = `doc/${input.issueIdentifier}-<slug>/`;
+	return [
+		"## Founder design HTML (MANDATORY)",
+		"This deliverable belongs to the design-node completion contract, regardless of whether the workflow has two, three, or more stages.",
+		`Before completing the design node, create a diagram-first, founder-friendly HTML in this issue's ${docFolder} folder. Follow the project's html-report-style (Apple-light when available) and include at least:`,
+		"1) one-sentence summary;",
+		"2) core flow diagram;",
+		"3) data / structure model;",
+		"4) key tradeoffs and rejected alternatives;",
+		"5) honest boundary — what this design does and does not do.",
+		"Commit and push the final HTML with the design artifacts. A concept-direction card does not replace this final artifact.",
+		`Publish it without sending a channel message: \`node ${input.commCliPath} publish-report --html <repo-relative-html-path> --project ${input.projectName} --publish-only\`.`,
+		`Report the hosted URL to the actual Lead: \`node ${input.commCliPath} ask --lead ${input.leadId} --exec-id ${input.executionId} --report "DESIGN-HTML ready: <hosted-url> | repo: <repo-relative-html-path> | issue: ${input.issueIdentifier}"\`. If publishing fails, report \`DESIGN-HTML publish-failed: <error> | repo: <repo-relative-html-path> | issue: ${input.issueIdentifier}\` instead; do not hide the failure.`,
+		`Only after the committed HTML has been published and reported, run \`node ${input.commCliPath} complete --route phase_design_complete\`.`,
+		"This delivery does NOT wait for founder review and does not block successor implementation. If founder feedback arrives later, the current TURN holder records a design-correction.md appendix and applies the correction incrementally; never roll the branch back or let a parked runner write without TURN.",
+	];
+}
+
 /** Shell command runner for tmux window cleanup */
 export interface ShellRunner {
 	execFile(
@@ -1462,6 +1487,27 @@ export class Blueprint {
 			path.dirname(__filename),
 			"../../flywheel-comm/dist/index.js",
 		);
+		const isDesignNodeCompletion =
+			isDesignPhase ||
+			(isGeneralizedExecution &&
+				ctx.workflowCapabilities?.completion_route === "phase_design_complete");
+		if (
+			isGeneralizedExecution &&
+			isDesignNodeCompletion &&
+			ctx.workflowCapabilities?.shared_branch_writer !== true
+		) {
+			throw new Error(
+				"design-node completion requires a shared branch writer for its committed founder HTML",
+			);
+		}
+		const designHtmlLeadId = isDesignNodeCompletion
+			? ctx.leadId?.trim()
+			: undefined;
+		if (isDesignNodeCompletion && !designHtmlLeadId) {
+			throw new Error(
+				"design-node completion requires a resolved Lead for founder HTML delivery",
+			);
+		}
 		const approveGateCiPrecondition =
 			"CI PRECONDITION (HARD): Before opening any approve_to_ship gate, run one short probe: `gh pr checks <NUMBER>` (never use `--watch`). Exit 0 means every reported check passed and you may continue. Exit 8 means checks are still pending: this is NOT a CI failure; do NOT open the approve gate, keep the runner/session alive, and re-run the short probe on the next turn or wake. Any other non-zero exit, including no reported checks, is a real precondition failure: diagnose/fix CI before opening the gate.";
 
@@ -1542,7 +1588,7 @@ export class Blueprint {
 				systemPromptLines.push(
 					`Before completion, write the required JSON artifact and submit it with \`node ${commCliPath} workflow-output --payload-file <absolute-json-path>\`; only after that succeeds run \`node ${commCliPath} complete --route ${completionRoute}\`.`,
 				);
-			} else {
+			} else if (completionRoute !== "phase_design_complete") {
 				systemPromptLines.push(
 					`When the bounded work is complete, run \`node ${commCliPath} complete --route ${completionRoute}\`.`,
 				);
@@ -1557,11 +1603,11 @@ export class Blueprint {
 				"You are the DESIGN phase of a three-stage pipeline (Design → Implement → QA), all on ONE shared branch. This is a UI/design-flavored issue, so run the mockup-first Designer workflow — the founder reacts to what it LOOKS like before any code.",
 				"0. FIRST confirm the mockup TYPE with the founder — a throwaway static direction image vs a UI increment that must live on the real app — using the QUESTION GATE instructions injected in this prompt (do NOT hard-code a gate command; the injected flow gives the right blocking / non-blocking shape for this runtime). Do NOT proceed until it is answered.",
 				"1. Brief: read CLAUDE.md, the product-experience spec, and the surface you are redesigning; clarify what to design.",
-				"2. Explore 2–3 visual directions A/B/C as concept images using codex-image AND gemini-image IN PARALLEL (dual-model, so the founder compares two takes). Assemble them into ONE founder card with founder-html-delivery / publish-report — publish WITHOUT --channel and hand the URL to your Lead; a Runner never posts founder material to Discord directly.",
+				`2. Explore 2–3 visual directions A/B/C as concept images using codex-image AND gemini-image IN PARALLEL (dual-model, so the founder compares two takes). Assemble them into ONE founder card and publish it with \`node ${commCliPath} publish-report --html <concept-card-path> --project ${ctx.projectName ?? "flywheel"} --publish-only\`; report the URL to your Lead. A Runner never posts founder material to Discord directly.`,
 				"3. DESIGN GATE (loopable): via the injected QUESTION GATE, have the founder pick ONE direction. If none fit, take the feedback, produce another round, and re-open the gate — do NOT force a pick.",
 				"4. Build the chosen direction into a high-fidelity mockup with frontend-design (real look + mock data; avoid the generic AI look).",
 				"5. Commit the approved high-fidelity artifact + a one-page spec (chosen direction, real/mock data shape, key interactions, where it lands) to this branch and push — that IS the Implement contract.",
-				"6. Then complete the design phase with `flywheel-comm complete --route phase_design_complete` — ONLY after a direction is chosen. Do NOT implement code, create a PR, or ship — the Implement phase does that on this same branch.",
+				"6. After a direction is chosen and the high-fidelity artifact is committed, follow the mandatory founder design HTML delivery contract below. Do NOT implement code, create a PR, or ship — the successor Implement node does that on this same branch.",
 				"If a mapped skill (frontend-design / codex-image / gemini-image / …) is missing, do NOT stall: do the same workflow by hand, preserve the same artifacts, and report the missing skill to your Lead.",
 			];
 		} else if (isDesignPhase) {
@@ -1570,7 +1616,7 @@ export class Blueprint {
 				"1. Read the codebase and understand the context (CLAUDE.md, relevant files).",
 				"2. Do the design: brainstorm → research → plan → design review.",
 				"3. Commit the design docs (exploration/research/plan + progress.md) to this branch and push.",
-				"4. Then complete the design phase with `flywheel-comm complete --route phase_design_complete`. Do NOT implement code, create a PR, or ship — the Implement phase does that on this same branch.",
+				"4. Then follow the mandatory founder design HTML delivery contract below. Do NOT implement code, create a PR, or ship — the successor Implement node does that on this same branch.",
 			];
 		} else if (isImplementPhase) {
 			systemPromptLines = [
@@ -1642,6 +1688,23 @@ export class Blueprint {
 				"3. Create a feature branch, commit your changes.",
 				"4. Push the branch and create a GitHub PR.",
 			];
+		}
+
+		if (isDesignNodeCompletion) {
+			const designHtmlIssueIdentifier =
+				ctx.issueIdentifier?.trim() ||
+				hydrated.issueIdentifier?.trim() ||
+				hydrated.issueId;
+			systemPromptLines.push(
+				"",
+				...founderDesignHtmlDeliveryLines({
+					issueIdentifier: designHtmlIssueIdentifier,
+					projectName: ctx.projectName ?? "flywheel",
+					executionId,
+					leadId: designHtmlLeadId!,
+					commCliPath,
+				}),
+			);
 		}
 
 		if (!isQaRunner && !isDesignPhase && !isQaPhase && canLand) {

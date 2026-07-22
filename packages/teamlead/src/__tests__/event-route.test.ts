@@ -128,7 +128,103 @@ function bindGeneralizedExecution(
 			FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 		},
 	});
-	expect(admission.ok).toBe(true);
+	expect(admission).toMatchObject({ ok: true });
+}
+
+function bindGeneralizedDesignExecution(
+	store: StateStore,
+	executionId: string,
+): void {
+	const snapshot = buildWorkflowRunSnapshotV2({
+		template: { id: "test-design", revision: 1 },
+		canonicalRoot: "/tmp",
+		manifest: {
+			schema_version: 2,
+			nodes: [
+				{
+					id: "design",
+					type: "design",
+					vendor: "claude",
+					model: "claude-fable-5",
+					effort: "high",
+				},
+				{
+					id: "implement",
+					type: "implement",
+					vendor: "codex",
+					model: "gpt-5.6-sol",
+					effort: "xhigh",
+				},
+				{
+					id: "qa",
+					type: "qa",
+					vendor: "claude",
+					model: "claude-opus-4-8",
+					effort: "high",
+				},
+				{ id: "founder_gate", type: "gate" },
+			],
+			edges: [
+				{
+					id: "design_done",
+					from: "design",
+					to: "implement",
+					condition: "design_done",
+				},
+				{
+					id: "implement_done",
+					from: "implement",
+					to: "qa",
+					condition: "implement_done",
+				},
+				{
+					id: "qa_pass",
+					from: "qa",
+					to: "founder_gate",
+					condition: "qa_pass",
+				},
+			],
+			loops: [
+				{
+					id: "qa_retry",
+					from: "qa",
+					to: "implement",
+					loop_when: "qa_fail",
+					exit_when: "qa_pass",
+					max_iterations: 3,
+					on_limit: "escalate",
+				},
+			],
+			terminal_gate: {
+				node: "founder_gate",
+				predicate: "founder_approved",
+			},
+			ship_claims: ["qa_passed", "founder_approved"],
+		},
+	});
+	store.createWorkflowRun({
+		runId: `run-${executionId}`,
+		issueId: "issue-1",
+		projectName: "geoforge3d",
+		snapshotJson: JSON.stringify(snapshot),
+		claimsReadEnrolled: false,
+	});
+	const admission = store.admitGeneralizedWorkflowExecution({
+		runId: `run-${executionId}`,
+		nodeId: "design",
+		executionId,
+		attempt: 1,
+		now: "2026-07-15T00:00:00.000Z",
+		expiresAt: "2026-07-15T00:05:00.000Z",
+		absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+		env: {
+			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+			FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+		},
+	});
+	if (!admission.ok) throw new Error(JSON.stringify(admission));
 }
 
 describe("Event route", () => {
@@ -163,6 +259,7 @@ describe("Event route", () => {
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
+		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -305,6 +402,200 @@ describe("Event route", () => {
 		expect(
 			store.getWorkflowNodeCompletion("run-exec-1", "execute", 1),
 		).toBeUndefined();
+	});
+
+	it("rejects design-node completion before lifecycle state advances when HTML evidence is missing", async () => {
+		const started = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "design-started",
+					payload: {
+						issueIdentifier: "GEO-95",
+						sessionRole: "design",
+					},
+				}),
+			),
+		});
+		expect(started.status).toBe(200);
+
+		const completed = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "design-complete-missing-html",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: { decision: { route: "phase_design_complete" } },
+				}),
+			),
+		});
+		expect(completed.status).toBe(409);
+		expect(await completed.json()).toMatchObject({
+			error: "design_html_evidence_missing",
+		});
+		expect(store.getSession("exec-1")?.status).toBe("running");
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.some((event) => event.event_id === "design-complete-missing-html"),
+		).toBe(false);
+	});
+
+	it("accepts attested design HTML and leaves non-design completion topology unaffected", async () => {
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "design-started-valid",
+					payload: {
+						issueIdentifier: "GEO-95",
+						sessionRole: "design",
+					},
+				}),
+			),
+		});
+		const headSha = "0123456789abcdef0123456789abcdef01234567";
+		const completed = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "design-complete-valid-html",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "phase_design_complete" },
+						evidence: { headSha },
+						designHtmlEvidence: {
+							version: 1,
+							issueIdentifier: "GEO-95",
+							paths: ["engineering/doc/GEO-95-design/founder.html"],
+							headSha,
+						},
+					},
+				}),
+			),
+		});
+		expect(completed.status).toBe(200);
+		expect(store.getSession("exec-1")?.status).toBe("design_done");
+	});
+
+	it("rejects a design HTML attestation bound to a different head before lifecycle state advances", async () => {
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "design-started-head-mismatch",
+					payload: {
+						issueIdentifier: "GEO-95",
+						sessionRole: "design",
+					},
+				}),
+			),
+		});
+		const completed = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "design-complete-head-mismatch",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "phase_design_complete" },
+						evidence: { headSha: "a".repeat(40) },
+						designHtmlEvidence: {
+							version: 1,
+							issueIdentifier: "GEO-95",
+							paths: ["engineering/doc/GEO-95-design/founder.html"],
+							headSha: "b".repeat(40),
+						},
+					},
+				}),
+			),
+		});
+
+		expect(completed.status).toBe(409);
+		expect(await completed.json()).toMatchObject({
+			error: "design_html_evidence_missing",
+			reason: "attested head SHA does not match completion evidence",
+		});
+		expect(store.getSession("exec-1")?.status).toBe("running");
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.some((event) => event.event_id === "design-complete-head-mismatch"),
+		).toBe(false);
+	});
+
+	it("rejects enrolled DAG design completion before receipt, edge traversal, or successor effects", async () => {
+		bindGeneralizedDesignExecution(store, "exec-1");
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "dag-design-started",
+					payload: {
+						issueIdentifier: "GEO-95",
+						sessionRole: "design",
+					},
+				}),
+			),
+		});
+		const completed = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "dag-design-complete-missing-html",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: { decision: { route: "phase_design_complete" } },
+				}),
+			),
+		});
+		expect(completed.status).toBe(409);
+		expect(store.getWorkflowNodeCompletion("run-exec-1", "design", 1)).toBe(
+			undefined,
+		);
+		expect(
+			store
+				.listWorkflowRunEvents("run-exec-1")
+				.some((event) =>
+					["node_completed", "edge_traversed"].includes(event.kind),
+				),
+		).toBe(false);
+		expect(store.getSession("exec-1")?.status).toBe("running");
 	});
 
 	it("records generalized teardown without a receipt and settles the HTTP signal", async () => {

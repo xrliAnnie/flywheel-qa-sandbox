@@ -185,6 +185,37 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
+	it("FLY-1404 registers the topology-neutral design HTML governance gate", () => {
+		const flag = FEATURE_FLAGS.find((f) => f.name === "design_html_gate");
+		expect(flag).toMatchObject({
+			category: "governance_gate",
+			envVar: "FLYWHEEL_DESIGN_HTML_GATE",
+			polarity: "default_on",
+			default: true,
+			toggleable: "readonly",
+		});
+		expect(flag?.readSites).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					file: "packages/flywheel-comm/src/commands/complete.ts",
+					timing: "cli_invocation",
+				}),
+				expect.objectContaining({
+					file: "packages/teamlead/src/bridge/event-route.ts",
+					timing: "call_time",
+				}),
+				expect.objectContaining({
+					file: "packages/teamlead/src/DirectEventSink.ts",
+					timing: "call_time",
+				}),
+				expect.objectContaining({
+					file: "packages/teamlead/src/bridge/complete-marker-reconciler.ts",
+					timing: "call_time",
+				}),
+			]),
+		);
+	});
+
 	it("FLY-1314 registers gate-hygiene rollback controls", () => {
 		const issueGateSupersede = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_ISSUE_GATE_SUPERSEDE",

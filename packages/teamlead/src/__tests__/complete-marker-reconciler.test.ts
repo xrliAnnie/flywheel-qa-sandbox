@@ -28,7 +28,11 @@ import {
 
 const mockedApplyTransition = vi.mocked(applyTransition);
 
-type SessionRow = { status: string; project_name?: string };
+type SessionRow = {
+	status: string;
+	project_name?: string;
+	issue_identifier?: string;
+};
 
 /** Minimal in-memory StateStore stub matching the reconciler's usage. */
 function makeStore(initial: Record<string, SessionRow> = {}) {
@@ -291,6 +295,7 @@ describe("tryReconcileComplete", () => {
 	afterEach(() => {
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_QA_DONE_GATE;
+		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
 		rmSync(dir, { recursive: true, force: true });
 		vi.restoreAllMocks();
 	});
@@ -616,6 +621,105 @@ describe("tryReconcileComplete", () => {
 		const r = await tryReconcileComplete("exec7", baseDeps(store));
 		expect(r.kind).toBe("quarantined");
 		if (r.kind === "quarantined") expect(r.reason).toBe("invalid");
+	});
+
+	it("quarantines a design-node marker without valid HTML attestation before replay", async () => {
+		writeMarker(markerDir, "execDesign", {
+			issue_id: "GEO-95",
+			payload: {
+				decision: { route: "phase_design_complete" },
+				evidence: {
+					headSha: "0123456789abcdef0123456789abcdef01234567",
+				},
+				sessionRole: "design",
+			},
+		});
+		const store = makeStore({
+			execDesign: {
+				status: "running",
+				issue_identifier: "GEO-95",
+			},
+		});
+		const fetchFn = vi.fn();
+		const result = await tryReconcileComplete(
+			"execDesign",
+			baseDeps(store, fetchFn as never),
+		);
+
+		expect(result).toMatchObject({ kind: "quarantined", reason: "invalid" });
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(readdirSync(quarantineDir)).toContain("execDesign.json");
+	});
+
+	it("quarantines a design-node marker whose HTML attestation targets a different head", async () => {
+		writeMarker(markerDir, "execDesignHeadMismatch", {
+			issue_id: "GEO-95",
+			payload: {
+				decision: { route: "phase_design_complete" },
+				evidence: { headSha: "a".repeat(40) },
+				designHtmlEvidence: {
+					version: 1,
+					issueIdentifier: "GEO-95",
+					paths: ["engineering/doc/GEO-95-design/founder.html"],
+					headSha: "b".repeat(40),
+				},
+				sessionRole: "design",
+			},
+		});
+		const store = makeStore({
+			execDesignHeadMismatch: {
+				status: "running",
+				issue_identifier: "GEO-95",
+			},
+		});
+		const fetchFn = vi.fn();
+		const result = await tryReconcileComplete(
+			"execDesignHeadMismatch",
+			baseDeps(store, fetchFn as never),
+		);
+
+		expect(result).toMatchObject({ kind: "quarantined", reason: "invalid" });
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(readdirSync(quarantineDir)).toContain("execDesignHeadMismatch.json");
+	});
+
+	it("replays an attested design-node marker", async () => {
+		const headSha = "0123456789abcdef0123456789abcdef01234567";
+		writeMarker(markerDir, "execDesignValid", {
+			issue_id: "GEO-95",
+			payload: {
+				decision: { route: "phase_design_complete" },
+				evidence: { headSha },
+				designHtmlEvidence: {
+					version: 1,
+					issueIdentifier: "GEO-95",
+					paths: ["engineering/doc/GEO-95-design/founder.html"],
+					headSha,
+				},
+				sessionRole: "design",
+			},
+		});
+		const store = makeStore({
+			execDesignValid: {
+				status: "running",
+				issue_identifier: "GEO-95",
+			},
+		});
+		const fetchFn = vi.fn(async () => {
+			store.sessions.set("execDesignValid", {
+				status: "design_done",
+				issue_identifier: "GEO-95",
+			});
+			return new Response(JSON.stringify({ ok: true }), { status: 200 });
+		});
+		const result = await tryReconcileComplete(
+			"execDesignValid",
+			baseDeps(store, fetchFn as never),
+		);
+
+		expect(result).toEqual({ kind: "reconciled", status: "design_done" });
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+		expect(existsSync(join(markerDir, "execDesignValid.json"))).toBe(false);
 	});
 
 	it("unreplayable route (missing route, running) → quarantine before any POST", async () => {

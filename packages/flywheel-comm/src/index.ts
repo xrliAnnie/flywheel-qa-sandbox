@@ -1393,6 +1393,7 @@ async function runPublishReport(args: string[]): Promise<void> {
 		title?: string;
 		channel?: string;
 		"no-screenshot"?: boolean;
+		"publish-only"?: boolean;
 		kind?: string;
 		"expected-date"?: string;
 	};
@@ -1405,6 +1406,7 @@ async function runPublishReport(args: string[]): Promise<void> {
 				title: { type: "string" },
 				channel: { type: "string" },
 				"no-screenshot": { type: "boolean", default: false },
+				"publish-only": { type: "boolean", default: false },
 				// FLY-929 B1: delivery-receipt seam (see PublishReportArgs).
 				kind: { type: "string" },
 				"expected-date": { type: "string" },
@@ -1428,6 +1430,7 @@ async function runPublishReport(args: string[]): Promise<void> {
 		title: values.title,
 		channelId: values.channel,
 		noScreenshot: values["no-screenshot"],
+		publishOnly: values["publish-only"],
 		kind: values.kind,
 		expectedDate: values["expected-date"],
 	};

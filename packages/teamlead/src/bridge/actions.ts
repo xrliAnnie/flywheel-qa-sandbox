@@ -752,6 +752,49 @@ async function handleRetry(
 		}
 	}
 
+	// FLY-1404: admission belongs to the design-node completion semantic, not
+	// to a particular workflow topology. Resolve it BEFORE closeRunner: a
+	// missing Lead must not destroy the preserved design context and only then
+	// discover that nobody can consume the founder HTML report.
+	const phaseRole = isThreeStagePhaseRole(session.chat_thread_role)
+		? session.chat_thread_role
+		: undefined;
+	const preflightGeneralizedBinding =
+		store.getGeneralizedWorkflowNodeForExecution(executionId)?.binding;
+	let generalizedDesignNode = false;
+	if (preflightGeneralizedBinding) {
+		const run = store.getWorkflowRun(preflightGeneralizedBinding.run_id);
+		if (!run?.snapshot) {
+			return {
+				success: false,
+				message: "Retry dispatch failed: generalized workflow snapshot missing",
+			};
+		}
+		try {
+			const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+			const node = snapshot.resolved.nodes.find(
+				(candidate) => candidate.id === preflightGeneralizedBinding.node_id,
+			);
+			generalizedDesignNode =
+				node?.capabilities.completion_route === "phase_design_complete";
+		} catch (error) {
+			return {
+				success: false,
+				message: `Retry dispatch failed: ${(error as Error).message}`,
+			};
+		}
+	}
+	if (
+		(phaseRole === "design" || generalizedDesignNode) &&
+		(typeof retryLeadId !== "string" || !retryLeadId.trim())
+	) {
+		return {
+			success: false,
+			message:
+				"Retry dispatch failed: design-node completion requires a resolved Lead for founder HTML delivery; preserved runner left intact",
+		};
+	}
+
 	// FLY-116: cleanup old preserved Runner window/tab BEFORE dispatching new
 	// execution. If status is failed/blocked it defaulted to crash_preserve;
 	// retry indicates the user has decided to discard the dead window.
@@ -856,9 +899,6 @@ async function handleRetry(
 	//   - `ignoreRunnerLabelSelection: true` is threaded through the retry
 	//     dispatcher (previously hardcoded undefined there) so a refreshed
 	//     `sonnet`/vendor label cannot bypass the table either.
-	const phaseRole = isThreeStagePhaseRole(session.chat_thread_role)
-		? session.chat_thread_role
-		: undefined;
 	const designOverride =
 		phaseRole === "design" && session.design_backend
 			? { vendor: session.design_backend }
@@ -869,8 +909,7 @@ async function handleRetry(
 
 	let generalizedExecution: GeneralizedExecutionDispatch | undefined;
 	let adoptedGeneralizedExecutionId: string | undefined;
-	const predecessorBinding =
-		store.getGeneralizedWorkflowNodeForExecution(executionId)?.binding;
+	const predecessorBinding = preflightGeneralizedBinding;
 	if (predecessorBinding) {
 		const run = store.getWorkflowRun(predecessorBinding.run_id);
 		if (!run?.snapshot) {

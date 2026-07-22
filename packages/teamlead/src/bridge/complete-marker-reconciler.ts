@@ -50,6 +50,7 @@ import {
 	applyTransition,
 } from "../applyTransition.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { validateDesignHtmlCompletion } from "./design-html-admission.js";
 import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import {
 	computeAuthoritativeShipDecision,
@@ -372,6 +373,32 @@ export async function tryReconcileComplete(
 
 	const currentSession = deps.store.getSession(execId);
 	const currentStatus = currentSession?.status;
+	const currentIdentifier = currentSession?.issue_identifier;
+	const authoritativeIssueIdentifier =
+		typeof currentIdentifier === "string" &&
+		/^[A-Z]+-\d+$/.test(currentIdentifier)
+			? currentIdentifier
+			: /^[A-Z]+-\d+$/.test(body.issue_id)
+				? body.issue_id
+				: undefined;
+	const designHtmlAdmission = validateDesignHtmlCompletion({
+		route: body.payload?.decision?.route,
+		payload: body.payload,
+		authoritativeIssueIdentifier,
+		gateDisabled: process.env.FLYWHEEL_DESIGN_HTML_GATE === "0",
+	});
+	if (!designHtmlAdmission.ok) {
+		const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
+		log(
+			`[complete-reconciler] founder design HTML evidence rejected for ${execId}: ${designHtmlAdmission.reason}; quarantined: ${qp}`,
+		);
+		return { kind: "quarantined", reason: "invalid", quarantinePath: qp };
+	}
+	if (designHtmlAdmission.disabled) {
+		log(
+			"[complete-reconciler] design-HTML gate DISABLED via FLYWHEEL_DESIGN_HTML_GATE=0 — skipping founder design HTML validation",
+		);
+	}
 	const generalizedBinding =
 		deps.store.getGeneralizedWorkflowNodeForExecution(execId)?.binding;
 	const generalizedReceipt = generalizedBinding

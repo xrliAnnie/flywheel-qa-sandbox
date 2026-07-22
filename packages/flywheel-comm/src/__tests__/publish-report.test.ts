@@ -236,6 +236,25 @@ describe("publishReport", () => {
 		expect(deliverBody.screenshotPath).toBeUndefined();
 	});
 
+	it("FLY-1404: publish-only returns the hosted URL without screenshot or Discord delivery", async () => {
+		publishOk();
+		const { envelope, exitCode } = await publishReport(
+			makeArgs({ publishOnly: true }),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(envelope).toMatchObject({
+			url: "https://fw-reports-abc123.vercel.app/r/tok123/",
+			reportId: "tok123",
+			messageId: null,
+			screenshot: null,
+			delivered: false,
+			publishOnly: true,
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(proofShotCalls).toEqual([]);
+	});
+
 	// ── FLY-929 B1: receipt fields ride the deliver body ────────────────
 
 	it("kind + expectedDate are forwarded verbatim in the deliver body", async () => {

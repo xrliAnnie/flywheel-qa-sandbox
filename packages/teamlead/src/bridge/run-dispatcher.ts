@@ -430,6 +430,34 @@ export function preRegistrationVendor(
 	return runnerSpawn.vendor;
 }
 
+/** Fail closed before any dispatch side effect for a design-node completion. */
+export function assertDesignDispatchContract(
+	req: Pick<
+		StartRequest | RetryRequest,
+		"sessionRole" | "shareParentBranch" | "leadId" | "generalizedExecution"
+	>,
+): void {
+	const generalizedRoute =
+		req.generalizedExecution?.capabilities?.completion_route;
+	const isDesignNode =
+		(req.shareParentBranch === true && req.sessionRole === "design") ||
+		generalizedRoute === "phase_design_complete";
+	if (!isDesignNode) return;
+	if (
+		generalizedRoute === "phase_design_complete" &&
+		req.generalizedExecution?.capabilities.shared_branch_writer !== true
+	) {
+		throw new Error(
+			"design-node completion requires a shared branch writer for its committed founder HTML",
+		);
+	}
+	if (typeof req.leadId !== "string" || !req.leadId.trim()) {
+		throw new Error(
+			"design-node completion requires a resolved Lead for founder HTML delivery",
+		);
+	}
+}
+
 export class RetryDispatcher implements IRetryDispatcher {
 	protected inflight = new Map<
 		string,
@@ -540,6 +568,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 		if (!this.accepting) {
 			throw new Error("RetryDispatcher is shutting down");
 		}
+		assertDesignDispatchContract(req);
 
 		const role = req.sessionRole ?? "main";
 		const key = this.inflightKey(req.issueId, role);
@@ -1149,6 +1178,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		if (!this.accepting) {
 			throw new Error("RunDispatcher is shutting down");
 		}
+		assertDesignDispatchContract(req);
 
 		// FLY-123 WS-D (P4): resource-based admission — defer only under real
 		// load/memory pressure, never a count cap. Typed error → route maps to

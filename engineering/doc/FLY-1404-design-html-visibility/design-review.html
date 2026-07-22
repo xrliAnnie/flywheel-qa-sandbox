@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1404 设计说明 — 设计一做完,你就能看见它</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    max-width: 960px; margin: 0 auto; padding: 24px 16px 64px;
+    line-height: 1.65;
+  }
+  h1 { font-size: 26px; color: #1a365d; margin: 8px 0 4px; }
+  .subtitle { color: #86868b; font-size: 14px; margin-bottom: 24px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 20px 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 20px;
+    border-left: 4px solid #007aff;
+  }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.red { border-left-color: #ff3b30; }
+  .section-title { font-size: 18px; font-weight: 600; color: #1a365d; margin-bottom: 12px; }
+  .section-title .num {
+    display: inline-block; background: #1a365d; color: #fff; border-radius: 50%;
+    width: 26px; height: 26px; text-align: center; line-height: 26px;
+    font-size: 14px; margin-right: 8px;
+  }
+  .one-liner { font-size: 19px; font-weight: 500; line-height: 1.5; }
+  .flow { display: flex; flex-direction: column; gap: 6px; margin: 14px 0; }
+  .flow-row { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; }
+  .node {
+    background: #f5f5f7; border: 1px solid #d2d2d7; border-radius: 10px;
+    padding: 10px 14px; font-size: 14px; flex: 1; min-width: 130px; text-align: center;
+    align-self: center;
+  }
+  .node.hl { background: #e8f2ff; border-color: #007aff; font-weight: 600; }
+  .node.new { background: #e9f9ee; border-color: #34c759; font-weight: 600; }
+  .node.bad { background: #ffefee; border-color: #ff3b30; }
+  .arrow { align-self: center; color: #86868b; font-size: 18px; padding: 0 2px; }
+  .lane-label {
+    font-size: 12px; color: #86868b; text-transform: uppercase;
+    letter-spacing: 0.5px; margin: 10px 0 4px;
+  }
+  .note { font-size: 13px; color: #86868b; margin-top: 10px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+  th { text-align: left; color: #86868b; font-weight: 500; font-size: 13px; padding: 6px 10px; border-bottom: 1px solid #d2d2d7; }
+  td { padding: 8px 10px; border-bottom: 1px solid #f0f0f2; vertical-align: top; }
+  .badge {
+    display: inline-block; border-radius: 6px; padding: 1px 8px; font-size: 12px; font-weight: 600;
+  }
+  .badge.keep { background: #e9f9ee; color: #1d7a3a; }
+  .badge.reject { background: #ffefee; color: #c22d23; }
+  .badge.info { background: #e8f2ff; color: #0a5bc4; }
+  ul { padding-left: 20px; }
+  li { margin: 6px 0; }
+  .tick { color: #34c759; font-weight: 700; }
+  .cross { color: #ff3b30; font-weight: 700; }
+  .sample-tag {
+    background: #af52de; color: #fff; border-radius: 6px; padding: 2px 10px;
+    font-size: 12px; font-weight: 600; display: inline-block; margin-bottom: 6px;
+  }
+</style>
+</head>
+<body>
+
+<h1>设计一做完,你就能看见它</h1>
+<div class="subtitle">FLY-1404 设计说明 · 2026-07-21 · 设计已定稿(评审 5 轮通过),施工即将开始 — 这页不拦施工,看完有意见随时说</div>
+
+<div class="card">
+  <div class="section-title"><span class="num">1</span>一句话</div>
+  <div class="one-liner">以后每张走「设计 → 施工 → 验收」流水线的活,<b>设计一做完,你就会在那张 issue 的 thread 里收到一份像这样的设计说明页</b> — 不用你追问;拿不出这页,设计就交不了差(系统会真的拦住它)。</div>
+</div>
+
+<div class="card">
+  <div class="section-title"><span class="num">2</span>核心流程:现在 vs 以后</div>
+
+  <div class="lane-label">现在(FLY-1392 踩过的坑)</div>
+  <div class="flow"><div class="flow-row">
+    <div class="node">设计完成</div><div class="arrow">→</div>
+    <div class="node">直接开工施工</div><div class="arrow">→</div>
+    <div class="node bad">你看不到设计长什么样</div><div class="arrow">→</div>
+    <div class="node bad">做出来 ≠ 想象中,一层层追问才暴露,返工最贵</div>
+  </div></div>
+
+  <div class="lane-label">以后</div>
+  <div class="flow">
+    <div class="flow-row">
+      <div class="node">设计完成</div><div class="arrow">→</div>
+      <div class="node new">必须先产出设计说明页<br>(没有就交不了差)</div><div class="arrow">→</div>
+      <div class="node new">Lead 把它发进 issue thread</div><div class="arrow">→</div>
+      <div class="node hl">你随手看,有问题当场说</div>
+    </div>
+    <div class="flow-row">
+      <div class="node" style="flex:2">施工<b>照常同时开跑,不等你看完</b> — 你的反馈随到随改,以「设计修正附录」进分支(1392 当天已趟通这条路)</div>
+    </div>
+  </div>
+  <div class="note">关键:这一步<b>不拦施工</b>。它把「你第一次看见设计」从「做完之后」提前到「做完设计的那一刻」— 返工发生在最便宜的时候。</div>
+</div>
+
+<div class="card purple">
+  <div class="section-title"><span class="num">3</span>怎么立得住:三道门</div>
+  <table>
+    <tr><th>门</th><th>在哪里</th><th>拦什么</th></tr>
+    <tr>
+      <td><b>① 完成命令自查</b></td>
+      <td>设计 runner 喊「我做完了」的那条命令里</td>
+      <td>检查设计说明页<b>真的存在、真的入了库</b>(在这张 issue 自己的文档文件夹里,防止拿别的文件充数、防止删旧文件也算数);没有 → 当场打回,并告诉它缺什么、怎么补</td>
+    </tr>
+    <tr>
+      <td><b>② 总控台验章</b></td>
+      <td>系统总控台(Bridge)收「设计完成」信号时</td>
+      <td>只认第一道门通过后盖的<b>防伪章</b>(一段只有新版命令在真检查通过后才写得出的凭据)— 老版本命令、崩溃残留的旧信号、绕道进来的信号,一律拒收或隔离,设计状态不会被悄悄推进</td>
+    </tr>
+    <tr>
+      <td><b>③ Lead 投递规则</b></td>
+      <td>Lead 的基础守则里</td>
+      <td>runner 上报「设计页好了」→ Lead 必须用标准投递方式发进对应 issue thread(带截图+链接,绝不发本机路径);发现漏了 → 让还活着的设计 runner 补发,但<b>不回滚、不暂停施工</b></td>
+    </tr>
+  </table>
+  <div class="note">说明页本身有固定模板(就是你现在看的这页的五段结构),规定图优先、必须有「诚实边界」段 — 那是 1392 当天帮你抓出真问题的功臣。</div>
+</div>
+
+<div class="card amber">
+  <div class="section-title"><span class="num">4</span>关键取舍(以及被否决的做法)</div>
+  <table>
+    <tr><th>选择</th><th></th><th>为什么</th></tr>
+    <tr>
+      <td><b>不拦施工</b></td><td><span class="badge keep">选定</span></td>
+      <td>你的原话:「这不一定会拦着后续的 implement」。等你看完才开工 = 把你变成流水线瓶颈;反馈异步进来照样能改,还便宜。<span class="badge reject">否决</span> 阻塞式评审门</td>
+    </tr>
+    <tr>
+      <td><b>机器只查「有没有」,你查「对不对」</b></td><td><span class="badge keep">选定</span></td>
+      <td>机器门保证这页永远会出现在你面前;内容好坏由你一眼判断 — 空壳页糊弄不过你,暴露本身就是机制。<span class="badge reject">否决</span> 让机器评审内容质量(做不准,还拖慢)</td>
+    </tr>
+    <tr>
+      <td><b>双层把关(命令 + 总控台)</b></td><td><span class="badge keep">选定</span></td>
+      <td>评审时发现:只查第一层的话,旧信号重放、版本交错都能绕过去,「缺页就交不了差」就成了空话。<span class="badge reject">否决</span> 只信命令那一层</td>
+    </tr>
+    <tr>
+      <td><b>发 thread 的是 Lead,不是 runner</b></td><td><span class="badge keep">选定</span></td>
+      <td>沿用现行铁律:runner 从不直接给你发 Discord。评审时还揪出一个存量 bug:现有发布命令有一种用法会把报告误发到公共频道 — 这次一并修掉。</td>
+    </tr>
+    <tr>
+      <td><b>反馈进来后谁改</b></td><td><span class="badge info">按 1392 实战</span></td>
+      <td>你的反馈 → Lead 转给当前握笔的施工 runner → 写「设计修正附录」(废除什么/保留什么/引用你的原话)→ 增量评审盖住。设计阶段不重开、流水线不回滚。</td>
+    </tr>
+  </table>
+</div>
+
+<div class="card red">
+  <div class="section-title"><span class="num">5</span>诚实边界:这个设计不做什么</div>
+  <ul>
+    <li><span class="cross">✗</span> <b>不保证内容质量</b> — 机器门只验「说明页存在且入库」;一份糊弄的页子能过机器门,但会原样出现在你眼前,由你打回。</li>
+    <li><span class="cross">✗</span> <b>不覆盖非三段式的活</b> — 只有走「设计→施工→验收」流水线的 issue 受此约束;单人小活、纯文档活不在内。</li>
+    <li><span class="cross">✗</span> <b>没有机器级「已送达」回执</b> — Lead 漏看上报时,靠它下次接触这张 issue 时的自查兜底(主门在机器层,这种漏网预计很少);真发现兜不住再加。</li>
+    <li><span class="cross">✗</span> <b>留了一个运维逃生开关</b> — 极端情况下运维可手动关门(关的时候会留下明显日志),但任何自动流程都不会替你关。</li>
+    <li><span class="tick">✓</span> <b>这页本身就是第一份样品</b> — FLY-1404 自己的设计,就按这个模板交付给你。看完这页,你其实已经验收了这个模板长什么样。</li>
+  </ul>
+</div>
+
+<div class="card green">
+  <div class="section-title">怎么给反馈</div>
+  直接在这张 issue 的 thread 里说就行。施工不会等你,但你的每条反馈都会以「设计修正附录」的方式进入分支、被增量评审盖住 — 和 1392 那天一样。
+</div>
+
+</body>
+</html>

@@ -4,7 +4,7 @@
  * One command any agent can run after generating an HTML report locally:
  *
  *   flywheel-comm publish-report --html /tmp/report.html --project flywheel \
- *     [--title "Ship Review"] [--channel <id>] [--no-screenshot]
+ *     [--title "Ship Review"] [--channel <id>] [--no-screenshot] [--publish-only]
  *
  * Orchestrates three steps client-side (Bridge stays thin — it only hosts
  * and posts):
@@ -64,6 +64,8 @@ export interface PublishReportArgs {
 	title?: string;
 	channelId?: string;
 	noScreenshot?: boolean;
+	/** Publish and return the hosted URL without screenshot or Discord delivery. */
+	publishOnly?: boolean;
 	/**
 	 * FLY-929 B1: OPTIONAL delivery-receipt fields forwarded verbatim in the
 	 * /deliver body. `kind: "token_report"` + `expectedDate` (YYYY-MM-DD, the
@@ -92,6 +94,8 @@ export interface PublishReportEnvelope {
 	delivered: boolean;
 	/** Present when FLYWHEEL_REMOTE_REPORTS=0 short-circuited the run. */
 	skipped?: boolean;
+	/** Present when --publish-only intentionally stopped after hosting. */
+	publishOnly?: boolean;
 	error?: string;
 }
 
@@ -200,6 +204,20 @@ export async function publishReport(
 		reportId = body.reportId;
 	} catch (err) {
 		return fail(`publish request failed: ${(err as Error).message}`);
+	}
+
+	if (args.publishOnly) {
+		return {
+			envelope: {
+				url,
+				reportId,
+				messageId: null,
+				screenshot: null,
+				delivered: false,
+				publishOnly: true,
+			},
+			exitCode: 0,
+		};
 	}
 
 	// ── 2. screenshot (degradable) ────────────────────────────────────

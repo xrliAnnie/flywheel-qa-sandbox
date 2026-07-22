@@ -126,6 +126,62 @@ class CleanupObservingRunDispatcher extends RunDispatcher {
 }
 
 describe("RunDispatcher", () => {
+	it("fails closed before launch when a design node has no resolved Lead", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const dispatcher = new RunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+
+		await expect(
+			dispatcher.start({
+				issueId: "FLY-1404",
+				projectName: "TestProject",
+				sessionRole: "design",
+				shareParentBranch: true,
+			}),
+		).rejects.toThrow(/design-node.*resolved Lead/i);
+		expect(runtime.blueprint.run).not.toHaveBeenCalled();
+		expect(dispatcher.getInflightCount()).toBe(0);
+	});
+
+	it("fails closed before launch for an illegal generalized design capability", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const dispatcher = new RunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+
+		await expect(
+			dispatcher.start({
+				issueId: "FLY-1404",
+				projectName: "TestProject",
+				leadId: "flywheel-eng-lead",
+				generalizedExecution: {
+					engineOwned: true,
+					executionId: "design-exec",
+					runId: "design-run",
+					nodeId: "design",
+					attempt: 1,
+					snapshotDigest: "digest",
+					dispatch: {
+						vendor: "codex",
+						model: "gpt-5.6-sol",
+						effort: "high",
+					},
+					capabilities: {
+						shared_branch_writer: false,
+						completion_route: "phase_design_complete",
+					},
+					agentContent: "Design the bounded surface.",
+					idempotencyKey: "design-key",
+				},
+			}),
+		).rejects.toThrow(/design-node.*shared branch writer/i);
+		expect(runtime.blueprint.run).not.toHaveBeenCalled();
+	});
 	it("FLY-1244 admits durable QA before spawn and passes its scoped credential", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
 		const shadow = {
@@ -458,6 +514,22 @@ describe("RunDispatcher", () => {
 });
 
 describe("RetryDispatcher", () => {
+	it("fails closed before retry launch when a design node has no resolved Lead", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const dispatcher = new RetryDispatcher(new Map([[name, runtime]]), []);
+
+		await expect(
+			dispatcher.dispatch({
+				oldExecutionId: "old-design",
+				issueId: "FLY-1404",
+				projectName: "TestProject",
+				runAttempt: 2,
+				sessionRole: "design",
+				shareParentBranch: true,
+			}),
+		).rejects.toThrow(/design-node.*resolved Lead/i);
+		expect(runtime.blueprint.run).not.toHaveBeenCalled();
+	});
 	it("keeps the resolved Codex model in a retried implement-phase window", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
 		// FLY-1257 defect ③: a three-stage PHASE retry (shareParentBranch +

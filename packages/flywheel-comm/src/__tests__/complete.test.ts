@@ -20,7 +20,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 import { execFileSync } from "node:child_process";
-import { complete } from "../commands/complete.js";
+import { complete, gitObjectExists } from "../commands/complete.js";
 import { CommDB } from "../db.js";
 import { removeGateMarker, writeGateMarker } from "../gate-marker.js";
 
@@ -45,6 +45,7 @@ describe("complete command", () => {
 		delete process.env.FLYWHEEL_INGEST_TOKEN;
 		delete process.env.FLYWHEEL_GATE_MARKER_DIR;
 		delete process.env.FLYWHEEL_COMM_DB;
+		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
 
 		mockFetch = vi
 			.fn()
@@ -340,6 +341,131 @@ describe("complete command", () => {
 			complete({ route: "no_code", pr: 7, merged: false }),
 		).rejects.toThrow("process.exit(1)");
 		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1404: phase design completion fails closed without committed issue HTML", async () => {
+		await expect(
+			complete({ route: "phase_design_complete", merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("founder design HTML"),
+		);
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1404: committed issue HTML emits a head-bound attestation", async () => {
+		execFileSyncMock.mockImplementation((cmd, args) => {
+			if (cmd !== "git") throw new Error(`unexpected cmd ${cmd}`);
+			const a = (args ?? []) as string[];
+			if (a[0] === "rev-parse" && a[1] === "--abbrev-ref") {
+				return "flywheel-FLY-1404\n";
+			}
+			if (a[0] === "rev-parse" && a[1] === "HEAD") return `${"d".repeat(40)}\n`;
+			if (a[0] === "merge-base") return "base1404\n";
+			if (a[0] === "rev-list") return "1\n";
+			if (a[0] === "diff" && a.includes("--numstat")) {
+				return "10\t0\tengineering/doc/FLY-1404-design-html/design.html\n";
+			}
+			if (a[0] === "diff" && a.includes("--name-only")) {
+				return "engineering/doc/FLY-1404-design-html/design.html\n";
+			}
+			if (a[0] === "diff" && a.includes("--stat")) {
+				return "1 file changed, 10 insertions(+)\n";
+			}
+			if (a[0] === "log") return "docs: founder design HTML\n";
+			if (a[0] === "cat-file") return "";
+			return "";
+		});
+
+		await complete({ route: "phase_design_complete", merged: false });
+
+		const body = JSON.parse(mockFetch.mock.calls[0]![1].body);
+		expect(body.payload.designHtmlEvidence).toEqual({
+			version: 1,
+			issueIdentifier: "FLY-1404",
+			paths: ["engineering/doc/FLY-1404-design-html/design.html"],
+			headSha: "d".repeat(40),
+		});
+	});
+
+	it("FLY-1404: refuses to attest HTML from a HEAD that moved after evidence capture", async () => {
+		const capturedHead = "1".repeat(40);
+		const htmlPath = "engineering/doc/FLY-1404-design-html/design.html";
+		execFileSyncMock.mockImplementation((cmd, args) => {
+			if (cmd !== "git") throw new Error(`unexpected cmd ${cmd}`);
+			const a = (args ?? []) as string[];
+			if (a[0] === "rev-parse" && a[1] === "--abbrev-ref") {
+				return "flywheel-FLY-1404\n";
+			}
+			if (a[0] === "rev-parse" && a[1] === "HEAD") {
+				return `${capturedHead}\n`;
+			}
+			if (a[0] === "merge-base") return "base1404\n";
+			if (a[0] === "rev-list") return "1\n";
+			if (a[0] === "diff" && a.includes("--numstat")) return "";
+			if (a[0] === "diff" && a.includes("--stat")) return "";
+			if (a[0] === "log") return "docs: founder design HTML\n";
+			if (a[0] === "diff" && a.includes("--name-only")) {
+				if (a.includes("--diff-filter=ACMR")) {
+					// The captured commit has no HTML. A later, moving HEAD does.
+					return a.at(-1) === "base1404..HEAD" ? `${htmlPath}\n` : "";
+				}
+				return "";
+			}
+			if (a[0] === "cat-file") {
+				if (a[2] === `HEAD:${htmlPath}`) return "";
+				throw new Error("HTML does not exist at the captured head");
+			}
+			return "";
+		});
+
+		await expect(
+			complete({ route: "phase_design_complete", merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1404: a deleted HTML cannot satisfy the committed artifact gate", async () => {
+		execFileSyncMock.mockImplementation((cmd, args) => {
+			if (cmd !== "git") throw new Error(`unexpected cmd ${cmd}`);
+			const a = (args ?? []) as string[];
+			if (a[0] === "rev-parse" && a[1] === "--abbrev-ref") {
+				return "flywheel-FLY-1404\n";
+			}
+			if (a[0] === "rev-parse" && a[1] === "HEAD") return `${"d".repeat(40)}\n`;
+			if (a[0] === "merge-base") return "base1404\n";
+			if (a[0] === "diff" && a.includes("--name-only")) {
+				return a.includes("--diff-filter=ACMR")
+					? ""
+					: "engineering/doc/FLY-1404-design-html/deleted.html\n";
+			}
+			return "";
+		});
+
+		await expect(
+			complete({ route: "phase_design_complete", merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1404: operator escape skips validation loudly and emits no attestation", async () => {
+		process.env.FLYWHEEL_DESIGN_HTML_GATE = "0";
+		await complete({ route: "phase_design_complete", merged: false });
+
+		const body = JSON.parse(mockFetch.mock.calls[0]![1].body);
+		expect(body.payload.designHtmlEvidence).toBeUndefined();
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("design-HTML gate DISABLED"),
+		);
+	});
+
+	it("FLY-1404: git object existence distinguishes empty-success from failure", () => {
+		execFileSyncMock.mockReturnValueOnce("");
+		expect(gitObjectExists("HEAD", "doc/FLY-1404-x/design.html")).toBe(true);
+		execFileSyncMock.mockImplementationOnce(() => {
+			throw new Error("missing");
+		});
+		expect(gitObjectExists("HEAD", "doc/FLY-1404-x/missing.html")).toBe(false);
 	});
 
 	// FLY-493: pr_handoff terminal route (no-transport antigravity build+PR).

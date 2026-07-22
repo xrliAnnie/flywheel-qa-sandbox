@@ -750,6 +750,62 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 	});
 });
 
+describe("DirectEventSink — FLY-1404 design HTML admission", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
+	});
+
+	afterEach(() => {
+		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
+		store.close();
+	});
+
+	it("refuses design-node completion because this sink has no legal attestation carrier", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		await sink.emitStarted(
+			makeEnvelope({ sessionRole: "design", chatThreadRole: "design" }),
+		);
+		await sink.emitCompleted(makeEnvelope(), {
+			decision: { route: "phase_design_complete" },
+			evidence: { headSha: "a".repeat(40) },
+		} as unknown as BlueprintResult);
+
+		expect(store.getSession("exec-1")?.status).toBe("running");
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.some((event) => event.event_type === "session_completed"),
+		).toBe(false);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringMatching(/founder design HTML.*refus/i),
+		);
+		warn.mockRestore();
+	});
+
+	it("honors the explicit operational escape hatch loudly", async () => {
+		process.env.FLYWHEEL_DESIGN_HTML_GATE = "0";
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		await sink.emitStarted(
+			makeEnvelope({ sessionRole: "design", chatThreadRole: "design" }),
+		);
+		await sink.emitCompleted(makeEnvelope(), {
+			decision: { route: "phase_design_complete" },
+			evidence: { headSha: "a".repeat(40) },
+		} as unknown as BlueprintResult);
+
+		expect(store.getSession("exec-1")?.status).toBe("design_done");
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringMatching(/gate DISABLED.*FLYWHEEL_DESIGN_HTML_GATE=0/),
+		);
+		warn.mockRestore();
+	});
+});
+
 describe("DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH-1)", () => {
 	let store: StateStore;
 	const SHA = "a".repeat(40);

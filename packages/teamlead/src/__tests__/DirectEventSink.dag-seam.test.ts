@@ -228,8 +228,9 @@ describe("FLY-1385 enrolled teardown seam", () => {
 		expect(displayEnqueue).not.toHaveBeenCalled();
 	});
 
-	it("persists a completed signal without invoking legacy completion hooks", async () => {
+	it("refuses an evidence-less design completion without invoking legacy completion hooks", async () => {
 		const { store, sink } = await harness();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const seed = loadBundledWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
@@ -305,19 +306,23 @@ describe("FLY-1385 enrolled teardown seam", () => {
 		);
 
 		expect(store.getSession("completed-teardown-exec")).toMatchObject({
-			status: "completed",
+			status: "running",
 			workflow_node_id: "design",
 		});
 		expect(
 			store
 				.getEventsByExecution("completed-teardown-exec")
 				.filter((event) => event.event_type === "session_completed"),
-		).toHaveLength(1);
+		).toHaveLength(0);
 		expect(
 			store
 				.listWorkflowRunEvents("run-completed-teardown")
 				.filter((event) => event.kind === "generalized_teardown_recorded"),
-		).toHaveLength(1);
+		).toHaveLength(0);
 		expect(displayEnqueue).not.toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringMatching(/founder design HTML.*refus/i),
+		);
+		warn.mockRestore();
 	});
 });

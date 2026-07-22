@@ -113,9 +113,11 @@ describe("Blueprint generalized workflow capability contract", () => {
 			},
 			workflowCapabilities: {
 				...generalized.workflowCapabilities,
+				shared_branch_writer: true,
 				produces_output: false,
 				completion_route: "phase_design_complete",
 			},
+			leadId: "flywheel-eng-lead",
 			workflowOutputCredential: undefined,
 		});
 		const designCall = (
@@ -124,6 +126,11 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(designCall.appendSystemPrompt).toContain(
 			"complete --route phase_design_complete",
 		);
+		expect(designCall.appendSystemPrompt).toContain(
+			"Founder design HTML (MANDATORY)",
+		);
+		expect(designCall.appendSystemPrompt).toContain("--publish-only");
+		expect(designCall.appendSystemPrompt).toContain("--lead flywheel-eng-lead");
 
 		const reviewHarness = harness();
 		await reviewHarness.blueprint.run(node, "/tmp/fly1307-review", {
@@ -147,6 +154,33 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(reviewCall.appendSystemPrompt).toContain("--status pass|fail");
 		expect(reviewCall.appendSystemPrompt).toContain("Do not run `complete`");
 		expect(reviewCall.workflowSubmissionCredential).toBe("review-ticket");
+	});
+
+	it("binds the HTML gate to design-node completion, independent of workflow topology", async () => {
+		const illegalDesign = harness();
+		await expect(
+			illegalDesign.blueprint.run(node, "/tmp/fly1404-two-node-design", {
+				...generalized,
+				leadId: "flywheel-eng-lead",
+				generalizedExecutionContext: {
+					...generalized.generalizedExecutionContext!,
+					nodeId: "design-in-two-node-workflow",
+				},
+				workflowCapabilities: {
+					...generalized.workflowCapabilities,
+					produces_output: false,
+					completion_route: "phase_design_complete",
+				},
+			}),
+		).rejects.toThrow(/design-node.*shared branch writer/i);
+
+		const noDesign = harness();
+		await noDesign.blueprint.run(node, "/tmp/fly1404-no-design", generalized);
+		const noDesignCall = (noDesign.adapter.execute as ReturnType<typeof vi.fn>)
+			.mock.calls[0]![0] as AdapterExecutionContext;
+		expect(noDesignCall.appendSystemPrompt).not.toContain(
+			"Founder design HTML (MANDATORY)",
+		);
 	});
 
 	it("fails closed when pinned generalized inputs are incomplete or unsupported", async () => {

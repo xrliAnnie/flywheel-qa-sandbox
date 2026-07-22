@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NODE_TYPE_REGISTRY } from "flywheel-config";
+import { canonicalSubmissionDigest, NODE_TYPE_REGISTRY } from "flywheel-config";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	buildWorkflowRunSnapshotV1,
@@ -314,5 +314,87 @@ describe("typed generalized workflow snapshot", () => {
 				canonicalRoot: root,
 			}),
 		).toThrow(/agent.*non-empty|non-empty.*agent/i);
+	});
+
+	it("rejects design-node completion without a shared branch writer during build and parse", () => {
+		const manifest = {
+			schema_version: 1 as const,
+			nodes: [
+				{
+					id: "design",
+					type: "design" as const,
+					vendor: "claude" as const,
+					model: "claude-fable-5",
+					handoff_pointer: { worktree: true, design_doc: true },
+				},
+				{
+					id: "qa",
+					type: "qa" as const,
+					vendor: "claude" as const,
+					model: "claude-opus-4-8",
+					handoff_pointer: { worktree: true, design_doc: true },
+				},
+				{ id: "founder_gate", type: "gate" as const },
+			],
+			edges: [
+				{
+					id: "design_done",
+					from: "design",
+					to: "qa",
+					condition: "design_done" as const,
+				},
+				{
+					id: "qa_pass",
+					from: "qa",
+					to: "founder_gate",
+					condition: "qa_pass" as const,
+				},
+			],
+			loops: [
+				{
+					id: "qa_retry",
+					from: "qa",
+					to: "design",
+					loop_when: "qa_fail" as const,
+					exit_when: "qa_pass" as const,
+					max_iterations: 3,
+					on_limit: "escalate" as const,
+				},
+			],
+			terminal_gate: {
+				node: "founder_gate",
+				predicate: "founder_approved" as const,
+			},
+			ship_claims: ["qa_passed" as const, "founder_approved" as const],
+		};
+
+		const designCapabilities = NODE_TYPE_REGISTRY.design.capabilities as {
+			shared_branch_writer: boolean;
+		};
+		const original = designCapabilities.shared_branch_writer;
+		try {
+			designCapabilities.shared_branch_writer = false;
+			expect(() =>
+				buildWorkflowRunSnapshotV1({
+					template: { id: "tpl_two_stage", revision: 1 },
+					manifest,
+				}),
+			).toThrow(/design-node.*shared branch writer/i);
+		} finally {
+			designCapabilities.shared_branch_writer = original;
+		}
+
+		const valid = buildWorkflowRunSnapshotV1({
+			template: { id: "tpl_two_stage", revision: 1 },
+			manifest,
+		});
+		const corrupt = structuredClone(valid);
+		const design = corrupt.resolved.nodes.find((node) => node.id === "design")!;
+		design.capabilities.shared_branch_writer = false;
+		const { snapshot_digest: _oldDigest, ...body } = corrupt;
+		corrupt.snapshot_digest = canonicalSubmissionDigest(body);
+		expect(() => parseWorkflowRunSnapshot(JSON.stringify(corrupt))).toThrow(
+			/design-node.*shared branch writer/i,
+		);
 	});
 });
