@@ -339,6 +339,95 @@ describe("Event route", () => {
 		).toBe(false);
 	});
 
+	it("rejects engine-owned qa_result on /events before persisting it", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run("UPDATE workflow_run SET engine_owned = 1 WHERE run_id = ?", [
+			"run-exec-1",
+		]);
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "misrouted-engine-qa-result",
+					event_type: "qa_result",
+					payload: {
+						status: "pass",
+						targetExecutionId: "impl-1",
+						qaExecutionId: "exec-1",
+					},
+				}),
+			),
+		});
+
+		expect(res.status).toBe(409);
+		expect(await res.json()).toMatchObject({
+			ok: false,
+			reason: "workflow_submission_required",
+		});
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.some((event) => event.event_id === "misrouted-engine-qa-result"),
+		).toBe(false);
+	});
+
+	it("preserves shadow qa_result delivery on /events", async () => {
+		store.createWorkflowRun({
+			runId: "shadow-run",
+			issueId: "issue-1",
+			projectName: "geoforge3d",
+			claimsReadEnrolled: true,
+		});
+		const admission = store.admitWorkflowExecution({
+			runId: "shadow-run",
+			nodeId: "qa",
+			executionId: "shadow-qa",
+			attempt: 2,
+			family: "qa_verdict",
+			now: "2026-07-15T00:00:00.000Z",
+			expiresAt: "2026-07-15T00:05:00.000Z",
+			absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+		});
+		expect(admission).toMatchObject({ ok: true });
+
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "shadow-round-two-qa-result",
+					execution_id: "shadow-qa",
+					event_type: "qa_result",
+					payload: {
+						status: "pass",
+						targetExecutionId: "impl-1",
+						qaExecutionId: "shadow-qa",
+					},
+				}),
+			),
+		});
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({ ok: true });
+		expect(
+			store
+				.getEventsByExecution("shadow-qa")
+				.some((event) => event.event_id === "shadow-round-two-qa-result"),
+		).toBe(true);
+	});
+
 	it("commits explicit generalized completion before audit and suppresses legacy issue completion", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		const res = await fetch(`${baseUrl}/events`, {

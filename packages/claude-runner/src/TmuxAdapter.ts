@@ -450,6 +450,9 @@ export class TmuxAdapter implements IAdapter {
 				`FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL=${ctx.workflowSubmissionCredential}`,
 			);
 		}
+		if (ctx.workflowSubmissionExpected) {
+			envArgs.push("-e", "FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED=1");
+		}
 		if (ctx.workflowOutputCredential) {
 			envArgs.push(
 				"-e",

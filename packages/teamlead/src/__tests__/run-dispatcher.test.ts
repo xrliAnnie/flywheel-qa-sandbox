@@ -182,6 +182,50 @@ describe("RunDispatcher", () => {
 		).rejects.toThrow(/design-node.*shared branch writer/i);
 		expect(runtime.blueprint.run).not.toHaveBeenCalled();
 	});
+
+	it("marks a fresh credential-backed generalized execution as submission-expected", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const dispatcher = new RunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+
+		await dispatcher.start({
+			issueId: "FLY-1425",
+			projectName: "TestProject",
+			leadId: "flywheel-eng-lead",
+			generalizedExecution: {
+				engineOwned: true,
+				executionId: "qa-engine-exec",
+				runId: "run-engine",
+				nodeId: "qa",
+				attempt: 1,
+				snapshotDigest: "digest",
+				dispatch: {
+					vendor: "codex",
+					model: "gpt-5.6-sol",
+					effort: "high",
+				},
+				capabilities: {
+					emits_decisions: true,
+					completion_route: "no_code",
+				},
+				agentContent: "Verify and submit the QA decision.",
+				submissionCredential: "decision-ticket",
+				idempotencyKey: "qa-engine-key",
+			},
+		});
+		await dispatcher.drain();
+
+		const run = (
+			runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }
+		).run;
+		expect(run.mock.calls[0]?.[2]).toMatchObject({
+			workflowSubmissionCredential: "decision-ticket",
+			workflowSubmissionExpected: true,
+		});
+	});
 	it("FLY-1244 admits durable QA before spawn and passes its scoped credential", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
 		const shadow = {
@@ -225,6 +269,7 @@ describe("RunDispatcher", () => {
 		expect(run.mock.calls[0]?.[2]).toMatchObject({
 			workflowSubmissionCredential: "qa-credential",
 		});
+		expect(run.mock.calls[0]?.[2].workflowSubmissionExpected).toBeUndefined();
 	});
 
 	it("FLY-1244 fails closed before Blueprint when durable QA admission fails", async () => {

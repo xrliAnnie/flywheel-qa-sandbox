@@ -555,6 +555,8 @@ export interface BlueprintContext {
 	qaContext?: QaContext;
 	/** FLY-1244: Bridge-minted per-execution verdict submission credential. */
 	workflowSubmissionCredential?: string;
+	/** FLY-1425: engine-owned verdict lane; missing credential must fail loud. */
+	workflowSubmissionExpected?: boolean;
 	/** FLY-1281: trusted generalized workflow context, never sourced from HTTP. */
 	generalizedExecutionContext?: {
 		runId: string;
@@ -1586,6 +1588,7 @@ export class Blueprint {
 			if (ctx.workflowSubmissionCredential) {
 				systemPromptLines.push(
 					`Your terminal action is one structured verdict: run \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass|fail --summary "<evidence and verdict>"\`. Do not run \`complete\`; the accepted verdict is this node attempt's terminal fact.`,
+					"Preserve FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL in the qa-result process exactly as injected: never use env -u and never reopen a shell that drops the runner environment. If the server reports replay_payload_mismatch, stop retrying and report both possible verdicts to your Lead; stripping the credential is forbidden.",
 				);
 			} else if (ctx.workflowCapabilities.produces_output === true) {
 				systemPromptLines.push(
@@ -2588,6 +2591,7 @@ export class Blueprint {
 				bridgeUrl: resolveBridgeUrl(),
 				bridgeIngestToken: process.env.TEAMLEAD_INGEST_TOKEN,
 				workflowSubmissionCredential: ctx.workflowSubmissionCredential,
+				workflowSubmissionExpected: ctx.workflowSubmissionExpected,
 				workflowOutputCredential: ctx.workflowOutputCredential,
 				// FLY-191 Phase 2: pin the Runner's verify-approval to THIS
 				// Bridge's StateStore (mirrors the FLY-137 bridgeUrl pattern).

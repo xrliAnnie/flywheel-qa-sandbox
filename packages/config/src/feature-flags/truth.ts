@@ -140,6 +140,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_INGEST_TOKEN: "secret: ingest token",
 	FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL:
 		"secret: short-lived per-execution workflow submission credential",
+	FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED:
+		"plumbing: engine-owned workflow submission credential expectation sentinel (FLY-1425)",
 	FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL:
 		"secret: one-shot generalized workflow output credential",
 	FLYWHEEL_ALERT_REPAIR_BOT_TOKEN_ENV:

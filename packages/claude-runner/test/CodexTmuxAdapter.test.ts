@@ -657,7 +657,12 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 
 	it("the daemon env carries the FLYWHEEL_* protocol vars + codex vendor", async () => {
 		await makeAdapter().execute(
-			ctx({ bridgeUrl: "http://b", progressPath: "/p" }),
+			ctx({
+				bridgeUrl: "http://b",
+				progressPath: "/p",
+				workflowSubmissionCredential: "decision-ticket",
+				workflowSubmissionExpected: true,
+			}),
 		);
 		const env = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
 		expect(env.FLYWHEEL_EXEC_ID).toBe(execId);
@@ -668,6 +673,14 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(env.FLYWHEEL_COMM_DB).toBe(dbPath);
 		expect(env.FLYWHEEL_BRIDGE_URL).toBe("http://b");
 		expect(env.FLYWHEEL_PROGRESS_PATH).toBe("/p");
+		expect(env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL).toBe("decision-ticket");
+		expect(env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toBe("1");
+	});
+
+	it("omits the workflow submission expectation sentinel outside the engine lane", async () => {
+		await makeAdapter().execute(ctx());
+		const env = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
+		expect(env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toBeUndefined();
 	});
 
 	it("FLY-1236: delivers appendSystemPrompt + prompt via the KICK turn (not the /goal objective)", async () => {

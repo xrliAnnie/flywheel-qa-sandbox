@@ -18,6 +18,12 @@ describe("FLY-1393 flag truth", () => {
 		).toMatchObject({ retiring: "FLY-1393" });
 	});
 
+	it("registers the FLY-1425 submission sentinel as non-flag plumbing", () => {
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toMatch(
+			/plumbing/i,
+		);
+	});
+
 	it("fails tombstones and unknown variables, but permits retiring flags in env", () => {
 		const tombstone = validateFlagTruthEnvironment([
 			"FLYWHEEL_DETECTION_GAP_SCAN",

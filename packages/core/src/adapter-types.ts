@@ -296,6 +296,8 @@ export interface AdapterExecutionContext {
 	 * fleet-wide ingest bearer, a leak is scoped to one execution + TTL.
 	 */
 	workflowSubmissionCredential?: string;
+	/** FLY-1425: engine-owned runners must never fall back to legacy /events. */
+	workflowSubmissionExpected?: boolean;
 	/** FLY-1281: one-shot credential for a generalized generic node output. */
 	workflowOutputCredential?: string;
 	/**

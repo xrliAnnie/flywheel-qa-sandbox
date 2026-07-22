@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1425 设计:QA 结果假成功修复 + 引擎层看门狗</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.65; padding:24px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:24px; }
+  .sub code { font-family:'SF Mono', monospace; font-size:12px; background:#e8e8ed; padding:1px 6px; border-radius:4px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin-bottom:18px; }
+  .card.red { border-left:4px solid #ff3b30; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.purple { border-left:4px solid #af52de; }
+  .card.gray { border-left:4px solid #86868b; }
+  h2 { font-size:18px; color:#1a365d; margin-bottom:12px; }
+  h3 { font-size:15px; color:#1d1d1f; margin:14px 0 8px; }
+  p { margin-bottom:10px; font-size:14.5px; }
+  .lede { font-size:16px; font-weight:600; }
+  .quote { background:#f5f5f7; border-left:3px solid #86868b; padding:10px 14px; border-radius:6px; font-size:14px; color:#515154; margin:10px 0; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:10px 0; }
+  th { text-align:left; color:#86868b; font-weight:600; padding:8px 10px; border-bottom:2px solid #e8e8ed; }
+  td { padding:8px 10px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  .ok { color:#34c759; font-weight:600; }
+  .bad { color:#ff3b30; font-weight:600; }
+  .new { color:#007aff; font-weight:700; }
+  .badge { display:inline-block; font-size:11px; font-weight:700; padding:2px 8px; border-radius:10px; margin-right:6px; vertical-align:middle; }
+  .badge.fix { background:#e8f2ff; color:#007aff; }
+  .badge.done { background:#e6f9ec; color:#34c759; }
+  .badge.warn { background:#fff3e0; color:#ff9500; }
+  .badge.no { background:#ffe9e7; color:#ff3b30; }
+  /* flow diagram */
+  .flow { display:flex; flex-direction:column; gap:0; margin:14px 0; }
+  .lane { display:flex; align-items:stretch; gap:10px; flex-wrap:wrap; }
+  .node { background:#fff; border:1.5px solid #d2d2d7; border-radius:10px; padding:10px 14px; font-size:13px; flex:1; min-width:150px; }
+  .node b { display:block; font-size:13.5px; margin-bottom:2px; }
+  .node.src { border-color:#1a365d; background:#f7fafd; }
+  .node.good { border-color:#34c759; background:#f2fbf5; }
+  .node.evil { border-color:#ff3b30; background:#fff5f4; }
+  .node.newpart { border-color:#007aff; background:#f0f7ff; box-shadow:0 0 0 3px rgba(0,122,255,0.10); }
+  .arrow { text-align:center; color:#86868b; font-size:16px; padding:2px 0; }
+  .arrowlabel { font-size:12px; color:#86868b; }
+  .cols { display:flex; gap:14px; flex-wrap:wrap; }
+  .cols > div { flex:1; min-width:260px; }
+  ul { margin:6px 0 10px 20px; font-size:14px; }
+  li { margin-bottom:5px; }
+  .mono { font-family:'SF Mono', monospace; font-size:12px; background:#f5f5f7; padding:1px 5px; border-radius:4px; }
+  .footer { color:#86868b; font-size:12px; text-align:center; margin-top:24px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-1425:QA 结果「假成功」修复 + 引擎层看门狗</h1>
+<div class="sub">设计报告 · 2026-07-22 · issue <code>FLY-1425</code> · 设计已过 Codex 评审(4 轮,APPROVED)</div>
+
+<div class="card blue">
+  <p class="lede">一句话:QA 干完活却把结果投进了一个「收了但不算数」的信箱,系统还回了句「送达」——这次修复让投错信箱当场报错,让「送达」只在真送达时才说,并加一只专盯「QA 说完了、引擎却没听见」的看门狗。</p>
+</div>
+
+<div class="card red">
+  <h2>那晚发生了什么(病根)</h2>
+  <div class="quote">Annie:「Runner 根本没有告诉引擎 QA 已经跑完,导致后面所有的这一套都不 work。最根本的原因是:为什么 Runner 没有告诉引擎?」</div>
+  <div class="flow">
+    <div class="lane">
+      <div class="node src"><b>QA Runner 干完活</b>手里有一张「一次性凭据」,应该拿它去正门提交结论</div>
+    </div>
+    <div class="arrow">↓ <span class="arrowlabel">它套用了一个治别的病的偏方,把凭据从口袋里扔了</span></div>
+    <div class="lane">
+      <div class="node good"><b>正门(decision)</b>验票 → 记账 → 推进流程 → 该通知的都通知<br><span class="ok">✓ 走这里一切正常</span></div>
+      <div class="node evil"><b>侧门(events,老通道)</b>没票也收,回一句 200,<b>但流程一步不动</b><br><span class="bad">✗ 实际走了这里</span></div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="lane">
+      <div class="node evil"><b>两个门都打印「delivered(已送达)」</b>QA 卡住 1.5 小时+,零报警;ship 审批从未出现。带凭据重跑,立刻恢复。</div>
+    </div>
+  </div>
+  <h3>「看门狗不是已经加了吗?」——诚实回答</h3>
+  <p>已有的看门狗都盯在<b>终端/进程层</b>:屏幕卡住会报、进程死了会报。但「QA <b>自己觉得干完了</b>、体面收工,而引擎的账本上这一格还空着」是<b>账本层</b>的失配——今天没有任何一只狗盯这个组合。这单补的就是它。</p>
+</div>
+
+<div class="card green">
+  <h2>修法(三件事 + 一句话提示词)</h2>
+  <div class="flow">
+    <div class="lane">
+      <div class="node newpart"><b>修 1 · 投错门当场翻脸(双闸)</b>发凭据时同时塞一张「你该有票」的提示条;没票还想投 → 本地当场红错退出。就算提示条也被扔了,<b>侧门自己会认出</b>这是引擎管的活,直接拒收(409),事件不落库。权威在服务端,怎么剥环境变量都绕不过。</div>
+      <div class="node newpart"><b>修 2 · 只说真话</b>「delivered」只在凭据被真消费、拿到回执编号后才打印;走老通道会明说「只是存了事件,不推进流程」。失败会打印服务端的具体原因,可判死刑的错误不再盲目重试。</div>
+    </div>
+    <div class="lane">
+      <div class="node newpart"><b>修 3 · 引擎层看门狗(本单主角)</b>每分钟扫一眼账本:<b>QA 格子还空着 + 凭据没被消费 + runner 已宣告收工</b> → 10 分钟后报 owning Lead;哪怕收工信号缺失,<b>凭据过期(1小时)兜底必报</b>。一个事故只报一次,不刷屏。只报警、不自动重派——人做决定。</div>
+      <div class="node"><b>修 4 · 提示词补一句</b>明确告诉 QA runner:凭据必须原样带着;「已被更早提交消费」的 409 不是失败,别再发明偏方。</div>
+    </div>
+  </div>
+</div>
+
+<div class="card purple">
+  <h2>结构:看门狗看什么账、怎么保证不吵</h2>
+  <div class="cols">
+    <div>
+      <h3>三本账对齐才算正常</h3>
+      <table>
+        <tr><th>账本</th><th>正常</th><th>事故形态</th></tr>
+        <tr><td>流程格子(QA 节点)</td><td>完成</td><td class="bad">一直「进行中」</td></tr>
+        <tr><td>一次性凭据</td><td>已消费</td><td class="bad">从未消费</td></tr>
+        <tr><td>runner 状态</td><td>收工</td><td class="bad">已收工/挂起</td></tr>
+      </table>
+      <p style="font-size:13.5px;">三者出现「格子空 + 票没用 + 人走了」的组合,且持续超过窗口 → 报警。</p>
+    </div>
+    <div>
+      <h3>不吵的三道保险</h3>
+      <ul>
+        <li><b>一事一报</b>:每个事故有唯一编号,报过即静音(数据库主键级保证);</li>
+        <li><b>不误伤</b>:comm 数据读不出来时宁可先不报(绝不把「读不到」翻译成「他收工了」);进程死了的场景让给已有的重试机制,不抢活;</li>
+        <li><b>可关</b>:一个正式开关可整体关闭看门狗应急(投错门的报错<b>刻意不给开关</b>——静默回退本身就是这次的 bug)。</li>
+      </ul>
+    </div>
+  </div>
+  <h3>与已有看门狗的分工(互补,不重复)</h3>
+  <table>
+    <tr><th>失效层</th><th>谁负责</th><th>状态</th></tr>
+    <tr><td>屏幕/终端卡死不动</td><td>session 层看门狗</td><td><span class="badge done">已有</span></td></tr>
+    <tr><td>进程死了、活没交</td><td>dead-exec 巡检(自动重试)</td><td><span class="badge done">已有</span></td></tr>
+    <tr><td><b>QA 说干完了,引擎账本没收到</b></td><td><b>本单看门狗</b></td><td><span class="badge fix">新增</span></td></tr>
+  </table>
+</div>
+
+<div class="card amber">
+  <h2>关键取舍(以及为什么)</h2>
+  <table>
+    <tr><th>决定</th><th>为什么</th></tr>
+    <tr><td><b>报警不自动修</b></td><td>runner 还挂着时自动重派 = 同一个活两个人干(违反「一格一人」纪律);系统替 runner 伪造提交 = 绕过凭据授权链。报给 Lead,人来裁。</td></tr>
+    <tr><td><b>侧门只对「引擎管的活」拒收</b></td><td>评审揪出关键事实:老三段式流程的 QA <b>第二轮</b>结论今天合法地走侧门(它的凭据只发一次、第一轮就用掉了)。一刀切封门会卡死合法复测。所以闸只认引擎车道;老车道的凭据多轮寿命是既有欠账,单开 issue 修(合并前建单)。</td></tr>
+    <tr><td><b>双保险检测(收工信号 + 凭据过期)</b></td><td>收工信号快(10 分钟)但可能缺失;凭据 1 小时过期是铁底,任何形态都兜得住——那晚的 1.5 小时卡死必中。</td></tr>
+    <tr><td><b>复用现有报警管道、零新定时器</b></td><td>挂在引擎已有的巡检循环里,报警走已有的外发队列直达 owning Lead;不加新表、不加新线程。</td></tr>
+    <tr><td class="bad">否掉:只做客户端检查</td><td>环境变量能被剥一次就能被剥两次;权威必须在服务端(它有账本真相)。</td></tr>
+    <tr><td class="bad">否掉:看门狗自动收养投错门的旧结论</td><td>修复落地后不会再投错;历史遗留由 Lead 拿着报警里的证据人工处置,不开自动伪造入口。</td></tr>
+  </table>
+</div>
+
+<div class="card gray">
+  <h2>诚实边界</h2>
+  <div class="cols">
+    <div>
+      <h3><span class="badge done">这个设计做到</span></h3>
+      <ul>
+        <li>引擎车道投错门:当场红错,事件不落库(验收①);</li>
+        <li>「delivered」不再说谎;</li>
+        <li>「QA 干完没上报」10 分钟~1 小时内必有人被叫到(验收②);</li>
+        <li>一个事故只报一次,Bridge 重启不丢检测(时间锚全部落盘);</li>
+        <li>老流程、无凭据的旧车道行为逐字不变。</li>
+      </ul>
+    </div>
+    <div>
+      <h3><span class="badge no">刻意不做</span></h3>
+      <ul>
+        <li>不自动重派、不自动代交结论(人在环);</li>
+        <li>不修老三段式凭据的多轮寿命(合并前建 follow-up 单);</li>
+        <li>review 类节点的同款看门狗(机制相同,后续复用);</li>
+        <li>不追溯收养历史上投错门的旧结论。</li>
+      </ul>
+    </div>
+  </div>
+  <p style="margin-top:8px;">验收:真机隔离房 E2E——①剥凭据跑提交 → 非零退出+明确报错+事件零落库+凭据仍未消费;②注入「干完没上报」→ 窗口过期后 owning Lead 收到一条(且只有一条)可行动的报警,Bridge 重启跨窗口场景同验。</p>
+</div>
+
+<div class="footer">FLY-1425 · 设计文档:engineering/doc/FLY-1425-qa-result-fail-loud/(exploration / research / plan)· Codex design review 4 轮 APPROVED</div>
+
+</div>
+</body>
+</html>

@@ -161,6 +161,7 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 			workflowAgentContent: "Produce a bounded JSON result.",
 			workflowOutputCredential: "output-ticket",
 			workflowSubmissionCredential: "decision-ticket",
+			workflowSubmissionExpected: true,
 		});
 	});
 

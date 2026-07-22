@@ -846,6 +846,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 					workflowOutputCredential: req.generalizedExecution.outputCredential,
 					workflowSubmissionCredential:
 						req.generalizedExecution.submissionCredential,
+					workflowSubmissionExpected: true,
 				}),
 				...runnerSpawn,
 				// FLY-751: recompute the MCP slim profile on retry from the persisted
@@ -1458,6 +1459,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					workflowOutputCredential: req.generalizedExecution.outputCredential,
 					workflowSubmissionCredential:
 						req.generalizedExecution.submissionCredential,
+					workflowSubmissionExpected: true,
 				}),
 				// FLY-1232: durable commit marker on the fresh path — flag ON only
 				// (undefined otherwise, byte-compatible with the normal-path sentinel).

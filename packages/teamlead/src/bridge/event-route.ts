@@ -784,6 +784,23 @@ export function createEventRouter(
 			}
 		}
 
+		// FLY-1425: generalized workflow verdicts are capability-backed engine
+		// decisions. Accepting one through the legacy event endpoint would return
+		// 200 without consuming the credential or advancing the DAG. Reject before
+		// idempotency storage so a misroute can never look successful or pollute the
+		// legacy QA paths. Shadow/legacy runs remain byte-compatible.
+		if (
+			event.event_type === "qa_result" &&
+			store.isWorkflowEngineOwnedExecution(event.execution_id)
+		) {
+			res.status(409).json({
+				ok: false,
+				reason: "workflow_submission_required",
+				hint: "Submit this verdict to /api/workflow/decision with the original FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL; do not strip the runner environment.",
+			});
+			return;
+		}
+
 		// Store event (idempotent)
 		const isNew = store.insertEvent({
 			event_id: event.event_id,

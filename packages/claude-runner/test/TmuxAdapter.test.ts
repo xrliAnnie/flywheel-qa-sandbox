@@ -1156,6 +1156,32 @@ describe("TmuxAdapter", () => {
 			);
 		});
 
+		it("injects the engine submission expectation sentinel only when requested", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(
+				makeCtx({
+					workflowSubmissionCredential: "decision-ticket",
+					workflowSubmissionExpected: true,
+				}),
+			);
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const envArgStr = newWindow!.args.join(" ");
+			expect(envArgStr).toContain(
+				"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL=decision-ticket",
+			);
+			expect(envArgStr).toContain("FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED=1");
+
+			const absent = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", absent.fn, 10).execute(makeCtx());
+			const absentWindow = absent.calls.find((c) => c.args[0] === "new-window");
+			expect(absentWindow!.args.join(" ")).not.toContain(
+				"FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED",
+			);
+		});
+
 		// FLY-1188: `send` routes wakes by the session row's vendor — the
 		// claude adapter must register itself explicitly as "claude-code".
 		it("execute() with commDbPath — registers the session with vendor=claude-code", async () => {

@@ -146,6 +146,7 @@ describe("Blueprint generalized workflow capability contract", () => {
 			},
 			workflowOutputCredential: undefined,
 			workflowSubmissionCredential: "review-ticket",
+			workflowSubmissionExpected: true,
 		});
 		const reviewCall = (
 			reviewHarness.adapter.execute as ReturnType<typeof vi.fn>
@@ -154,6 +155,9 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(reviewCall.appendSystemPrompt).toContain("--status pass|fail");
 		expect(reviewCall.appendSystemPrompt).toContain("Do not run `complete`");
 		expect(reviewCall.workflowSubmissionCredential).toBe("review-ticket");
+		expect(reviewCall.workflowSubmissionExpected).toBe(true);
+		expect(reviewCall.appendSystemPrompt).toContain("env -u");
+		expect(reviewCall.appendSystemPrompt).toContain("replay_payload_mismatch");
 	});
 
 	it("binds the HTML gate to design-node completion, independent of workflow topology", async () => {

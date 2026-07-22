@@ -1418,6 +1418,8 @@ export class CodexTmuxAdapter implements IAdapter {
 		if (ctx.workflowSubmissionCredential)
 			env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL =
 				ctx.workflowSubmissionCredential;
+		if (ctx.workflowSubmissionExpected)
+			env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED = "1";
 		if (ctx.workflowOutputCredential)
 			env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL = ctx.workflowOutputCredential;
 		if (ctx.stateDbPath) env.FLYWHEEL_STATE_DB_PATH = ctx.stateDbPath;
