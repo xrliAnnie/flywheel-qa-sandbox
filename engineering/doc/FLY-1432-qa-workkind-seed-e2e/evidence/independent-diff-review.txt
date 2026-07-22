@@ -1,0 +1,49 @@
+Target: PR #678, head 6a0576bd3ec3e9188ad6c012cfaf89711bf53692
+Base:   main, head 11bbec10cb351073ebf586e49d299de42cac019a
+
+Independent review checklist
+
+1. Import-layer generalized flag removal: PASS
+   - workflow-template.ts removes the bundled schema-v2 skip branch.
+   - StateStore.importWorkflowTemplateSeed removes the schema-v2 flag throw.
+   - No third import/admission relaxation was found.
+
+2. Runtime dispatch remains gated: PASS
+   - packages/teamlead/src/workflow-template-dispatch.ts is byte-unchanged.
+   - revision authoring and publication retain their generalized flag checks.
+   - real HTTP probe returns 409 with shared predicate generalized_disabled.
+
+3. Seed inventory and dormancy: PASS
+   - tpl_ops_light is renamed to tpl_generic; tpl_research_light is deleted.
+   - new tiered, land, designer, prototype, and generic identities are in the
+     bundle; target DB has exactly the 12 identities exported by that bundle.
+   - work-kind categories are absent from boot defaults; wildcard incumbent
+     selection remains tpl_eng_heavy.
+
+4. Retire and bind boundaries: PASS
+   - actor/reason are trimmed and fail closed when empty.
+   - any exact or wildcard binding refuses retirement with deterministic refs.
+   - retired+bound corrupt state surfaces refused_bound before already_retired.
+   - successful retirement and its audit write share one transaction.
+   - binding rejects unpublished or retired targets before any write/audit.
+   - the audit CHECK migration preserves rows and recreates all three append-only
+     triggers plus the index; targeted migration tests passed.
+
+5. Shipped executor contracts: PASS
+   - designer orders publish-only URL -> Lead -> founder-html-delivery -> check
+     receipt -> question gate, and explicitly rejects timeout/silence as approval.
+   - prototype requires a real open/render proof, docs_v1 materialization, and
+     leaves the feasibility decision to the founder gate.
+   - all bundled v2 templates materialize from the shipped agent files in tests.
+
+6. Diff hygiene: PASS
+   - git diff --check main...6a0576bd passes.
+   - no implementation changes were made by FLY-1432 QA.
+
+Blocking findings: none.
+
+Non-blocking harness drift (both reproduced at main 11bbec10):
+   - qa-fly-1281 expects founder_gate to remain absent after a direct-to-gate
+     completion and does not provision its rescue helper under isolated HOME.
+   - qa-fly-1307 hardcodes six bundled seeds although main already bundles nine,
+     and its design probe predates the mandatory design HTML attestation.

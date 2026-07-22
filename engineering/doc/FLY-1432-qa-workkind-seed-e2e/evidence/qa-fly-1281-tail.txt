@@ -1,0 +1,27 @@
+Command (pinned checkout 6a0576bd):
+  FLYWHEEL_TMUX_RESCUE_CLI=<qa-harness exact verify/create shim> node scripts/qa-fly-1281-generalized-template-e2e.mjs
+
+The shim is the same bounded pattern embedded by qa-fly-1307; it is required because the
+script redirects HOME and otherwise resolves a nonexistent helper inside that temporary HOME.
+
+[qa] PASS v2_seeds_imported_under_flag
+[qa] PASS lead_and_binding_start_routes
+[qa] PASS real_tmux_fresh_spawn_exactly_once_per_start
+[qa] PASS selection_provenance_persisted
+[qa] PASS typed_snapshot_pins_agent_content
+[qa] PASS zero_and_output_credential_shapes
+[qa] PASS missing_output_is_retryable_then_same_event_completes
+[qa] PASS no_output_completion_receipt_and_projection
+[qa] PASS blueprint_tail_is_receipt_noop
+[qa] FAIL successor_and_review_dispatch_remain_unreachable
+[qa] PASS completion_marker_present_before_restart
+[qa] PASS restart_reconciles_marker_without_losing_output
+[qa] PASS restart_completion_replay_is_idempotent_with_one_canonical_audit
+[qa] PASS flag_off_rejects_starts_but_keeps_bundled_v2_seeds_dormant
+
+Exit: 1 (one failed assertion)
+
+Main-head control (`11bbec10`, same command and shim):
+  The same `successor_and_review_dispatch_remain_unreachable` assertion failed;
+  every other listed check passed. This red is pre-existing and is not a PR #678
+  regression.

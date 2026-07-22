@@ -1,0 +1,27 @@
+Pinned checkout: 6a0576bd3ec3e9188ad6c012cfaf89711bf53692
+
+Command:
+  cd packages/teamlead
+  pnpm exec vitest run \
+    src/__tests__/StateStore.workflow-templates.test.ts \
+    src/__tests__/workflow-docs-git.integration.test.ts \
+    src/__tests__/workflow-engine-dispatcher.test.ts \
+    src/__tests__/workflow-template-routes.test.ts \
+    src/__tests__/workflow-template-selection.test.ts \
+    src/__tests__/workflow-template.test.ts
+
+Result:
+  Test Files  6 passed (6)
+  Tests       126 passed (126)
+  Duration    6.66s
+
+Command:
+  cd packages/config
+  pnpm exec vitest run src/__tests__/feature-flags-registry.test.ts
+
+Result:
+  Test Files  1 passed (1)
+  Tests       28 passed (28)
+  Duration    745ms
+
+Combined targeted result: 7/7 files PASS, 154/154 tests PASS.

@@ -1,0 +1,73 @@
+{
+  "before_warm": {
+    "total": 13,
+    "rebind": 1
+  },
+  "after_warm": {
+    "total": 13,
+    "rebind": 1
+  },
+  "boot2_results": [
+    {
+      "templateId": "tpl_eng_heavy",
+      "status": "unchanged",
+      "revision": 1
+    },
+    {
+      "templateId": "tpl_eng_light",
+      "status": "unchanged",
+      "revision": 1
+    },
+    {
+      "templateId": "tpl_eng_trivial",
+      "status": "unchanged",
+      "revision": 1
+    },
+    {
+      "templateId": "tpl_product_v1",
+      "status": "unchanged",
+      "revision": 1
+    },
+    {
+      "templateId": "tpl_eng_heavy_land_v1",
+      "status": "unchanged",
+      "revision": 1
+    },
+    {
+      "templateId": "tpl_eng_light_land_v1",
+      "status": "unchanged",
+      "revision": 1
+    },
+    {
+      "templateId": "tpl_eng_trivial_land_v1",
+      "status": "unchanged",
+      "revision": 1
+    },
+    {
+      "templateId": "tpl_eng",
+      "status": "unchanged",
+      "revision": 1
+    },
+    {
+      "templateId": "tpl_eng_land_v1",
+      "status": "unchanged",
+      "revision": 1
+    },
+    {
+      "templateId": "tpl_product_designer",
+      "status": "unchanged",
+      "revision": 1
+    },
+    {
+      "templateId": "tpl_product_prototype",
+      "status": "unchanged",
+      "revision": 1
+    },
+    {
+      "templateId": "tpl_generic",
+      "status": "unchanged",
+      "revision": 1
+    }
+  ],
+  "work_kind_binding_count": 0
+}

@@ -1,0 +1,7 @@
+[fresh] default bindings on a virgin project:
+  * -> tpl_eng_heavy
+  light -> tpl_eng_light
+  trivial -> tpl_eng_trivial
+[fresh] PASS no work-kind category bound (0)
+[fresh] PASS no new v2 identity bound (0)
+[fresh] WORK_KIND_CATEGORIES = ["prd","designer","prototype","code","research"]

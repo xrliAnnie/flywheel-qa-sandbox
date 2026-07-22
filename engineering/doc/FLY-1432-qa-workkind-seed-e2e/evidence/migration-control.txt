@@ -1,0 +1,11 @@
+[mig] PASS new_side_is_pinned_pr_head — 6a0576bd3ec3e9188ad6c012cfaf89711bf53692
+[mig] PASS old_side_is_not_pr_head — 11bbec10cb351073ebf586e49d299de42cac019a
+[mig] PASS legacy_db_lacks_template_retire_in_check
+[mig] PASS legacy_db_has_audit_rows — 7 rows
+[mig] PASS migration_widened_check_constraint
+[mig] PASS migration_preserved_every_audit_row_byte_for_byte — 7 -> 7
+[mig] PASS append_only_triggers_restored_after_table_swap — update_blocked=true delete_blocked=true
+[mig] PASS retire_refuses_bound_template — {"status":"refused_bound","refs":[{"project":"flywheel-e2e","taskCategory":"*"}]}
+[mig] PASS template_retire_row_writes_under_new_check — tpl_eng_heavy_land_v1 -> retired, audit rows=1
+[mig] PASS second_open_is_idempotent — 8 rows
+[mig] migration_control_pass=true

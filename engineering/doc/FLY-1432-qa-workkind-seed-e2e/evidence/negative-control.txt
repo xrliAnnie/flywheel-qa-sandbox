@@ -1,0 +1,7 @@
+[ctl] PASS control_runs_on_pinned_head — 6a0576bd3ec3e9188ad6c012cfaf89711bf53692
+[ctl] PASS audit_append_only_triggers_survive_check_rebuild — rows=13 update_blocked=true delete_blocked=true
+[Bridge] Daily digest configured — channel=1521630422918758472
+[ctl] PASS flag_on_same_request_is_not_generalized_rejected — status=500 code=GENERALIZED_START_NOT_LIVE
+[ctl] flag-on response: {"status":500,"body":{"success":false,"code":"GENERALIZED_START_NOT_LIVE","message":"Runner failed to start — session not registered after 90000ms."}}
+[ctl] dispatcher_start_calls=1
+[ctl] control_pass=true

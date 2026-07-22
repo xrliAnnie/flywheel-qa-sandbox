@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1432 · 给「新工作类型模板」做的独立验收方案</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 32px 16px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; margin-bottom: 6px; }
+  h2 { font-size: 19px; margin: 28px 0 12px; color: #1a365d; }
+  .sub { color: #86868b; font-size: 14px; margin-bottom: 20px; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; background: #eef0f3; padding: 1px 6px; border-radius: 5px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 18px 20px; margin-bottom: 14px; }
+  .card.blue { border-left: 4px solid #007aff; }
+  .card.green { border-left: 4px solid #34c759; }
+  .card.amber { border-left: 4px solid #ff9500; }
+  .card.red { border-left: 4px solid #ff3b30; }
+  .card.purple { border-left: 4px solid #af52de; }
+  .flow { display: flex; align-items: stretch; flex-wrap: wrap; gap: 6px; margin: 12px 0 6px; }
+  .step { background: #fff; border: 1.5px solid #d2d2d7; border-radius: 10px; padding: 10px 14px; font-size: 13.5px; flex: 1; min-width: 130px; text-align: center; }
+  .step b { display: block; font-size: 14px; margin-bottom: 3px; }
+  .step.hot { border-color: #007aff; background: #f0f7ff; }
+  .step.ok { border-color: #34c759; background: #f2fbf5; }
+  .arrow { align-self: center; color: #86868b; font-size: 16px; padding: 0 2px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); font-size: 14px; margin-bottom: 14px; }
+  th { background: #1a365d; color: #fff; text-align: left; padding: 9px 14px; font-weight: 600; font-size: 13.5px; }
+  td { padding: 9px 14px; border-top: 1px solid #f0f0f2; vertical-align: top; }
+  .badge { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin-right: 6px; }
+  .badge.check { background: #e6f7eb; color: #1d7a3d; }
+  .badge.no { background: #ffe9e7; color: #c93025; }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .dim { color: #86868b; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1432 · 「新工作类型模板」的独立验收方案</h1>
+  <div class="sub">被验对象:PR #678(FLY-1380,版本指纹 <span class="mono">6a0576bd</span>)· 2026-07-22 · QA 设计阶段</div>
+
+  <div class="card blue">
+    <b>一句话:</b>FLY-1380 往系统里「预装」了一批按工作类型分的新派工模板,但按设计它们应该<b>装好了却先不启用</b>;本方案在一间与生产完全隔离的「测试房」里,用真实系统实跑三件事——<b>① 模板真的装进去了 ② 真的没被启用 ③ 现在的派工没被弄坏</b>——并留下可查证据。
+  </div>
+
+  <h2>1. 核心流程(验收怎么跑)</h2>
+  <div class="card">
+    <div class="flow">
+      <div class="step"><b>搭隔离房</b>临时目录+独立数据库<br>不碰生产任何东西</div>
+      <div class="arrow">→</div>
+      <div class="step"><b>取被测版本</b>精确锁定 PR #678<br>指纹 <span class="mono">6a0576bd</span></div>
+      <div class="arrow">→</div>
+      <div class="step hot"><b>真启动系统</b>用真实启动流程<br>触发模板预装</div>
+      <div class="arrow">→</div>
+      <div class="step hot"><b>三项体检</b>装了?没启用?<br>老派工还好?</div>
+      <div class="arrow">→</div>
+      <div class="step ok"><b>出报告</b>qa-report + 证据<br>全部存档可复查</div>
+    </div>
+    <p class="dim">「真启动」= 跑的是和生产一模一样的启动代码,不是模拟;房间用完即拆,生产零感知。</p>
+  </div>
+
+  <h2>2. 三项体检分别怎么证</h2>
+  <table>
+    <tr><th style="width:22%">体检项</th><th>怎么证(全部真机)</th></tr>
+    <tr>
+      <td><b>① 模板真落库</b></td>
+      <td>房间里全新启动一次 → 数据库里应出现<b>恰好 6 个</b>新旧模板身份、且都处于「已发布」状态;被淘汰的 2 个旧模板<b>不再</b>被安装。再热重启一次 → 不重复安装(幂等)。</td>
+    </tr>
+    <tr>
+      <td><b>② 装而未启用</b></td>
+      <td>重启前后,「哪个项目用哪个模板」的绑定表<b>一行不多一行不少</b>;正常派工照旧选到老模板;有人想手动直选新模板 → 系统按开关拒绝(409)。开关只在房间里打开试一下:手动直选可以过(这是设计允许的),自动路由仍然不会选到新模板。</td>
+    </tr>
+    <tr>
+      <td><b>③ 老派工没坏</b></td>
+      <td>原样跑 PR 自带的两条「从派工到完工」全链路真机测试(真终端、真调度、真文档落盘)+ PR 触到的全部单测。任何红项须用主干版本对照,证明是环境噪音而不是这次改动弄坏的。</td>
+    </tr>
+  </table>
+
+  <h2>3. 数据 / 结构模型(看哪些账本)</h2>
+  <div class="card">
+    <div class="flow">
+      <div class="step"><b>模板账本</b>装了哪些模板<br>发布状态如何</div>
+      <div class="arrow">+</div>
+      <div class="step"><b>绑定账本</b>哪个项目自动用<br>哪个模板(路由的唯一开关)</div>
+      <div class="arrow">+</div>
+      <div class="step"><b>审计账本</b>每次安装/变更<br>都留了几笔记录</div>
+      <div class="arrow">=</div>
+      <div class="step ok"><b>判定依据</b>三本账相互印证<br>逐条落证据文件</div>
+    </div>
+    <p class="dim">「没启用」的判定完全落在绑定账本上:只要它零变化,新模板就不可能被自动派到——这正是 FLY-1380 设计里 dormant 的定义。</p>
+  </div>
+
+  <h2>4. 关键取舍(为什么这么设计)</h2>
+  <div class="card purple">
+    <ul>
+      <li><b>复用 PR 自带的两条全链路测试,而不是重写一套</b> —— 它们本来就是真机全链路,且这次 PR 恰好改写过它们;原样跑绿一举两得:老链路没坏 + PR 对这两个脚本的迁移不是纸上谈兵。<span class="dim">(弃案:全部重写——重复劳动且引入自己的 bug 面)</span></li>
+      <li><b>隔离房实跑,而不是直接在生产库上核对</b> —— 生产验收属于上线窗口(ship note 已有专门口径);QA 阶段在生产上做启动实验风险不对等。<span class="dim">(弃案:读生产库——只能看现状,无法做「重启两次对比」这种关键实验)</span></li>
+      <li><b>验收脚本连同证据一起存档进仓库</b>,而不是用完即删 —— 谁都能复跑复查,证据留到 Annie 验收完。</li>
+      <li><b>被测版本指纹开跑前后各核一次</b> —— 防「测的和合的不是同一份代码」。</li>
+    </ul>
+  </div>
+
+  <h2>5. 诚实边界(这次验收不覆盖什么)</h2>
+  <div class="card amber">
+    <ul>
+      <li><span class="badge no">不验</span>真正「启用」新模板的切换动作(绑定迁移、开关翻转)——那是后续 cutover 单的事,本 PR 本来就不含。</li>
+      <li><span class="badge no">不验</span>设计师/原型两个新模板的完整创始人闭环(试用投递、「不能做」终态)——系统能力尚未建成,FLY-1380 计划里已明文登记为后续项。</li>
+      <li><span class="badge no">不重跑</span>codex 代码审查——那是合并时的独立关卡。</li>
+      <li><span class="badge check">覆盖</span>本次上线唯一会发生的行为变化:重启后模板一次性预装 + 一切照旧运转。</li>
+    </ul>
+  </div>
+
+  <h2>6. 判定纪律</h2>
+  <div class="card green">
+    PASS 的唯一条件:三项体检全绿、每条结论都指向一份存档证据文件;任何红项要么当场判 FAIL、要么用主干对照证明与本 PR 无关。不允许「工具说成功了」当证据。
+  </div>
+
+  <p class="dim" style="margin-top:20px">FLY-1432 设计阶段产物 · 执行阶段将按本方案搭房实跑并产出 qa-report.md</p>
+</div>
+</body>
+</html>

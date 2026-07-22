@@ -1,0 +1,15 @@
+{
+	"bridge_url": "http://127.0.0.1:51629",
+	"status": 409,
+	"body": {
+		"success": false,
+		"code": "GENERALIZED_WORKFLOW_REJECTED",
+		"reason": "generalized workflow templates are disabled by flag"
+	},
+	"shared_dispatch_predicate": "generalized_disabled",
+	"workflow_run_rows_before": 1,
+	"workflow_run_rows_after": 1,
+	"dispatcher_start_calls": 0,
+	"tmux_windows_before": ["@1075"],
+	"tmux_windows_after": ["@1075"]
+}

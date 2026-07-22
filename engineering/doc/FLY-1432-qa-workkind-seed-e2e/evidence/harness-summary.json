@@ -1,0 +1,25 @@
+{
+	"issue": "FLY-1432",
+	"pinned_head": "6a0576bd3ec3e9188ad6c012cfaf89711bf53692",
+	"generated_at": "2026-07-22T21:02:32.851Z",
+	"room_root": "/Users/xiaorongli/.flywheel/runner-state/36cfbea3-4fea-4291-bd33-c4d09c79e3c5/browser-tmp/qa-fly1432-room-hftmbp",
+	"mutable_state": "isolated temporary HOME/state/comm roots",
+	"bridge": "production createBridgeApp HTTP stack on ephemeral loopback port",
+	"checks": {
+		"pinned_pr_head": true,
+		"isolated_mutable_roots": true,
+		"boot1_six_target_identities_installed_and_published": true,
+		"boot1_bundle_matches_production_seed_list": true,
+		"removed_dormant_seeds_absent": true,
+		"warm_boot_all_seed_imports_unchanged": true,
+		"warm_boot_binding_logical_rowset_unchanged": true,
+		"warm_boot_template_and_binding_audit_zero_increment": true,
+		"work_kind_categories_have_zero_bindings": true,
+		"category_selection_remains_tpl_eng_heavy": true,
+		"bridge_uses_ephemeral_nonproduction_port": true,
+		"flag_off_direct_v2_returns_generalized_disabled_409": true,
+		"flag_off_direct_v2_creates_zero_runs_and_zero_spawns": true,
+		"flag_on_direct_v2_allowed_while_category_stays_v1": true
+	},
+	"pass": true
+}

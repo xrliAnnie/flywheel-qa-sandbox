@@ -1,0 +1,31 @@
+Command (pinned checkout 6a0576bd):
+  node scripts/qa-fly-1307-template-dispatch-e2e.mjs
+
+Observed seed diagnostic:
+  imported seed identities = 12
+  default bindings = * -> tpl_eng_heavy, light -> tpl_eng_light,
+                     trivial -> tpl_eng_trivial
+
+[qa] FAIL six_seeds_and_engineering_default_bindings
+[qa] PASS engineering_v1_selected_and_materialized
+[qa] probe design:1 response=409 reason=attestation must be an object output=none
+[qa] FAIL harness_error=Error: timed out waiting for engineering founder gate
+    at waitFor (scripts/qa-fly-1307-template-dispatch-e2e.mjs:78:8)
+    at async scripts/qa-fly-1307-template-dispatch-e2e.mjs:530:3
+
+Direct source evidence for the first failure:
+  const seedIds = templates.loadBundledWorkflowSeeds().map(...);
+  const seedsAndBindingsOk = seedIds.length === 6 && ...;
+
+PR #678 makes the actual bundle contain 12 identities but does not update this assertion.
+Exit: 1
+
+Main-head control (`11bbec10`):
+  - current main imports 9 bundled identities but has the same hardcoded
+    `seedIds.length === 6` assertion, which fails identically;
+  - current main also receives the same `design_html_evidence_missing` 409 and
+    times out waiting for the engineering founder gate.
+
+Both red outcomes are therefore pre-existing harness drift, not regressions introduced
+by PR #678. The pinned run still proves that v1 selection/materialization reached the
+real design spawn before the unrelated attestation hold.

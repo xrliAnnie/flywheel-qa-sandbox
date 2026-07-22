@@ -1,0 +1,14 @@
+{
+  "before_work_kind_seed_presence": {
+    "templateId": "tpl_eng_heavy",
+    "revision": 1,
+    "selectionSource": "default",
+    "snapshotDigest": "6284ff42a828cd8dc26e5046ab8199483936191d7e4872f481961cb5e17fc3d6"
+  },
+  "after_work_kind_seed_presence": {
+    "templateId": "tpl_eng_heavy",
+    "revision": 1,
+    "selectionSource": "default",
+    "snapshotDigest": "6284ff42a828cd8dc26e5046ab8199483936191d7e4872f481961cb5e17fc3d6"
+  }
+}

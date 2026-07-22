@@ -1,0 +1,12 @@
+{
+  "direct": {
+    "template_id": "tpl_generic",
+    "selection_source": "lead",
+    "run_id": "228498ea-eca0-49ee-89e6-ca36d3502f11"
+  },
+  "category": {
+    "template_id": "tpl_eng_heavy",
+    "selection_source": "default",
+    "run_id": "f2aa1c27-207a-413f-b3e9-1e05753abfb2"
+  }
+}

@@ -1,0 +1,15 @@
+pinned_head=6a0576bd3ec3e9188ad6c012cfaf89711bf53692
+generalized_flag=<unset>
+boot1_results=[{"templateId":"tpl_eng_heavy","status":"imported","revision":1},{"templateId":"tpl_eng_light","status":"imported","revision":1},{"templateId":"tpl_eng_trivial","status":"imported","revision":1},{"templateId":"tpl_product_v1","status":"imported","revision":1},{"templateId":"tpl_eng_heavy_land_v1","status":"imported","revision":1},{"templateId":"tpl_eng_light_land_v1","status":"imported","revision":1},{"templateId":"tpl_eng_trivial_land_v1","status":"imported","revision":1},{"templateId":"tpl_eng","status":"imported","revision":1},{"templateId":"tpl_eng_land_v1","status":"imported","revision":1},{"templateId":"tpl_product_designer","status":"imported","revision":1},{"templateId":"tpl_product_prototype","status":"imported","revision":1},{"templateId":"tpl_generic","status":"imported","revision":1}]
+tpl_eng	current_published_revision=1	retired_at=NULL	seed_owner=system
+tpl_eng_heavy	current_published_revision=1	retired_at=NULL	seed_owner=system
+tpl_eng_heavy_land_v1	current_published_revision=1	retired_at=NULL	seed_owner=system
+tpl_eng_land_v1	current_published_revision=1	retired_at=NULL	seed_owner=system
+tpl_eng_light	current_published_revision=1	retired_at=NULL	seed_owner=system
+tpl_eng_light_land_v1	current_published_revision=1	retired_at=NULL	seed_owner=system
+tpl_eng_trivial	current_published_revision=1	retired_at=NULL	seed_owner=system
+tpl_eng_trivial_land_v1	current_published_revision=1	retired_at=NULL	seed_owner=system
+tpl_generic	current_published_revision=1	retired_at=NULL	seed_owner=system
+tpl_product_designer	current_published_revision=1	retired_at=NULL	seed_owner=system
+tpl_product_prototype	current_published_revision=1	retired_at=NULL	seed_owner=system
+tpl_product_v1	current_published_revision=1	retired_at=NULL	seed_owner=system
