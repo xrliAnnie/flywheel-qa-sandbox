@@ -324,6 +324,7 @@ describe("parseCodexLeadTuiRuntimeConfig", () => {
 		DISCORD_BOT_TOKEN: "tok",
 		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "chan",
 		FLYWHEEL_CODEX_LEAD_STATE_DIR: "/state",
+		FLYWHEEL_COMM_DB: "/state/comm.db",
 		FLYWHEEL_CODEX_BIN: "/bin/codex",
 		CODEX_HOME: "/home/.codex-x",
 	};

@@ -324,8 +324,54 @@ export interface ReconcileEscalationsDeps {
 	fleetWindowMs?: number;
 	/** C5: CLEARING rebound horizon (env FLYWHEEL_CLEARING_TTL_MS, default 2h). */
 	clearingTtlMs?: number;
+	/** Exact cohort filter. Receipt and legacy passes must never share rows. */
+	kindFilter?: {
+		includeKinds?: readonly string[];
+		excludeKinds?: readonly string[];
+	};
+	/** False when the plugin already ran the shared all-cohort maintenance pass. */
+	maintainClearing?: boolean;
 	logger?: (msg: string) => void;
 	now?: () => number;
+}
+
+export function reboundExpiredDetectionClearings(input: {
+	store: Pick<
+		StateStore,
+		| "getDetectionEscalationsForReconcile"
+		| "revertDetectionEscalationClearingToNew"
+	>;
+	nowMs: number;
+	clearingTtlMs?: number;
+	logger?: (msg: string) => void;
+}): number {
+	const logger =
+		input.logger ??
+		((message: string) => console.log(`[detection-escalation] ${message}`));
+	const clearingTtlMs = input.clearingTtlMs ?? DEFAULT_CLEARING_TTL_MS;
+	let rebounded = 0;
+	for (const row of input.store.getDetectionEscalationsForReconcile()) {
+		if (
+			row.status !== "CLEARING" ||
+			row.clearing_since_ms == null ||
+			input.nowMs - row.clearing_since_ms < clearingTtlMs
+		) {
+			continue;
+		}
+		if (
+			input.store.revertDetectionEscalationClearingToNew(
+				row.target_key,
+				row.kind,
+				row.episode_fingerprint,
+			)
+		) {
+			rebounded++;
+			logger(
+				`CLEARING TTL elapsed for ${row.kind} ${row.target_key} — rebounded to NEW (cleanup never finished)`,
+			);
+		}
+	}
+	return rebounded;
 }
 
 /**
@@ -346,27 +392,19 @@ export async function reconcileDetectionEscalations(
 	const clearingTtlMs = deps.clearingTtlMs ?? DEFAULT_CLEARING_TTL_MS;
 	const nowMs = deps.now?.() ?? Date.now();
 
-	const rows = deps.store.getDetectionEscalationsForReconcile();
+	const rows = deps.store.getDetectionEscalationsForReconcile(deps.kindFilter);
 
 	// C5 TTL rebound: a cleanup that never finished must not mute forever — a
 	// CLEARING row past the TTL reverts to NEW so the episode can re-report.
 	// Deliberately NOT paged in this same pass (it re-enters via a fresh
 	// Lead-first notification, never straight to the founder).
-	for (const row of rows) {
-		if (
-			row.status === "CLEARING" &&
-			row.clearing_since_ms != null &&
-			nowMs - row.clearing_since_ms >= clearingTtlMs
-		) {
-			deps.store.revertDetectionEscalationClearingToNew(
-				row.target_key,
-				row.kind,
-				row.episode_fingerprint,
-			);
-			logger(
-				`CLEARING TTL elapsed for ${row.kind} ${row.target_key} — rebounded to NEW (cleanup never finished)`,
-			);
-		}
+	if (deps.maintainClearing !== false) {
+		reboundExpiredDetectionClearings({
+			store: deps.store,
+			nowMs,
+			clearingTtlMs,
+			logger,
+		});
 	}
 
 	const overdue = rows.filter(
@@ -498,6 +536,10 @@ export interface ResolveRecoveredDeps {
 	progressResolvableKinds?: ReadonlySet<string>;
 	/** Kinds whose semantic owner clears them explicitly even after terminal. */
 	preserveOnTerminal?: (row: DetectionEscalationRow) => boolean;
+	kindFilter?: {
+		includeKinds?: readonly string[];
+		excludeKinds?: readonly string[];
+	};
 	logger?: (msg: string) => void;
 }
 
@@ -525,7 +567,9 @@ export function resolveRecoveredDetectionTargets(
 		string,
 		{ newestDetectedAtMs: number; rows: DetectionEscalationRow[] }
 	>();
-	for (const row of deps.store.getDetectionEscalationsForReconcile()) {
+	for (const row of deps.store.getDetectionEscalationsForReconcile(
+		deps.kindFilter,
+	)) {
 		const group = rowsByTarget.get(row.target_key);
 		if (!group) {
 			rowsByTarget.set(row.target_key, {

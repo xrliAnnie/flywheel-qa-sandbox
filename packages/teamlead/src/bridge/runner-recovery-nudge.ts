@@ -33,6 +33,7 @@ import type { CaptureSessionFn } from "./tools.js";
 
 /** The ONLY phrases the recovery nudge may type. Exact match. */
 export const NUDGE_ALLOWLIST: readonly string[] = ["continue"];
+export const WAKE_POINTER_PHRASE = "你有 pending wake,跑 flywheel-comm inbox";
 
 /** Episode fingerprints are 16 lowercase hex chars (see fingerprintOutput). */
 const FINGERPRINT_RE = /^[0-9a-f]{16}$/;
@@ -42,6 +43,14 @@ export interface RunnerNudgeDeps {
 	projects: ProjectEntry[];
 	captureSessionFn: CaptureSessionFn;
 	hasPendingGate: (executionId: string, projectName: string) => boolean;
+	/** FLY-1392 wake-pointer-only causal and binding gates. */
+	hasCausalResponse?: (
+		executionId: string,
+		projectName: string,
+		questionId: string,
+	) => boolean;
+	isWakeBindingLive?: (executionId: string, projectName: string) => boolean;
+	isDeclaredParked?: (executionId: string, projectName: string) => boolean;
 	sendKeys: (
 		tmuxWindow: string,
 		text: string,
@@ -56,12 +65,14 @@ export interface RunnerNudgeDeps {
 }
 
 export interface RunnerNudgeInput {
+	mode?: "recovery" | "wake_pointer";
 	/** Who initiated: "lead" (HTTP route) or "auto-repair-bot". Audited. */
 	actor: string;
 	executionId: string;
 	leadId: string;
 	fingerprint?: string;
 	phrase?: string;
+	causalQuestionId?: string;
 }
 
 export interface RunnerNudgeOutcome {
@@ -88,8 +99,14 @@ export async function attemptRunnerRecoveryNudge(
 	const { store, projects, captureSessionFn } = deps;
 	const executionId = input.executionId;
 	const leadId = (input.leadId ?? "").trim();
+	const mode = input.mode ?? "recovery";
 	const fingerprint = input.fingerprint;
-	const phrase = typeof input.phrase === "string" ? input.phrase : "continue";
+	const phrase =
+		mode === "wake_pointer"
+			? WAKE_POINTER_PHRASE
+			: typeof input.phrase === "string"
+				? input.phrase
+				: "continue";
 
 	const audit = (
 		result: "attempt" | "sent" | "refused",
@@ -108,6 +125,7 @@ export async function attemptRunnerRecoveryNudge(
 				payload: {
 					leadId,
 					actor: input.actor,
+					mode,
 					fingerprint,
 					phrase,
 					result,
@@ -143,7 +161,7 @@ export async function attemptRunnerRecoveryNudge(
 
 	if (!leadId) return refuse(400, "leadId is required in request body");
 	// Gate 0: allowlist phrase.
-	if (!NUDGE_ALLOWLIST.includes(phrase)) {
+	if (mode === "recovery" && !NUDGE_ALLOWLIST.includes(phrase)) {
 		return refuse(
 			400,
 			`phrase not in allowlist (${NUDGE_ALLOWLIST.join(", ")}) — other instructions must go via mailbox; lifecycle actions are founder-gated (FLY-175)`,
@@ -175,20 +193,56 @@ export async function attemptRunnerRecoveryNudge(
 	}
 
 	// Gate 1: status re-read.
-	if (session.status !== "running") {
+	const wakePointerStatusAllowed =
+		mode === "wake_pointer" &&
+		(session.status === "awaiting_review" ||
+			session.status === "approved_to_ship" ||
+			session.status === "design_done" ||
+			(session.status === "running" &&
+				deps.isDeclaredParked?.(executionId, session.project_name) === true));
+	if (
+		(mode === "recovery" && session.status !== "running") ||
+		(mode === "wake_pointer" && !wakePointerStatusAllowed)
+	) {
 		return refuse(
 			409,
-			`status is "${session.status}" — only running sessions can be nudged`,
+			mode === "wake_pointer"
+				? `status is "${session.status}" without a durable park — wake pointers require parked/design_done/awaiting_review`
+				: `status is "${session.status}" — only running sessions can be nudged`,
 			session,
 		);
 	}
 	// Gate 2: pending-review gray zone.
-	if (session.decision_route === "needs_review") {
+	if (mode === "recovery" && session.decision_route === "needs_review") {
 		return refuse(
 			409,
 			"session has a pending review signal (decision_route=needs_review)",
 			session,
 		);
+	}
+	if (mode === "wake_pointer") {
+		const questionId = input.causalQuestionId?.trim();
+		try {
+			if (
+				questionId &&
+				!deps.hasCausalResponse?.(executionId, session.project_name, questionId)
+			) {
+				return refuse(
+					409,
+					"causal question has no terminal response — refusing wake pointer",
+					session,
+				);
+			}
+			if (!deps.isWakeBindingLive?.(executionId, session.project_name)) {
+				return refuse(409, "runner wake binding is no longer live", session);
+			}
+		} catch (err) {
+			return refuse(
+				503,
+				`wake-pointer causal probe failed (${(err as Error).message}) — refusing fail-closed`,
+				session,
+			);
+		}
 	}
 	// Gate 3: pending CommDB gate question. Fail CLOSED on probe error.
 	try {
@@ -269,6 +323,14 @@ export async function attemptRunnerRecoveryNudge(
 	// rolled back with the DB transaction, so the boundary is HONESTLY
 	// non-atomic: nudged:true + dispositionPersisted:false + loud log
 	// (FLY-1282 Part D, Codex R18 #1 recovery contract).
+	if (mode === "wake_pointer") {
+		audit("sent", `wake pointer sent to ${target.tmuxWindow}`, session);
+		return {
+			status: 200,
+			body: { nudged: true, tmuxWindow: target.tmuxWindow },
+		};
+	}
+
 	let warning: string | undefined;
 	let dispositionPersisted = true;
 	const nudgeNote = `recovery-nudge "${phrase}" sent to ${target.tmuxWindow} (actor=${input.actor})`;

@@ -1,5 +1,6 @@
 export type { DirectToggleMetadata } from "./direct-toggle.js";
 export { isDirectToggleMetadata } from "./direct-toggle.js";
+export { receiptFoundationEnabled } from "./receipt-foundation.js";
 export type {
 	FeatureFlagSpec,
 	FlagCategory,

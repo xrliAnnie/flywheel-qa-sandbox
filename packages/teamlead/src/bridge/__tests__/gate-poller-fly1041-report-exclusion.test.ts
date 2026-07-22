@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const emitSpy = vi.fn(async () => {});
+const emitSpy = vi.fn(async () => ({ threadId: "test", result: "noop" }));
 vi.mock("../founder-reply-deliverer.js", async () => {
 	const actual = await vi.importActual<
 		typeof import("../founder-reply-deliverer.js")
@@ -68,6 +68,7 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 		db.close();
 
 		const store = {
+			listNonTerminalSessions: vi.fn(() => []),
 			getSession: vi.fn(() => ({
 				execution_id: "exec-1",
 				issue_id: "FLY-1041",
@@ -120,6 +121,7 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 		db.close();
 
 		const store = {
+			listNonTerminalSessions: vi.fn(() => []),
 			getSession: vi.fn(() => ({
 				execution_id: "exec-1",
 				issue_id: "FLY-1314",
@@ -160,6 +162,7 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 		});
 		db.close();
 		const store = {
+			listNonTerminalSessions: vi.fn(() => []),
 			getSession: vi.fn(() => ({
 				execution_id: "exec-1",
 				issue_id: "FLY-1314",
@@ -187,5 +190,51 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 			emitSpy.mock.calls[0]?.[1] as Array<{ questionId: string }>
 		).map((q) => q.questionId);
 		expect(qids).toEqual([review]);
+	});
+
+	it("receipt foundation scans a non-terminal issue thread with zero pending questions", async () => {
+		new CommDB(join(tmp, "flywheel", "comm.db")).close();
+		const session = {
+			execution_id: "exec-empty",
+			issue_id: "FLY-1392",
+			issue_identifier: "FLY-1392",
+			project_name: "flywheel",
+			issue_labels: "[]",
+		};
+		const store = {
+			listNonTerminalSessions: vi.fn(() => [session]),
+			getChatThreadByIssue: vi.fn(() => ({ thread_id: "T-empty" })),
+		} as unknown as GatePollerConfig["store"];
+		const poller = new GatePoller({
+			pollIntervalMs: 3_000,
+			projects: [
+				{
+					projectName: "flywheel",
+					leads: [
+						{
+							agentId: "test-lead",
+							botToken: "bot",
+							chatChannel: "C1",
+							match: { labels: [] },
+						},
+					],
+				},
+			] as unknown as GatePollerConfig["projects"],
+			store,
+			runtimeRegistry: {} as unknown as GatePollerConfig["runtimeRegistry"],
+			chatThreadsEnabled: true,
+			discordOwnerUserId: OWNER,
+			founderReplyDeliverGraceMs: 0,
+			receiptFoundationEnabled: () => true,
+		}) as unknown as Priv;
+
+		await poller.founderReplyDeliverPass();
+		expect(emitSpy).toHaveBeenCalledTimes(1);
+		expect(emitSpy.mock.calls[0]?.[0]).toMatchObject({ threadId: "T-empty" });
+		expect(emitSpy.mock.calls[0]?.[1]).toEqual([]);
+		expect(emitSpy.mock.calls[0]?.[2]).not.toHaveProperty(
+			"receiptFoundationEnabled",
+		);
+		expect(emitSpy.mock.calls[0]?.[2]).not.toHaveProperty("receiptOwnerEpoch");
 	});
 });

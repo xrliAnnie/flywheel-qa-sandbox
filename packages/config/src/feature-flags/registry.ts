@@ -196,6 +196,50 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 		retiring: "FLY-1393",
 	},
+	// ─── FLY-1392: receipt foundation ───
+	{
+		name: "receipt_foundation",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_RECEIPT_FOUNDATION",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"category-agnostic Lead 防漏收据闭环(=0 事故紧急临时回退时只暂停 deadline、重发与升级;入账、投递与 Lead handle 保持可用)",
+		readSites: [
+			envSite(
+				"packages/config/src/feature-flags/receipt-foundation.ts",
+				"receiptFoundationEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "行为读取是 call-time；=0 会在 Bridge 启动时立即告警并按小时周期重复告警，不得作为常态运行方式。它不会恢复 Bridge 代答或停止入账。事故结束后恢复开启并按 Bridge 重启边界验证。",
+	},
+	{
+		name: "receipt_activation_dry_run",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1392 activation episode 只计算并持久化 eligible/settled/disposed/exempt/pending 与 T1/T2/T3 容量预估，不提交 cohort deadline 或 chase artifacts",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"LeadReceiptPatrol.activationDryRun",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "运行时按 patrol cadence 读取；仅作容量验收与 rollback drill，正式 activation 必须保持关闭。",
+	},
 	// ─── FLY-1373: superseded delivery watchdog alert lanes ───
 	{
 		name: "legacy_delivery_watchdogs",
@@ -2156,26 +2200,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
-		name: "reply_to_card",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_REPLY_TO_CARD",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1041 Fix B: founder 真·Discord 回复(type 19)ship 卡 → 确定性收窄到该 gate 归因(=0 忽略 message_reference,回现状)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/founder-reply-deliverer.ts",
-				"processFounderMessage (reply-to-card qualification)",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
 		name: "tier2_prefix_norm",
 		category: "kill_switch",
 		source: "env",
@@ -2190,26 +2214,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			envSite(
 				"packages/teamlead/src/bridge/approval-signal/text-approval-source.ts",
 				"evaluateTextSource",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "founder_approval_ack",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_APPROVAL_ACK",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1041 Fix C: founder 消息处理后在她消息上点 ✅(绑上)/❓(没绑上)回执 reaction(纯通知,无批准语义;=0 不点)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/founder-reply-deliverer.ts",
-				"processFounderMessage (receipt reaction)",
 				"call_time",
 			),
 		],

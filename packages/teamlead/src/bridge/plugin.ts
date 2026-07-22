@@ -25,6 +25,7 @@ import {
 	defaultGateMarkerDir,
 	markGateMarkerAnsweredForExecution,
 } from "flywheel-comm/gate-marker";
+import { receiptPriorityWindowsMs } from "flywheel-comm/lead-inbox-queue";
 import {
 	ensureLeaseEpisodeMaterialized,
 	reconcileLeaseEpisodeQueue,
@@ -45,6 +46,7 @@ import {
 	type CommBackend,
 	phaseMessageTag,
 	readEnvFileSource,
+	receiptFoundationEnabled,
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
 	resolveFounderTimezone,
@@ -157,15 +159,13 @@ import {
 	rateLimitPerMinuteFromEnv,
 } from "./alert-rate-limiter.js";
 import { deriveCanonicalFounderId } from "./approval-signal/canonical-founder-id.js";
-import { makeDeferralSupport } from "./approval-signal/deferred-approval.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
-import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
 import { loadQaConfigByProject } from "./auto-qa-config-source.js";
 import { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { AutoQaEffects } from "./auto-qa-effects.js";
-import { founderApprovalHoldGuard, reviewHoldReason } from "./auto-qa-held.js";
+import { founderApprovalHoldGuard } from "./auto-qa-held.js";
 import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
 import { AutoContinueArmer } from "./autocontinue-armer.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
@@ -224,11 +224,13 @@ import {
 	type EscalationOwner,
 	formatEscalationLeadNote,
 	notifyLeadFirst,
+	reboundExpiredDetectionClearings,
+	reconcileDetectionEscalations,
 } from "./detection-escalation.js";
 import {
 	createFleetSink,
 	createFounderPager,
-	createSessionTargetResolver,
+	createReceiptAwareTargetResolver,
 } from "./detection-escalation-sinks.js";
 import {
 	createSuspicionRegistry,
@@ -239,8 +241,8 @@ import {
 	type SuspicionRecord,
 } from "./detection-gap-scan.js";
 import {
-	notifyUnlessClearing,
 	resolveClearedGapEpisodes,
+	runDetectionReconcileCohorts,
 	runDetectionReconcileTick,
 } from "./detection-reconcile-tick.js";
 import {
@@ -353,6 +355,7 @@ import {
 } from "./lead-event-delivery.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
+import { LeadReceiptPatrol } from "./lead-receipt-patrol.js";
 import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
@@ -491,6 +494,7 @@ import {
 	makeRunnerAuthScan,
 } from "./runner-auth-scan.js";
 import { makeRunnerQuotaScan } from "./runner-quota-scan.js";
+import { RunnerReceiptPatrol } from "./runner-receipt-patrol.js";
 import { attemptRunnerRecoveryNudge } from "./runner-recovery-nudge.js";
 import {
 	handleRunnerApply,
@@ -527,6 +531,7 @@ import {
 	reconcileStateStoreGhosts,
 	type StateStoreGhostDeps,
 } from "./statestore-ghost-reconcile.js";
+import { fingerprintOutput } from "./stuck-candidate.js";
 import {
 	buildStuckRunnerDetector,
 	hasPendingBlockingGateFromCommDb,
@@ -6305,10 +6310,6 @@ export async function startBridge(
 	const founderApprovalIsHeld = (executionId: string): boolean =>
 		founderApprovalHoldGuard(store, store.getSession(executionId));
 
-	// FLY-1099 §4.1: the reason-classified hold face (same predicate order as
-	// isReviewHeld — shared implementation, cannot drift).
-	const founderHoldReasonFor = (executionId: string) =>
-		reviewHoldReason(store, store.getSession(executionId));
 	// FLY-1099: current canonical founder id (same derivation the factory uses).
 	const founderCanonicalId = (): string | undefined =>
 		deriveCanonicalFounderId(
@@ -6332,39 +6333,6 @@ export async function startBridge(
 		},
 		env: process.env,
 		log: (message) => console.warn(message),
-	});
-
-	const founderShipApprovalCallback = makeFounderShipApprovalCallback({
-		discordOwnerUserId: config.discordOwnerUserId,
-		founderConsentUserId: config.founderConsent?.founderUserId,
-		store,
-		denylistProjects: founderAutoApproveDenylist,
-		// FLY-1041 Chunk 4: attribution forensics; Chunk 5: hold alignment.
-		auditStore: store,
-		isHeld: founderApprovalIsHeld,
-		mergedGateGuard,
-		projectRootFor,
-		// FLY-1099 §4.2: held approvals are durably deferred (codex_pending /
-		// qa_not_green) instead of silently declined; merge_block gets the
-		// recovery pointer. Kill-switches read per call inside.
-		deferralSupport: (ctx) =>
-			makeDeferralSupport({
-				store,
-				holdReasonFor: founderHoldReasonFor,
-				ctx,
-			}),
-		// The db flowing through the deliverer IS a real CommDB (GateResponseDb is
-		// its structural subset), so widening it for the wake is sound at runtime.
-		onResponseWritten: (info) =>
-			founderShipPostWriteHook({
-				executionId: info.executionId,
-				questionId: info.questionId,
-				leadId: info.actor,
-				answer: info.answer,
-				db: info.db as unknown as Parameters<
-					typeof founderShipPostWriteHook
-				>[0]["db"],
-			}),
 	});
 
 	// FLY-799: the founder ✅-reaction ship-approval callback (same gating; the
@@ -6592,6 +6560,19 @@ export async function startBridge(
 	const resolveDetectionOwner = (
 		input: DetectionEscalationInput,
 	): EscalationOwner | null => {
+		for (const project of projects) {
+			if (project.projectName !== input.projectName) continue;
+			for (const lead of project.leads) {
+				if (input.targetKey === `${project.projectName}:${lead.agentId}`) {
+					return {
+						leadId: lead.agentId,
+						projectName: project.projectName,
+						executionId: input.executionId,
+						issueId: input.issueId,
+					};
+				}
+			}
+		}
 		const session = store.getSession(input.targetKey);
 		if (!session?.project_name) return null;
 		const project = projects.find(
@@ -6614,43 +6595,41 @@ export async function startBridge(
 		}
 		return null;
 	};
+	const detectionLeadFirstDeps = {
+		store,
+		runtimeRegistry: registry,
+		resolveOwner: resolveDetectionOwner,
+		// Quiet issue-thread leg with the A5 pre-call guard (Codex design R1 #3):
+		// no bound thread → skip this leg silently. The guardrail lead_event leg
+		// remains the reliable channel.
+		emitThreadNote: async (
+			r: DetectionEscalationInput,
+			owner: EscalationOwner,
+		) => {
+			const poster = suspiciousThreadPoster.current;
+			if (!poster) return;
+			const lead = projects
+				.find((pr) => pr.projectName === owner.projectName)
+				?.leads.find((l) => l.agentId === owner.leadId);
+			const threadId = resolveChatThreadId(store, r.issueId, lead?.chatChannel);
+			if (!threadId) return;
+			await poster(threadId, formatEscalationLeadNote(r));
+		},
+	};
+	const notifyDetectionEpisodeWithOutcome = async (
+		input: DetectionEscalationInput,
+	) => {
+		// Preserve the pre-upsert CLEARING guard used by the legacy path. The
+		// inner helper repeats the check to close the race between this read and
+		// its atomic claim.
+		if (store.hasClearingDetectionEscalationForTarget(input.targetKey)) {
+			return "target_clearing" as const;
+		}
+		return notifyLeadFirst(detectionLeadFirstDeps, input);
+	};
 	const notifyDetectionEpisode = (
 		input: DetectionEscalationInput,
-	): Promise<void> =>
-		notifyUnlessClearing(
-			{
-				store,
-				notify: async (guarded) => {
-					await notifyLeadFirst(
-						{
-							store,
-							runtimeRegistry: registry,
-							resolveOwner: resolveDetectionOwner,
-							// Quiet issue-thread leg with the A5 pre-call guard (Codex
-							// design R1 #3): no bound thread → skip this leg silently,
-							// never call the poster with an unbound thread. The
-							// guardrail lead_event leg is the reliable channel.
-							emitThreadNote: async (r, owner) => {
-								const poster = suspiciousThreadPoster.current;
-								if (!poster) return;
-								const lead = projects
-									.find((pr) => pr.projectName === owner.projectName)
-									?.leads.find((l) => l.agentId === owner.leadId);
-								const threadId = resolveChatThreadId(
-									store,
-									r.issueId,
-									lead?.chatChannel,
-								);
-								if (!threadId) return;
-								await poster(threadId, formatEscalationLeadNote(r));
-							},
-						},
-						guarded,
-					);
-				},
-			},
-			input,
-		);
+	): Promise<void> => notifyDetectionEpisodeWithOutcome(input).then(() => {});
 
 	const watchdogJudge = createWatchdogJudge({
 		repoRoot: projects[0]?.projectRoot ?? process.cwd(),
@@ -6995,10 +6974,12 @@ export async function startBridge(
 	const detectionTerminalStatuses = new Set<string>(
 		OUTCOME_STATUSES.filter((s) => s !== "approved_to_ship"),
 	);
+	const receiptDetectionKinds = ["wake_failed", "receipt_unprocessed"] as const;
+	const receiptDetectionKindSet = new Set<string>(receiptDetectionKinds);
 	const detectionGraceByProject = await loadDetectionGraceByProject(projects);
 	const detectionPageFounder = createFounderPager({
 		store,
-		resolveTarget: createSessionTargetResolver({ store, projects }),
+		resolveTarget: createReceiptAwareTargetResolver({ store, projects }),
 		discordOwnerUserId: config.discordOwnerUserId,
 		discordBotToken: config.discordBotToken,
 		// NEVER silent (plan C3): an unaddressable/undeliverable founder page
@@ -7009,9 +6990,15 @@ export async function startBridge(
 			const sink = leadPendingAlertHolder.current;
 			if (!sink) return;
 			const session = store.getSession(row.target_key);
+			const receiptProject = projects.find((project) =>
+				project.leads.some(
+					(lead) => row.target_key === `${project.projectName}:${lead.agentId}`,
+				),
+			);
 			await sink.alert({
 				leadId: row.owner_lead_id ?? "unassigned",
-				projectName: session?.project_name ?? "unknown",
+				projectName:
+					session?.project_name ?? receiptProject?.projectName ?? "unknown",
 				eventId: `detection-page-undeliverable:${row.target_key}:${row.kind}:${row.episode_fingerprint}`,
 				eventType: "detection_page_undeliverable",
 				title: "Detection founder-page undeliverable",
@@ -7026,8 +7013,18 @@ export async function startBridge(
 	const detectionFleetSink = createFleetSink({
 		// Codex code R1 #3: issue_id is a Linear UUID — the project must come
 		// from the target's session row or the aggregate routes to unknown-lead.
-		resolveProject: (row) =>
-			store.getSession(row.target_key)?.project_name ?? null,
+		resolveProject: (row) => {
+			const sessionProject = store.getSession(row.target_key)?.project_name;
+			if (sessionProject) return sessionProject;
+			return (
+				projects.find((project) =>
+					project.leads.some(
+						(lead) =>
+							row.target_key === `${project.projectName}:${lead.agentId}`,
+					),
+				)?.projectName ?? null
+			);
+		},
 		alertSink: {
 			// Throwing (not swallowing) keeps the C3 contract: an unsurfaced
 			// fleet aggregate leaves every row LEAD_NOTIFIED for the next pass.
@@ -7116,9 +7113,66 @@ export async function startBridge(
 				Number.isFinite(clearingTtlEnv) && clearingTtlEnv > 0
 					? clearingTtlEnv
 					: undefined,
+			kindFilter: { excludeKinds: receiptDetectionKinds },
+			maintainClearing: false,
 			// FN4 undelivered-age rides the same knob family as consumed-ack
 			// (FLYWHEEL_GAP_UNCONSUMED_MS, default 30min) — one semantic, one knob.
 			fn4OverdueMs: defaultGapThresholds(process.env).unconsumedMs,
+		});
+	};
+	const receiptDetectionReconcileTick = async (): Promise<void> => {
+		const graceEnv = Number.parseInt(
+			process.env.FLYWHEEL_DETECTION_LEAD_GRACE_MS ?? "",
+			10,
+		);
+		const thresholdEnv = Number.parseInt(
+			process.env.FLYWHEEL_DETECTION_FLEET_THRESHOLD ?? "",
+			10,
+		);
+		await reconcileDetectionEscalations({
+			store,
+			pageFounder: detectionPageFounder,
+			fleetSink: detectionFleetSink,
+			kindFilter: { includeKinds: receiptDetectionKinds },
+			maintainClearing: false,
+			graceMs: Number.isFinite(graceEnv) && graceEnv > 0 ? graceEnv : undefined,
+			graceMsFor: (row) => {
+				const project = projects.find((candidate) =>
+					candidate.leads.some(
+						(lead) =>
+							row.target_key === `${candidate.projectName}:${lead.agentId}`,
+					),
+				);
+				return project
+					? detectionGraceByProject.get(project.projectName)
+					: undefined;
+			},
+			fleetThreshold:
+				Number.isFinite(thresholdEnv) && thresholdEnv > 0
+					? thresholdEnv
+					: undefined,
+		});
+	};
+	const detectionReconcileCohortsTick = (): Promise<void> => {
+		const clearingTtlEnv = Number.parseInt(
+			process.env.FLYWHEEL_CLEARING_TTL_MS ?? "",
+			10,
+		);
+		return runDetectionReconcileCohorts({
+			legacyEnabled: legacyDeliveryWatchdogsOn,
+			receiptEnabled: receiptFoundationEnabled(),
+			rebound: () => {
+				reboundExpiredDetectionClearings({
+					store,
+					nowMs: Date.now(),
+					clearingTtlMs:
+						Number.isFinite(clearingTtlEnv) && clearingTtlEnv > 0
+							? clearingTtlEnv
+							: undefined,
+				});
+			},
+			legacyPass: detectionReconcileTick,
+			receiptPass: receiptDetectionReconcileTick,
 		});
 	};
 	const parkWatchTick = (): Promise<void> =>
@@ -7148,6 +7202,271 @@ export async function startBridge(
 			}
 		}
 	};
+	const receiptEnvMs = (name: string, fallback: number): number => {
+		const value = Number.parseInt(process.env[name] ?? "", 10);
+		return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+	};
+	const receiptEnvMinutes = (name: string, fallback: number): number => {
+		const value = Number.parseInt(process.env[name] ?? "", 10);
+		return Number.isSafeInteger(value) && value > 0 ? value * 60_000 : fallback;
+	};
+	let receiptNudgeAuditSeq = 0;
+	const receiptWakePatrol = new RunnerReceiptPatrol({
+		projectNames: projects.map((project) => project.projectName),
+		commDbPathForProject,
+		receiptFoundationEnabled: () => receiptFoundationEnabled(),
+		resolveTargetState: ({ projectName, executionId }) => {
+			const session = store.getSession(executionId);
+			if (!session || session.project_name !== projectName) return "missing";
+			return ["failed", "blocked", "timeout", "canceled", "cancelled"].includes(
+				session.status,
+			)
+				? "terminal"
+				: "live";
+		},
+		t1Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T1_MS", 90_000),
+		t2Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T2_MS", 5 * 60_000),
+		t3Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T3_MS", 12 * 60_000),
+		pushWake: async ({ db, wake, verified }) => {
+			let envelope: {
+				content: string;
+				metadata?: Record<string, unknown>;
+			};
+			try {
+				envelope = JSON.parse(wake.envelope_json ?? "") as typeof envelope;
+			} catch {
+				return { ok: false, error: "invalid frozen wake envelope" };
+			}
+			const session = db.getSession(wake.execution_id);
+			return wakeRunnerMailbox({
+				db,
+				execId: wake.execution_id,
+				fromAgent: session?.lead_id ?? "flywheel-eng-lead",
+				content: envelope.content,
+				metadata: envelope.metadata,
+				...(session?.vendor ? { backend: session.vendor } : {}),
+				verified,
+			});
+		},
+		nudgeWakePointer: async ({ projectName, wake, causalQuestionId }) => {
+			const session = store.getSession(wake.execution_id);
+			let leadId: string | undefined;
+			try {
+				const comm = new CommDB(commDbPathForProject(projectName), false);
+				try {
+					leadId = comm.getSession(wake.execution_id)?.lead_id ?? undefined;
+				} finally {
+					comm.close();
+				}
+			} catch {
+				return { nudged: false, error: "commdb_binding_unavailable" };
+			}
+			if (!session || !leadId) {
+				return { nudged: false, error: "live_binding_missing" };
+			}
+			const capture = await defaultCaptureSession(
+				wake.execution_id,
+				projectName,
+				100,
+			);
+			if (isCaptureError(capture)) {
+				return { nudged: false, error: `capture_${capture.error}` };
+			}
+			const outcome = await attemptRunnerRecoveryNudge(
+				{
+					mode: "wake_pointer",
+					actor: "receipt-patrol",
+					executionId: wake.execution_id,
+					leadId,
+					fingerprint: fingerprintOutput(capture.output),
+					...(causalQuestionId ? { causalQuestionId } : {}),
+				},
+				{
+					store,
+					projects,
+					captureSessionFn: defaultCaptureSession,
+					hasPendingGate: hasPendingGateFromCommDb,
+					hasCausalResponse: (executionId, currentProject, questionId) => {
+						const comm = new CommDB(
+							commDbPathForProject(currentProject),
+							false,
+						);
+						try {
+							return Boolean(
+								comm.getSession(executionId) && comm.getResponse(questionId),
+							);
+						} finally {
+							comm.close();
+						}
+					},
+					isWakeBindingLive: (executionId, currentProject) => {
+						const comm = new CommDB(
+							commDbPathForProject(currentProject),
+							false,
+						);
+						try {
+							return Boolean(
+								comm.getSession(executionId) &&
+									store.getSession(executionId)?.project_name ===
+										currentProject,
+							);
+						} finally {
+							comm.close();
+						}
+					},
+					isDeclaredParked: (executionId, currentProject) => {
+						const comm = new CommDB(
+							commDbPathForProject(currentProject),
+							false,
+						);
+						try {
+							return (
+								comm.getEffectiveDeclaredState(executionId, Date.now())
+									?.kind === "parked"
+							);
+						} finally {
+							comm.close();
+						}
+					},
+					sendKeys: sendKeysToWindow,
+					getTmuxTarget: getTmuxTargetFromCommDb,
+					now: () => Date.now(),
+					nextAuditSeq: () => ++receiptNudgeAuditSeq,
+				},
+			);
+			return {
+				nudged: outcome.body.nudged,
+				...(outcome.body.error ? { error: outcome.body.error } : {}),
+			};
+		},
+		notifyWakeFailure: async ({
+			projectName,
+			wake,
+			reason,
+			firstDetectedAtMs,
+		}) => {
+			const session = store.getSession(wake.execution_id);
+			if (!session) return false;
+			const input: DetectionEscalationInput = {
+				targetKey: wake.execution_id,
+				kind: "wake_failed",
+				episodeFingerprint: createHash("sha256")
+					.update(wake.message_id)
+					.digest("hex")
+					.slice(0, 16),
+				executionId: wake.execution_id,
+				issueId: session.issue_id,
+				issueIdentifier: session.issue_identifier,
+				projectName,
+				firstDetectedAtMs,
+				reason: `runner wake 未取得 started 收据(${reason})`,
+				nextStep: "Lead 检查 runner mailbox/pane,必要时人工恢复",
+			};
+			if (!resolveDetectionOwner(input)) return false;
+			const outcome = await notifyDetectionEpisodeWithOutcome(input);
+			if (outcome !== "notified" && outcome !== "already_notified") {
+				return false;
+			}
+			return (
+				store.getDetectionEscalation(
+					input.targetKey,
+					input.kind,
+					input.episodeFingerprint,
+				)?.status !== "NEW"
+			);
+		},
+	});
+	const leadReceiptPatrol = new LeadReceiptPatrol({
+		projectNames: projects.map((project) => project.projectName),
+		commDbPathForProject,
+		receiptFoundationEnabled: () => receiptFoundationEnabled(),
+		ownerEpoch: () => leadInboxRuntime.receiptOwnerEpoch(),
+		windowMs: receiptEnvMinutes(
+			"FLYWHEEL_RECEIPT_UNPROCESSED_WINDOW_MIN",
+			30 * 60_000,
+		),
+		receiptWindowsMs: receiptPriorityWindowsMs(),
+		activationDryRun: () =>
+			process.env.FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN === "1",
+		resendCap: (() => {
+			const value = Number.parseInt(
+				process.env.FLYWHEEL_RECEIPT_RESEND_CAP ?? "",
+				10,
+			);
+			return Number.isSafeInteger(value) && value > 0 ? value : 2;
+		})(),
+		notifyUnprocessed: async ({ payload }) => {
+			const kind = "receipt_unprocessed";
+			if (!receiptDetectionKindSet.has(kind)) return false;
+			const firstDetectedAtMs = Date.parse(payload.firstDeliveredAt);
+			const input: DetectionEscalationInput = {
+				targetKey: payload.targetKey,
+				kind,
+				episodeFingerprint: payload.rootId,
+				executionId: payload.executionId,
+				issueId: payload.issueId,
+				issueIdentifier: payload.issueIdentifier,
+				projectName: payload.projectName,
+				firstDetectedAtMs: Number.isFinite(firstDetectedAtMs)
+					? firstDetectedAtMs
+					: Date.now(),
+				reason:
+					`消息已送达并重发 ${payload.resendRound} 次,仍无已处理收据` +
+					`(${payload.contentSummary})`,
+				nextStep: "Lead 立即完成路由副作用或说明阻塞原因",
+			};
+			if (!resolveDetectionOwner(input)) return false;
+			const outcome = await notifyDetectionEpisodeWithOutcome(input);
+			if (outcome !== "notified" && outcome !== "already_notified") {
+				return false;
+			}
+			return (
+				store.getDetectionEscalation(
+					input.targetKey,
+					input.kind,
+					input.episodeFingerprint,
+				)?.status !== "NEW"
+			);
+		},
+		notifyAdvisory: async ({ projectName, alert }) => {
+			const sink = leadPendingAlertHolder.current;
+			if (!sink) return false;
+			let payload: Record<string, unknown>;
+			try {
+				payload = JSON.parse(alert.payload) as Record<string, unknown>;
+			} catch {
+				return false;
+			}
+			let leadId =
+				typeof payload.toLead === "string" ? payload.toLead : undefined;
+			if (!leadId && typeof payload.executionId === "string") {
+				let db: CommDB | undefined;
+				try {
+					db = new CommDB(commDbPathForProject(projectName), false);
+					leadId = db.getSession(payload.executionId)?.lead_id ?? undefined;
+				} finally {
+					db?.close();
+				}
+			}
+			if (!leadId) return false;
+			const result = await sink.alert({
+				leadId,
+				projectName,
+				eventId: `receipt-alert:${alert.id}`,
+				eventType: "delivery_dead_letter",
+				title:
+					alert.kind === "wake_cap"
+						? "Runner receipt wake cap reached"
+						: "Lead receipt delivery dead-lettered",
+				body: `receipt foundation alert ${alert.id}: ${alert.payload}`,
+				severity: "warning",
+			});
+			return (
+				(!result.skipped || result.skipped === "duplicate") &&
+				!result.deadLettered
+			);
+		},
+	});
 
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
@@ -7158,6 +7477,10 @@ export async function startBridge(
 		watchdogLivenessEnabled: watchdogFlags.liveness,
 		ensureShipRelevantDiff,
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
+		onReceiptWakePatrolTick: async () => {
+			await receiptWakePatrol.pass();
+			await leadReceiptPatrol.pass();
+		},
 		onDeliveryReconcileTick: legacyDeliveryWatchdogsOn
 			? () => leadEventDelivery.reconcile()
 			: undefined,
@@ -7191,9 +7514,7 @@ export async function startBridge(
 		})(),
 		// FLY-1048 (PR-C): detection-escalation reconcile piggyback (zero new
 		// timer; env-gated inside the tick — unset flag = complete no-op).
-		onDetectionReconcileTick: legacyDeliveryWatchdogsOn
-			? detectionReconcileTick
-			: undefined,
+		onDetectionReconcileTick: detectionReconcileCohortsTick,
 		// FLY-1282 Part D: disposition-receipt delivery — its OWN stage, NOT
 		// under detectionReconcileEveryNTicks (cadence 0 must not become a
 		// hidden receipt kill switch). FLYWHEEL_DISPOSITION_RECEIPT is checked
@@ -7239,9 +7560,7 @@ export async function startBridge(
 		// from config; the founder-reply cursor persists across restarts.
 		discordBotToken: config.discordBotToken,
 		discordOwnerUserId: config.discordOwnerUserId,
-		// FLY-799: founder-in-thread ship approval (default-ON kill-switch inside
-		// the factory). Absent (fcWiring null) → deliverer stays WAKE-only.
-		tryFounderShipApproval: founderShipApprovalCallback,
+		receiptFoundationEnabled: () => receiptFoundationEnabled(),
 		// FLY-1099 §4.3: the deferred-approval rebind pass — the SAME production
 		// post-write hook + canonical founder id the live text path uses (no
 		// second authorization chain).
@@ -7261,10 +7580,6 @@ export async function startBridge(
 		mergedGateGuard,
 		// FLY-799: founder ✅-reaction ship approval (per-gate reaction poll).
 		tryFounderReactionApproval: founderReactionApprovalCallback,
-		// FLY-1041 Chunk 7: the SAME durable binding reader the reaction path
-		// uses — reply-to-card narrows a founder REPLY to its bound ship gate.
-		readCurrentBinding: (executionId, questionId, prHeadSha) =>
-			readCurrentGateMessageBinding(store, executionId, questionId, prHeadSha),
 		cursorStore: founderReplyCursorPath
 			? new FileInboundCursorStore(founderReplyCursorPath)
 			: undefined,

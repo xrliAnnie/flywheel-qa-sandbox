@@ -41,6 +41,7 @@ export {
 	isDirectToggleMetadata,
 	NON_FLAG_ALLOWLIST,
 	RETIRED_FLAGS,
+	receiptFoundationEnabled,
 	resolveAllFlags,
 	resolveFlag,
 	validateFlagTruthEnvironment,

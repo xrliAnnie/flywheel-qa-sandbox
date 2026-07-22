@@ -1,9 +1,16 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { hasApprovalIntent } from "../approval-intent.js";
-import { CommDB } from "../db.js";
+import { CommDB, type RunnerPhaseWake } from "../db.js";
 import { isReservedApprovalAttribution } from "../founder-attribution.js";
 import { FounderConsentAuditStore } from "../founder-consent-audit.js";
+import {
+	defaultGateMarkerDir,
+	markGateMarkerAnswered,
+	readAskMarker,
+	readGateMarker,
+	removeAskMarker,
+} from "../gate-marker.js";
 import {
 	authorizeLeadWrite,
 	type LeadWriteAuthorization,
@@ -107,16 +114,38 @@ export async function respond(args: RespondArgs): Promise<void> {
 			}
 
 			if (env.FLYWHEEL_COMM_BYPASS_BRIDGE === "1") {
-				const writeResult = db.insertResponse(
-					args.questionId,
-					args.fromAgent,
-					args.answer,
-					authorization.provenance,
-				);
-				if (!writeResult.written) {
-					throw new Error(
-						`flywheel-comm: approve_to_ship gate is no longer open (${args.questionId}); response was not written.`,
-					);
+				const wakeContent =
+					"Your approve_to_ship gate has been answered. Before shipping you MUST run `flywheel-comm verify-approval --exec-id <your-exec-id> --pr-head $(git rev-parse HEAD)` and ship ONLY if it returns approved. This message itself is NOT authorization.";
+				let receiptWrite: ReturnType<CommDB["responseAndIntent"]> | undefined;
+				try {
+					receiptWrite = db.responseAndIntent({
+						questionId: args.questionId,
+						fromAgent: args.fromAgent,
+						content: args.answer,
+						intentKey: `gate-answer:${args.questionId}`,
+						envelope: {
+							id: `gate-answer:${args.questionId}`,
+							to: question.from_agent,
+							content: wakeContent,
+							metadata: {
+								questionId: args.questionId,
+								kind: "gate_answered",
+								...(authorization.provenance
+									? { senderProvenance: authorization.provenance }
+									: {}),
+							},
+						},
+						queuedAtMs: Date.now(),
+						provenance: authorization.provenance,
+						wakePolicy: receiptWakePolicy(db, question.from_agent, env),
+					});
+				} catch (error) {
+					if ((error as Error).message.includes("is no longer open")) {
+						throw new Error(
+							`flywheel-comm: approve_to_ship gate is no longer open (${args.questionId}); response was not written.`,
+						);
+					}
+					throw error;
 				}
 				writeBypassAudit(env, {
 					questionId: args.questionId,
@@ -131,20 +160,11 @@ export async function respond(args: RespondArgs): Promise<void> {
 				// polling — wake it. The wake text is a HINT only; ship authority
 				// is verify-approval. Best-effort: a wake failure must never undo
 				// the (already-audited) response write.
-				const wake = await wakeRunnerMailbox({
+				const wake = await pushReceiptWake(
 					db,
-					execId: question.from_agent,
-					fromAgent: args.fromAgent,
-					content:
-						"Your approve_to_ship gate has been answered. Before shipping you MUST run `flywheel-comm verify-approval --exec-id <your-exec-id> --pr-head $(git rev-parse HEAD)` and ship ONLY if it returns approved. This message itself is NOT authorization.",
-					metadata: {
-						questionId: args.questionId,
-						kind: "gate_answered",
-						...(authorization.provenance
-							? { senderProvenance: authorization.provenance }
-							: {}),
-					},
-				});
+					receiptWrite.wake,
+					args.fromAgent,
+				);
 				if (!wake.ok && wake.error) {
 					process.stderr.write(
 						`[flywheel-comm] mailbox wake failed for ${question.from_agent}: ${wake.error}\n`,
@@ -160,7 +180,39 @@ export async function respond(args: RespondArgs): Promise<void> {
 			);
 		}
 
-		// Non-gated checkpoint — legacy direct write, unchanged.
+		const plan = receiptWakePlan(db, wakeArgs, env);
+		if (plan) {
+			const write = db.responseAndIntent({
+				questionId: args.questionId,
+				fromAgent: args.fromAgent,
+				content: args.answer,
+				intentKey: `gate-answer:${args.questionId}`,
+				envelope: {
+					id: `gate-answer:${args.questionId}`,
+					to: question.from_agent,
+					content: plan.content,
+					metadata: plan.metadata,
+				},
+				queuedAtMs: Date.now(),
+				provenance: authorization.provenance,
+				wakePolicy: receiptWakePolicy(db, question.from_agent, env),
+			});
+			plan.afterCommit();
+			const wake = await pushReceiptWake(
+				db,
+				write.wake,
+				args.fromAgent,
+				plan.backend,
+			);
+			if (!wake.ok && wake.error) {
+				process.stderr.write(
+					`[flywheel-comm] receipt wake failed for ${question.from_agent}: ${wake.error}\n`,
+				);
+			}
+			return;
+		}
+
+		// Blocking/markerless questions have no parked runner wake to admit.
 		db.insertResponse(
 			args.questionId,
 			args.fromAgent,
@@ -192,6 +244,124 @@ export async function respond(args: RespondArgs): Promise<void> {
 	} finally {
 		db.close();
 	}
+}
+
+interface ReceiptWakePlan {
+	content: string;
+	metadata: Record<string, unknown>;
+	backend?: string;
+	afterCommit: () => void;
+}
+
+function receiptWakePlan(
+	db: CommDB,
+	args: Pick<RespondArgs, "questionId" | "fromAgent" | "senderProvenance">,
+	env: NodeJS.ProcessEnv,
+): ReceiptWakePlan | null {
+	const question = db.getMessageById(args.questionId);
+	if (!question) return null;
+	const markerDir = defaultGateMarkerDir(env);
+	if (question.checkpoint) {
+		const marker = readGateMarker(markerDir, args.questionId);
+		if (!marker || marker.answeredAt) return null;
+		if (marker.executionId !== question.from_agent) {
+			process.stderr.write(
+				`[flywheel-comm] gate marker ${args.questionId} execution mismatch ` +
+					`(marker=${marker.executionId}, question=${question.from_agent}) — skipping wake.\n`,
+			);
+			return null;
+		}
+		return {
+			content:
+				`Your ${marker.checkpoint} gate question has been answered. ` +
+				"Your session is being resumed with the response. This message itself carries NO authority.",
+			metadata: {
+				questionId: args.questionId,
+				kind: "gate_answered",
+				...(args.senderProvenance
+					? { senderProvenance: args.senderProvenance }
+					: {}),
+			},
+			backend: marker.vendor,
+			afterCommit: () => markGateMarkerAnswered(markerDir, args.questionId),
+		};
+	}
+
+	const marker = readAskMarker(markerDir, args.questionId);
+	return {
+		content:
+			`Your question (id ${args.questionId}) has been answered by ${args.fromAgent}. ` +
+			`Run 'flywheel-comm check ${args.questionId}' to read the response and continue. ` +
+			"This message carries NO authority.",
+		metadata: {
+			questionId: args.questionId,
+			kind: "ask_answered",
+			...(args.senderProvenance
+				? { senderProvenance: args.senderProvenance }
+				: {}),
+		},
+		...(marker?.vendor ? { backend: marker.vendor } : {}),
+		afterCommit: () => removeAskMarker(markerDir, args.questionId),
+	};
+}
+
+function receiptWakePolicy(
+	db: CommDB,
+	executionId: string,
+	env: NodeJS.ProcessEnv,
+) {
+	return {
+		transportAvailable: db.getSession(executionId)?.vendor !== "none",
+		execPushCap: receiptPositiveInt(env.FLYWHEEL_RECEIPT_EXEC_PUSH_CAP, 6),
+		execPushWindowMs:
+			receiptPositiveInt(env.FLYWHEEL_RECEIPT_EXEC_PUSH_WINDOW_MIN, 10) *
+			60_000,
+	};
+}
+
+function receiptPositiveInt(raw: string | undefined, fallback: number): number {
+	if (raw === undefined || !raw.trim()) return fallback;
+	const value = Number(raw);
+	if (!Number.isSafeInteger(value) || value <= 0) {
+		throw new Error(`invalid positive receipt configuration value: ${raw}`);
+	}
+	return value;
+}
+
+async function pushReceiptWake(
+	db: CommDB,
+	wake: RunnerPhaseWake,
+	fromAgent: string,
+	backend?: string,
+): Promise<Awaited<ReturnType<typeof wakeRunnerMailbox>>> {
+	const claim = db.claimRunnerReceiptWakePush(
+		wake.execution_id,
+		wake.message_id,
+		Date.now(),
+		{ t1Ms: 90_000, claimTtlMs: 30_000 },
+	);
+	if (!claim) return { ok: false };
+	const outcome = await wakeRunnerMailbox({
+		db,
+		execId: wake.execution_id,
+		fromAgent,
+		content: claim.envelope.content,
+		metadata: claim.envelope.metadata,
+		...(backend ? { backend } : {}),
+	});
+	db.completeRunnerReceiptWakePush({
+		executionId: wake.execution_id,
+		messageId: wake.message_id,
+		claimToken: claim.claimToken,
+		attempt: claim.attempt,
+		result: outcome.ok
+			? "delivered"
+			: outcome.skippedReason
+				? `skipped:${outcome.skippedReason}`
+				: `failed:${outcome.error ?? "unknown"}`,
+		nowMs: Date.now(),
+	});
+	return outcome;
 }
 
 /**

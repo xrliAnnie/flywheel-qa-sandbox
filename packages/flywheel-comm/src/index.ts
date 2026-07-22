@@ -32,6 +32,7 @@ import {
 	recordFounderUxSignoff,
 } from "./commands/founder-ux.js";
 import { gate } from "./commands/gate.js";
+import { handleReceipt } from "./commands/handle-receipt.js";
 import { inbox } from "./commands/inbox.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
@@ -46,6 +47,7 @@ import { reportDeployed } from "./commands/report-deployed.js";
 import { requestReview } from "./commands/request-review.js";
 import { respond } from "./commands/respond.js";
 import { reviewRuling } from "./commands/review-ruling.js";
+import { routeFounderReply } from "./commands/route-founder-reply.js";
 import { runRunnerConfig } from "./commands/runner-config.js";
 import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
@@ -88,6 +90,9 @@ Commands:
             exit 0 only when approved. The wake message itself is NEVER authority.
   pending   List unanswered questions for a lead
   respond   Respond to a runner's question
+  route-founder-reply  Handle a founder receipt: relay its original text to an
+            eligible pending question, or explicitly close it as no-route (Lead use)
+  handle-receipt  Category-agnostic Lead action: ack/no-route/relay/respond a receipt
   send      Send an instruction to a runner (Lead use)
   lead-lease  Manage the Lead identity lease (acquire|bind|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
@@ -198,6 +203,12 @@ async function main(): Promise<void> {
 			break;
 		case "respond":
 			await runRespond(commandArgs);
+			break;
+		case "route-founder-reply":
+			runRouteFounderReply(commandArgs);
+			break;
+		case "handle-receipt":
+			runHandleReceipt(commandArgs);
 			break;
 		case "send":
 			await runSend(commandArgs);
@@ -543,6 +554,107 @@ async function runRespond(args: string[]): Promise<void> {
 	}
 }
 
+function runRouteFounderReply(args: string[]): void {
+	const { values } = parseArgs({
+		args,
+		options: {
+			msg: { type: "string" },
+			lead: { type: "string" },
+			"to-question": { type: "string" },
+			"no-route": { type: "boolean", default: false },
+			reason: { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: false,
+	});
+	if (!values.msg) throw new Error("--msg is required");
+	if (!values.lead) throw new Error("--lead is required");
+	if (Boolean(values["to-question"]) === Boolean(values["no-route"])) {
+		throw new Error("exactly one of --to-question or --no-route is required");
+	}
+	if (values["no-route"] && !values.reason) {
+		throw new Error("--reason is required with --no-route");
+	}
+	if (!values["no-route"] && values.reason) {
+		throw new Error("--reason is only valid with --no-route");
+	}
+
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const result = routeFounderReply({
+		msgId: values.msg,
+		leadId: values.lead,
+		dbPath,
+		...(values["to-question"]
+			? { toQuestionId: values["to-question"] }
+			: { noRouteReason: values.reason }),
+	});
+	console.log(
+		values.json ? JSON.stringify(result) : formatRouteFounderResult(result),
+	);
+}
+
+function formatRouteFounderResult(
+	result: ReturnType<typeof routeFounderReply>,
+): string {
+	if (result.kind === "routed") {
+		return `Routed founder reply to ${result.questionId}`;
+	}
+	if (result.kind === "stale_candidate") {
+		return `Question ${result.questionId} is stale; choose another eligible question or use --no-route`;
+	}
+	return "Founder reply closed with an explicit no-route disposition";
+}
+
+function runHandleReceipt(args: string[]): void {
+	const { values } = parseArgs({
+		args,
+		options: {
+			receipt: { type: "string" },
+			lead: { type: "string" },
+			"request-id": { type: "string" },
+			action: { type: "string" },
+			"to-question": { type: "string" },
+			content: { type: "string" },
+			reason: { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: false,
+	});
+	if (!values.receipt) throw new Error("--receipt is required");
+	if (!values.lead) throw new Error("--lead is required");
+	if (!values["request-id"]) throw new Error("--request-id is required");
+	if (
+		values.action !== "ack" &&
+		values.action !== "no-route" &&
+		values.action !== "relay" &&
+		values.action !== "respond"
+	) {
+		throw new Error("--action must be ack, no-route, relay, or respond");
+	}
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const result = handleReceipt({
+		dbPath,
+		requestId: values["request-id"],
+		receiptId: values.receipt,
+		leadId: values.lead,
+		action: values.action,
+		...(values["to-question"]
+			? { targetQuestionId: values["to-question"] }
+			: {}),
+		...(values.content ? { content: values.content } : {}),
+		...(values.reason ? { reason: values.reason } : {}),
+	});
+	console.log(
+		values.json
+			? JSON.stringify(result)
+			: `Handled ${result.receiptId} with ${result.action}`,
+	);
+}
+
 async function runSend(args: string[]): Promise<void> {
 	const { values, positionals } = parseArgs({
 		args,
@@ -595,12 +707,23 @@ function runInbox(args: string[]): void {
 		allowPositionals: false,
 	});
 
-	if (!values["exec-id"]) {
-		throw new Error("--exec-id is required");
+	const envExecId = process.env.FLYWHEEL_EXEC_ID;
+	const execId = values["exec-id"] ?? envExecId;
+	if (!execId) {
+		throw new Error(
+			"FLYWHEEL_EXEC_ID is required (or pass --exec-id for debug)",
+		);
+	}
+	const debugExecOverride =
+		Boolean(values["exec-id"]) && values["exec-id"] !== envExecId;
+	if (debugExecOverride) {
+		console.error(
+			`[flywheel-comm inbox] WARNING: --exec-id override (${values["exec-id"]}) — use only for debug/test.`,
+		);
 	}
 
 	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const result = inbox({ execId: values["exec-id"], dbPath });
+	const result = inbox({ execId, dbPath, debugExecOverride });
 
 	if (values.json) {
 		console.log(JSON.stringify(result.instructions));
@@ -711,6 +834,7 @@ function runDeclareState(
  * itself); an explicit `--exec-id` is a loud debug override.
  */
 function runTurn(args: string[]): void {
+	const observedAtMs = Date.now();
 	const { values } = parseArgs({
 		args,
 		options: {
@@ -746,6 +870,13 @@ function runTurn(args: string[]): void {
 	const db = new CommDB(dbPath);
 	try {
 		const status = turnStatus(db, execId);
+		db.ackRunnerReceiptWakesStarted(
+			execId,
+			observedAtMs,
+			values["exec-id"] && values["exec-id"] !== envExecId
+				? "debug_override"
+				: "exec_cli",
+		);
 		if (values.json) {
 			console.log(JSON.stringify(status));
 		} else {

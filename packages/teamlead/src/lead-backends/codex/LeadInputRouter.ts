@@ -133,6 +133,10 @@ export interface LeadInputRouterOptions {
 	 * budget reset must require a durably-accepted NEW topic, not an at-least-once
 	 * re-delivery of an old top-level message). Absent → no-op (byte-compat). */
 	onTopicEngaged?: (route: RoundtableReplyRoute) => void;
+	/** Durable inbound→turn→outbound completion hook. It runs only after the
+	 * journal reaches completed; failures are logged so an already-delivered
+	 * response is never mislabeled ambiguous. */
+	onEntryCompleted?: (entry: import("./LeadJournal.js").JournalEntry) => void;
 	logger?: {
 		warn: (m: string, c?: unknown) => void;
 		error: (m: string, c?: unknown) => void;
@@ -150,6 +154,7 @@ export class LeadInputRouter {
 		route: RoundtableReplyRoute,
 	) => Promise<void>;
 	private readonly onTopicEngaged?: (route: RoundtableReplyRoute) => void;
+	private readonly onEntryCompleted?: LeadInputRouterOptions["onEntryCompleted"];
 	private readonly corr: () => string;
 	private readonly logger: {
 		warn: (m: string, c?: unknown) => void;
@@ -170,6 +175,7 @@ export class LeadInputRouter {
 		this.typing = opts.typing;
 		this.ensureReplyRoute = opts.ensureReplyRoute;
 		this.onTopicEngaged = opts.onTopicEngaged;
+		this.onEntryCompleted = opts.onEntryCompleted;
 		this.corr =
 			opts.correlationFactory ?? (() => globalThis.crypto.randomUUID());
 		this.logger = opts.logger ?? {
@@ -295,7 +301,7 @@ export class LeadInputRouter {
 					entry.replyChannelId,
 					entry.replyRoute,
 				);
-				this.journal.toCompleted(id);
+				this.markCompleted(id);
 			} finally {
 				this.typing?.stop(entry.replyChannelId);
 			}
@@ -404,7 +410,7 @@ export class LeadInputRouter {
 						entry.replyChannelId,
 						entry.replyRoute,
 					);
-					this.journal.toCompleted(entry.id);
+					this.markCompleted(entry.id);
 					return;
 				}
 				// Turn exists but not provably complete → human review.
@@ -420,7 +426,7 @@ export class LeadInputRouter {
 					// "can't-prove → ambiguous" boundary for a stale output_pending row.
 					await this.ensureReplyRouteIfNeeded(entry.replyRoute);
 					await this.sender.deliver(entry.outboxId);
-					this.journal.toCompleted(entry.id);
+					this.markCompleted(entry.id);
 				} else if (entry.output !== undefined) {
 					// model_completed: output was persisted in the journal (CR HIGH-1)
 					// → re-enqueue with the deterministic key (idempotent) + deliver.
@@ -431,7 +437,7 @@ export class LeadInputRouter {
 						entry.replyChannelId,
 						entry.replyRoute,
 					);
-					this.journal.toCompleted(entry.id);
+					this.markCompleted(entry.id);
 				} else {
 					this.safeAmbiguous(
 						entry.id,
@@ -445,6 +451,17 @@ export class LeadInputRouter {
 	}
 
 	// ── helpers ───────────────────────────────────────────────────────────────
+	private markCompleted(id: string): void {
+		const completed = this.journal.toCompleted(id);
+		try {
+			this.onEntryCompleted?.(completed);
+		} catch (error) {
+			this.logger.error("completed-entry receipt hook failed", {
+				id,
+				error: (error as Error).message,
+			});
+		}
+	}
 
 	private safeAmbiguous(id: string, reason: string): void {
 		try {

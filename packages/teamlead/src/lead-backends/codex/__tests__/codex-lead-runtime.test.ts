@@ -51,6 +51,7 @@ function fullEnv(
 		FLYWHEEL_CODEX_LEAD_STATE_DIR: "/var/state/mufasa",
 		FLYWHEEL_CODEX_BIN: "/usr/local/bin/codex",
 		CODEX_HOME: "/Users/x/.codex-mufasa",
+		FLYWHEEL_COMM_DB: "/var/state/flywheel/comm.db",
 		...over,
 	};
 }

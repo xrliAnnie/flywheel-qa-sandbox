@@ -159,4 +159,62 @@ describe("attemptRunnerRecoveryNudge (FLY-368 shared audited op)", () => {
 		expect(out.status).toBe(409);
 		expect(sendKeys).not.toHaveBeenCalled();
 	});
+
+	it("wake_pointer mode wakes an awaiting-review runner with the fixed inbox pointer", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-1",
+			project_name: "geo",
+			status: "awaiting_review",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		const out = await attemptRunnerRecoveryNudge(
+			{
+				mode: "wake_pointer",
+				actor: "receipt-patrol",
+				executionId: "exec-1",
+				leadId: "product-lead",
+				fingerprint: STUCK_FP,
+				causalQuestionId: "question-1",
+			},
+			deps({
+				hasCausalResponse: () => true,
+				isWakeBindingLive: () => true,
+			}),
+		);
+
+		expect(out.status).toBe(200);
+		expect(sendKeys).toHaveBeenCalledWith(
+			"geo:@1",
+			"你有 pending wake,跑 flywheel-comm inbox",
+		);
+		expect(store.getStuckDisposition("exec-1", STUCK_FP)).toBeUndefined();
+	});
+
+	it("wake_pointer mode fails closed when the causal answer is absent", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-1",
+			project_name: "geo",
+			status: "awaiting_review",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		const out = await attemptRunnerRecoveryNudge(
+			{
+				mode: "wake_pointer",
+				actor: "receipt-patrol",
+				executionId: "exec-1",
+				leadId: "product-lead",
+				fingerprint: STUCK_FP,
+				causalQuestionId: "question-1",
+			},
+			deps({
+				hasCausalResponse: () => false,
+				isWakeBindingLive: () => true,
+			}),
+		);
+
+		expect(out.status).toBe(409);
+		expect(sendKeys).not.toHaveBeenCalled();
+	});
 });

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1392 · 消息收据地基 · 设计方案</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, "PingFang SC", sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.7; padding:24px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:28px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:24px 28px; margin-bottom:20px; }
+  .card h2 { font-size:18px; color:#1a365d; margin-bottom:14px; display:flex; align-items:center; gap:8px; }
+  .num { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:50%; background:#007aff; color:#fff; font-size:14px; flex-shrink:0; }
+  .oneliner { font-size:20px; font-weight:600; line-height:1.6; }
+  .oneliner .hl { color:#007aff; }
+  /* 流程图 */
+  .flow { display:flex; flex-direction:column; align-items:center; gap:0; margin:10px 0; }
+  .frow { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }
+  .fbox { border-radius:10px; padding:10px 16px; font-size:14px; text-align:center; border:1.5px solid; }
+  .src { background:#f0f7ff; border-color:#b3d4ff; color:#1a365d; }
+  .ledger { background:#fff8e6; border-color:#ffd27a; color:#7a4b00; font-weight:600; }
+  .lead { background:#eefaf1; border-color:#a5e0b5; color:#1d6234; font-weight:600; }
+  .done { background:#eefaf1; border-color:#34c759; color:#1d6234; }
+  .warn { background:#fff2f0; border-color:#ffb3ab; color:#8a2018; }
+  .esc { background:#fdeef7; border-color:#f2a5cf; color:#7d2054; font-weight:600; }
+  .arrow { color:#86868b; font-size:18px; padding:2px 0; text-align:center; }
+  .split { display:flex; gap:28px; flex-wrap:wrap; justify-content:center; align-items:flex-start; }
+  .branch { display:flex; flex-direction:column; align-items:center; }
+  .blabel { font-size:12px; color:#86868b; padding:2px 0; }
+  .note { font-size:13px; color:#86868b; margin-top:10px; }
+  /* 表格/列表 */
+  .row { display:flex; gap:12px; margin-bottom:14px; align-items:flex-start; }
+  .row:last-child { margin-bottom:0; }
+  .dot { flex-shrink:0; width:8px; height:8px; border-radius:50%; margin-top:10px; }
+  .d-blue { background:#007aff; } .d-amber { background:#ff9500; } .d-green { background:#34c759; } .d-red { background:#ff3b30; } .d-purple { background:#af52de; }
+  .row b { color:#1a365d; }
+  .ledger-demo { border-collapse:collapse; width:100%; font-size:13.5px; margin-top:8px; }
+  .ledger-demo th { text-align:left; color:#86868b; font-weight:600; padding:6px 10px; border-bottom:1.5px solid #e8e8ed; white-space:nowrap; }
+  .ledger-demo td { padding:8px 10px; border-bottom:1px solid #f0f0f2; }
+  .tag { display:inline-block; border-radius:6px; padding:1px 8px; font-size:12px; font-weight:600; }
+  .t-green { background:#eefaf1; color:#1d6234; } .t-amber { background:#fff8e6; color:#7a4b00; } .t-red { background:#fff2f0; color:#8a2018; } .t-gray { background:#f0f0f2; color:#6e6e73; }
+  .foot { text-align:center; color:#86868b; font-size:13px; margin-top:28px; }
+  @media (max-width:640px) { .card { padding:18px; } .split { gap:14px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>消息收据地基 · 设计方案</h1>
+  <div class="sub">FLY-1392 设计 v2(按你 7-21 的裁定重做:不分消息种类,一律记账)· 等你点头后才开工实现</div>
+
+  <!-- 1 一句话 -->
+  <div class="card">
+    <h2><span class="num">1</span>一句话</h2>
+    <div class="oneliner">每条发给主管的消息都记一笔账,账上只问一件事 ——<span class="hl">「主管办了没有」</span>;没办自动提醒,一直不办就升级到你。<br>不管消息是谁发的、什么种类 —— <span class="hl">以后新增的种类也自动被管住,不用任何人做任何事。</span></div>
+  </div>
+
+  <!-- 2 核心流程图 -->
+  <div class="card">
+    <h2><span class="num">2</span>核心流程</h2>
+    <div class="flow">
+      <div class="frow">
+        <div class="fbox src">你的回复</div>
+        <div class="fbox src">队员提问</div>
+        <div class="fbox src">工作报告</div>
+        <div class="fbox src">其他主管的消息</div>
+        <div class="fbox src">以后新增的任何种类</div>
+      </div>
+      <div class="arrow">↓ 一进来,先记账</div>
+      <div class="fbox ledger">账本记一行:「到了」✓</div>
+      <div class="arrow">↓ 原样转给主管(系统自己绝不代答)</div>
+      <div class="fbox lead">主管处理</div>
+      <div class="split" style="margin-top:10px;">
+        <div class="branch">
+          <div class="blabel">办了</div>
+          <div class="fbox done">账上标「办了」✓<br><span style="font-size:12px;">(事情确实办完的,系统也会自动销账)</span></div>
+        </div>
+        <div class="branch">
+          <div class="blabel">到点还没办</div>
+          <div class="fbox warn">自动提醒主管<br><span style="font-size:12px;">「第 N 次提醒」,有次数上限</span></div>
+          <div class="arrow">↓ 提醒完仍没办</div>
+          <div class="fbox esc">升级到你(只升一次)</div>
+        </div>
+      </div>
+    </div>
+    <div class="note">提醒节奏按轻重缓急:你的消息和队员提问 30 分钟内、工作报告 4 小时内、低优先度消息 24 小时内。</div>
+  </div>
+
+  <!-- 3 数据怎么立 -->
+  <div class="card">
+    <h2><span class="num">3</span>数据怎么立</h2>
+    <div>一张账本,<b>一条消息一行</b>。随时可以查任何一条消息的下落:</div>
+    <table class="ledger-demo">
+      <tr><th>消息</th><th>到了</th><th>办了没有</th></tr>
+      <tr><td>你在 issue 下的回复「先别 ship,改一下 X」</td><td>21:03</td><td><span class="tag t-green">办了 21:05</span> 主管已转给队员</td></tr>
+      <tr><td>队员小 A 的提问(卡在权限配置)</td><td>21:10</td><td><span class="tag t-amber">还没办 · 已提醒 1 次</span></td></tr>
+      <tr><td>队员小 B 的完工报告</td><td>20:40</td><td><span class="tag t-green">办了 22:15</span> 主管已确认</td></tr>
+      <tr><td>另一个门里的提问(已被别人解决)</td><td>20:12</td><td><span class="tag t-gray">不用办了</span> 写明原因,不再催</td></tr>
+    </table>
+    <div class="note">新种类的消息自动进账、自动有提醒节奏 —— 不需要任何配置。谁改了「不催」的例外,都有记录可查。</div>
+  </div>
+
+  <!-- 4 关键取舍 -->
+  <div class="card">
+    <h2><span class="num">4</span>关键取舍</h2>
+    <div class="row"><span class="dot d-blue"></span><div><b>工作报告以前不催,现在也催。</b>主管要多做一个小动作(点一下「知道了」,可以一批一起点),换来的是报告永远不会被静默漏掉。</div></div>
+    <div class="row"><span class="dot d-green"></span><div><b>事情确实办完的,系统自动销账。</b>比如提问已经有了回答,就不再催 —— 免得催已经办完的事。但自动销账绝不冒充「主管办了」:别人代办的,账上写清是「不用办了」,不算主管的。</div></div>
+    <div class="row"><span class="dot d-purple"></span><div><b>其他主管之间的消息:账本负责「没办会被发现」,消息传递走原来的路。</b>不重造一套传话系统,只补上原来完全没有的那本账。</div></div>
+    <div class="row"><span class="dot d-red"></span><div><b>「不催」的例外只有一种(纯内部镜像),写死在代码里。</b>加任何新例外都要过代码审查,不存在运行时开关 —— 不给静默漏消息留任何后门。</div></div>
+  </div>
+
+  <!-- 5 诚实边界 -->
+  <div class="card">
+    <h2><span class="num">5</span>诚实边界(这单不解决的)</h2>
+    <div class="row"><span class="dot d-red"></span><div>总控(Bridge)自己挂了,账本和提醒也会停 —— 「谁来看着总控」是下一单(FLY-1393 看门狗)专门解决的。</div></div>
+    <div class="row"><span class="dot d-amber"></span><div>「办了」= 主管说办了(或系统看到确实办了),<b>不检查办的质量</b>。</div></div>
+    <div class="row"><span class="dot d-amber"></span><div>其他主管的消息,只有<b>点名</b>的才记账;频道里的闲聊不记 —— 这是刻意的边界,不是漏。</div></div>
+    <div class="row"><span class="dot d-amber"></span><div>主管本身还是单点(主管挂了消息链路就断)—— 这单只保证「没办会被发现」,主管的备份是后续单。</div></div>
+    <div class="row"><span class="dot d-gray" style="background:#86868b;"></span><div>提醒是分钟级的节奏,不是秒级。</div></div>
+  </div>
+
+  <div class="foot">FLY-1392 · 设计 v2 · 独立技术评审 6 轮通过(23 项问题全部修正)· <b>你点头后才开工实现</b></div>
+</div>
+</body>
+</html>

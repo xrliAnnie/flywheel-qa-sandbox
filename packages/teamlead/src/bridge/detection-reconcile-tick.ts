@@ -36,6 +36,19 @@ import {
 } from "./detection-escalation.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 
+export async function runDetectionReconcileCohorts(input: {
+	legacyEnabled: boolean;
+	receiptEnabled: boolean;
+	rebound: () => void | Promise<void>;
+	legacyPass: () => void | Promise<void>;
+	receiptPass: () => void | Promise<void>;
+}): Promise<void> {
+	if (!input.legacyEnabled && !input.receiptEnabled) return;
+	await input.rebound();
+	if (input.legacyEnabled) await input.legacyPass();
+	if (input.receiptEnabled) await input.receiptPass();
+}
+
 /** C5: cleanup grace before a muted episode may re-report (plan: default 2h). */
 export const DEFAULT_CLEARING_TTL_MS = 7_200_000;
 
@@ -78,6 +91,11 @@ export interface DetectionReconcileTickDeps {
 	graceMsFor?: (row: DetectionEscalationRow) => number | undefined;
 	fleetThreshold?: number;
 	clearingTtlMs?: number;
+	kindFilter?: {
+		includeKinds?: readonly string[];
+		excludeKinds?: readonly string[];
+	};
+	maintainClearing?: boolean;
 	/** FN4 undelivered-age threshold (wired to FLYWHEEL_GAP_UNCONSUMED_MS). */
 	fn4OverdueMs: number;
 	fn4MaxAttempts?: number;
@@ -104,6 +122,7 @@ export async function runDetectionReconcileTick(
 			probe: deps.recoveryProbe,
 			progressResolvableKinds: deps.progressResolvableKinds,
 			preserveOnTerminal: deps.preserveOnTerminal,
+			kindFilter: deps.kindFilter,
 			logger,
 		});
 	} catch (err) {
@@ -112,91 +131,99 @@ export async function runDetectionReconcileTick(
 
 	// 2. FN4: fire + clear. A failing pass must never block the grace
 	// escalation below (each leg has its own catch).
-	try {
-		const candidates = deps.store
-			.getUndeliveredLeadEventsForReconcile({
-				maxAttempts,
-				overdueCutoffMs: nowMs - deps.fn4OverdueMs,
-				// Codex R3 #3: excluded BEFORE the LIMIT so 100 detection-family
-				// rows can never starve genuine failures (matrix filter stays too).
-				excludedEventTypes: [...FN4_EXCLUDED_EVENT_TYPES],
-			})
-			.map((row) => {
-				// Codex code R1 #5: production lead_events carry MIXED session_key
-				// encodings (execution ids AND `<project>:<identifier>` hook keys) —
-				// resolve to a REAL execution id via the payload's own
-				// execution_id first, else a session_key that actually resolves.
-				// Neither resolving ⇒ sessionKey undefined ⇒ the matrix skips it
-				// as unroutable (logged below via the findings loop's session read).
-				let executionId: string | undefined;
-				try {
-					const payload = JSON.parse(row.payload ?? "null") as {
-						execution_id?: unknown;
-					} | null;
-					if (
-						typeof payload?.execution_id === "string" &&
-						deps.store.getSession(payload.execution_id)
-					) {
-						executionId = payload.execution_id;
+	const fn4Included =
+		(!deps.kindFilter?.includeKinds ||
+			deps.kindFilter.includeKinds.includes(DELIVERY_FAILURE_KIND)) &&
+		!deps.kindFilter?.excludeKinds?.includes(DELIVERY_FAILURE_KIND);
+	if (fn4Included) {
+		try {
+			const candidates = deps.store
+				.getUndeliveredLeadEventsForReconcile({
+					maxAttempts,
+					overdueCutoffMs: nowMs - deps.fn4OverdueMs,
+					// Codex R3 #3: excluded BEFORE the LIMIT so 100 detection-family
+					// rows can never starve genuine failures (matrix filter stays too).
+					excludedEventTypes: [...FN4_EXCLUDED_EVENT_TYPES],
+				})
+				.map((row) => {
+					// Codex code R1 #5: production lead_events carry MIXED session_key
+					// encodings (execution ids AND `<project>:<identifier>` hook keys) —
+					// resolve to a REAL execution id via the payload's own
+					// execution_id first, else a session_key that actually resolves.
+					// Neither resolving ⇒ sessionKey undefined ⇒ the matrix skips it
+					// as unroutable (logged below via the findings loop's session read).
+					let executionId: string | undefined;
+					try {
+						const payload = JSON.parse(row.payload ?? "null") as {
+							execution_id?: unknown;
+						} | null;
+						if (
+							typeof payload?.execution_id === "string" &&
+							deps.store.getSession(payload.execution_id)
+						) {
+							executionId = payload.execution_id;
+						}
+					} catch {
+						/* unparseable payload — fall through to session_key */
 					}
-				} catch {
-					/* unparseable payload — fall through to session_key */
-				}
-				if (
-					!executionId &&
-					row.session_key &&
-					deps.store.getSession(row.session_key)
-				) {
-					executionId = row.session_key;
-				}
-				return {
-					seq: row.seq,
-					leadId: row.lead_id,
-					eventType: row.event_type,
-					sessionKey: executionId,
-					deliveryAttempts: row.delivery_attempts ?? 0,
-					createdAtMs: parseSqliteUtcMs(row.created_at),
-				};
+					if (
+						!executionId &&
+						row.session_key &&
+						deps.store.getSession(row.session_key)
+					) {
+						executionId = row.session_key;
+					}
+					return {
+						seq: row.seq,
+						leadId: row.lead_id,
+						eventType: row.event_type,
+						sessionKey: executionId,
+						deliveryAttempts: row.delivery_attempts ?? 0,
+						createdAtMs: parseSqliteUtcMs(row.created_at),
+					};
+				});
+			const findings = evaluateDeliveryFailures(candidates, nowMs, {
+				maxAttempts,
+				overdueMs: deps.fn4OverdueMs,
 			});
-		const findings = evaluateDeliveryFailures(candidates, nowMs, {
-			maxAttempts,
-			overdueMs: deps.fn4OverdueMs,
-		});
-		for (const finding of findings) {
-			const session = deps.store.getSession(finding.sessionKey);
-			if (!session) {
-				logger(
-					`FN4: session ${finding.sessionKey} gone for failed event seq ${finding.seq} — unroutable, skipped`,
-				);
-				continue;
+			for (const finding of findings) {
+				const session = deps.store.getSession(finding.sessionKey);
+				if (!session) {
+					logger(
+						`FN4: session ${finding.sessionKey} gone for failed event seq ${finding.seq} — unroutable, skipped`,
+					);
+					continue;
+				}
+				await deps.notify(buildDeliveryFailureInput(finding, session, nowMs));
 			}
-			await deps.notify(buildDeliveryFailureInput(finding, session, nowMs));
+		} catch (err) {
+			logger(`FN4 fire pass failed: ${(err as Error).message}`);
 		}
-	} catch (err) {
-		logger(`FN4 fire pass failed: ${(err as Error).message}`);
-	}
-	try {
-		for (const row of deps.store.getDetectionEscalationsForReconcile()) {
-			if (row.kind !== DELIVERY_FAILURE_KIND) continue;
-			const parsed = parseDeliveryFailureFingerprint(row.episode_fingerprint);
-			if (!parsed) continue;
-			const delivered = deps.store.isLeadEventDeliveredBySeq(parsed.seq);
-			// delivered OR the evidence row is gone (pruned) → the failure no
-			// longer exists to escalate; close the episode.
-			if (delivered !== false) {
-				deps.store.ackDetectionEscalation(
-					row.target_key,
-					row.kind,
-					row.episode_fingerprint,
-					{ atMs: nowMs, disposition: "resolve", via: "recovery" },
-				);
-				logger(
-					`FN4: seq ${parsed.seq} ${delivered === true ? "delivered" : "pruned"} — episode ${row.episode_fingerprint} auto-RESOLVED`,
-				);
+		try {
+			for (const row of deps.store.getDetectionEscalationsForReconcile(
+				deps.kindFilter,
+			)) {
+				if (row.kind !== DELIVERY_FAILURE_KIND) continue;
+				const parsed = parseDeliveryFailureFingerprint(row.episode_fingerprint);
+				if (!parsed) continue;
+				const delivered = deps.store.isLeadEventDeliveredBySeq(parsed.seq);
+				// delivered OR the evidence row is gone (pruned) → the failure no
+				// longer exists to escalate; close the episode.
+				if (delivered !== false) {
+					deps.store.ackDetectionEscalation(
+						row.target_key,
+						row.kind,
+						row.episode_fingerprint,
+						{ atMs: nowMs, disposition: "resolve", via: "recovery" },
+					);
+					logger(
+						`FN4: seq ${parsed.seq} ${delivered === true ? "delivered" : "pruned"} — episode ${row.episode_fingerprint} auto-RESOLVED`,
+					);
+				}
 			}
+		} catch (err) {
+			logger(`FN4 clear pass failed: ${(err as Error).message}`);
 		}
-	} catch (err) {
-		logger(`FN4 clear pass failed: ${(err as Error).message}`);
 	}
 
 	// 3. The ~30min grace escalation (C3 core — incl. the clearing-TTL rebound).
@@ -209,6 +236,8 @@ export async function runDetectionReconcileTick(
 		graceMsFor: deps.graceMsFor,
 		fleetThreshold: deps.fleetThreshold,
 		clearingTtlMs: deps.clearingTtlMs,
+		kindFilter: deps.kindFilter,
+		maintainClearing: deps.maintainClearing,
 		logger,
 		now: () => nowMs,
 	});

@@ -96,6 +96,100 @@ describe("CodexDiscordGateway — construction", () => {
 });
 
 describe("CodexDiscordGateway — reply routing (FLY-267 回)", () => {
+	it("records a cross-department receipt before journal accept and completes it after", () => {
+		const order: string[] = [];
+		const source = new FakeSource();
+		const gw = new CodexDiscordGateway({
+			source,
+			router: {
+				submit: () => {
+					order.push("journal.accept");
+					return { accepted: true, entryId: "entry-1" };
+				},
+			},
+			botUserId: "self-bot",
+			channelIds: ["round-1"],
+			resolveReplyChannelId: () => "round-1",
+			externalReceiptSaga: {
+				begin(message) {
+					order.push(`receipt.begin:${message.messageId}`);
+				},
+				complete(messageId) {
+					order.push(`receipt.complete:${messageId}`);
+				},
+			},
+		});
+
+		expect(gw.handle(msg({ id: "cross-1", channelId: "round-1" }))).toBe(true);
+		expect(order).toEqual([
+			"receipt.begin:cross-1",
+			"journal.accept",
+			"receipt.complete:cross-1",
+		]);
+	});
+
+	it("pins the cursor at either cross-store crash seam and converges on retry", () => {
+		const source = new FakeSource();
+		const accepted = new Set<string>();
+		let beginFails = true;
+		let completeFails = true;
+		const begin = vi.fn(() => {
+			if (beginFails) throw new Error("comm begin unavailable");
+		});
+		const complete = vi.fn(() => {
+			if (completeFails) throw new Error("comm complete unavailable");
+		});
+		const submit = vi.fn((input: { idempotencyKey: string }) => {
+			const fresh = !accepted.has(input.idempotencyKey);
+			accepted.add(input.idempotencyKey);
+			return { accepted: fresh, entryId: "entry-1" };
+		});
+		const gw = new CodexDiscordGateway({
+			source,
+			router: { submit },
+			botUserId: "self-bot",
+			channelIds: ["round-1"],
+			resolveReplyChannelId: () => "round-1",
+			externalReceiptSaga: { begin, complete },
+			logger: silent,
+		});
+		const cross = msg({ id: "cross-crash", channelId: "round-1" });
+
+		// receipt before submit failed: no durable Lead accept and no cursor advance.
+		expect(gw.handle(cross)).toBe(false);
+		expect(submit).not.toHaveBeenCalled();
+		beginFails = false;
+		// submit succeeded, but delivered transition failed: cursor remains pinned.
+		expect(gw.handle(cross)).toBe(false);
+		expect(accepted.size).toBe(1);
+		completeFails = false;
+		// Discord replay is a journal duplicate; the receipt completion is idempotent.
+		expect(gw.handle(cross)).toBe(true);
+		expect(accepted.size).toBe(1);
+		expect(submit).toHaveBeenCalledTimes(2);
+		expect(complete).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not create or settle a receipt for ordinary same-channel chat", () => {
+		const begin = vi.fn();
+		const complete = vi.fn();
+		const submit = vi.fn(() => ({ accepted: true, entryId: "entry-chat" }));
+		const gw = new CodexDiscordGateway({
+			source: new FakeSource(),
+			router: { submit },
+			botUserId: "self-bot",
+			channelIds: ["chat-1"],
+			externalReceiptSaga: { begin, complete },
+		});
+
+		expect(gw.handle(msg({ id: "chat-plain", channelId: "chat-1" }))).toBe(
+			true,
+		);
+		expect(submit).toHaveBeenCalledTimes(1);
+		expect(begin).not.toHaveBeenCalled();
+		expect(complete).not.toHaveBeenCalled();
+	});
+
 	it("attaches replyChannelId from resolveReplyChannelId to the submitted input", () => {
 		const { source, gw, router } = make({
 			// route replies for the cross-dept channel back to it; chat → undefined

@@ -99,6 +99,58 @@ type PrivHandoff = {
 };
 
 describe("FLY-605 ambiguous handoff durability + in-memory cursor (Codex code-review #2/#3)", () => {
+	it("passes the founder text to Lead unchanged without an attribution hint", async () => {
+		const appendLeadEvent = vi.fn(() => 42);
+		const store = {
+			isLeadEventDelivered: vi.fn(() => false),
+			appendLeadEvent,
+			markLeadEventDelivered: vi.fn(),
+			recordDeliveryFailure: vi.fn(),
+			flush: vi.fn(),
+		} as unknown as GatePollerConfig["store"];
+		const deliver = vi.fn(async () => ({ delivered: true }));
+		const runtimeRegistry = {
+			getForLead: vi.fn(() => ({
+				deliver,
+			})),
+		} as unknown as GatePollerConfig["runtimeRegistry"];
+		const poller = makePoller({ store, runtimeRegistry });
+		const handoff = (poller as unknown as PrivHandoff).makeAmbiguousHandoff(
+			{ agentId: "test-lead" },
+			"flywheel",
+		);
+		const founderText = `原样-${"x".repeat(1_200)}-结束`;
+
+		await handoff("founder-reply-T1-m1", {
+			issueId: "FLY-1392",
+			threadId: "T1",
+			msgId: "m1",
+			answer: founderText,
+			commDbPath: "/tmp/flywheel-comm.db",
+		});
+
+		expect(appendLeadEvent).toHaveBeenCalledWith(
+			"test-lead",
+			"founder-reply-T1-m1",
+			"founder_reply",
+			expect.any(String),
+			"FLY-1392",
+		);
+		const encoded = appendLeadEvent.mock.calls[0]?.[3];
+		expect(JSON.parse(encoded ?? "{}")).toMatchObject({
+			event_type: "founder_reply",
+			status: "founder_reply",
+			summary: founderText,
+			chat_thread_id: "T1",
+			founder_message_id: "m1",
+			comm_db_path: "/tmp/flywheel-comm.db",
+			action: expect.stringContaining(
+				"flywheel-comm route-founder-reply --msg m1",
+			),
+		});
+		expect(deliver).not.toHaveBeenCalled();
+	});
+
 	it("🔴 makeAmbiguousHandoff flushes lead_events to disk before returning true (Codex #2)", async () => {
 		const flush = vi.fn();
 		const store = {

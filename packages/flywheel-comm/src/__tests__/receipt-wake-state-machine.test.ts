@@ -1,0 +1,365 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { inbox } from "../commands/inbox.js";
+import { CommDB } from "../db.js";
+
+describe("FLY-1392 receipt wake state machine", () => {
+	let db: CommDB;
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "receipt-wake-"));
+		db = new CommDB(join(tmpDir, "comm.db"));
+	});
+
+	afterEach(() => {
+		db.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	function admit(
+		ordinal: number,
+		queuedAtMs = 1_000 + ordinal,
+		policy: {
+			transportAvailable?: boolean;
+			execPushCap?: number;
+			execPushWindowMs?: number;
+		} = {},
+	) {
+		return db.instructionAndIntent({
+			instructionId: `instruction-${ordinal}`,
+			fromAgent: "lead-1",
+			executionId: "exec-1",
+			content: `instruction ${ordinal}`,
+			intentKey: `instruction:instruction-${ordinal}`,
+			envelope: {
+				id: `wake-${ordinal}`,
+				to: "exec-1",
+				content: `wake ${ordinal}`,
+				metadata: { flywheelId: `instruction-${ordinal}`, execId: "exec-1" },
+			},
+			queuedAtMs,
+			wakePolicy: policy,
+		});
+	}
+
+	it("admits at most the per-exec window cap and records one deterministic cap alert", () => {
+		for (let ordinal = 1; ordinal <= 7; ordinal += 1) {
+			admit(ordinal, 10_000 + ordinal, {
+				execPushCap: 6,
+				execPushWindowMs: 600_000,
+			});
+		}
+
+		const wakes = db.listRunnerPhaseWakes("exec-1");
+		expect(wakes.map((wake) => wake.admission_state)).toEqual([
+			"queued",
+			"queued",
+			"queued",
+			"queued",
+			"queued",
+			"queued",
+			"suppressed_cap",
+		]);
+		expect(db.getReceiptAlertOutbox("wake_cap:exec-1:0")).toMatchObject({
+			kind: "wake_cap",
+		});
+		expect(admit(7, 10_007).kind).toBe("duplicate");
+	});
+
+	it("enforces the cap across a fixed-window boundary (true sliding window)", () => {
+		for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
+			admit(ordinal, 599_990 + ordinal, {
+				execPushCap: 6,
+				execPushWindowMs: 600_000,
+			});
+		}
+		for (let ordinal = 4; ordinal <= 7; ordinal += 1) {
+			admit(ordinal, 600_000 + ordinal, {
+				execPushCap: 6,
+				execPushWindowMs: 600_000,
+			});
+		}
+
+		expect(db.listRunnerPhaseWakes("exec-1").at(-1)?.admission_state).toBe(
+			"suppressed_cap",
+		);
+	});
+
+	it("marks no-transport intents as audit-only and never makes them push eligible", () => {
+		const result = admit(1, 1_000, { transportAvailable: false });
+
+		expect(result.wake.admission_state).toBe("skipped_no_transport");
+		expect(
+			db.claimRunnerReceiptWakePush("exec-1", result.wake.message_id, 1_000, {
+				t1Ms: 90_000,
+				claimTtlMs: 10_000,
+			}),
+		).toBeNull();
+	});
+
+	it("claims before push, shares a two-attempt budget, and does not refund crashes", () => {
+		const wake = admit(1, 1_000).wake;
+		const first = db.claimRunnerReceiptWakePush(
+			"exec-1",
+			wake.message_id,
+			1_000,
+			{ t1Ms: 90_000, claimTtlMs: 10_000 },
+		);
+		expect(first).toMatchObject({ attempt: 1 });
+		expect(
+			db.claimRunnerReceiptWakePush("exec-1", wake.message_id, 1_001, {
+				t1Ms: 90_000,
+				claimTtlMs: 10_000,
+			}),
+		).toBeNull();
+
+		// Simulate crash after the durable claim: attempt 1 stays spent.
+		expect(
+			db.claimRunnerReceiptWakePush("exec-1", wake.message_id, 90_999, {
+				t1Ms: 90_000,
+				claimTtlMs: 10_000,
+			}),
+		).toBeNull();
+		const second = db.claimRunnerReceiptWakePush(
+			"exec-1",
+			wake.message_id,
+			91_000,
+			{ t1Ms: 90_000, claimTtlMs: 10_000 },
+		);
+		expect(second).toMatchObject({ attempt: 2 });
+		expect(
+			db.completeRunnerReceiptWakePush({
+				executionId: "exec-1",
+				messageId: wake.message_id,
+				claimToken: second!.claimToken,
+				attempt: 2,
+				result: "verified",
+				nowMs: 91_001,
+			}),
+		).toBe(true);
+		expect(
+			db.claimRunnerReceiptWakePush("exec-1", wake.message_id, 999_999, {
+				t1Ms: 90_000,
+				claimTtlMs: 10_000,
+			}),
+		).toBeNull();
+		expect(db.listRunnerPhaseWakes("exec-1")[0]).toMatchObject({
+			push_attempts: 2,
+			last_push_result: "attempt:2:verified",
+		});
+	});
+
+	it("a stale success supplements delivery evidence without releasing the live claim", () => {
+		const wake = admit(1, 1_000).wake;
+		const first = db.claimRunnerReceiptWakePush(
+			"exec-1",
+			wake.message_id,
+			1_000,
+			{ t1Ms: 90_000, claimTtlMs: 10_000 },
+		)!;
+		const second = db.claimRunnerReceiptWakePush(
+			"exec-1",
+			wake.message_id,
+			91_000,
+			{ t1Ms: 90_000, claimTtlMs: 10_000 },
+		)!;
+
+		expect(
+			db.completeRunnerReceiptWakePush({
+				executionId: "exec-1",
+				messageId: wake.message_id,
+				claimToken: first.claimToken,
+				attempt: 1,
+				result: "delivered",
+				nowMs: 91_001,
+			}),
+		).toBe(false);
+		expect(db.listRunnerPhaseWakes("exec-1")[0]).toMatchObject({
+			claim_token: second.claimToken,
+			push_attempts: 2,
+		});
+		expect(db.listRunnerPhaseWakes("exec-1")[0]?.last_push_result).toContain(
+			"attempt:1:stale_delivered",
+		);
+	});
+
+	it("acks only pending wakes that existed when inbox or turn began", () => {
+		admit(1, 1_000);
+		admit(2, 2_001);
+
+		expect(db.ackRunnerReceiptWakesStarted("exec-1", 2_000, "exec_cli")).toBe(
+			1,
+		);
+		expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
+			{ state: "started", started_at: 2_000, started_ack_scope: "exec_cli" },
+			{ state: "pending", started_at: null, started_ack_scope: null },
+		]);
+	});
+
+	it("inbox writes the exec-level started receipt only after its primary action succeeds", () => {
+		admit(1, 1_000);
+		admit(2, 2_001);
+
+		expect(
+			inbox({
+				execId: "exec-1",
+				dbPath: join(tmpDir, "comm.db"),
+				now: () => 2_000,
+			}),
+		).toMatchObject({ instructions: expect.any(Array) });
+		expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
+			{ state: "started", started_at: 2_000 },
+			{ state: "pending", started_at: null },
+		]);
+	});
+
+	it("dedupes the vendor callback by instruction identity and consumes the durable instruction once", () => {
+		const admitted = admit(1, 1_000);
+		const callback = db.enqueueRunnerPhaseWake(
+			"exec-1",
+			{
+				id: "vendor-callback-1",
+				to: "exec-1",
+				content: "wake 1",
+				metadata: { flywheelId: "instruction-1", execId: "exec-1" },
+			},
+			1_001,
+		);
+
+		expect(callback).toEqual({ kind: "duplicate", wake: admitted.wake });
+		expect(db.listRunnerPhaseWakes("exec-1")).toHaveLength(1);
+		expect(db.getUnreadInstructions("exec-1").map((row) => row.id)).toEqual([
+			"instruction-1",
+		]);
+
+		expect(
+			inbox({
+				execId: "exec-1",
+				dbPath: join(tmpDir, "comm.db"),
+				now: () => 1_002,
+			}).instructions.map((row) => row.id),
+		).toEqual(["instruction-1"]);
+		expect(
+			inbox({
+				execId: "exec-1",
+				dbPath: join(tmpDir, "comm.db"),
+				now: () => 1_003,
+			}).instructions,
+		).toEqual([]);
+	});
+
+	it("keeps a same-millisecond pre-push ACK recoverable through the durable inbox", () => {
+		const admitted = admit(1, 2_000);
+
+		// Accepted at-least-once edge: an exec-level ACK at the same clock
+		// millisecond may retire the transport intent before its first push.
+		expect(db.ackRunnerReceiptWakesStarted("exec-1", 2_000, "exec_cli")).toBe(
+			1,
+		);
+		expect(
+			db.claimRunnerReceiptWakePush("exec-1", admitted.wake.message_id, 2_001, {
+				t1Ms: 90_000,
+				claimTtlMs: 10_000,
+			}),
+		).toBeNull();
+
+		// The transport skip does not delete the business payload: the stable
+		// instruction id remains unread and a later inbox call consumes it once.
+		expect(db.getUnreadInstructions("exec-1").map((row) => row.id)).toEqual([
+			"instruction-1",
+		]);
+		expect(
+			inbox({
+				execId: "exec-1",
+				dbPath: join(tmpDir, "comm.db"),
+				now: () => 2_002,
+			}).instructions.map((row) => row.id),
+		).toEqual(["instruction-1"]);
+		expect(db.getUnreadInstructions("exec-1")).toEqual([]);
+	});
+
+	it("durably claims T2 once and escalates a forbidden wake exactly once", () => {
+		const wake = admit(1, 1_000).wake;
+		const claim = db.claimRunnerReceiptWakeT2(
+			"exec-1",
+			wake.message_id,
+			301_000,
+			300_000,
+		);
+		expect(claim).not.toBeNull();
+		expect(
+			db.claimRunnerReceiptWakeT2("exec-1", wake.message_id, 301_001, 300_000),
+		).toBeNull();
+		expect(
+			db.completeRunnerReceiptWakeT2(
+				"exec-1",
+				wake.message_id,
+				"forbidden:no_tmux_target",
+			),
+		).toBe(true);
+
+		const first = db.enqueueRunnerReceiptWakeEscalation({
+			executionId: "exec-1",
+			messageId: wake.message_id,
+			reason: "no_tmux_target",
+			nowMs: 302_000,
+		});
+		const duplicate = db.enqueueRunnerReceiptWakeEscalation({
+			executionId: "exec-1",
+			messageId: wake.message_id,
+			reason: "no_tmux_target",
+			nowMs: 302_001,
+		});
+		expect(first?.id).toBe(`wake_failed:${wake.message_id}`);
+		expect(duplicate?.id).toBe(first?.id);
+		expect(db.getReceiptAlertOutbox(first!.id)).toMatchObject({
+			id: first!.id,
+			kind: "wake_failed",
+		});
+		expect(db.listRunnerPhaseWakes("exec-1")[0]?.escalation_outbox_id).toBe(
+			first!.id,
+		);
+		expect(db.listPendingRunnerReceiptWakes()).toEqual([]);
+	});
+
+	it("commits a gate response and its wake intent as one unit", () => {
+		const questionId = db.insertQuestion("exec-1", "lead-1", "ready?");
+		const result = db.responseAndIntent({
+			questionId,
+			fromAgent: "lead-1",
+			content: "yes",
+			intentKey: `gate-answer:${questionId}`,
+			envelope: {
+				id: `gate-answer:${questionId}`,
+				to: "exec-1",
+				content: "answer ready",
+				metadata: { kind: "gate_answered", questionId },
+			},
+			queuedAtMs: 1_000,
+		});
+
+		expect(db.getResponse(questionId)?.id).toBe(result.responseId);
+		expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
+			{ message_id: `gate-answer:${questionId}`, admission_state: "queued" },
+		]);
+	});
+
+	it("terminalizes pending receipt intents when the session registry is finalized", () => {
+		db.registerSession("exec-1", "session", "proj", "FLY-1", "lead-1");
+		const wake = admit(1, Date.now()).wake;
+
+		expect(db.deleteSessionAndRunnerPhaseLifecycle("exec-1")).toBe(1);
+		expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
+			{
+				message_id: wake.message_id,
+				state: "finished",
+				admission_state: "queued",
+				finished_at: expect.any(Number),
+			},
+		]);
+		expect(db.listPendingRunnerReceiptWakes()).toEqual([]);
+	});
+});

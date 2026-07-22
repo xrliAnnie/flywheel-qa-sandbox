@@ -67,6 +67,37 @@ describe("StateStore detection_escalations (FLY-1048 C1)", () => {
 		expect(s.getDetectionEscalationsForReconcile()).toHaveLength(4);
 	});
 
+	it("supports exact kind cohorts without letting a receipt pass consume legacy rows", async () => {
+		const s = await freshStore();
+		for (const [kind, firstDetectedAtMs] of [
+			["wake_failed", 1],
+			["receipt_unprocessed:runner_question", 2],
+			["delivery_unconsumed", 3],
+		] as const) {
+			s.upsertDetectionEscalation({
+				...KEY,
+				kind,
+				episodeFingerprint: `fp:${kind}`,
+				firstDetectedAtMs,
+			});
+		}
+
+		expect(
+			s
+				.getDetectionEscalationsForReconcile({
+					includeKinds: ["wake_failed", "receipt_unprocessed:runner_question"],
+				})
+				.map(({ kind }) => kind),
+		).toEqual(["wake_failed", "receipt_unprocessed:runner_question"]);
+		expect(
+			s
+				.getDetectionEscalationsForReconcile({
+					excludeKinds: ["wake_failed", "receipt_unprocessed:runner_question"],
+				})
+				.map(({ kind }) => kind),
+		).toEqual(["delivery_unconsumed"]);
+	});
+
 	it("markLeadNotified stamps LEAD_NOTIFIED once; the first notification timestamp wins on repeat", async () => {
 		const s = await freshStore();
 		expect(

@@ -9984,12 +9984,29 @@ export class StateStore {
 	 * the notify path's status!=NEW dedup and the reconcile's LEAD_NOTIFIED
 	 * filter, never by hiding the row.
 	 */
-	getDetectionEscalationsForReconcile(): DetectionEscalationRow[] {
+	getDetectionEscalationsForReconcile(filter?: {
+		includeKinds?: readonly string[];
+		excludeKinds?: readonly string[];
+	}): DetectionEscalationRow[] {
+		if (filter?.includeKinds?.length === 0) return [];
+		if (filter?.includeKinds && filter.excludeKinds) {
+			throw new Error(
+				"detection reconcile filter cannot include and exclude kinds together",
+			);
+		}
+		const kinds = filter?.includeKinds ?? filter?.excludeKinds;
+		const kindPredicate = kinds
+			? ` AND kind ${filter?.includeKinds ? "IN" : "NOT IN"} (${kinds
+					.map(() => "?")
+					.join(",")})`
+			: "";
 		const result = this.db.exec(
 			`SELECT ${StateStore.DETECTION_ESCALATION_COLUMNS}
 			 FROM detection_escalations
 			 WHERE status != 'RESOLVED'
+			 ${kindPredicate}
 			 ORDER BY first_detected_at_ms ASC`,
+			kinds ? [...kinds] : undefined,
 		);
 		const values = result[0]?.values ?? [];
 		return values.map((row) => this.detectionEscalationFromValues(row));

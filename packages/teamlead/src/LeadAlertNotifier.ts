@@ -311,6 +311,9 @@ export const ALERT_EVENT_TYPES = [
 	// FLY-1393 W-1: exact-target process evidence proved an approved ship runner
 	// dead; stable event id, one durable alert per execution.
 	"stale_approved_ship_dead",
+	// FLY-1392: the default-on receipt chase was explicitly paused. Founder
+	// transport remains Lead-only; this is a fail-loud incident, not steady state.
+	"receipt_foundation_off",
 	// FLY-1309: Lead identity uniqueness, lease control, and carrier drift.
 	"lead_dual_active",
 	"lead_dual_active_sensor_degraded",

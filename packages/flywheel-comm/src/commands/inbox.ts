@@ -5,6 +5,9 @@ import type { Message } from "../types.js";
 export interface InboxArgs {
 	execId: string;
 	dbPath: string;
+	env?: NodeJS.ProcessEnv;
+	now?: () => number;
+	debugExecOverride?: boolean;
 }
 
 export interface InboxResult {
@@ -12,6 +15,7 @@ export interface InboxResult {
 }
 
 export function inbox(args: InboxArgs): InboxResult {
+	const observedAtMs = (args.now ?? Date.now)();
 	if (!existsSync(args.dbPath)) {
 		return { instructions: [] };
 	}
@@ -21,6 +25,11 @@ export function inbox(args: InboxArgs): InboxResult {
 		for (const inst of instructions) {
 			db.markInstructionRead(inst.id);
 		}
+		db.ackRunnerReceiptWakesStarted(
+			args.execId,
+			observedAtMs,
+			args.debugExecOverride ? "debug_override" : "exec_cli",
+		);
 		return { instructions };
 	} finally {
 		db.close();

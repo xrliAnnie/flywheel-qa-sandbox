@@ -9,21 +9,38 @@ import { CommDB } from "../db.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "../../dist/index.js");
 
-function runCli(args: string[], env?: Record<string, string>): string {
+function cliEnv(
+	overrides?: Record<string, string | undefined>,
+): NodeJS.ProcessEnv {
+	const env = { ...process.env };
+	for (const [key, value] of Object.entries(overrides ?? {})) {
+		if (value === undefined) {
+			delete env[key];
+		} else {
+			env[key] = value;
+		}
+	}
+	return env;
+}
+
+function runCli(
+	args: string[],
+	env?: Record<string, string | undefined>,
+): string {
 	return execFileSync("node", [CLI_PATH, ...args], {
 		encoding: "utf-8",
-		env: { ...process.env, ...env },
+		env: cliEnv(env),
 	}).trim();
 }
 
 function runCliSafe(
 	args: string[],
-	env?: Record<string, string>,
+	env?: Record<string, string | undefined>,
 ): { stdout: string; exitCode: number } {
 	try {
 		const stdout = execFileSync("node", [CLI_PATH, ...args], {
 			encoding: "utf-8",
-			env: { ...process.env, ...env },
+			env: cliEnv(env),
 			stdio: ["pipe", "pipe", "pipe"],
 		}).trim();
 		return { stdout, exitCode: 0 };
@@ -457,8 +474,28 @@ describe("CLI", () => {
 			expect(result).toBe("No instructions.");
 		});
 
-		it("should fail without --exec-id", () => {
-			const { exitCode } = runCliSafe(["inbox", "--db", dbPath]);
+		it("should use FLYWHEEL_EXEC_ID when --exec-id is omitted", () => {
+			runCli([
+				"send",
+				"--from",
+				"product-lead",
+				"--to",
+				"env-exec",
+				"--db",
+				dbPath,
+				"Environment-bound instruction",
+			]);
+
+			const result = runCli(["inbox", "--db", dbPath], {
+				FLYWHEEL_EXEC_ID: "env-exec",
+			});
+			expect(result).toContain("Environment-bound instruction");
+		});
+
+		it("should fail without an execution identity", () => {
+			const { exitCode } = runCliSafe(["inbox", "--db", dbPath], {
+				FLYWHEEL_EXEC_ID: undefined,
+			});
 			expect(exitCode).toBe(1);
 		});
 	});

@@ -87,6 +87,8 @@ export interface HookPayload {
 	question_id?: string;
 	from_agent?: string;
 	comm_db_path?: string;
+	/** FLY-1392: opaque Discord id for a raw founder→Lead conveyor event. */
+	founder_message_id?: string;
 	// FLY-159 gate timeout / FLY-1279 park notice: elapsed wait duration.
 	waited_ms?: number;
 	original_message?: string;

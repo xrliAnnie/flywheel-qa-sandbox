@@ -14,6 +14,7 @@ function env(over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
 		FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9876",
 		FLYWHEEL_API_TOKEN: "api",
 		FLYWHEEL_CODEX_LEAD_STATE_DIR: "/var/state/mufasa",
+		FLYWHEEL_COMM_DB: "/var/state/mufasa/comm.db",
 		FLYWHEEL_CODEX_BIN: "/usr/local/bin/codex",
 		CODEX_HOME: "/Users/x/.codex-mufasa",
 		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: RT,

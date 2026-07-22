@@ -334,6 +334,11 @@ export class LeadJournal {
 		return this.store.listUnfinished();
 	}
 
+	/** Durable cross-store reconciliation lookup by the transport idempotency key. */
+	getByIdempotencyKey(key: string): JournalEntry | undefined {
+		return this.store.getByIdempotencyKey(key);
+	}
+
 	/**
 	 * Conservative recovery action for an unfinished entry (Phase 0A §7). Never
 	 * returns an action that would auto-re-run the model from an unprovable state.

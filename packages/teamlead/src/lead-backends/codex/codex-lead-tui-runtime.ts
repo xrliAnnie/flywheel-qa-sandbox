@@ -29,6 +29,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
+	LeadInboxQueue,
+	receiptPriorityWindowsMs,
+} from "flywheel-comm/lead-inbox-queue";
+import {
 	getProcessStart,
 	publishCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
@@ -61,6 +65,7 @@ import { DaemonConnectionSupervisor } from "./DaemonConnectionSupervisor.js";
 import { DirectDiscordOutboundSender } from "./DirectDiscordOutboundSender.js";
 import { DiscordTypingNotifier } from "./DiscordTypingNotifier.js";
 import { connectDaemonWs } from "./daemon-ws.js";
+import { ExternalReceiptSaga } from "./ExternalReceiptSaga.js";
 import { FileInboundCursorStore } from "./InboundCursorStore.js";
 import { LeadHealthProbe } from "./LeadHealthProbe.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
@@ -543,6 +548,13 @@ function buildTuiGeneration(
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
+						const externalReceiptQueue = new LeadInboxQueue(config.commDbPath);
+						const externalReceiptSaga = new ExternalReceiptSaga({
+							leadId: config.leadId,
+							queue: externalReceiptQueue,
+							journal,
+							receiptWindowsMs: receiptPriorityWindowsMs(),
+						});
 						// The full-access tool-surface guarantee is enforced by the config
 						// gate in main() BEFORE the daemon
 						// starts — not by a runtime "wait for the live MCP to report ready"
@@ -585,6 +597,14 @@ function buildTuiGeneration(
 							journal,
 							executor,
 							sender: builtSender,
+							onEntryCompleted: (entry) => {
+								if (
+									entry.source === "discord" &&
+									(entry.replyChannelId || entry.replyRoute)
+								) {
+									externalReceiptSaga.handle(entry.idempotencyKey, entry.id);
+								}
+							},
 							...(typing ? { typing } : {}),
 							...(replyInThread
 								? {
@@ -633,6 +653,7 @@ function buildTuiGeneration(
 							router,
 							botUserId: config.botUserId,
 							channelIds: config.channelIds,
+							externalReceiptSaga,
 							...(shouldHandle ? { shouldHandle } : {}),
 							...(replyInThread
 								? {
@@ -728,6 +749,12 @@ function buildTuiGeneration(
 							// gate in main(), before the daemon
 							// starts — not by a runtime gate here. See main() / mcp-config.ts.)
 							startGateway: async () => {
+								externalReceiptSaga.reconcile({
+									olderThan: new Date().toISOString(),
+									absenceProvenThroughMessageId:
+										externalReceiptQueue.getLatestReceiptActivation()
+											?.high_water_mark ?? "0",
+								});
 								// FLY-314 Phase 2 (Codex code review #1): gateway FIRST so the
 								// source.onMessage handler is installed before discovery's
 								// addChannel() can drain a resumed thread (else downtime thread
@@ -749,6 +776,7 @@ function buildTuiGeneration(
 									await gateway.stop();
 								} finally {
 									typing?.close();
+									externalReceiptQueue.close();
 								}
 							},
 						};

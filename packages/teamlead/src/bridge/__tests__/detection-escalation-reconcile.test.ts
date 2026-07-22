@@ -4,6 +4,7 @@ import {
 	DEFAULT_DETECTION_FLEET_THRESHOLD,
 	DEFAULT_DETECTION_LEAD_GRACE_MS,
 	type ReconcileEscalationsDeps,
+	reboundExpiredDetectionClearings,
 	reconcileDetectionEscalations,
 	resolveRecoveredDetectionTargets,
 	unifiedFlowOwnsTarget,
@@ -73,6 +74,31 @@ async function freshStore(): Promise<StateStore> {
 }
 
 describe("reconcileDetectionEscalations (FLY-1048 C3)", () => {
+	it("pages only the exact requested kind cohort", async () => {
+		const store = await freshStore();
+		await seedNotified(store, "legacy", {
+			kind: "delivery_unconsumed",
+			fp: "fp:legacy",
+		});
+		await seedNotified(store, "receipt", {
+			kind: "receipt_unprocessed:runner_question",
+			fp: "fp:receipt",
+		});
+		const { deps, paged } = makeDeps(store, {
+			kindFilter: {
+				includeKinds: ["receipt_unprocessed:runner_question"],
+			},
+			maintainClearing: false,
+		});
+
+		await reconcileDetectionEscalations(deps);
+		expect(paged).toEqual(["receipt"]);
+		expect(
+			store.getDetectionEscalation("legacy", "delivery_unconsumed", "fp:legacy")
+				?.status,
+		).toBe("LEAD_NOTIFIED");
+	});
+
 	it("grace not yet elapsed → no page, row stays LEAD_NOTIFIED", async () => {
 		const store = await freshStore();
 		await seedNotified(store, "e1", { notifiedAtMs: 1_000 });
@@ -471,6 +497,39 @@ describe("reconcile C5 — CLEARING TTL rebound + ESCALATED terminality (FLY-104
 		expect(row.clearing_since_ms).toBeNull();
 		expect(paged).toHaveLength(0);
 		expect(fleet).toHaveLength(0);
+	});
+
+	it("the shared maintenance pass rebounds all cohorts without paging either", async () => {
+		const store = await freshStore();
+		await seedClearing(store, 1_000);
+		store.upsertDetectionEscalation({
+			targetKey: "receipt",
+			kind: "wake_failed",
+			episodeFingerprint: "fp:wake",
+			firstDetectedAtMs: 0,
+		});
+		store.markDetectionEscalationClearing(
+			"receipt",
+			"wake_failed",
+			"fp:wake",
+			1_000,
+		);
+
+		expect(
+			reboundExpiredDetectionClearings({
+				store,
+				nowMs: 1_000 + TTL + 1,
+				clearingTtlMs: TTL,
+				logger: () => {},
+			}),
+		).toBe(2);
+		expect(
+			store.getDetectionEscalation("e1", "detection_stuck_confirmed", "fp:1")
+				?.status,
+		).toBe("NEW");
+		expect(
+			store.getDetectionEscalation("receipt", "wake_failed", "fp:wake")?.status,
+		).toBe("NEW");
 	});
 
 	it("a CLEARING row within the TTL stays CLEARING (mute holds)", async () => {

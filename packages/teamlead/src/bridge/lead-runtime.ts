@@ -62,6 +62,8 @@ export interface LeadEventEnvelope {
 	/** FLY-1279: a crash retry reuses this id; a deliberate reminder gets a new
 	 * id so mailbox dedupe produces a fresh interruption. */
 	deliveryAttemptId?: string;
+	/** Producer-owned receipt urgency; generic ingress defaults to P2. */
+	priority?: 0 | 1 | 2 | 3;
 	ack?: {
 		eventSeq: number;
 		token: string;

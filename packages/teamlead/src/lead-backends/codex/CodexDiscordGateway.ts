@@ -97,6 +97,19 @@ export interface CodexDiscordGatewayOptions {
 	 * R1#1 — the gateway has its OWN static allowlist; without this it would drop the
 	 * thread message even though RestPoll polls it). Omitted → only static channels. */
 	registry?: { has: (channelId: string) => boolean };
+	/** FLY-1392 v2: cross-store receipt saga for messages that the transport
+	 * classified as cross-department (a reply route is present). `begin` must
+	 * durably create delivery_pending before journal accept; `complete` closes
+	 * the delivery after accepted-new or accepted-duplicate. */
+	externalReceiptSaga?: {
+		begin: (message: {
+			messageId: string;
+			channelId: string;
+			content: string;
+			createdAt: string;
+		}) => void;
+		complete: (messageId: string) => void;
+	};
 	/** Current founder timezone provider (injectable for deterministic tests). */
 	founderTimezone?: () => string;
 	logger?: {
@@ -119,6 +132,7 @@ export class CodexDiscordGateway {
 		replyRoute?: RoundtableReplyRoute;
 	};
 	private readonly registry?: { has: (channelId: string) => boolean };
+	private readonly externalReceiptSaga?: CodexDiscordGatewayOptions["externalReceiptSaga"];
 	private readonly founderTimezone: () => string;
 	private readonly logger: {
 		debug?: (m: string, c?: unknown) => void;
@@ -139,6 +153,7 @@ export class CodexDiscordGateway {
 		this.resolveReplyChannelId = opts.resolveReplyChannelId;
 		this.resolveReplyRoute = opts.resolveReplyRoute;
 		this.registry = opts.registry;
+		this.externalReceiptSaga = opts.externalReceiptSaga;
 		this.founderTimezone = opts.founderTimezone ?? resolveFounderTimezone;
 		this.logger = opts.logger ?? { warn: (m, c) => console.warn(m, c ?? "") };
 	}
@@ -191,6 +206,15 @@ export class CodexDiscordGateway {
 				sentAt === null
 					? msg.content
 					: `[sent ${formatFounderLocal(new Date(sentAt), this.founderTimezone())} — founder 当前时区渲染]\n${msg.content}`;
+			const crossDepartment = Boolean(replyChannelId || replyRoute);
+			if (crossDepartment && this.externalReceiptSaga) {
+				this.externalReceiptSaga.begin({
+					messageId: msg.id,
+					channelId: msg.channelId,
+					content: payload,
+					createdAt: new Date(sentAt ?? Date.now()).toISOString(),
+				});
+			}
 			this.router.submit({
 				idempotencyKey: msg.id,
 				source: "discord",
@@ -198,6 +222,9 @@ export class CodexDiscordGateway {
 				...(replyChannelId ? { replyChannelId } : {}),
 				...(replyRoute ? { replyRoute } : {}),
 			});
+			if (crossDepartment && this.externalReceiptSaga) {
+				this.externalReceiptSaga.complete(msg.id);
+			}
 			return true;
 		} catch (err) {
 			// DURABLE-ACCEPT FAILURE (e.g. journal DB write threw). Do NOT advance —

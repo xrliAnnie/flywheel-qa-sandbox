@@ -123,6 +123,52 @@ describe("send mailbox dual-write (FLY-168)", () => {
 		expect(unread[0]!.read_at ?? null).toBeNull();
 	});
 
+	it("default-on: atomically records the instruction wake intent and spends the initial push attempt", async () => {
+		registerSession();
+		const id = await send({
+			fromAgent: LEAD,
+			toAgent: EXEC,
+			content: "receipt-backed instruction",
+			dbPath,
+		});
+
+		const db = new CommDB(dbPath);
+		const wakes = db.listRunnerPhaseWakes(EXEC);
+		db.close();
+		expect(wakes).toMatchObject([
+			{
+				message_id: `instruction:${id}`,
+				source_instruction_id: id,
+				admission_state: "queued",
+				push_attempts: 1,
+				last_push_result: "attempt:1:delivered",
+			},
+		]);
+	});
+
+	it("kill switch keeps admission and initial delivery while patrol stages are paused", async () => {
+		registerSession();
+		const id = await send({
+			fromAgent: LEAD,
+			toAgent: EXEC,
+			content: "legacy instruction",
+			dbPath,
+			env: { ...process.env, FLYWHEEL_RECEIPT_FOUNDATION: "0" },
+		});
+
+		const db = new CommDB(dbPath);
+		expect(db.listRunnerPhaseWakes(EXEC)).toMatchObject([
+			{
+				message_id: `instruction:${id}`,
+				source_instruction_id: id,
+				admission_state: "queued",
+				push_attempts: 1,
+				last_push_result: "attempt:1:delivered",
+			},
+		]);
+		db.close();
+	});
+
 	it("leaves delivered_at NULL in rollback mode (commdb backend)", async () => {
 		process.env.FLYWHEEL_COMM_BACKEND = "commdb";
 		registerSession();

@@ -304,6 +304,13 @@ describe("respond → ask wake end-to-end (FLY-142 B/Y, real transport)", () => 
 		// response durable
 		const db2 = new CommDB(dbPath);
 		expect(db2.getResponse(qid)?.content).toBe("use v2");
+		expect(db2.listRunnerPhaseWakes(EXEC)).toMatchObject([
+			{
+				message_id: `gate-answer:${qid}`,
+				push_attempts: 1,
+				last_push_result: "attempt:1:delivered",
+			},
+		]);
 		db2.close();
 
 		// wake landed in the CLAUDE inbox (fromEnv default), not Codex
@@ -343,6 +350,15 @@ describe("respond → ask wake end-to-end (FLY-142 B/Y, real transport)", () => 
 			dbPath,
 			env: { FLYWHEEL_GATE_MARKER_DIR: markerDir } as NodeJS.ProcessEnv,
 		});
+		const receiptDb = new CommDB(dbPath);
+		expect(receiptDb.listRunnerPhaseWakes(EXEC)).toMatchObject([
+			{
+				message_id: `gate-answer:${qid}`,
+				push_attempts: 1,
+				last_push_result: "attempt:1:delivered",
+			},
+		]);
+		receiptDb.close();
 
 		// routed to CODEX inbox, and the Claude inbox is untouched
 		expect(existsSync(codexInbox())).toBe(true);

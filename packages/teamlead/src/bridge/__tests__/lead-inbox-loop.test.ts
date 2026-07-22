@@ -66,6 +66,16 @@ function loop(
 	});
 }
 
+function receiptOverrides(
+	enabled: boolean,
+	extra: Record<string, unknown> = {},
+): Partial<ConstructorParameters<typeof LeadInboxLoop>[0]> {
+	return {
+		receiptFoundationEnabled: () => enabled,
+		...extra,
+	} as unknown as Partial<ConstructorParameters<typeof LeadInboxLoop>[0]>;
+}
+
 describe("LeadInboxLoop", () => {
 	it("QA fault seam pauses after last_started_at but before success", async () => {
 		const queue = makeQueue();
@@ -89,6 +99,24 @@ describe("LeadInboxLoop", () => {
 		expect((await ticking).ok).toBe(true);
 		expect(queue.getHeartbeat("lead-a")?.last_success_at).toBe(
 			"2026-07-19T12:00:00.000Z",
+		);
+	});
+
+	it("renders every model delivery with its stable receipt id", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "receipt-A");
+		enqueueModel(queue, "receipt-B");
+		let delivered!: LeadDeliveryBatch;
+		const consumer = loop(queue, {
+			async deliverBatch(batch) {
+				delivered = batch;
+				return receipt(batch);
+			},
+		});
+
+		expect((await consumer.tick()).ok).toBe(true);
+		expect(delivered.modelPayload).toBe(
+			"[receipt:receipt-A]\nreceipt-A\n\n[receipt:receipt-B]\nreceipt-B",
 		);
 	});
 
@@ -130,16 +158,26 @@ describe("LeadInboxLoop", () => {
 		enqueueModel(queue, "B");
 		const batches: LeadDeliveryBatch[] = [];
 		let fail = true;
-		const consumer = loop(queue, {
-			async deliverBatch(batch) {
-				batches.push(batch);
-				if (fail) throw new Error("socket disconnected");
-				return receipt(batch);
+		let nowMs = Date.parse("2026-07-19T12:00:00.000Z");
+		const consumer = loop(
+			queue,
+			{
+				async deliverBatch(batch) {
+					batches.push(batch);
+					if (fail) throw new Error("socket disconnected");
+					return receipt(batch);
+				},
 			},
-		});
+			receiptOverrides(false, {
+				now: () => new Date(nowMs),
+				retryBackoffBaseMs: 5_000,
+				retryBackoffCapMs: 5_000,
+			}),
+		);
 		expect((await consumer.tick()).ok).toBe(false);
 		enqueueModel(queue, "C", 0);
 		fail = false;
+		nowMs += 5_000;
 		expect((await consumer.tick()).ok).toBe(true);
 		expect(
 			batches.map((batch) => batch.members.map((m) => m.deliveryId)),
@@ -148,6 +186,148 @@ describe("LeadInboxLoop", () => {
 			["A", "B"],
 		]);
 		expect(queue.getById("C")?.consumed_at).toBeNull();
+	});
+
+	it("persists model retry backoff and honors it for frozen and fresh claims", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "A");
+		let nowMs = Date.parse("2026-07-19T12:00:00.000Z");
+		const adapter = {
+			deliverBatch: vi.fn(async () => {
+				throw new Error("socket disconnected");
+			}),
+		};
+		const consumer = loop(
+			queue,
+			adapter,
+			receiptOverrides(true, {
+				now: () => new Date(nowMs),
+				retryBackoffBaseMs: 5_000,
+				retryBackoffCapMs: 60_000,
+			}),
+		);
+
+		expect((await consumer.tick()).ok).toBe(false);
+		expect(queue.getById("A")).toMatchObject({
+			attempts: 1,
+			next_retry_at: "2026-07-19T12:00:05.000Z",
+		});
+		nowMs += 1_000;
+		expect((await consumer.tick()).ok).toBe(true);
+		expect(adapter.deliverBatch).toHaveBeenCalledTimes(1);
+		enqueueModel(queue, "B", 0);
+		expect((await consumer.tick()).ok).toBe(false);
+		expect(adapter.deliverBatch).toHaveBeenCalledTimes(2);
+		expect(adapter.deliverBatch.mock.calls[1]?.[0].members).toEqual([
+			expect.objectContaining({ deliveryId: "B" }),
+		]);
+		nowMs = Date.parse("2026-07-19T12:00:05.000Z");
+		expect((await consumer.tick()).ok).toBe(false);
+		expect(adapter.deliverBatch).toHaveBeenCalledTimes(3);
+		expect(adapter.deliverBatch.mock.calls[2]?.[0].members).toEqual([
+			expect.objectContaining({ deliveryId: "A" }),
+		]);
+	});
+
+	it("dead-letters an exhausted model batch and emits one durable alert", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "A");
+		let nowMs = Date.parse("2026-07-19T12:00:00.000Z");
+		const adapter = {
+			deliverBatch: vi.fn(async () => {
+				throw new Error("permanent adapter failure");
+			}),
+		};
+		const consumer = loop(
+			queue,
+			adapter,
+			receiptOverrides(true, {
+				now: () => new Date(nowMs),
+				maxModelAttempts: 2,
+				retryBackoffBaseMs: 1_000,
+				retryBackoffCapMs: 1_000,
+			}),
+		);
+
+		expect((await consumer.tick()).ok).toBe(false);
+		nowMs += 1_000;
+		expect((await consumer.tick()).ok).toBe(false);
+		expect(queue.getById("A")).toMatchObject({
+			attempts: 2,
+			disposition: "dead_letter",
+			consumed_at: "2026-07-19T12:00:01.000Z",
+		});
+		const getAlert = (
+			queue as unknown as {
+				getReceiptAlertOutbox?: (id: string) => {
+					kind: string;
+					payload: string;
+				};
+			}
+		).getReceiptAlertOutbox;
+		expect(getAlert).toBeTypeOf("function");
+		expect(getAlert?.call(queue, "dead_letter:batch-1")).toMatchObject({
+			kind: "dead_letter",
+		});
+		expect(
+			JSON.parse(
+				getAlert?.call(queue, "dead_letter:batch-1")?.payload ?? "null",
+			),
+		).toMatchObject({ batchId: "batch-1", memberIds: ["A"] });
+		expect((await consumer.tick()).ok).toBe(true);
+		expect(adapter.deliverBatch).toHaveBeenCalledTimes(2);
+	});
+
+	it("rollback pauses receipt chasing without reverting delivery failure safety", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "A");
+		const adapter = {
+			deliverBatch: vi.fn(async () => {
+				throw new Error("legacy retry");
+			}),
+		};
+		const consumer = loop(
+			queue,
+			adapter,
+			receiptOverrides(false, { maxModelAttempts: 2 }),
+		);
+
+		expect((await consumer.tick()).ok).toBe(false);
+		expect((await consumer.tick()).ok).toBe(true);
+		expect(adapter.deliverBatch).toHaveBeenCalledTimes(1);
+		expect(queue.getById("A")).toMatchObject({
+			attempts: 1,
+			consumed_at: null,
+			next_retry_at: expect.any(String),
+			next_unprocessed_at: null,
+		});
+	});
+
+	it("uses one receipt flag snapshot for a complete tick", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "A");
+		let flagReads = 0;
+		const consumer = loop(
+			queue,
+			{
+				async deliverBatch() {
+					throw new Error("legacy retry");
+				},
+			},
+			{
+				maxModelAttempts: 2,
+				receiptFoundationEnabled: () => flagReads++ > 0,
+			},
+		);
+
+		expect((await consumer.tick()).ok).toBe(false);
+		expect(flagReads).toBe(1);
+		expect(queue.getById("A")).toMatchObject({
+			attempts: 1,
+			consumed_at: null,
+			disposition: null,
+			next_retry_at: expect.any(String),
+		});
 	});
 
 	it("batches 50 concurrent-priority rows in priority/FIFO order without loss", async () => {
@@ -210,7 +390,7 @@ describe("LeadInboxLoop", () => {
 		]);
 	});
 
-	it("quarantines a poison protocol row once and emits one advisory", async () => {
+	it("dead-letters a poison protocol row once even while chase is rolled back", async () => {
 		const queue = makeQueue();
 		queue.enqueue({
 			id: "protocol-poison",
@@ -222,11 +402,17 @@ describe("LeadInboxLoop", () => {
 			content: "{}",
 		});
 		const advisory = vi.fn();
+		let nowMs = Date.parse("2026-07-19T12:00:00.000Z");
 		const consumer = loop(
 			queue,
 			{ deliverBatch: vi.fn(async (batch) => receipt(batch)) },
 			{
 				maxProtocolAttempts: 2,
+				...receiptOverrides(false, {
+					now: () => new Date(nowMs),
+					retryBackoffBaseMs: 5_000,
+					retryBackoffCapMs: 5_000,
+				}),
 				handleProtocol: async () => {
 					throw new Error("invalid ACK");
 				},
@@ -234,16 +420,61 @@ describe("LeadInboxLoop", () => {
 			},
 		);
 		expect((await consumer.tick()).ok).toBe(false);
+		nowMs += 5_000;
 		const second = await consumer.tick();
 		expect(second).toMatchObject({ ok: true, protocolConsumed: 1 });
 		expect(queue.getById("protocol-poison")).toMatchObject({
 			attempts: 2,
-			disposition: "quarantined",
-			consumed_at: "2026-07-19T12:00:00.000Z",
+			disposition: "dead_letter",
+			consumed_at: "2026-07-19T12:00:05.000Z",
 		});
 		expect(advisory).toHaveBeenCalledTimes(1);
 		expect((await consumer.tick()).ok).toBe(true);
 		expect(advisory).toHaveBeenCalledTimes(1);
+	});
+
+	it("backs off and durably dead-letters exhausted protocol delivery", async () => {
+		const queue = makeQueue();
+		queue.enqueue({
+			id: "protocol-poison",
+			toLead: "lead-a",
+			source: "ack",
+			type: "ack_receipt",
+			msgClass: "protocol",
+			priority: 1,
+			content: "{}",
+		});
+		let nowMs = Date.parse("2026-07-19T12:00:00.000Z");
+		const handleProtocol = vi.fn(async () => {
+			throw new Error("invalid ACK");
+		});
+		const consumer = loop(
+			queue,
+			{ deliverBatch: vi.fn(async (batch) => receipt(batch)) },
+			receiptOverrides(true, {
+				now: () => new Date(nowMs),
+				maxProtocolAttempts: 2,
+				retryBackoffBaseMs: 1_000,
+				retryBackoffCapMs: 1_000,
+				handleProtocol,
+			}),
+		);
+
+		expect((await consumer.tick()).ok).toBe(false);
+		nowMs += 500;
+		expect((await consumer.tick()).ok).toBe(true);
+		expect(handleProtocol).toHaveBeenCalledTimes(1);
+		nowMs += 500;
+		expect((await consumer.tick()).ok).toBe(true);
+		expect(handleProtocol).toHaveBeenCalledTimes(2);
+		expect(queue.getById("protocol-poison")).toMatchObject({
+			attempts: 2,
+			disposition: "dead_letter",
+			consumed_at: "2026-07-19T12:00:01.000Z",
+		});
+		expect(
+			queue.getReceiptAlertOutbox("dead_letter:protocol:protocol-poison"),
+		).toMatchObject({ kind: "dead_letter" });
 	});
 
 	it("quarantines an immutable membership conflict and persists one advisory", async () => {

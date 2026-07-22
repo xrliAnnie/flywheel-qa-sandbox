@@ -330,6 +330,54 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 		expect(db.insertResponse).not.toHaveBeenCalled();
 	});
 
+	it("uses the receipt-aware trusted writer for a founder thread decision", async () => {
+		const trustedFounderGateResponseAndReceipt = vi
+			.fn()
+			.mockReturnValue({ responseId: "R-1" });
+		const db = {
+			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
+			trustedFounderGateResponseAndReceipt,
+		};
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			actor: "founder-discord",
+			db,
+			store: store("awaiting_review"),
+			founderId: "founder-discord",
+			founderSource: {
+				project: "flywheel",
+				runId: "run-1",
+				issueId: "FLY-1392",
+				approvedHead: "a".repeat(40),
+				classification: "founder_direct_signal",
+				authorityId: "Q-1",
+			},
+			founderReceipt: {
+				rootId: "founder_msg:lead-a:M-1",
+				msgId: "M-1",
+				now: "2026-07-20T12:00:00.000Z",
+				intentKey: "founder-route:lead-a:M-1:Q-1",
+				queuedAtMs: 1_721_390_000_000,
+				envelope: {
+					id: "wake-M-1",
+					to: "E-1",
+					content: "founder decision",
+				},
+			},
+		});
+		expect(r).toMatchObject({ written: true, disposition: "written" });
+		expect(trustedFounderGateResponseAndReceipt).toHaveBeenCalledWith(
+			expect.objectContaining({
+				rootId: "founder_msg:lead-a:M-1",
+				msgId: "M-1",
+				approvalSource: expect.objectContaining({
+					sourceEventId: "founder-approval:Q-1:M-1",
+				}),
+			}),
+		);
+		expect(db.insertResponse).not.toHaveBeenCalled();
+	});
+
 	it("never emits a founder source event for feedback or an untrusted actor", async () => {
 		const db = {
 			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),

@@ -1,9 +1,6 @@
 /** FLY-1373 canonical StateStore lead-event → comm.db queue producer. */
 
-import type {
-	LeadInboxPriority,
-	LeadInboxQueue,
-} from "flywheel-comm/lead-inbox-queue";
+import type { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import type { DurableQueueReceipt } from "./runtime-registry.js";
 
@@ -12,34 +9,6 @@ export function canonicalLeadEventDeliveryId(
 ): string {
 	const eventId = envelope.eventId?.trim() || `seq:${envelope.seq}`;
 	return `lead_event:${envelope.leadId}:${eventId}`;
-}
-
-export function priorityForLeadEvent(eventType: string): LeadInboxPriority {
-	const normalized = eventType.toLowerCase();
-	if (
-		normalized.includes("founder") ||
-		normalized === "ship_approval_request" ||
-		normalized === "approve_to_ship"
-	) {
-		return 0;
-	}
-	if (
-		normalized.includes("gate") ||
-		normalized.includes("question") ||
-		normalized.includes("approval") ||
-		normalized.includes("review")
-	) {
-		return 1;
-	}
-	if (
-		normalized.includes("report") ||
-		normalized.includes("completed") ||
-		normalized.includes("artifact") ||
-		normalized.includes("action")
-	) {
-		return 2;
-	}
-	return 3;
 }
 
 export function enqueueLeadEvent(args: {
@@ -56,7 +25,7 @@ export function enqueueLeadEvent(args: {
 		source: `lead_event:${envelope.seq}`,
 		type: envelope.event.event_type,
 		msgClass: "model",
-		priority: priorityForLeadEvent(envelope.event.event_type),
+		priority: envelope.priority ?? 2,
 		content: args.content,
 		legacyAlias:
 			envelope.deliveryAttemptId !== undefined

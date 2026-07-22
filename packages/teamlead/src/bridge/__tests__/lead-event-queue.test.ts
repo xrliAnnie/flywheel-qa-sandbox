@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	canonicalLeadEventDeliveryId,
 	enqueueLeadEvent,
-	priorityForLeadEvent,
 } from "../lead-event-queue.js";
 import type { LeadEventEnvelope } from "../lead-runtime.js";
 
@@ -69,10 +68,23 @@ describe("lead-event queue producer", () => {
 		);
 	});
 
-	it("persists founder > gate/question > report > telemetry priorities", () => {
-		expect(priorityForLeadEvent("founder_reply_ambiguous")).toBe(0);
-		expect(priorityForLeadEvent("gate_question")).toBe(1);
-		expect(priorityForLeadEvent("milestone_report")).toBe(2);
-		expect(priorityForLeadEvent("heartbeat_sample")).toBe(3);
+	it("uses producer priority and defaults an unknown event to P2", () => {
+		const q = queue();
+		const explicit = enqueueLeadEvent({
+			queue: q,
+			envelope: { ...envelope("lead-a"), priority: 3 },
+			content: "explicit",
+		});
+		const fallback = enqueueLeadEvent({
+			queue: q,
+			envelope: {
+				...envelope("lead-b"),
+				eventId: "future-event",
+				event: { event_type: "invented_later" },
+			},
+			content: "fallback",
+		});
+		expect(q.getById(explicit.deliveryId)?.priority).toBe(3);
+		expect(q.getById(fallback.deliveryId)?.priority).toBe(2);
 	});
 });

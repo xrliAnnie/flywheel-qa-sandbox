@@ -6,9 +6,23 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
+import type { FrozenFounderRouteCandidatesV1 } from "./founder-reply-routing.js";
 import {
+	founderMessageRootId,
+	founderRouteRowId,
+} from "./founder-reply-routing.js";
+import type {
+	EnqueueFounderHubRootInput,
+	LeadInboxRow,
+	ProcessedEvidenceV1,
+	ReceiptPriorityWindowsMs,
+} from "./lead-inbox-queue.js";
+import {
+	applyReceiptFoundationMigrations,
+	assertProcessedEvidence,
 	assertUtcIsoTimestamp,
 	LEAD_INBOX_SCHEMA,
+	LeadInboxQueue,
 } from "./lead-inbox-queue.js";
 import type {
 	Message,
@@ -99,6 +113,17 @@ CREATE TABLE IF NOT EXISTS runner_phase_wakes (
   queued_at              INTEGER NOT NULL,
   started_at             INTEGER,
   finished_at            INTEGER,
+	admission_state         TEXT,
+	envelope_json           TEXT,
+	push_attempts           INTEGER NOT NULL DEFAULT 0,
+	last_push_at            TEXT,
+	last_push_result        TEXT,
+	claim_token             TEXT,
+	claim_expires_at        TEXT,
+	t2_claimed_at           TEXT,
+	t2_result               TEXT,
+	escalation_outbox_id    TEXT,
+	started_ack_scope       TEXT,
   UNIQUE (execution_id, message_id)
 );
 CREATE TABLE IF NOT EXISTS runner_shutdown_controls (
@@ -267,6 +292,190 @@ export interface RunnerPhaseWake {
 	queued_at: number;
 	started_at: number | null;
 	finished_at: number | null;
+	admission_state:
+		| "queued"
+		| "duplicate"
+		| "suppressed_cap"
+		| "skipped_no_transport"
+		| null;
+	envelope_json: string | null;
+	push_attempts: number;
+	last_push_at: string | null;
+	last_push_result: string | null;
+	claim_token: string | null;
+	claim_expires_at: string | null;
+	t2_claimed_at: string | null;
+	t2_result: string | null;
+	escalation_outbox_id: string | null;
+	started_ack_scope: "exec_cli" | "message" | "debug_override" | null;
+}
+
+export interface ReceiptWakePolicy {
+	transportAvailable?: boolean;
+	execPushCap?: number;
+	execPushWindowMs?: number;
+}
+
+export interface RunnerReceiptWakePushClaim {
+	wake: RunnerPhaseWake;
+	claimToken: string;
+	attempt: number;
+	envelope: PhaseWakeInput;
+}
+
+export interface InstructionAndIntentInput {
+	instructionId: string;
+	fromAgent: string;
+	executionId: string;
+	content: string;
+	intentKey: string;
+	envelope: PhaseWakeInput;
+	queuedAtMs: number;
+	provenance?: MessageProvenance;
+	wakePolicy?: ReceiptWakePolicy;
+}
+
+export interface InstructionAndIntentResult {
+	kind: "queued" | "duplicate";
+	instructionId: string;
+	wake: RunnerPhaseWake;
+}
+
+export interface RespondAndReceiptInput {
+	questionId: string;
+	fromAgent: string;
+	content: string;
+	rootId: string;
+	evidence: Omit<ProcessedEvidenceV1, "ref">;
+	now: string;
+	intentKey: string;
+	envelope: PhaseWakeInput;
+	queuedAtMs: number;
+	provenance?: MessageProvenance;
+}
+
+export interface ResponseAndIntentInput {
+	questionId: string;
+	fromAgent: string;
+	content: string;
+	intentKey: string;
+	envelope: PhaseWakeInput;
+	queuedAtMs: number;
+	provenance?: MessageProvenance;
+	wakePolicy?: ReceiptWakePolicy;
+}
+
+export interface RespondAndReceiptResult {
+	responseId: string;
+	wake: RunnerPhaseWake;
+}
+
+export type ReceiptHandleAction = "relay" | "respond" | "no-route" | "ack";
+
+export interface HandleReceiptInput {
+	requestId: string;
+	receiptId: string;
+	authenticatedLead: string;
+	action: ReceiptHandleAction;
+	now: string;
+	provenance: MessageProvenance;
+	targetQuestionId?: string;
+	content?: string;
+	reason?: string;
+	intentKey?: string;
+	envelope?: PhaseWakeInput;
+	queuedAtMs?: number;
+	/** Test-only transaction seam injection. */
+	testCrashAfter?: "effect" | "terminal" | "wake";
+}
+
+export interface HandleReceiptResult {
+	kind: "handled";
+	receiptId: string;
+	action: ReceiptHandleAction;
+	responseId?: string;
+	wake?: RunnerPhaseWake;
+}
+
+export interface TrustedFounderApprovalAndReceiptInput {
+	project: string;
+	sourceEventId: string;
+	questionId: string;
+	fromAgent: string;
+	content: string;
+	expectedOwner: string;
+	payload: unknown;
+	rootId: string;
+	evidence: Omit<ProcessedEvidenceV1, "ref">;
+	now: string;
+	intentKey: string;
+	envelope: PhaseWakeInput;
+	queuedAtMs: number;
+	provenance?: MessageProvenance;
+}
+
+export interface TrustedFounderGateResponseAndReceiptInput {
+	questionId: string;
+	fromAgent: string;
+	content: string;
+	expectedOwner: string;
+	rootId: string;
+	msgId: string;
+	now: string;
+	intentKey: string;
+	envelope: PhaseWakeInput;
+	queuedAtMs: number;
+	approvalSource?: {
+		project: string;
+		sourceEventId: string;
+		payload: unknown;
+	};
+}
+
+export interface RouteFounderReplyInput {
+	msgId: string;
+	leadId: string;
+	toQuestionId?: string;
+	noRouteReason?: string;
+	now: string;
+	provenance?: MessageProvenance;
+	intentKey?: string;
+	envelope?: PhaseWakeInput;
+	queuedAtMs?: number;
+}
+
+export type RouteFounderReplyResult =
+	| {
+			kind: "routed";
+			questionId: string;
+			responseId: string;
+			wake: RunnerPhaseWake;
+	  }
+	| {
+			kind: "stale_candidate";
+			questionId: string;
+			winningResponseId: string;
+	  }
+	| { kind: "no_route"; winningResponseId?: string };
+
+export type UnprocessedReceiptAdvance =
+	| { kind: "resent"; rootId: string; round: number; resendId: string }
+	| { kind: "escalation_queued"; rootId: string; outboxId: string };
+
+export interface UnprocessedReceiptAlertPayload {
+	rootId: string;
+	episodeId: string;
+	targetKey: string;
+	toLead: string;
+	type: string;
+	projectName: string;
+	issueId: string;
+	issueIdentifier?: string;
+	executionId: string;
+	threadId?: string;
+	firstDeliveredAt: string;
+	resendRound: number;
+	contentSummary: string;
 }
 
 export interface RunnerShutdownControl {
@@ -283,6 +492,16 @@ function isMissingTableError(error: unknown, table: string): boolean {
 		error instanceof Error &&
 		new RegExp(`no such table: (?:main\\.)?${table}`, "i").test(error.message)
 	);
+}
+
+function positiveReceiptEnv(name: string, fallback: number): number {
+	const raw = process.env[name];
+	if (raw === undefined || !raw.trim()) return fallback;
+	const value = Number(raw);
+	if (!Number.isSafeInteger(value) || value <= 0) {
+		throw new Error(`invalid positive receipt configuration ${name}=${raw}`);
+	}
+	return value;
 }
 
 function provenanceValues(
@@ -343,6 +562,7 @@ export class CommDB {
 	}
 
 	private applyMigrations(): void {
+		applyReceiptFoundationMigrations(this.db);
 		const columns = this.db
 			.prepare("PRAGMA table_info(messages)")
 			.all() as Array<{ name: string }>;
@@ -1617,6 +1837,1193 @@ export class CommDB {
 		return info.changes > 0;
 	}
 
+	enqueueFounderHubRoot(input: EnqueueFounderHubRootInput): LeadInboxRow {
+		return new LeadInboxQueue(this.db).enqueueHubRoot(input);
+	}
+
+	/**
+	 * Handle one founder receipt as Lead: relay the original message to an
+	 * eligible pending runner question, or close it explicitly as no-route.
+	 * New FLY-1392 roots carry no Bridge-generated candidates; legacy promoted
+	 * families retain their frozen-candidate checks. The business write,
+	 * processed receipt(s), and wake intent share this transaction.
+	 */
+	routeFounderReply(input: RouteFounderReplyInput): RouteFounderReplyResult {
+		assertUtcIsoTimestamp(input.now, "now");
+		const msgId = input.msgId.trim();
+		const leadId = input.leadId.trim();
+		if (!msgId) throw new Error("msgId is required");
+		if (!leadId) throw new Error("leadId is required");
+		const toQuestionId = input.toQuestionId?.trim();
+		const noRouteReason = input.noRouteReason?.trim();
+		if (Boolean(toQuestionId) === Boolean(noRouteReason)) {
+			throw new Error(
+				"exactly one of toQuestionId or noRouteReason is required",
+			);
+		}
+		const rootId = founderMessageRootId(leadId, msgId);
+		const routeId = founderRouteRowId(leadId, msgId);
+		const fence = this.processedFenceFromProvenance(input.provenance);
+
+		return this.db
+			.transaction((): RouteFounderReplyResult => {
+				const queue = new LeadInboxQueue(this.db);
+				const root = queue.getById(rootId);
+				const route = queue.getById(routeId);
+				if (
+					!root ||
+					root.to_lead !== leadId ||
+					root.source !== "founder_reply" ||
+					root.type !== "founder_reply" ||
+					root.ref_message_id !== msgId
+				) {
+					throw new Error(
+						`founder receipt root ${leadId}:${msgId} is unavailable`,
+					);
+				}
+				if (
+					route &&
+					(route.to_lead !== leadId ||
+						route.family_root_id !== rootId ||
+						!route.candidates_json)
+				) {
+					throw new Error(
+						`founder route family ${leadId}:${msgId} is unavailable`,
+					);
+				}
+				const rootPayload = this.parseFounderRootPayload(root.content);
+				const candidates = route
+					? this.parseFounderRouteCandidates(route.candidates_json as string)
+					: null;
+				if (candidates && candidates.leadId !== leadId) {
+					throw new Error("founder route lead scope mismatch");
+				}
+
+				if (
+					root.processed_at !== null ||
+					(route !== undefined && route.processed_at !== null)
+				) {
+					if (
+						root.processed_at === null ||
+						!root.processed_evidence ||
+						(route !== undefined &&
+							(route.processed_at === null ||
+								root.processed_evidence !== route.processed_evidence))
+					) {
+						throw new Error("founder route family has split processed state");
+					}
+					const evidence = JSON.parse(
+						root.processed_evidence,
+					) as ProcessedEvidenceV1;
+					if (
+						toQuestionId &&
+						evidence.kind === "lead_routed" &&
+						evidence.actor === leadId &&
+						evidence.basis?.includes(`question:${toQuestionId}`)
+					) {
+						const wake = this.db
+							.prepare("SELECT * FROM runner_phase_wakes WHERE message_id = ?")
+							.get(input.intentKey ?? "") as RunnerPhaseWake | undefined;
+						if (!wake) throw new Error("routed founder reply wake is missing");
+						return {
+							kind: "routed",
+							questionId: toQuestionId,
+							responseId: evidence.ref,
+							wake,
+						};
+					}
+					if (
+						noRouteReason &&
+						evidence.kind === "lead_no_route" &&
+						evidence.actor === leadId &&
+						evidence.basis?.includes(noRouteReason)
+					) {
+						return {
+							kind: "no_route",
+							...(noRouteReason === "already_answered"
+								? { winningResponseId: evidence.ref }
+								: {}),
+						};
+					}
+					throw new Error(
+						"founder route family was processed by another action",
+					);
+				}
+
+				if (noRouteReason) {
+					let winningResponseId: string | undefined;
+					if (noRouteReason === "already_answered") {
+						for (const questionId of candidates?.questionIds ?? []) {
+							const response = this.getResponse(questionId);
+							if (response) {
+								winningResponseId = response.id;
+								break;
+							}
+						}
+						if (!winningResponseId) {
+							throw new Error(
+								"already_answered requires a winning frozen-candidate response",
+							);
+						}
+					}
+					const evidence: ProcessedEvidenceV1 = {
+						v: 1,
+						kind: "lead_no_route",
+						ref: winningResponseId ?? route?.id ?? rootId,
+						actor: leadId,
+						actor_kind: "lead",
+						fence,
+						basis: [noRouteReason],
+					};
+					queue.markProcessed(rootId, { now: input.now, evidence });
+					if (route) {
+						queue.markProcessed(routeId, { now: input.now, evidence });
+					}
+					const familyIds = route ? [rootId, routeId] : [rootId];
+					const closed = this.db
+						.prepare(
+							`UPDATE lead_inbox SET routing_state = 'no_route',
+						   next_unprocessed_at = NULL,
+						   consumed_at = COALESCE(consumed_at, ?),
+						   disposition = CASE WHEN id = ? THEN 'lead_no_route'
+						                      ELSE disposition END
+						 WHERE id IN (${familyIds.map(() => "?").join(",")})
+						   AND processed_at IS NOT NULL`,
+						)
+						.run(input.now, route?.id ?? rootId, ...familyIds);
+					if (closed.changes !== familyIds.length) {
+						throw new Error("founder no-route family closure failed");
+					}
+					return {
+						kind: "no_route",
+						...(winningResponseId ? { winningResponseId } : {}),
+					};
+				}
+
+				const questionId = toQuestionId as string;
+				if (candidates && !candidates.questionIds.includes(questionId)) {
+					throw new Error(`question ${questionId} is not a frozen candidate`);
+				}
+				const question = this.getMessageById(questionId);
+				if (!question || question.type !== "question") {
+					throw new Error(`founder route question ${questionId} was not found`);
+				}
+				if (
+					question.kind === "report" ||
+					question.checkpoint === "approve_to_ship" ||
+					question.checkpoint === "review_design" ||
+					question.checkpoint === "review_code"
+				) {
+					throw new Error(`question ${questionId} is not founder-routable`);
+				}
+				const session = this.getSession(question.from_agent);
+				if (
+					!session ||
+					session.lead_id !== leadId ||
+					session.project_name !== rootPayload.projectName ||
+					session.issue_id !== rootPayload.issueId ||
+					(candidates !== null &&
+						(candidates.projectName !== rootPayload.projectName ||
+							candidates.issueId !== rootPayload.issueId ||
+							candidates.threadId !== rootPayload.threadId))
+				) {
+					throw new Error(
+						`question ${questionId} founder route scope mismatch`,
+					);
+				}
+				const winning = this.getResponse(questionId);
+				if (winning) {
+					return {
+						kind: "stale_candidate",
+						questionId,
+						winningResponseId: winning.id,
+					};
+				}
+				if (
+					question.resolved_at !== null ||
+					question.superseded_at !== null ||
+					question.relay_state === "terminal_disposed"
+				) {
+					throw new Error(`question ${questionId} is no longer pending`);
+				}
+				if (
+					!input.intentKey ||
+					!input.envelope ||
+					input.queuedAtMs === undefined
+				) {
+					throw new Error("question route requires a wake intent");
+				}
+				const responseId = randomUUID();
+				this.db
+					.prepare(
+						`INSERT INTO messages (
+					  id, from_agent, to_agent, type, content, parent_id,
+					  sender_lease_key, sender_generation, sender_holder_pid,
+					  sender_holder_start, writer_pid, writer_start
+					) VALUES (?, ?, ?, 'response', ?, ?, ?, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						responseId,
+						leadId,
+						question.from_agent,
+						rootPayload.answer,
+						questionId,
+						...provenanceValues(input.provenance),
+					);
+				this.markQuestionTerminalDisposed(questionId);
+				const evidence: ProcessedEvidenceV1 = {
+					v: 1,
+					kind: "lead_routed",
+					ref: responseId,
+					actor: leadId,
+					actor_kind: "lead",
+					fence,
+					basis: [`question:${questionId}`],
+				};
+				queue.markProcessed(rootId, { now: input.now, evidence });
+				if (route) {
+					queue.markProcessed(routeId, { now: input.now, evidence });
+				}
+				const familyIds = route ? [rootId, routeId] : [rootId];
+				const closed = this.db
+					.prepare(
+						`UPDATE lead_inbox SET routing_state = 'bound',
+					   next_unprocessed_at = NULL,
+					   consumed_at = COALESCE(consumed_at, ?),
+					   disposition = CASE WHEN id = ? THEN 'routed_question'
+					                      ELSE disposition END
+					 WHERE id IN (${familyIds.map(() => "?").join(",")})
+					   AND processed_at IS NOT NULL`,
+					)
+					.run(input.now, route?.id ?? rootId, ...familyIds);
+				if (closed.changes !== familyIds.length) {
+					throw new Error("founder route family closure failed");
+				}
+				const wake = this.admitReceiptWakeIntent({
+					executionId: question.from_agent,
+					intentKey: input.intentKey,
+					envelope: input.envelope,
+					queuedAtMs: input.queuedAtMs,
+				});
+				return { kind: "routed", questionId, responseId, wake };
+			})
+			.immediate();
+	}
+
+	private processedFenceFromProvenance(
+		provenance?: MessageProvenance,
+	): Record<string, string | number> {
+		if (
+			provenance?.senderGeneration !== null &&
+			provenance?.senderGeneration !== undefined
+		) {
+			return {
+				...(provenance.senderLeaseKey
+					? { lease_key: provenance.senderLeaseKey }
+					: {}),
+				lease_generation: provenance.senderGeneration,
+			};
+		}
+		if (provenance?.writerPid !== null && provenance?.writerPid !== undefined) {
+			return { writer_pid: provenance.writerPid };
+		}
+		return { authority: "lead_write_unprotected" };
+	}
+
+	private parseFounderRouteCandidates(
+		encoded: string,
+	): FrozenFounderRouteCandidatesV1 {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(encoded);
+		} catch {
+			throw new Error("founder route candidates_json is invalid JSON");
+		}
+		const value = parsed as Partial<FrozenFounderRouteCandidatesV1>;
+		if (
+			value?.v !== 1 ||
+			!Array.isArray(value.questionIds) ||
+			value.questionIds.some((id) => typeof id !== "string" || !id.trim()) ||
+			typeof value.leadId !== "string" ||
+			typeof value.projectName !== "string" ||
+			typeof value.issueId !== "string" ||
+			typeof value.threadId !== "string"
+		) {
+			throw new Error("founder route candidates_json has invalid shape");
+		}
+		return value as FrozenFounderRouteCandidatesV1;
+	}
+
+	private parseFounderRootPayload(encoded: string): {
+		msgId: string;
+		answer: string;
+		projectName: string;
+		issueId: string;
+		threadId: string;
+	} {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(encoded);
+		} catch {
+			throw new Error("founder root content is invalid JSON");
+		}
+		const value = parsed as Record<string, unknown>;
+		for (const field of [
+			"msgId",
+			"answer",
+			"projectName",
+			"issueId",
+			"threadId",
+		]) {
+			if (typeof value[field] !== "string" || !value[field].trim()) {
+				throw new Error(`founder root content ${field} is invalid`);
+			}
+		}
+		return value as {
+			msgId: string;
+			answer: string;
+			projectName: string;
+			issueId: string;
+			threadId: string;
+		};
+	}
+
+	/**
+	 * FLY-1392: one CommDB unit of work for a Lead instruction and the wake
+	 * intent that must make that instruction observable to the target runner.
+	 * Transport I/O deliberately happens after this durable commit.
+	 */
+	instructionAndIntent(
+		input: InstructionAndIntentInput,
+	): InstructionAndIntentResult {
+		for (const [field, value] of [
+			["instructionId", input.instructionId],
+			["fromAgent", input.fromAgent],
+			["executionId", input.executionId],
+			["content", input.content],
+			["intentKey", input.intentKey],
+			["envelope.id", input.envelope.id],
+			["envelope.content", input.envelope.content],
+		] as const) {
+			if (!value.trim()) throw new Error(`${field} is required`);
+		}
+		if (input.envelope.to !== input.executionId) {
+			throw new Error(
+				`wake envelope target mismatch: expected ${input.executionId}, got ${input.envelope.to}`,
+			);
+		}
+		if (!Number.isSafeInteger(input.queuedAtMs) || input.queuedAtMs < 0) {
+			throw new Error("queuedAtMs must be a non-negative safe integer");
+		}
+		const envelopeJson = JSON.stringify(input.envelope);
+
+		return this.db
+			.transaction((): InstructionAndIntentResult => {
+				this.db
+					.prepare(
+						`INSERT OR IGNORE INTO messages (
+					  id, from_agent, to_agent, type, content,
+					  sender_lease_key, sender_generation, sender_holder_pid,
+					  sender_holder_start, writer_pid, writer_start
+					) VALUES (?, ?, ?, 'instruction', ?, ?, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						input.instructionId,
+						input.fromAgent,
+						input.executionId,
+						input.content,
+						...provenanceValues(input.provenance),
+					);
+				const instruction = this.db
+					.prepare(
+						"SELECT id, from_agent, to_agent, type, content FROM messages WHERE id = ?",
+					)
+					.get(input.instructionId) as
+					| {
+							id: string;
+							from_agent: string;
+							to_agent: string;
+							type: string;
+							content: string;
+					  }
+					| undefined;
+				if (
+					!instruction ||
+					instruction.from_agent !== input.fromAgent ||
+					instruction.to_agent !== input.executionId ||
+					instruction.type !== "instruction" ||
+					instruction.content !== input.content
+				) {
+					throw new Error(
+						`instruction id ${input.instructionId} was reused with different content`,
+					);
+				}
+
+				const existing = this.db
+					.prepare(
+						`SELECT * FROM runner_phase_wakes
+					 WHERE execution_id = ?
+					   AND (message_id = ? OR source_instruction_id = ?)
+					 ORDER BY queue_seq LIMIT 1`,
+					)
+					.get(input.executionId, input.intentKey, input.instructionId) as
+					| RunnerPhaseWake
+					| undefined;
+				if (existing) {
+					if (
+						existing.message_id !== input.intentKey ||
+						existing.source_instruction_id !== input.instructionId ||
+						existing.envelope_json !== envelopeJson
+					) {
+						throw new Error(
+							`wake intent ${input.intentKey} was reused with different content`,
+						);
+					}
+					return {
+						kind: "duplicate",
+						instructionId: input.instructionId,
+						wake: existing,
+					};
+				}
+
+				const wake = this.admitReceiptWakeIntent({
+					executionId: input.executionId,
+					intentKey: input.intentKey,
+					envelope: input.envelope,
+					queuedAtMs: input.queuedAtMs,
+					sourceInstructionId: input.instructionId,
+					wakePolicy: input.wakePolicy,
+				});
+				return {
+					kind: "queued",
+					instructionId: input.instructionId,
+					wake,
+				};
+			})
+			.immediate();
+	}
+
+	/**
+	 * Category-agnostic Lead handle action. The optional business effect, receipt
+	 * terminal write, and runner wake share one SQLite transaction; request id +
+	 * canonical payload digest makes retries deterministic.
+	 */
+	handleReceipt(input: HandleReceiptInput): HandleReceiptResult {
+		const requestId = input.requestId.trim();
+		const receiptId = input.receiptId.trim();
+		const authenticatedLead = input.authenticatedLead.trim();
+		if (!requestId) throw new Error("requestId is required");
+		if (!receiptId) throw new Error("receiptId is required");
+		if (!authenticatedLead) throw new Error("authenticatedLead is required");
+		assertUtcIsoTimestamp(input.now, "now");
+		if (
+			!Number.isSafeInteger(input.provenance.senderGeneration) ||
+			(input.provenance.senderGeneration ?? 0) <= 0 ||
+			!input.provenance.senderLeaseKey?.trim()
+		) {
+			throw new Error(
+				"not_authorized: a valid Lead lease generation is required",
+			);
+		}
+		if (
+			(input.action === "relay" || input.action === "respond") &&
+			(!input.targetQuestionId?.trim() || !input.content?.trim())
+		) {
+			throw new Error(`${input.action} requires targetQuestionId and content`);
+		}
+		if (
+			(input.action === "relay" || input.action === "respond") &&
+			(!input.intentKey?.trim() ||
+				!input.envelope ||
+				input.queuedAtMs === undefined)
+		) {
+			throw new Error(`${input.action} requires a wake intent`);
+		}
+
+		const payloadDigest = canonicalSubmissionDigest({
+			receiptId,
+			action: input.action,
+			targetQuestionId: input.targetQuestionId?.trim(),
+			content: input.content?.trim(),
+			reason: input.reason?.trim(),
+			intentKey: input.intentKey?.trim(),
+			envelope: input.envelope,
+		});
+
+		return this.db
+			.transaction((): HandleReceiptResult => {
+				const existingRequest = this.db
+					.prepare(
+						`SELECT receipt_id, action, payload_digest, result_json
+						   FROM receipt_handle_requests WHERE request_id = ?`,
+					)
+					.get(requestId) as
+					| {
+							receipt_id: string;
+							action: string;
+							payload_digest: string;
+							result_json: string;
+					  }
+					| undefined;
+				if (existingRequest) {
+					if (
+						existingRequest.receipt_id !== receiptId ||
+						existingRequest.action !== input.action ||
+						existingRequest.payload_digest !== payloadDigest
+					) {
+						throw new Error(`idempotency_conflict: request ${requestId}`);
+					}
+					return JSON.parse(existingRequest.result_json) as HandleReceiptResult;
+				}
+
+				const queue = new LeadInboxQueue(this.db);
+				const receipt = queue.getById(receiptId);
+				if (!receipt) throw new Error(`receipt_not_found: ${receiptId}`);
+				if (receipt.to_lead !== authenticatedLead) {
+					throw new Error(
+						`not_authorized: receipt belongs to ${receipt.to_lead}`,
+					);
+				}
+				if (receipt.delivered_at === null) {
+					throw new Error(`receipt_not_delivered: ${receiptId}`);
+				}
+				if (receipt.processed_at !== null) {
+					throw new Error(`already_processed: ${receiptId}`);
+				}
+				if (receipt.disposed_at !== null) {
+					throw new Error(`already_disposed: ${receiptId}`);
+				}
+
+				let responseId: string | undefined;
+				let wake: RunnerPhaseWake | undefined;
+				if (input.action === "relay" || input.action === "respond") {
+					const questionId = input.targetQuestionId?.trim() as string;
+					const question = this.db
+						.prepare(
+							`SELECT id, from_agent, resolved_at, superseded_at, relay_state
+							   FROM messages WHERE id = ? AND type = 'question'`,
+						)
+						.get(questionId) as
+						| {
+								id: string;
+								from_agent: string;
+								resolved_at: string | null;
+								superseded_at: string | null;
+								relay_state: string;
+						  }
+						| undefined;
+					if (
+						!question ||
+						question.resolved_at !== null ||
+						question.superseded_at !== null ||
+						question.relay_state === "terminal_disposed" ||
+						this.getResponse(questionId)
+					) {
+						throw new Error(`business_object_not_pending: ${questionId}`);
+					}
+					if (input.envelope?.to !== question.from_agent) {
+						throw new Error("wake target must match the question owner");
+					}
+					responseId = randomUUID();
+					this.db
+						.prepare(
+							`INSERT INTO messages (
+							   id, from_agent, to_agent, type, content, parent_id,
+							   sender_lease_key, sender_generation, sender_holder_pid,
+							   sender_holder_start, writer_pid, writer_start
+							 ) VALUES (?, ?, ?, 'response', ?, ?, ?, ?, ?, ?, ?, ?)`,
+						)
+						.run(
+							responseId,
+							authenticatedLead,
+							question.from_agent,
+							input.content?.trim(),
+							questionId,
+							...provenanceValues(input.provenance),
+						);
+					this.markQuestionTerminalDisposed(questionId);
+				}
+				if (input.testCrashAfter === "effect") {
+					throw new Error("injected receipt handle crash after effect");
+				}
+
+				const evidence: ProcessedEvidenceV1 = {
+					v: 1,
+					kind: `lead_${input.action.replace("-", "_")}`,
+					ref: responseId ?? requestId,
+					actor: authenticatedLead,
+					actor_kind: "lead",
+					fence: this.processedFenceFromProvenance(input.provenance),
+					...(input.reason?.trim() ? { basis: [input.reason.trim()] } : {}),
+				};
+				queue.markProcessed(receiptId, { now: input.now, evidence });
+				if (input.testCrashAfter === "terminal") {
+					throw new Error("injected receipt handle crash after terminal");
+				}
+
+				if (input.action === "relay" || input.action === "respond") {
+					wake = this.admitReceiptWakeIntent({
+						executionId: input.envelope?.to as string,
+						intentKey: input.intentKey as string,
+						envelope: input.envelope as PhaseWakeInput,
+						queuedAtMs: input.queuedAtMs as number,
+					});
+				}
+				if (input.testCrashAfter === "wake") {
+					throw new Error("injected receipt handle crash after wake");
+				}
+
+				const result: HandleReceiptResult = {
+					kind: "handled",
+					receiptId,
+					action: input.action,
+					...(responseId ? { responseId } : {}),
+					...(wake ? { wake } : {}),
+				};
+				this.db
+					.prepare(
+						`INSERT INTO receipt_handle_requests (
+						   request_id, receipt_id, action, payload_digest, result_json,
+						   created_at
+						 ) VALUES (?, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						requestId,
+						receiptId,
+						input.action,
+						payloadDigest,
+						JSON.stringify(result),
+						input.now,
+					);
+				return result;
+			})
+			.immediate();
+	}
+
+	/**
+	 * FLY-1392 composite response UOW: the business response, its processed
+	 * evidence, and the runner wake intent either all commit or all roll back.
+	 */
+	respondAndReceipt(input: RespondAndReceiptInput): RespondAndReceiptResult {
+		for (const [field, value] of [
+			["questionId", input.questionId],
+			["fromAgent", input.fromAgent],
+			["content", input.content],
+			["rootId", input.rootId],
+			["intentKey", input.intentKey],
+		] as const) {
+			if (!value.trim()) throw new Error(`${field} is required`);
+		}
+		assertUtcIsoTimestamp(input.now, "now");
+		if (
+			input.evidence.actor_kind === "lead" &&
+			input.evidence.actor !== input.fromAgent
+		) {
+			throw new Error("processed evidence actor must match response author");
+		}
+
+		return this.db.transaction(() => {
+			if (input.evidence.actor_kind === "bridge-protocol") {
+				this.assertCurrentProtocolOwner(input.evidence.fence, input.now);
+			}
+			const question = this.db
+				.prepare(
+					`SELECT id, from_agent, checkpoint, relay_state, resolved_at,
+					        superseded_at FROM messages
+					 WHERE id = ? AND type = 'question'`,
+				)
+				.get(input.questionId) as
+				| {
+						id: string;
+						from_agent: string;
+						checkpoint: string | null;
+						relay_state: string;
+						resolved_at: string | null;
+						superseded_at: string | null;
+				  }
+				| undefined;
+			if (!question) throw new Error(`Question ${input.questionId} not found`);
+			if (question.checkpoint === "approve_to_ship") {
+				throw new Error("approve_to_ship requires the trusted founder writer");
+			}
+			let response = this.getResponse(input.questionId);
+			if (!response) {
+				const responseId = randomUUID();
+				const inserted = this.db
+					.prepare(
+						`INSERT INTO messages (
+						  id, from_agent, to_agent, type, content, parent_id,
+						  sender_lease_key, sender_generation, sender_holder_pid,
+						  sender_holder_start, writer_pid, writer_start
+						)
+						SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
+						  FROM messages q
+						 WHERE q.id = ? AND q.type = 'question'
+						   AND q.resolved_at IS NULL AND q.superseded_at IS NULL
+						   AND q.relay_state != 'terminal_disposed'
+						   AND NOT EXISTS (
+						     SELECT 1 FROM messages r
+						      WHERE r.parent_id = q.id AND r.type = 'response'
+						   )`,
+					)
+					.run(
+						responseId,
+						input.fromAgent,
+						input.content,
+						...provenanceValues(input.provenance),
+						input.questionId,
+					);
+				if (inserted.changes !== 1) {
+					throw new Error(`question ${input.questionId} is no longer open`);
+				}
+				this.markQuestionTerminalDisposed(input.questionId);
+				response = this.getResponse(input.questionId);
+			}
+			if (
+				!response ||
+				response.from_agent !== input.fromAgent ||
+				response.content !== input.content
+			) {
+				throw new Error(
+					`question ${input.questionId} was answered by another actor`,
+				);
+			}
+
+			const evidence: ProcessedEvidenceV1 = {
+				...input.evidence,
+				ref: response.id,
+			};
+			const queue = new LeadInboxQueue(this.db);
+			queue.markProcessed(input.rootId, { now: input.now, evidence });
+			const rootUpdated = this.db
+				.prepare(
+					`UPDATE lead_inbox SET routing_state = 'bound',
+					   next_unprocessed_at = NULL
+					 WHERE id = ? AND processed_at IS NOT NULL
+					   AND processed_evidence IS NOT NULL`,
+				)
+				.run(input.rootId);
+			if (rootUpdated.changes !== 1) {
+				throw new Error(`founder receipt root ${input.rootId} is unavailable`);
+			}
+			const wake = this.admitReceiptWakeIntent({
+				executionId: question.from_agent,
+				intentKey: input.intentKey,
+				envelope: input.envelope,
+				queuedAtMs: input.queuedAtMs,
+			});
+			return { responseId: response.id, wake };
+		})();
+	}
+
+	/** Response + wake intent in one transaction for gate/ask answers. */
+	responseAndIntent(input: ResponseAndIntentInput): RespondAndReceiptResult {
+		return this.db
+			.transaction(() => {
+				const question = this.db
+					.prepare(
+						`SELECT id, from_agent, resolved_at, superseded_at, relay_state
+					 FROM messages WHERE id = ? AND type = 'question'`,
+					)
+					.get(input.questionId) as
+					| {
+							id: string;
+							from_agent: string;
+							resolved_at: string | null;
+							superseded_at: string | null;
+							relay_state: string;
+					  }
+					| undefined;
+				if (!question)
+					throw new Error(`Question ${input.questionId} not found`);
+				let response = this.getResponse(input.questionId);
+				if (!response) {
+					const responseId = randomUUID();
+					const inserted = this.db
+						.prepare(
+							`INSERT INTO messages (
+						  id, from_agent, to_agent, type, content, parent_id,
+						  sender_lease_key, sender_generation, sender_holder_pid,
+						  sender_holder_start, writer_pid, writer_start
+						)
+						SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
+						  FROM messages q
+						 WHERE q.id = ? AND q.type = 'question'
+						   AND q.resolved_at IS NULL AND q.superseded_at IS NULL
+						   AND q.relay_state != 'terminal_disposed'
+						   AND NOT EXISTS (
+						     SELECT 1 FROM messages r
+						      WHERE r.parent_id = q.id AND r.type = 'response'
+						   )`,
+						)
+						.run(
+							responseId,
+							input.fromAgent,
+							input.content,
+							...provenanceValues(input.provenance),
+							input.questionId,
+						);
+					if (inserted.changes !== 1) {
+						throw new Error(`question ${input.questionId} is no longer open`);
+					}
+					this.markQuestionTerminalDisposed(input.questionId);
+					response = this.getResponse(input.questionId);
+				}
+				if (
+					!response ||
+					response.from_agent !== input.fromAgent ||
+					response.content !== input.content
+				) {
+					throw new Error(
+						`question ${input.questionId} was answered by another actor`,
+					);
+				}
+				const wake = this.admitReceiptWakeIntent({
+					executionId: question.from_agent,
+					intentKey: input.intentKey,
+					envelope: input.envelope,
+					queuedAtMs: input.queuedAtMs,
+					wakePolicy: input.wakePolicy,
+				});
+				return { responseId: response.id, wake };
+			})
+			.immediate();
+	}
+
+	trustedFounderApprovalAndReceipt(
+		input: TrustedFounderApprovalAndReceiptInput,
+	): RespondAndReceiptResult {
+		assertUtcIsoTimestamp(input.now, "now");
+		if (input.evidence.actor_kind !== "founder-writer") {
+			throw new Error(
+				"trusted founder evidence must use founder-writer actor_kind",
+			);
+		}
+		if (input.evidence.actor !== input.fromAgent) {
+			throw new Error(
+				"trusted founder evidence actor must match response author",
+			);
+		}
+		return this.db.transaction(() => {
+			let response = this.getResponse(input.questionId);
+			if (!response) {
+				const written = this.insertFounderApprovalResponseWithSource({
+					project: input.project,
+					sourceEventId: input.sourceEventId,
+					questionId: input.questionId,
+					fromAgent: input.fromAgent,
+					content: input.content,
+					expectedOwner: input.expectedOwner,
+					payload: input.payload,
+					provenance: input.provenance,
+				});
+				if (!written) {
+					throw new Error(
+						`founder approval gate ${input.questionId} is not open`,
+					);
+				}
+				response = this.getResponse(input.questionId);
+			}
+			if (
+				!response ||
+				response.from_agent !== input.fromAgent ||
+				response.content !== input.content
+			) {
+				throw new Error(
+					`founder approval gate ${input.questionId} was answered by another actor`,
+				);
+			}
+			const source = this.db
+				.prepare(
+					`SELECT kind FROM workflow_source_event
+					 WHERE project = ? AND source_event_id = ?`,
+				)
+				.get(input.project, input.sourceEventId) as
+				| { kind: string }
+				| undefined;
+			if (source?.kind !== "founder_approval") {
+				throw new Error("trusted founder authority source is missing");
+			}
+			const evidence: ProcessedEvidenceV1 = {
+				...input.evidence,
+				ref: response.id,
+			};
+			const queue = new LeadInboxQueue(this.db);
+			queue.markProcessed(input.rootId, { now: input.now, evidence });
+			const rootUpdated = this.db
+				.prepare(
+					`UPDATE lead_inbox SET routing_state = 'bound',
+					   next_unprocessed_at = NULL
+					 WHERE id = ? AND processed_at IS NOT NULL
+					   AND processed_evidence IS NOT NULL`,
+				)
+				.run(input.rootId);
+			if (rootUpdated.changes !== 1) {
+				throw new Error(`founder receipt root ${input.rootId} is unavailable`);
+			}
+			const wake = this.admitReceiptWakeIntent({
+				executionId: input.expectedOwner,
+				intentKey: input.intentKey,
+				envelope: input.envelope,
+				queuedAtMs: input.queuedAtMs,
+			});
+			return { responseId: response.id, wake };
+		})();
+	}
+
+	/** Trusted text/card ship decision + founder receipt + wake intent. */
+	trustedFounderGateResponseAndReceipt(
+		input: TrustedFounderGateResponseAndReceiptInput,
+	): RespondAndReceiptResult {
+		assertUtcIsoTimestamp(input.now, "now");
+		return this.db
+			.transaction(() => {
+				const question = this.getMessageById(input.questionId);
+				if (
+					!question ||
+					question.type !== "question" ||
+					question.checkpoint !== "approve_to_ship" ||
+					question.from_agent !== input.expectedOwner
+				) {
+					throw new Error(
+						`founder ship gate ${input.questionId} is unavailable`,
+					);
+				}
+				let response = this.getResponse(input.questionId);
+				if (!response) {
+					if (input.approvalSource) {
+						const wrote = this.insertFounderApprovalResponseWithSource({
+							project: input.approvalSource.project,
+							sourceEventId: input.approvalSource.sourceEventId,
+							questionId: input.questionId,
+							fromAgent: input.fromAgent,
+							content: input.content,
+							expectedOwner: input.expectedOwner,
+							payload: input.approvalSource.payload,
+						});
+						if (!wrote) {
+							throw new Error(
+								`founder ship gate ${input.questionId} is not open`,
+							);
+						}
+					} else {
+						const write = this.insertResponse(
+							input.questionId,
+							input.fromAgent,
+							input.content,
+						);
+						if (!write.written) {
+							throw new Error(
+								`founder ship gate ${input.questionId} is not open`,
+							);
+						}
+					}
+					response = this.getResponse(input.questionId);
+				}
+				if (
+					!response ||
+					response.from_agent !== input.fromAgent ||
+					response.content !== input.content
+				) {
+					throw new Error(
+						`founder ship gate ${input.questionId} was answered by another action`,
+					);
+				}
+				const queue = new LeadInboxQueue(this.db);
+				const root = queue.getById(input.rootId);
+				if (!root)
+					throw new Error(
+						`founder receipt root ${input.rootId} is unavailable`,
+					);
+				const rootPayload = this.parseFounderRootPayload(root.content);
+				if (rootPayload.msgId !== input.msgId) {
+					throw new Error("founder ship receipt message mismatch");
+				}
+				const evidence: ProcessedEvidenceV1 = {
+					v: 1,
+					kind: "ship_gate_bound",
+					ref: response.id,
+					actor: input.fromAgent,
+					actor_kind: "founder-writer",
+					fence: input.approvalSource
+						? { source_event_id: input.approvalSource.sourceEventId }
+						: { discord_message_id: input.msgId },
+					basis: [`question:${input.questionId}`],
+				};
+				queue.markProcessed(input.rootId, { now: input.now, evidence });
+				const updated = this.db
+					.prepare(
+						`UPDATE lead_inbox SET routing_state = 'bound',
+					   next_unprocessed_at = NULL
+					 WHERE id = ? AND processed_at IS NOT NULL`,
+					)
+					.run(input.rootId);
+				if (updated.changes !== 1) {
+					throw new Error(
+						`founder receipt root ${input.rootId} is unavailable`,
+					);
+				}
+				const wake = this.admitReceiptWakeIntent({
+					executionId: input.expectedOwner,
+					intentKey: input.intentKey,
+					envelope: input.envelope,
+					queuedAtMs: input.queuedAtMs,
+				});
+				return { responseId: response.id, wake };
+			})
+			.immediate();
+	}
+
+	private admitReceiptWakeIntent(input: {
+		executionId: string;
+		intentKey: string;
+		envelope: PhaseWakeInput;
+		queuedAtMs: number;
+		sourceInstructionId?: string | null;
+		wakePolicy?: ReceiptWakePolicy;
+	}): RunnerPhaseWake {
+		if (input.envelope.to !== input.executionId) {
+			throw new Error(
+				`wake envelope target mismatch: expected ${input.executionId}, got ${input.envelope.to}`,
+			);
+		}
+		if (!Number.isSafeInteger(input.queuedAtMs) || input.queuedAtMs < 0) {
+			throw new Error("queuedAtMs must be a non-negative safe integer");
+		}
+		const envelopeJson = JSON.stringify(input.envelope);
+		const metadataJson = input.envelope.metadata
+			? JSON.stringify(input.envelope.metadata)
+			: null;
+		const existing = this.db
+			.prepare(
+				`SELECT * FROM runner_phase_wakes
+				 WHERE execution_id = ?
+				   AND (message_id = ? OR (? IS NOT NULL AND source_instruction_id = ?))
+				 ORDER BY queue_seq LIMIT 1`,
+			)
+			.get(
+				input.executionId,
+				input.intentKey,
+				input.sourceInstructionId ?? null,
+				input.sourceInstructionId ?? null,
+			) as RunnerPhaseWake | undefined;
+		if (existing) {
+			if (
+				existing.message_id !== input.intentKey ||
+				existing.source_instruction_id !==
+					(input.sourceInstructionId ?? existing.source_instruction_id) ||
+				existing.envelope_json !== envelopeJson
+			) {
+				throw new Error(
+					`wake intent ${input.intentKey} was reused with different content`,
+				);
+			}
+			return existing;
+		}
+
+		const policy = input.wakePolicy ?? {};
+		const registeredVendor = (
+			this.db
+				.prepare("SELECT vendor FROM sessions WHERE execution_id = ?")
+				.get(input.executionId) as { vendor: string | null } | undefined
+		)?.vendor;
+		const transportAvailable =
+			policy.transportAvailable ?? registeredVendor !== "none";
+		const execPushCap =
+			policy.execPushCap ??
+			positiveReceiptEnv("FLYWHEEL_RECEIPT_EXEC_PUSH_CAP", 6);
+		const execPushWindowMs =
+			policy.execPushWindowMs ??
+			positiveReceiptEnv("FLYWHEEL_RECEIPT_EXEC_PUSH_WINDOW_MIN", 10) * 60_000;
+		if (!Number.isSafeInteger(execPushCap) || execPushCap < 1) {
+			throw new Error("execPushCap must be a positive safe integer");
+		}
+		if (!Number.isSafeInteger(execPushWindowMs) || execPushWindowMs < 1) {
+			throw new Error("execPushWindowMs must be a positive safe integer");
+		}
+		const windowStart =
+			Math.floor(input.queuedAtMs / execPushWindowMs) * execPushWindowMs;
+		const admittedInWindow = (
+			this.db
+				.prepare(
+					`SELECT COUNT(*) AS count FROM runner_phase_wakes
+					 WHERE execution_id = ? AND admission_state = 'queued'
+					   AND queued_at > ? AND queued_at <= ?`,
+				)
+				.get(
+					input.executionId,
+					input.queuedAtMs - execPushWindowMs,
+					input.queuedAtMs,
+				) as { count: number }
+		).count;
+		const admissionState: NonNullable<RunnerPhaseWake["admission_state"]> =
+			!transportAvailable
+				? "skipped_no_transport"
+				: admittedInWindow >= execPushCap
+					? "suppressed_cap"
+					: "queued";
+		this.db
+			.prepare(
+				`INSERT INTO runner_phase_wakes (
+				  execution_id, message_id, content, metadata_json,
+				  source_instruction_id, state, queued_at, admission_state,
+				  envelope_json, push_attempts
+				) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 0)`,
+			)
+			.run(
+				input.executionId,
+				input.intentKey,
+				input.envelope.content,
+				metadataJson,
+				input.sourceInstructionId ?? null,
+				input.queuedAtMs,
+				admissionState,
+				envelopeJson,
+			);
+		if (admissionState === "suppressed_cap") {
+			const outboxId = `wake_cap:${input.executionId}:${windowStart}`;
+			this.db
+				.prepare(
+					`INSERT OR IGNORE INTO receipt_alert_outbox
+					 (id, kind, payload, created_at)
+					 VALUES (?, 'wake_cap', ?, ?)`,
+				)
+				.run(
+					outboxId,
+					JSON.stringify({
+						executionId: input.executionId,
+						windowStart,
+						windowMs: execPushWindowMs,
+						cap: execPushCap,
+					}),
+					new Date(input.queuedAtMs).toISOString(),
+				);
+		}
+		return this.db
+			.prepare(
+				"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
+			)
+			.get(input.executionId, input.intentKey) as RunnerPhaseWake;
+	}
+
+	private assertCurrentProtocolOwner(
+		fence: Record<string, string | number>,
+		now: string,
+	): string {
+		const ownerEpoch = fence.owner_epoch;
+		if (typeof ownerEpoch !== "string" || !ownerEpoch.trim()) {
+			throw new Error("bridge-protocol evidence requires owner_epoch");
+		}
+		const owner = this.db
+			.prepare(
+				`SELECT owner_epoch FROM loop_owner
+				 WHERE singleton = 1 AND owner_epoch = ? AND lease_expires_at >= ?`,
+			)
+			.get(ownerEpoch, now) as { owner_epoch: string } | undefined;
+		if (!owner) throw new Error("founder protocol owner epoch is not current");
+		return owner.owner_epoch;
+	}
+
 	/**
 	 * GEO-151: best-effort audit row for a ProofShot artifact_emitted event.
 	 * Uses `type='progress'` + `content_type='artifact'` since the existing
@@ -1777,6 +3184,1162 @@ export class CommDB {
 		}
 	}
 
+	/**
+	 * Derive authorized Lead handling or an objective business-terminal disposal
+	 * before any reminder is admitted. Receipt category never participates.
+	 */
+	deriveProcessedReceipts(now: string): number {
+		assertUtcIsoTimestamp(now, "now");
+		const derive = this.db.transaction(() => {
+			const candidates = this.db
+				.prepare(
+					`SELECT receipt.id AS receipt_id, receipt.to_lead AS expected_lead,
+						        question.id AS question_id,
+						        response.id AS response_id, response.from_agent,
+						        response.sender_lease_key, response.sender_generation,
+						        question.resolved_at, question.superseded_at,
+						        question.relay_state
+					   FROM lead_inbox receipt
+					   JOIN messages question
+					     ON question.id = receipt.ref_message_id
+					    AND question.type = 'question'
+						   LEFT JOIN messages response
+					     ON response.parent_id = question.id
+					    AND response.type = 'response'
+					  WHERE receipt.resend_of IS NULL
+						    AND receipt.processed_at IS NULL
+						    AND receipt.processed_evidence IS NULL
+						    AND receipt.disposed_at IS NULL
+						    AND receipt.disposed_evidence IS NULL
+						    AND (response.id IS NOT NULL OR question.resolved_at IS NOT NULL
+						      OR question.superseded_at IS NOT NULL
+						      OR question.relay_state = 'terminal_disposed')
+					  ORDER BY receipt.seq`,
+				)
+				.all() as Array<{
+				receipt_id: string;
+				expected_lead: string;
+				question_id: string;
+				response_id: string | null;
+				from_agent: string | null;
+				sender_lease_key: string | null;
+				sender_generation: number | null;
+				resolved_at: string | null;
+				superseded_at: string | null;
+				relay_state: string;
+			}>;
+			const copiedEvidence = new Map<string, ProcessedEvidenceV1>();
+			for (const row of this.db
+				.prepare(
+					`SELECT processed_evidence FROM lead_inbox
+					  WHERE processed_evidence IS NOT NULL`,
+				)
+				.all() as Array<{ processed_evidence: string }>) {
+				try {
+					const evidence = JSON.parse(
+						row.processed_evidence,
+					) as ProcessedEvidenceV1;
+					assertProcessedEvidence(evidence);
+					copiedEvidence.set(evidence.ref, evidence);
+				} catch {
+					// Invalid legacy evidence is not authority and cannot be copied.
+				}
+			}
+
+			const queue = new LeadInboxQueue(this.db);
+			let derived = 0;
+			for (const candidate of candidates) {
+				let evidence: ProcessedEvidenceV1 | null = null;
+				if (
+					candidate.from_agent === candidate.expected_lead &&
+					candidate.response_id !== null &&
+					candidate.sender_generation !== null
+				) {
+					evidence = {
+						v: 1,
+						kind: "response_observed",
+						ref: candidate.response_id,
+						actor: candidate.from_agent,
+						actor_kind: "lead",
+						fence: {
+							...(candidate.sender_lease_key
+								? { lease_key: candidate.sender_lease_key }
+								: {}),
+							lease_generation: candidate.sender_generation,
+						},
+						basis: [`question:${candidate.question_id}`],
+					};
+				} else if (candidate.response_id !== null) {
+					const source = copiedEvidence.get(candidate.response_id);
+					if (
+						source?.actor === candidate.expected_lead &&
+						source.actor_kind === "lead"
+					) {
+						evidence = {
+							v: 1,
+							kind: "response_observed",
+							ref: candidate.response_id,
+							actor: source.actor,
+							actor_kind: source.actor_kind,
+							fence: { ...source.fence },
+							basis: [
+								`question:${candidate.question_id}`,
+								`source_evidence:${source.kind}`,
+							],
+						};
+					}
+				}
+				if (evidence) {
+					if (queue.markProcessed(candidate.receipt_id, { now, evidence })) {
+						derived++;
+					}
+					continue;
+				}
+				const disposalEvidence: ProcessedEvidenceV1 = {
+					v: 1,
+					kind: "business_object_terminal",
+					ref: candidate.response_id ?? candidate.question_id,
+					actor: candidate.from_agent ?? "commdb",
+					actor_kind: candidate.from_agent?.startsWith("founder")
+						? "founder-writer"
+						: candidate.from_agent
+							? "runner"
+							: "bridge-protocol",
+					fence:
+						candidate.sender_generation !== null
+							? {
+									...(candidate.sender_lease_key
+										? { lease_key: candidate.sender_lease_key }
+										: {}),
+									lease_generation: candidate.sender_generation,
+								}
+							: { authority: "commdb_business_terminal" },
+					basis: [`question:${candidate.question_id}`],
+				};
+				queue.markDisposed(candidate.receipt_id, {
+					now,
+					evidence: disposalEvidence,
+				});
+			}
+			return derived;
+		});
+		return derive.immediate();
+	}
+
+	reconcileReceiptActivation(input: {
+		enabled: boolean;
+		now: string;
+		receiptWindowsMs: ReceiptPriorityWindowsMs;
+		highWaterMark: string;
+		dryRun?: boolean;
+	}): {
+		episodeId: string;
+		status: "disabled" | "dry_run" | "active";
+		activatedAt: string | null;
+		derived: number;
+		initialized: number;
+		dryRunCounts: Record<string, unknown>;
+		commitCounts: Record<string, unknown> | null;
+	} {
+		assertUtcIsoTimestamp(input.now, "now");
+		if (
+			input.receiptWindowsMs.some(
+				(window) => !Number.isSafeInteger(window) || window <= 0,
+			)
+		) {
+			throw new Error("receiptWindowsMs must contain four positive integers");
+		}
+		if (!/^\d+$/.test(input.highWaterMark)) {
+			throw new Error("highWaterMark must be a Discord snowflake lower bound");
+		}
+		type EpisodeRow = {
+			episode_id: string;
+			disabled_at: string | null;
+			enabled_at: string | null;
+			activation_at: string | null;
+			status: "disabled" | "dry_run" | "active";
+			dry_run_counts: string;
+			commit_counts: string | null;
+			high_water_mark: string | null;
+		};
+		const reconcile = this.db.transaction(() => {
+			const latest = (): EpisodeRow | undefined =>
+				this.db
+					.prepare(
+						`SELECT * FROM receipt_activation_episodes
+						  ORDER BY rowid DESC LIMIT 1`,
+					)
+					.get() as EpisodeRow | undefined;
+			const parseCounts = (
+				encoded: string | null,
+			): Record<string, unknown> | null =>
+				encoded ? (JSON.parse(encoded) as Record<string, unknown>) : null;
+			const emptyCounts = (): Record<string, unknown> => ({
+				eligible: 0,
+				pending: 0,
+				exempt: 0,
+				autoSettled: 0,
+				disposed: 0,
+				byPriority: { 0: 0, 1: 0, 2: 0, 3: 0 },
+				estimated: { t1: 0, t2: 0, t3: 0, outboxPeak: 0 },
+			});
+			const activationCounts = (): Record<string, unknown> => {
+				const rows = this.db
+					.prepare(
+						`SELECT priority,
+						        SUM(CASE WHEN delivered_at IS NOT NULL
+						          AND processed_at IS NULL AND disposed_at IS NULL
+						          AND receipt_exempt_reason IS NULL THEN 1 ELSE 0 END) eligible,
+						        SUM(CASE WHEN processed_at IS NULL AND disposed_at IS NULL
+						          AND receipt_exempt_reason IS NULL THEN 1 ELSE 0 END) pending,
+						        SUM(CASE WHEN receipt_exempt_reason IS NOT NULL THEN 1 ELSE 0 END) exempt,
+						        SUM(CASE WHEN processed_at IS NOT NULL THEN 1 ELSE 0 END) settled,
+						        SUM(CASE WHEN disposed_at IS NOT NULL THEN 1 ELSE 0 END) disposed
+						   FROM lead_inbox WHERE resend_of IS NULL GROUP BY priority`,
+					)
+					.all() as Array<{
+					priority: 0 | 1 | 2 | 3;
+					eligible: number;
+					pending: number;
+					exempt: number;
+					settled: number;
+					disposed: number;
+				}>;
+				const counts = emptyCounts();
+				const byPriority = counts.byPriority as Record<string, number>;
+				for (const row of rows) {
+					counts.eligible = Number(counts.eligible) + row.eligible;
+					counts.pending = Number(counts.pending) + row.pending;
+					counts.exempt = Number(counts.exempt) + row.exempt;
+					counts.autoSettled = Number(counts.autoSettled) + row.settled;
+					counts.disposed = Number(counts.disposed) + row.disposed;
+					byPriority[String(row.priority)] = row.eligible;
+				}
+				const eligible = Number(counts.eligible);
+				counts.estimated = {
+					t1: eligible,
+					t2: eligible,
+					t3: eligible,
+					outboxPeak: eligible,
+				};
+				return counts;
+			};
+
+			let current = latest();
+			if (!input.enabled) {
+				if (!current) {
+					const episodeId = `receipt:${Date.parse(input.now)}:1`;
+					const counts = emptyCounts();
+					this.db
+						.prepare(
+							`INSERT INTO receipt_activation_episodes
+							 (episode_id, disabled_at, enabled_at, activation_at, status,
+							  dry_run_counts, commit_counts, high_water_mark)
+							 VALUES (?, ?, NULL, NULL, 'disabled', ?, NULL, ?)`,
+						)
+						.run(
+							episodeId,
+							input.now,
+							JSON.stringify(counts),
+							input.highWaterMark,
+						);
+					current = latest();
+				} else if (current.status !== "disabled") {
+					this.db
+						.prepare(
+							`UPDATE receipt_activation_episodes
+							 SET disabled_at = ?, status = 'disabled'
+							 WHERE episode_id = ? AND status != 'disabled'`,
+						)
+						.run(input.now, current.episode_id);
+					this.db
+						.prepare(
+							`UPDATE lead_inbox SET consumed_at = ?, disposition = 'superseded',
+							   claimed_by = NULL, claim_expires_at = NULL
+							 WHERE resend_of IS NOT NULL AND consumed_at IS NULL`,
+						)
+						.run(input.now);
+					this.db
+						.prepare(
+							`UPDATE receipt_alert_outbox SET canceled_at = ?,
+							   cancel_reason = 'receipt_foundation_disabled'
+							 WHERE kind = 'receipt_unprocessed' AND delivered_at IS NULL
+							   AND canceled_at IS NULL`,
+						)
+						.run(input.now);
+					current = latest();
+				}
+				if (!current) throw new Error("receipt disable episode is unavailable");
+				return {
+					episodeId: current.episode_id,
+					status: "disabled" as const,
+					activatedAt: current.activation_at,
+					derived: 0,
+					initialized: 0,
+					dryRunCounts: parseCounts(current.dry_run_counts) ?? emptyCounts(),
+					commitCounts: parseCounts(current.commit_counts),
+				};
+			}
+
+			const derived = this.deriveProcessedReceipts(input.now);
+			if (!current || current.status === "disabled") {
+				const count = (
+					this.db
+						.prepare("SELECT COUNT(*) count FROM receipt_activation_episodes")
+						.get() as { count: number }
+				).count;
+				const episodeId = `receipt:${Date.parse(input.now)}:${count + 1}`;
+				const counts = activationCounts();
+				this.db
+					.prepare(
+						`INSERT INTO receipt_activation_episodes
+						 (episode_id, disabled_at, enabled_at, activation_at, status,
+						  dry_run_counts, commit_counts, high_water_mark)
+						 VALUES (?, NULL, ?, NULL, 'dry_run', ?, NULL, ?)`,
+					)
+					.run(
+						episodeId,
+						input.now,
+						JSON.stringify(counts),
+						input.highWaterMark,
+					);
+				current = latest();
+			}
+			if (!current)
+				throw new Error("receipt activation episode is unavailable");
+			const dryRunCounts = activationCounts();
+			this.db
+				.prepare(
+					`UPDATE receipt_activation_episodes
+					 SET dry_run_counts = ? WHERE episode_id = ?`,
+				)
+				.run(JSON.stringify(dryRunCounts), current.episode_id);
+			if (input.dryRun) {
+				return {
+					episodeId: current.episode_id,
+					status: "dry_run" as const,
+					activatedAt: null,
+					derived,
+					initialized: 0,
+					dryRunCounts,
+					commitCounts: null,
+				};
+			}
+			if (current.status === "active" && current.activation_at) {
+				const newlyDelivered = this.db
+					.prepare(
+						`SELECT id, priority FROM lead_inbox
+						 WHERE resend_of IS NULL AND delivered_at IS NOT NULL
+						   AND receipt_episode_id IS NULL AND processed_at IS NULL
+						   AND disposed_at IS NULL AND receipt_exempt_reason IS NULL`,
+					)
+					.all() as Array<{ id: string; priority: 0 | 1 | 2 | 3 }>;
+				let initialized = 0;
+				for (const row of newlyDelivered) {
+					initialized += this.db
+						.prepare(
+							`UPDATE lead_inbox SET receipt_episode_id = ?,
+							   next_unprocessed_at = COALESCE(next_unprocessed_at, ?)
+							 WHERE id = ? AND receipt_episode_id IS NULL
+							   AND processed_at IS NULL AND disposed_at IS NULL`,
+						)
+						.run(
+							current.episode_id,
+							new Date(
+								Date.parse(input.now) + input.receiptWindowsMs[row.priority],
+							).toISOString(),
+							row.id,
+						).changes;
+				}
+				return {
+					episodeId: current.episode_id,
+					status: "active" as const,
+					activatedAt: current.activation_at,
+					derived,
+					initialized,
+					dryRunCounts,
+					commitCounts: parseCounts(current.commit_counts),
+				};
+			}
+
+			// One-time legacy accounting: only durably delivered reminder effects
+			// consume a logical round. Merely materialized v1 children are superseded.
+			const legacyRounds = this.db
+				.prepare(
+					`SELECT resend_of root_id, COUNT(DISTINCT resend_round) rounds
+					   FROM lead_inbox
+					  WHERE resend_of IS NOT NULL AND delivered_at IS NOT NULL
+					    AND resend_round IS NOT NULL
+					  GROUP BY resend_of`,
+				)
+				.all() as Array<{ root_id: string; rounds: number }>;
+			for (const row of legacyRounds) {
+				this.db
+					.prepare(
+						`UPDATE lead_inbox SET delivered_rounds = ?
+						 WHERE id = ? AND delivered_rounds < ?`,
+					)
+					.run(row.rounds, row.root_id, row.rounds);
+			}
+			this.db
+				.prepare(
+					`UPDATE lead_inbox SET consumed_at = ?, disposition = 'superseded'
+					 WHERE resend_of IS NOT NULL AND delivered_at IS NULL
+					   AND consumed_at IS NULL AND receipt_episode_id IS NULL`,
+				)
+				.run(input.now);
+			this.db
+				.prepare(
+					`UPDATE receipt_alert_outbox SET canceled_at = ?,
+					   cancel_reason = 'legacy_generation_superseded'
+					 WHERE kind IN ('unprocessed','receipt_unprocessed')
+					   AND delivered_at IS NULL AND canceled_at IS NULL`,
+				)
+				.run(input.now);
+
+			const eligible = this.db
+				.prepare(
+					`SELECT id, priority FROM lead_inbox
+					 WHERE resend_of IS NULL AND delivered_at IS NOT NULL
+					   AND processed_at IS NULL AND disposed_at IS NULL
+					   AND receipt_exempt_reason IS NULL`,
+				)
+				.all() as Array<{ id: string; priority: 0 | 1 | 2 | 3 }>;
+			let initialized = 0;
+			const initialize = this.db.prepare(
+				`UPDATE lead_inbox SET next_unprocessed_at = ?, receipt_episode_id = ?
+				 WHERE id = ? AND processed_at IS NULL AND disposed_at IS NULL
+				   AND receipt_exempt_reason IS NULL AND delivered_at IS NOT NULL`,
+			);
+			for (const row of eligible) {
+				initialized += initialize.run(
+					new Date(
+						Date.parse(input.now) + input.receiptWindowsMs[row.priority],
+					).toISOString(),
+					current.episode_id,
+					row.id,
+				).changes;
+			}
+			const commitCounts = activationCounts();
+			this.db
+				.prepare(
+					`UPDATE receipt_activation_episodes SET activation_at = ?,
+					   status = 'active', commit_counts = ? WHERE episode_id = ?`,
+				)
+				.run(input.now, JSON.stringify(commitCounts), current.episode_id);
+			return {
+				episodeId: current.episode_id,
+				status: "active" as const,
+				activatedAt: input.now,
+				derived,
+				initialized,
+				dryRunCounts,
+				commitCounts,
+			};
+		});
+		return reconcile.immediate();
+	}
+
+	/** Compatibility wrapper; v2 activation authority is receipt_activation_episodes. */
+	bootstrapUnprocessedReceipts(input: {
+		now: string;
+		windowMs: number;
+		receiptWindowsMs?: ReceiptPriorityWindowsMs;
+	}): { activationAt: string; derived: number; initialized: number } {
+		assertUtcIsoTimestamp(input.now, "now");
+		if (!Number.isSafeInteger(input.windowMs) || input.windowMs <= 0) {
+			throw new Error("windowMs must be a positive safe integer");
+		}
+		const receiptWindows =
+			input.receiptWindowsMs ??
+			([
+				input.windowMs,
+				input.windowMs,
+				input.windowMs,
+				input.windowMs,
+			] as const);
+		const activation = this.reconcileReceiptActivation({
+			enabled: true,
+			now: input.now,
+			receiptWindowsMs: receiptWindows,
+			highWaterMark: String(Date.parse(input.now)),
+		});
+		return {
+			activationAt: activation.activatedAt ?? input.now,
+			derived: activation.derived,
+			initialized: activation.initialized,
+		};
+	}
+
+	advanceDueUnprocessedReceipts(input: {
+		now: string;
+		windowMs: number;
+		receiptWindowsMs?: ReceiptPriorityWindowsMs;
+		resendCap: number;
+		limit?: number;
+	}): UnprocessedReceiptAdvance[] {
+		assertUtcIsoTimestamp(input.now, "now");
+		for (const [field, value] of [
+			["windowMs", input.windowMs],
+			["resendCap", input.resendCap],
+			["limit", input.limit ?? 100],
+		] as const) {
+			if (!Number.isSafeInteger(value) || value <= 0) {
+				throw new Error(`${field} must be a positive safe integer`);
+			}
+		}
+		const limit = input.limit ?? 100;
+		const receiptWindows =
+			input.receiptWindowsMs ??
+			([
+				input.windowMs,
+				input.windowMs,
+				input.windowMs,
+				input.windowMs,
+			] as const);
+		if (
+			receiptWindows.some(
+				(window) => !Number.isSafeInteger(window) || window <= 0,
+			)
+		) {
+			throw new Error("receiptWindowsMs must contain four positive integers");
+		}
+		const advance = this.db.transaction(() => {
+			const episode = this.db
+				.prepare(
+					`SELECT episode_id FROM receipt_activation_episodes
+					 WHERE status = 'active' AND activation_at IS NOT NULL
+					 ORDER BY rowid DESC LIMIT 1`,
+				)
+				.get() as { episode_id: string } | undefined;
+			if (!episode) return [];
+			const roots = this.db
+				.prepare(
+					`SELECT receipt.* FROM lead_inbox receipt
+					  WHERE receipt.resend_of IS NULL
+					    AND receipt.processed_at IS NULL
+					    AND receipt.processed_evidence IS NULL
+					    AND receipt.delivered_at IS NOT NULL
+					    AND receipt.escalated_at IS NULL
+					    AND receipt.next_unprocessed_at IS NOT NULL
+					    AND receipt.next_unprocessed_at <= ?
+					    AND receipt.receipt_episode_id = ?
+					    AND receipt.receipt_exempt_reason IS NULL
+					    AND receipt.disposed_at IS NULL
+					  ORDER BY receipt.next_unprocessed_at, receipt.seq
+					  LIMIT ?`,
+				)
+				.all(input.now, episode.episode_id, limit) as LeadInboxRow[];
+			const outcomes: UnprocessedReceiptAdvance[] = [];
+			for (const root of roots) {
+				const round = root.delivered_rounds;
+				if (round < input.resendCap) {
+					const nextRound = round + 1;
+					const resendId = `${root.id}#r${nextRound}@${episode.episode_id}`;
+					const updated = this.db
+						.prepare(
+							`UPDATE lead_inbox SET next_unprocessed_at = NULL
+							  WHERE id = ? AND processed_at IS NULL AND disposed_at IS NULL
+							    AND receipt_exempt_reason IS NULL
+							    AND delivered_rounds = ? AND receipt_episode_id = ?
+							    AND next_unprocessed_at <= ?`,
+						)
+						.run(root.id, round, episode.episode_id, input.now);
+					if (updated.changes !== 1) continue;
+					const content = `${root.content}\n\n⚠️ 第 ${nextRound} 次重发,首投 ${root.delivered_at},仍无处理收据。`;
+					const resendClass =
+						root.type === "founder_reply" ? "model" : root.msg_class;
+					this.db
+						.prepare(
+							`INSERT OR IGNORE INTO lead_inbox (
+							   id, to_lead, source, type, msg_class, priority, content,
+							   ref_message_id, created_at, resend_of, resend_round,
+							   receipt_episode_id
+							 ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+						)
+						.run(
+							resendId,
+							root.to_lead,
+							`receipt_resend:${root.id}`,
+							root.type,
+							resendClass,
+							root.priority,
+							content,
+							input.now,
+							root.id,
+							nextRound,
+							episode.episode_id,
+						);
+					const resend = new LeadInboxQueue(this.db).getById(resendId);
+					if (
+						!resend ||
+						resend.resend_of !== root.id ||
+						resend.resend_round !== nextRound ||
+						resend.ref_message_id !== null ||
+						resend.msg_class !== resendClass ||
+						resend.content !== content ||
+						resend.receipt_episode_id !== episode.episode_id
+					) {
+						throw new Error(`receipt resend id ${resendId} was reused`);
+					}
+					outcomes.push({
+						kind: "resent",
+						rootId: root.id,
+						round: nextRound,
+						resendId,
+					});
+					continue;
+				}
+
+				const outboxId = `unprocessed:${root.id}@${episode.episode_id}`;
+				const payload = this.buildUnprocessedReceiptAlertPayload(root);
+				const inserted = this.db
+					.prepare(
+						`INSERT OR IGNORE INTO receipt_alert_outbox
+						 (id, kind, payload, created_at)
+						 VALUES (?, 'receipt_unprocessed', ?, ?)`,
+					)
+					.run(outboxId, JSON.stringify(payload), input.now);
+				this.db
+					.prepare(
+						`UPDATE lead_inbox SET next_unprocessed_at = NULL
+						  WHERE id = ? AND processed_at IS NULL AND disposed_at IS NULL`,
+					)
+					.run(root.id);
+				if (inserted.changes !== 1) continue;
+				outcomes.push({
+					kind: "escalation_queued",
+					rootId: root.id,
+					outboxId,
+				});
+			}
+			return outcomes;
+		});
+		return advance.immediate();
+	}
+
+	/** v2 retires Bridge attribution/rebind promotion; Lead handles the canonical row. */
+	promoteDueFounderRebinds(input: {
+		ownerEpoch: string;
+		now: string;
+		limit?: number;
+	}): LeadInboxRow[] {
+		assertUtcIsoTimestamp(input.now, "now");
+		void input.ownerEpoch;
+		void input.limit;
+		return [];
+	}
+
+	listPendingReceiptAlerts(
+		kinds: readonly string[],
+		limit = 100,
+	): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow[] {
+		if (kinds.length === 0) return [];
+		if (!Number.isSafeInteger(limit) || limit <= 0) {
+			throw new Error("alert limit must be a positive safe integer");
+		}
+		const placeholders = kinds.map(() => "?").join(",");
+		return this.db
+			.prepare(
+				`SELECT * FROM receipt_alert_outbox
+				  WHERE delivered_at IS NULL AND canceled_at IS NULL
+				    AND kind IN (${placeholders})
+				  ORDER BY created_at, id LIMIT ?`,
+			)
+			.all(
+				...kinds,
+				limit,
+			) as import("./lead-inbox-queue.js").ReceiptAlertOutboxRow[];
+	}
+
+	private buildUnprocessedReceiptAlertPayload(
+		root: LeadInboxRow,
+	): UnprocessedReceiptAlertPayload {
+		let projectName = "unknown";
+		let issueId = "unknown";
+		let executionId = `${root.to_lead}:receipt`;
+		let threadId: string | undefined;
+		if (root.ref_message_id) {
+			const question = this.getMessageById(root.ref_message_id);
+			const session = question
+				? this.getSession(question.from_agent)
+				: undefined;
+			if (session) {
+				projectName = session.project_name;
+				issueId = session.issue_id ?? issueId;
+				executionId = session.execution_id;
+			}
+		}
+		const familyRoot = root.family_root_id
+			? new LeadInboxQueue(this.db).getById(root.family_root_id)
+			: root.type === "founder_reply"
+				? root
+				: undefined;
+		if (familyRoot) {
+			try {
+				const payload = this.parseFounderRootPayload(familyRoot.content);
+				projectName = payload.projectName;
+				issueId = payload.issueId;
+				threadId = payload.threadId;
+				executionId = `${projectName}:${root.to_lead}`;
+			} catch {
+				// Preserve an honest, routable fallback; delivery will retry/no-owner.
+			}
+		}
+		return {
+			rootId: root.id,
+			episodeId: root.receipt_episode_id ?? "legacy/v1",
+			targetKey: `${projectName}:${root.to_lead}`,
+			toLead: root.to_lead,
+			type: root.type,
+			projectName,
+			issueId,
+			executionId,
+			...(threadId ? { threadId } : {}),
+			firstDeliveredAt: root.delivered_at ?? root.created_at,
+			resendRound: root.delivered_rounds,
+			contentSummary: root.content.replaceAll(/\s+/g, " ").slice(0, 500),
+		};
+	}
+
+	listPendingRunnerReceiptWakes(limit = 100): RunnerPhaseWake[] {
+		if (!Number.isSafeInteger(limit) || limit < 1) {
+			throw new Error("wake list limit must be a positive safe integer");
+		}
+		return this.db
+			.prepare(
+				`SELECT * FROM runner_phase_wakes
+				 WHERE state = 'pending' AND admission_state = 'queued'
+				   AND escalation_outbox_id IS NULL
+				 ORDER BY queued_at ASC, queue_seq ASC LIMIT ?`,
+			)
+			.all(limit) as RunnerPhaseWake[];
+	}
+
+	findPendingRunnerReceiptWakeForQuestion(
+		executionId: string,
+		questionId: string,
+	): RunnerPhaseWake | undefined {
+		return [...this.listRunnerPhaseWakes(executionId)]
+			.reverse()
+			.find((wake) => {
+				if (wake.state !== "pending" || !wake.envelope_json) return false;
+				try {
+					const envelope = JSON.parse(wake.envelope_json) as {
+						metadata?: { questionId?: unknown };
+					};
+					return envelope.metadata?.questionId === questionId;
+				} catch {
+					return false;
+				}
+			});
+	}
+
+	/**
+	 * FLY-1392: reserve a mailbox push before performing transport I/O. The
+	 * attempt ordinal is consumed in this transaction and is never refunded,
+	 * including when the process crashes before completion.
+	 */
+	claimRunnerReceiptWakePush(
+		executionId: string,
+		messageId: string,
+		nowMs: number,
+		options: { t1Ms: number; claimTtlMs: number },
+	): RunnerReceiptWakePushClaim | null {
+		for (const [field, value] of [
+			["nowMs", nowMs],
+			["t1Ms", options.t1Ms],
+			["claimTtlMs", options.claimTtlMs],
+		] as const) {
+			if (!Number.isSafeInteger(value) || value < 0) {
+				throw new Error(`${field} must be a non-negative safe integer`);
+			}
+		}
+		const claim = this.db.transaction((): RunnerReceiptWakePushClaim | null => {
+			const wake = this.db
+				.prepare(
+					`SELECT * FROM runner_phase_wakes
+					 WHERE execution_id = ? AND message_id = ?`,
+				)
+				.get(executionId, messageId) as RunnerPhaseWake | undefined;
+			if (
+				!wake ||
+				wake.state !== "pending" ||
+				wake.admission_state !== "queued" ||
+				wake.push_attempts >= 2 ||
+				!wake.envelope_json
+			) {
+				return null;
+			}
+			const claimExpiresAtMs = wake.claim_expires_at
+				? Date.parse(wake.claim_expires_at)
+				: Number.NaN;
+			if (
+				wake.claim_token &&
+				Number.isFinite(claimExpiresAtMs) &&
+				claimExpiresAtMs > nowMs
+			) {
+				return null;
+			}
+			const lastPushAtMs = wake.last_push_at
+				? Date.parse(wake.last_push_at)
+				: Number.NaN;
+			if (
+				wake.push_attempts > 0 &&
+				Number.isFinite(lastPushAtMs) &&
+				nowMs - lastPushAtMs < options.t1Ms
+			) {
+				return null;
+			}
+
+			const attempt = wake.push_attempts + 1;
+			const claimToken = randomUUID();
+			const updated = this.db
+				.prepare(
+					`UPDATE runner_phase_wakes
+					 SET push_attempts = ?, claim_token = ?, claim_expires_at = ?,
+					     last_push_at = ?, last_push_result = ?
+					 WHERE execution_id = ? AND message_id = ?
+					   AND state = 'pending' AND admission_state = 'queued'
+					   AND push_attempts = ?`,
+				)
+				.run(
+					attempt,
+					claimToken,
+					new Date(nowMs + options.claimTtlMs).toISOString(),
+					new Date(nowMs).toISOString(),
+					`attempt:${attempt}:claimed`,
+					executionId,
+					messageId,
+					wake.push_attempts,
+				);
+			if (updated.changes !== 1) return null;
+			const claimedWake = this.db
+				.prepare(
+					"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
+				)
+				.get(executionId, messageId) as RunnerPhaseWake;
+			return {
+				wake: claimedWake,
+				claimToken,
+				attempt,
+				envelope: JSON.parse(claimedWake.envelope_json!) as PhaseWakeInput,
+			};
+		});
+		return claim.immediate();
+	}
+
+	completeRunnerReceiptWakePush(input: {
+		executionId: string;
+		messageId: string;
+		claimToken: string;
+		attempt: number;
+		result: string;
+		nowMs: number;
+	}): boolean {
+		if (!input.result.trim()) throw new Error("push result is required");
+		const updated = this.db
+			.prepare(
+				`UPDATE runner_phase_wakes
+					 SET last_push_result = ?, claim_token = NULL, claim_expires_at = NULL
+					 WHERE execution_id = ? AND message_id = ?
+					   AND claim_token = ? AND push_attempts = ?`,
+			)
+			.run(
+				`attempt:${input.attempt}:${input.result}`,
+				input.executionId,
+				input.messageId,
+				input.claimToken,
+				input.attempt,
+			).changes;
+		if (updated === 1) return true;
+		if (input.result === "verified" || input.result === "delivered") {
+			const staleFact = `attempt:${input.attempt}:stale_${input.result}`;
+			this.db
+				.prepare(
+					`UPDATE runner_phase_wakes
+					 SET last_push_result = CASE
+					   WHEN instr(COALESCE(last_push_result, ''), ?) > 0
+					     THEN last_push_result
+					   ELSE COALESCE(last_push_result || '|', '') || ?
+					 END
+					 WHERE execution_id = ? AND message_id = ?`,
+				)
+				.run(staleFact, staleFact, input.executionId, input.messageId);
+		}
+		return false;
+	}
+
+	/** Exec-level objective acknowledgement, bounded by command-entry time. */
+	ackRunnerReceiptWakesStarted(
+		executionId: string,
+		observedAtMs: number,
+		ackScope: "exec_cli" | "debug_override" = "exec_cli",
+	): number {
+		if (!Number.isSafeInteger(observedAtMs) || observedAtMs < 0) {
+			throw new Error("observedAtMs must be a non-negative safe integer");
+		}
+		return this.db
+			.prepare(
+				`UPDATE runner_phase_wakes
+				 SET state = 'started', started_at = ?, started_ack_scope = ?,
+				     claim_token = NULL, claim_expires_at = NULL
+				 WHERE execution_id = ? AND state = 'pending'
+				   AND admission_state = 'queued' AND queued_at <= ?`,
+			)
+			.run(observedAtMs, ackScope, executionId, observedAtMs).changes;
+	}
+
+	claimRunnerReceiptWakeT2(
+		executionId: string,
+		messageId: string,
+		nowMs: number,
+		t2Ms: number,
+	): RunnerPhaseWake | null {
+		const claimedAt = new Date(nowMs).toISOString();
+		const claim = this.db.transaction(() => {
+			const updated = this.db
+				.prepare(
+					`UPDATE runner_phase_wakes SET t2_claimed_at = ?
+					 WHERE execution_id = ? AND message_id = ?
+					   AND state = 'pending' AND admission_state = 'queued'
+					   AND t2_claimed_at IS NULL AND queued_at <= ?`,
+				)
+				.run(claimedAt, executionId, messageId, nowMs - t2Ms);
+			if (updated.changes !== 1) return null;
+			return this.db
+				.prepare(
+					"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
+				)
+				.get(executionId, messageId) as RunnerPhaseWake;
+		});
+		return claim.immediate();
+	}
+
+	completeRunnerReceiptWakeT2(
+		executionId: string,
+		messageId: string,
+		result: string,
+	): boolean {
+		if (!result.trim()) throw new Error("T2 result is required");
+		return (
+			this.db
+				.prepare(
+					`UPDATE runner_phase_wakes SET t2_result = ?
+					 WHERE execution_id = ? AND message_id = ?
+					   AND t2_claimed_at IS NOT NULL AND t2_result IS NULL`,
+				)
+				.run(result, executionId, messageId).changes === 1
+		);
+	}
+
+	enqueueRunnerReceiptWakeEscalation(input: {
+		executionId: string;
+		messageId: string;
+		reason: string;
+		nowMs: number;
+	}): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | null {
+		if (!input.reason.trim())
+			throw new Error("wake escalation reason is required");
+		const enqueue = this.db.transaction(() => {
+			const wake = this.db
+				.prepare(
+					`SELECT * FROM runner_phase_wakes
+					 WHERE execution_id = ? AND message_id = ?`,
+				)
+				.get(input.executionId, input.messageId) as RunnerPhaseWake | undefined;
+			if (!wake || wake.state !== "pending") return null;
+			const id = `wake_failed:${input.messageId}`;
+			this.db
+				.prepare(
+					`INSERT OR IGNORE INTO receipt_alert_outbox
+					 (id, kind, payload, created_at)
+					 VALUES (?, 'wake_failed', ?, ?)`,
+				)
+				.run(
+					id,
+					JSON.stringify({
+						executionId: input.executionId,
+						messageId: input.messageId,
+						reason: input.reason,
+					}),
+					new Date(input.nowMs).toISOString(),
+				);
+			this.db
+				.prepare(
+					`UPDATE runner_phase_wakes SET escalation_outbox_id = ?
+					 WHERE execution_id = ? AND message_id = ?
+					   AND state = 'pending' AND escalation_outbox_id IS NULL`,
+				)
+				.run(id, input.executionId, input.messageId);
+			return this.getReceiptAlertOutbox(id) ?? null;
+		});
+		return enqueue.immediate();
+	}
+
+	getReceiptAlertOutbox(
+		id: string,
+	): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | undefined {
+		return this.db
+			.prepare("SELECT * FROM receipt_alert_outbox WHERE id = ?")
+			.get(id) as
+			| import("./lead-inbox-queue.js").ReceiptAlertOutboxRow
+			| undefined;
+	}
+
+	/** Revalidate immediately before any external receipt notification effect. */
+	revalidateReceiptAlert(
+		outboxId: string,
+		nowMs: number,
+	): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | null {
+		const check = this.db.transaction(() => {
+			const alert = this.getReceiptAlertOutbox(outboxId);
+			if (!alert || alert.delivered_at || alert.canceled_at) return null;
+			if (
+				alert.kind === "receipt_unprocessed" ||
+				alert.kind === "unprocessed"
+			) {
+				let payload: { rootId?: string; episodeId?: string };
+				try {
+					payload = JSON.parse(alert.payload) as typeof payload;
+				} catch {
+					payload = {};
+				}
+				const activeEpisode = this.db
+					.prepare(
+						`SELECT episode_id FROM receipt_activation_episodes
+						 WHERE status = 'active' AND activation_at IS NOT NULL
+						 ORDER BY rowid DESC LIMIT 1`,
+					)
+					.get() as { episode_id: string } | undefined;
+				const live =
+					typeof payload.rootId === "string"
+						? (this.db
+								.prepare(
+									`SELECT 1 FROM lead_inbox receipt
+									  WHERE receipt.id = ? AND receipt.resend_of IS NULL
+									    AND receipt.processed_at IS NULL
+									    AND receipt.processed_evidence IS NULL
+									    AND receipt.delivered_at IS NOT NULL
+										    AND receipt.disposed_at IS NULL
+										    AND receipt.disposed_evidence IS NULL
+										    AND receipt.receipt_exempt_reason IS NULL`,
+								)
+								.get(payload.rootId) as { 1: number } | undefined)
+						: undefined;
+				if (
+					!live ||
+					alert.created_at > new Date(nowMs).toISOString() ||
+					payload.episodeId !== activeEpisode?.episode_id
+				) {
+					this.db
+						.prepare(
+							`UPDATE receipt_alert_outbox
+							 SET canceled_at = ?, cancel_reason = ?
+							 WHERE id = ? AND delivered_at IS NULL AND canceled_at IS NULL`,
+						)
+						.run(
+							new Date(nowMs).toISOString(),
+							payload.episodeId !== activeEpisode?.episode_id
+								? "stale_activation_episode"
+								: "source_no_longer_unprocessed",
+							outboxId,
+						);
+					return null;
+				}
+				return alert;
+			}
+			if (alert.kind !== "wake_failed") return alert;
+			let payload: { executionId?: string; messageId?: string };
+			try {
+				payload = JSON.parse(alert.payload) as typeof payload;
+			} catch {
+				payload = {};
+			}
+			const live =
+				typeof payload.executionId === "string" &&
+				typeof payload.messageId === "string"
+					? (this.db
+							.prepare(
+								`SELECT 1 FROM runner_phase_wakes
+								 WHERE execution_id = ? AND message_id = ?
+								   AND state = 'pending' AND escalation_outbox_id = ?`,
+							)
+							.get(payload.executionId, payload.messageId, outboxId) as
+							| { 1: number }
+							| undefined)
+					: undefined;
+			if (!live) {
+				this.db
+					.prepare(
+						`UPDATE receipt_alert_outbox
+						 SET canceled_at = ?, cancel_reason = 'source_no_longer_pending'
+						 WHERE id = ? AND delivered_at IS NULL AND canceled_at IS NULL`,
+					)
+					.run(new Date(nowMs).toISOString(), outboxId);
+				return null;
+			}
+			return alert;
+		});
+		return check.immediate();
+	}
+
+	/** Compatibility name retained for the runner-wake patrol. */
+	revalidateRunnerReceiptWakeAlert(
+		outboxId: string,
+		nowMs: number,
+	): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | null {
+		return this.revalidateReceiptAlert(outboxId, nowMs);
+	}
+
+	markReceiptAlertDelivered(outboxId: string, nowMs: number): boolean {
+		return (
+			this.db
+				.prepare(
+					`UPDATE receipt_alert_outbox SET delivered_at = ?
+					 WHERE id = ? AND delivered_at IS NULL AND canceled_at IS NULL`,
+				)
+				.run(new Date(nowMs).toISOString(), outboxId).changes === 1
+		);
+	}
+
+	markUnprocessedReceiptEscalated(outboxId: string, nowMs: number): boolean {
+		const now = new Date(nowMs).toISOString();
+		const mark = this.db.transaction(() => {
+			const alert = this.getReceiptAlertOutbox(outboxId);
+			if (
+				!alert ||
+				(alert.kind !== "receipt_unprocessed" &&
+					alert.kind !== "unprocessed") ||
+				alert.canceled_at
+			) {
+				return false;
+			}
+			let payload: { rootId?: string };
+			try {
+				payload = JSON.parse(alert.payload) as typeof payload;
+			} catch {
+				return false;
+			}
+			if (typeof payload.rootId !== "string") return false;
+			this.db
+				.prepare(
+					`UPDATE receipt_alert_outbox SET delivered_at = COALESCE(delivered_at, ?)
+					  WHERE id = ? AND canceled_at IS NULL`,
+				)
+				.run(now, outboxId);
+			this.db
+				.prepare(
+					`UPDATE lead_inbox SET escalated_at = COALESCE(escalated_at, ?),
+					   next_unprocessed_at = NULL
+					 WHERE id = ?`,
+				)
+				.run(now, payload.rootId);
+			return this.getReceiptAlertOutbox(outboxId)?.delivered_at !== null;
+		});
+		return mark.immediate();
+	}
+
 	markRunnerPhaseWakeStarted(
 		executionId: string,
 		messageId: string,
@@ -1785,7 +4348,8 @@ export class CommDB {
 		return (
 			this.db
 				.prepare(
-					`UPDATE runner_phase_wakes SET state = 'started', started_at = ?
+					`UPDATE runner_phase_wakes SET state = 'started', started_at = ?,
+					 started_ack_scope = 'message'
 					 WHERE execution_id = ? AND message_id = ? AND state = 'pending'`,
 				)
 				.run(nowMs, executionId, messageId).changes === 1
@@ -2465,9 +5029,7 @@ export class CommDB {
 					.run(targetExecutionId, ASK_CASCADE_GRACE_SQL).changes;
 			}
 
-			this.db
-				.prepare("DELETE FROM runner_phase_wakes WHERE execution_id = ?")
-				.run(targetExecutionId);
+			this.pruneTerminalRunnerReceiptWakes(targetExecutionId);
 			this.db
 				.prepare("DELETE FROM runner_shutdown_controls WHERE execution_id = ?")
 				.run(targetExecutionId);
@@ -2513,9 +5075,7 @@ export class CommDB {
 	 */
 	deleteSessionAndRunnerPhaseLifecycle(executionId: string): number {
 		const remove = this.db.transaction(() => {
-			this.db
-				.prepare("DELETE FROM runner_phase_wakes WHERE execution_id = ?")
-				.run(executionId);
+			this.pruneTerminalRunnerReceiptWakes(executionId);
 			this.db
 				.prepare("DELETE FROM runner_shutdown_controls WHERE execution_id = ?")
 				.run(executionId);
@@ -2524,6 +5084,29 @@ export class CommDB {
 				.run(executionId).changes;
 		});
 		return remove();
+	}
+
+	private pruneTerminalRunnerReceiptWakes(executionId: string): void {
+		const retentionCutoff = Date.now() - 7 * 24 * 60 * 60_000;
+		this.db
+			.prepare(
+				`UPDATE runner_phase_wakes
+				 SET state = 'finished', finished_at = ?,
+				     claim_token = NULL, claim_expires_at = NULL
+				 WHERE execution_id = ? AND state = 'pending'`,
+			)
+			.run(Date.now(), executionId);
+		this.db
+			.prepare(
+				`DELETE FROM runner_phase_wakes
+				 WHERE execution_id = ?
+				   AND (admission_state IS NULL
+				        OR (queued_at < ? AND (
+				          state IN ('started','finished')
+				          OR admission_state IN ('suppressed_cap','skipped_no_transport')
+				        )))`,
+			)
+			.run(executionId, retentionCutoff);
 	}
 
 	getActiveSessions(projectName?: string): Session[] {

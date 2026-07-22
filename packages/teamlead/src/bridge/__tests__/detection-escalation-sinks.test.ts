@@ -5,6 +5,7 @@ import { type DetectionEscalationRow, StateStore } from "../../StateStore.js";
 import {
 	createFleetSink,
 	createFounderPager,
+	createReceiptAwareTargetResolver,
 	createSessionTargetResolver,
 	type FounderPageTarget,
 } from "../detection-escalation-sinks.js";
@@ -378,6 +379,61 @@ describe("FLY-1048 C3-w createSessionTargetResolver", () => {
 		const store = await storeWithSession({ project_name: "ghost-project" });
 		const resolve = createSessionTargetResolver({ store, projects });
 		expect(resolve(row())).toBeNull();
+	});
+});
+
+describe("FLY-1392 receipt-aware founder target resolver", () => {
+	const projects: ProjectEntry[] = [
+		{
+			projectName: "flywheel",
+			projectRoot: "/tmp/does-not-matter",
+			leads: [
+				{
+					agentId: "flywheel-eng-lead",
+					chatChannel: "chan-eng",
+					match: { labels: ["flywheel"] },
+					botToken: "eng-token",
+				},
+			],
+		},
+	];
+
+	it("routes a Lead-keyed unprocessed receipt episode to that Lead's issue thread", async () => {
+		const store = await StateStore.create(":memory:");
+		const resolve = createReceiptAwareTargetResolver({ store, projects });
+
+		expect(
+			resolve(
+				row({
+					target_key: "flywheel:flywheel-eng-lead",
+					issue_id: "issue-1392",
+					owner_lead_id: "flywheel-eng-lead",
+					kind: "receipt_unprocessed:founder_reply",
+				}),
+			),
+		).toEqual({
+			executionId: "flywheel:flywheel-eng-lead",
+			issueId: "issue-1392",
+			projectName: "flywheel",
+			chatChannel: "chan-eng",
+			botToken: "eng-token",
+		});
+	});
+
+	it("rejects a Lead-keyed row whose owner/project binding is not exact", async () => {
+		const store = await StateStore.create(":memory:");
+		const resolve = createReceiptAwareTargetResolver({ store, projects });
+
+		expect(
+			resolve(
+				row({
+					target_key: "other:flywheel-eng-lead",
+					issue_id: "issue-1392",
+					owner_lead_id: "flywheel-eng-lead",
+					kind: "receipt_unprocessed:founder_reply",
+				}),
+			),
+		).toBeNull();
 	});
 });
 

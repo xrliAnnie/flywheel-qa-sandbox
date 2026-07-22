@@ -70,7 +70,6 @@ import {
 } from "./founder-notify-utils.js";
 import {
 	emitFounderReplyDeliveryForThread,
-	type FounderReplyDeliverDeps,
 	type FounderReplyRetryLedger,
 	type FounderReplyThreadCtx,
 	type PendingQuestionForThread,
@@ -292,20 +291,18 @@ export interface GatePollerConfig {
 	founderReplyDeliverEveryNTicks?: number;
 	/** Part B thread-read cursor store (default in-memory). */
 	cursorStore?: InboundCursorStore;
+	/** FLY-1392 system wiring is default-on; explicit seam keeps unit fixtures stable. */
+	receiptFoundationEnabled?: () => boolean;
 	/**
-	 * FLY-799: the flag-gated founder ship-approval callback (built in plugin.ts
-	 * via makeFounderShipApprovalCallback). Threaded into the founder-reply
-	 * deliverer so a founder's identity-verified text approval writes the
-	 * approve_to_ship gate response. Absent → deliverer stays WAKE-only.
+	 * FLY-1392 emergency-rollback warning cadence (default 1200, about 1h at
+	 * 3s). The warning is in addition to the immediate startup alert and shares
+	 * this poller's timer; it never creates a second interval.
 	 */
-	tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
-
-	/**
-	 * FLY-1041 Chunk 7: the durable gate-message binding reader (same closure
-	 * the ✅-reaction callback uses), threaded into the founder-reply deliverer
-	 * for reply-to-card narrowing. Absent → replies are never card-matched.
-	 */
-	readCurrentBinding?: FounderReplyDeliverDeps["readCurrentBinding"];
+	receiptFoundationOffAlertEveryNTicks?: number;
+	/** FLY-1392 durable wake ladder; piggybacks this poller's timer. */
+	onReceiptWakePatrolTick?: () => void | Promise<void>;
+	/** FLY-1392 receipt patrol cadence (default 20, about 60s in production). */
+	receiptWakePatrolEveryNTicks?: number;
 
 	/**
 	 * FLY-945 Fix D: the external-merge convergence sweeper closure (built in
@@ -386,6 +383,7 @@ export interface GatePollerConfig {
 /** The black-hole recipient name (stock claude-code lead convention). */
 const MISROUTE_AGENT_NAME = "team-lead";
 const DEFAULT_PATROL_EVERY_N_TICKS = 20;
+const DEFAULT_RECEIPT_FOUNDATION_OFF_ALERT_EVERY_N_TICKS = 1_200;
 const DEFAULT_BACKLOG_THRESHOLD = 10;
 // FLY-307 B: per-lead circuit breaker defaults.
 const DEFAULT_CIRCUIT_THRESHOLD = 3;
@@ -511,6 +509,8 @@ export function computeFounderPassHealthy(
 export class GatePoller {
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
 	private polling = false;
+	private readonly receiptFoundationOffBootMs = Date.now();
+	private receiptWakePatrolPass: Promise<void> | null = null;
 	private parkWatchPass: Promise<void> | null = null;
 	// FLY-1099 §7.2: founder-reply health watchdog + its per-thread routing map
 	// (refreshed by every deliver pass; unknown threads fall back to the infra
@@ -598,6 +598,9 @@ export class GatePoller {
 
 	start(): void {
 		if (this.timerHandle) return;
+		if (this.receiptFoundationOff()) {
+			this.emitReceiptFoundationOffAlert("startup", 0);
+		}
 		// FLY-639: guard the timer callback so an async poll() that somehow rejects
 		// can never become an unhandled rejection that exits the Bridge. poll()'s
 		// internals are already wrapped (per-lead + founder-reply try/catch), this
@@ -656,6 +659,24 @@ export class GatePoller {
 			// reports are a minutes-scale human-loop event; every Nth tick
 			// (default 20 ≈ 60s at the production 3s interval) is plenty.
 			this.tickCount++;
+
+			if (
+				this.receiptFoundationOff() &&
+				this.tickCount % this.receiptFoundationOffAlertEveryNTicks() === 0
+			) {
+				this.emitReceiptFoundationOffAlert("periodic", this.tickCount);
+			}
+
+			if (
+				this.config.onReceiptWakePatrolTick &&
+				(this.tickCount - 1) % this.receiptWakePatrolEveryNTicks() === 0
+			) {
+				void this.runReceiptWakePatrolPass().catch((err) =>
+					console.warn(
+						`[GatePoller] FLY-1392 receipt wake patrol error (non-fatal): ${(err as Error).message}`,
+					),
+				);
+			}
 
 			// FLY-1314: gate hygiene is a same-tick invariant repair, not a new
 			// background timer. Keep it outside the project/lead loops and isolate it
@@ -1246,6 +1267,107 @@ export class GatePoller {
 	// FLY-513: cadence for the optional global-codex drift probe (default 20 ≈ 60s).
 	private healthCheckEveryNTicks(): number {
 		return this.config.healthCheckEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
+	}
+
+	private receiptWakePatrolEveryNTicks(): number {
+		return Math.max(
+			1,
+			this.config.receiptWakePatrolEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS,
+		);
+	}
+
+	private receiptFoundationOffAlertEveryNTicks(): number {
+		return Math.max(
+			1,
+			this.config.receiptFoundationOffAlertEveryNTicks ??
+				DEFAULT_RECEIPT_FOUNDATION_OFF_ALERT_EVERY_N_TICKS,
+		);
+	}
+
+	/**
+	 * The callback is optional only for narrow unit fixtures. Production always
+	 * wires it; only an explicit false means receipt chasing is paused and owes
+	 * the fail-loud alerts. Founder transport remains Lead-only in either state.
+	 */
+	private receiptFoundationOff(): boolean {
+		const enabled = this.config.receiptFoundationEnabled;
+		if (!enabled) return false;
+		try {
+			return enabled() === false;
+		} catch (error) {
+			console.error(
+				`[GatePoller] CRITICAL: receipt foundation state unreadable; treating it as OFF: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return true;
+		}
+	}
+
+	private emitReceiptFoundationOffAlert(
+		phase: "startup" | "periodic",
+		tick: number,
+	): void {
+		const title = "receipt foundation OFF — 追办已暂停";
+		console.error(
+			`[GatePoller] CRITICAL: ${title}. FLYWHEEL_RECEIPT_FOUNDATION=0 is an emergency temporary rollback, not a supported steady state.`,
+		);
+
+		const sink = this.config.leadAlertSink;
+		const route = this.infraAlertRoute();
+		if (!sink || !route) {
+			console.error(
+				"[GatePoller] CRITICAL: receipt-foundation OFF alert has no durable Lead alert route",
+			);
+			return;
+		}
+
+		const episode = `${process.pid}:${this.receiptFoundationOffBootMs}`;
+		const eventId =
+			phase === "startup"
+				? `receipt-foundation-off:startup:${episode}`
+				: `receipt-foundation-off:periodic:${episode}:${tick}`;
+		void sink
+			.alert({
+				leadId: route.leadId,
+				projectName: route.projectName,
+				eventId,
+				eventType: "receipt_foundation_off",
+				title,
+				body:
+					"FLYWHEEL_RECEIPT_FOUNDATION=0 has paused receipt deadline advance, resend, and escalation. " +
+					"Founder transport remains Lead-only; restore receipt chasing after the incident is contained.",
+				severity: "severe",
+			})
+			.then((result) => {
+				if (
+					!result.sent &&
+					!result.queued &&
+					!result.dmSent &&
+					result.skipped !== "duplicate"
+				) {
+					console.error(
+						`[GatePoller] CRITICAL: receipt-foundation OFF durable alert was not delivered (${result.skipped ?? "unknown"})`,
+					);
+				}
+			})
+			.catch((error) => {
+				console.error(
+					`[GatePoller] CRITICAL: receipt-foundation OFF durable alert failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			});
+	}
+
+	private runReceiptWakePatrolPass(): Promise<void> {
+		if (this.receiptWakePatrolPass) return this.receiptWakePatrolPass;
+		const pass = Promise.resolve()
+			.then(() => this.config.onReceiptWakePatrolTick?.())
+			.then(() => undefined);
+		const guarded = pass.finally(() => {
+			if (this.receiptWakePatrolPass === guarded) {
+				this.receiptWakePatrolPass = null;
+			}
+		});
+		this.receiptWakePatrolPass = guarded;
+		return guarded;
 	}
 
 	/** FLY-1048 (PR-C): detection-escalation reconcile cadence (default 20 ≈ 60s). */
@@ -1892,9 +2014,9 @@ export class GatePoller {
 			return;
 		}
 
+		const now = Date.now();
 		const createdMs = parseSqliteUtcMs(question.created_at);
 		if (createdMs === null) return;
-		const now = Date.now();
 		const stuckKey = computeStuckKey(
 			question.id,
 			session.session_stage ?? null,
@@ -3019,7 +3141,7 @@ export class GatePoller {
 		}
 	}
 
-	// ── FLY-605 Part B: founder-reply inbound delivery (founder→runner) ──
+	// ── Founder-reply inbound delivery (FLY-1392: founder→Lead) ──
 
 	private founderReplyDeliverEnabled(): boolean {
 		return process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER !== "0";
@@ -3059,7 +3181,8 @@ export class GatePoller {
 	/**
 	 * Per (project, lead): take the past-grace pending questions, group them by
 	 * issue thread, and let `emitFounderReplyDeliveryForThread` read each thread
-	 * once and auto-deliver / WAKE / hand off as appropriate.
+	 * once. FLY-1392's path is always a raw Lead handoff; the kill switch pauses
+	 * chasing only.
 	 *
 	 * FLY-1099 §7.2: returns pass HEALTH — false when every scanned thread
 	 * failed its Discord read (ingest effectively down), so the watchdog's
@@ -3070,7 +3193,6 @@ export class GatePoller {
 		const ownerUserId = this.config.discordOwnerUserId;
 		if (!isDiscordSnowflake(ownerUserId)) return true;
 		const graceMs = this.founderReplyDeliverGraceMs();
-		const now = Date.now();
 		let scanned = 0;
 		let failedScans = 0;
 		// Codex code R4 HIGH: re-drive any dead-letters whose StateStore write
@@ -3095,18 +3217,44 @@ export class GatePoller {
 					continue; // CommDB not present yet
 				}
 
-				// Group pending questions by issue thread. FLY-945 Fix A: the old
-				// per-question "past 10min grace" pre-filter is REPLACED — every
-				// pending question joins its thread group (each carrying its own
-				// per-checkpoint grace), and a thread is scanned as soon as ANY of
-				// its questions has passed its own threshold. The deliverer matches
-				// founder messages against the FULL set (so a reply to a young
-				// question is never classified irrelevant and lost), while maturity
-				// only decides "process now vs pin the cursor and wait".
+				// Build every live issue thread first, then attach pending questions as
+				// Lead context. Question age never gates founder ingress in v2.
 				const byThread = new Map<
 					string,
 					{ ctx: FounderReplyThreadCtx; questions: PendingQuestionForThread[] }
 				>();
+				for (const session of this.config.store.listNonTerminalSessions()) {
+					if (session.project_name !== project.projectName) continue;
+					try {
+						if (!matchesLead(session, lead.agentId, this.config.projects))
+							continue;
+					} catch {
+						continue;
+					}
+					const thread = this.config.store.getChatThreadByIssue(
+						session.issue_id,
+						lead.chatChannel,
+					);
+					if (!thread?.thread_id || byThread.has(thread.thread_id)) continue;
+					byThread.set(thread.thread_id, {
+						ctx: {
+							issueId: session.issue_id,
+							projectName: project.projectName,
+							threadId: thread.thread_id,
+							botToken,
+							ownerUserId: ownerUserId as string,
+							graceMs,
+							commDbPath: dbPath,
+							leadId: lead.agentId,
+						},
+						questions: [],
+					});
+					this.founderThreadRoutes.set(thread.thread_id, {
+						leadId: lead.agentId,
+						projectName: project.projectName,
+						issueId: session.issue_identifier ?? session.issue_id,
+					});
+				}
 				for (const q of pending) {
 					// FLY-1041 Chunk 9 (Fix D): a runner's `ask --report` status report
 					// is NEVER a founder-reply binding candidate — it neither absorbs
@@ -3173,15 +3321,8 @@ export class GatePoller {
 					project.projectName,
 				);
 				for (const { ctx, questions } of byThread.values()) {
-					// Scan only threads where at least one question passed its own
-					// scan threshold (all-young thread → byte-compatible no-scan).
-					if (
-						!questions.some(
-							(q) => now - q.createdAtMs >= (q.checkpointGraceMs ?? graceMs),
-						)
-					) {
-						continue;
-					}
+					// Founder ingress scans every live issue thread. Pending questions
+					// remain context for the Lead, never a Bridge-side admission gate.
 					try {
 						scanned++;
 						const outcome = await emitFounderReplyDeliveryForThread(
@@ -3192,10 +3333,6 @@ export class GatePoller {
 								fetchImpl: this.config.fetchImpl,
 								cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
 								deliverAmbiguousToLead,
-								// FLY-799: founder text approval → gate write (flag-gated; absent → WAKE-only).
-								tryFounderShipApproval: this.config.tryFounderShipApproval,
-								// FLY-1041 Chunk 7: reply-to-card binding reader.
-								readCurrentBinding: this.config.readCurrentBinding,
 								// FLY-1099 §7.1: bounded retry + dead-letter.
 								retryLedger: this.founderReplyRetryLedger(),
 							},
@@ -3913,10 +4050,10 @@ export class GatePoller {
 	}
 
 	/**
-	 * Durable ambiguous-message handoff to the Lead via the SAME LeadRuntime path
-	 * GatePoller uses for gate questions (Codex R3 #2). Returns true only when the
-	 * event is durably accepted + delivered; on failure the deliverer stops the
-	 * cursor before that message so the manual-relay handoff is never lost.
+	 * Durable founder-message handoff audit. The deliverer has already inserted
+	 * the canonical founder row into comm.db; this method must never dispatch a
+	 * second lead_event row. It persists the audit mirror and rings the queue
+	 * doorbell only.
 	 */
 	private makeAmbiguousHandoff(
 		lead: LeadConfig,
@@ -3932,59 +4069,43 @@ export class GatePoller {
 				// A flush() failure propagates → emitFounderReplyDeliveryForThread
 				// throws → the per-thread catch leaves the cursor un-advanced → retry.
 				this.config.store.flush();
+				this.config.runtimeRegistry.nudgeLeadInbox?.(lead.agentId, projectName);
 				return true;
 			}
 			const issueId = String(payload.issueId ?? "");
 			const answer = String(payload.answer ?? "");
+			const msgId = String(payload.msgId ?? "");
+			const commDbPath = String(payload.commDbPath ?? "");
 			const hookPayload: HookPayload = {
-				event_type: "founder_reply_ambiguous",
+				event_type: "founder_reply",
 				execution_id: "",
 				issue_id: issueId,
 				project_name: projectName,
-				status: "founder_reply_ambiguous",
-				summary:
-					"🧵 Annie 在该 issue thread 回复了，但有多个 open question、Bridge 无法确定她答的是哪个 —— " +
-					`请人工 relay 给对应 runner。回复内容：${answer}`,
+				status: "founder_reply",
+				summary: answer,
 				chat_thread_id: String(payload.threadId ?? ""),
+				founder_message_id: msgId,
+				comm_db_path: commDbPath,
+				action:
+					`Handle this founder message as Lead. Relay it with ` +
+					`flywheel-comm route-founder-reply --msg ${msgId} --lead ${lead.agentId} ` +
+					`--db ${commDbPath} --to-question <qid>. If no runner action is needed, ` +
+					`close the handled receipt with flywheel-comm route-founder-reply --msg ${msgId} ` +
+					`--lead ${lead.agentId} --db ${commDbPath} --no-route --reason lead_handled.`,
 			};
 			const seq = this.config.store.appendLeadEvent(
 				lead.agentId,
 				eventId,
-				"founder_reply_ambiguous",
+				"founder_reply",
 				JSON.stringify(hookPayload),
 				issueId,
 			);
-			const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
-			if (!runtime) return false;
-			const result = await dispatchLeadEvent(
-				this.config.runtimeRegistry,
-				runtime,
-				{
-					eventId,
-					seq,
-					event: hookPayload,
-					sessionKey: issueId,
-					leadId: lead.agentId,
-					timestamp: new Date().toISOString(),
-				},
-			);
-			if (result.delivered) {
-				this.config.store.markLeadEventDelivered(seq);
-				// FLY-605 (Codex code-review #2): force the lead_events append +
-				// delivered mark to disk BEFORE we return true — the deliverer
-				// advances (and immediately persists) the thread cursor on success,
-				// and appendLeadEvent/markLeadEventDelivered do NOT auto-save. Without
-				// this flush a crash after the cursor write could drop the manual-relay
-				// handoff while the cursor permanently skips the founder message.
-				this.config.store.flush();
-				return true;
-			}
-			if (result.queued) return false;
-			this.config.store.recordDeliveryFailure(
-				seq,
-				result.error ?? "deliver returned false",
-			);
-			return false;
+			this.config.store.markLeadEventDelivered(seq);
+			// The StateStore event is audit-only. Marking it delivered prevents the
+			// legacy reconciler from materializing a sibling lead_event:* queue row.
+			this.config.store.flush();
+			this.config.runtimeRegistry.nudgeLeadInbox?.(lead.agentId, projectName);
+			return true;
 		};
 	}
 }

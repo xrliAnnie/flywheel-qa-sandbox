@@ -195,6 +195,10 @@ export class LeadInboxRuntime {
 		});
 	}
 
+	receiptOwnerEpoch(): string {
+		return this.ownerEpoch;
+	}
+
 	private key(projectName: string, leadId: string): string {
 		return `${projectName}\u001f${leadId}`;
 	}

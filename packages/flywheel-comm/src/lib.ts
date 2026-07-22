@@ -32,6 +32,8 @@ export type {
 	PhaseWakeInput,
 	RunnerPhaseWake,
 	RunnerShutdownControl,
+	UnprocessedReceiptAdvance,
+	UnprocessedReceiptAlertPayload,
 } from "./db.js";
 export { askHygieneEnabled, CommDB } from "./db.js";
 export type {

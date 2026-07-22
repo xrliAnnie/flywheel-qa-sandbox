@@ -71,6 +71,42 @@ export interface GateResponseDb {
 		payload: unknown;
 		provenance?: MessageProvenance;
 	}): boolean;
+	trustedFounderGateResponseAndReceipt?(input: {
+		questionId: string;
+		fromAgent: string;
+		content: string;
+		expectedOwner: string;
+		rootId: string;
+		msgId: string;
+		now: string;
+		intentKey: string;
+		envelope: {
+			id: string;
+			to: string;
+			content: string;
+			metadata?: Record<string, unknown>;
+		};
+		queuedAtMs: number;
+		approvalSource?: {
+			project: string;
+			sourceEventId: string;
+			payload: unknown;
+		};
+	}): { responseId: string };
+}
+
+export interface FounderGateReceiptContext {
+	rootId: string;
+	msgId: string;
+	now: string;
+	intentKey: string;
+	queuedAtMs: number;
+	envelope: {
+		id: string;
+		to: string;
+		content: string;
+		metadata?: Record<string, unknown>;
+	};
 }
 
 /** Preserved caller identity, independent from the final founder attribution. */
@@ -121,6 +157,8 @@ export interface WriteGateResponseArgs {
 	cardAuthority?: FounderApprovalCardAuthority;
 	/** Canonical founder identity used to distinguish trusted approval writers. */
 	founderId?: string;
+	/** FLY-1392: present only for founder thread/card ingress. */
+	founderReceipt?: FounderGateReceiptContext;
 	/** Frozen source metadata for a claims-enrolled workflow run. */
 	founderSource?: {
 		project: string;
@@ -398,7 +436,47 @@ export async function writeGateResponseAndRunPostWrite(
 		isTrustedApprovalAttribution(args.actor, args.founderId) &&
 		founderSource !== undefined &&
 		args.db.insertFounderApprovalResponseWithSource !== undefined;
-	if (trustedFounderApproval) {
+	const trustedFounderReceipt =
+		args.founderReceipt &&
+		isTrustedApprovalAttribution(args.actor, args.founderId) &&
+		args.db.trustedFounderGateResponseAndReceipt !== undefined &&
+		(!isApproval(args.answer) || founderSource !== undefined);
+	if (trustedFounderReceipt) {
+		const receipt = args.founderReceipt!;
+		const source = founderSource;
+		args.db.trustedFounderGateResponseAndReceipt!({
+			questionId: args.questionId,
+			fromAgent: args.actor,
+			content: args.answer,
+			expectedOwner: args.executionId,
+			rootId: receipt.rootId,
+			msgId: receipt.msgId,
+			now: receipt.now,
+			intentKey: receipt.intentKey,
+			envelope: receipt.envelope,
+			queuedAtMs: receipt.queuedAtMs,
+			...(isApproval(args.answer) && source
+				? {
+						approvalSource: {
+							project: source.project,
+							sourceEventId: `founder-approval:${args.questionId}:${receipt.msgId}`,
+							payload: {
+								schema_version: 1,
+								run_id: source.runId,
+								issue_id: source.issueId,
+								question_id: args.questionId,
+								response: { approved: true },
+								actor: args.actor,
+								approved_head: source.approvedHead,
+								classification: source.classification,
+								authority_id: source.authorityId,
+								msg_id: receipt.msgId,
+							},
+						},
+					}
+				: {}),
+		});
+	} else if (trustedFounderApproval) {
 		const source = founderSource!;
 		const wrote = args.db.insertFounderApprovalResponseWithSource!({
 			project: source.project,

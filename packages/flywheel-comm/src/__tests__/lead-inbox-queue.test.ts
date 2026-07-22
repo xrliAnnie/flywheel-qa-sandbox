@@ -4,7 +4,10 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommDB } from "../db.js";
-import { LeadInboxQueue } from "../lead-inbox-queue.js";
+import {
+	LeadInboxQueue,
+	receiptPriorityWindowsMs,
+} from "../lead-inbox-queue.js";
 
 describe("FLY-1373 lead inbox queue", () => {
 	let dir: string;
@@ -17,6 +20,17 @@ describe("FLY-1373 lead inbox queue", () => {
 	});
 
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+	it("uses the four category-agnostic priority windows", () => {
+		expect(
+			receiptPriorityWindowsMs({
+				FLYWHEEL_RECEIPT_WINDOW_P0_MIN: "1",
+				FLYWHEEL_RECEIPT_WINDOW_P1_MIN: "2",
+				FLYWHEEL_RECEIPT_WINDOW_P2_MIN: "3",
+				FLYWHEEL_RECEIPT_WINDOW_P3_MIN: "4",
+			}),
+		).toEqual([60_000, 120_000, 180_000, 240_000]);
+	});
 
 	it("creates the durable queue, owner lease, and per-Lead heartbeat schema", () => {
 		const raw = new Database(dbPath, { readonly: true });
@@ -70,6 +84,177 @@ describe("FLY-1373 lead inbox queue", () => {
 			expect(duplicate.seq).toBe(first.seq);
 			expect(otherLead.seq).not.toBe(first.seq);
 			expect(queue.countPending()).toBe(2);
+		} finally {
+			queue.close();
+		}
+	});
+
+	it("keeps external receipt rows out of every inbox queue surface", () => {
+		const queue = new LeadInboxQueue(dbPath);
+		try {
+			queue.acquireOrRenewOwner({
+				ownerEpoch: "epoch-a",
+				now: "2026-07-21T12:00:00.000Z",
+				leaseTtlMs: 10_000,
+			});
+			const external = queue.enqueue({
+				id: "xdept:lead-a:discord-1",
+				toLead: "lead-a",
+				source: "discord",
+				type: "cross_department_message",
+				msgClass: "model",
+				priority: 1,
+				content: "hello from another department",
+				carrier: "external",
+			});
+
+			expect(external.carrier).toBe("external");
+			expect(external.consumed_at).toBeNull();
+			expect(queue.countPending()).toBe(0);
+			expect(
+				queue.claimPending({
+					toLead: "lead-a",
+					ownerEpoch: "epoch-a",
+					now: "2026-07-21T12:00:01.000Z",
+					claimTtlMs: 5_000,
+				}),
+			).toEqual([]);
+			expect(
+				queue.claimProtocol({
+					toLead: "lead-a",
+					ownerEpoch: "epoch-a",
+					now: "2026-07-21T12:00:01.000Z",
+					claimTtlMs: 5_000,
+				}),
+			).toBeUndefined();
+			expect(
+				queue.claimModelBatch({
+					toLead: "lead-a",
+					ownerEpoch: "epoch-a",
+					batchId: "batch-external",
+					now: "2026-07-21T12:00:01.000Z",
+					claimTtlMs: 5_000,
+				}),
+			).toEqual([]);
+		} finally {
+			queue.close();
+		}
+	});
+
+	it("finishes an accepted external delivery without exposing it to the inbox carrier", () => {
+		const queue = new LeadInboxQueue(dbPath);
+		try {
+			queue.enqueue({
+				id: "xdept:lead-a:discord-accepted",
+				toLead: "lead-a",
+				source: "discord",
+				type: "cross_department_message",
+				msgClass: "model",
+				priority: 1,
+				content: "accepted",
+				carrier: "external",
+			});
+
+			expect(
+				queue.markExternalDelivered("xdept:lead-a:discord-accepted", {
+					now: "2026-07-21T12:00:00.000Z",
+					receiptWindowsMs: [1_800_000, 1_800_000, 14_400_000, 86_400_000],
+				}),
+			).toBe(true);
+			expect(queue.getById("xdept:lead-a:discord-accepted")).toMatchObject({
+				carrier: "external",
+				delivered_at: "2026-07-21T12:00:00.000Z",
+				consumed_at: "2026-07-21T12:00:00.000Z",
+				disposition: "external_delivered",
+				next_unprocessed_at: "2026-07-21T12:30:00.000Z",
+			});
+			expect(queue.countPending()).toBe(0);
+		} finally {
+			queue.close();
+		}
+	});
+
+	it("replays external completion idempotently even when the retry timestamp changes", () => {
+		const queue = new LeadInboxQueue(dbPath);
+		try {
+			queue.enqueue({
+				id: "xdept:lead-a:discord-replay",
+				toLead: "lead-a",
+				source: "discord",
+				type: "external_delivery",
+				msgClass: "model",
+				priority: 1,
+				content: "replay",
+				carrier: "external",
+			});
+			const windows = [1_800_000, 1_800_000, 14_400_000, 86_400_000] as const;
+			expect(
+				queue.markExternalDelivered("xdept:lead-a:discord-replay", {
+					now: "2026-07-21T12:00:00.000Z",
+					receiptWindowsMs: windows,
+				}),
+			).toBe(true);
+			expect(
+				queue.markExternalDelivered("xdept:lead-a:discord-replay", {
+					now: "2026-07-21T12:05:00.000Z",
+					receiptWindowsMs: windows,
+				}),
+			).toBe(true);
+			expect(queue.getById("xdept:lead-a:discord-replay")?.delivered_at).toBe(
+				"2026-07-21T12:00:00.000Z",
+			);
+		} finally {
+			queue.close();
+		}
+	});
+
+	it("reconciles external pending rows as aborted or quarantined without chasing them", () => {
+		const queue = new LeadInboxQueue(dbPath);
+		try {
+			for (const id of ["xdept:lead-a:absent", "xdept:lead-a:unknown"]) {
+				queue.enqueue({
+					id,
+					toLead: "lead-a",
+					source: "discord",
+					type: "external_delivery",
+					msgClass: "model",
+					priority: 1,
+					content: id,
+					carrier: "external",
+					createdAt: "2026-07-21T11:00:00.000Z",
+				});
+			}
+			expect(
+				queue.listExternalDeliveryPending({
+					before: "2026-07-21T12:00:00.000Z",
+				}),
+			).toHaveLength(2);
+			expect(
+				queue.markExternalAborted("xdept:lead-a:absent", {
+					now: "2026-07-21T12:00:00.000Z",
+					reason: "journal_absent_after_watermark",
+				}),
+			).toBe(true);
+			expect(
+				queue.quarantineExternalDelivery("xdept:lead-a:unknown", {
+					now: "2026-07-21T12:00:00.000Z",
+					reason: "journal_unavailable",
+				}),
+			).toBe(true);
+			expect(queue.getById("xdept:lead-a:absent")).toMatchObject({
+				disposition: "delivery_aborted",
+				delivered_at: null,
+				disposed_at: "2026-07-21T12:00:00.000Z",
+			});
+			expect(queue.getById("xdept:lead-a:unknown")).toMatchObject({
+				delivered_at: null,
+			});
+			expect(
+				queue.getReceiptAlertOutbox(
+					"external_saga_unknown:xdept:lead-a:unknown",
+				),
+			).toMatchObject({ kind: "external_saga_unknown" });
+			expect(queue.countPending()).toBe(0);
 		} finally {
 			queue.close();
 		}

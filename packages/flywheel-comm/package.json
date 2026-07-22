@@ -25,6 +25,7 @@
 		"./canonical-lead": "./dist/canonical-lead.js",
 		"./lead-inbox-queue": "./dist/lead-inbox-queue.js",
 		"./lead-inbox-nudge": "./dist/lead-inbox-nudge.js",
+		"./founder-reply-routing": "./dist/founder-reply-routing.js",
 		"./approval-intent": "./dist/approval-intent.js",
 		"./design-html-evidence": "./dist/design-html-evidence.js"
 	},

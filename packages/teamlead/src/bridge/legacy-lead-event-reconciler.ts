@@ -3,10 +3,7 @@
 import { CommDB } from "flywheel-comm/db";
 import type { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
 import type { LeadEventRow, StateStore } from "../StateStore.js";
-import {
-	canonicalLeadEventDeliveryId,
-	priorityForLeadEvent,
-} from "./lead-event-queue.js";
+import { canonicalLeadEventDeliveryId } from "./lead-event-queue.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 
@@ -38,6 +35,35 @@ const DEFAULT_AUDIT_ONLY_TYPES = new Set([
 	"gate_question",
 	"runner_question",
 ]);
+
+/** Frozen v1 migration map; live generic ingress never classifies by type. */
+function legacyPriorityForEvent(eventType: string): 0 | 1 | 2 | 3 {
+	const normalized = eventType.toLowerCase();
+	if (
+		normalized.includes("founder") ||
+		normalized === "ship_approval_request" ||
+		normalized === "approve_to_ship"
+	) {
+		return 0;
+	}
+	if (
+		normalized.includes("gate") ||
+		normalized.includes("question") ||
+		normalized.includes("approval") ||
+		normalized.includes("review")
+	) {
+		return 1;
+	}
+	if (
+		normalized.includes("report") ||
+		normalized.includes("completed") ||
+		normalized.includes("artifact") ||
+		normalized.includes("action")
+	) {
+		return 2;
+	}
+	return 3;
+}
 
 function sqliteTimestampToIso(value: string): string {
 	const normalized = value.includes("T")
@@ -104,7 +130,7 @@ export class LegacyLeadEventReconciler {
 				source: `lead_event:${row.seq}`,
 				type: row.event_type,
 				msgClass: "model",
-				priority: priorityForLeadEvent(row.event_type),
+				priority: legacyPriorityForEvent(row.event_type),
 				content,
 				legacyAlias,
 				createdAt: envelope.timestamp,

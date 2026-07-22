@@ -141,6 +141,48 @@ export async function sendRunnerWake(
 
 	let detail: string;
 	try {
+		const receiptWake = wakeDetail?.questionId
+			? db.findPendingRunnerReceiptWakeForQuestion(
+					executionId,
+					wakeDetail.questionId,
+				)
+			: undefined;
+		if (receiptWake) {
+			if (receiptWake.admission_state !== "queued") return;
+			const claim = db.claimRunnerReceiptWakePush(
+				executionId,
+				receiptWake.message_id,
+				Date.now(),
+				{ t1Ms: 90_000, claimTtlMs: 30_000 },
+			);
+			// Another owner holds the claim, the intent is already exhausted, or
+			// started won the race. Never bypass the ledger with a raw wake.
+			if (!claim) return;
+			const targetSession = db.getSession(executionId);
+			const outcome = await wakeRunnerMailbox({
+				db,
+				execId: executionId,
+				fromAgent: "bridge",
+				content: claim.envelope.content,
+				metadata: claim.envelope.metadata,
+				...(targetSession?.vendor ? { backend: targetSession.vendor } : {}),
+			});
+			db.completeRunnerReceiptWakePush({
+				executionId,
+				messageId: receiptWake.message_id,
+				claimToken: claim.claimToken,
+				attempt: claim.attempt,
+				result: outcome.ok
+					? "delivered"
+					: outcome.skippedReason
+						? `skipped:${outcome.skippedReason}`
+						: `failed:${outcome.error ?? "unknown"}`,
+				nowMs: Date.now(),
+			});
+			if (outcome.ok || outcome.skippedReason === "backend_commdb") return;
+			detail = outcome.error ?? outcome.skippedReason ?? "unknown";
+			throw new Error(detail);
+		}
 		// FLY-123 (code review R1 MEDIUM-4): route the wake by the TARGET
 		// runner's transport backend when a question-bound gate marker exists
 		// — never the process-wide env (Phase 1 locks the Bridge env to

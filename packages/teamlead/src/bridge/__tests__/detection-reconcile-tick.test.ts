@@ -13,6 +13,7 @@ import {
 	DEFAULT_CLEARING_TTL_MS,
 	notifyUnlessClearing,
 	resolveClearedGapEpisodes,
+	runDetectionReconcileCohorts,
 	runDetectionReconcileTick,
 } from "../detection-reconcile-tick.js";
 
@@ -69,6 +70,11 @@ interface TickOver {
 	} | null;
 	now?: number;
 	clearingTtlMs?: number;
+	kindFilter?: {
+		includeKinds?: readonly string[];
+		excludeKinds?: readonly string[];
+	};
+	maintainClearing?: boolean;
 }
 
 async function tick(s: StateStore, over: TickOver = {}) {
@@ -84,6 +90,8 @@ async function tick(s: StateStore, over: TickOver = {}) {
 		graceMs: GRACE_MS,
 		fleetThreshold: 4,
 		clearingTtlMs: over.clearingTtlMs,
+		kindFilter: over.kindFilter,
+		maintainClearing: over.maintainClearing,
 		fn4OverdueMs: 3_600_000,
 		now: () => over.now ?? T0,
 		logger: () => {},
@@ -92,6 +100,94 @@ async function tick(s: StateStore, over: TickOver = {}) {
 }
 
 describe("runDetectionReconcileTick (FLY-1048 C4+C5)", () => {
+	it.each([
+		{ legacy: false, receipt: false, expected: [] },
+		{ legacy: true, receipt: false, expected: ["rebound", "legacy"] },
+		{ legacy: false, receipt: true, expected: ["rebound", "receipt"] },
+		{
+			legacy: true,
+			receipt: true,
+			expected: ["rebound", "legacy", "receipt"],
+		},
+	])(
+		"cohort matrix legacy=$legacy receipt=$receipt keeps one shared maintenance pass",
+		async ({ legacy, receipt, expected }) => {
+			const calls: string[] = [];
+			await runDetectionReconcileCohorts({
+				legacyEnabled: legacy,
+				receiptEnabled: receipt,
+				rebound: async () => {
+					calls.push("rebound");
+				},
+				legacyPass: async () => {
+					calls.push("legacy");
+				},
+				receiptPass: async () => {
+					calls.push("receipt");
+				},
+			});
+			expect(calls).toEqual(expected);
+		},
+	);
+
+	it("an excluded receipt cohort is neither recovered nor paged by the legacy pass", async () => {
+		const s = await freshStore();
+		const legacy = seedEpisode(s, {
+			target: "exec-1",
+			kind: "delivery_unconsumed",
+			fp: "fp:legacy",
+		});
+		const receipt = seedEpisode(s, {
+			target: "lead-key",
+			kind: "wake_failed",
+			fp: "fp:receipt",
+		});
+		const { pageFounder } = await tick(s, {
+			kindFilter: { excludeKinds: ["wake_failed"] },
+			maintainClearing: false,
+		});
+
+		expect(pageFounder).toHaveBeenCalledTimes(1);
+		expect(
+			s.getDetectionEscalation(legacy.target, legacy.kind, legacy.fp)?.status,
+		).toBe("ESCALATED");
+		expect(
+			s.getDetectionEscalation(receipt.target, receipt.kind, receipt.fp)
+				?.status,
+		).toBe("LEAD_NOTIFIED");
+	});
+
+	it("an include-only receipt cohort cannot run the legacy FN4 clear pass", async () => {
+		const s = await freshStore();
+		const seq = s.appendLeadEvent(
+			"eng-lead",
+			"ev-filtered",
+			"runner_question",
+			"{}",
+			"exec-1",
+		);
+		const legacy = seedEpisode(s, {
+			kind: "delivery_failed_reconcile",
+			fp: `fn4:eng-lead:${seq}`,
+		});
+		s.markLeadEventDelivered(seq);
+		seedEpisode(s, {
+			target: "lead-key",
+			kind: "wake_failed",
+			fp: "fp:receipt",
+		});
+
+		const { notify } = await tick(s, {
+			kindFilter: { includeKinds: ["wake_failed"] },
+			maintainClearing: false,
+		});
+
+		expect(notify).not.toHaveBeenCalled();
+		expect(
+			s.getDetectionEscalation(legacy.target, legacy.kind, legacy.fp)?.status,
+		).toBe("LEAD_NOTIFIED");
+	});
+
 	it("overdue LEAD_NOTIFIED → founder page → ESCALATED", async () => {
 		const s = await freshStore();
 		const { kind, fp } = seedEpisode(s);

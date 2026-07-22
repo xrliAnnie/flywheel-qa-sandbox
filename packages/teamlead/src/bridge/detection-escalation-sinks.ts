@@ -117,6 +117,40 @@ export function createSessionTargetResolver(deps: {
 	};
 }
 
+/**
+ * FLY-1392 receipt episodes are owned by the Lead itself, so their target key
+ * is `<project>:<leadId>` rather than a runner execution id. Preserve the
+ * existing session resolver and add only that exact, auditable binding.
+ */
+export function createReceiptAwareTargetResolver(deps: {
+	store: Pick<StateStore, "getSession">;
+	projects: ProjectEntry[];
+}): (row: DetectionEscalationRow) => FounderPageTarget | null {
+	const resolveSession = createSessionTargetResolver(deps);
+	return (row) => {
+		const sessionTarget = resolveSession(row);
+		if (sessionTarget) return sessionTarget;
+		if (!row.issue_id || !row.owner_lead_id) return null;
+		for (const project of deps.projects) {
+			for (const lead of project.leads) {
+				if (
+					row.target_key === `${project.projectName}:${lead.agentId}` &&
+					row.owner_lead_id === lead.agentId
+				) {
+					return {
+						executionId: row.target_key,
+						issueId: row.issue_id,
+						projectName: project.projectName,
+						chatChannel: lead.chatChannel,
+						botToken: lead.botToken,
+					};
+				}
+			}
+		}
+		return null;
+	};
+}
+
 /** One-sentence, pane-free description of a detection kind. */
 function describeKind(kind: string): string {
 	switch (kind) {
@@ -130,7 +164,15 @@ function describeKind(kind: string): string {
 			return "消息投递了但没被消费";
 		case "delivery_failed_reconcile":
 			return "投递失败且无人跟进";
+		case "wake_failed":
+			return "Runner 唤醒失败且仍未处理消息";
 		default:
+			if (
+				kind === "receipt_unprocessed" ||
+				kind.startsWith("receipt_unprocessed:")
+			) {
+				return "应处理的消息重发后仍没有处理收据";
+			}
 			switch (kind) {
 				case "park:awaiting_review":
 					return "Runner 正在等待 founder 审批";

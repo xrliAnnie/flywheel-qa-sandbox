@@ -1106,6 +1106,10 @@ function titleFor(kind: AlertEventType): string {
 			return "Lead waiting on permission prompt";
 		case "crash_loop":
 			return "Lead crash-looping";
+		// FLY-1392: emitted by GatePoller with its own explicit title; retained
+		// here so the shared alert-kind face stays exhaustive.
+		case "receipt_foundation_off":
+			return "Receipt foundation emergency rollback active";
 		case "pane_hash_stuck":
 			return "Lead pane has been frozen";
 		// FLY-1048 (A4): multi-frame veto 1 — a known error signature frozen in
@@ -1355,6 +1359,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A Claude Lead launched with the emergency legacy last-one-wins rule-loading path. Restore bundle mode and restart the Lead after investigating the compatibility override.";
 		case "stale_approved_ship_dead":
 			return "An approved_to_ship runner was proven dead through its exact tmux target. Resume the execution through the durable recovery path; this watchdog never self-ships.";
+		case "receipt_foundation_off":
+			return "FLYWHEEL_RECEIPT_FOUNDATION=0 paused receipt deadline advance, resend, and escalation. Founder transport remains Lead-only; restore receipt chasing after the incident is contained.";
 		// FLY-195: never emitted by LeadWatchdog (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";

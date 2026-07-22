@@ -42,6 +42,7 @@ import type {
 	GateBinding,
 } from "./types.js";
 import {
+	type FounderGateReceiptContext,
 	type GateResponseDb,
 	type WriteGateResponseArgs,
 	writeGateResponseAndRunPostWrite,
@@ -198,6 +199,7 @@ export interface ShipApprovalHandlerArgs {
 	 * Tier-3 prompt so short affirmations on the card bind deterministically.
 	 */
 	replyToCard?: boolean;
+	founderReceipt?: FounderGateReceiptContext;
 }
 
 const excerpt = (s: string | undefined, max = 200): string => {
@@ -613,6 +615,7 @@ export async function tryFounderShipApproval(
 			cardAuthority: deps.cardAuthority,
 			actor: deps.canonicalFounderId,
 			founderId: deps.canonicalFounderId,
+			founderReceipt: args.founderReceipt,
 			answer,
 			expectedCurrentReviewQuestionId: session.review_question_id ?? undefined,
 			holdReasonFor: deps.deferral

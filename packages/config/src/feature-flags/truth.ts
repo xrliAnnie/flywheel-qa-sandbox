@@ -254,6 +254,22 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: dead auto-QA recovery reconcile cadence (FLY-1279 D3b)",
 	FLYWHEEL_POOL_REBUILD_TIMEOUT_MS:
 		"tuning knob: pool-rebuild launchd transition and health wait timeout (FLY-1182)",
+	FLYWHEEL_RECEIPT_UNPROCESSED_WINDOW_MIN:
+		"tuning knob: first unprocessed-receipt deadline in minutes (FLY-1392)",
+	FLYWHEEL_RECEIPT_REBIND_WINDOW_MIN:
+		"tuning knob: founder-reply issue rebind window in minutes (FLY-1392)",
+	FLYWHEEL_RECEIPT_RESEND_CAP:
+		"tuning knob: unprocessed-receipt resend attempts before escalation (FLY-1392)",
+	FLYWHEEL_RECEIPT_EXEC_PUSH_CAP:
+		"tuning knob: per-execution mailbox push budget (FLY-1392)",
+	FLYWHEEL_RECEIPT_EXEC_PUSH_WINDOW_MIN:
+		"tuning knob: per-execution mailbox push budget window in minutes (FLY-1392)",
+	FLYWHEEL_RECEIPT_WAKE_T1_MS:
+		"tuning knob: receipt resend mailbox wake delay in milliseconds (FLY-1392)",
+	FLYWHEEL_RECEIPT_WAKE_T2_MS:
+		"tuning knob: receipt resend terminal wake delay in milliseconds (FLY-1392)",
+	FLYWHEEL_RECEIPT_WAKE_T3_MS:
+		"tuning knob: receipt wake-failure escalation delay in milliseconds (FLY-1392)",
 	// FLY-927 infra-alert ticket-queue rollout levers (all default-off = current
 	// behavior; ops-flipped in ~/.flywheel/.env + Bridge restart, NOT founder
 	// dashboard toggles yet — same class as the internal ops levers above). When

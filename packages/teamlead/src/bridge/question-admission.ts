@@ -60,7 +60,16 @@ export class QuestionAdmission {
 	async revalidate(
 		row: LeadInboxRow,
 	): Promise<{ deliver: true } | { deliver: false; disposition: string }> {
-		if (!row.ref_message_id) return { deliver: true };
+		// Only QuestionAdmission owns question revalidation. Other model lanes also
+		// carry stable external references (for example a founder Discord message
+		// id); interpreting those as CommDB question ids revokes a real delivery.
+		if (
+			!row.ref_message_id ||
+			!row.source.startsWith("question:") ||
+			(row.type !== "runner_question" && row.type !== "gate_question")
+		) {
+			return { deliver: true };
+		}
 		const db = new CommDB(this.opts.dbPath, false);
 		try {
 			const question = db.getMessageById(row.ref_message_id);

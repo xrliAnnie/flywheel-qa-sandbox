@@ -24,6 +24,10 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	LeadInboxQueue,
+	receiptPriorityWindowsMs,
+} from "flywheel-comm/lead-inbox-queue";
+import {
 	getProcessStart,
 	publishCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
@@ -46,6 +50,7 @@ import { CodexTurnExecutor } from "./CodexTurnExecutor.js";
 import { assertConfinement, extractThreadDescriptor } from "./confinement.js";
 import { DirectDiscordOutboundSender } from "./DirectDiscordOutboundSender.js";
 import { DiscordTypingNotifier } from "./DiscordTypingNotifier.js";
+import { ExternalReceiptSaga } from "./ExternalReceiptSaga.js";
 import { parseOwnerRepo } from "./gateway/GitPushRunner.js";
 import { FileInboundCursorStore } from "./InboundCursorStore.js";
 import { LeadHealthProbe } from "./LeadHealthProbe.js";
@@ -101,6 +106,7 @@ export interface CodexLeadRuntimeConfig {
 	/** Durable inbound-poll cursor (FLY-224 review HIGH-4): restart resumes from the
 	 * persisted last-seen Discord msg id instead of re-baselining (no downtime loss). */
 	inboundCursorPath: string;
+	commDbPath: string;
 	codexBin: string;
 	codexHome: string;
 	chrome?: { enabled: boolean; browserUrl?: string };
@@ -512,6 +518,7 @@ export function parseCodexLeadRuntimeConfig(
 	const stateDir = req("FLYWHEEL_CODEX_LEAD_STATE_DIR");
 	const codexBin = req("FLYWHEEL_CODEX_BIN");
 	const codexHome = req("CODEX_HOME");
+	const commDbPath = req("FLYWHEEL_COMM_DB");
 	// Bridge fields: required only when outbound routes through the Bridge.
 	const bridgeUrl =
 		outboundMode === "bridge"
@@ -783,6 +790,7 @@ export function parseCodexLeadRuntimeConfig(
 		outboxDbPath: join(stateDir, "outbox.db"),
 		threadIdPath: join(stateDir, "thread-id"),
 		inboundCursorPath: join(stateDir, "inbound-cursor.json"),
+		commDbPath,
 		codexBin,
 		codexHome,
 		chrome,
@@ -1552,6 +1560,13 @@ export function buildCodexLeadRuntime(
 			return id;
 		},
 		wire: async (threadId: string): Promise<RuntimeWiring> => {
+			const externalReceiptQueue = new LeadInboxQueue(config.commDbPath);
+			const externalReceiptSaga = new ExternalReceiptSaga({
+				leadId: config.leadId,
+				queue: externalReceiptQueue,
+				journal,
+				receiptWindowsMs: receiptPriorityWindowsMs(),
+			});
 			const executor = new CodexTurnExecutor({ process: proc, threadId });
 			// FLY-404: Discord typing indicator (default ON; FLYWHEEL_CODEX_LEAD_TYPING=0
 			// disables). Posts with the Lead's own bot token in the reply channel while a
@@ -1584,6 +1599,14 @@ export function buildCodexLeadRuntime(
 				journal,
 				executor,
 				sender,
+				onEntryCompleted: (entry) => {
+					if (
+						entry.source === "discord" &&
+						(entry.replyChannelId || entry.replyRoute)
+					) {
+						externalReceiptSaga.handle(entry.idempotencyKey, entry.id);
+					}
+				},
 				...(typing ? { typing } : {}),
 				...(replyInThread
 					? {
@@ -1630,6 +1653,7 @@ export function buildCodexLeadRuntime(
 				router,
 				botUserId: config.botUserId,
 				channelIds: config.channelIds,
+				externalReceiptSaga,
 				...(shouldHandle ? { shouldHandle } : {}),
 				// FLY-314 Phase 2 ON → registry allowlist + structured route supersede
 				// resolveReplyChannelId; OFF → FLY-267 source-channel routing.
@@ -1645,6 +1669,14 @@ export function buildCodexLeadRuntime(
 			return {
 				recover: () => router.recover(),
 				startGateway: async () => {
+					externalReceiptSaga.reconcile({
+						olderThan: new Date().toISOString(),
+						// S3 activation persists the real absence watermark. Until then,
+						// startup may repair accepted rows but never guesses an abort.
+						absenceProvenThroughMessageId:
+							externalReceiptQueue.getLatestReceiptActivation()
+								?.high_water_mark ?? "0",
+					});
 					// FLY-314 Phase 2 (Codex code review #1): START THE GATEWAY FIRST so
 					// `source.onMessage(handler)` is installed BEFORE discovery's
 					// `addChannel()` can drain a resumed thread — otherwise drained downtime
@@ -1662,6 +1694,7 @@ export function buildCodexLeadRuntime(
 						await gateway.stop();
 					} finally {
 						typing?.close();
+						externalReceiptQueue.close();
 					}
 				},
 			};

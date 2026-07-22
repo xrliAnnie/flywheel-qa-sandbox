@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { CommDB } from "../db.js";
 import {
 	authorizeLeadWrite,
@@ -46,14 +47,45 @@ export async function send(args: SendArgs): Promise<string> {
 	);
 	const db = new CommDB(args.dbPath);
 	try {
-		const id = db.insertInstruction(
-			args.fromAgent,
-			args.toAgent,
-			args.content,
-			{
-				provenance: authorization.provenance,
+		const targetVendor = db.getSession(args.toAgent)?.vendor;
+		const id = randomUUID();
+		const wakeContent = `[lead-instruction ${id}]\n${args.content}`;
+		const wakeMetadata = {
+			flywheelId: id,
+			execId: args.toAgent,
+			...(authorization.provenance
+				? { senderProvenance: authorization.provenance }
+				: {}),
+		};
+		const wakeIntent = db.instructionAndIntent({
+			instructionId: id,
+			fromAgent: args.fromAgent,
+			executionId: args.toAgent,
+			content: args.content,
+			intentKey: `instruction:${id}`,
+			envelope: {
+				id: `instruction:${id}`,
+				to: args.toAgent,
+				content: wakeContent,
+				metadata: wakeMetadata,
 			},
-		);
+			queuedAtMs: Date.now(),
+			provenance: authorization.provenance,
+			wakePolicy: {
+				transportAvailable: targetVendor !== "none",
+				execPushCap: receiptPositiveInt(
+					args.env?.FLYWHEEL_RECEIPT_EXEC_PUSH_CAP ??
+						process.env.FLYWHEEL_RECEIPT_EXEC_PUSH_CAP,
+					6,
+				),
+				execPushWindowMs:
+					receiptPositiveInt(
+						args.env?.FLYWHEEL_RECEIPT_EXEC_PUSH_WINDOW_MIN ??
+							process.env.FLYWHEEL_RECEIPT_EXEC_PUSH_WINDOW_MIN,
+						10,
+					) * 60_000,
+			},
+		});
 
 		// FLY-626: a Lead/founder instruction to the runner is a RE-ENGAGEMENT —
 		// it clears any self-declared park/busy marker so the stall watchdogs
@@ -88,7 +120,6 @@ export async function send(args: SendArgs): Promise<string> {
 		// including "" — flows through so an unknown vendor is a LOUD wake
 		// error (never a silent claude fallback), surfaced via the stderr
 		// path below.
-		const targetVendor = db.getSession(args.toAgent)?.vendor;
 		if (targetVendor === "none") {
 			// No-transport backend (antigravity/kimi): there is NO mailbox to
 			// wake. Loud skip — the CommDB row above stays the durable record,
@@ -99,19 +130,46 @@ export async function send(args: SendArgs): Promise<string> {
 			);
 			return id;
 		}
+		const pushClaim = db.claimRunnerReceiptWakePush(
+			args.toAgent,
+			wakeIntent.wake.message_id,
+			Date.now(),
+			{
+				t1Ms: receiptPositiveInt(
+					args.env?.FLYWHEEL_RECEIPT_WAKE_T1_MS ??
+						process.env.FLYWHEEL_RECEIPT_WAKE_T1_MS,
+					90_000,
+				),
+				claimTtlMs: 30_000,
+			},
+		);
+		if (!pushClaim) {
+			if (wakeIntent.wake.admission_state === "suppressed_cap") {
+				console.error(
+					`[flywheel-comm send] wake admission cap suppressed ${wakeIntent.wake.message_id}; instruction remains durable`,
+				);
+			}
+			return id;
+		}
 		const wake = await wakeRunnerMailbox({
 			db,
 			execId: args.toAgent,
 			fromAgent: args.fromAgent,
-			content: `[lead-instruction ${id}]\n${args.content}`,
-			metadata: {
-				flywheelId: id,
-				execId: args.toAgent,
-				...(authorization.provenance
-					? { senderProvenance: authorization.provenance }
-					: {}),
-			},
+			content: pushClaim.envelope.content,
+			metadata: pushClaim.envelope.metadata,
 			...(targetVendor != null && { backend: targetVendor }),
+		});
+		db.completeRunnerReceiptWakePush({
+			executionId: args.toAgent,
+			messageId: pushClaim.wake.message_id,
+			claimToken: pushClaim.claimToken,
+			attempt: pushClaim.attempt,
+			result: wake.ok
+				? "delivered"
+				: wake.skippedReason
+					? `skipped:${wake.skippedReason}`
+					: `failed:${wake.error ?? "unknown"}`,
+			nowMs: Date.now(),
 		});
 		if (wake.ok) {
 			// FLY-208 B: delivered_at = "transport write returned ok" (raw
@@ -137,4 +195,13 @@ export async function send(args: SendArgs): Promise<string> {
 	} finally {
 		db.close();
 	}
+}
+
+function receiptPositiveInt(raw: string | undefined, fallback: number): number {
+	if (raw === undefined || !raw.trim()) return fallback;
+	const value = Number(raw);
+	if (!Number.isSafeInteger(value) || value <= 0) {
+		throw new Error(`invalid positive receipt configuration value: ${raw}`);
+	}
+	return value;
 }

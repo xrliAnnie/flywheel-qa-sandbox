@@ -186,6 +186,43 @@ describe("LeadInputRouter — happy path", () => {
 		expect(store.getById(entryId)?.state).toBe("completed");
 	});
 
+	it("publishes the durable inbound-to-outbound mapping after completion", async () => {
+		const store = new InMemoryJournalStore();
+		const journal = new LeadJournal({
+			store,
+			idFactory: () => "entry-cross",
+			now: () => 1,
+		});
+		const completed = vi.fn();
+		const router = new LeadInputRouter({
+			leadId: "lead-x",
+			threadId: "th-1",
+			journal,
+			executor: new FakeExecutor(),
+			sender: new FakeSender(),
+			onEntryCompleted: completed,
+			logger: silent,
+		});
+
+		router.submit({
+			idempotencyKey: "discord-cross",
+			source: "discord",
+			payload: "coordinate",
+			replyChannelId: "roundtable",
+		});
+		await router.whenIdle();
+
+		expect(completed).toHaveBeenCalledTimes(1);
+		expect(completed).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: "entry-cross",
+				idempotencyKey: "discord-cross",
+				replyChannelId: "roundtable",
+				state: "completed",
+			}),
+		);
+	});
+
 	it("dedupes a duplicate idempotencyKey (not reprocessed)", async () => {
 		const { router, executor } = make();
 		router.submit({ idempotencyKey: "k", source: "discord", payload: "a" });

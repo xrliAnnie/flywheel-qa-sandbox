@@ -48,10 +48,18 @@ export interface WakeRunnerArgs {
 	 * behavior (claude approve_to_ship path, byte-compat).
 	 */
 	backend?: string;
+	/** T1 retry path: verify the durable mailbox entry after write. */
+	verified?: boolean;
 	/** Injectable for tests. */
 	transportFactory?: (
 		backend: "claude-code" | "codex",
-	) => Pick<ReturnType<typeof AgentTeamTransportFactory.forBackend>, "write">;
+	) => Pick<ReturnType<typeof AgentTeamTransportFactory.forBackend>, "write"> &
+		Partial<
+			Pick<
+				ReturnType<typeof AgentTeamTransportFactory.forBackend>,
+				"verifyLastWrite"
+			>
+		>;
 }
 
 export async function wakeRunnerMailbox(
@@ -82,7 +90,13 @@ export async function wakeRunnerMailbox(
 		let transport: Pick<
 			ReturnType<typeof AgentTeamTransportFactory.forBackend>,
 			"write"
-		>;
+		> &
+			Partial<
+				Pick<
+					ReturnType<typeof AgentTeamTransportFactory.forBackend>,
+					"verifyLastWrite"
+				>
+			>;
 		if (args.backend !== undefined) {
 			if (args.backend !== "claude-code" && args.backend !== "codex") {
 				return {
@@ -96,19 +110,33 @@ export async function wakeRunnerMailbox(
 		} else {
 			transport = AgentTeamTransportFactory.fromEnv();
 		}
-		await transport.write({
+		const payload = {
+			from: args.fromAgent,
+			to: agentName,
+			content: args.content,
+			metadata: args.metadata,
+		};
+		const writeResult = await transport.write({
 			// leadName === teamName === leadId: each Lead owns one team named
 			// after itself; the Runner inbox lives at
 			// teams/<leadId>/inboxes/<agentName>.json.
 			leadName: teamName,
 			recipient: agentName,
-			payload: {
-				from: args.fromAgent,
-				to: agentName,
-				content: args.content,
-				metadata: args.metadata,
-			},
+			payload,
 		});
+		if (
+			args.verified &&
+			!(writeResult.idempotent && writeResult.finalized === true)
+		) {
+			if (!transport.verifyLastWrite) {
+				throw new Error("wake transport does not support verified writes");
+			}
+			await transport.verifyLastWrite({
+				leadName: teamName,
+				recipient: agentName,
+				expected: payload,
+			});
+		}
 		return { ok: true };
 	} catch (err) {
 		return { ok: false, error: (err as Error).message };
