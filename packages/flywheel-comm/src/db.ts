@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS three_stage_turn (
 CREATE TABLE IF NOT EXISTS workflow_source_event (
   project             TEXT NOT NULL,
   source_event_id     TEXT NOT NULL,
-  kind                TEXT NOT NULL CHECK(kind IN ('founder_approval','turn_grant')),
+  kind                TEXT NOT NULL CHECK(kind IN ('founder_approval','founder_feedback','turn_grant')),
   payload             TEXT NOT NULL,
   payload_digest      TEXT NOT NULL,
   schema_version      INTEGER NOT NULL,
@@ -256,7 +256,7 @@ const ASK_FORENSIC_TTL_SQL = "+1 hour";
 export interface WorkflowSourceEvent {
 	project: string;
 	source_event_id: string;
-	kind: "founder_approval" | "turn_grant";
+	kind: "founder_approval" | "founder_feedback" | "turn_grant";
 	payload: string;
 	payload_digest: string;
 	schema_version: number;
@@ -785,6 +785,44 @@ export class CommDB {
 				`);
 			})();
 		}
+
+		// FLY-1375: founder feedback is an immutable workflow source event just
+		// like approval. SQLite cannot widen the CHECK constraint in place.
+		const workflowSourceSchema = this.db
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_source_event'",
+			)
+			.get() as { sql?: string } | undefined;
+		if (!workflowSourceSchema?.sql?.includes("'founder_feedback'")) {
+			this.db.transaction(() => {
+				this.db.exec(`
+					DROP TRIGGER IF EXISTS workflow_source_event_no_update;
+					DROP TRIGGER IF EXISTS workflow_source_event_no_delete;
+					CREATE TABLE workflow_source_event_fly1375 (
+						project TEXT NOT NULL,
+						source_event_id TEXT NOT NULL,
+						kind TEXT NOT NULL CHECK(kind IN ('founder_approval','founder_feedback','turn_grant')),
+						payload TEXT NOT NULL,
+						payload_digest TEXT NOT NULL,
+						schema_version INTEGER NOT NULL,
+						at TEXT NOT NULL,
+						PRIMARY KEY (project, source_event_id)
+					);
+					INSERT INTO workflow_source_event_fly1375
+						(project, source_event_id, kind, payload, payload_digest, schema_version, at)
+					SELECT project, source_event_id, kind, payload, payload_digest, schema_version, at
+					FROM workflow_source_event;
+					DROP TABLE workflow_source_event;
+					ALTER TABLE workflow_source_event_fly1375 RENAME TO workflow_source_event;
+					CREATE TRIGGER workflow_source_event_no_update
+					BEFORE UPDATE ON workflow_source_event
+					BEGIN SELECT RAISE(ABORT, 'workflow_source_event is append-only'); END;
+					CREATE TRIGGER workflow_source_event_no_delete
+					BEFORE DELETE ON workflow_source_event
+					BEGIN SELECT RAISE(ABORT, 'workflow_source_event is append-only'); END;
+				`);
+			})();
+		}
 	}
 
 	/** FLY-1279: SQLite cannot ALTER a CHECK constraint, so add ack_receipt by
@@ -987,6 +1025,8 @@ export class CommDB {
 		toAgent: string,
 		content: string,
 		opts?: {
+			/** FLY-1375: deterministic engine-gate identity (insert-or-verify). */
+			id?: string;
 			checkpoint?: string;
 			contentRef?: string;
 			contentType?: "text" | "ref";
@@ -1002,12 +1042,40 @@ export class CommDB {
 			deadlineAt?: string;
 		},
 	): string {
-		const id = randomUUID();
+		const id = opts?.id?.trim() || randomUUID();
+		if (opts?.id !== undefined && !opts.id.trim()) {
+			throw new Error("deterministic question id must be non-empty");
+		}
 		const ttl = opts?.ttlSeconds;
 		const customTtl =
 			typeof ttl === "number" && Number.isFinite(ttl) && ttl > 0;
 		if (opts?.deadlineAt) {
 			assertUtcIsoTimestamp(opts.deadlineAt, "deadlineAt");
+		}
+		if (opts?.id) {
+			const existing = this.db
+				.prepare(
+					`SELECT id, from_agent, to_agent, type, content, checkpoint,
+					        content_ref, content_type, kind, deadline_at
+					   FROM messages WHERE id = ?`,
+				)
+				.get(id) as Message | undefined;
+			if (existing) {
+				const matches =
+					existing.type === "question" &&
+					existing.from_agent === fromAgent &&
+					existing.to_agent === toAgent &&
+					existing.content === content &&
+					(existing.checkpoint ?? null) === (opts.checkpoint ?? null) &&
+					(existing.content_ref ?? null) === (opts.contentRef ?? null) &&
+					(existing.content_type ?? "text") === (opts.contentType ?? "text") &&
+					(existing.kind ?? null) === (opts.kind ?? null) &&
+					(existing.deadline_at ?? null) === (opts.deadlineAt ?? null);
+				if (!matches) {
+					throw new Error(`deterministic question identity conflict: ${id}`);
+				}
+				return id;
+			}
 		}
 		if (customTtl) {
 			this.db
@@ -1547,13 +1615,27 @@ export class CommDB {
 				);
 			if (result.changes !== 1) return false;
 			this.markQuestionTerminalDisposed(input.questionId);
+			const response = input.payload as
+				| { approved?: unknown; response?: { approved?: unknown } }
+				| undefined;
+			const kind =
+				response?.response?.approved === true || response?.approved === true
+					? "founder_approval"
+					: "founder_feedback";
 			this.db
 				.prepare(
 					`INSERT INTO workflow_source_event
 					   (project, source_event_id, kind, payload, payload_digest, schema_version, at)
-					 VALUES (?, ?, 'founder_approval', ?, ?, 1, ?)`,
+					 VALUES (?, ?, ?, ?, ?, 1, ?)`,
 				)
-				.run(input.project, input.sourceEventId, payload, payloadDigest, at);
+				.run(
+					input.project,
+					input.sourceEventId,
+					kind,
+					payload,
+					payloadDigest,
+					at,
+				);
 			return true;
 		})();
 	}

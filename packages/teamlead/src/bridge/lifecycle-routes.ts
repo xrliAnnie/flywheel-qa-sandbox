@@ -24,7 +24,7 @@ import { createHash } from "node:crypto";
 import { Router } from "express";
 import type { WorktreeManager } from "flywheel-edge-worker";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import type { StateStore } from "../StateStore.js";
+import type { LandOperationRow, StateStore } from "../StateStore.js";
 import type { CleanupPolicyByProject } from "./cleanup-policy.js";
 import {
 	type ClosureReport,
@@ -68,6 +68,16 @@ export interface LifecycleRoutesDeps {
 	/** Fail-closed guard — routes refuse when the api token is not configured. */
 	apiTokenConfigured: boolean;
 	sweepFn?: typeof sweepProjectLifecycle;
+	land?: {
+		enabled(): boolean;
+		createIntent(input: {
+			projectName: string;
+			issueId: string;
+			prNumber?: number;
+			approvedHead?: string;
+		}): LandOperationRow;
+		kick(operationId: string): void;
+	};
 }
 
 export function sha256Hex(text: string): string {
@@ -198,6 +208,63 @@ export function createLifecycleRouter(deps: LifecycleRoutesDeps): Router {
 		}
 		return true;
 	};
+
+	router.post("/land", (req, res) => {
+		if (!guard(res)) return;
+		if (!deps.land?.enabled()) {
+			res.status(503).json({ error: "land_node_disabled" });
+			return;
+		}
+		const { project, issueId, prNumber, approvedHead } = req.body ?? {};
+		if (
+			typeof project !== "string" ||
+			!project ||
+			typeof issueId !== "string" ||
+			!issueId ||
+			(prNumber !== undefined &&
+				(!Number.isInteger(prNumber) || prNumber < 1)) ||
+			(approvedHead !== undefined &&
+				(typeof approvedHead !== "string" ||
+					!/^[0-9a-f]{40}$/i.test(approvedHead)))
+		) {
+			res.status(400).json({
+				error: "project + issueId required; prNumber/head assertions optional",
+			});
+			return;
+		}
+		try {
+			const operation = deps.land.createIntent({
+				projectName: project,
+				issueId,
+				...(prNumber !== undefined ? { prNumber } : {}),
+				...(approvedHead !== undefined
+					? { approvedHead: approvedHead.toLowerCase() }
+					: {}),
+			});
+			deps.land.kick(operation.operation_id);
+			res.status(202).json({
+				operation_id: operation.operation_id,
+				state: operation.state,
+			});
+		} catch (error) {
+			res.status(409).json({
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	});
+
+	router.get("/land/:operationId", (req, res) => {
+		if (!guard(res)) return;
+		const operation = deps.store.getLandOperation(req.params.operationId);
+		if (!operation) {
+			res.status(404).json({ error: "land_operation_not_found" });
+			return;
+		}
+		res.status(200).json({
+			...operation,
+			steps: deps.store.listLandOperationSteps(operation.operation_id),
+		});
+	});
 
 	// ── founder park-close (atomic tombstone + closeout, Codex R1#5) ──
 	router.post("/park", async (req, res) => {

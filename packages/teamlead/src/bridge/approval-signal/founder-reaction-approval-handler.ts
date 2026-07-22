@@ -19,6 +19,7 @@
 
 import type { ReactionFetcher } from "../../lead-backends/codex/gateway/founder-confirmation.js";
 import type { MergedGateGuard } from "../merged-gate-guard.js";
+import type { GateAuthorityView } from "./gate-authority-view.js";
 import type { GateMessageBinding } from "./gate-message-binding.js";
 import { evaluateReactionSource } from "./reaction-approval-source.js";
 import type { GateBinding } from "./types.js";
@@ -39,6 +40,7 @@ interface HandlerSession {
 export interface ReactionApprovalHandlerDeps {
 	canonicalFounderId: string;
 	store: { getSession(executionId: string): HandlerSession | undefined };
+	gateAuthorityView?: GateAuthorityView;
 	db: GateResponseDb;
 	reactionFetcherImpl: ReactionFetcher;
 	/** Read the single current binding for (executionId, questionId, prHeadSha). */
@@ -88,9 +90,22 @@ export async function tryFounderReactionApproval(
 	const { gate } = args;
 
 	// A-2: this must be the CURRENT review question of an awaiting_review session.
-	const session = deps.store.getSession(gate.executionId);
+	const engineAuthority = deps.gateAuthorityView?.resolve(
+		gate.questionId,
+		gate.executionId,
+	);
+	const session = engineAuthority
+		? {
+				status: engineAuthority.state,
+				review_question_id: engineAuthority.questionId,
+				pr_head_sha: engineAuthority.headSha,
+				pr_number: engineAuthority.prNumber,
+				issue_identifier: engineAuthority.issueIdentifier,
+			}
+		: deps.store.getSession(gate.executionId);
+	if (!session) return null;
 	if (
-		session?.status !== "awaiting_review" ||
+		(session.status !== "awaiting_review" && !engineAuthority) ||
 		session.review_question_id !== gate.questionId
 	) {
 		return null;
@@ -99,11 +114,22 @@ export async function tryFounderReactionApproval(
 
 	// A-0b: the reaction target is ONLY the durably-bound gate message — never
 	// inferred from a thread scan / timestamp. No binding → no reaction approval.
-	const stored = deps.readBindingImpl(
-		gate.executionId,
-		gate.questionId,
-		session.pr_head_sha,
-	);
+	const stored = engineAuthority?.cardMessageId
+		? {
+				questionId: gate.questionId,
+				executionId: gate.executionId,
+				issueId: engineAuthority.issueId,
+				prHeadSha: engineAuthority.headSha,
+				threadId: args.ctx.threadId,
+				gateMessageId: engineAuthority.cardMessageId,
+				checkpoint: "approve_to_ship" as const,
+				postedAt: new Date(gate.createdAtMs).toISOString(),
+			}
+		: deps.readBindingImpl(
+				gate.executionId,
+				gate.questionId,
+				session.pr_head_sha,
+			);
 	if (!stored?.gateMessageId) return null;
 
 	const binding: GateBinding = {
@@ -163,6 +189,7 @@ export async function tryFounderReactionApproval(
 	const res = await write({
 		db: deps.db,
 		store: { getSession: (e) => deps.store.getSession(e) },
+		gateAuthorityView: deps.gateAuthorityView,
 		questionId: gate.questionId,
 		executionId: gate.executionId,
 		source: "reaction",

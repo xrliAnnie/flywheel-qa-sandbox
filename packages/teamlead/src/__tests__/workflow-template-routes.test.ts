@@ -39,7 +39,7 @@ describe("workflow template read model", () => {
 		const list = await fetch(`${base}/api/workflow/templates`).then((res) =>
 			res.json(),
 		);
-		expect(list.templates).toHaveLength(3);
+		expect(list.templates).toHaveLength(6);
 		const detail = await fetch(
 			`${base}/api/workflow/templates/tpl_eng_heavy`,
 		).then((res) => res.json());

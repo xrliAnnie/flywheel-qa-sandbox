@@ -167,6 +167,42 @@ describe("tryFounderReactionApproval", () => {
 		const r = await tryFounderReactionApproval({ gate, ctx }, deps as never);
 		expect(r).toEqual({ handled: [], retrySafe: false });
 	});
+
+	it("engine gate remains approvable after its QA source session is gone", async () => {
+		const authority = {
+			kind: "engine" as const,
+			runId: "run-1",
+			questionId: "Q-1",
+			executionId: "E-1",
+			issueId: "I",
+			projectName: "proj",
+			headSha: "sha-1",
+			state: "awaiting_review" as const,
+			cardMessageId: "GATEMSG-1",
+			prNumber: 42,
+			issueIdentifier: "FLY-1",
+		};
+		const readBindingImpl = vi.fn();
+		const { deps, writeGateResponseImpl } = make({
+			store: { getSession: vi.fn().mockReturnValue(undefined) },
+			gateAuthorityView: { resolve: vi.fn().mockReturnValue(authority) },
+			readBindingImpl,
+		});
+
+		const result = await tryFounderReactionApproval(
+			{ gate, ctx },
+			deps as never,
+		);
+
+		expect(result).toEqual({ handled: ["Q-1"], retrySafe: true });
+		expect(readBindingImpl).not.toHaveBeenCalled();
+		expect(writeGateResponseImpl).toHaveBeenCalledWith(
+			expect.objectContaining({
+				gateAuthorityView: deps.gateAuthorityView,
+				targetMessageId: "GATEMSG-1",
+			}),
+		);
+	});
 });
 
 describe("tryFounderReactionApproval — hold guard (FLY-1041 Chunk 5, Codex R2 note 2)", () => {

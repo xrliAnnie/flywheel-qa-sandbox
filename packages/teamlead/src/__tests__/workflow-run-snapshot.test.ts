@@ -9,6 +9,7 @@ import {
 	parseWorkflowRunSnapshot,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
+import { loadBundledWorkflowSeeds } from "../workflow-template.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -55,6 +56,123 @@ function fixture() {
 }
 
 describe("typed generalized workflow snapshot", () => {
+	it("keeps the legacy engineering snapshot digest byte-compatible", () => {
+		const manifest = loadBundledWorkflowSeeds()[0]!.manifest;
+		const snapshot = buildWorkflowRunSnapshotV1({
+			template: { id: "tpl_eng_heavy", revision: 1 },
+			manifest,
+		});
+		expect(snapshot.manifest_digest).toBe(
+			"440987c7fcef1d9964c5bcd8deaaab6be9aee7e54e255e1f312b1afe2116da51",
+		);
+		expect(snapshot.snapshot_digest).toBe(
+			"6284ff42a828cd8dc26e5046ab8199483936191d7e4872f481961cb5e17fc3d6",
+		);
+	});
+
+	it("pins a land_v1 engine node without dispatching an agent", () => {
+		const snapshot = buildWorkflowRunSnapshotV1({
+			template: { id: "tpl_eng_heavy_land_v1", revision: 1 },
+			manifest: {
+				schema_version: 1,
+				manifest_variant: "land_v1",
+				nodes: [
+					{
+						id: "design",
+						type: "design",
+						vendor: "claude",
+						model: "claude-fable-5",
+					},
+					{
+						id: "implement",
+						type: "implement",
+						vendor: "codex",
+						model: "gpt-5.6-sol",
+						effort: "xhigh",
+					},
+					{
+						id: "qa",
+						type: "qa",
+						vendor: "claude",
+						model: "claude-opus-4-8",
+					},
+					{ id: "founder_gate", type: "gate" },
+					{ id: "land", type: "land", execution: "engine" },
+				],
+				edges: [
+					{
+						id: "design_done",
+						from: "design",
+						to: "implement",
+						condition: "design_done",
+					},
+					{
+						id: "implement_done",
+						from: "implement",
+						to: "qa",
+						condition: "implement_done",
+					},
+					{
+						id: "qa_pass",
+						from: "qa",
+						to: "founder_gate",
+						condition: "qa_pass",
+					},
+					{
+						id: "founder_approved",
+						from: "founder_gate",
+						to: "land",
+						condition: "founder_approved",
+					},
+				],
+				loops: [
+					{
+						id: "qa_retry",
+						from: "qa",
+						to: "implement",
+						loop_when: "qa_fail",
+						exit_when: "qa_pass",
+						max_iterations: 3,
+						on_limit: "escalate",
+					},
+					{
+						id: "founder_feedback",
+						from: "founder_gate",
+						to: "implement",
+						loop_when: "founder_feedback_kickback",
+						exit_when: "founder_approved",
+						max_iterations: 3,
+						on_limit: "escalate",
+					},
+				],
+				approval_gate: {
+					node: "founder_gate",
+					predicate: "founder_approved",
+				},
+				terminal_node: { node: "land" },
+				ship_claims: ["qa_passed", "founder_approved"],
+			},
+		});
+
+		expect(
+			snapshot.resolved.nodes.find((node) => node.id === "founder_gate"),
+		).toMatchObject({
+			capabilities: { can_request_ship_approval: true },
+		});
+		expect(
+			snapshot.resolved.nodes.find((node) => node.id === "land"),
+		).toMatchObject({
+			type: "land",
+			capabilities: { can_ship: true, can_land: true },
+		});
+		expect(
+			snapshot.resolved.nodes.find((node) => node.id === "land"),
+		).not.toHaveProperty("dispatch");
+		expect(() =>
+			parseWorkflowRunSnapshot(JSON.stringify(snapshot)),
+		).not.toThrow();
+	});
+
 	it("builds and strictly parses a pinned schema-v1 engine snapshot", () => {
 		const manifest = {
 			schema_version: 1 as const,

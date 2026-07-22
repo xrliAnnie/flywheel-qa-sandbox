@@ -122,7 +122,9 @@ export async function markLinearIssueDone(
  */
 export function makeLinearDoneFinalizer(config: {
 	linearApiKey?: string;
-}): ((issueId: string, issueIdentifier?: string) => Promise<void>) | undefined {
+}):
+	| ((issueId: string, issueIdentifier?: string) => Promise<MarkDoneResult>)
+	| undefined {
 	if (process.env.FLYWHEEL_AUTO_LINEAR_DONE === "0") return undefined;
 	const apiKey = config.linearApiKey;
 	if (!apiKey) return undefined;
@@ -143,10 +145,12 @@ export function makeLinearDoneFinalizer(config: {
 					`[linear-finalizer] ${issueIdentifier ?? issueId} NOT flipped to Done: ${r.reason ?? "unknown"}`,
 				);
 			}
+			return r;
 		} catch (err) {
 			console.warn(
 				`[linear-finalizer] markIssueDone threw for ${issueId} (non-fatal): ${(err as Error).message}`,
 			);
+			return { done: false, reason: (err as Error).message };
 		}
 	};
 }

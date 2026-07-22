@@ -56,12 +56,15 @@ import {
 import {
 	applyWorkflowOverride,
 	isGeneralizedTemplatesEnabled,
+	isWorkflowManifestV1Land,
 	type LoadedWorkflowSeed,
 	validateWorkflowManifest,
 	type WorkflowTemplateOverride,
+	workflowApprovalGate,
 	workflowSeedContentHash,
 } from "./workflow-template.js";
 import {
+	isLandNodeEnabled,
 	workflowTemplateDispatchBlockMessage,
 	workflowTemplateDispatchBlockReason,
 } from "./workflow-template-dispatch.js";
@@ -666,6 +669,7 @@ export interface SessionUpsert {
 	plan_path?: string;
 	/** FLY-137 Phase 5: codex-skip label snapshotted at run start (0|1) */
 	codex_skip?: number;
+
 	/**
 	 * FLY-191 Phase 2: when the session ENTERED awaiting_review (deadline
 	 * anchor for the Bridge-side 48h review timeout). Set only on entry —
@@ -4576,6 +4580,21 @@ export class StateStore {
 			`SELECT * FROM sessions WHERE issue_id = ? AND status IN (${placeholders}) ORDER BY last_activity_at DESC`,
 		);
 		stmt.bind([issueId, ...statuses]);
+		while (stmt.step()) {
+			results.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return results;
+	}
+
+	getSessionsByIssue(issueId: string): Session[] {
+		const results: Session[] = [];
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE issue_id = ? ORDER BY last_activity_at DESC, rowid DESC",
+		);
+		stmt.bind([issueId]);
 		while (stmt.step()) {
 			results.push(
 				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
@@ -12432,6 +12451,79 @@ export class StateStore {
 				UNIQUE (run_id, seq)
 			)
 		`);
+		// FLY-1375: approval authority survives the QA process lifecycle. The
+		// source execution is attribution only; materialization and founder
+		// approval advance this first-class holder row.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_gate_holder (
+				run_id TEXT NOT NULL,
+				gate_node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL CHECK (attempt > 0),
+				head_sha TEXT NOT NULL,
+				source_execution_id TEXT NOT NULL,
+				question_id TEXT NOT NULL UNIQUE,
+				card_message_id TEXT,
+				state TEXT NOT NULL DEFAULT 'materializing'
+				  CHECK (state IN ('materializing','awaiting_review','approved','superseded')),
+				materialization_stage TEXT NOT NULL DEFAULT 'question_intent'
+				  CHECK (materialization_stage IN (
+				    'question_intent','question_written','session_bound',
+				    'card_posted','card_bound','completed'
+				  )),
+				superseded_reason TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (run_id, gate_node_id, attempt, head_sha)
+			)
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS ux_workflow_gate_holder_current
+			ON workflow_gate_holder(run_id, gate_node_id)
+			WHERE state IN ('materializing','awaiting_review','approved')
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_gate_holder_question ON workflow_gate_holder(question_id, state)",
+		);
+		// FLY-1375: one fenced, resumable land operation per approved PR head.
+		// Step receipts are immutable evidence; ownership may move only by lease
+		// expiry and every write is generation-fenced.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS land_operation (
+				operation_id TEXT PRIMARY KEY,
+				run_id TEXT,
+				issue_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+				approved_head TEXT NOT NULL,
+				state TEXT NOT NULL DEFAULT 'intent'
+				  CHECK (state IN ('intent','running','partial','completed','held')),
+				owner_id TEXT,
+				lease_expires_at TEXT,
+				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+				current_step TEXT,
+				merge_confirmed_at TEXT,
+				finalization_completed_at TEXT,
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				UNIQUE (project_name, issue_id, pr_number, approved_head)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_land_operation_work ON land_operation(state, lease_expires_at, updated_at)",
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS land_operation_step (
+				operation_id TEXT NOT NULL,
+				step TEXT NOT NULL,
+				receipt_digest TEXT NOT NULL,
+				receipt_json TEXT NOT NULL,
+				generation INTEGER NOT NULL,
+				completed_at TEXT NOT NULL,
+				PRIMARY KEY (operation_id, step),
+				FOREIGN KEY (operation_id) REFERENCES land_operation(operation_id)
+			)
+		`);
 		// FLY-1385: alert delivery is a durable outbox, not a best-effort side
 		// effect of the state transition. A lease generation fences late send
 		// results from an earlier worker; three failed attempts dead-letter.
@@ -13590,6 +13682,12 @@ export class StateStore {
 		const applied = input.override
 			? applyWorkflowOverride(base, input.override)
 			: { manifest: base, override: undefined };
+		if (
+			isWorkflowManifestV1Land(applied.manifest) &&
+			!isLandNodeEnabled(input.env ?? process.env)
+		) {
+			throw new Error("land workflow node is disabled by flag");
+		}
 		const generalizedSnapshot =
 			applied.manifest.schema_version === 2
 				? buildWorkflowRunSnapshotV2({
@@ -16522,10 +16620,11 @@ export class StateStore {
 		nodeId: string;
 		executionId: string;
 		reason: string;
-		disposition: "held" | "design_fallback";
+		disposition: "held" | "partial" | "design_fallback";
 		identity: WorkflowEngineAlertIdentity;
 	}): WorkflowEngineAlertPayload {
 		const fallback = input.disposition === "design_fallback";
+		const partial = input.disposition === "partial";
 		return {
 			leadId: input.identity.leadId,
 			projectName: input.identity.projectName,
@@ -16535,10 +16634,14 @@ export class StateStore {
 			sessionKey: `wf:${input.runId}`,
 			title: fallback
 				? `Workflow design fallback used for ${input.issueId}`
-				: `Workflow run held for ${input.issueId}`,
+				: partial
+					? `Workflow land cleanup needs attention for ${input.issueId}`
+					: `Workflow run held for ${input.issueId}`,
 			body: fallback
 				? `Run ${input.runId} node ${input.nodeId}: Fable was unavailable; the one approved fallback to GPT-5.6 was selected. Reason: ${input.reason}.`
-				: `Run ${input.runId} node ${input.nodeId} was held after execution ${input.executionId}. Reason: ${input.reason}. Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`,
+				: partial
+					? `Run ${input.runId} land node ${input.nodeId} could not finish cleanup after merge. Reason: ${input.reason}. The durable operation will keep retrying; inspect GET /api/lifecycle/land/<operation-id>.`
+					: `Run ${input.runId} node ${input.nodeId} was held after execution ${input.executionId}. Reason: ${input.reason}. Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`,
 			metadata: {
 				workflowEngine: {
 					runId: input.runId,
@@ -18182,6 +18285,7 @@ export class StateStore {
 						attempt: Number(credential.attempt),
 						executionId: credential.execution_id as string,
 						outcome,
+						subjectDigest: input.subjectDigest,
 						now: nowIso,
 					});
 					if (!transition.ok) {
@@ -18218,6 +18322,10 @@ export class StateStore {
 		attempt: number;
 		executionId: string;
 		outcome: string;
+		/** Git head decided by QA/founder; required when land_v1 opens its gate. */
+		subjectDigest?: string;
+		/** Trusted founder feedback carried to the kickback successor receipt. */
+		founderFeedback?: string;
 		successorExecutionId?: string;
 		nodeCompletionEventUid?: string;
 		now?: string;
@@ -18309,11 +18417,16 @@ export class StateStore {
 				input.nodeId,
 				input.attempt,
 			);
+			const authorityDrivenGate =
+				source?.type === "gate" &&
+				snapshot.schema_version === 1 &&
+				"manifest_variant" in snapshot.manifest &&
+				snapshot.manifest.manifest_variant === "land_v1";
 			if (
 				!source ||
 				!current ||
 				run.current_node_id !== input.nodeId ||
-				current.execution_id !== input.executionId ||
+				(!authorityDrivenGate && current.execution_id !== input.executionId) ||
 				current.state === "done"
 			) {
 				result = { ok: false, reason: "node_attempt_not_current" };
@@ -18430,7 +18543,7 @@ export class StateStore {
 				nodeId: input.nodeId,
 				attempt: input.attempt,
 				state: "done",
-				executionId: input.executionId,
+				...(source.type === "gate" ? {} : { executionId: input.executionId }),
 				endedAt: now,
 			});
 			this.appendWorkflowRunEventTx({
@@ -18466,6 +18579,9 @@ export class StateStore {
 				...(successorExecutionId ? { successorExecutionId } : {}),
 				...(loopIteration ? { loopIteration } : {}),
 				...(target.type === "gate" ? { gateOpened: true } : {}),
+				...(input.founderFeedback
+					? { founderFeedback: input.founderFeedback.slice(0, 4_000) }
+					: {}),
 			};
 			this.appendWorkflowRunEventTx({
 				runId: input.runId,
@@ -18490,9 +18606,59 @@ export class StateStore {
 					nodeId: target.id,
 					payload: {
 						attempt: targetAttempt,
-						predicate: snapshot.manifest.terminal_gate.predicate,
+						predicate: workflowApprovalGate(snapshot.manifest).predicate,
 					},
 				});
+				if (
+					snapshot.schema_version === 1 &&
+					"manifest_variant" in snapshot.manifest &&
+					snapshot.manifest.manifest_variant === "land_v1"
+				) {
+					if (
+						source.type !== "qa" ||
+						!/^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "")
+					) {
+						throw new Error("land_gate_holder_requires_qa_head");
+					}
+					const head = input.subjectDigest!.toLowerCase();
+					const questionId = `workflow-gate:${canonicalSubmissionDigest({
+						runId: input.runId,
+						gateNodeId: target.id,
+						attempt: targetAttempt,
+						head,
+					})}`;
+					this.db.run(
+						`UPDATE workflow_gate_holder
+						    SET state = 'superseded', superseded_reason = 'new_gate_attempt', updated_at = ?
+						  WHERE run_id = ? AND gate_node_id = ?
+						    AND state IN ('materializing','awaiting_review','approved')`,
+						[now, input.runId, target.id],
+					);
+					this.db.run(
+						`INSERT INTO workflow_gate_holder
+						   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+						    question_id, state, materialization_stage, created_at, updated_at)
+						 VALUES (?, ?, ?, ?, ?, ?, 'materializing', 'question_intent', ?, ?)`,
+						[
+							input.runId,
+							target.id,
+							targetAttempt,
+							head,
+							input.executionId,
+							questionId,
+							now,
+							now,
+						],
+					);
+					this.appendWorkflowRunEventTx({
+						runId: input.runId,
+						eventUid: `gate_holder:${questionId}`,
+						kind: "gate_holder_created",
+						nodeId: target.id,
+						executionId: input.executionId,
+						payload: { attempt: targetAttempt, questionId, head },
+					});
+				}
 			} else {
 				const ordinal = this.allocateWorkflowLaunchOrdinalTx(
 					input.runId,
@@ -19305,9 +19471,11 @@ export class StateStore {
 								status: "replayed",
 								claimId: Number(existing.claim_id),
 							}
-						: targetRunId
-							? { kind: "turn_run_event", status: "replayed" }
-							: { kind: "turn_project_history", status: "replayed" };
+						: input.kind === "founder_feedback"
+							? { kind: "founder_feedback", status: "replayed" }
+							: targetRunId
+								? { kind: "turn_run_event", status: "replayed" }
+								: { kind: "turn_project_history", status: "replayed" };
 				return;
 			}
 
@@ -19382,7 +19550,9 @@ export class StateStore {
 				typeof payload.approved_head === "string" ? payload.approved_head : "";
 			const authorityId =
 				typeof payload.authority_id === "string" ? payload.authority_id : "";
-			const response = payload.response as { approved?: unknown } | undefined;
+			const response = payload.response as
+				| { approved?: unknown; feedback?: unknown }
+				| undefined;
 			const run = this.getWorkflowRun(runId);
 			if (!run) {
 				throw new Error("workflow source run unavailable");
@@ -19390,11 +19560,101 @@ export class StateStore {
 			if (
 				run.issue_id !== issueId ||
 				run.project_name !== input.project ||
-				response?.approved !== true ||
+				typeof response?.approved !== "boolean" ||
+				(input.kind === "founder_approval") !== (response.approved === true) ||
 				!/^[0-9a-f]{40}$/.test(approvedHead) ||
 				!authorityId
 			) {
-				throw new Error("founder approval source payload invalid");
+				throw new Error("founder decision source payload invalid");
+			}
+
+			if (input.kind === "founder_feedback") {
+				if (
+					typeof response.feedback !== "string" ||
+					response.feedback.trim().length === 0 ||
+					run.engine_owned !== 1 ||
+					!run.snapshot ||
+					run.status !== "active"
+				) {
+					throw new Error("founder feedback source payload invalid");
+				}
+				let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+				try {
+					snapshot = parseWorkflowRunSnapshot(run.snapshot);
+				} catch {
+					throw new Error("founder feedback source payload invalid: snapshot");
+				}
+				if (
+					!isWorkflowManifestV1Land(snapshot.manifest) ||
+					run.current_node_id !== snapshot.manifest.approval_gate.node
+				) {
+					throw new Error("founder feedback source payload invalid: run state");
+				}
+				const questionId =
+					typeof payload.question_id === "string" ? payload.question_id : "";
+				const holder = this.workflowSelectAll(
+					`SELECT * FROM workflow_gate_holder
+					  WHERE question_id = ? AND run_id = ? AND gate_node_id = ?`,
+					[questionId, runId, snapshot.manifest.approval_gate.node],
+				)[0];
+				if (
+					!holder ||
+					holder.state !== "awaiting_review" ||
+					holder.head_sha !== approvedHead ||
+					!holder.card_message_id
+				) {
+					throw new Error(
+						"founder feedback source payload invalid: gate holder",
+					);
+				}
+				const now = new Date().toISOString();
+				this.db.run(
+					`UPDATE workflow_gate_holder
+					    SET state = 'superseded', superseded_reason = 'founder_feedback', updated_at = ?
+					  WHERE question_id = ? AND state = 'awaiting_review'`,
+					[now, questionId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error(
+						"founder feedback source payload invalid: holder raced",
+					);
+				}
+				const transition = this.commitWorkflowTransitionTx({
+					runId,
+					nodeId: snapshot.manifest.approval_gate.node,
+					attempt: Number(holder.attempt),
+					executionId: holder.source_execution_id as string,
+					outcome: "founder_feedback_kickback",
+					subjectDigest: approvedHead,
+					founderFeedback: response.feedback.trim(),
+					now,
+				});
+				if (!transition.ok || transition.targetNodeId !== "implement") {
+					throw new Error(
+						`founder feedback kickback failed: ${transition.ok ? "wrong_target" : transition.reason}`,
+					);
+				}
+				this.db.run(
+					`INSERT INTO workflow_source_receipt
+					   (project, source_event_id, payload_digest, claim_id, applied_at)
+					 VALUES (?, ?, ?, NULL, ?)`,
+					[input.project, input.sourceEventId, input.payloadDigest, now],
+				);
+				this.appendWorkflowRunEventTx({
+					runId,
+					eventUid: `source_feedback:${input.project}:${input.sourceEventId}`,
+					kind: "founder_feedback_kickback",
+					nodeId: snapshot.manifest.approval_gate.node,
+					executionId: holder.source_execution_id as string,
+					payload: {
+						questionId,
+						head: approvedHead,
+						targetNodeId: transition.targetNodeId,
+						targetAttempt: transition.targetAttempt,
+					},
+				});
+				result = { kind: "founder_feedback", status: "applied" };
+				return;
 			}
 
 			const serverSeq = this.nextWorkflowClaimSeq();
@@ -19448,6 +19708,63 @@ export class StateStore {
 				// the sole terminal entry. Engineering v1 remains merge-gated by the
 				// Bridge composite seam and must not complete merely on approval.
 				if (
+					isWorkflowManifestV1Land(snapshot.manifest) &&
+					run.current_node_id === snapshot.manifest.approval_gate.node
+				) {
+					const questionId =
+						typeof payload.question_id === "string" ? payload.question_id : "";
+					const holder = this.workflowSelectAll(
+						`SELECT * FROM workflow_gate_holder
+						  WHERE question_id = ? AND run_id = ? AND gate_node_id = ?`,
+						[questionId, runId, snapshot.manifest.approval_gate.node],
+					)[0];
+					if (
+						!holder ||
+						holder.state !== "awaiting_review" ||
+						holder.head_sha !== approvedHead ||
+						!holder.card_message_id
+					) {
+						throw new Error(
+							"founder approval source payload invalid: gate holder",
+						);
+					}
+					this.db.run(
+						`UPDATE workflow_gate_holder
+						    SET state = 'approved', materialization_stage = 'completed', updated_at = ?
+						  WHERE question_id = ? AND state = 'awaiting_review'`,
+						[new Date().toISOString(), questionId],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new Error(
+							"founder approval source payload invalid: holder raced",
+						);
+					}
+					const transition = this.commitWorkflowTransitionTx({
+						runId,
+						nodeId: snapshot.manifest.approval_gate.node,
+						attempt: Number(holder.attempt),
+						executionId: holder.source_execution_id as string,
+						outcome: "founder_approved",
+						subjectDigest: approvedHead,
+						now: new Date().toISOString(),
+					});
+					if (!transition.ok || transition.targetNodeId !== "land") {
+						throw new Error(
+							`founder approval source land activation failed: ${transition.ok ? "wrong_target" : transition.reason}`,
+						);
+					}
+					this.appendWorkflowRunEventTx({
+						runId,
+						eventUid: `land_activated:${input.project}:${input.sourceEventId}`,
+						kind: "land_activated",
+						nodeId: transition.targetNodeId,
+						payload: {
+							questionId,
+							head: approvedHead,
+							attempt: transition.targetAttempt,
+						},
+					});
+				} else if (
 					snapshot.schema_version === 2 &&
 					run.current_node_id === snapshot.manifest.terminal_gate.node
 				) {
@@ -20494,13 +20811,26 @@ export class StateStore {
 		return rows.length > 0;
 	}
 
-	/** True when a post_ship_finalization_claim exists whose execution this
-	 * run dispatched — a prior workflow's claim can never finalize a new run
-	 * on the same issue (R2 #3). */
-	hasWorkflowRunAttributedShipClaim(runId: string, issueId: string): boolean {
+	/** True when durable finalization completion belongs to this run. A claim
+	 * only means cleanup started and can never terminalize a shadow run. */
+	hasWorkflowRunAttributedFinalizationCompleted(
+		runId: string,
+		issueId: string,
+	): boolean {
+		if (
+			this.workflowSelectAll(
+				`SELECT 1 AS x FROM land_operation
+				  WHERE run_id = ? AND issue_id = ?
+				    AND finalization_completed_at IS NOT NULL
+				  LIMIT 1`,
+				[runId, issueId],
+			).length > 0
+		) {
+			return true;
+		}
 		const rows = this.workflowSelectAll(
 			`SELECT 1 AS x FROM session_events
-			  WHERE issue_id = ? AND event_type = 'post_ship_finalization_claim'
+			  WHERE issue_id = ? AND event_type = 'post_ship_finalization_completed'
 			    AND execution_id IN (
 			      SELECT execution_id FROM workflow_side_effect_ledger
 			       WHERE run_id = ? AND kind = 'dispatch'
@@ -20511,6 +20841,11 @@ export class StateStore {
 			[issueId, runId, runId],
 		);
 		return rows.length > 0;
+	}
+
+	/** @deprecated FLY-1375: use completion, not the old once-claim. */
+	hasWorkflowRunAttributedShipClaim(runId: string, issueId: string): boolean {
+		return this.hasWorkflowRunAttributedFinalizationCompleted(runId, issueId);
 	}
 
 	listWorkflowSideEffects(runId: string): WorkflowSideEffectRow[] {
@@ -20804,6 +21139,816 @@ export class StateStore {
 		}
 	}
 
+	ensureWorkflowGateHolder(input: {
+		runId: string;
+		gateNodeId: string;
+		attempt: number;
+		headSha: string;
+		sourceExecutionId: string;
+		questionId: string;
+		now: string;
+	}): WorkflowGateHolderRow {
+		if (
+			!input.runId ||
+			!input.gateNodeId ||
+			!Number.isInteger(input.attempt) ||
+			input.attempt < 1 ||
+			!/^[0-9a-f]{40}$/i.test(input.headSha) ||
+			!input.sourceExecutionId ||
+			!input.questionId ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			throw new Error("invalid_workflow_gate_holder");
+		}
+		const headSha = input.headSha.toLowerCase();
+		let holder: WorkflowGateHolderRow | undefined;
+		this.db.transaction(() => {
+			const exact = this.workflowSelectAll(
+				`SELECT * FROM workflow_gate_holder
+				  WHERE run_id = ? AND gate_node_id = ? AND attempt = ? AND head_sha = ?`,
+				[input.runId, input.gateNodeId, input.attempt, headSha],
+			)[0];
+			if (exact) {
+				if (
+					exact.source_execution_id !== input.sourceExecutionId ||
+					exact.question_id !== input.questionId
+				) {
+					throw new Error("workflow_gate_holder_identity_conflict");
+				}
+				holder = exact as unknown as WorkflowGateHolderRow;
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_gate_holder
+				    SET state = 'superseded', superseded_reason = 'new_gate_attempt', updated_at = ?
+				  WHERE run_id = ? AND gate_node_id = ?
+				    AND state IN ('materializing','awaiting_review','approved')`,
+				[input.now, input.runId, input.gateNodeId],
+			);
+			this.db.run(
+				`INSERT INTO workflow_gate_holder
+				   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+				    question_id, state, materialization_stage, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 'materializing', 'question_intent', ?, ?)`,
+				[
+					input.runId,
+					input.gateNodeId,
+					input.attempt,
+					headSha,
+					input.sourceExecutionId,
+					input.questionId,
+					input.now,
+					input.now,
+				],
+			);
+			holder = this.workflowSelectAll(
+				"SELECT * FROM workflow_gate_holder WHERE question_id = ?",
+				[input.questionId],
+			)[0] as unknown as WorkflowGateHolderRow;
+		});
+		this.save();
+		if (!holder) throw new Error("workflow_gate_holder_not_created");
+		return holder;
+	}
+
+	advanceWorkflowGateHolderMaterialization(input: {
+		questionId: string;
+		stage: WorkflowGateMaterializationStage;
+		cardMessageId?: string;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean; state: WorkflowGateHolderState }
+		| { ok: false; reason: string } {
+		const order: Record<WorkflowGateMaterializationStage, number> = {
+			question_intent: 0,
+			question_written: 1,
+			session_bound: 2,
+			card_posted: 3,
+			card_bound: 4,
+			completed: 5,
+		};
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_gate_holder WHERE question_id = ?",
+			[input.questionId],
+		)[0];
+		if (!row) return { ok: false, reason: "workflow_gate_holder_not_found" };
+		if (row.state === "superseded" || row.state === "approved") {
+			return { ok: false, reason: "workflow_gate_holder_not_materializable" };
+		}
+		const current =
+			row.materialization_stage as WorkflowGateMaterializationStage;
+		if (order[input.stage] < order[current]) {
+			return { ok: false, reason: "workflow_gate_materialization_regression" };
+		}
+		if (order[input.stage] === order[current]) {
+			return {
+				ok: true,
+				idempotentReplay: true,
+				state: row.state as WorkflowGateHolderState,
+			};
+		}
+		const state: WorkflowGateHolderState =
+			order[input.stage] >= order.card_bound
+				? "awaiting_review"
+				: "materializing";
+		this.db.run(
+			`UPDATE workflow_gate_holder
+			    SET materialization_stage = ?, state = ?,
+			        card_message_id = COALESCE(?, card_message_id), updated_at = ?
+			  WHERE question_id = ? AND state IN ('materializing','awaiting_review')`,
+			[
+				input.stage,
+				state,
+				input.cardMessageId ?? null,
+				input.now,
+				input.questionId,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "workflow_gate_materialization_raced" };
+		}
+		this.save();
+		return { ok: true, idempotentReplay: false, state };
+	}
+
+	getCurrentWorkflowGateHolderByQuestionId(
+		questionId: string,
+	): WorkflowGateHolderRow | undefined {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE question_id = ? AND state IN ('materializing','awaiting_review','approved')`,
+			[questionId],
+		)[0] as unknown as WorkflowGateHolderRow | undefined;
+	}
+
+	getCurrentWorkflowGateHolder(
+		runId: string,
+		gateNodeId: string,
+	): WorkflowGateHolderRow | undefined {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE run_id = ? AND gate_node_id = ?
+			    AND state IN ('materializing','awaiting_review','approved')`,
+			[runId, gateNodeId],
+		)[0] as unknown as WorkflowGateHolderRow | undefined;
+	}
+
+	getCurrentWorkflowGateHolderBySourceExecution(
+		executionId: string,
+	): WorkflowGateHolderRow | undefined {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE source_execution_id = ?
+			    AND state IN ('materializing','awaiting_review','approved')
+			  ORDER BY created_at DESC
+			  LIMIT 1`,
+			[executionId],
+		)[0] as unknown as WorkflowGateHolderRow | undefined;
+	}
+
+	getWorkflowRunPrNumber(runId: string, headSha: string): number | undefined {
+		const run = this.getWorkflowRun(runId);
+		if (!run || !/^[0-9a-f]{40}$/i.test(headSha)) return undefined;
+		const sessions = this.getSessionsByIssue(run.issue_id);
+		const exact = new Set(
+			sessions
+				.filter(
+					(session) =>
+						Number.isSafeInteger(session.pr_number) &&
+						(session.pr_number ?? 0) > 0 &&
+						session.pr_head_sha?.toLowerCase() === headSha.toLowerCase(),
+				)
+				.map((session) => session.pr_number as number),
+		);
+		if (exact.size === 1) return [...exact][0];
+		if (exact.size > 1) return undefined;
+		const issuePrs = new Set(
+			sessions
+				.filter(
+					(session) =>
+						Number.isSafeInteger(session.pr_number) &&
+						(session.pr_number ?? 0) > 0,
+				)
+				.map((session) => session.pr_number as number),
+		);
+		return issuePrs.size === 1 ? [...issuePrs][0] : undefined;
+	}
+
+	listWorkflowGateHoldersForMaterialization(
+		limit = 20,
+	): WorkflowGateHolderRow[] {
+		const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE state IN ('materializing','awaiting_review')
+			    AND materialization_stage != 'completed'
+			  ORDER BY created_at ASC, question_id ASC
+			  LIMIT ?`,
+			[boundedLimit],
+		) as unknown as WorkflowGateHolderRow[];
+	}
+
+	ensureLandOperation(input: {
+		runId?: string;
+		issueId: string;
+		projectName: string;
+		prNumber: number;
+		approvedHead: string;
+		now: string;
+	}): LandOperationRow {
+		if (
+			!input.issueId ||
+			!input.projectName ||
+			!Number.isInteger(input.prNumber) ||
+			input.prNumber < 1 ||
+			!/^[0-9a-f]{40}$/i.test(input.approvedHead) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			throw new Error("invalid_land_operation");
+		}
+		const approvedHead = input.approvedHead.toLowerCase();
+		const operationId = `land:${canonicalSubmissionDigest({
+			projectName: input.projectName,
+			issueId: input.issueId,
+			prNumber: input.prNumber,
+			approvedHead,
+		})}`;
+		this.db.run(
+			`INSERT OR IGNORE INTO land_operation
+			   (operation_id, run_id, issue_id, project_name, pr_number,
+			    approved_head, state, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, 'intent', ?, ?)`,
+			[
+				operationId,
+				input.runId ?? null,
+				input.issueId,
+				input.projectName,
+				input.prNumber,
+				approvedHead,
+				input.now,
+				input.now,
+			],
+		);
+		const row = this.workflowSelectAll(
+			"SELECT * FROM land_operation WHERE operation_id = ?",
+			[operationId],
+		)[0];
+		if (!row) throw new Error("land_operation_not_created");
+		if (input.runId && row.run_id && row.run_id !== input.runId) {
+			throw new Error("land_operation_run_conflict");
+		}
+		if (input.runId && !row.run_id) {
+			this.db.run(
+				"UPDATE land_operation SET run_id = ?, updated_at = ? WHERE operation_id = ? AND run_id IS NULL",
+				[input.runId, input.now, operationId],
+			);
+			row.run_id = input.runId;
+			row.updated_at = input.now;
+		}
+		this.save();
+		return row as unknown as LandOperationRow;
+	}
+
+	getLandOperation(operationId: string): LandOperationRow | undefined {
+		return this.workflowSelectAll(
+			"SELECT * FROM land_operation WHERE operation_id = ?",
+			[operationId],
+		)[0] as unknown as LandOperationRow | undefined;
+	}
+
+	getLandOperationForRun(runId: string): LandOperationRow | undefined {
+		return this.workflowSelectAll(
+			"SELECT * FROM land_operation WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
+			[runId],
+		)[0] as unknown as LandOperationRow | undefined;
+	}
+
+	getLatestLandOperationForIssue(
+		projectName: string,
+		issueId: string,
+	): LandOperationRow | undefined {
+		return this.workflowSelectAll(
+			`SELECT * FROM land_operation
+			  WHERE project_name = ? AND issue_id = ?
+			  ORDER BY created_at DESC LIMIT 1`,
+			[projectName, issueId],
+		)[0] as unknown as LandOperationRow | undefined;
+	}
+
+	listRunnableLandOperations(now: string, limit = 20): LandOperationRow[] {
+		if (!StateStore.workflowFiniteTimestamp(now)) {
+			throw new Error("invalid_land_operation_sweep_time");
+		}
+		const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+		return this.workflowSelectAll(
+			`SELECT * FROM land_operation
+			  WHERE state IN ('intent','partial')
+			     OR (state = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))
+			  ORDER BY updated_at ASC, operation_id ASC
+			  LIMIT ?`,
+			[now, boundedLimit],
+		) as unknown as LandOperationRow[];
+	}
+
+	hasMergeConfirmedForIssue(issueId: string): boolean {
+		const land = this.workflowSelectAll(
+			`SELECT 1 AS x FROM land_operation
+			  WHERE issue_id = ? AND merge_confirmed_at IS NOT NULL
+			  LIMIT 1`,
+			[issueId],
+		);
+		if (land.length > 0) return true;
+		return (
+			this.countEventsByIssueAndType(issueId, "post_ship_finalization_claim") >
+			0
+		);
+	}
+
+	hasFinalizationCompletedForIssue(issueId: string): boolean {
+		const land = this.workflowSelectAll(
+			`SELECT 1 AS x FROM land_operation
+			  WHERE issue_id = ? AND finalization_completed_at IS NOT NULL
+			  LIMIT 1`,
+			[issueId],
+		);
+		if (land.length > 0) return true;
+		return (
+			this.countEventsByIssueAndType(
+				issueId,
+				"post_ship_finalization_completed",
+			) > 0
+		);
+	}
+
+	claimLandOperation(input: {
+		operationId: string;
+		ownerId: string;
+		now: string;
+		leaseExpiresAt: string;
+	}): LandOperationClaim | undefined {
+		if (
+			!input.ownerId ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.leaseExpiresAt) ||
+			Date.parse(input.leaseExpiresAt) <= Date.parse(input.now)
+		) {
+			throw new Error("invalid_land_operation_lease");
+		}
+		let claim: LandOperationClaim | undefined;
+		this.db.transaction(() => {
+			const row = this.workflowSelectAll(
+				"SELECT * FROM land_operation WHERE operation_id = ?",
+				[input.operationId],
+			)[0];
+			if (
+				!row ||
+				!["intent", "running", "partial"].includes(String(row.state)) ||
+				(row.lease_expires_at && String(row.lease_expires_at) > input.now)
+			) {
+				return;
+			}
+			const generation = Number(row.generation) + 1;
+			this.db.run(
+				`UPDATE land_operation
+				    SET state = 'running', owner_id = ?, lease_expires_at = ?,
+				        generation = ?, updated_at = ?
+				  WHERE operation_id = ? AND generation = ?
+				    AND state IN ('intent','running','partial')
+				    AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`,
+				[
+					input.ownerId,
+					input.leaseExpiresAt,
+					generation,
+					input.now,
+					input.operationId,
+					row.generation,
+					input.now,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			claim = {
+				operationId: input.operationId,
+				ownerId: input.ownerId,
+				generation,
+			};
+		});
+		if (claim) this.save();
+		return claim;
+	}
+
+	recordLandOperationStep(input: {
+		operationId: string;
+		ownerId: string;
+		generation: number;
+		step: string;
+		receipt: Record<string, unknown>;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		const receiptDigest = canonicalSubmissionDigest(input.receipt);
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_land_generation",
+		};
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				"SELECT receipt_digest FROM land_operation_step WHERE operation_id = ? AND step = ?",
+				[input.operationId, input.step],
+			)[0];
+			if (prior) {
+				result =
+					prior.receipt_digest === receiptDigest
+						? { ok: true, idempotentReplay: true }
+						: { ok: false, reason: "land_step_receipt_conflict" };
+				return;
+			}
+			const operation = this.workflowSelectAll(
+				"SELECT * FROM land_operation WHERE operation_id = ?",
+				[input.operationId],
+			)[0];
+			if (
+				!operation ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				Number(operation.generation) !== input.generation ||
+				!operation.lease_expires_at ||
+				String(operation.lease_expires_at) <= input.now
+			) {
+				return;
+			}
+			this.db.run(
+				`INSERT INTO land_operation_step
+				   (operation_id, step, receipt_digest, receipt_json, generation, completed_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					input.operationId,
+					input.step,
+					receiptDigest,
+					JSON.stringify(input.receipt),
+					input.generation,
+					input.now,
+				],
+			);
+			const completed = input.step === "finalization_completed";
+			this.db.run(
+				`UPDATE land_operation
+				    SET current_step = ?, updated_at = ?,
+				        merge_confirmed_at = CASE WHEN ? = 'merge_confirmed' THEN COALESCE(merge_confirmed_at, ?) ELSE merge_confirmed_at END,
+				        finalization_completed_at = CASE WHEN ? = 'finalization_completed' THEN COALESCE(finalization_completed_at, ?) ELSE finalization_completed_at END,
+				        state = CASE WHEN ? = 1 THEN 'completed' ELSE state END
+				  WHERE operation_id = ? AND owner_id = ? AND generation = ?`,
+				[
+					input.step,
+					input.now,
+					input.step,
+					input.now,
+					input.step,
+					input.now,
+					completed ? 1 : 0,
+					input.operationId,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	listLandOperationSteps(operationId: string): LandOperationStepRow[] {
+		return this.workflowSelectAll(
+			`SELECT operation_id, step, receipt_json, generation, completed_at
+			   FROM land_operation_step WHERE operation_id = ?
+			   ORDER BY CASE step
+			     WHEN 'authority_verified' THEN 1
+			     WHEN 'cool_triggered' THEN 2
+			     WHEN 'merge_confirmed' THEN 3
+			     WHEN 'cleanup_requested' THEN 4
+			     WHEN 'finalization_completed' THEN 5
+			     ELSE 100 END, completed_at, step`,
+			[operationId],
+		).map((row) => ({
+			operation_id: row.operation_id as string,
+			step: row.step as string,
+			receipt: JSON.parse(row.receipt_json as string) as Record<
+				string,
+				unknown
+			>,
+			generation: Number(row.generation),
+			completed_at: row.completed_at as string,
+		}));
+	}
+
+	setLandOperationDisposition(input: {
+		operationId: string;
+		ownerId: string;
+		generation: number;
+		state: "partial" | "held";
+		error: string;
+		now: string;
+	}): boolean {
+		this.db.run(
+			`UPDATE land_operation
+			    SET state = ?, last_error = ?, owner_id = NULL,
+			        lease_expires_at = NULL, updated_at = ?
+			  WHERE operation_id = ? AND state = 'running'
+			    AND owner_id = ? AND generation = ?`,
+			[
+				input.state,
+				input.error,
+				input.now,
+				input.operationId,
+				input.ownerId,
+				input.generation,
+			],
+		);
+		const updated = this.db.getRowsModified() === 1;
+		if (updated) this.save();
+		return updated;
+	}
+
+	recordWorkflowLandPartial(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		operationId: string;
+		reason: string;
+		now: string;
+		alertIdentity?: WorkflowEngineAlertIdentity;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		const escalationUid = `land_partial:${input.runId}:${input.nodeId}:${input.attempt}:${canonicalSubmissionDigest(
+			{ operationId: input.operationId, reason: input.reason },
+		)}`;
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "land_partial_not_committed",
+		};
+		this.db.transaction(() => {
+			if (
+				this.workflowSelectAll(
+					"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+					[escalationUid],
+				)[0]
+			) {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			const run = this.getWorkflowRun(input.runId);
+			const node = this.getWorkflowRunNode(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+			);
+			const operation = this.getLandOperation(input.operationId);
+			if (
+				!run ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				run.current_node_id !== input.nodeId ||
+				!node ||
+				node.execution_id !== input.executionId ||
+				!operation ||
+				operation.run_id !== input.runId ||
+				operation.state !== "partial"
+			) {
+				result = { ok: false, reason: "land_partial_precondition_failed" };
+				return;
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: escalationUid,
+				kind: "land_partial",
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload: {
+					attempt: input.attempt,
+					operationId: input.operationId,
+					reason: input.reason,
+					at: input.now,
+				},
+			});
+			if (input.alertIdentity) {
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: input.runId,
+					now: input.now,
+					payload: this.workflowEngineAlertPayload({
+						escalationUid,
+						runId: input.runId,
+						issueId: run.issue_id,
+						nodeId: input.nodeId,
+						executionId: input.executionId,
+						reason: input.reason,
+						disposition: "partial",
+						identity: input.alertIdentity,
+					}),
+				});
+			}
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	holdWorkflowLandNode(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		operationId?: string;
+		reason: string;
+		now: string;
+		alertIdentity?: WorkflowEngineAlertIdentity;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.runId ||
+			!input.nodeId ||
+			!Number.isInteger(input.attempt) ||
+			input.attempt < 1 ||
+			!input.executionId ||
+			!input.reason ||
+			input.reason.length > 500 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_land_hold" };
+		}
+		const escalationUid = `land_held:${input.runId}:${input.nodeId}:${input.attempt}:${canonicalSubmissionDigest(
+			{
+				operationId: input.operationId ?? null,
+				reason: input.reason,
+			},
+		)}`;
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "land_hold_not_committed",
+		};
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+				[escalationUid],
+			)[0];
+			if (prior) {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			const run = this.getWorkflowRun(input.runId);
+			const node = this.getWorkflowRunNode(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+			);
+			if (
+				!run ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				run.current_node_id !== input.nodeId ||
+				!node ||
+				node.execution_id !== input.executionId
+			) {
+				result = { ok: false, reason: "land_hold_precondition_failed" };
+				return;
+			}
+			if (input.operationId) {
+				const operation = this.getLandOperation(input.operationId);
+				if (
+					!operation ||
+					operation.run_id !== input.runId ||
+					operation.state !== "held"
+				) {
+					result = { ok: false, reason: "land_operation_not_held" };
+					return;
+				}
+			}
+			this.db.run(
+				"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+				[input.runId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "land_run_state_changed" };
+				return;
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: escalationUid,
+				kind: "land_held",
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload: {
+					attempt: input.attempt,
+					operationId: input.operationId ?? null,
+					reason: input.reason,
+					at: input.now,
+				},
+			});
+			if (input.alertIdentity) {
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: input.runId,
+					now: input.now,
+					payload: this.workflowEngineAlertPayload({
+						escalationUid,
+						runId: input.runId,
+						issueId: run.issue_id,
+						nodeId: input.nodeId,
+						executionId: input.executionId,
+						reason: input.reason,
+						disposition: "held",
+						identity: input.alertIdentity,
+					}),
+				});
+			}
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	completeWorkflowLandNode(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		operationId: string;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "land_completion_not_committed",
+		};
+		this.db.transaction(() => {
+			const run = this.workflowSelectAll(
+				"SELECT * FROM workflow_run WHERE run_id = ?",
+				[input.runId],
+			)[0];
+			const node = this.workflowSelectAll(
+				"SELECT * FROM workflow_run_node WHERE run_id = ? AND node_id = ? AND attempt = ?",
+				[input.runId, input.nodeId, input.attempt],
+			)[0];
+			const operation = this.workflowSelectAll(
+				"SELECT * FROM land_operation WHERE operation_id = ?",
+				[input.operationId],
+			)[0];
+			if (run?.status === "completed" && node?.state === "done") {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			if (
+				!run ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				run.current_node_id !== input.nodeId ||
+				!node ||
+				node.execution_id !== input.executionId ||
+				!operation ||
+				operation.run_id !== input.runId ||
+				operation.state !== "completed"
+			) {
+				result = { ok: false, reason: "land_completion_precondition_failed" };
+				return;
+			}
+			this.upsertWorkflowRunNodeTx({
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+				state: "done",
+				executionId: input.executionId,
+				endedAt: input.now,
+			});
+			this.db.run(
+				"UPDATE workflow_run SET status = 'completed' WHERE run_id = ? AND status = 'active'",
+				[input.runId],
+			);
+			this.appendWorkflowRunEventTx({
+				runId: input.runId,
+				eventUid: `land_completed:${input.operationId}`,
+				kind: "land_completed",
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload: { operationId: input.operationId, attempt: input.attempt },
+			});
+			this.appendWorkflowRunEventTx({
+				runId: input.runId,
+				eventUid: `run_completed:${input.operationId}`,
+				kind: "run_completed",
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload: { operationId: input.operationId },
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	/**
 	 * Writer-allocated launch ordinal (design R3#2/R4#1): inside the batch
 	 * transaction, the SAME execution id converges on its existing row (a
@@ -20932,6 +22077,75 @@ export class StateStore {
 }
 
 // ── FLY-1244: workflow template + claims row/result types ──────────────────
+
+export type WorkflowGateHolderState =
+	| "materializing"
+	| "awaiting_review"
+	| "approved"
+	| "superseded";
+
+export type WorkflowGateMaterializationStage =
+	| "question_intent"
+	| "question_written"
+	| "session_bound"
+	| "card_posted"
+	| "card_bound"
+	| "completed";
+
+export interface WorkflowGateHolderRow {
+	run_id: string;
+	gate_node_id: string;
+	attempt: number;
+	head_sha: string;
+	source_execution_id: string;
+	question_id: string;
+	card_message_id: string | null;
+	state: WorkflowGateHolderState;
+	materialization_stage: WorkflowGateMaterializationStage;
+	superseded_reason: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export type LandOperationState =
+	| "intent"
+	| "running"
+	| "partial"
+	| "completed"
+	| "held";
+
+export interface LandOperationRow {
+	operation_id: string;
+	run_id: string | null;
+	issue_id: string;
+	project_name: string;
+	pr_number: number;
+	approved_head: string;
+	state: LandOperationState;
+	owner_id: string | null;
+	lease_expires_at: string | null;
+	generation: number;
+	current_step: string | null;
+	merge_confirmed_at: string | null;
+	finalization_completed_at: string | null;
+	last_error: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface LandOperationClaim {
+	operationId: string;
+	ownerId: string;
+	generation: number;
+}
+
+export interface LandOperationStepRow {
+	operation_id: string;
+	step: string;
+	receipt: Record<string, unknown>;
+	generation: number;
+	completed_at: string;
+}
 
 export type WorkflowRouteDecisionRoute =
 	| "workflow_v2"
@@ -21393,6 +22607,7 @@ export interface WorkflowEngineAlertPayload {
 			executionId: string;
 			disposition:
 				| "held"
+				| "partial"
 				| "design_fallback"
 				| "probe_unknown"
 				| "dead_execution_activity_after_replacement"
@@ -21625,7 +22840,7 @@ export type WorkflowShipClaimsResolution =
 export interface WorkflowSourceEventInput {
 	project: string;
 	sourceEventId: string;
-	kind: "founder_approval" | "turn_grant";
+	kind: "founder_approval" | "founder_feedback" | "turn_grant";
 	payloadJson: string;
 	payloadDigest: string;
 	schemaVersion: number;
@@ -21636,6 +22851,10 @@ export type WorkflowSourceApplyResult =
 			kind: "founder_claim";
 			status: "applied" | "replayed";
 			claimId: number;
+	  }
+	| {
+			kind: "founder_feedback";
+			status: "applied" | "replayed";
 	  }
 	| {
 			kind: "turn_project_history";

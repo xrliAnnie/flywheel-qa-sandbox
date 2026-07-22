@@ -5,11 +5,13 @@ import {
 	ensureDefaultWorkflowBindings,
 	importBundledWorkflowSeeds,
 	isGeneralizedTemplatesEnabled,
+	isWorkflowManifestV1Land,
 	loadBundledWorkflowSeeds,
 	parseWorkflowManifestYaml,
 	validateWorkflowManifest,
 	WORKFLOW_OUTCOME_VOCABULARY,
 } from "../workflow-template.js";
+import { isLandNodeEnabled } from "../workflow-template-dispatch.js";
 
 describe("bundled workflow default bindings", () => {
 	it("seeds three-tier defaults only for empty projects and leaves existing project authority untouched", async () => {
@@ -95,6 +97,133 @@ const generalizedManifest = () => ({
 });
 
 describe("workflow template manifest v1", () => {
+	it("ships the land engine default-on with an explicit emergency kill switch", () => {
+		expect(isLandNodeEnabled({})).toBe(true);
+		expect(isLandNodeEnabled({ FLYWHEEL_LAND_NODE: "1" })).toBe(true);
+		expect(isLandNodeEnabled({ FLYWHEEL_LAND_NODE: "0" })).toBe(false);
+	});
+
+	it("accepts a land_v1 engine node with binding-engine tier presets", () => {
+		const manifest = {
+			schema_version: 1,
+			manifest_variant: "land_v1",
+			nodes: [
+				{ id: "design", type: "design" },
+				{ id: "implement", type: "implement" },
+				{ id: "qa", type: "qa" },
+				{ id: "founder_gate", type: "gate" },
+				{ id: "land", type: "land", execution: "engine" },
+			],
+			edges: [
+				{
+					id: "design_done",
+					from: "design",
+					to: "implement",
+					condition: "design_done",
+				},
+				{
+					id: "implement_done",
+					from: "implement",
+					to: "qa",
+					condition: "implement_done",
+				},
+				{
+					id: "qa_pass",
+					from: "qa",
+					to: "founder_gate",
+					condition: "qa_pass",
+				},
+				{
+					id: "founder_approved",
+					from: "founder_gate",
+					to: "land",
+					condition: "founder_approved",
+				},
+			],
+			loops: [
+				{
+					id: "qa_retry",
+					from: "qa",
+					to: "implement",
+					loop_when: "qa_fail",
+					exit_when: "qa_pass",
+					max_iterations: 3,
+					on_limit: "escalate",
+				},
+				{
+					id: "founder_feedback",
+					from: "founder_gate",
+					to: "implement",
+					loop_when: "founder_feedback_kickback",
+					exit_when: "founder_approved",
+					max_iterations: 3,
+					on_limit: "escalate",
+				},
+			],
+			approval_gate: {
+				node: "founder_gate",
+				predicate: "founder_approved",
+			},
+			terminal_node: { node: "land" },
+			ship_claims: ["qa_passed", "founder_approved"],
+			tier_presets: {
+				heavy: {
+					reason: "land flow heavy tier",
+					nodes: {
+						implement: {
+							vendor: "codex",
+							model: "gpt-5.6-sol",
+							effort: "xhigh",
+						},
+					},
+				},
+			},
+		};
+
+		const parsed = validateWorkflowManifest(manifest);
+		expect(parsed).toMatchObject({
+			schema_version: 1,
+			manifest_variant: "land_v1",
+			approval_gate: { node: "founder_gate" },
+			terminal_node: { node: "land" },
+		});
+		expect(parsed.nodes.at(-1)).toEqual({
+			id: "land",
+			type: "land",
+			execution: "engine",
+		});
+		expect(parsed.tier_presets?.heavy).toMatchObject({
+			reason: "land flow heavy tier",
+		});
+		const applied = applyWorkflowOverride(parsed, parsed.tier_presets!.heavy!);
+		expect(isWorkflowManifestV1Land(applied.manifest)).toBe(true);
+		expect(
+			applied.manifest.nodes.find((node) => node.id === "implement"),
+		).toMatchObject({
+			vendor: "codex",
+			model: "gpt-5.6-sol",
+			effort: "xhigh",
+		});
+		expect(applied.manifest.nodes.at(-1)).toEqual({
+			id: "land",
+			type: "land",
+			execution: "engine",
+		});
+		expect(loadBundledWorkflowSeeds().slice(0, 3)).toHaveLength(3);
+	});
+
+	it("rejects mixed legacy and land_v1 vocabularies", () => {
+		const legacy = loadBundledWorkflowSeeds()[0]!.manifest;
+		expect(() =>
+			validateWorkflowManifest({
+				...legacy,
+				manifest_variant: "land_v1",
+				approval_gate: legacy.terminal_gate,
+				terminal_node: { node: "land" },
+			}),
+		).toThrow(/mixed|unknown key|land_v1/i);
+	});
+
 	it("loads the founder-revised engineering seeds plus the default-off generalized set", () => {
 		const seeds = loadBundledWorkflowSeeds();
 		expect(seeds.map((seed) => seed.templateId)).toEqual([
@@ -104,6 +233,9 @@ describe("workflow template manifest v1", () => {
 			"tpl_product_v1",
 			"tpl_research_light",
 			"tpl_ops_light",
+			"tpl_eng_heavy_land_v1",
+			"tpl_eng_light_land_v1",
+			"tpl_eng_trivial_land_v1",
 		]);
 
 		const heavy = seeds[0]!.manifest;
@@ -169,9 +301,17 @@ describe("workflow template manifest v1", () => {
 				});
 			}
 		}
-		expect(seeds.slice(3).map((seed) => seed.manifest.schema_version)).toEqual([
-			2, 2, 2,
-		]);
+		for (const seed of seeds.slice(6)) {
+			expect(isWorkflowManifestV1Land(seed.manifest)).toBe(true);
+			expect(seed.manifest.nodes.at(-1)).toEqual({
+				id: "land",
+				type: "land",
+				execution: "engine",
+			});
+		}
+		expect(
+			seeds.slice(3, 6).map((seed) => seed.manifest.schema_version),
+		).toEqual([2, 2, 2]);
 	});
 
 	it("rejects unknown keys, inline handoffs, unsupported schemas, and invalid graphs", () => {

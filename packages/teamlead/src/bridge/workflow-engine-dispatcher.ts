@@ -17,7 +17,11 @@ import {
 	parseWorkflowRunSnapshot,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
-import { workflowTemplateDispatchBlockReason } from "../workflow-template-dispatch.js";
+import { workflowApprovalGate } from "../workflow-template.js";
+import {
+	isLandNodeEnabled,
+	workflowTemplateDispatchBlockReason,
+} from "../workflow-template-dispatch.js";
 import {
 	captureDeadExecutionActivityBaseline,
 	probeDeadExecutionActivity,
@@ -69,6 +73,11 @@ interface WorkflowEngineDispatcherOptions {
 		projectName: string,
 		issueId: string,
 	) => WorkflowEngineAlertIdentity;
+	/** FLY-1375: engine-owned land nodes execute here instead of spawning. */
+	landExecutor?: (operationId: string) => Promise<{
+		status: "completed" | "busy" | "partial" | "held";
+		reason?: string;
+	}>;
 }
 
 export interface WorkflowEngineReconcileResult {
@@ -680,6 +689,117 @@ export class WorkflowEngineDispatcher {
 		if (dispatchBlocked) {
 			throw new Error(`engine_dispatch_${dispatchBlocked}`);
 		}
+		const node = snapshot.resolved.nodes.find(
+			(candidate) => candidate.id === intent.node_id,
+		);
+		if (node?.type === "land") {
+			const holdLandRun = (reason: string, operationId?: string): boolean => {
+				const held = store.holdWorkflowLandNode({
+					runId: run.run_id,
+					nodeId: node.id,
+					attempt: intent.attempt,
+					executionId: intent.execution_id,
+					...(operationId ? { operationId } : {}),
+					reason,
+					now: this.now().toISOString(),
+					alertIdentity: this.resolveRunAlertIdentity(
+						run.project_name,
+						run.issue_id,
+					),
+				});
+				if (!held.ok) {
+					throw new Error(`engine_land_hold_${held.reason}`);
+				}
+				return false;
+			};
+			const existingOperation = store.getLandOperationForRun(run.run_id);
+			if (!isLandNodeEnabled(this.env) && !existingOperation) {
+				return holdLandRun("engine_land_node_disabled");
+			}
+			if (!this.options.landExecutor) {
+				return holdLandRun("engine_land_executor_unavailable");
+			}
+			const holder = store.getCurrentWorkflowGateHolder(
+				intent.run_id,
+				workflowApprovalGate(snapshot.manifest).node,
+			);
+			const prNumber = holder
+				? store.getWorkflowRunPrNumber(intent.run_id, holder.head_sha)
+				: undefined;
+			if (
+				!holder ||
+				holder.state !== "approved" ||
+				!prNumber ||
+				!/^[0-9a-f]{40}$/i.test(holder.head_sha)
+			) {
+				throw new Error("engine_land_authority_unavailable");
+			}
+			if (
+				existingOperation &&
+				(existingOperation.issue_id !== run.issue_id ||
+					existingOperation.project_name !== run.project_name ||
+					existingOperation.pr_number !== prNumber ||
+					existingOperation.approved_head !== holder.head_sha.toLowerCase())
+			) {
+				return holdLandRun(
+					"engine_land_operation_authority_mismatch",
+					existingOperation.operation_id,
+				);
+			}
+			const operation =
+				existingOperation ??
+				store.ensureLandOperation({
+					runId: run.run_id,
+					issueId: run.issue_id,
+					projectName: run.project_name,
+					prNumber,
+					approvedHead: holder.head_sha,
+					now: this.now().toISOString(),
+				});
+			const execution = await this.options.landExecutor(operation.operation_id);
+			if (execution.status === "held") {
+				return holdLandRun(
+					execution.reason ?? "land_operation_held",
+					operation.operation_id,
+				);
+			}
+			if (
+				execution.status === "partial" &&
+				/^(?:issue_closeout_incomplete|land_postconditions_incomplete:)/.test(
+					execution.reason ?? "",
+				)
+			) {
+				const partial = store.recordWorkflowLandPartial({
+					runId: run.run_id,
+					nodeId: node.id,
+					attempt: intent.attempt,
+					executionId: intent.execution_id,
+					operationId: operation.operation_id,
+					reason: execution.reason!,
+					now: this.now().toISOString(),
+					alertIdentity: this.resolveRunAlertIdentity(
+						run.project_name,
+						run.issue_id,
+					),
+				});
+				if (!partial.ok) {
+					throw new Error(`engine_land_partial_${partial.reason}`);
+				}
+			}
+			if (execution.status !== "completed") return false;
+			const completed = store.completeWorkflowLandNode({
+				runId: run.run_id,
+				nodeId: node.id,
+				attempt: intent.attempt,
+				executionId: intent.execution_id,
+				operationId: operation.operation_id,
+				now: this.now().toISOString(),
+			});
+			if (!completed.ok) {
+				throw new Error(`engine_land_completion_${completed.reason}`);
+			}
+			return this.markStarted(intent, { preserveTerminalNode: true });
+		}
 		if (
 			store.getWorkflowRunNode(intent.run_id, intent.node_id, intent.attempt)
 				?.state === "done"
@@ -688,9 +808,6 @@ export class WorkflowEngineDispatcher {
 		}
 		const adopted = this.adoptKnownSession(intent);
 		if (adopted !== undefined) return adopted;
-		const node = snapshot.resolved.nodes.find(
-			(candidate) => candidate.id === intent.node_id,
-		);
 		const agentContent = node ? workflowNodeAgentContent(node) : undefined;
 		if (!node?.dispatch || !agentContent || node.type === "gate") {
 			throw new Error("engine_node_not_executable");
@@ -700,6 +817,7 @@ export class WorkflowEngineDispatcher {
 					successorExecutionId?: unknown;
 					loopIteration?: unknown;
 					outcome?: unknown;
+					founderFeedback?: unknown;
 			  }
 			| undefined;
 		const events = [...store.listWorkflowRunEvents(intent.run_id)].reverse();
@@ -769,6 +887,16 @@ export class WorkflowEngineDispatcher {
 						qaSummary: this.qaFixSummary(transition.execution_id),
 					}
 				: undefined;
+		const founderFeedback =
+			node.type === "implement" &&
+			transitionPayload?.outcome === "founder_feedback_kickback" &&
+			typeof transitionPayload.founderFeedback === "string" &&
+			transitionPayload.founderFeedback.trim()
+				? transitionPayload.founderFeedback.trim().slice(0, 4_000)
+				: undefined;
+		const contextualAgentContent = founderFeedback
+			? `${agentContent}\n\nFounder feedback for this revision:\n${founderFeedback}`
+			: agentContent;
 		let startPoint: string | undefined;
 		if (isThreeStagePhaseRole(node.type)) {
 			if (!predecessorExecutionId || !predecessor) {
@@ -1042,7 +1170,7 @@ export class WorkflowEngineDispatcher {
 				snapshotDigest: snapshot.snapshot_digest,
 				dispatch: runtimeDispatch,
 				capabilities: { ...node.capabilities },
-				agentContent,
+				agentContent: contextualAgentContent,
 				outputCredential,
 				submissionCredential,
 				idempotencyKey: `engine:${intent.run_id}:${intent.node_id}:${intent.attempt}`,

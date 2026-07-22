@@ -45,6 +45,8 @@ export interface GateArgs {
 	nudge?: () => Promise<void>;
 	/** Queue-native SLA copied to lead_inbox by the Bridge admission pass. */
 	deadlineAt?: string;
+	/** Engine-owned workflow gates use a deterministic insert-or-verify id. */
+	questionId?: string;
 }
 
 export interface GateResult {
@@ -127,6 +129,7 @@ async function gateInner(
 		}
 
 		questionId = db.insertQuestion(args.execId, args.lead, dbContent, {
+			...(args.questionId ? { id: args.questionId } : {}),
 			checkpoint: args.checkpoint,
 			contentRef,
 			contentType: useRef ? "ref" : "text",

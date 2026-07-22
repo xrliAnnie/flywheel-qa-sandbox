@@ -404,7 +404,7 @@ const LEGACY_HEADER_DONE_STATUSES: ReadonlySet<string> = new Set([
 export function computeSessionsFingerprint(
 	store: Pick<
 		StateStore,
-		| "countEventsByIssueAndType"
+		| "hasFinalizationCompletedForIssue"
 		| "getLatestPhaseSessionsForIssue"
 		| "getSessionByIssue"
 	>,
@@ -421,10 +421,7 @@ export function computeSessionsFingerprint(
 		// `getLatestPhaseSessionsForIssue` only returns design/implement/qa rows,
 		// so a non-empty result is the same three-stage guard used by derivation.
 		// Single-session issues retain the pre-FLY-1225 zero-query path.
-		fc:
-			phases.length > 0 &&
-			store.countEventsByIssueAndType(issueId, "post_ship_finalization_claim") >
-				0,
+		fc: phases.length > 0 && store.hasFinalizationCompletedForIssue(issueId),
 		m: main
 			? { st: main.status, sg: main.session_stage ?? "", e: main.execution_id }
 			: null,
@@ -684,9 +681,7 @@ export class IssueDisplayRefresher {
 			);
 		}
 		const shipFinalizationClaimed =
-			isThreeStage &&
-			store.countEventsByIssueAndType(issueId, "post_ship_finalization_claim") >
-				0;
+			isThreeStage && store.hasFinalizationCompletedForIssue(issueId);
 
 		// ── Face A: title badge ──
 		let badge = deriveIssueTitleBadge({

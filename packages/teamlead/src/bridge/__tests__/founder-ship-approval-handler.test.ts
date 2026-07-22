@@ -106,6 +106,41 @@ describe("tryFounderShipApproval — approve path", () => {
 		expect(JSON.parse(writeArgs.answer).approved).toBe(true);
 		expect(writeArgs).toMatchObject({ source: "text", cardAuthority });
 	});
+
+	it("engine gate remains approvable after its QA source session is gone", async () => {
+		const authority = {
+			kind: "engine" as const,
+			runId: "run-1",
+			questionId: "Q-1",
+			executionId: "E-1",
+			issueId: "issue-uuid",
+			projectName: "proj",
+			headSha: HEAD,
+			state: "awaiting_review" as const,
+			cardMessageId: "GATE-CARD",
+			prNumber: 799,
+			issueIdentifier: "FLY-1375",
+		};
+		const gateAuthorityView = { resolve: vi.fn().mockReturnValue(authority) };
+		const d = deps({
+			store: { getSession: vi.fn().mockReturnValue(undefined) },
+			gateAuthorityView,
+		});
+
+		const result = await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+
+		expect(result).toEqual({
+			bound: [{ questionId: "Q-1", decision: "approve" }],
+			deferred: [],
+			retry: false,
+		});
+		expect(d.writeGateResponseImpl).toHaveBeenCalledWith(
+			expect.objectContaining({ gateAuthorityView }),
+		);
+	});
 });
 
 describe("tryFounderShipApproval — fail-closed (returns null → WAKE-only)", () => {

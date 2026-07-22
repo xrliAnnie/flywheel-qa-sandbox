@@ -24,6 +24,7 @@ import {
 	parseWorkflowRunSnapshot,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
+import type { GateAuthorityView } from "./approval-signal/gate-authority-view.js";
 import {
 	type FounderApprovalCardAuthority,
 	writeGateResponseAndRunPostWrite,
@@ -225,27 +226,30 @@ export async function approveExecution(
 	refreshIssueDisplay?: (issueId: string) => Promise<void>,
 	cardAuthority?: FounderApprovalCardAuthority,
 	materializedHeadAuthority?: MaterializedHeadAuthority,
+	gateAuthorityView?: GateAuthorityView,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
-	if (!session) {
+	const engineAuthority = gateAuthorityView?.resolveForExecution?.(executionId);
+	if (!session && !engineAuthority) {
 		return {
 			success: false,
 			message: `No session found for execution_id ${executionId}`,
 		};
 	}
 
-	if (session.status !== "awaiting_review") {
+	if (!engineAuthority && session?.status !== "awaiting_review") {
 		return {
 			success: false,
-			message: `Cannot approve ${identifier ?? executionId}: status is "${session.status}", expected "awaiting_review"`,
+			message: `Cannot approve ${identifier ?? executionId}: status is "${session?.status ?? "unknown"}", expected "awaiting_review"`,
 		};
 	}
 
-	const project = projects.find((p) => p.projectName === session.project_name);
+	const projectName = engineAuthority?.projectName ?? session!.project_name;
+	const project = projects.find((p) => p.projectName === projectName);
 	if (!project) {
 		return {
 			success: false,
-			message: `Unknown project: ${session.project_name}`,
+			message: `Unknown project: ${projectName}`,
 		};
 	}
 
@@ -262,7 +266,7 @@ export async function approveExecution(
 	// counts as written (so an FSM-rejected attempt can be retried).
 	let gateUnblocked = false;
 	try {
-		const commDbPath = commDbPathFor(session.project_name);
+		const commDbPath = commDbPathFor(projectName);
 		const db = new CommDB(commDbPath, false);
 		try {
 			// Bound question first (Codex PR R1 CRITICAL): the session's CURRENT
@@ -273,7 +277,8 @@ export async function approveExecution(
 			// strand the session (verify-approval can never pass) — refuse and
 			// point at the recovery path instead.
 			let targetQuestionId: string | undefined;
-			const boundId = session.review_question_id?.trim();
+			const boundId =
+				engineAuthority?.questionId ?? session?.review_question_id?.trim();
 			if (boundId === REVIEW_BINDING_UNBOUND) {
 				return {
 					success: false,
@@ -312,6 +317,7 @@ export async function approveExecution(
 				executionId,
 				source: "actions",
 				cardAuthority,
+				gateAuthorityView,
 				actor: "bridge",
 				answer: JSON.stringify({ approved: true }),
 				expectedCurrentReviewQuestionId: boundId || undefined,
@@ -351,6 +357,20 @@ export async function approveExecution(
 		return {
 			success: false,
 			message: `Cannot approve ${identifier ?? executionId}: CommDB gate response write failed (${(err as Error).message}). Session stays awaiting_review; retry once CommDB is reachable.`,
+		};
+	}
+	if (engineAuthority) {
+		return {
+			success: true,
+			message: `Approved ${identifier ?? executionId} → automated land activated (gate unblocked)`,
+			alreadyResponded: true,
+			gateUnblocked,
+		};
+	}
+	if (!session) {
+		return {
+			success: false,
+			message: `No session found for execution_id ${executionId}`,
 		};
 	}
 
@@ -1645,6 +1665,7 @@ export function createActionRouter(
 	phaseOrchestrator?: { current?: PhaseOrchestrator },
 	cardAuthority?: FounderApprovalCardAuthority,
 	materializedHeadAuthority?: MaterializedHeadAuthority,
+	gateAuthorityView?: GateAuthorityView,
 ): Router {
 	const router = Router();
 
@@ -1702,6 +1723,7 @@ export function createActionRouter(
 						: undefined,
 					cardAuthority,
 					materializedHeadAuthority,
+					gateAuthorityView,
 				);
 				if (result.success) {
 					res.json({

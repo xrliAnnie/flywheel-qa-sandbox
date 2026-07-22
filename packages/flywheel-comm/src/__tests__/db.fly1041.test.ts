@@ -29,6 +29,27 @@ describe("CommDB.retireShipGate (FLY-1041)", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
+	it("insert-or-verifies a caller-supplied deterministic gate id", () => {
+		expect(
+			db.insertQuestion("qa-exec", "eng-lead", "PR ready", {
+				checkpoint: "approve_to_ship",
+				id: "workflow-gate-run-1",
+			}),
+		).toBe("workflow-gate-run-1");
+		expect(
+			db.insertQuestion("qa-exec", "eng-lead", "PR ready", {
+				checkpoint: "approve_to_ship",
+				id: "workflow-gate-run-1",
+			}),
+		).toBe("workflow-gate-run-1");
+		expect(() =>
+			db.insertQuestion("other-exec", "eng-lead", "PR ready", {
+				checkpoint: "approve_to_ship",
+				id: "workflow-gate-run-1",
+			}),
+		).toThrow(/deterministic.*conflict|identity.*conflict/i);
+	});
+
 	it("retires an unanswered approve_to_ship gate — drops out of getPendingQuestions immediately", () => {
 		const qid = db.insertQuestion("exec-1", "lead-1", "PR ready", {
 			checkpoint: "approve_to_ship",

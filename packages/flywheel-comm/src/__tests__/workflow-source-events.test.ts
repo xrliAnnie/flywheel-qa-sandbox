@@ -135,6 +135,41 @@ describe("CommDB workflow source events", () => {
 		]);
 	});
 
+	it("writes founder feedback as a distinct immutable source event", () => {
+		const questionId = db.insertQuestion("exec-1", "lead", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const payload = {
+			schema_version: 1,
+			run_id: "run-1",
+			issue_id: "FLY-1375",
+			question_id: questionId,
+			response: { approved: false, feedback: "fix the changelog" },
+			actor: "bridge",
+			approved_head: "a".repeat(40),
+			classification: "dashboard_founder_action",
+			authority_id: questionId,
+		};
+		expect(
+			db.insertFounderApprovalResponseWithSource({
+				project: "flywheel",
+				sourceEventId: `founder-feedback:${questionId}`,
+				questionId,
+				fromAgent: "bridge",
+				content: "fix the changelog",
+				expectedOwner: "exec-1",
+				payload,
+			}),
+		).toBe(true);
+		expect(db.listWorkflowSourceEvents()).toEqual([
+			expect.objectContaining({
+				source_event_id: `founder-feedback:${questionId}`,
+				kind: "founder_feedback",
+				payload_digest: canonicalSubmissionDigest(payload),
+			}),
+		]);
+	});
+
 	it("source and TURN history tables reject UPDATE and DELETE", () => {
 		db.grantTurn("FLY-1244", "exec-design", "design", 100, {
 			project: "flywheel",

@@ -30,6 +30,7 @@ import {
 	isDeferrableReviewHoldReason,
 	type ReviewHoldReason,
 } from "../auto-qa-held.js";
+import type { GateAuthorityView } from "./gate-authority-view.js";
 
 export type FounderApprovalRouteSource =
 	| "reaction"
@@ -139,6 +140,8 @@ export interface GateResponseStore {
 export interface WriteGateResponseArgs {
 	db: GateResponseDb;
 	store: GateResponseStore;
+	/** Engine-owned land_v1 authority; absent keeps the legacy session path. */
+	gateAuthorityView?: GateAuthorityView;
 	questionId: string;
 	executionId: string;
 	/** Actor written to the response: the founder id (founder-reply) or leadId (Surface B). */
@@ -252,6 +255,12 @@ function isApproval(answer: string): boolean {
 }
 
 async function runHook(args: WriteGateResponseArgs): Promise<boolean> {
+	if (args.gateAuthorityView?.resolve(args.questionId, args.executionId)) {
+		// The durable source projector advances the holder and activates land.
+		// Flipping/waking the already-finished QA source execution is neither an
+		// authority fact nor a required postcondition.
+		return true;
+	}
 	if (!args.onResponseWritten) return true;
 	try {
 		const out = await Promise.resolve(
@@ -299,10 +308,25 @@ export async function writeGateResponseAndRunPostWrite(
 		return guardOk("stale_review_question");
 	}
 
+	const engineAuthority = args.gateAuthorityView?.resolve(
+		args.questionId,
+		args.executionId,
+	);
 	const liveSession = args.store.getSession(args.executionId);
 	const status = liveSession?.status;
-	if (status !== "awaiting_review" && status !== "approved_to_ship") {
+	if (
+		!engineAuthority &&
+		status !== "awaiting_review" &&
+		status !== "approved_to_ship"
+	) {
 		return guardOk(`status_${status ?? "unknown"}`);
+	}
+	if (
+		engineAuthority &&
+		engineAuthority.state !== "awaiting_review" &&
+		engineAuthority.state !== "approved"
+	) {
+		return guardOk(`holder_${engineAuthority.state}`);
 	}
 
 	// FLY-799 (Codex R1 HIGH-2): re-read the session's CURRENT review binding at
@@ -313,7 +337,7 @@ export async function writeGateResponseAndRunPostWrite(
 	// live via getCurrentReviewQuestionId — this gives the founder-reply path the
 	// same TOCTOU-closed guard).
 	const liveReviewQid = liveSession?.review_question_id;
-	if (liveReviewQid && liveReviewQid !== args.questionId) {
+	if (!engineAuthority && liveReviewQid && liveReviewQid !== args.questionId) {
 		return guardOk("stale_review_question_live");
 	}
 
@@ -378,7 +402,20 @@ export async function writeGateResponseAndRunPostWrite(
 		};
 	}
 
-	if (isApproval(args.answer) && args.cardAuthority) {
+	if (
+		isApproval(args.answer) &&
+		engineAuthority &&
+		args.source === "reaction" &&
+		args.targetMessageId !== engineAuthority.cardMessageId
+	) {
+		return {
+			written: false,
+			retrySafe: true,
+			disposition: "reject",
+			reason: "card_authority_engine_card_mismatch",
+		};
+	}
+	if (isApproval(args.answer) && args.cardAuthority && !engineAuthority) {
 		try {
 			const authority = args.cardAuthority({
 				executionId: args.executionId,
@@ -411,11 +448,24 @@ export async function writeGateResponseAndRunPostWrite(
 					liveSession.issue_id,
 				)
 			: undefined;
-	const derivedFounderSource =
-		activeRun &&
-		liveSession?.project_name &&
-		liveSession.issue_id &&
-		liveSession.pr_head_sha
+	const derivedFounderSource = engineAuthority
+		? {
+				project: engineAuthority.projectName,
+				runId: engineAuthority.runId,
+				issueId: engineAuthority.issueId,
+				approvedHead: engineAuthority.headSha,
+				classification:
+					args.actor === "bridge"
+						? "dashboard_founder_action"
+						: args.actor === "bridge-founder-consent"
+							? "founder_consent_enforce"
+							: "founder_direct_signal",
+				authorityId: args.questionId,
+			}
+		: activeRun &&
+				liveSession?.project_name &&
+				liveSession.issue_id &&
+				liveSession.pr_head_sha
 			? {
 					project: liveSession.project_name,
 					runId: activeRun.run_id,
@@ -431,10 +481,13 @@ export async function writeGateResponseAndRunPostWrite(
 				}
 			: undefined;
 	const founderSource = args.founderSource ?? derivedFounderSource;
-	const trustedFounderApproval =
-		isApproval(args.answer) &&
+	const approved = isApproval(args.answer);
+	const trustedFounderSourceDecision =
+		(approved || engineAuthority !== undefined) &&
 		isTrustedApprovalAttribution(args.actor, args.founderId) &&
-		founderSource !== undefined &&
+		founderSource !== undefined;
+	const trustedFounderDecision =
+		trustedFounderSourceDecision &&
 		args.db.insertFounderApprovalResponseWithSource !== undefined;
 	const trustedFounderReceipt =
 		args.founderReceipt &&
@@ -455,17 +508,19 @@ export async function writeGateResponseAndRunPostWrite(
 			intentKey: receipt.intentKey,
 			envelope: receipt.envelope,
 			queuedAtMs: receipt.queuedAtMs,
-			...(isApproval(args.answer) && source
+			...(trustedFounderSourceDecision && source
 				? {
 						approvalSource: {
 							project: source.project,
-							sourceEventId: `founder-approval:${args.questionId}:${receipt.msgId}`,
+							sourceEventId: `${approved ? "founder-approval" : "founder-feedback"}:${args.questionId}:${receipt.msgId}`,
 							payload: {
 								schema_version: 1,
 								run_id: source.runId,
 								issue_id: source.issueId,
 								question_id: args.questionId,
-								response: { approved: true },
+								response: approved
+									? { approved: true }
+									: { approved: false, feedback: args.answer },
 								actor: args.actor,
 								approved_head: source.approvedHead,
 								classification: source.classification,
@@ -476,11 +531,11 @@ export async function writeGateResponseAndRunPostWrite(
 					}
 				: {}),
 		});
-	} else if (trustedFounderApproval) {
+	} else if (trustedFounderDecision) {
 		const source = founderSource!;
 		const wrote = args.db.insertFounderApprovalResponseWithSource!({
 			project: source.project,
-			sourceEventId: `founder-approval:${args.questionId}`,
+			sourceEventId: `${approved ? "founder-approval" : "founder-feedback"}:${args.questionId}`,
 			questionId: args.questionId,
 			fromAgent: args.actor,
 			content: args.answer,
@@ -490,7 +545,9 @@ export async function writeGateResponseAndRunPostWrite(
 				run_id: source.runId,
 				issue_id: source.issueId,
 				question_id: args.questionId,
-				response: { approved: true },
+				response: approved
+					? { approved: true }
+					: { approved: false, feedback: args.answer },
 				actor: args.actor,
 				approved_head: source.approvedHead,
 				classification: source.classification,

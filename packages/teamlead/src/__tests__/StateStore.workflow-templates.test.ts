@@ -196,6 +196,45 @@ describe("StateStore workflow templates", () => {
 		store.close();
 	});
 
+	it("refuses to materialize a land snapshot while the land kill switch is off", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
+		)!;
+		store.importWorkflowTemplateSeed(seed);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "land",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+
+		expect(() =>
+			store.materializeWorkflowRun({
+				runId: "run-land-disabled",
+				issueId: "FLY-LAND-OFF",
+				projectName: "flywheel",
+				taskCategory: "land",
+				claimsReadEnrolled: true,
+				actor: "lead",
+				env: {
+					...WORKFLOW_ON,
+					FLYWHEEL_LAND_NODE: "0",
+				},
+				startReservation: {
+					idempotencyKey: "land-disabled-start",
+					selectionDigest: "selection-digest",
+					nodeId: "design",
+					attempt: 1,
+					executionId: "design-land-disabled",
+					createdAt: "2026-07-21T20:00:00.000Z",
+				},
+			}),
+		).toThrow(/land workflow node is disabled/);
+		expect(store.getWorkflowRun("run-land-disabled")).toBeUndefined();
+		store.close();
+	});
+
 	it("boot import skips v2 while off and imports the full optional set while on", async () => {
 		const offStore = await StateStore.create(":memory:");
 		const skipped: string[] = [];
@@ -204,7 +243,14 @@ describe("StateStore workflow templates", () => {
 		);
 		expect(
 			offStore.listWorkflowTemplates().map((row) => row.template_id),
-		).toEqual(["tpl_eng_heavy", "tpl_eng_light", "tpl_eng_trivial"]);
+		).toEqual([
+			"tpl_eng_heavy",
+			"tpl_eng_heavy_land_v1",
+			"tpl_eng_light",
+			"tpl_eng_light_land_v1",
+			"tpl_eng_trivial",
+			"tpl_eng_trivial_land_v1",
+		]);
 		expect(skipped).toHaveLength(3);
 		offStore.close();
 
@@ -215,8 +261,11 @@ describe("StateStore workflow templates", () => {
 			onStore.listWorkflowTemplates().map((row) => row.template_id),
 		).toEqual([
 			"tpl_eng_heavy",
+			"tpl_eng_heavy_land_v1",
 			"tpl_eng_light",
+			"tpl_eng_light_land_v1",
 			"tpl_eng_trivial",
+			"tpl_eng_trivial_land_v1",
 			"tpl_ops_light",
 			"tpl_product_v1",
 			"tpl_research_light",

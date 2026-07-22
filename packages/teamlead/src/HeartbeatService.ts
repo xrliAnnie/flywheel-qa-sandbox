@@ -2272,7 +2272,7 @@ export class HeartbeatService implements ReconnectController {
 	 * FLY-1204: the reclaim verdict for one issue. HARD guard against killing a
 	 * healthy parked holder.
 	 *
-	 * (1) A `post_ship_finalization_claim` exists → the pipeline is terminated and
+	 * (1) A durable merge-confirmed fact exists → the pipeline is terminated and
 	 *     will never spawn a new working phase, so reclaiming its real-parked /
 	 *     terminal candidates is TOCTOU-safe. This is the automated main path (the
 	 *     shipped design_done + completed-qa zombies).
@@ -2293,11 +2293,7 @@ export class HeartbeatService implements ReconnectController {
 		noClaim: boolean;
 	}> {
 		const projectName = group.find((s) => s.project_name)?.project_name ?? "";
-		const hasClaim =
-			this.store.countEventsByIssueAndType(
-				issueId,
-				"post_ship_finalization_claim",
-			) > 0;
+		const hasClaim = this.store.hasMergeConfirmedForIssue(issueId);
 
 		if (hasClaim) {
 			const autoReclaim: Session[] = [];

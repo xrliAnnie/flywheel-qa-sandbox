@@ -193,7 +193,10 @@ export interface PostShipDeps {
 	 * it here is the structural ship-success gate — a shipped issue flips to Done.
 	 * Best-effort (never throws). Absent → no Linear transition (byte-compat).
 	 */
-	markIssueDone?: (issueId: string, issueIdentifier?: string) => Promise<void>;
+	markIssueDone?: (
+		issueId: string,
+		issueIdentifier?: string,
+	) => Promise<undefined | { done: boolean; reason?: string }>;
 	/**
 	 * FLY-1185 §2.4: ship-time immediate remote-branch delete — consumes the
 	 * Layer A pre-delete attestation returned by `removeCleanWorktree` (never
@@ -428,18 +431,47 @@ export async function runPostShipFinalization(
 	// archive, Linear Done — runs inside ONE hold. A founder park serializes
 	// strictly before or after the whole DAG, never between its steps.
 	if (deps.withIssueLifecycleMutex) {
+		await deps.withIssueLifecycleMutex(opts.issueId, () =>
+			runPostShipFinalizationInner(opts, deps, true, false),
+		);
+		return;
+	}
+	await runPostShipFinalizationInner(opts, deps, false, false);
+}
+
+export interface ResumablePostShipFinalizationReport {
+	complete: boolean;
+	outcome: "completed" | "partial" | "held";
+	reason?: string;
+	details: {
+		tmuxClosed?: boolean;
+		commDbFinalized?: boolean;
+		closeoutBlocked?: boolean;
+		worktreeRemoved?: boolean;
+		threadArchived?: boolean;
+		issueDone?: boolean;
+	};
+}
+
+/** Land replay treats the old once-claim as started evidence, not completion. */
+export async function runResumablePostShipFinalization(
+	opts: PostShipOpts,
+	deps: PostShipDeps,
+): Promise<ResumablePostShipFinalizationReport> {
+	if (deps.withIssueLifecycleMutex) {
 		return deps.withIssueLifecycleMutex(opts.issueId, () =>
-			runPostShipFinalizationInner(opts, deps, true),
+			runPostShipFinalizationInner(opts, deps, true, true),
 		);
 	}
-	return runPostShipFinalizationInner(opts, deps, false);
+	return runPostShipFinalizationInner(opts, deps, false, true);
 }
 
 async function runPostShipFinalizationInner(
 	opts: PostShipOpts,
 	deps: PostShipDeps,
 	dagLocked: boolean,
-): Promise<void> {
+	resumable: boolean,
+): Promise<ResumablePostShipFinalizationReport> {
 	const { store, projects } = deps;
 
 	// ── (0.9) Codex R2#8 + R3#9: disposition pre-arbitration — BEFORE any
@@ -467,7 +499,12 @@ async function runPostShipFinalizationInner(
 				source: "bridge.post-ship-finalization",
 				payload: { reason: arb.reason ?? "conflict" },
 			});
-			return;
+			return {
+				complete: false,
+				outcome: "held",
+				reason: arb.reason ?? "disposition_conflict",
+				details: {},
+			};
 		}
 	}
 
@@ -483,32 +520,34 @@ async function runPostShipFinalizationInner(
 		source: "bridge.post-ship-finalization",
 		payload: { claimedAt: new Date().toISOString() },
 	});
-	if (!claimed) return;
+	if (!claimed) {
+		const alreadyCompleted = store
+			.getEventsByExecution(opts.executionId)
+			.some(
+				(event) =>
+					event.event_id ===
+					`post-ship-finalization-completed-${opts.executionId}`,
+			);
+		if (alreadyCompleted) {
+			return { complete: true, outcome: "completed", details: {} };
+		}
+		// A production caller holding the canonical issue mutex, or an explicit
+		// land replay, may repair a crash after the old once-claim. Unlocked legacy
+		// callers retain the original duplicate-suppression behavior.
+		if (!resumable && !dagLocked) {
+			return {
+				complete: false,
+				outcome: "partial",
+				reason: "finalization_claimed_without_completion",
+				details: {},
+			};
+		}
+	}
 
 	// (FLY-1185 Codex R1#7: the FLY-799 auto-Linear-Done step used to run HERE,
 	// FIRST — before any teardown. It now runs LAST (step 3.5 below), after the
 	// closeout confirmed every node gone, matching the plan's "Linear item runs
 	// last" DAG edge, and it is skipped entirely when the closeout is blocked.)
-	// ── (0.25) FLY-1232 T9 — shadow-run finalization rides the claim winner
-	// (exactly-once with the pipeline), resolved CENTRALLY so every in-process
-	// contender fires it regardless of which one built its own deps (Codex
-	// code R1 #5). Best-effort: the writer never throws, and the claim event
-	// itself is the durable repair source if the hook is absent or the
-	// process dies here. ──
-	try {
-		const shadowHook =
-			deps.workflowShadow ?? workflowShadowFinalizationHolder.current;
-		shadowHook?.onShipFinalized({
-			projectName: opts.projectName,
-			issueId: opts.issueId,
-		});
-	} catch (err) {
-		console.warn(
-			`[post-ship] workflow shadow finalization failed (non-blocking):`,
-			(err as Error).message,
-		);
-	}
-
 	// ── (1) tmux cleanup — idempotent; preserved contract { tmuxClosed, errors } ──
 	const cleanup = await postMergeTmuxCleanup(
 		{
@@ -562,17 +601,19 @@ async function runPostShipFinalizationInner(
 		});
 	}
 
-	// ── (1.5) FLY-603 Layer A worktree cleanup — AFTER tmux close (runner cwd is
-	// the worktree), BEFORE notifier. The closure self-guards on positive tmux
-	// close + clean tree + path-authority and never throws. ──
-	if (deps.removeCleanWorktree) {
+	// FLY-1375: land replay calls this only after issue-level closeout confirms
+	// every related session is gone. Legacy callers retain their prior order.
+	const cleanWorktree = async (closeoutConfirmed = false) => {
+		if (!deps.removeCleanWorktree) return undefined;
 		const attestation = await deps
 			.removeCleanWorktree({
 				executionId: opts.executionId,
 				issueId: opts.issueId,
 				issueIdentifier: opts.issueIdentifier,
 				projectName: opts.projectName,
-				tmuxClosed: cleanup.tmuxClosed,
+				tmuxClosed:
+					cleanup.tmuxClosed ||
+					(resumable && closeoutConfirmed && cleanup.commDbFinalized),
 				tmuxErrors: cleanup.errors,
 			})
 			.catch((err) => {
@@ -603,7 +644,9 @@ async function runPostShipFinalizationInner(
 					);
 				});
 		}
-	}
+		return attestation;
+	};
+	if (!resumable) await cleanWorktree();
 
 	// ── (1.7) FLY-1185 §2.12 entry A: issue-level lifecycle closeout —
 	// collect ALL related nodes (parked phases already finalized above,
@@ -645,6 +688,13 @@ async function runPostShipFinalizationInner(
 				`[post-ship] issue closeout ${closeoutRes.outcome} for ${opts.issueIdentifier ?? opts.issueId} — thread archive + Linear Done deferred to the next pass`,
 			);
 		}
+	}
+	let worktreeRemoved = !resumable;
+	if (resumable && !closeoutBlocked) {
+		const attestation = await cleanWorktree(true);
+		worktreeRemoved =
+			attestation?.removed === true ||
+			attestation?.skippedReason === "not_registered";
 	}
 
 	// ── Resolve lead + thread ONCE, reused by notifier AND archiver ──
@@ -692,6 +742,7 @@ async function runPostShipFinalizationInner(
 	// ── (3) thread teardown — only after notifier has landed AND the issue
 	// closeout confirmed every related node gone (Codex R1#3: an archive over
 	// a blocked closeout would hide a still-live runner). ──
+	let threadArchived = !resumable || !thread;
 	if (thread && botToken && !closeoutBlocked) {
 		// FLY-1165: route through the shared archive sink — per-thread
 		// serialization + the sink-level archive-once guard (a founder re-open
@@ -699,7 +750,7 @@ async function runPostShipFinalizationInner(
 		// removal is folded into the sink (no double removal), the audit event
 		// keeps this path's source, and `reason: "already_archived"` is an
 		// idempotent no-op success — NEVER a chat_thread_archive_failed.
-		await archiveThreadAndRecord(
+		const archive = await archiveThreadAndRecord(
 			store,
 			{
 				threadId: thread.thread_id,
@@ -716,6 +767,7 @@ async function runPostShipFinalizationInner(
 				fetchImpl: deps.fetchImpl,
 			},
 		);
+		threadArchived = archive.archived || archive.reason === "already_archived";
 	}
 
 	// ── (3.5) FLY-799 auto-Linear-Done — moved LAST (Codex R1#7): the Linear
@@ -723,28 +775,31 @@ async function runPostShipFinalizationInner(
 	// closeout confirmed all nodes gone (never over a blocked closeout, and
 	// the finalizer itself re-reads fresh Linear state so a founder-canceled
 	// issue is never overwritten to Done). Best-effort AND time-bounded. ──
+	let issueDone = !resumable;
 	if (deps.markIssueDone && !closeoutBlocked) {
 		const MARK_DONE_TIMEOUT_MS = 15_000;
 		let timer: ReturnType<typeof setTimeout> | undefined;
-		const timeout = new Promise<void>((resolve) => {
+		const timeout = new Promise<{ done: false; reason: string }>((resolve) => {
 			timer = setTimeout(() => {
 				console.warn(
 					`[post-ship] markIssueDone timed out after ${MARK_DONE_TIMEOUT_MS}ms for ${opts.issueIdentifier ?? opts.issueId} — issue left not-Done (Done-sweep / manual close can resolve)`,
 				);
-				resolve();
+				resolve({ done: false, reason: "mark_issue_done_timeout" });
 			}, MARK_DONE_TIMEOUT_MS);
 		});
-		await Promise.race([
+		const doneResult = await Promise.race([
 			deps.markIssueDone(opts.issueId, opts.issueIdentifier).catch((err) => {
 				console.error(
 					`[post-ship] markIssueDone failed:`,
 					(err as Error).message,
 				);
+				return { done: false, reason: (err as Error).message };
 			}),
 			timeout,
 		]).finally(() => {
 			if (timer) clearTimeout(timer);
 		});
+		issueDone = !resumable || doneResult?.done === true;
 	}
 
 	// ── (4) FLY-1185 §2.6: fire-and-forget trailing project sweep — the
@@ -760,4 +815,71 @@ async function runPostShipFinalizationInner(
 			);
 		}
 	}
+	if (closeoutBlocked) {
+		return {
+			complete: false,
+			outcome: "partial",
+			reason: "issue_closeout_incomplete",
+			details: {
+				tmuxClosed: cleanup.tmuxClosed,
+				commDbFinalized: cleanup.commDbFinalized,
+				closeoutBlocked: true,
+			},
+		};
+	}
+	if (resumable && (!worktreeRemoved || !threadArchived || !issueDone)) {
+		const incomplete = [
+			!worktreeRemoved ? "worktree" : undefined,
+			!threadArchived ? "thread_archive" : undefined,
+			!issueDone ? "linear_done" : undefined,
+		].filter((value): value is string => !!value);
+		return {
+			complete: false,
+			outcome: "partial",
+			reason: `land_postconditions_incomplete:${incomplete.join(",")}`,
+			details: {
+				tmuxClosed: cleanup.tmuxClosed,
+				commDbFinalized: cleanup.commDbFinalized,
+				closeoutBlocked: false,
+				worktreeRemoved,
+				threadArchived,
+				issueDone,
+			},
+		};
+	}
+
+	store.insertEvent({
+		event_id: `post-ship-finalization-completed-${opts.executionId}`,
+		execution_id: opts.executionId,
+		issue_id: opts.issueId,
+		project_name: opts.projectName,
+		event_type: "post_ship_finalization_completed",
+		source: "bridge.post-ship-finalization",
+		payload: { completedAt: new Date().toISOString() },
+	});
+	// T9 moves with the completion fact: a started/partial cleanup may never
+	// terminalize a workflow run or paint the founder-facing final badge.
+	try {
+		const shadowHook =
+			deps.workflowShadow ?? workflowShadowFinalizationHolder.current;
+		shadowHook?.onShipFinalized({
+			projectName: opts.projectName,
+			issueId: opts.issueId,
+		});
+	} catch (err) {
+		console.warn(
+			`[post-ship] workflow shadow finalization failed (non-blocking):`,
+			(err as Error).message,
+		);
+	}
+	return {
+		complete: true,
+		outcome: "completed",
+		details: {
+			tmuxClosed: cleanup.tmuxClosed,
+			commDbFinalized: cleanup.commDbFinalized,
+			closeoutBlocked: false,
+			...(resumable ? { worktreeRemoved, threadArchived, issueDone } : {}),
+		},
+	};
 }

@@ -176,7 +176,7 @@ describe("management DAG writer", () => {
 		const templates = store.listWorkflowTemplates();
 		const invalid = templates[0]!;
 		const valid = templates.find(
-			(template) => template.template_id !== invalid.template_id,
+			(template) => template.template_id === "tpl_eng_light",
 		)!;
 		store.bindWorkflowCategory({
 			project: "flywheel",

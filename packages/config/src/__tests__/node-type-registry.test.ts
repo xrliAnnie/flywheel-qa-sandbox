@@ -39,6 +39,7 @@ describe("generalized workflow node-type registry", () => {
 			"implement",
 			"qa",
 			"gate",
+			"land",
 			"generic",
 			"review",
 		]);
@@ -46,6 +47,13 @@ describe("generalized workflow node-type registry", () => {
 		expect(nodeTypeWritesCode("implement")).toBe(true);
 		expect(nodeTypeWritesCode("generic")).toBe(false);
 		expect(nodeTypeWritesCode("review")).toBe(false);
+		expect(getNodeTypeRegistryEntry("land").capabilities).toMatchObject({
+			shared_branch_writer: false,
+			creates_pr: false,
+			can_ship: true,
+			can_land: true,
+			completion_route: "no_code",
+		});
 		expect(getNodeTypeRegistryEntry("generic").capabilities).toMatchObject({
 			shared_branch_writer: false,
 			creates_pr: false,

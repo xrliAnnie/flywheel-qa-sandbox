@@ -133,10 +133,13 @@ import {
 	StateStore,
 } from "../StateStore.js";
 import { isWorkflowClaimsWriteEnabled } from "../workflow-claims.js";
+import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import {
 	ensureDefaultWorkflowBindings,
 	importBundledWorkflowSeeds,
+	isWorkflowManifestV1Land,
 } from "../workflow-template.js";
+import { isLandNodeEnabled } from "../workflow-template-dispatch.js";
 import {
 	AlertChannelHub,
 	correlationKeyFor,
@@ -160,6 +163,7 @@ import {
 } from "./alert-rate-limiter.js";
 import { deriveCanonicalFounderId } from "./approval-signal/canonical-founder-id.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
+import { makeGateAuthorityView } from "./approval-signal/gate-authority-view.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
 import { loadQaConfigByProject } from "./auto-qa-config-source.js";
@@ -307,8 +311,13 @@ import {
 import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 // FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
-import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
+import {
+	emitFounderStuckNotification,
+	emitFounderThreadNotification,
+	emitIssueThreadInfraNotification,
+} from "./founder-thread-notifier.js";
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
+import { materializeWorkflowGateHolder } from "./gate-materializer.js";
 import { GatePoller } from "./gate-poller.js";
 import { buildSessionKey } from "./hook-payload.js";
 import {
@@ -335,6 +344,8 @@ import {
 } from "./issue-display-refresher.js";
 import { sweepIssueGatesForProject } from "./issue-gate-supersede.js";
 import { validateKindContracts } from "./kind-contract.js";
+import { requestLandCleanupOpportunities } from "./land-cleanup-opportunity.js";
+import { executeLandOperation, GhCliLandMergeDriver } from "./land-executor.js";
 import { probeLaunchdJobAlive } from "./launchctl.js";
 import {
 	createBlockedMarkerReader,
@@ -376,6 +387,7 @@ import {
 	createLifecycleRouter,
 } from "./lifecycle-routes.js";
 import { sweepProjectLifecycle } from "./lifecycle-sweep.js";
+import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
 import {
 	listLinearIssueComments,
 	lookupLinearIssueByIdentifier,
@@ -438,6 +450,7 @@ import { postMergeTmuxCleanup } from "./post-merge.js";
 import {
 	type LifecycleShipInfra,
 	makeFinalizeThreeStagePhases,
+	runResumablePostShipFinalization,
 	setWorkflowShadowFinalizationHook,
 } from "./post-ship-finalization.js";
 import {
@@ -1237,6 +1250,7 @@ export function createBridgeApp(
 	opts?: BridgeAppOptions,
 ): express.Application {
 	const app = express();
+	const actionGateAuthorityView = makeGateAuthorityView(store);
 	app.disable("x-powered-by");
 
 	// FLY-1018 (Codex code-review R1): the ship-approval-request tokenless
@@ -1450,6 +1464,7 @@ export function createBridgeApp(
 			opts?.phaseOrchestrator, // FLY-1050: terminate → QA-loss re-drive
 			undefined, // cardAuthority
 			opts?.materializedHeadAuthority,
+			actionGateAuthorityView,
 		),
 	);
 
@@ -2049,6 +2064,7 @@ export function createBridgeApp(
 			opts?.phaseOrchestrator, // FLY-1050: terminate → QA-loss re-drive
 			undefined, // cardAuthority
 			opts?.materializedHeadAuthority,
+			actionGateAuthorityView,
 		),
 	);
 
@@ -5236,6 +5252,121 @@ export async function startBridge(
 	const workflowEngineAlertHolder: {
 		current?: { alert: (payload: AlertPayload) => Promise<AlertResult> };
 	} = {};
+	const landMergeDriver = new GhCliLandMergeDriver(
+		(projectName) =>
+			projects.find((project) => project.projectName === projectName)
+				?.projectRoot,
+	);
+	const landWorktreeCleanup = makeBridgeWorktreeCleanup(
+		store,
+		projects,
+		repoMutationLock.withRepoLock,
+	);
+	const landExecutor = async (operationId: string) =>
+		executeLandOperation(operationId, {
+			store,
+			mergeDriver: landMergeDriver,
+			requestCleanup: (operation) =>
+				requestLandCleanupOpportunities(operation, {
+					store,
+					commDbPathForProject,
+					graceMs: (() => {
+						const raw = Number.parseInt(
+							process.env.FLYWHEEL_LAND_CLEANUP_GRACE_MS ?? "",
+							10,
+						);
+						return Number.isFinite(raw) && raw >= 0 ? raw : 30_000;
+					})(),
+				}),
+			finalize: async (operation) => {
+				const session =
+					store
+						.getSessionsByIssue(operation.issue_id)
+						.find(
+							(candidate) =>
+								candidate.project_name === operation.project_name &&
+								candidate.pr_number === operation.pr_number &&
+								candidate.pr_head_sha?.toLowerCase() ===
+									operation.approved_head,
+						) ?? store.getSessionByIssue(operation.issue_id);
+				if (!session) {
+					return {
+						complete: false,
+						outcome: "partial" as const,
+						reason: "land_source_session_unavailable",
+					};
+				}
+				const markIssueDone = makeLinearDoneFinalizer(config);
+				return runResumablePostShipFinalization(
+					{
+						executionId: session.execution_id,
+						issueId: operation.issue_id,
+						issueIdentifier: session.issue_identifier,
+						projectName: operation.project_name,
+						sessionStatus: session.status,
+						discordOwnerUserId: config.discordOwnerUserId,
+						fallbackBotToken: config.discordBotToken,
+					},
+					{
+						store,
+						projects,
+						removeCleanWorktree: landWorktreeCleanup,
+						markIssueDone:
+							markIssueDone ??
+							(async () => ({
+								done: false,
+								reason: "linear_finalizer_unavailable",
+							})),
+						finalizeThreeStagePhases,
+						refreshIssueDisplay: (issueId) =>
+							issueDisplayRefreshHolder.current?.refresh(issueId) ??
+							Promise.resolve(),
+						...lifecycleInfra,
+					},
+				);
+			},
+			notify: async (operation, stage, detail) => {
+				const session = store.getSessionByIssue(operation.issue_id);
+				let lead: LeadConfig | undefined;
+				try {
+					lead = resolveLeadForIssue(
+						projects,
+						operation.project_name,
+						session ? store.getSessionLabels(session.execution_id) : [],
+					).lead;
+				} catch (error) {
+					throw new Error(
+						`land_lead_resolution_failed:${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+				const thread = store.getChatThreadByIssue(
+					operation.issue_id,
+					lead.chatChannel,
+				);
+				const result = await emitIssueThreadInfraNotification(
+					{
+						executionId: session?.execution_id ?? `land:${operation.issue_id}`,
+						issueId: operation.issue_id,
+						issueIdentifier: session?.issue_identifier,
+						projectName: operation.project_name,
+						kind: `land_${stage}`,
+						content: `🏁 land ${stage} — PR #${operation.pr_number}\n${JSON.stringify(detail)}`,
+						thread,
+						botToken: lead.botToken ?? config.discordBotToken,
+						onUndeliverable: (reason) =>
+							console.warn(
+								`[land] thread notification ${stage} undeliverable: ${reason}`,
+							),
+					},
+					{ store },
+				);
+				if (result.kind !== "posted") {
+					throw new Error(
+						`land_notification_${result.kind}${result.skipReason ? `_${result.skipReason}` : ""}`,
+					);
+				}
+			},
+		});
 	const workflowEngineDispatcher = startDispatcher
 		? new WorkflowEngineDispatcher({
 				store,
@@ -5280,6 +5411,7 @@ export async function startBridge(
 				},
 				log: (message) => console.warn(`[workflow-engine] ${message}`),
 				materializedHeadAuthority,
+				landExecutor,
 			})
 		: undefined;
 	workflowEngineDispatcher?.start();
@@ -5436,6 +5568,118 @@ export async function startBridge(
 								approvedLinear: approved.linear,
 							},
 						),
+					land: {
+						enabled: () => isLandNodeEnabled(process.env),
+						createIntent: (input: {
+							projectName: string;
+							issueId: string;
+							prNumber?: number;
+							approvedHead?: string;
+						}) => {
+							const canonicalIssueId =
+								store.getSessionByIdentifier(input.issueId)?.issue_id ??
+								input.issueId;
+							const existing = store.getLatestLandOperationForIssue(
+								input.projectName,
+								canonicalIssueId,
+							);
+							if (existing) {
+								if (
+									(input.prNumber !== undefined &&
+										input.prNumber !== existing.pr_number) ||
+									(input.approvedHead !== undefined &&
+										input.approvedHead !== existing.approved_head)
+								) {
+									throw new Error("land_intent_assertion_mismatch");
+								}
+								return existing;
+							}
+							const run = store.getActiveWorkflowRun(
+								input.projectName,
+								canonicalIssueId,
+							);
+							if (run?.snapshot && run.engine_owned === 1) {
+								const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+								if (!isWorkflowManifestV1Land(snapshot.manifest)) {
+									throw new Error("land_manifest_not_enabled_for_run");
+								}
+								const holder = store.getCurrentWorkflowGateHolder(
+									run.run_id,
+									snapshot.manifest.approval_gate.node,
+								);
+								const prNumber = holder
+									? store.getWorkflowRunPrNumber(run.run_id, holder.head_sha)
+									: undefined;
+								if (!holder || holder.state !== "approved" || !prNumber) {
+									throw new Error("land_founder_authority_not_ready");
+								}
+								if (
+									(input.prNumber !== undefined &&
+										input.prNumber !== prNumber) ||
+									(input.approvedHead !== undefined &&
+										input.approvedHead.toLowerCase() !== holder.head_sha)
+								) {
+									throw new Error("land_intent_assertion_mismatch");
+								}
+								return store.ensureLandOperation({
+									runId: run.run_id,
+									issueId: canonicalIssueId,
+									projectName: input.projectName,
+									prNumber,
+									approvedHead: holder.head_sha,
+									now: new Date().toISOString(),
+								});
+							}
+
+							const legacyEvidence = new Map<
+								string,
+								{ prNumber: number; approvedHead: string }
+							>();
+							for (const session of store.getSessionsByIssue(
+								canonicalIssueId,
+							)) {
+								const head = session.pr_head_sha?.toLowerCase();
+								if (
+									session.project_name !== input.projectName ||
+									!session.review_question_id ||
+									!session.pr_number ||
+									!/^[0-9a-f]{40}$/.test(head ?? "") ||
+									(input.prNumber !== undefined &&
+										input.prNumber !== session.pr_number) ||
+									(input.approvedHead !== undefined &&
+										input.approvedHead.toLowerCase() !== head)
+								) {
+									continue;
+								}
+								legacyEvidence.set(`${session.pr_number}:${head}`, {
+									prNumber: session.pr_number,
+									approvedHead: head!,
+								});
+							}
+							if (legacyEvidence.size !== 1) {
+								throw new Error(
+									legacyEvidence.size === 0
+										? "land_legacy_authority_not_ready"
+										: "land_legacy_authority_ambiguous",
+								);
+							}
+							const legacy = [...legacyEvidence.values()][0]!;
+							return store.ensureLandOperation({
+								issueId: canonicalIssueId,
+								projectName: input.projectName,
+								prNumber: legacy.prNumber,
+								approvedHead: legacy.approvedHead,
+								now: new Date().toISOString(),
+							});
+						},
+						kick: (operationId: string) => {
+							void landExecutor(operationId).catch((error) =>
+								console.warn(
+									`[land] explicit intent ${operationId} failed to start: ${error instanceof Error ? error.message : String(error)}`,
+								),
+							);
+						},
+					},
 					apiTokenConfigured: Boolean(config.apiToken),
 				};
 				return {
@@ -6320,6 +6564,7 @@ export async function startBridge(
 	const projectRootFor = (projectName: string): string | undefined =>
 		projects.find((project) => project.projectName === projectName)
 			?.projectRoot;
+	const gateAuthorityView = makeGateAuthorityView(store);
 	// FLY-1238: ONE composition-root instance owns cache, single-flight,
 	// backoff, and per-project network budget for all six recovery surfaces.
 	const mergedGateGuard = createMergedGateGuard({
@@ -6344,6 +6589,7 @@ export async function startBridge(
 		discordOwnerUserId: config.discordOwnerUserId,
 		founderConsentUserId: config.founderConsent?.founderUserId,
 		store,
+		gateAuthorityView,
 		denylistProjects: founderAutoApproveDenylist,
 		// FLY-1041 Chunk 4/5: same audit target + hold guard as the text source.
 		auditStore: store,
@@ -6374,6 +6620,7 @@ export async function startBridge(
 		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		createVoiceRouter({
 			store,
+			gateAuthorityView,
 			projects,
 			apiTokenConfigured: Boolean(config.apiToken),
 			discordOwnerUserId: config.discordOwnerUserId,
@@ -6429,6 +6676,7 @@ export async function startBridge(
 	// Kill-switch FLYWHEEL_EXTERNAL_MERGE_RECONCILE=0 lives inside pass().
 	const externalMergeReconciler = createExternalMergeReconciler({
 		store,
+		withIssueLifecycleMutex: lifecycleInfra.withIssueLifecycleMutex,
 		materializedHeadAuthority,
 		config,
 		projects,
@@ -7203,6 +7451,105 @@ export async function startBridge(
 			}
 		}
 	};
+	let workflowGateMaterializationRunning = false;
+	const workflowGateMaterializeTick = async (): Promise<void> => {
+		if (workflowGateMaterializationRunning) return;
+		workflowGateMaterializationRunning = true;
+		try {
+			const holders = store.listWorkflowGateHoldersForMaterialization(20);
+			await Promise.all(
+				holders.map(async (holder) => {
+					try {
+						const run = store.getWorkflowRun(holder.run_id);
+						if (!run) throw new Error("workflow_gate_run_not_found");
+						const source = store.getSession(holder.source_execution_id);
+						const { lead } = resolveLeadForIssue(
+							projects,
+							run.project_name,
+							source ? store.getSessionLabels(holder.source_execution_id) : [],
+						);
+						const thread = store.getChatThreadByIssue(
+							run.issue_id,
+							lead.chatChannel,
+						);
+						if (!thread?.thread_id) {
+							throw new Error("workflow_gate_thread_not_found");
+						}
+						await materializeWorkflowGateHolder(
+							{
+								store,
+								commDbPath: commDbPathForProject(run.project_name),
+								leadId: lead.agentId,
+								threadId: thread.thread_id,
+								postCard: async (input) => {
+									const result = await emitFounderThreadNotification(
+										{
+											questionId: input.questionId,
+											checkpoint: "approve_to_ship",
+											executionId: input.sourceExecutionId,
+											issueId: input.issueId,
+											issueIdentifier: source?.issue_identifier,
+											projectName: input.projectName,
+											summary: input.content,
+											ageMinutes: 0,
+											thread,
+											botToken: lead.botToken ?? config.discordBotToken,
+											ownerUserId: config.discordOwnerUserId,
+										},
+										{ store },
+									);
+									if (result.kind !== "posted" || !result.gateMessageId) {
+										throw new Error(
+											`workflow_gate_card_${result.kind}${result.skipReason ? `_${result.skipReason}` : ""}`,
+										);
+									}
+									return { messageId: result.gateMessageId };
+								},
+							},
+							holder.question_id,
+						);
+					} catch (error) {
+						console.warn(
+							`[workflow-gate] materialization failed for ${holder.question_id}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+				}),
+			);
+		} finally {
+			workflowGateMaterializationRunning = false;
+		}
+	};
+	let landOperationSweepRunning = false;
+	let landOperationLastSweepAt = 0;
+	const landOperationSweepIntervalMs = 30_000;
+	const landOperationTick = async (): Promise<void> => {
+		const now = Date.now();
+		if (
+			landOperationSweepRunning ||
+			now - landOperationLastSweepAt < landOperationSweepIntervalMs
+		) {
+			return;
+		}
+		landOperationLastSweepAt = now;
+		landOperationSweepRunning = true;
+		try {
+			const operations = store.listRunnableLandOperations(
+				new Date().toISOString(),
+				20,
+			);
+			await Promise.all(
+				operations.map((operation) =>
+					landExecutor(operation.operation_id).catch((error) =>
+						console.warn(
+							`[land] sweep failed for ${operation.operation_id}: ${error instanceof Error ? error.message : String(error)}`,
+						),
+					),
+				),
+			);
+		} finally {
+			landOperationSweepRunning = false;
+		}
+	};
 	const receiptEnvMs = (name: string, fallback: number): number => {
 		const value = Number.parseInt(process.env[name] ?? "", 10);
 		return Number.isSafeInteger(value) && value > 0 ? value : fallback;
@@ -7478,6 +7825,8 @@ export async function startBridge(
 		watchdogLivenessEnabled: watchdogFlags.liveness,
 		ensureShipRelevantDiff,
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
+		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
+		onLandOperationTick: landOperationTick,
 		onReceiptWakePatrolTick: async () => {
 			await receiptWakePatrol.pass();
 			await leadReceiptPatrol.pass();
@@ -7567,6 +7916,7 @@ export async function startBridge(
 		// second authorization chain).
 		deferredRebind: {
 			canonicalFounderId: founderCanonicalId,
+			gateAuthorityView,
 			onResponseWritten: (info) =>
 				founderShipPostWriteHook({
 					executionId: info.executionId,
@@ -8727,14 +9077,10 @@ export async function startBridge(
 						| PhaseSession
 						| undefined;
 				},
-				// FLY-887 QA round 2: durable "this issue already shipped" signal —
-				// runPostShipFinalization's atomic per-issue claim event, keyed to
-				// issue_id regardless of which execution triggered it.
+				// FLY-1375: merge-confirmed is the spawn/reclaim barrier; a cleanup
+				// claim no longer doubles as completion evidence.
 				hasShipFinalizationClaim: (issueId) =>
-					store.countEventsByIssueAndType(
-						issueId,
-						"post_ship_finalization_claim",
-					) > 0,
+					store.hasMergeConfirmedForIssue(issueId),
 				// FLY-887 (founder-visibility status line): re-render + post-or-edit
 				// the single "🎨design(...)·🔨implement(...)·🧪qa(...)" line. Best-effort
 				// — never lets a Discord hiccup break a real handoff/verdict. Also

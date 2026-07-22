@@ -1326,7 +1326,11 @@ describe("FLY-863 AutoQaCoordinator.reconcileStuckCodexHolds", () => {
 		const main = awaitingMain(s.store);
 		await s.coord.onMainAwaitingReview(main);
 
-		clock += STUCK_MS + 1;
+		// StateStore stamps hold_notified_at with SQLite's real wall clock. Under a
+		// loaded shard, async setup can take longer than STUCK_MS, so advancing the
+		// pre-setup clock is still earlier than the stored hold. Re-anchor after the
+		// hold exists, then cross the threshold deterministically.
+		clock = Date.now() + STUCK_MS + 1;
 		await s.coord.reconcileStuckCodexHolds();
 		expect(s.codexAlerts).toEqual([{ execId: "main-1", sha: SHA }]);
 		expect(

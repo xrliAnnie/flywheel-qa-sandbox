@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1375 · 说完 ship,系统自己收尾</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; margin: 0; padding: 24px 16px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 8px 0 4px; color: #1a365d; }
+  .sub { color: #86868b; font-size: 14px; margin-bottom: 24px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 24px; margin-bottom: 16px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.purple { border-left-color: #af52de; }
+  h2 { font-size: 18px; margin: 0 0 12px; color: #1a365d; }
+  p, li { font-size: 15px; line-height: 1.7; }
+  .chain { background: #f5f5f7; border-radius: 8px; padding: 12px 16px; font-size: 14px; line-height: 2; }
+  .step { display: inline-block; background: #fff; border-radius: 6px; padding: 2px 10px; margin: 2px 2px; box-shadow: 0 1px 2px rgba(0,0,0,0.08); white-space: nowrap; }
+  .arrow { color: #86868b; margin: 0 2px; }
+  .dim { color: #86868b; }
+  ul { padding-left: 20px; margin: 8px 0; }
+  li { margin-bottom: 8px; }
+  b { color: #1a365d; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>说完 ship,系统自己收尾</h1>
+  <div class="sub">FLY-1375 · 设计定稿 · 2026-07-21</div>
+
+  <div class="card red">
+    <h2>① 这单是什么</h2>
+    <p>你的原话:「我说可以 ship 之后,应该进入全自动流程,但基本没成功实行过。」深诊查清了原因:收尾这套动作本身是好的(那晚人肉走过一遍全套),坏在<b>没有扳机</b> — 「你批准了」在系统里不是一个事件,合并之后该不该收尾、谁去收,全靠 Tadashi 记性。再加上四个小断口:该关的会话因状态特殊被拒关、工作目录清理只建了一半、一单三个会话要逐个关容易漏、会话被关之前没人给它收拾的机会。</p>
+  </div>
+
+  <div class="card green">
+    <h2>② 怎么解</h2>
+    <p>给流水线补上最后一个自动节点 <b>land</b>:你点 ✅ 之后,<b>引擎</b>(不是任何 AI 的记性)接手把剩下的全部跑完:</p>
+    <div class="chain">
+      <span class="step">你点 ✅</span><span class="arrow">→</span>
+      <span class="step">验明正身(批的就是这个版本)</span><span class="arrow">→</span>
+      <span class="step">走 :cool: 安检合并</span><span class="arrow">→</span>
+      <span class="step">给每个会话 30 秒收拾</span><span class="arrow">→</span>
+      <span class="step">一键关这单全部会话</span><span class="arrow">→</span>
+      <span class="step">删工作目录</span><span class="arrow">→</span>
+      <span class="step">Linear 标 Done</span><span class="arrow">→</span>
+      <span class="step">归档 thread</span>
+    </div>
+    <p>每一步都留凭据:哪怕中途断电重启,接着上次的位置继续跑,<b>绝不会做了一半却显示「已完成」</b> — 这正是深诊点名的老病根(系统只信「事件发出那一瞬间」,从不回头核对真相)。</p>
+  </div>
+
+  <div class="card purple">
+    <h2>③ 关键取舍</h2>
+    <ul>
+      <li><b>合并仍走 :cool: 安检流程,一字不改</b>(你定的「不许裸合并」红线);只是按下 :cool: 的手从 Runner 换成引擎 — Runner 中途死掉,链条不再断。</li>
+      <li><b>你的批准凭据从会话身上摘出来单独保存</b>:以前批准「记在某个会话头上」,会话一关批准就悬空;现在批准独立存在,会话关了照样有效。</li>
+      <li><b>宁可重复触发,绝不重复合并</b>:触发允许多来一次(有安检兜住),合并只认准你批的那个版本。</li>
+      <li><b>只在新流水线(DAG)上生效</b>:现有在飞单一律不受影响,过渡期 Tadashi 按成文清单人肉收尾 — 清单和自动链用的是同一套动作。</li>
+    </ul>
+  </div>
+
+  <div class="card amber">
+    <h2>④ 风险边界</h2>
+    <ul>
+      <li><b>分三步交付</b>(骨架 → 能力 → 上线),每步都带「旧路一字不变」的哨兵测试;总开关先关着做安全脚手架,<b>最终交付默认打开</b>(不开就等于没做 — 若有理由不开,会显式来问你)。</li>
+      <li>land 若中途卡住:告警升级给人,恢复有两条路(修好后接着原进度跑 / 止血期间按清单人肉),不会卡死也不会瞒着。</li>
+      <li>一种特殊会话(还活着但心跳异常的 Codex)不硬杀 — 硬杀会留孤儿进程,这种转人工,其余全自动收。</li>
+      <li>方案经 Codex 设计评审五轮打磨通过,每轮都抓出真问题并已全部吸收进设计。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>⑤ 验收(真机,能力级)</h2>
+    <ul>
+      <li>你点 ✅ 后<b>零人工</b>:合并完成 → 工作目录消失 → 这单全部会话关闭 → Linear Done → thread 归档。</li>
+      <li>故意留一个卡死的会话 → land 照样收掉。</li>
+      <li>收完之后,同一分支再派新任务能干净启动。</li>
+      <li>全程 thread 里有播报,每一步看得见。</li>
+    </ul>
+  </div>
+
+  <div class="sub dim">设计文档:engineering/doc/FLY-1375-auto-land-flow/(exploration / research / plan + 五轮评审记录)</div>
+</div>
+</body>
+</html>

@@ -100,6 +100,7 @@ describe("lifecycle routes (FLY-1185 §2.12, manifest v2)", () => {
 	it("fail-closed: every endpoint 403s when apiToken is not configured", async () => {
 		serve(makeDeps({ apiTokenConfigured: false }));
 		for (const [path, body] of [
+			["/api/lifecycle/land", { issueId: UUID, project: "proj" }],
 			["/api/lifecycle/park", { issueUuid: UUID, project: "proj" }],
 			["/api/lifecycle/unpark", { issueUuid: UUID, supersededBy: "x" }],
 			["/api/lifecycle/dry-run", { project: "proj" }],
@@ -108,6 +109,46 @@ describe("lifecycle routes (FLY-1185 §2.12, manifest v2)", () => {
 			const res = await request(server, path, body);
 			expect(res.status, path).toBe(403);
 		}
+	});
+
+	it("land: flag-off writes no intent; enabled path returns a stable 202 operation", async () => {
+		const kick = vi.fn();
+		const createIntent = vi.fn((input) =>
+			store.ensureLandOperation({
+				issueId: input.issueId,
+				projectName: input.projectName,
+				prNumber: 1375,
+				approvedHead: "a".repeat(40),
+				now: "2026-07-21T20:00:00.000Z",
+			}),
+		);
+		serve(
+			makeDeps({
+				land: { enabled: () => false, createIntent, kick },
+			}),
+		);
+		const disabled = await request(server, "/api/lifecycle/land", {
+			issueId: UUID,
+			project: "proj",
+		});
+		expect(disabled.status).toBe(503);
+		expect(createIntent).not.toHaveBeenCalled();
+
+		server.close();
+		serve(
+			makeDeps({
+				land: { enabled: () => true, createIntent, kick },
+			}),
+		);
+		const accepted = await request(server, "/api/lifecycle/land", {
+			issueId: UUID,
+			project: "proj",
+			prNumber: 1375,
+			approvedHead: "a".repeat(40),
+		});
+		expect(accepted.status).toBe(202);
+		expect(accepted.body).toMatchObject({ state: "intent" });
+		expect(kick).toHaveBeenCalledWith(accepted.body.operation_id);
 	});
 
 	it("park: delegates to the ATOMIC parkFn (mutex-held tombstone + closeout)", async () => {

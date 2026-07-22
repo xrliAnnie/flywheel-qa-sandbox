@@ -23,6 +23,7 @@ import type {
 	LeadWriteAuthorizationDeps,
 	MessageProvenance,
 } from "flywheel-comm/lead-lease";
+import type { GateAuthorityView } from "../approval-signal/gate-authority-view.js";
 import {
 	type GateResponseStore,
 	writeGateResponseAndRunPostWrite,
@@ -66,6 +67,7 @@ export interface GateResponseRouterDeps {
 	cardAuthority?: Parameters<
 		typeof writeGateResponseAndRunPostWrite
 	>[0]["cardAuthority"];
+	gateAuthorityView?: GateAuthorityView;
 	/** Configured project names (validates a caller-supplied projectName). */
 	configuredProjects: ReadonlySet<string>;
 	/** Override the comm root (tests). Defaults to ~/.flywheel/comm. */
@@ -303,6 +305,7 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 					executionId: question.from_agent,
 					source: "founder-consent",
 					cardAuthority: deps.cardAuthority,
+					gateAuthorityView: deps.gateAuthorityView,
 					actor,
 					answer,
 					expectedCurrentReviewQuestionId: currentReviewId,

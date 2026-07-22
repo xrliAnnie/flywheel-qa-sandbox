@@ -361,6 +361,7 @@ export interface AlertMetadata {
 		executionId: string;
 		disposition:
 			| "held"
+			| "partial"
 			| "design_fallback"
 			| "probe_unknown"
 			| "dead_execution_activity_after_replacement"

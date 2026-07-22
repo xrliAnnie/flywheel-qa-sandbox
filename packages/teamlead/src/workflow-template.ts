@@ -34,6 +34,7 @@ export type WorkflowNodeType =
 	| "implement"
 	| "qa"
 	| "gate"
+	| "land"
 	| "generic"
 	| "review";
 export type WorkflowVendor = "claude" | "codex";
@@ -61,6 +62,7 @@ export interface WorkflowManifestNode {
 	agent_file?: string;
 	produces_output?: boolean;
 	output?: WorkflowOutputContract;
+	execution?: "engine";
 }
 
 export interface WorkflowManifestEdge {
@@ -75,12 +77,12 @@ export interface WorkflowManifestLoop {
 	from: string;
 	to: string;
 	loop_when: "qa_fail" | "review_fail" | "founder_feedback_kickback";
-	exit_when: "qa_pass" | "review_pass";
+	exit_when: "qa_pass" | "review_pass" | "founder_approved";
 	max_iterations: number;
 	on_limit: "escalate";
 }
 
-export interface WorkflowManifestV1 {
+export interface WorkflowManifestV1Legacy {
 	schema_version: 1;
 	nodes: WorkflowManifestNode[];
 	edges: WorkflowManifestEdge[];
@@ -89,6 +91,22 @@ export interface WorkflowManifestV1 {
 	ship_claims: Array<"qa_passed" | "founder_approved">;
 	tier_presets?: Partial<Record<EngTier, WorkflowTemplateOverride>>;
 }
+
+export interface WorkflowManifestV1Land {
+	schema_version: 1;
+	manifest_variant: "land_v1";
+	nodes: WorkflowManifestNode[];
+	edges: WorkflowManifestEdge[];
+	loops: WorkflowManifestLoop[];
+	approval_gate: { node: string; predicate: "founder_approved" };
+	terminal_node: { node: string };
+	ship_claims: Array<"qa_passed" | "founder_approved">;
+	tier_presets?: Partial<Record<EngTier, WorkflowTemplateOverride>>;
+}
+
+export type WorkflowManifestV1 =
+	| WorkflowManifestV1Legacy
+	| WorkflowManifestV1Land;
 
 export interface WorkflowManifestV2 {
 	schema_version: 2;
@@ -253,17 +271,30 @@ function validateWorkflowManifestV1(
 	options: WorkflowManifestValidationOptions = {},
 ): WorkflowManifestV1 {
 	const root = record(value, "manifest");
+	const isLandVariant = root.manifest_variant === "land_v1";
 	exactKeys(
 		root,
-		[
-			"schema_version",
-			"nodes",
-			"edges",
-			"loops",
-			"terminal_gate",
-			"ship_claims",
-			"tier_presets",
-		],
+		isLandVariant
+			? [
+					"schema_version",
+					"manifest_variant",
+					"nodes",
+					"edges",
+					"loops",
+					"approval_gate",
+					"terminal_node",
+					"ship_claims",
+					"tier_presets",
+				]
+			: [
+					"schema_version",
+					"nodes",
+					"edges",
+					"loops",
+					"terminal_gate",
+					"ship_claims",
+					"tier_presets",
+				],
 		"manifest",
 	);
 	if (root.schema_version !== WORKFLOW_MANIFEST_SCHEMA_VERSION) {
@@ -285,7 +316,17 @@ function validateWorkflowManifestV1(
 		const node = record(raw, `manifest.nodes[${index}]`);
 		exactKeys(
 			node,
-			["id", "type", "vendor", "model", "effort", "handoff_pointer"],
+			isLandVariant
+				? [
+						"id",
+						"type",
+						"vendor",
+						"model",
+						"effort",
+						"handoff_pointer",
+						"execution",
+					]
+				: ["id", "type", "vendor", "model", "effort", "handoff_pointer"],
 			`manifest.nodes[${index}]`,
 		);
 		const id = nonempty(node.id, `manifest.nodes[${index}].id`);
@@ -293,16 +334,38 @@ function validateWorkflowManifestV1(
 		nodeIds.add(id);
 		const type = oneOf(
 			node.type,
-			["design", "implement", "qa", "gate"] as const,
+			(isLandVariant
+				? ["design", "implement", "qa", "gate", "land"]
+				: ["design", "implement", "qa", "gate"]) as readonly WorkflowNodeType[],
 			`manifest.nodes[${index}].type`,
 		);
-		if (type === "gate") {
+		if (type === "land") {
+			if (node.execution !== "engine") {
+				throw new Error(`land node ${id} must define execution: engine`);
+			}
 			for (const key of ["vendor", "model", "effort", "handoff_pointer"]) {
+				if (node[key] !== undefined) {
+					throw new Error(`land node ${id} cannot define ${key}`);
+				}
+			}
+			return { id, type, execution: "engine" };
+		}
+		if (type === "gate") {
+			for (const key of [
+				"vendor",
+				"model",
+				"effort",
+				"handoff_pointer",
+				"execution",
+			]) {
 				if (node[key] !== undefined) {
 					throw new Error(`gate node ${id} cannot define ${key}`);
 				}
 			}
 			return { id, type };
+		}
+		if (node.execution !== undefined) {
+			throw new Error(`node ${id} cannot define execution`);
 		}
 		const vendor =
 			node.vendor === undefined
@@ -442,7 +505,9 @@ function validateWorkflowManifestV1(
 			),
 			exit_when: oneOf(
 				loop.exit_when,
-				["qa_pass"] as const,
+				(isLandVariant
+					? ["qa_pass", "founder_approved"]
+					: ["qa_pass"]) as readonly ("qa_pass" | "founder_approved")[],
 				`manifest.loops[${index}].exit_when`,
 			),
 			max_iterations: Number(loop.max_iterations),
@@ -454,20 +519,35 @@ function validateWorkflowManifestV1(
 		};
 	});
 
-	const terminal = record(root.terminal_gate, "manifest.terminal_gate");
-	exactKeys(terminal, ["node", "predicate"], "manifest.terminal_gate");
-	const terminalNode = nonempty(terminal.node, "manifest.terminal_gate.node");
-	if (nodes.find((node) => node.id === terminalNode)?.type !== "gate") {
-		throw new Error("terminal_gate.node must identify a gate node");
+	const gatePath = isLandVariant
+		? "manifest.approval_gate"
+		: "manifest.terminal_gate";
+	const gateRoot = record(
+		isLandVariant ? root.approval_gate : root.terminal_gate,
+		gatePath,
+	);
+	exactKeys(gateRoot, ["node", "predicate"], gatePath);
+	const approvalGateNode = nonempty(gateRoot.node, `${gatePath}.node`);
+	if (nodes.find((node) => node.id === approvalGateNode)?.type !== "gate") {
+		throw new Error(`${gatePath}.node must identify a gate node`);
 	}
-	const terminalGate = {
-		node: terminalNode,
+	const approvalGate = {
+		node: approvalGateNode,
 		predicate: oneOf(
-			terminal.predicate,
+			gateRoot.predicate,
 			["founder_approved"] as const,
-			"terminal_gate.predicate",
+			`${gatePath}.predicate`,
 		),
 	};
+	let terminalNode = approvalGateNode;
+	if (isLandVariant) {
+		const terminal = record(root.terminal_node, "manifest.terminal_node");
+		exactKeys(terminal, ["node"], "manifest.terminal_node");
+		terminalNode = nonempty(terminal.node, "manifest.terminal_node.node");
+		if (nodes.find((node) => node.id === terminalNode)?.type !== "land") {
+			throw new Error("terminal_node.node must identify a land node");
+		}
+	}
 
 	const shipClaims = root.ship_claims.map((claim, index) =>
 		oneOf(
@@ -530,7 +610,9 @@ function validateWorkflowManifestV1(
 					? "implement_done"
 					: node.type === "qa"
 						? "qa_pass"
-						: undefined;
+						: isLandVariant && node.id === approvalGateNode
+							? "founder_approved"
+							: undefined;
 		if (!expected || conditions.length !== 1 || conditions[0] !== expected) {
 			throw new Error(
 				`node ${node.id} outgoing conditions are incomplete or ambiguous`,
@@ -546,21 +628,68 @@ function validateWorkflowManifestV1(
 					`QA node ${node.id} requires a qa_fail loop with qa_pass exit`,
 				);
 			}
+		} else if (isLandVariant && node.id === approvalGateNode) {
+			if (
+				nodeLoops.length !== 1 ||
+				nodeLoops[0]!.loop_when !== "founder_feedback_kickback" ||
+				nodeLoops[0]!.exit_when !== "founder_approved"
+			) {
+				throw new Error(
+					`approval gate ${node.id} requires a founder_feedback_kickback loop`,
+				);
+			}
 		} else if (nodeLoops.length > 0) {
 			throw new Error(`node ${node.id} cannot own a loop`);
 		}
 	}
 
-	const manifest: WorkflowManifestV1 = {
-		schema_version: 1,
-		nodes,
-		edges,
-		loops,
-		terminal_gate: terminalGate,
-		ship_claims: shipClaims,
-	};
+	const manifest: WorkflowManifestV1 = isLandVariant
+		? {
+				schema_version: 1,
+				manifest_variant: "land_v1",
+				nodes,
+				edges,
+				loops,
+				approval_gate: approvalGate,
+				terminal_node: { node: terminalNode },
+				ship_claims: shipClaims,
+			}
+		: {
+				schema_version: 1,
+				nodes,
+				edges,
+				loops,
+				terminal_gate: approvalGate,
+				ship_claims: shipClaims,
+			};
 	const tierPresets = validateTierPresets(manifest, root.tier_presets);
 	return tierPresets ? { ...manifest, tier_presets: tierPresets } : manifest;
+}
+
+export function isWorkflowManifestV1Land(
+	manifest: WorkflowManifestV1 | WorkflowManifestV2,
+): manifest is WorkflowManifestV1Land {
+	return (
+		manifest.schema_version === 1 &&
+		"manifest_variant" in manifest &&
+		manifest.manifest_variant === "land_v1"
+	);
+}
+
+export function workflowApprovalGate(
+	manifest: WorkflowManifestV1 | WorkflowManifestV2,
+): { node: string; predicate: "founder_approved" } {
+	return isWorkflowManifestV1Land(manifest)
+		? manifest.approval_gate
+		: manifest.terminal_gate;
+}
+
+export function workflowTerminalNode(
+	manifest: WorkflowManifestV1 | WorkflowManifestV2,
+): string {
+	return isWorkflowManifestV1Land(manifest)
+		? manifest.terminal_node.node
+		: manifest.terminal_gate.node;
 }
 
 function assertSafeAgentFile(value: unknown, path: string): string {
@@ -1141,6 +1270,11 @@ const BUNDLED_SEED_FILES = [
 	"tpl_product_v1.yaml",
 	"tpl_research_light.yaml",
 	"tpl_ops_light.yaml",
+	// Append additive variants so the historical bundled-seed ordering remains
+	// stable for callers that persisted or display that order.
+	"tpl_eng_heavy_land_v1.yaml",
+	"tpl_eng_light_land_v1.yaml",
+	"tpl_eng_trivial_land_v1.yaml",
 ] as const;
 
 export function loadBundledWorkflowSeeds(): LoadedWorkflowSeed[] {

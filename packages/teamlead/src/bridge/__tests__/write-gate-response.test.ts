@@ -378,6 +378,63 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 		expect(db.insertResponse).not.toHaveBeenCalled();
 	});
 
+	it("keeps engine founder feedback atomic with its receipt and source event", async () => {
+		const trustedFounderGateResponseAndReceipt = vi
+			.fn()
+			.mockReturnValue({ responseId: "R-feedback" });
+		const db = {
+			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
+			trustedFounderGateResponseAndReceipt,
+		};
+		const feedback = '{"approved":false,"feedback":"fix release notes"}';
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			answer: feedback,
+			actor: "founder-discord",
+			db,
+			store: store(),
+			founderId: "founder-discord",
+			gateAuthorityView: {
+				resolve: () => ({
+					kind: "engine",
+					runId: "run-land",
+					questionId: "Q-1",
+					executionId: "E-1",
+					issueId: "FLY-1375",
+					projectName: "flywheel",
+					headSha: "b".repeat(40),
+					state: "awaiting_review",
+					cardMessageId: "M-1",
+				}),
+			},
+			founderReceipt: {
+				rootId: "founder_msg:lead-a:M-1",
+				msgId: "M-1",
+				now: "2026-07-20T12:00:00.000Z",
+				intentKey: "founder-route:lead-a:M-1:Q-1",
+				queuedAtMs: 1_721_390_000_000,
+				envelope: {
+					id: "wake-feedback-M-1",
+					to: "E-1",
+					content: "founder feedback",
+				},
+			},
+		});
+
+		expect(r).toMatchObject({ written: true, disposition: "written" });
+		expect(trustedFounderGateResponseAndReceipt).toHaveBeenCalledWith(
+			expect.objectContaining({
+				approvalSource: expect.objectContaining({
+					sourceEventId: "founder-feedback:Q-1:M-1",
+					payload: expect.objectContaining({
+						response: { approved: false, feedback },
+					}),
+				}),
+			}),
+		);
+		expect(db.insertResponse).not.toHaveBeenCalled();
+	});
+
 	it("never emits a founder source event for feedback or an untrusted actor", async () => {
 		const db = {
 			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),

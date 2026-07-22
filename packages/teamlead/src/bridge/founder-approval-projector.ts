@@ -12,7 +12,7 @@ interface WorkflowSourceRow {
 	row_id: number;
 	project: string;
 	source_event_id: string;
-	kind: "founder_approval" | "turn_grant";
+	kind: "founder_approval" | "founder_feedback" | "turn_grant";
 	payload: string;
 	payload_digest: string;
 	schema_version: number;
@@ -31,7 +31,7 @@ interface WorkflowSourceStore {
 	applyWorkflowSourceEvent(input: {
 		project: string;
 		sourceEventId: string;
-		kind: "founder_approval" | "turn_grant";
+		kind: "founder_approval" | "founder_feedback" | "turn_grant";
 		payloadJson: string;
 		payloadDigest: string;
 		schemaVersion: number;

@@ -29,6 +29,7 @@ import {
 import type { MergedGateGuard } from "../merged-gate-guard.js";
 import { reactToFounderMessage } from "./founder-ack.js";
 import type { DeferralSupport } from "./founder-ship-approval-handler.js";
+import type { GateAuthorityView } from "./gate-authority-view.js";
 import {
 	isApprovalContent,
 	makeGuardedOnResponseWritten,
@@ -410,6 +411,7 @@ export interface DeferredRebindDeps {
 	cardAuthority?: Parameters<
 		typeof writeGateResponseAndRunPostWrite
 	>[0]["cardAuthority"];
+	gateAuthorityView?: GateAuthorityView;
 	/** Bot token for the ✅ receipt upgrade on the founder's original message. */
 	resolveBotToken(row: FounderDeferredApproval): string | undefined;
 	reactImpl?: typeof reactToFounderMessage;
@@ -499,10 +501,22 @@ async function rebindOne(
 	now: number,
 ): Promise<void> {
 	const session = deps.store.getSession(row.execution_id);
+	const initialEngineAuthority = deps.gateAuthorityView?.resolve(
+		row.question_id,
+		row.execution_id,
+	);
+	const authoritySession = initialEngineAuthority
+		? {
+				status: initialEngineAuthority.state,
+				review_question_id: initialEngineAuthority.questionId,
+				pr_head_sha: initialEngineAuthority.headSha,
+				pr_number: initialEngineAuthority.prNumber,
+			}
+		: session;
 	// 1. TTL (§4.3 step 1).
 	const expiresMs = parseSqliteUtcMs(row.expires_at);
 	if (expiresMs !== null && expiresMs <= now) {
-		if (!(await guardRebindSideEffect(row, session, deps))) return;
+		if (!(await guardRebindSideEffect(row, authoritySession, deps))) return;
 		deps.store.invalidateDeferredApproval({
 			questionId: row.question_id,
 			msgId: row.msg_id,
@@ -545,9 +559,12 @@ async function rebindOne(
 	const db = deps.openCommDb(row.project_name);
 	if (!db) return; // CommDB unavailable → transient, retry next pass
 	try {
-		const bindingIntact =
-			session?.status === "awaiting_review" &&
-			session.review_question_id === row.question_id;
+		const bindingIntact = initialEngineAuthority
+			? (initialEngineAuthority.state === "awaiting_review" ||
+					initialEngineAuthority.state === "approved") &&
+				initialEngineAuthority.questionId === row.question_id
+			: session?.status === "awaiting_review" &&
+				session.review_question_id === row.question_id;
 		const priorResponse = db.getResponse(row.question_id);
 		const gateAlive =
 			bindingIntact &&
@@ -581,9 +598,9 @@ async function rebindOne(
 		}
 
 		// 4. Head guardrail (§4.3 step 4 — founder must re-confirm a new head).
-		const liveHead = session.pr_head_sha?.toLowerCase();
+		const liveHead = authoritySession?.pr_head_sha?.toLowerCase();
 		if (liveHead !== row.pr_head_sha.toLowerCase()) {
-			if (!(await guardRebindSideEffect(row, session, deps))) return;
+			if (!(await guardRebindSideEffect(row, authoritySession, deps))) return;
 			deps.store.invalidateDeferredApproval({
 				questionId: row.question_id,
 				msgId: row.msg_id,
@@ -604,7 +621,7 @@ async function rebindOne(
 
 		// 5. Hold recheck (§4.3 step 5 — still held → wait; TTL bounds it).
 		if (deps.holdReasonFor(row.execution_id) !== null) return;
-		if (!(await guardRebindSideEffect(row, session, deps))) return;
+		if (!(await guardRebindSideEffect(row, authoritySession, deps))) return;
 
 		// 6. Write — the SAME writer + guarded wrapper as the live path.
 		const answer =
@@ -639,6 +656,7 @@ async function rebindOne(
 			executionId: row.execution_id,
 			source: "deferred",
 			cardAuthority: deps.cardAuthority,
+			gateAuthorityView: deps.gateAuthorityView,
 			actor: founderId,
 			founderId,
 			answer,
@@ -704,6 +722,14 @@ async function rebindOne(
 			return;
 		}
 		if (row.decision === "approve") {
+			const projectedAuthority = deps.gateAuthorityView?.resolve(
+				row.question_id,
+				row.execution_id,
+			);
+			if (projectedAuthority?.state === "approved") {
+				await finalizeConsume(row, deps);
+				return;
+			}
 			const after = deps.store.getSession(row.execution_id);
 			if (!after || !APPROVE_FLIPPED_STATUSES.has(after.status ?? "")) {
 				// (a) holds but (b) not yet — hook silently failed to flip. Keep
@@ -729,10 +755,22 @@ async function finalizeConsume(
 	row: FounderDeferredApproval,
 	deps: DeferredRebindDeps,
 ): Promise<void> {
+	const liveSession = deps.store.getSession(row.execution_id);
+	const engineAuthority = deps.gateAuthorityView?.resolve(
+		row.question_id,
+		row.execution_id,
+	);
 	if (
 		!(await guardRebindSideEffect(
 			row,
-			deps.store.getSession(row.execution_id),
+			engineAuthority
+				? {
+						status: engineAuthority.state,
+						review_question_id: engineAuthority.questionId,
+						pr_head_sha: engineAuthority.headSha,
+						pr_number: engineAuthority.prNumber,
+					}
+				: liveSession,
 			deps,
 		))
 	) {

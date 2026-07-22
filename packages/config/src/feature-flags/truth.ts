@@ -232,6 +232,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: memory-pressure high watermark",
 	FLYWHEEL_SWAP_PRESSURE_LOW_PCT: "tuning knob: memory-pressure low watermark",
 	FLYWHEEL_MAILBOX_WRITE_TIMEOUT_MS: "tuning knob: mailbox write timeout",
+	FLYWHEEL_LAND_CLEANUP_GRACE_MS:
+		"tuning knob: per-session land cleanup opportunity grace period (FLY-1375)",
 	FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS:
 		"tuning knob: active Claude review subprocess timeout (FLY-1254)",
 	FLYWHEEL_AUTOCONTINUE_ARM_WINDOW_MS:

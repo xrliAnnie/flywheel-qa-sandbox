@@ -554,7 +554,7 @@ export class WorkflowShadowWriter implements WorkflowShadowHooks {
 	 *   - T6: three_stage_fix_round events recorded DURING this run (ts >=
 	 *     run.created_at — a previous workflow's rounds are its own history,
 	 *     R1 #2), each with its ACTUAL production round number;
-	 *   - T9: post_ship_finalization_claim → finalize (external-merge repair);
+	 *   - T9: finalization-completed fact → finalize (external-merge repair);
 	 *   - T4/T5: the NEWEST phase session per role only (R1 #4 — historical
 	 *     boundary rows from legacy close-respawns stay a declared gap);
 	 * DECLARED GAPS (R2#4/R3#4 — honest, never fabricated): wake-class
@@ -681,7 +681,12 @@ export class WorkflowShadowWriter implements WorkflowShadowHooks {
 				// finalizes it — a prior workflow's ship must never close a new run
 				// (an unattributable claim, e.g. pre-flag dispatch, stays a
 				// declared gap rather than a fabricated finalization).
-				if (store.hasWorkflowRunAttributedShipClaim(run.run_id, issueId)) {
+				if (
+					store.hasWorkflowRunAttributedFinalizationCompleted(
+						run.run_id,
+						issueId,
+					)
+				) {
 					store.applyWorkflowShadowBatch({
 						projectName: project,
 						issueId,

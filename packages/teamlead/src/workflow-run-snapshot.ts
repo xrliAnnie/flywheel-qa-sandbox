@@ -14,6 +14,7 @@ import {
 	type WorkKindCategory,
 } from "./work-kind.js";
 import {
+	isWorkflowManifestV1Land,
 	validatePinnedWorkflowManifest,
 	validateWorkflowManifest,
 	type WorkflowEffort,
@@ -173,12 +174,16 @@ export function buildWorkflowRunSnapshotV1(input: {
 	const resolved: ResolvedWorkflowNode[] = validated.nodes.map((node) => {
 		const capabilities = {
 			...getNodeTypeRegistryEntry(node.type).capabilities,
+			...(isWorkflowManifestV1Land(validated) &&
+			node.id === validated.approval_gate.node
+				? { can_request_ship_approval: true }
+				: {}),
 		};
 		assertDesignNodeCompletionCapabilities(
 			capabilities,
 			`workflow node ${node.id}`,
 		);
-		if (node.type === "gate") {
+		if (node.type === "gate" || node.type === "land") {
 			return { id: node.id, type: node.type, capabilities };
 		}
 		if (!node.vendor || !node.model) {
@@ -305,17 +310,31 @@ const CAPABILITY_KEYS = [
 	"output_mode",
 ] as const;
 
+const LAND_CAPABILITY_KEY = "can_request_ship_approval" as const;
+
 function parseCapabilities(
 	value: unknown,
 	path: string,
+	landVariant: boolean,
 ): WorkflowNodeCapabilities {
 	const raw = object(value, path);
-	exact(raw, CAPABILITY_KEYS, `${path} capabilities`);
+	exact(
+		raw,
+		landVariant ? [...CAPABILITY_KEYS, LAND_CAPABILITY_KEY] : CAPABILITY_KEYS,
+		`${path} capabilities`,
+	);
 	const booleanKeys = CAPABILITY_KEYS.slice(0, 10);
 	for (const key of booleanKeys) {
 		if (typeof raw[key] !== "boolean") {
 			throw new Error(`${path}.${key} must be boolean`);
 		}
+	}
+	if (
+		landVariant &&
+		raw[LAND_CAPABILITY_KEY] !== undefined &&
+		typeof raw[LAND_CAPABILITY_KEY] !== "boolean"
+	) {
+		throw new Error(`${path}.${LAND_CAPABILITY_KEY} must be boolean`);
 	}
 	if (
 		raw.completion_route !== "phase_design_complete" &&
@@ -443,15 +462,18 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 			const capabilities = parseCapabilities(
 				nodeRaw.capabilities,
 				`${path}.capabilities`,
+				manifest.schema_version === 1 && isWorkflowManifestV1Land(manifest),
 			);
 			assertDesignNodeCompletionCapabilities(capabilities, path);
-			if (manifestNode.type === "gate") {
+			if (manifestNode.type === "gate" || manifestNode.type === "land") {
 				if (
 					nodeRaw.dispatch !== undefined ||
 					nodeRaw.output !== undefined ||
 					nodeRaw.agent !== undefined
 				) {
-					throw new Error(`${path} gate cannot carry execution fields`);
+					throw new Error(
+						`${path} ${manifestNode.type} cannot carry execution fields`,
+					);
 				}
 				return { id, type: manifestNode.type, capabilities };
 			}

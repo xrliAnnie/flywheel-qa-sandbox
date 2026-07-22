@@ -2988,6 +2988,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "FLY-1344 founder-controlled DAG lever (FLY-1307 lineage). Dispatch still requires claims WRITE + READ; force_legacy is a separate ship-reader fallback.",
 	},
 	{
+		name: "land_node",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_LAND_NODE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1375: engine-owned land node (sanctioned merge → close sessions → worktree cleanup → Done/archive). =0 stops new land activation; already claimed operations keep converging.",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/workflow-template-dispatch.ts",
+				"isLandNodeEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"workflow-template tests: next land predicate call observes apply",
+		note: "New land template IDs are selected explicitly; existing legacy bindings remain unchanged.",
+	},
+	{
 		name: "workflow_generalized_templates",
 		category: "feature",
 		source: "env",

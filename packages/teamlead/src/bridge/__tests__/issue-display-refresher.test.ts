@@ -457,7 +457,7 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		expect(log.title).toEqual([{ via: "stage", stage: "approve" }]);
 	});
 
-	it("post-ship finalization claim → completed during the stale awaiting_review cleanup window", async () => {
+	it("post-ship finalization completion → completed during the stale awaiting_review cleanup window", async () => {
 		seedSession(store, {
 			exec: "e-design",
 			role: "design",
@@ -474,7 +474,7 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 			execution_id: "e-qa",
 			issue_id: ISSUE,
 			project_name: PROJECT,
-			event_type: "post_ship_finalization_claim",
+			event_type: "post_ship_finalization_completed",
 			source: "test",
 		});
 		const { refresher, log } = makeRefresher(store, {
@@ -902,7 +902,7 @@ describe("IssueDisplayRefresher — sweep (plan Step 4.5)", () => {
 			execution_id: "e-qa",
 			issue_id: ISSUE,
 			project_name: PROJECT,
-			event_type: "post_ship_finalization_claim",
+			event_type: "post_ship_finalization_completed",
 			source: "test",
 		});
 		const after = computeSessionsFingerprint(store, ISSUE);

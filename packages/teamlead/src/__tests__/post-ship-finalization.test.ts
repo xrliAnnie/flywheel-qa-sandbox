@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	isPostApproveShipComplete,
 	runPostShipFinalization,
+	runResumablePostShipFinalization,
 	setWorkflowShadowFinalizationHook,
 } from "../bridge/post-ship-finalization.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -579,5 +580,57 @@ describe("runPostShipFinalization", () => {
 			),
 		).resolves.toBeUndefined();
 		expect(markIssueDone).toHaveBeenCalledOnce();
+	});
+
+	it("land replay resumes an existing claim and closes the issue before worktree deletion", async () => {
+		const order: string[] = [];
+		const issueCloseout = vi
+			.fn()
+			.mockImplementationOnce(async () => {
+				order.push("closeout:partial");
+				return { outcome: "blocked" };
+			})
+			.mockImplementationOnce(async () => {
+				order.push("closeout:completed");
+				return { outcome: "completed" };
+			});
+		const removeCleanWorktree = vi.fn().mockImplementation(async () => {
+			order.push("worktree");
+			return { removed: true, bindingVerified: true };
+		});
+		const markIssueDone = vi.fn().mockResolvedValue({ done: true });
+		const opts = {
+			executionId: "exec-1",
+			issueId: "FLY-102",
+			issueIdentifier: "FLY-102",
+			projectName: "flywheel",
+			sessionStatus: "completed",
+		};
+
+		expect(
+			await runResumablePostShipFinalization(opts, {
+				store,
+				projects: PROJECTS,
+				issueCloseout,
+				removeCleanWorktree,
+				markIssueDone,
+			}),
+		).toMatchObject({ complete: false, outcome: "partial" });
+		expect(removeCleanWorktree).not.toHaveBeenCalled();
+
+		expect(
+			await runResumablePostShipFinalization(opts, {
+				store,
+				projects: PROJECTS,
+				issueCloseout,
+				removeCleanWorktree,
+				markIssueDone,
+			}),
+		).toMatchObject({ complete: true, outcome: "completed" });
+		expect(order).toEqual([
+			"closeout:partial",
+			"closeout:completed",
+			"worktree",
+		]);
 	});
 });

@@ -16,7 +16,11 @@ import {
 	StateStore,
 	type WorkflowDeadExecutionWatchRow,
 } from "../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+import { buildWorkflowRunSnapshotV1 } from "../workflow-run-snapshot.js";
+import {
+	isWorkflowManifestV1Land,
+	loadBundledWorkflowSeeds,
+} from "../workflow-template.js";
 
 const generalizedRecoveryMocks = vi.hoisted(() => ({
 	waitForDelivery: vi.fn(),
@@ -156,6 +160,75 @@ async function storeWithIntent(target: "design" | "implement" | "qa") {
 	return store;
 }
 
+async function storeWithLandIntent() {
+	const store = await StateStore.create(":memory:");
+	const seed = loadBundledWorkflowSeeds().find(
+		(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
+	)!;
+	if (!isWorkflowManifestV1Land(seed.manifest)) {
+		throw new Error("land fixture seed is not a land manifest");
+	}
+	store.createWorkflowRun({
+		runId: "run-land",
+		issueId: "FLY-1375",
+		projectName: "flywheel",
+		snapshotJson: JSON.stringify(
+			buildWorkflowRunSnapshotV1({
+				template: { id: seed.templateId, revision: 1 },
+				manifest: seed.manifest,
+			}),
+		),
+		claimsReadEnrolled: true,
+	});
+	const db = (
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db;
+	db.run(
+		"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'land' WHERE run_id = 'run-land'",
+	);
+	store.upsertWorkflowRunNode({
+		runId: "run-land",
+		nodeId: "land",
+		attempt: 1,
+		state: "pending",
+		executionId: "land-exec",
+	});
+	db.run(
+		`INSERT INTO workflow_side_effect_ledger
+		   (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state)
+		 VALUES ('run-land', 'land', 1, 'dispatch', 1, 'land-exec', 'intent_recorded')`,
+	);
+	store.upsertSession({
+		execution_id: "qa-land",
+		issue_id: "FLY-1375",
+		project_name: "flywheel",
+		status: "awaiting_review",
+		pr_number: 1375,
+		pr_head_sha: HEAD,
+	});
+	store.ensureWorkflowGateHolder({
+		runId: "run-land",
+		gateNodeId: "founder_gate",
+		attempt: 1,
+		headSha: HEAD,
+		sourceExecutionId: "qa-land",
+		questionId: "land-question",
+		now: "2026-07-21T20:00:00.000Z",
+	});
+	store.advanceWorkflowGateHolderMaterialization({
+		questionId: "land-question",
+		stage: "card_bound",
+		cardMessageId: "land-card",
+		now: "2026-07-21T20:01:00.000Z",
+	});
+	db.run(
+		"UPDATE workflow_gate_holder SET state = 'approved' WHERE question_id = 'land-question'",
+	);
+	return store;
+}
+
 function failRunningDesign(store: StateStore, lastError: string): void {
 	expect(
 		store.admitGeneralizedWorkflowExecution({
@@ -286,6 +359,154 @@ function fakeStartDispatcher(store: StateStore) {
 }
 
 describe("WorkflowEngineDispatcher", () => {
+	it("executes an engine-owned land node and terminalizes the run from its durable receipt", async () => {
+		const store = await storeWithLandIntent();
+		const landExecutor = vi.fn(async (operationId: string) => {
+			const claim = store.claimLandOperation({
+				operationId,
+				ownerId: "land-test-worker",
+				now: "2026-07-21T20:02:00.000Z",
+				leaseExpiresAt: "2026-07-21T20:03:00.000Z",
+			});
+			if (!claim) throw new Error("land operation was not claimable");
+			const completed = store.recordLandOperationStep({
+				operationId,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				step: "finalization_completed",
+				receipt: { complete: true },
+				now: "2026-07-21T20:02:01.000Z",
+			});
+			if (!completed.ok) throw new Error(completed.reason);
+			return { status: "completed" as const };
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fakeStartDispatcher(store).dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-21T20:02:00.000Z"),
+			landExecutor,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(landExecutor).toHaveBeenCalledOnce();
+		expect(store.getWorkflowRun("run-land")?.status).toBe("completed");
+		expect(store.getWorkflowRunNode("run-land", "land", 1)?.state).toBe("done");
+		expect(store.listWorkflowSideEffects("run-land")[0]?.state).toBe("started");
+		store.close();
+	});
+
+	it("continues an activated land operation after the land flag is disabled", async () => {
+		const store = await storeWithLandIntent();
+		const operation = store.ensureLandOperation({
+			runId: "run-land",
+			issueId: "FLY-1375",
+			projectName: "flywheel",
+			prNumber: 1375,
+			approvedHead: HEAD,
+			now: "2026-07-21T20:01:30.000Z",
+		});
+		const landExecutor = vi.fn(async (operationId: string) => {
+			expect(operationId).toBe(operation.operation_id);
+			const claim = store.claimLandOperation({
+				operationId,
+				ownerId: "land-test-worker",
+				now: "2026-07-21T20:02:00.000Z",
+				leaseExpiresAt: "2026-07-21T20:03:00.000Z",
+			});
+			if (!claim) throw new Error("land operation was not claimable");
+			const completed = store.recordLandOperationStep({
+				operationId,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				step: "finalization_completed",
+				receipt: { complete: true },
+				now: "2026-07-21T20:02:01.000Z",
+			});
+			if (!completed.ok) throw new Error(completed.reason);
+			return { status: "completed" as const };
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fakeStartDispatcher(store).dispatcher,
+			env: { ...WORKFLOW_ON, FLYWHEEL_LAND_NODE: "0" },
+			now: () => new Date("2026-07-21T20:02:00.000Z"),
+			landExecutor,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(landExecutor).toHaveBeenCalledOnce();
+		expect(store.getWorkflowRun("run-land")?.status).toBe("completed");
+		store.close();
+	});
+
+	it("holds an unactivated land node when the land flag is disabled", async () => {
+		const store = await storeWithLandIntent();
+		const landExecutor = vi.fn();
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fakeStartDispatcher(store).dispatcher,
+			env: { ...WORKFLOW_ON, FLYWHEEL_LAND_NODE: "0" },
+			now: () => new Date("2026-07-21T20:02:00.000Z"),
+			landExecutor,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(landExecutor).not.toHaveBeenCalled();
+		expect(store.getWorkflowRun("run-land")?.status).toBe("held");
+		expect(store.getLandOperationForRun("run-land")).toBeUndefined();
+		store.close();
+	});
+
+	it("durably escalates a post-merge cleanup partial without holding the run", async () => {
+		const store = await storeWithLandIntent();
+		const landExecutor = vi.fn(async (operationId: string) => {
+			const claim = store.claimLandOperation({
+				operationId,
+				ownerId: "land-test-worker",
+				now: "2026-07-21T20:02:00.000Z",
+				leaseExpiresAt: "2026-07-21T20:03:00.000Z",
+			});
+			if (!claim) throw new Error("land operation was not claimable");
+			store.setLandOperationDisposition({
+				operationId,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				state: "partial",
+				error: "issue_closeout_incomplete",
+				now: "2026-07-21T20:02:01.000Z",
+			});
+			return {
+				status: "partial" as const,
+				reason: "issue_closeout_incomplete",
+			};
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fakeStartDispatcher(store).dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-21T20:02:02.000Z"),
+			landExecutor,
+			resolveRunAlertIdentity: (projectName) => ({
+				leadId: "flywheel-eng-lead",
+				projectName,
+				leadResolution: "resolved",
+			}),
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(store.getWorkflowRun("run-land")?.status).toBe("active");
+		const partial = store
+			.listWorkflowRunEvents("run-land")
+			.find((event) => event.kind === "land_partial");
+		expect(partial).toBeDefined();
+		expect(store.getWorkflowAlertOutbox(partial!.event_uid)).toMatchObject({
+			state: "pending",
+			run_id: "run-land",
+		});
+		store.close();
+	});
+
 	it.each([
 		["v1", "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],
 		["v1", "FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
@@ -1024,7 +1245,7 @@ describe("WorkflowEngineDispatcher", () => {
 				new_execution_id: `new-${index}`,
 				project_name: "flywheel",
 				issue_id: "FLY-1307",
-				observed_at: "2026-07-22T00:00:00.000Z",
+				observed_at: "2030-07-22T00:00:00.000Z",
 				baseline: {
 					commitMarker: { state: "unknown" },
 					commDbMessageCount: null,
@@ -1405,7 +1626,7 @@ describe("WorkflowEngineDispatcher", () => {
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-quota-hold-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-22T00:00:00.000Z"),
+			now: () => new Date("2030-07-22T00:00:00.000Z"),
 			resolvePredecessorHead: async () => HEAD,
 			probeLaunchLiveness: async () => "dead",
 			alertSink: { current: { alert } },
@@ -1456,7 +1677,7 @@ describe("WorkflowEngineDispatcher", () => {
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-design-fallback-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-22T00:00:00.000Z"),
+			now: () => new Date("2030-07-22T00:00:00.000Z"),
 			probeLaunchLiveness: async () => "dead",
 			resolvePredecessorHead: async () => HEAD,
 			resolveRunAlertIdentity: (projectName) => ({
@@ -1503,7 +1724,7 @@ describe("WorkflowEngineDispatcher", () => {
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-design-quota-hold-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-22T00:00:00.000Z"),
+			now: () => new Date("2030-07-22T00:00:00.000Z"),
 			probeLaunchLiveness: async () => "dead",
 			resolvePredecessorHead: async () => HEAD,
 			resolveRunAlertIdentity: (projectName) => ({
@@ -1543,7 +1764,7 @@ describe("WorkflowEngineDispatcher", () => {
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-terminal-intent-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-22T00:00:00.000Z"),
+			now: () => new Date("2030-07-22T00:00:00.000Z"),
 			resolvePredecessorHead: async () => HEAD,
 			probeLaunchLiveness: async () => "alive",
 			log,

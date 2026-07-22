@@ -199,6 +199,13 @@ export interface GatePollerConfig {
 	 */
 	onIssueGateSupersedeTick?: () => void | Promise<void>;
 	/**
+	 * FLY-1375: converge engine-owned approval holders into CommDB + Discord.
+	 * Runs every poll tick on the existing timer; the callback owns single-flight.
+	 */
+	onWorkflowGateMaterializeTick?: () => void | Promise<void>;
+	/** FLY-1375: resume durable engine and runless land operations. */
+	onLandOperationTick?: () => void | Promise<void>;
+	/**
 	 * FLY-1048 (PR-C): the detection-escalation reconcile sweep — the ~30min
 	 * Lead-grace timer that pages the founder (or aggregates a fleet incident).
 	 * Piggybacks this same poll tick (zero new periodic timer). Error-isolated +
@@ -320,6 +327,7 @@ export interface GatePollerConfig {
 	deferredRebind?: {
 		canonicalFounderId(): string | undefined;
 		onResponseWritten?: DeferredRebindDeps["onResponseWritten"];
+		gateAuthorityView?: DeferredRebindDeps["gateAuthorityView"];
 	};
 	/** FLY-1238: one shared last-mile guard for all recovery surfaces. */
 	mergedGateGuard?: MergedGateGuard;
@@ -687,6 +695,26 @@ export class GatePoller {
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] FLY-1314 issue-gate supersede error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			if (this.config.onWorkflowGateMaterializeTick) {
+				void Promise.resolve()
+					.then(() => this.config.onWorkflowGateMaterializeTick?.())
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] FLY-1375 workflow-gate materialization error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			if (this.config.onLandOperationTick) {
+				void Promise.resolve()
+					.then(() => this.config.onLandOperationTick?.())
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] FLY-1375 land-operation sweep error (non-fatal): ${(err as Error).message}`,
 						),
 					);
 			}
@@ -3669,6 +3697,7 @@ export class GatePoller {
 				}
 			},
 			onResponseWritten: rebind.onResponseWritten,
+			gateAuthorityView: rebind.gateAuthorityView,
 			resolveBotToken: (row) =>
 				this.resolveBotTokenFor(row.project_name, row.execution_id),
 			fetchImpl: this.config.fetchImpl,

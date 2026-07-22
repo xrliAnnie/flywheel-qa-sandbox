@@ -129,6 +129,10 @@ export interface ExternalMergeReconcileDeps {
 	projects: ProjectEntry[];
 	/** FLY-603 worktree cleanup closure (same one the sinks thread through). */
 	removeCleanWorktree?: WorktreeCleanupFn;
+	withIssueLifecycleMutex?: <T>(
+		issueId: string,
+		fn: () => Promise<T>,
+	) => Promise<T>;
 	/** Lead alert sink for the path-2 rogue-merge escalation. Best-effort. */
 	alertLead?: (
 		session: Session,
@@ -441,6 +445,7 @@ export function createExternalMergeReconciler(
 				// FLY-1204: reclaim the parked three-stage phases on this ship path too.
 				finalizeThreeStagePhases: deps.finalizeThreeStagePhases,
 				markIssueDone: makeLinearDoneFinalizer(deps.config),
+				withIssueLifecycleMutex: deps.withIssueLifecycleMutex,
 			},
 		);
 		deps.store.insertEvent({
@@ -627,13 +632,7 @@ export function createExternalMergeReconciler(
 						if (isThreadArchived(s)) return false;
 						// runPostShipFinalization's own claim is the finalize-once gate;
 						// skip rows that already claimed it (idempotency, no gh spend).
-						const claimedAlready = deps.store
-							.getEventsByExecution(s.execution_id)
-							.some(
-								(e) =>
-									e.event_id === `post-ship-finalization-${s.execution_id}`,
-							);
-						return !claimedAlready;
+						return !deps.store.hasFinalizationCompletedForIssue(s.issue_id);
 					});
 
 				const candidateMap = new Map<string, ProjectMergeCandidate>();

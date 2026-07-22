@@ -23,6 +23,7 @@ export interface FounderReactionApprovalFactoryConfig {
 	discordOwnerUserId?: string;
 	founderConsentUserId?: string;
 	store: ReactionApprovalHandlerDeps["store"];
+	gateAuthorityView?: ReactionApprovalHandlerDeps["gateAuthorityView"];
 	readBindingImpl: ReactionApprovalHandlerDeps["readBindingImpl"];
 	onResponseWritten?: ReactionApprovalHandlerDeps["onResponseWritten"];
 	/** Projects for which auto-approve is disabled (per-project kill). */
@@ -125,6 +126,7 @@ export function makeFounderReactionApprovalCallback(
 			{
 				canonicalFounderId,
 				store: config.store,
+				gateAuthorityView: config.gateAuthorityView,
 				db: args.db,
 				reactionFetcherImpl: args.reactionFetcherImpl,
 				readBindingImpl: config.readBindingImpl,

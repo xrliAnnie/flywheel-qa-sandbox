@@ -482,7 +482,7 @@ describe("Codex R1 fixes — evidence tri-state, run-scoped backfill, completed-
 		).toBe(false);
 	});
 
-	it("R2#3: a PRIOR run's ship-finalization claim never finalizes a NEW run; the run's OWN claim does", async () => {
+	it("R2#3: a PRIOR run's finalization completion never finalizes a NEW run; the run's OWN completion does", async () => {
 		const { store, writer } = await makeWriter();
 		// run-1 dispatched exec-old, shipped (claim event), finalized
 		writer.onSpawnDispatch({
@@ -496,7 +496,7 @@ describe("Codex R1 fixes — evidence tri-state, run-scoped backfill, completed-
 			execution_id: "exec-old",
 			issue_id: ISSUE,
 			project_name: PROJECT,
-			event_type: "post_ship_finalization_claim",
+			event_type: "post_ship_finalization_completed",
 			source: "bridge.post-ship-finalization",
 			payload: {},
 		});
@@ -518,7 +518,7 @@ describe("Codex R1 fixes — evidence tri-state, run-scoped backfill, completed-
 			execution_id: "exec-new",
 			issue_id: ISSUE,
 			project_name: PROJECT,
-			event_type: "post_ship_finalization_claim",
+			event_type: "post_ship_finalization_completed",
 			source: "bridge.post-ship-finalization",
 			payload: {},
 		});
@@ -779,7 +779,7 @@ describe("reconcileOnStartup — T8 crash-window backfill from durable sources (
 		).toHaveLength(1);
 	});
 
-	it("finalizes an active run whose post_ship_finalization_claim exists (T9 claim repair — external merge path, B10)", async () => {
+	it("finalizes an active run whose durable finalization completion exists (T9 repair)", async () => {
 		const { store, writer } = await makeWriter();
 		writer.onSpawnDispatch({
 			projectName: PROJECT,
@@ -792,7 +792,7 @@ describe("reconcileOnStartup — T8 crash-window backfill from durable sources (
 			execution_id: "exec-1",
 			issue_id: ISSUE,
 			project_name: PROJECT,
-			event_type: "post_ship_finalization_claim",
+			event_type: "post_ship_finalization_completed",
 			source: "bridge.post-ship-finalization",
 			payload: {},
 		});

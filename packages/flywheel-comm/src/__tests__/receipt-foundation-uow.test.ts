@@ -722,4 +722,73 @@ describe("FLY-1392 CommDB receipt UOWs", () => {
 			db.close();
 		}
 	});
+
+	it("atomically records engine founder feedback with its receipt and wake", () => {
+		const db = new CommDB(dbPath);
+		const queue = new LeadInboxQueue(dbPath);
+		try {
+			const feedback = '{"approved":false,"feedback":"fix the release notes"}';
+			queue.enqueueHubRoot({
+				id: "founder_msg:lead-a:discord-feedback",
+				toLead: "lead-a",
+				content: JSON.stringify({
+					msgId: "discord-feedback",
+					answer: feedback,
+					projectName: "flywheel",
+					issueId: "FLY-1375",
+					threadId: "thread-1375",
+				}),
+				refMessageId: "discord-feedback",
+				now: "2026-07-20T12:00:00.000Z",
+			});
+			const questionId = db.insertQuestion("exec-a", "lead-a", "approve?", {
+				checkpoint: "approve_to_ship",
+			});
+			const result = db.trustedFounderGateResponseAndReceipt({
+				questionId,
+				fromAgent: "founder",
+				content: feedback,
+				expectedOwner: "exec-a",
+				rootId: "founder_msg:lead-a:discord-feedback",
+				msgId: "discord-feedback",
+				now: "2026-07-20T12:00:01.000Z",
+				intentKey: `gate-feedback:${questionId}`,
+				envelope: {
+					id: "wake-feedback",
+					to: "exec-a",
+					content: "ship gate feedback",
+				},
+				queuedAtMs: 1_721_390_001_000,
+				approvalSource: {
+					project: "flywheel",
+					sourceEventId: `founder-feedback:${questionId}:discord-feedback`,
+					payload: {
+						response: { approved: false, feedback },
+					},
+				},
+			});
+
+			expect(db.getResponse(questionId)).toMatchObject({
+				id: result.responseId,
+				from_agent: "founder",
+				content: feedback,
+			});
+			expect(db.listWorkflowSourceEvents()).toEqual([
+				expect.objectContaining({
+					source_event_id: `founder-feedback:${questionId}:discord-feedback`,
+					kind: "founder_feedback",
+				}),
+			]);
+			expect(
+				queue.getById("founder_msg:lead-a:discord-feedback"),
+			).toMatchObject({
+				processed_at: "2026-07-20T12:00:01.000Z",
+				routing_state: "bound",
+			});
+			expect(result.wake.message_id).toBe(`gate-feedback:${questionId}`);
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
 });

@@ -44,6 +44,7 @@ export interface FounderShipApprovalFactoryConfig {
 	discordOwnerUserId?: string;
 	founderConsentUserId?: string;
 	store: ShipApprovalHandlerDeps["store"];
+	gateAuthorityView?: ShipApprovalHandlerDeps["gateAuthorityView"];
 	onResponseWritten?: ShipApprovalHandlerDeps["onResponseWritten"];
 	/** Projects for which auto-approve is disabled (per-project kill). */
 	denylistProjects?: ReadonlySet<string>;
@@ -147,6 +148,7 @@ export function makeFounderShipApprovalCallback(
 			{
 				canonicalFounderId,
 				store: config.store,
+				gateAuthorityView: config.gateAuthorityView,
 				db: args.db,
 				onResponseWritten: config.onResponseWritten,
 				evaluateTextImpl: config.evaluateTextImpl,

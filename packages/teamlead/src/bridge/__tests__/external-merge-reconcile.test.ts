@@ -190,6 +190,7 @@ async function setup(opts?: {
 		// Ship gates bypassed by default (eligible path); individual tests re-arm.
 		FLYWHEEL_MERGE_APPROVAL_GATE: "0",
 		FLYWHEEL_QA_DONE_GATE: "0",
+		FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
 		...(opts?.env ?? {}),
 	};
 	// evaluateShipEligibility reads argsEnv keys only when present — thread via
@@ -438,8 +439,24 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 		expect(s.alerts).toHaveLength(1);
 	});
 
-	it("finalize is idempotent: a row that already claimed post-ship finalization is skipped without a gh call", async () => {
+	it("finalize is idempotent only after durable finalization completion", async () => {
 		const s = await setup();
+		seedSession(s.store, { status: "completed" });
+		s.store.insertEvent({
+			event_id: "post-ship-finalization-completed-exec-1",
+			execution_id: "exec-1",
+			issue_id: "FLY-921",
+			project_name: "proj",
+			event_type: "post_ship_finalization_completed",
+			source: "test",
+		});
+		await s.pass();
+		expect(s.checkPr).not.toHaveBeenCalled();
+		expect(runPostShipSpy).not.toHaveBeenCalled();
+	});
+
+	it("a legacy once-claim without completion is repaired instead of skipped", async () => {
+		const s = await setup({ trusted: true });
 		seedSession(s.store, { status: "completed" });
 		s.store.insertEvent({
 			event_id: "post-ship-finalization-exec-1",
@@ -450,8 +467,8 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 			source: "test",
 		});
 		await s.pass();
-		expect(s.checkPr).not.toHaveBeenCalled();
-		expect(runPostShipSpy).not.toHaveBeenCalled();
+		expect(s.checkPr).toHaveBeenCalledTimes(1);
+		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it("gh budget: at most N candidates per project per pass, rotating across passes", async () => {
@@ -523,15 +540,15 @@ describe("FLY-1314: external-merge TURN-belt reclaim", () => {
 			tmux_session:
 				args?.tmuxSession === undefined ? "tmux:qa" : args.tmuxSession,
 		});
-		// Make this a genuine belt-only source: the ordinary completed candidate
-		// path is already claimed and therefore filters the session out before gh.
+		// Make this a genuine belt-only source: finalization is complete, so the
+		// ordinary completed candidate filters out before the TURN candidate.
 		if (args?.beltOnly !== false) {
 			store.insertEvent({
-				event_id: "post-ship-finalization-qa-holder",
+				event_id: "post-ship-finalization-completed-qa-holder",
 				execution_id: "qa-holder",
 				issue_id: "FLY-1307",
 				project_name: "proj",
-				event_type: "post_ship_finalization_claim",
+				event_type: "post_ship_finalization_completed",
 				source: "test",
 			});
 		}

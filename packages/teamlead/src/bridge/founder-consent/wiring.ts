@@ -23,6 +23,7 @@ import {
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import type { StateStore } from "../../StateStore.js";
 import { deriveCanonicalFounderId } from "../approval-signal/canonical-founder-id.js";
+import { makeGateAuthorityView } from "../approval-signal/gate-authority-view.js";
 import { reviewHoldReason } from "../auto-qa-held.js";
 import type { MaterializedHeadAuthority } from "../materialized-head-authority.js";
 import { finalizeRecoveredMerge } from "../merge-ship-gate.js";
@@ -311,9 +312,12 @@ export function buildFounderConsentWiring(
 		return ctx;
 	};
 
+	const gateAuthorityView = makeGateAuthorityView(store);
 	const getSessionProject = (executionId: string) => {
 		const sess = store.getSession(executionId);
-		return sess ? { project_name: sess.project_name } : undefined;
+		if (sess) return { project_name: sess.project_name };
+		const authority = gateAuthorityView.resolveForExecution?.(executionId);
+		return authority ? { project_name: authority.projectName } : undefined;
 	};
 
 	// FLY-191 Phase 2 / FLY-799: post-write hook for the gate-response endpoint
@@ -337,7 +341,8 @@ export function buildFounderConsentWiring(
 	const getCurrentReviewQuestionId = (
 		executionId: string,
 	): string | undefined =>
-		store.getSession(executionId)?.review_question_id ?? undefined;
+		store.getSession(executionId)?.review_question_id ??
+		gateAuthorityView.resolveForExecution?.(executionId)?.questionId;
 
 	// ── Off: pass-through gate router only, no evaluator/audit/debug ──
 	if (!enabled) {
@@ -347,6 +352,7 @@ export function buildFounderConsentWiring(
 			getSessionProject,
 			getCurrentReviewQuestionId,
 			writerStore: store,
+			gateAuthorityView,
 			holdReasonFor: (executionId) =>
 				reviewHoldReason(store, store.getSession(executionId)),
 			founderId,
@@ -404,6 +410,7 @@ export function buildFounderConsentWiring(
 		getSessionProject,
 		getCurrentReviewQuestionId,
 		writerStore: store,
+		gateAuthorityView,
 		holdReasonFor: (executionId) =>
 			reviewHoldReason(store, store.getSession(executionId)),
 		founderId,

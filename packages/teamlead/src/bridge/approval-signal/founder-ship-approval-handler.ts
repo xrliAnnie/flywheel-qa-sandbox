@@ -31,6 +31,7 @@ import type {
 	MergedGateGuard,
 	MergedGateGuardResult,
 } from "../merged-gate-guard.js";
+import type { GateAuthorityView } from "./gate-authority-view.js";
 import {
 	makeGuardedOnResponseWritten,
 	type ResponseGuardDb,
@@ -145,6 +146,7 @@ export interface DeferralSupport {
 export interface ShipApprovalHandlerDeps {
 	canonicalFounderId: string;
 	store: { getSession(executionId: string): HandlerSession | undefined };
+	gateAuthorityView?: GateAuthorityView;
 	db: GateResponseDb;
 	evaluateTextImpl?: typeof evaluateTextSource;
 	writeGateResponseImpl?: typeof writeGateResponseAndRunPostWrite;
@@ -217,6 +219,11 @@ export async function tryFounderShipApproval(
 	// A-2: narrow to gates whose session is awaiting_review AND whose current
 	// review question is exactly this gate. Require EXACTLY ONE (Codex R1 #2).
 	const current = args.shipGates.filter((g) => {
+		const authority = deps.gateAuthorityView?.resolve(
+			g.questionId,
+			g.executionId,
+		);
+		if (authority) return authority.state === "awaiting_review";
 		const s = deps.store.getSession(g.executionId);
 		return (
 			s?.status === "awaiting_review" && s?.review_question_id === g.questionId
@@ -245,7 +252,19 @@ export async function tryFounderShipApproval(
 
 	const gate = current[0];
 	if (!gate) return null;
-	const session = deps.store.getSession(gate.executionId);
+	const engineAuthority = deps.gateAuthorityView?.resolve(
+		gate.questionId,
+		gate.executionId,
+	);
+	const session = engineAuthority
+		? {
+				status: engineAuthority.state,
+				review_question_id: engineAuthority.questionId,
+				pr_head_sha: engineAuthority.headSha,
+				pr_number: engineAuthority.prNumber,
+				issue_identifier: engineAuthority.issueIdentifier,
+			}
+		: deps.store.getSession(gate.executionId);
 	if (!session?.pr_head_sha) {
 		deps.auditSink?.("narrow_no_head", { questionId: gate.questionId });
 		return null;
@@ -491,10 +510,20 @@ export async function tryFounderShipApproval(
 	// session: hold reappeared → the held disposition (with the signal already
 	// in hand); anything else drifted → fail-closed WAKE-only (never write a
 	// stale gate).
-	const live = deps.store.getSession(gate.executionId);
+	const liveAuthority = deps.gateAuthorityView?.resolve(
+		gate.questionId,
+		gate.executionId,
+	);
+	const live = liveAuthority
+		? {
+				status: liveAuthority.state,
+				review_question_id: liveAuthority.questionId,
+				pr_head_sha: liveAuthority.headSha,
+			}
+		: deps.store.getSession(gate.executionId);
 	if (
 		!live ||
-		live.status !== "awaiting_review" ||
+		(live.status !== "awaiting_review" && !liveAuthority) ||
 		live.review_question_id !== gate.questionId ||
 		live.pr_head_sha !== session.pr_head_sha
 	) {
@@ -609,6 +638,7 @@ export async function tryFounderShipApproval(
 		res = await write({
 			db: deps.db,
 			store: deps.store,
+			gateAuthorityView: deps.gateAuthorityView,
 			questionId: gate.questionId,
 			executionId: gate.executionId,
 			source: "text",
@@ -718,8 +748,15 @@ export async function tryFounderShipApproval(
 					"post-write hook did not reach a safe state",
 				);
 			}
+			const afterAuthority = deps.gateAuthorityView?.resolve(
+				gate.questionId,
+				gate.executionId,
+			);
 			const after = deps.store.getSession(gate.executionId);
-			if (!after || !APPROVE_FLIPPED_STATUSES.has(after.status ?? "")) {
+			if (
+				!afterAuthority &&
+				(!after || !APPROVE_FLIPPED_STATUSES.has(after.status ?? ""))
+			) {
 				return parkOrRetry(
 					decision,
 					"postcondition_pending",

@@ -3,6 +3,7 @@ export type WorkflowNodeTypeId =
 	| "implement"
 	| "qa"
 	| "gate"
+	| "land"
 	| "generic"
 	| "review";
 
@@ -18,6 +19,8 @@ export interface WorkflowNodeCapabilities {
 	creates_pr: boolean;
 	can_ship: boolean;
 	can_land: boolean;
+	/** Land-v1 only. Omitted from legacy snapshots to preserve their digest. */
+	can_request_ship_approval?: boolean;
 	approval_gate_holder: boolean;
 	needs_review_evidence: boolean;
 	needs_mailbox_transport: boolean;
@@ -106,6 +109,17 @@ export const NODE_TYPE_REGISTRY: Readonly<
 		capabilities: {
 			...noCode("needs_review"),
 			approval_gate_holder: true,
+		},
+	},
+	land: {
+		id: "land",
+		isPhaseRole: false,
+		preserveCompletionRole: false,
+		badge: "🏁",
+		capabilities: {
+			...noCode("no_code"),
+			can_ship: true,
+			can_land: true,
 		},
 	},
 	generic: {
