@@ -217,7 +217,7 @@ describe("workflow dispatch resolution at launch", () => {
 		});
 	});
 
-	it("pins the snapshot behind the escape switch and allows only design Fable to GPT-5.6 fallback", async () => {
+	it("pins the snapshot behind the escape switch without a cause-driven fallback", async () => {
 		const store = await v1Run();
 		expect(
 			resolveNodeDispatchAtLaunch(store, {
@@ -230,27 +230,5 @@ describe("workflow dispatch resolution at launch", () => {
 			source: "snapshot_fallback",
 			audit: false,
 		});
-		expect(
-			resolveNodeDispatchAtLaunch(store, {
-				runId: "run-v1",
-				nodeId: "design",
-				approvedDesignFallback: true,
-			}),
-		).toEqual({
-			dispatch: {
-				vendor: "codex",
-				model: "gpt-5.6-sol",
-				effort: "xhigh",
-			},
-			source: "approved_design_fallback",
-			audit: true,
-		});
-		expect(() =>
-			resolveNodeDispatchAtLaunch(store, {
-				runId: "run-v1",
-				nodeId: "implement",
-				approvedDesignFallback: true,
-			}),
-		).toThrow("workflow_dispatch_fallback_not_allowlisted");
 	});
 });

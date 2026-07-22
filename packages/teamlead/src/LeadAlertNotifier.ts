@@ -362,12 +362,14 @@ export interface AlertMetadata {
 		disposition:
 			| "held"
 			| "partial"
-			| "design_fallback"
 			| "probe_unknown"
 			| "dead_execution_activity_after_replacement"
-			| "repeated_dead_execution_pattern"
 			| "ship_ready_stalled"
 			| "ship_ready_delivery_failed";
+		launchCount?: number;
+		maxBlindReplacements?: number;
+		outputExistsForAttempt?: boolean;
+		management?: { terminate: string };
 		leadResolution: "resolved" | "fallback";
 	};
 	runnerStuck?: {

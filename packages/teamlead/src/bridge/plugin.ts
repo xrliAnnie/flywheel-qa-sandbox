@@ -131,6 +131,7 @@ import {
 	REVIEW_BINDING_UNBOUND,
 	type Session,
 	StateStore,
+	type WorkflowEngineAlertIdentity,
 } from "../StateStore.js";
 import { isWorkflowClaimsWriteEnabled } from "../workflow-claims.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
@@ -663,6 +664,69 @@ import { scanZombies } from "./zombie-scan.js";
 // `./plugin.js` — run-dispatcher.ts, run-infra.ts — keep working unchanged.
 export type { CommBackend };
 export const resolveCommBackend = resolveCommBackendShared;
+
+export function resolveWorkflowRunAlertIdentity(input: {
+	store: Pick<
+		StateStore,
+		"getWorkflowRun" | "getSessionByIssue" | "getSessionLabels"
+	>;
+	projects: ProjectEntry[];
+	defaultLeadAgentId: string;
+	projectName: string;
+	issueId: string;
+	runId: string;
+	log?: (message: string) => void;
+}): WorkflowEngineAlertIdentity {
+	const project = input.projects.find(
+		(candidate) => candidate.projectName === input.projectName,
+	);
+	const configuredLead = (leadId: string | null | undefined): boolean =>
+		!!leadId &&
+		leadId !== "unassigned" &&
+		!!project?.leads.some((lead) => lead.agentId === leadId);
+	const run = input.store.getWorkflowRun(input.runId);
+	if (
+		run?.project_name === input.projectName &&
+		run.issue_id === input.issueId &&
+		configuredLead(run.selected_by)
+	) {
+		return {
+			leadId: run.selected_by!,
+			projectName: input.projectName,
+			leadResolution: "resolved",
+		};
+	}
+
+	const session = input.store.getSessionByIssue(input.issueId);
+	if (session?.project_name === input.projectName) {
+		try {
+			const labels = input.store.getSessionLabels(session.execution_id);
+			const resolution = resolveLeadForIssue(
+				input.projects,
+				input.projectName,
+				labels,
+			);
+			if (resolution.matchMethod === "label") {
+				return {
+					leadId: resolution.lead.agentId,
+					projectName: input.projectName,
+					leadResolution: "resolved",
+				};
+			}
+		} catch {
+			// Fall through to the explicit, loud fallback below.
+		}
+	}
+
+	(input.log ?? console.warn)(
+		`workflow engine alert routing fell back for ${input.runId}/${input.issueId}: no configured run owner or session-label owner`,
+	);
+	return {
+		leadId: input.defaultLeadAgentId,
+		projectName: input.projectName,
+		leadResolution: "fallback",
+	};
+}
 
 /**
  * FLY-182: resolve the per-write mailbox timeout from
@@ -5419,28 +5483,16 @@ export async function startBridge(
 					}
 				},
 				alertSink: workflowEngineAlertHolder,
-				resolveRunAlertIdentity: (projectName, issueId) => {
-					const session = store.getSessionByIssue(issueId);
-					if (session?.project_name === projectName) {
-						try {
-							const labels = store.getSessionLabels(session.execution_id);
-							return {
-								leadId: resolveLeadForIssue(projects, projectName, labels).lead
-									.agentId,
-								projectName,
-								leadResolution: "resolved" as const,
-							};
-						} catch {
-							// Fall through to the project-level default; alert delivery must not
-							// depend on the dead execution retaining a session row.
-						}
-					}
-					return {
-						leadId: config.defaultLeadAgentId,
+				resolveRunAlertIdentity: (projectName, issueId, runId) =>
+					resolveWorkflowRunAlertIdentity({
+						store,
+						projects,
+						defaultLeadAgentId: config.defaultLeadAgentId,
 						projectName,
-						leadResolution: "fallback" as const,
-					};
-				},
+						issueId,
+						runId,
+						log: (message) => console.warn(`[workflow-engine] ${message}`),
+					}),
 				log: (message) => console.warn(`[workflow-engine] ${message}`),
 				materializedHeadAuthority,
 				landExecutor,

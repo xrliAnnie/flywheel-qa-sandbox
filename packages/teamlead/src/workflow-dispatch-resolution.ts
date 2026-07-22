@@ -13,24 +13,9 @@ export interface WorkflowDispatchResolution {
 		model: string;
 		effort?: WorkflowEffort;
 	};
-	source:
-		| "current_config"
-		| "live_template"
-		| "snapshot_fallback"
-		| "approved_design_fallback";
+	source: "current_config" | "live_template" | "snapshot_fallback";
 	audit: boolean;
 }
-
-const APPROVED_FALLBACK_SOURCE_MODEL = "claude-fable-5";
-const APPROVED_FALLBACK_TARGET = {
-	vendor: "codex" as const,
-	model: "gpt-5.6-sol",
-	effort: "xhigh" as const,
-};
-const APPROVED_REPLACEMENT_MODELS = new Set([
-	APPROVED_FALLBACK_SOURCE_MODEL,
-	APPROVED_FALLBACK_TARGET.model,
-]);
 
 /**
  * Resolve the physical dispatch immediately before admission. The immutable
@@ -43,7 +28,6 @@ export function resolveNodeDispatchAtLaunch(
 		runId: string;
 		nodeId: string;
 		env?: Record<string, string | undefined>;
-		approvedDesignFallback?: boolean;
 	},
 ): WorkflowDispatchResolution {
 	const run = store.getWorkflowRun(input.runId);
@@ -55,23 +39,6 @@ export function resolveNodeDispatchAtLaunch(
 	if (!node?.dispatch) throw new Error("workflow_dispatch_node_not_executable");
 	const pinned = { ...node.dispatch };
 	const env = input.env ?? process.env;
-
-	if (input.approvedDesignFallback) {
-		if (
-			node.type !== "design" ||
-			pinned.vendor !== "claude" ||
-			pinned.model !== APPROVED_FALLBACK_SOURCE_MODEL ||
-			!APPROVED_REPLACEMENT_MODELS.has(pinned.model) ||
-			!APPROVED_REPLACEMENT_MODELS.has(APPROVED_FALLBACK_TARGET.model)
-		) {
-			throw new Error("workflow_dispatch_fallback_not_allowlisted");
-		}
-		return {
-			dispatch: { ...APPROVED_FALLBACK_TARGET },
-			source: "approved_design_fallback",
-			audit: true,
-		};
-	}
 
 	if (env.FLYWHEEL_VENDOR_AT_DISPATCH === "0") {
 		return { dispatch: pinned, source: "snapshot_fallback", audit: false };

@@ -299,7 +299,7 @@ async function storeWithLandIntent() {
 	return store;
 }
 
-function failRunningDesign(store: StateStore, lastError: string): void {
+function failRunningDesign(store: StateStore, lastError?: string): void {
 	expect(
 		store.admitGeneralizedWorkflowExecution({
 			runId: "run-1",
@@ -338,7 +338,7 @@ function failRunningDesign(store: StateStore, lastError: string): void {
 		issue_id: "FLY-1307",
 		project_name: "flywheel",
 		status: "failed",
-		last_error: lastError,
+		...(lastError === undefined ? {} : { last_error: lastError }),
 	});
 }
 
@@ -1213,6 +1213,74 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
+	it.each(["working", "awaiting_review"])(
+		"never probes or replaces a slow live runner in %s",
+		async (status) => {
+			const store = await storeWithIntent("implement");
+			const fake = fakeStartDispatcher(store);
+			const probeLaunchLiveness = vi.fn(async () => "dead" as const);
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				stateRoot: mkdtempSync(join(tmpdir(), "fly1415-live-runner-")),
+				env: WORKFLOW_ON,
+				now: () => new Date("2099-07-22T00:00:00.000Z"),
+				resolvePredecessorHead: async () => HEAD,
+				probeLaunchLiveness,
+			});
+			expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			probeLaunchLiveness.mockClear();
+			store.upsertSession({
+				execution_id: "implement-1",
+				issue_id: "FLY-1307",
+				project_name: "flywheel",
+				status,
+				workflow_node_id: "implement",
+			});
+
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+			expect(probeLaunchLiveness).not.toHaveBeenCalled();
+			expect(fake.requests).toHaveLength(1);
+			expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
+				state: "running",
+				execution_id: "implement-1",
+			});
+			store.close();
+		},
+	);
+
+	it("does not replace a terminal session while any runner pane remains alive", async () => {
+		const store = await storeWithIntent("implement");
+		const fake = fakeStartDispatcher(store);
+		const probeLaunchLiveness = vi.fn(async () => "alive" as const);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1415-live-pane-")),
+			env: WORKFLOW_ON,
+			now: () => new Date("2099-07-22T00:00:00.000Z"),
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness,
+		});
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "failed",
+			workflow_node_id: "implement",
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(probeLaunchLiveness).toHaveBeenCalledOnce();
+		expect(fake.requests).toHaveLength(1);
+		expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
+			state: "running",
+			execution_id: "implement-1",
+		});
+		store.close();
+	});
+
 	it("observes the dead-exec sweep kill switch on every tick without a restart", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);
@@ -1315,7 +1383,7 @@ describe("WorkflowEngineDispatcher", () => {
 				new_execution_id: `new-${index}`,
 				project_name: "flywheel",
 				issue_id: "FLY-1307",
-				observed_at: "2030-07-22T00:00:00.000Z",
+				observed_at: "2099-07-22T00:00:00.000Z",
 				baseline: {
 					commitMarker: { state: "unknown" },
 					commDbMessageCount: null,
@@ -1573,7 +1641,7 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it("alerts when the same node needs a second dead-execution replacement", async () => {
+	it("records but does not alert when a node needs a second dead-execution replacement", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);
 		const base = deadExecEngineClockBaseMs();
@@ -1618,18 +1686,12 @@ describe("WorkflowEngineDispatcher", () => {
 		});
 		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
 		expect(fake.requests).toHaveLength(3);
-		const repeatedAlerts = store.listWorkflowAlertOutbox();
-		expect(repeatedAlerts).toHaveLength(2);
-		expect(repeatedAlerts.map((row) => row.payload.eventType).sort()).toEqual([
-			"workflow_engine_escalation",
-			"workflow_engine_issue_alert",
-		]);
-		for (const row of repeatedAlerts) {
-			expect(row.payload.metadata.workflowEngine).toMatchObject({
-				disposition: "repeated_dead_execution_pattern",
-				nodeId: "implement",
-			});
-		}
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(0);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "repeated_dead_execution_pattern"),
+		).toHaveLength(1);
 		store.close();
 	});
 
@@ -1687,135 +1749,70 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it("holds quota/auth deaths immediately and delivers the durable escalation", async () => {
-		const store = await storeWithIntent("implement");
-		const fake = fakeStartDispatcher(store);
-		const alert = vi.fn(async () => ({ sent: true as const }));
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fake.dispatcher,
-			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-quota-hold-")),
-			env: WORKFLOW_ON,
-			now: () => new Date("2030-07-22T00:00:00.000Z"),
-			resolvePredecessorHead: async () => HEAD,
-			probeLaunchLiveness: async () => "dead",
-			alertSink: { current: { alert } },
-			resolveRunAlertIdentity: (projectName) => ({
-				leadId: "flywheel-eng-lead",
-				projectName,
-				leadResolution: "resolved",
-			}),
-		});
-		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
-		store.upsertSession({
-			execution_id: "implement-1",
-			issue_id: "FLY-1307",
-			project_name: "flywheel",
-			status: "failed",
-			last_error: "billing quota exhausted; authentication required",
-		});
-
-		await dispatcher.reconcile();
-		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
-		expect(fake.requests).toHaveLength(1);
-		expect(store.listWorkflowAlertOutbox()).toEqual([
-			expect.objectContaining({
-				state: "pending",
-				payload: expect.objectContaining({
-					eventType: "workflow_engine_escalation",
-					leadId: "flywheel-eng-lead",
-				}),
-			}),
-		]);
-		await dispatcher.reconcile();
-		expect(alert).toHaveBeenCalledWith(
-			expect.objectContaining({
-				eventId: expect.stringMatching(/:1$/),
-				sessionKey: "wf:run-1",
-			}),
-		);
-		expect(store.listWorkflowAlertOutbox()[0]?.state).toBe("sent");
-		store.close();
-	});
-
-	it("uses only the approved design Fable to GPT-5.6 fallback and reports it", async () => {
-		const store = await storeWithIntent("design");
-		failRunningDesign(store, "Fable provider is temporarily unavailable");
-		const fake = fakeStartDispatcher(store);
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fake.dispatcher,
-			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-design-fallback-")),
-			env: WORKFLOW_ON,
-			now: () => new Date("2030-07-22T00:00:00.000Z"),
-			probeLaunchLiveness: async () => "dead",
-			resolvePredecessorHead: async () => HEAD,
-			resolveRunAlertIdentity: (projectName) => ({
-				leadId: "flywheel-eng-lead",
-				projectName,
-				leadResolution: "resolved",
-			}),
-		});
-		await dispatcher.reconcile();
-		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
-		expect(fake.requests).toHaveLength(1);
-		expect(fake.requests[0]?.generalizedExecution?.dispatch).toEqual({
-			vendor: "codex",
-			model: "gpt-5.6-sol",
-			effort: "xhigh",
-		});
-		const fallbackRuntime = store.getWorkflowExecutionRuntime(
-			fake.requests[0]!.successorExecutionId!,
-		);
-		expect(fallbackRuntime).toMatchObject({
-			vendor: "codex",
-			model: "gpt-5.6-sol",
-		});
-		expect(store.listWorkflowAlertOutbox()[0]).toMatchObject({
-			state: "pending",
-			payload: {
-				metadata: {
-					workflowEngine: { disposition: "design_fallback" },
-				},
-			},
-		});
-		store.close();
-	});
-
-	it("holds a design Fable quota/auth death instead of treating it as provider unavailability", async () => {
-		const store = await storeWithIntent("design");
-		failRunningDesign(
-			store,
+	it("blindly replaces quota, provider-unavailable, and cause-free deaths through one path", async () => {
+		const outcomes: Array<Record<string, unknown>> = [];
+		for (const lastError of [
 			"Fable usage limit reached; quota exhausted; authentication required",
-		);
-		const fake = fakeStartDispatcher(store);
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fake.dispatcher,
-			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-design-quota-hold-")),
-			env: WORKFLOW_ON,
-			now: () => new Date("2030-07-22T00:00:00.000Z"),
-			probeLaunchLiveness: async () => "dead",
-			resolvePredecessorHead: async () => HEAD,
-			resolveRunAlertIdentity: (projectName) => ({
-				leadId: "flywheel-eng-lead",
-				projectName,
-				leadResolution: "resolved",
-			}),
-		});
+			"Fable provider is temporarily unavailable",
+			undefined,
+		]) {
+			const store = await storeWithIntent("design");
+			failRunningDesign(store, lastError);
+			const fake = fakeStartDispatcher(store);
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				stateRoot: mkdtempSync(join(tmpdir(), "fly1415-cause-neutral-")),
+				env: WORKFLOW_ON,
+				now: () => new Date("2099-07-22T00:00:00.000Z"),
+				probeLaunchLiveness: async () => "dead",
+				captureDeadExecutionActivityBaseline: async () => ({
+					commitMarker: { state: "absent" as const },
+					commDbMessageCount: 0,
+					tmuxTarget: null,
+					tmuxOutputDigest: null,
+					sessionCommitCount: 0,
+				}),
+				resolvePredecessorHead: async () => HEAD,
+				resolveRunAlertIdentity: (projectName) => ({
+					leadId: "flywheel-eng-lead",
+					projectName,
+					leadResolution: "resolved",
+				}),
+			});
 
-		await dispatcher.reconcile();
-		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
-		expect(fake.requests).toHaveLength(0);
-		expect(store.listWorkflowAlertOutbox()[0]).toMatchObject({
-			state: "pending",
-			payload: {
-				metadata: {
-					workflowEngine: { disposition: "held" },
-				},
+			expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			const rollback = store
+				.listWorkflowRunEvents("run-1")
+				.find((event) => event.kind === "execution_dead_rolled_back");
+			outcomes.push({
+				runStatus: store.getWorkflowRun("run-1")?.status,
+				requestCount: fake.requests.length,
+				dispatch: fake.requests[0]?.generalizedExecution?.dispatch,
+				alertCount: store.listWorkflowAlertOutbox().length,
+				rollback: rollback
+					? {
+							kind: rollback.kind,
+							reason: rollback.payload.reason,
+							retryDisposition: rollback.payload.retryDisposition,
+						}
+					: null,
+			});
+			store.close();
+		}
+
+		expect(outcomes[0]).toMatchObject({
+			runStatus: "active",
+			requestCount: 1,
+			alertCount: 0,
+			rollback: {
+				kind: "execution_dead_rolled_back",
+				reason: "terminal_session_and_dead_probe",
+				retryDisposition: "retry",
 			},
 		});
-		store.close();
+		expect(outcomes[1]).toEqual(outcomes[0]);
+		expect(outcomes[2]).toEqual(outcomes[0]);
 	});
 
 	it("does not adopt a terminal session as an in-flight dispatch without a receipt", async () => {
@@ -1834,7 +1831,7 @@ describe("WorkflowEngineDispatcher", () => {
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-terminal-intent-")),
 			env: WORKFLOW_ON,
-			now: () => new Date("2030-07-22T00:00:00.000Z"),
+			now: () => new Date("2099-07-22T00:00:00.000Z"),
 			resolvePredecessorHead: async () => HEAD,
 			probeLaunchLiveness: async () => "alive",
 			log,

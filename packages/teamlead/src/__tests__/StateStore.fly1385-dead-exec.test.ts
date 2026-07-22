@@ -319,6 +319,53 @@ function startAndFailReservedImplement(
 	});
 }
 
+function startAndFailReservedOutput(
+	store: StateStore,
+	executionId: string,
+	now: string,
+): void {
+	expect(
+		store.admitGeneralizedWorkflowExecution({
+			runId: "output-run",
+			nodeId: "produce",
+			executionId,
+			attempt: 1,
+			expiresAt: "2026-07-20T05:00:00.000Z",
+			absoluteDeadlineAt: "2026-07-21T00:00:00.000Z",
+			now,
+			env: WORKFLOW_ON,
+		}),
+	).toMatchObject({ ok: true });
+	store.applyWorkflowShadowBatch({
+		projectName: "flywheel",
+		issueId: "FLY-1335",
+		runId: "output-run",
+		ops: [
+			{
+				op: "side_effect",
+				node: "produce",
+				attempt: 1,
+				executionId,
+				to: "started",
+			},
+		],
+	});
+	store.upsertWorkflowRunNode({
+		runId: "output-run",
+		nodeId: "produce",
+		attempt: 1,
+		state: "running",
+		executionId,
+	});
+	store.upsertSession({
+		execution_id: executionId,
+		issue_id: "FLY-1335",
+		project_name: "flywheel",
+		status: "failed",
+		workflow_node_id: "produce",
+	});
+}
+
 describe("FLY-1385 dead workflow execution recovery", () => {
 	it("fails closed when a durable event UID is reused with different content", async () => {
 		const store = await engineRunWithImplement();
@@ -637,7 +684,7 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 		store.close();
 	});
 
-	it("holds the run instead of retrying after the dead execution wrote output", async () => {
+	it("blindly replaces a proven-dead execution even after it wrote output", async () => {
 		const { store, canonicalRoot } =
 			await engineRunWithOutputFromDeadExecution();
 
@@ -655,14 +702,65 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 				},
 				now: "2026-07-20T00:10:00.000Z",
 			}),
-		).toEqual({ ok: false, reason: "dead_execution_after_output" });
-		expect(store.getWorkflowRun("output-run")?.status).toBe("held");
-		expect(store.listWorkflowSideEffects("output-run")).toHaveLength(1);
+		).toMatchObject({ ok: true, launchOrdinal: 2 });
+		expect(store.getWorkflowRun("output-run")?.status).toBe("active");
+		expect(store.listWorkflowSideEffects("output-run")).toHaveLength(2);
 		expect(
 			store
 				.listWorkflowRunEvents("output-run")
 				.filter((event) => event.kind === "dead_execution_after_output"),
-		).toHaveLength(1);
+		).toHaveLength(0);
+		const retryAdmission = store.admitGeneralizedWorkflowExecution({
+			runId: "output-run",
+			nodeId: "produce",
+			executionId: "produce-retry-1",
+			attempt: 1,
+			expiresAt: "2026-07-20T02:10:00.000Z",
+			absoluteDeadlineAt: "2026-07-21T00:00:00.000Z",
+			now: "2026-07-20T00:11:00.000Z",
+			env: WORKFLOW_ON,
+		});
+		if (!retryAdmission.ok || !retryAdmission.outputCredential) {
+			throw new Error("replacement output admission failed");
+		}
+		store.applyWorkflowShadowBatch({
+			projectName: "flywheel",
+			issueId: "FLY-1335",
+			runId: "output-run",
+			ops: [
+				{
+					op: "side_effect",
+					node: "produce",
+					attempt: 1,
+					executionId: "produce-retry-1",
+					to: "started",
+				},
+			],
+		});
+		store.upsertWorkflowRunNode({
+			runId: "output-run",
+			nodeId: "produce",
+			attempt: 1,
+			state: "running",
+			executionId: "produce-retry-1",
+		});
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: retryAdmission.outputCredential,
+				clientRequestId: "replacement-output",
+				payload: '{"artifact":"replacement"}',
+				now: "2026-07-20T00:12:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "output_already_exists" });
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "produce-retry-1",
+				route: "no_code",
+				sourceEventId: "replacement-complete",
+				completionSubmission: { decision: { route: "no_code" } },
+				now: "2026-07-20T00:13:00.000Z",
+			}),
+		).toMatchObject({ ok: false, reason: "missing_output" });
 		store.close();
 		rmSync(canonicalRoot, { recursive: true, force: true });
 	});
@@ -692,6 +790,12 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 			startAndFailReservedImplement(store, newExecutionId, at);
 			deadExecutionId = newExecutionId;
 		}
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "repeated_dead_execution_pattern"),
+		).toHaveLength(2);
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(0);
 
 		expect(
 			store.rollbackDeadWorkflowNodeExecution({
@@ -701,6 +805,11 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 				deadExecutionId,
 				newExecutionId: "implement-retry-4",
 				reason: "terminal_session_and_dead_probe",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
 				livenessEvidence: {
 					liveness: "dead",
 					observedAt: "2026-07-20T00:20:00.000Z",
@@ -715,7 +824,113 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 				.listWorkflowRunEvents("run-1")
 				.filter((event) => event.kind === "retry_limit_escalated"),
 		).toHaveLength(1);
+		const uid = "retry_limit:run-1:implement:1:4";
+		const alert = store.getWorkflowAlertOutbox(uid);
+		expect(alert).toMatchObject({
+			state: "pending",
+			attempt: 0,
+			payload: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				title: "【需人工】FLY-1335 节点 implement 盲换 3 次仍起不来",
+				metadata: {
+					workflowEngine: {
+						runId: "run-1",
+						issueId: "FLY-1335",
+						nodeId: "implement",
+						executionId: "implement-retry-3",
+						disposition: "held",
+						launchCount: 4,
+						maxBlindReplacements: 3,
+						outputExistsForAttempt: false,
+						management: {
+							terminate: "POST /api/runs/run-1/terminate",
+						},
+						leadResolution: "resolved",
+					},
+				},
+			},
+		});
+		expect(alert?.payload.body).toContain("换了 3 次仍起不来");
+		expect(alert?.payload.body).not.toContain("POST /api");
+
+		const first = store.claimNextWorkflowAlert({
+			ownerId: "bridge-a",
+			now: "2026-07-20T00:21:00.000Z",
+			leaseExpiresAt: "2026-07-20T00:22:00.000Z",
+		});
+		expect(first).toMatchObject({ attempt: 1, generation: 1 });
+		expect(
+			store.finishWorkflowAlertDelivery({
+				escalationUid: uid,
+				ownerId: "bridge-a",
+				generation: first!.generation,
+				outcome: "failed",
+				error: "discord timeout",
+				now: "2026-07-20T00:21:10.000Z",
+			}),
+		).toEqual({ ok: true, state: "pending" });
+		const second = store.claimNextWorkflowAlert({
+			ownerId: "bridge-b",
+			now: "2026-07-20T00:21:20.000Z",
+			leaseExpiresAt: "2026-07-20T00:22:20.000Z",
+		});
+		expect(second).toMatchObject({ attempt: 2, generation: 2 });
 		store.close();
+	});
+
+	it("reports the mechanical output-exists fact when blind replacements exhaust", async () => {
+		const { store, canonicalRoot } =
+			await engineRunWithOutputFromDeadExecution();
+		let deadExecutionId = "produce-dead";
+		for (let retry = 1; retry <= 3; retry += 1) {
+			const newExecutionId = `produce-retry-${retry}`;
+			const at = `2026-07-20T00:${20 + retry}:00.000Z`;
+			expect(
+				store.rollbackDeadWorkflowNodeExecution({
+					runId: "output-run",
+					nodeId: "produce",
+					attempt: 1,
+					deadExecutionId,
+					newExecutionId,
+					reason: "terminal_session_and_dead_probe",
+					livenessEvidence: { liveness: "dead", observedAt: at },
+					now: at,
+				}),
+			).toMatchObject({ ok: true, launchOrdinal: retry + 1 });
+			startAndFailReservedOutput(store, newExecutionId, at);
+			deadExecutionId = newExecutionId;
+		}
+
+		expect(
+			store.rollbackDeadWorkflowNodeExecution({
+				runId: "output-run",
+				nodeId: "produce",
+				attempt: 1,
+				deadExecutionId,
+				newExecutionId: "must-not-launch",
+				reason: "terminal_session_and_dead_probe",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				livenessEvidence: {
+					liveness: "dead",
+					observedAt: "2026-07-20T00:30:00.000Z",
+				},
+				now: "2026-07-20T00:30:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "retry_limit_exceeded" });
+		expect(
+			store.listWorkflowAlertOutbox()[0]?.payload.metadata.workflowEngine,
+		).toMatchObject({
+			launchCount: 4,
+			maxBlindReplacements: 3,
+			outputExistsForAttempt: true,
+		});
+		store.close();
+		rmSync(canonicalRoot, { recursive: true, force: true });
 	});
 
 	it("rejects an output writer whose credential became stale after its first read", async () => {
@@ -980,16 +1195,15 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 		store.close();
 	});
 
-	it("holds non-retryable quota/auth deaths and durably retries their alert", async () => {
+	it("blindly replaces quota/auth deaths instead of classifying their cause", async () => {
 		const store = await engineRunWithImplement();
 		const result = store.rollbackDeadWorkflowNodeExecution({
 			runId: "run-1",
 			nodeId: "implement",
 			attempt: 1,
 			deadExecutionId: "implement-dead",
-			newExecutionId: "must-not-launch",
+			newExecutionId: "implement-retry-1",
 			reason: "quota_or_auth_failure",
-			retryDisposition: "hold",
 			alertIdentity: {
 				leadId: "flywheel-eng-lead",
 				projectName: "flywheel",
@@ -1001,70 +1215,10 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 			},
 			now: "2026-07-20T00:30:00.000Z",
 		});
-		expect(result).toEqual({
-			ok: false,
-			reason: "non_retryable_execution_failure",
-		});
-		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
-		expect(store.listWorkflowSideEffects("run-1")).toHaveLength(1);
-		const uid = "nonretryable:run-1:implement:1:implement-dead";
-		expect(store.getWorkflowAlertOutbox(uid)).toMatchObject({
-			state: "pending",
-			attempt: 0,
-			payload: {
-				eventType: "workflow_engine_escalation",
-				leadId: "flywheel-eng-lead",
-				projectName: "flywheel",
-				sessionKey: "wf:run-1",
-			},
-		});
-
-		const first = store.claimNextWorkflowAlert({
-			ownerId: "bridge-a",
-			now: "2026-07-20T00:31:00.000Z",
-			leaseExpiresAt: "2026-07-20T00:32:00.000Z",
-		});
-		expect(first).toMatchObject({ attempt: 1, generation: 1 });
-		expect(
-			store.finishWorkflowAlertDelivery({
-				escalationUid: uid,
-				ownerId: "bridge-a",
-				generation: first!.generation,
-				outcome: "failed",
-				error: "discord timeout",
-				now: "2026-07-20T00:31:10.000Z",
-			}),
-		).toEqual({ ok: true, state: "pending" });
-		const second = store.claimNextWorkflowAlert({
-			ownerId: "bridge-b",
-			now: "2026-07-20T00:31:20.000Z",
-			leaseExpiresAt: "2026-07-20T00:32:20.000Z",
-		});
-		expect(second).toMatchObject({ attempt: 2, generation: 2 });
-		expect(
-			store.finishWorkflowAlertDelivery({
-				escalationUid: uid,
-				ownerId: "bridge-a",
-				generation: first!.generation,
-				outcome: "sent",
-				now: "2026-07-20T00:31:30.000Z",
-			}),
-		).toEqual({ ok: false, reason: "stale_alert_delivery_generation" });
-		expect(
-			store.finishWorkflowAlertDelivery({
-				escalationUid: uid,
-				ownerId: "bridge-b",
-				generation: second!.generation,
-				outcome: "sent",
-				now: "2026-07-20T00:31:40.000Z",
-			}),
-		).toEqual({ ok: true, state: "sent" });
-		expect(store.getWorkflowAlertOutbox(uid)?.state).toBe("sent");
-		expect(
-			store
-				.listWorkflowRunEvents("run-1")
-				.filter((event) => event.kind === "workflow_engine_alert_posted"),
-		).toHaveLength(1);
+		expect(result).toMatchObject({ ok: true, launchOrdinal: 2 });
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+		expect(store.listWorkflowSideEffects("run-1")).toHaveLength(2);
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(0);
 		store.close();
 	});
 

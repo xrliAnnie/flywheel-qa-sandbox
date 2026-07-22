@@ -75,6 +75,9 @@ import {
 	workflowTemplateDispatchBlockReason,
 } from "./workflow-template-dispatch.js";
 
+/** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
+export const MAX_BLIND_REPLACEMENTS = 3;
+
 /**
  * FLY-663: a thin compatibility shim that exposes the exact sql.js surface
  * StateStore used (`run` / `prepare`+`bind`/`step`/`getAsObject`/`free` /
@@ -15798,11 +15801,7 @@ export class StateStore {
 				model: string;
 				effort?: "low" | "medium" | "high" | "xhigh";
 			};
-			source:
-				| "current_config"
-				| "live_template"
-				| "snapshot_fallback"
-				| "approved_design_fallback";
+			source: "current_config" | "live_template" | "snapshot_fallback";
 			audit: boolean;
 		};
 	}): GeneralizedWorkflowAdmissionResult {
@@ -16700,6 +16699,44 @@ export class StateStore {
 		this.save();
 	}
 
+	private workflowBlindReplacementExhaustedAlertPayload(input: {
+		escalationUid: string;
+		runId: string;
+		issueId: string;
+		nodeId: string;
+		executionId: string;
+		launchCount: number;
+		outputExistsForAttempt: boolean;
+		identity: WorkflowEngineAlertIdentity;
+	}): WorkflowEngineAlertPayload {
+		return {
+			leadId: input.identity.leadId,
+			projectName: input.identity.projectName,
+			eventId: input.escalationUid,
+			eventType: "workflow_engine_escalation",
+			severity: "severe",
+			sessionKey: `wf:${input.runId}`,
+			title: `【需人工】${input.issueId} 节点 ${input.nodeId} 盲换 ${MAX_BLIND_REPLACEMENTS} 次仍起不来`,
+			body: `${input.issueId} 的 ${input.nodeId} 节点换了 ${MAX_BLIND_REPLACEMENTS} 次仍起不来,引擎已停手,run 已挂起(held),需要你判断下一步处理。`,
+			metadata: {
+				workflowEngine: {
+					runId: input.runId,
+					issueId: input.issueId,
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					disposition: "held",
+					launchCount: input.launchCount,
+					maxBlindReplacements: MAX_BLIND_REPLACEMENTS,
+					outputExistsForAttempt: input.outputExistsForAttempt,
+					management: {
+						terminate: `POST /api/runs/${input.runId}/terminate`,
+					},
+					leadResolution: input.identity.leadResolution,
+				},
+			},
+		};
+	}
+
 	private workflowEngineAlertPayload(input: {
 		escalationUid: string;
 		runId: string;
@@ -16707,10 +16744,9 @@ export class StateStore {
 		nodeId: string;
 		executionId: string;
 		reason: string;
-		disposition: "held" | "partial" | "design_fallback";
+		disposition: "held" | "partial";
 		identity: WorkflowEngineAlertIdentity;
 	}): WorkflowEngineAlertPayload {
-		const fallback = input.disposition === "design_fallback";
 		const partial = input.disposition === "partial";
 		return {
 			leadId: input.identity.leadId,
@@ -16719,16 +16755,12 @@ export class StateStore {
 			eventType: "workflow_engine_escalation",
 			severity: "severe",
 			sessionKey: `wf:${input.runId}`,
-			title: fallback
-				? `Workflow design fallback used for ${input.issueId}`
-				: partial
-					? `Workflow land cleanup needs attention for ${input.issueId}`
-					: `Workflow run held for ${input.issueId}`,
-			body: fallback
-				? `Run ${input.runId} node ${input.nodeId}: Fable was unavailable; the one approved fallback to GPT-5.6 was selected. Reason: ${input.reason}.`
-				: partial
-					? `Run ${input.runId} land node ${input.nodeId} could not finish cleanup after merge. Reason: ${input.reason}. The durable operation will keep retrying; inspect GET /api/lifecycle/land/<operation-id>.`
-					: `Run ${input.runId} node ${input.nodeId} was held after execution ${input.executionId}. Reason: ${input.reason}. Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`,
+			title: partial
+				? `Workflow land cleanup needs attention for ${input.issueId}`
+				: `Workflow run held for ${input.issueId}`,
+			body: partial
+				? `Run ${input.runId} land node ${input.nodeId} could not finish cleanup after merge. Reason: ${input.reason}. The durable operation will keep retrying; inspect GET /api/lifecycle/land/<operation-id>.`
+				: `Run ${input.runId} node ${input.nodeId} was held after execution ${input.executionId}. Reason: ${input.reason}. Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`,
 			metadata: {
 				workflowEngine: {
 					runId: input.runId,
@@ -16749,14 +16781,10 @@ export class StateStore {
 		issueId: string;
 		nodeId: string;
 		executionId: string;
-		disposition:
-			| "dead_execution_activity_after_replacement"
-			| "repeated_dead_execution_pattern";
+		disposition: "dead_execution_activity_after_replacement";
 		body: string;
 		identity: WorkflowEngineAlertIdentity;
 	}): WorkflowEngineAlertPayload {
-		const falsePositive =
-			input.disposition === "dead_execution_activity_after_replacement";
 		return {
 			leadId: input.identity.leadId,
 			projectName: input.identity.projectName,
@@ -16764,9 +16792,7 @@ export class StateStore {
 			eventType: input.eventType,
 			severity: "severe",
 			sessionKey: `wf:${input.runId}`,
-			title: falsePositive
-				? `FALSE-POSITIVE dead execution detected for ${input.issueId}`
-				: `Repeated dead executions detected for ${input.issueId}`,
+			title: `FALSE-POSITIVE dead execution detected for ${input.issueId}`,
 			body: input.body,
 			metadata: {
 				workflowEngine: {
@@ -17228,7 +17254,6 @@ export class StateStore {
 		reason: string;
 		livenessEvidence: { liveness: "dead"; observedAt: string };
 		activityBaseline?: WorkflowDeadExecutionActivityBaseline;
-		retryDisposition?: "retry" | "hold" | "design_fallback";
 		alertIdentity?: WorkflowEngineAlertIdentity;
 		now?: string;
 	}):
@@ -17277,7 +17302,7 @@ export class StateStore {
 					prior.kind !== "execution_dead_rolled_back" ||
 					payload.newExecutionId !== input.newExecutionId ||
 					payload.reason !== input.reason ||
-					payload.retryDisposition !== (input.retryDisposition ?? "retry") ||
+					payload.retryDisposition !== "retry" ||
 					payload.at !== now ||
 					canonicalSubmissionDigest(payload.livenessEvidence) !==
 						canonicalSubmissionDigest(input.livenessEvidence) ||
@@ -17300,22 +17325,22 @@ export class StateStore {
 			}
 			const enqueueAlert = (
 				escalationUid: string,
-				disposition: "held" | "design_fallback",
-				reason: string,
+				launchCount: number,
+				outputExistsForAttempt: boolean,
 			): void => {
 				if (!input.alertIdentity) return;
 				this.enqueueWorkflowEngineAlertTx({
 					escalationUid,
 					runId: input.runId,
 					now,
-					payload: this.workflowEngineAlertPayload({
+					payload: this.workflowBlindReplacementExhaustedAlertPayload({
 						escalationUid,
 						runId: input.runId,
 						issueId: run.issue_id,
 						nodeId: input.nodeId,
 						executionId: input.deadExecutionId,
-						reason,
-						disposition,
+						launchCount,
+						outputExistsForAttempt,
 						identity: input.alertIdentity,
 					}),
 				});
@@ -17351,67 +17376,6 @@ export class StateStore {
 				result = { ok: false, reason: "execution_not_terminal" };
 				return;
 			}
-			if (input.retryDisposition === "hold") {
-				const escalationUid = `nonretryable:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`;
-				this.db.run(
-					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
-					[input.runId],
-				);
-				this.appendWorkflowRunEventCheckedTx({
-					runId: input.runId,
-					eventUid: escalationUid,
-					kind: "non_retryable_execution_failure",
-					nodeId: input.nodeId,
-					executionId: input.deadExecutionId,
-					payload: {
-						attempt: input.attempt,
-						reason: input.reason,
-						livenessEvidence: input.livenessEvidence,
-						at: now,
-					},
-				});
-				enqueueAlert(escalationUid, "held", input.reason);
-				result = { ok: false, reason: "non_retryable_execution_failure" };
-				return;
-			}
-			const outputExists =
-				this.workflowSelectAll(
-					`SELECT 1 AS present FROM workflow_node_outputs
-					  WHERE run_id = ? AND node_id = ? AND attempt = ? LIMIT 1`,
-					[input.runId, input.nodeId, input.attempt],
-				).length > 0 ||
-				this.workflowSelectAll(
-					`SELECT 1 AS present FROM workflow_output_credential
-					  WHERE run_id = ? AND node_id = ? AND attempt = ?
-					    AND consumed_at IS NOT NULL LIMIT 1`,
-					[input.runId, input.nodeId, input.attempt],
-				).length > 0;
-			if (outputExists) {
-				this.db.run(
-					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
-					[input.runId],
-				);
-				this.appendWorkflowRunEventCheckedTx({
-					runId: input.runId,
-					eventUid: `dead_after_output:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`,
-					kind: "dead_execution_after_output",
-					nodeId: input.nodeId,
-					executionId: input.deadExecutionId,
-					payload: {
-						attempt: input.attempt,
-						reason: input.reason,
-						livenessEvidence: input.livenessEvidence,
-						at: now,
-					},
-				});
-				enqueueAlert(
-					`dead_after_output:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`,
-					"held",
-					"dead_execution_after_output",
-				);
-				result = { ok: false, reason: "dead_execution_after_output" };
-				return;
-			}
 			const launchCount = Number(
 				this.workflowSelectAll(
 					`SELECT COUNT(*) AS count FROM workflow_side_effect_ledger
@@ -17419,7 +17383,19 @@ export class StateStore {
 					[input.runId, input.nodeId, input.attempt],
 				)[0]?.count ?? 0,
 			);
-			if (launchCount >= 4) {
+			if (launchCount >= MAX_BLIND_REPLACEMENTS + 1) {
+				const outputExistsForAttempt =
+					this.workflowSelectAll(
+						`SELECT 1 AS present FROM workflow_node_outputs
+						  WHERE run_id = ? AND node_id = ? AND attempt = ? LIMIT 1`,
+						[input.runId, input.nodeId, input.attempt],
+					).length > 0 ||
+					this.workflowSelectAll(
+						`SELECT 1 AS present FROM workflow_output_credential
+						  WHERE run_id = ? AND node_id = ? AND attempt = ?
+						    AND consumed_at IS NOT NULL LIMIT 1`,
+						[input.runId, input.nodeId, input.attempt],
+					).length > 0;
 				this.db.run(
 					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
 					[input.runId],
@@ -17440,8 +17416,8 @@ export class StateStore {
 				});
 				enqueueAlert(
 					`retry_limit:${input.runId}:${input.nodeId}:${input.attempt}:${launchCount}`,
-					"held",
-					"retry_limit_exceeded",
+					launchCount,
+					outputExistsForAttempt,
 				);
 				result = { ok: false, reason: "retry_limit_exceeded" };
 				return;
@@ -17490,7 +17466,7 @@ export class StateStore {
 					newExecutionId: input.newExecutionId,
 					launchOrdinal,
 					reason: input.reason,
-					retryDisposition: input.retryDisposition ?? "retry",
+					retryDisposition: "retry",
 					livenessEvidence: input.livenessEvidence,
 					at: now,
 				},
@@ -17523,7 +17499,7 @@ export class StateStore {
 					JSON.stringify(activityBaseline),
 				],
 			);
-			if (priorDeadReplacementCount > 0 && input.alertIdentity) {
+			if (priorDeadReplacementCount > 0) {
 				const deathNumber = priorDeadReplacementCount + 1;
 				const escalationUid = `repeated_dead:${input.runId}:${input.nodeId}:${input.attempt}:${deathNumber}`;
 				this.appendWorkflowRunEventCheckedTx({
@@ -17539,46 +17515,6 @@ export class StateStore {
 						at: now,
 					},
 				});
-				this.enqueueWorkflowEngineAlertTx({
-					escalationUid,
-					runId: input.runId,
-					now,
-					payload: this.workflowDeadExecutionAlertPayload({
-						escalationUid,
-						eventType: "workflow_engine_escalation",
-						runId: input.runId,
-						issueId: run.issue_id,
-						nodeId: input.nodeId,
-						executionId: input.deadExecutionId,
-						disposition: "repeated_dead_execution_pattern",
-						body: `Run ${input.runId} node ${input.nodeId} has now required ${deathNumber} dead-execution replacements in the same logical attempt. Inspect the liveness classifier and replacement chain; automatic retry remains bounded by the existing ladder.`,
-						identity: input.alertIdentity,
-					}),
-				});
-				const issueAlertUid = `${escalationUid}:issue`;
-				this.enqueueWorkflowEngineAlertTx({
-					escalationUid: issueAlertUid,
-					runId: input.runId,
-					now,
-					payload: this.workflowDeadExecutionAlertPayload({
-						escalationUid: issueAlertUid,
-						eventType: "workflow_engine_issue_alert",
-						runId: input.runId,
-						issueId: run.issue_id,
-						nodeId: input.nodeId,
-						executionId: input.deadExecutionId,
-						disposition: "repeated_dead_execution_pattern",
-						body: `Run ${input.runId} node ${input.nodeId} has now required ${deathNumber} dead-execution replacements in the same logical attempt. Inspect the liveness classifier and replacement chain; automatic retry remains bounded by the existing ladder.`,
-						identity: input.alertIdentity,
-					}),
-				});
-			}
-			if (input.retryDisposition === "design_fallback") {
-				enqueueAlert(
-					`design_fallback:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`,
-					"design_fallback",
-					input.reason,
-				);
 			}
 			result = { ok: true, idempotentReplay: false, launchOrdinal };
 		});
@@ -23149,12 +23085,14 @@ export interface WorkflowEngineAlertPayload {
 			disposition:
 				| "held"
 				| "partial"
-				| "design_fallback"
 				| "probe_unknown"
 				| "dead_execution_activity_after_replacement"
-				| "repeated_dead_execution_pattern"
 				| "ship_ready_stalled"
 				| "ship_ready_delivery_failed";
+			launchCount?: number;
+			maxBlindReplacements?: number;
+			outputExistsForAttempt?: boolean;
+			management?: { terminate: string };
 			leadResolution: "resolved" | "fallback";
 		};
 	};

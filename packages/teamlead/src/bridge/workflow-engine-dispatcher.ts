@@ -5,6 +5,7 @@ import { isThreeStagePhaseRole } from "flywheel-config";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import {
 	isStateStoreIrreversibleTerminalForZombie,
+	MAX_BLIND_REPLACEMENTS,
 	type StateStore,
 	type WorkflowDeadExecutionActivityBaseline,
 	type WorkflowDeadExecutionActivityEvidence,
@@ -79,6 +80,7 @@ interface WorkflowEngineDispatcherOptions {
 	resolveRunAlertIdentity?: (
 		projectName: string,
 		issueId: string,
+		runId: string,
 	) => WorkflowEngineAlertIdentity;
 	/** FLY-1375: engine-owned land nodes execute here instead of spawning. */
 	landExecutor?: (operationId: string) => Promise<{
@@ -93,25 +95,11 @@ export interface WorkflowEngineReconcileResult {
 	held: number;
 }
 
-const NON_RETRYABLE_RESOURCE_FAILURE =
-	/\b(quota|billing|usage\s+limit|credit(?:s)?\s+(?:exhausted|depleted)|auth(?:entication|orization)?\s+(?:failed|expired|required)|login\s+expired|unauthorized|forbidden)\b/i;
-
-const APPROVED_FABLE_UNAVAILABILITY =
-	/\b(?:fable|model|provider|service)\b[^.;\n]*\b(?:(?:temporarily|currently)\s+)?unavailable\b|\b(?:provider\s+outage|service\s+down)\b/i;
-
 export const DEAD_EXECUTION_WATCH_TTL_MS = 24 * 60 * 60 * 1_000;
 const SHIP_READY_MAX_PER_TICK = 3;
 const SHIP_READY_FOUNDER_RETRY_BASE_MS = 30_000;
 const SHIP_READY_FOUNDER_RETRY_CAP_MS = 5 * 60_000;
 const SHIP_READY_FOUNDER_BUDGET_MS = 45 * 60_000;
-
-function isNonRetryableResourceFailure(error: string | undefined): boolean {
-	return !!error && NON_RETRYABLE_RESOURCE_FAILURE.test(error);
-}
-
-function isApprovedFableUnavailability(error: string | undefined): boolean {
-	return !!error && APPROVED_FABLE_UNAVAILABILITY.test(error);
-}
 
 /**
  * Consumes only engine-owned dispatch outbox rows. The snapshot already chose
@@ -442,6 +430,7 @@ export class WorkflowEngineDispatcher {
 					alertIdentity: this.resolveRunAlertIdentity(
 						notice.projectName,
 						notice.issueId,
+						notice.runId,
 					),
 					now: nowIso,
 				});
@@ -500,6 +489,7 @@ export class WorkflowEngineDispatcher {
 			alertIdentity: this.resolveRunAlertIdentity(
 				notice.projectName,
 				notice.issueId,
+				notice.runId,
 			),
 			now,
 		});
@@ -570,6 +560,7 @@ export class WorkflowEngineDispatcher {
 				alertIdentity: this.resolveRunAlertIdentity(
 					watch.project_name,
 					watch.issue_id,
+					watch.run_id,
 				),
 				now: this.now().toISOString(),
 			});
@@ -711,22 +702,8 @@ export class WorkflowEngineDispatcher {
 						undefined,
 					);
 					if (!latest || latest.execution_id !== node.execution_id) continue;
-					const resourceFailure = isNonRetryableResourceFailure(
-						session?.last_error,
-					);
-					const runtime = store.getWorkflowExecutionRuntime(node.execution_id);
-					const approvedDesignFallback =
-						!resourceFailure &&
-						isApprovedFableUnavailability(session?.last_error) &&
-						workflowNode.type === "design" &&
-						runtime?.vendor === "claude" &&
-						runtime.model === "claude-fable-5";
 					const retryDelaysMs = [60_000, 5 * 60_000, 15 * 60_000];
-					if (
-						!resourceFailure &&
-						!approvedDesignFallback &&
-						launches.length < 4
-					) {
+					if (launches.length <= MAX_BLIND_REPLACEMENTS) {
 						const delay = retryDelaysMs[Math.max(0, launches.length - 1)]!;
 						const launchedAt = parseSqliteUtcMs(latest.created_at);
 						if (
@@ -757,6 +734,7 @@ export class WorkflowEngineDispatcher {
 								const identity = this.resolveRunAlertIdentity(
 									run.project_name,
 									run.issue_id,
+									run.run_id,
 								);
 								const uid = `probe_unknown:${run.run_id}:${workflowNode.id}:${node.attempt}:${node.execution_id}`;
 								store.enqueueWorkflowEngineAlert({
@@ -792,32 +770,24 @@ export class WorkflowEngineDispatcher {
 						`${run.run_id}:${workflowNode.id}:${node.attempt}:${node.execution_id}`,
 					);
 					const observedAt = this.now().toISOString();
-					const disposition = approvedDesignFallback
-						? "design_fallback"
-						: resourceFailure
-							? "hold"
-							: "retry";
 					let activityBaseline:
 						| WorkflowDeadExecutionActivityBaseline
 						| undefined;
-					if (disposition !== "hold") {
-						try {
-							activityBaseline =
-								await this.captureDeadExecutionActivityBaseline(
-									node.execution_id,
-									run.project_name,
-									typeof session?.commit_count === "number"
-										? session.commit_count
-										: null,
-								);
-						} catch (error) {
-							// A replacement without a trustworthy baseline would disable the
-							// founder's false-positive tripwire. Hold this tick and retry.
-							this.log(
-								`workflow engine dead-exec activity baseline held for ${node.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
-							);
-							continue;
-						}
+					try {
+						activityBaseline = await this.captureDeadExecutionActivityBaseline(
+							node.execution_id,
+							run.project_name,
+							typeof session?.commit_count === "number"
+								? session.commit_count
+								: null,
+						);
+					} catch (error) {
+						// A replacement without a trustworthy baseline would disable the
+						// founder's false-positive tripwire. Hold this tick and retry.
+						this.log(
+							`workflow engine dead-exec activity baseline held for ${node.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						continue;
 					}
 					const recovered = store.rollbackDeadWorkflowNodeExecution({
 						runId: run.run_id,
@@ -825,16 +795,12 @@ export class WorkflowEngineDispatcher {
 						attempt: node.attempt,
 						deadExecutionId: node.execution_id,
 						newExecutionId: randomUUID(),
-						reason: approvedDesignFallback
-							? "design_fable_unavailable_fallback_to_gpt_5_6"
-							: resourceFailure
-								? "quota_or_auth_failure"
-								: "terminal_session_and_dead_probe",
-						retryDisposition: disposition,
+						reason: "terminal_session_and_dead_probe",
 						activityBaseline,
 						alertIdentity: this.resolveRunAlertIdentity(
 							run.project_name,
 							run.issue_id,
+							run.run_id,
 						),
 						livenessEvidence: { liveness: "dead", observedAt },
 						now: observedAt,
@@ -938,6 +904,7 @@ export class WorkflowEngineDispatcher {
 					alertIdentity: this.resolveRunAlertIdentity(
 						run.project_name,
 						run.issue_id,
+						run.run_id,
 					),
 				});
 				if (!held.ok) {
@@ -1013,6 +980,7 @@ export class WorkflowEngineDispatcher {
 					alertIdentity: this.resolveRunAlertIdentity(
 						run.project_name,
 						run.issue_id,
+						run.run_id,
 					),
 				});
 				if (!partial.ok) {
@@ -1174,28 +1142,10 @@ export class WorkflowEngineDispatcher {
 			}
 		}
 		const now = this.now();
-		const approvedDesignFallback = store
-			.listWorkflowRunEvents(intent.run_id)
-			.some((event) => {
-				if (event.kind !== "execution_dead_rolled_back") return false;
-				try {
-					const payload =
-						typeof event.payload === "string"
-							? (JSON.parse(event.payload) as Record<string, unknown>)
-							: (event.payload as Record<string, unknown>);
-					return (
-						payload.newExecutionId === intent.execution_id &&
-						payload.retryDisposition === "design_fallback"
-					);
-				} catch {
-					return false;
-				}
-			});
 		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 			runId: intent.run_id,
 			nodeId: intent.node_id,
 			env: this.env,
-			approvedDesignFallback,
 		});
 		const admitted = store.admitGeneralizedWorkflowExecution({
 			runId: intent.run_id,

@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1415 设计简报 — 死掉的执行怎么处理:不判断,只换人</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    max-width: 960px; margin: 0 auto; padding: 32px 20px 60px;
+    line-height: 1.65;
+  }
+  .hero { margin-bottom: 28px; }
+  .hero .tag {
+    display: inline-block; font-family: 'SF Mono', monospace; font-size: 13px;
+    color: #1a365d; background: #e8eef7; border-radius: 6px; padding: 2px 10px; margin-bottom: 10px;
+  }
+  .hero h1 { font-size: 26px; color: #1a365d; margin-bottom: 8px; }
+  .hero .sub { color: #86868b; font-size: 15px; }
+  .section { margin-bottom: 26px; }
+  .section-title { font-size: 18px; font-weight: 600; color: #1a365d; margin-bottom: 12px; }
+  .section-title .dot { margin-right: 6px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 18px 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 12px;
+    border-left: 4px solid #007aff;
+  }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.purple { border-left-color: #af52de; }
+  .card h3 { font-size: 15px; margin-bottom: 6px; color: #1d1d1f; }
+  .card p { font-size: 14.5px; color: #3a3a3c; }
+  .card p + p { margin-top: 8px; }
+  .muted { color: #86868b; }
+  .flow {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    background: #fff; border-radius: 12px; padding: 16px 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 12px; font-size: 14px;
+  }
+  .flow .step {
+    background: #f0f4fa; border-radius: 8px; padding: 8px 12px; color: #1a365d; font-weight: 500;
+  }
+  .flow .arrow { color: #86868b; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); overflow: hidden; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid #f0f0f2; vertical-align: top; }
+  th { background: #fafafa; color: #86868b; font-weight: 600; font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  .ok { color: #34c759; font-weight: 600; }
+  .warn { color: #ff9500; font-weight: 600; }
+  .footer { margin-top: 30px; color: #86868b; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <span class="tag">FLY-1415 · 设计简报</span>
+  <h1>死掉的执行怎么处理:不判断,只换人</h1>
+  <div class="sub">设计已完成并通过评审,施工进行中 · 2026-07-21</div>
+</div>
+
+<div class="section">
+  <div class="section-title"><span class="dot" style="color:#007aff;">●</span>这单是什么</div>
+  <div class="card">
+    <p>干活的 AI(runner)偶尔会死掉——进程崩了、窗口没了。以前,负责调度的程序(Bridge,它不是 AI)会自己去<b>猜死因</b>:是配额用完?是模型不可用?是死前刚交了活?每种猜法配一套不同处理。这套"猜"越堆越复杂、越容易出错。</p>
+    <p>你定的原则:<b>Bridge 不是 AI,不该做判断;判断留给 Lead。</b>本单照此把所有"猜死因"的代码删掉,换成一条最笨但最稳的规则:<b>确认真死 → 直接换个新的接着干,最多换 3 次;3 次都起不来 → 停手,用人话报给这个任务的负责 Lead,由 Lead 动脑。</b></p>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title"><span class="dot" style="color:#34c759;">●</span>怎么解</div>
+  <div class="flow">
+    <span class="step">确认真死<br><span class="muted" style="font-weight:400;">只认两个硬信号:进程真退了 / 窗口真没了</span></span>
+    <span class="arrow">→</span>
+    <span class="step">盲换<br><span class="muted" style="font-weight:400;">不问死因,换新的接着干(最多 3 次)</span></span>
+    <span class="arrow">→</span>
+    <span class="step">耗尽升级<br><span class="muted" style="font-weight:400;">3 次全死 → 停手 + 人话告警给负责 Lead</span></span>
+  </div>
+  <div class="card green">
+    <h3>顺带修好的两件事</h3>
+    <p>① <b>告警说人话</b>:以前的告警夹着一堆接口地址,现在改成「某任务的某节点换了 3 次仍起不来,需要人处理」,技术细节收进附注。</p>
+    <p>② <b>告警找对人</b>:评审时发现一个真缺口——某些恢复场景下告警会发给"全局默认 Lead"而不是这个任务真正的负责 Lead。这次一并修好:按任务的持久归属记录找人,找不到才兜底,且兜底会留痕。</p>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title"><span class="dot" style="color:#af52de;">●</span>关键取舍</div>
+  <table>
+    <tr><th style="width:34%;">取舍</th><th>换来什么</th></tr>
+    <tr>
+      <td><b>配额类死亡不再立刻报警</b><br><span class="muted">先盲换 3 次(约多等 21 分钟)才升级</span></td>
+      <td>以前靠"读报错文字猜是配额问题"——猜错过,会把健康任务直接判死。现在不猜了;而且账号轮换生效后,换人本身就可能自愈,根本不用打扰 Lead。</td>
+    </tr>
+    <tr>
+      <td><b>模型不可用时不再自动换备用模型</b></td>
+      <td>"要不要换模型"是判断,归 Lead。Bridge 只管换人重试,耗尽后 Lead 决定。</td>
+    </tr>
+    <tr>
+      <td><b>中途换人不再发通知</b><br><span class="muted">第 2、3 次换人静默,只留审计记录</span></td>
+      <td>自愈的事不打扰人;真到耗尽才发一次强信号——「盲换 3 次全死」本身就说明是系统性问题,Lead 一看就知道该动脑了。</td>
+    </tr>
+    <tr>
+      <td><b>上限数字其实没改</b></td>
+      <td>核对代码发现现状本来就是"最多换 3 次"(单子里写的"4 改 3"是误读,已与 Tadashi 确认)。这次把它写成一个明确的常量,行为、告警、话术都从这一个数取,永绝歧义。</td>
+    </tr>
+  </table>
+</div>
+
+<div class="section">
+  <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span>风险边界(你提的"误判死循环"防线)</div>
+  <div class="card red">
+    <h3>慢 ≠ 死:活着的任务永远不会被换掉</h3>
+    <p>判死只认两个硬信号:<b>进程真的退出</b>、<b>窗口被证明不存在</b>。任务慢、半天没输出、看起来卡住——这些<b>一概不算死</b>,连探测都不会触发换人。"是卡住还是只是慢"这个判断只属于 Lead。所以你担心的"长任务被误判 → 换 → 再误判 → 空转几小时"发不出来:盲换只会发生在真死上,且最多 3 次就停。</p>
+  </div>
+  <div class="card amber">
+    <h3>一个已知的极小概率场景</h3>
+    <p>如果 runner 死在"刚交完活、还没来得及上报"的几秒窗口里,换上的新人会发现活已交过、自己交不了——这种情况最多白换几次,然后照常升级给 Lead,告警里会直接标注「这个节点其实可能已经交过活了」。有界、不空转、不塞新判断回 Bridge。</p>
+  </div>
+  <div class="card">
+    <h3>逃生口保留</h3>
+    <p>整个换人机制有现成的一键关闭开关,不用重启就能停;历史记录只增不改,升级后 Lead 有现成的终止手段。</p>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title"><span class="dot" style="color:#ff9500;">●</span>验收(真机,不是纸面)</div>
+  <table>
+    <tr><th style="width:40%;">场景</th><th>要看到什么</th></tr>
+    <tr><td>① 注入一个"慢但活着"的长任务</td><td><span class="ok">永不</span>被换、永不被判死(观察期内零动作)</td></tr>
+    <tr><td>② 第一次真死、第二次干净起来</td><td>恰换 <span class="ok">1 次</span>自愈,零告警,不打扰 Lead</td></tr>
+    <tr><td>③ 每次一起来就死</td><td>恰换 <span class="ok">3 次</span>后停手,任务挂起,<b>负责 Lead 本人</b>收到人话告警(核对身份,不是"某个频道有消息")</td></tr>
+    <tr><td>④ 配额死 / 普通死 / 歧义死</td><td>走<span class="ok">同一条</span>盲换路径,处理记录逐字段一致(证明判断真删干净了)</td></tr>
+    <tr><td>⑤ 防回退守卫</td><td>"慢不算死""报错文字不参与判死"写成守卫测试,谁想把判断加回来会先撞红</td></tr>
+  </table>
+</div>
+
+<div class="footer">
+  设计评审:Codex 4 轮通过(含 1 处被评审抓出的真缺口、1 处有据反驳)· 方案要点:删判断代码为主,不新增机制 · FLY-1411(告警话术)并入本单
+</div>
+
+</body>
+</html>
