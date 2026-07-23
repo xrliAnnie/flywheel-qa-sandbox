@@ -6,6 +6,7 @@
  * in lockstep). Returns `undefined` when the feature is off → byte-compat.
  */
 
+import { makeChannelArchiveDefaultProvider } from "../../bridge/roundtable/channel-archive-default.js";
 import { ensureThreadFromMessage } from "../../bridge/roundtable/ensure-thread-from-message.js";
 import type { DiscordInboundMessage } from "./CodexDiscordGateway.js";
 import {
@@ -83,6 +84,14 @@ export function buildReplyInThreadWiring(opts: {
 			: DEFAULT_ROUNDTABLE_THREAD_BUDGET;
 	const autoContinue = opts.cfg.autoContinue === true;
 	const parentChannelId = opts.cfg.parentChannelId;
+	const archiveDefaultProvider = makeChannelArchiveDefaultProvider({
+		channelId: parentChannelId,
+		botToken: opts.botToken,
+		...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+		...(opts.logger
+			? { logger: { warn: (message: string) => opts.logger?.warn(message) } }
+			: {}),
+	});
 	// Other cross-dept channels keep their FLY-267 source-channel reply (R2#2).
 	const staticCrossDept = new Set(
 		opts.crossDeptChannelIds.filter((id) => id !== parentChannelId),
@@ -145,6 +154,7 @@ export function buildReplyInThreadWiring(opts: {
 			opts.botToken,
 			{
 				...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+				archiveDefaultProvider,
 				// FLY-314 fix: correct-from-start name so a Codex-created topic thread is
 				// never left as the generic "Roundtable topic" placeholder.
 				...(route.threadName ? { threadName: route.threadName } : {}),

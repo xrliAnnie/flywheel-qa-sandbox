@@ -28,11 +28,11 @@ import type { InboundCursorStore } from "../../lead-backends/codex/InboundCursor
 import type { StateStore } from "../../StateStore.js";
 import { markAutomatedDiscordText } from "../automated-message.js";
 import { addThreadMember } from "../chat-thread-utils.js";
+import { VALID_AUTO_ARCHIVE_MINUTES } from "./channel-archive-default.js";
 import {
 	deriveRoundtableThreadName,
 	isTopicNoise,
 	ROUNDTABLE_PLACEHOLDER_NAME,
-	ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES,
 } from "./roundtable-text.js";
 import type { RoundtableMessage } from "./topic-trigger.js";
 
@@ -101,6 +101,26 @@ export interface RoundtableThreadManagerOptions {
 	 */
 	threadOwnBotMessages?: boolean;
 	cursorStore: InboundCursorStore;
+	/** Long-lived parent-channel default reader, shared across poll cycles. */
+	archiveDefaultProvider?: () => Promise<number | null>;
+	/**
+	 * Fail-loud sink for an unavailable, absent, or invalid parent-channel
+	 * archive policy. The manager holds its cursor and sends no create/PATCH.
+	 */
+	onArchiveDefaultUnresolved?: (failure: {
+		channelId: string;
+		reason: "provider_missing" | "not_configured" | "invalid" | "lookup_failed";
+		detail?: string;
+	}) => void | Promise<void>;
+	/**
+	 * Fail-loud sink for non-retryable metadata PATCH failures. Production wires
+	 * this to MetaAlertNotifier so missing MANAGE_THREADS cannot look successful.
+	 */
+	onPermanentPatchFailure?: (failure: {
+		threadId: string;
+		status: number;
+		fields: { name?: string; auto_archive_duration?: number };
+	}) => void | Promise<void>;
 	fetchImpl?: typeof fetch;
 	pollIntervalMs?: number;
 	limit?: number;
@@ -131,6 +151,15 @@ export class RoundtableThreadManager {
 	private readonly triggerMode: string;
 	private readonly threadOwnBotMessages: boolean;
 	private readonly cursorStore: InboundCursorStore;
+	private readonly archiveDefaultProvider:
+		| (() => Promise<number | null>)
+		| undefined;
+	private readonly onArchiveDefaultUnresolved:
+		| RoundtableThreadManagerOptions["onArchiveDefaultUnresolved"]
+		| undefined;
+	private readonly onPermanentPatchFailure:
+		| RoundtableThreadManagerOptions["onPermanentPatchFailure"]
+		| undefined;
 	private readonly fetchImpl: typeof fetch;
 	private readonly pollIntervalMs: number;
 	private readonly limit: number;
@@ -164,6 +193,9 @@ export class RoundtableThreadManager {
 		this.triggerMode = opts.triggerMode;
 		this.threadOwnBotMessages = opts.threadOwnBotMessages ?? false;
 		this.cursorStore = opts.cursorStore;
+		this.archiveDefaultProvider = opts.archiveDefaultProvider;
+		this.onArchiveDefaultUnresolved = opts.onArchiveDefaultUnresolved;
+		this.onPermanentPatchFailure = opts.onPermanentPatchFailure;
 		this.fetchImpl = opts.fetchImpl ?? fetch;
 		this.pollIntervalMs = opts.pollIntervalMs ?? 3000;
 		this.limit = Math.min(opts.limit ?? 50, 100);
@@ -338,17 +370,23 @@ export class RoundtableThreadManager {
 			return true;
 
 		// 4. Create the thread from the topic message (threadId === msg.id).
-		const result = await this.createThreadFromMessage(msg);
+		const desiredArchiveMinutes = await this.resolveArchiveMinutes();
+		if (desiredArchiveMinutes === null) return false; // hold — never create 4320 silently
+		const result = await this.createThreadFromMessage(
+			msg,
+			desiredArchiveMinutes,
+		);
 		switch (result.kind) {
 			case "created":
 				// Host bot won the create — the name is already descriptive AND
-				// createThreadFromMessage already set the 1h archive, so pass both as the
-				// current values (no PATCH needed). commitThread returns false on a
-				// transient decorate failure to hold the cursor.
+				// createThreadFromMessage already set the parent channel-list policy, so
+				// pass both as the current values (no PATCH needed). commitThread returns
+				// false on a transient decorate failure to hold the cursor.
 				return await this.commitThread(msg, result.threadId, {
 					seed: true,
 					currentName: this.threadName(msg.content),
-					currentArchiveMinutes: ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES,
+					currentArchiveMinutes: desiredArchiveMinutes,
+					desiredArchiveMinutes,
 				});
 			case "exists": {
 				// Recovery: someone (usually the Belle plugin's real-time gateway) created
@@ -367,6 +405,7 @@ export class RoundtableThreadManager {
 					seed: false,
 					currentName: conf.name,
 					currentArchiveMinutes: conf.autoArchiveMinutes,
+					desiredArchiveMinutes,
 				});
 			}
 			case "deleted":
@@ -399,10 +438,9 @@ export class RoundtableThreadManager {
 	 *     (the next poll re-runs; PUT thread-member is idempotent). A permanent
 	 *     failure (bad token / no perms / gone) is warned and skipped (never wedge).
 	 *  2. Converge thread metadata in ONE PATCH — rename a placeholder-named thread
-	 *     (the plugin hard-codes the placeholder) to a descriptive name AND, for a
-	 *     thread the plugin created with Discord's default 3-day archive, set the 1h
-	 *     archive (FLY-802). Only the fields that actually changed are sent; same
-	 *     hold-on-transient policy.
+	 *     (the plugin hard-codes the placeholder) to a descriptive name AND converge
+	 *     any plugin-created thread to the parent channel-list policy. Only fields
+	 *     that actually changed are sent; same hold-on-transient policy.
 	 *  3. Persist the row LAST. A crash before here re-runs idempotently via the
 	 *     160004 recovery path; a crash after here but before the cursor saves dedups
 	 *     out safely (the row now means the critical repair already completed). This
@@ -421,6 +459,7 @@ export class RoundtableThreadManager {
 			/** The thread's current auto_archive_duration (minutes). Undefined when
 			 * unreadable → treated as needing convergence (FLY-802). */
 			currentArchiveMinutes?: number;
+			desiredArchiveMinutes: number;
 		},
 	): Promise<boolean> {
 		// FLY-576 (Annie's T2 model + founder): the founder is ALWAYS a member; union
@@ -443,12 +482,9 @@ export class RoundtableThreadManager {
 		//  - name: only when the creator left the generic placeholder (the plugin's
 		//    real-time gateway hard-codes it); a thread the host bot created already
 		//    reads descriptive → skipped.
-		//  - auto_archive_duration: FLY-802 — the plugin's real-time gateway can win the
-		//    create race and open the thread with Discord's DEFAULT 3-day archive, so
-		//    the poller must converge it to 1h (else it never collapses out of the
-		//    sidebar — the whole point of the issue). A thread the host bot created
-		//    already carries 60 (currentArchiveMinutes === 60) → skipped, so there is no
-		//    redundant Discord write on the create path.
+		//  - auto_archive_duration: if the plugin's real-time gateway wins the create
+		//    race with stale metadata, converge it to the parent channel-list policy.
+		//    A thread created with the desired value skips this redundant write.
 		const patch: { name?: string; auto_archive_duration?: number } = {};
 		const desired = this.threadName(msg.content);
 		if (
@@ -457,16 +493,18 @@ export class RoundtableThreadManager {
 		) {
 			patch.name = desired;
 		}
-		if (opts.currentArchiveMinutes !== ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES) {
-			patch.auto_archive_duration = ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES;
+		if (opts.currentArchiveMinutes !== opts.desiredArchiveMinutes) {
+			patch.auto_archive_duration = opts.desiredArchiveMinutes;
 		}
 		if (patch.name !== undefined || patch.auto_archive_duration !== undefined) {
 			const outcome = await this.patchThread(threadId, patch);
 			if (outcome === "transient") return false; // hold — converge on the next poll
-			// "permanent" (e.g. no MANAGE_THREADS) already warned — membership stands.
+			// "permanent" is non-retryable, but patchThread reports it through the
+			// explicit fail-loud sink before membership is committed.
 		}
 
-		// Commit point — persist only after the critical repair has converged.
+		// Commit point — persist after metadata converged or a non-retryable failure
+		// was reported fail-loud. Transient repair failures returned above and retry.
 		this.store.upsertRoundtableTopicThread({
 			threadId,
 			channelId: this.channelId,
@@ -504,10 +542,62 @@ export class RoundtableThreadManager {
 		}
 	}
 
+	private async resolveArchiveMinutes(): Promise<number | null> {
+		if (!this.archiveDefaultProvider) {
+			await this.reportArchiveDefaultUnresolved("provider_missing");
+			return null;
+		}
+		try {
+			const channelDefault = await this.archiveDefaultProvider();
+			if (channelDefault === null) {
+				await this.reportArchiveDefaultUnresolved("not_configured");
+				return null;
+			}
+			if (!VALID_AUTO_ARCHIVE_MINUTES.has(channelDefault)) {
+				await this.reportArchiveDefaultUnresolved(
+					"invalid",
+					String(channelDefault),
+				);
+				return null;
+			}
+			return channelDefault;
+		} catch (err) {
+			await this.reportArchiveDefaultUnresolved(
+				"lookup_failed",
+				(err as Error).message,
+			);
+			return null;
+		}
+	}
+
+	private async reportArchiveDefaultUnresolved(
+		reason: "provider_missing" | "not_configured" | "invalid" | "lookup_failed",
+		detail?: string,
+	): Promise<void> {
+		this.logger.warn(
+			`[RoundtableThreadManager] parent archive default unresolved (${reason}); holding cursor without creating a thread`,
+			{ channelId: this.channelId, detail },
+		);
+		if (!this.onArchiveDefaultUnresolved) return;
+		try {
+			await this.onArchiveDefaultUnresolved({
+				channelId: this.channelId,
+				reason,
+				...(detail ? { detail } : {}),
+			});
+		} catch (err) {
+			this.logger.warn(
+				"[RoundtableThreadManager] archive-default fail-loud reporter failed",
+				{ channelId: this.channelId, err: (err as Error).message },
+			);
+		}
+	}
+
 	/** PATCH /channels/{threadId} with the given thread-metadata fields (name and/or
 	 * auto_archive_duration). Classified like the member add: transient
 	 * (429/5xx/network/timeout) → caller holds the cursor; permanent (401/403/404,
-	 * e.g. the bot lacks MANAGE_THREADS) → warn + proceed (membership still converges). */
+	 * e.g. the bot lacks MANAGE_THREADS) → fail-loud + proceed (membership still
+	 * converges; retrying the same unauthorized request would only wedge the channel). */
 	private async patchThread(
 		threadId: string,
 		fields: { name?: string; auto_archive_duration?: number },
@@ -530,6 +620,20 @@ export class RoundtableThreadManager {
 			);
 			if (res.status === 408 || res.status === 429 || res.status >= 500)
 				return "transient";
+			if (this.onPermanentPatchFailure) {
+				try {
+					await this.onPermanentPatchFailure({
+						threadId,
+						status: res.status,
+						fields,
+					});
+				} catch (err) {
+					this.logger.warn(
+						"[RoundtableThreadManager] permanent PATCH fail-loud reporter failed",
+						{ threadId, status: res.status, err: (err as Error).message },
+					);
+				}
+			}
 			return "permanent";
 		} catch (err) {
 			this.logger.warn("[RoundtableThreadManager] patch thread error", {
@@ -545,6 +649,7 @@ export class RoundtableThreadManager {
 	/** POST /channels/{channelId}/messages/{messageId}/threads. */
 	private async createThreadFromMessage(
 		msg: RoundtableMessage,
+		archiveMinutes: number,
 	): Promise<CreateResult> {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
@@ -559,8 +664,7 @@ export class RoundtableThreadManager {
 					},
 					body: JSON.stringify({
 						name: this.threadName(msg.content),
-						// FLY-802: 1h auto-archive so finished topics collapse out of the sidebar.
-						auto_archive_duration: ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES,
+						auto_archive_duration: archiveMinutes,
 					}),
 					signal: controller.signal,
 				},
@@ -606,7 +710,7 @@ export class RoundtableThreadManager {
 	 * GET /channels/{messageId} — confirm a thread owned by the roundtable channel
 	 * exists (recovery anchor: threadId === messageId) AND read its current name +
 	 * archive duration (so the caller can rename a placeholder and converge a
-	 * plugin-created thread's stale 3-day archive to 1h — FLY-802).
+	 * plugin-created thread to the parent channel-list policy).
 	 *
 	 * FLY-576: classified, not boolean. A transient failure (429/5xx/network/timeout)
 	 * must NOT be collapsed to "not confirmed" — that would advance the cursor and
@@ -644,9 +748,9 @@ export class RoundtableThreadManager {
 					THREAD_TYPES.has(data.type) &&
 					data.parent_id === this.channelId;
 				if (!isThread) return { kind: "absent" };
-				// FLY-802: also read the thread's current archive duration so commitThread
-				// can converge a plugin-created thread (Discord's default 3-day) to 1h
-				// without a redundant PATCH when it is already correct.
+				// Also read the thread's current archive duration so commitThread can
+				// converge a plugin-created thread without a redundant PATCH when it is
+				// already correct.
 				const rawArchive = data.thread_metadata?.auto_archive_duration;
 				return {
 					kind: "confirmed",

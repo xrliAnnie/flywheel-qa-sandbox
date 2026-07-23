@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-802 设计 — roundtable 话题串 1 小时自动收起(根修)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.6; padding: 24px 16px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 24px; color: #1a365d; margin-bottom: 4px; }
+  .sub { color: #86868b; font-size: 14px; margin-bottom: 20px; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 0.92em; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 18px 20px; margin-bottom: 16px; border-left: 4px solid #007aff; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .section-title { font-size: 17px; font-weight: 600; color: #1a365d; margin-bottom: 10px; }
+  .lede { font-size: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  .badge { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 10px; margin-right: 6px; vertical-align: 1px; }
+  .badge.bad { background: #ffe5e3; color: #ff3b30; }
+  .badge.good { background: #e4f8ea; color: #248a3d; }
+  .badge.info { background: #e5f1ff; color: #007aff; }
+  .badge.warn { background: #fff3e0; color: #c76b00; }
+  /* flow diagram */
+  .flow { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+  .lane { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; }
+  .node { flex: 1 1 150px; min-width: 140px; background: #f8f9fb; border: 1.5px solid #d8dce3; border-radius: 10px; padding: 10px 12px; font-size: 13.5px; position: relative; }
+  .node b { display: block; font-size: 13.5px; margin-bottom: 2px; }
+  .node.src { border-color: #af52de; background: #faf5ff; }
+  .node.fix { border-color: #34c759; background: #f3fbf5; }
+  .node.bad-n { border-color: #ff3b30; background: #fff6f5; }
+  .node.claw { border-color: #ff9500; background: #fffaf2; }
+  .arrow { align-self: center; color: #86868b; font-size: 18px; padding: 0 2px; }
+  .down { text-align: center; color: #86868b; font-size: 18px; line-height: 1; }
+  .small { font-size: 12.5px; color: #6e6e73; }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; font-size: 14px; }
+  .kv dt { color: #86868b; }
+  @media (max-width: 640px) { .kv { grid-template-columns: 1fr; } .kv dt { margin-top: 6px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>话题串没人聊就自动收起:roundtable + 告警频道</h1>
+<div class="sub">FLY-802 设计方案 · 2026-07-22 · 设计已过 Codex 评审(6 轮,APPROVED)· 等待实施</div>
+
+<div class="card green">
+  <div class="section-title">一句话</div>
+  <div class="lede"><b>以后每个频道的"话题串多久收起"由你在 Discord 频道设置里定,代码只负责照办</b>:建串的时候按频道设置来,再加一个每半小时的巡检员把漏网的串纠正、把聊完的串收起 —— roundtable 你已经设了 1 小时;告警频道(你派活时追加的)上线时也设成 1 小时;别的频道不动。</div>
+</div>
+
+<div class="card red">
+  <div class="section-title">上次为什么"修了"还堆串(这次查实的根因)</div>
+  <ul>
+    <li><b>Discord 的坑</b>:你在频道设置里选的"1 小时"只对<b>人手动建串</b>生效;<b>机器人建串</b>时 Discord 不看这个设置,机器人不明说就给 3 天。</li>
+    <li><b>建串的入口有三个</b>,上次只修了其中两个(Bridge 侧)。真正抢先建串的是第三个 —— 各个 Lead 身上的 Discord 插件,它代码里写死了"3 天"。</li>
+    <li><b>补救通道也是死的</b>:Bridge 想事后把串改成 1 小时,但它用的是 Lead 的机器人身份,没有"管理串"权限,Discord 拒绝(403),代码把失败吞了、以后不再重试。</li>
+    <li><b>今天实测</b>(距上次手动清理仅 5 天):13 个活跃串里 5 个又是 3 天档,最新一个就是今天上午建的 —— 问题还在持续产生。名字那半已经好了(0 个占位名)。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <div class="section-title">核心流程:两半闭环</div>
+  <div class="flow">
+    <div class="lane">
+      <div class="node src"><b>入口 ① Bridge 轮询</b>看到新话题就建串<br><span class="small">改:建串前先读频道设置</span></div>
+      <div class="node src"><b>入口 ② Codex Lead 回帖</b>回帖前保证串存在<br><span class="small">改:同上</span></div>
+      <div class="node bad-n"><b>入口 ③ Lead 插件(抢建主力)</b><br><span class="small">改:删掉写死的"3 天",读频道设置(另一个仓库的小改)</span></div>
+    </div>
+    <div class="down">↓ 三个入口统一规则:<b>频道设置了就照设置;没设置就 3 天</b>(零硬编码,不认频道名)</div>
+    <div class="lane">
+      <div class="node fix"><b>新串出生就正确</b><br><span class="small">roundtable → 1 小时;其他频道 → 3 天(现状不变)</span></div>
+      <div class="arrow">+</div>
+      <div class="node claw"><b>巡检员(新增,每 30 分钟)</b>用 claw 基建机器人(有"管理串"权限)<br><span class="small">① 把档位不对的串纠正到频道设置值<br>② 把"没动静超时"的串收起(归档,不删)</span></div>
+    </div>
+    <div class="down">↓</div>
+    <div class="lane">
+      <div class="node fix"><b>结果</b>:聊完 1 小时自动从侧栏收起;消息都在、能搜到;有人再说话自动弹回来。旧插件没重启前建错的串,巡检员半小时内纠正。</div>
+    </div>
+  </div>
+</div>
+
+<div class="card purple">
+  <div class="section-title">谁管什么(结构模型)</div>
+  <table>
+    <tr><th>角色</th><th>做什么</th><th>用什么身份/权限</th></tr>
+    <tr><td><b>你(founder)</b></td><td>在 Discord 频道设置里定"这个频道的串多久收起"—— 这是唯一的开关,想让哪个频道特殊就设哪个</td><td>Discord 频道设置</td></tr>
+    <tr><td>三个建串入口</td><td>建串时读频道设置、明说档位(没设置 = 3 天)</td><td>各自现有机器人,只需读权限</td></tr>
+    <tr><td>巡检员(新)</td><td>只巡查<b>你设置过档位的频道</b>;纠正 + 收起;每次动手前再确认一遍你的设置没变</td><td>claw 基建机器人(已验证有"管理串"权限)</td></tr>
+    <tr><td>告警频道(你追加的)</td><td>建告警串的代码同样改成读频道设置(没设置时保持今天的 1 天不变);上线时把告警频道设成 1 小时 → 巡检员自动把堆积的串收敛收起。<b>告警太多本身归 FLY-1386 治,这里只管"堆了的自动收起"</b></td><td>同上,零新机制</td></tr>
+    <tr><td>不碰的</td><td>issue 讨论串(3 天,FLY-292 管)—— 频道没设档位,巡检员根本不看</td><td>—</td></tr>
+  </table>
+</div>
+
+<div class="card amber">
+  <div class="section-title">关键取舍(含被否掉的做法)</div>
+  <table>
+    <tr><th>决定</th><th>为什么</th></tr>
+    <tr><td><span class="badge good">选定</span>巡检员只管"你设置过档位"的频道</td><td>你 7-17 的原话是"没设置的按 3 天对齐",但照字面执行会把告警串(故意 1 天)也翻成 3 天 —— 一个没人想要的副作用。改成"设置过才纳管":今天全服务器只有 roundtable 设置过,所以只有它被管;你哪天想纳管别的频道,设一下就行,不用改代码。<b>这是对你原话的唯一偏差,Codex 评审也认可。</b></td></tr>
+    <tr><td><span class="badge bad">否掉</span>代码里写"roundtable 特殊"</td><td>你明确禁止硬编码频道;而且下次再想调,又得改代码。</td></tr>
+    <tr><td><span class="badge bad">否掉</span>比 1 小时更短的自定义收串器</td><td>1 小时是 Discord 原生最短档,你已拍板够用;更短要自己造轮子,不值。</td></tr>
+    <tr><td><span class="badge bad">否掉</span>巡检员顺带改串名</td><td>名字问题已经修好了(今天实测 0 个占位名),不加多余功能。</td></tr>
+    <tr><td><span class="badge good">选定</span>巡检员动手前再读一遍你的设置</td><td>你改设置立刻生效,不会出现"我刚清掉设置它还在按旧规则收串"。</td></tr>
+  </table>
+</div>
+
+<div class="card gray">
+  <div class="section-title">诚实边界:这个设计不做什么</div>
+  <ul>
+    <li><b>过渡期不是严格 1 小时</b>:插件那半要等各 Lead 重启才生效;重启前建错的串靠巡检员纠正,最坏情况一个串要 ~1.5 小时才收起(纠正档位这个动作本身会让 Discord 重新计时)。稳定后新串都是出生即 1 小时。</li>
+    <li><b>你手动展开的旧串不会被立刻收回</b>:手动展开算"有动静",从那一刻重新计 1 小时 —— 特意这么设计,不打断你翻旧帖。</li>
+    <li><b>巡检员被关掉(开关或只跑一次模式)时没有兜底</b> —— 正常配置(每 30 分钟)下不存在这个问题。</li>
+    <li><b>没设置档位的频道完全不受管</b>:issue 串保持现状,除非你哪天主动给那些频道设档位;告警频道在上线那步才被设进来。</li>
+    <li><b>告警串的"量"这里不治</b>:这次只让堆了的自动收起;假告警风暴的减量归 FLY-1386(watchdog 误报治理)。</li>
+    <li>依赖 claw 机器人的权限;权限被动过会大声报警,但不会自己修。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <div class="section-title">交付与验收(实施节点接手)</div>
+  <div class="kv">
+    <dt>改动 1(本仓)</dt><dd>三个建串入口读频道设置 + 新巡检员(复用 FLY-1165 的调度器)</dd>
+    <dt>改动 2(插件仓)</dt><dd>删掉写死的"3 天",同样读频道设置;随分发脚本更新两处副本</dd>
+    <dt>验收口径</dt><dd>真机前后对照:5 个 3 天档的串半小时内归位;告警串/issue 串一个字节不变;重启一个 Lead 后新串出生即 1 小时(直接查 Discord 元数据,不认工具的"成功"字样)</dd>
+    <dt>发布</dt><dd>照旧走 Codex 代码评审 + 独立 QA + 你点 :cool: 才合</dd>
+  </div>
+</div>
+
+<div class="sub" style="text-align:center; margin-top: 20px;">FLY-802 · 设计文档全文在仓库 engineering/doc/FLY-802-roundtable-thread-autoarchive/(exploration / research / plan)</div>
+
+</div>
+</body>
+</html>

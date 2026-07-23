@@ -503,6 +503,7 @@ import {
 import { ReviewRequestCoordinator } from "./review-request-coordinator.js";
 import { createReviewRulingHandler } from "./review-ruling-route.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
+import { makeChannelArchiveDefaultProvider } from "./roundtable/channel-archive-default.js";
 import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
@@ -8148,6 +8149,35 @@ export async function startBridge(
 			triggerMode: roundtableConfig.triggerMode,
 			threadOwnBotMessages: roundtableConfig.threadOwnBotMessages,
 			cursorStore: new FileInboundCursorStore(roundtableConfig.cursorPath),
+			archiveDefaultProvider: makeChannelArchiveDefaultProvider({
+				channelId: roundtableConfig.channelId,
+				botToken: roundtableConfig.botToken,
+				logger: { warn: (message) => console.warn(message) },
+			}),
+			logger: {
+				warn: (message, context) => console.warn(message, context ?? ""),
+				log: (message) => console.log(message),
+			},
+			onArchiveDefaultUnresolved: async ({ channelId, reason, detail }) => {
+				await metaAlertNotifier.notify({
+					reason: "roundtable_archive_default_unresolved",
+					title: "Roundtable thread creation is waiting for channel policy",
+					body:
+						`Bridge held roundtable thread creation in channel ${channelId}; ` +
+						`parent archive policy is unresolved (${reason}${detail ? `: ${detail}` : ""}). ` +
+						"Set/read default_auto_archive_duration before retrying; no 4320-minute fallback thread was created.",
+				});
+			},
+			onPermanentPatchFailure: async ({ threadId, status, fields }) => {
+				await metaAlertNotifier.notify({
+					reason: "roundtable_patch_permanent_failure",
+					title: "Roundtable thread repair permanently failed",
+					body:
+						`Bridge could not converge thread ${threadId} in channel ${roundtableConfig.channelId}: ` +
+						`Discord HTTP ${status}; fields=${Object.keys(fields).join(",") || "none"}. ` +
+						"Check the poller bot's MANAGE_THREADS permission.",
+				});
+			},
 			pollIntervalMs: roundtableConfig.pollIntervalMs,
 		});
 		await roundtableThreadManager.start();
@@ -9647,7 +9677,7 @@ export async function startBridge(
 	// watchdog (piggybacked on onPollComplete below, no new timer) share one
 	// DiscordOps + one accountSwitch instance. accountSwitch is gated on both
 	// pool presence and FLY-1256 legacy mode (CUTOVER retires Bridge execution).
-	const alertDiscordOps = createDiscordOps(() => {
+	const getAlertDiscordTokens = (): string[] => {
 		// FLY-927 (D2): single sender identity — when set, Hub thread operations
 		// use the SAME one identity as the root alert (no repair-chain fan-out).
 		// Unresolvable token ⇒ empty chain ⇒ the op fails loudly via the Hub's
@@ -9660,7 +9690,15 @@ export async function startBridge(
 		return buildRepairChain(projects, repairBotTokenEnvName)
 			.map((env) => process.env[env])
 			.filter((t): t is string => !!t);
-	});
+	};
+	const alertDiscordOps = createDiscordOps(getAlertDiscordTokens);
+	const alertArchiveDefaultProvider = unifiedAlertChannelId
+		? makeChannelArchiveDefaultProvider({
+				channelId: unifiedAlertChannelId,
+				botToken: getAlertDiscordTokens,
+				logger: { warn: (message) => console.warn(message) },
+			})
+		: undefined;
 	// FLY-1048 (A5): wire the suspicious-report quiet thread leg now that the
 	// Discord ops exist (the deliverer skipped the leg while this was null).
 	suspiciousThreadPoster.current = async (threadId, content) => {
@@ -10024,6 +10062,7 @@ export async function startBridge(
 					notifier: leadAlertNotifier,
 					// Repair-chain DiscordOps: Cass → alphabetical, resolved per call.
 					discord: alertDiscordOps,
+					archiveDefaultProvider: alertArchiveDefaultProvider,
 					// FLY-1243: conservative auto-repair, 固化 default-on (always wired
 					// inside the hub, which itself needs a channel + repair chain). Only
 					// the two safe actions; reuses the audited runner-nudge +

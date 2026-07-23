@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1435 · roundtable thread 1 小时自动收起 — 根因 + 修复设计</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.65; padding:24px 16px 64px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:24px; }
+  .mono { font-family:'SF Mono', monospace; font-size:0.92em; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin-bottom:18px; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.red { border-left:4px solid #ff3b30; }
+  .card.purple { border-left:4px solid #af52de; }
+  .section-title { font-size:18px; font-weight:600; color:#1a365d; margin:28px 0 12px; }
+  .lede { font-size:16.5px; }
+  .lede b { color:#1a365d; }
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:14.5px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid #e8e8ed; vertical-align:top; }
+  th { color:#86868b; font-weight:600; font-size:13px; }
+  .ok { color:#34c759; font-weight:700; }
+  .warn { color:#ff9500; font-weight:700; }
+  .no { color:#ff3b30; font-weight:700; }
+  .flow { display:flex; flex-direction:column; gap:0; margin:14px 0; }
+  .frow { display:flex; gap:10px; align-items:stretch; flex-wrap:wrap; }
+  .fbox { flex:1 1 180px; background:#f5f5f7; border:1px solid #e2e2e7; border-radius:10px; padding:10px 12px; font-size:13.5px; min-width:170px; }
+  .fbox .t { font-weight:600; color:#1a365d; margin-bottom:3px; font-size:13.5px; }
+  .fbox.bad { background:#fff2f1; border-color:#ffc7c2; }
+  .fbox.good { background:#f0faf2; border-color:#bfe8c8; }
+  .fbox.fix { background:#f3ecfb; border-color:#ddc8f2; }
+  .arrow { text-align:center; color:#86868b; font-size:16px; padding:2px 0; }
+  .badge { display:inline-block; font-size:11.5px; font-weight:700; border-radius:6px; padding:1px 8px; margin-left:6px; vertical-align:middle; }
+  .badge.fixnew { background:#f3ecfb; color:#af52de; }
+  .badge.done { background:#f0faf2; color:#34c759; }
+  .badge.ops { background:#fff7ec; color:#ff9500; }
+  .kv { display:flex; gap:12px; flex-wrap:wrap; margin-top:10px; }
+  .stat { flex:1 1 150px; background:#f5f5f7; border-radius:10px; padding:10px 12px; min-width:150px; }
+  .stat .n { font-size:20px; font-weight:700; color:#1a365d; }
+  .stat .l { font-size:12.5px; color:#86868b; }
+  ul { margin:8px 0 4px 20px; }
+  li { margin-bottom:6px; }
+  .small { font-size:13px; color:#86868b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>roundtable thread「1 小时自动收起」— 根因查明了,这样修</h1>
+  <div class="sub">FLY-1435(接替 FLY-802)· 设计阶段报告 · 2026-07-22</div>
+
+  <div class="card blue">
+    <div class="lede"><b>一句话:</b>之前测出「自动归档从没触发」,不是机制坏了,而是<b>盯错了信号</b>——Discord 几年前就把这个设置改成了「控制 thread 在<b>侧栏里挂多久</b>」,而我们盯的那个「归档标志」平台本来就几乎不翻(实测 28 天都不动)。你要的「1 小时没动静就从侧栏收起」<b>Discord 原生就能做到,不用巡检员</b>。不过查根因时又挖出两个真窟窿:<b>抢先建 thread 的插件写死了 3 天</b>、<b>Cass 没有改 thread 的权限</b>——这次一起补上。
+  </div>
+
+  <div class="section-title">① 为什么之前会误判「没触发」</div>
+  <div class="card">
+    <p>Discord 的「自动归档时长」有两套互不相干的行为,之前的验收盯了错的那套:</p>
+    <table>
+      <tr><th></th><th>它实际做什么</th><th>我们实测</th></tr>
+      <tr>
+        <td><b>侧栏收起</b>(你要的)</td>
+        <td>thread 超过设定时长没动静,就从左边侧栏列表里收起(消息还在,搜得到)</td>
+        <td class="ok">✓ 真触发:一条闲置 6.4 小时的测试 thread,读掉未读后立刻从你的侧栏消失;旁边设 3 天的对照 thread 还挂着</td>
+      </tr>
+      <tr>
+        <td>「归档标志」(之前盯的)</td>
+        <td>服务器内部另有一个不公开的慢计时器,平时基本不翻这个标志</td>
+        <td class="no">✗ 有 thread 闲了 28.3 天标志都没翻——盯它必然误判「没触发」</td>
+      </tr>
+    </table>
+    <div class="kv">
+      <div class="stat"><div class="n">28.3 天</div><div class="l">闲置 thread 归档标志不翻(铁证)</div></div>
+      <div class="stat"><div class="n">读掉即收</div><div class="l">超时的已读 thread 立刻从侧栏消失</div></div>
+      <div class="stat"><div class="n">官方原文</div><div class="l">该字段已改为控制「在频道列表停留多久」</div></div>
+    </div>
+  </div>
+
+  <div class="section-title">② 核心流程:一条 roundtable 消息,thread 怎么出生、怎么收起</div>
+  <div class="card">
+    <div class="flow">
+      <div class="frow"><div class="fbox" style="flex:1"><div class="t">#leads-roundtable 有人发了条顶层消息</div>两个系统会赛跑,谁先建出 thread 算谁的</div></div>
+      <div class="arrow">↓ ↓</div>
+      <div class="frow">
+        <div class="fbox bad"><div class="t">路径 A:插件(反应快,常赢)</div>建出的 thread <b>写死 3 天</b>才收起 —— <span class="no">窟窿①</span><br><span class="badge fixnew">本次修</span> 改成跟着频道设置走(1 小时)</div>
+        <div class="fbox good"><div class="t">路径 B:Bridge(3 秒轮询)</div>已按频道设置建 1 小时 <span class="badge done">#677 已做对</span></div>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="frow"><div class="fbox fix" style="flex:1"><div class="t">兜底:Bridge 发现 thread 不是 1 小时,会顺手改过来 + 改成描述性名字</div>但这需要 Cass 有「管理 thread」权限,<b>生产里现在没有</b>,失败还静默放行 —— <span class="no">窟窿②</span><br><span class="badge ops">一次性配置</span> 给 Cass 加权限就好(不是巡检员,是既有的一次性动作)</div></div>
+      <div class="arrow">↓</div>
+      <div class="frow"><div class="fbox good" style="flex:1"><div class="t">之后全交给 Discord 原生</div>没动静 1 小时 → 自动从侧栏收起。我们不跑任何巡检进程</div></div>
+    </div>
+  </div>
+
+  <div class="section-title">③ 侧栏到底按什么规则显示(诚实版)</div>
+  <div class="card">
+    <p class="mono" style="background:#f5f5f7;border-radius:8px;padding:8px 12px;">侧栏显示 = 没被归档 且(有未读/被@点名 或 最近 1 小时内有动静)</p>
+    <table>
+      <tr><th>场景</th><th>修完之后</th></tr>
+      <tr><td>你<b>读过</b>的 roundtable thread</td><td class="ok">✓ 没动静 1 小时后自动收起 —— 这就是本单目标</td></tr>
+      <tr><td>你<b>还没读</b>的(被 @ 了)</td><td class="warn">⚠️ 会一直挂着提醒你,点开看一眼就收 —— 这是 Discord 全平台的未读保护,故意的</td></tr>
+      <tr><td>#flywheel-alerts 那一大排</td><td class="no">✗ 不归本单管 —— 那些全是未读钉住的,跟收起时长无关;想连未读一起强收是另一个产品决定,到时你拍</td></tr>
+    </table>
+  </div>
+
+  <div class="section-title">④ 关键取舍(否掉了什么、为什么)</div>
+  <div class="card">
+    <ul>
+      <li><b>巡检员方案 ✗</b> —— 你已明确否决(「802 我们不需要巡检员」)。本方案零常驻进程,收起完全交给 Discord;Cass 的权限只是让<b>既有的一次性</b>纠偏动作能成功,不是轮询。</li>
+      <li><b>只把 #677 合进去 ✗</b> —— 不够。插件抢建的 thread 还是 3 天,你实际看到的大多数 thread 恰恰是插件建的。两个窟窿不补,等于又一次「代码看着对、你的侧栏没变化」。</li>
+      <li><b>继续拿「归档标志」当验收 ✗</b> —— 平台就不按这个走,盯它只会永远 Fail。新验收 = 直接看<b>你客户端的侧栏</b>(截图为证):设 1 小时的收了、设 3 天的对照还在,才算过。</li>
+      <li><b>换掉 Discord 原生、自己写收起逻辑 ✗</b> —— 过度工程,还违背零巡检方向。</li>
+    </ul>
+  </div>
+
+  <div class="section-title">⑤ 需要你做的两个一次性配置(ship 窗口时找你)</div>
+  <div class="card amber">
+    <ul>
+      <li>给 <b>Cass</b> 在 #leads-roundtable 加「管理 thread(Manage Threads)」权限 —— 让纠偏和改名真正生效。</li>
+      <li>把测试频道 <b>#test-leads-roundtable</b> 的默认收起时长设为 <b>1 小时</b> —— QA 隔离房用,不碰生产。</li>
+    </ul>
+    <p class="small">机器人自己没权限做这两件事,各只需点一次。</p>
+  </div>
+
+  <div class="section-title">⑥ 边界(这个设计不做什么)</div>
+  <div class="card purple">
+    <ul>
+      <li><b>未读的 thread 不强收</b> —— Discord 的未读保护;要强收=新决策,你拍了才另立项。</li>
+      <li><b>存量老 thread 不回头处理</b> —— 只管新建的(FLY-802 就定过的边界)。</li>
+      <li><b>侧栏收起是 Discord 客户端的行为</b> —— 官方文档只有一句话合同,所以验收全部以真机截图为准;将来 Discord 客户端要是改行为,算新问题。</li>
+      <li><b>issue 讨论 thread(3 天)和告警 thread(1 天)的时长不变</b> —— 本单只动 roundtable。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="small">设计已过 Codex 独立评审 3 轮(第 1、2 轮共提 10 条意见全部采纳,第 3 轮 APPROVED)。评审揪出的最大问题正是窟窿①②:光合 #677 会再造一次「看着修好了、侧栏没变化」。详细证据链:<span class="mono">engineering/doc/FLY-1435-native-autoarchive-rootcause/research.md</span> · 实施细节:同目录 <span class="mono">plan.md</span></div>
+  </div>
+
+</div>
+</body>
+</html>

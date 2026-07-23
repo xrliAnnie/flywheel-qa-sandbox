@@ -39,6 +39,10 @@ export type MetaAlertReason =
 	| "queue_overflow"
 	| "mailbox_overflow"
 	| "alert_unreachable_config"
+	// FLY-1435: roundtable metadata convergence permanently failed (typically
+	// missing MANAGE_THREADS). This must not be mistaken for successful repair.
+	| "roundtable_patch_permanent_failure"
+	| "roundtable_archive_default_unresolved"
 	// FLY-513: the global `codex` binary the review gate resolves via PATH has
 	// drifted into a per-Lead CODEX_HOME (or CODEX_HOME env is bad). The codex
 	// review gate will transiently fail config-load; meta-alert so it is caught

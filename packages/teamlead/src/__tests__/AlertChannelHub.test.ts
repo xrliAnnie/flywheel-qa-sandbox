@@ -8,6 +8,7 @@ import {
 	createDiscordOps,
 	type DiscordOps,
 } from "../bridge/AlertChannelHub.js";
+import { makeChannelArchiveDefaultProvider } from "../bridge/roundtable/channel-archive-default.js";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import { StateStore } from "../StateStore.js";
 
@@ -31,20 +32,24 @@ type PostTuple = [string, string, { mentionUserId?: string } | undefined];
 
 function makeDiscord(_opts: { postOk?: boolean } = {}): DiscordOps & {
 	created: string[];
+	createdArchiveMinutes: Array<number | undefined>;
 	posts: PostTuple[];
 	archived: string[];
 } {
 	const created: string[] = [];
+	const createdArchiveMinutes: Array<number | undefined> = [];
 	const posts: PostTuple[] = [];
 	const archived: string[] = [];
 	let n = 0;
 	return {
 		created,
+		createdArchiveMinutes,
 		posts,
 		archived,
-		async createThreadFromMessage(_c, _m, name) {
+		async createThreadFromMessage(_c, _m, name, archiveMinutes) {
 			const id = `thread-${++n}`;
 			created.push(name);
+			createdArchiveMinutes.push(archiveMinutes);
 			return id;
 		},
 		async postToThread(threadId, content, opts) {
@@ -79,6 +84,88 @@ describe("AlertChannelHub (FLY-368)", () => {
 		expect(discord.posts[0]![1]).toContain("收到");
 		const row = store.getActiveAlertThread("flywheel|tadashi|pane_hash_stuck|");
 		expect(row?.thread_id).toBe("thread-1");
+	});
+
+	it("FLY-802: passes the parent channel's archive default into thread creation", async () => {
+		const discord = makeDiscord();
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
+		const hub = new AlertChannelHub({
+			store,
+			notifier,
+			discord,
+			archiveDefaultProvider: async () => 60,
+		});
+
+		await hub.handle(payload());
+
+		expect(discord.createdArchiveMinutes).toEqual([60]);
+	});
+
+	it.each([
+		["null", async () => null],
+		[
+			"rejection",
+			async () => {
+				throw new Error("lookup failed");
+			},
+		],
+	] as const)(
+		"FLY-802: %s provider falls back to 1440 without degrading to root-only",
+		async (_case, archiveDefaultProvider) => {
+			const discord = makeDiscord();
+			const logs: string[] = [];
+			const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
+			const hub = new AlertChannelHub({
+				store,
+				notifier,
+				discord,
+				archiveDefaultProvider,
+				logger: (message) => logs.push(message),
+			});
+
+			await hub.handle(payload());
+
+			expect(discord.createdArchiveMinutes).toEqual([1440]);
+			expect(
+				store.getActiveAlertThread("flywheel|tadashi|pane_hash_stuck|")
+					?.thread_id,
+			).toBe("thread-1");
+			if (_case === "rejection") {
+				expect(
+					logs.some((message) => message.includes("archive default")),
+				).toBe(true);
+			}
+		},
+	);
+
+	it("FLY-802: one Hub reuses a cached parent lookup across consecutive alert threads", async () => {
+		const discord = makeDiscord();
+		const channelReads: string[] = [];
+		const archiveDefaultProvider = makeChannelArchiveDefaultProvider({
+			channelId: "UNI",
+			botToken: "token",
+			fetchImpl: vi.fn(async (url: string) => {
+				channelReads.push(url);
+				return {
+					ok: true,
+					status: 200,
+					json: async () => ({ default_auto_archive_duration: 60 }),
+				} as Response;
+			}) as typeof fetch,
+		});
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
+		const hub = new AlertChannelHub({
+			store,
+			notifier,
+			discord,
+			archiveDefaultProvider,
+		});
+
+		await hub.handle(payload({ eventId: "evt-1" }));
+		await hub.handle(payload({ eventId: "evt-2" }));
+
+		expect(channelReads).toHaveLength(1);
+		expect(discord.createdArchiveMinutes).toEqual([60, 60]);
 	});
 
 	it("same event_id duplicate does NOT open a second thread", async () => {
@@ -762,6 +849,26 @@ describe("createDiscordOps (FLY-368 rework: repair chain + allowed_mentions)", (
 		expect(await ops.createThreadFromMessage("ch", "msg", "name")).toBe(
 			"new-thread",
 		);
+		const [, init] = (
+			fetchFn as unknown as { mock: { calls: [string, RequestInit][] } }
+		).mock.calls[0]!;
+		expect(JSON.parse(String(init.body)).auto_archive_duration).toBe(1440);
+	});
+
+	it("FLY-802: createThreadFromMessage accepts a resolved archive duration", async () => {
+		const fetchFn = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			json: async () => ({ id: "new-thread" }),
+		})) as never;
+		const ops = createDiscordOps(() => ["cass-tok"], fetchFn);
+
+		await ops.createThreadFromMessage("ch", "msg", "name", 60);
+
+		const [, init] = (
+			fetchFn as unknown as { mock: { calls: [string, RequestInit][] } }
+		).mock.calls[0]!;
+		expect(JSON.parse(String(init.body)).auto_archive_duration).toBe(60);
 	});
 });
 

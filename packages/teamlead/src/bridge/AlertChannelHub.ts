@@ -41,6 +41,7 @@ import {
 	FLEET_ESCALATION_COPY,
 	KIND_CONTRACTS,
 } from "./kind-contract.js";
+import { resolveAutoArchiveMinutes } from "./roundtable/channel-archive-default.js";
 import { fingerprintOutput } from "./stuck-candidate.js";
 import {
 	decideTicketEscalation,
@@ -75,7 +76,7 @@ export function createDiscordOps(
 		"Content-Type": "application/json",
 	});
 	return {
-		async createThreadFromMessage(channelId, messageId, name) {
+		async createThreadFromMessage(channelId, messageId, name, archiveMinutes) {
 			const tokens = getTokens();
 			for (const token of tokens) {
 				try {
@@ -84,7 +85,10 @@ export function createDiscordOps(
 						{
 							method: "POST",
 							headers: authHeaders(token),
-							body: JSON.stringify({ name, auto_archive_duration: 1440 }),
+							body: JSON.stringify({
+								name,
+								auto_archive_duration: archiveMinutes ?? 1440,
+							}),
 						},
 					);
 					if (res.ok) {
@@ -203,6 +207,7 @@ export interface DiscordOps {
 		channelId: string,
 		messageId: string,
 		name: string,
+		archiveMinutes?: number,
 	): Promise<string | null>;
 	/**
 	 * Post a message into a thread (best-effort). FLY-368 v1.58.0: `opts.mentionUserId`
@@ -234,6 +239,8 @@ export interface AlertChannelHubDeps {
 	store: StateStore;
 	notifier: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	discord: DiscordOps;
+	/** Parent-channel archive default reader. Missing/null/failure preserves 1440. */
+	archiveDefaultProvider?: () => Promise<number | null>;
 	/** Optional — when absent, no auto-repair runs (FLYWHEEL_AUTO_REPAIR off). */
 	autoRepairBot?: AutoRepairBot;
 	/**
@@ -399,10 +406,25 @@ export class AlertChannelHub {
 		}
 
 		const name = this.threadName(payload);
+		let archiveMinutes = 1440;
+		if (this.deps.archiveDefaultProvider) {
+			try {
+				archiveMinutes =
+					resolveAutoArchiveMinutes(
+						await this.deps.archiveDefaultProvider(),
+						1440,
+					) ?? 1440;
+			} catch (err) {
+				this.logger(
+					`archive default lookup failed for ${channelId}; using 1440: ${(err as Error).message}`,
+				);
+			}
+		}
 		const threadId = await this.deps.discord.createThreadFromMessage(
 			channelId,
 			messageId,
 			name,
+			archiveMinutes,
 		);
 		if (!threadId) {
 			this.logger(`thread create failed for ${ck} — root-only`);

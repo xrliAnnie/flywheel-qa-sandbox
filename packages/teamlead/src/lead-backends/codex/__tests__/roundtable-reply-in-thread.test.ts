@@ -190,4 +190,57 @@ describe("buildReplyInThreadWiring (FLY-314 Phase 2)", () => {
 		expect(r?.replyRoute).toBeUndefined();
 		expect(source.added).toHaveLength(0);
 	});
+
+	it("FLY-802: reuses one cached parent-channel read across consecutive ensures", async () => {
+		const parentReads: string[] = [];
+		const createBodies: Array<Record<string, unknown>> = [];
+		const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+			const method = (init?.method ?? "GET").toUpperCase();
+			if (method === "GET" && url.endsWith(`/channels/${RT}`)) {
+				parentReads.push(url);
+				return {
+					ok: true,
+					status: 200,
+					json: async () => ({ default_auto_archive_duration: 60 }),
+				} as Response;
+			}
+			if (method === "POST" && url.endsWith("/threads")) {
+				createBodies.push(JSON.parse(String(init?.body ?? "{}")));
+				return {
+					ok: true,
+					status: 201,
+					json: async () => ({ id: url.includes("/100/") ? "100" : "101" }),
+				} as Response;
+			}
+			throw new Error(`unexpected ${method} ${url}`);
+		});
+		const wiring = buildReplyInThreadWiring({
+			cfg: { enabled: true, parentChannelId: RT },
+			botToken: "tok",
+			botUserId: "bot-1",
+			crossDeptChannelIds: [RT],
+			source: fakeSource(),
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+
+		await wiring?.ensureReplyRoute({
+			kind: "roundtable_thread_from_message",
+			parentChannelId: RT,
+			sourceMessageId: "100",
+			threadId: "100",
+			threadName: "first topic",
+		});
+		await wiring?.ensureReplyRoute({
+			kind: "roundtable_thread_from_message",
+			parentChannelId: RT,
+			sourceMessageId: "101",
+			threadId: "101",
+			threadName: "second topic",
+		});
+
+		expect(parentReads).toHaveLength(1);
+		expect(createBodies.map((body) => body.auto_archive_duration)).toEqual([
+			60, 60,
+		]);
+	});
 });

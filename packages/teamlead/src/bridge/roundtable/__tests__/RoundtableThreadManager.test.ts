@@ -111,6 +111,7 @@ function mgr(
 		triggerMode: "any_top_level",
 		cursorStore: new InMemoryInboundCursorStore(),
 		fetchImpl,
+		archiveDefaultProvider: async () => 60,
 		// never auto-fire the loop — tests drive pollOnce() directly.
 		setTimer: () => ({ cancel: () => {} }),
 		logger: { warn: () => {} },
@@ -145,9 +146,11 @@ describe("RoundtableThreadManager.processMessage", () => {
 		expect(countCreates(calls)).toBe(0);
 	});
 
-	it("FLY-802: opens the topic thread with auto_archive_duration=60 (1h → collapses out of the sidebar)", async () => {
+	it("FLY-802: opens the topic thread with the parent channel's archive default", async () => {
 		const { impl, calls } = makeFetch({});
-		const m = mgr(store, impl);
+		const m = mgr(store, impl, {
+			archiveDefaultProvider: async () => 1440,
+		});
 		const advance = await m.processMessage({
 			id: "77",
 			channelId: CH,
@@ -163,9 +166,72 @@ describe("RoundtableThreadManager.processMessage", () => {
 		);
 		expect(createCall).toBeDefined();
 		const body = JSON.parse(createCall?.body ?? "{}");
-		expect(body.auto_archive_duration).toBe(60);
-		// Host bot created it with 60 up-front → no redundant archive PATCH follows.
+		expect(body.auto_archive_duration).toBe(1440);
+		// The host bot created it with the resolved value up-front, so no redundant
+		// archive PATCH follows.
 		expect(patchCalls(calls)).toHaveLength(0);
+	});
+
+	it("FLY-1435: an unconfigured parent holds and reports instead of creating a silent 4320 thread", async () => {
+		const { impl, calls } = makeFetch({});
+		const onArchiveDefaultUnresolved = vi.fn().mockResolvedValue(undefined);
+		const m = mgr(store, impl, {
+			archiveDefaultProvider: async () => null,
+			onArchiveDefaultUnresolved,
+		});
+
+		expect(
+			await m.processMessage({
+				id: "78",
+				channelId: CH,
+				authorId: "u1",
+				authorBot: false,
+				content: "another deploy plan review",
+				mentions: [],
+				mentionEveryone: false,
+			}),
+		).toBe(false);
+		expect(countCreates(calls)).toBe(0);
+		expect(onArchiveDefaultUnresolved).toHaveBeenCalledOnce();
+		expect(onArchiveDefaultUnresolved).toHaveBeenCalledWith({
+			channelId: CH,
+			reason: "not_configured",
+		});
+	});
+
+	it("FLY-1435: provider rejection holds and reports instead of creating a silent 4320 thread", async () => {
+		const { impl, calls } = makeFetch({});
+		const warnings: string[] = [];
+		const onArchiveDefaultUnresolved = vi.fn().mockResolvedValue(undefined);
+		const m = mgr(store, impl, {
+			archiveDefaultProvider: async () => {
+				throw new Error("channel lookup failed");
+			},
+			logger: { warn: (message) => warnings.push(message) },
+			onArchiveDefaultUnresolved,
+		});
+
+		expect(
+			await m.processMessage({
+				id: "79",
+				channelId: CH,
+				authorId: "u1",
+				authorBot: false,
+				content: "provider failure topic",
+				mentions: [],
+				mentionEveryone: false,
+			}),
+		).toBe(false);
+		expect(countCreates(calls)).toBe(0);
+		expect(
+			warnings.some((message) => message.includes("archive default")),
+		).toBe(true);
+		expect(onArchiveDefaultUnresolved).toHaveBeenCalledOnce();
+		expect(onArchiveDefaultUnresolved).toHaveBeenCalledWith({
+			channelId: CH,
+			reason: "lookup_failed",
+			detail: "channel lookup failed",
+		});
 	});
 
 	it("threads the poller bot's OWN top-level message when threadOwnBotMessages is set (echo relax)", async () => {
@@ -641,7 +707,7 @@ describe("RoundtableThreadManager — FLY-576 founder + naming + convergence", (
 		expect(countCreates(calls)).toBe(0); // no placeholder-named thread
 	});
 
-	it("recovery: a placeholder-named plugin thread (default 3-day archive) gets ONE PATCH renaming it AND setting the 1h archive (FLY-802)", async () => {
+	it("recovery: a placeholder-named plugin thread (default 3-day channel-list duration) gets ONE PATCH renaming it AND setting aad=60 (FLY-802)", async () => {
 		const { impl, calls } = makeFetch({
 			createResponse: () => res(400, { code: 160004 }),
 			getChannelResponse: () =>
@@ -657,7 +723,7 @@ describe("RoundtableThreadManager — FLY-576 founder + naming + convergence", (
 			msg({ content: "fix the sidebar surfacing", mentions: [] }),
 		);
 		expect(advance).toBe(true);
-		// ONE PATCH converging BOTH the descriptive name and the 1h archive.
+		// ONE PATCH converging BOTH the descriptive name and aad=60.
 		const patches = patchCalls(calls);
 		expect(patches).toHaveLength(1);
 		const patchBody = JSON.parse(patches[0].body ?? "{}");
@@ -668,7 +734,7 @@ describe("RoundtableThreadManager — FLY-576 founder + naming + convergence", (
 		expect(store.getRoundtableTopicThread(CH, "42")?.thread_id).toBe("42");
 	});
 
-	it("FLY-802 recovery: a plugin thread with a fine name but the default 3-day archive gets a PATCH setting ONLY the 1h archive", async () => {
+	it("FLY-802 recovery: a plugin thread with a fine name but the default 3-day channel-list duration gets a PATCH setting ONLY aad=60", async () => {
 		const { impl, calls } = makeFetch({
 			createResponse: () => res(400, { code: 160004 }),
 			getChannelResponse: () =>
@@ -692,7 +758,7 @@ describe("RoundtableThreadManager — FLY-576 founder + naming + convergence", (
 		expect(store.getRoundtableTopicThread(CH, "42")?.thread_id).toBe("42");
 	});
 
-	it("recovery: a fully-converged thread (good name AND already 1h archive) is NOT PATCHed", async () => {
+	it("recovery: a fully-converged thread (good name AND already aad=60) is NOT PATCHed", async () => {
 		const { impl, calls } = makeFetch({
 			createResponse: () => res(400, { code: 160004 }),
 			getChannelResponse: () =>
@@ -741,35 +807,51 @@ describe("RoundtableThreadManager — FLY-576 founder + naming + convergence", (
 	});
 
 	it("a transient rename failure HOLDS the cursor (no persist) so the name converges", async () => {
+		const onPermanentPatchFailure = vi.fn();
 		const { impl } = makeFetch({
 			createResponse: () => res(400, { code: 160004 }),
 			getChannelResponse: () =>
 				res(200, { type: 11, parent_id: CH, name: "Roundtable topic" }),
 			patchResponse: () => res(503, {}),
 		});
-		const m = mgr(store, impl);
+		const m = mgr(store, impl, { onPermanentPatchFailure });
 		const advance = await m.processMessage(msg({ content: "a real topic" }));
 		expect(advance).toBe(false);
 		expect(store.getRoundtableTopicThread(CH, "42")).toBeUndefined();
+		expect(onPermanentPatchFailure).not.toHaveBeenCalled();
 	});
 
-	it("a permanent rename failure (403 — no MANAGE_THREADS) warns but membership still commits", async () => {
-		const warn = vi.fn();
-		const { impl, calls } = makeFetch({
-			createResponse: () => res(400, { code: 160004 }),
-			getChannelResponse: () =>
-				res(200, { type: 11, parent_id: CH, name: "Roundtable topic" }),
-			patchResponse: () => res(403, {}),
-		});
-		const m = mgr(store, impl, {
-			founderUserId: "founder-x",
-			logger: { warn },
-		});
-		const advance = await m.processMessage(msg({ content: "a real topic" }));
-		expect(advance).toBe(true); // membership converged even though rename failed
-		expect(putMemberIds(calls)).toContain("founder-x");
-		expect(store.getRoundtableTopicThread(CH, "42")?.thread_id).toBe("42");
-	});
+	it.each([403, 404])(
+		"a permanent metadata PATCH failure (HTTP %s) reports fail-loud but still commits without retrying",
+		async (status) => {
+			const warn = vi.fn();
+			const onPermanentPatchFailure = vi.fn().mockResolvedValue(undefined);
+			const { impl, calls } = makeFetch({
+				createResponse: () => res(400, { code: 160004 }),
+				getChannelResponse: () =>
+					res(200, { type: 11, parent_id: CH, name: "Roundtable topic" }),
+				patchResponse: () => res(status, {}),
+			});
+			const m = mgr(store, impl, {
+				founderUserId: "founder-x",
+				logger: { warn },
+				onPermanentPatchFailure,
+			});
+			const advance = await m.processMessage(msg({ content: "a real topic" }));
+			expect(advance).toBe(true); // membership converged even though rename failed
+			expect(putMemberIds(calls)).toContain("founder-x");
+			expect(store.getRoundtableTopicThread(CH, "42")?.thread_id).toBe("42");
+			expect(onPermanentPatchFailure).toHaveBeenCalledOnce();
+			expect(onPermanentPatchFailure).toHaveBeenCalledWith({
+				threadId: "42",
+				status,
+				fields: {
+					name: "a real topic",
+					auto_archive_duration: 60,
+				},
+			});
+		},
+	);
 
 	it("no founder configured → adds only configured members + mentions (byte-compat, no throw)", async () => {
 		const { impl, calls } = makeFetch({});
@@ -804,7 +886,7 @@ describe("RoundtableThreadManager — FLY-576 founder + naming + convergence", (
 		const { impl, calls } = makeFetch({
 			createResponse: () =>
 				pass === 0 ? res(201, { id: "42" }) : res(400, { code: 160004 }),
-			// pass-1 create named it from the content AND set the 1h archive; the GET
+			// pass-1 create named it from the content AND set aad=60; the GET
 			// reflects both (no rename, no archive PATCH needed in the recovery pass).
 			getChannelResponse: () =>
 				res(200, {

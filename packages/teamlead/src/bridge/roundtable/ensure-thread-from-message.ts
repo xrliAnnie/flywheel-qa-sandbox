@@ -12,10 +12,8 @@
  * review R1#5). Never throws.
  */
 
-import {
-	deriveRoundtableThreadName,
-	ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES,
-} from "./roundtable-text.js";
+import { VALID_AUTO_ARCHIVE_MINUTES } from "./channel-archive-default.js";
+import { deriveRoundtableThreadName } from "./roundtable-text.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const ENSURE_TIMEOUT_MS = 5_000;
@@ -28,6 +26,10 @@ export interface EnsureThreadDeps {
 	fetchImpl?: typeof fetch;
 	/** Override the created thread name. Default derives from `name` arg / fallback. */
 	threadName?: string;
+	/** Already-resolved duration. Takes precedence over archiveDefaultProvider. */
+	archiveMinutes?: number;
+	/** Long-lived parent-channel provider, normally shared by the composition root. */
+	archiveDefaultProvider?: () => Promise<number | null>;
 	logger?: { warn: (m: string, c?: unknown) => void };
 }
 
@@ -39,6 +41,8 @@ export type EnsureThreadResult =
 	| { ok: false; reason: "auth" }
 	/** Other non-retryable 4xx. */
 	| { ok: false; reason: "client_error"; status: number }
+	/** Parent policy could not be resolved safely; no create request was sent. */
+	| { ok: false; reason: "archive_default_unresolved" }
 	/** 429 / 5xx / network / timeout — caller may retry or fall back. */
 	| { ok: false; reason: "transient" };
 
@@ -48,6 +52,50 @@ export type EnsureThreadResult =
  * an already-derived `deps.threadName`. */
 function deriveName(raw: string | undefined): string {
 	return deriveRoundtableThreadName(raw ?? "");
+}
+
+async function resolveArchiveMinutes(
+	deps: EnsureThreadDeps,
+): Promise<number | null> {
+	if (deps.archiveMinutes !== undefined) {
+		if (VALID_AUTO_ARCHIVE_MINUTES.has(deps.archiveMinutes)) {
+			return deps.archiveMinutes;
+		}
+		deps.logger?.warn(
+			`[ensure-thread-from-message] invalid archiveMinutes=${deps.archiveMinutes}; refusing to create with an unresolved policy`,
+		);
+		return null;
+	}
+
+	if (!deps.archiveDefaultProvider) {
+		deps.logger?.warn(
+			"[ensure-thread-from-message] no archive default provider; refusing to create with an unresolved policy",
+		);
+		return null;
+	}
+
+	try {
+		const channelDefault = await deps.archiveDefaultProvider();
+		if (channelDefault === null) {
+			deps.logger?.warn(
+				"[ensure-thread-from-message] parent channel has no archive default; refusing to create",
+			);
+			return null;
+		}
+		if (!VALID_AUTO_ARCHIVE_MINUTES.has(channelDefault)) {
+			deps.logger?.warn(
+				`[ensure-thread-from-message] invalid channel archive default=${channelDefault}; refusing to create`,
+			);
+			return null;
+		}
+		return channelDefault;
+	} catch (error) {
+		deps.logger?.warn(
+			"[ensure-thread-from-message] archive default provider failed; refusing to create",
+			{ error },
+		);
+		return null;
+	}
 }
 
 /**
@@ -61,6 +109,10 @@ export async function ensureThreadFromMessage(
 	deps: EnsureThreadDeps = {},
 ): Promise<EnsureThreadResult> {
 	const fetchImpl = deps.fetchImpl ?? fetch;
+	const archiveMinutes = await resolveArchiveMinutes(deps);
+	if (archiveMinutes === null) {
+		return { ok: false, reason: "archive_default_unresolved" };
+	}
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), ENSURE_TIMEOUT_MS);
 	try {
@@ -74,8 +126,7 @@ export async function ensureThreadFromMessage(
 				},
 				body: JSON.stringify({
 					name: deriveName(deps.threadName),
-					// FLY-802: 1h auto-archive so finished topics collapse out of the sidebar.
-					auto_archive_duration: ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES,
+					auto_archive_duration: archiveMinutes,
 				}),
 				signal: controller.signal,
 			},
