@@ -1,14 +1,14 @@
 ---
 issue: FLY-135
 phase: implement
-phaseCursor: 2/4
-updated: 2026-07-23T23:17:08.022Z
-nextStep: run final lint and marker/scope checks, then check Lead inbox before
-  committing and pushing
+phaseCursor: 3/4
+updated: 2026-07-23T23:17:58.288Z
+nextStep: push project-slot-1-FLY-135, verify origin matches HEAD and required
+  commits/artifacts, then complete needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-135 progress
-**phase**: implement (2/4)
-**next**: run final lint and marker/scope checks, then check Lead inbox before committing and pushing
+**phase**: implement (3/4)
+**next**: push project-slot-1-FLY-135, verify origin matches HEAD and required commits/artifacts, then complete needs_review
