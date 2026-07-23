@@ -457,6 +457,94 @@ describe("Event route", () => {
 		expect(lifecycle[0]?.event_id).toMatch(/^wfca:/);
 	});
 
+	it("books re-entry completion against the explicit activation and TURN epoch", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "attempt-1-complete",
+				completionSubmission: { decision: { route: "no_code" }, round: 1 },
+			}),
+		).toMatchObject({ ok: true });
+		store.upsertWorkflowRunNode({
+			runId: "run-exec-1",
+			nodeId: "execute",
+			attempt: 2,
+			state: "pending",
+			executionId: "exec-1",
+		});
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-exec-1",
+				nodeId: "execute",
+				executionId: "exec-1",
+				attempt: 2,
+				activationId: "activation-2",
+				activationMode: "wake",
+				reworkRequestId: "request-1",
+				now: "2026-07-15T00:02:00.000Z",
+				expiresAt: "2026-07-15T00:05:00.000Z",
+				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+				env: {
+					FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+					FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+				},
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			store.recordWorkflowActivationTurn({
+				activationId: "activation-2",
+				executionId: "exec-1",
+				issueId: "issue-1",
+				epoch: 2,
+				sourceEventId: "turn:activation-2:epoch-2",
+				grantedAt: "2026-07-15T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "explicit-complete-attempt-2",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "no_code" },
+						round: 2,
+						workflowActivation: {
+							activationId: "activation-2",
+							runId: "run-exec-1",
+							nodeId: "execute",
+							attempt: 2,
+							turnEpoch: 2,
+						},
+					},
+				}),
+			),
+		});
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({
+			ok: true,
+			generalized: true,
+			duplicate: false,
+		});
+		expect(
+			store.getWorkflowNodeCompletion("run-exec-1", "execute", 2),
+		).toMatchObject({
+			activation_id: "activation-2",
+			execution_id: "exec-1",
+		});
+	});
+
 	it("settles a stale generalized completion after the node execution was replaced", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		store.upsertWorkflowRunNode({
@@ -491,6 +579,77 @@ describe("Event route", () => {
 		expect(
 			store.getWorkflowNodeCompletion("run-exec-1", "execute", 1),
 		).toBeUndefined();
+	});
+
+	it("settles and escalates a changed terminal resubmission after a newer attempt exists", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const originalActivation =
+			store.listWorkflowActivationsForActor("exec-1")[0];
+		expect(originalActivation).toBeDefined();
+		expect(
+			store.recordWorkflowActivationTurn({
+				activationId: originalActivation!.activation_id,
+				executionId: "exec-1",
+				issueId: "issue-1",
+				epoch: 1,
+				sourceEventId: "turn:terminal-stale:epoch-1",
+				grantedAt: "2026-07-15T00:00:30.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		const postCompletion = (eventId: string, changed: boolean) =>
+			fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(
+					makeEvent({
+						event_id: eventId,
+						event_type: "session_completed",
+						source: "flywheel-comm",
+						payload: {
+							decision: { route: "no_code" },
+							evidence: changed
+								? { commitMessages: ["fix after QA feedback"] }
+								: { commitMessages: ["initial completion"] },
+							...(changed
+								? {
+										workflowActivation: {
+											activationId: originalActivation!.activation_id,
+											runId: "run-exec-1",
+											nodeId: "execute",
+											attempt: 1,
+											turnEpoch: 1,
+										},
+									}
+								: {}),
+						},
+					}),
+				),
+			});
+		expect((await postCompletion("terminal-original", false)).status).toBe(200);
+		store.upsertWorkflowRunNode({
+			runId: "run-exec-1",
+			nodeId: "execute",
+			attempt: 2,
+			state: "pending",
+			executionId: "exec-2",
+		});
+
+		const response = await postCompletion("terminal-stale-fix", true);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			ok: true,
+			generalized: true,
+			settled: "stale_resubmission_escalated",
+		});
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+		expect(
+			store
+				.listWorkflowRunEvents("run-exec-1")
+				.filter((event) => event.kind === "stale_completion_resubmission"),
+		).toHaveLength(1);
 	});
 
 	it("rejects design-node completion before lifecycle state advances when HTML evidence is missing", async () => {

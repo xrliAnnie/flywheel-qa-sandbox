@@ -973,6 +973,59 @@ describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to th
 		});
 	}
 
+	function activateRework(store: StateStore, requestId: string): string {
+		const request = store.getWorkflowReworkRequest(requestId);
+		const route = store.getLatestWorkflowReworkRoute(requestId);
+		expect(request).toBeDefined();
+		expect(route).toBeDefined();
+		const executionId = route!.preferred_actor_execution_id;
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: request!.run_id,
+				nodeId: route!.target_node_id,
+				executionId,
+				attempt: route!.target_attempt,
+				activationId: `activation:${requestId}`,
+				activationMode: "wake",
+				reworkRequestId: requestId,
+				now: "2026-07-23T00:00:00.000Z",
+				expiresAt: "2026-07-23T01:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+				env: flags,
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "equivalence-coordinator",
+				now: "2026-07-23T00:00:01.000Z",
+				leaseExpiresAt: "2026-07-23T00:01:01.000Z",
+			}),
+		).toMatchObject({ ok: true, generation: 1 });
+		expect(
+			store.advanceWorkflowReworkDelivery({
+				requestId,
+				ownerId: "equivalence-coordinator",
+				generation: 1,
+				from: "pending",
+				to: "turn_granted",
+				now: "2026-07-23T00:00:02.000Z",
+			}),
+		).toEqual({ ok: true });
+		expect(
+			store.advanceWorkflowReworkDelivery({
+				requestId,
+				ownerId: "equivalence-coordinator",
+				generation: 1,
+				from: "turn_granted",
+				to: "wake_delivered",
+				now: "2026-07-23T00:00:03.000Z",
+				releaseOwner: true,
+			}),
+		).toEqual({ ok: true });
+		return executionId;
+	}
+
 	it("matches observed legacy handoffs, one fail loop, founder gate, and max-limit escalation (vendor lineup intentionally excluded)", async () => {
 		const legacy = makeDeps();
 		const belt = new PhaseOrchestrator(legacy.deps);
@@ -1047,32 +1100,36 @@ describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to th
 				successorExecutionId: "equivalence-pass:qa:1",
 			}).ok,
 		).toBe(true);
+		const qaFailed = store.commitWorkflowTransitionTx({
+			runId: "equivalence-pass",
+			nodeId: "qa",
+			attempt: 1,
+			executionId: "equivalence-pass:qa:1",
+			outcome: "qa_fail",
+		});
+		expect(qaFailed.ok).toBe(true);
+		if (!qaFailed.ok || !qaFailed.reworkRequestId) {
+			throw new Error("QA fail did not create an implement rework request");
+		}
+		const implementActor = activateRework(store, qaFailed.reworkRequestId);
+		const implementFixed = store.commitWorkflowTransitionTx({
+			runId: "equivalence-pass",
+			nodeId: "implement",
+			attempt: 2,
+			executionId: implementActor,
+			outcome: "implement_done",
+		});
+		expect(implementFixed.ok).toBe(true);
+		if (!implementFixed.ok || !implementFixed.reworkRequestId) {
+			throw new Error("implement rework did not create a QA retest request");
+		}
+		const qaActor = activateRework(store, implementFixed.reworkRequestId);
 		expect(
 			store.commitWorkflowTransitionTx({
 				runId: "equivalence-pass",
 				nodeId: "qa",
-				attempt: 1,
-				executionId: "equivalence-pass:qa:1",
-				outcome: "qa_fail",
-				successorExecutionId: "equivalence-pass:implement:2",
-			}).ok,
-		).toBe(true);
-		expect(
-			store.commitWorkflowTransitionTx({
-				runId: "equivalence-pass",
-				nodeId: "implement",
 				attempt: 2,
-				executionId: "equivalence-pass:implement:2",
-				outcome: "implement_done",
-				successorExecutionId: "equivalence-pass:qa:2",
-			}).ok,
-		).toBe(true);
-		expect(
-			store.commitWorkflowTransitionTx({
-				runId: "equivalence-pass",
-				nodeId: "qa",
-				attempt: 2,
-				executionId: "equivalence-pass:qa:2",
+				executionId: qaActor,
 				outcome: "qa_pass",
 			}).ok,
 		).toBe(true);
@@ -1127,11 +1184,8 @@ describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to th
 				runId: "equivalence-limit",
 				nodeId: "qa",
 				attempt: round,
-				executionId: `equivalence-limit:qa:${round}`,
+				executionId: "equivalence-limit:qa:1",
 				outcome: "qa_fail",
-				...(round <= 3
-					? { successorExecutionId: `equivalence-limit:implement:${round + 1}` }
-					: {}),
 			});
 			expect(failed).toMatchObject(
 				round <= 3
@@ -1139,14 +1193,27 @@ describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to th
 					: { ok: true, escalated: true },
 			);
 			if (round <= 3) {
-				limited.commitWorkflowTransitionTx({
+				if (!failed.ok || !failed.reworkRequestId) {
+					throw new Error("QA fail did not create an implement rework request");
+				}
+				const implementExecutionId = activateRework(
+					limited,
+					failed.reworkRequestId,
+				);
+				const implementFixed = limited.commitWorkflowTransitionTx({
 					runId: "equivalence-limit",
 					nodeId: "implement",
 					attempt: round + 1,
-					executionId: `equivalence-limit:implement:${round + 1}`,
+					executionId: implementExecutionId,
 					outcome: "implement_done",
-					successorExecutionId: `equivalence-limit:qa:${round + 1}`,
 				});
+				expect(implementFixed.ok).toBe(true);
+				if (!implementFixed.ok || !implementFixed.reworkRequestId) {
+					throw new Error(
+						"implement rework did not create a QA retest request",
+					);
+				}
+				activateRework(limited, implementFixed.reworkRequestId);
 			}
 		}
 		expect(

@@ -422,6 +422,48 @@ describe("feature-flag registry invariants", () => {
 		expect(flag?.directToggleProof).toMatch(/live-sweep-flag/i);
 	});
 
+	it("FLY-1423 registers rework re-entry and the fresh-spawn tripwire as default-on kill switches", () => {
+		for (const [envVar, name, file, symbol] of [
+			[
+				"FLYWHEEL_WORKFLOW_REWORK_REENTRY",
+				"workflow_rework_reentry",
+				"packages/teamlead/src/bridge/workflow-rework-coordinator.ts",
+				"reconcile",
+			],
+			[
+				"FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE",
+				"engine_unlaunched_tripwire",
+				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
+				"unlaunchedTripwireEnabled",
+			],
+		] as const) {
+			const flag = FEATURE_FLAGS.find(
+				(candidate) => candidate.envVar === envVar,
+			);
+			expect(flag).toMatchObject({
+				name,
+				category: "kill_switch",
+				scope: "bridge_global",
+				polarity: "default_on",
+				default: true,
+				toggleable: "direct",
+			});
+			expect(flag?.readSites).toEqual([
+				expect.objectContaining({
+					file,
+					symbol,
+					timing: "call_time",
+				}),
+			]);
+			expect(flag?.directToggleProof).toMatch(/workflow-engine-dispatcher/i);
+		}
+		expect(
+			FEATURE_FLAGS.find(
+				(candidate) => candidate.envVar === "FLYWHEEL_KICKBACK_EVICT",
+			),
+		).toBeUndefined();
+	});
+
 	it("FLY-1066 terminal CommDB sync is a registered default-on Bridge kill-switch", () => {
 		const flag = FEATURE_FLAGS.find((f) => f.name === "terminal_commdb_sync");
 		expect(flag).toMatchObject({

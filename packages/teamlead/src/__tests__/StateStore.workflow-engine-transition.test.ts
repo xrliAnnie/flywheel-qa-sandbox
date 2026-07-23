@@ -230,7 +230,6 @@ describe("engine-owned snapshot transition transaction", () => {
 			attempt: 1,
 			executionId: "qa-1",
 			outcome: "qa_fail",
-			successorExecutionId: "implement-2",
 		});
 		expect(loop).toMatchObject({
 			ok: true,
@@ -243,14 +242,14 @@ describe("engine-owned snapshot transition transaction", () => {
 		advance(store, {
 			nodeId: "implement",
 			attempt: 2,
-			executionId: "implement-2",
+			executionId: "implement-1",
 			outcome: "implement_done",
-			successorExecutionId: "qa-2",
+			successorExecutionId: "qa-1",
 		});
 		const gate = advance(store, {
 			nodeId: "qa",
 			attempt: 2,
-			executionId: "qa-2",
+			executionId: "qa-1",
 			outcome: "qa_pass",
 		});
 		expect(gate).toMatchObject({
@@ -322,9 +321,14 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
 			state: "pending",
-			execution_id: expect.any(String),
+			execution_id: "implement-1",
 		});
-		expect(store.listWorkflowSideEffects("run-1")).toHaveLength(3);
+		expect(store.listWorkflowSideEffects("run-1")).toHaveLength(2);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "rework_requested"),
+		).toHaveLength(1);
 		expect(store.submitWorkflowDecisionByCredential(submission)).toMatchObject({
 			ok: true,
 			idempotentReplay: true,
@@ -407,18 +411,15 @@ describe("engine-owned snapshot transition transaction", () => {
 			advance(store, {
 				nodeId: "implement",
 				attempt,
-				executionId: `implement-${attempt}`,
+				executionId: "implement-1",
 				outcome: "implement_done",
-				successorExecutionId: `qa-${attempt}`,
+				successorExecutionId: "qa-1",
 			});
 			const result = advance(store, {
 				nodeId: "qa",
 				attempt,
-				executionId: `qa-${attempt}`,
+				executionId: "qa-1",
 				outcome: "qa_fail",
-				...(attempt <= 3
-					? { successorExecutionId: `implement-${attempt + 1}` }
-					: {}),
 			});
 			if (attempt === 4) {
 				expect(result).toMatchObject({ ok: true, escalated: true });
@@ -426,7 +427,7 @@ describe("engine-owned snapshot transition transaction", () => {
 					advance(store, {
 						nodeId: "qa",
 						attempt,
-						executionId: `qa-${attempt}`,
+						executionId: "qa-1",
 						outcome: "qa_fail",
 					}),
 				).toMatchObject({

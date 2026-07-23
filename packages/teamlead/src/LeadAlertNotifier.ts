@@ -363,6 +363,7 @@ export interface AlertMetadata {
 			| "held"
 			| "partial"
 			| "probe_unknown"
+			| "stale_resubmission"
 			| "dead_execution_activity_after_replacement"
 			| "ship_ready_stalled"
 			| "ship_ready_delivery_failed";

@@ -132,15 +132,23 @@ function engineShipContext(
 	// provide a narrow StateStore-shaped double. Missing engine capabilities mean
 	// the caller predates engine ownership, not that an engine run is malformed.
 	const capabilities = store as Partial<
-		Pick<StateStore, "getWorkflowExecutionBinding" | "getWorkflowRun">
+		Pick<
+			StateStore,
+			| "getWorkflowExecutionBinding"
+			| "listWorkflowActivationsForActor"
+			| "getWorkflowRun"
+		>
 	>;
 	if (
-		typeof capabilities.getWorkflowExecutionBinding !== "function" ||
+		(typeof capabilities.listWorkflowActivationsForActor !== "function" &&
+			typeof capabilities.getWorkflowExecutionBinding !== "function") ||
 		typeof capabilities.getWorkflowRun !== "function"
 	) {
 		return { engineOwned: false };
 	}
-	const binding = capabilities.getWorkflowExecutionBinding(executionId);
+	const binding = capabilities.listWorkflowActivationsForActor
+		? capabilities.listWorkflowActivationsForActor(executionId)[0]
+		: capabilities.getWorkflowExecutionBinding?.(executionId);
 	if (!binding) return { engineOwned: false };
 	const run = capabilities.getWorkflowRun(binding.run_id);
 	if (run?.engine_owned !== 1) return { engineOwned: false };

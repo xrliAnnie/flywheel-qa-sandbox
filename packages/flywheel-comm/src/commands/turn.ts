@@ -24,6 +24,10 @@ export interface TurnStatus {
 	phase?: string;
 	epoch?: number;
 	holderExecId?: string;
+	activationId?: string;
+	runId?: string;
+	nodeId?: string;
+	attempt?: number;
 }
 
 /**
@@ -44,11 +48,29 @@ export function turnStatus(db: CommDB, execId: string): TurnStatus {
 		return { answer: "no-turn" };
 	}
 	const answer = turn.holder_exec_id === execId ? "yours" : "not-yours";
+	const activation =
+		answer === "yours" ? db.resolveRunnerWorkflowActivation(execId) : undefined;
+	if (activation?.state === "stale") {
+		return {
+			answer: "not-yours",
+			phase: turn.phase,
+			epoch: turn.epoch,
+			holderExecId: turn.holder_exec_id,
+		};
+	}
 	return {
 		answer,
 		phase: turn.phase,
 		epoch: turn.epoch,
 		holderExecId: turn.holder_exec_id,
+		...(activation?.state === "active"
+			? {
+					activationId: activation.activation.activation_id,
+					runId: activation.activation.run_id,
+					nodeId: activation.activation.node_id,
+					attempt: activation.activation.attempt,
+				}
+			: {}),
 	};
 }
 
@@ -58,7 +80,10 @@ export function formatTurnStatus(status: TurnStatus): string {
 		return "no-turn";
 	}
 	if (status.answer === "yours") {
-		return `yours phase=${status.phase} epoch=${status.epoch}`;
+		const activation = status.activationId
+			? ` activation=${status.activationId} run=${status.runId} node=${status.nodeId} attempt=${status.attempt}`
+			: "";
+		return `yours phase=${status.phase} epoch=${status.epoch}${activation}`;
 	}
 	return `not-yours holder=${status.holderExecId} phase=${status.phase} epoch=${status.epoch}`;
 }

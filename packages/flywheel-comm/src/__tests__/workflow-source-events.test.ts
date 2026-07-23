@@ -71,8 +71,12 @@ describe("CommDB workflow source events", () => {
 			project: "flywheel",
 			sourceEventId: "turn:spawn:exec-design",
 		};
-		db.grantTurn("FLY-1244", "exec-design", "design", 100, opts);
-		db.grantTurn("FLY-1244", "exec-design", "design", 100, opts);
+		expect(db.grantTurn("FLY-1244", "exec-design", "design", 100, opts)).toBe(
+			1,
+		);
+		expect(db.grantTurn("FLY-1244", "exec-design", "design", 100, opts)).toBe(
+			1,
+		);
 		expect(db.getTurn("FLY-1244")?.epoch).toBe(1);
 		expect(db.listTurnSourceHistory("FLY-1244")).toHaveLength(1);
 
@@ -80,6 +84,53 @@ describe("CommDB workflow source events", () => {
 			db.grantTurn("FLY-1244", "exec-implement", "implement", 101, opts),
 		).toThrow(/digest|mismatch|poison/i);
 		expect(db.getTurn("FLY-1244")?.holder_exec_id).toBe("exec-design");
+	});
+
+	it("freezes activation context on source replay without incrementing epoch", () => {
+		const source = {
+			project: "flywheel",
+			sourceEventId: "rework:req-1:activation-2",
+			targetRunId: "run-1",
+			activation: {
+				activationId: "activation-2",
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 2,
+				outputCredential: "output-2",
+				submissionCredential: "submission-2",
+				context: { summary: "QA found a regression" },
+			},
+		};
+		expect(
+			db.grantTurn("FLY-1423", "exec-implement", "implement", 100, source),
+		).toBe(1);
+		expect(
+			db.grantTurn("FLY-1423", "exec-implement", "implement", 101, {
+				...source,
+				activation: {
+					...source.activation,
+					outputCredential: "rotated-output-must-not-win",
+					submissionCredential: "rotated-submission-must-not-win",
+				},
+			}),
+		).toBe(1);
+		expect(db.getTurn("FLY-1423")?.epoch).toBe(1);
+		expect(db.getRunnerWorkflowActivation("exec-implement", 1)).toMatchObject({
+			activation_id: "activation-2",
+			context_json: JSON.stringify({ summary: "QA found a regression" }),
+			output_credential: "output-2",
+			submission_credential: "submission-2",
+		});
+
+		expect(() =>
+			db.grantTurn("FLY-1423", "exec-implement", "implement", 102, {
+				...source,
+				activation: {
+					...source.activation,
+					context: { summary: "different" },
+				},
+			}),
+		).toThrow(/mismatch|poison/i);
 	});
 
 	it("pages immutable source rows by a monotonic rowid cursor", () => {

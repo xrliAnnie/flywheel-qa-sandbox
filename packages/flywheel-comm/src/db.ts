@@ -81,7 +81,25 @@ CREATE TABLE IF NOT EXISTS three_stage_turn (
   holder_exec_id  TEXT NOT NULL,
   phase           TEXT NOT NULL,
   epoch           INTEGER NOT NULL,
-  granted_at      INTEGER NOT NULL
+  granted_at      INTEGER NOT NULL,
+  target_run_id   TEXT,
+  target_node_id  TEXT,
+  target_attempt  INTEGER,
+  activation_id   TEXT
+);
+CREATE TABLE IF NOT EXISTS runner_workflow_activation (
+  execution_id          TEXT NOT NULL,
+  epoch                 INTEGER NOT NULL,
+  activation_id         TEXT NOT NULL,
+  run_id                TEXT NOT NULL,
+  node_id               TEXT NOT NULL,
+  attempt               INTEGER NOT NULL CHECK(attempt > 0),
+  output_credential     TEXT,
+  submission_credential TEXT,
+  context_json          TEXT NOT NULL,
+  context_digest        TEXT NOT NULL,
+  created_at            INTEGER NOT NULL,
+  PRIMARY KEY (execution_id, epoch)
 );
 CREATE TABLE IF NOT EXISTS workflow_source_event (
   project             TEXT NOT NULL,
@@ -189,6 +207,24 @@ export interface ThreeStageTurn {
 	phase: string;
 	epoch: number;
 	granted_at: number;
+	target_run_id: string | null;
+	target_node_id: string | null;
+	target_attempt: number | null;
+	activation_id: string | null;
+}
+
+export interface RunnerWorkflowActivation {
+	execution_id: string;
+	epoch: number;
+	activation_id: string;
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	output_credential: string | null;
+	submission_credential: string | null;
+	context_json: string;
+	context_digest: string;
+	created_at: number;
 }
 
 /** Lightweight indexed row used by the Bridge issue-gate supersede patrol. */
@@ -824,6 +860,47 @@ export class CommDB {
 				`);
 			})();
 		}
+
+		const turnColumns = this.db
+			.prepare("PRAGMA table_info(three_stage_turn)")
+			.all() as Array<{ name: string }>;
+		for (const [name, sqlType] of [
+			["target_run_id", "TEXT"],
+			["target_node_id", "TEXT"],
+			["target_attempt", "INTEGER"],
+			["activation_id", "TEXT"],
+		] as const) {
+			if (turnColumns.some((column) => column.name === name)) continue;
+			try {
+				this.db.exec(
+					`ALTER TABLE three_stage_turn ADD COLUMN ${name} ${sqlType}`,
+				);
+			} catch (error) {
+				if (
+					!new RegExp(`duplicate column name: ${name}`, "i").test(
+						(error as Error).message,
+					)
+				) {
+					throw error;
+				}
+			}
+		}
+		this.db.exec(`
+			CREATE TABLE IF NOT EXISTS runner_workflow_activation (
+				execution_id TEXT NOT NULL,
+				epoch INTEGER NOT NULL,
+				activation_id TEXT NOT NULL,
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL CHECK(attempt > 0),
+				output_credential TEXT,
+				submission_credential TEXT,
+				context_json TEXT NOT NULL,
+				context_digest TEXT NOT NULL,
+				created_at INTEGER NOT NULL,
+				PRIMARY KEY (execution_id, epoch)
+			)
+		`);
 	}
 
 	/** FLY-1279: SQLite cannot ALTER a CHECK constraint, so add ack_receipt by
@@ -4782,14 +4859,48 @@ export class CommDB {
 			sourceEventId: string;
 			/** Server-derived workflow run ownership; absent preserves legacy null. */
 			targetRunId?: string;
+			activation?: {
+				activationId: string;
+				runId: string;
+				nodeId: string;
+				attempt: number;
+				outputCredential?: string;
+				submissionCredential?: string;
+				context: unknown;
+			};
 		},
-	): void {
+	): number {
 		if (source) {
-			const targetRunId = source.targetRunId ?? null;
+			const activation = source.activation;
+			const targetRunId = activation?.runId ?? source.targetRunId ?? null;
 			if (targetRunId !== null && targetRunId.trim().length === 0) {
 				throw new Error("targetRunId must be non-empty when provided");
 			}
-			this.db.transaction(() => {
+			if (
+				activation &&
+				source.targetRunId !== undefined &&
+				source.targetRunId !== activation.runId
+			) {
+				throw new Error("activation runId must match targetRunId");
+			}
+			if (
+				activation &&
+				(!activation.activationId.trim() ||
+					!activation.runId.trim() ||
+					!activation.nodeId.trim() ||
+					!Number.isInteger(activation.attempt) ||
+					activation.attempt < 1 ||
+					activation.nodeId !== phase)
+			) {
+				throw new Error("invalid workflow TURN activation");
+			}
+			const contextJson = activation
+				? canonicalJsonString(activation.context)
+				: null;
+			const contextDigest = activation
+				? canonicalSubmissionDigest(activation.context)
+				: null;
+			return this.db.transaction(() => {
 				const priorSource = this.db
 					.prepare(
 						`SELECT project, payload FROM workflow_source_event
@@ -4807,13 +4918,38 @@ export class CommDB {
 						frozen.issue_id !== issueId ||
 						frozen.new_holder !== holderExecId ||
 						frozen.to_role !== phase ||
-						frozen.target_run_id !== targetRunId
+						frozen.target_run_id !== targetRunId ||
+						frozen.activation_id !== (activation?.activationId ?? null) ||
+						frozen.target_node_id !== (activation?.nodeId ?? null) ||
+						frozen.target_attempt !== (activation?.attempt ?? null) ||
+						frozen.activation_context_digest !== contextDigest
 					) {
 						throw new Error(
 							`workflow source replay payload mismatch (poison): ${source.sourceEventId}`,
 						);
 					}
-					return;
+					const epoch = Number(frozen.resulting_epoch);
+					if (!Number.isSafeInteger(epoch) || epoch < 1) {
+						throw new Error(
+							`workflow source replay epoch corrupt: ${source.sourceEventId}`,
+						);
+					}
+					if (activation) {
+						const frozenActivation = this.getRunnerWorkflowActivation(
+							holderExecId,
+							epoch,
+						);
+						if (
+							!frozenActivation ||
+							frozenActivation.activation_id !== activation.activationId ||
+							frozenActivation.context_digest !== contextDigest
+						) {
+							throw new Error(
+								`workflow activation replay mismatch (poison): ${source.sourceEventId}`,
+							);
+						}
+					}
+					return epoch;
 				}
 
 				const current = this.db
@@ -4833,20 +4969,62 @@ export class CommDB {
 					to_role: phase,
 					resulting_epoch: resultingEpoch,
 					target_run_id: targetRunId,
+					activation_id: activation?.activationId ?? null,
+					target_node_id: activation?.nodeId ?? null,
+					target_attempt: activation?.attempt ?? null,
+					activation_context_digest: contextDigest,
 				};
 				const at = new Date(grantedAtMs).toISOString();
 				this.db
 					.prepare(
 						`INSERT INTO three_stage_turn
-						   (issue_id, holder_exec_id, phase, epoch, granted_at)
-						 VALUES (?, ?, ?, ?, ?)
+						   (issue_id, holder_exec_id, phase, epoch, granted_at,
+						    target_run_id, target_node_id, target_attempt, activation_id)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 						 ON CONFLICT(issue_id) DO UPDATE SET
 						   holder_exec_id = excluded.holder_exec_id,
 						   phase = excluded.phase,
 						   epoch = excluded.epoch,
-						   granted_at = excluded.granted_at`,
+						   granted_at = excluded.granted_at,
+						   target_run_id = excluded.target_run_id,
+						   target_node_id = excluded.target_node_id,
+						   target_attempt = excluded.target_attempt,
+						   activation_id = excluded.activation_id`,
 					)
-					.run(issueId, holderExecId, phase, resultingEpoch, grantedAtMs);
+					.run(
+						issueId,
+						holderExecId,
+						phase,
+						resultingEpoch,
+						grantedAtMs,
+						targetRunId,
+						activation?.nodeId ?? null,
+						activation?.attempt ?? null,
+						activation?.activationId ?? null,
+					);
+				if (activation) {
+					this.db
+						.prepare(
+							`INSERT INTO runner_workflow_activation
+							   (execution_id, epoch, activation_id, run_id, node_id, attempt,
+							    output_credential, submission_credential, context_json,
+							    context_digest, created_at)
+							 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						)
+						.run(
+							holderExecId,
+							resultingEpoch,
+							activation.activationId,
+							activation.runId,
+							activation.nodeId,
+							activation.attempt,
+							activation.outputCredential ?? null,
+							activation.submissionCredential ?? null,
+							contextJson,
+							contextDigest,
+							grantedAtMs,
+						);
+				}
 				this.db
 					.prepare(
 						`INSERT INTO turn_source_history
@@ -4875,21 +5053,35 @@ export class CommDB {
 						canonicalSubmissionDigest(payloadObject),
 						at,
 					);
+				return resultingEpoch;
 			})();
-			return;
 		}
-		this.db
-			.prepare(
-				`INSERT INTO three_stage_turn
-           (issue_id, holder_exec_id, phase, epoch, granted_at)
-         VALUES (?, ?, ?, 1, ?)
-         ON CONFLICT(issue_id) DO UPDATE SET
-           holder_exec_id = excluded.holder_exec_id,
-           phase = excluded.phase,
-           epoch = three_stage_turn.epoch + 1,
-           granted_at = excluded.granted_at`,
-			)
-			.run(issueId, holderExecId, phase, grantedAtMs);
+		return this.db.transaction(() => {
+			this.db
+				.prepare(
+					`INSERT INTO three_stage_turn
+				   (issue_id, holder_exec_id, phase, epoch, granted_at,
+				    target_run_id, target_node_id, target_attempt, activation_id)
+				 VALUES (?, ?, ?, 1, ?, NULL, NULL, NULL, NULL)
+				 ON CONFLICT(issue_id) DO UPDATE SET
+				   holder_exec_id = excluded.holder_exec_id,
+				   phase = excluded.phase,
+				   epoch = three_stage_turn.epoch + 1,
+				   granted_at = excluded.granted_at,
+				   target_run_id = NULL,
+				   target_node_id = NULL,
+				   target_attempt = NULL,
+				   activation_id = NULL`,
+				)
+				.run(issueId, holderExecId, phase, grantedAtMs);
+			return Number(
+				(
+					this.db
+						.prepare("SELECT epoch FROM three_stage_turn WHERE issue_id = ?")
+						.get(issueId) as { epoch: number }
+				).epoch,
+			);
+		})();
 	}
 
 	/**
@@ -4904,7 +5096,8 @@ export class CommDB {
 		try {
 			row = this.db
 				.prepare(
-					`SELECT issue_id, holder_exec_id, phase, epoch, granted_at
+					`SELECT issue_id, holder_exec_id, phase, epoch, granted_at,
+					        target_run_id, target_node_id, target_attempt, activation_id
            FROM three_stage_turn WHERE issue_id = ?`,
 				)
 				.get(issueId) as ThreeStageTurn | undefined;
@@ -4912,9 +5105,99 @@ export class CommDB {
 			if (/no such table: three_stage_turn/i.test((err as Error).message)) {
 				return null;
 			}
+			if (/no such column:/i.test((err as Error).message)) {
+				const legacy = this.db
+					.prepare(
+						`SELECT issue_id, holder_exec_id, phase, epoch, granted_at
+						   FROM three_stage_turn WHERE issue_id = ?`,
+					)
+					.get(issueId) as
+					| Omit<
+							ThreeStageTurn,
+							| "target_run_id"
+							| "target_node_id"
+							| "target_attempt"
+							| "activation_id"
+					  >
+					| undefined;
+				return legacy
+					? {
+							...legacy,
+							target_run_id: null,
+							target_node_id: null,
+							target_attempt: null,
+							activation_id: null,
+						}
+					: null;
+			}
 			throw err;
 		}
 		return row ?? null;
+	}
+
+	getRunnerWorkflowActivation(
+		executionId: string,
+		epoch: number,
+	): RunnerWorkflowActivation | null {
+		try {
+			return (
+				(this.db
+					.prepare(
+						`SELECT execution_id, epoch, activation_id, run_id, node_id,
+						        attempt, output_credential, submission_credential,
+						        context_json, context_digest, created_at
+						   FROM runner_workflow_activation
+						  WHERE execution_id = ? AND epoch = ?`,
+					)
+					.get(executionId, epoch) as RunnerWorkflowActivation | undefined) ??
+				null
+			);
+		} catch (error) {
+			if (
+				/no such table: runner_workflow_activation/i.test(
+					(error as Error).message,
+				)
+			) {
+				return null;
+			}
+			throw error;
+		}
+	}
+
+	resolveRunnerWorkflowActivation(
+		executionId: string,
+	):
+		| { state: "active"; activation: RunnerWorkflowActivation }
+		| { state: "legacy" }
+		| { state: "stale"; reason: string } {
+		const session = this.getSession(executionId);
+		if (!session?.issue_id) return { state: "legacy" };
+		const turn = this.getTurn(session.issue_id);
+		if (!turn || !turn.activation_id) return { state: "legacy" };
+		if (turn.holder_exec_id !== executionId) {
+			return { state: "stale", reason: "turn_holder_mismatch" };
+		}
+		const activation = this.getRunnerWorkflowActivation(
+			executionId,
+			turn.epoch,
+		);
+		if (
+			!activation ||
+			activation.activation_id !== turn.activation_id ||
+			activation.run_id !== turn.target_run_id ||
+			activation.node_id !== turn.target_node_id ||
+			activation.attempt !== turn.target_attempt
+		) {
+			return { state: "stale", reason: "turn_activation_mismatch" };
+		}
+		return { state: "active", activation };
+	}
+
+	getCurrentRunnerWorkflowActivation(
+		executionId: string,
+	): RunnerWorkflowActivation | null {
+		const resolved = this.resolveRunnerWorkflowActivation(executionId);
+		return resolved.state === "active" ? resolved.activation : null;
 	}
 
 	/**
@@ -4927,7 +5210,8 @@ export class CommDB {
 		try {
 			return this.db
 				.prepare(
-					`SELECT issue_id, holder_exec_id, phase, epoch, granted_at
+					`SELECT issue_id, holder_exec_id, phase, epoch, granted_at,
+					        target_run_id, target_node_id, target_attempt, activation_id
            FROM three_stage_turn`,
 				)
 				.all() as ThreeStageTurn[];

@@ -40,6 +40,10 @@ import {
 import { REVIEW_BINDING_UNBOUND } from "../StateStore.js";
 import { decideDestructive } from "./destructive-verdict.js";
 import { isMergeBlocked } from "./merge-ship-gate.js";
+import {
+	classifyPhaseActorReentry,
+	type PhaseLiveness,
+} from "./phase-actor-reentry.js";
 import type { RetestHeadDeltaResult } from "./retest-head-delta.js";
 import type {
 	WorkflowShadowContext,
@@ -158,7 +162,7 @@ export const GHOST_PROBE_MAX_ROWS = 3;
  * timeout / EACCES) → FAIL-CLOSED: never treat a possibly-alive context holder as
  * dead — leave it for reconcile.
  */
-export type PhaseLiveness = "alive" | "dead_pin" | "absent" | "indeterminate";
+export type { PhaseLiveness } from "./phase-actor-reentry.js";
 
 /** FLY-887: a keep-alive wake — a FAIL fix or a retest after a new head. */
 export interface WakePhaseRunnerArgs {
@@ -2062,12 +2066,12 @@ export class PhaseOrchestrator {
 	 * — the spawn fallback's TURN comes from the dispatcher pre-launch seam.
 	 */
 	private async isWakeTargetProvenDead(row: PhaseSession): Promise<boolean> {
-		const liveness = await this.deps.effects.probePhaseAlive(row);
-		if (liveness === "dead_pin") return true;
-		if (liveness !== "absent") return false; // alive / indeterminate → wake path
-		if (!row.tmux_session) return false; // no persisted target → unfalsifiable
-		const direct = await this.deps.effects.probeGhostTmux(row);
-		return direct === "dead_pin" || direct === "absent";
+		const decision = await classifyPhaseActorReentry({
+			session: row,
+			probeRegistered: this.deps.effects.probePhaseAlive,
+			probePersisted: this.deps.effects.probeGhostTmux,
+		});
+		return decision.kind === "replace";
 	}
 
 	/**

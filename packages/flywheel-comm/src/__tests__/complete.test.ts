@@ -34,6 +34,41 @@ describe("complete command", () => {
 	let _logSpy: ReturnType<typeof vi.spyOn>;
 	let tmpHome: string;
 
+	function activateCompletion(
+		input: {
+			activationId?: string;
+			attempt?: number;
+			epochSource?: string;
+		} = {},
+	): void {
+		const dbPath = join(tmpHome, "comm.db");
+		process.env.FLYWHEEL_COMM_DB = dbPath;
+		const db = new CommDB(dbPath);
+		try {
+			db.registerSession(
+				"exec-108",
+				"win:1",
+				"geoforge3d",
+				"issue-108",
+				"lead",
+			);
+			db.grantTurn("issue-108", "exec-108", "implement", 1_700_000_000_000, {
+				project: "geoforge3d",
+				sourceEventId: input.epochSource ?? "rework:req-1:activation-2",
+				targetRunId: "run-1",
+				activation: {
+					activationId: input.activationId ?? "activation-2",
+					runId: "run-1",
+					nodeId: "implement",
+					attempt: input.attempt ?? 2,
+					context: { authority: "qa" },
+				},
+			});
+		} finally {
+			db.close();
+		}
+	}
+
 	beforeEach(() => {
 		tmpHome = mkdtempSync(join(tmpdir(), "fly-108-home-"));
 
@@ -156,6 +191,21 @@ describe("complete command", () => {
 		// FLY-191 Phase 2 (§5.5.2): completion binds the exact worktree HEAD —
 		// the Bridge persists it as pr_head_sha for verify-approval.
 		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
+	});
+
+	it("attaches the exact current activation and TURN epoch to completion", async () => {
+		activateCompletion();
+
+		await complete({ route: "needs_review", merged: false });
+
+		const body = JSON.parse(mockFetch.mock.calls[0]![1].body);
+		expect(body.payload.workflowActivation).toEqual({
+			activationId: "activation-2",
+			runId: "run-1",
+			nodeId: "implement",
+			attempt: 2,
+			turnEpoch: 1,
+		});
 	});
 
 	it("FLY-191: --question-id travels as payload.reviewQuestionId (review binding)", async () => {
@@ -553,6 +603,7 @@ describe("complete command", () => {
 	it("Bridge 5xx x4 → marker file written + exit 1 (fail-close)", async () => {
 		vi.useFakeTimers();
 		try {
+			activateCompletion();
 			mockFetch.mockResolvedValue({
 				ok: false,
 				status: 500,
@@ -583,6 +634,87 @@ describe("complete command", () => {
 			expect(marker.execution_id).toBe("exec-108");
 			expect(marker.attempts).toBe(4);
 			expect(marker.payload.decision.route).toBe("auto_approve");
+			expect(marker.payload.workflowActivation).toEqual({
+				activationId: "activation-2",
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 2,
+				turnEpoch: 1,
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("deterministic Bridge 409 stops after one attempt and preserves the response reason", async () => {
+		vi.useFakeTimers();
+		try {
+			mockFetch.mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						error: "workflow_completion_rejected",
+						reason: "completion_conflict",
+					}),
+					{
+						status: 409,
+						headers: { "content-type": "application/json" },
+					},
+				),
+			);
+			const completion = complete({
+				route: "auto_approve",
+				pr: 42,
+				merged: true,
+			});
+			const expectation = expect(completion).rejects.toThrow("process.exit(1)");
+			await vi.advanceTimersByTimeAsync(8000);
+			await expectation;
+
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+			const markerPath = join(
+				tmpHome,
+				".flywheel",
+				"state",
+				"complete-failed",
+				"exec-108.json",
+			);
+			const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+			expect(marker.attempts).toBe(1);
+			expect(marker.error).toContain("completion_conflict");
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("completion_conflict"),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("retryable Bridge 409 still retries and succeeds", async () => {
+		vi.useFakeTimers();
+		try {
+			mockFetch
+				.mockResolvedValueOnce(
+					new Response(
+						JSON.stringify({
+							reason: "missing_output",
+							retryable: true,
+						}),
+						{
+							status: 409,
+							headers: { "content-type": "application/json" },
+						},
+					),
+				)
+				.mockResolvedValueOnce(new Response("{}", { status: 200 }));
+			const completion = complete({
+				route: "auto_approve",
+				pr: 42,
+				merged: true,
+			});
+			await vi.advanceTimersByTimeAsync(2000);
+			await completion;
+			expect(mockFetch).toHaveBeenCalledTimes(2);
+			expect(exitSpy).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
 		}

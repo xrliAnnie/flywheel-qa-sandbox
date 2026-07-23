@@ -21,6 +21,7 @@ import {
 	type DesignHtmlEvidence,
 	findDesignHtmlPaths,
 } from "../design-html-evidence.js";
+import { currentWorkflowActivationFromEnv } from "./workflow-activation.js";
 
 // FLY-222 #1: `no_code` is the terminal route for a runner-driven no-code /
 // no-merge clean success (e.g. the scheduled learning Runner — reads, analyzes,
@@ -86,6 +87,13 @@ type Payload = {
 	reviewQuestionId?: string;
 	/** FLY-1404: minted only after the CLI proves committed issue-scoped HTML. */
 	designHtmlEvidence?: DesignHtmlEvidence;
+	workflowActivation?: {
+		activationId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		turnEpoch: number;
+	};
 };
 
 export interface CompleteOpts {
@@ -214,6 +222,7 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		evidence.landingStatus = { status: "ready_to_merge", prNumber: opts.pr };
 	}
 	const summary = opts.summary ?? evidence.commitMessages[0];
+	const workflowActivation = currentWorkflowActivationFromEnv(execId);
 
 	const payload: Payload = {
 		decision: { route: opts.route },
@@ -224,6 +233,15 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	if (summary) payload.summary = summary;
 	if (issueIdentifier) payload.issueIdentifier = issueIdentifier;
 	if (designHtmlEvidence) payload.designHtmlEvidence = designHtmlEvidence;
+	if (workflowActivation) {
+		payload.workflowActivation = {
+			activationId: workflowActivation.activation_id,
+			runId: workflowActivation.run_id,
+			nodeId: workflowActivation.node_id,
+			attempt: workflowActivation.attempt,
+			turnEpoch: workflowActivation.epoch,
+		};
+	}
 	// FLY-191 Phase 2: only meaningful for review requests; pass through as-is
 	// (Bridge validates + fail-closes on absence for needs_review).
 	if (opts.questionId?.trim())
@@ -260,27 +278,58 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	if (ingestToken) headers.Authorization = `Bearer ${ingestToken}`;
 
 	let lastError: string | undefined;
+	let attemptsMade = 0;
 	for (let attempt = 1; attempt <= ATTEMPT_COUNT; attempt += 1) {
+		attemptsMade = attempt;
 		try {
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
-			const response = await fetch(`${bridgeUrl}/events`, {
-				method: "POST",
-				headers,
-				body: JSON.stringify(body),
-				signal: controller.signal,
-			});
-			clearTimeout(timer);
+			let response: Response;
+			try {
+				response = await fetch(`${bridgeUrl}/events`, {
+					method: "POST",
+					headers,
+					body: JSON.stringify(body),
+					signal: controller.signal,
+				});
+			} finally {
+				clearTimeout(timer);
+			}
 			if (response.ok) {
 				console.log(
 					`[complete] session_completed delivered (attempt ${attempt}/${ATTEMPT_COUNT})`,
 				);
 				return;
 			}
-			lastError = `Bridge returned ${response.status}`;
+			let responseText = "";
+			let responseJson: Record<string, unknown> | undefined;
+			try {
+				responseText = (await response.text()).slice(0, 1000);
+				const parsed = responseText ? JSON.parse(responseText) : undefined;
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+					responseJson = parsed as Record<string, unknown>;
+				}
+			} catch {
+				// The status remains authoritative when the response is not JSON.
+			}
+			const detail =
+				typeof responseJson?.reason === "string"
+					? responseJson.reason
+					: typeof responseJson?.error === "string"
+						? responseJson.error
+						: responseText.trim();
+			lastError = `Bridge returned ${response.status}${detail ? `: ${detail}` : ""}`;
 			console.error(
 				`[complete] attempt ${attempt}/${ATTEMPT_COUNT} failed: ${lastError}`,
 			);
+			if (
+				response.status >= 400 &&
+				response.status < 500 &&
+				response.status !== 429 &&
+				responseJson?.retryable !== true
+			) {
+				break;
+			}
 		} catch (err) {
 			lastError = err instanceof Error ? err.message : String(err);
 			console.error(
@@ -297,14 +346,14 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	const markerWritten = writeMarker({
 		execId,
 		body,
-		attempts: ATTEMPT_COUNT,
+		attempts: attemptsMade,
 		lastError,
 	});
 	const markerStatus = markerWritten
 		? "Marker written."
 		: "Marker NOT written (see above).";
 	console.error(
-		`[complete] FAIL-CLOSE: ${ATTEMPT_COUNT} attempts failed. ${markerStatus} Last error: ${lastError}`,
+		`[complete] FAIL-CLOSE: ${attemptsMade} attempts failed. ${markerStatus} Last error: ${lastError}`,
 	);
 	process.exit(1);
 }

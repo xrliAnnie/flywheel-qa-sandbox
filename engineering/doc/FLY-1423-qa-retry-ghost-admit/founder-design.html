@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FLY-1423 设计说明 — QA 打回后不许再「派了个幽灵」</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1d1d1f;
+      --muted: #6e6e73;
+      --paper: #ffffff;
+      --wash: #f5f5f7;
+      --blue: #0a66c2;
+      --green: #248a3d;
+      --orange: #c75300;
+      --red: #b42318;
+      --purple: #7a3db8;
+      --line: #d9d9de;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--wash); color: var(--ink); font: 16px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 980px; margin: 0 auto; padding: 34px 18px 72px; }
+    h1 { margin: 0 0 6px; color: #17365d; font-size: clamp(26px, 5vw, 40px); line-height: 1.18; }
+    h2 { margin: 0 0 14px; color: #17365d; font-size: 21px; }
+    p { margin: 8px 0; }
+    .meta { color: var(--muted); margin-bottom: 26px; }
+    .card { margin: 18px 0; padding: 22px 24px; border: 1px solid var(--line); border-left: 5px solid var(--blue); border-radius: 16px; background: var(--paper); box-shadow: 0 6px 24px rgba(0,0,0,.05); }
+    .green { border-left-color: var(--green); }
+    .orange { border-left-color: var(--orange); }
+    .purple { border-left-color: var(--purple); }
+    .red { border-left-color: var(--red); }
+    .lead { font-size: 20px; line-height: 1.55; }
+    .eyebrow { color: var(--muted); font-size: 13px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 6px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+    th, td { padding: 10px 9px; border-bottom: 1px solid #ececf0; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+    code { padding: 1px 5px; border-radius: 5px; background: #f0f0f2; font-size: .92em; }
+    ul { padding-left: 21px; }
+    li { margin: 7px 0; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .bad { color: #8f2011; background: #fdebe8; }
+    .good { color: #116329; background: #e5f5e9; }
+    .dim { color: var(--muted); }
+    .flowline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: stretch; gap: 8px; margin: 16px 0; }
+    .node { display: grid; place-items: center; min-height: 84px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #fafafa; text-align: center; font-size: 14px; }
+    .node b { display: block; margin-bottom: 3px; }
+    .node.stop { background: #fdebe8; border-color: #d98b7e; }
+    .node.ok { background: #edf8ef; border-color: #68ad76; }
+    .node.warn { background: #fff5e8; border-color: #dc984a; }
+    .node.gate { background: #eaf4ff; border-color: #69a7df; }
+    .arrow { align-self: center; color: var(--muted); font-size: 20px; text-align: center; }
+    .twocol { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+    .panel { padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: #fafafa; }
+    .panel strong { display: block; margin-bottom: 8px; }
+    .panel.before { border-color: #d98b7e; background: #fff7f5; }
+    .panel.after { border-color: #68ad76; background: #f4fbf5; }
+    @media (max-width: 700px) { .flowline, .twocol { grid-template-columns: 1fr; } .arrow { transform: rotate(90deg); } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>FLY-1423 · QA 打回后，不许再「派了个幽灵」</h1>
+  <p class="meta">设计说明 · 2026-07-22 · engine·bug4（五连修之四）· Codex 设计评审四轮通过</p>
+
+  <div class="card">
+    <div class="eyebrow">一句话</div>
+    <p class="lead">昨晚你问的「为什么 1415 和 1364 扣不到 QA 复测」——根子找到了：QA 打回后，系统账上记了「已派新工人返工」，但新工人<b>从来没真正到岗</b>（被前一个还赖在工位上的老工人挡了 5 个小时，且全程零报警）；同时真把活干完的老工人去交作业，窗口一看「你不是已经交过了吗」直接拒收 4 次。这次修三件事：<b>老工人让位、交作业认账、卡住必报警</b>。</p>
+  </div>
+
+  <div class="card red">
+    <h2>出了什么事（生产库 + 日志铁证）</h2>
+    <p>两个 issue（FLY-1415 / FLY-1364）同一天同一形态。以 1415 为例：</p>
+    <table>
+      <tr><th>时间</th><th>发生了什么</th><th>系统状态</th></tr>
+      <tr><td>04:04</td><td>QA 打回，系统开返工工单、账上记「已派新工人」</td><td><span class="pill bad">新工人从未到岗 ✗</span>（幽灵：花名册上查无此人）</td></tr>
+      <tr><td>04:04–09:05</td><td>系统每秒重试派工，被同一句话挡回：「这个工位已有人」——挡路的是干完活<b>留在工位待命</b>的老工人</td><td><span class="pill bad">重试 14034 次，零报警 ✗</span></td></tr>
+      <tr><td>06:07–06:22</td><td>老工人被唤醒，真把 QA 挑的毛病修完（17 个提交），去交作业</td><td><span class="pill bad">窗口拒收 4 次 ✗</span>（理由：你这单已经结过账）</td></tr>
+      <tr><td>09:05</td><td>Bridge 重启,「工位有人」的内存记录被清空</td><td><span class="pill good">碰巧解锁,全链恢复 ✓</span></td></tr>
+    </table>
+    <p style="margin-top:12px">两条路都死:新工人进不来、老工人的成果交不上,QA 复测永远派不出去。<b>解锁靠的是重启的副作用,不是任何机制。</b></p>
+  </div>
+
+  <div class="card">
+    <h2>核心流程（修复前 → 修复后）</h2>
+    <div class="flowline">
+      <div class="node stop"><span><b>QA 打回</b>系统开返工工单<br>账上记「已派新工人」</span></div>
+      <div class="arrow">→</div>
+      <div class="node gate"><span><b>新增·让位放行</b>工位上的老工人若已交完差<br>只是留守待命 → 自动让位</span></div>
+      <div class="arrow">→</div>
+      <div class="node ok"><span><b>新工人真到岗</b>花名册有名字<br>返工 → 交付 → QA 复测自动派</span></div>
+    </div>
+    <div class="twocol">
+      <div class="panel before"><strong>修复前</strong>「一个工位一个人」的锁不分「正在干活」和「干完留守」——留守的老工人无限期挡住返工新人;账上「已派」和现实「没到岗」可以永远分叉,没有任何机制发现。</div>
+      <div class="panel after"><strong>修复后</strong>三道保险:① 留守老工人自动让位(只让位给系统派的返工工人,判据从严,拿不准就不放行);② 派工卡住 15 分钟 → 自动报警给 Lead(这次事故本会在 04:19 被叫醒,而不是 5 小时后碰运气);③ 卡满 1 小时还查无此人 → 按既有「换人重派」机制自动换新工号,最多换 3 次,再不行就挂起点名要人来看。</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>交作业窗口（修复前 → 修复后）</h2>
+    <div class="twocol">
+      <div class="panel before"><strong>修复前</strong>已结账的工人再来交(比如补修了 QA 挑的毛病,材料更新了),窗口只会硬邦邦地拒收 4 次,材料被丢进隔离箱,系统永远不知道「活其实干完了」。</div>
+      <div class="panel after"><strong>修复后</strong>同一个工人、同一类作业再来交 → 窗口认账:「这单已结,收到,不用再交」——温和放行,原始账目一字不改,补交材料留审计痕迹。<b>冒名顶替照样拒</b>:别的工号来冒领、或作业类型对不上,仍然吃闭门羹。若发现「账结了但总台账漏了一笔」,顺手把漏的补上,流程继续往下走。</div>
+    </div>
+  </div>
+
+  <div class="card purple">
+    <h2>数据与结构模型</h2>
+    <ul>
+      <li><b>工位锁(内存)</b>:每个 issue 每类工种一把。新增唯一的例外通道:系统派的返工工人 + 老占位者已到终态 → 原子换牌,不给第三者可乘之机;Bridge 关机排水等所有生命周期照旧。</li>
+      <li><b>派工台账(数据库)</b>:「已派」到「已到岗」之间从此有界——15 分钟未到岗必报警、1 小时未到岗按机械规则换人。换人时同步<b>注销旧工号的全部凭证</b>(落一张不可撤销的注销凭证表,数据库写锁保证与「旧工号迟到报到」二者只能一个赢),被换掉的工号永远不可能再复活开工——杜绝「一单两人同时干」。</li>
+      <li><b>交作业台账(数据库)</b>:同工号同类作业=幂等认账(补交材料只留痕不改账);异工号/异类型=真冲突照拒。判据全部从严:只对「已完成」状态开这个口,叫停/搁置等其它终态维持上周 FLY-1427 定下的规矩不动。</li>
+    </ul>
+  </div>
+
+  <div class="card orange">
+    <h2>关键取舍（否决了什么，为什么）</h2>
+    <table>
+      <tr><th>备选</th><th>为什么不选</th></tr>
+      <tr><td>打回时直接把老工人赶下班</td><td>关停工人属于你保留的授权动作,系统不该自动做;而且事实证明老工人留守与新工人同场干活是安全的(有换手令牌管着),让位比赶人动静小得多。</td></tr>
+      <tr><td>把「已派」改成到岗后才记账</td><td>派工凭证必须先铸好才能开工,顺序倒不过来;治幽灵靠「有界 + 报警 + 换人」,不靠改记账时序。</td></tr>
+      <tr><td>交作业窗口对已结账的一律温和放行</td><td>会把「冒名顶替」和「真冲突」一起放进来。只认「同工号 + 同类型 + 已完成」,其余照拒。</td></tr>
+      <tr><td>为这个 bug 加一个专用看门狗</td><td>你定过规矩:不要来一个打一个。这次的报警是派工流程自己报自己的故障(谁的失败谁开口),通用巡检另有专项(FLY-1386)。</td></tr>
+    </table>
+  </div>
+
+  <div class="card green">
+    <h2>修完之后的验收</h2>
+    <ul>
+      <li>真机隔离房完整重放 1415 事故:QA 打回 → 新工人<b>不重启 Bridge</b> 就真到岗(记录 Bridge 进程号前后一致为证)→ 返工交付 → QA 复测自动派出。</li>
+      <li>老工人补交作业:一次通过、不进隔离箱、原始账目未变、补交留痕。</li>
+      <li>报警与换人用时钟注入的自动化测试盖住(15 分钟/1 小时不真等);上周三个 sibling 修复(1415/1425/1427)的既有测试全部保持绿灯。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>诚实边界（这次不做什么）</h2>
+    <ul>
+      <li><b>1415 / 1364 的存量解锁不等本单</b>——当天已由 Bridge 重启 + Lead 人工收尾,本单只治机制。</li>
+      <li><b>老工人为什么会被唤醒去替新工人干活</b>(唤醒链路的车道混淆)——已记录在案,属另一条车道的语义问题,不在本单半径。</li>
+      <li><b>跨节点的通用体检框架</b>归 FLY-1386;三段式多轮凭证归 FLY-1429;状态机地图、上周 FLY-1427 定的终态规矩,一概不动。</li>
+      <li>部署只需重启一次 Bridge,不动任何 Lead / Runner。</li>
+    </ul>
+  </div>
+
+  <p class="dim">依据:engineering/doc/FLY-1423-qa-retry-ghost-admit/{exploration,research,plan}.md · Codex 设计评审 R1 五项阻塞 → R2 两项 → R3 一项 → R4 APPROVED,零遗留</p>
+</main>
+</body>
+</html>

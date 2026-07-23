@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1423 DAG 返工循环模型研究</title>
+<style>
+  :root {
+    --ink:#152033; --muted:#657087; --line:#dbe2ea; --paper:#ffffff;
+    --navy:#193b67; --blue:#1677ff; --blue-soft:#edf5ff;
+    --green:#16875d; --green-soft:#eaf8f2; --red:#d04444; --red-soft:#fff0f0;
+    --amber:#b86b00; --amber-soft:#fff7e6; --purple:#7155c5; --purple-soft:#f3efff;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; color:var(--ink); background:#f2f5f8; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.55; }
+  a { color:#115fbd; text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .page { max-width:1120px; margin:0 auto; padding:34px 22px 72px; }
+  .hero { background:linear-gradient(135deg,#142d51 0%,#205a87 60%,#1c7b75 100%); color:white; border-radius:22px; padding:36px 38px; box-shadow:0 12px 35px rgba(25,59,103,.22); position:relative; overflow:hidden; }
+  .hero::after { content:""; position:absolute; width:290px; height:290px; border:52px solid rgba(255,255,255,.065); border-radius:50%; right:-105px; top:-135px; }
+  .kicker { font-size:12px; letter-spacing:.12em; text-transform:uppercase; opacity:.8; font-weight:700; }
+  h1 { font-size:34px; line-height:1.18; margin:10px 0 12px; max-width:820px; }
+  .hero p { margin:0; max-width:850px; font-size:16px; opacity:.92; }
+  .verdict { display:flex; gap:10px; margin-top:24px; flex-wrap:wrap; }
+  .pill { border:1px solid rgba(255,255,255,.3); background:rgba(255,255,255,.12); border-radius:99px; padding:8px 14px; font-size:13px; font-weight:700; }
+  .pill.primary { background:#d9fff0; color:#086943; border-color:#d9fff0; }
+  .pill.fallback { background:#fff0c8; color:#754800; border-color:#fff0c8; }
+  .pill.reject { background:#ffe5e5; color:#8b2525; border-color:#ffe5e5; }
+  h2 { margin:38px 0 15px; color:var(--navy); font-size:22px; display:flex; gap:9px; align-items:center; }
+  h2 .n { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; background:var(--navy); color:#fff; font-size:13px; }
+  h3 { margin:20px 0 8px; color:var(--navy); font-size:17px; }
+  .card { background:var(--paper); border:1px solid var(--line); border-radius:16px; padding:22px 24px; margin-bottom:14px; box-shadow:0 2px 8px rgba(28,52,78,.04); }
+  .decision { border-left:5px solid var(--green); }
+  .decision strong.big { color:var(--green); font-size:18px; }
+  .muted { color:var(--muted); }
+  .small { font-size:12px; color:var(--muted); }
+  .flow { display:grid; grid-template-columns:1fr 38px 1.15fr 38px 1fr; align-items:stretch; gap:8px; }
+  .node { border:1px solid var(--line); background:#f8fafc; border-radius:13px; padding:15px; min-height:94px; }
+  .node b { display:block; margin-bottom:5px; color:var(--navy); }
+  .node small { display:block; color:var(--muted); line-height:1.45; }
+  .node.good { background:var(--green-soft); border-color:#b8e6d3; }
+  .node.bad { background:var(--red-soft); border-color:#f1bcbc; }
+  .node.warn { background:var(--amber-soft); border-color:#edcf92; }
+  .node.blue { background:var(--blue-soft); border-color:#bdd9fb; }
+  .arrow { align-self:center; text-align:center; color:#7c8ca2; font-size:24px; font-weight:400; }
+  .branch { margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .path { border-radius:13px; padding:14px 16px; border:1px solid var(--line); }
+  .path.c { background:var(--green-soft); border-color:#b8e6d3; }
+  .path.a { background:var(--amber-soft); border-color:#edcf92; }
+  .path .tag { display:inline-block; border-radius:99px; padding:2px 8px; font-size:11px; font-weight:800; margin-right:6px; }
+  .path.c .tag { color:#086943; background:#c8f1df; }
+  .path.a .tag { color:#754800; background:#ffe4a8; }
+  .metric-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .metric { background:#fff; border:1px solid var(--line); border-radius:15px; padding:18px; text-align:center; position:relative; }
+  .metric .label { color:var(--muted); font-size:12px; min-height:38px; }
+  .metric .values { display:flex; gap:10px; justify-content:center; align-items:baseline; margin:8px 0 4px; }
+  .metric .warm { color:var(--green); font-size:25px; font-weight:800; }
+  .metric .cold { color:var(--amber); font-size:25px; font-weight:800; }
+  .metric .vs { font-size:11px; color:#8b95a5; }
+  .metric .ratio { font-size:12px; color:var(--red); font-weight:700; }
+  .legend { display:flex; justify-content:center; gap:18px; margin:12px 0; color:var(--muted); font-size:12px; }
+  .dot { width:9px; height:9px; display:inline-block; border-radius:50%; margin-right:5px; }
+  .dot.warm { background:var(--green); } .dot.cold { background:var(--amber); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:#526078; font-size:11px; letter-spacing:.035em; text-transform:uppercase; padding:10px 9px; border-bottom:2px solid var(--line); }
+  td { padding:11px 9px; vertical-align:top; border-bottom:1px solid #edf0f4; }
+  tr:last-child td { border-bottom:none; }
+  .matrix td:nth-child(n+2), .matrix th:nth-child(n+2) { text-align:center; }
+  .matrix .pick { background:#f1fbf7; }
+  .grade { display:inline-flex; width:26px; height:26px; align-items:center; justify-content:center; border-radius:7px; font-weight:800; }
+  .g5 { background:#d9f3e7; color:#087048; } .g4 { background:#e8f2ff; color:#1765b3; }
+  .g3 { background:#fff1cc; color:#8a5900; } .g2 { background:#ffe8d9; color:#a14c16; }
+  .g1 { background:#ffe1e1; color:#a62929; }
+  .role { display:inline-block; border-radius:99px; padding:3px 9px; font-weight:700; font-size:11px; }
+  .role.main { background:#d9f3e7; color:#087048; } .role.backup { background:#fff1cc; color:#8a5900; } .role.no { background:#ffe1e1; color:#a62929; }
+  .layers { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; position:relative; }
+  .layer { padding:15px 12px; border-radius:13px; border:1px solid var(--line); text-align:center; background:#fff; }
+  .layer .num { display:flex; width:25px; height:25px; align-items:center; justify-content:center; margin:0 auto 8px; border-radius:50%; background:var(--navy); color:#fff; font-size:12px; font-weight:800; }
+  .layer b { display:block; color:var(--navy); font-size:13px; margin-bottom:5px; }
+  .layer code { font-size:10.5px; color:#526078; word-break:break-word; }
+  .layer.actor { background:var(--purple-soft); border-color:#d1c5f6; }
+  .layer.lease { background:var(--green-soft); border-color:#b8e6d3; }
+  .layer.process { background:#f7f8fa; }
+  .rules { display:grid; grid-template-columns:1fr 1fr; gap:9px 20px; margin:6px 0 0; padding:0; list-style:none; }
+  .rules li { position:relative; padding:8px 8px 8px 30px; border-bottom:1px solid #edf0f4; font-size:13px; }
+  .rules li::before { content:"✓"; position:absolute; left:6px; color:var(--green); font-weight:900; }
+  .engine-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .engine { border:1px solid var(--line); border-radius:13px; padding:14px; background:#fbfcfd; }
+  .engine b { color:var(--navy); }
+  .engine p { margin:6px 0 0; font-size:12px; color:var(--muted); }
+  .engine.selected { background:var(--green-soft); border:2px solid #8ed3b7; box-shadow:0 3px 12px rgba(22,135,93,.1); }
+  .engine.rejected { background:#fafafa; opacity:.82; }
+  .form-label { display:inline-block; border-radius:99px; padding:3px 8px; font-size:10.5px; font-weight:800; margin-bottom:8px; background:#e8edf4; color:#526078; }
+  .engine.selected .form-label { background:#c8f1df; color:#086943; }
+  .history { margin-top:12px; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .history span { border-radius:8px; padding:7px 9px; background:#f5f7fa; border:1px solid var(--line); font-size:11px; }
+  .history i { font-style:normal; color:#7d8ba0; }
+  .consensus { margin-top:14px; padding:14px 16px; border-radius:12px; background:var(--blue-soft); color:#244c75; font-size:13px; }
+  .callout { background:linear-gradient(135deg,#f2fff9,#edf6ff); border:1px solid #b9ddcf; border-radius:16px; padding:22px 24px; }
+  .callout h3 { margin-top:0; color:#116a4b; }
+  .callout ul { margin:8px 0 0; padding-left:20px; }
+  .callout li { margin:5px 0; }
+  .sources { columns:2; column-gap:30px; font-size:11.5px; }
+  .sources div { break-inside:avoid; margin-bottom:6px; }
+  .footer { color:#7c8798; text-align:center; font-size:11.5px; margin-top:34px; }
+  @media (max-width:780px) {
+    h1 { font-size:27px; } .hero { padding:28px 24px; }
+    .flow { grid-template-columns:1fr; } .arrow { transform:rotate(90deg); }
+    .branch,.metric-grid,.layers,.engine-grid { grid-template-columns:1fr; }
+    .rules { grid-template-columns:1fr; } .sources { columns:1; }
+    .scroll { overflow-x:auto; } table { min-width:720px; }
+  }
+</style>
+</head>
+<body>
+<main class="page">
+  <section class="hero">
+    <div class="kicker">FLY-1423 · Founder decision brief · 2026-07-22</div>
+    <h1>节点做完以后，是下线，还是能被叫回来重做？</h1>
+    <p>QA fail 与 founder correction 暴露的是同一个根问题：single-pass DAG 不足以承载随时打回的 LLM 工程流程。DAG 继续做依赖模板，runtime 升级为可重入 workflow state machine；健康 phase actor 保留身份和上下文继续做。</p>
+    <div class="verdict">
+      <span class="pill primary">形式 · DAG 模板 + 可重入状态机</span>
+      <span class="pill primary">C · 正常路径：同 runner / 同 exec</span>
+      <span class="pill fallback">A · 死亡兜底：fresh exec</span>
+      <span class="pill reject">B · 淘汰：活进程换 exec</span>
+    </div>
+  </section>
+
+  <h2><span class="n">1</span> 先回答形式：这还算 DAG 吗？</h2>
+  <section class="engine-grid">
+    <div class="engine rejected"><span class="form-label">只做底层</span><b>纯 DAG + task retry</b><p>适合失败重试和单轮依赖；要表达“1、2、3 完成后重做 2”，只能靠 clear/rerun 运维动作，correction 语义太弱。</p></div>
+    <div class="engine selected"><span class="form-label">推荐 runtime</span><b>可重入 workflow state machine</b><p>correction 是显式 event；追加 node attempt、计算下游失效范围、授权 actor、增量复验，全部 durable。</p></div>
+    <div class="engine"><span class="form-label">设计参照</span><b>Temporal 式长活 workflow</b><p>open workflow 接 Signal/Update；worker cache 可粘滞也可驱逐。借它的语义，不要求直接换引擎。</p></div>
+  </section>
+  <section class="card">
+    <b>静态依赖图仍是 DAG：</b> design → implement → QA → founder gate
+    <div class="history">
+      <span>design#1</span><i>→</i><span>implement#1</span><i>→</i><span>QA#1</span><i>→</i><span style="background:var(--red-soft);border-color:#efbcbc">founder correction</span><i>→</i><span style="background:var(--green-soft);border-color:#b8e6d3">design#2</span><i>→</i><span>增量 review / affected nodes</span>
+    </div>
+    <p class="small" style="margin-bottom:0">没有在静态图里画 3 → 2 回边；event history 只向前追加，所以历史仍然无环。“回去”是业务语义上的 re-entry，不是覆盖旧结果。</p>
+  </section>
+  <section class="card decision">
+    <strong class="big">Session 生命周期：</strong>
+    <span>节点完成后立即释放 TURN 并 park；issue 还在 QA / founder / landing 的 correction horizon 内，phase actor 保持可唤醒。只有 ship、取消、founder close 才逻辑 terminal；容量压力可物理 eviction，但必须能从 durable state 恢复。</span>
+  </section>
+
+  <h2><span class="n">2</span> QA 与 founder correction，共用一条返工环</h2>
+  <section class="card decision">
+    <div class="flow">
+      <div class="node bad"><b>rework_requested</b><small>QA fail / founder correction / review changes；携带目标、反馈、base revision</small></div>
+      <div class="arrow">→</div>
+      <div class="node blue"><b>计算 correction plan</b><small>目标 node、invalidation scope、增量 review / QA policy</small></div>
+      <div class="arrow">→</div>
+      <div class="node"><b>append 新 attempt + 检查 actor</b><small>旧历史不覆盖；判断原 phase actor 是否健康可恢复</small></div>
+    </div>
+    <div class="branch">
+      <div class="path c"><span class="tag">C · 正常</span><b>活着：同 exec + 新 TURN epoch 唤醒</b><br><span class="small">发 attempt-scoped 权限 → 带 correction feedback 继续修 → complete → 按 policy 增量复验</span></div>
+      <div class="path a"><span class="tag">A · 兜底</span><b>已死：fresh exec 接管同一回合</b><br><span class="small">launch 真成功后才 admit → 从 docs / progress / feedback 恢复 → complete → 增量复验</span></div>
+    </div>
+  </section>
+
+  <section class="card decision">
+    <strong class="big">一句话裁决：</strong>
+    <span>QA rework 与 founder correction 是同一个 first-class correction loop 的两个触发源；同 runner 唤醒是首选执行策略，不是 loop 本身。</span>
+  </section>
+
+  <h2><span class="n">3</span> FLY-1415 实测：上下文重建不是免费</h2>
+  <div class="legend"><span><i class="dot warm"></i>原 runner 唤醒</span><span><i class="dot cold"></i>fresh attempt2</span></div>
+  <section class="metric-grid">
+    <div class="metric">
+      <div class="label">wake/start → 最终代码 commit</div>
+      <div class="values"><span class="warm">5.5m</span><span class="vs">vs</span><span class="cold">25.1m</span></div>
+      <div class="ratio">fresh 约 4.6× 更慢</div>
+    </div>
+    <div class="metric">
+      <div class="label">新增 uncached input tokens</div>
+      <div class="values"><span class="warm">226.7k</span><span class="vs">vs</span><span class="cold">482.6k</span></div>
+      <div class="ratio">fresh 约 2.1×</div>
+    </div>
+    <div class="metric">
+      <div class="label">新增 output tokens</div>
+      <div class="values"><span class="warm">7.5k</span><span class="vs">vs</span><span class="cold">38.0k</span></div>
+      <div class="ratio">fresh 约 5.1×</div>
+    </div>
+  </section>
+  <section class="card">
+    <p style="margin-top:0"><b>两条证据同时成立：</b></p>
+    <ul class="rules">
+      <li>原 implement 带上下文被手动 wake 后，约 5 分半完成聚焦修复，证明热 actor 有真实价值。</li>
+      <li>fresh attempt2 成功 adopt、rebase、review、complete 并触发 QA retest，证明 A 是可靠恢复路径。</li>
+      <li>fresh runner 重新接收完整任务提示，并冷读 39,398 bytes / 约 3,028 分词的 branch process docs。</li>
+      <li>保活也不是零 token：闲置 2.5 小时后 prompt cache 部分过期，首次 wake 约 189k uncached input。</li>
+    </ul>
+    <p class="small" style="margin-bottom:0">注意：这是生产观察，不是随机对照。fresh 路径还承担了 adopt、rebase、重新检查和交接，不能把全部差异归因于上下文；但差异量级足以否定“冷启动成本可忽略”。</p>
+  </section>
+
+  <h2><span class="n">4</span> 六个成熟引擎的共同答案</h2>
+  <section class="engine-grid">
+    <div class="engine"><b>Airflow</b><p>clear 已成功 task，可选 upstream/downstream 后重跑并保留历史；worker 不保活。</p></div>
+    <div class="engine"><b>Temporal</b><p>open workflow 接 Signal/Update；closed 后 reset 或 with-start；sticky cache 可驱逐并 replay。</p></div>
+    <div class="engine"><b>Dagster</b><p>可 re-execute / op selection 选择目标、祖先或后代；step 默认独立进程。</p></div>
+    <div class="engine"><b>Argo Workflows</b><p>可 restart-successful + node selector 重启成功节点；同 Workflow object，新 pod 承载。</p></div>
+    <div class="engine"><b>GitHub Actions</b><p>成功 run 也能 rerun all / specific job；RUN_ATTEMPT 递增，hosted runner 是 fresh VM。</p></div>
+    <div class="engine"><b>AWS Step Functions</b><p>redrive 只接受未成功 execution；SUCCEEDED correction 要新 execution 或定义内显式 loop。</p></div>
+  </section>
+  <div class="consensus"><b>成熟引擎并不认为“成功后永远不可重做”：</b>Airflow clear、Dagster subset、Argo restart-successful、GitHub rerun 都提供 correction 手段。共同底线仍是 attempt / event durable、worker 不是真相源。<b>Flywheel 的特殊点：</b>correction 是业务常态且 LLM 上下文昂贵，所以要把 operator action 提升为 first-class event，并优先复用健康 actor。</div>
+
+  <h2><span class="n">5</span> A / B / C 完整对比</h2>
+  <section class="card scroll">
+    <table class="matrix">
+      <thead><tr><th style="text-align:left">维度（5 最好）</th><th>A<br>evict + 新 exec</th><th>B<br>wake-rebind</th><th class="pick">C<br>同 exec + 新 epoch</th></tr></thead>
+      <tbody>
+        <tr><td style="text-align:left">当前 binding 一致性</td><td><span class="grade g5">5</span></td><td><span class="grade g1">1</span></td><td class="pick"><span class="grade g2">2</span><div class="small">需拆 actor / attempt</div></td></tr>
+        <tr><td style="text-align:left">resident phase 契约</td><td><span class="grade g2">2</span></td><td><span class="grade g3">3</span></td><td class="pick"><span class="grade g5">5</span></td></tr>
+        <tr><td style="text-align:left">双写可控性</td><td><span class="grade g4">4</span></td><td><span class="grade g1">1</span></td><td class="pick"><span class="grade g5">5</span></td></tr>
+        <tr><td style="text-align:left">token / 时间成本</td><td><span class="grade g2">2</span></td><td><span class="grade g4">4</span></td><td class="pick"><span class="grade g5">5</span></td></tr>
+        <tr><td style="text-align:left">机制复杂度</td><td><span class="grade g4">4</span></td><td><span class="grade g1">1</span></td><td class="pick"><span class="grade g3">3</span></td></tr>
+        <tr><td style="text-align:left">TURN belt 兼容</td><td><span class="grade g4">4</span></td><td><span class="grade g2">2</span></td><td class="pick"><span class="grade g5">5</span></td></tr>
+        <tr><td style="text-align:left">crash 后恢复</td><td><span class="grade g5">5</span></td><td><span class="grade g2">2</span></td><td class="pick"><span class="grade g5">5</span><div class="small">搭配 A</div></td></tr>
+        <tr><td style="text-align:left">最终角色</td><td><span class="role backup">死亡兜底</span></td><td><span class="role no">淘汰</span></td><td class="pick"><span class="role main">正常路径</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section class="card">
+    <h3 style="margin-top:0">为什么 B 最差？</h3>
+    <p style="margin-bottom:0">它让一个活进程中途“换工牌”。但 exec 身份已经进入环境变量、CommDB session、凭证、workflow binding、watchdog、Lead 指令路由、completion ownership 和 TURN holder。任何一处未原子切换，就会同时出现旧身份和新身份；收益却只是绕着 C 的稳定 actor 模型走了一圈。</p>
+  </section>
+
+  <h2><span class="n">6</span> 正确的身份拆分</h2>
+  <section class="card">
+    <div class="layers">
+      <div class="layer"><span class="num">1</span><b>逻辑工作</b><code>(run, node, attempt=2)</code><div class="small">DAG durable truth</div></div>
+      <div class="layer actor"><span class="num">2</span><b>Resident phase actor</b><code>actor_exec_id = impl-1</code><div class="small">身份稳定，可服务多轮</div></div>
+      <div class="layer lease"><span class="num">3</span><b>一次激活权</b><code>(attempt=2, epoch=4)</code><div class="small">append-only lease / capability</div></div>
+      <div class="layer process"><span class="num">4</span><b>本地进程</b><code>alive / dead / replaced</code><div class="small">可丢失，不是真相源</div></div>
+    </div>
+    <p class="small" style="margin-bottom:0">现有 schema 把 execution_id 一对一绑定某个 attempt，且禁止 update/delete。终态不应放松历史不可变性，而应新增 stable actor → per-attempt activation 这一层。</p>
+  </section>
+
+  <h2><span class="n">7</span> C 不双写的十条底线</h2>
+  <section class="card">
+    <ul class="rules">
+      <li>每次 QA fail 都创建新的 logical attempt，绝不覆盖上一轮。</li>
+      <li>actor execution_id 稳定；禁止活进程重绑身份。</li>
+      <li>activation 记录 append-only，历史不可改、不可删。</li>
+      <li>同 worktree 同时只有一个 active TURN lease。</li>
+      <li>所有写入带 TURN epoch；迟到的旧 epoch 被 fence。</li>
+      <li>completion 权限绑定 attempt + actor + epoch，而非“exec 一生只能交一次”。</li>
+      <li>同 attempt 同 digest 重放 200；不同 digest 仍 409。</li>
+      <li>相同 round/epoch 的重复 wake 不重复 worktree 或外部副作用。</li>
+      <li>只有 proven dead 才走 A；replacement launch 成功后才 admit。</li>
+      <li>每轮仍写 docs、progress、commit、receipt，确保随时可恢复。</li>
+    </ul>
+  </section>
+
+  <h2><span class="n">8</span> 对 PR #674 的裁决建议</h2>
+  <section class="callout">
+    <h3>暂停现形态 ship；保留基建，替换主路径</h3>
+    <ul>
+      <li><b>不能原样 ship：</b>正常 QA kickback 不应 evict 一个健康、掌握上下文的 implement actor。</li>
+      <li><b>保留：</b>launch 成功后才 admit、ghost cancellation fence、卡住 tripwire、相同 completion 幂等、真冲突 409。</li>
+      <li><b>重做：</b>runtime 采用 first-class correction event；健康 actor 走同 exec + 新 TURN epoch；A 只在 proven-dead 后启动。</li>
+      <li><b>统一：</b>QA fail 与 founder correction 共用 attempt / activation / TURN / wake 基建，差别只在目标、权限、失效范围和复验 policy。</li>
+      <li><b>已有先例：</b>FLY-752 的 QA retest 同 exec；FLY-887 PhaseOrchestrator 已实现 QA fail 后唤醒原 implement、死亡才 spawn。</li>
+    </ul>
+    <p style="margin-bottom:0"><b>需要 Annie 拍板：</b>批准 “C 主路径 + A failover + B 淘汰” 后，再进入代码重构与真机 E2E；拍板前不改代码、不推进 ship。</p>
+  </section>
+
+  <h2><span class="n">9</span> 参考资料（官方一手文档）</h2>
+  <section class="card sources">
+    <div><a href="https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/tasks.html">Airflow · Tasks / retry states</a></div>
+    <div><a href="https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dag-run.html">Airflow · DAG Runs / rerun history</a></div>
+    <div><a href="https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/task-and-asset-state-store.html">Airflow · Stateless task guidance</a></div>
+    <div><a href="https://docs.temporal.io/encyclopedia/retry-policies">Temporal · Retry Policies</a></div>
+    <div><a href="https://docs.temporal.io/workflow-execution">Temporal · Workflow Execution</a></div>
+    <div><a href="https://docs.temporal.io/workers">Temporal · Workers</a></div>
+    <div><a href="https://docs.temporal.io/encyclopedia/workflow-message-passing">Temporal · Workflow messages</a></div>
+    <div><a href="https://docs.temporal.io/cli/command-reference/workflow">Temporal · Reset / With-Start CLI</a></div>
+    <div><a href="https://docs.temporal.io/develop/typescript/workflows/message-passing">Temporal · Closed-workflow message rules</a></div>
+    <div><a href="https://docs.dagster.io/guides/build/ops/op-retries">Dagster · Op retries</a></div>
+    <div><a href="https://docs.dagster.io/guides/operate/run-executors">Dagster · Run executors</a></div>
+    <div><a href="https://docs.dagster.io/guides/build/jobs/job-execution#executing-job-subsets">Dagster · Job subset execution</a></div>
+    <div><a href="https://argo-workflows.readthedocs.io/en/latest/walk-through/retrying-failed-or-errored-steps/">Argo · Retrying failed steps</a></div>
+    <div><a href="https://argo-workflows.readthedocs.io/en/latest/walk-through/loops/">Argo · Loops</a></div>
+    <div><a href="https://argo-workflows.readthedocs.io/en/latest/walk-through/recursion/">Argo · Recursion</a></div>
+    <div><a href="https://argo-workflows.readthedocs.io/en/latest/cli/argo_retry/">Argo · Restart successful selected node</a></div>
+    <div><a href="https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs?tool=cli">GitHub Actions · Rerun workflows/jobs</a></div>
+    <div><a href="https://docs.github.com/en/enterprise-cloud@latest/actions/reference/workflows-and-actions/variables">GitHub Actions · RUN_ATTEMPT</a></div>
+    <div><a href="https://docs.github.com/en/actions/reference/runners/github-hosted-runners">GitHub Actions · Hosted runners</a></div>
+    <div><a href="https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html">Step Functions · Retry / error handling</a></div>
+    <div><a href="https://docs.aws.amazon.com/step-functions/latest/dg/tutorial-create-iterate-pattern-section.html">Step Functions · Iteration pattern</a></div>
+    <div><a href="https://docs.aws.amazon.com/step-functions/latest/dg/concepts-activities.html">Step Functions · Activity task tokens</a></div>
+    <div><a href="https://docs.aws.amazon.com/step-functions/latest/dg/redrive-executions.html">Step Functions · Redrive eligibility</a></div>
+  </section>
+
+  <div class="footer">FLY-1423 · DAG loop model research · Primary-source review + FLY-1415 production evidence · Ship paused pending founder decision</div>
+</main>
+</body>
+</html>

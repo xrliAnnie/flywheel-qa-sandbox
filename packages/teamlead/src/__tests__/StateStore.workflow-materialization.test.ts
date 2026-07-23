@@ -109,16 +109,24 @@ async function seededStore(
 		db.run("UPDATE workflow_run SET engine_owned = 1 WHERE run_id = ?", [RUN]);
 	}
 	db.run(
+		`INSERT INTO workflow_actor
+		   (execution_id, project_name, issue_id, role, created_at)
+		 VALUES ('exec-produce-1', 'flywheel', ?, ?, '2026-07-16T00:00:00.000Z')`,
+		[ISSUE, PRODUCER],
+	);
+	db.run(
 		`INSERT INTO workflow_execution_binding
-		   (execution_id, run_id, node_id, attempt, bound_at)
-		 VALUES ('exec-produce-1', ?, ?, 1, '2026-07-16T00:00:00.000Z')`,
+		   (activation_id, execution_id, run_id, node_id, attempt, mode,
+		    rework_request_id, bound_at)
+		 VALUES ('activation-produce-1', 'exec-produce-1', ?, ?, 1, 'spawn', NULL,
+		         '2026-07-16T00:00:00.000Z')`,
 		[RUN, PRODUCER],
 	);
 	db.run(
 		`INSERT INTO workflow_node_outputs
-		   (id, run_id, node_id, attempt, execution_id, payload, output_digest,
+		   (id, activation_id, run_id, node_id, attempt, execution_id, payload, output_digest,
 		    output_schema, byte_size, client_request_id, submission_digest, written_at)
-		 VALUES (1, ?, ?, 1, 'exec-produce-1', ?, ?, 'json_v1', 64, 'req-1',
+		 VALUES (1, 'activation-produce-1', ?, ?, 1, 'exec-produce-1', ?, ?, 'json_v1', 64, 'req-1',
 		         'submission-1', '2026-07-16T00:00:00.000Z')`,
 		[
 			RUN,
@@ -202,9 +210,17 @@ describe("workflow materialization ledger and receipts", () => {
 		const store = await seededStore();
 		const db = (store as unknown as { db: InternalDb }).db;
 		db.run(
+			`INSERT INTO workflow_actor
+			   (execution_id, project_name, issue_id, role, created_at)
+			 VALUES ('exec-produce-other', 'flywheel', ?, ?, '2026-07-16T00:01:00.000Z')`,
+			[ISSUE, PRODUCER],
+		);
+		db.run(
 			`INSERT INTO workflow_execution_binding
-			   (execution_id, run_id, node_id, attempt, bound_at)
-			 VALUES ('exec-produce-other', ?, ?, 1, '2026-07-16T00:01:00.000Z')`,
+			   (activation_id, execution_id, run_id, node_id, attempt, mode,
+			    rework_request_id, bound_at)
+			 VALUES ('activation-produce-other', 'exec-produce-other', ?, ?, 1,
+			         'spawn', NULL, '2026-07-16T00:01:00.000Z')`,
 			[RUN, PRODUCER],
 		);
 		db.run(
@@ -315,16 +331,24 @@ describe("workflow materialization ledger and receipts", () => {
 
 		const db = (store as unknown as { db: InternalDb }).db;
 		db.run(
+			`INSERT INTO workflow_actor
+			   (execution_id, project_name, issue_id, role, created_at)
+			 VALUES ('exec-produce-2', 'flywheel', ?, ?, '2026-07-16T01:00:00.000Z')`,
+			[ISSUE, PRODUCER],
+		);
+		db.run(
 			`INSERT INTO workflow_execution_binding
-			   (execution_id, run_id, node_id, attempt, bound_at)
-			 VALUES ('exec-produce-2', ?, ?, 2, '2026-07-16T01:00:00.000Z')`,
+			   (activation_id, execution_id, run_id, node_id, attempt, mode,
+			    rework_request_id, bound_at)
+			 VALUES ('activation-produce-2', 'exec-produce-2', ?, ?, 2, 'spawn', NULL,
+			         '2026-07-16T01:00:00.000Z')`,
 			[RUN, PRODUCER],
 		);
 		db.run(
 			`INSERT INTO workflow_node_outputs
-			   (id, run_id, node_id, attempt, execution_id, payload, output_digest,
+			   (id, activation_id, run_id, node_id, attempt, execution_id, payload, output_digest,
 			    output_schema, byte_size, client_request_id, submission_digest, written_at)
-			 SELECT 2, run_id, node_id, 2, 'exec-produce-2', payload, ?, output_schema,
+			 SELECT 2, 'activation-produce-2', run_id, node_id, 2, 'exec-produce-2', payload, ?, output_schema,
 			        byte_size, 'req-2', 'submission-2', '2026-07-16T01:00:00.000Z'
 			   FROM workflow_node_outputs WHERE id = 1`,
 			["e".repeat(64)],

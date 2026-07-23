@@ -8,6 +8,12 @@ import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../workflow-run-snapshot.js";
 
 const HEAD = "a".repeat(40);
+const WORKFLOW_ON = {
+	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+};
 
 function landSnapshot(): string {
 	return JSON.stringify(
@@ -94,6 +100,130 @@ function landSnapshot(): string {
 			},
 		}),
 	);
+}
+
+function prepareAwaitingFounderGate(store: StateStore, runId: string) {
+	store.createWorkflowRun({
+		runId,
+		issueId: "FLY-1375",
+		projectName: "flywheel",
+		snapshotJson: landSnapshot(),
+		claimsReadEnrolled: true,
+	});
+	(
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db.run(
+		"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'qa' WHERE run_id = ?",
+		[runId],
+	);
+	store.upsertWorkflowRunNode({
+		runId,
+		nodeId: "design",
+		attempt: 1,
+		state: "done",
+		executionId: "design-exec",
+	});
+	store.upsertWorkflowRunNode({
+		runId,
+		nodeId: "implement",
+		attempt: 1,
+		state: "done",
+		executionId: "implement-exec",
+	});
+	(
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db.run(
+		`INSERT INTO workflow_actor
+		   (execution_id, project_name, issue_id, role, created_at)
+		 VALUES ('design-exec','flywheel','FLY-1375','design','2026-07-21T19:00:00.000Z'),
+		        ('implement-exec','flywheel','FLY-1375','implement','2026-07-21T19:00:00.000Z')`,
+	);
+	store.upsertWorkflowRunNode({
+		runId,
+		nodeId: "qa",
+		attempt: 1,
+		state: "running",
+		executionId: "qa-feedback",
+	});
+	const passed = store.commitWorkflowTransitionTx({
+		runId,
+		nodeId: "qa",
+		attempt: 1,
+		executionId: "qa-feedback",
+		outcome: "qa_pass",
+		subjectDigest: HEAD,
+		now: "2026-07-21T20:00:00.000Z",
+	});
+	if (!passed.ok) throw new Error(`qa pass setup failed: ${passed.reason}`);
+	const holder = store.getCurrentWorkflowGateHolder(runId, "founder_gate");
+	if (!holder) throw new Error("founder gate setup failed");
+	store.advanceWorkflowGateHolderMaterialization({
+		questionId: holder.question_id,
+		stage: "card_bound",
+		cardMessageId: `card-${runId}`,
+		now: "2026-07-21T20:01:00.000Z",
+	});
+	return holder;
+}
+
+function activateFounderRework(
+	store: StateStore,
+	input: {
+		requestId: string;
+		runId: string;
+		nodeId: "design" | "implement" | "qa";
+		executionId: string;
+		attempt: number;
+	},
+): void {
+	expect(
+		store.admitGeneralizedWorkflowExecution({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			executionId: input.executionId,
+			attempt: input.attempt,
+			activationId: `activation:${input.requestId}`,
+			activationMode: "wake",
+			reworkRequestId: input.requestId,
+			now: "2026-07-21T20:02:00.000Z",
+			expiresAt: "2026-07-21T21:02:00.000Z",
+			absoluteDeadlineAt: "2026-07-22T20:02:00.000Z",
+			env: WORKFLOW_ON,
+		}),
+	).toMatchObject({ ok: true });
+	expect(
+		store.claimWorkflowReworkDelivery({
+			requestId: input.requestId,
+			ownerId: "coordinator",
+			now: "2026-07-21T20:02:01.000Z",
+			leaseExpiresAt: "2026-07-21T20:03:01.000Z",
+		}),
+	).toMatchObject({ ok: true, generation: 1 });
+	expect(
+		store.advanceWorkflowReworkDelivery({
+			requestId: input.requestId,
+			ownerId: "coordinator",
+			generation: 1,
+			from: "pending",
+			to: "turn_granted",
+			now: "2026-07-21T20:02:02.000Z",
+		}),
+	).toEqual({ ok: true });
+	expect(
+		store.advanceWorkflowReworkDelivery({
+			requestId: input.requestId,
+			ownerId: "coordinator",
+			generation: 1,
+			from: "turn_granted",
+			to: "wake_delivered",
+			now: "2026-07-21T20:02:03.000Z",
+			releaseOwner: true,
+		}),
+	).toEqual({ ok: true });
 }
 
 describe("StateStore land lifecycle ledger", () => {
@@ -193,6 +323,317 @@ describe("StateStore land lifecycle ledger", () => {
 		store.close();
 	});
 
+	it("routes a trusted design-only correction to the original designer without rewriting founder words", async () => {
+		const store = await StateStore.create(":memory:");
+		const holder = prepareAwaitingFounderGate(store, "run-design-only");
+		const sourcePayload = {
+			schema_version: 1,
+			run_id: "run-design-only",
+			issue_id: "FLY-1375",
+			question_id: holder.question_id,
+			response: {
+				approved: false,
+				feedback: "只改设计说明，别重跑实现。  保留空格。",
+			},
+			actor: "founder",
+			approved_head: HEAD,
+			classification: "founder_direct_signal",
+			authority_id: holder.question_id,
+			rework: {
+				target: "design",
+				invalidation_scope: ["design"],
+				verification_policy: ["design_review", "founder_gate"],
+				interpreted_by: "flywheel-eng-lead",
+				interpretation_reason: "founder explicitly scoped this to design",
+			},
+		};
+		const event = {
+			project: "flywheel",
+			sourceEventId: `founder-feedback:${holder.question_id}:design-only`,
+			kind: "founder_feedback" as const,
+			payloadJson: canonicalJsonString(sourcePayload),
+			payloadDigest: canonicalSubmissionDigest(sourcePayload),
+			schemaVersion: 1,
+		};
+
+		expect(store.applyWorkflowSourceEvent(event)).toEqual({
+			kind: "founder_feedback",
+			status: "applied",
+		});
+		expect(store.applyWorkflowSourceEvent(event)).toEqual({
+			kind: "founder_feedback",
+			status: "replayed",
+		});
+		const requestEvent = store
+			.listWorkflowRunEvents("run-design-only")
+			.find((entry) => entry.kind === "rework_requested");
+		const requestId = (requestEvent?.payload as { requestId?: string })
+			.requestId;
+		expect(requestId).toBeTruthy();
+		expect(store.getWorkflowReworkRequest(requestId!)).toMatchObject({
+			founder_feedback_verbatim: "只改设计说明，别重跑实现。  保留空格。",
+		});
+		expect(store.getLatestWorkflowReworkRoute(requestId!)).toMatchObject({
+			revision: 2,
+			target_node_id: "design",
+			target_attempt: 2,
+			preferred_actor_execution_id: "design-exec",
+			invalidation_scope: ["design"],
+			verification_policy: ["design_review", "founder_gate"],
+			interpreted_by: "flywheel-eng-lead",
+		});
+		expect(store.getWorkflowRun("run-design-only")).toMatchObject({
+			current_node_id: "design",
+		});
+		expect(
+			store.getWorkflowRunNode("run-design-only", "design", 2),
+		).toMatchObject({ state: "pending", execution_id: "design-exec" });
+		expect(
+			store.getWorkflowRunNode("run-design-only", "implement", 2),
+		).toMatchObject({ state: "superseded", execution_id: "implement-exec" });
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-design-only",
+				nodeId: "design",
+				executionId: "design-exec",
+				attempt: 2,
+				activationId: "activation-design-correction",
+				activationMode: "wake",
+				reworkRequestId: requestId!,
+				now: "2026-07-21T20:02:00.000Z",
+				expiresAt: "2026-07-21T21:02:00.000Z",
+				absoluteDeadlineAt: "2026-07-22T20:02:00.000Z",
+				env: WORKFLOW_ON,
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			store.claimWorkflowReworkDelivery({
+				requestId: requestId!,
+				ownerId: "coordinator",
+				now: "2026-07-21T20:02:01.000Z",
+				leaseExpiresAt: "2026-07-21T20:03:01.000Z",
+			}),
+		).toMatchObject({ ok: true, generation: 1 });
+		expect(
+			store.advanceWorkflowReworkDelivery({
+				requestId: requestId!,
+				ownerId: "coordinator",
+				generation: 1,
+				from: "pending",
+				to: "turn_granted",
+				now: "2026-07-21T20:02:02.000Z",
+			}),
+		).toEqual({ ok: true });
+		expect(
+			store.advanceWorkflowReworkDelivery({
+				requestId: requestId!,
+				ownerId: "coordinator",
+				generation: 1,
+				from: "turn_granted",
+				to: "wake_delivered",
+				now: "2026-07-21T20:02:03.000Z",
+				releaseOwner: true,
+			}),
+		).toEqual({ ok: true });
+
+		const correctedHead = "b".repeat(40);
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "run-design-only",
+				nodeId: "design",
+				attempt: 2,
+				executionId: "design-exec",
+				outcome: "design_done",
+				subjectDigest: correctedHead,
+				now: "2026-07-21T20:10:00.000Z",
+			}),
+		).toMatchObject({
+			ok: true,
+			targetNodeId: "founder_gate",
+			gateOpened: true,
+		});
+		expect(store.getWorkflowReworkVerificationPath(requestId!)).toMatchObject({
+			state: "completed",
+			current_node_id: "founder_gate",
+		});
+		expect(store.getWorkflowReworkDelivery(requestId!)).toMatchObject({
+			state: "completed",
+		});
+		expect(
+			store.getCurrentWorkflowGateHolder("run-design-only", "founder_gate"),
+		).toMatchObject({
+			head_sha: correctedHead,
+			source_execution_id: "design-exec",
+		});
+		store.close();
+	});
+
+	it("rejects an invalid correction hint atomically without consuming the founder gate", async () => {
+		const store = await StateStore.create(":memory:");
+		const holder = prepareAwaitingFounderGate(store, "run-invalid-hint");
+		const sourcePayload = {
+			schema_version: 1,
+			run_id: "run-invalid-hint",
+			issue_id: "FLY-1375",
+			question_id: holder.question_id,
+			response: { approved: false, feedback: "fix implementation" },
+			actor: "founder",
+			approved_head: HEAD,
+			classification: "founder_direct_signal",
+			authority_id: holder.question_id,
+			rework: {
+				target: "implement",
+				invalidation_scope: ["implement"],
+				verification_policy: ["code_review", "founder_gate"],
+				interpreted_by: "flywheel-eng-lead",
+				interpretation_reason: "invalid attempt to skip QA",
+			},
+		};
+
+		expect(() =>
+			store.applyWorkflowSourceEvent({
+				project: "flywheel",
+				sourceEventId: `founder-feedback:${holder.question_id}:invalid`,
+				kind: "founder_feedback",
+				payloadJson: canonicalJsonString(sourcePayload),
+				payloadDigest: canonicalSubmissionDigest(sourcePayload),
+				schemaVersion: 1,
+			}),
+		).toThrow(/invalid_rework_route|source payload invalid/i);
+		expect(
+			store.getCurrentWorkflowGateHolderByQuestionId(holder.question_id),
+		).toMatchObject({ state: "awaiting_review" });
+		expect(
+			store
+				.listWorkflowRunEvents("run-invalid-hint")
+				.filter((entry) => entry.kind === "rework_requested"),
+		).toHaveLength(0);
+		store.close();
+	});
+
+	it("runs an implement correction through a new QA attempt and returns the new head to founder gate", async () => {
+		const store = await StateStore.create(":memory:");
+		const holder = prepareAwaitingFounderGate(store, "run-implement-full");
+		const sourcePayload = {
+			schema_version: 1,
+			run_id: "run-implement-full",
+			issue_id: "FLY-1375",
+			question_id: holder.question_id,
+			response: { approved: false, feedback: "fix implementation and retest" },
+			actor: "founder",
+			approved_head: HEAD,
+			classification: "founder_direct_signal",
+			authority_id: holder.question_id,
+			rework: {
+				target: "implement",
+				invalidation_scope: ["implement", "qa"],
+				verification_policy: ["code_review", "qa_retest", "founder_gate"],
+				interpreted_by: "flywheel-eng-lead",
+				interpretation_reason: "implementation change invalidates QA",
+			},
+		};
+		store.applyWorkflowSourceEvent({
+			project: "flywheel",
+			sourceEventId: `founder-feedback:${holder.question_id}:implement-full`,
+			kind: "founder_feedback",
+			payloadJson: canonicalJsonString(sourcePayload),
+			payloadDigest: canonicalSubmissionDigest(sourcePayload),
+			schemaVersion: 1,
+		});
+		const requestEvent = store
+			.listWorkflowRunEvents("run-implement-full")
+			.find((entry) => entry.kind === "rework_requested");
+		const requestId = (requestEvent?.payload as { requestId?: string })
+			.requestId;
+		if (!requestId) throw new Error("rework request missing");
+		expect(store.getLatestWorkflowReworkRoute(requestId)).toMatchObject({
+			revision: 2,
+			target_node_id: "implement",
+			target_attempt: 2,
+			preferred_actor_execution_id: "implement-exec",
+		});
+		activateFounderRework(store, {
+			requestId,
+			runId: "run-implement-full",
+			nodeId: "implement",
+			executionId: "implement-exec",
+			attempt: 2,
+		});
+
+		const correctedHead = "c".repeat(40);
+		const implementation = store.commitWorkflowTransitionTx({
+			runId: "run-implement-full",
+			nodeId: "implement",
+			attempt: 2,
+			executionId: "implement-exec",
+			outcome: "implement_done",
+			subjectDigest: correctedHead,
+			now: "2026-07-21T20:10:00.000Z",
+		});
+		expect(implementation).toMatchObject({
+			ok: true,
+			targetNodeId: "qa",
+			targetAttempt: 2,
+			reworkRequestId: expect.any(String),
+		});
+		if (!implementation.ok || !implementation.reworkRequestId) {
+			throw new Error("QA retest request missing");
+		}
+		expect(store.getWorkflowReworkVerificationPath(requestId)).toMatchObject({
+			state: "completed",
+			current_node_id: "qa",
+			current_attempt: 2,
+		});
+		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+			state: "completed",
+		});
+		const qaRequestId = implementation.reworkRequestId;
+		expect(store.getLatestWorkflowReworkRoute(qaRequestId)).toMatchObject({
+			target_node_id: "qa",
+			target_attempt: 2,
+			preferred_actor_execution_id: "qa-feedback",
+			invalidation_scope: ["qa"],
+		});
+		activateFounderRework(store, {
+			requestId: qaRequestId,
+			runId: "run-implement-full",
+			nodeId: "qa",
+			executionId: "qa-feedback",
+			attempt: 2,
+		});
+		const qa = store.commitWorkflowTransitionTx({
+			runId: "run-implement-full",
+			nodeId: "qa",
+			attempt: 2,
+			executionId: "qa-feedback",
+			outcome: "qa_pass",
+			subjectDigest: correctedHead,
+			now: "2026-07-21T20:20:00.000Z",
+		});
+		expect(qa).toMatchObject({
+			ok: true,
+			targetNodeId: "founder_gate",
+			gateOpened: true,
+		});
+		expect(store.getWorkflowReworkVerificationPath(qaRequestId)).toMatchObject({
+			state: "completed",
+			current_node_id: "founder_gate",
+		});
+		expect(store.getWorkflowReworkDelivery(qaRequestId)).toMatchObject({
+			state: "completed",
+		});
+		expect(
+			store.getCurrentWorkflowGateHolder("run-implement-full", "founder_gate"),
+		).toMatchObject({
+			head_sha: correctedHead,
+			source_execution_id: "qa-feedback",
+		});
+		expect(
+			store.getWorkflowRunNode("run-implement-full", "design", 2),
+		).toBeUndefined();
+		store.close();
+	});
+
 	it("keeps gate authority independent from the source execution lifecycle", async () => {
 		const store = await StateStore.create(":memory:");
 		const created = store.ensureWorkflowGateHolder({
@@ -244,46 +685,7 @@ describe("StateStore land lifecycle ledger", () => {
 
 	it("retires a rejected holder and durably kicks the land workflow back to implement", async () => {
 		const store = await StateStore.create(":memory:");
-		store.createWorkflowRun({
-			runId: "run-feedback",
-			issueId: "FLY-1375",
-			projectName: "flywheel",
-			snapshotJson: landSnapshot(),
-			claimsReadEnrolled: true,
-		});
-		(
-			store as unknown as {
-				db: { run(sql: string, params?: unknown[]): void };
-			}
-		).db.run(
-			"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'qa' WHERE run_id = 'run-feedback'",
-		);
-		store.upsertWorkflowRunNode({
-			runId: "run-feedback",
-			nodeId: "qa",
-			attempt: 1,
-			state: "running",
-			executionId: "qa-feedback",
-		});
-		store.commitWorkflowTransitionTx({
-			runId: "run-feedback",
-			nodeId: "qa",
-			attempt: 1,
-			executionId: "qa-feedback",
-			outcome: "qa_pass",
-			subjectDigest: HEAD,
-			now: "2026-07-21T20:00:00.000Z",
-		});
-		const holder = store.getCurrentWorkflowGateHolder(
-			"run-feedback",
-			"founder_gate",
-		)!;
-		store.advanceWorkflowGateHolderMaterialization({
-			questionId: holder.question_id,
-			stage: "card_bound",
-			cardMessageId: "card-feedback",
-			now: "2026-07-21T20:01:00.000Z",
-		});
+		const holder = prepareAwaitingFounderGate(store, "run-feedback");
 		const sourcePayload = {
 			schema_version: 1,
 			run_id: "run-feedback",
@@ -320,8 +722,26 @@ describe("StateStore land lifecycle ledger", () => {
 			current_node_id: "implement",
 		});
 		expect(
-			store.getWorkflowRunNode("run-feedback", "implement", 1),
+			store.getWorkflowRunNode("run-feedback", "implement", 2),
 		).toMatchObject({ state: "pending" });
+		const requestEvent = store
+			.listWorkflowRunEvents("run-feedback")
+			.find((entry) => entry.kind === "rework_requested");
+		const requestId = (requestEvent?.payload as { requestId?: string })
+			.requestId;
+		expect(requestId).toBeTruthy();
+		expect(store.getWorkflowReworkRequest(requestId!)).toMatchObject({
+			authority: "founder",
+			founder_feedback_verbatim: "please fix the release note",
+		});
+		expect(store.getLatestWorkflowReworkRoute(requestId!)).toMatchObject({
+			target_node_id: "implement",
+			target_attempt: 2,
+			preferred_actor_execution_id: "implement-exec",
+			invalidation_scope: ["implement", "qa"],
+			verification_policy: ["code_review", "qa_retest", "founder_gate"],
+			interpreted_by: "legacy_default",
+		});
 		expect(
 			store
 				.listWorkflowRunEvents("run-feedback")

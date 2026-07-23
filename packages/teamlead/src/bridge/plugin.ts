@@ -630,6 +630,10 @@ import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
 import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
+import {
+	grantWorkflowReworkTurn,
+	WorkflowReworkCoordinator,
+} from "./workflow-rework-coordinator.js";
 import { drainWorkflowRouteReminders } from "./workflow-route-reminder-drain.js";
 import { createWorkflowShadowRuntimeFromEnv } from "./workflow-shadow-writer.js";
 import { createWorkflowShipReadyArm } from "./workflow-ship-ready-arm.js";
@@ -4726,6 +4730,9 @@ export async function startBridge(
 	const phaseOrchestratorHolder: {
 		current: PhaseOrchestrator | undefined;
 	} = { current: undefined };
+	const workflowReworkCoordinatorHolder: {
+		current: WorkflowReworkCoordinator | undefined;
+	} = { current: undefined };
 
 	// FLY-887 (founder-visibility status line, Finding B): the refresh function
 	// is only ready once phaseQaEffects is built (post-listen), but
@@ -5466,6 +5473,31 @@ export async function startBridge(
 		checkPrMerge: checkPrMergeViaGh,
 		log: (message) => console.warn(`[workflow-ship-ready] ${message}`),
 	});
+	const probeUnlaunchedExternalEvidence = async (
+		executionId: string,
+		projectName: string,
+	): Promise<"absent" | "present" | "unknown"> => {
+		let db: CommDB | undefined;
+		try {
+			const dbPath = defaultGetCommDbPath(projectName);
+			if (!ffExistsSync(dbPath)) return "absent";
+			db = CommDB.openReadonly(dbPath);
+			const session = db.getSession(executionId) as
+				| { tmux_window?: string }
+				| undefined;
+			const target = String(session?.tmux_window ?? "");
+			return session && target && !target.endsWith(":pending")
+				? "present"
+				: "absent";
+		} catch (error) {
+			console.warn(
+				`[workflow-engine] unlaunched evidence lookup failed for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return "unknown";
+		} finally {
+			db?.close();
+		}
+	};
 	const workflowEngineDispatcher = startDispatcher
 		? new WorkflowEngineDispatcher({
 				store,
@@ -5500,6 +5532,13 @@ export async function startBridge(
 				materializedHeadAuthority,
 				landExecutor,
 				shipReadyArm: workflowShipReadyArm,
+				reconcileWorkflowRework: (requestId) =>
+					workflowReworkCoordinatorHolder.current?.reconcile(requestId) ??
+					Promise.resolve({
+						kind: "retryable" as const,
+						reason: "rework_coordinator_unavailable",
+					}),
+				probeUnlaunchedExternalEvidence,
 			})
 		: undefined;
 	workflowEngineDispatcher?.start();
@@ -9263,6 +9302,150 @@ export async function startBridge(
 				logger: {
 					log: (m) => console.log(m),
 					warn: (m) => console.warn(m),
+				},
+			});
+			workflowReworkCoordinatorHolder.current = new WorkflowReworkCoordinator({
+				store,
+				ownerId: `bridge:${process.pid}`,
+				env: process.env,
+				effects: {
+					getActorSession: (executionId) =>
+						store.getSession(executionId) as PhaseSession | undefined,
+					probeRegistered: async (session) => {
+						const target = getTmuxTargetFromCommDb(
+							session.execution_id,
+							session.project_name ?? "",
+						);
+						if (!target) return "absent";
+						return probeRunnerProcessLiveness(target.tmuxWindow);
+					},
+					probePersisted: async (session) => {
+						if (!session.tmux_session) return "absent";
+						return probeRunnerProcessLiveness(session.tmux_session);
+					},
+					assertWorktreeReady: async (session, expectedHeadSha) => {
+						const worktree = store.getSession(
+							session.execution_id,
+						)?.worktree_path;
+						if (!worktree)
+							return { ok: false, reason: "worktree_path_missing" };
+						if (!ffExistsSync(worktree)) {
+							return { ok: false, reason: `worktree_missing:${worktree}` };
+						}
+						const clean = await gitWorktreeClean(worktree);
+						if (clean !== true) {
+							return {
+								ok: false,
+								reason:
+									clean === false ? "worktree_dirty" : "worktree_unverifiable",
+							};
+						}
+						try {
+							const { stdout } = await execFileP("git", [
+								"-C",
+								worktree,
+								"rev-parse",
+								"HEAD",
+							]);
+							const actual = stdout.trim().toLowerCase();
+							if (actual !== expectedHeadSha.trim().toLowerCase()) {
+								return {
+									ok: false,
+									reason: `head_mismatch:${actual}:${expectedHeadSha}`,
+								};
+							}
+						} catch (error) {
+							return {
+								ok: false,
+								reason: `head_probe_failed:${(error as Error).message}`,
+							};
+						}
+						return { ok: true };
+					},
+					grantTurn: async (input) => {
+						const grantedAtMs = Date.now();
+						const db = new CommDB(commDbPathForProject(input.projectName));
+						try {
+							return grantWorkflowReworkTurn(db, input, grantedAtMs);
+						} finally {
+							db.close();
+						}
+					},
+					wakeActor: async ({
+						session,
+						wakeId,
+						activationId,
+						epoch,
+						context,
+					}) => {
+						const adapter = store.getSession(
+							session.execution_id,
+						)?.adapter_type;
+						const transport =
+							adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
+								? EXECUTOR_TO_TRANSPORT[
+										adapter as keyof typeof EXECUTOR_TO_TRANSPORT
+									]
+								: "claude-code";
+						if (transport === "none") {
+							return { ok: false, error: `wake_transport_missing:${adapter}` };
+						}
+						const db = new CommDB(
+							commDbPathForProject(session.project_name ?? ""),
+						);
+						try {
+							db.clearDeclaredState(session.execution_id);
+							const res = await wakeRunnerMailbox({
+								db,
+								execId: session.execution_id,
+								fromAgent: "bridge",
+								content: `[phase-wake ${wakeId}] Workflow rework activation ${activationId} is ready at TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; proceed only if it answers yours. Rework context: ${JSON.stringify(context)}`,
+								metadata: {
+									kind: "workflow_rework",
+									wakeId,
+									activationId,
+									epoch,
+								},
+								backend: transport,
+							});
+							return res.ok
+								? { ok: true }
+								: {
+										ok: false,
+										error: res.error ?? res.skippedReason ?? "wake_failed",
+									};
+						} catch (error) {
+							return { ok: false, error: (error as Error).message };
+						} finally {
+							db.close();
+							issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
+						}
+					},
+					alertHold: async ({ session, requestId, reason }) => {
+						const projectName = session.project_name ?? "";
+						let leadId = config.defaultLeadAgentId;
+						try {
+							leadId = resolveLeadForIssue(
+								projects,
+								projectName,
+								parseJsonStringArray(
+									store.getSession(session.execution_id)?.issue_labels,
+								),
+							).lead.agentId;
+						} catch {
+							// Fall back to the configured Lead; durable request state remains authority.
+						}
+						await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+							leadId,
+							projectName,
+							eventId: `workflow-rework-held:${requestId}:${reason}`,
+							eventType: "three_stage_stuck",
+							title: `Workflow rework held — ${session.issue_identifier ?? session.issue_id}`,
+							body: `Request ${requestId} could not safely re-enter actor ${session.execution_id}: ${reason}`,
+							severity: "warning",
+							sessionKey: session.execution_id,
+						});
+					},
 				},
 			});
 			// FLY-793 (Codex full-PR R2 #1): re-drive any Design phase stranded at

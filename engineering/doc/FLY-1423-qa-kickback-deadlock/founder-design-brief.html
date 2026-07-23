@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1423 QA 踢回锁死 — 修复设计</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.6; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 20px 64px; }
+  h1 { font-size:26px; margin-bottom:6px; color:#1a365d; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:28px; }
+  .sub code { font-family:'SF Mono', monospace; font-size:12px; }
+  h2 { font-size:19px; margin:36px 0 14px; color:#1a365d; display:flex; align-items:center; gap:8px; }
+  h2 .dot { font-size:13px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin-bottom:14px; }
+  .card.red { border-left:4px solid #ff3b30; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.purple { border-left:4px solid #af52de; }
+  .card.gray { border-left:4px solid #86868b; }
+  .lede { font-size:16px; }
+  .flow { display:flex; flex-direction:column; gap:0; margin:10px 0; }
+  .frow { display:flex; align-items:stretch; gap:10px; flex-wrap:wrap; }
+  .fbox { background:#f5f5f7; border:1px solid #e5e5ea; border-radius:10px; padding:10px 14px; font-size:13.5px; flex:1; min-width:150px; }
+  .fbox b { display:block; font-size:13.5px; }
+  .fbox small { color:#86868b; font-size:12px; line-height:1.45; display:block; margin-top:2px; }
+  .fbox.bad { background:#fff1f0; border-color:#ffccc7; }
+  .fbox.good { background:#f0fff4; border-color:#b7eb8f; }
+  .fbox.warn { background:#fff8e6; border-color:#ffe58f; }
+  .farrow { text-align:center; color:#86868b; font-size:15px; padding:2px 0; width:100%; }
+  .harrow { align-self:center; color:#86868b; font-size:16px; flex:0 0 auto; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin-top:8px; }
+  th { text-align:left; color:#86868b; font-weight:600; padding:8px 10px; border-bottom:1px solid #e5e5ea; font-size:12.5px; }
+  td { padding:9px 10px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  tr:last-child td { border-bottom:none; }
+  .badge { display:inline-block; padding:2px 9px; border-radius:20px; font-size:11.5px; font-weight:600; }
+  .badge.rej { background:#fff1f0; color:#ff3b30; }
+  .badge.pick { background:#f0fff4; color:#34c759; }
+  .badge.info { background:#eef6ff; color:#007aff; }
+  ul.clean { list-style:none; }
+  ul.clean li { padding:5px 0 5px 24px; position:relative; font-size:14px; }
+  ul.clean li::before { content:"✓"; position:absolute; left:2px; color:#34c759; font-weight:700; }
+  ul.clean.limits li::before { content:"—"; color:#ff9500; }
+  .num { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; background:#1a365d; color:#fff; font-size:12px; font-weight:700; flex:0 0 22px; margin-right:8px; }
+  .step { display:flex; align-items:flex-start; gap:6px; margin:8px 0; font-size:14px; }
+  .footer { margin-top:36px; color:#86868b; font-size:12.5px; text-align:center; }
+  .mono { font-family:'SF Mono', monospace; font-size:12px; color:#1a365d; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>QA 打回后卡死的修复设计</h1>
+<div class="sub">FLY-1423 · [engine·bug4] · 设计阶段完成 · 2026-07-22 · Codex 设计审查 5 轮通过</div>
+
+<h2><span class="dot" style="color:#007aff;">●</span> 一句话</h2>
+<div class="card blue lede">
+  QA 打回返工时，引擎「雇不进新人、也收不了旧人交的活」，两头堵死（FLY-1415 / FLY-1364 就是这样卡住的）。这次修复让<b>旧人主动让位、新人真正上岗、旧人交活不再被硬拒</b>，并给引擎装上「卡住必报警」的底线——同一种卡法从此不可能再无声出现。
+</div>
+
+<h2><span class="dot" style="color:#ff3b30;">●</span> 出了什么事（当晚实录）</h2>
+<div class="card red">
+  <div class="step"><span class="num">1</span><span>QA 检查发现问题，把活<b>打回</b>返工。引擎按规则准备雇一个「二号修复工」。</span></div>
+  <div class="step"><span class="num">2</span><span>但一号工人（干完活的那位）按值守规则<b>还守在工位上</b>（等最终发布才下班）。工位一人一岗——二号永远挤不进来。引擎每秒试一次，试了 <b>14,034 次</b>，全部失败，<b>没有任何报警</b>。</span></div>
+  <div class="step"><span class="num">3</span><span>与此同时，一号工人实际把问题修好了，交活时却被系统以「你之前交过一次了」<b>硬拒四次</b>，修好的代码就此没人认领。</span></div>
+  <div class="step"><span class="num">4</span><span>结果：修复明明完成、检查明明该重跑,整条流水线却永远停在原地。</span></div>
+</div>
+
+<h2><span class="dot" style="color:#34c759;">●</span> 修复后的核心流程</h2>
+<div class="card green">
+  <div class="flow">
+    <div class="frow">
+      <div class="fbox"><b>QA 打回</b><small>发现问题,要求返工</small></div>
+      <div class="harrow">→</div>
+      <div class="fbox good"><b>① 旧人让位</b><small>一号工人的活已交、职责已尽,引擎先请他正式下班,把工位和资料交接干净（交接不彻底就不放行）</small></div>
+      <div class="harrow">→</div>
+      <div class="fbox good"><b>② 新人真上岗</b><small>二号修复工真正入职（系统里有他的工牌）,带着 QA 的问题清单开工</small></div>
+    </div>
+    <div class="farrow">↓</div>
+    <div class="frow">
+      <div class="fbox good"><b>③ 交活顺畅</b><small>二号交活走正常流程;重复提交自动识别,不再误拒</small></div>
+      <div class="harrow">→</div>
+      <div class="fbox good"><b>④ QA 自动重验</b><small>检查环节自动重新派人（QA 老工位同样先让位）</small></div>
+      <div class="harrow">→</div>
+      <div class="fbox"><b>发布</b><small>全链自动走完</small></div>
+    </div>
+  </div>
+  <div style="margin-top:10px; font-size:13.5px; color:#515154;">兜底线（任何一步不顺时）：</div>
+  <div class="flow" style="margin-top:6px;">
+    <div class="frow">
+      <div class="fbox warn"><b>10 分钟没进展</b><small>自动报警给负责的 Lead：卡在哪、为什么</small></div>
+      <div class="harrow">→</div>
+      <div class="fbox warn"><b>60 分钟仍没进展</b><small>确认「新人确实从未上过岗」后,安全撤销这次招聘,整单转人工接管——绝不静默空转</small></div>
+    </div>
+  </div>
+</div>
+
+<h2><span class="dot" style="color:#af52de;">●</span> 结构模型（改了哪几本账）</h2>
+<div class="card purple">
+  <table>
+    <tr><th style="width:24%;">账本</th><th>改动</th></tr>
+    <tr><td><b>工位调度</b></td><td>打回时新增「让位判定」：七项证据全齐（活已交、身份对得上、确实是被打回的那个岗…）才请旧人下班,缺一项就不动手、转报警。绝不误伤还在干活的人。</td></tr>
+    <tr><td><b>交活验收</b></td><td>验收规则补上缺的一格：同一人对同一岗的<b>内容更新重报</b>不再当「冲突」硬拒,改为收下证据、报 Lead 决策;真正的重复冲突照旧拒绝。滞留的交活凭条会自动清账,不再无限重试。</td></tr>
+    <tr><td><b>招聘存根</b></td><td>新增一张「撤销栅栏」小表：撤销招聘前先立栅栏,立住之后迟到的入职动作一律无效——撤销和入职二者只能成一个,不会打架。</td></tr>
+    <tr><td><b>报警台账</b></td><td>每种卡法都有唯一编号,报一次就不重复刷屏;换人后旧的计时作废、新人重新起算。</td></tr>
+  </table>
+</div>
+
+<h2><span class="dot" style="color:#ff9500;">●</span> 关键取舍（为什么这么修）</h2>
+<div class="card amber">
+  <table>
+    <tr><th style="width:30%;">方案</th><th style="width:14%;">裁定</th><th>理由</th></tr>
+    <tr>
+      <td><b>旧人让位 → 新人上岗</b><br><small>（evict-then-spawn）</small></td>
+      <td><span class="badge pick">采用</span></td>
+      <td>全部复用现有、久经考验的下班/入职机制,不发明新东西;账目干净（一岗一人一份档案）。新人虽要重新熟悉上下文,但 QA 问题清单和分支上的文档会自动带给他。</td>
+    </tr>
+    <tr>
+      <td>叫醒旧人改当二号</td>
+      <td><span class="badge rej">否决</span></td>
+      <td>上下文最暖,但要求一个在岗的人「中途换工牌」——权限、身份、监控全要跟着换,风险面全新且大。留作未来优化。</td>
+    </tr>
+    <tr>
+      <td>允许两人挤同一工位</td>
+      <td><span class="badge rej">否决</span></td>
+      <td>撞名、翻倍内存,且「一岗一人」是防止两人同时改同一份代码的第一道闸,不能拆。</td>
+    </tr>
+    <tr>
+      <td>旧人的重报直接自动入账</td>
+      <td><span class="badge rej">否决</span></td>
+      <td>会绕过现任岗位的权限体系,和「终态只能一个人写」的原则（bug5 单）冲突。改为证据完整地报给 Lead,由 Lead 决定收编还是丢弃。</td>
+    </tr>
+  </table>
+</div>
+
+<h2><span class="dot" style="color:#86868b;">●</span> 诚实边界</h2>
+<div class="card gray">
+  <div style="font-size:13.5px; color:#515154; margin-bottom:6px;">本设计做到：</div>
+  <ul class="clean">
+    <li>打回返工全链自动走通（含 QA 重验那一跳——它有同样的死锁,这次一并修）</li>
+    <li>同一种卡死从此必有报警、必有台账,Bridge 重启也不丢</li>
+    <li>撤销招聘有原子栅栏,和并行修复单（FLY-1415 换人机制、FLY-1427 终态保护）划清边界、留了合并测试</li>
+  </ul>
+  <div style="font-size:13.5px; color:#515154; margin:10px 0 6px;">本设计不做：</div>
+  <ul class="clean limits">
+    <li>已卡住的 FLY-1415 / FLY-1364 存量解锁——由 Lead 手动收尾,不等本单</li>
+    <li>旧人重报不自动入账（报 Lead 决策）;「整单重跑」按钮另立单</li>
+    <li>设计已定,但要等实现 + 独立 QA 真机验证后才真正生效</li>
+  </ul>
+</div>
+
+<div class="footer">FLY-1423 · 设计文档：engineering/doc/FLY-1423-qa-kickback-deadlock/（exploration / research / plan）· Codex 设计审查 5 轮 APPROVED</div>
+
+</div>
+</body>
+</html>

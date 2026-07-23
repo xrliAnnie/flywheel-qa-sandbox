@@ -1013,13 +1013,19 @@ async function handleRetry(
 			leaseExpiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
 			markerPath: launchMarkerPath,
 		});
-		if (launch.status === "hold" || launch.status === "busy") {
+		if (
+			launch.status === "hold" ||
+			launch.status === "busy" ||
+			launch.status === "cancelled"
+		) {
 			return {
 				success: false,
 				message:
 					launch.status === "hold"
 						? `Retry dispatch held: generalized launch ${launch.reason}`
-						: `Retry dispatch held: generalized owner generation ${launch.generation} is active`,
+						: launch.status === "cancelled"
+							? `Retry dispatch held: generalized launch generation ${launch.generation} was cancelled`
+							: `Retry dispatch held: generalized owner generation ${launch.generation} is active`,
 			};
 		}
 		let outputCredential = admitted.outputCredential;
@@ -1067,7 +1073,9 @@ async function handleRetry(
 						message:
 							repair.status === "busy"
 								? `Retry dispatch held: delivery repair attempt ${repair.attempt} is active`
-								: `Retry dispatch held: delivery repair ${repair.reason}`,
+								: repair.status === "cancelled"
+									? `Retry dispatch held: delivery repair generation ${repair.generation} was cancelled`
+									: `Retry dispatch held: delivery repair ${repair.reason}`,
 					};
 				}
 				launchGateToken = repair.token;

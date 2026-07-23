@@ -182,7 +182,7 @@ function resolveReQaCanonical(
 	) {
 		return { ok: false, reason: "not_durable_qa_execution" };
 	}
-	if (store.getWorkflowExecutionBinding(executionId)) {
+	if (store.getWorkflowActor(executionId)) {
 		return { ok: false, reason: "qa_already_enrolled" };
 	}
 	const node = store.getWorkflowRunNodeForExecution(executionId);
@@ -570,7 +570,12 @@ export function createWorkflowDecisionRouter(
 			);
 			if (
 				existing?.execution_id &&
-				deps.store.getWorkflowExecutionBinding(existing.execution_id)
+				deps.store.getWorkflowActivationForAttempt({
+					executionId: existing.execution_id,
+					runId: input.canonical.runId,
+					nodeId: "qa",
+					attempt: input.canonical.targetAttempt,
+				})
 			) {
 				res.json({
 					ok: true,
@@ -599,9 +604,12 @@ export function createWorkflowDecisionRouter(
 		}
 		try {
 			const spawned = await deps.reQa.respawn(input.canonical, prHeadSha);
-			const binding = deps.store.getWorkflowExecutionBinding(
-				spawned.executionId,
-			);
+			const binding = deps.store.getWorkflowActivationForAttempt({
+				executionId: spawned.executionId,
+				runId: input.canonical.runId,
+				nodeId: "qa",
+				attempt: input.canonical.targetAttempt,
+			});
 			if (
 				!binding ||
 				binding.run_id !== input.canonical.runId ||

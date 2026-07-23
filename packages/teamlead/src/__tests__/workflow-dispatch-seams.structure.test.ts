@@ -22,6 +22,7 @@ const EXPECTED_ADMISSION_SEAMS = [
 	"bridge/runs-route.ts",
 	"bridge/workflow-engine-dispatcher.ts",
 ];
+const EXPECTED_REENTRY_SEAMS = ["bridge/workflow-rework-coordinator.ts"];
 
 function productionSourceFiles(dir: string, acc: string[] = []): string[] {
 	for (const entry of readdirSync(dir)) {
@@ -49,12 +50,31 @@ describe("FLY-1385 W6 — generalized admission seam inventory", () => {
 		.map(relative)
 		.sort();
 
-	it("has exactly the three reviewed production admission seams", () => {
+	it("has exactly the reviewed spawn and same-actor re-entry admission seams", () => {
 		// If this fails, a new admission call site appeared. Do not just widen the
 		// list: the new seam must resolve dispatch before admitting (asserted below)
 		// or vendor-at-dispatch is no longer the single source of truth.
-		expect(callers).toEqual(EXPECTED_ADMISSION_SEAMS);
+		expect(callers).toEqual(
+			[...EXPECTED_ADMISSION_SEAMS, ...EXPECTED_REENTRY_SEAMS].sort(),
+		);
 	});
+
+	it.each(EXPECTED_REENTRY_SEAMS)(
+		"admits %s only as a wake of the route-pinned actor",
+		(seam) => {
+			const source = readFileSync(join(SRC_ROOT, seam), "utf8");
+			const admitAt = source.indexOf("admitGeneralizedWorkflowExecution({");
+			const admission = source.slice(admitAt, admitAt + 1_200);
+
+			expect(admitAt).toBeGreaterThan(-1);
+			expect(admission).toContain('activationMode: "wake"');
+			expect(admission).toContain("reworkRequestId: requestId");
+			expect(admission).toContain(
+				"executionId: route.preferred_actor_execution_id",
+			);
+			expect(source).not.toContain("resolveNodeDispatchAtLaunch(");
+		},
+	);
 
 	it.each(EXPECTED_ADMISSION_SEAMS)(
 		"resolves the dispatch triple before admitting in %s",

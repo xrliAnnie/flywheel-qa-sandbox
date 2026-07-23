@@ -41,6 +41,7 @@ function makeStore(initial: Record<string, SessionRow> = {}) {
 		sessions,
 		getSession: vi.fn((id: string) => sessions.get(id)),
 		getGeneralizedWorkflowNodeForExecution: vi.fn(() => undefined),
+		getGeneralizedWorkflowNodeForActivation: vi.fn(() => undefined),
 		getWorkflowNodeCompletion: vi.fn(() => undefined),
 		getEventPayloadById: vi.fn(() => undefined),
 		setMergeBlock: vi.fn(() => true),
@@ -574,6 +575,66 @@ describe("tryReconcileComplete", () => {
 		expect(existsSync(join(markerDir, "exec-receipt.json"))).toBe(false);
 	});
 
+	it("generalized replay resolves a reused actor marker by activation, never by ambiguous execution", async () => {
+		const workflowActivation = {
+			activationId: "activation-attempt-2",
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 2,
+			turnEpoch: 4,
+		};
+		const payload = {
+			decision: { route: "no_code" },
+			evidence: { commitMessages: ["same actor fixed QA feedback"] },
+			workflowActivation,
+		};
+		writeMarker(markerDir, "exec-reused", { payload });
+		const store = makeStore({ "exec-reused": { status: "completed" } });
+		Object.assign(store, {
+			getGeneralizedWorkflowNodeForExecution: vi.fn(() => {
+				throw new Error("ambiguous execution lookup must not run");
+			}),
+			getGeneralizedWorkflowNodeForActivation: vi.fn((activationId: string) =>
+				activationId === workflowActivation.activationId
+					? {
+							binding: {
+								activation_id: workflowActivation.activationId,
+								execution_id: "exec-reused",
+								run_id: workflowActivation.runId,
+								node_id: workflowActivation.nodeId,
+								attempt: workflowActivation.attempt,
+							},
+						}
+					: undefined,
+			),
+			getWorkflowNodeCompletion: vi.fn(() => ({
+				activation_id: workflowActivation.activationId,
+				execution_id: "exec-reused",
+				route: "no_code",
+				event_uid: "wfc:run-1:execute:2",
+				completion_submission_digest: canonicalSubmissionDigest(payload),
+			})),
+			getEventPayloadById: vi.fn(() => payload),
+		});
+		const fetchFn = vi.fn();
+
+		const result = await tryReconcileComplete(
+			"exec-reused",
+			baseDeps(store, fetchFn as never),
+		);
+
+		expect(result).toEqual({
+			kind: "duplicate_terminal",
+			status: "node_completed",
+		});
+		expect(store.getGeneralizedWorkflowNodeForActivation).toHaveBeenCalledWith(
+			workflowActivation.activationId,
+		);
+		expect(store.getGeneralizedWorkflowNodeForExecution).not.toHaveBeenCalled();
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(existsSync(join(markerDir, "exec-reused.json"))).toBe(false);
+	});
+
 	it("generalized receipt without its canonical audit replays before deleting the marker", async () => {
 		const payload = { decision: { route: "no_code" }, evidence: {} };
 		writeMarker(markerDir, "exec-audit-gap", { payload });
@@ -611,7 +672,7 @@ describe("tryReconcileComplete", () => {
 		expect(existsSync(join(markerDir, "exec-audit-gap.json"))).toBe(false);
 	});
 
-	it("generalized receipt with a conflicting marker digest is quarantined without replay", async () => {
+	it("generalized receipt owned by another execution is quarantined without replay", async () => {
 		writeMarker(markerDir, "exec-audit-conflict", {
 			payload: { decision: { route: "no_code" }, evidence: { changed: true } },
 		});
@@ -626,7 +687,7 @@ describe("tryReconcileComplete", () => {
 				},
 			})),
 			getWorkflowNodeCompletion: vi.fn(() => ({
-				execution_id: "exec-audit-conflict",
+				execution_id: "other-execution",
 				route: "no_code",
 				event_uid: "wfc:run-1:execute:1",
 				completion_submission_digest: canonicalSubmissionDigest({
@@ -646,6 +707,63 @@ describe("tryReconcileComplete", () => {
 		expect(result.kind).toBe("quarantined");
 		expect(existsSync(join(markerDir, "exec-audit-conflict.json"))).toBe(false);
 		expect(readdirSync(quarantineDir)).toContain("exec-audit-conflict.json");
+	});
+
+	it("generalized changed resubmission replays to the Bridge and deletes the marker when settled", async () => {
+		writeMarker(markerDir, "exec-stale-resubmission", {
+			payload: {
+				decision: { route: "no_code" },
+				evidence: { commitMessages: ["fix after QA feedback"] },
+			},
+		});
+		const store = makeStore({
+			"exec-stale-resubmission": { status: "completed" },
+		});
+		Object.assign(store, {
+			getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
+				binding: {
+					execution_id: "exec-stale-resubmission",
+					run_id: "run-1",
+					node_id: "execute",
+					attempt: 1,
+				},
+			})),
+			getWorkflowNodeCompletion: vi.fn(() => ({
+				execution_id: "exec-stale-resubmission",
+				route: "no_code",
+				event_uid: "wfc:run-1:execute:1",
+				completion_submission_digest: canonicalSubmissionDigest({
+					decision: { route: "no_code" },
+					evidence: { commitMessages: ["initial completion"] },
+				}),
+			})),
+		});
+		const fetchFn = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						ok: true,
+						generalized: true,
+						settled: "stale_resubmission_escalated",
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+		);
+
+		const result = await tryReconcileComplete(
+			"exec-stale-resubmission",
+			baseDeps(store, fetchFn as never),
+		);
+
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+		expect(result).toEqual({
+			kind: "reconciled",
+			status: "stale_resubmission_escalated",
+		});
+		expect(existsSync(join(markerDir, "exec-stale-resubmission.json"))).toBe(
+			false,
+		);
+		expect(existsSync(quarantineDir)).toBe(false);
 	});
 
 	it("rejected: 200+warning (FSM/route reject), session stays running → quarantine (Codex R1 #3)", async () => {

@@ -1821,14 +1821,20 @@ export function createRunsRouter(
 					).toISOString(),
 					markerPath: launchMarkerPath,
 				});
-				if (launch.status === "hold" || launch.status === "busy") {
+				if (
+					launch.status === "hold" ||
+					launch.status === "busy" ||
+					launch.status === "cancelled"
+				) {
 					res.status(409).json({
 						success: false,
 						code: "GENERALIZED_LAUNCH_HELD",
 						reason:
 							launch.status === "hold"
 								? launch.reason
-								: `owner generation ${launch.generation} is active`,
+								: launch.status === "cancelled"
+									? `launch generation ${launch.generation} was cancelled`
+									: `owner generation ${launch.generation} is active`,
 					});
 					return;
 				}
@@ -1876,7 +1882,9 @@ export function createRunsRouter(
 								reason:
 									repair.status === "busy"
 										? `delivery repair attempt ${repair.attempt} is active`
-										: repair.reason,
+										: repair.status === "cancelled"
+											? `delivery repair generation ${repair.generation} was cancelled`
+											: repair.reason,
 							});
 							return;
 						}

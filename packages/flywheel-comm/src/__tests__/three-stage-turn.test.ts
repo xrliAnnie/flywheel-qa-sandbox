@@ -34,7 +34,7 @@ describe("CommDB three_stage_turn (FLY-887)", () => {
 	});
 
 	it("grantTurn creates the row at epoch 1", () => {
-		db.grantTurn("ISSUE-1", "exec-design", "design", T0);
+		expect(db.grantTurn("ISSUE-1", "exec-design", "design", T0)).toBe(1);
 		const t = db.getTurn("ISSUE-1");
 		expect(t).not.toBeNull();
 		expect(t!.issue_id).toBe("ISSUE-1");
@@ -42,6 +42,94 @@ describe("CommDB three_stage_turn (FLY-887)", () => {
 		expect(t!.phase).toBe("design");
 		expect(t!.epoch).toBe(1);
 		expect(t!.granted_at).toBe(T0);
+	});
+
+	it("atomically hands an activation to the TURN holder and returns its epoch", () => {
+		db.registerSession("exec-impl", "win:1", "flywheel", "ISSUE-1", "lead");
+		const epoch = db.grantTurn("ISSUE-1", "exec-impl", "implement", T0, {
+			project: "flywheel",
+			sourceEventId: "rework:req-1:activation-2",
+			targetRunId: "run-1",
+			activation: {
+				activationId: "activation-2",
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 2,
+				outputCredential: "output-2",
+				submissionCredential: "submission-2",
+				context: { authority: "qa", summary: "fix the regression" },
+			},
+		});
+
+		expect(epoch).toBe(1);
+		expect(db.getTurn("ISSUE-1")).toMatchObject({
+			holder_exec_id: "exec-impl",
+			epoch: 1,
+			activation_id: "activation-2",
+			target_run_id: "run-1",
+			target_node_id: "implement",
+			target_attempt: 2,
+		});
+		expect(db.getRunnerWorkflowActivation("exec-impl", 1)).toMatchObject({
+			activation_id: "activation-2",
+			run_id: "run-1",
+			node_id: "implement",
+			attempt: 2,
+			output_credential: "output-2",
+			submission_credential: "submission-2",
+		});
+		expect(db.getCurrentRunnerWorkflowActivation("exec-impl")).toMatchObject({
+			activation_id: "activation-2",
+			epoch: 1,
+		});
+		expect(turnStatus(db, "exec-impl")).toMatchObject({
+			answer: "yours",
+			epoch: 1,
+			activationId: "activation-2",
+			runId: "run-1",
+			nodeId: "implement",
+			attempt: 2,
+		});
+	});
+
+	it("never exposes an activation after the holder or epoch has advanced", () => {
+		db.registerSession("exec-old", "win:1", "flywheel", "ISSUE-1", "lead");
+		db.registerSession("exec-new", "win:2", "flywheel", "ISSUE-1", "lead");
+		db.grantTurn("ISSUE-1", "exec-old", "implement", T0, {
+			project: "flywheel",
+			sourceEventId: "rework:req-1:activation-2",
+			activation: {
+				activationId: "activation-2",
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 2,
+				outputCredential: "old-output",
+				context: {},
+			},
+		});
+		db.grantTurn("ISSUE-1", "exec-new", "implement", T0 + 1, {
+			project: "flywheel",
+			sourceEventId: "rework:req-2:activation-3",
+			activation: {
+				activationId: "activation-3",
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 3,
+				outputCredential: "new-output",
+				context: {},
+			},
+		});
+
+		expect(db.getRunnerWorkflowActivation("exec-old", 1)).not.toBeNull();
+		expect(db.getCurrentRunnerWorkflowActivation("exec-old")).toBeNull();
+		expect(db.resolveRunnerWorkflowActivation("exec-old")).toMatchObject({
+			state: "stale",
+			reason: "turn_holder_mismatch",
+		});
+		expect(db.getCurrentRunnerWorkflowActivation("exec-new")).toMatchObject({
+			activation_id: "activation-3",
+			epoch: 2,
+		});
 	});
 
 	it("re-granting the same issue overwrites holder/phase and increments epoch", () => {
@@ -220,6 +308,20 @@ describe("turnStatus (FLY-887 runner self-check)", () => {
 				holderExecId: "exec-impl",
 			}),
 		).toBe("yours phase=implement epoch=3");
+		expect(
+			formatTurnStatus({
+				answer: "yours",
+				phase: "implement",
+				epoch: 4,
+				holderExecId: "exec-impl",
+				activationId: "activation-4",
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 2,
+			}),
+		).toBe(
+			"yours phase=implement epoch=4 activation=activation-4 run=run-1 node=implement attempt=2",
+		);
 		expect(
 			formatTurnStatus({
 				answer: "not-yours",

@@ -172,6 +172,20 @@ export interface WriteGateResponseArgs {
 		authorityId: string;
 	};
 	/**
+	 * Server-interpreted routing hint for a trusted founder correction. This is
+	 * never founder authority: the immutable feedback text remains the authority,
+	 * while StateStore validates and versions this impact plan separately.
+	 */
+	founderRework?: {
+		target: "design" | "implement";
+		invalidationScope: Array<"design" | "implement" | "qa">;
+		verificationPolicy: Array<
+			"design_review" | "code_review" | "qa_retest" | "founder_gate"
+		>;
+		interpretedBy: string;
+		interpretationReason: string;
+	};
+	/**
 	 * Present only for the token-authenticated Lead HTTP route. Internal founder
 	 * writers omit this and retain their existing trusted-server path.
 	 */
@@ -252,6 +266,28 @@ function isApproval(answer: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+function founderFeedbackVerbatim(answer: string): string {
+	try {
+		const parsed = JSON.parse(answer) as { feedback?: unknown };
+		return typeof parsed.feedback === "string" ? parsed.feedback : answer;
+	} catch {
+		return answer;
+	}
+}
+
+function founderReworkPayload(args: WriteGateResponseArgs, approved: boolean) {
+	if (approved || !args.founderRework) return {};
+	return {
+		rework: {
+			target: args.founderRework.target,
+			invalidation_scope: args.founderRework.invalidationScope,
+			verification_policy: args.founderRework.verificationPolicy,
+			interpreted_by: args.founderRework.interpretedBy,
+			interpretation_reason: args.founderRework.interpretationReason,
+		},
+	};
 }
 
 async function runHook(args: WriteGateResponseArgs): Promise<boolean> {
@@ -520,7 +556,11 @@ export async function writeGateResponseAndRunPostWrite(
 								question_id: args.questionId,
 								response: approved
 									? { approved: true }
-									: { approved: false, feedback: args.answer },
+									: {
+											approved: false,
+											feedback: founderFeedbackVerbatim(args.answer),
+										},
+								...founderReworkPayload(args, approved),
 								actor: args.actor,
 								approved_head: source.approvedHead,
 								classification: source.classification,
@@ -547,7 +587,11 @@ export async function writeGateResponseAndRunPostWrite(
 				question_id: args.questionId,
 				response: approved
 					? { approved: true }
-					: { approved: false, feedback: args.answer },
+					: {
+							approved: false,
+							feedback: founderFeedbackVerbatim(args.answer),
+						},
+				...founderReworkPayload(args, approved),
 				actor: args.actor,
 				approved_head: source.approvedHead,
 				classification: source.classification,

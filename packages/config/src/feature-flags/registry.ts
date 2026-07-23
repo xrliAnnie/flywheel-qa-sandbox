@@ -1689,6 +1689,52 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"workflow-engine-dispatcher.test:live-sweep-flag same-instance OFF-to-ON",
 	},
+	{
+		name: "workflow_rework_reentry",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_REWORK_REENTRY",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1423: re-enter the original workflow actor for QA/founder rework; =0 holds and alerts without evicting or spawning",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/workflow-rework-coordinator.ts",
+				"reconcile",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"workflow-engine-dispatcher.test:rework coordinator reads the re-entry switch on every reconcile",
+	},
+	{
+		name: "engine_unlaunched_tripwire",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1423: alert, fence, and recover blocked or admitted-but-unlaunched workflow retries",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
+				"unlaunchedTripwireEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"workflow-engine-dispatcher.test:reads the unlaunched tripwire switch on every reconcile",
+	},
 
 	// ─── env features/kill-switches captured at boot/construction → RESTART ───
 	{

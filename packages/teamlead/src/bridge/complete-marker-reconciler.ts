@@ -50,7 +50,11 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import type { Session, StateStore } from "../StateStore.js";
+import type {
+	Session,
+	StateStore,
+	WorkflowCompletionActivationContext,
+} from "../StateStore.js";
 import { validateDesignHtmlCompletion } from "./design-html-admission.js";
 import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import {
@@ -58,6 +62,7 @@ import {
 	mergedPrCiProbe,
 	parkMergeBlock,
 } from "./merge-ship-gate.js";
+import { isClosedSettledCompletion } from "./workflow-completion-settled.js";
 
 /** Default marker directory — mirrors `flywheel-comm/complete.ts` writeMarker(). */
 export function defaultMarkerDir(): string {
@@ -190,9 +195,40 @@ type MarkerBody = {
 		decision?: { route?: string };
 		evidence?: { landingStatus?: { status?: string }; headSha?: string };
 		sessionRole?: string;
+		workflowActivation?: WorkflowCompletionActivationContext;
 		[k: string]: unknown;
 	};
 };
+
+function markerWorkflowActivation(
+	value: unknown,
+): WorkflowCompletionActivationContext | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const row = value as Record<string, unknown>;
+	if (
+		typeof row.activationId !== "string" ||
+		!row.activationId ||
+		typeof row.runId !== "string" ||
+		!row.runId ||
+		typeof row.nodeId !== "string" ||
+		!row.nodeId ||
+		!Number.isInteger(row.attempt) ||
+		Number(row.attempt) < 1 ||
+		!Number.isInteger(row.turnEpoch) ||
+		Number(row.turnEpoch) < 1
+	) {
+		return undefined;
+	}
+	return {
+		activationId: row.activationId,
+		runId: row.runId,
+		nodeId: row.nodeId,
+		attempt: Number(row.attempt),
+		turnEpoch: Number(row.turnEpoch),
+	};
+}
 
 /**
  * Compute the terminal status the marker's payload PROVES, using the EXACT same
@@ -400,8 +436,20 @@ export async function tryReconcileComplete(
 			"[complete-reconciler] design-HTML gate DISABLED via FLYWHEEL_DESIGN_HTML_GATE=0 — skipping founder design HTML validation",
 		);
 	}
-	const generalizedBinding =
-		deps.store.getGeneralizedWorkflowNodeForExecution(execId)?.binding;
+	const rawWorkflowActivation = body.payload?.workflowActivation;
+	const workflowActivation = markerWorkflowActivation(rawWorkflowActivation);
+	if (rawWorkflowActivation !== undefined && !workflowActivation) {
+		const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
+		log(
+			`[complete-reconciler] malformed workflow activation quarantined ${execId}: ${qp}`,
+		);
+		return { kind: "quarantined", reason: "invalid", quarantinePath: qp };
+	}
+	const generalizedBinding = workflowActivation
+		? deps.store.getGeneralizedWorkflowNodeForActivation(
+				workflowActivation.activationId,
+			)?.binding
+		: deps.store.getGeneralizedWorkflowNodeForExecution(execId)?.binding;
 	const generalizedReceipt = generalizedBinding
 		? deps.store.getWorkflowNodeCompletion(
 				generalizedBinding.run_id,
@@ -415,9 +463,7 @@ export async function tryReconcileComplete(
 	if (generalizedReceipt) {
 		if (
 			generalizedReceipt.execution_id !== execId ||
-			generalizedReceipt.route !== body.payload?.decision?.route ||
-			generalizedReceipt.completion_submission_digest !==
-				generalizedSubmissionDigest
+			generalizedReceipt.route !== body.payload?.decision?.route
 		) {
 			const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
 			log(
@@ -429,26 +475,31 @@ export async function tryReconcileComplete(
 				quarantinePath: qp,
 			};
 		}
-		const canonicalAuditId = `wfca:${generalizedReceipt.event_uid.slice("wfc:".length)}`;
-		const canonicalAuditPayload =
-			deps.store.getEventPayloadById(canonicalAuditId);
-		if (canonicalAuditPayload) {
-			if (
-				canonicalSubmissionDigest(canonicalAuditPayload) !==
-				generalizedReceipt.completion_submission_digest
-			) {
-				const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
-				log(
-					`[complete-reconciler] generalized canonical audit conflict quarantined ${execId}: ${qp}`,
-				);
-				return {
-					kind: "quarantined",
-					reason: "rejected",
-					quarantinePath: qp,
-				};
+		if (
+			generalizedReceipt.completion_submission_digest ===
+			generalizedSubmissionDigest
+		) {
+			const canonicalAuditId = `wfca:${generalizedReceipt.event_uid.slice("wfc:".length)}`;
+			const canonicalAuditPayload =
+				deps.store.getEventPayloadById(canonicalAuditId);
+			if (canonicalAuditPayload) {
+				if (
+					canonicalSubmissionDigest(canonicalAuditPayload) !==
+					generalizedReceipt.completion_submission_digest
+				) {
+					const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
+					log(
+						`[complete-reconciler] generalized canonical audit conflict quarantined ${execId}: ${qp}`,
+					);
+					return {
+						kind: "quarantined",
+						reason: "rejected",
+						quarantinePath: qp,
+					};
+				}
+				safeUnlink(markerPath, log);
+				return { kind: "duplicate_terminal", status: "node_completed" };
 			}
-			safeUnlink(markerPath, log);
-			return { kind: "duplicate_terminal", status: "node_completed" };
 		}
 	}
 
@@ -626,9 +677,9 @@ export async function tryReconcileComplete(
 	}
 
 	if (generalizedBinding) {
-		if (json?.settled === "stale_execution_superseded") {
+		if (isClosedSettledCompletion(json?.settled)) {
 			safeUnlink(markerPath, log);
-			return { kind: "reconciled", status: "stale_execution_superseded" };
+			return { kind: "reconciled", status: json.settled };
 		}
 		if (json?.settled === "terminal_status_immune") {
 			const verifiedStatus = deps.store.getSession(execId)?.status;

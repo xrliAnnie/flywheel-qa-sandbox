@@ -1331,6 +1331,408 @@ export class StateStore {
 		// no-op: writes are already durable under WAL.
 	}
 
+	private workflowTableColumns(table: string): Set<string> {
+		return new Set(
+			(
+				this.db.raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+					name: string;
+				}>
+			).map((column) => column.name),
+		);
+	}
+
+	private createWorkflowActorAndActivationTables(): void {
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_actor (
+				execution_id TEXT PRIMARY KEY,
+				project_name TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				role TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_execution_binding (
+				activation_id TEXT PRIMARY KEY,
+				execution_id TEXT NOT NULL,
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL CHECK (attempt > 0),
+				mode TEXT NOT NULL CHECK (mode IN ('spawn','wake','replacement')),
+				rework_request_id TEXT,
+				bound_at TEXT NOT NULL,
+				UNIQUE (execution_id, run_id, node_id, attempt),
+				FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
+			)
+		`);
+	}
+
+	private rebuildWorkflowActivationChildren(): void {
+		if (
+			this.db.raw
+				.prepare(
+					"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workflow_submission_credential'",
+				)
+				.get()
+		) {
+			this.db.raw.exec(`
+				DROP INDEX IF EXISTS ux_workflow_submission_live;
+				CREATE TABLE workflow_submission_credential_next (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					activation_id TEXT NOT NULL,
+					credential_hash TEXT NOT NULL UNIQUE,
+					run_id TEXT NOT NULL,
+					node_id TEXT NOT NULL,
+					execution_id TEXT NOT NULL,
+					attempt INTEGER NOT NULL CHECK (attempt > 0),
+					family TEXT NOT NULL CHECK (family IN ('qa_verdict','review_verdict')),
+					decision_capability_id INTEGER,
+					issued_at TEXT NOT NULL,
+					expires_at TEXT NOT NULL,
+					absolute_deadline_at TEXT NOT NULL,
+					consumed_at TEXT,
+					consumed_client_request_id TEXT,
+					consumed_submission_digest TEXT,
+					claim_id INTEGER,
+					revoked INTEGER NOT NULL DEFAULT 0,
+					revoked_reason TEXT,
+					FOREIGN KEY (activation_id) REFERENCES workflow_execution_binding(activation_id),
+					FOREIGN KEY (decision_capability_id) REFERENCES workflow_decision_capability(id),
+					FOREIGN KEY (claim_id) REFERENCES workflow_claims(id)
+				);
+				INSERT INTO workflow_submission_credential_next
+					(id, activation_id, credential_hash, run_id, node_id, execution_id,
+					 attempt, family, decision_capability_id, issued_at, expires_at,
+					 absolute_deadline_at, consumed_at, consumed_client_request_id,
+					 consumed_submission_digest, claim_id, revoked, revoked_reason)
+				SELECT c.id, b.activation_id, c.credential_hash, c.run_id, c.node_id,
+				       c.execution_id, c.attempt, c.family, c.decision_capability_id,
+				       c.issued_at, c.expires_at, c.absolute_deadline_at, c.consumed_at,
+				       c.consumed_client_request_id, c.consumed_submission_digest,
+				       c.claim_id, c.revoked, c.revoked_reason
+				  FROM workflow_submission_credential c
+				  JOIN workflow_execution_binding b
+				    ON b.execution_id = c.execution_id AND b.run_id = c.run_id
+				   AND b.node_id = c.node_id AND b.attempt = c.attempt;
+				DROP TABLE workflow_submission_credential;
+				ALTER TABLE workflow_submission_credential_next
+					RENAME TO workflow_submission_credential;
+			`);
+		}
+
+		if (
+			this.db.raw
+				.prepare(
+					"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workflow_node_outputs'",
+				)
+				.get()
+		) {
+			this.db.raw.exec(`
+				DROP TRIGGER IF EXISTS workflow_node_outputs_no_update;
+				DROP TRIGGER IF EXISTS workflow_node_outputs_no_delete;
+				CREATE TABLE workflow_node_outputs_next (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					activation_id TEXT NOT NULL,
+					run_id TEXT NOT NULL,
+					node_id TEXT NOT NULL,
+					attempt INTEGER NOT NULL CHECK (attempt > 0),
+					execution_id TEXT NOT NULL,
+					payload TEXT NOT NULL,
+					output_digest TEXT NOT NULL,
+					output_schema TEXT NOT NULL,
+					byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
+					client_request_id TEXT NOT NULL,
+					submission_digest TEXT NOT NULL,
+					written_at TEXT NOT NULL,
+					UNIQUE (run_id, node_id, attempt),
+					FOREIGN KEY (activation_id) REFERENCES workflow_execution_binding(activation_id)
+				);
+				INSERT INTO workflow_node_outputs_next
+					(id, activation_id, run_id, node_id, attempt, execution_id, payload,
+					 output_digest, output_schema, byte_size, client_request_id,
+					 submission_digest, written_at)
+				SELECT o.id, b.activation_id, o.run_id, o.node_id, o.attempt,
+				       o.execution_id, o.payload, o.output_digest, o.output_schema,
+				       o.byte_size, o.client_request_id, o.submission_digest, o.written_at
+				  FROM workflow_node_outputs o
+				  JOIN workflow_execution_binding b
+				    ON b.execution_id = o.execution_id AND b.run_id = o.run_id
+				   AND b.node_id = o.node_id AND b.attempt = o.attempt;
+				DROP TABLE workflow_node_outputs;
+				ALTER TABLE workflow_node_outputs_next RENAME TO workflow_node_outputs;
+			`);
+		}
+
+		if (
+			this.db.raw
+				.prepare(
+					"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workflow_output_credential'",
+				)
+				.get()
+		) {
+			this.db.raw.exec(`
+				DROP INDEX IF EXISTS ux_workflow_output_credential_live;
+				CREATE TABLE workflow_output_credential_next (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					activation_id TEXT NOT NULL,
+					credential_hash TEXT NOT NULL UNIQUE,
+					run_id TEXT NOT NULL,
+					node_id TEXT NOT NULL,
+					execution_id TEXT NOT NULL,
+					attempt INTEGER NOT NULL CHECK (attempt > 0),
+					issued_at TEXT NOT NULL,
+					expires_at TEXT NOT NULL,
+					absolute_deadline_at TEXT NOT NULL,
+					consumed_at TEXT,
+					consumed_client_request_id TEXT,
+					consumed_submission_digest TEXT,
+					output_id INTEGER,
+					revoked INTEGER NOT NULL DEFAULT 0,
+					revoked_reason TEXT,
+					FOREIGN KEY (activation_id) REFERENCES workflow_execution_binding(activation_id),
+					FOREIGN KEY (output_id) REFERENCES workflow_node_outputs(id)
+				);
+				INSERT INTO workflow_output_credential_next
+					(id, activation_id, credential_hash, run_id, node_id, execution_id,
+					 attempt, issued_at, expires_at, absolute_deadline_at, consumed_at,
+					 consumed_client_request_id, consumed_submission_digest, output_id,
+					 revoked, revoked_reason)
+				SELECT c.id, b.activation_id, c.credential_hash, c.run_id, c.node_id,
+				       c.execution_id, c.attempt, c.issued_at, c.expires_at,
+				       c.absolute_deadline_at, c.consumed_at,
+				       c.consumed_client_request_id, c.consumed_submission_digest,
+				       c.output_id, c.revoked, c.revoked_reason
+				  FROM workflow_output_credential c
+				  JOIN workflow_execution_binding b
+				    ON b.execution_id = c.execution_id AND b.run_id = c.run_id
+				   AND b.node_id = c.node_id AND b.attempt = c.attempt;
+				DROP TABLE workflow_output_credential;
+				ALTER TABLE workflow_output_credential_next
+					RENAME TO workflow_output_credential;
+			`);
+		}
+
+		if (
+			this.db.raw
+				.prepare(
+					"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workflow_node_completion'",
+				)
+				.get()
+		) {
+			this.db.raw.exec(`
+				DROP TRIGGER IF EXISTS workflow_node_completion_no_update;
+				DROP TRIGGER IF EXISTS workflow_node_completion_no_delete;
+				CREATE TABLE workflow_node_completion_next (
+					activation_id TEXT,
+					run_id TEXT NOT NULL,
+					node_id TEXT NOT NULL,
+					attempt INTEGER NOT NULL CHECK (attempt > 0),
+					execution_id TEXT NOT NULL,
+					route TEXT NOT NULL,
+					event_uid TEXT NOT NULL UNIQUE,
+					source_event_id TEXT NOT NULL,
+					completion_submission_digest TEXT NOT NULL,
+					completed_at TEXT NOT NULL,
+					PRIMARY KEY (run_id, node_id, attempt),
+					FOREIGN KEY (activation_id) REFERENCES workflow_execution_binding(activation_id)
+				);
+				INSERT INTO workflow_node_completion_next
+					(activation_id, run_id, node_id, attempt, execution_id, route,
+					 event_uid, source_event_id, completion_submission_digest, completed_at)
+				SELECT b.activation_id, c.run_id, c.node_id, c.attempt, c.execution_id,
+				       c.route, c.event_uid, c.source_event_id,
+				       c.completion_submission_digest, c.completed_at
+				  FROM workflow_node_completion c
+				  LEFT JOIN workflow_execution_binding b
+				    ON b.execution_id = c.execution_id AND b.run_id = c.run_id
+				   AND b.node_id = c.node_id AND b.attempt = c.attempt;
+				DROP TABLE workflow_node_completion;
+				ALTER TABLE workflow_node_completion_next
+					RENAME TO workflow_node_completion;
+			`);
+		}
+	}
+
+	/**
+	 * FLY-1423: execution_id is the durable conversational actor, while every
+	 * logical node attempt gets an immutable activation. The legacy table used
+	 * execution_id as its primary key, so a same-actor retry was structurally
+	 * impossible. Rebuild it atomically and retain a pre-migration SQLite image
+	 * for operator recovery before touching a file-backed production database.
+	 */
+	private migrateWorkflowActorActivations(): void {
+		const bindingExists = Boolean(
+			this.db.raw
+				.prepare(
+					"SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'workflow_execution_binding'",
+				)
+				.get(),
+		);
+		if (!bindingExists) {
+			this.createWorkflowActorAndActivationTables();
+			return;
+		}
+		const bindingColumns = this.workflowTableColumns(
+			"workflow_execution_binding",
+		);
+		if (bindingColumns.has("activation_id")) {
+			this.createWorkflowActorAndActivationTables();
+			return;
+		}
+
+		if (this.dbPath !== ":memory:") {
+			const backupPath = `${this.dbPath}.pre-fly1423.bak`;
+			if (!existsSync(backupPath)) {
+				this.db.raw.pragma("wal_checkpoint(FULL)");
+				const escaped = backupPath.replaceAll("'", "''");
+				this.db.raw.exec(`VACUUM INTO '${escaped}'`);
+			}
+		}
+
+		const foreignKeys = Number(
+			this.db.raw.pragma("foreign_keys", { simple: true }),
+		);
+		this.db.raw.pragma("foreign_keys = OFF");
+		try {
+			this.db.raw.transaction(() => {
+				this.db.raw.exec(`
+					CREATE TABLE IF NOT EXISTS workflow_actor (
+						execution_id TEXT PRIMARY KEY,
+						project_name TEXT NOT NULL,
+						issue_id TEXT NOT NULL,
+						role TEXT NOT NULL,
+						created_at TEXT NOT NULL
+					);
+					INSERT OR IGNORE INTO workflow_actor
+						(execution_id, project_name, issue_id, role, created_at)
+					SELECT b.execution_id, r.project_name, r.issue_id, b.node_id, b.bound_at
+					  FROM workflow_execution_binding b
+					  JOIN workflow_run r ON r.run_id = b.run_id;
+
+					DROP TRIGGER IF EXISTS workflow_execution_binding_no_update;
+					DROP TRIGGER IF EXISTS workflow_execution_binding_no_delete;
+					CREATE TABLE workflow_execution_binding_next (
+						activation_id TEXT PRIMARY KEY,
+						execution_id TEXT NOT NULL,
+						run_id TEXT NOT NULL,
+						node_id TEXT NOT NULL,
+						attempt INTEGER NOT NULL CHECK (attempt > 0),
+						mode TEXT NOT NULL CHECK (mode IN ('spawn','wake','replacement')),
+						rework_request_id TEXT,
+						bound_at TEXT NOT NULL,
+						UNIQUE (execution_id, run_id, node_id, attempt),
+						FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
+					);
+					INSERT INTO workflow_execution_binding_next
+						(activation_id, execution_id, run_id, node_id, attempt, mode,
+						 rework_request_id, bound_at)
+					SELECT 'legacy:' || execution_id || ':' || run_id || ':' || node_id || ':' || attempt,
+					       execution_id, run_id, node_id, attempt, 'spawn', NULL, bound_at
+					  FROM workflow_execution_binding;
+					DROP TABLE workflow_execution_binding;
+					ALTER TABLE workflow_execution_binding_next
+						RENAME TO workflow_execution_binding;
+				`);
+				this.rebuildWorkflowActivationChildren();
+
+				if (
+					this.db.raw
+						.prepare(
+							"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workflow_execution_runtime'",
+						)
+						.get()
+				) {
+					this.db.raw.exec(`
+						DROP TRIGGER IF EXISTS workflow_execution_runtime_no_update;
+						DROP TRIGGER IF EXISTS workflow_execution_runtime_no_delete;
+						CREATE TABLE workflow_execution_runtime_next (
+							execution_id TEXT PRIMARY KEY,
+							run_id TEXT NOT NULL,
+							node_id TEXT NOT NULL,
+							attempt INTEGER NOT NULL CHECK (attempt > 0),
+							vendor TEXT NOT NULL,
+							model TEXT NOT NULL,
+							effort TEXT NOT NULL,
+							resolved_family TEXT NOT NULL,
+							capabilities_digest TEXT NOT NULL,
+							created_at TEXT NOT NULL,
+							FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
+						);
+						INSERT INTO workflow_execution_runtime_next
+						SELECT * FROM workflow_execution_runtime;
+						DROP TABLE workflow_execution_runtime;
+						ALTER TABLE workflow_execution_runtime_next
+							RENAME TO workflow_execution_runtime;
+					`);
+				}
+
+				if (
+					this.db.raw
+						.prepare(
+							"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workflow_launch_owner'",
+						)
+						.get()
+				) {
+					this.db.raw.exec(`
+						CREATE TABLE workflow_launch_owner_next (
+							execution_id TEXT PRIMARY KEY,
+							owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+							owner_id TEXT NOT NULL,
+							acquired_at TEXT NOT NULL,
+							lease_expires_at TEXT NOT NULL,
+							committed_generation INTEGER,
+							delivery_attempt INTEGER NOT NULL DEFAULT 0 CHECK (delivery_attempt >= 0),
+							delivery_owner TEXT,
+							delivery_lease_expires_at TEXT,
+							delivery_state TEXT NOT NULL DEFAULT 'pending'
+							  CHECK (delivery_state IN ('pending','repairing','delivered')),
+							CHECK (committed_generation IS NULL OR committed_generation = owner_generation),
+							FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
+						);
+						INSERT INTO workflow_launch_owner_next
+						SELECT * FROM workflow_launch_owner;
+						DROP TABLE workflow_launch_owner;
+						ALTER TABLE workflow_launch_owner_next RENAME TO workflow_launch_owner;
+					`);
+				}
+
+				if (
+					this.db.raw
+						.prepare(
+							"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workflow_launch_cancellation'",
+						)
+						.get()
+				) {
+					this.db.raw.exec(`
+						DROP TRIGGER IF EXISTS workflow_launch_cancellation_no_update;
+						DROP TRIGGER IF EXISTS workflow_launch_cancellation_no_delete;
+						CREATE TABLE workflow_launch_cancellation_next (
+							execution_id TEXT PRIMARY KEY,
+							generation INTEGER NOT NULL CHECK (generation > 0),
+							reason TEXT NOT NULL,
+							created_at TEXT NOT NULL,
+							FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
+						);
+						INSERT INTO workflow_launch_cancellation_next
+						SELECT * FROM workflow_launch_cancellation;
+						DROP TABLE workflow_launch_cancellation;
+						ALTER TABLE workflow_launch_cancellation_next
+							RENAME TO workflow_launch_cancellation;
+					`);
+				}
+
+				const violations = this.db.raw.pragma("foreign_key_check") as unknown[];
+				if (violations.length > 0) {
+					throw new Error(
+						`workflow activation migration foreign key violations: ${JSON.stringify(violations)}`,
+					);
+				}
+			})();
+		} finally {
+			if (foreignKeys === 1) this.db.raw.pragma("foreign_keys = ON");
+		}
+	}
+
 	migrate(): void {
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS session_events (
@@ -12836,15 +13238,16 @@ export class StateStore {
 				actor TEXT NOT NULL
 			)
 		`);
+		this.migrateWorkflowActorActivations();
 		this.db.run(`
-			CREATE TABLE IF NOT EXISTS workflow_execution_binding (
-				execution_id TEXT PRIMARY KEY,
-				run_id TEXT NOT NULL,
-				node_id TEXT NOT NULL,
-				attempt INTEGER NOT NULL CHECK (attempt > 0),
-				bound_at TEXT NOT NULL,
-				UNIQUE (execution_id, run_id, node_id, attempt)
-			)
+			CREATE TRIGGER IF NOT EXISTS workflow_actor_no_update
+			BEFORE UPDATE ON workflow_actor
+			BEGIN SELECT RAISE(ABORT, 'workflow_actor is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_actor_no_delete
+			BEFORE DELETE ON workflow_actor
+			BEGIN SELECT RAISE(ABORT, 'workflow_actor is immutable'); END
 		`);
 		this.db.run(`
 			CREATE TRIGGER IF NOT EXISTS workflow_execution_binding_no_update
@@ -12857,8 +13260,109 @@ export class StateStore {
 			BEGIN SELECT RAISE(ABORT, 'workflow_execution_binding is immutable'); END
 		`);
 		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_activation_turn (
+				activation_id TEXT PRIMARY KEY,
+				issue_id TEXT NOT NULL,
+				execution_id TEXT NOT NULL,
+				epoch INTEGER NOT NULL CHECK (epoch > 0),
+				source_event_id TEXT NOT NULL UNIQUE,
+				granted_at TEXT NOT NULL,
+				FOREIGN KEY (activation_id)
+					REFERENCES workflow_execution_binding(activation_id),
+				FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_activation_turn_no_update
+			BEFORE UPDATE ON workflow_activation_turn
+			BEGIN SELECT RAISE(ABORT, 'workflow_activation_turn is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_activation_turn_no_delete
+			BEFORE DELETE ON workflow_activation_turn
+			BEGIN SELECT RAISE(ABORT, 'workflow_activation_turn is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_rework_request (
+				request_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				source_event_id TEXT NOT NULL UNIQUE,
+				authority TEXT NOT NULL CHECK (authority IN ('qa','founder')),
+				source_node_id TEXT NOT NULL,
+				source_attempt INTEGER NOT NULL CHECK (source_attempt > 0),
+				base_revision TEXT NOT NULL,
+				authority_context_json TEXT NOT NULL,
+				authority_context_digest TEXT NOT NULL,
+				founder_feedback_verbatim TEXT,
+				requested_at TEXT NOT NULL,
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_rework_route_revision (
+				request_id TEXT NOT NULL,
+				revision INTEGER NOT NULL CHECK (revision > 0),
+				target_node_id TEXT NOT NULL,
+				target_attempt INTEGER NOT NULL CHECK (target_attempt > 0),
+				preferred_actor_execution_id TEXT NOT NULL,
+				invalidation_scope_json TEXT NOT NULL,
+				verification_policy_json TEXT NOT NULL,
+				interpreted_by TEXT NOT NULL,
+				interpretation_reason TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (request_id, revision),
+				FOREIGN KEY (request_id) REFERENCES workflow_rework_request(request_id),
+				FOREIGN KEY (preferred_actor_execution_id) REFERENCES workflow_actor(execution_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_rework_delivery (
+				request_id TEXT PRIMARY KEY,
+				owner_id TEXT,
+				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+				lease_expires_at TEXT,
+				route_revision INTEGER NOT NULL CHECK (route_revision > 0),
+				state TEXT NOT NULL CHECK (state IN
+				 ('pending','turn_granted','wake_delivered','replacement_pending','completed','held')),
+				last_error TEXT,
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (request_id, route_revision)
+					REFERENCES workflow_rework_route_revision(request_id, revision)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_rework_verification_path (
+				request_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				route_revision INTEGER NOT NULL CHECK (route_revision > 0),
+				state TEXT NOT NULL CHECK (state IN ('pending','active','completed')),
+				current_node_id TEXT NOT NULL,
+				current_attempt INTEGER NOT NULL CHECK (current_attempt > 0),
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (request_id, route_revision)
+					REFERENCES workflow_rework_route_revision(request_id, revision),
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			)
+		`);
+		for (const table of [
+			"workflow_rework_request",
+			"workflow_rework_route_revision",
+		]) {
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS ${table}_no_update
+				BEFORE UPDATE ON ${table}
+				BEGIN SELECT RAISE(ABORT, '${table} is immutable'); END
+			`);
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS ${table}_no_delete
+				BEFORE DELETE ON ${table}
+				BEGIN SELECT RAISE(ABORT, '${table} is immutable'); END
+			`);
+		}
+		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_submission_credential (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				activation_id TEXT NOT NULL,
 				credential_hash TEXT NOT NULL UNIQUE,
 				run_id TEXT NOT NULL,
 				node_id TEXT NOT NULL,
@@ -12875,8 +13379,8 @@ export class StateStore {
 				claim_id INTEGER,
 				revoked INTEGER NOT NULL DEFAULT 0,
 				revoked_reason TEXT,
-				FOREIGN KEY (execution_id, run_id, node_id, attempt)
-					REFERENCES workflow_execution_binding(execution_id, run_id, node_id, attempt),
+				FOREIGN KEY (activation_id)
+					REFERENCES workflow_execution_binding(activation_id),
 				FOREIGN KEY (decision_capability_id) REFERENCES workflow_decision_capability(id),
 				FOREIGN KEY (claim_id) REFERENCES workflow_claims(id)
 			)
@@ -12898,8 +13402,7 @@ export class StateStore {
 				resolved_family TEXT NOT NULL,
 				capabilities_digest TEXT NOT NULL,
 				created_at TEXT NOT NULL,
-				FOREIGN KEY (execution_id, run_id, node_id, attempt)
-					REFERENCES workflow_execution_binding(execution_id, run_id, node_id, attempt)
+				FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
 			)
 		`);
 		this.db.run(`
@@ -12915,6 +13418,7 @@ export class StateStore {
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_node_outputs (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				activation_id TEXT NOT NULL,
 				run_id TEXT NOT NULL,
 				node_id TEXT NOT NULL,
 				attempt INTEGER NOT NULL CHECK (attempt > 0),
@@ -12927,8 +13431,8 @@ export class StateStore {
 				submission_digest TEXT NOT NULL,
 				written_at TEXT NOT NULL,
 				UNIQUE (run_id, node_id, attempt),
-				FOREIGN KEY (execution_id, run_id, node_id, attempt)
-					REFERENCES workflow_execution_binding(execution_id, run_id, node_id, attempt)
+				FOREIGN KEY (activation_id)
+					REFERENCES workflow_execution_binding(activation_id)
 			)
 		`);
 		this.db.run(`
@@ -12956,6 +13460,7 @@ export class StateStore {
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_output_credential (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				activation_id TEXT NOT NULL,
 				credential_hash TEXT NOT NULL UNIQUE,
 				run_id TEXT NOT NULL,
 				node_id TEXT NOT NULL,
@@ -12970,8 +13475,8 @@ export class StateStore {
 				output_id INTEGER,
 				revoked INTEGER NOT NULL DEFAULT 0,
 				revoked_reason TEXT,
-				FOREIGN KEY (execution_id, run_id, node_id, attempt)
-					REFERENCES workflow_execution_binding(execution_id, run_id, node_id, attempt),
+				FOREIGN KEY (activation_id)
+					REFERENCES workflow_execution_binding(activation_id),
 				FOREIGN KEY (output_id) REFERENCES workflow_node_outputs(id)
 			)
 		`);
@@ -12982,6 +13487,7 @@ export class StateStore {
 		`);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_node_completion (
+				activation_id TEXT,
 				run_id TEXT NOT NULL,
 				node_id TEXT NOT NULL,
 				attempt INTEGER NOT NULL CHECK (attempt > 0),
@@ -12992,8 +13498,8 @@ export class StateStore {
 				completion_submission_digest TEXT NOT NULL,
 				completed_at TEXT NOT NULL,
 				PRIMARY KEY (run_id, node_id, attempt),
-				FOREIGN KEY (execution_id, run_id, node_id, attempt)
-					REFERENCES workflow_execution_binding(execution_id, run_id, node_id, attempt)
+				FOREIGN KEY (activation_id)
+					REFERENCES workflow_execution_binding(activation_id)
 			)
 		`);
 		this.db.run(`
@@ -13116,8 +13622,27 @@ export class StateStore {
 				delivery_state TEXT NOT NULL DEFAULT 'pending'
 				  CHECK (delivery_state IN ('pending','repairing','delivered')),
 				CHECK (committed_generation IS NULL OR committed_generation = owner_generation),
-				FOREIGN KEY (execution_id) REFERENCES workflow_execution_binding(execution_id)
+				FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
 			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_launch_cancellation (
+				execution_id TEXT PRIMARY KEY,
+				generation INTEGER NOT NULL CHECK (generation > 0),
+				reason TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_launch_cancellation_no_update
+			BEFORE UPDATE ON workflow_launch_cancellation
+			BEGIN SELECT RAISE(ABORT, 'workflow_launch_cancellation is append-only'); END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_launch_cancellation_no_delete
+			BEFORE DELETE ON workflow_launch_cancellation
+			BEGIN SELECT RAISE(ABORT, 'workflow_launch_cancellation is append-only'); END
 		`);
 		this.db.run(`
 			CREATE TRIGGER IF NOT EXISTS workflow_start_response_no_update
@@ -14825,6 +15350,694 @@ export class StateStore {
 		};
 	}
 
+	getWorkflowLaunchCancellation(
+		executionId: string,
+	): WorkflowLaunchCancellationRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_launch_cancellation WHERE execution_id = ?",
+			[executionId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			execution_id: row.execution_id as string,
+			generation: Number(row.generation),
+			reason: row.reason as string,
+			created_at: row.created_at as string,
+		};
+	}
+
+	beginUnlaunchedWorkflowCancellation(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		launchOrdinal: number;
+		cancellationOwner: string;
+		reason: string;
+		now: string;
+	}): UnlaunchedWorkflowCancellationResult {
+		if (
+			!input.runId ||
+			!input.nodeId ||
+			!input.executionId ||
+			!input.cancellationOwner ||
+			!input.reason ||
+			!Number.isInteger(input.attempt) ||
+			input.attempt < 1 ||
+			!Number.isInteger(input.launchOrdinal) ||
+			input.launchOrdinal < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_cancellation_fence" };
+		}
+		let result: UnlaunchedWorkflowCancellationResult = {
+			ok: false,
+			reason: "cancellation_not_committed",
+		};
+		this.db.transaction(() => {
+			const prior = this.getWorkflowLaunchCancellation(input.executionId);
+			if (prior) {
+				if (prior.reason !== input.reason) {
+					result = { ok: false, reason: "cancellation_fence_conflict" };
+					return;
+				}
+				result = {
+					ok: true,
+					generation: prior.generation,
+					idempotentReplay: true,
+				};
+				return;
+			}
+			const run = this.getWorkflowRun(input.runId);
+			if (!run || run.engine_owned !== 1 || run.status !== "active") {
+				result = { ok: false, reason: "engine_run_not_active" };
+				return;
+			}
+			const node = this.getWorkflowRunNode(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+			);
+			if (
+				!node ||
+				node.state !== "admitted" ||
+				node.execution_id !== input.executionId
+			) {
+				result = { ok: false, reason: "node_execution_not_admitted" };
+				return;
+			}
+			const binding = this.getWorkflowActivationForAttempt({
+				executionId: input.executionId,
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+			});
+			if (
+				!binding ||
+				binding.run_id !== input.runId ||
+				binding.node_id !== input.nodeId ||
+				binding.attempt !== input.attempt
+			) {
+				result = { ok: false, reason: "execution_binding_mismatch" };
+				return;
+			}
+			const latest = this.workflowSelectAll(
+				`SELECT launch_ordinal, execution_id, state
+				   FROM workflow_side_effect_ledger
+				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+				  ORDER BY launch_ordinal DESC LIMIT 1`,
+				[input.runId, input.nodeId, input.attempt],
+			)[0];
+			if (
+				!latest ||
+				Number(latest.launch_ordinal) !== input.launchOrdinal ||
+				latest.execution_id !== input.executionId ||
+				latest.state !== "intent_recorded"
+			) {
+				result = { ok: false, reason: "launch_intent_mismatch" };
+				return;
+			}
+			const claim = this.getLaunchClaim(input.executionId);
+			if (claim?.state === "starting" || claim?.state === "active") {
+				result = { ok: false, reason: "lifecycle_claim_present" };
+				return;
+			}
+			if (this.getSession(input.executionId)) {
+				result = { ok: false, reason: "session_present" };
+				return;
+			}
+			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if (owner?.committed_generation != null) {
+				result = { ok: false, reason: "launch_committed" };
+				return;
+			}
+			if (owner && Date.parse(input.now) < Date.parse(owner.lease_expires_at)) {
+				result = { ok: false, reason: "launch_owner_live" };
+				return;
+			}
+			const generation = owner ? owner.owner_generation + 1 : 1;
+			if (owner) {
+				this.db.run(
+					`UPDATE workflow_launch_owner
+					    SET owner_generation = ?, owner_id = ?, acquired_at = ?,
+					        lease_expires_at = ?, delivery_attempt = 0,
+					        delivery_owner = NULL, delivery_lease_expires_at = NULL,
+					        delivery_state = 'pending'
+					  WHERE execution_id = ? AND owner_generation = ?
+					    AND committed_generation IS NULL AND lease_expires_at <= ?`,
+					[
+						generation,
+						input.cancellationOwner,
+						input.now,
+						input.now,
+						input.executionId,
+						owner.owner_generation,
+						input.now,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					result = { ok: false, reason: "launch_owner_race" };
+					return;
+				}
+			}
+			this.db.run(
+				`INSERT INTO workflow_launch_cancellation
+				   (execution_id, generation, reason, created_at)
+				 VALUES (?, ?, ?, ?)`,
+				[input.executionId, generation, input.reason, input.now],
+			);
+			result = { ok: true, generation, idempotentReplay: false };
+		});
+		this.save();
+		return result;
+	}
+
+	rollbackUnlaunchedWorkflowAdmission(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		launchOrdinal: number;
+		fenceGeneration: number;
+		markerPath: string;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}): UnlaunchedWorkflowRollbackResult {
+		if (
+			!input.markerPath ||
+			!Number.isInteger(input.fenceGeneration) ||
+			input.fenceGeneration < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_unlaunched_rollback" };
+		}
+		const eventUid = `unlaunched_rollback:${input.runId}:${input.nodeId}:${input.attempt}:${input.executionId}`;
+		let result: UnlaunchedWorkflowRollbackResult = {
+			ok: false,
+			reason: "rollback_not_committed",
+		};
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				"SELECT kind FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			)[0];
+			if (prior) {
+				if (prior.kind !== "unlaunched_admission_rolled_back") {
+					result = { ok: false, reason: "rollback_receipt_conflict" };
+					return;
+				}
+				result = { ok: true, eventUid, idempotentReplay: true };
+				return;
+			}
+			const cancellation = this.getWorkflowLaunchCancellation(
+				input.executionId,
+			);
+			if (cancellation?.generation !== input.fenceGeneration) {
+				result = { ok: false, reason: "cancellation_fence_missing" };
+				return;
+			}
+			const run = this.getWorkflowRun(input.runId);
+			if (!run || run.engine_owned !== 1 || run.status !== "active") {
+				result = { ok: false, reason: "engine_run_not_active" };
+				return;
+			}
+			const node = this.getWorkflowRunNode(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+			);
+			if (
+				!node ||
+				node.state !== "admitted" ||
+				node.execution_id !== input.executionId
+			) {
+				result = { ok: false, reason: "node_execution_not_admitted" };
+				return;
+			}
+			const binding = this.getWorkflowActivationForAttempt({
+				executionId: input.executionId,
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+			});
+			if (
+				!binding ||
+				binding.run_id !== input.runId ||
+				binding.node_id !== input.nodeId ||
+				binding.attempt !== input.attempt
+			) {
+				result = { ok: false, reason: "execution_binding_mismatch" };
+				return;
+			}
+			const claim = this.getLaunchClaim(input.executionId);
+			if (claim?.state === "starting" || claim?.state === "active") {
+				result = { ok: false, reason: "lifecycle_claim_present" };
+				return;
+			}
+			if (this.getSession(input.executionId)) {
+				result = { ok: false, reason: "session_present" };
+				return;
+			}
+			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if (owner?.committed_generation != null) {
+				result = { ok: false, reason: "launch_committed" };
+				return;
+			}
+			if (existsSync(input.markerPath)) {
+				result = { ok: false, reason: "launch_marker_present" };
+				return;
+			}
+			const latest = this.workflowSelectAll(
+				`SELECT launch_ordinal, execution_id, state
+				   FROM workflow_side_effect_ledger
+				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+				  ORDER BY launch_ordinal DESC LIMIT 1`,
+				[input.runId, input.nodeId, input.attempt],
+			)[0];
+			if (
+				!latest ||
+				Number(latest.launch_ordinal) !== input.launchOrdinal ||
+				latest.execution_id !== input.executionId ||
+				latest.state !== "intent_recorded"
+			) {
+				result = { ok: false, reason: "launch_intent_mismatch" };
+				return;
+			}
+			for (const table of [
+				"workflow_output_credential",
+				"workflow_submission_credential",
+			]) {
+				this.db.run(
+					`UPDATE ${table}
+					    SET revoked = 1, revoked_reason = 'unlaunched_admission_rolled_back'
+					  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+					[input.executionId],
+				);
+			}
+			this.db.run(
+				`UPDATE workflow_side_effect_ledger
+				    SET state = 'abandoned', reason = 'unlaunched_admission_rolled_back',
+				        abandoned_at = ?, updated_at = ?
+				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+				    AND launch_ordinal = ? AND execution_id = ? AND state = 'intent_recorded'`,
+				[
+					input.now,
+					input.now,
+					input.runId,
+					input.nodeId,
+					input.attempt,
+					input.launchOrdinal,
+					input.executionId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "launch_intent_race" };
+				return;
+			}
+			this.db.run(
+				"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+				[input.runId],
+			);
+			if (binding.mode === "replacement" && binding.rework_request_id) {
+				this.db.run(
+					`UPDATE workflow_rework_delivery
+					    SET state = 'held', owner_id = NULL, lease_expires_at = NULL,
+					        last_error = 'replacement_launch_rolled_back', updated_at = ?
+					  WHERE request_id = ? AND state = 'replacement_pending'`,
+					[input.now, binding.rework_request_id],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_rework_replacement_rollback_cas_failed");
+				}
+			}
+			const eventPayload = {
+				attempt: input.attempt,
+				launchOrdinal: input.launchOrdinal,
+				fenceGeneration: input.fenceGeneration,
+				reason: "unlaunched_admission_rolled_back",
+				at: input.now,
+			};
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid,
+				kind: "unlaunched_admission_rolled_back",
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload: eventPayload,
+			});
+			const alertPayload: WorkflowEngineAlertPayload = {
+				leadId: input.alertIdentity.leadId,
+				projectName: input.alertIdentity.projectName,
+				eventId: eventUid,
+				eventType: "workflow_engine_escalation",
+				severity: "severe",
+				sessionKey: `wf:${input.runId}`,
+				title: `Unlaunched workflow admission rolled back for ${run.issue_id}`,
+				body: `Execution ${input.executionId} never produced launch evidence. The engine installed cancellation fence ${input.fenceGeneration}, revoked its unused credentials, abandoned the dispatch intent, and held run ${input.runId}. Re-open a new run after inspecting the launch failure.`,
+				metadata: {
+					workflowEngine: {
+						runId: input.runId,
+						issueId: run.issue_id,
+						nodeId: input.nodeId,
+						executionId: input.executionId,
+						disposition: "held",
+						leadResolution: input.alertIdentity.leadResolution,
+					},
+				},
+			};
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: input.runId,
+				payload: alertPayload,
+				now: input.now,
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `alert_enqueued:${eventUid}`,
+				kind: "workflow_engine_alert_enqueued",
+				payload: { escalationUid: eventUid },
+			});
+			result = { ok: true, eventUid, idempotentReplay: false };
+		});
+		this.save();
+		return result;
+	}
+
+	escalateUnlaunchedWorkflowStall(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		launchOrdinal: number;
+		action: "alert" | "hold";
+		sourceAt: string;
+		reason: string;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}):
+		| { ok: true; eventUid: string; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!input.runId ||
+			!input.nodeId ||
+			!input.executionId ||
+			!input.reason ||
+			!Number.isInteger(input.attempt) ||
+			input.attempt < 1 ||
+			!Number.isInteger(input.launchOrdinal) ||
+			input.launchOrdinal < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.sourceAt) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_unlaunched_escalation" };
+		}
+		const prefix =
+			input.action === "alert" ? "unlaunched_admission" : "unlaunched_hold";
+		const eventUid = `${prefix}:${input.runId}:${input.nodeId}:${input.attempt}:${input.executionId}`;
+		const eventKind =
+			input.action === "alert"
+				? "unlaunched_admission_alerted"
+				: "unlaunched_admission_held";
+		let result:
+			| { ok: true; eventUid: string; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "unlaunched_escalation_not_committed",
+		};
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				"SELECT kind, node_id, execution_id FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			)[0];
+			if (prior) {
+				if (
+					prior.kind !== eventKind ||
+					prior.node_id !== input.nodeId ||
+					prior.execution_id !== input.executionId
+				) {
+					result = { ok: false, reason: "unlaunched_escalation_conflict" };
+					return;
+				}
+				result = { ok: true, eventUid, idempotentReplay: true };
+				return;
+			}
+			const run = this.getWorkflowRun(input.runId);
+			if (!run || run.engine_owned !== 1 || run.status !== "active") {
+				result = { ok: false, reason: "engine_run_not_active" };
+				return;
+			}
+			const node = this.getWorkflowRunNode(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+			);
+			if (
+				!node ||
+				node.state !== "admitted" ||
+				node.execution_id !== input.executionId
+			) {
+				result = { ok: false, reason: "unlaunched_node_identity_changed" };
+				return;
+			}
+			const latest = this.workflowSelectAll(
+				`SELECT launch_ordinal, execution_id, state
+				   FROM workflow_side_effect_ledger
+				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+				  ORDER BY launch_ordinal DESC LIMIT 1`,
+				[input.runId, input.nodeId, input.attempt],
+			)[0];
+			if (
+				!latest ||
+				Number(latest.launch_ordinal) !== input.launchOrdinal ||
+				latest.execution_id !== input.executionId ||
+				latest.state !== "intent_recorded"
+			) {
+				result = { ok: false, reason: "unlaunched_intent_identity_changed" };
+				return;
+			}
+			if (input.action === "hold") {
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+					[input.runId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					result = { ok: false, reason: "engine_run_state_changed" };
+					return;
+				}
+			}
+			const payload = {
+				attempt: input.attempt,
+				launchOrdinal: input.launchOrdinal,
+				branch: "unlaunched_admission",
+				action: input.action,
+				reason: input.reason,
+				sourceAt: input.sourceAt,
+				at: input.now,
+			};
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid,
+				kind: eventKind,
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload,
+			});
+			const branchLabel = "unlaunched admission";
+			const alertPayload: WorkflowEngineAlertPayload = {
+				leadId: input.alertIdentity.leadId,
+				projectName: input.alertIdentity.projectName,
+				eventId: eventUid,
+				eventType: "workflow_engine_escalation",
+				severity: "severe",
+				sessionKey: `wf:${input.runId}`,
+				title:
+					input.action === "hold"
+						? `Workflow run held after stalled ${branchLabel} for ${run.issue_id}`
+						: `Stalled ${branchLabel} detected for ${run.issue_id}`,
+				body:
+					input.action === "hold"
+						? `Execution ${input.executionId} remained stalled at launch ordinal ${input.launchOrdinal}. Reason: ${input.reason}. Run ${input.runId} was held for Lead inspection.`
+						: `Execution ${input.executionId} has not progressed from ${branchLabel} at launch ordinal ${input.launchOrdinal}. Reason: ${input.reason}. The engine will keep checking durable launch evidence.`,
+				metadata: {
+					workflowEngine: {
+						runId: input.runId,
+						issueId: run.issue_id,
+						nodeId: input.nodeId,
+						executionId: input.executionId,
+						disposition: "held",
+						leadResolution: input.alertIdentity.leadResolution,
+					},
+				},
+			};
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: input.runId,
+				payload: alertPayload,
+				now: input.now,
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `alert_enqueued:${eventUid}`,
+				kind: "workflow_engine_alert_enqueued",
+				payload: { escalationUid: eventUid },
+			});
+			result = { ok: true, eventUid, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	escalateWorkflowReworkStall(input: {
+		requestId: string;
+		generation: number;
+		action: "alert" | "hold";
+		sourceAt: string;
+		reason: string;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}):
+		| { ok: true; eventUid: string; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.reason.trim() ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 0 ||
+			!StateStore.workflowFiniteTimestamp(input.sourceAt) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_rework_stall_escalation" };
+		}
+		let result:
+			| { ok: true; eventUid: string; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "rework_stall_not_escalated",
+		};
+		this.db.transaction(() => {
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			const route = this.getLatestWorkflowReworkRoute(input.requestId);
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+			if (
+				!request ||
+				!route ||
+				!delivery ||
+				!run ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				delivery.generation !== input.generation ||
+				!(
+					delivery.state === "pending" ||
+					delivery.state === "turn_granted" ||
+					delivery.state === "replacement_pending"
+				)
+			) {
+				result = { ok: false, reason: "rework_stall_context_changed" };
+				return;
+			}
+			const executionId = route.preferred_actor_execution_id;
+			const prefix =
+				input.action === "alert"
+					? "rework_stalled_alert"
+					: "rework_stalled_hold";
+			const eventUid = `${prefix}:${input.requestId}:${input.generation}:${executionId}`;
+			const eventKind =
+				input.action === "alert"
+					? "rework_activation_stalled_alerted"
+					: "rework_activation_stalled_held";
+			const prior = this.workflowSelectAll(
+				"SELECT kind, execution_id FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			)[0];
+			if (prior) {
+				if (prior.kind !== eventKind || prior.execution_id !== executionId) {
+					result = { ok: false, reason: "rework_stall_receipt_conflict" };
+					return;
+				}
+				result = { ok: true, eventUid, idempotentReplay: true };
+				return;
+			}
+			if (input.action === "hold") {
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+					[request.run_id],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					result = { ok: false, reason: "engine_run_state_changed" };
+					return;
+				}
+				this.db.run(
+					`UPDATE workflow_rework_delivery
+					    SET state = 'held', owner_id = NULL, lease_expires_at = NULL,
+					        last_error = ?, updated_at = ?
+					  WHERE request_id = ? AND generation = ?
+					    AND state IN ('pending','turn_granted','replacement_pending')`,
+					[input.reason, input.now, input.requestId, input.generation],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_rework_stall_delivery_cas_failed");
+				}
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid,
+				kind: eventKind,
+				nodeId: route.target_node_id,
+				executionId,
+				payload: {
+					requestId: input.requestId,
+					generation: input.generation,
+					action: input.action,
+					reason: input.reason,
+					sourceAt: input.sourceAt,
+					at: input.now,
+				},
+			});
+			const alertPayload: WorkflowEngineAlertPayload = {
+				leadId: input.alertIdentity.leadId,
+				projectName: input.alertIdentity.projectName,
+				eventId: eventUid,
+				eventType: "workflow_engine_escalation",
+				severity: "severe",
+				sessionKey: `wf:${request.run_id}`,
+				title:
+					input.action === "hold"
+						? `Workflow run held after stalled rework activation for ${run.issue_id}`
+						: `Stalled rework activation detected for ${run.issue_id}`,
+				body:
+					input.action === "hold"
+						? `Rework ${input.requestId} remained stalled for actor ${executionId}. Reason: ${input.reason}. Run ${request.run_id} was held for Lead inspection.`
+						: `Rework ${input.requestId} has not delivered TURN/wake for actor ${executionId}. Reason: ${input.reason}. The engine will keep checking durable activation evidence.`,
+				metadata: {
+					workflowEngine: {
+						runId: request.run_id,
+						issueId: run.issue_id,
+						nodeId: route.target_node_id,
+						executionId,
+						disposition: "held",
+						leadResolution: input.alertIdentity.leadResolution,
+					},
+				},
+			};
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: request.run_id,
+				payload: alertPayload,
+				now: input.now,
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `alert_enqueued:${eventUid}`,
+				kind: "workflow_engine_alert_enqueued",
+				payload: { escalationUid: eventUid },
+			});
+			result = { ok: true, eventUid, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	/** Marker repair and owner acquisition share one SQLite write critical section. */
 	recoverOrAcquireWorkflowLaunch(input: {
 		executionId: string;
@@ -14845,7 +16058,17 @@ export class StateStore {
 			reason: "launch_owner_unknown",
 		};
 		this.db.transaction(() => {
-			if (!this.getWorkflowExecutionBinding(input.executionId)) {
+			const cancellation = this.getWorkflowLaunchCancellation(
+				input.executionId,
+			);
+			if (cancellation) {
+				result = {
+					status: "cancelled",
+					generation: cancellation.generation,
+				};
+				return;
+			}
+			if (!this.getWorkflowActor(input.executionId)) {
 				result = { status: "hold", reason: "execution_not_bound" };
 				return;
 			}
@@ -14986,7 +16209,12 @@ export class StateStore {
 			return { ok: false, reason: "invalid_lease" };
 		}
 		let renewed = false;
+		let cancelled = false;
 		this.db.transaction(() => {
+			if (this.getWorkflowLaunchCancellation(input.executionId)) {
+				cancelled = true;
+				return;
+			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
 			if (
 				!owner ||
@@ -15012,6 +16240,7 @@ export class StateStore {
 			renewed = this.db.getRowsModified() === 1;
 		});
 		this.save();
+		if (cancelled) return { ok: false, reason: "launch_cancelled" };
 		return renewed ? { ok: true } : { ok: false, reason: "stale_launch_owner" };
 	}
 
@@ -15049,6 +16278,10 @@ export class StateStore {
 			reason: "stale_launch_owner",
 		};
 		this.db.transaction(() => {
+			if (this.getWorkflowLaunchCancellation(input.executionId)) {
+				result = { ok: false, reason: "launch_cancelled" };
+				return;
+			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
 			if (owner?.committed_generation != null) {
 				result = { ok: false, reason: "launch_committed" };
@@ -15081,10 +16314,11 @@ export class StateStore {
 			const outputCredential = generateCapabilityToken();
 			this.db.run(
 				`INSERT INTO workflow_output_credential
-				   (credential_hash, run_id, node_id, execution_id, attempt,
+				   (activation_id, credential_hash, run_id, node_id, execution_id, attempt,
 				    issued_at, expires_at, absolute_deadline_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
+					context.binding.activation_id,
 					hashCapabilityToken(outputCredential),
 					context.binding.run_id,
 					context.binding.node_id,
@@ -15192,10 +16426,11 @@ export class StateStore {
 			const outputCredential = generateCapabilityToken();
 			this.db.run(
 				`INSERT INTO workflow_output_credential
-				   (credential_hash, run_id, node_id, execution_id, attempt,
+				   (activation_id, credential_hash, run_id, node_id, execution_id, attempt,
 				    issued_at, expires_at, absolute_deadline_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
+					context.binding.activation_id,
 					hashCapabilityToken(outputCredential),
 					context.binding.run_id,
 					context.binding.node_id,
@@ -15286,10 +16521,11 @@ export class StateStore {
 			const submissionCredential = generateCapabilityToken();
 			this.db.run(
 				`INSERT INTO workflow_submission_credential
-				   (credential_hash, run_id, node_id, execution_id, attempt, family,
+				   (activation_id, credential_hash, run_id, node_id, execution_id, attempt, family,
 				    issued_at, expires_at, absolute_deadline_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
+					context.binding.activation_id,
 					hashCapabilityToken(submissionCredential),
 					context.binding.run_id,
 					context.binding.node_id,
@@ -15401,10 +16637,11 @@ export class StateStore {
 			const submissionCredential = generateCapabilityToken();
 			this.db.run(
 				`INSERT INTO workflow_submission_credential
-				   (credential_hash, run_id, node_id, execution_id, attempt, family,
+				   (activation_id, credential_hash, run_id, node_id, execution_id, attempt, family,
 				    issued_at, expires_at, absolute_deadline_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
+					context.binding.activation_id,
 					hashCapabilityToken(submissionCredential),
 					context.binding.run_id,
 					context.binding.node_id,
@@ -15453,6 +16690,16 @@ export class StateStore {
 			reason: "delivery_owner_unknown",
 		};
 		this.db.transaction(() => {
+			const cancellation = this.getWorkflowLaunchCancellation(
+				input.executionId,
+			);
+			if (cancellation) {
+				result = {
+					status: "cancelled",
+					generation: cancellation.generation,
+				};
+				return;
+			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
 			if (!owner?.committed_generation) {
 				result = { status: "hold", reason: "launch_not_committed" };
@@ -15513,6 +16760,9 @@ export class StateStore {
 		markerPath: string;
 		now: string;
 	}): { ok: true; token: string } | { ok: false; reason: string } {
+		if (this.getWorkflowLaunchCancellation(input.executionId)) {
+			return { ok: false, reason: "launch_cancelled" };
+		}
 		const owner = this.getWorkflowLaunchOwner(input.executionId);
 		if (
 			!owner ||
@@ -15538,7 +16788,12 @@ export class StateStore {
 		});
 		const temp = `${input.markerPath}.${input.repairOwner}.${randomUUID()}.tmp`;
 		let committed = false;
+		let cancelled = false;
 		this.db.transaction(() => {
+			if (this.getWorkflowLaunchCancellation(input.executionId)) {
+				cancelled = true;
+				return;
+			}
 			const current = this.getWorkflowLaunchOwner(input.executionId);
 			if (
 				!current ||
@@ -15569,6 +16824,7 @@ export class StateStore {
 			committed = this.db.getRowsModified() === 1;
 		});
 		this.save();
+		if (cancelled) return { ok: false, reason: "launch_cancelled" };
 		return committed
 			? { ok: true, token }
 			: { ok: false, reason: "delivery_fence_lost" };
@@ -15592,6 +16848,10 @@ export class StateStore {
 			reason: "fence_rejected",
 		};
 		this.db.transaction(() => {
+			if (this.getWorkflowLaunchCancellation(input.executionId)) {
+				result = { ok: false, reason: "launch_cancelled" };
+				return;
+			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
 			if (
 				!owner ||
@@ -15762,10 +17022,25 @@ export class StateStore {
 			}
 			if (!bound) {
 				this.db.run(
+					`INSERT OR IGNORE INTO workflow_actor
+					   (execution_id, project_name, issue_id, role, created_at)
+					 SELECT ?, project_name, issue_id, ?, ?
+					   FROM workflow_run WHERE run_id = ?`,
+					[input.executionId, input.nodeId, nowIso, input.runId],
+				);
+				this.db.run(
 					`INSERT INTO workflow_execution_binding
-					   (execution_id, run_id, node_id, attempt, bound_at)
-					 VALUES (?, ?, ?, ?, ?)`,
-					[input.executionId, input.runId, input.nodeId, input.attempt, nowIso],
+					   (activation_id, execution_id, run_id, node_id, attempt, mode,
+					    rework_request_id, bound_at)
+					 VALUES (?, ?, ?, ?, ?, 'spawn', NULL, ?)`,
+					[
+						`activation:${input.executionId}:${input.runId}:${input.nodeId}:${input.attempt}`,
+						input.executionId,
+						input.runId,
+						input.nodeId,
+						input.attempt,
+						nowIso,
+					],
 				);
 			}
 			this.db.run(
@@ -15792,10 +17067,11 @@ export class StateStore {
 			const credentialHash = hashCapabilityToken(credential);
 			this.db.run(
 				`INSERT INTO workflow_submission_credential
-				   (credential_hash, run_id, node_id, execution_id, attempt, family,
+				   (activation_id, credential_hash, run_id, node_id, execution_id, attempt, family,
 				    issued_at, expires_at, absolute_deadline_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
+					`activation:${input.executionId}:${input.runId}:${input.nodeId}:${input.attempt}`,
 					credentialHash,
 					input.runId,
 					input.nodeId,
@@ -15832,27 +17108,1148 @@ export class StateStore {
 	getWorkflowExecutionBinding(
 		executionId: string,
 	): WorkflowExecutionBindingRow | undefined {
+		const rows = this.workflowSelectAll(
+			`SELECT * FROM workflow_execution_binding
+			  WHERE execution_id = ? ORDER BY bound_at, activation_id`,
+			[executionId],
+		);
+		// FLY-1423: this legacy getter is only well-defined for a single activation.
+		// Callers that can observe re-entry must use an exact activation API.
+		if (rows.length !== 1) return undefined;
+		return StateStore.workflowActivationFromRow(rows[0]!);
+	}
+
+	private static workflowActivationFromRow(
+		row: Record<string, unknown>,
+	): WorkflowExecutionBindingRow {
+		return {
+			activation_id: row.activation_id as string,
+			execution_id: row.execution_id as string,
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			mode: row.mode as "spawn" | "wake" | "replacement",
+			rework_request_id: (row.rework_request_id as string | null) ?? null,
+			bound_at: row.bound_at as string,
+		};
+	}
+
+	getWorkflowActor(executionId: string): WorkflowActorRow | undefined {
 		const row = this.workflowSelectAll(
-			"SELECT * FROM workflow_execution_binding WHERE execution_id = ?",
+			"SELECT * FROM workflow_actor WHERE execution_id = ?",
 			[executionId],
 		)[0];
 		if (!row) return undefined;
 		return {
 			execution_id: row.execution_id as string,
-			run_id: row.run_id as string,
-			node_id: row.node_id as string,
-			attempt: Number(row.attempt),
-			bound_at: row.bound_at as string,
+			project_name: row.project_name as string,
+			issue_id: row.issue_id as string,
+			role: row.role as string,
+			created_at: row.created_at as string,
 		};
 	}
 
+	getWorkflowActivation(
+		activationId: string,
+	): WorkflowExecutionBindingRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_execution_binding WHERE activation_id = ?",
+			[activationId],
+		)[0];
+		return row ? StateStore.workflowActivationFromRow(row) : undefined;
+	}
+
+	getWorkflowActivationForAttempt(input: {
+		executionId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+	}): WorkflowExecutionBindingRow | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_execution_binding
+			  WHERE execution_id = ? AND run_id = ? AND node_id = ? AND attempt = ?`,
+			[input.executionId, input.runId, input.nodeId, input.attempt],
+		)[0];
+		return row ? StateStore.workflowActivationFromRow(row) : undefined;
+	}
+
+	listWorkflowActivationsForActor(
+		executionId: string,
+	): WorkflowExecutionBindingRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_execution_binding
+			  WHERE execution_id = ? ORDER BY attempt, bound_at, activation_id`,
+			[executionId],
+		).map((row) => StateStore.workflowActivationFromRow(row));
+	}
+
+	getWorkflowReworkRequest(
+		requestId: string,
+	): WorkflowReworkRequestRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_rework_request WHERE request_id = ?",
+			[requestId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			request_id: row.request_id as string,
+			run_id: row.run_id as string,
+			source_event_id: row.source_event_id as string,
+			authority: row.authority as "qa" | "founder",
+			source_node_id: row.source_node_id as string,
+			source_attempt: Number(row.source_attempt),
+			base_revision: row.base_revision as string,
+			authority_context_json: row.authority_context_json as string,
+			authority_context_digest: row.authority_context_digest as string,
+			founder_feedback_verbatim:
+				(row.founder_feedback_verbatim as string | null) ?? null,
+			requested_at: row.requested_at as string,
+		};
+	}
+
+	getWorkflowActivationTurn(
+		activationId: string,
+	): WorkflowActivationTurnRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_activation_turn WHERE activation_id = ?",
+			[activationId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			activation_id: row.activation_id as string,
+			issue_id: row.issue_id as string,
+			execution_id: row.execution_id as string,
+			epoch: Number(row.epoch),
+			source_event_id: row.source_event_id as string,
+			granted_at: row.granted_at as string,
+		};
+	}
+
+	recordWorkflowActivationTurn(input: {
+		activationId: string;
+		issueId: string;
+		executionId: string;
+		epoch: number;
+		sourceEventId: string;
+		grantedAt: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.activationId ||
+			!input.issueId ||
+			!input.executionId ||
+			!input.sourceEventId ||
+			!Number.isInteger(input.epoch) ||
+			input.epoch < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.grantedAt)
+		) {
+			return { ok: false, reason: "invalid_activation_turn" };
+		}
+		const binding = this.getWorkflowActivation(input.activationId);
+		const run = binding ? this.getWorkflowRun(binding.run_id) : undefined;
+		if (
+			!binding ||
+			!run ||
+			binding.execution_id !== input.executionId ||
+			run.issue_id !== input.issueId
+		) {
+			return { ok: false, reason: "activation_turn_identity_conflict" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "activation_turn_not_recorded",
+		};
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				`SELECT * FROM workflow_activation_turn
+				  WHERE activation_id = ? OR source_event_id = ?`,
+				[input.activationId, input.sourceEventId],
+			)[0];
+			if (prior) {
+				const matches =
+					prior.activation_id === input.activationId &&
+					prior.issue_id === input.issueId &&
+					prior.execution_id === input.executionId &&
+					Number(prior.epoch) === input.epoch &&
+					prior.source_event_id === input.sourceEventId &&
+					prior.granted_at === input.grantedAt;
+				result = matches
+					? { ok: true, idempotentReplay: true }
+					: { ok: false, reason: "activation_turn_conflict" };
+				return;
+			}
+			this.db.run(
+				`INSERT INTO workflow_activation_turn
+				   (activation_id, issue_id, execution_id, epoch, source_event_id, granted_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					input.activationId,
+					input.issueId,
+					input.executionId,
+					input.epoch,
+					input.sourceEventId,
+					input.grantedAt,
+				],
+			);
+			this.appendWorkflowRunEventCheckedTx({
+				runId: binding.run_id,
+				eventUid: `activation_turn_granted:${input.sourceEventId}`,
+				kind: "activation_turn_granted",
+				nodeId: binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					activationId: input.activationId,
+					attempt: binding.attempt,
+					epoch: input.epoch,
+					sourceEventId: input.sourceEventId,
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	getLatestWorkflowReworkRoute(
+		requestId: string,
+	): WorkflowReworkRouteRevisionRow | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_rework_route_revision
+			  WHERE request_id = ? ORDER BY revision DESC LIMIT 1`,
+			[requestId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			request_id: row.request_id as string,
+			revision: Number(row.revision),
+			target_node_id: row.target_node_id as string,
+			target_attempt: Number(row.target_attempt),
+			preferred_actor_execution_id: row.preferred_actor_execution_id as string,
+			invalidation_scope: JSON.parse(
+				row.invalidation_scope_json as string,
+			) as string[],
+			verification_policy: JSON.parse(
+				row.verification_policy_json as string,
+			) as string[],
+			interpreted_by: row.interpreted_by as string,
+			interpretation_reason: row.interpretation_reason as string,
+			created_at: row.created_at as string,
+		};
+	}
+
+	getWorkflowReworkDelivery(
+		requestId: string,
+	): WorkflowReworkDeliveryRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_rework_delivery WHERE request_id = ?",
+			[requestId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			request_id: row.request_id as string,
+			owner_id: (row.owner_id as string | null) ?? null,
+			generation: Number(row.generation),
+			lease_expires_at: (row.lease_expires_at as string | null) ?? null,
+			route_revision: Number(row.route_revision),
+			state: row.state as WorkflowReworkDeliveryRow["state"],
+			last_error: (row.last_error as string | null) ?? null,
+			updated_at: row.updated_at as string,
+		};
+	}
+
+	listWorkflowReworkDeliveries(input?: {
+		states?: WorkflowReworkDeliveryRow["state"][];
+	}): WorkflowReworkDeliveryRow[] {
+		const states = input?.states ?? [
+			"pending",
+			"turn_granted",
+			"replacement_pending",
+		];
+		if (states.length === 0) return [];
+		const placeholders = states.map(() => "?").join(", ");
+		return this.workflowSelectAll(
+			`SELECT request_id FROM workflow_rework_delivery
+			  WHERE state IN (${placeholders})
+			  ORDER BY updated_at, request_id`,
+			states,
+		)
+			.map((row) => this.getWorkflowReworkDelivery(row.request_id as string))
+			.filter((row): row is WorkflowReworkDeliveryRow => row !== undefined);
+	}
+
+	/**
+	 * Convert a proven-dead rework actor reservation into one ordinary fresh
+	 * dispatch. The request and prior route remain immutable; a new route
+	 * revision records the replacement actor, while launch recognition still
+	 * flows through the existing fenced dispatcher path.
+	 */
+	materializeWorkflowReworkReplacement(input: {
+		requestId: string;
+		deadExecutionId: string;
+		newExecutionId: string;
+		reason: string;
+		observedAt: string;
+	}):
+		| {
+				ok: true;
+				executionId: string;
+				launchOrdinal: number;
+				idempotentReplay: boolean;
+		  }
+		| { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.deadExecutionId ||
+			!input.newExecutionId ||
+			!input.reason.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.observedAt)
+		) {
+			return { ok: false, reason: "invalid_rework_replacement" };
+		}
+		let result:
+			| {
+					ok: true;
+					executionId: string;
+					launchOrdinal: number;
+					idempotentReplay: boolean;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "rework_replacement_not_materialized",
+		};
+		this.db.transaction(() => {
+			const eventUid = `rework_replacement_materialized:${input.requestId}`;
+			const prior = this.workflowSelectAll(
+				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			)[0];
+			if (prior) {
+				let payload: Record<string, unknown>;
+				try {
+					payload = JSON.parse(prior.payload as string) as Record<
+						string,
+						unknown
+					>;
+				} catch {
+					result = { ok: false, reason: "rework_replacement_receipt_corrupt" };
+					return;
+				}
+				if (
+					prior.kind !== "rework_replacement_materialized" ||
+					typeof payload.newExecutionId !== "string" ||
+					!Number.isInteger(payload.launchOrdinal)
+				) {
+					result = { ok: false, reason: "rework_replacement_receipt_conflict" };
+					return;
+				}
+				result = {
+					ok: true,
+					executionId: payload.newExecutionId,
+					launchOrdinal: Number(payload.launchOrdinal),
+					idempotentReplay: true,
+				};
+				return;
+			}
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			const route = this.getLatestWorkflowReworkRoute(input.requestId);
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+			if (
+				!request ||
+				!route ||
+				!delivery ||
+				!run ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				delivery.state !== "replacement_pending" ||
+				delivery.route_revision !== route.revision ||
+				route.preferred_actor_execution_id !== input.deadExecutionId
+			) {
+				result = { ok: false, reason: "rework_replacement_context_changed" };
+				return;
+			}
+			const target = this.getWorkflowRunNode(
+				request.run_id,
+				route.target_node_id,
+				route.target_attempt,
+			);
+			if (
+				!target ||
+				!(target.state === "pending" || target.state === "admitted") ||
+				target.execution_id !== input.deadExecutionId
+			) {
+				result = { ok: false, reason: "rework_replacement_target_changed" };
+				return;
+			}
+			for (const table of [
+				"workflow_output_credential",
+				"workflow_submission_credential",
+			]) {
+				this.db.run(
+					`UPDATE ${table}
+					    SET revoked = 1, revoked_reason = 'rework_actor_proven_dead'
+					  WHERE run_id = ? AND node_id = ? AND attempt = ?
+					    AND execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+					[
+						request.run_id,
+						route.target_node_id,
+						route.target_attempt,
+						input.deadExecutionId,
+					],
+				);
+			}
+			const launchOrdinal = this.allocateWorkflowLaunchOrdinalTx(
+				request.run_id,
+				route.target_node_id,
+				route.target_attempt,
+				input.newExecutionId,
+			);
+			this.db.run(
+				`UPDATE workflow_side_effect_ledger
+				    SET reason = ?
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND kind = 'dispatch' AND launch_ordinal = ? AND execution_id = ?`,
+				[
+					`rework_replacement:${input.requestId}`,
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+					launchOrdinal,
+					input.newExecutionId,
+				],
+			);
+			this.upsertWorkflowRunNodeTx({
+				runId: request.run_id,
+				nodeId: route.target_node_id,
+				attempt: route.target_attempt,
+				state: "pending",
+				executionId: input.newExecutionId,
+			});
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_actor
+				   (execution_id, project_name, issue_id, role, created_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[
+					input.newExecutionId,
+					run.project_name,
+					run.issue_id,
+					route.target_node_id,
+					input.observedAt,
+				],
+			);
+			const nextRevision = route.revision + 1;
+			this.db.run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'engine:proven_dead_replacement', ?, ?)`,
+				[
+					input.requestId,
+					nextRevision,
+					route.target_node_id,
+					route.target_attempt,
+					input.newExecutionId,
+					JSON.stringify(route.invalidation_scope),
+					JSON.stringify(route.verification_policy),
+					input.reason,
+					input.observedAt,
+				],
+			);
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET route_revision = ?, updated_at = ?, last_error = ?
+				  WHERE request_id = ? AND route_revision = ?
+				    AND state = 'replacement_pending'`,
+				[
+					nextRevision,
+					input.observedAt,
+					input.reason,
+					input.requestId,
+					route.revision,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("workflow_rework_replacement_delivery_cas_failed");
+			}
+			this.db.run(
+				`UPDATE workflow_rework_verification_path
+				    SET route_revision = ?, updated_at = ?
+				  WHERE request_id = ? AND route_revision = ?
+				    AND state IN ('pending','active')`,
+				[nextRevision, input.observedAt, input.requestId, route.revision],
+			);
+			const session = this.getSession(input.deadExecutionId);
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_dead_execution_watch
+				   (dead_execution_id, run_id, node_id, attempt, new_execution_id,
+				    project_name, issue_id, observed_at, baseline_json, state)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+				[
+					input.deadExecutionId,
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+					input.newExecutionId,
+					run.project_name,
+					run.issue_id,
+					input.observedAt,
+					JSON.stringify({
+						commitMarker: { state: "unknown" },
+						commDbMessageCount: null,
+						tmuxTarget: session?.tmux_session ?? null,
+						tmuxOutputDigest: null,
+						sessionCommitCount: session?.commit_count ?? null,
+					}),
+				],
+			);
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `dead_rollback:${request.run_id}:${route.target_node_id}:${route.target_attempt}:${input.deadExecutionId}`,
+				kind: "execution_dead_rolled_back",
+				nodeId: route.target_node_id,
+				executionId: input.deadExecutionId,
+				payload: {
+					attempt: route.target_attempt,
+					newExecutionId: input.newExecutionId,
+					launchOrdinal,
+					reason: input.reason,
+					retryDisposition: "retry",
+					livenessEvidence: {
+						liveness: "dead",
+						observedAt: input.observedAt,
+					},
+					at: input.observedAt,
+				},
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid,
+				kind: "rework_replacement_materialized",
+				nodeId: route.target_node_id,
+				executionId: input.deadExecutionId,
+				payload: {
+					requestId: input.requestId,
+					deadExecutionId: input.deadExecutionId,
+					newExecutionId: input.newExecutionId,
+					launchOrdinal,
+					routeRevision: nextRevision,
+					reason: input.reason,
+				},
+			});
+			result = {
+				ok: true,
+				executionId: input.newExecutionId,
+				launchOrdinal,
+				idempotentReplay: false,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	markWorkflowReworkReplacementLaunched(input: {
+		executionId: string;
+		now: string;
+	}): { ok: true; updated: boolean } | { ok: false; reason: string } {
+		if (!input.executionId || !StateStore.workflowFiniteTimestamp(input.now)) {
+			return { ok: false, reason: "invalid_rework_replacement_launch" };
+		}
+		const binding = this.getWorkflowExecutionBinding(input.executionId);
+		if (binding?.mode !== "replacement" || !binding.rework_request_id) {
+			return { ok: true, updated: false };
+		}
+		let result: { ok: true; updated: boolean } | { ok: false; reason: string } =
+			{
+				ok: false,
+				reason: "rework_replacement_launch_not_recorded",
+			};
+		this.db.transaction(() => {
+			const requestId = binding.rework_request_id!;
+			const request = this.getWorkflowReworkRequest(requestId);
+			const route = this.getLatestWorkflowReworkRoute(requestId);
+			const delivery = this.getWorkflowReworkDelivery(requestId);
+			const node = request
+				? this.getWorkflowRunNode(
+						request.run_id,
+						binding.node_id,
+						binding.attempt,
+					)
+				: undefined;
+			if (
+				!request ||
+				!route ||
+				!delivery ||
+				!node ||
+				route.preferred_actor_execution_id !== input.executionId ||
+				delivery.route_revision !== route.revision ||
+				node.execution_id !== input.executionId ||
+				node.state !== "running"
+			) {
+				result = {
+					ok: false,
+					reason: "rework_replacement_launch_context_changed",
+				};
+				return;
+			}
+			if (delivery.state === "wake_delivered") {
+				result = { ok: true, updated: false };
+				return;
+			}
+			if (delivery.state !== "replacement_pending") {
+				result = { ok: false, reason: "rework_replacement_delivery_changed" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET state = 'wake_delivered', owner_id = NULL,
+				        lease_expires_at = NULL, last_error = NULL, updated_at = ?
+				  WHERE request_id = ? AND route_revision = ?
+				    AND state = 'replacement_pending'`,
+				[input.now, requestId, route.revision],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "rework_replacement_launch_race" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_rework_verification_path
+				    SET state = 'active', updated_at = ?
+				  WHERE request_id = ? AND route_revision = ? AND state = 'pending'`,
+				[input.now, requestId, route.revision],
+			);
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `rework_replacement_launched:${requestId}`,
+				kind: "rework_replacement_launched",
+				nodeId: binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					requestId,
+					activationId: binding.activation_id,
+					attempt: binding.attempt,
+				},
+			});
+			result = { ok: true, updated: true };
+		});
+		const settled = result as
+			| { ok: true; updated: boolean }
+			| { ok: false; reason: string };
+		if (settled.ok && settled.updated) this.save();
+		return settled;
+	}
+
+	getWorkflowReworkVerificationPath(
+		requestId: string,
+	): WorkflowReworkVerificationPathRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_rework_verification_path WHERE request_id = ?",
+			[requestId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			request_id: row.request_id as string,
+			run_id: row.run_id as string,
+			route_revision: Number(row.route_revision),
+			state: row.state as WorkflowReworkVerificationPathRow["state"],
+			current_node_id: row.current_node_id as string,
+			current_attempt: Number(row.current_attempt),
+			updated_at: row.updated_at as string,
+		};
+	}
+
+	claimWorkflowReworkDelivery(input: {
+		requestId: string;
+		ownerId: string;
+		now: string;
+		leaseExpiresAt: string;
+	}): WorkflowReworkDeliveryClaimResult {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.leaseExpiresAt) ||
+			Date.parse(input.leaseExpiresAt) <= Date.parse(input.now)
+		) {
+			return { ok: false, reason: "invalid_delivery_claim" };
+		}
+		let result: WorkflowReworkDeliveryClaimResult = {
+			ok: false,
+			reason: "rework_delivery_not_found",
+		};
+		this.db.transaction(() => {
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			if (!delivery) return;
+			if (
+				!(["pending", "turn_granted"] as const).includes(
+					delivery.state as never,
+				)
+			) {
+				result = {
+					ok: false,
+					reason: "delivery_settled",
+					state: delivery.state,
+				};
+				return;
+			}
+			const leaseLive =
+				delivery.lease_expires_at !== null &&
+				Date.parse(delivery.lease_expires_at) > Date.parse(input.now);
+			if (
+				delivery.owner_id &&
+				delivery.owner_id !== input.ownerId &&
+				leaseLive
+			) {
+				result = { ok: false, reason: "delivery_busy" };
+				return;
+			}
+			if (delivery.owner_id === input.ownerId && leaseLive) {
+				result = {
+					ok: true,
+					generation: delivery.generation,
+					idempotentReplay: true,
+				};
+				return;
+			}
+			const generation = delivery.generation + 1;
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET owner_id = ?, generation = ?, lease_expires_at = ?,
+				        last_error = NULL, updated_at = ?
+				  WHERE request_id = ? AND generation = ? AND state = ?`,
+				[
+					input.ownerId,
+					generation,
+					input.leaseExpiresAt,
+					input.now,
+					input.requestId,
+					delivery.generation,
+					delivery.state,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "delivery_busy" };
+				return;
+			}
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			if (!request)
+				throw new Error("workflow_rework_request_missing_after_claim");
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `rework_delivery_claimed:${input.requestId}:${generation}`,
+				kind: "rework_delivery_claimed",
+				payload: {
+					requestId: input.requestId,
+					ownerId: input.ownerId,
+					generation,
+				},
+			});
+			result = { ok: true, generation, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	releaseWorkflowReworkDelivery(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		error: string;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!input.error.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_delivery_release" };
+		}
+		let released = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET owner_id = NULL, lease_expires_at = NULL,
+				        last_error = ?, updated_at = ?
+				  WHERE request_id = ? AND owner_id = ? AND generation = ?
+				    AND state IN ('pending','turn_granted')`,
+				[
+					input.error,
+					input.now,
+					input.requestId,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			released = this.db.getRowsModified() === 1;
+			if (!released) return;
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			if (!request)
+				throw new Error("workflow_rework_request_missing_after_release");
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `rework_delivery_released:${input.requestId}:${input.generation}`,
+				kind: "rework_delivery_released",
+				payload: {
+					requestId: input.requestId,
+					generation: input.generation,
+					error: input.error,
+				},
+			});
+		});
+		if (!released) return { ok: false, reason: "stale_delivery_owner" };
+		this.save();
+		return { ok: true };
+	}
+
+	advanceWorkflowReworkDelivery(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		from: WorkflowReworkDeliveryRow["state"];
+		to: WorkflowReworkDeliveryRow["state"];
+		now: string;
+		error?: string;
+		releaseOwner?: boolean;
+	}): { ok: true } | { ok: false; reason: string } {
+		const allowed =
+			(input.from === "pending" &&
+				(["turn_granted", "replacement_pending", "held"] as const).includes(
+					input.to as never,
+				)) ||
+			(input.from === "turn_granted" &&
+				(["wake_delivered", "replacement_pending", "held"] as const).includes(
+					input.to as never,
+				)) ||
+			(input.from === "wake_delivered" && input.to === "completed") ||
+			(input.from === "replacement_pending" && input.to === "completed");
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!allowed
+		) {
+			return { ok: false, reason: "invalid_delivery_transition" };
+		}
+		let advanced = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET state = ?, last_error = ?, updated_at = ?,
+				        owner_id = CASE WHEN ? THEN NULL ELSE owner_id END,
+				        lease_expires_at = CASE WHEN ? THEN NULL ELSE lease_expires_at END
+				  WHERE request_id = ? AND owner_id = ? AND generation = ? AND state = ?`,
+				[
+					input.to,
+					input.error ?? null,
+					input.now,
+					input.releaseOwner ? 1 : 0,
+					input.releaseOwner ? 1 : 0,
+					input.requestId,
+					input.ownerId,
+					input.generation,
+					input.from,
+				],
+			);
+			advanced = this.db.getRowsModified() === 1;
+			if (!advanced) return;
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			const route = this.getLatestWorkflowReworkRoute(input.requestId);
+			if (!request || !route) {
+				throw new Error("workflow_rework_context_missing_after_advance");
+			}
+			if (input.to === "wake_delivered") {
+				this.db.run(
+					`UPDATE workflow_run_node SET state = 'running'
+					  WHERE run_id = ? AND node_id = ? AND attempt = ?
+					    AND execution_id = ? AND state = 'admitted'`,
+					[
+						request.run_id,
+						route.target_node_id,
+						route.target_attempt,
+						route.preferred_actor_execution_id,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_rework_activation_not_admitted");
+				}
+				const path = this.getWorkflowReworkVerificationPath(input.requestId);
+				if (path) {
+					this.db.run(
+						`UPDATE workflow_rework_verification_path
+						    SET state = 'active', updated_at = ?
+						  WHERE request_id = ? AND route_revision = ? AND state = 'pending'`,
+						[input.now, input.requestId, route.revision],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new Error(
+							"workflow_rework_verification_activation_cas_failed",
+						);
+					}
+				}
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `rework_delivery_${input.to}:${input.requestId}`,
+				kind: `rework_delivery_${input.to}`,
+				nodeId: route.target_node_id,
+				executionId: route.preferred_actor_execution_id,
+				payload: {
+					requestId: input.requestId,
+					generation: input.generation,
+					from: input.from,
+					to: input.to,
+					...(input.error ? { error: input.error } : {}),
+				},
+			});
+		});
+		if (!advanced) return { ok: false, reason: "stale_delivery_owner" };
+		this.save();
+		return { ok: true };
+	}
+
+	appendWorkflowReworkRouteRevision(input: {
+		requestId: string;
+		targetNodeId: "design" | "implement";
+		targetAttempt: number;
+		preferredActorExecutionId: string;
+		invalidationScope: Array<"design" | "implement" | "qa">;
+		verificationPolicy: Array<
+			"design_review" | "code_review" | "qa_retest" | "founder_gate"
+		>;
+		interpretedBy: string;
+		interpretationReason: string;
+		now: string;
+	}): { ok: true; revision: number } | { ok: false; reason: string } {
+		const sameSequence = (left: readonly string[], right: readonly string[]) =>
+			left.length === right.length &&
+			left.every((value, index) => value === right[index]);
+		const routeIsValid =
+			(input.targetNodeId === "design" &&
+				sameSequence(input.invalidationScope, ["design"]) &&
+				sameSequence(input.verificationPolicy, [
+					"design_review",
+					"founder_gate",
+				])) ||
+			(input.targetNodeId === "design" &&
+				sameSequence(input.invalidationScope, ["design", "implement", "qa"]) &&
+				sameSequence(input.verificationPolicy, [
+					"design_review",
+					"code_review",
+					"qa_retest",
+					"founder_gate",
+				])) ||
+			(input.targetNodeId === "implement" &&
+				sameSequence(input.invalidationScope, ["implement", "qa"]) &&
+				sameSequence(input.verificationPolicy, [
+					"code_review",
+					"qa_retest",
+					"founder_gate",
+				]));
+		if (
+			!input.requestId ||
+			!input.preferredActorExecutionId ||
+			!input.interpretedBy.trim() ||
+			!input.interpretationReason.trim() ||
+			!Number.isInteger(input.targetAttempt) ||
+			input.targetAttempt < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!routeIsValid
+		) {
+			return { ok: false, reason: "invalid_rework_route" };
+		}
+
+		let result: { ok: true; revision: number } | { ok: false; reason: string } =
+			{
+				ok: false,
+				reason: "rework_route_not_appended",
+			};
+		this.db.transaction(() => {
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			if (!request) {
+				result = { ok: false, reason: "rework_request_not_found" };
+				return;
+			}
+			if (request.authority !== "founder") {
+				result = { ok: false, reason: "rework_route_not_revisable" };
+				return;
+			}
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			if (!delivery) {
+				result = { ok: false, reason: "rework_delivery_not_found" };
+				return;
+			}
+			if (
+				delivery.state !== "pending" ||
+				delivery.owner_id !== null ||
+				delivery.generation !== 0
+			) {
+				result = { ok: false, reason: "delivery_route_frozen" };
+				return;
+			}
+			const run = this.getWorkflowRun(request.run_id);
+			const actor = this.getWorkflowActor(input.preferredActorExecutionId);
+			if (
+				!run ||
+				!actor ||
+				actor.project_name !== run.project_name ||
+				actor.issue_id !== run.issue_id ||
+				actor.role !== input.targetNodeId
+			) {
+				result = { ok: false, reason: "rework_actor_identity_conflict" };
+				return;
+			}
+			const latest = this.getLatestWorkflowReworkRoute(input.requestId);
+			if (!latest || latest.revision !== delivery.route_revision) {
+				result = { ok: false, reason: "rework_route_revision_conflict" };
+				return;
+			}
+			const routeChanged =
+				latest.target_node_id !== input.targetNodeId ||
+				latest.target_attempt !== input.targetAttempt ||
+				latest.preferred_actor_execution_id !== input.preferredActorExecutionId;
+			if (routeChanged) {
+				const previousReservation = this.getWorkflowRunNode(
+					request.run_id,
+					latest.target_node_id,
+					latest.target_attempt,
+				);
+				const nextReservation = this.getWorkflowRunNode(
+					request.run_id,
+					input.targetNodeId,
+					input.targetAttempt,
+				);
+				if (
+					!previousReservation ||
+					previousReservation.state !== "pending" ||
+					previousReservation.execution_id !==
+						latest.preferred_actor_execution_id ||
+					nextReservation
+				) {
+					result = { ok: false, reason: "rework_target_reservation_conflict" };
+					return;
+				}
+				this.db.run(
+					`UPDATE workflow_run_node SET state = 'superseded'
+					  WHERE run_id = ? AND node_id = ? AND attempt = ?
+					    AND execution_id = ? AND state = 'pending'`,
+					[
+						request.run_id,
+						latest.target_node_id,
+						latest.target_attempt,
+						latest.preferred_actor_execution_id,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_rework_previous_reservation_cas_failed");
+				}
+				this.upsertWorkflowRunNodeTx({
+					runId: request.run_id,
+					nodeId: input.targetNodeId,
+					attempt: input.targetAttempt,
+					state: "pending",
+					executionId: input.preferredActorExecutionId,
+				});
+				this.db.run(
+					"UPDATE workflow_run SET current_node_id = ? WHERE run_id = ? AND status = 'active'",
+					[input.targetNodeId, request.run_id],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_rework_run_target_cas_failed");
+				}
+			}
+			const revision = latest.revision + 1;
+			this.db.run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.requestId,
+					revision,
+					input.targetNodeId,
+					input.targetAttempt,
+					input.preferredActorExecutionId,
+					JSON.stringify(input.invalidationScope),
+					JSON.stringify(input.verificationPolicy),
+					input.interpretedBy,
+					input.interpretationReason,
+					input.now,
+				],
+			);
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET route_revision = ?, updated_at = ?
+				  WHERE request_id = ? AND route_revision = ? AND state = 'pending'
+				    AND owner_id IS NULL AND generation = 0`,
+				[revision, input.now, input.requestId, latest.revision],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("workflow_rework_delivery_route_cas_failed");
+			}
+			const verificationPath = this.getWorkflowReworkVerificationPath(
+				input.requestId,
+			);
+			if (verificationPath) {
+				this.db.run(
+					`UPDATE workflow_rework_verification_path
+					    SET route_revision = ?, current_node_id = ?, current_attempt = ?,
+					        updated_at = ?
+					  WHERE request_id = ? AND route_revision = ? AND state = 'pending'`,
+					[
+						revision,
+						input.targetNodeId,
+						input.targetAttempt,
+						input.now,
+						input.requestId,
+						latest.revision,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_rework_verification_route_cas_failed");
+				}
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `rework_route_interpreted:${input.requestId}:${revision}`,
+				kind: "rework_route_interpreted",
+				nodeId: input.targetNodeId,
+				executionId: input.preferredActorExecutionId,
+				payload: {
+					requestId: input.requestId,
+					revision,
+					targetNodeId: input.targetNodeId,
+					targetAttempt: input.targetAttempt,
+					preferredActorExecutionId: input.preferredActorExecutionId,
+					invalidationScope: input.invalidationScope,
+					verificationPolicy: input.verificationPolicy,
+					interpretedBy: input.interpretedBy,
+					interpretationReason: input.interpretationReason,
+				},
+			});
+			result = { ok: true, revision };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	isWorkflowEngineOwnedExecution(executionId: string): boolean {
-		const binding = this.getWorkflowExecutionBinding(executionId);
+		const binding = this.listWorkflowActivationsForActor(executionId)[0];
 		if (!binding) return false;
 		return this.getWorkflowRun(binding.run_id)?.engine_owned === 1;
 	}
 
-	private generalizedExecutionContext(executionId: string):
+	private generalizedExecutionContextForBinding(
+		binding: WorkflowExecutionBindingRow,
+	):
 		| {
 				binding: WorkflowExecutionBindingRow;
 				run: WorkflowRunRow;
@@ -15862,8 +18259,6 @@ export class StateStore {
 				>["resolved"]["nodes"][number];
 		  }
 		| undefined {
-		const binding = this.getWorkflowExecutionBinding(executionId);
-		if (!binding) return undefined;
 		const run = this.getWorkflowRun(binding.run_id);
 		// Legacy shadow/auto-QA bindings intentionally have no typed snapshot.
 		// A binding row alone is not typed engine enrollment.
@@ -15899,12 +18294,29 @@ export class StateStore {
 		return { binding, run, snapshot, node };
 	}
 
+	private generalizedExecutionContext(executionId: string) {
+		const binding = this.getWorkflowExecutionBinding(executionId);
+		return binding
+			? this.generalizedExecutionContextForBinding(binding)
+			: undefined;
+	}
+
+	private generalizedExecutionContextForActivation(activationId: string) {
+		const binding = this.getWorkflowActivation(activationId);
+		return binding
+			? this.generalizedExecutionContextForBinding(binding)
+			: undefined;
+	}
+
 	/** One fail-closed admission seam for typed engine and generalized executions. */
 	admitGeneralizedWorkflowExecution(input: {
 		runId: string;
 		nodeId: string;
 		executionId: string;
 		attempt: number;
+		activationId?: string;
+		activationMode?: "spawn" | "wake" | "replacement";
+		reworkRequestId?: string;
 		expiresAt: string;
 		absoluteDeadlineAt: string;
 		now?: string;
@@ -15922,6 +18334,18 @@ export class StateStore {
 	}): GeneralizedWorkflowAdmissionResult {
 		const env = input.env ?? process.env;
 		const now = input.now ?? new Date().toISOString();
+		const activationId =
+			input.activationId ??
+			`activation:${input.executionId}:${input.runId}:${input.nodeId}:${input.attempt}`;
+		const activationMode = input.activationMode ?? "spawn";
+		if (
+			!activationId ||
+			!(["spawn", "wake", "replacement"] as readonly string[]).includes(
+				activationMode,
+			)
+		) {
+			return { ok: false, reason: "activation_conflict" };
+		}
 		if (
 			!StateStore.workflowFiniteTimestamp(now) ||
 			!StateStore.workflowFiniteTimestamp(input.expiresAt) ||
@@ -15996,19 +18420,34 @@ export class StateStore {
 			}
 		}
 
-		const existingBinding = this.getWorkflowExecutionBinding(input.executionId);
+		const actor = this.getWorkflowActor(input.executionId);
+		if (
+			actor &&
+			(actor.project_name !== run.project_name ||
+				actor.issue_id !== run.issue_id ||
+				actor.role !== input.nodeId)
+		) {
+			return { ok: false, reason: "actor_identity_conflict" };
+		}
+		const existingBinding = this.getWorkflowActivationForAttempt({
+			executionId: input.executionId,
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+		});
 		if (existingBinding) {
 			if (
-				existingBinding.run_id !== input.runId ||
-				existingBinding.node_id !== input.nodeId ||
-				existingBinding.attempt !== input.attempt ||
+				existingBinding.activation_id !== activationId ||
+				existingBinding.mode !== activationMode ||
+				existingBinding.rework_request_id !== (input.reworkRequestId ?? null) ||
 				!this.getWorkflowExecutionRuntime(input.executionId)
 			) {
-				return { ok: false, reason: "execution_already_bound" };
+				return { ok: false, reason: "activation_conflict" };
 			}
 			return {
 				ok: true,
 				idempotentReplay: true,
+				activationId,
 				outputCredential: undefined,
 				snapshotDigest: snapshot.snapshot_digest,
 			};
@@ -16051,6 +18490,20 @@ export class StateStore {
 		let outputCredential: string | undefined;
 		let submissionCredential: string | undefined;
 		this.db.transaction(() => {
+			if (!actor) {
+				this.db.run(
+					`INSERT INTO workflow_actor
+					   (execution_id, project_name, issue_id, role, created_at)
+					 VALUES (?, ?, ?, ?, ?)`,
+					[
+						input.executionId,
+						run.project_name,
+						run.issue_id,
+						input.nodeId,
+						now,
+					],
+				);
+			}
 			if (reservedSuccessor) {
 				this.db.run(
 					`UPDATE workflow_run_node SET state = 'admitted'
@@ -16068,28 +18521,40 @@ export class StateStore {
 			}
 			this.db.run(
 				`INSERT INTO workflow_execution_binding
-				   (execution_id, run_id, node_id, attempt, bound_at)
-				 VALUES (?, ?, ?, ?, ?)`,
-				[input.executionId, input.runId, input.nodeId, input.attempt, now],
-			);
-			this.db.run(
-				`INSERT INTO workflow_execution_runtime
-				   (execution_id, run_id, node_id, attempt, vendor, model, effort,
-				    resolved_family, capabilities_digest, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				   (activation_id, execution_id, run_id, node_id, attempt, mode,
+				    rework_request_id, bound_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
+					activationId,
 					input.executionId,
 					input.runId,
 					input.nodeId,
 					input.attempt,
-					resolvedDispatch.vendor,
-					resolvedDispatch.model,
-					resolvedDispatch.effort ?? "",
-					resolvedDispatch.vendor,
-					canonicalSubmissionDigest(node.capabilities),
+					activationMode,
+					input.reworkRequestId ?? null,
 					now,
 				],
 			);
+			if (!this.getWorkflowExecutionRuntime(input.executionId)) {
+				this.db.run(
+					`INSERT INTO workflow_execution_runtime
+					   (execution_id, run_id, node_id, attempt, vendor, model, effort,
+					    resolved_family, capabilities_digest, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						input.executionId,
+						input.runId,
+						input.nodeId,
+						input.attempt,
+						resolvedDispatch.vendor,
+						resolvedDispatch.model,
+						resolvedDispatch.effort ?? "",
+						resolvedDispatch.vendor,
+						canonicalSubmissionDigest(node.capabilities),
+						now,
+					],
+				);
+			}
 			if (input.dispatchResolution?.audit) {
 				this.appendWorkflowRunEventCheckedTx({
 					runId: input.runId,
@@ -16115,10 +18580,11 @@ export class StateStore {
 				outputCredential = generateCapabilityToken();
 				this.db.run(
 					`INSERT INTO workflow_output_credential
-					   (credential_hash, run_id, node_id, execution_id, attempt,
+					   (activation_id, credential_hash, run_id, node_id, execution_id, attempt,
 					    issued_at, expires_at, absolute_deadline_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 					[
+						activationId,
 						hashCapabilityToken(outputCredential),
 						input.runId,
 						input.nodeId,
@@ -16147,10 +18613,11 @@ export class StateStore {
 				submissionCredential = generateCapabilityToken();
 				this.db.run(
 					`INSERT INTO workflow_submission_credential
-					   (credential_hash, run_id, node_id, execution_id, attempt, family,
+					   (activation_id, credential_hash, run_id, node_id, execution_id, attempt, family,
 					    issued_at, expires_at, absolute_deadline_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 					[
+						activationId,
 						hashCapabilityToken(submissionCredential),
 						input.runId,
 						input.nodeId,
@@ -16173,14 +18640,20 @@ export class StateStore {
 			);
 			this.appendWorkflowRunEventTx({
 				runId: input.runId,
-				eventUid: `generalized_execution_admitted:${input.executionId}`,
+				eventUid:
+					activationMode === "spawn" && input.attempt === 1
+						? `generalized_execution_admitted:${input.executionId}`
+						: `workflow_activation_admitted:${activationId}`,
 				kind: "execution_admitted",
 				nodeId: input.nodeId,
 				executionId: input.executionId,
 				payload: {
+					activationId,
 					attempt: input.attempt,
+					mode: activationMode,
 					output: !!outputCredential,
 					decision: !!submissionCredential,
+					at: now,
 				},
 			});
 			if (input.idempotencyKey) {
@@ -16195,6 +18668,7 @@ export class StateStore {
 		return {
 			ok: true,
 			idempotentReplay: false,
+			activationId,
 			outputCredential,
 			submissionCredential,
 			snapshotDigest: snapshot.snapshot_digest,
@@ -16235,6 +18709,7 @@ export class StateStore {
 		)[0];
 		if (!row) return undefined;
 		return {
+			activation_id: (row.activation_id as string | null) ?? null,
 			run_id: row.run_id as string,
 			node_id: row.node_id as string,
 			attempt: Number(row.attempt),
@@ -16256,6 +18731,7 @@ export class StateStore {
 		if (!row) return undefined;
 		return {
 			id: Number(row.id),
+			activation_id: row.activation_id as string,
 			run_id: row.run_id as string,
 			node_id: row.node_id as string,
 			attempt: Number(row.attempt),
@@ -16281,6 +18757,18 @@ export class StateStore {
 		};
 	}
 
+	getGeneralizedWorkflowNodeForActivation(activationId: string) {
+		const context = this.generalizedExecutionContextForActivation(activationId);
+		if (!context) return undefined;
+		return {
+			binding: context.binding,
+			run: context.run,
+			node: context.node,
+			snapshot: context.snapshot,
+			snapshotDigest: context.snapshot.snapshot_digest,
+		};
+	}
+
 	/** Enrolled-only active query. Legacy phase SQL remains untouched. */
 	listActiveGeneralizedWorkflowExecutions(issueId: string): Array<{
 		executionId: string;
@@ -16289,7 +18777,7 @@ export class StateStore {
 		attempt: number;
 	}> {
 		const rows = this.workflowSelectAll(
-			`SELECT b.execution_id
+			`SELECT b.activation_id
 			   FROM workflow_execution_binding b
 			   JOIN workflow_run r ON r.run_id = b.run_id
 			   JOIN workflow_run_node n
@@ -16299,8 +18787,8 @@ export class StateStore {
 			[issueId],
 		);
 		return rows.flatMap((row) => {
-			const context = this.generalizedExecutionContext(
-				row.execution_id as string,
+			const context = this.generalizedExecutionContextForActivation(
+				row.activation_id as string,
 			);
 			if (!context) return [];
 			return [
@@ -17640,7 +20128,7 @@ export class StateStore {
 	/** Startup safety collector: record durable holds, never dispatch successors. */
 	holdStrandedGeneralizedExecutions(): string[] {
 		const rows = this.workflowSelectAll(
-			`SELECT b.execution_id
+			`SELECT b.activation_id, b.execution_id
 			   FROM workflow_execution_binding b
 			   JOIN workflow_run_node n
 			     ON n.run_id = b.run_id AND n.node_id = b.node_id AND n.attempt = b.attempt
@@ -17654,7 +20142,9 @@ export class StateStore {
 		const held: string[] = [];
 		for (const row of rows) {
 			const executionId = row.execution_id as string;
-			const context = this.generalizedExecutionContext(executionId);
+			const context = this.generalizedExecutionContextForActivation(
+				row.activation_id as string,
+			);
 			if (!context) continue;
 			// Typed engine successors are recovered by WorkflowEngineDispatcher from
 			// the durable dispatch outbox. This legacy safety collector must not
@@ -17699,8 +20189,8 @@ export class StateStore {
 		)[0];
 		if (!credentialPreview)
 			return { ok: false, reason: "credential_not_found" };
-		const context = this.generalizedExecutionContext(
-			credentialPreview.execution_id as string,
+		const context = this.generalizedExecutionContextForActivation(
+			credentialPreview.activation_id as string,
 		);
 		if (
 			!context ||
@@ -17793,10 +20283,11 @@ export class StateStore {
 			}
 			this.db.run(
 				`INSERT INTO workflow_node_outputs
-				   (run_id, node_id, attempt, execution_id, payload, output_digest,
+				   (activation_id, run_id, node_id, attempt, execution_id, payload, output_digest,
 				    output_schema, byte_size, client_request_id, submission_digest, written_at)
-				 VALUES (?, ?, ?, ?, ?, ?, 'json_v1', ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'json_v1', ?, ?, ?, ?)`,
 				[
+					credential.activation_id as string,
 					credential.run_id as string,
 					credential.node_id as string,
 					Number(credential.attempt),
@@ -17912,13 +20403,68 @@ export class StateStore {
 		route: string;
 		sourceEventId: string;
 		completionSubmission: unknown;
+		/** Current completion head carried by the trusted event envelope. */
+		subjectDigest?: string;
+		workflowActivation?: WorkflowCompletionActivationContext;
+		alertIdentity?: WorkflowEngineAlertIdentity;
 		now?: string;
 	}): WorkflowCompletionResult {
 		const now = input.now ?? new Date().toISOString();
 		if (!StateStore.workflowFiniteTimestamp(now)) {
 			return { ok: false, reason: "invalid_timestamp" };
 		}
-		const context = this.generalizedExecutionContext(input.executionId);
+		if (
+			input.subjectDigest !== undefined &&
+			!/^[0-9a-f]{40}$/i.test(input.subjectDigest)
+		) {
+			return { ok: false, reason: "invalid_subject_digest" };
+		}
+		let context: ReturnType<
+			typeof this.generalizedExecutionContextForActivation
+		>;
+		if (input.workflowActivation) {
+			const supplied = input.workflowActivation;
+			if (
+				!supplied.activationId ||
+				!supplied.runId ||
+				!supplied.nodeId ||
+				!Number.isInteger(supplied.attempt) ||
+				supplied.attempt < 1 ||
+				!Number.isInteger(supplied.turnEpoch) ||
+				supplied.turnEpoch < 1
+			) {
+				return { ok: false, reason: "invalid_activation_context" };
+			}
+			context = this.generalizedExecutionContextForActivation(
+				supplied.activationId,
+			);
+			if (
+				!context ||
+				context.binding.execution_id !== input.executionId ||
+				context.binding.run_id !== supplied.runId ||
+				context.binding.node_id !== supplied.nodeId ||
+				context.binding.attempt !== supplied.attempt
+			) {
+				return { ok: false, reason: "activation_context_conflict" };
+			}
+			const turn = this.getWorkflowActivationTurn(supplied.activationId);
+			if (
+				!turn ||
+				turn.execution_id !== input.executionId ||
+				turn.issue_id !== context.run.issue_id ||
+				turn.epoch !== supplied.turnEpoch
+			) {
+				return { ok: false, reason: "activation_turn_conflict" };
+			}
+		} else {
+			const activations = this.listWorkflowActivationsForActor(
+				input.executionId,
+			);
+			if (activations.length > 1) {
+				return { ok: false, reason: "workflow_activation_required" };
+			}
+			context = this.generalizedExecutionContext(input.executionId);
+		}
 		if (!context) return { ok: false, reason: "not_enrolled" };
 		if (input.route !== context.node.capabilities.completion_route) {
 			return { ok: false, reason: "route_mismatch" };
@@ -17935,11 +20481,110 @@ export class StateStore {
 		)[0];
 		if (existing) {
 			if (
+				(existing.activation_id != null &&
+					existing.activation_id !== context.binding.activation_id) ||
 				existing.execution_id !== input.executionId ||
-				existing.route !== input.route ||
-				existing.completion_submission_digest !== digest
+				existing.route !== input.route
 			) {
 				return { ok: false, reason: "completion_conflict" };
+			}
+			if (existing.completion_submission_digest !== digest) {
+				const successor = this.listWorkflowRunNodes(
+					context.binding.run_id,
+					context.binding.node_id,
+				).find((node) => node.attempt > context.binding.attempt);
+				if (!successor) {
+					return { ok: false, reason: "completion_conflict" };
+				}
+				// A changed stale completion is authority-bearing evidence. Require the
+				// caller to name the superseded activation explicitly; an execution-only
+				// lookup must never guess which attempt a reused conversational actor meant.
+				if (!input.workflowActivation) {
+					return { ok: false, reason: "workflow_activation_required" };
+				}
+				if (!input.alertIdentity) {
+					return { ok: false, reason: "stale_resubmission_identity_missing" };
+				}
+				const eventUid = `stale_resub:${context.binding.run_id}:${context.binding.node_id}:${context.binding.attempt}:${input.executionId}:${digest}`;
+				const prior = this.workflowSelectAll(
+					"SELECT kind FROM workflow_run_event WHERE event_uid = ?",
+					[eventUid],
+				)[0];
+				if (prior) {
+					if (prior.kind !== "stale_completion_resubmission") {
+						throw new Error(`workflow_event_uid_conflict:${eventUid}`);
+					}
+					return {
+						ok: false,
+						reason: "stale_resubmission",
+						eventUid,
+						idempotentReplay: true,
+					};
+				}
+				const completionRecord =
+					input.completionSubmission &&
+					typeof input.completionSubmission === "object" &&
+					!Array.isArray(input.completionSubmission)
+						? (input.completionSubmission as Record<string, unknown>)
+						: undefined;
+				const payload = {
+					attempt: context.binding.attempt,
+					oldDigest: existing.completion_submission_digest as string,
+					newDigest: digest,
+					currentAttempt: successor.attempt,
+					currentState: successor.state,
+					evidence: completionRecord?.evidence ?? null,
+					at: now,
+				};
+				const alertPayload: WorkflowEngineAlertPayload = {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: eventUid,
+					eventType: "workflow_engine_escalation",
+					severity: "severe",
+					sessionKey: `wf:${context.binding.run_id}`,
+					title: `Stale completion resubmitted for ${context.run.issue_id}`,
+					body: `Execution ${input.executionId} resubmitted changed completion evidence for superseded ${context.binding.node_id} attempt ${context.binding.attempt}. It was not booked into the DAG. Current attempt ${successor.attempt} was ${successor.state} at classification time; decide whether to carry the evidence forward or discard it.`,
+					metadata: {
+						workflowEngine: {
+							runId: context.binding.run_id,
+							issueId: context.run.issue_id,
+							nodeId: context.binding.node_id,
+							executionId: input.executionId,
+							disposition: "stale_resubmission",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				};
+				this.db.transaction(() => {
+					this.appendWorkflowRunEventCheckedTx({
+						runId: context.binding.run_id,
+						eventUid,
+						kind: "stale_completion_resubmission",
+						nodeId: context.binding.node_id,
+						executionId: input.executionId,
+						payload,
+					});
+					this.enqueueWorkflowEngineAlertTx({
+						escalationUid: eventUid,
+						runId: context.binding.run_id,
+						payload: alertPayload,
+						now,
+					});
+					this.appendWorkflowRunEventCheckedTx({
+						runId: context.binding.run_id,
+						eventUid: `alert_enqueued:${eventUid}`,
+						kind: "workflow_engine_alert_enqueued",
+						payload: { escalationUid: eventUid },
+					});
+				});
+				this.save();
+				return {
+					ok: false,
+					reason: "stale_resubmission",
+					eventUid,
+					idempotentReplay: false,
+				};
 			}
 			this.db.transaction(() =>
 				this.projectGeneralizedCompletionTx({
@@ -17988,6 +20633,12 @@ export class StateStore {
 						: context.node.type === "generic"
 							? "node_done"
 							: undefined;
+		const sessionHead = this.getSession(input.executionId)?.pr_head_sha;
+		const completionSubjectDigest = input.subjectDigest
+			? input.subjectDigest.toLowerCase()
+			: /^[0-9a-f]{40}$/i.test(sessionHead ?? "")
+				? sessionHead!.toLowerCase()
+				: undefined;
 		let transitionRefusal: string | undefined;
 		let terminalImmuneRefusal = false;
 		try {
@@ -18002,10 +20653,11 @@ export class StateStore {
 				}
 				this.db.run(
 					`INSERT INTO workflow_node_completion
-				   (run_id, node_id, attempt, execution_id, route, event_uid,
+				   (activation_id, run_id, node_id, attempt, execution_id, route, event_uid,
 				    source_event_id, completion_submission_digest, completed_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 					[
+						context.binding.activation_id,
 						context.binding.run_id,
 						context.binding.node_id,
 						context.binding.attempt,
@@ -18029,6 +20681,9 @@ export class StateStore {
 						executionId: context.binding.execution_id,
 						outcome: engineOutcome,
 						nodeCompletionEventUid: eventUid,
+						...(completionSubjectDigest
+							? { subjectDigest: completionSubjectDigest }
+							: {}),
 						now,
 					});
 					if (!transition.ok) {
@@ -18115,8 +20770,8 @@ export class StateStore {
 		executionId: string,
 		proposedNodeId?: string,
 	): string | undefined {
-		const rawBinding = this.getWorkflowExecutionBinding(executionId);
-		if (!rawBinding) {
+		const actor = this.getWorkflowActor(executionId);
+		if (!actor) {
 			if (proposedNodeId) {
 				throw new Error(
 					`workflow node set-once conflict for unbound execution ${executionId}`,
@@ -18124,18 +20779,22 @@ export class StateStore {
 			}
 			return undefined;
 		}
-		const context = this.generalizedExecutionContext(executionId);
+		const firstActivation =
+			this.listWorkflowActivationsForActor(executionId)[0];
+		const context = firstActivation
+			? this.generalizedExecutionContextForBinding(firstActivation)
+			: undefined;
 		if (!context) return undefined;
-		const binding = context.binding;
+		const nodeId = actor.role;
 		const persistedNodeId = this.getSession(executionId)?.workflow_node_id;
 		for (const candidate of [persistedNodeId, proposedNodeId]) {
-			if (candidate && candidate !== binding.node_id) {
+			if (candidate && candidate !== nodeId) {
 				throw new Error(
-					`workflow node set-once conflict for ${executionId}: ${candidate} != ${binding.node_id}`,
+					`workflow node set-once conflict for ${executionId}: ${candidate} != ${nodeId}`,
 				);
 			}
 		}
-		return binding.node_id;
+		return nodeId;
 	}
 
 	getWorkflowSubmissionCredential(
@@ -18148,6 +20807,7 @@ export class StateStore {
 		if (!row) return undefined;
 		return {
 			id: Number(row.id),
+			activation_id: row.activation_id as string,
 			credential_hash: row.credential_hash as string,
 			run_id: row.run_id as string,
 			node_id: row.node_id as string,
@@ -18531,6 +21191,23 @@ export class StateStore {
 					typeof payload.successorExecutionId === "string"
 						? payload.successorExecutionId
 						: undefined;
+				const committedReworkRequest =
+					typeof payload.reworkRequestId === "string"
+						? payload.reworkRequestId
+						: undefined;
+				if (committedReworkRequest) {
+					const request = this.getWorkflowReworkRequest(committedReworkRequest);
+					if (
+						!request ||
+						request.base_revision !== (input.subjectDigest ?? "unavailable") ||
+						(input.founderFeedback !== undefined &&
+							request.authority === "founder" &&
+							request.founder_feedback_verbatim !== input.founderFeedback)
+					) {
+						result = { ok: false, reason: "transition_conflict" };
+						return;
+					}
+				}
 				if (
 					input.successorExecutionId !== undefined &&
 					committedSuccessor !== input.successorExecutionId
@@ -18546,6 +21223,9 @@ export class StateStore {
 					targetAttempt: Number(payload.targetAttempt),
 					...(committedSuccessor
 						? { successorExecutionId: committedSuccessor }
+						: {}),
+					...(committedReworkRequest
+						? { reworkRequestId: committedReworkRequest }
 						: {}),
 					...(payload.loopIteration == null
 						? {}
@@ -18625,13 +21305,74 @@ export class StateStore {
 				return;
 			}
 			const selected = edge ?? loop!;
-			const target = snapshot.resolved.nodes.find(
+			let selectedId = selected.id;
+			let target = snapshot.resolved.nodes.find(
 				(node) => node.id === selected.to,
 			);
 			if (!target) {
 				result = { ok: false, reason: "transition_target_missing" };
 				return;
 			}
+			const activePathRow = this.workflowSelectAll(
+				`SELECT * FROM workflow_rework_verification_path
+				  WHERE run_id = ? AND state = 'active'
+				    AND current_node_id = ? AND current_attempt = ?`,
+				[input.runId, input.nodeId, input.attempt],
+			)[0];
+			const activePath = activePathRow
+				? this.getWorkflowReworkVerificationPath(
+						activePathRow.request_id as string,
+					)
+				: undefined;
+			const activeRoute = activePath
+				? this.getLatestWorkflowReworkRoute(activePath.request_id)
+				: undefined;
+			const activeRequest = activePath
+				? this.getWorkflowReworkRequest(activePath.request_id)
+				: undefined;
+			if (activePath && (!activeRoute || !activeRequest)) {
+				result = { ok: false, reason: "rework_verification_path_conflict" };
+				return;
+			}
+			let activePathCurrentIndex: number | undefined;
+			if (activePath && activeRoute && edge) {
+				const currentIndex = activeRoute.invalidation_scope.indexOf(
+					input.nodeId,
+				);
+				if (currentIndex < 0) {
+					result = { ok: false, reason: "rework_verification_path_conflict" };
+					return;
+				}
+				activePathCurrentIndex = currentIndex;
+				const nextNodeId =
+					activeRoute.invalidation_scope[currentIndex + 1] ??
+					workflowApprovalGate(snapshot.manifest).node;
+				target = snapshot.resolved.nodes.find((node) => node.id === nextNodeId);
+				if (!target) {
+					result = { ok: false, reason: "transition_target_missing" };
+					return;
+				}
+				selectedId = `rework_verify:${activePath.request_id}:${input.nodeId}:${target.id}`;
+			}
+			const authorityKickback: "qa" | "founder" | undefined =
+				loop && input.outcome === "qa_fail"
+					? "qa"
+					: loop && input.outcome === "founder_feedback_kickback"
+						? "founder"
+						: undefined;
+			const chainedRework = Boolean(
+				activePath &&
+					activeRoute &&
+					activeRequest &&
+					edge &&
+					target.type !== "gate",
+			);
+			const supersedingRework = Boolean(
+				activePath && activeRoute && activeRequest && authorityKickback,
+			);
+			const reworkAuthority =
+				authorityKickback ??
+				(chainedRework ? activeRequest?.authority : undefined);
 			const targetAttempts = this.listWorkflowRunNodes(input.runId, target.id);
 			const targetAttempt =
 				targetAttempts.reduce(
@@ -18647,7 +21388,11 @@ export class StateStore {
 						)[0]?.n ?? 0,
 					) + 1
 				: undefined;
-			if (loop && loopIteration! > loop.max_iterations) {
+			if (
+				loop &&
+				reworkAuthority !== "founder" &&
+				loopIteration! > loop.max_iterations
+			) {
 				this.upsertWorkflowRunNodeTx({
 					runId: input.runId,
 					nodeId: input.nodeId,
@@ -18695,7 +21440,21 @@ export class StateStore {
 			const successorExecutionId =
 				target.type === "gate"
 					? undefined
-					: (input.successorExecutionId ?? randomUUID());
+					: reworkAuthority
+						? undefined
+						: (input.successorExecutionId ?? randomUUID());
+			const reworkRequestId = reworkAuthority
+				? `rework:${canonicalSubmissionDigest({
+						runId: input.runId,
+						transitionUid,
+						authority: reworkAuthority,
+						...(chainedRework || supersedingRework
+							? { parentRequestId: activePath!.request_id }
+							: {}),
+						targetNodeId: target.id,
+						targetAttempt,
+					})}`
+				: undefined;
 
 			this.upsertWorkflowRunNodeTx({
 				runId: input.runId,
@@ -18715,7 +21474,7 @@ export class StateStore {
 				executionId: input.executionId,
 				payload: { attempt: input.attempt, outcome: input.outcome },
 			});
-			if (loop) {
+			if (loop && reworkAuthority !== "founder") {
 				this.appendWorkflowRunEventTx({
 					runId: input.runId,
 					eventUid: `loop_iteration:${transitionUid}`,
@@ -18729,13 +21488,182 @@ export class StateStore {
 					},
 				});
 			}
+			let preferredActorExecutionId: string | undefined;
+			if (reworkAuthority && reworkRequestId) {
+				preferredActorExecutionId = targetAttempts
+					.filter((candidate) => candidate.execution_id)
+					.sort((left, right) => right.attempt - left.attempt)[0]
+					?.execution_id as string | undefined;
+				if (!preferredActorExecutionId) {
+					throw new Error("workflow_rework_preferred_actor_missing");
+				}
+				this.db.run(
+					`INSERT OR IGNORE INTO workflow_actor
+					   (execution_id, project_name, issue_id, role, created_at)
+					 VALUES (?, ?, ?, ?, ?)`,
+					[
+						preferredActorExecutionId,
+						run.project_name,
+						run.issue_id,
+						target.id,
+						now,
+					],
+				);
+				const baseRevision =
+					input.subjectDigest ?? activeRequest?.base_revision ?? "unavailable";
+				const authorityContext =
+					chainedRework || supersedingRework
+						? {
+								authority: reworkAuthority,
+								outcome: input.outcome,
+								parentRequestId: activePath!.request_id,
+								parentAuthorityContextDigest:
+									activeRequest!.authority_context_digest,
+								sourceNodeId: input.nodeId,
+								sourceAttempt: input.attempt,
+								sourceExecutionId: input.executionId,
+								edgeId: selectedId,
+								targetNodeId: target.id,
+								targetAttempt,
+								baseRevision,
+							}
+						: {
+								authority: reworkAuthority,
+								outcome: input.outcome,
+								sourceNodeId: input.nodeId,
+								sourceAttempt: input.attempt,
+								sourceExecutionId: input.executionId,
+								edgeId: selectedId,
+								targetNodeId: target.id,
+								targetAttempt,
+								baseRevision,
+								...(input.founderFeedback
+									? { founderFeedback: input.founderFeedback }
+									: {}),
+							};
+				const authorityContextJson = JSON.stringify(authorityContext);
+				const authorityContextDigest =
+					canonicalSubmissionDigest(authorityContext);
+				const invalidationScope = chainedRework
+					? activeRoute!.invalidation_scope.slice(
+							(activePathCurrentIndex ?? -1) + 1,
+						)
+					: target.id === "design"
+						? ["design", "implement", "qa"]
+						: [target.id, "qa"];
+				const verificationPolicy = chainedRework
+					? activeRoute!.verification_policy
+					: reworkAuthority === "qa"
+						? ["code_review", "qa_retest"]
+						: target.id === "design"
+							? ["design_review", "code_review", "qa_retest", "founder_gate"]
+							: ["code_review", "qa_retest", "founder_gate"];
+				this.db.run(
+					`INSERT INTO workflow_rework_request
+					   (request_id, run_id, source_event_id, authority, source_node_id,
+					    source_attempt, base_revision, authority_context_json,
+					    authority_context_digest, founder_feedback_verbatim, requested_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						reworkRequestId,
+						input.runId,
+						transitionUid,
+						reworkAuthority,
+						input.nodeId,
+						input.attempt,
+						baseRevision,
+						authorityContextJson,
+						authorityContextDigest,
+						reworkAuthority === "founder"
+							? (input.founderFeedback ??
+								activeRequest?.founder_feedback_verbatim ??
+								"")
+							: null,
+						now,
+					],
+				);
+				this.db.run(
+					`INSERT INTO workflow_rework_route_revision
+					   (request_id, revision, target_node_id, target_attempt,
+					    preferred_actor_execution_id, invalidation_scope_json,
+					    verification_policy_json, interpreted_by,
+					    interpretation_reason, created_at)
+					 VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						reworkRequestId,
+						target.id,
+						targetAttempt,
+						preferredActorExecutionId,
+						JSON.stringify(invalidationScope),
+						JSON.stringify(verificationPolicy),
+						chainedRework
+							? "engine:rework_verification"
+							: reworkAuthority === "qa"
+								? "engine:qa_verdict"
+								: "legacy_default",
+						chainedRework
+							? `verification_path_next_step:${activePath!.request_id}`
+							: reworkAuthority === "qa"
+								? "qa_fail_requires_implement_and_qa_retest"
+								: "legacy_founder_feedback_defaults_to_implement",
+						now,
+					],
+				);
+				this.db.run(
+					`INSERT INTO workflow_rework_delivery
+					   (request_id, route_revision, state, updated_at)
+					 VALUES (?, 1, 'pending', ?)`,
+					[reworkRequestId, now],
+				);
+				this.db.run(
+					`INSERT INTO workflow_rework_verification_path
+					   (request_id, run_id, route_revision, state,
+					    current_node_id, current_attempt, updated_at)
+					 VALUES (?, ?, 1, 'pending', ?, ?, ?)`,
+					[reworkRequestId, input.runId, target.id, targetAttempt, now],
+				);
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `rework_requested:${reworkRequestId}`,
+					kind: "rework_requested",
+					nodeId: target.id,
+					executionId: preferredActorExecutionId,
+					payload: {
+						requestId: reworkRequestId,
+						authority: reworkAuthority,
+						targetNodeId: target.id,
+						targetAttempt,
+						preferredActorExecutionId,
+						invalidationScope,
+						verificationPolicy,
+						authorityContextDigest,
+					},
+				});
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `rework_route_interpreted:${reworkRequestId}:1`,
+					kind: "rework_route_interpreted",
+					nodeId: target.id,
+					executionId: preferredActorExecutionId,
+					payload: {
+						requestId: reworkRequestId,
+						revision: 1,
+						targetNodeId: target.id,
+						targetAttempt,
+						preferredActorExecutionId,
+						invalidationScope,
+						verificationPolicy,
+					},
+				});
+			}
 			const receipt = {
-				edgeId: selected.id,
+				edgeId: selectedId,
 				targetNodeId: target.id,
 				targetAttempt,
 				sourceAttempt: input.attempt,
 				outcome: input.outcome,
 				...(successorExecutionId ? { successorExecutionId } : {}),
+				...(reworkRequestId ? { reworkRequestId } : {}),
 				...(loopIteration ? { loopIteration } : {}),
 				...(target.type === "gate" ? { gateOpened: true } : {}),
 				...(input.founderFeedback
@@ -18747,7 +21675,7 @@ export class StateStore {
 				eventUid: transitionUid,
 				kind: "edge_traversed",
 				nodeId: input.nodeId,
-				edgeId: selected.id,
+				edgeId: selectedId,
 				executionId: input.executionId,
 				payload: receipt,
 			});
@@ -18774,7 +21702,7 @@ export class StateStore {
 					snapshot.manifest.manifest_variant === "land_v1"
 				) {
 					if (
-						source.type !== "qa" ||
+						(!activePath && source.type !== "qa") ||
 						!/^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "")
 					) {
 						throw new Error("land_gate_holder_requires_qa_head");
@@ -18818,6 +21746,22 @@ export class StateStore {
 						payload: { attempt: targetAttempt, questionId, head },
 					});
 				}
+			} else if (reworkRequestId && preferredActorExecutionId) {
+				this.upsertWorkflowRunNodeTx({
+					runId: input.runId,
+					nodeId: target.id,
+					attempt: targetAttempt,
+					state: "pending",
+					executionId: preferredActorExecutionId,
+				});
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid: `rework_target_reserved:${reworkRequestId}`,
+					kind: "rework_target_reserved",
+					nodeId: target.id,
+					executionId: preferredActorExecutionId,
+					payload: { requestId: reworkRequestId, attempt: targetAttempt },
+				});
 			} else {
 				const ordinal = this.allocateWorkflowLaunchOrdinalTx(
 					input.runId,
@@ -18841,6 +21785,97 @@ export class StateStore {
 					payload: { attempt: targetAttempt, via: "engine_intent", ordinal },
 				});
 			}
+			if (activePath) {
+				if (target.type === "gate") {
+					this.db.run(
+						`UPDATE workflow_rework_verification_path
+						    SET state = 'completed', current_node_id = ?, current_attempt = ?,
+						        updated_at = ?
+						  WHERE request_id = ? AND state = 'active'
+						    AND current_node_id = ? AND current_attempt = ?`,
+						[
+							target.id,
+							targetAttempt,
+							now,
+							activePath.request_id,
+							input.nodeId,
+							input.attempt,
+						],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new Error("workflow_rework_verification_complete_cas_failed");
+					}
+					this.db.run(
+						`UPDATE workflow_rework_delivery
+						    SET state = 'completed', updated_at = ?
+						  WHERE request_id = ? AND state = 'wake_delivered'`,
+						[now, activePath.request_id],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new Error("workflow_rework_delivery_complete_cas_failed");
+					}
+					this.appendWorkflowRunEventCheckedTx({
+						runId: input.runId,
+						eventUid: `rework_verification_completed:${activePath.request_id}`,
+						kind: "rework_verification_completed",
+						nodeId: target.id,
+						executionId: input.executionId,
+						payload: {
+							requestId: activePath.request_id,
+							gateAttempt: targetAttempt,
+						},
+					});
+				} else if (chainedRework || supersedingRework) {
+					this.db.run(
+						`UPDATE workflow_rework_verification_path
+						    SET state = 'completed', current_node_id = ?,
+						        current_attempt = ?, updated_at = ?
+						  WHERE request_id = ? AND state = 'active'
+						    AND current_node_id = ? AND current_attempt = ?`,
+						[
+							target.id,
+							targetAttempt,
+							now,
+							activePath.request_id,
+							input.nodeId,
+							input.attempt,
+						],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new Error("workflow_rework_verification_chain_cas_failed");
+					}
+					this.db.run(
+						`UPDATE workflow_rework_delivery
+						    SET state = 'completed', updated_at = ?
+						  WHERE request_id = ? AND state = 'wake_delivered'`,
+						[now, activePath.request_id],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new Error("workflow_rework_delivery_chain_cas_failed");
+					}
+					this.appendWorkflowRunEventCheckedTx({
+						runId: input.runId,
+						eventUid: `${
+							supersedingRework
+								? "rework_verification_superseded"
+								: "rework_verification_chained"
+						}:${activePath.request_id}:${reworkRequestId}`,
+						kind: supersedingRework
+							? "rework_verification_superseded"
+							: "rework_verification_chained",
+						nodeId: target.id,
+						executionId: input.executionId,
+						payload: {
+							requestId: activePath.request_id,
+							nextRequestId: reworkRequestId,
+							targetNodeId: target.id,
+							targetAttempt,
+						},
+					});
+				} else {
+					throw new Error("workflow_rework_verification_step_missing_chain");
+				}
+			}
 			this.db.run(
 				"UPDATE workflow_run SET current_node_id = ? WHERE run_id = ?",
 				[target.id, input.runId],
@@ -18848,10 +21883,11 @@ export class StateStore {
 			result = {
 				ok: true,
 				idempotentReplay: false,
-				edgeId: selected.id,
+				edgeId: selectedId,
 				targetNodeId: target.id,
 				targetAttempt,
 				...(successorExecutionId ? { successorExecutionId } : {}),
+				...(reworkRequestId ? { reworkRequestId } : {}),
 				...(loopIteration ? { loopIteration } : {}),
 				...(target.type === "gate" ? { gateOpened: true } : {}),
 			};
@@ -19651,9 +22687,11 @@ export class StateStore {
 					const toRole =
 						typeof payload.to_role === "string" ? payload.to_role : "";
 					const run = this.getWorkflowRun(targetRunId);
-					turnBinding = this.getWorkflowExecutionBinding(newHolder);
+					turnBinding = this.listWorkflowActivationsForActor(newHolder)
+						.filter((binding) => binding.run_id === targetRunId)
+						.sort((left, right) => right.attempt - left.attempt)[0];
 					const context = turnBinding
-						? this.generalizedExecutionContext(newHolder)
+						? this.generalizedExecutionContextForBinding(turnBinding)
 						: undefined;
 					if (
 						!run ||
@@ -19728,6 +22766,79 @@ export class StateStore {
 			}
 
 			if (input.kind === "founder_feedback") {
+				const rawRework = payload.rework;
+				let founderRework:
+					| {
+							target: "design" | "implement";
+							invalidationScope: Array<"design" | "implement" | "qa">;
+							verificationPolicy: Array<
+								"design_review" | "code_review" | "qa_retest" | "founder_gate"
+							>;
+							interpretedBy: string;
+							interpretationReason: string;
+					  }
+					| undefined;
+				if (rawRework !== undefined) {
+					if (
+						!rawRework ||
+						typeof rawRework !== "object" ||
+						Array.isArray(rawRework)
+					) {
+						throw new Error("founder feedback source payload invalid: rework");
+					}
+					const hint = rawRework as Record<string, unknown>;
+					const target = hint.target;
+					const invalidationScope = hint.invalidation_scope;
+					const verificationPolicy = hint.verification_policy;
+					const interpretedBy = hint.interpreted_by;
+					const interpretationReason = hint.interpretation_reason;
+					const exactKeys = [
+						"target",
+						"invalidation_scope",
+						"verification_policy",
+						"interpreted_by",
+						"interpretation_reason",
+					];
+					if (
+						(target !== "design" && target !== "implement") ||
+						!Array.isArray(invalidationScope) ||
+						!invalidationScope.every((value) =>
+							(["design", "implement", "qa"] as readonly unknown[]).includes(
+								value,
+							),
+						) ||
+						!Array.isArray(verificationPolicy) ||
+						!verificationPolicy.every((value) =>
+							(
+								[
+									"design_review",
+									"code_review",
+									"qa_retest",
+									"founder_gate",
+								] as readonly unknown[]
+							).includes(value),
+						) ||
+						typeof interpretedBy !== "string" ||
+						!interpretedBy.trim() ||
+						typeof interpretationReason !== "string" ||
+						!interpretationReason.trim() ||
+						Object.keys(hint).length !== exactKeys.length ||
+						!exactKeys.every((key) => Object.hasOwn(hint, key))
+					) {
+						throw new Error("founder feedback source payload invalid: rework");
+					}
+					founderRework = {
+						target,
+						invalidationScope: invalidationScope as Array<
+							"design" | "implement" | "qa"
+						>,
+						verificationPolicy: verificationPolicy as Array<
+							"design_review" | "code_review" | "qa_retest" | "founder_gate"
+						>,
+						interpretedBy,
+						interpretationReason,
+					};
+				}
 				if (
 					typeof response.feedback !== "string" ||
 					response.feedback.trim().length === 0 ||
@@ -19785,13 +22896,59 @@ export class StateStore {
 					executionId: holder.source_execution_id as string,
 					outcome: "founder_feedback_kickback",
 					subjectDigest: approvedHead,
-					founderFeedback: response.feedback.trim(),
+					founderFeedback: response.feedback,
 					now,
 				});
 				if (!transition.ok || transition.targetNodeId !== "implement") {
 					throw new Error(
 						`founder feedback kickback failed: ${transition.ok ? "wrong_target" : transition.reason}`,
 					);
+				}
+				if (founderRework) {
+					if (!transition.reworkRequestId) {
+						throw new Error(
+							"founder feedback kickback failed: request_missing",
+						);
+					}
+					const priorTarget = this.listWorkflowRunNodes(
+						runId,
+						founderRework.target,
+					)
+						.filter((candidate) => candidate.execution_id)
+						.sort((left, right) => right.attempt - left.attempt)
+						.find(
+							(candidate) =>
+								candidate.attempt !== transition.targetAttempt ||
+								founderRework.target !== transition.targetNodeId,
+						);
+					if (!priorTarget?.execution_id) {
+						throw new Error(
+							"founder feedback source payload invalid: target actor",
+						);
+					}
+					const targetAttempt =
+						founderRework.target === transition.targetNodeId
+							? transition.targetAttempt
+							: this.listWorkflowRunNodes(runId, founderRework.target).reduce(
+									(max, candidate) => Math.max(max, candidate.attempt),
+									0,
+								) + 1;
+					const interpreted = this.appendWorkflowReworkRouteRevision({
+						requestId: transition.reworkRequestId,
+						targetNodeId: founderRework.target,
+						targetAttempt,
+						preferredActorExecutionId: priorTarget.execution_id,
+						invalidationScope: founderRework.invalidationScope,
+						verificationPolicy: founderRework.verificationPolicy,
+						interpretedBy: founderRework.interpretedBy,
+						interpretationReason: founderRework.interpretationReason,
+						now,
+					});
+					if (!interpreted.ok) {
+						throw new Error(
+							`founder feedback source payload invalid: ${interpreted.reason}`,
+						);
+					}
 				}
 				this.db.run(
 					`INSERT INTO workflow_source_receipt
@@ -22959,6 +26116,7 @@ export type WorkflowTransitionResult =
 			targetNodeId: string;
 			targetAttempt: number;
 			successorExecutionId?: string;
+			reworkRequestId?: string;
 			loopIteration?: number;
 			gateOpened?: true;
 			escalated?: true;
@@ -22966,12 +26124,106 @@ export type WorkflowTransitionResult =
 	| { ok: false; reason: string };
 
 export interface WorkflowExecutionBindingRow {
+	activation_id: string;
 	execution_id: string;
 	run_id: string;
 	node_id: string;
 	attempt: number;
+	mode: "spawn" | "wake" | "replacement";
+	rework_request_id: string | null;
 	bound_at: string;
 }
+
+export interface WorkflowActorRow {
+	execution_id: string;
+	project_name: string;
+	issue_id: string;
+	role: string;
+	created_at: string;
+}
+
+export interface WorkflowActivationTurnRow {
+	activation_id: string;
+	issue_id: string;
+	execution_id: string;
+	epoch: number;
+	source_event_id: string;
+	granted_at: string;
+}
+
+export interface WorkflowCompletionActivationContext {
+	activationId: string;
+	runId: string;
+	nodeId: string;
+	attempt: number;
+	turnEpoch: number;
+}
+
+export interface WorkflowReworkRequestRow {
+	request_id: string;
+	run_id: string;
+	source_event_id: string;
+	authority: "qa" | "founder";
+	source_node_id: string;
+	source_attempt: number;
+	base_revision: string;
+	authority_context_json: string;
+	authority_context_digest: string;
+	founder_feedback_verbatim: string | null;
+	requested_at: string;
+}
+
+export interface WorkflowReworkRouteRevisionRow {
+	request_id: string;
+	revision: number;
+	target_node_id: string;
+	target_attempt: number;
+	preferred_actor_execution_id: string;
+	invalidation_scope: string[];
+	verification_policy: string[];
+	interpreted_by: string;
+	interpretation_reason: string;
+	created_at: string;
+}
+
+export interface WorkflowReworkDeliveryRow {
+	request_id: string;
+	owner_id: string | null;
+	generation: number;
+	lease_expires_at: string | null;
+	route_revision: number;
+	state:
+		| "pending"
+		| "turn_granted"
+		| "wake_delivered"
+		| "replacement_pending"
+		| "completed"
+		| "held";
+	last_error: string | null;
+	updated_at: string;
+}
+
+export interface WorkflowReworkVerificationPathRow {
+	request_id: string;
+	run_id: string;
+	route_revision: number;
+	state: "pending" | "active" | "completed";
+	current_node_id: string;
+	current_attempt: number;
+	updated_at: string;
+}
+
+export type WorkflowReworkDeliveryClaimResult =
+	| { ok: true; generation: number; idempotentReplay: boolean }
+	| {
+			ok: false;
+			reason:
+				| "invalid_delivery_claim"
+				| "rework_delivery_not_found"
+				| "delivery_busy"
+				| "delivery_settled";
+			state?: WorkflowReworkDeliveryRow["state"];
+	  };
 
 export interface WorkflowExecutionRuntimeRow {
 	execution_id: string;
@@ -22987,6 +26239,7 @@ export interface WorkflowExecutionRuntimeRow {
 }
 
 export interface WorkflowNodeCompletionRow {
+	activation_id: string | null;
 	run_id: string;
 	node_id: string;
 	attempt: number;
@@ -23000,6 +26253,7 @@ export interface WorkflowNodeCompletionRow {
 
 export interface WorkflowNodeOutputRow {
 	id: number;
+	activation_id: string;
 	run_id: string;
 	node_id: string;
 	attempt: number;
@@ -23055,6 +26309,21 @@ export interface WorkflowLaunchOwnerRow {
 	delivery_state: "pending" | "repairing" | "delivered";
 }
 
+export interface WorkflowLaunchCancellationRow {
+	execution_id: string;
+	generation: number;
+	reason: string;
+	created_at: string;
+}
+
+export type UnlaunchedWorkflowCancellationResult =
+	| { ok: true; generation: number; idempotentReplay: boolean }
+	| { ok: false; reason: string };
+
+export type UnlaunchedWorkflowRollbackResult =
+	| { ok: true; eventUid: string; idempotentReplay: boolean }
+	| { ok: false; reason: string };
+
 export type WorkflowLaunchAcquireResult =
 	| {
 			status: "acquired" | "committed";
@@ -23062,6 +26331,7 @@ export type WorkflowLaunchAcquireResult =
 			deliveryAttempt: number;
 			token: string;
 	  }
+	| { status: "cancelled"; generation: number }
 	| { status: "busy"; generation: number }
 	| { status: "hold"; reason: string };
 
@@ -23072,6 +26342,7 @@ export type WorkflowLaunchDeliveryResult =
 			attempt: number;
 			token: string;
 	  }
+	| { status: "cancelled"; generation: number }
 	| { status: "busy"; attempt: number }
 	| { status: "hold"; reason: string };
 
@@ -23079,6 +26350,7 @@ export type GeneralizedWorkflowAdmissionResult =
 	| {
 			ok: true;
 			idempotentReplay: boolean;
+			activationId: string;
 			outputCredential?: string;
 			submissionCredential?: string;
 			snapshotDigest: string;
@@ -23101,6 +26373,8 @@ export type GeneralizedWorkflowAdmissionResult =
 				| "review_output_producer_required"
 				| "same_vendor_review"
 				| "execution_already_bound"
+				| "actor_identity_conflict"
+				| "activation_conflict"
 				| "invalid_retry_attempt"
 				| "successor_not_reserved";
 	  };
@@ -23128,12 +26402,24 @@ export type WorkflowCompletionResult =
 	| { ok: false; reason: "stale_execution_superseded" }
 	| {
 			ok: false;
+			reason: "stale_resubmission";
+			eventUid: string;
+			idempotentReplay: boolean;
+	  }
+	| {
+			ok: false;
 			reason:
 				| "invalid_timestamp"
+				| "invalid_subject_digest"
+				| "invalid_activation_context"
+				| "activation_context_conflict"
+				| "activation_turn_conflict"
+				| "workflow_activation_required"
 				| "not_enrolled"
 				| "route_mismatch"
 				| "completion_conflict"
 				| "terminal_status_immune"
+				| "stale_resubmission_identity_missing"
 				| "transition_refused";
 	  };
 
@@ -23216,6 +26502,7 @@ export interface WorkflowEngineAlertPayload {
 				| "held"
 				| "partial"
 				| "probe_unknown"
+				| "stale_resubmission"
 				| "dead_execution_activity_after_replacement"
 				| "ship_ready_stalled"
 				| "ship_ready_delivery_failed";
@@ -23262,6 +26549,7 @@ export interface WorkflowDivergenceCandidate {
 
 export interface WorkflowSubmissionCredentialRow {
 	id: number;
+	activation_id: string;
 	credential_hash: string;
 	run_id: string;
 	node_id: string;

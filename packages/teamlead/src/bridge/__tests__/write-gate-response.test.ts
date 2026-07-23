@@ -419,6 +419,13 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 					content: "founder feedback",
 				},
 			},
+			founderRework: {
+				target: "design",
+				invalidationScope: ["design"],
+				verificationPolicy: ["design_review", "founder_gate"],
+				interpretedBy: "flywheel-eng-lead",
+				interpretationReason: "founder explicitly limited correction to design",
+			},
 		});
 
 		expect(r).toMatchObject({ written: true, disposition: "written" });
@@ -427,7 +434,15 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 				approvalSource: expect.objectContaining({
 					sourceEventId: "founder-feedback:Q-1:M-1",
 					payload: expect.objectContaining({
-						response: { approved: false, feedback },
+						response: { approved: false, feedback: "fix release notes" },
+						rework: {
+							target: "design",
+							invalidation_scope: ["design"],
+							verification_policy: ["design_review", "founder_gate"],
+							interpreted_by: "flywheel-eng-lead",
+							interpretation_reason:
+								"founder explicitly limited correction to design",
+						},
 					}),
 				}),
 			}),
@@ -442,6 +457,7 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 		};
 		await writeGateResponseAndRunPostWrite({
 			...baseArgs,
+			answer: '{"approved":false,"feedback":"please redo design"}',
 			actor: "lead",
 			db,
 			store: store("awaiting_review"),
@@ -453,6 +469,13 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 				approvedHead: "a".repeat(40),
 				classification: "audit_only",
 				authorityId: "Q-1",
+			},
+			founderRework: {
+				target: "design",
+				invalidationScope: ["design"],
+				verificationPolicy: ["design_review", "founder_gate"],
+				interpretedBy: "lead",
+				interpretationReason: "untrusted metadata must not mint authority",
 			},
 		});
 		expect(db.insertFounderApprovalResponseWithSource).not.toHaveBeenCalled();

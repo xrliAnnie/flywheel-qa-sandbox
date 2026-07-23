@@ -22,6 +22,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { currentWorkflowCredentialFromEnv } from "./workflow-activation.js";
 
 const VALID_STATUSES = new Set(["pass", "fail"]);
 
@@ -165,8 +166,11 @@ export async function qaResult(opts: QaResultOpts): Promise<void> {
 	const projectName = requireEnv("FLYWHEEL_PROJECT_NAME");
 	const bridgeUrl = requireEnv("FLYWHEEL_BRIDGE_URL");
 	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
-	const workflowCredential =
-		process.env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL?.trim();
+	const workflowCredential = currentWorkflowCredentialFromEnv({
+		executionId: qaExecId,
+		kind: "submission",
+		envName: "FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
+	});
 	const workflowSubmissionExpected =
 		process.env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED === "1";
 

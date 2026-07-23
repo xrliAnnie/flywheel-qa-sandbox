@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { currentWorkflowCredentialFromEnv } from "./workflow-activation.js";
 
 export interface WorkflowOutputOpts {
 	payloadFile: string;
@@ -19,7 +20,14 @@ export function buildWorkflowOutputRequest(input: {
 }
 
 export async function workflowOutput(opts: WorkflowOutputOpts): Promise<void> {
-	const credential = process.env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL?.trim();
+	const executionId = process.env.FLYWHEEL_EXEC_ID?.trim() ?? "";
+	const credential = executionId
+		? currentWorkflowCredentialFromEnv({
+				executionId,
+				kind: "output",
+				envName: "FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL",
+			})
+		: process.env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL?.trim();
 	const bridgeUrl = process.env.FLYWHEEL_BRIDGE_URL?.trim();
 	if (!credential)
 		throw new Error("FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL is required");

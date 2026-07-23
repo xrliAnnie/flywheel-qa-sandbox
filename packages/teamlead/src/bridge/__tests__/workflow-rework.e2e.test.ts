@@ -1,0 +1,384 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { StateStore } from "../../StateStore.js";
+import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
+import { WorkflowReworkCoordinator } from "../workflow-rework-coordinator.js";
+
+const WORKFLOW_ON = {
+	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+	FLYWHEEL_WORKFLOW_REWORK_REENTRY: "1",
+};
+const BASE_HEAD = "a".repeat(40);
+const FIX_HEAD = "b".repeat(40);
+const NOW = new Date("2026-07-23T00:20:00.000Z");
+const roots: string[] = [];
+
+afterEach(() => {
+	for (const root of roots.splice(0)) {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+async function createHarness() {
+	const root = mkdtempSync(join(tmpdir(), "fly1423-rework-e2e-"));
+	roots.push(root);
+	const store = await StateStore.create(join(root, "state.db"));
+	const comm = new CommDB(join(root, "comm.db"));
+	const seed = loadBundledWorkflowSeeds().find(
+		(candidate) => candidate.templateId === "tpl_eng_heavy",
+	);
+	if (!seed) throw new Error("tpl_eng_heavy seed missing");
+	store.importWorkflowTemplateSeed(seed);
+	store.bindWorkflowCategory({
+		project: "flywheel",
+		taskCategory: "code",
+		templateId: seed.templateId,
+		updatedBy: "lead",
+	});
+	store.materializeWorkflowRun({
+		runId: "run-e2e",
+		issueId: "FLY-1423-E2E",
+		projectName: "flywheel",
+		taskCategory: "code",
+		claimsReadEnrolled: true,
+		actor: "lead",
+		env: WORKFLOW_ON,
+		startReservation: {
+			idempotencyKey: "start-e2e",
+			selectionDigest: "selection-e2e",
+			nodeId: "design",
+			attempt: 1,
+			executionId: "design-exec",
+			createdAt: "2026-07-23T00:00:00.000Z",
+		},
+	});
+	store.upsertWorkflowRunNode({
+		runId: "run-e2e",
+		nodeId: "design",
+		attempt: 1,
+		state: "running",
+		executionId: "design-exec",
+	});
+
+	const designDone = store.commitWorkflowTransitionTx({
+		runId: "run-e2e",
+		nodeId: "design",
+		attempt: 1,
+		executionId: "design-exec",
+		outcome: "design_done",
+		successorExecutionId: "implement-exec",
+		now: "2026-07-23T00:02:00.000Z",
+	});
+	if (!designDone.ok)
+		throw new Error(`design transition failed: ${designDone.reason}`);
+	store.upsertWorkflowRunNode({
+		runId: "run-e2e",
+		nodeId: "implement",
+		attempt: 1,
+		state: "running",
+		executionId: "implement-exec",
+	});
+	const implementDone = store.commitWorkflowTransitionTx({
+		runId: "run-e2e",
+		nodeId: "implement",
+		attempt: 1,
+		executionId: "implement-exec",
+		outcome: "implement_done",
+		successorExecutionId: "qa-exec",
+		now: "2026-07-23T00:04:00.000Z",
+	});
+	if (!implementDone.ok) {
+		throw new Error(`implement transition failed: ${implementDone.reason}`);
+	}
+	store.upsertWorkflowRunNode({
+		runId: "run-e2e",
+		nodeId: "qa",
+		attempt: 1,
+		state: "running",
+		executionId: "qa-exec",
+	});
+	const rawStore = store as unknown as {
+		db: { run(sql: string, params?: unknown[]): void };
+	};
+	rawStore.db.run(
+		`INSERT INTO workflow_actor
+		   (execution_id, project_name, issue_id, role, created_at)
+		 VALUES ('implement-exec', 'flywheel', 'FLY-1423-E2E', 'implement',
+		         '2026-07-23T00:00:00.000Z'),
+		        ('qa-exec', 'flywheel', 'FLY-1423-E2E', 'qa',
+		         '2026-07-23T00:00:00.000Z')`,
+	);
+
+	for (const [executionId, role] of [
+		["implement-exec", "implement"],
+		["qa-exec", "qa"],
+	] as const) {
+		store.upsertSession({
+			execution_id: executionId,
+			issue_id: "FLY-1423-E2E",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: role,
+			session_role: role,
+			chat_thread_role: role,
+			tmux_session: `tmux:${executionId}`,
+			worktree_path: root,
+		});
+		store.patchSessionMetadata(executionId, { pr_head_sha: BASE_HEAD });
+		comm.registerSession(
+			executionId,
+			`tmux:${executionId}`,
+			"flywheel",
+			"FLY-1423-E2E",
+			"flywheel-eng-lead",
+		);
+	}
+	comm.grantTurn("FLY-1423-E2E", "design-exec", "design", 1);
+	comm.grantTurn("FLY-1423-E2E", "implement-exec", "implement", 2);
+	comm.grantTurn("FLY-1423-E2E", "qa-exec", "qa", 3);
+
+	const wakes: Array<{
+		executionId: string;
+		activationId: string;
+		epoch: number;
+		context: unknown;
+	}> = [];
+	const coordinator = new WorkflowReworkCoordinator({
+		store,
+		ownerId: "e2e-coordinator",
+		now: () => NOW,
+		env: WORKFLOW_ON,
+		effects: {
+			getActorSession: (executionId) => store.getSession(executionId),
+			probeRegistered: async () => "alive",
+			probePersisted: async () => "alive",
+			assertWorktreeReady: async () => ({ ok: true }),
+			grantTurn: async (input) => {
+				const grantedAt = NOW.toISOString();
+				const epoch = comm.grantTurn(
+					input.issueId,
+					input.executionId,
+					input.nodeId,
+					NOW.getTime(),
+					{
+						project: input.projectName,
+						sourceEventId: input.sourceEventId,
+						targetRunId: input.runId,
+						activation: {
+							activationId: input.activationId,
+							runId: input.runId,
+							nodeId: input.nodeId,
+							attempt: input.attempt,
+							outputCredential: input.outputCredential,
+							submissionCredential: input.submissionCredential,
+							context: input.context,
+						},
+					},
+				);
+				return { epoch, grantedAt };
+			},
+			wakeActor: async ({ session, activationId, epoch, context }) => {
+				wakes.push({
+					executionId: session.execution_id,
+					activationId,
+					epoch,
+					context,
+				});
+				return { ok: true };
+			},
+			alertHold: vi.fn(async () => undefined),
+		},
+	});
+
+	return { store, comm, coordinator, wakes };
+}
+
+describe("FLY-1423 capability-level rework flow", () => {
+	it("re-enters the same implement and QA actors from fail through retest", async () => {
+		const { store, comm, coordinator, wakes } = await createHarness();
+		try {
+			const sideEffectsBefore = store.listWorkflowSideEffects("run-e2e");
+			const failed = store.commitWorkflowTransitionTx({
+				runId: "run-e2e",
+				nodeId: "qa",
+				attempt: 1,
+				executionId: "qa-exec",
+				outcome: "qa_fail",
+				subjectDigest: BASE_HEAD,
+				now: "2026-07-23T00:10:00.000Z",
+			});
+			expect(failed).toMatchObject({
+				ok: true,
+				targetNodeId: "implement",
+				targetAttempt: 2,
+				reworkRequestId: expect.any(String),
+			});
+			if (!failed.ok || !failed.reworkRequestId) {
+				throw new Error("QA fail did not create a rework request");
+			}
+
+			expect(await coordinator.reconcile(failed.reworkRequestId)).toMatchObject(
+				{
+					kind: "wake_delivered",
+					executionId: "implement-exec",
+					epoch: 4,
+				},
+			);
+			const implementActivation =
+				comm.getCurrentRunnerWorkflowActivation("implement-exec");
+			expect(implementActivation).toMatchObject({
+				activation_id: `activation:${failed.reworkRequestId}`,
+				node_id: "implement",
+				attempt: 2,
+				epoch: 4,
+			});
+			expect(JSON.parse(implementActivation!.context_json)).toMatchObject({
+				authority: "qa",
+				target: {
+					nodeId: "implement",
+					attempt: 2,
+					invalidationScope: ["implement", "qa"],
+				},
+			});
+			expect(
+				store.getWorkflowReworkVerificationPath(failed.reworkRequestId),
+			).toMatchObject({
+				state: "active",
+				current_node_id: "implement",
+				current_attempt: 2,
+			});
+
+			const completion = {
+				decision: { route: "needs_review" },
+				evidence: { commitMessages: ["fix QA regression"] },
+			};
+			const completed = store.commitEnrolledCompletion({
+				executionId: "implement-exec",
+				route: "needs_review",
+				sourceEventId: "complete-implement-attempt-2",
+				completionSubmission: completion,
+				subjectDigest: FIX_HEAD,
+				workflowActivation: {
+					activationId: implementActivation!.activation_id,
+					runId: implementActivation!.run_id,
+					nodeId: implementActivation!.node_id,
+					attempt: implementActivation!.attempt,
+					turnEpoch: implementActivation!.epoch,
+				},
+				now: "2026-07-23T00:21:00.000Z",
+			});
+			expect(completed).toMatchObject({ ok: true, idempotentReplay: false });
+			expect(
+				store.commitEnrolledCompletion({
+					executionId: "implement-exec",
+					route: "needs_review",
+					sourceEventId: "complete-implement-attempt-2-replay",
+					completionSubmission: completion,
+					subjectDigest: FIX_HEAD,
+					workflowActivation: {
+						activationId: implementActivation!.activation_id,
+						runId: implementActivation!.run_id,
+						nodeId: implementActivation!.node_id,
+						attempt: implementActivation!.attempt,
+						turnEpoch: implementActivation!.epoch,
+					},
+					now: "2026-07-23T00:22:00.000Z",
+				}),
+			).toMatchObject({ ok: true, idempotentReplay: true });
+
+			const pending = store.listWorkflowReworkDeliveries({
+				states: ["pending"],
+			});
+			expect(pending).toHaveLength(1);
+			const qaRequestId = pending[0]!.request_id;
+			expect(store.getWorkflowReworkRequest(qaRequestId)).toMatchObject({
+				authority: "qa",
+				base_revision: FIX_HEAD,
+				source_node_id: "implement",
+				source_attempt: 2,
+			});
+			expect(store.getLatestWorkflowReworkRoute(qaRequestId)).toMatchObject({
+				target_node_id: "qa",
+				target_attempt: 2,
+				preferred_actor_execution_id: "qa-exec",
+				invalidation_scope: ["qa"],
+			});
+			expect(
+				store.getWorkflowReworkDelivery(failed.reworkRequestId),
+			).toMatchObject({
+				state: "completed",
+			});
+
+			expect(await coordinator.reconcile(qaRequestId)).toMatchObject({
+				kind: "wake_delivered",
+				executionId: "qa-exec",
+				epoch: 5,
+			});
+			const qaActivation = comm.getCurrentRunnerWorkflowActivation("qa-exec");
+			expect(qaActivation).toMatchObject({
+				activation_id: `activation:${qaRequestId}`,
+				node_id: "qa",
+				attempt: 2,
+				epoch: 5,
+			});
+			const passed = store.commitWorkflowTransitionTx({
+				runId: "run-e2e",
+				nodeId: "qa",
+				attempt: 2,
+				executionId: "qa-exec",
+				outcome: "qa_pass",
+				subjectDigest: FIX_HEAD,
+				now: "2026-07-23T00:25:00.000Z",
+			});
+			expect(passed).toMatchObject({
+				ok: true,
+				targetNodeId: "founder_gate",
+				gateOpened: true,
+			});
+			expect(
+				store.commitWorkflowTransitionTx({
+					runId: "run-e2e",
+					nodeId: "qa",
+					attempt: 2,
+					executionId: "qa-exec",
+					outcome: "qa_pass",
+					subjectDigest: FIX_HEAD,
+					now: "2026-07-23T00:26:00.000Z",
+				}),
+			).toMatchObject({ ok: true, idempotentReplay: true });
+
+			expect(store.getWorkflowRun("run-e2e")).toMatchObject({
+				current_node_id: "founder_gate",
+			});
+			expect(store.getWorkflowReworkDelivery(qaRequestId)).toMatchObject({
+				state: "completed",
+			});
+			expect(store.listWorkflowSideEffects("run-e2e")).toEqual(
+				sideEffectsBefore,
+			);
+			expect(
+				store
+					.getPhaseSessionsForIssue("FLY-1423-E2E")
+					.filter((session) => session.chat_thread_role === "implement"),
+			).toHaveLength(1);
+			expect(
+				store
+					.getPhaseSessionsForIssue("FLY-1423-E2E")
+					.filter((session) => session.chat_thread_role === "qa"),
+			).toHaveLength(1);
+			expect(wakes.map((wake) => wake.executionId)).toEqual([
+				"implement-exec",
+				"qa-exec",
+			]);
+		} finally {
+			comm.close();
+			store.close();
+		}
+	});
+});

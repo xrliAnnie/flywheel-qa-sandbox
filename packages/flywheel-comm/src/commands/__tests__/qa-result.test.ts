@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CommDB } from "../../db.js";
 import {
 	buildQaResultBody,
 	buildQaResultFailureMarker,
@@ -78,7 +82,60 @@ describe("buildQaResultBody", () => {
 });
 
 describe("credential-backed qa-result delivery", () => {
+	it("uses the current TURN activation credential instead of the stale process env", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1423-qa-activation-"));
+		const dbPath = join(dir, "comm.db");
+		const db = new CommDB(dbPath);
+		try {
+			db.registerSession("qa-1", "win:1", "flywheel", "FLY-1423", "lead");
+			db.grantTurn("FLY-1423", "qa-1", "qa", 1_700_000_000_000, {
+				project: "flywheel",
+				sourceEventId: "rework:req-1:qa-activation-2",
+				targetRunId: "run-1",
+				activation: {
+					activationId: "qa-activation-2",
+					runId: "run-1",
+					nodeId: "qa",
+					attempt: 2,
+					submissionCredential: "current-qa-credential",
+					context: { verification: "qa_retest" },
+				},
+			});
+		} finally {
+			db.close();
+		}
+		vi.stubEnv("FLYWHEEL_COMM_DB", dbPath);
+		vi.stubEnv("FLYWHEEL_EXEC_ID", "qa-1");
+		vi.stubEnv("FLYWHEEL_ISSUE_ID", "FLY-1423");
+		vi.stubEnv("FLYWHEEL_PROJECT_NAME", "flywheel");
+		vi.stubEnv("FLYWHEEL_BRIDGE_URL", "http://127.0.0.1:9876");
+		vi.stubEnv("FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL", "stale-startup");
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					ok: true,
+					claimId: 1,
+					serverSeq: 1,
+					idempotentReplay: false,
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await qaResult({
+			status: "pass",
+			targetExec: "impl-1",
+			prHeadSha: "a".repeat(40),
+		});
+
+		const [, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+		expect(JSON.parse(init.body).credential).toBe("current-qa-credential");
+		rmSync(dir, { recursive: true, force: true });
+	});
+
 	it("uses the dedicated decision route without the fleet ingest bearer", async () => {
+		vi.stubEnv("FLYWHEEL_COMM_DB", "");
 		vi.stubEnv("FLYWHEEL_EXEC_ID", "qa-1");
 		vi.stubEnv("FLYWHEEL_ISSUE_ID", "FLY-1244");
 		vi.stubEnv("FLYWHEEL_PROJECT_NAME", "flywheel");
@@ -122,6 +179,7 @@ describe("credential-backed qa-result delivery", () => {
 	});
 
 	it("keeps legacy /events + bearer behavior when no scoped credential exists", async () => {
+		vi.stubEnv("FLYWHEEL_COMM_DB", "");
 		vi.stubEnv("FLYWHEEL_EXEC_ID", "qa-legacy");
 		vi.stubEnv("FLYWHEEL_ISSUE_ID", "FLY-1244");
 		vi.stubEnv("FLYWHEEL_PROJECT_NAME", "flywheel");

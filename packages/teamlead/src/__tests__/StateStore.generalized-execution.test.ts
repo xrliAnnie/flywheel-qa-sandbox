@@ -69,6 +69,44 @@ function createRun(store: StateStore, options: { output?: boolean } = {}) {
 	return snapshot;
 }
 
+function createAdmittedEngineRun(
+	store: StateStore,
+	options: { output?: boolean } = {},
+): { markerPath: string; outputCredential?: string } {
+	createRun(store, options);
+	const db = (
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db;
+	db.run(
+		"UPDATE workflow_run SET engine_owned = 1, claims_read_enrolled = 1 WHERE run_id = 'run-1'",
+	);
+	db.run(
+		`INSERT INTO workflow_side_effect_ledger
+		   (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state, created_at, updated_at)
+		 VALUES ('run-1', 'execute', 1, 'dispatch', 1, 'exec-1', 'intent_recorded',
+		         '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z')`,
+	);
+	const admitted = store.admitGeneralizedWorkflowExecution({
+		runId: "run-1",
+		nodeId: "execute",
+		executionId: "exec-1",
+		attempt: 1,
+		expiresAt: "2026-07-15T01:00:00.000Z",
+		absoluteDeadlineAt: "2026-07-16T00:00:00.000Z",
+		now: "2026-07-15T00:00:00.000Z",
+		env: enabled,
+	});
+	if (!admitted.ok) throw new Error(`admission failed: ${admitted.reason}`);
+	const markerRoot = mkdtempSync(join(tmpdir(), "fly1423-unlaunched-"));
+	cleanups.push(markerRoot);
+	return {
+		markerPath: join(markerRoot, "exec-1"),
+		outputCredential: admitted.outputCredential,
+	};
+}
+
 const enabled = {
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -476,6 +514,330 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
+	it("installs an append-only cancellation fence that rejects every launch entrance", async () => {
+		const store = await StateStore.create(":memory:");
+		const { markerPath } = createAdmittedEngineRun(store);
+		const fenced = store.beginUnlaunchedWorkflowCancellation({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 1,
+			executionId: "exec-1",
+			launchOrdinal: 1,
+			cancellationOwner: "tripwire-a",
+			reason: "unlaunched_admission_ttl",
+			now: "2026-07-15T02:00:00.000Z",
+		});
+		expect(fenced).toMatchObject({
+			ok: true,
+			generation: 1,
+			idempotentReplay: false,
+		});
+		expect(store.getWorkflowLaunchCancellation("exec-1")).toMatchObject({
+			execution_id: "exec-1",
+			generation: 1,
+			reason: "unlaunched_admission_ttl",
+			created_at: "2026-07-15T02:00:00.000Z",
+		});
+		expect(
+			store.recoverOrAcquireWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				now: "2026-07-15T02:01:00.000Z",
+				leaseExpiresAt: "2026-07-15T03:01:00.000Z",
+				markerPath,
+			}),
+		).toEqual({ status: "cancelled", generation: 1 });
+		expect(
+			store.renewWorkflowLaunchOwner({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				generation: 1,
+				now: "2026-07-15T02:01:00.000Z",
+				leaseExpiresAt: "2026-07-15T03:01:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "launch_cancelled" });
+		expect(
+			store.claimWorkflowLaunchDeliveryRepair({
+				executionId: "exec-1",
+				repairOwner: "repair-a",
+				now: "2026-07-15T02:01:00.000Z",
+				leaseExpiresAt: "2026-07-15T03:01:00.000Z",
+			}),
+		).toEqual({ status: "cancelled", generation: 1 });
+		expect(
+			store.commitWorkflowLaunchDeliveryRepair({
+				executionId: "exec-1",
+				repairOwner: "repair-a",
+				generation: 1,
+				attempt: 1,
+				markerPath,
+				now: "2026-07-15T02:01:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "launch_cancelled" });
+		expect(
+			store.fencedCommitWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				generation: 1,
+				deliveryAttempt: 0,
+				markerPath,
+				now: "2026-07-15T02:01:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "launch_cancelled" });
+		expect(existsSync(markerPath)).toBe(false);
+		store.close();
+	});
+
+	it("takes over only an expired pending owner before fencing; a live owner or committed launch wins", async () => {
+		const liveStore = await StateStore.create(":memory:");
+		const live = createAdmittedEngineRun(liveStore);
+		expect(
+			liveStore.recoverOrAcquireWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				now: "2026-07-15T00:01:00.000Z",
+				leaseExpiresAt: "2026-07-15T00:30:00.000Z",
+				markerPath: live.markerPath,
+			}),
+		).toMatchObject({ status: "acquired", generation: 1 });
+		expect(
+			liveStore.beginUnlaunchedWorkflowCancellation({
+				runId: "run-1",
+				nodeId: "execute",
+				attempt: 1,
+				executionId: "exec-1",
+				launchOrdinal: 1,
+				cancellationOwner: "tripwire-a",
+				reason: "unlaunched_admission_ttl",
+				now: "2026-07-15T00:10:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "launch_owner_live" });
+		expect(liveStore.getWorkflowLaunchCancellation("exec-1")).toBeUndefined();
+
+		const expired = liveStore.beginUnlaunchedWorkflowCancellation({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 1,
+			executionId: "exec-1",
+			launchOrdinal: 1,
+			cancellationOwner: "tripwire-a",
+			reason: "unlaunched_admission_ttl",
+			now: "2026-07-15T00:31:00.000Z",
+		});
+		expect(expired).toMatchObject({ ok: true, generation: 2 });
+		expect(liveStore.getWorkflowLaunchOwner("exec-1")).toMatchObject({
+			owner_generation: 2,
+			owner_id: "tripwire-a",
+			committed_generation: null,
+		});
+		expect(
+			liveStore.fencedCommitWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				generation: 1,
+				deliveryAttempt: 0,
+				markerPath: live.markerPath,
+				now: "2026-07-15T00:32:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "launch_cancelled" });
+		liveStore.close();
+
+		const committedStore = await StateStore.create(":memory:");
+		const committed = createAdmittedEngineRun(committedStore);
+		const owner = committedStore.recoverOrAcquireWorkflowLaunch({
+			executionId: "exec-1",
+			ownerId: "dispatcher-a",
+			now: "2026-07-15T00:01:00.000Z",
+			leaseExpiresAt: "2026-07-15T01:00:00.000Z",
+			markerPath: committed.markerPath,
+		});
+		if (owner.status !== "acquired") throw new Error("owner not acquired");
+		expect(
+			committedStore.fencedCommitWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				generation: owner.generation,
+				deliveryAttempt: owner.deliveryAttempt,
+				markerPath: committed.markerPath,
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			committedStore.beginUnlaunchedWorkflowCancellation({
+				runId: "run-1",
+				nodeId: "execute",
+				attempt: 1,
+				executionId: "exec-1",
+				launchOrdinal: 1,
+				cancellationOwner: "tripwire-a",
+				reason: "unlaunched_admission_ttl",
+				now: "2026-07-15T02:00:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "launch_committed" });
+		committedStore.close();
+	});
+
+	it("rolls back a fenced never-launched admission without rewriting immutable evidence", async () => {
+		const store = await StateStore.create(":memory:");
+		const { markerPath, outputCredential } = createAdmittedEngineRun(store, {
+			output: true,
+		});
+		const binding = store.getWorkflowExecutionBinding("exec-1");
+		const runtime = store.getWorkflowExecutionRuntime("exec-1");
+		const fenced = store.beginUnlaunchedWorkflowCancellation({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 1,
+			executionId: "exec-1",
+			launchOrdinal: 1,
+			cancellationOwner: "tripwire-a",
+			reason: "unlaunched_admission_ttl",
+			now: "2026-07-15T02:00:00.000Z",
+		});
+		if (!fenced.ok) throw new Error(`fence failed: ${fenced.reason}`);
+		const first = store.rollbackUnlaunchedWorkflowAdmission({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 1,
+			executionId: "exec-1",
+			launchOrdinal: 1,
+			fenceGeneration: fenced.generation,
+			markerPath,
+			now: "2026-07-15T02:01:00.000Z",
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+		});
+		expect(first).toMatchObject({ ok: true, idempotentReplay: false });
+		expect(store.getWorkflowExecutionBinding("exec-1")).toEqual(binding);
+		expect(store.getWorkflowExecutionRuntime("exec-1")).toEqual(runtime);
+		expect(store.getWorkflowRunNode("run-1", "execute", 1)).toMatchObject({
+			state: "admitted",
+			execution_id: "exec-1",
+		});
+		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		expect(store.listWorkflowSideEffects("run-1")[0]).toMatchObject({
+			state: "abandoned",
+			reason: "unlaunched_admission_rolled_back",
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "unlaunched_admission_rolled_back"),
+		).toHaveLength(1);
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+		if (!outputCredential) throw new Error("output credential missing");
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: outputCredential,
+				clientRequestId: "rolled-back-output",
+				payload: '{"late":true}',
+				now: "2026-07-15T02:02:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "credential_revoked" });
+		expect(
+			store.rollbackUnlaunchedWorkflowAdmission({
+				runId: "run-1",
+				nodeId: "execute",
+				attempt: 1,
+				executionId: "exec-1",
+				launchOrdinal: 1,
+				fenceGeneration: fenced.generation,
+				markerPath,
+				now: "2026-07-15T03:01:00.000Z",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: true });
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+		store.close();
+	});
+
+	it("refuses rollback when any positive never-launched evidence surface is missing", async () => {
+		const cases: Array<{
+			name: string;
+			arrange: (store: StateStore, markerPath: string) => void;
+			reason: string;
+		}> = [
+			{
+				name: "lifecycle claim",
+				arrange: (store) =>
+					store.insertLaunchClaim({
+						executionId: "exec-1",
+						rootUuid: "FLY-X",
+						project: "flywheel",
+						role: "main",
+					}),
+				reason: "lifecycle_claim_present",
+			},
+			{
+				name: "session row",
+				arrange: (store) =>
+					store.upsertSession({
+						execution_id: "exec-1",
+						issue_id: "FLY-X",
+						project_name: "flywheel",
+						status: "running",
+					}),
+				reason: "session_present",
+			},
+			{
+				name: "launch marker",
+				arrange: (_store, markerPath) => writeFileSync(markerPath, "late"),
+				reason: "launch_marker_present",
+			},
+		];
+
+		for (const testCase of cases) {
+			const store = await StateStore.create(":memory:");
+			const { markerPath } = createAdmittedEngineRun(store);
+			if (testCase.name !== "launch marker")
+				testCase.arrange(store, markerPath);
+			const fenced = store.beginUnlaunchedWorkflowCancellation({
+				runId: "run-1",
+				nodeId: "execute",
+				attempt: 1,
+				executionId: "exec-1",
+				launchOrdinal: 1,
+				cancellationOwner: "tripwire-a",
+				reason: "unlaunched_admission_ttl",
+				now: "2026-07-15T02:00:00.000Z",
+			});
+			if (testCase.name === "launch marker") {
+				expect(fenced).toMatchObject({ ok: true });
+				testCase.arrange(store, markerPath);
+				expect(
+					store.rollbackUnlaunchedWorkflowAdmission({
+						runId: "run-1",
+						nodeId: "execute",
+						attempt: 1,
+						executionId: "exec-1",
+						launchOrdinal: 1,
+						fenceGeneration: fenced.ok ? fenced.generation : -1,
+						markerPath,
+						now: "2026-07-15T02:01:00.000Z",
+						alertIdentity: {
+							leadId: "flywheel-eng-lead",
+							projectName: "flywheel",
+							leadResolution: "resolved",
+						},
+					}),
+				).toEqual({ ok: false, reason: testCase.reason });
+			} else {
+				expect(fenced).toEqual({ ok: false, reason: testCase.reason });
+			}
+			expect(store.listWorkflowSideEffects("run-1")[0]?.state).toBe(
+				"intent_recorded",
+			);
+			store.close();
+		}
+	});
+
 	it("repairs marker-after/DB-before crashes before lease takeover", async () => {
 		const store = await StateStore.create(":memory:");
 		createRun(store);
@@ -812,6 +1174,363 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(completedSession?.terminal_at).toBeTruthy();
 		store.close();
 	});
+
+	it("settles a changed resubmission from a superseded attempt with one frozen alert receipt", async () => {
+		const store = await StateStore.create(":memory:");
+		createRun(store);
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-1",
+				nodeId: "execute",
+				executionId: "exec-1",
+				attempt: 1,
+				activationId: "activation-1",
+				expiresAt: "2026-07-15T00:20:00.000Z",
+				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+				now: "2026-07-15T00:00:00.000Z",
+				env: enabled,
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			store.recordWorkflowActivationTurn({
+				activationId: "activation-1",
+				executionId: "exec-1",
+				issueId: "FLY-X",
+				epoch: 1,
+				sourceEventId: "turn:activation-1:epoch-1",
+				grantedAt: "2026-07-15T00:00:30.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		const originalSubmission = {
+			decision: { route: "no_code" },
+			evidence: { commitMessages: ["initial completion"] },
+		};
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "complete-original",
+				completionSubmission: originalSubmission,
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		store.upsertWorkflowRunNode({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 2,
+			state: "pending",
+			executionId: "exec-2",
+		});
+
+		const changedSubmission = {
+			decision: { route: "no_code" },
+			evidence: { commitMessages: ["fix after QA feedback"] },
+		};
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "complete-stale-missing-context",
+				completionSubmission: changedSubmission,
+				now: "2026-07-15T00:02:30.000Z",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			}),
+		).toEqual({ ok: false, reason: "workflow_activation_required" });
+		const activation1 = {
+			activationId: "activation-1",
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 1,
+			turnEpoch: 1,
+		};
+		const first = store.commitEnrolledCompletion({
+			executionId: "exec-1",
+			route: "no_code",
+			sourceEventId: "complete-stale-1",
+			completionSubmission: changedSubmission,
+			workflowActivation: activation1,
+			now: "2026-07-15T00:03:00.000Z",
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+		});
+		expect(first).toMatchObject({
+			ok: false,
+			reason: "stale_resubmission",
+			idempotentReplay: false,
+		});
+		const staleEvents = store
+			.listWorkflowRunEvents("run-1")
+			.filter((event) => event.kind === "stale_completion_resubmission");
+		expect(staleEvents).toHaveLength(1);
+		expect(staleEvents[0]).toMatchObject({
+			execution_id: "exec-1",
+			payload: {
+				currentAttempt: 2,
+				currentState: "pending",
+				at: "2026-07-15T00:03:00.000Z",
+			},
+		});
+		const alerts = store.listWorkflowAlertOutbox();
+		expect(alerts).toHaveLength(1);
+		expect(alerts[0]?.payload.metadata.workflowEngine).toMatchObject({
+			executionId: "exec-1",
+			disposition: "stale_resubmission",
+		});
+
+		// Classification-time evidence is immutable. A replay after the successor
+		// advances must reuse the first event/alert payload rather than recompute it.
+		store.upsertWorkflowRunNode({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 2,
+			state: "running",
+			executionId: "exec-2",
+		});
+		const replay = store.commitEnrolledCompletion({
+			executionId: "exec-1",
+			route: "no_code",
+			sourceEventId: "complete-stale-2",
+			completionSubmission: changedSubmission,
+			workflowActivation: activation1,
+			now: "2026-07-15T00:04:00.000Z",
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+		});
+		expect(replay).toMatchObject({
+			ok: false,
+			reason: "stale_resubmission",
+			idempotentReplay: true,
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "stale_completion_resubmission"),
+		).toEqual(staleEvents);
+		expect(store.listWorkflowAlertOutbox()).toEqual(alerts);
+		expect(
+			store.getWorkflowNodeCompletion("run-1", "execute", 1),
+		).toMatchObject({
+			execution_id: "exec-1",
+			completion_submission_digest: expect.any(String),
+		});
+		store.close();
+	});
+
+	it("completes two attempts on one actor only with exact activation epochs", async () => {
+		const store = await StateStore.create(":memory:");
+		createRun(store);
+		const firstAdmission = store.admitGeneralizedWorkflowExecution({
+			runId: "run-1",
+			nodeId: "execute",
+			executionId: "exec-1",
+			attempt: 1,
+			activationId: "activation-1",
+			expiresAt: "2026-07-15T00:20:00.000Z",
+			absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+			now: "2026-07-15T00:00:00.000Z",
+			env: enabled,
+		});
+		expect(firstAdmission).toMatchObject({ ok: true });
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "complete-1",
+				completionSubmission: { decision: { route: "no_code" }, round: 1 },
+				now: "2026-07-15T00:01:00.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+
+		store.upsertWorkflowRunNode({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 2,
+			state: "pending",
+			executionId: "exec-1",
+		});
+		const secondAdmission = store.admitGeneralizedWorkflowExecution({
+			runId: "run-1",
+			nodeId: "execute",
+			executionId: "exec-1",
+			attempt: 2,
+			activationId: "activation-2",
+			activationMode: "wake",
+			reworkRequestId: "request-1",
+			expiresAt: "2026-07-15T00:20:00.000Z",
+			absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+			now: "2026-07-15T00:02:00.000Z",
+			env: enabled,
+		});
+		expect(secondAdmission).toMatchObject({ ok: true });
+		expect(
+			store.recordWorkflowActivationTurn({
+				activationId: "activation-2",
+				executionId: "exec-1",
+				issueId: "FLY-X",
+				epoch: 2,
+				sourceEventId: "turn:activation-2:epoch-2",
+				grantedAt: "2026-07-15T00:02:00.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "complete-2-missing-context",
+				completionSubmission: { decision: { route: "no_code" }, round: 2 },
+				now: "2026-07-15T00:03:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "workflow_activation_required" });
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "complete-2-wrong-epoch",
+				completionSubmission: { decision: { route: "no_code" }, round: 2 },
+				workflowActivation: {
+					activationId: "activation-2",
+					runId: "run-1",
+					nodeId: "execute",
+					attempt: 2,
+					turnEpoch: 1,
+				},
+				now: "2026-07-15T00:03:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "activation_turn_conflict" });
+
+		const activation2 = {
+			activationId: "activation-2",
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 2,
+			turnEpoch: 2,
+		};
+		const secondSubmission = {
+			decision: { route: "no_code" },
+			round: 2,
+		};
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "complete-2",
+				completionSubmission: secondSubmission,
+				workflowActivation: activation2,
+				now: "2026-07-15T00:03:00.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		expect(
+			store.getWorkflowNodeCompletion("run-1", "execute", 2),
+		).toMatchObject({
+			activation_id: "activation-2",
+			execution_id: "exec-1",
+		});
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "complete-2-replay",
+				completionSubmission: secondSubmission,
+				workflowActivation: activation2,
+				now: "2026-07-15T00:04:00.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: true });
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "complete-2-conflict",
+				completionSubmission: { ...secondSubmission, changed: true },
+				workflowActivation: activation2,
+				now: "2026-07-15T00:05:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "completion_conflict" });
+		store.close();
+	});
+
+	it.each([
+		["execution", "other-exec"],
+		["route", "auto_approve"],
+	] as const)(
+		"keeps a true %s receipt conflict rejected after a newer attempt exists",
+		async (column, conflictingValue) => {
+			const store = await StateStore.create(":memory:");
+			createRun(store);
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					runId: "run-1",
+					nodeId: "execute",
+					executionId: "exec-1",
+					attempt: 1,
+					expiresAt: "2026-07-15T00:20:00.000Z",
+					absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+					now: "2026-07-15T00:00:00.000Z",
+					env: enabled,
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.commitEnrolledCompletion({
+					executionId: "exec-1",
+					route: "no_code",
+					sourceEventId: "complete-original",
+					completionSubmission: { decision: { route: "no_code" } },
+					now: "2026-07-15T00:02:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			store.upsertWorkflowRunNode({
+				runId: "run-1",
+				nodeId: "execute",
+				attempt: 2,
+				state: "pending",
+				executionId: "exec-2",
+			});
+			const raw = store as unknown as {
+				db: { run: (sql: string, params: unknown[]) => void };
+			};
+			raw.db.run("DROP TRIGGER workflow_node_completion_no_update", []);
+			if (column === "execution") raw.db.run("PRAGMA foreign_keys = OFF", []);
+			raw.db.run(
+				`UPDATE workflow_node_completion SET ${column === "execution" ? "execution_id" : "route"} = ? WHERE run_id = 'run-1' AND node_id = 'execute' AND attempt = 1`,
+				[conflictingValue],
+			);
+			if (column === "execution") raw.db.run("PRAGMA foreign_keys = ON", []);
+			raw.db.run(
+				"CREATE TRIGGER workflow_node_completion_no_update BEFORE UPDATE ON workflow_node_completion BEGIN SELECT RAISE(ABORT, 'workflow_node_completion is append-only'); END",
+				[],
+			);
+
+			expect(
+				store.commitEnrolledCompletion({
+					executionId: "exec-1",
+					route: "no_code",
+					sourceEventId: "complete-changed",
+					completionSubmission: {
+						decision: { route: "no_code" },
+						evidence: { changed: true },
+					},
+					now: "2026-07-15T00:03:00.000Z",
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+				}),
+			).toEqual({ ok: false, reason: "completion_conflict" });
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(0);
+			store.close();
+		},
+	);
 
 	it("holds teardown without an explicit receipt and rejects non-start/review execution", async () => {
 		const store = await StateStore.create(":memory:");

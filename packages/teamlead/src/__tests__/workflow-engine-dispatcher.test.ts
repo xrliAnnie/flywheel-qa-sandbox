@@ -476,6 +476,145 @@ function fakeStartDispatcher(store: StateStore) {
 	return { dispatcher, requests, start };
 }
 
+function seedCompletedKickbackHusk(
+	store: StateStore,
+	input: {
+		nodeId: string;
+		executionId: string;
+		attempt: number;
+		route: string;
+	},
+): void {
+	const db = (
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db;
+	seedWorkflowBinding(store, {
+		nodeId: input.nodeId,
+		executionId: input.executionId,
+		attempt: input.attempt,
+	});
+	db.run(
+		`INSERT INTO workflow_node_completion
+		   (activation_id, run_id, node_id, attempt, execution_id, route, event_uid,
+		    source_event_id, completion_submission_digest, completed_at)
+		 VALUES (?, 'run-1', ?, ?, ?, ?, ?, ?, ?, '2026-07-16T00:09:00.000Z')`,
+		[
+			`activation:${input.executionId}:run-1:${input.nodeId}:${input.attempt}`,
+			input.nodeId,
+			input.attempt,
+			input.executionId,
+			input.route,
+			`wfc:run-1:${input.nodeId}:${input.attempt}`,
+			`complete:${input.executionId}`,
+			`digest:${input.executionId}`,
+		],
+	);
+}
+
+function seedWorkflowBinding(
+	store: StateStore,
+	input: { nodeId: string; executionId: string; attempt: number },
+): void {
+	const db = (
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db;
+	db.run(
+		`INSERT OR IGNORE INTO workflow_actor
+		   (execution_id, project_name, issue_id, role, created_at)
+		 VALUES (?, 'flywheel', 'FLY-1307', ?, '2026-07-16T00:06:00.000Z')`,
+		[input.executionId, input.nodeId],
+	);
+	db.run(
+		`INSERT INTO workflow_execution_binding
+		   (activation_id, execution_id, run_id, node_id, attempt, mode,
+		    rework_request_id, bound_at)
+		 VALUES (?, ?, 'run-1', ?, ?, 'spawn', NULL,
+		         '2026-07-16T00:06:00.000Z')`,
+		[
+			`activation:${input.executionId}:run-1:${input.nodeId}:${input.attempt}`,
+			input.executionId,
+			input.nodeId,
+			input.attempt,
+		],
+	);
+}
+
+async function storeWithQaFailKickback() {
+	const store = await storeWithIntent("qa");
+	seedCompletedKickbackHusk(store, {
+		nodeId: "implement",
+		executionId: "implement-1",
+		attempt: 1,
+		route: "needs_review",
+	});
+	store.upsertSession({
+		execution_id: "implement-1",
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "completed",
+		session_role: "implement",
+	});
+	store.applyWorkflowShadowBatch({
+		projectName: "flywheel",
+		issueId: "FLY-1307",
+		runId: "run-1",
+		ops: [
+			{
+				op: "side_effect",
+				node: "qa",
+				attempt: 1,
+				executionId: "qa-1",
+				to: "started",
+			},
+		],
+	});
+	store.upsertWorkflowRunNode({
+		runId: "run-1",
+		nodeId: "qa",
+		attempt: 1,
+		state: "running",
+		executionId: "qa-1",
+	});
+	store.upsertSession({
+		execution_id: "qa-1",
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "completed",
+		session_role: "qa",
+		issue_identifier: "FLY-1307",
+		issue_title: "DAG template engine",
+		design_backend: "claude",
+		doc_tier: "full",
+		issue_url: "https://linear.app/flywheel/FLY-1307",
+	});
+	store.insertEvent({
+		event_id: "workflow-decision:qa-1:fail",
+		execution_id: "qa-1",
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		event_type: "workflow_decision",
+		source: "bridge.workflow-decision",
+		payload: { status: "fail", summary: "two acceptance tests failed" },
+	});
+	expect(
+		store.commitWorkflowTransitionTx({
+			runId: "run-1",
+			nodeId: "qa",
+			attempt: 1,
+			executionId: "qa-1",
+			outcome: "qa_fail",
+			subjectDigest: HEAD,
+			successorExecutionId: "implement-fix-1",
+			now: "2026-07-16T00:15:00.000Z",
+		}),
+	).toMatchObject({ ok: true, loopIteration: 1 });
+	return store;
+}
+
 describe("WorkflowEngineDispatcher", () => {
 	it("executes an engine-owned land node and terminalizes the run from its durable receipt", async () => {
 		const store = await storeWithLandIntent();
@@ -828,6 +967,7 @@ describe("WorkflowEngineDispatcher", () => {
 
 	it("contains top-level store read failures", async () => {
 		const store = {
+			listWorkflowReworkDeliveries: () => [],
 			listNonTerminalWorkflowSideEffects: () => {
 				throw new Error("database unavailable");
 			},
@@ -1004,79 +1144,433 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it("preserves Lead routing and QA-fix context on an engine loop dispatch", async () => {
-		const store = await storeWithIntent("qa");
-		store.applyWorkflowShadowBatch({
-			projectName: "flywheel",
-			issueId: "FLY-1307",
-			runId: "run-1",
-			ops: [
-				{
-					op: "side_effect",
-					node: "qa",
-					attempt: 1,
-					executionId: "qa-1",
-					to: "started",
-				},
-			],
-		});
-		store.upsertWorkflowRunNode({
-			runId: "run-1",
-			nodeId: "qa",
-			attempt: 1,
-			state: "running",
-			executionId: "qa-1",
-		});
-		store.upsertSession({
-			execution_id: "qa-1",
-			issue_id: "FLY-1307",
-			project_name: "flywheel",
-			status: "completed",
-			issue_identifier: "FLY-1307",
-			issue_title: "DAG template engine",
-			design_backend: "claude",
-			doc_tier: "full",
-			issue_url: "https://linear.app/flywheel/FLY-1307",
-		});
-		store.insertEvent({
-			event_id: "workflow-decision:qa-1:fail",
-			execution_id: "qa-1",
-			issue_id: "FLY-1307",
-			project_name: "flywheel",
-			event_type: "workflow_decision",
-			source: "bridge.workflow-decision",
-			payload: { status: "fail", summary: "two acceptance tests failed" },
-		});
-		expect(
-			store.commitWorkflowTransitionTx({
-				runId: "run-1",
-				nodeId: "qa",
-				attempt: 1,
-				executionId: "qa-1",
-				outcome: "qa_fail",
-				successorExecutionId: "implement-fix-1",
-				now: "2026-07-16T00:15:00.000Z",
-			}),
-		).toMatchObject({ ok: true, loopIteration: 1 });
-
+	it("hands QA rework to the coordinator without closing or spawning the healthy actor", async () => {
+		const store = await storeWithQaFailKickback();
 		const fake = fakeStartDispatcher(store);
+		const reconcileWorkflowRework = vi.fn(async () => ({
+			kind: "wake_delivered" as const,
+			executionId: "implement-1",
+			activationId: "activation:rework-1",
+			epoch: 2,
+		}));
 		const dispatcher = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
-			stateRoot: mkdtempSync(join(tmpdir(), "fly1307-engine-fix-")),
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1423-same-actor-")),
 			env: WORKFLOW_ON,
+			reconcileWorkflowRework,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(reconcileWorkflowRework).toHaveBeenCalledOnce();
+		expect(reconcileWorkflowRework).toHaveBeenCalledWith(
+			expect.stringMatching(/^rework:/),
+		);
+		expect(fake.start).not.toHaveBeenCalled();
+		expect(
+			store
+				.listWorkflowSideEffects("run-1")
+				.filter((row) => row.node_id === "implement" && row.attempt === 2),
+		).toHaveLength(0);
+		store.close();
+	});
+
+	it("mints a fresh launch only after the coordinator proves the actor dead", async () => {
+		const store = await storeWithQaFailKickback();
+		const fake = fakeStartDispatcher(store);
+		const reconcileWorkflowRework = vi.fn(async (requestId: string) => {
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run(
+				"UPDATE workflow_rework_delivery SET state = 'replacement_pending' WHERE request_id = ?",
+				[requestId],
+			);
+			return {
+				kind: "replacement_pending" as const,
+				executionId: "implement-1",
+				reason: "persisted_target_dead",
+			};
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1423-dead-replacement-")),
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-16T00:16:00.000Z"),
 			resolvePredecessorHead: async () => HEAD,
-			resolveLeadId: () => "flywheel-eng-lead",
+			reconcileWorkflowRework,
 		});
+
 		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
-		expect(fake.requests[0]).toMatchObject({
-			leadId: "flywheel-eng-lead",
-			sessionRole: "implement",
-			phaseFixContext: {
-				round: 1,
-				qaSummary: "two acceptance tests failed",
-			},
+		expect(fake.start).toHaveBeenCalledOnce();
+		const launched = fake.requests[0]?.generalizedExecution?.executionId;
+		expect(launched).toEqual(expect.any(String));
+		expect(launched).not.toBe("implement-1");
+		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
+			state: "running",
+			execution_id: launched,
 		});
+		const requestId = reconcileWorkflowRework.mock.calls[0]?.[0];
+		expect(store.getWorkflowReworkDelivery(requestId!)).toMatchObject({
+			state: "wake_delivered",
+		});
+		store.close();
+	});
+
+	it("fences and rolls back a proven-dead replacement that never launches", async () => {
+		const store = await storeWithQaFailKickback();
+		const start = vi.fn(async () => {
+			throw new Error("synthetic replacement prelaunch failure");
+		});
+		const startDispatcher = {
+			start,
+			getInflightCount: () => 0,
+			validateAgentName: () => ({ ok: true as const }),
+		} as IStartDispatcher;
+		const reconcileWorkflowRework = vi.fn(async (requestId: string) => {
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run(
+				"UPDATE workflow_rework_delivery SET state = 'replacement_pending' WHERE request_id = ?",
+				[requestId],
+			);
+			return {
+				kind: "replacement_pending" as const,
+				executionId: "implement-1",
+				reason: "persisted_target_dead",
+			};
+		});
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly1423-replacement-fail-"));
+		const env = {
+			...WORKFLOW_ON,
+			FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS: "1000",
+			FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS: "2000",
+		};
+		const first = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher,
+			stateRoot,
+			env,
+			now: () => new Date("2026-07-16T00:16:00.000Z"),
+			resolvePredecessorHead: async () => HEAD,
+			reconcileWorkflowRework,
+			probeUnlaunchedExternalEvidence: async () => "absent",
+			resolveRunAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			}),
+		});
+		expect(await first.reconcile()).toEqual({ started: 0, held: 1 });
+		const replacement = store.getWorkflowRunNode(
+			"run-1",
+			"implement",
+			2,
+		)?.execution_id;
+		expect(replacement).toEqual(expect.any(String));
+		expect(store.getSession(replacement!)).toBeUndefined();
+		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
+			state: "admitted",
+		});
+		const replacementBinding = store.getWorkflowExecutionBinding(replacement!);
+		expect(replacementBinding).toMatchObject({
+			mode: "replacement",
+		});
+		expect(store.getWorkflowLaunchOwner(replacement!)).toMatchObject({
+			lease_expires_at: "2026-07-16T01:16:00.000Z",
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.find(
+					(event) =>
+						event.event_uid ===
+						`workflow_activation_admitted:${replacementBinding!.activation_id}`,
+				),
+		).toMatchObject({ payload: { at: "2026-07-16T00:16:00.000Z" } });
+
+		const recovered = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher,
+			stateRoot,
+			env,
+			now: () => new Date("2026-07-16T01:17:00.000Z"),
+			resolvePredecessorHead: async () => HEAD,
+			probeUnlaunchedExternalEvidence: async () => "absent",
+			resolveRunAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			}),
+		});
+		expect(await recovered.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		expect(store.getWorkflowLaunchCancellation(replacement!)).toBeDefined();
+		expect(
+			store
+				.listWorkflowSideEffects("run-1")
+				.find((row) => row.execution_id === replacement),
+		).toMatchObject({ state: "abandoned" });
+		expect(store.listWorkflowAlertOutbox().length).toBeGreaterThanOrEqual(2);
+		const requestId = reconcileWorkflowRework.mock.calls[0]?.[0];
+		expect(store.getWorkflowReworkDelivery(requestId!)).toMatchObject({
+			state: "held",
+		});
+		store.close();
+	});
+
+	it("durably alerts then holds a stalled rework activation without spawning", async () => {
+		const store = await storeWithQaFailKickback();
+		const fake = fakeStartDispatcher(store);
+		const env = {
+			...WORKFLOW_ON,
+			FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS: "1000",
+			FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS: "2000",
+		};
+		const reconcileWorkflowRework = vi.fn(async () => ({
+			kind: "busy" as const,
+		}));
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env,
+			now: () => new Date("2026-07-16T00:20:00.000Z"),
+			reconcileWorkflowRework,
+			resolveRunAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			}),
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		expect(fake.start).not.toHaveBeenCalled();
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "rework_activation_stalled_alerted"),
+		).toHaveLength(1);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "rework_activation_stalled_held"),
+		).toHaveLength(1);
+		store.close();
+	});
+
+	it("rolls back an admitted ghost only after the owner lease expires and external evidence stays absent", async () => {
+		const store = await storeWithIntent("implement");
+		const start = vi.fn(async () => {
+			throw new Error("synthetic prelaunch failure");
+		});
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly1423-admitted-ghost-"));
+		const initial = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: {
+				start,
+				getInflightCount: () => 0,
+				validateAgentName: () => ({ ok: true as const }),
+			} as IStartDispatcher,
+			stateRoot,
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS: "1000",
+				FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS: "2000",
+			},
+			now: () => new Date("2026-07-16T00:07:00.000Z"),
+			resolvePredecessorHead: async () => HEAD,
+			probeUnlaunchedExternalEvidence: async () => "absent",
+		});
+		expect(await initial.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
+			state: "admitted",
+			execution_id: "implement-1",
+		});
+
+		const afterExpiry = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: {
+				start,
+				getInflightCount: () => 0,
+				validateAgentName: () => ({ ok: true as const }),
+			} as IStartDispatcher,
+			stateRoot,
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS: "1000",
+				FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS: "2000",
+			},
+			now: () => new Date("2026-07-16T01:08:00.000Z"),
+			resolvePredecessorHead: async () => HEAD,
+			probeUnlaunchedExternalEvidence: async () => "absent",
+			resolveRunAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			}),
+		});
+		expect(await afterExpiry.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		expect(store.listWorkflowSideEffects("run-1")[0]).toMatchObject({
+			state: "abandoned",
+		});
+		expect(store.getSession("implement-1")).toBeUndefined();
+		expect(store.getWorkflowLaunchCancellation("implement-1")).toBeDefined();
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "unlaunched_admission_rolled_back"),
+		).toHaveLength(1);
+		store.close();
+	});
+
+	it("holds without rollback when external launch evidence is present at the hard TTL", async () => {
+		const store = await storeWithIntent("implement");
+		const start = vi.fn(async () => {
+			throw new Error("synthetic prelaunch failure");
+		});
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly1423-admitted-present-"));
+		const common = {
+			store,
+			startDispatcher: {
+				start,
+				getInflightCount: () => 0,
+				validateAgentName: () => ({ ok: true as const }),
+			} as IStartDispatcher,
+			stateRoot,
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS: "1000",
+				FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS: "2000",
+			},
+			resolvePredecessorHead: async () => HEAD,
+			resolveRunAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved" as const,
+			}),
+		};
+		expect(
+			await new WorkflowEngineDispatcher({
+				...common,
+				now: () => new Date("2026-07-16T00:07:00.000Z"),
+				probeUnlaunchedExternalEvidence: async () => "present",
+			}).reconcile(),
+		).toEqual({ started: 0, held: 1 });
+		expect(
+			await new WorkflowEngineDispatcher({
+				...common,
+				now: () => new Date("2026-07-16T01:08:00.000Z"),
+				probeUnlaunchedExternalEvidence: async () => "present",
+			}).reconcile(),
+		).toEqual({ started: 0, held: 0 });
+		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		expect(store.listWorkflowSideEffects("run-1")[0]?.state).toBe(
+			"intent_recorded",
+		);
+		expect(store.getWorkflowLaunchCancellation("implement-1")).toBeUndefined();
+		store.close();
+	});
+
+	it("reads the unlaunched tripwire switch on every reconcile", async () => {
+		const store = await storeWithIntent("implement");
+		const start = vi.fn(async () => {
+			throw new Error("synthetic prelaunch failure");
+		});
+		const env = {
+			...WORKFLOW_ON,
+			FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE: "0",
+			FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS: "1000",
+			FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS: "2000",
+		};
+		const now = vi.fn(() => new Date("2026-07-16T00:16:00.000Z"));
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: {
+				start,
+				getInflightCount: () => 0,
+				validateAgentName: () => ({ ok: true as const }),
+			} as IStartDispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1423-tripwire-switch-")),
+			env,
+			now,
+			resolvePredecessorHead: async () => HEAD,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		now.mockReturnValue(new Date("2026-07-16T00:30:00.000Z"));
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(0);
+
+		env.FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE = "1";
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(2);
+		store.close();
+	});
+
+	it("keeps the cancellation fence and refuses rollback when evidence appears after fencing", async () => {
+		const store = await storeWithIntent("implement");
+		const start = vi.fn(async () => {
+			throw new Error("synthetic prelaunch failure");
+		});
+		const startDispatcher = {
+			start,
+			getInflightCount: () => 0,
+			validateAgentName: () => ({ ok: true as const }),
+		} as IStartDispatcher;
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly1423-post-fence-race-"));
+		const env = {
+			...WORKFLOW_ON,
+			FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS: "1000",
+			FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS: "2000",
+		};
+		expect(
+			await new WorkflowEngineDispatcher({
+				store,
+				startDispatcher,
+				stateRoot,
+				env,
+				now: () => new Date("2026-07-16T00:07:00.000Z"),
+				resolvePredecessorHead: async () => HEAD,
+				probeUnlaunchedExternalEvidence: async () => "absent",
+			}).reconcile(),
+		).toEqual({ started: 0, held: 1 });
+		const probe = vi
+			.fn<() => Promise<"absent" | "present">>()
+			.mockResolvedValueOnce("absent")
+			.mockResolvedValueOnce("present");
+
+		expect(
+			await new WorkflowEngineDispatcher({
+				store,
+				startDispatcher,
+				stateRoot,
+				env,
+				now: () => new Date("2026-07-16T01:08:00.000Z"),
+				resolvePredecessorHead: async () => HEAD,
+				probeUnlaunchedExternalEvidence: probe,
+			}).reconcile(),
+		).toEqual({ started: 0, held: 0 });
+		expect(probe).toHaveBeenCalledTimes(2);
+		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		expect(store.getWorkflowLaunchCancellation("implement-1")).toBeDefined();
+		expect(store.listWorkflowSideEffects("run-1")[0]?.state).toBe(
+			"intent_recorded",
+		);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.some((event) => event.kind === "unlaunched_admission_rolled_back"),
+		).toBe(false);
 		store.close();
 	});
 

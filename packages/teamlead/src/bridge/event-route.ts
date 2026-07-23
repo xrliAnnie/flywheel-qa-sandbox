@@ -26,11 +26,12 @@ import {
 	applyTransition,
 } from "../applyTransition.js";
 import type { ReconnectController } from "../HeartbeatService.js";
-import type { ProjectEntry } from "../ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import {
 	REVIEW_BINDING_UNBOUND,
 	type Session,
 	type StateStore,
+	type WorkflowCompletionActivationContext,
 } from "../StateStore.js";
 import { handleArtifactEvent } from "./artifact-event.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
@@ -157,6 +158,38 @@ function resolveIdentifier(
 /** Coerce a value to number or undefined. */
 function asNumber(v: unknown): number | undefined {
 	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+function asWorkflowCompletionActivation(
+	value: unknown,
+): WorkflowCompletionActivationContext | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	const activationId = asString(record.activationId);
+	const runId = asString(record.runId);
+	const nodeId = asString(record.nodeId);
+	const attempt = asNumber(record.attempt);
+	const turnEpoch = asNumber(record.turnEpoch);
+	if (
+		!activationId ||
+		!runId ||
+		!nodeId ||
+		!Number.isInteger(attempt) ||
+		(attempt ?? 0) < 1 ||
+		!Number.isInteger(turnEpoch) ||
+		(turnEpoch ?? 0) < 1
+	) {
+		return undefined;
+	}
+	return {
+		activationId,
+		runId,
+		nodeId,
+		attempt: attempt!,
+		turnEpoch: turnEpoch!,
+	};
 }
 
 function asTerminalFailureInfo(v: unknown): TerminalFailureInfo | undefined {
@@ -665,11 +698,73 @@ export function createEventRouter(
 					!Array.isArray(event.payload.decision)
 						? (event.payload.decision as Record<string, unknown>)
 						: undefined;
+				const rawWorkflowActivation = event.payload?.workflowActivation;
+				const rawCompletionEvidence =
+					event.payload?.evidence &&
+					typeof event.payload.evidence === "object" &&
+					!Array.isArray(event.payload.evidence)
+						? (event.payload.evidence as Record<string, unknown>)
+						: undefined;
+				const completionHeadRaw = asString(
+					rawCompletionEvidence?.headSha,
+				)?.toLowerCase();
+				const completionHead =
+					completionHeadRaw && /^[0-9a-f]{40}$/.test(completionHeadRaw)
+						? completionHeadRaw
+						: undefined;
+				const workflowActivation = asWorkflowCompletionActivation(
+					rawWorkflowActivation,
+				);
+				if (rawWorkflowActivation !== undefined && !workflowActivation) {
+					res.status(409).json({
+						error: "workflow_completion_rejected",
+						reason: "invalid_activation_context",
+					});
+					return;
+				}
+				const generalizedContext = workflowActivation
+					? store.getGeneralizedWorkflowNodeForActivation(
+							workflowActivation.activationId,
+						)
+					: store.getGeneralizedWorkflowNodeForExecution(event.execution_id);
+				let alertIdentity:
+					| {
+							leadId: string;
+							projectName: string;
+							leadResolution: "resolved" | "fallback";
+					  }
+					| undefined;
+				if (generalizedContext) {
+					const projectName = generalizedContext.run.project_name;
+					const session = store.getSessionByIssue(
+						generalizedContext.run.issue_id,
+					);
+					try {
+						const labels = session
+							? store.getSessionLabels(session.execution_id)
+							: [];
+						alertIdentity = {
+							leadId: resolveLeadForIssue(projects, projectName, labels).lead
+								.agentId,
+							projectName,
+							leadResolution: "resolved",
+						};
+					} catch {
+						alertIdentity = {
+							leadId: config.defaultLeadAgentId,
+							projectName,
+							leadResolution: "fallback",
+						};
+					}
+				}
 				const completion = store.commitEnrolledCompletion({
 					executionId: event.execution_id,
 					route: asString(decision?.route) ?? "",
 					sourceEventId: event.event_id,
 					completionSubmission: event.payload ?? {},
+					...(completionHead ? { subjectDigest: completionHead } : {}),
+					...(workflowActivation ? { workflowActivation } : {}),
+					alertIdentity,
 				});
 				if (
 					!(completion.ok === false && completion.reason === "not_enrolled")
@@ -680,6 +775,14 @@ export function createEventRouter(
 								ok: true,
 								generalized: true,
 								settled: "stale_execution_superseded",
+							});
+							return;
+						}
+						if (completion.reason === "stale_resubmission") {
+							res.json({
+								ok: true,
+								generalized: true,
+								settled: "stale_resubmission_escalated",
 							});
 							return;
 						}
