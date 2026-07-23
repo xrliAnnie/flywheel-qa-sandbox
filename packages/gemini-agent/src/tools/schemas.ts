@@ -66,7 +66,7 @@ export const TOOL_DECLARATIONS: Record<string, ToolDeclaration> = {
 	dispatch_runner: {
 		name: "dispatch_runner",
 		description:
-			"Dispatch an autonomous engineering Runner to work on an existing Linear issue. The Runner will design, implement and open a PR. Requires the issue identifier and the project name. Returns an executionId to poll with query_status. ADMISSION: the issue must carry the target Lead's department label (issues you created via create_issue get it automatically when configured). A 403 with code DEPT_SCOPE_REJECT means the issue's labels do not satisfy that gate (reason issue_no_department_label = the label is missing; label_mismatch = it belongs to a different Lead) — recreate the issue with the correct department label or ask the user; do not retry the same dispatch unchanged.",
+			"Dispatch an autonomous Runner to work on an existing Linear issue. Requires the issue identifier, project name, and canonical taskCategory so work-kind routing can select the correct workflow. Returns an executionId to poll with query_status. ADMISSION: the issue must carry the target Lead's department label (issues you created via create_issue get it automatically when configured). A 403 with code DEPT_SCOPE_REJECT means the issue's labels do not satisfy that gate (reason issue_no_department_label = the label is missing; label_mismatch = it belongs to a different Lead) — recreate the issue with the correct department label or ask the user; do not retry the same dispatch unchanged.",
 		readonly: false,
 		parameters: {
 			type: "object",
@@ -80,6 +80,12 @@ export const TOOL_DECLARATIONS: Record<string, ToolDeclaration> = {
 					type: "string",
 					description: 'Project the issue belongs to, e.g. "geoforge3d".',
 				},
+				taskCategory: {
+					type: "string",
+					enum: ["prd", "designer", "prototype", "code", "research"],
+					description:
+						"Required canonical work kind: prd for product definition, designer for visual/UX design, prototype for feasibility prototypes, code for engineering implementation, or research for investigation.",
+				},
 				agentName: {
 					type: "string",
 					description:
@@ -91,7 +97,7 @@ export const TOOL_DECLARATIONS: Record<string, ToolDeclaration> = {
 					description: "Optional: process-doc tier for the run.",
 				},
 			},
-			required: ["issueId", "projectName"],
+			required: ["issueId", "projectName", "taskCategory"],
 		},
 	},
 

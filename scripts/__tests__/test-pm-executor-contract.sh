@@ -87,7 +87,10 @@ assert_contains "$PM_MD" "different* primitive from" \
 assert_contains "$PM_MD" "the interaction loop is the blocking" \
                 "loop is explicitly the blocking gate (not the ask channel)"
 assert_contains "$PM_MD" "prd.md"          "PRD output location: prd.md"
-assert_contains "$PM_MD" "no-three-stage"  "dispatch discipline: no-three-stage label"
+assert_not_contains "$PM_MD" "no-three-stage" "old label-based routing removed from PM"
+assert_contains "$PM_MD" "FLY-1436 work-kind routing" "cutover probe sentinel: PM"
+assert_contains "$PM_MD" 'taskCategory":"prd"' "work-kind routing: PM uses canonical prd"
+assert_contains "$PM_MD" "pipeline.work_kind" "work-kind routing: PM names the project switch"
 assert_contains "$PM_MD" "create-issue"    "handoff: create-issue (break PRD into build issues)"
 assert_contains "$PM_MD" "FLY-830"         "boundary: PM acceptance = FLY-830 (not here)"
 # ── v5 additions (FLY-1089): the two steps Mode A was missing ──
@@ -111,7 +114,10 @@ assert_contains "$PROTO_MD" "可行性"         "prototype anchor: 可行性 (fe
 assert_contains "$PROTO_MD" "drop"           "verdict: not-doable -> drop (a success)"
 assert_contains "$PROTO_MD" "不是生产级"      "boundary: prototype is NOT production-grade"
 assert_contains "$PROTO_MD" "cheapest"       "cheapest-real-prototype ladder"
-assert_contains "$PROTO_MD" "no-three-stage" "dispatch discipline: no-three-stage label"
+assert_not_contains "$PROTO_MD" "no-three-stage" "old label-based routing removed from prototype"
+assert_contains "$PROTO_MD" "FLY-1436 work-kind routing" "cutover probe sentinel: prototype"
+assert_contains "$PROTO_MD" 'taskCategory":"prototype"' "work-kind routing: prototype uses canonical category"
+assert_contains "$PROTO_MD" "pipeline.work_kind" "work-kind routing: prototype names the project switch"
 assert_contains "$PROTO_MD" "create-issue"   "handoff (4a doable): create-issue -> productionize"
 assert_contains "$PROTO_MD" "proofshot"      "founder experience: proofshot"
 # ── boundary with designer must be explicit (Annie required it) ──

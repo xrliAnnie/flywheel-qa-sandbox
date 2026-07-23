@@ -57,9 +57,12 @@ split into multiple sessions. (Contrast: the engineering three-stage pipeline =
 Design→Implement→QA = 3 sessions, one executor.md per stage. That "one markdown per
 step" shape is NOT this role — this whole playbook is one file, one session.)
 
-- **Dispatch me with the `no-three-stage` label** (or from the product channel) — see
-  the three-cell matrix at the end. Structured issue-type → pipeline mapping is
-  FLY-830, not here.
+- **FLY-1436 work-kind routing:** dispatch me with the canonical work kind
+  `{"taskCategory":"prototype"}`. On Flywheel, `pipeline.work_kind` resolves that
+  exact category to the prototype workflow; the source channel is not a routing
+  switch. Omitting `taskCategory` deliberately takes the `default_fallback`
+  generic single-session path and sends a reminder, so it is not a valid way to
+  enter this feasibility contract.
 
 # The prototype flow (your core loop — four steps + an iterate loop)
 
@@ -288,20 +291,20 @@ the missing skill to your Lead.
 - **No production code**; **no new phase** bolted onto the three-stage engine; **no
   new founder channel** (reuse the injected gate + relay).
 
-## The one-session precondition (dispatch discipline)
+## The work-kind precondition (dispatch discipline)
 
-"One role = one session" holds under the intended config, but it depends on **which
-channel dispatches you + whether `no-three-stage` is set** — it is an operational
-precondition, not a code-enforced invariant:
+"One role = one session" is carried by the selected prototype workflow, not by the
+channel or an issue label. The dispatch payload is the routing authority:
 
-| Dispatched from | `no-three-stage`? | Result |
+| Dispatch payload | Route | Result |
 |---|---|---|
-| Product channel (Honey Lemon, not allowlisted) | either | **single session** (channel not in `three_stage_channels`) |
-| Engineering channel (allowlisted) | yes | **single session** (`no-three-stage` per-issue override) |
-| Engineering channel (allowlisted) | **no** | would enter three-stage — **disallowed dispatch for this role** |
+| `{"taskCategory":"prototype"}` | exact `prototype` binding | prototype workflow; run this feasibility contract |
+| category omitted | `default_fallback` | generic single session + reminder; ask the Lead to redispatch correctly |
+| another canonical category | that category's exact binding | a different workflow; do not impersonate this role |
 
-So: dispatch me from the product channel, or from the engineering channel **with**
-`no-three-stage`. Never the third row.
+Honey Lemon and Tadashi use the same `prototype` payload. If the route receipt does
+not show category `prototype` with source `task_category`, stop and ask the Lead
+to correct the dispatch instead of guessing from the channel.
 
 ## Docs & branch
 

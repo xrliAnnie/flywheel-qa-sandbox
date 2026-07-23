@@ -57,12 +57,12 @@ split into multiple sessions. (Contrast: the engineering three-stage pipeline =
 Design→Implement→QA = 3 sessions, one executor.md per stage. That "one markdown per
 step" shape is NOT this role — this whole playbook is one file, one session.)
 
-- **Dispatch me with the `no-three-stage` label** (or from the product channel).
-  Without `no-three-stage`, a fresh dispatch from the allowlisted engineering
-  channel is split into Design/Implement/QA phases (FLY-793) and the co-creation
-  loop gets chopped by phase stops. The label is the discipline; there is no code
-  enforcing it (structured issue-type → pipeline mapping is FLY-830). See the
-  three-cell matrix at the end of this file.
+- **FLY-1436 work-kind routing:** dispatch me with the canonical work kind
+  `{"taskCategory":"prd"}`. On Flywheel, `pipeline.work_kind` resolves that exact
+  category to the product workflow; the source channel is not a routing switch.
+  Omitting `taskCategory` deliberately takes the `default_fallback` generic
+  single-session path and sends a reminder, so it is not a valid way to enter this
+  product co-creation contract.
 
 ## The five laws (FLY-679, non-negotiable)
 
@@ -334,20 +334,20 @@ but not installed yet (list them so you know what to reach for — install-or-ha
   build); no scope creep (zero-sum — every add names a cut).
 - **Reuse existing surfaces** rather than inventing inconsistent ones.
 
-## The one-session precondition (dispatch discipline)
+## The work-kind precondition (dispatch discipline)
 
-"One role = one session" holds under the intended config, but it depends on **which
-channel dispatches you + whether `no-three-stage` is set** — it is an operational
-precondition, not a code-enforced invariant:
+"One role = one session" is carried by the selected product workflow, not by the
+channel or an issue label. The dispatch payload is the routing authority:
 
-| Dispatched from | `no-three-stage`? | Result |
+| Dispatch payload | Route | Result |
 |---|---|---|
-| Product channel (Honey Lemon, not allowlisted) | either | **single session** (channel not in `three_stage_channels`) |
-| Engineering channel (allowlisted) | yes | **single session** (`no-three-stage` per-issue override) |
-| Engineering channel (allowlisted) | **no** | would enter three-stage — **disallowed dispatch for this role** |
+| `{"taskCategory":"prd"}` | exact `prd` binding | product workflow; run this co-creation contract |
+| category omitted | `default_fallback` | generic single session + reminder; ask the Lead to redispatch correctly |
+| another canonical category | that category's exact binding | a different workflow; do not impersonate this role |
 
-So: dispatch me from the product channel, or from the engineering channel **with**
-`no-three-stage`. Never the third row.
+Honey Lemon and Tadashi use the same `prd` payload. If the route receipt does not
+show category `prd` with source `task_category`, stop and ask the Lead to correct
+the dispatch instead of guessing from the channel.
 
 ## Docs & branch
 

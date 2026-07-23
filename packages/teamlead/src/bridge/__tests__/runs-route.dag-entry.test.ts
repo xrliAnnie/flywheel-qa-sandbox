@@ -11,7 +11,13 @@
  * 400 · #9b/#9c candidate missing · #10 param echo · #13 v2 untouched.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -58,6 +64,24 @@ const DAG_ENV = {
 	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
 } as const;
+
+interface Fly1436StagingFixture {
+	name: string;
+	generalizedTemplates: boolean;
+	configWorkKind: boolean;
+	bindingCategory: string;
+	taskCategory?: string;
+	expectedStatus: number;
+	expectedCode?: string;
+	expectedEntryKind?: string;
+}
+
+const FLY1436_STAGING_FIXTURES = JSON.parse(
+	readFileSync(
+		new URL("./fixtures/fly1436-work-kind-cutover.json", import.meta.url),
+		"utf8",
+	),
+) as Fly1436StagingFixture[];
 
 const savedEnv: Record<string, string | undefined> = {};
 const cleanups: Array<() => void> = [];
@@ -445,6 +469,37 @@ describe("FLY-1372 DAG dispatch entry — fresh domain", () => {
 			kind: "start_signal",
 			signal: { runOverride: "on" },
 		});
+	});
+});
+
+describe("FLY-1436 staging cutover fixture", () => {
+	it.each(FLY1436_STAGING_FIXTURES)("$name", async (fixture) => {
+		const h = await startHarness({
+			templateSchema: 2,
+			bindingCategory: fixture.bindingCategory,
+			env: {
+				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: fixture.generalizedTemplates
+					? "1"
+					: undefined,
+			},
+			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n${
+				fixture.configWorkKind ? "  work_kind: true\n" : ""
+			}`,
+		});
+		const { status, json } = await post(
+			h.url,
+			fixture.taskCategory ? { taskCategory: fixture.taskCategory } : {},
+		);
+		expect(status).toBe(fixture.expectedStatus);
+		if (fixture.expectedCode) {
+			expect(json.code).toBe(fixture.expectedCode);
+			expect(h.calls).toHaveLength(0);
+		}
+		if (fixture.expectedEntryKind) {
+			expect(json.generalized).toBe(true);
+			const run = h.store.getWorkflowRun(json.workflowRunId as string);
+			expect(run?.entry_kind).toBe(fixture.expectedEntryKind);
+		}
 	});
 });
 

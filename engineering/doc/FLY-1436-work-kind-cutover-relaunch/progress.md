@@ -1,13 +1,14 @@
 ---
 issue: FLY-1436
 phase: implement
-phaseCursor: 5/6
-updated: 2026-07-23T05:25:35.619Z
-nextStep: "monitor PR #684 CI, G-rules gate, and code review; fix any blocking findings"
+phaseCursor: 9/10
+updated: 2026-07-23T08:31:50.272Z
+nextStep: await final-head code review, CI, and G-PR founder content approval;
+  do not mutate head after review approval
 chunks: []
 pointers: {}
 ---
 
 # FLY-1436 progress
-**phase**: implement (5/6)
-**next**: monitor PR #684 CI, G-rules gate, and code review; fix any blocking findings
+**phase**: implement (9/10)
+**next**: await final-head code review, CI, and G-PR founder content approval; do not mutate head after review approval

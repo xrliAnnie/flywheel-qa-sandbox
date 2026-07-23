@@ -1,0 +1,19 @@
+[
+	{
+		"name": "GENERALIZED off + work-kind on + v2 binding fails closed",
+		"generalizedTemplates": false,
+		"configWorkKind": true,
+		"bindingCategory": "research",
+		"taskCategory": "research",
+		"expectedStatus": 409,
+		"expectedCode": "GENERALIZED_WORKFLOW_REJECTED"
+	},
+	{
+		"name": "GENERALIZED on + work-kind off + v2 wildcard routes keyless generic",
+		"generalizedTemplates": true,
+		"configWorkKind": false,
+		"bindingCategory": "*",
+		"expectedStatus": 200,
+		"expectedEntryKind": "workflow_v2"
+	}
+]
