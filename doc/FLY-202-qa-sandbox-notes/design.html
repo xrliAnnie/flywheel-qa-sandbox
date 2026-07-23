@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-202 设计 — QA Sandbox Notes Fixture</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    max-width: 960px; margin: 0 auto; padding: 32px 20px 60px;
+    line-height: 1.6;
+  }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 14px; margin-bottom: 28px; }
+  .meta code { font-family: 'SF Mono', monospace; font-size: 13px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 20px 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 20px;
+    border-left: 4px solid #007aff;
+  }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.purple { border-left-color: #af52de; }
+  .section-title { font-size: 18px; font-weight: 600; color: #1a365d; margin-bottom: 14px; }
+  .section-title .dot { margin-right: 6px; }
+  .oneliner { font-size: 17px; font-weight: 500; }
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px;
+    border-radius: 6px; margin-right: 6px; vertical-align: middle;
+  }
+  .badge.fixture { background: #f3e8fd; color: #af52de; }
+  .badge.docs { background: #e8f2ff; color: #007aff; }
+  .badge.sandbox { background: #fff4e5; color: #ff9500; }
+  /* flow diagram (pure CSS, CSP-safe) */
+  .flow { display: flex; flex-direction: column; gap: 0; margin: 8px 0; }
+  .flow-step {
+    display: flex; align-items: stretch; gap: 12px;
+  }
+  .flow-rail { display: flex; flex-direction: column; align-items: center; width: 34px; flex-shrink: 0; }
+  .flow-num {
+    width: 28px; height: 28px; border-radius: 50%; background: #1a365d; color: #fff;
+    font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .flow-line { width: 2px; flex: 1; background: #c7d2e0; min-height: 10px; }
+  .flow-box {
+    flex: 1; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;
+    padding: 10px 14px; margin-bottom: 10px;
+  }
+  .flow-box b { color: #1a365d; }
+  .flow-box .commit {
+    font-family: 'SF Mono', monospace; font-size: 12px; color: #34c759; font-weight: 600;
+  }
+  .flow-box small { color: #86868b; display: block; margin-top: 2px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e8e8ed; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; }
+  code, .mono { font-family: 'SF Mono', monospace; font-size: 13px; background: #f0f0f5; padding: 1px 5px; border-radius: 4px; }
+  .no { color: #ff3b30; font-weight: 600; }
+  .yes { color: #34c759; font-weight: 600; }
+  ul.tight { padding-left: 20px; }
+  ul.tight li { margin-bottom: 6px; }
+  @media (max-width: 600px) { body { padding: 20px 12px 40px; } .card { padding: 16px; } }
+</style>
+</head>
+<body>
+
+<h1>FLY-202 — QA Sandbox Notes Fixture 设计</h1>
+<div class="meta">
+  <span class="badge fixture">FIXTURE</span><span class="badge docs">DOC-ONLY</span><span class="badge sandbox">SANDBOX</span>
+  Issue <code>FLY-202</code> · 2026-07-23 · 分支 <code>project-slot-1-FLY-202</code> · 仓库 <code>xrliAnnie/flywheel-qa-sandbox</code>
+</div>
+
+<div class="card green">
+  <div class="section-title"><span class="dot" style="color:#34c759;">●</span>一句话总结</div>
+  <p class="oneliner">在 sandbox 仓库内分 4 步增量写一份 <code>doc/qa/sandbox-notes.md</code>（每步一个 commit），最后对 sandbox main 开 PR——给 slot harness 的 real-Runner E2E 提供一个小而稳定、带 mid-work 观测窗口的多步骤任务。</p>
+</div>
+
+<div class="card">
+  <div class="section-title"><span class="dot" style="color:#007aff;">●</span>核心流程（implement 节点执行）</div>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="flow-rail"><div class="flow-num">1</div><div class="flow-line"></div></div>
+      <div class="flow-box"><b>创建文件 + 段落 A（Overview）</b> — 2-3 段讲清 sandbox 用途与隔离动机 → <span class="commit">commit</span></div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-rail"><div class="flow-num">2</div><div class="flow-line"></div></div>
+      <div class="flow-box"><b>追加 段落 B（顶层目录表）</b> — 按 implement 时 live 仓库状态枚举（含 <code>.claude/.github/.serena</code>）→ <span class="commit">commit</span><small>QA 在这里已能观测到部分完成状态（mid-work window）</small></div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-rail"><div class="flow-num">3</div><div class="flow-line"></div></div>
+      <div class="flow-box"><b>追加 段落 C（qa-framework README 摘要）</b> — ~10 bullets，覆盖 5-Step Protocol / Test Slot Framework / FLY-60 suite → <span class="commit">commit</span></div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-rail"><div class="flow-num">4</div><div class="flow-line"></div></div>
+      <div class="flow-box"><b>追加 段落 D（doc/ 树快照）</b> — 实跑 <code>ls -R doc/ | head -50</code> 原样贴入 fenced block → <span class="commit">commit</span></div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-rail"><div class="flow-num">5</div></div>
+      <div class="flow-box"><b>push + 开 PR → sandbox <code>main</code></b> — PR body 带 Linear Issue 段；上报 PR 证据。<b class="no">Runner 不自行 merge</b>（merge 归 harness / founder 流程）</div>
+    </div>
+  </div>
+</div>
+
+<div class="card purple">
+  <div class="section-title"><span class="dot" style="color:#af52de;">●</span>数据 / 结构模型 — <code>doc/qa/sandbox-notes.md</code> 单文件四段</div>
+  <table>
+    <tr><th>段落</th><th>内容</th><th>来源</th></tr>
+    <tr><td><b>A. Overview</b></td><td>sandbox 是什么、为何独立（real-Runner E2E 无 synthetic 模式，须与生产历史隔离）、本文件本身即 fixture 产物</td><td>design + <code>doc/qa/framework/</code> 指南</td></tr>
+    <tr><td><b>B. 顶层目录表</b></td><td>每目录一行一句描述</td><td>implement 时 live <code>ls</code>（忽略 <code>memory.db</code> 等非目录文件）</td></tr>
+    <tr><td><b>C. README 摘要</b></td><td>~10 bullets</td><td><code>packages/qa-framework/README.md</code>（316 行）</td></tr>
+    <tr><td><b>D. doc/ 树快照</b></td><td>fenced block 原样输出</td><td>implement 时实跑命令</td></tr>
+  </table>
+  <p style="margin-top:10px; font-size:14px; color:#86868b;">抬头沿用既有 fixture 形态：标题 + <code>**Issue**: FLY-202</code> + <code>**Date**</code>。每步一个 <code>docs(FLY-202):</code> commit，全部只触碰 <code>doc/</code>。</p>
+</div>
+
+<div class="card amber">
+  <div class="section-title"><span class="dot" style="color:#ff9500;">●</span>关键取舍与被否方案</div>
+  <table>
+    <tr><th>决策</th><th>选择</th><th>被否方案 · 原因</th></tr>
+    <tr><td>内容来源</td><td class="yes">live 仓库状态重新生成</td><td><span class="no">复刻历史版本</span> — 仓库已漂移（新增 <code>agents/ engineering/ fleet/ product/</code> 等），复刻产出陈旧事实</td></tr>
+    <tr><td>commit 粒度</td><td class="yes">每步一 commit（4+）</td><td><span class="no">单 commit 写完</span> — 丢掉 mid-work 观测窗口，违背 issue 的 multi-step 动机</td></tr>
+    <tr><td>分支</td><td class="yes">复用 Runner 分支</td><td><span class="no">另开 feat/ 分支</span> — WorktreeManager 派生分支即任务语义的 feature branch，历史各轮（#29/#30）均如此</td></tr>
+    <tr><td>D 段确定性</td><td class="yes">接受跨轮输出漂移</td><td><span class="no">固化 byte-stable 快照</span> — fixture 价值在多步真实工作流，不在字节稳定</td></tr>
+    <tr><td>PR 处置</td><td class="yes">开 PR + 上报证据</td><td><span class="no">Runner self-merge</span> — 违反节点合同，ship/merge 归 harness</td></tr>
+  </table>
+</div>
+
+<div class="card red">
+  <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span>诚实边界</div>
+  <ul class="tight">
+    <li><b>做</b>：doc-only 多步骤 fixture 的执行蓝图——文件结构、步骤切分、commit/PR 纪律、内容来源规则。</li>
+    <li><b>不做</b>：不改任何 <code>packages/</code> 代码，不测 qa-framework 本身的正确性。</li>
+    <li><b>不做</b>：不保证 <code>sandbox-notes.md</code> 跨 E2E 轮次字节稳定（D 段天然漂移）。</li>
+    <li><b>不做</b>：不覆盖 PR merge 之后的环节（merge / teardown 由 harness 与 QA 驱动）。</li>
+    <li><b>不做</b>：不触碰生产 flywheel 仓库、生产 Bridge/Lead 或任何生产 Linear 资源。</li>
+  </ul>
+</div>
+
+</body>
+</html>
