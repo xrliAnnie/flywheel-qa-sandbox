@@ -1,13 +1,13 @@
 ---
 issue: FLY-136
 phase: implement
-phaseCursor: 2/5
-updated: 2026-07-23T18:46:17.389Z
-nextStep: Verify the one-line diff and repository checks
+phaseCursor: 3/5
+updated: 2026-07-23T18:46:57.537Z
+nextStep: Commit and push the verified README change
 chunks: []
 pointers: {}
 ---
 
 # FLY-136 progress
-**phase**: implement (2/5)
-**next**: Verify the one-line diff and repository checks
+**phase**: implement (3/5)
+**next**: Commit and push the verified README change
