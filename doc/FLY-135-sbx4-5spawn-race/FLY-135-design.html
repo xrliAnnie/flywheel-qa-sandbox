@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-135 设计 — FLY-SBX-4 最小 doc-only 变更(5-spawn race 沙箱)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #f5f5f7;
+    color: #1d1d1f;
+    line-height: 1.6;
+    padding: 24px 16px;
+  }
+  .container { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 24px; color: #1a365d; margin-bottom: 4px; }
+  .subtitle { color: #86868b; font-size: 14px; margin-bottom: 24px; }
+  .issue-id { font-family: 'SF Mono', monospace; color: #1a365d; font-weight: 600; }
+  .card {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    padding: 20px 24px;
+    margin-bottom: 16px;
+    border-left: 4px solid #007aff;
+  }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.purple { border-left-color: #af52de; }
+  .section-title { font-size: 17px; font-weight: 600; margin-bottom: 12px; color: #1a365d; }
+  .summary-line { font-size: 16px; font-weight: 500; }
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+  .flow-step {
+    background: #f5f5f7;
+    border: 1px solid #d2d2d7;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px;
+    text-align: center;
+    min-width: 110px;
+  }
+  .flow-step.this-node { background: #eaf3ff; border-color: #007aff; font-weight: 600; }
+  .flow-step .step-label { display: block; font-size: 11px; color: #86868b; margin-bottom: 2px; }
+  .flow-arrow { color: #86868b; font-size: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #f0f0f2; vertical-align: top; }
+  th { color: #86868b; font-weight: 500; font-size: 12px; text-transform: uppercase; }
+  code, .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; background: #f5f5f7; padding: 2px 6px; border-radius: 5px; }
+  .marker-demo {
+    font-family: 'SF Mono', monospace;
+    font-size: 13px;
+    background: #1a365d;
+    color: #e8f0fe;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 10px 0;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  ol.tradeoffs { padding-left: 20px; font-size: 14px; }
+  ol.tradeoffs li { margin-bottom: 10px; }
+  .pill { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 6px; padding: 2px 8px; margin-right: 6px; }
+  .pill.chosen { background: #e6f7ec; color: #1d7a3d; }
+  .pill.rejected { background: #ffe9e7; color: #c22e24; }
+  .boundary-cols { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+  .boundary-col { flex: 1; min-width: 260px; background: #f5f5f7; border-radius: 10px; padding: 14px 16px; font-size: 14px; }
+  .boundary-col h4 { font-size: 13px; margin-bottom: 8px; }
+  .boundary-col.do h4 { color: #1d7a3d; }
+  .boundary-col.dont h4 { color: #c22e24; }
+  .boundary-col ul { padding-left: 18px; }
+  .footnote { color: #86868b; font-size: 12px; margin-top: 20px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1><span class="issue-id">FLY-135</span> 设计 — FLY-SBX-4 最小 doc-only 变更</h1>
+  <div class="subtitle">沙箱仓 flywheel-qa-sandbox · FLY-128 5-spawn race 测试夹具 · 2026-07-23 · design 节点交付</div>
+
+  <div class="card green">
+    <div class="section-title">① 一句话总结</div>
+    <div class="summary-line">Implement 节点在沙箱仓 README.md 末尾 append <strong>恰好一行</strong>带 issue ID + UTC 时间戳的 marker,开 PR → approve → ship,除此之外什么都不碰。</div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">② 核心流程</div>
+    <div class="flow">
+      <div class="flow-step"><span class="step-label">阶段 1</span>onboard</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step this-node"><span class="step-label">阶段 2 · 本节点</span>design<br><span class="mono">doc/FLY-135-…/</span></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><span class="step-label">阶段 3</span>implement<br>append 1 行 marker</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><span class="step-label">阶段 4</span>PR → approve gate</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><span class="step-label">阶段 5</span>ship + merge<br>issue 保持 open</div>
+    </div>
+  </div>
+
+  <div class="card purple">
+    <div class="section-title">③ 数据 / 结构模型(变更合同)</div>
+    <table>
+      <tr><th>项</th><th>规格</th></tr>
+      <tr><td>目标文件</td><td><code>README.md</code>(仓根,惰性文件)</td></tr>
+      <tr><td>操作</td><td>文件末尾 append 恰好一行,保留结尾换行</td></tr>
+      <tr><td>行格式</td><td>issue ID + 用途 + UTC 时间戳(与仓内既有先例同形态)</td></tr>
+      <tr><td>Commit</td><td><code>docs(FLY-135): append 5-spawn race marker (FLY-SBX-4)</code></td></tr>
+      <tr><td>PR</td><td>base <code>main</code>,body 链接 FLY-135,test plan 注明 doc-only waiver</td></tr>
+    </table>
+    <div class="marker-demo">FLY-135 5-spawn race marker 20260723T&lt;HHMMSS&gt;Z</div>
+    <div style="font-size:13px;color:#86868b;">时间戳取 implement 执行时刻,保证 5 个并发 sibling(FLY-SBX-1…5)的 marker 行互不相同、可溯源。仓内先例:<code>FLY-1375 land E2E marker 20260722T023540Z</code></div>
+  </div>
+
+  <div class="card amber">
+    <div class="section-title">④ 关键取舍与被否方案</div>
+    <ol class="tradeoffs">
+      <li><span class="pill chosen">已选</span><strong>README.md</strong> <span class="pill rejected">被否</span><strong>CLAUDE.md</strong> — CLAUDE.md 会注入每个后续 session 的上下文,反复 append marker 会持续污染所有 agent 的 context;README 是惰性文件且 marker 先例都在这里。</li>
+      <li><span class="pill chosen">已选</span><strong>append 单行 @EOF</strong> <span class="pill rejected">被否</span><strong>per-issue 独立文件</strong> — 单行 append 改动面最小、review 平凡。已知代价:5 个 sibling 分支顺序 merge 时,第 2 个及以后的 PR 会在 EOF 冲突;行内自带 issue ID + 时间戳使冲突解决(update branch 后重放自己那一行)平凡化。独立文件能消掉冲突,但会改变 QA 套件依赖的稳定 spec,被否。</li>
+      <li><span class="pill chosen">已选</span><strong>不写测试</strong> — doc-only 单行 append 无可测行为,PR test plan 显式 waiver;强行加测试违反最小改动原则。</li>
+    </ol>
+  </div>
+
+  <div class="card red">
+    <div class="section-title">⑤ 诚实边界</div>
+    <div class="boundary-cols">
+      <div class="boundary-col do">
+        <h4>✓ 本设计做</h4>
+        <ul>
+          <li>定义 implement 节点的单行 append 合同</li>
+          <li>定义 commit / PR / gate 流程形态</li>
+          <li>为 5-spawn race 提供可溯源 marker 格式</li>
+        </ul>
+      </div>
+      <div class="boundary-col dont">
+        <h4>✗ 本设计不做</h4>
+        <ul>
+          <li>不改 QA 套件,不自动化 5-PR 并发 merge 的 EOF 冲突(归 ship 路径所有)</li>
+          <li>不关闭、不修改 FLY-135 issue(永久保持 open)</li>
+          <li>不产生任何代码/配置变更</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="footnote">FLY-135 · [Sandbox] FLY-SBX-4 — dummy issue for FLY-128 5-spawn race testing · design 节点 runner-8ca1bff0 · 设计文档:<code>doc/FLY-135-sbx4-5spawn-race/design.md</code></div>
+</div>
+</body>
+</html>
