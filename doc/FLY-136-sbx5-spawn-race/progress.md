@@ -1,13 +1,13 @@
 ---
 issue: FLY-136
 phase: implement
-phaseCursor: 1/5
-updated: 2026-07-23T18:45:38.916Z
-nextStep: Append the approved README marker line
+phaseCursor: 2/5
+updated: 2026-07-23T18:46:17.389Z
+nextStep: Verify the one-line diff and repository checks
 chunks: []
 pointers: {}
 ---
 
 # FLY-136 progress
-**phase**: implement (1/5)
-**next**: Append the approved README marker line
+**phase**: implement (2/5)
+**next**: Verify the one-line diff and repository checks
