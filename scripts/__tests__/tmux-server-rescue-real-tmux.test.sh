@@ -16,6 +16,7 @@
 # SAFETY: sockets live under a private dir; the default Flywheel socket is never
 # touched. Every spawned server is SIGCONT'd and killed on exit.
 set -uo pipefail
+export FLYWHEEL_TMUX_RESCUE_ALERT_BIN="/usr/bin/true"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LIB="$SCRIPT_DIR/../lib/tmux-server-rescue.sh"
@@ -29,10 +30,12 @@ if ! command -v lsof >/dev/null 2>&1; then
   exit 0
 fi
 
-# Use a /private-rooted base so path normalization is the identity. This mirrors
-# the production default socket (/private/tmp/tmux-<uid>/default), which tmux
-# itself resolves to a /private path.
-BASE="$(mktemp -d /private/tmp/fly1285-realtmux.XXXXXX)" || exit 1
+# The full suite must run on both macOS and Linux CI. The macOS-only
+# /tmp -> /private/tmp normalization case gets its own Darwin-scoped root below.
+PORTABLE_TMP="${TMPDIR:-/tmp}"
+[ -d "$PORTABLE_TMP" ] || PORTABLE_TMP=/tmp
+BASE="$(mktemp -d "$PORTABLE_TMP/fly1285-realtmux.XXXXXX")" || exit 1
+SYM_BASE=""
 
 PASSED=0
 FAILED=0
@@ -55,6 +58,7 @@ cleanup() {
     kill -9 "$p" 2>/dev/null
   done
   rm -rf "$BASE"
+  [ -z "$SYM_BASE" ] || rm -rf "$SYM_BASE"
 }
 trap cleanup EXIT
 
@@ -62,6 +66,13 @@ trap cleanup EXIT
 source "$LIB"
 
 server_pid_on() { tmux -S "$1" display-message -p '#{pid}' 2>/dev/null; }
+socket_inode() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    stat -f '%i' "$1"
+  else
+    stat -c '%i' "$1"
+  fi
+}
 
 start_server() { # <socket> -> echoes pid
   local sock="$1" pid
@@ -104,8 +115,8 @@ echo "[TEST] ownership survives a socket path that traverses a symlink"
 # to /private/tmp/... while lsof reports the path as tmux bound it. An exact
 # string compare between the two silently returns "not the owner" — which is
 # read as positive proof of absence, not as missing evidence.
-SYM_BASE="/tmp/${BASE#/private/tmp/}"
-if [ -e "$SYM_BASE" ]; then
+if [ "$(uname -s)" = "Darwin" ]; then
+  SYM_BASE="$(mktemp -d /tmp/fly1285-realtmux-symlink.XXXXXX)" || exit 1
   SOCK_SYM="$SYM_BASE/symlinked.sock"
   PID_SYM="$(start_server "$SOCK_SYM")"
   SPAWNED="$SPAWNED $PID_SYM"
@@ -117,7 +128,7 @@ if [ -e "$SYM_BASE" ]; then
     fi
   fi
 else
-  echo "  (skip: $SYM_BASE not reachable via symlink)"
+  echo "  (skip: /tmp -> /private/tmp normalization is macOS-only)"
 fi
 
 echo "[TEST] a reachable server yields the reachable verdict with no orphan candidates"
@@ -129,6 +140,43 @@ else
   fail "reachable verdict wrong: $V"
 fi
 
+echo "[TEST] a killed server's stale socket is proven dead and replaced"
+SOCK_D="$BASE/dead.sock"
+PID_D="$(start_server "$SOCK_D")"
+SPAWNED="$SPAWNED $PID_D"
+DEAD_INODE_BEFORE="$(socket_inode "$SOCK_D")"
+kill -9 "$PID_D"
+for _ in $(seq 1 100); do
+  kill -0 "$PID_D" 2>/dev/null || break
+  sleep 0.05
+done
+if [ ! -S "$SOCK_D" ]; then
+  fail "SIGKILL did not leave the stale socket inode required by this regression"
+else
+  VD="$(tmux_socket_inspect "$SOCK_D")"
+  VERDICT_D="$(_tmux_rescue_json_field "$VD" verdict)"
+  ENS_D="$(tmux_socket_ensure "$SOCK_D" \
+    --verify tmux -S "$SOCK_D" has-session -t =live \
+    --create tmux -S "$SOCK_D" new-session -Ad -s live)"
+  ENS_D_RC=$?
+  DEAD_INODE_AFTER="$(socket_inode "$SOCK_D" 2>/dev/null || echo GONE)"
+  PID_D_AFTER="$(server_pid_on "$SOCK_D")"
+  VD_AFTER="$(tmux_socket_inspect "$SOCK_D")"
+  SPAWNED="$SPAWNED $PID_D_AFTER"
+  if [ "$VERDICT_D" = "dead" ] \
+    && [ "$ENS_D_RC" -eq 0 ] \
+    && [ "$(_tmux_rescue_json_field "$ENS_D" action)" = "created" ] \
+    && [ -n "$PID_D_AFTER" ] \
+    && [ "$PID_D_AFTER" != "$PID_D" ] \
+    && [ "$(_tmux_rescue_json_field "$VD_AFTER" verdict)" = "reachable" ] \
+    && [ "$(_tmux_rescue_json_field "$VD_AFTER" reachablePid)" = "$PID_D_AFTER" ] \
+    && _tmux_rescue_pid_has_socket "$PID_D_AFTER" "$(_tmux_rescue_normalize_socket "$SOCK_D")"; then
+    pass "zero-owner stale inode classifies dead and the path is rebound to a verified server"
+  else
+    fail "dead-server cleanup regressed: before=$VD ensure=$ENS_D_RC/$ENS_D after=$VD_AFTER inode=$DEAD_INODE_BEFORE->$DEAD_INODE_AFTER pid=$PID_D->$PID_D_AFTER"
+  fi
+fi
+
 echo "[TEST] THE INCIDENT: a live-but-saturated server must hold, never be replaced"
 # Reproduce FLY-1285: SIGSTOP the server so it stops accepting, then fill the
 # 128-deep listen backlog so connect() is refused. tmux then reports "no server
@@ -137,7 +185,7 @@ echo "[TEST] THE INCIDENT: a live-but-saturated server must hold, never be repla
 SOCK_S="$BASE/saturated.sock"
 PID_S="$(start_server "$SOCK_S")"
 SPAWNED="$SPAWNED $PID_S"
-INODE_BEFORE="$(stat -f '%i' "$SOCK_S" 2>/dev/null || stat -c '%i' "$SOCK_S" 2>/dev/null)"
+INODE_BEFORE="$(socket_inode "$SOCK_S")"
 kill -STOP "$PID_S"
 /usr/bin/python3 - "$SOCK_S" "$BASE/filled" <<'PY' &
 import socket, sys, time
@@ -171,7 +219,7 @@ ENS="$(tmux_socket_ensure "$SOCK_S" \
   --verify tmux -S "$SOCK_S" has-session -t =live \
   --create tmux -S "$SOCK_S" new-session -Ad -s live)"
 ENS_RC=$?
-INODE_AFTER="$(stat -f '%i' "$SOCK_S" 2>/dev/null || stat -c '%i' "$SOCK_S" 2>/dev/null || echo GONE)"
+INODE_AFTER="$(socket_inode "$SOCK_S" 2>/dev/null || echo GONE)"
 kill -CONT "$PID_S" 2>/dev/null
 if [ "$ENS_RC" -eq 2 ] && [ "$INODE_BEFORE" = "$INODE_AFTER" ]; then
   pass "ensure holds (rc=2) and the live server's socket is never replaced"

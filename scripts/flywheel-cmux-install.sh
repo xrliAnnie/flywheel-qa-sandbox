@@ -3,6 +3,14 @@
 # Idempotent: safe to run multiple times.
 set -euo pipefail
 
+LINK_ONLY=0
+case "${1:-}" in
+  "") ;;
+  --link-only) LINK_ONLY=1; shift ;;
+  *) echo "Usage: $0 [--link-only]" >&2; exit 2 ;;
+esac
+[[ $# -eq 0 ]] || { echo "Usage: $0 [--link-only]" >&2; exit 2; }
+
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_DIR="$HOME/.flywheel/bin"
 INTEGRATION_FILE="$HOME/.flywheel/cmux-integration.zsh"
@@ -32,6 +40,14 @@ mkdir -p "$INSTALL_DIR"
 # 2. Symlink scripts (FLY-98: repo updates take effect immediately without re-install)
 ln -sf "$REPO_DIR/scripts/flywheel-cmux-sync.sh" "$INSTALL_DIR/flywheel-cmux-sync"
 ln -sf "$REPO_DIR/scripts/flywheel-cmux-autostart.sh" "$INSTALL_DIR/flywheel-cmux-autostart"
+ln -sf "$REPO_DIR/scripts/lib/flywheel-alert-lib.sh" "$INSTALL_DIR/flywheel-alert-lib.sh"
+ln -sf "$REPO_DIR/scripts/lead-alert.sh" "$INSTALL_DIR/lead-alert.sh"
+ln -sf "$REPO_DIR/scripts/meta-alert.sh" "$INSTALL_DIR/meta-alert.sh"
+
+if [[ "$LINK_ONLY" == "1" ]]; then
+  echo "[install] Link-only convergence complete (watcher and shell config untouched)."
+  exit 0
+fi
 
 # 3. Write shell integration file
 cat > "$INTEGRATION_FILE" << 'INTEGRATION'

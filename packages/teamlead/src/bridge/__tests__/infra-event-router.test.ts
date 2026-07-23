@@ -11,6 +11,7 @@ import {
 	type AlertEventType,
 	type AlertPayload,
 	type AlertResult,
+	INFORMATIONAL_KINDS,
 } from "../../LeadAlertNotifier.js";
 import {
 	type BoundIssueThread,
@@ -41,6 +42,18 @@ function payload(eventType: AlertEventType): AlertPayload {
 }
 
 describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
+	it("routes FLY-1364 actionable incidents to tickets and flag state to notify", () => {
+		expect(TICKET_KINDS.has("cmux_cleanup")).toBe(true);
+		expect(TICKET_KINDS.has("tmux_rescue_hold")).toBe(true);
+		expect(TICKET_KINDS.has("cmux_flag_state")).toBe(false);
+		expect(
+			classifyInfraEvent({
+				eventType: "cmux_flag_state",
+				boundIssueThread: null,
+			}),
+		).toBe("notify");
+	});
+
 	it("every TICKET_KIND routes to ticket, with or without a bound thread", () => {
 		for (const kind of TICKET_KINDS) {
 			expect(
@@ -84,14 +97,14 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 		}
 	});
 
-	it("union members outside both sets fail-safe to ticket", () => {
+	it("union members outside both sets notify only when informational, otherwise fail-safe to ticket", () => {
 		const uncovered = ALERT_EVENT_TYPES.filter(
 			(k) => !TICKET_KINDS.has(k) && !ISSUE_PROGRESS_KINDS.has(k),
 		);
 		for (const kind of uncovered) {
 			expect(
 				classifyInfraEvent({ eventType: kind, boundIssueThread: THREAD }),
-			).toBe("ticket");
+			).toBe(INFORMATIONAL_KINDS.has(kind) ? "notify" : "ticket");
 		}
 	});
 });

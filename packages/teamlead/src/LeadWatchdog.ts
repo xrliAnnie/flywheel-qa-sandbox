@@ -1094,7 +1094,7 @@ export function isTransientThrottlePane(pane: string): boolean {
 	return IDLE_READY_MARKERS.some((t) => t.test(region));
 }
 
-function titleFor(kind: AlertEventType): string {
+export function titleFor(kind: AlertEventType): string {
 	switch (kind) {
 		case "rate_limit":
 			return "Lead hit rate limit";
@@ -1306,6 +1306,12 @@ function titleFor(kind: AlertEventType): string {
 			return "Canonical Lead identity source broken";
 		case "lead_backend_drift":
 			return "Lead carrier/backend identity drift";
+		case "cmux_cleanup":
+			return "cmux cleanup needs operator review";
+		case "cmux_flag_state":
+			return "cmux A0B1 topology transition";
+		case "tmux_rescue_hold":
+			return "tmux rescue lock held too long";
 	}
 }
 
@@ -1517,5 +1523,11 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "The canonical Lead identity could not be resolved unambiguously from configured evidence. Repair the identity mapping before allowing Lead mutations.";
 		case "lead_backend_drift":
 			return "The configured Lead backend and the live carrier evidence disagree. The conflicting process is not authoritative; reconcile the carrier generation before restoring write authority.";
+		case "cmux_cleanup":
+			return "cmux-sync refused an unsafe cleanup or found authority state requiring manual review. Inspect the supplied generation, ref, and lease evidence; no foreign workspace was closed.";
+		case "cmux_flag_state":
+			return "cmux-sync entered A0B1. Exact-ref receipts remain mandatory; use the event evidence to distinguish strict-independent from grouped-rollback topology. The durable transition notice is informational; convergence remains enabled.";
+		case "tmux_rescue_hold":
+			return "A tmux rescue operation held its per-socket kernel lock beyond the warning threshold. Inspect the supplied socket, verb, caller, and acquisition audit evidence.";
 	}
 }

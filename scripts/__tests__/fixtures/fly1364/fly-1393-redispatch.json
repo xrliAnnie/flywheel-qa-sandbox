@@ -1,0 +1,19 @@
+{
+	"scenario": "FLY-1393 QA redispatch",
+	"provenance": "Founder/Lead live redispatch case, 2026-07-21; identifiers sanitized.",
+	"workspace_json": { "workspaces": [] },
+	"tmux_sessions": ["runner-flywheel"],
+	"tmux_windows": [
+		{
+			"session": "runner-flywheel",
+			"id": "@1393",
+			"title": "FLY-1393-qa-retest",
+			"pane_dead": false
+		}
+	],
+	"initial": { "ledger": [], "adoption": [] },
+	"expected": {
+		"create_within_seconds": 60,
+		"strict_view": "cmux-FLY-1393-qa-retest"
+	}
+}

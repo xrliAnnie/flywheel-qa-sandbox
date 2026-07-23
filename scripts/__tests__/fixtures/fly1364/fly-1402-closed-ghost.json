@@ -1,0 +1,43 @@
+{
+	"scenario": "FLY-1402 closed managed and raw-attach ghosts with refusal controls",
+	"provenance": "Sanitized from committed real production evidence in engineering/doc/FLY-825-cmux-dual-attach-restart/exploration.md: cmux retained the exact create command as title after rename failure.",
+	"workspace_json": {
+		"workspaces": [
+			{
+				"ref": "workspace:1402",
+				"title": "env -u TMUX tmux attach -t '=cmux-FLY-1402-qa-retest'"
+			},
+			{ "ref": "workspace:1403", "title": "FLY-1402-design-retired" },
+			{ "ref": "workspace:1404", "title": "FLY-1402-qa-ambiguous" },
+			{
+				"ref": "workspace:1405",
+				"title": "env -u TMUX tmux attach -t '=cmux-FLY-1402-qa-ambiguous'"
+			},
+			{
+				"ref": "workspace:1406",
+				"title": "env -u TMUX tmux attach -t '=cmux-FLY-1402-qa-retest'; touch /tmp/nope"
+			}
+		]
+	},
+	"tmux_sessions": [{ "name": "flywheel", "id": "$1" }],
+	"tmux_windows": [
+		{ "session": "flywheel", "id": "@1", "title": "zsh", "pane_dead": false }
+	],
+	"initial": { "ledger": [], "adoption": [] },
+	"controls": {
+		"workspace_refs": ["workspace:1404", "workspace:1405", "workspace:1406"],
+		"invalid_titles": [
+			"env -u TMUX tmux attach -t '=cmux-home'",
+			"env -u TMUX tmux attach -t '=cmux-FLY-1402-qa-retest'; touch /tmp/nope",
+			"tmux attach -t '=cmux-FLY-1402-qa-retest'",
+			"env -u TMUX tmux attach -t '=cmux-FLY-1402-qa-retest"
+		]
+	},
+	"expected": {
+		"minimum_adopt_count": 2,
+		"adopt_after_two_passes": ["workspace:1402", "workspace:1403"],
+		"preserve_refs": ["workspace:1404", "workspace:1405", "workspace:1406"],
+		"alert_reasons": ["ambiguous-normalized-title", "invalid-raw-attach"],
+		"keeper_count": 0
+	}
+}

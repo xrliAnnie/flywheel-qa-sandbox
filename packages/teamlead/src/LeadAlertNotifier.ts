@@ -326,6 +326,10 @@ export const ALERT_EVENT_TYPES = [
 	"lead_lease_control_broken",
 	"lead_identity_source_broken",
 	"lead_backend_drift",
+	// FLY-1364: shell-side cmux display convergence and tmux rescue telemetry.
+	"cmux_cleanup",
+	"cmux_flag_state",
+	"tmux_rescue_hold",
 ] as const;
 
 export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];
@@ -338,6 +342,7 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"quota_switch_confirmation",
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
+	"cmux_flag_state",
 ]);
 
 export function isInformationalKind(kind: AlertEventType): boolean {

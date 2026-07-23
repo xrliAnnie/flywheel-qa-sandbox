@@ -9,8 +9,8 @@
 #   `pane-died` (not `pane-exited`) when the pane has `remain-on-exit on`
 #   set, so the cleanup event path silently never ran in production.
 #
-# This script runs an *isolated* tmux server via a custom socket name
-# (`tmux -L flywheel-cmux-test`) so it does not touch the developer's or
+# This script runs an *isolated* tmux server via an exact socket path under
+# its private temp root, so it does not touch the developer's or
 # CI runner's main tmux server. The shim function `tmux()` redirects all
 # `tmux` calls to that isolated socket, including calls made from
 # functions sourced from `flywheel-cmux-sync.sh`.
@@ -87,8 +87,9 @@ case "$TMUX_MAJOR_MINOR" in
 esac
 echo "tmux 3.5+: $TMUX_IS_35_PLUS"
 
-TMUX_SOCKET="flywheel-cmux-test-$$"
 TMPDIR_ROOT=$(mktemp -d -t fly110.XXXXXX)
+TMUX_SOCKET="$TMPDIR_ROOT/tmux-hooks-integration.sock"
+export TMUX_SOCKET
 EVENT_FILE_BASE="$TMPDIR_ROOT/events"
 # Process-table reads are intentionally denied by the managed test sandbox.
 # Production leaves this unset and leases use the kernel-reported start time.
@@ -98,7 +99,7 @@ VIEW_WAL_DIR="$TMPDIR_ROOT/view-wal"
 
 cleanup() {
   # Best-effort cleanup. Never fail the script in cleanup.
-  command tmux -L "$TMUX_SOCKET" kill-server 2>/dev/null || true
+  command tmux -S "$TMUX_SOCKET" kill-server 2>/dev/null || true
   rm -rf "$TMPDIR_ROOT" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -122,7 +123,7 @@ maybe_skip() {
   exit 0
 }
 
-command tmux -L "$TMUX_SOCKET" new-session -d -s _preflight -n init "sleep 5" 2>"$TMPDIR_ROOT/preflight.err"
+command tmux -S "$TMUX_SOCKET" new-session -d -s _preflight -n init "sleep 5" 2>"$TMPDIR_ROOT/preflight.err"
 preflight_exit=$?
 
 if [[ $preflight_exit -ne 0 ]]; then
@@ -141,18 +142,18 @@ fi
 
 # Server may have started but be unreachable on this socket — verify by
 # asking it about its own session.
-if ! command tmux -L "$TMUX_SOCKET" has-session -t _preflight 2>/dev/null; then
+if ! command tmux -S "$TMUX_SOCKET" has-session -t _preflight 2>/dev/null; then
   maybe_skip "isolated tmux server is not reachable on socket $TMUX_SOCKET"
 fi
 
 # Pre-flight passed — clean up the probe session and proceed.
-command tmux -L "$TMUX_SOCKET" kill-server 2>/dev/null || true
+command tmux -S "$TMUX_SOCKET" kill-server 2>/dev/null || true
 
 # ── tmux shim — redirects all `tmux` calls in this shell + sourced
 # ── functions to the isolated socket. Defined BEFORE sourcing
 # ── flywheel-cmux-sync.sh so register_session_hooks calls our shim,
 # ── not the real tmux binary against the default socket.
-tmux() { command tmux -L "$TMUX_SOCKET" "$@"; }
+tmux() { command tmux -S "$TMUX_SOCKET" "$@"; }
 export -f tmux
 
 # Source script (guarded by BASH_SOURCE check, so the main case dispatcher
@@ -197,7 +198,7 @@ reset_scenario() {
   EVENT_FILE="${EVENT_FILE_BASE}.${name}"
   rm -f "$EVENT_FILE"
   # Kill any leftover isolated server windows from a previous scenario.
-  command tmux -L "$TMUX_SOCKET" kill-server 2>/dev/null || true
+  command tmux -S "$TMUX_SOCKET" kill-server 2>/dev/null || true
 }
 
 setup_session() {
@@ -414,6 +415,7 @@ rm -f "$LOG_A" "$LOG_B"
 /bin/bash -c "
   export FLYWHEEL_CMUX_WATCHER_LOCK_DIR='$INT_LOCK_DIR'
   source '$SYNC_SCRIPT_PATH'
+  _snapshot_live_mutator_processes() { return 0; }
   acquire_watcher_lock
   echo \"acquired by \$\$\" > '$LOG_A'
   sleep 60
@@ -423,6 +425,7 @@ PID_A=$!
 /bin/bash -c "
   export FLYWHEEL_CMUX_WATCHER_LOCK_DIR='$INT_LOCK_DIR'
   source '$SYNC_SCRIPT_PATH'
+  _snapshot_live_mutator_processes() { return 0; }
   acquire_watcher_lock
   echo \"acquired by \$\$\" > '$LOG_B'
   sleep 60
@@ -566,7 +569,7 @@ fi
 
 # Fail-closed against a REAL tmux failure: kill the isolated server → the real
 # `tmux list-sessions` inside orphan_pin_refs fails → rc=2, no false orphans.
-command tmux -L "$TMUX_SOCKET" kill-server 2>/dev/null || true
+command tmux -S "$TMUX_SOCKET" kill-server 2>/dev/null || true
 d293_fc_out=$(orphan_pin_refs 2>/dev/null); d293_fc_rc=$?
 if [[ $d293_fc_rc -eq 2 && -z "$d293_fc_out" ]]; then
   pass "Scenario E: real tmux server down → orphan_pin_refs rc=2 (fail-closed, zero false orphans)"

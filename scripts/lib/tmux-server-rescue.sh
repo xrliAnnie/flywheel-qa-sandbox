@@ -2,8 +2,25 @@
 # FLY-1285: inspect and safely recover a Flywheel tmux server socket.
 # Sourceable by launchers and executable as a small runtime CLI.
 
+_TMUX_RESCUE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$_TMUX_RESCUE_LIB_DIR/../lead-alert.sh" ]; then
+  _TMUX_RESCUE_DEFAULT_ALERT_BIN="$_TMUX_RESCUE_LIB_DIR/../lead-alert.sh"
+else
+  _TMUX_RESCUE_DEFAULT_ALERT_BIN="$_TMUX_RESCUE_LIB_DIR/lead-alert.sh"
+fi
+FLYWHEEL_ALERT_BIN="${FLYWHEEL_TMUX_RESCUE_ALERT_BIN:-${FLYWHEEL_ALERT_BIN:-$_TMUX_RESCUE_DEFAULT_ALERT_BIN}}"
+if [ -r "$_TMUX_RESCUE_LIB_DIR/flywheel-alert-lib.sh" ]; then
+  # shellcheck source=flywheel-alert-lib.sh
+  source "$_TMUX_RESCUE_LIB_DIR/flywheel-alert-lib.sh"
+else
+  printf '[tmux-rescue] WARN: optional alert library unavailable; alerts disabled\n' >&2
+  flywheel_alert() { return 0; }
+fi
+
 _tmux_rescue_stat_owner_mode() {
-  stat -f '%u %Lp' "$1" 2>/dev/null || stat -c '%u %a' "$1" 2>/dev/null
+  # GNU stat accepts `-f` but interprets it as filesystem output, so a BSD-first
+  # fallback can succeed with unusable data. GNU `-c` fails cleanly on BSD stat.
+  stat -c '%u %a' "$1" 2>/dev/null || stat -f '%u %Lp' "$1" 2>/dev/null
 }
 
 _tmux_rescue_mode_is_safe() {
@@ -116,13 +133,13 @@ _tmux_rescue_load_factor() {
   read -r load1 ncpu <<EOF
 $sampled
 EOF
-  awk -v load="$load1" -v cores="$ncpu" -v max="$max" 'BEGIN {
-    if (load !~ /^[0-9]+([.][0-9]+)?$/ || cores !~ /^[0-9]+([.][0-9]+)?$/ || cores + 0 <= 0) {
+  awk -v load_value="$load1" -v cores="$ncpu" -v max="$max" 'BEGIN {
+    if (load_value !~ /^[0-9]+([.][0-9]+)?$/ || cores !~ /^[0-9]+([.][0-9]+)?$/ || cores + 0 <= 0) {
       print 1
       exit
     }
-    factor = int((load + 0) / (cores + 0))
-    if (factor * (cores + 0) < (load + 0)) factor++
+    factor = int((load_value + 0) / (cores + 0))
+    if (factor * (cores + 0) < (load_value + 0)) factor++
     if (factor < 1) factor = 1
     if (factor > max) factor = max
     printf "%.0f\n", factor
@@ -251,24 +268,65 @@ _tmux_rescue_normalize_socket() {
 }
 
 _tmux_rescue_pid_has_socket() {
-  local pid="$1" socket_path="$2" output rc line reported normalized timeout
+  local pid="$1" socket_path="$2" output probe rc line reported normalized timeout err_file
   command -v lsof >/dev/null 2>&1 || return 2
   timeout="$(_tmux_rescue_effective_timeout inspect)"
+  err_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-tmux-lsof.XXXXXX" 2>/dev/null)" || return 2
   output="$(_tmux_rescue_bounded_exec "$timeout" \
-    lsof -a -p "$pid" -U -Fn 2>/dev/null)"
+    lsof -a -p "$pid" -U -Fn 2>"$err_file")"
   rc=$?
-	if [ "$rc" -ne 0 ]; then
-		if [ "$rc" -eq 124 ] || [ "$rc" -eq 125 ]; then return 3; fi
-		# lsof uses 1 for a complete "no matching descriptor" result. Accept it
-		# only while the candidate identity still exists; permission/tool errors
-		# remain incomplete evidence.
-		if [ "$rc" -eq 1 ] && kill -0 "$pid" 2>/dev/null; then return 1; fi
+	if [ "$rc" -eq 124 ] || [ "$rc" -eq 125 ]; then
+		rm -f "$err_file"
+		return 3
+	fi
+	# Any diagnostic means lsof itself says the descriptor scan was not clean.
+	# Never use its partial/empty stdout as ownership evidence in that case.
+	if [ -s "$err_file" ]; then
+		rm -f "$err_file"
 		return 2
 	fi
+	if [ "$rc" -ne 0 ]; then
+		# lsof uses 1 both for a complete filtered-empty result and for generic
+		# failures. The diagnostic-free requirement above rejects the latter.
+		# Also require a second bounded exact-PID enumeration before accepting
+		# "no Unix socket" as complete evidence.
+		if [ "$rc" -eq 1 ] && kill -0 "$pid" 2>/dev/null; then
+			: > "$err_file" || {
+				rm -f "$err_file"
+				return 2
+			}
+			probe="$(_tmux_rescue_bounded_exec "$timeout" \
+				lsof -a -p "$pid" -Fp 2>"$err_file")"
+			rc=$?
+			if [ "$rc" -eq 124 ] || [ "$rc" -eq 125 ]; then
+				rm -f "$err_file"
+				return 3
+			fi
+			if [ "$rc" -ne 0 ] || [ -s "$err_file" ]; then
+				rm -f "$err_file"
+				return 2
+			fi
+			rm -f "$err_file"
+			while IFS= read -r line; do
+				[ "$line" = "p$pid" ] && return 1
+			done <<EOF
+$probe
+EOF
+			return 2
+		fi
+		rm -f "$err_file"
+		return 2
+	fi
+  rm -f "$err_file"
   while IFS= read -r line; do
     case "$line" in
       n/*)
         reported="${line#n}"
+        # Linux lsof appends socket metadata to -Fn output (for example,
+        # " type=STREAM"); macOS reports only the pathname.
+        case "$reported" in
+          *' type=STREAM') reported="${reported% type=STREAM}" ;;
+        esac
         normalized="$(_tmux_rescue_normalize_socket "$reported")" || continue
         [ "$normalized" = "$socket_path" ] && return 0
         ;;
@@ -307,7 +365,7 @@ _tmux_rescue_server_pids() {
 
 tmux_socket_inspect() {
   local requested="$1" socket_path socket_present=false reachable_pid="null"
-  local scan_complete=true timed_out=false candidates="" pid rc inspect_timeout
+  local scan_complete=true reachability_timed_out=false timed_out=false candidates="" pid rc inspect_timeout
 
   _tmux_rescue_prepare_runtime
   inspect_timeout="$(_tmux_rescue_effective_timeout inspect)"
@@ -324,7 +382,9 @@ tmux_socket_inspect() {
   [ "$rc" -eq 0 ] || {
     pid=""
     if [ "$rc" -eq 124 ] || [ "$rc" -eq 125 ]; then
-      scan_complete=false
+      # Client reachability and process ownership are independent evidence.
+      # Preserve a complete exact ps+lsof proof collected below.
+      reachability_timed_out=true
       timed_out=true
     fi
   }
@@ -362,6 +422,18 @@ tmux_socket_inspect() {
         verdict="split_brain"
       else
         verdict="reachable"
+      fi
+    elif [ "$reachability_timed_out" = true ]; then
+      if [ -z "$candidates" ] || [ "$socket_present" != true ]; then
+        # A client timeout without an exact live owner remains fail-closed.
+        scan_complete=false
+        verdict="unknown"
+      elif [ "${candidates#*,}" != "$candidates" ]; then
+        verdict="ambiguous"
+      else
+        # One exact live owner plus the socket inode proves saturation even
+        # when the client probe itself cannot connect.
+        verdict="saturated"
       fi
     elif [ -z "$candidates" ]; then
       # A stale socket inode is not evidence of a live server. Once the full
@@ -707,26 +779,641 @@ _tmux_rescue_lock_hash() {
   return 1
 }
 
+_tmux_rescue_now() {
+  if [ -x /usr/bin/python3 ]; then
+    /usr/bin/python3 -c 'import time; print(f"{time.time():.6f}")'
+  else
+    date +%s
+  fi
+}
+
+_tmux_rescue_release_now() {
+  # Separate seam for the first instruction after the backend returns. Tests
+  # inject this clock independently from the in-lock clock so lock-release
+  # accounting never depends on host load or scheduler timing.
+  _tmux_rescue_now
+}
+
+_tmux_rescue_audit() {
+  local log_dir="${HOME}/.flywheel/logs"
+  mkdir -p "$log_dir" 2>/dev/null || return 0
+  printf '%s %s\n' "$(_tmux_rescue_now 2>/dev/null || date +%s)" "$*" \
+    >> "$log_dir/tmux-rescue-audit.log" 2>/dev/null || true
+  return 0
+}
+
+_tmux_rescue_new_token() {
+  local token
+  token="$(uuidgen 2>/dev/null || printf '%s-%s-%s' "$(date +%s)" "$$" "${RANDOM:-0}")"
+  printf '%s' "$token" | tr -cd 'A-Za-z0-9_.-'
+}
+
+_tmux_rescue_probe_mtime() {
+  stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null
+}
+
+_tmux_rescue_sweep_outer_pid_probes() {
+  # A SIGKILL after the Bash 3.2 direct child publishes its parent PID can
+  # strand a token-specific probe. Sweep only old, regular, tightly named
+  # files, and cap work per invocation so cleanup cannot become lock latency.
+  local lock_dir="${HOME}/.flywheel/locks" probe base token mtime now age swept=0
+  now=$(date +%s) || return 0
+  for probe in "$lock_dir"/.tmux-*.outer-pid; do
+    [[ -e "$probe" ]] || continue
+    [[ -f "$probe" && ! -L "$probe" ]] || continue
+    base=${probe##*/}
+    token=${base#.tmux-}
+    token=${token%.outer-pid}
+    case "$token" in ''|*[!A-Za-z0-9_.-]*) continue ;; esac
+    mtime=$(_tmux_rescue_probe_mtime "$probe" 2>/dev/null || true)
+    case "$mtime" in ''|*[!0-9]*) continue ;; esac
+    age=$((now - mtime))
+    [[ "$age" -ge 600 ]] || continue
+    rm -f "$probe" 2>/dev/null || continue
+    swept=$((swept + 1))
+    [[ "$swept" -ge 32 ]] && break
+  done
+  return 0
+}
+
+_tmux_rescue_prepare_lock_instrumentation() {
+  # Called by the outer process before it waits for the kernel lock. The child
+  # inherits this immutable acquisition identity; nested recovery reuses it.
+  local socket_path="$1" verb="$2" caller="$3" lock_file="$4"
+  local lock_hash caller_hash state_dir token outer_pid outer_start_identity pid_probe
+  case "$verb" in ensure|recover) ;; *) return 1 ;; esac
+  case "$caller" in ''|*[!A-Za-z0-9_.:-]*) caller="unknown" ;; esac
+  lock_hash="$(_tmux_rescue_lock_hash "$socket_path")" || return 1
+  caller_hash="$(_tmux_rescue_lock_hash "$caller")" || return 1
+  token="$(_tmux_rescue_new_token)"
+  [ -n "$token" ] || return 1
+  state_dir="${HOME}/.flywheel/state/tmux-rescue-episodes"
+  mkdir -p "$state_dir" "${HOME}/.flywheel/locks" 2>/dev/null || return 1
+  _tmux_rescue_sweep_outer_pid_probes
+  # The post-lock decision belongs to this outer invocation, not the backend
+  # child that will inherit the instrumentation environment. A later holder
+  # may replay the decision only after this exact process incarnation is gone;
+  # otherwise two live contenders can both attempt the same alert.
+  outer_pid="${BASHPID:-}"
+  if [ -z "$outer_pid" ]; then
+    # Bash 3.2 has no BASHPID and keeps $$ equal to the top-level shell inside
+    # background subshells. A direct child writes its parent without command
+    # substitution; command substitution would insert another shell and leave
+    # us recording that already-dead intermediate process instead.
+    pid_probe="${HOME}/.flywheel/locks/.tmux-${token}.outer-pid"
+    /bin/sh -c 'umask 077; set -C; printf "%s\n" "$PPID" > "$1"' \
+      _ "$pid_probe" 2>/dev/null || return 1
+    chmod 600 "$pid_probe" 2>/dev/null || { rm -f "$pid_probe"; return 1; }
+    IFS= read -r outer_pid < "$pid_probe" || { rm -f "$pid_probe"; return 1; }
+    rm -f "$pid_probe" 2>/dev/null || return 1
+  fi
+  case "$outer_pid" in ''|*[!0-9]*) return 1 ;; esac
+  outer_start_identity="$(_tmux_rescue_process_start_identity "$outer_pid" || true)"
+  _TMUX_RESCUE_TOKEN="$token"
+  _TMUX_RESCUE_VERB="$verb"
+  _TMUX_RESCUE_CALLER="$caller"
+  _TMUX_RESCUE_SOCKET="$socket_path"
+  _TMUX_RESCUE_LOCK_FILE="$lock_file"
+  _TMUX_RESCUE_ACQUISITION_FILE="${HOME}/.flywheel/locks/tmux-${lock_hash}.${token}.acquired"
+  _TMUX_RESCUE_DECISION_FILE="${HOME}/.flywheel/locks/tmux-${lock_hash}.${token}.decision"
+  _TMUX_RESCUE_EPISODE_FILE="${state_dir}/${lock_hash}-${verb}-${caller_hash}.state"
+  _TMUX_RESCUE_TAIL_FILE="${state_dir}/${lock_hash}-${verb}-${caller_hash}.release-tail.state"
+  _TMUX_RESCUE_OUTER_PID="$outer_pid"
+  _TMUX_RESCUE_OUTER_START_IDENTITY="$outer_start_identity"
+  export _TMUX_RESCUE_TOKEN _TMUX_RESCUE_VERB _TMUX_RESCUE_CALLER
+  export _TMUX_RESCUE_SOCKET _TMUX_RESCUE_LOCK_FILE
+  export _TMUX_RESCUE_ACQUISITION_FILE _TMUX_RESCUE_DECISION_FILE
+  export _TMUX_RESCUE_EPISODE_FILE _TMUX_RESCUE_TAIL_FILE
+  export _TMUX_RESCUE_OUTER_PID _TMUX_RESCUE_OUTER_START_IDENTITY
+}
+
+_tmux_rescue_begin_acquisition() {
+  # First controlled action after the backend child owns the kernel lock.
+  local socket_path="$1" acquired_at tmp
+  [ "${_TMUX_RESCUE_SOCKET:-}" = "$socket_path" ] || return 1
+  [ -n "${_TMUX_RESCUE_ACQUISITION_FILE:-}" ] || return 1
+  acquired_at="$(_tmux_rescue_now)" || return 1
+  tmp="${_TMUX_RESCUE_ACQUISITION_FILE}.$$.$RANDOM.tmp"
+  {
+    printf 'token=%s\n' "$_TMUX_RESCUE_TOKEN"
+    printf 'acquiredAt=%s\n' "$acquired_at"
+    printf 'verb=%s\n' "$_TMUX_RESCUE_VERB"
+    printf 'caller=%s\n' "$_TMUX_RESCUE_CALLER"
+    printf 'outerPid=%s\n' "$_TMUX_RESCUE_OUTER_PID"
+    printf 'outerStartIdentity=%s\n' "$_TMUX_RESCUE_OUTER_START_IDENTITY"
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+  chmod 600 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$_TMUX_RESCUE_ACQUISITION_FILE" || return 1
+  _TMUX_RESCUE_ACQUIRED_AT="$acquired_at"
+  export _TMUX_RESCUE_ACQUIRED_AT
+  _tmux_rescue_write_owner_metadata "$socket_path" || true
+  return 0
+}
+
+_tmux_rescue_state_value() {
+  local file="$1" key="$2"
+  awk -F= -v k="$key" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$file" 2>/dev/null
+}
+
+_tmux_rescue_after_decision_prepare() {
+  # Test seam: production callers keep this as a no-op.
+  return 0
+}
+
+_tmux_rescue_after_state_commit() {
+  # Test seam: production callers keep this as a no-op.
+  return 0
+}
+
+_tmux_rescue_write_decision() {
+  local state_committed="$1" hold="$2" should_alert="$3" counter="$4" backend_rc="$5"
+  local tail_should_alert="$6" tail_counter="$7" episode_state="$8"
+  local tmp
+  tmp="${_TMUX_RESCUE_DECISION_FILE}.$$.$RANDOM.tmp"
+  {
+    printf 'token=%s\n' "$_TMUX_RESCUE_TOKEN"
+    printf 'holdSec=%s\n' "$hold"
+    printf 'shouldAlert=%s\n' "$should_alert"
+    printf 'episodeCounter=%s\n' "$counter"
+    printf 'backendRc=%s\n' "$backend_rc"
+    printf 'stateCommitted=%s\n' "$state_committed"
+    printf 'tailShouldAlert=%s\n' "$tail_should_alert"
+    printf 'tailEpisodeCounter=%s\n' "$tail_counter"
+    printf 'episodeState=%s\n' "$episode_state"
+  } > "$tmp" 2>/dev/null && chmod 600 "$tmp" 2>/dev/null \
+    && mv -f "$tmp" "$_TMUX_RESCUE_DECISION_FILE" 2>/dev/null \
+    || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+}
+
+_tmux_rescue_finish_acquisition() {
+  # Runs inside the kernel lock. Episode RMW and the token-scoped decision are
+  # completed before the backend process exits and releases the lock.
+  local socket_path="$1" backend_rc="$2" acquired_at now hold threshold
+  local last_state="normal" normal_streak=0 counter=0 cooldown_until=0 state_token=""
+  local required_streak cooldown_sec is_long=0 should_alert=0 tmp line
+  local tail_should_alert=0 tail_counter=0
+  [ "${_TMUX_RESCUE_SOCKET:-}" = "$socket_path" ] || return 0
+  [ -f "${_TMUX_RESCUE_ACQUISITION_FILE:-}" ] || return 0
+  acquired_at="$(_tmux_rescue_state_value "$_TMUX_RESCUE_ACQUISITION_FILE" acquiredAt)"
+  case "$acquired_at" in ''|*[!0-9.]*) return 0 ;; esac
+  threshold="${FLYWHEEL_TMUX_RESCUE_HOLD_WARN_SEC:-5}"
+  awk -v v="$threshold" 'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/) }' \
+    || threshold=5
+  required_streak="${FLYWHEEL_TMUX_RESCUE_NORMAL_STREAK:-2}"
+  case "$required_streak" in ''|*[!0-9]*) required_streak=2 ;; esac
+  [ "$required_streak" -ge 1 ] 2>/dev/null || required_streak=2
+  cooldown_sec="${FLYWHEEL_TMUX_RESCUE_ALERT_COOLDOWN_SEC:-0}"
+  awk -v v="$cooldown_sec" 'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/) }' \
+    || cooldown_sec=0
+  if [ -f "$_TMUX_RESCUE_EPISODE_FILE" ]; then
+    line="$(cat "$_TMUX_RESCUE_EPISODE_FILE" 2>/dev/null || true)"
+    IFS='|' read -r last_state normal_streak counter cooldown_until state_token <<EOF
+$line
+EOF
+    case "$last_state" in normal|long) ;; *) last_state="normal" ;; esac
+    case "$normal_streak" in ''|*[!0-9]*) normal_streak=0 ;; esac
+    case "$counter" in ''|*[!0-9]*) counter=0 ;; esac
+    case "$cooldown_until" in ''|*[!0-9.]*) cooldown_until=0 ;; esac
+  fi
+  # Read-side instrumentation belongs to the critical section too. Take the
+  # decision clock only after the episode state is fully available.
+  now="$(_tmux_rescue_now)" || return 0
+  hold="$(awk -v n="$now" -v a="$acquired_at" 'BEGIN { v=n-a; if (v<0) v=0; printf "%.6f", v }')"
+  tail_counter="$counter"
+  if [ "$last_state" != "long" ] \
+      && awk -v n="$now" -v c="$cooldown_until" 'BEGIN { exit !((n+0) >= (c+0)) }'; then
+    tail_should_alert=1
+    tail_counter=$((counter + 1))
+  fi
+  awk -v h="$hold" -v t="$threshold" 'BEGIN { exit !((h+0) > (t+0)) }' \
+    && is_long=1
+  if [ "$is_long" = "1" ]; then
+    normal_streak=0
+    if [ "$last_state" != "long" ]; then
+      if awk -v n="$now" -v c="$cooldown_until" 'BEGIN { exit !((n+0) >= (c+0)) }'; then
+        counter=$((counter + 1))
+        should_alert=1
+        last_state="long"
+        cooldown_until="$(awk -v n="$now" -v c="$cooldown_sec" 'BEGIN { printf "%.6f", n+c }')"
+      fi
+    fi
+  else
+    if [ "$last_state" = "long" ]; then
+      normal_streak=$((normal_streak + 1))
+      if [ "$normal_streak" -ge "$required_streak" ]; then
+        last_state="normal"
+        normal_streak=0
+      fi
+    else
+      normal_streak=0
+    fi
+  fi
+  # Publish an immutable prepared decision before changing persistent episode
+  # state. If the child dies now, the outer process can prove no state commit
+  # occurred; if it dies after the state rename, the token in that state proves
+  # this exact decision committed and is safe to consume after lock release.
+  _tmux_rescue_write_decision 0 "$hold" "$should_alert" "$counter" "$backend_rc" \
+    "$tail_should_alert" "$tail_counter" "$last_state" \
+    || return 0
+  _tmux_rescue_after_decision_prepare
+  tmp="${_TMUX_RESCUE_EPISODE_FILE}.$$.$RANDOM.tmp"
+  printf '%s|%s|%s|%s|%s\n' "$last_state" "$normal_streak" "$counter" "$cooldown_until" "$_TMUX_RESCUE_TOKEN" \
+    > "$tmp" 2>/dev/null && chmod 600 "$tmp" 2>/dev/null \
+    && mv -f "$tmp" "$_TMUX_RESCUE_EPISODE_FILE" 2>/dev/null \
+    || { rm -f "$tmp" 2>/dev/null || true; return 0; }
+  _tmux_rescue_after_state_commit
+  _tmux_rescue_write_decision 1 "$hold" "$should_alert" "$counter" "$backend_rc" \
+    "$tail_should_alert" "$tail_counter" "$last_state" \
+    || true
+  return 0
+}
+
+_tmux_rescue_tail_transition() {
+  # The true hold duration is knowable only after the main kernel lock has
+  # released. Serialize that post-release classification in an independent
+  # state file so tail-only overruns have durable, monotonic episodes without
+  # extending the rescue critical section around alert I/O.
+  local hold="$1" threshold="$2" required_streak="$3" suppress_new_alert="${4:-0}"
+  [ -n "${_TMUX_RESCUE_TAIL_FILE:-}" ] || return 1
+  [ -x /usr/bin/python3 ] || return 1
+  /usr/bin/python3 - "$_TMUX_RESCUE_TAIL_FILE" "$hold" "$threshold" "$required_streak" "$suppress_new_alert" <<'PY'
+import fcntl
+import os
+import signal
+import sys
+import tempfile
+
+state_path, hold_raw, threshold_raw, streak_raw, suppress_raw = sys.argv[1:]
+try:
+    hold = float(hold_raw)
+    threshold = float(threshold_raw)
+    required = max(1, int(streak_raw))
+    suppress_new_alert = suppress_raw == "1"
+except (TypeError, ValueError):
+    raise SystemExit(1)
+
+lock_path = state_path + ".lock"
+fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    last = "normal"
+    streak = 0
+    counter = 0
+    pending = 0
+    try:
+        with open(state_path, encoding="utf-8") as src:
+            parts = src.readline().strip().split("|")
+        if len(parts) in {3, 4} and parts[0] in {"normal", "long"}:
+            last = parts[0]
+            streak = max(0, int(parts[1]))
+            counter = max(0, int(parts[2]))
+            pending = max(0, int(parts[3])) if len(parts) == 4 else 0
+            if pending > counter:
+                raise ValueError
+    except (OSError, TypeError, ValueError):
+        last, streak, counter, pending = "normal", 0, 0, 0
+
+    should = 1 if pending else 0
+    alert_counter = pending
+    if hold > threshold:
+        streak = 0
+        if last != "long":
+            last = "long"
+            counter += 1
+            if not suppress_new_alert:
+                pending = counter
+                should = 1
+                alert_counter = counter
+    elif last == "long":
+        streak += 1
+        if streak >= required:
+            last, streak = "normal", 0
+    else:
+        streak = 0
+
+    directory = os.path.dirname(state_path)
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix=".release-tail.", dir=directory, text=True)
+    try:
+        os.fchmod(tmp_fd, 0o600)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as out:
+            out.write(f"{last}|{streak}|{counter}|{pending}\n")
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp_path, state_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    # Hermetic crash seam: prove the durable pending decision survives the
+    # exact state-commit -> stdout/alert gap. Unset in production.
+    if os.environ.get("FLYWHEEL_TEST_TAIL_CRASH_AFTER_COMMIT") == "1":
+        os.kill(os.getpid(), signal.SIGKILL)
+    print(f"{should}|{alert_counter or counter}|{pending}")
+finally:
+    os.close(fd)
+PY
+}
+
+_tmux_rescue_tail_ack() {
+  # Clear only the exact episode whose alert attempt completed. A crash before
+  # this acknowledgement leaves `pending` replayable; a crash after delivery
+  # may retry the same stable signature, which downstream dedup suppresses.
+  local episode="$1"
+  [ -n "${_TMUX_RESCUE_TAIL_FILE:-}" ] || return 1
+  [ -x /usr/bin/python3 ] || return 1
+  /usr/bin/python3 - "$_TMUX_RESCUE_TAIL_FILE" "$episode" <<'PY'
+import fcntl
+import os
+import sys
+import tempfile
+
+state_path, episode_raw = sys.argv[1:]
+try:
+    episode = int(episode_raw)
+except (TypeError, ValueError):
+    raise SystemExit(1)
+lock_path = state_path + ".lock"
+fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    with open(state_path, encoding="utf-8") as src:
+        parts = src.readline().strip().split("|")
+    if len(parts) != 4 or parts[0] not in {"normal", "long"}:
+        raise SystemExit(1)
+    last, streak_raw, counter_raw, pending_raw = parts
+    streak, counter, pending = int(streak_raw), int(counter_raw), int(pending_raw)
+    if pending != episode:
+        raise SystemExit(0)
+    directory = os.path.dirname(state_path)
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix=".release-tail.", dir=directory, text=True)
+    try:
+        os.fchmod(tmp_fd, 0o600)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as out:
+            out.write(f"{last}|{streak}|{counter}|0\n")
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp_path, state_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+finally:
+    os.close(fd)
+PY
+}
+
+_tmux_rescue_replay_pending_decisions() {
+  # A backend child commits its decision while it still owns the kernel lock,
+  # but alert I/O intentionally runs only after release. If the outer process
+  # dies in that gap, a later acquisition proves the prior lock is no longer
+  # held and may replay the immutable token pair. Stable alert signatures make
+  # a crash after delivery but before unlink safe through downstream dedup.
+  local socket_path="$1" exclude_decision="${2:-}" lock_hash lock_dir decision acquisition
+  local token acquired_token verb caller committed caller_hash episode_file state_token
+  local outer_pid outer_start_identity observed_start process_state is_zombie
+  local should hold counter expected
+  lock_hash="$(_tmux_rescue_lock_hash "$socket_path")" || return 0
+  lock_dir="${HOME}/.flywheel/locks"
+  for decision in "$lock_dir"/tmux-"$lock_hash".*.decision; do
+    [ -f "$decision" ] || continue
+    [ ! -L "$decision" ] || continue
+    [ "$decision" != "$exclude_decision" ] || continue
+    acquisition="${decision%.decision}.acquired"
+    [ -f "$acquisition" ] && [ ! -L "$acquisition" ] || continue
+    token="$(_tmux_rescue_state_value "$decision" token)"
+    acquired_token="$(_tmux_rescue_state_value "$acquisition" token)"
+    case "$token" in ''|*[!A-Za-z0-9_.-]*) continue ;; esac
+    expected="$lock_dir/tmux-${lock_hash}.${token}.decision"
+    [ "$decision" = "$expected" ] && [ "$acquired_token" = "$token" ] || continue
+    verb="$(_tmux_rescue_state_value "$acquisition" verb)"
+    caller="$(_tmux_rescue_state_value "$acquisition" caller)"
+    case "$verb" in ensure|recover) ;; *) continue ;; esac
+    case "$caller" in ''|*[!A-Za-z0-9_.:-]*) continue ;; esac
+    outer_pid="$(_tmux_rescue_state_value "$acquisition" outerPid)"
+    outer_start_identity="$(_tmux_rescue_state_value "$acquisition" outerStartIdentity)"
+    if [ -n "$outer_pid" ] || [ -n "$outer_start_identity" ]; then
+      case "$outer_pid" in ''|*[!0-9]*) continue ;; esac
+      observed_start="$(_tmux_rescue_process_start_identity "$outer_pid" || true)"
+      process_state="$(_tmux_rescue_process_state "$outer_pid" || true)"
+      is_zombie=0
+      case "$process_state" in Z*|z*) is_zombie=1 ;; esac
+      if kill -0 "$outer_pid" 2>/dev/null \
+          && [ "$is_zombie" = "0" ] \
+          && { [ -z "$outer_start_identity" ] || [ -z "$observed_start" ] \
+            || [ "$observed_start" = "$outer_start_identity" ]; }; then
+        _tmux_rescue_audit "token=$token verb=$verb caller=$caller pending_decision_owner_alive"
+        continue
+      fi
+    fi
+    committed="$(_tmux_rescue_state_value "$decision" stateCommitted)"
+    if [ "$committed" != "1" ]; then
+      # The child may have committed episode state and died before rewriting
+      # stateCommitted=1. Recover only while that exact token is still the
+      # episode's committed token; otherwise it was merely a prepared decision.
+      caller_hash="$(_tmux_rescue_lock_hash "$caller")" || continue
+      episode_file="${HOME}/.flywheel/state/tmux-rescue-episodes/${lock_hash}-${verb}-${caller_hash}.state"
+      state_token="$(awk -F'|' 'NF >= 5 { print $5; exit }' "$episode_file" 2>/dev/null)"
+      if [ "$committed" != "0" ] || [ "$state_token" != "$token" ]; then
+        rm -f "$acquisition" "$decision" 2>/dev/null || true
+        continue
+      fi
+    fi
+    should="$(_tmux_rescue_state_value "$decision" shouldAlert)"
+    hold="$(_tmux_rescue_state_value "$decision" holdSec)"
+    counter="$(_tmux_rescue_state_value "$decision" episodeCounter)"
+    case "$should" in 0|1) ;; *) continue ;; esac
+    case "$counter" in ''|*[!0-9]*) continue ;; esac
+    awk -v v="$hold" 'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/) }' 2>/dev/null || continue
+    if [ "$should" = "1" ]; then
+      flywheel_alert tmux_rescue_hold warning \
+        "tmux rescue lock held ${hold}s" \
+        "A tmux rescue critical section exceeded its hold threshold after acquisition: socket=$socket_path verb=$verb caller=$caller holdSec=$hold episode=$counter." \
+        "tmux_rescue_hold|sockhash=$lock_hash|verb=$verb|caller=$caller|episode=$counter"
+      _tmux_rescue_audit "token=$token verb=$verb caller=$caller holdSec=$hold episode=$counter pending_decision_replayed"
+    else
+      _tmux_rescue_audit "token=$token verb=$verb caller=$caller pending_decision_no_alert"
+    fi
+    rm -f "$acquisition" "$decision" 2>/dev/null || true
+  done
+  return 0
+}
+
+_tmux_rescue_after_lock() {
+  # The backend has returned, so the kernel lock is released before any
+  # network-capable alert executable runs.
+  local socket_path="$1" backend_rc="$2" end acquired_at hold should counter committed state_token
+  local threshold tail_should=0 tail_counter=0 tail_pending=0 tail_override=0 tail_result="" required_streak tail_signature="" episode_state suppress_tail=0
+  end="${3:-}"
+  awk -v v="$end" 'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/) }' 2>/dev/null \
+    || end="$(_tmux_rescue_release_now 2>/dev/null || date +%s)"
+  if [ ! -f "${_TMUX_RESCUE_ACQUISITION_FILE:-}" ]; then
+    _tmux_rescue_audit "token=${_TMUX_RESCUE_TOKEN:-unknown} verb=${_TMUX_RESCUE_VERB:-unknown} caller=${_TMUX_RESCUE_CALLER:-unknown} rc=$backend_rc acquisition_missing_wait_only"
+    return 0
+  fi
+  if [ ! -f "${_TMUX_RESCUE_DECISION_FILE:-}" ]; then
+    _tmux_rescue_audit "token=${_TMUX_RESCUE_TOKEN:-unknown} acquiredAt=$(_tmux_rescue_state_value "$_TMUX_RESCUE_ACQUISITION_FILE" acquiredAt) end=$end verb=${_TMUX_RESCUE_VERB:-unknown} caller=${_TMUX_RESCUE_CALLER:-unknown} rc=$backend_rc decision_missing_due_to_abnormal_exit"
+    rm -f "$_TMUX_RESCUE_ACQUISITION_FILE" 2>/dev/null || true
+    return 0
+  fi
+  committed="$(_tmux_rescue_state_value "$_TMUX_RESCUE_DECISION_FILE" stateCommitted)"
+  if [ "$committed" != "1" ]; then
+    state_token="$(awk -F'|' 'NF >= 5 { print $5; exit }' "${_TMUX_RESCUE_EPISODE_FILE:-/dev/null}" 2>/dev/null)"
+    if [ "$committed" != "0" ] || [ "$state_token" != "${_TMUX_RESCUE_TOKEN:-}" ]; then
+      _tmux_rescue_audit "token=${_TMUX_RESCUE_TOKEN:-unknown} acquiredAt=$(_tmux_rescue_state_value "$_TMUX_RESCUE_ACQUISITION_FILE" acquiredAt) end=$end verb=${_TMUX_RESCUE_VERB:-unknown} caller=${_TMUX_RESCUE_CALLER:-unknown} rc=$backend_rc decision_uncommitted_before_state"
+      rm -f "$_TMUX_RESCUE_ACQUISITION_FILE" "$_TMUX_RESCUE_DECISION_FILE" 2>/dev/null || true
+      return 0
+    fi
+    _tmux_rescue_audit "token=$_TMUX_RESCUE_TOKEN acquiredAt=$(_tmux_rescue_state_value "$_TMUX_RESCUE_ACQUISITION_FILE" acquiredAt) end=$end verb=$_TMUX_RESCUE_VERB caller=$_TMUX_RESCUE_CALLER rc=$backend_rc decision_commit_recovered"
+  fi
+  acquired_at="$(_tmux_rescue_state_value "$_TMUX_RESCUE_ACQUISITION_FILE" acquiredAt)"
+  case "$acquired_at" in
+    ''|*[!0-9.]*) hold="$(_tmux_rescue_state_value "$_TMUX_RESCUE_DECISION_FILE" holdSec)" ;;
+    *) hold="$(awk -v n="$end" -v a="$acquired_at" 'BEGIN { v=n-a; if (v<0) v=0; printf "%.6f", v }')" ;;
+  esac
+  should="$(_tmux_rescue_state_value "$_TMUX_RESCUE_DECISION_FILE" shouldAlert)"
+  counter="$(_tmux_rescue_state_value "$_TMUX_RESCUE_DECISION_FILE" episodeCounter)"
+  episode_state="$(_tmux_rescue_state_value "$_TMUX_RESCUE_DECISION_FILE" episodeState)"
+  [ "$episode_state" = "long" ] && suppress_tail=1
+  threshold="${FLYWHEEL_TMUX_RESCUE_HOLD_WARN_SEC:-5}"
+  awk -v v="$threshold" 'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/) }' 2>/dev/null \
+    || threshold=5
+  required_streak="${FLYWHEEL_TMUX_RESCUE_NORMAL_STREAK:-2}"
+  case "$required_streak" in ''|*[!0-9]*) required_streak=2 ;; esac
+  [ "$required_streak" -ge 1 ] 2>/dev/null || required_streak=2
+  tail_result="$(_tmux_rescue_tail_transition "$hold" "$threshold" "$required_streak" "$suppress_tail" 2>/dev/null || true)"
+  IFS='|' read -r tail_should tail_counter tail_pending <<EOF
+$tail_result
+EOF
+  if [ "$should" != "1" ] && [ "$tail_should" = "1" ]; then
+    should=1
+    counter="$tail_counter"
+    tail_override=1
+    tail_signature="|tail=1"
+  fi
+  _tmux_rescue_audit "token=$_TMUX_RESCUE_TOKEN acquiredAt=$acquired_at end=$end holdSec=$hold verb=$_TMUX_RESCUE_VERB caller=$_TMUX_RESCUE_CALLER rc=$backend_rc shouldAlert=$should episode=$counter tailOverride=$tail_override"
+  if [ "$should" = "1" ]; then
+    flywheel_alert tmux_rescue_hold warning \
+      "tmux rescue lock held ${hold}s" \
+      "A tmux rescue critical section exceeded its hold threshold after acquisition: socket=$socket_path verb=$_TMUX_RESCUE_VERB caller=$_TMUX_RESCUE_CALLER holdSec=$hold episode=$counter." \
+      "tmux_rescue_hold|sockhash=$(_tmux_rescue_lock_hash "$socket_path")|verb=$_TMUX_RESCUE_VERB|caller=$_TMUX_RESCUE_CALLER${tail_signature}|episode=$counter"
+    # A main in-lock alert is a different delivery attempt/signature. Only a
+    # selected tail override may acknowledge the durable tail episode.
+    if [ "$tail_override" = "1" ] && [ -n "$tail_pending" ] && [ "$tail_pending" != "0" ]; then
+      _tmux_rescue_tail_ack "$tail_pending" || \
+        _tmux_rescue_audit "token=$_TMUX_RESCUE_TOKEN tail_alert_ack_failed episode=$tail_pending"
+    fi
+  fi
+  rm -f "$_TMUX_RESCUE_ACQUISITION_FILE" "$_TMUX_RESCUE_DECISION_FILE" 2>/dev/null || true
+  return 0
+}
+
+_tmux_rescue_locked_dispatch() {
+  local verb="$1" socket_path="$2" fn="$3" rc=0
+  shift 3
+  _tmux_rescue_begin_acquisition "$socket_path" || true
+  "$fn" "$@" || rc=$?
+  _tmux_rescue_finish_acquisition "$socket_path" "$rc" || true
+  return "$rc"
+}
+
+_tmux_rescue_process_start_identity() {
+  local pid="$1" ps_bin
+  ps_bin="$(command -v ps 2>/dev/null || true)"
+  [ -x /bin/ps ] && ps_bin=/bin/ps
+  [ -n "$ps_bin" ] || return 1
+  "$ps_bin" -p "$pid" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//'
+}
+
+_tmux_rescue_process_state() {
+  local pid="$1" ps_bin
+  ps_bin="$(command -v ps 2>/dev/null || true)"
+  [ -x /bin/ps ] && ps_bin=/bin/ps
+  [ -n "$ps_bin" ] || return 1
+  "$ps_bin" -p "$pid" -o stat= 2>/dev/null | sed 's/^[[:space:]]*//'
+}
+
 _tmux_rescue_write_owner_metadata() {
-	local socket_path="$1" lock_hash lock_dir owner_file tmp start_identity token ps_bin
+	local socket_path="$1" lock_hash lock_dir owner_file tmp start_identity token
 	lock_hash="$(_tmux_rescue_lock_hash "$socket_path")" || return 1
 	lock_dir="${HOME}/.flywheel/locks"
 	owner_file="${lock_dir}/tmux-${lock_hash}.owner"
 	umask 077
 	mkdir -p "$lock_dir" 2>/dev/null || return 1
-	ps_bin="$(command -v ps 2>/dev/null || true)"
-	[ -x /bin/ps ] && ps_bin=/bin/ps
-	start_identity="$($ps_bin -p $$ -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//' || true)"
+	start_identity="$(_tmux_rescue_process_start_identity "$$" || true)"
 	[ -n "$start_identity" ] || start_identity="unknown-$(date +%s)"
-	token="$(uuidgen 2>/dev/null || printf '%s-%s-%s' "$(date +%s)" "$$" "${RANDOM:-0}")"
+	token="${_TMUX_RESCUE_TOKEN:-}"
+	[ -n "$token" ] || token="$(uuidgen 2>/dev/null || printf '%s-%s-%s' "$(date +%s)" "$$" "${RANDOM:-0}")"
 	tmp="${owner_file}.$$.$token.tmp"
 	{
 		printf 'pid=%s\n' "$$"
 		printf 'startIdentity=%s\n' "$start_identity"
 		printf 'token=%s\n' "$token"
+		if [ -n "${_TMUX_RESCUE_VERB:-}" ]; then printf 'verb=%s\n' "$_TMUX_RESCUE_VERB"; fi
+		if [ -n "${_TMUX_RESCUE_ACQUIRED_AT:-}" ]; then printf 'acquiredAt=%s\n' "$_TMUX_RESCUE_ACQUIRED_AT"; fi
+		if [ -n "${_TMUX_RESCUE_CALLER:-}" ]; then printf 'caller=%s\n' "$_TMUX_RESCUE_CALLER"; fi
 	} > "$tmp" || return 1
 	chmod 600 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
 	mv -f "$tmp" "$owner_file"
+}
+
+_tmux_rescue_timeout_owner_json() {
+  # Advisory evidence only: emit an owner object iff every field is bounded,
+  # syntactically valid, and still matches the live process incarnation.
+  local socket_path="$1" lock_hash owner_file size pid start token verb acquired caller
+  local observed held now
+  lock_hash="$(_tmux_rescue_lock_hash "$socket_path")" || return 0
+  owner_file="${HOME}/.flywheel/locks/tmux-${lock_hash}.owner"
+  if [ ! -f "$owner_file" ] || [ -L "$owner_file" ]; then
+    _tmux_rescue_audit "owner_evidence_omitted reason=not_regular socket=$socket_path"
+    return 0
+  fi
+  size="$(wc -c < "$owner_file" 2>/dev/null | tr -d ' ')"
+  case "$size" in ''|*[!0-9]*) return 0 ;; esac
+  if [ "$size" -gt 4096 ]; then
+    _tmux_rescue_audit "owner_evidence_omitted reason=oversize socket=$socket_path size=$size"
+    return 0
+  fi
+  pid="$(_tmux_rescue_state_value "$owner_file" pid)"
+  start="$(_tmux_rescue_state_value "$owner_file" startIdentity)"
+  token="$(_tmux_rescue_state_value "$owner_file" token)"
+  verb="$(_tmux_rescue_state_value "$owner_file" verb)"
+  acquired="$(_tmux_rescue_state_value "$owner_file" acquiredAt)"
+  caller="$(_tmux_rescue_state_value "$owner_file" caller)"
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  case "$token" in ''|*[!A-Za-z0-9_.-]*) return 0 ;; esac
+  case "$verb" in ensure|recover) ;; *) return 0 ;; esac
+  case "$caller" in ''|*[!A-Za-z0-9_.:-]*) return 0 ;; esac
+  case "$acquired" in
+    ''|*[!0-9.]*|.*|*.)
+      _tmux_rescue_audit "owner_evidence_omitted reason=invalid_acquired_at socket=$socket_path"
+      return 0
+      ;;
+  esac
+  case "${acquired#*.}" in
+    *.*)
+      _tmux_rescue_audit "owner_evidence_omitted reason=invalid_acquired_at socket=$socket_path"
+      return 0
+      ;;
+  esac
+  [ -n "$start" ] || return 0
+  kill -0 "$pid" 2>/dev/null || {
+    _tmux_rescue_audit "owner_evidence_omitted reason=pid_dead socket=$socket_path pid=$pid"
+    return 0
+  }
+  observed="$(_tmux_rescue_process_start_identity "$pid" || true)"
+  if [ -z "$observed" ] || [ "$observed" != "$start" ]; then
+    _tmux_rescue_audit "owner_evidence_omitted reason=incarnation_mismatch socket=$socket_path pid=$pid"
+    return 0
+  fi
+  now="$(_tmux_rescue_now)"
+  held="$(awk -v n="$now" -v a="$acquired" 'BEGIN { v=n-a; if (v<0) v=0; printf "%.6f", v }')"
+  printf ',"owner":{"pid":%s,"startIdentity":"%s","token":"%s","verb":"%s","acquiredAt":%s,"caller":"%s","heldSec":%s}' \
+    "$pid" "$(_tmux_rescue_json_escape "$start")" "$(_tmux_rescue_json_escape "$token")" \
+    "$verb" "$acquired" "$(_tmux_rescue_json_escape "$caller")" "$held"
 }
 
 _tmux_rescue_has_flock() {
@@ -783,7 +1470,7 @@ PY
 _tmux_rescue_run_with_lock() {
   local dispatch="$1" requested="$2"
   shift 2
-  local socket_path script lock_dir lock_hash lock_file timeout rc backend
+  local socket_path script lock_dir lock_hash lock_file timeout rc release_end backend verb caller owner_json
   socket_path="$(_tmux_rescue_normalize_socket "$requested")" || return 64
   script="${BASH_SOURCE[0]}"
   lock_dir="${HOME}/.flywheel/locks"
@@ -804,22 +1491,47 @@ _tmux_rescue_run_with_lock() {
     printf '{"action":"hold_lock_unavailable","evidence":{"reason":"capability_missing"}}\n'
     return 5
   }
+  case "$dispatch" in
+    _ensure_locked) verb="ensure" ;;
+    _recover_locked) verb="recover" ;;
+    *) return 64 ;;
+  esac
+  caller="${FLYWHEEL_TMUX_RESCUE_CALLER:-${FUNCNAME[2]:-cli}}"
+  unset _TMUX_RESCUE_TOKEN _TMUX_RESCUE_VERB _TMUX_RESCUE_CALLER
+  unset _TMUX_RESCUE_SOCKET _TMUX_RESCUE_LOCK_FILE
+  unset _TMUX_RESCUE_ACQUISITION_FILE _TMUX_RESCUE_DECISION_FILE
+  unset _TMUX_RESCUE_EPISODE_FILE _TMUX_RESCUE_TAIL_FILE _TMUX_RESCUE_ACQUIRED_AT
+  unset _TMUX_RESCUE_OUTER_PID _TMUX_RESCUE_OUTER_START_IDENTITY
+  _tmux_rescue_prepare_lock_instrumentation "$socket_path" "$verb" "$caller" "$lock_file" || true
   case "$backend" in
     flock)
       flock -w "$timeout" "$lock_file" /bin/bash "$script" "$dispatch" "$socket_path" "$@"
       rc=$?
+      release_end="$(_tmux_rescue_release_now 2>/dev/null || date +%s)"
       ;;
     lockf)
       lockf -t "$timeout" "$lock_file" /bin/bash "$script" "$dispatch" "$socket_path" "$@"
       rc=$?
+      release_end="$(_tmux_rescue_release_now 2>/dev/null || date +%s)"
       ;;
     python)
       _tmux_rescue_python_lock "$timeout" "$lock_file" /bin/bash "$script" "$dispatch" "$socket_path" "$@"
       rc=$?
+      release_end="$(_tmux_rescue_release_now 2>/dev/null || date +%s)"
       ;;
   esac
+  # Replaying only after this invocation produced an acquisition receipt proves
+  # it reached and released the same kernel lock. Never scan while a previous
+  # holder may still be active, and exclude the current decision because its
+  # release-tail classification belongs to _tmux_rescue_after_lock below.
+  if [ -f "${_TMUX_RESCUE_ACQUISITION_FILE:-}" ]; then
+    _tmux_rescue_replay_pending_decisions \
+      "$socket_path" "${_TMUX_RESCUE_DECISION_FILE:-}" || true
+  fi
+  _tmux_rescue_after_lock "$socket_path" "$rc" "$release_end" || true
   case "$rc" in 0|2|3|4|5|64) return "$rc" ;; esac
-  printf '{"action":"hold_lock_unavailable","evidence":{"reason":"acquire_timeout"}}\n'
+  owner_json="$(_tmux_rescue_timeout_owner_json "$socket_path")"
+  printf '{"action":"hold_lock_unavailable","evidence":{"reason":"acquire_timeout"%s}}\n' "$owner_json"
   return 5
 }
 
@@ -855,11 +1567,11 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
       ;;
     _ensure_locked)
       shift
-      _tmux_socket_ensure_locked "$@"
+      _tmux_rescue_locked_dispatch ensure "$1" _tmux_socket_ensure_locked "$@"
       ;;
     _recover_locked)
       shift
-      _tmux_socket_recover_locked "$@"
+      _tmux_rescue_locked_dispatch recover "$1" _tmux_socket_recover_locked "$@"
       ;;
     *)
       echo "usage: tmux-server-rescue inspect|recover|ensure ..." >&2

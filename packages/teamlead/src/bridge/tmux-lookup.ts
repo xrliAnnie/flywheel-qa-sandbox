@@ -541,6 +541,16 @@ export async function killTmuxWindow(
  * separately by `killTmuxWindow`. Best-effort: a missing window / cmux session /
  * tmux server is benign success. Never throws.
  */
+function strictCmuxViewEnabled(): boolean {
+	// Shell parity: only an explicit "0" disables a flag; missing or invalid
+	// values fail safe to enabled. A or B is sufficient to require lifetime
+	// protection, while STRICT_VIEW=0 is the ordered rollback lever.
+	const strict = process.env.FLYWHEEL_CMUX_STRICT_VIEW !== "0";
+	const linked = process.env.FLYWHEEL_CMUX_LINKED_VIEW !== "0";
+	const invariant = process.env.FLYWHEEL_CMUX_VIEW_INVARIANT !== "0";
+	return strict && (linked || invariant);
+}
+
 export async function killCmuxLinkedSession(
 	tmuxWindow: string,
 	runTmux: TmuxRunner = defaultTmuxRunner,
@@ -554,11 +564,12 @@ export async function killCmuxLinkedSession(
 	// FLY-1272: isolated linked views can become the sole holder of a live
 	// window. A name-based observe→kill sequence also has an unavoidable rebind
 	// race: the watcher can escrow the observed session and atomically claim a
-	// replacement under the same name before kill-session executes. Therefore A
-	// enabled means no Bridge-side view kill under any observation result. We
+	// replacement under the same name before kill-session executes. Therefore
+	// effective strict mode (STRICT && (A || B)) means no Bridge-side view kill
+	// under any observation result. We
 	// still resolve the name when possible so close_runner can write its existing
 	// pin-close marker; resolution failure remains lifecycle-permitting.
-	if (process.env.FLYWHEEL_CMUX_LINKED_VIEW !== "0") {
+	if (strictCmuxViewEnabled()) {
 		try {
 			const { stdout } = await runTmux([
 				"display-message",

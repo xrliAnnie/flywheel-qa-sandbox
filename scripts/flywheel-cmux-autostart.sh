@@ -12,7 +12,7 @@ SYNC_SCRIPT="$HOME/.flywheel/bin/flywheel-cmux-sync"
 ENV_FILE="$HOME/.flywheel/.env"
 MAINTENANCE_MARKER="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/state/cmux-maintenance}"
 
-# FLY-1272: extract only the two bool flags. Never source the whole .env — it
+# FLY-1272/1364: extract only the three cmux topology bool flags. Never source the whole .env — it
 # may contain unrelated shell syntax/secrets, and autostart needs only these
 # literals. Precedence: inherited env > .env > default-on. Any non-0/1 value
 # fails safe to 1.
@@ -46,6 +46,7 @@ load_cmux_bool_flag() {
 
 load_cmux_bool_flag FLYWHEEL_CMUX_LINKED_VIEW
 load_cmux_bool_flag FLYWHEEL_CMUX_VIEW_INVARIANT
+load_cmux_bool_flag FLYWHEEL_CMUX_STRICT_VIEW
 
 if [[ -e "$MAINTENANCE_MARKER" && "${FLYWHEEL_CMUX_SUPERVISED:-0}" != "1" ]]; then
   echo "flywheel-cmux-autostart: maintenance marker present; watcher not started" >&2

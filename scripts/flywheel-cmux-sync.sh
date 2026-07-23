@@ -14,6 +14,8 @@
 #   register_session_hooks() for why both pane-exited AND pane-died are needed.
 set -euo pipefail
 
+_CMUX_SYNC_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 FLYWHEEL_SESSION="flywheel"
 VIEW_PREFIX="cmux-"  # Linked session naming: cmux-<window_name>
 
@@ -47,6 +49,10 @@ CREATE_STATE="${CREATE_STATE:-/tmp/flywheel-cmux-create.state}"
 # FLY-293: orphan cmux workspace-pin reaper — grace state file (ref-keyed).
 # Overridable for tests (${VAR:-default} preserves pre-set values).
 ORPHAN_PIN_STATE="${ORPHAN_PIN_STATE:-/tmp/flywheel-cmux-orphan-pin.state}"
+# FLY-1364 R6: independent two-pass evidence for pre-ledger stock adoption.
+# This must not share STALE_STATE/ORPHAN_PIN_STATE because their lifecycles and
+# cleanup keys differ.
+ADOPTION_STATE="${ADOPTION_STATE:-$HOME/.flywheel/state/cmux-stock-adoption}"
 
 # FLY-685: close-request marker file. close_runner (Bridge, no cmux socket)
 # appends a runner's window_name here on a successful window kill; the watcher
@@ -66,6 +72,7 @@ VIEW_LEDGER="${VIEW_LEDGER:-$HOME/.flywheel/state/cmux-view-ledger}"
 KEEPER_INVENTORY="${KEEPER_INVENTORY:-$HOME/.flywheel/state/cmux-keeper-inventory}"
 VIEW_ABSENT_STATE="${VIEW_ABSENT_STATE:-$HOME/.flywheel/state/cmux-view-absent}"
 CMUX_MAINTENANCE_MARKER="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/state/cmux-maintenance}"
+CMUX_FLAG_STATE="${CMUX_FLAG_STATE:-$HOME/.flywheel/state/cmux-flag-state}"
 
 # FLY-254: cmux app-reopen one-shot re-attach sweep.
 # Generation state file — single line `<identity>|<state>|<attempts>`,
@@ -101,6 +108,78 @@ SUPERVISED_WAIT_SECONDS="${FLYWHEEL_CMUX_SUPERVISED_WAIT:-15}"
 # don't get diagnostics mixed into the data stream. autostart redirects both
 # stdout and stderr to the log file, so on-disk log output is unchanged.
 log() { echo "[cmux-sync $(date '+%H:%M:%S')] $*" >&2; }
+
+# FLY-1364: alerting is optional and fail-open. Repo executions find the
+# library under scripts/lib; deployed binaries find its symlink as a sibling.
+FLYWHEEL_ALERT_BIN="${FLYWHEEL_CMUX_ALERT_BIN:-$_CMUX_SYNC_SCRIPT_DIR/lead-alert.sh}"
+if [[ -r "$_CMUX_SYNC_SCRIPT_DIR/lib/flywheel-alert-lib.sh" ]]; then
+  # shellcheck source=lib/flywheel-alert-lib.sh
+  source "$_CMUX_SYNC_SCRIPT_DIR/lib/flywheel-alert-lib.sh"
+elif [[ -r "$_CMUX_SYNC_SCRIPT_DIR/flywheel-alert-lib.sh" ]]; then
+  # shellcheck source=lib/flywheel-alert-lib.sh
+  source "$_CMUX_SYNC_SCRIPT_DIR/flywheel-alert-lib.sh"
+else
+  log "WARN: optional alert library unavailable; alerts disabled"
+  flywheel_alert() { return 0; }
+fi
+
+_cmux_alert_hash() {
+  printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+}
+
+CMUX_CLEANUP_ALERT_LATCH=""
+CMUX_CLEANUP_ALERT_LATCH_COUNT=0
+CMUX_CLEANUP_ALERT_LATCH_GENERATION=""
+CMUX_CLEANUP_ALERT_SATURATION_WARNED=0
+_alert_cmux_cleanup() {
+  local title="$1" body="$2" signature="$3" key generation generation_key
+  if [[ "$signature" == *'|generation='* ]]; then
+    generation="${signature#*|generation=}"
+    generation="${generation%%|*}"
+  else
+    generation=$(cmux_socket_identity 2>/dev/null || printf 'unavailable')
+  fi
+  generation_key=$(_cmux_alert_hash "$generation")
+  if [[ "$CMUX_CLEANUP_ALERT_LATCH_GENERATION" != "$generation_key" ]]; then
+    CMUX_CLEANUP_ALERT_LATCH=""
+    CMUX_CLEANUP_ALERT_LATCH_COUNT=0
+    CMUX_CLEANUP_ALERT_SATURATION_WARNED=0
+    CMUX_CLEANUP_ALERT_LATCH_GENERATION="$generation_key"
+  fi
+  key=$(_cmux_alert_hash "$signature")
+  if printf '%s\n' "$CMUX_CLEANUP_ALERT_LATCH" | grep -qxF "$key"; then
+    return 0
+  fi
+  # Bound process memory and page volume even if corrupt input manufactures an
+  # unbounded stream of distinct refusal signatures. A watcher restart resets
+  # the latch, and a cmux generation transition re-arms it for the new app
+  # instance, while the downstream alert sink retains its durable dedup.
+  if (( CMUX_CLEANUP_ALERT_LATCH_COUNT >= 64 )); then
+    if [[ "$CMUX_CLEANUP_ALERT_SATURATION_WARNED" == "0" ]]; then
+      CMUX_CLEANUP_ALERT_SATURATION_WARNED=1
+      log "WARN: cleanup alert latch saturated for cmux generation; later distinct signatures are locally suppressed until generation changes"
+    fi
+    return 0
+  fi
+  CMUX_CLEANUP_ALERT_LATCH+="${CMUX_CLEANUP_ALERT_LATCH:+$'\n'}${key}"
+  CMUX_CLEANUP_ALERT_LATCH_COUNT=$((CMUX_CLEANUP_ALERT_LATCH_COUNT + 1))
+  flywheel_alert cmux_cleanup warning "$title" "$body" "$signature"
+  return 0
+}
+
+MALFORMED_LEASE_ALERTED_SIG=""
+_alert_malformed_mutator_lease() {
+  local owner_bytes owner_hash signature
+  owner_bytes=$(cat "$WATCHER_LOCK_DIR/owner" 2>/dev/null || printf '<missing>')
+  owner_hash=$(_cmux_alert_hash "$owner_bytes")
+  signature="cmux_cleanup|lease-malformed|owner_sha256=$owner_hash"
+  [[ "$MALFORMED_LEASE_ALERTED_SIG" == "$signature" ]] && return 0
+  MALFORMED_LEASE_ALERTED_SIG="$signature"
+  _alert_cmux_cleanup \
+    "cmux mutator lease malformed" \
+    "cmux-sync refused to steal an unverifiable mutator lease at $WATCHER_LOCK_DIR. Manual inspection is required; owner_sha256=$owner_hash." \
+    "$signature"
+}
 
 # Path of cmux IPC socket. Override via $CMUX_SOCKET_PATH env (cmux's own convention).
 CMUX_SOCKET_PATH_DEFAULT="${CMUX_SOCKET_PATH:-/tmp/cmux.sock}"
@@ -297,14 +376,19 @@ _heal_focus_gen_guard() {
   return 0
 }
 
-# FLY-254 guard: generation pin + FINAL 0-client check (escalated send).
-# Target view session is passed via _GUARD_VIEW_SESSION (bash has no
-# closures). GUARD_BLOCK_RC: 1 = fail-closed; 2 = client appeared (healed).
+# FLY-254/1364 guard: re-prove the complete injection target immediately before
+# the send. State is passed via globals because bash 3.2 has no closures.
+# GUARD_BLOCK_RC: 1 = fail-closed; 2 = client appeared (healed).
 _GUARD_VIEW_SESSION=""
+_GUARD_VIEW_TITLE=""
+_GUARD_WORKSPACE_REF=""
+_GUARD_SURFACE_REF=""
+_GUARD_EXPECTED_GENERATION=""
+_GUARD_REQUIRE_STRICT_VIEW=0
 _heal_send_final_guard() {
+  local gi receipt_generation raw matches current_surface c
   GUARD_BLOCK_RC=0
   if [[ -n "${HEAL_SWEEP_GEN_IDENT:-}" ]]; then
-    local gi
     gi=$(cmux_socket_identity)
     if [[ "$gi" != "$HEAL_SWEEP_GEN_IDENT" ]]; then
       HEAL_GEN_CHANGED=1
@@ -312,7 +396,75 @@ _heal_send_final_guard() {
       return 1
     fi
   fi
-  local c
+  if [[ -n "${_GUARD_EXPECTED_GENERATION:-}" ]]; then
+    receipt_generation=$(cmux_socket_identity)
+    if [[ "$receipt_generation" != "$_GUARD_EXPECTED_GENERATION" ]]; then
+      GUARD_BLOCK_RC=1
+      return 1
+    fi
+    ledger_committed_ref "$receipt_generation" "$_GUARD_WORKSPACE_REF" "$_GUARD_VIEW_TITLE" || {
+      GUARD_BLOCK_RC=1
+      return 1
+    }
+    raw=$(get_cmux_workspaces_json) || {
+      GUARD_BLOCK_RC=1
+      return 1
+    }
+    matches=$(printf '%s' "$raw" | python3 -c '
+import json,sys
+r,t=sys.argv[1:3]
+print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
+          if w.get("ref") == r and w.get("title") == t))
+' "$_GUARD_WORKSPACE_REF" "$_GUARD_VIEW_TITLE") || {
+      GUARD_BLOCK_RC=1
+      return 1
+    }
+    if [[ "$matches" != "1" ]]; then
+      GUARD_BLOCK_RC=1
+      return 1
+    fi
+  elif [[ "${_GUARD_REQUIRE_STRICT_VIEW:-0}" == "1" ]]; then
+    # Strict-view injection is receipt-authorized. A missing generation means
+    # the caller lost that authority before reaching the final guard.
+    GUARD_BLOCK_RC=1
+    return 1
+  fi
+  if [[ "${_GUARD_REQUIRE_STRICT_VIEW:-0}" == "1" ]] \
+      && ! _view_shell_owned_for_title "$_GUARD_VIEW_SESSION" "$_GUARD_VIEW_TITLE" 0 1 1; then
+    GUARD_BLOCK_RC=1
+    return 1
+  fi
+  current_surface=$(workspace_terminal_surface_ref "$_GUARD_WORKSPACE_REF") || {
+    GUARD_BLOCK_RC=1
+    return 1
+  }
+  if [[ -z "$current_surface" || "$current_surface" != "$_GUARD_SURFACE_REF" ]]; then
+    GUARD_BLOCK_RC=1
+    return 1
+  fi
+  if ! surface_looks_like_bare_shell "$_GUARD_WORKSPACE_REF" "$_GUARD_SURFACE_REF" 1; then
+    GUARD_BLOCK_RC=1
+    return 1
+  fi
+  # The ownership/surface/screen probes above are all subprocess or IPC
+  # boundaries. Re-pin the cmux generation after them, then make the client
+  # count the final read before mutation so neither app replacement nor a
+  # focus-triggered attach can inherit stale authority.
+  if [[ -n "${HEAL_SWEEP_GEN_IDENT:-}" ]]; then
+    gi=$(cmux_socket_identity)
+    if [[ "$gi" != "$HEAL_SWEEP_GEN_IDENT" ]]; then
+      HEAL_GEN_CHANGED=1
+      GUARD_BLOCK_RC=1
+      return 1
+    fi
+  fi
+  if [[ -n "${_GUARD_EXPECTED_GENERATION:-}" ]]; then
+    receipt_generation=$(cmux_socket_identity)
+    if [[ "$receipt_generation" != "$_GUARD_EXPECTED_GENERATION" ]]; then
+      GUARD_BLOCK_RC=1
+      return 1
+    fi
+  fi
   if ! c=$(view_session_client_count "$_GUARD_VIEW_SESSION"); then
     GUARD_BLOCK_RC=1
     return 1
@@ -320,6 +472,24 @@ _heal_send_final_guard() {
   if [[ "$c" -gt 0 ]]; then
     GUARD_BLOCK_RC=2
     return 1
+  fi
+  # list-clients is the final external proof before injection. A cmux restart
+  # during that probe can reuse the same ref/title, so re-pin after it rather
+  # than letting the pre-probe generation check authorize the new app.
+  if [[ -n "${HEAL_SWEEP_GEN_IDENT:-}" ]]; then
+    gi=$(cmux_socket_identity)
+    if [[ "$gi" != "$HEAL_SWEEP_GEN_IDENT" ]]; then
+      HEAL_GEN_CHANGED=1
+      GUARD_BLOCK_RC=1
+      return 1
+    fi
+  fi
+  if [[ -n "${_GUARD_EXPECTED_GENERATION:-}" ]]; then
+    receipt_generation=$(cmux_socket_identity)
+    if [[ "$receipt_generation" != "$_GUARD_EXPECTED_GENERATION" ]]; then
+      GUARD_BLOCK_RC=1
+      return 1
+    fi
   fi
   return 0
 }
@@ -686,6 +856,302 @@ for title, group in by_title.items():
 is_managed_runner_title() {
   local re='^[A-Z][A-Z0-9]*-[0-9]+-(claude|runner|design|implement|qa)(-|$)'
   [[ "$1" =~ $re ]]
+}
+
+# Normalize either a normal managed title or the exact create-command title
+# observed in production when cmux workspace rename failed. The raw grammar is
+# deliberately a full-string match: no extra shell token, alternate command,
+# or arbitrary target can cross this ownership boundary. Evidence provenance is
+# committed in scripts/__tests__/fixtures/fly1364/fly-1402-closed-ghost.json.
+normalize_stock_workspace_title() {
+  local raw="$1" normalized
+  case "$raw" in *'|'*|*$'\n'*|*$'\t'*) return 1 ;; esac
+  if is_managed_runner_title "$raw"; then
+    printf '%s\n' "$raw"
+    return 0
+  fi
+  normalized=$(printf '%s' "$raw" | python3 -c '
+import re, sys
+s = sys.stdin.read()
+m = re.fullmatch(r"env -u TMUX tmux attach -t '\''=cmux-([^'\''\\n]+)'\''", s)
+if not m:
+    raise SystemExit(1)
+sys.stdout.write(m.group(1))
+') || return 1
+  is_managed_runner_title "$normalized" || return 1
+  printf '%s\n' "$normalized"
+}
+
+# Emit tab-separated stock records from one authoritative cmux JSON snapshot:
+#   C <ref> <raw-title-base64> <normalized-title> <raw-title-sha256>
+#   R <reason> <ref-or-multiple> <normalized-or-unknown> <evidence-sha256>
+# A normalized title is a candidate only when exactly one workspace maps to it.
+stock_workspace_records() {
+  local raw
+  raw=$(get_cmux_workspaces_json) || return 2
+  printf '%s' "$raw" | python3 -c '
+import base64, hashlib, json, re, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(2)
+
+managed_re = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+-(?:claude|runner|design|implement|qa)(?:-|$)")
+raw_re = re.compile(r"^env -u TMUX tmux attach -t '\''=cmux-([^'\''\\n]+)'\''$")
+groups = {}
+blocked = set()
+refusals = []
+for ws in data.get("workspaces", []):
+    ref = ws.get("ref", "")
+    title = ws.get("title")
+    if not isinstance(title, str):
+        continue
+    if any(ch in title for ch in ("|", "\t", "\n")):
+        refusals.append(("invalid-title-bytes", ref or "missing", "unknown",
+                         hashlib.sha256(title.encode()).hexdigest()))
+        continue
+    normalized = title if managed_re.match(title) else None
+    if normalized is None:
+        match = raw_re.fullmatch(title)
+        if match and managed_re.match(match.group(1)):
+            normalized = match.group(1)
+        elif title.startswith("env -u TMUX tmux attach"):
+            refusals.append(("invalid-raw-attach", ref or "missing", "unknown",
+                             hashlib.sha256(title.encode()).hexdigest()))
+            continue
+        else:
+            continue
+    evidence = hashlib.sha256(title.encode()).hexdigest()
+    if not re.fullmatch(r"workspace:[0-9]+", ref):
+        refusals.append(("malformed-ref", ref or "missing", normalized, evidence))
+        blocked.add(normalized)
+        continue
+    groups.setdefault(normalized, []).append((ref, title, evidence))
+
+for normalized, items in sorted(groups.items()):
+    if len(items) != 1 or normalized in blocked:
+        digest = hashlib.sha256("\\n".join(sorted(r + "|" + t for r, t, _ in items)).encode()).hexdigest()
+        refusals.append(("ambiguous-normalized-title", "multiple", normalized, digest))
+        continue
+    ref, title, evidence = items[0]
+    encoded = base64.b64encode(title.encode()).decode()
+    print("C", ref, encoded, normalized, evidence, sep="\t")
+for reason, ref, normalized, evidence in sorted(refusals):
+    print("R", reason, ref, normalized, evidence, sep="\t")
+' || return 2
+}
+
+_stock_refusal_alert() {
+  local generation="$1" reason="$2" ref="$3" normalized="$4" evidence="$5"
+  local signature="cmux_cleanup|stock-adoption|generation=$generation|ref=$ref|normalized=$normalized|evidence_sha256=$evidence|reason=$reason"
+  _alert_cmux_cleanup \
+    "cmux stock cleanup refused" \
+    "A pre-ledger cmux workspace was preserved because stock-adoption evidence was not unique and conclusive: generation=$generation ref=$ref normalized=$normalized reason=$reason evidence_sha256=$evidence." \
+    "$signature"
+}
+
+# Print a stable topology fingerprint for an orphan candidate.
+# rc=0: conclusively orphaned (stdout starts absent: or owned-dead:)
+# rc=1: live source/view exists (expected preserve, no alert)
+# rc=2: inventory unreadable (fail closed)
+# rc=3: same-name view exists but is not provably Flywheel-owned/dead (alert)
+stock_topology_fingerprint() {
+  local title="$1" sessions rows="" sess current snapshot sid grouped active owner marker members observed dead
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 2
+  while IFS= read -r sess; do
+    [[ -z "$sess" ]] && continue
+    case "$sess" in flywheel|runner-*) ;;
+      *) continue ;;
+    esac
+    current=$(tmux list-windows -t "=$sess" \
+      -F '#{session_name}|#{window_id}|#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
+    [[ -n "$current" ]] && rows+="${rows:+$'\n'}${current}"
+  done <<< "$sessions"
+  if printf '%s\n' "$rows" | awk -F'|' -v t="$title" '$3 == t { found=1 } END { exit(found ? 0 : 1) }'; then
+    return 1
+  fi
+
+  if ! printf '%s\n' "$sessions" | grep -qxF "${VIEW_PREFIX}${title}"; then
+    # The grace identity belongs to this candidate, not to the global tmux
+    # inventory. A second pass re-runs the exact-title source/view probes above,
+    # so unrelated runner/session churn must not restart an unchanged orphan's
+    # clock forever.
+    printf 'absent:%s\n' "$(_cmux_alert_hash "$title|source=absent|view=absent")"
+    return 0
+  fi
+  snapshot=$(_view_session_snapshot "${VIEW_PREFIX}${title}") || return 2
+  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  # A markerless grouped session has no immutable Flywheel ownership evidence.
+  # Group name, title, and pane-dead are mutable topology, so they can preserve
+  # a candidate but can never mint the first close receipt. Already-receipted
+  # grouped views still migrate through repair_view_invariants.
+  case "$owner" in flywheel|runner-*) ;;
+    *)
+      printf 'foreign-view:%s\n' "$(_cmux_alert_hash "$snapshot")"
+      return 3
+      ;;
+  esac
+  if [[ "$grouped" != "0" || -z "$sid" || -z "$active" \
+      || "$marker" != "0" || "$members" != "$active" ]]; then
+    printf 'foreign-view:%s\n' "$(_cmux_alert_hash "$snapshot")"
+    return 3
+  fi
+  observed=$(tmux display-message -p -t "=${VIEW_PREFIX}${title}:${active}" \
+    '#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
+  IFS='|' read -r current dead <<< "$observed"
+  if [[ "$current" != "$title" ]]; then
+    printf 'foreign-view:%s\n' "$(_cmux_alert_hash "$snapshot|observed=$observed")"
+    return 3
+  fi
+  [[ "$dead" == "0" ]] && return 1
+  if [[ "$dead" != "1" ]]; then
+    return 2
+  fi
+  printf 'owned-dead:%s\n' "$(_cmux_alert_hash "$snapshot|dead=$dead")"
+  return 0
+}
+
+_decode_stock_title() {
+  printf '%s' "$1" | python3 -c 'import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read(), validate=True).decode())'
+}
+
+_stock_candidate_still_matches() {
+  local generation="$1" ref="$2" encoded="$3" normalized="$4" evidence="$5" fingerprint="$6"
+  local current records count topology rc=0
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$generation" ]] || return 1
+  records=$(stock_workspace_records) || return 1
+  count=$(printf '%s\n' "$records" | awk -F'\t' -v r="$ref" -v b="$encoded" -v n="$normalized" -v e="$evidence" \
+    '$1 == "C" && $2 == r && $3 == b && $4 == n && $5 == e { c++ } END { print c+0 }')
+  [[ "$count" == "1" ]] || return 1
+  topology=$(stock_topology_fingerprint "$normalized") || rc=$?
+  [[ "$rc" == "0" && "$topology" == "$fingerprint" ]] || return 1
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$generation" ]] || return 1
+  return 0
+}
+
+_GUARD_STOCK_GENERATION=""
+_GUARD_STOCK_REF=""
+_GUARD_STOCK_ENCODED=""
+_GUARD_STOCK_NORMALIZED=""
+_GUARD_STOCK_EVIDENCE=""
+_GUARD_STOCK_FINGERPRINT=""
+_stock_final_close_guard() {
+  _stock_candidate_still_matches \
+    "$_GUARD_STOCK_GENERATION" "$_GUARD_STOCK_REF" "$_GUARD_STOCK_ENCODED" \
+    "$_GUARD_STOCK_NORMALIZED" "$_GUARD_STOCK_EVIDENCE" "$_GUARD_STOCK_FINGERPRINT"
+}
+
+reap_unledgered_stock_workspaces() {
+  [[ "${FLYWHEEL_CMUX_STOCK_ADOPTION:-1}" == "0" ]] && return 0
+  linked_view_enabled || view_invariant_enabled || return 0
+  assert_or_reuse_owned_lease || return 0
+
+  local generation records rc=0 grace now dir tmp keep=""
+  generation=$(cmux_socket_identity)
+  [[ -n "$generation" ]] || return 0
+  records=$(stock_workspace_records) || rc=$?
+  [[ "$rc" == "0" ]] || return 0
+
+  grace="${FLYWHEEL_CMUX_ADOPTION_GRACE:-$CONSERVATIVE_CLEANUP_SECONDS}"
+  case "$grace" in ''|*[!0-9]*) grace=300 ;; esac
+  [[ ${#grace} -gt 5 ]] && grace=300
+  now=$(date +%s)
+  dir=$(dirname "$ADOPTION_STATE")
+  mkdir -p "$dir" 2>/dev/null || return 0
+  touch "$ADOPTION_STATE" 2>/dev/null || return 0
+  tmp=$(mktemp "${ADOPTION_STATE}.XXXX" 2>/dev/null) || return 0
+
+  local kind a b c d ref encoded normalized evidence fingerprint topology_rc key first raw_title ready closed view_kind
+  while IFS=$'\t' read -r kind a b c d; do
+    [[ -z "$kind" ]] && continue
+    if [[ "$kind" == "R" ]]; then
+      _stock_refusal_alert "$generation" "$a" "$b" "$c" "$d"
+      continue
+    fi
+    [[ "$kind" == "C" ]] || continue
+    ref="$a"; encoded="$b"; normalized="$c"; evidence="$d"
+    fingerprint=""; topology_rc=0
+    fingerprint=$(stock_topology_fingerprint "$normalized") || topology_rc=$?
+    if [[ "$topology_rc" == "1" ]]; then
+      continue
+    elif [[ "$topology_rc" == "2" ]]; then
+      _stock_refusal_alert "$generation" "topology-inventory-unreadable" "$ref" "$normalized" "$evidence"
+      continue
+    elif [[ "$topology_rc" == "3" ]]; then
+      _stock_refusal_alert "$generation" "foreign-or-unproven-view" "$ref" "$normalized" "$(_cmux_alert_hash "$fingerprint")"
+      continue
+    fi
+
+    view_kind="${fingerprint%%:*}"
+    key=$(_cmux_alert_hash "$generation|$ref|$evidence|$normalized|$fingerprint")
+    first=$(awk -F'|' -v k="$key" '$1 == k { print $2; exit }' "$ADOPTION_STATE" 2>/dev/null || true)
+    case "$first" in ''|*[!0-9]*) first="" ;; esac
+    [[ -n "$first" && ${#first} -gt 12 ]] && first=""
+    raw_title=$(_decode_stock_title "$encoded" 2>/dev/null || true)
+    [[ -n "$raw_title" ]] || continue
+
+    ready=0
+    if ledger_committed_ref "$generation" "$ref" "$raw_title"; then
+      # Retry only a receipt written by a prior adoption attempt, proven by its
+      # matching durable adoption fingerprint. A pre-existing normal ledger row
+      # belongs to the established orphan-reaper grace path and must not be
+      # accelerated here.
+      if [[ -n "$first" ]]; then
+        ready=1
+      else
+        continue
+      fi
+    elif [[ -f "$VIEW_LEDGER" ]] && awk -F'|' -v r="$ref" '$3 == r { found=1 } END { exit(found ? 0 : 1) }' "$VIEW_LEDGER"; then
+      _stock_refusal_alert "$generation" "existing-ledger-authority" "$ref" "$normalized" "$evidence"
+      continue
+    elif [[ -z "$first" ]]; then
+      keep+="$key|$now|$generation|$ref|$encoded|$normalized|$fingerprint"$'\n'
+      continue
+    elif (( now - 10#$first >= grace )); then
+      ready=1
+    else
+      keep+="$key|$first|$generation|$ref|$encoded|$normalized|$fingerprint"$'\n'
+      continue
+    fi
+
+    if [[ "$ready" == "1" ]] \
+        && _stock_candidate_still_matches "$generation" "$ref" "$encoded" "$normalized" "$evidence" "$fingerprint"; then
+      if ! ledger_committed_ref "$generation" "$ref" "$raw_title"; then
+        _ledger_upsert committed "$generation" "$ref" "$raw_title" || {
+          keep+="$key|${first:-$now}|$generation|$ref|$encoded|$normalized|$fingerprint"$'\n'
+          continue
+        }
+      fi
+      closed=0
+      _GUARD_STOCK_GENERATION="$generation"
+      _GUARD_STOCK_REF="$ref"
+      _GUARD_STOCK_ENCODED="$encoded"
+      _GUARD_STOCK_NORMALIZED="$normalized"
+      _GUARD_STOCK_EVIDENCE="$evidence"
+      _GUARD_STOCK_FINGERPRINT="$fingerprint"
+      close_ledger_workspace_ref "$generation" "$ref" "$raw_title" \
+        "stock-adoption-${normalized}" _stock_final_close_guard && closed=1
+      if [[ "$closed" == "1" ]]; then
+        if [[ "$view_kind" == "owned-dead" ]]; then
+          dismantle_view_display "$normalized" "stock-adoption-owned-dead" || true
+        fi
+      else
+        keep+="$key|${first:-$now}|$generation|$ref|$encoded|$normalized|$fingerprint"$'\n'
+      fi
+    else
+      # Evidence changed between observation and the final under-lease read.
+      # Drop the old fingerprint; a future conclusive pass starts a new grace.
+      continue
+    fi
+  done <<< "$records"
+
+  if ! printf '%s' "$keep" > "$tmp" 2>/dev/null || ! mv "$tmp" "$ADOPTION_STATE" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 0
+  fi
+  return 0
 }
 
 # collect_agent_window_names_strict <sessions_snapshot> — print live agent window
@@ -1091,26 +1557,39 @@ is_pane_alive() {
   # Since Runner and Lead both set `remain-on-exit on`, the tmux window persists
   # after the pane process dies (displaying exit code). We therefore cannot rely on
   # window existence — we must check #{pane_dead} on the source pane itself.
-  # Returns 0 (alive) if at least one matching window has a live pane.
-  # Returns 1 (dead / missing) otherwise.
-  local wname="$1"
+  # Returns 0 (alive), 1 (conclusively dead / missing), or 2 (tmux truth is
+  # unavailable). Cleanup callers MUST preserve on rc=2.
+  local wname="$1" sessions rows="" sess current dead
   # FLY-129 Phase 5 (Codex R2 MEDIUM fix): use awk -F'|' literal field
   # compare instead of `grep "|name$"`. The grep form interprets `.`/`[`/
   # `]` in window names as regex (repro: `foo.bar[1]` was matched against
   # `foo-bar-1` etc), causing false-positive "alive" reads + false-positive
   # cleanups elsewhere via the inverted predicate at cleanup_stale_conservative.
-  local sessions
-  sessions=$(get_tmux_agent_windows | awk -F'|' -v n="$wname" '$3 == n' || true)
-  [[ -z "$sessions" ]] && return 1
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 2
+  while IFS= read -r sess; do
+    case "$sess" in flywheel|runner-*) ;; *) continue ;; esac
+    current=$(tmux list-windows -t "$sess" \
+      -F '#{session_name}|#{window_id}|#{window_name}' 2>/dev/null) || return 2
+    [[ -n "$current" ]] && rows+="${rows:+$'\n'}${current}"
+  done <<< "$sessions"
 
   while IFS='|' read -r sess wid name; do
     [[ -z "$sess" || -z "$name" ]] && continue
-    local dead
-    dead=$(tmux display-message -p -t "=${sess}:=${name}" "#{pane_dead}" 2>/dev/null || echo "1")
-    if [[ "$dead" == "0" ]]; then
-      return 0
-    fi
-  done <<< "$sessions"
+    [[ "$name" == "$wname" ]] || continue
+    dead=$(tmux display-message -p -t "=${sess}:${wid}" "#{pane_dead}" 2>/dev/null) || return 2
+    case "$dead" in 0) return 0 ;; 1) ;; *) return 2 ;; esac
+  done <<< "$rows"
+
+  # R6 view-lifetime rule: in strict A0B1 the independent cmux view may be the
+  # window's only remaining reference after the runner's spawning session is
+  # retired. Its live pane is still the watched workload, so source-session
+  # disappearance alone must not authorize cleanup. This is preservation-only:
+  # any lookup uncertainty returns rc=2 and authorizes zero cleanup mutation.
+  local strict_view_session="${VIEW_PREFIX}${wname}" strict_view_dead
+  if strict_view_enabled && printf '%s\n' "$sessions" | grep -qxF "$strict_view_session"; then
+    strict_view_dead=$(tmux display-message -p -t "=${strict_view_session}:=${wname}" "#{pane_dead}" 2>/dev/null) || return 2
+    case "$strict_view_dead" in 0) return 0 ;; 1) ;; *) return 2 ;; esac
+  fi
   return 1
 }
 
@@ -1204,11 +1683,11 @@ gc_stale_state_file() {
 # at create time (race / quoting); cmux falls back to a bare login shell with
 # no retry/verify. The workspace stays bare zsh until manually re-attached.
 #
-# Design: EVENT-DRIVEN self-heal — NO new periodic scan (Annie vetoed polling;
-# her machine crashes under load). Heal only fires at event boundaries where
-# attach can actually fail: verify-at-create, create/register drain events,
-# watcher bootstrap, cmux health-recovery, and `--once`. The existing FLY-129
-# `sync_additive` 60s reconcile is intentionally left untouched (out of scope).
+# Design: bounded self-heal at attach-sensitive event boundaries plus the
+# existing FLY-129 60s additive reconcile. The 15s watch loop does not run a
+# heal scan, so steady-state work remains capped at one managed-window sweep per
+# minute. Every injection still passes the exact-ref, zero-client, bare-shell,
+# and final TOCTOU guards below.
 #
 # Detection (never type into an attached Lead's Claude prompt):
 #   MANAGED: workspace title == agent window name (enforced by callers via
@@ -1290,7 +1769,7 @@ except Exception:
 # arg3 quiet=1 (FLY-254): escalation retries probe read-screen repeatedly while
 # a surface renders; per-failure WARNs via cmux_call would flood the log. The
 # quiet probe suppresses them — the caller logs ONE summary per workspace.
-# Runs only at a heal attempt (event-driven), not as a periodic scan.
+# Runs only at a bounded heal attempt (event-driven or the 60s additive tick).
 surface_looks_like_bare_shell() {
   local ref="$1" surface_ref="$2" quiet="${3:-0}" screen last
   if [[ "$quiet" == "1" ]]; then
@@ -1436,11 +1915,44 @@ gc_create_state_file() {
 # be nested with care, unset $TMUX" (tmux keys nesting off `$TMUX`; `TMUX_PANE`
 # is informational and not part of the check). Stripping `$TMUX` for this one
 # invocation is the source-level cure for the nested-attach dead pane.
+build_attach_command() {
+  local view_session="$1" attach_tmux_bin="${FLYWHEEL_CMUX_ATTACH_TMUX_BIN:-}"
+  # Session names are embedded in a single-quoted target. Agent/view names do
+  # not normally contain quotes or newlines; reject them here rather than ever
+  # turning a malformed name into shell syntax.
+  case "$view_session" in
+    *"'"*|*$'\n'*|*$'\r'*) return 1 ;;
+  esac
+  if [[ -z "$attach_tmux_bin" ]]; then
+    # Keep the production command byte-compatible. Stock-workspace evidence
+    # and normalization intentionally recognize this one canonical grammar.
+    printf "env -u TMUX tmux attach -t '=%s'" "$view_session"
+    return 0
+  fi
+  # Capability QA needs the cmux surface to attach to an isolated tmux server.
+  # Admit only one executable absolute-path token, quoted as a single shell
+  # word; production leaves this unset. Quotes/newlines are rejected because
+  # they cannot be represented safely by the canonical single-quoted command.
+  case "$attach_tmux_bin" in
+    /*) ;;
+    *) log "WARN: FLYWHEEL_CMUX_ATTACH_TMUX_BIN must be an absolute executable path"; return 1 ;;
+  esac
+  case "$attach_tmux_bin" in
+    *"'"*|*$'\n'*|*$'\r'*) log "WARN: unsafe FLYWHEEL_CMUX_ATTACH_TMUX_BIN refused"; return 1 ;;
+  esac
+  if [[ ! -x "$attach_tmux_bin" ]]; then
+    log "WARN: FLYWHEEL_CMUX_ATTACH_TMUX_BIN is not executable: $attach_tmux_bin"
+    return 1
+  fi
+  printf "env -u TMUX '%s' attach -t '=%s'" "$attach_tmux_bin" "$view_session"
+}
+
 heal_send_attach() {
-  local wname="$1" ref="$2" surface_ref="$3"
+  local wname="$1" ref="$2" surface_ref="$3" expected_generation="${4:-}"
   local view_session="${VIEW_PREFIX}${wname}"
   local attach_cmd
-  printf -v attach_cmd "env -u TMUX tmux attach -t '=%s'\n" "$view_session"
+  attach_cmd=$(build_attach_command "$view_session") || return 1
+  attach_cmd="${attach_cmd}"$'\n'
   heal_state_log_once "$wname" "Self-heal: re-attaching '$wname' (0 clients on $view_session, ws $ref surface $surface_ref)"
   # FLY-254 (Codex CR R1 HIGH-1 + R5 HIGH-1) + FLY-756: the FINAL guards
   # (generation pin + 0-client) run INSIDE cmux_call_guarded — after ALL
@@ -1456,6 +1968,12 @@ heal_send_attach() {
   # unset). rc: 0 = sent (best-effort); 1 = fail-closed / generation changed;
   # 2 = client appeared (do not send).
   _GUARD_VIEW_SESSION="$view_session"
+  _GUARD_VIEW_TITLE="$wname"
+  _GUARD_WORKSPACE_REF="$ref"
+  _GUARD_SURFACE_REF="$surface_ref"
+  _GUARD_EXPECTED_GENERATION="$expected_generation"
+  _GUARD_REQUIRE_STRICT_VIEW=0
+  strict_view_enabled && _GUARD_REQUIRE_STRICT_VIEW=1
   cmux_call_guarded _heal_send_final_guard send --workspace "$ref" --surface "$surface_ref" "$attach_cmd" || true
   if [[ "$GUARD_WAS_BLOCKED" == "1" ]]; then
     return "${GUARD_BLOCK_RC:-1}"
@@ -1470,7 +1988,7 @@ heal_send_attach() {
 #          1 = skip (no attach-intent surface / cmux/JSON / tmux uncertainty)
 #          2 = a client appeared (attached) — caller should stop sending
 self_heal_workspace_ref() {
-  local wname="$1" ref="$2"
+  local wname="$1" ref="$2" expected_generation="${3:-}"
   local view_session="${VIEW_PREFIX}${wname}"
   [[ -z "$ref" ]] && return 1
   # Target the workspace's selected terminal surface (see
@@ -1493,7 +2011,7 @@ self_heal_workspace_ref() {
   surface_looks_like_bare_shell "$ref" "$surface_ref" "${HEAL_RENDER_ESCALATE:-0}" || shell_rc=$?
   if [[ $shell_rc -eq 2 && "${HEAL_RENDER_ESCALATE:-0}" == "1" ]]; then
     local esc_rc=0
-    self_heal_render_escalate "$wname" "$ref" || esc_rc=$?
+    self_heal_render_escalate "$wname" "$ref" "$expected_generation" || esc_rc=$?
     return $esc_rc
   fi
   [[ $shell_rc -ne 0 ]] && return 1
@@ -1504,7 +2022,7 @@ self_heal_workspace_ref() {
   # returned 0 with no final guard — that unguarded gate→send window was the
   # nested-attach injection race.)
   local send_rc=0
-  heal_send_attach "$wname" "$ref" "$surface_ref" || send_rc=$?
+  heal_send_attach "$wname" "$ref" "$surface_ref" "$expected_generation" || send_rc=$?
   [[ $send_rc -eq 2 ]] && return 2
   [[ $send_rc -ne 0 ]] && return 1
   return 0
@@ -1809,7 +2327,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
 # over). Returns: 0 = send attempted; 1 = skip (fail-closed / timeout / user
 # intervened); 2 = a client appeared (cmux re-ran the attach itself — healed).
 self_heal_render_escalate() {
-  local wname="$1" ref="$2"
+  local wname="$1" ref="$2" expected_generation="${3:-}"
   local view_session="${VIEW_PREFIX}${wname}"
   [[ "${HEAL_FOCUS_SNAPSHOT_OK:-0}" == "1" ]] || return 1
   [[ "${HEAL_USER_INTERVENED:-0}" == "1" ]] && return 1
@@ -1900,7 +2418,7 @@ self_heal_render_escalate() {
         #    state bookkeeping). Single enforcement point for every escalated
         #    send path. rc=2 = client appeared (healed), rc=1 = fail-closed.
         send_rc=0
-        heal_send_attach "$wname" "$ref" "$surface_ref" || send_rc=$?
+        heal_send_attach "$wname" "$ref" "$surface_ref" "$expected_generation" || send_rc=$?
         [[ $send_rc -eq 2 ]] && return 2
         [[ $send_rc -ne 0 ]] && return 1
         return 0
@@ -1940,10 +2458,20 @@ select_live_view_window() {
 # heal each via the ref-scoped primitive. Attach-only — the "workspace exists
 # but linked session is dead" case is reconcile_existing_workspaces' job.
 self_heal_one_workspace() {
-  local wname="$1"
+  local wname="$1" require_receipt="${2:-0}" receipt_generation=""
   local view_session="${VIEW_PREFIX}${wname}"
+  # Every strict-view heal is exact-ref authorized, regardless of whether this
+  # title was discovered from a live source window or a sole-holder view. The
+  # source-discovery distinction is topology, not workspace ownership.
+  strict_view_enabled && require_receipt=1
   # Need a live linked session to attach to.
   linked_session_exists "$view_session" || return 0
+  if strict_view_enabled; then
+    # A receipt proves the cmux workspace, not the tmux destination. Re-prove
+    # that the canonical name still resolves to the exact live Flywheel view
+    # before injecting an attach command into its detached surface.
+    _view_shell_owned_for_title "$view_session" "$wname" 0 1 1 || return 0
+  fi
 
   # Mutation path uses workspace_refs_for with rc=2 handling (NOT
   # get_workspace_ref_for, which is unsafe as a mutation gate).
@@ -1951,6 +2479,10 @@ self_heal_one_workspace() {
   refs=$(workspace_refs_for "$wname") || rc=$?
   [[ $rc -eq 2 ]] && return 0          # JSON unavailable → skip (event-time tradeoff)
   [[ -z "$refs" ]] && return 0
+  if [[ "$require_receipt" == "1" ]]; then
+    receipt_generation=$(cmux_socket_identity)
+    [[ -n "$receipt_generation" ]] || return 0
+  fi
 
   # STATE: only "tmux succeeded AND count==0" = detached. Per view_session
   # (shared by all dup workspaces for this window name).
@@ -1978,8 +2510,16 @@ self_heal_one_workspace() {
   local healed=0 ref hr
   while read -r ref; do
     [[ -z "$ref" ]] && continue
+    if [[ "$require_receipt" == "1" ]] \
+        && ! ledger_committed_ref "$receipt_generation" "$ref" "$wname"; then
+      _alert_cmux_cleanup \
+        "cmux attach heal refused" \
+        "Periodic strict-view healing preserved an unreceipted same-title workspace: generation=$receipt_generation ref=$ref title=$wname." \
+        "cmux_cleanup|self-heal|generation=$receipt_generation|ref=$ref|title=$wname|reason=missing-exact-receipt"
+      continue
+    fi
     hr=0
-    self_heal_workspace_ref "$wname" "$ref" || hr=$?
+    self_heal_workspace_ref "$wname" "$ref" "$receipt_generation" || hr=$?
     case "$hr" in
       0) healed=1 ;;
       1) ;;          # normal skip (no intent / fail-closed)
@@ -1994,14 +2534,46 @@ self_heal_one_workspace() {
     select_live_view_window "$wname" "$view_session" || true
     cmux_call refresh-surfaces || true
   fi
+  return 0
 }
 
-# One-shot sweep of ALL agent windows (bootstrap / health-recovery / --once /
-# FLY-254 escalated reopen consume).
+# Print titles of conclusive, Flywheel-owned strict views. These are additional
+# heal anchors only when the spawning source session is already gone; ordinary
+# source-window discovery remains the primary path. Every field is re-read from
+# tmux so a user-created cmux-* session cannot opt itself into command injection.
+strict_view_heal_titles() {
+  strict_view_enabled || return 0
+  local sessions session title snapshot sid grouped active owner marker members observed dead
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 1
+  while IFS= read -r session; do
+    case "$session" in "${VIEW_PREFIX}"*) ;; *) continue ;; esac
+    title="${session#"${VIEW_PREFIX}"}"
+    is_managed_runner_title "$title" || continue
+    snapshot=$(_view_session_snapshot "$session") || continue
+    IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+    case "$owner" in flywheel|runner-*) ;; *) continue ;; esac
+    [[ -n "$sid" && "$grouped" == "0" && -n "$active" \
+        && "$marker" == "0" && "$members" == "$active" ]] || continue
+    observed=$(tmux display-message -p -t "=${session}:${active}" '#{window_name}' 2>/dev/null) || continue
+    dead=$(tmux display-message -p -t "=${session}:${active}" '#{pane_dead}' 2>/dev/null) || continue
+    [[ "$observed" == "$title" && "$dead" == "0" ]] || continue
+    printf '%s\n' "$title"
+  done <<< "$sessions"
+}
+
+# Bounded sweep of ALL agent windows plus conclusive strict sole-holder views
+# (bootstrap / health-recovery / --once / FLY-254 escalated reopen consume /
+# one call per 60s additive tick).
 self_heal_sweep_all() {
-  local tmux_windows
+  local tmux_windows heal_names strict_names=""
   tmux_windows=$(get_tmux_agent_windows)
-  [[ -z "$tmux_windows" ]] && return 0
+  heal_names=$(printf '%s\n' "$tmux_windows" | awk -F'|' 'NF >= 3 && $3 != "" { print $3 }')
+  if strict_view_enabled; then
+    strict_names=$(strict_view_heal_titles) || return 0
+    [[ -n "$strict_names" ]] && heal_names="${heal_names}${heal_names:+$'\n'}${strict_names}"
+  fi
+  heal_names=$(printf '%s\n' "$heal_names" | awk 'NF && !seen[$0]++')
+  [[ -z "$heal_names" ]] && return 0
 
   # FLY-254: escalated sweep — snapshot the user's selected workspace BEFORE
   # any focus mutation. Fail-closed (Codex R1 M3): without exactly one legal
@@ -2023,11 +2595,17 @@ self_heal_sweep_all() {
     fi
   fi
 
-  local _s _wid wname
-  while IFS='|' read -r _s _wid wname; do
+  local wname require_receipt
+  while IFS= read -r wname; do
     [[ -z "$wname" ]] && continue
-    self_heal_one_workspace "$wname"
-  done <<< "$tmux_windows"
+    require_receipt=0
+    if [[ -n "$strict_names" ]] \
+        && printf '%s\n' "$strict_names" | grep -qxF "$wname" \
+        && ! printf '%s\n' "$tmux_windows" | awk -F'|' -v n="$wname" '$3 == n { found=1 } END { exit(found ? 0 : 1) }'; then
+      require_receipt=1
+    fi
+    self_heal_one_workspace "$wname" "$require_receipt"
+  done <<< "$heal_names"
 
   # FLY-254: single cleanup epilogue — the focus restore decision. Restore the
   # original tab ONLY when (a) we actually moved focus, (b) the user never
@@ -2117,6 +2695,19 @@ linked_view_enabled() {
   esac
 }
 
+# FLY-1364 R6: lifetime protection is strict whenever either the isolated-view
+# producer (A) or invariant consumer (B) is enabled. This closes the unsafe
+# A0B1 split-brain where create used a grouped session while Bridge treated the
+# view as disposable. STRICT_VIEW=0 is the ordered rollback lever.
+strict_view_enabled() {
+  case "${FLYWHEEL_CMUX_STRICT_VIEW:-1}" in
+    0) return 1 ;;
+    1|"") ;;
+    *) log "WARN: invalid FLYWHEEL_CMUX_STRICT_VIEW='${FLYWHEEL_CMUX_STRICT_VIEW}' — using 1" ;;
+  esac
+  linked_view_enabled || view_invariant_enabled
+}
+
 tmux_server_generation() {
   if [[ -n "${FLYWHEEL_CMUX_TMUX_GENERATION:-}" ]]; then
     printf '%s\n' "$FLYWHEEL_CMUX_TMUX_GENERATION"
@@ -2169,15 +2760,152 @@ _view_session_snapshot() {
   printf '%s|%s\n' "$meta" "$members"
 }
 
+# tmux mutation equivalent of cmux_call_guarded: the supplied proof is the
+# genuine last operation before the tmux client is invoked. The proof binds a
+# mutable canonical name to one server generation and one complete session
+# snapshot, so a restarted server or a same-name/session-id replacement cannot
+# inherit teardown authority observed earlier in the pass.
+_GUARD_TMUX_GENERATION=""
+_GUARD_TMUX_SESSION=""
+_GUARD_TMUX_SNAPSHOT=""
+_GUARD_TMUX_GROUP=""
+_tmux_session_snapshot_guard() {
+  local current observed group
+  current=$(tmux_server_generation) || return 1
+  [[ -n "$current" && "$current" == "$_GUARD_TMUX_GENERATION" ]] || return 1
+  observed=$(_view_session_snapshot "$_GUARD_TMUX_SESSION") || return 1
+  [[ "$observed" == "$_GUARD_TMUX_SNAPSHOT" ]] || return 1
+  if [[ -n "${_GUARD_TMUX_GROUP:-}" ]]; then
+    group=$(tmux display-message -p -t "=$_GUARD_TMUX_SESSION:" \
+      '#{session_group}' 2>/dev/null) || return 1
+    [[ "$group" == "$_GUARD_TMUX_GROUP" ]] || return 1
+  fi
+  current=$(tmux_server_generation) || return 1
+  [[ -n "$current" && "$current" == "$_GUARD_TMUX_GENERATION" ]]
+}
+
+tmux_call_guarded() {
+  local guard_fn="$1"
+  shift
+  "$guard_fn" || return 1
+  tmux "$@"
+}
+
+# Normal strict-view construction binds every tmux mutation to the generation
+# and exact source topology captured before the WAL was opened. Once a staging
+# session exists, its complete snapshot is part of the same last-operation
+# proof. This prevents a restarted server or a source-window replacement from
+# inheriting an in-flight build's authority.
+_GUARD_VIEW_BUILD_GENERATION=""
+_GUARD_VIEW_BUILD_SOURCE=""
+_GUARD_VIEW_BUILD_SOURCE_SNAPSHOT=""
+_GUARD_VIEW_BUILD_WINDOW_ID=""
+_GUARD_VIEW_BUILD_WINDOW_NAME=""
+_GUARD_VIEW_BUILD_STAGE=""
+_GUARD_VIEW_BUILD_STAGE_SNAPSHOT=""
+_GUARD_VIEW_BUILD_CANONICAL_ABSENT=""
+_tmux_view_build_guard() {
+  local current observed source_name source_dead
+  current=$(tmux_server_generation) || return 1
+  [[ -n "$current" && "$current" == "$_GUARD_VIEW_BUILD_GENERATION" ]] || return 1
+  observed=$(_view_session_snapshot "$_GUARD_VIEW_BUILD_SOURCE") || return 1
+  [[ "$observed" == "$_GUARD_VIEW_BUILD_SOURCE_SNAPSHOT" ]] || return 1
+  observed=$(tmux display-message -p \
+    -t "=$_GUARD_VIEW_BUILD_SOURCE:$_GUARD_VIEW_BUILD_WINDOW_ID" \
+    '#{window_name}|#{pane_dead}' 2>/dev/null) || return 1
+  IFS='|' read -r source_name source_dead <<< "$observed"
+  [[ "$source_name" == "$_GUARD_VIEW_BUILD_WINDOW_NAME" && "$source_dead" == "0" ]] || return 1
+  if [[ -n "$_GUARD_VIEW_BUILD_STAGE" ]]; then
+    observed=$(_view_session_snapshot "$_GUARD_VIEW_BUILD_STAGE") || return 1
+    [[ "$observed" == "$_GUARD_VIEW_BUILD_STAGE_SNAPSHOT" ]] || return 1
+  fi
+  if [[ -n "$_GUARD_VIEW_BUILD_CANONICAL_ABSENT" ]]; then
+    linked_session_exists "$_GUARD_VIEW_BUILD_CANONICAL_ABSENT" && return 1
+  fi
+  current=$(tmux_server_generation) || return 1
+  [[ -n "$current" && "$current" == "$_GUARD_VIEW_BUILD_GENERATION" ]]
+}
+
+OWNED_VIEW_SNAPSHOT=""
+_view_shell_owned_for_title() {
+  # Independently prove the tmux shell addressed by a mutable canonical name.
+  # allow_grouped=1 accepts only a legacy Flywheel/runner group; require_live=1
+  # requires its sole pane to be alive. When verify_source=1 and a same-title
+  # source still exists, the view must hold that exact live window object. A
+  # source-less sole-holder remains valid under the FLY-1272 lifetime ruling.
+  local session="$1" title="$2" allow_grouped="${3:-0}"
+  local require_live="${4:-0}" verify_source="${5:-0}"
+  local snapshot sid grouped active owner marker members observed current dead group
+  local source_rows source_session source_wid source_title source_dead
+  local saw_source=0 matched_source=0
+  OWNED_VIEW_SNAPSHOT=""
+  snapshot=$(_view_session_snapshot "$session") || return 1
+  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  [[ -n "$sid" && -n "$active" ]] || return 1
+
+  if [[ "$grouped" == "0" ]]; then
+    case "$owner" in flywheel|runner-*) ;; *) return 1 ;; esac
+    [[ "$marker" == "0" && "$members" == "$active" ]] || return 1
+    observed=$(tmux display-message -p -t "=${session}:${active}" \
+      '#{window_name}|#{pane_dead}' 2>/dev/null) || return 1
+    IFS='|' read -r current dead <<< "$observed"
+    [[ "$current" == "$title" ]] || return 1
+    case "$dead" in 0|1) ;; *) return 1 ;; esac
+    [[ "$require_live" != "1" || "$dead" == "0" ]] || return 1
+  elif [[ "$allow_grouped" == "1" && "$grouped" == "1" ]]; then
+    group=$(tmux display-message -p -t "=${session}:" '#{session_group}' 2>/dev/null) || return 1
+    case "$group" in flywheel|runner-*) ;; *) return 1 ;; esac
+    [[ -z "$owner" || "$owner" == "$group" ]] || return 1
+    [[ -z "$marker" || "$marker" == "0" ]] || return 1
+  else
+    return 1
+  fi
+
+  if [[ "$verify_source" == "1" ]]; then
+    source_rows=$(get_tmux_agent_windows) || return 1
+    while IFS='|' read -r source_session source_wid source_title; do
+      [[ "$source_title" == "$title" ]] || continue
+      saw_source=1
+      [[ "$source_wid" == "$active" ]] || continue
+      source_dead=$(tmux display-message -p -t "=${source_session}:${source_wid}" \
+        '#{pane_dead}' 2>/dev/null) || return 1
+      [[ "$source_dead" == "0" ]] || return 1
+      matched_source=1
+    done <<< "$source_rows"
+    [[ "$saw_source" == "0" || "$matched_source" == "1" ]] || return 1
+  fi
+
+  OWNED_VIEW_SNAPSHOT="$snapshot"
+  return 0
+}
+
 _linked_view_matches() {
   local session="$1" expected_wid="$2" expected_owner="$3" expected_sid="${4:-}"
-  local snapshot sid grouped active owner marker members
+  local expected_title="${5:-}" expected_generation="${6:-}"
+  local snapshot sid grouped active owner marker members observed title dead current
+  if [[ -n "$expected_generation" ]]; then
+    current=$(tmux_server_generation) || return 1
+    [[ "$current" == "$expected_generation" ]] || return 1
+  fi
   snapshot=$(_view_session_snapshot "$session") || return 1
   IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
   [[ "$grouped" == "0" && "$active" == "$expected_wid" \
      && "$owner" == "$expected_owner" && "$marker" == "0" \
      && "$members" == "$expected_wid" ]] || return 1
-  [[ -z "$expected_sid" || "$sid" == "$expected_sid" ]]
+  [[ -z "$expected_sid" || "$sid" == "$expected_sid" ]] || return 1
+  if [[ -n "$expected_title" ]]; then
+    observed=$(tmux display-message -p -t "=${session}:${expected_wid}" \
+      '#{window_name}|#{pane_dead}' 2>/dev/null) || return 1
+    IFS='|' read -r title dead <<< "$observed"
+    [[ "$title" == "$expected_title" ]] || return 1
+    case "$dead" in 0|1) ;; *) return 1 ;; esac
+  fi
+  if [[ -n "$expected_generation" ]]; then
+    current=$(tmux_server_generation) || return 1
+    [[ "$current" == "$expected_generation" ]] || return 1
+  fi
+  OWNED_VIEW_SNAPSHOT="$snapshot"
+  return 0
 }
 
 _new_view_nonce() {
@@ -2193,6 +2921,7 @@ _retire_owned_stage() {
   # unlinked while the source reference is positively present; tmux then
   # atomically refuses the operation if it would destroy the last reference.
   local stage="$1" expected_sid="$2" owner="$3" source="$4" wid="$5" placeholder="$6"
+  local expected_generation="$7"
   local snapshot sid grouped active observed_owner marker members source_id
   linked_session_exists "$stage" || return 0
   snapshot=$(_view_session_snapshot "$stage") || return 1
@@ -2203,12 +2932,19 @@ _retire_owned_stage() {
     *,"$wid",*)
       source_id=$(tmux display-message -p -t "=${source}:${wid}" '#{window_id}' 2>/dev/null) || {
         # The stage may now be the only holder. Never unlink/kill the shared
-        # window on an unprovable source; escrow the whole proven stage.
-        escrow_view_session "$stage" 1 >/dev/null || return 1
+        # window on an unprovable source; escrow only the exact generation,
+        # session id, and topology already authorized by this WAL.
+        escrow_view_session "$stage" 1 "$expected_generation" "$expected_sid" \
+          "$snapshot" >/dev/null || return 1
         return 0
       }
       [[ "$source_id" == "$wid" ]] || return 1
-      tmux unlink-window -t "=${stage}:${wid}" 2>/dev/null || return 1
+      _GUARD_TMUX_GENERATION="$expected_generation"
+      _GUARD_TMUX_SESSION="$stage"
+      _GUARD_TMUX_SNAPSHOT="$snapshot"
+      _GUARD_TMUX_GROUP=""
+      tmux_call_guarded _tmux_session_snapshot_guard \
+        unlink-window -t "=${stage}:${wid}" 2>/dev/null || return 1
       ;;
   esac
   linked_session_exists "$stage" || return 0
@@ -2219,7 +2955,12 @@ _retire_owned_stage() {
      && "$members" == "$placeholder" ]] || return 1
   # Only our marked initial window remains, so whole-session removal cannot
   # touch the source or another linked window.
-  tmux kill-session -t "=$stage" 2>/dev/null || return 1
+  _GUARD_TMUX_GENERATION="$expected_generation"
+  _GUARD_TMUX_SESSION="$stage"
+  _GUARD_TMUX_SNAPSHOT="$snapshot"
+  _GUARD_TMUX_GROUP=""
+  tmux_call_guarded _tmux_session_snapshot_guard \
+    kill-session -t "=$stage" 2>/dev/null || return 1
   linked_session_exists "$stage" && return 1
   return 0
 }
@@ -2228,16 +2969,20 @@ _retire_create_intent_stage() {
   # create_intent may have crashed after new-session but before recording the
   # session id/options. The deterministic nonce name plus an independent
   # one-window placeholder topology is the complete ownership proof.
-  local stage="$1" rows count wid name grouped
+  local stage="$1" expected_generation="$2"
+  local snapshot sid grouped active owner marker members name
   linked_session_exists "$stage" || return 0
-  grouped=$(tmux display-message -p -t "=$stage:" '#{session_grouped}' 2>/dev/null) || return 1
-  [[ "$grouped" == "0" ]] || return 1
-  rows=$(tmux list-windows -t "=$stage" -F '#{window_id}|#{window_name}' 2>/dev/null) || return 1
-  count=$(printf '%s\n' "$rows" | grep -c . || true)
-  [[ "$count" == "1" ]] || return 1
-  IFS='|' read -r wid name <<< "$rows"
-  [[ -n "$wid" && "$name" == "__flywheel_placeholder__" ]] || return 1
-  tmux kill-session -t "=$stage" 2>/dev/null || return 1
+  snapshot=$(_view_session_snapshot "$stage") || return 1
+  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  [[ -n "$sid" && "$grouped" == "0" && "$members" == "$active" ]] || return 1
+  name=$(tmux display-message -p -t "=${stage}:${active}" '#{window_name}' 2>/dev/null) || return 1
+  [[ "$name" == "__flywheel_placeholder__" ]] || return 1
+  _GUARD_TMUX_GENERATION="$expected_generation"
+  _GUARD_TMUX_SESSION="$stage"
+  _GUARD_TMUX_SNAPSHOT="$snapshot"
+  _GUARD_TMUX_GROUP=""
+  tmux_call_guarded _tmux_session_snapshot_guard \
+    kill-session -t "=$stage" 2>/dev/null || return 1
   linked_session_exists "$stage" && return 1
   return 0
 }
@@ -2250,7 +2995,7 @@ recover_view_construction() {
   # the current server. A same-name current-generation object remains foreign
   # and is never mutated by this cleanup.
   local requested_view="$1" wal line fields
-  local version generation state nonce view source wid stage_sid placeholder stage current_generation
+  local version generation state nonce view source wid stage_sid placeholder stage current_generation expected_title
   wal=$(_view_wal_path "$requested_view")
   [[ -f "$wal" ]] || return 0
   [[ "$(wc -l < "$wal" 2>/dev/null | tr -d ' ')" == "1" ]] || { log "WARN: malformed view WAL: $wal"; return 1; }
@@ -2259,6 +3004,8 @@ recover_view_construction() {
   [[ "$fields" == "9" ]] || { log "WARN: malformed view WAL fields: $wal"; return 1; }
   IFS='|' read -r version generation state nonce view source wid stage_sid placeholder <<< "$line"
   [[ "$version" == "v1" && "$view" == "$requested_view" ]] || return 1
+  expected_title=${view#"$VIEW_PREFIX"}
+  [[ -n "$expected_title" && "$expected_title" != "$view" ]] || return 1
   case "$state" in create_intent|created|link_intent|linked|claim_intent|claimed_complete) ;; *) return 1 ;; esac
   case "$nonce" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
   case "$view$source$wid$stage_sid$placeholder" in *$'\n'*) return 1 ;; esac
@@ -2278,6 +3025,7 @@ recover_view_construction() {
   if [[ "$state" == "claim_intent" ]]; then
     if linked_session_exists "$view"; then
       if _linked_view_matches "$view" "$wid" "$source" "$stage_sid" \
+          "$expected_title" "$generation" \
           && ! linked_session_exists "$stage"; then
         _write_view_wal "$wal" "$generation" claimed_complete "$nonce" "$view" \
           "$source" "$wid" "$stage_sid" "$placeholder" || return 1
@@ -2288,14 +3036,21 @@ recover_view_construction() {
       # proven stage, but the conflict record stays for operator visibility.
       if linked_session_exists "$stage"; then
         _retire_owned_stage "$stage" "$stage_sid" "$source" \
-          "$source" "$wid" "$placeholder" || return 1
+          "$source" "$wid" "$placeholder" "$generation" || return 1
       fi
       log "WARN: canonical view collision for $view; preserving WAL"
       return 1
     fi
-    if _linked_view_matches "$stage" "$wid" "$source" "$stage_sid"; then
-      tmux rename-session -t "=$stage" "$view" 2>/dev/null || return 1
-      _linked_view_matches "$view" "$wid" "$source" "$stage_sid" || return 1
+    if _linked_view_matches "$stage" "$wid" "$source" "$stage_sid" \
+        "$expected_title" "$generation"; then
+      _GUARD_TMUX_GENERATION="$generation"
+      _GUARD_TMUX_SESSION="$stage"
+      _GUARD_TMUX_SNAPSHOT="$OWNED_VIEW_SNAPSHOT"
+      _GUARD_TMUX_GROUP=""
+      tmux_call_guarded _tmux_session_snapshot_guard \
+        rename-session -t "=$stage" "$view" 2>/dev/null || return 1
+      _linked_view_matches "$view" "$wid" "$source" "$stage_sid" \
+        "$expected_title" "$generation" || return 1
       linked_session_exists "$stage" && return 1
       _write_view_wal "$wal" "$generation" claimed_complete "$nonce" "$view" \
         "$source" "$wid" "$stage_sid" "$placeholder" || return 1
@@ -2307,7 +3062,7 @@ recover_view_construction() {
 
   if [[ "$state" == "create_intent" ]]; then
     if linked_session_exists "$stage"; then
-      _retire_create_intent_stage "$stage" || return 1
+      _retire_create_intent_stage "$stage" "$generation" || return 1
     fi
     rm -f "$wal" 2>/dev/null || return 1
     return 0
@@ -2321,42 +3076,130 @@ recover_view_construction() {
   fi
   [[ -n "$stage_sid" && -n "$placeholder" ]] || return 1
   _retire_owned_stage "$stage" "$stage_sid" "$source" \
-    "$source" "$wid" "$placeholder" || return 1
+    "$source" "$wid" "$placeholder" "$generation" || return 1
   rm -f "$wal" 2>/dev/null || return 1
   return 0
 }
 
-_ledger_upsert() {
-  local state="$1" generation="$2" ref="$3" title="$4" dir lock tmp
-  case "$state" in prepared|committed) ;; *) return 1 ;; esac
-  case "$generation$ref$title" in *'|'*|*$'\n'*) return 1 ;; esac
-  [[ -n "$generation" && -n "$ref" && -n "$title" ]] || return 1
+_ledger_release_inner_lock() {
+  local lock="$1"
+  rm -f "$lock/owner" 2>/dev/null || true
+  _ledger_maybe_crash after-lock-owner-remove
+  rmdir "$lock" 2>/dev/null || true
+}
+
+_ledger_maybe_crash() {
+  # Deterministic fault-injection seam for the ledger durability matrix. This
+  # variable is unset in production; tests run the writer in a disposable child
+  # process so SIGKILL faithfully leaves each possible crash residue behind.
+  [[ "${FLYWHEEL_CMUX_LEDGER_CRASH_AT:-}" == "$1" ]] || return 0
+  kill -KILL "$$"
+  return 137
+}
+
+_ledger_transaction() {
+  # The global incarnation-bound mutator lease is the authority that excludes
+  # every legitimate ledger writer. The small inner lock only protects the
+  # file replacement itself and may be reaped by that verified sole writer
+  # after a crash. Without the global lease, even a missing/malformed inner
+  # owner authorizes zero mutation.
+  local action="$1" state="$2" generation="$3" ref="$4" title="$5"
+  local dir lock owner_tmp="" tmp="" acquired=0 lock_owner="<missing>"
+  if ! assert_or_reuse_owned_lease; then
+    log "WARN: ledger $action refused: current process does not hold the verified mutator lease"
+    return 1
+  fi
+
   dir=$(dirname "$VIEW_LEDGER")
   mkdir -p "$dir" 2>/dev/null || return 1
   lock="${VIEW_LEDGER}.lock"
-  mkdir "$lock" 2>/dev/null || return 1
-  touch "$VIEW_LEDGER" 2>/dev/null || { rmdir "$lock" 2>/dev/null || true; return 1; }
-  tmp=$(mktemp "${VIEW_LEDGER}.XXXX" 2>/dev/null) || { rmdir "$lock" 2>/dev/null || true; return 1; }
-  if ! awk -F'|' -v r="$ref" '$3 != r { print }' "$VIEW_LEDGER" > "$tmp" 2>/dev/null; then
-    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; return 1
+  if mkdir "$lock" 2>/dev/null; then
+    acquired=1
+  else
+    # The verified global lease proves there is no second legitimate writer.
+    # Therefore any residual inner lock belongs to an interrupted operation
+    # and is safe for this sole writer to reap. This is deliberately after the
+    # lease assertion above; an unleased caller can never reach this branch.
+    lock_owner=$(cat "$lock/owner" 2>/dev/null || printf '<missing>')
+    log "[audit] reaping residual ledger inner lock under verified mutator lease: $lock"
+    if ! rm -rf "$lock" 2>/dev/null; then
+      _alert_cmux_cleanup \
+        "cmux ledger inner lock cannot be recovered" \
+        "The verified global mutator lease could not remove residual ledger lock $lock; owner=$lock_owner. Ledger mutation remains fail-closed." \
+        "cmux_cleanup|ledger-inner-lock|owner=$lock_owner"
+      return 1
+    fi
+    if mkdir "$lock" 2>/dev/null; then
+      acquired=1
+    fi
   fi
-  printf '%s|%s|%s|%s\n' "$state" "$generation" "$ref" "$title" >> "$tmp" || {
-    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; return 1;
+  if [[ "$acquired" != "1" ]]; then
+    _alert_cmux_cleanup \
+      "cmux ledger inner lock remains unavailable" \
+      "The verified global mutator lease could not reacquire residual ledger lock $lock; owner=$lock_owner. Ledger mutation remains fail-closed." \
+      "cmux_cleanup|ledger-inner-lock|owner=$lock_owner"
+    return 1
+  fi
+  _ledger_maybe_crash after-inner-mkdir
+
+  owner_tmp=$(mktemp "${lock}.owner.XXXX" 2>/dev/null) || {
+    _ledger_release_inner_lock "$lock"; return 1;
   }
-  mv "$tmp" "$VIEW_LEDGER" 2>/dev/null || {
-    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; return 1;
+  printf '%s|%s\n' "$$" "$MUTATOR_LEASE_INCARNATION" > "$owner_tmp" 2>/dev/null || {
+    rm -f "$owner_tmp"; _ledger_release_inner_lock "$lock"; return 1;
   }
-  rmdir "$lock" 2>/dev/null || true
+  _ledger_maybe_crash after-owner-tmp-write
+  mv "$owner_tmp" "$lock/owner" 2>/dev/null || {
+    rm -f "$owner_tmp"; _ledger_release_inner_lock "$lock"; return 1;
+  }
+  owner_tmp=""
+  _ledger_maybe_crash after-owner-mv
+
+  if [[ "$action" == "remove" && ! -f "$VIEW_LEDGER" ]]; then
+    _ledger_release_inner_lock "$lock"
+    return 0
+  fi
+  touch "$VIEW_LEDGER" 2>/dev/null || {
+    _ledger_release_inner_lock "$lock"; return 1;
+  }
+  tmp=$(mktemp "${VIEW_LEDGER}.XXXX" 2>/dev/null) || {
+    _ledger_release_inner_lock "$lock"; return 1;
+  }
+  if [[ "$action" == "upsert" ]]; then
+    if ! awk -F'|' -v r="$ref" '$3 != r { print }' "$VIEW_LEDGER" > "$tmp" 2>/dev/null; then
+      rm -f "$tmp"; _ledger_release_inner_lock "$lock"; return 1
+    fi
+    printf '%s|%s|%s|%s\n' "$state" "$generation" "$ref" "$title" >> "$tmp" || {
+      rm -f "$tmp"; _ledger_release_inner_lock "$lock"; return 1;
+    }
+  else
+    if ! awk -F'|' -v g="$generation" -v r="$ref" \
+        '!($2 == g && $3 == r) { print }' "$VIEW_LEDGER" > "$tmp" 2>/dev/null; then
+      rm -f "$tmp"; _ledger_release_inner_lock "$lock"; return 1
+    fi
+  fi
+  _ledger_maybe_crash after-ledger-tmp-write
+  if ! mv "$tmp" "$VIEW_LEDGER" 2>/dev/null; then
+    rm -f "$tmp"; _ledger_release_inner_lock "$lock"; return 1
+  fi
+  _ledger_maybe_crash after-ledger-mv
+  _ledger_release_inner_lock "$lock"
   return 0
 }
 
+_ledger_upsert() {
+  local state="$1" generation="$2" ref="$3" title="$4"
+  case "$state" in prepared|committed) ;; *) return 1 ;; esac
+  case "$generation$ref$title" in *'|'*|*$'\n'*) return 1 ;; esac
+  [[ -n "$generation" && -n "$ref" && -n "$title" ]] || return 1
+  _ledger_transaction upsert "$state" "$generation" "$ref" "$title"
+}
+
 _ledger_remove() {
-  local generation="$1" ref="$2" tmp
-  [[ -f "$VIEW_LEDGER" ]] || return 0
-  tmp=$(mktemp "${VIEW_LEDGER}.XXXX" 2>/dev/null) || return 1
-  awk -F'|' -v g="$generation" -v r="$ref" '!($2 == g && $3 == r) { print }' \
-    "$VIEW_LEDGER" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
-  mv "$tmp" "$VIEW_LEDGER" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  local generation="$1" ref="$2"
+  case "$generation$ref" in *'|'*|*$'\n'*) return 1 ;; esac
+  [[ -n "$generation" && -n "$ref" ]] || return 1
+  _ledger_transaction remove "" "$generation" "$ref" ""
 }
 
 ledger_committed_ref() {
@@ -2377,6 +3220,7 @@ ledger_refs_for_title() {
 _GUARD_LEDGER_GENERATION=""
 _GUARD_LEDGER_REF=""
 _GUARD_LEDGER_TITLE=""
+_GUARD_LEDGER_EXTRA_GUARD=""
 _ledger_close_guard() {
   local current raw matches
   current=$(cmux_socket_identity)
@@ -2389,16 +3233,34 @@ r,t=sys.argv[1:3]
 print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
           if w.get("ref") == r and w.get("title") == t))
 ' "$_GUARD_LEDGER_REF" "$_GUARD_LEDGER_TITLE") || return 1
-  [[ "$matches" == "1" ]]
+  [[ "$matches" == "1" ]] || return 1
+  if [[ -n "${_GUARD_LEDGER_EXTRA_GUARD:-}" ]]; then
+    "$_GUARD_LEDGER_EXTRA_GUARD" || return 1
+    # The extra guard may perform multiple JSON/tmux IPCs. Re-read the exact
+    # object afterwards so neither title drift nor ref reuse during that probe
+    # can inherit the receipt.
+    raw=$(get_cmux_workspaces_json) || return 1
+    matches=$(printf '%s' "$raw" | python3 -c '
+import json,sys
+r,t=sys.argv[1:3]
+print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
+          if w.get("ref") == r and w.get("title") == t))
+' "$_GUARD_LEDGER_REF" "$_GUARD_LEDGER_TITLE") || return 1
+    [[ "$matches" == "1" ]] || return 1
+  fi
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_LEDGER_GENERATION" ]]
 }
 
 close_ledger_workspace_ref() {
-  local generation="$1" ref="$2" title="$3" reason="$4" rc=0
+  local generation="$1" ref="$2" title="$3" reason="$4" extra_guard="${5:-}" rc=0
   _GUARD_LEDGER_GENERATION="$generation"
   _GUARD_LEDGER_REF="$ref"
   _GUARD_LEDGER_TITLE="$title"
+  _GUARD_LEDGER_EXTRA_GUARD="$extra_guard"
   log "[audit] guarded close workspace=$ref title=$title reason=$reason"
   cmux_call_guarded _ledger_close_guard close-workspace --workspace "$ref" || rc=$?
+  _GUARD_LEDGER_EXTRA_GUARD=""
   if [[ "$GUARD_WAS_BLOCKED" == "1" || "$rc" -ne 0 ]]; then
     return 1
   fi
@@ -2406,17 +3268,85 @@ close_ledger_workspace_ref() {
   return 0
 }
 
+_GUARD_ROLLBACK_GENERATION=""
+_GUARD_ROLLBACK_REF=""
+_GUARD_ROLLBACK_PROVISIONAL_TITLE=""
+_rollback_unreceipted_guard() {
+  local current raw matches
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_ROLLBACK_GENERATION" ]] || return 1
+  raw=$(get_cmux_workspaces_json) || return 1
+  matches=$(printf '%s' "$raw" | python3 -c '
+import json,sys
+r,p=sys.argv[1:3]
+print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
+          if w.get("ref") == r
+          and (w.get("title") in (None, "", "~") or (p and w.get("title") == p))))
+' "$_GUARD_ROLLBACK_REF" "$_GUARD_ROLLBACK_PROVISIONAL_TITLE") || return 1
+  [[ "$matches" == "1" ]] || return 1
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_ROLLBACK_GENERATION" ]]
+}
+
+_GUARD_CREATE_GENERATION=""
+_create_generation_guard() {
+  local current
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_CREATE_GENERATION" ]]
+}
+
+_GUARD_RENAME_GENERATION=""
+_GUARD_RENAME_REF=""
+_GUARD_RENAME_TITLE=""
+_GUARD_RENAME_PROVISIONAL_TITLE=""
+_prepared_rename_guard() {
+  local current raw matches
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_RENAME_GENERATION" ]] || return 1
+  [[ -f "$VIEW_LEDGER" ]] || return 1
+  awk -F'|' -v g="$_GUARD_RENAME_GENERATION" -v r="$_GUARD_RENAME_REF" -v t="$_GUARD_RENAME_TITLE" \
+    '$1 == "prepared" && $2 == g && $3 == r && $4 == t { n++ } END { exit(n == 1 ? 0 : 1) }' \
+    "$VIEW_LEDGER" || return 1
+  raw=$(get_cmux_workspaces_json) || return 1
+  matches=$(printf '%s' "$raw" | python3 -c '
+import json,sys
+r,p=sys.argv[1:3]
+print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
+          if w.get("ref") == r
+          and (w.get("title") in (None, "", "~") or (p and w.get("title") == p))))
+' "$_GUARD_RENAME_REF" "$_GUARD_RENAME_PROVISIONAL_TITLE") || return 1
+  [[ "$matches" == "1" ]] || return 1
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_RENAME_GENERATION" ]]
+}
+
+rollback_unreceipted_workspace() {
+  # Called synchronously after one exact refs_before/refs_after diff. The ref is
+  # still unnamed and was created by this attempt, so the generation + exact-ref
+  # readback is sufficient same-authority rollback; title is never authority.
+  local generation="$1" ref="$2" provisional_title="${3:-}" rc=0
+  _GUARD_ROLLBACK_GENERATION="$generation"
+  _GUARD_ROLLBACK_REF="$ref"
+  _GUARD_ROLLBACK_PROVISIONAL_TITLE="$provisional_title"
+  log "[audit] rolling back unreceipted workspace generation=$generation ref=$ref"
+  cmux_call_guarded _rollback_unreceipted_guard close-workspace --workspace "$ref" || rc=$?
+  [[ "$GUARD_WAS_BLOCKED" == "0" && "$rc" -eq 0 ]]
+}
+
 reconcile_prepared_ledger() {
   [[ -f "$VIEW_LEDGER" ]] || return 0
-  local generation raw rows ref title observed confirm current
+  local generation raw rows ref title observed confirm current state old_generation provisional
+  local had_current_prepared=0
   generation=$(cmux_socket_identity)
   [[ -n "$generation" ]] || return 1
   raw=$(get_cmux_workspaces_json) || return 1
   rows=$(awk -F'|' -v g="$generation" '$1 == "prepared" && $2 == g { print $3 "|" $4 }' "$VIEW_LEDGER")
-  [[ -z "$rows" ]] && return 0
-  while IFS='|' read -r ref title; do
-    [[ -z "$ref" || -z "$title" ]] && continue
-    observed=$(printf '%s' "$raw" | python3 -c '
+  if [[ -n "$rows" ]]; then
+    had_current_prepared=1
+    while IFS='|' read -r ref title; do
+      [[ -z "$ref" || -z "$title" ]] && continue
+      provisional=$(build_attach_command "${VIEW_PREFIX}${title}" 2>/dev/null || true)
+      observed=$(printf '%s' "$raw" | python3 -c '
 import json,sys
 r=sys.argv[1]
 for w in json.load(sys.stdin).get("workspaces", []):
@@ -2427,38 +3357,51 @@ for w in json.load(sys.stdin).get("workspaces", []):
 else:
     print("__ABSENT__")
 ' "$ref") || return 1
-    case "$observed" in
-      __ABSENT__)
-        # prepared is a crash-recovery claim and is never GC authority. Its
-        # exact ref may be temporarily unreadable/restarted; preserve it for
-        # operator diagnosis instead of guessing that the create never ran.
-        log "WARN: prepared ledger ref absent ref=$ref title=$title; preserving"
-        ;;
-      __NULL__)
-        cmux_call rename-workspace --workspace "$ref" "$title" || return 1
-        confirm=$(get_cmux_workspaces_json) || return 1
-        current=$(cmux_socket_identity)
-        [[ "$current" == "$generation" ]] || return 1
-        observed=$(printf '%s' "$confirm" | python3 -c '
+      case "$observed" in
+        __ABSENT__)
+          # prepared is a crash-recovery claim and is never GC authority. Its
+          # exact ref may be temporarily unreadable/restarted; preserve it for
+          # operator diagnosis instead of guessing that the create never ran.
+          log "WARN: prepared ledger ref absent ref=$ref title=$title; preserving"
+          ;;
+        __NULL__|"$provisional")
+          _GUARD_RENAME_GENERATION="$generation"
+          _GUARD_RENAME_REF="$ref"
+          _GUARD_RENAME_TITLE="$title"
+          _GUARD_RENAME_PROVISIONAL_TITLE="$provisional"
+          # Recovery has the same authority boundary as first-create rename:
+          # the prepared row, exact unnamed ref, and cmux generation must all
+          # still match at cmux_call_guarded's last pre-mutation operation.
+          cmux_call_guarded _prepared_rename_guard \
+            rename-workspace --workspace "$ref" "$title" || return 1
+          confirm=$(get_cmux_workspaces_json) || return 1
+          current=$(cmux_socket_identity)
+          [[ "$current" == "$generation" ]] || return 1
+          observed=$(printf '%s' "$confirm" | python3 -c '
 import json,sys
 r,t=sys.argv[1:3]
 print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
           if w.get("ref") == r and w.get("title") == t))
 ' "$ref" "$title") || return 1
-        [[ "$observed" == "1" ]] || return 1
-        _ledger_upsert committed "$generation" "$ref" "$title" || return 1
-        ;;
-      "$title")
-        _ledger_upsert committed "$generation" "$ref" "$title" || return 1
-        ;;
-      *)
-        log "WARN: prepared ledger title drift ref=$ref expected=$title observed=$observed; preserving"
-        ;;
-    esac
-  done <<< "$rows"
+          [[ "$observed" == "1" ]] || return 1
+          _ledger_upsert committed "$generation" "$ref" "$title" || return 1
+          ;;
+        "$title")
+          _ledger_upsert committed "$generation" "$ref" "$title" || return 1
+          ;;
+        *)
+          log "WARN: prepared ledger title drift ref=$ref expected=$title observed=$observed; preserving"
+          ;;
+      esac
+    done <<< "$rows"
+  fi
 
-  # Refresh after prepared reconciliation may have renamed an unnamed ref.
-  raw=$(get_cmux_workspaces_json) || return 1
+  # Refresh only when current-generation prepared reconciliation may have
+  # renamed an unnamed ref. A ledger containing only stale generations still
+  # proceeds to the independent stale pass below.
+  if [[ "$had_current_prepared" == "1" ]]; then
+    raw=$(get_cmux_workspaces_json) || return 1
+  fi
   # GC only committed rows whose exact ref is conclusively gone or renamed.
   rows=$(awk -F'|' -v g="$generation" '$1 == "committed" && $2 == g { print $3 "|" $4 }' "$VIEW_LEDGER" 2>/dev/null || true)
   while IFS='|' read -r ref title; do
@@ -2475,8 +3418,46 @@ else:
     print("__ABSENT__")
 ' "$ref") || return 1
     if [[ "$observed" == "__ABSENT__" || "$observed" != "$title" ]]; then
+      current=$(cmux_socket_identity)
+      [[ "$current" == "$generation" ]] || return 1
       _ledger_remove "$generation" "$ref" || return 1
       log "GC committed ledger ref=$ref expected=$title observed=$observed"
+    fi
+  done <<< "$rows"
+
+  # Stale generations are hygiene-only, never authority migration. A ref that
+  # is conclusively absent can be collected; any present ref (same title,
+  # different title, or unnamed) is preserved for operator review. In
+  # particular, an old prepared row can never rename a current object.
+  current=$(cmux_socket_identity)
+  [[ "$current" == "$generation" ]] || return 1
+  rows=$(awk -F'|' -v g="$generation" \
+    'NF == 4 && ($1 == "prepared" || $1 == "committed") && $2 != g { print $1 "|" $2 "|" $3 "|" $4 }' \
+    "$VIEW_LEDGER" 2>/dev/null || true)
+  while IFS='|' read -r state old_generation ref title; do
+    [[ -z "$state" || -z "$old_generation" || -z "$ref" || -z "$title" ]] && continue
+    observed=$(printf '%s' "$raw" | python3 -c '
+import json,sys
+r=sys.argv[1]
+for w in json.load(sys.stdin).get("workspaces", []):
+    if w.get("ref") == r:
+        t=w.get("title")
+        print("__NULL__" if t is None or t == "" or t == "~" else t)
+        break
+else:
+    print("__ABSENT__")
+' "$ref") || return 1
+    current=$(cmux_socket_identity)
+    [[ "$current" == "$generation" ]] || return 1
+    if [[ "$observed" == "__ABSENT__" ]]; then
+      _ledger_remove "$old_generation" "$ref" || return 1
+      log "GC stale-generation ledger state=$state old_generation=$old_generation current_generation=$generation ref=$ref title=$title"
+    else
+      log "WARN: preserving stale-generation ledger state=$state old_generation=$old_generation current_generation=$generation ref=$ref title=$title observed=$observed; manual resolution required"
+      _alert_cmux_cleanup \
+        "cmux stale-generation receipt preserved" \
+        "A stale cmux receipt still resolves and was preserved without rename or migration: state=$state old_generation=$old_generation current_generation=$generation ref=$ref title=$title observed=$observed." \
+        "cmux_cleanup|stale-generation|old=$old_generation|current=$generation|ref=$ref|observed=$observed"
     fi
   done <<< "$rows"
   return 0
@@ -2655,11 +3636,21 @@ view_mismatch_confirmed() {
 }
 
 escrow_view_session() {
-  local session="$1" allow_placeholder="${2:-0}" generation snapshot sid grouped active owner marker members group
-  local keeper post
-  snapshot=$(_view_session_snapshot "$session") || return 1
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  local session="$1" allow_placeholder="${2:-0}"
+  local expected_generation="${3:-}" expected_sid="${4:-}" expected_snapshot="${5:-}"
+  local generation snapshot sid grouped active owner marker members group
+  local keeper post current
   generation=$(tmux_server_generation) || return 1
+  if [[ -n "$expected_generation$expected_sid$expected_snapshot" ]]; then
+    [[ -n "$expected_generation" && -n "$expected_sid" && -n "$expected_snapshot" ]] || return 1
+    [[ "$generation" == "$expected_generation" ]] || return 1
+  fi
+  snapshot=$(_view_session_snapshot "$session") || return 1
+  [[ -z "$expected_snapshot" || "$snapshot" == "$expected_snapshot" ]] || return 1
+  current=$(tmux_server_generation) || return 1
+  [[ "$current" == "$generation" ]] || return 1
+  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  [[ -z "$expected_sid" || "$sid" == "$expected_sid" ]] || return 1
   if [[ "$grouped" == "0" ]]; then
     [[ -n "$owner" ]] || return 1
     [[ "$marker" == "0" || "$allow_placeholder" == "1" ]] || return 1
@@ -2669,17 +3660,33 @@ escrow_view_session() {
     owner="$group"
     # Persist the source identity before the grouped name changes; teardown
     # can then prove slot ownership even after the source session disappears.
-    tmux set-option -t "=$session:" @flywheel_cmux_owner "$owner" 2>/dev/null || return 1
+    _GUARD_TMUX_GENERATION="$generation"
+    _GUARD_TMUX_SESSION="$session"
+    _GUARD_TMUX_SNAPSHOT="$snapshot"
+    _GUARD_TMUX_GROUP="$group"
+    tmux_call_guarded _tmux_session_snapshot_guard \
+      set-option -t "=$session:" @flywheel_cmux_owner "$owner" \
+      2>/dev/null || return 1
     [[ "$(tmux show-options -v -t "=$session:" @flywheel_cmux_owner 2>/dev/null || true)" == "$owner" ]] || return 1
+    snapshot=$(_view_session_snapshot "$session") || return 1
+    IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+    [[ "$grouped" == "1" && "$owner" == "$group" ]] || return 1
   else
     return 1
   fi
   keeper="fwkeeper-${sid#\$}-${session}"
   _inventory_upsert "$generation" "$sid" "$keeper" "$owner" "$members" prepared || return 1
-  tmux rename-session -t "=$session" "$keeper" 2>/dev/null || return 1
+  _GUARD_TMUX_GENERATION="$generation"
+  _GUARD_TMUX_SESSION="$session"
+  _GUARD_TMUX_SNAPSHOT="$snapshot"
+  _GUARD_TMUX_GROUP="${group:-}"
+  tmux_call_guarded _tmux_session_snapshot_guard \
+    rename-session -t "=$session" "$keeper" 2>/dev/null || return 1
   post=$(_view_session_snapshot "$keeper") || return 1
   IFS='|' read -r post _ <<< "$post"
   [[ "$post" == "$sid" ]] || return 1
+  current=$(tmux_server_generation) || return 1
+  [[ "$current" == "$generation" ]] || return 1
   linked_session_exists "$session" && return 1
   _inventory_upsert "$generation" "$sid" "$keeper" "$owner" "$members" committed || return 1
   printf '%s\n' "$keeper"
@@ -2687,15 +3694,67 @@ escrow_view_session() {
 
 dismantle_view_display() {
   # Close only current-generation ledger refs, then dismantle only the proven
-  # Flywheel view shell. Unledgered same-title workspaces are foreign and block
-  # mutation; title alone is never authority.
+  # Flywheel view shell. An unledgered title is split into three states:
+  # inventory unavailable (fail closed), present same-title refs (foreign,
+  # preserve), or conclusively zero refs (the tab is already gone, so only the
+  # existing owner/group-guarded tmux shell teardown may continue).
   local title="$1" reason="$2" generation refs ref view snapshot sid grouped active owner marker members wid
+  local raw same_title_refs refs_csv view_exists=0 source_window=0 stale_state=0
+  local tmux_generation tmux_current guard_snapshot guard_sid guard_grouped guard_active guard_owner guard_marker guard_members
   generation=$(cmux_socket_identity)
   [[ -n "$generation" ]] || return 1
   refs=$(ledger_refs_for_title "$generation" "$title")
   if [[ -z "$refs" ]]; then
-    log "WARN: foreign/unledgered same-title workspace collision for $title; manual resolution required"
-    return 1
+    if ! raw=$(get_cmux_workspaces_json); then
+      log "WARN: unledgered cleanup refused generation=$generation title=$title reason=workspace-json-unavailable"
+      _alert_cmux_cleanup \
+        "cmux cleanup refused: workspace inventory unavailable" \
+        "An unledgered cleanup candidate was preserved because workspace JSON was unavailable: generation=$generation title=$title reason=$reason." \
+        "cmux_cleanup|generation=$generation|title=$title|refs_sha256=$(_cmux_alert_hash '__unavailable__')|reason=workspace-json-unavailable"
+      return 1
+    fi
+    same_title_refs=$(printf '%s' "$raw" | python3 -c '
+import json,re,sys
+t=sys.argv[1]
+raw_re=re.compile(r"^env -u TMUX tmux attach -t '\''=cmux-([^'\''\\n]+)'\''$")
+for w in json.load(sys.stdin).get("workspaces", []):
+    title=w.get("title")
+    match=raw_re.fullmatch(title) if isinstance(title, str) else None
+    if (title == t or (match and match.group(1) == t)) and w.get("ref"):
+        print(w["ref"])
+' "$title") || {
+      log "WARN: unledgered cleanup refused generation=$generation title=$title reason=workspace-json-unparseable"
+      _alert_cmux_cleanup \
+        "cmux cleanup refused: workspace inventory unparseable" \
+        "An unledgered cleanup candidate was preserved because workspace JSON could not be parsed: generation=$generation title=$title reason=$reason." \
+        "cmux_cleanup|generation=$generation|title=$title|refs_sha256=$(_cmux_alert_hash '__unparseable__')|reason=workspace-json-unparseable"
+      return 1
+    }
+    if [[ -n "$same_title_refs" ]]; then
+      view="${VIEW_PREFIX}${title}"
+      grouped="unknown"; owner="unknown"
+      if linked_session_exists "$view"; then
+        view_exists=1
+        snapshot=$(_view_session_snapshot "$view" 2>/dev/null || true)
+        if [[ -n "$snapshot" ]]; then
+          IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+          [[ -n "$owner" ]] || owner="none"
+        fi
+      fi
+      if get_tmux_agent_windows | awk -F'|' -v t="$title" '$3 == t { found=1 } END { exit(found ? 0 : 1) }'; then
+        source_window=1
+      fi
+      if [[ -f "$STALE_STATE" ]] && awk -F'|' -v t="$title" '$1 == t { found=1 } END { exit(found ? 0 : 1) }' "$STALE_STATE"; then
+        stale_state=1
+      fi
+      refs_csv=$(printf '%s\n' "$same_title_refs" | sort | paste -sd, -)
+      log "WARN: unledgered cleanup refused generation=$generation title=$title refs=$refs_csv view_exists=$view_exists grouped=$grouped owner=$owner source_window=$source_window stale_state=$stale_state reason=present-same-title-ref manual resolution required"
+      _alert_cmux_cleanup \
+        "cmux cleanup refused: unledgered workspace present" \
+        "A same-title cmux workspace has no current-generation receipt and was preserved: generation=$generation title=$title refs=$refs_csv view_exists=$view_exists grouped=$grouped owner=$owner source_window=$source_window stale_state=$stale_state." \
+        "cmux_cleanup|generation=$generation|title=$title|refs_sha256=$(_cmux_alert_hash "$(printf '%s\n' "$same_title_refs" | sort)")|reason=present-same-title-ref"
+      return 1
+    fi
   fi
   while IFS= read -r ref; do
     [[ -z "$ref" ]] && continue
@@ -2704,7 +3763,13 @@ dismantle_view_display() {
 
   view="${VIEW_PREFIX}${title}"
   linked_session_exists "$view" || return 0
-  snapshot=$(_view_session_snapshot "$view") || return 1
+  # The workspace ledger authorizes only cmux refs. Prove the independently
+  # addressed tmux shell before any unlink/rename operation.
+  tmux_generation=$(tmux_server_generation) || return 1
+  _view_shell_owned_for_title "$view" "$title" 1 0 0 || return 1
+  tmux_current=$(tmux_server_generation) || return 1
+  [[ "$tmux_current" == "$tmux_generation" ]] || return 1
+  snapshot="$OWNED_VIEW_SNAPSHOT"
   IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
   if [[ "$grouped" == "1" ]]; then
     escrow_view_session "$view" >/dev/null || return 1
@@ -2713,7 +3778,17 @@ dismantle_view_display() {
   [[ "$grouped" == "0" && -n "$owner" && "$marker" == "0" ]] || return 1
   while IFS= read -r wid; do
     [[ -z "$wid" ]] && continue
-    if ! tmux unlink-window -t "=${view}:${wid}" 2>/dev/null; then
+    guard_snapshot=$(_view_session_snapshot "$view") || return 1
+    IFS='|' read -r guard_sid guard_grouped guard_active guard_owner guard_marker guard_members <<< "$guard_snapshot"
+    [[ "$guard_sid" == "$sid" && "$guard_grouped" == "0" \
+        && "$guard_owner" == "$owner" && "$guard_marker" == "0" ]] || return 1
+    case ",$guard_members," in *",$wid,"*) ;; *) return 1 ;; esac
+    _GUARD_TMUX_GENERATION="$tmux_generation"
+    _GUARD_TMUX_SESSION="$view"
+    _GUARD_TMUX_SNAPSHOT="$guard_snapshot"
+    _GUARD_TMUX_GROUP=""
+    if ! tmux_call_guarded _tmux_session_snapshot_guard \
+        unlink-window -t "=${view}:${wid}" 2>/dev/null; then
       # Atomic last-reference refusal means this view is now the sole holder;
       # preserve it by escrow rename instead of escalating to -k/kill-window.
       escrow_view_session "$view" >/dev/null || return 1
@@ -2731,11 +3806,17 @@ create_or_replace_view_session() {
   # view is never visible while it contains the placeholder or a wrong window.
   local source_session="$1" window_id="$2" window_name="$3"
   local view_session="${VIEW_PREFIX}${window_name}" nonce stage generation wal
-  local stage_sid="" placeholder_id="" snapshot sid grouped active owner marker members
+  local stage_sid="" placeholder_id="" snapshot source_snapshot sid grouped active owner marker members
+  local observed source_name source_dead
   VIEW_BUILD_OUTCOME=""
-  linked_view_enabled || return 1
+  strict_view_enabled || return 1
   case "$source_session$window_id$window_name" in *'|'*|*$'\n'*) return 1 ;; esac
   generation=$(tmux_server_generation) || { log "WARN: tmux generation unreadable; refusing linked-view build for $window_name"; return 1; }
+  source_snapshot=$(_view_session_snapshot "$source_session") || return 1
+  observed=$(tmux display-message -p -t "=${source_session}:${window_id}" \
+    '#{window_name}|#{pane_dead}' 2>/dev/null) || return 1
+  IFS='|' read -r source_name source_dead <<< "$observed"
+  [[ "$source_name" == "$window_name" && "$source_dead" == "0" ]] || return 1
   nonce=$(_new_view_nonce)
   case "$nonce" in ''|*[!A-Za-z0-9_.-]*) log "WARN: invalid view nonce"; return 1 ;; esac
   stage="fwstage-${nonce}"
@@ -2749,21 +3830,50 @@ create_or_replace_view_session() {
   _write_view_wal "$wal" "$generation" create_intent "$nonce" "$view_session" \
     "$source_session" "$window_id" "" "" || return 1
 
-  if ! tmux new-session -d -s "$stage" -n '__flywheel_placeholder__' 2>/dev/null; then
+  _GUARD_VIEW_BUILD_GENERATION="$generation"
+  _GUARD_VIEW_BUILD_SOURCE="$source_session"
+  _GUARD_VIEW_BUILD_SOURCE_SNAPSHOT="$source_snapshot"
+  _GUARD_VIEW_BUILD_WINDOW_ID="$window_id"
+  _GUARD_VIEW_BUILD_WINDOW_NAME="$window_name"
+  _GUARD_VIEW_BUILD_STAGE=""
+  _GUARD_VIEW_BUILD_STAGE_SNAPSHOT=""
+  _GUARD_VIEW_BUILD_CANONICAL_ABSENT=""
+  if ! tmux_call_guarded _tmux_view_build_guard \
+      new-session -d -s "$stage" -n '__flywheel_placeholder__' 2>/dev/null; then
     log "WARN: staging session create failed for $view_session"
     return 1
   fi
-  stage_sid=$(tmux display-message -p -t "=$stage:" '#{session_id}' 2>/dev/null) || return 1
-  placeholder_id=$(tmux list-windows -t "=$stage" -F '#{window_id}' 2>/dev/null | head -1) || return 1
-  [[ -n "$stage_sid" && -n "$placeholder_id" ]] || return 1
-  tmux set-option -t "=$stage:" @flywheel_cmux_owner "$source_session" 2>/dev/null || return 1
-  tmux set-option -t "=$stage:" @flywheel_cmux_placeholder 1 2>/dev/null || return 1
+  snapshot=$(_view_session_snapshot "$stage") || return 1
+  IFS='|' read -r stage_sid grouped placeholder_id owner marker members <<< "$snapshot"
+  [[ -n "$stage_sid" && "$grouped" == "0" && -n "$placeholder_id" \
+      && -z "$owner" && -z "$marker" && "$members" == "$placeholder_id" ]] || return 1
+  observed=$(tmux display-message -p -t "=${stage}:${placeholder_id}" \
+    '#{window_name}' 2>/dev/null) || return 1
+  [[ "$observed" == "__flywheel_placeholder__" ]] || return 1
+
+  _GUARD_VIEW_BUILD_STAGE="$stage"
+  _GUARD_VIEW_BUILD_STAGE_SNAPSHOT="$snapshot"
+  tmux_call_guarded _tmux_view_build_guard \
+    set-option -t "=$stage:" @flywheel_cmux_owner "$source_session" 2>/dev/null || return 1
+  snapshot=$(_view_session_snapshot "$stage") || return 1
+  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  [[ "$sid" == "$stage_sid" && "$grouped" == "0" && "$owner" == "$source_session" \
+      && -z "$marker" && "$members" == "$placeholder_id" ]] || return 1
+  _GUARD_VIEW_BUILD_STAGE_SNAPSHOT="$snapshot"
+  tmux_call_guarded _tmux_view_build_guard \
+    set-option -t "=$stage:" @flywheel_cmux_placeholder 1 2>/dev/null || return 1
+  snapshot=$(_view_session_snapshot "$stage") || return 1
+  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  [[ "$sid" == "$stage_sid" && "$grouped" == "0" && "$owner" == "$source_session" \
+      && "$marker" == "1" && "$members" == "$placeholder_id" ]] || return 1
   _write_view_wal "$wal" "$generation" created "$nonce" "$view_session" \
     "$source_session" "$window_id" "$stage_sid" "$placeholder_id" || return 1
 
   _write_view_wal "$wal" "$generation" link_intent "$nonce" "$view_session" \
     "$source_session" "$window_id" "$stage_sid" "$placeholder_id" || return 1
-  tmux link-window -s "=${source_session}:${window_id}" -t "=${stage}:" 2>/dev/null || return 1
+  _GUARD_VIEW_BUILD_STAGE_SNAPSHOT="$snapshot"
+  tmux_call_guarded _tmux_view_build_guard \
+    link-window -s "=${source_session}:${window_id}" -t "=${stage}:" 2>/dev/null || return 1
   snapshot=$(_view_session_snapshot "$stage") || return 1
   IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
   if [[ "$sid" != "$stage_sid" || "$grouped" != "0" || "$owner" != "$source_session" \
@@ -2775,10 +3885,27 @@ create_or_replace_view_session() {
     "$source_session" "$window_id" "$stage_sid" "$placeholder_id" || return 1
 
   # The marker and exact id prove this is our disposable initial window.
-  tmux kill-window -t "=${stage}:${placeholder_id}" 2>/dev/null || return 1
-  tmux select-window -t "=${stage}:${window_id}" 2>/dev/null || return 1
-  tmux set-option -t "=$stage:" @flywheel_cmux_placeholder 0 2>/dev/null || return 1
-  _linked_view_matches "$stage" "$window_id" "$source_session" "$stage_sid" || return 1
+  _GUARD_VIEW_BUILD_STAGE_SNAPSHOT="$snapshot"
+  tmux_call_guarded _tmux_view_build_guard \
+    kill-window -t "=${stage}:${placeholder_id}" 2>/dev/null || return 1
+  snapshot=$(_view_session_snapshot "$stage") || return 1
+  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  [[ "$sid" == "$stage_sid" && "$grouped" == "0" && "$owner" == "$source_session" \
+      && "$marker" == "1" && "$members" == "$window_id" ]] || return 1
+  _GUARD_VIEW_BUILD_STAGE_SNAPSHOT="$snapshot"
+  tmux_call_guarded _tmux_view_build_guard \
+    select-window -t "=${stage}:${window_id}" 2>/dev/null || return 1
+  snapshot=$(_view_session_snapshot "$stage") || return 1
+  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  [[ "$sid" == "$stage_sid" && "$grouped" == "0" && "$active" == "$window_id" \
+      && "$owner" == "$source_session" && "$marker" == "1" \
+      && "$members" == "$window_id" ]] || return 1
+  _GUARD_VIEW_BUILD_STAGE_SNAPSHOT="$snapshot"
+  tmux_call_guarded _tmux_view_build_guard \
+    set-option -t "=$stage:" @flywheel_cmux_placeholder 0 2>/dev/null || return 1
+  _linked_view_matches "$stage" "$window_id" "$source_session" "$stage_sid" \
+    "$window_name" "$generation" || return 1
+  snapshot="$OWNED_VIEW_SNAPSHOT"
 
   _write_view_wal "$wal" "$generation" claim_intent "$nonce" "$view_session" \
     "$source_session" "$window_id" "$stage_sid" "$placeholder_id" || return 1
@@ -2786,14 +3913,23 @@ create_or_replace_view_session() {
     log "WARN: canonical view name already occupied: $view_session"
     return 1
   fi
-  tmux rename-session -t "=$stage" "$view_session" 2>/dev/null || return 1
-  _linked_view_matches "$view_session" "$window_id" "$source_session" "$stage_sid" || return 1
+  _GUARD_VIEW_BUILD_STAGE_SNAPSHOT="$snapshot"
+  _GUARD_VIEW_BUILD_CANONICAL_ABSENT="$view_session"
+  tmux_call_guarded _tmux_view_build_guard \
+    rename-session -t "=$stage" "$view_session" 2>/dev/null || return 1
+  _GUARD_VIEW_BUILD_CANONICAL_ABSENT=""
+  _linked_view_matches "$view_session" "$window_id" "$source_session" "$stage_sid" \
+    "$window_name" "$generation" || return 1
   if linked_session_exists "$stage"; then
     log "WARN: canonical claim left staging name alive: $stage"
     return 1
   fi
   _write_view_wal "$wal" "$generation" claimed_complete "$nonce" "$view_session" \
     "$source_session" "$window_id" "$stage_sid" "$placeholder_id" || return 1
+  _GUARD_VIEW_BUILD_STAGE="$view_session"
+  _GUARD_VIEW_BUILD_STAGE_SNAPSHOT="$OWNED_VIEW_SNAPSHOT"
+  _GUARD_VIEW_BUILD_CANONICAL_ABSENT=""
+  _tmux_view_build_guard || return 1
   rm -f "$wal" 2>/dev/null || return 1
   VIEW_BUILD_OUTCOME="staging_ready"
   return 0
@@ -2831,12 +3967,19 @@ create_workspace_for_window() {
     return 0
   fi
 
-  local raw_before cmux_generation="" clients_before="" attachment_unverified=0
-  raw_before=$(get_cmux_workspaces_json) || return 0  # JSON unavailable → skip
-  if linked_view_enabled; then
+  local raw_before cmux_generation="" clients_before="" attachment_unverified=0 snapshot_generation=""
+  if linked_view_enabled || view_invariant_enabled; then
     cmux_generation=$(cmux_socket_identity)
     if [[ -z "$cmux_generation" ]]; then
       log "WARN: cmux generation unreadable; refusing unledgered create for $window_name"
+      return 0
+    fi
+  fi
+  raw_before=$(get_cmux_workspaces_json) || return 0  # JSON unavailable → skip
+  if linked_view_enabled || view_invariant_enabled; then
+    snapshot_generation=$(cmux_socket_identity)
+    if [[ "$snapshot_generation" != "$cmux_generation" ]]; then
+      log "WARN: cmux generation changed during pre-create snapshot for $window_name; refusing create"
       return 0
     fi
   fi
@@ -2855,10 +3998,10 @@ sys.exit(0 if exists else 1)
 
   log "Creating workspace for: $window_name ($window_id) from session $source_session"
 
-  # 1. Create the tmux view. A=1 builds an independent, exact-one-window view
-  # through the staging WAL above. A=0 is the byte-compatible grouped-session
-  # rollback path (including its historical fallback risk).
-  if linked_view_enabled; then
+  # 1. Create the tmux view. Effective strict mode builds an independent,
+  # exact-one-window view through the staging WAL above. Only the explicit
+  # strict rollback switch enters the grouped-session path.
+  if strict_view_enabled; then
     recover_view_construction "$view_session" || return 0
     if ! linked_session_exists "$view_session"; then
       create_or_replace_view_session "$source_session" "$window_id" "$window_name" || {
@@ -2884,7 +4027,7 @@ sys.exit(0 if exists else 1)
   #    deferred every tick forever, so live runners never got a sidebar tab).
   #    Grouped sessions share window objects, so the id is a valid view-session
   #    target — same form FLY-177 already uses in refresh_linked_sessions.
-  if linked_view_enabled; then
+  if strict_view_enabled; then
     if ! _linked_view_matches "$view_session" "$window_id" "$source_session"; then
       log "WARN: $view_session failed isolated topology ready gate — deferring create for $window_name"
       return 0
@@ -2923,10 +4066,22 @@ for w in json.load(sys.stdin).get("workspaces", []):
   # process env; when cmux was launched from within tmux, `$TMUX` is set and
   # `tmux attach` nest-fails ("sessions should be nested with care"). Strip it
   # for this attach so the fresh surface attaches cleanly.
-  if linked_view_enabled; then
+  if strict_view_enabled; then
     clients_before=$(view_session_client_count "$view_session") || attachment_unverified=1
   fi
-  if ! cmux_call new-workspace --command "env -u TMUX tmux attach -t '=${view_session}'"; then
+  local attach_cmd
+  attach_cmd=$(build_attach_command "$view_session") || {
+    log "WARN: attach command rejected for $window_name; deferring workspace create"
+    return 0
+  }
+  local create_rc=0
+  if linked_view_enabled || view_invariant_enabled; then
+    _GUARD_CREATE_GENERATION="$cmux_generation"
+    cmux_call_guarded _create_generation_guard new-workspace --command "$attach_cmd" || create_rc=$?
+  else
+    cmux_call new-workspace --command "$attach_cmd" || create_rc=$?
+  fi
+  if [[ "$create_rc" -ne 0 ]]; then
     log "WARN: cmux new-workspace failed for $window_name (see prior log lines)"
     return 0
   fi
@@ -2936,7 +4091,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
   # until next reconcile pass.
   local raw_after refs_after new_ref
   raw_after=$(get_cmux_workspaces_json) || {
-    if linked_view_enabled; then
+    if strict_view_enabled; then
       log "WARN: attachment_unverified generation=$cmux_generation ref=unknown title=$window_name reason=post-create-read-failed"
     fi
     log "WARN: cmux JSON unavailable post-create; cannot rename or verify-attach $window_name this tick (deferred to later event / --once)"
@@ -2955,7 +4110,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
   new_ref=$(printf '%s\n' "$new_refs" | head -1 || true)
 
   # 6. Rename using the exact ref — immune to user tab switching
-  if linked_view_enabled; then
+  if linked_view_enabled || view_invariant_enabled; then
     local current_generation confirm_raw confirm_count post_clients
     current_generation=$(cmux_socket_identity)
     if [[ "$current_generation" != "$cmux_generation" || "$new_ref_count" != "1" || -z "$new_ref" ]]; then
@@ -2963,10 +4118,21 @@ for w in json.load(sys.stdin).get("workspaces", []):
       return 0
     fi
     if ! _ledger_upsert prepared "$cmux_generation" "$new_ref" "$window_name"; then
-      log "WARN: cannot persist prepared ledger row for $new_ref; leaving workspace unnamed"
+      log "WARN: cannot persist prepared ledger row for $new_ref; rolling back exact unnamed ref"
+      if ! rollback_unreceipted_workspace "$cmux_generation" "$new_ref" "$attach_cmd"; then
+        log "WARN: rollback failed for unreceipted workspace generation=$cmux_generation ref=$new_ref; manual resolution required"
+        _alert_cmux_cleanup \
+          "cmux unreceipted workspace rollback failed" \
+          "The exact unnamed workspace created by this attempt could not be rolled back and was preserved for manual resolution: generation=$cmux_generation ref=$new_ref." \
+          "cmux_cleanup|rollback|generation=$cmux_generation|ref=$new_ref"
+      fi
       return 0
     fi
-    if ! cmux_call rename-workspace --workspace "$new_ref" "$window_name"; then
+    _GUARD_RENAME_GENERATION="$cmux_generation"
+    _GUARD_RENAME_REF="$new_ref"
+    _GUARD_RENAME_TITLE="$window_name"
+    _GUARD_RENAME_PROVISIONAL_TITLE="$attach_cmd"
+    if ! cmux_call_guarded _prepared_rename_guard rename-workspace --workspace "$new_ref" "$window_name"; then
       log "WARN: rename failed for prepared workspace $new_ref; recovery will reconcile it"
       return 0
     fi
@@ -2993,12 +4159,14 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
       log "WARN: cannot commit ledger row for renamed workspace $new_ref"
       return 0
     }
-    post_clients=$(view_session_client_count "$view_session") || attachment_unverified=1
-    if [[ "$attachment_unverified" == "1" \
-       || -z "$clients_before" || "$clients_before" -gt 0 ]]; then
-      log "WARN: attachment_unverified generation=$cmux_generation ref=$new_ref title=$window_name reason=client-baseline-ambiguous"
-    elif [[ -z "$post_clients" || "$post_clients" -le 0 ]]; then
-      log "WARN: attachment_unverified generation=$cmux_generation ref=$new_ref title=$window_name reason=no-post-create-client"
+    if strict_view_enabled; then
+      post_clients=$(view_session_client_count "$view_session") || attachment_unverified=1
+      if [[ "$attachment_unverified" == "1" \
+         || -z "$clients_before" || "$clients_before" -gt 0 ]]; then
+        log "WARN: attachment_unverified generation=$cmux_generation ref=$new_ref title=$window_name reason=client-baseline-ambiguous"
+      elif [[ -z "$post_clients" || "$post_clients" -le 0 ]]; then
+        log "WARN: attachment_unverified generation=$cmux_generation ref=$new_ref title=$window_name reason=no-post-create-client"
+      fi
     fi
   elif [[ -n "$new_ref" ]]; then
     cmux_call rename-workspace --workspace "$new_ref" "$window_name" || true
@@ -3018,11 +4186,14 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
   #    gating it to event-only would reintroduce the bug for sync_additive-born
   #    workspaces. "Zero new idle load" holds: no create → no verify.
   if [[ -n "$new_ref" ]]; then
-    local vc_attempt vc_clients
+    local vc_attempt vc_clients vc_generation=""
+    if linked_view_enabled || view_invariant_enabled; then
+      vc_generation="$cmux_generation"
+    fi
     for vc_attempt in 1 2 3; do
       vc_clients=$(view_session_client_count "$view_session") || break  # tmux error → stop (fail-closed)
       [[ "$vc_clients" -gt 0 ]] && break                                # attached — done
-      self_heal_workspace_ref "$window_name" "$new_ref" || true         # re-drive attach (ref-scoped, gated)
+      self_heal_workspace_ref "$window_name" "$new_ref" "$vc_generation" || true # re-drive attach (ref-scoped, gated)
       sleep 1
     done
   fi
@@ -3039,11 +4210,17 @@ cleanup_stale_workspaces() {
   [[ -z "$linked_sessions" ]] && return 0
 
   while read -r sess; do
-    local agent_name="${sess#"${VIEW_PREFIX}"}"
+    local agent_name="${sess#"${VIEW_PREFIX}"}" pane_rc=0
     # Exact match check (not substring)
-    if ! echo "$active_names" | grep -qx "$agent_name"; then
+    if echo "$active_names" | grep -qx "$agent_name"; then
+      continue
+    fi
+    is_pane_alive "$agent_name" || pane_rc=$?
+    if [[ "$pane_rc" == "1" ]]; then
       log "Cleaning stale: $sess (tmux window '$agent_name' gone)"
       cleanup_workspace_for "$agent_name"
+    elif [[ "$pane_rc" != "0" ]]; then
+      log "WARN: liveness unavailable for $agent_name; stale cleanup deferred"
     fi
   done <<< "$linked_sessions"
 }
@@ -3054,6 +4231,54 @@ view_invariant_enabled() {
     1|"") return 0 ;;
     *) log "WARN: invalid FLYWHEEL_CMUX_VIEW_INVARIANT='${FLYWHEEL_CMUX_VIEW_INVARIANT}' — using 1"; return 0 ;;
   esac
+}
+
+check_cmux_flag_state() {
+  # Durable transition latch: restarts inside A0B1 do not re-page, while a
+  # genuine exit and re-entry increments the episode counter.
+  local linked_bit=0 invariant_bit=0 state last_state="" counter=0 line="" dir tmp topology
+  linked_view_enabled && linked_bit=1
+  view_invariant_enabled && invariant_bit=1
+  state="A${linked_bit}B${invariant_bit}"
+  if [[ -f "$CMUX_FLAG_STATE" ]]; then
+    line=$(cat "$CMUX_FLAG_STATE" 2>/dev/null || true)
+    IFS='|' read -r last_state counter <<< "$line"
+    case "$last_state" in A0B0|A0B1|A1B0|A1B1) ;; *) last_state="" ;; esac
+    case "$counter" in ''|*[!0-9]*) counter=0 ;; esac
+  fi
+  if [[ "$state" == "$last_state" ]]; then
+    return 0
+  fi
+  if [[ "$state" == "A0B1" ]]; then
+    counter=$((counter + 1))
+  fi
+  dir=$(dirname "$CMUX_FLAG_STATE")
+  mkdir -p "$dir" 2>/dev/null || {
+    log "WARN: cannot persist cmux flag-state latch at $CMUX_FLAG_STATE"
+    return 0
+  }
+  tmp=$(mktemp "${CMUX_FLAG_STATE}.XXXX" 2>/dev/null) || {
+    log "WARN: cannot stage cmux flag-state latch at $CMUX_FLAG_STATE"
+    return 0
+  }
+  if ! printf '%s|%s\n' "$state" "$counter" > "$tmp" 2>/dev/null \
+      || ! mv "$tmp" "$CMUX_FLAG_STATE" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    log "WARN: cannot commit cmux flag-state latch at $CMUX_FLAG_STATE"
+    return 0
+  fi
+  if [[ "$state" == "A0B1" ]]; then
+    if strict_view_enabled; then
+      topology="strict-independent"
+    else
+      topology="grouped-rollback"
+    fi
+    flywheel_alert cmux_flag_state info \
+      "cmux sync flags entered A0B1" \
+      "FLYWHEEL_CMUX_LINKED_VIEW=0 while FLYWHEEL_CMUX_VIEW_INVARIANT=1. Exact-ref receipts remain mandatory; topology=$topology; episode=$counter." \
+      "cmux_flag_state|state=A0B1|episode=$counter"
+  fi
+  return 0
 }
 
 repair_view_invariants() {
@@ -3099,11 +4324,11 @@ END { for (name in row) print row[name] }
     fi
   done <<< "$winners"
 
-  local sid grouped active owner marker members
+  local sid grouped active owner marker members cmux_generation current_refs
   while IFS=$'\t' read -r source wid title snapshot; do
     [[ "$snapshot" == "absent" ]] && continue
     IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
-    if linked_view_enabled; then
+    if strict_view_enabled; then
       if [[ "$grouped" == "0" && "$active" == "$wid" && "$owner" == "$source" \
          && "$marker" == "0" && "$members" == "$wid" ]]; then
         clear_view_mismatch_latch "$title" || { rm -f "$plan"; return 1; }
@@ -3114,6 +4339,21 @@ END { for (name in row) print row[name] }
           "$repair_generation|$source|$wid|$sid|$grouped|$active|$owner|$marker|$members"; then
         log "Invariant mismatch pending second conclusive pass: ${VIEW_PREFIX}${title}"
         continue
+      fi
+      if [[ "$grouped" == "1" && -z "$owner" && -z "$marker" ]]; then
+        cmux_generation=$(cmux_socket_identity) || {
+          log "WARN: legacy grouped backfill deferred for $title; cmux generation unavailable"
+          continue
+        }
+        current_refs=$(ledger_refs_for_title "$cmux_generation" "$title")
+        if [[ -z "$current_refs" ]]; then
+          _alert_cmux_cleanup \
+            "cmux legacy grouped migration refused" \
+            "A legacy grouped view was preserved because no current-generation exact workspace receipt authorizes migration: generation=$cmux_generation title=$title view=${VIEW_PREFIX}${title}." \
+            "cmux_cleanup|legacy-grouped|generation=$cmux_generation|title=$title|reason=missing-exact-receipt"
+          log "WARN: legacy grouped migration refused for $title; no exact receipt"
+          continue
+        fi
       fi
       if dismantle_view_display "$title" "view-invariant-mismatch"; then
         create_or_replace_view_session "$source" "$wid" "$title" || {
@@ -3397,6 +4637,22 @@ mark_for_cleanup() {
     echo "${wname}|${ts}" >> "$CLEANUP_PENDING"
 }
 
+cleanup_event_source_allowed() {
+  local session="$1" wname="$2"
+  case "$session" in
+    flywheel|runner-*) return 0 ;;
+  esac
+  # A strict independent view can outlive the runner session that spawned it.
+  # Its pane-died event is then the only prompt signal that the watched window
+  # itself ended. Exact namespace equality prevents unrelated cmux sessions
+  # from manufacturing cleanup candidates; exact-ref ledger authority still
+  # gates the later workspace close.
+  if strict_view_enabled && [[ "$session" == "${VIEW_PREFIX}${wname}" ]]; then
+    return 0
+  fi
+  return 1
+}
+
 process_pending_cleanups() {
   # Walk the cleanup-pending file. For each entry:
   #   - if the source pane is alive again → drop the entry (restart detected)
@@ -3411,7 +4667,14 @@ process_pending_cleanups() {
     [[ -z "$wname" || -z "$ts" ]] && continue
     # Pane alive again → cancel cleanup. Uses #{pane_dead} (not window existence)
     # because `remain-on-exit on` means window lingers after pane dies.
-    if is_pane_alive "$wname"; then
+    local pane_rc=0
+    is_pane_alive "$wname" || pane_rc=$?
+    if [[ "$pane_rc" == "0" ]]; then
+      continue
+    fi
+    if [[ "$pane_rc" != "1" ]]; then
+      remaining+="${wname}|${ts}"$'\n'
+      log "WARN: liveness unavailable for $wname; pending cleanup preserved"
       continue
     fi
     # Still within delay window → keep entry for next tick
@@ -3502,10 +4765,7 @@ _drain_file() {
         local session="$arg1" wname="$arg2"
         [[ -z "$wname" ]] && continue
         [[ "$wname" == "zsh" || "$wname" == "bash" ]] && continue
-        case "$session" in
-          flywheel|runner-*) ;;
-          *) continue ;;
-        esac
+        cleanup_event_source_allowed "$session" "$wname" || continue
         mark_for_cleanup "$wname" "$now"
         ;;
       register)
@@ -3537,10 +4797,7 @@ _drain_file() {
         local wname="${arg2#wn=}"
         [[ -z "$wname" ]] && continue
         [[ "$wname" == "zsh" || "$wname" == "bash" ]] && continue
-        case "$session" in
-          flywheel|runner-*) ;;
-          *) continue ;;
-        esac
+        cleanup_event_source_allowed "$session" "$wname" || continue
         mark_for_cleanup "$wname" "$now"
         ;;
     esac
@@ -3565,8 +4822,9 @@ cleanup_stale_conservative() {
   touch "$STALE_STATE"
 
   while read -r sess; do
-    local agent_name="${sess#"${VIEW_PREFIX}"}"
-    if ! is_pane_alive "$agent_name"; then
+    local agent_name="${sess#"${VIEW_PREFIX}"}" pane_rc=0
+    is_pane_alive "$agent_name" || pane_rc=$?
+    if [[ "$pane_rc" == "1" ]]; then
       # FLY-129 Phase 5 (Codex R1 MEDIUM fix): replace `grep "^name|"` with
       # awk -F'|' literal field compare so window names containing regex
       # metacharacters (`.` / `[` / `]` etc) match correctly and don't
@@ -3583,9 +4841,11 @@ cleanup_stale_conservative() {
         # operation so a future regex-safety fix only has to land there.
         drain_stale_state_row "$agent_name"
       fi
-    else
+    elif [[ "$pane_rc" == "0" ]]; then
       # Pane is alive again → clear stale marker (literal-compare drain).
       drain_stale_state_row "$agent_name"
+    else
+      log "WARN: liveness unavailable for $agent_name; conservative cleanup state preserved"
     fi
   done <<< "$linked_sessions"
 }
@@ -3642,10 +4902,16 @@ sync_additive() {
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
   if [[ -z "$tmux_windows" ]]; then
+    # A strict independent view may be the watched window's sole holder after
+    # its source runner retires. It still needs the ordinary 60s attach-heal.
+    self_heal_sweep_all
     cleanup_stale_conservative
     # Even with no agent windows, reap ghosts so cmux UI clutter doesn't
     # accumulate during quiet periods.
     reap_ghost_workspaces
+    # R6 stock adoption is anchor-independent by design; the quiet state is
+    # where already-closed runner tabs most commonly remain visible.
+    reap_unledgered_stock_workspaces
     # FLY-293: the "all runners closed" quiet state is EXACTLY when orphan pins
     # linger — reap them here too, not only in the has-windows branch.
     reap_orphan_workspace_pins
@@ -3667,10 +4933,17 @@ sync_additive() {
     fi
   done <<< "$tmux_windows"
 
+  # FLY-1364 R6: recover killed/exited attach clients even when no create or
+  # register hook fires. This function is reached only by the existing 60s
+  # additive cadence; self_heal_sweep_all is best-effort and its ref-scoped
+  # primitive performs a final zero-client check immediately before any send.
+  self_heal_sweep_all
+
   # FLY-129 Phase 4 + Phase 6: ghost reap + dedup. Both fail-closed on
   # JSON-unavailable — they no-op rather than mis-acting on stale state.
   reap_ghost_workspaces
   dedup_workspaces_by_title
+  reap_unledgered_stock_workspaces
   # FLY-293: anchor-independent orphan-pin reaper (closes fully-orphaned managed
   # runner pins whose linked session AND source window are both gone). Env-gated,
   # fail-closed, ref-keyed grace — see reap_orphan_workspace_pins.
@@ -3782,6 +5055,7 @@ watch_loop() {
 # without falling foul of the case-statement scope.
 watch_main() {
   log "Watch mode: event-signaled polling (${CLEANUP_DELAY_SECONDS}s cleanup delay, ${CONSERVATIVE_CLEANUP_SECONDS}s conservative cleanup)"
+  check_cmux_flag_state
 
   # Advisory: warn if cmux app preference is the broken default. This catches
   # the case where the watcher will work today (we're inside cmux pane) but
@@ -3865,8 +5139,12 @@ sync_once() {
   tmux_windows=$(get_tmux_agent_windows)
 
   if [[ -z "$tmux_windows" ]]; then
-    # No agent windows in any session — just cleanup stale
+    # A strict view may be the watched window's sole holder after its source
+    # runner retires. Preserve --once as a complete manual recovery path even
+    # in that quiet topology, then apply the ordinary cleanup gates.
+    self_heal_sweep_all
     cleanup_stale_workspaces
+    reap_unledgered_stock_workspaces
     # FLY-293: quiet state (all runners closed) → reap orphan pins here too.
     reap_orphan_workspace_pins
     return 0
@@ -3895,6 +5173,7 @@ sync_once() {
   #    benefits from the same hygiene the periodic watcher gives).
   reap_ghost_workspaces
   dedup_workspaces_by_title
+  reap_unledgered_stock_workspaces
   # FLY-293: orphan-pin reaper in manual full-sync too.
   reap_orphan_workspace_pins
 
@@ -3986,51 +5265,371 @@ _owner_process_matches() {
   [[ "$observed" == "$MUTATOR_OWNER_INCARNATION" ]]
 }
 
+_mutator_command_matches() {
+  # Match the executed argv shape, not a substring anywhere in shell prose.
+  # Production exposes either the script directly or through its bash shebang.
+  # An interpreter may carry execution flags before the script. Search through
+  # those argv words, but reject every short-option cluster containing `c`:
+  # `bash -lc "... flywheel-cmux-sync ..."` is shell prose, not a mutator.
+  local cmd="$1" first="" token="" verb="" saw_script=0 i
+  local -a argv=()
+  read -ra argv <<< "$cmd"
+  [[ ${#argv[@]} -gt 0 ]] || return 1
+  first="${argv[0]}"
+  case "${first##*/}" in
+    flywheel-cmux-sync|flywheel-cmux-sync.sh)
+      verb="${argv[1]:-}"
+      ;;
+    bash|sh)
+      for ((i = 1; i < ${#argv[@]}; i++)); do
+        token="${argv[$i]}"
+        case "$token" in
+          -c|+c) return 1 ;;
+          --*) ;;
+          -?*|+?*)
+            case "${token:1}" in *c*) return 1 ;; esac
+            ;;
+        esac
+        case "${token##*/}" in
+          flywheel-cmux-sync|flywheel-cmux-sync.sh)
+            verb="${argv[$((i + 1))]:-}"
+            saw_script=1
+            break
+            ;;
+        esac
+      done
+      [[ "$saw_script" == "1" ]] || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  case "$verb" in
+    ""|--watch|--once|--refresh|--reap-orphan-pins|--qa-teardown) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_snapshot_live_mutator_processes() {
+  # Print sorted "pid|command" rows. rc=2 means process-table truth is
+  # unavailable and therefore authorizes zero lease mutation.
+  # The function is normally called through command substitution. Bash keeps
+  # $$ equal to the top-level shell there, while the forked child has a new PID
+  # and identical argv. Build the complete descendant set rooted at $$ so that
+  # census plumbing can never masquerade as an independent mutator.
+  local rows pid ppid command matches="" own_tree=" $$ " changed=1
+  rows=$(ps -axo pid=,ppid=,command= 2>/dev/null) || return 2
+  while [[ "$changed" == "1" ]]; do
+    changed=0
+    while read -r pid ppid command; do
+      case "$pid" in ''|*[!0-9]*) continue ;; esac
+      case "$ppid" in ''|*[!0-9]*) continue ;; esac
+      if [[ "$own_tree" == *" $ppid "* && "$own_tree" != *" $pid "* ]]; then
+        own_tree+="$pid "
+        changed=1
+      fi
+    done <<< "$rows"
+  done
+  while read -r pid ppid command; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    [[ "$own_tree" == *" $pid "* ]] && continue
+    _mutator_command_matches "$command" || continue
+    matches+="${pid}|${command}"$'\n'
+  done <<< "$rows"
+  printf '%s' "$matches" | sort -n
+}
+
+_process_command_for_pid() {
+  local pid="$1" command
+  command=$(ps -o command= -p "$pid" 2>/dev/null) || return 2
+  command=$(printf '%s' "$command" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [[ -n "$command" ]] || return 2
+  printf '%s\n' "$command"
+}
+
+_bounded_candidate_pid() {
+  # Read a candidate pid without trusting an unbounded/crafted stale file.
+  local file="$1" kind="$2" bytes raw pid
+  [[ -e "$file" ]] || return 1
+  [[ -f "$file" && ! -L "$file" ]] || return 2
+  bytes=$(wc -c < "$file" 2>/dev/null | tr -d ' ') || return 2
+  case "$bytes" in ''|*[!0-9]*) return 2 ;; esac
+  (( bytes <= 4096 )) || return 2
+  raw=$(cat "$file" 2>/dev/null) || return 2
+  if [[ "$kind" == "owner" ]]; then
+    pid="${raw%%|*}"
+  else
+    [[ "$(printf '%s\n' "$raw" | wc -l | tr -d ' ')" == "1" ]] || return 2
+    pid="$raw"
+  fi
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$pid"
+}
+
+LEASE_REBUILD_REASON=""
+_lease_maybe_crash() {
+  # Hermetic crash seam for the global lease state machine. Production never
+  # sets this variable; tests launch the writer in a disposable process so the
+  # kernel reap mutex is released exactly as it would be after a real SIGKILL.
+  [[ "${FLYWHEEL_CMUX_LEASE_CRASH_AT:-}" == "$1" ]] || return 0
+  kill -KILL "$$"
+  return 137
+}
+
+_classify_mutator_lease_for_rebuild() {
+  # Called only while WATCHER_REAP_MUTEX is held.
+  # rc=0 rebuildable; rc=1 busy; rc=2 unverifiable/fail-closed.
+  local owner_rc=0 owner_pid="" legacy_pid="" candidate_rc=0
+  local first_snapshot second_snapshot pid command
+  LEASE_REBUILD_REASON=""
+  MUTATOR_OWNER_PID=""; MUTATOR_OWNER_INCARNATION=""; MUTATOR_OWNER_MODE=""; MUTATOR_OWNER_NONCE=""
+  _read_mutator_owner || owner_rc=$?
+  if [[ "$owner_rc" -eq 0 ]]; then
+    if _owner_process_matches; then
+      LEASE_REBUILD_REASON="verified-live-owner"
+      return 1
+    fi
+    owner_pid="$MUTATOR_OWNER_PID"
+  else
+    candidate_rc=0
+    owner_pid=$(_bounded_candidate_pid "$WATCHER_LOCK_DIR/owner" owner) || candidate_rc=$?
+    if [[ "$candidate_rc" -eq 2 ]]; then
+      LEASE_REBUILD_REASON="owner-file-unreadable"
+      return 2
+    fi
+  fi
+
+  candidate_rc=0
+  legacy_pid=$(_bounded_candidate_pid "$WATCHER_LOCK_DIR/pid" pid) || candidate_rc=$?
+  if [[ "$candidate_rc" -eq 2 ]]; then
+    LEASE_REBUILD_REASON="pid-file-unreadable"
+    return 2
+  fi
+
+  first_snapshot=$(_snapshot_live_mutator_processes) || {
+    LEASE_REBUILD_REASON="process-census-unavailable"
+    return 2
+  }
+  second_snapshot=$(_snapshot_live_mutator_processes) || {
+    LEASE_REBUILD_REASON="process-census-unavailable"
+    return 2
+  }
+  if [[ "$first_snapshot" != "$second_snapshot" ]]; then
+    LEASE_REBUILD_REASON="process-census-changed"
+    return 2
+  fi
+  if [[ -n "$first_snapshot" ]]; then
+    LEASE_REBUILD_REASON="live-mutator-census"
+    return 1
+  fi
+
+  for pid in $owner_pid $legacy_pid; do
+    [[ -n "$pid" && "$pid" != "$$" ]] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    command=$(_process_command_for_pid "$pid") || {
+      LEASE_REBUILD_REASON="candidate-command-unavailable"
+      return 2
+    }
+    if _mutator_command_matches "$command"; then
+      LEASE_REBUILD_REASON="live-candidate-mutator"
+      return 1
+    fi
+  done
+
+  if [[ "$owner_rc" -eq 2 ]]; then
+    LEASE_REBUILD_REASON="malformed-owner-no-live-mutator"
+  elif [[ "$owner_rc" -eq 1 ]]; then
+    LEASE_REBUILD_REASON="missing-owner-no-live-mutator"
+  else
+    LEASE_REBUILD_REASON="stale-owner-no-live-mutator"
+  fi
+  return 0
+}
+
+_create_mutator_lease_dir() {
+  local mode="$1" owner_tmp pid_tmp rc=0
+  mkdir "$WATCHER_LOCK_DIR" 2>/dev/null || return 1
+  _lease_maybe_crash after-lease-dir-create
+  MUTATOR_LEASE_MODE="$mode"
+  MUTATOR_LEASE_INCARNATION=$(_process_incarnation "$$") || rc=$?
+  if [[ "$rc" -ne 0 ]]; then rm -rf "$WATCHER_LOCK_DIR"; return 2; fi
+  MUTATOR_LEASE_NONCE="$(date +%s)-$$-$RANDOM"
+  owner_tmp="$WATCHER_LOCK_DIR/owner.tmp.$$.$RANDOM"
+  pid_tmp="$WATCHER_LOCK_DIR/pid.tmp.$$.$RANDOM"
+  if ! printf '%s|%s|%s|%s\n' "$$" "$MUTATOR_LEASE_INCARNATION" "$mode" "$MUTATOR_LEASE_NONCE" > "$owner_tmp" \
+      || ! printf '%s\n' "$$" > "$pid_tmp" \
+      || ! mv "$pid_tmp" "$WATCHER_LOCK_DIR/pid" \
+      || ! mv "$owner_tmp" "$WATCHER_LOCK_DIR/owner"; then
+    rm -rf "$WATCHER_LOCK_DIR"
+    return 2
+  fi
+  _lease_maybe_crash after-owner-publication
+  rc=0; _read_mutator_owner || rc=$?
+  if [[ "$rc" -ne 0 || "$MUTATOR_OWNER_PID" != "$$" \
+      || "$MUTATOR_OWNER_INCARNATION" != "$MUTATOR_LEASE_INCARNATION" \
+      || "$MUTATOR_OWNER_MODE" != "$mode" \
+      || "$MUTATOR_OWNER_NONCE" != "$MUTATOR_LEASE_NONCE" ]]; then
+    rm -rf "$WATCHER_LOCK_DIR"
+    return 2
+  fi
+  _lease_maybe_crash after-owner-readback
+  return 0
+}
+
+_prune_stale_lease_quarantines() {
+  # A process can die after atomically moving a conclusively stale lease out of
+  # the canonical name. While the retained kernel reap mutex is held, repeat
+  # the same two-snapshot no-mutator proof before removing only those exact
+  # non-symlink quarantine directories. Unknown nodes remain fail-closed.
+  local candidate found=0 first_snapshot second_snapshot
+  for candidate in "${WATCHER_LOCK_DIR}.stale."*; do
+    [[ -e "$candidate" || -L "$candidate" ]] || continue
+    found=1
+    [[ -d "$candidate" && ! -L "$candidate" ]] || return 2
+  done
+  [[ "$found" == "1" ]] || return 0
+  first_snapshot=$(_snapshot_live_mutator_processes) || return 2
+  second_snapshot=$(_snapshot_live_mutator_processes) || return 2
+  [[ "$first_snapshot" == "$second_snapshot" ]] || return 2
+  [[ -z "$first_snapshot" ]] || return 1
+  for candidate in "${WATCHER_LOCK_DIR}.stale."*; do
+    [[ -e "$candidate" || -L "$candidate" ]] || continue
+    [[ -d "$candidate" && ! -L "$candidate" ]] || return 2
+    rm -rf "$candidate" 2>/dev/null || return 2
+  done
+  return 0
+}
+
+# Lease reconstruction is serialized by a kernel-managed advisory lock on a
+# retained file. The kernel releases it when the holder exits or crashes, so
+# there is no stale-owner file to compare and unlink (and therefore no
+# compare->unlink window in which one contender can delete another's claim).
+# FD 9 is reserved for this short reconstruction critical section.
+REAP_MUTEX_HELD=0
+_acquire_reap_mutex() {
+  local first_snapshot second_snapshot lock_rc=0
+  mkdir -p "$(dirname "$WATCHER_REAP_MUTEX")" 2>/dev/null || return 2
+
+  # Upgrade the only historical shape: an empty mkdir-style mutex. Its removal
+  # is authorized only by the same stable, conclusive no-mutator census used to
+  # rebuild the main lease. Unknown node types remain fail-closed.
+  if [[ -d "$WATCHER_REAP_MUTEX" && ! -L "$WATCHER_REAP_MUTEX" ]]; then
+    first_snapshot=$(_snapshot_live_mutator_processes) || return 2
+    second_snapshot=$(_snapshot_live_mutator_processes) || return 2
+    [[ "$first_snapshot" == "$second_snapshot" ]] || return 2
+    [[ -z "$first_snapshot" ]] || return 1
+    if ! rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null; then
+      [[ -f "$WATCHER_REAP_MUTEX" && ! -L "$WATCHER_REAP_MUTEX" ]] || return 1
+    fi
+  elif [[ -L "$WATCHER_REAP_MUTEX" \
+      || (-e "$WATCHER_REAP_MUTEX" && ! -f "$WATCHER_REAP_MUTEX") ]]; then
+    return 2
+  fi
+
+  exec 9>>"$WATCHER_REAP_MUTEX" || return 2
+  if command -v lockf >/dev/null 2>&1; then
+    command lockf -s -t 0 9 || lock_rc=$?
+    case "$lock_rc" in
+      0) ;;
+      75) exec 9>&-; return 1 ;;
+      *) exec 9>&-; return 2 ;;
+    esac
+  elif command -v flock >/dev/null 2>&1; then
+    command flock -n 9 || lock_rc=$?
+    case "$lock_rc" in
+      0) ;;
+      1) exec 9>&-; return 1 ;;
+      *) exec 9>&-; return 2 ;;
+    esac
+  else
+    exec 9>&-
+    return 2
+  fi
+  REAP_MUTEX_HELD=1
+  return 0
+}
+
+_release_reap_mutex() {
+  [[ "$REAP_MUTEX_HELD" == "1" ]] || return 0
+  exec 9>&- || true
+  REAP_MUTEX_HELD=0
+}
+
 acquire_mutator_lease() {
-  local mode="$1" read_rc=0 legacy_pid="" attempt=0
+  local mode="$1" read_rc=0 attempt=0 class_rc=0 create_rc=0
+  local quarantine="" rebuild_reason="" had_old=0 restore_rc=0 prune_rc=0
   case "$mode" in watch|bootstrap|once|refresh|reaper|qa_teardown) ;; *) return 2 ;; esac
   while (( attempt < 3 )); do
     attempt=$((attempt + 1))
+    if [[ -L "$WATCHER_LOCK_DIR" \
+        || (-e "$WATCHER_LOCK_DIR" && ! -d "$WATCHER_LOCK_DIR") ]]; then
+      log "WARN: mutator lease path is not a directory; refusing mutation path=$WATCHER_LOCK_DIR"
+      return 2
+    fi
     if [[ -d "$WATCHER_LOCK_DIR" ]]; then
       read_rc=0; _read_mutator_owner || read_rc=$?
-      if [[ $read_rc -eq 0 ]]; then
-        _owner_process_matches && return 1
-      elif [[ $read_rc -eq 2 ]]; then
-        log "WARN: malformed mutator lease; refusing to steal $WATCHER_LOCK_DIR"
-        return 2
-      else
-        legacy_pid=$(cat "$WATCHER_LOCK_DIR/pid" 2>/dev/null || true)
-        if [[ -n "$legacy_pid" ]] && kill -0 "$legacy_pid" 2>/dev/null; then return 1; fi
-      fi
+      if [[ $read_rc -eq 0 ]] && _owner_process_matches; then return 1; fi
     fi
-    if mkdir "$WATCHER_REAP_MUTEX" 2>/dev/null; then
+    class_rc=0
+    _acquire_reap_mutex || class_rc=$?
+    if [[ "$class_rc" -eq 0 ]]; then
+      prune_rc=0; _prune_stale_lease_quarantines || prune_rc=$?
+      if [[ "$prune_rc" -ne 0 ]]; then
+        _release_reap_mutex
+        [[ "$prune_rc" -eq 1 ]] && return 1
+        return 2
+      fi
+      had_old=0; quarantine=""; rebuild_reason=""
+      if [[ -L "$WATCHER_LOCK_DIR" \
+          || (-e "$WATCHER_LOCK_DIR" && ! -d "$WATCHER_LOCK_DIR") ]]; then
+        log "WARN: mutator lease path changed to a non-directory; refusing mutation path=$WATCHER_LOCK_DIR"
+        _release_reap_mutex
+        return 2
+      fi
       if [[ -d "$WATCHER_LOCK_DIR" ]]; then
-        read_rc=0; _read_mutator_owner || read_rc=$?
-        if [[ $read_rc -eq 0 ]] && _owner_process_matches; then
-          rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
+        class_rc=0; _classify_mutator_lease_for_rebuild || class_rc=$?
+        if [[ "$class_rc" -eq 1 ]]; then
+          _release_reap_mutex
           return 1
         fi
-        if [[ $read_rc -eq 2 ]]; then
-          rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
+        if [[ "$class_rc" -eq 2 ]]; then
+          log "WARN: mutator lease unverifiable; refusing rebuild reason=${LEASE_REBUILD_REASON:-unknown} path=$WATCHER_LOCK_DIR"
+          _release_reap_mutex
           return 2
         fi
-        rm -rf "$WATCHER_LOCK_DIR"
+        rebuild_reason="$LEASE_REBUILD_REASON"
+        quarantine="${WATCHER_LOCK_DIR}.stale.$$.$RANDOM"
+        if [[ -e "$quarantine" ]] || ! mv "$WATCHER_LOCK_DIR" "$quarantine" 2>/dev/null; then
+          _release_reap_mutex
+          return 2
+        fi
+        had_old=1
+        _lease_maybe_crash after-quarantine-rename
       fi
-      if mkdir "$WATCHER_LOCK_DIR" 2>/dev/null; then
-        MUTATOR_LEASE_MODE="$mode"
-        MUTATOR_LEASE_INCARNATION=$(_process_incarnation "$$") || {
-          rm -rf "$WATCHER_LOCK_DIR"; rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true; return 2;
-        }
-        MUTATOR_LEASE_NONCE="$(date +%s)-$$-$RANDOM"
-        printf '%s|%s|%s|%s\n' "$$" "$MUTATOR_LEASE_INCARNATION" "$mode" "$MUTATOR_LEASE_NONCE" \
-          > "$WATCHER_LOCK_DIR/owner" || {
-          rm -rf "$WATCHER_LOCK_DIR"; rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true; return 2;
-        }
-        printf '%s\n' "$$" > "$WATCHER_LOCK_DIR/pid"
-        rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
+      create_rc=0; _create_mutator_lease_dir "$mode" || create_rc=$?
+      if [[ "$create_rc" -eq 0 ]]; then
+        if [[ "$had_old" -eq 1 ]]; then
+          rm -rf "$quarantine" 2>/dev/null || true
+          log "[audit] rebuilt stale/unverifiable mutator lease reason=$rebuild_reason path=$WATCHER_LOCK_DIR"
+        fi
+        _release_reap_mutex
         return 0
       fi
-      rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
+      # A failed mkdir can mean another actor published the path. Never delete
+      # that path. Restore our quarantined stale lease only when the canonical
+      # name is conclusively absent; otherwise preserve the quarantine for
+      # diagnosis instead of overwriting newer state.
+      restore_rc=0
+      if [[ "$had_old" -eq 1 && -d "$quarantine" && ! -L "$quarantine" ]]; then
+        if [[ ! -e "$WATCHER_LOCK_DIR" && ! -L "$WATCHER_LOCK_DIR" ]]; then
+          mv "$quarantine" "$WATCHER_LOCK_DIR" 2>/dev/null || restore_rc=$?
+        else
+          restore_rc=1
+          log "WARN: failed lease rebuild left stale lease quarantined path=$quarantine canonical=$WATCHER_LOCK_DIR"
+        fi
+      fi
+      _release_reap_mutex
+      [[ "$create_rc" -eq 2 || "$restore_rc" -ne 0 ]] && return 2
+    elif [[ "$class_rc" -eq 2 ]]; then
+      return 2
     fi
     sleep 1
   done
@@ -4054,7 +5653,6 @@ release_mutator_lease() {
      && "$MUTATOR_OWNER_NONCE" == "$MUTATOR_LEASE_NONCE" ]]; then
     rm -rf "$WATCHER_LOCK_DIR" 2>/dev/null || true
   fi
-  rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
 }
 
 probe_mutator_lease() {
@@ -4089,8 +5687,19 @@ maintenance_entry_allowed() {
 }
 
 run_mutator_once() {
-  local mode="$1" fn="$2" rc=0
-  acquire_mutator_lease "$mode" || { log "$mode mutator lease busy/unverifiable; skipping"; return 0; }
+  local mode="$1" fn="$2" rc=0 lease_rc=0 owner_pid owner_mode
+  acquire_mutator_lease "$mode" || lease_rc=$?
+  if [[ "$lease_rc" -ne 0 ]]; then
+    owner_pid="${MUTATOR_OWNER_PID:-unknown}"
+    owner_mode="${MUTATOR_OWNER_MODE:-unknown}"
+    if [[ "$lease_rc" -eq 1 ]]; then
+      log "$mode mutator already running (owner pid=$owner_pid mode=$owner_mode); skipping"
+    else
+      log "$mode mutator lease MALFORMED at $WATCHER_LOCK_DIR; manual inspection required; skipping"
+      _alert_malformed_mutator_lease
+    fi
+    return 0
+  fi
   trap release_mutator_lease EXIT
   trap 'release_mutator_lease; exit 130' INT
   trap 'release_mutator_lease; exit 143' TERM
@@ -4165,115 +5774,36 @@ acquire_watcher_lock() {
   # live launchd owner.
   local supervised=0
   [[ "${FLYWHEEL_CMUX_SUPERVISED:-}" == "1" ]] && supervised=1
-  # New-format/free locks use the shared incarnation-aware state machine.
-  # The legacy body below remains solely for an upgrade-time pid-only lock.
-  if [[ ! -d "$WATCHER_LOCK_DIR" || -f "$WATCHER_LOCK_DIR/owner" ]]; then
-    local lease_rc=0
-    while true; do
-      lease_rc=0
-      acquire_mutator_lease watch || lease_rc=$?
-      if [[ "$lease_rc" -eq 0 ]]; then
-        trap release_watcher_lock EXIT
-        trap 'release_watcher_lock; exit 130' INT
-        trap 'release_watcher_lock; exit 143' TERM
-        return 0
-      fi
-      if [[ "$supervised" == "1" ]]; then
-        log "supervised: cmux mutator lease busy/unverifiable, waiting ${SUPERVISED_WAIT_SECONDS}s"
-        sleep "$SUPERVISED_WAIT_SECONDS"
-        continue
-      fi
-      log "cmux mutator already running or lease unverifiable, exiting"
-      exit 0
-    done
-  fi
-  local attempt=0
+  # Every format, including legacy pid-only directories, goes through the same
+  # tri-state census/rebuild state machine. A missing/malformed pid can no
+  # longer bypass live-mutator discovery and create a second writer.
+  local lease_rc=0
   while true; do
-    # Step 1 — lock dir exists + owner alive.
-    if [[ -d "$WATCHER_LOCK_DIR" ]]; then
-      local owner_pid
-      owner_pid=$(cat "$WATCHER_LOCK_DIR/pid" 2>/dev/null || echo "")
-      if [[ -n "$owner_pid" ]] && kill -0 "$owner_pid" 2>/dev/null; then
-        if [[ "$supervised" == "1" ]] && _pid_is_watcher "$owner_pid"; then
-          # Supervised: block-wait for the live watcher to exit, then take over.
-          # Do NOT exit (avoids respawn churn) and do NOT consume reap attempts.
-          # No lock is held during the wait, so a launchd TERM/bootout simply
-          # terminates this process cleanly (no orphan, no stale lock).
-          log "supervised: watcher already running (pid=$owner_pid), waiting ${SUPERVISED_WAIT_SECONDS}s to take over"
-          sleep "$SUPERVISED_WAIT_SECONDS"
-          continue
-        fi
-        if [[ "$supervised" != "1" ]]; then
-          log "watcher already running (pid=$owner_pid), exiting"
-          exit 0
-        fi
-        # Supervised but owner is alive yet NOT a watcher (PID reuse) → stale;
-        # fall through to reap below.
-        log "supervised: lock owner pid=$owner_pid is not a watcher (stale), reaping"
-      fi
+    lease_rc=0
+    acquire_mutator_lease watch || lease_rc=$?
+    if [[ "$lease_rc" -eq 0 ]]; then
+      trap release_watcher_lock EXIT
+      trap 'release_watcher_lock; exit 130' INT
+      trap 'release_watcher_lock; exit 143' TERM
+      return 0
     fi
-    attempt=$((attempt + 1))
-    # Step 2 — lock dir missing OR owner dead ⇒ try to grab the reap mutex.
-    if mkdir "$WATCHER_REAP_MUTEX" 2>/dev/null; then
-      # We hold the reap mutex — serialize the stale-lock cleanup.
-      # Step 3 — re-verify under mutex (TOCTOU defense).
-      if [[ -d "$WATCHER_LOCK_DIR" ]]; then
-        local owner_pid2
-        owner_pid2=$(cat "$WATCHER_LOCK_DIR/pid" 2>/dev/null || echo "")
-        if [[ -n "$owner_pid2" ]] && kill -0 "$owner_pid2" 2>/dev/null; then
-          if [[ "$supervised" == "1" ]] && _pid_is_watcher "$owner_pid2"; then
-            # A live watcher (re)appeared under the mutex → release + block-wait.
-            rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
-            log "supervised: watcher already running (pid=$owner_pid2, post-mutex), waiting ${SUPERVISED_WAIT_SECONDS}s to take over"
-            sleep "$SUPERVISED_WAIT_SECONDS"
-            attempt=0   # a supervised wait is not a reap-race attempt
-            continue
-          fi
-          if [[ "$supervised" != "1" ]]; then
-            rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
-            log "watcher already running (pid=$owner_pid2, post-mutex), exiting"
-            exit 0
-          fi
-          # Supervised + alive non-watcher → stale; reap below.
-        fi
-        rm -rf "$WATCHER_LOCK_DIR"  # truly stale (dead owner, or supervised non-watcher)
+    if [[ "$supervised" == "1" ]]; then
+      if [[ "$lease_rc" -eq 1 ]]; then
+        log "supervised: cmux mutator already running (owner pid=${MUTATOR_OWNER_PID:-unknown} mode=${MUTATOR_OWNER_MODE:-unknown}), waiting ${SUPERVISED_WAIT_SECONDS}s"
+      else
+        log "supervised: cmux mutator lease unverifiable at $WATCHER_LOCK_DIR, waiting ${SUPERVISED_WAIT_SECONDS}s"
+        _alert_malformed_mutator_lease
       fi
-      # Step 4 — try to acquire the lock dir.
-      if mkdir "$WATCHER_LOCK_DIR" 2>/dev/null; then
-        echo "$$" > "$WATCHER_LOCK_DIR/pid"
-        MUTATOR_LEASE_MODE="watch"
-        MUTATOR_LEASE_INCARNATION=$(_process_incarnation "$$") || {
-          rm -rf "$WATCHER_LOCK_DIR"; rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true; return 1;
-        }
-        MUTATOR_LEASE_NONCE="$(date +%s)-$$-$RANDOM"
-        printf '%s|%s|watch|%s\n' "$$" "$MUTATOR_LEASE_INCARNATION" "$MUTATOR_LEASE_NONCE" \
-          > "$WATCHER_LOCK_DIR/owner" || {
-          rm -rf "$WATCHER_LOCK_DIR"; rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true; return 1;
-        }
-        rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
-        # FLY-129 Phase 1 (Codex R1 HIGH fix): split traps so TERM/INT
-        # actually terminates the watcher. Previously `trap release_watcher_lock
-        # EXIT INT TERM` released the lock then bash continued running the
-        # watch_loop, leaving a lock-less but still-alive watcher — exactly
-        # the double-watcher race the lock was meant to prevent.
-        trap release_watcher_lock EXIT
-        trap 'release_watcher_lock; exit 130' INT
-        trap 'release_watcher_lock; exit 143' TERM
-        return 0
-      fi
-      # mkdir failed — contender created the dir between our rm and mkdir.
-      # Drop reap mutex and retry from step 1 (the new owner may be alive).
-      rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
+      sleep "$SUPERVISED_WAIT_SECONDS"
+      continue
+    fi
+    if [[ "$lease_rc" -eq 1 ]]; then
+      log "cmux mutator already running (owner pid=${MUTATOR_OWNER_PID:-unknown} mode=${MUTATOR_OWNER_MODE:-unknown}), exiting"
     else
-      # Another process holds the reap mutex — back off then retry from step 1.
-      sleep 1
+      log "cmux mutator lease unverifiable at $WATCHER_LOCK_DIR; manual inspection required; exiting"
+      _alert_malformed_mutator_lease
     fi
-    # Bounded retry for the reap-race livelock (unchanged for the unsupervised
-    # path). Supervised block-waits reset `attempt`, so they never trip this.
-    if [[ "$attempt" -ge 3 ]]; then
-      log "watcher lock acquire exhausted retries after 3 attempts, exiting"
-      exit 0
-    fi
+    exit 0
   done
 }
 

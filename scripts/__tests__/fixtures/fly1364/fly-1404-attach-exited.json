@@ -1,0 +1,44 @@
+{
+	"scenario": "FLY-1404 attach exited",
+	"provenance": "Founder-observed design view falling back to an exited bare shell, 2026-07-21; identifiers sanitized.",
+	"workspace_json": {
+		"workspaces": [{ "ref": "workspace:1404", "title": "FLY-1404-design" }]
+	},
+	"tmux_sessions": [
+		{ "name": "runner-flywheel", "id": "$1404-source" },
+		{
+			"name": "cmux-FLY-1404-design",
+			"id": "$1404-view",
+			"owner": "runner-flywheel",
+			"marker": "0"
+		}
+	],
+	"tmux_windows": [
+		{
+			"session": "runner-flywheel",
+			"id": "@1404",
+			"title": "FLY-1404-design",
+			"pane_dead": false
+		},
+		{
+			"session": "cmux-FLY-1404-design",
+			"id": "@1404",
+			"title": "FLY-1404-design",
+			"pane_dead": false
+		}
+	],
+	"initial": {
+		"ledger": ["committed|generation-once|workspace:1404|FLY-1404-design"],
+		"adoption": []
+	},
+	"surface": {
+		"ref": "surface:1404",
+		"screen": "user@host ~ %",
+		"view_clients": 0
+	},
+	"expected": {
+		"periodic_attach_heal_within_seconds": 60,
+		"view_session": "cmux-FLY-1404-design",
+		"receipt_generation": "generation-once"
+	}
+}

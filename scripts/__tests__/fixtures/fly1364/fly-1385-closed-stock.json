@@ -1,0 +1,82 @@
+{
+	"scenario": "FLY-1385 absorbed runner with three retained displays",
+	"provenance": "Founder-observed three-workspace residue after issue collection, 2026-07-21; identifiers sanitized.",
+	"workspace_json": {
+		"workspaces": [
+			{ "ref": "workspace:1385", "title": "FLY-1385-qa-retest" },
+			{ "ref": "workspace:1386", "title": "FLY-1385-design-retired" },
+			{ "ref": "workspace:1387", "title": "FLY-1385-implement-retired" },
+			{ "ref": "workspace:1388", "title": "FLY-1385-qa-founder-control" }
+		]
+	},
+	"tmux_sessions": [
+		{ "name": "flywheel", "id": "$1" },
+		{
+			"name": "cmux-FLY-1385-qa-retest",
+			"id": "$1385",
+			"owner": "runner-flywheel",
+			"marker": "0"
+		},
+		{
+			"name": "cmux-FLY-1385-design-retired",
+			"id": "$1386",
+			"owner": "runner-flywheel",
+			"marker": "0"
+		},
+		{
+			"name": "cmux-FLY-1385-implement-retired",
+			"id": "$1387",
+			"owner": "runner-flywheel",
+			"marker": "0"
+		},
+		{
+			"name": "cmux-FLY-1385-qa-founder-control",
+			"id": "$1388",
+			"owner": "founder-session",
+			"marker": "0"
+		}
+	],
+	"tmux_windows": [
+		{ "session": "flywheel", "id": "@1", "title": "zsh", "pane_dead": false },
+		{
+			"session": "cmux-FLY-1385-qa-retest",
+			"id": "@1385",
+			"title": "FLY-1385-qa-retest",
+			"pane_dead": true
+		},
+		{
+			"session": "cmux-FLY-1385-design-retired",
+			"id": "@1386",
+			"title": "FLY-1385-design-retired",
+			"pane_dead": true
+		},
+		{
+			"session": "cmux-FLY-1385-implement-retired",
+			"id": "@1387",
+			"title": "FLY-1385-implement-retired",
+			"pane_dead": true
+		},
+		{
+			"session": "cmux-FLY-1385-qa-founder-control",
+			"id": "@1388",
+			"title": "FLY-1385-qa-founder-control",
+			"pane_dead": true
+		}
+	],
+	"initial": { "ledger": [], "adoption": [] },
+	"controls": {
+		"workspace_refs": ["workspace:1388"],
+		"invalid_titles": []
+	},
+	"expected": {
+		"minimum_adopt_count": 3,
+		"adopt_after_two_passes": [
+			"workspace:1385",
+			"workspace:1386",
+			"workspace:1387"
+		],
+		"preserve_refs": ["workspace:1388"],
+		"alert_reasons": ["foreign-or-unproven-view"],
+		"keeper_count": 3
+	}
+}

@@ -12,8 +12,8 @@
  *                    Discord thread, where the responsible party has context.
  *                    ONLY when a thread is actually bound; otherwise fail-safe
  *                    to "ticket" (never silently drop).
- *  - "notify":       non-urgent digests. v1 places the classification seam only
- *                    — no kind maps here yet (sender migration = FLY-929).
+ *  - "notify":       root-only informational notices; these bypass ticket and
+ *                    issue-thread lifecycle (for example cmux_flag_state).
  *
  * The classification is a PURE function; the routed sink wrapper
  * (`createInfraAlertSink`) is what plugin.ts installs in front of the raw
@@ -21,10 +21,11 @@
  * a pure passthrough (byte-compat, resolver never even consulted).
  */
 
-import type {
-	AlertEventType,
-	AlertPayload,
-	AlertResult,
+import {
+	type AlertEventType,
+	type AlertPayload,
+	type AlertResult,
+	isInformationalKind,
 } from "../LeadAlertNotifier.js";
 
 export type AlertRouteClass = "ticket" | "issue_thread" | "notify";
@@ -85,6 +86,8 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		"bridge_abnormal_exit",
 		"infra_bot_down",
 		"zombie_session_backlog",
+		"cmux_cleanup",
+		"tmux_rescue_hold",
 	]);
 
 /**
@@ -117,6 +120,7 @@ export interface RouteInput {
 }
 
 export function classifyInfraEvent(input: RouteInput): AlertRouteClass {
+	if (isInformationalKind(input.eventType)) return "notify";
 	if (TICKET_KINDS.has(input.eventType)) return "ticket";
 	if (ISSUE_PROGRESS_KINDS.has(input.eventType) && input.boundIssueThread) {
 		return "issue_thread";

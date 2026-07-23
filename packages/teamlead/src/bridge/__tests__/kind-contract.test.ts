@@ -64,6 +64,7 @@ const QUOTA_INFORMATIONAL_KINDS = new Set([
 	"quota_switch_confirmation",
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
+	"cmux_flag_state",
 ]);
 const QUOTA_GUARD_KINDS = ["quota_guard_bypassed"] as const;
 
@@ -83,6 +84,12 @@ const LEAD_IDENTITY_KINDS = [
 	"lead_lease_control_broken",
 	"lead_identity_source_broken",
 	"lead_backend_drift",
+] as const;
+
+const CMUX_SYNC_KINDS = [
+	"cmux_cleanup",
+	"cmux_flag_state",
+	"tmux_rescue_hold",
 ] as const;
 
 describe("FLY-1082 kind contract (Task 1.1)", () => {
@@ -159,6 +166,19 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 			owner: "claude",
 			arc: "human_by_design",
 		});
+	});
+
+	it("FLY-1364 cmux/rescue kinds have the exact approved contracts", () => {
+		for (const kind of CMUX_SYNC_KINDS) {
+			expect(ALERT_EVENT_TYPES).toContain(kind);
+			expect(KIND_CONTRACTS[kind]).toEqual({
+				owner: "claude",
+				arc: "human_by_design",
+			});
+		}
+		expect(INFORMATIONAL_KINDS.has("cmux_flag_state")).toBe(true);
+		expect(INFORMATIONAL_KINDS.has("cmux_cleanup")).toBe(false);
+		expect(INFORMATIONAL_KINDS.has("tmux_rescue_hold")).toBe(false);
 	});
 
 	it("routes review governance audit events to a human-owned contract", () => {
@@ -336,6 +356,17 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 			expect(
 				allow.has(kind),
 				`FLY-1309 kind "${kind}" missing from shell allowlist`,
+			).toBe(true);
+		}
+	});
+
+	it("all FLY-1364 kinds exist on both the TS and shell faces", () => {
+		const allow = shellAllowlist();
+		for (const kind of CMUX_SYNC_KINDS) {
+			expect(ALERT_EVENT_TYPES).toContain(kind);
+			expect(
+				allow.has(kind),
+				`FLY-1364 kind "${kind}" missing from shell allowlist`,
 			).toBe(true);
 		}
 	});

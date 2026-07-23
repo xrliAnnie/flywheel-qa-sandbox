@@ -534,18 +534,23 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
-	it("FLY-1272 registers the two default-on cmux rollback switches with exact read sites", () => {
+	it("FLY-1272/1364 registers the three default-on cmux rollback switches with exact read sites", () => {
 		const linked = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_CMUX_LINKED_VIEW",
 		);
 		const invariant = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_CMUX_VIEW_INVARIANT",
 		);
+		const strict = FEATURE_FLAGS.find(
+			(f) => f.envVar === "FLYWHEEL_CMUX_STRICT_VIEW",
+		);
 		expect(linked).toMatchObject({
 			name: "cmux_linked_view",
 			polarity: "default_on",
 			default: true,
 			toggleable: "conversational",
+			description:
+				"FLY-1272/1364: 默认 exact-one-window link topology；仅设 =0 仍由 STRICT_VIEW 保持独立视图，完整 grouped rollback 需同时设 FLYWHEEL_CMUX_STRICT_VIEW=0",
 		});
 		expect(linked?.readSites).toHaveLength(3);
 		expect(linked?.readSites.map((s) => s.file)).toEqual([
@@ -563,6 +568,18 @@ describe("feature-flag registry invariants", () => {
 		expect(invariant?.readSites.map((s) => s.file)).toEqual([
 			"scripts/flywheel-cmux-sync.sh",
 			"scripts/flywheel-cmux-autostart.sh",
+		]);
+		expect(strict).toMatchObject({
+			name: "cmux_strict_view",
+			polarity: "default_on",
+			default: true,
+			toggleable: "conversational",
+		});
+		expect(strict?.readSites).toHaveLength(3);
+		expect(strict?.readSites.map((s) => s.file)).toEqual([
+			"scripts/flywheel-cmux-sync.sh",
+			"scripts/flywheel-cmux-autostart.sh",
+			"packages/teamlead/src/bridge/tmux-lookup.ts",
 		]);
 	});
 

@@ -4,12 +4,14 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AlertPayload } from "../LeadAlertNotifier.js";
 import {
+	bodyFor,
 	computeEventId,
 	DEFAULT_LEAD_WATCHDOG_INTERVAL_MS,
 	isIdleHealthyPane,
 	isTransientThrottlePane,
 	LeadWatchdog,
 	leadWatchdogIntervalMs,
+	titleFor,
 } from "../LeadWatchdog.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -74,6 +76,13 @@ function makeNotifier(): NotifierStub {
 }
 
 describe("LeadWatchdog", () => {
+	it("describes A0B1 using exact-ref and topology semantics", () => {
+		expect(titleFor("cmux_flag_state")).toBe("cmux A0B1 topology transition");
+		expect(bodyFor("cmux_flag_state", "ignored")).toBe(
+			"cmux-sync entered A0B1. Exact-ref receipts remain mandatory; use the event evidence to distinguish strict-independent from grouped-rollback topology. The durable transition notice is informational; convergence remains enabled.",
+		);
+	});
+
 	it("defaults the Lead scan cadence to 10min and accepts a positive ms override", () => {
 		expect(DEFAULT_LEAD_WATCHDOG_INTERVAL_MS).toBe(10 * 60_000);
 		expect(leadWatchdogIntervalMs({})).toBe(10 * 60_000);

@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 LIB="$ROOT/scripts/lib/tmux-server-rescue.sh"
 TMP_DIR="$(mktemp -d -t fly1285-lock.XXXXXX)" || exit 1
 trap 'rm -rf "$TMP_DIR"' EXIT
+export FLYWHEEL_TMUX_RESCUE_ALERT_BIN="/usr/bin/true"
 
 # shellcheck source=../lib/tmux-server-rescue.sh
 source "$LIB"
@@ -81,17 +82,21 @@ fi
 
 echo "[TEST] SIGKILL of the rescue shell does not release the lock ahead of its bounded child"
 BOUNDED="$TMP_DIR/bounded.sh"
+BOUNDED_CHILD="$TMP_DIR/bounded-child.sh"
+BOUNDED_CHILD_MARKER="$TMP_DIR/bounded-child-started"
+printf '%s\n' '#!/bin/bash' 'touch "$1"' 'exec sleep 313360' > "$BOUNDED_CHILD"
+chmod +x "$BOUNDED_CHILD"
 # Distinctive sleep duration so the poll below can target the fd-holding child
 # precisely (its own marker) instead of the transient awk/sysctl subprocesses
 # _tmux_rescue_bounded_exec now spawns for budget/load-factor math.
 printf '%s\n' '#!/bin/bash' \
   'source "$1"' \
   'printf "%s" "$$" > "$2"' \
-  '_tmux_rescue_bounded_exec 2 /bin/sleep 313360' > "$BOUNDED"
+  '_tmux_rescue_bounded_exec 2 "$3" "$4"' > "$BOUNDED"
 chmod +x "$BOUNDED"
 BOUNDED_OWNER_FILE="$TMP_DIR/bounded-owner"
 _tmux_rescue_python_lock 3 "$TMP_DIR/bounded.lockf" \
-  "$BOUNDED" "$LIB" "$BOUNDED_OWNER_FILE" &
+  "$BOUNDED" "$LIB" "$BOUNDED_OWNER_FILE" "$BOUNDED_CHILD" "$BOUNDED_CHILD_MARKER" &
 BOUNDED_WRAPPER_PID=$!
 for _ in $(seq 1 50); do [ -s "$BOUNDED_OWNER_FILE" ] && break; sleep 0.02; done
 BOUNDED_OWNER_PID="$(cat "$BOUNDED_OWNER_FILE" 2>/dev/null)"
@@ -102,10 +107,10 @@ BOUNDED_OWNER_PID="$(cat "$BOUNDED_OWNER_FILE" 2>/dev/null)"
 # before spawning the fd-holding child — under a saturated host a fixed
 # `sleep 0.1` reliably fires the SIGKILL during that pre-spawn window (child not
 # yet holding the fd → EARLY_RC=0, a false failure). Synchronize on the actual
-# bounded sleep child (its distinctive marker) rather than guessing a delay or
-# matching the transient awk/sysctl subprocesses.
+# bounded sleep child (its own file marker) rather than guessing a delay or
+# depending on a process-table capability that can be unavailable in a sandbox.
 for _ in $(seq 1 400); do
-  pgrep -f 'sleep 313360' >/dev/null 2>&1 && break
+  [ -e "$BOUNDED_CHILD_MARKER" ] && break
   sleep 0.02
 done
 kill -9 "$BOUNDED_OWNER_PID" 2>/dev/null || true

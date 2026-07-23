@@ -150,13 +150,32 @@ jobs:
           pnpm test:cycle-time
 
       # FLY-110: cmux-sync hook integration test runs against an isolated
-      # tmux server (custom -L socket name) so it cannot interfere with
+      # tmux server (exact -S path under its private temp root) so it cannot interfere with
       # other CI processes. Verifies the production-critical cleanup path:
       # pane-died (global hook) fires when a remain-on-exit pane process
       # exits — the bug that left cmux sidebar entries hanging for 5+
       # minutes in production until FLY-110.
       - name: Integration test — cmux-sync hooks
         run: bash scripts/test-cmux-sync-hooks-integration.sh
+
+      # FLY-1364: the cmux sync repair spans the exact-ref authority ledger,
+      # conservative cleanup, rescue-lock instrumentation, and deployed-link
+      # surface. These suites are hermetic on CI (private state roots and tmux
+      # sockets); the instrumentation case uses real kernel locks/processes so
+      # CI records the previously-missing green observation environment.
+      - name: Test — FLY-1364 cmux sync repair
+        env:
+          # The production-compatibility pass remains /bin/bash 3.2 on macOS;
+          # this explicit opt-in adds Linux CI's modern-Bash observation.
+          FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH: "1"
+        run: |
+          bash scripts/test-cmux-sync.sh
+          bash scripts/__tests__/tmux-server-rescue.test.sh
+          bash scripts/__tests__/tmux-server-rescue-lock.test.sh
+          bash scripts/__tests__/tmux-server-rescue-instrumentation.test.sh
+          bash scripts/__tests__/tmux-server-rescue-real-tmux.test.sh
+          bash scripts/__tests__/flywheel-cmux-install-link-only.test.sh
+          bash scripts/__tests__/test-cmux-autostart-flags.test.sh
 
       # FLY-183: Discord adapter orphan reaper tests. Hermetic — the reaper's
       # process-table source is injected (FLY183_PS_OVERRIDE) and all spawned

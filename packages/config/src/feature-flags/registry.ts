@@ -397,7 +397,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		valueKind: "bool",
 		default: true,
 		description:
-			"FLY-1272: cmux managed tab 使用 exact-one-window link topology；=0 回滚 grouped legacy",
+			"FLY-1272/1364: 默认 exact-one-window link topology；仅设 =0 仍由 STRICT_VIEW 保持独立视图，完整 grouped rollback 需同时设 FLYWHEEL_CMUX_STRICT_VIEW=0",
 		readSites: [
 			envSite(
 				"scripts/flywheel-cmux-sync.sh",
@@ -438,6 +438,36 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"scripts/flywheel-cmux-autostart.sh",
 				"load_cmux_bool_flag FLYWHEEL_CMUX_VIEW_INVARIANT",
 				"cli_invocation",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "cmux_strict_view",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CMUX_STRICT_VIEW",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1364: A0B1 managed tab 使用 independent exact-window view；=0 有序回滚 grouped topology",
+		readSites: [
+			envSite(
+				"scripts/flywheel-cmux-sync.sh",
+				"strict_view_enabled",
+				"cli_invocation",
+			),
+			envSite(
+				"scripts/flywheel-cmux-autostart.sh",
+				"load_cmux_bool_flag FLYWHEEL_CMUX_STRICT_VIEW",
+				"cli_invocation",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/tmux-lookup.ts",
+				"strictCmuxViewEnabled",
+				"call_time",
 			),
 		],
 		toggleable: "conversational",

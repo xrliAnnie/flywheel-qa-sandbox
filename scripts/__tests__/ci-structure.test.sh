@@ -4,13 +4,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKFLOW="$REPO_ROOT/.github/workflows/ci.yml"
+DISCORD_E2E="$REPO_ROOT/scripts/__tests__/fly1364-discord-e2e.test.sh"
+REAL_TMUX_E2E="$REPO_ROOT/scripts/__tests__/tmux-server-rescue-real-tmux.test.sh"
+CMUX_TEST="$REPO_ROOT/scripts/test-cmux-sync.sh"
+HOOKS_E2E="$REPO_ROOT/scripts/test-cmux-sync-hooks-integration.sh"
+LIVE_E2E="$REPO_ROOT/scripts/__tests__/fly1364-live-e2e.test.sh"
 
 if grep -Fq -- ' -- --shard' "$WORKFLOW"; then
   echo "FAIL: ci.yml contains the swallowed pnpm shard form: -- --shard" >&2
   exit 1
 fi
 
-WORKFLOW="$WORKFLOW" python3 <<'PY'
+WORKFLOW="$WORKFLOW" DISCORD_E2E="$DISCORD_E2E" REAL_TMUX_E2E="$REAL_TMUX_E2E" CMUX_TEST="$CMUX_TEST" HOOKS_E2E="$HOOKS_E2E" LIVE_E2E="$LIVE_E2E" python3 <<'PY'
 import os
 import re
 import shlex
@@ -192,6 +197,107 @@ for job_id, job in (("unit-tests", unit_tests), ("script-tests", script_tests)):
 
 script_steps = script_tests.get("steps")
 require(isinstance(script_steps, list), "script-tests.steps must be a list")
+
+# FLY-1364: the cmux authority/cleanup matrix and every shell-side delivery
+# seam must be visible in the required PR gate. Keep this as one named step so
+# a future workflow edit cannot silently strand one of the constituent suites.
+fly1364_steps = [
+    step
+    for step in script_steps
+    if isinstance(step, dict) and step.get("name") == "Test — FLY-1364 cmux sync repair"
+]
+require(len(fly1364_steps) == 1, "script-tests must contain exactly one FLY-1364 cmux sync repair step")
+fly1364_step = fly1364_steps[0]
+require("if" not in fly1364_step, "FLY-1364 shell suites must not be conditional")
+require("continue-on-error" not in fly1364_step, "FLY-1364 shell suites must fail the PR gate")
+fly1364_env = mapping(fly1364_step.get("env"), "FLY-1364 shell suite env")
+require(
+    str(fly1364_env.get("FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH")) == "1",
+    "FLY-1364 CI must opt into the modern-Bash compatibility pass explicitly",
+)
+fly1364_commands = [
+    line.strip()
+    for line in str(fly1364_step.get("run", "")).splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+]
+expected_fly1364_commands = [
+    "bash scripts/test-cmux-sync.sh",
+    "bash scripts/__tests__/tmux-server-rescue.test.sh",
+    "bash scripts/__tests__/tmux-server-rescue-lock.test.sh",
+    "bash scripts/__tests__/tmux-server-rescue-instrumentation.test.sh",
+    "bash scripts/__tests__/tmux-server-rescue-real-tmux.test.sh",
+    "bash scripts/__tests__/flywheel-cmux-install-link-only.test.sh",
+    "bash scripts/__tests__/test-cmux-autostart-flags.test.sh",
+]
+require(
+    fly1364_commands == expected_fly1364_commands,
+    f"FLY-1364 CI command set/order drifted: {fly1364_commands}",
+)
+
+with open(os.environ["DISCORD_E2E"], encoding="utf-8") as handle:
+    discord_e2e = handle.read()
+require(
+    re.search(r"^cmux_call_guarded\(\)", discord_e2e, re.MULTILINE) is not None,
+    "FLY-1364 Discord E2E must intercept the guarded cmux mutation primitive",
+)
+require(
+    re.search(r"^cmux\(\)", discord_e2e, re.MULTILINE) is not None,
+    "FLY-1364 Discord E2E must fail closed on any direct cmux invocation",
+)
+
+with open(os.environ["REAL_TMUX_E2E"], encoding="utf-8") as handle:
+    real_tmux_e2e = handle.read()
+require(
+    "mktemp -d /private/tmp/" not in real_tmux_e2e,
+    "FLY-1364 real-tmux CI suite must use a portable temporary root",
+)
+require(
+    re.search(r'\[ "\$\(uname -s\)" = "Darwin" \]', real_tmux_e2e) is not None,
+    "FLY-1364 /tmp to /private/tmp normalization case must be Darwin-only",
+)
+
+with open(os.environ["CMUX_TEST"], encoding="utf-8") as handle:
+    cmux_test = handle.read()
+integration = cmux_test.split("# Integration: real tmux hook expansion", 1)[1].split(
+    "# FLY-129: cmux IPC health check", 1
+)[0]
+require(
+    'TMUX_INT_SOCKET="$TMPDIR_ROOT/tmux-hook-integration.sock"' in integration,
+    "FLY-1364 embedded hook integration must allocate a private tmux socket",
+)
+require(
+    re.search(r'command tmux(?! -S "\$TMUX_INT_SOCKET")', integration) is None,
+    "FLY-1364 embedded hook integration must never address the default tmux server",
+)
+require(
+    'command tmux -S "$TMUX_INT_SOCKET" kill-server' in integration,
+    "FLY-1364 embedded hook integration must tear down its private tmux server",
+)
+
+with open(os.environ["HOOKS_E2E"], encoding="utf-8") as handle:
+    hooks_e2e = handle.read()
+require("tmux -L" not in hooks_e2e, "FLY-1364 hook suite must not use label-derived tmux sockets")
+require(
+    'TMUX_SOCKET="$TMPDIR_ROOT/tmux-hooks-integration.sock"' in hooks_e2e,
+    "FLY-1364 hook suite must allocate an exact private tmux socket path",
+)
+require(
+    'tmux() { command tmux -S "$TMUX_SOCKET" "$@"; }' in hooks_e2e,
+    "FLY-1364 hook suite shim must route every sourced call to its private socket",
+)
+
+with open(os.environ["LIVE_E2E"], encoding="utf-8") as handle:
+    live_e2e = handle.read()
+require(" -L " not in live_e2e, "FLY-1364 live E2E must not use a label-derived tmux server")
+require(
+    'ISOLATED_TMUX_SOCKET="$TEST_ROOT/tmux-live.sock"' in live_e2e,
+    "FLY-1364 live E2E must allocate an exact private tmux socket path",
+)
+require(
+    "printf '#!/bin/sh\\nexec '\\''%s'\\'' -S '\\''%s'\\'' \"$@\"\\n'" in live_e2e,
+    "FLY-1364 live E2E wrapper must pin tmux to its private socket",
+)
+
 apt_steps = [
     step
     for step in script_steps

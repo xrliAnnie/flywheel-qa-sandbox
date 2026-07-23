@@ -63,14 +63,31 @@ cat > "$BIN_DIR/lsof" <<'SH'
 #!/bin/bash
 [ -n "${FAKE_LSOF_SLEEP:-}" ] && sleep "$FAKE_LSOF_SLEEP"
 [ "${FAKE_LSOF_FAIL:-0}" = "1" ] && exit 2
+[ "${FAKE_LSOF_RC_ONE_ERROR:-0}" = "1" ] && {
+  echo "lsof: permission denied" >&2
+  exit 1
+}
 pid=""
+fields=""
+unix_filter=0
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-p" ]; then pid="$2"; break; fi
+  if [ "$1" = "-p" ]; then pid="$2"; shift 2; continue; fi
+  if [ "$1" = "-U" ]; then unix_filter=1; fi
+  case "$1" in -F*) fields="$1" ;; esac
   shift
 done
-case ",${FAKE_SOCKET_PIDS:-}," in
-  *",${pid},"*) echo "n${FAKE_LSOF_SOCKET_PATH:-$TEST_SOCKET}" ;;
+[ "${FAKE_LSOF_FILTER_RC_ONE_ERROR:-0}" = "1" ] && [ "$unix_filter" = "1" ] && {
+  echo "lsof: filtered Unix descriptor scan failed" >&2
+  exit 1
+}
+case "$fields" in
+  *p*) printf 'p%s\n' "$pid"; exit 0 ;;
 esac
+case ",${FAKE_SOCKET_PIDS:-}," in
+  *",${pid},"*) printf 'n%s%s\n' "${FAKE_LSOF_SOCKET_PATH:-$TEST_SOCKET}" "${FAKE_LSOF_METADATA:-}" ;;
+esac
+if [ "${FAKE_LSOF_EMPTY_RC_ONE:-0}" = "1" ]; then exit 1; fi
+exit 0
 SH
 
 cat > "$BIN_DIR/uname" <<'SH'
@@ -125,6 +142,9 @@ REQUEST_SOCKET="$TMP_DIR/default.sock"
 : > "$REQUEST_SOCKET"
 export TEST_SOCKET="$(cd -P "$(dirname "$REQUEST_SOCKET")" && pwd)/$(basename "$REQUEST_SOCKET")"
 export FAKE_LSOF_FAIL=0
+export FAKE_LSOF_RC_ONE_ERROR=0
+export FAKE_LSOF_FILTER_RC_ONE_ERROR=0
+export FAKE_LSOF_EMPTY_RC_ONE=0
 export TMUX_CALL_LOG="$TMP_DIR/tmux-calls.log"
 : > "$TMUX_CALL_LOG"
 export FAKE_STATE_FILE=""
@@ -134,11 +154,28 @@ export FAKE_LSOF_SOCKET_PATH=""
 export FAKE_DISPLAY_SLEEP=""
 export FAKE_PS_SLEEP=""
 export FAKE_LSOF_SLEEP=""
+export FAKE_LSOF_METADATA=""
+export FLYWHEEL_TMUX_RESCUE_ALERT_BIN="/usr/bin/true"
 MACOS_TMUX_COMMAND='tmux -S /private/tmp/fly1285-fixture.sock new-session -Ad -s flywheel'
 ORIGINAL_HOME="$HOME"
 
 # shellcheck source=../lib/tmux-server-rescue.sh
 source "$LIB"
+
+echo "[TEST] sourcing rescue preserves a host-selected shared alert binary"
+PRESERVED_ALERT_BIN="$(
+  /bin/bash -c '
+    unset FLYWHEEL_TMUX_RESCUE_ALERT_BIN
+    FLYWHEEL_ALERT_BIN=/usr/bin/false
+    source "$1"
+    printf "%s" "$FLYWHEEL_ALERT_BIN"
+  ' _ "$LIB"
+)"
+if [ "$PRESERVED_ALERT_BIN" = "/usr/bin/false" ]; then
+  pass "rescue defaults do not clobber an existing shared alert adapter"
+else
+  fail "rescue source replaced the host alert adapter: $PRESERVED_ALERT_BIN"
+fi
 
 # Existing scenarios pin the historical fixture timings. FLY-1336 makes load
 # scaling the production default, so deterministic tests that are not ABOUT the
@@ -146,6 +183,18 @@ source "$LIB"
 export FLYWHEEL_TMUX_RESCUE_LOAD_FACTOR=1
 
 echo "[TEST] load factor parses macOS/Linux fixtures, clamps, and rejects malformed overrides"
+# GNU awk reserves `load` as a builtin name. Model that parser rule on macOS
+# too, so this portability contract fails before reaching Linux CI.
+cat > "$BIN_DIR/awk" <<'SH'
+#!/bin/bash
+for arg in "$@"; do
+  case "$arg" in
+    load=*) echo "awk: fatal: cannot use gawk builtin \`load' as variable name" >&2; exit 2 ;;
+  esac
+done
+exec /usr/bin/awk "$@"
+SH
+chmod +x "$BIN_DIR/awk"
 unset FLYWHEEL_TMUX_RESCUE_LOAD_FACTOR
 export FLYWHEEL_TMUX_RESCUE_LOAD_FACTOR_MAX=12
 export FAKE_UNAME=Darwin
@@ -199,6 +248,8 @@ if [ "$INVALID_OVERRIDE_FACTOR" = "3" ] && [ "$BROKEN_SAMPLE_FACTOR" = "1" ]; th
 else
   fail "invalid override/sample fallback collapsed: override=$INVALID_OVERRIDE_FACTOR sample=$BROKEN_SAMPLE_FACTOR"
 fi
+rm -f "$BIN_DIR/awk"
+hash -r
 
 echo "[TEST] total budget accepts positive integer seconds only"
 BUDGETS=""
@@ -246,6 +297,8 @@ fi
 
 echo "[TEST] inspect timeout remains bounded at the new six-second ceiling"
 export FAKE_DISPLAY_SLEEP=7
+export FAKE_PS_ROWS=""
+export FAKE_SOCKET_PIDS=""
 SECONDS=0
 SLOW_TIMEOUT_OUT="$(tmux_socket_inspect "$REQUEST_SOCKET")"
 SLOW_TIMEOUT_ELAPSED=$SECONDS
@@ -282,6 +335,8 @@ export FAKE_LSOF_SLEEP=1
 LSOF_TIMEOUT_OUT="$(tmux_socket_inspect "$REQUEST_SOCKET")"
 export FAKE_LSOF_SLEEP=""
 
+export FAKE_PS_ROWS=""
+export FAKE_SOCKET_PIDS=""
 export FAKE_DISPLAY_SLEEP=1
 TMUX_TIMEOUT_ENSURE="$(_tmux_socket_ensure_locked "$TEST_SOCKET" \
   --verify tmux -S "$TEST_SOCKET" has-session -t =flywheel \
@@ -401,6 +456,15 @@ else
   fail "lsof alias did not match: reported=$FAKE_LSOF_SOCKET_PATH expected=$TEST_SOCKET"
 fi
 
+echo "[TEST] Linux lsof name-field metadata is not part of the socket path"
+export FAKE_LSOF_METADATA=' type=STREAM'
+if _tmux_rescue_pid_has_socket 9301 "$TEST_SOCKET"; then
+  pass "the real Linux -Fn STREAM suffix preserves exact socket ownership"
+else
+  fail "Linux lsof metadata was parsed as pathname text"
+fi
+export FAKE_LSOF_METADATA=""
+
 echo "[TEST] an unrelated unnormalizable lsof path does not poison the target verdict"
 export FAKE_LSOF_SOCKET_PATH="$TMP_DIR/missing-parent/socket"
 _tmux_rescue_pid_has_socket 9301 "$TEST_SOCKET"
@@ -411,6 +475,29 @@ else
   fail "an unrelated unresolved path poisoned the target scan: rc=$LSOF_PATH_RC"
 fi
 export FAKE_LSOF_SOCKET_PATH=""
+
+echo "[TEST] lsof rc=1 needs an independent PID-enumeration proof before it means no socket"
+export FAKE_SOCKET_PIDS=""
+export FAKE_LSOF_EMPTY_RC_ONE=1
+LSOF_EMPTY_RC=0
+_tmux_rescue_pid_has_socket "$$" "$TEST_SOCKET" || LSOF_EMPTY_RC=$?
+export FAKE_LSOF_EMPTY_RC_ONE=0
+if [ "$LSOF_EMPTY_RC" -eq 1 ]; then
+  pass "a filtered rc=1 plus successful exact PID enumeration proves non-ownership"
+else
+  fail "a genuine filtered-empty lsof result was not distinguished: rc=$LSOF_EMPTY_RC"
+fi
+
+echo "[TEST] filtered lsof rc=1 error stays incomplete even when PID enumeration succeeds"
+export FAKE_LSOF_FILTER_RC_ONE_ERROR=1
+LSOF_ERROR_RC=0
+_tmux_rescue_pid_has_socket "$$" "$TEST_SOCKET" || LSOF_ERROR_RC=$?
+export FAKE_LSOF_FILTER_RC_ONE_ERROR=0
+if [ "$LSOF_ERROR_RC" -eq 2 ]; then
+  pass "a filtered rc=1 error cannot borrow a successful PID probe as completeness evidence"
+else
+  fail "filtered lsof error plus successful PID probe was accepted as empty: rc=$LSOF_ERROR_RC"
+fi
 
 echo "[TEST] activated recover signals one revalidated orphan and proves its generation"
 export HOME="$TMP_DIR/activated-home"
@@ -522,6 +609,31 @@ else
   fail "unexpected saturation inspection: $OUT"
 fi
 
+echo "[TEST] a timed-out client probe cannot erase a complete exact-owner proof"
+export FLYWHEEL_TMUX_RESCUE_INSPECT_TIMEOUT_SEC=0.2
+export FAKE_DISPLAY_SLEEP=1
+export FAKE_PS_ROWS="6162 1 ${MACOS_TMUX_COMMAND}\n"
+export FAKE_SOCKET_PIDS=6162
+unset _TMUX_RESCUE_CACHED_LOAD_FACTOR _TMUX_RESCUE_TOTAL_BUDGET _TMUX_RESCUE_BUDGET_ANCHOR
+TIMED_SATURATED_OUT="$(tmux_socket_inspect "$REQUEST_SOCKET")"
+TIMED_SATURATED_ENSURE="$(_tmux_socket_ensure_locked "$TEST_SOCKET" \
+  --verify tmux -S "$TEST_SOCKET" has-session -t =flywheel \
+  --create tmux -S "$TEST_SOCKET" new-session -Ad -s flywheel)"
+TIMED_SATURATED_RC=$?
+export FAKE_DISPLAY_SLEEP=""
+unset FLYWHEEL_TMUX_RESCUE_INSPECT_TIMEOUT_SEC
+unset _TMUX_RESCUE_CACHED_LOAD_FACTOR _TMUX_RESCUE_TOTAL_BUDGET _TMUX_RESCUE_BUDGET_ANCHOR
+if [ "$(printf '%s' "$TIMED_SATURATED_OUT" | jq -r '.verdict')" = "saturated" ] \
+  && [ "$(printf '%s' "$TIMED_SATURATED_OUT" | jq -r '.candidatePids | join(",")')" = "6162" ] \
+  && [ "$(printf '%s' "$TIMED_SATURATED_OUT" | jq -r '.scanComplete')" = "true" ] \
+  && [ "$(printf '%s' "$TIMED_SATURATED_OUT" | jq -r '.timedOut')" = "true" ] \
+  && [ "$TIMED_SATURATED_RC" -eq 2 ] \
+  && [ "$(printf '%s' "$TIMED_SATURATED_ENSURE" | jq -r '.action')" = "hold_saturated" ]; then
+  pass "complete ps+lsof ownership classifies saturated despite client timeout"
+else
+  fail "client timeout erased positive ownership: inspect=$TIMED_SATURATED_OUT ensure=$TIMED_SATURATED_RC/$TIMED_SATURATED_ENSURE"
+fi
+
 echo "[TEST] complete process scan distinguishes dead, split-brain, and ambiguous"
 rm -f "$REQUEST_SOCKET"
 export FAKE_REACHABLE_PID=""
@@ -578,6 +690,20 @@ else
   fail "unexpected incomplete-scan inspection: $OUT"
 fi
 
+echo "[TEST] filtered lsof rc=1 error plus successful PID probe keeps a live candidate unknown"
+export FAKE_REACHABLE_PID=""
+export FAKE_PS_ROWS="$$ 1 ${MACOS_TMUX_COMMAND}\n"
+export FAKE_SOCKET_PIDS=""
+export FAKE_LSOF_FILTER_RC_ONE_ERROR=1
+OUT="$(tmux_socket_inspect "$REQUEST_SOCKET")"
+export FAKE_LSOF_FILTER_RC_ONE_ERROR=0
+if [ "$(printf '%s' "$OUT" | jq -r '.verdict')" = "unknown" ] \
+  && [ "$(printf '%s' "$OUT" | jq -r '.scanComplete')" = "false" ]; then
+  pass "split rc=1/PID-success evidence cannot authorize replacement-server creation"
+else
+  fail "split rc=1/PID-success evidence falsely proved dead/non-ownership: $OUT"
+fi
+
 echo "[TEST] candidate scan excludes a foreign uid"
 rm -f "$REQUEST_SOCKET"
 export FAKE_REACHABLE_PID=""
@@ -592,6 +718,19 @@ else
 fi
 
 echo "[TEST] activation marker must be an owner-controlled regular file"
+# GNU `stat -f` succeeds with filesystem output instead of rejecting the BSD
+# format. Emulate that collision while keeping `stat -c` useful on this macOS
+# test host; the production probe must select the portable order.
+stat() {
+  case "$1" in
+    -c)
+      /usr/bin/stat -c '%u %a' "$3" 2>/dev/null \
+        || /usr/bin/stat -f '%u %Lp' "$3"
+      ;;
+    -f) printf 'gnu-statfs-output\n' ;;
+    *) /usr/bin/stat "$@" ;;
+  esac
+}
 ORIGINAL_HOME="$HOME"
 export HOME="$TMP_DIR/home"
 MARKER_DIR="$HOME/.flywheel/flags"
@@ -619,6 +758,7 @@ chmod 777 "$MARKER_DIR"
 BAD_PARENT=false
 tmux_rescue_activation_enabled && BAD_PARENT=true
 export HOME="$ORIGINAL_HOME"
+unset -f stat
 
 if [ "$ABSENT" = false ] && [ "$VALID" = true ] && [ "$SYMLINK" = false ] \
   && [ "$BAD_FILE" = false ] && [ "$BAD_PARENT" = false ]; then
@@ -863,6 +1003,48 @@ if [ -f "$OWNER_META" ] \
   pass "owner sidecar records pid, process start identity, and token"
 else
   fail "owner metadata missing required diagnostic fields: $(cat "$OWNER_META" 2>/dev/null || true)"
+fi
+
+echo "[TEST] acquire-timeout owner evidence requires a live matching incarnation"
+_tmux_rescue_process_start_identity() { printf 'fixture-start\n'; }
+export _TMUX_RESCUE_TOKEN=fixture-token
+export _TMUX_RESCUE_VERB=ensure
+export _TMUX_RESCUE_CALLER=fixture-caller
+export _TMUX_RESCUE_ACQUIRED_AT="$(awk -v n="$(_tmux_rescue_now)" 'BEGIN { printf "%.6f", n-2 }')"
+_tmux_rescue_write_owner_metadata "$TEST_SOCKET"
+TRUSTED_OWNER="$(_tmux_rescue_timeout_owner_json "$TEST_SOCKET")"
+if printf '{"evidence":{"reason":"acquire_timeout"%s}}\n' "$TRUSTED_OWNER" \
+    | jq -e --argjson pid "$$" '.evidence.owner.pid == $pid and .evidence.owner.verb == "ensure" and .evidence.owner.caller == "fixture-caller" and .evidence.owner.heldSec >= 2' >/dev/null; then
+  pass "trusted owner evidence includes pid/incarnation/verb/caller/acquiredAt/heldSec"
+else
+  fail "trusted owner evidence missing or malformed: $TRUSTED_OWNER"
+fi
+printf '%s\n' \
+  "pid=$$" \
+  'startIdentity=fixture-start' \
+  'token=fixture-token' \
+  'verb=ensure' \
+  'acquiredAt=1.2.3' \
+  'caller=fixture-caller' > "$OWNER_META"
+MALFORMED_CLOCK_OWNER="$(_tmux_rescue_timeout_owner_json "$TEST_SOCKET")"
+if [ -z "$MALFORMED_CLOCK_OWNER" ] \
+  && grep -q 'owner_evidence_omitted reason=invalid_acquired_at' "$HOME/.flywheel/logs/tmux-rescue-audit.log"; then
+  pass "malformed acquiredAt is omitted before timeout JSON is assembled"
+else
+  fail "malformed acquiredAt leaked into timeout JSON: $MALFORMED_CLOCK_OWNER"
+fi
+printf '%s\n' \
+  "pid=$$" \
+  'startIdentity=wrong-generation' \
+  'token=fixture-token' \
+  'verb=ensure' \
+  "acquiredAt=$_TMUX_RESCUE_ACQUIRED_AT" \
+  'caller=fixture-caller' > "$OWNER_META"
+STALE_OWNER="$(_tmux_rescue_timeout_owner_json "$TEST_SOCKET")"
+if [ -z "$STALE_OWNER" ] && grep -q 'owner_evidence_omitted reason=incarnation_mismatch' "$HOME/.flywheel/logs/tmux-rescue-audit.log"; then
+  pass "stale owner metadata is omitted with a local diagnostic"
+else
+  fail "stale owner metadata leaked into timeout JSON: $STALE_OWNER"
 fi
 
 echo "Results: ${PASSED} passed, ${FAILED} failed"

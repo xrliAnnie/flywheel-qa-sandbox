@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1364 · cmux 侧边栏总修 — 设计说明</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #f5f5f7;
+    color: #1d1d1f;
+    line-height: 1.65;
+    padding: 32px 16px 64px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  header { margin-bottom: 28px; }
+  .issue-tag {
+    font-family: 'SF Mono', monospace;
+    font-size: 13px;
+    color: #1a365d;
+    background: #fff;
+    border: 1px solid #e5e5ea;
+    border-radius: 6px;
+    padding: 2px 8px;
+    display: inline-block;
+    margin-bottom: 10px;
+  }
+  h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 6px; }
+  .subtitle { font-size: 16px; color: #515154; }
+  .section { margin-top: 32px; }
+  .section-title {
+    font-size: 19px; font-weight: 700; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .section-title .num {
+    font-size: 13px; font-weight: 600; color: #fff;
+    width: 24px; height: 24px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .card {
+    background: #fff; border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    padding: 20px 24px; margin-bottom: 14px;
+  }
+  .card.blue   { border-left: 4px solid #007aff; }
+  .card.amber  { border-left: 4px solid #ff9500; }
+  .card.green  { border-left: 4px solid #34c759; }
+  .card.purple { border-left: 4px solid #af52de; }
+  .card.red    { border-left: 4px solid #ff3b30; }
+  .card.gray   { border-left: 4px solid #86868b; }
+  .amend {
+    background: #fff4e5; border: 2px solid #ff9500; border-radius: 12px;
+    padding: 20px 24px; margin-bottom: 24px;
+  }
+  .amend h2 { font-size: 19px; margin-bottom: 8px; color: #8a4b00; }
+  .amend p, .amend li { font-size: 15px; }
+  .amend ul { padding-left: 20px; margin: 8px 0; }
+  .card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+  .card p { font-size: 15px; margin-bottom: 8px; }
+  .card p:last-child { margin-bottom: 0; }
+  .card ul { padding-left: 20px; margin-bottom: 8px; }
+  .card li { font-size: 15px; margin-bottom: 6px; }
+  .card li:last-child { margin-bottom: 0; }
+  .dim { color: #86868b; font-size: 13px; }
+  .highlight { background: #fff8e6; border-radius: 4px; padding: 1px 5px; }
+  .before-after { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 4px; }
+  .ba-col {
+    flex: 1; min-width: 260px; background: #fff; border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 18px 20px;
+  }
+  .ba-col.before { border-top: 4px solid #ff3b30; }
+  .ba-col.after  { border-top: 4px solid #34c759; }
+  .ba-col h4 { font-size: 14px; font-weight: 700; margin-bottom: 10px; }
+  .ba-col.before h4 { color: #ff3b30; }
+  .ba-col.after h4 { color: #34c759; }
+  .ba-col li { font-size: 14px; margin-bottom: 8px; }
+  .check { color: #34c759; font-weight: 600; }
+  .cross { color: #ff3b30; font-weight: 600; }
+  footer { margin-top: 40px; text-align: center; }
+  footer p { font-size: 13px; color: #86868b; }
+  @media (max-width: 600px) {
+    body { padding: 20px 10px 40px; }
+    h1 { font-size: 22px; }
+    .card { padding: 16px 18px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="amend" role="alert">
+  <h2>⚠️ 本页已被 2026-07-22 founder-approved AMEND 全量取代</h2>
+  <p><strong>下面内容是首轮 R5 的历史快照,不是当前设计或安全边界。</strong>当前唯一权威是同目录 <a href="plan.md">plan.md</a> 的 amend 方案与后续 review 记录。</p>
+  <ul>
+    <li>存量条目不再是「全部人工一次性关闭」:只有连续两轮证据一致、归属和 topology 可证明的 exact ref 才会 receipted stock adoption 后自动关闭;重名、foreign、invalid 或 unreadable 一律保留并告警。</li>
+    <li>新增自动 close authority 不只 create rollback,还包括上述受 receipt + generation + last-operation guard 约束的存量收敛。</li>
+    <li>view 生命周期、attach 自愈、watcher 单实例、lease rebuild+continue 已并入同一单实现与验收,不再作为「后续另题」。</li>
+  </ul>
+  <p>保留下文只为审计首轮决策如何被 founder amend;不得据此操作、回滚或判断验收范围。</p>
+</div>
+
+<header>
+  <span class="issue-tag">FLY-1364</span>
+  <h1>cmux 侧边栏总修 — 设计说明</h1>
+  <p class="subtitle">为什么最近总在打地鼠 · 这次修的是哪个根子 · 修完世界长什么样</p>
+</header>
+
+<!-- ① 这单是什么 -->
+<div class="section">
+  <div class="section-title"><span class="num" style="background:#007aff;">1</span>这单是什么</div>
+
+  <div class="card blue">
+    <h3>你这几天撞到的,是同一类问题的三张脸</h3>
+    <ul>
+      <li><strong>死条目赖着不走</strong> — 任务早结束了,侧边栏条目还挂在那里,要手动一个个关。</li>
+      <li><strong>新窗口没有条目</strong> — 任务明明在跑,侧边栏却看不到它,像凭空消失。</li>
+      <li><strong>看着的画面突然没了</strong> — 你正盯着的窗口,因为别的任务收尾被连带关掉。</li>
+    </ul>
+    <p>共同点:<span class="highlight">干活的程序全都健康,是「侧边栏显示」和真实世界脱了节</span>。活干完了显示不走,活在干显示不出,你看的画面跟着别人陪葬。</p>
+  </div>
+
+  <div class="card amber">
+    <h3>诊断有一次重要修正:根子不是原来猜的那个</h3>
+    <p>最初怀疑是「一把锁出了问题,把后台清洁工永远挡在门外」。实地取证后发现:<strong>锁是健康的,清洁工每个周期都真的在干活</strong>——但每次伸手都被拒绝。</p>
+    <p>真正的根子是<strong>「出生登记制度停摆」</strong>:早前一次配置回退,把「创建窗口时做登记」这条路关掉了;而「清理窗口」那条路(为了安全)<strong>只认登记在册的条目</strong>。结果:</p>
+    <ul>
+      <li>每个新条目生下来就是「黑户」——登记簿里根本没有它;</li>
+      <li>它死了以后,清洁工看得见尸体、却没有权限收(怕误伤别人的东西);</li>
+      <li>这样的「想收而不敢收」在日志里默默记了 <strong>2389 次</strong>,一声都没有告诉人。</li>
+    </ul>
+    <p><strong>这就是打地鼠感的来源</strong>:你手动清掉一批,新条目继续以黑户身份出生,死后继续没人敢收——问题按住一个又冒一个,因为出生那一端一直在批量制造下一波。</p>
+  </div>
+</div>
+
+<!-- ② 怎么解 -->
+<div class="section">
+  <div class="section-title"><span class="num" style="background:#34c759;">2</span>怎么解</div>
+
+  <div class="card green">
+    <h3>四步,从根上换制度</h3>
+    <ul>
+      <li><strong>① 恢复出生登记(核心)</strong> — 每个新条目创建那一刻就拿到「出生证」。有了出生证,它死后就走现成的正常回收流程,<strong>几分钟内自动消失</strong>,不需要任何人插手。</li>
+      <li><strong>② 认不出的绝不乱动,但也绝不再沉默</strong> — 遇到黑户或重名条目:零动作,同时发一条<strong>带全部证据的告警</strong>(叫什么、有几个、什么状态),人一眼就能定性,不用再去日志里考古。</li>
+      <li><strong>③ 你手动关掉后的残渣自动收敛</strong> — 你亲手关掉一个 tab 后,它留下的空壳下个周期自动清走,不再反复报「有冲突」。</li>
+      <li><strong>④ 后台自身的健康状况接进 Discord</strong> — 以前这些「我被拒绝了」「我状态异常」只写在没人看的日志里;现在统一接进告警通道。</li>
+    </ul>
+  </div>
+
+  <div class="card green">
+    <h3>现在挂着的那几个死条目怎么办</h3>
+    <p>存量的 3–5 个死条目<strong>人工一次性关掉</strong>(安全步骤已交给 Tadashi)。制度换新之后,这样的黑户不再新增——所以这是最后一次手动打地鼠。</p>
+  </div>
+</div>
+
+<!-- ③ 关键取舍 -->
+<div class="section">
+  <div class="section-title"><span class="num" style="background:#af52de;">3</span>关键取舍</div>
+
+  <div class="card purple">
+    <h3>三条原则,都是「宁可保守」</h3>
+    <ul>
+      <li><strong>安全 &gt; 干净</strong> — 宁可侧边栏多显示一个死条目,绝不冒险自动关一个可能还活着的窗口。误关活窗口的伤害(你正看的东西没了)远大于多看一眼死条目。之前为此定过的安全规矩全部保留,一条不退。</li>
+      <li><strong>自动化只管增量,存量交人工</strong> — 已经存在的黑户没办法证明归属,系统不被赋予「猜一猜然后关掉」的权力。评审过程中曾考虑过「自动认领旧条目」,第一轮就被否了:归属证明不了,就不给权限。</li>
+      <li><strong>告警一事一报</strong> — 同一个问题只报一次,恢复之后再犯才再报。这个月刚治过两轮告警刷屏,这次所有新告警从设计起就带防刷屏机制。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ④ 风险边界 -->
+<div class="section">
+  <div class="section-title"><span class="num" style="background:#ff3b30;">4</span>风险边界</div>
+
+  <div class="card red">
+    <h3>动手的权力被压到最窄</h3>
+    <p>全案<strong>唯一新增的「自动关闭」权力</strong>只覆盖一种情况:本进程<strong>一秒内亲手创建、但登记失败</strong>的那一个条目——当场回滚关掉,防止它变成新黑户。关之前还要当场重验三重证据(没换代、还在、还没被命名),打错对象的可能性趋近于零。</p>
+    <p>除此之外,<strong>没有任何路径会自动关闭一个来历不明的条目</strong>。</p>
+  </div>
+
+  <div class="card red">
+    <h3>上线顺序冻结,坏情况有底</h3>
+    <ul>
+      <li>先装「收告警的一端」,再换「发告警的一端」——顺序错位的最坏后果只是<strong>丢一条告警</strong>,清理本体完全不受影响。</li>
+      <li>整套改动可以对称回滚:退回旧版本,行为回到现状,不留隐患。</li>
+      <li>换新过程中不重启正在干活的后台进程,现有任务零打扰。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ⑤ 验收 -->
+<div class="section">
+  <div class="section-title"><span class="num" style="background:#1a365d;">5</span>验收 — 修完世界长什么样</div>
+
+  <div class="before-after">
+    <div class="ba-col before">
+      <h4>现在</h4>
+      <ul>
+        <li><span class="cross">✗</span> 任务结束,条目赖在侧边栏,要手动关</li>
+        <li><span class="cross">✗</span> 清理被拒 2389 次,没人知道</li>
+        <li><span class="cross">✗</span> 手动关掉后残壳反复报冲突</li>
+        <li><span class="cross">✗</span> 出问题只能靠你亲眼撞见</li>
+      </ul>
+    </div>
+    <div class="ba-col after">
+      <h4>修完</h4>
+      <ul>
+        <li><span class="check">✓</span> 任务结束,条目<strong>几分钟内自动消失</strong></li>
+        <li><span class="check">✓</span> 认不出的条目:零动作 + 一条带全证据的 Discord 告警</li>
+        <li><span class="check">✓</span> 手动关掉后残壳自动收敛,不再报错</li>
+        <li><span class="check">✓</span> 活窗口零误伤(上线前后做全量快照对比)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card green" style="margin-top:14px;">
+    <h3>怎么验(真机,不是纸面)</h3>
+    <ul>
+      <li>在隔离环境完整走一遍:新条目出生领证 → 任务结束 → 几分钟内自动清掉(主验收)。</li>
+      <li>故意制造黑户、重名、登记失败、手动关 tab 等七种情况,逐一确认「该收的收、不该动的一根手指不碰、该报的报且只报一次」。</li>
+      <li>最后在生产环境观察:新条目全生命周期自动收敛,活条目零触碰,至少 10 分钟无反复。</li>
+    </ul>
+  </div>
+
+  <div class="card gray">
+    <h3>边界说清楚:这一步修什么、不修什么</h3>
+    <p>这次设计根治的是五个症状里的<strong>「死条目不清」和「拒清却不吭声」</strong>——也就是打地鼠的主力来源。</p>
+    <p>另外三个症状——<strong>你看的画面随别人收尾一起消失</strong>(画面寿命绑错了对象,已确认是独立的设计题)、<strong>连接断了不自己恢复</strong>、<strong>后台重复多开</strong>——属于同一张总修单的后续步:根子换新后逐一复验,没自然消失的各自单独设计。<strong>不把「全都会好」许诺进这一步</strong>,每一步只承诺能验证的事。</p>
+  </div>
+</div>
+
+<footer>
+  <p>FLY-1364 设计说明 · 2026-07-22 · 设计全文 plan.md(6 轮独立评审通过)</p>
+</footer>
+
+</div>
+</body>
+</html>

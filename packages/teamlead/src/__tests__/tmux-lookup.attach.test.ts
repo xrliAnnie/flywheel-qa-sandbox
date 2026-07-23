@@ -134,6 +134,7 @@ describe("buildAttachCommand", () => {
 describe("killCmuxLinkedSession", () => {
 	beforeEach(() => {
 		vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "0");
+		vi.stubEnv("FLYWHEEL_CMUX_STRICT_VIEW", "0");
 	});
 	afterEach(() => {
 		vi.unstubAllEnvs();
@@ -230,6 +231,48 @@ describe("killCmuxLinkedSession linked-view mode", () => {
 		});
 		expect(calls).toHaveLength(1);
 		expect(calls.some((c) => c[0] === "kill-session")).toBe(false);
+	});
+
+	it("preserves an A0B1 canonical view because B keeps strict lifetime binding active", async () => {
+		vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "0");
+		vi.stubEnv("FLYWHEEL_CMUX_VIEW_INVARIANT", "1");
+		const calls: string[][] = [];
+		const runner: TmuxRunner = async (args) => {
+			calls.push(args);
+			return { stdout: "FLY-1364-implement\n" };
+		};
+		const res = await killCmuxLinkedSession("runner-flywheel:@42", runner);
+		expect(res).toEqual({
+			killed: true,
+			viewSkipped: true,
+			cmuxSession: "cmux-FLY-1364-implement",
+		});
+		expect(calls.some((c) => c[0] === "kill-session")).toBe(false);
+	});
+
+	it("allows the grouped-view kill path when the explicit strict rollback is off", async () => {
+		vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "0");
+		vi.stubEnv("FLYWHEEL_CMUX_VIEW_INVARIANT", "1");
+		vi.stubEnv("FLYWHEEL_CMUX_STRICT_VIEW", "0");
+		const calls: string[][] = [];
+		const runner: TmuxRunner = async (args) => {
+			calls.push(args);
+			if (args[0] === "display-message") {
+				return { stdout: "FLY-1364-implement\n" };
+			}
+			return { stdout: "" };
+		};
+		await expect(
+			killCmuxLinkedSession("runner-flywheel:@42", runner),
+		).resolves.toEqual({
+			killed: true,
+			cmuxSession: "cmux-FLY-1364-implement",
+		});
+		expect(calls).toContainEqual([
+			"kill-session",
+			"-t",
+			"=cmux-FLY-1364-implement",
+		]);
 	});
 
 	it.each([
