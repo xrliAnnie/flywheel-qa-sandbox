@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 1/4
-updated: 2026-07-23T18:22:16.408Z
-nextStep: Finalize narrow document design and implementation checklist
+phaseCursor: 2/4
+updated: 2026-07-23T18:23:00.906Z
+nextStep: Draft and mechanically validate sandbox-notes.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (1/4)
-**next**: Finalize narrow document design and implementation checklist
+**phase**: design (2/4)
+**next**: Draft and mechanically validate sandbox-notes.md
