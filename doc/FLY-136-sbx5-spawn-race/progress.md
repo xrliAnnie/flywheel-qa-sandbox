@@ -1,13 +1,13 @@
 ---
 issue: FLY-136
 phase: design
-phaseCursor: 3/5
-updated: 2026-07-23T18:39:54.495Z
-nextStep: publish-report + report DESIGN-HTML to lead
+phaseCursor: 4/5
+updated: 2026-07-23T18:40:30.813Z
+nextStep: complete phase_design_complete + park
 chunks: []
 pointers: {}
 ---
 
 # FLY-136 progress
-**phase**: design (3/5)
-**next**: publish-report + report DESIGN-HTML to lead
+**phase**: design (4/5)
+**next**: complete phase_design_complete + park
