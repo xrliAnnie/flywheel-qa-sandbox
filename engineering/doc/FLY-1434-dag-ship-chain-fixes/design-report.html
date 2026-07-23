@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1434 设计 — DAG ship 链修复族批</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; margin: 0; padding: 24px 16px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 8px 0 4px; }
+  h2 { font-size: 19px; color: #1a365d; margin: 32px 0 12px; }
+  .sub { color: #86868b; font-size: 14px; margin-bottom: 20px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 16px 18px; margin-bottom: 12px; }
+  .card.red { border-left: 4px solid #ff3b30; } .card.blue { border-left: 4px solid #007aff; }
+  .card.green { border-left: 4px solid #34c759; } .card.amber { border-left: 4px solid #ff9500; }
+  .card.purple { border-left: 4px solid #af52de; } .card.gray { border-left: 4px solid #86868b; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-right: 6px; vertical-align: middle; }
+  .badge.fix { background: #e8f5ec; color: #1e7c3a; } .badge.ops { background: #fff3e0; color: #b26a00; }
+  .badge.core { background: #e3f0ff; color: #0a5dc2; } .badge.id { background: #f0eafa; color: #6b34a8; font-family: 'SF Mono', monospace; }
+  .title { font-weight: 600; font-size: 15px; margin: 4px 0; }
+  .why { color: #515154; font-size: 13.5px; line-height: 1.55; }
+  .fixline { font-size: 13.5px; margin-top: 6px; color: #1d1d1f; } .fixline b { color: #1e7c3a; }
+  .flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; margin: 14px 0; }
+  .step { flex: 1 1 120px; min-width: 118px; background: #fff; border: 1px solid #e5e5ea; border-radius: 10px; padding: 10px; text-align: center; position: relative; }
+  .step .n { font-size: 11px; color: #86868b; } .step .t { font-weight: 600; font-size: 13px; margin: 3px 0; }
+  .step .d { font-size: 11.5px; color: #515154; line-height: 1.4; }
+  .step.fixed { border-color: #34c759; background: #f4fbf6; }
+  .arrow { align-self: center; color: #86868b; font-size: 16px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; } @media (max-width: 700px) { .two { grid-template-columns: 1fr; } }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+  th { text-align: left; background: #fafafa; color: #86868b; font-weight: 600; padding: 9px 12px; border-bottom: 1px solid #eee; }
+  td { padding: 9px 12px; border-bottom: 1px solid #f2f2f2; vertical-align: top; }
+  code { font-family: 'SF Mono', monospace; font-size: 12px; background: #f2f2f5; padding: 1px 5px; border-radius: 4px; }
+  .hero { background: #1a365d; color: #fff; border-radius: 14px; padding: 20px 22px; margin: 14px 0 24px; font-size: 16px; line-height: 1.6; }
+  .hero b { color: #8ec8ff; }
+  ul.tight { margin: 6px 0 0; padding-left: 20px; } ul.tight li { font-size: 13.5px; line-height: 1.6; color: #3a3a3c; }
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>FLY-1434 · DAG ship 链修复族批 — 设计定稿</h1>
+<div class="sub">设计文档 · 2026-07-23 · Codex 设计评审 16 轮 APPROVED · Tadashi 批复条件已折入</div>
+
+<div class="hero">
+一句话：把 7/22 深夜实测暴露的 <b>10 个流程缺陷一次修完</b>——修完后，新开的工程单能自己走通「开发 → 你在 thread 回 ship → 自动合并 → 正确收口」的全链；一晚 17 条的误报警报根除；卡死的单有正规返工入口；重启只剩一个按钮、按下自动发通告。
+</div>
+
+<h2>修完后的 ship 链（绿色 = 本次修复打通的环节）</h2>
+<div class="flow">
+  <div class="step fixed"><div class="n">①</div><div class="t">PR 绑定</div><div class="d">开发完成时 PR 号自动登记，不再显示「PR 未绑定」</div></div>
+  <div class="arrow">→</div>
+  <div class="step fixed"><div class="n">⑤</div><div class="t">你回 ship</div><div class="d">thread 里的批准有处落笔，引擎不再装聋</div></div>
+  <div class="arrow">→</div>
+  <div class="step fixed"><div class="n">⑧</div><div class="t">结果送达</div><div class="d">批准/评审结论 90 秒内必达执行者，丢了自动重投</div></div>
+  <div class="arrow">→</div>
+  <div class="step fixed"><div class="n">⑩</div><div class="t">合并前查账</div><div class="d">评审通过记录换个经手人也查得到，不再卡死</div></div>
+  <div class="arrow">→</div>
+  <div class="step fixed"><div class="n">land</div><div class="t">自动合并</div><div class="d">引擎替你按下合并（你批准后）</div></div>
+  <div class="arrow">→</div>
+  <div class="step fixed"><div class="n">⑥</div><div class="t">收口判定</div><div class="d">多 PR 的单，最后一个合完才算完</div></div>
+</div>
+
+<h2>十项修复清单（现象 → 修法）</h2>
+
+<div class="card red"><span class="badge id">①</span><span class="badge core">主项</span>
+  <div class="title">所有 DAG 单都显示「PR 未绑定」</div>
+  <div class="why">开发完成开了 PR，但流程没记下 PR 号——昨晚 6 个单全中招，1423 靠手工改数据库救急。</div>
+  <div class="fixline"><b>修：</b>完成时把 PR 号和代码版本一起登记进台账（按轮次记，返工自动换新账），后面每一环都从台账读。</div>
+</div>
+<div class="card red"><span class="badge id">⑤</span><span class="badge core">self-ship 最后一环</span>
+  <div class="title">你在 thread 回 ship，引擎纹丝不动</div>
+  <div class="why">批准识别只认旧流程的登记处；DAG 单的批准门根本没开出来，你的话无处落笔（1423 实测 10 分钟零反应）。</div>
+  <div class="fixline"><b>修：</b>新工程单统一切到带「自动合并尾巴」的流程模板——批准门、识别、合并全是已建好的链路，一个协议都不用新造。存量卡死的单走 ③ 的返工通道救。</div>
+</div>
+<div class="card amber"><span class="badge id">②</span>
+  <div class="title">「启动」按钮假成功</div>
+  <div class="why">对已完成的单再点启动，返回成功但什么都没发生 → Lead 误报你「已开工」。</div>
+  <div class="fixline"><b>修：</b>不能启动就诚实报错并写明原因，指路到正确入口。</div>
+</div>
+<div class="card amber"><span class="badge id">③</span>
+  <div class="title">完成/卡死的单没有返工入口</div>
+  <div class="why">只能开接替新单绕路（1435/1436 就是这么来的）。</div>
+  <div class="fixline"><b>修：</b>新增正规返工入口（走你的授权面 + 全程留痕），重开、补位、唤醒执行者全自动接手。另给 Lead 一个<b>只读诊断面</b>：一眼看清卡死单的全部状态，不用再手工拼数据库（Tadashi 点名要求）。</div>
+</div>
+<div class="card blue"><span class="badge id">④</span><span class="badge ops">你的直令</span>
+  <div class="title">重启分好几档，有的档不发通告</div>
+  <div class="fixline"><b>修：</b>删掉所有分档，只留一个全量重启脚本；每次重启（含改配置）自动向 #flywheel-notify 发起止通告 + 原因。</div>
+</div>
+<div class="card blue"><span class="badge id">⑥</span>
+  <div class="title">两个 PR 的单，合了一个就被当「完成」</div>
+  <div class="why">1426 半部署上线净负（收据风暴），第二个 PR 无人接。</div>
+  <div class="fixline"><b>修：</b>先登记「这单几个 PR」再逐个封口对账，最后一个合完才收口；中途每合一个都提醒「部分交付，先关功能开关」。</div>
+</div>
+<div class="card purple"><span class="badge id">⑦</span><span class="badge core">高频误报</span>
+  <div class="title">一晚 17 条「唤醒失败」全是假警报</div>
+  <div class="why">给干活中的执行者发正常消息也被当「唤醒失败」，30 分钟后升级页你——Lead 越尽责误报越多。</div>
+  <div class="fixline"><b>修：</b>给每条唤醒标注用途：正常聊天不进失败判定；只有「叫醒睡着的」和「送批准结论」才走催办阶梯。</div>
+</div>
+<div class="card purple"><span class="badge id">⑧</span>
+  <div class="title">评审结论写好了，执行者干等 15 分钟</div>
+  <div class="why">结论只投一次、丢了没人管，最后靠 Lead 手工转发。</div>
+  <div class="fixline"><b>修：</b>结论写入和催办登记绑成一笔账，90 秒起自动重投直到真正取走为止。</div>
+</div>
+<div class="card gray"><span class="badge id">⑨</span>
+  <div class="title">代码在子仓库时，评审绑错对象</div>
+  <div class="fixline"><b>修：</b>评审请求可声明子仓库为被审对象（服务端校验真伪），评审记录带仓库身份。<b>边界：</b>只管「审得对」；子仓库 PR 的自动合并不在本单（见下）。</div>
+</div>
+<div class="card gray"><span class="badge id">⑩</span>
+  <div class="title">评审通过了，换个经手人查账查不到 → 合并卡死</div>
+  <div class="why">通过记录绑在写代码的人身上，合并时按持钥匙的人查——必然查空（1435 实测）。</div>
+  <div class="fixline"><b>修：</b>查账改按「单 + 代码版本 + 仓库身份」，不看经手人是谁。</div>
+</div>
+
+<h2>数据/结构模型（新增 4 张台账）</h2>
+<table>
+  <tr><th>台账</th><th>记什么</th><th>解决谁</th></tr>
+  <tr><td><code>PR 绑定台账</code></td><td>每个单每轮开发产出的 PR 号 + 代码版本 + 仓库身份</td><td>①⑤⑩ 的取数源头</td></tr>
+  <tr><td><code>PR 清单封口账</code></td><td>这单计划交付几个 PR、封口版本、逐个的合并对账</td><td>⑥ 的「全齐才收口」</td></tr>
+  <tr><td><code>ship 对象绑定账</code></td><td>你批准的那一刻，批的到底是哪个仓库哪个版本</td><td>⑤⑩ 的批准↔合并对齐</td></tr>
+  <tr><td><code>收口终审账</code></td><td>每单每版本只允许收口一次，崩溃自动续</td><td>⑥ 防重复收口/漏收口</td></tr>
+</table>
+
+<h2>关键取舍（和被否掉的方案）</h2>
+<div class="card green">
+  <ul class="tight">
+    <li><b>⑤ 选「换模板」不选「给运行中的单动手术」</b>——快照手术要造一整套迁移机器，风险大收益小（评审第 2 轮否掉）。代价：只有新单受益，存量卡死单改走 ③ 返工通道；<b>Tadashi 批复条件：两条都要真机演给你看</b>（新单全链 + 1437/1423 存量标本救援）。</li>
+    <li><b>③ 返工只开你的授权面，不开旁路</b>——返工/重启单属于本窗口你保留的动作类；QA 侧已有可信通道，不重复开口。</li>
+    <li><b>子仓库收口为「只管审对，不管自动合」</b>——issue 原文只要求评审对象声明；自动合并子仓库 PR 是评审过程长出来的范围，砍掉后少一半复杂度。子仓库 PR 由 Lead 按手册人工收尾（手册已写成一键脚本，防呆：没全合完就物理按不下终止键）。</li>
+    <li><b>4 个 PR、固定部署顺序</b>——可靠性底座（⑦⑧⑨⑩）先上，ship 链闭环（①⑤⑥）踩着它上，入口修复（②③）与重启改造（④）独立。</li>
+  </ul>
+</div>
+
+<h2>诚实边界（这单不做什么）</h2>
+<div class="card gray">
+  <ul class="tight">
+    <li>产品线（无代码交付）流程模板的批准门 → 后续单独立项。</li>
+    <li>子仓库 PR 的自动合并、以及人工合并后的自动收口 → 后续单；本单内该场景 = 明确拒绝 + Lead 按手册收尾，<b>不假装是闭环</b>。</li>
+    <li>存量卡死单不能原地升级到新模板（技术上做不到），只能返工或关单重开。</li>
+    <li>QA 递归豁免归 FLY-1261；NPM 分发版的重启面不动。</li>
+    <li>本单自己的 4 个 PR 也要「全合完才算完」——但 ⑥ 上线前只能靠 Lead 流程纪律保证，机制管不了自己的出生。</li>
+  </ul>
+</div>
+
+<h2>验收（逐项真机）</h2>
+<div class="card blue">
+  <ul class="tight">
+    <li><b>⑤（你亲测）</b>：新开一个真工程单，你在 thread 回 ship → 引擎自动合并全链走通；再用 1437/1423 标本演一次存量救援。</li>
+    <li><b>⑦</b>：复现昨晚的正常对话流量，零误报；真睡着的执行者叫不醒仍会升级（阳性对照）。</li>
+    <li><b>④</b>：<code>--bridge-only</code> 不存在；改配置重启也自动出通告。</li>
+    <li>其余各项按 plan §14 逐条复现→修→复验；三段式老流程、单 PR 单行为全程不变（回归护栏）。</li>
+  </ul>
+</div>
+
+<div class="sub" style="margin-top:24px">设计过程：Codex 设计评审 16 轮（发现并修复 47 项设计缺陷后 APPROVED）· Tadashi 三条批复条件全部折入 · 完整技术细节见 plan.md（v16）</div>
+
+</div></body>
+</html>

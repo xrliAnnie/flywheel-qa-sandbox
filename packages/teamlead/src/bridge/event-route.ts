@@ -5,6 +5,7 @@ import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import type { FounderUxGateMode } from "flywheel-config";
 import {
+	adapterTypeToFamily,
 	isDesignBackend,
 	isFounderUxGateEnabled,
 	isSkillFrameworkMode,
@@ -79,6 +80,7 @@ import {
 	runPostShipFinalization,
 } from "./post-ship-finalization.js";
 import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
+import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
@@ -708,7 +710,7 @@ export function createEventRouter(
 				const completionHeadRaw = asString(
 					rawCompletionEvidence?.headSha,
 				)?.toLowerCase();
-				const completionHead =
+				const callerCompletionHead =
 					completionHeadRaw && /^[0-9a-f]{40}$/.test(completionHeadRaw)
 						? completionHeadRaw
 						: undefined;
@@ -727,6 +729,104 @@ export function createEventRouter(
 							workflowActivation.activationId,
 						)
 					: store.getGeneralizedWorkflowNodeForExecution(event.execution_id);
+				let completionHead = callerCompletionHead;
+				let prBinding:
+					| {
+							prNumber: number;
+							headSha: string;
+							targetRepoIdentity: string;
+							probeRepoSlug: string;
+							targetRepoPath: string;
+							worktreeBindingGeneration: string;
+					  }
+					| undefined;
+				if (generalizedContext) {
+					const landing =
+						rawCompletionEvidence?.landingStatus &&
+						typeof rawCompletionEvidence.landingStatus === "object" &&
+						!Array.isArray(rawCompletionEvidence.landingStatus)
+							? (rawCompletionEvidence.landingStatus as Record<string, unknown>)
+							: undefined;
+					const prNumber = Number(landing?.prNumber);
+					const targetRepoPath = asString(landing?.targetRepoPath);
+					const hasPrEvidence =
+						landing !== undefined &&
+						Number.isSafeInteger(prNumber) &&
+						prNumber > 0;
+					if (
+						landing &&
+						!hasPrEvidence &&
+						(asString(landing.status) === "ready_to_merge" ||
+							targetRepoPath !== undefined)
+					) {
+						res.status(422).json({
+							error: "workflow_pr_binding_rejected",
+							reason: "invalid_pr_number",
+						});
+						return;
+					}
+					const worktreeBinding = store.getWorktreeBinding(event.execution_id);
+					if (worktreeBinding) {
+						try {
+							const authority = await resolveBoundRepositoryAuthority({
+								authorityRoot: worktreeBinding.path,
+								...(targetRepoPath
+									? { requestedRepoPath: targetRepoPath }
+									: {}),
+							});
+							completionHead = authority.headSha;
+							if (
+								callerCompletionHead &&
+								callerCompletionHead !== authority.headSha
+							) {
+								console.warn(
+									`[event-route] rejected caller PR head ${callerCompletionHead} for ${event.execution_id}; server authority is ${authority.headSha}`,
+								);
+							} else if (
+								hasPrEvidence &&
+								callerCompletionHead === authority.headSha
+							) {
+								prBinding = {
+									prNumber,
+									headSha: authority.headSha,
+									targetRepoIdentity: authority.identity,
+									probeRepoSlug: authority.probeRepoSlug,
+									targetRepoPath: authority.path,
+									worktreeBindingGeneration: worktreeBinding.generation,
+								};
+							} else if (hasPrEvidence) {
+								console.warn(
+									`[event-route] generalized PR #${prNumber} for ${event.execution_id} was not bound because evidence.headSha is missing`,
+								);
+							}
+						} catch (error) {
+							completionHead = undefined;
+							if (hasPrEvidence) {
+								res.status(422).json({
+									error: "workflow_pr_binding_rejected",
+									reason: "repository_authority_unavailable",
+									detail:
+										error instanceof Error ? error.message : String(error),
+								});
+								return;
+							}
+							console.warn(
+								`[event-route] generalized PR authority unavailable for ${event.execution_id}; completion continues without PR evidence: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					} else if (hasPrEvidence) {
+						res.status(422).json({
+							error: "workflow_pr_binding_rejected",
+							reason: "worktree_binding_missing",
+						});
+						return;
+					} else if (landing || callerCompletionHead) {
+						completionHead = undefined;
+						console.warn(
+							`[event-route] generalized PR evidence ignored for ${event.execution_id}: immutable worktree binding missing`,
+						);
+					}
+				}
 				let alertIdentity:
 					| {
 							leadId: string;
@@ -764,6 +864,7 @@ export function createEventRouter(
 					completionSubmission: event.payload ?? {},
 					...(completionHead ? { subjectDigest: completionHead } : {}),
 					...(workflowActivation ? { workflowActivation } : {}),
+					...(prBinding ? { prBinding } : {}),
 					alertIdentity,
 				});
 				if (
@@ -1243,7 +1344,7 @@ export function createEventRouter(
 					| undefined;
 				const route = asString(decision?.route);
 				const landingStatus = evidence?.landingStatus as
-					| { status?: string }
+					| { status?: string; prNumber?: number }
 					| undefined;
 
 				// FLY-123 (Codex design review R1 #4): persist adapter session-
@@ -1573,12 +1674,73 @@ export function createEventRouter(
 					prHeadShaRaw && /^[0-9a-f]{40}$/.test(prHeadShaRaw)
 						? prHeadShaRaw
 						: undefined;
+				let reviewShipTarget:
+					| {
+							runId?: string;
+							sourceRequestId?: string;
+							targetRepoPath: string;
+							targetRepoIdentity: string;
+							probeRepoSlug: string;
+							worktreeBindingGeneration: string;
+					  }
+					| undefined;
+				if (status === "awaiting_review" && reviewQuestionId && prHeadSha) {
+					const worktreeBinding = store.getWorktreeBinding(event.execution_id);
+					if (worktreeBinding) {
+						try {
+							const requestedRepoPath = asString(
+								(evidence?.landingStatus as Record<string, unknown> | undefined)
+									?.targetRepoPath,
+							);
+							const authority = await resolveBoundRepositoryAuthority({
+								authorityRoot: worktreeBinding.path,
+								...(requestedRepoPath ? { requestedRepoPath } : {}),
+							});
+							if (authority.headSha !== prHeadSha) {
+								throw new Error("review_ship_target_head_mismatch");
+							}
+							const source = store.findApprovedReviewShipTargetSource({
+								projectName: event.project_name,
+								issueId: event.issue_id,
+								targetRepoIdentity: authority.identity,
+								targetPrHeadSha: authority.headSha,
+							});
+							const isClaudeLegacyMain =
+								authority.identity === "__main__" &&
+								adapterTypeToFamily(existingSession?.adapter_type) === "claude";
+							if (source.status === "resolved" || isClaudeLegacyMain) {
+								const workflowRunId = store.getWorkflowRunIdForExecution(
+									event.execution_id,
+								);
+								reviewShipTarget = {
+									...(workflowRunId ? { runId: workflowRunId } : {}),
+									...(source.status === "resolved" && source.sourceRequestId
+										? { sourceRequestId: source.sourceRequestId }
+										: {}),
+									targetRepoPath: authority.path,
+									targetRepoIdentity: authority.identity,
+									probeRepoSlug: authority.probeRepoSlug,
+									worktreeBindingGeneration: worktreeBinding.generation,
+								};
+							} else {
+								console.warn(
+									`[event-route] review ship target unavailable for ${event.execution_id}: approved review source ${source.status}`,
+								);
+							}
+						} catch (error) {
+							console.warn(
+								`[event-route] review ship target unavailable for ${event.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					}
+				}
 				// (reviewQuestionId validated above the status mapping — FLY-945.)
 				const writeReviewBinding = (): void => {
 					if (status !== "awaiting_review") return;
 					store.setReviewBinding(event.execution_id, {
 						questionId: reviewQuestionId ?? null,
 						prHeadSha: prHeadSha ?? null,
+						...(reviewShipTarget ? { shipTarget: reviewShipTarget } : {}),
 					});
 				};
 
@@ -1884,6 +2046,17 @@ export function createEventRouter(
 					runPostShipFinalization(
 						{
 							executionId: event.execution_id,
+							runId: store.getWorkflowRunIdForExecution(event.execution_id),
+							...(Number.isInteger(landingStatus?.prNumber) &&
+							landingStatus!.prNumber! > 0 &&
+							!!erPrHead
+								? {
+										mergedPr: {
+											prNumber: landingStatus!.prNumber!,
+											headSha: erPrHead,
+										},
+									}
+								: {}),
 							issueId: event.issue_id,
 							issueIdentifier: asString(payload.issueIdentifier) || undefined,
 							projectName: event.project_name,
@@ -2340,6 +2513,19 @@ export function createEventRouter(
 								runPostShipFinalization(
 									{
 										executionId: event.execution_id,
+										runId: store.getWorkflowRunIdForExecution(
+											event.execution_id,
+										),
+										...(Number.isInteger(landingStatus.prNumber) &&
+										landingStatus.prNumber! > 0 &&
+										!!w2PrHead
+											? {
+													mergedPr: {
+														prNumber: landingStatus.prNumber!,
+														headSha: w2PrHead,
+													},
+												}
+											: {}),
 										issueId: event.issue_id,
 										issueIdentifier:
 											sessionAtStage?.issue_identifier ??
@@ -2455,6 +2641,17 @@ export function createEventRouter(
 				`[event-route] Session update failed for ${event.execution_id}:`,
 				err,
 			);
+			if (
+				err instanceof Error &&
+				err.message.startsWith("workflow_ship_target_binding_")
+			) {
+				res.status(409).json({
+					ok: false,
+					error: "review_ship_target_binding_rejected",
+					reason: err.message,
+				});
+				return;
+			}
 			// Event is already stored — return success with a warning rather than 500
 			// so retries don't get stuck on duplicate detection
 			res.json({ ok: true, warning: "event stored but session update failed" });

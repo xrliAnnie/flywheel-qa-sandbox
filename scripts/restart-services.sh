@@ -2,7 +2,7 @@
 # FLY-20: Auto-restart Bridge + Lead after merge.
 # Core restart script: diff analysis → idle wait → build → restart → health check → notify.
 #
-# Usage: restart-services.sh [--force] [--wait-idle] [--dry-run] [--bridge-only]
+# Usage: restart-services.sh [--force] [--wait-idle] [--dry-run] [--reason <text>]
 #   --force:       kept for back-compat — skipping the idle wait is now the
 #                  DEFAULT (FLY-1224 founder directive). When given together
 #                  with --wait-idle, --force wins (idle wait skipped).
@@ -10,11 +10,8 @@
 #                  pre-FLY-1224 default). Env FLYWHEEL_RESTART_WAIT_IDLE=1 is
 #                  equivalent.
 #   --dry-run:     print plan, don't execute
-#   --bridge-only: FLY-1142 sanctioned env-reload path — restart ONLY the
-#                  Bridge in place (stop → start → health check). No build,
-#                  no deployed-sha reads/writes, no Lead restarts, no plugin
-#                  update, no deploy notifications. For pure ~/.flywheel/.env
-#                  changes that a no-code-delta deploy would otherwise skip.
+#   --reason:      operator-visible reason included in automatic start/finish
+#                  notices (default: manual; examples: deploy, env-change).
 #
 # Called by:
 #   1. Orchestrator/spin post-merge bookkeeping (main path)
@@ -74,10 +71,26 @@ record_deployed_range() {
     return 0
 }
 PLUGIN_RESTART_PENDING="${HOME}/.flywheel/plugin-restart-pending"
+LEADS_RESTART_STATUS_FILE="${HOME}/.flywheel/leads-restart-status.json"
 
 MAX_WAIT_SECONDS="${RESTART_MAX_WAIT:-300}"   # 5 minutes default (env override: RESTART_MAX_WAIT)
 POLL_INTERVAL=30        # seconds between idle checks
 BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
+LEAD_STOP_WAIT_SECONDS="${RESTART_LEAD_STOP_WAIT_SECONDS:-60}"
+LEAD_VERIFY_ATTEMPTS="${RESTART_LEAD_VERIFY_ATTEMPTS:-30}"
+LEAD_VERIFY_INTERVAL="${RESTART_LEAD_VERIFY_INTERVAL:-2}"
+if [[ ! "$LEAD_STOP_WAIT_SECONDS" =~ ^[0-9]+$ ]]; then
+    echo "[restart] WARNING: invalid RESTART_LEAD_STOP_WAIT_SECONDS; using 60" >&2
+    LEAD_STOP_WAIT_SECONDS=60
+fi
+if [[ ! "$LEAD_VERIFY_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[restart] WARNING: invalid RESTART_LEAD_VERIFY_ATTEMPTS; using 30" >&2
+    LEAD_VERIFY_ATTEMPTS=30
+fi
+if [[ ! "$LEAD_VERIFY_INTERVAL" =~ ^[0-9]+$ ]]; then
+    echo "[restart] WARNING: invalid RESTART_LEAD_VERIFY_INTERVAL; using 2" >&2
+    LEAD_VERIFY_INTERVAL=2
+fi
 
 # ════════════════════════════════════════════════════════════════
 # Env loading
@@ -100,6 +113,51 @@ fi
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart] $*"
+}
+
+file_mtime_epoch() {
+    local path="$1" mtime
+    if mtime=$(stat -f %m "$path" 2>/dev/null) && [[ "$mtime" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$mtime"
+        return 0
+    fi
+    if mtime=$(stat -c %Y "$path" 2>/dev/null) && [[ "$mtime" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$mtime"
+        return 0
+    fi
+    return 1
+}
+
+# FLY-1434: code deployment truth and Lead restart health are independent.
+# deployed-sha records which code is active; this atomic status record preserves
+# degraded Lead evidence without lying that the code failed to deploy.
+write_leads_restart_status() {
+    local status="$1" failed="$2" skipped="$3"
+    local status_dir tmp
+    status_dir="$(dirname "$LEADS_RESTART_STATUS_FILE")"
+    mkdir -p "$status_dir" || return 1
+    tmp=$(mktemp "${status_dir}/.leads-restart-status.XXXXXX") || return 1
+    if ! jq -n \
+        --arg sha "$CURRENT_HEAD" \
+        --arg status "$status" \
+        --arg reason "$RESTART_REASON" \
+        --arg recordedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --argjson failed "$failed" \
+        --argjson skipped "$skipped" \
+        '{
+          schemaVersion: 1,
+          codeDeployedSha: $sha,
+          leadsRestartStatus: $status,
+          failed: $failed,
+          skipped: $skipped,
+          reason: $reason,
+          recordedAt: $recordedAt
+        }' > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$LEADS_RESTART_STATUS_FILE"
 }
 
 # Discord-INDEPENDENT trace (desktop + <state>/meta-alert file; per-reason
@@ -409,7 +467,7 @@ PROJECT_SHA_UPDATES_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-project-sha-XXXXXX")
 
 FORCE=false
 DRY_RUN=false
-BRIDGE_ONLY=false
+RESTART_REASON="manual"
 # FLY-1224 (founder directive): the idle wait is DEFAULT-OFF. `--wait-idle`
 # or env FLYWHEEL_RESTART_WAIT_IDLE=1 restores the old waiting behavior;
 # `--force` is kept as an accepted flag (its old meaning — skip the wait — is
@@ -421,7 +479,14 @@ while [[ $# -gt 0 ]]; do
         --force) FORCE=true; shift ;;
         --wait-idle) WAIT_IDLE=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
-        --bridge-only) BRIDGE_ONLY=true; shift ;;
+        --reason)
+            [[ $# -ge 2 && -n "$2" && "$2" != *$'\n'* && "$2" != *$'\r'* ]] || {
+                log "ERROR: --reason requires one non-empty line of text"
+                exit 1
+            }
+            RESTART_REASON="$2"
+            shift 2
+            ;;
         *) log "ERROR: Unknown argument '$1'"; exit 1 ;;
     esac
 done
@@ -434,16 +499,15 @@ if [[ "$FORCE" == "true" && "$WAIT_IDLE" == "true" ]]; then
     WAIT_IDLE=false
 fi
 
-# FLY-1142: every mode/impact flag gets a default BEFORE any guarded section.
-# --bridge-only skips the detection + classification blocks below, and under
-# `set -u` any later reference (idle-wait guard, Main branch selection) to a
-# variable those blocks would have set must not die on "unbound variable".
-PLUGIN_ONLY_RESTART=false
+# FLY-1434: restart scope is no longer classified. These flags only decide
+# whether a build/install is needed; every legal invocation restarts the Bridge
+# and all Leads.
 plugin_needs_restart=false
 project_lead_changed=false
 restart_bridge=false
 restart_all_leads=false
 need_install=false
+SKIP_BUILD=false
 
 # ════════════════════════════════════════════════════════════════
 # Mutual exclusion lock
@@ -452,8 +516,9 @@ need_install=false
 acquire_lock() {
     if ! mkdir "$LOCK_DIR" 2>/dev/null; then
         # Check if lock is stale (>2 hours)
-        local lock_age
-        lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0) ))
+        local lock_age lock_mtime
+        lock_mtime=$(file_mtime_epoch "$LOCK_DIR" 2>/dev/null || echo 0)
+        lock_age=$(( $(date +%s) - lock_mtime ))
         if (( lock_age > 7200 )); then
             log "Stale lock detected (${lock_age}s), breaking."
             rmdir "$LOCK_DIR" 2>/dev/null || true
@@ -471,11 +536,6 @@ acquire_lock
 # ════════════════════════════════════════════════════════════════
 # Discord plugin detection — marker + fork check
 # ════════════════════════════════════════════════════════════════
-
-# FLY-1142: --bridge-only skips plugin fork/update, project .lead/ scanning
-# and the whole deployed-sha gate + diff classification — it is a pure
-# in-place Bridge bounce for env reloads, never a deploy.
-if [[ "$BRIDGE_ONLY" != "true" ]]; then
 
 # Check for pending plugin-only restart retry
 if [[ -f "$PLUGIN_RESTART_PENDING" ]]; then
@@ -505,26 +565,13 @@ DEPLOYED_SHA=$(cat "$DEPLOYED_SHA_FILE" 2>/dev/null || echo "")
 CURRENT_HEAD=$(git -C "$FLYWHEEL_DIR" rev-parse HEAD)
 
 if [[ "$DEPLOYED_SHA" == "$CURRENT_HEAD" ]]; then
-    if [[ "$plugin_needs_restart" == "true" || "$project_lead_changed" == "true" ]]; then
-        # Dry-run guard for lead-only restart path
-        if [[ "$DRY_RUN" == "true" ]]; then
-            log "DRY RUN: Would restart Leads (plugin=$plugin_needs_restart project_lead=$project_lead_changed)"
-            [[ -f "$PLUGIN_RESTART_PENDING" ]] && log "DRY RUN: Marker exists, would retry"
-            exit 0
-        fi
-        PLUGIN_ONLY_RESTART=true
-        # Fall through to Main section (do_restart_all_leads is defined below)
-    else
-        log "Already deployed at ${CURRENT_HEAD:0:7}, exiting."
-        exit 0
-    fi
+    log "Already built at ${CURRENT_HEAD:0:7}; skipping build, continuing full restart."
+    SKIP_BUILD=true
 fi
 
 # ════════════════════════════════════════════════════════════════
-# Diff classification (skipped when plugin-only restart)
+# Diff classification (build/install only; never restart scope)
 # ════════════════════════════════════════════════════════════════
-
-if [[ "$PLUGIN_ONLY_RESTART" != "true" ]]; then
 
 # Bootstrap: deployed-sha not found → first run, force full restart
 FIRST_RUN=false
@@ -584,13 +631,12 @@ if [[ "$FIRST_RUN" == "true" ]]; then
 else
     CHANGED=$(git -C "$FLYWHEEL_DIR" diff --name-only "$DEPLOYED_SHA" "$CURRENT_HEAD")
     if [[ -z "$CHANGED" ]]; then
-        log "No file changes between ${DEPLOYED_SHA:0:7} and ${CURRENT_HEAD:0:7}, exiting."
-        record_deployed_range "$DEPLOYED_SHA" "$CURRENT_HEAD"
-        echo "$CURRENT_HEAD" > "$DEPLOYED_SHA_FILE"
-        exit 0
+        log "No build-relevant changes; skipping build, continuing full restart."
+        SKIP_BUILD=true
+    else
+        eval "$(classify_changes)"
+        log "Diff analysis: bridge=$restart_bridge leads=$restart_all_leads install=$need_install"
     fi
-    eval "$(classify_changes)"
-    log "Diff analysis: bridge=$restart_bridge leads=$restart_all_leads install=$need_install"
 fi
 
 # Merge plugin update + project .lead/ change flags into diff classification result
@@ -598,23 +644,20 @@ if [[ "$plugin_needs_restart" == "true" || "$project_lead_changed" == "true" ]];
     restart_all_leads=true
 fi
 
-if [[ "$restart_bridge" == "false" && "$restart_all_leads" == "false" ]]; then
-    log "No services affected by changes. Updating deployed-sha only."
-    record_deployed_range "$DEPLOYED_SHA" "$CURRENT_HEAD"
-    echo "$CURRENT_HEAD" > "$DEPLOYED_SHA_FILE"
-    exit 0
+if [[ "$restart_bridge" == "false" && "$restart_all_leads" == "false" && "$need_install" == "false" ]]; then
+    SKIP_BUILD=true
 fi
 
+# FLY-1434: the only restart scope is full fleet.
+restart_bridge=true
+restart_all_leads=true
+
 if [[ "$DRY_RUN" == "true" ]]; then
-    log "DRY RUN: Would restart bridge=$restart_bridge leads=$restart_all_leads install=$need_install"
+    log "DRY RUN: Would restart Bridge + all Leads (reason=$RESTART_REASON build=$([[ "$SKIP_BUILD" == "true" ]] && echo skip || echo run) install=$need_install)"
     log "DRY RUN: Changes since ${DEPLOYED_SHA:0:7}:"
     echo "${CHANGED:-"(first run)"}" | head -20
     exit 0
 fi
-
-fi  # end PLUGIN_ONLY_RESTART guard
-
-fi  # end BRIDGE_ONLY guard (FLY-1142)
 
 # ════════════════════════════════════════════════════════════════
 # Idle wait
@@ -669,14 +712,7 @@ wait_for_idle() {
             else
                 zero_streak=0   # any active session resets the stabilization streak
                 if (( elapsed == 0 || elapsed % 300 == 0 )); then
-                    # FLY-1142 (Codex code R1 MEDIUM-1): --bridge-only promises
-                    # ZERO deploy notifications — the busy-wait progress notice
-                    # must stay a local log there, not a Discord post.
-                    if [[ "$BRIDGE_ONLY" == "true" ]]; then
-                        log "waiting for ${count} active session(s) to idle... (${elapsed}s/${MAX_WAIT_SECONDS}s)"
-                    else
-                        notify_routine "⏳ 等待 ${count} 个 active session idle... (${elapsed}s/${MAX_WAIT_SECONDS}s)"
-                    fi
+                    notify_routine "⏳ 等待 ${count} 个 active session idle... (${elapsed}s/${MAX_WAIT_SECONDS}s)"
                 fi
             fi
         fi
@@ -687,10 +723,8 @@ wait_for_idle() {
     return 1
 }
 
-# FLY-1142: --bridge-only runs its own single wait_for_idle inside its Main
-# branch (after the dry-run early-exit), so it is excluded here.
 # FLY-1224: the idle wait is opt-in (--wait-idle / FLYWHEEL_RESTART_WAIT_IDLE=1).
-if [[ "$BRIDGE_ONLY" != "true" && "$PLUGIN_ONLY_RESTART" != "true" && "$restart_bridge" == "true" && "$WAIT_IDLE" == "true" ]]; then
+if [[ "$WAIT_IDLE" == "true" ]]; then
     log "Waiting for idle sessions before restart..."
     if ! wait_for_idle; then
         log "Proceeding with restart after idle timeout"
@@ -858,6 +892,27 @@ start_bridge() {
 # Lead restart
 # ════════════════════════════════════════════════════════════════
 
+# Outcome probe for a launchd-managed Lead. A successful kickstart command is
+# not sufficient, and a slow old PID is not itself a failure: the authority is
+# a replacement launchd PID plus a responsive, non-dead Lead tmux window.
+VERIFIED_LEAD_PID=""
+launchd_lead_outcome_ready() {
+    local daemon_target="$1" project_name="$2" lead_id="$3" old_pid="${4:-}"
+    local launchd_state daemon_pid window probe
+    launchd_state=$(launchctl print "$daemon_target" 2>/dev/null) || return 1
+    daemon_pid=$(printf '%s\n' "$launchd_state" | grep -m1 'pid =' | awk '{print $NF}' || true)
+    [[ "$daemon_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    if [[ "$old_pid" =~ ^[1-9][0-9]*$ && "$daemon_pid" == "$old_pid" ]]; then
+        return 1
+    fi
+    command -v tmux >/dev/null 2>&1 || return 1
+    window="${project_name}-${lead_id}"
+    probe=$(tmux display-message -p -t "=flywheel:=${window}" '#{window_name} #{pane_dead}' 2>/dev/null) || return 1
+    [[ "$probe" == "${window} 0" ]] || return 1
+    VERIFIED_LEAD_PID="$daemon_pid"
+    return 0
+}
+
 # Returns: 0=success, 1=error
 # Args: <manifest_path>  (caller passes the manifest directly, no re-globbing)
 restart_lead() {
@@ -908,16 +963,24 @@ restart_lead() {
         fi
     fi
 
+    local daemon_key="${project_name}-${lead_id}"
+    local daemon_label="com.flywheel.lead.${daemon_key}"
+    local daemon_target="gui/$(id -u)/${daemon_label}"
+    local launchd_managed=false
+    if launchctl print "$daemon_target" &>/dev/null; then
+        launchd_managed=true
+    fi
+
     # Use PID file for precise supervisor targeting
     local pid_file="${HOME}/.flywheel/pids/${project_name}-${lead_id}.pid"
+    local old_pid=""
     if [[ -f "$pid_file" ]]; then
-        local pid
-        pid=$(cat "$pid_file")
-        if kill -0 "$pid" 2>/dev/null; then
-            log "Stopping Lead $lead_id (supervisor PID $pid)..."
-            kill -TERM "$pid"
+        old_pid=$(cat "$pid_file")
+        if kill -0 "$old_pid" 2>/dev/null; then
+            log "Stopping Lead $lead_id (supervisor PID $old_pid)..."
+            kill -TERM "$old_pid" 2>/dev/null || true
             local wait_count=0
-            while kill -0 "$pid" 2>/dev/null && (( wait_count < 60 )); do
+            while kill -0 "$old_pid" 2>/dev/null && (( wait_count < LEAD_STOP_WAIT_SECONDS )); do
                 sleep 1
                 # FLY-239: assignment form, not `((wait_count++))` — the latter
                 # exits 1 on the first pass (n=0) and `set -e` would abort the
@@ -925,12 +988,15 @@ restart_lead() {
                 # point). Same footgun fixed in stop_bridge.
                 wait_count=$((wait_count + 1))
             done
-            # Fail-fast: refuse to start new supervisor if old is still alive
-            if kill -0 "$pid" 2>/dev/null; then
-                log "ERROR: Old supervisor for $lead_id (PID $pid) still alive after 60s"
-                alert_warning "supervisor-stuck-${lead_id}" "Lead supervisor stuck" \
-                    "Lead $lead_id 旧 supervisor (PID $pid) 60s 后仍未退出，跳过重启避免双启动"
-                return 1
+            if kill -0 "$old_pid" 2>/dev/null; then
+                if [[ "$launchd_managed" == "true" ]]; then
+                    log "WARNING: Old supervisor for $lead_id (PID $old_pid) still alive after ${LEAD_STOP_WAIT_SECONDS}s; continuing with launchd kickstart and judging the replacement outcome"
+                else
+                    log "ERROR: Old supervisor for $lead_id (PID $old_pid) still alive after ${LEAD_STOP_WAIT_SECONDS}s"
+                    alert_warning "supervisor-stuck-${lead_id}" "Lead supervisor stuck" \
+                        "Lead $lead_id 旧 supervisor (PID $old_pid) ${LEAD_STOP_WAIT_SECONDS}s 后仍未退出，且没有 launchd replacement authority，跳过重启避免双启动"
+                    return 1
+                fi
             fi
         fi
         rm -f "$pid_file"
@@ -953,16 +1019,35 @@ restart_lead() {
     # FLY-74: If this Lead is managed by launchd daemon, use kickstart instead
     # of nohup to avoid double-start (launchd KeepAlive would respawn alongside
     # the nohup'd instance).
-    local daemon_key="${project_name}-${lead_id}"
-    local daemon_label="com.flywheel.lead.${daemon_key}"
-    if launchctl print "gui/$(id -u)/${daemon_label}" &>/dev/null; then
+    if [[ "$launchd_managed" == "true" ]]; then
         log "Lead $lead_id is managed by launchd — using kickstart"
-        launchctl kickstart -k "gui/$(id -u)/${daemon_label}"
-        sleep 3
-        local daemon_pid
-        daemon_pid=$(launchctl print "gui/$(id -u)/${daemon_label}" 2>/dev/null | grep -m1 'pid =' | awk '{print $NF}' || true)
-        log "Lead $lead_id restarted via launchd (PID ${daemon_pid:-unknown})"
-        return 0
+        local kickstart_rc=0
+        launchctl kickstart -k "$daemon_target" >/dev/null 2>&1 || kickstart_rc=$?
+        if (( kickstart_rc != 0 )); then
+            log "WARNING: launchctl kickstart returned $kickstart_rc for $lead_id; probing the actual replacement outcome before deciding"
+        fi
+
+        local attempt
+        for (( attempt=1; attempt<=LEAD_VERIFY_ATTEMPTS; attempt++ )); do
+            if launchd_lead_outcome_ready "$daemon_target" "$project_name" "$lead_id" "$old_pid"; then
+                log "Lead $lead_id restarted via launchd (PID $VERIFIED_LEAD_PID, responsive session verified)"
+                return 0
+            fi
+            (( attempt < LEAD_VERIFY_ATTEMPTS )) && sleep "$LEAD_VERIFY_INTERVAL"
+        done
+
+        # Required final re-probe: do not turn a slow replacement into a false
+        # failure merely because the bounded verification window just elapsed.
+        log "WARNING: Lead $lead_id replacement not yet healthy after ${LEAD_VERIFY_ATTEMPTS} probes; performing final re-probe"
+        sleep "$LEAD_VERIFY_INTERVAL"
+        if launchd_lead_outcome_ready "$daemon_target" "$project_name" "$lead_id" "$old_pid"; then
+            log "Lead $lead_id restarted via launchd on final re-probe (PID $VERIFIED_LEAD_PID, responsive session verified)"
+            return 0
+        fi
+        log "ERROR: Lead $lead_id launchd replacement has no new supervisor + responsive session after final re-probe"
+        alert_warning "lead-restart-failed-${lead_id}" "Lead restart failed" \
+            "Lead $lead_id launchd replacement 最终复验仍无新 supervisor + responsive tmux session (kickstart_rc=$kickstart_rc)"
+        return 1
     fi
 
     # Legacy path: manual nohup (Lead not daemon-managed)
@@ -1069,13 +1154,13 @@ do_restart_all_leads() {
     # a corrupted wrapper takes the fleet down (2026-07-06: 12-byte stub +
     # KeepAlive throttling = 13 Leads offline). FAIL-LOUD: if convergence
     # cannot leave bin healthy, refuse the whole Lead restart wave (reported
-    # through the existing skipped/failed stdout contract; deploy aborts and
-    # deployed-sha does not advance).
+    # through the existing skipped/failed stdout contract; code deployment
+    # truth still advances while Lead health is recorded degraded).
     # Codex code R1 MEDIUM: report the refusal through the stdout contract and
     # return 0 — all three call sites capture this function via $( ) under
     # `set -e`, so a non-zero return would kill the whole script at the
     # assignment, skipping the existing failed>0 handling (deploy-failure
-    # notification + deployed-sha hold + plugin-only retry marker).
+    # notification + degraded Lead-status evidence + plugin-only retry marker).
     local _conv_dir
     _conv_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [ -f "${_conv_dir}/converge-flywheel-bin.sh" ]; then
@@ -1119,8 +1204,8 @@ do_restart_all_leads() {
     # FLY-231 fail-closed resolver: only restart manifests whose (projectName,
     # leadId) match the HOST production projects.json. Skip test-slot-owned
     # manifests (leadId flywheel-test-*) WITHOUT counting them — they must not
-    # block deployed-sha advance. Any OTHER non-matching manifest (config drift /
-    # removed projects entry / typo) counts as failed → blocks sha advance + alerts,
+    # degrade Lead restart status. Any OTHER non-matching manifest (config drift /
+    # removed projects entry / typo) counts as failed → degraded status + alerts,
     # instead of being silently restarted into claude-lead.sh's notfound fail-STOP
     # (Codex R6 BLOCKER-1). "Cannot match" is NEVER treated as test-slot.
     for mf in ${manifests[@]+"${manifests[@]}"}; do
@@ -1141,7 +1226,7 @@ do_restart_all_leads() {
                 ;;
             *)  # fail — config drift / removed entry / typo / loadProjects error.
                 # NOT a test slot and NOT a host-config match → block deploy
-                # (counts as failed → deployed-sha not advanced + Annie alerted).
+                # (counts as failed → degraded status + Annie alerted).
                 log "ERROR: manifest $mf (project=$pn lead=$lid) is NOT in host projects.json and is NOT a test slot — refusing to restart (config drift?). Blocking deploy." >&2
                 failed=$((failed + 1))
                 ;;
@@ -1256,7 +1341,7 @@ rollback_and_restart() {
 deploy_and_verify() {
     local restarted=()
 
-    notify_routine "🔄 开始更新 Flywheel: \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`"
+    notify_routine "🔄 开始全量重启 Flywheel (reason=${RESTART_REASON}): \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`"
 
     # Step 1: Stop Bridge FIRST (triggers stopAccepting + drain)
     # FLY-516 (Codex R1 HIGH): fail-closed — if the old Bridge's port can't be
@@ -1273,11 +1358,15 @@ deploy_and_verify() {
     fi
 
     # Step 2: Build (Bridge is stopped, no race possible)
-    if ! build_project; then
-        log "Build failed, attempting rollback"
-        rollback_and_restart "$DEPLOYED_SHA"
-        # rollback_and_restart already handles stop+start of Bridge/Leads
-        return 1
+    if [[ "$SKIP_BUILD" != "true" ]]; then
+        if ! build_project; then
+            log "Build failed, attempting rollback"
+            rollback_and_restart "$DEPLOYED_SHA"
+            # rollback_and_restart already handles stop+start of Bridge/Leads
+            return 1
+        fi
+    else
+        log "Build skipped (no build-relevant code delta)"
     fi
 
     # Step 3: Start new Bridge
@@ -1315,131 +1404,53 @@ deploy_and_verify() {
         trigger_cmux_refresh
     fi
 
-    # Step 5: Update deployed-sha
+    # Step 5: Record code deployment truth independently of Lead health.
+    # Bridge is already healthy and the new code is active at this point, so a
+    # later Lead failure must not leave deployed-sha lying about the old code.
+    record_deployed_range "$DEPLOYED_SHA" "$CURRENT_HEAD"
+    echo "$CURRENT_HEAD" > "$DEPLOYED_SHA_FILE"
+    log "deployed-sha updated to ${CURRENT_HEAD:0:7}"
+    update_project_shas
+
+    local leads_status="healthy"
+    if (( leads_failed > 0 || leads_skipped > 0 )); then
+        leads_status="degraded"
+    fi
+    if ! write_leads_restart_status "$leads_status" "$leads_failed" "$leads_skipped"; then
+        log "ERROR: code deployed but failed to persist $LEADS_RESTART_STATUS_FILE"
+        alert_severe "restart-status-write-failed" "Lead restart status write failed" \
+            "Flywheel 代码已部署到 \`${CURRENT_HEAD:0:7}\`，但无法写入 Lead restart status。请检查 $LEADS_RESTART_STATUS_FILE。"
+    fi
+
     if (( leads_failed > 0 )); then
-        log "ERROR: ${leads_failed} lead(s) failed to restart. deployed-sha NOT advanced."
+        log "ERROR: ${leads_failed} lead(s) failed to restart; code deployed; Lead restart status is degraded."
         alert_warning "leads-partial-failed" "Lead restarts partially failed" \
-            "Flywheel 更新到 \`${CURRENT_HEAD:0:7}\` 部分失败。${leads_failed} 个 Lead 重启失败。下次运行会重试。"
-        return 1
+            "Flywheel 代码已部署到 \`${CURRENT_HEAD:0:7}\` 且 deployed-sha 已推进，但 ${leads_failed} 个 Lead 重启失败；状态已记为 degraded。"
+        return 0
     fi
 
     # Clear any stale plugin-restart-pending marker after successful deploy
     rm -f "$PLUGIN_RESTART_PENDING"
 
     if (( leads_skipped > 0 )); then
-        log "WARNING: ${leads_skipped} lead(s) skipped (no manifest). deployed-sha NOT advanced."
+        log "WARNING: ${leads_skipped} lead(s) skipped (no manifest); code deployed; Lead restart status is degraded."
         alert_warning "leads-skipped-no-manifest" "Leads skipped (no manifest)" \
-            "Flywheel 部分更新到 \`${CURRENT_HEAD:0:7}\`。${leads_skipped} 个 Lead 因缺少 manifest 被跳过。请手动重启这些 Lead 一次以生成 manifest。"
+            "Flywheel 代码已部署到 \`${CURRENT_HEAD:0:7}\` 且 deployed-sha 已推进；${leads_skipped} 个 Lead 因缺少 manifest 被跳过，状态已记为 degraded。请手动重启这些 Lead 一次以生成 manifest。"
         return 0
     fi
 
-    record_deployed_range "$DEPLOYED_SHA" "$CURRENT_HEAD"
-    echo "$CURRENT_HEAD" > "$DEPLOYED_SHA_FILE"
-    log "deployed-sha updated to ${CURRENT_HEAD:0:7}"
-
-    # Update project repo deployed SHAs (FLY-43)
-    update_project_shas
-
-    notify_routine "✅ Flywheel 已更新到 \`${CURRENT_HEAD:0:7}\`。重启了: ${restarted[*]:-无}"
+    notify_routine "✅ Flywheel 全量重启完成 (reason=${RESTART_REASON})。版本 \`${CURRENT_HEAD:0:7}\`，重启了: ${restarted[*]:-无}"
 }
 
 # ════════════════════════════════════════════════════════════════
 # Main
 # ════════════════════════════════════════════════════════════════
 
-if [[ "$BRIDGE_ONLY" == "true" ]]; then
-    # FLY-1142: sanctioned env-reload path. The 2026-07-10 stopgap removal
-    # needed a Bridge bounce with ZERO code delta, and the normal deploy path
-    # exits early on "already deployed" — the only way through was a
-    # guard-bypass manual kickstart. This branch is the sanctioned road:
-    # stop → start → health check, nothing else. It never builds, never
-    # touches deployed-sha / project SHAs / the plugin marker, never restarts
-    # Leads, never sends deploy notifications, and never reuses
-    # deploy_and_verify (no rollback machinery — there is no code change to
-    # roll back).
-    log "Bridge-only restart (env reload): no build, no SHA writes, Leads untouched"
-    if [[ "$DRY_RUN" == "true" ]]; then
-        log "DRY RUN: Would restart ONLY the Bridge in place — skip the idle wait by default (pass --wait-idle or FLYWHEEL_RESTART_WAIT_IDLE=1 to wait), stop Bridge on :$(bridge_port), start via launchctl kickstart, health-check up to 60s."
-        log "DRY RUN: No build, no deployed-sha/project-sha writes, no Lead restarts, no plugin update, no deploy notifications."
-        exit 0
-    fi
-    # FLY-1224: idle wait is opt-in.
-    if [[ "$WAIT_IDLE" == "true" ]]; then
-        log "Waiting for idle sessions before bridge-only restart..."
-        if ! wait_for_idle; then
-            log "Proceeding with bridge-only restart after idle timeout"
-        fi
-    fi
-    if ! stop_bridge; then
-        log "ERROR: stop_bridge failed to free the port — aborting bridge-only restart."
-        alert_severe "bridge-only-port-stuck" "Flywheel bridge-only restart aborted" \
-            "bridge-only 重启中止: Bridge 端口未能释放,新 Bridge 无法 bind。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
-        exit 1
-    fi
-    start_bridge
-    # Same-strength health check as deploy_and_verify Step 3 (up to 60s).
-    hc_ok=false
-    for _ in $(seq 1 30); do
-        if curl -sf "$BRIDGE_URL/health" | jq -e '.ok' > /dev/null 2>&1; then
-            hc_ok=true
-            break
-        fi
-        sleep 2
-    done
-    if [[ "$hc_ok" != "true" ]]; then
-        log "ERROR: Bridge health check failed after bridge-only restart."
-        alert_severe "bridge-only-health-failed" "Flywheel bridge-only restart failed" \
-            "bridge-only 重启后 Bridge health check 60s 内未通过。Bridge 可能没起来 — 请查 /tmp/flywheel-bridge.log 与 launchctl print gui/\$(id -u)/com.flywheel.bridge。"
-        exit 1
-    fi
-    log "Bridge health check: OK"
-    log "Done (bridge-only)."
-    exit 0
+log "Starting full restart: ${DEPLOYED_SHA:0:7} → ${CURRENT_HEAD:0:7} (reason=$RESTART_REASON)"
+deploy_and_verify
+# FLY-90: Sync gbrain project Wiki (non-blocking, best-effort)
+if [[ -x "$HOME/.flywheel/bin/sync-gbrain-docs.sh" ]]; then
+    nohup "$HOME/.flywheel/bin/sync-gbrain-docs.sh" >/dev/null 2>&1 &
+    log "gbrain doc sync triggered (background PID $!)"
 fi
-
-if [[ "$PLUGIN_ONLY_RESTART" == "true" ]]; then
-    # Lead-only restart path: plugin update or project .lead/ changes (no Flywheel code change)
-    log "Lead-only restart: plugin=$plugin_needs_restart project_lead=$project_lead_changed"
-    notify_routine "🔄 Lead 重启中 (plugin=$plugin_needs_restart project_lead=$project_lead_changed)..."
-
-    lead_result=$(do_restart_all_leads)
-    leads_skipped=$(echo "$lead_result" | sed 's/.*skipped:\([0-9]*\).*/\1/')
-    leads_failed=$(echo "$lead_result" | sed 's/.*failed:\([0-9]*\).*/\1/')
-
-    # FLY-98: trigger cmux refresh after Lead-only restart
-    trigger_cmux_refresh
-
-    if (( leads_failed > 0 )); then
-        # Write retry marker — next run will retry Lead restart
-        echo "failed=$leads_failed at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PLUGIN_RESTART_PENDING"
-        alert_warning "plugin-leads-failed" "Lead restarts failed after plugin update" \
-            "Discord plugin 更新后 ${leads_failed} 个 Lead 重启失败。请检查日志。"
-        exit 1
-    fi
-    # Success (full or partial-skip) — clear retry marker
-    rm -f "$PLUGIN_RESTART_PENDING"
-    # Update project repo deployed SHAs (FLY-43)
-    update_project_shas
-    if (( leads_skipped > 0 )); then
-        alert_warning "plugin-leads-skipped" "Leads skipped after plugin update" \
-            "Discord plugin 更新后 ${leads_skipped} 个 Lead 跳过（无 manifest）。请手动重启。"
-        exit 0
-    fi
-    notify_routine "✅ Lead 重启完成 (plugin=$plugin_needs_restart project_lead=$project_lead_changed)。"
-    # FLY-90: Sync gbrain project Wiki (non-blocking, best-effort)
-    if [[ -x "$HOME/.flywheel/bin/sync-gbrain-docs.sh" ]]; then
-        nohup "$HOME/.flywheel/bin/sync-gbrain-docs.sh" >/dev/null 2>&1 &
-        log "gbrain doc sync triggered (background PID $!)"
-    fi
-    log "Done."
-else
-    # Normal deploy path
-    log "Starting restart: ${DEPLOYED_SHA:0:7} → ${CURRENT_HEAD:0:7} (bridge=$restart_bridge leads=$restart_all_leads)"
-    deploy_and_verify
-    # FLY-90: Sync gbrain project Wiki (non-blocking, best-effort)
-    if [[ -x "$HOME/.flywheel/bin/sync-gbrain-docs.sh" ]]; then
-        nohup "$HOME/.flywheel/bin/sync-gbrain-docs.sh" >/dev/null 2>&1 &
-        log "gbrain doc sync triggered (background PID $!)"
-    fi
-    log "Done."
-fi
+log "Done."

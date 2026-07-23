@@ -11,10 +11,12 @@
  * Action Gate rule. Gated by `BRIDGE_DEPT_SCOPE_REJECT` env var (default on).
  */
 
+import { execFile } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { Router } from "express";
 import type {
 	DesignBackend,
@@ -49,7 +51,11 @@ import {
 	resolveCanonicalProjectName,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
-import type { Session, StateStore } from "../StateStore.js";
+import type {
+	Session,
+	StateStore,
+	WorkflowStartReservationRow,
+} from "../StateStore.js";
 import {
 	canonicalizeEngTier,
 	canonicalizeRoutingOverrides,
@@ -89,6 +95,7 @@ import {
 	waitForGeneralizedLaunchDelivery,
 } from "./generalized-launch-recovery.js";
 import { resolveLifecycleRootKey } from "./lifecycle-root-key.js";
+import { loopbackSelfOrigin } from "./loopback-origin.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
 import { collectRunQuiescenceEvidence } from "./run-quiescence.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
@@ -106,6 +113,100 @@ import {
 /** Poll interval / max wait for chat thread_id to appear on session (FLY-91). */
 const THREAD_POLL_INTERVAL_MS = 500;
 const THREAD_POLL_MAX_MS = 5000;
+const execFileAsync = promisify(execFile);
+
+interface RunCloseoutMergeProof {
+	probeRepoSlug: string;
+	prNumber: number;
+	headSha: string;
+	state: "MERGED";
+}
+
+async function probeRunCloseoutMerge(input: {
+	probeRepoSlug: string;
+	prNumber: number;
+}): Promise<RunCloseoutMergeProof> {
+	const { stdout } = await execFileAsync(
+		"gh",
+		[
+			"pr",
+			"view",
+			String(input.prNumber),
+			"--repo",
+			input.probeRepoSlug,
+			"--json",
+			"state,headRefOid",
+		],
+		{ timeout: 20_000 },
+	);
+	const parsed = JSON.parse(stdout) as {
+		state?: unknown;
+		headRefOid?: unknown;
+	};
+	const state =
+		typeof parsed.state === "string" ? parsed.state.toUpperCase() : "";
+	const headSha =
+		typeof parsed.headRefOid === "string"
+			? parsed.headRefOid.toLowerCase()
+			: "";
+	if (state !== "MERGED" || !/^[0-9a-f]{40}$/.test(headSha)) {
+		throw new Error("nested closeout PR is not provably merged");
+	}
+	return {
+		probeRepoSlug: input.probeRepoSlug,
+		prNumber: input.prNumber,
+		headSha,
+		state: "MERGED",
+	};
+}
+
+type WorkflowStartReplayInspection =
+	| { ok: true }
+	| {
+			ok: false;
+			reason: "run_not_active";
+			runStatus: string;
+	  }
+	| { ok: false; reason: "start_attempt_not_current" };
+
+/**
+ * FLY-1434: a start reservation is replayable only while its exact attempt is
+ * still the active engine owner. The cached HTTP response is evidence that a
+ * launch once happened, not authority to claim that it would launch now.
+ */
+function inspectWorkflowStartReplay(
+	store: StateStore,
+	reservation: WorkflowStartReservationRow,
+): WorkflowStartReplayInspection {
+	const run = store.getWorkflowRun(reservation.run_id);
+	if (!run || run.status !== "active") {
+		return {
+			ok: false,
+			reason: "run_not_active",
+			runStatus: run?.status ?? "not_found",
+		};
+	}
+	const node = store.getWorkflowRunNode(
+		reservation.run_id,
+		reservation.node_id,
+		reservation.attempt,
+	);
+	const activation = store.getWorkflowActivationForAttempt({
+		executionId: reservation.execution_id,
+		runId: reservation.run_id,
+		nodeId: reservation.node_id,
+		attempt: reservation.attempt,
+	});
+	if (
+		run.current_node_id !== reservation.node_id ||
+		node?.execution_id !== reservation.execution_id ||
+		(node.state !== "admitted" && node.state !== "running") ||
+		!activation
+	) {
+		return { ok: false, reason: "start_attempt_not_current" };
+	}
+	return { ok: true };
+}
 
 /**
  * FLY-123 QA Finding 3: ghost-start guard deadline. Reuses FLY-205's
@@ -224,7 +325,35 @@ export function createRunsRouter(
 	staleBlockerGuard?: {
 		handleActiveBlocker(blocker: Session): Promise<{ proceed: boolean }>;
 	},
-	auth?: { masterToken?: string; scopedToken?: string },
+	auth?: {
+		masterToken?: string;
+		scopedToken?: string;
+		authorizeRework?: (input: {
+			runId: string;
+			requestedReason: string;
+			leadId?: string;
+		}) => Promise<
+			| {
+					ok: true;
+					consent: {
+						mode: "off" | "audit_only" | "enforce";
+						decision: string;
+						auditId?: number;
+					};
+			  }
+			| {
+					ok: false;
+					status: 403 | 503;
+					code: string;
+					reason?: string;
+					auditId?: number;
+			  }
+		>;
+		probeMergedPr?: (input: {
+			probeRepoSlug: string;
+			prNumber: number;
+		}) => Promise<RunCloseoutMergeProof>;
+	},
 ): Router {
 	const router = Router();
 	// FLY-127: registry is constructed once per router and re-read on each
@@ -249,12 +378,16 @@ export function createRunsRouter(
 			const runId = String(req.params.runId ?? "");
 			const reason = req.body?.reason;
 			const clientRequestId = req.body?.clientRequestId;
+			const closeoutInvariantDigest = req.body?.closeoutInvariantDigest;
 			if (
 				typeof reason !== "string" ||
 				!reason.trim() ||
 				reason.length > 500 ||
 				typeof clientRequestId !== "string" ||
-				!clientRequestId.trim()
+				!clientRequestId.trim() ||
+				(closeoutInvariantDigest !== undefined &&
+					(typeof closeoutInvariantDigest !== "string" ||
+						!/^[0-9a-f]{64}$/.test(closeoutInvariantDigest)))
 			) {
 				res.status(400).json({
 					success: false,
@@ -273,6 +406,60 @@ export function createRunsRouter(
 					probeGeneralizedLaunchLiveness,
 				);
 				const now = new Date().toISOString();
+				const run = store.getWorkflowRun(runId)!;
+				let closeoutKind: "nested_manual" | "operator" | undefined;
+				let mergeProof: RunCloseoutMergeProof | undefined;
+				if (action === "terminate" && run.status === "held") {
+					const diagnostic = store.getWorkflowRunDiagnostic({
+						runId,
+						evidence,
+						now,
+					});
+					if (!diagnostic.ok) {
+						res.status(409).json({
+							success: false,
+							code: "DIAGNOSTIC_DATA_CONFLICT",
+							reason: diagnostic.reason,
+						});
+						return;
+					}
+					if (diagnostic.dto.latest_hold.reason === "nested_land_unsupported") {
+						if (!closeoutInvariantDigest) {
+							res.status(409).json({
+								success: false,
+								code: "CLOSEOUT_INVARIANT_REQUIRED",
+							});
+							return;
+						}
+						closeoutKind = "nested_manual";
+						if (!diagnostic.dto.pr_manifest) {
+							const target = diagnostic.dto.single_closeout_target;
+							if (!target || target.target_repo_identity === "__main__") {
+								res.status(409).json({
+									success: false,
+									code: "NESTED_CLOSEOUT_TARGET_UNAVAILABLE",
+								});
+								return;
+							}
+							try {
+								mergeProof = await (
+									auth?.probeMergedPr ?? probeRunCloseoutMerge
+								)({
+									probeRepoSlug: target.probe_repo_slug,
+									prNumber: target.pr_number,
+								});
+							} catch (error) {
+								res.status(503).json({
+									success: false,
+									code: "NESTED_CLOSEOUT_MERGE_PROBE_UNAVAILABLE",
+									message:
+										error instanceof Error ? error.message : String(error),
+								});
+								return;
+							}
+						}
+					}
+				}
 				const request = {
 					runId,
 					reason: reason.trim(),
@@ -280,6 +467,9 @@ export function createRunsRouter(
 					principal: "master",
 					evidence,
 					now,
+					...(closeoutInvariantDigest ? { closeoutInvariantDigest } : {}),
+					...(closeoutKind ? { closeoutKind } : {}),
+					...(mergeProof ? { mergeProof } : {}),
 				};
 				const result =
 					action === "hold"
@@ -293,7 +483,13 @@ export function createRunsRouter(
 							code:
 								result.reason === "run_has_live_executions"
 									? "RUN_HAS_LIVE_EXECUTIONS"
-									: "RUN_MANAGEMENT_REFUSED",
+									: result.reason === "closeout_invariant_required"
+										? "CLOSEOUT_INVARIANT_REQUIRED"
+										: result.reason === "closeout_invariant_changed"
+											? "CLOSEOUT_INVARIANT_CHANGED"
+											: result.reason === "nested_closeout_merge_unproven"
+												? "NESTED_CLOSEOUT_MERGE_UNPROVEN"
+												: "RUN_MANAGEMENT_REFUSED",
 							reason: result.reason,
 							...(result.executionIds
 								? { executionIds: result.executionIds }
@@ -318,6 +514,402 @@ export function createRunsRouter(
 	};
 	registerRunManagementRoute("hold");
 	registerRunManagementRoute("terminate");
+
+	router.get("/:runId/diagnostic", async (req, res) => {
+		if (!auth?.masterToken) {
+			res.status(503).json({
+				success: false,
+				code: "MASTER_AUTH_NOT_CONFIGURED",
+			});
+			return;
+		}
+		if (!loopbackSelfOrigin(req.headers.host)) {
+			res.status(403).json({
+				success: false,
+				code: "LOOPBACK_REQUIRED",
+			});
+			return;
+		}
+		const bearer =
+			typeof req.headers.authorization === "string" &&
+			req.headers.authorization.startsWith("Bearer ")
+				? req.headers.authorization.slice("Bearer ".length)
+				: undefined;
+		if (!bearer) {
+			res.status(401).json({
+				success: false,
+				code: "MASTER_AUTH_REQUIRED",
+			});
+			return;
+		}
+		if (!secureTokenEqual(bearer, auth.masterToken)) {
+			res.status(403).json({
+				success: false,
+				code: "MASTER_AUTH_REQUIRED",
+			});
+			return;
+		}
+		const runId = String(req.params.runId ?? "");
+		if (!store.getWorkflowRun(runId)) {
+			res.status(404).json({ success: false, code: "RUN_NOT_FOUND" });
+			return;
+		}
+		try {
+			const evidence = await collectRunQuiescenceEvidence(
+				store,
+				runId,
+				probeGeneralizedLaunchLiveness,
+			);
+			const result = store.getWorkflowRunDiagnostic({
+				runId,
+				evidence,
+				now: new Date().toISOString(),
+			});
+			if (!result.ok) {
+				res.status(result.reason === "run_not_found" ? 404 : 409).json({
+					success: false,
+					code:
+						result.reason === "run_not_found"
+							? "RUN_NOT_FOUND"
+							: "DIAGNOSTIC_DATA_CONFLICT",
+				});
+				return;
+			}
+			res.json(result.dto);
+		} catch (error) {
+			res.status(503).json({
+				success: false,
+				code: "DIAGNOSTIC_SCHEMA_UNAVAILABLE",
+				message: error instanceof Error ? error.message : String(error),
+			});
+		}
+	});
+
+	router.post("/:runId/pr-manifest", (req, res) => {
+		const bearer =
+			typeof req.headers.authorization === "string" &&
+			req.headers.authorization.startsWith("Bearer ")
+				? req.headers.authorization.slice("Bearer ".length)
+				: undefined;
+		if (!secureTokenEqual(bearer, auth?.masterToken)) {
+			res.status(403).json({
+				success: false,
+				code: "MASTER_AUTH_REQUIRED",
+			});
+			return;
+		}
+		const expectedCount = req.body?.expectedCount;
+		if (
+			!Number.isInteger(expectedCount) ||
+			expectedCount < 1 ||
+			expectedCount > 50
+		) {
+			res.status(400).json({
+				success: false,
+				code: "MANIFEST_EXPECTED_COUNT_INVALID",
+			});
+			return;
+		}
+		const runId = String(req.params.runId ?? "");
+		const result = store.openWorkflowPrManifest({ runId, expectedCount });
+		if (!result.ok) {
+			res.status(result.reason === "run_not_found" ? 404 : 409).json({
+				success: false,
+				code:
+					result.reason === "run_terminal_authority_frozen"
+						? "RUN_TERMINAL_AUTHORITY_FROZEN"
+						: "PR_MANIFEST_REFUSED",
+				reason: result.reason,
+			});
+			return;
+		}
+		res.json({
+			success: true,
+			runId,
+			expectedCount: result.manifest.expected_count,
+			currentRevision: result.manifest.current_revision,
+			sealed: result.manifest.sealed_at !== null,
+			idempotentReplay: result.idempotentReplay,
+		});
+	});
+
+	const registerManifestSealRoute = (reopen: boolean) => {
+		router.post(
+			`/:runId/pr-manifest/${reopen ? "reopen" : "seal"}`,
+			(req, res) => {
+				const bearer =
+					typeof req.headers.authorization === "string" &&
+					req.headers.authorization.startsWith("Bearer ")
+						? req.headers.authorization.slice("Bearer ".length)
+						: undefined;
+				if (!secureTokenEqual(bearer, auth?.masterToken)) {
+					res.status(403).json({
+						success: false,
+						code: "MASTER_AUTH_REQUIRED",
+					});
+					return;
+				}
+				const runId = String(req.params.runId ?? "");
+				const result = store.sealWorkflowPrManifestFromBindings({
+					runId,
+					reopen,
+				});
+				if (!result.ok) {
+					res.status(409).json({
+						success: false,
+						code:
+							result.reason === "run_terminal_authority_frozen"
+								? "RUN_TERMINAL_AUTHORITY_FROZEN"
+								: result.reason === "manifest_count_mismatch"
+									? "MANIFEST_COUNT_MISMATCH"
+									: "PR_MANIFEST_REFUSED",
+						reason: result.reason,
+						...(result.expectedCount !== undefined
+							? { expectedCount: result.expectedCount }
+							: {}),
+						...(result.actualCount !== undefined
+							? { actualCount: result.actualCount }
+							: {}),
+					});
+					return;
+				}
+				res.json({
+					success: true,
+					runId,
+					expectedCount: result.manifest.expected_count,
+					currentRevision: result.manifest.current_revision,
+					sealed: result.manifest.sealed_at !== null,
+					idempotentReplay: result.idempotentReplay,
+				});
+			},
+		);
+	};
+	registerManifestSealRoute(false);
+	registerManifestSealRoute(true);
+
+	router.post("/:runId/pr-manifest/merge-receipt", async (req, res) => {
+		const bearer =
+			typeof req.headers.authorization === "string" &&
+			req.headers.authorization.startsWith("Bearer ")
+				? req.headers.authorization.slice("Bearer ".length)
+				: undefined;
+		if (!secureTokenEqual(bearer, auth?.masterToken)) {
+			res.status(403).json({
+				success: false,
+				code: "MASTER_AUTH_REQUIRED",
+			});
+			return;
+		}
+		const runId = String(req.params.runId ?? "");
+		const repoIdentity =
+			typeof req.body?.repoIdentity === "string"
+				? req.body.repoIdentity
+				: undefined;
+		const prNumber = req.body?.prNumber;
+		const callerHead =
+			typeof req.body?.headSha === "string"
+				? req.body.headSha.toLowerCase()
+				: "";
+		const declared = store
+			.listCurrentWorkflowDeclaredPrs(runId)
+			.filter(
+				(row) =>
+					row.pr_number === prNumber &&
+					(repoIdentity === undefined || row.repo_identity === repoIdentity),
+			);
+		if (
+			declared.length !== 1 ||
+			!/^[0-9a-f]{40}$/.test(callerHead) ||
+			declared[0]?.frozen_head_sha !== callerHead
+		) {
+			res.status(409).json({
+				success: false,
+				code: "PR_MERGE_RECEIPT_REFUSED",
+				reason:
+					declared.length > 1
+						? "declared_pr_ambiguous"
+						: "declared_pr_not_found",
+			});
+			return;
+		}
+		const target = declared[0]!;
+		try {
+			const proof = await (auth?.probeMergedPr ?? probeRunCloseoutMerge)({
+				probeRepoSlug: target.probe_repo_slug,
+				prNumber: target.pr_number,
+			});
+			if (
+				proof.state !== "MERGED" ||
+				proof.probeRepoSlug !== target.probe_repo_slug ||
+				proof.prNumber !== target.pr_number ||
+				proof.headSha.toLowerCase() !== target.frozen_head_sha
+			) {
+				throw new Error("declared PR merge proof mismatch");
+			}
+		} catch (error) {
+			res.status(409).json({
+				success: false,
+				code: "PR_MERGE_PROOF_UNAVAILABLE",
+				reason:
+					error instanceof Error ? error.message : "merge proof unavailable",
+			});
+			return;
+		}
+		const result = store.markWorkflowDeclaredPrMerged({
+			runId,
+			...(repoIdentity ? { repoIdentity } : {}),
+			prNumber,
+			headSha: callerHead,
+		});
+		if (!result.ok) {
+			res.status(409).json({
+				success: false,
+				code:
+					result.reason === "run_terminal_authority_frozen"
+						? "RUN_TERMINAL_AUTHORITY_FROZEN"
+						: "PR_MERGE_RECEIPT_REFUSED",
+				reason: result.reason,
+			});
+			return;
+		}
+		res.json({
+			success: true,
+			runId,
+			allMerged: result.allMerged,
+			partialDelivery: !result.allMerged,
+			flagOffRequired: !result.allMerged,
+			idempotentReplay: result.idempotentReplay,
+		});
+	});
+
+	router.post("/:runId/rework", async (req, res) => {
+		if (!auth?.masterToken) {
+			res.status(503).json({
+				success: false,
+				code: "MASTER_AUTH_NOT_CONFIGURED",
+			});
+			return;
+		}
+		if (!loopbackSelfOrigin(req.headers.host)) {
+			res.status(403).json({
+				success: false,
+				code: "LOOPBACK_REQUIRED",
+			});
+			return;
+		}
+		const bearer =
+			typeof req.headers.authorization === "string" &&
+			req.headers.authorization.startsWith("Bearer ")
+				? req.headers.authorization.slice("Bearer ".length)
+				: undefined;
+		if (!secureTokenEqual(bearer, auth.masterToken)) {
+			res.status(403).json({
+				success: false,
+				code: "MASTER_AUTH_REQUIRED",
+			});
+			return;
+		}
+		const runId = String(req.params.runId ?? "");
+		const targetNodeId = req.body?.targetNodeId;
+		const feedback = req.body?.feedback;
+		const clientRequestId = req.body?.clientRequestId;
+		if (
+			typeof targetNodeId !== "string" ||
+			!targetNodeId.trim() ||
+			typeof feedback !== "string" ||
+			!feedback.trim() ||
+			feedback.length > 4_000 ||
+			typeof clientRequestId !== "string" ||
+			!clientRequestId.trim()
+		) {
+			res.status(400).json({
+				success: false,
+				code: "INVALID_REWORK_REQUEST",
+			});
+			return;
+		}
+		if (!store.getWorkflowRun(runId)) {
+			res.status(404).json({ success: false, code: "RUN_NOT_FOUND" });
+			return;
+		}
+		try {
+			const consent = auth.authorizeRework
+				? await auth.authorizeRework({
+						runId,
+						requestedReason: feedback.trim(),
+						leadId:
+							typeof req.body?.leadId === "string"
+								? req.body.leadId.trim() || undefined
+								: undefined,
+					})
+				: {
+						ok: true as const,
+						consent: {
+							mode: "off" as const,
+							decision: "pass_through",
+						},
+					};
+			if (!consent.ok) {
+				res.status(consent.status).json({
+					success: false,
+					code: consent.code,
+					...(consent.reason ? { reason: consent.reason } : {}),
+					...(consent.auditId ? { auditId: consent.auditId } : {}),
+				});
+				return;
+			}
+			const evidence = await collectRunQuiescenceEvidence(
+				store,
+				runId,
+				probeGeneralizedLaunchLiveness,
+			);
+			const result = store.openOperatorRework({
+				runId,
+				targetNodeId: targetNodeId.trim(),
+				feedback: feedback.trim(),
+				clientRequestId: clientRequestId.trim(),
+				principal: "master",
+				evidence,
+				now: new Date().toISOString(),
+				consent: consent.consent,
+			});
+			if (!result.ok) {
+				res
+					.status(
+						result.reason === "invalid_operator_rework_request" ? 400 : 409,
+					)
+					.json({
+						success: false,
+						code:
+							result.reason === "target_not_quiescent"
+								? "REWORK_TARGET_NOT_QUIESCENT"
+								: result.reason === "target_actor_history_missing"
+									? "REWORK_TARGET_ACTOR_HISTORY_MISSING"
+									: "REWORK_REFUSED",
+						reason: result.reason,
+						...(result.executionIds
+							? { executionIds: result.executionIds }
+							: {}),
+					});
+				return;
+			}
+			res.json({
+				success: true,
+				runId,
+				requestId: result.requestId,
+				targetNodeId: result.targetNodeId,
+				targetAttempt: result.targetAttempt,
+				preferredActorExecutionId: result.preferredActorExecutionId,
+				idempotentReplay: result.idempotentReplay,
+			});
+		} catch (error) {
+			res.status(503).json({
+				success: false,
+				code: "RUN_LIVENESS_UNAVAILABLE",
+				message: error instanceof Error ? error.message : String(error),
+			});
+		}
+	});
 
 	router.get("/route-decisions/summary", (req, res) => {
 		const bearer =
@@ -635,17 +1227,74 @@ export function createRunsRouter(
 		const replayReservation = requestedStartKey
 			? store.getWorkflowStartReservation(requestedStartKey)
 			: undefined;
+		const rejectInvalidStartReplay = (
+			reservation: WorkflowStartReservationRow,
+			inspection: WorkflowStartReplayInspection,
+		): boolean => {
+			if (inspection.ok) return false;
+			if (inspection.reason === "run_not_active") {
+				res.status(409).json({
+					success: false,
+					code: "RUN_NOT_REWORKABLE_VIA_START",
+					runId: reservation.run_id,
+					runStatus: inspection.runStatus,
+					hint: "use /api/runs/:runId/rework",
+				});
+				return true;
+			}
+			res.status(409).json({
+				success: false,
+				code: "STALE_START_RESPONSE",
+				runId: reservation.run_id,
+				executionId: reservation.execution_id,
+				reason:
+					"the reserved start execution is no longer the current active attempt",
+			});
+			return true;
+		};
+		const replayInspection = replayReservation
+			? inspectWorkflowStartReplay(store, replayReservation)
+			: undefined;
+		if (
+			replayReservation &&
+			replayInspection &&
+			!replayInspection.ok &&
+			(replayInspection.reason === "run_not_active" ||
+				(store.getWorkflowStartResponse(requestedStartKey!) !== undefined &&
+					replayInspection.reason === "start_attempt_not_current")) &&
+			rejectInvalidStartReplay(replayReservation, replayInspection)
+		) {
+			return;
+		}
 		const activeEngineRunAtDedup = store.getActiveWorkflowRunForIssue(issueId);
 		const activeEngineStartReservation =
 			activeEngineRunAtDedup?.engine_owned === 1
 				? store.getWorkflowStartReservationForRun(activeEngineRunAtDedup.run_id)
 				: undefined;
+		const activeEngineStartInspection = activeEngineStartReservation
+			? inspectWorkflowStartReplay(store, activeEngineStartReservation)
+			: undefined;
+		if (
+			activeEngineStartReservation &&
+			activeEngineStartInspection &&
+			store.getWorkflowStartResponse(
+				activeEngineStartReservation.idempotency_key,
+			) !== undefined &&
+			!activeEngineStartInspection.ok &&
+			rejectInvalidStartReplay(
+				activeEngineStartReservation,
+				activeEngineStartInspection,
+			)
+		) {
+			return;
+		}
 		const exactActiveEngineStartSession =
 			activeEngineStartReservation?.execution_id ===
-			alreadyActive?.execution_id;
+				alreadyActive?.execution_id && activeEngineStartInspection?.ok === true;
 		const exactGeneralizedReplay =
 			requestAuthKind === "master" &&
 			replayReservation?.execution_id === alreadyActive?.execution_id &&
+			replayInspection?.ok === true &&
 			isSchemaV2Snapshot(
 				replayReservation
 					? store.getWorkflowRun(replayReservation.run_id)?.snapshot
@@ -1713,6 +2362,26 @@ export function createRunsRouter(
 				generalizedSelection.idempotencyKey,
 			);
 			if (priorResponse) {
+				const reservation = store.getWorkflowStartReservation(
+					generalizedSelection.idempotencyKey,
+				);
+				if (!reservation) {
+					res.status(409).json({
+						success: false,
+						code: "STALE_START_RESPONSE",
+						runId: generalizedSelection.runId,
+						executionId: generalizedSelection.executionId,
+						reason: "the cached start response has no durable reservation",
+					});
+					return;
+				}
+				const inspection = inspectWorkflowStartReplay(store, reservation);
+				if (
+					!inspection.ok &&
+					rejectInvalidStartReplay(reservation, inspection)
+				) {
+					return;
+				}
 				res.json(priorResponse);
 				return;
 			}

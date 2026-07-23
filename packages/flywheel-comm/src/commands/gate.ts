@@ -207,13 +207,16 @@ async function gateInner(
 			if (response) {
 				// Got answer — resolve the gate
 				const writeDb = new CommDB(args.dbPath);
+				let consumed = response;
 				try {
+					consumed =
+						writeDb.consumeGateResponse(questionId, args.execId) ?? response;
 					writeDb.resolveGate(questionId, args.cleanupTtlHours);
 				} finally {
 					writeDb.close();
 				}
 
-				let content = response.content;
+				let content = consumed.content;
 				// If original was ref, try to parse structured response
 				let approved: boolean | undefined;
 				try {

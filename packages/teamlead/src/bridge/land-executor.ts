@@ -154,12 +154,15 @@ async function authorizeLandOperation(
 	if (holder.head_sha !== operation.approved_head) {
 		return { ok: false, reason: "approved_head_mismatch" };
 	}
-	const prNumber = store.getWorkflowRunPrNumber(
+	const prBinding = store.getCurrentWorkflowNodePrBindingForHead(
 		operation.run_id,
 		holder.head_sha,
 	);
-	if (!prNumber || prNumber !== operation.pr_number) {
+	if (!prBinding || prBinding.pr_number !== operation.pr_number) {
 		return { ok: false, reason: "approved_pr_mismatch" };
+	}
+	if (prBinding.target_repo_identity !== "__main__") {
+		return { ok: false, reason: "nested_land_unsupported" };
 	}
 	const claims = store.resolveEngineWorkflowShipClaims({
 		runId: operation.run_id,

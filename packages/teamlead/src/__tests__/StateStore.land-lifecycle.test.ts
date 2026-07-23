@@ -102,6 +102,32 @@ function landSnapshot(): string {
 	);
 }
 
+function bindPr(
+	store: StateStore,
+	input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		head: string;
+		receiptId: string;
+	},
+): void {
+	(
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db.run(
+		`INSERT INTO workflow_node_pr_binding
+		   (run_id, node_id, attempt, pr_number, head_sha, target_repo_identity,
+		    probe_repo_slug, target_repo_path, worktree_binding_generation,
+		    receipt_id, bound_at)
+		 VALUES (?, ?, ?, 1375, ?, '__main__', 'geoforge3d/flywheel',
+		         '/tmp/flywheel', 'generation-1', ?,
+		         '2026-07-21T19:59:00.000Z')`,
+		[input.runId, input.nodeId, input.attempt, input.head, input.receiptId],
+	);
+}
+
 function prepareAwaitingFounderGate(store: StateStore, runId: string) {
 	store.createWorkflowRun({
 		runId,
@@ -131,6 +157,13 @@ function prepareAwaitingFounderGate(store: StateStore, runId: string) {
 		attempt: 1,
 		state: "done",
 		executionId: "implement-exec",
+	});
+	bindPr(store, {
+		runId,
+		nodeId: "implement",
+		attempt: 1,
+		head: HEAD,
+		receiptId: `${runId}:implement:1`,
 	});
 	(
 		store as unknown as {
@@ -243,6 +276,20 @@ describe("StateStore land lifecycle ledger", () => {
 		).db.run(
 			"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'qa' WHERE run_id = 'run-transition'",
 		);
+		store.upsertWorkflowRunNode({
+			runId: "run-transition",
+			nodeId: "implement",
+			attempt: 1,
+			state: "done",
+			executionId: "implement-exec",
+		});
+		bindPr(store, {
+			runId: "run-transition",
+			nodeId: "implement",
+			attempt: 1,
+			head: HEAD,
+			receiptId: "run-transition:implement:1",
+		});
 		store.upsertWorkflowRunNode({
 			runId: "run-transition",
 			nodeId: "qa",
@@ -437,6 +484,13 @@ describe("StateStore land lifecycle ledger", () => {
 		).toEqual({ ok: true });
 
 		const correctedHead = "b".repeat(40);
+		bindPr(store, {
+			runId: "run-design-only",
+			nodeId: "design",
+			attempt: 2,
+			head: correctedHead,
+			receiptId: "run-design-only:design:2",
+		});
 		expect(
 			store.commitWorkflowTransitionTx({
 				runId: "run-design-only",
@@ -561,6 +615,13 @@ describe("StateStore land lifecycle ledger", () => {
 		});
 
 		const correctedHead = "c".repeat(40);
+		bindPr(store, {
+			runId: "run-implement-full",
+			nodeId: "implement",
+			attempt: 2,
+			head: correctedHead,
+			receiptId: "run-implement-full:implement:2",
+		});
 		const implementation = store.commitWorkflowTransitionTx({
 			runId: "run-implement-full",
 			nodeId: "implement",

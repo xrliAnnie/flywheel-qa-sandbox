@@ -27,6 +27,7 @@ export interface RequestReviewOptions {
 	type?: string;
 	questionId?: string;
 	planPath?: string;
+	targetRepoPath?: string;
 	requestId?: string;
 	/** Test seams. */
 	fetchImpl?: typeof fetch;
@@ -87,6 +88,9 @@ export async function requestReview(
 		reviewType,
 		questionId,
 		...(opts.planPath?.trim() ? { planPath: opts.planPath.trim() } : {}),
+		...(opts.targetRepoPath?.trim()
+			? { targetRepoPath: opts.targetRepoPath.trim() }
+			: {}),
 	};
 
 	const stateDir =

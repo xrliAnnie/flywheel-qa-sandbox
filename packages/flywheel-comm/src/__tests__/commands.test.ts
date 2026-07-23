@@ -65,6 +65,40 @@ describe("commands round-trip", () => {
 		expect(pending({ lead: "product-lead", dbPath })).toHaveLength(0);
 	});
 
+	it("only the explicitly matching runner consumes a gate response", () => {
+		const questionId = ask({
+			lead: "product-lead",
+			execId: "exec-owner",
+			question: "Ship?",
+			dbPath,
+		});
+		respond({
+			questionId,
+			fromAgent: "product-lead",
+			answer: "yes",
+			dbPath,
+		});
+
+		expect(check({ questionId, dbPath }).content).toBe("yes");
+		let db = new CommDB(dbPath, false);
+		expect(db.getResponse(questionId)?.delivered_at).toBeNull();
+		db.close();
+
+		expect(
+			check({ questionId, dbPath, executionId: "exec-observer" }).content,
+		).toBe("yes");
+		db = new CommDB(dbPath, false);
+		expect(db.getResponse(questionId)?.delivered_at).toBeNull();
+		db.close();
+
+		expect(
+			check({ questionId, dbPath, executionId: "exec-owner" }).content,
+		).toBe("yes");
+		db = new CommDB(dbPath, false);
+		expect(db.getResponse(questionId)?.delivered_at).not.toBeNull();
+		db.close();
+	});
+
 	it("should handle multiple runners asking different leads", () => {
 		const q1 = ask({
 			lead: "product-lead",

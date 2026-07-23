@@ -35,7 +35,7 @@
  *     (FLY-1245 / FLY-1259). Opposite activating value (=1 vs =0) because design
  *     defaults to claude while implement defaults to codex.
  * Env is read at process start: edit `~/.flywheel/.env`, then
- * `restart-services.sh --bridge-only` (see the FLY-1224 plan §7 runbook).
+ * `restart-services.sh --reason env-change`.
  *
  * REVERT (7/7, after the Fable window): flip the `pipeline.three_stage` toggle
  * OFF — a task then runs as a single session exactly as before. The table here
@@ -213,7 +213,7 @@ export const DEFAULT_PHASE_DISPATCH: Readonly<
  *
  * Env is injectable for tests; defaults to process.env. The env is read at call
  * time, but process.env itself only loads at Bridge start — a `~/.flywheel/.env`
- * edit needs `restart-services.sh --bridge-only` (§7 runbook in the FLY-1224
+ * edit needs `restart-services.sh --reason env-change` (§7 runbook in the FLY-1224
  * plan).
  */
 export function resolvePhaseDispatch(

@@ -139,6 +139,7 @@ import {
 	ensureDefaultWorkflowBindings,
 	importBundledWorkflowSeeds,
 	isWorkflowManifestV1Land,
+	migrateSystemWorkflowBindingsToLand,
 } from "../workflow-template.js";
 import { isLandNodeEnabled } from "../workflow-template-dispatch.js";
 import {
@@ -3664,6 +3665,7 @@ export function createBridgeApp(
 			{
 				masterToken: config.apiToken,
 				scopedToken: config.geminiAgentToken,
+				authorizeRework: fcWiring?.authorizeWorkflowRework,
 			},
 		);
 		if (config.apiToken) {
@@ -4217,6 +4219,10 @@ export async function startBridge(
 				warm: async (nextProjects) => {
 					await ffConfigCache.get(nextProjects);
 					ensureDefaultWorkflowBindings(
+						store,
+						nextProjects.map((project) => project.projectName),
+					);
+					migrateSystemWorkflowBindingsToLand(
 						store,
 						nextProjects.map((project) => project.projectName),
 					);
@@ -5417,6 +5423,11 @@ export async function startBridge(
 				return runResumablePostShipFinalization(
 					{
 						executionId: session.execution_id,
+						runId: operation.run_id ?? undefined,
+						mergedPr: {
+							prNumber: operation.pr_number,
+							headSha: operation.approved_head,
+						},
 						issueId: operation.issue_id,
 						issueIdentifier: session.issue_identifier,
 						projectName: operation.project_name,
@@ -5773,11 +5784,18 @@ export async function startBridge(
 									run.run_id,
 									snapshot.manifest.approval_gate.node,
 								);
-								const prNumber = holder
-									? store.getWorkflowRunPrNumber(run.run_id, holder.head_sha)
+								const prBinding = holder
+									? store.getCurrentWorkflowNodePrBindingForHead(
+											run.run_id,
+											holder.head_sha,
+										)
 									: undefined;
+								const prNumber = prBinding?.pr_number;
 								if (!holder || holder.state !== "approved" || !prNumber) {
 									throw new Error("land_founder_authority_not_ready");
+								}
+								if (prBinding.target_repo_identity !== "__main__") {
+									throw new Error("nested_land_unsupported");
 								}
 								if (
 									(input.prNumber !== undefined &&
@@ -8424,7 +8442,13 @@ export async function startBridge(
 					executionId,
 				);
 			},
-			wakeRunner: async (executionId, sessionInfo, questionId, summary) => {
+			wakeRunner: async (
+				executionId,
+				sessionInfo,
+				_questionId,
+				_summary,
+				responseId,
+			) => {
 				const db = new CommDB(
 					join(commRoot, sessionInfo.project_name, "comm.db"),
 					false,
@@ -8432,16 +8456,32 @@ export async function startBridge(
 				try {
 					const vendor = db.getSession(executionId)?.vendor;
 					if (vendor === "none") return; // no-transport backend (FLY-493)
-					await wakeRunnerMailbox({
+					const claim = db.claimRunnerReceiptWakePush(
+						executionId,
+						responseId,
+						Date.now(),
+						{ t1Ms: 90_000, claimTtlMs: 30_000 },
+					);
+					if (!claim) return;
+					const wake = await wakeRunnerMailbox({
 						db,
 						execId: executionId,
 						fromAgent: "bridge",
-						content:
-							`Your ${summary === "SKIPPED" ? "review request was sanctioned as SKIPPED" : `review request has been answered: ${summary}`} ` +
-							`(question ${questionId}). Read the durable answer with: ` +
-							`node <flywheel-comm> check ${questionId} --project ${sessionInfo.project_name}. ` +
-							`This wake carries NO authority.`,
+						content: claim.envelope.content,
+						metadata: claim.envelope.metadata,
 						...(vendor ? { backend: vendor } : {}),
+					});
+					db.completeRunnerReceiptWakePush({
+						executionId,
+						messageId: responseId,
+						claimToken: claim.claimToken,
+						attempt: claim.attempt,
+						result: wake.ok
+							? "delivered"
+							: wake.skippedReason
+								? `skipped:${wake.skippedReason}`
+								: `failed:${wake.error ?? "unknown"}`,
+						nowMs: Date.now(),
 					});
 				} finally {
 					db.close();

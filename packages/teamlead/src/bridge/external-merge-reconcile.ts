@@ -87,20 +87,22 @@ export async function checkPrMergeViaGh(
 	projectRoot: string,
 	prNumber: number,
 	timeoutMs = 10_000,
+	probeRepoSlug?: string,
 ): Promise<PrMergeInfo> {
 	if (!Number.isInteger(prNumber) || prNumber <= 0) return { state: "unknown" };
 	try {
-		const { stdout } = await execFileP(
-			"gh",
-			[
-				"pr",
-				"view",
-				String(prNumber),
-				"--json",
-				"state,mergedAt,mergeCommit,headRefOid",
-			],
-			{ cwd: projectRoot, timeout: Math.max(1, timeoutMs) },
-		);
+		const args = [
+			"pr",
+			"view",
+			String(prNumber),
+			...(probeRepoSlug ? ["--repo", probeRepoSlug] : []),
+			"--json",
+			"state,mergedAt,mergeCommit,headRefOid",
+		];
+		const { stdout } = await execFileP("gh", args, {
+			cwd: projectRoot,
+			timeout: Math.max(1, timeoutMs),
+		});
 		const parsed = JSON.parse(stdout) as {
 			state?: string;
 			mergedAt?: string | null;
@@ -255,6 +257,7 @@ export function createExternalMergeReconciler(
 	// Per-project rotation cursor so a >budget backlog makes progress across
 	// passes instead of re-checking the same first N forever.
 	const rotation = new Map<string, number>();
+	const declaredRotation = new Map<string, number>();
 	// FLY-1314: non-MERGED probes are new bounded in-memory state. They avoid
 	// spending the shared gh budget on the same open/closed/unknown PR every
 	// patrol tick; merged results are never cached negatively.
@@ -425,10 +428,27 @@ export function createExternalMergeReconciler(
 		);
 	}
 
-	async function finalize(session: Session, info: PrMergeInfo): Promise<void> {
+	async function finalize(
+		session: Session,
+		info: PrMergeInfo,
+		options: { runId?: string; omitMergedReceipt?: boolean } = {},
+	): Promise<void> {
 		await runPostShipFinalization(
 			{
 				executionId: session.execution_id,
+				runId:
+					options.runId ??
+					deps.store.getWorkflowRunIdForExecution(session.execution_id),
+				...(!options.omitMergedReceipt &&
+				session.pr_number &&
+				session.pr_head_sha
+					? {
+							mergedPr: {
+								prNumber: session.pr_number,
+								headSha: session.pr_head_sha,
+							},
+						}
+					: {}),
 				issueId: session.issue_id,
 				issueIdentifier: session.issue_identifier,
 				projectName: session.project_name,
@@ -462,6 +482,104 @@ export function createExternalMergeReconciler(
 				statusBefore: session.status,
 			},
 		});
+	}
+
+	async function reconcileDeclaredPrRuns(
+		projectName: string,
+		projectRoot: string,
+		budget: number,
+	): Promise<number> {
+		const initial = deps.store.listWorkflowPrConvergenceRows(projectName);
+		if (initial.length === 0) return 0;
+		const groups = new Map<string, typeof initial>();
+		for (const row of initial) {
+			const group = groups.get(row.run_id) ?? [];
+			group.push(row);
+			groups.set(row.run_id, group);
+		}
+		const pending = initial.filter(
+			(row) =>
+				row.state !== "merged" &&
+				(negativeMergeCache.get(
+					candidateKey(projectName, row.issue_id, row.pr_number),
+				) ?? 0) <= now(),
+		);
+		const declaredBudget = Math.max(1, budget);
+		const start =
+			pending.length > 0
+				? (declaredRotation.get(projectName) ?? 0) % pending.length
+				: 0;
+		const picked = pending
+			.map((_, index) => pending[(start + index) % pending.length]!)
+			.slice(0, declaredBudget);
+		declaredRotation.set(
+			projectName,
+			pending.length > 0 ? (start + picked.length) % pending.length : 0,
+		);
+		for (const row of picked) {
+			const info = await checkPr(
+				projectRoot,
+				row.pr_number,
+				10_000,
+				row.probe_repo_slug,
+			);
+			if (
+				info.state !== "merged" ||
+				info.headRefOid?.toLowerCase() !== row.frozen_head_sha
+			) {
+				negativeMergeCache.set(
+					candidateKey(projectName, row.issue_id, row.pr_number),
+					now() +
+						intEnv(
+							env(),
+							"FLYWHEEL_EXTERNAL_MERGE_NEGATIVE_CACHE_MS",
+							10 * 60_000,
+						),
+				);
+				continue;
+			}
+			negativeMergeCache.delete(
+				candidateKey(projectName, row.issue_id, row.pr_number),
+			);
+			const marked = deps.store.markWorkflowDeclaredPrMerged({
+				runId: row.run_id,
+				repoIdentity: row.repo_identity,
+				prNumber: row.pr_number,
+				headSha: row.frozen_head_sha,
+			});
+			if (!marked.ok) {
+				log(
+					`[external-merge] declared PR ${row.run_id}/${row.repo_identity}#${row.pr_number} receipt refused: ${marked.reason}`,
+				);
+			}
+		}
+		for (const [runId, rows] of groups) {
+			const current = deps.store.listCurrentWorkflowDeclaredPrs(runId);
+			if (
+				current.length === 0 ||
+				current.some((row) => row.state !== "merged")
+			) {
+				continue;
+			}
+			const sourceExecutionId = rows.find(
+				(row) => row.source_execution_id,
+			)?.source_execution_id;
+			const source = sourceExecutionId
+				? deps.store.getSession(sourceExecutionId)
+				: undefined;
+			if (!source) {
+				log(
+					`[external-merge] declared PR run ${runId} is fully merged but has no source session; retrying on a later pass`,
+				);
+				continue;
+			}
+			await finalize(
+				source,
+				{ state: "merged", headRefOid: current.at(-1)?.frozen_head_sha },
+				{ runId, omitMergedReceipt: true },
+			);
+		}
+		return picked.length;
 	}
 
 	async function handleParked(session: Session, info: PrMergeInfo) {
@@ -602,6 +720,15 @@ export function createExternalMergeReconciler(
 				const root = project.projectRoot;
 				if (!root) continue;
 				const projectName = project.projectName;
+				const declaredProbeCount = await reconcileDeclaredPrRuns(
+					projectName,
+					root,
+					budgetPerProject,
+				);
+				const ordinaryBudget = Math.max(
+					0,
+					budgetPerProject - declaredProbeCount,
+				);
 
 				// ── collect candidates (cheap local reads only) ──
 				const parked = deps.store
@@ -693,11 +820,7 @@ export function createExternalMergeReconciler(
 				// ── rotate + budget the gh calls ──
 				const start = rotation.get(projectName) ?? 0;
 				const picked: ProjectMergeCandidate[] = [];
-				for (
-					let i = 0;
-					i < all.length && picked.length < budgetPerProject;
-					i++
-				) {
+				for (let i = 0; i < all.length && picked.length < ordinaryBudget; i++) {
 					const s = all[(start + i) % all.length];
 					if (s) picked.push(s);
 				}
@@ -707,7 +830,7 @@ export function createExternalMergeReconciler(
 				);
 				if (all.length > picked.length) {
 					log(
-						`[external-merge] ${projectName}: ${all.length} candidates, checking ${picked.length} this pass (budget ${budgetPerProject}, rotating)`,
+						`[external-merge] ${projectName}: ${all.length} candidates, checking ${picked.length} this pass (remaining budget ${ordinaryBudget}, rotating)`,
 					);
 				}
 

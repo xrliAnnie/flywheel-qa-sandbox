@@ -6,6 +6,19 @@ PASSED=0; FAILED=0
 pass() { PASSED=$((PASSED + 1)); echo "[TEST] ✓ $1"; }
 fail() { FAILED=$((FAILED + 1)); echo "[TEST] ✗ $1 — $2"; }
 
+file_mode() {
+  local path="$1" mode
+  if mode="$(stat -f '%Lp' "$path" 2>/dev/null)" && [[ "$mode" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$mode"
+    return 0
+  fi
+  if mode="$(stat -c '%a' "$path" 2>/dev/null)" && [[ "$mode" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$mode"
+    return 0
+  fi
+  return 1
+}
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SETUP="$REPO_DIR/scripts/setup-quota-monitor.sh"
@@ -152,7 +165,7 @@ old_state_json 1 | jq '. + {blockedEpisode:null,pendingSwitchFailure:null}' \
 if run_setup rollback_strip --rollback-state >/dev/null 2>&1 \
   && jq -e '(has("blockedEpisode")|not) and (has("pendingSwitchFailure")|not) and .observedGeneration == 1' \
     "$ROOT/rollback_strip/home/.flywheel/quota-monitor-state.json" >/dev/null \
-  && [[ "$(stat -f '%Lp' "$ROOT/rollback_strip/home/.flywheel/quota-monitor-state.json" 2>/dev/null || stat -c '%a' "$ROOT/rollback_strip/home/.flywheel/quota-monitor-state.json")" == "600" ]]; then
+  && [[ "$(file_mode "$ROOT/rollback_strip/home/.flywheel/quota-monitor-state.json")" == "600" ]]; then
   pass "rollback-state strips new fields, revalidates, and writes mode 0600"
 else
   fail "rollback strip" "state=$(cat "$ROOT/rollback_strip/home/.flywheel/quota-monitor-state.json" 2>/dev/null)"
@@ -270,7 +283,7 @@ fi
 if run_setup default --disable >/dev/null 2>&1 \
   && ! grep -q '^FLYWHEEL_QUOTA_DAEMON_CUTOVER=' "$ROOT/default/home/.flywheel/.env" \
   && [[ ! -e "$ROOT/default/home/Library/LaunchAgents/com.flywheel.quota-monitor.plist" ]] \
-  && tail -2 "$ROOT/default/restart.log" | grep -q -- '--bridge-only'; then
+  && tail -2 "$ROOT/default/restart.log" | grep -q -- '--reason env-change'; then
   pass "--disable stops daemon, removes plist/CUTOVER, and revives Bridge path"
 else
   fail "kill switch" "env=$(cat "$ROOT/default/home/.flywheel/.env"); restart=$(cat "$ROOT/default/restart.log" 2>/dev/null)"

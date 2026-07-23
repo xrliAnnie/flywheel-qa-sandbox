@@ -531,6 +531,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const generalizedExecution =
 			this.store.getGeneralizedWorkflowNodeForExecution(env.executionId);
 		if (generalizedExecution) {
+			// FLY-1434: BlueprintResult has no PR-number/target-repository evidence
+			// carrier. Never infer a binding from session display metadata here.
+			// PR-producing generalized nodes must complete through flywheel-comm's
+			// HTTP /events path (`complete --route needs_review --pr ...`), where
+			// Bridge re-derives repository/head authority server-side.
+			if (generalizedExecution.node.capabilities.creates_pr) {
+				console.warn(
+					`[DirectEventSink] generalized PR completion rejected for ${env.executionId}; use flywheel-comm complete --pr via HTTP`,
+				);
+				return;
+			}
 			const recorded = this.store.recordEnrolledTerminalSignal({
 				executionId: env.executionId,
 				sourceEventId: randomUUID(),
@@ -1060,7 +1071,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// would still trigger tmux teardown / thread archive before ship completes.
 		// Must match event-route.ts:482 gate.
 		const landingStatusForHook = result.evidence?.landingStatus as
-			| { status?: string }
+			| { status?: string; prNumber?: number }
 			| undefined;
 		// FLY-1282 Part C: hoisted — the same predicate gates post-ship
 		// finalization below AND excludes this completion from the targeted
@@ -1081,6 +1092,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				runPostShipFinalization(
 					{
 						executionId: env.executionId,
+						runId: this.store.getWorkflowRunIdForExecution(env.executionId),
+						...(Number.isInteger(landingStatusForHook?.prNumber) &&
+						landingStatusForHook!.prNumber! > 0 &&
+						!!desPrHead
+							? {
+									mergedPr: {
+										prNumber: landingStatusForHook!.prNumber!,
+										headSha: desPrHead,
+									},
+								}
+							: {}),
 						issueId: env.issueId,
 						issueIdentifier: env.issueIdentifier,
 						projectName: env.projectName,

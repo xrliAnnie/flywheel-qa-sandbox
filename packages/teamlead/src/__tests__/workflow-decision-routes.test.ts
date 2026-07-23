@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
@@ -26,6 +26,14 @@ function gitWorktree(): { path: string; head: string } {
 	execFileSync("git", ["init", "-q", path]);
 	execFileSync("git", ["-C", path, "config", "user.email", "test@example.com"]);
 	execFileSync("git", ["-C", path, "config", "user.name", "Test"]);
+	execFileSync("git", [
+		"-C",
+		path,
+		"remote",
+		"add",
+		"origin",
+		"https://github.com/geoforge3d/flywheel.git",
+	]);
 	writeFileSync(join(path, "README.md"), "head\n");
 	mkdirSync(join(path, "agents"));
 	writeFileSync(
@@ -438,6 +446,161 @@ describe("workflow decision routes", () => {
 				ok: true,
 				executionId: "qa-exec",
 				prHeadSha: f.worktree.head,
+			});
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("resolves ship authority from the immutable approve-question binding", async () => {
+		const f = await fixture();
+		try {
+			const db = (
+				f.store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run(
+				`INSERT INTO workflow_gate_holder
+				   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+				    question_id, state, materialization_stage, created_at, updated_at)
+				 VALUES ('run-1', 'founder_gate', 1, ?, 'qa-exec', 'ship-q',
+				         'approved', 'completed', ?, ?)`,
+				[f.worktree.head, T0, T0],
+			);
+			db.run(
+				`INSERT INTO workflow_ship_target_binding
+				   (approve_question_id, run_id, target_repo_path,
+				    target_repo_identity, probe_repo_slug, frozen_head_sha,
+				    worktree_binding_generation)
+				 VALUES ('ship-q', 'run-1', ?, '__main__',
+				         'geoforge3d/flywheel', ?, 'generation-1')`,
+				[realpathSync(f.worktree.path), f.worktree.head],
+			);
+			const response = await fetch(`${f.baseUrl}/head-authority`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					execution_id: "qa-exec",
+					approve_question_id: "ship-q",
+				}),
+			});
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({
+				ok: true,
+				executionId: "qa-exec",
+				approveQuestionId: "ship-q",
+				targetRepoIdentity: "__main__",
+				prHeadSha: f.worktree.head,
+			});
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("resolves a legacy approve question without requiring a workflow gate holder", async () => {
+		const f = await fixture();
+		try {
+			f.store.setReviewBinding("qa-exec", {
+				questionId: "legacy-ship-q",
+				prHeadSha: f.worktree.head,
+				shipTarget: {
+					sourceRequestId: "review-request-legacy",
+					targetRepoPath: realpathSync(f.worktree.path),
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "geoforge3d/flywheel",
+					worktreeBindingGeneration: "legacy-generation",
+				},
+			});
+			const response = await fetch(`${f.baseUrl}/head-authority`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					execution_id: "qa-exec",
+					approve_question_id: "legacy-ship-q",
+				}),
+			});
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({
+				ok: true,
+				executionId: "qa-exec",
+				approveQuestionId: "legacy-ship-q",
+				targetRepoIdentity: "__main__",
+				prHeadSha: f.worktree.head,
+			});
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("rejects a legacy target binding owned by another execution", async () => {
+		const f = await fixture();
+		try {
+			f.store.setReviewBinding("impl-exec", {
+				questionId: "foreign-ship-q",
+				prHeadSha: f.worktree.head,
+				shipTarget: {
+					targetRepoPath: realpathSync(f.worktree.path),
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "geoforge3d/flywheel",
+					worktreeBindingGeneration: "legacy-generation",
+				},
+			});
+			const response = await fetch(`${f.baseUrl}/head-authority`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					execution_id: "qa-exec",
+					approve_question_id: "foreign-ship-q",
+				}),
+			});
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({
+				ok: false,
+				reason: "ship_target_binding_mismatch",
+			});
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("rejects nested ship authority before repository side effects", async () => {
+		const f = await fixture();
+		try {
+			const db = (
+				f.store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run(
+				`INSERT INTO workflow_gate_holder
+				   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+				    question_id, state, materialization_stage, created_at, updated_at)
+				 VALUES ('run-1', 'founder_gate', 1, ?, 'qa-exec', 'nested-q',
+				         'approved', 'completed', ?, ?)`,
+				[f.worktree.head, T0, T0],
+			);
+			db.run(
+				`INSERT INTO workflow_ship_target_binding
+				   (approve_question_id, run_id, target_repo_path,
+				    target_repo_identity, probe_repo_slug, frozen_head_sha,
+				    worktree_binding_generation)
+				 VALUES ('nested-q', 'run-1', ?, 'geoforge3d/nested',
+				         'geoforge3d/nested', ?, 'generation-1')`,
+				[f.worktree.path, f.worktree.head],
+			);
+			const response = await fetch(`${f.baseUrl}/head-authority`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					execution_id: "qa-exec",
+					approve_question_id: "nested-q",
+				}),
+			});
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({
+				ok: false,
+				reason: "nested_ship_unsupported",
 			});
 		} finally {
 			await f.close();

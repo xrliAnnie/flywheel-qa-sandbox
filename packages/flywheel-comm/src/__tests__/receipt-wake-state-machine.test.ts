@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { inbox } from "../commands/inbox.js";
 import { CommDB } from "../db.js";
@@ -196,6 +197,99 @@ describe("FLY-1392 receipt wake state machine", () => {
 		expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
 			{ state: "started", started_at: 2_000, started_ack_scope: "exec_cli" },
 			{ state: "pending", started_at: null, started_ack_scope: null },
+		]);
+	});
+
+	it("bulk ACK consumes only message traffic and never a gate response or legacy wake", () => {
+		const traffic = admit(1, 1_000).wake;
+		const questionId = db.insertQuestion("exec-1", "lead-1", "review?", {
+			checkpoint: "review_code",
+		});
+		const verdict = db.insertReviewResponseWithWakeIfGateOpen({
+			questionId,
+			fromAgent: "bridge",
+			content: '{"reviewVerdict":"APPROVED"}',
+			expectedOwner: "exec-1",
+			expectedCheckpoint: "review_code",
+			summary: "APPROVED",
+			queuedAtMs: 1_001,
+		});
+		expect(verdict).not.toBeNull();
+		const raw = new Database(join(tmpDir, "comm.db"));
+		raw
+			.prepare(
+				`INSERT INTO runner_phase_wakes
+				   (execution_id, message_id, content, state, queued_at,
+				    admission_state, envelope_json, purpose)
+				 VALUES ('exec-1', 'legacy-wake', 'legacy', 'pending', 1002,
+				         'queued', '{"id":"legacy-wake","to":"exec-1","content":"legacy"}', NULL)`,
+			)
+			.run();
+		raw.close();
+
+		expect(db.ackRunnerReceiptWakesStarted("exec-1", 2_000, "exec_cli")).toBe(
+			1,
+		);
+		expect(db.listRunnerPhaseWakes("exec-1")).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					message_id: traffic.message_id,
+					purpose: "message_traffic",
+					state: "started",
+				}),
+				expect.objectContaining({
+					message_id: verdict?.responseId,
+					purpose: "gate_response",
+					state: "pending",
+				}),
+				expect.objectContaining({
+					message_id: "legacy-wake",
+					purpose: null,
+					state: "pending",
+				}),
+			]),
+		);
+	});
+
+	it("atomically writes, redrives, and exactly consumes a review response wake", () => {
+		db.registerSession("exec-1", "session", "proj", "FLY-1", "lead-1");
+		const questionId = db.insertQuestion("exec-1", "lead-1", "review?", {
+			checkpoint: "review_code",
+		});
+		const input = {
+			questionId,
+			fromAgent: "bridge",
+			content: '{"reviewVerdict":"APPROVED"}',
+			expectedOwner: "exec-1",
+			expectedCheckpoint: "review_code",
+			summary: "APPROVED",
+			queuedAtMs: 1_000,
+		};
+		const first = db.insertReviewResponseWithWakeIfGateOpen(input);
+		expect(first).toMatchObject({
+			responseId: expect.any(String),
+			wake: {
+				message_id: expect.any(String),
+				purpose: "gate_response",
+				admission_state: "queued",
+			},
+		});
+		expect(first?.wake.message_id).toBe(first?.responseId);
+		expect(db.insertReviewResponseWithWakeIfGateOpen(input)).toMatchObject({
+			responseId: first?.responseId,
+		});
+
+		expect(db.consumeGateResponse(questionId, "other-exec")).toBeUndefined();
+		const consumed = db.consumeGateResponse(questionId, "exec-1");
+		expect(consumed?.id).toBe(first?.responseId);
+		expect(consumed?.delivered_at).toEqual(expect.any(String));
+		expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
+			{
+				message_id: first?.responseId,
+				purpose: "gate_response",
+				state: "finished",
+				finished_at: expect.any(Number),
+			},
 		]);
 	});
 

@@ -113,6 +113,16 @@ export class RunnerReceiptPatrol {
 			);
 			return;
 		}
+		const durablePark =
+			db.getEffectiveDeclaredState(wake.execution_id, nowMs)?.kind === "parked";
+		if (wake.purpose === "message_traffic" && !durablePark) {
+			db.disposeRunnerPhaseWakePending(
+				wake.execution_id,
+				wake.message_id,
+				nowMs,
+			);
+			return;
+		}
 
 		const ageMs = nowMs - wake.queued_at;
 		const t3Ms = this.options.t3Ms ?? DEFAULT_WAKE_T3_MS;

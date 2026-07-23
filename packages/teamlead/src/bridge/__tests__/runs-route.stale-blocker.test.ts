@@ -127,13 +127,21 @@ describe("runs-route stale-blocker guard integration", () => {
 		expect(res.status).toBe(409);
 	});
 
-	it("a matching legacy reservation cannot bypass the active-session guard", async () => {
+	it("a matching terminal reservation cannot bypass start admission", async () => {
 		const app = await startApp(undefined);
 		server = app.server;
 		const res = await post(app.url, "legacy-replay");
 		expect(res.status).toBe(409);
-		const body = (await res.json()) as { message: string };
-		expect(body.message).toContain("already has an active session");
+		const body = (await res.json()) as {
+			code: string;
+			hint: string;
+			runId: string;
+		};
+		expect(body).toMatchObject({
+			code: "RUN_NOT_REWORKABLE_VIA_START",
+			hint: "use /api/runs/:runId/rework",
+			runId: "legacy-run",
+		});
 	});
 
 	it("guard proceed:true → falls through past 409 (reaches admission → 429)", async () => {

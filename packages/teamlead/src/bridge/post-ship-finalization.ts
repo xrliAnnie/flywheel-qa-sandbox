@@ -151,6 +151,14 @@ export function setWorkflowShadowFinalizationHook(
 
 export interface PostShipOpts {
 	executionId: string;
+	/** Workflow authority when the session belongs to an engine-owned run. */
+	runId?: string;
+	/** Exact merge receipt attributed to this finalization trigger. */
+	mergedPr?: {
+		prNumber: number;
+		headSha: string;
+		repoIdentity?: string;
+	};
 	issueId: string;
 	issueIdentifier?: string;
 	projectName: string;
@@ -508,6 +516,48 @@ async function runPostShipFinalizationInner(
 		}
 	}
 
+	// FLY-1434: a workflow run may declare an exact multi-PR delivery set.
+	// Claiming that run/revision is the durable closeout authority; no teardown,
+	// archive, or Linear Done happens while any declared PR is still open.
+	let declaredFinalization = false;
+	if (opts.runId) {
+		if (opts.mergedPr && store.getWorkflowPrManifest(opts.runId)) {
+			const attributed = store.markWorkflowDeclaredPrMerged({
+				runId: opts.runId,
+				...opts.mergedPr,
+			});
+			if (!attributed.ok) {
+				return {
+					complete: false,
+					outcome: "held",
+					reason: `workflow_pr_manifest_merge_receipt_refused:${attributed.reason}`,
+					details: {},
+				};
+			}
+		}
+		const manifestClaim = store.claimWorkflowPrFinalization({
+			runId: opts.runId,
+			sourceExecutionId: opts.executionId,
+		});
+		if (!manifestClaim.ok) {
+			const held = manifestClaim.reason === "run_not_active";
+			const reason =
+				manifestClaim.reason === "manifest_incomplete"
+					? `workflow_pr_manifest_partial:${manifestClaim.pendingCount ?? 0}; partial delivery must stay flag-off until all declared PRs merge`
+					: manifestClaim.reason;
+			return {
+				complete: false,
+				outcome: held ? "held" : "partial",
+				reason,
+				details: {},
+			};
+		}
+		declaredFinalization = manifestClaim.mode === "declared";
+		if (manifestClaim.mode === "declared" && manifestClaim.completed) {
+			return { complete: true, outcome: "completed", details: {} };
+		}
+	}
+
 	// ── (0) ATOMIC ORCHESTRATOR CLAIM ──
 	// Stable event_id → UNIQUE constraint collapses concurrent callers
 	// (DES + event-route dual paths) to one winner for the full pipeline.
@@ -816,6 +866,13 @@ async function runPostShipFinalizationInner(
 		}
 	}
 	if (closeoutBlocked) {
+		if (declaredFinalization && opts.runId) {
+			store.setWorkflowPrFinalizationOutcome({
+				runId: opts.runId,
+				completed: false,
+				error: "issue_closeout_incomplete",
+			});
+		}
 		return {
 			complete: false,
 			outcome: "partial",
@@ -833,10 +890,18 @@ async function runPostShipFinalizationInner(
 			!threadArchived ? "thread_archive" : undefined,
 			!issueDone ? "linear_done" : undefined,
 		].filter((value): value is string => !!value);
+		const reason = `land_postconditions_incomplete:${incomplete.join(",")}`;
+		if (declaredFinalization && opts.runId) {
+			store.setWorkflowPrFinalizationOutcome({
+				runId: opts.runId,
+				completed: false,
+				error: reason,
+			});
+		}
 		return {
 			complete: false,
 			outcome: "partial",
-			reason: `land_postconditions_incomplete:${incomplete.join(",")}`,
+			reason,
 			details: {
 				tmuxClosed: cleanup.tmuxClosed,
 				commDbFinalized: cleanup.commDbFinalized,
@@ -857,6 +922,12 @@ async function runPostShipFinalizationInner(
 		source: "bridge.post-ship-finalization",
 		payload: { completedAt: new Date().toISOString() },
 	});
+	if (declaredFinalization && opts.runId) {
+		store.setWorkflowPrFinalizationOutcome({
+			runId: opts.runId,
+			completed: true,
+		});
+	}
 	// T9 moves with the completion fact: a started/partial cleanup may never
 	// terminalize a workflow run or paint the founder-facing final badge.
 	try {

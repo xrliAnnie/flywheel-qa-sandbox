@@ -53,6 +53,7 @@ describe("FLY-1392 receipt foundation schema", () => {
 					"t2_claimed_at",
 					"t2_result",
 					"escalation_outbox_id",
+					"purpose",
 				]),
 			);
 			expect(columns("receipt_alert_outbox")).toEqual([
@@ -126,6 +127,7 @@ describe("FLY-1392 receipt foundation schema", () => {
 				"push_attempts",
 				"envelope_json",
 				"admission_state",
+				"purpose",
 			]) {
 				raw.exec(`ALTER TABLE runner_phase_wakes DROP COLUMN ${column}`);
 			}
@@ -134,7 +136,7 @@ describe("FLY-1392 receipt foundation schema", () => {
 		}
 
 		expect(() => new CommDB(dbPath).close()).not.toThrow();
-		const migrated = new Database(dbPath, { readonly: true });
+		const migrated = new Database(dbPath);
 		try {
 			const leadColumns = (
 				migrated.prepare("PRAGMA table_info(lead_inbox)").all() as Array<{
@@ -154,6 +156,16 @@ describe("FLY-1392 receipt foundation schema", () => {
 			expect(leadColumns).toContain("delivered_rounds");
 			expect(wakeColumns).toContain("push_attempts");
 			expect(wakeColumns).toContain("escalation_outbox_id");
+			expect(wakeColumns).toContain("purpose");
+			expect(() =>
+				migrated
+					.prepare(
+						`INSERT INTO runner_phase_wakes
+						   (execution_id, message_id, content, state, queued_at, purpose)
+						 VALUES ('exec-invalid', 'message-invalid', 'x', 'pending', 1, 'foreign')`,
+					)
+					.run(),
+			).toThrow(/purpose check failed/i);
 		} finally {
 			migrated.close();
 		}

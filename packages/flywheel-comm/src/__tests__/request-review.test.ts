@@ -81,6 +81,32 @@ describe("request-review", () => {
 		expect(marker("r1").status).toBe("accepted");
 	});
 
+	it("persists and posts the optional nested target repository path", async () => {
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ accepted: true, requestId: "nested" }), {
+					status: 200,
+				}),
+		);
+		const code = await run({
+			execId: "e1",
+			type: "code",
+			questionId: "q1",
+			requestId: "nested",
+			targetRepoPath: "vendor/fork",
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		expect(code).toBe(0);
+		const [, init] = fetchImpl.mock.calls[0] as unknown as [
+			string,
+			RequestInit,
+		];
+		expect(JSON.parse(String(init.body))).toMatchObject({
+			targetRepoPath: "vendor/fork",
+		});
+		expect(marker("nested").targetRepoPath).toBe("vendor/fork");
+	});
+
 	it("bare 2xx WITHOUT accepted:true is NOT an ack (fail-close after retries)", async () => {
 		const fetchImpl = vi.fn(
 			async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
+import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
+import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import {
 	executeLandOperation,
 	type LandMergeDriver,
@@ -22,6 +24,89 @@ async function fixture() {
 }
 
 describe("land executor", () => {
+	it("rejects a nested repository before calling the merge driver", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
+		)!;
+		store.createWorkflowRun({
+			runId: "run-nested",
+			issueId: "issue-nested",
+			projectName: "flywheel",
+			snapshotJson: JSON.stringify(
+				buildWorkflowRunSnapshotV1({
+					template: { id: seed.templateId, revision: 1 },
+					manifest: seed.manifest,
+				}),
+			),
+			claimsReadEnrolled: true,
+		});
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'land' WHERE run_id = 'run-nested'",
+		);
+		store.upsertWorkflowRunNode({
+			runId: "run-nested",
+			nodeId: "implement",
+			attempt: 1,
+			state: "done",
+			executionId: "implement-nested",
+		});
+		db.run(
+			`INSERT INTO workflow_node_pr_binding
+			   (run_id, node_id, attempt, pr_number, head_sha,
+			    target_repo_identity, probe_repo_slug, target_repo_path,
+			    worktree_binding_generation, receipt_id, bound_at)
+			 VALUES ('run-nested', 'implement', 1, 1375, ?,
+			         'geoforge3d/nested', 'geoforge3d/nested', '/tmp/nested',
+			         'generation-1', 'nested-binding',
+			         '2026-07-21T19:59:00.000Z')`,
+			[HEAD],
+		);
+		store.ensureWorkflowGateHolder({
+			runId: "run-nested",
+			gateNodeId: "founder_gate",
+			attempt: 1,
+			headSha: HEAD,
+			sourceExecutionId: "qa-nested",
+			questionId: "nested-question",
+			now: "2026-07-21T20:00:00.000Z",
+		});
+		db.run(
+			"UPDATE workflow_gate_holder SET state = 'approved' WHERE question_id = 'nested-question'",
+		);
+		const operation = store.ensureLandOperation({
+			runId: "run-nested",
+			issueId: "issue-nested",
+			projectName: "flywheel",
+			prNumber: 1375,
+			approvedHead: HEAD,
+			now: "2026-07-21T20:00:00.000Z",
+		});
+		const inspectPr = vi.fn();
+		const result = await executeLandOperation(operation.operation_id, {
+			store,
+			mergeDriver: {
+				inspectPr,
+				triggerCool: vi.fn(),
+				inspectTriggeredWorkflow: vi.fn(),
+			},
+			finalize: vi.fn(),
+			ownerId: "worker",
+			now: () => new Date("2026-07-21T20:01:00.000Z"),
+		});
+		expect(result).toMatchObject({
+			status: "held",
+			reason: "nested_land_unsupported",
+		});
+		expect(inspectPr).not.toHaveBeenCalled();
+		store.close();
+	});
+
 	it("triggers sanctioned merge once, yields while pending, then resumes finalization", async () => {
 		const { store, operation } = await fixture();
 		let merged = false;

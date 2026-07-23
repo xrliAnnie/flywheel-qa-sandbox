@@ -56,6 +56,8 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		adapter_type?: string | null;
 		pr_number?: number;
 		worktree_path?: string;
+		project_name?: string;
+		issue_id?: string;
 	}): void {
 		const db = new Database(stateDbPath);
 		db.exec(
@@ -66,12 +68,14 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				review_question_id TEXT,
 				codex_skip INTEGER NOT NULL DEFAULT 0,
 				adapter_type TEXT,
+				project_name TEXT NOT NULL DEFAULT 'proj',
+				issue_id TEXT NOT NULL DEFAULT 'FLY-1434',
 				pr_number INTEGER NOT NULL DEFAULT 621,
 				worktree_path TEXT NOT NULL DEFAULT '/worktree'
 			)`,
 		);
 		db.prepare(
-			"INSERT OR REPLACE INTO sessions (execution_id, status, pr_head_sha, review_question_id, codex_skip, adapter_type) VALUES (?, ?, ?, ?, ?, ?)",
+			"INSERT OR REPLACE INTO sessions (execution_id, status, pr_head_sha, review_question_id, codex_skip, adapter_type, project_name, issue_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 		).run(
 			row.execution_id,
 			row.status,
@@ -79,6 +83,8 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			row.review_question_id ?? null,
 			row.codex_skip ?? 0,
 			row.adapter_type ?? null,
+			row.project_name ?? "proj",
+			row.issue_id ?? "FLY-1434",
 		);
 		db.close();
 	}
@@ -95,15 +101,18 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		db.exec(
 			`CREATE TABLE IF NOT EXISTS codex_review_record (
 				execution_id TEXT NOT NULL,
+				target_repo_identity TEXT NOT NULL DEFAULT '__main__',
 				target_pr_head_sha TEXT NOT NULL,
+				issue_id TEXT NOT NULL DEFAULT 'FLY-1434',
+				project_name TEXT NOT NULL DEFAULT 'proj',
 				status TEXT NOT NULL DEFAULT 'pending',
 				author_family TEXT,
 				reviewer_family TEXT,
-				PRIMARY KEY (execution_id, target_pr_head_sha)
+				PRIMARY KEY (execution_id, target_repo_identity, target_pr_head_sha)
 			)`,
 		);
 		db.prepare(
-			"INSERT OR REPLACE INTO codex_review_record (execution_id, target_pr_head_sha, status, author_family, reviewer_family) VALUES (?, ?, ?, ?, ?)",
+			"INSERT OR REPLACE INTO codex_review_record (execution_id, target_repo_identity, target_pr_head_sha, issue_id, project_name, status, author_family, reviewer_family) VALUES (?, '__main__', ?, 'FLY-1434', 'proj', ?, ?, ?)",
 		).run(
 			execution_id,
 			targetPrHeadSha.toLowerCase(),
@@ -266,17 +275,18 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 
 	describe("FLY-1244 Bridge head authority", () => {
 		it("uses the Bridge-derived head for the final local approval check", async () => {
-			setupFullyApproved();
+			const qid = setupFullyApproved();
+			const fetchImpl = vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => ({ ok: true, prHeadSha: HEAD }),
+			});
 			const result = await verifyApprovalWithBridgeHead({
 				execId: EXEC,
 				prHead: HEAD,
 				dbPath: commDbPath,
 				stateDbPath,
 				bridgeUrl: "http://127.0.0.1:9876",
-				fetchImpl: vi.fn().mockResolvedValue({
-					ok: true,
-					json: async () => ({ ok: true, prHeadSha: HEAD }),
-				}) as never,
+				fetchImpl: fetchImpl as never,
 				env: {
 					FLYWHEEL_CODEX_HARD_GATE: "0",
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
@@ -285,9 +295,14 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				ciProbe: () => ({ green: true, reason: "ci_green" }),
 			});
 			expect(result).toMatchObject({ approved: true, reason: "approved" });
+			expect(JSON.parse(fetchImpl.mock.calls[0]![1].body)).toEqual({
+				execution_id: EXEC,
+				approve_question_id: qid,
+			});
 		});
 
 		it("refuses when caller HEAD differs from Bridge worktree authority", async () => {
+			setupFullyApproved();
 			const result = await verifyApprovalWithBridgeHead({
 				execId: EXEC,
 				prHead: OTHER_HEAD,
@@ -309,6 +324,7 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		});
 
 		it("fails closed when the Bridge authority cannot be read", async () => {
+			setupFullyApproved();
 			const result = await verifyApprovalWithBridgeHead({
 				execId: EXEC,
 				prHead: HEAD,
@@ -321,6 +337,32 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			expect(result).toMatchObject({
 				approved: false,
 				reason: "head_authority_unavailable",
+				exitCode: 1,
+			});
+		});
+
+		it("surfaces nested-repository refusal as a stable ship reason", async () => {
+			const qid = setupFullyApproved();
+			const result = await verifyApprovalWithBridgeHead({
+				execId: EXEC,
+				prHead: HEAD,
+				dbPath: commDbPath,
+				stateDbPath,
+				bridgeUrl: "http://127.0.0.1:9876",
+				fetchImpl: vi.fn().mockResolvedValue({
+					ok: false,
+					status: 409,
+					json: async () => ({
+						ok: false,
+						reason: "nested_ship_unsupported",
+					}),
+				}) as never,
+				env: { FLYWHEEL_WORKFLOW_CLAIMS_READ: "1" } as NodeJS.ProcessEnv,
+			});
+			expect(result).toMatchObject({
+				approved: false,
+				reason: "nested_ship_unsupported",
+				questionId: qid,
 				exitCode: 1,
 			});
 		});
@@ -693,6 +735,21 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			founderApproved();
 			writeCodexRecord(EXEC, HEAD, "approved");
 			const r = runGateOn();
+			expect(r.approved).toBe(true);
+			expect(r.reason).toBe("approved");
+		});
+
+		it("accepts issue-scoped review authority written by a different author execution", () => {
+			founderApproved();
+			writeStateSession({
+				execution_id: "author-exec",
+				status: "completed",
+				adapter_type: "claude-tmux",
+			});
+			writeCodexRecord("author-exec", HEAD, "approved");
+
+			const r = runGateOn();
+
 			expect(r.approved).toBe(true);
 			expect(r.reason).toBe("approved");
 		});

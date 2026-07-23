@@ -63,6 +63,27 @@ export interface FounderConsentWiring {
 	middlewareFor: (
 		mount: MountKind,
 	) => ReturnType<typeof founderConsentMiddleware>;
+	authorizeWorkflowRework: (input: {
+		runId: string;
+		requestedReason: string;
+		leadId?: string;
+	}) => Promise<
+		| {
+				ok: true;
+				consent: {
+					mode: "off" | "audit_only" | "enforce";
+					decision: string;
+					auditId?: number;
+				};
+		  }
+		| {
+				ok: false;
+				status: 403 | 503;
+				code: string;
+				reason?: string;
+				auditId?: number;
+		  }
+	>;
 	/** Surface B router — ALWAYS present (pass-through write when off). */
 	gateRouter: Router;
 	/** Read-only debug router — undefined when off. */
@@ -311,6 +332,108 @@ export function buildFounderConsentWiring(
 		};
 		return ctx;
 	};
+	const resolveRunContext = async (
+		runId: string,
+	): Promise<ResolvedConsentContext | null> => {
+		const run = store.getWorkflowRun(runId);
+		if (!run) return null;
+		const currentExecutionId = run.current_node_id
+			? store
+					.listWorkflowRunNodes(runId, run.current_node_id)
+					.filter((node) => node.execution_id)
+					.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id
+			: undefined;
+		if (currentExecutionId) {
+			const sessionContext = await resolveContext(currentExecutionId);
+			if (sessionContext) {
+				return {
+					...sessionContext,
+					sessionStatusAtCall: run.status,
+				};
+			}
+		}
+		const project = projects.find(
+			(candidate) => candidate.projectName === run.project_name,
+		);
+		let threadId: string | undefined;
+		let channelId: string | undefined;
+		let botToken: string | undefined = config.discordBotToken;
+		for (const lead of project?.leads ?? []) {
+			const thread = store.getChatThreadByIssue(run.issue_id, lead.chatChannel);
+			if (!thread) continue;
+			threadId = thread.thread_id;
+			channelId = thread.channel_id;
+			botToken = lead.botToken ?? config.discordBotToken;
+			break;
+		}
+		return {
+			issueId: run.issue_id,
+			issueIdentifier: run.issue_id,
+			projectName: run.project_name,
+			executionId: currentExecutionId ?? undefined,
+			sessionRole: run.current_node_id ?? undefined,
+			sessionStatusAtCall: run.status,
+			threadId,
+			discordChannelId: channelId,
+			botToken,
+			leadBotIds: new Set<string>(),
+			runnerBotIds: new Set<string>(),
+		};
+	};
+	const makeAuthorizeWorkflowRework = (
+		evaluator?: FounderConsentEvaluator,
+	): FounderConsentWiring["authorizeWorkflowRework"] => {
+		return async (input) => {
+			if (!evaluator) {
+				return {
+					ok: true,
+					consent: { mode: "off", decision: "pass_through" },
+				};
+			}
+			const context = await resolveRunContext(input.runId);
+			if (!context) {
+				return {
+					ok: false,
+					status: 503,
+					code: "FOUNDER_CONSENT_RUN_CONTEXT_MISSING",
+					reason: "workflow run context unavailable",
+				};
+			}
+			const evaluated = await evaluator.evaluate({
+				...context,
+				action: "workflow_rework",
+				actorSource: "http_middleware",
+				leadId: input.leadId,
+				requestedBy: input.leadId ?? "master",
+				requestReason: input.requestedReason,
+			});
+			if (
+				evaluator.decisionMode === "audit_only" ||
+				evaluated.decision === "allow" ||
+				evaluated.decision === "bypass"
+			) {
+				return {
+					ok: true,
+					consent: {
+						mode: evaluator.decisionMode,
+						decision: evaluated.decision,
+						auditId: evaluated.auditId,
+					},
+				};
+			}
+			return {
+				ok: false,
+				status: evaluated.decision === "fail_closed" ? 503 : 403,
+				code:
+					evaluated.code ??
+					(evaluated.decision === "fail_closed"
+						? "FOUNDER_CONSENT_FAIL_CLOSED"
+						: "FOUNDER_CONSENT_REQUIRED"),
+				reason: evaluated.failReason ?? evaluated.llmReason ?? undefined,
+				auditId: evaluated.auditId,
+			};
+		};
+	};
 
 	const gateAuthorityView = makeGateAuthorityView(store);
 	const getSessionProject = (executionId: string) => {
@@ -364,6 +487,7 @@ export function buildFounderConsentWiring(
 		return {
 			resolveContext,
 			middlewareFor: () => (_q, _s, next) => next(),
+			authorizeWorkflowRework: makeAuthorizeWorkflowRework(),
 			gateRouter: createGateResponseRouter(gateDeps),
 			onResponseWritten,
 		};
@@ -426,6 +550,7 @@ export function buildFounderConsentWiring(
 		resolveContext,
 		middlewareFor: (mount) =>
 			founderConsentMiddleware(mount, { evaluator, resolveContext, logger }),
+		authorizeWorkflowRework: makeAuthorizeWorkflowRework(evaluator),
 		gateRouter: createGateResponseRouter(gateDeps),
 		debugRouter,
 		onResponseWritten,

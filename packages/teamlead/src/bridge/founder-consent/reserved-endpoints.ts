@@ -27,7 +27,8 @@ export type ActionKey =
 	// unchanged.
 	| "park_issue"
 	| "unpark_issue"
-	| "lifecycle_apply";
+	| "lifecycle_apply"
+	| "workflow_rework";
 
 /**
  * Action keys handled by the Bridge action router (`/api/actions/:action`
@@ -122,6 +123,12 @@ export const RESERVED_ENDPOINTS: readonly ReservedEndpoint[] = [
 		action: "lifecycle_apply",
 		surface: "A",
 	},
+	{
+		method: "POST",
+		path: "/api/runs/:runId/rework",
+		action: "workflow_rework",
+		surface: "A",
+	},
 	// Surface B — flywheel-comm respond wrapper
 	{
 		method: "POST",
@@ -145,7 +152,11 @@ export const RESERVED_ENDPOINTS: readonly ReservedEndpoint[] = [
 // asserts every reserved action is classified EXACTLY once, so a new reserved
 // endpoint can't silently drift out of the lifecycle authorization surface.
 
-export type ActionClassKind = "lifecycle" | "ship_gate" | "issue_lifecycle";
+export type ActionClassKind =
+	| "lifecycle"
+	| "ship_gate"
+	| "issue_lifecycle"
+	| "run_lifecycle";
 export type IdempotencyClass = "idempotent" | "non_idempotent";
 
 export interface ActionClassMeta {
@@ -268,6 +279,14 @@ export const ACTION_CLASS_METADATA: readonly ActionClassMeta[] = [
 		eligibleStatuses: ["any"],
 		idempotencyClass: "idempotent",
 		postconditionVerifier: "manifest_hash_consumed",
+	},
+	{
+		action: "workflow_rework",
+		kind: "run_lifecycle",
+		canonicalEndpoint: "/api/runs/:runId/rework",
+		eligibleStatuses: ["completed", "active"],
+		idempotencyClass: "idempotent",
+		postconditionVerifier: "workflow_rework_materialized",
 	},
 ] as const;
 

@@ -260,6 +260,23 @@ async function storeWithLandIntent() {
 	);
 	store.upsertWorkflowRunNode({
 		runId: "run-land",
+		nodeId: "implement",
+		attempt: 1,
+		state: "done",
+		executionId: "implement-land",
+	});
+	db.run(
+		`INSERT INTO workflow_node_pr_binding
+		   (run_id, node_id, attempt, pr_number, head_sha, target_repo_identity,
+		    probe_repo_slug, target_repo_path, worktree_binding_generation,
+		    receipt_id, bound_at)
+		 VALUES ('run-land', 'implement', 1, 1375, ?, '__main__',
+		         'geoforge3d/flywheel', '/tmp/flywheel', 'generation-1',
+		         'land-pr-binding', '2026-07-21T19:59:00.000Z')`,
+		[HEAD],
+	);
+	store.upsertWorkflowRunNode({
+		runId: "run-land",
 		nodeId: "land",
 		attempt: 1,
 		state: "pending",
@@ -647,9 +664,49 @@ describe("WorkflowEngineDispatcher", () => {
 
 		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
 		expect(landExecutor).toHaveBeenCalledOnce();
+		expect(store.getWorkflowShipTargetBinding("land-question")).toMatchObject({
+			run_id: "run-land",
+			target_repo_identity: "__main__",
+			frozen_head_sha: HEAD,
+			worktree_binding_generation: "generation-1",
+			superseded_at: null,
+		});
 		expect(store.getWorkflowRun("run-land")?.status).toBe("completed");
 		expect(store.getWorkflowRunNode("run-land", "land", 1)?.state).toBe("done");
 		expect(store.listWorkflowSideEffects("run-land")[0]?.state).toBe("started");
+		store.close();
+	});
+
+	it("holds nested-repository land authority before creating an operation", async () => {
+		const store = await storeWithLandIntent();
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			`UPDATE workflow_node_pr_binding
+			    SET target_repo_identity = 'geoforge3d/nested'
+			  WHERE run_id = 'run-land'`,
+		);
+		const landExecutor = vi.fn();
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fakeStartDispatcher(store).dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-21T20:02:00.000Z"),
+			landExecutor,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(landExecutor).not.toHaveBeenCalled();
+		expect(store.getWorkflowRun("run-land")?.status).toBe("held");
+		expect(store.getLandOperationForRun("run-land")).toBeUndefined();
+		expect(
+			store
+				.listWorkflowRunEvents("run-land")
+				.some((event) => event.kind === "land_held"),
+		).toBe(true);
 		store.close();
 	});
 

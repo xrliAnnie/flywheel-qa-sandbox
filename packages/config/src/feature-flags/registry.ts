@@ -957,7 +957,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		valueKind: "bool",
 		default: true,
 		description:
-			"三段式 implement 段 codex 派发开关（=0 → implement 回落 legacy (claude, heavy)；design/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --bridge-only）(FLY-1224)",
+			"三段式 implement 段 codex 派发开关（=0 → implement 回落 legacy (claude, heavy)；design/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --reason env-change）(FLY-1224/FLY-1434)",
 		readSites: [
 			envSite(
 				"packages/config/src/three-stage-phases.ts",
@@ -985,7 +985,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		valueKind: "bool",
 		default: false,
 		description:
-			"三段式 design 段新 run admission fallback（仅在 admission 时且本次 run 未指定 designBackend：=1 → codex gpt-5.6-sol xhigh；不设/≠1 → claude/Fable；一旦写入 sessions.design_backend，retry/rescue 不再读本开关；implement/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --bridge-only）(FLY-1245/FLY-1259)",
+			"三段式 design 段新 run admission fallback（仅在 admission 时且本次 run 未指定 designBackend：=1 → codex gpt-5.6-sol xhigh；不设/≠1 → claude/Fable；一旦写入 sessions.design_backend，retry/rescue 不再读本开关；implement/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --reason env-change）(FLY-1245/FLY-1259/FLY-1434)",
 		readSites: [
 			envSite(
 				"packages/config/src/three-stage-phases.ts",

@@ -1596,7 +1596,10 @@ export class Blueprint {
 				);
 			} else if (completionRoute !== "phase_design_complete") {
 				systemPromptLines.push(
-					`When the bounded work is complete, run \`node ${commCliPath} complete --route ${completionRoute}\`.`,
+					ctx.workflowCapabilities.creates_pr === true &&
+						completionRoute === "needs_review"
+						? `When the bounded work is complete, open the PR and run \`node ${commCliPath} complete --route needs_review --pr <NUMBER>\` (add \`--target-repo <relative-repo-path>\` for a nested repository).`
+						: `When the bounded work is complete, run \`node ${commCliPath} complete --route ${completionRoute}\`.`,
 				);
 			}
 		} else if (isQaRunner) {

@@ -13,9 +13,15 @@
 
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { CommDB } from "../db.js";
 import {
 	type DesignHtmlEvidence,
@@ -50,7 +56,11 @@ const BACKOFF_MS = [1000, 2000, 4000] as const;
 type Evidence = {
 	// FLY-493: `ready_to_merge` (pr_handoff) joins `merged` — a no-transport
 	// Runner records PR evidence without a merge.
-	landingStatus?: { status: "merged" | "ready_to_merge"; prNumber: number };
+	landingStatus?: {
+		status: "merged" | "ready_to_merge";
+		prNumber: number;
+		targetRepoPath?: string;
+	};
 	commitCount: number;
 	filesChangedCount: number;
 	linesAdded: number;
@@ -104,6 +114,7 @@ export interface CompleteOpts {
 	summary?: string;
 	exitReason?: string;
 	baseRef?: string;
+	targetRepo?: string;
 	/** FLY-191 Phase 2: questionId from `gate --no-block` (route=needs_review). */
 	questionId?: string;
 }
@@ -121,6 +132,14 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	}
 	if (opts.merged && (opts.pr === undefined || opts.pr === null)) {
 		console.error("--merged requires --pr <number>");
+		process.exit(1);
+	}
+	if (opts.pr !== undefined && (!Number.isInteger(opts.pr) || opts.pr <= 0)) {
+		console.error("--pr must be a positive integer");
+		process.exit(1);
+	}
+	if (opts.targetRepo && opts.pr === undefined) {
+		console.error("--target-repo requires --pr");
 		process.exit(1);
 	}
 	// FLY-222 #1: no_code is a no-merge completion — reject contradictory flags
@@ -202,12 +221,13 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 
 	const sessionRole = opts.sessionRole ?? "main";
 	const exitReason = opts.exitReason ?? "completed";
-	const baseRef = opts.baseRef ?? deriveBaseRef();
+	const baseRef = opts.baseRef ?? deriveBaseRef(opts.targetRepo);
 	const issueIdentifier = deriveIssueIdentifier();
 	const evidence = collectEvidence({
 		baseRef,
 		merged: opts.merged,
 		pr: opts.pr,
+		targetRepo: opts.targetRepo,
 	});
 	const designHtmlEvidence =
 		opts.route === "phase_design_complete"
@@ -219,7 +239,16 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	// wiring bug, fail loud rather than completing with ambiguous evidence.
 	if (opts.route === "pr_handoff" && opts.pr !== undefined) {
 		validateLandStatusPr(opts.pr);
-		evidence.landingStatus = { status: "ready_to_merge", prNumber: opts.pr };
+	}
+	if (
+		(opts.route === "pr_handoff" || opts.route === "needs_review") &&
+		opts.pr !== undefined
+	) {
+		evidence.landingStatus = {
+			status: "ready_to_merge",
+			prNumber: opts.pr,
+			...(opts.targetRepo ? { targetRepoPath: opts.targetRepo } : {}),
+		};
 	}
 	const summary = opts.summary ?? evidence.commitMessages[0];
 	const workflowActivation = currentWorkflowActivationFromEnv(execId);
@@ -448,9 +477,13 @@ function deriveIssueIdentifier(): string | undefined {
 	}
 }
 
-function deriveBaseRef(): string {
+function deriveBaseRef(targetRepo?: string): string {
 	try {
-		const base = git(["merge-base", "HEAD", "origin/main"]).trim();
+		const base = gitAt(resolveEvidenceRepo(targetRepo), [
+			"merge-base",
+			"HEAD",
+			"origin/main",
+		]).trim();
 		return base || "origin/main";
 	} catch {
 		return "origin/main";
@@ -461,24 +494,27 @@ function collectEvidence(args: {
 	baseRef: string;
 	merged: boolean;
 	pr?: number;
+	targetRepo?: string;
 }): Evidence {
 	const { baseRef, merged, pr } = args;
+	const evidenceRepo = resolveEvidenceRepo(args.targetRepo);
+	const repoGit = (gitArgs: string[]) => gitAt(evidenceRepo, gitArgs);
 	// Capture HEAD exactly once, before any diff/object reads. Every evidence
 	// query below and the FLY-1404 HTML attestation use this immutable object id,
 	// so a concurrent branch update cannot mix content from one commit with the
 	// headSha of another.
-	const parsedHeadSha = git(["rev-parse", "HEAD"]).trim().toLowerCase();
+	const parsedHeadSha = repoGit(["rev-parse", "HEAD"]).trim().toLowerCase();
 	const headSha = /^[0-9a-f]{40}$/.test(parsedHeadSha)
 		? parsedHeadSha
 		: undefined;
 	const range = `${baseRef}..${headSha ?? "HEAD"}`;
 
 	const commitCount = parseInt(
-		git(["rev-list", "--count", range]).trim() || "0",
+		repoGit(["rev-list", "--count", range]).trim() || "0",
 		10,
 	);
 
-	const numstat = git(["diff", "--numstat", range]).trim();
+	const numstat = repoGit(["diff", "--numstat", range]).trim();
 	const numstatLines = numstat ? numstat.split("\n") : [];
 	let linesAdded = 0;
 	let linesRemoved = 0;
@@ -490,13 +526,13 @@ function collectEvidence(args: {
 		if (!Number.isNaN(removed)) linesRemoved += removed;
 	}
 
-	const nameOnly = git(["diff", "--name-only", range]).trim();
+	const nameOnly = repoGit(["diff", "--name-only", range]).trim();
 	const changedFilePaths = nameOnly ? nameOnly.split("\n") : [];
 
 	const diffSummary =
-		git(["diff", "--stat", range]).trim().split("\n").pop()?.trim() ?? "";
+		repoGit(["diff", "--stat", range]).trim().split("\n").pop()?.trim() ?? "";
 
-	const logOut = git(["log", "--format=%s", range]).trim();
+	const logOut = repoGit(["log", "--format=%s", range]).trim();
 	const commitMessages = logOut ? logOut.split("\n") : [];
 
 	const evidence: Evidence = {
@@ -550,13 +586,62 @@ function validateLandStatusPr(pr: number): void {
 }
 
 function git(args: string[]): string {
+	return gitAt(undefined, args);
+}
+
+function gitAt(cwd: string | undefined, args: string[]): string {
 	try {
 		return execFileSync("git", args, {
+			...(cwd ? { cwd } : {}),
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 	} catch {
 		return "";
+	}
+}
+
+function resolveEvidenceRepo(targetRepo?: string): string | undefined {
+	if (!targetRepo) return undefined;
+	const hasControlCharacter = [...targetRepo].some((character) => {
+		const code = character.charCodeAt(0);
+		return code <= 31 || code === 127;
+	});
+	if (
+		isAbsolute(targetRepo) ||
+		targetRepo.startsWith("~") ||
+		targetRepo.split(/[\\/]/).includes("..") ||
+		hasControlCharacter
+	) {
+		console.error("--target-repo must be a safe relative repository path");
+		process.exit(1);
+	}
+	try {
+		const root = realpathSync(process.cwd());
+		const target = realpathSync(resolve(root, targetRepo));
+		const rel = relative(root, target);
+		if (
+			!rel ||
+			rel === ".." ||
+			rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
+		) {
+			throw new Error("target must be strictly beneath the worktree root");
+		}
+		const toplevel = realpathSync(
+			execFileSync("git", ["-C", target, "rev-parse", "--show-toplevel"], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+			}).trim(),
+		);
+		if (toplevel !== target) {
+			throw new Error("target is not an exact nested repository root");
+		}
+		return target;
+	} catch (error) {
+		console.error(
+			`--target-repo is invalid: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		process.exit(1);
 	}
 }
 

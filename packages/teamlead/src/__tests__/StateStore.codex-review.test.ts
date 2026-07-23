@@ -182,6 +182,31 @@ describe("StateStore — FLY-827 codex_review_record", () => {
 		expect(store.isCodexCodeReviewApproved("exec1", SHA_B)).toBe(false);
 	});
 
+	it("keys by (exec, repo identity, head) so identical cross-repo SHAs coexist", () => {
+		store.recordCodexReviewApproved({
+			executionId: "exec1",
+			targetRepoIdentity: "__main__",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1434",
+			projectName: "proj",
+		});
+		store.recordCodexReviewApproved({
+			executionId: "exec1",
+			targetRepoIdentity: "acme/fork",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1434",
+			projectName: "proj",
+		});
+
+		expect(
+			store.getCodexReviewRecord("exec1", SHA_A)?.target_repo_identity,
+		).toBe("__main__");
+		expect(
+			store.getCodexReviewRecord("exec1", "acme/fork", SHA_A)
+				?.target_repo_identity,
+		).toBe("acme/fork");
+	});
+
 	it("normalizes sha case on write and read", () => {
 		const upper = SHA_A.toUpperCase();
 		store.recordCodexReviewApproved({

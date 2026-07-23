@@ -471,6 +471,105 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
 	});
 
+	it("reconciles every declared repository head and finalizes only after the complete set merges", async () => {
+		const s = await setup({ maxCandidates: 3 });
+		s.store.createWorkflowRun({
+			runId: "declared-run",
+			issueId: "FLY-1434",
+			projectName: "proj",
+			claimsReadEnrolled: true,
+		});
+		s.store.openWorkflowPrManifest({
+			runId: "declared-run",
+			expectedCount: 2,
+		});
+		for (const [nodeId, executionId] of [
+			["implement-main", "declared-main"],
+			["implement-nested", "declared-nested"],
+		] as const) {
+			s.store.upsertWorkflowRunNode({
+				runId: "declared-run",
+				nodeId,
+				attempt: 1,
+				state: "done",
+				executionId,
+			});
+			s.store.upsertSession({
+				execution_id: executionId,
+				issue_id: "FLY-1434",
+				project_name: "proj",
+				status: "running",
+			});
+		}
+		const db = (
+			s.store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		for (const binding of [
+			{
+				node: "implement-main",
+				pr: 687,
+				head: HEAD,
+				identity: "__main__",
+				slug: "geoforge3d/flywheel",
+			},
+			{
+				node: "implement-nested",
+				pr: 42,
+				head: OTHER_HEAD,
+				identity: "geoforge3d/dashboard",
+				slug: "geoforge3d/dashboard",
+			},
+		]) {
+			db.run(
+				`INSERT INTO workflow_node_pr_binding
+				   (run_id, node_id, attempt, pr_number, head_sha,
+				    target_repo_identity, probe_repo_slug, target_repo_path,
+				    worktree_binding_generation, receipt_id, bound_at)
+				 VALUES ('declared-run', ?, 1, ?, ?, ?, ?, '/tmp/repo',
+				         'generation-1', ?, '2026-07-23T00:00:00.000Z')`,
+				[
+					binding.node,
+					binding.pr,
+					binding.head,
+					binding.identity,
+					binding.slug,
+					`receipt-${binding.pr}`,
+				],
+			);
+		}
+		expect(
+			s.store.sealWorkflowPrManifestFromBindings({
+				runId: "declared-run",
+			}).ok,
+		).toBe(true);
+		s.checkPr.mockImplementation(async (_root: string, prNumber: number) => ({
+			state: "merged",
+			headRefOid: prNumber === 687 ? HEAD : OTHER_HEAD,
+			mergeCommitOid: MERGE_OID,
+		}));
+
+		await s.pass();
+
+		expect(
+			s.store
+				.listCurrentWorkflowDeclaredPrs("declared-run")
+				.map((row) => row.state),
+		).toEqual(["merged", "merged"]);
+		expect(s.checkPr).toHaveBeenCalledWith(
+			"/tmp/proj",
+			42,
+			10_000,
+			"geoforge3d/dashboard",
+		);
+		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
+		expect(runPostShipSpy.mock.calls[0]?.[0]).toMatchObject({
+			runId: "declared-run",
+		});
+		expect(runPostShipSpy.mock.calls[0]?.[0]).not.toHaveProperty("mergedPr");
+	});
+
 	it("gh budget: at most N candidates per project per pass, rotating across passes", async () => {
 		const s = await setup({ maxCandidates: 2, prInfo: { state: "open" } });
 		for (let i = 0; i < 5; i++) {

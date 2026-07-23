@@ -10,9 +10,11 @@
 #      with the Claude Infra Bot token — unchanged.
 #   2. Either env missing → ZERO curl + meta-alert(notify_routine_unconfigured)
 #      + rc=0 (fail-loud, deploy never blocked, NO legacy fallback sender).
-#   3. Call-site classification: the 5 routine sites (⏳ idle wait / 🔄 update
-#      start / ✅ updated / 🔄 lead restart / ✅ lead restart done) call
-#      notify_routine; every former ⚠️/🚨 site rides alert_warning/alert_severe;
+#   3. Call-site classification: the idle-wait notice plus the unified full-fleet
+#      start/finish notices call notify_routine. The unified pair carries the
+#      reason, SHA/version and restarted-service evidence, so it preserves the
+#      old update + Lead-restart semantics after FLY-1434 removed split restart
+#      modes. Every former ⚠️/🚨 site rides alert_warning/alert_severe;
 #      notify_discord and the severe_alert() wrapper no longer exist.
 set -uo pipefail
 
@@ -116,19 +118,23 @@ grep -q "notify_routine_unconfigured" "$M3" \
 	&& pass "channel-only → meta-alert(notify_routine_unconfigured)" || fail "channel-only: meta-alert missing"
 [[ $rc -eq 0 ]] && pass "channel-only → rc=0" || fail "channel-only rc=$rc"
 
-# ── Case 4: call-site classification (static, against the real script) ──────
+# ── Case 4: unified call-site contract (static, against the real script) ────
 routine_sites=(
 	'notify_routine "⏳ 等待 ${count} 个 active session idle'
-	'notify_routine "🔄 开始更新 Flywheel'
-	'notify_routine "✅ Flywheel 已更新到'
-	'notify_routine "🔄 Lead 重启中'
-	'notify_routine "✅ Lead 重启完成'
+	'notify_routine "🔄 开始全量重启 Flywheel (reason=${RESTART_REASON}): \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`"'
+	'notify_routine "✅ Flywheel 全量重启完成 (reason=${RESTART_REASON})。版本 \`${CURRENT_HEAD:0:7}\`，重启了: ${restarted[*]:-无}"'
 )
 ok=1
 for site in "${routine_sites[@]}"; do
 	grep -qF "$site" "$RS" || { ok=0; fail "routine site missing/misrouted: $site"; }
 done
-[[ $ok -eq 1 ]] && pass "all 5 routine call sites use notify_routine"
+force_block="$(sed -n \
+	'/^# FLY-1434: the only restart scope is full fleet\.$/,/^restart_all_leads=true$/p' \
+	"$RS")"
+expected_force_block=$'# FLY-1434: the only restart scope is full fleet.\nrestart_bridge=true\nrestart_all_leads=true'
+[[ "$force_block" == "$expected_force_block" ]] \
+	|| { ok=0; fail "unified restart force block missing or no longer contiguous"; }
+[[ $ok -eq 1 ]] && pass "unified full-fleet start/finish notices preserve update + Lead-restart semantics"
 
 # Every ⚠️/🚨 message must ride alert_warning/alert_severe, never notify_routine
 # and never a raw ⚠️/🚨 string (titles/bodies carry no emoji since FLY-1081 —

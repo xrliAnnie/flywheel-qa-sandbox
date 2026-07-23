@@ -11,15 +11,15 @@ import {
 } from "../reserved-endpoints.js";
 
 describe("RESERVED_ENDPOINTS table integrity (§4.3)", () => {
-	it("contains exactly 17 Surface A + 1 Surface B entries (FLY-1185 adds 3 issue-lifecycle)", () => {
+	it("contains exactly 18 Surface A + 1 Surface B entries", () => {
 		const a = RESERVED_ENDPOINTS.filter((e) => e.surface === "A");
 		const b = RESERVED_ENDPOINTS.filter((e) => e.surface === "B");
-		expect(a).toHaveLength(17);
+		expect(a).toHaveLength(18);
 		expect(b).toHaveLength(1);
-		expect(RESERVED_ENDPOINTS).toHaveLength(18);
+		expect(RESERVED_ENDPOINTS).toHaveLength(19);
 	});
 
-	it("covers all 12 action keys", () => {
+	it("covers all 13 action keys", () => {
 		const keys = new Set(RESERVED_ENDPOINTS.map((e) => e.action));
 		expect([...keys].sort()).toEqual(
 			[
@@ -35,6 +35,7 @@ describe("RESERVED_ENDPOINTS table integrity (§4.3)", () => {
 				"shelve",
 				"terminate",
 				"unpark_issue",
+				"workflow_rework",
 			].sort(),
 		);
 	});
@@ -45,6 +46,7 @@ describe("RESERVED_ENDPOINTS table integrity (§4.3)", () => {
 		expect(LIFECYCLE_ACTIONS).not.toContain("park_issue");
 		expect(LIFECYCLE_ACTIONS).not.toContain("unpark_issue");
 		expect(LIFECYCLE_ACTIONS).not.toContain("lifecycle_apply");
+		expect(LIFECYCLE_ACTIONS).not.toContain("workflow_rework");
 	});
 
 	it("Surface B is the gate-response endpoint", () => {
@@ -152,6 +154,18 @@ describe("FLY-245 D-d: action-class metadata (SSOT classification, R2#4)", () =>
 		expect(getActionClassMeta("close_runner")?.canonicalEndpoint).toBe(
 			"/api/sessions/:id/close-runner",
 		);
+	});
+
+	it("classifies workflow rework as run lifecycle without expanding the runner gateway", () => {
+		expect(getActionClassMeta("workflow_rework")).toEqual({
+			action: "workflow_rework",
+			kind: "run_lifecycle",
+			canonicalEndpoint: "/api/runs/:runId/rework",
+			eligibleStatuses: ["completed", "active"],
+			idempotencyClass: "idempotent",
+			postconditionVerifier: "workflow_rework_materialized",
+		});
+		expect(isLifecycleAction("workflow_rework")).toBe(false);
 	});
 
 	it("lifecycleCheckpoint maps an action to its CommDB checkpoint", () => {

@@ -80,6 +80,7 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 	beforeEach(async () => {
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		process.env.FLYWHEEL_QA_DONE_GATE = "0";
+		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 		runPostShipSpy.mockClear();
 		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
@@ -102,6 +103,7 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_QA_DONE_GATE;
+		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});

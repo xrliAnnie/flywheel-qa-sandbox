@@ -256,6 +256,7 @@ const RECEIPT_WAKE_COLUMNS = [
 	["t2_result", "TEXT"],
 	["escalation_outbox_id", "TEXT"],
 	["started_ack_scope", "TEXT"],
+	["purpose", "TEXT"],
 ] as const;
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -297,6 +298,31 @@ function addColumns(
 export function applyReceiptFoundationMigrations(db: Database.Database): void {
 	addColumns(db, "lead_inbox", RECEIPT_LEAD_COLUMNS);
 	addColumns(db, "runner_phase_wakes", RECEIPT_WAKE_COLUMNS);
+	const wakeTableSql = (
+		db
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runner_phase_wakes'",
+			)
+			.get() as { sql?: string } | undefined
+	)?.sql;
+	if (wakeTableSql && !/CHECK\s*\(\s*purpose\s+IN/i.test(wakeTableSql)) {
+		db.exec(`
+			CREATE TRIGGER IF NOT EXISTS trg_runner_phase_wakes_purpose_insert
+			BEFORE INSERT ON runner_phase_wakes
+			WHEN NEW.purpose IS NOT NULL
+			  AND NEW.purpose NOT IN ('message_traffic','gate_response','park_wake')
+			BEGIN
+			  SELECT RAISE(ABORT, 'runner_phase_wakes purpose check failed');
+			END;
+			CREATE TRIGGER IF NOT EXISTS trg_runner_phase_wakes_purpose_update
+			BEFORE UPDATE OF purpose ON runner_phase_wakes
+			WHEN NEW.purpose IS NOT NULL
+			  AND NEW.purpose NOT IN ('message_traffic','gate_response','park_wake')
+			BEGIN
+			  SELECT RAISE(ABORT, 'runner_phase_wakes purpose check failed');
+			END;
+		`);
+	}
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS receipt_alert_outbox (
 		  id TEXT PRIMARY KEY,

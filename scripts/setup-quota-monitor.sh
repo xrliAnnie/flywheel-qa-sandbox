@@ -171,7 +171,7 @@ if [[ "$MODE" == "disable" ]]; then
   rm -f "$PLIST_DEST"
   set_env_key FLYWHEEL_QUOTA_DAEMON_CUTOVER
   [[ -x "$RESTART_BIN" ]] || die "restart_missing" "Bridge restart command missing: $RESTART_BIN"
-  "$RESTART_BIN" --bridge-only
+  "$RESTART_BIN" --reason env-change
   log "disabled daemon and restored the Bridge switch path"
   exit 0
 fi
@@ -347,10 +347,10 @@ log "daemon healthy (pid=$pid, lastPollAt=$last_poll)"
 
 if [[ "$MODE" == "enable" ]]; then
   # No automatic-switch vacuum: retire the Bridge path only after the daemon is
-  # independently healthy. restart-services --bridge-only reloads the new env.
+  # independently healthy. The unified restart reloads the new env and notifies.
   set_env_key FLYWHEEL_QUOTA_DAEMON_CUTOVER 1
   [[ -x "$RESTART_BIN" ]] || die "restart_missing" "Bridge restart command missing: $RESTART_BIN"
-  "$RESTART_BIN" --bridge-only \
+  "$RESTART_BIN" --reason env-change \
     || die "restart_failed" "Bridge failed to reload CUTOVER after daemon health passed"
   log "enabled daemon and retired the Bridge switch path"
 else

@@ -390,6 +390,126 @@ describe("FLY-1423 stable workflow actor activations", () => {
 });
 
 describe("FLY-1423 durable unified rework request", () => {
+	it("reopens a completed run into one idempotent operator rework attempt", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			expect(
+				advanceHeavy(store, {
+					nodeId: "design",
+					attempt: 1,
+					executionId: "design-exec",
+					outcome: "design_done",
+					successorExecutionId: "implement-exec",
+				}),
+			).toMatchObject({ ok: true });
+			store.upsertWorkflowRunNode({
+				runId: "run-heavy",
+				nodeId: "implement",
+				attempt: 1,
+				state: "done",
+				executionId: "implement-exec",
+				endedAt: "2026-07-23T00:09:00.000Z",
+			});
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run("UPDATE workflow_run SET status = 'completed' WHERE run_id = ?", [
+				"run-heavy",
+			]);
+			const evidence = store
+				.listRunAttributedExecutions("run-heavy")
+				.map((executionId) => ({
+					executionId,
+					sessionStatus: null,
+					lifecycleRevision: null,
+					liveness: "dead" as const,
+					observedAt: "2026-07-23T00:10:00.000Z",
+				}));
+			const input = {
+				runId: "run-heavy",
+				targetNodeId: "implement",
+				feedback: "rework the implementation",
+				clientRequestId: "operator-rework-1",
+				principal: "master",
+				evidence,
+				now: "2026-07-23T00:10:00.000Z",
+			};
+
+			const opened = store.openOperatorRework(input);
+
+			expect(opened).toMatchObject({
+				ok: true,
+				idempotentReplay: false,
+				targetNodeId: "implement",
+				targetAttempt: 2,
+				preferredActorExecutionId: "implement-exec",
+				requestId: expect.stringMatching(/^rework:/),
+			});
+			if (!opened.ok) throw new Error(opened.reason);
+			expect(store.getWorkflowRun("run-heavy")).toMatchObject({
+				status: "active",
+				current_node_id: "implement",
+			});
+			expect(
+				store.getWorkflowRunNode("run-heavy", "implement", 2),
+			).toMatchObject({
+				state: "pending",
+				execution_id: "implement-exec",
+			});
+			expect(store.getWorkflowReworkRequest(opened.requestId)).toMatchObject({
+				source_event_id: "operator_rework:run-heavy:operator-rework-1",
+				founder_feedback_verbatim: "rework the implementation",
+			});
+			expect(store.getWorkflowReworkDelivery(opened.requestId)).toMatchObject({
+				state: "pending",
+			});
+			expect(
+				store.listWorkflowRunEvents("run-heavy").map((event) => event.kind),
+			).toEqual(
+				expect.arrayContaining(["operator_rework_requested", "run_reopened"]),
+			);
+
+			expect(store.openOperatorRework(input)).toEqual({
+				...opened,
+				idempotentReplay: true,
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refuses operator rework without a historical actor for the target node", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			const result = store.openOperatorRework({
+				runId: "run-heavy",
+				targetNodeId: "implement",
+				feedback: "start implementation",
+				clientRequestId: "operator-rework-no-actor",
+				principal: "master",
+				evidence: store
+					.listRunAttributedExecutions("run-heavy")
+					.map((executionId) => ({
+						executionId,
+						sessionStatus: null,
+						lifecycleRevision: null,
+						liveness: "dead" as const,
+						observedAt: "2026-07-23T00:10:00.000Z",
+					})),
+				now: "2026-07-23T00:10:00.000Z",
+			});
+
+			expect(result).toEqual({
+				ok: false,
+				reason: "target_actor_history_missing",
+			});
+		} finally {
+			store.close();
+		}
+	});
+
 	it("leases one pending rework delivery to exactly one coordinator owner", async () => {
 		const store = await createHeavyEngineRun();
 		try {

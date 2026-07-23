@@ -534,6 +534,33 @@ describe("complete command", () => {
 		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
 	});
 
+	it("FLY-1434: route=needs_review with --pr carries authoritative ready_to_merge evidence", async () => {
+		await complete({ route: "needs_review", pr: 42, merged: false });
+		expect(mockFetch).toHaveBeenCalledOnce();
+		const [, opts] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(opts.body);
+		expect(body.payload.decision).toEqual({ route: "needs_review" });
+		expect(body.payload.evidence.landingStatus).toEqual({
+			status: "ready_to_merge",
+			prNumber: 42,
+		});
+		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
+	});
+
+	it("FLY-1434: --target-repo is only valid with a positive --pr", async () => {
+		await expect(
+			complete({
+				route: "needs_review",
+				targetRepo: "packages/example",
+				merged: false,
+			}),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("--target-repo requires --pr"),
+		);
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
 	it("FLY-493: route=pr_handoff WITHOUT --pr → exit 1 (PR evidence mandatory)", async () => {
 		await expect(
 			complete({ route: "pr_handoff", merged: false }),

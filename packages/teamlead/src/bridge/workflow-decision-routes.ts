@@ -12,6 +12,7 @@ import {
 	unavailableMaterializedHeadAuthority,
 } from "./materialized-head-authority.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
+import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
 
 interface WorkflowDecisionBody {
 	credential?: unknown;
@@ -239,14 +240,70 @@ export function createWorkflowDecisionRouter(
 
 	router.post("/head-authority", async (req, res) => {
 		if (rejectNonLoopback(req, res)) return;
-		const executionId = stringField(
-			(req.body as { execution_id?: unknown } | undefined)?.execution_id,
-		);
+		const body = (req.body ?? {}) as Record<string, unknown>;
+		const executionId = stringField(body.execution_id);
+		const approveQuestionId = stringField(body.approve_question_id);
 		if (!executionId) {
 			res.status(400).json({ ok: false, reason: "execution_id_required" });
 			return;
 		}
 		try {
+			if (approveQuestionId) {
+				const binding =
+					deps.store.getWorkflowShipTargetBinding(approveQuestionId);
+				const holder =
+					deps.store.getCurrentWorkflowGateHolderByQuestionId(
+						approveQuestionId,
+					);
+				if (!binding || binding.superseded_at) {
+					throw new Error("ship_target_binding_unavailable");
+				}
+				if (holder) {
+					if (
+						binding.run_id !== holder.run_id ||
+						binding.frozen_head_sha !== holder.head_sha
+					) {
+						throw new Error("ship_target_binding_mismatch");
+					}
+				} else {
+					const session = deps.store.getSession(executionId);
+					if (
+						session?.review_question_id !== approveQuestionId ||
+						session.pr_head_sha?.toLowerCase() !== binding.frozen_head_sha
+					) {
+						throw new Error("ship_target_binding_mismatch");
+					}
+					if (
+						binding.run_id &&
+						deps.store.getWorkflowRunIdForExecution(executionId) !==
+							binding.run_id
+					) {
+						throw new Error("ship_target_binding_mismatch");
+					}
+				}
+				if (binding.target_repo_identity !== "__main__") {
+					throw new Error("nested_ship_unsupported");
+				}
+				const authority = await resolveBoundRepositoryAuthority({
+					authorityRoot: binding.target_repo_path,
+				});
+				if (
+					authority.path !== binding.target_repo_path ||
+					authority.identity !== "__main__" ||
+					authority.probeRepoSlug !== binding.probe_repo_slug ||
+					authority.headSha !== binding.frozen_head_sha
+				) {
+					throw new Error("ship_target_authority_drift");
+				}
+				res.json({
+					ok: true,
+					executionId,
+					approveQuestionId,
+					targetRepoIdentity: binding.target_repo_identity,
+					prHeadSha: authority.headSha,
+				});
+				return;
+			}
 			const authority = await resolveWorkflowHeadAuthority(
 				deps.store,
 				executionId,

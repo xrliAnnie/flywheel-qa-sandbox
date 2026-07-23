@@ -1353,9 +1353,13 @@ export class WorkflowEngineDispatcher {
 				intent.run_id,
 				workflowApprovalGate(snapshot.manifest).node,
 			);
-			const prNumber = holder
-				? store.getWorkflowRunPrNumber(intent.run_id, holder.head_sha)
+			const prBinding = holder
+				? store.getCurrentWorkflowNodePrBindingForHead(
+						intent.run_id,
+						holder.head_sha,
+					)
 				: undefined;
+			const prNumber = prBinding?.pr_number;
 			if (
 				!holder ||
 				holder.state !== "approved" ||
@@ -1363,6 +1367,9 @@ export class WorkflowEngineDispatcher {
 				!/^[0-9a-f]{40}$/i.test(holder.head_sha)
 			) {
 				throw new Error("engine_land_authority_unavailable");
+			}
+			if (prBinding.target_repo_identity !== "__main__") {
+				return holdLandRun("nested_land_unsupported");
 			}
 			if (
 				existingOperation &&

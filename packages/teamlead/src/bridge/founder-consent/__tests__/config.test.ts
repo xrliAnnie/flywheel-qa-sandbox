@@ -124,6 +124,43 @@ describe("parseFounderConsentConfig validation tolerance (§8.1)", () => {
 		expect(failModeForAction(c, "defer")).toBe("open");
 		expect(failModeForAction(c, "approve")).toBe("closed");
 	});
+
+	it("pins workflow rework to threshold 0.85 and fail-closed", () => {
+		const c = parseFounderConsentConfig(
+			base({
+				FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
+				FLYWHEEL_FOUNDER_USER_ID: "1",
+				FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_THRESHOLD: "0.9",
+			}),
+			() => {},
+		);
+		expect(thresholdForAction(c, "workflow_rework")).toBe(0.9);
+		expect(failModeForAction(c, "workflow_rework")).toBe("closed");
+	});
+
+	it("fails start when workflow rework consent is configured fail-open", () => {
+		expect(() =>
+			parseFounderConsentConfig(
+				base({
+					FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
+					FLYWHEEL_FOUNDER_USER_ID: "1",
+					FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_FAIL_MODE: "open",
+				}),
+				() => {},
+			),
+		).toThrow(/WORKFLOW_REWORK_FAIL_MODE must be closed/);
+		expect(() =>
+			parseFounderConsentConfig(
+				base({
+					FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
+					FLYWHEEL_FOUNDER_USER_ID: "1",
+					FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE_PER_ACTION:
+						'{"workflow_rework":"open"}',
+				}),
+				() => {},
+			),
+		).toThrow(/workflow_rework.*closed/);
+	});
 });
 
 describe("configHash", () => {

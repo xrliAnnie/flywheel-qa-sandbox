@@ -308,6 +308,20 @@ apt_run = str(apt_steps[0].get("run", ""))
 for package in ("tmux", "lsof", "sqlite3"):
     require(re.search(rf"\b{re.escape(package)}\b", apt_run) is not None, f"apt step must install {package}")
 
+script_runs = [
+    str(step.get("run", ""))
+    for step in script_steps
+    if isinstance(step, dict)
+]
+for required_command in (
+    "bash scripts/__tests__/setup-quota-monitor.test.sh",
+    "bash scripts/test-restart-services.sh",
+):
+    require(
+        sum(required_command in run for run in script_runs) == 1,
+        f"script-tests must run exactly once: {required_command}",
+    )
+
 unit_steps = unit_tests.get("steps")
 require(isinstance(unit_steps, list), "unit-tests.steps must be a list")
 test_home_steps = [

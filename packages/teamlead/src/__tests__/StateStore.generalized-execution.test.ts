@@ -1092,6 +1092,81 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
+	it("FLY-1434: atomically binds current generalized PR evidence and projects session display fields", async () => {
+		const store = await StateStore.create(":memory:");
+		createRun(store);
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-1",
+				nodeId: "execute",
+				executionId: "exec-1",
+				attempt: 1,
+				expiresAt: "2026-07-15T00:05:00.000Z",
+				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+				now: "2026-07-15T00:00:00.000Z",
+				env: enabled,
+			}),
+		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
+		const headSha = "a".repeat(40);
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "complete-with-pr-1",
+				completionSubmission: { decision: { route: "no_code" } },
+				subjectDigest: headSha,
+				prBinding: {
+					prNumber: 1434,
+					headSha,
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "geoforge3d/flywheel",
+					targetRepoPath: "/tmp/flywheel-FLY-1434",
+					worktreeBindingGeneration: "generation-1",
+				},
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		expect(
+			store.getCurrentWorkflowNodePrBindingForHead("run-1", headSha),
+		).toEqual({
+			run_id: "run-1",
+			node_id: "execute",
+			attempt: 1,
+			pr_number: 1434,
+			head_sha: headSha,
+			target_repo_identity: "__main__",
+			probe_repo_slug: "geoforge3d/flywheel",
+			target_repo_path: "/tmp/flywheel-FLY-1434",
+			worktree_binding_generation: "generation-1",
+			receipt_id: "complete-with-pr-1",
+			bound_at: "2026-07-15T00:02:00.000Z",
+		});
+		expect(store.getSession("exec-1")).toMatchObject({
+			pr_number: 1434,
+			pr_head_sha: headSha,
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 2,
+			state: "pending",
+		});
+		expect(
+			store.getCurrentWorkflowNodePrBindingForHead("run-1", headSha),
+		).toBeUndefined();
+		expect(
+			store.getCurrentWorkflowNodePrBindingForHead("run-1", "b".repeat(40)),
+		).toBeUndefined();
+		store.close();
+	});
+
 	it("bumps lifecycle revision only when generalized completion changes status", async () => {
 		const store = await StateStore.create(":memory:");
 		createRun(store);

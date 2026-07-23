@@ -117,7 +117,7 @@ Commands:
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
   workflow-output  Submit a generalized node's JSON output before completion
-  request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>])
+  request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>] [--target-repo <rel>])
   review-ruling  Record or revoke a supervised Lead ruling for a delivered review finding (FLY-1278)
   codex-review-result  Emit a Codex code-review APPROVED verdict for the current head (FLY-827; await-codex-gate calls this automatically)
   cleanup   Delete read messages older than TTL (default 24h)
@@ -476,7 +476,11 @@ function runCheck(args: string[]): void {
 	}
 
 	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const result = check({ questionId, dbPath });
+	const result = check({
+		questionId,
+		dbPath,
+		executionId: process.env.FLYWHEEL_EXEC_ID,
+	});
 
 	if (values.json) {
 		console.log(JSON.stringify(result));
@@ -1250,6 +1254,7 @@ async function runComplete(args: string[]): Promise<void> {
 			summary: { type: "string" },
 			"exit-reason": { type: "string" },
 			"base-ref": { type: "string" },
+			"target-repo": { type: "string" },
 			// FLY-191 Phase 2: bind the review request to the exact gate
 			// question from `gate --no-block` (route=needs_review).
 			"question-id": { type: "string" },
@@ -1265,6 +1270,7 @@ async function runComplete(args: string[]): Promise<void> {
 		summary: values.summary,
 		exitReason: values["exit-reason"],
 		baseRef: values["base-ref"],
+		targetRepo: values["target-repo"],
 		questionId: values["question-id"],
 	});
 }
@@ -1278,6 +1284,7 @@ async function runRequestReview(args: string[]): Promise<void> {
 			type: { type: "string" },
 			"question-id": { type: "string" },
 			plan: { type: "string" },
+			"target-repo": { type: "string" },
 			"request-id": { type: "string" },
 		},
 		allowPositionals: false,
@@ -1288,6 +1295,7 @@ async function runRequestReview(args: string[]): Promise<void> {
 		type: values.type,
 		questionId: values["question-id"],
 		planPath: values.plan,
+		targetRepoPath: values["target-repo"],
 		requestId: values["request-id"],
 	});
 }

@@ -132,6 +132,40 @@ export function parseFounderConsentConfig(
 			`FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE must be closed|open, got "${failModeRaw}"`,
 		);
 	}
+	const workflowReworkFailMode =
+		env.FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_FAIL_MODE?.trim() || "closed";
+	if (workflowReworkFailMode !== "closed") {
+		throw new Error(
+			"FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_FAIL_MODE must be closed",
+		);
+	}
+	const perActionThreshold = parseJsonMap(
+		env.FLYWHEEL_FOUNDER_CONSENT_THRESHOLD_PER_ACTION,
+		"FLYWHEEL_FOUNDER_CONSENT_THRESHOLD_PER_ACTION",
+		(v): v is number => typeof v === "number" && v >= 0 && v <= 1,
+	);
+	const workflowReworkThreshold = parseFloatEnv(
+		env.FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_THRESHOLD,
+		0.85,
+		"FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_THRESHOLD",
+	);
+	if (workflowReworkThreshold < 0 || workflowReworkThreshold > 1) {
+		throw new Error(
+			"FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_THRESHOLD must be between 0 and 1",
+		);
+	}
+	perActionThreshold.workflow_rework = workflowReworkThreshold;
+	const perActionFailMode = parseJsonMap(
+		env.FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE_PER_ACTION,
+		"FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE_PER_ACTION",
+		(v): v is FailMode => v === "closed" || v === "open",
+	);
+	if (perActionFailMode.workflow_rework === "open") {
+		throw new Error(
+			"workflow_rework founder consent fail mode must remain closed",
+		);
+	}
+	perActionFailMode.workflow_rework = "closed";
 
 	const freshnessRaw =
 		env.FLYWHEEL_FOUNDER_CONSENT_BYPASS_LABEL_FRESHNESS?.trim() || "stored";
@@ -150,11 +184,7 @@ export function parseFounderConsentConfig(
 			0.85,
 			"FLYWHEEL_FOUNDER_CONSENT_THRESHOLD",
 		),
-		perActionThreshold: parseJsonMap(
-			env.FLYWHEEL_FOUNDER_CONSENT_THRESHOLD_PER_ACTION,
-			"FLYWHEEL_FOUNDER_CONSENT_THRESHOLD_PER_ACTION",
-			(v): v is number => typeof v === "number" && v >= 0 && v <= 1,
-		),
+		perActionThreshold,
 		windowHours: parseIntEnv(
 			env.FLYWHEEL_FOUNDER_CONSENT_WINDOW_HOURS,
 			24,
@@ -171,11 +201,7 @@ export function parseFounderConsentConfig(
 			"FLYWHEEL_FOUNDER_CONSENT_CACHE_TTL_SECS",
 		),
 		failMode: failModeRaw as FailMode,
-		perActionFailMode: parseJsonMap(
-			env.FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE_PER_ACTION,
-			"FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE_PER_ACTION",
-			(v): v is FailMode => v === "closed" || v === "open",
-		),
+		perActionFailMode,
 		autoApproveLabel:
 			env.FLYWHEEL_FOUNDER_CONSENT_BYPASS_LABEL?.trim() || undefined,
 		bypassLabelFreshness: freshnessRaw as BypassLabelFreshness,

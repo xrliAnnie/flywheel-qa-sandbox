@@ -27,7 +27,10 @@ interface FakeQuestion {
 /** In-memory CommDB fake shared across opens (per project path). */
 class FakeCommDb implements ReviewCommDb {
 	questions = new Map<string, FakeQuestion>();
-	responses = new Map<string, { content: string; from_agent: string }>();
+	responses = new Map<
+		string,
+		{ id: string; content: string; from_agent: string }
+	>();
 	getMessageById(id: string) {
 		return this.questions.get(id);
 	}
@@ -35,7 +38,11 @@ class FakeCommDb implements ReviewCommDb {
 		return this.responses.get(questionId);
 	}
 	insertResponse(parentId: string, fromAgent: string, content: string) {
-		this.responses.set(parentId, { content, from_agent: fromAgent });
+		this.responses.set(parentId, {
+			id: `response:${parentId}`,
+			content,
+			from_agent: fromAgent,
+		});
 	}
 	/** Mirrors CommDB.insertResponseIfGateOpen's atomic conditions. */
 	insertResponseIfGateOpen(input: {
@@ -58,10 +65,40 @@ class FakeCommDb implements ReviewCommDb {
 			return false;
 		}
 		this.responses.set(input.questionId, {
+			id: `response:${input.questionId}`,
 			content: input.content,
 			from_agent: input.fromAgent,
 		});
 		return true;
+	}
+	insertReviewResponseWithWakeIfGateOpen(input: {
+		questionId: string;
+		fromAgent: string;
+		content: string;
+		expectedOwner: string;
+		expectedCheckpoint: "review_design" | "review_code";
+		summary: string;
+		queuedAtMs: number;
+	}) {
+		const existing = this.responses.get(input.questionId);
+		if (existing) {
+			if (
+				existing.from_agent !== input.fromAgent ||
+				existing.content !== input.content
+			) {
+				return null;
+			}
+			return {
+				responseId: existing.id,
+				wake: { message_id: existing.id, admission_state: "queued" },
+			};
+		}
+		if (!this.insertResponseIfGateOpen(input)) return null;
+		const response = this.responses.get(input.questionId)!;
+		return {
+			responseId: response.id,
+			wake: { message_id: response.id, admission_state: "queued" },
+		};
 	}
 	close() {}
 }
@@ -83,6 +120,7 @@ interface Harness {
 	alerts: string[];
 	reviewAlerts: Array<Record<string, unknown>>;
 	rulingThreadPosts: string[];
+	derivedHeadPaths: string[];
 	currentHead: () => string;
 	setHead: (h: string) => void;
 }
@@ -110,6 +148,7 @@ async function makeHarness(
 	const alerts: string[] = [];
 	const reviewAlerts: Array<Record<string, unknown>> = [];
 	const rulingThreadPosts: string[] = [];
+	const derivedHeadPaths: string[] = [];
 	let head = HEAD;
 	const coordinator = new ReviewRequestCoordinator({
 		store,
@@ -136,12 +175,21 @@ async function makeHarness(
 			if (!next) throw new Error("no stubbed outcome");
 			return next;
 		},
-		deriveHead: async () => head,
+		deriveHead: async (path) => {
+			derivedHeadPaths.push(path);
+			return head;
+		},
 		listActiveReviewFindingRulings: ({ projectName, issueId }) =>
 			store
 				.listActiveReviewFindingRulings(projectName, issueId)
 				.map(toReviewFindingRulingSnapshot),
-		wakeRunner: async (executionId, _session, questionId, summary) => {
+		wakeRunner: async (
+			executionId,
+			_session,
+			questionId,
+			summary,
+			_responseId,
+		) => {
 			wakes.push({ executionId, questionId, summary });
 		},
 		markGateAnswered: (questionId, executionId) => {
@@ -168,6 +216,7 @@ async function makeHarness(
 		alerts,
 		reviewAlerts,
 		rulingThreadPosts,
+		derivedHeadPaths,
 		currentHead: () => head,
 		setHead: (h) => {
 			head = h;
@@ -414,15 +463,25 @@ describe("ReviewRequestCoordinator — FLY-1278 review-ruling authority", () => 
 function registerSession(
 	store: StateStore,
 	execId: string,
-	opts: { codexSkip?: boolean; adapterType?: string } = {},
+	opts: {
+		codexSkip?: boolean;
+		adapterType?: string;
+		displayPath?: string;
+		bindingPath?: string;
+	} = {},
 ) {
 	store.upsertSession({
 		execution_id: execId,
 		issue_id: "FLY-1188",
 		project_name: "proj",
 		status: "running",
-		worktree_path: "/fake/worktree",
+		worktree_path: opts.displayPath ?? "/fake/worktree",
 		adapter_type: opts.adapterType ?? "codex-tmux",
+	});
+	store.bindWorktreeOnce(execId, {
+		path: opts.bindingPath ?? "/fake/worktree",
+		branch: `flywheel-${execId}`,
+		generation: `generation-${execId}`,
 	});
 	if (opts.codexSkip) {
 		store.patchSessionMetadata(execId, { codex_skip: 1 });
@@ -570,6 +629,50 @@ describe("ReviewRequestCoordinator.accept — validation (fail-close)", () => {
 			questionId: "q1",
 		});
 		expect(r).toMatchObject({ accepted: false, httpStatus: 422 });
+	});
+
+	it("requires the immutable worktree binding instead of display metadata", async () => {
+		h.store.upsertSession({
+			execution_id: "e1",
+			issue_id: "FLY-1434",
+			project_name: "proj",
+			status: "running",
+			worktree_path: "/runner-controlled/display",
+			adapter_type: "codex-tmux",
+		});
+		openGate(h.comm, "q1");
+
+		const r = await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "binding-missing",
+			reviewType: "code",
+			questionId: "q1",
+		});
+
+		expect(r).toMatchObject({ accepted: false, httpStatus: 422 });
+		expect(h.derivedHeadPaths).toEqual([]);
+	});
+
+	it("freezes main-repo head from the immutable binding when display path drifts", async () => {
+		registerSession(h.store, "e1", {
+			displayPath: "/runner-controlled/display",
+			bindingPath: "/authority/worktree",
+		});
+		openGate(h.comm, "q1");
+
+		const r = await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "binding-authority",
+			reviewType: "code",
+			questionId: "q1",
+		});
+
+		expect(r).toMatchObject({ accepted: true });
+		expect(h.derivedHeadPaths[0]).toBe("/authority/worktree");
+		expect(h.store.getCodexReviewJob("binding-authority")).toMatchObject({
+			target_repo_path: "/authority/worktree",
+			target_repo_identity: "__main__",
+		});
 	});
 });
 
@@ -2116,8 +2219,10 @@ describe("R13 — terminal-state and delivery invariants", () => {
 			raw: "",
 		});
 		// make the CommDB write blow up AFTER the verdict lands
-		const realInsert = h.comm.insertResponseIfGateOpen.bind(h.comm);
-		h.comm.insertResponseIfGateOpen = () => {
+		const realInsert = h.comm.insertReviewResponseWithWakeIfGateOpen.bind(
+			h.comm,
+		);
+		h.comm.insertReviewResponseWithWakeIfGateOpen = () => {
 			throw new Error("disk full");
 		};
 		await h.coordinator.accept({
@@ -2131,7 +2236,7 @@ describe("R13 — terminal-state and delivery invariants", () => {
 		expect(job?.status).toBe("done"); // NOT downgraded to failed
 		expect(job?.responded_at).toBeUndefined();
 		// recovery: CommDB healthy again → boot outbox delivers
-		h.comm.insertResponseIfGateOpen = realInsert;
+		h.comm.insertReviewResponseWithWakeIfGateOpen = realInsert;
 		h.coordinator.redriveOnBoot();
 		await settle();
 		expect(h.comm.getResponse("q1")).toBeDefined();

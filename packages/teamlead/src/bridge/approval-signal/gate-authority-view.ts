@@ -62,7 +62,7 @@ export function makeGateAuthorityView(store: StateStore): GateAuthorityView {
 				: holder.gate_node_id;
 		if (run.current_node_id !== expectedCurrentNode) return undefined;
 		const source = store.getSession(holder.source_execution_id);
-		const prNumber = store.getWorkflowRunPrNumber(
+		const prBinding = store.getCurrentWorkflowNodePrBindingForHead(
 			holder.run_id,
 			holder.head_sha,
 		);
@@ -76,7 +76,7 @@ export function makeGateAuthorityView(store: StateStore): GateAuthorityView {
 			headSha: holder.head_sha,
 			state: holder.state,
 			cardMessageId: holder.card_message_id,
-			...(prNumber ? { prNumber } : {}),
+			...(prBinding ? { prNumber: prBinding.pr_number } : {}),
 			...(source?.issue_identifier
 				? { issueIdentifier: source.issue_identifier }
 				: {}),

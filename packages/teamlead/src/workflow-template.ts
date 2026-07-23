@@ -1318,10 +1318,32 @@ export function importBundledWorkflowSeeds(
 export const DEFAULT_BUNDLED_WORKFLOW_TEMPLATE_ID = "tpl_eng_heavy";
 
 export const DEFAULT_ENGINEERING_WORKFLOW_BINDINGS = [
-	{ taskCategory: "*", templateId: "tpl_eng_heavy" },
-	{ taskCategory: "light", templateId: "tpl_eng_light" },
-	{ taskCategory: "trivial", templateId: "tpl_eng_trivial" },
+	{ taskCategory: "*", templateId: "tpl_eng_heavy_land_v1" },
+	{ taskCategory: "light", templateId: "tpl_eng_light_land_v1" },
+	{ taskCategory: "trivial", templateId: "tpl_eng_trivial_land_v1" },
 ] as const;
+
+const ENGINEERING_LAND_BINDING_MIGRATION = [
+	{
+		taskCategory: "*",
+		legacyTemplateId: "tpl_eng_heavy",
+		landTemplateId: "tpl_eng_heavy_land_v1",
+	},
+	{
+		taskCategory: "light",
+		legacyTemplateId: "tpl_eng_light",
+		landTemplateId: "tpl_eng_light_land_v1",
+	},
+	{
+		taskCategory: "trivial",
+		legacyTemplateId: "tpl_eng_trivial",
+		landTemplateId: "tpl_eng_trivial_land_v1",
+	},
+] as const;
+
+const BUNDLED_DEFAULT_OWNER = "system:bundled-default";
+const LAND_MIGRATION_OWNER = "system:FLY-1434-land-migration";
+const LAND_ROLLBACK_OWNER = "system:FLY-1434-land-rollback";
 
 /**
  * Seed the bundled engineering tiers only for projects with no binding
@@ -1345,8 +1367,100 @@ export function ensureDefaultWorkflowBindings(
 				project,
 				taskCategory: binding.taskCategory,
 				templateId: binding.templateId,
-				updatedBy: "system:bundled-default",
+				updatedBy: BUNDLED_DEFAULT_OWNER,
 			});
 		}
 	}
+}
+
+function migrateSystemEngineeringBindings(input: {
+	store: Pick<
+		StateStore,
+		"listWorkflowCategoryBindings" | "bindWorkflowCategory"
+	>;
+	projectNames: readonly string[];
+	direction: "to_land" | "from_land";
+	log: (message: string) => void;
+}): number {
+	let migrated = 0;
+	const allowedOwners =
+		input.direction === "to_land"
+			? new Set([BUNDLED_DEFAULT_OWNER, LAND_ROLLBACK_OWNER])
+			: new Set([BUNDLED_DEFAULT_OWNER, LAND_MIGRATION_OWNER]);
+	for (const project of [
+		...new Set(input.projectNames.map((name) => name.trim())),
+	]
+		.filter(Boolean)
+		.sort((a, b) => a.localeCompare(b))) {
+		const existing = input.store.listWorkflowCategoryBindings(project);
+		for (const migration of ENGINEERING_LAND_BINDING_MIGRATION) {
+			const binding = existing.find(
+				(row) => row.task_category === migration.taskCategory,
+			);
+			if (!binding) continue;
+			const sourceTemplate =
+				input.direction === "to_land"
+					? migration.legacyTemplateId
+					: migration.landTemplateId;
+			const targetTemplate =
+				input.direction === "to_land"
+					? migration.landTemplateId
+					: migration.legacyTemplateId;
+			if (binding.template_id !== sourceTemplate) continue;
+			if (!allowedOwners.has(binding.updated_by)) {
+				input.log(
+					`[workflow-template] FLY-1434 preserved custom binding ${project}/${binding.task_category}: ${binding.template_id} owner=${binding.updated_by}`,
+				);
+				continue;
+			}
+			input.store.bindWorkflowCategory({
+				project,
+				taskCategory: binding.task_category,
+				templateId: targetTemplate,
+				updatedBy:
+					input.direction === "to_land"
+						? LAND_MIGRATION_OWNER
+						: LAND_ROLLBACK_OWNER,
+			});
+			migrated += 1;
+		}
+	}
+	return migrated;
+}
+
+/**
+ * FLY-1434: move only system-owned engineering defaults onto the land-v1
+ * graphs. Founder/custom bindings remain authoritative and are never rewritten.
+ */
+export function migrateSystemWorkflowBindingsToLand(
+	store: Pick<
+		StateStore,
+		"listWorkflowCategoryBindings" | "bindWorkflowCategory"
+	>,
+	projectNames: readonly string[],
+	log: (message: string) => void = (message) => console.warn(message),
+): number {
+	return migrateSystemEngineeringBindings({
+		store,
+		projectNames,
+		direction: "to_land",
+		log,
+	});
+}
+
+/** Explicit operator rollback for the FLY-1434 system binding migration. */
+export function rollbackSystemWorkflowBindingsFromLand(
+	store: Pick<
+		StateStore,
+		"listWorkflowCategoryBindings" | "bindWorkflowCategory"
+	>,
+	projectNames: readonly string[],
+	log: (message: string) => void = (message) => console.warn(message),
+): number {
+	return migrateSystemEngineeringBindings({
+		store,
+		projectNames,
+		direction: "from_land",
+		log,
+	});
 }

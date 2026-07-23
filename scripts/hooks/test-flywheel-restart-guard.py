@@ -212,11 +212,12 @@ MUST_PASS = [
     ("RESTART_MAX_WAIT=60 bash scripts/restart-services.sh", "legit env-prefixed"),
     # FLY-1142: the sanctioned env-reload path must never be guard-blocked —
     # it IS the alternative the deny message points operators to.
-    ("bash scripts/restart-services.sh --bridge-only", "legit --bridge-only (FLY-1142)"),
-    ("bash ~/Dev/flywheel/scripts/restart-services.sh --bridge-only --dry-run",
-     "legit --bridge-only --dry-run (FLY-1142)"),
-    ("bash ~/Dev/flywheel/scripts/restart-services.sh --bridge-only --force",
-     "legit --bridge-only --force (FLY-1142)"),
+    ("bash scripts/restart-services.sh --reason env-change",
+     "legit unified env-change restart (FLY-1434)"),
+    ("bash ~/Dev/flywheel/scripts/restart-services.sh --reason manual --dry-run",
+     "legit unified dry-run (FLY-1434)"),
+    ("bash ~/Dev/flywheel/scripts/restart-services.sh --reason deploy --force",
+     "legit unified forced restart (FLY-1434)"),
     ("bash scripts/update-flywheel.sh", "legit updater"),
     ("launchctl print gui/501/com.flywheel.bridge", "read-only launchctl print"),
     ("launchctl list | grep flywheel", "read-only launchctl list"),

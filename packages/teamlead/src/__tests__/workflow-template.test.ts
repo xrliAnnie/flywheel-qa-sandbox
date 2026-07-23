@@ -12,7 +12,9 @@ import {
 	isGeneralizedTemplatesEnabled,
 	isWorkflowManifestV1Land,
 	loadBundledWorkflowSeeds,
+	migrateSystemWorkflowBindingsToLand,
 	parseWorkflowManifestYaml,
+	rollbackSystemWorkflowBindingsFromLand,
 	validateWorkflowManifest,
 	WORKFLOW_OUTCOME_VOCABULARY,
 } from "../workflow-template.js";
@@ -46,14 +48,14 @@ describe("bundled workflow default bindings", () => {
 			"production-shaped",
 		]);
 		expect(store.listWorkflowCategoryBindings("alpha")).toMatchObject([
-			{ task_category: "*", template_id: "tpl_eng_heavy" },
-			{ task_category: "light", template_id: "tpl_eng_light" },
-			{ task_category: "trivial", template_id: "tpl_eng_trivial" },
+			{ task_category: "*", template_id: "tpl_eng_heavy_land_v1" },
+			{ task_category: "light", template_id: "tpl_eng_light_land_v1" },
+			{ task_category: "trivial", template_id: "tpl_eng_trivial_land_v1" },
 		]);
 		expect(store.listWorkflowCategoryBindings("beta")).toMatchObject([
-			{ task_category: "*", template_id: "tpl_eng_heavy" },
-			{ task_category: "light", template_id: "tpl_eng_light" },
-			{ task_category: "trivial", template_id: "tpl_eng_trivial" },
+			{ task_category: "*", template_id: "tpl_eng_heavy_land_v1" },
+			{ task_category: "light", template_id: "tpl_eng_light_land_v1" },
+			{ task_category: "trivial", template_id: "tpl_eng_trivial_land_v1" },
 		]);
 		expect(store.listWorkflowCategoryBindings("custom")).toMatchObject([
 			{ task_category: "light", template_id: "tpl_eng_light" },
@@ -68,6 +70,67 @@ describe("bundled workflow default bindings", () => {
 
 		ensureDefaultWorkflowBindings(store, ["alpha", "beta", "custom"]);
 		expect(store.listWorkflowTemplateAudit()).toHaveLength(auditCount);
+		store.close();
+	});
+
+	it("migrates only system defaults to land, is idempotent, and supports explicit rollback", async () => {
+		const store = await StateStore.create(":memory:");
+		importBundledWorkflowSeeds(store);
+		for (const [taskCategory, templateId] of [
+			["*", "tpl_eng_heavy"],
+			["light", "tpl_eng_light"],
+			["trivial", "tpl_eng_trivial"],
+		] as const) {
+			store.bindWorkflowCategory({
+				project: "system",
+				taskCategory,
+				templateId,
+				updatedBy: "system:bundled-default",
+			});
+			store.bindWorkflowCategory({
+				project: "custom",
+				taskCategory,
+				templateId,
+				updatedBy: "founder",
+			});
+		}
+		const warnings: string[] = [];
+		expect(
+			migrateSystemWorkflowBindingsToLand(
+				store,
+				["system", "custom"],
+				(message) => warnings.push(message),
+			),
+		).toBe(3);
+		expect(store.listWorkflowCategoryBindings("system")).toMatchObject([
+			{ task_category: "*", template_id: "tpl_eng_heavy_land_v1" },
+			{ task_category: "light", template_id: "tpl_eng_light_land_v1" },
+			{ task_category: "trivial", template_id: "tpl_eng_trivial_land_v1" },
+		]);
+		expect(store.listWorkflowCategoryBindings("custom")).toMatchObject([
+			{ task_category: "*", template_id: "tpl_eng_heavy" },
+			{ task_category: "light", template_id: "tpl_eng_light" },
+			{ task_category: "trivial", template_id: "tpl_eng_trivial" },
+		]);
+		expect(warnings).toHaveLength(3);
+		const auditCount = store.listWorkflowTemplateAudit().length;
+		expect(
+			migrateSystemWorkflowBindingsToLand(
+				store,
+				["system", "custom"],
+				() => {},
+			),
+		).toBe(0);
+		expect(store.listWorkflowTemplateAudit()).toHaveLength(auditCount);
+
+		expect(
+			rollbackSystemWorkflowBindingsFromLand(store, ["system"], () => {}),
+		).toBe(3);
+		expect(store.listWorkflowCategoryBindings("system")).toMatchObject([
+			{ task_category: "*", template_id: "tpl_eng_heavy" },
+			{ task_category: "light", template_id: "tpl_eng_light" },
+			{ task_category: "trivial", template_id: "tpl_eng_trivial" },
+		]);
 		store.close();
 	});
 

@@ -59,6 +59,7 @@ describe("FLY-1392 runner receipt patrol", () => {
 
 	it("uses the same hard budget for the verified T1 retry", async () => {
 		const wake = admit(1_000);
+		db.upsertDeclaredState("exec-1", "parked", "awaiting work", 1_000, null);
 		const initial = db.claimRunnerReceiptWakePush(
 			"exec-1",
 			wake.message_id,
@@ -89,6 +90,7 @@ describe("FLY-1392 runner receipt patrol", () => {
 
 	it("records a failed T2 wake and immediately enters the visible escalation chain", async () => {
 		admit(1_000);
+		db.upsertDeclaredState("exec-1", "parked", "awaiting work", 1_000, null);
 		nudgeWakePointer.mockResolvedValueOnce({
 			nudged: false,
 			error: "no_tmux_target",
@@ -106,6 +108,53 @@ describe("FLY-1392 runner receipt patrol", () => {
 		expect(
 			db.getReceiptAlertOutbox("wake_failed:instruction:instruction-1"),
 		).toMatchObject({ delivered_at: expect.any(String) });
+	});
+
+	it("disposes ordinary traffic for a live non-parked runner before the ladder", async () => {
+		const wake = admit(1_000);
+		db.close();
+
+		await patrol(999_000);
+
+		db = new CommDB(dbPath);
+		expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
+			{
+				message_id: wake.message_id,
+				purpose: "message_traffic",
+				state: "finished",
+				started_ack_scope: "normal_traffic",
+			},
+		]);
+		expect(pushWake).not.toHaveBeenCalled();
+		expect(nudgeWakePointer).not.toHaveBeenCalled();
+		expect(notifyWakeFailure).not.toHaveBeenCalled();
+	});
+
+	it("keeps gate-response traffic on the durable ladder for a live runner", async () => {
+		const questionId = db.insertQuestion("exec-1", "lead-1", "review?", {
+			checkpoint: "review_code",
+		});
+		const result = db.insertReviewResponseWithWakeIfGateOpen({
+			questionId,
+			fromAgent: "bridge",
+			content: '{"reviewVerdict":"APPROVED"}',
+			expectedOwner: "exec-1",
+			expectedCheckpoint: "review_code",
+			summary: "APPROVED",
+			queuedAtMs: 1_000,
+		});
+		expect(result).not.toBeNull();
+		db.close();
+
+		await patrol(91_000);
+
+		db = new CommDB(dbPath);
+		expect(pushWake).toHaveBeenCalledOnce();
+		expect(db.listRunnerPhaseWakes("exec-1")[0]).toMatchObject({
+			message_id: result?.responseId,
+			purpose: "gate_response",
+			state: "pending",
+		});
 	});
 
 	it("never swallows a terminal-before-started wake as clean stand-down", async () => {

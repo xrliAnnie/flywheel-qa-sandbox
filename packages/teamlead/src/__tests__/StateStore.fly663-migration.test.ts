@@ -92,6 +92,53 @@ describe("FLY-663 — StateStore better-sqlite3 migration", () => {
 		}
 	});
 
+	it("rebuilds a pre-FLY-863 review ledger before selecting the missing stuck column", async () => {
+		const legacy = new BetterSqlite3(dbPath);
+		legacy.exec(`
+			CREATE TABLE codex_review_record (
+				execution_id TEXT NOT NULL,
+				target_pr_head_sha TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'pending',
+				reviewed_target TEXT,
+				codex_thread_id TEXT,
+				rounds INTEGER,
+				verdict_event_id TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				approved_at TEXT,
+				hold_notified_at TEXT,
+				PRIMARY KEY (execution_id, target_pr_head_sha)
+			);
+			INSERT INTO codex_review_record (
+				execution_id, target_pr_head_sha, issue_id, project_name, status
+			) VALUES ('legacy-review', '${"a".repeat(40)}', 'FLY-663', 'flywheel', 'approved');
+		`);
+		legacy.close();
+
+		const store = await StateStore.create(dbPath);
+		expect(
+			store.getCodexReviewRecord("legacy-review", "__main__", "a".repeat(40)),
+		).toMatchObject({
+			status: "approved",
+			target_repo_identity: "__main__",
+		});
+		const columns = (
+			store as unknown as { db: { raw: BetterSqlite3.Database } }
+		).db.raw.pragma("table_info(codex_review_record)") as Array<{
+			name: string;
+			pk: number;
+		}>;
+		expect(
+			columns
+				.filter((column) => column.pk > 0)
+				.sort((left, right) => left.pk - right.pk)
+				.map((column) => column.name),
+		).toEqual(["execution_id", "target_repo_identity", "target_pr_head_sha"]);
+		expect(columns.map((column) => column.name)).toContain("stuck_notified_at");
+		store.close();
+	});
+
 	describe("§2.8 multi-statement transaction atomicity", () => {
 		it("upsertSession rolls back the INSERT if the awaiting_review stamp throws", async () => {
 			const store = await StateStore.create(dbPath);

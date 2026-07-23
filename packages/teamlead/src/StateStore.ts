@@ -959,6 +959,8 @@ export interface ShipRelevantDiffSnapshot {
  */
 export interface CodexReviewRecord {
 	execution_id: string;
+	/** Canonical reviewed repository: main worktree or normalized owner/repo. */
+	target_repo_identity: string;
 	target_pr_head_sha: string;
 	issue_id: string;
 	project_name: string;
@@ -1013,6 +1015,10 @@ export interface CodexReviewJob {
 	question_id: string;
 	/** design review: the plan path the reviewer reads. */
 	target_path?: string;
+	/** Canonical repository root selected from the immutable worktree binding. */
+	target_repo_path?: string;
+	/** `__main__` or a server-derived normalized owner/repo. */
+	target_repo_identity: string;
 	/** code review: server-frozen head at accept time. */
 	frozen_head_sha?: string;
 	status: "pending" | "running" | "done" | "failed" | "skipped";
@@ -2606,6 +2612,7 @@ export class StateStore {
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS codex_review_record (
 				execution_id TEXT NOT NULL,
+				target_repo_identity TEXT NOT NULL DEFAULT '__main__',
 				target_pr_head_sha TEXT NOT NULL,
 				issue_id TEXT NOT NULL,
 				project_name TEXT NOT NULL,
@@ -2618,12 +2625,9 @@ export class StateStore {
 				approved_at TEXT,
 				hold_notified_at TEXT,
 				stuck_notified_at TEXT,
-				PRIMARY KEY (execution_id, target_pr_head_sha)
+				PRIMARY KEY (execution_id, target_repo_identity, target_pr_head_sha)
 			)
 		`);
-		this.db.run(
-			"CREATE INDEX IF NOT EXISTS idx_codex_review_status ON codex_review_record(status)",
-		);
 		// FLY-1188 §7.3: family-aware review authority — the reviewer-inversion
 		// invariant (reviewer family ≠ author family) is checked against these
 		// stamps; NULL = pre-FLY-1188 legacy row (claude-author→codex-reviewer
@@ -2636,7 +2640,8 @@ export class StateStore {
 				/* exists */
 			}
 		}
-		// FLY-863: existing databases created before this column existed.
+		// FLY-863 compatibility must run before the identity-key rebuild below:
+		// old databases do not have this column, while the rebuild SELECT copies it.
 		try {
 			this.db.run(
 				"ALTER TABLE codex_review_record ADD COLUMN stuck_notified_at TEXT",
@@ -2644,6 +2649,79 @@ export class StateStore {
 		} catch {
 			/* exists */
 		}
+		// FLY-1434 §10: identity is part of the physical key. SQLite cannot
+		// alter a primary key, so existing databases require a quiescent,
+		// roll-forward-only table rebuild. Pre-migration rows were all main-repo
+		// reviews and are therefore backfilled to the explicit sentinel.
+		const reviewRecordInfo = this.db.exec(
+			"PRAGMA table_info(codex_review_record)",
+		);
+		const reviewRecordColumns =
+			reviewRecordInfo[0]?.values.map((row) => row[1] as string) ?? [];
+		if (!reviewRecordColumns.includes("target_repo_identity")) {
+			this.db.run(
+				"ALTER TABLE codex_review_record ADD COLUMN target_repo_identity TEXT NOT NULL DEFAULT '__main__'",
+			);
+		}
+		const refreshedReviewRecordInfo = this.db.exec(
+			"PRAGMA table_info(codex_review_record)",
+		);
+		const primaryKeyColumns = (refreshedReviewRecordInfo[0]?.values ?? [])
+			.filter((row) => Number(row[5]) > 0)
+			.sort((a, b) => Number(a[5]) - Number(b[5]))
+			.map((row) => row[1] as string);
+		if (
+			primaryKeyColumns.join(",") !==
+			"execution_id,target_repo_identity,target_pr_head_sha"
+		) {
+			this.db.transaction(() => {
+				this.db.run(`
+					CREATE TABLE codex_review_record_v2 (
+						execution_id TEXT NOT NULL,
+						target_repo_identity TEXT NOT NULL DEFAULT '__main__',
+						target_pr_head_sha TEXT NOT NULL,
+						issue_id TEXT NOT NULL,
+						project_name TEXT NOT NULL,
+						status TEXT NOT NULL DEFAULT 'pending',
+						reviewed_target TEXT,
+						codex_thread_id TEXT,
+						rounds INTEGER,
+						verdict_event_id TEXT,
+						created_at TEXT NOT NULL DEFAULT (datetime('now')),
+						approved_at TEXT,
+						hold_notified_at TEXT,
+						stuck_notified_at TEXT,
+						author_family TEXT,
+						reviewer_family TEXT,
+						request_id TEXT,
+						PRIMARY KEY (execution_id, target_repo_identity, target_pr_head_sha)
+					)
+				`);
+				this.db.run(`
+					INSERT INTO codex_review_record_v2 (
+						execution_id, target_repo_identity, target_pr_head_sha,
+						issue_id, project_name, status, reviewed_target,
+						codex_thread_id, rounds, verdict_event_id, created_at,
+						approved_at, hold_notified_at, stuck_notified_at,
+						author_family, reviewer_family, request_id
+					)
+					SELECT execution_id,
+						COALESCE(NULLIF(target_repo_identity, ''), '__main__'),
+						target_pr_head_sha, issue_id, project_name, status,
+						reviewed_target, codex_thread_id, rounds, verdict_event_id,
+						created_at, approved_at, hold_notified_at, stuck_notified_at,
+						author_family, reviewer_family, request_id
+					FROM codex_review_record
+				`);
+				this.db.run("DROP TABLE codex_review_record");
+				this.db.run(
+					"ALTER TABLE codex_review_record_v2 RENAME TO codex_review_record",
+				);
+			});
+		}
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_codex_review_status ON codex_review_record(status)",
+		);
 
 		// FLY-1188 §7.1: durable review-JOB registry for the codex-author lane.
 		// A row = one runner-issued review request (requestId is the idempotency
@@ -2662,6 +2740,8 @@ export class StateStore {
 				round                 INTEGER NOT NULL DEFAULT 1,
 				question_id           TEXT NOT NULL,
 				target_path           TEXT,
+				target_repo_path      TEXT,
+				target_repo_identity  TEXT NOT NULL DEFAULT '__main__',
 				frozen_head_sha       TEXT,
 				status                TEXT NOT NULL DEFAULT 'pending'
 				                      CHECK(status IN ('pending','running','done','failed','skipped')),
@@ -2713,6 +2793,8 @@ export class StateStore {
 			["settled_json", "TEXT"],
 			["response_json", "TEXT"],
 			["payload_version", "INTEGER"],
+			["target_repo_path", "TEXT"],
+			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
 		] as const) {
 			if (!reviewJobColumns.includes(column)) {
 				this.db.run(
@@ -4932,17 +5014,102 @@ export class StateStore {
 	 */
 	setReviewBinding(
 		executionId: string,
-		binding: { questionId: string | null; prHeadSha: string | null },
+		binding: {
+			questionId: string | null;
+			prHeadSha: string | null;
+			shipTarget?: {
+				runId?: string;
+				sourceRequestId?: string;
+				targetRepoPath: string;
+				targetRepoIdentity: string;
+				probeRepoSlug: string;
+				worktreeBindingGeneration: string;
+			};
+		},
 	): void {
-		this.db.run(
-			"UPDATE sessions SET review_question_id = ?, pr_head_sha = ? WHERE execution_id = ?",
+		this.db.transaction(() => {
+			this.db.run(
+				"UPDATE sessions SET review_question_id = ?, pr_head_sha = ? WHERE execution_id = ?",
+				[
+					binding.questionId ?? REVIEW_BINDING_UNBOUND,
+					binding.prHeadSha,
+					executionId,
+				],
+			);
+			if (binding.questionId && binding.prHeadSha && binding.shipTarget) {
+				this.recordWorkflowShipTargetBindingTx({
+					approveQuestionId: binding.questionId,
+					runId: binding.shipTarget.runId,
+					sourceRequestId: binding.shipTarget.sourceRequestId,
+					binding: {
+						target_repo_path: binding.shipTarget.targetRepoPath,
+						target_repo_identity: binding.shipTarget.targetRepoIdentity,
+						probe_repo_slug: binding.shipTarget.probeRepoSlug,
+						head_sha: binding.prHeadSha,
+						worktree_binding_generation:
+							binding.shipTarget.worktreeBindingGeneration,
+					},
+				});
+				if (binding.shipTarget.runId) {
+					this.db.run(
+						`UPDATE workflow_ship_target_binding
+						    SET superseded_at = datetime('now')
+						  WHERE run_id = ?
+						    AND approve_question_id != ?
+						    AND superseded_at IS NULL
+						    AND NOT EXISTS (
+						      SELECT 1 FROM workflow_gate_holder h
+						       WHERE h.question_id =
+						             workflow_ship_target_binding.approve_question_id
+						    )`,
+						[binding.shipTarget.runId, binding.questionId],
+					);
+				}
+			}
+		});
+		this.save();
+	}
+
+	/**
+	 * Resolve the one approved review record that may back a legacy/non-DAG
+	 * approve-to-ship question. The issue/project/identity/head tuple is the
+	 * authority boundary; multiple matching writers are ambiguous and therefore
+	 * fail closed.
+	 */
+	findApprovedReviewShipTargetSource(input: {
+		projectName: string;
+		issueId: string;
+		targetRepoIdentity: string;
+		targetPrHeadSha: string;
+	}):
+		| { status: "resolved"; sourceRequestId?: string }
+		| { status: "not_found" | "ambiguous" } {
+		const rows = this.workflowSelectAll(
+			`SELECT request_id
+			   FROM codex_review_record
+			  WHERE project_name = ?
+			    AND issue_id = ?
+			    AND target_repo_identity = ?
+			    AND lower(target_pr_head_sha) = ?
+			    AND status IN ('approved','skipped')
+			  ORDER BY execution_id
+			  LIMIT 2`,
 			[
-				binding.questionId ?? REVIEW_BINDING_UNBOUND,
-				binding.prHeadSha,
-				executionId,
+				input.projectName,
+				input.issueId,
+				input.targetRepoIdentity,
+				input.targetPrHeadSha.toLowerCase(),
 			],
 		);
-		this.save();
+		if (rows.length === 0) return { status: "not_found" };
+		if (rows.length > 1) return { status: "ambiguous" };
+		const sourceRequestId = rows[0]?.request_id;
+		return {
+			status: "resolved",
+			...(typeof sourceRequestId === "string" && sourceRequestId
+				? { sourceRequestId }
+				: {}),
+		};
 	}
 
 	/**
@@ -5885,6 +6052,7 @@ export class StateStore {
 	): CodexReviewRecord {
 		return {
 			execution_id: row.execution_id as string,
+			target_repo_identity: (row.target_repo_identity as string) || "__main__",
 			target_pr_head_sha: row.target_pr_head_sha as string,
 			issue_id: row.issue_id as string,
 			project_name: row.project_name as string,
@@ -5922,18 +6090,20 @@ export class StateStore {
 		targetPrHeadSha: string;
 		issueId: string;
 		projectName: string;
+		targetRepoIdentity?: string;
 	}): boolean {
 		const sha = input.targetPrHeadSha.toLowerCase();
+		const repoIdentity = input.targetRepoIdentity ?? "__main__";
 		this.db.run(
 			`INSERT OR IGNORE INTO codex_review_record
-			   (execution_id, target_pr_head_sha, issue_id, project_name, status, created_at)
-			 VALUES (?, ?, ?, ?, 'pending', datetime('now'))`,
-			[input.executionId, sha, input.issueId, input.projectName],
+			   (execution_id, target_repo_identity, target_pr_head_sha, issue_id, project_name, status, created_at)
+			 VALUES (?, ?, ?, ?, ?, 'pending', datetime('now'))`,
+			[input.executionId, repoIdentity, sha, input.issueId, input.projectName],
 		);
 		this.db.run(
 			`UPDATE codex_review_record SET hold_notified_at = datetime('now')
-			  WHERE execution_id = ? AND target_pr_head_sha = ? AND hold_notified_at IS NULL`,
-			[input.executionId, sha],
+			  WHERE execution_id = ? AND target_repo_identity = ? AND target_pr_head_sha = ? AND hold_notified_at IS NULL`,
+			[input.executionId, repoIdentity, sha],
 		);
 		const claimed = this.db.getRowsModified() > 0;
 		this.save();
@@ -6028,6 +6198,7 @@ export class StateStore {
 	 */
 	recordCodexReviewApproved(input: {
 		executionId: string;
+		targetRepoIdentity?: string;
 		targetPrHeadSha: string;
 		issueId: string;
 		projectName: string;
@@ -6042,16 +6213,22 @@ export class StateStore {
 		requestId?: string;
 	}): boolean {
 		const sha = input.targetPrHeadSha.toLowerCase();
-		const existing = this.getCodexReviewRecord(input.executionId, sha);
+		const repoIdentity = input.targetRepoIdentity ?? "__main__";
+		const existing = this.getCodexReviewRecord(
+			input.executionId,
+			repoIdentity,
+			sha,
+		);
 		if (!existing) {
 			this.db.run(
 				`INSERT INTO codex_review_record
-				   (execution_id, target_pr_head_sha, issue_id, project_name, status,
+				   (execution_id, target_repo_identity, target_pr_head_sha, issue_id, project_name, status,
 				    reviewed_target, codex_thread_id, rounds, verdict_event_id,
 				    author_family, reviewer_family, request_id, created_at, approved_at)
-				 VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+				 VALUES (?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
 				[
 					input.executionId,
+					repoIdentity,
 					sha,
 					input.issueId,
 					input.projectName,
@@ -6065,11 +6242,19 @@ export class StateStore {
 				],
 			);
 			this.save();
-			return this.isCodexCodeReviewApproved(input.executionId, sha);
+			return this.isCodexCodeReviewApproved(
+				input.executionId,
+				repoIdentity,
+				sha,
+			);
 		}
 		if (existing.status === "skipped") {
 			// gate already satisfied via sanctioned bypass; never overwritten
-			return this.isCodexCodeReviewApproved(input.executionId, sha);
+			return this.isCodexCodeReviewApproved(
+				input.executionId,
+				repoIdentity,
+				sha,
+			);
 		}
 
 		const isNewAuthoritativeRequest =
@@ -6085,7 +6270,11 @@ export class StateStore {
 			// look like a replay and its evidence unreplaceable). Only the
 			// bound request's own verdict — or a different authoritative
 			// request — may write here.
-			return this.isCodexCodeReviewApproved(input.executionId, sha);
+			return this.isCodexCodeReviewApproved(
+				input.executionId,
+				repoIdentity,
+				sha,
+			);
 		}
 
 		if (
@@ -6107,7 +6296,7 @@ export class StateStore {
 				   author_family = ?,
 				   reviewer_family = ?,
 				   request_id = ?
-				 WHERE execution_id = ? AND target_pr_head_sha = ?`,
+				 WHERE execution_id = ? AND target_repo_identity = ? AND target_pr_head_sha = ?`,
 				[
 					input.verdictEventId ?? null,
 					input.reviewedTarget ?? null,
@@ -6117,11 +6306,16 @@ export class StateStore {
 					input.reviewerFamily ?? null,
 					input.requestId ?? null,
 					input.executionId,
+					repoIdentity,
 					sha,
 				],
 			);
 			this.save();
-			return this.isCodexCodeReviewApproved(input.executionId, sha);
+			return this.isCodexCodeReviewApproved(
+				input.executionId,
+				repoIdentity,
+				sha,
+			);
 		}
 
 		// pending→approved, replay of the same request-bound verdict, or a
@@ -6139,7 +6333,7 @@ export class StateStore {
 			   author_family = COALESCE(author_family, ?),
 			   reviewer_family = COALESCE(reviewer_family, ?),
 			   request_id = COALESCE(request_id, ?)
-			 WHERE execution_id = ? AND target_pr_head_sha = ?`,
+			 WHERE execution_id = ? AND target_repo_identity = ? AND target_pr_head_sha = ?`,
 			[
 				input.verdictEventId ?? null,
 				input.reviewedTarget ?? null,
@@ -6149,11 +6343,12 @@ export class StateStore {
 				input.reviewerFamily ?? null,
 				input.requestId ?? null,
 				input.executionId,
+				repoIdentity,
 				sha,
 			],
 		);
 		this.save();
-		return this.isCodexCodeReviewApproved(input.executionId, sha);
+		return this.isCodexCodeReviewApproved(input.executionId, repoIdentity, sha);
 	}
 
 	/**
@@ -6164,17 +6359,19 @@ export class StateStore {
 	 */
 	markCodexReviewSkipped(input: {
 		executionId: string;
+		targetRepoIdentity?: string;
 		targetPrHeadSha: string;
 		issueId: string;
 		projectName: string;
 	}): void {
 		const sha = input.targetPrHeadSha.toLowerCase();
+		const repoIdentity = input.targetRepoIdentity ?? "__main__";
 		this.db.run(
 			`INSERT INTO codex_review_record
-			   (execution_id, target_pr_head_sha, issue_id, project_name, status, created_at)
-			 VALUES (?, ?, ?, ?, 'skipped', datetime('now'))
-			 ON CONFLICT(execution_id, target_pr_head_sha) DO UPDATE SET status = 'skipped'`,
-			[input.executionId, sha, input.issueId, input.projectName],
+			   (execution_id, target_repo_identity, target_pr_head_sha, issue_id, project_name, status, created_at)
+			 VALUES (?, ?, ?, ?, ?, 'skipped', datetime('now'))
+			 ON CONFLICT(execution_id, target_repo_identity, target_pr_head_sha) DO UPDATE SET status = 'skipped'`,
+			[input.executionId, repoIdentity, sha, input.issueId, input.projectName],
 		);
 		this.save();
 	}
@@ -6191,6 +6388,8 @@ export class StateStore {
 			round: (row.round as number) ?? 1,
 			question_id: row.question_id as string,
 			target_path: (row.target_path as string) ?? undefined,
+			target_repo_path: (row.target_repo_path as string) ?? undefined,
+			target_repo_identity: (row.target_repo_identity as string) || "__main__",
 			frozen_head_sha: (row.frozen_head_sha as string) ?? undefined,
 			status: row.status as CodexReviewJob["status"],
 			reviewer_session_uuid: (row.reviewer_session_uuid as string) ?? undefined,
@@ -6263,6 +6462,8 @@ export class StateStore {
 		round?: number;
 		questionId: string;
 		targetPath?: string;
+		targetRepoPath?: string;
+		targetRepoIdentity?: string;
 		frozenHeadSha?: string;
 		reviewerSessionUuid?: string;
 		authorFamily?: string;
@@ -6272,10 +6473,11 @@ export class StateStore {
 		this.db.run(
 			`INSERT OR IGNORE INTO codex_review_job
 			   (request_id, execution_id, issue_id, project_name, review_type,
-			    round, question_id, target_path, frozen_head_sha,
+			    round, question_id, target_path, target_repo_path,
+			    target_repo_identity, frozen_head_sha,
 			    reviewer_session_uuid, author_family, status, delivery_nonce,
 			    created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
 			[
 				input.requestId,
 				input.executionId,
@@ -6285,6 +6487,8 @@ export class StateStore {
 				input.round ?? 1,
 				input.questionId,
 				input.targetPath ?? null,
+				input.targetRepoPath ?? null,
+				input.targetRepoIdentity ?? "__main__",
 				input.frozenHeadSha ?? null,
 				input.reviewerSessionUuid ?? null,
 				input.authorFamily ?? null,
@@ -6444,11 +6648,12 @@ export class StateStore {
 	countCodexReviewJobs(
 		executionId: string,
 		reviewType: "design" | "code",
+		targetRepoIdentity = "__main__",
 	): number {
 		const stmt = this.db.prepare(
-			"SELECT COUNT(*) AS n FROM codex_review_job WHERE execution_id = ? AND review_type = ?",
+			"SELECT COUNT(*) AS n FROM codex_review_job WHERE execution_id = ? AND review_type = ? AND target_repo_identity = ?",
 		);
-		stmt.bind([executionId, reviewType]);
+		stmt.bind([executionId, reviewType, targetRepoIdentity]);
 		let n = 0;
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
@@ -6462,13 +6667,14 @@ export class StateStore {
 	latestDoneCodexReviewJob(
 		executionId: string,
 		reviewType: "design" | "code",
+		targetRepoIdentity = "__main__",
 	): CodexReviewJob | null {
 		const stmt = this.db.prepare(
 			`SELECT * FROM codex_review_job
-			  WHERE execution_id = ? AND review_type = ? AND status = 'done'
+			  WHERE execution_id = ? AND review_type = ? AND target_repo_identity = ? AND status = 'done'
 			  ORDER BY created_at DESC LIMIT 1`,
 		);
-		stmt.bind([executionId, reviewType]);
+		stmt.bind([executionId, reviewType, targetRepoIdentity]);
 		let job: CodexReviewJob | null = null;
 		if (stmt.step()) {
 			job = this.rowToCodexReviewJob(
@@ -6486,14 +6692,15 @@ export class StateStore {
 	latestCodexReviewerSessionUuid(
 		executionId: string,
 		reviewType: "design" | "code",
+		targetRepoIdentity = "__main__",
 	): string | null {
 		const stmt = this.db.prepare(
 			`SELECT reviewer_session_uuid FROM codex_review_job
-			  WHERE execution_id = ? AND review_type = ?
+			  WHERE execution_id = ? AND review_type = ? AND target_repo_identity = ?
 			    AND reviewer_session_uuid IS NOT NULL
 			  ORDER BY created_at DESC LIMIT 1`,
 		);
-		stmt.bind([executionId, reviewType]);
+		stmt.bind([executionId, reviewType, targetRepoIdentity]);
 		let uuid: string | null = null;
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
@@ -6869,16 +7076,18 @@ export class StateStore {
 	 */
 	upsertCodexReviewPending(input: {
 		executionId: string;
+		targetRepoIdentity?: string;
 		targetPrHeadSha: string;
 		issueId: string;
 		projectName: string;
 	}): void {
 		const sha = input.targetPrHeadSha.toLowerCase();
+		const repoIdentity = input.targetRepoIdentity ?? "__main__";
 		this.db.run(
 			`INSERT OR IGNORE INTO codex_review_record
-			   (execution_id, target_pr_head_sha, issue_id, project_name, status, created_at)
-			 VALUES (?, ?, ?, ?, 'pending', datetime('now'))`,
-			[input.executionId, sha, input.issueId, input.projectName],
+			   (execution_id, target_repo_identity, target_pr_head_sha, issue_id, project_name, status, created_at)
+			 VALUES (?, ?, ?, ?, ?, 'pending', datetime('now'))`,
+			[input.executionId, repoIdentity, sha, input.issueId, input.projectName],
 		);
 		this.save();
 	}
@@ -6886,11 +7095,24 @@ export class StateStore {
 	getCodexReviewRecord(
 		executionId: string,
 		targetPrHeadSha: string,
+	): CodexReviewRecord | undefined;
+	getCodexReviewRecord(
+		executionId: string,
+		targetRepoIdentity: string,
+		targetPrHeadSha: string,
+	): CodexReviewRecord | undefined;
+	getCodexReviewRecord(
+		executionId: string,
+		identityOrSha: string,
+		maybeSha?: string,
 	): CodexReviewRecord | undefined {
+		const targetRepoIdentity =
+			maybeSha === undefined ? "__main__" : identityOrSha;
+		const targetPrHeadSha = maybeSha ?? identityOrSha;
 		const stmt = this.db.prepare(
-			"SELECT * FROM codex_review_record WHERE execution_id = ? AND target_pr_head_sha = ?",
+			"SELECT * FROM codex_review_record WHERE execution_id = ? AND target_repo_identity = ? AND target_pr_head_sha = ?",
 		);
-		stmt.bind([executionId, targetPrHeadSha.toLowerCase()]);
+		stmt.bind([executionId, targetRepoIdentity, targetPrHeadSha.toLowerCase()]);
 		let rec: CodexReviewRecord | undefined;
 		if (stmt.step()) {
 			rec = this.rowToCodexReviewRecord(
@@ -6907,8 +7129,25 @@ export class StateStore {
 	 * `isCodexGateSatisfied` layers session.codex_skip + the hard-gate kill-switch
 	 * on top of this.
 	 */
-	isCodexCodeReviewApproved(executionId: string, sha: string): boolean {
-		const rec = this.getCodexReviewRecord(executionId, sha.toLowerCase());
+	isCodexCodeReviewApproved(executionId: string, sha: string): boolean;
+	isCodexCodeReviewApproved(
+		executionId: string,
+		targetRepoIdentity: string,
+		sha: string,
+	): boolean;
+	isCodexCodeReviewApproved(
+		executionId: string,
+		identityOrSha: string,
+		maybeSha?: string,
+	): boolean {
+		const targetRepoIdentity =
+			maybeSha === undefined ? "__main__" : identityOrSha;
+		const sha = maybeSha ?? identityOrSha;
+		const rec = this.getCodexReviewRecord(
+			executionId,
+			targetRepoIdentity,
+			sha.toLowerCase(),
+		);
 		if (!rec) return false;
 		// FLY-1188 §7.3: the reviewer-inversion invariant — a record only
 		// satisfies the gate if the reviewer came from a DIFFERENT agent
@@ -6968,12 +7207,13 @@ export class StateStore {
 	claimCodexHoldStuckNotify(
 		executionId: string,
 		targetPrHeadSha: string,
+		targetRepoIdentity = "__main__",
 	): boolean {
 		const sha = targetPrHeadSha.toLowerCase();
 		this.db.run(
 			`UPDATE codex_review_record SET stuck_notified_at = datetime('now')
-			  WHERE execution_id = ? AND target_pr_head_sha = ? AND stuck_notified_at IS NULL`,
-			[executionId, sha],
+			  WHERE execution_id = ? AND target_repo_identity = ? AND target_pr_head_sha = ? AND stuck_notified_at IS NULL`,
+			[executionId, targetRepoIdentity, sha],
 		);
 		const claimed = this.db.getRowsModified() > 0;
 		this.save();
@@ -12988,6 +13228,83 @@ export class StateStore {
 			)
 		`);
 		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_node_pr_binding (
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL CHECK (attempt > 0),
+				pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+				head_sha TEXT NOT NULL CHECK (length(head_sha) = 40),
+				target_repo_identity TEXT NOT NULL DEFAULT '__main__',
+				probe_repo_slug TEXT NOT NULL CHECK (length(probe_repo_slug) > 0),
+				target_repo_path TEXT NOT NULL CHECK (length(target_repo_path) > 0),
+				worktree_binding_generation TEXT NOT NULL,
+				receipt_id TEXT NOT NULL UNIQUE,
+				bound_at TEXT NOT NULL,
+				PRIMARY KEY (run_id, node_id, attempt),
+				FOREIGN KEY (run_id, node_id, attempt)
+					REFERENCES workflow_run_node(run_id, node_id, attempt)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_pr_manifest (
+				run_id TEXT PRIMARY KEY,
+				mode TEXT NOT NULL DEFAULT 'declared' CHECK (mode = 'declared'),
+				expected_count INTEGER NOT NULL CHECK (expected_count BETWEEN 1 AND 50),
+				current_revision INTEGER NOT NULL DEFAULT 0 CHECK (current_revision >= 0),
+				sealed_at TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_declared_pr (
+				run_id TEXT NOT NULL,
+				revision INTEGER NOT NULL CHECK (revision > 0),
+				repo_identity TEXT NOT NULL,
+				probe_repo_slug TEXT NOT NULL,
+				pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+				frozen_head_sha TEXT NOT NULL CHECK (length(frozen_head_sha) = 40),
+				state TEXT NOT NULL DEFAULT 'declared'
+				  CHECK (state IN ('declared','merged')),
+				merged_at TEXT,
+				declared_at TEXT NOT NULL,
+				PRIMARY KEY (run_id, revision, repo_identity, pr_number),
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_pr_finalization (
+				run_id TEXT NOT NULL,
+				revision INTEGER NOT NULL CHECK (revision > 0),
+				state TEXT NOT NULL CHECK (state IN ('claimed','completed')),
+				source_execution_id TEXT NOT NULL,
+				claimed_at TEXT NOT NULL,
+				completed_at TEXT,
+				last_error TEXT,
+				PRIMARY KEY (run_id, revision),
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_ship_target_binding (
+				approve_question_id TEXT NOT NULL PRIMARY KEY
+				  CHECK (length(trim(approve_question_id)) > 0),
+				run_id TEXT,
+				source_request_id TEXT,
+				target_repo_path TEXT NOT NULL CHECK (length(target_repo_path) > 0),
+				target_repo_identity TEXT NOT NULL,
+				probe_repo_slug TEXT NOT NULL,
+				frozen_head_sha TEXT NOT NULL CHECK (
+				  length(frozen_head_sha) = 40
+				  AND frozen_head_sha NOT GLOB '*[^0-9a-f]*'
+				),
+				worktree_binding_generation TEXT NOT NULL,
+				superseded_at TEXT,
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			)
+		`);
+		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_run_event (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				run_id TEXT NOT NULL,
@@ -18686,6 +19003,43 @@ export class StateStore {
 		return this.getWorkflowRun(binding.run_id)?.engine_owned === 1;
 	}
 
+	private static workflowAdmissionReservationBlocker(input: {
+		engineOwned: boolean;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		startNodeIds: string[];
+		attempts: WorkflowRunNodeRow[];
+	}):
+		| "successor_not_reserved"
+		| "not_start_node"
+		| "invalid_retry_attempt"
+		| null {
+		const reservedSuccessor = input.attempts.find(
+			(candidate) =>
+				candidate.attempt === input.attempt &&
+				candidate.execution_id === input.executionId &&
+				(candidate.state === "pending" || candidate.state === "running"),
+		);
+		if (input.engineOwned && input.attempts.length > 0 && !reservedSuccessor) {
+			return "successor_not_reserved";
+		}
+		if (!reservedSuccessor && input.attempts.length === 0) {
+			return input.startNodeIds.length === 1 &&
+				input.startNodeIds[0] === input.nodeId &&
+				input.attempt === 1
+				? null
+				: "not_start_node";
+		}
+		if (!reservedSuccessor) {
+			const maxAttempt = Math.max(
+				...input.attempts.map((entry) => entry.attempt),
+			);
+			if (input.attempt !== maxAttempt + 1) return "invalid_retry_attempt";
+		}
+		return null;
+	}
+
 	private generalizedExecutionContextForBinding(
 		binding: WorkflowExecutionBindingRow,
 	):
@@ -18908,22 +19262,16 @@ export class StateStore {
 				candidate.execution_id === input.executionId &&
 				(candidate.state === "pending" || candidate.state === "running"),
 		);
-		if (run.engine_owned === 1 && attempts.length > 0 && !reservedSuccessor) {
-			return { ok: false, reason: "successor_not_reserved" };
-		}
-		if (!reservedSuccessor && attempts.length === 0) {
-			if (
-				starts.length !== 1 ||
-				starts[0]!.id !== input.nodeId ||
-				input.attempt !== 1
-			) {
-				return { ok: false, reason: "not_start_node" };
-			}
-		} else if (!reservedSuccessor) {
-			const maxAttempt = Math.max(...attempts.map((entry) => entry.attempt));
-			if (input.attempt !== maxAttempt + 1) {
-				return { ok: false, reason: "invalid_retry_attempt" };
-			}
+		const reservationBlocker = StateStore.workflowAdmissionReservationBlocker({
+			engineOwned: run.engine_owned === 1,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+			executionId: input.executionId,
+			startNodeIds: starts.map((candidate) => candidate.id),
+			attempts,
+		});
+		if (reservationBlocker) {
+			return { ok: false, reason: reservationBlocker };
 		}
 
 		let outputCredential: string | undefined;
@@ -19572,6 +19920,14 @@ export class StateStore {
 		evidence: RunQuiescenceEvidence[];
 		now: string;
 		target: "held" | "terminated";
+		closeoutInvariantDigest?: string;
+		closeoutKind?: "nested_manual" | "operator";
+		mergeProof?: {
+			probeRepoSlug: string;
+			prNumber: number;
+			headSha: string;
+			state: "MERGED";
+		};
 	}): WorkflowRunOperatorResult {
 		if (
 			!input.runId ||
@@ -19587,6 +19943,8 @@ export class StateStore {
 			ok: false,
 			reason: "operator_change_not_committed",
 		};
+		const requestedCloseoutKind =
+			input.target === "terminated" ? (input.closeoutKind ?? "operator") : null;
 		this.db.transaction(() => {
 			const eventUid = `run_${input.target === "held" ? "held_by_operator" : "terminated"}:${input.runId}:${input.clientRequestId}`;
 			const prior = this.workflowSelectAll(
@@ -19602,7 +19960,12 @@ export class StateStore {
 					if (
 						payload.reason !== input.reason ||
 						payload.principal !== input.principal ||
-						payload.status !== input.target
+						payload.status !== input.target ||
+						(payload.clientRequestId ?? null) !==
+							(input.clientRequestId ?? null) ||
+						(payload.closeoutInvariantDigest ?? null) !==
+							(input.closeoutInvariantDigest ?? null) ||
+						(payload.closeoutKind ?? null) !== requestedCloseoutKind
 					) {
 						result = { ok: false, reason: "operator_request_conflict" };
 						return;
@@ -19640,6 +20003,94 @@ export class StateStore {
 				};
 				return;
 			}
+			let effectiveCloseoutKind: "nested_manual" | "operator" | null =
+				input.target === "terminated" ? "operator" : null;
+			if (input.target === "terminated" && run.status === "held") {
+				const diagnostic = this.getWorkflowRunDiagnostic({
+					runId: input.runId,
+					evidence: input.evidence,
+					now: input.now,
+				});
+				if (!diagnostic.ok) {
+					result = { ok: false, reason: diagnostic.reason };
+					return;
+				}
+				const nestedManual =
+					diagnostic.dto.latest_hold.reason === "nested_land_unsupported";
+				if (nestedManual) {
+					if (!input.closeoutInvariantDigest) {
+						result = {
+							ok: false,
+							reason: "closeout_invariant_required",
+						};
+						return;
+					}
+					if (!/^[0-9a-f]{64}$/.test(input.closeoutInvariantDigest)) {
+						result = {
+							ok: false,
+							reason: "invalid_closeout_invariant",
+						};
+						return;
+					}
+					if (
+						input.closeoutInvariantDigest !==
+						diagnostic.dto.closeout_invariant_digest
+					) {
+						result = {
+							ok: false,
+							reason: "closeout_invariant_changed",
+						};
+						return;
+					}
+					if (
+						input.closeoutKind !== "nested_manual" ||
+						!diagnostic.dto.quiescence.quiescent ||
+						diagnostic.dto.receipts.attributed_out_of_set !== 0 ||
+						diagnostic.dto.finalization.state !== null ||
+						diagnostic.dto.land_operation.present
+					) {
+						result = {
+							ok: false,
+							reason: "nested_closeout_precondition_failed",
+						};
+						return;
+					}
+					if (diagnostic.dto.pr_manifest) {
+						if (
+							!diagnostic.dto.pr_manifest.sealed ||
+							diagnostic.dto.declared_prs.length !==
+								diagnostic.dto.pr_manifest.expected_count ||
+							diagnostic.dto.declared_prs.some(
+								(candidate) => candidate.state !== "merged",
+							)
+						) {
+							result = {
+								ok: false,
+								reason: "nested_closeout_merge_unproven",
+							};
+							return;
+						}
+					} else {
+						const target = diagnostic.dto.single_closeout_target;
+						if (
+							!target ||
+							target.target_repo_identity === "__main__" ||
+							!input.mergeProof ||
+							input.mergeProof.state !== "MERGED" ||
+							input.mergeProof.probeRepoSlug !== target.probe_repo_slug ||
+							input.mergeProof.prNumber !== target.pr_number ||
+							input.mergeProof.headSha !== target.frozen_head_sha
+						) {
+							result = {
+								ok: false,
+								reason: "nested_closeout_merge_unproven",
+							};
+							return;
+						}
+					}
+					effectiveCloseoutKind = "nested_manual";
+				}
+			}
 			this.db.run(
 				"UPDATE workflow_run SET status = ? WHERE run_id = ? AND status = ?",
 				[input.target, input.runId, run.status],
@@ -19659,6 +20110,10 @@ export class StateStore {
 					reason: input.reason,
 					principal: input.principal,
 					status: input.target,
+					clientRequestId: input.clientRequestId,
+					closeoutInvariantDigest: input.closeoutInvariantDigest ?? null,
+					closeoutKind: effectiveCloseoutKind,
+					mergeProof: input.mergeProof ?? null,
 					at: input.now,
 				},
 			});
@@ -19691,6 +20146,471 @@ export class StateStore {
 			...input,
 			target: "terminated",
 		});
+	}
+
+	private revokeWorkflowClaimTx(input: {
+		claimId: number;
+		reason: string;
+		actor: string;
+		runId: string;
+		nodeId?: string;
+	}): void {
+		const prior = this.workflowSelectAll(
+			"SELECT id FROM workflow_claim_revocation WHERE claim_id = ? LIMIT 1",
+			[input.claimId],
+		)[0];
+		if (prior) return;
+		this.db.run(
+			"INSERT INTO workflow_claim_revocation (claim_id, reason, actor) VALUES (?, ?, ?)",
+			[input.claimId, input.reason, input.actor],
+		);
+		const revocation = this.workflowSelectAll(
+			"SELECT MAX(id) AS id FROM workflow_claim_revocation WHERE claim_id = ?",
+			[input.claimId],
+		)[0];
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.runId,
+			eventUid: `claim_revoked:${input.claimId}:${Number(revocation?.id)}`,
+			kind: "claim_revoked",
+			nodeId: input.nodeId,
+			payload: {
+				claimId: input.claimId,
+				reason: input.reason,
+				actor: input.actor,
+			},
+		});
+	}
+
+	/**
+	 * FLY-1434: master-authorized recovery entry for completed or quiescent
+	 * active engine runs. It writes the same request/route/delivery contract as
+	 * QA/founder kickback, so the existing coordinator and engine tick own all
+	 * subsequent wake/replacement work.
+	 */
+	openOperatorRework(input: {
+		runId: string;
+		targetNodeId: string;
+		feedback: string;
+		clientRequestId: string;
+		principal: string;
+		evidence: RunQuiescenceEvidence[];
+		now: string;
+		consent?: {
+			mode: "off" | "audit_only" | "enforce";
+			decision: string;
+			auditId?: number;
+		};
+	}): WorkflowOperatorReworkResult {
+		if (
+			!input.runId ||
+			!input.targetNodeId ||
+			!input.feedback.trim() ||
+			input.feedback.length > 4_000 ||
+			!input.clientRequestId.trim() ||
+			!input.principal ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_operator_rework_request" };
+		}
+		const sourceEventId = `operator_rework:${input.runId}:${input.clientRequestId}`;
+		let result: WorkflowOperatorReworkResult = {
+			ok: false,
+			reason: "operator_rework_not_committed",
+		};
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
+				[sourceEventId],
+			)[0];
+			if (prior) {
+				try {
+					const payload = JSON.parse(prior.payload as string) as {
+						requestId?: unknown;
+						targetNodeId?: unknown;
+						targetAttempt?: unknown;
+						preferredActorExecutionId?: unknown;
+						feedback?: unknown;
+						principal?: unknown;
+					};
+					if (
+						prior.kind !== "operator_rework_requested" ||
+						payload.targetNodeId !== input.targetNodeId ||
+						payload.feedback !== input.feedback.trim() ||
+						payload.principal !== input.principal ||
+						typeof payload.requestId !== "string" ||
+						typeof payload.targetAttempt !== "number" ||
+						typeof payload.preferredActorExecutionId !== "string"
+					) {
+						result = { ok: false, reason: "operator_request_conflict" };
+						return;
+					}
+					result = {
+						ok: true,
+						requestId: payload.requestId,
+						targetNodeId: input.targetNodeId,
+						targetAttempt: payload.targetAttempt,
+						preferredActorExecutionId: payload.preferredActorExecutionId,
+						idempotentReplay: true,
+					};
+					return;
+				} catch {
+					result = { ok: false, reason: "operator_request_conflict" };
+					return;
+				}
+			}
+
+			const run = this.getWorkflowRun(input.runId);
+			if (
+				!run?.snapshot ||
+				run.engine_owned !== 1 ||
+				(run.status !== "active" && run.status !== "completed")
+			) {
+				result = { ok: false, reason: "run_not_reworkable" };
+				return;
+			}
+			const competing = this.getActiveWorkflowRun(
+				run.project_name,
+				run.issue_id,
+			);
+			if (competing && competing.run_id !== run.run_id) {
+				result = { ok: false, reason: "issue_has_active_run" };
+				return;
+			}
+			const quiescence = this.validateRunQuiescenceEvidenceTx(
+				input.runId,
+				input.evidence,
+				input.now,
+			);
+			if (!quiescence.ok) {
+				result = {
+					ok: false,
+					reason: "target_not_quiescent",
+					executionIds: quiescence.executionIds,
+				};
+				return;
+			}
+			let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+			try {
+				snapshot = parseWorkflowRunSnapshot(run.snapshot);
+			} catch {
+				result = { ok: false, reason: "invalid_snapshot" };
+				return;
+			}
+			const target = snapshot.resolved.nodes.find(
+				(node) => node.id === input.targetNodeId,
+			);
+			if (!target?.dispatch || target.type === "gate") {
+				result = { ok: false, reason: "invalid_rework_target" };
+				return;
+			}
+			const openDelivery = this.workflowSelectAll(
+				`SELECT d.request_id FROM workflow_rework_delivery d
+				  JOIN workflow_rework_request r ON r.request_id = d.request_id
+				 WHERE r.run_id = ?
+				   AND d.state IN ('pending','turn_granted','wake_delivered','replacement_pending')
+				 LIMIT 1`,
+				[input.runId],
+			)[0];
+			if (openDelivery) {
+				result = { ok: false, reason: "rework_already_open" };
+				return;
+			}
+			const targetAttempts = this.listWorkflowRunNodes(input.runId, target.id);
+			const latestTarget = [...targetAttempts].sort(
+				(left, right) => right.attempt - left.attempt,
+			)[0];
+			if (
+				latestTarget &&
+				latestTarget.ended_at === null &&
+				(["pending", "admitted", "running"] as readonly string[]).includes(
+					latestTarget.state,
+				)
+			) {
+				result = { ok: false, reason: "target_attempt_already_reserved" };
+				return;
+			}
+			const preferredActorExecutionId = targetAttempts
+				.filter((candidate) => candidate.execution_id)
+				.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id;
+			if (!preferredActorExecutionId) {
+				result = { ok: false, reason: "target_actor_history_missing" };
+				return;
+			}
+			const targetAttempt =
+				targetAttempts.reduce(
+					(max, candidate) => Math.max(max, candidate.attempt),
+					0,
+				) + 1;
+			const sourceNodeId = run.current_node_id ?? target.id;
+			const sourceAttempt =
+				this.listWorkflowRunNodes(input.runId, sourceNodeId).reduce(
+					(max, candidate) => Math.max(max, candidate.attempt),
+					0,
+				) || latestTarget?.attempt;
+			if (!sourceAttempt) {
+				result = { ok: false, reason: "source_attempt_missing" };
+				return;
+			}
+
+			const reachable = new Set<string>();
+			const queue = [target.id];
+			while (queue.length > 0) {
+				const nodeId = queue.shift()!;
+				if (reachable.has(nodeId)) continue;
+				const node = snapshot.resolved.nodes.find(
+					(candidate) => candidate.id === nodeId,
+				);
+				if (!node || node.type === "gate") continue;
+				reachable.add(nodeId);
+				for (const edge of snapshot.manifest.edges) {
+					if (edge.from === nodeId) queue.push(edge.to);
+				}
+			}
+			const invalidationScope = snapshot.resolved.nodes
+				.map((node) => node.id)
+				.filter((nodeId) => reachable.has(nodeId));
+			const reachableNodes = snapshot.resolved.nodes.filter((node) =>
+				reachable.has(node.id),
+			);
+			const verificationPolicy = [
+				...(reachableNodes.some((node) => node.type === "design")
+					? ["design_review"]
+					: []),
+				...(reachableNodes.some((node) => node.type === "review")
+					? ["code_review"]
+					: []),
+				...(reachableNodes.some((node) => node.type === "qa")
+					? ["qa_retest"]
+					: []),
+				"founder_gate",
+			];
+			const authorityContext = {
+				authority: "operator",
+				principal: input.principal,
+				sourceEventId,
+				sourceNodeId,
+				sourceAttempt,
+				targetNodeId: target.id,
+				targetAttempt,
+				feedback: input.feedback.trim(),
+			};
+			const authorityContextJson = JSON.stringify(authorityContext);
+			const authorityContextDigest =
+				canonicalSubmissionDigest(authorityContext);
+			const requestId = `rework:${canonicalSubmissionDigest({
+				runId: input.runId,
+				sourceEventId,
+				targetNodeId: target.id,
+				targetAttempt,
+			})}`;
+
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_actor
+				   (execution_id, project_name, issue_id, role, created_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[
+					preferredActorExecutionId,
+					run.project_name,
+					run.issue_id,
+					target.id,
+					input.now,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, founder_feedback_verbatim, requested_at)
+				 VALUES (?, ?, ?, 'founder', ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					requestId,
+					input.runId,
+					sourceEventId,
+					sourceNodeId,
+					sourceAttempt,
+					snapshot.snapshot_digest,
+					authorityContextJson,
+					authorityContextDigest,
+					input.feedback.trim(),
+					input.now,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES (?, 1, ?, ?, ?, ?, ?, 'operator:master',
+				         'operator_requested_rework', ?)`,
+				[
+					requestId,
+					target.id,
+					targetAttempt,
+					preferredActorExecutionId,
+					JSON.stringify(invalidationScope),
+					JSON.stringify(verificationPolicy),
+					input.now,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES (?, 1, 'pending', ?)`,
+				[requestId, input.now],
+			);
+			this.db.run(
+				`INSERT INTO workflow_rework_verification_path
+				   (request_id, run_id, route_revision, state,
+				    current_node_id, current_attempt, updated_at)
+				 VALUES (?, ?, 1, 'pending', ?, ?, ?)`,
+				[requestId, input.runId, target.id, targetAttempt, input.now],
+			);
+			this.upsertWorkflowRunNodeTx({
+				runId: input.runId,
+				nodeId: target.id,
+				attempt: targetAttempt,
+				state: "pending",
+				executionId: preferredActorExecutionId,
+			});
+
+			const staleClaims = this.workflowSelectAll(
+				`SELECT c.id, c.node_id FROM workflow_claims c
+				  WHERE c.workflow_run_id = ?
+				    AND (
+				      c.predicate = 'founder_approved'
+				      OR c.node_id IN (${invalidationScope.map(() => "?").join(",") || "NULL"})
+				    )
+				    AND NOT EXISTS (
+				      SELECT 1 FROM workflow_claim_revocation r WHERE r.claim_id = c.id
+				    )`,
+				[input.runId, ...invalidationScope],
+			);
+			for (const claim of staleClaims) {
+				this.revokeWorkflowClaimTx({
+					claimId: Number(claim.id),
+					reason: "operator_rework_superseded",
+					actor: input.principal,
+					runId: input.runId,
+					nodeId: (claim.node_id as string | null) ?? undefined,
+				});
+			}
+			this.db.run(
+				`UPDATE workflow_ship_target_binding
+				    SET superseded_at = ?
+				  WHERE superseded_at IS NULL
+				    AND approve_question_id IN (
+				      SELECT question_id FROM workflow_gate_holder
+				       WHERE run_id = ?
+				         AND state IN ('materializing','awaiting_review','approved')
+				    )`,
+				[input.now, input.runId],
+			);
+			this.db.run(
+				`UPDATE workflow_gate_holder
+				    SET state = 'superseded',
+				        superseded_reason = 'operator_rework',
+				        updated_at = ?
+				  WHERE run_id = ?
+				    AND state IN ('materializing','awaiting_review','approved')`,
+				[input.now, input.runId],
+			);
+			this.db.run(
+				`UPDATE workflow_run
+				    SET status = 'active', current_node_id = ?
+				  WHERE run_id = ? AND status = ?`,
+				[target.id, input.runId, run.status],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "run_state_changed" };
+				return;
+			}
+			if (run.status === "completed") {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `run_reopened:${sourceEventId}`,
+					kind: "run_reopened",
+					nodeId: target.id,
+					executionId: preferredActorExecutionId,
+					payload: {
+						requestId,
+						principal: input.principal,
+						targetNodeId: target.id,
+						targetAttempt,
+					},
+				});
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `rework_requested:${requestId}`,
+				kind: "rework_requested",
+				nodeId: target.id,
+				executionId: preferredActorExecutionId,
+				payload: {
+					requestId,
+					authority: "operator",
+					targetNodeId: target.id,
+					targetAttempt,
+					preferredActorExecutionId,
+					invalidationScope,
+					verificationPolicy,
+					authorityContextDigest,
+				},
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `rework_route_interpreted:${requestId}:1`,
+				kind: "rework_route_interpreted",
+				nodeId: target.id,
+				executionId: preferredActorExecutionId,
+				payload: {
+					requestId,
+					revision: 1,
+					targetNodeId: target.id,
+					targetAttempt,
+					preferredActorExecutionId,
+					invalidationScope,
+					verificationPolicy,
+				},
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `rework_target_reserved:${requestId}`,
+				kind: "rework_target_reserved",
+				nodeId: target.id,
+				executionId: preferredActorExecutionId,
+				payload: { requestId, attempt: targetAttempt },
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: sourceEventId,
+				kind: "operator_rework_requested",
+				nodeId: target.id,
+				executionId: preferredActorExecutionId,
+				payload: {
+					requestId,
+					targetNodeId: target.id,
+					targetAttempt,
+					preferredActorExecutionId,
+					feedback: input.feedback.trim(),
+					principal: input.principal,
+					consent: input.consent ?? {
+						mode: "off",
+						decision: "pass_through",
+					},
+				},
+			});
+			result = {
+				ok: true,
+				requestId,
+				targetNodeId: target.id,
+				targetAttempt,
+				preferredActorExecutionId,
+				idempotentReplay: false,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
 	}
 
 	private enqueueWorkflowEngineAlertTx(input: {
@@ -20837,6 +21757,1349 @@ export class StateStore {
 		}
 	}
 
+	private workflowRunAcceptsAuthorityMutation(runId: string): boolean {
+		const status = this.getWorkflowRun(runId)?.status;
+		return status === "active" || status === "held";
+	}
+
+	private workflowRunRequiresShipTarget(runId: string): boolean {
+		const run = this.getWorkflowRun(runId);
+		if (!run?.snapshot) return false;
+		try {
+			const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+			return (
+				snapshot.schema_version === 1 &&
+				isWorkflowManifestV1Land(snapshot.manifest)
+			);
+		} catch {
+			return false;
+		}
+	}
+
+	private recordWorkflowShipTargetBindingTx(input: {
+		approveQuestionId: string;
+		runId?: string;
+		sourceRequestId?: string;
+		binding: Pick<
+			WorkflowNodePrBindingRow,
+			| "target_repo_path"
+			| "target_repo_identity"
+			| "probe_repo_slug"
+			| "head_sha"
+			| "worktree_binding_generation"
+		>;
+	}): void {
+		const questionId = input.approveQuestionId.trim();
+		if (
+			!questionId ||
+			!StateStore.workflowRepoIdentityValid(
+				input.binding.target_repo_identity,
+			) ||
+			!StateStore.workflowRepoSlugValid(input.binding.probe_repo_slug) ||
+			!/^[0-9a-f]{40}$/.test(input.binding.head_sha) ||
+			!input.binding.target_repo_path ||
+			!input.binding.worktree_binding_generation
+		) {
+			throw new Error("workflow_ship_target_binding_invalid");
+		}
+		const prior = this.workflowSelectAll(
+			`SELECT * FROM workflow_ship_target_binding
+			  WHERE approve_question_id = ?`,
+			[questionId],
+		)[0];
+		const matches = (row: Record<string, unknown>): boolean =>
+			(row.run_id ?? null) === (input.runId ?? null) &&
+			(row.source_request_id ?? null) === (input.sourceRequestId ?? null) &&
+			row.target_repo_path === input.binding.target_repo_path &&
+			row.target_repo_identity === input.binding.target_repo_identity &&
+			row.probe_repo_slug === input.binding.probe_repo_slug &&
+			row.frozen_head_sha === input.binding.head_sha &&
+			row.worktree_binding_generation ===
+				input.binding.worktree_binding_generation;
+		if (prior) {
+			if (!matches(prior)) {
+				throw new Error("workflow_ship_target_binding_conflict");
+			}
+			return;
+		}
+		if (input.runId && !this.workflowRunAcceptsAuthorityMutation(input.runId)) {
+			throw new Error("workflow_ship_target_binding_terminal");
+		}
+		this.db.run(
+			`INSERT INTO workflow_ship_target_binding
+			   (approve_question_id, run_id, source_request_id, target_repo_path,
+			    target_repo_identity, probe_repo_slug, frozen_head_sha,
+			    worktree_binding_generation)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				questionId,
+				input.runId ?? null,
+				input.sourceRequestId ?? null,
+				input.binding.target_repo_path,
+				input.binding.target_repo_identity,
+				input.binding.probe_repo_slug,
+				input.binding.head_sha,
+				input.binding.worktree_binding_generation,
+			],
+		);
+	}
+
+	private bindWorkflowShipTargetForGateTx(input: {
+		runId: string;
+		questionId: string;
+		headSha: string;
+		sourceRequestId?: string;
+	}): void {
+		if (!this.workflowRunRequiresShipTarget(input.runId)) return;
+		const binding = this.getCurrentWorkflowNodePrBindingForHead(
+			input.runId,
+			input.headSha,
+		);
+		if (!binding) {
+			throw new Error("workflow_ship_target_binding_unavailable");
+		}
+		this.recordWorkflowShipTargetBindingTx({
+			approveQuestionId: input.questionId,
+			runId: input.runId,
+			sourceRequestId: input.sourceRequestId,
+			binding,
+		});
+	}
+
+	private supersedeWorkflowShipTargetsForCurrentGateTx(input: {
+		runId: string;
+		gateNodeId: string;
+		now: string;
+	}): void {
+		this.db.run(
+			`UPDATE workflow_ship_target_binding
+			    SET superseded_at = ?
+			  WHERE superseded_at IS NULL
+			    AND approve_question_id IN (
+			      SELECT question_id FROM workflow_gate_holder
+			       WHERE run_id = ? AND gate_node_id = ?
+			         AND state IN ('materializing','awaiting_review','approved')
+			    )`,
+			[input.now, input.runId, input.gateNodeId],
+		);
+	}
+
+	getWorkflowShipTargetBinding(
+		approveQuestionId: string,
+	): WorkflowShipTargetBindingRow | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_ship_target_binding
+			  WHERE approve_question_id = ?`,
+			[approveQuestionId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			approve_question_id: row.approve_question_id as string,
+			run_id: (row.run_id as string | null) ?? null,
+			source_request_id: (row.source_request_id as string | null) ?? null,
+			target_repo_path: row.target_repo_path as string,
+			target_repo_identity: row.target_repo_identity as string,
+			probe_repo_slug: row.probe_repo_slug as string,
+			frozen_head_sha: row.frozen_head_sha as string,
+			worktree_binding_generation: row.worktree_binding_generation as string,
+			superseded_at: (row.superseded_at as string | null) ?? null,
+		};
+	}
+
+	getWorkflowRunDiagnostic(input: {
+		runId: string;
+		evidence: RunQuiescenceEvidence[];
+		now: string;
+	}): WorkflowRunDiagnosticResult {
+		const run = this.getWorkflowRun(input.runId);
+		if (!run) return { ok: false, reason: "run_not_found" };
+		const cap = <T>(rows: T[], limit: number) => ({
+			rows: rows.slice(0, limit),
+			truncated: rows.length > limit,
+		});
+		const nodeRows = this.workflowSelectAll(
+			`SELECT node_id, attempt, state, execution_id, started_at, ended_at
+				   FROM workflow_run_node
+				  WHERE run_id = ?
+				  ORDER BY node_id, attempt`,
+			[input.runId],
+		).map((row) => ({
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			state: row.state as string,
+			execution_id: (row.execution_id as string | null) ?? null,
+			started_at: (row.started_at as string | null) ?? null,
+			ended_at: (row.ended_at as string | null) ?? null,
+		}));
+		const nodesResult = cap(nodeRows, 200);
+		const currentNode = nodeRows
+			.filter((row) => row.node_id === run.current_node_id)
+			.sort((left, right) => right.attempt - left.attempt)[0];
+		const activationRows = currentNode?.execution_id
+			? this.workflowSelectAll(
+					`SELECT activation_id, execution_id, mode, rework_request_id
+					   FROM workflow_execution_binding
+					  WHERE run_id = ? AND node_id = ? AND attempt = ?
+					    AND execution_id = ?
+					  ORDER BY bound_at DESC, activation_id DESC
+					  LIMIT 2`,
+					[
+						input.runId,
+						currentNode.node_id,
+						currentNode.attempt,
+						currentNode.execution_id,
+					],
+				)
+			: [];
+		if (activationRows.length > 1) {
+			return { ok: false, reason: "diagnostic_data_conflict" };
+		}
+		const activationRow = activationRows[0];
+		const activation = activationRow
+			? {
+					execution_id: activationRow.execution_id as string,
+					mode: activationRow.mode as string,
+					rework_request_id:
+						(activationRow.rework_request_id as string | null) ?? null,
+				}
+			: null;
+		const turnRow = activationRow
+			? this.workflowSelectAll(
+					`SELECT execution_id, granted_at
+					   FROM workflow_activation_turn
+					  WHERE activation_id = ?`,
+					[activationRow.activation_id],
+				)[0]
+			: undefined;
+		const reservation = this.getWorkflowStartReservationForRun(input.runId);
+		let admissionBlocker: string | null = null;
+		if (
+			run.status === "active" &&
+			run.engine_owned === 1 &&
+			run.current_node_id &&
+			run.snapshot
+		) {
+			const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+			const node = snapshot.resolved.nodes.find(
+				(candidate) => candidate.id === run.current_node_id,
+			);
+			if (node?.dispatch) {
+				if (!currentNode?.execution_id) {
+					admissionBlocker = "successor_not_reserved";
+				} else {
+					const incoming = new Map(
+						snapshot.manifest.nodes.map((candidate) => [candidate.id, 0]),
+					);
+					for (const edge of snapshot.manifest.edges) {
+						incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
+					}
+					admissionBlocker = StateStore.workflowAdmissionReservationBlocker({
+						engineOwned: true,
+						nodeId: currentNode.node_id,
+						attempt: currentNode.attempt,
+						executionId: currentNode.execution_id,
+						startNodeIds: snapshot.manifest.nodes
+							.filter((candidate) => incoming.get(candidate.id) === 0)
+							.map((candidate) => candidate.id),
+						attempts: this.listWorkflowRunNodes(
+							input.runId,
+							currentNode.node_id,
+						),
+					});
+				}
+			}
+		}
+
+		const gateResult = cap(
+			this.workflowSelectAll(
+				`SELECT gate_node_id, attempt, head_sha, state,
+				        materialization_stage, question_id
+				   FROM workflow_gate_holder
+				  WHERE run_id = ?
+				  ORDER BY gate_node_id, attempt`,
+				[input.runId],
+			).map((row) => ({
+				gate_node_id: row.gate_node_id as string,
+				attempt: Number(row.attempt),
+				head_sha: row.head_sha as string,
+				state: row.state as string,
+				materialization_stage: row.materialization_stage as string,
+				question_id: (row.question_id as string | null) ?? null,
+				superseded: row.state === "superseded",
+			})),
+			50,
+		);
+		const claimsResult = cap(
+			this.workflowSelectAll(
+				`SELECT c.id, c.predicate, c.node_id, c.attempt, c.subject_kind,
+				        c.subject_digest, c.issuer_kind, c.decision_kind,
+				        EXISTS (
+				          SELECT 1 FROM workflow_claim_revocation r
+				           WHERE r.claim_id = c.id
+				        ) AS revoked
+				   FROM workflow_claims c
+				  WHERE c.workflow_run_id = ?
+				  ORDER BY c.id`,
+				[input.runId],
+			).map((row) => ({
+				claim_id: String(row.id),
+				predicate: row.predicate as string,
+				node_id: (row.node_id as string | null) ?? null,
+				attempt: row.attempt == null ? null : Number(row.attempt),
+				subject_kind: row.subject_kind as string,
+				subject_digest: row.subject_digest as string,
+				issuer_kind: row.issuer_kind as string,
+				decision_kind: (row.decision_kind as string | null) ?? null,
+				revoked: Number(row.revoked) === 1,
+			})),
+			200,
+		);
+		const reworkRow = this.workflowSelectAll(
+			`SELECT r.request_id, d.state, d.route_revision, d.owner_id,
+			        d.generation, d.last_error, rr.target_node_id,
+			        rr.target_attempt, rr.preferred_actor_execution_id,
+			        vp.state AS verification_state,
+			        vp.current_node_id AS verification_node_id,
+			        vp.current_attempt AS verification_attempt
+			   FROM workflow_rework_request r
+			   JOIN workflow_rework_delivery d ON d.request_id = r.request_id
+			   JOIN workflow_rework_route_revision rr
+			     ON rr.request_id = d.request_id
+			    AND rr.revision = d.route_revision
+			   LEFT JOIN workflow_rework_verification_path vp
+			     ON vp.request_id = r.request_id
+			  WHERE r.run_id = ?
+			  ORDER BY r.requested_at DESC, r.request_id DESC
+			  LIMIT 1`,
+			[input.runId],
+		)[0];
+		const rework = reworkRow
+			? {
+					request_id: reworkRow.request_id as string,
+					state: reworkRow.state as string,
+					route_revision: Number(reworkRow.route_revision),
+					target_node_id: reworkRow.target_node_id as string,
+					target_attempt: Number(reworkRow.target_attempt),
+					preferred_actor_execution_id:
+						reworkRow.preferred_actor_execution_id as string,
+					verification_path:
+						reworkRow.verification_state == null
+							? null
+							: {
+									state: reworkRow.verification_state as string,
+									current_node_id:
+										(reworkRow.verification_node_id as string | null) ?? null,
+									current_attempt:
+										reworkRow.verification_attempt == null
+											? null
+											: Number(reworkRow.verification_attempt),
+								},
+					delivery: {
+						state: reworkRow.state as string,
+						owner_id: (reworkRow.owner_id as string | null) ?? null,
+						generation:
+							reworkRow.generation == null
+								? null
+								: Number(reworkRow.generation),
+						last_error: (reworkRow.last_error as string | null) ?? null,
+					},
+				}
+			: null;
+
+		const shipTargetRows = this.workflowSelectAll(
+			`SELECT approve_question_id, target_repo_identity, probe_repo_slug,
+			        frozen_head_sha, superseded_at
+			   FROM workflow_ship_target_binding
+			  WHERE run_id = ? AND superseded_at IS NULL
+			  ORDER BY approve_question_id
+			  LIMIT 2`,
+			[input.runId],
+		);
+		if (shipTargetRows.length > 1) {
+			return { ok: false, reason: "diagnostic_data_conflict" };
+		}
+		const shipTargetRow = shipTargetRows[0];
+		const shipTarget = shipTargetRow
+			? {
+					approve_question_id: shipTargetRow.approve_question_id as string,
+					target_repo_identity: shipTargetRow.target_repo_identity as string,
+					probe_repo_slug: shipTargetRow.probe_repo_slug as string,
+					frozen_head_sha: shipTargetRow.frozen_head_sha as string,
+					superseded: false,
+				}
+			: null;
+		const prBindingResult = cap(
+			this.workflowSelectAll(
+				`SELECT node_id, attempt, pr_number, head_sha,
+				        target_repo_identity, probe_repo_slug
+				   FROM workflow_node_pr_binding
+				  WHERE run_id = ?
+				  ORDER BY node_id, attempt`,
+				[input.runId],
+			).map((row) => ({
+				node_id: row.node_id as string,
+				attempt: Number(row.attempt),
+				pr_number: Number(row.pr_number),
+				head_sha: row.head_sha as string,
+				target_repo_identity: row.target_repo_identity as string,
+				probe_repo_slug: row.probe_repo_slug as string,
+			})),
+			50,
+		);
+		const manifest = this.getWorkflowPrManifest(input.runId);
+		const declaredResult = cap(
+			this.listCurrentWorkflowDeclaredPrs(input.runId).map((row) => ({
+				repo_identity: row.repo_identity,
+				probe_repo_slug: row.probe_repo_slug,
+				pr_number: row.pr_number,
+				frozen_head_sha: row.frozen_head_sha,
+				state: row.state,
+				merged_at: row.merged_at,
+			})),
+			50,
+		);
+		let singleCloseoutTarget: WorkflowRunDiagnosticDto["single_closeout_target"] =
+			null;
+		if (!manifest && shipTarget) {
+			const matches = new Map<
+				string,
+				NonNullable<WorkflowRunDiagnosticDto["single_closeout_target"]>
+			>();
+			for (const binding of this.currentWorkflowPrBindingRows(input.runId)) {
+				if (
+					binding.head_sha === shipTarget.frozen_head_sha &&
+					binding.target_repo_identity === shipTarget.target_repo_identity
+				) {
+					const target = {
+						probe_repo_slug: binding.probe_repo_slug,
+						pr_number: binding.pr_number,
+						frozen_head_sha: binding.head_sha,
+						target_repo_identity: binding.target_repo_identity,
+					};
+					matches.set(
+						`${target.target_repo_identity}\u0000${target.pr_number}\u0000${target.frozen_head_sha}`,
+						target,
+					);
+				}
+			}
+			if (matches.size > 1) {
+				return { ok: false, reason: "diagnostic_data_conflict" };
+			}
+			singleCloseoutTarget = [...matches.values()][0] ?? null;
+		}
+		const finalization = this.getWorkflowPrFinalization(input.runId);
+		const land = this.getLandOperationForRun(input.runId);
+		const latestHoldRow = this.workflowSelectAll(
+			`SELECT event_uid, payload, at
+			   FROM workflow_run_event
+			  WHERE run_id = ? AND kind IN ('land_held','run_held_by_operator')
+			  ORDER BY seq DESC LIMIT 1`,
+			[input.runId],
+		)[0];
+		let latestHoldReason: string | null = null;
+		if (latestHoldRow?.payload) {
+			try {
+				const payload = JSON.parse(latestHoldRow.payload as string) as {
+					reason?: unknown;
+				};
+				latestHoldReason =
+					typeof payload.reason === "string" ? payload.reason : null;
+			} catch {
+				return { ok: false, reason: "diagnostic_data_conflict" };
+			}
+		}
+		const latestTerminationRow = this.workflowSelectAll(
+			`SELECT payload, at
+			   FROM workflow_run_event
+			  WHERE run_id = ? AND kind = 'run_terminated_by_operator'
+			  ORDER BY seq DESC LIMIT 1`,
+			[input.runId],
+		)[0];
+		let latestTermination: WorkflowRunDiagnosticDto["latest_termination"] =
+			null;
+		if (latestTerminationRow?.payload) {
+			try {
+				const payload = JSON.parse(latestTerminationRow.payload as string) as {
+					reason?: unknown;
+					clientRequestId?: unknown;
+					closeoutInvariantDigest?: unknown;
+					closeoutKind?: unknown;
+				};
+				if (typeof payload.reason !== "string") {
+					return { ok: false, reason: "diagnostic_data_conflict" };
+				}
+				latestTermination = {
+					event_at: latestTerminationRow.at as string,
+					reason: payload.reason,
+					client_request_id:
+						typeof payload.clientRequestId === "string"
+							? payload.clientRequestId
+							: "",
+					closeout_invariant_digest:
+						typeof payload.closeoutInvariantDigest === "string"
+							? payload.closeoutInvariantDigest
+							: null,
+					closeout_kind:
+						payload.closeoutKind === "nested_manual" ||
+						payload.closeoutKind === "operator"
+							? payload.closeoutKind
+							: null,
+				};
+			} catch {
+				return { ok: false, reason: "diagnostic_data_conflict" };
+			}
+		}
+		const quiescence = this.validateRunQuiescenceEvidenceTx(
+			input.runId,
+			input.evidence,
+			input.now,
+		);
+		const liveExecutions = quiescence.ok ? [] : quiescence.executionIds;
+		const attributed = new Set(this.listRunAttributedExecutions(input.runId));
+		const normalizedQuiescence = input.evidence
+			.filter((item) => attributed.has(item.executionId))
+			.map((item) => ({
+				execution_id: item.executionId,
+				session_status: item.sessionStatus,
+				lifecycle_revision: item.lifecycleRevision,
+				liveness: item.liveness,
+				trusted_zombie_event_uid: item.trustedZombieEventUid ?? null,
+			}))
+			.sort((left, right) =>
+				left.execution_id.localeCompare(right.execution_id),
+			);
+		const attributedOutOfSet = manifest
+			? Number(
+					this.workflowSelectAll(
+						`SELECT COUNT(*) AS n
+						   FROM land_operation l
+						  WHERE l.run_id = ?
+						    AND l.merge_confirmed_at IS NOT NULL
+						    AND NOT EXISTS (
+						      SELECT 1
+						        FROM workflow_declared_pr d
+						       WHERE d.run_id = l.run_id
+						         AND d.revision = ?
+						         AND d.repo_identity = '__main__'
+						         AND d.pr_number = l.pr_number
+						         AND d.frozen_head_sha = lower(l.approved_head)
+						    )`,
+						[input.runId, manifest.current_revision],
+					)[0]?.n ?? 0,
+				)
+			: land?.merge_confirmed_at &&
+					(!singleCloseoutTarget ||
+						land.pr_number !== singleCloseoutTarget.pr_number ||
+						land.approved_head.toLowerCase() !==
+							singleCloseoutTarget.frozen_head_sha)
+				? 1
+				: 0;
+		const receipts = {
+			attributed_in_set: manifest
+				? declaredResult.rows.filter((row) => row.state === "merged").length
+				: land?.merge_confirmed_at && singleCloseoutTarget
+					? 1
+					: 0,
+			attributed_out_of_set: attributedOutOfSet,
+		};
+		const invariant = {
+			schema_version: 1,
+			run: {
+				run_id: run.run_id,
+				status: run.status,
+				current_node_id: run.current_node_id,
+			},
+			latest_hold_reason: latestHoldReason,
+			receipts,
+			finalization: finalization
+				? { state: finalization.state, revision: finalization.revision }
+				: null,
+			land_operation: land
+				? {
+						operation_id: land.operation_id,
+						state: land.state,
+						approved_head: land.approved_head,
+						pr_number: land.pr_number,
+					}
+				: null,
+			quiescence: normalizedQuiescence,
+			closeout: manifest
+				? {
+						mode: "declared",
+						revision: manifest.current_revision,
+						sealed: manifest.sealed_at !== null,
+						declared_prs: declaredResult.rows,
+					}
+				: {
+						mode: "single",
+						current_node: currentNode
+							? {
+									node_id: currentNode.node_id,
+									attempt: currentNode.attempt,
+								}
+							: null,
+						target: singleCloseoutTarget,
+						ship_target_binding: shipTarget
+							? {
+									approve_question_id: shipTarget.approve_question_id,
+									target_repo_identity: shipTarget.target_repo_identity,
+									frozen_head_sha: shipTarget.frozen_head_sha,
+								}
+							: null,
+					},
+		};
+		const dto: WorkflowRunDiagnosticDto = {
+			schema_version: 1,
+			run: {
+				run_id: run.run_id,
+				issue_id: run.issue_id,
+				status: run.status,
+				entry_kind: run.entry_kind ?? null,
+				template_id: run.template_id,
+				current_node_id: run.current_node_id,
+			},
+			nodes: nodesResult.rows,
+			activation,
+			start_reservation: reservation
+				? {
+						execution_id: reservation.execution_id,
+						stage: reservation.stage,
+						idempotency_key_digest: canonicalSubmissionDigest(
+							reservation.idempotency_key,
+						),
+					}
+				: null,
+			admission: { blocker: admissionBlocker },
+			turn: {
+				holder_execution_id:
+					(turnRow?.execution_id as string | undefined) ?? null,
+				granted_at: (turnRow?.granted_at as string | undefined) ?? null,
+			},
+			gate_holders: gateResult.rows,
+			claims: claimsResult.rows,
+			rework,
+			ship_target_binding: shipTarget,
+			pr_bindings: prBindingResult.rows,
+			single_closeout_target: singleCloseoutTarget,
+			pr_manifest: manifest
+				? {
+						expected_count: manifest.expected_count,
+						current_revision: manifest.current_revision,
+						sealed: manifest.sealed_at !== null,
+					}
+				: null,
+			declared_prs: declaredResult.rows,
+			receipts,
+			finalization: {
+				state: finalization?.state ?? null,
+				last_error: finalization?.last_error ?? null,
+			},
+			land_operation: {
+				present: land !== undefined,
+				state: land?.state ?? null,
+			},
+			latest_hold: {
+				reason: latestHoldReason,
+				event_at: (latestHoldRow?.at as string | undefined) ?? null,
+				alert_delivered: latestHoldRow
+					? this.workflowSelectAll(
+							`SELECT 1 AS present FROM workflow_alert_outbox
+							  WHERE escalation_uid = ? AND state = 'sent'`,
+							[latestHoldRow.event_uid],
+						).length === 1
+					: false,
+			},
+			latest_termination: latestTermination,
+			quiescence: {
+				live_executions: liveExecutions.length,
+				quiescent: liveExecutions.length === 0,
+			},
+			closeout_invariant_digest: canonicalSubmissionDigest(invariant),
+			truncated: {
+				nodes: nodesResult.truncated,
+				gate_holders: gateResult.truncated,
+				claims: claimsResult.truncated,
+				pr_bindings: prBindingResult.truncated,
+				declared_prs: declaredResult.truncated,
+			},
+		};
+		return { ok: true, dto };
+	}
+
+	private currentWorkflowPrBindingRows(
+		runId: string,
+	): WorkflowNodePrBindingRow[] {
+		return this.workflowSelectAll(
+			`WITH latest AS (
+			   SELECT run_id, node_id, MAX(attempt) AS attempt
+			     FROM workflow_run_node
+			    WHERE run_id = ?
+			    GROUP BY run_id, node_id
+			 )
+			 SELECT b.*
+			   FROM workflow_node_pr_binding b
+			   JOIN latest l
+			     ON l.run_id = b.run_id
+			    AND l.node_id = b.node_id
+			    AND l.attempt = b.attempt
+			  ORDER BY b.target_repo_identity, b.pr_number, b.node_id`,
+			[runId],
+		).map((row) => ({
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			pr_number: Number(row.pr_number),
+			head_sha: row.head_sha as string,
+			target_repo_identity: row.target_repo_identity as string,
+			probe_repo_slug: row.probe_repo_slug as string,
+			target_repo_path: row.target_repo_path as string,
+			worktree_binding_generation: row.worktree_binding_generation as string,
+			receipt_id: row.receipt_id as string,
+			bound_at: row.bound_at as string,
+		}));
+	}
+
+	getWorkflowPrManifest(runId: string): WorkflowPrManifestRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_pr_manifest WHERE run_id = ?",
+			[runId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			run_id: row.run_id as string,
+			mode: "declared",
+			expected_count: Number(row.expected_count),
+			current_revision: Number(row.current_revision),
+			sealed_at: (row.sealed_at as string | null) ?? null,
+			created_at: row.created_at as string,
+			updated_at: row.updated_at as string,
+		};
+	}
+
+	listCurrentWorkflowDeclaredPrs(runId: string): WorkflowDeclaredPrRow[] {
+		const manifest = this.getWorkflowPrManifest(runId);
+		if (!manifest || manifest.current_revision < 1) return [];
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_declared_pr
+			  WHERE run_id = ? AND revision = ?
+			  ORDER BY repo_identity, pr_number`,
+			[runId, manifest.current_revision],
+		).map((row) => ({
+			run_id: row.run_id as string,
+			revision: Number(row.revision),
+			repo_identity: row.repo_identity as string,
+			probe_repo_slug: row.probe_repo_slug as string,
+			pr_number: Number(row.pr_number),
+			frozen_head_sha: row.frozen_head_sha as string,
+			state: row.state as "declared" | "merged",
+			merged_at: (row.merged_at as string | null) ?? null,
+			declared_at: row.declared_at as string,
+		}));
+	}
+
+	/**
+	 * Active, sealed manifest revisions that still need merge reconciliation or
+	 * post-merge finalization. The scanner probes every declared row against its
+	 * frozen repository/head authority and keeps retrying claimed-but-incomplete
+	 * finalizations.
+	 */
+	listWorkflowPrConvergenceRows(
+		projectName: string,
+	): WorkflowPrConvergenceRow[] {
+		return this.workflowSelectAll(
+			`SELECT d.*, r.issue_id, r.project_name,
+			        f.state AS finalization_state,
+			        COALESCE(
+			          f.source_execution_id,
+			          (
+			            SELECT n.execution_id
+			              FROM workflow_node_pr_binding b
+			              JOIN workflow_run_node n
+			                ON n.run_id = b.run_id
+			               AND n.node_id = b.node_id
+			               AND n.attempt = b.attempt
+			             WHERE b.run_id = d.run_id
+			               AND b.target_repo_identity = d.repo_identity
+			               AND b.pr_number = d.pr_number
+			               AND b.head_sha = d.frozen_head_sha
+			               AND n.execution_id IS NOT NULL
+			             ORDER BY b.attempt DESC
+			             LIMIT 1
+			          )
+			        ) AS source_execution_id
+			   FROM workflow_run r
+			   JOIN workflow_pr_manifest m
+			     ON m.run_id = r.run_id
+			    AND m.sealed_at IS NOT NULL
+			    AND m.current_revision > 0
+			   JOIN workflow_declared_pr d
+			     ON d.run_id = m.run_id
+			    AND d.revision = m.current_revision
+			   LEFT JOIN workflow_pr_finalization f
+			     ON f.run_id = m.run_id
+			    AND f.revision = m.current_revision
+			  WHERE r.project_name = ?
+			    AND r.status = 'active'
+			    AND (f.state IS NULL OR f.state != 'completed')
+			  ORDER BY d.run_id, d.repo_identity, d.pr_number`,
+			[projectName],
+		).map((row) => ({
+			run_id: row.run_id as string,
+			issue_id: row.issue_id as string,
+			project_name: row.project_name as string,
+			revision: Number(row.revision),
+			repo_identity: row.repo_identity as string,
+			probe_repo_slug: row.probe_repo_slug as string,
+			pr_number: Number(row.pr_number),
+			frozen_head_sha: row.frozen_head_sha as string,
+			state: row.state as "declared" | "merged",
+			merged_at: (row.merged_at as string | null) ?? null,
+			declared_at: row.declared_at as string,
+			source_execution_id: (row.source_execution_id as string | null) ?? null,
+			finalization_state:
+				(row.finalization_state as "claimed" | "completed" | null) ?? null,
+		}));
+	}
+
+	openWorkflowPrManifest(input: {
+		runId: string;
+		expectedCount: number;
+		now?: string;
+	}): WorkflowPrManifestMutationResult {
+		const now = input.now ?? new Date().toISOString();
+		if (
+			!Number.isInteger(input.expectedCount) ||
+			input.expectedCount < 1 ||
+			input.expectedCount > 50 ||
+			!StateStore.workflowFiniteTimestamp(now)
+		) {
+			return { ok: false, reason: "manifest_expected_count_invalid" };
+		}
+		const existing = this.getWorkflowPrManifest(input.runId);
+		if (existing) {
+			return existing.expected_count === input.expectedCount
+				? { ok: true, manifest: existing, idempotentReplay: true }
+				: { ok: false, reason: "manifest_already_open" };
+		}
+		if (!this.getWorkflowRun(input.runId)) {
+			return { ok: false, reason: "run_not_found" };
+		}
+		if (!this.workflowRunAcceptsAuthorityMutation(input.runId)) {
+			return { ok: false, reason: "run_terminal_authority_frozen" };
+		}
+		this.db.run(
+			`INSERT INTO workflow_pr_manifest
+			   (run_id, expected_count, current_revision, created_at, updated_at)
+			 VALUES (?, ?, 0, ?, ?)`,
+			[input.runId, input.expectedCount, now, now],
+		);
+		this.appendWorkflowRunEventTx({
+			runId: input.runId,
+			eventUid: `pr_manifest_opened:${input.runId}`,
+			kind: "pr_manifest_opened",
+			payload: { expectedCount: input.expectedCount },
+		});
+		this.save();
+		return {
+			ok: true,
+			manifest: this.getWorkflowPrManifest(input.runId)!,
+			idempotentReplay: false,
+		};
+	}
+
+	sealWorkflowPrManifestFromBindings(input: {
+		runId: string;
+		reopen?: boolean;
+		now?: string;
+	}): WorkflowPrManifestMutationResult {
+		const now = input.now ?? new Date().toISOString();
+		if (!StateStore.workflowFiniteTimestamp(now)) {
+			return { ok: false, reason: "invalid_timestamp" };
+		}
+		let result: WorkflowPrManifestMutationResult = {
+			ok: false,
+			reason: "manifest_not_open",
+		};
+		this.db.transaction(() => {
+			const manifest = this.getWorkflowPrManifest(input.runId);
+			if (!manifest) return;
+			if (!this.workflowRunAcceptsAuthorityMutation(input.runId)) {
+				result = { ok: false, reason: "run_terminal_authority_frozen" };
+				return;
+			}
+			const currentRows = this.currentWorkflowPrBindingRows(input.runId);
+			const unique = new Map<string, WorkflowNodePrBindingRow>();
+			for (const row of currentRows) {
+				const key = `${row.target_repo_identity}\u0000${row.pr_number}`;
+				const prior = unique.get(key);
+				if (
+					prior &&
+					(prior.head_sha !== row.head_sha ||
+						prior.probe_repo_slug !== row.probe_repo_slug)
+				) {
+					result = { ok: false, reason: "manifest_binding_conflict" };
+					return;
+				}
+				unique.set(key, row);
+			}
+			const bindings = [...unique.values()].sort(
+				(a, b) =>
+					a.target_repo_identity.localeCompare(b.target_repo_identity) ||
+					a.pr_number - b.pr_number,
+			);
+			if (bindings.length !== manifest.expected_count) {
+				result = {
+					ok: false,
+					reason: "manifest_count_mismatch",
+					expectedCount: manifest.expected_count,
+					actualCount: bindings.length,
+				};
+				return;
+			}
+			if (
+				bindings.some(
+					(binding) =>
+						!StateStore.workflowRepoIdentityValid(
+							binding.target_repo_identity,
+						) ||
+						!StateStore.workflowRepoSlugValid(binding.probe_repo_slug) ||
+						!/^[0-9a-f]{40}$/.test(binding.head_sha),
+				)
+			) {
+				result = { ok: false, reason: "manifest_binding_invalid" };
+				return;
+			}
+			const currentDeclared = this.listCurrentWorkflowDeclaredPrs(input.runId);
+			const exactCurrent =
+				currentDeclared.length === bindings.length &&
+				currentDeclared.every((row, index) => {
+					const binding = bindings[index]!;
+					return (
+						row.repo_identity === binding.target_repo_identity &&
+						row.probe_repo_slug === binding.probe_repo_slug &&
+						row.pr_number === binding.pr_number &&
+						row.frozen_head_sha === binding.head_sha
+					);
+				});
+			if (manifest.sealed_at && exactCurrent) {
+				result = { ok: true, manifest, idempotentReplay: true };
+				return;
+			}
+			if (manifest.sealed_at && !input.reopen) {
+				result = { ok: false, reason: "manifest_sealed" };
+				return;
+			}
+			const finalization = this.workflowSelectAll(
+				"SELECT 1 AS present FROM workflow_pr_finalization WHERE run_id = ? LIMIT 1",
+				[input.runId],
+			)[0];
+			if (finalization) {
+				result = { ok: false, reason: "manifest_finalization_started" };
+				return;
+			}
+			const revision = manifest.sealed_at
+				? manifest.current_revision + 1
+				: Math.max(1, manifest.current_revision);
+			for (const binding of bindings) {
+				this.db.run(
+					`INSERT INTO workflow_declared_pr
+					   (run_id, revision, repo_identity, probe_repo_slug, pr_number,
+					    frozen_head_sha, state, declared_at)
+					 VALUES (?, ?, ?, ?, ?, ?, 'declared', ?)`,
+					[
+						input.runId,
+						revision,
+						binding.target_repo_identity,
+						binding.probe_repo_slug,
+						binding.pr_number,
+						binding.head_sha,
+						now,
+					],
+				);
+			}
+			this.db.run(
+				`UPDATE workflow_pr_manifest
+				    SET current_revision = ?, sealed_at = ?, updated_at = ?
+				  WHERE run_id = ?`,
+				[revision, now, now, input.runId],
+			);
+			this.appendWorkflowRunEventTx({
+				runId: input.runId,
+				eventUid: `pr_manifest_sealed:${input.runId}:${revision}`,
+				kind: input.reopen ? "pr_manifest_reopened" : "pr_manifest_sealed",
+				payload: {
+					revision,
+					expectedCount: manifest.expected_count,
+				},
+			});
+			result = {
+				ok: true,
+				manifest: this.getWorkflowPrManifest(input.runId)!,
+				idempotentReplay: false,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	private static workflowRepoIdentityValid(value: string): boolean {
+		return (
+			value === "__main__" || /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value)
+		);
+	}
+
+	private static workflowRepoSlugValid(value: string): boolean {
+		return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value);
+	}
+
+	private markWorkflowDeclaredPrMergedTx(input: {
+		runId: string;
+		repoIdentity?: string;
+		prNumber: number;
+		headSha: string;
+		now: string;
+	}): WorkflowDeclaredPrMergeResult {
+		const manifest = this.getWorkflowPrManifest(input.runId);
+		if (!manifest?.sealed_at || manifest.current_revision < 1) {
+			return { ok: false, reason: "manifest_not_sealed" };
+		}
+		if (!this.workflowRunAcceptsAuthorityMutation(input.runId)) {
+			return { ok: false, reason: "run_terminal_authority_frozen" };
+		}
+		const identityClause = input.repoIdentity ? "repo_identity = ?" : "1 = 1";
+		const params: unknown[] = [
+			input.runId,
+			manifest.current_revision,
+			input.prNumber,
+			input.headSha.toLowerCase(),
+		];
+		if (input.repoIdentity) params.push(input.repoIdentity);
+		const rows = this.workflowSelectAll(
+			`SELECT * FROM workflow_declared_pr
+			  WHERE run_id = ? AND revision = ? AND pr_number = ?
+			    AND frozen_head_sha = ? AND ${identityClause}`,
+			params,
+		);
+		if (rows.length !== 1) {
+			return {
+				ok: false,
+				reason:
+					rows.length === 0 ? "declared_pr_not_found" : "declared_pr_ambiguous",
+			};
+		}
+		const row = rows[0]!;
+		if (row.state === "merged") {
+			return {
+				ok: true,
+				idempotentReplay: true,
+				allMerged: this.listCurrentWorkflowDeclaredPrs(input.runId).every(
+					(candidate) => candidate.state === "merged",
+				),
+			};
+		}
+		this.db.run(
+			`UPDATE workflow_declared_pr
+			    SET state = 'merged', merged_at = ?
+			  WHERE run_id = ? AND revision = ? AND repo_identity = ? AND pr_number = ?
+			    AND state = 'declared'`,
+			[
+				input.now,
+				input.runId,
+				manifest.current_revision,
+				row.repo_identity,
+				input.prNumber,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "declared_pr_merge_raced" };
+		}
+		const allMerged = this.workflowSelectAll(
+			`SELECT COUNT(*) AS pending FROM workflow_declared_pr
+			  WHERE run_id = ? AND revision = ? AND state <> 'merged'`,
+			[input.runId, manifest.current_revision],
+		)[0]?.pending;
+		this.appendWorkflowRunEventTx({
+			runId: input.runId,
+			eventUid: `declared_pr_merged:${input.runId}:${manifest.current_revision}:${row.repo_identity}:${input.prNumber}`,
+			kind: "declared_pr_merged",
+			payload: {
+				revision: manifest.current_revision,
+				repoIdentity: row.repo_identity,
+				prNumber: input.prNumber,
+				headSha: input.headSha.toLowerCase(),
+				partialDelivery: Number(allMerged ?? 0) > 0,
+			},
+		});
+		return {
+			ok: true,
+			idempotentReplay: false,
+			allMerged: Number(allMerged ?? 0) === 0,
+		};
+	}
+
+	markWorkflowDeclaredPrMerged(input: {
+		runId: string;
+		repoIdentity?: string;
+		prNumber: number;
+		headSha: string;
+		now?: string;
+	}): WorkflowDeclaredPrMergeResult {
+		const now = input.now ?? new Date().toISOString();
+		if (
+			!Number.isInteger(input.prNumber) ||
+			input.prNumber < 1 ||
+			!/^[0-9a-f]{40}$/i.test(input.headSha) ||
+			(input.repoIdentity !== undefined &&
+				!StateStore.workflowRepoIdentityValid(input.repoIdentity)) ||
+			!StateStore.workflowFiniteTimestamp(now)
+		) {
+			return { ok: false, reason: "invalid_declared_pr_merge" };
+		}
+		let result: WorkflowDeclaredPrMergeResult = {
+			ok: false,
+			reason: "declared_pr_not_found",
+		};
+		this.db.transaction(() => {
+			result = this.markWorkflowDeclaredPrMergedTx({ ...input, now });
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	claimWorkflowPrFinalization(input: {
+		runId: string;
+		sourceExecutionId: string;
+		now?: string;
+	}): WorkflowPrFinalizationClaimResult {
+		const now = input.now ?? new Date().toISOString();
+		if (!input.sourceExecutionId || !StateStore.workflowFiniteTimestamp(now)) {
+			return { ok: false, reason: "invalid_finalization_claim" };
+		}
+		let result: WorkflowPrFinalizationClaimResult = {
+			ok: false,
+			reason: "run_not_found",
+		};
+		this.db.transaction(() => {
+			const run = this.getWorkflowRun(input.runId);
+			if (!run) return;
+			if (run.status !== "active") {
+				result = { ok: false, reason: "run_not_active" };
+				return;
+			}
+			const manifest = this.getWorkflowPrManifest(input.runId);
+			if (!manifest) {
+				result = {
+					ok: true,
+					mode: "single",
+					idempotentReplay: false,
+				};
+				return;
+			}
+			if (!manifest.sealed_at || manifest.current_revision < 1) {
+				result = { ok: false, reason: "manifest_not_sealed" };
+				return;
+			}
+			const rows = this.listCurrentWorkflowDeclaredPrs(input.runId);
+			const pending = rows.filter((row) => row.state !== "merged");
+			if (rows.length !== manifest.expected_count || pending.length > 0) {
+				result = {
+					ok: false,
+					reason: "manifest_incomplete",
+					pendingCount:
+						pending.length + Math.max(0, manifest.expected_count - rows.length),
+				};
+				return;
+			}
+			const existing = this.workflowSelectAll(
+				`SELECT * FROM workflow_pr_finalization
+				  WHERE run_id = ? AND revision = ?`,
+				[input.runId, manifest.current_revision],
+			)[0];
+			if (existing) {
+				result = {
+					ok: true,
+					mode: "declared",
+					revision: manifest.current_revision,
+					idempotentReplay: true,
+					completed: existing.state === "completed",
+				};
+				return;
+			}
+			this.db.run(
+				`INSERT INTO workflow_pr_finalization
+				   (run_id, revision, state, source_execution_id, claimed_at)
+				 VALUES (?, ?, 'claimed', ?, ?)`,
+				[input.runId, manifest.current_revision, input.sourceExecutionId, now],
+			);
+			result = {
+				ok: true,
+				mode: "declared",
+				revision: manifest.current_revision,
+				idempotentReplay: false,
+				completed: false,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	setWorkflowPrFinalizationOutcome(input: {
+		runId: string;
+		completed: boolean;
+		error?: string;
+		now?: string;
+	}): boolean {
+		const now = input.now ?? new Date().toISOString();
+		const manifest = this.getWorkflowPrManifest(input.runId);
+		if (
+			!manifest ||
+			manifest.current_revision < 1 ||
+			!StateStore.workflowFiniteTimestamp(now)
+		) {
+			return false;
+		}
+		this.db.run(
+			`UPDATE workflow_pr_finalization
+			    SET state = CASE WHEN ? = 1 THEN 'completed' ELSE state END,
+			        completed_at = CASE WHEN ? = 1 THEN COALESCE(completed_at, ?) ELSE completed_at END,
+			        last_error = ?
+			  WHERE run_id = ? AND revision = ?`,
+			[
+				input.completed ? 1 : 0,
+				input.completed ? 1 : 0,
+				now,
+				input.completed ? null : (input.error ?? "finalization_incomplete"),
+				input.runId,
+				manifest.current_revision,
+			],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
+	}
+
+	getWorkflowPrFinalization(
+		runId: string,
+	): WorkflowPrFinalizationRow | undefined {
+		const manifest = this.getWorkflowPrManifest(runId);
+		if (!manifest || manifest.current_revision < 1) return undefined;
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_pr_finalization
+			  WHERE run_id = ? AND revision = ?`,
+			[runId, manifest.current_revision],
+		)[0];
+		if (!row) return undefined;
+		return {
+			run_id: row.run_id as string,
+			revision: Number(row.revision),
+			state: row.state as "claimed" | "completed",
+			source_execution_id: row.source_execution_id as string,
+			claimed_at: row.claimed_at as string,
+			completed_at: (row.completed_at as string | null) ?? null,
+			last_error: (row.last_error as string | null) ?? null,
+		};
+	}
+
+	getWorkflowRunIdForExecution(executionId: string): string | undefined {
+		const rows = this.workflowSelectAll(
+			`SELECT run_id FROM workflow_execution_binding
+			  WHERE execution_id = ?
+			 UNION
+			 SELECT run_id FROM workflow_run_node
+			  WHERE execution_id = ?`,
+			[executionId, executionId],
+		);
+		return rows.length === 1 ? (rows[0]!.run_id as string) : undefined;
+	}
+
+	private recordWorkflowNodePrBindingTx(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		prNumber: number;
+		headSha: string;
+		targetRepoIdentity: string;
+		probeRepoSlug: string;
+		targetRepoPath: string;
+		worktreeBindingGeneration: string;
+		receiptId: string;
+		boundAt: string;
+	}): boolean {
+		if (
+			!Number.isInteger(input.prNumber) ||
+			input.prNumber < 1 ||
+			!/^[0-9a-f]{40}$/i.test(input.headSha) ||
+			!input.targetRepoIdentity ||
+			!input.probeRepoSlug ||
+			!input.targetRepoPath ||
+			!input.worktreeBindingGeneration ||
+			!input.receiptId
+		) {
+			return false;
+		}
+		const normalized = {
+			...input,
+			headSha: input.headSha.toLowerCase(),
+		};
+		const priorReceipt = this.workflowSelectAll(
+			"SELECT * FROM workflow_node_pr_binding WHERE receipt_id = ?",
+			[input.receiptId],
+		)[0];
+		const tupleMatches = (row: Record<string, unknown>): boolean =>
+			row.run_id === normalized.runId &&
+			row.node_id === normalized.nodeId &&
+			Number(row.attempt) === normalized.attempt &&
+			Number(row.pr_number) === normalized.prNumber &&
+			String(row.head_sha).toLowerCase() === normalized.headSha &&
+			row.target_repo_identity === normalized.targetRepoIdentity &&
+			row.probe_repo_slug === normalized.probeRepoSlug &&
+			row.target_repo_path === normalized.targetRepoPath &&
+			row.worktree_binding_generation === normalized.worktreeBindingGeneration;
+		if (priorReceipt) return tupleMatches(priorReceipt);
+		if (!this.workflowRunAcceptsAuthorityMutation(input.runId)) return false;
+		const currentMax = Number(
+			this.workflowSelectAll(
+				`SELECT MAX(attempt) AS attempt FROM workflow_node_pr_binding
+				  WHERE run_id = ? AND node_id = ?`,
+				[input.runId, input.nodeId],
+			)[0]?.attempt ?? 0,
+		);
+		if (currentMax > input.attempt) return false;
+		const existing = this.workflowSelectAll(
+			`SELECT * FROM workflow_node_pr_binding
+			  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+			[input.runId, input.nodeId, input.attempt],
+		)[0];
+		if (existing) return tupleMatches(existing);
+		this.db.run(
+			`INSERT INTO workflow_node_pr_binding
+			   (run_id, node_id, attempt, pr_number, head_sha,
+			    target_repo_identity, probe_repo_slug, target_repo_path,
+			    worktree_binding_generation, receipt_id, bound_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				input.runId,
+				input.nodeId,
+				input.attempt,
+				input.prNumber,
+				normalized.headSha,
+				input.targetRepoIdentity,
+				input.probeRepoSlug,
+				input.targetRepoPath,
+				input.worktreeBindingGeneration,
+				input.receiptId,
+				input.boundAt,
+			],
+		);
+		this.db.run(
+			`UPDATE sessions SET pr_number = ?, pr_head_sha = ?
+			  WHERE execution_id = ?`,
+			[input.prNumber, normalized.headSha, input.executionId],
+		);
+		return true;
+	}
+
 	commitEnrolledCompletion(input: {
 		executionId: string;
 		route: string;
@@ -20846,6 +23109,14 @@ export class StateStore {
 		subjectDigest?: string;
 		workflowActivation?: WorkflowCompletionActivationContext;
 		alertIdentity?: WorkflowEngineAlertIdentity;
+		prBinding?: {
+			prNumber: number;
+			headSha: string;
+			targetRepoIdentity: string;
+			probeRepoSlug: string;
+			targetRepoPath: string;
+			worktreeBindingGeneration: string;
+		};
 		now?: string;
 	}): WorkflowCompletionResult {
 		const now = input.now ?? new Date().toISOString();
@@ -21089,6 +23360,30 @@ export class StateStore {
 				) {
 					terminalImmuneRefusal = true;
 					throw new Error("engine_completion_terminal_immune");
+				}
+				if (input.prBinding) {
+					const bindingWritten =
+						input.prBinding.headSha.toLowerCase() === completionSubjectDigest &&
+						this.recordWorkflowNodePrBindingTx({
+							runId: context.binding.run_id,
+							nodeId: context.binding.node_id,
+							attempt: context.binding.attempt,
+							executionId: context.binding.execution_id,
+							prNumber: input.prBinding.prNumber,
+							headSha: input.prBinding.headSha,
+							targetRepoIdentity: input.prBinding.targetRepoIdentity,
+							probeRepoSlug: input.prBinding.probeRepoSlug,
+							targetRepoPath: input.prBinding.targetRepoPath,
+							worktreeBindingGeneration:
+								input.prBinding.worktreeBindingGeneration,
+							receiptId: input.sourceEventId,
+							boundAt: now,
+						});
+					if (!bindingWritten) {
+						console.warn(
+							`[workflow-completion] PR binding evidence rejected for ${context.binding.run_id}/${context.binding.node_id}/${context.binding.attempt}`,
+						);
+					}
 				}
 				this.db.run(
 					`INSERT INTO workflow_node_completion
@@ -22153,6 +24448,11 @@ export class StateStore {
 						attempt: targetAttempt,
 						head,
 					})}`;
+					this.supersedeWorkflowShipTargetsForCurrentGateTx({
+						runId: input.runId,
+						gateNodeId: target.id,
+						now,
+					});
 					this.db.run(
 						`UPDATE workflow_gate_holder
 						    SET state = 'superseded', superseded_reason = 'new_gate_attempt', updated_at = ?
@@ -22176,6 +24476,11 @@ export class StateStore {
 							now,
 						],
 					);
+					this.bindWorkflowShipTargetForGateTx({
+						runId: input.runId,
+						questionId,
+						headSha: head,
+					});
 					this.appendWorkflowRunEventTx({
 						runId: input.runId,
 						eventUid: `gate_holder:${questionId}`,
@@ -23328,6 +25633,12 @@ export class StateStore {
 						"founder feedback source payload invalid: holder raced",
 					);
 				}
+				this.db.run(
+					`UPDATE workflow_ship_target_binding
+					    SET superseded_at = ?
+					  WHERE approve_question_id = ? AND superseded_at IS NULL`,
+					[now, questionId],
+				);
 				const transition = this.commitWorkflowTransitionTx({
 					runId,
 					nodeId: snapshot.manifest.approval_gate.node,
@@ -25362,9 +27673,19 @@ export class StateStore {
 				) {
 					throw new Error("workflow_gate_holder_identity_conflict");
 				}
+				this.bindWorkflowShipTargetForGateTx({
+					runId: input.runId,
+					questionId: input.questionId,
+					headSha,
+				});
 				holder = exact as unknown as WorkflowGateHolderRow;
 				return;
 			}
+			this.supersedeWorkflowShipTargetsForCurrentGateTx({
+				runId: input.runId,
+				gateNodeId: input.gateNodeId,
+				now: input.now,
+			});
 			this.db.run(
 				`UPDATE workflow_gate_holder
 				    SET state = 'superseded', superseded_reason = 'new_gate_attempt', updated_at = ?
@@ -25392,6 +27713,11 @@ export class StateStore {
 				"SELECT * FROM workflow_gate_holder WHERE question_id = ?",
 				[input.questionId],
 			)[0] as unknown as WorkflowGateHolderRow;
+			this.bindWorkflowShipTargetForGateTx({
+				runId: input.runId,
+				questionId: input.questionId,
+				headSha,
+			});
 		});
 		this.save();
 		if (!holder) throw new Error("workflow_gate_holder_not_created");
@@ -25491,6 +27817,45 @@ export class StateStore {
 			  LIMIT 1`,
 			[executionId],
 		)[0] as unknown as WorkflowGateHolderRow | undefined;
+	}
+
+	getCurrentWorkflowNodePrBindingForHead(
+		runId: string,
+		headSha: string,
+	): WorkflowNodePrBindingRow | undefined {
+		if (!/^[0-9a-f]{40}$/i.test(headSha)) return undefined;
+		const rows = this.workflowSelectAll(
+			`WITH latest AS (
+			   SELECT run_id, node_id, MAX(attempt) AS attempt
+			     FROM workflow_run_node
+			    WHERE run_id = ?
+			    GROUP BY run_id, node_id
+			 )
+			 SELECT b.*
+			   FROM workflow_node_pr_binding b
+			   JOIN latest l
+			     ON l.run_id = b.run_id
+			    AND l.node_id = b.node_id
+			    AND l.attempt = b.attempt
+			  WHERE lower(b.head_sha) = lower(?)
+			  ORDER BY b.node_id, b.attempt`,
+			[runId, headSha],
+		);
+		if (rows.length !== 1) return undefined;
+		const row = rows[0]!;
+		return {
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			pr_number: Number(row.pr_number),
+			head_sha: row.head_sha as string,
+			target_repo_identity: row.target_repo_identity as string,
+			probe_repo_slug: row.probe_repo_slug as string,
+			target_repo_path: row.target_repo_path as string,
+			worktree_binding_generation: row.worktree_binding_generation as string,
+			receipt_id: row.receipt_id as string,
+			bound_at: row.bound_at as string,
+		};
 	}
 
 	getWorkflowRunPrNumber(runId: string, headSha: string): number | undefined {
@@ -25763,6 +28128,25 @@ export class StateStore {
 				String(operation.lease_expires_at) <= input.now
 			) {
 				return;
+			}
+			if (
+				input.step === "merge_confirmed" &&
+				operation.run_id &&
+				this.getWorkflowPrManifest(operation.run_id as string)
+			) {
+				const manifestMerge = this.markWorkflowDeclaredPrMergedTx({
+					runId: operation.run_id as string,
+					prNumber: Number(operation.pr_number),
+					headSha: operation.approved_head as string,
+					now: input.now,
+				});
+				if (!manifestMerge.ok) {
+					result = {
+						ok: false,
+						reason: `workflow_pr_manifest_${manifestMerge.reason}`,
+					};
+					return;
+				}
 			}
 			this.db.run(
 				`INSERT INTO land_operation_step
@@ -26622,6 +29006,262 @@ export interface WorkflowRunNodeRow {
 	ended_at: string | null;
 }
 
+export interface WorkflowNodePrBindingRow {
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	pr_number: number;
+	head_sha: string;
+	target_repo_identity: string;
+	probe_repo_slug: string;
+	target_repo_path: string;
+	worktree_binding_generation: string;
+	receipt_id: string;
+	bound_at: string;
+}
+
+export interface WorkflowShipTargetBindingRow {
+	approve_question_id: string;
+	run_id: string | null;
+	source_request_id: string | null;
+	target_repo_path: string;
+	target_repo_identity: string;
+	probe_repo_slug: string;
+	frozen_head_sha: string;
+	worktree_binding_generation: string;
+	superseded_at: string | null;
+}
+
+export interface WorkflowRunDiagnosticDto {
+	schema_version: 1;
+	run: {
+		run_id: string;
+		issue_id: string;
+		status: string;
+		entry_kind: string | null;
+		template_id: string | null;
+		current_node_id: string | null;
+	};
+	nodes: Array<{
+		node_id: string;
+		attempt: number;
+		state: string;
+		execution_id: string | null;
+		started_at: string | null;
+		ended_at: string | null;
+	}>;
+	activation: {
+		execution_id: string;
+		mode: string;
+		rework_request_id: string | null;
+	} | null;
+	start_reservation: {
+		execution_id: string;
+		stage: string;
+		idempotency_key_digest: string;
+	} | null;
+	admission: { blocker: string | null };
+	turn: {
+		holder_execution_id: string | null;
+		granted_at: string | null;
+	};
+	gate_holders: Array<{
+		gate_node_id: string;
+		attempt: number;
+		head_sha: string;
+		state: string;
+		materialization_stage: string;
+		question_id: string | null;
+		superseded: boolean;
+	}>;
+	claims: Array<{
+		claim_id: string;
+		predicate: string;
+		node_id: string | null;
+		attempt: number | null;
+		subject_kind: string;
+		subject_digest: string;
+		issuer_kind: string;
+		decision_kind: string | null;
+		revoked: boolean;
+	}>;
+	rework: {
+		request_id: string;
+		state: string;
+		route_revision: number;
+		target_node_id: string;
+		target_attempt: number;
+		preferred_actor_execution_id: string;
+		verification_path: {
+			state: string;
+			current_node_id: string | null;
+			current_attempt: number | null;
+		} | null;
+		delivery: {
+			state: string;
+			owner_id: string | null;
+			generation: number | null;
+			last_error: string | null;
+		};
+	} | null;
+	ship_target_binding: {
+		approve_question_id: string;
+		target_repo_identity: string;
+		probe_repo_slug: string;
+		frozen_head_sha: string;
+		superseded: boolean;
+	} | null;
+	pr_bindings: Array<{
+		node_id: string;
+		attempt: number;
+		pr_number: number;
+		head_sha: string;
+		target_repo_identity: string;
+		probe_repo_slug: string;
+	}>;
+	single_closeout_target: {
+		probe_repo_slug: string;
+		pr_number: number;
+		frozen_head_sha: string;
+		target_repo_identity: string;
+	} | null;
+	pr_manifest: {
+		expected_count: number;
+		current_revision: number;
+		sealed: boolean;
+	} | null;
+	declared_prs: Array<{
+		repo_identity: string;
+		probe_repo_slug: string;
+		pr_number: number;
+		frozen_head_sha: string;
+		state: "declared" | "merged";
+		merged_at: string | null;
+	}>;
+	receipts: {
+		attributed_in_set: number;
+		attributed_out_of_set: number;
+	};
+	finalization: {
+		state: "claimed" | "completed" | null;
+		last_error: string | null;
+	};
+	land_operation: {
+		present: boolean;
+		state: string | null;
+	};
+	latest_hold: {
+		reason: string | null;
+		event_at: string | null;
+		alert_delivered: boolean;
+	};
+	latest_termination: {
+		event_at: string;
+		reason: string;
+		client_request_id: string;
+		closeout_invariant_digest: string | null;
+		closeout_kind: "nested_manual" | "operator" | null;
+	} | null;
+	quiescence: {
+		live_executions: number;
+		quiescent: boolean;
+	};
+	closeout_invariant_digest: string;
+	truncated: {
+		nodes: boolean;
+		gate_holders: boolean;
+		claims: boolean;
+		pr_bindings: boolean;
+		declared_prs: boolean;
+	};
+}
+
+export type WorkflowRunDiagnosticResult =
+	| { ok: true; dto: WorkflowRunDiagnosticDto }
+	| {
+			ok: false;
+			reason: "run_not_found" | "diagnostic_data_conflict";
+	  };
+
+export interface WorkflowPrManifestRow {
+	run_id: string;
+	mode: "declared";
+	expected_count: number;
+	current_revision: number;
+	sealed_at: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface WorkflowDeclaredPrRow {
+	run_id: string;
+	revision: number;
+	repo_identity: string;
+	probe_repo_slug: string;
+	pr_number: number;
+	frozen_head_sha: string;
+	state: "declared" | "merged";
+	merged_at: string | null;
+	declared_at: string;
+}
+
+export interface WorkflowPrConvergenceRow extends WorkflowDeclaredPrRow {
+	issue_id: string;
+	project_name: string;
+	source_execution_id: string | null;
+	finalization_state: "claimed" | "completed" | null;
+}
+
+export interface WorkflowPrFinalizationRow {
+	run_id: string;
+	revision: number;
+	state: "claimed" | "completed";
+	source_execution_id: string;
+	claimed_at: string;
+	completed_at: string | null;
+	last_error: string | null;
+}
+
+export type WorkflowPrManifestMutationResult =
+	| {
+			ok: true;
+			manifest: WorkflowPrManifestRow;
+			idempotentReplay: boolean;
+	  }
+	| {
+			ok: false;
+			reason: string;
+			expectedCount?: number;
+			actualCount?: number;
+	  };
+
+export type WorkflowDeclaredPrMergeResult =
+	| {
+			ok: true;
+			idempotentReplay: boolean;
+			allMerged: boolean;
+	  }
+	| { ok: false; reason: string };
+
+export type WorkflowPrFinalizationClaimResult =
+	| {
+			ok: true;
+			mode: "single";
+			idempotentReplay: boolean;
+	  }
+	| {
+			ok: true;
+			mode: "declared";
+			revision: number;
+			idempotentReplay: boolean;
+			completed: boolean;
+	  }
+	| {
+			ok: false;
+			reason: string;
+			pendingCount?: number;
+	  };
+
 export type WorkflowTransitionResult =
 	| {
 			ok: true;
@@ -26950,6 +29590,21 @@ export type WorkflowRunOperatorResult =
 	| {
 			ok: true;
 			status: "held" | "terminated";
+			idempotentReplay: boolean;
+	  }
+	| {
+			ok: false;
+			reason: string;
+			executionIds?: string[];
+	  };
+
+export type WorkflowOperatorReworkResult =
+	| {
+			ok: true;
+			requestId: string;
+			targetNodeId: string;
+			targetAttempt: number;
+			preferredActorExecutionId: string;
 			idempotentReplay: boolean;
 	  }
 	| {

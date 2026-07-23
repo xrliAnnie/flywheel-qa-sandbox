@@ -535,6 +535,15 @@ export async function finalizeRecoveredMerge(
 		await runPostShipFinalization(
 			{
 				executionId: execId,
+				runId: store.getWorkflowRunIdForExecution(execId),
+				...(s.pr_number && s.pr_head_sha
+					? {
+							mergedPr: {
+								prNumber: s.pr_number,
+								headSha: s.pr_head_sha,
+							},
+						}
+					: {}),
 				issueId: s.issue_id,
 				issueIdentifier: s.issue_identifier,
 				projectName: s.project_name,

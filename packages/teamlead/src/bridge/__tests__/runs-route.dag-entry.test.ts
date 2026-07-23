@@ -799,6 +799,99 @@ describe("FLY-1407 work-kind entry gate", () => {
 		);
 	});
 
+	it("rejects a cached start response after its workflow run completed", async () => {
+		const h = await startHarness({
+			templateSchema: 2,
+			bindingCategory: "research",
+			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
+		});
+		const first = await post(h.url, {
+			taskCategory: "research",
+			idempotencyKey: "completed-run-replay",
+		});
+		expect(first.status).toBe(200);
+		const internal = h.store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		internal.db.run(
+			"UPDATE workflow_run SET status = 'completed' WHERE run_id = ?",
+			[first.json.workflowRunId],
+		);
+
+		const replay = await post(h.url, {
+			taskCategory: "research",
+			idempotencyKey: "completed-run-replay",
+		});
+
+		expect(replay.status).toBe(409);
+		expect(replay.json).toEqual({
+			success: false,
+			code: "RUN_NOT_REWORKABLE_VIA_START",
+			runId: first.json.workflowRunId,
+			runStatus: "completed",
+			hint: "use /api/runs/:runId/rework",
+		});
+		expect(h.calls).toHaveLength(1);
+	});
+
+	it("rejects a cached start response after the active run advances past its start attempt", async () => {
+		const h = await startHarness({
+			templateSchema: 2,
+			bindingCategory: "research",
+			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
+		});
+		const first = await post(h.url, {
+			taskCategory: "research",
+			idempotencyKey: "stale-node-replay",
+		});
+		expect(first.status).toBe(200);
+		const internal = h.store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		internal.db.run(
+			"UPDATE workflow_run SET current_node_id = 'founder_gate' WHERE run_id = ?",
+			[first.json.workflowRunId],
+		);
+
+		const replay = await post(h.url, {
+			taskCategory: "research",
+			idempotencyKey: "stale-node-replay",
+		});
+
+		expect(replay.status).toBe(409);
+		expect(replay.json).toMatchObject({
+			success: false,
+			code: "STALE_START_RESPONSE",
+			runId: first.json.workflowRunId,
+			executionId: first.json.executionId,
+		});
+		expect(h.calls).toHaveLength(1);
+	});
+
+	it("rejects the active engine start-session exemption after a v1 DAG run advances", async () => {
+		const h = await startHarness({});
+		const first = await post(h.url, {});
+		expect(first.status).toBe(200);
+		const internal = h.store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		internal.db.run(
+			"UPDATE workflow_run SET current_node_id = 'implement' WHERE run_id = ?",
+			[first.json.workflowRunId],
+		);
+
+		const replay = await post(h.url, {});
+
+		expect(replay.status).toBe(409);
+		expect(replay.json).toMatchObject({
+			success: false,
+			code: "STALE_START_RESPONSE",
+			runId: first.json.workflowRunId,
+			executionId: first.json.executionId,
+		});
+		expect(h.calls).toHaveLength(1);
+	});
+
 	it("routes an absent category to generic single-session fallback before candidate lookup", async () => {
 		const h = await startHarness({
 			templateSchema: 2,

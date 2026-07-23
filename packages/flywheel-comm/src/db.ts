@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS runner_phase_wakes (
 	t2_result               TEXT,
 	escalation_outbox_id    TEXT,
 	started_ack_scope       TEXT,
+	purpose                 TEXT CHECK(purpose IN ('message_traffic','gate_response','park_wake')),
   UNIQUE (execution_id, message_id)
 );
 CREATE TABLE IF NOT EXISTS runner_shutdown_controls (
@@ -344,7 +345,13 @@ export interface RunnerPhaseWake {
 	t2_claimed_at: string | null;
 	t2_result: string | null;
 	escalation_outbox_id: string | null;
-	started_ack_scope: "exec_cli" | "message" | "debug_override" | null;
+	started_ack_scope:
+		| "exec_cli"
+		| "message"
+		| "debug_override"
+		| "normal_traffic"
+		| null;
+	purpose: "message_traffic" | "gate_response" | "park_wake" | null;
 }
 
 export interface ReceiptWakePolicy {
@@ -405,6 +412,17 @@ export interface ResponseAndIntentInput {
 export interface RespondAndReceiptResult {
 	responseId: string;
 	wake: RunnerPhaseWake;
+}
+
+export interface ReviewResponseAndWakeInput {
+	questionId: string;
+	fromAgent: string;
+	content: string;
+	expectedOwner: string;
+	expectedCheckpoint: "review_design" | "review_code";
+	summary: string;
+	queuedAtMs: number;
+	wakePolicy?: ReceiptWakePolicy;
 }
 
 export type ReceiptHandleAction = "relay" | "respond" | "no-route" | "ack";
@@ -2302,6 +2320,7 @@ export class CommDB {
 					intentKey: input.intentKey,
 					envelope: input.envelope,
 					queuedAtMs: input.queuedAtMs,
+					purpose: "park_wake",
 				});
 				return { kind: "routed", questionId, responseId, wake };
 			})
@@ -2491,6 +2510,7 @@ export class CommDB {
 					queuedAtMs: input.queuedAtMs,
 					sourceInstructionId: input.instructionId,
 					wakePolicy: input.wakePolicy,
+					purpose: "message_traffic",
 				});
 				return {
 					kind: "queued",
@@ -2665,6 +2685,7 @@ export class CommDB {
 						intentKey: input.intentKey as string,
 						envelope: input.envelope as PhaseWakeInput,
 						queuedAtMs: input.queuedAtMs as number,
+						purpose: "park_wake",
 					});
 				}
 				if (input.testCrashAfter === "wake") {
@@ -2809,6 +2830,7 @@ export class CommDB {
 				intentKey: input.intentKey,
 				envelope: input.envelope,
 				queuedAtMs: input.queuedAtMs,
+				purpose: "park_wake",
 			});
 			return { responseId: response.id, wake };
 		})();
@@ -2882,6 +2904,7 @@ export class CommDB {
 					envelope: input.envelope,
 					queuedAtMs: input.queuedAtMs,
 					wakePolicy: input.wakePolicy,
+					purpose: "park_wake",
 				});
 				return { responseId: response.id, wake };
 			})
@@ -2964,6 +2987,7 @@ export class CommDB {
 				intentKey: input.intentKey,
 				envelope: input.envelope,
 				queuedAtMs: input.queuedAtMs,
+				purpose: "park_wake",
 			});
 			return { responseId: response.id, wake };
 		})();
@@ -3066,6 +3090,7 @@ export class CommDB {
 					intentKey: input.intentKey,
 					envelope: input.envelope,
 					queuedAtMs: input.queuedAtMs,
+					purpose: "park_wake",
 				});
 				return { responseId: response.id, wake };
 			})
@@ -3079,6 +3104,7 @@ export class CommDB {
 		queuedAtMs: number;
 		sourceInstructionId?: string | null;
 		wakePolicy?: ReceiptWakePolicy;
+		purpose: NonNullable<RunnerPhaseWake["purpose"]>;
 	}): RunnerPhaseWake {
 		if (input.envelope.to !== input.executionId) {
 			throw new Error(
@@ -3110,7 +3136,8 @@ export class CommDB {
 				existing.message_id !== input.intentKey ||
 				existing.source_instruction_id !==
 					(input.sourceInstructionId ?? existing.source_instruction_id) ||
-				existing.envelope_json !== envelopeJson
+				existing.envelope_json !== envelopeJson ||
+				existing.purpose !== input.purpose
 			) {
 				throw new Error(
 					`wake intent ${input.intentKey} was reused with different content`,
@@ -3146,6 +3173,7 @@ export class CommDB {
 				.prepare(
 					`SELECT COUNT(*) AS count FROM runner_phase_wakes
 					 WHERE execution_id = ? AND admission_state = 'queued'
+					   AND purpose != 'gate_response'
 					   AND queued_at > ? AND queued_at <= ?`,
 				)
 				.get(
@@ -3157,7 +3185,7 @@ export class CommDB {
 		const admissionState: NonNullable<RunnerPhaseWake["admission_state"]> =
 			!transportAvailable
 				? "skipped_no_transport"
-				: admittedInWindow >= execPushCap
+				: input.purpose !== "gate_response" && admittedInWindow >= execPushCap
 					? "suppressed_cap"
 					: "queued";
 		this.db
@@ -3165,8 +3193,8 @@ export class CommDB {
 				`INSERT INTO runner_phase_wakes (
 				  execution_id, message_id, content, metadata_json,
 				  source_instruction_id, state, queued_at, admission_state,
-				  envelope_json, push_attempts
-				) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 0)`,
+				  envelope_json, push_attempts, purpose
+				) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 0, ?)`,
 			)
 			.run(
 				input.executionId,
@@ -3177,6 +3205,7 @@ export class CommDB {
 				input.queuedAtMs,
 				admissionState,
 				envelopeJson,
+				input.purpose,
 			);
 		if (admissionState === "suppressed_cap") {
 			const outboxId = `wake_cap:${input.executionId}:${windowStart}`;
@@ -3202,6 +3231,83 @@ export class CommDB {
 				"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
 			)
 			.get(input.executionId, input.intentKey) as RunnerPhaseWake;
+	}
+
+	/**
+	 * FLY-1434 ⑧: atomically persist a Bridge-owned review response and the
+	 * purpose-bound wake that makes it observable. An exact replay repairs an
+	 * older owned response that committed before the wake existed. Foreign
+	 * answers and non-queued admissions fail closed.
+	 */
+	insertReviewResponseWithWakeIfGateOpen(
+		input: ReviewResponseAndWakeInput,
+	): RespondAndReceiptResult | null {
+		class ReviewWakeAdmissionError extends Error {}
+		try {
+			return this.db
+				.transaction((): RespondAndReceiptResult | null => {
+					let response = this.getResponse(input.questionId);
+					if (response) {
+						if (
+							response.from_agent !== input.fromAgent ||
+							response.content !== input.content
+						) {
+							return null;
+						}
+					} else {
+						const inserted = this.insertResponseIfGateOpen({
+							questionId: input.questionId,
+							fromAgent: input.fromAgent,
+							content: input.content,
+							expectedOwner: input.expectedOwner,
+							expectedCheckpoint: input.expectedCheckpoint,
+						});
+						if (!inserted) {
+							response = this.getResponse(input.questionId);
+							if (
+								!response ||
+								response.from_agent !== input.fromAgent ||
+								response.content !== input.content
+							) {
+								return null;
+							}
+						} else {
+							response = this.getResponse(input.questionId);
+						}
+					}
+					if (!response) return null;
+					const wake = this.admitReceiptWakeIntent({
+						executionId: input.expectedOwner,
+						intentKey: response.id,
+						envelope: {
+							id: response.id,
+							to: input.expectedOwner,
+							content:
+								`Your review request has been answered: ${input.summary} ` +
+								`(question ${input.questionId}). Read the durable answer with ` +
+								`flywheel-comm check ${input.questionId}. This wake carries NO authority.`,
+							metadata: {
+								kind: "review_response",
+								questionId: input.questionId,
+								responseId: response.id,
+							},
+						},
+						queuedAtMs: input.queuedAtMs,
+						wakePolicy: input.wakePolicy,
+						purpose: "gate_response",
+					});
+					if (wake.admission_state !== "queued") {
+						throw new ReviewWakeAdmissionError(
+							`review response wake admission failed: ${wake.admission_state}`,
+						);
+					}
+					return { responseId: response.id, wake };
+				})
+				.immediate();
+		} catch (error) {
+			if (error instanceof ReviewWakeAdmissionError) return null;
+			throw error;
+		}
 	}
 
 	private assertCurrentProtocolOwner(
@@ -3339,8 +3445,8 @@ export class CommDB {
 				.prepare(
 					`INSERT INTO runner_phase_wakes
 					   (execution_id, message_id, content, metadata_json,
-					    source_instruction_id, state, queued_at)
-					 VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+					    source_instruction_id, state, queued_at, purpose)
+					 VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
 				)
 				.run(
 					executionId,
@@ -3349,6 +3455,7 @@ export class CommDB {
 					metadataJson,
 					sourceInstructionId,
 					nowMs,
+					sourceInstructionId ? "message_traffic" : "park_wake",
 				);
 			if (sourceInstructionId) {
 				this.db
@@ -4283,9 +4390,35 @@ export class CommDB {
 				 SET state = 'started', started_at = ?, started_ack_scope = ?,
 				     claim_token = NULL, claim_expires_at = NULL
 				 WHERE execution_id = ? AND state = 'pending'
-				   AND admission_state = 'queued' AND queued_at <= ?`,
+				   AND admission_state = 'queued'
+				   AND purpose = 'message_traffic' AND queued_at <= ?`,
 			)
 			.run(observedAtMs, ackScope, executionId, observedAtMs).changes;
+	}
+
+	/**
+	 * Normal Lead traffic to an already-live, non-parked runner is observable
+	 * without a phase-start receipt. Retire only the exact pending wake; legacy
+	 * NULL-purpose rows deliberately retain the old recovery ladder.
+	 */
+	disposeRunnerPhaseWakePending(
+		executionId: string,
+		messageId: string,
+		nowMs: number,
+	): boolean {
+		return (
+			this.db
+				.prepare(
+					`UPDATE runner_phase_wakes
+					    SET state = 'finished', finished_at = ?,
+					        started_ack_scope = 'normal_traffic',
+					        claim_token = NULL, claim_expires_at = NULL
+					  WHERE execution_id = ? AND message_id = ?
+					    AND state = 'pending'
+					    AND purpose = 'message_traffic'`,
+				)
+				.run(nowMs, executionId, messageId).changes === 1
+		);
 	}
 
 	claimRunnerReceiptWakeT2(
@@ -4674,6 +4807,52 @@ export class CommDB {
 				"UPDATE messages SET delivered_at = datetime('now') WHERE id = ?",
 			)
 			.run(id);
+	}
+
+	/**
+	 * The only consuming read for a gate response. Internal probes continue to
+	 * use getResponse(), which is intentionally pure. Consumption stamps the
+	 * response and finishes only its exact purpose-bound wake.
+	 */
+	consumeGateResponse(
+		questionId: string,
+		executionId: string,
+	): Message | undefined {
+		const consume = this.db.transaction(() => {
+			const response = this.db
+				.prepare(
+					`SELECT response.*
+					   FROM messages response
+					   JOIN messages question ON question.id = response.parent_id
+					  WHERE question.id = ? AND question.type = 'question'
+					    AND question.from_agent = ?
+					    AND response.type = 'response'`,
+				)
+				.get(questionId, executionId) as Message | undefined;
+			if (!response) return undefined;
+			const nowMs = Date.now();
+			this.db
+				.prepare(
+					`UPDATE messages
+					    SET delivered_at = COALESCE(delivered_at, datetime('now'))
+					  WHERE id = ? AND type = 'response'`,
+				)
+				.run(response.id);
+			this.db
+				.prepare(
+					`UPDATE runner_phase_wakes
+					    SET state = 'finished', finished_at = ?,
+					        claim_token = NULL, claim_expires_at = NULL
+					  WHERE execution_id = ? AND message_id = ?
+					    AND purpose = 'gate_response'
+					    AND state IN ('pending','started')`,
+				)
+				.run(nowMs, executionId, response.id);
+			return this.db
+				.prepare("SELECT * FROM messages WHERE id = ?")
+				.get(response.id) as Message;
+		});
+		return consume.immediate();
 	}
 
 	/**

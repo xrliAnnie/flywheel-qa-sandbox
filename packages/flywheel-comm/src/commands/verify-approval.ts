@@ -85,6 +85,7 @@ export type VerifyApprovalReason =
 	| "invalid_pr_head_format"
 	| "head_authority_unavailable"
 	| "head_authority_mismatch"
+	| "nested_ship_unsupported"
 	| "state_db_unreadable"
 	| "session_not_found"
 	| "review_question_unbound"
@@ -170,25 +171,84 @@ export async function verifyApprovalWithBridgeHead(
 			exitCode: 1,
 		};
 	}
+	const statePath = resolveStateDbPath(args.stateDbPath, env);
+	let approveQuestionId: string;
+	try {
+		const stateDb = new Database(statePath, {
+			readonly: true,
+			fileMustExist: true,
+		});
+		try {
+			const row = stateDb
+				.prepare(
+					"SELECT review_question_id FROM sessions WHERE execution_id = ?",
+				)
+				.get(args.execId) as { review_question_id?: string | null } | undefined;
+			if (!row) {
+				return {
+					approved: false,
+					reason: "session_not_found",
+					exitCode: 1,
+				};
+			}
+			approveQuestionId = row.review_question_id?.trim() ?? "";
+		} finally {
+			stateDb.close();
+		}
+	} catch (error) {
+		console.error(
+			`[verify-approval] StateStore review binding unavailable: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return {
+			approved: false,
+			reason: "state_db_unreadable",
+			exitCode: 1,
+		};
+	}
+	if (!approveQuestionId || approveQuestionId === "unbound") {
+		return {
+			approved: false,
+			reason: "review_question_unbound",
+			exitCode: 1,
+		};
+	}
 	try {
 		const response = await (args.fetchImpl ?? fetch)(
 			`${bridgeUrl}/api/workflow/head-authority`,
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ execution_id: args.execId }),
+				body: JSON.stringify({
+					execution_id: args.execId,
+					approve_question_id: approveQuestionId,
+				}),
 			},
 		);
-		if (!response.ok) throw new Error(`Bridge returned ${response.status}`);
 		const payload = (await response.json()) as {
 			ok?: unknown;
 			prHeadSha?: unknown;
+			reason?: unknown;
 		};
+		if (!response.ok || payload.ok !== true) {
+			if (payload.reason === "nested_ship_unsupported") {
+				return {
+					approved: false,
+					reason: "nested_ship_unsupported",
+					questionId: approveQuestionId,
+					exitCode: 1,
+				};
+			}
+			throw new Error(
+				typeof payload.reason === "string"
+					? payload.reason
+					: `Bridge returned ${response.status}`,
+			);
+		}
 		const authoritativeHead =
 			typeof payload.prHeadSha === "string"
 				? payload.prHeadSha.trim().toLowerCase()
 				: "";
-		if (payload.ok !== true || !FULL_SHA_RE.test(authoritativeHead)) {
+		if (!FULL_SHA_RE.test(authoritativeHead)) {
 			throw new Error("invalid Bridge head response");
 		}
 		if (callerHead !== authoritativeHead) {
@@ -301,6 +361,8 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 				adapter_type?: string | null;
 				pr_number?: number | null;
 				worktree_path?: string | null;
+				project_name?: string | null;
+				issue_id?: string | null;
 		  }
 		| undefined;
 	// FLY-827: does an approved/skipped Codex code-review record exist for the
@@ -314,7 +376,7 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 		try {
 			row = stateDb
 				.prepare(
-					"SELECT status, pr_head_sha, review_question_id, codex_skip, adapter_type, pr_number, worktree_path FROM sessions WHERE execution_id = ?",
+					"SELECT status, pr_head_sha, review_question_id, codex_skip, adapter_type, pr_number, worktree_path, project_name, issue_id FROM sessions WHERE execution_id = ?",
 				)
 				.get(args.execId) as typeof row;
 			// Separate try: an un-upgraded DB may lack codex_review_record (or,
@@ -322,30 +384,61 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 			// column → codexApprovedForHead stays false (fail-closed under the
 			// gate), but must NOT corrupt the authoritative row read above.
 			try {
-				const codexRow = stateDb
+				const candidates = stateDb
 					.prepare(
-						"SELECT status, author_family, reviewer_family FROM codex_review_record WHERE execution_id = ? AND lower(target_pr_head_sha) = ? AND status IN ('approved','skipped')",
+						`SELECT r.status, r.author_family, r.reviewer_family,
+						        author.adapter_type AS author_adapter_type
+						   FROM codex_review_record r
+						   LEFT JOIN sessions author ON author.execution_id = r.execution_id
+						  WHERE r.project_name = ?
+						    AND r.issue_id = ?
+						    AND r.target_repo_identity = '__main__'
+						    AND lower(r.target_pr_head_sha) = ?
+						    AND r.status IN ('approved','skipped')`,
 					)
-					.get(args.execId, prHead) as
-					| {
-							status?: string;
-							author_family?: string | null;
-							reviewer_family?: string | null;
-					  }
-					| undefined;
-				// FLY-1188 §7.3: reviewer-inversion invariant — the SAME shared
-				// rule as the Bridge gate (StateStore.isCodexCodeReviewApproved),
-				// so the runner-side merge check can never drift from the server.
-				codexApprovedForHead =
-					codexRow !== undefined &&
+					.all(row?.project_name, row?.issue_id, prHead) as Array<{
+					status?: string;
+					author_family?: string | null;
+					reviewer_family?: string | null;
+					author_adapter_type?: string | null;
+				}>;
+				// FLY-1434 §10: the ship execution may differ from the author
+				// execution. Query issue-scoped candidates and evaluate each
+				// record with its AUTHOR session adapter, never the shipping one.
+				codexApprovedForHead = candidates.some((candidate) =>
 					crossFamilyReviewSatisfied({
-						status: codexRow.status,
-						authorFamily: codexRow.author_family ?? null,
-						reviewerFamily: codexRow.reviewer_family ?? null,
-						sessionAdapterType: row?.adapter_type ?? null,
-					});
+						status: candidate.status,
+						authorFamily: candidate.author_family ?? null,
+						reviewerFamily: candidate.reviewer_family ?? null,
+						sessionAdapterType: candidate.author_adapter_type ?? null,
+					}),
+				);
 			} catch {
-				codexApprovedForHead = false;
+				// Legacy pre-FLY-1434 database: preserve exact-execution lookup
+				// until StateStore performs the roll-forward table cutover.
+				try {
+					const legacy = stateDb
+						.prepare(
+							"SELECT status, author_family, reviewer_family FROM codex_review_record WHERE execution_id = ? AND lower(target_pr_head_sha) = ? AND status IN ('approved','skipped')",
+						)
+						.get(args.execId, prHead) as
+						| {
+								status?: string;
+								author_family?: string | null;
+								reviewer_family?: string | null;
+						  }
+						| undefined;
+					codexApprovedForHead =
+						legacy !== undefined &&
+						crossFamilyReviewSatisfied({
+							status: legacy.status,
+							authorFamily: legacy.author_family ?? null,
+							reviewerFamily: legacy.reviewer_family ?? null,
+							sessionAdapterType: row?.adapter_type ?? null,
+						});
+				} catch {
+					codexApprovedForHead = false;
+				}
 			}
 		} finally {
 			stateDb.close();

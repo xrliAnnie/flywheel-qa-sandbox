@@ -22,6 +22,8 @@
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
+import { isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { adapterTypeToFamily, type RoleEffort } from "flywheel-config";
 import type {
@@ -68,6 +70,18 @@ export interface ReviewCommDb {
 		expectedOwner: string;
 		expectedCheckpoint: string;
 	}): boolean;
+	insertReviewResponseWithWakeIfGateOpen(input: {
+		questionId: string;
+		fromAgent: string;
+		content: string;
+		expectedOwner: string;
+		expectedCheckpoint: "review_design" | "review_code";
+		summary: string;
+		queuedAtMs: number;
+	}): {
+		responseId: string;
+		wake: { message_id: string; admission_state: string | null };
+	} | null;
 	close(): void;
 }
 
@@ -77,6 +91,7 @@ export interface ReviewRequestPayload {
 	reviewType?: unknown;
 	questionId?: unknown;
 	planPath?: unknown;
+	targetRepoPath?: unknown;
 }
 
 export type AcceptReviewResult =
@@ -140,6 +155,7 @@ export interface ReviewCoordinatorDeps {
 		session: { issue_id: string; project_name: string },
 		questionId: string,
 		summary: string,
+		responseId: string,
 	) => Promise<void>;
 	/**
 	 * FLY-1257 defect ① × ④ (Codex code review HIGH-1): flip the answered review
@@ -182,6 +198,7 @@ export interface ReviewCoordinatorDeps {
 
 const REQUEST_ID_MAX = 128;
 const PLAN_PATH_MAX = 512;
+const TARGET_REPO_PATH_MAX = 512;
 const SHA40 = /^[0-9a-f]{40}$/;
 const SESSION_NOT_FOUND = /no conversation found with session id/i;
 const FAILURE_RAW_MAX = 4000;
@@ -290,6 +307,82 @@ function isSafePlanPath(p: string): boolean {
 	if (/[\u0000-\u001f\u007f]/.test(p)) return false;
 	if (p.startsWith("/") || p.startsWith("~")) return false; // no absolute / home
 	return !p.split("/").includes(".."); // no parent traversal
+}
+
+function isSafeRepoPath(p: string): boolean {
+	if (p.length === 0 || isAbsolute(p) || p.startsWith("~")) return false;
+	if (CONTROL_CHAR.test(p)) return false;
+	return !p.split(/[\\/]/).includes("..");
+}
+
+interface ReviewTarget {
+	path: string;
+	identity: string;
+}
+
+/**
+ * Resolve a review repository strictly beneath the immutable authority root.
+ * The main worktree keeps the explicit `__main__` sentinel; nested repositories
+ * must prove both physical containment and their own git toplevel, then derive
+ * identity from the origin remote rather than accepting caller authority.
+ */
+export async function resolveReviewTarget(
+	authorityRoot: string,
+	requestedRepoPath?: string,
+): Promise<ReviewTarget> {
+	if (!requestedRepoPath) {
+		return { path: authorityRoot, identity: "__main__" };
+	}
+	const root = await realpath(authorityRoot);
+	const target = await realpath(resolve(root, requestedRepoPath));
+	const rel = relative(root, target);
+	if (
+		!rel ||
+		rel === ".." ||
+		rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+		isAbsolute(rel)
+	) {
+		throw new Error("target must be strictly contained in the bound worktree");
+	}
+	const { stdout: toplevelOut } = await execFileAsync(
+		"git",
+		["-C", target, "rev-parse", "--show-toplevel"],
+		{ timeout: 15_000 },
+	);
+	const toplevel = await realpath(toplevelOut.trim());
+	if (toplevel !== target) {
+		throw new Error("target must be the root of a nested git repository");
+	}
+	const { stdout: remoteOut } = await execFileAsync(
+		"git",
+		["-C", target, "remote", "get-url", "origin"],
+		{ timeout: 15_000 },
+	);
+	return { path: target, identity: normalizeRepoIdentity(remoteOut.trim()) };
+}
+
+function normalizeRepoIdentity(remote: string): string {
+	const withoutQuery = remote.split(/[?#]/, 1)[0] ?? remote;
+	const pathPart = withoutQuery.includes("://")
+		? new URL(withoutQuery).pathname
+		: withoutQuery.replace(/^[^@/]+@[^:]+:/, "");
+	const pieces = pathPart
+		.replace(/\\/g, "/")
+		.replace(/\/+$/, "")
+		.replace(/\.git$/i, "")
+		.split("/")
+		.filter(Boolean);
+	if (pieces.length < 2) {
+		throw new Error(
+			"nested repository origin cannot be normalized to owner/repo",
+		);
+	}
+	const owner = pieces.at(-2)!;
+	const repo = pieces.at(-1)!;
+	if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) {
+		throw new Error("nested repository origin contains an invalid owner/repo");
+	}
+	return `${owner.toLowerCase()}/${repo.toLowerCase()}`;
 }
 
 /** FLY-245 precedent: rev-parse ONLY, execFile (no shell), in the worktree. */
@@ -474,6 +567,7 @@ export class ReviewRequestCoordinator {
 		const reviewType = str(payload.reviewType);
 		const questionId = str(payload.questionId);
 		const planPath = str(payload.planPath);
+		const requestedRepoPath = str(payload.targetRepoPath);
 		if (!executionId || !requestId || !questionId) {
 			return reject(400, "executionId, requestId and questionId are required");
 		}
@@ -492,10 +586,39 @@ export class ReviewRequestCoordinator {
 				"planPath must be a worktree-relative path (no absolute, '~', '..' or control characters)",
 			);
 		}
+		if (
+			requestedRepoPath &&
+			(!isSafeRepoPath(requestedRepoPath) ||
+				requestedRepoPath.length > TARGET_REPO_PATH_MAX)
+		) {
+			return reject(
+				400,
+				"targetRepoPath must be a safe relative repository path",
+			);
+		}
 
 		const session = this.store.getSession(executionId);
 		if (!session) return reject(404, `unknown execution ${executionId}`);
 		const projectName = session.project_name;
+		const worktreeBinding = this.store.getWorktreeBinding(executionId);
+		if (!worktreeBinding) {
+			return reject(
+				422,
+				`execution ${executionId} has no immutable worktree binding`,
+			);
+		}
+		let reviewTarget: ReviewTarget;
+		try {
+			reviewTarget = await resolveReviewTarget(
+				worktreeBinding.path,
+				requestedRepoPath,
+			);
+		} catch (err) {
+			return reject(
+				422,
+				`invalid review target: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
 
 		// R12 HIGH-3: this lane enforces the reviewer-inversion invariant for
 		// NON-claude authors. A claude-family author must stay on the legacy
@@ -516,7 +639,10 @@ export class ReviewRequestCoordinator {
 			if (
 				existing.question_id !== questionId ||
 				existing.execution_id !== executionId ||
-				existing.review_type !== reviewType
+				existing.review_type !== reviewType ||
+				existing.target_repo_identity !== reviewTarget.identity ||
+				(existing.target_repo_path ?? worktreeBinding.path) !==
+					reviewTarget.path
 			) {
 				return reject(
 					409,
@@ -594,11 +720,11 @@ export class ReviewRequestCoordinator {
 		// head refuses registration rather than skipping headlessly).
 		let frozenHeadSha: string | undefined;
 		if (reviewType === "code") {
-			const head = await this.tryDeriveHead(session);
+			const head = await this.tryDeriveHead(executionId, reviewTarget.path);
 			if (!head) {
 				return reject(
 					422,
-					`cannot derive a trusted head for ${executionId} (worktree ${session.worktree_path ?? "<missing>"})`,
+					`cannot derive a trusted head for ${executionId} (target ${reviewTarget.path})`,
 				);
 			}
 			frozenHeadSha = head;
@@ -615,6 +741,8 @@ export class ReviewRequestCoordinator {
 				projectName,
 				reviewType,
 				questionId,
+				targetRepoPath: reviewTarget.path,
+				targetRepoIdentity: reviewTarget.identity,
 				frozenHeadSha,
 				authorFamily,
 				status: "skipped",
@@ -643,6 +771,7 @@ export class ReviewRequestCoordinator {
 			if (reviewType === "code" && frozenHeadSha) {
 				this.store.markCodexReviewSkipped({
 					executionId,
+					targetRepoIdentity: reviewTarget.identity,
 					targetPrHeadSha: frozenHeadSha,
 					issueId: session.issue_id,
 					projectName,
@@ -665,10 +794,16 @@ export class ReviewRequestCoordinator {
 			return { accepted: true, requestId, skipped: true, duplicate: false };
 		}
 
-		const round = this.store.countCodexReviewJobs(executionId, reviewType) + 1;
+		const round =
+			this.store.countCodexReviewJobs(
+				executionId,
+				reviewType,
+				reviewTarget.identity,
+			) + 1;
 		const priorUuid = this.store.latestCodexReviewerSessionUuid(
 			executionId,
 			reviewType,
+			reviewTarget.identity,
 		);
 		const insert = this.store.insertCodexReviewJob({
 			requestId,
@@ -679,6 +814,8 @@ export class ReviewRequestCoordinator {
 			round,
 			questionId,
 			targetPath: reviewType === "design" ? planPath : undefined,
+			targetRepoPath: reviewTarget.path,
+			targetRepoIdentity: reviewTarget.identity,
 			frozenHeadSha,
 			reviewerSessionUuid: priorUuid ?? undefined,
 			authorFamily,
@@ -690,7 +827,10 @@ export class ReviewRequestCoordinator {
 			if (
 				insert.job.question_id !== questionId ||
 				insert.job.execution_id !== executionId ||
-				insert.job.review_type !== reviewType
+				insert.job.review_type !== reviewType ||
+				insert.job.target_repo_identity !== reviewTarget.identity ||
+				(insert.job.target_repo_path ?? worktreeBinding.path) !==
+					reviewTarget.path
 			) {
 				return reject(
 					409,
@@ -750,6 +890,7 @@ export class ReviewRequestCoordinator {
 		) {
 			this.store.markCodexReviewSkipped({
 				executionId: job.execution_id,
+				targetRepoIdentity: job.target_repo_identity,
 				targetPrHeadSha: job.frozen_head_sha,
 				issueId: job.issue_id ?? session.issue_id,
 				projectName: job.project_name,
@@ -883,6 +1024,7 @@ export class ReviewRequestCoordinator {
 		if (job.review_type === "code" && job.frozen_head_sha) {
 			const rec = this.store.getCodexReviewRecord(
 				job.execution_id,
+				job.target_repo_identity,
 				job.frozen_head_sha,
 			);
 			if (rec?.status === "approved" && rec.request_id === requestId) {
@@ -911,7 +1053,9 @@ export class ReviewRequestCoordinator {
 			resume = false;
 		}
 
-		const cwd = session.worktree_path;
+		const cwd =
+			job.target_repo_path ??
+			this.store.getWorktreeBinding(job.execution_id)?.path;
 		if (!cwd) {
 			this.store.failCodexReviewJob(requestId, "worktree_missing");
 			this.alert(
@@ -1004,7 +1148,7 @@ export class ReviewRequestCoordinator {
 				return;
 			}
 			if (job.review_type === "code") {
-				const current = await this.tryDeriveHead(session);
+				const current = await this.tryDeriveHead(job.execution_id, cwd);
 				const frozen = job.frozen_head_sha?.toLowerCase();
 				if (!current || !frozen || current !== frozen) {
 					this.store.failCodexReviewJob(
@@ -1066,7 +1210,7 @@ export class ReviewRequestCoordinator {
 			// accept-time freeze × verdict-time recheck for EVERY code verdict
 			// (R3 #2 + R12 MEDIUM: findings against a moved head are as
 			// misleading as a stale approval).
-			const current = await this.tryDeriveHead(session);
+			const current = await this.tryDeriveHead(job.execution_id, cwd);
 			const frozen = job.frozen_head_sha?.toLowerCase();
 			if (!current || !frozen || current !== frozen) {
 				this.store.failCodexReviewJob(requestId, "head_moved");
@@ -1196,6 +1340,7 @@ export class ReviewRequestCoordinator {
 		this.store.recordCodexReviewApproved({
 			executionId: job.execution_id,
 			targetPrHeadSha: job.frozen_head_sha,
+			targetRepoIdentity: job.target_repo_identity,
 			issueId: job.issue_id ?? job.execution_id,
 			projectName: job.project_name,
 			verdictEventId: `review-job:${job.request_id}`,
@@ -1211,6 +1356,7 @@ export class ReviewRequestCoordinator {
 			review_type: "design" | "code";
 			round: number;
 			target_path?: string;
+			target_repo_identity: string;
 			frozen_head_sha?: string;
 			issue_id?: string;
 			execution_id: string;
@@ -1254,6 +1400,7 @@ export class ReviewRequestCoordinator {
 		const prior = this.store.latestDoneCodexReviewJob(
 			job.execution_id,
 			job.review_type,
+			job.target_repo_identity,
 		);
 		const priorContext = prior?.findings_json
 			? `Your previous findings were:\n${prior.findings_json}`
@@ -1328,26 +1475,19 @@ export class ReviewRequestCoordinator {
 		const db = this.deps.openCommDb(
 			this.deps.commDbPathFor(session.project_name),
 		);
+		let responseId: string;
 		try {
-			const existing = db.getResponse(questionId);
-			if (existing) {
-				if (!isOurResponse(existing, contentJson)) return false;
-			} else {
-				const inserted = db.insertResponseIfGateOpen({
-					questionId,
-					fromAgent: "bridge",
-					content: contentJson,
-					expectedOwner: binding.executionId,
-					expectedCheckpoint: `review_${binding.reviewType}`,
-				});
-				if (!inserted) {
-					// the gate stopped being open in the window — resolved,
-					// expired, or a racing answer landed. Re-read: only our own
-					// canonical bytes count as delivered.
-					const after = db.getResponse(questionId);
-					if (!after || !isOurResponse(after, contentJson)) return false;
-				}
-			}
+			const delivery = db.insertReviewResponseWithWakeIfGateOpen({
+				questionId,
+				fromAgent: "bridge",
+				content: contentJson,
+				expectedOwner: binding.executionId,
+				expectedCheckpoint: `review_${binding.reviewType}`,
+				summary: reviewVerdictSummary(contentJson),
+				queuedAtMs: Date.now(),
+			});
+			if (!delivery) return false;
+			responseId = delivery.responseId;
 		} finally {
 			db.close();
 		}
@@ -1372,6 +1512,7 @@ export class ReviewRequestCoordinator {
 					},
 					questionId,
 					reviewVerdictSummary(contentJson),
+					responseId,
 				);
 			} catch (err) {
 				this.log(
@@ -1402,15 +1543,16 @@ export class ReviewRequestCoordinator {
 		);
 	}
 
-	private async tryDeriveHead(session: Session): Promise<string | null> {
-		const wt = session.worktree_path;
-		if (!wt) return null;
+	private async tryDeriveHead(
+		executionId: string,
+		targetRepoPath: string,
+	): Promise<string | null> {
 		const derive = this.deps.deriveHead ?? deriveWorktreeHead;
 		try {
-			return await derive(wt);
+			return await derive(targetRepoPath);
 		} catch (err) {
 			this.log(
-				`head derivation failed for ${session.execution_id}: ${err instanceof Error ? err.message : String(err)}`,
+				`head derivation failed for ${executionId}: ${err instanceof Error ? err.message : String(err)}`,
 			);
 			return null;
 		}
@@ -1468,23 +1610,6 @@ export class ReviewRequestCoordinator {
 
 function str(v: unknown): string | undefined {
 	return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
-}
-
-/**
- * R14 HIGH-1 + R15 HIGH-1: a response is OURS only when the CommDB row's
- * from_agent is "bridge" AND its content is BYTE-IDENTICAL to the exact
- * payload this job would deliver. from_agent alone is forgeable too
- * (`flywheel-comm respond --lead bridge` is caller-controlled), but a forger
- * cannot reproduce the canonical serialization of a verdict it wants to
- * differ from — any deviation (verdict, findings, round, key order) makes
- * the answer FOREIGN and delivery is withheld.
- */
-function isOurResponse(
-	existing: { content: string; from_agent?: string },
-	expectedContentJson: string,
-): boolean {
-	if (existing.from_agent !== "bridge") return false;
-	return existing.content === expectedContentJson;
 }
 
 export const REVIEW_POLICY_NOTE = "medium_low_findings_are_non_blocking_v1";
