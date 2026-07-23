@@ -1,13 +1,14 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 3/4
-updated: 2026-07-23T18:25:27.669Z
-nextStep: Commit, push, and open the sandbox PR
+phaseCursor: 4/4
+updated: 2026-07-23T18:26:52.497Z
+nextStep: Await cross-family code review, then satisfy ship gate
 chunks: []
-pointers: {}
+pointers:
+  pr: https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/65
 ---
 
 # FLY-202 progress
-**phase**: implement (3/4)
-**next**: Commit, push, and open the sandbox PR
+**phase**: implement (4/4)
+**next**: Await cross-family code review, then satisfy ship gate
