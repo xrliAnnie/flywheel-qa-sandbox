@@ -1,0 +1,17 @@
+method=slot-only-manual-after-cmux-lease-refusal
+slot_lead_window_present=false
+bridge_port_19871_listening=false
+foreign_slot_worktrees=0
+trust_entries_before=2
+trust_entries_after=0
+claude_json_sha256_before=e26ce9caec7ce5591e3245881885ba864f8c6abd67992fed1a5a657a9c6ba471
+claude_json_sha256_after=4acee7b50240282db57477a50d23df28d205e61c2d5761a3eae61c917ae50ae1
+standard_paths_absent=true
+quarantine=/tmp/fly1439-q6-slot-only-quarantine-7af14cc5
+quarantined=comm-test-slot-1
+quarantined=slot-dir
+quarantined=slot-lock
+quarantined=standard-manifest
+quarantined=standard-pid
+quarantined=standard-session-id
+quarantine_deleted=true

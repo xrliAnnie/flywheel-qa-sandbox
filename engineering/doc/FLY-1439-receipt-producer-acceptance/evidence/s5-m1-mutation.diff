@@ -1,0 +1,13 @@
+diff --git a/external_plugins/discord/chat-receipt-runtime.ts b/external_plugins/discord/chat-receipt-runtime.ts
+index ea2e324..51aca67 100644
+--- a/external_plugins/discord/chat-receipt-runtime.ts
++++ b/external_plugins/discord/chat-receipt-runtime.ts
+@@ -208,7 +208,7 @@ export class ChatReceiptRuntime {
+         attempts: 0,
+         advisedAt: null,
+       }
+-      writeJsonAtomic(path, intent)
++      // FLY-1439 MUTATION: write-ahead removed
+       intentWritten = true
+     } catch (error) {
+       this.log(`settle recovery write failed for ${messageId}: ${errorText(error)}`)

@@ -1,0 +1,1 @@
+{"callId":"827401bf-2be7-4065-98ff-32c5c5320fd3","phase":"start","ts":"2026-07-23T11:02:57.708Z","argv":["chat-receipt","settle","--db","/Users/xiaorongli/.flywheel/comm/test-slot-1/comm.db","--lead","flywheel-test-1","--message-id","1529806006593261709","--reply-id","1529806019893526528","--json"],"mode":"hang-settle"}

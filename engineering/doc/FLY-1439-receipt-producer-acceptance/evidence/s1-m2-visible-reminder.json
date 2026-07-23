@@ -1,0 +1,8 @@
+[
+  {
+    "from": "bridge",
+    "text": "[discord-chat-receipt v1] {\"v\":1,\"receiptId\":\"chat:flywheel-test-1:990000000000000011\",\"leadId\":\"flywheel-test-1\",\"chatId\":\"1504277055406211142\",\"originChannelId\":\"1504277055406211142\",\"messageId\":\"990000000000000011\",\"authorId\":\"1493072948683341976\",\"authorName\":\"flywheel-test-2\",\"ts\":\"2026-07-23T10:32:25.000Z\",\"priority\":1,\"msgKind\":\"guild\",\"attachments\":[],\"text\":\"FLY-1439 S1 M2 patrol-positive control. This synthetic item exists only to prove the 2-minute patrol path; harness will close it through the real Lead lease after redelivery.\"}\nflywheel-test-2: FLY-1439 S1 M2 patrol-positive control. This synthetic item exists only to prove the 2-minute patrol path; harness will close it through the real Lead lease after redelivery.\n\n⚠️ 第 1 次重发,首投 2026-07-23T10:32:25.707Z,仍无处理收据。",
+    "timestamp": "2026-07-23T10:35:12.64205193265385115188592Z",
+    "read": false
+  }
+]

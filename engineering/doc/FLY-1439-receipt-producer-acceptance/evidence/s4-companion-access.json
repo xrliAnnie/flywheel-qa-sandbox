@@ -1,0 +1,14 @@
+{
+  "dmPolicy": "allowlist",
+  "allowFrom": [],
+  "allowBots": [
+    "1493072948683341976"
+  ],
+  "groups": {
+    "1504277055406211142": {
+      "requireMention": false,
+      "allowFrom": []
+    }
+  },
+  "pending": {}
+}

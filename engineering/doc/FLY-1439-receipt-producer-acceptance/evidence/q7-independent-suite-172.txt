@@ -1,0 +1,11 @@
+bun test v1.3.11 (af24e281)
+[chat-receipt] begin failed and spool write failed for 100000000000000011: EACCES: permission denied, mkdir '/Users/xiaorongli/.flywheel/runner-state/5514bd71-1165-4f95-becf-aa05cf5fa39b/browser-tmp/fly1437-runtime-ea7IyZ/chat-receipt-spool'
+[chat-receipt] broken-advised.json advisory failed: Discord unavailable
+[chat-receipt] inbound notify failed for 100000000000000011: MCP closed
+[chat-receipt] settle failed for 100000000000000011: database busy
+[chat-receipt] corrupt-advised.json advisory failed: Discord unavailable
+
+ 172 pass
+ 0 fail
+ 411 expect() calls
+Ran 172 tests across 8 files. [743.00ms]

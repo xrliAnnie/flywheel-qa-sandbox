@@ -1,0 +1,8 @@
+1:[lead] 04:22:52 Discord state: /tmp/flywheel-test-slot-1/discord-state-companion
+2:[lead] 04:22:52 Role: companion (projects.json companion:true) — skipping engineering-governance rules + capability
+13:[lead] 04:22:52 QA: skipping Discord plugin fork check for isolated CLAUDE_CONFIG_DIR: /tmp/flywheel-test-slot-1/claude-config
+19:[lead] 04:22:53 Companion: flywheel-terminal MCP NOT registered
+20:[lead] 04:22:53 Companion: flywheel-inbox MCP NOT registered
+21:[lead] 04:22:53 Companion: gbrain MCP NOT registered
+47:[lead] 04:23:08 [restart #1] Fresh start with session e25b5182-07f9-4df8-be9e-9a52c60effc9
+48:[lead] 04:23:08 Companion: skipping engineering bootstrap (persona via --agent identity.md)

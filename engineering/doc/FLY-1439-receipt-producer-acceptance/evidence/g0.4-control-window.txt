@@ -1,0 +1,52 @@
+FLY-1439 G0.4 controlled-observation window (exec 5514bd71, independent QA node)
+================================================================================
+
+PURPOSE: close the prior run's BLOCKING finding — known_marketplaces.json drift
+         could not be attributed because only a whole-file hash was retained.
+
+PROVENANCE OF THE BEFORE/AFTER BYTES (criterion 2)
+  Both snapshots are verbatim 'cp' copies of the live production file
+  ~/.claude/plugins/known_marketplaces.json, taken by exec 5514bd71 from this
+  QA node's own shell. No editing, no re-serialization. For each copy the
+  sha256, mtime and inode of the SOURCE file were recorded at copy time
+  (g0.4-control-t{0,1}-meta.txt). The archived JSON hashes back to the
+  recorded sha256, so the stored bytes are the observed bytes.
+  t0 = g0.4-control-t0-raw.json  (copied 2026-07-23T12:34:24Z)
+  t1 = g0.4-control-t1-raw.json  (copied 2026-07-23T12:38:56Z)
+
+QA-QUIESCENT PROOF: the FLY-1439 QA slot was fully torn down at 04:46 PDT
+  (11:46Z). Both t0 and t1 lie ~50min AFTER teardown. /tmp/flywheel-test-slot-1
+  absent, port 19871 closed, no FLY-1439 slot process alive.
+
+OBSERVED TRANSITION (t0 -> t1), file changed itself at 12:37:25Z:
+  --- engineering/doc/FLY-1439-receipt-producer-acceptance/evidence/g0.4-control-t0-raw.json	2026-07-23 06:01:32
+  +++ engineering/doc/FLY-1439-receipt-producer-acceptance/evidence/g0.4-control-t1-raw.json	2026-07-23 06:01:32
+  @@ -5,7 +5,7 @@
+         "repo": "anthropics/claude-plugins-official"
+       },
+       "installLocation": "/Users/xiaorongli/.claude/plugins/marketplaces/claude-plugins-official",
+  -    "lastUpdated": "2026-07-23T12:09:06.421Z"
+  +    "lastUpdated": "2026-07-23T12:37:25.132Z"
+     },
+     "everything-claude-code": {
+       "source": {
+
+CRITERION 1 — byte-exact positive match:
+  differing lines total: 2 (one field, one value)
+  masking ONLY claude-plugins-official.lastUpdated makes t0 and t1 byte-identical
+  => zero drift in any other field (source, repo, installLocation, or any other
+     marketplace entry). NOT a 'broadly similar' judgement.
+
+OBSERVED SERIES of known_marketplaces sha256 (all four values):
+  2441ff58...  pre-QA          (evidence/g0.4-production-pre.txt)
+  5e8d70a9...  post-teardown   (evidence/g0.4-production-post.txt)
+  ac42da6f...  12:09:06Z  <- moved with NO QA running
+  3278e783...  12:37:25Z  <- moved with NO QA running (t0->t1, raw captured)
+
+ALL OTHER PRODUCTION FIELDS: byte-identical pre-QA -> post-teardown -> 13:00Z
+  (evidence/g0.4-production-recheck-1300z.txt) — 11 of 12 fields never moved.
+
+CONCLUSION: known_marketplaces.json carries a self-moving ambient timestamp
+  written by Claude Code's marketplace metadata refresh. The drift seen inside
+  the QA window is the same delta class that provably continues without QA.
+  No QA-controllable production surface changed.

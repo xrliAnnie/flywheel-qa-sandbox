@@ -1,0 +1,114 @@
+[discord.js runtime type]
+2474:  public reference: MessageReference | null;
+
+[test shape]
+describe('sentMessageCarriesReference', () => {
+  it('settles only from the reference Discord persisted on the returned message', () => {
+    expect(sentMessageCarriesReference({
+      id: '100000000000000090',
+      reference: { messageId: baseMessage.messageId },
+    }, baseMessage.messageId)).toBe(true)
+    expect(sentMessageCarriesReference({
+      id: '100000000000000091',
+      reference: null,
+    }, baseMessage.messageId)).toBe(false)
+    expect(sentMessageCarriesReference({
+      id: '100000000000000092',
+      reference: { messageId: '100000000000000099' },
+    }, baseMessage.messageId)).toBe(false)
+  })
+
+[stock and isolated env shapes]
+  it('keeps a stock plugin install byte-compatible and disabled', () => {
+    expect(resolveRecorderMode({})).toEqual({ kind: 'disabled', reason: 'stock' })
+  })
+
+  it('treats companion and external markers as intentional isolation', () => {
+    expect(resolveRecorderMode({
+      FLYWHEEL_LEAD_COMPANION: '1',
+      FLYWHEEL_LEAD_ID: 'belle',
+      FLYWHEEL_COMM_CLI: '',
+      FLYWHEEL_COMM_DB: '  ',
+    })).toEqual({ kind: 'disabled', reason: 'isolated' })
+
+    expect(resolveRecorderMode({
+      FLYWHEEL_LEAD_EXTERNAL: '1',
+      FLYWHEEL_LEAD_ID: 'mufasa',
+    })).toEqual({ kind: 'disabled', reason: 'isolated' })
+  })
+
+  it('honours the explicit kill switch before classifying partial wiring', () => {
+    expect(resolveRecorderMode({
+      ...enabledEnv,
+      FLYWHEEL_CHAT_RECEIPTS: '0',
+    })).toEqual({ kind: 'disabled', reason: 'kill_switch' })
+
+    expect(resolveRecorderMode({
+      FLYWHEEL_LEAD_ID: 'flywheel-eng-lead',
+      FLYWHEEL_CHAT_RECEIPTS: '0',
+    })).toEqual({ kind: 'disabled', reason: 'kill_switch' })
+  })
+
+  it('fails loud for a non-isolated partial capability tuple', () => {
+    expect(resolveRecorderMode({
+      FLYWHEEL_LEAD_ID: 'flywheel-eng-lead',
+      FLYWHEEL_COMM_CLI: '/opt/flywheel-comm.js',
+      FLYWHEEL_COMM_DB: '',
+    })).toEqual({
+      kind: 'broken',
+      missing: ['FLYWHEEL_COMM_DB'],
+    })
+
+[real CLI guard and duplicate begin]
+  it('runs begin idempotently, completes delivery, and settles processed_at', async () => {
+    const commCli = process.env.FLYWHEEL_COMM_CLI
+    if (!commCli || !existsSync(commCli) || !Bun.which('sqlite3')) {
+      process.stderr.write(
+        'SKIP LOUD: real chat-receipt integration requires FLYWHEEL_COMM_CLI and sqlite3\n',
+      )
+      return
+    }
+    const dir = tempDir()
+    const dbPath = join(dir, 'comm.db')
+    const runtime = new ChatReceiptRuntime({
+      mode: {
+        kind: 'enabled',
+        commCli,
+        dbPath,
+        leadId: begin.leadId,
+      },
+      stateDir: dir,
+      notify: async () => {},
+      advise: async () => {},
+    })
+
+    expect(await runtime.begin(begin)).toBe('ok')
+    expect(await runtime.begin(begin)).toBe('ok')
+
+    const before = await Bun.$`sqlite3 ${dbPath} "select count(*) from lead_inbox where id='chat:flywheel-eng-lead:100000000000000011'"`.text()
+    expect(before.trim()).toBe('1')
+
+
+[real fs mode assertions]
+  it('fails open into an atomic 0700/0600 intent and preserves retry state', async () => {
+    const dir = tempDir()
+    const runtime = new ChatReceiptRuntime({
+      mode: enabledMode(),
+      stateDir: dir,
+      runCommand: async () => result('', 1, 'database unavailable'),
+      notify: async () => {},
+      advise: async () => {},
+    })
+
+    expect(await runtime.begin(begin)).toBe('spooled')
+    const spool = join(dir, 'chat-receipt-spool')
+    const intent = join(spool, `${begin.messageId}.json`)
+    expect(statSync(spool).mode & 0o777).toBe(0o700)
+    expect(statSync(intent).mode & 0o777).toBe(0o600)
+    expect(JSON.parse(readFileSync(intent, 'utf8'))).toMatchObject({
+      v: 1,
+      begin,
+      attempts: 0,
+      advisedAt: null,
+    })
+    expect(readdirSync(spool).filter(name => name.endsWith('.tmp'))).toEqual([])

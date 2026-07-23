@@ -1,0 +1,49 @@
+Scope: 22 of 23 workspace projects
+packages/agent-team-transport build$ tsc
+packages/core build$ tsc
+packages/dag-resolver build$ tsc
+packages/config build$ tsc
+packages/agent-team-transport build: Done
+packages/flywheel-cli build$ tsc && cp -r src/templates dist/templates
+packages/dag-resolver build: Done
+packages/qa-framework build$ tsc
+packages/config build: Done
+packages/token-usage build$ tsc
+packages/flywheel-cli build: Done
+packages/voice-core build$ tsc
+packages/core build: Done
+packages/qa-framework build: Done
+packages/token-usage build: Done
+packages/voice-core build: Done
+packages/flywheel-comm build$ tsc
+packages/gemini-agent build$ tsc
+packages/linear-event-transport build$ tsc
+packages/github-event-transport build$ tsc
+packages/linear-event-transport build: Done
+packages/slack-event-transport build$ tsc
+packages/github-event-transport build: Done
+packages/voice-headphone build$ tsc
+packages/gemini-agent build: Done
+packages/flywheel-comm build: Done
+packages/slack-event-transport build: Done
+packages/voice-headphone build: Done
+packages/claude-runner build$ tsc
+packages/terminal-mcp build$ tsc
+packages/inbox-mcp build$ tsc
+packages/terminal-mcp build: Done
+packages/inbox-mcp build: Done
+packages/claude-runner build: Done
+packages/edge-worker build$ tsc && npm run copy-prompts
+packages/edge-worker build: npm warn Unknown env config "approve-builds-auto". This will stop working in the next major version of npm.
+packages/edge-worker build: npm warn Unknown env config "recursive". This will stop working in the next major version of npm.
+packages/edge-worker build: npm warn Unknown env config "approve-builds". This will stop working in the next major version of npm.
+packages/edge-worker build: npm warn Unknown env config "verify-deps-before-run". This will stop working in the next major version of npm.
+packages/edge-worker build: npm warn Unknown env config "_jsr-registry". This will stop working in the next major version of npm.
+packages/edge-worker build: npm warn Unknown env config "overrides". This will stop working in the next major version of npm.
+packages/edge-worker build: > flywheel-edge-worker@0.2.24 copy-prompts
+packages/edge-worker build: > mkdir -p dist/prompts/subroutines && cp -r src/prompts/subroutines/*.md dist/prompts/subroutines/ && cp label-prompt-template.md dist/ && cp -r prompts dist/
+packages/edge-worker build: Done
+packages/voice-bridge build$ tsc
+packages/teamlead build$ tsc && rm -rf dist/static dist/workflow-seeds && cp -r static dist/static && cp -r src/workflow-seeds dist/workflow-seeds
+packages/voice-bridge build: Done
+packages/teamlead build: Done

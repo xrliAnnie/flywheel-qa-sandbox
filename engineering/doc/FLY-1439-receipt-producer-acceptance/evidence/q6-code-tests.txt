@@ -1,0 +1,26 @@
+Final repository verification
+=============================
+
+PASS packages/teamlead/scripts/__tests__/claude-lead-plugin-fork-check.test.sh
+  6 passed, 0 failed (includes canonical and aliased production-config rejection)
+PASS packages/teamlead/scripts/__tests__/claude-lead-agent-target.test.sh
+  2 passed, 0 failed
+PASS packages/teamlead/scripts/__tests__/claude-lead-config-root.test.sh
+  2 passed, 0 failed
+PASS scripts/hooks/test-reply-enforcer-install-integration.sh with an inherited
+  external CLAUDE_CONFIG_DIR
+  6 passed, 0 failed; config writes stayed in its fake HOME
+PASS scripts/hooks/test-restart-guard-install.sh with an inherited external
+  CLAUDE_CONFIG_DIR
+  11 passed, 0 failed; every installer invocation stayed in its fake HOME
+PASS scripts/__tests__/test-deploy-fly1389.test.sh
+  10 passed, 0 failed (includes preflight rejection of a missing config root)
+PASS evidence/shim-self-test.sh
+  passthrough bytes, 3 fault modes, atomic barriers, ledger states, restore hash
+PASS bash -n on changed shell and evidence scripts
+PASS git diff --check
+PASS pnpm -r build
+  22 of 23 workspace projects built successfully
+
+The full pinned plugin suite is recorded separately in s5-bun-test.txt:
+172 pass, 0 fail, 411 expect(), 8 files, with zero loud skip.

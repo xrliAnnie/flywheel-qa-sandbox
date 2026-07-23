@@ -29,6 +29,9 @@ cleanup() { rm -rf "$TMP_HOME"; }
 trap cleanup EXIT
 
 mkdir -p "$TMP_HOME/.claude"
+# Pin both configuration roots. HOME alone no longer forms a complete sandbox
+# now that the real installer intentionally honors CLAUDE_CONFIG_DIR.
+export CLAUDE_CONFIG_DIR="$TMP_HOME/.claude"
 # Pre-existing settings: an OLD manual enforcer + an unrelated SIBLING in the
 # same Stop group + an unrelated PostCompact hook (must all be respected).
 cat > "$TMP_HOME/.claude/settings.json" <<'EOF'

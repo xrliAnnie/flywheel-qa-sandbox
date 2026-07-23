@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1439 收据核销真机验收 — 设计</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,system-ui,sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.6; padding:24px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:24px; color:#1a365d; margin-bottom:4px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px; margin-bottom:16px; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.purple { border-left:4px solid #af52de; }
+  .card.gray { border-left:4px solid #86868b; }
+  h2 { font-size:17px; color:#1a365d; margin-bottom:10px; }
+  p { font-size:14px; margin-bottom:8px; }
+  .flow { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:12px 0; }
+  .step { background:#f5f5f7; border:1px solid #d2d2d7; border-radius:8px; padding:8px 12px; font-size:13px; text-align:center; flex:1; min-width:100px; }
+  .step b { display:block; font-size:13px; color:#1a365d; }
+  .step small { color:#86868b; font-size:11px; }
+  .arrow { color:#86868b; font-size:16px; flex:0; }
+  .step.hit { background:#eaf6ec; border-color:#34c759; }
+  .step.fault { background:#fdeeee; border-color:#ff3b30; }
+  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:8px; }
+  th { text-align:left; color:#86868b; font-weight:600; padding:6px 8px; border-bottom:1px solid #d2d2d7; }
+  td { padding:6px 8px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  .tag { display:inline-block; border-radius:5px; padding:1px 7px; font-size:11px; font-weight:600; }
+  .tag.g { background:#eaf6ec; color:#1d7a35; }
+  .tag.r { background:#fdeeee; color:#c22; }
+  .tag.b { background:#e8f1fd; color:#0a5ad4; }
+  .tag.p { background:#f4eafd; color:#af52de; }
+  ul { margin:6px 0 6px 18px; font-size:14px; }
+  li { margin-bottom:4px; }
+  code { font-family:'SF Mono',monospace; font-size:12px; background:#f5f5f7; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1439 · 插件收据核销 — 独立真机验收设计</h1>
+  <div class="sub">被测:插件 fork PR #17(版本钉死 bb0a1509)· 结论供 FLY-1437 上线门使用 · 2026-07-23</div>
+
+  <div class="card blue">
+    <h2>一句话</h2>
+    <p>在一个<b>完全隔离的测试房间</b>里,让真的 Discord 消息走完「记账 → 送达 → 回复销账」全流程,并故意制造崩溃和故障,证明这套「消息收据」系统在真机上确实做到:<b>该记的账都记上、崩溃了能补账、记账坏了也不耽误送信、不该记账的环境一条假账都没有</b>。</p>
+  </div>
+
+  <div class="card green">
+    <h2>1 · 核心流程:验收怎么跑</h2>
+    <p style="color:#86868b;font-size:13px;">正常链路(场景 S1)——每一步都在真机上留证据:</p>
+    <div class="flow">
+      <div class="step"><b>真消息进</b><small>测试机器人发到 Discord</small></div>
+      <div class="arrow">→</div>
+      <div class="step hit"><b>开账</b><small>账本出现「待处理」</small></div>
+      <div class="arrow">→</div>
+      <div class="step hit"><b>送达</b><small>Lead 真的看到了</small></div>
+      <div class="arrow">→</div>
+      <div class="step hit"><b>真回复</b><small>Lead 带引用回复</small></div>
+      <div class="arrow">→</div>
+      <div class="step hit"><b>销账</b><small>账本记「已处理」</small></div>
+      <div class="arrow">→</div>
+      <div class="step"><b>零重发</b><small>巡逻不再催</small></div>
+    </div>
+    <p style="font-size:13px;"><b>关键设计——阳性对照</b>:同时放一条<b>故意不回复</b>的消息,证明巡逻系统真的会催单。没有这条对照,「零重发」可能只是巡逻根本没开——那就是假绿。</p>
+    <div class="flow">
+      <div class="step fault"><b>崩溃注入</b><small>三个精确时点</small></div>
+      <div class="arrow">→</div>
+      <div class="step"><b>意图先落盘</b><small>崩溃前账已有底</small></div>
+      <div class="arrow">→</div>
+      <div class="step"><b>重启补账</b><small>自动恢复</small></div>
+      <div class="arrow">→</div>
+      <div class="step hit"><b>不重不漏</b><small>同一条消息只一笔账</small></div>
+    </div>
+    <p style="font-size:13px;">崩溃场景(S2)专门复现此前代码审查抓到的那个高危缺陷的修复:<b>销账凭证必须在动手之前先写到盘上</b>——真机上在「凭证已落盘、命令还在跑」的瞬间强杀进程,重启后账必须补对且只补一次。</p>
+  </div>
+
+  <div class="card purple">
+    <h2>2 · 环境与数据结构</h2>
+    <table>
+      <tr><th>部件</th><th>是什么</th><th>隔离方式</th></tr>
+      <tr><td><b>测试房间</b></td><td>独立的调度服务 + 一个真的 AI Lead</td><td>专用端口/目录/测试频道,和生产互不可见</td></tr>
+      <tr><td><b>被测插件</b></td><td>fork PR #17,版本钉死 bb0a1509</td><td>装进房间专属的配置目录,<b>生产插件一个字节不碰</b>;启动后按文件逐一比对哈希,证明跑的确实是这个版本</td></tr>
+      <tr><td><b>账本</b></td><td>房间自己的收据数据库</td><td>按测试项目名独立建库</td></tr>
+      <tr><td><b>故障开关</b></td><td>记账命令外面套一层「透明转发器」</td><td>平时原样放行并记录每次调用;测试时按开关精确制造「开账失败 / 送达卡死 / 销账卡死」</td></tr>
+    </table>
+    <p style="font-size:13px;margin-top:8px;">每条断言至少两路独立证据交叉:账本数据库、落盘的恢复文件、Discord 上真实可见的消息、转发器的调用流水。</p>
+  </div>
+
+  <div class="card amber">
+    <h2>3 · 关键取舍(和放弃了什么)</h2>
+    <table>
+      <tr><th>决策</th><th>选了</th><th>放弃了 · 为什么</th></tr>
+      <tr><td>怎么装被测插件</td><td>房间专属配置目录 + 启动后逐文件哈希验证</td><td><span class="tag r">拒绝</span> 临时替换生产插件——生产 Lead 若在窗口内重启会吃到未上线代码</td></tr>
+      <tr><td>怎么制造崩溃</td><td>转发器在精确时点写「信号文件」,脚本看到信号立即自动强杀(2 秒预算)</td><td><span class="tag r">拒绝</span> 人工掐秒表——系统 5 秒超时窗口里人手不可靠,测不准就成了假证据</td></tr>
+      <tr><td>测试消息的优先级</td><td>普通优先级(P1),把催单窗口缩到 2 分钟</td><td>创始人专属 P0 通道:身份来自生产配置文件,测试机器人天然不是创始人——流程完全同路,P0 留作可选补录</td></tr>
+      <tr><td>「勿扰环境零假账」怎么测</td><td>用真启动器以「陪伴角色」形态重启 Lead,发消息后核对账本零新增</td><td><span class="tag r">拒绝</span> 手捏环境变量模拟——必须是启动器真实生产的形态才算数</td></tr>
+      <tr><td>172 条自动化测试可信吗</td><td>独立复跑 + 三针「故意破坏」探针:把被测机制弄坏,对应测试必须变红,不红=测试是摆设</td><td><span class="tag r">拒绝</span> 只看测试全绿就采信——本周刚有过「测试绿但没测到真东西」的教训</td></tr>
+    </table>
+    <p style="font-size:13px;margin-top:8px;">设计经过 Codex 五轮评审(共 22 项修正全部采纳):包括「故障注入会被系统自愈机制修好」「杀进程会被守护进程自动拉起」「测试会话会误续上一个会话」等只有读了真代码才能发现的坑,全部在计划里冻结了应对协议。</p>
+  </div>
+
+  <div class="card gray">
+    <h2>4 · 诚实边界:这次验收不覆盖什么</h2>
+    <ul>
+      <li><b>催单升级到创始人的链路</b>——上游 FLY-1426 已经真机验收过(有真 Discord 消息为证),不重测;</li>
+      <li><b>私聊 / 圆桌频道变体</b>——由插件自带的自动化测试覆盖,真机走主频道;</li>
+      <li><b>创始人专属 P0 优先级的真机腿</b>——见上表,流程同路,可选补录;</li>
+      <li><b>代码审查</b>——Codex 已两轮通过(独立的门),本验收不重复消费;</li>
+      <li>版本钉死 bb0a1509:<b>代码若有任何变动,本次结论自动作废、必须重测</b>;</li>
+      <li>执行隔离:跑验收的执行者与写这份代码的任何会话完全分离。</li>
+    </ul>
+  </div>
+
+  <div class="card blue">
+    <h2>接下来</h2>
+    <p>实施节点按计划执行六个切片:故障转发器与安全开关 → 环境搭建与四道冒烟门 → 全周期+崩溃恢复 → 故障容错+勿扰环境 → 测试口径复核 → 出具验收报告。<b>结论(通过/不通过)连同全部证据</b>回到 FLY-1439,由 Lead 转录进 FLY-1437,决定其能否上线。</p>
+  </div>
+</div>
+</body>
+</html>

@@ -185,6 +185,9 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
       LEAD_WORKSPACE="/malicious/prod-workspace" \
       CLAUDE_CONFIG_DIR="/malicious/claude-config" \
+      TEST_SKIP_PLUGIN_FORK_CHECK=1 \
+      TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR="/malicious/claude-config" \
+      TEST_LEAD_CLAUDE_CONFIG_DIR="${TEST_LEAD_CLAUDE_CONFIG_DIR:-}" \
       FLYWHEEL_LEAD_MODEL="malicious-model" \
       FLYWHEEL_LEAD_EFFORT="malicious-effort" \
       bash "$FR/scripts/test-deploy.sh" "$slot" "$@" \
@@ -223,6 +226,9 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
   if [[ -f "$LE" ]]; then
     grep -q "^LEAD_WORKSPACE=${E_SLOT_DIR}/lead-workspace$" "$LE" || { E_OK=0; fail "E/P0-a: LEAD_WORKSPACE not pinned slot-local" "$(grep '^LEAD_WORKSPACE=' "$LE" || true)"; }
     grep -q "^CLAUDE_CONFIG_DIR=" "$LE" && { E_OK=0; fail "E/P0-a: CLAUDE_CONFIG_DIR leaked into Lead env"; }
+    grep -q "^TEST_SKIP_PLUGIN_FORK_CHECK=" "$LE" && { E_OK=0; fail "E/P0-a: TEST_SKIP_PLUGIN_FORK_CHECK leaked into Lead env"; }
+    grep -q "^TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR=" "$LE" \
+      && { E_OK=0; fail "E/P0-a: fork-check expected config leaked into Lead env"; }
     grep -q "^FLYWHEEL_LEAD_MODEL=" "$LE" && { E_OK=0; fail "E/P0-a: FLYWHEEL_LEAD_MODEL leaked into Lead env"; }
     grep -q "^FLYWHEEL_LEAD_EFFORT=" "$LE" && { E_OK=0; fail "E/P0-a: FLYWHEEL_LEAD_EFFORT leaked into Lead env"; }
     grep -q "^DISCORD_BOT_TOKEN=tok-31$" "$LE" || { E_OK=0; fail "E: slot token not delivered"; }
@@ -247,6 +253,34 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
     || fail "E2: teardown left the lock behind"
 else
   fail "E: Lead-ful hermetic deploy failed" "$(tail -20 "$E_ERR")"
+  run_teardown "$FH1" "$LEAD_SLOT" || true
+fi
+
+# ── I: explicit isolated Claude config injection (FLY-1439) ────────────────
+# The default E case above proves an inherited caller CLAUDE_CONFIG_DIR is
+# still scrubbed. This opt-in case proves the dedicated QA knob is appended
+# after `env -u CLAUDE_CONFIG_DIR`, and that the launcher's fail-closed
+# expected-path sentinel is derived from the exact same value.
+rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}"
+I_OUT="$SB/i-out.json"; I_ERR="$SB/i-err.log"
+I_CONFIG="$SB/isolated-claude-config"
+mkdir -p "$I_CONFIG/plugins"
+if TEST_LEAD_CLAUDE_CONFIG_DIR="$I_CONFIG" \
+    run_deploy "$FH1" "$LEAD_SLOT" "$I_OUT" "$I_ERR"; then
+  I_SLOT_DIR="/tmp/flywheel-test-slot-${LEAD_SLOT}"
+  I_LE="$I_SLOT_DIR/lead-env.txt"
+  I_OK=1
+  grep -q "^CLAUDE_CONFIG_DIR=${I_CONFIG}$" "$I_LE" \
+    || { I_OK=0; fail "I: opt-in CLAUDE_CONFIG_DIR did not reach Lead"; }
+  grep -q "^TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR=${I_CONFIG}$" "$I_LE" \
+    || { I_OK=0; fail "I: expected config sentinel did not match injected config"; }
+  grep -q "^TEST_SKIP_PLUGIN_FORK_CHECK=1$" "$I_LE" \
+    || { I_OK=0; fail "I: isolated config did not enable guarded fork-check skip"; }
+  [[ "$I_OK" == "1" ]] \
+    && pass "I: TEST_LEAD_CLAUDE_CONFIG_DIR opt-in reaches Lead with byte-identical expected-path sentinel"
+  run_teardown "$FH1" "$LEAD_SLOT"
+else
+  fail "I: isolated config deploy failed" "$(tail -20 "$I_ERR")"
   run_teardown "$FH1" "$LEAD_SLOT" || true
 fi
 
@@ -332,6 +366,19 @@ else
   grep -q "lead-ready-timeout" "$X2_ERR" \
     && pass "X2: invalid --lead-ready-timeout rejected before preflight" \
     || fail "X2: wrong failure point" "$(cat "$X2_ERR")"
+fi
+
+# Invalid isolated roots fail before preflight (no gh in PATH, as above).
+X2B_ERR="$SB/x2b-err.log"
+if ( env -i HOME="$FH1" PATH="/usr/bin:/bin:$(dirname "$(command -v jq)")" \
+    TEST_LEAD_CLAUDE_CONFIG_DIR="$SB/does-not-exist" \
+    bash "$FR/scripts/test-deploy.sh" "$LEAD_SLOT" \
+    >/dev/null 2> "$X2B_ERR" ); then
+  fail "X2b: missing TEST_LEAD_CLAUDE_CONFIG_DIR must be rejected"
+else
+  grep -q "TEST_LEAD_CLAUDE_CONFIG_DIR must be an existing absolute directory" "$X2B_ERR" \
+    && pass "X2b: missing isolated config rejected before preflight" \
+    || fail "X2b: wrong failure point" "$(cat "$X2B_ERR")"
 fi
 
 # Extra-lead path source sentinels (campaign not hermetically E2E-runnable):

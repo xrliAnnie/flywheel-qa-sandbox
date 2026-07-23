@@ -111,7 +111,11 @@ else
 fi
 
 # ═════ End-to-end: run the real installer against a fake HOME ════════════════
-run_installer() { HOME="$FAKE_HOME" bash "$INSTALLER" "$@" 2>/dev/null; }
+run_installer() {
+  HOME="$FAKE_HOME" \
+    CLAUDE_CONFIG_DIR="$FAKE_HOME/.claude" \
+    bash "$INSTALLER" "$@" 2>/dev/null
+}
 
 # ── T7: fresh install — bin file + settings entry ────────────────────────────
 echo "T7: e2e fresh install"

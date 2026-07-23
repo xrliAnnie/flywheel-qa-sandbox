@@ -1,0 +1,7 @@
+mcp_pid=48216
+mcp_command=bun /tmp/flywheel-test-slot-1/claude-config/plugins/cache/claude-plugins-official/discord/0.0.4/server.ts
+signal_wall_ms=1784804579174
+mcp_dead=true
+mcp_dead_wall_ms=1784804579220
+window_kill_status=0
+window_kill_wall_ms=1784804581973

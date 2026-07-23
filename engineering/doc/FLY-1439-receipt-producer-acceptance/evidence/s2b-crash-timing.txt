@@ -1,0 +1,12 @@
+message_id=1529804847509934192
+call_id=f53d2eff-065a-4ff8-b46c-b8bb8ff03a13
+shim_pid=26116
+old_window=@1284
+old_pane_pid=24056
+barrier_ts=2026-07-23T10:58:18.348Z
+barrier_observed_wall_ms=1784804298353
+barrier_age_at_observation_ms=5
+kill_wall_ms=1784804298356
+barrier_to_kill_ms=2.788
+kill_command_status=pending
+kill_command_final_status=0

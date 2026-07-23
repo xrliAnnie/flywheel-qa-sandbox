@@ -1,0 +1,15 @@
+ external_plugins/discord/chat-receipt-runtime.ts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+diff --git a/external_plugins/discord/chat-receipt-runtime.ts b/external_plugins/discord/chat-receipt-runtime.ts
+index ea2e324..9362c74 100644
+--- a/external_plugins/discord/chat-receipt-runtime.ts
++++ b/external_plugins/discord/chat-receipt-runtime.ts
+@@ -142,7 +142,7 @@ export class ChatReceiptRuntime {
+     }
+     try {
+       this.ensureSpoolDir()
+-      this.writeIntent(this.intentPath(args.messageId), intent)
++      void intent
+       return 'spooled'
+     } catch (error) {
+       this.log(`begin failed and spool write failed for ${args.messageId}: ${errorText(error)}`)

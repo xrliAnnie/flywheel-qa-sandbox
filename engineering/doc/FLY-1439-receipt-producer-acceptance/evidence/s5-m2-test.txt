@@ -1,0 +1,37 @@
+bun test v1.3.11 (af24e281)
+
+chat-receipt-recorder.test.ts:
+(pass) resolveRecorderMode > enables only when the complete Flywheel capability tuple exists
+(pass) resolveRecorderMode > keeps a stock plugin install byte-compatible and disabled
+(pass) resolveRecorderMode > treats companion and external markers as intentional isolation
+(pass) resolveRecorderMode > honours the explicit kill switch before classifying partial wiring
+(pass) resolveRecorderMode > fails loud for a non-isolated partial capability tuple
+(pass) resolveFounderId > does not read the host Flywheel env outside enabled mode [0.53ms]
+(pass) resolveFounderId > prefers the live ~/.flywheel/.env value over inherited process env
+(pass) resolveFounderId > uses the last uncommented live assignment during config rotation [0.06ms]
+(pass) resolveFounderId > falls back to inherited env and rejects non-snowflakes
+(pass) buildBeginArgs > builds the CLI envelope and gives the founder P0 priority [0.07ms]
+(pass) buildBeginArgs > uses P1 when founder identity is unavailable and classifies all message kinds [0.03ms]
+(pass) spool intent codec > round-trips durable retry state [0.13ms]
+(pass) spool intent codec > rejects malformed intents and separates intent filenames from metadata [0.05ms]
+(pass) sentMessageCarriesReference > settles only from the reference Discord persisted on the returned message [0.02ms]
+270 |   const stockTool = 'Reply on Discord. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for threading, and files (absolute paths) to attach images or other files.'
+271 |   const stockReplyTo = 'Message ID to thread under. Use message_id from the inbound <channel> block, or an id from fetch_messages.'
+272 |
+273 |   it('preserves all three stock strings exactly when receipts are not enabled', () => {
+274 |     const disabled = { kind: 'disabled', reason: 'stock' } as const
+275 |     expect(receiptInboundInstruction(disabled)).toBe(stockInbound)
+                                                      ^
+error: expect(received).toBe(expected)
+
+Expected: "Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_count, the attachments attribute lists name/type/size — call download_attachment(chat_id, message_id) to fetch them. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn't need a quote-reply, omit reply_to for normal responses."
+Received: "Messages from Discord arrive az <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_count, the attachments attribute lists name/type/size — call download_attachment(chat_id, message_id) to fetch them. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn't need a quote-reply, omit reply_to for normal responses."
+
+      at <anonymous> (/private/tmp/flywheel-test-slot-1/s5-mutation-m2/external_plugins/discord/chat-receipt-recorder.test.ts:275:49)
+(fail) receipt-aware MCP copy > preserves all three stock strings exactly when receipts are not enabled [0.09ms]
+(pass) receipt-aware MCP copy > requires explicit reply_to only for receipted messages and explains roundtable ack
+
+ 15 pass
+ 1 fail
+ 43 expect() calls
+Ran 16 tests across 1 file. [14.00ms]

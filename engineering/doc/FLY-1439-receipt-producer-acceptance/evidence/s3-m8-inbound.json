@@ -1,0 +1,11 @@
+{
+  "id": "1529809599803162738",
+  "channel_id": "1504277055406211142",
+  "author": {
+    "id": "1493072948683341976",
+    "username": "product-lead-test",
+    "bot": true
+  },
+  "content": "FLY-1439 S3 M8 writable-spool begin failure. Do not reply. If this message later arrives with [redelivery], do not reply; the QA driver will close the receipt from the real Lead pane.",
+  "message_reference": null
+}

@@ -1,0 +1,11 @@
+{
+  "id": "1529808058148982945",
+  "channel_id": "1504277055406211142",
+  "author": {
+    "id": "1493068669444427927",
+    "username": "flywheel-test-1",
+    "bot": true
+  },
+  "content": "⚠️ Chat receipt could not persist its recovery intent for message 1529808056618188831; delivery continued, but receipt recovery needs operator attention.",
+  "message_reference": null
+}

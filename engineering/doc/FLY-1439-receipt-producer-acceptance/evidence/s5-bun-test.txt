@@ -1,0 +1,199 @@
+bun test v1.3.11 (af24e281)
+
+mention-patterns.test.ts:
+(pass) resolveGroupMentionPatterns (FLY-898) > no per-group field → falls back to global (byte-compat) [0.02ms]
+(pass) resolveGroupMentionPatterns (FLY-898) > undefined policy → falls back to global
+(pass) resolveGroupMentionPatterns (FLY-898) > EMPTY per-group array → id-only, does NOT fall back to global [0.03ms]
+(pass) resolveGroupMentionPatterns (FLY-898) > non-empty per-group array → overrides global
+(pass) resolveGroupMentionPatterns (FLY-898) > no per-group and no global → undefined (isMentioned then id-only) [0.03ms]
+(pass) resolveGroupMentionPatterns (FLY-898) > EMPTY per-group with no global → [] (still id-only, not undefined)
+
+retry.test.ts:
+(pass) classifySendError > treats a discord.js RateLimitError as retryable and extracts the wait [0.06ms]
+(pass) classifySendError > treats a REAL @discordjs/rest RateLimitError as retryable (name carries the route, status is undefined) [0.07ms]
+(pass) classifySendError > treats a routed RateLimitError name string as retryable [0.01ms]
+(pass) classifySendError > treats HTTP 429 as retryable
+(pass) classifySendError > treats 5xx as retryable (no retry-after)
+(pass) classifySendError > treats 4xx (non-429) as permanent — do not retry
+(pass) classifySendError > treats network / timeout errors as retryable (incl. cause.code and undici codes) [0.04ms]
+(pass) classifySendError > treats unknown / malformed errors as NOT retryable (avoid duplicate sends) [0.01ms]
+(pass) pickRetryAfterMs > uses either field, and takes the larger when both are present
+(pass) pickRetryAfterMs > honours retryAfter when timeToReset is 0 (sublimit divergence — never retry-now) [0.02ms]
+(pass) pickRetryAfterMs > returns undefined when absent or non-finite/negative [0.01ms]
+(pass) parseIntInRange > parses a valid in-range integer [0.04ms]
+(pass) parseIntInRange > falls back when missing
+(pass) parseIntInRange > rejects malformed / non-strict-integer strings (falls back)
+(pass) parseIntInRange > rejects out-of-range values (falls back)
+(pass) parseIntInRange > accepts surrounding whitespace around a valid integer
+(pass) computeBackoffMs > honours retry-after, capped
+(pass) computeBackoffMs > grows exponentially and is capped [0.09ms]
+(pass) computeBackoffMs > adds bounded jitter from the injected rng, never exceeding cap [0.01ms]
+(pass) sendWithRetry > returns immediately on first success — no sleeps [0.15ms]
+(pass) sendWithRetry > retries transient failures then succeeds [0.09ms]
+(pass) sendWithRetry > gives up after maxRetries and throws the original error [0.06ms]
+(pass) sendWithRetry > does NOT retry permanent errors — throws immediately [0.02ms]
+(pass) sendWithRetry > respects Retry-After from a rate-limit error
+(pass) sendWithRetry > reports each retry via onRetry [0.14ms]
+
+roundtable-shared-routing.test.ts:
+(pass) parseSharedRoundtableRouting (pure, snowflake-only) > valid snowflake channelId → extracted [0.05ms]
+(pass) parseSharedRoundtableRouting (pure, snowflake-only) > extra/token-ish fields are DROPPED — only channelId survives
+(pass) parseSharedRoundtableRouting (pure, snowflake-only) > trims whitespace around a valid snowflake
+(pass) parseSharedRoundtableRouting (pure, snowflake-only) > non-snowflake channelId → {} (not a numeric id)
+(pass) parseSharedRoundtableRouting (pure, snowflake-only) > too-short id → {} (must be 15-21 digits)
+(pass) parseSharedRoundtableRouting (pure, snowflake-only) > empty channelId → {}
+(pass) parseSharedRoundtableRouting (pure, snowflake-only) > non-string channelId → {} [0.02ms]
+(pass) parseSharedRoundtableRouting (pure, snowflake-only) > invalid JSON → {}
+(pass) parseSharedRoundtableRouting (pure, snowflake-only) > missing channelId key → {}
+(pass) loadSharedRoundtableRouting (IO + env precedence + warnings) > default path missing (ENOENT) → {} and SILENT (byte-compat) [0.10ms]
+(pass) loadSharedRoundtableRouting (IO + env precedence + warnings) > explicit FLYWHEEL_ROUNDTABLE_CONFIG_FILE unreadable (ENOENT) → {} and WARN
+(pass) loadSharedRoundtableRouting (IO + env precedence + warnings) > default path with non-ENOENT read error (EACCES) → {} and WARN
+(pass) loadSharedRoundtableRouting (IO + env precedence + warnings) > present + valid → {channelId}, no warn
+(pass) loadSharedRoundtableRouting (IO + env precedence + warnings) > present but invalid channelId → {} and WARN
+
+fly306-qa-adversarial.test.ts:
+(pass) QA claim-3 idempotency — delivered chunks never re-sent > middle chunk (b) of 3 exhausts → a sent exactly once, c never attempted [0.28ms]
+(pass) QA claim-3 idempotency — delivered chunks never re-sent > last chunk (c) of 3 exhausts → a and b each delivered exactly once [0.09ms]
+(pass) QA claim-3 idempotency — delivered chunks never re-sent > b succeeds AFTER 2 transient retries, THEN c exhausts → a once, b once (no dup), c exhausts [0.07ms]
+(pass) QA claim-3 idempotency — delivered chunks never re-sent > chunk a recovers (transient→success) then b exhausts → a delivered exactly once [0.03ms]
+(pass) QA claim-3 idempotency — delivered chunks never re-sent > all chunks succeed first try → each sent exactly once, ids in order [0.05ms]
+(pass) QA claim-4 guidance tail — appended exactly once, never duplicated > partial failure: "do NOT resend" guidance appears exactly once [0.14ms]
+(pass) QA claim-4 guidance tail — appended exactly once, never duplicated > zero delivered (first chunk exhausts) → NO guidance tail at all [0.07ms]
+(pass) QA claim-4 guidance tail — appended exactly once, never duplicated > guidance remaining-count matches the unsent tail (delivered 2 of 5 → remaining 3) [0.04ms]
+(pass) QA claim-5 kill-switch — maxRetries:0 disables the retry loop > sendWithRetry maxRetries:0 on a RETRYABLE error → fn called once, no sleep, original thrown [0.05ms]
+(pass) QA claim-5 kill-switch — maxRetries:0 disables the retry loop > sendReplyChunks with maxRetries:0 → transient on chunk 0 fails immediately (1 send call) [0.02ms]
+(pass) QA claim-6 non-transient — not retried > 404 / 401 / 400 / 403 → not retryable
+(pass) QA claim-6 non-transient — not retried > a plain Error (no shape) and unknown 4xx-ish names → not retryable, fails fast [0.04ms]
+(pass) QA claim-6 non-transient — not retried > a "RateLimiter"-ish name that does NOT start with RateLimitError is not a false positive
+(pass) QA claim-1/2 — boundary retries + Retry-After symmetry > succeeds on the VERY LAST allowed attempt (maxRetries transient fails, then ok) [0.08ms]
+(pass) QA claim-1/2 — boundary retries + Retry-After symmetry > one more transient than allowed → exhausts and throws original [0.06ms]
+(pass) QA claim-1/2 — boundary retries + Retry-After symmetry > Retry-After takes the LARGER field in BOTH directions [0.02ms]
+(pass) QA robustness — malformed RateLimitError shapes never break backoff > negative retry-after fields → retryable but retryAfterMs undefined (falls to exponential) [0.02ms]
+(pass) QA robustness — malformed RateLimitError shapes never break backoff > NaN retry-after fields → retryAfterMs undefined
+(pass) QA robustness — malformed RateLimitError shapes never break backoff > Infinity retry-after → rejected (not finite) → undefined
+(pass) QA robustness — malformed RateLimitError shapes never break backoff > string-typed retry-after ("5000") → rejected (duck-type guards number only)
+(pass) QA robustness — malformed RateLimitError shapes never break backoff > bare RateLimitError name with no wait fields → retryable, no retryAfterMs
+(pass) QA robustness — malformed RateLimitError shapes never break backoff > computeBackoffMs is clamped to >= 0 even if handed a negative retryAfterMs [0.01ms]
+(pass) QA robustness — malformed RateLimitError shapes never break backoff > computeBackoffMs never overflows the cap for an absurd attempt index
+(pass) QA robustness — malformed RateLimitError shapes never break backoff > a transient send that retries with a malformed RateLimitError still eventually succeeds
+(pass) QA edge — timeToReset:0 means retry-now (documented behaviour) > pickRetryAfterMs({timeToReset:0}) is 0, not undefined
+(pass) QA edge — timeToReset:0 means retry-now (documented behaviour) > a 429 with timeToReset:0 retries with a 0ms delay (then succeeds)
+(pass) QA invariant — throwing onSent never under-reports delivered count > onSent throws on the 2nd chunk → error still counts it as delivered (2 of 3) [0.14ms]
+
+reply-send.test.ts:
+(pass) buildChunkPayload > attaches files only to the first chunk
+(pass) buildChunkPayload > quote-replies on the first chunk only when replyMode=first
+(pass) buildChunkPayload > quote-replies on every chunk when replyMode=all, never when off
+(pass) sendReplyChunks > sends every chunk once on success and returns ids
+(pass) sendReplyChunks > reports the exact payload and Discord-returned message to onSent
+(pass) sendReplyChunks > awaits onSent for a referenced first chunk even when a later chunk fails [0.34ms]
+(pass) sendReplyChunks > retries a transient failure within a chunk without duplicating earlier chunks
+(pass) sendReplyChunks > does NOT re-send an already-delivered chunk when a later chunk exhausts retries [0.15ms]
+(pass) sendReplyChunks > omits the resend-guidance when nothing was delivered [0.07ms]
+(pass) sendReplyChunks > does not retry a permanent error — fails fast [0.02ms]
+(pass) sendReplyChunks > retries a real @discordjs/rest RateLimitError through the loop [0.06ms]
+
+chat-receipt-runtime.test.ts:
+(pass) real built chat-receipt CLI > runs begin idempotently, completes delivery, and settles processed_at [550.31ms]
+(pass) begin failure and durable spool > fails open into an atomic 0700/0600 intent and preserves retry state [1.74ms]
+[chat-receipt] begin failed and spool write failed for 100000000000000011: EACCES: permission denied, mkdir '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly1437-runtime-OUkiuE/chat-receipt-spool'
+(pass) begin failure and durable spool > surfaces an immediate advisory when the spool itself cannot be written [1.54ms]
+[chat-receipt] broken-advised.json advisory failed: Discord unavailable
+(pass) broken wiring advisory > persists detected-before-send and latches only after a successful visible advisory [1.21ms]
+(pass) producer accept boundary > marks complete only after the inbound notification has resolved [1.02ms]
+[chat-receipt] inbound notify failed for 100000000000000011: MCP closed
+(pass) producer accept boundary > does not complete when notification delivery rejects [1.67ms]
+(pass) recovery worker > does not turn a successful settle into reply failure when the intent path is unusable [1.53ms]
+(pass) recovery worker > persists the settle proof before the CLI runs (write-ahead) [1.19ms]
+[chat-receipt] settle failed for 100000000000000011: database busy
+(pass) recovery worker > persists a failed settle proof and recovers it after process restart [2.78ms]
+(pass) recovery worker > drains a failed begin idempotently without completing it directly [1.39ms]
+(pass) recovery worker > skips active accepts, then redelivers and completes after the accept releases [0.89ms]
+(pass) recovery worker > quarantines a 48h-old row before notify and completes only after notify resolves [0.60ms]
+(pass) recovery worker > coalesces kicks and continues across a five-intent pass until finite work is empty [4.39ms]
+(pass) recovery worker > preserves a kick that lands during a zero-work pass and drains the new intent [1.65ms]
+[chat-receipt] corrupt-advised.json advisory failed: Discord unavailable
+(pass) recovery worker > preserves corrupt intents, ignores metadata filenames, and retries the pending advisory [1.96ms]
+
+roundtable-thread-policy.test.ts:
+(pass) loadRoundtableConfig > nothing set (no env channel, no routing) → undefined (byte-compat OFF) [0.04ms]
+(pass) loadRoundtableConfig > FLY-569/FLY-676: env channel id without flags → reply routing + autoContinue DEFAULT-ON [0.02ms]
+(pass) loadRoundtableConfig > FLY-676: explicit opt-out THREAD_AUTOCONTINUE=0 → kill-switch (mention-required)
+(pass) loadRoundtableConfig > FLY-676: explicit THREAD_BUDGET overrides the default 12
+(pass) loadRoundtableConfig > FLY-569: explicit opt-out REPLY_IN_THREAD=0 → reply routing OFF [0.04ms]
+(pass) loadRoundtableConfig > FLY-569/FLY-676: routing channel only (env empty) → channelId from routing + reply+autoContinue default-on (Belle path)
+(pass) loadRoundtableConfig > FLY-569: routing channel + explicit opt-out → OFF
+(pass) loadRoundtableConfig > FLY-569: env channel wins over routing channel
+(pass) loadRoundtableConfig > full enable (explicit =1 still works)
+(pass) loadRoundtableConfig > reply flag set but no channel id anywhere → undefined (can't identify roundtable)
+(pass) classifyThreadCreate / threadGetConfirmsExistence (FLY-569 R1#2) > 2xx create → created [0.10ms]
+(pass) classifyThreadCreate / threadGetConfirmsExistence (FLY-569 R1#2) > 400/409 with code 160004 (already has thread) → exists [0.01ms]
+(pass) classifyThreadCreate / threadGetConfirmsExistence (FLY-569 R1#2) > 403/404/429/5xx → confirm-via-get (maybe host/Bridge already created it)
+(pass) classifyThreadCreate / threadGetConfirmsExistence (FLY-569 R1#2) > other 4xx (e.g. 400 without 160004) → failed
+(pass) classifyThreadCreate / threadGetConfirmsExistence (FLY-569 R1#2) > threadGetConfirmsExistence: only 200 confirms [0.02ms]
+(pass) resolveRoundtableInboundChatId (R1 reply routing) > top-level roundtable message → chat_id rewritten to thread id (== msg id) [0.03ms]
+(pass) resolveRoundtableInboundChatId (R1 reply routing) > message already inside a roundtable topic thread → chat_id unchanged (stays in thread) [0.01ms]
+(pass) resolveRoundtableInboundChatId (R1 reply routing) > non-roundtable channel → unchanged [0.01ms]
+(pass) resolveRoundtableInboundChatId (R1 reply routing) > replyInThread OFF → top-level roundtable unchanged (byte-compat)
+(pass) decideTopicThreadHandling — self-skip & membership fail-closed > own message → never handle (self-skip)
+(pass) decideTopicThreadHandling — self-skip & membership fail-closed > membership unknown → fail-closed: only handle on explicit mention, no relax
+(pass) decideTopicThreadHandling — self-skip & membership fail-closed > non-member bot message (no @) → drop (only members auto-continue)
+(pass) decideTopicThreadHandling — bounded bot-only budget (Codex R1#1 core) > UNSEEDED thread: a bot trigger drops (missing budget = exhausted, NOT a reset)
+(pass) decideTopicThreadHandling — bounded bot-only budget (Codex R1#1 core) > seeded thread: member bot message (no @) consumes budget; stops after N
+(pass) decideTopicThreadHandling — bounded bot-only budget (Codex R1#1 core) > bot @-mention does NOT bypass/reset budget — still consumes, still stops [0.12ms]
+(pass) decideTopicThreadHandling — bounded bot-only budget (Codex R1#1 core) > non-bot HUMAN message resets budget; bot can continue again
+(pass) decideTopicThreadHandling — bounded bot-only budget (Codex R1#1 core) > 2-bot adversarial: A and B always @ each other → total auto-continues bounded, then stops [0.05ms]
+(pass) decideTopicThreadHandling — bounded bot-only budget (Codex R1#1 core) > per-thread isolation: budget is independent per thread [0.04ms]
+(pass) decideTopicThreadHandling — bounded bot-only budget (Codex R1#1 core) > autoContinue OFF (kill-switch) → falls back to mention-required (byte-compat) [0.01ms]
+(pass) decideTopicThreadHandling — FLY-576 non-bot (founder) relaxation, DEFAULT-ON > human MEMBER, no @, autoContinue OFF → handle (THE FIX: founder surfaces without @) [0.01ms]
+(pass) decideTopicThreadHandling — FLY-576 non-bot (founder) relaxation, DEFAULT-ON > human NON-member, no @, autoContinue OFF → drop (still needs @ when not a member)
+(pass) decideTopicThreadHandling — FLY-576 non-bot (founder) relaxation, DEFAULT-ON > human NON-member, explicit @, autoContinue OFF → handle (explicit @ always works)
+(pass) decideTopicThreadHandling — FLY-576 non-bot (founder) relaxation, DEFAULT-ON > human member message resets the bot budget even with autoContinue OFF
+(pass) decideTopicThreadHandling — FLY-576 non-bot (founder) relaxation, DEFAULT-ON > human member, no @, autoContinue ON → still handle (unchanged)
+(pass) decideTopicThreadHandling — FLY-576 non-bot (founder) relaxation, DEFAULT-ON > bot path UNCHANGED by the non-bot relaxation: bot member no @ autoContinue OFF → drop (no melee)
+(pass) shouldProbeTopicThreadMembership (FLY-576 R1#1 — pure probe-decision seam) > non-bot, no @ → probe (FLY-576 founder path needs membership)
+(pass) shouldProbeTopicThreadMembership (FLY-576 R1#1 — pure probe-decision seam) > non-bot, explicit @ → skip probe (decided by isExplicitMention; avoid 5s timeout)
+(pass) shouldProbeTopicThreadMembership (FLY-576 R1#1 — pure probe-decision seam) > bot, autoContinue OFF → skip probe (bot is mention-only, membership unused)
+(pass) shouldProbeTopicThreadMembership (FLY-576 R1#1 — pure probe-decision seam) > bot, autoContinue ON → probe (budget path needs membership)
+(pass) FLY-676 — member-follow default-on + non-member @ semantics > member bot, no @, autoContinue ON, budget seeded to default 12 → follows up to 12 then stops [0.11ms]
+(pass) FLY-676 — member-follow default-on + non-member @ semantics > non-member bot + explicit @ → handle (one reply; top-level @ semantics, NOT dropped)
+(pass) FLY-676 — member-follow default-on + non-member @ semantics > non-member bot, no @ → drop (never drawn into a thread without an @)
+(pass) FLY-676 — member-follow default-on + non-member @ semantics > unknown membership + explicit @ → handle (top-level @ semantics); + no @ → drop (no relax without proof)
+(pass) FLY-676 — member-follow default-on + non-member @ semantics > member bot, UNSEEDED budget (initiator pre-seed), explicit @ → drop (missing = exhausted, @ does not revive)
+(pass) shouldSeedInitiatorBudget (FLY-676 — initiator-seed pure seam) > send to roundtable parent + autoContinue ON → seed
+(pass) shouldSeedInitiatorBudget (FLY-676 — initiator-seed pure seam) > send to a non-parent channel → never seed (only top-level topic posts)
+(pass) shouldSeedInitiatorBudget (FLY-676 — initiator-seed pure seam) > autoContinue OFF (kill-switch) → never seed
+(pass) resolveRoundtableInboundChatId — FLY-314 fix (follow-up + noise + naming) > fresh topic → routed to its own thread, create-or-confirm, descriptive threadName [0.27ms]
+(pass) resolveRoundtableInboundChatId — FLY-314 fix (follow-up + noise + naming) > follow-up (Discord reply) → confirm-only route INTO the referenced thread, no new thread
+(pass) resolveRoundtableInboundChatId — FLY-314 fix (follow-up + noise + naming) > noise (pure emoji) fresh top-level → NOT routed to a thread (reply stays in parent)
+(pass) resolveRoundtableInboundChatId — FLY-314 fix (follow-up + noise + naming) > byte-compat: top-level with no content/ref still routes to its thread (no confirmOnly) [0.22ms]
+(pass) deriveRoundtableThreadName / isTopicNoise / confirmThreadUnderParent — FLY-314 fix > deriveRoundtableThreadName strips markup, falls back to placeholder
+(pass) deriveRoundtableThreadName / isTopicNoise / confirmThreadUnderParent — FLY-314 fix > isTopicNoise: emoji/short = noise, real text = not [0.18ms]
+(pass) deriveRoundtableThreadName / isTopicNoise / confirmThreadUnderParent — FLY-314 fix > confirmThreadUnderParent: only a thread type under the right parent confirms
+(pass) rememberRoundtableRedirect / shouldStripRoundtableReplyTo — FLY-314 fix (bounded, testable) > remembers BOTH the topic source id and the follow-up id; strip matches either [0.08ms]
+(pass) rememberRoundtableRedirect / shouldStripRoundtableReplyTo — FLY-314 fix (bounded, testable) > bounds the ids PER hot thread (oldest evicted) — Codex R1 MEDIUM [0.10ms]
+(pass) rememberRoundtableRedirect / shouldStripRoundtableReplyTo — FLY-314 fix (bounded, testable) > bounds the number of threads (oldest thread evicted) [0.16ms]
+(pass) rememberRoundtableRedirect / shouldStripRoundtableReplyTo — FLY-314 fix (bounded, testable) > skips empty ids
+
+chat-receipt-recorder.test.ts:
+(pass) resolveRecorderMode > enables only when the complete Flywheel capability tuple exists [0.06ms]
+(pass) resolveRecorderMode > keeps a stock plugin install byte-compatible and disabled
+(pass) resolveRecorderMode > treats companion and external markers as intentional isolation [0.01ms]
+(pass) resolveRecorderMode > honours the explicit kill switch before classifying partial wiring
+(pass) resolveRecorderMode > fails loud for a non-isolated partial capability tuple [0.05ms]
+(pass) resolveFounderId > does not read the host Flywheel env outside enabled mode [0.23ms]
+(pass) resolveFounderId > prefers the live ~/.flywheel/.env value over inherited process env
+(pass) resolveFounderId > uses the last uncommented live assignment during config rotation [0.03ms]
+(pass) resolveFounderId > falls back to inherited env and rejects non-snowflakes [0.02ms]
+(pass) buildBeginArgs > builds the CLI envelope and gives the founder P0 priority [0.04ms]
+(pass) buildBeginArgs > uses P1 when founder identity is unavailable and classifies all message kinds [0.04ms]
+(pass) spool intent codec > round-trips durable retry state
+(pass) spool intent codec > rejects malformed intents and separates intent filenames from metadata [0.06ms]
+(pass) sentMessageCarriesReference > settles only from the reference Discord persisted on the returned message [0.03ms]
+(pass) receipt-aware MCP copy > preserves all three stock strings exactly when receipts are not enabled [0.03ms]
+(pass) receipt-aware MCP copy > requires explicit reply_to only for receipted messages and explains roundtable ack [0.03ms]
+
+ 172 pass
+ 0 fail
+ 411 expect() calls
+Ran 172 tests across 8 files. [639.00ms]

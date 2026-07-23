@@ -1,0 +1,11 @@
+{
+  "id": "1529793610114007142",
+  "channel_id": "1504277055406211142",
+  "author": {
+    "id": "1493072948683341976",
+    "username": "product-lead-test",
+    "bot": true
+  },
+  "content": "FLY-1439 G0.3 real-machine gate. Please reply directly to this exact Discord message with: G0.3 received. Use reply_to so the receipt can settle.",
+  "message_reference": null
+}

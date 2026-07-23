@@ -1,0 +1,13 @@
+[tmux]
+flywheel:@1291 name=test-slot-1-flywheel-test-1 pane_pid=46330
+[processes]
+54029 83816 bash /Users/xiaorongli/Dev/flywheel-FLY-1439/packages/teamlead/scripts/claude-lead.sh flywheel-test-1 /tmp/flywheel-test-slot-1/project-slot-1 test-slot-1
+54030 54029 bash /Users/xiaorongli/Dev/flywheel-FLY-1439/packages/teamlead/scripts/claude-lead.sh flywheel-test-1 /tmp/flywheel-test-slot-1/project-slot-1 test-slot-1
+83816  5952 bash /Users/xiaorongli/Dev/flywheel-FLY-1439/packages/teamlead/scripts/claude-lead.sh flywheel-test-1 /tmp/flywheel-test-slot-1/project-slot-1 test-slot-1
+60410 46330 bun /tmp/flywheel-test-slot-1/claude-config/plugins/cache/claude-plugins-official/discord/0.0.4/server.ts
+60411 46330 node /Users/xiaorongli/Dev/flywheel-FLY-1439/packages/terminal-mcp/dist/index.js
+60412 46330 node /Users/xiaorongli/Dev/flywheel-FLY-1439/packages/inbox-mcp/dist/index.js
+90452  5952 node /Users/xiaorongli/Dev/flywheel-FLY-1439/node_modules/.bin/../tsx/dist/cli.mjs /Users/xiaorongli/Dev/flywheel-FLY-1439/scripts/run-bridge.ts
+90547 90452 /opt/homebrew/Cellar/node/25.6.1/bin/node --require /Users/xiaorongli/Dev/flywheel-FLY-1439/node_modules/.pnpm/tsx@4.20.6/node_modules/tsx/dist/preflight.cjs --import file:///Users/xiaorongli/Dev/flywheel-FLY-1439/node_modules/.pnpm/tsx@4.20.6/node_modules/tsx/dist/loader.mjs /Users/xiaorongli/Dev/flywheel-FLY-1439/scripts/run-bridge.ts
+90637 90547 /Users/xiaorongli/Dev/flywheel-FLY-1439/node_modules/.pnpm/@esbuild+darwin-arm64@0.25.10/node_modules/@esbuild/darwin-arm64/bin/esbuild --service=0.25.10 --ping
+54572 53914 awk -v plugin /tmp/flywheel-test-slot-1/claude-config/plugins/ -v repo

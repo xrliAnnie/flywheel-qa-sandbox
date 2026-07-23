@@ -1,0 +1,11 @@
+{
+  "id": "1529811809945649152",
+  "channel_id": "1504277055406211142",
+  "author": {
+    "id": "1493072948683341976",
+    "username": "product-lead-test",
+    "bot": true
+  },
+  "content": "FLY-1439 S4 M9 companion=true isolation probe (valid subscribed run). Please reply exactly: S4 companion replied, using reply_to this message. This message must not create any chat receipt.",
+  "message_reference": null
+}

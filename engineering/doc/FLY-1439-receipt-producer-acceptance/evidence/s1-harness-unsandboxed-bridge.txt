@@ -1,0 +1,2 @@
+bridge_pid=90452
+bridge_health={"ok":true,"shuttingDown":false,"sessions_count":0}

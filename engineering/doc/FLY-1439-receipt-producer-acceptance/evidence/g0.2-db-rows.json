@@ -1,0 +1,28 @@
+[
+  {
+    "id": "chat:flywheel-test-1:990000000000000001",
+    "to_lead": "flywheel-test-1",
+    "source": "discord_chat",
+    "type": "external_delivery",
+    "msg_class": "model",
+    "priority": 1,
+    "carrier": "external",
+    "delivered": 1,
+    "processed": 1,
+    "resend_of": null,
+    "resend_round": 0
+  },
+  {
+    "id": "chat:flywheel-test-1:990000000000000002",
+    "to_lead": "flywheel-test-1",
+    "source": "discord_chat",
+    "type": "external_delivery",
+    "msg_class": "model",
+    "priority": 1,
+    "carrier": "external",
+    "delivered": 1,
+    "processed": 1,
+    "resend_of": null,
+    "resend_round": 0
+  }
+]

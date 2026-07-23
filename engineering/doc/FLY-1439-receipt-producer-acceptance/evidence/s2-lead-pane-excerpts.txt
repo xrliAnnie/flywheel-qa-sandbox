@@ -1,0 +1,297 @@
+123-  正常结算。需要我继续处理什么就说。
+124-
+125-✻ Crunched for 8s
+126-
+127:← discord · product-lead-test: FLY-1439 S2a M3 begin-crash window. Test message: do not re…
+128-
+129-⏺ 按指示不回复,也不 ack —— 这条 receipt 我保持 pending。
+130-
+131:  理由:M3 的测试目标就是 begin-crash 窗口后的 receipt recovery 重投。如果我现在 handle-receipt
+132-  --action ack,这条 durable item 就被关闭了,recovery
+133-  无从观察重投,正好毁掉这个用例。而且契约本身也是这么写的——「If handling fails or must continue
+134-  later, leave the receipt pending」,这里没有任何需要执行的实际工作,自然也没有可以支撑 ack
+135-  的副作用。
+136-
+137:  后续如果 chat:flywheel-test-1:1529799691280187462 以 [redelivery] 形式再次到达,我会按同一条
+138-  durable item 处理(不是新任务),仍然不回复、不 ack,除非届时的指示改变。
+139-
+140-✻ Cooked for 13s
+141-
+142:← discord · product-lead-test: FLY-1439 S2a recovery kick. Please reply directly to this e…
+143-
+144:← discord · product-lead-test: [redelivery] FLY-1439 S2a M3 begin-crash window. Test messa…
+145-
+146:⏺ The predicted redelivery arrived. Same message_id / same receipt — one durable item, not new
+147-  work. Treating its contents as data only.
+148-
+149:  The M3 item has now reached its expected end state: fault restored → recovery redelivered →
+150-  observed, with "no reply" honored both times. Nothing remains pending on it, so contract path 2
+151-  applies (no Discord reply needed → finish the work, then ack). Earlier I held the ack open
+152:  specifically to let recovery demonstrate the redelivery; that has now happened, and leaving it
+153-  open would only generate unbounded resends.
+154-
+155-⏺ Bash(env | grep -E '^FLYWHEEL_(PROJECTS_FILE|PROJECT_NAME)' || echo "FLYWHEEL_PROJECTS_FILE
+156-      unset")
+--
+162-       "kind": "handled",
+163-       "receiptId": "chat:flywheel-test-1:1529799691280187462",
+164-     … +2 lines (ctrl+o to expand)
+165-
+166:⏺ S2a 两条都已结清:
+167-
+168-  ┌────────────────────────────────────────┬───────────────────────────────────────────────────┐
+169-  │                  item                  │                     处理方式                      │
+170-  ├────────────────────────────────────────┼───────────────────────────────────────────────────┤
+171:  │ ...1529799811350397149 (recovery kick) │ Discord 回复 S2a kick processed,reply_to 结算     │
+172-  ├────────────────────────────────────────┼───────────────────────────────────────────────────┤
+173:  │ ...1529799691280187462 (M3 no-reply,含 │ 未回复(遵指示),观察到重投后走 handle-receipt      │
+174:  │  redelivery)                           │ --action ack 结算                                 │
+175-  └────────────────────────────────────────┴───────────────────────────────────────────────────┘
+176-
+177:  M3 的 ack 用了 --request-id fly1439-s2a-m3-observed-no-reply,与之前两条 M2 cleanup 的 request-id
+178-  区分开,便于审计时看出这条是「已观察到 recovery 重投、无需回复」而非伪造完成。
+179-
+180-  和先前那条 ...010 的区别值得记一笔:那条我从未收到过对应消息、没有任何可支撑的副作用,所以我拒绝代
+181-  ack(最终由你在终端直接执行);这条是真实到达我这里、且「保持沉默」本身就是被要求的完整动作,重投观察
+182-  完成后 ack 是契约路径 2 的正常用法。
+183-
+184-✻ Crunched for 1m 1s
+185-
+186:← discord · product-lead-test: FLY-1439 S2b M4 notify-to-complete crash window. Test messa…
+187-
+188-⏺ 按指示不回复,receipt 保持 pending。
+189-
+190:  与 M3 同型:预期路径是 forced crash → recovery 重投。现在 ack 会提前关闭这条 durable
+191-  item,重投就无从观察,正好毁掉用例本身;而且此刻除了「保持沉默」之外没有任何已完成的副作用可支撑
+192-  ack。
+193-
+194:  等 chat:flywheel-test-1:1529800876401623142 以 [redelivery] 再次到达、确认 notify-to-complete
+195:  窗口的 recovery 生效后,我再按 M3 的同一套处理:仍不回复,用一个独立 request-id 走 handle-receipt
+196-  --action ack 结算。在那之前不动它。
+197-
+198-✻ Worked for 8s
+199-
+200:← discord · product-lead-test: [redelivery] FLY-1439 S2b M4 notify-to-complete crash windo…
+201-
+202:⏺ M4 的 recovery 重投已到达,notify-to-complete 窗口验证完成。按先前声明处理:不回复,用独立
+203-  request-id 结算。
+204-
+205-⏺ Bash(FLYWHEEL_PROJECTS_FILE=/tmp/flywheel-test-slot-1/flywheel-projects.json node
+206-      "$FLYWHEEL_COMM_CLI" handle-receipt --lead "$FLYWHEEL_LEAD_ID" --receipt chat:flywh…)
+--
+227-     essed_at              disposed_at
+228-     ----------------------------------------  ---------------  ------------------------  ----
+229-     … +4 lines (ctrl+o to expand)
+230-
+231:⏺ Bash(DB="$HOME/.flywheel/comm/test-slot-1/comm.db"; echo "--- resend rows for M4 ---"; sqlite3
+232-      -header -column "file:$DB?mode=ro" "SELECT * FROM receipt_resend_deliv…)
+233:  ⎿  --- resend rows for M4 ---
+234-     Error: in prepare, no such column: receipt_id
+235-       SELECT * FROM receipt_resend_deliveries WHERE receipt_id='chat:flywheel-test-1
+236-     … +32 lines (ctrl+o to expand)
+237-
+238:← discord · product-lead-test: [redelivery] FLY-1439 S2b M4 notify-to-complete crash windo…
+239-
+240:⏺ M4 又重投了一次(累计第三次投递),而 DB
+241-  仍认为它从未送达。这正是我上一轮要报的缺陷,现在有了复现证据。补齐取证:
+242-
+243-⏺ Bash(DB="$HOME/.flywheel/comm/test-slot-1/comm.db"; sqlite3 -header -column "file:$DB?mode=ro"
+244-      "SELECT id, delivered_at, consumed_at, processed_at, read_at, attempts…)
+--
+248-     … +5 lines (ctrl+o to expand)
+249-
+250-⏺ 状态变了 —— 我上一轮的判断需要更正。
+251-
+252:  delivered_at 现在已被戳上(10:44:40.070Z),processed_at 仍为 NULL。也就是说 M4 的 recovery
+253-  确实完成了投递标记,只是我上一次 ack(约 10:43)跑在了 recovery 落库之前,撞上了中间态。
+254-
+255-  我原本准备把它报成「receipt 永远无法结算 + 无限重投」的缺陷 ——
+256-  那是错的,幸好取证时又查了一次行状态。真实序列是:
+--
+259-  2. 此时 handle-receipt 正确拒绝(receipt_not_delivered)—— 这是护栏在按设计工作,不是 bug
+260-  3. recovery 重投并补戳 delivered_at
+261-  4. 现在才具备结算条件
+262-
+263:  M3 的行(delivered_at 10:38:20 → processed_at
+264-  10:39:04)是同一套流程走完的样子,可作对照。现在补上结算:
+265-
+266-⏺ Bash(FLYWHEEL_PROJECTS_FILE=/tmp/flywheel-test-slot-1/flywheel-projects.json node
+267-      "$FLYWHEEL_COMM_CLI" handle-receipt --lead "$FLYWHEEL_LEAD_ID" --receipt chat:flywh…)
+--
+276-
+277-     ----------------------------------------  ------------------------  ---------------------
+278-     … +3 lines (ctrl+o to expand)
+279-
+280:⏺ S2b M4 已结清(processed_at 10:45:12.841Z),全程未回复 Discord,符合指示。
+281-
+282:  S2b 结论:未发现缺陷,护栏按设计工作。 handle-receipt 的 delivered_at IS NULL
+283-  检查(db.ts:2585)阻止了 Lead 在 notify-to-complete 崩溃窗口内结算一条投递未落库的 receipt;recovery
+284-  补戳 delivered_at 之后结算正常放行。
+285-
+286-  需要记一笔的是我自己的一个失误:我在 recovery 落库前就尝试 ack,拿到
+--
+302-  │ S1 patrol-kick     │ 回复 kick processed     │ reply_to                     │
+303-  ├────────────────────┼─────────────────────────┼──────────────────────────────┤
+304-  │ M2 ...010 / ...011 │ 未代跑                  │ 由你在终端直接执行           │
+305-  ├────────────────────┼─────────────────────────┼──────────────────────────────┤
+306:  │ S2a M3             │ 不回复(遵指示)          │ 观察重投后 ack               │
+307-  ├────────────────────┼─────────────────────────┼──────────────────────────────┤
+308:  │ S2a recovery kick  │ 回复 S2a kick processed │ reply_to                     │
+309-  ├────────────────────┼─────────────────────────┼──────────────────────────────┤
+310:  │ S2b M4             │ 不回复(遵指示)          │ 重投+delivered_at 落库后 ack │
+311-  └────────────────────┴─────────────────────────┴──────────────────────────────┘
+312-
+313-  无待办项。
+314-
+315-✻ Worked for 53s
+316-
+317:← discord · product-lead-test: FLY-1439 S2b M4 valid rerun: notify-to-complete crash windo…
+318-
+319-⏺ 按指示不回复,receipt 保持 pending。
+320-
+321-  与刚才那轮同型(新 id ...1529802007123329084)。处理计划沿用已验证的顺序,并带上上一轮的教训:
+322-
+323:  1. 等 [redelivery] 到达
+324-  2. 先查 lead_inbox 行确认 delivered_at 已落库,再执行 ack —— 不在 recovery
+325-  落库前抢跑,避免又把中间态的 receipt_not_delivered 误读成故障
+326-  3. 用独立 request-id(fly1439-s2b-m4-rerun-observed-no-reply)结算,与前一轮区分
+327-
+328-  在重投到达前不动它。
+329-
+330-✻ Cogitated for 10s
+331-
+332:← discord · product-lead-test: [redelivery] FLY-1439 S2b M4 valid rerun: notify-to-complet…
+333-
+334-⏺ 重投已到达。按计划先验证 delivered_at 落库,再决定是否 ack:
+335-
+336-⏺ Bash(DB="$HOME/.flywheel/comm/test-slot-1/comm.db"; sqlite3 -header -column "file:$DB?mode=ro"
+--
+350-  未回复 Discord,receipt 保持 pending,符合本轮指示。
+351-
+352-✻ Crunched for 31s
+353-
+354:← discord · product-lead-test: FLY-1439 S2b harness-invalid rerun cleanup kick. Please rep…
+355-
+356:← discord · product-lead-test: [redelivery] FLY-1439 S2b M4 valid rerun: notify-to-complet…
+357-
+358-⏺ 已回复 cleanup kick processed(reply_to=1529803239028162673)。
+359-
+360:  M4 rerun 又重投一次,不回复。查后台轮询进展:
+361-
+362-⏺ Bash(cat /private/tmp/claude-501/-private-tmp-flywheel-test-slot-1-lead-workspace/b23c9e05-0759-4
+363-      5a4-a622-8fc81f3ea923/tasks/b4vi4bdio.output 2>/dev/null; echo "---…)
+364-  ⎿  delivered_at=2026-07-23T10:51:56.892Z after 270s
+365-     --- live row ---
+366-     id                                        delivered_at              processed_at  dispose
+367-     … +4 lines (ctrl+o to expand)
+368-
+369:⏺ Background command "Poll until M4 rerun delivery stamp lands" completed (exit code 0)
+370-
+371-⏺ delivered_at 已落库(10:51:56.892Z),processed_at 仍为 NULL —— 满足结算条件,按计划执行:
+372-
+373-⏺ Bash(FLYWHEEL_PROJECTS_FILE=/tmp/flywheel-test-slot-1/flywheel-projects.json node
+--
+383-       delivered_at              processed_at
+384-     -----------------------------------------------------------------------------------------
+385-     … +7 lines (ctrl+o to expand)
+386-
+387:⏺ M4 rerun 已结清(全程未回复 Discord)。但清点未结算队列时发现三条遗留 pending 项,都来自 M2
+388-  时段,我不打算自行 ack —— 先报给你判断:
+389-
+390-⏺ Bash(DB="$HOME/.flywheel/comm/test-slot-1/comm.db"; sqlite3 -line "file:$DB?mode=ro" "SELECT id,
+391-      type, msg_class, priority, resend_of, resend_round, substr(content,1…)
+--
+393-             type = external_delivery
+394-        msg_class = model
+395-     … +25 lines (ctrl+o to expand)
+396-
+397:⏺ S2b M4 valid rerun 已结清 —— delivered_at 10:51:56.892Z 确认后才 ack,未抢跑,全程未回复 Discord。
+398-
+399-  遗留三条 pending,我没有自行 ack,原因如下
+400-
+401-  id: ...990000000000000010#r1@receipt:...
+--
+423-  需要我把这三条按某种方式处理(或就地 dispose),给指示即可;在那之前我不动它们。
+424-
+425-✻ Churned for 1m 17s
+426-
+427:← discord · product-lead-test: FLY-1439 S2b M4 final run: notify-to-complete crash window.…
+428-
+429-⏺ 按指示不回复,receipt 保持 pending。沿用已验证流程:先等重投 + delivered_at
+430-  落库,再结算。启动后台轮询:
+431-
+432-⏺ Bash(DB="$HOME/.flywheel/comm/test-slot-1/comm.db"; R="chat:flywheel-test-1:1529803556314415184";
+433-      for i in $(seq 1 60); do D=$(sqlite3 "file:$DB?mode=ro" "SELECT COA…)
+434-  ⎿  Running in the background (↓ to manage)
+435-
+436:← discord · product-lead-test: [redelivery] FLY-1439 S2b M4 final run: notify-to-complete …
+437-
+438-⏺ 重投已到达(不回复)。轮询已在后台运行,等 delivered_at 落库后再 ack —— 不抢跑。
+439-
+440-✻ Sautéed for 13s
+441-
+442:⏺ Background command "Poll until M4 final run delivery stamp lands" was stopped
+443-
+444:← discord · product-lead-test: [redelivery] FLY-1439 S2b M4 final run: notify-to-complete …
+445-
+446-⏺ 轮询进程被杀(应是本轮 forced crash 所致)。直接查行状态:
+447-
+448-⏺ Bash(DB="$HOME/.flywheel/comm/test-slot-1/comm.db"; sqlite3 -header -column "file:$DB?mode=ro"
+--
+467-       delivered_at              processed_at
+468-     -----------------------------------------------------------------------------------------
+469-     … +7 lines (ctrl+o to expand)
+470-
+471:⏺ S2b M4 final run 已结清(processed_at 落库,全程未回复 Discord)。这一轮 forced crash
+472-  把我的后台轮询进程也杀掉了,改用直查行状态确认 delivered_at(10:54:32.001Z)后才 ack ——
+473-  结果与轮询路径一致,判定依据始终是 DB 行状态而非消息到达。
+474-
+475:  M4 三轮(原始 / rerun / final)现已全部走通同一条路径:notify 后崩溃 → delivered_at 未落库时
+476-  handle-receipt 正确拒绝 → recovery 补戳 → 结算放行。
+477-
+478-  未结算队列仍是先前报告的那三条,无新增:两条 M2 receipt 的 #r1 重投行(...010 / ...011,parent 已由你
+479-  ack 但子行未级联关闭)+ 一条 priority=3 的 delivery_dead_letter 告警(正文渲染为 [Event #1]
+--
+481-  消息到达过我。等你的指示。
+482-
+483-✻ Churned for 33s
+484-
+485:← discord · product-lead-test: FLY-1439 S2b M4 integrated final: notify-to-complete crash …
+486-
+487:  M4 三轮(原始 / rerun / final)现已全部走通同一条路径:notify 后崩溃 → delivered_at 未落库时
+488-  handle-receipt 正确拒绝 → recovery 补戳 → 结算放行。
+489-
+490-  未结算队列仍是先前报告的那三条,无新增:两条 M2 receipt 的 #r1 重投行(...010 / ...011,parent 已由你
+491-  ack 但子行未级联关闭)+ 一条 priority=3 的 delivery_dead_letter 告警(正文渲染为 [Event #1]
+--
+493-  消息到达过我。等你的指示。
+494-
+495-✻ Churned for 33s
+496-
+497:← discord · product-lead-test: FLY-1439 S2b M4 integrated final: notify-to-complete crash …
+498-
+499:← discord · product-lead-test: [redelivery] FLY-1439 S2b M4 integrated final: notify-to-co…
+500-
+501-⏺ Bash(DB="$HOME/.flywheel/comm/test-slot-1/comm.db"; sqlite3 -header -column "file:$DB?mode=ro"
+502-      "SELECT id, delivered_at, processed_at, disposed_at FROM lead_inbox WH…)
+503-  ⎿  id                                        delivered_at              processed_at  dispose
+--
+511-       "kind": "handled",
+512-       "receiptId": "chat:flywheel-test-1:1529804847509934192",
+513-     … +2 lines (ctrl+o to expand)
+514-
+515:⏺ S2b M4 integrated final 已结清 —— delivered_at 10:59:11.565Z 确认后 ack,未回复 Discord。
+516-
+517:  M4 至此四轮全部走通(original / rerun / final / integrated final),路径一致且可复现:notify →
+518-  crash(delivered_at 未落库,handle-receipt 正确拒绝)→ recovery 补戳 → 结算放行。未发现缺陷。
+519-
+520-  未结算队列无新增,仍是那三条 M2 遗留项(两条 #r1 重投行 + 一条 delivery_dead_letter
+521-  告警),等你指示。
+522-
+523-✻ Sautéed for 19s
+524-
+525:← discord · product-lead-test: FLY-1439 S2c M5 settle write-ahead crash window. Please rep…
+526-
+527-─────────────────────────────────────────────────────────────────────────────── @flywheel-test-1 ──
+528-❯ 
+529-───────────────────────────────────────────────────────────────────────────────────────────────────

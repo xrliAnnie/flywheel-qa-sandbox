@@ -1,0 +1,31 @@
+G0.4 post-teardown analysis
+=============================
+
+Pre/post byte-identical fields:
+- installed_plugins.json
+- active Discord cache server.ts and .fork-sha
+- marketplace Discord server.ts and .fork-sha
+- ~/.flywheel/repos/claude-plugins-official HEAD and status
+- delivery marker, delivery-secret content hash, and mode
+
+Non-identical field:
+- ~/.claude/plugins/known_marketplaces.json
+  pre sha256:  2441ff58a3a71c9aba9b161b70247219703a76cee670853d05313be81eeddbf1
+  post sha256: 5e8d70a90d1bdae9588da36c2644ad6d9f0a8f6b0e0269e5a51ac8b96c60c1dc
+  birth/mtime: 2026-07-23T04:21:13-0700
+
+The post file records the official marketplace lastUpdated as
+2026-07-23T11:21:13.651Z. The production marketplace/cache code bytes and
+installed plugin selection did not change. The isolated Lead launch path used
+CLAUDE_CONFIG_DIR=/tmp/flywheel-test-slot-1/claude-config, and its guarded
+fork-check skip could only succeed when the expected path matched those exact
+bytes.
+
+This is consistent with an ambient Claude marketplace metadata refresh, but
+the pre snapshot retained only the whole-file hash, not the original JSON
+bytes, and no writer identity was captured. Therefore the refresh cannot be
+attributed strongly enough to waive the approved G0.4 byte-equality gate.
+
+Classification: G0.4 FAIL-CLOSED (provenance inconclusive). Do not restore or
+otherwise mutate the production file. Product scenarios S1-S5 remain green,
+but the overall QA verdict cannot be PASS under plan.md sections 1, 4, and 6.

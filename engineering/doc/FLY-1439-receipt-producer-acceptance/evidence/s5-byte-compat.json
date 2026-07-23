@@ -1,0 +1,14 @@
+{
+  "forkMainServerPath": "/tmp/flywheel-test-slot-1/s5-evidence/s5-fork-main-server.ts",
+  "recorderPath": "/Users/xiaorongli/Dev/flywheel-FLY-1439/.flywheel/runs/7af14cc5-eab9-41be-a129-eec5addd0936/plugin-pinned/external_plugins/discord/chat-receipt-recorder.ts",
+  "lengths": {
+    "inbound": 460,
+    "replyTool": 169,
+    "replyTo": 106
+  },
+  "matches": {
+    "inbound": true,
+    "replyTool": true,
+    "replyTo": true
+  }
+}

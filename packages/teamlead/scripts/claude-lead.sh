@@ -605,6 +605,213 @@ else
   log "WARNING: jq not found. Manifest not written — auto-restart will skip this Lead."
 fi
 
+# ── FLY-1439: validate an isolated-CLAUDE_CONFIG_DIR skip request ──
+# Runs BEFORE the launcher's first CLAUDE_CONFIG_DIR-derived write. The
+# agent-file copy below already resolves its target through CLAUDE_CONFIG_DIR,
+# so validating only at the plugin fork-check block (further down) let a
+# malformed request overwrite the PRODUCTION agents/<lead>.md and only then
+# abort — the guard has to run before anything is written, not before the
+# check/update scripts run.
+#
+# Comparing only the canonical config ROOT is not sufficient either: an
+# isolated root whose `plugins` subtree symlinks back to ~/.claude/plugins
+# passes a root-only comparison while Claude still reads and writes the
+# PRODUCTION plugin cache — precisely the zero-write guarantee this seam
+# exists to provide. So the real plugin surfaces are resolved too and must
+# stay outside the production plugin tree.
+#
+# Pure + idempotent: the fork-check block calls it again rather than trusting
+# a "already validated" shell variable, which an inherited env could preset.
+validate_isolated_claude_config() {
+  local qa_real="" prod_real="" detail=""
+
+  if [ -z "${CLAUDE_CONFIG_DIR:-}" ] \
+    || [ -z "${TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR:-}" ] \
+    || [ "${CLAUDE_CONFIG_DIR}" != "${TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR}" ]; then
+    log "ERROR: TEST_SKIP_PLUGIN_FORK_CHECK=1 requires a CLAUDE_CONFIG_DIR matching TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR. Aborting."
+    exit 1
+  fi
+
+  # A relative CLAUDE_CONFIG_DIR is validated against THIS process's cwd but
+  # consumed by a Lead that tmux starts with `-c "$LEAD_WORKSPACE"`, so the
+  # same string can resolve to the isolated root here and to the production
+  # root there. That is a time-of-check/time-of-use hole, not a style nit —
+  # only an absolute path means the same directory in both places.
+  case "${CLAUDE_CONFIG_DIR}" in
+    /*) ;;
+    *)
+      log "ERROR: TEST_SKIP_PLUGIN_FORK_CHECK=1 requires an ABSOLUTE CLAUDE_CONFIG_DIR (got '${CLAUDE_CONFIG_DIR}'); a relative path resolves against the consumer's cwd. Aborting."
+      exit 1
+      ;;
+  esac
+
+  if [ ! -d "${CLAUDE_CONFIG_DIR}" ]; then
+    log "ERROR: TEST_SKIP_PLUGIN_FORK_CHECK=1 requires an existing CLAUDE_CONFIG_DIR. Aborting."
+    exit 1
+  fi
+
+  # Everything below is a CONTAINMENT INVARIANT rather than a list of known
+  # escape routes: the isolated plugin tree must be entirely self-contained,
+  # and identity is compared by (device, inode) rather than by path string.
+  #
+  # Path strings are the wrong instrument here. On a case-insensitive APFS
+  # volume `~/.CLAUDE` and `~/.claude` are the SAME directory, but `pwd -P`
+  # and realpath both preserve the caller's casing, so a string compare says
+  # they differ. Likewise a blacklist of escape shapes (this symlink, that
+  # subdirectory) keeps losing to the next shape — a dangling link, a link
+  # via an innocent third directory, a hardlink that is not a link at all.
+  # So instead: nothing under the isolated plugin tree may resolve outside
+  # the isolated root, and no regular file in it may share an inode with the
+  # production plugin tree.
+  #
+  # python3 is already a hard dependency of this launcher (the hook
+  # installers shell out to it); if it is missing we fail closed rather than
+  # grant an unverified skip.
+  if ! command -v python3 >/dev/null 2>&1; then
+    log "ERROR: TEST_SKIP_PLUGIN_FORK_CHECK=1 needs python3 to verify isolation. Aborting."
+    exit 1
+  fi
+
+  if ! detail="$(python3 - "${CLAUDE_CONFIG_DIR}" "${HOME}/.claude" <<'PYEOF'
+import json, os, sys
+
+cfg, prod_root = sys.argv[1], sys.argv[2]
+prod_plugins = os.path.join(prod_root, "plugins")
+
+
+def ident(path):
+    """(device, inode) — the only reliable identity on a case-insensitive fs."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+problems = []
+cfg_real = os.path.realpath(cfg)
+cfg_id, prod_id = ident(cfg_real), ident(prod_root)
+
+if cfg_id is not None and cfg_id == prod_id:
+    problems.append("config root IS the production Claude config root (%s)" % prod_root)
+
+# Nesting is also an identity question: walk ancestors comparing inodes.
+if prod_id is not None and not problems:
+    node = cfg_real
+    while True:
+        parent = os.path.dirname(node)
+        if parent == node:
+            break
+        if ident(parent) == prod_id:
+            problems.append("config root is nested inside the production Claude config root (%s)" % prod_root)
+            break
+        node = parent
+
+
+def inside(real):
+    return real == cfg_real or real.startswith(cfg_real + os.sep)
+
+
+plugins = os.path.join(cfg, "plugins")
+if not problems and os.path.lexists(plugins):
+    if not os.path.exists(plugins):
+        problems.append("plugins root is a dangling link (%s -> %s)" % (plugins, os.path.realpath(plugins)))
+    elif not inside(os.path.realpath(plugins)):
+        problems.append("plugins root escapes the isolated root (%s -> %s)" % (plugins, os.path.realpath(plugins)))
+    else:
+        linked = []
+        for dirpath, dirnames, filenames in os.walk(plugins, followlinks=False):
+            for name in dirnames + filenames:
+                entry = os.path.join(dirpath, name)
+                if os.path.islink(entry):
+                    target = os.path.realpath(entry)
+                    if not os.path.exists(entry):
+                        problems.append("dangling link in plugin tree (%s -> %s)" % (entry, target))
+                    elif not inside(target):
+                        problems.append("link escapes the isolated root (%s -> %s)" % (entry, target))
+                else:
+                    try:
+                        st = os.stat(entry)
+                    except OSError:
+                        continue
+                    # Only a file with extra links can be a shared hardlink;
+                    # this keeps the production-side walk off the hot path.
+                    if os.path.isfile(entry) and st.st_nlink > 1:
+                        linked.append(((st.st_dev, st.st_ino), entry))
+                if len(problems) >= 5:
+                    break
+            if len(problems) >= 5:
+                break
+
+        if linked and not problems:
+            shared = {}
+            for dirpath, _dirnames, filenames in os.walk(prod_plugins, followlinks=False):
+                for name in filenames:
+                    pid = ident(os.path.join(dirpath, name))
+                    if pid is not None:
+                        shared[pid] = os.path.join(dirpath, name)
+            for key, entry in linked:
+                if key in shared:
+                    problems.append("file is a hardlink to the production plugin tree (%s == %s)" % (entry, shared[key]))
+
+# Filesystem containment says nothing about the LOGICAL paths recorded
+# inside the plugin registry files.
+# installed_plugins.json / known_marketplaces.json are ordinary files with
+# st_nlink == 1, yet a single missed rewrite during QA setup can leave
+# installPath / installLocation / source.path pointing straight at the
+# production plugin tree — the skip is then granted while Claude loads
+# production bytes. This is the ordinary operator-misconfiguration case the
+# seam exists to catch, so it is checked here rather than after launch.
+def registry_paths(path):
+    """Yield (field, value) path-like entries from a plugin registry file."""
+    with open(path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("top level is not an object")
+    for key, entry in (data.get("plugins") or {}).items() if "plugins" in data else []:
+        for item in entry if isinstance(entry, list) else [entry]:
+            if isinstance(item, dict) and isinstance(item.get("installPath"), str):
+                yield ("plugins[%s].installPath" % key, item["installPath"])
+    for name, entry in data.items():
+        if name == "plugins" or not isinstance(entry, dict):
+            continue
+        if isinstance(entry.get("installLocation"), str):
+            yield ("%s.installLocation" % name, entry["installLocation"])
+        source = entry.get("source")
+        if isinstance(source, dict) and isinstance(source.get("path"), str):
+            yield ("%s.source.path" % name, source["path"])
+
+
+if not problems:
+    for registry in ("installed_plugins.json", "known_marketplaces.json"):
+        target = os.path.join(plugins, registry)
+        if not os.path.exists(target):
+            continue
+        try:
+            entries = list(registry_paths(target))
+        except Exception as exc:  # fail closed: unreadable registry is unverifiable
+            problems.append("could not verify %s (%s)" % (registry, exc))
+            continue
+        for field, value in entries:
+            if not inside(os.path.realpath(value)):
+                problems.append(
+                    "%s %s points outside the isolated root (%s)" % (registry, field, value)
+                )
+
+print("; ".join(problems[:5]))
+sys.exit(1 if problems else 0)
+PYEOF
+  )"; then
+    log "ERROR: TEST_SKIP_PLUGIN_FORK_CHECK=1 isolation check failed: ${detail}. Aborting."
+    exit 1
+  fi
+}
+
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ] \
+  && [ "${TEST_SKIP_PLUGIN_FORK_CHECK:-0}" = "1" ]; then
+  validate_isolated_claude_config
+fi
+
 # ── Agent file auto-sync (project source → global target) ──
 # GEO-246: Agent files live in the project repo, not Flywheel infrastructure.
 # GEO-286: Agent source always from PROJECT_DIR/.lead/ (not workspace).
@@ -617,8 +824,9 @@ elif [ -f "${PROJECT_DIR}/.lead/${LEAD_ID}/identity.md" ]; then
 elif [ -f "${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md" ]; then
   AGENT_SOURCE="${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md"
 fi
-AGENT_TARGET="${HOME}/.claude/agents/${LEAD_ID}.md"
-mkdir -p "${HOME}/.claude/agents"
+CLAUDE_AGENT_ROOT="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+AGENT_TARGET="${CLAUDE_AGENT_ROOT}/agents/${LEAD_ID}.md"
+mkdir -p "${CLAUDE_AGENT_ROOT}/agents"
 
 if [ -f "${AGENT_SOURCE:-}" ]; then
   # Copy (not symlink) to prevent Lead from writing back to repo via symlink.
@@ -717,24 +925,35 @@ UPDATE_SCRIPT="${FLYWHEEL_BIN}/update-discord-plugin.sh"
 # shared plugin cache and is irrelevant to argv/env assembly).
 if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
   log "DRY-RUN: skipping Discord plugin fork check"
-elif [ ! -x "$CHECK_SCRIPT" ] || [ ! -x "$UPDATE_SCRIPT" ]; then
-  log "ERROR: Discord plugin fork scripts not found or not executable:"
-  log "  check:  $CHECK_SCRIPT"
-  log "  update: $UPDATE_SCRIPT"
-  log "Run GEO-296 setup first. Aborting."
-  exit 1
-fi
-
-if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ] && ! "$CHECK_SCRIPT"; then
-  log "Discord plugin cache is not fork version, updating..."
-  "$UPDATE_SCRIPT"
-  # Re-check after update — hard fail if still not matching
-  if ! "$CHECK_SCRIPT"; then
-    log "ERROR: Discord plugin still not fork version after update. Aborting."
+elif [ "${TEST_SKIP_PLUGIN_FORK_CHECK:-0}" = "1" ]; then
+  # FLY-1439: a pinned-plugin QA Lead may use an isolated CLAUDE_CONFIG_DIR.
+  # Never let a malformed skip request fall through to the production
+  # ~/.claude plugin check/update scripts. The validation itself lives in
+  # validate_isolated_claude_config (defined above and already run before the
+  # first CLAUDE_CONFIG_DIR-derived write); re-run it here so this branch is
+  # independently fail-closed rather than trusting an earlier side effect.
+  validate_isolated_claude_config
+  log "QA: skipping Discord plugin fork check for isolated CLAUDE_CONFIG_DIR: ${CLAUDE_CONFIG_DIR}"
+else
+  if [ ! -x "$CHECK_SCRIPT" ] || [ ! -x "$UPDATE_SCRIPT" ]; then
+    log "ERROR: Discord plugin fork scripts not found or not executable:"
+    log "  check:  $CHECK_SCRIPT"
+    log "  update: $UPDATE_SCRIPT"
+    log "Run GEO-296 setup first. Aborting."
     exit 1
   fi
+
+  if ! "$CHECK_SCRIPT"; then
+    log "Discord plugin cache is not fork version, updating..."
+    "$UPDATE_SCRIPT"
+    # Re-check after update — hard fail if still not matching
+    if ! "$CHECK_SCRIPT"; then
+      log "ERROR: Discord plugin still not fork version after update. Aborting."
+      exit 1
+    fi
+  fi
+  log "Discord plugin fork check: OK"
 fi
-[ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ] || log "Discord plugin fork check: OK"
 
 # ── GEO-285: Install PostCompact hook ─────────────────────
 # Requires jq for idempotent JSON merge. Skip gracefully if not installed.
@@ -759,7 +978,9 @@ install_post_compact_hook() {
 
   # Clean up any old entries pointing to different paths (repo-local copies)
   # before adding the stable path entry.
-  local settings_file="${HOME}/.claude/settings.json"
+  # Keep this function self-contained: the integration harness extracts and
+  # evaluates it without the launcher's outer-scope variables.
+  local settings_file="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/settings.json"
   mkdir -p "$(dirname "$settings_file")"
 
   local existing
@@ -829,7 +1050,9 @@ install_discord_reply_enforcer_hook() {
   chmod +x "$hook_script"
   local cmd="python3 ${hook_script}"
 
-  local settings_file="${HOME}/.claude/settings.json"
+  # Keep this function self-contained: the integration harness extracts and
+  # evaluates it without the launcher's outer-scope variables.
+  local settings_file="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/settings.json"
   mkdir -p "$(dirname "$settings_file")"
 
   # NOTE: macOS ships jq 1.6, whose `jq empty` / filters return exit 0 even on a

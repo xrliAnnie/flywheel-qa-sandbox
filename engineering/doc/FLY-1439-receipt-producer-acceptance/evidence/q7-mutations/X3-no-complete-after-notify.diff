@@ -1,0 +1,15 @@
+ external_plugins/discord/chat-receipt-runtime.ts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+diff --git a/external_plugins/discord/chat-receipt-runtime.ts b/external_plugins/discord/chat-receipt-runtime.ts
+index ea2e324..3dfaeb8 100644
+--- a/external_plugins/discord/chat-receipt-runtime.ts
++++ b/external_plugins/discord/chat-receipt-runtime.ts
+@@ -181,7 +181,7 @@ export class ChatReceiptRuntime {
+       this.log(`inbound notify failed for ${args.messageId}: ${errorText(error)}`)
+       return false
+     }
+-    return this.complete(args.messageId)
++    return true
+   }
+ 
+   async settle(

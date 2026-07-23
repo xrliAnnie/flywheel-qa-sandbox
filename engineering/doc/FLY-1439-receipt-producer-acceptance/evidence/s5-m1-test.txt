@@ -1,0 +1,73 @@
+bun test v1.3.11 (af24e281)
+
+chat-receipt-runtime.test.ts:
+(pass) real built chat-receipt CLI > runs begin idempotently, completes delivery, and settles processed_at [528.22ms]
+(pass) begin failure and durable spool > fails open into an atomic 0700/0600 intent and preserves retry state [1.44ms]
+[chat-receipt] begin failed and spool write failed for 100000000000000011: EACCES: permission denied, mkdir '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly1437-runtime-0aS3p2/chat-receipt-spool'
+(pass) begin failure and durable spool > surfaces an immediate advisory when the spool itself cannot be written [1.43ms]
+[chat-receipt] broken-advised.json advisory failed: Discord unavailable
+(pass) broken wiring advisory > persists detected-before-send and latches only after a successful visible advisory [1.18ms]
+(pass) producer accept boundary > marks complete only after the inbound notification has resolved [1.05ms]
+[chat-receipt] inbound notify failed for 100000000000000011: MCP closed
+(pass) producer accept boundary > does not complete when notification delivery rejects [0.63ms]
+286 |     expect(await runtime.settle(
+287 |       begin.messageId,
+288 |       '100000000000000099',
+289 |       begin.chatId,
+290 |     )).toBe(true)
+291 |     expect(logs).toEqual([
+                       ^
+error: expect(received).toEqual(expected)
+
+  [
+-   StringContaining "settle recovery write failed",
+-   StringContaining "could not remove stale settle intent",
++   "could not remove stale settle intent for 100000000000000011: EFAULT: bad address in system call argument, rm '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly1437-runtime-Unl2HS/chat-receipt-spool/settle/100000000000000011.json'",
+  ]
+
+- Expected  - 2
++ Received  + 1
+
+      at <anonymous> (/private/tmp/flywheel-test-slot-1/s5-mutation-m1/external_plugins/discord/chat-receipt-runtime.test.ts:291:18)
+(fail) recovery worker > does not turn a successful settle into reply failure when the intent path is unusable [1.46ms]
+329 |     expect(await runtime.settle(
+330 |       begin.messageId,
+331 |       '100000000000000099',
+332 |       begin.chatId,
+333 |     )).toBe(true)
+334 |     expect(intentDuringCli).toBe(true)
+                                  ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/private/tmp/flywheel-test-slot-1/s5-mutation-m1/external_plugins/discord/chat-receipt-runtime.test.ts:334:29)
+(fail) recovery worker > persists the settle proof before the CLI runs (write-ahead) [0.68ms]
+[chat-receipt] settle failed for 100000000000000011: database busy
+361 |       '100000000000000099',
+362 |       begin.chatId,
+363 |     )).toBe(false)
+364 |     await failingRuntime.whenIdle()
+365 |
+366 |     expect(settleCalls).toBe(2)
+                              ^
+error: expect(received).toBe(expected)
+
+Expected: 2
+Received: 1
+
+      at <anonymous> (/private/tmp/flywheel-test-slot-1/s5-mutation-m1/external_plugins/discord/chat-receipt-runtime.test.ts:366:25)
+(fail) recovery worker > persists a failed settle proof and recovers it after process restart [1.48ms]
+(pass) recovery worker > drains a failed begin idempotently without completing it directly [1.42ms]
+(pass) recovery worker > skips active accepts, then redelivers and completes after the accept releases [0.76ms]
+(pass) recovery worker > quarantines a 48h-old row before notify and completes only after notify resolves [0.66ms]
+(pass) recovery worker > coalesces kicks and continues across a five-intent pass until finite work is empty [5.43ms]
+(pass) recovery worker > preserves a kick that lands during a zero-work pass and drains the new intent [1.31ms]
+[chat-receipt] corrupt-advised.json advisory failed: Discord unavailable
+(pass) recovery worker > preserves corrupt intents, ignores metadata filenames, and retries the pending advisory [2.11ms]
+
+ 12 pass
+ 3 fail
+ 47 expect() calls
+Ran 15 tests across 1 file. [569.00ms]

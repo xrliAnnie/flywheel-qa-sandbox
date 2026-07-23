@@ -28,7 +28,8 @@ log() { echo "[install-restart-guard] $*" >&2; }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_SCRIPT="${SCRIPT_DIR}/flywheel-restart-guard.py"
 HOOK_SCRIPT="${HOME}/.flywheel/bin/flywheel-restart-guard.py"
-SETTINGS_FILE="${HOME}/.claude/settings.json"
+CLAUDE_SETTINGS_ROOT="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+SETTINGS_FILE="${CLAUDE_SETTINGS_ROOT}/settings.json"
 CMD="python3 ${HOOK_SCRIPT}"
 
 UNINSTALL=0

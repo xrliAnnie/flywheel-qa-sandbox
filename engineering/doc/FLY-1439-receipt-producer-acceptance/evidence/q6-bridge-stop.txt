@@ -1,0 +1,7 @@
+pid=90452
+ppid=5952
+command=node /Users/xiaorongli/Dev/flywheel-FLY-1439/node_modules/.bin/../tsx/dist/cli.mjs /Users/xiaorongli/Dev/flywheel-FLY-1439/scripts/run-bridge.ts
+mode=term-kill
+signal_at=2026-07-23T11:43:56Z
+dead=true
+confirmed_at=2026-07-23T11:43:56Z

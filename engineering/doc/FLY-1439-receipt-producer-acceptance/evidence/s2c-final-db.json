@@ -1,0 +1,9 @@
+[
+  {
+    "canonical_rows": 1,
+    "id": "chat:flywheel-test-1:1529806006593261709",
+    "delivered_at": "2026-07-23T11:02:54.851Z",
+    "processed_at": "2026-07-23T11:03:52.584Z",
+    "processed_evidence": "{\"v\":1,\"kind\":\"discord_explicit_reply\",\"ref\":\"1529806019893526528\",\"actor\":\"flywheel-test-1\",\"actor_kind\":\"lead\",\"fence\":{\"leadId\":\"flywheel-test-1\",\"chatReplyTo\":\"1529806006593261709\"},\"basis\":[\"discord_reply_reference\"]}"
+  }
+]

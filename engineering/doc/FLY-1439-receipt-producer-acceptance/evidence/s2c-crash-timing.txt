@@ -1,0 +1,15 @@
+message_id=1529806006593261709
+reply_id=1529806019893526528
+call_id=827401bf-2be7-4065-98ff-32c5c5320fd3
+shim_pid=35418
+mcp_pid=48216
+old_window=@1287
+old_pane_pid=38879
+barrier_ts=2026-07-23T11:02:57.709Z
+barrier_observed_wall_ms=1784804577717
+barrier_age_at_observation_ms=8
+helper_request_after_barrier_ms=6.788
+mcp_signal_wall_ms=1784804579174
+barrier_to_mcp_signal_ms=1457
+mcp_dead=true
+window_kill_status=0

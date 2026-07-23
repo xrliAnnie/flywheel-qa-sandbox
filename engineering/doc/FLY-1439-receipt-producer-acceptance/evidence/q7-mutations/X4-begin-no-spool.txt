@@ -1,0 +1,6 @@
+[chat-receipt] corrupt-advised.json advisory failed: Discord unavailable
+
+ 168 pass
+ 4 fail
+ 404 expect() calls
+Ran 172 tests across 8 files. [963.00ms]

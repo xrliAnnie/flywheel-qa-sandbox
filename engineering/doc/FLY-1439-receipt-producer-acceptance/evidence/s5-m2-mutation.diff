@@ -1,0 +1,13 @@
+diff --git a/external_plugins/discord/chat-receipt-recorder.ts b/external_plugins/discord/chat-receipt-recorder.ts
+index 53b743c..68587c2 100644
+--- a/external_plugins/discord/chat-receipt-recorder.ts
++++ b/external_plugins/discord/chat-receipt-recorder.ts
+@@ -62,7 +62,7 @@ export interface SpoolIntentV1 {
+ const DISCORD_SNOWFLAKE = /^\d{17,20}$/
+ const INTENT_FILENAME = /^\d{17,20}\.json$/
+ const STOCK_INBOUND_INSTRUCTION =
+-  'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_count, the attachments attribute lists name/type/size — call download_attachment(chat_id, message_id) to fetch them. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.'
++  'Messages from Discord arrive az <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_count, the attachments attribute lists name/type/size — call download_attachment(chat_id, message_id) to fetch them. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.'
+ const STOCK_REPLY_TOOL_DESCRIPTION =
+   'Reply on Discord. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for threading, and files (absolute paths) to attach images or other files.'
+ const STOCK_REPLY_TO_DESCRIPTION =

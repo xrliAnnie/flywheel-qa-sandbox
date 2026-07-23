@@ -1,0 +1,8 @@
+pid=83816
+ppid=5952
+command=bash /Users/xiaorongli/Dev/flywheel-FLY-1439/packages/teamlead/scripts/claude-lead.sh flywheel-test-1 /tmp/flywheel-test-slot-1/project-slot-1 test-slot-1
+mode=term-kill
+signal_at=2026-07-23T11:21:33Z
+escalated_at=2026-07-23T11:22:03Z
+dead=true
+confirmed_at=2026-07-23T11:22:03Z

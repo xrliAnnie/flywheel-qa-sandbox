@@ -1,0 +1,12 @@
+slot_dir_absent=true
+slot_lock_absent=true
+slot_comm_dir_absent=true
+standard_session_id_absent=true
+standard_manifest_absent=true
+standard_pid_absent=true
+global_test_lead_workspace_absent=true
+quarantine_absent=true
+bridge_port_19871_listening=false
+shim_backup_absent=true
+flywheel_comm_dist_sha256=55974455cd66987417abcb97f65f7fa4b049a5cfc1509f967c4ddd9c9d9aae88
+flywheel_comm_dist_matches_pre_qa=true

@@ -1,0 +1,45 @@
+[
+  {
+    "id": "1529808058148982945",
+    "channel_id": "1504277055406211142",
+    "author": {
+      "id": "1493068669444427927",
+      "username": "flywheel-test-1",
+      "bot": true
+    },
+    "content": "⚠️ Chat receipt could not persist its recovery intent for message 1529808056618188831; delivery continued, but receipt recovery needs operator attention.",
+    "message_reference": null
+  },
+  {
+    "id": "1529808686241943623",
+    "channel_id": "1504277055406211142",
+    "author": {
+      "id": "1493068669444427927",
+      "username": "flywheel-test-1",
+      "bot": true
+    },
+    "content": "S3 M7 healthy replied",
+    "message_reference": {
+      "type": 0,
+      "channel_id": "1504277055406211142",
+      "message_id": "1529808671612211282",
+      "guild_id": "1485787271192907816"
+    }
+  },
+  {
+    "id": "1529809649316921395",
+    "channel_id": "1504277055406211142",
+    "author": {
+      "id": "1493068669444427927",
+      "username": "flywheel-test-1",
+      "bot": true
+    },
+    "content": "S3 M8K healthy replied",
+    "message_reference": {
+      "type": 0,
+      "channel_id": "1504277055406211142",
+      "message_id": "1529809601954840708",
+      "guild_id": "1485787271192907816"
+    }
+  }
+]

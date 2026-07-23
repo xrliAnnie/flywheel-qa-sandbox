@@ -1,0 +1,50 @@
+{
+  "claude-plugins-official": {
+    "source": {
+      "source": "github",
+      "repo": "anthropics/claude-plugins-official"
+    },
+    "installLocation": "/Users/xiaorongli/.claude/plugins/marketplaces/claude-plugins-official",
+    "lastUpdated": "2026-07-23T12:37:25.132Z"
+  },
+  "everything-claude-code": {
+    "source": {
+      "source": "github",
+      "repo": "affaan-m/everything-claude-code"
+    },
+    "installLocation": "/Users/xiaorongli/.claude/plugins/marketplaces/everything-claude-code",
+    "lastUpdated": "2026-01-28T07:16:16.658Z"
+  },
+  "openai-codex": {
+    "source": {
+      "source": "github",
+      "repo": "openai/codex-plugin-cc"
+    },
+    "installLocation": "/Users/xiaorongli/.claude/plugins/marketplaces/openai-codex",
+    "lastUpdated": "2026-03-31T01:24:10.641Z"
+  },
+  "minimalist-entrepreneur": {
+    "source": {
+      "source": "github",
+      "repo": "slavingia/skills"
+    },
+    "installLocation": "/Users/xiaorongli/.claude/plugins/marketplaces/minimalist-entrepreneur",
+    "lastUpdated": "2026-04-03T03:53:17.492Z"
+  },
+  "superpowers-dev": {
+    "source": {
+      "source": "github",
+      "repo": "obra/superpowers"
+    },
+    "installLocation": "/Users/xiaorongli/.claude/plugins/marketplaces/superpowers-dev",
+    "lastUpdated": "2026-06-05T01:07:14.480Z"
+  },
+  "matt-skills": {
+    "source": {
+      "source": "directory",
+      "path": "/Users/xiaorongli/.flywheel/marketplaces/matt-skills"
+    },
+    "installLocation": "/Users/xiaorongli/.flywheel/marketplaces/matt-skills",
+    "lastUpdated": "2026-07-20T18:56:44.922Z"
+  }
+}

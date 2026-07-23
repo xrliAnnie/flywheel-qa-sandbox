@@ -1,0 +1,13 @@
+diff --git a/packages/flywheel-comm/src/lead-inbox-queue.ts b/packages/flywheel-comm/src/lead-inbox-queue.ts
+index 2af2e7d1..ce60adac 100644
+--- a/packages/flywheel-comm/src/lead-inbox-queue.ts
++++ b/packages/flywheel-comm/src/lead-inbox-queue.ts
+@@ -528,7 +528,7 @@ export class LeadInboxQueue {
+         const enqueue = this.db.transaction(() => {
+             this.db
+                 .prepare(
+-                    `INSERT OR IGNORE INTO lead_inbox (
++                    `INSERT INTO lead_inbox (
+                    id, to_lead, source, type, msg_class, priority, content,
+                    ref_message_id, legacy_alias, deadline_at, created_at, carrier,
+                    receipt_exempt_reason

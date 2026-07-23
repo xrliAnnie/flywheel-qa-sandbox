@@ -1,0 +1,41 @@
+bun test v1.3.11 (af24e281)
+
+chat-receipt-runtime.test.ts:
+ 98 |       notify: async () => {},
+ 99 |       advise: async () => {},
+100 |     })
+101 |
+102 |     expect(await runtime.begin(begin)).toBe('ok')
+103 |     expect(await runtime.begin(begin)).toBe('ok')
+                                             ^
+error: expect(received).toBe(expected)
+
+Expected: "ok"
+Received: "spooled"
+
+      at <anonymous> (/private/tmp/flywheel-test-slot-1/s5-mutation-m3-plugin/external_plugins/discord/chat-receipt-runtime.test.ts:103:40)
+(fail) real built chat-receipt CLI > runs begin idempotently, completes delivery, and settles processed_at [509.52ms]
+(pass) begin failure and durable spool > fails open into an atomic 0700/0600 intent and preserves retry state [1.51ms]
+[chat-receipt] begin failed and spool write failed for 100000000000000011: EACCES: permission denied, mkdir '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly1437-runtime-FPVdhD/chat-receipt-spool'
+(pass) begin failure and durable spool > surfaces an immediate advisory when the spool itself cannot be written [1.77ms]
+[chat-receipt] broken-advised.json advisory failed: Discord unavailable
+(pass) broken wiring advisory > persists detected-before-send and latches only after a successful visible advisory [1.37ms]
+(pass) producer accept boundary > marks complete only after the inbound notification has resolved [0.69ms]
+[chat-receipt] inbound notify failed for 100000000000000011: MCP closed
+(pass) producer accept boundary > does not complete when notification delivery rejects [0.74ms]
+(pass) recovery worker > does not turn a successful settle into reply failure when the intent path is unusable [1.61ms]
+(pass) recovery worker > persists the settle proof before the CLI runs (write-ahead) [1.37ms]
+[chat-receipt] settle failed for 100000000000000011: database busy
+(pass) recovery worker > persists a failed settle proof and recovers it after process restart [2.90ms]
+(pass) recovery worker > drains a failed begin idempotently without completing it directly [1.39ms]
+(pass) recovery worker > skips active accepts, then redelivers and completes after the accept releases [0.73ms]
+(pass) recovery worker > quarantines a 48h-old row before notify and completes only after notify resolves [0.86ms]
+(pass) recovery worker > coalesces kicks and continues across a five-intent pass until finite work is empty [9.94ms]
+(pass) recovery worker > preserves a kick that lands during a zero-work pass and drains the new intent [1.66ms]
+[chat-receipt] corrupt-advised.json advisory failed: Discord unavailable
+(pass) recovery worker > preserves corrupt intents, ignores metadata filenames, and retries the pending advisory [1.88ms]
+
+ 14 pass
+ 1 fail
+ 49 expect() calls
+Ran 15 tests across 1 file. [584.00ms]

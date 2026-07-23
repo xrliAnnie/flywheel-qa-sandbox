@@ -197,6 +197,26 @@ done
 # Default branch — sandbox `main` works for most smoke / regression suites.
 FROM_BRANCH="${FROM_BRANCH:-main}"
 
+# FLY-1439: fail immediately on a typo'd isolated Claude root instead of
+# materializing an empty config and waiting minutes for an unauthenticated
+# Lead to miss its ready lease.
+if [[ -n "${TEST_LEAD_CLAUDE_CONFIG_DIR:-}" ]]; then
+  case "${TEST_LEAD_CLAUDE_CONFIG_DIR}" in
+    /*) ;;
+    *)
+      echo "ERROR: TEST_LEAD_CLAUDE_CONFIG_DIR must be an existing absolute directory." >&2
+      exit 1
+      ;;
+  esac
+  if [[ ! -d "${TEST_LEAD_CLAUDE_CONFIG_DIR}" ]] \
+    || { [[ ! -f "${TEST_LEAD_CLAUDE_CONFIG_DIR}/.credentials.json" ]] \
+      && [[ ! -d "${TEST_LEAD_CLAUDE_CONFIG_DIR}/plugins" ]] \
+      && [[ ! -f "${TEST_LEAD_CLAUDE_CONFIG_DIR}/settings.json" ]]; }; then
+    echo "ERROR: TEST_LEAD_CLAUDE_CONFIG_DIR must be an existing absolute directory containing Claude credentials, plugins, or settings." >&2
+    exit 1
+  fi
+fi
+
 # ── FLY-153: Mirror mode validation (BEFORE expensive preflight) ──
 # Round 1 #3 + R2 #4: validate mode + mirror requirements before paying for
 # gh/pnpm preflight. If the user asks for an impossible mirror config (slot 4,
@@ -587,6 +607,16 @@ mkdir -p "${SLOT_DIR}/discord-state"
 # `set -u` would otherwise abort).
 LEAD_EXTRA_ENV=()
 BRIDGE_EXTRA_ENV=()
+# FLY-1439: opt-in isolated Claude config for pinned-plugin real-machine QA.
+# The dedicated knob is appended after the Lead launcher's `env -u
+# CLAUDE_CONFIG_DIR`, so inherited production values remain scrubbed while an
+# explicit test config wins. The expected-path sentinel is derived from the
+# exact same bytes; claude-lead.sh fails closed if a skip request drifts.
+if [[ -n "${TEST_LEAD_CLAUDE_CONFIG_DIR:-}" ]]; then
+  LEAD_EXTRA_ENV+=("CLAUDE_CONFIG_DIR=${TEST_LEAD_CLAUDE_CONFIG_DIR}")
+  LEAD_EXTRA_ENV+=("TEST_SKIP_PLUGIN_FORK_CHECK=1")
+  LEAD_EXTRA_ENV+=("TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR=${TEST_LEAD_CLAUDE_CONFIG_DIR}")
+fi
 # FLY-1189: the single Bridge hosts multiple dept Leads. PR-C's detection /
 # founder escalation posts to each owner Lead's [FLY-XX] thread with THAT lead's
 # botToken (resolveLeadForIssue → lead.botToken), and loadProjects() resolves
@@ -1111,6 +1141,8 @@ LEAD_LOG="${SLOT_DIR}/lead.log"
 env -u DISCORD_BOT_TOKEN \
   -u LEAD_WORKSPACE \
   -u CLAUDE_CONFIG_DIR \
+  -u TEST_SKIP_PLUGIN_FORK_CHECK \
+  -u TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR \
   -u FLYWHEEL_LEAD_MODEL \
   -u FLYWHEEL_LEAD_EFFORT \
   DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
@@ -1401,6 +1433,8 @@ EOF
     env -u DISCORD_BOT_TOKEN \
       -u LEAD_WORKSPACE \
       -u CLAUDE_CONFIG_DIR \
+      -u TEST_SKIP_PLUGIN_FORK_CHECK \
+      -u TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR \
       -u FLYWHEEL_LEAD_MODEL \
       -u FLYWHEEL_LEAD_EFFORT \
       DISCORD_BOT_TOKEN="${XTOKEN}" \

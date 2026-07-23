@@ -1,0 +1,21 @@
+[
+  [
+    {
+      "id": "chat:flywheel-test-1:1529799691280187462",
+      "created_at": "2026-07-23T10:37:48.705Z",
+      "delivered_at": "2026-07-23T10:38:20.263Z",
+      "processed_at": "2026-07-23T10:39:04.789Z",
+      "processed_evidence": "{\"v\":1,\"kind\":\"lead_ack\",\"ref\":\"fly1439-s2a-m3-observed-no-reply\",\"actor\":\"flywheel-test-1\",\"actor_kind\":\"lead\",\"fence\":{\"lease_key\":\"test-slot-1-flywheel-test-1\",\"lease_generation\":30}}",
+      "next_unprocessed_at": null
+    }
+  ],
+  [
+    {
+      "request_id": "fly1439-s2a-m3-observed-no-reply",
+      "receipt_id": "chat:flywheel-test-1:1529799691280187462",
+      "action": "ack",
+      "result_json": "{\"kind\":\"handled\",\"receiptId\":\"chat:flywheel-test-1:1529799691280187462\",\"action\":\"ack\"}",
+      "created_at": "2026-07-23T10:39:04.789Z"
+    }
+  ]
+]

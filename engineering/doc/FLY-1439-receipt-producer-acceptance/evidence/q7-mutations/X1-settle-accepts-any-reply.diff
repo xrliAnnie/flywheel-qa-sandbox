@@ -1,0 +1,15 @@
+ external_plugins/discord/chat-receipt-recorder.ts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+diff --git a/external_plugins/discord/chat-receipt-recorder.ts b/external_plugins/discord/chat-receipt-recorder.ts
+index 53b743c..8b0a91e 100644
+--- a/external_plugins/discord/chat-receipt-recorder.ts
++++ b/external_plugins/discord/chat-receipt-recorder.ts
+@@ -204,7 +204,7 @@ export function sentMessageCarriesReference(
+   sent: { reference?: { messageId?: string } | null },
+   inboundMsgId: string,
+ ): boolean {
+-  return sent.reference?.messageId === inboundMsgId
++  return true
+ }
+ 
+ export function receiptInboundInstruction(mode: RecorderMode): string {

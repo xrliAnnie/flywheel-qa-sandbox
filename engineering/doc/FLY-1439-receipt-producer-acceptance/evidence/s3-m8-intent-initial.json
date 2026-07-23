@@ -1,0 +1,22 @@
+{
+  "path": "/tmp/flywheel-test-slot-1/discord-state/chat-receipt-spool/1529809599803162738.json",
+  "mode": "600",
+  "bytes": {
+    "v": 1,
+    "begin": {
+      "leadId": "flywheel-test-1",
+      "chatId": "1504277055406211142",
+      "originChannelId": "1504277055406211142",
+      "messageId": "1529809599803162738",
+      "authorId": "1493072948683341976",
+      "authorName": "product-lead-test",
+      "priority": 1,
+      "ts": "2026-07-23T11:17:11.081Z",
+      "msgKind": "guild",
+      "attachments": [],
+      "text": "FLY-1439 S3 M8 writable-spool begin failure. Do not reply. If this message later arrives with [redelivery], do not reply; the QA driver will close the receipt from the real Lead pane."
+    },
+    "attempts": 1,
+    "advisedAt": null
+  }
+}

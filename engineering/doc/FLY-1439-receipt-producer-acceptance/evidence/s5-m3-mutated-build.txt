@@ -1,0 +1,3 @@
+
+> flywheel-comm@0.1.0 build /private/tmp/flywheel-test-slot-1/s5-mutation-m3-main/packages/flywheel-comm
+> tsc

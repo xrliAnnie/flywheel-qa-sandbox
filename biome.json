@@ -5,6 +5,7 @@
 			"**",
 			"!**/dist-electron",
 			"!**/.cursor",
+			"!engineering/doc/**",
 			"!engineering/doc/FLY-1278-review-gate-convergence/fixtures/fly-1251-rounds-6-9.json"
 		]
 	},

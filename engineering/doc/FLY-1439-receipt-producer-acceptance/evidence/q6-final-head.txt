@@ -1,0 +1,6 @@
+local_head=bb0a150989c0d7477bbb03543052c87ee229d368
+local_status_lines=0
+remote_feature_head=bb0a150989c0d7477bbb03543052c87ee229d368
+remote_pr_17_head=bb0a150989c0d7477bbb03543052c87ee229d368
+archive_diff_bytes=0
+verdict_head_pinned=true
