@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-136 设计 — FLY-SBX-5 五并发竞态沙盒</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    max-width: 960px; margin: 0 auto; padding: 32px 20px 64px;
+    line-height: 1.6;
+  }
+  .mono { font-family: 'SF Mono', ui-monospace, monospace; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .subtitle { color: #86868b; font-size: 14px; margin-bottom: 28px; }
+  .section { margin-bottom: 32px; }
+  .section-title { font-size: 18px; font-weight: 600; color: #1a365d; margin-bottom: 14px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 20px 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 14px;
+  }
+  .card.blue  { border-left: 4px solid #007aff; }
+  .card.green { border-left: 4px solid #34c759; }
+  .card.amber { border-left: 4px solid #ff9500; }
+  .card.red   { border-left: 4px solid #ff3b30; }
+  .card.gray  { border-left: 4px solid #86868b; }
+  .summary { font-size: 17px; }
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 20px;
+    font-size: 12px; font-weight: 600; margin-right: 8px; color: #fff;
+  }
+  .badge.blue { background: #007aff; }
+  .badge.green { background: #34c759; }
+  .badge.red { background: #ff3b30; }
+  .badge.gray { background: #86868b; }
+  /* flow diagram */
+  .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
+  .flow-step {
+    flex: 1 1 120px; min-width: 120px; background: #fff; border-radius: 10px;
+    padding: 12px 10px; text-align: center;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-top: 3px solid #007aff;
+  }
+  .flow-step.gate { border-top-color: #ff9500; }
+  .flow-step.done { border-top-color: #34c759; }
+  .flow-step .t { font-weight: 600; font-size: 14px; }
+  .flow-step .d { font-size: 12px; color: #86868b; margin-top: 4px; }
+  .flow-arrow { align-self: center; color: #86868b; font-size: 18px; flex: 0 0 auto; }
+  /* race lanes */
+  .lanes { display: flex; flex-direction: column; gap: 6px; }
+  .lane { display: flex; align-items: center; gap: 10px; }
+  .lane-label { flex: 0 0 150px; font-size: 13px; font-weight: 600; }
+  .lane-bar {
+    flex: 1; background: #e8e8ed; border-radius: 8px; padding: 6px 12px;
+    font-size: 12px; color: #1d1d1f;
+  }
+  .lane-bar.hl { background: #d9ecff; border: 1px solid #007aff; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e8e8ed; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  code, .codeline {
+    font-family: 'SF Mono', ui-monospace, monospace; font-size: 13px;
+    background: #f0f0f2; border-radius: 6px; padding: 2px 6px;
+  }
+  .codeblock {
+    font-family: 'SF Mono', ui-monospace, monospace; font-size: 13px;
+    background: #1a365d; color: #e8f0fb; border-radius: 10px;
+    padding: 14px 18px; overflow-x: auto; white-space: pre;
+  }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+</style>
+</head>
+<body>
+  <h1>FLY-136 设计 — FLY-SBX-5 五并发竞态沙盒</h1>
+  <div class="subtitle mono">Issue: FLY-136 · 阶段: design · 日期: 2026-07-23 · 仓库: xrliAnnie/flywheel-qa-sandbox</div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#007aff;">●</span> 一句话总结</div>
+    <div class="card blue summary">
+      这是 QA 竞态测试的<strong>沙盒占位 issue</strong>:设计产出 = 向 sandbox 仓 README.md 末尾<strong>追加一行带 FLY-136 标识的记录</strong>,让 5 个 Runner 并发跑 FLY-SBX-1..5 时,每个都有一条真实、互不冲突的 brainstorm → PR → approve → ship 全链路可走。
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#007aff;">●</span> 核心流程(单个 Runner 的链路)</div>
+    <div class="card">
+      <div class="flow">
+        <div class="flow-step"><div class="t">读 issue</div><div class="d">FLY-136 spec 固定</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step gate"><div class="t">Brainstorm 门</div><div class="d">QA fixture 应答放行</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="t">追加一行</div><div class="d">README.md 末尾</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="t">开 PR</div><div class="d">1 行 diff,链接 issue</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step gate"><div class="t">等 approve</div><div class="d">Hard Gate 验证点</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step done"><div class="t">Ship + Merge</div><div class="d">issue 保持 open</div></div>
+      </div>
+    </div>
+    <div class="card gray">
+      <div style="font-weight:600; margin-bottom:8px;">5-spawn 竞态全景(FLY-128 观察对象)</div>
+      <div class="lanes">
+        <div class="lane"><div class="lane-label mono">FLY-SBX-1..4</div><div class="lane-bar">各自 Runner · 各自 branch · 各自追加自己标识的一行 · 各自 PR</div></div>
+        <div class="lane"><div class="lane-label mono">FLY-SBX-5 (本 issue)</div><div class="lane-bar hl">Runner 913ec87f · branch project-slot-2-FLY-136 · 追加 <span class="mono">FLY-136</span> 行 · PR → approve → ship</div></div>
+      </div>
+      <div style="font-size:13px; color:#86868b; margin-top:10px;">5 条泳道内容互不相同 → merge 只有位置级 rebase,没有语义冲突。竞态压力集中在 spawn/Terminal 层,这正是测试要观察的。</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#af52de;">●</span> 数据 / 结构模型</div>
+    <div class="card">
+      <table>
+        <tr><th>要素</th><th>值</th></tr>
+        <tr><td>变更文件</td><td><code>README.md</code>(仓库根,末尾追加)</td></tr>
+        <tr><td>追加内容</td><td><code>FLY-136 (FLY-SBX-5) design-node pass — 5-spawn race fixture run, 2026-07-23</code></td></tr>
+        <tr><td>diff 体积</td><td>恰好 1 行新增,0 行删除/修改</td></tr>
+        <tr><td>冲突键</td><td>行内 issue 标识(<code>FLY-136</code>)保证 5 条泳道内容唯一</td></tr>
+        <tr><td>设计工件</td><td><code>doc/FLY-136-sbx5-spawn-race/</code>(design.md · design.html · progress.md)</td></tr>
+        <tr><td>issue 生命周期</td><td>永久 open(QA suite 复用;每轮仅日期/内容变化)</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#ff9500;">●</span> 关键取舍与被否方案</div>
+    <div class="card green">
+      <span class="badge green">选定</span><strong>追加 README.md 一行</strong>
+      <div style="margin-top:6px;">最小、可重复、冲突面最低,与 issue spec 逐字一致。</div>
+    </div>
+    <div class="card red">
+      <span class="badge red">否</span><strong>追加 CLAUDE.md</strong>
+      <div style="margin-top:6px;">CLAUDE.md 是每个 agent session 的 prompt 注入面 —— 测试行会污染后续所有 session 的指令上下文;README.md 是惰性文档,零副作用。</div>
+    </div>
+    <div class="card red">
+      <span class="badge red">否</span><strong>每轮测试建独立新文件</strong>
+      <div style="margin-top:6px;">偏离 issue spec("append one line to README.md or CLAUDE.md"),且文件数随测试轮次膨胀。</div>
+    </div>
+    <div class="card red">
+      <span class="badge red">否</span><strong>做任何真实功能变更</strong>
+      <div style="margin-top:6px;">issue 明令 "Do not assign real work / Do not modify scope"。</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#ff3b30;">●</span> 诚实边界</div>
+    <div class="card amber">
+      <ul>
+        <li><strong>只做</strong>:QA fixture 的一行追加 + 本设计工件;为 5-spawn race 提供稳定可走的链路。</li>
+        <li><strong>不做</strong>:不给 sandbox 仓引入任何功能、测试或结构变化;不"修复" 5 个 PR 并发 merge 的排队/rebase 行为 —— 那是 FLY-128 race test 本身要观察的现象,不是 fixture 要解决的问题。</li>
+        <li><strong>不碰</strong>:issue 状态(永久 open)、issue scope(QA 依赖其稳定)。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span style="color:#34c759;">●</span> 实现节点 handoff(合同)</div>
+    <div class="card">
+      <div class="codeblock">1. echo 'FLY-136 (FLY-SBX-5) design-node pass — 5-spawn race fixture run, 2026-07-23' >> README.md
+2. git commit -m "docs(FLY-136): append SBX-5 race fixture line" && git push
+3. gh pr create(base=main,body 链接 FLY-136)
+4. complete --route awaiting_review → 等 approve → ship + merge
+5. 不 touch 其它文件;doc-only,无需新增测试(QA suite 即验证)</div>
+    </div>
+  </div>
+</body>
+</html>
