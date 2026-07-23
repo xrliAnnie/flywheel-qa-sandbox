@@ -76,6 +76,42 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 		expect(modelRules).toContain("start a new run");
 	});
 
+	it("gives every present and future department Lead the parameterized work-kind contract, but excludes CoS", () => {
+		const rules = readFileSync(
+			join(BASE_RULES_DIR, "department-lead-rules.md"),
+			"utf8",
+		);
+		expect(rules).toContain("FLY-1436 work-kind dispatch contract");
+		for (const category of [
+			"prd",
+			"designer",
+			"prototype",
+			"code",
+			"research",
+		]) {
+			expect(rules).toContain(`\`${category}\``);
+		}
+		expect(rules).toContain('"issueId":"<issue_id>"');
+		expect(rules).toContain('"projectName":"<project_name>"');
+		expect(rules).toContain('"leadId":"<lead_id>"');
+		expect(rules).toContain('"taskCategory":"<task_category>"');
+		expect(rules).toContain("generic single-session");
+		expect(rules).toContain("only after that project's `pipeline.work_kind`");
+
+		const syntheticFutureLead = runBundle(
+			"dept",
+			BASE_RULES_DIR,
+			"mailbox",
+			"1",
+		);
+		expect(syntheticFutureLead.status).toBe(0);
+		expect(names(syntheticFutureLead.lines)).toContain(
+			"department-lead-rules.md",
+		);
+		const cos = runBundle("cos", BASE_RULES_DIR, "mailbox", "1");
+		expect(names(cos.lines)).not.toContain("department-lead-rules.md");
+	});
+
 	it("dept (mailbox) → full ordered bundle incl. runner-messaging + governance", () => {
 		const { lines, status } = runBundle("dept", BASE_RULES_DIR, "mailbox", "1");
 		expect(status).toBe(0);

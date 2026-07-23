@@ -639,6 +639,11 @@ import { createWorkflowShadowRuntimeFromEnv } from "./workflow-shadow-writer.js"
 import { createWorkflowShipReadyArm } from "./workflow-ship-ready-arm.js";
 import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
 import {
+	createWorkKindCutoverRouter,
+	type Fly1436ActivationEvidence,
+	readFly1436ActivationEvidence,
+} from "./workkind-cutover.js";
+import {
 	gitWorktreeClean,
 	makeBridgeWorktreeCleanup,
 	worktreeAutocleanEnabled,
@@ -1156,6 +1161,10 @@ export interface BridgeAppOptions {
 	vercelToken?: string;
 	/** FLY-1251: manual-QA confirm tokens (independent of Fleet console uptime). */
 	manualQaTokens?: ConfirmTokenStore;
+	/** FLY-1436: isolated confirm tokens for the founder-gated binding cutover. */
+	workKindCutoverTokens?: ConfirmTokenStore;
+	/** FLY-1436: injectable deployment evidence reader for route-level tests. */
+	workKindCutoverEvidence?: () => Fly1436ActivationEvidence;
 	/** FLY-1185: ship-entry lifecycle bundle built in startBridge. */
 	lifecycleInfra?: LifecycleShipInfra;
 	/** FLY-1185 §2.11: the shared per-repo mutation lock (startBridge-owned). */
@@ -1392,6 +1401,35 @@ export function createBridgeApp(
 		}),
 	);
 	app.use("/api/workflow", createWorkflowTemplateRouter(store));
+	const flywheelProjectRoot = projects.find(
+		(project) => project.projectName === "flywheel",
+	)?.projectRoot;
+	app.use(
+		"/api/workflow/cutovers/FLY-1436",
+		createWorkKindCutoverRouter({
+			store,
+			apiToken: config.apiToken,
+			// The operator re-runs the bounded quiescence probe between stage and
+			// apply. Five minutes preserves single-use semantics without making a
+			// healthy 60–90 second probe burn the founder-approved window.
+			tokens: opts?.workKindCutoverTokens ?? new ConfirmTokenStore(5 * 60_000),
+			readActivationEvidence:
+				opts?.workKindCutoverEvidence ??
+				(() =>
+					flywheelProjectRoot
+						? readFly1436ActivationEvidence({
+								projectRoot: flywheelProjectRoot,
+							})
+						: {
+								templateDispatch: false,
+								generalizedTemplates: false,
+								workKind: false,
+								prBAssetsReady: false,
+								deployedSha: "",
+								assetsDigest: "",
+							}),
+		}),
+	);
 
 	// FLY-175 Track 2: founder-consent hard gate. Returns null when
 	// decisionMode=off (default) — `fcMw()` then yields a no-op handler so the

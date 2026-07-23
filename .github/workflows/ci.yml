@@ -129,6 +129,11 @@ jobs:
       - name: Test — FLY-1393 flag truth CLI
         run: bash scripts/__tests__/check-flag-truth.test.sh
 
+      # FLY-1436: the founder-gated cutover CLI is a root-level node:test
+      # module, so workspace Vitest jobs do not discover it.
+      - name: Test — FLY-1436 work-kind cutover CLI
+        run: node --test scripts/__tests__/workkind-cutover.test.mjs
+
       # FLY-889: tmux/lsof/sqlite3 are each needed by a later hermetic test step
       # (cmux-sync / FLY-183 orphan-reaper / FLY-697 codex-log-guard). Installing
       # all three here in one apt-get avoids repeating `apt-get update` three

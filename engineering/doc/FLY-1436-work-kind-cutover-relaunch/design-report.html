@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1436 · 分档路由上线设计</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,system-ui,sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.6; padding:24px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:4px; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',monospace; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin-bottom:18px; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.purple { border-left:4px solid #af52de; }
+  .card.red { border-left:4px solid #ff3b30; }
+  h2 { font-size:17px; color:#1a365d; margin-bottom:12px; }
+  p, li { font-size:14px; }
+  .lede { font-size:16px; }
+  .flow { display:flex; flex-direction:column; gap:0; margin:14px 0; }
+  .stage { display:flex; align-items:stretch; gap:10px; }
+  .gate { background:#fff8e6; border:1.5px dashed #ff9500; border-radius:10px; padding:8px 14px; font-size:13px; margin:6px 0 6px 28px; color:#8a5a00; }
+  .gate b { color:#c77400; }
+  .step { background:#f0f6ff; border:1px solid #cfe3ff; border-radius:10px; padding:10px 14px; font-size:13.5px; flex:1; }
+  .step b { color:#0a4da3; }
+  .arrow { text-align:center; color:#86868b; font-size:15px; margin:2px 0 2px 28px; width:20px; }
+  .num { display:inline-block; background:#007aff; color:#fff; border-radius:50%; width:22px; height:22px; text-align:center; line-height:22px; font-size:12.5px; font-weight:600; margin-right:8px; flex-shrink:0; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:10px 0; }
+  th { text-align:left; color:#86868b; font-weight:600; padding:6px 10px; border-bottom:1.5px solid #e5e5ea; font-size:12.5px; }
+  td { padding:7px 10px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  .mono { font-family:'SF Mono',monospace; font-size:12.5px; }
+  .pill { display:inline-block; border-radius:6px; padding:1px 8px; font-size:12px; font-weight:600; }
+  .pill.v2 { background:#eaf7ee; color:#1d7a3a; }
+  .pill.v1 { background:#eef2fb; color:#3d5aa8; }
+  .pill.single { background:#f4eefb; color:#7a3fa8; }
+  .pill.err { background:#feecec; color:#c22; }
+  .tr-title { font-weight:600; margin-bottom:2px; }
+  .tr-why { color:#6e6e73; font-size:13px; }
+  .cols { display:flex; gap:16px; flex-wrap:wrap; }
+  .col { flex:1; min-width:260px; }
+  .do h3, .dont h3 { font-size:14px; margin-bottom:6px; }
+  .do h3 { color:#1d7a3a; } .dont h3 { color:#c22; }
+  ul { padding-left:20px; }
+  li { margin-bottom:5px; }
+  .footer { color:#86868b; font-size:12px; text-align:center; margin-top:24px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1436 · 派单分档路由上线(解冻 1418)</h1>
+  <div class="meta">Issue <code>FLY-1436</code> · 设计阶段报告 · 2026-07-22 · Codex 设计评审 5 轮通过</div>
+
+  <div class="card blue">
+    <h2>一句话</h2>
+    <p class="lede">把已经建好、一直沉睡的「按活的类型选工作流模板」在 flywheel 项目上<b>真金打开</b>:以后派单时说清楚这是 产品文档 / 设计 / 原型 / 代码 / 调研 哪一类活,系统就走对应的流水线,不再一律按最重的工程三段流跑 —— Honey Lemon 的产品单和调研单从此能跑起来。<b>最后翻开关那一步永远等你拍板,绝不自翻。</b></p>
+  </div>
+
+  <div class="card green">
+    <h2>① 核心流程 —— 五道你拍板的门,每道门后才动下一步</h2>
+    <div class="flow">
+      <div class="gate"><b>门1 · 批教学与工具</b> — 批准「教所有 Lead 怎么报活的类型」的文本 + 写入/恢复工具的安全边界</div>
+      <div class="stage"><span class="num">1</span><div class="step"><b>先行 PR-A(不改任何路由行为)</b>:给全部 9 个能派单的 Lead 写进通用教学(不点名、按角色参数化,未来新 Lead 自动继承);交付「写入 / 一键恢复」工具 —— 工具先上生产,回滚时才不会把救命工具一起撤掉</div></div>
+      <div class="arrow">↓</div>
+      <div class="stage"><span class="num">2</span><div class="step"><b>重启全部 Lead + 逐个验收</b>:每个 Lead 都要现场复述新规则、并真的写出一份带活类型的派单示例才算过;CoS 作反向对照(它不该学到)</div></div>
+      <div class="gate"><b>门2 · 验教学证据</b> — 9 个 Lead 的读回矩阵呈报</div>
+      <div class="stage"><span class="num">3</span><div class="step"><b>切换 PR-B(内容先批、先不合并)</b>:项目开关 + 两份产品执行者提示词改写 + 语音派单必填活类型</div></div>
+      <div class="gate"><b>门3 · 批 PR-B 内容</b>(批内容,不合并)</div>
+      <div class="gate"><b>门4 · 最终 GO = 翻开关的那道门</b> — 两个开关的翻转授权、写入清单、快照与回滚预案全部摆在桌面上</div>
+      <div class="stage"><span class="num">4</span><div class="step"><b>受控翻转(目标 10 分钟内)</b>:确认没有在途的 v2 活 → 翻总开关(走带审计的官方开关面,免重启)→ 合并 PR-B 自动部署 → 五项部署完成证据 + 「更新器已静默」证据 → 预演(dry-run)→ <b>一个数据库事务写入六行路由</b> + 凭据落库 → 复读核对</div></div>
+      <div class="arrow">↓</div>
+      <div class="stage"><span class="num">5</span><div class="step"><b>三分支生产验收</b>:Honey Lemon 真发一单调研 → 走对模板;不报类型 → 兜底单人流程 + 提醒;报错类型 → 明确拒绝零残留;Tadashi 发一单代码活 → 工程流水线照旧</div></div>
+      <div class="gate"><b>门5 · 验收证据包收尾</b></div>
+    </div>
+  </div>
+
+  <div class="card purple">
+    <h2>② 数据模型 —— 写入前后,路由表长什么样</h2>
+    <p class="tr-why">现在 6 个项目各只有一行「兜底 → 最重工程模板」。切换只动 flywheel 一个项目:换掉兜底行 + 新增五行精确路由。</p>
+    <table>
+      <tr><th>你报的活类型</th><th>走的模板</th><th>流水线形态</th></tr>
+      <tr><td class="mono">prd(产品文档)</td><td class="mono">tpl_product_v1</td><td><span class="pill v2">新流水线</span> 写作→评审→你拍板</td></tr>
+      <tr><td class="mono">designer(设计)</td><td class="mono">tpl_product_designer</td><td><span class="pill v2">新流水线</span> 设计迭代→评审→你拍板</td></tr>
+      <tr><td class="mono">prototype(原型)</td><td class="mono">tpl_product_prototype</td><td><span class="pill v2">新流水线</span></td></tr>
+      <tr><td class="mono">code(代码)</td><td class="mono">tpl_eng(默认重档)</td><td><span class="pill v1">工程三段流</span> 与今天完全同构</td></tr>
+      <tr><td class="mono">research(调研)</td><td class="mono">tpl_generic</td><td><span class="pill v2">轻量单节点</span></td></tr>
+      <tr><td>不报类型</td><td>—</td><td><span class="pill single">兜底单人流程</span> + 给 Lead 发提醒(不拒绝)</td></tr>
+      <tr><td>报错类型</td><td>—</td><td><span class="pill err">当场拒绝</span> 零残留,改对重发</td></tr>
+    </table>
+    <p class="tr-why">每次写入都留「操作凭据」在数据库里:断线重试不会写两次,恢复时照凭据一键还原到写入前的样子。</p>
+  </div>
+
+  <div class="card amber">
+    <h2>③ 关键取舍(与被否掉的方案)</h2>
+    <table>
+      <tr><td style="width:38%"><div class="tr-title">写入工具这次自己建</div><div class="tr-why">上游 1380 只种了模板、刻意没交付写入工具</div></td><td>被否:「等别人补工具」— 解冻后本单就是执行单;自建反而把形态定死为最安全的「单事务 + 一键恢复」,不留中间烂尾态</td></tr>
+      <tr><td><div class="tr-title">总开关走官方带审计的开关面,免重启</div><div class="tr-why">评审第 1 轮纠正</div></td><td>被否:「手改配置文件 + 重启 Bridge」— 绕过校验和审计、还要多一次全员重启;官方开关面一条命令、有据可查</td></tr>
+      <tr><td><div class="tr-title">不修更新器的老锁 bug,改用「静默证据」</div><div class="tr-why">解冻条件之一:避开全机队半径</div></td><td>被否:「修锁协议」— 那会让每个项目每次自动部署都吃新代码,风险远大于收益;改为写入前反复核实「更新器确实闲着 + 部署内容没漂移」,写完再核一遍</td></tr>
+      <tr><td><div class="tr-title">出问题先「一键还原路由」,再动开关</div><div class="tr-why">回滚次序被今天的现实反转</div></td><td>被否:「先关开关」— 实测发现路由写入后单独关开关会让派单整体报错;所以正常回滚永远先还原数据库,紧急情况(还原通道本身坏了)才动总闸,两条路都写死在预案里</td></tr>
+      <tr><td><div class="tr-title">Honey Lemon 当验收正样本</div><div class="tr-why">你的通用性纠正:不能只教 Tadashi</div></td><td>被否:「Tadashi 一发金丝雀当全局证据」— 教学写进所有 Lead 共享的规则层,9 个 Lead 逐个读回验证,未来新 Lead 自动继承并有测试守着</td></tr>
+    </table>
+  </div>
+
+  <div class="card red">
+    <h2>④ 诚实边界</h2>
+    <div class="cols">
+      <div class="col do">
+        <h3>这个设计做到</h3>
+        <ul>
+          <li>只切 flywheel 一个项目(试点);其余 5 个项目一字不动</li>
+          <li>切换前所有阶段对现有派单零行为变化(有测试钉住)</li>
+          <li>切换后代码活照旧走工程三段流(同构模板,逐字段核对过)</li>
+          <li>每一步失败都有单义处置:写入是一个事务、有凭据、可一键还原</li>
+          <li>翻开关的动作 100% 在你最终 GO 之后</li>
+        </ul>
+      </div>
+      <div class="col dont">
+        <h3>它不承诺</h3>
+        <ul>
+          <li>切换后「不报类型」不再走重工程模板,而是兜底单人流程+提醒 —— 这是你之前拍的软兜底语义,不是字节不变</li>
+          <li>写入前的最后一秒仍有极小的并发窗口(已用纪律+写后复核+凭据对账收敛,风险余量会写进 GO 呈报)</li>
+          <li>语音派单的必填活类型要等你下一次语音会话才真验到(会挂具名跟进项)</li>
+          <li>旧模板的退役、其他项目的推广,都是后续独立的、各自带门的单子</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">FLY-1436 设计节点 · 继承 FLY-1418 冻结设计并按今日生产实况修订 · Codex 评审 R1-R5 全采纳</div>
+</div>
+</body>
+</html>

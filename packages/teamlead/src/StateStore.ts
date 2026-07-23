@@ -3201,6 +3201,44 @@ export class StateStore {
 				FOREIGN KEY (template_id) REFERENCES workflow_template(template_id)
 			)
 		`);
+		// FLY-1436: the one-time work-kind binding activation/restore receipt is
+		// committed in the SAME transaction as its binding rows and audit facts.
+		// The control-plane state file is only a navigation hint; this immutable
+		// row is the authority after response loss or a Bridge restart.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_binding_cutover_claim (
+				operation_id TEXT PRIMARY KEY,
+				activation_id TEXT NOT NULL,
+				kind TEXT NOT NULL CHECK (kind IN ('activate','restore')),
+				source_operation_id TEXT,
+				canonical_hash TEXT NOT NULL,
+				snapshot_hash TEXT NOT NULL,
+				status TEXT NOT NULL CHECK (status = 'committed'),
+				result_json JSON NOT NULL,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				committed_at TEXT NOT NULL DEFAULT (datetime('now')),
+				CHECK (
+					(kind = 'activate' AND source_operation_id IS NULL)
+					OR (kind = 'restore' AND source_operation_id IS NOT NULL)
+				)
+			)
+		`);
+		for (const action of ["update", "delete"] as const) {
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS workflow_binding_cutover_claim_no_${action}
+				BEFORE ${action.toUpperCase()} ON workflow_binding_cutover_claim
+				BEGIN SELECT RAISE(ABORT, 'workflow_binding_cutover_claim is append-only'); END
+			`);
+		}
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_binding_cutover_claim_no_replace
+			BEFORE INSERT ON workflow_binding_cutover_claim
+			WHEN EXISTS (
+				SELECT 1 FROM workflow_binding_cutover_claim
+				 WHERE operation_id = NEW.operation_id
+			)
+			BEGIN SELECT RAISE(ABORT, 'workflow_binding_cutover_claim is append-only'); END
+		`);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_template_audit (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -14285,6 +14323,22 @@ export class StateStore {
 		)[0] as unknown as WorkflowCategoryBindingRow | undefined;
 	}
 
+	/**
+	 * Authoring/CAS read: unlike getWorkflowCategoryBinding, this never falls
+	 * back to `*`. A cutover baseline must prove the exact physical row it is
+	 * about to replace, not the route that row would resolve to.
+	 */
+	getWorkflowCategoryBindingExact(
+		project: string,
+		taskCategory: string,
+	): WorkflowCategoryBindingRow | undefined {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_category_binding
+			 WHERE project = ? AND task_category = ?`,
+			[project, taskCategory],
+		)[0] as unknown as WorkflowCategoryBindingRow | undefined;
+	}
+
 	listWorkflowCategoryBindings(project?: string): WorkflowCategoryBindingRow[] {
 		return this.workflowSelectAll(
 			project
@@ -14294,6 +14348,391 @@ export class StateStore {
 				   ORDER BY project, task_category, template_id`,
 			project ? [project] : [],
 		) as unknown as WorkflowCategoryBindingRow[];
+	}
+
+	getWorkflowBindingCutoverClaim(
+		operationId: string,
+	): WorkflowBindingCutoverClaimRow | undefined {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_binding_cutover_claim
+			 WHERE operation_id = ?`,
+			[operationId],
+		)[0] as unknown as WorkflowBindingCutoverClaimRow | undefined;
+	}
+
+	/**
+	 * FLY-1436's deliberately narrow authoring seam. It can replace bindings
+	 * for one named project only when the exact expected set still matches.
+	 * The endpoint above this method hard-codes the project, activation id,
+	 * actor, and target set; this layer supplies the atomic CAS + durable replay
+	 * boundary and is not a general-purpose bindings CRUD API.
+	 */
+	commitWorkflowBindingCutover(
+		input: WorkflowBindingCutoverInput,
+	): WorkflowBindingCutoverResult {
+		const operationId = input.operationId.trim();
+		const activationId = input.activationId.trim();
+		const project = input.project.trim();
+		const actor = input.actor.trim();
+		const canonicalHash = input.canonicalHash.trim();
+		const snapshotHash = input.snapshotHash.trim();
+		const sourceOperationId = input.sourceOperationId?.trim();
+		if (
+			!operationId ||
+			!activationId ||
+			!project ||
+			!actor ||
+			!canonicalHash ||
+			!snapshotHash ||
+			(input.kind === "restore" && !sourceOperationId) ||
+			(input.kind === "activate" && sourceOperationId)
+		) {
+			return { status: "invalid_request" };
+		}
+
+		const normalize = (
+			bindings: readonly WorkflowBindingCutoverBinding[],
+		): WorkflowBindingCutoverBinding[] | undefined => {
+			const seen = new Set<string>();
+			const normalized: WorkflowBindingCutoverBinding[] = [];
+			for (const raw of bindings) {
+				const taskCategory = raw.taskCategory.trim();
+				const templateId = raw.templateId.trim();
+				if (!taskCategory || !templateId || seen.has(taskCategory)) {
+					return undefined;
+				}
+				seen.add(taskCategory);
+				normalized.push({ taskCategory, templateId });
+			}
+			return normalized.sort((a, b) =>
+				a.taskCategory < b.taskCategory
+					? -1
+					: a.taskCategory > b.taskCategory
+						? 1
+						: 0,
+			);
+		};
+		const expectedBefore = normalize(input.expectedBefore);
+		const targetBindings = normalize(input.targetBindings);
+		if (!expectedBefore || !targetBindings || targetBindings.length === 0) {
+			return { status: "invalid_request" };
+		}
+
+		const receiptFrom = (
+			row: WorkflowBindingCutoverClaimRow,
+		): WorkflowBindingCutoverReceipt | undefined => {
+			try {
+				return JSON.parse(row.result_json) as WorkflowBindingCutoverReceipt;
+			} catch {
+				return undefined;
+			}
+		};
+		const existing = this.getWorkflowBindingCutoverClaim(operationId);
+		if (existing) {
+			if (existing.canonical_hash !== canonicalHash) {
+				return { status: "operation_conflict" };
+			}
+			const receipt = receiptFrom(existing);
+			return receipt
+				? { status: "replayed", receipt }
+				: { status: "receipt_corrupt" };
+		}
+
+		if (input.kind === "restore") {
+			const source = this.getWorkflowBindingCutoverClaim(sourceOperationId!);
+			const sourceReceipt = source && receiptFrom(source);
+			if (
+				!source ||
+				source.kind !== "activate" ||
+				source.activation_id !== activationId ||
+				!sourceReceipt ||
+				source.operation_id !== sourceReceipt.operationId ||
+				source.canonical_hash !== sourceReceipt.canonicalHash ||
+				source.snapshot_hash !== sourceReceipt.snapshotHash ||
+				sourceReceipt.activationId !== activationId ||
+				sourceReceipt.kind !== "activate" ||
+				sourceReceipt.project !== project
+			) {
+				return { status: "activation_receipt_not_found" };
+			}
+			if (source.snapshot_hash !== snapshotHash) {
+				return { status: "snapshot_mismatch" };
+			}
+			if (
+				JSON.stringify(expectedBefore) !==
+					JSON.stringify(sourceReceipt.after) ||
+				JSON.stringify(targetBindings) !== JSON.stringify(sourceReceipt.before)
+			) {
+				return { status: "target_drift" };
+			}
+		}
+
+		let result: WorkflowBindingCutoverResult = {
+			status: "baseline_mismatch",
+		};
+		let shouldSave = false;
+		this.db.transaction(() => {
+			// Close the same-operation race inside the write transaction.
+			const raced = this.getWorkflowBindingCutoverClaim(operationId);
+			if (raced) {
+				if (raced.canonical_hash !== canonicalHash) {
+					result = { status: "operation_conflict" };
+					return;
+				}
+				const receipt = receiptFrom(raced);
+				result = receipt
+					? { status: "replayed", receipt }
+					: { status: "receipt_corrupt" };
+				return;
+			}
+
+			const current = this.listWorkflowCategoryBindings(project)
+				.map((row) => ({
+					taskCategory: row.task_category,
+					templateId: row.template_id,
+				}))
+				.sort((a, b) =>
+					a.taskCategory < b.taskCategory
+						? -1
+						: a.taskCategory > b.taskCategory
+							? 1
+							: 0,
+				);
+			if (JSON.stringify(current) !== JSON.stringify(expectedBefore)) {
+				result =
+					input.kind === "restore"
+						? { status: "target_drift" }
+						: { status: "baseline_mismatch" };
+				return;
+			}
+
+			for (const binding of targetBindings) {
+				const template = this.getWorkflowTemplate(binding.templateId);
+				const revision =
+					template?.current_published_revision === null ||
+					template?.current_published_revision === undefined
+						? undefined
+						: this.getWorkflowTemplateRevision(
+								binding.templateId,
+								template.current_published_revision,
+							);
+				let revisionValid = false;
+				try {
+					revisionValid =
+						revision !== undefined &&
+						validateWorkflowManifest(JSON.parse(revision.manifest))
+							.schema_version === revision.schema_version;
+				} catch {
+					revisionValid = false;
+				}
+				if (
+					!template ||
+					template.current_published_revision === null ||
+					template.retired_at !== null ||
+					(template.project_scope !== "global" &&
+						template.project_scope !== project) ||
+					!revisionValid
+				) {
+					result = {
+						status: "target_invalid",
+						templateId: binding.templateId,
+					};
+					return;
+				}
+			}
+
+			this.db.run("DELETE FROM workflow_category_binding WHERE project = ?", [
+				project,
+			]);
+			for (const binding of targetBindings) {
+				this.db.run(
+					`INSERT INTO workflow_category_binding
+					 (project, task_category, template_id, updated_by)
+					 VALUES (?, ?, ?, ?)`,
+					[project, binding.taskCategory, binding.templateId, actor],
+				);
+			}
+			const written = this.listWorkflowCategoryBindings(project)
+				.map((row) => ({
+					taskCategory: row.task_category,
+					templateId: row.template_id,
+				}))
+				.sort((a, b) =>
+					a.taskCategory < b.taskCategory
+						? -1
+						: a.taskCategory > b.taskCategory
+							? 1
+							: 0,
+				);
+			if (JSON.stringify(written) !== JSON.stringify(targetBindings)) {
+				throw new Error("workflow binding cutover exact readback failed");
+			}
+
+			const beforeByCategory = new Map(
+				expectedBefore.map((binding) => [binding.taskCategory, binding]),
+			);
+			const afterByCategory = new Map(
+				targetBindings.map((binding) => [binding.taskCategory, binding]),
+			);
+			const categories = [
+				...new Set([...beforeByCategory.keys(), ...afterByCategory.keys()]),
+			].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+			for (const taskCategory of categories) {
+				const before = beforeByCategory.get(taskCategory) ?? null;
+				const after = afterByCategory.get(taskCategory) ?? null;
+				this.db.run(
+					`INSERT INTO workflow_template_audit
+					 (actor, action, template_id, detail)
+					 VALUES (?, 'rebind', ?, ?)`,
+					[
+						actor,
+						after?.templateId ?? before?.templateId ?? null,
+						JSON.stringify({
+							operation_id: operationId,
+							activation_id: activationId,
+							kind: input.kind,
+							project,
+							task_category: taskCategory,
+							before,
+							after,
+							deleted: after === null,
+						}),
+					],
+				);
+			}
+
+			const committedAt = new Date().toISOString();
+			const receipt: WorkflowBindingCutoverReceipt = {
+				operationId,
+				activationId,
+				kind: input.kind,
+				...(sourceOperationId ? { sourceOperationId } : {}),
+				canonicalHash,
+				snapshotHash,
+				project,
+				before: expectedBefore,
+				after: targetBindings,
+				auditCount: categories.length,
+				committedAt,
+			};
+			this.db.run(
+				`INSERT INTO workflow_binding_cutover_claim
+				 (operation_id, activation_id, kind, source_operation_id,
+				  canonical_hash, snapshot_hash, status, result_json,
+				  created_at, committed_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 'committed', ?, ?, ?)`,
+				[
+					operationId,
+					activationId,
+					input.kind,
+					sourceOperationId ?? null,
+					canonicalHash,
+					snapshotHash,
+					JSON.stringify(receipt),
+					committedAt,
+					committedAt,
+				],
+			);
+			result = { status: "committed", receipt };
+			shouldSave = true;
+		});
+		if (shouldSave) this.save();
+		return result;
+	}
+
+	/**
+	 * Read-only shared predicate for every GENERALIZED on/off boundary. Only
+	 * residue attached to an ACTIVE schema-2 run can be released by a flag flip;
+	 * historical terminal-run ledger rows remain diagnostics, never blockers.
+	 */
+	getGeneralizedWorkflowReleaseState(): GeneralizedWorkflowReleaseState {
+		const activeRunRows = this.workflowSelectAll(
+			`SELECT r.run_id
+			   FROM workflow_run r
+			   JOIN workflow_template_revision rev
+			     ON rev.template_id = r.template_id
+			    AND rev.revision = r.template_revision
+			  WHERE r.status = 'active' AND rev.schema_version = 2
+			  ORDER BY r.run_id`,
+			[],
+		);
+		const activeRunIds = activeRunRows.map((row) => String(row.run_id));
+		const nonterminalSideEffectRows = this.workflowSelectAll(
+			`SELECT effect.execution_id
+				   FROM workflow_side_effect_ledger effect
+				   JOIN workflow_run r ON r.run_id = effect.run_id
+				   JOIN workflow_template_revision rev
+				     ON rev.template_id = r.template_id
+				    AND rev.revision = r.template_revision
+				  WHERE r.status = 'active'
+				    AND rev.schema_version = 2
+				    AND effect.state IN ('intent_recorded','launch_committed')
+				  ORDER BY effect.execution_id`,
+			[],
+		);
+		const activeSideEffectExecutionIds = nonterminalSideEffectRows.map((row) =>
+			String(row.execution_id),
+		);
+		const unrespondedReservationRows = this.workflowSelectAll(
+			`SELECT reservation.idempotency_key
+				   FROM workflow_start_reservation reservation
+				   JOIN workflow_run r ON r.run_id = reservation.run_id
+				   JOIN workflow_template_revision rev
+				     ON rev.template_id = r.template_id
+				    AND rev.revision = r.template_revision
+				   LEFT JOIN workflow_start_stage stage
+				     ON stage.idempotency_key = reservation.idempotency_key
+				  WHERE r.status = 'active'
+				    AND rev.schema_version = 2
+				    AND (stage.stage IS NULL OR stage.stage <> 'responded')
+				  ORDER BY reservation.idempotency_key`,
+			[],
+		);
+		const activeReservationKeys = unrespondedReservationRows.map((row) =>
+			String(row.idempotency_key),
+		);
+		const nonterminalSideEffects = activeSideEffectExecutionIds.length;
+		const unrespondedReservations = activeReservationKeys.length;
+		const terminalSchema2RunsWithResidue = Number(
+			this.workflowSelectAll(
+				`SELECT COUNT(DISTINCT r.run_id) AS n
+				   FROM workflow_run r
+				   JOIN workflow_template_revision rev
+				     ON rev.template_id = r.template_id
+				    AND rev.revision = r.template_revision
+				  WHERE r.status <> 'active'
+				    AND rev.schema_version = 2
+				    AND (
+				      EXISTS (
+				        SELECT 1 FROM workflow_side_effect_ledger effect
+				         WHERE effect.run_id = r.run_id
+				           AND effect.state IN ('intent_recorded','launch_committed')
+				      )
+				      OR EXISTS (
+				        SELECT 1
+				          FROM workflow_start_reservation reservation
+				          LEFT JOIN workflow_start_stage stage
+				            ON stage.idempotency_key = reservation.idempotency_key
+				         WHERE reservation.run_id = r.run_id
+				           AND (stage.stage IS NULL OR stage.stage <> 'responded')
+				      )
+				    )`,
+				[],
+			)[0]?.n ?? 0,
+		);
+		return {
+			activeSchema2Runs: activeRunIds.length,
+			nonterminalSideEffects,
+			unrespondedReservations,
+			releasable:
+				activeRunIds.length === 0 &&
+				nonterminalSideEffects === 0 &&
+				unrespondedReservations === 0,
+			activeRunIds,
+			activeSideEffectExecutionIds,
+			activeReservationKeys,
+			diagnostics: { terminalSchema2RunsWithResidue },
+		};
 	}
 
 	/** Resolve once, overlay once, validate once, then pin the whole snapshot. */
@@ -26032,6 +26471,81 @@ export interface WorkflowCategoryBindingRow {
 	template_id: string;
 	updated_by: string;
 	updated_at: string;
+}
+
+export interface WorkflowBindingCutoverBinding {
+	taskCategory: string;
+	templateId: string;
+}
+
+export interface WorkflowBindingCutoverClaimRow {
+	operation_id: string;
+	activation_id: string;
+	kind: "activate" | "restore";
+	source_operation_id: string | null;
+	canonical_hash: string;
+	snapshot_hash: string;
+	status: "committed";
+	result_json: string;
+	created_at: string;
+	committed_at: string;
+}
+
+export interface WorkflowBindingCutoverReceipt {
+	operationId: string;
+	activationId: string;
+	kind: "activate" | "restore";
+	sourceOperationId?: string;
+	canonicalHash: string;
+	snapshotHash: string;
+	project: string;
+	before: WorkflowBindingCutoverBinding[];
+	after: WorkflowBindingCutoverBinding[];
+	auditCount: number;
+	committedAt: string;
+}
+
+export interface WorkflowBindingCutoverInput {
+	operationId: string;
+	activationId: string;
+	kind: "activate" | "restore";
+	sourceOperationId?: string;
+	canonicalHash: string;
+	snapshotHash: string;
+	project: string;
+	actor: string;
+	expectedBefore: readonly WorkflowBindingCutoverBinding[];
+	targetBindings: readonly WorkflowBindingCutoverBinding[];
+}
+
+export type WorkflowBindingCutoverResult =
+	| {
+			status: "committed" | "replayed";
+			receipt: WorkflowBindingCutoverReceipt;
+	  }
+	| {
+			status:
+				| "invalid_request"
+				| "operation_conflict"
+				| "receipt_corrupt"
+				| "activation_receipt_not_found"
+				| "snapshot_mismatch"
+				| "target_drift"
+				| "baseline_mismatch";
+	  }
+	| { status: "target_invalid"; templateId: string };
+
+export interface GeneralizedWorkflowReleaseState {
+	activeSchema2Runs: number;
+	nonterminalSideEffects: number;
+	unrespondedReservations: number;
+	releasable: boolean;
+	activeRunIds: string[];
+	activeSideEffectExecutionIds: string[];
+	activeReservationKeys: string[];
+	diagnostics: {
+		terminalSchema2RunsWithResidue: number;
+	};
 }
 
 export interface WorkflowTemplateAuditRow {

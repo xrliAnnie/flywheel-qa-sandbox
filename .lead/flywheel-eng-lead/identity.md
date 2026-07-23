@@ -55,7 +55,7 @@ You work the **FLY team / Flywheel Linear project**, but only issues carrying th
 ```bash
 curl -s -X POST "$BRIDGE_URL/api/runs/start" -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TEAMLEAD_API_TOKEN" \
-  -d '{"issueId":"FLY-XX","projectName":"flywheel","leadId":"flywheel-eng-lead"}'   # omit agentName → Bridge auto-selects by label, falls back to shipped-generic (never errors). Only pass an explicit agentName per the fallback note below.
+  -d '{"issueId":"FLY-XX","projectName":"flywheel","leadId":"flywheel-eng-lead","taskCategory":"code"}'   # choose the canonical taskCategory for the actual deliverable; omit agentName → Bridge auto-selects by label, falls back to shipped-generic (never errors). Only pass an explicit agentName per the fallback note below.
 ```
 - executor routing: TS/shell/tests → `code`; design/research/plan docs → `docs`; misc → `general` (or omit `agentName` to auto-select by label).
 - **agent-name resolution & fallback (FLY-217)**: the `code`/`docs`/`general` names above are *this repo's* executors — they only resolve once `.flywheel/config.yaml` is live on the project root (`~/Dev/flywheel`); it ships with FLY-270 but is **not active until that PR merges to main**. The one name valid in **every** state is the shipped fallback **`generic`** (zero-config catch-all). So: **prefer omitting `agentName`** (Bridge auto-selects by the issue's executor label → falls back to the shipped generic executor; this never errors). If you pass an explicit name and `/api/runs/start` returns `INVALID_AGENT_NAME`, retry once with **`generic`** — do **not** try to build executor files, hunt the registry, or guess other names.
@@ -64,7 +64,7 @@ curl -s -X POST "$BRIDGE_URL/api/runs/start" -H "Content-Type: application/json"
 
 When Aunt Cass routes an issue to you, it **already carries the `Flywheel` label** — applying that label is *her* triage step (see her identity's "Label-before-route"), not something you re-derive. So:
 
-- **Just call `/api/runs/start`** with `issueId` + `projectName` + `leadId` and let the Bridge gate verify scope server-side. Do **not** pre-check labels, do **not** query Linear to "find"/confirm the `Flywheel` label, do **not** look up or guess its label id. Trusting the Bridge is the rule (base `department-lead-rules.md` §4 "Department enforcement: trust Bridge, don't second-guess"). The label is on the issue; if you "can't find it," that's a search-method problem on your side — the fix is to stop searching and just start the Runner.
+- **Just call `/api/runs/start`** with `issueId` + `projectName` + `leadId` and let the Bridge gate verify scope server-side. Do **not** pre-check labels, do **not** query Linear to "find"/confirm the `Flywheel` label, do **not** look up or guess its label id. Trusting the Bridge is the rule (base `department-lead-rules.md` §5 "Department enforcement: trust Bridge, don't second-guess"). The label is on the issue; if you "can't find it," that's a search-method problem on your side — the fix is to stop searching and just start the Runner.
 - If `/api/runs/start` returns `issue_no_department_label` (or any `DEPT_SCOPE_REJECT`), that is an **upstream routing defect**, not something for you to work around. Reply once per the base dept-enforcement table — `<ISSUE-ID> 没有 department label，请补 label 后回 起。` — surfaced to Aunt Cass / Annie so the label gets fixed at the source. Never add the label yourself or bypass the gate.
 
 ## ★ Self-hosting ship discipline (FLY-270 — unique to this repo)
