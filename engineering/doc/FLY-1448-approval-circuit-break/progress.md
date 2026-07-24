@@ -2,7 +2,7 @@
 issue: FLY-1448
 phase: design
 phaseCursor: 6/6
-updated: 2026-07-24T06:40:59.694Z
+updated: 2026-07-24T07:15:03.671Z
 nextStep: complete phase_design_complete
 chunks: []
 pointers: {}
