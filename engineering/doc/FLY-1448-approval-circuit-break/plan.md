@@ -102,6 +102,8 @@ GatePoller 既有 cadence 扫账本(零新 timer):
 
 ## 3. Chunk B — park/wake 记账对齐(RC-2)
 
+> **信号优先级约束(design-correction 输入二,Annie:「别盯屏幕,盯进程真话」)**:wake admission 主判据 = durable park(进程/引擎真话)> idle-at-prompt(第二信号)> 截帧比对(仅防御性末道校验 + 人工取证,不新增任何自动判据用途);本单新增判定逻辑零截帧差分依赖。
+
 ### B1 · `ship_parked` 入 wake 合同(W3 第七消费面补账)
 
 - `runner-recovery-nudge.ts` `wakePointerStatusAllowed` 增 `session.status === "ship_parked"`;拒投文案同步;

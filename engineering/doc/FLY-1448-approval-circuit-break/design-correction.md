@@ -36,6 +36,29 @@ Issue: FLY-1448 (https://linear.app/geoforge3d/issue/FLY-1448/p1批准断路-fou
 
 原 ④ 的「kill-switch 关 A → warning 级告警」形态**作废**(kill-switch off = founder 明确的运维选择,不该报警)。④ 改为:**classification 已落盘后人为切断绑定链**(如注入 writer 失败)→ deadline 内 `founder_decision_dropped` 送达 Lead。仍满足 issue 原验收「人为造投递失败 → fail-loud,绝不静默」。
 
+## 附加输入二(msg 1530111445583527967):盯进程真话,别盯屏幕
+
+### Annie 方向(Lead 转述)
+
+卡死检测的结构性盲区:截帧比对会漏掉「活着但文字不变」态(长静默命令 / 纯 spinner 动画 —— spinner 恰好是会变的文字字符属侥幸非设计)。根治原则 = **别盯屏幕,盯进程真话**。信号优先级:
+
+① **runner 进程/harness 心跳**(CLI 干活时定期写心跳,最准;基座已有 FLY-172 heartbeat markers)
+② **停在空提示符**(idle-at-prompt)
+③ **截帧比对** —— 仅人工取证工具,**不作自动判据**
+
+与输入一「少养狗、机制对了不需要狗」合并为同一约束:检测层收缩为「心跳缺失 + 提示符空等」两个硬信号。
+
+### 落进本单 Fix 设计
+
+| 位置 | 落法 |
+|---|---|
+| B1/B2 wake-pointer admission | 主判据 = **durable park(进程/引擎真话:`ship_parked` FSM 态 / engine-park 凭证 / runner 自声明 park)**;第二信号 = idle-at-prompt(既有 `detectInputBoxPresent`);既有截帧 fingerprint 比对**降级为防御性末道校验**(防止往正在输出的 pane 打字),不新增任何以截帧差分为自动判据的用途 |
+| D episode 开闭 | 全部由进程真话驱动(started receipt / terminal lifecycle transition / durable claim),零截帧依赖 —— 已天然对齐 |
+| A/C/E | 不接触屏幕信号 —— 已天然对齐 |
+| 本单红线 | 本单新增的任何判定逻辑,**不得**把截帧差分当自动判据;若发现依赖,改 heartbeat 缺失 + idle-at-prompt 两硬信号 |
+
+(存量 stuck/liveness 检测器族(FLY-92/FLY-1048/FLY-1234)的全面改造不在本单 scope,此原则作为 fleet 方向记录,由检测族 own。)
+
 ## 对已批设计的影响边界
 
 - 不回滚 R1-R9 已批的其余部分;本 correction 只做**收窄**(删一个告警级别、改一行验收形态),不新增机制;
