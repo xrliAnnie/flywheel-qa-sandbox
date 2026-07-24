@@ -450,6 +450,7 @@ import {
 	parkFounderGraceMs,
 	runParkWatch,
 } from "./park-watch.js";
+import { probeRegisteredPhaseActor } from "./phase-actor-probe.js";
 import {
 	PhaseOrchestrator,
 	type PhaseSession,
@@ -9134,16 +9135,14 @@ export async function startBridge(
 							sessionKey: session.execution_id,
 						});
 					},
-					// FLY-887: 4-state PROCESS liveness (not window existence). No tmux
-					// target = the process is gone → absent.
-					probePhaseAlive: async (session) => {
-						const target = getTmuxTargetFromCommDb(
-							session.execution_id,
-							session.project_name ?? "",
-						);
-						if (!target) return "absent";
-						return probeRunnerProcessLiveness(target.tmuxWindow);
-					},
+					// FLY-887/1462: 4-state PROCESS liveness. A missing registration
+					// is absent; a CommDB read error remains indeterminate.
+					probePhaseAlive: (session) =>
+						probeRegisteredPhaseActor({
+							session,
+							lookupTarget: lookupTmuxTarget,
+							probeTarget: probeRunnerProcessLiveness,
+						}),
 					// FLY-939 (G-C): probe a phase row's PERSISTED tmux target DIRECTLY,
 					// bypassing the CommDB registration lookup (which returns absent for a
 					// terminal-status row and would mask a still-live window — the exact
@@ -9153,6 +9152,8 @@ export async function startBridge(
 						if (!row.tmux_session) return "absent";
 						return probeRunnerProcessLiveness(row.tmux_session);
 					},
+					discoverByExecMarker: (session) =>
+						discoverTmuxTargetByExecutionId(session.execution_id),
 					// FLY-887: park a completed-but-alive phase (CommDB declared-state;
 					// NOT closeRunner, NOT worktree removal). The shared worktree stays.
 					parkPhaseRunner: async (session) => {
@@ -9476,18 +9477,18 @@ export async function startBridge(
 				effects: {
 					getActorSession: (executionId) =>
 						store.getSession(executionId) as PhaseSession | undefined,
-					probeRegistered: async (session) => {
-						const target = getTmuxTargetFromCommDb(
-							session.execution_id,
-							session.project_name ?? "",
-						);
-						if (!target) return "absent";
-						return probeRunnerProcessLiveness(target.tmuxWindow);
-					},
+					probeRegistered: (session) =>
+						probeRegisteredPhaseActor({
+							session,
+							lookupTarget: lookupTmuxTarget,
+							probeTarget: probeRunnerProcessLiveness,
+						}),
 					probePersisted: async (session) => {
 						if (!session.tmux_session) return "absent";
 						return probeRunnerProcessLiveness(session.tmux_session);
 					},
+					discoverByExecMarker: (session) =>
+						discoverTmuxTargetByExecutionId(session.execution_id),
 					assertWorktreeReady: async (session, expectedHeadSha) => {
 						const worktree = store.getSession(
 							session.execution_id,

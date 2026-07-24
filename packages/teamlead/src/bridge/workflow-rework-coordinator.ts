@@ -13,6 +13,7 @@ import {
 	type PhaseLiveness,
 } from "./phase-actor-reentry.js";
 import type { PhaseSession } from "./phase-orchestrator.js";
+import type { RunnerTmuxTargetDiscovery } from "./tmux-lookup.js";
 
 export interface WorkflowReworkTurnInput {
 	issueId: string;
@@ -148,6 +149,9 @@ export interface WorkflowReworkCoordinatorEffects {
 	getActorSession(executionId: string): PhaseSession | undefined;
 	probeRegistered(session: PhaseSession): Promise<PhaseLiveness>;
 	probePersisted(session: PhaseSession): Promise<PhaseLiveness>;
+	discoverByExecMarker?(
+		session: PhaseSession,
+	): Promise<RunnerTmuxTargetDiscovery>;
 	assertWorktreeReady(
 		session: PhaseSession,
 		expectedHeadSha: string,
@@ -322,6 +326,7 @@ export class WorkflowReworkCoordinator {
 			session: actor,
 			probeRegistered: this.deps.effects.probeRegistered,
 			probePersisted: this.deps.effects.probePersisted,
+			discoverByExecMarker: this.deps.effects.discoverByExecMarker,
 		});
 		if (reentry.kind === "hold") {
 			return this.releaseAndHold({
