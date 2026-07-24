@@ -1,0 +1,4855 @@
+{
+	"provenance": {
+		"capturedAt": "2026-07-23T05:12:43.615Z",
+		"registryContentSha256": "327b5aca03278c951d9a36a53df4e368bdafb356f12a377fe08ea08c7d028781",
+		"registryCommit": "6b42de3f47491d464481941056d2f228da012b3e",
+		"projects": [
+			"geoforge3d",
+			"joycon-typeless",
+			"personal-assistant",
+			"growth",
+			"flywheel",
+			"tidal-echo"
+		],
+		"total": 148,
+		"baseline": {
+			"source": "FLY-1136 per-flag audit snapshot (PR #546, branch flywheel-FLY-1136 — NOT merged to main)",
+			"commit": "dc62daac",
+			"path": "product/doc/FLY-1136-feature-flag-audit/snapshot.json",
+			"capturedAt": "2026-07-14T03:18:03.572Z",
+			"total": 103,
+			"note": "审计基线:本单只补审「当前 registry 里、不在这份名单里」的 flag。",
+			"verifiedAgainstGit": true,
+			"newSinceBaseline": 62,
+			"goneSinceBaseline": 17
+		}
+	},
+	"registryNameSet": [
+		"ack_late_window_ms",
+		"ask_hygiene",
+		"auto_linear_done",
+		"auto_qa_killswitch",
+		"boot_sha_check",
+		"bridge_watchdog",
+		"checkpoint_watchdog",
+		"chrome_session_reaper",
+		"claude_account_identity_check",
+		"cmux_close_request_killswitch",
+		"cmux_linked_view",
+		"cmux_view_invariant",
+		"codex_gate_wait",
+		"codex_hard_gate_killswitch",
+		"codex_hold_nudge",
+		"codex_hold_nudge_ms",
+		"codex_lead_typing",
+		"comm_bypass_bridge",
+		"commdb_fsm_reconcile",
+		"commdb_protection",
+		"commdb_residue_harvest",
+		"crash_reaper",
+		"cron_stale_guard",
+		"deferred_approval_ttl_ms",
+		"deferred_founder_approval",
+		"delivery_ack",
+		"delivery_ack_timeout_ms",
+		"delivery_max_redeliver",
+		"delivery_max_transport_failures",
+		"delivery_secret_path",
+		"delivery_unconsumed_v2",
+		"design_html_gate",
+		"disposition_receipt",
+		"doc_flow",
+		"done_thread_reconcile",
+		"done_thread_reconcile_dryrun",
+		"done_thread_reconcile_interval_min",
+		"done_thread_reconcile_max_per_run",
+		"engine_dead_exec_sweep",
+		"engine_unlaunched_tripwire",
+		"external_merge_reconcile",
+		"fleet_console",
+		"fleet_sensor_tmux_killswitch",
+		"founder_attribution_gate",
+		"founder_auto_approve",
+		"founder_consent_decision_mode",
+		"founder_milestone_notify",
+		"founder_notify_retry_max",
+		"founder_reply_deadletter_age_ms",
+		"founder_reply_deliver",
+		"founder_reply_retry_max",
+		"founder_reply_watchdog",
+		"founder_review_gate_exclude",
+		"founder_thread_notify",
+		"founder_ux_gate",
+		"founder_ux_gate_killswitch",
+		"gatepoller_circuit",
+		"ghost_guard_wait_ms",
+		"heartbeat_readopt",
+		"held_declined_reply",
+		"issue_attach_pin",
+		"issue_display_refresh",
+		"issue_display_sweep_ticks",
+		"issue_gate_supersede_mode",
+		"issue_status_emoji",
+		"issue_status_word",
+		"land_node",
+		"lead_chrome_enabled",
+		"lead_core_mention_gated",
+		"lead_cross_dept_channel_ids",
+		"lead_dry_run",
+		"lead_dual_active_scan",
+		"lead_lease_bypass",
+		"lead_pending_escalation",
+		"legacy_delivery_watchdogs",
+		"liveness_activity_window_ms",
+		"liveness_pane_dead",
+		"merge_approval_gate_killswitch",
+		"merge_reconcile_window_days",
+		"misroute_patrol",
+		"pane_idle_suppress",
+		"park_biased_handoff",
+		"park_watch",
+		"park_watch_cadence",
+		"park_watch_n1_ms",
+		"park_watch_n2_ms",
+		"park_watch_qa_n3_ms",
+		"ponytail",
+		"progress_resume_killswitch",
+		"proofshot",
+		"prune_park_guard",
+		"publish_broker",
+		"qa_auto",
+		"qa_done_gate_killswitch",
+		"quiet_classifier",
+		"quiet_persist_dedup",
+		"quota_daemon_cutover",
+		"quota_daemon_wake",
+		"quota_degraded_switch",
+		"readopt_parked_roles",
+		"receipt_activation_dry_run",
+		"receipt_foundation",
+		"remote_reports",
+		"reports_ttl_days",
+		"retest_head_delta_guard",
+		"review_severity_policy_killswitch",
+		"roundtable_thread_autocontinue",
+		"roundtable_thread_own_bot",
+		"runner_autocontinue",
+		"ship_ci_guard",
+		"ship_gate_card",
+		"ship_gate_card_grace_ms",
+		"ship_gate_grace_ms",
+		"ship_gate_rebind",
+		"ship_gate_retire",
+		"ship_ready_notify",
+		"ship_ready_remind_ms",
+		"skill_framework_mode",
+		"skill_framework_split_participation",
+		"stale_ship_rewake",
+		"stale_terminal_close",
+		"stuck_detect",
+		"stuck_founder_page_killswitch",
+		"stuck_pane_confirm",
+		"terminal_commdb_sync",
+		"terminal_thread_archive",
+		"three_stage_codex_design_toggle",
+		"three_stage_codex_implement_killswitch",
+		"three_stage_keepalive_killswitch",
+		"three_stage_killswitch",
+		"three_stage_qa_respawn_killswitch",
+		"tier2_prefix_norm",
+		"viewer_session_reaper",
+		"voice_qa_presence_override",
+		"watchdog_blocked",
+		"watchdog_judge",
+		"watchdog_liveness",
+		"watchdog_loop_heartbeat",
+		"workflow_claims_read",
+		"workflow_claims_write",
+		"workflow_generalized_templates",
+		"workflow_rework_reentry",
+		"workflow_template_dispatch",
+		"workflow_vendor_at_dispatch",
+		"worktree_autoclean",
+		"xiaohongshu_learning",
+		"zombie_gate_resolve",
+		"zombie_reconcile"
+	],
+	"newSinceBaseline": [
+		"ack_late_window_ms",
+		"ask_hygiene",
+		"checkpoint_watchdog",
+		"claude_account_identity_check",
+		"cmux_linked_view",
+		"cmux_view_invariant",
+		"codex_gate_wait",
+		"commdb_protection",
+		"commdb_residue_harvest",
+		"delivery_ack",
+		"delivery_ack_timeout_ms",
+		"delivery_max_redeliver",
+		"delivery_max_transport_failures",
+		"delivery_secret_path",
+		"delivery_unconsumed_v2",
+		"design_html_gate",
+		"disposition_receipt",
+		"engine_dead_exec_sweep",
+		"engine_unlaunched_tripwire",
+		"founder_review_gate_exclude",
+		"ghost_guard_wait_ms",
+		"issue_gate_supersede_mode",
+		"land_node",
+		"lead_dual_active_scan",
+		"lead_lease_bypass",
+		"legacy_delivery_watchdogs",
+		"liveness_activity_window_ms",
+		"park_biased_handoff",
+		"park_watch",
+		"park_watch_cadence",
+		"park_watch_n1_ms",
+		"park_watch_n2_ms",
+		"park_watch_qa_n3_ms",
+		"prune_park_guard",
+		"quota_daemon_cutover",
+		"quota_daemon_wake",
+		"quota_degraded_switch",
+		"readopt_parked_roles",
+		"receipt_activation_dry_run",
+		"receipt_foundation",
+		"retest_head_delta_guard",
+		"review_severity_policy_killswitch",
+		"ship_ci_guard",
+		"ship_ready_notify",
+		"ship_ready_remind_ms",
+		"skill_framework_mode",
+		"skill_framework_split_participation",
+		"stuck_pane_confirm",
+		"terminal_commdb_sync",
+		"terminal_thread_archive",
+		"three_stage_codex_design_toggle",
+		"voice_qa_presence_override",
+		"watchdog_blocked",
+		"watchdog_liveness",
+		"watchdog_loop_heartbeat",
+		"workflow_claims_read",
+		"workflow_claims_write",
+		"workflow_generalized_templates",
+		"workflow_rework_reentry",
+		"workflow_template_dispatch",
+		"workflow_vendor_at_dispatch",
+		"zombie_reconcile"
+	],
+	"goneSinceBaseline": [
+		"account_self_heal",
+		"alert_threads",
+		"attribution_hold_align",
+		"auto_repair",
+		"codex_lead_read_deny",
+		"detection_escalation",
+		"detection_gap_scan",
+		"founder_approval_ack",
+		"founder_image_approval",
+		"lead_pane_readiness",
+		"notify_digest_expect",
+		"pane_multiframe",
+		"reply_to_card",
+		"roundtable_enabled",
+		"roundtable_reply_in_thread",
+		"stuck_errorsig",
+		"xhs_review"
+	],
+	"rows": [
+		{
+			"name": "watchdog_liveness",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_WATCHDOG_LIVENESS",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": ["packages/teamlead/src/bridge/watchdog-minimum-set.ts"],
+			"registryDescription": "W-1 进程存活探测(Bridge 启动时读取;=0 关闭人工告警)",
+			"registryNote": "Bridge boot 时捕获;修改后需重启 Bridge。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "watchdog_loop_heartbeat",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_WATCHDOG_LOOP_HEARTBEAT",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": ["packages/teamlead/src/bridge/watchdog-minimum-set.ts"],
+			"registryDescription": "W-2 Lead inbox 投递循环独立心跳(=0 关闭独立循环告警)",
+			"registryNote": "Bridge boot 时捕获;修改后需重启 Bridge。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "watchdog_blocked",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_WATCHDOG_BLOCKED",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["bridge_boot", "call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/watchdog-minimum-set.ts"],
+			"registryDescription": "W-4 活着但干不了活:block 关键字(启动时读取)与 session_stuck(调用时读取;默认开启)",
+			"registryNote": "Annie 裁定保留且默认开:宁愿误报,不希望不报。Lead blocked-marker 修改后需重启;Runner session_stuck 下一次检查即生效。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "checkpoint_watchdog",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_CHECKPOINT_WATCHDOG",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": ["packages/teamlead/src/bridge/watchdog-minimum-set.ts"],
+			"registryDescription": "已退役 checkpoint-park 巡检;变量仅保留作真值迁移提示",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"runtimeHardOff": {
+				"reason": "FLY-1393 退役:环境变量设成什么都不会让这条巡检跑起来",
+				"evidence": "packages/teamlead/src/bridge/gate-poller.ts:2258 checkpointWatchdogEnabled() → watchdog-minimum-set.ts:41 retiredWatchdogLaneEnabled(): false;maybeEmitCheckpointParkAlert() 首行即 return"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": false
+			}
+		},
+		{
+			"name": "receipt_foundation",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_RECEIPT_FOUNDATION",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/config/src/feature-flags/receipt-foundation.ts"],
+			"registryDescription": "category-agnostic Lead 防漏收据闭环(=0 事故紧急临时回退时只暂停 deadline、重发与升级;入账、投递与 Lead handle 保持可用)",
+			"registryNote": "行为读取是 call-time；=0 会在 Bridge 启动时立即告警并按小时周期重复告警，不得作为常态运行方式。它不会恢复 Bridge 代答或停止入账。事故结束后恢复开启并按 Bridge 重启边界验证。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "packages/config/src/feature-flags/receipt-foundation.ts,由 bridge/gate-poller.ts 消费",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "receipt_activation_dry_run",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "FLY-1392 activation episode 只计算并持久化 eligible/settled/disposed/exempt/pending 与 T1/T2/T3 容量预估，不提交 cohort deadline 或 chase artifacts",
+			"registryNote": "运行时按 patrol cadence 读取；仅作容量验收与 rollback drill，正式 activation 必须保持关闭。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "legacy_delivery_watchdogs",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/legacy-delivery-watchdog-policy.ts"
+			],
+			"registryDescription": "旧 Lead 投递 watchdog 告警巷(默认关闭;=1 仅用于回开旧 cohort,新 comm.db 消费循环及其心跳不受影响)",
+			"registryNote": "Bridge boot 时捕获;修改后需重启 Bridge。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"runtimeHardOff": {
+				"reason": "FLY-1393 退役:判断函数的返回类型就写死成 false",
+				"evidence": "packages/teamlead/src/bridge/legacy-delivery-watchdog-policy.ts legacyDeliveryWatchdogsEnabled(env): false"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "park_biased_handoff",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_PARK_BIASED_HANDOFF",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/phase-orchestrator.ts"],
+			"registryDescription": "handoff 在 liveness=absent 时 park 而非 close(=0 回退 FLY-1319 事故前的 absent→close 旧行为)。absent 不是死亡证据,只是「按这个名字找不到窗」——CommDB 窗名过时时健康 runner 也返回它;只有 dead_pin 才是正证据 (FLY-1329 A1)",
+			"registryNote": "改后需重启 Bridge。dead_pin close 与 indeterminate fail-close 两条路径不受本 env 影响。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "prune_park_guard",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_PRUNE_PARK_GUARD",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/done-running-reconciler.ts",
+				"packages/teamlead/src/bridge/commdb-session-prune.ts",
+				"packages/teamlead/src/bridge/commdb-fsm-reconcile.ts",
+				"packages/teamlead/src/bridge/event-route.ts"
+			],
+			"registryDescription": "park 声明 veto 两条破坏性 reconcile 清扫:FLY-324 done-but-running 强转 completed + CommDB row prune(=0 回退到无 veto 的旧清扫)。取代原来靠人手填 FLYWHEEL_FLY324_SWEEP_EXCLUDE 名单的保护 (FLY-1329 A4/A5)",
+			"registryNote": "Lead 的 FLYWHEEL_FLY324_SWEEP_EXCLUDE 名单仍在且仍先生效;本 veto 是结构性补位。改后需重启 Bridge。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "readopt_parked_roles",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_READOPT_PARKED",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/HeartbeatService.ts"],
+			"registryDescription": "boot re-adopt 覆盖全角色 park 态(running|awaiting_review|design_done|approved_to_ship);=0 回退只认 running 的旧过滤器。keep-alive 下每个 role park 在不同 status,只认 running 恰好漏掉所有会 park 的 role (FLY-1329 A3)",
+			"registryNote": "终态永不进候选(re-adopt 终态=复活死人)。改后需重启 Bridge。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "packages/teamlead/src/HeartbeatService.ts —— Bridge 在 bridge/plugin.ts:6054 构造 HeartbeatService(flywheel-comm 侧只有注释提到它)",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "liveness_activity_window_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "600000",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/liveness-evidence.ts"],
+			"registryDescription": "absent-park 告警正文里判定 likely-alive / likely-dead 的活动窗口(默认 10 分钟)。【只影响告警措辞,绝不影响裁决】——活动证据故意不作为 decideDestructive 的输入 (FLY-1329 A2)",
+			"registryNote": "非法/未设/≤0 的 env 值由 activityWindowMs() 在运行时 sanitize 回默认 600000;resolveFlag 对本 flag 走同款 sanitizer(见 resolve.ts 特判),故 registry 显示的 effective 值 = 运行时实际生效值(Codex R2 LOW,修正 R1 LOW-6 的 raw-string 展示)。改这个改不了任何生命周期决定,只改人读的那句话。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "600000"
+			}
+		},
+		{
+			"name": "cmux_linked_view",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_CMUX_LINKED_VIEW",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["cli_invocation", "call_time"],
+			"readFiles": [
+				"scripts/flywheel-cmux-sync.sh",
+				"scripts/flywheel-cmux-autostart.sh",
+				"packages/teamlead/src/bridge/tmux-lookup.ts"
+			],
+			"registryDescription": "FLY-1272: cmux managed tab 使用 exact-one-window link topology；=0 回滚 grouped legacy",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart",
+				"watcher": "next_invocation"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge", "cmux watcher 脚本"],
+			"processOwnerEvidence": "scripts/flywheel-cmux-sync.sh + flywheel-cmux-autostart.sh(watcher 每次调用现读 .env)+ bridge/tmux-lookup.ts(Bridge)",
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": false
+			}
+		},
+		{
+			"name": "cmux_view_invariant",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_CMUX_VIEW_INVARIANT",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["cli_invocation"],
+			"readFiles": [
+				"scripts/flywheel-cmux-sync.sh",
+				"scripts/flywheel-cmux-autostart.sh"
+			],
+			"registryDescription": "FLY-1272: 验证 managed view 的 active @window_id 并用 ledger-safe repair 收敛",
+			"registryNote": null,
+			"activation": {
+				"watcher": "next_invocation"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["cmux watcher 脚本"],
+			"processOwnerEvidence": "只被 scripts/flywheel-cmux-sync.sh 与 flywheel-cmux-autostart.sh 读,每次调用现读",
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": true
+			}
+		},
+		{
+			"name": "codex_gate_wait",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_CODEX_GATE_WAIT",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/claude-runner/src/codex-daemon-client.ts"],
+			"registryDescription": "Codex resident goal 在 mandatory gate 未答时保活并在门解析后恢复（=0 回滚为 blocked 终态）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "读点在 packages/claude-runner/src/codex-daemon-client.ts:638,但持有它的 CodexTmuxAdapter 由 Bridge 在 packages/teamlead/src/bridge/run-infra.ts:409 构造 —— 跑在 Bridge 进程里,不是 Runner",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "lead_dual_active_scan",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DUAL_ACTIVE_SCAN",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["object_construction", "call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/plugin.ts",
+				"packages/teamlead/src/bridge/fleet-data.ts"
+			],
+			"registryDescription": "FLY-1309: 检测同一 leadId 双活并立刻告警、标记后起进程（=0 应急停用；改后需重启 Bridge）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "quota_daemon_cutover",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_QUOTA_DAEMON_CUTOVER",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/quota-daemon-cutover.ts"],
+			"registryDescription": "FLY-1256: daemon 健康后退役 Bridge 内旧 account-switch 执行面（迁移期临时 flag，翻转需重启）",
+			"registryNote": "临时两阶段迁移 flag；FLY-1284 在 enable 稳定 >=1 周后删除，并同步迁移 KIND_CONTRACTS.usage_limit。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": true
+			}
+		},
+		{
+			"name": "quota_degraded_switch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_QUOTA_DEGRADED_SWITCH",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/account-heal/quota-monitor.ts"],
+			"registryDescription": "FLY-1252: 允许 quota daemon 执行已在 quota-monitor config 开启的受控降级切号（=0 立即压制）",
+			"registryNote": null,
+			"activation": {
+				"daemon": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["quota daemon(独立进程)"],
+			"processOwnerEvidence": "packages/teamlead/src/account-heal/quota-monitor.ts —— 该模块不被 Bridge import,跑在独立的 flywheel-quota-monitor 守护进程里(其 wrapper 启动时 source 共享 .env)",
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "claude_account_identity_check",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ACCOUNT_IDENTITY_CHECK",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time", "cli_invocation"],
+			"readFiles": [
+				"packages/teamlead/src/account-heal/quota-monitor.ts",
+				"packages/claude-runner/bin/flywheel-claude-profile"
+			],
+			"registryDescription": "FLY-1252: 对 Claude active/候选/切换/池写凭据执行 label 身份核验（默认 OFF，需先灌可信映射并 audit）",
+			"registryNote": "启用前必须完成 identity-set + identity-audit；=0 立即停核验，但既有 identityMismatch 排除标记需 audit 清除。",
+			"activation": {
+				"daemon": "restart",
+				"cli": "next_invocation"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["quota daemon(独立进程)", "命令行(每次调用)"],
+			"processOwnerEvidence": "account-heal/quota-monitor.ts(quota 守护进程)+ packages/claude-runner/bin/flywheel-claude-profile(独立命令行 bin,不是 Runner 进程)",
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "voice_qa_presence_override",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/voice-bridge/src/assistant/wiring.ts"],
+			"registryDescription": "FLY-1353: voice-bridge /gemini headless 声学 E2E 的 presence QA seam —— =1 时 founderPresent() 视为满足(仅 staged rig;armed 时 allowlist 只放行 http://127.0.0.1:9877 staged Bridge,其余 boot 拒启)",
+			"registryNote": "QA-only seam(FLY-1353)。生产永不置位;armed + 生产 Bridge URL = boot 拒启。",
+			"activation": {
+				"voice": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["voice-bridge 进程"],
+			"processOwnerEvidence": "packages/voice-bridge/src/assistant/wiring.ts,由 voice-bridge 自己的 cli.ts / index.ts 装配",
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "quota_daemon_wake",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_QUOTA_WAKE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/quota-daemon-wake.ts"],
+			"registryDescription": "FLY-1252: Bridge 在可信 quota-limit 信号后通过能力协商 pidfile 立即唤醒 daemon（=0 停发信号）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "auto_qa_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_AUTO_QA",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/auto-qa-policy.ts"],
+			"registryDescription": "全局关掉 code-review 后的 auto-QA runner spawn（叠在 qa.auto 上）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "codex_hard_gate_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_CODEX_HARD_GATE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/codex-gate.ts",
+				"packages/teamlead/src/bridge/auto-qa-held.ts"
+			],
+			"registryDescription": "全局关掉 Codex code-review 硬门（=0 应急放行；默认 ON=任何 PR 没过 Codex APPROVED 就卡住 auto-QA + merge）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "review_severity_policy_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_REVIEW_SEVERITY_POLICY",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/review-verdict-policy.ts"],
+			"registryDescription": "全局关掉跨家族审查收敛政策（=0 回滚 legacy verdict；默认 ON=MEDIUM/LOW 不阻塞并尊重 Lead 已裁决 finding）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "merge_approval_gate_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_MERGE_APPROVAL_GATE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time", "dotenv_live"],
+			"readFiles": ["packages/flywheel-comm/src/ship-eligibility.ts"],
+			"registryDescription": "全局关掉 merge-抢跑 ship 闸（=0 应急放行；默认 ON=merged 只有经 verifyApproval 批准才 completed/Done，否则挂 merge_block 不自动 revert + 响亮 alert）",
+			"registryNote": "B 与 A（FLYWHEEL_QA_DONE_GATE）独立开关（R2 HIGH-3）；Bridge caller 与 CLI live-.env 均在下一次调用生效,分歧时可能 split-brain；授权面保持 readonly。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "qa_done_gate_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_QA_DONE_GATE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time", "dotenv_live"],
+			"readFiles": ["packages/flywheel-comm/src/ship-eligibility.ts"],
+			"registryDescription": "全局关掉 QA-done ship 闸（=0 应急放行；默认 ON=qa_required=1 的 session 必须有 head 的 passed auto_qa_record 才 completed/Done；豁免口=快照0/no-code/no-PR/no-qa/qa.auto:false）",
+			"registryNote": "A 与 B（FLYWHEEL_MERGE_APPROVAL_GATE）独立开关（R2 HIGH-3）；Bridge caller 与 CLI live-.env 均在下一次调用生效,分歧时可能 split-brain；授权面保持 readonly。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "design_html_gate",
+			"category": "governance_gate",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DESIGN_HTML_GATE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["cli_invocation", "call_time"],
+			"readFiles": [
+				"packages/flywheel-comm/src/commands/complete.ts",
+				"packages/teamlead/src/bridge/event-route.ts",
+				"packages/teamlead/src/DirectEventSink.ts",
+				"packages/teamlead/src/bridge/complete-marker-reconciler.ts"
+			],
+			"registryDescription": "design node 完成前必须提交 issue-scoped founder 设计 HTML 并携带 HEAD 绑定的可信证据；=0 仅作 operator 应急放行，与 DAG 是否三段式无关 (FLY-1404)",
+			"registryNote": "CLI 每次调用即时读取；Bridge 进程在每次 completion admission 读取 process.env，但修改共享 .env 后仍需重启 Bridge。",
+			"activation": {
+				"bridge": "restart",
+				"cli": "next_invocation"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge", "命令行(每次调用)"],
+			"processOwnerEvidence": "flywheel-comm/src/commands/complete.ts(CLI 每次调用)+ bridge/event-route.ts、DirectEventSink.ts、bridge/complete-marker-reconciler.ts(Bridge)",
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "three_stage_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_THREE_STAGE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/three-stage-policy.ts"],
+			"registryDescription": "全局关掉三段式 pipeline（Design→Implement→QA）；主开关是 per-project pipeline.three_stage config，本 env 是 fleet-wide 紧急 OFF（FLY-793）",
+			"registryNote": "三段式主开关是 per-project pipeline.three_stage config；本 env=0 是全局紧急关，改后需重启 Bridge。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "three_stage_keepalive_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_THREE_STAGE_KEEPALIVE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/three-stage-policy.ts",
+				"packages/edge-worker/src/Blueprint.ts"
+			],
+			"registryDescription": "全局关掉三段式 phase-session 保活（=0 回退 close-and-respawn 旧行为，不关三段式本身；默认 ON=三段 park 保活 + wake，QA↔implement 修复循环留全 context）(FLY-887)",
+			"registryNote": "与 FLYWHEEL_THREE_STAGE 正交（那个关整条三段式）；本 env=0 只回退保活到 close+respawn，改后需重启 Bridge。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "three_stage_qa_respawn_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_THREE_STAGE_QA_RESPAWN",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/phase-orchestrator.ts"],
+			"registryDescription": "三段式死 QA 重生开关（=0 回退修复前行为:死 qa row 继续挡 implement→QA 重驱,scoped 事件位点不重生;terminated stranded-pass 告警硬化不受此开关控制）(FLY-1050)",
+			"registryNote": "与 FLYWHEEL_THREE_STAGE / FLYWHEEL_THREE_STAGE_KEEPALIVE 正交；本 env=0 只关死-QA 重生路径，改后需重启 Bridge。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "three_stage_codex_implement_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/config/src/three-stage-phases.ts"],
+			"registryDescription": "三段式 implement 段 codex 派发开关（=0 → implement 回落 legacy (claude, heavy)；design/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --bridge-only）(FLY-1224)",
+			"registryNote": "与 FLYWHEEL_THREE_STAGE(整体开关)/ FLYWHEEL_THREE_STAGE_KEEPALIVE 正交；本 env=0 只翻 implement 段的 vendor/model，phase 表其余行不动。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": true
+			}
+		},
+		{
+			"name": "three_stage_codex_design_toggle",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_THREE_STAGE_CODEX_DESIGN",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/config/src/three-stage-phases.ts"],
+			"registryDescription": "三段式 design 段新 run admission fallback（仅在 admission 时且本次 run 未指定 designBackend：=1 → codex gpt-5.6-sol xhigh；不设/≠1 → claude/Fable；一旦写入 sessions.design_backend，retry/rescue 不再读本开关；implement/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --bridge-only）(FLY-1245/FLY-1259)",
+			"registryNote": "per-dispatch designBackend 与已锁定 sessions.design_backend 优先于本全局 fallback；已锁定 run 如需换 vendor，结束旧 run 后以显式 designBackend 新开 run；display fallback 对新 run 先读 locked backend，legacy/null 才读本开关。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "packages/config/src/three-stage-phases.ts 的 resolvePhaseDispatch,由 teamlead/workflow-dispatch-resolution.ts 与 bridge/phase-orchestrator.ts 消费;注册表 note 也写「改 .env 后需 restart-services.sh --bridge-only」",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": false
+			}
+		},
+		{
+			"name": "boot_sha_check",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_BOOT_SHA_CHECK",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/boot-sha-check.ts"],
+			"registryDescription": "Bridge 启动打印运行 HEAD 并 best-effort 比对 origin/main;落后(stale checkout,merged 未生效)→ WARN + durable event + Lead 报警。=0 整段跳过。纯可观测,绝不影响启动;分支 checkout(dev/QA slot)自动静音 (FLY-939 G-D)",
+			"registryNote": "启动时一次性 best-effort git 检查;改后需重启 Bridge 才生效。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "progress_resume_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_PROGRESS_RESUME",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"packages/edge-worker/src/Blueprint.ts"
+			],
+			"registryDescription": "全局关掉 restart-resilient resume（重启/terminate/reboot 后从 progress.md 游标续做）；=0 = 纯 fresh 现状 + 抑制写台账纪律 prompt（FLY-795）",
+			"registryNote": "重启/terminate resume 主机制；=0 全局关，改后需重启 Bridge。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "cmux_close_request_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_CMUX_CLOSE_REQUEST",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/cmux-close-request.ts"],
+			"registryDescription": "close_runner 写 cmux pin close-request marker + watcher 立即移除 stale pin（FLY-685）",
+			"registryNote": "watcher 侧同名读取在 scripts/flywheel-cmux-sync.sh（cli_invocation）；=0 关闭两侧，需重启 Bridge + watcher。",
+			"activation": {
+				"bridge": "restart",
+				"watcher": "restart"
+			},
+			"activationSource": "override",
+			"activationReason": "registry note: watcher scripts/flywheel-cmux-sync.sh owns its own env — restart Bridge AND watcher",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "gatepoller_circuit",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_GATEPOLLER_CIRCUIT",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/gate-poller.ts"],
+			"registryDescription": "GatePoller 连续 poll 失败时的熔断",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "issue_gate_supersede_mode",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ISSUE_GATE_SUPERSEDE",
+			"polarity": "default_on",
+			"valueKind": "enum",
+			"enumValues": ["enforce", "observe", "0"],
+			"default": "enforce",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/issue-gate-supersede.ts"],
+			"registryDescription": "FLY-1314: issue gate supersede patrol 模式（enforce=收敛、observe=只审计、0=停止新 mutation）",
+			"registryNote": "已写入 superseded_at/superseded_by 的 disposition 永久有效；=0 只停止新的 mutation，不回滚历史 stamp。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "enforce"
+			}
+		},
+		{
+			"name": "founder_review_gate_exclude",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/gate-poller.ts"],
+			"registryDescription": "FLY-1314: founder 单字母回复候选排除 review_design/review_code gate（=0 恢复旧候选集合）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "retest_head_delta_guard",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_RETEST_HEAD_DELTA_GUARD",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/phase-orchestrator.ts"],
+			"registryDescription": "FLY-1314: 用不可变 QA verdict head 与 exact range diff 抑制无代码变化的重复 retest（=0 恢复每次重驱）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "ship_ci_guard",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_SHIP_CI_GUARD",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["cli_invocation"],
+			"readFiles": ["packages/flywheel-comm/src/ship-ci-guard.ts"],
+			"registryDescription": "FLY-1314: approve gate 与最终 ship authority 的即时 GitHub CI 守卫（=0 紧急旁路 GitHub evidence axis）",
+			"registryNote": "由每次 flywheel-comm CLI invocation 读取；默认开启，=0 仅用于 GitHub/gh 证据链故障的紧急恢复。",
+			"activation": {
+				"cli": "next_invocation"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["命令行(每次调用)"],
+			"processOwnerEvidence": "packages/flywheel-comm/src/ship-ci-guard.ts 只被 flywheel-comm 的 gate.ts / verify-approval.ts import;Bridge 不加载",
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "misroute_patrol",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_MISROUTE_PATROL",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/gate-poller.ts"],
+			"registryDescription": "Lead-inbox 误投巡检（每 poll 读）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "founder_thread_notify",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FOUNDER_THREAD_NOTIFY",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/gate-poller.ts"],
+			"registryDescription": "gate 上给 founder 发 thread 通知",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "ship_ready_notify",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_SHIP_READY_NOTIFY",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/workflow-ship-ready.ts"],
+			"registryDescription": "非 land 工程 workflow 停在 founder gate 时向 owning Lead 与 founder thread 双路宣告 ship-ready",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "packages/teamlead/src/workflow-ship-ready.ts,由 bridge/plugin.ts 与 bridge/workflow-engine-dispatcher.ts 消费",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "ship_ready_remind_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_SHIP_READY_REMIND_MS",
+			"polarity": "default_on",
+			"valueKind": "value",
+			"default": "1800000",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/workflow-ship-ready.ts"],
+			"registryDescription": "ship-ready founder gate 未处理时提醒 Lead 的停留阈值(默认 30 分钟)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "同 workflow-ship-ready.ts,由 bridge/plugin.ts 消费",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "1800000"
+			}
+		},
+		{
+			"name": "founder_auto_approve",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FOUNDER_AUTO_APPROVE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/approval-signal/founder-ship-approval-factory.ts",
+				"packages/teamlead/src/bridge/approval-signal/founder-reaction-approval-factory.ts"
+			],
+			"registryDescription": "FLY-799: founder 在 [FLY-XX] thread 的文字/✅ 批准 → 归属 founder → 写 approve_to_ship gate → runner 自 ship",
+			"registryNote": "call_time reads (live-toggleable in principle); marked readonly pending a resolve.direct-toggle proof test (fast-follow). `=0` → deliverer falls back to WAKE-only.",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "stale_ship_rewake",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_STALE_SHIP_REWAKE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/gate-poller.ts"],
+			"registryDescription": "FLY-799 Part B: 重新唤醒卡在 approved_to_ship 的 runner（漏掉的自-ship wake）；死 runner → alert 一次 defer FLY-795",
+			"registryNote": "GatePoller sub-cadence pass；`=0` 关掉再唤醒。call_time read (readonly pending direct-toggle proof).",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "auto_linear_done",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_AUTO_LINEAR_DONE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/linear-issue-finalizer.ts"],
+			"registryDescription": "FLY-799: runner 自-ship（confirmed merged）后自动把 Linear issue 翻到 Done",
+			"registryNote": "在 runPostShipFinalization（merge-evidence gated）里读；`=0` 关掉自动 Done。call_time read (readonly pending direct-toggle proof).",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "founder_reply_deliver",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FOUNDER_REPLY_DELIVER",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/gate-poller.ts"],
+			"registryDescription": "把 founder 的 gate 回复回投给 runner",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "deferred_founder_approval",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DEFERRED_FOUNDER_APPROVAL",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/approval-signal/deferred-approval.ts"
+			],
+			"registryDescription": "held 期间 founder 批准暂存 + hold 清后自动补绑(OFF=今日 held 提前 decline)",
+			"registryNote": "handler 暂存分支与 rebind pass 双读点;call_time read (readonly pending direct-toggle proof).",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "held_declined_reply",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_HELD_DECLINED_REPLY",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/approval-signal/deferred-approval.ts"
+			],
+			"registryDescription": "held 时给 founder 发 thread 明文解释(硬要求① — ❓ 不再是哑谜)",
+			"registryNote": "与 deferred_founder_approval 组成 §4.4 2×2 真值表;call_time read.",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "deferred_approval_ttl_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DEFERRED_APPROVAL_TTL_MS",
+			"polarity": "default_on",
+			"valueKind": "value",
+			"default": "2700000",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/approval-signal/deferred-approval.ts"
+			],
+			"registryDescription": "暂存批准的 TTL(默认 45min;过期需 founder 重新确认)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "2700000"
+			}
+		},
+		{
+			"name": "founder_notify_retry_max",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FOUNDER_NOTIFY_RETRY_MAX",
+			"polarity": "default_on",
+			"valueKind": "value",
+			"default": "5",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/founder-action-drain.ts"],
+			"registryDescription": "founder action ledger 投递重试上限(超限 failed+emit_alert)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "5"
+			}
+		},
+		{
+			"name": "codex_hold_nudge",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_CODEX_HOLD_NUDGE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/auto-qa-coordinator.ts"],
+			"registryDescription": "codex-hold 30min 早期 nudge 层(ledger 化 queue+wake 再驱动)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "codex_hold_nudge_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_CODEX_HOLD_NUDGE_MS",
+			"polarity": "default_on",
+			"valueKind": "value",
+			"default": "1800000",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/auto-qa-coordinator.ts"],
+			"registryDescription": "codex-hold nudge 阈值(默认 30min,早于 3h stuck 层)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "1800000"
+			}
+		},
+		{
+			"name": "founder_reply_retry_max",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FOUNDER_REPLY_RETRY_MAX",
+			"polarity": "default_on",
+			"valueKind": "value",
+			"default": "10",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/gate-poller.ts"],
+			"registryDescription": "founder 消息有界重试上限(超限 dead-letter+告警,cursor 解钉)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "10"
+			}
+		},
+		{
+			"name": "founder_reply_deadletter_age_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FOUNDER_REPLY_DEADLETTER_AGE_MS",
+			"polarity": "default_on",
+			"valueKind": "value",
+			"default": "1800000",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/gate-poller.ts"],
+			"registryDescription": "founder 消息重试超龄上限(默认 30min,与次数上限双阈值)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "1800000"
+			}
+		},
+		{
+			"name": "founder_reply_watchdog",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FOUNDER_REPLY_WATCHDOG",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/founder-reply-watchdog.ts"],
+			"registryDescription": "founder-reply 摄取 watchdog(pass 死亡/cursor 钉死/unreachable runner 告警)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "zombie_gate_resolve",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ZOMBIE_GATE_RESOLVE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/zombie-gate-hygiene.ts"],
+			"registryDescription": "僵尸 gate 自动 retire(Z1 三段式;OFF 连 intent 都不写=今日字节路径)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": false
+			}
+		},
+		{
+			"name": "ask_hygiene",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ASK_HYGIENE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/flywheel-comm/src/db.ts",
+				"packages/teamlead/src/bridge/zombie-gate-hygiene.ts",
+				"packages/teamlead/src/bridge/gate-poller.ts",
+				"packages/teamlead/src/StateStore.ts"
+			],
+			"registryDescription": "runner 收尾清它名下未答的 ask(A1 close 级联 + A2 巡检 sweep;OFF=今日字节路径,含 gate 行 resolved_via 保持 NULL)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart",
+				"cli": "next_invocation"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge", "命令行(每次调用)"],
+			"processOwnerEvidence": "读点跨 flywheel-comm/src/db.ts(Bridge 与 CLI 共用)与 bridge/zombie-gate-hygiene.ts、bridge/gate-poller.ts、StateStore.ts(Bridge)",
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "founder_milestone_notify",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FOUNDER_MILESTONE_NOTIFY",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/gate-poller.ts"],
+			"registryDescription": "founder 里程碑推送（FLY-725）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "heartbeat_readopt",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_HEARTBEAT_READOPT",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/HeartbeatService.ts"],
+			"registryDescription": "心跳服务 re-adopt 已有 session",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "liveness_pane_dead",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_LIVENESS_PANE_DEAD",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/HeartbeatService.ts"],
+			"registryDescription": "pane-dead liveness 检测",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "quiet_persist_dedup",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_QUIET_PERSIST_DEDUP",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/HeartbeatService.ts",
+				"packages/teamlead/src/RunnerIdleWatchdog.ts"
+			],
+			"registryDescription": "quiet-persist 信号去重",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "engine_dead_exec_sweep",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts"
+			],
+			"registryDescription": "DAG terminal dead-execution recovery sweep (OFF pauses new replacement decisions)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "workflow_rework_reentry",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_WORKFLOW_REWORK_REENTRY",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/workflow-rework-coordinator.ts"
+			],
+			"registryDescription": "FLY-1423: re-enter the original workflow actor for QA/founder rework; =0 holds and alerts without evicting or spawning",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "engine_unlaunched_tripwire",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts"
+			],
+			"registryDescription": "FLY-1423: alert, fence, and recover blocked or admitted-but-unlaunched workflow retries",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "remote_reports",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_REMOTE_REPORTS",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["object_construction", "cli_invocation"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/plugin.ts",
+				"packages/flywheel-comm/src/commands/publish-report.ts"
+			],
+			"registryDescription": "远程报告发布管线 /api/reports（Bridge + CLI 双侧）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "fleet_console",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FLEET_CONSOLE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "Fleet console 面 + fleet 路由（=0 回退旧 dashboard）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "pane_idle_suppress",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_PANE_IDLE_SUPPRESS",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "抑制 alive-idle Lead pane 的 pane_hash_stuck 误报",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "watchdog_judge",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_WATCHDOG_JUDGE",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "watchdog LLM judge 层(机械快路可疑才升级,跑 Codex 不占 Claude 额度,FLY-1048 PR-B/FLY-976)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": false
+			}
+		},
+		{
+			"name": "stuck_pane_confirm",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_STUCK_PANE_CONFIRM",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/HeartbeatService.ts"],
+			"registryDescription": "session_stuck 心跳告警前的 pane/进程证据确认层(liveness→双帧→judge,只因明确健康证据抑制,FLY-1234)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "同 HeartbeatService,由 bridge/plugin.ts:6054 构造",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "worktree_autoclean",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_WORKTREE_AUTOCLEAN",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/worktree-cleanup.ts"],
+			"registryDescription": "run 后自动清理 git worktree",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "bridge_watchdog",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_BRIDGE_WATCHDOG",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": ["packages/teamlead/src/bridge/BridgeEventLoopWatchdog.ts"],
+			"registryDescription": "Bridge event-loop watchdog（start() 只在启动看，事后置 0 停不了已跑的）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "issue_status_emoji",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ISSUE_STATUS_EMOJI",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "issue thread 状态 emoji + 重连标记",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "issue_status_word",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ISSUE_STATUS_WORD",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": ["packages/teamlead/src/HeartbeatService.ts"],
+			"registryDescription": "word 形式的 issue 状态标注",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "issue_attach_pin",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ISSUE_ATTACH_PIN",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "issue thread 钉 tmux attach 救援命令（FLY-560）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "issue_display_refresh",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ISSUE_DISPLAY_REFRESH",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "统一 issue 显示刷新：三个显示面从真实状态派生,park/wake/kill/finalize 等全生命周期触发(FLY-907);=0 回退 stage_changed 旧路径",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "issue_display_sweep_ticks",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS",
+			"polarity": "default_on",
+			"valueKind": "value",
+			"default": "60",
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "issue 显示自愈 sweep 的 GatePoller tick 周期(默认 60 ≈ 3min@3s;0=关,FLY-907)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "60"
+			}
+		},
+		{
+			"name": "quiet_classifier",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_QUIET_CLASSIFIER",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "抑制安静 runner 的 token-贵 Lead wake（FLY-626）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "crash_reaper",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_CRASH_REAPER",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "crash/orphan runner 回收",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "stale_terminal_close",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_STALE_TERMINAL_CLOSE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/HeartbeatService.ts"],
+			"registryDescription": "FLY-867: 终态 session 的 tmux 还活着超过 stale 阈值 → 经 closeRunner 自动收(泄漏兜底);=0 回退 GEO-270 纯通知",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "commdb_fsm_reconcile",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_COMMDB_FSM_RECONCILE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "CommDB↔FSM reconcile boot sweep — 清 CommDB running 但 FSM 终态+tmux 死的僵尸（FLY-817，补 FLY-638 盲区）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "commdb_residue_harvest",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_COMMDB_RESIDUE_HARVEST",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "Bridge scope-free residue harvest — 清 CommDB-only 注册、StateStore ghost 与无主 detection escalation (FLY-1066)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "terminal_commdb_sync",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_TERMINAL_COMMDB_SYNC",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "StateStore failed/blocked → CommDB 异步终态同步（FLY-1066 根因层）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "lead_pending_escalation",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_LEAD_PENDING_ESCALATION",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": ["packages/teamlead/src/bridge/lead-pending-escalation.ts"],
+			"registryDescription": "lead-pending 升级功能",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "cron_stale_guard",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_CRON_STALE_GUARD",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "run-start 409 路径的 stale-blocker guard（=0 回退旧 409，FLY-742）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "ship_gate_grace_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_SHIP_GATE_GRACE_MS",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "15000",
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/gate-poller.ts"],
+			"registryDescription": "founder 文字/✅ 对 approve_to_ship gate 的放行 grace(ms;默认 15s;设 600000 回到 FLY-605 旧 10min 行为——这就是 kill-switch,FLY-945 Fix A)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "15000"
+			}
+		},
+		{
+			"name": "ship_gate_rebind",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_SHIP_GATE_REBIND",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/auto-qa-coordinator.ts"],
+			"registryDescription": "QA PASS 证据 commit 使 PR head 前移时自动 rebind ship gate(=0 回到 FLY-945 前的 drop 行为)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "external_merge_reconcile",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_EXTERNAL_MERGE_RECONCILE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/external-merge-reconcile.ts"],
+			"registryDescription": "外部 merge(executor-merge 残局)收敛兜底 pass(=0 关闭;FLY-945 Fix D——兜底不是许可)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "merge_reconcile_window_days",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_MERGE_RECONCILE_WINDOW_DAYS",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "7",
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/external-merge-reconcile.ts"],
+			"registryDescription": "外部 merge 收敛 pass 的 completed-but-unfinalized 回看窗口(天;FLY-945 Fix D)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "7"
+			}
+		},
+		{
+			"name": "ship_gate_retire",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_SHIP_GATE_RETIRE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/event-route.ts",
+				"packages/teamlead/src/bridge/gate-poller.ts"
+			],
+			"registryDescription": "FLY-1041 Fix A: rebind 后 retire 被取代的 approve_to_ship gate(event-route 主路径 + GatePoller sweeper 兜底)——同一时刻只留一个可绑 ship gate(=0 回到 FLY-910 前的僵尸 gate 现状)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "ship_gate_card",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_SHIP_GATE_CARD",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/gate-poller.ts"],
+			"registryDescription": "FLY-1041 Fix B: approve_to_ship 的 founder 卡转正为主载体(15s grace;=0 回到 10min FLY-605 兜底节奏)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "ship_gate_card_grace_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_SHIP_GATE_CARD_GRACE_MS",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "15000",
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/gate-poller.ts"],
+			"registryDescription": "FLY-1041 Fix B: ship 卡发出前的 grace(ms;默认 15s;env > config > default)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "15000"
+			}
+		},
+		{
+			"name": "tier2_prefix_norm",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_TIER2_PREFIX_NORM",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/approval-signal/text-approval-source.ts"
+			],
+			"registryDescription": "FLY-1041 Fix C: tier2 允许剥离纯语气前缀(「嗯ship」→「ship」确定性命中;=0 回到降级 tier3 的现状——确定性批准语义扩张的独立回滚)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "viewer_session_reaper",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_VIEWER_SESSION_REAPER",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "boot sweep 清理泄漏的 viewer-<execId> tmux session（FLY-754）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "chrome_session_reaper",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_CHROME_REAPER",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "周期清理泄漏的 agent-browser headless Chrome（=0 关闭 reaper，FLY-766）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "stuck_detect",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_STUCK_DETECT",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": ["packages/teamlead/src/bridge/stuck-escalation.ts"],
+			"registryDescription": "runner stuck 检测 + 升级",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "codex_lead_typing",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_CODEX_LEAD_TYPING",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": [
+				"packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts"
+			],
+			"registryDescription": "Codex Lead 打字指示器",
+			"registryNote": null,
+			"activation": {
+				"lead": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "roundtable_thread_autocontinue",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": [
+				"packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts"
+			],
+			"registryDescription": "roundtable 话题线程 auto-continue",
+			"registryNote": null,
+			"activation": {
+				"lead": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "lead_chrome_enabled",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_LEAD_CHROME_ENABLED",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": [
+				"packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts"
+			],
+			"registryDescription": "Lead 侧 Chrome/claude-in-chrome 能力",
+			"registryNote": null,
+			"activation": {
+				"lead": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "per_lead",
+				"source": "manifest",
+				"values": [
+					{
+						"project": "flywheel",
+						"leadId": "claude-infra-bot-lead",
+						"value": false
+					},
+					{
+						"project": "flywheel",
+						"leadId": "flywheel-cos-lead",
+						"value": false
+					},
+					{
+						"project": "flywheel",
+						"leadId": "flywheel-eng-lead",
+						"value": false
+					},
+					{
+						"project": "flywheel",
+						"leadId": "flywheel-product-lead",
+						"value": false
+					},
+					{
+						"project": "geoforge3d",
+						"leadId": "cos-lead",
+						"value": false
+					},
+					{
+						"project": "geoforge3d",
+						"leadId": "ops-lead",
+						"value": false
+					},
+					{
+						"project": "geoforge3d",
+						"leadId": "product-lead",
+						"value": false
+					},
+					{
+						"project": "growth",
+						"leadId": "mufasa-lead",
+						"value": false
+					},
+					{
+						"project": "growth",
+						"leadId": "rafiki-lead",
+						"value": false
+					},
+					{
+						"project": "growth",
+						"leadId": "reflection-lead",
+						"value": false
+					},
+					{
+						"project": "joycon-typeless",
+						"leadId": "joycon-lead",
+						"value": false
+					},
+					{
+						"project": "personal-assistant",
+						"leadId": "belle-lead",
+						"value": false
+					},
+					{
+						"project": "test-slot-3",
+						"leadId": "flywheel-test-3",
+						"value": false
+					},
+					{
+						"project": "test-slot-4",
+						"leadId": "flywheel-test-4",
+						"value": false
+					},
+					{
+						"project": "tidal-echo",
+						"leadId": "sub-lead",
+						"value": false
+					},
+					{
+						"project": "tidal-echo",
+						"leadId": "tidal-echo-content-lead",
+						"value": false
+					},
+					{
+						"project": "tidal-echo",
+						"leadId": "tidal-echo-cos-lead",
+						"value": false
+					}
+				],
+				"onCount": 0,
+				"total": 17
+			},
+			"configuredNote": "flywheel-lead-wrapper.sh 从每个 Lead manifest 读 .chromeEnabled 并 export 该 Lead 的 env"
+		},
+		{
+			"name": "lead_core_mention_gated",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_LEAD_CORE_MENTION_GATED",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": [
+				"packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts"
+			],
+			"registryDescription": "core-room 无-@ 消息只让 CoS 回、非-CoS lead 需被点名才回（FLY-898，launcher 从 projects.json 计算）",
+			"registryNote": null,
+			"activation": {
+				"lead": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "per_lead",
+				"source": "launcher_derived",
+				"values": null,
+				"note": "逐 Codex Lead 由 launcher 按 projects.json core-room 拓扑计算;精确值需跑 core-room-gate-cli。non-CoS Codex Lead 若订阅带 CoS 的 core room 则 ON。"
+			},
+			"configuredNote": "codex-lead.sh 用 core-room-gate-cli.js 按 projects.json core-room 拓扑逐 Codex Lead 计算并 export=1"
+		},
+		{
+			"name": "roundtable_thread_own_bot",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ROUNDTABLE_THREAD_OWN_BOT",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/roundtable/roundtable-config.ts"
+			],
+			"registryDescription": "roundtable 线程包含 own-bot 消息",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "lead_dry_run",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_LEAD_DRY_RUN",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["mixed"],
+			"readFiles": [
+				"packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts"
+			],
+			"registryDescription": "Codex Lead dry-run 预演模式（只描述不执行）",
+			"registryNote": null,
+			"activation": {
+				"lead": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "lead_cross_dept_channel_ids",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": [
+				"packages/teamlead/src/lead-backends/codex/lead-actions/config.ts"
+			],
+			"registryDescription": "Codex Lead poll+mention-gate 的 #leads-roundtable 频道 id（逗号分隔）",
+			"registryNote": null,
+			"activation": {
+				"lead": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": "1512578695468941333"
+			}
+		},
+		{
+			"name": "reports_ttl_days",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_REPORTS_TTL_DAYS",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "7",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "报告链接保留天数（默认 7）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "7"
+			}
+		},
+		{
+			"name": "ghost_guard_wait_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_GHOST_GUARD_WAIT_MS",
+			"polarity": "default_on",
+			"valueKind": "value",
+			"default": "90000",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": ["packages/teamlead/src/bridge/runs-route.ts"],
+			"registryDescription": "FLY-1336: generalized launch delivery/session confirmation guard (ms; default 90s; captured when the Bridge loads the runs route)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "90000"
+			}
+		},
+		{
+			"name": "founder_consent_decision_mode",
+			"category": "governance_gate",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE",
+			"polarity": "opt_in",
+			"valueKind": "enum",
+			"enumValues": ["off", "audit_only", "enforce"],
+			"default": "off",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/founder-consent/config.ts"],
+			"registryDescription": "founder-consent 硬门模式（治理门，只读）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": "audit_only"
+			}
+		},
+		{
+			"name": "founder_attribution_gate",
+			"category": "governance_gate",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FOUNDER_ATTRIBUTION_GATE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["cli_invocation"],
+			"readFiles": ["packages/flywheel-comm/src/founder-attribution.ts"],
+			"registryDescription": "verify-approval 要求 approve gate 答复归属 founder 侧(founder id / bridge / bridge-founder-consent;=0 仅供 QA 房/应急;治理门,只读;FLY-945 Fix E)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "comm_bypass_bridge",
+			"category": "governance_gate",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_COMM_BYPASS_BRIDGE",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["cli_invocation"],
+			"readFiles": ["packages/flywheel-comm/src/commands/respond.ts"],
+			"registryDescription": "应急：绕过 founder-consent 直写 approve gate（治理门 override，只读）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "lead_lease_bypass",
+			"category": "governance_gate",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_LEAD_LEASE_BYPASS",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["cli_invocation"],
+			"readFiles": ["packages/flywheel-comm/src/lead-lease.ts"],
+			"registryDescription": "FLY-1309: 紧急绕过 Lead identity lease 写授权（=1；强告警 + 审计；治理门，只读）",
+			"registryNote": null,
+			"activation": {
+				"cli": "next_invocation"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["命令行(每次调用)"],
+			"processOwnerEvidence": "packages/flywheel-comm/src/lead-lease.ts,注册表登记为 cli_invocation(治理门)",
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "qa_auto",
+			"category": "feature",
+			"source": "project_config",
+			"scope": "project",
+			"configKey": "qa.auto",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/auto-qa-policy.ts"],
+			"registryDescription": "code-review 后自动 spawn 独立 QA runner（per-project）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "project",
+				"byProject": [
+					{
+						"project": "geoforge3d",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "joycon-typeless",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "personal-assistant",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "growth",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "flywheel",
+						"value": true,
+						"isDefault": false
+					},
+					{
+						"project": "tidal-echo",
+						"value": false,
+						"isDefault": true
+					}
+				]
+			}
+		},
+		{
+			"name": "doc_flow",
+			"category": "feature",
+			"source": "project_config",
+			"scope": "project",
+			"configKey": "doc_flow.enabled",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/edge-worker/src/Blueprint.ts"],
+			"registryDescription": "DOC-FLOW 提示词块：Runner 写部门优先过程文档（per-project）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "project",
+				"byProject": [
+					{
+						"project": "geoforge3d",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "joycon-typeless",
+						"value": true,
+						"isDefault": false
+					},
+					{
+						"project": "personal-assistant",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "growth",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "flywheel",
+						"value": true,
+						"isDefault": false
+					},
+					{
+						"project": "tidal-echo",
+						"value": true,
+						"isDefault": false
+					}
+				]
+			}
+		},
+		{
+			"name": "skill_framework_mode",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_SKILL_FRAMEWORK_MODE",
+			"polarity": "default_on",
+			"valueKind": "enum",
+			"enumValues": ["superpowers", "matt", "bare", "split"],
+			"default": "superpowers",
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/edge-worker/src/Blueprint.ts"],
+			"registryDescription": "FLY-1356: Runner skill 框架三选一（superpowers=A 现状默认 / matt=B / bare=C / split=按 issue 稳定哈希分流）。kill = 设回 superpowers，秒级生效不重启；存量 in-flight session 不追改",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "packages/edge-worker/src/Blueprint.ts —— Blueprint 由 bridge/actions.ts、bridge/bootstrap-generator.ts 在 Bridge 内使用(flywheel-comm 侧只有注释提到它)",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": "split"
+			}
+		},
+		{
+			"name": "skill_framework_split_participation",
+			"category": "feature",
+			"source": "project_config",
+			"scope": "project",
+			"configKey": "skill_framework.split",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/edge-worker/src/Blueprint.ts"],
+			"registryDescription": "FLY-1356: split 分流下该项目是否参与实验臂（false = 项目钉回 A/superpowers，via 记 project_opt_out；这是退出杠杆，不是启用开关）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "同 Blueprint.ts,逐项目 config,由 Bridge 读取",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "project",
+				"byProject": [
+					{
+						"project": "geoforge3d",
+						"value": true,
+						"isDefault": true
+					},
+					{
+						"project": "joycon-typeless",
+						"value": true,
+						"isDefault": true
+					},
+					{
+						"project": "personal-assistant",
+						"value": true,
+						"isDefault": true
+					},
+					{
+						"project": "growth",
+						"value": true,
+						"isDefault": true
+					},
+					{
+						"project": "flywheel",
+						"value": true,
+						"isDefault": true
+					},
+					{
+						"project": "tidal-echo",
+						"value": true,
+						"isDefault": true
+					}
+				]
+			}
+		},
+		{
+			"name": "proofshot",
+			"category": "feature",
+			"source": "project_config",
+			"scope": "project",
+			"configKey": "skills.proofshot.enabled",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/config/src/ConfigLoader.ts"],
+			"registryDescription": "ProofShot 视觉验证 auto-trigger（per-project）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "project",
+				"byProject": [
+					{
+						"project": "geoforge3d",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "joycon-typeless",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "personal-assistant",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "growth",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "flywheel",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "tidal-echo",
+						"value": false,
+						"isDefault": true
+					}
+				]
+			}
+		},
+		{
+			"name": "xiaohongshu_learning",
+			"category": "feature",
+			"source": "project_config",
+			"scope": "project",
+			"configKey": "xiaohongshu_learning.enabled",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/config/src/ConfigLoader.ts"],
+			"registryDescription": "定期小红书收藏学习管线（per-project）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "project",
+				"byProject": [
+					{
+						"project": "geoforge3d",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "joycon-typeless",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "personal-assistant",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "growth",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "flywheel",
+						"value": false,
+						"isDefault": true
+					},
+					{
+						"project": "tidal-echo",
+						"value": false,
+						"isDefault": true
+					}
+				]
+			}
+		},
+		{
+			"name": "ponytail",
+			"category": "feature",
+			"source": "project_config",
+			"scope": "project",
+			"configKey": "ponytail.enabled",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": true,
+			"timings": ["call_time"],
+			"readFiles": ["packages/config/src/ConfigLoader.ts"],
+			"registryDescription": "代码极简 ponytail 逐项目 rollout（Annie-exception：默认 OFF）",
+			"registryNote": "run-infra.ts 明确不加载 flywheelConfig?.ponytail（项目层 dormant）；Annie-exception。",
+			"activation": {
+				"n_a": true
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "project",
+				"dormant": true
+			}
+		},
+		{
+			"name": "founder_ux_gate",
+			"category": "governance_gate",
+			"source": "project_config",
+			"scope": "project",
+			"configKey": "founder_ux_gate.mode",
+			"polarity": "default_on",
+			"valueKind": "enum",
+			"enumValues": ["off", "audit_only", "enforce"],
+			"default": "enforce",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/config/src/ConfigLoader.ts"],
+			"registryDescription": "全 issue brainstorm 对齐门（治理门，只读）— 默认 gate 所有实质性 issue，仅 brainstorm-exempt 标签豁免",
+			"registryNote": "absent → enforce（resolveEffectiveFounderUxConfig 收口，FLY-869）；显式 mode:off 才是旧行为的 kill-switch。",
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "project",
+				"byProject": [
+					{
+						"project": "geoforge3d",
+						"value": "enforce",
+						"isDefault": true
+					},
+					{
+						"project": "joycon-typeless",
+						"value": "enforce",
+						"isDefault": true
+					},
+					{
+						"project": "personal-assistant",
+						"value": "enforce",
+						"isDefault": true
+					},
+					{
+						"project": "growth",
+						"value": "enforce",
+						"isDefault": true
+					},
+					{
+						"project": "flywheel",
+						"value": "enforce",
+						"isDefault": true
+					},
+					{
+						"project": "tidal-echo",
+						"value": "enforce",
+						"isDefault": true
+					}
+				]
+			}
+		},
+		{
+			"name": "founder_ux_gate_killswitch",
+			"category": "governance_gate",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FOUNDER_UX_GATE_ENABLED",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/config/src/founder-ux-config.ts"],
+			"registryDescription": "全局撤掉 founder-UX 签字门（implement 前必须 thread 签字，FLY-598/869）；默认 OFF=门禁用，=1 恢复原 enforce（叠在 per-project founder_ux_gate.mode 上，FLY-900）",
+			"registryNote": "单一语义在 helper isFounderUxGateEnabled；Blueprint(A)/status route(B)/stage-guard(C)/claude-lead.sh(D) 消费该 helper（无 env 字面量，非 readSite）；默认 OFF 撤门，=1 恢复；改后需重启 Bridge。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived",
+			"processOwners": ["未核实"],
+			"processOwnerEvidence": "读点不全在 packages/teamlead/src/bridge/ 下,且没有已核实的进程归属条目",
+			"processOwnerUnclassified": true,
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "runner_autocontinue",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_RUNNER_AUTOCONTINUE",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["bridge_boot", "call_time"],
+			"readFiles": [
+				"packages/teamlead/src/bridge/plugin.ts",
+				"packages/teamlead/src/bridge/autocontinue-armer.ts"
+			],
+			"registryDescription": "FLY-818 ①: opt-in /loop-native goal-driven 自动续跑 arming（AutoContinueArmer）",
+			"registryNote": "boot-gated：plugin.ts 仅在 =1 时启动 armer poll；翻转需重启 Bridge。默认 off，先单-runner canary。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "stuck_founder_page_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_STUCK_FOUNDER_PAGE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/stuck-escalation.ts"],
+			"registryDescription": "FLY-818 ②: 关掉「runner 真卡住 → 在其 [FLY-XX] issue thread @founder」的直达页（default-on 安全网）",
+			"registryNote": "额外要 owner id + store 才发页；=0 关闭直达页、退回 legacy alert 语义（需重启 Bridge 生效）。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "fleet_sensor_tmux_killswitch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_FLEET_SENSOR_TMUX",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "FLY-1082: 关掉 tmux server-loss coordinator（HeartbeatService pre-reaper phase：fleet 级检测 + 成组终态迁移 + 单张 fleet ticket + 按 Lead 分组通知）",
+			"registryNote": "=0 时 server-loss 整段关闭,退回 per-runner crash-reaper/reapOrphans 旧行为。HeartbeatService 构造时读一次（ternary 选 phase 对象或 undefined）,翻转需重启 Bridge。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "done_thread_reconcile",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DONE_THREAD_RECONCILE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/done-thread-reconcile.ts"],
+			"registryDescription": "FLY-1165: 关掉 done-thread reconcile sweep（Done/Canceled issue 的未归档 thread 自动归档兜底；调度器每 tick 重读 env，off→on/on→off 无需重启）",
+			"registryNote": "伴生 knobs：FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN / _DRYRUN / _MAX_PER_RUN（下方三条）。QA slot Bridge 由 test-deploy.sh 显式注入 =0 隔离（防扫真 Linear）。",
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "done_thread_reconcile_interval_min",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN",
+			"polarity": "default_on",
+			"valueKind": "value",
+			"default": "360",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/done-thread-reconcile.ts"],
+			"registryDescription": "FLY-1165: reconcile sweep 周期（分钟；0=只跑 boot pass；调度器每 tick 重读）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "360"
+			}
+		},
+		{
+			"name": "done_thread_reconcile_dryrun",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DONE_THREAD_RECONCILE_DRYRUN",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/done-thread-reconcile.ts"],
+			"registryDescription": "FLY-1165: reconcile sweep 只记不归档（=1 观察模式；每 tick 重读）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "done_thread_reconcile_max_per_run",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN",
+			"polarity": "default_on",
+			"valueKind": "value",
+			"default": "25",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/done-thread-reconcile.ts"],
+			"registryDescription": "FLY-1165: 每轮 reconcile 最多归档数（Discord 429 保护；每 tick 重读）",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "25"
+			}
+		},
+		{
+			"name": "publish_broker",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_PUBLISH_BROKER",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": ["packages/teamlead/src/bridge/publish-broker/wire.ts"],
+			"registryDescription": "FLY-1062: publish broker — 对外发布(promote-commit / 薄壳 npm publish)的唯一执行点。默认关(生产字节兼容);开启 = Bridge boot 起 unix-socket 请求面 + founder ✅-reaction 审批观察。真发布另需 token 供给 + founder 批(P5)",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "workflow_template_dispatch",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/workflow-template-dispatch.ts"],
+			"registryDescription": "FLY-1307: enable candidate-first workflow-template dispatch through the typed snapshot engine. Default off for exact legacy compatibility; starts also require claims WRITE and READ, and schema v2 additionally requires generalized templates.",
+			"registryNote": "FLY-1344 founder-controlled DAG lever (FLY-1307 lineage). Dispatch still requires claims WRITE + READ; force_legacy is a separate ship-reader fallback.",
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "packages/teamlead/src/workflow-template-dispatch.ts,由 bridge/plugin.ts 与 bridge/runs-route.ts 消费",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": true
+			}
+		},
+		{
+			"name": "land_node",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_LAND_NODE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/workflow-template-dispatch.ts"],
+			"registryDescription": "FLY-1375: engine-owned land node (sanctioned merge → close sessions → worktree cleanup → Done/archive). =0 stops new land activation; already claimed operations keep converging.",
+			"registryNote": "New land template IDs are selected explicitly; existing legacy bindings remain unchanged.",
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "同 workflow-template-dispatch.ts,由 bridge/plugin.ts 消费",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "workflow_generalized_templates",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/workflow-template.ts"],
+			"registryDescription": "FLY-1281: gates schema-v2 selection, admission, and submission; bundled v2 seed installation/publication stays always-on and dormant until explicitly bound. Default off for byte-compatible routing. V2 admission also requires workflow_claims_write, and workflow_claims_write must not be enabled before the pinned real fresh-spawn E2E passes.",
+			"registryNote": "FLY-1344 founder-controlled DAG v2 lever (FLY-1307/1281 lineage). A v2 start still requires template dispatch + claims WRITE + READ.",
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "packages/teamlead/src/workflow-template.ts,由 bridge/land-executor.ts、bridge/management-dag-source.ts 消费",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": false
+			}
+		},
+		{
+			"name": "workflow_vendor_at_dispatch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_VENDOR_AT_DISPATCH",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/workflow-dispatch-resolution.ts"],
+			"registryDescription": "FLY-1385: resolve each workflow node from the current approved phase/template dispatch at launch time; =0 immediately returns to the pinned snapshot.",
+			"registryNote": "Emergency escape only. Current configured dispatch remains authoritative; automatic replacement is limited to the separately enforced design Fable to GPT-5.6 exception.",
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "packages/teamlead/src/workflow-dispatch-resolution.ts,由 bridge/actions.ts、bridge/runs-route.ts 消费",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "workflow_claims_write",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": [
+				"packages/teamlead/src/workflow-claims.ts",
+				"packages/teamlead/src/bridge/workflow-shadow-writer.ts",
+				"packages/teamlead/src/bridge/plugin.ts"
+			],
+			"registryDescription": "FLY-1232/1244: workflow claims shadow writes and enrolled execution admission. Must remain off until the pinned fresh-spawn E2E and peer-credential hardening gates pass.",
+			"registryNote": "FLY-1344 founder-controlled DAG claims-write lever (FLY-1307/1232 lineage). Start entry latches ON/OFF; non-start hooks and reQA read at use-time.",
+			"activation": {
+				"bridge": "live"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "packages/teamlead/src/workflow-claims.ts + bridge/workflow-shadow-writer.ts + bridge/plugin.ts —— 全部 Bridge 内",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": true
+			}
+		},
+		{
+			"name": "workflow_claims_read",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_WORKFLOW_CLAIMS_READ",
+			"polarity": "opt_in",
+			"valueKind": "bool",
+			"default": false,
+			"toggleable": "direct",
+			"dormant": false,
+			"timings": ["call_time", "dotenv_live"],
+			"readFiles": [
+				"packages/teamlead/src/workflow-claims.ts",
+				"packages/flywheel-comm/src/ship-eligibility.ts",
+				"packages/flywheel-comm/src/commands/verify-approval.ts"
+			],
+			"registryDescription": "FLY-1244: switch explicitly enrolled durable three-stage runs to claims-backed ship eligibility and authoritative head reads.",
+			"registryNote": "FLY-1344 founder-controlled DAG claims-read lever (FLY-1307/1244 lineage). Bridge and CLI are both live authoritative consumers; explicit run enrollment remains required.",
+			"activation": {
+				"bridge": "live",
+				"cli": "next_invocation"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge", "命令行(每次调用)"],
+			"processOwnerEvidence": "teamlead/src/workflow-claims.ts(Bridge)+ flywheel-comm 的 ship-eligibility.ts / verify-approval.ts(CLI)",
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": true,
+				"value": true
+			}
+		},
+		{
+			"name": "delivery_ack",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DELIVERY_ACK",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/lead-event-ack-policy.ts"],
+			"registryDescription": "FLY-1279: durable Lead-event ACK, bounded reminder, and dead-letter escalation loop",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"deadByDependency": {
+				"via": "legacy_delivery_watchdogs",
+				"chain": "lead-event-ack-policy.ts:9 deliveryAckEnabled() = legacyDeliveryWatchdogsEnabled(env) && FLYWHEEL_DELIVERY_ACK !== '0' —— 左边恒 false,整个与式恒 false;plugin.ts:4536 生产 wiring 同样是 legacyDeliveryWatchdogsOn && …"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "commdb_protection",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_COMMDB_PROTECTION",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/flywheel-comm/src/db.ts"],
+			"registryDescription": "FLY-1279 H2: retain unanswered actionable CommDB rows through expiry, finalize, and prune paths",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart",
+				"cli": "next_invocation"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge", "命令行(每次调用)"],
+			"processOwnerEvidence": "读点在 packages/flywheel-comm/src/db.ts:259(共享 CommDB);Bridge 在 packages/teamlead/src/bridge/plugin.ts:23 import 同一个 CommDB,命令行也用它",
+			"bridgeOnlyConsumers": false,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "delivery_ack_timeout_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DELIVERY_ACK_TIMEOUT_MS",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "300000",
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/lead-event-delivery.ts"],
+			"registryDescription": "FLY-1279: ACK deadline before a Lead-event reminder",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"deadByDependency": {
+				"via": "legacy_delivery_watchdogs",
+				"chain": "lead-event-delivery.ts:86 —— 只被 LeadEventDeliveryCoordinator 构造函数读;该 coordinator 全仓唯一实例(plugin.ts:4528)的 enabled 恒 false,deliver() 直接旁路、reconcile() 直接返回"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "300000"
+			}
+		},
+		{
+			"name": "delivery_max_redeliver",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DELIVERY_MAX_REDELIVER",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "5",
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/lead-event-delivery.ts"],
+			"registryDescription": "FLY-1279: maximum pushed ACK reminders before dead-letter escalation",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"deadByDependency": {
+				"via": "legacy_delivery_watchdogs",
+				"chain": "lead-event-delivery.ts:91 —— 同一个恒关 coordinator"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "5"
+			}
+		},
+		{
+			"name": "delivery_max_transport_failures",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DELIVERY_MAX_TRANSPORT_FAILURES",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "5",
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/lead-event-delivery.ts"],
+			"registryDescription": "FLY-1279: maximum failed transport attempts before dead-letter escalation",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"deadByDependency": {
+				"via": "legacy_delivery_watchdogs",
+				"chain": "lead-event-delivery.ts:95 —— 同一个恒关 coordinator"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "5"
+			}
+		},
+		{
+			"name": "ack_late_window_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ACK_LATE_WINDOW_MS",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "86400000",
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/lead-event-delivery.ts"],
+			"registryDescription": "FLY-1279: late-ACK acceptance window after a confirmed founder page",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"deadByDependency": {
+				"via": "legacy_delivery_watchdogs",
+				"chain": "lead-event-delivery.ts:99 —— 同一个恒关 coordinator"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "86400000"
+			}
+		},
+		{
+			"name": "delivery_secret_path",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DELIVERY_SECRET_PATH",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "~/.flywheel/delivery-secret",
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/delivery-secret.ts"],
+			"registryDescription": "FLY-1279: versioned 0600 HMAC key path for per-event ACK bearer capabilities",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "~/.flywheel/delivery-secret"
+			}
+		},
+		{
+			"name": "park_watch",
+			"category": "kill_switch",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_PARK_WATCH",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/park-watch.ts"],
+			"registryDescription": "FLY-1279 D2: semantic scan for blocked, missing-gate, declared-park, and QA-hold episodes",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"runtimeHardOff": {
+				"reason": "FLY-1393 退役:启动接的是 legacy_delivery_watchdogs 总闸,恒关",
+				"evidence": "packages/teamlead/src/bridge/plugin.ts:7973 onParkWatchTick: legacyDeliveryWatchdogsOn ? parkWatchTick : undefined —— 恒 undefined;runParkWatch 全仓无其他生产调用点"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "park_watch_cadence",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_PARK_WATCH_EVERY_N_TICKS",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "20",
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["object_construction"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "FLY-1279 D2: park-watch cadence on the GatePoller timer",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"deadByDependency": {
+				"via": "park_watch",
+				"chain": "plugin.ts:7974 parkWatchEveryNTicks → gate-poller onParkWatchTick(恒 undefined)"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "20"
+			}
+		},
+		{
+			"name": "park_watch_n1_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_PARK_N1_MS",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "600000",
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/park-watch.ts"],
+			"registryDescription": "FLY-1279 D2: ordinary park age before Lead notification",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"deadByDependency": {
+				"via": "park_watch",
+				"chain": "park-watch.ts:183 runParkWatch() —— runParkWatch 永不被调用"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "600000"
+			}
+		},
+		{
+			"name": "park_watch_qa_n3_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_PARK_QA_N3_MS",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "7200000",
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/park-watch.ts"],
+			"registryDescription": "FLY-1279 D2: healthy QA/retest hold age before a Lead-only patrol notice",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"deadByDependency": {
+				"via": "park_watch",
+				"chain": "park-watch.ts runParkWatch() —— 同上"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "7200000"
+			}
+		},
+		{
+			"name": "park_watch_n2_ms",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_PARK_N2_MS",
+			"polarity": "opt_in",
+			"valueKind": "value",
+			"default": "600000",
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/park-watch.ts"],
+			"registryDescription": "FLY-1279 D2: grace after Lead park notification before confirmed founder issue-thread escalation",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"deadByDependency": {
+				"via": "park_watch",
+				"chain": "park-watch.ts runParkWatch() —— 同上"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": "600000"
+			}
+		},
+		{
+			"name": "zombie_reconcile",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_ZOMBIE_RECONCILE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/HeartbeatService.ts"],
+			"registryDescription": "FLY-1282: 僵尸会话探真机器(tri-state pane 探活 + 连续 2 个 server-up absent cycle 宣告 failed + Lead 告警带未推送工作清单)。=0 逐字节回退到旧 readopt 行为(M0 golden 哨兵)",
+			"registryNote": "与既有 FLYWHEEL_LIVENESS_PANE_DEAD / FLYWHEEL_HEARTBEAT_READOPT 合成 zombieMachineryEnabled() 单谓词。",
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "同 HeartbeatService,由 bridge/plugin.ts:6054 构造",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "delivery_unconsumed_v2",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DELIVERY_UNCONSUMED_V2",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "FLY-1282 Part B: delivery_unconsumed 误报修正——parked/awaiting_review/approved_to_ship 不触发 + 回报引用完整 [lead-instruction id] 即消费证明(不再只看 read_at)。=0 回 V1 判据",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"deadByDependency": {
+				"via": "legacy_delivery_watchdogs",
+				"chain": "plugin.ts:7213 —— 唯一生产读点在 gapScanTick(定义于 7205);plugin.ts:7993 onGapScanTick: legacyDeliveryWatchdogsOn ? gapScanTick : undefined —— 恒 undefined"
+			},
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "terminal_thread_archive",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_TERMINAL_THREAD_ARCHIVE",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "readonly",
+			"dormant": false,
+			"timings": ["bridge_boot"],
+			"readFiles": ["packages/teamlead/src/bridge/plugin.ts"],
+			"registryDescription": "FLY-1282 Part C(吸收 FLY-1289): issue 全段 {completed,terminated}+Linear Done+pane 死 → thread 分钟级自动归档(completion 事件入队,FLY-1165 scheduler 消费)。单次 boot 捕获;=0 双 sink 零入队,只剩 6h sweep 兜底",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		},
+		{
+			"name": "disposition_receipt",
+			"category": "feature",
+			"source": "env",
+			"scope": "bridge_global",
+			"envVar": "FLYWHEEL_DISPOSITION_RECEIPT",
+			"polarity": "default_on",
+			"valueKind": "bool",
+			"default": true,
+			"toggleable": "conversational",
+			"dormant": false,
+			"timings": ["call_time"],
+			"readFiles": ["packages/teamlead/src/bridge/disposition-receipt.ts"],
+			"registryDescription": "FLY-1282 Part D: Lead 处置回执投递(检测告警 Lead-only 路由后,Lead 处置 → issue thread 落一条可见回执)。只门投递——处置记账(outbox prepare)恒写;=0 零投递,重开补 7 天窗口",
+			"registryNote": null,
+			"activation": {
+				"bridge": "restart"
+			},
+			"activationSource": "derived_per_process",
+			"processOwners": ["Bridge"],
+			"processOwnerEvidence": "全部读点在 packages/teamlead/src/bridge/ 下",
+			"bridgeOnlyConsumers": true,
+			"configured": {
+				"kind": "global_env",
+				"set": false,
+				"value": true
+			}
+		}
+	]
+}

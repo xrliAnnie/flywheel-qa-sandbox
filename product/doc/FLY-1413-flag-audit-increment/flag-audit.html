@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1413 · 62 个新开关，逐条说清在干嘛 + 你圈留/清/动态化</title>
+<style>
+/* Light-only, declared to the UA as well as in our own colours: without this a
+   dark-mode browser still paints the form controls (radios, textareas) with its
+   dark widget styling on top of a light page. Annie's pages are light-only. */
+html{color-scheme:light only}
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;line-height:1.55;-webkit-text-size-adjust:100%}
+.wrap{max-width:900px;margin:0 auto;padding:20px 16px 96px}
+h1{font-size:22px;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:13px;margin:0 0 10px}
+h2{font-size:16px;margin:28px 0 2px}
+.gc{color:var(--dim);font-size:13px;font-weight:600}
+.hint{color:#555;font-size:12.5px;margin:3px 0 10px}
+.pill{display:inline-block;font-size:12px;font-weight:700;padding:1px 8px;border-radius:6px}
+.b1{background:#fdeceb;color:#c0322b}.b3{background:#e3f9ea;color:#1a7a3c}.b4{background:#f3e8fd;color:#7b2ec8}.bu{background:#f0f0f4;color:#555}
+.hero{background:#fff;border:1px solid var(--line);border-left:4px solid #af52de;border-radius:12px;padding:13px 15px;margin:6px 0 8px;font-size:13.5px}
+.hero b{color:var(--navy)}
+.grow{background:#fff6e6;border:1px solid #ffe0a3;border-radius:10px;padding:9px 12px;margin:8px 0;font-size:13px;color:#8a5a00}
+.fr{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:8px 0;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.fh{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:4px}
+.fn{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:13.5px;color:var(--navy);font-weight:600;word-break:break-all}
+.sugpill{margin-left:auto}
+.cur{font-size:12.5px;color:#333;margin:2px 0}
+.plain{font-size:13.5px;color:#222;margin:6px 0;background:#fafafd;border-radius:8px;padding:8px 10px}
+.dim{color:var(--dim)}
+.dead{font-size:12.5px;color:#c0322b;background:#fdeceb;border:1px solid #f5b7b1;border-left:4px solid #ff3b30;border-radius:8px;padding:7px 10px;margin:5px 0}
+.dead b{color:#a02620}
+.owner{font-size:12.5px;color:#7b2ec8;background:#f7f0ff;border:1px solid #e3d0f7;border-radius:7px;padding:5px 9px;margin:5px 0}
+.caveat{background:#fff;border:1px solid var(--line);border-left:4px solid #ff9500;border-radius:10px;padding:9px 12px;margin:8px 0;font-size:12.5px;color:#7a4a00}
+.ev{color:#8a4a45;font-size:11.5px;font-family:"SF Mono",ui-monospace,Menlo,monospace;word-break:break-all}
+.lead{font-size:12.5px;color:#8a5a00;background:#fff6e6;border:1px solid #ffe0a3;border-radius:7px;padding:5px 9px;margin:5px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11.5px;background:#f0f0f4;border-radius:4px;padding:0 4px}
+.pick{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 2px}
+.pick label{display:flex;gap:4px;align-items:center;font-size:12.5px;background:#f6f6fa;border:1px solid var(--line);border-radius:8px;padding:5px 11px;cursor:pointer}
+.pick label.sug{outline:2px solid #34c759;outline-offset:-1px;font-weight:600}
+.pick input{accent-color:#007aff}
+.premise{font-size:11.5px;color:#8a5a00;background:#fff6e6;border-radius:7px;padding:5px 8px;margin:5px 0 0}
+.cmt{margin:8px 0 0}
+.cmt label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:3px}
+.cmt textarea{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;padding:7px 9px;font:inherit;font-size:14px;background:#fff;color:var(--ink);resize:vertical}
+details{margin:6px 0}summary{cursor:pointer;font-size:13px;color:var(--navy);font-weight:600;padding:6px 0}
+.foot{font-size:11.5px;color:var(--dim);margin-top:18px;line-height:1.6}
+.bar{position:sticky;bottom:0;margin-top:20px;background:rgba(245,245,247,.92);backdrop-filter:saturate(180%) blur(8px);border-top:1px solid var(--line);padding:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:10px;padding:9px 16px;cursor:pointer}
+button.primary{background:#007aff;color:#fff}button.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}
+#saveHint{color:var(--dim);font-size:12.5px}#prog{font-size:12.5px;color:var(--navy);font-weight:600}
+dialog{border:none;border-radius:14px;padding:0;max-width:680px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+.dlg{padding:18px 20px}.dlg h3{margin-top:0}.dlgsub{font-size:12.5px;color:var(--dim)}
+.dlg textarea{width:100%;min-height:220px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;background:#fff;color:var(--ink)}
+.dlgbtns{margin-top:10px;display:flex;gap:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+<h1>62 个新开关，逐条说清在干嘛</h1>
+<p class="sub">FLY-1413 · 2026-07-23 · 上次 FLY-1136 审完之后新冒出来的这批 · 每条：人话在干嘛 + 现状 + 改了怎么才生效 + 我的建议 + 你圈</p>
+</header>
+
+<div class="hero">
+<b>先说一个数字更正。</b>单子上写「~55 个」，实际数出来是 <b>62 个</b>。算法：上次 FLY-1136 审到最后是 103 个，之后清掉了 17 个（就是 FLY-1240 到 1243 那几单干的），现在注册表里是 148 个 —— <code>103 − 17 + 62 = 148</code>。对得上。<br>
+<b>怎么用这张：</b>我已经按建议 <b>预选</b> 了每一条，并<b>按处理方式分了组</b>（不完全等于建议 —— 有 2 条我建议「不确定」，但按它们的工程处理方式排在下面的组里，卡片右上角会写「建议 不确定」）。你只要从上往下过，<b>改掉不同意的</b>，有疑问就在那条下面写。底部「复制我的逐条决定」一次带走。没点过的会在导出里标「未过目」。
+</div>
+
+<div class="grow">📌 <b>三个桶什么意思</b><br>
+<b>清</b>＝这开关已经不起作用了（代码里硬关死），或者它自己写明的退役条件已经到了 → 固化成默认 + 退休开关，逻辑保留。<br>
+<b>动态化</b>＝该继续当开关，但现在改了要重启才算数 → 把读取时机改掉 / 接进控制台，归 FLY-1405 那条线。<br>
+<b>留</b>＝现在就已经是想要的样子：要么已经能秒切，要么是治理门（本来就不该随手切），要么是路径配置（不该热改）。</div>
+
+<div class="caveat">⚠️ <b>两条口径，先说清楚免得误读</b><br>
+① 每条写的「配置里写的值」是<b>磁盘上配置文件的值</b>，不是跑着的进程里的活值。如果某个值改过、但相关进程还没重启过，进程里可能还是旧的 —— 这张表看不出来，要看活值得查控制台。<br>
+② 除了标 💀 的 13 条（那些我逐个追到调用点取了证），其余的<b>运行时行为我没有独立验证</b>，写的是代码和注册表说的。工程事实以 Tadashi 为准。</div>
+
+<div style="margin:8px 0 2px"><span id="prog">已过 0 / 66</span></div>
+
+<h2><span class="pill b1">清</span> <span class="gc">14</span></h2><p class="hint">这组有实打实的证据：<b>13 条是死壳</b> —— 环境变量还在，但它的消费者接在一条已经退役的巷道后面（判断函数写死了「关」），你怎么设都没用。分两批：一批是停车扫描（park_watch + 它的 4 个旋钮 + checkpoint 巡检），另一批是投递签收（delivery_ack + 4 个旋钮 + 空档扫描判据），根都是同一次退役。剩下 1 条 <code>quota_daemon_cutover</code> 不是死壳 —— 它<b>自己写明</b>了退役条件、但<b>条件我没验</b>，所以它排在这组里但<b>预选的是「不确定」</b>。</p>
+<div class="fr">
+  <div class="fh"><span class="fn">checkpoint_watchdog</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在关着（.env 显式 =0） · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_CHECKPOINT_WATCHDOG</code></span></div>
+  <div class="dead">💀 <b>这个开关现在是死的</b>：FLY-1393 退役:环境变量设成什么都不会让这条巡检跑起来<br><span class="ev">取证：packages/teamlead/src/bridge/gate-poller.ts:2258 checkpointWatchdogEnabled() → watchdog-minimum-set.ts:41 retiredWatchdogLaneEnabled(): false;maybeEmitCheckpointParkAlert() 首行即 return</span></div>
+  <div class="plain"><b>开着＝</b>（设了也没用）本来是：会话卡在等你拍板的检查点超过一小时，先推 runner 自己重试通知你；再一个整窗口还没动静，就在那条 issue 自己的 thread 里叫你。<br><b>关了＝</b>现在的实际情况：这条巡检整条不跑，一次都不会触发。<br><b>为啥现在是这状态＝</b>FLY-1393 已经把这条巷道正式退役 —— 代码里的判断函数写死返回「关」，环境变量设成什么都复活不了。生产 .env 里还留着一行 =0，是历史残留。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_checkpoint_watchdog" data-q="flag:checkpoint_watchdog" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_checkpoint_watchdog" data-q="flag:checkpoint_watchdog" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_checkpoint_watchdog" data-q="flag:checkpoint_watchdog" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_checkpoint_watchdog" data-q="flag:checkpoint_watchdog" value="unknown">不确定</label></div>
+  <div class="premise">前提：清 = 删这个环境变量 + 删已经不可达的巡检代码。删之前确认没有别的东西还在读它。</div>
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="checkpoint_watchdog"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">quota_daemon_cutover</span><span class="pill bu sugpill">建议 不确定</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（.env 显式 =1） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_QUOTA_DAEMON_CUTOVER</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>现在开着：账号配额守护进程健康之后，Bridge 里那套旧的换号执行面就退场，换号统一走守护进程一条路。<br><b>关了＝</b>回到「Bridge 内旧执行面 + 守护进程」两套并存的迁移中间态。<br><b>为啥现在是这状态＝</b>它是<b>它自己写明的临时开关</b>。注册表原话：「临时两阶段迁移 flag；FLY-1284 在 enable 稳定 &gt;=1 周后删除，并同步迁移 KIND_CONTRACTS.usage_limit」。生产已经显式打开了。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：我本来想直接建议「清」，但<b>它自己定的退役条件我没取证</b>（要「稳定运行 ≥1 周」，而 .env 那行没有日期注释）。给你一个前提没验过的预选结论不合适，所以预选「不确定」。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_quota_daemon_cutover" data-q="flag:quota_daemon_cutover" value="keep">留</label><label class="b1"><input type="radio" name="f_quota_daemon_cutover" data-q="flag:quota_daemon_cutover" value="clear">清</label><label class="b4"><input type="radio" name="f_quota_daemon_cutover" data-q="flag:quota_daemon_cutover" value="dynamize">动态化</label><label class="bu sug"><input type="radio" name="f_quota_daemon_cutover" data-q="flag:quota_daemon_cutover" value="unknown" data-default="1">不确定</label></div>
+  <div class="premise">前提：要转「清」需要三样证据：① 这个开关是哪天打开的 ② 守护进程这一周是健康的 ③ KIND_CONTRACTS.usage_limit 的同步迁移做了没。这三样齐了它就是明确的「清」。</div>
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="quota_daemon_cutover"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">legacy_delivery_watchdogs</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在关着（默认 / 没设） · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS</code></span></div>
+  <div class="dead">💀 <b>这个开关现在是死的</b>：FLY-1393 退役:判断函数的返回类型就写死成 false<br><span class="ev">取证：packages/teamlead/src/bridge/legacy-delivery-watchdog-policy.ts legacyDeliveryWatchdogsEnabled(env): false</span></div>
+  <div class="plain"><b>开着＝</b>（设了也没用）本来是：回开旧的 Lead 投递告警巷道，给还没迁完的老会话兜底。<br><b>关了＝</b>现在的实际情况：旧告警巷道整条不跑。新的 comm.db 消费循环和它自己的心跳照常工作，不受影响。<br><b>为啥现在是这状态＝</b>同一次退役（FLY-1393）。它的判断函数返回类型直接被写死成「假」，留着变量只是为了让真值检查还能认出「运维那边配置过期了」。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_legacy_delivery_watchdogs" data-q="flag:legacy_delivery_watchdogs" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_legacy_delivery_watchdogs" data-q="flag:legacy_delivery_watchdogs" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_legacy_delivery_watchdogs" data-q="flag:legacy_delivery_watchdogs" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_legacy_delivery_watchdogs" data-q="flag:legacy_delivery_watchdogs" value="unknown">不确定</label></div>
+  <div class="premise">前提：它是下面 park_watch 那一串的总闸，一起清。</div>
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="legacy_delivery_watchdogs"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">park_watch</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_PARK_WATCH</code></span></div>
+  <div class="dead">💀 <b>这个开关现在是死的</b>：FLY-1393 退役:启动接的是 legacy_delivery_watchdogs 总闸,恒关<br><span class="ev">取证：packages/teamlead/src/bridge/plugin.ts:7973 onParkWatchTick: legacyDeliveryWatchdogsOn ? parkWatchTick : undefined —— 恒 undefined;runParkWatch 全仓无其他生产调用点</span></div>
+  <div class="plain"><b>开着＝</b>（设了也没用）本来是：定期扫一遍有没有会话卡在阻塞、缺门、自己声明停车、QA 挂起这几种情况，该通知 Lead 的通知、该升级给你的升级。<br><b>关了＝</b>现在的实际情况：这条扫描永不启动。<br><b>为啥现在是这状态＝</b>它的启动接的就是上面那个总闸，恒关。活着的 Bridge 自己也这么报（/health 里它是 effective_enabled:false）。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_park_watch" data-q="flag:park_watch" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_park_watch" data-q="flag:park_watch" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_park_watch" data-q="flag:park_watch" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_park_watch" data-q="flag:park_watch" value="unknown">不确定</label></div>
+  <div class="premise">前提：注意：它同时也在「读点已经是随用随读、只差分类」那一组里 —— 但既然巷道已死，应该走清，不是动态化。</div>
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="park_watch"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">park_watch_cadence</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = 20 · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_PARK_WATCH_EVERY_N_TICKS</code></span></div>
+  <div class="dead">💀 <b>死旋钮</b>：它唯一的生产消费者接在已退役的 <code>park_watch</code> 后面，永不运行 —— 设成什么都不改变行为。<br><span class="ev">取证：plugin.ts:7974 parkWatchEveryNTicks → gate-poller onParkWatchTick(恒 undefined)</span></div>
+  <div class="plain"><b>开着＝</b>这是「停车扫描多久跑一次」（默认每 20 个轮询周期一次）。<br><b>关了＝</b>不适用 —— 它是个数字，不是开关。<br><b>为啥现在是这状态＝</b>唯一读它的就是上面那条已经不跑的扫描。改这个数字不改变任何行为，是个死旋钮。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_park_watch_cadence" data-q="flag:park_watch_cadence" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_park_watch_cadence" data-q="flag:park_watch_cadence" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_park_watch_cadence" data-q="flag:park_watch_cadence" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_park_watch_cadence" data-q="flag:park_watch_cadence" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="park_watch_cadence"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">park_watch_n1_ms</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = 600000 · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_PARK_N1_MS</code></span></div>
+  <div class="dead">💀 <b>死旋钮</b>：它唯一的生产消费者接在已退役的 <code>park_watch</code> 后面，永不运行 —— 设成什么都不改变行为。<br><span class="ev">取证：park-watch.ts:183 runParkWatch() —— runParkWatch 永不被调用</span></div>
+  <div class="plain"><b>开着＝</b>这是「一般的停车放多久之后通知 Lead」（默认 10 分钟）。<br><b>关了＝</b>不适用 —— 数字，不是开关。<br><b>为啥现在是这状态＝</b>同上：喂的是已退役的扫描，永远读不到。死旋钮。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_park_watch_n1_ms" data-q="flag:park_watch_n1_ms" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_park_watch_n1_ms" data-q="flag:park_watch_n1_ms" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_park_watch_n1_ms" data-q="flag:park_watch_n1_ms" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_park_watch_n1_ms" data-q="flag:park_watch_n1_ms" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="park_watch_n1_ms"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">park_watch_n2_ms</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = 600000 · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_PARK_N2_MS</code></span></div>
+  <div class="dead">💀 <b>死旋钮</b>：它唯一的生产消费者接在已退役的 <code>park_watch</code> 后面，永不运行 —— 设成什么都不改变行为。<br><span class="ev">取证：park-watch.ts runParkWatch() —— 同上</span></div>
+  <div class="plain"><b>开着＝</b>这是「通知过 Lead 之后再宽限多久，就升级到你的 issue thread」（默认 10 分钟）。<br><b>关了＝</b>不适用 —— 数字，不是开关。<br><b>为啥现在是这状态＝</b>同上，死旋钮。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_park_watch_n2_ms" data-q="flag:park_watch_n2_ms" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_park_watch_n2_ms" data-q="flag:park_watch_n2_ms" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_park_watch_n2_ms" data-q="flag:park_watch_n2_ms" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_park_watch_n2_ms" data-q="flag:park_watch_n2_ms" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="park_watch_n2_ms"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">park_watch_qa_n3_ms</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = 7200000 · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_PARK_QA_N3_MS</code></span></div>
+  <div class="dead">💀 <b>死旋钮</b>：它唯一的生产消费者接在已退役的 <code>park_watch</code> 后面，永不运行 —— 设成什么都不改变行为。<br><span class="ev">取证：park-watch.ts runParkWatch() —— 同上</span></div>
+  <div class="plain"><b>开着＝</b>这是「健康的 QA / 重测挂起放多久之后，只给 Lead 发一条巡查提示（不惊动你）」（默认 2 小时）。<br><b>关了＝</b>不适用 —— 数字，不是开关。<br><b>为啥现在是这状态＝</b>同上，死旋钮。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_park_watch_qa_n3_ms" data-q="flag:park_watch_qa_n3_ms" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_park_watch_qa_n3_ms" data-q="flag:park_watch_qa_n3_ms" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_park_watch_qa_n3_ms" data-q="flag:park_watch_qa_n3_ms" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_park_watch_qa_n3_ms" data-q="flag:park_watch_qa_n3_ms" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="park_watch_qa_n3_ms"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">delivery_ack</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_DELIVERY_ACK</code></span></div>
+  <div class="dead">💀 <b>这个开关现在是死的</b>：它唯一的生产消费者接在已退役的 <code>legacy_delivery_watchdogs</code> 后面，永不运行 —— 设成什么都不改变行为。<br><span class="ev">取证：lead-event-ack-policy.ts:9 deliveryAckEnabled() = legacyDeliveryWatchdogsEnabled(env) &amp;&amp; FLYWHEEL_DELIVERY_ACK !== '0' —— 左边恒 false,整个与式恒 false;plugin.ts:4536 生产 wiring 同样是 legacyDeliveryWatchdogsOn &amp;&amp; …</span></div>
+  <div class="plain"><b>开着＝</b>（设了也没用）本来是：Lead 收到的事件要签收，没签收就限次提醒，提醒到头还没签就转死信并升级。<br><b>关了＝</b>现在的实际情况：整套签收不跑，投递直接旁路过去。<br><b>为啥现在是这状态＝</b>它的判断是「旧投递巷道开着 <b>并且</b> 本开关不等于 0」—— 而左边那半 FLY-1393 已经写死成假，所以整个与式恒为假。把本开关设成 1 也复活不了。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_delivery_ack" data-q="flag:delivery_ack" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_delivery_ack" data-q="flag:delivery_ack" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_delivery_ack" data-q="flag:delivery_ack" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_delivery_ack" data-q="flag:delivery_ack" value="unknown">不确定</label></div>
+  <div class="premise">前提：和 legacy_delivery_watchdogs 是同一批，一起清。</div>
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="delivery_ack"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">delivery_unconsumed_v2</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_DELIVERY_UNCONSUMED_V2</code></span></div>
+  <div class="dead">💀 <b>这个开关现在是死的</b>：它唯一的生产消费者接在已退役的 <code>legacy_delivery_watchdogs</code> 后面，永不运行 —— 设成什么都不改变行为。<br><span class="ev">取证：plugin.ts:7213 —— 唯一生产读点在 gapScanTick(定义于 7205);plugin.ts:7993 onGapScanTick: legacyDeliveryWatchdogsOn ? gapScanTick : undefined —— 恒 undefined</span></div>
+  <div class="plain"><b>开着＝</b>（设了也没用）本来是：「投递出去没被消费」的判据升级版 —— 停车 / 等审 / 待发布不再算漏，回报里引用了完整指令编号就算已消费。<br><b>关了＝</b>现在的实际情况：这条判据所在的扫描永不运行，新旧判据都不跑。<br><b>为啥现在是这状态＝</b>它唯一的生产读点在那条空档扫描里，而那条扫描的启动同样接在已退役的旧投递总闸上，恒关。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_delivery_unconsumed_v2" data-q="flag:delivery_unconsumed_v2" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_delivery_unconsumed_v2" data-q="flag:delivery_unconsumed_v2" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_delivery_unconsumed_v2" data-q="flag:delivery_unconsumed_v2" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_delivery_unconsumed_v2" data-q="flag:delivery_unconsumed_v2" value="unknown">不确定</label></div>
+  <div class="premise">前提：同上，一批清。</div>
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="delivery_unconsumed_v2"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">delivery_ack_timeout_ms</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = 300000 · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_DELIVERY_ACK_TIMEOUT_MS</code></span></div>
+  <div class="dead">💀 <b>死旋钮</b>：它唯一的生产消费者接在已退役的 <code>legacy_delivery_watchdogs</code> 后面，永不运行 —— 设成什么都不改变行为。<br><span class="ev">取证：lead-event-delivery.ts:86 —— 只被 LeadEventDeliveryCoordinator 构造函数读;该 coordinator 全仓唯一实例(plugin.ts:4528)的 enabled 恒 false,deliver() 直接旁路、reconcile() 直接返回</span></div>
+  <div class="plain"><b>开着＝</b>这是「Lead 事件多久没签收就发第一条提醒」（默认 5 分钟）。<br><b>关了＝</b>不适用 —— 数字，不是开关。<br><b>为啥现在是这状态＝</b>只被那个已经禁用的签收协调器在构造时读一次。协调器全仓只有一个实例、而且是关的 —— 死旋钮。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_delivery_ack_timeout_ms" data-q="flag:delivery_ack_timeout_ms" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_delivery_ack_timeout_ms" data-q="flag:delivery_ack_timeout_ms" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_delivery_ack_timeout_ms" data-q="flag:delivery_ack_timeout_ms" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_delivery_ack_timeout_ms" data-q="flag:delivery_ack_timeout_ms" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="delivery_ack_timeout_ms"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">delivery_max_redeliver</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = 5 · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_DELIVERY_MAX_REDELIVER</code></span></div>
+  <div class="dead">💀 <b>死旋钮</b>：它唯一的生产消费者接在已退役的 <code>legacy_delivery_watchdogs</code> 后面，永不运行 —— 设成什么都不改变行为。<br><span class="ev">取证：lead-event-delivery.ts:91 —— 同一个恒关 coordinator</span></div>
+  <div class="plain"><b>开着＝</b>这是「最多推几次签收提醒，就转死信并升级」（默认 5 次）。<br><b>关了＝</b>不适用 —— 数字，不是开关。<br><b>为啥现在是这状态＝</b>同上，喂的是同一个已禁用的协调器 —— 死旋钮。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_delivery_max_redeliver" data-q="flag:delivery_max_redeliver" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_delivery_max_redeliver" data-q="flag:delivery_max_redeliver" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_delivery_max_redeliver" data-q="flag:delivery_max_redeliver" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_delivery_max_redeliver" data-q="flag:delivery_max_redeliver" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="delivery_max_redeliver"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">delivery_max_transport_failures</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = 5 · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_DELIVERY_MAX_TRANSPORT_FAILURES</code></span></div>
+  <div class="dead">💀 <b>死旋钮</b>：它唯一的生产消费者接在已退役的 <code>legacy_delivery_watchdogs</code> 后面，永不运行 —— 设成什么都不改变行为。<br><span class="ev">取证：lead-event-delivery.ts:95 —— 同一个恒关 coordinator</span></div>
+  <div class="plain"><b>开着＝</b>这是「传输失败几次就转死信并升级」（默认 5 次）。<br><b>关了＝</b>不适用 —— 数字，不是开关。<br><b>为啥现在是这状态＝</b>同上，死旋钮。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_delivery_max_transport_failures" data-q="flag:delivery_max_transport_failures" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_delivery_max_transport_failures" data-q="flag:delivery_max_transport_failures" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_delivery_max_transport_failures" data-q="flag:delivery_max_transport_failures" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_delivery_max_transport_failures" data-q="flag:delivery_max_transport_failures" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="delivery_max_transport_failures"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">ack_late_window_ms</span><span class="pill b1 sugpill">建议 清</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = 86400000 · <b>改了怎么才生效：</b>重启 Bridge<br><span class="dim">开关名 <code>FLYWHEEL_ACK_LATE_WINDOW_MS</code></span></div>
+  <div class="dead">💀 <b>死旋钮</b>：它唯一的生产消费者接在已退役的 <code>legacy_delivery_watchdogs</code> 后面，永不运行 —— 设成什么都不改变行为。<br><span class="ev">取证：lead-event-delivery.ts:99 —— 同一个恒关 coordinator</span></div>
+  <div class="plain"><b>开着＝</b>这是「已经确认叫过你之后，多久之内的迟到签收还认」（默认 24 小时）。<br><b>关了＝</b>不适用 —— 数字，不是开关。<br><b>为啥现在是这状态＝</b>同上，死旋钮。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_ack_late_window_ms" data-q="flag:ack_late_window_ms" value="keep">留</label><label class="b1 sug"><input type="radio" name="f_ack_late_window_ms" data-q="flag:ack_late_window_ms" value="clear" data-default="1">清</label><label class="b4"><input type="radio" name="f_ack_late_window_ms" data-q="flag:ack_late_window_ms" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_ack_late_window_ms" data-q="flag:ack_late_window_ms" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="ack_late_window_ms"></textarea></div>
+</div>
+
+<h2><span class="pill b4">动态化 · 一改就能秒切的</span> <span class="gc">14</span></h2><p class="hint">这 14 条<b>在代码里已经是随用随读</b>了，只是注册表把它们标成「只读」—— 离「能秒切」差一层分类 + 一条证明测试，是 FLY-1405 性价比最高的一段。<br>两条标了 ⚠️：注册表写着「立即生效」「应急停用」，实际改完并不会立刻生效 —— <b>说的和做的对不上</b>，事故当下最容易踩。<br>另外带 🔌 的那几条要注意：它们不止 Bridge 一个读者（有的是独立守护进程，有的还有命令行），而控制台的秒切只改 Bridge 自己的环境 —— 这几条不是「改个分类」就完事的。</p>
+<div class="fr">
+  <div class="fh"><span class="fn">three_stage_codex_design_toggle</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在关着（.env 显式 =0） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_THREE_STAGE_CODEX_DESIGN</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>新开的三段式任务，设计那一段默认交给 Codex（gpt-5.6-sol，xhigh）。<br><b>关了＝</b>设计那一段默认交给 Claude / Fable。<br><b>为啥现在是这状态＝</b>生产显式关着。注意它只在「新任务开始、且这次没单独指定设计用谁」时起作用；已经锁进某个任务的不受影响，单次派发指定的优先级更高。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：你换设计模型的频率不低，而现在改完要跑 restart-services.sh --bridge-only 才算数。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_three_stage_codex_design_toggle" data-q="flag:three_stage_codex_design_toggle" value="keep">留</label><label class="b1"><input type="radio" name="f_three_stage_codex_design_toggle" data-q="flag:three_stage_codex_design_toggle" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_three_stage_codex_design_toggle" data-q="flag:three_stage_codex_design_toggle" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_three_stage_codex_design_toggle" data-q="flag:three_stage_codex_design_toggle" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="three_stage_codex_design_toggle"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">receipt_foundation</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_RECEIPT_FOUNDATION</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>Lead 的防漏收据闭环全跑：入账、投递、到期提醒、重发、升级。<br><b>关了＝</b>只暂停「到期提醒 / 重发 / 升级」三样；入账和投递照常，Bridge 也不会替 Lead 代答。而且一开机就告警、之后每小时刷一次，提醒你现在是事故态。<br><b>为啥现在是这状态＝</b>默认开。这是事故时的紧急回退阀，注册表明说「不得作为常态运行方式」。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：紧急阀却要重启 Bridge 才生效 —— 事故当下最不想做的事就是重启。代码里它已经是随用随读，差的只是注册表把它标成只读，而那是<b>故意</b>的（不想让人随手切）。所以这条要你拍的是政策不是技术：保持「必须慎重」，还是改成「能秒切、但切了就大声告警」。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_receipt_foundation" data-q="flag:receipt_foundation" value="keep">留</label><label class="b1"><input type="radio" name="f_receipt_foundation" data-q="flag:receipt_foundation" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_receipt_foundation" data-q="flag:receipt_foundation" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_receipt_foundation" data-q="flag:receipt_foundation" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="receipt_foundation"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">receipt_activation_dry_run</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在关着（默认 / 没设） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>收据启用的演练模式：只算不提交 —— 算出哪些该追、容量多大，但不真的下发期限和催办。<br><b>关了＝</b>正式模式，该下发就下发。<br><b>为啥现在是这状态＝</b>默认关。它是给容量验收和回滚演练用的，注册表明说正式启用时必须保持关闭。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：演练本来就该随开随关，现在开一次演练要重启一次 Bridge。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_receipt_activation_dry_run" data-q="flag:receipt_activation_dry_run" value="keep">留</label><label class="b1"><input type="radio" name="f_receipt_activation_dry_run" data-q="flag:receipt_activation_dry_run" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_receipt_activation_dry_run" data-q="flag:receipt_activation_dry_run" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_receipt_activation_dry_run" data-q="flag:receipt_activation_dry_run" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="receipt_activation_dry_run"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">park_biased_handoff</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_PARK_BIASED_HANDOFF</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>交接的时候，如果按名字找不到那个窗口，判「停车」而不是「关掉」。因为找不到窗口不等于人死了 —— 窗口名过时的健康 runner 也会这样。<br><b>关了＝</b>回到 FLY-1319 事故之前的行为：找不到就直接关掉。<br><b>为啥现在是这状态＝</b>默认开，是那次事故的修复。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：事故回退阀，现在要重启才生效。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_park_biased_handoff" data-q="flag:park_biased_handoff" value="keep">留</label><label class="b1"><input type="radio" name="f_park_biased_handoff" data-q="flag:park_biased_handoff" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_park_biased_handoff" data-q="flag:park_biased_handoff" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_park_biased_handoff" data-q="flag:park_biased_handoff" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="park_biased_handoff"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">prune_park_guard</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_PRUNE_PARK_GUARD</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>声明了停车的会话，可以否决两种破坏性清扫：把「标记完成但还在跑」的强转成完成、以及删 CommDB 里的记录行。<br><b>关了＝</b>回到没有否决的老清扫，只剩人手维护的排除名单挡着。<br><b>为啥现在是这状态＝</b>默认开。它取代的就是「靠人记得往名单里加名字」那种保护。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：回退阀，要重启。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_prune_park_guard" data-q="flag:prune_park_guard" value="keep">留</label><label class="b1"><input type="radio" name="f_prune_park_guard" data-q="flag:prune_park_guard" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_prune_park_guard" data-q="flag:prune_park_guard" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_prune_park_guard" data-q="flag:prune_park_guard" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="prune_park_guard"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">readopt_parked_roles</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_READOPT_PARKED</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>Bridge 重启后重新接管会话时，四种停车状态全认（在跑 / 等审 / 设计完成 / 待发布）。<br><b>关了＝</b>只认「在跑」—— 而保活模式下每个角色停在不同状态，只认「在跑」恰好把所有会停车的角色全漏掉。<br><b>为啥现在是这状态＝</b>默认开，就是补那个漏洞的。（已经结束的会话永远不进候选 —— 重新接管一个终态等于复活死人。）</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：回退阀，要重启。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_readopt_parked_roles" data-q="flag:readopt_parked_roles" value="keep">留</label><label class="b1"><input type="radio" name="f_readopt_parked_roles" data-q="flag:readopt_parked_roles" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_readopt_parked_roles" data-q="flag:readopt_parked_roles" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_readopt_parked_roles" data-q="flag:readopt_parked_roles" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="readopt_parked_roles"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">codex_gate_wait</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_CODEX_GATE_WAIT</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>Codex 常驻目标遇到「必须有人答」的门时保活等着，门答完接着往下走。<br><b>关了＝</b>回到遇到门就判定为阻塞终态（这一轮就废了）。<br><b>为啥现在是这状态＝</b>默认开。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：回退阀，要重启 Bridge 才生效。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_codex_gate_wait" data-q="flag:codex_gate_wait" value="keep">留</label><label class="b1"><input type="radio" name="f_codex_gate_wait" data-q="flag:codex_gate_wait" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_codex_gate_wait" data-q="flag:codex_gate_wait" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_codex_gate_wait" data-q="flag:codex_gate_wait" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="codex_gate_wait"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">quota_degraded_switch</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启配额守护进程 · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_QUOTA_DEGRADED_SWITCH</code></span></div>
+  <div class="owner">🔌 <b>读它的进程</b>：quota daemon(独立进程) —— 控制台的秒切只改 Bridge 自己的环境，而读它的根本不是 Bridge —— 所以这条<b>不是</b>「改个分类就能热切」。<br><span class="ev">取证：packages/teamlead/src/account-heal/quota-monitor.ts —— 该模块不被 Bridge import,跑在独立的 flywheel-quota-monitor 守护进程里(其 wrapper 启动时 source 共享 .env)</span></div>
+  <div class="plain"><b>开着＝</b>允许配额守护进程执行「已经在它自己配置里开启的」受控降级换号。<br><b>关了＝</b>立刻压制，一次都不换。<br><b>为啥现在是这状态＝</b>默认开。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：⚠️ 这条我建议排最前面：注册表原话是「=0 <b>立即</b>压制」，但实际改完并不会立刻生效 —— <b>说的和做的对不上</b>。号出问题时你会以为改一行就压住了，其实没有。读它的是<b>独立的配额守护进程</b>（不是 Bridge），要那个进程重启才算数。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_quota_degraded_switch" data-q="flag:quota_degraded_switch" value="keep">留</label><label class="b1"><input type="radio" name="f_quota_degraded_switch" data-q="flag:quota_degraded_switch" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_quota_degraded_switch" data-q="flag:quota_degraded_switch" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_quota_degraded_switch" data-q="flag:quota_degraded_switch" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="quota_degraded_switch"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">issue_gate_supersede_mode</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = enforce · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_ISSUE_GATE_SUPERSEDE</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>三档：enforce = 真的去收敛重复的 issue 门；observe = 只记录不动手；0 = 停止新的改写。<br><b>关了＝</b>设成 0 只停「新的」改写 —— 已经写下的记录永久有效，不会回滚。<br><b>为啥现在是这状态＝</b>默认 enforce。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：三档之间切换现在要重启。它是有明确取值集合的多选一，技术上完全可以进控制台秒切（控制台已经支持枚举型）。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_issue_gate_supersede_mode" data-q="flag:issue_gate_supersede_mode" value="keep">留</label><label class="b1"><input type="radio" name="f_issue_gate_supersede_mode" data-q="flag:issue_gate_supersede_mode" value="clear">定一个赢家、其余删</label><label class="b4 sug"><input type="radio" name="f_issue_gate_supersede_mode" data-q="flag:issue_gate_supersede_mode" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_issue_gate_supersede_mode" data-q="flag:issue_gate_supersede_mode" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="issue_gate_supersede_mode"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">ask_hygiene</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>分别是：重启 Bridge / 下次命令行调用就生效 · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_ASK_HYGIENE</code></span></div>
+  <div class="owner">🔌 <b>读它的进程</b>：Bridge + 命令行(每次调用) —— 控制台的秒切只改 Bridge 自己的环境，所以 <b>Bridge 那半</b>可以，<b>其余那半不会</b>跟着变。<br><span class="ev">取证：读点跨 flywheel-comm/src/db.ts(Bridge 与 CLI 共用)与 bridge/zombie-gate-hygiene.ts、bridge/gate-poller.ts、StateStore.ts(Bridge)</span></div>
+  <div class="plain"><b>开着＝</b>runner 收尾的时候，把挂在它名下、没人回答的提问清掉（关闭时级联 + 巡检兜底扫一遍）。<br><b>关了＝</b>回到今天之前的老路径，门的记录里「最后是怎么解决的」那一栏留空。<br><b>为啥现在是这状态＝</b>默认开。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：回退阀，要重启。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_ask_hygiene" data-q="flag:ask_hygiene" value="keep">留</label><label class="b1"><input type="radio" name="f_ask_hygiene" data-q="flag:ask_hygiene" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_ask_hygiene" data-q="flag:ask_hygiene" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_ask_hygiene" data-q="flag:ask_hygiene" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="ask_hygiene"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">stuck_pane_confirm</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_STUCK_PANE_CONFIRM</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>判定「卡住」并发告警之前，先看窗口和进程的实际证据（探活 → 连拍两帧 → 让模型判），只有拿到明确「健康」的证据才压住不报。<br><b>关了＝</b>少这层确认，直接按心跳判 —— 误报会变多。<br><b>为啥现在是这状态＝</b>默认开，是专门压误报的。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：告警吵起来的时候你会想立刻调这个 —— 现在要重启。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_stuck_pane_confirm" data-q="flag:stuck_pane_confirm" value="keep">留</label><label class="b1"><input type="radio" name="f_stuck_pane_confirm" data-q="flag:stuck_pane_confirm" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_stuck_pane_confirm" data-q="flag:stuck_pane_confirm" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_stuck_pane_confirm" data-q="flag:stuck_pane_confirm" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="stuck_pane_confirm"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">commdb_protection</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>分别是：重启 Bridge / 下次命令行调用就生效 · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_COMMDB_PROTECTION</code></span></div>
+  <div class="owner">🔌 <b>读它的进程</b>：Bridge + 命令行(每次调用) —— 控制台的秒切只改 Bridge 自己的环境，所以 <b>Bridge 那半</b>可以，<b>其余那半不会</b>跟着变。<br><span class="ev">取证：读点在 packages/flywheel-comm/src/db.ts:259(共享 CommDB);Bridge 在 packages/teamlead/src/bridge/plugin.ts:23 import 同一个 CommDB,命令行也用它</span></div>
+  <div class="plain"><b>开着＝</b>「还没被回答、而且确实该有人管」的记录，在过期、收尾、清理这三条路上都保住不删。<br><b>关了＝</b>按老规矩该清就清（该有人管的事可能被顺手清掉）。<br><b>为啥现在是这状态＝</b>默认开。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：回退阀，要重启。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_commdb_protection" data-q="flag:commdb_protection" value="keep">留</label><label class="b1"><input type="radio" name="f_commdb_protection" data-q="flag:commdb_protection" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_commdb_protection" data-q="flag:commdb_protection" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_commdb_protection" data-q="flag:commdb_protection" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="commdb_protection"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">zombie_reconcile</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_ZOMBIE_RECONCILE</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>僵尸会话探真：窗口探活分三态，连续两轮都「服务在、但找不到这个窗口」才宣告失败，并给 Lead 一份「这些活没推出去」的清单。<br><b>关了＝</b>逐字节回到旧的重新接管行为。<br><b>为啥现在是这状态＝</b>默认开。它和另外两个开关合成一个判断，不是单独起效。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：回退阀，要重启。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_zombie_reconcile" data-q="flag:zombie_reconcile" value="keep">留</label><label class="b1"><input type="radio" name="f_zombie_reconcile" data-q="flag:zombie_reconcile" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_zombie_reconcile" data-q="flag:zombie_reconcile" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_zombie_reconcile" data-q="flag:zombie_reconcile" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="zombie_reconcile"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">disposition_receipt</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_DISPOSITION_RECEIPT</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>Lead 处置完一条检测告警之后，在那条 issue 的 thread 里落一条你看得见的回执。<br><b>关了＝</b>不投回执 —— 但处置本身照样记账，重新打开还能补最近 7 天的。<br><b>为啥现在是这状态＝</b>默认开。它只管「投不投」，不管「记不记」。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：回退阀，要重启。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_disposition_receipt" data-q="flag:disposition_receipt" value="keep">留</label><label class="b1"><input type="radio" name="f_disposition_receipt" data-q="flag:disposition_receipt" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_disposition_receipt" data-q="flag:disposition_receipt" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_disposition_receipt" data-q="flag:disposition_receipt" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="disposition_receipt"></textarea></div>
+</div>
+
+<h2><span class="pill b4">动态化 · 要改读取时机的</span> <span class="gc">9</span></h2><p class="hint">这 9 条是<b>真的</b>在启动那一刻读一次就焊死了，动态化要逐个改读点，工作量比上面那组大。里面 cmux_linked_view 那条我标了「不确定」—— 它默认是开的、生产却被显式关掉，而<b>没有任何地方记了为什么</b>，我没编理由。</p>
+<div class="fr">
+  <div class="fh"><span class="fn">cmux_linked_view</span><span class="pill bu sugpill">建议 不确定</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在关着（.env 显式 =0） · <b>改了怎么才生效：</b>分别是：重启 Bridge / cmux watcher 下次跑就生效 · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_CMUX_LINKED_VIEW</code></span></div>
+  <div class="owner">🔌 <b>读它的进程</b>：Bridge + cmux watcher 脚本 —— 控制台的秒切只改 Bridge 自己的环境，所以 <b>Bridge 那半</b>可以，<b>其余那半不会</b>跟着变。<br><span class="ev">取证：scripts/flywheel-cmux-sync.sh + flywheel-cmux-autostart.sh(watcher 每次调用现读 .env)+ bridge/tmux-lookup.ts(Bridge)</span></div>
+  <div class="plain"><b>开着＝</b>cmux 的受管标签页用「一个标签对一个窗口」的拓扑（FLY-1272 的修复）。<br><b>关了＝</b>回到修复之前的「分组」老拓扑。<br><b>为啥现在是这状态＝</b><b>UNKNOWN —— 我读不出来。</b> 注册表默认是开，但生产 .env 里被显式设成了关；那一行没有注释，整个仓库里也搜不到任何地方记录为什么要关它。要问 Tadashi。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：我把它标成「不确定」而不是替它编一个理由。同一批里 cmux_view_invariant 反而是开着的（和默认一致），两条放一起更像是有意为之的中间态 —— 但没有证据，所以不写成结论。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_cmux_linked_view" data-q="flag:cmux_linked_view" value="keep">留</label><label class="b1"><input type="radio" name="f_cmux_linked_view" data-q="flag:cmux_linked_view" value="clear">清</label><label class="b4"><input type="radio" name="f_cmux_linked_view" data-q="flag:cmux_linked_view" value="dynamize">动态化</label><label class="bu sug"><input type="radio" name="f_cmux_linked_view" data-q="flag:cmux_linked_view" value="unknown" data-default="1">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="cmux_linked_view"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">watchdog_liveness</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_WATCHDOG_LIVENESS</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>W-1 进程存活探测：进程没了会叫人。<br><b>关了＝</b>这类不叫。<br><b>为啥现在是这状态＝</b>默认开，是看门狗最小集的第一根。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：这一组和上面 F 组不同：它是真的在 Bridge 启动那一刻读一次就焊死了，要动态化得改读点，工作量比 F 组大。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_watchdog_liveness" data-q="flag:watchdog_liveness" value="keep">留</label><label class="b1"><input type="radio" name="f_watchdog_liveness" data-q="flag:watchdog_liveness" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_watchdog_liveness" data-q="flag:watchdog_liveness" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_watchdog_liveness" data-q="flag:watchdog_liveness" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="watchdog_liveness"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">watchdog_loop_heartbeat</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_WATCHDOG_LOOP_HEARTBEAT</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>W-2：Lead 收件箱的投递循环有一条独立心跳，循环本身卡住也能被发现（不靠别的信号）。<br><b>关了＝</b>少这条独立心跳。<br><b>为啥现在是这状态＝</b>默认开。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_watchdog_loop_heartbeat" data-q="flag:watchdog_loop_heartbeat" value="keep">留</label><label class="b1"><input type="radio" name="f_watchdog_loop_heartbeat" data-q="flag:watchdog_loop_heartbeat" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_watchdog_loop_heartbeat" data-q="flag:watchdog_loop_heartbeat" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_watchdog_loop_heartbeat" data-q="flag:watchdog_loop_heartbeat" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="watchdog_loop_heartbeat"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">watchdog_blocked</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_WATCHDOG_BLOCKED</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>W-4「活着但干不了活」：Lead 那半看阻塞关键字，Runner 那半看会话卡住信号。<br><b>关了＝</b>这类不报。<br><b>为啥现在是这状态＝</b>默认开 —— 这是你自己裁定的：宁愿误报，不希望不报。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：它现在是「半动态」：Runner 那半下一次检查就生效，Lead 那半要重启。同一个开关两种脾气，该拉齐。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_watchdog_blocked" data-q="flag:watchdog_blocked" value="keep">留</label><label class="b1"><input type="radio" name="f_watchdog_blocked" data-q="flag:watchdog_blocked" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_watchdog_blocked" data-q="flag:watchdog_blocked" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_watchdog_blocked" data-q="flag:watchdog_blocked" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="watchdog_blocked"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">commdb_residue_harvest</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_COMMDB_RESIDUE_HARVEST</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>Bridge 启动时清一遍残渣：只登记在一边的孤儿会话、状态库里的幽灵、没主的检测升级。<br><b>关了＝</b>不清 —— 残渣会一直堆着。<br><b>为啥现在是这状态＝</b>默认开。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_commdb_residue_harvest" data-q="flag:commdb_residue_harvest" value="keep">留</label><label class="b1"><input type="radio" name="f_commdb_residue_harvest" data-q="flag:commdb_residue_harvest" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_commdb_residue_harvest" data-q="flag:commdb_residue_harvest" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_commdb_residue_harvest" data-q="flag:commdb_residue_harvest" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="commdb_residue_harvest"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">terminal_commdb_sync</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_TERMINAL_COMMDB_SYNC</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>状态库里「失败 / 阻塞」这种终态，异步同步回 CommDB，两边不打架。<br><b>关了＝</b>不同步 —— 上面那种残渣会重新长出来（这条是根因层，上面那条是收拾层）。<br><b>为啥现在是这状态＝</b>默认开。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_terminal_commdb_sync" data-q="flag:terminal_commdb_sync" value="keep">留</label><label class="b1"><input type="radio" name="f_terminal_commdb_sync" data-q="flag:terminal_commdb_sync" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_terminal_commdb_sync" data-q="flag:terminal_commdb_sync" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_terminal_commdb_sync" data-q="flag:terminal_commdb_sync" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="terminal_commdb_sync"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">terminal_thread_archive</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_TERMINAL_THREAD_ARCHIVE</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>一条 issue 全部段落结束 + Linear 标了 Done + 窗口已关 → 它的 thread 分钟级自动归档。<br><b>关了＝</b>两条入队路都不入队，只剩 6 小时一次的兜底扫描 —— thread 会在频道里挂很久。<br><b>为啥现在是这状态＝</b>默认开。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_terminal_thread_archive" data-q="flag:terminal_thread_archive" value="keep">留</label><label class="b1"><input type="radio" name="f_terminal_thread_archive" data-q="flag:terminal_thread_archive" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_terminal_thread_archive" data-q="flag:terminal_thread_archive" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_terminal_thread_archive" data-q="flag:terminal_thread_archive" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="terminal_thread_archive"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">lead_dual_active_scan</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_DUAL_ACTIVE_SCAN</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>同一个 Lead 被起了两份的时候立刻告警，并标记后起的那个。<br><b>关了＝</b>应急停用这条检测。<br><b>为啥现在是这状态＝</b>默认开。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：⚠️ 又一处「说的是应急、做的要重启」：注册表写「=0 应急停用」，同一句里又注明「改后需重启 Bridge」。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_lead_dual_active_scan" data-q="flag:lead_dual_active_scan" value="keep">留</label><label class="b1"><input type="radio" name="f_lead_dual_active_scan" data-q="flag:lead_dual_active_scan" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_lead_dual_active_scan" data-q="flag:lead_dual_active_scan" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_lead_dual_active_scan" data-q="flag:lead_dual_active_scan" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="lead_dual_active_scan"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">claude_account_identity_check</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在关着（默认 / 没设） · <b>改了怎么才生效：</b>分别是：重启配额守护进程 / 下次命令行调用就生效 · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_ACCOUNT_IDENTITY_CHECK</code></span></div>
+  <div class="owner">🔌 <b>读它的进程</b>：quota daemon(独立进程) + 命令行(每次调用) —— 控制台的秒切只改 Bridge 自己的环境，而读它的根本不是 Bridge —— 所以这条<b>不是</b>「改个分类就能热切」。<br><span class="ev">取证：account-heal/quota-monitor.ts(quota 守护进程)+ packages/claude-runner/bin/flywheel-claude-profile(独立命令行 bin,不是 Runner 进程)</span></div>
+  <div class="plain"><b>开着＝</b>对 Claude 的当前号 / 候选号 / 切换动作 / 写进凭据池这四处，做一次「这个号真是它自称的那个号吗」的核验。<br><b>关了＝</b>不核验。<br><b>为啥现在是这状态＝</b>默认关，而且是有明确原因地关着：注册表写明启用前必须先灌可信的号-标签映射并跑一次审计，否则会把好号误标成不匹配。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：读它的是<b>配额守护进程 + 一个独立的命令行工具</b>，都不是 Bridge —— 所以要开它得重启守护进程（命令行那半下次调用就生效）。真要启用那天，你会希望是「灌完映射、审计过、然后一键开」而不是「还得挑个能重启的时间」。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_claude_account_identity_check" data-q="flag:claude_account_identity_check" value="keep">留</label><label class="b1"><input type="radio" name="f_claude_account_identity_check" data-q="flag:claude_account_identity_check" value="clear">清</label><label class="b4 sug"><input type="radio" name="f_claude_account_identity_check" data-q="flag:claude_account_identity_check" value="dynamize" data-default="1">动态化</label><label class="bu"><input type="radio" name="f_claude_account_identity_check" data-q="flag:claude_account_identity_check" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="claude_account_identity_check"></textarea></div>
+</div>
+
+<h2><span class="pill b4">动态化 · 数值旋钮</span> <span class="gc">3</span></h2><p class="hint">这 3 条不是开关是数字（几分钟、多久）。它们现在调不了热的，原因很具体：控制台的切换接口只认「布尔」和「有限取值」，自由数字被结构性拒绝 —— 要动态化就得给它加带边界的数值校验。<b>这组不给「清」选项</b>（旋钮很少是删掉，是调）。</p>
+<div class="fr">
+  <div class="fh"><span class="fn">liveness_activity_window_ms</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = 600000 · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>这是「停车告警的正文里，拿多久之内有没有活动来判断『大概还活着 / 大概已经死了』」的时间窗（默认 10 分钟）。<br><b>关了＝</b>不适用 —— 数字，不是开关。<br><b>为啥现在是这状态＝</b>默认值在跑。<b>它只影响那句话怎么写，绝不影响任何生死裁决</b> —— 活动证据是故意不作为裁决输入的。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：纯措辞旋钮，却要重启才能调。这类是动态化里风险最低的一批（调错了最多是话说得不准，不会误杀会话）。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_liveness_activity_window_ms" data-q="flag:liveness_activity_window_ms" value="keep">留（继续可调）</label><label class="b4 sug"><input type="radio" name="f_liveness_activity_window_ms" data-q="flag:liveness_activity_window_ms" value="dynamize" data-default="1">动态化（免重启可调）</label><label class="bu"><input type="radio" name="f_liveness_activity_window_ms" data-q="flag:liveness_activity_window_ms" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="liveness_activity_window_ms"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">ship_ready_remind_ms</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = 1800000 · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_SHIP_READY_REMIND_MS</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>这是「工作流停在等你拍板的门口多久之后，去提醒 Lead」（默认 30 分钟）。<br><b>关了＝</b>不适用 —— 数字，不是开关。<br><b>为啥现在是这状态＝</b>默认值在跑。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：你嫌吵或者嫌慢想调它的时候，现在得重启。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_ship_ready_remind_ms" data-q="flag:ship_ready_remind_ms" value="keep">留（继续可调）</label><label class="b4 sug"><input type="radio" name="f_ship_ready_remind_ms" data-q="flag:ship_ready_remind_ms" value="dynamize" data-default="1">动态化（免重启可调）</label><label class="bu"><input type="radio" name="f_ship_ready_remind_ms" data-q="flag:ship_ready_remind_ms" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="ship_ready_remind_ms"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">ghost_guard_wait_ms</span><span class="pill b4 sugpill">建议 动态化</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = 90000 · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_GHOST_GUARD_WAIT_MS</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>这是「起了一个 runner 之后，等多久来确认『投递 + 会话』真的建起来了」（默认 90 秒），超时就当幽灵处理。<br><b>关了＝</b>不适用 —— 数字，不是开关。<br><b>为啥现在是这状态＝</b>默认值在跑。</div>
+  
+  <div class="pick"><label class="b3"><input type="radio" name="f_ghost_guard_wait_ms" data-q="flag:ghost_guard_wait_ms" value="keep">留（继续可调）</label><label class="b4 sug"><input type="radio" name="f_ghost_guard_wait_ms" data-q="flag:ghost_guard_wait_ms" value="dynamize" data-default="1">动态化（免重启可调）</label><label class="bu"><input type="radio" name="f_ghost_guard_wait_ms" data-q="flag:ghost_guard_wait_ms" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="ghost_guard_wait_ms"></textarea></div>
+</div>
+
+<h2><span class="pill b3">留 · 已经能秒切的</span> <span class="gc">15</span></h2><p class="hint">这 15 条<b>已经是我们想要的样子了</b> —— 改了立刻生效，不用重启。不用动。<br>其中 3 条（workflow_template_dispatch / claims_write / claims_read）按「已经全量开着就该固化」的规矩像清理对象，但它们是明确交给你控制的 DAG 杆，而 v2 那半还关着＝<b>上线在半途</b>。现在退休它们等于上线中途拆方向盘 —— 我建议 DAG v2 收尾后一批三个一起转「清」。</p><details><summary>展开这 15 条（每条都有人话解释 + 留言位）</summary>
+<div class="fr">
+  <div class="fh"><span class="fn">skill_framework_mode</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在 = split（.env 显式设过） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_SKILL_FRAMEWORK_MODE</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>Runner 用哪套技能框架：superpowers（原来的默认）/ matt / bare / split（按 issue 稳定哈希分流，做 A-B 对比）。<br><b>关了＝</b>设回 superpowers 就是停实验。<br><b>为啥现在是这状态＝</b>生产现在是 split，在跑对比实验。<b>已经能秒切</b>，改了不用重启；已经在跑的会话不会被追改。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：实验杆，等对比出结论再定去留 —— 现在留。它是这 62 个里唯一一个「本来就设计成随时能停」的实验开关，可以当模板。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_skill_framework_mode" data-q="flag:skill_framework_mode" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_skill_framework_mode" data-q="flag:skill_framework_mode" value="clear">定一个赢家、其余删</label><label class="b4"><input type="radio" name="f_skill_framework_mode" data-q="flag:skill_framework_mode" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_skill_framework_mode" data-q="flag:skill_framework_mode" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="skill_framework_mode"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">workflow_template_dispatch</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（.env 显式 =1） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>工作流走「候选优先」的类型化快照引擎来派发任务。生产已经打开。<br><b>关了＝</b>逐字节回到老的派发方式。<br><b>为啥现在是这状态＝</b>默认是关的，生产显式打开了。要真跑起来还得配合下面 claims 的读写两个开关。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：按「已经全量开着就该固化」的规矩，它像清理对象。但它是 FLY-1344 明确交给你控制的 DAG 杆，而 v2 那半（下面的 generalized_templates）还关着 = <b>上线在半途</b>。现在退休它等于上线中途把方向盘拆了。建议：DAG v2 收尾之后再转「清」，一批三个一起。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_workflow_template_dispatch" data-q="flag:workflow_template_dispatch" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_workflow_template_dispatch" data-q="flag:workflow_template_dispatch" value="clear">清</label><label class="b4"><input type="radio" name="f_workflow_template_dispatch" data-q="flag:workflow_template_dispatch" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_workflow_template_dispatch" data-q="flag:workflow_template_dispatch" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="workflow_template_dispatch"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">workflow_claims_write</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（.env 显式 =1） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_WORKFLOW_CLAIMS_WRITE</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>工作流的 claims 影子写入 + 已登记任务的执行准入。生产已经打开。<br><b>关了＝</b>不写。<br><b>为啥现在是这状态＝</b>默认关，生产显式打开了。任务开始时会把开关状态锁住，非开始阶段的钩子和重测是随用随读。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：和 template_dispatch 同一批 —— DAG v2 收尾后一起转「清」。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_workflow_claims_write" data-q="flag:workflow_claims_write" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_workflow_claims_write" data-q="flag:workflow_claims_write" value="clear">清</label><label class="b4"><input type="radio" name="f_workflow_claims_write" data-q="flag:workflow_claims_write" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_workflow_claims_write" data-q="flag:workflow_claims_write" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="workflow_claims_write"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">workflow_claims_read</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（.env 显式 =1） · <b>改了怎么才生效：</b>分别是：Bridge 改了立刻生效（不用重启） / 下次命令行调用就生效 · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_WORKFLOW_CLAIMS_READ</code></span></div>
+  <div class="owner">🔌 <b>读它的进程</b>：Bridge + 命令行(每次调用) —— 控制台的秒切只改 Bridge 自己的环境，所以 <b>Bridge 那半</b>可以，<b>其余那半不会</b>跟着变。<br><span class="ev">取证：teamlead/src/workflow-claims.ts(Bridge)+ flywheel-comm 的 ship-eligibility.ts / verify-approval.ts(CLI)</span></div>
+  <div class="plain"><b>开着＝</b>已登记的持久三段式任务，改成用 claims 来判「能不能发布」和读权威的代码基准。生产已经打开。<br><b>关了＝</b>回到老的判定路径。<br><b>为啥现在是这状态＝</b>默认关，生产显式打开了。Bridge 和命令行两边都是权威消费者。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：和上面两根同一批 —— DAG v2 收尾后一起转「清」。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_workflow_claims_read" data-q="flag:workflow_claims_read" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_workflow_claims_read" data-q="flag:workflow_claims_read" value="clear">清</label><label class="b4"><input type="radio" name="f_workflow_claims_read" data-q="flag:workflow_claims_read" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_workflow_claims_read" data-q="flag:workflow_claims_read" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="workflow_claims_read"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">quota_daemon_wake</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_QUOTA_WAKE</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>Bridge 收到可信的「配额到顶」信号后，立刻把守护进程叫醒去处理，不用等它自己下一轮。<br><b>关了＝</b>不发这个唤醒信号，等守护进程自己轮到。<br><b>为啥现在是这状态＝</b>默认开，而且<b>已经能秒切</b> —— 改了立刻生效，不用重启。</div>
+  
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_quota_daemon_wake" data-q="flag:quota_daemon_wake" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_quota_daemon_wake" data-q="flag:quota_daemon_wake" value="clear">清</label><label class="b4"><input type="radio" name="f_quota_daemon_wake" data-q="flag:quota_daemon_wake" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_quota_daemon_wake" data-q="flag:quota_daemon_wake" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="quota_daemon_wake"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">review_severity_policy_killswitch</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_REVIEW_SEVERITY_POLICY</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>跨家族的审查收敛政策：中 / 低级别的意见不阻塞流程，并且尊重 Lead 已经裁决过的意见（不重复纠缠）。<br><b>关了＝</b>回到旧的判定方式。<br><b>为啥现在是这状态＝</b>默认开，已经能秒切。</div>
+  
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_review_severity_policy_killswitch" data-q="flag:review_severity_policy_killswitch" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_review_severity_policy_killswitch" data-q="flag:review_severity_policy_killswitch" value="clear">清</label><label class="b4"><input type="radio" name="f_review_severity_policy_killswitch" data-q="flag:review_severity_policy_killswitch" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_review_severity_policy_killswitch" data-q="flag:review_severity_policy_killswitch" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="review_severity_policy_killswitch"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">founder_review_gate_exclude</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>你回一个单字母的时候，不把「设计评审 / 代码评审」这两种门算进候选，免得一个字误答到评审门上。<br><b>关了＝</b>回到旧的候选集合（这两种门也会被单字母命中）。<br><b>为啥现在是这状态＝</b>默认开，已经能秒切。</div>
+  
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_founder_review_gate_exclude" data-q="flag:founder_review_gate_exclude" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_founder_review_gate_exclude" data-q="flag:founder_review_gate_exclude" value="clear">清</label><label class="b4"><input type="radio" name="f_founder_review_gate_exclude" data-q="flag:founder_review_gate_exclude" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_founder_review_gate_exclude" data-q="flag:founder_review_gate_exclude" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="founder_review_gate_exclude"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">retest_head_delta_guard</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_RETEST_HEAD_DELTA_GUARD</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>代码没变就不重复跑重测 —— 拿不可变的 QA 判定基准和精确的区间 diff 比。<br><b>关了＝</b>每次都重新跑一遍。<br><b>为啥现在是这状态＝</b>默认开，已经能秒切。</div>
+  
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_retest_head_delta_guard" data-q="flag:retest_head_delta_guard" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_retest_head_delta_guard" data-q="flag:retest_head_delta_guard" value="clear">清</label><label class="b4"><input type="radio" name="f_retest_head_delta_guard" data-q="flag:retest_head_delta_guard" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_retest_head_delta_guard" data-q="flag:retest_head_delta_guard" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="retest_head_delta_guard"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">ship_ready_notify</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_SHIP_READY_NOTIFY</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>非 land 类的工程工作流停在你的门口时，同时通知负责的 Lead 和你的 issue thread 两路。<br><b>关了＝</b>不做这个双路宣告。<br><b>为啥现在是这状态＝</b>默认开，已经能秒切。</div>
+  
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_ship_ready_notify" data-q="flag:ship_ready_notify" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_ship_ready_notify" data-q="flag:ship_ready_notify" value="clear">清</label><label class="b4"><input type="radio" name="f_ship_ready_notify" data-q="flag:ship_ready_notify" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_ship_ready_notify" data-q="flag:ship_ready_notify" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="ship_ready_notify"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">engine_dead_exec_sweep</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>DAG 里执行体死掉之后的恢复扫描 —— 发现死的，决定要不要换一个补上。<br><b>关了＝</b>暂停新的替补决定（已经在跑的照常收敛）。<br><b>为啥现在是这状态＝</b>默认开，已经能秒切。</div>
+  
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_engine_dead_exec_sweep" data-q="flag:engine_dead_exec_sweep" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_engine_dead_exec_sweep" data-q="flag:engine_dead_exec_sweep" value="clear">清</label><label class="b4"><input type="radio" name="f_engine_dead_exec_sweep" data-q="flag:engine_dead_exec_sweep" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_engine_dead_exec_sweep" data-q="flag:engine_dead_exec_sweep" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="engine_dead_exec_sweep"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">workflow_rework_reentry</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_WORKFLOW_REWORK_REENTRY</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>QA 或者你打回的时候，让原来那个执行体重新进场返工（它有上下文，比新起一个省）。<br><b>关了＝</b>挂起并告警，既不驱逐也不新起 —— 等人来处理。<br><b>为啥现在是这状态＝</b>默认开，已经能秒切。</div>
+  
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_workflow_rework_reentry" data-q="flag:workflow_rework_reentry" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_workflow_rework_reentry" data-q="flag:workflow_rework_reentry" value="clear">清</label><label class="b4"><input type="radio" name="f_workflow_rework_reentry" data-q="flag:workflow_rework_reentry" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_workflow_rework_reentry" data-q="flag:workflow_rework_reentry" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="workflow_rework_reentry"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">engine_unlaunched_tripwire</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>工作流重试被卡住、或者「准了却一直没起来」的时候，告警 + 围栏 + 恢复。<br><b>关了＝</b>不管这类。<br><b>为啥现在是这状态＝</b>默认开，已经能秒切。</div>
+  
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_engine_unlaunched_tripwire" data-q="flag:engine_unlaunched_tripwire" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_engine_unlaunched_tripwire" data-q="flag:engine_unlaunched_tripwire" value="clear">清</label><label class="b4"><input type="radio" name="f_engine_unlaunched_tripwire" data-q="flag:engine_unlaunched_tripwire" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_engine_unlaunched_tripwire" data-q="flag:engine_unlaunched_tripwire" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="engine_unlaunched_tripwire"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">land_node</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_LAND_NODE</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>引擎自己管 land 这一步：批准过的合并 → 关会话 → 清 worktree → 标 Done / 归档。<br><b>关了＝</b>停止新的 land 启动；已经认领的那些继续跑完。<br><b>为啥现在是这状态＝</b>默认开，已经能秒切。</div>
+  
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_land_node" data-q="flag:land_node" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_land_node" data-q="flag:land_node" value="clear">清</label><label class="b4"><input type="radio" name="f_land_node" data-q="flag:land_node" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_land_node" data-q="flag:land_node" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="land_node"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">workflow_generalized_templates</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在关着（默认 / 没设） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>打开 schema v2 的选型、准入、提交三处。<br><b>关了＝</b>默认关 —— 路由逐字节保持老样子。（v2 的模板其实一直在装、在发布，只是不绑就不用。）<br><b>为啥现在是这状态＝</b>默认关，生产也没开。这是 DAG v2 上线的下一步，前置条件（一个固定的、真实全新起号的端到端验证）没过之前不能开。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：这是三个 DAG 杆里唯一还没扳的那根。它关着 = 上线没走完 —— 也正是我建议另外两根先别退休的理由。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_workflow_generalized_templates" data-q="flag:workflow_generalized_templates" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_workflow_generalized_templates" data-q="flag:workflow_generalized_templates" value="clear">清</label><label class="b4"><input type="radio" name="f_workflow_generalized_templates" data-q="flag:workflow_generalized_templates" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_workflow_generalized_templates" data-q="flag:workflow_generalized_templates" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="workflow_generalized_templates"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">workflow_vendor_at_dispatch</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_VENDOR_AT_DISPATCH</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>每个工作流节点在真正启动的那一刻，按「当前批准的派发配置」解析用谁 —— 而不是按任务开始时钉死的那份快照。<br><b>关了＝</b>立刻回到钉死的快照。<br><b>为啥现在是这状态＝</b>默认开，已经能秒切。注册表明说它只作紧急逃生用。</div>
+  
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_workflow_vendor_at_dispatch" data-q="flag:workflow_vendor_at_dispatch" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_workflow_vendor_at_dispatch" data-q="flag:workflow_vendor_at_dispatch" value="clear">清</label><label class="b4"><input type="radio" name="f_workflow_vendor_at_dispatch" data-q="flag:workflow_vendor_at_dispatch" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_workflow_vendor_at_dispatch" data-q="flag:workflow_vendor_at_dispatch" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="workflow_vendor_at_dispatch"></textarea></div>
+</div>
+</details>
+
+<h2><span class="pill b3">留 · 其余</span> <span class="gc">7</span></h2><p class="hint">治理门 2 条（能随手关的门不叫门，按规矩永远不进批量切换）· 逐项目配置 1 条（改配置文件就生效，已经是好形态）· 按次调用生效 2 条（本来就不用重启，不属于动态化对象）· 测试专用接缝 1 条（做成能随手切反而会削弱它的硬保险）· 路径配置 1 条（跑着的时候改会让在途凭据失效）。</p><details><summary>展开这 7 条（每条都有人话解释 + 留言位）</summary>
+<div class="fr">
+  <div class="fh"><span class="fn">cmux_view_invariant</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（.env 显式 =1） · <b>改了怎么才生效：</b>cmux watcher 下次跑就生效 · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_CMUX_VIEW_INVARIANT</code></span></div>
+  <div class="owner">🔌 <b>读它的进程</b>：cmux watcher 脚本 —— 控制台的秒切只改 Bridge 自己的环境，而读它的根本不是 Bridge —— 所以这条<b>不是</b>「改个分类就能热切」。<br><span class="ev">取证：只被 scripts/flywheel-cmux-sync.sh 与 flywheel-cmux-autostart.sh 读,每次调用现读</span></div>
+  <div class="plain"><b>开着＝</b>校验受管视图当前激活的到底是哪个窗口，并用「不破坏账本」的方式修回去。<br><b>关了＝</b>不校验、不修。<br><b>为啥现在是这状态＝</b>默认开，生产也显式设成开（和默认一致）。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：它只被 cmux 那两个脚本读，每次调用现读 —— <b>已经是「下次调用就生效」，本来就不用重启</b>。所以它不属于要动态化的那批。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_cmux_view_invariant" data-q="flag:cmux_view_invariant" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_cmux_view_invariant" data-q="flag:cmux_view_invariant" value="clear">清</label><label class="b4"><input type="radio" name="f_cmux_view_invariant" data-q="flag:cmux_view_invariant" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_cmux_view_invariant" data-q="flag:cmux_view_invariant" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="cmux_view_invariant"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">design_html_gate</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>分别是：重启 Bridge / 下次命令行调用就生效 · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_DESIGN_HTML_GATE</code></span></div>
+  <div class="owner">🔌 <b>读它的进程</b>：Bridge + 命令行(每次调用) —— 控制台的秒切只改 Bridge 自己的环境，所以 <b>Bridge 那半</b>可以，<b>其余那半不会</b>跟着变。<br><span class="ev">取证：flywheel-comm/src/commands/complete.ts(CLI 每次调用)+ bridge/event-route.ts、DirectEventSink.ts、bridge/complete-marker-reconciler.ts(Bridge)</span></div>
+  <div class="plain"><b>开着＝</b>设计那一段完成之前，必须交一份这条 issue 自己的设计 HTML，而且要带上和当前代码绑定的可信证据。<br><b>关了＝</b>运维应急放行（跟这条任务走不走三段式无关）。<br><b>为啥现在是这状态＝</b>默认开。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：这是<b>治理门</b>：按规矩治理门永远不进批量切换、也永远不做成随手可切 —— 能随手关的门不叫门。留，且保持只读。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_design_html_gate" data-q="flag:design_html_gate" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_design_html_gate" data-q="flag:design_html_gate" value="clear">清</label><label class="b4"><input type="radio" name="f_design_html_gate" data-q="flag:design_html_gate" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_design_html_gate" data-q="flag:design_html_gate" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="design_html_gate"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">lead_lease_bypass</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在关着（默认 / 没设） · <b>改了怎么才生效：</b>下次命令行调用就生效 · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_LEAD_LEASE_BYPASS</code></span></div>
+  <div class="owner">🔌 <b>读它的进程</b>：命令行(每次调用) —— 控制台的秒切只改 Bridge 自己的环境，而读它的根本不是 Bridge —— 所以这条<b>不是</b>「改个分类就能热切」。<br><span class="ev">取证：packages/flywheel-comm/src/lead-lease.ts,注册表登记为 cli_invocation(治理门)</span></div>
+  <div class="plain"><b>开着＝</b>紧急绕过 Lead 身份租约的写授权 —— 会强告警 + 留审计痕迹。<br><b>关了＝</b>默认关，正常走租约。<br><b>为啥现在是这状态＝</b>默认关。它是「打开 = 放宽管控」型的例外，和大多数「打开 = 更安全」的开关方向相反。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：治理门，留，且保持只读。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_lead_lease_bypass" data-q="flag:lead_lease_bypass" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_lead_lease_bypass" data-q="flag:lead_lease_bypass" value="clear">清</label><label class="b4"><input type="radio" name="f_lead_lease_bypass" data-q="flag:lead_lease_bypass" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_lead_lease_bypass" data-q="flag:lead_lease_bypass" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="lead_lease_bypass"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">skill_framework_split_participation</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>全部 6 个项目都用默认（true） · <b>改了怎么才生效：</b>Bridge 改了立刻生效（不用重启） · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>skill_framework.split</code>（逐项目配置）</span></div>
+  
+  <div class="plain"><b>开着＝</b>在 split 分流实验下，这个项目参与实验组。<br><b>关了＝</b>这个项目钉回 superpowers，不参与实验。<br><b>为啥现在是这状态＝</b>6 个项目现在全是默认（参与）。<b>这是退出杠杆，不是启用开关</b> —— 改成 false 是把某个项目摘出来，不是把实验打开。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：它是逐项目配置，改配置文件就生效、不用重启 —— 已经是我们想要的形态，可以当扩大化的模板。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_skill_framework_split_participation" data-q="flag:skill_framework_split_participation" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_skill_framework_split_participation" data-q="flag:skill_framework_split_participation" value="clear">清</label><label class="b4"><input type="radio" name="f_skill_framework_split_participation" data-q="flag:skill_framework_split_participation" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_skill_framework_split_participation" data-q="flag:skill_framework_split_participation" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="skill_framework_split_participation"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">ship_ci_guard</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在开着（默认） · <b>改了怎么才生效：</b>下次命令行调用就生效 · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_SHIP_CI_GUARD</code></span></div>
+  <div class="owner">🔌 <b>读它的进程</b>：命令行(每次调用) —— 控制台的秒切只改 Bridge 自己的环境，而读它的根本不是 Bridge —— 所以这条<b>不是</b>「改个分类就能热切」。<br><span class="ev">取证：packages/flywheel-comm/src/ship-ci-guard.ts 只被 flywheel-comm 的 gate.ts / verify-approval.ts import;Bridge 不加载</span></div>
+  <div class="plain"><b>开着＝</b>在批准门和最终发布权限那两处，即时查一次 GitHub 的 CI 状态。<br><b>关了＝</b>紧急旁路掉 GitHub 这条证据线 —— 只在 GitHub / gh 本身挂了的时候用。<br><b>为啥现在是这状态＝</b>默认开。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：由每次命令行调用现读 —— 同样已经是「下次调用就生效」，不用重启。不属于动态化对象。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_ship_ci_guard" data-q="flag:ship_ci_guard" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_ship_ci_guard" data-q="flag:ship_ci_guard" value="clear">清</label><label class="b4"><input type="radio" name="f_ship_ci_guard" data-q="flag:ship_ci_guard" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_ship_ci_guard" data-q="flag:ship_ci_guard" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="ship_ci_guard"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">voice_qa_presence_override</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>现在关着（默认 / 没设） · <b>改了怎么才生效：</b>重启 voice-bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE</code></span></div>
+  <div class="owner">🔌 <b>读它的进程</b>：voice-bridge 进程 —— 控制台的秒切只改 Bridge 自己的环境，而读它的根本不是 Bridge —— 所以这条<b>不是</b>「改个分类就能热切」。<br><span class="ev">取证：packages/voice-bridge/src/assistant/wiring.ts,由 voice-bridge 自己的 cli.ts / index.ts 装配</span></div>
+  <div class="plain"><b>开着＝</b>语音端到端测试专用的接缝：打开时把「founder 在场」当成已满足，好让无人值守的声学测试跑得下去。<br><b>关了＝</b>正常判定在场与否。<br><b>为啥现在是这状态＝</b>默认关，生产永不置位。而且加了硬保险：一旦置位又指向生产 Bridge 地址，启动直接拒绝。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：测试专用接缝，留。<b>但不该把它做成能随手切</b> —— 那等于削弱那道硬保险。这条明确不进动态化。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_voice_qa_presence_override" data-q="flag:voice_qa_presence_override" value="keep" data-default="1">留</label><label class="b1"><input type="radio" name="f_voice_qa_presence_override" data-q="flag:voice_qa_presence_override" value="clear">清</label><label class="b4"><input type="radio" name="f_voice_qa_presence_override" data-q="flag:voice_qa_presence_override" value="dynamize">动态化</label><label class="bu"><input type="radio" name="f_voice_qa_presence_override" data-q="flag:voice_qa_presence_override" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="voice_qa_presence_override"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">delivery_secret_path</span><span class="pill b3 sugpill">建议 留</span></div>
+  <div class="cur"><b>配置里写的值：</b>用默认 = ~/.flywheel/delivery-secret · <b>改了怎么才生效：</b>重启 Bridge · <span class="dim">运行未独立验证</span><br><span class="dim">开关名 <code>FLYWHEEL_DELIVERY_SECRET_PATH</code></span></div>
+  
+  <div class="plain"><b>开着＝</b>这是「签收凭据用的那把 HMAC 密钥文件放在哪」（默认 ~/.flywheel/delivery-secret，权限 0600）。<br><b>关了＝</b>不适用 —— 路径，不是开关。<br><b>为啥现在是这状态＝</b>默认路径在跑。</div>
+  <div class="lead">🍋 我的看法（工程事实以 Tadashi 为准，最后你圈）：<b>这是路径配置，不是开关。</b> 而且跑着的时候改它会让在途的签收凭据全部失效 —— 所以它不该做成热改，留在只读是对的。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_delivery_secret_path" data-q="flag:delivery_secret_path" value="keep" data-default="1">留（继续可调）</label><label class="b4"><input type="radio" name="f_delivery_secret_path" data-q="flag:delivery_secret_path" value="dynamize">动态化（免重启可调）</label><label class="bu"><input type="radio" name="f_delivery_secret_path" data-q="flag:delivery_secret_path" value="unknown">不确定</label></div>
+  
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="delivery_secret_path"></textarea></div>
+</div>
+</details>
+
+<h2><span class="pill bu">额外一节：4 个没登记的开关</span> <span class="gc">4</span></h2>
+<p class="hint">这 4 个<b>不在上面 62 条里</b>，因为它们压根没登记过。代码里它们被当开关用（<code>=== "1"</code>），也进了真值白名单（所以漂移检查不报），<b>但没进注册表</b> —— 控制台看不见、逐条审计也会漏掉。这一节是拿 Tadashi 那份 env 侧清单（444 个变量）和注册表交叉核出来的。<br>
+<b>但它们不是一类东西，所以选项不一样</b>：前两个是<b>内部运维杆</b>（生产开着，问的是「转正吗」，不是「漏登记了」）；后两个是<b>刻意不登记的内部接缝</b>（一个是 QA 故障注入，一个会去回收「认不出归属」的 Chrome —— 那可能是你自己开的窗口）。后两个<b>不提供「补登记到控制台」</b>，因为那正是它们被设计成不该有的入口。</p>
+<div class="fr">
+  <div class="fh"><span class="fn">FLYWHEEL_ALERT_ROUTING</span><span class="pill b3 sugpill">建议 维持内部杆不转正</span></div>
+  <div class="cur"><b>配置里写的值：</b>生产 .env 里 =1(开着) · <span class="dim">没进注册表 → 控制台看不见</span><br><span class="dim">这一类：内部运维 rollout 杆 —— 不算漏登记，问的是「转正吗」</span><br><span class="ev">取证：packages/teamlead/src/bridge/infra-event-router.ts:162 —— process.env.FLYWHEEL_ALERT_ROUTING === &quot;1&quot;;真值白名单 truth.ts:282 写的是「internal ops lever … default-off (FLY-927)」</span></div>
+  <div class="plain"><b>开着＝</b>告警按「谁负责」来路由，并对 /send 做门控。<br><b>关了＝</b>不路由，走原来的直通。<br><b>为啥现在是这状态＝</b>生产开着（2026-07-09 那批 enable window 打开的）。白名单里它的定位是<b>内部运维 rollout 杆</b>，注释只说部署稳了之后「考虑」转正 —— 所以它不算漏登记，是还没转正。要问你的是：现在转正吗？</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_drift_0" data-q="drift:FLYWHEEL_ALERT_ROUTING" value="register">转正、登记进控制台</label><label class="b3 sug"><input type="radio" name="f_drift_0" data-q="drift:FLYWHEEL_ALERT_ROUTING" value="keep" data-default="1">维持内部杆不转正</label><label class="b1"><input type="radio" name="f_drift_0" data-q="drift:FLYWHEEL_ALERT_ROUTING" value="clear">就地清掉</label><label class="bu"><input type="radio" name="f_drift_0" data-q="drift:FLYWHEEL_ALERT_ROUTING" value="unknown">不确定</label></div>
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="FLYWHEEL_ALERT_ROUTING"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">FLYWHEEL_ALERT_TICKETS</span><span class="pill b3 sugpill">建议 维持内部杆不转正</span></div>
+  <div class="cur"><b>配置里写的值：</b>生产 .env 里 =1(开着) · <span class="dim">没进注册表 → 控制台看不见</span><br><span class="dim">这一类：内部运维 rollout 杆 —— 不算漏登记，问的是「转正吗」</span><br><span class="ev">取证：packages/teamlead/src/LeadAlertNotifier.ts:684 + packages/teamlead/src/bridge/stuck-escalation.ts:582;truth.ts:284 同样标为 internal ops lever</span></div>
+  <div class="plain"><b>开着＝</b>告警带 🎫 工单头、@ 上责任人、并带生命周期。<b>注意这不只是排版</b>：打开之后系统不再立刻叫你，改成先走工单生命周期，两轮自动恢复尝试都没救回来才由 T2 升级叫你。<br><b>关了＝</b>普通告警没有工单结构，但<b>卡住时是立刻叫你</b>。<br><b>为啥现在是这状态＝</b>生产开着，定位是内部运维杆而不是漏登记。要问的是「转正吗」—— 而且因为它改的是「多久叫你」，这条值得你单独看一眼。</div>
+  <div class="pick"><label class="b3"><input type="radio" name="f_drift_1" data-q="drift:FLYWHEEL_ALERT_TICKETS" value="register">转正、登记进控制台</label><label class="b3 sug"><input type="radio" name="f_drift_1" data-q="drift:FLYWHEEL_ALERT_TICKETS" value="keep" data-default="1">维持内部杆不转正</label><label class="b1"><input type="radio" name="f_drift_1" data-q="drift:FLYWHEEL_ALERT_TICKETS" value="clear">就地清掉</label><label class="bu"><input type="radio" name="f_drift_1" data-q="drift:FLYWHEEL_ALERT_TICKETS" value="unknown">不确定</label></div>
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="FLYWHEEL_ALERT_TICKETS"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">FLYWHEEL_QUOTA_QA_INJECTION</span><span class="pill b3 sugpill">建议 维持现状（留在代码里、不进控制台）</span></div>
+  <div class="cur"><b>配置里写的值：</b>生产没设(关) · <span class="dim">没进注册表 → 控制台看不见</span><br><span class="dim">这一类：刻意不登记的内部接缝 —— 不提供「补登记到控制台」</span><br><span class="ev">取证：packages/teamlead/src/account-heal/quota-monitor-runtime.ts:444 / :454;truth.ts:131 明写「internal QA-only safety lever」——要 env=1 <b>加上</b> 隔离窗口标记才生效</span></div>
+  <div class="plain"><b>开着＝</b>配额守护进程的 QA 故障注入接缝：显式 =1 <b>而且</b>窗口带隔离标记，两个条件都满足才真的注入故障。<br><b>关了＝</b>不注入。<br><b>为啥现在是这状态＝</b>它是<b>刻意不登记</b>的测试接缝，不是漏登记。把故障注入放进控制台等于给它一个不该有的入口 —— 所以这条不提供「补登记」。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_drift_2" data-q="drift:FLYWHEEL_QUOTA_QA_INJECTION" value="keep" data-default="1">维持现状（留在代码里、不进控制台）</label><label class="b1"><input type="radio" name="f_drift_2" data-q="drift:FLYWHEEL_QUOTA_QA_INJECTION" value="clear">就地清掉</label><label class="bu"><input type="radio" name="f_drift_2" data-q="drift:FLYWHEEL_QUOTA_QA_INJECTION" value="unknown">不确定</label></div>
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="FLYWHEEL_QUOTA_QA_INJECTION"></textarea></div>
+</div>
+<div class="fr">
+  <div class="fh"><span class="fn">FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED</span><span class="pill b3 sugpill">建议 维持现状（留在代码里、不进控制台）</span></div>
+  <div class="cur"><b>配置里写的值：</b>生产没设(关) · <span class="dim">没进注册表 → 控制台看不见</span><br><span class="dim">这一类：刻意不登记的内部接缝 —— 不提供「补登记到控制台」</span><br><span class="ev">取证：packages/teamlead/src/bridge/plugin.ts:6468;truth.ts:190 明写「internal ops lever: opt-in reap of unattributed Chrome, default off (FLY-766)」</span></div>
+  <div class="plain"><b>开着＝</b>允许回收那些「认不出是谁的」Chrome 进程。<br><b>关了＝</b>只回收认得出归属的，认不出的只打日志不动手。<br><b>为啥现在是这状态＝</b>认不出归属的 Chrome <b>有可能是你自己开的窗口</b>。这条刻意留在代码里当运维接缝、不进控制台，是对的 —— 所以同样不提供「补登记」。</div>
+  <div class="pick"><label class="b3 sug"><input type="radio" name="f_drift_3" data-q="drift:FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED" value="keep" data-default="1">维持现状（留在代码里、不进控制台）</label><label class="b1"><input type="radio" name="f_drift_3" data-q="drift:FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED" value="clear">就地清掉</label><label class="bu"><input type="radio" name="f_drift_3" data-q="drift:FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED" value="unknown">不确定</label></div>
+  <div class="cmt"><label>对这条有疑问 / 决定就写这（可空）</label><textarea data-c="FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED"></textarea></div>
+</div>
+
+<div class="grow" style="margin-top:20px">📏 <b>顺带一个规模数字（不用你圈，只是让你知道盘子多大）</b><br>
+Tadashi 机械扫了一遍所有 <code>FLYWHEEL_*</code> 环境变量，一共 <b>444 个</b>。其中真正的开关只有 <b>53 个</b>（13 个默认关 + 40 个默认开）—— 剩下 <b>391 个是「值配置」</b>：超时秒数、token、频道 id、目录路径这类。<br>
+<b>它们不是 on/off 开关，所以不进这张圈选页</b>。放这句是因为它本身就是 flag 债的规模证据：真正要你拍的开关是几十个量级，而挂在环境变量上的配置是它的七八倍。<br>
+<span style="color:#a06a00">覆盖率交代（拿他那份清单跟这页逐个对过）：那 <b>53</b> 个真开关 = <b>19</b> 个在上面的卡片里（本轮新增）+ <b>4</b> 个在「没登记」那节 + <b>30</b> 个是 FLY-1136 那轮你已经圈过的。<b>19+4+30 = 53，没有漏网的新开关</b>。<br>
+（为什么这页有 62 张卡、这里却只对上 19 个：他那份是机械扫 <code>process.env.FLYWHEEL_X</code> 这种字面写法，认不出 <code>defaultOn(env, "X")</code> 之类的间接读法，所以他的 53 是偏少的一份。注册表才是全的，这页按注册表出。）</span></div>
+
+<div class="cmt" style="margin-top:16px"><label>整体留言（可选，比如「这批清理我同意，但 X 先别动」）</label><textarea data-k="overall"></textarea></div>
+<div class="bar">
+<button class="primary" id="exportBtn">复制我的逐条决定</button>
+<button class="ghost" id="clearBtn">清空</button>
+<span id="saveHint">自动存在本机</span>
+</div>
+<p class="foot">口径：注册表是唯一真源（内容哈希 <code>327b5aca0327</code>，抽取于 2026-07-23 05:12）。基线是 FLY-1136 那轮的 103 条（commit <code>dc62daac</code>，已用 git 逐条核对）。<br>
+「配置里写的值」＝磁盘配置，不等于跑着的进程里的活值。除标 💀 的 13 条外，运行时行为未独立验证。本页只做审计和圈选，<b>不改任何 flag</b>。导出的决定带「事实版本」一行，下游执行单请核对。</p>
+</div>
+<dialog id="dlg"><div class="dlg"><h3>你的逐条决定（已复制）</h3><p class="dlgsub">粘回 Discord 发我就行。</p><textarea id="out" readonly></textarea><div class="dlgbtns"><button class="primary" id="dlBtn">下载 .md</button><button class="ghost" id="closeBtn">关闭</button></div></div></dialog>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var scope=(typeof location!=="undefined"&&location.pathname)?location.pathname:"local";
+  // Codex R1 HIGH-6: bind saved state AND the export to the fact version. A
+  // regenerated page (registry moved, wording changed) must NOT silently inherit
+  // the old "已过目" ticks, and a downstream execution issue must be able to
+  // check that a decision was made against the facts it can still reproduce.
+  var FACTS="snap:37a0d762369c/data:9d98dec8534e/base:dc62daac/n:62+4";
+  var KEY="fly1413-flag-audit::"+scope+"::"+FACTS;
+  var LABEL={"clear":"清 / 清掉","dynamize":"动态化","keep":"留 / 维持现状","unknown":"不确定","register":"补登记 / 转正"};
+  var areas=Array.prototype.slice.call(document.querySelectorAll("textarea[data-c],textarea[data-k]"));
+  var radios=Array.prototype.slice.call(document.querySelectorAll("input[type=radio][data-q]"));
+  var names={}; radios.forEach(function(r){names[r.name]=1;}); var TOTAL=Object.keys(names).length;
+  var saved={}; try{saved=JSON.parse(localStorage.getItem(KEY)||"{}");}catch(e){saved={};}
+  // Pre-fill my suggestion so she confirms-or-overrides instead of clicking 66 times.
+  // "Reviewed" is tracked separately so the progress count stays honest.
+  radios.forEach(function(r){var nk="r::"+r.name; if(saved[nk]===undefined && r.getAttribute("data-default")==="1"){saved[nk]=r.value;}});
+  function seenCount(){var c=0; for(var k in saved){if(k.indexOf("seen::")===0 && names[k.slice(6)])c++;} return c;}
+  function prog(){var el=document.getElementById("prog"); if(el)el.textContent="已过 "+seenCount()+" / "+TOTAL+"（已按我的建议预选，你只需过一遍、改不同意的）";}
+  function persist(){try{localStorage.setItem(KEY,JSON.stringify(saved));}catch(e){} var h=document.getElementById("saveHint"); if(h)h.textContent="已保存 ✓"; prog();}
+  areas.forEach(function(t){var k=t.getAttribute("data-c")?("c::"+t.getAttribute("data-c")):("k::"+t.getAttribute("data-k")); if(saved[k])t.value=saved[k]; t.addEventListener("input",function(){saved[k]=t.value;persist();});});
+  // Mark reviewed on BOTH change AND click — clicking an already-selected
+  // suggestion (the common case here) does not fire change.
+  function markSeen(r){if(r.checked){saved["r::"+r.name]=r.value;saved["seen::"+r.name]=1;persist();}}
+  radios.forEach(function(r){var nk="r::"+r.name; if(saved[nk]===r.value)r.checked=true; r.addEventListener("change",function(){markSeen(r);}); r.addEventListener("click",function(){markSeen(r);});});
+  prog();
+  function labelOf(r){var q=r.getAttribute("data-q"); return q.indexOf("drift:")===0?q.slice(6):q.slice(5);}
+  function buildMd(){
+    var lines=["# FLY-1413 · 62 个新开关 + 4 个没登记的 —— Annie 的逐条决定","","日期: "+new Date().toLocaleString(),"已过目 "+seenCount()+" / "+TOTAL+" 条（其余用了我的建议，下面标「未过目」）","事实版本: "+FACTS+"（下游执行单请核对这一行；对不上说明注册表已经变了，要重出这张表）",""];
+    // Keep the 62 registered flags and the 4 unregistered vars in SEPARATE
+    // sections: both can be answered "keep", but "keep a registered flag" and
+    // "leave an unregistered seam alone" are different follow-up work.
+    var by={}, byDrift={};
+    Object.keys(LABEL).forEach(function(k){by[k]=[];byDrift[k]=[];});
+    radios.forEach(function(r){
+      if(!r.checked) return;
+      var mark=saved["seen::"+r.name]?"":" （未过目）";
+      var isDrift=r.getAttribute("data-q").indexOf("drift:")===0;
+      (isDrift?byDrift:by)[r.value].push(labelOf(r)+mark);
+    });
+    lines.push("## 一、62 个新开关","");
+    ["clear","dynamize","unknown","keep"].forEach(function(k){
+      var arr=by[k]||[]; lines.push("### "+LABEL[k]+"（"+arr.length+"）","",arr.map(function(x){return "- "+x;}).join("\n")||"> (无)","");
+    });
+    lines.push("## 二、4 个没登记进注册表的","");
+    ["register","keep","clear","unknown"].forEach(function(k){
+      var arr=byDrift[k]||[]; if(!arr.length) return;
+      lines.push("### "+LABEL[k]+"（"+arr.length+"）","",arr.map(function(x){return "- "+x;}).join("\n"),"");
+    });
+    var cmts=[];
+    areas.forEach(function(t){var fk=t.getAttribute("data-c"); if(fk&&t.value.trim())cmts.push("- **"+fk+"**: "+t.value.trim());});
+    if(cmts.length){lines.push("## 逐条留言","",cmts.join("\n"),"");}
+    var ovEl=document.querySelector("textarea[data-k=overall]"); var ov=ovEl?ovEl.value:"";
+    if(ov&&ov.trim()){lines.push("## 整体留言","",ov.trim());}
+    return lines.join("\n");
+  }
+  var dlg=document.getElementById("dlg"),out=document.getElementById("out");
+  document.getElementById("exportBtn").addEventListener("click",function(){out.value=buildMd(); if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(out.value).catch(function(){}); if(dlg.showModal)dlg.showModal(); else alert(out.value);});
+  document.getElementById("clearBtn").addEventListener("click",function(){if(!confirm("清空所有圈选和留言?不可撤销。"))return; areas.forEach(function(t){t.value="";}); radios.forEach(function(r){r.checked=false;}); saved={}; try{localStorage.removeItem(KEY);}catch(e){} prog(); var h=document.getElementById("saveHint"); if(h)h.textContent="已清空。";});
+  document.getElementById("dlBtn").addEventListener("click",function(){var b=new Blob([out.value],{type:"text/markdown"}),u=URL.createObjectURL(b); var a=document.createElement("a"); a.href=u; a.download="fly1413-62flag-决定.md"; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(function(){URL.revokeObjectURL(u);},1000);});
+  document.getElementById("closeBtn").addEventListener("click",function(){if(dlg.close)dlg.close();});
+})();
+</script>
+</body>
+</html>

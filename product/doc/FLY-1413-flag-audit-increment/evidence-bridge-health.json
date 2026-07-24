@@ -1,0 +1,44 @@
+{
+	"captured_at": "2026-07-22T21:14:56.164377",
+	"bridge_started_at": "2026-07-23T03:30:07.414Z",
+	"generated_at": "2026-07-23T04:14:56.124Z",
+	"sessions_count": 26,
+	"retiring": [
+		{
+			"name": "legacy_delivery_watchdogs",
+			"effective_enabled": false
+		},
+		{
+			"name": "misroute_patrol",
+			"effective_enabled": false
+		},
+		{
+			"name": "founder_reply_watchdog",
+			"effective_enabled": false
+		},
+		{
+			"name": "lead_pending_escalation",
+			"effective_enabled": false
+		},
+		{
+			"name": "park_watch",
+			"effective_enabled": false
+		},
+		{
+			"name": "stuck_detect",
+			"effective_enabled": false
+		},
+		{
+			"name": "stuck_founder_page_killswitch",
+			"effective_enabled": false
+		},
+		{
+			"name": "zombie_gate_resolve",
+			"effective_enabled": false
+		},
+		{
+			"name": "checkpoint_watchdog",
+			"effective_enabled": false
+		}
+	]
+}
