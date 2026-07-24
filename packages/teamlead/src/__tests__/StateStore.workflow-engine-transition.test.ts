@@ -150,6 +150,56 @@ async function openRunnerShipGate(
 }
 
 describe("engine-owned snapshot transition transaction", () => {
+	it("exposes park evidence only for the exact current activation and generation", async () => {
+		const store = await engineRun();
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-1",
+				nodeId: "design",
+				executionId: "design-1",
+				attempt: 1,
+				expiresAt: "2026-07-16T02:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-16T03:00:00.000Z",
+				now: "2026-07-16T01:00:00.000Z",
+				env: engineFlags,
+			}),
+		).toMatchObject({ ok: true });
+		const activation = store.resolveCurrentWorkflowActivation("design-1");
+		expect(activation.kind).toBe("current");
+		if (activation.kind !== "current") throw new Error("activation missing");
+		const opened = store.appendWorkflowEngineParkEvent({
+			eventId: "park-design-1",
+			projectName: "flywheel",
+			executionId: "design-1",
+			runId: activation.binding.run_id,
+			nodeId: activation.binding.node_id,
+			attempt: activation.binding.attempt,
+			activationId: activation.binding.activation_id,
+			event: "park_opened",
+			reason: "waiting",
+		});
+
+		expect(store.getCurrentWorkflowEngineParkEvidence("design-1")).toEqual(
+			opened,
+		);
+
+		store.appendWorkflowEngineParkEvent({
+			eventId: "clear-design-1",
+			projectName: "flywheel",
+			executionId: "design-1",
+			runId: activation.binding.run_id,
+			nodeId: activation.binding.node_id,
+			attempt: activation.binding.attempt,
+			activationId: activation.binding.activation_id,
+			event: "park_cleared",
+			reason: "resumed",
+		});
+		expect(
+			store.getCurrentWorkflowEngineParkEvidence("design-1"),
+		).toBeUndefined();
+		store.close();
+	});
+
 	it("commits completion and the selected successor in one idempotent operation", async () => {
 		const store = await engineRun();
 		const admitted = store.admitGeneralizedWorkflowExecution({

@@ -115,7 +115,7 @@ import {
 } from "../lead-backends/codexLeadBridgeWiring.js";
 import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
 import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
-import { isOperationalTerminalStatus } from "../operational-terminal-status.js";
+import { isWakeTerminalStatus } from "../operational-terminal-status.js";
 import {
 	type LeadConfig,
 	loadProjects,
@@ -644,6 +644,7 @@ import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
 import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
+import { isExactCurrentWorkflowEnginePark } from "./workflow-engine-park-evidence.js";
 import { projectWorkflowEngineParkOutbox } from "./workflow-engine-park-projector.js";
 import { createWorkflowMenuRouter } from "./workflow-menu-routes.js";
 import {
@@ -7844,6 +7845,31 @@ export async function startBridge(
 		commDbPathForProject,
 	});
 	terminalReceiptSettlementHolder.current = terminalReceiptSettlement;
+	const isDurablyParkedForWake = (
+		projectName: string,
+		executionId: string,
+		existingDb?: CommDB,
+	): boolean => {
+		const session = store.getSession(executionId);
+		if (
+			session?.project_name === projectName &&
+			session.status === "ship_parked"
+		) {
+			return true;
+		}
+		const db =
+			existingDb ?? new CommDB(commDbPathForProject(projectName), false);
+		try {
+			return isExactCurrentWorkflowEnginePark(
+				store,
+				db,
+				projectName,
+				executionId,
+			);
+		} finally {
+			if (!existingDb) db.close();
+		}
+	};
 	const receiptWakePatrol = new RunnerReceiptPatrol({
 		projectNames: projects.map((project) => project.projectName),
 		commDbPathForProject,
@@ -7851,14 +7877,14 @@ export async function startBridge(
 		resolveTargetState: ({ projectName, executionId }) => {
 			const session = store.getSession(executionId);
 			if (!session || session.project_name !== projectName) return "missing";
-			return isOperationalTerminalStatus(session.status) ? "terminal" : "live";
+			return isWakeTerminalStatus(session.status) ? "terminal" : "live";
 		},
 		terminalLifecycleIdFor: ({ projectName, executionId }) => {
 			const session = store.getSession(executionId);
 			if (
 				!session ||
 				session.project_name !== projectName ||
-				!isOperationalTerminalStatus(session.status)
+				!isWakeTerminalStatus(session.status)
 			) {
 				return undefined;
 			}
@@ -7872,19 +7898,7 @@ export async function startBridge(
 			);
 		},
 		isDurablyParked: ({ projectName, executionId }) => {
-			const session = store.getSession(executionId);
-			if (
-				session?.project_name === projectName &&
-				session.status === "ship_parked"
-			) {
-				return true;
-			}
-			const db = new CommDB(commDbPathForProject(projectName), false);
-			try {
-				return db.getWorkflowEnginePark(executionId)?.state === "open";
-			} finally {
-				db.close();
-			}
+			return isDurablyParkedForWake(projectName, executionId);
 		},
 		auditWakeDisposition: ({ projectName, executionId, messageId, reason }) => {
 			const session = store.getSession(executionId);
@@ -7901,7 +7915,7 @@ export async function startBridge(
 		t1Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T1_MS", 90_000),
 		t2Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T2_MS", 5 * 60_000),
 		t3Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T3_MS", 12 * 60_000),
-		pushWake: async ({ db, wake, verified }) => {
+		pushWake: async ({ db, projectName, wake, verified }) => {
 			let envelope: {
 				content: string;
 				metadata?: Record<string, unknown>;
@@ -7912,6 +7926,14 @@ export async function startBridge(
 				return { ok: false, error: "invalid frozen wake envelope" };
 			}
 			const session = db.getSession(wake.execution_id);
+			if (
+				wake.purpose === "message_traffic" &&
+				db.getEffectiveDeclaredState(wake.execution_id, Date.now())?.kind !==
+					"parked" &&
+				!isDurablyParkedForWake(projectName, wake.execution_id, db)
+			) {
+				return { ok: false, skippedReason: "durable_park_fence" };
+			}
 			return wakeRunnerMailbox({
 				db,
 				execId: wake.execution_id,
@@ -8008,7 +8030,12 @@ export async function startBridge(
 							false,
 						);
 						try {
-							return comm.getWorkflowEnginePark(executionId)?.state === "open";
+							return isExactCurrentWorkflowEnginePark(
+								store,
+								comm,
+								currentProject,
+								executionId,
+							);
 						} finally {
 							comm.close();
 						}

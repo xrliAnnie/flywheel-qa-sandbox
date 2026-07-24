@@ -131,12 +131,15 @@ export class TerminalReceiptSettlementProjector {
 			verdict = "unknown";
 		}
 		if (verdict === "authorized") return true;
-		this.options.store.fenceReceiptSettlementIntent(
-			intent.intent_id,
+		const reason =
 			verdict === "reopened"
 				? `${intent.authority_kind}_revoked_before_settlement_mutation`
-				: `${intent.authority_kind}_authority_unknown_before_settlement_mutation`,
-		);
+				: `${intent.authority_kind}_authority_unknown_before_settlement_mutation`;
+		if (verdict === "reopened") {
+			this.options.store.fenceReceiptSettlementIntent(intent.intent_id, reason);
+		} else {
+			this.options.store.retryReceiptSettlementIntent(intent.intent_id, reason);
+		}
 		return false;
 	}
 
@@ -171,6 +174,11 @@ export class TerminalReceiptSettlementProjector {
 		let db: CommDB | undefined;
 		try {
 			db = this.openDb(this.options.commDbPathForProject(intent.project_name));
+			this.attachActiveLegacyReceiptDetectionLineage(
+				db,
+				intent,
+				input.issueAliases,
+			);
 			const receiptIds = db.listReceiptRootsForExecution(intent.execution_id);
 			for (const receiptId of receiptIds) {
 				const lineage = db.getReceiptSettlementLineage(receiptId);
@@ -254,6 +262,37 @@ export class TerminalReceiptSettlementProjector {
 		}
 	}
 
+	private attachActiveLegacyReceiptDetectionLineage(
+		db: CommDB,
+		intent: ReceiptSettlementIntent,
+		issueAliases: readonly string[],
+	): void {
+		if (!intent.execution_id) return;
+		const detections = this.options.store.listActiveLegacyReceiptDetections({
+			projectName: intent.project_name,
+			issueAliases: [intent.issue_id, ...issueAliases],
+		});
+		for (const detection of detections) {
+			const receiptId = detection.episode_fingerprint;
+			const lineage = db.getReceiptSettlementLineage(receiptId);
+			if (!lineage) {
+				throw new Error(
+					`unresolved legacy receipt detection ${receiptId}: CommDB root missing`,
+				);
+			}
+			if (lineage.projectName !== intent.project_name) {
+				throw new Error(
+					`unresolved legacy receipt detection ${receiptId}: project lineage mismatch`,
+				);
+			}
+			if (lineage.executionId !== intent.execution_id) continue;
+			this.options.store.attachLegacyReceiptDetectionLineage(receiptId, {
+				sourceExecutionId: lineage.executionId,
+				sourceQuestionId: lineage.questionId,
+			});
+		}
+	}
+
 	private async applyIntent(intent: ReceiptSettlementIntent): Promise<void> {
 		if (
 			intent.authority_kind !== "session_terminal" ||
@@ -271,6 +310,9 @@ export class TerminalReceiptSettlementProjector {
 		let db: CommDB | undefined;
 		try {
 			db = this.openDb(this.options.commDbPathForProject(intent.project_name));
+			this.attachActiveLegacyReceiptDetectionLineage(db, intent, [
+				intent.issue_id,
+			]);
 			const receiptIds = db.listReceiptRootsForExecution(intent.execution_id);
 			for (const receiptId of receiptIds) {
 				const lineage = db.getReceiptSettlementLineage(receiptId);

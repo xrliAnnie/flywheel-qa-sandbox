@@ -1412,6 +1412,15 @@ export class StateStore {
 		);
 	}
 
+	private addColumnIfMissing(
+		table: string,
+		column: string,
+		definition: string,
+	): void {
+		if (this.workflowTableColumns(table).has(column)) return;
+		this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+	}
+
 	private createWorkflowActorAndActivationTables(): void {
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_actor (
@@ -2181,11 +2190,7 @@ export class StateStore {
 		} catch {
 			/* exists */
 		}
-		try {
-			this.db.run("ALTER TABLE sessions ADD COLUMN terminal_lifecycle_id TEXT");
-		} catch {
-			/* exists */
-		}
+		this.addColumnIfMissing("sessions", "terminal_lifecycle_id", "TEXT");
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS receipt_settlement_intent (
 				intent_id TEXT PRIMARY KEY,
@@ -2209,13 +2214,11 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_receipt_settlement_intent_state ON receipt_settlement_intent(state, created_at)",
 		);
-		try {
-			this.db.run(
-				"ALTER TABLE receipt_settlement_intent ADD COLUMN authority_credential TEXT",
-			);
-		} catch {
-			/* exists */
-		}
+		this.addColumnIfMissing(
+			"receipt_settlement_intent",
+			"authority_credential",
+			"TEXT",
+		);
 		this.backfillTerminalLifecycleIds();
 
 		// FLY-1185 §2.1: worktree authority binding — an INDEPENDENT column group
@@ -3221,13 +3224,7 @@ export class StateStore {
 			"source_execution_id",
 			"source_question_id",
 		]) {
-			try {
-				this.db.run(
-					`ALTER TABLE detection_escalations ADD COLUMN ${column} TEXT`,
-				);
-			} catch {
-				/* column already exists */
-			}
+			this.addColumnIfMissing("detection_escalations", column, "TEXT");
 		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_detection_escalations_status ON detection_escalations(status)",
@@ -4582,6 +4579,22 @@ export class StateStore {
 			`UPDATE receipt_settlement_intent
 			    SET state = 'fenced', updated_at = datetime('now'),
 			        last_error = ?
+			  WHERE intent_id = ? AND state IN ('pending','applying')`,
+			[reason.slice(0, 500), intentId],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	/**
+	 * A transient external-authority lookup is not negative authority. Release
+	 * any in-flight claim back to pending while preserving the durable error so
+	 * the same credential can be retried on the next convergence pass.
+	 */
+	retryReceiptSettlementIntent(intentId: string, reason: string): boolean {
+		this.db.run(
+			`UPDATE receipt_settlement_intent
+			    SET state = 'pending', claim_token = NULL,
+			        updated_at = datetime('now'), last_error = ?
 			  WHERE intent_id = ? AND state IN ('pending','applying')`,
 			[reason.slice(0, 500), intentId],
 		);
@@ -11125,6 +11138,38 @@ export class StateStore {
 		).map((row) => this.workflowEngineParkOutboxFromRow(row));
 	}
 
+	/**
+	 * Return the open park event only when it belongs to the execution's exact
+	 * current engine activation. A historical activation, a newer clear, or an
+	 * ambiguous binding is not durable wake authority.
+	 */
+	getCurrentWorkflowEngineParkEvidence(
+		executionId: string,
+	): WorkflowEngineParkOutboxRow | undefined {
+		const activation = this.resolveCurrentWorkflowActivation(executionId);
+		if (activation.kind !== "current") return undefined;
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_engine_park_outbox
+			  WHERE execution_id = ?
+			  ORDER BY generation DESC, row_id DESC
+			  LIMIT 1`,
+			[executionId],
+		)[0];
+		if (!row) return undefined;
+		const evidence = this.workflowEngineParkOutboxFromRow(row);
+		if (
+			evidence.event !== "park_opened" ||
+			evidence.project_name !== activation.run.project_name ||
+			evidence.run_id !== activation.binding.run_id ||
+			evidence.node_id !== activation.binding.node_id ||
+			evidence.attempt !== activation.binding.attempt ||
+			evidence.activation_id !== activation.binding.activation_id
+		) {
+			return undefined;
+		}
+		return evidence;
+	}
+
 	private static readonly DETECTION_ESCALATION_COLUMNS =
 		"target_key, kind, episode_fingerprint, issue_id, owner_lead_id, first_detected_at_ms, lead_notified_at_ms, lead_ack_at_ms, founder_paged_at_ms, clearing_since_ms, status, attempts, resolved_via, source_receipt_id, source_execution_id, source_question_id";
 
@@ -11336,6 +11381,35 @@ export class StateStore {
 			],
 		);
 		return this.db.getRowsModified() === 1;
+	}
+
+	listActiveLegacyReceiptDetections(input: {
+		projectName: string;
+		issueAliases: readonly string[];
+	}): DetectionEscalationRow[] {
+		const issueAliases = [
+			...new Set(input.issueAliases.filter((value) => value.trim().length > 0)),
+		];
+		const issueClause =
+			issueAliases.length > 0
+				? `AND (issue_id IS NULL OR issue_id IN (${issueAliases
+						.map(() => "?")
+						.join(",")}))`
+				: "AND issue_id IS NULL";
+		const result = this.db.exec(
+			`SELECT ${StateStore.DETECTION_ESCALATION_COLUMNS}
+			   FROM detection_escalations
+			  WHERE kind LIKE 'receipt_unprocessed%'
+			    AND status != 'RESOLVED'
+			    AND source_receipt_id IS NULL
+			    AND substr(target_key, 1, length(?) + 1) = ? || ':'
+			    ${issueClause}
+			  ORDER BY first_detected_at_ms, target_key, kind, episode_fingerprint`,
+			[input.projectName, input.projectName, ...issueAliases],
+		);
+		return (result[0]?.values ?? []).map((row) =>
+			this.detectionEscalationFromValues(row),
+		);
 	}
 
 	attachLegacyReceiptDetectionLineage(

@@ -791,4 +791,126 @@ describe("FLY-1392 CommDB receipt UOWs", () => {
 			db.close();
 		}
 	});
+
+	it("rejects malformed pre-existing founder settlement evidence", () => {
+		const db = new CommDB(dbPath);
+		const queue = new LeadInboxQueue(dbPath);
+		const rootId = "founder_msg:lead-a:discord-settlement";
+		const rootContent = JSON.stringify({
+			msgId: "discord-settlement",
+			answer: "approved",
+			projectName: "flywheel",
+			issueId: "FLY-1448",
+			threadId: "thread-1448",
+		});
+		try {
+			queue.enqueueHubRoot({
+				id: rootId,
+				toLead: "lead-a",
+				content: rootContent,
+				refMessageId: "discord-settlement",
+				now: "2026-07-24T00:00:00.000Z",
+				routingState: "awaiting_rebind",
+			});
+			queue.markProcessed(rootId, {
+				now: "2026-07-24T00:00:01.000Z",
+				evidence: {
+					v: 1,
+					kind: "ship_gate_bound",
+					ref: "response-question-1",
+					actor: "founder",
+					actor_kind: "founder-writer",
+					fence: { discord_message_id: "discord-settlement" },
+					basis: ["question:question-1"],
+				},
+			});
+			const raw = new Database(dbPath);
+			try {
+				raw
+					.prepare("UPDATE lead_inbox SET processed_evidence = ? WHERE id = ?")
+					.run(JSON.stringify({ kind: "ship_gate_bound" }), rootId);
+			} finally {
+				raw.close();
+			}
+
+			expect(
+				db.settleFounderHubRoot({
+					rootId,
+					now: "2026-07-24T00:00:02.000Z",
+					evidence: {
+						v: 1,
+						kind: "already_applied",
+						ref: "question-1",
+						actor: "founder",
+						actor_kind: "founder-writer",
+						fence: { discord_message_id: "discord-settlement" },
+						basis: ["question:question-1"],
+					},
+					acceptedProcessedKinds: ["ship_gate_bound", "already_applied"],
+				}),
+			).toEqual({ kind: "conflict" });
+			expect(queue.getById(rootId)?.routing_state).toBe("awaiting_rebind");
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("rejects pre-existing founder evidence for a different question", () => {
+		const db = new CommDB(dbPath);
+		const queue = new LeadInboxQueue(dbPath);
+		const rootId = "founder_msg:lead-a:discord-question-lineage";
+		try {
+			queue.enqueueHubRoot({
+				id: rootId,
+				toLead: "lead-a",
+				content: JSON.stringify({
+					msgId: "discord-question-lineage",
+					answer: "approved",
+					projectName: "flywheel",
+					issueId: "FLY-1448",
+					threadId: "thread-1448",
+				}),
+				refMessageId: "discord-question-lineage",
+				now: "2026-07-24T00:00:00.000Z",
+				routingState: "awaiting_rebind",
+			});
+			queue.markProcessed(rootId, {
+				now: "2026-07-24T00:00:01.000Z",
+				evidence: {
+					v: 1,
+					kind: "ship_gate_bound",
+					ref: "response-question-other",
+					actor: "founder",
+					actor_kind: "founder-writer",
+					fence: { discord_message_id: "discord-question-lineage" },
+					basis: ["question:question-other"],
+				},
+			});
+
+			expect(
+				db.settleFounderHubRoot({
+					rootId,
+					now: "2026-07-24T00:00:02.000Z",
+					evidence: {
+						v: 1,
+						kind: "already_applied",
+						ref: "question-expected",
+						actor: "founder",
+						actor_kind: "founder-writer",
+						fence: { discord_message_id: "discord-question-lineage" },
+						basis: ["question:question-expected"],
+					},
+					acceptedProcessedKinds: ["ship_gate_bound", "already_applied"],
+				}),
+			).toEqual({
+				kind: "conflict",
+				evidenceKind: "ship_gate_bound",
+			});
+			expect(queue.getById(rootId)?.routing_state).toBe("awaiting_rebind");
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
 });

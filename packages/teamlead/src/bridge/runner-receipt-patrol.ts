@@ -194,13 +194,14 @@ export class RunnerReceiptPatrol {
 			);
 			return;
 		}
-		const durablePark =
+		const isDurablyParked = () =>
 			db.getEffectiveDeclaredState(wake.execution_id, nowMs)?.kind ===
 				"parked" ||
 			this.options.isDurablyParked?.({
 				projectName,
 				executionId: wake.execution_id,
 			}) === true;
+		const durablePark = isDurablyParked();
 		if (wake.purpose === "message_traffic" && !durablePark) {
 			if (metadata.origin === "founder") {
 				await this.escalate(
@@ -295,6 +296,40 @@ export class RunnerReceiptPatrol {
 			},
 		);
 		if (!claim) return;
+		if (wake.purpose === "message_traffic" && !isDurablyParked()) {
+			db.completeRunnerReceiptWakePush({
+				executionId: wake.execution_id,
+				messageId: wake.message_id,
+				claimToken: claim.claimToken,
+				attempt: claim.attempt,
+				result: "skipped:durable_park_fence",
+				nowMs,
+			});
+			if (metadata.origin === "founder") {
+				await this.escalate(
+					db,
+					projectName,
+					wake,
+					nowMs,
+					"founder_wake_undeliverable",
+				);
+				return;
+			}
+			const disposed = db.disposeRunnerPhaseWakePending(
+				wake.execution_id,
+				wake.message_id,
+				nowMs,
+			);
+			if (disposed) {
+				this.options.auditWakeDisposition?.({
+					projectName,
+					executionId: wake.execution_id,
+					messageId: wake.message_id,
+					reason: "live_non_parked_normal_traffic",
+				});
+			}
+			return;
+		}
 		let outcome: { ok: boolean; error?: string; skippedReason?: string };
 		try {
 			outcome = await this.options.pushWake({

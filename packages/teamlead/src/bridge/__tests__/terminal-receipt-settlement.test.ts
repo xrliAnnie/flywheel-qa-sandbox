@@ -238,6 +238,222 @@ describe("FLY-1448 terminal receipt settlement projector", () => {
 		]);
 	});
 
+	it("keeps an unknown issue-authority lookup retryable", async () => {
+		const sourceId = comm.insertQuestion(
+			"exec-1",
+			"flywheel-eng-lead",
+			"ordinary runner message",
+			{ checkpoint: "question" },
+		);
+		const queue = new LeadInboxQueue(commPath);
+		try {
+			queue.enqueue({
+				id: "receipt-unknown",
+				toLead: "flywheel-eng-lead",
+				source: "runner",
+				type: "runner_report",
+				msgClass: "protocol",
+				content: "retry after transient authority lookup failure",
+				refMessageId: sourceId,
+				createdAt: "2026-07-24T00:00:00.000Z",
+			});
+		} finally {
+			queue.close();
+		}
+		comm.close();
+		const revalidate = vi
+			.fn()
+			.mockResolvedValueOnce("unknown" as const)
+			.mockResolvedValue("authorized" as const);
+		const projector = new TerminalReceiptSettlementProjector({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+			now: () => 5_000,
+		});
+		const input = {
+			projectName: "flywheel",
+			canonicalIssueId: "issue-uuid",
+			issueAliases: ["issue-uuid", "FLY-1448"],
+			authorityCredential: "issue-uuid:2026-07-24T00:00:00.000Z",
+			revalidate,
+		};
+
+		await projector.settleIssueDone(input);
+		expect(store.listReceiptSettlementIntents()).toMatchObject([
+			{
+				authority_kind: "issue_done",
+				state: "pending",
+				claim_token: null,
+				last_error: expect.stringContaining("authority_unknown"),
+			},
+		]);
+
+		await projector.settleIssueDone(input);
+		comm = new CommDB(commPath);
+		expect(store.listReceiptSettlementIntents()).toMatchObject([
+			{ authority_kind: "issue_done", state: "completed" },
+		]);
+		const check = new LeadInboxQueue(commPath);
+		try {
+			expect(check.getById("receipt-unknown")?.disposed_at).toBeTruthy();
+		} finally {
+			check.close();
+		}
+	});
+
+	it("refuses to complete while an active legacy receipt detection has no CommDB root", async () => {
+		store.upsertDetectionEscalation({
+			targetKey: "flywheel:flywheel-eng-lead",
+			kind: "receipt_unprocessed",
+			episodeFingerprint: "missing-receipt-root",
+			issueId: "FLY-1448",
+			ownerLeadId: "flywheel-eng-lead",
+			firstDetectedAtMs: 1_000,
+		});
+		store.persistTransition("exec-1", "completed", {
+			issue_id: "FLY-1448",
+			project_name: "flywheel",
+		});
+		comm.close();
+
+		await new TerminalReceiptSettlementProjector({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+			now: () => 5_000,
+		}).pass();
+
+		comm = new CommDB(commPath);
+		expect(store.listReceiptSettlementIntents()).toMatchObject([
+			{
+				state: "applying",
+				last_error: expect.stringContaining(
+					"unresolved legacy receipt detection",
+				),
+			},
+		]);
+		expect(
+			store.getDetectionEscalation(
+				"flywheel:flywheel-eng-lead",
+				"receipt_unprocessed",
+				"missing-receipt-root",
+			),
+		).toMatchObject({ status: "NEW", source_receipt_id: null });
+	});
+
+	it("refuses cross-project legacy receipt lineage", async () => {
+		comm.registerSession(
+			"exec-other",
+			"session",
+			"other-project",
+			"FLY-1448",
+			"flywheel-eng-lead",
+			"codex",
+		);
+		const sourceId = comm.insertQuestion(
+			"exec-other",
+			"flywheel-eng-lead",
+			"foreign receipt",
+			{ checkpoint: "question" },
+		);
+		const queue = new LeadInboxQueue(commPath);
+		try {
+			queue.enqueue({
+				id: "cross-project-root",
+				toLead: "flywheel-eng-lead",
+				source: "runner",
+				type: "runner_report",
+				msgClass: "protocol",
+				content: "must not attach across projects",
+				refMessageId: sourceId,
+				createdAt: "2026-07-24T00:00:00.000Z",
+			});
+		} finally {
+			queue.close();
+		}
+		store.upsertDetectionEscalation({
+			targetKey: "flywheel:flywheel-eng-lead",
+			kind: "receipt_unprocessed",
+			episodeFingerprint: "cross-project-root",
+			issueId: "FLY-1448",
+			firstDetectedAtMs: 1_000,
+		});
+		store.persistTransition("exec-1", "completed", {
+			issue_id: "FLY-1448",
+			project_name: "flywheel",
+		});
+		comm.close();
+
+		await new TerminalReceiptSettlementProjector({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+		}).pass();
+
+		comm = new CommDB(commPath);
+		expect(store.listReceiptSettlementIntents()).toMatchObject([
+			{
+				state: "applying",
+				last_error: expect.stringContaining("project lineage mismatch"),
+			},
+		]);
+	});
+
+	it("refuses ambiguous legacy detection rows for one receipt root", async () => {
+		const sourceId = comm.insertQuestion(
+			"exec-1",
+			"flywheel-eng-lead",
+			"ambiguous receipt",
+			{ checkpoint: "question" },
+		);
+		const queue = new LeadInboxQueue(commPath);
+		try {
+			queue.enqueue({
+				id: "ambiguous-root",
+				toLead: "flywheel-eng-lead",
+				source: "runner",
+				type: "runner_report",
+				msgClass: "protocol",
+				content: "ambiguous legacy detection",
+				refMessageId: sourceId,
+				createdAt: "2026-07-24T00:00:00.000Z",
+			});
+		} finally {
+			queue.close();
+		}
+		for (const targetKey of ["flywheel:lead-a", "flywheel:lead-b"]) {
+			store.upsertDetectionEscalation({
+				targetKey,
+				kind: "receipt_unprocessed",
+				episodeFingerprint: "ambiguous-root",
+				issueId: "FLY-1448",
+				firstDetectedAtMs: 1_000,
+			});
+		}
+		store.persistTransition("exec-1", "completed", {
+			issue_id: "FLY-1448",
+			project_name: "flywheel",
+		});
+		comm.close();
+
+		await new TerminalReceiptSettlementProjector({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+		}).pass();
+
+		comm = new CommDB(commPath);
+		expect(store.listReceiptSettlementIntents()).toMatchObject([
+			{
+				state: "applying",
+				last_error: expect.stringContaining(
+					"ambiguous legacy receipt detection lineage",
+				),
+			},
+		]);
+	});
+
 	it("uses PR-merged authority to retire the exact ship gate family", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",

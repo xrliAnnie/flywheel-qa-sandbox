@@ -163,6 +163,37 @@ describe("FLY-1392 runner receipt patrol", () => {
 		});
 	});
 
+	it("rechecks durable park after claiming and before the T1 mailbox send", async () => {
+		const wake = admit(1_000);
+		const isDurablyParked = vi
+			.fn<() => boolean>()
+			.mockReturnValueOnce(true)
+			.mockReturnValue(false);
+		db.close();
+
+		await new RunnerReceiptPatrol({
+			projectNames: ["proj"],
+			commDbPathForProject: () => dbPath,
+			receiptFoundationEnabled: () => true,
+			isDurablyParked,
+			now: () => 91_000,
+			pushWake,
+			nudgeWakePointer,
+			notifyWakeFailure,
+		}).pass();
+
+		db = new CommDB(dbPath);
+		expect(isDurablyParked).toHaveBeenCalledTimes(2);
+		expect(pushWake).not.toHaveBeenCalled();
+		expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
+			{
+				message_id: wake.message_id,
+				state: "finished",
+				started_ack_scope: "normal_traffic",
+			},
+		]);
+	});
+
 	it("escalates founder-origin traffic instead of silently disposing it", async () => {
 		const wake = admit(1_000, 1, {
 			origin: "founder",

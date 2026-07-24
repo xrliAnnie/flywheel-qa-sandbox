@@ -2514,21 +2514,72 @@ export class CommDB {
 				) {
 					return { kind: "conflict" as const };
 				}
+				let rootPayload: ReturnType<CommDB["parseFounderRootPayload"]>;
+				try {
+					rootPayload = this.parseFounderRootPayload(root.content);
+				} catch {
+					return { kind: "conflict" as const };
+				}
+				if (
+					root.ref_message_id !== rootPayload.msgId ||
+					input.evidence.actor_kind !== "founder-writer" ||
+					input.evidence.fence.discord_message_id !== rootPayload.msgId
+				) {
+					return { kind: "conflict" as const };
+				}
+				const inputQuestionBasisEntries =
+					input.evidence.basis?.filter((basis) =>
+						basis.startsWith("question:"),
+					) ?? [];
+				if (inputQuestionBasisEntries.length > 1) {
+					return { kind: "conflict" as const };
+				}
+				const inputQuestionBasis = inputQuestionBasisEntries[0];
 				let result: "marked" | "verified";
 				let evidenceKind: string;
 				if (root.processed_at !== null && root.processed_evidence !== null) {
+					let existingEvidence: ProcessedEvidenceV1;
 					try {
-						evidenceKind = (
-							JSON.parse(root.processed_evidence) as { kind?: unknown }
-						).kind as string;
+						existingEvidence = JSON.parse(
+							root.processed_evidence,
+						) as ProcessedEvidenceV1;
+						assertProcessedEvidence(existingEvidence);
 					} catch {
 						return { kind: "conflict" as const };
 					}
+					evidenceKind = existingEvidence.kind;
 					if (typeof evidenceKind !== "string" || !accepted.has(evidenceKind)) {
 						return {
 							kind: "conflict" as const,
 							...(typeof evidenceKind === "string" ? { evidenceKind } : {}),
 						};
+					}
+					const existingQuestionBasisEntries =
+						existingEvidence.basis?.filter((basis) =>
+							basis.startsWith("question:"),
+						) ?? [];
+					if (existingQuestionBasisEntries.length > 1) {
+						return { kind: "conflict" as const, evidenceKind };
+					}
+					const existingQuestionBasis = existingQuestionBasisEntries[0];
+					if (
+						existingEvidence.actor_kind !== "founder-writer" ||
+						(inputQuestionBasis
+							? existingQuestionBasis !== inputQuestionBasis
+							: existingEvidence.ref !== input.evidence.ref)
+					) {
+						return { kind: "conflict" as const, evidenceKind };
+					}
+					const discordFence =
+						existingEvidence.fence.discord_message_id === rootPayload.msgId;
+					const sourceEventFence =
+						typeof existingEvidence.fence.source_event_id === "string" &&
+						typeof inputQuestionBasis === "string" &&
+						existingEvidence.fence.source_event_id.endsWith(
+							`:${inputQuestionBasis.slice("question:".length)}:${rootPayload.msgId}`,
+						);
+					if (!discordFence && !sourceEventFence) {
+						return { kind: "conflict" as const, evidenceKind };
 					}
 					result = "verified";
 				} else {
