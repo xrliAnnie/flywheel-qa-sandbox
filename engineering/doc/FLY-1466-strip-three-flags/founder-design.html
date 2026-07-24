@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1466 · 剥掉 #696 的 3 个新开关,再上线</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.6; padding:24px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:20px; }
+  .mono { font-family:'SF Mono', monospace; font-size:0.92em; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px; margin-bottom:16px; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.purple { border-left:4px solid #af52de; }
+  .card.red { border-left:4px solid #ff3b30; }
+  .section-title { font-size:18px; font-weight:600; color:#1a365d; margin-bottom:12px; }
+  .lede { font-size:17px; }
+  .badge { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:10px; margin-right:6px; vertical-align:middle; }
+  .badge.ok { background:#e8f8ee; color:#1e7e40; }
+  .badge.warn { background:#fff4e5; color:#b25e00; }
+  .badge.info { background:#e8f1ff; color:#0a55c4; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; color:#86868b; font-weight:600; padding:8px 10px; border-bottom:1px solid #e5e5ea; }
+  td { padding:8px 10px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  /* flow diagram */
+  .flow { display:flex; flex-wrap:wrap; align-items:stretch; gap:8px; margin:10px 0; }
+  .step { flex:1 1 150px; background:#f8f9fb; border:1px solid #e5e5ea; border-radius:10px; padding:10px 12px; min-width:145px; position:relative; }
+  .step .n { display:inline-block; background:#1a365d; color:#fff; font-size:11px; font-weight:700; border-radius:50%; width:20px; height:20px; text-align:center; line-height:20px; margin-bottom:6px; }
+  .step .t { font-weight:600; font-size:14px; margin-bottom:4px; }
+  .step .d { font-size:12.5px; color:#515154; }
+  .step.gate { background:#fff8ec; border-color:#f2d9ac; }
+  .step.done { background:#f0faf3; border-color:#bfe8cc; }
+  .arrow { align-self:center; color:#c7c7cc; font-size:18px; font-weight:700; }
+  /* matrix */
+  .mx { display:grid; grid-template-columns:110px 1fr 1fr; gap:6px; font-size:13.5px; margin-top:8px; }
+  .mx > div { padding:8px 10px; border-radius:8px; }
+  .mx .h { font-weight:600; color:#86868b; background:transparent; padding-bottom:2px; }
+  .mx .k { background:#f2f2f7; font-weight:600; }
+  .mx .a { background:#e8f1ff; }
+  .mx .b { background:#f3e8fd; }
+  .note { font-size:13px; color:#515154; margin-top:8px; }
+  ul { padding-left:20px; }
+  li { margin-bottom:6px; font-size:14.5px; }
+  .kv { font-size:13px; color:#86868b; }
+  @media (max-width:640px){ .flow { flex-direction:column; } .arrow { transform:rotate(90deg); align-self:flex-start; margin-left:16px; } .mx { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1466 · 剥掉 #696 的 3 个新开关,再上线</h1>
+  <div class="sub">设计方案(已过 Codex 设计评审 3 轮 APPROVED)· 2026-07-24 · PR #696 既有分支上执行,不新建分支</div>
+
+  <div class="card blue">
+    <div class="section-title">一句话</div>
+    <div class="lede">把批准断路修(#696)里违反铁律的 <b>3 个新开关拆掉</b>——行为固定成现在默认生效的那一条路;同时把分支和 main <b>合流解冲突</b>(今早 main 进了别的修复,#696 已经合不进去了),产出一个可以重新批准上线的新版本。</div>
+  </div>
+
+  <div class="card green">
+    <div class="section-title">整体流程</div>
+    <div class="flow">
+      <div class="step done"><span class="n">✓</span><div class="t">设计(本单)</div><div class="d">审计 + 方案 + Codex 评审 3 轮通过</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">A</span><div class="t">与 main 合流</div><div class="d">解 3 个文件的冲突(按下方裁决表),测试全绿</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">B</span><div class="t">剥 3 个开关</div><div class="d">删注册 + 删代码里的开关判断 + 立墓碑防复活,测试改为断言唯一行为</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">C</span><div class="t">全仓验证 + push</div><div class="d">lint / build / 全部测试绿 → #696 出新版本号</div></div>
+    </div>
+    <div class="flow">
+      <div class="step gate"><span class="n">1</span><div class="t">Codex 代码评审</div><div class="d">真跑、不跳过,评到通过为止</div></div>
+      <div class="arrow">→</div>
+      <div class="step gate"><span class="n">2</span><div class="t">独立 QA</div><div class="d">529 房真 Discord 批准链实测(不是只看代码)</div></div>
+      <div class="arrow">→</div>
+      <div class="step gate"><span class="n">3</span><div class="t">Annie 重批</div><div class="d">新版本开批准门,上线永远由你拍板</div></div>
+    </div>
+    <div class="note">每一步都绑定同一个版本号:版本一变,评审和 QA 重来,不许拿旧结论顶新代码。</div>
+  </div>
+
+  <div class="card purple">
+    <div class="section-title">3 个开关:现在管什么,拆掉后变成什么</div>
+    <table>
+      <tr><th>开关</th><th>现在管什么</th><th>拆掉后</th></tr>
+      <tr><td class="mono">engine_declared_park</td><td>「任务已停牌」的持久记号是否投影/生效(设 0 可关)</td><td>永远生效,无关闭口</td></tr>
+      <tr><td class="mono">founder_decision_deadline_ms</td><td>你的决定多久没落实就大声报警(可改时长)</td><td>写死 3 分钟(原默认值)</td></tr>
+      <tr><td class="mono">terminal_receipt_settlement</td><td>已收尾任务的回执清算是否运行(设 0 可冻结)</td><td>永远运行,无冻结口</td></tr>
+    </table>
+    <div class="note">三个开关默认全开、生产环境从没设过——拆掉后<b>生产行为不变</b>,只是失去「紧急关掉」的口子。出事的兜底 = 整个 PR 回退(revert),这正是你的铁律:宁可回退,不留开关。每个拆掉的开关都会立「墓碑」:若有人残留旧环境变量或想复活它,检查会直接报错。</div>
+  </div>
+
+  <div class="card amber">
+    <div class="section-title">合流的关键裁决:两个修复撞在同一处</div>
+    <div style="font-size:14.5px;">今早上线的 FLY-1374 和 #696 对同一件事给了相反答案:<b>叫醒消息发现对方任务已经收尾时怎么办</b>。1374 说「静默清理,别吵」;#696 说「记账 + 报警,别丢」。两个都对——只是针对的对象不同。裁决表:</div>
+    <div class="mx">
+      <div class="h">场景</div><div class="h">采用</div><div class="h">效果</div>
+      <div class="k">普通消息</div><div class="a">按 FLY-1374(main 现行)</div><div class="a">静默清理,不打扰——普通唤醒晚到了本来就无所谓</div>
+      <div class="k">你的决定</div><div class="b">按 FLY-1448(#696)</div><div class="b">逐条记账 + 报警——founder 的批准/决定<b>永远不许静默消失</b></div>
+    </div>
+    <div class="note">净效果:普通消息与 main 完全一致;你的决定比 main 多一层保护(这正是 #696 要修的东西)。此裁决已呈 Tadashi 确认,他可否决改判。</div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">关键取舍(与被否掉的做法)</div>
+    <ul>
+      <li><b>先合流、再剥开关</b> —— 两步分开,各自验证。被否:先剥再合流(冲突照样在,还把两种改动搅进同一次冲突解决,查错查不清)。</li>
+      <li><b>普通 merge,不改历史</b> —— 不 rebase、不强推。被否:rebase + force-push(在既有 PR 分支上改历史,风险白担)。</li>
+      <li><b>裁决表分场景</b> —— 见上卡。被否:全按 1374(你的决定可能静默丢,#696 白修);全按 1448(推翻 main 已上线的契约,普通消息重新吵起来)。</li>
+      <li><b>拆开关立墓碑 + 正向断言</b> —— 沿用 FLY-1456 删 13 个开关的同一套先例;另加「墓碑必须存在」的正向测试,堵住「漏立墓碑但检查照样绿」的假绿口。</li>
+    </ul>
+  </div>
+
+  <div class="card red">
+    <div class="section-title">诚实边界:这个设计做什么、不做什么</div>
+    <ul>
+      <li><b>做</b>:剥 3 个开关(行为固定)、合流 main(#696 重新可合并)、产出可重批的新版本。全程在既有分支,不新建 PR。</li>
+      <li><b>不做</b>:不改批准断路修的核心行为(QA 验过的保护全保留);不碰其他任何开关(含 2 条 RESERVED 红线);不修派单引擎卡死的 bug(FLY-1462 另计)。</li>
+      <li><b>有一处有意变化要说清</b>:普通消息撞上已收尾任务时,从 #696 原来的「报警」改成与 main 一致的「静默清理」(见裁决表)——不是零变化,是选了 main 已上线的做法。</li>
+      <li><b>拆掉开关 = 拆掉紧急逃生口</b>:此后出事只能整体回退 PR。这是铁律的代价,设计里明确接受。</li>
+      <li><b>上线三道门一个不少</b>:Codex 代码评审 → 529 房真 Discord QA → 你重批。设计通过不等于可以上线。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="section-title">状态</div>
+    <div class="kv">
+      Codex 设计评审:<span class="badge ok">3 轮 APPROVED</span>(R1 抓出「两修复冲突被误判为互补」+ 假绿测试命令;R2 抓出流程自锁 + 两处描述失准 + 测试缺口;R3 全闭合)<br>
+      待 Tadashi 确认(不阻塞推进):① 合流并入本单执行;② 上方裁决表。<br>
+      文档:<span class="mono">engineering/doc/FLY-1466-strip-three-flags/</span>(exploration / research / plan)· 母单 FLY-1448 · PR #696
+    </div>
+  </div>
+</div>
+</body>
+</html>
