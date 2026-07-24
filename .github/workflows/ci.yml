@@ -362,6 +362,13 @@ jobs:
       - name: Test — FLY-880 PM executor role contract
         run: bash scripts/__tests__/test-pm-executor-contract.sh
 
+      # FLY-1461: QA executor role .md guard. Pure text assertions — defends the
+      # "Discord-capable change → real Discord N-to-N in the 529 QA Room is part of
+      # QA-done" mandate (self-owned by the QA Runner, not the Lead's memory) + the
+      # 40k injection-truncation red line against silent regression.
+      - name: Test — FLY-1461 QA executor 529 N-to-N contract
+        run: bash scripts/__tests__/test-qa-executor-529-nton-contract.sh
+
       # FLY-913: restart-guard deployment guardrail. Hermetic — the hook runs
       # against stdin JSON fixtures with the alert seam stubbed (plus one
       # integration case through the REAL lead-alert.sh with a fake curl); the
