@@ -1,13 +1,13 @@
 ---
 issue: FLY-1466
 phase: design
-phaseCursor: 3/6
-updated: 2026-07-24T19:31:57.819Z
-nextStep: plan.md — 实施计划
+phaseCursor: 5/6
+updated: 2026-07-24T20:07:08.010Z
+nextStep: founder HTML + publish + report + design_review stage
 chunks: []
 pointers: {}
 ---
 
 # FLY-1466 progress
-**phase**: design (3/6)
-**next**: plan.md — 实施计划
+**phase**: design (5/6)
+**next**: founder HTML + publish + report + design_review stage
