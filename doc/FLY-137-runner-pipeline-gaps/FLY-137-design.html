@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-137 设计 — Runner Pipeline 四断点收敛</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,system-ui,sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.6; padding:24px 16px 64px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:28px; color:#1a365d; margin-bottom:4px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:24px; }
+  .mono, code { font-family:'SF Mono',Menlo,monospace; font-size:0.92em; }
+  code { background:#eceef1; padding:1px 6px; border-radius:5px; }
+  .badge { display:inline-block; font-size:12px; font-weight:600; padding:2px 10px; border-radius:10px; margin-right:6px; vertical-align:middle; }
+  .badge.issue { background:#1a365d; color:#fff; }
+  .badge.green { background:#e6f7ec; color:#1d7a3e; }
+  .badge.amber { background:#fff3e0; color:#b36b00; }
+  .badge.red   { background:#ffe5e3; color:#c22a20; }
+  .badge.blue  { background:#e5f1ff; color:#0060cc; }
+  .badge.purple{ background:#f3e8fb; color:#8a3fc4; }
+  .section { margin:32px 0; }
+  .section-title { font-size:20px; font-weight:700; color:#1a365d; margin-bottom:14px; }
+  .section-title .dot { margin-right:6px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin-bottom:14px; }
+  .card.blue   { border-left:4px solid #007aff; }
+  .card.green  { border-left:4px solid #34c759; }
+  .card.amber  { border-left:4px solid #ff9500; }
+  .card.red    { border-left:4px solid #ff3b30; }
+  .card.purple { border-left:4px solid #af52de; }
+  .hero { font-size:17px; }
+  .hero b { color:#1a365d; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; color:#86868b; font-weight:600; padding:8px 10px; border-bottom:2px solid #eceef1; white-space:nowrap; }
+  td { padding:9px 10px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  .tablebox { overflow-x:auto; }
+  /* ---- flow diagram ---- */
+  .flow { display:flex; flex-direction:column; align-items:stretch; gap:0; }
+  .fnode { background:#fff; border:1.5px solid #d8dce2; border-radius:10px; padding:10px 16px; font-size:14px; text-align:center; }
+  .fnode b { color:#1a365d; }
+  .fnode.gate { border-color:#ff9500; background:#fffaf2; }
+  .fnode.gate b { color:#b36b00; }
+  .fnode.term { border-color:#34c759; background:#f2fbf5; }
+  .fnode.start { border-color:#007aff; background:#f2f8ff; }
+  .farrow { text-align:center; color:#86868b; font-size:15px; line-height:1.2; padding:3px 0; }
+  .farrow .lbl { font-size:12px; color:#af52de; }
+  /* dispatch chain */
+  .chain { display:flex; flex-wrap:wrap; gap:8px; align-items:stretch; }
+  .step { flex:1 1 160px; min-width:150px; background:#fff; border:1.5px solid #d8dce2; border-radius:10px; padding:10px 12px; font-size:13px; position:relative; }
+  .step .n { font-size:11px; font-weight:700; color:#fff; background:#007aff; border-radius:8px; padding:1px 8px; display:inline-block; margin-bottom:6px; }
+  .step.fallback .n { background:#af52de; }
+  .step.override .n { background:#1a365d; }
+  .step .miss { color:#86868b; font-size:11.5px; margin-top:6px; }
+  .cols { display:flex; gap:14px; flex-wrap:wrap; }
+  .cols > div { flex:1 1 300px; }
+  pre { background:#1a1f27; color:#e8ecf2; border-radius:10px; padding:14px 16px; overflow-x:auto; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; line-height:1.55; }
+  pre .c { color:#8aa0b8; }
+  ul { padding-left:20px; }
+  li { margin:5px 0; font-size:14.5px; }
+  .footer { color:#86868b; font-size:12.5px; margin-top:40px; border-top:1px solid #e3e3e6; padding-top:14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Runner Pipeline 四断点收敛设计</h1>
+  <div class="sub">
+    <span class="badge issue">FLY-137</span>
+    <span class="badge blue">design-node handoff</span>
+    2026-07-23 · 基于 GEO-371 / GEO-372 实测 gap + 本仓代码现状核对
+  </div>
+
+  <!-- 1. 一句话总结 -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>一句话总结</div>
+    <div class="card blue hero">
+      把 Runner pipeline 的四个断点——<b>agent 文件不随 label 分发、design/code 两道 Codex review 不触发、onboarding 无显式阶段</b>——收敛为一条<b>确定性、配置驱动、fail-closed</b> 的流水线：Bridge 按项目 <code>agents:</code> 声明做 3-step 分发并永远有兜底，review 触发从"祈祷 Runner 记得跑 hook"改为 <b>Bridge 自动触发 + Runner 阻塞等待</b>，onboard 成为一等 stage。
+    </div>
+    <div class="card green" style="font-size:14px;">
+      <b>现状核对（诚实基线）</b>：本仓快照中该设计的核心机制<b>已经落地</b>（<code>AgentDispatcher</code> 已接线、<code>await-codex-gate</code> 已存在、<code>onboard</code> 已进 <code>VALID_STAGES</code>）。本文价值 = 把散落在代码注释与两份审计里的设计整合成正式可交接设计（tradeoff + 边界），successor 的起点是<b>验证性收口</b>而非重写。
+    </div>
+  </div>
+
+  <!-- 2. 核心流程 -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>核心流程</div>
+
+    <div class="card">
+      <div style="font-weight:600; margin-bottom:10px; color:#1a365d;">① Agent 分发链（确定性 3-step，永远有结果）</div>
+      <div class="chain">
+        <div class="step override"><span class="n">Step 1</span><br><b>Lead override</b><br><code>agentName</code> 显式传入 → <code>dispatchByName</code>；未知名报 <code>INVALID_AGENT_NAME</code><div class="miss">未传 ↓</div></div>
+        <div class="step"><span class="n">Step 2a</span><br><b>本部门 label 匹配</b><br><code>.flywheel/agents/&lt;dept&gt;/*.md</code>（owningDept 由 DepartmentRegistry 解析）<div class="miss">未中 →</div></div>
+        <div class="step"><span class="n">Step 2b</span><br><b>顶层 catch-all 匹配</b><br><code>.flywheel/agents/*.md</code>（depth 0，跨部门）<div class="miss">未中 →</div></div>
+        <div class="step fallback"><span class="n">Step 3a</span><br><b>项目 default_agent</b><br>配置声明的默认 agent<div class="miss">未声明 →</div></div>
+        <div class="step fallback"><span class="n">Step 3b</span><br><b>shipped generic</b><br>Flywheel 自带 <code>generic-executor.md</code>，零配置项目也有 role 协议</div>
+      </div>
+      <div style="font-size:13px; color:#86868b; margin-top:10px;">每次分发都带 <code>matchMethod</code>（override / label / default / shipped-generic / shipped-qa）留审计痕迹 — Lead 事后能看到某个 Runner 为什么拿到某个协议。</div>
+    </div>
+
+    <div class="card">
+      <div style="font-weight:600; margin-bottom:10px; color:#1a365d;">② Runner 生命周期（两道 Codex 硬门 + 一等 onboard）</div>
+      <div class="flow">
+        <div class="fnode start"><b>spawn</b> — Blueprint 把选中的 agent file 注入 system prompt（agentContext + Baseline Rules）</div>
+        <div class="farrow">↓</div>
+        <div class="fnode"><b>onboard</b>（新增一等 stage）— 跑 skill <b>前</b>先上报（intent 语义）；成功或 skill 缺失 → brainstorm；硬失败 → <code>complete --route blocked</code></div>
+        <div class="farrow">↓</div>
+        <div class="fnode">brainstorm → research → plan</div>
+        <div class="farrow">↓ <span class="lbl">stage set design_review --plan &lt;path&gt;</span></div>
+        <div class="fnode gate"><b>🚧 Design Gate</b> — Bridge 自动写 Codex instruction（或 codex-skip 的 skip.json）→ Runner 跑 <code>/codex-design-review</code> → <code>await-codex-gate</code> 阻塞轮询结果 JSON，<b>超时/坏 schema 一律 fail-closed</b></div>
+        <div class="farrow">↓</div>
+        <div class="fnode">implement → test → PR 创建</div>
+        <div class="farrow">↓ <span class="lbl">stage pr_created</span></div>
+        <div class="fnode gate"><b>🚧 Code Gate</b> — 同一机制的 code review type → <code>/codex-code-review</code> → 阻塞等待 APPROVED</div>
+        <div class="farrow">↓</div>
+        <div class="fnode term"><b>approve / merge 边界</b> — <code>verify-approval</code> 查 <code>codex_review_record</code>：review 的<b>最终强制点</b>在这里，写文件当下是尽力触发</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. 数据/结构模型 -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>数据 / 结构模型</div>
+    <div class="cols">
+      <div class="card">
+        <div style="font-weight:600; margin-bottom:8px; color:#1a365d;">配置（<code>.flywheel/config.yaml</code>）</div>
+<pre>agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    match: { labels: [backend, api] }
+    departments: [product, platform]  <span class="c"># 可选 dual-register</span>
+  general:
+    agent_file: .flywheel/agents/general-executor.md
+    match: { labels: [chore] }        <span class="c"># depth 0 = catch-all</span>
+default_agent: general</pre>
+        <div style="font-size:13px; margin-top:8px;">路径合同：必须以 <code>.flywheel/agents/</code> 开头；depth 0 = 跨部门 catch-all，depth 1 = dept-owned，<b>depth ≥2 或 legacy <code>.claude/agents/</code> 在配置加载期即拒</b>（不是 spawn 时才炸）。</div>
+      </div>
+      <div class="card">
+        <div style="font-weight:600; margin-bottom:8px; color:#1a365d;">运行期产物（review gate 的账本）</div>
+<pre>.flywheel/runs/&lt;execId&gt;/codex/
+├── design-review.json   <span class="c"># Runner 写</span>
+├── code-review.json     <span class="c"># {status:"APPROVED", rounds, ...}</span>
+└── skip.json            <span class="c"># Bridge 写 (codex-skip 治理跳过)</span></pre>
+        <div style="font-size:13px; margin-top:8px;">结果同步镜像进 Bridge 的 <code>codex_review_record</code> — 它是 merge 硬门（<code>verify-approval</code>）的输入。</div>
+        <div class="tablebox" style="margin-top:12px;">
+        <table>
+          <tr><th>保留名</th><th>语义</th></tr>
+          <tr><td><code>generic</code></td><td>永远 = shipped 兜底；项目不可占用</td></tr>
+          <tr><td><code>qa</code></td><td>项目声明则覆盖，否则 shipped <code>qa-executor.md</code> — 每个项目零配置获得独立 QA runner</td></tr>
+        </table>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="font-size:14px;">
+      <b>两层兜底刻意区分</b>：<code>general-executor.md</code> = 项目级 catch-all（项目自己写、自己声明）；<code>generic-executor.md</code> = Flywheel-shipped 绝对兜底。两层共存、各司其职。
+    </div>
+  </div>
+
+  <!-- 4. tradeoffs -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:#ff9500;">●</span>关键取舍与被否决的替代方案</div>
+    <div class="card amber tablebox">
+      <table>
+        <tr><th>决策</th><th>被否决的替代</th><th>为什么</th></tr>
+        <tr><td><b>确定性 label 匹配</b></td><td>Haiku 语义分类（早期版本含，后删）</td><td>分发要可预测、可测试、可审计；LLM 分类带来不确定性 + 延迟 + 成本</td></tr>
+        <tr><td><b>显式 <code>agents:</code> 声明 + shipped 兜底</b></td><td>Bridge 自动扫 <code>.claude/agents/</code> 推断</td><td>自动扫把文件系统变成隐式行为合同（改文件名 = 静默改分发）；显式声明同时保住 zero-config（靠兜底）与可审计</td></tr>
+        <tr><td><b>Bridge 触发 + Runner 阻塞 gate</b></td><td>继承 user-level PostToolUse hooks（issue 原假设）</td><td>hooks 是 prompt 层提醒、fail-open——Runner 忘了就静默跳过（GEO-371/372 实证）；gate fail-closed，review 从"约定"变"机制"</td></tr>
+        <tr><td><b>onboard = attempted（intent）语义</b></td><td>"succeeded" 语义 / 独立 error stage</td><td>跑 skill 前上报，dashboard 即刻见进度；失败复用 blocked 终态，不膨胀 stage 机</td></tr>
+        <tr><td><b>每次 spawn 都报 onboard</b></td><td>once-per-project 持久化标记</td><td>标记要新状态 + 失效判定；每次报的成本只是 dashboard 一行</td></tr>
+        <tr><td><b>flat dept dirs（depth ≤1）</b></td><td>任意嵌套子目录</td><td>嵌套让 dispatch 优先级组合爆炸；一层已覆盖现有组织形态</td></tr>
+        <tr><td><b>无匹配兜底到 generic</b></td><td>无匹配 → spawn 失败</td><td>分发职责是"总能给 Runner 合理协议"，不是惩罚没打 label 的 issue</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 5. 诚实边界 -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span>诚实边界</div>
+    <div class="cols">
+      <div class="card green">
+        <div style="font-weight:700; margin-bottom:6px;">这个设计做到</div>
+        <ul>
+          <li>label/config 驱动的确定性 agent 分发 + Lead 显式 override + 双保留名兜底</li>
+          <li>design/code 两道 Codex review：Bridge 触发 + Runner fail-closed 阻塞 + merge 边界硬校验</li>
+          <li>onboard 一等 stage（intent 语义），失败走既有 blocked 通道</li>
+        </ul>
+      </div>
+      <div class="card red">
+        <div style="font-weight:700; margin-bottom:6px;">刻意不做 / 已知局限</div>
+        <ul>
+          <li><b>无语义分类</b>：没 label 且没 default_agent → 一律 generic；分发质量取决于 label 卫生</li>
+          <li><b>design gate 触发依赖 Runner 上报 stage</b>：不上报就不会在写 plan 当下被拦——最终强制点在 approve/merge 边界</li>
+          <li><b>onboard ≠ onboarding 质量证明</b>：intent 信号，不校验 skill 内容是否被遵守</li>
+          <li>不覆盖 Lead 侧 agent 体系、不解决 marketing-lead 缺位、不做任意 user hooks 的通用继承（被 gate 方案刻意替代）</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card purple" style="font-size:14px;">
+      <b>Successor（implement 节点）建议起点</b>：① 按现状核对表逐条 e2e 验证（label → agent 注入 → onboard → 两道 gate → verify-approval）；② 补目标项目的 <code>agents:</code> block + 11 个 executor 文件按路径合同迁移；③ 若要把 design gate 收紧到"写 plan 当下硬拦"，属 three_stage pipeline 层面的顺序强制，另开 issue。
+    </div>
+  </div>
+
+  <div class="footer">
+    FLY-137 design-node handoff · 来源：GEO-371 session 95ad2405 / GEO-372 session 88dfed58 captures + <span class="mono">v1.27.0-FLY-137-runner-pipeline-gaps-audit.md</span> + <span class="mono">v1.27.2-FLY-137-geoforge3d-agents-audit.md</span> + 本仓代码核对（AgentDispatcher.ts / await-codex-gate.ts / stage-utils.ts / run-infra.ts）
+  </div>
+
+</div>
+</body>
+</html>
