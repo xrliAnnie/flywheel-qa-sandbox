@@ -111,3 +111,11 @@ grep 全仓(排除 dist/tests):`persisted_target_dead` / `persisted_target_missi
 5. `completed` 维持 hold;`running/pending/ship_parked/awaiting_review/approved_to_ship/design_done/approved/timeout` 等一律不进集合(活跃、或语义模糊 → 保守面不动)。
 6. 新 reason `terminal_status_dead`,不复用 `persisted_target_dead`。
 7. 无 feature flag(纯引擎逻辑,Annie 铁律)。
+
+## 9. 更正附录(post 独立对抗性 review,2026-07-24)
+
+独立 Claude 对抗性 review(见 `claude-design-review-r1.md`)证伪了本文三处结论,以此附录为准:
+
+1. **§4 `tmux_session` 生命周期——"写入: COALESCE upsert"具误导性**:upsert 支持该列,但全仓**无任何生产调用方传入非空值**(grep:仅 StateStore 列名映射 4165 与 dashboard 读)。生产实锤(`phase-orchestrator.fly1329-park-alive.test.ts:104,223` pin,2026-07-17 对活库核查):**1423 行 session 的 `tmux_session` 全部 NULL**。推论:分类器"有 target 的探针路径"生产不可达;空 target 分支是 registration-absent 后的**全部**生产决策路径。"FLY-1050 cleanupPending 一定带 target 不落空分支"的安全论证不成立——cleanupPending 的真守卫是 kill 失败时 **CommDB registration 被保留**(`actions.ts:1537-1546` physicalGone=false → 不 finalize)。
+2. **§2b/§8-2 "第二消费者同受益"为死代码**:`isWakeTargetProvenDead` 两个调用点的行均来自 `getAlivePhaseSession`,生产 wiring 过滤 `{running, awaiting_review, approved_to_ship, design_done}`(`plugin.ts:9368-9375`),与 proven-dead 六态不相交。消费者 2 既无收益也无风险。
+3. **新发现(review HIGH-1/MED-3,进 plan v2)**:① probe wiring(`plugin.ts:9479-9486`)经 `getTmuxTargetFromCommDb` 把 CommDB **读错误**折叠成 `absent`(`tmux-lookup.ts:268` NOTE 自认),status-only 的 replace 会让瞬时 sqlite 锁触发不可逆替换;② terminate 对查无 registration 的 session 直接 `physicalGone=true` 不尝试 kill(`actions.ts:1544-1546`)——status=terminated **不**蕴含物理死亡。故 plan v2 要求三重证据(六态 + registration 确无 + FLY-1374 exec-marker 全局扫描 missing)。exploration §6 "根治一整类"措辞相应收敛为:根治"已证死"子类;`completed` 姊妹 hold 与可见性告警留 follow-up。
