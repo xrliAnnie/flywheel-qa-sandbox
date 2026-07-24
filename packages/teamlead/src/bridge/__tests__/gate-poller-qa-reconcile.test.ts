@@ -39,23 +39,6 @@ describe("FLY-1279 GatePoller auto-QA recovery piggyback", () => {
 		expect(onQaReconcileTick).toHaveBeenCalledTimes(2);
 	});
 
-	it("is independent of the park-watch kill switch", async () => {
-		const before = process.env.FLYWHEEL_PARK_WATCH;
-		process.env.FLYWHEEL_PARK_WATCH = "0";
-		try {
-			const onQaReconcileTick = vi.fn();
-			const poller = makePoller({
-				onQaReconcileTick,
-				qaReconcileEveryNTicks: 1,
-			});
-			await tick(poller, 2);
-			expect(onQaReconcileTick).toHaveBeenCalledTimes(2);
-		} finally {
-			if (before === undefined) delete process.env.FLYWHEEL_PARK_WATCH;
-			else process.env.FLYWHEEL_PARK_WATCH = before;
-		}
-	});
-
 	it("contains sync and async failures without breaking later ticks", async () => {
 		const onQaReconcileTick = vi
 			.fn()

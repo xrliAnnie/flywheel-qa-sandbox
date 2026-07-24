@@ -41,9 +41,15 @@ describe("runParkWatch (FLY-1279 D2)", () => {
 		else process.env.FLYWHEEL_CODEX_HARD_GATE = priorHardGate;
 	});
 
-	it("uses an explicit 10-minute N2 founder grace for park episodes", () => {
-		expect(parkFounderGraceMs({})).toBe(10 * 60_000);
-		expect(parkFounderGraceMs({ FLYWHEEL_PARK_N2_MS: "12345" })).toBe(12_345);
+	it("uses the retired flag's 10-minute N2 default unconditionally", () => {
+		const previous = process.env.FLYWHEEL_PARK_N2_MS;
+		process.env.FLYWHEEL_PARK_N2_MS = "12345";
+		try {
+			expect(parkFounderGraceMs()).toBe(10 * 60_000);
+		} finally {
+			if (previous === undefined) delete process.env.FLYWHEEL_PARK_N2_MS;
+			else process.env.FLYWHEEL_PARK_N2_MS = previous;
+		}
 	});
 
 	it.each([
@@ -81,7 +87,7 @@ describe("runParkWatch (FLY-1279 D2)", () => {
 		});
 	}
 
-	async function scan(seen: DetectionEscalationInput[], n1Ms = 0) {
+	async function scan(seen: DetectionEscalationInput[], n1Ms?: number) {
 		await runParkWatch({
 			store,
 			commDbPathForProject: () => dbPath,
@@ -100,6 +106,27 @@ describe("runParkWatch (FLY-1279 D2)", () => {
 			qaRegistrationGraceMs: 60_000,
 		});
 	}
+
+	it("uses the retired flag's 10-minute N1 default unconditionally", async () => {
+		const previous = process.env.FLYWHEEL_PARK_N1_MS;
+		process.env.FLYWHEEL_PARK_N1_MS = String(10 * 60 * 60_000);
+		try {
+			session("review-default-n1", "awaiting_review", {
+				session_role: "implement",
+				pr_number: 999,
+			});
+			store.setReviewBinding("review-default-n1", {
+				questionId: null,
+				prHeadSha: "f".repeat(40),
+			});
+			const seen: DetectionEscalationInput[] = [];
+			await scan(seen);
+			expect(seen.map((input) => input.kind)).toEqual(["park:review_hold"]);
+		} finally {
+			if (previous === undefined) delete process.env.FLYWHEEL_PARK_N1_MS;
+			else process.env.FLYWHEEL_PARK_N1_MS = previous;
+		}
+	});
 
 	it("notifies blocked once and keeps the durable episode active", async () => {
 		session("blocked", "blocked", { last_error: "goal blocked: no progress" });
@@ -287,12 +314,12 @@ describe("runParkWatch (FLY-1279 D2)", () => {
 		expect(store.getDetectionEscalationsForReconcile()).toEqual([]);
 	});
 
-	it("is a byte-noop when the park-watch switch is off", async () => {
+	it("ignores the retired park-watch switch", async () => {
 		process.env.FLYWHEEL_PARK_WATCH = "0";
 		session("blocked-off", "blocked");
 		const seen: DetectionEscalationInput[] = [];
 		await scan(seen);
-		expect(seen).toEqual([]);
-		expect(store.getDetectionEscalationsForReconcile()).toEqual([]);
+		expect(seen.map((input) => input.kind)).toEqual(["park:blocked"]);
+		expect(store.getDetectionEscalationsForReconcile()).toHaveLength(1);
 	});
 });

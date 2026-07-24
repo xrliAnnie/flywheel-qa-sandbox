@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	qaStallInboxLoopLead,
+	RETIRED_WATCHDOG_ENV_VARS,
 	retiredWatchdogLaneEnabled,
 	watchdogBlockedEnabled,
 	watchdogLivenessEnabled,
@@ -27,11 +28,10 @@ describe("FLY-1393 minimum-set policy", () => {
 	});
 
 	it("retired delivery lanes are hard-off even when legacy flags try to revive them", () => {
+		expect(RETIRED_WATCHDOG_ENV_VARS).toEqual(["FLYWHEEL_ZOMBIE_GATE_RESOLVE"]);
 		expect(retiredWatchdogLaneEnabled({})).toBe(false);
 		expect(
 			retiredWatchdogLaneEnabled({
-				FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS: "1",
-				FLYWHEEL_CHECKPOINT_WATCHDOG: "1",
 				FLYWHEEL_ZOMBIE_GATE_RESOLVE: "1",
 			}),
 		).toBe(false);

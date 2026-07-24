@@ -9,9 +9,7 @@ export type LeadEventAckPolicy =
 export function deliveryAckEnabled(
 	env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-	return (
-		legacyDeliveryWatchdogsEnabled(env) && env.FLYWHEEL_DELIVERY_ACK !== "0"
-	);
+	return legacyDeliveryWatchdogsEnabled(env);
 }
 
 /** Reverse feature flag for the superseded scanner/redelivery cohort. */

@@ -175,27 +175,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 		note: "Annie 裁定保留且默认开:宁愿误报,不希望不报。Lead blocked-marker 修改后需重启;Runner session_stuck 下一次检查即生效。",
 	},
-	{
-		name: "checkpoint_watchdog",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CHECKPOINT_WATCHDOG",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "已退役 checkpoint-park 巡检;变量仅保留作真值迁移提示",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/watchdog-minimum-set.ts",
-				"retiredWatchdogLaneEnabled",
-				"bridge_boot",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		retiring: "FLY-1393",
-	},
 	// ─── FLY-1392: receipt foundation ───
 	{
 		name: "receipt_foundation",
@@ -239,30 +218,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "readonly",
 		note: "运行时按 patrol cadence 读取；仅作容量验收与 rollback drill，正式 activation 必须保持关闭。",
-	},
-	// ─── FLY-1373: superseded delivery watchdog alert lanes ───
-	{
-		name: "legacy_delivery_watchdogs",
-		retiring: "FLY-1393",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"旧 Lead 投递 watchdog 告警巷(默认关闭;=1 仅用于回开旧 cohort,新 comm.db 消费循环及其心跳不受影响)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/legacy-delivery-watchdog-policy.ts",
-				"legacyDeliveryWatchdogsEnabled",
-				"bridge_boot",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "Bridge boot 时捕获;修改后需重启 Bridge。",
 	},
 	// ─── FLY-1329: session lifecycle floor — liveness never authorizes alone ───
 	{
@@ -524,32 +479,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 		],
 		toggleable: "readonly",
-	},
-	{
-		// FLY-1256 phase-1 migration flag: after the external daemon is healthy,
-		// setup flips this to retire the Bridge's legacy switch execution surfaces.
-		// The Bridge captures the resolved mode while wiring the plugin, so changing
-		// the env requires a restart. This row is deliberately readonly/temporary;
-		// FLY-1284 removes the flag after one week of stable daemon operation.
-		name: "quota_daemon_cutover",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_QUOTA_DAEMON_CUTOVER",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1256: daemon 健康后退役 Bridge 内旧 account-switch 执行面（迁移期临时 flag，翻转需重启）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/quota-daemon-cutover.ts",
-				"resolveQuotaDaemonCutover",
-				"object_construction",
-			),
-		],
-		toggleable: "readonly",
-		note: "临时两阶段迁移 flag；FLY-1284 在 enable 稳定 >=1 周后删除，并同步迁移 KIND_CONTRACTS.usage_limit。",
 	},
 	{
 		name: "quota_degraded_switch",
@@ -3281,27 +3210,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "FLY-1344 founder-controlled DAG claims-read lever (FLY-1307/1244 lineage). Bridge and CLI are both live authoritative consumers; explicit run enrollment remains required.",
 	},
 	{
-		name: "delivery_ack",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DELIVERY_ACK",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1279: durable Lead-event ACK, bounded reminder, and dead-letter escalation loop",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/lead-event-ack-policy.ts",
-				"deliveryAckEnabled",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
 		name: "commdb_protection",
 		category: "kill_switch",
 		source: "env",
@@ -3317,85 +3225,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/flywheel-comm/src/db.ts",
 				"commDbProtectionEnabled",
 				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "delivery_ack_timeout_ms",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DELIVERY_ACK_TIMEOUT_MS",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "300000",
-		description: "FLY-1279: ACK deadline before a Lead-event reminder",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/lead-event-delivery.ts",
-				"LeadEventDeliveryCoordinator constructor",
-				"object_construction",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "delivery_max_redeliver",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DELIVERY_MAX_REDELIVER",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "5",
-		description:
-			"FLY-1279: maximum pushed ACK reminders before dead-letter escalation",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/lead-event-delivery.ts",
-				"LeadEventDeliveryCoordinator constructor",
-				"object_construction",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "delivery_max_transport_failures",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DELIVERY_MAX_TRANSPORT_FAILURES",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "5",
-		description:
-			"FLY-1279: maximum failed transport attempts before dead-letter escalation",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/lead-event-delivery.ts",
-				"LeadEventDeliveryCoordinator constructor",
-				"object_construction",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "ack_late_window_ms",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ACK_LATE_WINDOW_MS",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "86400000",
-		description:
-			"FLY-1279: late-ACK acceptance window after a confirmed founder page",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/lead-event-delivery.ts",
-				"LeadEventDeliveryCoordinator constructor",
-				"object_construction",
 			),
 		],
 		toggleable: "conversational",
@@ -3420,105 +3249,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "readonly",
 	},
-	{
-		name: "park_watch",
-		retiring: "FLY-1393",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PARK_WATCH",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1279 D2: semantic scan for blocked, missing-gate, declared-park, and QA-hold episodes",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/park-watch.ts",
-				"runParkWatch",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "park_watch_cadence",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PARK_WATCH_EVERY_N_TICKS",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "20",
-		description: "FLY-1279 D2: park-watch cadence on the GatePoller timer",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"GatePoller park-watch wiring",
-				"object_construction",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "park_watch_n1_ms",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PARK_N1_MS",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "600000",
-		description: "FLY-1279 D2: ordinary park age before Lead notification",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/park-watch.ts",
-				"runParkWatch",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "park_watch_qa_n3_ms",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PARK_QA_N3_MS",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "7200000",
-		description:
-			"FLY-1279 D2: healthy QA/retest hold age before a Lead-only patrol notice",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/park-watch.ts",
-				"runParkWatch",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "park_watch_n2_ms",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PARK_N2_MS",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "600000",
-		description:
-			"FLY-1279 D2: grace after Lead park notification before confirmed founder issue-thread escalation",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/park-watch.ts",
-				"parkFounderGraceMs",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
 	// ─── FLY-1282: zombie-session liveness + folded family defects ───
 	{
 		name: "zombie_reconcile",
@@ -3540,26 +3270,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "conversational",
 		note: "与既有 FLYWHEEL_LIVENESS_PANE_DEAD / FLYWHEEL_HEARTBEAT_READOPT 合成 zombieMachineryEnabled() 单谓词。",
-	},
-	{
-		name: "delivery_unconsumed_v2",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DELIVERY_UNCONSUMED_V2",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1282 Part B: delivery_unconsumed 误报修正——parked/awaiting_review/approved_to_ship 不触发 + 回报引用完整 [lead-instruction id] 即消费证明(不再只看 read_at)。=0 回 V1 判据",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"gapScanTick",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
 	},
 	{
 		name: "terminal_thread_archive",

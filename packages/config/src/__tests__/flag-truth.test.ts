@@ -8,14 +8,33 @@ import {
 } from "../feature-flags/truth.js";
 
 describe("FLY-1393 flag truth", () => {
-	it("shares the allowlist and removes CHECKPOINT_WATCHDOG from it", () => {
+	it("FLY-1456 tombstones CHECKPOINT_WATCHDOG instead of registering it", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_EXEC_ID).toMatch(/execution id/);
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_CHECKPOINT_WATCHDOG).toBeUndefined();
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_CHECKPOINT_STUCK_MS).toBeUndefined();
 		expect(
 			FEATURE_FLAGS.find(
 				(flag) => flag.envVar === "FLYWHEEL_CHECKPOINT_WATCHDOG",
 			),
-		).toMatchObject({ retiring: "FLY-1393" });
+		).toBeUndefined();
+		expect(
+			RETIRED_FLAGS.find(
+				(flag) => flag.envVar === "FLYWHEEL_CHECKPOINT_WATCHDOG",
+			),
+		).toMatchObject({ retiredBy: "FLY-1456" });
+	});
+
+	it("FLY-1456 tombstones QUOTA_DAEMON_CUTOVER after solidifying it on", () => {
+		expect(
+			FEATURE_FLAGS.find(
+				(flag) => flag.envVar === "FLYWHEEL_QUOTA_DAEMON_CUTOVER",
+			),
+		).toBeUndefined();
+		expect(
+			RETIRED_FLAGS.find(
+				(flag) => flag.envVar === "FLYWHEEL_QUOTA_DAEMON_CUTOVER",
+			),
+		).toMatchObject({ retiredBy: "FLY-1456" });
 	});
 
 	it("registers the FLY-1425 submission sentinel as non-flag plumbing", () => {
@@ -24,7 +43,7 @@ describe("FLY-1393 flag truth", () => {
 		);
 	});
 
-	it("fails tombstones and unknown variables, but permits retiring flags in env", () => {
+	it("fails tombstones and unknown variables, but permits remaining retiring flags in env", () => {
 		const tombstone = validateFlagTruthEnvironment([
 			"FLYWHEEL_DETECTION_GAP_SCAN",
 		]);
@@ -35,8 +54,13 @@ describe("FLY-1393 flag truth", () => {
 		expect(unknown.ok).toBe(false);
 		expect(unknown.errors.join("\n")).toMatch(/unknown/i);
 
-		const retiring = validateFlagTruthEnvironment([
+		const retiredLegacy = validateFlagTruthEnvironment([
 			"FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS",
+		]);
+		expect(retiredLegacy.ok).toBe(false);
+		expect(retiredLegacy.errors.join("\n")).toMatch(/删这行/);
+
+		const retiring = validateFlagTruthEnvironment([
 			"FLYWHEEL_ZOMBIE_GATE_RESOLVE",
 		]);
 		expect(retiring).toEqual({ ok: true, errors: [] });
@@ -50,6 +74,49 @@ describe("FLY-1393 flag truth", () => {
 				"FLYWHEEL_DETECTION_ESCALATION",
 			]),
 		);
+	});
+
+	it("FLY-1456 retires the five park-watch controls", () => {
+		const retiredParkFlags = [
+			"FLYWHEEL_PARK_WATCH",
+			"FLYWHEEL_PARK_WATCH_EVERY_N_TICKS",
+			"FLYWHEEL_PARK_N1_MS",
+			"FLYWHEEL_PARK_N2_MS",
+			"FLYWHEEL_PARK_QA_N3_MS",
+		];
+		const registered = new Set(
+			FEATURE_FLAGS.flatMap((flag) => (flag.envVar ? [flag.envVar] : [])),
+		);
+		const tombstones = new Map(
+			RETIRED_FLAGS.map((flag) => [flag.envVar, flag.retiredBy]),
+		);
+
+		for (const envVar of retiredParkFlags) {
+			expect(registered.has(envVar), envVar).toBe(false);
+			expect(tombstones.get(envVar), envVar).toBe("FLY-1456");
+		}
+	});
+
+	it("FLY-1456 retires the six legacy delivery controls", () => {
+		const retiredDeliveryFlags = [
+			"FLYWHEEL_DELIVERY_ACK",
+			"FLYWHEEL_DELIVERY_UNCONSUMED_V2",
+			"FLYWHEEL_DELIVERY_ACK_TIMEOUT_MS",
+			"FLYWHEEL_DELIVERY_MAX_REDELIVER",
+			"FLYWHEEL_DELIVERY_MAX_TRANSPORT_FAILURES",
+			"FLYWHEEL_ACK_LATE_WINDOW_MS",
+		];
+		const registered = new Set(
+			FEATURE_FLAGS.flatMap((flag) => (flag.envVar ? [flag.envVar] : [])),
+		);
+		const tombstones = new Map(
+			RETIRED_FLAGS.map((flag) => [flag.envVar, flag.retiredBy]),
+		);
+
+		for (const envVar of retiredDeliveryFlags) {
+			expect(registered.has(envVar), envVar).toBe(false);
+			expect(tombstones.get(envVar), envVar).toBe("FLY-1456");
+		}
 	});
 
 	it("runtime validation catches a missing minimum-set row and any revived retiring lane", () => {

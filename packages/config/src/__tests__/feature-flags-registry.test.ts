@@ -153,24 +153,11 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
-	it("FLY-1373 registers legacy delivery watchdogs as a boot-captured opt-in", () => {
+	it("FLY-1456 no longer registers the retired legacy delivery watchdog flag", () => {
 		const flag = FEATURE_FLAGS.find(
 			(f) => f.name === "legacy_delivery_watchdogs",
 		);
-		expect(flag).toMatchObject({
-			category: "kill_switch",
-			envVar: "FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS",
-			polarity: "opt_in",
-			default: false,
-			toggleable: "readonly",
-		});
-		expect(flag?.readSites).toEqual([
-			expect.objectContaining({
-				file: "packages/teamlead/src/bridge/legacy-delivery-watchdog-policy.ts",
-				symbol: "legacyDeliveryWatchdogsEnabled",
-				timing: "bridge_boot",
-			}),
-		]);
+		expect(flag).toBeUndefined();
 	});
 
 	it("FLY-1393 records both W-4 read timings instead of advertising a fake live toggle", () => {
@@ -475,21 +462,11 @@ describe("feature-flag registry invariants", () => {
 		});
 	});
 
-	it("quota daemon cutover is a temporary readonly boot flag tied to FLY-1284", () => {
+	it("FLY-1456 removes the temporary quota daemon cutover flag", () => {
 		const cutover = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_QUOTA_DAEMON_CUTOVER",
 		);
-		expect(cutover).toMatchObject({
-			name: "quota_daemon_cutover",
-			category: "feature",
-			polarity: "opt_in",
-			default: false,
-			toggleable: "readonly",
-		});
-		expect(cutover?.readSites).toEqual([
-			expect.objectContaining({ timing: "object_construction" }),
-		]);
-		expect(cutover?.note).toContain("FLY-1284");
+		expect(cutover).toBeUndefined();
 	});
 
 	it("FLY-1252 registers account identity verification as a default-off external-runtime feature", () => {

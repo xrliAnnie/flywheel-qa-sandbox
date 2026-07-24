@@ -4,6 +4,10 @@ Issue: FLY-1049 (https://linear.app/geoforge3d/issue/FLY-1049/build-fly-915-aler
 日期: 2026-07-09
 基于: plan.md(收敛 FLY-871 `C6-infra-bot-deployment.md` + FLY-929 `enable-runbook.md` + FLY-927 plan §5 步 2-5)
 
+> **FLY-1456 修订:**下文原 checkpoint-park enable 步已 superseded;该 patrol 已移除,
+> **勿再设置** `FLYWHEEL_CHECKPOINT_WATCHDOG` 或 `FLYWHEEL_CHECKPOINT_STUCK_MS`。
+> 其余 alerts enable 清单继续有效。
+>
 > **这是 founder-gated 运维窗的执行清单**,在本 PR merge 之后、独立于 PR ship 单独执行,
 > 由 Tadashi 调度。目标 = 一个窗、**一次 Bridge 重启**,把 FLY-915 pipeline(925 standup /
 > 927 工单队列 / 928 两 infra bot / 929 self-heal + 通知迁移)全部真跑起来。
@@ -63,7 +67,6 @@ FLYWHEEL_ALERT_TICKETS=1
 FLYWHEEL_ALERT_RATE_PER_MIN=20
 FLYWHEEL_ALERT_SENDER_TOKEN_ENV=FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN   # 非-owner dispatcher(作者≠owner 不变量)
 FLYWHEEL_ALERT_REPAIR_BOT_TOKEN_ENV=FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN # auto-repair 同声音(现默认 Cass;指针 env 零代码改)
-FLYWHEEL_CHECKPOINT_WATCHDOG=1
 # —— sender 身份(Codex R1 修正)——
 FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN=<步 1a ② token>
 # —— 928 W5 身份(缺口 C)——

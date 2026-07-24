@@ -116,12 +116,10 @@ describe("FLY-696 reverse-compat sentinel (isEnabled false)", () => {
 	});
 });
 
-describe("FLY-1243: accountPoolConfigured() — the production self-heal gate signal", () => {
-	// plugin.ts gates `accountSwitchRepair` construction on accountPoolConfigured()
-	// (pool-file presence), not on any env-flag boolean. This proves that gate
-	// signal directly — the account-selfheal-bytecompat suite above only covered
-	// the (still-reachable) isEnabled deps seam, so a regression in the real
-	// production gate (e.g. always/never returning true) would have stayed green.
+describe("FLY-1243: accountPoolConfigured() — the production pool signal", () => {
+	// FLY-1456 permanently retired Bridge account switching, but plugin.ts still
+	// uses pool presence to wire independent rotation notices and login rescue.
+	// Prove that remaining production signal directly.
 	const ORIGINAL_PATH = process.env.FLYWHEEL_CLAUDE_ACCOUNTS_PATH;
 	afterEach(() => {
 		if (ORIGINAL_PATH === undefined) {

@@ -285,8 +285,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"internal ops lever: 🎫 ticket schema header + owner @-target + lifecycle/T2, default-off (FLY-927)",
 	FLYWHEEL_ALERT_SENDER_TOKEN_ENV:
 		"config value: single alert-sender token env NAME (D2), default-unset = own-bot chain (FLY-927)",
-	FLYWHEEL_CHECKPOINT_STUCK_MS:
-		"tuning knob: Watchdog v2 checkpoint-park stuck threshold ms, default 3600000 (FLY-927)",
 };
 
 export const RETIRED_FLAGS = [
@@ -300,6 +298,26 @@ export const RETIRED_FLAGS = [
 	{ envVar: "FLYWHEEL_ACCOUNT_SELF_HEAL", retiredBy: "FLY-1243" },
 	{ envVar: "FLYWHEEL_NOTIFY_DIGEST_EXPECT", retiredBy: "FLY-1243" },
 	{ envVar: "FLYWHEEL_PANE_MULTIFRAME", retiredBy: "FLY-1243" },
+	{ envVar: "FLYWHEEL_PARK_WATCH", retiredBy: "FLY-1456" },
+	{
+		envVar: "FLYWHEEL_PARK_WATCH_EVERY_N_TICKS",
+		retiredBy: "FLY-1456",
+	},
+	{ envVar: "FLYWHEEL_PARK_N1_MS", retiredBy: "FLY-1456" },
+	{ envVar: "FLYWHEEL_PARK_N2_MS", retiredBy: "FLY-1456" },
+	{ envVar: "FLYWHEEL_PARK_QA_N3_MS", retiredBy: "FLY-1456" },
+	{ envVar: "FLYWHEEL_DELIVERY_ACK", retiredBy: "FLY-1456" },
+	{ envVar: "FLYWHEEL_DELIVERY_UNCONSUMED_V2", retiredBy: "FLY-1456" },
+	{ envVar: "FLYWHEEL_DELIVERY_ACK_TIMEOUT_MS", retiredBy: "FLY-1456" },
+	{ envVar: "FLYWHEEL_DELIVERY_MAX_REDELIVER", retiredBy: "FLY-1456" },
+	{
+		envVar: "FLYWHEEL_DELIVERY_MAX_TRANSPORT_FAILURES",
+		retiredBy: "FLY-1456",
+	},
+	{ envVar: "FLYWHEEL_ACK_LATE_WINDOW_MS", retiredBy: "FLY-1456" },
+	{ envVar: "FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS", retiredBy: "FLY-1456" },
+	{ envVar: "FLYWHEEL_CHECKPOINT_WATCHDOG", retiredBy: "FLY-1456" },
+	{ envVar: "FLYWHEEL_QUOTA_DAEMON_CUTOVER", retiredBy: "FLY-1456" },
 ] as const;
 
 export interface FlagTruthValidation {

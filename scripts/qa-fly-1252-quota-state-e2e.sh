@@ -6,8 +6,7 @@
 #   2. manual bypass is loud and queues two independently-claimed audit alerts,
 #      loading alert configuration from a scratch ~/.flywheel/.env;
 #   3. daemon active+sweep observations project both windows into the store;
-#   4. CUTOVER-off legacy repair skips a stored exhaustion and re-reads a live
-#      guard exhaustion before trying the next account.
+#   4. Bridge mode stays permanently cut over to the external quota daemon.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,9 +37,10 @@ on_error() {
 trap on_error ERR
 trap cleanup EXIT
 
-for tool in bash node pnpm jq sqlite3 shasum; do
+for tool in bash node pnpm jq sqlite3 shasum curl; do
   command -v "$tool" >/dev/null 2>&1 || fail "missing prerequisite: $tool"
 done
+PROFILE_CURL_BIN="$(command -v curl)"
 [[ -x "$PROFILE_BIN" && -x "$FRESHNESS_BIN" && -x "$GUARD_BIN" ]] \
   || fail "profile/freshness/quota-guard launchers must be executable"
 
@@ -55,19 +55,31 @@ KEYCHAIN_STATE="$ROOT/keychain-state.json"
 SECURITY_LOG="$ROOT/security-argv.log"
 mkdir -p "$HOME_DIR/.flywheel" "$POOL" "$ROOT/bin" "$ROOT/queue" "$ROOT/deadletter"
 
-make_credential() { # name access refresh
-  local name="$1" access="$2" refresh="$3"
+make_credential() { # name access refresh canonical-email
+  local name="$1" access="$2" refresh="$3" email="$4"
   mkdir -p "$POOL/$name"
   jq -cn --arg access "$access" --arg refresh "$refresh" \
     '{claudeAiOauth:{accessToken:$access,refreshToken:$refresh,expiresAt:4102444800000}}' \
     > "$POOL/$name/.credentials.json"
   chmod 600 "$POOL/$name/.credentials.json"
+  jq -cn --arg name "$name" --arg email "$email" \
+    '{accountUuid:("uuid-"+$name),emailAddress:$email,organizationUuid:("org-"+$name),organizationName:("Org "+$name)}' \
+    > "$POOL/$name/oauthAccount.json"
+  chmod 600 "$POOL/$name/oauthAccount.json"
+  jq -cn --arg name "$name" --arg email "$email" \
+    '{accountUuid:("uuid-"+$name),email:$email,anchoredAt:"2026-07-16T00:00:00.000Z",anchoredBy:"fly1252-hermetic-e2e",confirmedBy:"scratch-fixture"}' \
+    > "$POOL/$name/identity-anchor.json"
+  chmod 600 "$POOL/$name/identity-anchor.json"
 }
-make_credential shopping shopping-access shopping-refresh
-make_credential business business-access business-refresh
+make_credential shopping shopping-access shopping-refresh shopping@example.test
+make_credential business business-access business-refresh business@example.test
 printf 'shopping' > "$POOL/.active"
 cp "$POOL/shopping/.credentials.json" "$KEYCHAIN_STATE"
 chmod 600 "$KEYCHAIN_STATE"
+mkdir -p "$HOME_DIR"
+jq -n --slurpfile identity "$POOL/shopping/oauthAccount.json" \
+  '{numStartups:1,oauthAccount:$identity[0]}' > "$HOME_DIR/.claude.json"
+chmod 600 "$HOME_DIR/.claude.json"
 jq -n '{generation:0,activeAccount:"shopping",accounts:[
   {name:"shopping",quotaExhaustedUntil:null,weeklyResetAt:null},
   {name:"business",quotaExhaustedUntil:null,weeklyResetAt:null}
@@ -131,6 +143,15 @@ const usage = (name) => ({
   seven_day: { utilization: name === "business" ? 100 : 23, resets_at: "2099-01-07T00:00:00.000Z" },
 });
 const server = createServer((req, res) => {
+  if (req.method === "GET" && req.url === "/v1/oauth/profile") {
+    const auth = String(req.headers.authorization ?? "");
+    const name = auth.includes("business-") ? "business" : auth.includes("shopping-") ? "shopping" : "unknown";
+    record(`identity:${name}`);
+    if (name === "unknown") return send(res, 401, { error: "unauthorized" });
+    return send(res, 200, {
+      account: { uuid: `uuid-${name}`, email: `${name}@example.test` },
+    });
+  }
   if (req.method === "GET" && req.url === "/api/oauth/usage") {
     const auth = String(req.headers.authorization ?? "");
     const name = auth.includes("business-") ? "business" : auth.includes("shopping-") ? "shopping" : "unknown";
@@ -175,6 +196,7 @@ COMMON_ENV=(
   "USER=fly1252-e2e"
   "FLYWHEEL_QUOTA_API_BASE=http://127.0.0.1:$PORT"
   "FLYWHEEL_CLAUDE_OAUTH_ENDPOINT=http://127.0.0.1:$PORT/v1/oauth/token"
+  "FLYWHEEL_PROFILE_IDENTITY_ENDPOINT=http://127.0.0.1:$PORT/v1/oauth/profile"
   "FLYWHEEL_CLAUDE_PROFILES_DIR=$POOL"
   "FLYWHEEL_CLAUDE_ACCOUNTS_PATH=$STORE"
   "FLYWHEEL_CLAUDE_ACCOUNTS_LOCK=$LOCK"
@@ -183,6 +205,7 @@ COMMON_ENV=(
   "FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT=fly1252-e2e"
   "FLYWHEEL_CLAUDE_FRESHNESS_BIN=$FRESHNESS_BIN"
   "FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN=$GUARD_BIN"
+  "FLYWHEEL_PROFILE_CURL_BIN=$PROFILE_CURL_BIN"
   "FLYWHEEL_CLAUDE_JSON=$HOME_DIR/.claude.json"
   "FLYWHEEL_CLAUDE_JSON_LOCK=$HOME_DIR/.claude.json.lock"
   "FAKE_SECURITY_STATE=$KEYCHAIN_STATE"
@@ -227,11 +250,11 @@ claim_count="$(sqlite3 "$ROOT/claims.db" "select count(*) from alert_claims wher
 [[ "$(cat "$POOL/.active")" == "business" ]] || fail "bypass did not perform the requested switch"
 grep -R -q 'quota_guard_bypassed' "$ROOT/queue" || fail "queued audit kind missing"
 
-# Compiled-module E2E for daemon projection and the CUTOVER-off legacy repair
-# chain. All writes stay under the scratch root.
+# Compiled-module E2E for daemon projection and the permanent Bridge cutover.
+# All writes stay under the scratch root.
 cat > "$ROOT/runtime-replay.mjs" <<'RUNTIME'
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -240,8 +263,6 @@ const dist = process.env.TEAMLEAD_DIST;
 const load = (rel) => import(pathToFileURL(join(dist, rel)).href);
 const { makeQuotaMonitorRuntime } = await load("account-heal/quota-monitor-runtime.js");
 const { readStore, writeStore } = await load("account-heal/account-store.js");
-const { makeAccountSwitchRepair } = await load("account-heal/account-switch-repair.js");
-const { TargetQuotaExhaustedError } = await load("account-heal/switch-executor.js");
 const { resolveQuotaDaemonBridgeMode } = await load("bridge/quota-daemon-cutover.js");
 
 const NOW = Date.parse("2026-07-16T12:00:00.000Z");
@@ -254,14 +275,29 @@ const configPath = join(daemonRoot, "config.json");
 const statePath = join(daemonRoot, "state.json");
 const cachePath = join(daemonRoot, "cache.json");
 const lockPath = join(daemonRoot, "accounts.lock");
+const claudeJsonPath = join(daemonRoot, ".claude.json");
 mkdirSync(poolDir, { recursive: true });
 for (const name of ["shopping", "business", "school"]) {
   mkdirSync(join(poolDir, name), { recursive: true });
   writeFileSync(join(poolDir, name, ".credentials.json"), JSON.stringify({
     claudeAiOauth: { accessToken: `${name}-token`, refreshToken: `${name}-refresh`, expiresAt: 4102444800000 },
   }), { mode: 0o600 });
+  writeFileSync(join(poolDir, name, "oauthAccount.json"), JSON.stringify({
+    accountUuid: `uuid-${name}`,
+    emailAddress: `${name}@example.test`,
+    organizationUuid: `org-${name}`,
+    organizationName: `Org ${name}`,
+  }), { mode: 0o600 });
 }
 writeFileSync(join(poolDir, ".active"), "shopping");
+writeFileSync(claudeJsonPath, JSON.stringify({
+  oauthAccount: {
+    accountUuid: "uuid-shopping",
+    emailAddress: "shopping@example.test",
+    organizationUuid: "org-shopping",
+    organizationName: "Org shopping",
+  },
+}), { mode: 0o600 });
 writeStore({
   generation: 4,
   activeAccount: "shopping",
@@ -291,7 +327,7 @@ const usageFor = (token) => {
 };
 const runtime = makeQuotaMonitorRuntime({
   now: () => NOW,
-  paths: { poolDir, storePath, configPath, statePath, cachePath, lockPath },
+  paths: { poolDir, storePath, configPath, statePath, cachePath, lockPath, claudeJsonPath },
   readKeychainCredential: async () => ({ accessToken: "shopping-token", expiresAt: 4102444800000 }),
   fetchUsage: async (token) => usageFor(token),
   tmux: { listPanes: async () => [], capturePane: async () => "", sendContinue: async () => undefined },
@@ -307,105 +343,20 @@ for (const [name, expected] of Object.entries(pct)) {
   assert.equal(entry.weeklyResetAt, RESET_7D, `${name} weekly reset`);
 }
 
-const legacy = resolveQuotaDaemonBridgeMode(true, {});
-assert.deepEqual(legacy, {
-  cutover: false,
-  attachAccountSwitch: true,
-  runAccountSwitchWatchdog: true,
-  retireAccountSwitchRoute: false,
-  quarantinePending: false,
+const bridgeMode = resolveQuotaDaemonBridgeMode();
+assert.deepEqual(bridgeMode, {
+  cutover: true,
+  attachAccountSwitch: false,
+  runAccountSwitchWatchdog: false,
+  retireAccountSwitchRoute: true,
+  quarantinePending: true,
   runRunnerQuotaScan: true,
 });
 
-async function runLegacyScenario(name, rejectBusiness) {
-  const scenarioRoot = join(root, name);
-  const scenarioStore = join(scenarioRoot, "accounts.json");
-  const pendingPath = join(scenarioRoot, "pending.json");
-  mkdirSync(scenarioRoot, { recursive: true });
-  writeStore({
-    generation: 7,
-    activeAccount: "shopping",
-    accounts: [
-      { name: "shopping", quotaExhaustedUntil: null, weeklyResetAt: RESET_7D },
-      {
-        name: "business",
-        quotaExhaustedUntil: rejectBusiness ? null : "2099-01-07T00:00:00.000Z",
-        weeklyResetAt: "2026-07-16T18:00:00.000Z",
-        lastObservedAt: "2026-07-16T11:00:00.000Z",
-        observedFiveHPct: rejectBusiness ? 40 : 44,
-        observedSevenDPct: rejectBusiness ? 40 : 100,
-      },
-      { name: "school", quotaExhaustedUntil: null, weeklyResetAt: "2026-07-17T18:00:00.000Z" },
-    ],
-  }, scenarioStore);
-  let active = "shopping";
-  const applied = [];
-  const switchDeps = {
-    storePath: scenarioStore,
-    lockPath: join(scenarioRoot, "accounts.lock"),
-    withLock: async (_path, fn) => ({
-      kind: "ok",
-      value: await fn({
-        lockPath: _path,
-        markerPath: join(_path, "holder.qa.token"),
-        ownershipToken: "qa-token",
-      }),
-    }),
-    renewLock: () => true,
-    validateLease: () => true,
-    readActiveProfile: async () => active,
-    applyProfile: async (target) => {
-      applied.push(target);
-      if (rejectBusiness && target === "business") {
-        const fresh = readStore(scenarioStore);
-        writeStore({
-          ...fresh,
-          accounts: fresh.accounts.map((account) => account.name === "business" ? {
-            ...account,
-            quotaExhaustedUntil: "2099-01-07T00:00:00.000Z",
-            weeklyResetAt: "2099-01-07T00:00:00.000Z",
-            lastObservedAt: "2026-07-16T12:00:01.000Z",
-            observedFiveHPct: 44,
-            observedSevenDPct: 100,
-          } : account),
-        }, scenarioStore);
-        throw new TargetQuotaExhaustedError("business");
-      }
-      active = target;
-    },
-  };
-  const repair = makeAccountSwitchRepair({
-    switchDeps,
-    storePath: scenarioStore,
-    pendingPath,
-    now: () => NOW,
-    // This is the generic pending-store mutex, not SwitchDeps.withLock; its
-    // contract intentionally returns the callback's raw value.
-    withLock: async (_path, fn) => fn(),
-  });
-  const pending = {
-    key: `incident|shopping|7`,
-    provider: "claude",
-    sourceAlertId: "incident",
-    observedAccount: "shopping",
-    observedGeneration: 7,
-    scope: "weekly",
-    resetAt: RESET_7D,
-    deadlineAt: new Date(NOW).toISOString(),
-    createdAt: new Date(NOW).toISOString(),
-  };
-  const result = await repair.executeSwitch(pending);
-  assert.equal(result.outcome, "attempted");
-  assert.equal(readStore(scenarioStore).activeAccount, "school");
-  return applied;
-}
-
-assert.deepEqual(await runLegacyScenario("legacy-store-truth", false), ["school"], "stored exhaustion must never reach applyProfile");
-assert.deepEqual(await runLegacyScenario("legacy-live-guard", true), ["business", "school"], "live exit-32 fact must be re-read before retry");
-writeFileSync(join(root, "runtime-pass"), "daemon projection + legacy rollback passed\n");
+writeFileSync(join(root, "runtime-pass"), "daemon projection + permanent cutover passed\n");
 RUNTIME
 
-log "verifying daemon observation projection and CUTOVER-off rollback behavior"
+log "verifying daemon observation projection and permanent Bridge cutover"
 TEAMLEAD_DIST="$TEAMLEAD_DIR/dist" node "$ROOT/runtime-replay.mjs" "$ROOT"
 [[ -s "$ROOT/runtime-pass" ]] || fail "compiled runtime replay did not complete"
 
@@ -416,4 +367,4 @@ fi
 
 log "PASS: weekly exhaustion refused with actionable suggestion and no Keychain mutation"
 log "PASS: bypass switched only when explicit and queued two independently claimed audit alerts"
-log "PASS: daemon store projection and CUTOVER-off legacy repair both consume truthful quota state"
+log "PASS: daemon store projection is authoritative and Bridge account-switch execution stays retired"

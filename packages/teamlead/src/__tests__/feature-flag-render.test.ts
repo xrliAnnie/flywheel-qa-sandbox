@@ -44,9 +44,7 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 	});
 
 	it("marks retiring flags and never renders a control for them", () => {
-		const retiring = FLAGS.find(
-			(flag) => flag.name === "legacy_delivery_watchdogs",
-		);
+		const retiring = FLAGS.find((flag) => flag.name === "zombie_gate_resolve");
 		if (!retiring) throw new Error("missing retiring watchdog flag");
 		expect(retiring.retiring).toBe("FLY-1393");
 		const html = renderFlagCard(retiring, "console");

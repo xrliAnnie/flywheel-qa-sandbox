@@ -96,7 +96,7 @@ run_setup() { # <fixture> [args...]
 }
 
 make_fixture default
-if run_setup default >/dev/null 2>&1; then
+if run_setup default >"$ROOT/default/setup.out" 2>&1; then
   order="$(jq -r '.order | join(",")' "$ROOT/default/home/.flywheel/quota-monitor.json")"
   if [[ "$order" == "shopping,school,alpha,zeta" ]]; then
     pass "default install enables founder order then alphabetical remainder"
@@ -109,11 +109,12 @@ if run_setup default >/dev/null 2>&1; then
   else
     fail "default clock knobs" "$(cat "$ROOT/default/home/.flywheel/quota-monitor.json")"
   fi
-  if grep -q '^FLYWHEEL_QUOTA_DAEMON_CUTOVER=1$' "$ROOT/default/home/.flywheel/.env" \
-    && head -1 "$ROOT/default/restart.log" | grep -q '^FLYWHEEL_QUOTA_DAEMON_CUTOVER=1$'; then
-    pass "health succeeds before CUTOVER is persisted and Bridge restarted"
+  if ! grep -q '^FLYWHEEL_QUOTA_DAEMON_CUTOVER=' "$ROOT/default/home/.flywheel/.env" \
+    && [[ ! -e "$ROOT/default/restart.log" ]] \
+    && grep -q 'only auto-switch executor' "$ROOT/default/setup.out"; then
+    pass "healthy enable leaves the retired flag absent and does not restart Bridge"
   else
-    fail "cutover ordering" "env=$(cat "$ROOT/default/home/.flywheel/.env"); restart=$(cat "$ROOT/default/restart.log" 2>/dev/null)"
+    fail "permanent cutover enable" "env=$(cat "$ROOT/default/home/.flywheel/.env"); restart=$(cat "$ROOT/default/restart.log" 2>/dev/null); output=$(cat "$ROOT/default/setup.out")"
   fi
   if grep -q '^bootout gui/.*/com.flywheel.quota-monitor$' "$ROOT/default/launchctl.log" \
     && grep -q '^bootstrap gui/' "$ROOT/default/launchctl.log"; then
@@ -226,13 +227,15 @@ else
 fi
 
 make_fixture monitor
-if run_setup monitor --monitor-only >/dev/null 2>&1 \
+if run_setup monitor --monitor-only >"$ROOT/monitor/setup.out" 2>&1 \
   && [[ "$(jq -r '.order | length' "$ROOT/monitor/home/.flywheel/quota-monitor.json")" == "0" ]] \
   && ! grep -q '^FLYWHEEL_QUOTA_DAEMON_CUTOVER=' "$ROOT/monitor/home/.flywheel/.env" \
-  && [[ ! -e "$ROOT/monitor/restart.log" ]]; then
-  pass "--monitor-only leaves order empty and does not retire legacy switcher"
+  && [[ ! -e "$ROOT/monitor/restart.log" ]] \
+  && grep -q 'automatic account switching stays OFF' "$ROOT/monitor/setup.out" \
+  && grep -q 'NO Bridge fallback' "$ROOT/monitor/setup.out"; then
+  pass "--monitor-only is pure observation with no automatic switching fallback"
 else
-  fail "monitor-only" "config=$(cat "$ROOT/monitor/home/.flywheel/quota-monitor.json" 2>/dev/null); env=$(cat "$ROOT/monitor/home/.flywheel/.env" 2>/dev/null)"
+  fail "monitor-only" "config=$(cat "$ROOT/monitor/home/.flywheel/quota-monitor.json" 2>/dev/null); env=$(cat "$ROOT/monitor/home/.flywheel/.env" 2>/dev/null); output=$(cat "$ROOT/monitor/setup.out" 2>/dev/null)"
 fi
 
 make_fixture empty_enable
@@ -280,13 +283,23 @@ else
   fail "symlinked plist destination" "target was overwritten"
 fi
 
-if run_setup default --disable >/dev/null 2>&1 \
+default_env_before_disable="$(cat "$ROOT/default/home/.flywheel/.env")"
+if run_setup default --disable >"$ROOT/default/disable.out" 2>&1 \
+  && [[ "$(cat "$ROOT/default/home/.flywheel/.env")" == "$default_env_before_disable" ]] \
   && ! grep -q '^FLYWHEEL_QUOTA_DAEMON_CUTOVER=' "$ROOT/default/home/.flywheel/.env" \
   && [[ ! -e "$ROOT/default/home/Library/LaunchAgents/com.flywheel.quota-monitor.plist" ]] \
-  && tail -2 "$ROOT/default/restart.log" | grep -q -- '--reason env-change'; then
-  pass "--disable stops daemon, removes plist/CUTOVER, and revives Bridge path"
+  && [[ ! -e "$ROOT/default/restart.log" ]] \
+  && grep -q 'automatic account switching is now OFF entirely' "$ROOT/default/disable.out" \
+  && grep -q 'NO Bridge fallback' "$ROOT/default/disable.out"; then
+  pass "--disable stops the daemon without mutating env or reviving Bridge fallback"
 else
-  fail "kill switch" "env=$(cat "$ROOT/default/home/.flywheel/.env"); restart=$(cat "$ROOT/default/restart.log" 2>/dev/null)"
+  fail "disable" "env=$(cat "$ROOT/default/home/.flywheel/.env"); restart=$(cat "$ROOT/default/restart.log" 2>/dev/null); output=$(cat "$ROOT/default/disable.out" 2>/dev/null)"
+fi
+
+if ! grep -q 'FLYWHEEL_QUOTA_DAEMON_CUTOVER' "$SETUP"; then
+  pass "setup source no longer reads or writes the retired cutover flag"
+else
+  fail "retired flag residue" "setup still references FLYWHEEL_QUOTA_DAEMON_CUTOVER"
 fi
 
 echo ""

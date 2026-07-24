@@ -3,24 +3,13 @@ import { StateStore } from "../StateStore.js";
 
 describe("FLY-1373 legacy Lead ACK retirement", () => {
 	let store: StateStore;
-	let priorLegacy: string | undefined;
-	let priorAck: string | undefined;
 
 	beforeEach(async () => {
-		priorLegacy = process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS;
-		priorAck = process.env.FLYWHEEL_DELIVERY_ACK;
-		process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS = "1";
-		process.env.FLYWHEEL_DELIVERY_ACK = "1";
 		store = await StateStore.create(":memory:");
 	});
 
 	afterEach(() => {
 		store.close();
-		if (priorLegacy === undefined)
-			delete process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS;
-		else process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS = priorLegacy;
-		if (priorAck === undefined) delete process.env.FLYWHEEL_DELIVERY_ACK;
-		else process.env.FLYWHEEL_DELIVERY_ACK = priorAck;
 	});
 
 	function seedLegacyAck(seq: number): void {

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1456 · 62 个开关逐条定值执行 — 设计方案</title>
+<style>
+  body{margin:0;background:#f5f5f7;color:#1d1d1f;font-family:-apple-system,system-ui,"SF Pro Text",sans-serif;line-height:1.65}
+  .wrap{max-width:960px;margin:0 auto;padding:28px 20px 60px}
+  h1{font-size:24px;color:#1a365d;margin:0 0 4px}
+  .sub{color:#86868b;font-size:13px;margin-bottom:20px}
+  .card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 20px;margin:14px 0}
+  .card h2{font-size:16px;color:#1a365d;margin:0 0 10px}
+  .hero{border-left:4px solid #007aff;font-size:15px}
+  code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;background:#f0f0f4;border-radius:4px;padding:0 5px}
+  .flow{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch;margin:8px 0}
+  .fbox{flex:1 1 150px;border-radius:10px;padding:10px 12px;font-size:13px;border:1px solid #e5e5ea;background:#fafafd}
+  .fbox b{display:block;font-size:14px;margin-bottom:3px}
+  .del{border-left:4px solid #ff3b30}
+  .bake{border-left:4px solid #ff9500}
+  .keep{border-left:4px solid #34c759}
+  .frozen{border-left:4px solid #af52de}
+  .arrow{align-self:center;color:#86868b;font-size:18px;padding:0 2px}
+  .prlane{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .pr{flex:1 1 140px;background:#1a365d;color:#fff;border-radius:9px;padding:9px 11px;font-size:12.5px}
+  .pr b{display:block;font-size:13px}
+  .pr.done-gate{background:#0b7a3c}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
+  th{text-align:left;color:#55555c;font-size:12px;border-bottom:1px solid #e5e5ea;padding:6px 8px;background:#fafafd}
+  td{border-bottom:1px solid #f0f0f4;padding:7px 8px;vertical-align:top}
+  .pill{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 8px;border-radius:6px;white-space:nowrap}
+  .p-del{background:#fdeceb;color:#c0322b}.p-bake{background:#fff0e0;color:#a04a00}.p-keep{background:#e3f9ea;color:#1a7a3c}.p-frozen{background:#f3e8fd;color:#6b21a8}.p-res{background:#fff0e0;color:#a04a00;outline:1.5px solid #ff9500}
+  .warn{background:#fff6e6;border:1px solid #ffe0a3;color:#7a4a00;border-radius:9px;padding:9px 12px;font-size:13px;margin:8px 0}
+  .ok{background:#e3f9ea;border:1px solid #b7e4c7;color:#14532d;border-radius:9px;padding:9px 12px;font-size:13px;margin:8px 0}
+  ul{margin:6px 0;padding-left:20px}li{margin:4px 0;font-size:13.5px}
+  .muted{color:#86868b;font-size:12px}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>FLY-1456 · 62 个开关逐条定值执行</h1>
+<div class="sub">设计方案(design 节点)· 2026-07-24 · 承接 FLY-1413 盘点(裁决源 commit <code>67b35748</code>,HL + Tadashi 收敛完成)· Codex 设计评审 3 轮 APPROVED</div>
+
+<div class="card hero">
+<b>一句话:</b>上一单已经把 62 个新开关逐条判完了(HL + Tadashi 收敛、Annie 已授权),这一单就是照单执行——<b>删掉 13 个确认没用的死开关、焊死 1 个不能再关的开关、其余 46 个原样保留记录在案、2 个应急急停杆绝对不碰</b>;拆成 5 个小 PR 串行走,每一步都单独过审、由你 :cool: 把关。
+
+</div>
+
+<div class="card">
+<h2>① 核心流程 — 62 个开关怎么分流</h2>
+<div class="flow">
+  <div class="fbox" style="border-left:4px solid #007aff"><b>62 个新开关</b>FLY-1413 盘点 + 收敛裁决<br><span class="muted">40+1+12+2+6+1=62,自洽校验过</span></div>
+  <div class="arrow">→</div>
+  <div style="flex:2 1 320px;display:flex;flex-direction:column;gap:8px">
+    <div class="fbox del"><b>删除 · 13 个死开关</b>开关还在,但它管的那条旧通道早已废弃写死关闭——设成什么都不改变行为。逐条追到代码终点取过证。</div>
+    <div class="fbox bake"><b>焊死 · 1 个(quota_daemon_cutover)</b>裁决是「保持开、且不能关」(关了=旧路复活=倒退)。做法:把「开」写死进代码,然后删掉开关本身。</div>
+    <div class="fbox keep"><b>保留 · 46 个</b>5 个在用的 + 40 个跑默认值的 + 1 个冻结在 0 的(归 FLY-1446)。零代码改动,只记录在执行台账,幸存者标给 FLY-1405 动态化评估。</div>
+    <div class="fbox frozen"><b>🛑 不碰 · 2 个(RESERVED)</b><code>workflow_template_dispatch</code> + <code>workflow_generalized_templates</code> —— FLY-1436 菜单系统的急停杆,Annie 红线,每个 PR 都有自动检查证明没碰它们。</div>
+  </div>
+</div>
+<div class="prlane">
+  <div class="pr"><b>PR-1</b>删 park 家族 ×5<br>+ 建 62 行执行台账</div>
+  <div class="pr"><b>PR-2</b>删 delivery 家族 ×6</div>
+  <div class="pr"><b>PR-3</b>删总闸 + checkpoint ×2<br>+ 改活文档</div>
+  <div class="pr"><b>PR-4</b>焊死 quota 开关<br>+ 救火脚本改实话</div>
+  <div class="pr done-gate"><b>PR-5</b>收尾:台账终版<br>+ 里程碑</div>
+</div>
+<div class="muted" style="margin-top:6px">串行落地(都改同一张开关登记表,并行会打架);每个 PR 独立 Codex 评审 + 独立 QA + 你的 :cool:。前 3 个 PR 行为零变化(删的全是死壳)。</div>
+</div>
+
+<div class="card">
+<h2>② 数据/结构模型 — 开关退休的三件套机制(现成的,FLY-1243 走通过)</h2>
+<table>
+<thead><tr><th>部件</th><th>作用</th><th>本单怎么用</th></tr></thead>
+<tbody>
+<tr><td><b>登记表</b> <code>registry.ts</code></td><td>每个开关的唯一户口(默认值、读取位置)</td><td>删 14 个户口(13 死壳 + 1 焊死)</td></tr>
+<tr><td><b>墓碑</b> <code>truth.ts RETIRED_FLAGS</code></td><td>退休开关的墓碑名单;有人再在配置里设它,体检工具会喊「已退役,删这行」</td><td>立 14 块墓碑,防止死灰复燃</td></tr>
+<tr><td><b>双向核对</b>(drift 守卫,CI 自动跑)</td><td>正向:代码里出现没登记的开关 → 挡下;反向:登记了却没人读 → 挡下</td><td>每个 PR 的最终裁判:登记表和代码必须同步清干净才放行</td></tr>
+</tbody>
+</table>
+<div class="ok">另有逐 PR 三段验收门(残留扫描 / 结构断言 / RESERVED 零触碰),命令写死在 plan 里可照抄执行,全部是「有问题就报错退出」的自动形式。</div>
+</div>
+
+<div class="card">
+<h2>③ 关键取舍(和被否掉的做法)</h2>
+<ul>
+<li><b>只删「开关壳」,不拆「死通道机器」。</b>13 个死开关背后那条废弃通道的机器代码(几千行)不在本单拆——拆它是另一个量级的手术(类似 FLY-1261),留 follow-up 单独立项。<span class="muted">否掉的做法:顺手拆通道 → 爆炸半径大、每个 PR 不再小而可审。</span></li>
+<li><b>焊死 quota 开关 = 连救火脚本一起改成实话。</b>Codex 评审抓到:旧救火脚本的「停用」模式会谎称「已恢复旧的自动切号兜底」——焊死后那个兜底永远不存在了。方案:脚本运行时明白打印「无自动切号兜底」,回滚只有两条有序路径(继续用守护进程 / 有序换回旧执行者),每条都验证「恰好一个执行者在场」。<span class="muted">否掉的做法:只删两行配置写入、提示语不动 → 静默语义漂移,Annie 红线。Tadashi 已批,附 2 条硬要求已折入。</span></li>
+<li><b>5 个 PR 串行,不并行、不合并成一个大 PR。</b>都改同一张登记表,串行免冲突(FLY-1243 撞过);小 PR 隔离审是本单 issue 的明文要求。</li>
+<li><b>台账取数钉死在裁决 commit,不用改到一半的活代码取数。</b>否则边删边数会漏账。</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>④ 诚实边界 — 这个方案不做什么</h2>
+<ul>
+<li>🛑 <b>不碰 RESERVED 两个急停杆</b>(FLY-1436),每个 PR 有自动检查作证。</li>
+<li>不做开关动态化(那是 FLY-1405,等 FLY-1150 的存储层;本单只把幸存者名单标记交接过去)。</li>
+<li>不拆死通道机器、不动更早批次(FLY-1136 基线前)的 76 个开关。</li>
+<li><code>cmux_linked_view</code> 冻结在 0、不删,它的活线索归 FLY-1446 处理。</li>
+<li>40 个跑默认值的开关:只担保「配置里没写」+「默认值是多少」,<b>没有</b>逐个验证运行时行为(与 FLY-1413 的口径一致,不冒充)。</li>
+<li>生产配置文件里 2 行旧开关的清理是上线时的运维步骤(体检工具会提示),不在代码 diff 里。</li>
+</ul>
+<div class="warn"><b>唯一的行为变化点在 PR-4</b>:焊死后不能再用改配置的方式退回旧的切号路径——这不是副作用,这正是裁决本身(「关=倒退,不能关」)。生产现在就是开着的,上线当天行为零变化。</div>
+</div>
+
+<div class="card">
+<h2>评审与授权链</h2>
+<ul>
+<li>裁决源:FLY-1413 收敛版 FINAL(commit <code>67b35748</code>),Annie 已下放 ratify(「你们俩收敛好了就可以了」)。</li>
+<li>Codex 设计评审:<b>3 轮,APPROVED</b>(R1 抓运维合同断裂等 4 项、R2 抓回滚双执行者等 5 项,全部折入;证据存 <code>design-review-codex.md</code>)。</li>
+<li>Tadashi:PR-4 语义变化<b>已批</b>,附 2 条硬要求(脚本运行时明说无兜底;PR 描述单列「语义变化」节)——均已写死进 plan。</li>
+<li>每个 PR 的 merge 仍然全部由你 :cool: 把关,绝不自合并。</li>
+</ul>
+</div>
+
+<div class="muted">FLY-1456 · design 节点产物 · 详细实施步骤见 engineering/doc/FLY-1456-flag-verdict-execution/plan.md</div>
+</div></body>
+</html>

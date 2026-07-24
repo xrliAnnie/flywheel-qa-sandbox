@@ -6,8 +6,6 @@ export type WatchdogEnv = Record<string, string | undefined>;
 
 /** Discoverable migration tombs; none is consulted as runtime authority. */
 export const RETIRED_WATCHDOG_ENV_VARS = [
-	"FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS",
-	"FLYWHEEL_CHECKPOINT_WATCHDOG",
 	"FLYWHEEL_ZOMBIE_GATE_RESOLVE",
 ] as const;
 export type RetiredWatchdogEnvVar = (typeof RETIRED_WATCHDOG_ENV_VARS)[number];

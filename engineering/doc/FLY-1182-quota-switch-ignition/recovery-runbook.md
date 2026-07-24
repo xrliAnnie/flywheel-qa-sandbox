@@ -28,10 +28,11 @@ Issue: FLY-1182
 
 ### 问 2:谁执行切换、怎么切?
 
-**机制启用时,执行者是 launchd 常驻的外部 `quota-monitor` daemon
-(`com.flywheel.quota-monitor`)。** 生产已设置 `FLYWHEEL_QUOTA_DAEMON_CUTOVER=1`,所以旧的
-“Codex Bot 认领 20 秒,否则 Bridge watchdog 兜底”整条路径已退役;Bridge 不执行切换,
-`/api/account-switch` 也不是当前入口。
+**机制启用时,唯一执行者是 launchd 常驻的外部 `quota-monitor` daemon
+(`com.flywheel.quota-monitor`)。** FLY-1456 已把 cutover 永久固化:旧的
+“Codex Bot 认领 20 秒,否则 Bridge watchdog 兜底”整条路径永久退役;Bridge 不执行切换,
+认证后的 `/api/account-switch` 固定返回 410。`FLYWHEEL_QUOTA_DAEMON_CUTOVER` 已墓碑化,
+不得再设置;没有 Bridge fallback。
 
 **当前生产还没有常开。** 2026-07-16 的止血冻结把
 `~/.flywheel/quota-monitor.json` 设为 `trigger5hPct: 100`、`order: []`。daemon 仍会 detect
@@ -146,7 +147,8 @@ launchctl kickstart -k gui/$(id -u)/com.flywheel.lead.<project>-<leadId>
 
 ### Retired paths
 
-以下是历史架构,在 `FLYWHEEL_QUOTA_DAEMON_CUTOVER=1` 下不要使用或写进 GO 卡:
+以下是 FLY-1456 后永久退役的历史架构,不要使用或写进 GO 卡。退役不再由 env 控制,
+`FLYWHEEL_QUOTA_DAEMON_CUTOVER` 已墓碑化且不得设置:
 
 - Codex Infra Bot claim `/api/account-switch`;
 - 20 秒 claim window + Bridge watchdog fallback;

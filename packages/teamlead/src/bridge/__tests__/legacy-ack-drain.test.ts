@@ -20,8 +20,6 @@ describe("FLY-1373 LegacyAckDrain", () => {
 	};
 
 	beforeEach(async () => {
-		process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS = "1";
-		process.env.FLYWHEEL_DELIVERY_ACK = "1";
 		dir = mkdtempSync(join(tmpdir(), "fly1373-ack-drain-"));
 		dbPath = join(dir, "comm.db");
 		new CommDB(dbPath).close();
@@ -31,8 +29,6 @@ describe("FLY-1373 LegacyAckDrain", () => {
 	afterEach(() => {
 		store.close();
 		rmSync(dir, { recursive: true, force: true });
-		delete process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS;
-		delete process.env.FLYWHEEL_DELIVERY_ACK;
 	});
 
 	function append(id: string): number {

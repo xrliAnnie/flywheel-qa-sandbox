@@ -23,8 +23,6 @@ describe("FLY-1373 ProtocolIngress", () => {
 	const now = "2026-07-19T20:00:00.000Z";
 
 	beforeEach(async () => {
-		process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS = "1";
-		process.env.FLYWHEEL_DELIVERY_ACK = "1";
 		dir = mkdtempSync(join(tmpdir(), "fly1373-protocol-"));
 		dbPath = join(dir, "comm.db");
 		store = await StateStore.create(":memory:");
@@ -40,8 +38,6 @@ describe("FLY-1373 ProtocolIngress", () => {
 		queue.close();
 		store.close();
 		rmSync(dir, { recursive: true, force: true });
-		delete process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS;
-		delete process.env.FLYWHEEL_DELIVERY_ACK;
 	});
 
 	function appendAckEvent(): number {

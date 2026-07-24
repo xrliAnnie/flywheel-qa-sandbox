@@ -5,7 +5,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLYWHEEL_DIR="${FLYWHEEL_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 STATE_DIR="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}"
-ENV_FILE="${FLYWHEEL_ENV_FILE:-$STATE_DIR/.env}"
 POOL_DIR="${FLYWHEEL_CLAUDE_PROFILES_DIR:-$STATE_DIR/claude-profiles}"
 STORE_PATH="${FLYWHEEL_CLAUDE_ACCOUNTS_PATH:-$STATE_DIR/claude-accounts.json}"
 CONFIG_PATH="${FLYWHEEL_QUOTA_MONITOR_CONFIG:-$STATE_DIR/quota-monitor.json}"
@@ -16,7 +15,6 @@ PLIST_TEMPLATE="${FLYWHEEL_QUOTA_PLIST_TEMPLATE:-$FLYWHEEL_DIR/scripts/com.flywh
 PLIST_DEST="${FLYWHEEL_QUOTA_PLIST_DEST:-$HOME/Library/LaunchAgents/com.flywheel.quota-monitor.plist}"
 LABEL="com.flywheel.quota-monitor"
 LAUNCHCTL="${FLYWHEEL_QUOTA_LAUNCHCTL_BIN:-launchctl}"
-RESTART_BIN="${FLYWHEEL_QUOTA_RESTART_BIN:-$FLYWHEEL_DIR/scripts/restart-services.sh}"
 ALERT_BIN="${FLYWHEEL_LEAD_ALERT_BIN:-$FLYWHEEL_DIR/scripts/lead-alert.sh}"
 HEALTH_TIMEOUT="${FLYWHEEL_QUOTA_HEALTH_TIMEOUT_SECONDS:-90}"
 STOP_TIMEOUT="${FLYWHEEL_QUOTA_STOP_TIMEOUT_SECONDS:-30}"
@@ -154,25 +152,10 @@ if [[ "$MODE" == "rollback-state" ]]; then
   exit 0
 fi
 
-set_env_key() { # key [value]; missing value removes key
-  local key="$1" value="${2-}" tmp
-  mkdir -p "$(dirname "$ENV_FILE")"
-  [[ -f "$ENV_FILE" ]] || : > "$ENV_FILE"
-  [[ ! -L "$ENV_FILE" ]] || die "unsafe_env" "$ENV_FILE is a symlink"
-  tmp="${ENV_FILE}.tmp.$$"
-  awk -v key="$key" 'index($0, key "=") != 1 {print}' "$ENV_FILE" > "$tmp"
-  if (( $# == 2 )); then printf '%s=%s\n' "$key" "$value" >> "$tmp"; fi
-  chmod 600 "$tmp"
-  mv "$tmp" "$ENV_FILE"
-}
-
 if [[ "$MODE" == "disable" ]]; then
   "$LAUNCHCTL" bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
   rm -f "$PLIST_DEST"
-  set_env_key FLYWHEEL_QUOTA_DAEMON_CUTOVER
-  [[ -x "$RESTART_BIN" ]] || die "restart_missing" "Bridge restart command missing: $RESTART_BIN"
-  "$RESTART_BIN" --reason env-change
-  log "disabled daemon and restored the Bridge switch path"
+  log "daemon disabled — automatic account switching is now OFF entirely; NO Bridge fallback exists; re-run setup to re-enable"
   exit 0
 fi
 
@@ -250,7 +233,7 @@ fi
 
 if [[ "$MODE" == "enable" ]] \
   && [[ "$(jq -r '.order | length' "$CONFIG_PATH")" == "0" ]]; then
-  die "empty_order" "enable requires at least one configured target; use --monitor-only to keep the Bridge switch path active"
+  die "empty_order" "enable requires at least one configured target; --monitor-only is observation only and provides NO automatic switching fallback"
 fi
 
 validate_target() { # name
@@ -346,13 +329,7 @@ fi
 log "daemon healthy (pid=$pid, lastPollAt=$last_poll)"
 
 if [[ "$MODE" == "enable" ]]; then
-  # No automatic-switch vacuum: retire the Bridge path only after the daemon is
-  # independently healthy. The unified restart reloads the new env and notifies.
-  set_env_key FLYWHEEL_QUOTA_DAEMON_CUTOVER 1
-  [[ -x "$RESTART_BIN" ]] || die "restart_missing" "Bridge restart command missing: $RESTART_BIN"
-  "$RESTART_BIN" --reason env-change \
-    || die "restart_failed" "Bridge failed to reload CUTOVER after daemon health passed"
-  log "enabled daemon and retired the Bridge switch path"
+  log "enabled daemon (the only auto-switch executor)"
 else
-  log "monitor-only daemon healthy; Bridge switch path remains active"
+  log "monitor-only: daemon observes; automatic account switching stays OFF; NO Bridge fallback exists (FLY-1456)"
 fi

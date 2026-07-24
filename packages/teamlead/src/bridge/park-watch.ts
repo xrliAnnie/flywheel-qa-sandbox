@@ -91,20 +91,9 @@ function sqliteMs(value?: string): number | null {
 	return Number.isFinite(parsed) ? parsed : null;
 }
 
-function positiveEnv(
-	name: string,
-	fallback: number,
-	env: NodeJS.ProcessEnv = process.env,
-): number {
-	const value = Number.parseInt(env[name] ?? "", 10);
-	return Number.isFinite(value) && value >= 0 ? value : fallback;
-}
-
 /** Founder grace starts after the durable Lead-first park notification. */
-export function parkFounderGraceMs(
-	env: NodeJS.ProcessEnv = process.env,
-): number {
-	return positiveEnv("FLYWHEEL_PARK_N2_MS", 10 * 60_000, env);
+export function parkFounderGraceMs(): number {
+	return 10 * 60_000;
 }
 
 function qaCondition(
@@ -178,12 +167,9 @@ function key(row: {
 }
 
 export async function runParkWatch(options: ParkWatchOptions): Promise<void> {
-	if (process.env.FLYWHEEL_PARK_WATCH === "0") return;
 	const nowMs = options.now?.() ?? Date.now();
-	const n1Ms = options.n1Ms ?? positiveEnv("FLYWHEEL_PARK_N1_MS", 10 * 60_000);
-	const qaHealthyMs =
-		options.qaHealthyMs ??
-		positiveEnv("FLYWHEEL_PARK_QA_N3_MS", 2 * 60 * 60_000);
+	const n1Ms = options.n1Ms ?? 10 * 60_000;
+	const qaHealthyMs = options.qaHealthyMs ?? 2 * 60 * 60_000;
 	const registrationGraceMs = options.qaRegistrationGraceMs ?? 10 * 60_000;
 	const sessions = options.store.listParkWatchSessions();
 	const recordsByParent = new Map<string, AutoQaRecord>();

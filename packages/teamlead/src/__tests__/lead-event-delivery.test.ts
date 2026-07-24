@@ -38,16 +38,10 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 	let tmpDir: string;
 	let commDbPath: string;
 	let nowMs: number;
-	let priorAck: string | undefined;
 	let priorTypes: string | undefined;
-	let priorLegacyWatchdog: string | undefined;
 
 	beforeEach(async () => {
-		priorAck = process.env.FLYWHEEL_DELIVERY_ACK;
 		priorTypes = process.env.FLYWHEEL_DELIVERY_ACK_TYPES;
-		priorLegacyWatchdog = process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS;
-		process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS = "1";
-		process.env.FLYWHEEL_DELIVERY_ACK = "1";
 		delete process.env.FLYWHEEL_DELIVERY_ACK_TYPES;
 		store = await StateStore.create(":memory:");
 		runtime = new RecordingRuntime();
@@ -60,14 +54,9 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 	afterEach(() => {
 		store.close();
 		rmSync(tmpDir, { recursive: true, force: true });
-		if (priorAck === undefined) delete process.env.FLYWHEEL_DELIVERY_ACK;
-		else process.env.FLYWHEEL_DELIVERY_ACK = priorAck;
 		if (priorTypes === undefined)
 			delete process.env.FLYWHEEL_DELIVERY_ACK_TYPES;
 		else process.env.FLYWHEEL_DELIVERY_ACK_TYPES = priorTypes;
-		if (priorLegacyWatchdog === undefined)
-			delete process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS;
-		else process.env.FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS = priorLegacyWatchdog;
 	});
 
 	function appendQuestionEvent(
@@ -89,9 +78,7 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 			JSON.stringify(payload),
 			"exec-1",
 		);
-		if (process.env.FLYWHEEL_DELIVERY_ACK !== "0") {
-			seedLegacyAck(seq, "question_response", payload);
-		}
+		seedLegacyAck(seq, "question_response", payload);
 		return seq;
 	}
 
@@ -172,6 +159,52 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 				: undefined,
 		});
 	}
+
+	it("uses the retired delivery flags' defaults unconditionally", () => {
+		const envVars = [
+			"FLYWHEEL_DELIVERY_ACK_TIMEOUT_MS",
+			"FLYWHEEL_DELIVERY_MAX_REDELIVER",
+			"FLYWHEEL_DELIVERY_MAX_TRANSPORT_FAILURES",
+			"FLYWHEEL_ACK_LATE_WINDOW_MS",
+		] as const;
+		const previous = new Map(
+			envVars.map((envVar) => [envVar, process.env[envVar]]),
+		);
+		for (const envVar of envVars) process.env[envVar] = "1";
+		try {
+			const delivery = new LeadEventDeliveryCoordinator({
+				enabled: false,
+				store,
+				runtimeForLead: () => undefined,
+				commDbPaths: () => [],
+				secretProvider: {
+					getActive: () => ({
+						secretId: "secret-v1",
+						key: Buffer.from("01234567890123456789012345678901"),
+					}),
+				},
+			});
+			expect(
+				delivery as unknown as {
+					ackTimeoutMs: number;
+					maxRedeliver: number;
+					maxTransportFailures: number;
+					lateAckWindowMs: number;
+				},
+			).toMatchObject({
+				ackTimeoutMs: 5 * 60_000,
+				maxRedeliver: 5,
+				maxTransportFailures: 5,
+				lateAckWindowMs: 24 * 60 * 60_000,
+			});
+		} finally {
+			for (const envVar of envVars) {
+				const value = previous.get(envVar);
+				if (value === undefined) delete process.env[envVar];
+				else process.env[envVar] = value;
+			}
+		}
+	});
 
 	it("reads a persisted legacy ACK cohort and immutable routing snapshot", () => {
 		const seq = appendQuestionEvent("q-1");
@@ -581,17 +614,5 @@ describe("LeadEventDeliveryCoordinator (FLY-1279 D1)", () => {
 		checkDb = new CommDB(commDbPath);
 		expect(checkDb.getMessageById(qid)?.relay_state).toBe("terminal_disposed");
 		checkDb.close();
-	});
-
-	it("keeps legacy byte behavior when ACK delivery is disabled", async () => {
-		process.env.FLYWHEEL_DELIVERY_ACK = "0";
-		const seq = appendQuestionEvent("q-off");
-		expect(store.getLeadEventBySeq(seq)?.ack_required).toBe(false);
-		const delivery = coordinator();
-		expect(await delivery.deliver(envelope(seq, "q-off"), runtime)).toEqual({
-			delivered: true,
-		});
-		expect(runtime.delivered[0]!.ack).toBeUndefined();
-		expect(store.listLeadEventDeliveryAttempts(seq)).toEqual([]);
 	});
 });

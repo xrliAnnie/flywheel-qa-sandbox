@@ -5,14 +5,14 @@
  * implementing runner itself, running) where instructions were acted on but
  * read_at stays NULL forever (mailbox/hook delivery never stamps it).
  *
- * V2 semantics (FLYWHEEL_DELIVERY_UNCONSUMED_V2, default ON; the captured
- * boolean is threaded here as an explicit input — never env reads):
+ * V2 semantics (fixed ON in production after FLY-1456; the captured boolean
+ * remains an explicit pure-function input for V1/V2 regression comparison):
  *   - parked / awaiting_review / approved_to_ship never trigger; those
  *     targets are ALWAYS evaluated (status gate = complete judgement);
  *   - reader SQL excludes instructions with a correlated receipt: a later
  *     from_agent message containing the FULL instruction id (no delivered_at
  *     comparison — the id is unknowable before delivery, so it IS the proof);
- *   - V1 (=0) keeps the legacy read_at-only behavior byte-for-byte.
+ *   - V1 fixtures keep the legacy read_at-only behavior as historical evidence.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

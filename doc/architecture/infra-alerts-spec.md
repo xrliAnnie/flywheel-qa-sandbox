@@ -129,7 +129,7 @@ bridge-wrapper 死机 🚨(D4)优先经 `lead-alert.sh`(kind=`bridge_wrapper_fai
 - **按真实 stage 报,不靠 heuristic 猜**:kind/措辞取自 `flywheel-comm stage set` 上报的 `sessions.session_stage`。
 - **park 元组归属**:〈真实 stage,阻塞方(founder|lead|runner|ci),owner Lead,waiting_since,投递证据〉
   (`checkpoint-park.ts` 纯函数派生)。
-- **时效 1h(可配)**:`FLYWHEEL_CHECKPOINT_STUCK_MS`(默认 3600000)。
+- **历史时效 1h**:该 checkpoint-park patrol 已由 FLY-1456 移除；不得再设置已退役的 `FLYWHEEL_CHECKPOINT_STUCK_MS`。
 - **首响应人 = owner,不是 founder**:第一响 wake owning Runner/Lead 自查自愈;再超一窗才 founder page 落 issue thread。
 - **文案模板(真话)**:`[FLY-XXX] [Runner] 停在<真实stage>已<N>h,球在<party>,owner=<Lead>,下一步=<…>`
   —— approve 停等的告警必须含「待你拍板/等你 ship」、**绝不**写「code review 卡住」(FLY-912 回归测试)。
@@ -143,7 +143,7 @@ bridge-wrapper 死机 🚨(D4)优先经 `lead-alert.sh`(kind=`bridge_wrapper_fai
 | `FLYWHEEL_ALERT_RATE_PER_MIN` | T1 令牌桶 | `20` |
 | `FLYWHEEL_ALERT_SENDER_TOKEN_ENV` | D2 单一发送身份(存 env 名) | `FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN`(专用 dispatcher,作者≠owner —— FLY-1049 修正,CASS 过渡态已裁掉) |
 | `FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID` | Claude bot owner @(T3/FLY-928 后填) | 待 FLY-928 |
-| `FLYWHEEL_CHECKPOINT_WATCHDOG` / `FLYWHEEL_CHECKPOINT_STUCK_MS` | Watchdog v2 巡检 / 时效 | `1` / 默认 1h |
+| `FLYWHEEL_CHECKPOINT_WATCHDOG` / `FLYWHEEL_CHECKPOINT_STUCK_MS` | **已退役(FLY-1456)**:checkpoint-park patrol 已移除,两变量均不得再设置 | n/a |
 
 ## 10. 判例链接
 

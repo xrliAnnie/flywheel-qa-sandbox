@@ -44,11 +44,6 @@ function positiveInt(value: number | undefined, fallback: number): number {
 		: fallback;
 }
 
-function envPositiveInt(name: string, fallback: number): number {
-	const raw = Number.parseInt(process.env[name] ?? "", 10);
-	return positiveInt(raw, fallback);
-}
-
 export function deriveLeadEventAckToken(
 	secret: DeliverySecret,
 	input: { eventSeq: number; ackOwnerLeadId: string; ownerEpoch: number },
@@ -81,22 +76,13 @@ export class LeadEventDeliveryCoordinator {
 	constructor(private readonly options: LeadEventDeliveryCoordinatorOptions) {
 		this.enabled = options.enabled ?? deliveryAckEnabled();
 		this.now = options.now ?? Date.now;
-		this.ackTimeoutMs = positiveInt(
-			options.ackTimeoutMs,
-			envPositiveInt("FLYWHEEL_DELIVERY_ACK_TIMEOUT_MS", 5 * 60_000),
-		);
+		this.ackTimeoutMs = positiveInt(options.ackTimeoutMs, 5 * 60_000);
 		this.leaseMs = positiveInt(options.leaseMs, this.ackTimeoutMs * 2);
-		this.maxRedeliver = positiveInt(
-			options.maxRedeliver,
-			envPositiveInt("FLYWHEEL_DELIVERY_MAX_REDELIVER", 5),
-		);
-		this.maxTransportFailures = positiveInt(
-			options.maxTransportFailures,
-			envPositiveInt("FLYWHEEL_DELIVERY_MAX_TRANSPORT_FAILURES", 5),
-		);
+		this.maxRedeliver = positiveInt(options.maxRedeliver, 5);
+		this.maxTransportFailures = positiveInt(options.maxTransportFailures, 5);
 		this.lateAckWindowMs = positiveInt(
 			options.lateAckWindowMs,
-			envPositiveInt("FLYWHEEL_ACK_LATE_WINDOW_MS", 24 * 60 * 60_000),
+			24 * 60 * 60_000,
 		);
 	}
 
