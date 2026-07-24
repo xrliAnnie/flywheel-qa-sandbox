@@ -152,6 +152,82 @@ describe("FLY-1448 terminal receipt settlement primitives", () => {
 		});
 	});
 
+	it("treats a second terminal authority as the same idempotent settlement", () => {
+		const questionId = db.insertQuestion("exec-1", "flywheel-eng-lead", "help");
+		enqueueRoot(questionId);
+
+		expect(
+			db.settleReceiptFamilyForTerminalSubject({
+				receiptId: "receipt-root",
+				expectedExecutionId: "exec-1",
+				reason: "session_terminal",
+				now: "2026-07-24T00:01:00.000Z",
+			}),
+		).toEqual({ kind: "disposed", receiptId: "receipt-root" });
+		expect(
+			db.settleReceiptFamilyForTerminalSubject({
+				receiptId: "receipt-root",
+				expectedExecutionId: "exec-1",
+				reason: "issue_done",
+				now: "2026-07-24T00:02:00.000Z",
+			}),
+		).toEqual({ kind: "already_disposed", receiptId: "receipt-root" });
+	});
+
+	it("recognizes an exact ship-family terminal disposal from another authority", () => {
+		const questionId = db.insertQuestion(
+			"exec-1",
+			"flywheel-eng-lead",
+			"ship?",
+			{ checkpoint: "approve_to_ship" },
+		);
+		enqueueRoot(questionId);
+
+		db.supersedeShipGateAndReceiptFamily({
+			questionId,
+			reason: "superseded_session_terminal",
+			now: "2026-07-24T00:01:00.000Z",
+		});
+		expect(
+			db.settleReceiptFamilyForTerminalSubject({
+				receiptId: "receipt-root",
+				expectedExecutionId: "exec-1",
+				reason: "pr_merged",
+				now: "2026-07-24T00:02:00.000Z",
+			}),
+		).toEqual({ kind: "already_disposed", receiptId: "receipt-root" });
+	});
+
+	it("still rejects disposal evidence from a different authority family", () => {
+		const questionId = db.insertQuestion("exec-1", "flywheel-eng-lead", "help");
+		enqueueRoot(questionId);
+		const queue = new LeadInboxQueue(dbPath);
+		try {
+			queue.markDisposed("receipt-root", {
+				now: "2026-07-24T00:01:00.000Z",
+				evidence: {
+					v: 1,
+					kind: "manual_operator_disposal",
+					ref: "receipt-root",
+					actor: "operator",
+					actor_kind: "lead",
+					fence: { question_id: questionId },
+				},
+			});
+		} finally {
+			queue.close();
+		}
+
+		expect(() =>
+			db.settleReceiptFamilyForTerminalSubject({
+				receiptId: "receipt-root",
+				expectedExecutionId: "exec-1",
+				reason: "session_terminal",
+				now: "2026-07-24T00:02:00.000Z",
+			}),
+		).toThrow(/conflicting disposed evidence/);
+	});
+
 	it("rejects lineage that belongs to a different execution", () => {
 		const questionId = db.insertQuestion("exec-1", "flywheel-eng-lead", "help");
 		enqueueRoot(questionId);

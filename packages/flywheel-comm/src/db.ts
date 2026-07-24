@@ -622,6 +622,44 @@ export interface WorkflowEngineParkProjection {
 	updated_at: string;
 }
 
+const TERMINAL_RECEIPT_DISPOSAL_KINDS = new Set([
+	"terminal_subject_settlement",
+	"superseded_session_terminal",
+	"superseded_issue_done",
+	"superseded_merged",
+]);
+
+function isEquivalentTerminalReceiptDisposal(
+	raw: string,
+	receiptId: string,
+	sourceQuestionId: string,
+	expectedExecutionId: string,
+): boolean {
+	try {
+		const evidence = JSON.parse(raw) as ProcessedEvidenceV1;
+		assertProcessedEvidence(evidence);
+		if (
+			!TERMINAL_RECEIPT_DISPOSAL_KINDS.has(evidence.kind) ||
+			evidence.actor !== "terminal-receipt-projector" ||
+			evidence.actor_kind !== "bridge-protocol"
+		) {
+			return false;
+		}
+		if (evidence.kind === "terminal_subject_settlement") {
+			return (
+				evidence.ref === receiptId &&
+				evidence.fence.execution_id === expectedExecutionId
+			);
+		}
+		return (
+			evidence.ref === sourceQuestionId &&
+			evidence.fence.question_id === sourceQuestionId
+		);
+	} catch {
+		return false;
+	}
+}
+
 function isMissingTableError(error: unknown, table: string): boolean {
 	return (
 		error instanceof Error &&
@@ -1525,7 +1563,9 @@ export class CommDB {
 	 * FLY-1448 E2: settle any canonical receipt family for an exact terminal
 	 * execution. `delivered_at` is intentionally irrelevant: delivered but
 	 * unprocessed is still an open obligation. Processed evidence wins;
-	 * conflicting disposal evidence fails closed.
+	 * conflicting disposal evidence fails closed. All terminal authorities for
+	 * the same subject are equivalent: whichever one disposes first satisfies
+	 * the others without rewriting its original forensic evidence.
 	 */
 	settleReceiptFamilyForTerminalSubject(input: {
 		receiptId: string;
@@ -1593,13 +1633,18 @@ export class CommDB {
 				if (root.disposed_at === null || root.disposed_evidence === null) {
 					throw new Error(`receipt ${root.id} has partial disposed evidence`);
 				}
-				const expected = JSON.stringify(evidence);
-				if (root.disposed_evidence !== expected) {
+				if (
+					!isEquivalentTerminalReceiptDisposal(
+						root.disposed_evidence,
+						root.id,
+						root.ref_message_id,
+						input.expectedExecutionId,
+					)
+				) {
 					throw new Error(
 						`receipt ${root.id} has conflicting disposed evidence`,
 					);
 				}
-				queue.markDisposed(root.id, { now: input.now, evidence });
 				return { kind: "already_disposed" as const, receiptId: root.id };
 			}
 			queue.markDisposed(root.id, { now: input.now, evidence });

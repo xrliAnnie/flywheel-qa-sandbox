@@ -47,6 +47,34 @@ describe("StateStore terminal lifecycle identity", () => {
 		expect(second).not.toBe(first);
 	});
 
+	it("keeps one terminal lifecycle and settlement intent across recoverable terminal states", async () => {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		const fields = { issue_id: "FLY-1448", project_name: "flywheel" };
+		store.upsertSession(session());
+
+		store.persistTransition("exec-terminal", "blocked", fields);
+		const lifecycleId =
+			store.getSession("exec-terminal")?.terminal_lifecycle_id;
+		expect(lifecycleId).toMatch(/^[0-9a-f-]{36}$/);
+
+		for (const status of ["deferred", "shelved", "terminated"]) {
+			store.persistTransition("exec-terminal", status, fields);
+			expect(store.getSession("exec-terminal")?.terminal_lifecycle_id).toBe(
+				lifecycleId,
+			);
+		}
+
+		expect(store.listReceiptSettlementIntents()).toEqual([
+			expect.objectContaining({
+				authority_kind: "session_terminal",
+				terminal_lifecycle_id: lifecycleId,
+				state: "pending",
+				last_error: null,
+			}),
+		]);
+	});
+
 	it("CAS repair mints once only for the exact observed terminal revision", async () => {
 		const store = await StateStore.create(":memory:");
 		stores.push(store);

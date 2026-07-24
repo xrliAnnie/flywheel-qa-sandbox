@@ -6,6 +6,10 @@ export const OPERATIONAL_TERMINAL_STATUSES = new Set([
 	"timeout",
 	"canceled",
 	"cancelled",
+	"rejected",
+	"deferred",
+	"shelved",
+	"approved",
 ]);
 
 export function isOperationalTerminalStatus(
