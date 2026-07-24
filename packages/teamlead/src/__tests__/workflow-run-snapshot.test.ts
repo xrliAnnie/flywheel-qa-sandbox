@@ -56,17 +56,17 @@ function fixture() {
 }
 
 describe("typed generalized workflow snapshot", () => {
-	it("keeps the legacy engineering snapshot digest byte-compatible", () => {
+	it("pins the engineering Gate-feedback topology digest", () => {
 		const manifest = loadBundledWorkflowSeeds()[0]!.manifest;
 		const snapshot = buildWorkflowRunSnapshotV1({
 			template: { id: "tpl_eng_heavy", revision: 1 },
 			manifest,
 		});
 		expect(snapshot.manifest_digest).toBe(
-			"440987c7fcef1d9964c5bcd8deaaab6be9aee7e54e255e1f312b1afe2116da51",
+			"6aeb8c0d2a4c96958d03698975b9a65bfbe2318b02faf97bef1f089aad016e23",
 		);
 		expect(snapshot.snapshot_digest).toBe(
-			"6284ff42a828cd8dc26e5046ab8199483936191d7e4872f481961cb5e17fc3d6",
+			"7d69ece40fb969af57c2f3ebc1deda8d79ecf54a2d1f8e3b575899f77a0bb902",
 		);
 	});
 

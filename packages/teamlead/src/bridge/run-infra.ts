@@ -84,6 +84,22 @@ import type { WorkflowShadowRuntime } from "./workflow-shadow-writer.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 import { reconcileProjectWorktrees } from "./worktree-reconciler.js";
 
+export function liveCodexHomeExecutionIds(
+	store: Pick<StateStore, "getActiveSessions">,
+): Set<string> {
+	return new Set(
+		store
+			.getActiveSessions()
+			.filter(
+				(session) =>
+					session.status === "running" ||
+					session.status === "ship_parked" ||
+					session.status === "awaiting_review",
+			)
+			.map((session) => session.execution_id),
+	);
+}
+
 /**
  * FLY-1257 M3: inspect one fully-qualified local branch ref with a
  * machine-readable three-state exit contract. Exit 1 from `--verify --quiet`
@@ -695,14 +711,10 @@ export async function setupRunInfrastructure(
 	// killed mid-run the per-runner CODEX_HOME's `finally` token-scrub never
 	// fired, leaving a live GH_TOKEN in the retained home's config.toml. Strip
 	// it from every retained home that is NOT a currently-live runner
-	// (running/awaiting_review keep their token — they may resume). Runs once.
+	// (running/ship_parked/awaiting_review keep their token — they may resume).
+	// Runs once.
 	try {
-		const liveExecIds = new Set(
-			store
-				.getActiveSessions()
-				.filter((s) => s.status === "running" || s.status === "awaiting_review")
-				.map((s) => s.execution_id),
-		);
+		const liveExecIds = liveCodexHomeExecutionIds(store);
 		const scrubbed = scrubOrphanedCodexHomes(liveExecIds);
 		if (scrubbed > 0) {
 			console.log(

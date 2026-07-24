@@ -32,6 +32,27 @@ export type ShipReadyHandledOutcome =
 	| { kind: "unhandled" }
 	| { kind: "unknown" };
 
+export type WorkflowRunnerShipMergeCandidate = {
+	runId: string;
+	issueId: string;
+	projectName: string;
+	templateId: string;
+	gateNodeId: string;
+	attempt: number;
+	questionId: string;
+	holderState: "materializing" | "awaiting_review" | "approved";
+	carrierBindingState: "unbound" | "bound";
+	subjectDigest: string;
+	sourceExecutionId: string;
+	gateOpenedAt: string;
+	prNumber?: number;
+};
+
+export type WorkflowRunnerShipMergeProbe = {
+	state: "merged" | "closed" | "open" | "unknown";
+	headRefOid?: string;
+};
+
 export type ShipReadyMarkerPayload = {
 	path: "lead" | "founder" | "failed";
 	reason?: string;
@@ -48,6 +69,10 @@ export type WorkflowShipReadyArm = {
 	classifyShipHandled(
 		batch: readonly WorkflowShipReadyNotice[],
 	): Promise<Map<string, ShipReadyHandledOutcome>>;
+	/** Epoch-1 merge completion backstop; absent only in narrow legacy tests. */
+	classifyRunnerShipMerged?(
+		batch: readonly WorkflowRunnerShipMergeCandidate[],
+	): Promise<Map<string, WorkflowRunnerShipMergeProbe>>;
 };
 
 export function shipReadyNotifyEnabled(

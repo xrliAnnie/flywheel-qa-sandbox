@@ -1379,6 +1379,22 @@ export function createBridgeApp(
 			store,
 			materializedHeadAuthority: opts?.materializedHeadAuthority,
 			phaseOrchestrator: opts?.phaseOrchestrator,
+			gateCarrierRebind: {
+				tokens: opts?.fleetConsole?.tokens ?? new ConfirmTokenStore(),
+			},
+			resolveAlertIdentity: (projectName, issueId, runId) =>
+				resolveWorkflowRunAlertIdentity({
+					store,
+					projects,
+					defaultLeadAgentId: config.defaultLeadAgentId,
+					projectName,
+					issueId,
+					runId,
+					log: (message) => console.warn(`[workflow-gate-carrier] ${message}`),
+				}),
+			...(opts?.fleetConsole
+				? { loopReentry: { tokens: opts.fleetConsole.tokens } }
+				: {}),
 			...(opts?.fleetConsole && opts.phaseOrchestrator
 				? {
 						reQa: {
@@ -2314,7 +2330,12 @@ export function createBridgeApp(
 			}
 
 			// FLY-44: Only block close-tmux when Runner still needs tmux
-			const tmuxProtectedStates = new Set(["running", "approved_to_ship"]);
+			const tmuxProtectedStates = new Set([
+				"running",
+				"ship_parked",
+				"awaiting_review",
+				"approved_to_ship",
+			]);
 			if (tmuxProtectedStates.has(session.status)) {
 				res.status(409).json({
 					error: `Cannot close tmux for session in "${session.status}" state — Runner still needs tmux`,

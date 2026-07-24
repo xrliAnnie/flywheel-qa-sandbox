@@ -77,6 +77,35 @@ describe("writeGateResponseAndRunPostWrite — happy path", () => {
 		expect(r).toMatchObject({ written: true, retrySafe: false });
 	});
 
+	it("runner_ship engine authority still flips and wakes the bound session", async () => {
+		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
+		const onResponseWritten = vi.fn().mockResolvedValue({ ok: true });
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			db,
+			store: store("awaiting_review"),
+			gateAuthorityView: {
+				resolve: () => ({
+					kind: "engine",
+					runId: "run-1",
+					questionId: "Q-1",
+					executionId: "E-1",
+					issueId: "FLY-1441",
+					projectName: "flywheel",
+					headSha: "a".repeat(40),
+					authorityMode: "runner_ship",
+					subjectKind: "git_head",
+					state: "awaiting_review",
+					cardMessageId: "M-1",
+				}),
+			},
+			onResponseWritten,
+		});
+
+		expect(r).toMatchObject({ written: true, retrySafe: true });
+		expect(onResponseWritten).toHaveBeenCalledOnce();
+	});
+
 	it("a guarded writer rejection never runs the post-write hook", async () => {
 		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
 		db.insertResponse.mockReturnValue({
@@ -403,6 +432,8 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 					issueId: "FLY-1375",
 					projectName: "flywheel",
 					headSha: "b".repeat(40),
+					authorityMode: "land",
+					subjectKind: "git_head",
 					state: "awaiting_review",
 					cardMessageId: "M-1",
 				}),

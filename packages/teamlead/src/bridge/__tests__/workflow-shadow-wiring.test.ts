@@ -10,7 +10,10 @@ import {
 	type TurnBeltRow,
 } from "../phase-orchestrator.js";
 import { type ProjectRuntime, RunDispatcher } from "../run-dispatcher.js";
-import { createRunInfraDispatcher } from "../run-infra.js";
+import {
+	createRunInfraDispatcher,
+	liveCodexHomeExecutionIds,
+} from "../run-infra.js";
 import {
 	WorkflowShadowRuntime,
 	WorkflowShadowWriter,
@@ -46,6 +49,32 @@ async function makeShadow(probes?: {
 	});
 	return { store, writer };
 }
+
+describe("run-infra credential retention", () => {
+	it("keeps resumable pre-Gate and Gate-carrier CODEX_HOME credentials", async () => {
+		const store = await StateStore.create(":memory:");
+		for (const [execution_id, status] of [
+			["running", "running"],
+			["ship-parked", "ship_parked"],
+			["at-gate", "awaiting_review"],
+			["approved", "approved_to_ship"],
+		]) {
+			store.upsertSession({
+				execution_id,
+				issue_id: ISSUE,
+				project_name: PROJECT,
+				status,
+			});
+		}
+
+		expect([...liveCodexHomeExecutionIds(store)].sort()).toEqual([
+			"at-gate",
+			"running",
+			"ship-parked",
+		]);
+		store.close();
+	});
+});
 
 // ── RunDispatcher pre-launch seam ───────────────────────────────────────────
 

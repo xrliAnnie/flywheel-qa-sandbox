@@ -291,7 +291,11 @@ function founderReworkPayload(args: WriteGateResponseArgs, approved: boolean) {
 }
 
 async function runHook(args: WriteGateResponseArgs): Promise<boolean> {
-	if (args.gateAuthorityView?.resolve(args.questionId, args.executionId)) {
+	const engineAuthority = args.gateAuthorityView?.resolve(
+		args.questionId,
+		args.executionId,
+	);
+	if (engineAuthority && engineAuthority.authorityMode !== "runner_ship") {
 		// The durable source projector advances the holder and activates land.
 		// Flipping/waking the already-finished QA source execution is neither an
 		// authority fact nor a required postcondition.

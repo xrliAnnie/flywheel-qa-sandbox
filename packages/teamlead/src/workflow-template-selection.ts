@@ -33,6 +33,7 @@ export interface WorkflowTemplateSelectionResult {
 	nodeId: string;
 	attempt: 1;
 	snapshotDigest: string;
+	gateCarrierEpoch: 0 | 1;
 	selectionSource: "lead" | "binding" | "default";
 	idempotencyKey: string;
 	node: ResolvedWorkflowNodeV2;
@@ -276,6 +277,7 @@ export async function resolveWorkflowTemplateSelection(
 			nodeId: prior.node_id,
 			attempt: 1,
 			snapshotDigest: snapshot.snapshot_digest,
+			gateCarrierEpoch: run.gate_carrier_epoch,
 			selectionSource,
 			idempotencyKey: key,
 			node,
@@ -427,6 +429,7 @@ export async function resolveWorkflowTemplateSelection(
 		nodeId: node.id,
 		attempt: 1,
 		snapshotDigest: snapshot.snapshot_digest,
+		gateCarrierEpoch: run.gate_carrier_epoch,
 		selectionSource,
 		idempotencyKey: key,
 		node,
@@ -504,6 +507,7 @@ export function recoverWorkflowStartSelection(
 		nodeId: reservation.node_id,
 		attempt: 1,
 		snapshotDigest: snapshot.snapshot_digest,
+		gateCarrierEpoch: run.gate_carrier_epoch,
 		selectionSource,
 		idempotencyKey: reservation.idempotency_key,
 		node,

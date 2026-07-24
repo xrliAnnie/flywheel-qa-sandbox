@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1441 · Generic Gate 到达发射 — 设计方案 v2</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,system-ui,sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.65; padding:24px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:24px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 24px; margin-bottom:20px; }
+  .card.red { border-left:4px solid #ff3b30; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.purple { border-left:4px solid #af52de; }
+  h2 { font-size:18px; color:#1a365d; margin-bottom:12px; }
+  h3 { font-size:15px; margin:14px 0 6px; }
+  p { margin-bottom:10px; }
+  .big { font-size:17px; }
+  .dim { color:#86868b; font-size:13px; }
+  .quote { background:#f5f5f7; border-left:3px solid #007aff; padding:10px 14px; border-radius:6px; font-size:14px; margin:10px 0; }
+  .flow { display:flex; align-items:stretch; flex-wrap:wrap; margin:14px 0; }
+  .fnode { background:#fff; border:2px solid #d2d2d7; border-radius:10px; padding:10px 14px; text-align:center; min-width:100px; font-size:14px; align-self:center; margin:4px 0; }
+  .fnode .t { font-weight:600; }
+  .fnode .s { font-size:12px; color:#86868b; }
+  .fnode.gate { border-color:#af52de; background:#faf5ff; }
+  .fnode.ok { border-color:#34c759; background:#f2fbf5; }
+  .fnode.stop { border-color:#ff3b30; background:#fff5f5; }
+  .arrow { align-self:center; padding:0 8px; color:#86868b; font-size:20px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; margin:10px 0; }
+  th { text-align:left; color:#86868b; font-weight:600; font-size:13px; border-bottom:1px solid #e5e5ea; padding:6px 10px; }
+  td { border-bottom:1px solid #f0f0f2; padding:8px 10px; vertical-align:top; }
+  ul { margin:6px 0 10px 20px; }
+  li { margin-bottom:6px; }
+  .cols { display:flex; gap:16px; flex-wrap:wrap; }
+  .cols > div { flex:1; min-width:260px; }
+  .vbox { flex:1; min-width:240px; border-radius:10px; padding:12px 16px; font-size:14px; }
+  .vbox.ok { background:#f2fbf5; border:1px solid #bfe8cd; }
+  .vbox.no { background:#fff5f5; border:1px solid #ffd0cc; }
+  .verdict { display:flex; gap:12px; flex-wrap:wrap; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Generic Gate 到达发射</h1>
+<div class="sub">FLY-1441 · 设计方案 v2(重做版,Codex 评审 7 轮 APPROVED)· 2026-07-23</div>
+
+<div class="card blue">
+  <h2>一句话</h2>
+  <p class="big">你的 ship 审批,今后只有一个来源:<b>流程真正走完模板里的所有前置节点、抵达 Gate 的那一刻,由引擎亲手造出审批卡</b> —— 工程单自然是「QA 完了才到 Gate」,无 QA 的 generic/产品单前置完成即到 Gate,同一条规则,零补丁;任何 runner 都再也造不出一张野审批卡。</p>
+  <div class="quote">你的原话(方向锚点):「通知器不看 QA…只看流程是否走到了 Gate 节点,这个逻辑是对的。我们并不是所有情况都需要看 QA…一定要 generic,一定要简单,不要在上面打补丁。」</div>
+</div>
+
+<div class="card red">
+  <h2>真正的 bug 是什么(生产账本铁证)</h2>
+  <ul>
+    <li><b>DAG 引擎本身没走错一步</b>:FLY-1364 那单,引擎老老实实走了 implement→QA(fail)→implement→QA(pass),QA 过了才开 Gate。</li>
+    <li><b>提前弹给你的 ship gate,是 implement runner 自己造的野审批卡</b>:它的提示词里同时写着两句相反的话 —— 新合同说「流程推进归引擎,不许申请 ship 审批」,旧尾巴(FLY-887 时代)又说「跑 APPROVE GATE 流程」。runner 听了旧的,在 QA 还没开始时就往公共信箱里塞了张审批卡。</li>
+    <li><b>光删那句旧话不够</b>:野卡还有 5 个呈现入口 + 2 个投递面能把它送到你眼前;而且写卡的命令是直写数据库,没有任何服务端闸口。</li>
+    <li><b>更隐蔽的坑</b>:今天只有 land 类模板有引擎造的真审批卡;普通工程单的「真审批」一直靠 runner 自建的卡 —— 把野卡全拦掉而不补引擎载体,ship 就死锁(评审第一轮就抓过这个)。</li>
+  </ul>
+</div>
+
+<div class="card green">
+  <h2>核心流程(装好之后)</h2>
+  <h3>工程单(有 QA 的模板)</h3>
+  <div class="flow">
+    <div class="fnode"><div class="t">设计</div></div><div class="arrow">→</div>
+    <div class="fnode"><div class="t">实现</div><div class="s">完成后原地待命<br>(不再显示"待批")</div></div><div class="arrow">→</div>
+    <div class="fnode"><div class="t">QA</div><div class="s">真机验证</div></div><div class="arrow">→</div>
+    <div class="fnode gate"><div class="t">抵达 Gate</div><div class="s">引擎造审批卡<br>绑定实现者+代码版本</div></div><div class="arrow">→</div>
+    <div class="fnode ok"><div class="t">你批准</div><div class="s">runner 被唤醒<br>核验后合并</div></div><div class="arrow">→</div>
+    <div class="fnode"><div class="t">合并确认<br>流程收口</div></div>
+  </div>
+  <h3>Generic / 产品单(无 QA 的模板)—— 同一条规则</h3>
+  <div class="flow">
+    <div class="fnode"><div class="t">执行/产出/评审</div></div><div class="arrow">→</div>
+    <div class="fnode gate"><div class="t">抵达 Gate</div><div class="s">同一种引擎审批卡</div></div><div class="arrow">→</div>
+    <div class="fnode ok"><div class="t">你批准</div><div class="s">流程即完成</div></div>
+  </div>
+  <h3>runner 想造野卡?</h3>
+  <div class="flow">
+    <div class="fnode stop"><div class="t">runner 自建审批卡</div></div><div class="arrow">→</div>
+    <div class="fnode stop"><div class="t">7 道闸全拦</div><div class="s">呈现面统一分类器<br>你永远看不到</div></div><div class="arrow">→</div>
+    <div class="fnode"><div class="t">留痕告警</div><div class="s">Lead 可查</div></div>
+  </div>
+</div>
+
+<div class="card purple">
+  <h2>结构模型(三个关键机制)</h2>
+  <div class="cols">
+    <div>
+      <h3>① 审批卡三种「批准后动作」,按模板能力自动推导</h3>
+      <ul>
+        <li><b>land 类</b>:批准 → 引擎推进 land 节点(现有链路,一字不动);</li>
+        <li><b>工程类</b>(有写代码节点):批准 → 唤醒待命的实现 runner → 核验(卡、代码版本、身份全绑定)→ 合并 → 引擎确认合并后流程收口;</li>
+        <li><b>纯产出类</b>(无代码):批准 → 流程直接完成。</li>
+      </ul>
+      <p class="dim">推导只看模板声明的能力,不看节点叫什么名字、模板叫什么名字。</p>
+      <h3>② 证据在抵达 Gate 时冻结</h3>
+      <p>QA/评审的通过证据在开 Gate 那一刻由引擎存档进审批卡 —— 你两天后才批准也不会因为「证据过期」卡死(现状:证据凭证只有 1 小时寿命,而你的审批窗口是 48 小时 —— 这个隐雷这次一并拆掉)。</p>
+    </div>
+    <div>
+      <h3>③ 引擎全面去「QA 专名」</h3>
+      <ul>
+        <li>发射器删掉模板白名单/schema/QA 条件,只认「抵达 terminal Gate」;</li>
+        <li><code>current_qa_attempt</code> 等按节点名写死的引擎逻辑,全部改成按模板拓扑/能力推导;</li>
+        <li>「重跑一轮」操作通用化成「按模板声明的 loop 重入」,不再叫 re-QA;</li>
+        <li><b>CI 里挂一把守卫尺</b>:引擎代码再出现按节点名写死的行为,直接红。</li>
+      </ul>
+      <h3>灰度与回滚</h3>
+      <p>新旧语义按「单」冻结:开关打开后<b>新开的单</b>走新规则,在途旧单原样走完 —— 不混代、不回填历史 Gate、不会因为翻开关把半路的单弄死锁。</p>
+    </div>
+  </div>
+</div>
+
+<div class="card amber">
+  <h2>关键取舍(和被否掉的方案)</h2>
+  <table>
+    <tr><th>决策</th><th>取</th><th>舍(为什么)</th></tr>
+    <tr><td><b>审批卡谁造</b></td><td>引擎在 Gate 到达事务里原子造(land 已有骨架,泛化到全部)</td><td>✕ 唤醒 runner 让它造 —— 依赖 runner 活着、提示词对、唤醒不丢,永远证不成不变量</td></tr>
+    <tr><td><b>野卡怎么拦</b></td><td>7 个呈现面共用一个分类器 + 留痕告警</td><td>✕ 只删提示词旧话 —— 修得了这次的触发器,挡不住下一个错误命令</td></tr>
+    <tr><td><b>拦了之后审批哪来</b></td><td>引擎载体先就位再拦(同一开关联动)</td><td>✕ 先拦后补 —— ship 死锁(评审 HIGH 原型)</td></tr>
+    <tr><td><b>QA 要不要进发射条件</b></td><td>不进。「QA 完才发」是工程模板拓扑的自然结果</td><td>✕ 上一版的 QA 谓词方案 —— 你亲自否的:不 generic、是补丁</td></tr>
+    <tr><td><b>实现 runner 等批准期间</b></td><td>新驻留态「待命」(不显示待批、不触发超时、重启不被回收凭据)</td><td>✕ 完成即注销 —— 批准时没人可唤醒;✕ 提前标「待批」—— QA 还没跑你就被打扰(这正是这次的体感)</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>诚实边界 — 做什么、不做什么</h2>
+  <div class="verdict">
+    <div class="vbox ok">
+      <b>做</b>
+      <ul>
+        <li>引擎级 Gate 到达载体,三种批准后模式,全模板一条规则</li>
+        <li>提示词冲突修复 + 7 面野卡闸 + 留痕</li>
+        <li>合并后流程收口(现状:工程单合并后永远挂在 Gate 上 —— 顺手治掉)</li>
+        <li>引擎去 QA 专名 + CI 守卫尺 + 拓扑回归测试(未到 Gate 零呈现 / 到 Gate 恰一张 / 无 QA 模板正向)</li>
+        <li>按单冻结的灰度,零混代零回填</li>
+      </ul>
+    </div>
+    <div class="vbox no">
+      <b>不做(各归各单)</b>
+      <ul>
+        <li>纯产出类模板这轮不支持「卡上直接打回重做」(卡上不放会失败的按钮;要改意见走 Lead,后续单补)</li>
+        <li>不改工程模板主拓扑;不动 land 现有链路;旧单(开关前)原样走完</li>
+        <li>不删旧通知器本体(旧单还要用,删除条件已写明)</li>
+        <li>审批卡投递承诺「至少一次+以绑定卡为准」,不承诺物理上绝无重复卡</li>
+      </ul>
+    </div>
+  </div>
+  <p class="dim" style="margin-top:10px">评审强度:Codex xhigh 7 轮,逐轮收敛(6H→7H→7H→4H→1H→1H→0),每一轮都是拿源码对出来的真缺口;全部折进方案。</p>
+</div>
+
+<div class="sub" style="text-align:center">FLY-1441 · design epoch 4 交付 · 实现与 QA 由后续节点执行</div>
+</div>
+</body>
+</html>

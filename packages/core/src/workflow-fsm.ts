@@ -123,6 +123,7 @@ export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 	// session through the FSM instead of a forceStatus bypass.
 	pending: ["running", "terminated"],
 	running: [
+		"ship_parked",
 		"awaiting_review",
 		"completed",
 		"blocked",
@@ -132,6 +133,9 @@ export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 		// (non-terminal); the PhaseOrchestrator hands off to the Implement phase.
 		"design_done",
 	],
+	// FLY-1441: a ship-capable DAG actor has completed its node but the graph
+	// has not reached the terminal Gate yet. This is live/parked, not review.
+	ship_parked: ["running", "awaiting_review", "completed", "terminated"],
 	// FLY-793: Design phase done (docs on the shared branch). Non-terminal — the
 	// PhaseOrchestrator captures the head + starts Implement, then this session is
 	// finalized (completed) or fails out (blocked/failed/terminated).
@@ -144,6 +148,7 @@ export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 	// this FSM map only declares the transition is legal. Defense-in-depth FSM
 	// guard via ctx.payload is a follow-up if needed (per plan §12.3).
 	awaiting_review: [
+		"ship_parked",
 		"approved_to_ship",
 		"completed",
 		"rejected",
@@ -246,6 +251,7 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
 			// never-started session without a forceStatus bypass.
 			"pending",
 			"running",
+			"ship_parked",
 			"awaiting_review",
 			"approved_to_ship",
 			"design_done",

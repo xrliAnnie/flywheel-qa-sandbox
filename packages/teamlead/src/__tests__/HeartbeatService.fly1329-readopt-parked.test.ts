@@ -191,6 +191,20 @@ for (const [label, zombieEnv] of [
 			);
 		});
 
+		it("re-adopts the neutral pre-Gate ship_parked carrier too", async () => {
+			store = makeStore(parkedImplement({ status: "ship_parked" }));
+			notifier = makeNotifier();
+			service = makeService(store, notifier);
+
+			await service.seedReconnecting();
+
+			expect(store.updateHeartbeat).toHaveBeenCalledWith("parked-impl");
+			expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(
+				1,
+			);
+			expect(store.forceStatus).not.toHaveBeenCalled();
+		});
+
 		it("a parked implement whose tmux is DEAD → alert-only, never a status change or re-adopt", async () => {
 			store = makeStore(parkedImplement());
 			notifier = makeNotifier();

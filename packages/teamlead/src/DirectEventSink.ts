@@ -1055,9 +1055,15 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// off and the hard gate is off. FLY-827 (R4-HIGH-1): DirectEventSink is the
 		// FOURTH founder-surface path — without isReviewHeld a Codex-held session
 		// (no auto_qa_record → isQaHeld false) would leak the review-required push.
-		if (isReviewHeld(this.store, this.store.getSession(env.executionId))) {
+		if (
+			isReviewHeld(this.store, this.store.getSession(env.executionId)) ||
+			!this.store.workflowGatePresentationDisposition({
+				executionId: env.executionId,
+				checkpoint: "approve_to_ship",
+			}).allow
+		) {
 			console.log(
-				`[DirectEventSink] FLY-827 review-held: suppressing review-required delivery for ${env.executionId}`,
+				`[DirectEventSink] suppressing non-authoritative review-required delivery for ${env.executionId}`,
 			);
 		} else {
 			this.pushNotification(env, "session_completed");

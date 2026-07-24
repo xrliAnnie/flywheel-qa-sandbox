@@ -3029,10 +3029,14 @@ export function createEventRouter(
 				// coordinator's ThreadPoster, NOT this block.
 				if (
 					event.event_type === "session_completed" &&
-					isReviewHeld(store, session)
+					(isReviewHeld(store, session) ||
+						!store.workflowGatePresentationDisposition({
+							executionId: event.execution_id,
+							checkpoint: "approve_to_ship",
+						}).allow)
 				) {
 					console.log(
-						`[event-route] FLY-579 QA-held: suppressing review-required Lead delivery for ${event.execution_id}`,
+						`[event-route] suppressing non-authoritative review-required Lead delivery for ${event.execution_id}`,
 					);
 				} else {
 					// FLY-47: Always deliver ALL events to Lead — Lead decides routing

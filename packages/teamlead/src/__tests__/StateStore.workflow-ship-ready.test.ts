@@ -203,6 +203,22 @@ describe("workflow ship-ready StateStore contract", () => {
 		store.close();
 	});
 
+	it("yields epoch-1 Gate-carrier runs to the authoritative holder path", async () => {
+		const store = await readyRun();
+		testDb(store).run(
+			"UPDATE workflow_run SET gate_carrier_epoch = 1 WHERE run_id = 'run-ship-ready'",
+		);
+
+		expect(store.listWorkflowShipReadyGates({ now: NOW })).toEqual([]);
+		expect(
+			store.listWorkflowShipReadyStalled({
+				now: NOW,
+				remindAfterMs: 1,
+			}),
+		).toEqual([]);
+		store.close();
+	});
+
 	it("requires engine ownership, active review at the current terminal gate, and no founder claim", async () => {
 		const mutations = [
 			"UPDATE workflow_run SET engine_owned = 0 WHERE run_id = 'run-ship-ready'",

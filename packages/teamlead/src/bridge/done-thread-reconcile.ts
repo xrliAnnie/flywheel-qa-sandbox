@@ -61,6 +61,7 @@ import {
  */
 export const RECONCILE_FINALIZABLE_STATUSES = [
 	"running",
+	"ship_parked",
 	"awaiting_review",
 	"approved_to_ship",
 	"design_done",

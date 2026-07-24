@@ -245,7 +245,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 
 	function productWithReviewPredicate(
 		predicate: "codex_approved" | "design_review_approved",
-	): void {
+	) {
 		const seed = loadBundledWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_product_v1",
 		)!;
@@ -312,20 +312,19 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		if (!review.ok || !review.submissionCredential) {
 			throw new Error("product review admission failed");
 		}
-		expect(
-			store.submitWorkflowDecisionByCredential({
-				credential: review.submissionCredential,
-				clientRequestId: "wrong-review-predicate",
-				predicate,
-				subjectDigest: HEAD,
-				issuerVendor: "claude",
-				issuerModel: "sonnet",
-				subjectProducerExecutionId: "product-produce",
-				subjectProducerVendor: "codex",
-				claimExpiresAt: "2027-07-16T00:11:00.000Z",
-				now: "2026-07-16T00:12:00.000Z",
-			}).ok,
-		).toBe(true);
+		const submitted = store.submitWorkflowDecisionByCredential({
+			credential: review.submissionCredential,
+			clientRequestId: "product-review-predicate",
+			predicate,
+			subjectDigest: HEAD,
+			issuerVendor: "claude",
+			issuerModel: "sonnet",
+			subjectProducerExecutionId: "product-produce",
+			subjectProducerVendor: "codex",
+			claimExpiresAt: "2027-07-16T00:11:00.000Z",
+			now: "2026-07-16T00:12:00.000Z",
+		});
+		if (!submitted.ok) return submitted;
 		expect(
 			store.appendWorkflowSystemClaim({
 				issuerKind: "founder_challenge",
@@ -340,6 +339,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			}).ok,
 		).toBe(true);
 		upsert("approved_to_ship");
+		return submitted;
 	}
 
 	// ── Group ① — FLY-120: genuinely approved + merged → eligible → completed ──
@@ -460,29 +460,23 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		});
 	});
 
-	it("does not confuse predicates in the review family and fails closed without materialized authority", async () => {
-		productWithReviewPredicate("codex_approved");
-		const session = store.getSession(EXEC)!;
-		const env = {
-			FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-			FLYWHEEL_MERGE_APPROVAL_GATE: "0",
-			FLYWHEEL_QA_DONE_GATE: "0",
-			FLYWHEEL_CODEX_HARD_GATE: "0",
-		} as NodeJS.ProcessEnv;
-		expect(
-			await computeAuthoritativeShipDecision(store, session, HEAD, env),
-		).toMatchObject({
-			eligible: false,
-			mergeReason: "head_authority_unavailable",
+	it("does not confuse predicates in the review family", () => {
+		expect(productWithReviewPredicate("codex_approved")).toEqual({
+			ok: false,
+			reason: "transition_refused",
 		});
 		expect(
-			await computeAuthoritativeShipDecision(store, session, HEAD, env, {
-				resolve: async () => ({ head: HEAD, outputId: 1, attempt: 1 }),
+			store.resolveWorkflowDecisionClaim({
+				runId: "product-run",
+				nodeId: "review",
+				decisionKind: "review_verdict",
+				predicate: "design_review_approved",
+				requiredAttempt: 1,
+				subjectKind: "git_head",
+				subjectDigest: HEAD,
+				now: "2026-07-16T00:12:00.000Z",
 			}),
-		).toMatchObject({
-			eligible: false,
-			workflowClaimsReason: "design_review_approved:predicate_mismatch",
-		});
+		).toEqual({ valid: false, reason: "no_claim" });
 	});
 
 	// ── Group ② — merged WITHOUT approval → merge_block + not Done (决定③) ──
@@ -590,7 +584,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 	});
 
 	it("recovered product merge resolves its materialized head through the production authority port", async () => {
-		productWithReviewPredicate("design_review_approved");
+		expect(productWithReviewPredicate("design_review_approved").ok).toBe(true);
 		const session = store.getSession(EXEC)!;
 		parkMergeBlock(store, session, HEAD, {
 			eligible: false,

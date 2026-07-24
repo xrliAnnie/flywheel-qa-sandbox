@@ -1,6 +1,14 @@
 import type { StateStore } from "../../StateStore.js";
-import { parseWorkflowRunSnapshot } from "../../workflow-run-snapshot.js";
-import { isWorkflowManifestV1Land } from "../../workflow-template.js";
+import {
+	parseWorkflowRunSnapshot,
+	resolveWorkflowGateAuthority,
+	type WorkflowGateAuthorityMode,
+	type WorkflowGateSubjectKind,
+} from "../../workflow-run-snapshot.js";
+import {
+	isWorkflowManifestV1Land,
+	workflowApprovalGate,
+} from "../../workflow-template.js";
 
 export interface EngineGateAuthority {
 	kind: "engine";
@@ -10,6 +18,8 @@ export interface EngineGateAuthority {
 	issueId: string;
 	projectName: string;
 	headSha: string;
+	authorityMode: WorkflowGateAuthorityMode;
+	subjectKind: WorkflowGateSubjectKind;
 	state: "materializing" | "awaiting_review" | "approved";
 	cardMessageId: string | null;
 	prNumber?: number;
@@ -50,14 +60,25 @@ export function makeGateAuthorityView(store: StateStore): GateAuthorityView {
 		} catch {
 			return undefined;
 		}
+		const derived = resolveWorkflowGateAuthority(snapshot);
+		const authorityMode = holder.authority_mode ?? "land";
+		const subjectKind = holder.subject_kind ?? "git_head";
 		if (
-			!isWorkflowManifestV1Land(snapshot.manifest) ||
-			snapshot.manifest.approval_gate.node !== holder.gate_node_id
+			(holder.authority_mode == null &&
+				!isWorkflowManifestV1Land(snapshot.manifest)) ||
+			derived.mode !== authorityMode ||
+			derived.subjectKind !== subjectKind ||
+			(holder.authority_mode === "runner_ship" &&
+				holder.carrier_binding_state !== "bound")
 		) {
 			return undefined;
 		}
+		const gateNodeId = workflowApprovalGate(snapshot.manifest).node;
+		if (gateNodeId !== holder.gate_node_id) return undefined;
 		const expectedCurrentNode =
-			holder.state === "approved"
+			holder.state === "approved" &&
+			authorityMode === "land" &&
+			isWorkflowManifestV1Land(snapshot.manifest)
 				? snapshot.manifest.terminal_node.node
 				: holder.gate_node_id;
 		if (run.current_node_id !== expectedCurrentNode) return undefined;
@@ -74,6 +95,8 @@ export function makeGateAuthorityView(store: StateStore): GateAuthorityView {
 			issueId: run.issue_id,
 			projectName: run.project_name,
 			headSha: holder.head_sha,
+			authorityMode,
+			subjectKind,
 			state: holder.state,
 			cardMessageId: holder.card_message_id,
 			...(prBinding ? { prNumber: prBinding.pr_number } : {}),

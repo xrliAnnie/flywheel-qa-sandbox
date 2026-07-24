@@ -252,6 +252,15 @@ export async function generateBootstrap(
 					// gate_question — preserve pre-FLY-161 gating: active session
 					// AND label-scope match (R2 Issue 3 + R3 Issue 1).
 					if (
+						!store.workflowGatePresentationDisposition({
+							executionId: q.from_agent,
+							checkpoint: q.checkpoint,
+							questionId: q.id,
+						}).allow
+					) {
+						continue;
+					}
+					if (
 						matchedSession.status !== "running" &&
 						matchedSession.status !== "awaiting_review" &&
 						matchedSession.status !== "approved_to_ship"

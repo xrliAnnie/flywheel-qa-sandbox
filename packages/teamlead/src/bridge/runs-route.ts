@@ -1218,7 +1218,12 @@ export function createRunsRouter(
 				// treats it as active, so a lingering approved_to_ship session must
 				// also route through the stale-blocker guard (align the one-active-
 				// session rule with getActiveSessions()).
-				["running", "awaiting_review", "approved_to_ship"].includes(s.status),
+				[
+					"running",
+					"ship_parked",
+					"awaiting_review",
+					"approved_to_ship",
+				].includes(s.status),
 		);
 		const requestedStartKey =
 			typeof req.body.idempotencyKey === "string"
@@ -2680,6 +2685,7 @@ export function createRunsRouter(
 							nodeId: generalizedSelection.nodeId,
 							attempt: 1,
 							snapshotDigest: generalizedSelection.snapshotDigest,
+							gateCarrierEpoch: generalizedSelection.gateCarrierEpoch,
 							dispatch: workflowRuntimeDispatch,
 							capabilities: { ...generalizedSelection.node.capabilities },
 							agentContent: workflowAgentContent,

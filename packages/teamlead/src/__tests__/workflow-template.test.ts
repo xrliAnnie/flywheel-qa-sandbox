@@ -371,6 +371,14 @@ describe("workflow template manifest v1", () => {
 				max_iterations: 3,
 				on_limit: "escalate",
 			}),
+			expect.objectContaining({
+				from: "founder_gate",
+				to: "implement",
+				loop_when: "founder_feedback_kickback",
+				exit_when: "founder_approved",
+				max_iterations: 3,
+				on_limit: "escalate",
+			}),
 		]);
 		expect(heavy.ship_claims).toEqual(["qa_passed", "founder_approved"]);
 

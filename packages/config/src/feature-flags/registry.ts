@@ -3107,6 +3107,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "FLY-1344 founder-controlled DAG lever (FLY-1307 lineage). Dispatch still requires claims WRITE + READ; force_legacy is a separate ship-reader fallback.",
 	},
 	{
+		name: "workflow_gate_carrier",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_GATE_CARRIER",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1441: freeze new engine-owned runs onto Gate-arrival ship approval carriers. Existing epoch-0 runs finish with legacy semantics; toggling affects only the next run.",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/workflow-template-dispatch.ts",
+				"isWorkflowGateCarrierEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"FLY-1441 epoch matrix proves an in-process toggle changes only the next materialized run",
+		note: "Rollout flag only. The run-frozen gate_carrier_epoch, not the live env, owns prompt, fence, holder, and scanner behavior.",
+	},
+	{
 		name: "land_node",
 		category: "kill_switch",
 		source: "env",

@@ -3,7 +3,13 @@ import {
 	adapterTypeToFamily,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
-import type { StateStore } from "../StateStore.js";
+import type {
+	StateStore,
+	WorkflowEngineAlertIdentity,
+	WorkflowGateCarrierRebindCanonical,
+	WorkflowLoopReentryCanonical,
+} from "../StateStore.js";
+import { resolveWorkflowDecisionContract } from "../workflow-run-snapshot.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
 import { isSameOrigin, loopbackSelfOrigin } from "./loopback-origin.js";
@@ -36,6 +42,17 @@ export interface WorkflowDecisionRouterDeps {
 			prHeadSha: string,
 		): Promise<{ executionId: string }>;
 	};
+	loopReentry?: {
+		tokens: Pick<ConfirmTokenStore, "issue" | "verifyAndConsume">;
+	};
+	gateCarrierRebind?: {
+		tokens: Pick<ConfirmTokenStore, "issue" | "verifyAndConsume">;
+	};
+	resolveAlertIdentity?: (
+		projectName: string,
+		issueId: string,
+		runId: string,
+	) => WorkflowEngineAlertIdentity;
 }
 
 type SubmissionCredential = NonNullable<
@@ -61,12 +78,14 @@ async function resolveEngineDecisionCanonical(
 		credential.execution_id,
 	);
 	if (!context || context.run.engine_owned !== 1) return undefined;
-	if (context.node.type !== "qa" && context.node.type !== "review") {
+	const decision = resolveWorkflowDecisionContract(
+		context.snapshot,
+		context.node.id,
+	);
+	if (!decision) {
 		throw new Error("node_does_not_emit_decisions");
 	}
-	const expectedFamily =
-		context.node.type === "qa" ? "qa_verdict" : "review_verdict";
-	if (credential.family !== expectedFamily) {
+	if (credential.family !== decision.family) {
 		throw new Error("decision_family_mismatch");
 	}
 	const reporting = deps.store.getSession(credential.execution_id);
@@ -77,7 +96,7 @@ async function resolveEngineDecisionCanonical(
 
 	let serverHead: string;
 	let producerExecutionId: string;
-	if (context.node.type === "qa") {
+	if (decision.family === "qa_verdict") {
 		serverHead = (
 			await resolveWorkflowHeadAuthority(deps.store, credential.execution_id)
 		).prHeadSha;
@@ -122,13 +141,7 @@ async function resolveEngineDecisionCanonical(
 		reporting,
 		serverHead,
 		predicate:
-			context.node.type === "qa"
-				? status === "pass"
-					? "qa_passed"
-					: "qa_failed"
-				: status === "pass"
-					? "design_review_approved"
-					: "design_review_failed",
+			status === "pass" ? decision.passPredicate : decision.failPredicate,
 		issuerVendor: issuer.vendor,
 		issuerModel: issuer.model,
 		producerExecutionId,
@@ -147,6 +160,56 @@ export interface WorkflowReQaCanonical {
 
 function stringField(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function workflowGateCarrierRebindCanonical(
+	value: unknown,
+): WorkflowGateCarrierRebindCanonical | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const raw = value as Record<string, unknown>;
+	const requestId = stringField(raw.requestId);
+	const runId = stringField(raw.runId);
+	const gateNodeId = stringField(raw.gateNodeId);
+	const questionId = stringField(raw.questionId);
+	const candidateExecutionId = stringField(raw.candidateExecutionId);
+	const subjectDigest = stringField(raw.subjectDigest)?.toLowerCase();
+	const holderAttempt = raw.holderAttempt;
+	const exactKeys = [
+		"requestId",
+		"runId",
+		"gateNodeId",
+		"holderAttempt",
+		"questionId",
+		"candidateExecutionId",
+		"subjectDigest",
+	];
+	if (
+		!requestId ||
+		!/^gate-carrier-rebind:[0-9a-f]{64}$/i.test(requestId) ||
+		!runId ||
+		!gateNodeId ||
+		!questionId ||
+		!candidateExecutionId ||
+		!subjectDigest ||
+		!/^[0-9a-f]{40}$/.test(subjectDigest) ||
+		!Number.isInteger(holderAttempt) ||
+		Number(holderAttempt) < 1 ||
+		Object.keys(raw).length !== exactKeys.length ||
+		!exactKeys.every((key) => Object.hasOwn(raw, key))
+	) {
+		return undefined;
+	}
+	return {
+		requestId,
+		runId,
+		gateNodeId,
+		holderAttempt: Number(holderAttempt),
+		questionId,
+		candidateExecutionId,
+		subjectDigest,
+	};
 }
 
 function rejectNonLoopback(
@@ -385,6 +448,11 @@ export function createWorkflowDecisionRouter(
 				subjectProducerVendor: engineCanonical.producerVendor,
 				claimExpiresAt: credentialRow.expires_at,
 				evidence: summary ? { summary } : undefined,
+				alertIdentity: deps.resolveAlertIdentity?.(
+					engineCanonical.reporting.project_name,
+					engineCanonical.reporting.issue_id,
+					credentialRow.run_id,
+				),
 				now: deps.now?.(),
 			});
 			if (!result.ok) {
@@ -491,6 +559,11 @@ export function createWorkflowDecisionRouter(
 			// differently even when the client payload is exact.
 			claimExpiresAt: credentialRow.expires_at,
 			evidence: summary ? { summary } : undefined,
+			alertIdentity: deps.resolveAlertIdentity?.(
+				reporting.project_name,
+				reporting.issue_id,
+				credentialRow.run_id,
+			),
 			now,
 		});
 		if (!result.ok) {
@@ -572,6 +645,230 @@ export function createWorkflowDecisionRouter(
 		res.json({ ok: true, canonical: resolved.canonical, confirmToken });
 	});
 
+	router.post("/gate-carrier-rebind/stage", (req, res) => {
+		if (!deps.gateCarrierRebind) {
+			res
+				.status(503)
+				.json({ ok: false, reason: "gate_carrier_rebind_unavailable" });
+			return;
+		}
+		const selfOrigin = loopbackSelfOrigin(req.headers.host);
+		if (!selfOrigin) {
+			res.status(403).json({ ok: false, reason: "non_loopback_host" });
+			return;
+		}
+		if (!isSameOrigin(requestHeaders(req), selfOrigin)) {
+			res.status(403).json({ ok: false, reason: "cross_origin" });
+			return;
+		}
+		const body = (req.body ?? {}) as {
+			question_id?: unknown;
+			candidate_execution_id?: unknown;
+		};
+		const questionId = stringField(body.question_id);
+		const candidateExecutionId = stringField(body.candidate_execution_id);
+		if (!questionId || !candidateExecutionId) {
+			res.status(400).json({ ok: false, reason: "invalid_request" });
+			return;
+		}
+		const canonical = deps.store.resolveWorkflowGateCarrierRebindCanonical(
+			questionId,
+			candidateExecutionId,
+		);
+		if (!canonical) {
+			res.status(409).json({ ok: false, reason: "rebind_proof_unavailable" });
+			return;
+		}
+		const confirmToken = deps.gateCarrierRebind.tokens.issue(
+			canonicalSubmissionDigest(canonical),
+		);
+		res.json({ ok: true, canonical, confirmToken });
+	});
+
+	router.post("/gate-carrier-rebind", (req, res) => {
+		if (!deps.gateCarrierRebind) {
+			res
+				.status(503)
+				.json({ ok: false, reason: "gate_carrier_rebind_unavailable" });
+			return;
+		}
+		const selfOrigin = loopbackSelfOrigin(req.headers.host);
+		if (!selfOrigin) {
+			res.status(403).json({ ok: false, reason: "non_loopback_host" });
+			return;
+		}
+		if (!isSameOrigin(requestHeaders(req), selfOrigin)) {
+			res.status(403).json({ ok: false, reason: "cross_origin" });
+			return;
+		}
+		const input = (req.body ?? {}) as {
+			canonical?: unknown;
+			confirmToken?: unknown;
+		};
+		const canonical = workflowGateCarrierRebindCanonical(input.canonical);
+		const confirmToken = stringField(input.confirmToken);
+		if (!canonical || !confirmToken) {
+			res.status(400).json({ ok: false, reason: "missing_canonical_or_token" });
+			return;
+		}
+		const canonicalDigest = canonicalSubmissionDigest(canonical);
+		const prior = deps.store.getWorkflowGateCarrierRebindReceipt(
+			canonical.requestId,
+		);
+		if (prior) {
+			if (
+				prior.canonicalDigest !== canonicalDigest ||
+				prior.questionId !== canonical.questionId ||
+				prior.sourceExecutionId !== canonical.candidateExecutionId
+			) {
+				res.status(409).json({ ok: false, reason: "request_conflict" });
+				return;
+			}
+			res.json({
+				ok: true,
+				idempotentReplay: true,
+				questionId: prior.questionId,
+				sourceExecutionId: prior.sourceExecutionId,
+				reviewWindowStartedAt: prior.reviewWindowStartedAt,
+			});
+			return;
+		}
+		const current = deps.store.resolveWorkflowGateCarrierRebindCanonical(
+			canonical.questionId,
+			canonical.candidateExecutionId,
+		);
+		if (!current || canonicalSubmissionDigest(current) !== canonicalDigest) {
+			res.status(409).json({ ok: false, reason: "rebind_state_changed" });
+			return;
+		}
+		const token = deps.gateCarrierRebind.tokens.verifyAndConsume(
+			confirmToken,
+			canonicalDigest,
+		);
+		if (!token.ok) {
+			res.status(403).json({ ok: false, reason: token.reason });
+			return;
+		}
+		const result = deps.store.rebindWorkflowGateCarrier({
+			requestId: canonical.requestId,
+			questionId: canonical.questionId,
+			candidateExecutionId: canonical.candidateExecutionId,
+			canonicalDigest,
+			now: deps.now?.() ?? new Date().toISOString(),
+		});
+		if (!result.ok) {
+			res.status(result.reason === "invalid_input" ? 400 : 409).json(result);
+			return;
+		}
+		res.json(result);
+	});
+
+	router.post("/loop-reentry/stage", (req, res) => {
+		if (!deps.loopReentry) {
+			res.status(503).json({ ok: false, reason: "loop_reentry_unavailable" });
+			return;
+		}
+		const selfOrigin = loopbackSelfOrigin(req.headers.host);
+		if (!selfOrigin) {
+			res.status(403).json({ ok: false, reason: "non_loopback_host" });
+			return;
+		}
+		if (!isSameOrigin(requestHeaders(req), selfOrigin)) {
+			res.status(403).json({ ok: false, reason: "cross_origin" });
+			return;
+		}
+		const body = (req.body ?? {}) as {
+			execution_id?: unknown;
+			loop_id?: unknown;
+		};
+		const executionId = stringField(body.execution_id);
+		const loopId = stringField(body.loop_id);
+		if (!executionId || !loopId) {
+			res.status(400).json({ ok: false, reason: "invalid_request" });
+			return;
+		}
+		const canonical = deps.store.resolveWorkflowLoopReentryCanonical(
+			executionId,
+			loopId,
+		);
+		if (!canonical) {
+			res.status(409).json({ ok: false, reason: "loop_reentry_unavailable" });
+			return;
+		}
+		const confirmToken = deps.loopReentry.tokens.issue(
+			canonicalSubmissionDigest(canonical),
+		);
+		res.json({ ok: true, canonical, confirmToken });
+	});
+
+	router.post("/loop-reentry", (req, res) => {
+		if (!deps.loopReentry) {
+			res.status(503).json({ ok: false, reason: "loop_reentry_unavailable" });
+			return;
+		}
+		const selfOrigin = loopbackSelfOrigin(req.headers.host);
+		if (!selfOrigin) {
+			res.status(403).json({ ok: false, reason: "non_loopback_host" });
+			return;
+		}
+		if (!isSameOrigin(requestHeaders(req), selfOrigin)) {
+			res.status(403).json({ ok: false, reason: "cross_origin" });
+			return;
+		}
+		const input = (req.body ?? {}) as {
+			canonical?: WorkflowLoopReentryCanonical;
+			confirmToken?: unknown;
+		};
+		const confirmToken = stringField(input.confirmToken);
+		if (!input.canonical || !confirmToken) {
+			res.status(400).json({ ok: false, reason: "missing_canonical_or_token" });
+			return;
+		}
+		const canonical = input.canonical;
+		const canonicalDigest = canonicalSubmissionDigest(canonical);
+		const prior = deps.store.getWorkflowLoopReentryReceipt(canonical.requestId);
+		if (prior) {
+			if (prior.canonicalDigest !== canonicalDigest) {
+				res.status(409).json({ ok: false, reason: "request_conflict" });
+				return;
+			}
+			res.json({
+				ok: true,
+				idempotentReplay: true,
+				receipt: prior.receipt,
+			});
+			return;
+		}
+		const current = deps.store.resolveWorkflowLoopReentryCanonical(
+			canonical.sourceExecutionId,
+			canonical.loopId,
+		);
+		if (!current || canonicalSubmissionDigest(current) !== canonicalDigest) {
+			res.status(409).json({ ok: false, reason: "loop_state_changed" });
+			return;
+		}
+		const token = deps.loopReentry.tokens.verifyAndConsume(
+			confirmToken,
+			canonicalDigest,
+		);
+		if (!token.ok) {
+			res.status(403).json({ ok: false, reason: token.reason });
+			return;
+		}
+		const result = deps.store.commitWorkflowLoopReentryRequest({
+			canonical,
+			canonicalDigest,
+			tokenIdentity: canonicalSubmissionDigest(confirmToken),
+			initiator: canonical.sourceExecutionId,
+			now: deps.now?.() ?? new Date().toISOString(),
+		});
+		if (!result.ok) {
+			res.status(result.reason === "invalid_input" ? 400 : 409).json(result);
+			return;
+		}
+		res.json(result);
+	});
+
 	router.post("/re-qa", async (req, res) => {
 		if (!deps.reQa || deps.reQa.enabled?.() === false) {
 			res.status(503).json({
@@ -597,48 +894,51 @@ export function createWorkflowDecisionRouter(
 			res.status(400).json({ ok: false, reason: "missing_canonical_or_token" });
 			return;
 		}
+		const canonical = input.canonical;
 		const resolved = resolveReQaCanonical(
 			deps.store,
-			input.canonical.sourceExecutionId,
+			canonical.sourceExecutionId,
 		);
 		if (
 			!resolved.ok ||
 			canonicalSubmissionDigest(resolved.canonical) !==
-				canonicalSubmissionDigest(input.canonical)
+				canonicalSubmissionDigest(canonical)
 		) {
 			res.status(409).json({ ok: false, reason: "re_qa_state_changed" });
 			return;
 		}
 		const token = deps.reQa.tokens.verifyAndConsume(
 			input.confirmToken,
-			canonicalSubmissionDigest(input.canonical),
+			canonicalSubmissionDigest(canonical),
 		);
 		if (!token.ok) {
 			res.status(403).json({ ok: false, reason: token.reason });
 			return;
 		}
 
-		const run = deps.store.getWorkflowRun(input.canonical.runId);
-		if ((run?.current_qa_attempt ?? 0) >= input.canonical.targetAttempt) {
-			const existing = deps.store.getWorkflowRunNode(
-				input.canonical.runId,
-				"qa",
-				input.canonical.targetAttempt,
+		const existingAttempts = deps.store.listWorkflowRunNodes(
+			canonical.runId,
+			"qa",
+		);
+		const latestQaAttempt = existingAttempts.at(-1)?.attempt ?? 0;
+		if (latestQaAttempt >= canonical.targetAttempt) {
+			const existing = existingAttempts.find(
+				(candidate) => candidate.attempt === canonical.targetAttempt,
 			);
 			if (
 				existing?.execution_id &&
 				deps.store.getWorkflowActivationForAttempt({
 					executionId: existing.execution_id,
-					runId: input.canonical.runId,
+					runId: canonical.runId,
 					nodeId: "qa",
-					attempt: input.canonical.targetAttempt,
+					attempt: canonical.targetAttempt,
 				})
 			) {
 				res.json({
 					ok: true,
 					idempotentReplay: true,
 					executionId: existing.execution_id,
-					targetAttempt: input.canonical.targetAttempt,
+					targetAttempt: canonical.targetAttempt,
 				});
 				return;
 			}
@@ -649,7 +949,7 @@ export function createWorkflowDecisionRouter(
 			prHeadSha = (
 				await resolveWorkflowHeadAuthority(
 					deps.store,
-					input.canonical.sourceExecutionId,
+					canonical.sourceExecutionId,
 				)
 			).prHeadSha;
 		} catch (error) {
@@ -660,18 +960,18 @@ export function createWorkflowDecisionRouter(
 			return;
 		}
 		try {
-			const spawned = await deps.reQa.respawn(input.canonical, prHeadSha);
+			const spawned = await deps.reQa.respawn(canonical, prHeadSha);
 			const binding = deps.store.getWorkflowActivationForAttempt({
 				executionId: spawned.executionId,
-				runId: input.canonical.runId,
+				runId: canonical.runId,
 				nodeId: "qa",
-				attempt: input.canonical.targetAttempt,
+				attempt: canonical.targetAttempt,
 			});
 			if (
 				!binding ||
-				binding.run_id !== input.canonical.runId ||
+				binding.run_id !== canonical.runId ||
 				binding.node_id !== "qa" ||
-				binding.attempt !== input.canonical.targetAttempt
+				binding.attempt !== canonical.targetAttempt
 			) {
 				throw new Error("replacement_not_admitted");
 			}
@@ -679,7 +979,7 @@ export function createWorkflowDecisionRouter(
 				ok: true,
 				idempotentReplay: false,
 				executionId: spawned.executionId,
-				targetAttempt: input.canonical.targetAttempt,
+				targetAttempt: canonical.targetAttempt,
 			});
 		} catch (error) {
 			res.status(500).json({

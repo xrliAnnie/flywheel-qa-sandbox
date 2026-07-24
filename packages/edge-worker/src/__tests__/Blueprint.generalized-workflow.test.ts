@@ -251,4 +251,43 @@ describe("Blueprint generalized workflow capability contract", () => {
 		// checkpoint; capability isolation must not suppress that safe gate.
 		expect(prompt).toContain("QUESTION GATE");
 	});
+
+	it("does not leak the legacy three-stage landing or approve epilogue into an epoch-1 generalized implement node", async () => {
+		const checkpoints = {
+			brainstorm: { enabled: true },
+			approve_to_ship: { enabled: true },
+			question: { enabled: true },
+		} as unknown as CheckpointsConfig;
+		const { blueprint, adapter } = harness(checkpoints);
+		await blueprint.run(node, "/tmp/fly1441-generalized-implement", {
+			...generalized,
+			leadId: "flywheel-eng-lead",
+			shareParentBranch: true,
+			sessionRole: "implement",
+			generalizedExecutionContext: {
+				...generalized.generalizedExecutionContext!,
+				nodeId: "implement",
+				gateCarrierEpoch: 1,
+			},
+			workflowCapabilities: {
+				...generalized.workflowCapabilities,
+				shared_branch_writer: true,
+				creates_pr: true,
+				can_ship: true,
+				can_land: true,
+				produces_output: false,
+				completion_route: "needs_review",
+			},
+			workflowOutputCredential: undefined,
+		});
+		const call = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		const prompt = call.appendSystemPrompt ?? "";
+
+		expect(prompt).toContain("complete --route needs_review");
+		expect(prompt).not.toContain("APPROVE GATE");
+		expect(prompt).not.toContain("flywheel-land");
+		expect(prompt).not.toContain("Landing signal path");
+		expect(prompt).not.toContain("Three-stage keep-alive (implement phase)");
+	});
 });

@@ -64,6 +64,122 @@ export interface WorkflowRunSnapshotV1 extends WorkflowSnapshotWorkKind {
 
 export type WorkflowRunSnapshot = WorkflowRunSnapshotV1 | WorkflowRunSnapshotV2;
 
+export type WorkflowGateAuthorityMode =
+	| "land"
+	| "runner_ship"
+	| "engine_terminal";
+export type WorkflowGateSubjectKind = "git_head" | "snapshot_digest";
+
+export interface WorkflowGateAuthority {
+	mode: WorkflowGateAuthorityMode;
+	subjectKind: WorkflowGateSubjectKind;
+	carrierNodeId?: string;
+}
+
+export interface WorkflowDecisionContract {
+	family: "qa_verdict" | "review_verdict";
+	passOutcome: "qa_pass" | "review_pass";
+	failOutcome: "qa_fail" | "review_fail";
+	passPredicate: "qa_passed" | "design_review_approved";
+	failPredicate: "qa_failed" | "design_review_failed";
+	subjectKind: "git_head";
+}
+
+/**
+ * Resolve a decision node from its pinned verdict pair, never its node type or
+ * id. The snapshot manifest is the frozen admission contract.
+ */
+export function resolveWorkflowDecisionContract(
+	snapshot: WorkflowRunSnapshot,
+	nodeId: string,
+): WorkflowDecisionContract | undefined {
+	const verdictLoops = snapshot.manifest.loops.filter(
+		(loop) =>
+			loop.from === nodeId &&
+			(loop.loop_when === "qa_fail" || loop.loop_when === "review_fail"),
+	);
+	if (verdictLoops.length === 0) return undefined;
+	if (verdictLoops.length !== 1) {
+		throw new Error("workflow_decision_contract_ambiguous");
+	}
+	const loop = verdictLoops[0]!;
+	const exitEdges = snapshot.manifest.edges.filter(
+		(edge) => edge.from === nodeId && edge.condition === loop.exit_when,
+	);
+	if (exitEdges.length !== 1) {
+		throw new Error("workflow_decision_contract_exit_ambiguous");
+	}
+	if (loop.loop_when === "qa_fail" && loop.exit_when === "qa_pass") {
+		return {
+			family: "qa_verdict",
+			passOutcome: "qa_pass",
+			failOutcome: "qa_fail",
+			passPredicate: "qa_passed",
+			failPredicate: "qa_failed",
+			subjectKind: "git_head",
+		};
+	}
+	if (loop.loop_when === "review_fail" && loop.exit_when === "review_pass") {
+		return {
+			family: "review_verdict",
+			passOutcome: "review_pass",
+			failOutcome: "review_fail",
+			passPredicate: "design_review_approved",
+			failPredicate: "design_review_failed",
+			subjectKind: "git_head",
+		};
+	}
+	throw new Error("workflow_decision_contract_mismatch");
+}
+
+/**
+ * FLY-1441: derive the post-Gate authority from one coherent pinned capability
+ * bundle. Node ids and template ids are intentionally irrelevant.
+ */
+export function resolveWorkflowGateAuthority(
+	snapshot: WorkflowRunSnapshot,
+): WorkflowGateAuthority {
+	const subjectKind: WorkflowGateSubjectKind =
+		snapshot.manifest.ship_claims.some((claim) => claim !== "founder_approved")
+			? "git_head"
+			: "snapshot_digest";
+	if (isWorkflowManifestV1Land(snapshot.manifest)) {
+		return { mode: "land", subjectKind: "git_head" };
+	}
+	const candidates = snapshot.resolved.nodes.filter((node) => {
+		const capabilities = node.capabilities;
+		return (
+			capabilities.creates_pr || capabilities.can_ship || capabilities.can_land
+		);
+	});
+	if (candidates.length === 0) {
+		return { mode: "engine_terminal", subjectKind };
+	}
+	if (candidates.length !== 1) {
+		throw new Error("incoherent_ship_bundle");
+	}
+	const carrier = candidates[0]!;
+	const capabilities = carrier.capabilities;
+	if (
+		!capabilities.creates_pr ||
+		!capabilities.can_ship ||
+		!capabilities.can_land ||
+		!capabilities.approval_gate_holder ||
+		!capabilities.needs_mailbox_transport ||
+		capabilities.completion_route !== "needs_review"
+	) {
+		throw new Error("incoherent_ship_bundle");
+	}
+	if (subjectKind !== "git_head") {
+		throw new Error("incoherent_ship_bundle");
+	}
+	return {
+		mode: "runner_ship",
+		subjectKind,
+		carrierNodeId: carrier.id,
+	};
+}
+
 /** Kept as a source-compatible alias for schema-v2 consumers. */
 export type ResolvedWorkflowNodeV2 = ResolvedWorkflowNode;
 
@@ -564,13 +680,20 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 		(node) =>
 			node.capabilities.shared_branch_writer || node.capabilities.creates_pr,
 	);
-	const qaCount = resolved.filter((node) => node.type === "qa").length;
+	const qaVerdictCount = manifest.loops.filter(
+		(loop) =>
+			loop.loop_when === "qa_fail" &&
+			loop.exit_when === "qa_pass" &&
+			manifest.edges.some(
+				(edge) => edge.from === loop.from && edge.condition === loop.exit_when,
+			),
+	).length;
 	if (
 		pinnedWritesCode &&
-		(qaCount !== 1 || !manifest.ship_claims.includes("qa_passed"))
+		(qaVerdictCount !== 1 || !manifest.ship_claims.includes("qa_passed"))
 	) {
 		throw new Error(
-			"a workflow containing a pinned code-writing node must contain exactly one independent QA node and qa_passed ship claim",
+			"a workflow containing a pinned code-writing node must contain exactly one independent QA verdict contract and qa_passed ship claim",
 		);
 	}
 	const body =

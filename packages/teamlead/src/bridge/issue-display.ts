@@ -64,6 +64,7 @@ const PHASE_DONE_STATUSES: ReadonlySet<string> = new Set([
  * a woken rework session sits at one of these with its park marker cleared). */
 const PHASE_BOUNDARY_STATUSES: ReadonlySet<string> = new Set([
 	"design_done",
+	"ship_parked",
 	"awaiting_review",
 	"approved_to_ship",
 ]);

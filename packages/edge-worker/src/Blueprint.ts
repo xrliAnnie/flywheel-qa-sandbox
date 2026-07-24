@@ -563,6 +563,8 @@ export interface BlueprintContext {
 		nodeId: string;
 		attempt: number;
 		snapshotDigest: string;
+		/** FLY-1441: frozen run-level gate-carrier behavior epoch. */
+		gateCarrierEpoch?: number;
 	};
 	workflowCapabilities?: Record<string, boolean | string>;
 	workflowAgentContent?: string;
@@ -1426,6 +1428,8 @@ export class Blueprint {
 		const landingEnabled = !!this.worktreeManager;
 		const hasLandCommand = !!this.skillsConfig?.land_command;
 		const isGeneralizedExecution = !!ctx.generalizedExecutionContext;
+		const gateCarrierEpoch1 =
+			ctx.generalizedExecutionContext?.gateCarrierEpoch === 1;
 		const canLand = isGeneralizedExecution
 			? ctx.workflowCapabilities?.can_land === true && landingEnabled
 			: landingEnabled && (skillInjectionSucceeded || hasLandCommand);
@@ -1716,7 +1720,13 @@ export class Blueprint {
 			);
 		}
 
-		if (!isQaRunner && !isDesignPhase && !isQaPhase && canLand) {
+		if (
+			!gateCarrierEpoch1 &&
+			!isQaRunner &&
+			!isDesignPhase &&
+			!isQaPhase &&
+			canLand
+		) {
 			// v0.6: land after PR creation (v1.0 Phase 2: no merge — report readiness only)
 			// FLY-793: the Design phase has no PR/CI/land — it completes via
 			// phase_design_complete. The QA phase inherits the Implement phase's
@@ -1757,7 +1767,7 @@ export class Blueprint {
 		// them at ship. Appended AFTER the land block so "park, do NOT exit"
 		// overrides any "exit the session" step above. Gated on the keep-alive
 		// kill-switch (=0 → these lines are absent → legacy exit behavior).
-		if (threeStageKeepAlive && isDesignPhase) {
+		if (!gateCarrierEpoch1 && threeStageKeepAlive && isDesignPhase) {
 			systemPromptLines.push(
 				"",
 				"## Three-stage keep-alive (design phase)",
@@ -1771,7 +1781,7 @@ export class Blueprint {
 				...(isCodexRunner ? [codexPhaseWakeContract] : []),
 			);
 		}
-		if (threeStageKeepAlive && isImplementPhase) {
+		if (!gateCarrierEpoch1 && threeStageKeepAlive && isImplementPhase) {
 			systemPromptLines.push(
 				"",
 				"## Three-stage keep-alive (implement phase)",

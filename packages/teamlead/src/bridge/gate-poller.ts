@@ -928,6 +928,21 @@ export class GatePoller {
 								);
 								continue;
 							}
+							const gateOwnership =
+								typeof this.config.store.workflowGatePresentationDisposition ===
+								"function"
+									? this.config.store.workflowGatePresentationDisposition({
+											executionId: question.from_agent,
+											checkpoint: question.checkpoint,
+											questionId: question.id,
+										})
+									: { allow: true as const, reason: "legacy" as const };
+							if (!gateOwnership.allow) {
+								console.warn(
+									`[GatePoller] suppressed non-authoritative workflow ship gate ${question.id}: ${gateOwnership.reason}`,
+								);
+								continue;
+							}
 							// FLY-1041 Fix A (sweeper): a superseded ship gate is retired +
 							// skipped BEFORE any founder surface — runs even for a held
 							// session (a zombie gate on a held session must still die).
@@ -2596,6 +2611,18 @@ export class GatePoller {
 		if (!this.config.chatThreadsEnabled) return;
 		const cp = question.checkpoint;
 		if (cp !== "brainstorm" && cp !== "approve_to_ship") return; // v1 scope
+		const gateOwnership =
+			typeof this.config.store.workflowGatePresentationDisposition ===
+			"function"
+				? this.config.store.workflowGatePresentationDisposition({
+						executionId: question.from_agent,
+						checkpoint: cp,
+						questionId: question.id,
+					})
+				: { allow: true as const };
+		if (!gateOwnership.allow) {
+			return;
+		}
 
 		// Same liveness + scope gate as the gate-question relay path.
 		if (!ACTIVE_SESSION_STATUSES.has(session.status)) return;
@@ -3939,6 +3966,18 @@ export class GatePoller {
 
 						const session = this.config.store.getSession(q.from_agent);
 						if (!session) continue;
+						const gateOwnership =
+							typeof this.config.store.workflowGatePresentationDisposition ===
+							"function"
+								? this.config.store.workflowGatePresentationDisposition({
+										executionId: q.from_agent,
+										checkpoint: q.checkpoint,
+										questionId: q.id,
+									})
+								: { allow: true as const };
+						if (!gateOwnership.allow) {
+							continue;
+						}
 						const thread = this.config.store.getChatThreadByIssue(
 							session.issue_id,
 							lead.chatChannel,

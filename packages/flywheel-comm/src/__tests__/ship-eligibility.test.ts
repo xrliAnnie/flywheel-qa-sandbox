@@ -144,6 +144,15 @@ describe("FLY-869 ship-eligibility", () => {
 		db.prepare(
 			"INSERT INTO workflow_run_node (run_id, node_id, attempt, execution_id) VALUES ('run-1', ?, ?, ?)",
 		).run(nodeId, attempt, executionId);
+		if ((input.currentAttempt ?? attempt) > attempt) {
+			db.prepare(
+				"INSERT INTO workflow_run_node (run_id, node_id, attempt, execution_id) VALUES ('run-1', ?, ?, ?)",
+			).run(
+				nodeId,
+				input.currentAttempt,
+				`${executionId}-attempt-${input.currentAttempt}`,
+			);
+		}
 		db.prepare(
 			"INSERT INTO workflow_execution_binding (execution_id, run_id, node_id, attempt) VALUES (?, 'run-1', ?, ?)",
 		).run(executionId, nodeId, attempt);

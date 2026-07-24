@@ -354,6 +354,7 @@ export interface MonitorReconcileConfig {
  * here — this predicate answers "is this a keep-alive parked phase?".
  */
 const READOPT_PARKED_STATUSES: ReadonlySet<string> = new Set([
+	"ship_parked",
 	"awaiting_review",
 	"design_done",
 	"approved_to_ship",

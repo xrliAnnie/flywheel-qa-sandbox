@@ -33,6 +33,13 @@ manifest:
       exit_when: qa_pass
       max_iterations: 3
       on_limit: escalate
+    - id: founder_feedback
+      from: founder_gate
+      to: implement
+      loop_when: founder_feedback_kickback
+      exit_when: founder_approved
+      max_iterations: 3
+      on_limit: escalate
   terminal_gate: { node: founder_gate, predicate: founder_approved }
   ship_claims: [qa_passed, founder_approved]
   tier_presets:

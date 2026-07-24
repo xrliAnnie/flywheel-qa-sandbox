@@ -505,9 +505,7 @@ function validateWorkflowManifestV1(
 			),
 			exit_when: oneOf(
 				loop.exit_when,
-				(isLandVariant
-					? ["qa_pass", "founder_approved"]
-					: ["qa_pass"]) as readonly ("qa_pass" | "founder_approved")[],
+				["qa_pass", "founder_approved"] as const,
 				`manifest.loops[${index}].exit_when`,
 			),
 			max_iterations: Number(loop.max_iterations),
@@ -599,8 +597,19 @@ function validateWorkflowManifestV1(
 			.map((edge) => edge.condition);
 		const nodeLoops = loops.filter((loop) => loop.from === node.id);
 		if (node.id === terminalNode) {
-			if (conditions.length || nodeLoops.length)
+			if (conditions.length) {
 				throw new Error("terminal gate cannot have outgoing edges");
+			}
+			if (
+				nodeLoops.length > 1 ||
+				(nodeLoops.length === 1 &&
+					(nodeLoops[0]!.loop_when !== "founder_feedback_kickback" ||
+						nodeLoops[0]!.exit_when !== "founder_approved"))
+			) {
+				throw new Error(
+					"terminal gate feedback must be one founder_feedback_kickback loop",
+				);
+			}
 			continue;
 		}
 		const expected =

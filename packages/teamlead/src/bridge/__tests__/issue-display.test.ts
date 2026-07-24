@@ -64,6 +64,7 @@ describe("derivePhaseDisplayState (plan 1a mapping table)", () => {
 	it("handoff-boundary statuses + park parked/unknown → done (到达 handoff 边界=该段工作到位)", () => {
 		for (const status of [
 			"design_done",
+			"ship_parked",
 			"awaiting_review",
 			"approved_to_ship",
 		]) {
@@ -78,6 +79,7 @@ describe("derivePhaseDisplayState (plan 1a mapping table)", () => {
 	it("handoff-boundary statuses + park not_parked → active (FLY-543: woken rework must show ▶, not a fake ✅)", () => {
 		for (const status of [
 			"design_done",
+			"ship_parked",
 			"awaiting_review",
 			"approved_to_ship",
 		]) {

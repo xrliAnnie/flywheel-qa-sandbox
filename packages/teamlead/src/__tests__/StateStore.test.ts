@@ -76,10 +76,13 @@ describe("StateStore", () => {
 		expect(s!.decision_route).toBe("needs_review");
 	});
 
-	it("getActiveSessions returns only running/awaiting_review", () => {
+	it("getActiveSessions keeps the pre-Gate ship_parked carrier live", () => {
 		store.upsertSession(makeSession({ execution_id: "e1", status: "running" }));
 		store.upsertSession(
 			makeSession({ execution_id: "e2", status: "awaiting_review" }),
+		);
+		store.upsertSession(
+			makeSession({ execution_id: "e5", status: "ship_parked" }),
 		);
 		store.upsertSession(makeSession({ execution_id: "e3", status: "failed" }));
 		store.upsertSession(
@@ -87,9 +90,40 @@ describe("StateStore", () => {
 		);
 
 		const active = store.getActiveSessions();
-		expect(active).toHaveLength(2);
+		expect(active).toHaveLength(3);
 		const ids = active.map((s) => s.execution_id).sort();
-		expect(ids).toEqual(["e1", "e2"]);
+		expect(ids).toEqual(["e1", "e2", "e5"]);
+	});
+
+	it("classifies ship_parked as re-adoptable, dedup-blocking, patrolled, and worktree-protected", () => {
+		store.upsertSession(
+			makeSession({
+				execution_id: "ship-carrier",
+				issue_id: "FLY-1441",
+				project_name: "flywheel",
+				status: "ship_parked",
+				session_role: "implement",
+				chat_thread_role: "implement",
+				worktree_path: "/tmp/fly-1441",
+			}),
+		);
+
+		expect(
+			store
+				.getReadoptCandidateSessions()
+				.map((session) => session.execution_id),
+		).toContain("ship-carrier");
+		expect(
+			store.listParkWatchSessions().map((session) => session.execution_id),
+		).toContain("ship-carrier");
+		expect(store.getActivePhaseSessionForIssue("FLY-1441")?.execution_id).toBe(
+			"ship-carrier",
+		);
+		expect(
+			store
+				.listWorktreeProtectionSessions("flywheel")
+				.map((session) => session.execution_id),
+		).toContain("ship-carrier");
 	});
 
 	it("getStuckSessions returns sessions with old last_activity_at", () => {

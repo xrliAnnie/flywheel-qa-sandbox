@@ -75,6 +75,7 @@ export const CRASH_PRESERVE_STATES: ReadonlySet<string> = new Set([
  */
 export const FINALIZE_DONE_SOURCE_STATES: ReadonlySet<string> = new Set([
 	"running",
+	"ship_parked",
 	"awaiting_review",
 	"approved_to_ship",
 	// FLY-793: a three-stage Design phase-session lands here (route

@@ -166,10 +166,15 @@ function resolveEnrolledQaClaim(
 				    AND n.execution_id = b.execution_id
 				   JOIN workflow_run r
 				     ON r.run_id = b.run_id
-				    AND r.current_qa_attempt = b.attempt
 				  WHERE b.execution_id = ?
 				    AND b.node_id = 'qa'
-				    AND r.claims_read_enrolled = 1`,
+				    AND r.claims_read_enrolled = 1
+				    AND b.attempt = (
+				      SELECT MAX(latest.attempt)
+				        FROM workflow_run_node latest
+				       WHERE latest.run_id = b.run_id
+				         AND latest.node_id = b.node_id
+				    )`,
 			)
 			.get(execId) as typeof binding;
 	} catch {

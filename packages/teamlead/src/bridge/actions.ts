@@ -1146,6 +1146,7 @@ async function handleRetry(
 				nodeId: predecessorBinding.node_id,
 				attempt: predecessorBinding.attempt + 1,
 				snapshotDigest: snapshot.snapshot_digest,
+				gateCarrierEpoch: run.gate_carrier_epoch,
 				dispatch: runtimeDispatch,
 				capabilities: { ...node.capabilities },
 				agentContent,

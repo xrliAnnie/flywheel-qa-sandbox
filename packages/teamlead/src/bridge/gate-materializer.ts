@@ -67,6 +67,12 @@ export async function materializeWorkflowGateHolder(
 		return { ok: false, reason: "workflow_gate_holder_already_approved" };
 	}
 	if (
+		holder.authority_mode === "runner_ship" &&
+		holder.carrier_binding_state !== "bound"
+	) {
+		return { ok: false, reason: "workflow_gate_carrier_unbound" };
+	}
+	if (
 		holder.materialization_stage === "completed" &&
 		holder.state === "awaiting_review" &&
 		holder.card_message_id

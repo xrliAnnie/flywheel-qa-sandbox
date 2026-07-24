@@ -177,6 +177,20 @@ export class QuestionAdmission {
 		}
 		const session = this.opts.store.getSession(question.from_agent);
 		if (!session) return { ok: false, disposition: "revoked_orphan" };
+		const ownership =
+			typeof this.opts.store.workflowGatePresentationDisposition === "function"
+				? this.opts.store.workflowGatePresentationDisposition({
+						executionId: question.from_agent,
+						checkpoint: question.checkpoint,
+						questionId: question.id,
+					})
+				: { allow: true as const, reason: "legacy" as const };
+		if (!ownership.allow) {
+			return {
+				ok: false,
+				disposition: `revoked_workflow_gate_${ownership.reason}`,
+			};
+		}
 		if (question.checkpoint != null) {
 			if (!ACTIVE_GATE_SESSION_STATUSES.has(session.status)) {
 				return { ok: false, disposition: "revoked_terminal_session" };

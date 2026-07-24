@@ -17,6 +17,7 @@ import {
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import {
 	parseWorkflowRunSnapshot,
+	resolveWorkflowDecisionContract,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
 import {
@@ -316,11 +317,13 @@ export class WorkflowEngineDispatcher {
 
 	private async reconcileWorkflowShipReady(): Promise<void> {
 		const arm = this.options.shipReadyArm;
-		if (!arm || !shipReadyNotifyEnabled(this.env)) return;
+		if (!arm) return;
 		const store = this.options.store;
 		const now = this.now();
 		const nowIso = now.toISOString();
 		const nowMs = now.getTime();
+		await this.reconcileRunnerShipMerges(arm, nowIso);
+		if (!shipReadyNotifyEnabled(this.env)) return;
 
 		try {
 			const ready = store.listWorkflowShipReadyGates({ now: nowIso });
@@ -473,6 +476,73 @@ export class WorkflowEngineDispatcher {
 			} catch (error) {
 				this.log(
 					`ship-ready stalled candidate held for ${workflowShipReadyUid(notice)}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+	}
+
+	private async reconcileRunnerShipMerges(
+		arm: WorkflowShipReadyArm,
+		now: string,
+	): Promise<void> {
+		if (!arm.classifyRunnerShipMerged) return;
+		const store = this.options.store;
+		let candidates: ReturnType<typeof store.listRunnerShipHoldersForMergeProbe>;
+		try {
+			candidates = store.listRunnerShipHoldersForMergeProbe();
+		} catch (error) {
+			this.log(
+				`runner-ship merge candidate scan held: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return;
+		}
+		let probes: Awaited<
+			ReturnType<NonNullable<WorkflowShipReadyArm["classifyRunnerShipMerged"]>>
+		>;
+		try {
+			probes = await arm.classifyRunnerShipMerged(candidates);
+		} catch (error) {
+			this.log(
+				`runner-ship merge probe held: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return;
+		}
+		for (const candidate of candidates) {
+			const probe = probes.get(candidate.questionId);
+			if (probe?.state !== "merged") continue;
+			const mergedHead = probe.headRefOid?.trim().toLowerCase();
+			if (!mergedHead || mergedHead !== candidate.subjectDigest.toLowerCase()) {
+				this.log(
+					`runner-ship merged head held for ${candidate.questionId}: expected ${candidate.subjectDigest}, observed ${mergedHead ?? "missing"}`,
+				);
+				continue;
+			}
+			try {
+				if (candidate.holderState !== "approved") {
+					store.recordRunnerShipRogueMerge({
+						questionId: candidate.questionId,
+						alertIdentity: this.resolveRunAlertIdentity(
+							candidate.projectName,
+							candidate.issueId,
+							candidate.runId,
+						),
+						now,
+					});
+					continue;
+				}
+				const completed = store.completeWorkflowGateRunAfterShip({
+					questionId: candidate.questionId,
+					mergedHead,
+					now,
+				});
+				if (!completed.ok) {
+					this.log(
+						`runner-ship merge completion held for ${candidate.questionId}: ${completed.reason}`,
+					);
+				}
+			} catch (error) {
+				this.log(
+					`runner-ship merge candidate held for ${candidate.questionId}: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
 		}
@@ -1691,6 +1761,7 @@ export class WorkflowEngineDispatcher {
 		}
 		let outputCredential = admitted.outputCredential;
 		let submissionCredential = admitted.submissionCredential;
+		const decisionContract = resolveWorkflowDecisionContract(snapshot, node.id);
 		if (admitted.idempotentReplay && launch.status === "acquired") {
 			const expiresAt = new Date(now.getTime() + 60 * 60_000).toISOString();
 			const absoluteDeadlineAt = new Date(
@@ -1710,7 +1781,7 @@ export class WorkflowEngineDispatcher {
 				}
 				outputCredential = rotated.outputCredential;
 			}
-			if (node.type === "qa" || node.type === "review") {
+			if (decisionContract) {
 				const rotated = store.rotateGeneralizedWorkflowSubmissionCredential({
 					executionId: intent.execution_id,
 					ownerId,
@@ -1745,7 +1816,7 @@ export class WorkflowEngineDispatcher {
 				}
 				outputCredential = rotated.outputCredential;
 			}
-			if (node.type === "qa" || node.type === "review") {
+			if (decisionContract) {
 				const rotated =
 					store.rotateGeneralizedWorkflowSubmissionCredentialForDeliveryRepair({
 						executionId: intent.execution_id,
@@ -1805,6 +1876,7 @@ export class WorkflowEngineDispatcher {
 				nodeId: intent.node_id,
 				attempt: intent.attempt,
 				snapshotDigest: snapshot.snapshot_digest,
+				gateCarrierEpoch: run.gate_carrier_epoch,
 				dispatch: runtimeDispatch,
 				capabilities: { ...node.capabilities },
 				agentContent: contextualAgentContent,

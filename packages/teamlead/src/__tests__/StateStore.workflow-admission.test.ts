@@ -46,7 +46,7 @@ describe("workflow claims admission — fail-closed enrollment + immutable bindi
 
 		expect(store.getWorkflowRun("run-1")).toMatchObject({
 			claims_read_enrolled: 1,
-			current_qa_attempt: 1,
+			current_qa_attempt: null,
 		});
 		expect(store.getWorkflowRunNode("run-1", "qa", 1)).toMatchObject({
 			execution_id: "qa-exec-1",

@@ -196,6 +196,47 @@ describe("StateStore workflow templates", () => {
 		store.close();
 	});
 
+	it("freezes the gate carrier flag per run so a live toggle affects only the next materialization", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!;
+		store.importWorkflowTemplateSeed(seed);
+
+		const materialize = (runId: string, issueId: string, enabled: "0" | "1") =>
+			store.materializeWorkflowRun({
+				runId,
+				issueId,
+				projectName: "flywheel",
+				templateId: seed.templateId,
+				claimsReadEnrolled: true,
+				actor: "lead",
+				env: {
+					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+					FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+					FLYWHEEL_WORKFLOW_GATE_CARRIER: enabled,
+				},
+				startReservation: {
+					idempotencyKey: `start-${runId}`,
+					selectionDigest: `selection-${runId}`,
+					nodeId: "design",
+					attempt: 1,
+					executionId: `design-${runId}`,
+					createdAt: "2026-07-23T00:00:00.000Z",
+				},
+			});
+
+		const legacy = materialize("run-gate-epoch-0", "FLY-EPOCH-0", "0");
+		const carrier = materialize("run-gate-epoch-1", "FLY-EPOCH-1", "1");
+
+		expect(legacy.gate_carrier_epoch).toBe(0);
+		expect(carrier.gate_carrier_epoch).toBe(1);
+		expect(store.getWorkflowRun(legacy.run_id)?.gate_carrier_epoch).toBe(0);
+		expect(store.getWorkflowRun(carrier.run_id)?.gate_carrier_epoch).toBe(1);
+		store.close();
+	});
+
 	it("refuses to materialize a land snapshot while the land kill switch is off", async () => {
 		const store = await StateStore.create(":memory:");
 		const seed = loadBundledWorkflowSeeds().find(

@@ -570,6 +570,7 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 			"awaiting_review",
 			"design_done",
 			"running",
+			"ship_parked",
 		]);
 	});
 });

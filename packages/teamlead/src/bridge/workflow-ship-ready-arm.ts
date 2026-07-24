@@ -181,6 +181,45 @@ export function createWorkflowShipReadyArm(
 		},
 
 		classifyShipHandled,
+
+		async classifyRunnerShipMerged(batch) {
+			const outcomes = new Map<
+				string,
+				{
+					state: "merged" | "closed" | "open" | "unknown";
+					headRefOid?: string;
+				}
+			>();
+			await Promise.all(
+				batch.map(async (candidate) => {
+					const prNumber = candidate.prNumber;
+					const projectRoot = deps.projectRootFor(candidate.projectName);
+					if (!prNumber || !projectRoot) {
+						outcomes.set(candidate.questionId, { state: "unknown" });
+						return;
+					}
+					try {
+						const info = await deps.checkPrMerge(
+							projectRoot,
+							prNumber,
+							PROBE_TIMEOUT_MS,
+						);
+						outcomes.set(candidate.questionId, {
+							state: info.state,
+							...(info.headRefOid
+								? { headRefOid: info.headRefOid.toLowerCase() }
+								: {}),
+						});
+					} catch (error) {
+						deps.log?.(
+							`runner-ship merge probe failed for ${candidate.questionId}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						outcomes.set(candidate.questionId, { state: "unknown" });
+					}
+				}),
+			);
+			return outcomes;
+		},
 	};
 }
 

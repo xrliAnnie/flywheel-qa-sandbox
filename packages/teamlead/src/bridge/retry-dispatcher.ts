@@ -23,6 +23,7 @@ export interface GeneralizedExecutionDispatch {
 	nodeId: string;
 	attempt: number;
 	snapshotDigest: string;
+	gateCarrierEpoch: 0 | 1;
 	dispatch: {
 		vendor: "claude" | "codex";
 		model: string;
