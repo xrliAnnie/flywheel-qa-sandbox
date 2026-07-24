@@ -9,8 +9,8 @@
 | 1/6 | audit — onboard + 核对既有 exploration/research + 代码现状 | done |
 | 2/6 | design doc (`design.md`) | done |
 | 3/6 | founder HTML (`FLY-137-design.html`) | done |
-| 4/6 | commit + push | in_progress |
-| 5/6 | publish-report + Lead 报告 | pending |
-| 6/6 | complete --route phase_design_complete | pending |
+| 4/6 | commit + push | done (32a66650) |
+| 5/6 | publish-report + Lead 报告 | publish-failed (401 unauthorized) — 已按合同报 `DESIGN-HTML publish-failed` 给 Lead |
+| 6/6 | complete --route phase_design_complete | in_progress |
 
-**Next**: commit + push, then publish
+**Next**: complete
