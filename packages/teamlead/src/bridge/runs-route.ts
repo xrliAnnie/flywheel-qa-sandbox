@@ -39,6 +39,7 @@ import {
 	SKILL_FRAMEWORK_MODE_ENV,
 	SKILL_FRAMEWORK_MODES,
 	SKILL_FRAMEWORK_SPLIT,
+	workflowMenuTemplateId,
 } from "flywheel-config";
 import {
 	DOC_TIERS,
@@ -68,6 +69,13 @@ import {
 	type WorkKindCategory,
 } from "../work-kind.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
+import {
+	hasProjectMenuConfig,
+	loadProjectMenuConfig,
+	resolveLeadMenus,
+	resolveMenuOverrides,
+	WorkflowMenuValidationError,
+} from "../workflow-menu.js";
 import {
 	parseWorkflowRunSnapshot,
 	workflowNodeAgentContent,
@@ -1838,6 +1846,11 @@ export function createRunsRouter(
 		let canonicalTier: EngTier | undefined;
 		let noThreeStageOverride = false;
 		let genericFallback = false;
+		let menuActiveAtEntry = false;
+		let menuResolution: ReturnType<typeof resolveMenuOverrides> | undefined;
+		let menuTemplateOverride:
+			| ReturnType<typeof resolveMenuOverrides>["templateOverride"]
+			| undefined;
 		if (workflowDispatchEnabled && freshMasterMain) {
 			const project = projects.find((p) => p.projectName === projectName);
 			if (project) {
@@ -1855,6 +1868,56 @@ export function createRunsRouter(
 			}
 		}
 		if (workKindActiveAtEntry) {
+			const menuProject = projects.find(
+				(project) => project.projectName === projectName,
+			);
+			menuActiveAtEntry =
+				!!menuProject && hasProjectMenuConfig(menuProject.projectRoot);
+			let adoptedMenus: ReturnType<typeof resolveLeadMenus> | undefined;
+			if (menuActiveAtEntry) {
+				if (!leadId) {
+					let legal: string[] = [];
+					try {
+						legal = Object.keys(
+							loadProjectMenuConfig(menuProject!.projectRoot).adoption,
+						);
+					} catch {
+						// The malformed config is reported once a concrete Lead is known.
+					}
+					res.status(400).json({
+						success: false,
+						code: "LEAD_ID_REQUIRED",
+						legal,
+						silent: false,
+					});
+					return;
+				}
+				try {
+					adoptedMenus = resolveLeadMenus({
+						projectRoot: menuProject!.projectRoot,
+						leadId,
+					});
+				} catch (error) {
+					if (error instanceof WorkflowMenuValidationError) {
+						res.status(error.status).json({
+							success: false,
+							code: error.code,
+							reason: error.message,
+							legal: error.legal,
+							silent: false,
+						});
+						return;
+					}
+					res.status(400).json({
+						success: false,
+						code: "INVALID_MENU_CONFIG",
+						reason: (error as Error).message,
+						legal: [],
+						silent: false,
+					});
+					return;
+				}
+			}
 			const overrides = canonicalizeRoutingOverrides(req.body.routingOverrides);
 			if (overrides.status === "invalid") {
 				rejectWorkKindRequest({
@@ -1874,7 +1937,12 @@ export function createRunsRouter(
 					status: 400,
 					code: "INVALID_TASK_CATEGORY",
 					reason: parsed.reason,
-					response: { allowed: [...WORK_KIND_CATEGORIES], silent: false },
+					response: {
+						allowed: adoptedMenus
+							? adoptedMenus.map((menu) => menu.shape)
+							: [...WORK_KIND_CATEGORIES],
+						silent: false,
+					},
 					payload: { taskCategory: req.body.taskCategory },
 					remind: true,
 				});
@@ -1882,40 +1950,154 @@ export function createRunsRouter(
 			}
 			canonicalTaskCategory =
 				parsed.status === "valid" ? parsed.category : undefined;
-			const parsedTier = canonicalizeEngTier(req.body.tier);
-			if (parsedTier.status === "invalid") {
-				rejectWorkKindRequest({
-					status: 400,
-					code: "INVALID_TIER",
-					reason: parsedTier.reason,
-					response: { allowed: [...ENG_TIERS], silent: false },
-					payload: { tier: req.body.tier },
-					remind: true,
-				});
-				return;
+			if (menuActiveAtEntry) {
+				const legalMenus = adoptedMenus!.map((menu) => menu.shape);
+				if (!canonicalTaskCategory) {
+					res.status(400).json({
+						success: false,
+						code: "TASK_CATEGORY_REQUIRED",
+						legal: legalMenus,
+						silent: false,
+					});
+					return;
+				}
+				const menu = adoptedMenus!.find(
+					(candidate) => candidate.shape === canonicalTaskCategory,
+				);
+				if (!menu) {
+					res.status(400).json({
+						success: false,
+						code: "MENU_NOT_ADOPTED_FOR_LEAD",
+						legal: legalMenus,
+						silent: false,
+					});
+					return;
+				}
+				if (noThreeStageOverride) {
+					res.status(400).json({
+						success: false,
+						code: "MENU_ROUTING_OVERRIDE_NOT_SUPPORTED",
+						legal: [],
+						silent: false,
+					});
+					return;
+				}
+				if (req.body.templateId !== undefined) {
+					res.status(400).json({
+						success: false,
+						code: "MENU_TEMPLATE_OVERRIDE_NOT_SUPPORTED",
+						legal: [workflowMenuTemplateId(canonicalTaskCategory)],
+						silent: false,
+					});
+					return;
+				}
+				if (req.body.tier !== undefined) {
+					res.status(400).json({
+						success: false,
+						code: "MENU_TIER_NOT_SUPPORTED",
+						legal: [],
+						silent: false,
+					});
+					return;
+				}
+				const expectedTemplateId = workflowMenuTemplateId(
+					canonicalTaskCategory,
+				);
+				const exactBinding = store.getWorkflowCategoryBindingExact(
+					projectName,
+					canonicalTaskCategory,
+				);
+				const available = store
+					.listWorkflowCategoryBindings(projectName)
+					.map((binding) => ({
+						taskCategory: binding.task_category,
+						templateId: binding.template_id,
+					}));
+				if (!exactBinding) {
+					res.status(400).json({
+						success: false,
+						code: "WORK_KIND_BINDING_MISSING",
+						legal: [expectedTemplateId],
+						available,
+						silent: false,
+					});
+					return;
+				}
+				if (exactBinding.template_id !== expectedTemplateId) {
+					res.status(400).json({
+						success: false,
+						code: "MENU_BINDING_MISMATCH",
+						legal: [expectedTemplateId],
+						available,
+						silent: false,
+					});
+					return;
+				}
+				try {
+					menuResolution = resolveMenuOverrides(menu, req.body.overrides);
+					menuTemplateOverride = Object.hasOwn(req.body, "overrides")
+						? menuResolution.templateOverride
+						: undefined;
+				} catch (error) {
+					if (error instanceof WorkflowMenuValidationError) {
+						res.status(error.status).json({
+							success: false,
+							code: error.code,
+							reason: error.message,
+							legal: error.legal,
+							silent: false,
+						});
+						return;
+					}
+					res.status(400).json({
+						success: false,
+						code: "INVALID_MENU_OVERRIDE",
+						reason: (error as Error).message,
+						legal: [],
+						silent: false,
+					});
+					return;
+				}
 			}
-			canonicalTier =
-				parsedTier.status === "valid" ? parsedTier.tier : undefined;
-			const hasTemplateOverride =
-				typeof req.body.templateId === "string" &&
-				req.body.templateId.trim().length > 0;
-			if (
-				noThreeStageOverride &&
-				(hasTemplateOverride || canonicalTaskCategory !== undefined)
-			) {
-				res.status(400).json({
-					success: false,
-					code: "ROUTING_CONFLICT_CONFIRM_REQUIRED",
-					silent: false,
-				});
-				return;
+			if (menuActiveAtEntry) {
+				canonicalTier = undefined;
+				genericFallback = false;
+			} else {
+				const parsedTier = canonicalizeEngTier(req.body.tier);
+				if (parsedTier.status === "invalid") {
+					rejectWorkKindRequest({
+						status: 400,
+						code: "INVALID_TIER",
+						reason: parsedTier.reason,
+						response: { allowed: [...ENG_TIERS], silent: false },
+						payload: { tier: req.body.tier },
+						remind: true,
+					});
+					return;
+				}
+				canonicalTier =
+					parsedTier.status === "valid" ? parsedTier.tier : undefined;
+				const hasTemplateOverride =
+					typeof req.body.templateId === "string" &&
+					req.body.templateId.trim().length > 0;
+				if (
+					noThreeStageOverride &&
+					(hasTemplateOverride || canonicalTaskCategory !== undefined)
+				) {
+					res.status(400).json({
+						success: false,
+						code: "ROUTING_CONFLICT_CONFIRM_REQUIRED",
+						silent: false,
+					});
+					return;
+				}
+				// Founder correction: an omitted work kind is a soft, observable
+				// generic fallback. It must never inherit the engineering-heavy default.
+				genericFallback =
+					!noThreeStageOverride &&
+					!hasTemplateOverride &&
+					canonicalTaskCategory === undefined;
 			}
-			// Founder correction: an omitted work kind is a soft, observable
-			// generic fallback. It must never inherit the engineering-heavy default.
-			genericFallback =
-				!noThreeStageOverride &&
-				!hasTemplateOverride &&
-				canonicalTaskCategory === undefined;
 		}
 
 		const templateCandidateInput = {
@@ -2253,6 +2435,7 @@ export function createRunsRouter(
 							: "task_category"
 						: undefined,
 					tier: workKindActiveAtEntry ? canonicalTier : undefined,
+					override: menuTemplateOverride,
 					...(dagEntry
 						? { entryKind: "pipeline_dag_v1" as const }
 						: v2Entry
@@ -2437,7 +2620,8 @@ export function createRunsRouter(
 								| "low"
 								| "medium"
 								| "high"
-								| "xhigh",
+								| "xhigh"
+								| "max",
 						}
 					: {}),
 			};
@@ -2759,6 +2943,9 @@ export function createRunsRouter(
 					workflowNodeId: generalizedSelection.nodeId,
 					// FLY-1372: 202 carries the same advisory echo as the 200.
 					...dagAuthority,
+					...(menuResolution
+						? { resolved: { nodeModels: menuResolution.receipts } }
+						: {}),
 					...(generalizedSelection.categorySource
 						? {
 								workKind: {
@@ -2829,6 +3016,9 @@ export function createRunsRouter(
 				workflowRunId: generalizedSelection.runId,
 				workflowNodeId: generalizedSelection.nodeId,
 				...dagAuthority,
+				...(menuResolution
+					? { resolved: { nodeModels: menuResolution.receipts } }
+					: {}),
 				...(generalizedSelection.categorySource
 					? {
 							workKind: {

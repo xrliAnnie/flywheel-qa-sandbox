@@ -10,7 +10,8 @@
 #      packages/<dir> symlinks, vendored nested closures (@linear/sdk under
 #      teamlead, @anthropic-ai/sdk under claude-runner — the mem0ai peer-hoist
 #      case), npm's unreified empty husk dirs pruned;
-#   ③  agents/generic-executor.md resolvable from PKG_ROOT (run-infra sentinel);
+#   ③  agents/generic-executor.md and menus/shapes/*.yaml resolvable from
+#      PKG_ROOT (run-infra + workflow-menu boot assets);
 #   ④  every embedded package bare-imports from PKG_ROOT context with zero
 #      module-resolution errors; better-sqlite3 native module loads; the Bridge
 #      entry (dist/run-bridge.js) starts with a stub env and serves /health;
@@ -96,6 +97,13 @@ husks="$(find "$PKG_ROOT/node_modules" -mindepth 1 -maxdepth 2 -type d -empty 2>
 [ -f "$PKG_ROOT/agents/generic-executor.md" ] && [ -f "$PKG_ROOT/agents/qa-executor.md" ] \
   && pass "③ agents/ runtime prompts at PKG_ROOT (run-infra sentinel resolvable)" \
   || fail "③ agents/ prompts missing from PKG_ROOT"
+menus_ok=1
+for menu in code prd design prototype generic; do
+  [ -f "$PKG_ROOT/menus/shapes/$menu.yaml" ] || menus_ok=0
+done
+[ "$menus_ok" -eq 1 ] \
+  && pass "③a workflow menu shapes at PKG_ROOT (Bridge boot assets resolvable)" \
+  || fail "③a workflow menu shapes missing from PKG_ROOT"
 
 # ── ③b claude-runner runtime assets (FLY-1188) ───────────────────────────────
 # codex-home.ts resolves these as ../agents / ../bin siblings of dist — a

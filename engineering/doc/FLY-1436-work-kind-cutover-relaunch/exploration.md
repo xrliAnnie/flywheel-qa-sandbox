@@ -1,7 +1,35 @@
-# FLY-1436 work-kind cutover 解冻返工 — 探索
+# FLY-1436 菜单系统落地 — 探索
 Issue: FLY-1436 (https://linear.app/geoforge3d/issue/FLY-1436/解冻1418-work-kind-binding-cutover-分档路由上线解锁-honey-lemon接替-fly-1418)
-日期: 2026-07-22
+日期: 2026-07-23
 基于: 无(上游 = FLY-1418 committed design:`flywheel-FLY-1418` 分支 `engineering/doc/FLY-1418-work-kind-cutover/{exploration,research,plan,design-correction}.md`,plan 已 codex-approved R8 + Bridge review APPROVED,但冻结于执行前)
+
+## 0. Founder 最终改版(本次实现的唯一权威范围)
+
+2026-07-23 founder 否决了下方历史 work-kind cutover 方案,批准以「全局 shape 菜单 + 项目 IC roster + Lead adoption」替代。Lead 指令
+`ed4d3633-8131-4097-ad34-90bd64f506fb` 与 `0c9455f0-a01c-42c2-b34c-cbbc119096f9`
+要求 implement 直接按 Linear 最新评论及四份 review page 落地;本节及同目录 research/plan 的顶部改版说明覆盖其后历史正文。
+
+交付目标:
+
+1. 全局 `menus/shapes/` 固定五种 shape:`code`、`prd`、`design`、`prototype`、`generic`;删除 `research`,不设 mandatory review node。
+2. `code` 是 `design → implement → qa → founder_gate`,只有 `qa_fail → implement`,最多 3 次;其余四种各一个 executable node + founder gate。
+3. Flywheel 项目用 `.flywheel/menus/ic-roster.yaml` 把 node `role` 映射到现有 executor markdown,原 executor 文件逐字节不改;`.flywheel/menus/adoption.yaml` 指定 Tadashi=`code,generic`,Honey Lemon=`prd,design,prototype`。
+4. node 的模型合同是 `role`、`defaultModel`、`models:[{model,allowedEfforts,defaultEffort}]`;配置只写 alias,alias→完整版本仅由系统 model registry 解析。
+5. 引擎从 roster 解出 agent;提供只读 `GET /api/workflow/menus`;`POST /api/runs/start` 接收按 node 的 `{model,effort}` override,先校 model 再校该 model 下 effort。
+6. 全部非法类别、node、model、effort、roster/adoption/shape 配置都 fail loud,HTTP 400 返回对应 legal set,不做 silent fallback。
+
+Founder 指定模型策略:
+
+- design / implement:allowed models 恰为 `[fable,codex]`,默认分别 `fable` / `codex`;
+- qa:allowed models 恰为 `[opus]`,默认 `opus`;
+- 单 session shape 的 executable node 默认 `opus`;
+- 所有 model 的 `defaultEffort` 都是 `xhigh`;
+- Claude/Codex 的 `allowedEfforts` 取各自 CLI 实际支持集合,当前受管 runtime 合同均为
+  `low,medium,high,xhigh,max`。
+
+本次 bounded implement 只写代码、配置、测试、PR 与 CI 证据;不部署、不 merge、不翻任何生产 flag。
+
+## 历史设计(已被上述改版否决,仅保留审计谱系)
 
 ## 0. 这张单的本质
 

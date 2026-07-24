@@ -291,3 +291,9 @@ export {
 	XIAOHONGSHU_MAX_FETCH_CEILING,
 	XIAOHONGSHU_REVIEW_CHANNELS,
 } from "./types.js";
+export {
+	WORKFLOW_MENU_BINDINGS,
+	WORKFLOW_MENU_SHAPES,
+	type WorkflowMenuShapeId,
+	workflowMenuTemplateId,
+} from "./workflow-menu-contract.js";

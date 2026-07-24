@@ -994,7 +994,12 @@ async function handleRetry(
 			model: runtime.model,
 			...(runtime.effort
 				? {
-						effort: runtime.effort as "low" | "medium" | "high" | "xhigh",
+						effort: runtime.effort as
+							| "low"
+							| "medium"
+							| "high"
+							| "xhigh"
+							| "max",
 					}
 				: {}),
 		};

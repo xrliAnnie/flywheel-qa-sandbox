@@ -1,0 +1,17 @@
+shape: prd
+nodes:
+  - id: produce
+    role: pm
+    defaultModel: opus
+    models:
+      - model: opus
+        allowedEfforts: [low, medium, high, xhigh, max]
+        defaultEffort: xhigh
+  - id: founder_gate
+    type: gate
+edges:
+  - id: produce_done
+    from: produce
+    to: founder_gate
+    condition: node_done
+loops: []

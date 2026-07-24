@@ -16,11 +16,11 @@ import {
 describe("work-kind vocabulary", () => {
 	it("exports the single contract vocabularies", () => {
 		expect(WORK_KIND_CATEGORIES).toEqual([
-			"prd",
-			"designer",
-			"prototype",
 			"code",
-			"research",
+			"prd",
+			"design",
+			"prototype",
+			"generic",
 		]);
 		expect(ENG_TIERS).toEqual(["trivial", "light", "heavy"]);
 		expect(DEFAULT_ENG_TIER).toBe("heavy");
@@ -42,9 +42,20 @@ describe("work-kind vocabulary", () => {
 	);
 
 	it("canonicalizes case and surrounding whitespace", () => {
-		expect(canonicalizeWorkKind("  ReSeArCh ")).toEqual({
+		expect(canonicalizeWorkKind("  DeSiGn ")).toEqual({
 			status: "valid",
-			category: "research",
+			category: "design",
+		});
+	});
+
+	it("fails loud for the retired research and designer spellings", () => {
+		expect(canonicalizeWorkKind("research")).toEqual({
+			status: "invalid",
+			reason: "unknown_category",
+		});
+		expect(canonicalizeWorkKind("designer")).toEqual({
+			status: "invalid",
+			reason: "unknown_category",
 		});
 	});
 

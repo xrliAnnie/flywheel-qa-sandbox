@@ -13,6 +13,7 @@ import {
 	WORK_KIND_CATEGORIES,
 	type WorkKindCategory,
 } from "./work-kind.js";
+import { resolveMenuAgentFile } from "./workflow-menu.js";
 import {
 	isWorkflowManifestV1Land,
 	validatePinnedWorkflowManifest,
@@ -35,6 +36,8 @@ export interface ResolvedWorkflowNode {
 	id: string;
 	type: WorkflowNodeType;
 	capabilities: WorkflowNodeCapabilities;
+	/** True when a per-run menu override must outrank mutable live config. */
+	dispatchPinned?: boolean;
 	dispatch?: {
 		vendor: WorkflowVendor;
 		model: string;
@@ -347,6 +350,7 @@ export function buildWorkflowRunSnapshotV2(input: {
 		categorySource: CategorySource;
 		tier?: EngTier;
 	};
+	pinnedDispatchNodeIds?: readonly string[];
 }): WorkflowRunSnapshotV2 {
 	const validated = validateWorkflowManifest(input.manifest);
 	if (validated.schema_version !== 2) {
@@ -381,15 +385,25 @@ export function buildWorkflowRunSnapshotV2(input: {
 			id: node.id,
 			type: node.type,
 			capabilities,
+			...(input.pinnedDispatchNodeIds?.includes(node.id)
+				? { dispatchPinned: true }
+				: {}),
 			dispatch: {
 				vendor: node.vendor,
 				model: node.model,
 				effort: node.effort,
 			},
 			...(node.output ? { output: node.output } : {}),
-			...(node.type === "generic"
-				? { agent: readAgent(input.canonicalRoot, node.agent_file!) }
-				: { agent: builtInAgent(node.type) }),
+			...(node.role
+				? {
+						agent: readAgent(
+							input.canonicalRoot,
+							resolveMenuAgentFile(input.canonicalRoot, node.role),
+						),
+					}
+				: node.type === "generic"
+					? { agent: readAgent(input.canonicalRoot, node.agent_file!) }
+					: { agent: builtInAgent(node.type) }),
 		};
 	});
 	const body = snapshotBody({
@@ -567,7 +581,15 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 			const nodeRaw = object(value, path);
 			exact(
 				nodeRaw,
-				["id", "type", "capabilities", "dispatch", "output", "agent"],
+				[
+					"id",
+					"type",
+					"capabilities",
+					"dispatchPinned",
+					"dispatch",
+					"output",
+					"agent",
+				],
 				path,
 			);
 			const id = nonempty(nodeRaw.id, `${path}.id`);
@@ -584,6 +606,7 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 			if (manifestNode.type === "gate" || manifestNode.type === "land") {
 				if (
 					nodeRaw.dispatch !== undefined ||
+					nodeRaw.dispatchPinned !== undefined ||
 					nodeRaw.output !== undefined ||
 					nodeRaw.agent !== undefined
 				) {
@@ -603,7 +626,8 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 				dispatchRaw.effort !== "low" &&
 				dispatchRaw.effort !== "medium" &&
 				dispatchRaw.effort !== "high" &&
-				dispatchRaw.effort !== "xhigh"
+				dispatchRaw.effort !== "xhigh" &&
+				dispatchRaw.effort !== "max"
 			) {
 				throw new Error(`${path}.dispatch.effort is unknown`);
 			}
@@ -614,6 +638,7 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 				id,
 				type: manifestNode.type,
 				capabilities,
+				...(nodeRaw.dispatchPinned === true ? { dispatchPinned: true } : {}),
 				dispatch: {
 					vendor: dispatchRaw.vendor,
 					model: nonempty(dispatchRaw.model, `${path}.dispatch.model`),
@@ -622,6 +647,12 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 						: {}),
 				},
 			};
+			if (
+				nodeRaw.dispatchPinned !== undefined &&
+				nodeRaw.dispatchPinned !== true
+			) {
+				throw new Error(`${path}.dispatchPinned must be true when present`);
+			}
 			if (
 				root.schema_version === 1 &&
 				(nodeRaw.output !== undefined || nodeRaw.agent !== undefined)

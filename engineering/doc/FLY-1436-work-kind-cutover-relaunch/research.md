@@ -1,7 +1,33 @@
-# FLY-1436 work-kind cutover 解冻返工 — 调研
+# FLY-1436 菜单系统落地 — 调研
 Issue: FLY-1436 (https://linear.app/geoforge3d/issue/FLY-1436/解冻1418-work-kind-binding-cutover-分档路由上线解锁-honey-lemon接替-fly-1418)
-日期: 2026-07-22
+日期: 2026-07-23
 基于: exploration.md
+
+## 0. Founder 最终改版后的代码现状与落点
+
+本节覆盖后续历史 cutover 调研。
+
+| 合同 | 当前代码事实 | 实现落点 |
+|---|---|---|
+| alias 唯一来源 | `packages/config/src/model-registry.ts` 已是系统唯一 model registry;`fable`、`opus` 已存在,`codex` 尚未注册 | 在同一 registry 增加 `codex` alias,workflow effort 对齐受管 CLI 的 `low..max`;禁止另建 alias map |
+| work-kind/menu 词表 | `work-kind.ts` 仍是 `prd/designer/prototype/code/research` | 改为 `code/prd/design/prototype/generic`,无 wildcard/absent fallback |
+| shape source | 尚无 `menus/shapes/` | 新建五份 YAML,由严格 parser 编译为现有 v2 manifest/snapshot 输入 |
+| node schema | v2 manifest 目前依赖 `agent_file`,model/effort 是平铺单值 | menu source 增加 `role/defaultModel/models[]`;编译时 alias resolve,materialize 时按 roster 读取 agent |
+| project 配置 | 尚无 `.flywheel/menus/` | 新建 roster/adoption;路径必须约束在 project root 内且读取失败即报错 |
+| 运行时快照 | `workflow-run-snapshot.ts` 已在可信边界 pin agent 内容和 dispatch | 在此处用 `role` 查 roster;保留 legacy `agent_file` 兼容,新 menu 不写 `agent_file` |
+| API | `/api/runs/start` 已有 generalized selection,无 menu override;无 `/api/workflow/menus` | 新 route 返回 Lead 可见菜单与 git SHA;start 将外部 alias override 严格校验后转成内部 canonical override |
+| binding cutover fixture | `FLY1436_TARGET_BINDINGS` 仍列旧模板 | 改为五项 exact:`code→tpl_code`,`prd→tpl_prd`,`design→tpl_design`,`prototype→tpl_prototype`,`generic→tpl_generic_menu`;无 `*`;新 generic menu 使用独立 id,避免与 legacy 全局 `tpl_generic` seed 冲突 |
+
+关键兼容与安全结论:
+
+1. legacy seed/template 的 `agent_file` 继续可读;只有 menu 编译出的节点必须走 `role` + IC roster,避免一次性破坏已发布快照。
+2. shape/adoption/roster 在启动时严格解析,模板内容编译进 SQLite;运行 receipt 同时保留 alias 与 resolved full model,显示为 `alias (= resolved version)`。
+3. override 的 legal set 取选中 node 自身配置:model 不在 node `models` 中先报 400;effort 不在选中 model 的 `allowedEfforts` 中再报 400。
+4. GET menus 仅接受 loopback Host,`menuVersion` 用承载 shape 的 checkout git SHA;取不到 SHA 时 fail loud,不能伪造稳定版本。
+5. 现有 executor markdown 是受保护资产;实现和测试只引用路径并校 hash/内容未变,不改文件。
+6. global menu YAML 是 Bridge 启动资产;`flywheel-onboard-payload` 必须把同一份 `menus/shapes/*.yaml` 放到 PKG_ROOT,并以 real npm pack/install + Bridge health smoke 防止 monorepo-only 成功。
+
+## 历史调研(已被 founder 改版覆盖)
 
 所有 file:line 均在本 worktree(= main `948275e3` 派生)或生产机就地核过;继承自 FLY-1418 research 的结论均已对当前 branch 重验,凡行号/事实有漂移处以本文为准。
 

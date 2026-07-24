@@ -35,14 +35,23 @@ describe("model registry invariants", () => {
 		expect(getModelRegistryEntry("fable-1m")?.id).toBe("claude-fable-5[1m]");
 	});
 
-	it("registers the standard Codex model with workflow xhigh support", () => {
-		const codex = getModelRegistryEntry("gpt-5.6-sol");
+	it("registers the standard Codex model once, with its menu alias and CLI efforts", () => {
+		const codex = getModelRegistryEntry("codex");
 		expect(codex).toMatchObject({
+			id: "gpt-5.6-sol",
 			provider: "openai",
 			runtimeVendor: "codex",
+			aliases: ["codex"],
 		});
 		expect(codex?.surfaces).toContain("workflow");
-		expect(codex?.effortsBySurface.workflow).toContain("xhigh");
+		expect(codex?.effortsBySurface.workflow).toEqual([
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
+		expect(codex?.effortsBySurface.runner).toEqual(["xhigh"]);
 	});
 
 	it("covers every built-in tier and three-stage dispatch row", () => {
@@ -81,7 +90,7 @@ describe("model registry catalog", () => {
 			workflow.providers
 				.flatMap((provider) => provider.models)
 				.find((model) => model.id === "claude-fable-5")?.efforts,
-		).toEqual(["low", "medium", "high", "xhigh"]);
+		).toEqual(["low", "medium", "high", "xhigh", "max"]);
 		expect(
 			buildModelCatalog("cron").providers.flatMap((provider) =>
 				provider.models.flatMap((model) => model.efforts),
@@ -121,7 +130,7 @@ describe("model registry catalog", () => {
 			isModelSelectionSupported({
 				surface: "workflow",
 				model: "claude-fable-5",
-				effort: "max",
+				effort: "ultra",
 			}),
 		).toBe(false);
 		expect(

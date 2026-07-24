@@ -134,6 +134,7 @@ import {
 	type WorkflowEngineAlertIdentity,
 } from "../StateStore.js";
 import { isWorkflowClaimsWriteEnabled } from "../workflow-claims.js";
+import { importWorkflowMenuSeeds } from "../workflow-menu.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import {
 	ensureDefaultWorkflowBindings,
@@ -632,6 +633,7 @@ import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
 import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
+import { createWorkflowMenuRouter } from "./workflow-menu-routes.js";
 import {
 	grantWorkflowReworkTurn,
 	WorkflowReworkCoordinator,
@@ -1419,6 +1421,7 @@ export function createBridgeApp(
 		}),
 	);
 	app.use("/api/workflow", createWorkflowTemplateRouter(store));
+	app.use("/api/workflow", createWorkflowMenuRouter(projects));
 	const flywheelProjectRoot = projects.find(
 		(project) => project.projectName === "flywheel",
 	)?.projectRoot;
@@ -4031,6 +4034,7 @@ export async function startBridge(
 	// FLY-1244: deterministic boot import. Content hashes make restarts no-ops;
 	// a founder-owned seed mismatch is audited and refused by StateStore.
 	importBundledWorkflowSeeds(store);
+	importWorkflowMenuSeeds(store);
 	const strandedGeneralized = store.holdStrandedGeneralizedExecutions();
 	if (strandedGeneralized.length > 0) {
 		console.warn(

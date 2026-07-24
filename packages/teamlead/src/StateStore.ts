@@ -15184,6 +15184,8 @@ export class StateStore {
 		templateId?: string;
 		claimsReadEnrolled: boolean;
 		override?: WorkflowTemplateOverride;
+		/** Menu-level API override included in the selection authority digest. */
+		selectionOverride?: WorkflowTemplateOverride;
 		actor: string;
 		canonicalRoot?: string;
 		selection?: {
@@ -15286,6 +15288,11 @@ export class StateStore {
 									"generalized workflow materialization requires canonicalRoot",
 								);
 							})(),
+						...(applied.override?.nodes
+							? {
+									pinnedDispatchNodeIds: Object.keys(applied.override.nodes),
+								}
+							: {}),
 						...(input.categorySource
 							? {
 									workKind: {
@@ -15353,25 +15360,31 @@ export class StateStore {
 						: undefined;
 					currentTemplateId = currentBinding?.template_id;
 				}
+				const currentSelectionDigestBody = buildWorkflowSelectionDigestBody(
+					{
+						project: input.projectName,
+						issueId: input.issueId,
+						category: input.taskCategory ?? "*",
+						templateId: expected.templateId,
+						revision: expected.revision,
+						selectionSource: expected.selectionSource,
+						selectedBy: input.selection?.selectedBy ?? "",
+						reason: input.selection?.reason ?? "",
+					},
+					input.categorySource
+						? {
+								categorySource: input.categorySource,
+								tier: input.tier,
+							}
+						: undefined,
+				);
 				const currentSelectionDigest = canonicalSubmissionDigest(
-					buildWorkflowSelectionDigestBody(
-						{
-							project: input.projectName,
-							issueId: input.issueId,
-							category: input.taskCategory ?? "*",
-							templateId: expected.templateId,
-							revision: expected.revision,
-							selectionSource: expected.selectionSource,
-							selectedBy: input.selection?.selectedBy ?? "",
-							reason: input.selection?.reason ?? "",
-						},
-						input.categorySource
-							? {
-									categorySource: input.categorySource,
-									tier: input.tier,
-								}
-							: undefined,
-					),
+					input.selectionOverride
+						? {
+								...currentSelectionDigestBody,
+								override: input.selectionOverride,
+							}
+						: currentSelectionDigestBody,
 				);
 				if (
 					!input.startReservation ||
@@ -19247,7 +19260,7 @@ export class StateStore {
 			dispatch: {
 				vendor: "claude" | "codex";
 				model: string;
-				effort?: "low" | "medium" | "high" | "xhigh";
+				effort?: "low" | "medium" | "high" | "xhigh" | "max";
 			};
 			source: "current_config" | "live_template" | "snapshot_fallback";
 			audit: boolean;

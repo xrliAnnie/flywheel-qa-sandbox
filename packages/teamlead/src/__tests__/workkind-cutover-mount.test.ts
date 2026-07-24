@@ -5,6 +5,7 @@ import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import { importWorkflowMenuSeeds } from "../workflow-menu.js";
 import { importBundledWorkflowSeeds } from "../workflow-template.js";
 
 const servers: http.Server[] = [];
@@ -48,6 +49,7 @@ async function boot(apiToken?: string): Promise<string> {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
 	importBundledWorkflowSeeds(store);
+	importWorkflowMenuSeeds(store);
 	store.bindWorkflowCategory({
 		project: "flywheel",
 		templateId: "tpl_eng_heavy",

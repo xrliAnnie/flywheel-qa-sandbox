@@ -29,7 +29,8 @@
 # a public registry.
 #
 # Sourceable for tests via PACKAGE_ONBOARD_SOURCED=1 (fixture monorepos may
-# override PO_PACKAGES / PO_SCRIPT_FILES / PO_SCRIPT_DIRS / PO_AGENT_FILES).
+# override PO_PACKAGES / PO_SCRIPT_FILES / PO_SCRIPT_DIRS / PO_AGENT_FILES /
+# PO_MENU_FILES).
 set -uo pipefail
 
 PO_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -120,6 +121,15 @@ launchd"}
 # Bridge but fails on first dispatch (Codex R1#3).
 PO_AGENT_FILES=${PO_AGENT_FILES:-"generic-executor.md
 qa-executor.md"}
+
+# Global workflow menu assets. workflow-menu.ts resolves these from the
+# checkout/package root in both source and compiled layouts, so the packaged
+# Bridge must carry the same reviewed YAML bytes.
+PO_MENU_FILES=${PO_MENU_FILES:-"shapes/code.yaml
+shapes/prd.yaml
+shapes/design.yaml
+shapes/prototype.yaml
+shapes/generic.yaml"}
 
 PO_PAYLOAD_NAME=${PO_PAYLOAD_NAME:-flywheel-onboard-payload}
 
@@ -525,7 +535,7 @@ po_assemble() {
   version="$(po_release_version "$root")" || return 1
 
   rm -rf "$tree"
-  mkdir -p "$tree/scripts" "$tree/agents" "$tree/node_modules"
+  mkdir -p "$tree/scripts" "$tree/agents" "$tree/menus" "$tree/node_modules"
 
   # 1. curated scripts (fail-closed on any missing whitelist entry).
   local f
@@ -555,7 +565,15 @@ po_assemble() {
     cp -p "$root/agents/$f" "$tree/agents/$f" || return 1
   done <<<"$PO_AGENT_FILES"
 
-  # 4. workspace packages → node_modules/<npm-name>/ (dist REQUIRED — an
+  # 4. global workflow menu assets.
+  while IFS= read -r f; do
+    case "$f" in *[![:space:]]*) ;; *) continue ;; esac
+    [ -f "$root/menus/$f" ] || { po_err "workflow menu missing: menus/$f"; return 1; }
+    mkdir -p "$tree/menus/$(dirname "$f")"
+    cp -p "$root/menus/$f" "$tree/menus/$f" || return 1
+  done <<<"$PO_MENU_FILES"
+
+  # 5. workspace packages → node_modules/<npm-name>/ (dist REQUIRED — an
   #    unbuilt package must fail the build, never ship hollow).
   local dir name mirror_json="{}"
   for dir in $PO_PACKAGES; do
@@ -592,14 +610,14 @@ po_assemble() {
     cp -p "$root/packages/$dir/$afile" "$tree/node_modules/$name/$afile" || return 1
   done <<<"$PO_PACKAGE_ASSET_FILES"
 
-  # 5. strip non-runtime residue from the embedded packages. Source maps are a
+  # 6. strip non-runtime residue from the embedded packages. Source maps are a
   #    HARD strip: tsc sourcemaps can embed the ORIGINAL TypeScript source via
   #    sourcesContent — shipping them would leak the source the whole payload
   #    exists to withhold. Type declarations are runtime-dead weight.
   find "$tree/node_modules" -type d -name "__tests__" -prune -exec rm -rf {} + 2>/dev/null
   find "$tree/node_modules" -type f \( -name "*.test.js" -o -name "*.map" -o -name "*.d.ts" -o -name "*.d.mts" -o -name "*.d.cts" -o -name "*.tsbuildinfo" \) -delete 2>/dev/null
 
-  # 6. dependency union (+ registered nested vendoring) + payload package.json.
+  # 7. dependency union (+ registered nested vendoring) + payload package.json.
   local union_out union deps_json bundle_json="[]"
   union_out="$(po_dependency_union "$root")" || return 1
   union="$(jq -c '.union' <<<"$union_out")" || return 1
@@ -652,14 +670,14 @@ po_assemble() {
       engines: { node: ">=20" },
       dependencies: ($deps | to_entries | sort_by(.key) | from_entries),
       bundleDependencies: ($bundle | sort),
-      files: ["scripts", "agents", "dist", "node_modules", "vendor", ".flywheel-prebuilt", "LICENSE", "README.md"],
+      files: ["scripts", "agents", "menus", "dist", "node_modules", "vendor", ".flywheel-prebuilt", "LICENSE", "README.md"],
       flywheelPackagesMirror: $mirror
     }' > "$tree/package.json" || return 1
 
-  # 7. run-bridge entry → dist/run-bridge.js (P1-1).
+  # 8. run-bridge entry → dist/run-bridge.js (P1-1).
   po_compile_run_bridge "$root" "$tree" || return 1
 
-  # 8. sentinel + license + readme.
+  # 9. sentinel + license + readme.
   printf '%s\n' "$version" > "$tree/.flywheel-prebuilt"
   cat > "$tree/LICENSE" <<'EOF'
 UNLICENSED — proprietary.

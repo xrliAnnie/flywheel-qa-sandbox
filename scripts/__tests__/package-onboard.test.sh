@@ -44,7 +44,7 @@ trap 'rm -rf "$SANDBOX"' EXIT
 FIX="$SANDBOX/fixture-repo"
 mk_fixture() {
   rm -rf "$FIX"
-  mkdir -p "$FIX/doc" "$FIX/scripts/lib" "$FIX/agents" "$FIX/node_modules" \
+  mkdir -p "$FIX/doc" "$FIX/scripts/lib" "$FIX/agents" "$FIX/menus/shapes" "$FIX/node_modules" \
            "$FIX/packages/alpha/dist" "$FIX/packages/beta/dist" \
            "$FIX/packages/alpha/node_modules/zeta" \
            "$FIX/packages/alpha/node_modules/omega" \
@@ -56,6 +56,7 @@ mk_fixture() {
   # real typescript for the run-bridge transpile step
   ln -s "$REPO_ROOT/node_modules/typescript" "$FIX/node_modules/typescript"
   echo "# generic executor" > "$FIX/agents/generic-executor.md"
+  echo "shape: code" > "$FIX/menus/shapes/code.yaml"
 
   cat > "$FIX/packages/alpha/package.json" <<'EOF'
 { "name": "fw-alpha", "version": "0.1.0",
@@ -104,6 +105,7 @@ README.md
 .flywheel-prebuilt
 dist/run-bridge.js
 agents/generic-executor.md
+menus/shapes/code.yaml
 scripts/flywheel-onboard.sh
 node_modules/fw-alpha/package.json
 node_modules/fw-alpha/dist/*
@@ -126,6 +128,7 @@ run_po() {
     PO_SCRIPT_FILES="flywheel-onboard.sh" \
     PO_SCRIPT_DIRS=" " \
     PO_AGENT_FILES="generic-executor.md" \
+    PO_MENU_FILES="shapes/code.yaml" \
     PO_FILES_ALLOWLIST="$FIX/files.allow" \
     PO_GREP_ALLOWLIST="$FIX/grep.allow" \
     bash -c 'source "$1"; shift; "$@"' _ "$PO" "$@"
@@ -139,6 +142,7 @@ if run_po po_assemble "$FIX" "$TREE" >/dev/null 2>&1; then
   ok=1
   [ -f "$TREE/node_modules/fw-alpha/dist/index.js" ] || ok=0
   [ -f "$TREE/node_modules/fw-beta/dist/index.js" ] || ok=0
+  [ -f "$TREE/menus/shapes/code.yaml" ] || ok=0
   [ "$(cat "$TREE/.flywheel-prebuilt")" = "9.9.9" ] || ok=0
   [ "$(jq -r '.version' "$TREE/package.json")" = "9.9.9" ] || ok=0
   [ "$(jq -r '.dependencies["lodash-x"]' "$TREE/package.json")" = "^1.4.0" ] || ok=0

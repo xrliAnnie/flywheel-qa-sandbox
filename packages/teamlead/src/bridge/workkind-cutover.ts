@@ -3,6 +3,8 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import express from "express";
+import { WORKFLOW_MENU_BINDINGS, WORKFLOW_MENU_SHAPES } from "flywheel-config";
+import { parse } from "yaml";
 import type {
 	StateStore,
 	WorkflowBindingCutoverBinding,
@@ -24,19 +26,26 @@ const SAFE_OPERATION_ID = /^fly-1436-(activate|restore)-[A-Za-z0-9._-]+$/;
 const SAFE_ACTIVATION_OPERATION_ID = /^fly-1436-activate-[A-Za-z0-9._-]+$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
+const REQUIRED_MENU_ROLES = [
+	"design",
+	"implement",
+	"qa",
+	"pm",
+	"designer",
+	"proto",
+	"generic",
+] as const;
+const REQUIRED_MENU_ADOPTION = {
+	"flywheel-eng-lead": ["code", "generic"],
+	"flywheel-product-lead": ["prd", "design", "prototype"],
+} as const;
 
 export const FLY1436_BASELINE_BINDINGS = [
 	{ taskCategory: "*", templateId: "tpl_eng_heavy" },
 ] as const satisfies readonly WorkflowBindingCutoverBinding[];
 
-export const FLY1436_TARGET_BINDINGS = [
-	{ taskCategory: "*", templateId: "tpl_generic" },
-	{ taskCategory: "code", templateId: "tpl_eng" },
-	{ taskCategory: "designer", templateId: "tpl_product_designer" },
-	{ taskCategory: "prd", templateId: "tpl_product_v1" },
-	{ taskCategory: "prototype", templateId: "tpl_product_prototype" },
-	{ taskCategory: "research", templateId: "tpl_generic" },
-] as const satisfies readonly WorkflowBindingCutoverBinding[];
+export const FLY1436_TARGET_BINDINGS =
+	WORKFLOW_MENU_BINDINGS satisfies readonly WorkflowBindingCutoverBinding[];
 
 export interface Fly1436ActivationEvidence {
 	templateDispatch: boolean;
@@ -96,6 +105,44 @@ function stableStringify(value: unknown): string {
 	return JSON.stringify(value);
 }
 
+function parsedYamlRecord(source: string): Record<string, unknown> | undefined {
+	try {
+		const value = parse(source);
+		return value && typeof value === "object" && !Array.isArray(value)
+			? (value as Record<string, unknown>)
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function menuAssetsReady(
+	rosterSource: string,
+	adoptionSource: string,
+	shapeSources: readonly string[],
+): boolean {
+	const roster = parsedYamlRecord(rosterSource);
+	const adoption = parsedYamlRecord(adoptionSource);
+	if (!roster || !adoption) return false;
+	const rosterReady = REQUIRED_MENU_ROLES.every((role) => {
+		const value = roster[role];
+		return typeof value === "string" && value.trim() !== "";
+	});
+	const adoptionReady = Object.entries(REQUIRED_MENU_ADOPTION).every(
+		([leadId, expected]) => {
+			const actual = adoption[leadId];
+			return (
+				Array.isArray(actual) && expected.every((menu) => actual.includes(menu))
+			);
+		},
+	);
+	const shapesReady = WORKFLOW_MENU_SHAPES.every(
+		(shape, index) =>
+			parsedYamlRecord(shapeSources[index] ?? "")?.shape === shape,
+	);
+	return rosterReady && adoptionReady && shapesReady;
+}
+
 function sha256(value: unknown): string {
 	return createHash("sha256").update(stableStringify(value)).digest("hex");
 }
@@ -123,20 +170,22 @@ function normalizeBindings(
 		seen.add(taskCategory);
 		bindings.push({ taskCategory, templateId });
 	}
-	return bindings.sort((a, b) =>
-		a.taskCategory < b.taskCategory
-			? -1
-			: a.taskCategory > b.taskCategory
-				? 1
-				: 0,
-	);
+	return bindings;
 }
 
 function sameBindings(
 	left: readonly WorkflowBindingCutoverBinding[],
 	right: readonly WorkflowBindingCutoverBinding[],
 ): boolean {
-	return JSON.stringify(left) === JSON.stringify(right);
+	const ordered = (bindings: readonly WorkflowBindingCutoverBinding[]) =>
+		[...bindings].sort((a, b) =>
+			a.taskCategory < b.taskCategory
+				? -1
+				: a.taskCategory > b.taskCategory
+					? 1
+					: 0,
+		);
+	return JSON.stringify(ordered(left)) === JSON.stringify(ordered(right));
 }
 
 function exactBindings(store: StateStore): WorkflowBindingCutoverBinding[] {
@@ -741,19 +790,10 @@ export function readFly1436ActivationEvidence(
 	const strict = loadWorkKindConfigStrict(project, read);
 	const workKind = strict.ok && strict.workKind;
 	const assetPaths = [
-		join(
-			options.projectRoot,
-			".flywheel",
-			"agents",
-			"engineering",
-			"pm-executor.md",
-		),
-		join(
-			options.projectRoot,
-			".flywheel",
-			"agents",
-			"engineering",
-			"prototype-executor.md",
+		join(options.projectRoot, ".flywheel", "menus", "ic-roster.yaml"),
+		join(options.projectRoot, ".flywheel", "menus", "adoption.yaml"),
+		...WORKFLOW_MENU_SHAPES.map((shape) =>
+			join(options.projectRoot, "menus", "shapes", `${shape}.yaml`),
 		),
 		join(
 			options.projectRoot,
@@ -775,15 +815,13 @@ export function readFly1436ActivationEvidence(
 		);
 		contents = [];
 	}
-	const [pm = "", prototype = "", gemini = ""] = contents;
-	const promptReady = [pm, prototype].every(
-		(content) =>
-			content.includes("FLY-1436 work-kind routing") &&
-			content.includes("taskCategory"),
-	);
+	const [roster = "", adoption = "", ...shapeAndGemini] = contents;
+	const gemini = shapeAndGemini.at(-1) ?? "";
+	const shapeContents = shapeAndGemini.slice(0, -1);
+	const menuReady = menuAssetsReady(roster, adoption, shapeContents);
 	const geminiReady =
 		gemini.includes("taskCategory") &&
-		gemini.includes("research") &&
+		WORKFLOW_MENU_SHAPES.every((shape) => gemini.includes(shape)) &&
 		/required:\s*\[[^\]]*["']taskCategory["']/s.test(gemini);
 	const assetsDigest = createHash("sha256")
 		.update(
@@ -824,7 +862,7 @@ export function readFly1436ActivationEvidence(
 		templateDispatch: isWorkflowTemplateDispatchEnabled(env),
 		generalizedTemplates: isGeneralizedTemplatesEnabled(env),
 		workKind,
-		prBAssetsReady: promptReady && geminiReady,
+		prBAssetsReady: menuReady && geminiReady,
 		deployedSha,
 		assetsDigest,
 	};

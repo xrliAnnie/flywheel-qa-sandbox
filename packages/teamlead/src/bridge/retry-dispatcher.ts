@@ -27,7 +27,7 @@ export interface GeneralizedExecutionDispatch {
 	dispatch: {
 		vendor: "claude" | "codex";
 		model: string;
-		effort?: "low" | "medium" | "high" | "xhigh";
+		effort?: RoleEffort;
 	};
 	capabilities: Record<string, boolean | string>;
 	agentContent: string;

@@ -26,6 +26,7 @@ import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
+import { importWorkflowMenuSeeds } from "../../workflow-menu.js";
 import {
 	loadBundledWorkflowSeeds,
 	workflowSeedContentHash,
@@ -96,7 +97,7 @@ function v2Seed() {
 			schema_version: 2 as const,
 			nodes: [
 				{
-					id: "research",
+					id: "generic",
 					type: "generic" as const,
 					vendor: "codex" as const,
 					model: "gpt-5.6-sol",
@@ -108,7 +109,7 @@ function v2Seed() {
 			edges: [
 				{
 					id: "done",
-					from: "research",
+					from: "generic",
 					to: "founder_gate",
 					condition: "node_done" as const,
 				},
@@ -162,11 +163,14 @@ async function startHarness(options: {
 	seedBinding?: boolean;
 	bindingCategory?: string;
 	templateSchema?: 1 | 2;
+	menuMode?: boolean;
+	bindingTemplateId?: string;
 	afterSessionPersisted?: (input: {
 		executionId: string;
 		store: StateStore;
 	}) => void;
 }): Promise<Harness> {
+	if (options.menuMode) linearMock.labels = ["Engineering"];
 	// Isolate HOME so launch-commit markers never touch the real ~/.flywheel.
 	const home = mkdtempSync(join(tmpdir(), "fly1372-home-"));
 	process.env.HOME = home;
@@ -178,9 +182,40 @@ async function startHarness(options: {
 	mkdirSync(join(projectRoot, ".flywheel"), { recursive: true });
 	mkdirSync(join(projectRoot, "agents"), { recursive: true });
 	writeFileSync(join(projectRoot, "agents", "generic.md"), "Do the work.\n");
+	if (options.menuMode) {
+		mkdirSync(join(projectRoot, ".flywheel", "menus"), { recursive: true });
+		mkdirSync(join(projectRoot, ".flywheel", "agents"), { recursive: true });
+		writeFileSync(
+			join(projectRoot, ".flywheel", "agents", "engineer.md"),
+			"Engineer menu agent.\n",
+		);
+		writeFileSync(
+			join(projectRoot, ".flywheel", "agents", "qa.md"),
+			"QA menu agent.\n",
+		);
+		writeFileSync(
+			join(projectRoot, ".flywheel", "agents", "generic.md"),
+			"Generic menu agent.\n",
+		);
+		writeFileSync(
+			join(projectRoot, ".flywheel", "menus", "ic-roster.yaml"),
+			[
+				"design: .flywheel/agents/engineer.md",
+				"implement: .flywheel/agents/engineer.md",
+				"qa: .flywheel/agents/qa.md",
+				"generic: .flywheel/agents/generic.md",
+				"",
+			].join("\n"),
+		);
+		writeFileSync(
+			join(projectRoot, ".flywheel", "menus", "adoption.yaml"),
+			"flywheel-eng-lead: [code, generic]\n",
+		);
+	}
 	writeFileSync(
 		join(projectRoot, ".flywheel", "config.yaml"),
-		options.configYaml ?? `${CONFIG_BASE}pipeline:\n  dag: true\n`,
+		options.configYaml ??
+			`${CONFIG_BASE}pipeline:\n  dag: true\n${options.menuMode ? "  work_kind: true\n" : ""}`,
 	);
 	for (const [key, value] of Object.entries({ ...DAG_ENV, ...options.env })) {
 		if (value === undefined) delete process.env[key];
@@ -190,16 +225,19 @@ async function startHarness(options: {
 	const store = await StateStore.create(":memory:");
 	cleanups.push(() => store.close());
 	if (options.seedBinding !== false) {
-		const seed =
-			options.templateSchema === 2
+		if (options.menuMode) importWorkflowMenuSeeds(store, process.env);
+		const seed = options.menuMode
+			? { templateId: options.bindingTemplateId ?? "tpl_code" }
+			: options.templateSchema === 2
 				? v2Seed()
 				: loadBundledWorkflowSeeds().find(
 						(candidate) => candidate.templateId === "tpl_eng_heavy",
 					)!;
-		store.importWorkflowTemplateSeed(seed, process.env);
+		if (!options.menuMode) store.importWorkflowTemplateSeed(seed, process.env);
 		store.bindWorkflowCategory({
 			project: "flywheel",
-			taskCategory: options.bindingCategory ?? "*",
+			taskCategory:
+				options.bindingCategory ?? (options.menuMode ? "code" : "*"),
 			templateId: seed.templateId,
 			updatedBy: "lead",
 		});
@@ -234,7 +272,21 @@ async function startHarness(options: {
 	} as unknown as IStartDispatcher;
 
 	const projects = [
-		{ projectName: "flywheel", projectRoot, leads: [] },
+		{
+			projectName: "flywheel",
+			projectRoot,
+			leads: options.menuMode
+				? [
+						{
+							agentId: "flywheel-eng-lead",
+							chatChannel: "test",
+							match: { labels: ["Engineering"] },
+							department: "engineering",
+							canSpawnRunners: true,
+						},
+					]
+				: [],
+		},
 	] as unknown as ProjectEntry[];
 
 	const app = express();
@@ -336,7 +388,7 @@ describe("FLY-1372 DAG dispatch entry — fresh domain", () => {
 	it("deduplicates the rejected receipt and reminder for repeated bad input", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			bindingCategory: "research",
+			bindingCategory: "generic",
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
 		for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -548,10 +600,10 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 	it("recovers a marked v2 run without re-validating work-kind input", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			bindingCategory: "research",
+			bindingCategory: "generic",
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
-		const first = await post(h.url, { taskCategory: "research" });
+		const first = await post(h.url, { taskCategory: "generic" });
 		expect(first.status).toBe(200);
 		const second = await post(h.url, { taskCategory: 42 });
 		expect(second.status).toBe(200);
@@ -562,11 +614,11 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 	it("recovers an active run from its pinned snapshot after the selected template is retired", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			bindingCategory: "research",
+			bindingCategory: "generic",
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
 		const first = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 			idempotencyKey: "retired-recovery",
 		});
 		expect(first.status).toBe(200);
@@ -584,7 +636,7 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		);
 
 		const recovered = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 			idempotencyKey: "retired-recovery",
 		});
 		expect(recovered.status).toBe(200);
@@ -615,7 +667,7 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 			startReservation: {
 				idempotencyKey: "unmarked-v2-key",
 				selectionDigest: "legacy-selection",
-				nodeId: "research",
+				nodeId: "generic",
 				attempt: 1,
 				executionId: "unmarked-v2-exec",
 				createdAt: "2026-07-20T00:00:00.000Z",
@@ -691,7 +743,7 @@ describe("FLY-1407 work-kind entry gate", () => {
 		async (taskCategory, reason) => {
 			const h = await startHarness({
 				templateSchema: 2,
-				bindingCategory: "research",
+				bindingCategory: "generic",
 				configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 			});
 			const { status, json } = await post(h.url, { taskCategory });
@@ -712,11 +764,11 @@ describe("FLY-1407 work-kind entry gate", () => {
 		async (tier, reason) => {
 			const h = await startHarness({
 				templateSchema: 2,
-				bindingCategory: "research",
+				bindingCategory: "generic",
 				configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 			});
 			const { status, json } = await post(h.url, {
-				taskCategory: "research",
+				taskCategory: "generic",
 				tier,
 			});
 			expect(status).toBe(400);
@@ -728,11 +780,11 @@ describe("FLY-1407 work-kind entry gate", () => {
 	it("rejects an explicit tier when the exact template has no tier presets", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			bindingCategory: "research",
+			bindingCategory: "generic",
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
 		const { status, json } = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 			tier: "light",
 		});
 		expect(status).toBe(409);
@@ -743,7 +795,7 @@ describe("FLY-1407 work-kind entry gate", () => {
 	it("fails closed when the dispatch flag flips after v2 entry classification", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			bindingCategory: "research",
+			bindingCategory: "generic",
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
 		const original = h.store.getWorkflowCategoryBinding.bind(h.store);
@@ -755,7 +807,7 @@ describe("FLY-1407 work-kind entry gate", () => {
 			return result;
 		}) as typeof h.store.getWorkflowCategoryBinding;
 		const { status, json } = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 		});
 		expect(status).toBe(409);
 		expect(json.code).toBe("WORK_KIND_ENTRY_NOT_MATERIALIZED");
@@ -766,11 +818,11 @@ describe("FLY-1407 work-kind entry gate", () => {
 	it("rebuilds the same work-kind 200 after launch committed but response cache was lost", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			bindingCategory: "research",
+			bindingCategory: "generic",
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
 		const first = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 			idempotencyKey: "work-kind-crash-window",
 		});
 		expect(first.status).toBe(200);
@@ -783,13 +835,13 @@ describe("FLY-1407 work-kind entry gate", () => {
 			["work-kind-crash-window"],
 		);
 		const replay = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 			idempotencyKey: "work-kind-crash-window",
 		});
 		expect(replay.status).toBe(200);
 		expect(replay.json).toEqual(first.json);
 		expect(replay.json.workKind).toEqual({
-			category: "research",
+			category: "generic",
 			source: "task_category",
 		});
 		expect(h.calls).toHaveLength(1);
@@ -802,11 +854,11 @@ describe("FLY-1407 work-kind entry gate", () => {
 	it("rejects a cached start response after its workflow run completed", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			bindingCategory: "research",
+			bindingCategory: "generic",
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
 		const first = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 			idempotencyKey: "completed-run-replay",
 		});
 		expect(first.status).toBe(200);
@@ -819,7 +871,7 @@ describe("FLY-1407 work-kind entry gate", () => {
 		);
 
 		const replay = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 			idempotencyKey: "completed-run-replay",
 		});
 
@@ -837,11 +889,11 @@ describe("FLY-1407 work-kind entry gate", () => {
 	it("rejects a cached start response after the active run advances past its start attempt", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			bindingCategory: "research",
+			bindingCategory: "generic",
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
 		const first = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 			idempotencyKey: "stale-node-replay",
 		});
 		expect(first.status).toBe(200);
@@ -854,7 +906,7 @@ describe("FLY-1407 work-kind entry gate", () => {
 		);
 
 		const replay = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 			idempotencyKey: "stale-node-replay",
 		});
 
@@ -1002,7 +1054,7 @@ describe("FLY-1407 work-kind entry gate", () => {
 			templateSchema: 2,
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: "yes"\n`,
 		});
-		const { status, json } = await post(h.url, { taskCategory: "research" });
+		const { status, json } = await post(h.url, { taskCategory: "generic" });
 		expect(status).toBe(400);
 		expect(json).toMatchObject({
 			success: false,
@@ -1015,31 +1067,31 @@ describe("FLY-1407 work-kind entry gate", () => {
 	it("canonicalizes a valid category, requires an exact binding, and echoes provenance", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			bindingCategory: "research",
+			bindingCategory: "generic",
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
 		const { status, json } = await post(h.url, {
-			taskCategory: " ReSeArCh ",
+			taskCategory: " GeNeRiC ",
 		});
 		expect(status).toBe(200);
 		expect(json.generalized).toBe(true);
 		expect(json.workKind).toEqual({
-			category: "research",
+			category: "generic",
 			source: "task_category",
 		});
 		expect(h.calls[0]!.routeSummary).toBe(
-			"🧭 **Route**: `research` → `workflow_v2` · source `task_category`",
+			"🧭 **Route**: `generic` → `workflow_v2` · source `task_category`",
 		);
 		const run = h.store.getWorkflowRun(json.workflowRunId as string)!;
 		expect(run).toMatchObject({
-			task_category: "research",
+			task_category: "generic",
 			category_source: "task_category",
 		});
 		expect(h.store.listWorkflowRouteDecisions()).toMatchObject([
 			{
 				status: "launched",
 				route: "workflow_v2",
-				task_category: "research",
+				task_category: "generic",
 				category_source: "task_category",
 			},
 		]);
@@ -1064,7 +1116,7 @@ describe("FLY-1407 work-kind entry gate", () => {
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
 		const { status, json } = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 		});
 		expect(status).toBe(409);
 		expect(json.code).toBe("WORK_KIND_BINDING_MISSING");
@@ -1079,7 +1131,7 @@ describe("FLY-1407 work-kind entry gate", () => {
 		});
 		const { status, json } = await post(h.url, {
 			templateId: "tpl_fly1385_v2_entry",
-			selectionReason: "explicit bounded research flow",
+			selectionReason: "explicit bounded generic flow",
 		});
 		expect(status).toBe(200);
 		expect(json.workKind).toEqual({
@@ -1112,7 +1164,7 @@ describe("FLY-1407 work-kind entry gate", () => {
 		for (let attempt = 0; attempt < 2; attempt += 1) {
 			const { status, json } = await post(h.url, {
 				templateId: "tpl_fly1385_v2_entry",
-				selectionReason: "explicit bounded research flow",
+				selectionReason: "explicit bounded generic flow",
 			});
 			expect(status).toBe(409);
 			expect(json.code).toBe("TEMPLATE_NOT_FRESH_ELIGIBLE");
@@ -1125,12 +1177,12 @@ describe("FLY-1407 work-kind entry gate", () => {
 	it("ignores a residual no-three-stage label and routes by this dispatch's category", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			bindingCategory: "research",
+			bindingCategory: "generic",
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  three_stage: true\n  work_kind: true\n`,
 		});
 		linearMock.labels = ["no-three-stage"];
 		const { status, json } = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 		});
 		expect(status).toBe(200);
 		expect(json.generalized).toBe(true);
@@ -1170,15 +1222,137 @@ describe("FLY-1407 work-kind entry gate", () => {
 	it("requires explicit conflict confirmation by rejecting override plus category", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			bindingCategory: "research",
+			bindingCategory: "generic",
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
 		const { status, json } = await post(h.url, {
-			taskCategory: "research",
+			taskCategory: "generic",
 			routingOverrides: ["no-three-stage"],
 		});
 		expect(status).toBe(400);
 		expect(json.code).toBe("ROUTING_CONFLICT_CONFIRM_REQUIRED");
+		expect(h.calls).toHaveLength(0);
+	});
+});
+
+describe("FLY-1436 menu start contract", () => {
+	it("applies a valid node model/effort override and returns alias/version receipts", async () => {
+		const h = await startHarness({ menuMode: true });
+		const { status, json } = await post(h.url, {
+			leadId: "flywheel-eng-lead",
+			taskCategory: "code",
+			overrides: {
+				design: { model: "codex", effort: "max" },
+			},
+		});
+		expect(status).toBe(200);
+		expect(json).toMatchObject({
+			success: true,
+			generalized: true,
+			workflowNodeId: "design",
+			resolved: {
+				nodeModels: {
+					design: {
+						model: "codex (= gpt-5.6-sol)",
+						effort: "max",
+						overridden: true,
+					},
+					implement: {
+						model: "codex (= gpt-5.6-sol)",
+						effort: "xhigh",
+						overridden: false,
+					},
+					qa: {
+						model: "opus (= claude-opus-4-8)",
+						effort: "xhigh",
+						overridden: false,
+					},
+				},
+			},
+		});
+		expect(h.calls[0]!.generalizedExecution?.dispatch).toEqual({
+			vendor: "codex",
+			model: "gpt-5.6-sol",
+			effort: "max",
+		});
+	});
+
+	it.each([
+		[
+			{ overrides: { missing: { model: "fable" } } },
+			"MENU_NODE_NOT_FOUND",
+			["design", "implement", "qa"],
+		],
+		[
+			{ overrides: { design: { model: "opus" } } },
+			"MODEL_NOT_ALLOWED_FOR_NODE",
+			["fable", "codex"],
+		],
+		[
+			{ overrides: { design: { model: "fable", effort: "ultra" } } },
+			"EFFORT_NOT_ALLOWED_FOR_MODEL",
+			["low", "medium", "high", "xhigh", "max"],
+		],
+	] as const)(
+		"rejects invalid menu override %# with HTTP 400 and the legal set",
+		async (extra, code, legal) => {
+			const h = await startHarness({ menuMode: true });
+			const { status, json } = await post(h.url, {
+				leadId: "flywheel-eng-lead",
+				taskCategory: "code",
+				...extra,
+			});
+			expect(status).toBe(400);
+			expect(json).toMatchObject({ success: false, code, legal });
+			expect(h.calls).toHaveLength(0);
+		},
+	);
+
+	it("rejects a missing category instead of silently falling back", async () => {
+		const h = await startHarness({ menuMode: true });
+		const { status, json } = await post(h.url, {
+			leadId: "flywheel-eng-lead",
+		});
+		expect(status).toBe(400);
+		expect(json).toMatchObject({
+			success: false,
+			code: "TASK_CATEGORY_REQUIRED",
+			legal: ["code", "generic"],
+		});
+		expect(h.calls).toHaveLength(0);
+	});
+
+	it("rejects a menu not adopted by the dispatching Lead", async () => {
+		const h = await startHarness({ menuMode: true });
+		const { status, json } = await post(h.url, {
+			leadId: "flywheel-eng-lead",
+			taskCategory: "prd",
+		});
+		expect(status).toBe(400);
+		expect(json).toMatchObject({
+			success: false,
+			code: "MENU_NOT_ADOPTED_FOR_LEAD",
+			legal: ["code", "generic"],
+		});
+		expect(h.calls).toHaveLength(0);
+	});
+
+	it("rejects a registry binding whose template id disagrees with the menu SSOT", async () => {
+		const h = await startHarness({
+			menuMode: true,
+			bindingTemplateId: "tpl_prd",
+		});
+		const { status, json } = await post(h.url, {
+			leadId: "flywheel-eng-lead",
+			taskCategory: "code",
+		});
+		expect(status).toBe(400);
+		expect(json).toMatchObject({
+			success: false,
+			code: "MENU_BINDING_MISMATCH",
+			legal: ["tpl_code"],
+			available: [{ taskCategory: "code", templateId: "tpl_prd" }],
+		});
 		expect(h.calls).toHaveLength(0);
 	});
 });

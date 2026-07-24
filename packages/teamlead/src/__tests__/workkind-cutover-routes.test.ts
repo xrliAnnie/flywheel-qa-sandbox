@@ -14,6 +14,7 @@ import {
 	type WorkKindCutoverRouteDeps,
 } from "../bridge/workkind-cutover.js";
 import { StateStore } from "../StateStore.js";
+import { importWorkflowMenuSeeds } from "../workflow-menu.js";
 import { importBundledWorkflowSeeds } from "../workflow-template.js";
 
 const servers: Server[] = [];
@@ -45,6 +46,7 @@ async function makeDeps(
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
 	importBundledWorkflowSeeds(store);
+	importWorkflowMenuSeeds(store);
 	store.bindWorkflowCategory({
 		project: "flywheel",
 		templateId: "tpl_eng_heavy",
@@ -141,14 +143,29 @@ describe("FLY-1436 work-kind cutover routes", () => {
 				if (path.endsWith(".flywheel/config.yaml")) {
 					return "pipeline:\n  dag: true\n  work_kind: true\n";
 				}
-				if (path.endsWith("pm-executor.md")) {
-					return "FLY-1436 work-kind routing: send taskCategory";
+				if (path.endsWith("ic-roster.yaml")) {
+					return [
+						"design: .flywheel/agents/engineering/engineer-executor.md",
+						"implement: .flywheel/agents/engineering/engineer-executor.md",
+						"qa: .flywheel/agents/engineering/qa-executor.md",
+						"pm: .flywheel/agents/engineering/pm-executor.md",
+						"designer: .flywheel/agents/engineering/designer-executor.md",
+						"proto: .flywheel/agents/engineering/prototype-executor.md",
+						"generic: .flywheel/agents/general-executor.md",
+					].join("\n");
 				}
-				if (path.endsWith("prototype-executor.md")) {
-					return "FLY-1436 work-kind routing: send taskCategory";
+				if (path.endsWith("adoption.yaml")) {
+					return [
+						"flywheel-eng-lead: [generic, code]",
+						"flywheel-product-lead: [prd, design, prototype]",
+						"claude-infra-bot-lead: [generic]",
+					].join("\n");
+				}
+				if (path.includes("menus/shapes/")) {
+					return `shape: ${path.split("/").at(-1)?.replace(".yaml", "")}`;
 				}
 				if (path.endsWith("schemas.js")) {
-					return 'taskCategory research required: ["issueId", "taskCategory"]';
+					return 'taskCategory code prd design prototype generic required: ["issueId", "taskCategory"]';
 				}
 				throw new Error(`unexpected path ${path}`);
 			},
@@ -165,10 +182,40 @@ describe("FLY-1436 work-kind cutover routes", () => {
 			deployedSha: "a".repeat(40),
 		});
 		expect(evidence.assetsDigest).toMatch(/^[0-9a-f]{64}$/);
-		expect(paths).toHaveLength(4);
+		expect(paths).toHaveLength(9);
 		expect(paths.every((path) => path.startsWith("/canonical/flywheel/"))).toBe(
 			true,
 		);
+	});
+
+	it("rejects the obsolete wrapped menu asset shape", () => {
+		const evidence = readFly1436ActivationEvidence({
+			projectRoot: "/canonical/flywheel",
+			env: {
+				FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+			},
+			readFile: (path) => {
+				if (path.endsWith(".flywheel/config.yaml")) {
+					return "pipeline:\n  dag: true\n  work_kind: true\n";
+				}
+				if (path.endsWith("ic-roster.yaml")) {
+					return "roles:\n  pm: .flywheel/agents/engineering/pm-executor.md";
+				}
+				if (path.endsWith("adoption.yaml")) {
+					return "leads:\n  flywheel-product-lead: [prd, design, prototype]";
+				}
+				if (path.includes("menus/shapes/")) {
+					return `shape: ${path.split("/").at(-1)?.replace(".yaml", "")}`;
+				}
+				if (path.endsWith("schemas.js")) {
+					return 'taskCategory code prd design prototype generic required: ["issueId", "taskCategory"]';
+				}
+				throw new Error(`unexpected path ${path}`);
+			},
+			gitHead: () => "a".repeat(40),
+		});
+		expect(evidence.prBAssetsReady).toBe(false);
 	});
 
 	it("fails closed on non-loopback hosts, a missing master token, and wrong bearer auth", async () => {
@@ -301,10 +348,12 @@ describe("FLY-1436 work-kind cutover routes", () => {
 			receipt: { operationId: "fly-1436-activate-test" },
 		});
 		expect(deps.store.listWorkflowCategoryBindings("flywheel")).toMatchObject(
-			FLY1436_TARGET_BINDINGS.map((binding) => ({
-				task_category: binding.taskCategory,
-				template_id: binding.templateId,
-			})),
+			[...FLY1436_TARGET_BINDINGS]
+				.sort((a, b) => a.taskCategory.localeCompare(b.taskCategory))
+				.map((binding) => ({
+					task_category: binding.taskCategory,
+					template_id: binding.templateId,
+				})),
 		);
 		const auditCount = deps.store.listWorkflowTemplateAudit().length;
 

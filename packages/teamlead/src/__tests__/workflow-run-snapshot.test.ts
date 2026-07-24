@@ -319,13 +319,13 @@ describe("typed generalized workflow snapshot", () => {
 			manifest,
 			canonicalRoot: root,
 			workKind: {
-				taskCategory: "research",
+				taskCategory: "generic",
 				categorySource: "task_category",
 				tier: "heavy",
 			},
 		});
 		expect(parseWorkflowRunSnapshot(JSON.stringify(withKind))).toMatchObject({
-			task_category: "research",
+			task_category: "generic",
 			category_source: "task_category",
 			tier: "heavy",
 		});

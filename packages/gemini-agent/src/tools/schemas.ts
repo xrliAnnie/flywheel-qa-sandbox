@@ -12,6 +12,7 @@
  * reviewable act.
  */
 
+import { WORKFLOW_MENU_SHAPES } from "flywheel-config";
 import type { JsonSchema } from "../types.js";
 
 export interface ToolDeclaration {
@@ -82,9 +83,9 @@ export const TOOL_DECLARATIONS: Record<string, ToolDeclaration> = {
 				},
 				taskCategory: {
 					type: "string",
-					enum: ["prd", "designer", "prototype", "code", "research"],
+					enum: [...WORKFLOW_MENU_SHAPES],
 					description:
-						"Required canonical work kind: prd for product definition, designer for visual/UX design, prototype for feasibility prototypes, code for engineering implementation, or research for investigation.",
+						"Required canonical menu: code for engineering delivery, prd for product definition, design for visual/UX design, prototype for feasibility prototypes, or generic for a one-session general task. It changes routing only for projects with menu/work-kind dispatch enabled.",
 				},
 				agentName: {
 					type: "string",

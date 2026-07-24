@@ -38,7 +38,7 @@ export type WorkflowNodeType =
 	| "generic"
 	| "review";
 export type WorkflowVendor = "claude" | "codex";
-export type WorkflowEffort = "low" | "medium" | "high" | "xhigh";
+export type WorkflowEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type WorkflowEdgeCondition =
 	| "design_done"
 	| "implement_done"
@@ -55,6 +55,8 @@ export interface WorkflowOutputContract {
 export interface WorkflowManifestNode {
 	id: string;
 	type: WorkflowNodeType;
+	/** Menu-sourced nodes resolve this role through the project's IC roster. */
+	role?: string;
 	vendor?: WorkflowVendor;
 	model?: string;
 	effort?: WorkflowEffort;
@@ -405,7 +407,7 @@ function validateWorkflowManifestV1(
 				? undefined
 				: oneOf(
 						node.effort,
-						["low", "medium", "high", "xhigh"] as const,
+						["low", "medium", "high", "xhigh", "max"] as const,
 						`manifest.nodes[${index}].effort`,
 					);
 		if (effort && (!vendor || !model)) {
@@ -755,6 +757,7 @@ function validateWorkflowManifestV2(
 			[
 				"id",
 				"type",
+				"role",
 				"vendor",
 				"model",
 				"effort",
@@ -775,6 +778,7 @@ function validateWorkflowManifestV2(
 		);
 		if (type === "gate") {
 			for (const key of [
+				"role",
 				"vendor",
 				"model",
 				"effort",
@@ -796,6 +800,10 @@ function validateWorkflowManifestV2(
 				}
 			}
 		}
+		const role =
+			node.role === undefined
+				? undefined
+				: nonempty(node.role, `${nodePath}.role`);
 		const vendor =
 			node.vendor === undefined
 				? undefined
@@ -821,7 +829,7 @@ function validateWorkflowManifestV2(
 				? undefined
 				: oneOf(
 						node.effort,
-						["low", "medium", "high", "xhigh"] as const,
+						["low", "medium", "high", "xhigh", "max"] as const,
 						`${nodePath}.effort`,
 					);
 		let handoffPointer: WorkflowManifestNode["handoff_pointer"];
@@ -850,12 +858,18 @@ function validateWorkflowManifestV2(
 				...(model ? { model } : {}),
 				...(effort ? { effort } : {}),
 				...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
+				...(role ? { role } : {}),
 			};
 		}
-		const agentFile = assertSafeAgentFile(
-			node.agent_file,
-			`${nodePath}.agent_file`,
-		);
+		const agentFile =
+			node.agent_file === undefined
+				? undefined
+				: assertSafeAgentFile(node.agent_file, `${nodePath}.agent_file`);
+		if ((role ? 1 : 0) + (agentFile ? 1 : 0) !== 1) {
+			throw new Error(
+				`generic node ${id} must define exactly one of role or agent_file`,
+			);
+		}
 		if (
 			node.produces_output !== undefined &&
 			typeof node.produces_output !== "boolean"
@@ -892,7 +906,8 @@ function validateWorkflowManifestV2(
 			...(model ? { model } : {}),
 			...(effort ? { effort } : {}),
 			...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
-			agent_file: agentFile,
+			...(role ? { role } : {}),
+			...(agentFile ? { agent_file: agentFile } : {}),
 			...(producesOutput ? { produces_output: true, output } : {}),
 		};
 	});
@@ -1211,7 +1226,7 @@ export function applyWorkflowOverride(
 		if (nodeOverride.effort !== undefined) {
 			node.effort = oneOf(
 				nodeOverride.effort,
-				["low", "medium", "high", "xhigh"] as const,
+				["low", "medium", "high", "xhigh", "max"] as const,
 				`override.nodes.${nodeId}.effort`,
 			);
 		}

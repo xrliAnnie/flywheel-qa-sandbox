@@ -246,7 +246,7 @@ not stall.
   ```bash
   curl -s -X POST "$BRIDGE_URL/api/runs/start" -H "Content-Type: application/json" \
     -H "Authorization: Bearer $TEAMLEAD_API_TOKEN" \
-    -d '{"issueId":"FLY-XX","projectName":"flywheel","leadId":"flywheel-product-lead","taskCategory":"research"}'
+    -d '{"issueId":"FLY-XX","projectName":"flywheel","leadId":"flywheel-product-lead","taskCategory":"prd"}'
   ```
   Trust the routed label; do not pre-check or guess labels (base
   `department-lead-rules.md` §5). If `/api/runs/start` returns a dept-scope reject,

@@ -548,7 +548,7 @@ describe("workflow template manifest v1", () => {
 			validateWorkflowManifest({
 				...valid,
 				nodes: valid.nodes.map((node) =>
-					node.id === "implement" ? { ...node, effort: "high" } : node,
+					node.id === "implement" ? { ...node, effort: "ultra" } : node,
 				),
 			}),
 		).toThrow(/registry|supported|effort/i);

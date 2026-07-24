@@ -43,6 +43,9 @@ export function resolveNodeDispatchAtLaunch(
 	if (env.FLYWHEEL_VENDOR_AT_DISPATCH === "0") {
 		return { dispatch: pinned, source: "snapshot_fallback", audit: false };
 	}
+	if (node.dispatchPinned) {
+		return { dispatch: pinned, source: "snapshot_fallback", audit: true };
+	}
 
 	if (
 		snapshot.schema_version === 1 &&

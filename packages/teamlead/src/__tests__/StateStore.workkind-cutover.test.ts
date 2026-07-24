@@ -1,24 +1,23 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WORKFLOW_MENU_BINDINGS } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
+import { importWorkflowMenuSeeds } from "../workflow-menu.js";
 import { importBundledWorkflowSeeds } from "../workflow-template.js";
 
 const BASELINE = [{ taskCategory: "*", templateId: "tpl_eng_heavy" }] as const;
 
-const TARGET = [
-	{ taskCategory: "*", templateId: "tpl_generic" },
-	{ taskCategory: "code", templateId: "tpl_eng" },
-	{ taskCategory: "designer", templateId: "tpl_product_designer" },
-	{ taskCategory: "prd", templateId: "tpl_product_v1" },
-	{ taskCategory: "prototype", templateId: "tpl_product_prototype" },
-	{ taskCategory: "research", templateId: "tpl_generic" },
-] as const;
+const TARGET = WORKFLOW_MENU_BINDINGS;
+const TARGET_SORTED = [...TARGET].sort((a, b) =>
+	a.taskCategory.localeCompare(b.taskCategory),
+);
 
 async function seededStore(): Promise<StateStore> {
 	const store = await StateStore.create(":memory:");
 	importBundledWorkflowSeeds(store);
+	importWorkflowMenuSeeds(store);
 	store.bindWorkflowCategory({
 		project: "flywheel",
 		templateId: "tpl_eng_heavy",
@@ -47,10 +46,10 @@ describe("StateStore FLY-1436 work-kind cutover", () => {
 		const store = await seededStore();
 
 		expect(
-			store.getWorkflowCategoryBinding("flywheel", "research"),
+			store.getWorkflowCategoryBinding("flywheel", "generic"),
 		).toMatchObject({ task_category: "*", template_id: "tpl_eng_heavy" });
 		expect(
-			store.getWorkflowCategoryBindingExact("flywheel", "research"),
+			store.getWorkflowCategoryBindingExact("flywheel", "generic"),
 		).toBeUndefined();
 		expect(
 			store.getWorkflowCategoryBindingExact("flywheel", "*"),
@@ -58,7 +57,7 @@ describe("StateStore FLY-1436 work-kind cutover", () => {
 		store.close();
 	});
 
-	it("commits all six bindings, row audits, and the durable receipt in one transaction", async () => {
+	it("commits all five bindings, row audits, and the durable receipt in one transaction", async () => {
 		const store = await seededStore();
 		const auditBefore = store.listWorkflowTemplateAudit().length;
 
@@ -72,12 +71,12 @@ describe("StateStore FLY-1436 work-kind cutover", () => {
 				canonicalHash: "activate-hash",
 				snapshotHash: "snapshot-hash",
 				before: BASELINE,
-				after: TARGET,
+				after: TARGET_SORTED,
 				auditCount: 6,
 			},
 		});
 		expect(store.listWorkflowCategoryBindings("flywheel")).toMatchObject(
-			TARGET.map((binding) => ({
+			TARGET_SORTED.map((binding) => ({
 				task_category: binding.taskCategory,
 				template_id: binding.templateId,
 			})),
@@ -119,6 +118,7 @@ describe("StateStore FLY-1436 work-kind cutover", () => {
 		try {
 			const first = await StateStore.create(dbPath);
 			importBundledWorkflowSeeds(first);
+			importWorkflowMenuSeeds(first);
 			first.bindWorkflowCategory({
 				project: "flywheel",
 				templateId: "tpl_eng_heavy",
@@ -170,7 +170,7 @@ describe("StateStore FLY-1436 work-kind cutover", () => {
 				cutoverInput({
 					targetBindings: [
 						...TARGET.slice(0, -1),
-						{ taskCategory: "research", templateId: "missing-template" },
+						{ taskCategory: "generic", templateId: "missing-template" },
 					],
 				}),
 			),
@@ -213,7 +213,7 @@ describe("StateStore FLY-1436 work-kind cutover", () => {
 		};
 		expect(store.commitWorkflowBindingCutover(restore)).toMatchObject({
 			status: "committed",
-			receipt: { kind: "restore", before: TARGET, after: BASELINE },
+			receipt: { kind: "restore", before: TARGET_SORTED, after: BASELINE },
 		});
 		expect(store.listWorkflowCategoryBindings("flywheel")).toMatchObject([
 			{ task_category: "*", template_id: "tpl_eng_heavy" },

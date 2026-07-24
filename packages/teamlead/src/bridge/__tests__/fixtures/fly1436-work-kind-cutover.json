@@ -3,8 +3,8 @@
 		"name": "GENERALIZED off + work-kind on + v2 binding fails closed",
 		"generalizedTemplates": false,
 		"configWorkKind": true,
-		"bindingCategory": "research",
-		"taskCategory": "research",
+		"bindingCategory": "generic",
+		"taskCategory": "generic",
 		"expectedStatus": 409,
 		"expectedCode": "GENERALIZED_WORKFLOW_REJECTED"
 	},

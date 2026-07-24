@@ -302,6 +302,9 @@ importers:
       discord.js:
         specifier: 14.26.4
         version: 14.26.4
+      flywheel-config:
+        specifier: workspace:*
+        version: link:../config
       flywheel-voice-core:
         specifier: workspace:*
         version: link:../voice-core

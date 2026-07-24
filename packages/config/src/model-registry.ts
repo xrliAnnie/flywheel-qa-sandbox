@@ -37,12 +37,7 @@ const DISPATCH_AND_MANAGED_SURFACES: readonly ModelSurface[] = [
 	"dispatch",
 	...ALL_MANAGED_SURFACES,
 ];
-const WORKFLOW_EFFORT_LEVELS: readonly RoleEffort[] = [
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-];
+const WORKFLOW_EFFORT_LEVELS: readonly RoleEffort[] = ROLE_EFFORT_LEVELS;
 
 function claudeEntry(input: {
 	id: string;
@@ -113,11 +108,11 @@ export const MODEL_REGISTRY: readonly ModelRegistryEntry[] = [
 		provider: "openai",
 		runtimeVendor: "codex",
 		label: "GPT-5.6",
-		aliases: [],
+		aliases: ["codex"],
 		surfaces: ["runner", "workflow", "cron"],
 		effortsBySurface: {
 			runner: ["xhigh"],
-			workflow: ["xhigh"],
+			workflow: ROLE_EFFORT_LEVELS,
 			cron: [],
 		},
 	},

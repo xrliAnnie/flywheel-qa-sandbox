@@ -1,7 +1,30 @@
-# FLY-1436 work-kind cutover 解冻返工 — 实施计划
+# FLY-1436 菜单系统落地 — 实施计划
 Issue: FLY-1436 (https://linear.app/geoforge3d/issue/FLY-1436/解冻1418-work-kind-binding-cutover-分档路由上线解锁-honey-lemon接替-fly-1418)
-日期: 2026-07-22
+日期: 2026-07-23
 基于: research.md
+
+## 0. Founder 最终改版执行计划(覆盖后续历史 plan)
+
+**Status**: founder/Lead 已确认最终范围并恢复 implement TURN;不重开旧 design review。下面九步是当前执行游标:
+
+1. 固化文档与 ledger,把历史 cutover 明确标为 superseded。
+2. 先写失败测试:五份 shape/边/loop/模型精确值、roster/adoption、唯一 alias registry、非法输入 legal-set 错误。
+3. 新建严格 menu parser/compiler 与 source YAML;编译产物沿用 SQLite workflow template registry,同时将 `FLY1436_TARGET_BINDINGS` 改为五项 exact menu binding;onboard payload 携带同一份 global menu YAML。
+4. 扩展 model registry:`codex` alias;Claude/Codex workflow effort 使用各自受管 CLI 支持集;`WorkflowEffort` 接受 `max`。
+5. materialize 时按 node `role` 从项目 IC roster 解出 executor markdown,安全限制路径在项目 root;旧 `agent_file` 仅作 legacy 兼容。
+6. 新增只读 `GET /api/workflow/menus`,按 project+Lead adoption 返回可选 menu、node model/effort policy、`menuVersion=git sha` 和 alias/resolved version 收据。
+7. 扩展 `POST /api/runs/start` 的 `overrides:{node:{model,effort}}`:先确定 menu/node,再校 model,最后校该 model 下 effort;任何失败 400 + 精确 legal set。
+8. 跑 targeted tests、全 package tests、typecheck/lint/build 与 real payload pack/install/Bridge-health smoke;确认受保护 executor markdown 未变、旧工程路径回归通过。
+9. 提交并 push 最终 head,最后一次 head 上走 code review;review 后不再调用 progress。创建/更新 PR 后用 `flywheel-land` 监控 CI,写 landing signal,再 `complete --route needs_review` + park 等 QA。
+
+实现边界:
+
+- 不部署、不 merge、不翻 `pipeline.work_kind` 或任何环境 flag。
+- 不新增 `research`、mandatory review node、wildcard binding 或 silent fallback。
+- 不修改任何既有 executor markdown。
+- 发现 schema/API 级重大歧义时向 Lead 提问,但不阻塞独立实现。
+
+## 历史 plan(已被 founder 改版覆盖,仅保留审计记录)
 
 **Status**: **codex-approved**(design review 5 轮:R1 6H → R2 4H+1M → R3 3H+2M → R4 1H+1M → **R5 APPROVED**,2026-07-22;全部 findings 采纳零 reject)
 

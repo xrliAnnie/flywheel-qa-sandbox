@@ -167,6 +167,8 @@ export async function resolveWorkflowTemplateSelection(
 		workKindEnforced?: boolean;
 		categorySource?: CategorySource;
 		tier?: EngTier;
+		/** Canonical, already policy-validated menu node override. */
+		override?: WorkflowTemplateOverride;
 	},
 ): Promise<WorkflowTemplateSelectionResult | null> {
 	const candidate = resolveWorkflowTemplateCandidate(store, input);
@@ -236,25 +238,33 @@ export async function resolveWorkflowTemplateSelection(
 			`workflow template ${templateId} does not declare tier presets`,
 		);
 	}
+	if (tierPreset && input.override) {
+		throw new Error(
+			"workflow selection cannot combine tier and menu overrides",
+		);
+	}
 	const reportedCategory = input.leadTemplateId
 		? input.taskCategory?.trim() || undefined
 		: category;
+	const selectionDigestBody = buildWorkflowSelectionDigestBody(
+		{
+			project: input.project,
+			issueId: input.issueId,
+			category,
+			templateId,
+			revision: revision.revision,
+			selectionSource,
+			selectedBy: input.selectedBy,
+			reason,
+		},
+		input.categorySource
+			? { categorySource: input.categorySource, tier: effectiveTier }
+			: undefined,
+	);
 	const selectionDigest = canonicalSubmissionDigest(
-		buildWorkflowSelectionDigestBody(
-			{
-				project: input.project,
-				issueId: input.issueId,
-				category,
-				templateId,
-				revision: revision.revision,
-				selectionSource,
-				selectedBy: input.selectedBy,
-				reason,
-			},
-			input.categorySource
-				? { categorySource: input.categorySource, tier: effectiveTier }
-				: undefined,
-		),
+		input.override
+			? { ...selectionDigestBody, override: input.override }
+			: selectionDigestBody,
 	);
 	const key = input.idempotencyKey.trim();
 	const resolveReplay = (
@@ -324,26 +334,34 @@ export async function resolveWorkflowTemplateSelection(
 		const refreshedReason =
 			input.leadReason?.trim() ||
 			`${refreshedSelectionSource}:${refreshedCandidate?.binding?.task_category ?? category}`;
-		const refreshedSelectionDigest = refreshedCandidate
+		const refreshedSelectionDigestBody = refreshedCandidate
+			? buildWorkflowSelectionDigestBody(
+					{
+						project: input.project,
+						issueId: input.issueId,
+						category: refreshedCandidate.category,
+						templateId: refreshedCandidate.templateId,
+						revision: refreshedCandidate.revision.revision,
+						selectionSource: refreshedSelectionSource,
+						selectedBy: input.selectedBy,
+						reason: refreshedReason,
+					},
+					input.categorySource
+						? {
+								categorySource: input.categorySource,
+								tier: effectiveTier,
+							}
+						: undefined,
+				)
+			: undefined;
+		const refreshedSelectionDigest = refreshedSelectionDigestBody
 			? canonicalSubmissionDigest(
-					buildWorkflowSelectionDigestBody(
-						{
-							project: input.project,
-							issueId: input.issueId,
-							category: refreshedCandidate.category,
-							templateId: refreshedCandidate.templateId,
-							revision: refreshedCandidate.revision.revision,
-							selectionSource: refreshedSelectionSource,
-							selectedBy: input.selectedBy,
-							reason: refreshedReason,
-						},
-						input.categorySource
-							? {
-									categorySource: input.categorySource,
-									tier: effectiveTier,
-								}
-							: undefined,
-					),
+					input.override
+						? {
+								...refreshedSelectionDigestBody,
+								override: input.override,
+							}
+						: refreshedSelectionDigestBody,
 				)
 			: undefined;
 		if (
@@ -399,7 +417,8 @@ export async function resolveWorkflowTemplateSelection(
 		},
 		categorySource: input.categorySource,
 		tier: effectiveTier,
-		override: tierPreset,
+		override: input.override ?? tierPreset,
+		selectionOverride: input.override,
 		startReservation: {
 			idempotencyKey: key,
 			selectionDigest,

@@ -1,0 +1,17 @@
+shape: generic
+nodes:
+  - id: execute
+    role: generic
+    defaultModel: opus
+    models:
+      - model: opus
+        allowedEfforts: [low, medium, high, xhigh, max]
+        defaultEffort: xhigh
+  - id: founder_gate
+    type: gate
+edges:
+  - id: execute_done
+    from: execute
+    to: founder_gate
+    condition: node_done
+loops: []

@@ -172,26 +172,26 @@ After the operator answers:
 If the message clearly asks for opinion, explanation, triage, or discussion only — or explicitly says **don't** start a Runner — reply with your input but do **not** spawn. Examples:
 `你怎么看` / `先别起 Runner` / `只是问一下` / `讨论下` / `为什么` / `?` (without assignment language)
 
-### 4. FLY-1436 work-kind dispatch contract (strictly enforced)
+### 4. FLY-1436 menu dispatch contract (strictly enforced)
 
 Every department Lead that starts a Runner must explicitly pass the semantic
 `taskCategory`. This contract is shared and parameterized; never copy a
 particular project's Lead id into the base rule.
 
-Use exactly one of these canonical values:
+Choose only from the menus adopted for your Lead. The system-wide canonical
+values are:
 
 | `taskCategory` | Use when the Runner's primary output is |
 |---|---|
-| `prd` | product requirements, product planning, or a feature brief |
-| `designer` | product/UX design, flows, visual specifications, or design review |
-| `prototype` | a runnable or interactive product prototype |
 | `code` | engineering implementation, fixes, tests, or code review |
-| `research` | investigation, synthesis, evaluation, or an evidence-backed recommendation |
+| `prd` | product requirements, product planning, or a feature brief |
+| `design` | product/UX design, flows, visual specifications, or design review |
+| `prototype` | a runnable or interactive product prototype |
+| `generic` | investigation, synthesis, one-off operations, or other single-session work |
 
-Your department is only a suggestion, never routing authority: product work
-often uses `prd`, and engineering work often uses `code`, but you must classify
-the issue's actual deliverable. For example, an engineering Lead dispatching a
-research-only issue still uses `research`.
+Your department is only a suggestion, never routing authority. Classify the
+issue's actual deliverable, and if no adopted menu is a clear match, ask instead
+of inventing a category.
 
 Use this parameterized payload shape and substitute all four slots:
 
@@ -199,12 +199,11 @@ Use this parameterized payload shape and substitute all four slots:
 {"issueId":"<issue_id>","projectName":"<project_name>","leadId":"<lead_id>","taskCategory":"<task_category>"}
 ```
 
-The cutover is deliberately dual-state:
-
-- Always include `taskCategory`, before and after project activation.
-- If it is omitted after activation, Bridge intentionally uses a generic single-session fallback and sends a reminder; omission is not a rejection.
-- An invalid value produces the stable `400 INVALID_TASK_CATEGORY` response only after that project's `pipeline.work_kind` switch is active. Before activation, legacy dispatch remains unchanged.
-- Existing project agent instructions still decide whether product work carries `routingOverrides: ["no-three-stage"]`. This shared rule does not remove or invent that override.
+Always include `taskCategory`. Missing or invalid categories, non-adopted menus,
+unknown nodes, disallowed models, and disallowed efforts fail loud with HTTP 400
+and the corresponding legal set. Do not retry by silently dropping the field.
+Optional per-node model/effort choices belong under
+`overrides: {"<node>":{"model":"<alias>","effort":"<effort>"}}`.
 
 ### 5. Department enforcement: trust Bridge, don't second-guess
 

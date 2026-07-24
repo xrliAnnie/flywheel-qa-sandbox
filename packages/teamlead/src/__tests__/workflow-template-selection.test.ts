@@ -444,7 +444,7 @@ describe("workflow template selection", () => {
 		store.importWorkflowTemplateSeed(seed, enabled);
 		store.bindWorkflowCategory({
 			project: "flywheel",
-			taskCategory: "research",
+			taskCategory: "generic",
 			templateId: seed.templateId,
 			updatedBy: "lead",
 		});
@@ -594,7 +594,7 @@ describe("workflow template selection", () => {
 		);
 		store.bindWorkflowCategory({
 			project: "flywheel",
-			taskCategory: "research",
+			taskCategory: "generic",
 			templateId: seed.templateId,
 			updatedBy: "lead",
 		});
@@ -602,8 +602,8 @@ describe("workflow template selection", () => {
 		const selected = await resolveWorkflowTemplateSelection(store, {
 			project: "flywheel",
 			issueId: "FLY-TIER",
-			taskCategory: "research",
-			selectedBy: "research-lead",
+			taskCategory: "generic",
+			selectedBy: "generic-lead",
 			actor: "master",
 			authKind: "master",
 			canonicalRoot: root,

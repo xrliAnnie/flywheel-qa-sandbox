@@ -1,12 +1,12 @@
-/** FLY-1407: the single runtime vocabulary for dispatch-time work-kind. */
-export const WORK_KIND_CATEGORIES = [
-	"prd",
-	"designer",
-	"prototype",
-	"code",
-	"research",
-] as const;
+import {
+	WORKFLOW_MENU_SHAPES,
+	type WorkflowMenuShapeId,
+} from "flywheel-config";
+
+/** FLY-1436: dispatch validation aliases the menu binding SSOT. */
+export const WORK_KIND_CATEGORIES = WORKFLOW_MENU_SHAPES;
 export type WorkKindCategory = (typeof WORK_KIND_CATEGORIES)[number];
+export type { WorkflowMenuShapeId };
 
 export const ENG_TIERS = ["trivial", "light", "heavy"] as const;
 export type EngTier = (typeof ENG_TIERS)[number];

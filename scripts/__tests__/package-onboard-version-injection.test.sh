@@ -66,6 +66,7 @@ run_po() {
     PO_SCRIPT_FILES="flywheel-onboard.sh" \
     PO_SCRIPT_DIRS=" " \
     PO_AGENT_FILES="generic-executor.md" \
+    PO_MENU_FILES=" " \
     PO_FILES_ALLOWLIST="$FIX/files.allow" \
     PO_GREP_ALLOWLIST="$FIX/grep.allow" \
     bash -c 'source "$1"; shift; "$@"' _ "$PO" "$@"
