@@ -48,7 +48,6 @@ export class TerminalReceiptSettlementProjector {
 	}
 
 	async pass(): Promise<void> {
-		if (process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT === "0") return;
 		for (const projectName of this.options.projectNames) {
 			for (const session of this.options.store.getProjectSessions(
 				projectName,
@@ -82,7 +81,6 @@ export class TerminalReceiptSettlementProjector {
 	 * the durable intent.
 	 */
 	async settleIssueDone(input: IssueDoneReceiptSettlementInput): Promise<void> {
-		if (process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT === "0") return;
 		if (!this.options.projectNames.includes(input.projectName)) return;
 		const intents = this.options.store.ensureIssueDoneSettlementIntents({
 			projectName: input.projectName,
@@ -103,7 +101,6 @@ export class TerminalReceiptSettlementProjector {
 
 	/** FLY-1448 E1: the separate fresh-GitHub-MERGED authority lane. */
 	async settlePrMerged(input: PrMergedReceiptSettlementInput): Promise<void> {
-		if (process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT === "0") return;
 		if (!this.options.projectNames.includes(input.projectName)) return;
 		const intents = this.options.store.ensurePrMergedSettlementIntents({
 			projectName: input.projectName,

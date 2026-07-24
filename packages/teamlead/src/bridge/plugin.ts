@@ -7879,7 +7879,6 @@ export async function startBridge(
 			) {
 				return true;
 			}
-			if (process.env.FLYWHEEL_ENGINE_DECLARED_PARK === "0") return false;
 			const db = new CommDB(commDbPathForProject(projectName), false);
 			try {
 				return db.getWorkflowEnginePark(executionId)?.state === "open";
@@ -8004,9 +8003,6 @@ export async function startBridge(
 						}
 					},
 					isEngineParked: (executionId, currentProject) => {
-						if (process.env.FLYWHEEL_ENGINE_DECLARED_PARK === "0") {
-							return false;
-						}
 						const comm = new CommDB(
 							commDbPathForProject(currentProject),
 							false,
@@ -8252,7 +8248,6 @@ export async function startBridge(
 				store,
 				projectNames: projects.map((project) => project.projectName),
 				commDbPathForProject,
-				enabled: () => process.env.FLYWHEEL_ENGINE_DECLARED_PARK !== "0",
 			});
 			await terminalReceiptSettlement.pass();
 			await receiptWakePatrol.pass();

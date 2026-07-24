@@ -3,11 +3,9 @@ import { StateStore } from "../StateStore.js";
 
 describe("FLY-1448 terminal receipt settlement intents", () => {
 	let store: StateStore;
-	const originalFlag = process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT;
 	const fields = { issue_id: "FLY-1448", project_name: "flywheel" };
 
 	beforeEach(async () => {
-		process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT = "1";
 		store = await StateStore.create(":memory:");
 		store.upsertSession({
 			execution_id: "exec-1",
@@ -18,11 +16,6 @@ describe("FLY-1448 terminal receipt settlement intents", () => {
 
 	afterEach(() => {
 		store.close();
-		if (originalFlag === undefined) {
-			delete process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT;
-		} else {
-			process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT = originalFlag;
-		}
 	});
 
 	it("creates one fenced intent per continuous terminal lifecycle", () => {
@@ -49,13 +42,9 @@ describe("FLY-1448 terminal receipt settlement intents", () => {
 		).toBe(2);
 	});
 
-	it("OFF writes no intent and ON catch-up creates exactly one", () => {
-		process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT = "0";
+	it("catch-up is unconditional and idempotent", () => {
 		store.persistTransition("exec-1", "completed", fields);
 		const lifecycleId = store.getSession("exec-1")?.terminal_lifecycle_id;
-		expect(store.listReceiptSettlementIntents()).toEqual([]);
-
-		process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT = "1";
 		const first = store.ensureTerminalSettlementIntent(
 			"exec-1",
 			lifecycleId ?? "",

@@ -557,14 +557,6 @@ async function processFounderMessage(
 	const shipGates = matching.filter(
 		(question) => question.checkpoint === "approve_to_ship",
 	);
-	const configuredDeadlineMs = Number.parseInt(
-		process.env.FLYWHEEL_FOUNDER_DECISION_DEADLINE_MS ?? "",
-		10,
-	);
-	const deadlineMs =
-		Number.isSafeInteger(configuredDeadlineMs) && configuredDeadlineMs > 0
-			? configuredDeadlineMs
-			: DEFAULT_FOUNDER_DECISION_DEADLINE_MS;
 	for (const gate of shipGates) {
 		deps.ensureDecisionConvergence?.({
 			threadId: ctx.threadId,
@@ -574,7 +566,8 @@ async function processFounderMessage(
 			leadId: ctx.leadId,
 			executionId: gate.executionId,
 			disposedAtMs: nowDate.getTime(),
-			deadlineAtMs: nowDate.getTime() + deadlineMs,
+			deadlineAtMs:
+				nowDate.getTime() + DEFAULT_FOUNDER_DECISION_DEADLINE_MS,
 		});
 	}
 	// Founder ingress has no classifier. The chase flag

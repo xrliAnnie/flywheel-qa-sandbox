@@ -4086,18 +4086,16 @@ export class StateStore {
 					[randomUUID(), row.execution_id],
 				);
 			}
-			if (process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT !== "0") {
-				for (const row of this.workflowSelectAll(
-					`SELECT execution_id, terminal_lifecycle_id
-					   FROM sessions
-					  WHERE terminal_lifecycle_id IS NOT NULL`,
-					[],
-				)) {
-					this.ensureTerminalSettlementIntentTx(
-						row.execution_id as string,
-						row.terminal_lifecycle_id as string,
-					);
-				}
+			for (const row of this.workflowSelectAll(
+				`SELECT execution_id, terminal_lifecycle_id
+				   FROM sessions
+				  WHERE terminal_lifecycle_id IS NOT NULL`,
+				[],
+			)) {
+				this.ensureTerminalSettlementIntentTx(
+					row.execution_id as string,
+					row.terminal_lifecycle_id as string,
+				);
 			}
 		});
 	}
@@ -4145,19 +4143,17 @@ export class StateStore {
 				  WHERE execution_id = ?`,
 				[randomUUID(), executionId],
 			);
-			if (process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT !== "0") {
-				const row = this.workflowSelectAll(
-					`SELECT terminal_lifecycle_id FROM sessions
-					  WHERE execution_id = ?`,
-					[executionId],
-				)[0];
-				if (typeof row?.terminal_lifecycle_id === "string") {
-					this.ensureTerminalSettlementIntentTx(
-						executionId,
-						row.terminal_lifecycle_id,
-						previousStatus !== undefined && previousStatus !== nextStatus ? 1 : 0,
-					);
-				}
+			const row = this.workflowSelectAll(
+				`SELECT terminal_lifecycle_id FROM sessions
+				  WHERE execution_id = ?`,
+				[executionId],
+			)[0];
+			if (typeof row?.terminal_lifecycle_id === "string") {
+				this.ensureTerminalSettlementIntentTx(
+					executionId,
+					row.terminal_lifecycle_id,
+					previousStatus !== undefined && previousStatus !== nextStatus ? 1 : 0,
+				);
 			}
 		} else if (!isOperationalTerminal) {
 			const oldLifecycle = this.workflowSelectAll(
@@ -4317,9 +4313,6 @@ export class StateStore {
 		executionId: string,
 		terminalLifecycleId: string,
 	): ReceiptSettlementIntent | undefined {
-		if (process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT === "0") {
-			return undefined;
-		}
 		let result: ReceiptSettlementIntent | undefined;
 		this.db.transaction(() => {
 			result = this.ensureTerminalSettlementIntentTx(
@@ -4342,7 +4335,6 @@ export class StateStore {
 		issueAliases: readonly string[];
 		authorityCredential: string;
 	}): ReceiptSettlementIntent[] {
-		if (process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT === "0") return [];
 		const intents: ReceiptSettlementIntent[] = [];
 		this.db.transaction(() => {
 			const rows = this.getSessionsForIssueAliases([
@@ -4387,7 +4379,6 @@ export class StateStore {
 		prNumber: number;
 		authorityCredential: string;
 	}): ReceiptSettlementIntent[] {
-		if (process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT === "0") return [];
 		const intents: ReceiptSettlementIntent[] = [];
 		this.db.transaction(() => {
 			const rows = this.getSessionsForIssueAliases([
@@ -11059,7 +11050,6 @@ export class StateStore {
 		reason: string;
 		createdAt: string;
 	}): WorkflowEngineParkOutboxRow | undefined {
-		if (process.env.FLYWHEEL_ENGINE_DECLARED_PARK === "0") return undefined;
 		const prior = this.workflowSelectAll(
 			"SELECT * FROM workflow_engine_park_outbox WHERE event_id = ?",
 			[input.eventId],

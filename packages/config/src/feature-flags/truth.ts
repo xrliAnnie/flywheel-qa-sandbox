@@ -318,6 +318,15 @@ export const RETIRED_FLAGS = [
 	{ envVar: "FLYWHEEL_LEGACY_DELIVERY_WATCHDOGS", retiredBy: "FLY-1456" },
 	{ envVar: "FLYWHEEL_CHECKPOINT_WATCHDOG", retiredBy: "FLY-1456" },
 	{ envVar: "FLYWHEEL_QUOTA_DAEMON_CUTOVER", retiredBy: "FLY-1456" },
+	{ envVar: "FLYWHEEL_ENGINE_DECLARED_PARK", retiredBy: "FLY-1466" },
+	{
+		envVar: "FLYWHEEL_FOUNDER_DECISION_DEADLINE_MS",
+		retiredBy: "FLY-1466",
+	},
+	{
+		envVar: "FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT",
+		retiredBy: "FLY-1466",
+	},
 ] as const;
 
 export interface FlagTruthValidation {

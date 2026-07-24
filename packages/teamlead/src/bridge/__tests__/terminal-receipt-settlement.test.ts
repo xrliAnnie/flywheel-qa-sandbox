@@ -12,10 +12,8 @@ describe("FLY-1448 terminal receipt settlement projector", () => {
 	let commPath: string;
 	let store: StateStore;
 	let comm: CommDB;
-	const originalFlag = process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT;
 
 	beforeEach(async () => {
-		process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT = "1";
 		dir = mkdtempSync(join(tmpdir(), "fly1448-settlement-projector-"));
 		commPath = join(dir, "comm.db");
 		store = await StateStore.create(":memory:");
@@ -40,11 +38,6 @@ describe("FLY-1448 terminal receipt settlement projector", () => {
 		comm.close();
 		store.close();
 		rmSync(dir, { recursive: true, force: true });
-		if (originalFlag === undefined) {
-			delete process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT;
-		} else {
-			process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT = originalFlag;
-		}
 	});
 
 	it("settles a pending gate, receipt family, and legacy detection lineage", async () => {
@@ -141,26 +134,6 @@ describe("FLY-1448 terminal receipt settlement projector", () => {
 		expect(store.getReceiptSettlementIntent(intent.intent_id)?.state).toBe(
 			"completed",
 		);
-	});
-
-	it("kill switch freezes existing intents and side effects", async () => {
-		store.persistTransition("exec-1", "completed", {
-			issue_id: "FLY-1448",
-			project_name: "flywheel",
-		});
-		process.env.FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT = "0";
-		comm.close();
-
-		await new TerminalReceiptSettlementProjector({
-			store,
-			projectNames: ["flywheel"],
-			commDbPathForProject: () => commPath,
-		}).pass();
-
-		comm = new CommDB(commPath);
-		expect(store.listReceiptSettlementIntents()).toMatchObject([
-			{ state: "pending" },
-		]);
 	});
 
 	it("settles a non-gate receipt for a running session under fresh issue-Done authority", async () => {
