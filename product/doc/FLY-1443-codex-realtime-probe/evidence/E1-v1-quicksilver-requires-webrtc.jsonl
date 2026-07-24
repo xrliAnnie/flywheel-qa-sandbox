@@ -1,0 +1,170 @@
+{"t":"2026-07-24T02:33:26.282Z","dir":">>","obj":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"fly1443-probe","title":"FLY-1443 realtime probe","version":"0.0.1"},"capabilities":{"experimentalApi":true}}}}
+{"t":"2026-07-24T02:33:28.892Z","dir":"<<","obj":{"id":1,"result":{"userAgent":"fly1443-probe/0.145.0 (Mac OS 26.3.2; arm64) ghostty/1.3.0-HEAD_80d3fa0 (fly1443-probe; 0.0.1)","codexHome":"/Users/xiaorongli/.codex","platformFamily":"unix","platformOs":"macos"}}}
+{"t":"2026-07-24T02:33:28.892Z","dir":"<<","obj":{"method":"remoteControl/status/changed","params":{"status":"disabled","serverName":"MacBook-Pro.local","installationId":"1fbcc443-ab45-47e6-9a13-87612c2219ba","environmentId":null},"emittedAtMs":1784860408891}}
+{"t":"2026-07-24T02:33:29.301Z","dir":">>","obj":{"id":2,"method":"thread/start","params":{}}}
+{"t":"2026-07-24T02:33:30.866Z","dir":"<<","obj":{"id":2,"result":{"thread":{"id":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","extra":null,"sessionId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","forkedFromId":null,"parentThreadId":null,"preview":"","ephemeral":false,"historyMode":"legacy","modelProvider":"openai","createdAt":1784860410,"updatedAt":1784860410,"recencyAt":1784860410,"status":{"type":"idle"},"path":"/Users/xiaorongli/.codex/sessions/2026/07/23/rollout-2026-07-23T19-33-29-019f91f8-7e11-7f60-a30c-ca4cf77a3d64.jsonl","cwd":"/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-1443/cdcf74ba-0c8c-4e2d-a7a4-cc105b11f455/scratchpad","cliVersion":"0.145.0","source":"vscode","canAcceptDirectInput":true,"threadSource":null,"agentNickname":null,"agentRole":null,"gitInfo":null,"name":null,"turns":[]},"model":"gpt-5.6-sol","modelProvider":"openai","serviceTier":null,"cwd":"/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-1443/cdcf74ba-0c8c-4e2d-a7a4-cc105b11f455/scratchpad","runtimeWorkspaceRoots":["/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-1443/cdcf74ba-0c8c-4e2d-a7a4-cc105b11f455/scratchpad"],"instructionSources":["/Users/xiaorongli/.codex/AGENTS.md"],"approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"dangerFullAccess"},"activePermissionProfile":null,"reasoningEffort":"xhigh","multiAgentMode":"explicitRequestOnly"}}}
+{"t":"2026-07-24T02:33:30.867Z","dir":">>","obj":{"id":3,"method":"thread/realtime/start","params":{"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","transport":{"type":"websocket"},"outputModality":"audio","voice":"cove","version":"v1"}}}
+{"t":"2026-07-24T02:33:30.871Z","dir":"<<","obj":{"id":3,"result":{}}}
+{"t":"2026-07-24T02:33:37.765Z","dir":"ERR","obj":"2026-07-24T02:33:37.760666Z ERROR codex_core::realtime_conversation: realtime stream error event received"}
+{"t":"2026-07-24T02:33:37.773Z","dir":"<<","obj":{"method":"thread/realtime/started","params":{"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","realtimeSessionId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","version":"v1"},"emittedAtMs":1784860417760}}
+{"t":"2026-07-24T02:33:37.776Z","dir":"<<","obj":{"method":"thread/realtime/error","params":{"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","message":"Quicksilver sessions require WebRTC."},"emittedAtMs":1784860417760}}
+{"t":"2026-07-24T02:33:37.785Z","dir":"<<","obj":{"method":"thread/realtime/closed","params":{"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","reason":"error"},"emittedAtMs":1784860417761}}
+{"t":"2026-07-24T02:33:37.823Z","dir":"START-OUTCOME","obj":{"outcome":"started","waitedMs":6951,"event":{"method":"thread/realtime/started","params":{"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","realtimeSessionId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","version":"v1"},"emittedAtMs":1784860417760}}}
+{"t":"2026-07-24T02:33:37.824Z","dir":"STEP","obj":{"step":"feeding-external-audio","pcmBytes":183744,"silenceBytes":96000,"streamBytes":279744,"totalChunks":30}}
+{"t":"2026-07-24T02:33:37.824Z","dir":"<<AUDIO-IN","obj":{"index":0,"decodedBytes":9600,"sha256":"67d2407b66f7bc0a2c249ca2f61bd0513a4b0faead7a94c6516427fe206117a1","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:37.824Z","dir":">>","obj":{"id":4,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:37.826Z","dir":"<<","obj":{"id":4,"result":{}}}
+{"t":"2026-07-24T02:33:37.826Z","dir":"<<","obj":{"method":"thread/status/changed","params":{"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","status":{"type":"systemError"}},"emittedAtMs":1784860417826}}
+{"t":"2026-07-24T02:33:37.826Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-9f22-73c1-a10e-21a648ecf292"},"emittedAtMs":1784860417826}}
+{"t":"2026-07-24T02:33:37.826Z","dir":"ERR","obj":"2026-07-24T02:33:37.826219Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:37.889Z","dir":"<<AUDIO-IN","obj":{"index":1,"decodedBytes":9600,"sha256":"5504f192b4dd8e686eeca109574f4d25993491c17de65a928ee02f5fc8e01a76","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:37.889Z","dir":">>","obj":{"id":5,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:37.894Z","dir":"<<","obj":{"id":5,"result":{}}}
+{"t":"2026-07-24T02:33:37.894Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-9f66-7f02-b737-1b1ef63fb2bc"},"emittedAtMs":1784860417894}}
+{"t":"2026-07-24T02:33:37.895Z","dir":"ERR","obj":"2026-07-24T02:33:37.894735Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:37.965Z","dir":"<<AUDIO-IN","obj":{"index":2,"decodedBytes":9600,"sha256":"81466149c2a90191ac7d496aabf23abfc478a156ada7e5c0254c96f7b5d6c711","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:37.965Z","dir":">>","obj":{"id":6,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:37.992Z","dir":"<<","obj":{"id":6,"result":{}}}
+{"t":"2026-07-24T02:33:37.992Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-9fc8-7df3-9ea4-dc3a26c35e32"},"emittedAtMs":1784860417992}}
+{"t":"2026-07-24T02:33:37.993Z","dir":"ERR","obj":"2026-07-24T02:33:37.992382Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:38.059Z","dir":"<<AUDIO-IN","obj":{"index":3,"decodedBytes":9600,"sha256":"faeb5e45c00fbff37b61352330374de7e53493846d65c13a85658e1a18a022fa","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:38.060Z","dir":">>","obj":{"id":7,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:38.138Z","dir":"<<","obj":{"id":7,"result":{}}}
+{"t":"2026-07-24T02:33:38.138Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a05a-77a3-bb72-3613c31b71ae"},"emittedAtMs":1784860418138}}
+{"t":"2026-07-24T02:33:38.139Z","dir":"ERR","obj":"2026-07-24T02:33:38.138284Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:38.210Z","dir":"<<AUDIO-IN","obj":{"index":4,"decodedBytes":9600,"sha256":"5597d0a20bdc0f007f6042068ca5edd8e5244c00d6026373f0612a0bbe325972","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:38.210Z","dir":">>","obj":{"id":8,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:38.234Z","dir":"ERR","obj":"2026-07-24T02:33:38.234200Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:38.234Z","dir":"<<","obj":{"id":8,"result":{}}}
+{"t":"2026-07-24T02:33:38.234Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a0ba-74f3-a009-0da9d26be3cf"},"emittedAtMs":1784860418234}}
+{"t":"2026-07-24T02:33:38.309Z","dir":"<<AUDIO-IN","obj":{"index":5,"decodedBytes":9600,"sha256":"6682821052a8581c6c34f304024424abd70eb6cd0b9e76daef1e3824454c34ff","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:38.309Z","dir":">>","obj":{"id":9,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:38.389Z","dir":"ERR","obj":"2026-07-24T02:33:38.389017Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:38.390Z","dir":"<<","obj":{"id":9,"result":{}}}
+{"t":"2026-07-24T02:33:38.391Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a154-7513-9f89-1961975795b3"},"emittedAtMs":1784860418389}}
+{"t":"2026-07-24T02:33:38.455Z","dir":"<<AUDIO-IN","obj":{"index":6,"decodedBytes":9600,"sha256":"1ff4b68e3437c54b66f9df6d66540a647eccb1630fc0013fc886fd6c877f3837","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:38.455Z","dir":">>","obj":{"id":10,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:38.475Z","dir":"<<","obj":{"id":10,"result":{}}}
+{"t":"2026-07-24T02:33:38.475Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a1ab-7341-b4c4-ad2de019bd44"},"emittedAtMs":1784860418475}}
+{"t":"2026-07-24T02:33:38.475Z","dir":"ERR","obj":"2026-07-24T02:33:38.475242Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:38.557Z","dir":"<<AUDIO-IN","obj":{"index":7,"decodedBytes":9600,"sha256":"5cce0a2f1b2d6adf59882cd700f45aac9316d222f03d6aae892462e271a48c28","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:38.557Z","dir":">>","obj":{"id":11,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:38.576Z","dir":"ERR","obj":"2026-07-24T02:33:38.575736Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:38.577Z","dir":"<<","obj":{"id":11,"result":{}}}
+{"t":"2026-07-24T02:33:38.577Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a20f-7502-86a5-d0267769b1d5"},"emittedAtMs":1784860418575}}
+{"t":"2026-07-24T02:33:38.638Z","dir":"<<AUDIO-IN","obj":{"index":8,"decodedBytes":9600,"sha256":"89aafe43f565c871d9e51485534f799f50521dad7c6690e491c8a7b4bb718220","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:38.642Z","dir":">>","obj":{"id":12,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:38.647Z","dir":"<<","obj":{"id":12,"result":{}}}
+{"t":"2026-07-24T02:33:38.648Z","dir":"ERR","obj":"2026-07-24T02:33:38.647834Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:38.648Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a257-7953-937e-49d69c8d8967"},"emittedAtMs":1784860418647}}
+{"t":"2026-07-24T02:33:38.713Z","dir":"<<AUDIO-IN","obj":{"index":9,"decodedBytes":9600,"sha256":"d5db742bea5e2a3708662c748d8058c79798cf87fda1e915af8b6911202c453c","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:38.713Z","dir":">>","obj":{"id":13,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:38.716Z","dir":"<<","obj":{"id":13,"result":{}}}
+{"t":"2026-07-24T02:33:38.717Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a29c-7d50-90f1-3e8fdd5b46db"},"emittedAtMs":1784860418716}}
+{"t":"2026-07-24T02:33:38.717Z","dir":"ERR","obj":"2026-07-24T02:33:38.716705Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:38.792Z","dir":"<<AUDIO-IN","obj":{"index":10,"decodedBytes":9600,"sha256":"3c339411edf9dd6b348b8bd5f474f79473919ddc23db8459b1f93056004f33e2","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:38.792Z","dir":">>","obj":{"id":14,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:38.861Z","dir":"ERR","obj":"2026-07-24T02:33:38.860973Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:38.861Z","dir":"<<","obj":{"id":14,"result":{}}}
+{"t":"2026-07-24T02:33:38.861Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a32c-7902-ab43-62bbbb08d8c3"},"emittedAtMs":1784860418861}}
+{"t":"2026-07-24T02:33:38.929Z","dir":"<<AUDIO-IN","obj":{"index":11,"decodedBytes":9600,"sha256":"af5d8df49ec52430e85482afd20e53cac95bc6dc37a5ab30841c0a71e4af4b9c","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:38.929Z","dir":">>","obj":{"id":15,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:38.958Z","dir":"ERR","obj":"2026-07-24T02:33:38.958439Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:38.959Z","dir":"<<","obj":{"id":15,"result":{}}}
+{"t":"2026-07-24T02:33:38.959Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a38e-7880-8f2b-f2a3eb6308cd"},"emittedAtMs":1784860418958}}
+{"t":"2026-07-24T02:33:39.020Z","dir":"<<AUDIO-IN","obj":{"index":12,"decodedBytes":9600,"sha256":"ecd4a28f20eb66c330ff87d2a6104176e5b89ec47359370c320b73af743f233a","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:39.021Z","dir":">>","obj":{"id":16,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.022Z","dir":"<<","obj":{"id":16,"result":{}}}
+{"t":"2026-07-24T02:33:39.023Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a3ce-7c73-898d-d2f564461e9f"},"emittedAtMs":1784860419023}}
+{"t":"2026-07-24T02:33:39.023Z","dir":"ERR","obj":"2026-07-24T02:33:39.022927Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.092Z","dir":"<<AUDIO-IN","obj":{"index":13,"decodedBytes":9600,"sha256":"2d792acd4af689102052dd886b8e2365ce92c628299af6c183dfb0874464b721","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:39.093Z","dir":">>","obj":{"id":17,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.104Z","dir":"<<","obj":{"id":17,"result":{}}}
+{"t":"2026-07-24T02:33:39.104Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a420-7483-8d9f-bc3697024de0"},"emittedAtMs":1784860419104}}
+{"t":"2026-07-24T02:33:39.105Z","dir":"ERR","obj":"2026-07-24T02:33:39.104298Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.172Z","dir":"<<AUDIO-IN","obj":{"index":14,"decodedBytes":9600,"sha256":"20b3b9e69c354513d191442461580c56ea5b9a044bddf3cefdb77343fcd8a034","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:39.172Z","dir":">>","obj":{"id":18,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.199Z","dir":"ERR","obj":"2026-07-24T02:33:39.199213Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.199Z","dir":"<<","obj":{"id":18,"result":{}}}
+{"t":"2026-07-24T02:33:39.199Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a47f-7a21-8414-a63f915ab6a0"},"emittedAtMs":1784860419199}}
+{"t":"2026-07-24T02:33:39.268Z","dir":"<<AUDIO-IN","obj":{"index":15,"decodedBytes":9600,"sha256":"08bd2319df581a7630bbf93359b49343929cb01a5dbc262658921b89ffef1a91","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:39.269Z","dir":">>","obj":{"id":19,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.296Z","dir":"<<","obj":{"id":19,"result":{}}}
+{"t":"2026-07-24T02:33:39.306Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a4df-71b3-a9ca-03b24e5fe898"},"emittedAtMs":1784860419306}}
+{"t":"2026-07-24T02:33:39.306Z","dir":"ERR","obj":"2026-07-24T02:33:39.306263Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.368Z","dir":"<<AUDIO-IN","obj":{"index":16,"decodedBytes":9600,"sha256":"525b28dc828ba61cc0bac8fac8f0f064f2d7af4d065378ad5d6cac33aa494578","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:39.368Z","dir":">>","obj":{"id":20,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.371Z","dir":"<<","obj":{"id":20,"result":{}}}
+{"t":"2026-07-24T02:33:39.371Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a52b-7822-a394-a1700edbdfb2"},"emittedAtMs":1784860419371}}
+{"t":"2026-07-24T02:33:39.371Z","dir":"ERR","obj":"2026-07-24T02:33:39.371133Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.432Z","dir":"<<AUDIO-IN","obj":{"index":17,"decodedBytes":9600,"sha256":"f201cd0069c9dd5eca6336d09ea9eb229c8bcc02c3776cfee5e61fa6dd7cfb32","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:39.433Z","dir":">>","obj":{"id":21,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.435Z","dir":"<<","obj":{"id":21,"result":{}}}
+{"t":"2026-07-24T02:33:39.435Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a56b-7d80-b205-ea404d781af2"},"emittedAtMs":1784860419435}}
+{"t":"2026-07-24T02:33:39.435Z","dir":"ERR","obj":"2026-07-24T02:33:39.435314Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.497Z","dir":"<<AUDIO-IN","obj":{"index":18,"decodedBytes":9600,"sha256":"7b16209ec7ed3274b3745c48dcd29f7c30c177fb36a9badd80f0d2c3a8ab0a8e","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:39.497Z","dir":">>","obj":{"id":22,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.499Z","dir":"<<","obj":{"id":22,"result":{}}}
+{"t":"2026-07-24T02:33:39.499Z","dir":"ERR","obj":"2026-07-24T02:33:39.499256Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.499Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a5aa-73e1-ae4a-b74d35585d7a"},"emittedAtMs":1784860419499}}
+{"t":"2026-07-24T02:33:39.561Z","dir":"<<AUDIO-IN","obj":{"index":19,"decodedBytes":9600,"sha256":"4bf51d8191cfdb2a9a1eb035aa460c10c9fac0afd4c35ac7ab992b0479dfaf00","isSilenceTail":false}}
+{"t":"2026-07-24T02:33:39.561Z","dir":">>","obj":{"id":23,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.563Z","dir":"<<","obj":{"id":23,"result":{}}}
+{"t":"2026-07-24T02:33:39.563Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a5eb-7ea2-b345-fc964012120b"},"emittedAtMs":1784860419563}}
+{"t":"2026-07-24T02:33:39.564Z","dir":"ERR","obj":"2026-07-24T02:33:39.563610Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.627Z","dir":"<<AUDIO-IN","obj":{"index":20,"decodedBytes":9600,"sha256":"e9a15a094703faaea3fdf53af7e04da21717008ab4bb228799712b2fced03c65","isSilenceTail":true}}
+{"t":"2026-07-24T02:33:39.628Z","dir":">>","obj":{"id":24,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.632Z","dir":"ERR","obj":"2026-07-24T02:33:39.632464Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.633Z","dir":"<<","obj":{"id":24,"result":{}}}
+{"t":"2026-07-24T02:33:39.633Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a630-7f61-8f82-16a5465bfade"},"emittedAtMs":1784860419632}}
+{"t":"2026-07-24T02:33:39.694Z","dir":"<<AUDIO-IN","obj":{"index":21,"decodedBytes":9600,"sha256":"e9a15a094703faaea3fdf53af7e04da21717008ab4bb228799712b2fced03c65","isSilenceTail":true}}
+{"t":"2026-07-24T02:33:39.694Z","dir":">>","obj":{"id":25,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.697Z","dir":"<<","obj":{"id":25,"result":{}}}
+{"t":"2026-07-24T02:33:39.698Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a671-7560-b4de-65966b6f495a"},"emittedAtMs":1784860419697}}
+{"t":"2026-07-24T02:33:39.698Z","dir":"ERR","obj":"2026-07-24T02:33:39.697639Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.765Z","dir":"<<AUDIO-IN","obj":{"index":22,"decodedBytes":9600,"sha256":"e9a15a094703faaea3fdf53af7e04da21717008ab4bb228799712b2fced03c65","isSilenceTail":true}}
+{"t":"2026-07-24T02:33:39.765Z","dir":">>","obj":{"id":26,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.776Z","dir":"<<","obj":{"id":26,"result":{}}}
+{"t":"2026-07-24T02:33:39.777Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a6c0-73f3-a813-711777dee24e"},"emittedAtMs":1784860419776}}
+{"t":"2026-07-24T02:33:39.777Z","dir":"ERR","obj":"2026-07-24T02:33:39.776812Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.860Z","dir":"<<AUDIO-IN","obj":{"index":23,"decodedBytes":9600,"sha256":"e9a15a094703faaea3fdf53af7e04da21717008ab4bb228799712b2fced03c65","isSilenceTail":true}}
+{"t":"2026-07-24T02:33:39.860Z","dir":">>","obj":{"id":27,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.875Z","dir":"<<","obj":{"id":27,"result":{}}}
+{"t":"2026-07-24T02:33:39.876Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a723-7463-806a-dc2e4b91929d"},"emittedAtMs":1784860419875}}
+{"t":"2026-07-24T02:33:39.876Z","dir":"ERR","obj":"2026-07-24T02:33:39.875536Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.935Z","dir":"<<AUDIO-IN","obj":{"index":24,"decodedBytes":9600,"sha256":"e9a15a094703faaea3fdf53af7e04da21717008ab4bb228799712b2fced03c65","isSilenceTail":true}}
+{"t":"2026-07-24T02:33:39.935Z","dir":">>","obj":{"id":28,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:39.938Z","dir":"ERR","obj":"2026-07-24T02:33:39.938084Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:39.938Z","dir":"<<","obj":{"id":28,"result":{}}}
+{"t":"2026-07-24T02:33:39.938Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a762-7c43-a7e2-5fca882bbb83"},"emittedAtMs":1784860419938}}
+{"t":"2026-07-24T02:33:40.000Z","dir":"<<AUDIO-IN","obj":{"index":25,"decodedBytes":9600,"sha256":"e9a15a094703faaea3fdf53af7e04da21717008ab4bb228799712b2fced03c65","isSilenceTail":true}}
+{"t":"2026-07-24T02:33:40.000Z","dir":">>","obj":{"id":29,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:40.002Z","dir":"ERR","obj":"2026-07-24T02:33:40.002596Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:40.002Z","dir":"<<","obj":{"id":29,"result":{}}}
+{"t":"2026-07-24T02:33:40.003Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a7a2-7ca0-abd3-b41bd5499c5b"},"emittedAtMs":1784860420002}}
+{"t":"2026-07-24T02:33:40.065Z","dir":"<<AUDIO-IN","obj":{"index":26,"decodedBytes":9600,"sha256":"e9a15a094703faaea3fdf53af7e04da21717008ab4bb228799712b2fced03c65","isSilenceTail":true}}
+{"t":"2026-07-24T02:33:40.066Z","dir":">>","obj":{"id":30,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:40.068Z","dir":"ERR","obj":"2026-07-24T02:33:40.068886Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:40.069Z","dir":"<<","obj":{"id":30,"result":{}}}
+{"t":"2026-07-24T02:33:40.069Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a7e4-7ee2-9f0c-2dcb380df8e7"},"emittedAtMs":1784860420068}}
+{"t":"2026-07-24T02:33:40.130Z","dir":"<<AUDIO-IN","obj":{"index":27,"decodedBytes":9600,"sha256":"e9a15a094703faaea3fdf53af7e04da21717008ab4bb228799712b2fced03c65","isSilenceTail":true}}
+{"t":"2026-07-24T02:33:40.130Z","dir":">>","obj":{"id":31,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:40.133Z","dir":"<<","obj":{"id":31,"result":{}}}
+{"t":"2026-07-24T02:33:40.133Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a825-7af2-a8b1-0ff97ffb856d"},"emittedAtMs":1784860420133}}
+{"t":"2026-07-24T02:33:40.133Z","dir":"ERR","obj":"2026-07-24T02:33:40.133327Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:40.195Z","dir":"<<AUDIO-IN","obj":{"index":28,"decodedBytes":9600,"sha256":"e9a15a094703faaea3fdf53af7e04da21717008ab4bb228799712b2fced03c65","isSilenceTail":true}}
+{"t":"2026-07-24T02:33:40.195Z","dir":">>","obj":{"id":32,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:40.197Z","dir":"<<","obj":{"id":32,"result":{}}}
+{"t":"2026-07-24T02:33:40.197Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a864-7041-b273-8931888afcae"},"emittedAtMs":1784860420197}}
+{"t":"2026-07-24T02:33:40.197Z","dir":"ERR","obj":"2026-07-24T02:33:40.197074Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:40.258Z","dir":"<<AUDIO-IN","obj":{"index":29,"decodedBytes":1344,"sha256":"d457efc0edd106bb2ab6c7b0630f50618de6e1d29c67937e15368e6d5c9df205","isSilenceTail":true}}
+{"t":"2026-07-24T02:33:40.259Z","dir":">>","obj":{"id":33,"method":"thread/realtime/appendAudio","params":"<redacted: audio chunk, see <<AUDIO-IN record>>"}}
+{"t":"2026-07-24T02:33:40.307Z","dir":"<<","obj":{"id":33,"result":{}}}
+{"t":"2026-07-24T02:33:40.308Z","dir":"<<","obj":{"method":"error","params":{"error":{"message":"conversation is not running","codexErrorInfo":"badRequest","additionalDetails":null},"willRetry":false,"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","turnId":"019f91f8-a8d3-7483-b916-9f77a915ada4"},"emittedAtMs":1784860420307}}
+{"t":"2026-07-24T02:33:40.308Z","dir":"ERR","obj":"2026-07-24T02:33:40.307640Z ERROR codex_core::realtime_conversation: failed to append realtime audio: conversation is not running"}
+{"t":"2026-07-24T02:33:40.373Z","dir":"STEP","obj":{"step":"audio-fed","chunksSent":30}}
+{"t":"2026-07-24T02:34:15.377Z","dir":"RESULT","obj":{"audioOutChunks":0,"audioOutBytes":0,"audioOutSha256":null,"approxSeconds":0}}
+{"t":"2026-07-24T02:34:15.378Z","dir":">>","obj":{"id":34,"method":"thread/realtime/stop","params":{"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64"}}}
+{"t":"2026-07-24T02:34:15.380Z","dir":"<<","obj":{"id":34,"result":{}}}
+{"t":"2026-07-24T02:34:15.380Z","dir":"<<","obj":{"method":"thread/realtime/closed","params":{"threadId":"019f91f8-7e11-7f60-a30c-ca4cf77a3d64","reason":"requested"},"emittedAtMs":1784860455380}}
+{"t":"2026-07-24T02:34:16.895Z","dir":"EXIT","obj":{"code":0,"sig":null}}

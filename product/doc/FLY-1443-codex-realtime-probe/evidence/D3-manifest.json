@@ -1,0 +1,48 @@
+{
+  "issue": "FLY-1443",
+  "startedAt": "2026-07-24T01:45:07.588Z",
+  "cwd": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-1443/cdcf74ba-0c8c-4e2d-a7a4-cc105b11f455/scratchpad",
+  "codexRequested": "/Users/xiaorongli/.local/bin/codex",
+  "codexResolved": "/Users/xiaorongli/.codex-infra-bot/packages/standalone/releases/0.145.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+  "codexArgv": [
+    "/Users/xiaorongli/.codex-infra-bot/packages/standalone/releases/0.145.0-aarch64-apple-darwin/bin/codex",
+    "--enable",
+    "realtime_conversation",
+    "app-server"
+  ],
+  "probeScriptSha256": "6f7599cc046f8de31307f1744755e87e69fc53a438c966cf5bdecc11c5a02fb4",
+  "params": {
+    "version": "v3",
+    "voice": "cove",
+    "outputModality": "audio",
+    "mode": "audio",
+    "transport": "websocket"
+  },
+  "gates": {
+    "enableFlag": true,
+    "experimentalApiCapability": true
+  },
+  "input": {
+    "file": "probe-in.wav",
+    "sha256": "e3944fb44092ffd3f27238475f196a2ae10b0426f5e117cb48a41c08b4f6081a",
+    "dataOffset": 4096,
+    "fmt": {
+      "channels": 1,
+      "sampleRate": 24000,
+      "bits": 16
+    },
+    "pcmBytes": 183744
+  },
+  "startRequestResponse": {
+    "result": {}
+  },
+  "startOutcome": {
+    "outcome": "error",
+    "waitedMs": 3625,
+    "message": "stream disconnected before completion: Voice session access denied."
+  },
+  "result": {
+    "aborted": true
+  }
+}
