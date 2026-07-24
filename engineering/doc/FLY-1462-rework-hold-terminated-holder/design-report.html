@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1462 设计方案 — 返工永久卡死修复</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, "PingFang SC", sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    max-width: 960px; margin: 0 auto; padding: 32px 20px 64px;
+    line-height: 1.65;
+  }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .subtitle { color: #86868b; font-size: 14px; margin-bottom: 28px; }
+  .subtitle code { font-family: 'SF Mono', monospace; font-size: 12px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 20px 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 20px;
+  }
+  .card.blue { border-left: 4px solid #007aff; }
+  .card.green { border-left: 4px solid #34c759; }
+  .card.red { border-left: 4px solid #ff3b30; }
+  .card.amber { border-left: 4px solid #ff9500; }
+  .card.gray { border-left: 4px solid #86868b; }
+  .section-title { font-size: 18px; font-weight: 600; color: #1a365d; margin: 32px 0 12px; }
+  .section-title .dot { margin-right: 6px; }
+  p + p { margin-top: 10px; }
+  .lead { font-size: 16px; }
+  code, .mono { font-family: 'SF Mono', Menlo, monospace; font-size: 13px; background: #f0f0f2; border-radius: 4px; padding: 1px 5px; }
+  /* flow diagram */
+  .flow { display: flex; flex-direction: column; gap: 0; margin: 14px 0; }
+  .flow-row { display: flex; align-items: stretch; gap: 10px; flex-wrap: wrap; }
+  .node {
+    border-radius: 10px; padding: 10px 14px; font-size: 13.5px;
+    background: #f0f4fa; border: 1px solid #d5dce8; flex: 1; min-width: 180px;
+  }
+  .node b { display: block; margin-bottom: 2px; }
+  .node.q { background: #fff8ec; border-color: #f0ddb8; }
+  .node.bad { background: #fdeeee; border-color: #f2c7c4; }
+  .node.good { background: #e8f5e9; border-color: #bfe3c4; }
+  .node.neutral { background: #f2f2f4; border-color: #ddddde; }
+  .arrow { text-align: center; color: #86868b; font-size: 13px; padding: 3px 0; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 5px; padding: 2px 8px; vertical-align: 2px; margin-left: 6px; }
+  .badge.new { background: #e8f5e9; color: #1e7b34; }
+  .badge.old { background: #fdeeee; color: #b3261e; }
+  .badge.keep { background: #eef3fb; color: #0b57d0; }
+  .badge.warn { background: #fff3e0; color: #b26a00; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 12px 0 4px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #ececee; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  tr.hl td { background: #f3faf4; }
+  .muted { color: #86868b; font-size: 13px; }
+  ul { margin: 8px 0 0 20px; }
+  li { margin-bottom: 6px; }
+  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 6px 14px; font-size: 14px; }
+  .kv .k { color: #86868b; }
+  @media (max-width: 640px) { .flow-row { flex-direction: column; } .kv { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>FLY-1462 设计方案 — 返工永久卡死修复</h1>
+<div class="subtitle">infra · 引擎 · 设计阶段交付 · 2026-07-24 · 触发事故: FLY-1150</div>
+
+<div class="card blue">
+  <p class="lead"><b>一句话:</b>系统里有一条安全检查太死板——一个<b>已经被明确终结</b>的旧工人,系统只因为查不到他的工位记录,就一直"不敢"派新人顶班,导致 FLY-1150 的返工永远没人干。这次修复让系统学会认"死亡证明":状态机里已经写明终结的,直接放行派新人;其余拿不准的情况,保守行为一律不变。</p>
+</div>
+
+<div class="section-title"><span class="dot" style="color:#ff3b30;">●</span> 出了什么事(FLY-1150 实锤)</div>
+<div class="card red">
+  <p>FLY-1150 的 QA 没通过,系统按流程要发起"返工"——把修复任务交回给原来的工人,或者派个新人接手。但这一步卡死了:</p>
+  <ul>
+    <li>原来那个工人的终端窗口早在停靠阶段被回收了,工位记录(<code>tmux_session</code>)是空的;</li>
+    <li>负责判断"原工人是死是活"的检查器,只会用工位记录去实地探活。<b>记录是空的,它就永远探不了,于是永远回答"拿不准,先等等"</b>;</li>
+    <li>这个"等等"没有任何出口——引擎每个周期重试一次,重试了 980 次,每次都是同一个答案;</li>
+    <li>最关键的:后来那个工人已经被<b>显式终结</b>(状态机写明 terminated),检查器仍然只看工位记录、不看死亡证明——终结了也照样卡。</li>
+  </ul>
+  <p>后果:返工任务永远排队,没有任何人在修 FLY-1150,PR #698 的 7000 行工作悬在半空,Annie 反复问"为什么没人在干活"。内部的手动解卡杆(<code>/loop-reentry</code>)又只有 Bridge 自己够得到,Lead 也帮不上。</p>
+</div>
+
+<div class="section-title"><span class="dot" style="color:#007aff;">●</span> 核心流程(改在哪一步)</div>
+<div class="card">
+  <div class="flow">
+    <div class="flow-row"><div class="node"><b>返工引擎问检查器</b>原来的工人还能叫醒吗?(每个周期问一次)</div></div>
+    <div class="arrow">↓</div>
+    <div class="flow-row"><div class="node q"><b>第一步:查在册登记</b>活着→叫醒 · 确认死→换人 · 拿不准→等 · <b>查无此人→往下走</b></div></div>
+    <div class="arrow">↓ 查无此人</div>
+    <div class="flow-row"><div class="node q"><b>第二步:有没有工位记录(tmux_session)?</b></div></div>
+    <div class="flow-row">
+      <div class="node neutral"><b>有记录 → 实地探活</b><span class="badge keep">原样不动</span>活着→叫醒 · 死了→换人 · 拿不准→等。<span class="muted">(FLY-1050 的教训:"被终结"的工人现场有时还没清完,必须实地看——这条守卫完整保留)</span></div>
+      <div class="node q"><b>没记录 → 这里是卡死点</b><br>旧逻辑:一律回答"等"<span class="badge old">永久死锁</span></div>
+    </div>
+    <div class="arrow">↓ 本次修复(只改"没记录"这一格)</div>
+    <div class="flow-row">
+      <div class="node good"><b>★ 新增:先看死亡证明</b><br>状态机已写明终结类终态(terminated / failed / rejected / blocked / deferred / shelved)→ <b>放行换人</b>,理由记为 <code>terminal_status_dead</code><span class="badge new">新行为</span></div>
+      <div class="node neutral"><b>其余情况照旧"等"</b><br>completed(停靠待复用是它的常态)、running 等 → 保守行为一字不改<span class="badge keep">不变</span></div>
+    </div>
+    <div class="arrow">↓ 换人放行之后</div>
+    <div class="flow-row"><div class="node good"><b>引擎自动派新工人</b>接手返工(implement attempt 2 真正开跑)——<b>部署后无需任何人手动解卡,FLY-1150 自愈</b></div></div>
+  </div>
+</div>
+
+<div class="section-title"><span class="dot" style="color:#af52de;">●</span> 判定规则一张表(数据模型)</div>
+<div class="card">
+  <table>
+    <tr><th>工人状态</th><th>工位记录</th><th>旧行为</th><th>新行为</th></tr>
+    <tr class="hl"><td>terminated(被终结)</td><td>空</td><td>等(永久死锁)</td><td><b>换人 ★</b></td></tr>
+    <tr class="hl"><td>failed / rejected / blocked / deferred / shelved</td><td>空</td><td>等(同样死锁)</td><td><b>换人 ★</b></td></tr>
+    <tr><td>completed(干完停靠)</td><td>空</td><td>等</td><td>等(刻意不变——停靠待复用是 completed 的正常形态,查不到记录不代表死)</td></tr>
+    <tr><td>running 等活跃状态</td><td>空</td><td>等</td><td>等(不变)</td></tr>
+    <tr><td>任意状态</td><td><b>有</b></td><td>实地探活定夺</td><td>实地探活定夺(一行不改)</td></tr>
+  </table>
+  <p class="muted">改动实体:单个文件 <code>phase-actor-reentry.ts</code>(53 行的检查器)+ 测试。两个使用方(返工引擎、三段式保活)自动同时受益,零改动。</p>
+</div>
+
+<div class="section-title"><span class="dot" style="color:#ff9500;">●</span> 关键取舍 & 否决掉的方案</div>
+<div class="card amber">
+  <ul>
+    <li><b>为什么"被终结=可换人"是安全的?</b>这些终态都是系统<b>亲手关掉</b>工人后才写下的(终结动作杀窗口、崩溃收割器确认死亡后才记 failed)。而且此时"等"并不是在等更多证据——工位记录是空的,探活永远不可能发生,"等"就是纯死锁,不是保护。换人后指挥权(TURN)归新人,旧壳即使残存也没有合法写入权,双保险。</li>
+    <li><b>completed 刻意不放行:</b>"干完停靠、等着被叫醒复用"正是 completed 的设计形态,查不到工位记录不能当它的死亡证据——这条保守面原样保留,现有测试断言一条不翻。</li>
+    <li><b>有工位记录时永远实地探活:</b>FLY-1050 发现过"状态机写了终结、现场其实还没清完"的情况——那种情况一定带着工位记录,继续由探活路径把守,本次一行不碰。</li>
+    <li><b>否决·方案 B</b>(把内部解卡杆开放给 Lead 手动用):治标不治本,每次撞病还得人肉发现+人肉解卡,还扩大了对引擎内部的操作面。</li>
+    <li><b>否决·方案 C</b>(终结动作顺手推进返工流程):把返工引擎的知识泄漏进终结动作,而且只治"先卡后终结"这一种时序;改检查器则天然覆盖全部时序。</li>
+    <li><b>否决·方案 D</b>(卡住 N 次后发告警):只缩短发现时间、不解决卡死;本修复落地后这类卡死不复存在,留作可选 follow-up。</li>
+    <li><b>判定理由用新名字 <code>terminal_status_dead</code></b>,不冒用旧名字 <code>persisted_target_dead</code>(旧名字的含义是"实地探过且证死",这条路根本没探——记录必须诚实,方便日后查账)。</li>
+    <li><b>不加开关(feature flag):</b>纯引擎逻辑修 bug,按 Annie 的规矩直接生效。</li>
+  </ul>
+</div>
+
+<div class="section-title"><span class="dot" style="color:#86868b;">●</span> 诚实边界 — 这个设计不做什么</div>
+<div class="card gray">
+  <ul>
+    <li>只修"已证死 + 无工位记录"的永久卡死这一类病;<b>真正拿不准</b>(探活结果模糊)的"等"是正确的保守行为,不碰。</li>
+    <li>不解决"卡住了没人知道"的可见性问题(告警,方案 D)——可另立小单。</li>
+    <li>不改上游"窗口被回收却没留下工位记录"的时序卫生——另属别的 issue。</li>
+    <li>生效需要 merge + Bridge 重启(随下一个批量重启窗口);重启后第一个引擎周期 FLY-1150 自动解卡,可在数据库里查验(卡住理由从 <code>persisted_target_missing</code> 变为 <code>terminal_status_dead</code>,并出现"替补已派出"事件)。</li>
+  </ul>
+</div>
+
+<div class="section-title"><span class="dot" style="color:#34c759;">●</span> 状态</div>
+<div class="card green">
+  <div class="kv">
+    <div class="k">设计文档</div><div>exploration / research / plan 三份齐,含逐行代码审计</div>
+    <div class="k">设计评审</div><div><span class="badge warn">待补</span>Codex design review 撞硬配额(唯一有权限的账号 usage limit 至 7/29 22:35);已上报 Tadashi 裁决 waive 或等待,不阻塞后续实现节点排队</div>
+    <div class="k">下一步</div><div>implement 节点:TDD(先扩测试表再改检查器)→ 全仓 lint / build / 测试 → PR → code review → QA → 随批量重启上线</div>
+  </div>
+</div>
+
+</body>
+</html>
