@@ -10,7 +10,7 @@ Issue: FLY-1466 (https://linear.app/geoforge3d/issue/FLY-1466/p1剥-flag-fly-144
 
 **非目标**:不新建分支/PR;不碰其他 flag;不修 1448 claim 卡死引擎 bug(FLY-1462 同类);不清 worktree untracked QA 残留;不自 merge、不自 ship。
 
-**行为语义边界(诚实版)**:剥 flag 本身不改 ON-path 语义;但合流解冲突必须在「普通 wake × 终态目标」上做一次裁决(FLY-1374 与 FLY-1448 正面冲突,见 research §3 矩阵)—— 默认采用矩阵(相对 main 零变化;相对 1448 分支原实现,普通终态 wake 从告警改为静默 dispose),founder receipt/alert 契约完整保留。不得宣称「合流零语义变化」。
+**行为语义边界(诚实版)**:剥 flag 本身不改 ON-path 语义;但合流解冲突必须在「wake × 终态目标」上做一次裁决(FLY-1374 与 FLY-1448 正面冲突,见 research §3 矩阵)。默认矩阵的净效果:**普通 terminal wake 与 main 一致**(静默 dispose;相对 1448 分支原实现从告警改为静默);**founder terminal wake 保留 FLY-1448 = 相对 main 有意新增** message-scoped alert(founder 决定不许静默丢,这正是 1448 的本意)。不得宣称「合流零语义变化」——两个方向各有一处有意差异,都要写明。
 
 ## 1. Preflight(implement 第一步)
 
@@ -18,13 +18,15 @@ Issue: FLY-1466 (https://linear.app/geoforge3d/issue/FLY-1466/p1剥-flag-fly-144
 cd ~/Dev/flywheel-FLY-1448
 git status                                  # 期望:干净(untracked qa-*.{mjs,md} 残留可在,不入 commit)
 git fetch origin main flywheel-FLY-1448     # 两个 ref 都刷新,不能只刷 main
-git rev-parse HEAD origin/flywheel-FLY-1448 # 期望两者相等(本地 == 远端)
-gh pr view 696 --json headRefName,state,headRefOid
-# 期望:headRefName=flywheel-FLY-1448 / OPEN / headRefOid == 本地 HEAD
-git log --oneline b863b4d8..HEAD            # 期望:仅 FLY-1466 design docs + progress commit,无未知增量
+remote_sha=$(git rev-parse origin/flywheel-FLY-1448)
+pr_head=$(gh pr view 696 --json headRefOid --jq .headRefOid)
+[ "$remote_sha" = "$pr_head" ]              # ① 远端 tracking ref == PR headRefOid
+git merge-base --is-ancestor "$remote_sha" HEAD   # ② 远端是本地 HEAD 的 ancestor
+git log --oneline "$remote_sha"..HEAD       # ③ 增量白名单:只允许已审阅的 FLY-1466 docs/progress commits
+gh pr view 696 --json headRefName,state --jq '.headRefName + " " + .state'  # flywheel-FLY-1448 OPEN
 ```
 
-任何一项不符(远端被他人推进 / 出现未审阅 commit)→ **停,重读增量**再继续,不盲做。
+**不要求未 push 的本地设计 commit 与远端相等**(design 节点收尾会把 docs push 上去,届时 `remote_sha == HEAD` 也合法)。只有两种情况停:远端 SHA 偏离预期(被他人推进)/ `remote_sha..HEAD` 出现未知 commit → **停,重读增量**再继续,不盲做。
 
 ## 2. Commit A — 合流 `origin/main`(普通 merge,不 rebase、不 force-push)
 
@@ -36,12 +38,13 @@ git merge origin/main      # 预期冲突恰好 3 个文件(research §3)
 
 1. `runner-receipt-patrol.ts` —
    - **普通 wake × 终态目标** → main 侧:`disposeRunnerPhaseWakeForTerminal` 静默处置,不告警。
-   - **founder-origin wake × 终态目标** → 我们侧:`completeTerminal`(durable terminal episode + alert + notify)。判定用 `envelopeMetadata(wake).origin === "founder"`(1448 live 路径既有手法),须在终态分支**先于**处置判 origin。
+   - **founder-origin wake × 终态目标** → 我们侧:`completeTerminal` = **事务性完成 wake + durable message-scoped `receipt_alert_outbox` 行 + notify**(`completeRunnerPhaseWakeTerminal` 对 founder origin 取 `identityKind="founder_message"`、message-scoped outbox ID,并**刻意不写** `runner_wake_failure_episode` 的 terminal episode 行 —— 保留该既有断言)。判定用 `envelopeMetadata(wake).origin === "founder"`(founder deliverer 把 metadata 冻进 envelope,CommDB terminal completion 同字段判 identity),须在终态分支**先于**处置判 origin。
    - 普通 failure → main 的 episode-start fingerprint;founder failure → 1448 的 `founder_wake_undeliverable` / `founder_message` identity(message-scoped)。
    - park 探针(我们侧)照保。
-2. `plugin.ts` — 以 main 的 event-driven session truth 重构(dual reconcilers / holder rehydration)为基座,把 1448 的 settlement projector / park outbox / decision convergence 接线重新挂到重构后的 seam;告警指纹按矩阵(普通=episode-start,founder=message hash)。**此步 flag 读点代码一律原样保留**(剥 flag 是 Commit B 的事,变量隔离)。
-3. `runner-receipt-patrol.test.ts` — 1374 普通终态用例原样保留;1448 终态用例**改造为 founder-origin wake 触发**;两侧其余用例不变。补一条「普通 wake × 终态 → disposed 且不 notify;founder wake × 终态 → completeTerminal + notify」的对照用例,并覆盖重启/重复投递(durable claim 幂等)。
-4. 矩阵落地后盘点 `terminalLifecycleIdFor` / `completeTerminal` / terminal-episode DB API 存活调用方:founder 路径仍用 → 保留;若有变死的**列出来问 Lead,不擅删**。
+2. `plugin.ts` — 以 main 的 event-driven session truth 重构(dual reconcilers / holder rehydration)为基座,把 1448 的 settlement projector / park outbox / decision convergence 接线重新挂到重构后的 seam。**告警指纹的普通/founder 条件裁决必须有直接可失败的测试锚**:把指纹选择提取成可单测 helper(main 的 callback 现在无条件 `wakeFailureEpisodeFingerprint(executionId, firstDetectedAtMs)`,1448 现在无显式 fingerprint 时无条件 hash `wake.message_id` —— 合流必须条件化,而现有 patrol 测试只断言 reason,发现不了「全 episode-start」或「全 message hash」的错误合成)。备选:让 patrol 对两类路径都传入权威 fingerprint,plugin 不再自行猜测。**此步 flag 读点代码一律原样保留**(剥 flag 是 Commit B 的事,变量隔离)。
+3. `runner-receipt-patrol.test.ts` — 1374 普通终态用例原样保留;1448 终态用例**改造为 founder-origin wake 触发**;两侧其余用例不变。补:①「普通 wake × 终态 → disposed 且不 notify;founder wake × 终态 → completeTerminal + notify」对照用例;② founder completion **不创建 terminal episode 行**的既有断言保留;③ 事务性 CAS / outbox 幂等 + 重启后重复投递不重复告警。
+4. **指纹 helper 表驱动测试**(新文件或就近):同一普通 episode 的多条 wake 共用 episode-start fingerprint;不同 founder message 得到不同 message-scoped fingerprint;terminal founder 显式 fingerprint 原样透传。该文件加入下方 vitest 显式清单与 §8 验收。
+5. 矩阵落地后盘点 `terminalLifecycleIdFor` / `completeTerminal` / terminal-episode DB API 存活调用方:founder 路径仍用 → 保留;若有变死的**列出来问 Lead,不擅删**。
 
 验证(合流正确性的客观锚 = 矩阵化后的两侧断言同时绿。**包名必须用真实名,`--filter teamlead` 匹配不到且 exit 0 = 假绿**):
 
@@ -53,7 +56,8 @@ pnpm --filter flywheel-teamlead exec vitest run \
   src/bridge/__tests__/terminal-receipt-settlement.test.ts \
   src/bridge/__tests__/workflow-engine-park-projector.test.ts \
   src/bridge/__tests__/founder-reply-receipts.test.ts \
-  src/bridge/__tests__/founder-decision-convergence.test.ts
+  src/bridge/__tests__/founder-decision-convergence.test.ts \
+  src/bridge/__tests__/wake-failure-fingerprint.test.ts   # §2.4 新增指纹 helper 表驱动测试(实际路径以实现为准,必须列进本清单)
 pnpm --filter flywheel-comm exec vitest run \
   src/__tests__/terminal-wake-episode.test.ts \
   src/__tests__/terminal-receipt-settlement.test.ts
@@ -136,7 +140,7 @@ gh pr view 696 --json headRefName,state,headRefOid,mergeable,mergeStateStatus
 - [ ] `RETIRED_FLAGS` 含 3 条 `retiredBy: "FLY-1466"`,且 flag-truth 新增正向断言(§3.3)全绿。
 - [ ] 删 OFF-path 后:`StateStore.terminal-settlement` / bridge `terminal-receipt-settlement` 套件绿,且无任何测试再设这 3 个 env。
 - [ ] `pnpm lint` + `pnpm -r build` + `pnpm test:packages:run` 绿(flake 需 main 对照证伪记录;pnpm filter 一律用真实包名)。
-- [ ] 合流矩阵锚全绿:普通 wake × 终态 → disposed 且不 notify;founder wake × 终态 → completeTerminal + notify;1374 episode fingerprint 与 1448 park/settlement/convergence 断言同时绿;flywheel-comm terminal-wake-episode / terminal-receipt-settlement 绿。
+- [ ] 合流矩阵锚全绿:普通 wake × 终态 → disposed 且不 notify;founder wake × 终态 → completeTerminal(message-scoped outbox + notify,**不写 terminal episode 行**);指纹 helper 表驱动测试绿(普通共用 episode-start / founder per-message / 显式透传);1374 episode fingerprint 与 1448 park/settlement/convergence 断言同时绿;flywheel-comm terminal-wake-episode / terminal-receipt-settlement 绿。
 - [ ] codex code review APPROVED @ `final_sha`;QA verdict @ `final_sha`(head 再变则重验)。
 
 ## 9. 风险与回退

@@ -89,7 +89,7 @@ drift 三向核:①正向 — 读点全删,src 无残留 gate 读;②反向 — 
 
 | 文件 | main 侧(FLY-1374) | 我们侧(FLY-1448) |
 |------|--------------------|-------------------|
-| `runner-receipt-patrol.ts` | +31/-x:`wakeFailureEpisodeFingerprint()`(episode 稳定指纹);`processOne` 终态目标改为 `disposeRunnerPhaseWakeForTerminal()` 静默处置、**不告警**(测试断言 `notifyWakeFailure` 不被调用,结果 `disposed:terminal_target`);alert `firstDetectedAtMs` 改读 episode start | +107:终态目标走 `completeTerminal()` = `completeRunnerPhaseWakeTerminal`(durable terminal episode)+ 告警 + `notifyWakeFailure(terminal_before_started, episodeFingerprint, identityKind)`;live 路径 founder-origin 走 `founder_wake_undeliverable` 升级(普通 traffic 才静默 dispose);park 探针接进 wake admission |
+| `runner-receipt-patrol.ts` | +31/-x:`wakeFailureEpisodeFingerprint()`(episode 稳定指纹);`processOne` 终态目标改为 `disposeRunnerPhaseWakeForTerminal()` 静默处置、**不告警**(测试断言 `notifyWakeFailure` 不被调用,结果 `disposed:terminal_target`);alert `firstDetectedAtMs` 改读 episode start | +107:终态目标走 `completeTerminal()` = `completeRunnerPhaseWakeTerminal` **事务性完成 wake + durable message-scoped `receipt_alert_outbox` 行** + `notifyWakeFailure(terminal_before_started, ...)`(founder origin 取 `identityKind="founder_message"` / message-scoped outbox ID,**刻意不写** `runner_wake_failure_episode` 的 terminal episode 行);live 路径 founder-origin 走 `founder_wake_undeliverable` 升级(普通 traffic 才静默 dispose);park 探针接进 wake admission |
 | `plugin.ts` | ±235:event-driven session truth 重构(dual reconcilers / holder rehydration);告警指纹用 episode-start fingerprint | +243:settlement projector / park outbox / decision convergence 接线;founder 路径未显式传 fingerprint 时用 message hash(per-founder-message 告警作用域) |
 | `runner-receipt-patrol.test.ts` | +66:episode fingerprint / terminal disposal 用例 | +100:terminal completeTerminal / founder 升级 / park 探针用例 |
 
@@ -100,13 +100,13 @@ drift 三向核:①正向 — 读点全删,src 无残留 gate 读;②反向 — 
 | 场景 | 采用 | 行为 |
 |------|------|------|
 | 普通 wake,目标已终态 | FLY-1374 | `disposeRunnerPhaseWakeForTerminal` 静默处置,不告警 |
-| **founder-origin** wake,目标已终态 | FLY-1448 | `completeTerminal`:durable terminal episode + alert + notify(message-scoped) |
+| **founder-origin** wake,目标已终态 | FLY-1448 | `completeTerminal`:事务性完成 wake + durable **message-scoped `receipt_alert_outbox`** + notify(不写 terminal episode 行) |
 | 普通 wake failure(live) | FLY-1374 | episode-start fingerprint 告警 |
 | **founder-origin** wake failure | FLY-1448 | `founder_wake_undeliverable` 升级 / `founder_message` identity(message-scoped fingerprint) |
 
-诚实边界:此矩阵**相对 main 零行为变化**;相对 1448 分支原实现,「普通 wake × 终态目标」从 completeTerminal+告警 改为 1374 的静默 dispose —— 这是把 main 已 ship 的契约延展到普通场景,属于经裁决的行为选择,不能再宣称「合流零语义变化」。founder receipt/alert 契约(1448 的核心)完整保留。
+诚实边界(两个方向各一处有意差异,都要写明):**普通 terminal wake 行为与 main 一致**(相对 1448 分支原实现,从 completeTerminal+告警改为静默 dispose —— 把 main 已 ship 的契约用于普通场景);**founder terminal wake 保留 FLY-1448、相对 main 有意新增** message-scoped alert(founder 决定不许静默丢,1448 的本意)。不能宣称「合流零语义变化」或「相对 main 零变化」。founder receipt/alert 契约(1448 的核心)完整保留。
 
-测试锚:1374 的普通终态用例原样保留;1448 的终态用例**改造用 founder-origin wake 触发**;两侧其余断言不变,合流后同时绿。矩阵落地后须盘点 `terminalLifecycleIdFor` / `completeTerminal` / terminal-episode DB API 的存活调用方(founder 路径仍用 → 保留;若有变死的列出来问 Lead,不擅删)。
+测试锚:1374 的普通终态用例原样保留;1448 的终态用例**改造用 founder-origin wake 触发**,并保留「founder completion 不创建 terminal episode 行」的既有断言;覆盖事务性 CAS / outbox 幂等 + 重启后重复投递不重复告警;plugin.ts 的指纹条件裁决须有直接可失败的测试(提取 helper 做表驱动:普通 episode 共用 episode-start 指纹 / 不同 founder message 各自 message-scoped / 显式指纹透传 —— 现有 patrol 测试只断言 reason,发现不了「全 episode-start」或「全 message hash」的错误合成)。两侧其余断言不变,合流后同时绿。矩阵落地后须盘点 `terminalLifecycleIdFor` / `completeTerminal` / terminal-episode DB API 的存活调用方(founder 路径仍用 → 保留;若有变死的列出来问 Lead,不擅删)。
 
 顺序结论(与 exploration §4.1 一致):**先合流、后剥 flag**,理由:
 1. 合流步保持 flag 代码原样(OFF-path 测试此步不动;1448 终态用例按上表矩阵改造为 founder-origin 触发)→ 合流正确性单独验证,变量隔离;
