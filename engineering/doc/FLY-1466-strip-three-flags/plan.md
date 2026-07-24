@@ -154,7 +154,9 @@ gh pr view 696 --json headRefName,state,headRefOid,mergeable,mergeStateStatus
 | teamlead 套件 flake 误判回归 | main HEAD 同套件对照证伪并留记录 |
 | push 后 head 变化使旧 QA/review 失效 | 本来就要求 @ 新 head 重跑 codex review + QA(issue 流程内置) |
 
-## 10. Scope / 裁决确认状态(均非阻塞 ask,design 按默认推进)
+## 10. Scope / 裁决确认状态 — **两项均已获 Tadashi 批准**(2026-07-24)
 
-1. 「合流纳入 1466」— ask `ed611965`(2026-07-24)。若 Lead 要求拆单:§2 独立成单,§3-6 不变。
-2. 「terminal-wake 矩阵裁决」(research §3)— ask 已发 Tadashi。默认按矩阵执行;若改判,按 §9 风险行处理。
+1. 「合流纳入 1466」— ask `ed611965` **已批,不拆单**:先 merge origin/main 解 3 文件冲突(Commit A,全套件绿)再剥 flag(Commit B);冲突解决属实质变更,codex incremental re-review 照跑不跳。
+2. 「terminal-wake 矩阵」(research §3)— ask `9918183a` **已批,按矩阵执行**:founder-origin × 终态 = completeTerminal + durable + 告警(1448 立单本意 = founder 信号绝不静默丢);普通 wake × 终态 = 1374 静默 dispose(当晚 wake_failed 告警洪水正是普通 wake 戳终态 session 造成,静默语义正确)。
+
+Codex design review:3 轮 APPROVED(thread `019f92b4-0b4b-7fb1-a923-be48b4d280f3`);verdict 已落 `.flywheel/runs/62170553-7e5e-4eae-9b88-5b25c5bf01d4/codex/design-review.json`,`await-codex-gate design` exit 0。
