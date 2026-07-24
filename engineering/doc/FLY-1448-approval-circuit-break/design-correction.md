@@ -59,6 +59,13 @@ Issue: FLY-1448 (https://linear.app/geoforge3d/issue/FLY-1448/p1批准断路-fou
 
 (存量 stuck/liveness 检测器族(FLY-92/FLY-1048/FLY-1234)的全面改造不在本单 scope,此原则作为 fleet 方向记录,由检测族 own。)
 
+## 附加:implement 阶段现场输入(Lead 答复 6a91aea1,2026-07-24)
+
+给 implement 后继节点的两条一线情报(非设计变更,执行时注意):
+
+1. **codex 全局 config 陷阱**:今晚 Codex CLI 0.145 曾自写 `shell_environment_policy` 进全局 config,导致 implement 节点 boot-fail(已修)。若 implement 后继撞 config 类错误,**先查这个**。
+2. **boot-fail attempt 也要被必达/清算兜底覆盖**:失败节点无自动补派是活案例(FLY-1150 正卡着)。实现 Chunk C/D/E 时确认:boot-fail 的 attempt session 同样进入 terminal lifecycle 铸造与终态清算(D1/E2),其名下的 wake/receipt debt 不得 strand;C 的收敛账本对「决定已落盘但目标 attempt boot-fail」的形态照常 fail-loud。节点级自动补派本身归 FLY-1150,不并入本单。
+
 ## 对已批设计的影响边界
 
 - 不回滚 R1-R9 已批的其余部分;本 correction 只做**收窄**(删一个告警级别、改一行验收形态),不新增机制;
