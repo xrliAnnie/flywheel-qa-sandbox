@@ -1,13 +1,13 @@
 ---
 issue: FLY-1462
 phase: design
-phaseCursor: 1/4
-updated: 2026-07-24T16:41:52.618Z
-nextStep: research.md(代码审计事实)
+phaseCursor: 2/4
+updated: 2026-07-24T16:43:10.537Z
+nextStep: plan.md(实施计划)
 chunks: []
 pointers: {}
 ---
 
 # FLY-1462 progress
-**phase**: design (1/4)
-**next**: research.md(代码审计事实)
+**phase**: design (2/4)
+**next**: plan.md(实施计划)
