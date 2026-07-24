@@ -566,8 +566,7 @@ async function processFounderMessage(
 			leadId: ctx.leadId,
 			executionId: gate.executionId,
 			disposedAtMs: nowDate.getTime(),
-			deadlineAtMs:
-				nowDate.getTime() + DEFAULT_FOUNDER_DECISION_DEADLINE_MS,
+			deadlineAtMs: nowDate.getTime() + DEFAULT_FOUNDER_DECISION_DEADLINE_MS,
 		});
 	}
 	// Founder ingress has no classifier. The chase flag

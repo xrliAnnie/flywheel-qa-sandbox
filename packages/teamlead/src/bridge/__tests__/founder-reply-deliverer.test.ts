@@ -92,9 +92,10 @@ describe("FLY-1392 v2 founder ingress", () => {
 			type: 19,
 		};
 		const handoff = vi.fn(async () => true);
-		const ensureDecisionConvergence = vi.fn<
-			NonNullable<FounderReplyDeliverDeps["ensureDecisionConvergence"]>
-		>();
+		const ensureDecisionConvergence =
+			vi.fn<
+				NonNullable<FounderReplyDeliverDeps["ensureDecisionConvergence"]>
+			>();
 		const db = new CommDB(dbPath);
 		db.registerSession(
 			"exec-ship",
