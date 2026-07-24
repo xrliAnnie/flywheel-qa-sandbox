@@ -87,16 +87,29 @@ drift 三向核:①正向 — 读点全删,src 无残留 gate 读;②反向 — 
 
 `git merge-tree --write-tree origin/main HEAD` 实测:**3 个冲突文件**,其余(含 `registry.ts`、`flywheel-comm/db.ts`、`gate-poller.ts`、`CLAUDE.md`)auto-merge 干净。main 侧 6 commit 中唯一撞文件的是 `dc754746`(FLY-1374 #697)。
 
-| 文件 | main 侧(FLY-1374) | 我们侧(FLY-1448) | 语义关系 |
-|------|--------------------|-------------------|----------|
-| `runner-receipt-patrol.ts` | +31/-x:`wakeFailureEpisodeFingerprint()`(episode 稳定指纹);`processOne` 终态目标从 escalate 改为 `disposeRunnerPhaseWakeForTerminal`;alert 的 `firstDetectedAtMs` 改读 episode start | +107:park 探针(`isEngineParked` 等)接进 wake admission | **互补**,两侧都保 |
-| `plugin.ts` | ±235:event-driven session truth 重构(dual reconcilers / holder rehydration 区域) | +243:settlement projector / park outbox / decision convergence 接线 | **互补**,以 main 重构后的结构为基座,把 1448 的接线重新挂到对应 seam |
-| `runner-receipt-patrol.test.ts` | +66:episode fingerprint / terminal disposal 用例 | +100:park 探针用例 | 两侧用例都保留 |
+| 文件 | main 侧(FLY-1374) | 我们侧(FLY-1448) |
+|------|--------------------|-------------------|
+| `runner-receipt-patrol.ts` | +31/-x:`wakeFailureEpisodeFingerprint()`(episode 稳定指纹);`processOne` 终态目标改为 `disposeRunnerPhaseWakeForTerminal()` 静默处置、**不告警**(测试断言 `notifyWakeFailure` 不被调用,结果 `disposed:terminal_target`);alert `firstDetectedAtMs` 改读 episode start | +107:终态目标走 `completeTerminal()` = `completeRunnerPhaseWakeTerminal`(durable terminal episode)+ 告警 + `notifyWakeFailure(terminal_before_started, episodeFingerprint, identityKind)`;live 路径 founder-origin 走 `founder_wake_undeliverable` 升级(普通 traffic 才静默 dispose);park 探针接进 wake admission |
+| `plugin.ts` | ±235:event-driven session truth 重构(dual reconcilers / holder rehydration);告警指纹用 episode-start fingerprint | +243:settlement projector / park outbox / decision convergence 接线;founder 路径未显式传 fingerprint 时用 message hash(per-founder-message 告警作用域) |
+| `runner-receipt-patrol.test.ts` | +66:episode fingerprint / terminal disposal 用例 | +100:terminal completeTerminal / founder 升级 / park 探针用例 |
 
-解法原则:**以 main(FLY-1374)的新结构为基座,重挂 FLY-1448 的新增**;两侧各自的测试用例全部保留并全部通过 —— 这就是合流正确性的客观锚(1374 的断言 + 1448 的断言同时绿)。冲突解错任何一侧,对应侧测试会红。
+**⚠️ 两侧在「wake 目标已终态」上是正面冲突,不是互补**(Codex design review R1 实证,复核属实):同一输入(terminal target 的 wake),main 要求 dispose 静默、1448 要求 completeTerminal + 告警,两侧测试断言互斥,不可能「都保留并同时绿」。
+
+解冲突采用**逐场景矩阵**(默认裁决,已呈 Tadashi 确认;各取两个 PR 的本意 —— 1374 = 普通 wake 卫生,1448 = founder 决定不许静默丢):
+
+| 场景 | 采用 | 行为 |
+|------|------|------|
+| 普通 wake,目标已终态 | FLY-1374 | `disposeRunnerPhaseWakeForTerminal` 静默处置,不告警 |
+| **founder-origin** wake,目标已终态 | FLY-1448 | `completeTerminal`:durable terminal episode + alert + notify(message-scoped) |
+| 普通 wake failure(live) | FLY-1374 | episode-start fingerprint 告警 |
+| **founder-origin** wake failure | FLY-1448 | `founder_wake_undeliverable` 升级 / `founder_message` identity(message-scoped fingerprint) |
+
+诚实边界:此矩阵**相对 main 零行为变化**;相对 1448 分支原实现,「普通 wake × 终态目标」从 completeTerminal+告警 改为 1374 的静默 dispose —— 这是把 main 已 ship 的契约延展到普通场景,属于经裁决的行为选择,不能再宣称「合流零语义变化」。founder receipt/alert 契约(1448 的核心)完整保留。
+
+测试锚:1374 的普通终态用例原样保留;1448 的终态用例**改造用 founder-origin wake 触发**;两侧其余断言不变,合流后同时绿。矩阵落地后须盘点 `terminalLifecycleIdFor` / `completeTerminal` / terminal-episode DB API 的存活调用方(founder 路径仍用 → 保留;若有变死的列出来问 Lead,不擅删)。
 
 顺序结论(与 exploration §4.1 一致):**先合流、后剥 flag**,理由:
-1. 合流步保持 flag 代码原样,两侧测试(含 OFF-path)原样跑绿 → 合流正确性单独验证,变量隔离;
+1. 合流步保持 flag 代码原样(OFF-path 测试此步不动;1448 终态用例按上表矩阵改造为 founder-origin 触发)→ 合流正确性单独验证,变量隔离;
 2. 剥 flag 步在合流后的代码上做,diff 干净、单一语义(去可配置性),codex review 好审;
 3. 若先剥再合流,plugin.ts 冲突照样存在(冲突源是 1374 重构区域,与 flag 行无关),反而把两种变更搅进同一次冲突解决。
 
@@ -116,7 +129,7 @@ merge 用普通 merge commit(不 rebase):不改历史 → 不需要 force-push,`
 | lint 全仓 | `pnpm lint` | biome |
 | build 全仓 | `pnpm -r build` | topo 序 |
 | 包套件 | `pnpm test:packages:run` | teamlead 全套件有已知 pre-existing machine-state flake(~12 文件);红了先用 main HEAD 对照证伪,别当回归(memory: `teamlead_full_suite_preexisting_machine_state_flakes`) |
-| 重点套件 | config(drift/registry/truth/resolve)+ teamlead(StateStore.terminal-settlement / terminal-receipt-settlement / workflow-engine-park-projector / runner-receipt-patrol / founder-reply-receipts / founder-decision-convergence) | 冲突文件与剥点全覆盖 |
+| 重点套件 | config(drift/registry/truth/resolve)+ teamlead(StateStore.terminal-settlement / terminal-receipt-settlement / workflow-engine-park-projector / runner-receipt-patrol / founder-reply-receipts / founder-decision-convergence)+ **flywheel-comm**(terminal-wake-episode / terminal-receipt-settlement) | 冲突文件、剥点与 1374 terminal episode 契约全覆盖。**包名注意**:pnpm filter 必须用真实包名 `flywheel-teamlead` / `flywheel-config` / `flywheel-comm`(`--filter teamlead` 匹配不到且 exit 0 = 假绿) |
 | mergeable | `gh pr view 696 --json mergeable` | 合流 push 后应变 `MERGEABLE` |
 
 ## 6. 下游(不归 implement 步,列出供 Lead/节点编排)
