@@ -2,12 +2,12 @@
 issue: FLY-1462
 phase: design
 phaseCursor: 4/4
-updated: 2026-07-24T16:50:04.104Z
-nextStep: design-review gate 裁决(codex 配额阻塞,已问 Tadashi c9c55457)→ complete
+updated: 2026-07-24T17:18:50.990Z
+nextStep: design 节点完成(v2 已评审入库);后继 implement 节点按 plan v2 施工
 chunks: []
 pointers: {}
 ---
 
 # FLY-1462 progress
 **phase**: design (4/4)
-**next**: design-review gate 裁决(codex 配额阻塞,已问 Tadashi c9c55457)→ complete
+**next**: design 节点完成(v2 已评审入库);后继 implement 节点按 plan v2 施工
