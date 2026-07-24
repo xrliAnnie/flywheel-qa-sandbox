@@ -3,7 +3,7 @@
 Issue: FLY-1448 (https://linear.app/geoforge3d/issue/FLY-1448/p1批准断路-founder-批准被静默丢弃-session-卡-running-无-durable-park-wake-拒投)
 日期: 2026-07-23
 基于: research.md
-修订: R5(R4 唯一 HIGH 采纳:存量 terminal session 的 `terminal_lifecycle_id` 幂等 backfill —— migration 单事务铸稳定 id + CAS `ensureTerminalLifecycleId` 兜底 + 同一投影路径 + `completeRunnerPhaseWakeTerminal` 签名显式携带 fence + `OPERATIONAL_TERMINAL_STATUSES` 单一中立常量模块 + migration fixture 测试)← R4(R3 一 HIGH + 二 MEDIUM 全采纳:D1 episode 增 `opened_terminal_lifecycle_id` 持久身份 —— StateStore terminal-entry epoch 单调铸造、terminal→terminal 改写不推进、观测/completion API 携带 fence、身份缺失或不一致绝不并入旧 episode,补停机期 terminal→live→terminal 测试;A1 矩阵补「processed(预期 typed evidence)→ verify 幂等推进」与「processed(冲突 evidence)→ fail-closed pin+告警」两行及四种 typed evidence 崩溃重放测试;B3 定为无条件安全行为、删 `=0` 声明)← R3(R2 四 HIGH + 一 MEDIUM 全采纳:A1 root 处置改为 deliverer 权威重读 + CAS terminalization,不再按业务 outcome 盲推 root 状态,isDeadLettered 快路径推进游标前必须幂等修复 root;B2 outbox 改 append-only lifecycle 事件(park_opened/park_cleared 各占新 rowid)+ generation CAS 投影;C1 definite 决定的 classification 在不可逆写之前 durable 落盘,失败即 retry+pin;D1 terminal episode 生命周期按 category 分治(terminal 态存续期恰一 episode,dispose 不算恢复);D2/D3 terminal 处置事务后置条件 = wake terminal + alert identity + alert-pending outbox 三者同事务原子,founder-origin 改 message-scoped alert identity 不共享 episode)← R2(Codex R1 五 HIGH + 一 MEDIUM 全采纳:A 改为 root-first + 崩溃安全处置状态机;C 按 question 规范化、intent 前置于不可逆写、两级告警语义;B2 弃用 runner_declared_states 复用,改独立 engine-park 证据 + outbox/projector + activation/generation 绑定、只授权 wake pointer;D 指纹改持久 episode 代际、terminal 处置定义 CommDB 原子 transition、terminal authority 显式枚举;A 补完整 reply-to-card 授权谓词与 negative tests)
+修订: R9(Codex R8 三 HIGH + 一 MEDIUM 全采纳:E2 通用件 root 状态改字段级合同(`delivered_at` 非终态 —— processed/disposed 双空即 open obligation 必清,alert outbox 的 delivered 只管 alert 行不管 root);settlement intent 增 `authority_kind` 三分治(session_terminal / issue_done / pr_merged 各配互斥 guard,terminal fence 不叠加到 issue authority);session_terminal 路径线性化点改 durable `claimTerminalSettlementIntent` CAS(与 lifecycle transition 串行,transition 先赢则 fenced、claim 先赢则跨库幂等完成,裸 re-read 降级为防御纵深);§7 ON 语义改「先 catch-up 再 drain」+ QA 行纳入 ⑥⑦⑧)← R8(Codex R7 四 HIGH + 一 MEDIUM 全采纳:E2 增通用 `settleReceiptFamilyForTerminalSubject` primitive(非 gate receipt / Done 无 gate / 多 alias 全覆盖)+ projector mutation-time fence(不可逆 effect 前 re-read terminal 态与 exact lifecycle id,mismatch → intent fenced/stale)+ 存量 detection 的 lineage catch-up(fingerprint=rootId 精确回填,歧义保留并 fail-loud)+ `ensureTerminalSettlementIntent` OFF→ON 补偿 seam;§6 验收矩阵补 ⑥⑦⑧ 三条 E 能力级验收)← R7(Codex R6 四 HIGH + 二 MEDIUM 全采纳:E1 双 authority 分治(merged→externalMergeReconcile fresh MERGED / Done→done-thread-reconcile fresh Linear + mutation 前二次 recheck + reopen 赢,candidate 覆盖 thread-less/无 PR/多 alias);E2 跨库结算协议(CommDB 单事务 `supersedeShipGateAndReceiptFamily` + StateStore detection settlement lineage 列 + fenced settlement intent/projector 两侧 re-read 才完成)+ per-kind 清算矩阵(terminal wake_failed 降 lead_only 不删未投告警、founder-origin/dropped/安全类 retain、founder-page 末跳 revalidate fence);E3 定死 `POST /api/leads/:leadId/detection-ack` + 服务端派生 target 绝不收 raw key + owner 校验 fail-closed;E 回退面入 §7(继承两巡检开关 + `FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT=0` intent 前短路);§8 措辞去绝对化(MQ 不能加入现有 SQLite 事务但可 outbox-relay、Flywheel 本就双库、容量句改为「无可观测 contention/丢失证据」))← R6(Lead 现场收编,Linear comment 3f9d0987 + founder MQ 问题:新增 Chunk E 终态清算三件套(E1 merged/Done gate 自动 supersede + escalation 同 pass RESOLVED;E2 session/issue 终态清算 pending receipts/escalations、终态后零 founder-page;E3 detection-ack lead-target 通路)+ §8 手搓 durable queue vs 真 MQ 对比(结论:消费端语义缺失非传输层问题,单机 SQLite 无瓶颈,同事务能力是正确性依赖;多机/写锁竞争/传输层实证丢失时重评,迁移对象限传输层))← R5(R4 唯一 HIGH 采纳:存量 terminal session 的 `terminal_lifecycle_id` 幂等 backfill —— migration 单事务铸稳定 id + CAS `ensureTerminalLifecycleId` 兜底 + 同一投影路径 + `completeRunnerPhaseWakeTerminal` 签名显式携带 fence + `OPERATIONAL_TERMINAL_STATUSES` 单一中立常量模块 + migration fixture 测试)← R4(R3 一 HIGH + 二 MEDIUM 全采纳:D1 episode 增 `opened_terminal_lifecycle_id` 持久身份 —— StateStore terminal-entry epoch 单调铸造、terminal→terminal 改写不推进、观测/completion API 携带 fence、身份缺失或不一致绝不并入旧 episode,补停机期 terminal→live→terminal 测试;A1 矩阵补「processed(预期 typed evidence)→ verify 幂等推进」与「processed(冲突 evidence)→ fail-closed pin+告警」两行及四种 typed evidence 崩溃重放测试;B3 定为无条件安全行为、删 `=0` 声明)← R3(R2 四 HIGH + 一 MEDIUM 全采纳:A1 root 处置改为 deliverer 权威重读 + CAS terminalization,不再按业务 outcome 盲推 root 状态,isDeadLettered 快路径推进游标前必须幂等修复 root;B2 outbox 改 append-only lifecycle 事件(park_opened/park_cleared 各占新 rowid)+ generation CAS 投影;C1 definite 决定的 classification 在不可逆写之前 durable 落盘,失败即 retry+pin;D1 terminal episode 生命周期按 category 分治(terminal 态存续期恰一 episode,dispose 不算恢复);D2/D3 terminal 处置事务后置条件 = wake terminal + alert identity + alert-pending outbox 三者同事务原子,founder-origin 改 message-scoped alert identity 不共享 episode)← R2(Codex R1 五 HIGH + 一 MEDIUM 全采纳:A 改为 root-first + 崩溃安全处置状态机;C 按 question 规范化、intent 前置于不可逆写、两级告警语义;B2 弃用 runner_declared_states 复用,改独立 engine-park 证据 + outbox/projector + activation/generation 绑定、只授权 wake pointer;D 指纹改持久 episode 代际、terminal 处置定义 CommDB 原子 transition、terminal authority 显式枚举;A 补完整 reply-to-card 授权谓词与 negative tests)
 
 ## 0. 目标与一句话方案
 
@@ -13,7 +13,9 @@ founder 对 ship-gate 卡的批准(散文 / 逐字 JSON / ✅ reaction)必须**�
 **C** founder 决定收敛看门狗(读到但未绑定 → 分钟级 fail-loud);
 **D** wake_failed 告警改持久 episode 代际 + 终态 wake 原子处置(治告警跑步机且不吞新故障)。
 
-单 PR 交付,chunk 顺序 A → C → B → D(A+C 先解 P1 急症,B+D 治底账;每 chunk 独立可测)。
+**E** 终态清算三件套(merged/Done gate 自动 supersede + 终态 session 的 receipts/escalations 清算 + detection-ack lead-target 通路;Lead 现场收编,Linear comment 3f9d0987)。
+
+单 PR 交付,chunk 顺序 A → C → B → D → E(A+C 先解 P1 急症,B+D 治底账,E 清终态欠账;每 chunk 独立可测)。另 §8 回答 founder 的「要不要换真 MQ」架构问题(分析结论,不产生本单构建项)。
 
 ## 1. Chunk A — 重接 founder text 批准绑定(RC-1)
 
@@ -157,6 +159,85 @@ Codex R1 #4/#5 采纳,重设计如下:
 - **founder-origin 不共享 D1 episode**(Codex R2 #4:「复用 episode 指纹」与「每条独立告警」互斥):founder-origin wake 失败使用 **message-scoped alert identity** = `sha256(execution_id + ":founder:" + message_id)` —— 同一条 source wake 的所有 patrol retry / 重启恰报一次;不同 founder wake 互不合并、各报一条(founder 决定丢失永远值得一条);它不是 episode,不参与 D1 的 open/close 生命周期;
 - 实现前 grep #690 wake_failed 相关处理面 + `notifyDetectionEpisodeWithOutcome` 的 episode 语义,PR 描述逐项列「已核不重叠」。
 
+## 4.5 Chunk E — 终态清算 + ack 通路(Lead 现场收编,Linear comment 3f9d0987 四件套之 1-3;第 4 件 = Chunk D 主诉的量化)
+
+今晚 ship 收尾期间 Lead 被迫手工 SQL 清了一批同族欠账,三个新增 scope 收编如下(全部复用既有基座,不另起炉灶):
+
+### E1 · 已 merge / 已 Done 的 pending approve_to_ship gate 自动 supersede(双 authority 分治,R6 #1)
+
+现场:FLY-1441/1436 founder 直合后,runner 的 approve_to_ship gate 永久 pending,受体 patrol 反复升级、威胁 30min founder page;Lead 侧 respond 该 gate = 伪造批准记录(founder-consent 红线),唯一出路是手工 SQL。
+
+**两个 authority source 分开挂,不混用**(`externalMergeReconcile` 只有 GitHub `gh pr view` authority、候选集要求带 PR;它证明不了 Done):
+
+- `superseded_merged`:挂 `externalMergeReconcile` / 共享 merge probe,只接受 fresh `MERGED`;`open/closed/unknown` 一律不动;
+- `superseded_issue_done`:挂 `done-thread-reconcile` 的 **fresh Linear Done/Canceled observation**(该模块已有 per-issue fresh read、lookup 失败 fail-closed、mutation 前二次 fresh recheck、reopen 必须赢的完整纪律)—— 由它在同一 StateStore 事务 append issue-terminal settlement intent;每次 guarded mutation 前再调同一 fresh authority,`reopened/unknown` → pin/skip;
+- candidate discovery 覆盖 thread-less、无 PR、同 issue 多 session alias(复用 done reconcile 的 residue/alias 集,不要求 external-merge 的 PR 候选形态)。
+
+三相形态沿 `zombie-gate-hygiene`(durable INTENT 审计 → GUARDED mutation → RE-READ OUTCOME 审计),且 intent 覆盖 **gate / receipt root+outbox / detection 三个子效果** —— 任一子效果未经 re-read 验证,dangling-intent reconcile 继续,不许先写 outcome audit。已 answered 的 gate 不可触碰(并发 response 赢)。
+
+测试:Done 后 mutation 前 reopen / Linear lookup error / Done 无 PR / Done 无 thread / 同 issue 多 session / 重复 pass+restart 幂等 —— 任何非 fresh-terminal 结果都不得 retire gate 或 settle receipt。
+
+### E2 · 跨库结算协议 + per-kind 清算矩阵(R6 #2/#3)
+
+现场:FLY-1443 phantom gate 收据在 runner 关掉后仍卡满 30 分钟升级,真的 page 了 Annie。
+
+**可恢复的跨库结算协议**(gate/root/outbox 在 CommDB,detection 在 StateStore,两库不假设原子):
+
+- **两个 CommDB 单事务 primitive 分工(R7 #1:ship-gate 专用件清不了通用 receipt debt)**:
+  - E1 用 `supersedeShipGateAndReceiptFamily({ questionId, reason })`:guard unanswered gate(现 `retireShipGate` 只收 supersededBy,需扩 typed reason);retire 成功或已是同 typed disposition 时,按**精确 `ref_message_id = questionId`** 找原始 lead_inbox root → 写 typed disposed evidence + 关闭 resend family + 取消未投递 receipt alert(`markDisposed` 既有同事务语义);response 先赢 → gate/root 全部不动;
+  - E2 用**通用件** `settleReceiptFamilyForTerminalSubject({ receiptId, expectedExecutionId, reason })`:按 root id 精确读取;验证 `ref_message_id → message.from_agent / session.execution_id` 与 lineage 一致。**root 状态字段级合同(R8 #1:`delivered_at` 不是终态 —— 巡检恰好挑 delivered-未-processed 的 root 重发/升级,现场 debt 几乎必然已 delivered)**:
+    - `processed_at/evidence` 已存在 → 验证 processed evidence(response/processing wins),不写 disposed;
+    - `disposed_at/evidence` = 本 typed reason → 幂等成功 + 重验 family 关闭;
+    - `disposed` = 冲突 evidence → fail-closed;
+    - `processed_* IS NULL AND disposed_* IS NULL` → **无论 `delivered_at` 有无**,都是 open obligation → 写 terminal-typed disposed evidence + 同事务关闭 resend family;
+    - receipt alert outbox 的 `delivered_at` 只决定「已投审计保留 vs 未投 row 取消」,**绝不**决定 root 是否 open;
+    - 最小状态矩阵测试:root 有 `delivered_at`、无 processed/disposed、alert 已投 → primitive 仍 dispose root + 关 family,但不改写/取消已投 alert。
+    **lead_inbox 的 type 是开放字符串,receipt 不都挂 gate** —— terminal session 上的非 ship-gate receipt、Done issue 无 pending gate 但有 receipt debt,都由这个通用件覆盖;issue-terminal intent 枚举**全部 alias execution** 的 lineage 命中 receipt(即使该 issue 无 gate/PR/thread),同一 per-kind 矩阵;
+- StateStore detection 行增 first-class **settlement lineage** 列(`source_receipt_id / source_execution_id / source_question_id`)—— 结算按 lineage 精确命中,绝不解析提示文字或猜 target_key;
+- **存量 detection 的 lineage catch-up(R7 #3:新列对已有 active row 全 NULL,恰是 Lead 要清的 legacy debt)**:独立、可重放的 catch-up pass —— 以旧 row 的 `episode_fingerprint` 作为**协议已持久化的精确 root id**(receipt detection 的 fingerprint = rootId),去对应 CommDB re-read root,经 `ref_message_id → question → session` 验证 project/Lead/execution/question 全链一致后 **CAS 填充** `source_*` 列;缺 root / 跨项目 / 歧义 / 冲突 → 保留 row + Lead audit,绝不猜,settlement intent 不得标完成;
+- terminal transition / D1 backfill 只在各自 StateStore 事务内 append **fenced settlement intent**(按 `terminal_lifecycle_id`);projector(既有 cadence)幂等执行 CommDB 效果 → 按 lineage resolve StateStore detection → 两边 re-read 都满足后才完成 intent。backfill **不**「顺路」跨库原子清算;
+- **settlement intent 按 `authority_kind` 分治,各配互斥 guard(R8 #2:「session 必须仍 terminal」的 fence 会把 Done-issue-非终态-session 的合法清算全判 stale)**:intent 持久化 `authority_kind` + 对应 credential —— `session_terminal`(execution_id + terminal_lifecycle_id + lifecycle revision/activation)/ `issue_done`(canonical issue/project + fresh Linear Done/Canceled observation credential;每个 guarded mutation 前走 E1 既有 fresh recheck,`reopened/unknown` → pin/fence)/ `pr_merged`(PR identity + fresh `MERGED` proof)。projector 按 authority_kind 选**唯一** guard,terminal-lifecycle 条件绝不叠加到 issue authority 上。成对测试:「issue Done、session 仍 running、无 gate 有 receipt → 可结算」与「同场景 mutation 前 issue reopened → 完全不动」;
+- **session_terminal 路径的线性化点 = durable claim,不是裸 re-read(R8 #3:跨库 TOCTOU —— read 后 transition 提交、CommDB 已 dispose、post-await recheck 才发现 mismatch = 留半状态)**:StateStore 内新原语 `claimTerminalSettlementIntent(intentId, lifecycleId)` —— 与 lifecycle transition **串行**的单事务:验证 exact-current lifecycle 并 CAS `pending → applying(claim_token)`。与 transition writer 共享同一状态合同:transition 先提交 → claim 失败、intent fenced、CommDB 不动;claim 先提交 → 旧 lifecycle 的 receipt settlement 已获授权,跨库幂等完成(后续 activation 不复用旧 root),post-effect 阶段按 claim_token 完成 detection —— **绝不**因 session 事后 live 而遗留「root 已 dispose、detection 未 resolve」半状态。测试:两种严格排序 + 真并发 + 「claim 后 CommDB commit → live transition → Bridge crash → restart 后 detection 仍收敛」窗口。慢 await 后的 fence 复验与 founder-page 末跳 revalidate 保留,作为 claim 之外的防御纵深;
+- **OFF→ON 补偿 seam(R7 #4:flag OFF 期间升级会漏建 intent,ON 后 session 不会再 terminal transition)**:幂等 `ensureTerminalSettlementIntent(executionId, currentTerminalLifecycleId)` 挂既有 cadence —— 仅对「当前仍 terminal 且 lifecycle 精确匹配」的 execution CAS 创建恰一个 intent,已存在返回同一行,非 terminal / mismatch 不建;kill-switch OFF 时不写 intent 不执行副作用,ON 后由该 catch-up 扫描补齐 OFF 窗口欠账;
+- crash windows 必测:intent 已 commit 未动 CommDB / gate+root 事务已 commit detection 未 resolve / detection resolve 前后 Bridge crash / response 与 supersede 竞争 / typed disposition 已 commit outcome audit 缺失 / 旧 schema backfill 恰产一个稳定 intent 跨 restart 收敛 / **intent commit 后 projector 前 session terminal→live:root/detection 均不清,新 terminal lifecycle 只能由新 id 的 intent 结算** / **terminal session + 非 gate receipt** / **Done issue 无 gate + receipt debt** / **多 alias 各有 receipt** / **legacy 无 lineage fixture:active receipt_unprocessed + open root → 升级 + backfill → 跨 restart 精确结算;歧义映射不动且 fail-loud** / **E2=0 部署(D1 id 已 backfill 无 intent)→ E2=1 重启 → 恰一 intent 完整收敛;反复 OFF/ON 不重复清算**。断言:无 double-retire、无 open root、无 orphan detection、不误取消已投/已处理 receipt。
+
+**per-kind 清算矩阵(「业务义务已过期」≠「欠下的告警不用送」——绝不吞 D/B3 的 fail-loud 义务)**:
+
+| kind | 终态处置 |
+|---|---|
+| lineage 命中的 `receipt_unprocessed`(该 gate/session) | typed dispose root + resolve detection |
+| D1 terminal `wake_failed` | source wake 可 terminal-complete;**episode/message 的 alert-pending 必须至少送达 Lead**;终态只把 founder-page 策略降为 `lead_only`,绝不在投递前删除告警 |
+| founder-origin wake 失败(D3) | 保留 message-scoped fail-loud,**不得**被 E2 合并或取消 |
+| `founder_decision_dropped` / 安全·授权异常 / delivery-failure audit / `park:*`(他人 own) | **retain** —— 不进 blanket resolution |
+
+founder-page 最后一跳 **revalidate** exact terminal lifecycle / settlement fence(解决清算与 page 并发,不靠先后顺序)。终态之后 founder-page 归零,但 Lead 侧告警义务照常兑付。
+
+测试:D2 alert 事务与 E2 并发(wake terminal-complete 已提交、E2 先跑 → Lead alert 仍 pending 可投、founder page 不发生)/ founder-origin 每消息告警不被吞 / 无关 detection 不变 / 旧 lifecycle 已结算 receipt 在 terminal→live→terminal 后不复活。
+
+### E3 · detection-ack lead-target 通路(定死端点 + 单一授权谓词,R6 #4)
+
+现场:`detection_escalations` 里 target_key=`flywheel:<lead>` 的行,现 route 第一步 `store.getSession()` 就 404,Lead 唯一出路 = 手工 SQL(今晚 9 行)。
+
+**定死为独立端点 `POST /api/leads/:leadId/detection-ack`**(不复用带伪 executionId 的 session route;`matchesLead` 需要 Session 而 lead-target 没有 session,不可复用)。单一授权谓词:
+
+1. 既有 token auth;
+2. body 携带 canonical `projectName`;服务端从**唯一** `ProjectEntry(projectName, leadId)` 派生 `${projectName}:${leadId}` —— **绝不接受 raw target_key**;
+3. exact row 同时匹配派生 target + kind + fingerprint,且 `owner_lead_id === leadId`;unknown/ambiguous project、owner 缺失/冲突一律 fail-closed;
+4. audit/receipt 身份用 E2 的 settlement lineage(或把 disposition-receipt prepare 显式扩成支持 `target_kind=lead`),**不伪造 session**;
+5. detection ack + disposition receipt prepare 保持一个 StateStore 事务;secondary trace 失败不得反过来谎报主 ack 未成功。
+
+测试:cross-lead / cross-project / raw-target 注入 / unknown·ambiguous project / owner mismatch / 已 resolved replay / receipt prepare 失败回滚 / session endpoint 逐字节回归(reverse-compat sentinel)。
+
+## 4.6 §8 · 架构对比:手搓 durable queue vs 真 Message Queue(founder 现场问题,Tadashi 转达)
+
+Annie 问:「换真 MQ(Redis/NATS 类)会不会更好?」结论先行:**本单继续在 SQLite 事件表上补齐消费端语义,不迁移 MQ;迁移评估点后置**。理由:
+
+1. **今晚 15 个假警报的根因在消费端语义缺失,不在传输层**:无终态清算(E1/E2)、无 lead-target ack API(E3)、重投无代际去重(D)。消息本身没有丢在「传输」上 —— 丢在「收到之后没人按合同处置」上。换 MQ 只换传输,这些消费端合同照样要写。
+2. **真 MQ 的 ack/nack/DLQ/TTL 语义正是本单在补的东西**:A 的处置状态机 = ack/nack;FLY-1099 dead-letter 账本 = DLQ;D 的 episode 代际 = 去重;C 的收敛看门狗 = 消费超时监控。区别在于落点:MQ **不能直接加入现有 SQLite 事务** —— 本单多处正确性(trusted writer 原子写、tri-atomic terminal 处置)依赖「消息处置与业务状态同一事务提交」;引入 MQ 后这些位置仍要 transactional outbox + relay 才能保住原子性,等于新增一个外部有状态服务(部署/监控/崩溃恢复)外加一层 relay 运维面,而业务 ledger(gate/holder/claims)谁也替代不了。诚实标注:Flywheel 今天也不是全同库 —— StateStore/CommDB 跨库处(B2/E2)本就走 outbox/projector 收敛;MQ 只会把这类跨库边界变多,不会变少。
+3. **单机 Mac 部署,无传输层瓶颈证据**:当前无可观测的 SQLite writer contention、无实证的传输层丢失(今晚全部事故都定位在消费端);MQ 的横向扩展收益为零,运维成本为正。
+
+**何时重新评估迁移**:出现以下任一信号时开专项 —— ① 多机部署(FLY-1005 方向落地,跨机传输成为真需求);② 控制面消息量级接近单写者瓶颈(持续写锁竞争可观测);③ 消费端语义补齐后仍出现传输层丢失(用本单 C 看门狗的账本作证据)。届时迁移对象优先是**传输层**(mailbox/wake 投递),业务状态账本(gate/holder/claims)留在 SQLite。
+
 ## 5. 明确不做
 
 - FLY-1374 对账循环(独立单);
@@ -174,11 +255,14 @@ Codex R1 #4/#5 采纳,重设计如下:
 | ③ ✅ reaction 同 | 既有面 + A 共享收口 | 真机稳定点击取证(QA 节点) |
 | ④ 人为造投递失败 → Lead fail-loud,绝不静默 | C(+B3) | kill-switch 关 A → founder 回复 → 3 分钟内 `founder_reply_unbound_gate_pending`;classifier 证据在而绑定断 → `founder_decision_dropped` |
 | ⑤ 完结会话不重铸 wake_failed 指纹 | D | completed session 重复投递 → 恰 1 告警(episode 代际),指纹表一手复核;恢复后新故障可再报 |
+| ⑥ merged/Done 的 pending gate 自动 supersede(含无 gate 的 terminal receipt 清算) | E1/E2 | 房测复刻 FLY-1441/1436 孤儿 gate 形态 → 自动 retire + escalation RESOLVED;含至少一个无 gate 的 terminal receipt 与一个 legacy 无 lineage fixture |
+| ⑦ 终态 session 零 founder-page 且 Lead 告警仍送达 | E2 | terminal 后注入 receipt/wake 失败 → founder-page 不发生、Lead alert 送达取证 |
+| ⑧ lead-target detection-ack 通路 + 鉴权 | E3 | 真 Lead 调新端点 ack `flywheel:<lead>` 行;cross-lead/raw-target 注入被拒 |
 
 ## 7. 交付与风控
 
-- **byte-compat**:A 的 dep 可选(absent = 现行为);B2 有 `FLYWHEEL_ENGINE_DECLARED_PARK=0` 逃生口;**B3 是无条件安全行为,无开关**(R3 #3:任何恢复 founder wake 静默 dispose 的 rollback 开关都违反本 issue 核心不变量「founder 决定生效或响亮失败」;founder-origin 标记 absent 的旧 wake 自然走现行为,已是兼容面);C deadline flag 可调;新 flag 全注册 `packages/config/src/feature-flags/registry.ts`;
+- **byte-compat**:A 的 dep 可选(absent = 现行为);B2 有 `FLYWHEEL_ENGINE_DECLARED_PARK=0` 逃生口;**B3 是无条件安全行为,无开关**(R3 #3:任何恢复 founder wake 静默 dispose 的 rollback 开关都违反本 issue 核心不变量「founder 决定生效或响亮失败」;founder-origin 标记 absent 的旧 wake 自然走现行为,已是兼容面);C deadline flag 可调;**Chunk E 的回退面(R6 #5)**:E1 merged 分支继承 `externalMergeReconcile` 既有开关、Done/Canceled 分支继承 fresh-Linear reconciler 既有开关,E2 终态收据清算独立 `FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT=0`(OFF 在 intent 写入**之前**短路,零半套 side effect;已存在的 dangling intent 在 OFF 下冻结不执行;**ON 时先跑 `ensureTerminalSettlementIntent` catch-up 补建 OFF 窗口漏建的 intent,再 drain 既有 dangling intent** —— OFF/ON 测试点名「无 intent 的旧 terminal session」形态,R8 #4),E3 为 additive API 不设 runtime 开关但 session endpoint 配 reverse-compat sentinel;OFF 路径测试:gate/root/detection/审计全为旧行为;新 flag 全注册 `packages/config/src/feature-flags/registry.ts`;
 - **全仓门禁**:`pnpm lint` + `pnpm -r build` + `pnpm test:packages:run`;Codex code review(`codex:rescue`)循环到 APPROVED;
 - **部署形态**:Bridge 侧代码,merge 后需 Bridge 重启生效 —— 汇入「三线合流统一重启」窗口,不单独重启;
-- **QA**:529 房复测断言 C(①②)+ ④⑤ 人为断供/重复投递取证 + ③ reaction 真机;沿用房测留存现场(run A/B);
+- **QA**:529 房复测断言 C(①②)+ ④⑤ 人为断供/重复投递取证 + ③ reaction 真机 + **⑥⑦⑧ E 段能力级验收**(⑥ 复刻孤儿 gate + 无 gate terminal receipt + legacy 无 lineage fixture;⑦ 终态零 founder-page 且 Lead alert 送达;⑧ lead-target ack + 注入拒绝;其中 legacy fixture / OFF-ON 收敛属自动化 migration 测试,孤儿 gate 复刻与 page 行为在 529 房真机执行);沿用房测留存现场(run A/B);
 - **风险**:A 重新启用自动批准面 → kill-switch + denylist + canonical founder id fail-closed + A3 完整谓词 + hold/deferral 全套随组件恢复,组件历史上已在生产跑过(FLY-1099 时代);B2 两库投影不假设跨库原子(outbox + durable cursor);sql.js 单写者:CommDB 写全部经 Bridge 进程内。
