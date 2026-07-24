@@ -206,6 +206,53 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(db.getSession("t2")).toBeDefined();
 		});
 
+		it("FLY-1374 never finalizes the current TURN holder even when its stale window target probes dead", async () => {
+			seed("holder", "completed", "stale:@holder");
+			db.grantTurn("FLY-1374", "holder", "implement", 1_000, {
+				project: "flywheel",
+				sourceEventId: "turn:holder",
+			});
+
+			const probe = vi.fn(async () => "dead" as const);
+			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
+				dbPath,
+				probe,
+			});
+
+			expect(res).toMatchObject({
+				scanned: 1,
+				pruned: 0,
+				parkedVetoed: 1,
+			});
+			expect(probe).not.toHaveBeenCalled();
+			expect(db.getSession("holder")).toBeDefined();
+			expect(db.getTurn("FLY-1374")?.holder_exec_id).toBe("holder");
+		});
+
+		it("FLY-1374 rechecks TURN authority atomically when a holder is granted during the liveness probe", async () => {
+			seed("holder", "completed", "stale:@holder");
+
+			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
+				dbPath,
+				probe: async () => {
+					db.grantTurn("FLY-1374", "holder", "implement", 1_000, {
+						project: "flywheel",
+						sourceEventId: "turn:holder-during-probe",
+					});
+					return "dead";
+				},
+			});
+
+			expect(res).toMatchObject({
+				scanned: 1,
+				pruned: 0,
+				parkedVetoed: 1,
+			});
+			expect(res.provenDeadTargets).toEqual([]);
+			expect(db.getSession("holder")).toBeDefined();
+			expect(db.getTurn("FLY-1374")?.holder_exec_id).toBe("holder");
+		});
+
 		it("FLY-1066 harvest expands the proven-dead scan to failed/blocked", async () => {
 			seed("failed-dead", "failed", "base:@failed");
 			seed("blocked-dead", "blocked", "base:@blocked");

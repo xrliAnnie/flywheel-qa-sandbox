@@ -256,6 +256,10 @@ export interface FinalizeSessionResult {
 	deletedSessionCount: number;
 }
 
+export type GuardedFinalizeSessionResult =
+	| { finalized: false; reason: "turn_holder" }
+	| { finalized: true; result: FinalizeSessionResult };
+
 function commDbProtectionEnabled(): boolean {
 	return process.env.FLYWHEEL_COMMDB_PROTECTION !== "0";
 }
@@ -4421,6 +4425,30 @@ export class CommDB {
 		);
 	}
 
+	/**
+	 * FLY-1374: a terminal execution cannot consume a wake. Retire the durable
+	 * intent at this write boundary instead of manufacturing a wake-failure
+	 * incident for an already-finished runner.
+	 */
+	disposeRunnerPhaseWakeForTerminal(
+		executionId: string,
+		messageId: string,
+		nowMs: number,
+	): boolean {
+		return (
+			this.db
+				.prepare(
+					`UPDATE runner_phase_wakes
+					    SET state = 'finished', finished_at = ?,
+					        last_push_result = 'disposed:terminal_target',
+					        claim_token = NULL, claim_expires_at = NULL
+					  WHERE execution_id = ? AND message_id = ?
+					    AND state = 'pending'`,
+				)
+				.run(nowMs, executionId, messageId).changes === 1
+		);
+	}
+
 	claimRunnerReceiptWakeT2(
 		executionId: string,
 		messageId: string,
@@ -4506,6 +4534,24 @@ export class CommDB {
 			return this.getReceiptAlertOutbox(id) ?? null;
 		});
 		return enqueue.immediate();
+	}
+
+	/**
+	 * The first still-open failed wake defines the episode. Later messages for
+	 * the same execution reuse this timestamp; once receipts move every member
+	 * out of pending, the next failure naturally starts a new episode.
+	 */
+	getRunnerWakeFailureEpisodeStartedAt(executionId: string): number | null {
+		const row = this.db
+			.prepare(
+				`SELECT MIN(queued_at) AS started_at
+				   FROM runner_phase_wakes
+				  WHERE execution_id = ?
+				    AND state = 'pending'
+				    AND escalation_outbox_id IS NOT NULL`,
+			)
+			.get(executionId) as { started_at: number | null };
+		return row.started_at;
 	}
 
 	getReceiptAlertOutbox(
@@ -5469,6 +5515,86 @@ export class CommDB {
 	}
 
 	/**
+	 * FLY-1374: restore the exact CommDB identity a proven-live parked holder
+	 * needs before its wake is committed. Existing rows are revived in place so
+	 * questions/messages/receipts survive; their registered tmux target remains
+	 * authoritative. Missing rows may be inserted only with a complete,
+	 * caller-proven identity.
+	 */
+	activateSessionForWake(input: {
+		executionId: string;
+		tmuxWindow: string;
+		projectName: string;
+		issueId: string;
+		leadId: string;
+		vendor: string;
+	}):
+		| { ok: true; inserted: boolean; previousStatus: string | null }
+		| { ok: false; reason: "invalid_wake_identity" } {
+		const values = [
+			input.executionId,
+			input.tmuxWindow,
+			input.projectName,
+			input.issueId,
+			input.leadId,
+			input.vendor,
+		];
+		if (values.some((value) => !value.trim())) {
+			return { ok: false, reason: "invalid_wake_identity" };
+		}
+		return this.db.transaction(() => {
+			const current = this.db
+				.prepare(
+					"SELECT status, tmux_window FROM sessions WHERE execution_id = ?",
+				)
+				.get(input.executionId) as
+				| { status: string; tmux_window: string }
+				| undefined;
+			if (!current) {
+				this.db
+					.prepare(
+						`INSERT INTO sessions
+						   (execution_id, tmux_window, project_name, issue_id, lead_id,
+						    vendor, status, ended_at)
+						 VALUES (?, ?, ?, ?, ?, ?, 'running', NULL)`,
+					)
+					.run(
+						input.executionId,
+						input.tmuxWindow,
+						input.projectName,
+						input.issueId,
+						input.leadId,
+						input.vendor,
+					);
+				return {
+					ok: true as const,
+					inserted: true,
+					previousStatus: null,
+				};
+			}
+			this.db
+				.prepare(
+					`UPDATE sessions
+					    SET status = 'running', ended_at = NULL,
+					        project_name = ?, issue_id = ?, lead_id = ?, vendor = ?
+					  WHERE execution_id = ?`,
+				)
+				.run(
+					input.projectName,
+					input.issueId,
+					input.leadId,
+					input.vendor,
+					input.executionId,
+				);
+			return {
+				ok: true as const,
+				inserted: false,
+				previousStatus: current.status,
+			};
+		})();
+	}
+
+	/**
 	 * FLY-1269: replace only the routing target after a lazily-created tmux
 	 * window has an immutable id. Unlike registerSession's INSERT OR REPLACE,
 	 * this preserves lifecycle/review metadata already attached to the row.
@@ -5626,6 +5752,37 @@ export class CommDB {
 				deletedSessionCount: deleted,
 			};
 		})(executionId);
+	}
+
+	/**
+	 * FLY-1374: maintenance deletion may not retire the identity of the current
+	 * three-stage TURN holder. The guard and finalization share one IMMEDIATE
+	 * transaction, so a TURN granted after an async liveness probe cannot race
+	 * between a second read and the destructive session write.
+	 *
+	 * Explicit live teardown keeps using `finalizeSession`: its caller owns TURN
+	 * release. This guarded variant is intentionally for inference-based cleanup.
+	 */
+	finalizeSessionUnlessTurnHolder(
+		executionId: string,
+	): GuardedFinalizeSessionResult {
+		const finalize = this.db.transaction(
+			(targetExecutionId: string): GuardedFinalizeSessionResult => {
+				const holdsTurn = this.db
+					.prepare(
+						"SELECT 1 FROM three_stage_turn WHERE holder_exec_id = ? LIMIT 1",
+					)
+					.get(targetExecutionId);
+				if (holdsTurn) {
+					return { finalized: false, reason: "turn_holder" };
+				}
+				return {
+					finalized: true,
+					result: this.finalizeSession(targetExecutionId),
+				};
+			},
+		);
+		return finalize.immediate(executionId);
 	}
 
 	/**

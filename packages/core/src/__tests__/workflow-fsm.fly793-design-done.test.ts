@@ -6,8 +6,9 @@ describe("WORKFLOW_TRANSITIONS — FLY-793 design_done", () => {
 		expect(WORKFLOW_TRANSITIONS.running).toContain("design_done");
 	});
 
-	it("design_done is a non-terminal state with finalization/failure exits", () => {
+	it("design_done can reactivate for a durable rework wake or finalize", () => {
 		expect(WORKFLOW_TRANSITIONS.design_done).toEqual([
+			"running",
 			"completed",
 			"blocked",
 			"failed",

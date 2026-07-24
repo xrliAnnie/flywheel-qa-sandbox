@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CommDB, RunnerPhaseWake } from "flywheel-comm/db";
 import { CommDB as CommDatabase } from "flywheel-comm/db";
 
@@ -53,6 +54,17 @@ function resultReason(error: string | undefined): string {
 	return (error ?? "unknown").replaceAll(/\s+/g, " ").slice(0, 240);
 }
 
+/** Stable within one unresolved failure episode; changes only after recovery. */
+export function wakeFailureEpisodeFingerprint(
+	executionId: string,
+	firstDetectedAtMs: number,
+): string {
+	return createHash("sha256")
+		.update(`${executionId}|wake_failed|${firstDetectedAtMs}`)
+		.digest("hex")
+		.slice(0, 16);
+}
+
 /**
  * FLY-1392 wake ladder. It owns no timer: GatePoller calls one pass from its
  * existing cadence. Every external action is preceded by a durable claim.
@@ -101,15 +113,21 @@ export class RunnerReceiptPatrol {
 				: session.status === "running"
 					? "live"
 					: "terminal";
-		if (targetState !== "live") {
+		if (targetState === "terminal") {
+			db.disposeRunnerPhaseWakeForTerminal(
+				wake.execution_id,
+				wake.message_id,
+				nowMs,
+			);
+			return;
+		}
+		if (targetState === "missing") {
 			await this.escalate(
 				db,
 				projectName,
 				wake,
 				nowMs,
-				targetState === "missing"
-					? "target_missing_before_started"
-					: "terminal_before_started",
+				"target_missing_before_started",
 			);
 			return;
 		}
@@ -230,13 +248,16 @@ export class RunnerReceiptPatrol {
 			nowMs,
 		});
 		if (!alert) return;
+		const firstDetectedAtMs =
+			db.getRunnerWakeFailureEpisodeStartedAt(wake.execution_id) ??
+			wake.queued_at;
 		const live = db.revalidateRunnerReceiptWakeAlert(alert.id, nowMs);
 		if (!live) return;
 		const delivered = await this.options.notifyWakeFailure({
 			projectName,
 			wake,
 			reason,
-			firstDetectedAtMs: wake.queued_at,
+			firstDetectedAtMs,
 		});
 		if (delivered) db.markReceiptAlertDelivered(alert.id, nowMs);
 	}

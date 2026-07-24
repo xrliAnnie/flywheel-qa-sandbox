@@ -1,11 +1,30 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { readEnvValueFromContent } from "flywheel-config";
+
 export interface LeadInboxNudgeArgs {
 	bridgeUrl?: string;
 	leadId: string;
 	project?: string;
 	apiToken?: string;
+	apiTokenFile?: string;
+	resolveApiToken?: () => string | undefined;
 	timeoutMs?: number;
 	fetchImpl?: typeof fetch;
 	warn?: (message: string) => void;
+}
+
+function readCurrentBridgeApiToken(path: string): string | undefined {
+	try {
+		const content = readFileSync(path, "utf8");
+		const raw = readEnvValueFromContent(content, "TEAMLEAD_API_TOKEN")?.trim();
+		if (!raw) return undefined;
+		const quoted = raw.match(/^(["'])(.*)\1$/);
+		return quoted?.[2] ?? raw;
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -18,28 +37,47 @@ export async function nudgeLeadInboxBestEffort(
 	const bridgeUrl = args.bridgeUrl?.trim();
 	if (!bridgeUrl) return;
 	const timeoutMs = args.timeoutMs ?? 200;
-	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	const warn =
 		args.warn ?? ((message: string) => process.stderr.write(`${message}\n`));
-	try {
-		const response = await (args.fetchImpl ?? fetch)(
-			`${bridgeUrl.replace(/\/+$/, "")}/api/lead-inbox/nudge`,
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					...(args.apiToken
-						? { Authorization: `Bearer ${args.apiToken}` }
-						: {}),
+	const fetchImpl = args.fetchImpl ?? fetch;
+	const post = async (apiToken: string | undefined): Promise<Response> => {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), timeoutMs);
+		try {
+			return await fetchImpl(
+				`${bridgeUrl.replace(/\/+$/, "")}/api/lead-inbox/nudge`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						...(apiToken ? { Authorization: `Bearer ${apiToken}` } : {}),
+					},
+					body: JSON.stringify({
+						leadId: args.leadId,
+						...(args.project ? { project: args.project } : {}),
+					}),
+					signal: controller.signal,
 				},
-				body: JSON.stringify({
-					leadId: args.leadId,
-					...(args.project ? { project: args.project } : {}),
-				}),
-				signal: controller.signal,
-			},
-		);
+			);
+		} finally {
+			clearTimeout(timer);
+		}
+	};
+
+	try {
+		let response = await post(args.apiToken);
+		if (response.status === 401 || response.status === 403) {
+			const refreshedToken = (
+				args.resolveApiToken ??
+				(() =>
+					readCurrentBridgeApiToken(
+						args.apiTokenFile ?? join(homedir(), ".flywheel", ".env"),
+					))
+			)();
+			if (refreshedToken) {
+				response = await post(refreshedToken);
+			}
+		}
 		if (!response.ok) {
 			warn(
 				`[flywheel-comm] lead inbox nudge returned ${response.status}; durable queue row retained`,
@@ -49,7 +87,5 @@ export async function nudgeLeadInboxBestEffort(
 		warn(
 			`[flywheel-comm] lead inbox nudge failed: ${(error as Error).message}; durable queue row retained`,
 		);
-	} finally {
-		clearTimeout(timer);
 	}
 }

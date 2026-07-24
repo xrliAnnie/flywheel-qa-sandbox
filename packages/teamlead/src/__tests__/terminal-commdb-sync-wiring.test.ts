@@ -63,9 +63,24 @@ describe("FLY-1066 terminal CommDB sync production inventory", () => {
 		expect(plugin).toContain("await terminalCommDbSync.warmProjects(");
 		expect(
 			plugin.match(
-				/onTerminalStatusPersisted: \(executionId, status, projectName\)/g,
+				/onTerminalStatusPersisted: onMarkerTerminalStatusPersisted/g,
 			),
 		).toHaveLength(2);
+		const effectStart = plugin.indexOf(
+			"const onMarkerTerminalStatusPersisted =",
+		);
+		const effectEnd = plugin.indexOf("const heartbeatService =", effectStart);
+		const effect = plugin.slice(effectStart, effectEnd);
+		expect(effect).toContain("terminalCommDbSync.enqueue(");
+		expect(effect).toContain("store.getSession(executionId)?.issue_id");
+		expect(effect).toContain("enqueueIssueDisplayRefresh(issueId)");
+		expect(plugin).toContain(
+			"const pendingIssueDisplayRefreshes = new Set<string>()",
+		);
+		expect(plugin).toContain(
+			"for (const issueId of pendingIssueDisplayRefreshes)",
+		);
+		expect(plugin).toContain("pendingIssueDisplayRefreshes.clear()");
 		expect(plugin).toContain("await terminalCommDbSync.close(1_000)");
 	});
 });

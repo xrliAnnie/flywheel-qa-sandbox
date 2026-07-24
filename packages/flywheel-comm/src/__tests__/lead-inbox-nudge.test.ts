@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { nudgeLeadInboxBestEffort } from "../lead-inbox-nudge.js";
 
@@ -41,5 +44,107 @@ describe("FLY-1373 lead inbox doorbell", () => {
 		expect(warn).toHaveBeenCalledWith(
 			expect.stringContaining("connection refused"),
 		);
+	});
+
+	it.each([401, 403])(
+		"reloads the Bridge token once after a %s response",
+		async (status) => {
+			const fetchImpl = vi
+				.fn<typeof fetch>()
+				.mockResolvedValueOnce(new Response(null, { status }))
+				.mockResolvedValueOnce(new Response(null, { status: 202 }));
+			const resolveApiToken = vi.fn(() => "rotated-token");
+			const warn = vi.fn();
+
+			await nudgeLeadInboxBestEffort({
+				bridgeUrl: "http://127.0.0.1:9876",
+				leadId: "flywheel-eng-lead",
+				apiToken: "stale-token",
+				resolveApiToken,
+				fetchImpl,
+				warn,
+			});
+
+			expect(fetchImpl).toHaveBeenCalledTimes(2);
+			expect(resolveApiToken).toHaveBeenCalledOnce();
+			expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
+				Authorization: "Bearer stale-token",
+			});
+			expect(fetchImpl.mock.calls[1]?.[1]?.headers).toMatchObject({
+				Authorization: "Bearer rotated-token",
+			});
+			expect(warn).not.toHaveBeenCalled();
+		},
+	);
+
+	it("reloads TEAMLEAD_API_TOKEN from the live env file", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1374-nudge-"));
+		const apiTokenFile = join(dir, ".env");
+		writeFileSync(
+			apiTokenFile,
+			"OTHER=value\nexport TEAMLEAD_API_TOKEN='rotated-from-file'\n",
+		);
+		const fetchImpl = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(new Response(null, { status: 401 }))
+			.mockResolvedValueOnce(new Response(null, { status: 202 }));
+
+		try {
+			await nudgeLeadInboxBestEffort({
+				bridgeUrl: "http://127.0.0.1:9876",
+				leadId: "flywheel-eng-lead",
+				apiToken: "stale-token",
+				apiTokenFile,
+				fetchImpl,
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
+		expect(fetchImpl.mock.calls[1]?.[1]?.headers).toMatchObject({
+			Authorization: "Bearer rotated-from-file",
+		});
+	});
+
+	it("warns once when the token-reloaded retry is still unauthorized", async () => {
+		const fetchImpl = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(new Response(null, { status: 401 }))
+			.mockResolvedValueOnce(new Response(null, { status: 403 }));
+		const warn = vi.fn();
+
+		await nudgeLeadInboxBestEffort({
+			bridgeUrl: "http://127.0.0.1:9876",
+			leadId: "flywheel-eng-lead",
+			apiToken: "stale-token",
+			resolveApiToken: () => "still-wrong-token",
+			fetchImpl,
+			warn,
+		});
+
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("returned 403"));
+	});
+
+	it("does not reload or retry for a non-auth HTTP failure", async () => {
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 500 }));
+		const resolveApiToken = vi.fn(() => "rotated-token");
+		const warn = vi.fn();
+
+		await nudgeLeadInboxBestEffort({
+			bridgeUrl: "http://127.0.0.1:9876",
+			leadId: "flywheel-eng-lead",
+			apiToken: "stale-token",
+			resolveApiToken,
+			fetchImpl,
+			warn,
+		});
+
+		expect(fetchImpl).toHaveBeenCalledOnce();
+		expect(resolveApiToken).not.toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("returned 500"));
 	});
 });

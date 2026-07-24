@@ -554,6 +554,10 @@ export class CodexTmuxAdapter implements IAdapter {
 				if (windowId) {
 					founderWindowId = windowId;
 					tmuxWindow = `${this.sessionName}:${windowId}`;
+					this.publishWindowExecutionIdentity(
+						ctx.executionId,
+						`=${tmuxWindow}`,
+					);
 					this.pinCommDbSessionWindow(ctx, tmuxWindow);
 				}
 				if (ctx.onTmuxWindowCreated) {
@@ -1495,6 +1499,33 @@ export class CodexTmuxAdapter implements IAdapter {
 			// Best-effort: the adapter still owns the immutable id for teardown.
 		} finally {
 			commDb?.close();
+		}
+	}
+
+	/** Publish the exact identity needed to rebuild a lost CommDB holder row. */
+	private publishWindowExecutionIdentity(
+		executionId: string,
+		exactTmuxTarget: string,
+	): void {
+		try {
+			withSyncOpMarker("codex-adapter:publish-window-identity", () =>
+				this.execFileFn(
+					"tmux",
+					[
+						"set-option",
+						"-w",
+						"-t",
+						exactTmuxTarget,
+						"@flywheel_exec_id",
+						executionId,
+					],
+					{ timeoutMs: 5_000 },
+				),
+			);
+		} catch (error) {
+			console.warn(
+				`[CodexTmuxAdapter] execution identity publish failed for ${exactTmuxTarget}: ${(error as Error).message}`,
+			);
 		}
 	}
 

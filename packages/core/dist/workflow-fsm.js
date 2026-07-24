@@ -101,7 +101,9 @@ export const WORKFLOW_TRANSITIONS = {
     // FLY-793: Design phase done (docs on the shared branch). Non-terminal — the
     // PhaseOrchestrator captures the head + starts Implement, then this session is
     // finalized (completed) or fails out (blocked/failed/terminated).
-    design_done: ["completed", "blocked", "failed", "terminated"],
+    // FLY-1374: a durable rework wake reuses the parked Design holder. The
+    // activation write path is the only caller of this return edge.
+    design_done: ["running", "completed", "blocked", "failed", "terminated"],
     // FLY-44: terminate allowed from all started non-terminal states.
     // FLY-60 W2 (b): `completed` added to support post-merge re-finalization
     // from the `stage_changed=completed + landing_status.status="merged"`

@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RunnerReceiptPatrol } from "../bridge/runner-receipt-patrol.js";
+import {
+	RunnerReceiptPatrol,
+	wakeFailureEpisodeFingerprint,
+} from "../bridge/runner-receipt-patrol.js";
 
 describe("FLY-1392 runner receipt patrol", () => {
 	let tmpDir: string;
@@ -28,18 +31,18 @@ describe("FLY-1392 runner receipt patrol", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	function admit(queuedAtMs: number) {
+	function admit(queuedAtMs: number, ordinal = 1) {
 		return db.instructionAndIntent({
-			instructionId: "instruction-1",
+			instructionId: `instruction-${ordinal}`,
 			fromAgent: "lead-1",
 			executionId: "exec-1",
 			content: "do work",
-			intentKey: "instruction:instruction-1",
+			intentKey: `instruction:instruction-${ordinal}`,
 			envelope: {
-				id: "wake-1",
+				id: `wake-${ordinal}`,
 				to: "exec-1",
 				content: "wake",
-				metadata: { questionId: "question-1" },
+				metadata: { questionId: `question-${ordinal}` },
 			},
 			queuedAtMs,
 		}).wake;
@@ -157,16 +160,61 @@ describe("FLY-1392 runner receipt patrol", () => {
 		});
 	});
 
-	it("never swallows a terminal-before-started wake as clean stand-down", async () => {
-		admit(1_000);
+	it("settles a terminal target at the source instead of raising a wake-failed alert", async () => {
+		const wake = admit(1_000);
 		db.updateSessionStatus("exec-1", "failed");
 		db.close();
 
 		await patrol(2_000);
 
 		db = new CommDB(dbPath);
+		expect(notifyWakeFailure).not.toHaveBeenCalled();
+		expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
+			{
+				message_id: wake.message_id,
+				state: "finished",
+				last_push_result: "disposed:terminal_target",
+			},
+		]);
+	});
+
+	it("shares one failure episode across messages until a started receipt closes it", async () => {
+		admit(1_000, 1);
+		admit(2_000, 2);
+		db.upsertDeclaredState("exec-1", "parked", "awaiting work", 1_000, null);
+		nudgeWakePointer.mockResolvedValue({
+			nudged: false,
+			error: "no_tmux_target",
+		});
+		db.close();
+
+		await patrol(400_000);
+
+		db = new CommDB(dbPath);
+		expect(notifyWakeFailure).toHaveBeenCalledTimes(2);
+		expect(
+			notifyWakeFailure.mock.calls.map(([input]) => input.firstDetectedAtMs),
+		).toEqual([1_000, 1_000]);
+
+		for (const wake of db.listRunnerPhaseWakes("exec-1")) {
+			db.markRunnerPhaseWakeStarted(wake.execution_id, wake.message_id, 4_001);
+		}
+		admit(5_000, 3);
+		notifyWakeFailure.mockClear();
+		db.close();
+
+		await patrol(400_001);
+
+		db = new CommDB(dbPath);
+		expect(notifyWakeFailure).toHaveBeenCalledOnce();
 		expect(notifyWakeFailure).toHaveBeenCalledWith(
-			expect.objectContaining({ reason: "terminal_before_started" }),
+			expect.objectContaining({ firstDetectedAtMs: 5_000 }),
+		);
+		expect(wakeFailureEpisodeFingerprint("exec-1", 1_000)).toBe(
+			wakeFailureEpisodeFingerprint("exec-1", 1_000),
+		);
+		expect(wakeFailureEpisodeFingerprint("exec-1", 5_000)).not.toBe(
+			wakeFailureEpisodeFingerprint("exec-1", 1_000),
 		);
 	});
 

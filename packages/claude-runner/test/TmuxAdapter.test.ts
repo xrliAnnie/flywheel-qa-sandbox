@@ -1201,6 +1201,29 @@ describe("TmuxAdapter", () => {
 			}
 		});
 
+		it("publishes the execution id on the exact runner window", async () => {
+			const { fn, calls } = makeMockExec({
+				paneDead: true,
+				windowId: "@42",
+			});
+
+			await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());
+
+			expect(
+				calls.find(
+					(call) =>
+						call.cmd === "tmux" && call.args.includes("@flywheel_exec_id"),
+				)?.args,
+			).toEqual([
+				"set-option",
+				"-w",
+				"-t",
+				"=flywheel:@42",
+				"@flywheel_exec_id",
+				"test-exec-1",
+			]);
+		});
+
 		it("execute() without commDbPath — no FLYWHEEL_COMM_DB env", async () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			const adapter = new TmuxAdapter("flywheel", fn, 10);

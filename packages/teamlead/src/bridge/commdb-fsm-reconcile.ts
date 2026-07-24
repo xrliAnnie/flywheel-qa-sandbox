@@ -162,14 +162,28 @@ export async function reconcileCommDbRunningAgainstFsm(
 	const probe = opts.probe ?? probeTmuxWindowLiveness;
 	const finalizeSession =
 		opts.finalizeSession ??
-		((db: CommDB, executionId: string) => db.finalizeSession(executionId));
+		((db: CommDB, executionId: string) =>
+			db.finalizeSessionUnlessTurnHolder(executionId));
 
 	let db: CommDB | undefined;
 	try {
 		db = new CommDB(dbPath);
+		const turnHolders = new Set(
+			db.listTurns().map((turn) => turn.holder_exec_id),
+		);
 		const running = db.listSessions(projectName, ["running"]);
 		result.scanned = running.length;
 		for (const s of running) {
+			// FLY-1374: a TURN holder is an active writer even when StateStore
+			// still carries the prior activation's terminal status. Never let a
+			// stale tmux target authorize deletion of its turn/mailbox identity.
+			if (turnHolders.has(s.execution_id)) {
+				result.parkedVetoed++;
+				console.log(
+					`[commdb-fsm-reconcile] prune_skipped_turn_holder: ${s.execution_id} (${projectName}) owns the current TURN — KEEPING the row`,
+				);
+				continue;
+			}
 			const fsm = fsmStatusOf(s.execution_id);
 			let harvestKind: "orphan" | "preserve" | undefined;
 			let targetProvenDead = false;
@@ -259,17 +273,32 @@ export async function reconcileCommDbRunningAgainstFsm(
 			try {
 				const raw = finalizeSession(db, s.execution_id) as
 					| {
+							finalized?: boolean;
+							reason?: string;
+							result?: {
+								retiredQuestionCount?: number;
+								retiredAskCount?: number;
+								deletedSessionCount?: number;
+							};
 							retiredQuestionCount?: number;
 							retiredAskCount?: number;
 							deletedSessionCount?: number;
 					  }
 					| undefined;
+				if (raw?.finalized === false && raw.reason === "turn_holder") {
+					result.parkedVetoed++;
+					console.log(
+						`[commdb-fsm-reconcile] prune_skipped_turn_holder_at_finalize: ${s.execution_id} (${projectName}) acquired the current TURN — KEEPING the row`,
+					);
+					continue;
+				}
+				const finalized = raw?.finalized === true ? raw.result : raw;
 				opts.onFinalizeOutcome?.(s.execution_id, projectName, {
 					ok: true,
 					outcome: "finalized",
-					retiredGateCount: raw?.retiredQuestionCount ?? 0,
-					retiredAskCount: raw?.retiredAskCount ?? 0,
-					deletedSessionCount: raw?.deletedSessionCount ?? 0,
+					retiredGateCount: finalized?.retiredQuestionCount ?? 0,
+					retiredAskCount: finalized?.retiredAskCount ?? 0,
+					deletedSessionCount: finalized?.deletedSessionCount ?? 0,
 				});
 				result.reconciled++;
 				if (harvestKind === "orphan") result.harvest!.orphanHarvested++;

@@ -322,6 +322,10 @@ import {
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { materializeWorkflowGateHolder } from "./gate-materializer.js";
 import { GatePoller } from "./gate-poller.js";
+import {
+	activateHolderForWake,
+	type HolderWakeCause,
+} from "./holder-wake-activation.js";
 import { buildSessionKey } from "./hook-payload.js";
 import {
 	InboxLoopHealthChecker,
@@ -511,7 +515,10 @@ import {
 	makeRunnerAuthScan,
 } from "./runner-auth-scan.js";
 import { makeRunnerQuotaScan } from "./runner-quota-scan.js";
-import { RunnerReceiptPatrol } from "./runner-receipt-patrol.js";
+import {
+	RunnerReceiptPatrol,
+	wakeFailureEpisodeFingerprint,
+} from "./runner-receipt-patrol.js";
 import { attemptRunnerRecoveryNudge } from "./runner-recovery-nudge.js";
 import {
 	handleRunnerApply,
@@ -587,6 +594,7 @@ import {
 } from "./tmux-hold-route.js";
 import {
 	captureRunnerScrollback,
+	discoverTmuxTargetByExecutionId,
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
 	killCmuxLinkedSession,
@@ -4126,6 +4134,17 @@ export async function startBridge(
 	const issueDisplayRefreshEnabled =
 		process.env.FLYWHEEL_ISSUE_DISPLAY_REFRESH !== "0";
 	const issueDisplayRefreshHolder: IssueDisplayRefreshHolder = {};
+	const pendingIssueDisplayRefreshes = new Set<string>();
+	const enqueueIssueDisplayRefresh = (issueId: string): void => {
+		const refresher = issueDisplayRefreshHolder.current;
+		if (refresher) {
+			refresher.enqueue(issueId);
+		} else if (issueDisplayRefreshEnabled && chatThreadCreator) {
+			// Startup status writes can precede the late-bound refresher. Preserve
+			// the exact write trigger and drain it as soon as the renderer exists.
+			pendingIssueDisplayRefreshes.add(issueId);
+		}
+	};
 	// GEO-158: FSM instance + DirectiveExecutor for validated transitions
 	const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 	const executor = new DirectiveExecutor(store);
@@ -4139,7 +4158,7 @@ export async function startBridge(
 		// triggers ONE coalesced derive-from-state display refresh.
 		onTransition: (executionId, targetStatus, ctx) => {
 			const issueId = ctx.issueId ?? store.getSession(executionId)?.issue_id;
-			if (issueId) issueDisplayRefreshHolder.current?.enqueue(issueId);
+			if (issueId) enqueueIssueDisplayRefresh(issueId);
 			terminalCommDbSync.enqueue(executionId, targetStatus, ctx.projectName);
 		},
 	};
@@ -6097,6 +6116,20 @@ export async function startBridge(
 	});
 	watchdogWiring.loopHeartbeat = true;
 
+	// FLY-1374: complete-marker fail-close can persist via forceStatus when the
+	// FSM rejects an un-replayable terminal marker. That bypasses the shared
+	// applyTransition hook, so run both exact write-after effects here: converge
+	// CommDB and enqueue the existing derive-from-state Discord render.
+	const onMarkerTerminalStatusPersisted = (
+		executionId: string,
+		status: "failed" | "blocked",
+		projectName: string,
+	): void => {
+		terminalCommDbSync.enqueue(executionId, status, projectName);
+		const issueId = store.getSession(executionId)?.issue_id;
+		if (issueId) enqueueIssueDisplayRefresh(issueId);
+	};
+
 	const heartbeatService = new HeartbeatService(
 		store,
 		notifier,
@@ -6111,8 +6144,7 @@ export async function startBridge(
 			ingestToken: config.ingestToken,
 			materializedHeadAuthority,
 			commDbPathForProject,
-			onTerminalStatusPersisted: (executionId, status, projectName) =>
-				terminalCommDbSync.enqueue(executionId, status, projectName),
+			onTerminalStatusPersisted: onMarkerTerminalStatusPersisted,
 		},
 		48, // reviewTimeoutHours (constructor default; FLY-159/191 48h)
 		quietSignalsProbe,
@@ -6312,8 +6344,7 @@ export async function startBridge(
 			transitionOpts,
 			getTmuxTarget: getTmuxTargetFromCommDb,
 			isTmuxWindowAlive,
-			onTerminalStatusPersisted: (executionId, status, projectName) =>
-				terminalCommDbSync.enqueue(executionId, status, projectName),
+			onTerminalStatusPersisted: onMarkerTerminalStatusPersisted,
 		});
 	} catch (err) {
 		console.error(
@@ -7870,10 +7901,10 @@ export async function startBridge(
 			const input: DetectionEscalationInput = {
 				targetKey: wake.execution_id,
 				kind: "wake_failed",
-				episodeFingerprint: createHash("sha256")
-					.update(wake.message_id)
-					.digest("hex")
-					.slice(0, 16),
+				episodeFingerprint: wakeFailureEpisodeFingerprint(
+					wake.execution_id,
+					firstDetectedAtMs,
+				),
 				executionId: wake.execution_id,
 				issueId: session.issue_id,
 				issueIdentifier: session.issue_identifier,
@@ -8352,6 +8383,10 @@ export async function startBridge(
 				reconnectHolder.current?.isReconnectTitleActive(execId) ?? false,
 		});
 		issueDisplayRefreshHolder.current = issueDisplayRefresher;
+		for (const issueId of pendingIssueDisplayRefreshes) {
+			issueDisplayRefresher.enqueue(issueId);
+		}
+		pendingIssueDisplayRefreshes.clear();
 		const restoreReconnectTitles = (executionIds?: readonly string[]) => {
 			const restoredIssues = settleReconnectTitlesAndRefresh(
 				heartbeatService,
@@ -8631,6 +8666,45 @@ export async function startBridge(
 				maxFixRoundsEnv !== undefined
 					? Number.parseInt(maxFixRoundsEnv, 10)
 					: undefined;
+			const activateWakeHolder = (
+				session: PhaseSession,
+				cause: HolderWakeCause,
+			) =>
+				activateHolderForWake(
+					{
+						transitionOpts,
+						openCommDb: (projectName) =>
+							new CommDB(commDbPathForProject(projectName)),
+						resolveLeadId: (target) => {
+							const fresh = store.getSession(target.execution_id);
+							if (!fresh) return undefined;
+							try {
+								return resolveLeadForIssue(
+									projects,
+									fresh.project_name,
+									parseJsonStringArray(fresh.issue_labels),
+								).lead.agentId;
+							} catch {
+								return undefined;
+							}
+						},
+						resolveVendor: (target) => {
+							const adapter = store.getSession(
+								target.execution_id,
+							)?.adapter_type;
+							const transport =
+								adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
+									? EXECUTOR_TO_TRANSPORT[
+											adapter as keyof typeof EXECUTOR_TO_TRANSPORT
+										]
+									: "claude-code";
+							return transport === "none" ? undefined : transport;
+						},
+						discoverTmuxTarget: discoverTmuxTargetByExecutionId,
+						probeDiscoveredTarget: probeRunnerProcessLiveness,
+					},
+					{ session, cause },
+				);
 			// FLY-887 (founder-visibility status line): shared by the orchestrator's
 			// per-transition refresh AND ship-time finalization's final refresh (via
 			// phaseStatusLineRefreshHolder, declared near the other forward-reference
@@ -9218,6 +9292,8 @@ export async function startBridge(
 						}
 						return { ok: true };
 					},
+					activatePhaseRunner: ({ session, cause }) =>
+						activateWakeHolder(session, cause),
 					// FLY-887: clear the park marker, then mailbox-wake the parked phase
 					// with the role-specific instruction + new head (mirrors auto-QA
 					// retestWakeQa). `{ ok:false }` = nothing delivered → held for reconcile.
@@ -9451,6 +9527,8 @@ export async function startBridge(
 						}
 						return { ok: true };
 					},
+					activateActorForWake: (session) =>
+						activateWakeHolder(session, "workflow_rework"),
 					grantTurn: async (input) => {
 						const grantedAtMs = Date.now();
 						const db = new CommDB(commDbPathForProject(input.projectName));

@@ -13,6 +13,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
 	buildAttachCommand,
 	captureRunnerScrollback,
+	discoverTmuxTargetByExecutionId,
 	isTmuxWindowAlive,
 	probeRunnerProcessLiveness,
 	resolveCmuxAttachTarget,
@@ -25,6 +26,53 @@ function tmuxAvailable(): boolean {
 
 const hasTmux = tmuxAvailable();
 const describeReal = hasTmux ? describe : describe.skip;
+
+describeReal("discoverTmuxTargetByExecutionId (real tmux)", () => {
+	const id = randomUUID().slice(0, 8);
+	const session = `runner-fly1374-${id}`;
+	const linked = `cmux-FLY-1374-${id}`;
+	const executionId = `exec-${randomUUID()}`;
+
+	afterAll(() => {
+		spawnSync("tmux", ["kill-session", "-t", linked], { stdio: "ignore" });
+		spawnSync("tmux", ["kill-session", "-t", session], { stdio: "ignore" });
+	});
+
+	it("finds one marked window through base + linked-session aliases", async () => {
+		execFileSync(
+			"tmux",
+			["new-session", "-d", "-s", session, "-n", "holder", "sleep 600"],
+			{ timeout: 5000 },
+		);
+		const windowId = execFileSync(
+			"tmux",
+			["list-windows", "-t", session, "-F", "#{window_id}"],
+			{ encoding: "utf8", timeout: 5000 },
+		).trim();
+		execFileSync(
+			"tmux",
+			[
+				"set-option",
+				"-w",
+				"-t",
+				`=${session}:${windowId}`,
+				"@flywheel_exec_id",
+				executionId,
+			],
+			{ timeout: 5000 },
+		);
+		execFileSync("tmux", ["new-session", "-d", "-s", linked, "-t", session], {
+			timeout: 5000,
+		});
+
+		await expect(discoverTmuxTargetByExecutionId(executionId)).resolves.toEqual(
+			{
+				kind: "found",
+				tmuxWindow: `${session}:${windowId}`,
+			},
+		);
+	});
+});
 
 describeReal("isTmuxWindowAlive (real tmux)", () => {
 	const session = `fly172-test-${randomUUID().slice(0, 8)}`;

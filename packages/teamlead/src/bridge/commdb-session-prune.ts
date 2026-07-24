@@ -176,6 +176,9 @@ export async function pruneDeadTerminalCommDbSessions(
 	let db: CommDB | undefined;
 	try {
 		db = new CommDB(dbPath);
+		const turnHolders = new Set(
+			db.listTurns().map((turn) => turn.holder_exec_id),
+		);
 		const terminal = db.listSessions(
 			projectName,
 			opts.includeCrashPreserve
@@ -184,6 +187,17 @@ export async function pruneDeadTerminalCommDbSessions(
 		);
 		result.scanned = terminal.length;
 		for (const s of terminal) {
+			// FLY-1374: TURN is current writer authority. A stale tmux mapping can
+			// make a live parked holder's old target look dead; deleting its session
+			// row also deletes turn self-check + mailbox identity. The write path
+			// therefore vetoes before any liveness probe.
+			if (turnHolders.has(s.execution_id)) {
+				result.parkedVetoed++;
+				console.log(
+					`[commdb-prune] prune_skipped_turn_holder: ${s.execution_id} (${projectName}) owns the current TURN — KEEPING the row`,
+				);
+				continue;
+			}
 			// Delete ONLY on a proven-dead window. `alive` (parked) and
 			// `indeterminate` (we learned nothing) both keep the row.
 			const state = await probe(s.tmux_window);
@@ -219,7 +233,15 @@ export async function pruneDeadTerminalCommDbSessions(
 				}
 			}
 			try {
-				const finalized = db.finalizeSession(s.execution_id);
+				const guarded = db.finalizeSessionUnlessTurnHolder(s.execution_id);
+				if (!guarded.finalized) {
+					result.parkedVetoed++;
+					console.log(
+						`[commdb-prune] prune_skipped_turn_holder_at_finalize: ${s.execution_id} (${projectName}) acquired the current TURN — KEEPING the row`,
+					);
+					continue;
+				}
+				const finalized = guarded.result;
 				const outcome: FinalizeCommDbResult = {
 					ok: true,
 					outcome: "finalized",

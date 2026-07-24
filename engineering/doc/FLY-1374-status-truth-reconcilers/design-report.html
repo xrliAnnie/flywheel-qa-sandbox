@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1374 状态真相双对账器 — 设计方案</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,system-ui,"PingFang SC",sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.65; padding:32px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; margin-bottom:6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:24px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:22px 24px; margin-bottom:20px; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.purple { border-left:4px solid #af52de; }
+  .card.gray { border-left:4px solid #86868b; }
+  h2 { font-size:19px; color:#1a365d; margin-bottom:12px; }
+  h3 { font-size:15px; margin:14px 0 8px; }
+  p { margin-bottom:10px; font-size:15px; }
+  .lede { font-size:16.5px; }
+  .dim { color:#86868b; font-size:13.5px; }
+  code, .mono { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f4; padding:1px 5px; border-radius:4px; }
+  /* flow diagram */
+  .flow { display:flex; flex-direction:column; gap:0; margin:14px 0; }
+  .frow { display:flex; align-items:stretch; gap:10px; flex-wrap:wrap; }
+  .fbox { flex:1 1 150px; background:#f6f9ff; border:1px solid #d8e4f8; border-radius:10px; padding:10px 12px; font-size:13.5px; min-width:140px; }
+  .fbox b { display:block; font-size:13.5px; margin-bottom:3px; color:#1a365d; }
+  .fbox.act { background:#f2fbf4; border-color:#cdeed6; }
+  .fbox.warn { background:#fff8f0; border-color:#f6e0c4; }
+  .fbox.stop { background:#fff5f5; border-color:#f3d1cf; }
+  .arrow { text-align:center; color:#86868b; font-size:16px; padding:2px 0; }
+  .badge { display:inline-block; font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:10px; margin-right:6px; vertical-align:1px; }
+  .badge.b { background:#e8f1ff; color:#007aff; }
+  .badge.g { background:#e6f8ec; color:#1e8e3e; }
+  .badge.a { background:#fff2e0; color:#c26a00; }
+  .badge.r { background:#ffe9e7; color:#d93025; }
+  .badge.p { background:#f5eafb; color:#8e44ad; }
+  table { width:100%; border-collapse:collapse; margin:10px 0; font-size:13.5px; }
+  th { text-align:left; color:#86868b; font-weight:600; font-size:12.5px; border-bottom:1px solid #e5e5ea; padding:6px 8px; }
+  td { border-bottom:1px solid #f0f0f2; padding:8px; vertical-align:top; }
+  ul { margin:6px 0 10px 20px; }
+  li { margin-bottom:6px; font-size:14.5px; }
+  .twocol { display:flex; gap:16px; flex-wrap:wrap; }
+  .twocol > div { flex:1 1 300px; }
+  .kv { background:#fafafa; border-radius:8px; padding:10px 14px; margin:8px 0; font-size:13.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>📡 状态真相双对账器</h1>
+<div class="sub">FLY-1374 · 设计方案(Codex 设计评审 9 轮通过)· 2026-07-24</div>
+
+<!-- ① 一句话总结 -->
+<div class="card blue">
+  <h2>① 一句话总结</h2>
+  <p class="lede"><b>让 Discord 上看到的状态重新可信</b>:给系统加两个「循环核对真相」的对账器 —— 每 3 分钟把<b>进程的真实死活</b>核对进数据库(主因,占七成),数据库一变、Discord 标题<b>自动跟着改</b>(这半套 7 月 6 日已上线,本单补洞)。原则:<b>先当审计员,再当执法者</b> —— 新机制先只记账不动手,真机跑出「零误判」的证据后才开启自动纠正。</p>
+  <p class="dim">背景:你 7/18 深夜说「Discord 显示的状态经常错/停格,我已经不敢信了」。深诊定位:数据库里死进程还标着"运行中"、活进程被标"失联",显示层只是忠实渲染了这份错误的账本。</p>
+</div>
+
+<!-- ② 核心流程图 -->
+<div class="card green">
+  <h2>② 核心流程:两个对账循环</h2>
+
+  <h3>对账器 1「进程现实 → 数据库」(新建,主活)</h3>
+  <div class="flow">
+    <div class="frow">
+      <div class="fbox"><b>每 3 分钟</b>搭现有巡检的车(零新定时器),把全部未完结会话过一遍</div>
+      <div class="fbox"><b>直连查证</b>绕开中介层,直接问 tmux:窗口还在吗?进程还活吗?窗口真的是它的吗?(每个会话出生时打上专属身份标记)</div>
+      <div class="fbox"><b>身份错位?先找人再定死</b>窗口对不上 ≠ 死了。全局反查:活在别的窗口 → 修映射;确实全网找不到 + 仪器自检正常 → 才算「死亡证明」</div>
+    </div>
+    <div class="arrow">↓ 按判定分派</div>
+    <div class="frow">
+      <div class="fbox act"><b>确认死了</b>数据库落终态(完整收尾:两库同步+审计留痕),Discord 标题自动跟上 → <b>≤5 分钟</b></div>
+      <div class="fbox act"><b>其实活着</b>被误标"失联"的 → 恢复认领;数据库行丢了的 → 补回来</div>
+      <div class="fbox warn"><b>拿不准</b>一律不动手,只记录。宁可晚修 3 分钟,<b>绝不误杀活会话</b></div>
+    </div>
+  </div>
+
+  <h3>对账器 2「数据库 → Discord 显示」(已在生产,补洞)</h3>
+  <div class="flow">
+    <div class="frow">
+      <div class="fbox"><b>已有底子</b>7/6 上线的统一渲染器:每 3 分钟幂等重渲染,标题不对就改、对就跳过(零浪费)</div>
+      <div class="fbox act"><b>本单补的洞</b>「已否决/已搁置」等终态还挂着进行中标记 → 补全;告警对完结会话反复刷屏 → 每个会话每类事只报一次;重启把活单 thread 锁死 → 修判定 + 自动解锁</div>
+    </div>
+  </div>
+
+  <h3>附带根治:「复用会话」病族(7/23 晚三案例)</h3>
+  <div class="flow">
+    <div class="frow">
+      <div class="fbox"><b>病根</b>停驻的会话被派新活时,系统只发"接力棒",五步开工手续一步都不补 → 领不到任务、写不了进度、收不到信</div>
+      <div class="arrow" style="align-self:center">→</div>
+      <div class="fbox act"><b>修法</b>唤醒前先把手续补齐(账本行、状态、信箱),全部就绪<b>才</b>交接力棒;中途断电也能从断点续上,绝不出现"拿着棒却开不了工"</div>
+    </div>
+  </div>
+</div>
+
+<!-- ③ 数据/结构模型 -->
+<div class="card purple">
+  <h2>③ 数据与结构模型(给工程看的骨架)</h2>
+  <table>
+    <tr><th>新东西</th><th>放哪</th><th>干什么</th></tr>
+    <tr><td><span class="badge b">组件</span>SessionRealityReconciler</td><td>Bridge,GatePoller 搭车</td><td>对账器 1 本体;三档开关 <code>off / audit(默认) / enforce</code></td></tr>
+    <tr><td><span class="badge b">身份标记</span><code>@flywheel_exec_id</code></td><td>tmux 窗口属性</td><td>会话出生时打上,<b>进程死了标记还在</b> —— 尸体也能验明正身;Codex 会话另用 daemon 身份(带世代号防重启窗口误判)</td></tr>
+    <tr><td><span class="badge b">新列</span>身份能力 + 世代四元组</td><td>comm.db 会话行</td><td>只有「标记确认发布成功」的会话才允许判死;老会话永远只记录不动手</td></tr>
+    <tr><td><span class="badge b">新表</span>激活意向 + 收尾凭据</td><td>comm.db / StateStore</td><td>唤醒复用、终态收尾都改成「先立字据再动手」—— 断电重启从字据续跑,不重复不丢失</td></tr>
+    <tr><td><span class="badge g">复用</span>FLY-907 渲染器、crash-reaper、marker 重放、re-adopt</td><td>既有机制</td><td>探针统一成一个共享判定源;校正尽量委托老机制,<b>不造第 10 个平行收割者</b></td></tr>
+  </table>
+  <div class="kv">交付节奏:<b>3 个 PR</b> —— PR-1 探针+审计模式+显示补洞 → PR-2 复用再水合+守卫钝化 → PR-3 真机 soak 证据达标后,一行开关切到自动纠正。</div>
+</div>
+
+<!-- ④ 关键取舍 -->
+<div class="card amber">
+  <h2>④ 关键取舍与被否掉的方案</h2>
+  <ul>
+    <li><b>审计先行,不首发就执法</b> —— 否掉了「上线即自动纠正」:检测这种东西,误判的代价是杀活会话,必须先用真机证据自证清白(受控杀真会话的正例 + 各种干扰负例都要过)。</li>
+    <li><b>补洞不重建</b> —— 否掉了「重写显示层」:审计发现显示对账器 7/6 就在生产跑着,错在输入(数据库本身是错的)。重建=重复建设。</li>
+    <li><b>委托不抢活</b> —— 否掉了「对账器自己收割一切」:死窗收割仍归现有唯一执法者,对账器只递证据+催它提前跑,结构上杜绝两个执法者打架。</li>
+    <li><b>worktree 不当身份证</b> —— 评审抓出:三段式的设计/实现/QA 共用一个工作目录,拿目录认人会把兄弟会话认成本人。改用出生时打的专属标记。</li>
+    <li><b>与并行两单划清边界</b> —— 批准投递断路(FLY-1448)、cmux 层(FLY-1446)一概不碰;等待批准中的会话本单只报不动。</li>
+    <li><b>收据双开只降级为检测</b> —— 评审证实两套收据的证明合同不同,盲目联动会吞掉你的指令,结算方案另开单细做。</li>
+  </ul>
+  <p class="dim">Codex 设计评审 9 轮:R1-R8 共 33 项反馈全部采纳(零拒绝),多数是「防误杀」的合同精度 —— 死亡证明怎么才算数、断电各切口怎么续、并发注册谁赢。第 9 轮 APPROVED,留 3 条非阻塞实施注记。</p>
+</div>
+
+<!-- ⑤ 诚实边界 -->
+<div class="card gray">
+  <h2>⑤ 诚实边界 — 这个设计不做什么</h2>
+  <ul>
+    <li><b>默认档(audit)不满足「5 分钟内自动纠正」</b> —— 这是刻意的:自动纠正要等真机 soak 证据达标后才开(PR-3)。验收会在开启后的环境里做。</li>
+    <li><b>已完结 thread 被人改名不自愈</b> —— 关单的 thread 没人看,为它常年烧 API 不值。活跃单的标题改错,下一轮自动纠正。</li>
+    <li><b>批准送达链(你批了没生效)不在本单</b> —— 那是 FLY-1448 的急修,两单并行,边界表已写死防撞车。</li>
+    <li><b>老会话(没有身份标记的存量)永远不会被自动判死</b> —— 只进「身份不明」清单,人工处置;清单不清零,不许宣称「零脱节」。</li>
+    <li><b>守卫钝化先取当晚真实被拦样本定位执法点再改</b> —— 不凭 issue 描述猜着修。</li>
+  </ul>
+</div>
+
+<div class="dim" style="text-align:center;margin-top:8px">FLY-1374 · design 节点交付 · 文档:exploration / research / plan(codex-approved)· 分支 flywheel-FLY-1374</div>
+</div>
+</body>
+</html>

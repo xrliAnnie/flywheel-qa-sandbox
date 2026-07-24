@@ -182,6 +182,57 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 		expect(db.getSession("flaky1")).toBeDefined();
 	});
 
+	it("FLY-1374 never finalizes the current TURN holder even when FSM is terminal and its stale target probes dead", async () => {
+		seedRunning("holder", "stale:@holder");
+		db.grantTurn("FLY-1374", "holder", "implement", 1_000, {
+			project: "flywheel",
+			sourceEventId: "turn:holder",
+		});
+		const probe = vi.fn(async () => "dead" as const);
+
+		const res = await reconcileCommDbRunningAgainstFsm(
+			"flywheel",
+			fsmFrom({ holder: "completed" }),
+			{ dbPath, probe },
+		);
+
+		expect(res).toMatchObject({
+			scanned: 1,
+			reconciled: 0,
+			parkedVetoed: 1,
+		});
+		expect(probe).not.toHaveBeenCalled();
+		expect(db.getSession("holder")).toBeDefined();
+		expect(db.getTurn("FLY-1374")?.holder_exec_id).toBe("holder");
+	});
+
+	it("FLY-1374 rechecks TURN authority atomically when a holder is granted during the liveness probe", async () => {
+		seedRunning("holder", "stale:@holder");
+
+		const res = await reconcileCommDbRunningAgainstFsm(
+			"flywheel",
+			fsmFrom({ holder: "completed" }),
+			{
+				dbPath,
+				probe: async () => {
+					db.grantTurn("FLY-1374", "holder", "implement", 1_000, {
+						project: "flywheel",
+						sourceEventId: "turn:holder-during-probe",
+					});
+					return "dead";
+				},
+			},
+		);
+
+		expect(res).toMatchObject({
+			scanned: 1,
+			reconciled: 0,
+			parkedVetoed: 1,
+		});
+		expect(db.getSession("holder")).toBeDefined();
+		expect(db.getTurn("FLY-1374")?.holder_exec_id).toBe("holder");
+	});
+
 	it("keeps non-terminal FSM rows without probing (running/awaiting_review/approved_to_ship/pending/reconnecting)", async () => {
 		const states = {
 			r1: "running",

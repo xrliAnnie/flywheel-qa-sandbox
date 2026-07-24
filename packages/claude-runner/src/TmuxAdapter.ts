@@ -588,6 +588,25 @@ export class TmuxAdapter implements IAdapter {
 			...windowCommand,
 		]);
 		const windowId = launchResult.stdout.trim();
+		const exactWindowTarget = `=${this.sessionName}:${windowId}`;
+
+		// FLY-1374: publish the execution identity on the exact window. If its
+		// CommDB row is later lost, the event-driven WAKE path can rediscover this
+		// one live holder without guessing from StateStore metadata.
+		try {
+			this.execFileFn("tmux", [
+				"set-option",
+				"-w",
+				"-t",
+				exactWindowTarget,
+				"@flywheel_exec_id",
+				ctx.executionId,
+			]);
+		} catch (err) {
+			console.warn(
+				`[TmuxAdapter] execution identity publish failed for ${exactWindowTarget}: ${(err as Error).message}`,
+			);
+		}
 
 		// FLY-1272: remain-on-exit is a window option. The former pre-spawn
 		// `=<session>:` target changed whichever window happened to be current,
@@ -596,7 +615,6 @@ export class TmuxAdapter implements IAdapter {
 		// Kimi/Antigravity inherit this execute() path but intentionally retain
 		// their existing exit semantics.
 		if (this.type === "claude-tmux") {
-			const exactWindowTarget = `=${this.sessionName}:${windowId}`;
 			try {
 				this.execFileFn("tmux", [
 					"set-option",

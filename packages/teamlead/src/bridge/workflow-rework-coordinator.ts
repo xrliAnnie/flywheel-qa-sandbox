@@ -152,6 +152,9 @@ export interface WorkflowReworkCoordinatorEffects {
 		session: PhaseSession,
 		expectedHeadSha: string,
 	): Promise<{ ok: boolean; reason?: string }>;
+	activateActorForWake?(
+		session: PhaseSession,
+	): Promise<{ ok: boolean; error?: string }>;
 	grantTurn(
 		input: WorkflowReworkTurnInput,
 	): Promise<{ epoch: number; grantedAt: string }>;
@@ -359,6 +362,16 @@ export class WorkflowReworkCoordinator {
 				generation: claim.generation,
 				session: actor,
 				reason: `worktree_not_ready:${ready.reason ?? "unknown"}`,
+			});
+		}
+		const holderActivation =
+			await this.deps.effects.activateActorForWake?.(actor);
+		if (holderActivation && !holderActivation.ok) {
+			return this.releaseAndHold({
+				requestId,
+				generation: claim.generation,
+				session: actor,
+				reason: `holder_activation_failed:${holderActivation.error ?? "unknown"}`,
 			});
 		}
 

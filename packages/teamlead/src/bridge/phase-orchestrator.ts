@@ -92,6 +92,8 @@ export interface PhaseSession {
 	 * still alive — the "don't respawn onto a live ghost" signal.
 	 */
 	tmux_session?: string;
+	/** Persisted executor backend used to restore mailbox routing on wake. */
+	adapter_type?: string;
 	/** Persisted shared-worktree path used for exact predecessor..current diffs. */
 	worktree_path?: string;
 }
@@ -327,6 +329,14 @@ export interface PhaseOrchestratorDeps {
 			session: PhaseSession,
 			expectedHeadSha: string,
 		): Promise<{ ok: boolean; reason?: string }>;
+		/**
+		 * FLY-1374: restore the reused holder's StateStore/CommDB activation
+		 * contract at the wake write path. Must succeed before TURN grant.
+		 */
+		activatePhaseRunner?(args: {
+			session: PhaseSession;
+			cause: "qa_fail" | "phase_retest";
+		}): Promise<{ ok: boolean; error?: string }>;
 		/**
 		 * FLY-939 (G-C): probe process liveness of a phase row's PERSISTED tmux
 		 * session directly (`row.tmux_session` → probeRunnerProcessLiveness), NOT
@@ -1596,6 +1606,17 @@ export class PhaseOrchestrator {
 				);
 				return;
 			}
+			const activation = await this.deps.effects.activatePhaseRunner?.({
+				session: impl,
+				cause: "qa_fail",
+			});
+			if (activation && !activation.ok) {
+				await this.failClosed(
+					impl,
+					`implement holder activation failed (${activation.error ?? "unknown"}) — not granting TURN / not waking`,
+				);
+				return;
+			}
 			this.deps.grantTurn({
 				issueId: session.issue_id,
 				execId: impl.execution_id,
@@ -1907,6 +1928,17 @@ export class PhaseOrchestrator {
 				await this.failClosed(
 					target,
 					`${next} phase worktree not ready to wake (${ready.reason ?? "?"}) — not granting TURN / not waking`,
+				);
+				return;
+			}
+			const activation = await this.deps.effects.activatePhaseRunner?.({
+				session: target,
+				cause: "phase_retest",
+			});
+			if (activation && !activation.ok) {
+				await this.failClosed(
+					target,
+					`${next} holder activation failed (${activation.error ?? "unknown"}) — not granting TURN / not waking`,
 				);
 				return;
 			}

@@ -51,10 +51,12 @@ class FakeExec {
 	gitRevParseOut = "";
 	gitRevParseThrows = false;
 	gitConfigCalls: string[][] = [];
+	tmuxCalls: string[][] = [];
 	displayMessageOut = `${WINDOW_ID}\n`;
 
 	exec = (cmd: string, args: string[]): { stdout: string } => {
 		if (cmd === "tmux") {
+			this.tmuxCalls.push(args);
 			if (args[0] === "-V") return { stdout: "tmux 3.4" };
 			if (args[0] === "display-message")
 				return { stdout: this.displayMessageOut };
@@ -268,6 +270,21 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		// daemon confirmed torn down
 		expect(runtime.stopped).toBe(1);
 		expect(runtime.drainedCalls).toBe(1);
+	});
+
+	it("publishes the execution id on the exact founder window", async () => {
+		await makeAdapter().execute(ctx());
+
+		expect(
+			fake.tmuxCalls.find((args) => args.includes("@flywheel_exec_id")),
+		).toEqual([
+			"set-option",
+			"-w",
+			"-t",
+			"=testsess:@7",
+			"@flywheel_exec_id",
+			execId,
+		]);
 	});
 
 	it("phase keep-alive starts one controller without starting mailbox intake before hold", async () => {

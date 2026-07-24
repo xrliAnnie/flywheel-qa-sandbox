@@ -211,6 +211,7 @@ function makeHarness(input: {
 		probeRegistered: vi.fn(async () => input.registered ?? "alive"),
 		probePersisted: vi.fn(async () => input.persisted ?? "absent"),
 		assertWorktreeReady: vi.fn(async () => input.ready ?? { ok: true }),
+		activateActorForWake: vi.fn(async () => ({ ok: true })),
 		grantTurn: vi.fn(async () => ({ epoch: 4, grantedAt: NOW })),
 		wakeActor: vi.fn(async () => wakeResults.shift() ?? { ok: true }),
 		alertHold: vi.fn(async () => undefined),
@@ -289,6 +290,10 @@ describe("WorkflowReworkCoordinator", () => {
 			epoch: 4,
 		});
 		expect(h.effects.assertWorktreeReady).toHaveBeenCalledWith(session, HEAD);
+		expect(h.effects.activateActorForWake).toHaveBeenCalledWith(session);
+		expect(
+			h.effects.activateActorForWake.mock.invocationCallOrder[0],
+		).toBeLessThan(h.effects.grantTurn.mock.invocationCallOrder[0]!);
 		expect(h.effects.grantTurn).toHaveBeenCalledWith(
 			expect.objectContaining({
 				executionId: "implement-exec",
@@ -326,6 +331,22 @@ describe("WorkflowReworkCoordinator", () => {
 		});
 		expect(dirty.effects.grantTurn).not.toHaveBeenCalled();
 		expect(dirty.getDelivery().state).toBe("pending");
+	});
+
+	it("holds a holder activation failure before admission, TURN, or wake", async () => {
+		const h = makeHarness({ registered: "alive" });
+		h.effects.activateActorForWake.mockResolvedValue({
+			ok: false,
+			error: "state_not_revivable:approved_to_ship",
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "held",
+			reason: "holder_activation_failed:state_not_revivable:approved_to_ship",
+		});
+		expect(h.store.admitGeneralizedWorkflowExecution).not.toHaveBeenCalled();
+		expect(h.effects.grantTurn).not.toHaveBeenCalled();
+		expect(h.effects.wakeActor).not.toHaveBeenCalled();
 	});
 
 	it("marks only proven-dead actors for replacement", async () => {

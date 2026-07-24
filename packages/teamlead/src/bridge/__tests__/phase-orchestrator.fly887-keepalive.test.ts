@@ -64,6 +64,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const parkPhaseRunner = vi.fn(async () => {});
 	const wakePhaseRunner = vi.fn(async () => ({ ok: true }));
 	const assertPhaseWorktreeReady = vi.fn(async () => ({ ok: true }));
+	const activatePhaseRunner = vi.fn(async () => ({ ok: true }));
 	const getAlivePhaseSession = vi.fn((): PhaseSession | undefined => undefined);
 	const hasShipFinalizationClaim = vi.fn((): boolean => false);
 	// FLY-939 (G-A2 / G-C): default empty stranded list + empty phase rows.
@@ -92,6 +93,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 			parkPhaseRunner,
 			wakePhaseRunner,
 			assertPhaseWorktreeReady,
+			activatePhaseRunner,
 		},
 		resolveThreeStage: () => ({ enabled: true }),
 		listStrandedDesignPhases: () => [],
@@ -119,6 +121,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		parkPhaseRunner,
 		wakePhaseRunner,
 		assertPhaseWorktreeReady,
+		activatePhaseRunner,
 		getAlivePhaseSession,
 		hasShipFinalizationClaim,
 		listStrandedImplementPhases,
@@ -276,11 +279,18 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 			qa,
 			"deadbeefcafe1234",
 		);
+		expect(h.activatePhaseRunner).toHaveBeenCalledWith({
+			session: qa,
+			cause: "phase_retest",
+		});
 		expect(h.grantTurn).toHaveBeenCalledWith(
 			expect.objectContaining({ execId: "qa-exec", phase: "qa" }),
 		);
 		expect(h.wakePhaseRunner).toHaveBeenCalledWith(
 			expect.objectContaining({ session: qa, kind: "retest" }),
+		);
+		expect(h.activatePhaseRunner.mock.invocationCallOrder[0]).toBeLessThan(
+			h.grantTurn.mock.invocationCallOrder[0]!,
 		);
 		expect(h.grantTurn.mock.invocationCallOrder[0]).toBeLessThan(
 			h.wakePhaseRunner.mock.invocationCallOrder[0]!,
@@ -572,6 +582,40 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 		expect(h.deps.effects.wakePhaseRunner).not.toHaveBeenCalled();
 	});
 
+	it("holder activation failure is fail-closed before TURN grant and wake", async () => {
+		const qa = session({
+			execution_id: "qa-exec",
+			session_role: "qa",
+			chat_thread_role: "qa",
+			status: "awaiting_review",
+		});
+		const h = makeDeps({
+			getAlivePhaseSession: vi.fn((_issue, phase) =>
+				phase === "qa" ? qa : undefined,
+			),
+		});
+		h.activatePhaseRunner.mockResolvedValue({
+			ok: false,
+			error: "commdb_session_missing_target",
+		});
+
+		await new PhaseOrchestrator(h.deps).onPhaseComplete(
+			session({
+				session_role: "implement",
+				status: "awaiting_review",
+				review_question_id: "q-1",
+			}),
+		);
+
+		expect(h.alertLeadPipelineError).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reason: expect.stringContaining("commdb_session_missing_target"),
+			}),
+		);
+		expect(h.grantTurn).not.toHaveBeenCalled();
+		expect(h.wakePhaseRunner).not.toHaveBeenCalled();
+	});
+
 	// FLY-939 (G-A / Step 2): a failed handoff wake now FAILS LOUD — the TURN is
 	// still set (points at the parked target, so the reconcile re-drive re-wakes
 	// idempotently) but the Lead is alerted instead of a silent warn. A silent
@@ -637,6 +681,10 @@ describe("FLY-887 keep-alive QA-FAIL fix loop (wake implement, don't close QA)",
 			summary: "login regression",
 		});
 		expect(h.qaVerdicts.recordFixRound).toHaveBeenCalledOnce();
+		expect(h.activatePhaseRunner).toHaveBeenCalledWith({
+			session: impl,
+			cause: "qa_fail",
+		});
 		expect(h.grantTurn).toHaveBeenCalledWith(
 			expect.objectContaining({ execId: "impl-1", phase: "implement" }),
 		);
