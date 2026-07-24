@@ -1,14 +1,14 @@
 ---
 issue: FLY-1466
 phase: implement
-phaseCursor: 2/6
-updated: 2026-07-24T22:09:56.958Z
-nextStep: Write RED flag-retirement assertions, then remove all three registry
-  entries and runtime reads
+phaseCursor: 3/6
+updated: 2026-07-24T22:15:37.760Z
+nextStep: Run full-repository lint, build, package tests, and required shell
+  harnesses; record any baseline-only failures
 chunks: []
 pointers: {}
 ---
 
 # FLY-1466 progress
-**phase**: implement (2/6)
-**next**: Write RED flag-retirement assertions, then remove all three registry entries and runtime reads
+**phase**: implement (3/6)
+**next**: Run full-repository lint, build, package tests, and required shell harnesses; record any baseline-only failures
