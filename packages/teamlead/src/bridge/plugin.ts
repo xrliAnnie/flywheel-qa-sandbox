@@ -115,6 +115,7 @@ import {
 } from "../lead-backends/codexLeadBridgeWiring.js";
 import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
 import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
+import { isOperationalTerminalStatus } from "../operational-terminal-status.js";
 import {
 	type LeadConfig,
 	loadProjects,
@@ -162,14 +163,17 @@ import {
 	rateLimitPerMinuteFromEnv,
 } from "./alert-rate-limiter.js";
 import { deriveCanonicalFounderId } from "./approval-signal/canonical-founder-id.js";
+import { makeDeferralSupport } from "./approval-signal/deferred-approval.js";
+import { reactToFounderMessage } from "./approval-signal/founder-ack.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
+import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { makeGateAuthorityView } from "./approval-signal/gate-authority-view.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
 import { loadQaConfigByProject } from "./auto-qa-config-source.js";
 import { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { AutoQaEffects } from "./auto-qa-effects.js";
-import { founderApprovalHoldGuard } from "./auto-qa-held.js";
+import { founderApprovalHoldGuard, reviewHoldReason } from "./auto-qa-held.js";
 import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
 import { AutoContinueArmer } from "./autocontinue-armer.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
@@ -311,6 +315,7 @@ import {
 	buildFounderConsentWiring,
 	buildGateResponsePostWriteHook,
 } from "./founder-consent/wiring.js";
+import { runFounderDecisionConvergencePass } from "./founder-decision-convergence.js";
 import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 // FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
@@ -517,7 +522,7 @@ import {
 import { makeRunnerQuotaScan } from "./runner-quota-scan.js";
 import {
 	RunnerReceiptPatrol,
-	wakeFailureEpisodeFingerprint,
+	wakeFailureNotificationFingerprint,
 } from "./runner-receipt-patrol.js";
 import { attemptRunnerRecoveryNudge } from "./runner-recovery-nudge.js";
 import {
@@ -570,12 +575,16 @@ import {
 	parseStuckConfirmKnobs,
 	type StuckConfirmResult,
 } from "./stuck-pane-confirm.js";
-import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
+import {
+	createLeadDetectionAckRouter,
+	createStuckRemanageRouter,
+} from "./stuck-remanage-routes.js";
 import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
 import {
 	createTerminalCommDbSync,
 	type TerminalCommDbSync,
 } from "./terminal-commdb-sync.js";
+import { TerminalReceiptSettlementProjector } from "./terminal-receipt-settlement.js";
 import {
 	createTerminalArchiveEnqueueBuffer,
 	isRetryableOutcome,
@@ -635,6 +644,7 @@ import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
 import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
+import { projectWorkflowEngineParkOutbox } from "./workflow-engine-park-projector.js";
 import { createWorkflowMenuRouter } from "./workflow-menu-routes.js";
 import {
 	grantWorkflowReworkTurn,
@@ -2540,6 +2550,14 @@ export function createBridgeApp(
 			...(opts?.stuckLatchTtlMs !== undefined
 				? { latchTtlMs: opts.stuckLatchTtlMs }
 				: {}),
+		}),
+	);
+	app.use(
+		"/api/leads",
+		createLeadDetectionAckRouter({
+			store,
+			projects: projects ?? [],
+			auth: tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		}),
 	);
 
@@ -6413,6 +6431,13 @@ export async function startBridge(
 		);
 	}
 
+	// FLY-1448: populated once receipt infrastructure is assembled below. The
+	// done-thread scheduler starts with a delay, and a defensive absent holder
+	// simply defers receipt settlement to its next fresh-Linear pass.
+	const terminalReceiptSettlementHolder: {
+		current?: TerminalReceiptSettlementProjector;
+	} = {};
+
 	// FLY-1165: done-thread reconcile — boot pass + periodic tick. The
 	// structural backstop behind the FLY-369 close cascade: threads whose issue
 	// is Done/Canceled in a FRESH per-issue Linear lookup AND provably owns no
@@ -6454,6 +6479,14 @@ export async function startBridge(
 						// Codex R2#5: D's fresh-Linear authority (reopen wins).
 						freshAuthority: input.freshAuthority,
 					}),
+				settleIssueReceipts: (input) =>
+					terminalReceiptSettlementHolder.current?.settleIssueDone({
+						projectName: input.projectName,
+						canonicalIssueId: input.canonicalIssueId,
+						issueAliases: input.issueAliases,
+						authorityCredential: input.authorityCredential,
+						revalidate: input.revalidate,
+					}) ?? Promise.resolve(),
 				newMutatorsEnabled: worktreeAutocleanEnabled(),
 			});
 		},
@@ -6758,6 +6791,8 @@ export async function startBridge(
 	// approval source (text / ✅ reaction / voice) so they cannot drift.
 	const founderApprovalIsHeld = (executionId: string): boolean =>
 		founderApprovalHoldGuard(store, store.getSession(executionId));
+	const founderHoldReasonFor = (executionId: string) =>
+		reviewHoldReason(store, store.getSession(executionId));
 
 	// FLY-1099: current canonical founder id (same derivation the factory uses).
 	const founderCanonicalId = (): string | undefined =>
@@ -6783,6 +6818,34 @@ export async function startBridge(
 		},
 		env: process.env,
 		log: (message) => console.warn(message),
+	});
+
+	const founderShipApprovalCallback = makeFounderShipApprovalCallback({
+		discordOwnerUserId: config.discordOwnerUserId,
+		founderConsentUserId: config.founderConsent?.founderUserId,
+		store,
+		gateAuthorityView,
+		denylistProjects: founderAutoApproveDenylist,
+		auditStore: store,
+		isHeld: founderApprovalIsHeld,
+		mergedGateGuard,
+		projectRootFor,
+		deferralSupport: (ctx) =>
+			makeDeferralSupport({
+				store,
+				holdReasonFor: founderHoldReasonFor,
+				ctx,
+			}),
+		onResponseWritten: (info) =>
+			founderShipPostWriteHook({
+				executionId: info.executionId,
+				questionId: info.questionId,
+				leadId: info.actor,
+				answer: info.answer,
+				db: info.db as unknown as Parameters<
+					typeof founderShipPostWriteHook
+				>[0]["db"],
+			}),
 	});
 
 	// FLY-799: the founder ✅-reaction ship-approval callback (same gating; the
@@ -6892,6 +6955,15 @@ export async function startBridge(
 		// FLY-1204: external merge is a real ship path — reclaim the parked
 		// three-stage phase sessions here too (shared finalizer, same as run-infra).
 		finalizeThreeStagePhases,
+		settleMergedReceipts: (input) =>
+			terminalReceiptSettlementHolder.current?.settlePrMerged({
+				projectName: input.projectName,
+				canonicalIssueId: input.canonicalIssueId,
+				issueAliases: input.issueAliases,
+				prNumber: input.prNumber,
+				authorityCredential: input.authorityCredential,
+				revalidate: input.revalidate,
+			}) ?? Promise.resolve(),
 		alertLead: async (session, title, body) => {
 			try {
 				const { lead } = resolveLeadForIssue(
@@ -7426,7 +7498,11 @@ export async function startBridge(
 	const detectionTerminalStatuses = new Set<string>(
 		OUTCOME_STATUSES.filter((s) => s !== "approved_to_ship"),
 	);
-	const receiptDetectionKinds = ["wake_failed", "receipt_unprocessed"] as const;
+	const receiptDetectionKinds = [
+		"wake_failed",
+		"receipt_unprocessed",
+		"founder_decision_dropped",
+	] as const;
 	const receiptDetectionKindSet = new Set<string>(receiptDetectionKinds);
 	const detectionGraceByProject = await loadDetectionGraceByProject(projects);
 	const detectionPageFounder = createFounderPager({
@@ -7762,6 +7838,12 @@ export async function startBridge(
 		return Number.isSafeInteger(value) && value > 0 ? value * 60_000 : fallback;
 	};
 	let receiptNudgeAuditSeq = 0;
+	const terminalReceiptSettlement = new TerminalReceiptSettlementProjector({
+		store,
+		projectNames: projects.map((project) => project.projectName),
+		commDbPathForProject,
+	});
+	terminalReceiptSettlementHolder.current = terminalReceiptSettlement;
 	const receiptWakePatrol = new RunnerReceiptPatrol({
 		projectNames: projects.map((project) => project.projectName),
 		commDbPathForProject,
@@ -7769,11 +7851,53 @@ export async function startBridge(
 		resolveTargetState: ({ projectName, executionId }) => {
 			const session = store.getSession(executionId);
 			if (!session || session.project_name !== projectName) return "missing";
-			return ["failed", "blocked", "timeout", "canceled", "cancelled"].includes(
-				session.status,
-			)
-				? "terminal"
-				: "live";
+			return isOperationalTerminalStatus(session.status) ? "terminal" : "live";
+		},
+		terminalLifecycleIdFor: ({ projectName, executionId }) => {
+			const session = store.getSession(executionId);
+			if (
+				!session ||
+				session.project_name !== projectName ||
+				!isOperationalTerminalStatus(session.status)
+			) {
+				return undefined;
+			}
+			return (
+				session.terminal_lifecycle_id ??
+				store.ensureTerminalLifecycleId(
+					executionId,
+					session.status,
+					session.lifecycle_revision ?? 0,
+				)
+			);
+		},
+		isDurablyParked: ({ projectName, executionId }) => {
+			const session = store.getSession(executionId);
+			if (
+				session?.project_name === projectName &&
+				session.status === "ship_parked"
+			) {
+				return true;
+			}
+			if (process.env.FLYWHEEL_ENGINE_DECLARED_PARK === "0") return false;
+			const db = new CommDB(commDbPathForProject(projectName), false);
+			try {
+				return db.getWorkflowEnginePark(executionId)?.state === "open";
+			} finally {
+				db.close();
+			}
+		},
+		auditWakeDisposition: ({ projectName, executionId, messageId, reason }) => {
+			const session = store.getSession(executionId);
+			store.insertEvent({
+				event_id: `wake-disposed-${executionId}-${messageId}`,
+				execution_id: executionId,
+				issue_id: session?.issue_id ?? "unknown",
+				project_name: projectName,
+				event_type: "wake_disposed",
+				source: "bridge.runner-receipt-patrol",
+				payload: { messageId, reason },
+			});
 		},
 		t1Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T1_MS", 90_000),
 		t2Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T2_MS", 5 * 60_000),
@@ -7879,6 +8003,20 @@ export async function startBridge(
 							comm.close();
 						}
 					},
+					isEngineParked: (executionId, currentProject) => {
+						if (process.env.FLYWHEEL_ENGINE_DECLARED_PARK === "0") {
+							return false;
+						}
+						const comm = new CommDB(
+							commDbPathForProject(currentProject),
+							false,
+						);
+						try {
+							return comm.getWorkflowEnginePark(executionId)?.state === "open";
+						} finally {
+							comm.close();
+						}
+					},
 					sendKeys: sendKeysToWindow,
 					getTmuxTarget: getTmuxTargetFromCommDb,
 					now: () => Date.now(),
@@ -7895,16 +8033,21 @@ export async function startBridge(
 			wake,
 			reason,
 			firstDetectedAtMs,
+			episodeFingerprint,
+			identityKind,
 		}) => {
 			const session = store.getSession(wake.execution_id);
 			if (!session) return false;
 			const input: DetectionEscalationInput = {
 				targetKey: wake.execution_id,
 				kind: "wake_failed",
-				episodeFingerprint: wakeFailureEpisodeFingerprint(
-					wake.execution_id,
+				episodeFingerprint: wakeFailureNotificationFingerprint({
+					executionId: wake.execution_id,
+					messageId: wake.message_id,
 					firstDetectedAtMs,
-				),
+					identityKind,
+					explicitFingerprint: episodeFingerprint,
+				}),
 				executionId: wake.execution_id,
 				issueId: session.issue_id,
 				issueIdentifier: session.issue_identifier,
@@ -7970,6 +8113,9 @@ export async function startBridge(
 				firstDetectedAtMs: Number.isFinite(firstDetectedAtMs)
 					? firstDetectedAtMs
 					: Date.now(),
+				sourceReceiptId: routedPayload.rootId,
+				sourceExecutionId: routedPayload.executionId,
+				sourceQuestionId: routedPayload.questionId,
 				reason:
 					`消息已送达并重发 ${routedPayload.resendRound} 次,仍无已处理收据` +
 					`(${routedPayload.contentSummary})`,
@@ -8028,6 +8174,68 @@ export async function startBridge(
 		},
 	});
 
+	const founderDecisionConvergenceTick = () =>
+		runFounderDecisionConvergencePass({
+			store,
+			resolve: (row) => {
+				const db = new CommDB(commDbPathForProject(row.project_name), false);
+				try {
+					if (db.getResponse(row.question_id)) return "response";
+					const question = db.getMessageById(row.question_id);
+					if (
+						question?.relay_state === "terminal_disposed" ||
+						question?.resolved_at
+					) {
+						return "question_retired";
+					}
+				} finally {
+					db.close();
+				}
+				const holder = store.getCurrentWorkflowGateHolderByQuestionId(
+					row.question_id,
+				);
+				if (holder?.state === "approved") return "holder_approved";
+				if (store.getDeferredApproval(row.question_id, row.msg_id)) {
+					return "deferred";
+				}
+				return null;
+			},
+			notifyDropped: async (row) => {
+				const session = store.getSession(row.execution_id);
+				if (!session) return false;
+				const outcome = await notifyDetectionEpisodeWithOutcome({
+					targetKey: row.execution_id,
+					kind: "founder_decision_dropped",
+					episodeFingerprint: `${row.msg_id}:${row.question_id}`,
+					executionId: row.execution_id,
+					issueId: session.issue_id,
+					issueIdentifier: session.issue_identifier,
+					projectName: row.project_name,
+					firstDetectedAtMs: row.deadline_at_ms,
+					reason: `founder 明确 ${row.classification} 决定已被读取,但未绑定到 gate ${row.question_id}`,
+					nextStep: "Lead 立即检查 gate writer / wake 投递链并人工收敛",
+				});
+				if (outcome !== "notified" && outcome !== "already_notified") {
+					return false;
+				}
+				const lead = projects
+					.find((project) => project.projectName === row.project_name)
+					?.leads.find((candidate) => candidate.agentId === row.lead_id);
+				const botToken = lead?.botToken ?? config.discordBotToken;
+				if (botToken) {
+					void reactToFounderMessage({
+						botToken,
+						channelId: row.thread_id,
+						messageId: row.msg_id,
+						emoji: "❓",
+					});
+				}
+				return true;
+			},
+			logger: (message) =>
+				console.warn(`[founder-decision-convergence] ${message}`),
+		});
+
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
 		projects,
@@ -8040,8 +8248,18 @@ export async function startBridge(
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
 		onLandOperationTick: landOperationTick,
 		onReceiptWakePatrolTick: async () => {
+			await projectWorkflowEngineParkOutbox({
+				store,
+				projectNames: projects.map((project) => project.projectName),
+				commDbPathForProject,
+				enabled: () => process.env.FLYWHEEL_ENGINE_DECLARED_PARK !== "0",
+			});
+			await terminalReceiptSettlement.pass();
 			await receiptWakePatrol.pass();
 			await leadReceiptPatrol.pass();
+		},
+		onFounderDecisionConvergenceTick: async () => {
+			await founderDecisionConvergenceTick();
 		},
 		onDeliveryReconcileTick: legacyDeliveryWatchdogsOn
 			? () => leadEventDelivery.reconcile()
@@ -8116,6 +8334,9 @@ export async function startBridge(
 		discordBotToken: config.discordBotToken,
 		discordOwnerUserId: config.discordOwnerUserId,
 		receiptFoundationEnabled: () => receiptFoundationEnabled(),
+		tryFounderShipApproval: founderShipApprovalCallback,
+		readCurrentBinding: (executionId, questionId, prHeadSha) =>
+			readCurrentGateMessageBinding(store, executionId, questionId, prHeadSha),
 		// FLY-1099 §4.3: the deferred-approval rebind pass — the SAME production
 		// post-write hook + canonical founder id the live text path uses (no
 		// second authorization chain).

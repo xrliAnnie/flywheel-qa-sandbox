@@ -14,6 +14,22 @@ export interface ReceiptWakePatrolOptions {
 		projectName: string;
 		executionId: string;
 	}) => "live" | "terminal" | "missing";
+	/** StateStore-owned identity for one continuous terminal lifecycle. */
+	terminalLifecycleIdFor?: (input: {
+		projectName: string;
+		executionId: string;
+	}) => string | undefined;
+	/** StateStore-owned durable park states (for example ship_parked). */
+	isDurablyParked?: (input: {
+		projectName: string;
+		executionId: string;
+	}) => boolean;
+	auditWakeDisposition?: (input: {
+		projectName: string;
+		executionId: string;
+		messageId: string;
+		reason: string;
+	}) => void;
 	now?: () => number;
 	t1Ms?: number;
 	t2Ms?: number;
@@ -34,6 +50,8 @@ export interface ReceiptWakePatrolOptions {
 		wake: RunnerPhaseWake;
 		reason: string;
 		firstDetectedAtMs: number;
+		episodeFingerprint?: string;
+		identityKind?: "terminal_episode" | "founder_message";
 	}) => Promise<boolean>;
 	openDb?: (path: string) => CommDB;
 }
@@ -63,6 +81,26 @@ export function wakeFailureEpisodeFingerprint(
 		.update(`${executionId}|wake_failed|${firstDetectedAtMs}`)
 		.digest("hex")
 		.slice(0, 16);
+}
+
+export function wakeFailureNotificationFingerprint(input: {
+	executionId: string;
+	messageId: string;
+	firstDetectedAtMs: number;
+	identityKind?: "terminal_episode" | "founder_message";
+	explicitFingerprint?: string;
+}): string {
+	if (input.explicitFingerprint) return input.explicitFingerprint;
+	if (input.identityKind === "founder_message") {
+		return createHash("sha256")
+			.update(input.messageId)
+			.digest("hex")
+			.slice(0, 16);
+	}
+	return wakeFailureEpisodeFingerprint(
+		input.executionId,
+		input.firstDetectedAtMs,
+	);
 }
 
 /**
@@ -113,7 +151,32 @@ export class RunnerReceiptPatrol {
 				: session.status === "running"
 					? "live"
 					: "terminal";
+		const metadata = envelopeMetadata(wake);
 		if (targetState === "terminal") {
+			if (metadata.origin === "founder") {
+				const terminalLifecycleId = this.options.terminalLifecycleIdFor?.({
+					projectName,
+					executionId: wake.execution_id,
+				});
+				if (terminalLifecycleId) {
+					await this.completeTerminal(
+						db,
+						projectName,
+						wake,
+						nowMs,
+						terminalLifecycleId,
+					);
+					return;
+				}
+				await this.escalate(
+					db,
+					projectName,
+					wake,
+					nowMs,
+					"terminal_before_started",
+				);
+				return;
+			}
 			db.disposeRunnerPhaseWakeForTerminal(
 				wake.execution_id,
 				wake.message_id,
@@ -132,13 +195,36 @@ export class RunnerReceiptPatrol {
 			return;
 		}
 		const durablePark =
-			db.getEffectiveDeclaredState(wake.execution_id, nowMs)?.kind === "parked";
+			db.getEffectiveDeclaredState(wake.execution_id, nowMs)?.kind ===
+				"parked" ||
+			this.options.isDurablyParked?.({
+				projectName,
+				executionId: wake.execution_id,
+			}) === true;
 		if (wake.purpose === "message_traffic" && !durablePark) {
-			db.disposeRunnerPhaseWakePending(
+			if (metadata.origin === "founder") {
+				await this.escalate(
+					db,
+					projectName,
+					wake,
+					nowMs,
+					"founder_wake_undeliverable",
+				);
+				return;
+			}
+			const disposed = db.disposeRunnerPhaseWakePending(
 				wake.execution_id,
 				wake.message_id,
 				nowMs,
 			);
+			if (disposed) {
+				this.options.auditWakeDisposition?.({
+					projectName,
+					executionId: wake.execution_id,
+					messageId: wake.message_id,
+					reason: "live_non_parked_normal_traffic",
+				});
+			}
 			return;
 		}
 
@@ -234,6 +320,37 @@ export class RunnerReceiptPatrol {
 		});
 	}
 
+	private async completeTerminal(
+		db: CommDB,
+		projectName: string,
+		wake: RunnerPhaseWake,
+		nowMs: number,
+		terminalLifecycleId: string,
+	): Promise<void> {
+		const result = db.completeRunnerPhaseWakeTerminal({
+			executionId: wake.execution_id,
+			messageId: wake.message_id,
+			reason: "terminal_before_started",
+			terminalLifecycleId,
+			nowMs,
+		});
+		if (!result) return;
+		const live = db.revalidateRunnerReceiptWakeAlert(result.alert.id, nowMs);
+		if (!live) return;
+		const firstDetectedAtMs = Date.parse(result.alert.created_at);
+		const delivered = await this.options.notifyWakeFailure({
+			projectName,
+			wake: result.wake,
+			reason: "terminal_before_started",
+			firstDetectedAtMs: Number.isFinite(firstDetectedAtMs)
+				? firstDetectedAtMs
+				: wake.queued_at,
+			episodeFingerprint: result.episodeFingerprint,
+			identityKind: result.identityKind,
+		});
+		if (delivered) db.markReceiptAlertDelivered(result.alert.id, nowMs);
+	}
+
 	private async escalate(
 		db: CommDB,
 		projectName: string,
@@ -258,6 +375,9 @@ export class RunnerReceiptPatrol {
 			wake,
 			reason,
 			firstDetectedAtMs,
+			...(envelopeMetadata(wake).origin === "founder"
+				? { identityKind: "founder_message" as const }
+				: {}),
 		});
 		if (delivered) db.markReceiptAlertDelivered(alert.id, nowMs);
 	}

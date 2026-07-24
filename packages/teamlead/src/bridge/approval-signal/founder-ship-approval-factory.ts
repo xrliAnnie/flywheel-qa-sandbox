@@ -85,6 +85,7 @@ export interface FounderShipApprovalCallbackArgs {
 	/** FLY-1041 Chunk 7: deliverer-verified reply to THIS gate's ship card. */
 	replyToCard?: boolean;
 	founderReceipt?: ShipApprovalHandlerArgs["founderReceipt"];
+	recordDecisionClassification?: ShipApprovalHandlerArgs["recordDecisionClassification"];
 }
 
 /** Default ON — only an explicit `=0` disables (kill-switch). */
@@ -144,6 +145,7 @@ export function makeFounderShipApprovalCallback(
 				},
 				replyToCard: args.replyToCard,
 				founderReceipt: args.founderReceipt,
+				recordDecisionClassification: args.recordDecisionClassification,
 			},
 			{
 				canonicalFounderId,

@@ -16,6 +16,7 @@ import { CommDB } from "flywheel-comm/db";
 import { founderMessageRootId } from "flywheel-comm/founder-reply-routing";
 import type { InboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import type { StateStore } from "../StateStore.js";
+import type { GateMessageBinding } from "./approval-signal/gate-message-binding.js";
 import {
 	msToSnowflakeLowerBound,
 	snowflakeToMs,
@@ -25,9 +26,17 @@ import {
 const DISCORD_API = "https://discord.com/api/v10";
 const GET_TIMEOUT_MS = 5_000;
 const GET_LIMIT = 50;
+const DEFAULT_FOUNDER_DECISION_DEADLINE_MS = 3 * 60_000;
 
 /** Discord message type 19 = REPLY (the only shape reply-to-card accepts). */
 const DISCORD_MESSAGE_TYPE_REPLY = 19;
+const FOUNDER_TERMINAL_EVIDENCE_KINDS = [
+	"ship_gate_bound",
+	"already_applied",
+	"deferred_founder_decision",
+	"gate_retired_merged",
+	"dead_lettered",
+] as const;
 
 interface RawDiscordMessage {
 	id: string;
@@ -177,6 +186,49 @@ export interface FounderReplyDeliverDeps {
 		eventId: string,
 		payload: Record<string, unknown>,
 	) => Promise<boolean>;
+	/**
+	 * Restore the FLY-945 founder text/card decision path. The canonical
+	 * founder receipt is enqueued before this callback runs, so the shared gate
+	 * writer can atomically bind the response, source event, receipt, and wake.
+	 * Absent keeps the category-agnostic Lead handoff byte-compatible.
+	 */
+	tryFounderShipApproval?: (args: {
+		msg: { id: string; content?: string; authorId?: string };
+		shipGates: PendingQuestionForThread[];
+		ctx: FounderReplyThreadCtx;
+		db: CommDB;
+		replyToCard?: boolean;
+		founderReceipt: {
+			rootId: string;
+			msgId: string;
+			now: string;
+			intentKey: string;
+			queuedAtMs: number;
+			envelope: {
+				id: string;
+				to: string;
+				content: string;
+				metadata?: Record<string, unknown>;
+			};
+		};
+		recordDecisionClassification?: (decision: "approve" | "reject") => void;
+	}) => Promise<ShipApprovalOutcome | null>;
+	/** Current exact card binding, shared with the reaction approval path. */
+	readCurrentBinding?: (
+		executionId: string,
+		questionId: string,
+		prHeadSha: string,
+	) => GateMessageBinding | null;
+	/**
+	 * FLY-1448 C: production StateStore seams. Optional so legacy/test
+	 * assemblies retain their exact transport-only behavior.
+	 */
+	ensureDecisionConvergence?: (
+		input: Parameters<StateStore["ensureFounderDecisionConvergence"]>[0],
+	) => void;
+	classifyDecisionConvergence?: (
+		input: Parameters<StateStore["classifyFounderDecisionConvergence"]>[0],
+	) => void;
 }
 
 function audit(
@@ -338,6 +390,43 @@ export async function emitFounderReplyDeliveryForThread(
 			// exactly like a non-matching one (its loss is on the durable record;
 			// re-processing would just re-fail forever).
 			if (deps.retryLedger?.isDeadLettered(ctx.threadId, msg.id)) {
+				const rootId = founderMessageRootId(ctx.leadId, msg.id);
+				const repaired = db.settleFounderHubRoot({
+					rootId,
+					now: new Date().toISOString(),
+					evidence: {
+						v: 1,
+						kind: "dead_lettered",
+						ref: msg.id,
+						actor: ctx.ownerUserId,
+						actor_kind: "founder-writer",
+						fence: { discord_message_id: msg.id },
+						basis: ["founder-reply-dead-letter"],
+					},
+					acceptedProcessedKinds: FOUNDER_TERMINAL_EVIDENCE_KINDS,
+				});
+				if (repaired.kind === "missing" || repaired.kind === "conflict") {
+					audit(
+						store,
+						ctx,
+						matching[0]?.executionId ?? "",
+						"founder_root_evidence_conflict",
+						{
+							msgId: msg.id,
+							rootId,
+							result: repaired.kind,
+							...(repaired.evidenceKind
+								? { evidenceKind: repaired.evidenceKind }
+								: {}),
+						},
+					);
+					brokeOn = {
+						msgId: msg.id,
+						stage: "founder_root_evidence_conflict",
+						reason: `dead-lettered founder receipt is ${repaired.kind}`,
+					};
+					break;
+				}
 				if (!cursorPinned) advanceableUpTo = msg.id;
 				continue;
 			}
@@ -356,9 +445,15 @@ export async function emitFounderReplyDeliveryForThread(
 			// message can spin forever with zero durable trail (账本诚实性).
 			let outcome: ProcessOutcome;
 			try {
-				outcome = await processFounderMessage(msg, ctx, {
+				outcome = await processFounderMessage(msg, matching, ctx, {
+					store,
 					db,
 					deliverAmbiguousToLead: deps.deliverAmbiguousToLead,
+					tryFounderShipApproval: deps.tryFounderShipApproval,
+					retryLedger: deps.retryLedger,
+					readCurrentBinding: deps.readCurrentBinding,
+					ensureDecisionConvergence: deps.ensureDecisionConvergence,
+					classifyDecisionConvergence: deps.classifyDecisionConvergence,
 				});
 			} catch (err) {
 				outcome = {
@@ -441,10 +536,17 @@ type ProcessOutcome =
 
 async function processFounderMessage(
 	msg: RawDiscordMessage,
+	matching: PendingQuestionForThread[],
 	ctx: FounderReplyThreadCtx,
 	deps: {
+		store: StateStore;
 		db: CommDB;
 		deliverAmbiguousToLead?: FounderReplyDeliverDeps["deliverAmbiguousToLead"];
+		tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
+		retryLedger?: FounderReplyRetryLedger;
+		readCurrentBinding?: FounderReplyDeliverDeps["readCurrentBinding"];
+		ensureDecisionConvergence?: FounderReplyDeliverDeps["ensureDecisionConvergence"];
+		classifyDecisionConvergence?: FounderReplyDeliverDeps["classifyDecisionConvergence"];
 	},
 ): Promise<ProcessOutcome> {
 	const { db } = deps;
@@ -452,6 +554,29 @@ async function processFounderMessage(
 	const nowDate = new Date();
 	const now = nowDate.toISOString();
 	const rootId = founderMessageRootId(ctx.leadId, msg.id);
+	const shipGates = matching.filter(
+		(question) => question.checkpoint === "approve_to_ship",
+	);
+	const configuredDeadlineMs = Number.parseInt(
+		process.env.FLYWHEEL_FOUNDER_DECISION_DEADLINE_MS ?? "",
+		10,
+	);
+	const deadlineMs =
+		Number.isSafeInteger(configuredDeadlineMs) && configuredDeadlineMs > 0
+			? configuredDeadlineMs
+			: DEFAULT_FOUNDER_DECISION_DEADLINE_MS;
+	for (const gate of shipGates) {
+		deps.ensureDecisionConvergence?.({
+			threadId: ctx.threadId,
+			msgId: msg.id,
+			questionId: gate.questionId,
+			projectName: ctx.projectName,
+			leadId: ctx.leadId,
+			executionId: gate.executionId,
+			disposedAtMs: nowDate.getTime(),
+			deadlineAtMs: nowDate.getTime() + deadlineMs,
+		});
+	}
 	// Founder ingress has no classifier. The chase flag
 	// only controls patrol; it cannot change this transport topology.
 	db.enqueueFounderHubRoot({
@@ -471,6 +596,163 @@ async function processFounderMessage(
 		now,
 		routingState: "hub_recorded",
 	});
+	let cardGate: PendingQuestionForThread | undefined;
+	if (
+		deps.readCurrentBinding &&
+		shipGates.length > 0 &&
+		msg.type === DISCORD_MESSAGE_TYPE_REPLY &&
+		(msg.message_reference?.type === undefined ||
+			msg.message_reference.type === 0) &&
+		msg.message_reference?.channel_id === ctx.threadId &&
+		msg.message_reference.message_id
+	) {
+		for (const gate of shipGates) {
+			const head = deps.store.getSession(gate.executionId)?.pr_head_sha;
+			if (!head) continue;
+			const binding = deps.readCurrentBinding(
+				gate.executionId,
+				gate.questionId,
+				head,
+			);
+			if (binding?.gateMessageId === msg.message_reference.message_id) {
+				cardGate = gate;
+				break;
+			}
+		}
+	}
+	const receiptGate =
+		cardGate ?? (shipGates.length === 1 ? shipGates[0] : undefined);
+	if (deps.tryFounderShipApproval && receiptGate) {
+		const intentKey = `founder-route:${ctx.leadId}:${msg.id}:${receiptGate.questionId}`;
+		const handled = await deps.tryFounderShipApproval({
+			msg: { id: msg.id, content: msg.content, authorId: msg.author?.id },
+			shipGates: cardGate ? [cardGate] : shipGates,
+			ctx,
+			db,
+			replyToCard: cardGate !== undefined,
+			founderReceipt: {
+				rootId,
+				msgId: msg.id,
+				now,
+				intentKey,
+				queuedAtMs: nowDate.getTime(),
+				envelope: {
+					id: `founder-route-wake:${ctx.leadId}:${msg.id}:${receiptGate.questionId}`,
+					to: receiptGate.executionId,
+					content: rawAnswer,
+					metadata: {
+						origin: "founder",
+						kind: "ship_thread_reply",
+						msgId: msg.id,
+						questionId: receiptGate.questionId,
+					},
+				},
+			},
+			recordDecisionClassification: deps.classifyDecisionConvergence
+				? (decision) =>
+						deps.classifyDecisionConvergence?.({
+							threadId: ctx.threadId,
+							msgId: msg.id,
+							questionId: receiptGate.questionId,
+							classification: decision,
+							cardReferenceValid: cardGate !== undefined,
+						})
+				: undefined,
+		});
+		let terminalDisposition = handled?.bound[0]
+			? {
+					kind: "already_applied",
+					questionId: handled.bound[0].questionId,
+				}
+			: handled?.deferred[0]
+				? {
+						kind: "deferred_founder_decision",
+						questionId: handled.deferred[0].questionId,
+					}
+				: handled?.suppressed?.[0]
+					? {
+							kind: "gate_retired_merged",
+							questionId: handled.suppressed[0].questionId,
+						}
+					: undefined;
+		if (handled?.deadLetter) {
+			const deadLettered = deps.retryLedger?.deadLetterNow({
+				ctx,
+				msgId: msg.id,
+				executionId: receiptGate.executionId,
+				stage: handled.deadLetter.stage,
+				reason: handled.deadLetter.reason,
+				contentExcerpt: truncate(msg.content ?? "", 200),
+			});
+			if (!deadLettered?.deadLettered) {
+				return {
+					ok: false,
+					stage: handled.deadLetter.stage,
+					reason: handled.deadLetter.reason,
+				};
+			}
+			terminalDisposition = {
+				kind: "dead_lettered",
+				questionId: handled.deadLetter.questionId,
+			};
+		}
+		if (terminalDisposition) {
+			const rootSettlement = db.settleFounderHubRoot({
+				rootId,
+				now,
+				evidence: {
+					v: 1,
+					kind: terminalDisposition.kind,
+					ref: terminalDisposition.questionId,
+					actor: msg.author?.id ?? ctx.ownerUserId,
+					actor_kind: "founder-writer",
+					fence: { discord_message_id: msg.id },
+					basis: [`question:${terminalDisposition.questionId}`],
+				},
+				acceptedProcessedKinds: FOUNDER_TERMINAL_EVIDENCE_KINDS,
+			});
+			if (
+				rootSettlement.kind === "missing" ||
+				rootSettlement.kind === "conflict"
+			) {
+				audit(
+					deps.store,
+					ctx,
+					receiptGate.executionId,
+					"founder_root_evidence_conflict",
+					{
+						msgId: msg.id,
+						rootId,
+						result: rootSettlement.kind,
+						...(rootSettlement.evidenceKind
+							? { evidenceKind: rootSettlement.evidenceKind }
+							: {}),
+					},
+				);
+				return {
+					ok: false,
+					stage: "founder_root_evidence_conflict",
+					reason: `canonical founder receipt is ${rootSettlement.kind}`,
+				};
+			}
+		}
+		if (
+			handled &&
+			(handled.bound.length > 0 ||
+				handled.deferred.length > 0 ||
+				(handled.suppressed?.length ?? 0) > 0 ||
+				handled.deadLetter !== undefined)
+		) {
+			return { ok: true };
+		}
+		if (handled?.retry) {
+			return {
+				ok: false,
+				stage: handled.stage ?? "ship_attribution_retry",
+				reason: handled.reason ?? "transient ship-attribution failure",
+			};
+		}
+	}
 	// Founder control-plane messages follow the Claude agent-team topology:
 	// Bridge is a transport only. It records delivery, forwards the original
 	// message to Lead, and stops. Lead's later route/no-route command is the

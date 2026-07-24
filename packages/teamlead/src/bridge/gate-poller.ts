@@ -70,6 +70,7 @@ import {
 } from "./founder-notify-utils.js";
 import {
 	emitFounderReplyDeliveryForThread,
+	type FounderReplyDeliverDeps,
 	type FounderReplyRetryLedger,
 	type FounderReplyThreadCtx,
 	type PendingQuestionForThread,
@@ -295,8 +296,21 @@ export interface GatePollerConfig {
 	shipGateCardGraceMs?: number;
 	/** Part B slow sub-cadence in poll ticks (default 20 ≈ 60s at 3s). */
 	founderReplyDeliverEveryNTicks?: number;
+	/** FLY-1448: durable decision convergence on this existing cadence. */
+	onFounderDecisionConvergenceTick?: () => void | Promise<void>;
 	/** Part B thread-read cursor store (default in-memory). */
 	cursorStore?: InboundCursorStore;
+	/**
+	 * FLY-1448: the founder ship-approval callback built by plugin.ts. The
+	 * deliverer invokes it only after founder identity and gate targeting have
+	 * been verified. Absent preserves the legacy Lead-handoff behavior.
+	 */
+	tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
+	/**
+	 * FLY-1448: durable ship-card binding reader used for exact reply-to-card
+	 * targeting when more than one ship gate is pending in the issue thread.
+	 */
+	readCurrentBinding?: FounderReplyDeliverDeps["readCurrentBinding"];
 	/** FLY-1392 system wiring is default-on; explicit seam keeps unit fixtures stable. */
 	receiptFoundationEnabled?: () => boolean;
 	/**
@@ -1175,6 +1189,15 @@ export class GatePoller {
 				} catch (err) {
 					console.warn(
 						"[GatePoller] founder action-ledger drain error:",
+						err instanceof Error ? err.message : String(err),
+					);
+					this.maybeRecoverStore(err);
+				}
+				try {
+					await this.config.onFounderDecisionConvergenceTick?.();
+				} catch (err) {
+					console.warn(
+						"[GatePoller] founder-decision convergence pass error:",
 						err instanceof Error ? err.message : String(err),
 					);
 					this.maybeRecoverStore(err);
@@ -3152,6 +3175,14 @@ export class GatePoller {
 								fetchImpl: this.config.fetchImpl,
 								cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
 								deliverAmbiguousToLead,
+								tryFounderShipApproval: this.config.tryFounderShipApproval,
+								readCurrentBinding: this.config.readCurrentBinding,
+								ensureDecisionConvergence: (input) => {
+									this.config.store.ensureFounderDecisionConvergence(input);
+								},
+								classifyDecisionConvergence: (input) => {
+									this.config.store.classifyFounderDecisionConvergence(input);
+								},
 								// FLY-1099 §7.1: bounded retry + dead-letter.
 								retryLedger: this.founderReplyRetryLedger(),
 							},

@@ -187,4 +187,39 @@ describe("FLY-1185 D entry — cutover episode machine (plan §4 #30)", () => {
 	it("per-run closeout cap is the hardcoded constant (no env)", () => {
 		expect(MAX_ISSUE_CLOSEOUTS_PER_RUN).toBe(5);
 	});
+
+	it("offers fresh Done authority to receipt settlement before an active-runner veto", async () => {
+		const store = await freshStore();
+		store.upsertSession({
+			execution_id: "active-e",
+			issue_id: UUID,
+			project_name: "proj",
+			status: "running",
+			issue_identifier: "FLY-500",
+		});
+		store.upsertChatThread("thread-1", "chan", UUID, "lead");
+		const settleIssueReceipts = vi.fn(async () => {});
+
+		const result = await reconcileDoneThreads(
+			baseDeps(store, {
+				settleIssueReceipts,
+				lookupTarget: (() => ({
+					kind: "found",
+					target: { tmuxWindow: "runner" },
+				})) as never,
+				probeLiveness: async () => "alive" as const,
+			}),
+		);
+
+		expect(settleIssueReceipts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectName: "proj",
+				canonicalIssueId: UUID,
+				issueAliases: expect.arrayContaining([UUID, "FLY-500"]),
+				authorityCredential: `${UUID}:2026-07-11T00:00:00.000Z`,
+				revalidate: expect.any(Function),
+			}),
+		);
+		expect(result.skippedActive).toBe(1);
+	});
 });

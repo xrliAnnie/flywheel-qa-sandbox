@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CaptureError, CaptureResult } from "../bridge/session-capture.js";
 import { fingerprintOutput } from "../bridge/stuck-candidate.js";
 import {
+	createLeadDetectionAckRouter,
 	createStuckRemanageRouter,
 	NUDGE_ALLOWLIST,
 	type StuckRemanageRouterOptions,
@@ -88,6 +89,14 @@ async function boot(
 			sendKeys,
 			getTmuxTarget: () => ({ tmuxWindow: "geo:@1", sessionName: "geo" }),
 			...over,
+		}),
+	);
+	app.use(
+		"/api/leads",
+		createLeadDetectionAckRouter({
+			store,
+			projects,
+			auth: over.auth,
 		}),
 	);
 	const server = app.listen(0, "127.0.0.1");
@@ -887,6 +896,91 @@ describe("POST /:executionId/detection-ack (FLY-1048 C3-w)", () => {
 		});
 		expect(r.status).toBe(200);
 		expect(r.json).toMatchObject({ ok: true, status: "RESOLVED" });
+	});
+});
+
+describe("POST /api/leads/:leadId/detection-ack (FLY-1448)", () => {
+	const KIND = "receipt_unprocessed";
+	const FP = "receipt-root-1";
+	const valid = {
+		projectName: "geo",
+		kind: KIND,
+		episode_fingerprint: FP,
+		disposition: "ack",
+	};
+
+	function seedLeadEpisode(
+		targetKey = "geo:product-lead",
+		ownerLeadId: string | null = "product-lead",
+		fingerprint = FP,
+	): void {
+		h.store.upsertDetectionEscalation({
+			targetKey,
+			kind: KIND,
+			episodeFingerprint: fingerprint,
+			issueId: "FLY-1",
+			ownerLeadId,
+			firstDetectedAtMs: 1_000,
+		});
+		h.store.markDetectionEscalationLeadNotified(
+			targetKey,
+			KIND,
+			fingerprint,
+			2_000,
+		);
+	}
+
+	it("derives the target server-side and atomically prepares the disposition receipt", async () => {
+		seedLeadEpisode();
+		const r = await post(h, "/api/leads/product-lead/detection-ack", valid);
+
+		expect(r.status).toBe(200);
+		expect(r.json).toMatchObject({
+			ok: true,
+			status: "ACKED",
+			receiptPrepared: true,
+		});
+		expect(
+			h.store.getDetectionEscalation("geo:product-lead", KIND, FP)?.status,
+		).toBe("ACKED");
+	});
+
+	it("rejects raw target injection and cross-project/cross-lead attempts", async () => {
+		seedLeadEpisode();
+		const raw = await post(h, "/api/leads/product-lead/detection-ack", {
+			...valid,
+			target_key: "other:product-lead",
+		});
+		const project = await post(h, "/api/leads/product-lead/detection-ack", {
+			...valid,
+			projectName: "other",
+		});
+		const lead = await post(h, "/api/leads/other-lead/detection-ack", valid);
+
+		expect(raw.status).toBe(400);
+		expect(project.status).not.toBe(200);
+		expect(lead.status).not.toBe(200);
+		expect(
+			h.store.getDetectionEscalation("geo:product-lead", KIND, FP)?.status,
+		).toBe("LEAD_NOTIFIED");
+	});
+
+	it("fails closed on a missing or conflicting owner", async () => {
+		seedLeadEpisode("geo:product-lead", null);
+		const missing = await post(
+			h,
+			"/api/leads/product-lead/detection-ack",
+			valid,
+		);
+		expect(missing.status).toBe(403);
+
+		const conflictingFingerprint = "receipt-root-2";
+		seedLeadEpisode("geo:product-lead", "other-lead", conflictingFingerprint);
+		const conflict = await post(h, "/api/leads/product-lead/detection-ack", {
+			...valid,
+			episode_fingerprint: conflictingFingerprint,
+		});
+		expect(conflict.status).toBe(403);
 	});
 });
 

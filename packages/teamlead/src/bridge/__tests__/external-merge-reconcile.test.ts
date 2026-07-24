@@ -173,6 +173,9 @@ async function setup(opts?: {
 		issueId: string,
 		projectName: string,
 	) => Promise<void>;
+	settleMergedReceipts?: Parameters<
+		typeof createExternalMergeReconciler
+	>[0]["settleMergedReceipts"];
 }): Promise<Setup> {
 	const store = await StateStore.create(
 		join(tmpRoot, `state-${stateDbSequence++}.db`),
@@ -209,6 +212,7 @@ async function setup(opts?: {
 		checkPrMerge: checkPr as never,
 		hasTrustedApprovalImpl: () => opts?.trusted ?? true,
 		finalizeThreeStagePhases: opts?.finalizeThreeStagePhases,
+		settleMergedReceipts: opts?.settleMergedReceipts,
 		alertLead: (_s, title) => {
 			alerts.push({ title });
 		},
@@ -255,6 +259,33 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 			prNumber: 478,
 			mergeCommitOid: MERGE_OID,
 		});
+	});
+
+	it("offers only a fresh MERGED proof to receipt settlement", async () => {
+		const settleMergedReceipts = vi.fn(
+			async (input: {
+				revalidate: () => Promise<"authorized" | "unknown">;
+			}) => {
+				expect(await input.revalidate()).toBe("authorized");
+			},
+		);
+		const s = await setup({
+			settleMergedReceipts: settleMergedReceipts as never,
+		});
+		seedSession(s.store);
+
+		await s.pass();
+
+		expect(settleMergedReceipts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectName: "proj",
+				canonicalIssueId: "FLY-921",
+				prNumber: 478,
+				authorityCredential: `proj:478:${MERGE_OID}`,
+				revalidate: expect.any(Function),
+			}),
+		);
+		expect(s.checkPr).toHaveBeenCalledTimes(2);
 	});
 
 	it("path 1: an already-merged PR does not re-run the open-PR CI probe", async () => {

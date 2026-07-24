@@ -194,6 +194,7 @@ export interface ShipApprovalHandlerArgs {
 		projectName?: string;
 		projectRoot?: string;
 	};
+	recordDecisionClassification?: (decision: "approve" | "reject") => void;
 	/**
 	 * FLY-1041 Chunk 7: this founder message is a VERIFIED Discord reply
 	 * (type 19 + reference in this thread) to THIS gate's ship card — the
@@ -337,6 +338,7 @@ export async function tryFounderShipApproval(
 
 	// ── signal evaluation (text), shared by the live and held paths ──
 	let signalAudited = false;
+	let classificationFailure: Error | undefined;
 	const evaluateSignal = async (): Promise<ApprovalSignal | null> => {
 		const evaluateText = deps.evaluateTextImpl ?? evaluateTextSource;
 		const signal = await evaluateText({
@@ -360,6 +362,22 @@ export async function tryFounderShipApproval(
 				kind: signal.kind,
 				...(evidence?.reason !== undefined ? { reason: evidence.reason } : {}),
 			});
+		}
+		if (
+			(signal.kind === "approve" || signal.kind === "reject") &&
+			args.recordDecisionClassification
+		) {
+			try {
+				args.recordDecisionClassification(signal.kind);
+			} catch (error) {
+				classificationFailure =
+					error instanceof Error ? error : new Error(String(error));
+				deps.auditSink?.("decision_classification_failed", {
+					questionId: gate.questionId,
+					decision: signal.kind,
+					error: classificationFailure.message,
+				});
+			}
 		}
 		return signal;
 	};
@@ -449,6 +467,12 @@ export async function tryFounderShipApproval(
 		const signal =
 			preEvaluated === undefined ? await evaluateSignal() : preEvaluated;
 		if (!signal) return null;
+		if (classificationFailure) {
+			return retryOutcome(
+				"decision_classification_failed",
+				classificationFailure.message,
+			);
+		}
 		if (signal.kind === "unclear") {
 			// R1 #2 truth-in-time: NEVER a "已存着" reply for unclear — nothing was
 			// stored. WAKE-only + ❓ (or bounded retry on infra failure).
@@ -502,6 +526,12 @@ export async function tryFounderShipApproval(
 
 	const signal = await evaluateSignal();
 	if (!signal) return null;
+	if (classificationFailure) {
+		return retryOutcome(
+			"decision_classification_failed",
+			classificationFailure.message,
+		);
+	}
 	if (signal.kind === "unclear") return unclearDisposition(signal);
 
 	// ── FLY-1099 §4.3 (Codex R3 #2): pre-write re-verify, immediately before the

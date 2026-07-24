@@ -33,6 +33,11 @@ export interface DetectionEscalationInput {
 	issueIdentifier?: string;
 	projectName: string;
 	firstDetectedAtMs: number;
+	/** Exact receipt lineage used by terminal settlement; never inferred from
+	 * rendered alert text. */
+	sourceReceiptId?: string;
+	sourceExecutionId?: string;
+	sourceQuestionId?: string;
 	/** Kind-specific one-sentence summary. NO raw pane text — ever. */
 	reason: string;
 	/** Truthful next step for the Lead (formatParkAlert wording family). */
@@ -149,6 +154,9 @@ export async function notifyLeadFirst(
 		issueId: input.issueId,
 		ownerLeadId: owner?.leadId ?? null,
 		firstDetectedAtMs: input.firstDetectedAtMs,
+		sourceReceiptId: input.sourceReceiptId,
+		sourceExecutionId: input.sourceExecutionId,
+		sourceQuestionId: input.sourceQuestionId,
 	});
 	if (row.status !== "NEW") return "already_notified";
 

@@ -175,6 +175,19 @@ export interface ExternalMergeReconcileDeps {
 		issueId: string,
 		projectName: string,
 	) => Promise<void>;
+	/**
+	 * FLY-1448 E1: settle receipt debt using this reconciler's independent
+	 * GitHub authority. The sink must invoke `revalidate` before every
+	 * irreversible mutation; only a fresh MERGED probe authorizes work.
+	 */
+	settleMergedReceipts?: (input: {
+		projectName: string;
+		canonicalIssueId: string;
+		issueAliases: string[];
+		prNumber: number;
+		authorityCredential: string;
+		revalidate: () => Promise<"authorized" | "unknown">;
+	}) => Promise<void>;
 	log?: (m: string) => void;
 }
 
@@ -849,6 +862,33 @@ export function createExternalMergeReconciler(
 							continue;
 						}
 						negativeMergeCache.delete(cacheKey);
+						if (deps.settleMergedReceipts) {
+							const authorityCredential = `${projectName}:${candidate.prNumber}:${info.mergeCommitOid ?? info.headRefOid ?? "merged"}`;
+							const issueAliases = [
+								...new Set(
+									[
+										candidate.issueId,
+										...candidate.sessions.flatMap((session) => [
+											session.issue_id,
+											session.issue_identifier,
+										]),
+										candidate.belt?.holder.issue_id,
+										candidate.belt?.holder.issue_identifier,
+									].filter((value): value is string => !!value),
+								),
+							];
+							await deps.settleMergedReceipts({
+								projectName,
+								canonicalIssueId: candidate.issueId,
+								issueAliases,
+								prNumber: candidate.prNumber,
+								authorityCredential,
+								revalidate: async () => {
+									const fresh = await checkPr(root, candidate.prNumber);
+									return fresh.state === "merged" ? "authorized" : "unknown";
+								},
+							});
+						}
 						for (const session of candidate.sessions) {
 							// Re-read the row — the world may have moved during the gh call.
 							const fresh = deps.store.getSession(session.execution_id);
