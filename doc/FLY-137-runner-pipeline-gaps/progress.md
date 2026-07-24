@@ -11,6 +11,6 @@
 | 3/6 | founder HTML (`FLY-137-design.html`) | done |
 | 4/6 | commit + push | done (32a66650) |
 | 5/6 | publish-report + Lead 报告 | publish-failed (401 unauthorized) — 已按合同报 `DESIGN-HTML publish-failed` 给 Lead |
-| 6/6 | complete --route phase_design_complete | in_progress |
+| 6/6 | complete --route phase_design_complete | attempted — Bridge 409 completion_conflict（session 已 terminal），fail-close marker 已写，待 boot-drain 对账 |
 
-**Next**: complete
+**Next**: (none — design node work complete; DONE report queued to Lead, ids 2bdeeaff / 92c51216)
