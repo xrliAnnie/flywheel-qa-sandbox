@@ -1,13 +1,13 @@
 ---
 issue: FLY-1448
-phase: design
-phaseCursor: 6/6
-updated: 2026-07-24T07:19:24.155Z
-nextStep: complete phase_design_complete
+phase: implement
+phaseCursor: 0/5
+updated: 2026-07-24T07:22:40.412Z
+nextStep: audit current main drift and start TDD slice A
 chunks: []
 pointers: {}
 ---
 
 # FLY-1448 progress
-**phase**: design (6/6)
-**next**: complete phase_design_complete
+**phase**: implement (0/5)
+**next**: audit current main drift and start TDD slice A
