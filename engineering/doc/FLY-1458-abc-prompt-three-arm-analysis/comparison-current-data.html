@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1458 · A/B/C Prompt 三臂对比(现有数据版)</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --dim:#86868b; --navy:#1a365d;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de;
+    --A:#af52de; --B:#007aff; --C:#34c759;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"SF Pro Text",sans-serif;line-height:1.55;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:28px 18px 80px}
+  h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:20px}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+  .card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+    padding:18px 20px;margin:16px 0}
+  .card.warn{border-left:4px solid var(--amber)}
+  .card.can{border-left:4px solid var(--green)}
+  .card.cant{border-left:4px solid var(--red)}
+  .card.conf{border-left:4px solid var(--purple)}
+  h2{font-size:18px;margin:2px 0 12px;display:flex;align-items:center;gap:8px}
+  h3{font-size:15px;margin:16px 0 6px;color:var(--navy)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+  td.num{font-variant-numeric:tabular-nums;font-family:"SF Mono",monospace}
+  .tableScroll{overflow-x:auto}
+  .pill{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:700;color:#fff}
+  .pA{background:var(--A)} .pB{background:var(--B)} .pC{background:var(--C)}
+  .tag{display:inline-block;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:600;
+    background:#f0f0f2;color:var(--dim)}
+  .big{font-size:15px;font-weight:700}
+  ul{margin:6px 0 6px 2px;padding-left:20px} li{margin:4px 0;font-size:13.5px}
+  .note{font-size:12.5px;color:var(--dim);margin-top:6px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 2px}
+  .tab{padding:7px 14px;border-radius:20px;border:1px solid #ddd;background:#fff;cursor:pointer;
+    font-size:13px;color:var(--navy)}
+  .tab.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+  .panel{display:none} .panel.on{display:block}
+  .kbd{background:#f0f0f2;border-radius:5px;padding:1px 6px;font-size:12px}
+  .bar{height:9px;border-radius:5px;background:#eee;position:relative;overflow:hidden;min-width:60px}
+  .bar>span{position:absolute;left:0;top:0;bottom:0;border-radius:5px}
+  details{margin:6px 0}
+  summary{cursor:pointer;font-size:13px;color:var(--navy);font-weight:600}
+  code{background:#f0f0f2;padding:1px 5px;border-radius:5px;font-size:12.5px}
+  .foot{color:var(--dim);font-size:12px;margin-top:24px;border-top:1px solid #e5e5ea;padding-top:12px}
+  @media (prefers-color-scheme: dark){
+    :root{--bg:#000;--card:#1c1c1e;--ink:#f5f5f7;--dim:#8e8e93;--navy:#7aa5d6}
+    th,td{border-color:#2c2c2e}.tab{background:#1c1c1e;border-color:#3a3a3c}
+    .tag,.kbd,code{background:#2c2c2e}.bar{background:#2c2c2e}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>A / B / C Prompt 三臂对比 — 现有数据版</h1>
+  <div class="sub">FLY-1458 · 阶段级 duration 优先 · 生成于 2026-07-24 · 数据源:teamlead.db(只读)</div>
+
+  <div class="card warn">
+    <h2>⚠️ 先读这个:这是方向感,不是定论</h2>
+    <ul>
+      <li>每臂样本极小(<b>N=1~4</b>),且各臂样本来自<b>不同 issue</b>(任务难度不受控)。</li>
+      <li>本版只做<b>「能比的比」</b>:今晚 split 分桶让 <b>design 阶段</b>攒到了多样本 → 阶段级 duration 是当前最能比的维度。</li>
+      <li><b>不做终局推荐</b>,选择权在 founder。split 分桶已于今晚 R2 重启起转正,数据会持续积累,后续有更新版。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>三臂是什么(臂归因已按 <span class="mono">skill_framework_mode</span> 核验,非猜测)</h2>
+    <div class="tableScroll"><table>
+      <tr><th>臂</th><th>Prompt 模式</th><th>历史完整载荷(07-21)</th><th>今晚 design 阶段追加</th></tr>
+      <tr><td><span class="pill pA">A</span></td><td>superpowers(重·全技能框架)</td>
+        <td>FLY-1392 收据地基(foundation)</td><td>1456 flag治理 · 1374 状态真相</td></tr>
+      <tr><td><span class="pill pB">B</span></td><td>matt</td>
+        <td>FLY-1385 DAG引擎 bug</td><td>1448 批准断路 · <i>1457 generic 单段*</i></td></tr>
+      <tr><td><span class="pill pC">C</span></td><td>bare(最简)</td>
+        <td>FLY-1393 watchdog最小集(foundation)</td><td>1150 dynamic flag store(×3 pass)</td></tr>
+    </table></div>
+    <div class="note">三臂模型恒定:design=Fable / implement=gpt-5.6-sol / QA=Opus,<b>同阶段模型可比</b>。* 1457 是 generic 单段(monolithic)ops 审计任务,执行模型 + 任务类型都不同 → 不进阶段对比表,仅作旁注(总耗时 26m16s)。</div>
+  </div>
+
+  <div class="card can">
+    <h2>⭐ 主指标:Design 阶段 duration(阶段级可比,多样本)</h2>
+    <div class="note">度量 = 该 design-role session 的 <b>first-pass active</b>(onboard → 首次进 design_review 的连续工作段,可干净测量;全 Fable)。</div>
+    <div class="tableScroll"><table>
+      <tr><th>臂</th><th>N(pass)</th><th>range</th><th>mean</th><th>逐个样本(issue:时长)</th></tr>
+      <tr><td><span class="pill pA">A superpowers</span></td><td class="num">3</td>
+        <td class="num">12m54s – 1h00m</td><td class="num big">30m47s</td>
+        <td class="num">1456:12m54s · 1374:18m35s · <b>1392:1h00m*</b></td></tr>
+      <tr><td><span class="pill pB">B matt</span></td><td class="num">2</td>
+        <td class="num">18m47s – 20m59s</td><td class="num big">19m53s</td>
+        <td class="num">1448:18m47s · 1385:20m59s</td></tr>
+      <tr><td><span class="pill pC">C bare</span></td><td class="num">4</td>
+        <td class="num">10m57s – 30m56s</td><td class="num big">16m38s</td>
+        <td class="num">1150:11m45s · 1150:12m55s · 1150:10m57s · <b>1393:30m56s</b></td></tr>
+    </table></div>
+    <details>
+      <summary>关键诚实标注(点开)—— 为什么这张表还不能下结论</summary>
+      <ul>
+        <li><b>* A 的 mean 被 1392 单点异常(1h00m)拉高</b>。1392 是三臂里任务最大的(foundation 收据地基,implement 产出最多)。A 的另外两个 design 样本(13m/19m)其实与 B/C 落在同一区间 → <b>「superpowers=慢」的初印象很可能是那一个大任务造成的,加样本后并未被系统性复现</b>。</li>
+        <li><b>C 的 N=4 其实只有 2 个不同 issue</b>:1150 同一任务重跑了 3 次 pass(相关,不算 3 个独立样本)+ 1393。有效独立任务 ≈ 2。</li>
+        <li>1374 / 1150(最新)的 design session 仍 <span class="tag">running</span>(停在 design_review 等 review),first-pass 已测但 session 未终态;且它们的 <span class="mono">main</span> 前置 session 先做过 brainstorm/research 后被取代 → design-role first-pass 可能<b>低估</b>了总 design 投入。</li>
+        <li>各臂样本仍是<b>不同 issue</b> → 任务复杂度差异未被控制(见 confound)。</li>
+      </ul>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>历史三臂 · 完整三段(唯一有 implement+QA 全链的 N=1 数据)</h2>
+    <div class="tabs" id="stab">
+      <div class="tab on" data-p="dur">分阶段 active</div>
+      <div class="tab" data-p="wait">等待 / wall-clock</div>
+      <div class="tab" data-p="qual">review / 产出</div>
+    </div>
+    <div class="panel on" id="p-dur"><div class="tableScroll"><table>
+      <tr><th>阶段(first-pass active)</th><th>A·superpowers 1392</th><th>B·matt 1385</th><th>C·bare 1393</th></tr>
+      <tr><td>Design</td><td class="num">1h00m</td><td class="num">20m59s</td><td class="num">30m56s</td></tr>
+      <tr><td>Implement(onboard→pr)</td><td class="num">2h44m</td><td class="num">2h12m</td><td class="num">1h08m</td></tr>
+      <tr><td>QA(首个 verdict)</td><td class="num">1m12s ⚠</td><td class="num">25m</td><td class="num">25m</td></tr>
+    </table></div>
+      <div class="note">⚠ A 的 QA 1m12s 是一次快速 smoke-fail,与 B/C 的完整跑一遍不可比。跨轮 fix 的<b>总</b> active 不可干净分离(见「不能说」)。</div>
+    </div>
+    <div class="panel" id="p-wait"><div class="tableScroll"><table>
+      <tr><th></th><th>A·superpowers</th><th>B·matt</th><th>C·bare</th></tr>
+      <tr><td>founder approve 等待</td><td class="num">11h47m</td><td class="num">9h41m</td><td class="num">39m</td></tr>
+      <tr><td>wall-clock 总</td><td class="num big">24h20m</td><td class="num big">18h20m</td><td class="num big">16h47m</td></tr>
+    </table></div>
+      <div class="note"><b>wall-clock 被 founder 等待 / 过夜 park 主导,≠ prompt 效率。</b> C 的 approve 等待只有 39m,仅因它当晚命中 gate 时 founder 在线;A/B 的 implement gate 撞上过夜。差异反映 founder 何时在线。</div>
+    </div>
+    <div class="panel" id="p-qual"><div class="tableScroll"><table>
+      <tr><th></th><th>A·superpowers</th><th>B·matt</th><th>C·bare</th></tr>
+      <tr><td>code_review 轮数</td><td class="num">11</td><td class="num">5</td><td class="num">7</td></tr>
+      <tr><td>implement fix 重入</td><td class="num">8</td><td class="num">4</td><td class="num">3</td></tr>
+      <tr><td>代码产出(文件 / +行)</td><td class="num">197f / +28808</td><td class="num">93f / +10433</td><td class="num">121f / +7842</td></tr>
+      <tr><td>其中 implement</td><td class="num">110f / +15933</td><td class="num">64f / +7843</td><td class="num">57f / +3666</td></tr>
+    </table></div>
+      <div class="note">A 的 implement 产出 ≈ C 的 <b>4.3×</b>(+15933 vs +3666 行)。A review churn 也最多(11 轮)。但这既可能是 prompt 差异,也可能只是<b>任务大</b>。</div>
+    </div>
+  </div>
+
+  <div class="card conf">
+    <h2>Confound 清单(不许拿脏数直接比)</h2>
+    <ul>
+      <li><b>①【最大】任务规模不对等</b>:各臂样本是不同 issue。历史臂 implement 产出差 ~4×(A≈4.3×C)。<span class="mono">workflow_run.tier / task_category</span> 系统难度标签<b>全 NULL</b>,无客观难度分级。</li>
+      <li><b>②【Annie 已知】B 中途注入第 6 修复面</b>(1385 design 阶段 scope 被扩)。</li>
+      <li><b>③【新发现】C(1393)implement 被 blocked + 过夜 11h 重派</b>(两个 implement session 拼接)。</li>
+      <li><b>④ wall-clock ≈ founder 在线时机</b>,非计算时间(approve 等待 A 11h47m / B 9h41m / C 39m)。</li>
+      <li><b>⑤ C 的 design N=4 实为 2 个不同 issue</b>(1150 同任务 ×3 pass 相关)。</li>
+      <li><b>⑥ 1374 / 1150 有前置 main 研究被取代</b> → design first-pass 可能低估。</li>
+      <li><b>⑦ 1457 是 generic 单段 ops 任务</b>,执行模型 + 任务类型都不同,不可与三段并列。</li>
+    </ul>
+  </div>
+
+  <div class="card can">
+    <h2>✅ 数据能说什么(方向感,N 小)</h2>
+    <ul>
+      <li>Design 阶段 duration:matt(19-21m,最紧)与 bare(11-31m)偏低;superpowers 有 1 个大异常(1392,1h),但其余样本(13-19m)与其他臂同区间 → <b>加样本后没看到 superpowers 系统性更慢</b>。</li>
+      <li>历史 implement first-pass:A(2h44m)>B(2h12m)>C(1h08m)——但与任务规模同序。</li>
+      <li>review churn:A(11)>C(7)>B(5),A 迭代最多(可能因任务最大)。</li>
+    </ul>
+  </div>
+
+  <div class="card cant">
+    <h2>🚫 数据不能说什么(诚实边界,不估算冒充实测)</h2>
+    <ul>
+      <li><b>哪个 prompt 更快 / 更好 —— 无法定论。</b> N=1~4、任务体量差 ~4×、多个 confound、token 不可得、主指标(扣等待的 active)只能部分测。</li>
+      <li><b>每臂 token 消耗:不可得。</b> <span class="mono">token-usage.db</span> 只有 2026-06-28~30 数据,07-21~24 全空;GPT(implement)侧 token 也不在 Claude 账本。仅有行数/文件数作产出规模的<b>部分</b>代理。</li>
+      <li><b>跨轮 fix 的总 active 工作时间:不可干净分离。</b> QA/design session 停在 active 标签阶段(如 test)时其实在等 implementer —— 从时间戳无法把「真在算」和「在等别的 role」分开。这正是等待态无法从时间戳区分的盲区。只有 first-pass active 可干净测。</li>
+      <li>今晚的 implement / QA 阶段<b>尚不可用</b>(1448/1456 implement 仍 running;1150 implement 是 65s stub / 1s failed)。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>后续数据采集(会自动积累,后续出更新版)</h2>
+    <ul>
+      <li><b>split 分桶自今晚 R2 重启起转正</b>(<span class="mono">FLYWHEEL_SKILL_FRAMEWORK_MODE=split</span>):按 per-issue stable-hash 自动把 issue 分桶到 A/B/C,per-dispatch 也可显式指定。正常干活即积累多臂样本。</li>
+      <li>关键收益:N>1/臂消除单点噪声;大量不同 issue 随机分桶让<b>任务规模 confound 在臂间平均掉</b>(当前 N 小最致命的问题);<span class="mono">sessions.skill_framework_mode</span> 已能干净归因每个 session 的臂(本报告的臂位全部据此核验)。</li>
+      <li>攒够后重跑分析脚本(改为 <span class="mono">GROUP BY skill_framework_mode</span>)即得有统计意义的分阶段对比。</li>
+    </ul>
+  </div>
+
+  <div class="foot">
+    只读分析,未碰任何生产状态。数字来源:<span class="mono">teamlead.db</span> 的 sessions / session_events(stage_changed / qa_result / codex_review_result)。
+    复现脚本 + 原始 stage 时间线见同目录 <span class="mono">scripts/</span> 与 <span class="mono">data/</span>。臂归因据 <span class="mono">skill_framework_mode</span>,非猜测。
+  </div>
+</div>
+<script>
+  document.querySelectorAll('#stab .tab').forEach(t=>{
+    t.addEventListener('click',()=>{
+      document.querySelectorAll('#stab .tab').forEach(x=>x.classList.remove('on'));
+      document.querySelectorAll('.panel').forEach(x=>x.classList.remove('on'));
+      t.classList.add('on');
+      document.getElementById('p-'+t.dataset.p).classList.add('on');
+    });
+  });
+</script>
+</body>
+</html>
