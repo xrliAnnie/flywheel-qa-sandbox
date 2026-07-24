@@ -27,7 +27,7 @@ on the pinned shared branch.
 | 1/4 | onboard + read design handoff + baseline build/test audit | done |
 | 2/4 | TDD regression for explicit `onboard` in generated valid-stage guidance | done (red: 1 failed; green: 12 passed) |
 | 3/4 | targeted/full verification + diff audit | done (1,112 pass; build/typecheck/lint exit 0) |
-| 4/4 | commit + push + PR + `needs_review` completion route | done (PR #69; completion command next) |
+| 4/4 | commit + push + PR + `needs_review` completion route | done (PR #69; completion attempted, Bridge 409 conflict; fail-close marker written) |
 
 Full edge-worker run first exposed 13 sandbox-coupled failures: 1 from the
 injected `FLYWHEEL_STATE_DB_PATH`, plus 12 from two tests that intentionally read
@@ -35,4 +35,5 @@ the sandbox's real `.flywheel/config.yaml` (which has no production agent map).
 Re-running with that injected env removed and only those two real-config fixtures
 excluded produced 1,112 passing tests / 5 skipped.
 
-**Next**: report `pr_created`, then run the exact `complete --route needs_review --pr 69` handoff command.
+**Next**: Bridge boot-drain reconciles the fail-close marker; Lead has the PR and
+completion-conflict report.
