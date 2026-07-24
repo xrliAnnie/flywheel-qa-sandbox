@@ -1831,7 +1831,7 @@ export class Blueprint {
 			systemPromptLines.push(
 				`Report your pipeline stage at each major transition using: ` +
 					`\`node ${commCliPath} stage set <stage>\`. ` +
-					`Valid stages: brainstorm, research, plan, design_review, implement, test, code_review, pr_created, approve, ship, completed. ` +
+					`Valid stages: onboard, brainstorm, research, plan, design_review, implement, test, code_review, pr_created, approve, ship, completed. ` +
 					`Call this when you start each pipeline phase. ` +
 					`Not every task goes through all stages — skip stages that don't apply ` +
 					`(e.g., bug fixes may go directly to implement).`,

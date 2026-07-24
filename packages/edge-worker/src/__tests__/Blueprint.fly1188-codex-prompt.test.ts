@@ -177,6 +177,12 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		expect(prompt).toContain("NO teammate-messaging tool");
 	});
 
+	it("stage reporting guidance lists onboard as a valid first-class stage", async () => {
+		const prompt = await buildCodexPrompt();
+
+		expect(prompt).toContain("Valid stages: onboard, brainstorm");
+	});
+
 	it("codex three-stage implement phase (keep-alive): park wording carries no banned tokens", async () => {
 		const prompt = await buildCodexPrompt({
 			sessionRole: "implement",
