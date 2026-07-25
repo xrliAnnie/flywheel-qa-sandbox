@@ -2611,9 +2611,9 @@ export class CommDB {
 						existingEvidence.fence.discord_message_id === rootPayload.msgId;
 					const sourceEventFence =
 						typeof existingEvidence.fence.source_event_id === "string" &&
-						typeof inputQuestionBasis === "string" &&
+						typeof existingQuestionBasis === "string" &&
 						existingEvidence.fence.source_event_id.endsWith(
-							`:${inputQuestionBasis.slice("question:".length)}:${rootPayload.msgId}`,
+							`:${existingQuestionBasis.slice("question:".length)}:${rootPayload.msgId}`,
 						);
 					if (!discordFence && !sourceEventFence) {
 						return { kind: "conflict" as const, evidenceKind };
@@ -5314,10 +5314,17 @@ export class CommDB {
 		executionId: string;
 		messageId: string;
 		reason: string;
+		firstDetectedAtMs: number;
 		nowMs: number;
 	}): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | null {
 		if (!input.reason.trim())
 			throw new Error("wake escalation reason is required");
+		if (
+			!Number.isSafeInteger(input.firstDetectedAtMs) ||
+			input.firstDetectedAtMs < 0
+		) {
+			throw new Error("firstDetectedAtMs must be a non-negative safe integer");
+		}
 		const enqueue = this.db.transaction(() => {
 			const wake = this.db
 				.prepare(
@@ -5339,6 +5346,7 @@ export class CommDB {
 						executionId: input.executionId,
 						messageId: input.messageId,
 						reason: input.reason,
+						firstDetectedAtMs: input.firstDetectedAtMs,
 					}),
 					new Date(input.nowMs).toISOString(),
 				);
@@ -6688,15 +6696,40 @@ export class CommDB {
 	}
 
 	private pruneTerminalRunnerReceiptWakes(executionId: string): void {
-		const retentionCutoff = Date.now() - 7 * 24 * 60 * 60_000;
-		this.db
+		const nowMs = Date.now();
+		const retentionCutoff = nowMs - 7 * 24 * 60 * 60_000;
+		const pending = this.db
 			.prepare(
-				`UPDATE runner_phase_wakes
-				 SET state = 'finished', finished_at = ?,
-				     claim_token = NULL, claim_expires_at = NULL
-				 WHERE execution_id = ? AND state = 'pending'`,
+				`SELECT * FROM runner_phase_wakes
+				  WHERE execution_id = ? AND state = 'pending'`,
 			)
-			.run(Date.now(), executionId);
+			.all(executionId) as RunnerPhaseWake[];
+		for (const wake of pending) {
+			let founderOrigin = false;
+			try {
+				const envelope = JSON.parse(wake.envelope_json ?? "{}") as {
+					metadata?: { origin?: unknown };
+				};
+				founderOrigin = envelope.metadata?.origin === "founder";
+			} catch {
+				// An unreadable envelope is ordinary traffic, never founder authority.
+			}
+			if (founderOrigin) {
+				this.completeRunnerPhaseWakeTerminal({
+					executionId,
+					messageId: wake.message_id,
+					reason: "terminal_before_started",
+					terminalLifecycleId: `commdb-session-finalize:${executionId}`,
+					nowMs,
+				});
+				continue;
+			}
+			this.disposeRunnerPhaseWakeForTerminal(
+				executionId,
+				wake.message_id,
+				nowMs,
+			);
+		}
 		this.db
 			.prepare(
 				`DELETE FROM runner_phase_wakes

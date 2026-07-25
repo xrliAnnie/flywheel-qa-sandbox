@@ -703,7 +703,9 @@ describe("FLY-1392 founder receipt ingress", () => {
 				ref: responseId!,
 				actor: OWNER,
 				actor_kind: "founder-writer",
-				fence: { discord_message_id: msgId },
+				fence: {
+					source_event_id: `founder-approval:${questionId}:${msgId}`,
+				},
 				basis: [`question:${questionId}`],
 			},
 		});

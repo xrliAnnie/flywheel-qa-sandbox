@@ -375,6 +375,33 @@ describe("FLY-1392 runner receipt patrol", () => {
 		).toMatchObject({ delivered_at: expect.any(String) });
 	});
 
+	it("retries an ordinary wake alert with the original episode start", async () => {
+		admit(1_000);
+		db.upsertDeclaredState("exec-1", "parked", "awaiting work", 1_000, null);
+		nudgeWakePointer.mockResolvedValue({
+			nudged: false,
+			error: "no_tmux_target",
+		});
+		notifyWakeFailure.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+		db.close();
+
+		await patrol(301_000);
+		db = new CommDB(dbPath);
+		expect(
+			db.getReceiptAlertOutbox("wake_failed:instruction:instruction-1"),
+		).toMatchObject({ delivered_at: null });
+		db.close();
+
+		await patrol(302_000);
+		db = new CommDB(dbPath);
+		expect(
+			notifyWakeFailure.mock.calls.map(([input]) => input.firstDetectedAtMs),
+		).toEqual([1_000, 1_000]);
+		expect(
+			db.getReceiptAlertOutbox("wake_failed:instruction:instruction-1"),
+		).toMatchObject({ delivered_at: expect.any(String) });
+	});
+
 	it("shares one failure episode across messages until a started receipt closes it", async () => {
 		admit(1_000, 1);
 		admit(2_000, 2);

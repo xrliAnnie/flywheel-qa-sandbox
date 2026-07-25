@@ -148,6 +148,7 @@ export class RunnerReceiptPatrol {
 				executionId?: string;
 				messageId?: string;
 				reason?: string;
+				firstDetectedAtMs?: number;
 				identityKind?: "terminal_episode" | "founder_message";
 				episodeFingerprint?: string;
 			};
@@ -167,6 +168,14 @@ export class RunnerReceiptPatrol {
 				.find((candidate) => candidate.message_id === payload.messageId);
 			if (!wake) continue;
 			const firstDetectedAtMs = Date.parse(current.created_at);
+			const authoritativeFirstDetectedAtMs =
+				typeof payload.firstDetectedAtMs === "number" &&
+				Number.isSafeInteger(payload.firstDetectedAtMs) &&
+				payload.firstDetectedAtMs >= 0
+					? payload.firstDetectedAtMs
+					: Number.isFinite(firstDetectedAtMs)
+						? firstDetectedAtMs
+						: wake.queued_at;
 			const identityKind =
 				payload.identityKind ??
 				(envelopeMetadata(wake).origin === "founder"
@@ -178,9 +187,7 @@ export class RunnerReceiptPatrol {
 					projectName,
 					wake,
 					reason: payload.reason ?? "wake_failed",
-					firstDetectedAtMs: Number.isFinite(firstDetectedAtMs)
-						? firstDetectedAtMs
-						: wake.queued_at,
+					firstDetectedAtMs: authoritativeFirstDetectedAtMs,
 					...(payload.episodeFingerprint
 						? { episodeFingerprint: payload.episodeFingerprint }
 						: {}),
@@ -452,16 +459,17 @@ export class RunnerReceiptPatrol {
 		nowMs: number,
 		reason: string,
 	): Promise<void> {
+		const firstDetectedAtMs =
+			db.getRunnerWakeFailureEpisodeStartedAt(wake.execution_id) ??
+			wake.queued_at;
 		const alert = db.enqueueRunnerReceiptWakeEscalation({
 			executionId: wake.execution_id,
 			messageId: wake.message_id,
 			reason,
+			firstDetectedAtMs,
 			nowMs,
 		});
 		if (!alert) return;
-		const firstDetectedAtMs =
-			db.getRunnerWakeFailureEpisodeStartedAt(wake.execution_id) ??
-			wake.queued_at;
 		const live = db.revalidateRunnerReceiptWakeAlert(alert.id, nowMs);
 		if (!live) return;
 		const delivered = await this.options.notifyWakeFailure({
