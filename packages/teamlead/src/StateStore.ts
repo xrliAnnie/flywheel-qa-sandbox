@@ -612,6 +612,8 @@ export type FounderDecisionClassification =
 	| "unclear"
 	| "none";
 
+const FOUNDER_DECISION_ALERT_CLAIM_TTL_MS = 5 * 60_000;
+
 export interface FounderDecisionConvergenceRow {
 	thread_id: string;
 	msg_id: string;
@@ -626,6 +628,7 @@ export interface FounderDecisionConvergenceRow {
 	resolved_at_ms: number | null;
 	resolution: string | null;
 	alerted_at_ms: number | null;
+	alert_claimed_at_ms: number | null;
 }
 
 export interface WorkflowEngineParkOutboxRow {
@@ -3251,9 +3254,32 @@ export class StateStore {
 				resolved_at_ms INTEGER,
 				resolution TEXT,
 				alerted_at_ms INTEGER,
+				alert_claimed_at_ms INTEGER,
 				PRIMARY KEY (thread_id, msg_id, question_id)
 			)
 		`);
+		const convergenceColumns = this.workflowTableColumns(
+			"founder_decision_convergence",
+		);
+		const migrateLegacyAlertClaims = !convergenceColumns.has(
+			"alert_claimed_at_ms",
+		);
+		this.addColumnIfMissing(
+			"founder_decision_convergence",
+			"alert_claimed_at_ms",
+			"INTEGER",
+		);
+		if (migrateLegacyAlertClaims) {
+			// Before the lease column existed, alerted_at_ms was written before the
+			// external notification. Treat those ambiguous rows as stale claims so
+			// idempotent notification can prove delivery after upgrade.
+			this.db.run(
+				`UPDATE founder_decision_convergence
+				    SET alert_claimed_at_ms = alerted_at_ms,
+				        alerted_at_ms = NULL
+				  WHERE resolved_at_ms IS NULL AND alerted_at_ms IS NOT NULL`,
+			);
+		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_founder_decision_convergence_due ON founder_decision_convergence(resolved_at_ms, alerted_at_ms, deadline_at_ms)",
 		);
@@ -10824,6 +10850,7 @@ export class StateStore {
 			resolved_at_ms: row[10] === null ? null : Number(row[10]),
 			resolution: (row[11] as string | null) ?? null,
 			alerted_at_ms: row[12] === null ? null : Number(row[12]),
+			alert_claimed_at_ms: row[13] === null ? null : Number(row[13]),
 		};
 	}
 
@@ -10836,7 +10863,7 @@ export class StateStore {
 			`SELECT thread_id, msg_id, question_id, project_name, lead_id,
 			        execution_id, classification, card_reference_valid,
 			        disposed_at_ms, deadline_at_ms, resolved_at_ms, resolution,
-			        alerted_at_ms
+			        alerted_at_ms, alert_claimed_at_ms
 			   FROM founder_decision_convergence
 			  WHERE thread_id = ? AND msg_id = ? AND question_id = ?`,
 			[threadId, msgId, questionId],
@@ -10967,7 +10994,7 @@ export class StateStore {
 			`SELECT thread_id, msg_id, question_id, project_name, lead_id,
 			        execution_id, classification, card_reference_valid,
 			        disposed_at_ms, deadline_at_ms, resolved_at_ms, resolution,
-			        alerted_at_ms
+			        alerted_at_ms, alert_claimed_at_ms
 			   FROM founder_decision_convergence
 			  ORDER BY thread_id, msg_id, question_id`,
 		);
@@ -10979,23 +11006,26 @@ export class StateStore {
 	claimOverdueFounderDecisionAlerts(
 		nowMs: number,
 	): FounderDecisionConvergenceRow[] {
+		const staleBeforeMs = nowMs - FOUNDER_DECISION_ALERT_CLAIM_TTL_MS;
 		const claimed: FounderDecisionConvergenceRow[] = [];
 		this.db.transaction(() => {
 			const due = this.db.exec(
 				`SELECT thread_id, msg_id, question_id
 				   FROM founder_decision_convergence
 				  WHERE resolved_at_ms IS NULL AND alerted_at_ms IS NULL
+				    AND (alert_claimed_at_ms IS NULL OR alert_claimed_at_ms <= ?)
 				    AND deadline_at_ms <= ?
 				    AND classification IN ('approve','reject')
 				  ORDER BY deadline_at_ms, thread_id, msg_id, question_id`,
-				[nowMs],
+				[staleBeforeMs, nowMs],
 			);
 			for (const [threadId, msgId, questionId] of due[0]?.values ?? []) {
 				this.db.run(
-					`UPDATE founder_decision_convergence SET alerted_at_ms = ?
+					`UPDATE founder_decision_convergence SET alert_claimed_at_ms = ?
 					  WHERE thread_id = ? AND msg_id = ? AND question_id = ?
-					    AND resolved_at_ms IS NULL AND alerted_at_ms IS NULL`,
-					[nowMs, threadId, msgId, questionId],
+					    AND resolved_at_ms IS NULL AND alerted_at_ms IS NULL
+					    AND (alert_claimed_at_ms IS NULL OR alert_claimed_at_ms <= ?)`,
+					[nowMs, threadId, msgId, questionId, staleBeforeMs],
 				);
 				if (this.db.getRowsModified() !== 1) continue;
 				const row = this.getFounderDecisionConvergence(
@@ -11014,22 +11044,49 @@ export class StateStore {
 		threadId: string;
 		msgId: string;
 		questionId: string;
-		expectedAlertedAtMs: number;
+		expectedAlertClaimedAtMs: number;
 	}): boolean {
 		this.db.run(
-			`UPDATE founder_decision_convergence SET alerted_at_ms = NULL
+			`UPDATE founder_decision_convergence SET alert_claimed_at_ms = NULL
 			  WHERE thread_id = ? AND msg_id = ? AND question_id = ?
-			    AND resolved_at_ms IS NULL AND alerted_at_ms = ?`,
+			    AND resolved_at_ms IS NULL AND alerted_at_ms IS NULL
+			    AND alert_claimed_at_ms = ?`,
 			[
 				input.threadId,
 				input.msgId,
 				input.questionId,
-				input.expectedAlertedAtMs,
+				input.expectedAlertClaimedAtMs,
 			],
 		);
 		const released = this.db.getRowsModified() === 1;
 		if (released) this.save();
 		return released;
+	}
+
+	markFounderDecisionAlertDelivered(input: {
+		threadId: string;
+		msgId: string;
+		questionId: string;
+		expectedAlertClaimedAtMs: number;
+		alertedAtMs: number;
+	}): boolean {
+		this.db.run(
+			`UPDATE founder_decision_convergence
+			    SET alerted_at_ms = ?, alert_claimed_at_ms = NULL
+			  WHERE thread_id = ? AND msg_id = ? AND question_id = ?
+			    AND resolved_at_ms IS NULL AND alerted_at_ms IS NULL
+			    AND alert_claimed_at_ms = ?`,
+			[
+				input.alertedAtMs,
+				input.threadId,
+				input.msgId,
+				input.questionId,
+				input.expectedAlertClaimedAtMs,
+			],
+		);
+		const delivered = this.db.getRowsModified() === 1;
+		if (delivered) this.save();
+		return delivered;
 	}
 
 	private workflowEngineParkOutboxFromRow(

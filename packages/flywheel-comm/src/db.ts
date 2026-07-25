@@ -5202,12 +5202,29 @@ export class CommDB {
 					  WHERE execution_id = ? AND message_id = ?`,
 				)
 				.get(input.executionId, input.messageId) as RunnerPhaseWake | undefined;
-			if (!wake || wake.state !== "pending" || wake.escalation_outbox_id) {
+			if (!wake || wake.state !== "pending") {
 				return null;
 			}
 			const founderOrigin = runnerWakeMetadata(wake).origin === "founder";
+			if (wake.escalation_outbox_id && !founderOrigin) {
+				return null;
+			}
 			if (wake.admission_state !== "queued" && !founderOrigin) {
 				return null;
+			}
+			const existingAlert = wake.escalation_outbox_id
+				? this.getReceiptAlertOutbox(wake.escalation_outbox_id)
+				: undefined;
+			let preservedAlertPayload: Record<string, unknown> = {};
+			if (existingAlert?.kind === "wake_failed") {
+				try {
+					const parsed = JSON.parse(existingAlert.payload) as unknown;
+					if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+						preservedAlertPayload = parsed as Record<string, unknown>;
+					}
+				} catch {
+					// The terminal identity below replaces malformed payload evidence.
+				}
 			}
 
 			const now = new Date(input.nowMs).toISOString();
@@ -5219,7 +5236,10 @@ export class CommDB {
 			if (founderOrigin) {
 				identityKind = "founder_message";
 				episodeFingerprint = `founder:${input.executionId}:${input.messageId}`;
-				outboxId = `wake_failed:founder:${input.messageId}`;
+				outboxId =
+					existingAlert?.kind === "wake_failed"
+						? existingAlert.id
+						: `wake_failed:founder:${input.messageId}`;
 			} else {
 				identityKind = "terminal_episode";
 				episodeFingerprint = `terminal:${input.executionId}:${input.terminalLifecycleId}`;
@@ -5256,7 +5276,7 @@ export class CommDB {
 						  WHERE execution_id = ? AND message_id = ?
 						    AND state = 'pending'
 						    AND (admission_state = 'queued' OR ? = 1)
-						    AND escalation_outbox_id IS NULL`,
+						    AND escalation_outbox_id IS ?`,
 				)
 				.run(
 					input.nowMs,
@@ -5264,6 +5284,7 @@ export class CommDB {
 					input.executionId,
 					input.messageId,
 					founderOrigin ? 1 : 0,
+					wake.escalation_outbox_id,
 				);
 			if (retired.changes !== 1) return null;
 
@@ -5311,32 +5332,43 @@ export class CommDB {
 				}
 			}
 
+			const alertPayload = JSON.stringify({
+				...preservedAlertPayload,
+				executionId: input.executionId,
+				messageId: input.messageId,
+				reason: input.reason,
+				identityKind,
+				episodeFingerprint,
+				terminalLifecycleId: input.terminalLifecycleId,
+				...(generation !== undefined ? { generation } : {}),
+			});
 			this.db
 				.prepare(
-					`INSERT OR IGNORE INTO receipt_alert_outbox
+					`INSERT INTO receipt_alert_outbox
 					   (id, kind, payload, created_at)
-					 VALUES (?, 'wake_failed', ?, ?)`,
+					 VALUES (?, 'wake_failed', ?, ?)
+					 ON CONFLICT(id) DO UPDATE SET
+					   payload = excluded.payload,
+					   canceled_at = CASE
+					     WHEN receipt_alert_outbox.delivered_at IS NULL THEN NULL
+					     ELSE receipt_alert_outbox.canceled_at
+					   END,
+					   cancel_reason = CASE
+					     WHEN receipt_alert_outbox.delivered_at IS NULL THEN NULL
+					     ELSE receipt_alert_outbox.cancel_reason
+					   END
+					 WHERE receipt_alert_outbox.kind = 'wake_failed'`,
 				)
-				.run(
-					outboxId,
-					JSON.stringify({
-						executionId: input.executionId,
-						messageId: input.messageId,
-						reason: input.reason,
-						identityKind,
-						episodeFingerprint,
-						terminalLifecycleId: input.terminalLifecycleId,
-						...(generation !== undefined ? { generation } : {}),
-					}),
-					now,
-				);
+				.run(outboxId, alertPayload, now);
 			const completedWake = this.db
 				.prepare(
 					"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
 				)
 				.get(input.executionId, input.messageId) as RunnerPhaseWake;
 			const alert = this.getReceiptAlertOutbox(outboxId);
-			if (!alert) throw new Error("terminal wake alert outbox was not created");
+			if (!alert || alert.kind !== "wake_failed") {
+				throw new Error("terminal wake alert outbox was not created");
+			}
 			return { wake: completedWake, alert, identityKind, episodeFingerprint };
 		});
 		return complete.immediate();

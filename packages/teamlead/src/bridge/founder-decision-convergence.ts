@@ -10,6 +10,7 @@ export interface FounderDecisionConvergencePassDeps {
 		| "resolveFounderDecisionConvergence"
 		| "claimOverdueFounderDecisionAlerts"
 		| "releaseFounderDecisionAlertClaim"
+		| "markFounderDecisionAlertDelivered"
 	>;
 	resolve(
 		row: FounderDecisionConvergenceRow,
@@ -57,6 +58,13 @@ export async function runFounderDecisionConvergencePass(
 	for (const row of deps.store.claimOverdueFounderDecisionAlerts(nowMs)) {
 		try {
 			if (await deps.notifyDropped(row)) {
+				deps.store.markFounderDecisionAlertDelivered({
+					threadId: row.thread_id,
+					msgId: row.msg_id,
+					questionId: row.question_id,
+					expectedAlertClaimedAtMs: nowMs,
+					alertedAtMs: nowMs,
+				});
 				alerted += 1;
 				continue;
 			}
@@ -71,7 +79,7 @@ export async function runFounderDecisionConvergencePass(
 			threadId: row.thread_id,
 			msgId: row.msg_id,
 			questionId: row.question_id,
-			expectedAlertedAtMs: nowMs,
+			expectedAlertClaimedAtMs: nowMs,
 		});
 		retried += 1;
 	}

@@ -18,6 +18,7 @@ const row = (
 	resolved_at_ms: null,
 	resolution: null,
 	alerted_at_ms: null,
+	alert_claimed_at_ms: null,
 	...over,
 });
 
@@ -31,6 +32,7 @@ describe("founder decision convergence pass", () => {
 			resolveFounderDecisionConvergence,
 			claimOverdueFounderDecisionAlerts: vi.fn(() => []),
 			releaseFounderDecisionAlertClaim: vi.fn(),
+			markFounderDecisionAlertDelivered: vi.fn(),
 		};
 
 		await runFounderDecisionConvergencePass({
@@ -49,7 +51,7 @@ describe("founder decision convergence pass", () => {
 	});
 
 	it("releases a claimed alert when durable Lead notification was not accepted", async () => {
-		const overdue = row({ alerted_at_ms: 200 });
+		const overdue = row({ alert_claimed_at_ms: 200 });
 		const releaseFounderDecisionAlertClaim = vi.fn();
 		const result = await runFounderDecisionConvergencePass({
 			store: {
@@ -57,6 +59,7 @@ describe("founder decision convergence pass", () => {
 				resolveFounderDecisionConvergence: vi.fn(),
 				claimOverdueFounderDecisionAlerts: vi.fn(() => [overdue]),
 				releaseFounderDecisionAlertClaim,
+				markFounderDecisionAlertDelivered: vi.fn(),
 			},
 			resolve: vi.fn(),
 			notifyDropped: vi.fn(async () => false),
@@ -68,7 +71,33 @@ describe("founder decision convergence pass", () => {
 			threadId: "thread",
 			msgId: "msg",
 			questionId: "q",
-			expectedAlertedAtMs: 200,
+			expectedAlertClaimedAtMs: 200,
+		});
+	});
+
+	it("stamps durable delivery only after the notifier accepts the alert", async () => {
+		const overdue = row({ alert_claimed_at_ms: 200 });
+		const markFounderDecisionAlertDelivered = vi.fn(() => true);
+		const result = await runFounderDecisionConvergencePass({
+			store: {
+				listFounderDecisionConvergence: vi.fn(() => []),
+				resolveFounderDecisionConvergence: vi.fn(),
+				claimOverdueFounderDecisionAlerts: vi.fn(() => [overdue]),
+				releaseFounderDecisionAlertClaim: vi.fn(),
+				markFounderDecisionAlertDelivered,
+			},
+			resolve: vi.fn(),
+			notifyDropped: vi.fn(async () => true),
+			now: () => 200,
+		});
+
+		expect(result).toEqual({ resolved: 0, alerted: 1, retried: 0 });
+		expect(markFounderDecisionAlertDelivered).toHaveBeenCalledWith({
+			threadId: "thread",
+			msgId: "msg",
+			questionId: "q",
+			expectedAlertClaimedAtMs: 200,
+			alertedAtMs: 200,
 		});
 	});
 });

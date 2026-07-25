@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 
@@ -26,6 +30,7 @@ describe("StateStore founder decision convergence", () => {
 				classification: "none",
 				resolved_at_ms: null,
 				alerted_at_ms: null,
+				alert_claimed_at_ms: null,
 			},
 		});
 		expect(
@@ -102,7 +107,8 @@ describe("StateStore founder decision convergence", () => {
 			expect.objectContaining({
 				question_id: "question-a",
 				classification: "reject",
-				alerted_at_ms: 181_001,
+				alerted_at_ms: null,
+				alert_claimed_at_ms: 181_001,
 			}),
 		]);
 		expect(store.claimOverdueFounderDecisionAlerts(181_002)).toEqual([]);
@@ -111,5 +117,102 @@ describe("StateStore founder decision convergence", () => {
 				.listFounderDecisionConvergence()
 				.find((row) => row.question_id === "question-b")?.alerted_at_ms,
 		).toBeNull();
+	});
+
+	it("reclaims an overdue alert after a process dies with the durable claim", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "founder-convergence-"));
+		const dbPath = join(dir, "state.db");
+		let store = await StateStore.create(dbPath);
+		try {
+			store.ensureFounderDecisionConvergence(BASE);
+			store.classifyFounderDecisionConvergence({
+				threadId: BASE.threadId,
+				msgId: BASE.msgId,
+				questionId: BASE.questionId,
+				classification: "approve",
+				cardReferenceValid: true,
+			});
+			expect(store.claimOverdueFounderDecisionAlerts(181_001)).toHaveLength(1);
+
+			store.close();
+			store = await StateStore.create(dbPath);
+			expect(store.claimOverdueFounderDecisionAlerts(481_001)).toEqual([
+				expect.objectContaining({
+					question_id: BASE.questionId,
+					resolved_at_ms: null,
+					alerted_at_ms: null,
+					alert_claimed_at_ms: 481_001,
+				}),
+			]);
+			expect(
+				store.markFounderDecisionAlertDelivered({
+					threadId: BASE.threadId,
+					msgId: BASE.msgId,
+					questionId: BASE.questionId,
+					expectedAlertClaimedAtMs: 481_001,
+					alertedAtMs: 481_002,
+				}),
+			).toBe(true);
+
+			store.close();
+			store = await StateStore.create(dbPath);
+			expect(store.claimOverdueFounderDecisionAlerts(781_002)).toEqual([]);
+			expect(store.listFounderDecisionConvergence()).toEqual([
+				expect.objectContaining({
+					alerted_at_ms: 481_002,
+					alert_claimed_at_ms: null,
+				}),
+			]);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("migrates an ambiguous legacy alerted stamp into a reclaimable lease", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "founder-convergence-migrate-"));
+		const dbPath = join(dir, "state.db");
+		const legacy = new Database(dbPath);
+		legacy.exec(`
+			CREATE TABLE founder_decision_convergence (
+				thread_id TEXT NOT NULL,
+				msg_id TEXT NOT NULL,
+				question_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				lead_id TEXT NOT NULL,
+				execution_id TEXT NOT NULL,
+				classification TEXT NOT NULL,
+				card_reference_valid INTEGER NOT NULL,
+				disposed_at_ms INTEGER NOT NULL,
+				deadline_at_ms INTEGER NOT NULL,
+				resolved_at_ms INTEGER,
+				resolution TEXT,
+				alerted_at_ms INTEGER,
+				PRIMARY KEY (thread_id, msg_id, question_id)
+			);
+			INSERT INTO founder_decision_convergence
+				(thread_id, msg_id, question_id, project_name, lead_id,
+				 execution_id, classification, card_reference_valid,
+				 disposed_at_ms, deadline_at_ms, alerted_at_ms)
+			VALUES
+				('thread-1448', 'msg-1448', 'question-a', 'flywheel',
+				 'flywheel-eng-lead', 'exec-a', 'approve', 1,
+				 1000, 181000, 181001);
+		`);
+		legacy.close();
+
+		const store = await StateStore.create(dbPath);
+		try {
+			expect(store.listFounderDecisionConvergence()).toEqual([
+				expect.objectContaining({
+					alerted_at_ms: null,
+					alert_claimed_at_ms: 181_001,
+				}),
+			]);
+			expect(store.claimOverdueFounderDecisionAlerts(481_001)).toHaveLength(1);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

@@ -557,6 +557,57 @@ describe("FLY-1392 receipt wake state machine", () => {
 	);
 
 	it.each(["finalizeSession", "deleteSessionAndRunnerPhaseLifecycle"] as const)(
+		"terminalizes a previously escalated founder wake during %s",
+		(method) => {
+			db.registerSession("exec-1", "session", "proj", "FLY-1", "lead-1");
+			const wake = db.instructionAndIntent({
+				instructionId: "escalated-founder-instruction",
+				fromAgent: "lead-1",
+				executionId: "exec-1",
+				content: "founder decided",
+				intentKey: "instruction:escalated-founder-instruction",
+				envelope: {
+					id: "escalated-founder-wake",
+					to: "exec-1",
+					content: "founder decided",
+					metadata: { origin: "founder", questionId: "question-1" },
+				},
+				queuedAtMs: 1_000,
+			}).wake;
+			const existingAlert = db.enqueueRunnerReceiptWakeEscalation({
+				executionId: "exec-1",
+				messageId: wake.message_id,
+				reason: "no_started_receipt",
+				firstDetectedAtMs: 1_000,
+				nowMs: 2_000,
+			});
+			expect(existingAlert).not.toBeNull();
+
+			if (method === "finalizeSession") db.finalizeSession("exec-1");
+			else db.deleteSessionAndRunnerPhaseLifecycle("exec-1");
+
+			expect(db.listRunnerPhaseWakes("exec-1")).toContainEqual(
+				expect.objectContaining({
+					message_id: wake.message_id,
+					state: "finished",
+					started_ack_scope: "terminal",
+					escalation_outbox_id: existingAlert?.id,
+				}),
+			);
+			expect(
+				JSON.parse(db.getReceiptAlertOutbox(existingAlert!.id)!.payload),
+			).toMatchObject({
+				executionId: "exec-1",
+				messageId: wake.message_id,
+				identityKind: "founder_message",
+			});
+			expect(
+				db.revalidateRunnerReceiptWakeAlert(existingAlert!.id, 3_000),
+			).toMatchObject({ id: existingAlert?.id, canceled_at: null });
+		},
+	);
+
+	it.each(["finalizeSession", "deleteSessionAndRunnerPhaseLifecycle"] as const)(
 		"preserves metadata-only founder wake authority during %s",
 		(method) => {
 			db.registerSession("exec-1", "session", "proj", "FLY-1", "lead-1");
