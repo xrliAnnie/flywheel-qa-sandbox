@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 3/4
-updated: 2026-07-25T07:38:12.358Z
-nextStep: Run final requirement audit and inspect branch diff
+phaseCursor: 4/4
+updated: 2026-07-25T07:39:19.894Z
+nextStep: Push feature branch and open PR against sandbox main
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (3/4)
-**next**: Run final requirement audit and inspect branch diff
+**phase**: implement (4/4)
+**next**: Push feature branch and open PR against sandbox main
