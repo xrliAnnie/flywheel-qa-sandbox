@@ -474,6 +474,7 @@ import { resolveQuotaDaemonBridgeMode } from "./quota-daemon-cutover.js";
 import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
+import { resolveProjectIssueThread } from "./report-issue-thread-resolver.js";
 import {
 	DEFAULT_RETENTION_MAX_AGE_MS,
 	ReportRegistry,
@@ -3741,6 +3742,8 @@ export function createBridgeApp(
 		// delivery failure — the P-expect receipt check owns fail-loud.
 		discordBotToken: infraSenderTokenOr(opts?.globalBotToken),
 		projects,
+		resolveIssueThread: (issueIdentifier, projectName) =>
+			resolveProjectIssueThread(store, projects, issueIdentifier, projectName),
 		registry: new ReportRegistry(reportsBaseDir, {
 			// FLY-203 follow-up (founder): report links expire after 7 days.
 			// FLYWHEEL_REPORTS_TTL_DAYS overrides (positive integer; 0 disables).

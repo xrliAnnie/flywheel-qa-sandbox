@@ -87,6 +87,7 @@ describe("reports-route", () => {
 				discordBotToken: "bt",
 				projects,
 				registry,
+				resolveIssueThread: () => undefined,
 				deployFiles: deployMock as never,
 				postWithFile: postWithFileMock as never,
 				postText: postTextMock as never,
@@ -298,6 +299,61 @@ describe("reports-route", () => {
 		});
 		expect(r.status).toBe(400);
 		expect(String(r.json.error)).toContain("channel");
+	});
+
+	it("deliver: issueIdentifier resolves the issue thread without generalChannel fallback", async () => {
+		const resolveIssueThread = vi.fn().mockResolvedValue("thread-fly-1463");
+		await startApp({ resolveIssueThread } as never);
+		const r = await post("/api/reports/deliver", {
+			url: "https://x",
+			projectName: "withGeneral",
+			issueIdentifier: "FLY-1463",
+		});
+		expect(r.status).toBe(200);
+		expect(resolveIssueThread).toHaveBeenCalledWith("FLY-1463", "withGeneral");
+		expect(postTextMock.mock.calls[0]?.[0]).toBe("thread-fly-1463");
+	});
+
+	it("deliver: unresolved issueIdentifier → 404 and never posts to generalChannel", async () => {
+		const resolveIssueThread = vi.fn().mockResolvedValue(undefined);
+		await startApp({ resolveIssueThread } as never);
+		const r = await post("/api/reports/deliver", {
+			url: "https://x",
+			projectName: "withGeneral",
+			issueIdentifier: "FLY-404",
+		});
+		expect(r.status).toBe(404);
+		expect(r.json.error).toBe("issue_thread_not_found");
+		expect(postTextMock).not.toHaveBeenCalled();
+	});
+
+	it("deliver: channelId plus issueIdentifier → 400 before resolving or posting", async () => {
+		const resolveIssueThread = vi.fn().mockResolvedValue("thread-fly-1463");
+		await startApp({ resolveIssueThread } as never);
+		const r = await post("/api/reports/deliver", {
+			url: "https://x",
+			projectName: "withGeneral",
+			channelId: "chan-explicit",
+			issueIdentifier: "FLY-1463",
+		});
+		expect(r.status).toBe(400);
+		expect(String(r.json.error)).toContain("mutually exclusive");
+		expect(resolveIssueThread).not.toHaveBeenCalled();
+		expect(postTextMock).not.toHaveBeenCalled();
+	});
+
+	it("deliver: malformed issueIdentifier → 400 before resolving or posting", async () => {
+		const resolveIssueThread = vi.fn().mockReturnValue("thread");
+		await startApp({ resolveIssueThread });
+		const r = await post("/api/reports/deliver", {
+			url: "https://x",
+			projectName: "withGeneral",
+			issueIdentifier: "not-an-issue",
+		});
+		expect(r.status).toBe(400);
+		expect(String(r.json.error)).toContain("issueIdentifier");
+		expect(resolveIssueThread).not.toHaveBeenCalled();
+		expect(postTextMock).not.toHaveBeenCalled();
 	});
 
 	it("deliver: link-only message uses bare URL (Discord preview allowed)", async () => {

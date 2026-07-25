@@ -125,7 +125,8 @@ Commands:
   notify    POST artifact_emitted event to Bridge after capture+Read (GEO-151)
   publish-report   Publish HTML report to hosting + deliver to Discord as
             screenshot preview + unguessable link (FLY-203). Flags:
-            --html <file> --project <name> [--title <t>] [--channel <id>]
+            --html <file> --project <name> [--title <t>]
+            [--channel <id> | --issue <FLY-123>]
             [--no-screenshot] [--kind token_report --expected-date YYYY-MM-DD].
             Env: FLYWHEEL_BRIDGE_URL, TEAMLEAD_API_TOKEN,
             FLYWHEEL_REMOTE_REPORTS=0 disables. Always prints a one-line
@@ -1690,6 +1691,7 @@ async function runPublishReport(args: string[]): Promise<void> {
 		project?: string;
 		title?: string;
 		channel?: string;
+		issue?: string;
 		"no-screenshot"?: boolean;
 		"publish-only"?: boolean;
 		kind?: string;
@@ -1703,6 +1705,7 @@ async function runPublishReport(args: string[]): Promise<void> {
 				project: { type: "string" },
 				title: { type: "string" },
 				channel: { type: "string" },
+				issue: { type: "string" },
 				"no-screenshot": { type: "boolean", default: false },
 				"publish-only": { type: "boolean", default: false },
 				// FLY-929 B1: delivery-receipt seam (see PublishReportArgs).
@@ -1721,12 +1724,16 @@ async function runPublishReport(args: string[]): Promise<void> {
 	if (!values.project) {
 		return failEnvelope("--project <name> is required");
 	}
+	if (values.channel !== undefined && values.issue !== undefined) {
+		return failEnvelope("--channel and --issue are mutually exclusive");
+	}
 
 	const reportArgs: PublishReportArgs = {
 		htmlPath: values.html,
 		project: values.project,
 		title: values.title,
 		channelId: values.channel,
+		issueIdentifier: values.issue,
 		noScreenshot: values["no-screenshot"],
 		publishOnly: values["publish-only"],
 		kind: values.kind,

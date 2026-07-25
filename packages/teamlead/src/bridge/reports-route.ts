@@ -66,6 +66,11 @@ export interface ReportsRouterOptions {
 	discordBotToken: string | undefined;
 	projects: ProjectEntry[];
 	registry: ReportRegistry;
+	/** Resolve an issue identifier to its existing Lead-owned Discord thread. */
+	resolveIssueThread: (
+		issueIdentifier: string,
+		projectName: string,
+	) => string | undefined | Promise<string | undefined>;
 	/** Test seams. */
 	deployFiles?: typeof deployFilesToVercel;
 	postWithFile?: typeof postDiscordMessageWithFile;
@@ -313,7 +318,14 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 		}
 
 		const body = (req.body ?? {}) as Record<string, unknown>;
-		const { url, projectName, title, channelId, screenshotPath } = body;
+		const {
+			url,
+			projectName,
+			title,
+			channelId,
+			issueIdentifier,
+			screenshotPath,
+		} = body;
 		if (typeof url !== "string" || url.trim().length === 0) {
 			res.status(400).json({
 				error: "url is required and must be a non-empty string",
@@ -332,6 +344,23 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 		) {
 			res.status(400).json({
 				error: `title must be a string of at most ${MAX_TITLE_LENGTH} characters`,
+			});
+			return;
+		}
+		if (channelId !== undefined && issueIdentifier !== undefined) {
+			res.status(400).json({
+				error: "channelId and issueIdentifier are mutually exclusive",
+			});
+			return;
+		}
+		if (
+			issueIdentifier !== undefined &&
+			(typeof issueIdentifier !== "string" ||
+				!/^[A-Z][A-Z0-9]*-\d+$/.test(issueIdentifier.trim()))
+		) {
+			res.status(400).json({
+				error:
+					"issueIdentifier must be a Linear issue identifier such as FLY-1463",
 			});
 			return;
 		}
@@ -365,10 +394,20 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			});
 		};
 
-		// Channel resolution: explicit param → project generalChannel → 400.
+		// Channel resolution: explicit param OR issue thread, otherwise the
+		// pre-FLY-1463 project generalChannel fallback.
 		let channel: string | undefined;
 		if (typeof channelId === "string" && channelId.trim().length > 0) {
 			channel = channelId.trim();
+		} else if (typeof issueIdentifier === "string") {
+			channel = await opts.resolveIssueThread(
+				issueIdentifier.trim(),
+				projectName.trim(),
+			);
+			if (!channel) {
+				res.status(404).json({ error: "issue_thread_not_found" });
+				return;
+			}
 		} else {
 			const project = opts.projects.find(
 				(p) => p.projectName === projectName.trim(),

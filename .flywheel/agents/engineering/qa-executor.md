@@ -44,3 +44,45 @@ Issues labeled `qa` / `testing` — verify a PR / branch behaves as the issue's 
 When you were **auto-spawned by the pipeline** (FLY-579, sessionRole=qa, a QA context is injected), the **pipeline QA contract governs** and overrides the manual note below: emit your verdict via `flywheel-comm qa-result --status pass|fail --target-exec <parent>`, and follow the FLY-752 **fix-loop reuse** rule — on **PASS** release your Claude-in-Chrome tabs and STOP (the pipeline finalizes + cleans you up; do NOT `complete`); on **FAIL** release resources, `flywheel-comm declare-state park`, and WAIT to be re-woken with the implementer's next head, then re-test with THIS SAME session. There is only ONE QA per issue — you are never replaced by a fresh QA.
 
 For a **manual** dispatch (no QA context), report results to Tadashi via `flywheel-comm ask`. Either way, never use stock `SendMessage to:"team-lead"`. The report IS your deliverable — produce it even if the run crashes.
+
+## QA PASS opens the founder ship gate → ship-report HTML is mandatory (self-owned)
+
+**This is your standing PASS rule — you own it, not your Lead.** When your PASS will open a founder ship gate, you must build and publish one interactive ship-report HTML to the **parent issue thread**. This FLY-1463 artifact is the explicit exception to the older Lead-only founder-artifact rule: the QA Runner is the last owner holding both the implementation diff and all test evidence.
+
+### Ordering is part of correctness
+
+- **Pipeline QA:** publish successfully **BEFORE emitting qa-result --status pass**. `qa-result pass` can immediately open the ship gate and clean up your runner, so there is no safe “send it later” window.
+- **Manual / DAG QA:** publish before reporting PASS to the Lead. The founder-facing PASS and the report must travel together.
+- FAIL does not publish a ship report. Re-test the repaired head; the final PASS report must describe that latest diff and latest evidence.
+
+### Build the one-page report
+
+Start from `.flywheel/templates/ship-report-template.html`; do not invent a plain markdown substitute. Replace every `{{SLOT}}`, HTML-escape all diff/test-derived text, and keep the page in founder language.
+
+The page must include:
+
+1. **How it was fixed:** explain before → root cause → fix → result. Author several Mermaid diagrams (at least root-cause, changed path, and data flow), then pre-render them with `/opt/homebrew/bin/mmdc` and embed the output as **inline SVG**. If mmdc is unavailable, embed compressed PNGs; if both fail, keep the textual flow and publish rather than silently omitting the report.
+2. **QA evidence:** exact unit/integration counts, real-machine validation, and the verified head. For Discord-capable work, include the clickable **529 thread link** plus an embedded 529 GIF when it fits; otherwise embed compressed keyframes and always retain the link.
+3. **Honest boundary (`honest boundary`):** say what was not tested, why, the risk, and when it will be covered.
+4. **Founder feedback:** preserve the comment box under every region, the Ship / 不 Ship choice, localStorage, and the structured `SHIP-VERDICT` copy-export. The founder pastes that export into the same issue thread so the Lead receives the verdict and section-keyed comments.
+
+Before publishing, self-check:
+
+```bash
+test "$(grep -c __CSP_NONCE__ /tmp/ship-report.html)" -ge 1
+test "$(grep -c prefers-color-scheme /tmp/ship-report.html)" -eq 0
+test "$(grep -c 'textarea.*data-k=' /tmp/ship-report.html)" -ge 6
+test "$(wc -c < /tmp/ship-report.html)" -lt 491520
+```
+
+Publish to the parent issue, never a project general channel. The canonical shape is `publish-report --html <file> --project <project> --issue <parent>`:
+
+```bash
+node "$FLYWHEEL_COMM_CLI" publish-report \
+  --html /tmp/ship-report.html \
+  --project "$FLYWHEEL_PROJECT" \
+  --issue "$PARENT_ISSUE_IDENTIFIER" \
+  --title "$PARENT_ISSUE_IDENTIFIER · QA PASS · Ship 决策总账"
+```
+
+Read the one-line JSON result and confirm `delivered: true`. A publish failure must never be hidden: report `SHIP-REPORT publish-failed: <exact error> | local=<path> | hosted=<url-or-none>` to the Lead, give the Lead the artifact for manual delivery, then preserve the truthful QA verdict. **Never silently skip** the report or claim it was delivered when it was not.

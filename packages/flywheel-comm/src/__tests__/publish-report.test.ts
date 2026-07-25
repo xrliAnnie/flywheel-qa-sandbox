@@ -275,7 +275,7 @@ describe("publishReport", () => {
 		expect(deliverBody.expectedDate).toBe("2026-07-06");
 	});
 
-	it("absent kind/expectedDate → deliver body carries NEITHER key (byte-compat)", async () => {
+	it("absent optional delivery fields stay byte-compatible", async () => {
 		publishOk();
 		deliverOk();
 		await publishReport(makeArgs({ noScreenshot: true }));
@@ -284,6 +284,45 @@ describe("publishReport", () => {
 		);
 		expect("kind" in deliverBody).toBe(false);
 		expect("expectedDate" in deliverBody).toBe(false);
+		expect("issueIdentifier" in deliverBody).toBe(false);
+	});
+
+	it("issueIdentifier targets delivery by issue without adding channelId", async () => {
+		publishOk();
+		deliverOk();
+		const { exitCode } = await publishReport(
+			makeArgs({
+				noScreenshot: true,
+				issueIdentifier: "FLY-1463",
+			}),
+		);
+		expect(exitCode).toBe(0);
+		const deliverBody = JSON.parse(
+			(fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string,
+		);
+		expect(deliverBody.issueIdentifier).toBe("FLY-1463");
+		expect("channelId" in deliverBody).toBe(false);
+	});
+
+	it("channelId plus issueIdentifier fails before publishing", async () => {
+		const { envelope, exitCode } = await publishReport(
+			makeArgs({
+				channelId: "chan-explicit",
+				issueIdentifier: "FLY-1463",
+			}),
+		);
+		expect(exitCode).toBe(1);
+		expect(envelope.error).toContain("mutually exclusive");
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("invalid issueIdentifier fails before publishing", async () => {
+		const { envelope, exitCode } = await publishReport(
+			makeArgs({ issueIdentifier: "not-an-issue" }),
+		);
+		expect(exitCode).toBe(1);
+		expect(envelope.error).toContain("--issue");
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	// ── failure paths ───────────────────────────────────────────────────
@@ -570,6 +609,23 @@ describe("publish-report CLI wrapper (subprocess, built dist)", () => {
 		expect(r.exitCode).toBe(1);
 		const envelope = JSON.parse(r.stdout);
 		expect(envelope.error).toContain("invalid arguments");
+	});
+
+	it("--channel plus --issue → exit 1 with one JSON envelope", () => {
+		const r = runCliSafe([
+			"publish-report",
+			"--html",
+			"/tmp/x.html",
+			"--project",
+			"p",
+			"--channel",
+			"chan",
+			"--issue",
+			"FLY-1463",
+		]);
+		expect(r.exitCode).toBe(1);
+		const envelope = JSON.parse(r.stdout);
+		expect(envelope.error).toContain("mutually exclusive");
 	});
 
 	it("stdout is EXACTLY one JSON object (no extra lines)", () => {

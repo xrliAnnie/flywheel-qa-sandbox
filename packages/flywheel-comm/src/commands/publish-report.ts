@@ -4,7 +4,8 @@
  * One command any agent can run after generating an HTML report locally:
  *
  *   flywheel-comm publish-report --html /tmp/report.html --project flywheel \
- *     [--title "Ship Review"] [--channel <id>] [--no-screenshot] [--publish-only]
+ *     [--title "Ship Review"] [--channel <id> | --issue FLY-1463]
+ *     [--no-screenshot] [--publish-only]
  *
  * Orchestrates three steps client-side (Bridge stays thin — it only hosts
  * and posts):
@@ -63,6 +64,8 @@ export interface PublishReportArgs {
 	project: string;
 	title?: string;
 	channelId?: string;
+	/** Resolve delivery to the issue's existing Lead thread. */
+	issueIdentifier?: string;
 	noScreenshot?: boolean;
 	/** Publish and return the hosted URL without screenshot or Discord delivery. */
 	publishOnly?: boolean;
@@ -153,6 +156,15 @@ export async function publishReport(
 	}
 	if (!args.project || args.project.trim().length === 0) {
 		return fail("--project is required");
+	}
+	if (args.channelId !== undefined && args.issueIdentifier !== undefined) {
+		return fail("--channel and --issue are mutually exclusive");
+	}
+	if (
+		args.issueIdentifier !== undefined &&
+		!/^[A-Z][A-Z0-9]*-\d+$/.test(args.issueIdentifier.trim())
+	) {
+		return fail("--issue must be a Linear issue identifier such as FLY-1463");
 	}
 
 	let html: string;
@@ -253,6 +265,7 @@ export async function publishReport(
 				projectName: args.project.trim(),
 				title: args.title,
 				channelId: args.channelId,
+				issueIdentifier: args.issueIdentifier?.trim(),
 				screenshotPath: screenshot ?? undefined,
 				// FLY-929 B1: receipt fields — undefined keys are dropped by
 				// JSON.stringify, so the no-flag body stays byte-identical.
