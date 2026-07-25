@@ -39,7 +39,7 @@ test-slot real-Runner E2E 需要一个小而稳定、又足够多步骤的真实
 
 1. 标题与 FLY-202 日期元数据。
 2. 3 段 Purpose，分别解释 sandbox 隔离边界、slot harness 执行链、fixture issue 的角色。
-3. Top-Level Directories 表，按 `git ls-tree -d --name-only HEAD` 顺序覆盖 20 个 tracked 目录，每行给一条可由目录内容验证的描述。
+3. Top-Level Directories 表，按 `git ls-tree -d --name-only HEAD` 顺序覆盖 19 个 tracked 目录，每行给一条可由目录内容验证的描述。
 4. `packages/qa-framework/README.md` Summary，严格保持 10 个 bullet，覆盖框架定位、五步协议、slot lifecycle、镜像模式、近期 529-Room 能力与契约。
 5. `ls -R doc/ | head -50` 的原样输出，使用 fenced text block。
 
@@ -50,4 +50,3 @@ test-slot real-Runner E2E 需要一个小而稳定、又足够多步骤的真实
 - RED：在目标文件不存在时运行检查脚本，确认因 missing file 失败。
 - GREEN：创建文档后重复运行同一脚本，验证段落数、20 个目录表项、10 个 README bullets，以及 fenced block 与实际命令输出逐行一致。
 - 最后运行 `git diff --check`，并对照 task brief 逐条审计。
-
