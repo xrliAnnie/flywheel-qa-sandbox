@@ -345,7 +345,11 @@ describe("FLY-1392 runner receipt patrol", () => {
 			questionId: "question-1",
 		});
 		db.updateSessionStatus("exec-1", "failed");
-		notifyWakeFailure.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		notifyWakeFailure
+			.mockResolvedValueOnce(false)
+			.mockRejectedValueOnce(new Error("discord unavailable"))
+			.mockResolvedValueOnce(true);
 		db.close();
 		const run = () =>
 			new RunnerReceiptPatrol({
@@ -369,10 +373,26 @@ describe("FLY-1392 runner receipt patrol", () => {
 
 		await run();
 		db = new CommDB(dbPath);
-		expect(notifyWakeFailure).toHaveBeenCalledTimes(2);
+		expect(
+			db.getReceiptAlertOutbox(`wake_failed:founder:${wake.message_id}`),
+		).toMatchObject({ delivered_at: null });
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining(
+				`wake_failed notification ${`wake_failed:founder:${wake.message_id}`} failed for proj`,
+			),
+		);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("discord unavailable"),
+		);
+
+		db.close();
+		await run();
+		db = new CommDB(dbPath);
+		expect(notifyWakeFailure).toHaveBeenCalledTimes(3);
 		expect(
 			db.getReceiptAlertOutbox(`wake_failed:founder:${wake.message_id}`),
 		).toMatchObject({ delivered_at: expect.any(String) });
+		warn.mockRestore();
 	});
 
 	it("retries an ordinary wake alert with the original episode start", async () => {

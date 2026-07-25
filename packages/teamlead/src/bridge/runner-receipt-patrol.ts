@@ -210,7 +210,11 @@ export class RunnerReceiptPatrol {
 						: {}),
 					...(identityKind ? { identityKind } : {}),
 				});
-			} catch {
+			} catch (error) {
+				const detail = error instanceof Error ? error.message : String(error);
+				console.warn(
+					`[receipt-wake-patrol] wake_failed notification ${current.id} failed for ${projectName}: ${resultReason(detail)}; keeping retryable`,
+				);
 				delivered = false;
 			}
 			if (delivered) db.markReceiptAlertDelivered(current.id, nowMs);
