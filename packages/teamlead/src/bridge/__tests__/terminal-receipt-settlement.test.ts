@@ -340,6 +340,78 @@ describe("FLY-1448 terminal receipt settlement projector", () => {
 				"missing-receipt-root",
 			),
 		).toMatchObject({ status: "NEW", source_receipt_id: null });
+		expect(store.listUndeliveredLeadEvents()).toEqual([
+			expect.objectContaining({
+				lead_id: "flywheel-eng-lead",
+				event_type: "receipt_settlement_lineage_invalid",
+				payload: expect.stringContaining("CommDB root missing"),
+			}),
+		]);
+	});
+
+	it("refuses a same-execution legacy receipt owned by a different Lead", async () => {
+		const sourceId = comm.insertQuestion(
+			"exec-1",
+			"lead-other",
+			"wrong-lead receipt",
+			{ checkpoint: "question" },
+		);
+		const queue = new LeadInboxQueue(commPath);
+		try {
+			queue.enqueue({
+				id: "wrong-lead-root",
+				toLead: "lead-other",
+				source: "runner",
+				type: "runner_report",
+				msgClass: "protocol",
+				content: "must not attach to the session owner's settlement",
+				refMessageId: sourceId,
+				createdAt: "2026-07-24T00:00:00.000Z",
+			});
+		} finally {
+			queue.close();
+		}
+		store.upsertDetectionEscalation({
+			targetKey: "flywheel:lead-other",
+			kind: "receipt_unprocessed",
+			episodeFingerprint: "wrong-lead-root",
+			issueId: "FLY-1448",
+			ownerLeadId: "lead-other",
+			firstDetectedAtMs: 1_000,
+		});
+		store.persistTransition("exec-1", "completed", {
+			issue_id: "FLY-1448",
+			project_name: "flywheel",
+		});
+		comm.close();
+
+		await new TerminalReceiptSettlementProjector({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+		}).pass();
+
+		comm = new CommDB(commPath);
+		expect(store.listReceiptSettlementIntents()).toMatchObject([
+			{
+				state: "applying",
+				last_error: expect.stringContaining("Lead lineage mismatch"),
+			},
+		]);
+		expect(
+			store.getDetectionEscalation(
+				"flywheel:lead-other",
+				"receipt_unprocessed",
+				"wrong-lead-root",
+			),
+		).toMatchObject({ status: "NEW", source_receipt_id: null });
+		expect(store.listUndeliveredLeadEvents()).toEqual([
+			expect.objectContaining({
+				lead_id: "lead-other",
+				event_type: "receipt_settlement_lineage_invalid",
+				payload: expect.stringContaining("Lead lineage mismatch"),
+			}),
+		]);
 	});
 
 	it("refuses cross-project legacy receipt lineage", async () => {
@@ -422,12 +494,13 @@ describe("FLY-1448 terminal receipt settlement projector", () => {
 		} finally {
 			queue.close();
 		}
-		for (const targetKey of ["flywheel:lead-a", "flywheel:lead-b"]) {
+		for (const kind of ["receipt_unprocessed", "receipt_unprocessed_retry"]) {
 			store.upsertDetectionEscalation({
-				targetKey,
-				kind: "receipt_unprocessed",
+				targetKey: "flywheel:flywheel-eng-lead",
+				kind,
 				episodeFingerprint: "ambiguous-root",
 				issueId: "FLY-1448",
+				ownerLeadId: "flywheel-eng-lead",
 				firstDetectedAtMs: 1_000,
 			});
 		}

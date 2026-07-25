@@ -1,6 +1,10 @@
 import { CommDB } from "flywheel-comm/db";
 import { isOperationalTerminalStatus } from "../operational-terminal-status.js";
-import type { ReceiptSettlementIntent, StateStore } from "../StateStore.js";
+import type {
+	DetectionEscalationRow,
+	ReceiptSettlementIntent,
+	StateStore,
+} from "../StateStore.js";
 
 export interface TerminalReceiptSettlementProjectorOptions {
 	store: StateStore;
@@ -276,21 +280,76 @@ export class TerminalReceiptSettlementProjector {
 			const receiptId = detection.episode_fingerprint;
 			const lineage = db.getReceiptSettlementLineage(receiptId);
 			if (!lineage) {
-				throw new Error(
+				this.failLegacyReceiptLineage(
+					intent,
+					detection,
 					`unresolved legacy receipt detection ${receiptId}: CommDB root missing`,
 				);
 			}
 			if (lineage.projectName !== intent.project_name) {
-				throw new Error(
+				this.failLegacyReceiptLineage(
+					intent,
+					detection,
 					`unresolved legacy receipt detection ${receiptId}: project lineage mismatch`,
 				);
 			}
 			if (lineage.executionId !== intent.execution_id) continue;
-			this.options.store.attachLegacyReceiptDetectionLineage(receiptId, {
-				sourceExecutionId: lineage.executionId,
-				sourceQuestionId: lineage.questionId,
-			});
+			const expectedTargetKey = `${intent.project_name}:${lineage.rootLeadId}`;
+			if (
+				!lineage.rootLeadId ||
+				lineage.sessionLeadId !== lineage.rootLeadId ||
+				detection.target_key !== expectedTargetKey ||
+				detection.owner_lead_id !== lineage.rootLeadId
+			) {
+				this.failLegacyReceiptLineage(
+					intent,
+					detection,
+					`unresolved legacy receipt detection ${receiptId}: Lead lineage mismatch`,
+				);
+			}
+			try {
+				this.options.store.attachLegacyReceiptDetectionLineage(receiptId, {
+					sourceExecutionId: lineage.executionId,
+					sourceQuestionId: lineage.questionId,
+				});
+			} catch (error) {
+				this.failLegacyReceiptLineage(
+					intent,
+					detection,
+					error instanceof Error ? error.message : String(error),
+				);
+			}
 		}
+	}
+
+	private failLegacyReceiptLineage(
+		intent: ReceiptSettlementIntent,
+		detection: DetectionEscalationRow,
+		reason: string,
+	): never {
+		const targetPrefix = `${intent.project_name}:`;
+		const targetLeadId = detection.target_key.startsWith(targetPrefix)
+			? detection.target_key.slice(targetPrefix.length)
+			: "";
+		const leadId = detection.owner_lead_id ?? targetLeadId;
+		if (leadId) {
+			this.options.store.appendLeadEvent(
+				leadId,
+				`receipt-settlement-lineage-invalid:${detection.kind}:${detection.episode_fingerprint}`,
+				"receipt_settlement_lineage_invalid",
+				JSON.stringify({
+					event_type: "receipt_settlement_lineage_invalid",
+					project_name: intent.project_name,
+					issue_id: detection.issue_id ?? intent.issue_id,
+					execution_id: intent.execution_id,
+					target_key: detection.target_key,
+					receipt_id: detection.episode_fingerprint,
+					reason,
+				}),
+				intent.execution_id ?? undefined,
+			);
+		}
+		throw new Error(reason);
 	}
 
 	private async applyIntent(intent: ReceiptSettlementIntent): Promise<void> {

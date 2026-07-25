@@ -434,12 +434,17 @@ describe("FLY-1392 founder receipt ingress", () => {
 					},
 				},
 			});
+			expect(
+				db.insertResponse(questionId, OWNER, '{"approved": true}'),
+			).toEqual({ written: true });
+			const responseId = db.getResponse(questionId)?.id;
+			expect(responseId).toBeTruthy();
 			queue.markProcessed(rootId, {
 				now: new Date().toISOString(),
 				evidence: {
 					v: 1,
 					kind: "ship_gate_bound",
-					ref: `response:${questionId}`,
+					ref: responseId!,
 					actor: OWNER,
 					actor_kind: "founder-writer",
 					fence: { discord_message_id: msgId },
