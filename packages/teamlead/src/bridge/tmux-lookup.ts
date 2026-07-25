@@ -66,8 +66,9 @@ export type RunnerTmuxTargetDiscovery =
 
 /**
  * FLY-1374: recover an exact tmux target from the execution marker published
- * on the window at creation time. This inventory runs only in the WAKE path
- * after the corresponding CommDB row is found missing; it is not a sweep.
+ * on the window at creation time. This bounded global inventory runs only in
+ * wake/re-entry paths after the corresponding CommDB row is found missing; it
+ * is not a periodic sweep.
  *
  * Linked cmux sessions expose the same global window id more than once. Those
  * rows are one identity, not an ambiguity; prefer the non-cmux base session.

@@ -18638,6 +18638,153 @@ export class StateStore {
 		return settled;
 	}
 
+	/**
+	 * FLY-1462 (Codex design R3 HIGH-3): ATOMIC crash recovery for a rework
+	 * replacement's launch finalization. The normal path persists three steps
+	 * separately (ledger `started` → node `running` → delivery `wake_delivered`);
+	 * a Bridge exit between them strands the delivery at `replacement_pending`
+	 * (a `started` ledger row is terminal and never rescanned). This finalizer
+	 * converges that state in ONE transaction with full context CAS:
+	 *   - the dispatch ledger row at `started` for THIS execution is the durable
+	 *     launch evidence — absent → refuse (the launch scan still owns it);
+	 *   - node still bound to THIS execution: `admitted|running` → `running`;
+	 *   - node `done` → REFUSE with zero writes (R4 HIGH-3, explicit
+	 *     conservative boundary): a fast-completed replacement already
+	 *     committed as a PLAIN DAG transition (its verification path was still
+	 *     `pending`, so `commitWorkflowTransitionTx` never saw it) — activating
+	 *     the path after the fact cannot restore the rework-chain routing that
+	 *     completion skipped. The delivery stays `replacement_pending` and is
+	 *     surfaced as held every tick; chain-aware compensation is a follow-up.
+	 *   - node rebound to another execution / route revision moved / delivery
+	 *     not `replacement_pending` → refuse with NO writes.
+	 */
+	finalizeWorkflowReworkReplacementLaunch(input: {
+		executionId: string;
+		now: string;
+	}): { ok: true; updated: boolean } | { ok: false; reason: string } {
+		if (!input.executionId || !StateStore.workflowFiniteTimestamp(input.now)) {
+			return { ok: false, reason: "invalid_rework_replacement_finalize" };
+		}
+		const binding = this.getWorkflowExecutionBinding(input.executionId);
+		if (binding?.mode !== "replacement" || !binding.rework_request_id) {
+			return { ok: false, reason: "rework_replacement_binding_missing" };
+		}
+		let result: { ok: true; updated: boolean } | { ok: false; reason: string } =
+			{
+				ok: false,
+				reason: "rework_replacement_finalize_not_applied",
+			};
+		this.db.transaction(() => {
+			const requestId = binding.rework_request_id as string;
+			const request = this.getWorkflowReworkRequest(requestId);
+			const route = this.getLatestWorkflowReworkRoute(requestId);
+			const delivery = this.getWorkflowReworkDelivery(requestId);
+			const node = request
+				? this.getWorkflowRunNode(
+						request.run_id,
+						binding.node_id,
+						binding.attempt,
+					)
+				: undefined;
+			if (
+				!request ||
+				!route ||
+				!delivery ||
+				!node ||
+				route.preferred_actor_execution_id !== input.executionId ||
+				delivery.route_revision !== route.revision ||
+				node.execution_id !== input.executionId
+			) {
+				result = {
+					ok: false,
+					reason: "rework_replacement_finalize_context_changed",
+				};
+				return;
+			}
+			if (delivery.state === "wake_delivered") {
+				result = { ok: true, updated: false };
+				return;
+			}
+			if (delivery.state !== "replacement_pending") {
+				result = { ok: false, reason: "rework_replacement_delivery_changed" };
+				return;
+			}
+			const startedRow = this.workflowSelectAll(
+				`SELECT id FROM workflow_side_effect_ledger
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND execution_id = ? AND kind = 'dispatch' AND state = 'started'
+				  LIMIT 1`,
+				[
+					request.run_id,
+					binding.node_id,
+					binding.attempt,
+					input.executionId,
+				],
+			)[0];
+			if (!startedRow) {
+				result = { ok: false, reason: "rework_replacement_not_started" };
+				return;
+			}
+			if (node.state === "done") {
+				result = {
+					ok: false,
+					reason: "rework_replacement_completed_out_of_band",
+				};
+				return;
+			}
+			if (node.state !== "admitted" && node.state !== "running") {
+				result = {
+					ok: false,
+					reason: "rework_replacement_node_state_unexpected",
+				};
+				return;
+			}
+			this.upsertWorkflowRunNodeTx({
+				runId: request.run_id,
+				nodeId: binding.node_id,
+				attempt: binding.attempt,
+				state: "running",
+				executionId: input.executionId,
+			});
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET state = 'wake_delivered', owner_id = NULL,
+				        lease_expires_at = NULL, last_error = NULL, updated_at = ?
+				  WHERE request_id = ? AND route_revision = ?
+				    AND state = 'replacement_pending'`,
+				[input.now, requestId, route.revision],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "rework_replacement_launch_race" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_rework_verification_path
+				    SET state = 'active', updated_at = ?
+				  WHERE request_id = ? AND route_revision = ? AND state = 'pending'`,
+				[input.now, requestId, route.revision],
+			);
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `rework_replacement_launched:${requestId}`,
+				kind: "rework_replacement_launched",
+				nodeId: binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					requestId,
+					activationId: binding.activation_id,
+					attempt: binding.attempt,
+				},
+			});
+			result = { ok: true, updated: true };
+		});
+		const settled = result as
+			| { ok: true; updated: boolean }
+			| { ok: false; reason: string };
+		if (settled.ok && settled.updated) this.save();
+		return settled;
+	}
+
 	getWorkflowReworkVerificationPath(
 		requestId: string,
 	): WorkflowReworkVerificationPathRow | undefined {

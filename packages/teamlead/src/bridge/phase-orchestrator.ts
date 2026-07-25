@@ -44,7 +44,9 @@ import {
 	classifyPhaseActorReentry,
 	type PhaseLiveness,
 } from "./phase-actor-reentry.js";
+import type { ActorProcessRemnant } from "./phase-actor-remnant.js";
 import type { RetestHeadDeltaResult } from "./retest-head-delta.js";
+import type { RunnerTmuxTargetDiscovery } from "./tmux-lookup.js";
 import type {
 	WorkflowShadowContext,
 	WorkflowShadowHooks,
@@ -341,12 +343,22 @@ export interface PhaseOrchestratorDeps {
 		 * FLY-939 (G-C): probe process liveness of a phase row's PERSISTED tmux
 		 * session directly (`row.tmux_session` → probeRunnerProcessLiveness), NOT
 		 * via the CommDB registration lookup. `probePhaseAlive` above goes through
-		 * the CommDB (`getTmuxTargetFromCommDb`), which returns `absent` when the
-		 * registration was cleared for a terminal session — exactly masking the
-		 * "terminal row, live tmux window" pollution the ghost guard must catch
-		 * (Codex design R1 #2). A row with no `tmux_session` → `absent`.
+		 * CommDB and returns `absent` when the registration was cleared for a
+		 * terminal session — exactly masking the "terminal row, live tmux window"
+		 * pollution the ghost guard must catch (Codex design R1 #2). A read error
+		 * remains `indeterminate`. A row with no `tmux_session` → `absent`.
 		 */
 		probeGhostTmux(row: PhaseSession): Promise<PhaseLiveness>;
+		/**
+		 * FLY-1462: fail-closed global exec-marker discovery for terminal
+		 * holders whose persisted target is missing.
+		 */
+		discoverByExecMarker?(
+			session: PhaseSession,
+		): Promise<RunnerTmuxTargetDiscovery>;
+		/** FLY-1462 (Codex R1 HIGH-1): adapter-aware process-remnant sweep —
+		 * required alongside the marker sweep before a terminal-status replace. */
+		probeProcessRemnant?(session: PhaseSession): Promise<ActorProcessRemnant>;
 		/**
 		 * FLY-1329 (A1/A2): record that a phase was parked on `absent` liveness
 		 * rather than closed — the FLY-1319 downgrade. Never silent: `absent` means
@@ -2083,13 +2095,12 @@ export class PhaseOrchestrator {
 	 *   - `alive` / `indeterminate` → NOT dead (indeterminate is fail-closed:
 	 *     never treat a maybe-alive context holder as dead — existing stance);
 	 *   - `dead_pin` → dead unconditionally (a confirmed remain-on-exit corpse);
-	 *   - `absent` → `probePhaseAlive` goes through the CommDB registration
-	 *     lookup, which FOLDS "registration gone" AND "CommDB read error" into
-	 *     absent — unfalsifiable on its own (authorizing a spawn inside a CommDB
-	 *     lock/corruption window could double-write branch B). Only a DIRECT
-	 *     probe of the row's PERSISTED tmux target (`probeGhostTmux`, which
-	 *     bypasses the CommDB lookup) may confirm death; a row with no persisted
-	 *     target keeps the existing wake path (fail-closed).
+	 *   - `absent` → CommDB positively found no registration; this remains
+	 *     unfalsifiable on its own. A DIRECT persisted-target probe may confirm
+	 *     death. FLY-1462 additionally permits terminal statuses with no persisted
+	 *     target to use an exec-marker inventory; missing/uncertain inventory
+	 *     evidence stays fail-closed. This consumer selects only live statuses,
+	 *     so that terminal-status branch is currently unreachable here.
 	 * NOTE: the ghostGuard inside the spawn fallback is NOT a substitute for
 	 * this in-place direct probe — it re-queries listPhaseSessionRows (a throw
 	 * there ALLOWS the spawn) and only probes the newest few rows, so it does
@@ -2102,6 +2113,8 @@ export class PhaseOrchestrator {
 			session: row,
 			probeRegistered: this.deps.effects.probePhaseAlive,
 			probePersisted: this.deps.effects.probeGhostTmux,
+			discoverByExecMarker: this.deps.effects.discoverByExecMarker,
+			probeProcessRemnant: this.deps.effects.probeProcessRemnant,
 		});
 		return decision.kind === "replace";
 	}

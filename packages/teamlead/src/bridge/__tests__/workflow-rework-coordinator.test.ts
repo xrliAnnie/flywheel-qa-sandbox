@@ -12,6 +12,8 @@ import {
 	classifyPhaseActorReentry,
 	type PhaseActorReentryDecision,
 } from "../phase-actor-reentry.js";
+import type { PhaseSession } from "../phase-orchestrator.js";
+import type { RunnerTmuxTargetDiscovery } from "../tmux-lookup.js";
 import {
 	grantWorkflowReworkTurn,
 	WorkflowReworkCoordinator,
@@ -32,6 +34,157 @@ const session = {
 };
 
 describe("classifyPhaseActorReentry", () => {
+	it.each([
+		"terminated",
+		"failed",
+		"rejected",
+		"blocked",
+		"deferred",
+		"shelved",
+	])(
+		"replaces a %s holder with no target when marker sweep AND remnant sweep prove it gone",
+		async (status) => {
+			const probePersisted = vi.fn(async () => "absent" as const);
+			const discoverByExecMarker = vi.fn(async () => ({
+				kind: "missing" as const,
+			}));
+			const probeProcessRemnant = vi.fn(async () => "none" as const);
+
+			await expect(
+				classifyPhaseActorReentry({
+					session: {
+						...session,
+						status,
+						tmux_session: undefined,
+					},
+					probeRegistered: vi.fn(async () => "absent"),
+					probePersisted,
+					discoverByExecMarker,
+					probeProcessRemnant,
+				}),
+			).resolves.toEqual({
+				kind: "replace",
+				reason: "terminal_status_dead",
+			});
+			expect(discoverByExecMarker).toHaveBeenCalledOnce();
+			expect(probeProcessRemnant).toHaveBeenCalledOnce();
+			expect(probePersisted).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["found", "indeterminate"] as const)(
+		"holds a terminal holder when the marker sweep is missing but the process-remnant sweep is %s",
+		async (remnant) => {
+			const probeProcessRemnant = vi.fn(async () => remnant);
+			await expect(
+				classifyPhaseActorReentry({
+					session: {
+						...session,
+						status: "terminated",
+						tmux_session: undefined,
+					},
+					probeRegistered: vi.fn(async () => "absent"),
+					probePersisted: vi.fn(async () => "absent"),
+					discoverByExecMarker: vi.fn(async () => ({
+						kind: "missing" as const,
+					})),
+					probeProcessRemnant,
+				}),
+			).resolves.toEqual({
+				kind: "hold",
+				reason: "terminal_status_unconfirmed",
+			});
+			expect(probeProcessRemnant).toHaveBeenCalledOnce();
+		},
+	);
+
+	it("holds a terminal holder with no target when the remnant probe is not wired", async () => {
+		await expect(
+			classifyPhaseActorReentry({
+				session: {
+					...session,
+					status: "terminated",
+					tmux_session: undefined,
+				},
+				probeRegistered: vi.fn(async () => "absent"),
+				probePersisted: vi.fn(async () => "absent"),
+				discoverByExecMarker: vi.fn(async () => ({
+					kind: "missing" as const,
+				})),
+			}),
+		).resolves.toEqual({
+			kind: "hold",
+			reason: "persisted_target_missing",
+		});
+	});
+
+	it.each(["found", "ambiguous", "indeterminate"] as const)(
+		"holds a terminal holder when the marker sweep is %s (remnant sweep never consulted)",
+		async (kind) => {
+			const discovery: RunnerTmuxTargetDiscovery =
+				kind === "found" ? { kind, tmuxWindow: "flywheel:@42" } : { kind };
+			const probeProcessRemnant = vi.fn(async () => "none" as const);
+
+			await expect(
+				classifyPhaseActorReentry({
+					session: {
+						...session,
+						status: "terminated",
+						tmux_session: undefined,
+					},
+					probeRegistered: vi.fn(async () => "absent"),
+					probePersisted: vi.fn(async () => "absent"),
+					discoverByExecMarker: vi.fn(async () => discovery),
+					probeProcessRemnant,
+				}),
+			).resolves.toEqual({
+				kind: "hold",
+				reason: "terminal_status_unconfirmed",
+			});
+			expect(probeProcessRemnant).not.toHaveBeenCalled();
+		},
+	);
+
+	it("holds a terminal holder with no target when marker discovery is not wired", async () => {
+		await expect(
+			classifyPhaseActorReentry({
+				session: {
+					...session,
+					status: "terminated",
+					tmux_session: undefined,
+				},
+				probeRegistered: vi.fn(async () => "absent"),
+				probePersisted: vi.fn(async () => "absent"),
+			}),
+		).resolves.toEqual({
+			kind: "hold",
+			reason: "persisted_target_missing",
+		});
+	});
+
+	it("holds a running holder with no target without consulting the marker sweep", async () => {
+		const discoverByExecMarker = vi.fn(async () => ({
+			kind: "missing" as const,
+		}));
+
+		await expect(
+			classifyPhaseActorReentry({
+				session: {
+					...session,
+					status: "running",
+					tmux_session: undefined,
+				},
+				probeRegistered: vi.fn(async () => "absent"),
+				probePersisted: vi.fn(async () => "absent"),
+				discoverByExecMarker,
+			}),
+		).resolves.toEqual({
+			kind: "hold",
+			reason: "persisted_target_missing",
+		});
+		expect(discoverByExecMarker).not.toHaveBeenCalled();
+	});
+
 	it.each<{
 		registered: "alive" | "dead_pin" | "absent" | "indeterminate";
 		persisted?: "alive" | "dead_pin" | "absent" | "indeterminate";
@@ -69,6 +222,9 @@ describe("classifyPhaseActorReentry", () => {
 function makeHarness(input: {
 	registered?: "alive" | "dead_pin" | "absent" | "indeterminate";
 	persisted?: "alive" | "dead_pin" | "absent" | "indeterminate";
+	discovered?: RunnerTmuxTargetDiscovery;
+	remnant?: "none" | "found" | "indeterminate";
+	actor?: PhaseSession;
 	ready?: { ok: boolean; reason?: string };
 	wakeResults?: Array<{ ok: boolean; error?: string }>;
 	failTurnProjectionOnce?: boolean;
@@ -207,9 +363,13 @@ function makeHarness(input: {
 
 	const wakeResults = [...(input.wakeResults ?? [{ ok: true }])];
 	const effects = {
-		getActorSession: vi.fn(() => session),
+		getActorSession: vi.fn(() => input.actor ?? session),
 		probeRegistered: vi.fn(async () => input.registered ?? "alive"),
 		probePersisted: vi.fn(async () => input.persisted ?? "absent"),
+		discoverByExecMarker: vi.fn(
+			async () => input.discovered ?? { kind: "missing" as const },
+		),
+		probeProcessRemnant: vi.fn(async () => input.remnant ?? ("none" as const)),
 		assertWorktreeReady: vi.fn(async () => input.ready ?? { ok: true }),
 		activateActorForWake: vi.fn(async () => ({ ok: true })),
 		grantTurn: vi.fn(async () => ({ epoch: 4, grantedAt: NOW })),
@@ -359,6 +519,77 @@ describe("WorkflowReworkCoordinator", () => {
 		);
 		expect(dead.effects.grantTurn).not.toHaveBeenCalled();
 		expect(dead.getDelivery().state).toBe("replacement_pending");
+	});
+
+	it("moves a terminal holder with no persisted target to replacement when no marker window exists", async () => {
+		const h = makeHarness({
+			registered: "absent",
+			discovered: { kind: "missing" },
+			actor: {
+				...session,
+				status: "terminated",
+				tmux_session: undefined,
+			},
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toEqual({
+			kind: "replacement_pending",
+			executionId: "implement-exec",
+			reason: "terminal_status_dead",
+		});
+		expect(h.effects.discoverByExecMarker).toHaveBeenCalledOnce();
+		expect(h.effects.probeProcessRemnant).toHaveBeenCalledOnce();
+		expect(h.effects.grantTurn).not.toHaveBeenCalled();
+		expect(h.getDelivery()).toMatchObject({
+			state: "replacement_pending",
+			last_error: "terminal_status_dead",
+		});
+	});
+
+	it("holds a terminal holder when a process remnant still exists despite a missing marker", async () => {
+		const h = makeHarness({
+			registered: "absent",
+			discovered: { kind: "missing" },
+			remnant: "found",
+			actor: {
+				...session,
+				status: "terminated",
+				tmux_session: undefined,
+			},
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toEqual({
+			kind: "held",
+			reason: "terminal_status_unconfirmed",
+		});
+		expect(h.effects.probeProcessRemnant).toHaveBeenCalledOnce();
+		expect(h.getDelivery().state).toBe("pending");
+	});
+
+	it("holds a terminal holder when its marker window still exists", async () => {
+		const h = makeHarness({
+			registered: "absent",
+			discovered: { kind: "found", tmuxWindow: "flywheel:@42" },
+			actor: {
+				...session,
+				status: "terminated",
+				tmux_session: undefined,
+			},
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toEqual({
+			kind: "held",
+			reason: "terminal_status_unconfirmed",
+		});
+		expect(h.effects.alertHold).toHaveBeenCalledWith({
+			session: expect.objectContaining({ execution_id: "implement-exec" }),
+			requestId: "rework-1",
+			reason: "terminal_status_unconfirmed",
+		});
+		expect(h.getDelivery()).toMatchObject({
+			state: "pending",
+			last_error: "terminal_status_unconfirmed",
+		});
 	});
 
 	it("replays the same activation and source grant after a projection crash", async () => {
