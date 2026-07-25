@@ -1,62 +1,32 @@
-import type { ActorProcessRemnant } from "./phase-actor-remnant.js";
 import type { PhaseSession } from "./phase-orchestrator.js";
-import type { RunnerTmuxTargetDiscovery } from "./tmux-lookup.js";
 
 /** Four-state process evidence shared by three-stage and generalized re-entry. */
 export type PhaseLiveness = "alive" | "dead_pin" | "absent" | "indeterminate";
-
-/**
- * FLY-1462: statuses that may authorize replacement in the no-target branch —
- * but ONLY together with BOTH physical sweeps agreeing the actor is gone:
- * the global exec-marker window sweep (`missing`) AND the adapter-aware
- * process-remnant probe (`none`). Neither status nor either sweep alone is
- * death evidence (Codex design R1 HIGH-1): terminate infers success from
- * registration absence without killing; marker publication is best-effort;
- * the resident codex daemon outlives its marked TUI window. `completed` is
- * intentionally excluded because a parked-alive holder commonly has that
- * status. Retry dispatches a new execution id rather than reviving these rows.
- */
-const PROVEN_DEAD_HOLDER_STATUSES: ReadonlySet<string> = new Set([
-	"terminated",
-	"failed",
-	"rejected",
-	"blocked",
-	"deferred",
-	"shelved",
-]);
 
 export type PhaseActorReentryDecision =
 	| { kind: "wake"; reason: "registered_alive" | "persisted_target_alive" }
 	| {
 			kind: "replace";
-			reason:
-				| "registered_dead_pin"
-				| "persisted_target_dead"
-				| "terminal_status_dead";
+			reason: "registered_dead_pin" | "persisted_target_dead";
 	  }
 	| {
 			kind: "hold";
 			reason:
 				| "registered_liveness_indeterminate"
 				| "persisted_target_missing"
-				| "persisted_liveness_indeterminate"
-				| "terminal_status_unconfirmed";
+				| "persisted_liveness_indeterminate";
 	  };
 
 /**
  * Prove whether the original context holder can be woken or is genuinely dead.
- * `absent` from the registration-backed probe is not death: a missing CommDB
- * registration and a dead process look identical there. Replacement therefore
- * requires independent target or exec-marker evidence.
+ * `absent` from the registration-backed probe is not death: a cleared/corrupt
+ * CommDB registration and a dead process look identical there. Only the actor's
+ * persisted tmux target may authorize replacement.
  */
 export async function classifyPhaseActorReentry(input: {
 	session: PhaseSession;
 	probeRegistered(session: PhaseSession): Promise<PhaseLiveness>;
 	probePersisted(session: PhaseSession): Promise<PhaseLiveness>;
-	discoverByExecMarker?(
-		session: PhaseSession,
-	): Promise<RunnerTmuxTargetDiscovery>;
-	probeProcessRemnant?(session: PhaseSession): Promise<ActorProcessRemnant>;
 }): Promise<PhaseActorReentryDecision> {
 	const registered = await input.probeRegistered(input.session);
 	if (registered === "alive") {
@@ -69,21 +39,6 @@ export async function classifyPhaseActorReentry(input: {
 		return { kind: "hold", reason: "registered_liveness_indeterminate" };
 	}
 	if (!input.session.tmux_session) {
-		if (
-			PROVEN_DEAD_HOLDER_STATUSES.has(input.session.status) &&
-			input.discoverByExecMarker &&
-			input.probeProcessRemnant
-		) {
-			const discovered = await input.discoverByExecMarker(input.session);
-			if (discovered.kind !== "missing") {
-				return { kind: "hold", reason: "terminal_status_unconfirmed" };
-			}
-			const remnant = await input.probeProcessRemnant(input.session);
-			if (remnant === "none") {
-				return { kind: "replace", reason: "terminal_status_dead" };
-			}
-			return { kind: "hold", reason: "terminal_status_unconfirmed" };
-		}
 		return { kind: "hold", reason: "persisted_target_missing" };
 	}
 	const persisted = await input.probePersisted(input.session);

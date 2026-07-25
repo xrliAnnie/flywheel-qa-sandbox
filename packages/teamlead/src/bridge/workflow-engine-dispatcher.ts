@@ -558,12 +558,7 @@ export class WorkflowEngineDispatcher {
 		>;
 		try {
 			deliveries = this.options.store.listWorkflowReworkDeliveries({
-				// FLY-1462 (Codex design R1 HIGH-2): replacement_pending is scanned
-				// too — advance and materialization are separate transactions, and a
-				// Bridge exit between them used to strand the delivery forever (the
-				// claim path treats replacement_pending as settled, and the stall
-				// path only flips it to held).
-				states: ["pending", "turn_granted", "replacement_pending"],
+				states: ["pending", "turn_granted"],
 			});
 		} catch (error) {
 			result.held += 1;
@@ -585,61 +580,6 @@ export class WorkflowEngineDispatcher {
 				run.engine_owned !== 1 ||
 				run.status !== "active"
 			) {
-				continue;
-			}
-			if (delivery.state === "replacement_pending") {
-				// FLY-1462 HIGH-2 crash recovery: re-drive the materialization for a
-				// persisted replacement_pending. The request-scoped
-				// `rework_replacement_materialized:<requestId>` receipt makes replays
-				// idempotent — exactly one new execution across any number of ticks.
-				const routeRow = this.options.store.getLatestWorkflowReworkRoute(
-					delivery.request_id,
-				);
-				if (!routeRow) {
-					result.held += 1;
-					continue;
-				}
-				const recovered =
-					this.options.store.materializeWorkflowReworkReplacement({
-						requestId: delivery.request_id,
-						deadExecutionId: routeRow.preferred_actor_execution_id,
-						newExecutionId: randomUUID(),
-						reason: "replacement_recovered",
-						observedAt: this.now().toISOString(),
-					});
-				if (!recovered.ok) {
-					result.held += 1;
-					this.log(
-						`workflow rework replacement recovery held for ${delivery.request_id}: ${recovered.reason}`,
-					);
-					continue;
-				}
-				// FLY-1462 (Codex R2 HIGH-3 + R3 HIGH-3): the launch finalization is
-				// three separate persists (ledger `started` → node `running` →
-				// delivery `wake_delivered`, see markStarted); a crash between them
-				// leaves the delivery at replacement_pending forever (`started` is a
-				// terminal ledger state the launch scan never revisits). The ATOMIC
-				// StateStore finalizer converges it under full context CAS: `started`
-				// ledger row required as durable launch evidence, node writes only
-				// while still bound to this execution, `done` kept terminal, delivery
-				// settle in the same transaction. `rework_replacement_not_started` is
-				// the normal not-yet-launched answer — the launch scan owns that.
-				if (recovered.idempotentReplay) {
-					const finalized =
-						this.options.store.finalizeWorkflowReworkReplacementLaunch({
-							executionId: recovered.executionId,
-							now: this.now().toISOString(),
-						});
-					if (
-						!finalized.ok &&
-						finalized.reason !== "rework_replacement_not_started"
-					) {
-						result.held += 1;
-						this.log(
-							`workflow rework replacement finalize held for ${delivery.request_id}: ${finalized.reason}`,
-						);
-					}
-				}
 				continue;
 			}
 			let outcome: WorkflowReworkCoordinatorOutcome;
