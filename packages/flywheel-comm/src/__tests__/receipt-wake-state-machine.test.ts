@@ -498,4 +498,94 @@ describe("FLY-1392 receipt wake state machine", () => {
 			});
 		},
 	);
+
+	it.each(["finalizeSession", "deleteSessionAndRunnerPhaseLifecycle"] as const)(
+		"preserves metadata-only founder wake authority during %s",
+		(method) => {
+			db.registerSession("exec-1", "session", "proj", "FLY-1", "lead-1");
+			const wake = db.enqueueRunnerPhaseWake(
+				"exec-1",
+				{
+					id: "metadata-founder-wake",
+					to: "exec-1",
+					content: "founder decided",
+					metadata: { origin: "founder", questionId: "question-1" },
+				},
+				Date.now(),
+			).wake;
+
+			if (method === "finalizeSession") db.finalizeSession("exec-1");
+			else db.deleteSessionAndRunnerPhaseLifecycle("exec-1");
+
+			expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
+				{
+					message_id: wake.message_id,
+					state: "finished",
+					started_ack_scope: "terminal",
+					escalation_outbox_id: `wake_failed:founder:${wake.message_id}`,
+				},
+			]);
+		},
+	);
+
+	it("retains an aged founder wake until its durable terminal alert is delivered", () => {
+		db.registerSession("exec-1", "session", "proj", "FLY-1", "lead-1");
+		const wake = db.instructionAndIntent({
+			instructionId: "aged-founder-instruction",
+			fromAgent: "lead-1",
+			executionId: "exec-1",
+			content: "aged founder decision",
+			intentKey: "instruction:aged-founder-instruction",
+			envelope: {
+				id: "aged-founder-wake",
+				to: "exec-1",
+				content: "aged founder decision",
+				metadata: { origin: "founder", questionId: "question-1" },
+			},
+			queuedAtMs: Date.now() - 8 * 24 * 60 * 60_000,
+		}).wake;
+
+		db.finalizeSession("exec-1");
+
+		const alertId = `wake_failed:founder:${wake.message_id}`;
+		expect(db.listRunnerPhaseWakes("exec-1")).toHaveLength(1);
+		expect(
+			db.revalidateRunnerReceiptWakeAlert(alertId, Date.now()),
+		).toMatchObject({ id: alertId, canceled_at: null });
+	});
+
+	it("keeps malformed wake-failure evidence pending instead of canceling it", () => {
+		const wake = admit(1, 1_000).wake;
+		const alert = db.enqueueRunnerReceiptWakeEscalation({
+			executionId: "exec-1",
+			messageId: wake.message_id,
+			reason: "no_started_receipt",
+			firstDetectedAtMs: wake.queued_at,
+			nowMs: 2_000,
+		});
+		(
+			db as unknown as {
+				db: { prepare(sql: string): { run(...args: unknown[]): void } };
+			}
+		).db
+			.prepare("UPDATE receipt_alert_outbox SET payload = ? WHERE id = ?")
+			.run("{not-json", alert?.id);
+
+		expect(
+			db.revalidateRunnerReceiptWakeAlert(alert?.id ?? "", 3_000),
+		).toMatchObject({ id: alert?.id, canceled_at: null });
+		expect(db.listPendingReceiptAlerts(["wake_failed"])).toHaveLength(1);
+	});
+
+	it("rejects attempts to rewrite durable session receipt lineage", () => {
+		db.registerSession("exec-1", "session", "proj", "FLY-1", "lead-1");
+
+		expect(() =>
+			db.registerSession("exec-1", "other", "proj", "FLY-2", "lead-1"),
+		).toThrow(/session receipt lineage mismatch/);
+		expect(db.getSession("exec-1")).toMatchObject({
+			tmux_window: "session",
+			issue_id: "FLY-1",
+		});
+	});
 });

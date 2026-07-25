@@ -68,6 +68,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   ended_at      DATETIME,
   status        TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout','blocked','failed'))
 );
+CREATE TABLE IF NOT EXISTS session_receipt_lineage (
+  execution_id  TEXT PRIMARY KEY,
+  project_name  TEXT NOT NULL,
+  issue_id      TEXT,
+  lead_id       TEXT
+);
 CREATE TABLE IF NOT EXISTS runner_declared_states (
   execution_id  TEXT PRIMARY KEY,
   kind          TEXT NOT NULL CHECK(kind IN ('parked','long_task')),
@@ -404,6 +410,49 @@ export interface TerminalWakeCompletion {
 	alert: import("./lead-inbox-queue.js").ReceiptAlertOutboxRow;
 	identityKind: "terminal_episode" | "founder_message";
 	episodeFingerprint: string;
+}
+
+function runnerWakeMetadata(wake: RunnerPhaseWake): Record<string, unknown> {
+	let stored: Record<string, unknown> = {};
+	if (wake.metadata_json) {
+		try {
+			const parsed = JSON.parse(wake.metadata_json) as unknown;
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				stored = parsed as Record<string, unknown>;
+			}
+		} catch {
+			// Malformed metadata never confers founder authority.
+		}
+	}
+	if (!wake.envelope_json) return stored;
+	try {
+		const parsed = JSON.parse(wake.envelope_json) as {
+			metadata?: unknown;
+		};
+		if (
+			parsed.metadata &&
+			typeof parsed.metadata === "object" &&
+			!Array.isArray(parsed.metadata)
+		) {
+			return {
+				...stored,
+				...(parsed.metadata as Record<string, unknown>),
+			};
+		}
+	} catch {
+		// Fall back to the independently persisted metadata_json.
+	}
+	return stored;
+}
+
+function founderWakeEnvelope(envelope: PhaseWakeInput): PhaseWakeInput {
+	return {
+		...envelope,
+		metadata: {
+			...(envelope.metadata ?? {}),
+			origin: "founder",
+		},
+	};
 }
 
 export interface ReceiptWakePolicy {
@@ -958,6 +1007,12 @@ export class CommDB {
 				`);
 			})();
 		}
+		this.db.exec(`
+			INSERT OR IGNORE INTO session_receipt_lineage
+				(execution_id, project_name, issue_id, lead_id)
+			SELECT execution_id, project_name, issue_id, lead_id
+			  FROM sessions
+		`);
 
 		// FLY-1375: founder feedback is an immutable workflow source event just
 		// like approval. SQLite cannot widen the CHECK constraint in place.
@@ -1521,9 +1576,8 @@ export class CommDB {
 					`SELECT DISTINCT root.id
 					   FROM lead_inbox root
 					   JOIN messages source ON source.id = root.ref_message_id
-					   JOIN sessions owner ON owner.execution_id = source.from_agent
 					  WHERE root.resend_of IS NULL
-					    AND owner.execution_id = ?
+					    AND source.from_agent = ?
 					  ORDER BY root.seq`,
 				)
 				.all(executionId) as Array<{ id: string }>
@@ -1536,6 +1590,7 @@ export class CommDB {
 				executionId: string;
 				questionId: string;
 				projectName: string;
+				issueId: string | null;
 				rootLeadId: string;
 				sessionLeadId: string | null;
 		  }
@@ -1546,11 +1601,13 @@ export class CommDB {
 				        owner.execution_id AS executionId,
 				        source.id AS questionId,
 				        owner.project_name AS projectName,
+				        owner.issue_id AS issueId,
 				        root.to_lead AS rootLeadId,
 				        owner.lead_id AS sessionLeadId
 				   FROM lead_inbox root
 				   JOIN messages source ON source.id = root.ref_message_id
-				   JOIN sessions owner ON owner.execution_id = source.from_agent
+				   JOIN session_receipt_lineage owner
+				     ON owner.execution_id = source.from_agent
 				  WHERE root.id = ? AND root.resend_of IS NULL`,
 			)
 			.get(receiptId) as
@@ -1559,6 +1616,7 @@ export class CommDB {
 					executionId: string;
 					questionId: string;
 					projectName: string;
+					issueId: string | null;
 					rootLeadId: string;
 					sessionLeadId: string | null;
 			  }
@@ -1601,9 +1659,10 @@ export class CommDB {
 			const lineage = this.db
 				.prepare(
 					`SELECT source.from_agent, owner.execution_id
-					   FROM messages source
-					   JOIN sessions owner ON owner.execution_id = source.from_agent
-					  WHERE source.id = ?`,
+						   FROM messages source
+						   JOIN session_receipt_lineage owner
+						     ON owner.execution_id = source.from_agent
+						  WHERE source.id = ?`,
 				)
 				.get(root.ref_message_id) as
 				| { from_agent: string; execution_id: string }
@@ -2943,7 +3002,7 @@ export class CommDB {
 				const wake = this.admitReceiptWakeIntent({
 					executionId: question.from_agent,
 					intentKey: input.intentKey,
-					envelope: input.envelope,
+					envelope: founderWakeEnvelope(input.envelope),
 					queuedAtMs: input.queuedAtMs,
 					purpose: "park_wake",
 				});
@@ -3610,7 +3669,7 @@ export class CommDB {
 			const wake = this.admitReceiptWakeIntent({
 				executionId: input.expectedOwner,
 				intentKey: input.intentKey,
-				envelope: input.envelope,
+				envelope: founderWakeEnvelope(input.envelope),
 				queuedAtMs: input.queuedAtMs,
 				purpose: "park_wake",
 			});
@@ -3713,7 +3772,7 @@ export class CommDB {
 				const wake = this.admitReceiptWakeIntent({
 					executionId: input.expectedOwner,
 					intentKey: input.intentKey,
-					envelope: input.envelope,
+					envelope: founderWakeEnvelope(input.envelope),
 					queuedAtMs: input.queuedAtMs,
 					purpose: "park_wake",
 				});
@@ -5143,23 +5202,15 @@ export class CommDB {
 					  WHERE execution_id = ? AND message_id = ?`,
 				)
 				.get(input.executionId, input.messageId) as RunnerPhaseWake | undefined;
-			if (
-				!wake ||
-				wake.state !== "pending" ||
-				wake.admission_state !== "queued" ||
-				wake.escalation_outbox_id
-			) {
+			if (!wake || wake.state !== "pending" || wake.escalation_outbox_id) {
 				return null;
 			}
-
-			let founderOrigin = false;
-			try {
-				const envelope = JSON.parse(wake.envelope_json ?? "{}") as {
-					metadata?: { origin?: unknown };
-				};
-				founderOrigin = envelope.metadata?.origin === "founder";
-			} catch {
-				// An unreadable envelope is not founder authority.
+			const founderOrigin = runnerWakeMetadata(wake).origin === "founder";
+			if (
+				wake.admission_state !== "queued" &&
+				!(founderOrigin && wake.admission_state === null)
+			) {
+				return null;
 			}
 
 			const now = new Date(input.nowMs).toISOString();
@@ -5205,11 +5256,19 @@ export class CommDB {
 					        started_ack_scope = 'terminal',
 					        escalation_outbox_id = ?,
 					        claim_token = NULL, claim_expires_at = NULL
-					  WHERE execution_id = ? AND message_id = ?
-					    AND state = 'pending' AND admission_state = 'queued'
-					    AND escalation_outbox_id IS NULL`,
+						  WHERE execution_id = ? AND message_id = ?
+						    AND state = 'pending'
+						    AND (admission_state = 'queued'
+						      OR (? = 1 AND admission_state IS NULL))
+						    AND escalation_outbox_id IS NULL`,
 				)
-				.run(input.nowMs, outboxId, input.executionId, input.messageId);
+				.run(
+					input.nowMs,
+					outboxId,
+					input.executionId,
+					input.messageId,
+					founderOrigin ? 1 : 0,
+				);
 			if (retired.changes !== 1) return null;
 
 			if (identityKind === "terminal_episode") {
@@ -5463,11 +5522,16 @@ export class CommDB {
 			try {
 				payload = JSON.parse(alert.payload) as typeof payload;
 			} catch {
-				payload = {};
+				return alert;
+			}
+			if (
+				typeof payload.executionId !== "string" ||
+				typeof payload.messageId !== "string"
+			) {
+				return alert;
 			}
 			if (
 				payload.identityKind === "terminal_episode" &&
-				typeof payload.executionId === "string" &&
 				typeof payload.terminalLifecycleId === "string" &&
 				typeof payload.generation === "number"
 			) {
@@ -5486,7 +5550,6 @@ export class CommDB {
 			}
 			if (
 				payload.identityKind === "founder_message" &&
-				typeof payload.executionId === "string" &&
 				typeof payload.messageId === "string"
 			) {
 				const founderWake = this.db
@@ -5501,19 +5564,15 @@ export class CommDB {
 					| undefined;
 				return founderWake ? alert : null;
 			}
-			const live =
-				typeof payload.executionId === "string" &&
-				typeof payload.messageId === "string"
-					? (this.db
-							.prepare(
-								`SELECT 1 FROM runner_phase_wakes
-								 WHERE execution_id = ? AND message_id = ?
-								   AND state = 'pending' AND escalation_outbox_id = ?`,
-							)
-							.get(payload.executionId, payload.messageId, outboxId) as
-							| { 1: number }
-							| undefined)
-					: undefined;
+			const live = this.db
+				.prepare(
+					`SELECT 1 FROM runner_phase_wakes
+						 WHERE execution_id = ? AND message_id = ?
+						   AND state = 'pending' AND escalation_outbox_id = ?`,
+				)
+				.get(payload.executionId, payload.messageId, outboxId) as
+				| { 1: number }
+				| undefined;
 			if (!live) {
 				this.db
 					.prepare(
@@ -6344,6 +6403,50 @@ export class CommDB {
 
 	// ── Session Registry (Phase 2) ──
 
+	private upsertSessionReceiptLineage(input: {
+		executionId: string;
+		projectName: string;
+		issueId: string | null;
+		leadId: string | null;
+	}): void {
+		const existing = this.db
+			.prepare(
+				`SELECT project_name, issue_id, lead_id
+				   FROM session_receipt_lineage WHERE execution_id = ?`,
+			)
+			.get(input.executionId) as
+			| {
+					project_name: string;
+					issue_id: string | null;
+					lead_id: string | null;
+			  }
+			| undefined;
+		if (
+			existing &&
+			(existing.project_name !== input.projectName ||
+				(existing.issue_id !== null &&
+					input.issueId !== null &&
+					existing.issue_id !== input.issueId) ||
+				(existing.lead_id !== null &&
+					input.leadId !== null &&
+					existing.lead_id !== input.leadId))
+		) {
+			throw new Error(
+				`session receipt lineage mismatch for ${input.executionId}`,
+			);
+		}
+		this.db
+			.prepare(
+				`INSERT INTO session_receipt_lineage
+				   (execution_id, project_name, issue_id, lead_id)
+				 VALUES (?, ?, ?, ?)
+				 ON CONFLICT(execution_id) DO UPDATE SET
+				   issue_id = COALESCE(session_receipt_lineage.issue_id, excluded.issue_id),
+				   lead_id = COALESCE(session_receipt_lineage.lead_id, excluded.lead_id)`,
+			)
+			.run(input.executionId, input.projectName, input.issueId, input.leadId);
+	}
+
 	registerSession(
 		executionId: string,
 		tmuxWindow: string,
@@ -6353,11 +6456,12 @@ export class CommDB {
 		/** FLY-1188: transport vendor ("claude-code" | "codex"); routes `send` wakes. */
 		vendor?: string,
 	): void {
-		this.db
-			.prepare(
-				`INSERT INTO sessions (execution_id, tmux_window, project_name, issue_id, lead_id, vendor)
-		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(execution_id) DO UPDATE SET
+		this.db.transaction(() => {
+			this.db
+				.prepare(
+					`INSERT INTO sessions (execution_id, tmux_window, project_name, issue_id, lead_id, vendor)
+			 VALUES (?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(execution_id) DO UPDATE SET
 		   tmux_window = excluded.tmux_window,
 		   project_name = excluded.project_name,
 		   issue_id = excluded.issue_id,
@@ -6371,15 +6475,22 @@ export class CommDB {
 		     WHEN sessions.status = 'running' THEN NULL
 		     ELSE sessions.ended_at
 		   END`,
-			)
-			.run(
+				)
+				.run(
+					executionId,
+					tmuxWindow,
+					projectName,
+					issueId ?? null,
+					leadId ?? null,
+					vendor ?? null,
+				);
+			this.upsertSessionReceiptLineage({
 				executionId,
-				tmuxWindow,
 				projectName,
-				issueId ?? null,
-				leadId ?? null,
-				vendor ?? null,
-			);
+				issueId: issueId ?? null,
+				leadId: leadId ?? null,
+			});
+		})();
 	}
 
 	/**
@@ -6434,6 +6545,12 @@ export class CommDB {
 						input.leadId,
 						input.vendor,
 					);
+				this.upsertSessionReceiptLineage({
+					executionId: input.executionId,
+					projectName: input.projectName,
+					issueId: input.issueId,
+					leadId: input.leadId,
+				});
 				return {
 					ok: true as const,
 					inserted: true,
@@ -6454,6 +6571,12 @@ export class CommDB {
 					input.vendor,
 					input.executionId,
 				);
+			this.upsertSessionReceiptLineage({
+				executionId: input.executionId,
+				projectName: input.projectName,
+				issueId: input.issueId,
+				leadId: input.leadId,
+			});
 			return {
 				ok: true as const,
 				inserted: false,
@@ -6705,15 +6828,7 @@ export class CommDB {
 			)
 			.all(executionId) as RunnerPhaseWake[];
 		for (const wake of pending) {
-			let founderOrigin = false;
-			try {
-				const envelope = JSON.parse(wake.envelope_json ?? "{}") as {
-					metadata?: { origin?: unknown };
-				};
-				founderOrigin = envelope.metadata?.origin === "founder";
-			} catch {
-				// An unreadable envelope is ordinary traffic, never founder authority.
-			}
+			const founderOrigin = runnerWakeMetadata(wake).origin === "founder";
 			if (founderOrigin) {
 				this.completeRunnerPhaseWakeTerminal({
 					executionId,
@@ -6734,11 +6849,17 @@ export class CommDB {
 			.prepare(
 				`DELETE FROM runner_phase_wakes
 				 WHERE execution_id = ?
-				   AND (admission_state IS NULL
-				        OR (queued_at < ? AND (
-				          state IN ('started','finished')
-				          OR admission_state IN ('suppressed_cap','skipped_no_transport')
-				        )))`,
+					   AND (admission_state IS NULL
+					        OR (queued_at < ? AND (
+					          state IN ('started','finished')
+					          OR admission_state IN ('suppressed_cap','skipped_no_transport')
+					        )))
+					   AND NOT EXISTS (
+					     SELECT 1 FROM receipt_alert_outbox alert
+					      WHERE alert.id = runner_phase_wakes.escalation_outbox_id
+					        AND alert.delivered_at IS NULL
+					        AND alert.canceled_at IS NULL
+					   )`,
 			)
 			.run(executionId, retentionCutoff);
 	}

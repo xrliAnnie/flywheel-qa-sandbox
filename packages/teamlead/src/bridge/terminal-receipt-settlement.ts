@@ -304,11 +304,11 @@ export class TerminalReceiptSettlementProjector {
 					`unresolved legacy receipt detection ${receiptId}: project lineage mismatch`,
 				);
 			}
-			if (lineage.executionId !== intent.execution_id) continue;
 			const trustedLeadId = lineage.sessionLeadId ?? lineage.rootLeadId;
 			if (
-				detection.issue_id !== null &&
-				!issueAliasSet.has(detection.issue_id)
+				lineage.issueId === null ||
+				!issueAliasSet.has(lineage.issueId) ||
+				(detection.issue_id !== null && !issueAliasSet.has(detection.issue_id))
 			) {
 				this.failLegacyReceiptLineage(
 					intent,
@@ -331,6 +331,7 @@ export class TerminalReceiptSettlementProjector {
 					trustedLeadId,
 				);
 			}
+			if (lineage.executionId !== intent.execution_id) continue;
 			try {
 				this.options.store.attachLegacyReceiptDetectionLineage(receiptId, {
 					sourceExecutionId: lineage.executionId,

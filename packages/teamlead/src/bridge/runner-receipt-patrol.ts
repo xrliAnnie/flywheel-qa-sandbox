@@ -57,14 +57,25 @@ export interface ReceiptWakePatrolOptions {
 }
 
 function envelopeMetadata(wake: RunnerPhaseWake): Record<string, unknown> {
-	if (!wake.envelope_json) return {};
+	let stored: Record<string, unknown> = {};
+	if (wake.metadata_json) {
+		try {
+			const parsed = JSON.parse(wake.metadata_json) as unknown;
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				stored = parsed as Record<string, unknown>;
+			}
+		} catch {
+			// Malformed metadata never confers founder authority.
+		}
+	}
+	if (!wake.envelope_json) return stored;
 	try {
 		const parsed = JSON.parse(wake.envelope_json) as {
 			metadata?: Record<string, unknown>;
 		};
-		return parsed.metadata ?? {};
+		return { ...stored, ...(parsed.metadata ?? {}) };
 	} catch {
-		return {};
+		return stored;
 	}
 }
 
@@ -155,12 +166,18 @@ export class RunnerReceiptPatrol {
 			try {
 				payload = JSON.parse(current.payload) as typeof payload;
 			} catch {
+				console.warn(
+					`[receipt-wake-patrol] malformed wake_failed payload ${current.id}; keeping retryable`,
+				);
 				continue;
 			}
 			if (
 				typeof payload.executionId !== "string" ||
 				typeof payload.messageId !== "string"
 			) {
+				console.warn(
+					`[receipt-wake-patrol] incomplete wake_failed payload ${current.id}; keeping retryable`,
+				);
 				continue;
 			}
 			const wake = db

@@ -107,7 +107,11 @@ describe("FLY-1392 v2 Lead founder relay compatibility wrapper", () => {
 		expect(
 			queue.getById(founderRouteRowId("lead-a", "discord-1")),
 		).toBeUndefined();
-		expect(db.listRunnerPhaseWakes("exec-a")).toHaveLength(1);
+		const wakes = db.listRunnerPhaseWakes("exec-a");
+		expect(wakes).toHaveLength(1);
+		expect(JSON.parse(wakes[0]?.envelope_json ?? "{}")).toMatchObject({
+			metadata: { origin: "founder" },
+		});
 	});
 
 	it("lets only Lead explicitly close a canonical founder receipt as no-route", () => {

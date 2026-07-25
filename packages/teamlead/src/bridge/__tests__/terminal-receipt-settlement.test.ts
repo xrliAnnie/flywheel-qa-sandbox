@@ -108,6 +108,57 @@ describe("FLY-1448 terminal receipt settlement projector", () => {
 		});
 	});
 
+	it.each(["finalizeSession", "deleteSessionAndRunnerPhaseLifecycle"] as const)(
+		"settles roots after CommDB %s deletes the live session row",
+		async (method) => {
+			const questionId = comm.insertQuestion(
+				"exec-1",
+				"flywheel-eng-lead",
+				"terminal root",
+			);
+			const queue = new LeadInboxQueue(commPath);
+			try {
+				queue.enqueue({
+					id: `post-${method}-root`,
+					toLead: "flywheel-eng-lead",
+					source: "runner",
+					type: "runner_question",
+					msgClass: "protocol",
+					content: "must settle after session deletion",
+					refMessageId: questionId,
+					createdAt: "2026-07-24T00:00:00.000Z",
+				});
+			} finally {
+				queue.close();
+			}
+			store.persistTransition("exec-1", "completed", {
+				issue_id: "FLY-1448",
+				project_name: "flywheel",
+			});
+			if (method === "finalizeSession") comm.finalizeSession("exec-1");
+			else comm.deleteSessionAndRunnerPhaseLifecycle("exec-1");
+			comm.close();
+
+			await new TerminalReceiptSettlementProjector({
+				store,
+				projectNames: ["flywheel"],
+				commDbPathForProject: () => commPath,
+				now: () => 5_000,
+			}).pass();
+
+			comm = new CommDB(commPath);
+			const check = new LeadInboxQueue(commPath);
+			try {
+				expect(check.getById(`post-${method}-root`)?.disposed_at).toBeTruthy();
+			} finally {
+				check.close();
+			}
+			expect(store.listReceiptSettlementIntents()).toMatchObject([
+				{ state: "completed" },
+			]);
+		},
+	);
+
 	it("resumes an applying intent after the session revives", async () => {
 		store.persistTransition("exec-1", "completed", {
 			issue_id: "FLY-1448",
@@ -468,6 +519,78 @@ describe("FLY-1448 terminal receipt settlement projector", () => {
 				"flywheel:flywheel-eng-lead",
 				"receipt_unprocessed",
 				"wrong-issue-root",
+			),
+		).toMatchObject({ status: "NEW", source_receipt_id: null });
+		expect(store.listUndeliveredLeadEvents()).toEqual([
+			expect.objectContaining({
+				lead_id: "flywheel-eng-lead",
+				event_type: "receipt_settlement_lineage_invalid",
+				payload: expect.stringContaining("issue lineage mismatch"),
+			}),
+		]);
+	});
+
+	it("audits an issue-selected legacy root owned by a foreign execution", async () => {
+		comm.registerSession(
+			"exec-foreign",
+			"foreign-session",
+			"flywheel",
+			"FLY-OTHER",
+			"flywheel-eng-lead",
+			"codex",
+		);
+		const sourceId = comm.insertQuestion(
+			"exec-foreign",
+			"flywheel-eng-lead",
+			"foreign execution receipt",
+		);
+		const queue = new LeadInboxQueue(commPath);
+		try {
+			queue.enqueue({
+				id: "foreign-execution-root",
+				toLead: "flywheel-eng-lead",
+				source: "runner",
+				type: "runner_report",
+				msgClass: "protocol",
+				content: "must fail issue lineage",
+				refMessageId: sourceId,
+				createdAt: "2026-07-24T00:00:00.000Z",
+			});
+		} finally {
+			queue.close();
+		}
+		store.upsertDetectionEscalation({
+			targetKey: "flywheel:flywheel-eng-lead",
+			kind: "receipt_unprocessed",
+			episodeFingerprint: "foreign-execution-root",
+			issueId: "FLY-1448",
+			ownerLeadId: "flywheel-eng-lead",
+			firstDetectedAtMs: 1_000,
+		});
+		store.persistTransition("exec-1", "completed", {
+			issue_id: "FLY-1448",
+			project_name: "flywheel",
+		});
+		comm.close();
+
+		await new TerminalReceiptSettlementProjector({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+		}).pass();
+
+		comm = new CommDB(commPath);
+		expect(store.listReceiptSettlementIntents()).toMatchObject([
+			{
+				state: "applying",
+				last_error: expect.stringContaining("issue lineage mismatch"),
+			},
+		]);
+		expect(
+			store.getDetectionEscalation(
+				"flywheel:flywheel-eng-lead",
+				"receipt_unprocessed",
+				"foreign-execution-root",
 			),
 		).toMatchObject({ status: "NEW", source_receipt_id: null });
 		expect(store.listUndeliveredLeadEvents()).toEqual([
