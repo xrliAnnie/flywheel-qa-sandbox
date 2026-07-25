@@ -27,3 +27,23 @@ checkpoints:
     enabled: true
     timeout_ms: 14400000     # 4h (FLY-159: ConfigLoader floor; anything lower is warn+raised)
     timeout_behavior: fail-close
+
+# FLY-1466 QA baseline fix: canonical feature switches read directly by the
+# edge-worker dispatcher contract tests. Added at the sandbox-main baseline so
+# fixture PRs stay clean (Markdown-only) while CI passes. (Tadashi-approved.)
+roles:
+  runner:
+    backend: claude-tmux
+    model: claude-opus-4-8[1m]
+
+qa:
+  auto: true
+  skip_labels: [docs, chore]
+
+doc_flow:
+  enabled: true
+  default_department: engineering
+
+founder_milestone_report:
+  enabled: true
+  milestones: [failed, blocked]
