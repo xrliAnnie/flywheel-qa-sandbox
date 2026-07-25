@@ -25,7 +25,6 @@ FLY-202 是供这条链路重复使用的、PreHydrator 可见的 Linear fixture
 | `docs/` | 贡献指南、运行手册和 operations runbooks。 |
 | `engineering/` | 按 Linear issue 组织的工程设计、实现证据与 spike 资料。 |
 | `fleet/` | 去密的 Flywheel fleet 示例、manifest、projects 配置与迁移输入。 |
-| `menus/` | 命令菜单的可复用 shape 定义。 |
 | `packages/` | Flywheel pnpm monorepo 的 Runner、Bridge、Comm、QA framework 等 TypeScript packages。 |
 | `patches/` | 由 pnpm 应用的第三方依赖补丁。 |
 | `product/` | 按 Linear issue 组织的产品研究、需求与体验设计文档。 |
@@ -33,7 +32,6 @@ FLY-202 是供这条链路重复使用的、PreHydrator 可见的 Linear fixture
 | `qa-fly310/` | FLY-310 read-exfil hardening 的对抗脚本、证据与报告。 |
 | `scripts/` | 开发、部署、运维、发布和 QA/test-slot 自动化脚本及其测试。 |
 | `supabase/` | Supabase 本地元数据和数据库 migrations。 |
-| `vendor/` | 随仓库固定版本交付的第三方 agent skill bundle。 |
 
 ## packages/qa-framework/README.md Summary
 
@@ -44,8 +42,8 @@ FLY-202 是供这条链路重复使用的、PreHydrator 可见的 Linear fixture
 - FLY-60 manual-trigger suite 用 1 个 happy path 和 6 个 variants 验证 G1/G2/G3 hard gates，并区分 StateStore、CommDB、alert queue 等证据来源；指定 Discord 步骤需要 Chrome MCP。
 - FLY-153 Mirror Mode 让 slots 1–3 共享隔离的 `#test-core-mirror` 来验证多 Lead shared-channel 行为，同时默认拒绝在该拓扑运行 Runner E2E。
 - FLY-529 Roundtable Mirror 提供单一 auto-thread host 和独立状态表，Alert Mirror 则隔离 Bridge 与 shell 两条 alert writer 路径，避免测试告警进入生产 queue。
-- FLY-1389 增加可调的 cold-Lead readiness timeout 和 `--no-lead` Bridge-only deploy，同时把 slot 的 binary/hook 路径固定到本地，避免改写全局 symlink。
-- QA room 的 token usage 会进入可见但独立的 `sandbox` bucket；canonical slot config 默认关闭 auto-QA，测试 auto-QA 的 suite 必须显式 opt in。
+- 完整 config schema 在 `templates/qa-config.yaml`，消费者可导入 `QaConfig` TypeScript 类型，`examples/geoforge3d/` 提供完整项目配置示例。
+- FLY-60 的 happy path 使用生产 `flywheel-comm respond` approve wire；StateStore 与 CommDB 是两个不同数据库，alert evidence 则来自 slot-local claims DB 与 filesystem queue。
 - `contracts/PLAN_SOURCE_CONTRACT.md` 规定 QA agent 跨 worktree 获取 plan 的方式，`skills/SKILL_INTERFACE.md` 规定所有 QA test skill 的接口。
 
 ## `ls -R doc/ | head -50` Output

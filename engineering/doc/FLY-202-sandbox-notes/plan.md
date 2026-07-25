@@ -77,7 +77,6 @@ doc
 docs
 engineering
 fleet
-menus
 packages
 patches
 product
@@ -85,7 +84,6 @@ qa-fly294
 qa-fly310
 scripts
 supabase
-vendor
 ```
 
 Each row must describe the directory’s observed contents in one concise sentence.
@@ -101,8 +99,8 @@ Summarize `packages/qa-framework/README.md` in exactly ten bullets covering:
 5. FLY-60 hard-gate suite and its evidence boundaries;
 6. FLY-153 Mirror Mode;
 7. FLY-529 Roundtable and Alert mirrors;
-8. FLY-1389 cold-Lead knobs and bridge-only deploys;
-9. sandbox token accounting and auto-QA being off by default;
+8. config schema, TypeScript type import, and GeoForge3D example;
+9. FLY-60 production approve wire plus StateStore, CommDB, and alert evidence boundaries;
 10. plan-source and skill-interface contracts.
 
 - [ ] **Step 4: Append the exact command output**
@@ -143,7 +141,7 @@ Expected: no whitespace errors; the diff contains the requested note plus proces
 sed -n '1,260p' doc/qa/sandbox-notes.md
 ```
 
-Expected: three purpose paragraphs, 19 directory rows, ten summary bullets, and the exact 50-line command output.
+Expected: three purpose paragraphs, 17 directory rows, ten summary bullets, and the exact 50-line command output.
 
 - [ ] **Step 4: Commit the implementation**
 

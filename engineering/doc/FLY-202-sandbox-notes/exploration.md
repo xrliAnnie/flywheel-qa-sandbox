@@ -16,7 +16,7 @@ test-slot real-Runner E2E 需要一个小而稳定、又足够多步骤的真实
 
 从当前 `HEAD` 读取 tracked top-level directories，通读当前 `packages/qa-framework/README.md`，实际运行 `ls -R doc/ | head -50`，再手写精炼说明。
 
-- 优点：与本次被测分支一致，能够覆盖新增的 `menus/`、`vendor/` 等目录。
+- 优点：与最终 PR base 的 live source tree 一致，避免沿用旧 fixture 的目录与 README 状态。
 - 风险：README 较长，需要主动收敛到约 10 个高信息密度 bullet。
 
 ### B. Refresh a historical FLY-202 note
@@ -39,7 +39,7 @@ test-slot real-Runner E2E 需要一个小而稳定、又足够多步骤的真实
 
 1. 标题与 FLY-202 日期元数据。
 2. 3 段 Purpose，分别解释 sandbox 隔离边界、slot harness 执行链、fixture issue 的角色。
-3. Top-Level Directories 表，按 `git ls-tree -d --name-only HEAD` 顺序覆盖 19 个 tracked 目录，每行给一条可由目录内容验证的描述。
+3. Top-Level Directories 表，按 `git ls-tree -d --name-only HEAD` 顺序覆盖 17 个 tracked 目录，每行给一条可由目录内容验证的描述。
 4. `packages/qa-framework/README.md` Summary，严格保持 10 个 bullet，覆盖框架定位、五步协议、slot lifecycle、镜像模式、近期 529-Room 能力与契约。
 5. `ls -R doc/ | head -50` 的原样输出，使用 fenced text block。
 
@@ -48,5 +48,5 @@ test-slot real-Runner E2E 需要一个小而稳定、又足够多步骤的真实
 文档型交付物采用 requirements-as-tests：
 
 - RED：在目标文件不存在时运行检查脚本，确认因 missing file 失败。
-- GREEN：创建文档后重复运行同一脚本，验证段落数、19 个目录表项、10 个 README bullets，以及 fenced block 与实际命令输出逐行一致。
+- GREEN：创建文档后重复运行同一脚本，验证段落数、17 个目录表项、10 个 README bullets，以及 fenced block 与实际命令输出逐行一致。
 - 最后运行 `git diff --check`，并对照 task brief 逐条审计。
