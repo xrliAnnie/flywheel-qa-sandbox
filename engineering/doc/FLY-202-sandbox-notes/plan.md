@@ -19,6 +19,7 @@
 
 ```bash
 bash -euo pipefail -c '
+export LC_ALL=C
 target=doc/qa/sandbox-notes.md
 test -f "$target"
 test "$(awk "/^## Purpose/{inside=1;next}/^## /{inside=0} inside && NF{if (\$0 !~ /^[-*#|`]/) n++} END{print n+0}" "$target")" -ge 3
@@ -26,7 +27,7 @@ for dir in $(git ls-tree -d --name-only HEAD); do
   grep -Fq "| \`$dir/\` |" "$target"
 done
 test "$(awk "/^## packages\\/qa-framework\\/README.md Summary/{inside=1;next}/^## /{inside=0} inside && /^- /{n++} END{print n+0}" "$target")" -eq 10
-ls -R doc/ | head -50 > /tmp/fly-202-doc-tree.actual
+LC_ALL=C ls -R doc/ | head -50 > /tmp/fly-202-doc-tree.actual
 awk "/^## \`ls -R doc\\/ \\| head -50\` Output/{inside=1;next} inside && /^```/{if (open) exit; open=1; next} inside && open{print}" "$target" > /tmp/fly-202-doc-tree.documented
 cmp /tmp/fly-202-doc-tree.actual /tmp/fly-202-doc-tree.documented
 '
@@ -98,10 +99,10 @@ Summarize `packages/qa-framework/README.md` in exactly ten bullets covering:
 
 - [ ] **Step 4: Append the exact command output**
 
-Run:
+Run with deterministic collation:
 
 ```bash
-ls -R doc/ | head -50
+LC_ALL=C ls -R doc/ | head -50
 ```
 
 Copy all 50 output lines verbatim under `## \`ls -R doc/ | head -50\` Output` in a fenced `text` block.
@@ -149,15 +150,27 @@ Expected: one documentation commit containing the requested deliverable.
 
 **Files:**
 - Update through CLI only: `engineering/doc/FLY-202-sandbox-notes/progress.md`
-- Write through landing workflow: `.flywheel/runs/a7a4eec4-b7a9-4974-8679-f6d4d1f09f55/land-status.json`
+- Write through landing workflow: `.flywheel/runs/$FLYWHEEL_EXEC_ID/land-status.json`
 
-- [ ] **Step 1: Push the existing harness-created feature branch**
+- [ ] **Step 1: Guard the injected run identity**
+
+```bash
+: "${FLYWHEEL_EXEC_ID:?FLYWHEEL_EXEC_ID is required}"
+: "${FLYWHEEL_ISSUE_ID:?FLYWHEEL_ISSUE_ID is required}"
+: "${FLYWHEEL_COMM_CLI:?FLYWHEEL_COMM_CLI is required}"
+test "$FLYWHEEL_ISSUE_ID" = "FLY-202"
+test -f "$FLYWHEEL_COMM_CLI"
+```
+
+Expected: exit 0. Any missing or stale injected identity fails before push, PR, gate, or landing side effects.
+
+- [ ] **Step 2: Push the existing harness-created feature branch**
 
 ```bash
 git push -u origin project-slot-2-FLY-202
 ```
 
-- [ ] **Step 2: Open a PR against sandbox `main`**
+- [ ] **Step 3: Open a PR against sandbox `main`**
 
 ```bash
 gh pr create \
@@ -167,7 +180,7 @@ gh pr create \
   --body $'## Summary\n- describe the QA sandbox and slot lifecycle\n- inventory every top-level directory\n- summarize the QA framework and capture the requested tree output\n\n## Verification\n- deterministic documentation requirements check\n- git diff --check'
 ```
 
-- [ ] **Step 3: Complete mandatory review and approval controls**
+- [ ] **Step 4: Complete mandatory review and approval controls**
 
 Resolve the PR identity:
 
@@ -179,41 +192,41 @@ PR_NUMBER=$(gh pr view --json number -q '.number')
 Register and poll the request-driven cross-family code review:
 
 ```bash
-CODE_Q=$(node /Users/xiaorongli/Dev/flywheel-FLY-1466/packages/flywheel-comm/dist/index.js gate review_code \
+CODE_Q=$(node "$FLYWHEEL_COMM_CLI" gate review_code \
   --lead flywheel-test-2 \
-  --exec-id a7a4eec4-b7a9-4974-8679-f6d4d1f09f55 \
+  --exec-id "$FLYWHEEL_EXEC_ID" \
   --no-block "Code review requested: PR $PR_URL" | jq -r '.questionId')
-node /Users/xiaorongli/Dev/flywheel-FLY-1466/packages/flywheel-comm/dist/index.js request-review \
+node "$FLYWHEEL_COMM_CLI" request-review \
   --type code \
   --question-id "$CODE_Q"
-node /Users/xiaorongli/Dev/flywheel-FLY-1466/packages/flywheel-comm/dist/index.js check "$CODE_Q"
+node "$FLYWHEEL_COMM_CLI" check "$CODE_Q"
 ```
 
 After an APPROVED or governance-level SKIPPED verdict, probe CI and bind the approval gate:
 
 ```bash
 gh pr checks "$PR_NUMBER"
-APPROVE_Q=$(node /Users/xiaorongli/Dev/flywheel-FLY-1466/packages/flywheel-comm/dist/index.js gate approve_to_ship \
+APPROVE_Q=$(node "$FLYWHEEL_COMM_CLI" gate approve_to_ship \
   --lead flywheel-test-2 \
-  --exec-id a7a4eec4-b7a9-4974-8679-f6d4d1f09f55 \
+  --exec-id "$FLYWHEEL_EXEC_ID" \
   --timeout 14400000 \
   --timeout-behavior fail-close \
   --no-block "PR created: $PR_URL. Ready for review." | jq -r '.questionId')
-node /Users/xiaorongli/Dev/flywheel-FLY-1466/packages/flywheel-comm/dist/index.js complete \
+node "$FLYWHEEL_COMM_CLI" complete \
   --route needs_review \
   --pr "$PR_NUMBER" \
   --question-id "$APPROVE_Q"
-node /Users/xiaorongli/Dev/flywheel-FLY-1466/packages/flywheel-comm/dist/index.js verify-approval \
-  --exec-id a7a4eec4-b7a9-4974-8679-f6d4d1f09f55 \
+node "$FLYWHEEL_COMM_CLI" verify-approval \
+  --exec-id "$FLYWHEEL_EXEC_ID" \
   --pr-head "$(git rev-parse HEAD)"
 ```
 
-- [ ] **Step 4: Ship only through the project workflow**
+- [ ] **Step 5: Ship only through the project workflow**
 
 After verified approval, post `:cool:`, wait for the deploy workflow to merge, then write the merged commit SHA to the required landing signal:
 
 ```bash
-node /Users/xiaorongli/Dev/flywheel-FLY-1466/packages/flywheel-comm/dist/index.js stage set ship
+node "$FLYWHEEL_COMM_CLI" stage set ship
 gh pr comment "$PR_NUMBER" --body ":cool:"
 gh pr view "$PR_NUMBER" --json state,mergeCommit
 ```
@@ -221,12 +234,12 @@ gh pr view "$PR_NUMBER" --json state,mergeCommit
 Only after the state is `MERGED`, write the actual PR number and merge SHA to the required signal, then complete the stage:
 
 ```bash
-LAND_PATH=/tmp/flywheel-test-slot-2/project-slot-2-FLY-202/.flywheel/runs/a7a4eec4-b7a9-4974-8679-f6d4d1f09f55/land-status.json
+LAND_PATH="/tmp/flywheel-test-slot-2/project-slot-2-FLY-202/.flywheel/runs/$FLYWHEEL_EXEC_ID/land-status.json"
 MERGE_SHA=$(gh pr view "$PR_NUMBER" --json mergeCommit -q '.mergeCommit.oid')
 mkdir -p "$(dirname "$LAND_PATH")"
 jq -n \
   --arg sha "$MERGE_SHA" \
   --argjson n "$PR_NUMBER" \
   '{status:"merged",prNumber:$n,mergeCommitSha:$sha}' > "$LAND_PATH"
-node /Users/xiaorongli/Dev/flywheel-FLY-1466/packages/flywheel-comm/dist/index.js stage set completed
+node "$FLYWHEEL_COMM_CLI" stage set completed
 ```

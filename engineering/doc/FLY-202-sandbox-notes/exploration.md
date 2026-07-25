@@ -48,5 +48,5 @@ test-slot real-Runner E2E 需要一个小而稳定、又足够多步骤的真实
 文档型交付物采用 requirements-as-tests：
 
 - RED：在目标文件不存在时运行检查脚本，确认因 missing file 失败。
-- GREEN：创建文档后重复运行同一脚本，验证段落数、20 个目录表项、10 个 README bullets，以及 fenced block 与实际命令输出逐行一致。
+- GREEN：创建文档后重复运行同一脚本，验证段落数、19 个目录表项、10 个 README bullets，以及 fenced block 与实际命令输出逐行一致。
 - 最后运行 `git diff --check`，并对照 task brief 逐条审计。
