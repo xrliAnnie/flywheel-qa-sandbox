@@ -1161,7 +1161,10 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 		store.close();
 	});
 
-	it("refuses operator run management while an attributed session is nonterminal", async () => {
+	// SKIPPED with #705: the FLY-1434 quiescence validator is neutralized by
+	// founder directive (2026-07-24 incident) — the refusal this asserts is
+	// intentionally disabled. Restore with the redesigned rework path.
+	it.skip("refuses operator run management while an attributed session is nonterminal", async () => {
 		const store = await engineRunWithImplement("running");
 		const result = store.holdWorkflowRunByOperator({
 			runId: "run-1",

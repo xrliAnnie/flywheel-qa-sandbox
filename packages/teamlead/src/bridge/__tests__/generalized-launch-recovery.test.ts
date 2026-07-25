@@ -55,7 +55,7 @@ describe("generalized launch recovery liveness", () => {
 		expect(probe).not.toHaveBeenCalled();
 	});
 
-	it("does not mistake a pending pre-registration for a dead runner", async () => {
+	it("does not mistake a pending pre-registration for a dead runner while a host process still references it", async () => {
 		const lookup = vi.fn<() => GeneralizedLaunchTargetLookup>(() => ({
 			kind: "found",
 			target: { tmuxWindow: "flywheel:pending", sessionName: "flywheel" },
@@ -66,8 +66,26 @@ describe("generalized launch recovery liveness", () => {
 			probeGeneralizedLaunchLiveness("exec-1", "flywheel", {
 				lookup,
 				probe,
+				hasHostProcess: async () => true,
 			}),
 		).resolves.toBe("unknown");
+		expect(probe).not.toHaveBeenCalled();
+	});
+
+	it("treats a pending window with zero host processes as death evidence (2026-07-24 incident)", async () => {
+		const lookup = vi.fn<() => GeneralizedLaunchTargetLookup>(() => ({
+			kind: "found",
+			target: { tmuxWindow: "flywheel:pending", sessionName: "flywheel" },
+		}));
+		const probe = vi.fn(async () => "absent" as const);
+
+		await expect(
+			probeGeneralizedLaunchLiveness("exec-1", "flywheel", {
+				lookup,
+				probe,
+				hasHostProcess: async () => false,
+			}),
+		).resolves.toBe("dead");
 		expect(probe).not.toHaveBeenCalled();
 	});
 

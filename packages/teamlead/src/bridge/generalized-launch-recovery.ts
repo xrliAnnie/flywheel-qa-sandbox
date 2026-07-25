@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import type { WorkflowLaunchOwnerRow } from "../StateStore.js";
 import {
 	lookupTmuxTarget,
@@ -12,6 +13,25 @@ export type GeneralizedLaunchTargetLookup = TmuxTargetLookup;
 interface GeneralizedLaunchProbeDeps {
 	lookup: (executionId: string, projectName: string) => TmuxTargetLookup;
 	probe: (tmuxWindow: string) => Promise<RunnerLiveness>;
+	/** Does ANY process on this host reference the execution id? */
+	hasHostProcess?: (executionId: string) => Promise<boolean>;
+}
+
+/** `pgrep -f <executionId>`: exit 0 = at least one match. Errors (incl. exit 1
+ * = no match) resolve false-vs-true conservatively: only a clean "no match"
+ * proves absence; spawn failures return true so the verdict stays "unknown". */
+function defaultHasHostProcess(executionId: string): Promise<boolean> {
+	return new Promise((resolve) => {
+		try {
+			execFile("pgrep", ["-f", executionId], (error) => {
+				if (!error) return resolve(true); // matches exist
+				const code = (error as { code?: number | string }).code;
+				resolve(code !== 1); // 1 = clean no-match → false; anything else → true
+			});
+		} catch {
+			resolve(true);
+		}
+	});
 }
 
 /**
@@ -28,11 +48,22 @@ export async function probeGeneralizedLaunchLiveness(
 	},
 ): Promise<GeneralizedLaunchLiveness> {
 	const lookup = deps.lookup(executionId, projectName);
-	if (
-		lookup.kind !== "found" ||
-		lookup.target.tmuxWindow.endsWith(":pending")
-	) {
+	if (lookup.kind !== "found") {
 		return "unknown";
+	}
+	if (lookup.target.tmuxWindow.endsWith(":pending")) {
+		// 2026-07-24 incident (founder-directed hotfix): a runner that dies
+		// BEFORE its tmux window materializes stays ":pending" forever. There is
+		// nothing to probe, so this branch returned "unknown" eternally and the
+		// dead-exec sweep never reclaimed the node (unknown = keep unchanged) —
+		// the run wedged and every later dispatch replayed STALE_START_RESPONSE.
+		// If NO process on this host references the execution id, the runner
+		// cannot be alive: that is death evidence, not uncertainty. Conservative
+		// direction: any matching process keeps the verdict at "unknown".
+		const hasProcess = await (deps.hasHostProcess ?? defaultHasHostProcess)(
+			executionId,
+		);
+		return hasProcess ? "unknown" : "dead";
 	}
 	const state = await deps.probe(lookup.target.tmuxWindow);
 	if (state === "alive") return "alive";
