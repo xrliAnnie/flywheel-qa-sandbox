@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 4/4
-updated: 2026-07-25T07:46:02.491Z
-nextStep: "Force-push clean branch and verify PR #70 mergeability"
+phaseCursor: 5/5
+updated: 2026-07-25T07:58:29.928Z
+nextStep: Commit and push the routing repair; rerun code review and CI
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (4/4)
-**next**: Force-push clean branch and verify PR #70 mergeability
+**phase**: implement (5/5)
+**next**: Commit and push the routing repair; rerun code review and CI
