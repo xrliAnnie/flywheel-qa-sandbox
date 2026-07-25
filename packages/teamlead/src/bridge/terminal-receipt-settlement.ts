@@ -198,10 +198,6 @@ export class TerminalReceiptSettlementProjector {
 				) {
 					return;
 				}
-				this.options.store.attachLegacyReceiptDetectionLineage(receiptId, {
-					sourceExecutionId: lineage.executionId,
-					sourceQuestionId: lineage.questionId,
-				});
 			}
 
 			const shipSettledReceiptIds = new Set<string>();
@@ -272,11 +268,26 @@ export class TerminalReceiptSettlementProjector {
 		issueAliases: readonly string[],
 	): void {
 		if (!intent.execution_id) return;
+		const receiptIds = db.listReceiptRootsForExecution(intent.execution_id);
+		const issueAliasSet = new Set(
+			[intent.issue_id, ...issueAliases].filter((value) => value.trim()),
+		);
 		const detections = this.options.store.listActiveLegacyReceiptDetections({
 			projectName: intent.project_name,
-			issueAliases: [intent.issue_id, ...issueAliases],
+			issueAliases: [...issueAliasSet],
 		});
+		for (const receiptId of receiptIds) {
+			detections.push(
+				...this.options.store.listActiveLegacyReceiptDetectionsForReceipt(
+					receiptId,
+				),
+			);
+		}
+		const seen = new Set<string>();
 		for (const detection of detections) {
+			const candidateKey = `${detection.target_key}\0${detection.kind}\0${detection.episode_fingerprint}`;
+			if (seen.has(candidateKey)) continue;
+			seen.add(candidateKey);
 			const receiptId = detection.episode_fingerprint;
 			const lineage = db.getReceiptSettlementLineage(receiptId);
 			if (!lineage) {
@@ -294,6 +305,18 @@ export class TerminalReceiptSettlementProjector {
 				);
 			}
 			if (lineage.executionId !== intent.execution_id) continue;
+			const trustedLeadId = lineage.sessionLeadId ?? lineage.rootLeadId;
+			if (
+				detection.issue_id !== null &&
+				!issueAliasSet.has(detection.issue_id)
+			) {
+				this.failLegacyReceiptLineage(
+					intent,
+					detection,
+					`unresolved legacy receipt detection ${receiptId}: issue lineage mismatch`,
+					trustedLeadId,
+				);
+			}
 			const expectedTargetKey = `${intent.project_name}:${lineage.rootLeadId}`;
 			if (
 				!lineage.rootLeadId ||
@@ -305,6 +328,7 @@ export class TerminalReceiptSettlementProjector {
 					intent,
 					detection,
 					`unresolved legacy receipt detection ${receiptId}: Lead lineage mismatch`,
+					trustedLeadId,
 				);
 			}
 			try {
@@ -326,12 +350,14 @@ export class TerminalReceiptSettlementProjector {
 		intent: ReceiptSettlementIntent,
 		detection: DetectionEscalationRow,
 		reason: string,
+		trustedLeadId?: string,
 	): never {
 		const targetPrefix = `${intent.project_name}:`;
 		const targetLeadId = detection.target_key.startsWith(targetPrefix)
 			? detection.target_key.slice(targetPrefix.length)
 			: "";
-		const leadId = detection.owner_lead_id ?? targetLeadId;
+		const leadId =
+			trustedLeadId?.trim() || detection.owner_lead_id || targetLeadId;
 		if (leadId) {
 			this.options.store.appendLeadEvent(
 				leadId,
@@ -382,10 +408,6 @@ export class TerminalReceiptSettlementProjector {
 				) {
 					throw new Error(`receipt lineage mismatch for ${receiptId}`);
 				}
-				this.options.store.attachLegacyReceiptDetectionLineage(receiptId, {
-					sourceExecutionId: lineage.executionId,
-					sourceQuestionId: lineage.questionId,
-				});
 			}
 
 			const shipSettledReceiptIds = new Set<string>();

@@ -11412,6 +11412,24 @@ export class StateStore {
 		);
 	}
 
+	listActiveLegacyReceiptDetectionsForReceipt(
+		receiptId: string,
+	): DetectionEscalationRow[] {
+		const result = this.db.exec(
+			`SELECT ${StateStore.DETECTION_ESCALATION_COLUMNS}
+			   FROM detection_escalations
+			  WHERE episode_fingerprint = ?
+			    AND kind LIKE 'receipt_unprocessed%'
+			    AND status != 'RESOLVED'
+			    AND source_receipt_id IS NULL
+			  ORDER BY first_detected_at_ms, target_key, kind`,
+			[receiptId],
+		);
+		return (result[0]?.values ?? []).map((row) =>
+			this.detectionEscalationFromValues(row),
+		);
+	}
+
 	attachLegacyReceiptDetectionLineage(
 		receiptId: string,
 		lineage: {

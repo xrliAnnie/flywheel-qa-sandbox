@@ -407,9 +407,74 @@ describe("FLY-1448 terminal receipt settlement projector", () => {
 		).toMatchObject({ status: "NEW", source_receipt_id: null });
 		expect(store.listUndeliveredLeadEvents()).toEqual([
 			expect.objectContaining({
-				lead_id: "lead-other",
+				lead_id: "flywheel-eng-lead",
 				event_type: "receipt_settlement_lineage_invalid",
 				payload: expect.stringContaining("Lead lineage mismatch"),
+			}),
+		]);
+	});
+
+	it("refuses a root-matched legacy detection from a different issue", async () => {
+		const sourceId = comm.insertQuestion(
+			"exec-1",
+			"flywheel-eng-lead",
+			"wrong-issue receipt",
+			{ checkpoint: "question" },
+		);
+		const queue = new LeadInboxQueue(commPath);
+		try {
+			queue.enqueue({
+				id: "wrong-issue-root",
+				toLead: "flywheel-eng-lead",
+				source: "runner",
+				type: "runner_report",
+				msgClass: "protocol",
+				content: "must not attach across issues",
+				refMessageId: sourceId,
+				createdAt: "2026-07-24T00:00:00.000Z",
+			});
+		} finally {
+			queue.close();
+		}
+		store.upsertDetectionEscalation({
+			targetKey: "flywheel:flywheel-eng-lead",
+			kind: "receipt_unprocessed",
+			episodeFingerprint: "wrong-issue-root",
+			issueId: "FLY-OTHER",
+			ownerLeadId: "flywheel-eng-lead",
+			firstDetectedAtMs: 1_000,
+		});
+		store.persistTransition("exec-1", "completed", {
+			issue_id: "FLY-1448",
+			project_name: "flywheel",
+		});
+		comm.close();
+
+		await new TerminalReceiptSettlementProjector({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+		}).pass();
+
+		comm = new CommDB(commPath);
+		expect(store.listReceiptSettlementIntents()).toMatchObject([
+			{
+				state: "applying",
+				last_error: expect.stringContaining("issue lineage mismatch"),
+			},
+		]);
+		expect(
+			store.getDetectionEscalation(
+				"flywheel:flywheel-eng-lead",
+				"receipt_unprocessed",
+				"wrong-issue-root",
+			),
+		).toMatchObject({ status: "NEW", source_receipt_id: null });
+		expect(store.listUndeliveredLeadEvents()).toEqual([
+			expect.objectContaining({
+				lead_id: "flywheel-eng-lead",
+				event_type: "receipt_settlement_lineage_invalid",
+				payload: expect.stringContaining("issue lineage mismatch"),
 			}),
 		]);
 	});

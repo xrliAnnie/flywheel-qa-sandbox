@@ -2571,37 +2571,41 @@ export class CommDB {
 					if (
 						existingEvidence.actor_kind !== "founder-writer" ||
 						existingEvidence.actor !== input.evidence.actor ||
-						(inputQuestionBasis
-							? existingQuestionBasis !== inputQuestionBasis
-							: existingEvidence.ref !== input.evidence.ref)
+						(inputQuestionBasis && existingQuestionBasis !== inputQuestionBasis)
 					) {
 						return { kind: "conflict" as const, evidenceKind };
 					}
-					if (inputQuestionBasis) {
-						const questionId = inputQuestionBasis.slice("question:".length);
-						if (evidenceKind === "ship_gate_bound") {
-							const response = this.db
-								.prepare(
-									`SELECT parent_id, from_agent, type
-									   FROM messages WHERE id = ?`,
-								)
-								.get(existingEvidence.ref) as
-								| {
-										parent_id: string | null;
-										from_agent: string;
-										type: string;
-								  }
-								| undefined;
-							if (
-								response?.type !== "response" ||
-								response.parent_id !== questionId ||
-								response.from_agent !== existingEvidence.actor
-							) {
-								return { kind: "conflict" as const, evidenceKind };
-							}
-						} else if (existingEvidence.ref !== questionId) {
+					if (evidenceKind === "ship_gate_bound") {
+						if (!existingQuestionBasis) {
 							return { kind: "conflict" as const, evidenceKind };
 						}
+						const questionId = existingQuestionBasis.slice("question:".length);
+						const response = this.db
+							.prepare(
+								`SELECT parent_id, from_agent, type
+								   FROM messages WHERE id = ?`,
+							)
+							.get(existingEvidence.ref) as
+							| {
+									parent_id: string | null;
+									from_agent: string;
+									type: string;
+							  }
+							| undefined;
+						if (
+							response?.type !== "response" ||
+							response.parent_id !== questionId ||
+							response.from_agent !== existingEvidence.actor
+						) {
+							return { kind: "conflict" as const, evidenceKind };
+						}
+					} else if (inputQuestionBasis) {
+						const questionId = inputQuestionBasis.slice("question:".length);
+						if (existingEvidence.ref !== questionId) {
+							return { kind: "conflict" as const, evidenceKind };
+						}
+					} else if (existingEvidence.ref !== input.evidence.ref) {
+						return { kind: "conflict" as const, evidenceKind };
 					}
 					const discordFence =
 						existingEvidence.fence.discord_message_id === rootPayload.msgId;

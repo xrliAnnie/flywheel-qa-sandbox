@@ -115,12 +115,14 @@ export class RunnerReceiptPatrol {
 	}
 
 	async pass(): Promise<void> {
-		if (!this.options.receiptFoundationEnabled()) return;
+		const enabled = this.options.receiptFoundationEnabled();
 		const nowMs = (this.options.now ?? Date.now)();
 		for (const projectName of this.options.projectNames) {
 			let db: CommDB | undefined;
 			try {
 				db = this.openDb(this.options.commDbPathForProject(projectName));
+				await this.drainWakeFailureAlerts(db, projectName, nowMs);
+				if (!enabled) continue;
 				for (const wake of db.listPendingRunnerReceiptWakes()) {
 					await this.advance(db, projectName, wake, nowMs);
 				}
@@ -131,6 +133,63 @@ export class RunnerReceiptPatrol {
 			} finally {
 				db?.close();
 			}
+		}
+	}
+
+	private async drainWakeFailureAlerts(
+		db: CommDB,
+		projectName: string,
+		nowMs: number,
+	): Promise<void> {
+		for (const alert of db.listPendingReceiptAlerts(["wake_failed"], 100)) {
+			const current = db.revalidateRunnerReceiptWakeAlert(alert.id, nowMs);
+			if (!current) continue;
+			let payload: {
+				executionId?: string;
+				messageId?: string;
+				reason?: string;
+				identityKind?: "terminal_episode" | "founder_message";
+				episodeFingerprint?: string;
+			};
+			try {
+				payload = JSON.parse(current.payload) as typeof payload;
+			} catch {
+				continue;
+			}
+			if (
+				typeof payload.executionId !== "string" ||
+				typeof payload.messageId !== "string"
+			) {
+				continue;
+			}
+			const wake = db
+				.listRunnerPhaseWakes(payload.executionId)
+				.find((candidate) => candidate.message_id === payload.messageId);
+			if (!wake) continue;
+			const firstDetectedAtMs = Date.parse(current.created_at);
+			const identityKind =
+				payload.identityKind ??
+				(envelopeMetadata(wake).origin === "founder"
+					? "founder_message"
+					: undefined);
+			let delivered = false;
+			try {
+				delivered = await this.options.notifyWakeFailure({
+					projectName,
+					wake,
+					reason: payload.reason ?? "wake_failed",
+					firstDetectedAtMs: Number.isFinite(firstDetectedAtMs)
+						? firstDetectedAtMs
+						: wake.queued_at,
+					...(payload.episodeFingerprint
+						? { episodeFingerprint: payload.episodeFingerprint }
+						: {}),
+					...(identityKind ? { identityKind } : {}),
+				});
+			} catch {
+				delivered = false;
+			}
+			if (delivered) db.markReceiptAlertDelivered(current.id, nowMs);
 		}
 	}
 

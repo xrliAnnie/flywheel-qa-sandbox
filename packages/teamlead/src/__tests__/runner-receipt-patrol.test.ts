@@ -339,6 +339,42 @@ describe("FLY-1392 runner receipt patrol", () => {
 		expect(db.listRunnerWakeFailureEpisodes("exec-1", "terminal")).toEqual([]);
 	});
 
+	it("retries a founder-terminal wake alert on a later patrol pass", async () => {
+		const wake = admit(1_000, 1, {
+			origin: "founder",
+			questionId: "question-1",
+		});
+		db.updateSessionStatus("exec-1", "failed");
+		notifyWakeFailure.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+		db.close();
+		const run = () =>
+			new RunnerReceiptPatrol({
+				projectNames: ["proj"],
+				commDbPathForProject: () => dbPath,
+				receiptFoundationEnabled: () => true,
+				resolveTargetState: () => "terminal",
+				terminalLifecycleIdFor: () => "terminal-life-a",
+				now: () => 2_000,
+				pushWake,
+				nudgeWakePointer,
+				notifyWakeFailure,
+			}).pass();
+
+		await run();
+		db = new CommDB(dbPath);
+		expect(
+			db.getReceiptAlertOutbox(`wake_failed:founder:${wake.message_id}`),
+		).toMatchObject({ delivered_at: null });
+		db.close();
+
+		await run();
+		db = new CommDB(dbPath);
+		expect(notifyWakeFailure).toHaveBeenCalledTimes(2);
+		expect(
+			db.getReceiptAlertOutbox(`wake_failed:founder:${wake.message_id}`),
+		).toMatchObject({ delivered_at: expect.any(String) });
+	});
+
 	it("shares one failure episode across messages until a started receipt closes it", async () => {
 		admit(1_000, 1);
 		admit(2_000, 2);
