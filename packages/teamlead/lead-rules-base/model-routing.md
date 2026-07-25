@@ -23,7 +23,7 @@ same `/api/runs/start` call.
 | Difficulty | Model | `model` value |
 |------------|-------|---------------|
 | **Heavy** — architecture, migration, redesign, gnarly multi-file/cross-system change, deep debugging | Fable 5 | `fable` |
-| **Medium** — a normal feature or bug fix of moderate scope | Opus 4.8 | `opus` |
+| **Medium** — a normal feature or bug fix of moderate scope | Opus 5 | `opus` |
 | **Simple** — a small, well-scoped change | Sonnet 5 | `sonnet` |
 | **Trivial** — a typo, a rename, a copy tweak, a version bump, a one-liner | Haiku 4.5 | `haiku` |
 
@@ -39,7 +39,7 @@ Claude process costs ~0.35GB more RAM per Runner, and the fleet hit swap
 exhaustion when every runner inherited a 1M default — so 1M is now something
 you ask for, not something you get.
 
-- Pass `"model": "opus-1m"` (Opus 4.8 · 1M) or `"model": "fable-1m"`
+- Pass `"model": "opus-1m"` (Opus 5 · 1M) or `"model": "fable-1m"`
   (Fable 5 · 1M) **only when the task genuinely needs the huge window** — e.g.
   it must hold a massive corpus/log/diff in one context and cannot be chunked.
 - The same spellings work as issue labels (`opus-1m` / `fable-1m`) when the

@@ -405,7 +405,7 @@ describe("buildRescueSuccessorDispatchFields (FLY-1224 R1 #1 — the 6th lane)",
 			session_role: "qa",
 			dispatch_model: null,
 		} as never);
-		expect(f.dispatchModel).toBe("claude-opus-4-8");
+		expect(f.dispatchModel).toBe("claude-opus-5");
 		expect(f.dispatchVendor).toBe("claude");
 		expect(f.dispatchEffort).toBeUndefined();
 		expect(f.shareParentBranch).toBe(true);

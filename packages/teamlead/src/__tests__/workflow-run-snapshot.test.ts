@@ -62,11 +62,13 @@ describe("typed generalized workflow snapshot", () => {
 			template: { id: "tpl_eng_heavy", revision: 1 },
 			manifest,
 		});
+		// FLY-1467: the tpl_eng_heavy qa node repointed opus 4.8 → Opus 5, so the
+		// pinned topology digests move with the manifest content.
 		expect(snapshot.manifest_digest).toBe(
-			"6aeb8c0d2a4c96958d03698975b9a65bfbe2318b02faf97bef1f089aad016e23",
+			"4f1fef0fce28f7c086c4f31462da77f053a3e5fefdebc5bb8d021864bf39b2c4",
 		);
 		expect(snapshot.snapshot_digest).toBe(
-			"7d69ece40fb969af57c2f3ebc1deda8d79ecf54a2d1f8e3b575899f77a0bb902",
+			"f0014039d4a89de928b0907d7625cb80ec0e22be9462e89cfb150850aa1bce75",
 		);
 	});
 

@@ -607,7 +607,7 @@ describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => 
 		});
 		const r = await postRetry({ execution_id: "phase-qa-1" });
 		expect(r.status).toBe(200);
-		expect(dispatched[0]?.dispatchModel).toBe("claude-opus-4-8"); // qa → Opus
+		expect(dispatched[0]?.dispatchModel).toBe("claude-opus-5"); // qa → Opus (FLY-1467: Opus 5)
 		expect(dispatched[0]?.dispatchVendor).toBe("claude"); // FLY-1224: qa stays claude
 		expect(dispatched[0]?.dispatchEffort).toBeUndefined();
 		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBe(true);

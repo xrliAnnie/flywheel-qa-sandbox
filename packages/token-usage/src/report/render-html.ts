@@ -7,6 +7,7 @@ import type {
 } from "./build-report.js";
 
 const MODEL_LABEL: Record<string, string> = {
+	"claude-opus-5": "Opus 5",
 	"claude-opus-4-8": "Opus 4.8",
 	"claude-opus-4-7": "Opus 4.7",
 	"claude-opus-4-6": "Opus 4.6",
@@ -16,6 +17,7 @@ const MODEL_LABEL: Record<string, string> = {
 	"claude-haiku-4-5-20251001": "Haiku 4.5",
 };
 const MODEL_COLOR: Record<string, string> = {
+	"claude-opus-5": "#d92d20",
 	"claude-opus-4-8": "#ff3b30",
 	"claude-opus-4-7": "#ff6961",
 	"claude-opus-4-6": "#ff8a80",

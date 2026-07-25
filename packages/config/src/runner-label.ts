@@ -1,3 +1,5 @@
+import { DEFAULT_OPUS_1M, MODEL_IDS } from "./model-registry.js";
+
 /**
  * FLY-123: shared pure label → runner-vendor parser.
  *
@@ -88,8 +90,9 @@ function resolveModelFromLabels(labels: string[]): string | undefined {
 	// aliases so an issue carrying both `opus` and `opus-1m` resolves to 1M
 	// (the more specific ask wins). `includes` is exact-match, so there is no
 	// substring swallowing either way; the ordering is for precedence only.
-	if (labels.includes("opus-1m")) return "claude-opus-4-8[1m]";
-	if (labels.includes("fable-1m")) return "claude-fable-5[1m]";
+	// FLY-1467: 档位 → 当前绑定,不写死版本。
+	if (labels.includes("opus-1m")) return DEFAULT_OPUS_1M;
+	if (labels.includes("fable-1m")) return MODEL_IDS.FABLE_1M;
 
 	// FLY-728: per-issue model routing. `fable` resolves to the canonical
 	// explicit id `claude-fable-5` (the exact string fleet-console, token

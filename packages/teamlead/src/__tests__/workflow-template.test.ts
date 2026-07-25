@@ -358,7 +358,7 @@ describe("workflow template manifest v1", () => {
 					id: "qa",
 					type: "qa",
 					vendor: "claude",
-					model: "claude-opus-4-8",
+					model: "claude-opus-5",
 				}),
 			]),
 		);

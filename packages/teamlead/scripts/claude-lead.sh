@@ -1572,6 +1572,16 @@ _launch_claude() {
       if [ "$_fly1285_arg" = "--model" ]; then _fly1285_skip=true; continue; fi
       _fly1285_filtered+=("$_fly1285_arg")
     done
+    # FLY-1485 review NOTE (HIGH, latent): the manifest value is appended RAW
+    # and does NOT pass through the FLY-1467 tier resolver above (that runs only
+    # on the FLYWHEEL_LEAD_MODEL env path). Manifest is the "runtime source of
+    # truth", so if a Lead's manifest model is ever a tier alias (`opus` /
+    # `opus-1m`) the resolver is defeated: `opus-1m` → CLI rejects; `opus` →
+    # resolved by the CLI's own alias table, bypassing the registry binding
+    # (rollback ineffective). Latent today — production manifests carry full ids
+    # (projects.json pins are `claude-opus-4-8[1m]`, exploration §3.3). Proper
+    # fix: resolve the tier at the SINGLE final model-selection point after
+    # manifest/env precedence, not only on the env path.
     launch_args=("${_fly1285_filtered[@]}" --model "$_fly1285_manifest_model")
     if [ -n "${_fly241_lead_model:-}" ] && [ "$_fly241_lead_model" != "$_fly1285_manifest_model" ]; then
       log "model drift: env=${_fly241_lead_model} manifest=${_fly1285_manifest_model} → using manifest"
@@ -2266,7 +2276,38 @@ CLAUDE_ARGS=(
 _fly241_lead_model="${FLYWHEEL_LEAD_MODEL:-}"
 _fly241_lead_model="${_fly241_lead_model#"${_fly241_lead_model%%[![:space:]]*}"}"
 _fly241_lead_model="${_fly241_lead_model%"${_fly241_lead_model##*[![:space:]]}"}"
+# FLY-1467: boundary resolution — config writes only the TIER ("opus",
+# "opus-1m", "fable", ...), never a version; the version lives in
+# model-registry alone. leads[].model is deliberately NOT normalized upstream
+# (ProjectConfig only checks non-empty + control chars), and it reaches the CLI
+# verbatim — so a tier spelling must be resolved to a canonical model id HERE.
+#
+# This matters: "opus-1m" is a Flywheel-internal alias the claude CLI does not
+# know ("may not exist or you may not have access" — verified on a real
+# machine), so passing it through raw would fail to start the Lead. And bare
+# "opus" would be resolved by the CLI's own alias table rather than by our
+# registry, which would move version control out of the registry.
+#
+# FAIL-SAFE: any failure (missing dist, node error, unknown spelling) leaves the
+# value untouched and passes it through exactly as before — a resolver problem
+# must never be the reason a Lead cannot start.
 if [ -n "$_fly241_lead_model" ]; then
+  _fly1467_registry="${FLYWHEEL_ROOT}/packages/config/dist/index.js"
+  if [ -f "$_fly1467_registry" ]; then
+    _fly1467_resolved="$(
+      FLY1467_RAW="$_fly241_lead_model" \
+      FLY1467_ENTRY="$_fly1467_registry" \
+      node --input-type=module -e '
+        const { normalizeDispatchModel } = await import(process.env.FLY1467_ENTRY);
+        const resolved = normalizeDispatchModel(process.env.FLY1467_RAW ?? "");
+        if (resolved) process.stdout.write(resolved);
+      ' 2>/dev/null
+    )" || _fly1467_resolved=""
+    if [ -n "$_fly1467_resolved" ] && [ "$_fly1467_resolved" != "$_fly241_lead_model" ]; then
+      log "FLY-1467: resolved lead model tier '${_fly241_lead_model}' -> '${_fly1467_resolved}'"
+      _fly241_lead_model="$_fly1467_resolved"
+    fi
+  fi
   CLAUDE_ARGS+=(--model "$_fly241_lead_model")
 fi
 

@@ -203,9 +203,14 @@ function oneOf<T extends string>(
 }
 
 function compatibleModel(vendor: WorkflowVendor, model: string): boolean {
+	// FLY-1467: judge the CANONICAL id, not the raw spelling. Config may now
+	// write a tier ("opus" / "opus-1m") instead of a version, and a tier does not
+	// carry the vendor prefix. Resolving first keeps every existing full-id
+	// spelling byte-identical while letting tiers through.
+	const canonical = getModelRegistryEntry(model)?.id ?? model;
 	return vendor === "claude"
-		? model.startsWith("claude-")
-		: model.startsWith("gpt-");
+		? canonical.startsWith("claude-")
+		: canonical.startsWith("gpt-");
 }
 
 function canonicalWorkflowModel(

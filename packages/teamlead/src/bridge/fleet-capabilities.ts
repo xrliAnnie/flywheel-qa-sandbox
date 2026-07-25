@@ -63,9 +63,15 @@ if (!LEAD_CLAUDE_MODELS) {
 }
 
 export const CLAUDE_TIER_OPTIONS: readonly TierOption[] = [
+	// FLY-1467: every ACCEPTED Lead model is listed, so a Lead already pinned to
+	// a non-default (e.g. claude-opus-4-8[1m]) still renders a human label and
+	// stays a legal write target. Non-selectable ones are marked `readonly` —
+	// the same idiom the Codex option already uses for "shown, not switchable"
+	// — so they are visible but never offered as a NEW choice.
 	...LEAD_CLAUDE_MODELS.map((model) => ({
 		id: model.id,
 		label: model.label,
+		...(model.selectable ? {} : { readonly: true as const }),
 	})),
 	// `null` remains the exact persisted representation of account default. It is
 	// a write target, not a duplicate model-registry entry.

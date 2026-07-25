@@ -229,7 +229,7 @@ describe("FLY-1050 F1: qa terminated (intent pass) → clean QA respawn", () => 
 			sessionRole: "qa",
 			designBackend: "claude",
 			dispatchVendor: "claude",
-			dispatchModel: "claude-opus-4-8",
+			dispatchModel: "claude-opus-5",
 			startPoint: HEAD, // capturePhaseHeadSha(implement) — the latest valid head
 			shareParentBranch: true,
 			ignoreRunnerLabelSelection: true,

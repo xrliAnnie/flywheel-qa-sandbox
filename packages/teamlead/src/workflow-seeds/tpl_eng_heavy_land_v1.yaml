@@ -19,7 +19,7 @@ manifest:
     - id: qa
       type: qa
       vendor: claude
-      model: claude-opus-4-8
+      model: opus
       handoff_pointer: { worktree: true, design_doc: true }
     - id: founder_gate
       type: gate

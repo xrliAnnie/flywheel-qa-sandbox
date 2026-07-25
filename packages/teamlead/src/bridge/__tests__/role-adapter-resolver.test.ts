@@ -73,7 +73,8 @@ describe("resolveRoleAdapter — FLY-751 runner default model", () => {
 			issueLabels: ["opus-1m"],
 			env: EMPTY_ENV,
 		});
-		expect(resolved.model).toBe("claude-opus-4-8[1m]");
+		// FLY-1467: the opus-1m label binds to Opus 5 (1M).
+		expect(resolved.model).toBe("claude-opus-5[1m]");
 	});
 
 	it("the dispatch model wins — no default injection", () => {

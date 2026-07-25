@@ -76,6 +76,7 @@ export {
 } from "./model-display.js";
 export type {
 	CurrentModelView,
+	DefaultOpusBindings,
 	ModelCatalog,
 	ModelProviderId,
 	ModelRegistryEntry,
@@ -84,8 +85,14 @@ export type {
 } from "./model-registry.js";
 export {
 	assertValidModelRegistry,
+	buildDispatchLookup,
 	buildModelCatalog,
+	buildModelRegistry,
+	DEFAULT_OPUS,
+	DEFAULT_OPUS_1M,
+	DEFAULT_OPUS_BINDINGS,
 	getModelRegistryEntry,
+	isModelSelectable,
 	isModelSelectionSupported,
 	MODEL_IDS,
 	MODEL_REGISTRY,

@@ -30,7 +30,7 @@
  * guess. The founder confirmed the fleet standard is Sonnet 5 (not 4.6).
  */
 
-import { MODEL_IDS } from "./model-registry.js";
+import { DEFAULT_OPUS, DEFAULT_OPUS_1M, MODEL_IDS } from "./model-registry.js";
 
 export type ModelTier = "heavy" | "medium" | "light" | "trivial";
 
@@ -46,7 +46,9 @@ export interface ModelTierSpec {
 /** Difficulty tier → default model. 728 built-in; FLY-709 makes it configurable. */
 export const MODEL_TIERS: Readonly<Record<ModelTier, ModelTierSpec>> = {
 	heavy: { id: MODEL_IDS.FABLE, aliases: ["fable"], code: "F" },
-	medium: { id: MODEL_IDS.OPUS, aliases: ["opus"], code: "O" },
+	// FLY-1467: medium 档指向**当前绑定**,不写死版本(Annie 原则:
+	// 配置只写档位,版本只存在 model-registry 一处)。
+	medium: { id: DEFAULT_OPUS, aliases: ["opus"], code: "O" },
 	light: { id: MODEL_IDS.SONNET_5, aliases: ["sonnet"], code: "S" },
 	trivial: { id: MODEL_IDS.HAIKU, aliases: ["haiku"], code: "H" },
 };
@@ -56,11 +58,25 @@ export const MODEL_TIERS: Readonly<Record<ModelTier, ModelTierSpec>> = {
  * label) reaches for these only when a task genuinely needs the 1M window.
  */
 const ONE_M_DISPATCH_MODELS: ReadonlyMap<string, string> = new Map([
-	["opus-1m", MODEL_IDS.OPUS_1M],
-	[MODEL_IDS.OPUS_1M, MODEL_IDS.OPUS_1M],
+	["opus-1m", DEFAULT_OPUS_1M],
+	[DEFAULT_OPUS_1M, DEFAULT_OPUS_1M],
 	["fable-1m", MODEL_IDS.FABLE_1M],
 	[MODEL_IDS.FABLE_1M, MODEL_IDS.FABLE_1M],
 ]);
+
+/**
+ * FLY-1467:未被绑定的 Opus 固定身份仍必须被 dispatch 边界接受
+ * (`/api/runs/start`、小红书 collection model 的旧 pin 向后兼容),
+ * 但它们**不带档位 alias** —— 档位永远指向当前绑定。
+ */
+const LEGACY_DISPATCH_MODELS: ReadonlyMap<string, string> = new Map(
+	[
+		MODEL_IDS.OPUS_5,
+		MODEL_IDS.OPUS_5_1M,
+		MODEL_IDS.OPUS_48,
+		MODEL_IDS.OPUS_48_1M,
+	].map((id) => [id, id] as const),
+);
 
 /** Lowercased id/alias → canonical id (built once from MODEL_TIERS + 1M opt-ins). */
 const DISPATCH_MODEL_LOOKUP: ReadonlyMap<string, string> = (() => {
@@ -70,6 +86,7 @@ const DISPATCH_MODEL_LOOKUP: ReadonlyMap<string, string> = (() => {
 		for (const alias of spec.aliases) m.set(alias.toLowerCase(), spec.id);
 	}
 	for (const [alias, id] of ONE_M_DISPATCH_MODELS) m.set(alias, id);
+	for (const [alias, id] of LEGACY_DISPATCH_MODELS) m.set(alias, id);
 	return m;
 })();
 

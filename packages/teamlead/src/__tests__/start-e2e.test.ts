@@ -786,7 +786,8 @@ describe("Start API E2E", () => {
 			expect(res.status).toBe(200);
 			const startReq = mockDispatcher.start.mock.calls[0]![0];
 			// FLY-751: medium tier dropped [1m] — `opus` is small-context now.
-			expect(startReq.dispatchModel).toBe("claude-opus-4-8");
+			// FLY-1467: the opus tier now binds to Opus 5.
+			expect(startReq.dispatchModel).toBe("claude-opus-5");
 		}, 15_000);
 
 		it("FLY-751: opus-1m opt-in normalizes to the [1m] id before dispatch", async () => {
@@ -801,7 +802,7 @@ describe("Start API E2E", () => {
 			});
 			expect(res.status).toBe(200);
 			const startReq = mockDispatcher.start.mock.calls[0]![0];
-			expect(startReq.dispatchModel).toBe("claude-opus-4-8[1m]");
+			expect(startReq.dispatchModel).toBe("claude-opus-5[1m]");
 		}, 15_000);
 
 		it("unknown model → 400 INVALID_MODEL (never reaches dispatcher)", async () => {

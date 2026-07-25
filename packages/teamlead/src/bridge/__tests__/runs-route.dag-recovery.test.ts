@@ -230,13 +230,13 @@ describe("FLY-1372 DAG recovery domain", () => {
 		const first = await post(h.url, { model: "opus" });
 		expect(first.status).toBe(200);
 		const session = h.store.getSession(first.json.executionId as string)!;
-		expect(session.dispatch_model).toBe("claude-opus-4-8");
+		expect(session.dispatch_model).toBe("claude-opus-5");
 		const retry = await post(h.url, { model: "haiku" });
 		expect(retry.status).toBe(200);
 		expect(retry.json).toEqual(first.json);
 		expect(
 			h.store.getSession(first.json.executionId as string)!.dispatch_model,
-		).toBe("claude-opus-4-8");
+		).toBe("claude-opus-5");
 	});
 
 	it("#8c a live SUCCESSOR phase (execution ≠ start reservation) → 409 already-active, no second run", async () => {

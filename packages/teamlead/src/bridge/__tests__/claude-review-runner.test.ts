@@ -27,9 +27,10 @@ describe("buildClaudeReviewArgv", () => {
 			"--output-format",
 			"json",
 			"--model",
-			"claude-opus-4-8",
+			"claude-opus-5",
 			// FLY-1224 (T13 ②, Annie's directive): the cross-family Claude
 			// reviewer defaults to Opus + effort xhigh.
+			// FLY-1467: the default Opus reviewer binds to Opus 5.
 			"--effort",
 			"xhigh",
 		]);

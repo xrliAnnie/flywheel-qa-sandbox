@@ -17,7 +17,7 @@ manifest:
     - id: review
       type: review
       vendor: claude
-      model: claude-opus-4-8
+      model: opus
       effort: high
     - id: founder_gate
       type: gate

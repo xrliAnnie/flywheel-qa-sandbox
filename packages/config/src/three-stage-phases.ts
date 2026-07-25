@@ -9,7 +9,7 @@
  * Dispatch per phase (Annie's directive, 2026-07-13 — FLY-1224):
  *   design    → claude claude-fable-5       — brainstorm / research / design
  *   implement → codex  gpt-5.6-sol (xhigh)  — code (Annie's standard Codex config)
- *   qa        → claude claude-opus-4-8      — verification (QA is a write-capable
+ *   qa        → claude claude-opus-5        — verification (QA is a write-capable
  *                                             phase too; the model choice is
  *                                             independent of that)
  *

@@ -43,7 +43,15 @@ runners:
 roles:
   runner:
     backend: claude-tmux
-    model: claude-opus-4-8[1m]
+    # FLY-1485 reviewer-fix (BLOCKER): use the CLI-native full id, NOT the
+    # internal tier alias `opus-1m`. This project-default path is NOT
+    # canonicalized (ConfigLoader trims only → resolveRoleAdapter →
+    # run-dispatcher → Blueprint → TmuxAdapter `--model <verbatim>`), so a tier
+    # alias reaches the claude CLI raw and it rejects `opus-1m` ("may not exist
+    # or you may not have access") → the runner never starts. `[1m]` IS a
+    # CLI-native selector, so `claude-opus-5[1m]` is accepted (verified). Opus 5
+    # (1M), upgrading the pre-FLY-1467 `claude-opus-4-8[1m]` default.
+    model: claude-opus-5[1m]
 
 teams:
   - name: default

@@ -31,7 +31,7 @@ describe("model registry invariants", () => {
 				expect(getModelRegistryEntry(alias)?.id).toBe(tier.id);
 			}
 		}
-		expect(getModelRegistryEntry("opus-1m")?.id).toBe("claude-opus-4-8[1m]");
+		expect(getModelRegistryEntry("opus-1m")?.id).toBe("claude-opus-5[1m]");
 		expect(getModelRegistryEntry("fable-1m")?.id).toBe("claude-fable-5[1m]");
 	});
 

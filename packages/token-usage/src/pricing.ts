@@ -32,6 +32,9 @@ export interface ModelRate {
  * cacheWrite = 1.25×input (5-min TTL, the `cache_creation_input_tokens` tier).
  */
 export const MODEL_RATES: Record<string, ModelRate> = {
+	// FLY-1467: Opus 5 与 Opus 4.8 同价(Anthropic catalog: "a drop-in
+	// upgrade at Opus 4.8's pricing")。cacheRead/Write = 标准 0.1x / 1.25x。
+	"claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 	"claude-opus-4-8": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 	"claude-opus-4-7": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 	"claude-opus-4-6": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },

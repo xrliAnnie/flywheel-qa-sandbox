@@ -30,7 +30,7 @@ describe("three-stage-phases (FLY-793)", () => {
 		expect(DEFAULT_PHASE_DISPATCH).toEqual({
 			design: { vendor: "claude", model: "claude-fable-5" },
 			implement: { vendor: "codex", model: "gpt-5.6-sol", effort: "xhigh" },
-			qa: { vendor: "claude", model: "claude-opus-4-8" },
+			qa: { vendor: "claude", model: "claude-opus-5" },
 		});
 	});
 
@@ -40,7 +40,7 @@ describe("three-stage-phases (FLY-793)", () => {
 		// draws from the dispatch table.
 		expect(resolvePhaseModel("design")).toBe("claude-fable-5");
 		expect(resolvePhaseModel("implement")).toBe("gpt-5.6-sol");
-		expect(resolvePhaseModel("qa")).toBe("claude-opus-4-8");
+		expect(resolvePhaseModel("qa")).toBe("claude-opus-5");
 	});
 
 	it("zero-Sonnet invariant: no phase in the dispatch table resolves to a sonnet model", () => {

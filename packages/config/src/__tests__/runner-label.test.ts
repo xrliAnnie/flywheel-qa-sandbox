@@ -162,7 +162,7 @@ describe("parseRunnerLabels", () => {
 	it("resolves opus-1m / fable-1m labels to the [1m] ids (Claude runner)", () => {
 		expect(parseRunnerLabels(["opus-1m"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-opus-4-8[1m]",
+			modelOverride: "claude-opus-5[1m]",
 		});
 		expect(parseRunnerLabels(["FABLE-1M"])).toEqual({
 			runnerType: "claude",
@@ -173,7 +173,7 @@ describe("parseRunnerLabels", () => {
 	it("1m label wins over the bare alias when both are present", () => {
 		expect(parseRunnerLabels(["opus", "opus-1m"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-opus-4-8[1m]",
+			modelOverride: "claude-opus-5[1m]",
 		});
 		expect(parseRunnerLabels(["fable-1m", "fable"])).toEqual({
 			runnerType: "claude",

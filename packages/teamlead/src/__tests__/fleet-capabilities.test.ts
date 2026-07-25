@@ -32,7 +32,11 @@ describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () =
 			(provider) => provider.id === "anthropic",
 		)!.models;
 		expect(CLAUDE_TIER_OPTIONS.filter((option) => option.id !== null)).toEqual(
-			catalogModels.map((model) => ({ id: model.id, label: model.label })),
+			catalogModels.map((model) => ({
+				id: model.id,
+				label: model.label,
+				...(model.selectable ? {} : { readonly: true }),
+			})),
 		);
 	});
 
@@ -40,11 +44,15 @@ describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () =
 		expect(CLAUDE_TIER_OPTIONS).toEqual([
 			{ id: "claude-fable-5", label: "Fable 5" },
 			{ id: "claude-fable-5[1m]", label: "Fable 5 (1M)" },
-			{ id: "claude-opus-4-8", label: "Opus 4.8" },
-			{ id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)" },
+			{ id: "claude-opus-5", label: "Opus 5" },
+			{ id: "claude-opus-5[1m]", label: "Opus 5 (1M)" },
 			{ id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
 			{ id: "claude-sonnet-5", label: "Sonnet 5" },
 			{ id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+			// FLY-1467: legacy Opus identities stay listed (label + legal target)
+			// but are readonly — visible, never offered as a new choice.
+			{ id: "claude-opus-4-8", label: "Opus 4.8", readonly: true },
+			{ id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)", readonly: true },
 			{ id: null, label: "Opus 4.8" },
 		]);
 	});

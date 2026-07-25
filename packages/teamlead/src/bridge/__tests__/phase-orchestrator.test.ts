@@ -208,7 +208,7 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 			sessionRole: "qa",
 			// FLY-887 R2 (Annie's table): QA runs on Opus — never Sonnet.
 			// FLY-1224: qa stays a claude phase (vendor claude, no effort).
-			dispatchModel: "claude-opus-4-8",
+			dispatchModel: "claude-opus-5",
 			dispatchVendor: "claude",
 			ignoreRunnerLabelSelection: true,
 			shareParentBranch: true,
@@ -1980,7 +1980,7 @@ describe("FLY-1259: re-QA respawn inherits the locked design backend", () => {
 			designBackend: "claude",
 			// The lock is metadata only — the QA phase keeps its own dispatch triple.
 			dispatchVendor: "claude",
-			dispatchModel: "claude-opus-4-8",
+			dispatchModel: "claude-opus-5",
 			startPoint: HEAD_SHA,
 		});
 	});

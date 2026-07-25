@@ -513,7 +513,7 @@ describe("FLY-1372 DAG dispatch entry — fresh domain", () => {
 		});
 		const executionId = json.executionId as string;
 		const session = h.store.getSession(executionId)!;
-		expect(session.dispatch_model).toBe("claude-opus-4-8");
+		expect(session.dispatch_model).toBe("claude-opus-5");
 		expect(session.agent_name).toBe("engineer");
 		// ponytail rides the legacy-identical ponytailInput ladder, NOT the
 		// template-authority override list.
@@ -1263,7 +1263,7 @@ describe("FLY-1436 menu start contract", () => {
 						overridden: false,
 					},
 					qa: {
-						model: "opus (= claude-opus-4-8)",
+						model: "opus (= claude-opus-5)",
 						effort: "xhigh",
 						overridden: false,
 					},

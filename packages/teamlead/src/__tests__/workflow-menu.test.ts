@@ -409,7 +409,7 @@ describe("workflow menu override validation", () => {
 				overridden: false,
 			},
 			qa: {
-				model: "opus (= claude-opus-4-8)",
+				model: "opus (= claude-opus-5)",
 				effort: "xhigh",
 				overridden: false,
 			},

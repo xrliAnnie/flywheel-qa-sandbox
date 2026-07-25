@@ -10,6 +10,16 @@ manifest:
       model: gpt-5.6-sol
       effort: low
       agent_file: agents/generic-executor.md
+      # FLY-1467 (05cde232, option C — Annie via Tadashi): the node's output
+      # now counts. The "zero-prompt clean session" (dropping agent_file) is
+      # blocked here — a generic node must define exactly one of role or
+      # agent_file (workflow-template.ts) — so it is folded into the follow-up
+      # "capable-generic" node type (option B), alongside the capability opening
+      # (shared_branch_writer / creates_pr / completion_route).
+      produces_output: true
+      output:
+        schema: json_v1
+        max_bytes: 262144
     - id: founder_gate
       type: gate
   edges:
