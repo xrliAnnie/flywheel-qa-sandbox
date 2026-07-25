@@ -499,6 +499,63 @@ describe("FLY-1392 receipt wake state machine", () => {
 		},
 	);
 
+	it.each([
+		["finalizeSession", "suppressed_cap"],
+		["finalizeSession", "skipped_no_transport"],
+		["deleteSessionAndRunnerPhaseLifecycle", "suppressed_cap"],
+		["deleteSessionAndRunnerPhaseLifecycle", "skipped_no_transport"],
+	] as const)(
+		"durably preserves a founder wake during %s when admitted as %s",
+		(method, admissionState) => {
+			db.registerSession("exec-1", "session", "proj", "FLY-1", "lead-1");
+			const nowMs = Date.now();
+			if (admissionState === "suppressed_cap") {
+				admit(1, nowMs, { execPushCap: 1 });
+			}
+			const questionId = db.insertQuestion(
+				"exec-1",
+				"lead-1",
+				"founder decided?",
+			);
+			const wake = db.responseAndIntent({
+				questionId,
+				fromAgent: "lead-1",
+				content: "founder decided",
+				intentKey: `founder-response:${admissionState}`,
+				envelope: {
+					id: `founder-wake-${admissionState}`,
+					to: "exec-1",
+					content: "founder decided",
+					metadata: { origin: "founder", questionId },
+				},
+				queuedAtMs: nowMs,
+				wakePolicy:
+					admissionState === "suppressed_cap"
+						? { execPushCap: 1 }
+						: { transportAvailable: false },
+			}).wake;
+			expect(wake.admission_state).toBe(admissionState);
+
+			if (method === "finalizeSession") db.finalizeSession("exec-1");
+			else db.deleteSessionAndRunnerPhaseLifecycle("exec-1");
+
+			expect(db.listRunnerPhaseWakes("exec-1")).toContainEqual(
+				expect.objectContaining({
+					message_id: wake.message_id,
+					state: "finished",
+					started_ack_scope: "terminal",
+					escalation_outbox_id: `wake_failed:founder:${wake.message_id}`,
+				}),
+			);
+			expect(
+				db.getReceiptAlertOutbox(`wake_failed:founder:${wake.message_id}`),
+			).toMatchObject({
+				kind: "wake_failed",
+				delivered_at: null,
+			});
+		},
+	);
+
 	it.each(["finalizeSession", "deleteSessionAndRunnerPhaseLifecycle"] as const)(
 		"preserves metadata-only founder wake authority during %s",
 		(method) => {

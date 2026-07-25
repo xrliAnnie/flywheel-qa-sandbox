@@ -5206,10 +5206,7 @@ export class CommDB {
 				return null;
 			}
 			const founderOrigin = runnerWakeMetadata(wake).origin === "founder";
-			if (
-				wake.admission_state !== "queued" &&
-				!(founderOrigin && wake.admission_state === null)
-			) {
+			if (wake.admission_state !== "queued" && !founderOrigin) {
 				return null;
 			}
 
@@ -5258,8 +5255,7 @@ export class CommDB {
 					        claim_token = NULL, claim_expires_at = NULL
 						  WHERE execution_id = ? AND message_id = ?
 						    AND state = 'pending'
-						    AND (admission_state = 'queued'
-						      OR (? = 1 AND admission_state IS NULL))
+						    AND (admission_state = 'queued' OR ? = 1)
 						    AND escalation_outbox_id IS NULL`,
 				)
 				.run(
