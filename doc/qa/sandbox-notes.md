@@ -16,11 +16,11 @@ FLY-202 是供这条链路重复使用的、PreHydrator 可见的 Linear fixture
 | Directory | Description |
 | --- | --- |
 | `.claude/` | Claude Code 项目命令、QA 配置、skills 与旧 orchestrator 工具。 |
-| `.flywheel/` | Flywheel 项目配置、Runner agent 声明与菜单配置。 |
+| `.flywheel/` | Flywheel 项目配置与 Runner agent 声明。 |
 | `.github/` | GitHub Actions 的 CI、发布与自动化 workflows。 |
 | `.lead/` | 各类 Flywheel Lead 的 identity 文件与共享行为规则。 |
 | `.serena/` | Serena MCP 的项目索引配置与忽略规则。 |
-| `agents/` | 随仓库交付的 generic、designer、prototype 与 QA executor 提示词。 |
+| `agents/` | 随仓库交付的 generic 与 QA executor 提示词。 |
 | `doc/` | 架构、工程、QA、reference、retro 与版本等主文档树。 |
 | `docs/` | 贡献指南、运行手册和 operations runbooks。 |
 | `engineering/` | 按 Linear issue 组织的工程设计、实现证据与 spike 资料。 |

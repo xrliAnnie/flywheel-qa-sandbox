@@ -22,6 +22,49 @@ decision_layer:
   autonomy_level: advisor
   escalation_channel: discord
 
+# Keep sandbox routing aligned with the checked-in executor prompts. The two
+# dispatcher contract suites load this real config rather than a synthetic
+# fixture, so these label sets must remain pairwise disjoint.
+agents:
+  engineer:
+    agent_file: .flywheel/agents/engineering/engineer-executor.md
+    department: engineering
+    match:
+      labels: ["code", "feat", "fix", "refactor", "test", "infra", "tooling", "bug", "backend", "frontend", "api", "server", "ui", "web", "be", "fe", "eng", "research", "plan"]
+  qa:
+    agent_file: .flywheel/agents/engineering/qa-executor.md
+    department: engineering
+    match:
+      labels: ["qa", "testing"]
+  product-designer:
+    agent_file: .flywheel/agents/engineering/product-designer-executor.md
+    department: engineering
+    departments: [engineering, product]
+    match:
+      labels: ["doc", "docs", "design", "ux"]
+  pm:
+    agent_file: .flywheel/agents/engineering/pm-executor.md
+    department: engineering
+    departments: [engineering, product]
+    match:
+      labels: ["pm", "product"]
+  prototype:
+    agent_file: .flywheel/agents/engineering/prototype-executor.md
+    department: engineering
+    departments: [engineering, product]
+    match:
+      labels: ["prototype"]
+  designer:
+    agent_file: .flywheel/agents/engineering/designer-executor.md
+    department: engineering
+    departments: [engineering, product]
+    match:
+      labels: ["designer", "mockup"]
+  general:
+    agent_file: .flywheel/agents/general-executor.md
+    match:
+      labels: []
+
 checkpoints:
   approve_to_ship:
     enabled: true
