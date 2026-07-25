@@ -175,7 +175,9 @@ Expected: exit 0. Any missing or stale injected identity fails before push, PR, 
 - [ ] **Step 2: Push the existing harness-created feature branch**
 
 ```bash
-git push -u origin project-slot-2-FLY-202
+BRANCH=$(git branch --show-current)
+test "$BRANCH" = "project-slot-2-FLY-202-a7a4eec4"
+git push -u origin "$BRANCH"
 ```
 
 - [ ] **Step 3: Open a PR against sandbox `main`**
@@ -183,7 +185,7 @@ git push -u origin project-slot-2-FLY-202
 ```bash
 gh pr create \
   --base main \
-  --head project-slot-2-FLY-202 \
+  --head project-slot-2-FLY-202-a7a4eec4 \
   --title "docs(FLY-202): add QA sandbox fixture notes" \
   --body $'## Summary\n- describe the QA sandbox and slot lifecycle\n- inventory every top-level directory\n- summarize the QA framework and capture the requested tree output\n\n## Verification\n- deterministic documentation requirements check\n- git diff --check'
 ```
