@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 3/5
-updated: 2026-07-25T07:15:02.200Z
-nextStep: Request cross-family design review for plan.md
+phaseCursor: 4/5
+updated: 2026-07-25T07:28:11.963Z
+nextStep: Request design review round 2 on revised head
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (3/5)
-**next**: Request cross-family design review for plan.md
+**phase**: design (4/5)
+**next**: Request design review round 2 on revised head
