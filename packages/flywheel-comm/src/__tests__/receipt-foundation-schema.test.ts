@@ -82,6 +82,10 @@ describe("FLY-1392 receipt foundation schema", () => {
 		new CommDB(dbPath).close();
 		const raw = new Database(dbPath);
 		try {
+			raw.exec("DROP TRIGGER receipt_root_lineage_capture");
+			raw.exec("DROP TRIGGER receipt_root_lineage_no_update");
+			raw.exec("DROP TRIGGER receipt_root_lineage_no_delete");
+			raw.exec("DROP TABLE receipt_root_lineage");
 			raw.exec("DROP TRIGGER lead_inbox_receipt_terminal_insert");
 			raw.exec("DROP TRIGGER lead_inbox_receipt_terminal_update");
 			raw.exec("DROP INDEX idx_lead_inbox_resend");
@@ -157,6 +161,13 @@ describe("FLY-1392 receipt foundation schema", () => {
 			expect(wakeColumns).toContain("push_attempts");
 			expect(wakeColumns).toContain("escalation_outbox_id");
 			expect(wakeColumns).toContain("purpose");
+			expect(
+				migrated
+					.prepare(
+						"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'receipt_root_lineage'",
+					)
+					.get(),
+			).toEqual({ name: "receipt_root_lineage" });
 			expect(() =>
 				migrated
 					.prepare(

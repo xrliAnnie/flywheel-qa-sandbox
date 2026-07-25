@@ -162,6 +162,8 @@ export class RunnerReceiptPatrol {
 				firstDetectedAtMs?: number;
 				identityKind?: "terminal_episode" | "founder_message";
 				episodeFingerprint?: string;
+				terminalLifecycleId?: string;
+				generation?: number;
 			};
 			try {
 				payload = JSON.parse(current.payload) as typeof payload;
@@ -177,6 +179,19 @@ export class RunnerReceiptPatrol {
 			) {
 				console.warn(
 					`[receipt-wake-patrol] incomplete wake_failed payload ${current.id}; keeping retryable`,
+				);
+				continue;
+			}
+			if (
+				payload.identityKind === "terminal_episode" &&
+				(typeof payload.terminalLifecycleId !== "string" ||
+					!payload.terminalLifecycleId.trim() ||
+					typeof payload.generation !== "number" ||
+					!Number.isSafeInteger(payload.generation) ||
+					payload.generation <= 0)
+			) {
+				console.warn(
+					`[receipt-wake-patrol] incomplete terminal_episode wake_failed payload ${current.id}; keeping retryable`,
 				);
 				continue;
 			}

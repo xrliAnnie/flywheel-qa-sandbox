@@ -395,6 +395,51 @@ describe("FLY-1392 runner receipt patrol", () => {
 		warn.mockRestore();
 	});
 
+	it("keeps an incomplete terminal-episode alert pending without notifying", async () => {
+		const wake = admit(1_000);
+		const terminal = db.completeRunnerPhaseWakeTerminal({
+			executionId: "exec-1",
+			messageId: wake.message_id,
+			reason: "terminal_before_started",
+			terminalLifecycleId: "terminal-life-a",
+			nowMs: 2_000,
+		});
+		expect(terminal).not.toBeNull();
+		(
+			db as unknown as {
+				db: { prepare(sql: string): { run(...args: unknown[]): void } };
+			}
+		).db
+			.prepare("UPDATE receipt_alert_outbox SET payload = ? WHERE id = ?")
+			.run(
+				JSON.stringify({
+					executionId: "exec-1",
+					messageId: wake.message_id,
+					reason: "terminal_before_started",
+					identityKind: "terminal_episode",
+					terminalLifecycleId: "terminal-life-a",
+				}),
+				terminal?.alert.id,
+			);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		db.close();
+
+		await patrol(3_000);
+
+		db = new CommDB(dbPath);
+		expect(notifyWakeFailure).not.toHaveBeenCalled();
+		expect(db.getReceiptAlertOutbox(terminal?.alert.id ?? "")).toMatchObject({
+			delivered_at: null,
+			canceled_at: null,
+		});
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining(
+				`incomplete terminal_episode wake_failed payload ${terminal?.alert.id}; keeping retryable`,
+			),
+		);
+		warn.mockRestore();
+	});
+
 	it("retries an ordinary wake alert with the original episode start", async () => {
 		admit(1_000);
 		db.upsertDeclaredState("exec-1", "parked", "awaiting work", 1_000, null);

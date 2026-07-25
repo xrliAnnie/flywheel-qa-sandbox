@@ -212,36 +212,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_runner_phase_wakes_source
   ON runner_phase_wakes(execution_id, source_instruction_id)
   WHERE source_instruction_id IS NOT NULL;
 ${LEAD_INBOX_SCHEMA}
-CREATE TABLE IF NOT EXISTS receipt_root_lineage (
-  receipt_id     TEXT PRIMARY KEY,
-  execution_id  TEXT NOT NULL,
-  question_id   TEXT NOT NULL,
-  root_lead_id  TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_receipt_root_lineage_execution
-  ON receipt_root_lineage(execution_id, receipt_id);
-INSERT OR IGNORE INTO receipt_root_lineage
-  (receipt_id, execution_id, question_id, root_lead_id)
-SELECT root.id, source.from_agent, source.id, root.to_lead
-  FROM lead_inbox root
-  JOIN messages source ON source.id = root.ref_message_id
- WHERE root.resend_of IS NULL;
-CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_capture
-AFTER INSERT ON lead_inbox
-WHEN NEW.resend_of IS NULL AND NEW.ref_message_id IS NOT NULL
-BEGIN
-  INSERT OR IGNORE INTO receipt_root_lineage
-    (receipt_id, execution_id, question_id, root_lead_id)
-  SELECT NEW.id, source.from_agent, source.id, NEW.to_lead
-    FROM messages source
-   WHERE source.id = NEW.ref_message_id;
-END;
-CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_update
-BEFORE UPDATE ON receipt_root_lineage
-BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_delete
-BEFORE DELETE ON receipt_root_lineage
-BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
 `;
 
 /**
@@ -815,6 +785,7 @@ export class CommDB {
 
 	private applyMigrations(): void {
 		applyReceiptFoundationMigrations(this.db);
+		this.applyReceiptRootLineageMigration();
 		const columns = this.db
 			.prepare("PRAGMA table_info(messages)")
 			.all() as Array<{ name: string }>;
@@ -1190,6 +1161,41 @@ export class CommDB {
 		} finally {
 			this.db.pragma("foreign_keys = ON");
 		}
+	}
+
+	private applyReceiptRootLineageMigration(): void {
+		this.db.exec(`
+			CREATE TABLE IF NOT EXISTS receipt_root_lineage (
+			  receipt_id     TEXT PRIMARY KEY,
+			  execution_id  TEXT NOT NULL,
+			  question_id   TEXT NOT NULL,
+			  root_lead_id  TEXT NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_receipt_root_lineage_execution
+			  ON receipt_root_lineage(execution_id, receipt_id);
+			INSERT OR IGNORE INTO receipt_root_lineage
+			  (receipt_id, execution_id, question_id, root_lead_id)
+			SELECT root.id, source.from_agent, source.id, root.to_lead
+			  FROM lead_inbox root
+			  JOIN messages source ON source.id = root.ref_message_id
+			 WHERE root.resend_of IS NULL;
+			CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_capture
+			AFTER INSERT ON lead_inbox
+			WHEN NEW.resend_of IS NULL AND NEW.ref_message_id IS NOT NULL
+			BEGIN
+			  INSERT OR IGNORE INTO receipt_root_lineage
+			    (receipt_id, execution_id, question_id, root_lead_id)
+			  SELECT NEW.id, source.from_agent, source.id, NEW.to_lead
+			    FROM messages source
+			   WHERE source.id = NEW.ref_message_id;
+			END;
+			CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_update
+			BEFORE UPDATE ON receipt_root_lineage
+			BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
+			CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_delete
+			BEFORE DELETE ON receipt_root_lineage
+			BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
+		`);
 	}
 
 	purgeExpired(): number {
