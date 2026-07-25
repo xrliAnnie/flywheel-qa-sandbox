@@ -1,0 +1,70 @@
+SOURCE /tmp/flywheel-bridge.log
+COLLECTED 2026-07-24 America/Los_Angeles
+
+LINES 1922820,1922851,1922912,1922973,1923064
+{"component":"EventFilter","event_type":"session_monitoring_lost","issue_id":"FLY-1413","priority":"normal","reason":"monitoring lost — Runner liveness unverified; Lead should check via tmux","timestamp":"2026-07-23T10:39:07.984Z"}
+{"component":"EventFilter","event_type":"session_monitoring_lost","issue_id":"FLY-1436","priority":"normal","reason":"monitoring lost — Runner liveness unverified; Lead should check via tmux","timestamp":"2026-07-23T10:39:13.021Z"}
+{"component":"EventFilter","event_type":"session_monitoring_lost","issue_id":"FLY-1364","priority":"normal","reason":"monitoring lost — Runner liveness unverified; Lead should check via tmux","timestamp":"2026-07-23T10:39:18.148Z"}
+{"component":"EventFilter","event_type":"session_monitoring_lost","issue_id":"FLY-1436","priority":"normal","reason":"monitoring lost — Runner liveness unverified; Lead should check via tmux","timestamp":"2026-07-23T10:39:23.272Z"}
+[server-loss] tmux inspect failed — holding all running tmux sessions: Command failed: /Users/xiaorongli/.flywheel/bin/tmux-server-rescue inspect /private/tmp/tmux-501/default
+
+LINES 1940811-1940820
+[tmux-lookup] pane-dead probe INDETERMINATE (fail-closed): Command failed: tmux list-panes -t runner-flywheel:@465 -F #{pane_dead}
+server exited unexpectedly
+
+{"component":"EventFilter","event_type":"session_monitoring_lost","issue_id":"FLY-1410","priority":"normal","reason":"monitoring lost — Runner liveness unverified; Lead should check via tmux","timestamp":"2026-07-23T11:28:45.564Z"}
+[capture] tmux capture-pane failed for runner-flywheel:@1263 (execution 679c6245-2c36-45b3-93e3-551f04bb8896): Command failed: tmux capture-pane -t runner-flywheel:@1263 -p -S -100
+server exited unexpectedly
+
+[GatePoller] FLY-1393 W-1 indeterminate for ba41d7f5-57c0-43c8-bc06-ba89416d411e: indeterminate; harmless re-wake only, no death alert
+[runner-wake] approval_wake FAILED for ba41d7f5-57c0-43c8-bc06-ba89416d411e: no_session_lead. Runner may stay idle — Lead should reach it via tmux (terminal-mcp) fallback.
+{"component":"EventFilter","event_type":"session_monitoring_reestablished","issue_id":"FLY-1434","priority":"low","reason":"monitoring re-established via tmux — Runner alive","timestamp":"2026-07-23T11:28:54.146Z"}
+
+ALL "server exited unexpectedly" LINE NUMBERS OBSERVED AT COLLECTION
+1940812
+1940816
+1944142
+1944563
+1944566
+1944569
+1944572
+1944575
+1944578
+1945202
+1946462
+1949972
+1954143
+1954146
+1954149
+1967073
+1968813
+1968978
+1972211
+1974152
+1975417
+1983385
+1983388
+1983391
+1983394
+1989206
+2002708
+2002711
+2002714
+2002717
+2002720
+2002723
+2002726
+2002729
+2012427
+2016203
+2018165
+2020169
+2025740
+2039175
+2040801
+2042037
+2042746
+2043413
+2043803
+2044867
+2045993

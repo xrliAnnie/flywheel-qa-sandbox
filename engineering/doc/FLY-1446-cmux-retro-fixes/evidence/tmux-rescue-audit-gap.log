@@ -1,0 +1,19 @@
+SOURCE /Users/xiaorongli/.flywheel/logs/tmux-rescue-audit.log
+COLLECTED 2026-07-24 America/Los_Angeles
+
+LINE 35
+1784791325.925979 token=207FCDF3-6D95-4BE9-BF0C-7B605FA98714 acquiredAt=1784791320.142058 end=1784791325.624069 holdSec=5.482011 verb=ensure caller=main rc=0 shouldAlert=1 episode=1 tailOverride=0
+
+LINE 36
+1784791332.133512 token=F4FF034D-3704-45FE-861B-55D95ACF3034 acquiredAt=1784791330.126416 end=1784791331.934080 holdSec=1.807664 verb=ensure caller=main rc=2 shouldAlert=0 episode=0 tailOverride=0
+
+LINE 37
+1784824508.022058 token=98B2EEE4-8E2F-4EEB-8FB8-81B95DBC8822 acquiredAt=1784824501.813460 end=1784824507.926966 holdSec=6.113506 verb=ensure caller=ensure_tmux_session rc=0 shouldAlert=1 episode=1 tailOverride=0
+
+EPOCH CONVERSIONS (America/Los_Angeles)
+1784791325 = 2026-07-23T00:22:05-0700
+1784791332 = 2026-07-23T00:22:12-0700
+1784824508 = 2026-07-23T09:35:08-0700
+
+The audit file contains no entry between source lines 36 and 37. T0
+(2026-07-23T04:28:45-0700) falls inside that gap.

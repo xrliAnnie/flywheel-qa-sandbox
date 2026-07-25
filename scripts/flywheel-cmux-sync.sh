@@ -73,6 +73,15 @@ KEEPER_INVENTORY="${KEEPER_INVENTORY:-$HOME/.flywheel/state/cmux-keeper-inventor
 VIEW_ABSENT_STATE="${VIEW_ABSENT_STATE:-$HOME/.flywheel/state/cmux-view-absent}"
 CMUX_MAINTENANCE_MARKER="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/state/cmux-maintenance}"
 CMUX_FLAG_STATE="${CMUX_FLAG_STATE:-$HOME/.flywheel/state/cmux-flag-state}"
+LEDGER_CONFLICT_STATE="${LEDGER_CONFLICT_STATE:-$HOME/.flywheel/state/cmux-ledger-conflicts}"
+ROSTER_EPISODE_STATE="${ROSTER_EPISODE_STATE:-$HOME/.flywheel/state/cmux-roster-episodes}"
+FLYWHEEL_ENV_FILE="${FLYWHEEL_ENV_FILE:-$HOME/.flywheel/.env}"
+FLYWHEEL_LEAD_PLIST_DIR="${FLYWHEEL_LEAD_PLIST_DIR:-$HOME/Library/LaunchAgents}"
+FLYWHEEL_MANIFEST_DIR="${FLYWHEEL_MANIFEST_DIR:-$HOME/.flywheel/manifests}"
+# FLY-1446 E2: newline-delimited `view|source|window_id` identities whose
+# well-formed construction WAL hit a proven canonical-name collision in the
+# current reconciliation round. Bash 3.2 has no associative arrays.
+CMUX_WAL_BLOCKED_VIEWS="${CMUX_WAL_BLOCKED_VIEWS:-}"
 
 # FLY-254: cmux app-reopen one-shot re-attach sweep.
 # Generation state file — single line `<identity>|<state>|<attempts>`,
@@ -518,6 +527,446 @@ get_tmux_agent_windows() {
 
   # Filter out default shell windows
   echo "$all_windows" | grep -v '|zsh$' | grep -v '|bash$' | grep -v '^$' || true
+}
+
+# ── FLY-1446: authoritative Lead/Runner roster read phase ──
+
+roster_enabled() {
+  case "${FLYWHEEL_CMUX_ROSTER:-1}" in
+    0) return 1 ;;
+    1|"") return 0 ;;
+    *) log "WARN: invalid FLYWHEEL_CMUX_ROSTER='${FLYWHEEL_CMUX_ROSTER}' — using 1"; return 0 ;;
+  esac
+}
+
+classify_lead_carrier() {
+  local wrapper="$1" backend="$2"
+  case "$wrapper" in
+    flywheel-lead-wrapper.sh)
+      [[ "$backend" == "claude-code" ]] \
+        && printf 'claude-tmux\n' \
+        || printf 'config-drift\n'
+      ;;
+    flywheel-codex-lead-wrapper-mufasa-tui.sh|\
+    flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|\
+    flywheel-codex-lead-wrapper-codex-infra-bot.sh)
+      printf 'codex-tui-cmux\n'
+      ;;
+    *) printf 'config-drift\n' ;;
+  esac
+}
+
+lead_job_loaded() {
+  launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1
+}
+
+lead_plist_wrapper_basename() {
+  plutil -convert json -o - "$1" 2>/dev/null | python3 -c '
+import json,os,sys
+d=json.load(sys.stdin)
+args=d.get("ProgramArguments")
+if not isinstance(args,list) or len(args) < 2 or not isinstance(args[1],str) or not args[1]:
+    raise SystemExit(1)
+print(os.path.basename(args[1]))
+' 2>/dev/null
+}
+
+lead_manifest_fields() {
+  python3 - "$1" <<'PY'
+import json,sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    d=json.load(f)
+project=d.get("projectName")
+lead=d.get("leadId")
+backend=(d.get("leadBackend") or {}).get("backendId")
+if not isinstance(project,str) or not project or "|" in project or "\n" in project:
+    raise SystemExit(1)
+if not isinstance(lead,str) or not lead or "|" in lead or "\n" in lead:
+    raise SystemExit(1)
+if backend is None:
+    backend=""
+if not isinstance(backend,str) or "|" in backend or "\n" in backend:
+    raise SystemExit(1)
+print(f"{project}|{lead}|{backend}")
+PY
+}
+
+LEAD_ROSTER_STATE="indeterminate"
+LEAD_ROSTER_ROWS=""
+derive_lead_roster() {
+  # Rows: carrier|launchd-label|expected-title. No row is published until
+  # every loaded job has been parsed and classified successfully.
+  local plist label slug wrapper manifest fields project lead backend carrier title rows=""
+  LEAD_ROSTER_STATE="indeterminate"
+  LEAD_ROSTER_ROWS=""
+  for plist in "$FLYWHEEL_LEAD_PLIST_DIR"/com.flywheel.lead.*.plist; do
+    [[ -f "$plist" ]] || continue
+    label=$(basename "$plist" .plist)
+    lead_job_loaded "$label" || continue
+    wrapper=$(lead_plist_wrapper_basename "$plist") || return 1
+    slug=${label#com.flywheel.lead.}
+    manifest="$FLYWHEEL_MANIFEST_DIR/${slug}.json"
+    fields=$(lead_manifest_fields "$manifest" 2>/dev/null) || return 1
+    IFS='|' read -r project lead backend <<< "$fields"
+    title="${project}-${lead}"
+    # The launchd label and manifest identity must describe the same slot.
+    [[ "$slug" == "$title" ]] || return 1
+    carrier=$(classify_lead_carrier "$wrapper" "$backend") || return 1
+    rows+="${rows:+$'\n'}${carrier}|${label}|${title}"
+  done
+  LEAD_ROSTER_ROWS="$rows"
+  LEAD_ROSTER_STATE="ok"
+}
+
+ROSTER_TMUX_STATE="indeterminate"
+ROSTER_TMUX_WINDOWS=""
+read_roster_tmux_inventory() {
+  # Typed, atomic snapshot for the read-only roster phase. Unlike the legacy
+  # get_tmux_agent_windows helper, one failed session read is never collapsed
+  # into an apparently healthy empty inventory.
+  local sessions relevant="" session rows tmp
+  ROSTER_TMUX_STATE="indeterminate"
+  ROSTER_TMUX_WINDOWS=""
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 1
+  while IFS= read -r session; do
+    [[ -n "$session" ]] || continue
+    case "$session" in
+      flywheel|runner-*) relevant+="${relevant:+$'\n'}${session}" ;;
+    esac
+  done <<< "$sessions"
+  if [[ -z "$relevant" ]]; then
+    ROSTER_TMUX_STATE="ok_empty"
+    return 0
+  fi
+  tmp=$(mktemp) || return 1
+  while IFS= read -r session; do
+    rows=$(tmux list-windows -t "$session" \
+      -F '#{session_name}|#{window_id}|#{window_name}' 2>/dev/null) || {
+      rm -f "$tmp"; return 1;
+    }
+    while IFS='|' read -r observed_session wid title extra; do
+      [[ -n "$observed_session$wid$title${extra:-}" ]] || continue
+      if [[ -n "${extra:-}" || "$observed_session" != "$session" \
+          || -z "$title" ]]; then
+        rm -f "$tmp"
+        return 1
+      fi
+      case "$wid" in
+        @*) case "${wid#@}" in ''|*[!0-9]*) rm -f "$tmp"; return 1 ;; esac ;;
+        *)
+        rm -f "$tmp"
+        return 1
+        ;;
+      esac
+      case "$title" in zsh|bash) continue ;; esac
+      printf '%s|%s|%s\n' "$observed_session" "$wid" "$title" >> "$tmp" || {
+        rm -f "$tmp"; return 1;
+      }
+    done <<< "$rows"
+  done <<< "$relevant"
+  ROSTER_TMUX_WINDOWS=$(cat "$tmp") || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  [[ -n "$ROSTER_TMUX_WINDOWS" ]] \
+    && ROSTER_TMUX_STATE="ok_nonempty" \
+    || ROSTER_TMUX_STATE="ok_empty"
+  return 0
+}
+
+ROSTER_EPISODE_CHANGED=0
+ROSTER_EPISODE_NUMBER=0
+roster_episode_transition() {
+  # kind|subject|episode|state, with state healthy|unhealthy.
+  local kind="$1" subject="$2" desired="$3" previous episode state dir tmp
+  case "$kind$subject" in *'|'*|*$'\n'*) return 1 ;; esac
+  case "$desired" in healthy|unhealthy) ;; *) return 1 ;; esac
+  ROSTER_EPISODE_CHANGED=0
+  ROSTER_EPISODE_NUMBER=0
+  dir=$(dirname "$ROSTER_EPISODE_STATE")
+  mkdir -p "$dir" 2>/dev/null || return 1
+  touch "$ROSTER_EPISODE_STATE" 2>/dev/null || return 1
+  previous=$(awk -F'|' -v k="$kind" -v s="$subject" \
+    'NF == 4 && $1 == k && $2 == s { print $3 "|" $4; exit }' \
+    "$ROSTER_EPISODE_STATE" 2>/dev/null || true)
+  episode=${previous%%|*}
+  state=${previous#*|}
+  [[ "$previous" == *'|'* ]] || { episode=0; state=""; }
+  ROSTER_EPISODE_NUMBER=$episode
+  [[ "$state" == "$desired" ]] && return 0
+  [[ "$desired" == "healthy" && -z "$state" ]] && return 0
+  [[ "$desired" == "unhealthy" ]] && episode=$((10#${episode:-0} + 1))
+  tmp=$(mktemp "${ROSTER_EPISODE_STATE}.XXXX" 2>/dev/null) || return 1
+  awk -F'|' -v k="$kind" -v s="$subject" \
+    '!($1 == k && $2 == s) { print }' "$ROSTER_EPISODE_STATE" > "$tmp" 2>/dev/null || {
+    rm -f "$tmp"; return 1;
+  }
+  printf '%s|%s|%s|%s\n' "$kind" "$subject" "$episode" "$desired" >> "$tmp" || {
+    rm -f "$tmp"; return 1;
+  }
+  mv "$tmp" "$ROSTER_EPISODE_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  ROSTER_EPISODE_CHANGED=1
+  ROSTER_EPISODE_NUMBER=$episode
+}
+
+roster_alert_unhealthy() {
+  local kind="$1" subject="$2" title="$3" body="$4" signature_subject="${5:-$2}"
+  roster_episode_transition "$kind" "$subject" unhealthy || {
+    log "WARN: cannot persist roster alert episode kind=$kind subject=$subject"
+    return 0
+  }
+  [[ "$ROSTER_EPISODE_CHANGED" == "1" ]] || return 0
+  _alert_cmux_cleanup "$title" "$body" \
+    "cmux_cleanup|${kind}|${signature_subject}|e${ROSTER_EPISODE_NUMBER}"
+}
+
+roster_mark_healthy() {
+  roster_episode_transition "$1" "$2" healthy || {
+    log "WARN: cannot re-arm roster alert episode kind=$1 subject=$2"
+    return 0
+  }
+}
+
+roster_rearm_absent_subjects() {
+  local kind="$1" current="$2" subject
+  [[ -f "$ROSTER_EPISODE_STATE" ]] || return 0
+  while IFS= read -r subject; do
+    [[ -n "$subject" ]] || continue
+    printf '%s\n' "$current" | grep -qxF "$subject" \
+      || roster_mark_healthy "$kind" "$subject"
+  done <<< "$(awk -F'|' -v k="$kind" 'NF == 4 && $1 == k { print $2 }' "$ROSTER_EPISODE_STATE")"
+}
+
+reconcile_lead_roster() {
+  local carrier label title current_missing="" current_config=""
+  if ! derive_lead_roster || [[ "$LEAD_ROSTER_STATE" != "ok" ]]; then
+    roster_alert_unhealthy roster-derive-failed lead-roster \
+      "cmux Lead roster derivation failed" \
+      "At least one loaded Lead plist/manifest could not be parsed consistently. No partial roster conclusions were emitted."
+    return 0
+  fi
+  roster_mark_healthy roster-derive-failed lead-roster
+  while IFS='|' read -r carrier label title; do
+    [[ -n "$carrier$title" ]] || continue
+    if [[ "$carrier" == "config-drift" ]]; then
+      current_config+="${current_config:+$'\n'}${label}"
+      roster_alert_unhealthy config-drift "$label" \
+        "cmux Lead carrier config drift" \
+        "Loaded Lead $label is outside the closed windowed carrier matrix; wrapper/backend configuration must be repaired."
+    else
+      roster_mark_healthy config-drift "$label"
+    fi
+  done <<< "$LEAD_ROSTER_ROWS"
+  roster_rearm_absent_subjects config-drift "$current_config"
+
+  if ! read_roster_tmux_inventory \
+      || [[ "$ROSTER_TMUX_STATE" == "indeterminate" ]]; then
+    roster_alert_unhealthy roster-blind lead-tmux \
+      "cmux Lead roster inventory unavailable" \
+      "The typed tmux inventory was inconclusive. Existing Lead subject states were preserved and no missing-window conclusions were made."
+    return 0
+  fi
+  roster_mark_healthy roster-blind lead-tmux
+  while IFS='|' read -r carrier label title; do
+    [[ "$carrier" == "claude-tmux" || "$carrier" == "codex-tui-cmux" ]] || continue
+    if printf '%s\n' "$ROSTER_TMUX_WINDOWS" \
+        | awk -F'|' -v t="$title" '$1 == "flywheel" && $3 == t { found=1 } END { exit(found ? 0 : 1) }'; then
+      roster_mark_healthy lead-window-missing "$title"
+    else
+      current_missing+="${current_missing:+$'\n'}${title}"
+      roster_alert_unhealthy lead-window-missing "$title" \
+        "cmux Lead window missing" \
+        "Loaded Lead $label expects flywheel:=$title, but the conclusive tmux inventory contains no such window. The watcher will not silently infer a tab from titles."
+    fi
+  done <<< "$LEAD_ROSTER_ROWS"
+  roster_rearm_absent_subjects lead-window-missing "$current_missing"
+}
+
+load_flywheel_env_value() {
+  local name="$1" allow_inherited="${2:-1}" inherited="" raw=""
+  FLYWHEEL_ENV_VALUE=""
+  if [[ "$allow_inherited" == "1" ]]; then
+    eval "inherited=\${${name}+set}"
+    [[ "$inherited" == "set" ]] && eval "raw=\${${name}}"
+  fi
+  if [[ -z "$raw" && -f "$FLYWHEEL_ENV_FILE" ]]; then
+    raw=$(awk -v key="$name" '
+      /^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/ {
+        line=$0
+        sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+        lhs=line; sub(/[[:space:]]*=.*/, "", lhs)
+        if (lhs == key) {
+          sub(/^[^=]*=[[:space:]]*/, "", line)
+          sub(/[[:space:]]*#.*/, "", line)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+          if ((line ~ /^".*"$/) || (line ~ /^'\''.*'\''$/)) {
+            line=substr(line, 2, length(line)-2)
+          }
+          value=line
+        }
+      }
+      END { if (value != "") print value }
+    ' "$FLYWHEEL_ENV_FILE") || return 1
+  fi
+  case "$raw" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  FLYWHEEL_ENV_VALUE="$raw"
+}
+
+validate_loopback_bridge_url() {
+  python3 - "$1" <<'PY' >/dev/null 2>&1
+import sys,urllib.parse
+raw=sys.argv[1]
+if not raw or raw != raw.strip():
+    raise SystemExit(1)
+try:
+    u=urllib.parse.urlsplit(raw)
+    port=u.port
+except ValueError:
+    raise SystemExit(1)
+if u.scheme != "http" or u.hostname not in {"127.0.0.1","localhost"}:
+    raise SystemExit(1)
+if u.username is not None or u.password is not None:
+    raise SystemExit(1)
+if u.path or u.query or u.fragment or "?" in raw or "#" in raw:
+    raise SystemExit(1)
+if port is not None and not (1 <= port <= 65535):
+    raise SystemExit(1)
+PY
+}
+
+RUNNER_BRIDGE_URL=""
+resolve_runner_bridge_url() {
+  local url port
+  load_flywheel_env_value FLYWHEEL_BRIDGE_URL 1 || return 1
+  url="$FLYWHEEL_ENV_VALUE"
+  if [[ -z "$url" ]]; then
+    load_flywheel_env_value TEAMLEAD_PORT 1 || return 1
+    port="${FLYWHEEL_ENV_VALUE:-9876}"
+    case "$port" in ''|*[!0-9]*) return 1 ;; esac
+    (( 10#$port >= 1 && 10#$port <= 65535 )) || return 1
+    url="http://127.0.0.1:${port}"
+  fi
+  validate_loopback_bridge_url "$url" || return 1
+  RUNNER_BRIDGE_URL="$url"
+}
+
+RUNNER_EXPECTED_STATE="indeterminate"
+RUNNER_EXPECTED_EXEC_IDS=""
+fetch_active_runner_roster() {
+  local token escaped response parsed
+  RUNNER_EXPECTED_STATE="indeterminate"
+  RUNNER_EXPECTED_EXEC_IDS=""
+  resolve_runner_bridge_url || return 1
+  load_flywheel_env_value TEAMLEAD_API_TOKEN 0 || return 1
+  token="$FLYWHEEL_ENV_VALUE"
+  [[ -n "$token" ]] || return 1
+  escaped=${token//\\/\\\\}
+  escaped=${escaped//\"/\\\"}
+  response=$(printf 'header = "Authorization: Bearer %s"\n' "$escaped" \
+    | curl --silent --show-error --fail --max-time 2 --config - \
+      "${RUNNER_BRIDGE_URL}/api/sessions?mode=active" 2>/dev/null) || return 1
+  parsed=$(printf '%s' "$response" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+rows=d.get("sessions")
+count=d.get("count")
+if not isinstance(rows,list) or type(count) is not int or count != len(rows):
+    raise SystemExit(1)
+allowed={"running","ship_parked","awaiting_review","approved_to_ship"}
+seen=set()
+for row in rows:
+    if not isinstance(row,dict):
+        raise SystemExit(1)
+    execution_id=row.get("execution_id")
+    status=row.get("status")
+    if not isinstance(execution_id,str) or not execution_id or any(c in execution_id for c in "|\t\r\n"):
+        raise SystemExit(1)
+    if execution_id in seen or status not in allowed:
+        raise SystemExit(1)
+    seen.add(execution_id)
+print("\n".join(sorted(seen)))
+') || return 1
+  RUNNER_EXPECTED_EXEC_IDS="$parsed"
+  RUNNER_EXPECTED_STATE="ok"
+}
+
+RUNNER_TMUX_STATE="indeterminate"
+RUNNER_TMUX_EXEC_ROWS=""
+read_runner_tmux_exec_inventory() {
+  local raw parsed
+  RUNNER_TMUX_STATE="indeterminate"
+  RUNNER_TMUX_EXEC_ROWS=""
+  raw=$(tmux list-windows -a \
+    -F $'#{session_name}\t#{window_id}\t#{@flywheel_exec_id}' 2>/dev/null) || return 1
+  parsed=$(printf '%s\n' "$raw" | python3 -c '
+import re,sys
+seen={}
+for line in sys.stdin.read().splitlines():
+    if not line:
+        continue
+    parts=line.split("\t")
+    if len(parts) != 3:
+        raise SystemExit(1)
+    session,wid,execution_id=parts
+    if not session or not re.fullmatch(r"@[0-9]+",wid):
+        raise SystemExit(1)
+    if not execution_id:
+        continue
+    if any(c in execution_id for c in "|\t\r\n"):
+        raise SystemExit(1)
+    seen.setdefault(execution_id,set()).add(wid)
+for execution_id in sorted(seen):
+    ids=sorted(seen[execution_id])
+    if len(ids) == 1:
+        print(f"{execution_id}|present|{ids[0]}")
+    else:
+        print(execution_id + "|indeterminate|" + ",".join(ids))
+') || return 1
+  RUNNER_TMUX_EXEC_ROWS="$parsed"
+  RUNNER_TMUX_STATE="ok"
+}
+
+reconcile_runner_roster() {
+  local exec_id row state _ids short current=""
+  if ! fetch_active_runner_roster || [[ "$RUNNER_EXPECTED_STATE" != "ok" ]]; then
+    roster_alert_unhealthy runner-roster-blind bridge \
+      "cmux runner roster API unavailable" \
+      "The authenticated loopback active-session inventory was unavailable or invalid. Existing runner orphan states were preserved."
+    return 0
+  fi
+  if ! read_runner_tmux_exec_inventory || [[ "$RUNNER_TMUX_STATE" != "ok" ]]; then
+    roster_alert_unhealthy runner-roster-blind tmux \
+      "cmux runner window inventory unavailable" \
+      "The global tmux execution-id inventory was unavailable or malformed. Existing runner orphan states were preserved."
+    return 0
+  fi
+  roster_mark_healthy runner-roster-blind bridge
+  roster_mark_healthy runner-roster-blind tmux
+  while IFS= read -r exec_id; do
+    [[ -n "$exec_id" ]] || continue
+    current+="${current:+$'\n'}${exec_id}"
+    row=$(printf '%s\n' "$RUNNER_TMUX_EXEC_ROWS" \
+      | awk -F'|' -v e="$exec_id" '$1 == e { print; exit }')
+    if [[ -z "$row" ]]; then
+      short=${exec_id:0:12}
+      roster_alert_unhealthy runner-orphan "$exec_id" \
+        "cmux active runner window missing" \
+        "Active execution $exec_id has no global tmux window carrying the exact @flywheel_exec_id option." \
+        "$short"
+      continue
+    fi
+    IFS='|' read -r _ state _ids <<< "$row"
+    [[ "$state" == "present" ]] && roster_mark_healthy runner-orphan "$exec_id"
+    # A multi-window execution identity is itself indeterminate. Preserve the
+    # prior subject state; title or session aliases are never used to guess.
+  done <<< "$RUNNER_EXPECTED_EXEC_IDS"
+  roster_rearm_absent_subjects runner-orphan "$current"
+}
+
+reconcile_roster_read_phase() {
+  roster_enabled || return 0
+  [[ -e "$CMUX_MAINTENANCE_MARKER" ]] && return 0
+  reconcile_lead_roster
+  reconcile_runner_roster
+  return 0
 }
 
 get_cmux_workspaces() {
@@ -2695,6 +3144,43 @@ linked_view_enabled() {
   esac
 }
 
+wal_quarantine_enabled() {
+  case "${FLYWHEEL_CMUX_WAL_QUARANTINE:-1}" in
+    0) return 1 ;;
+    1|"") return 0 ;;
+    *) log "WARN: invalid FLYWHEEL_CMUX_WAL_QUARANTINE='${FLYWHEEL_CMUX_WAL_QUARANTINE}' — using 1"; return 0 ;;
+  esac
+}
+
+cmux_wal_block_view() {
+  local view="$1" source="$2" wid="$3" row="${1}|${2}|${3}"
+  case "$row" in *$'\n'*) return 1 ;; esac
+  if ! printf '%s\n' "$CMUX_WAL_BLOCKED_VIEWS" | grep -qxF "$row"; then
+    CMUX_WAL_BLOCKED_VIEWS+="${CMUX_WAL_BLOCKED_VIEWS:+$'\n'}${row}"
+  fi
+}
+
+cmux_wal_view_blocked() {
+  local view="$1"
+  [[ -n "$CMUX_WAL_BLOCKED_VIEWS" ]] || return 1
+  printf '%s\n' "$CMUX_WAL_BLOCKED_VIEWS" \
+    | awk -F'|' -v v="$view" '$1 == v { found=1 } END { exit(found ? 0 : 1) }'
+}
+
+cmux_wal_title_blocked() {
+  cmux_wal_view_blocked "${VIEW_PREFIX}${1}"
+}
+
+cmux_wal_keeper_blocked() {
+  local owner="$1" members="$2" row view source wid
+  [[ -n "$CMUX_WAL_BLOCKED_VIEWS" ]] || return 1
+  while IFS='|' read -r view source wid; do
+    [[ -n "$view" && "$source" == "$owner" ]] || continue
+    case ",$members," in *",$wid,"*) return 0 ;; esac
+  done <<< "$CMUX_WAL_BLOCKED_VIEWS"
+  return 1
+}
+
 # FLY-1364 R6: lifetime protection is strict whenever either the isolated-view
 # producer (A) or invariant consumer (B) is enabled. This closes the unsafe
 # A0B1 split-brain where create used a grouped session while Bridge treated the
@@ -3039,7 +3525,7 @@ recover_view_construction() {
           "$source" "$wid" "$placeholder" "$generation" || return 1
       fi
       log "WARN: canonical view collision for $view; preserving WAL"
-      return 1
+      return 2
     fi
     if _linked_view_matches "$stage" "$wid" "$source" "$stage_sid" \
         "$expected_title" "$generation"; then
@@ -3097,6 +3583,61 @@ _ledger_maybe_crash() {
   return 137
 }
 
+_ledger_conflict_state_transition() {
+  # key|generation|title|episode|state
+  local generation="$1" title="$2" desired="$3" key previous episode state dir tmp
+  case "$desired" in healthy|unhealthy) ;; *) return 1 ;; esac
+  key=$(_cmux_alert_hash "${generation}|${title}")
+  dir=$(dirname "$LEDGER_CONFLICT_STATE")
+  mkdir -p "$dir" 2>/dev/null || return 1
+  touch "$LEDGER_CONFLICT_STATE" 2>/dev/null || return 1
+  previous=$(awk -F'|' -v k="$key" \
+    '$1 == k && NF == 5 { print $4 "|" $5; exit }' "$LEDGER_CONFLICT_STATE" 2>/dev/null || true)
+  episode=${previous%%|*}
+  state=${previous#*|}
+  [[ "$previous" == *'|'* ]] || { episode=0; state=""; }
+  if [[ "$desired" == "$state" ]]; then
+    printf '%s\n' "$episode"
+    return 0
+  fi
+  if [[ "$desired" == "healthy" && -z "$state" ]]; then
+    printf '0\n'
+    return 0
+  fi
+  [[ "$desired" == "unhealthy" ]] && episode=$((10#${episode:-0} + 1))
+  tmp=$(mktemp "${LEDGER_CONFLICT_STATE}.XXXX" 2>/dev/null) || return 1
+  awk -F'|' -v k="$key" '$1 != k { print }' "$LEDGER_CONFLICT_STATE" > "$tmp" 2>/dev/null || {
+    rm -f "$tmp"; return 1;
+  }
+  printf '%s|%s|%s|%s|%s\n' "$key" "$generation" "$title" "$episode" "$desired" >> "$tmp" || {
+    rm -f "$tmp"; return 1;
+  }
+  mv "$tmp" "$LEDGER_CONFLICT_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  printf '%s\n' "$episode"
+}
+
+_alert_ledger_title_conflict() {
+  local generation="$1" title="$2" refs="$3" episode
+  episode=$(_ledger_conflict_state_transition "$generation" "$title" unhealthy) || {
+    log "WARN: cannot persist ledger title-conflict episode state generation=$generation title=$title"
+    return 0
+  }
+  # An already-unhealthy subject returns its existing episode. The in-process
+  # alert latch suppresses repeats during one watcher lifetime; the durable
+  # episode suffix lets a recovered-then-regressed subject page again.
+  _alert_cmux_cleanup \
+    "cmux ledger title authority conflict" \
+    "Multiple exact refs claim one logical cmux slot and were preserved without guessing a winner: generation=$generation title=$title refs=$refs episode=$episode." \
+    "cmux_cleanup|ledger-title-conflict|$title|e$episode|generation=$generation"
+}
+
+_ledger_title_conflict_healthy() {
+  _ledger_conflict_state_transition "$1" "$2" healthy >/dev/null || {
+    log "WARN: cannot re-arm ledger title-conflict episode generation=$1 title=$2"
+    return 0
+  }
+}
+
 _ledger_transaction() {
   # The global incarnation-bound mutator lease is the authority that excludes
   # every legitimate ledger writer. The small inner lock only protects the
@@ -3104,7 +3645,7 @@ _ledger_transaction() {
   # after a crash. Without the global lease, even a missing/malformed inner
   # owner authorizes zero mutation.
   local action="$1" state="$2" generation="$3" ref="$4" title="$5"
-  local dir lock owner_tmp="" tmp="" acquired=0 lock_owner="<missing>"
+  local dir lock owner_tmp="" tmp="" acquired=0 lock_owner="<missing>" conflict_refs=""
   if ! assert_or_reuse_owned_lease; then
     log "WARN: ledger $action refused: current process does not hold the verified mutator lease"
     return 1
@@ -3162,6 +3703,23 @@ _ledger_transaction() {
   touch "$VIEW_LEDGER" 2>/dev/null || {
     _ledger_release_inner_lock "$lock"; return 1;
   }
+  if [[ "$action" == "upsert" ]]; then
+    # FLY-1446 E1: the uniqueness decision belongs inside the same inner-lock
+    # transaction as the replace. An outer preflight would recreate the
+    # rename-lag TOCTOU that produced two committed refs for one logical slot.
+    conflict_refs=$(awk -F'|' -v g="$generation" -v r="$ref" -v t="$title" \
+      'NF == 4 && ($1 == "prepared" || $1 == "committed") \
+        && $2 == g && $4 == t && $3 != r { print $3 }' \
+      "$VIEW_LEDGER" 2>/dev/null) || {
+      _ledger_release_inner_lock "$lock"; return 1;
+    }
+    if [[ -n "$conflict_refs" ]]; then
+      _ledger_release_inner_lock "$lock"
+      _alert_ledger_title_conflict "$generation" "$title" \
+        "$(printf '%s\n%s\n' "$conflict_refs" "$ref" | sort -u | paste -sd, -)"
+      return 1
+    fi
+  fi
   tmp=$(mktemp "${VIEW_LEDGER}.XXXX" 2>/dev/null) || {
     _ledger_release_inner_lock "$lock"; return 1;
   }
@@ -3192,6 +3750,10 @@ _ledger_upsert() {
   case "$state" in prepared|committed) ;; *) return 1 ;; esac
   case "$generation$ref$title" in *'|'*|*$'\n'*) return 1 ;; esac
   [[ -n "$generation" && -n "$ref" && -n "$title" ]] || return 1
+  if cmux_wal_title_blocked "$title"; then
+    log "WARN: ledger upsert blocked by preserved construction collision: title=$title ref=$ref"
+    return 1
+  fi
   _ledger_transaction upsert "$state" "$generation" "$ref" "$title"
 }
 
@@ -3215,6 +3777,67 @@ ledger_refs_for_title() {
   [[ -f "$VIEW_LEDGER" ]] || return 0
   awk -F'|' -v g="$generation" -v t="$title" \
     '$1 == "committed" && $2 == g && $4 == t { print $3 }' "$VIEW_LEDGER"
+}
+
+ledger_rows_for_title() {
+  local generation="$1" title="$2"
+  [[ -f "$VIEW_LEDGER" ]] || return 0
+  awk -F'|' -v g="$generation" -v t="$title" \
+    'NF == 4 && ($1 == "prepared" || $1 == "committed") && $2 == g && $4 == t { print }' \
+    "$VIEW_LEDGER"
+}
+
+CMUX_LEDGER_DUPLICATE_TITLES=""
+_ledger_title_duplicate_blocked() {
+  local generation="$1" title="$2"
+  [[ -n "$CMUX_LEDGER_DUPLICATE_TITLES" ]] || return 1
+  printf '%s\n' "$CMUX_LEDGER_DUPLICATE_TITLES" \
+    | awk -F'|' -v g="$generation" -v t="$title" \
+      '$1 == g && $2 == t { found=1 } END { exit(found ? 0 : 1) }'
+}
+
+_detect_historical_ledger_title_conflicts() {
+  local groups all_subjects generation title refs
+  CMUX_LEDGER_DUPLICATE_TITLES=""
+  [[ -f "$VIEW_LEDGER" ]] || return 0
+  groups=$(awk -F'|' \
+    'NF == 4 && $1 == "committed" { print $2 "|" $4 "|" $3 }' \
+    "$VIEW_LEDGER" 2>/dev/null \
+    | sort -u \
+    | awk -F'|' '
+function emit() {
+  if (count > 1) print previous_generation "|" previous_title "|" refs
+}
+{
+  key=$1 "|" $2
+  if (NR > 1 && key != previous_key) {
+    emit()
+    count=0
+    refs=""
+  }
+  previous_key=key
+  previous_generation=$1
+  previous_title=$2
+  count++
+  refs=refs (refs ? "," : "") $3
+}
+END { if (NR > 0) emit() }
+') || return 1
+  while IFS='|' read -r generation title refs; do
+    [[ -n "$generation" && -n "$title" && -n "$refs" ]] || continue
+    CMUX_LEDGER_DUPLICATE_TITLES+="${CMUX_LEDGER_DUPLICATE_TITLES:+$'\n'}${generation}|${title}"
+    _alert_ledger_title_conflict "$generation" "$title" "$refs"
+  done <<< "$groups"
+
+  all_subjects=$(awk -F'|' \
+    'NF == 4 && ($1 == "prepared" || $1 == "committed") { print $2 "|" $4 }' \
+    "$VIEW_LEDGER" 2>/dev/null | sort -u) || return 1
+  while IFS='|' read -r generation title; do
+    [[ -n "$generation" && -n "$title" ]] || continue
+    _ledger_title_duplicate_blocked "$generation" "$title" \
+      || _ledger_title_conflict_healthy "$generation" "$title"
+  done <<< "$all_subjects"
+  return 0
 }
 
 _GUARD_LEDGER_GENERATION=""
@@ -3254,6 +3877,10 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
 
 close_ledger_workspace_ref() {
   local generation="$1" ref="$2" title="$3" reason="$4" extra_guard="${5:-}" rc=0
+  if cmux_wal_title_blocked "$title"; then
+    log "WARN: workspace close blocked by preserved construction collision: title=$title ref=$ref"
+    return 1
+  fi
   _GUARD_LEDGER_GENERATION="$generation"
   _GUARD_LEDGER_REF="$ref"
   _GUARD_LEDGER_TITLE="$title"
@@ -3333,6 +3960,52 @@ rollback_unreceipted_workspace() {
   [[ "$GUARD_WAS_BLOCKED" == "0" && "$rc" -eq 0 ]]
 }
 
+_GUARD_PREPARED_LOSER_GENERATION=""
+_GUARD_PREPARED_LOSER_REF=""
+_GUARD_PREPARED_LOSER_OWNER_REF=""
+_GUARD_PREPARED_LOSER_TITLE=""
+_GUARD_PREPARED_LOSER_PROVISIONAL=""
+_prepared_loser_close_guard() {
+  local current raw matches
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_PREPARED_LOSER_GENERATION" ]] || return 1
+  awk -F'|' -v g="$current" -v r="$_GUARD_PREPARED_LOSER_REF" -v t="$_GUARD_PREPARED_LOSER_TITLE" \
+    'NF == 4 && $1 == "prepared" && $2 == g && $3 == r && $4 == t { n++ } END { exit(n == 1 ? 0 : 1) }' \
+    "$VIEW_LEDGER" || return 1
+  awk -F'|' -v g="$current" -v r="$_GUARD_PREPARED_LOSER_OWNER_REF" -v t="$_GUARD_PREPARED_LOSER_TITLE" \
+    'NF == 4 && $1 == "committed" && $2 == g && $3 == r && $4 == t { n++ } END { exit(n == 1 ? 0 : 1) }' \
+    "$VIEW_LEDGER" || return 1
+  raw=$(get_cmux_workspaces_json) || return 1
+  matches=$(printf '%s' "$raw" | python3 -c '
+import json,sys
+r,t,p=sys.argv[1:4]
+print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
+          if w.get("ref") == r and w.get("title") in (t, p)))
+' "$_GUARD_PREPARED_LOSER_REF" "$_GUARD_PREPARED_LOSER_TITLE" \
+    "$_GUARD_PREPARED_LOSER_PROVISIONAL") || return 1
+  [[ "$matches" == "1" ]] || return 1
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_PREPARED_LOSER_GENERATION" ]]
+}
+
+close_prepared_loser_ref() {
+  local generation="$1" loser_ref="$2" owner_ref="$3" title="$4" provisional rc=0
+  provisional=$(build_attach_command "${VIEW_PREFIX}${title}") || return 1
+  _GUARD_PREPARED_LOSER_GENERATION="$generation"
+  _GUARD_PREPARED_LOSER_REF="$loser_ref"
+  _GUARD_PREPARED_LOSER_OWNER_REF="$owner_ref"
+  _GUARD_PREPARED_LOSER_TITLE="$title"
+  _GUARD_PREPARED_LOSER_PROVISIONAL="$provisional"
+  cmux_call_guarded _prepared_loser_close_guard \
+    close-workspace --workspace "$loser_ref" || rc=$?
+  [[ "$GUARD_WAS_BLOCKED" == "0" && "$rc" -eq 0 ]] || return 1
+  _ledger_remove "$generation" "$loser_ref" || return 1
+  _alert_cmux_cleanup \
+    "cmux rename-lag loser closed" \
+    "A historical prepared workspace lost the exact generation/title claim to a committed ref and was closed by exact ref: generation=$generation title=$title loser=$loser_ref owner=$owner_ref." \
+    "cmux_cleanup|ledger-prepared-loser-closed|$title|$loser_ref"
+}
+
 reconcile_prepared_ledger() {
   [[ -f "$VIEW_LEDGER" ]] || return 0
   local generation raw rows ref title observed confirm current state old_generation provisional
@@ -3340,11 +4013,36 @@ reconcile_prepared_ledger() {
   generation=$(cmux_socket_identity)
   [[ -n "$generation" ]] || return 1
   raw=$(get_cmux_workspaces_json) || return 1
+  _detect_historical_ledger_title_conflicts || return 1
   rows=$(awk -F'|' -v g="$generation" '$1 == "prepared" && $2 == g { print $3 "|" $4 }' "$VIEW_LEDGER")
   if [[ -n "$rows" ]]; then
     had_current_prepared=1
     while IFS='|' read -r ref title; do
       [[ -z "$ref" || -z "$title" ]] && continue
+      if cmux_wal_title_blocked "$title"; then
+        log "WARN: prepared ledger reconciliation blocked by construction collision: title=$title ref=$ref"
+        continue
+      fi
+      if _ledger_title_duplicate_blocked "$generation" "$title"; then
+        log "WARN: prepared ledger reconciliation blocked by multiple committed owners: title=$title ref=$ref"
+        continue
+      fi
+      local owner_refs owner_ref owner_count
+      owner_refs=$(awk -F'|' -v g="$generation" -v r="$ref" -v t="$title" \
+        'NF == 4 && $1 == "committed" && $2 == g && $4 == t && $3 != r { print $3 }' \
+        "$VIEW_LEDGER" 2>/dev/null | sort -u) || return 1
+      owner_count=$(printf '%s\n' "$owner_refs" | grep -c . || true)
+      if [[ "$owner_count" == "1" ]]; then
+        owner_ref=$(printf '%s\n' "$owner_refs" | head -1)
+        if close_prepared_loser_ref "$generation" "$ref" "$owner_ref" "$title"; then
+          continue
+        fi
+        log "WARN: prepared loser cleanup deferred for title=$title ref=$ref owner=$owner_ref"
+        continue
+      elif [[ "$owner_count" -gt 1 ]]; then
+        log "WARN: prepared ledger row preserved beside ambiguous committed owners: title=$title ref=$ref"
+        continue
+      fi
       provisional=$(build_attach_command "${VIEW_PREFIX}${title}" 2>/dev/null || true)
       observed=$(printf '%s' "$raw" | python3 -c '
 import json,sys
@@ -3406,6 +4104,8 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
   rows=$(awk -F'|' -v g="$generation" '$1 == "committed" && $2 == g { print $3 "|" $4 }' "$VIEW_LEDGER" 2>/dev/null || true)
   while IFS='|' read -r ref title; do
     [[ -z "$ref" || -z "$title" ]] && continue
+    cmux_wal_title_blocked "$title" && continue
+    _ledger_title_duplicate_blocked "$generation" "$title" && continue
     observed=$(printf '%s' "$raw" | python3 -c '
 import json,sys
 r=sys.argv[1]
@@ -3436,6 +4136,8 @@ else:
     "$VIEW_LEDGER" 2>/dev/null || true)
   while IFS='|' read -r state old_generation ref title; do
     [[ -z "$state" || -z "$old_generation" || -z "$ref" || -z "$title" ]] && continue
+    cmux_wal_title_blocked "$title" && continue
+    _ledger_title_duplicate_blocked "$old_generation" "$title" && continue
     observed=$(printf '%s' "$raw" | python3 -c '
 import json,sys
 r=sys.argv[1]
@@ -3527,6 +4229,10 @@ reconcile_keeper_inventory() {
     IFS='|' read -r row_generation sid exact owner members state _epoch <<< "$line"
     case "$state" in prepared|committed) ;; *) log "WARN: invalid keeper inventory state preserved: $state"; continue ;; esac
     [[ "$row_generation" == "$generation" ]] || continue
+    if cmux_wal_keeper_blocked "$owner" "$members"; then
+      log "WARN: keeper inventory reconciliation blocked by construction collision: session=$exact owner=$owner"
+      continue
+    fi
     if printf '%s\n' "$sessions" | grep -qxF "$exact"; then
       snapshot=$(_view_session_snapshot "$exact") || return 1
       IFS='|' read -r observed_sid grouped active observed_owner marker observed_members <<< "$snapshot"
@@ -3559,6 +4265,7 @@ reconcile_keeper_inventory() {
     snapshot=$(_view_session_snapshot "$exact") || return 1
     IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
     [[ -n "$sid" && -n "$owner" && -n "$members" ]] || continue
+    cmux_wal_keeper_blocked "$owner" "$members" && continue
     if ! awk -F'|' -v g="$generation" -v s="$sid" \
         'NF == 7 && $1 == g && $2 == s { found=1 } END { exit(found ? 0 : 1) }' \
         "$KEEPER_INVENTORY" 2>/dev/null; then
@@ -3569,22 +4276,69 @@ reconcile_keeper_inventory() {
   return 0
 }
 
+_quarantine_malformed_view_wal() {
+  local wal="$1" reason="$2" base sha sha8 quarantine target
+  wal_quarantine_enabled || {
+    log "WARN: malformed view WAL preserved (quarantine disabled): $wal reason=$reason"
+    return 1
+  }
+  base=$(basename "$wal")
+  sha=$(shasum -a 256 "$wal" 2>/dev/null | awk '{print $1}') || return 1
+  [[ -n "$sha" ]] || return 1
+  sha8=${sha:0:8}
+  quarantine="$VIEW_WAL_DIR/quarantine"
+  mkdir -p "$quarantine" 2>/dev/null || return 1
+  target="$quarantine/${base}.$(date +%s).$$"
+  mv "$wal" "$target" 2>/dev/null || {
+    log "WARN: malformed view WAL quarantine move failed: $wal reason=$reason"
+    return 1
+  }
+  log "WARN: quarantined malformed view WAL: $wal -> $target reason=$reason sha256=$sha"
+  _alert_cmux_cleanup \
+    "cmux malformed construction WAL quarantined" \
+    "A syntactically malformed cmux construction WAL was quarantined so unrelated views can reconcile: file=$base reason=$reason sha256=$sha quarantine=$target." \
+    "cmux_cleanup|wal-quarantined|$base|$sha8"
+  return 0
+}
+
 recover_all_view_constructions() {
-  local wal line fields view expected
+  local wal line line_count fields view source wid expected recover_rc
+  CMUX_WAL_BLOCKED_VIEWS=""
   [[ -d "$VIEW_WAL_DIR" ]] || return 0
   for wal in "$VIEW_WAL_DIR"/*.wal; do
     [[ -f "$wal" ]] || continue
-    [[ "$(wc -l < "$wal" 2>/dev/null | tr -d ' ')" == "1" ]] || {
-      log "WARN: malformed view WAL preserved: $wal"; return 1;
-    }
     line=$(cat "$wal" 2>/dev/null) || return 1
+    line_count=$(awk 'END { print NR }' "$wal" 2>/dev/null) || return 1
+    if [[ "$line_count" != "1" ]]; then
+      _quarantine_malformed_view_wal "$wal" "line-count" || return 1
+      continue
+    fi
     fields=$(printf '%s\n' "$line" | awk -F'|' '{print NF}')
-    [[ "$fields" == "9" ]] || { log "WARN: malformed view WAL fields preserved: $wal"; return 1; }
+    if [[ "$fields" != "9" ]]; then
+      _quarantine_malformed_view_wal "$wal" "field-count" || return 1
+      continue
+    fi
     view=$(printf '%s\n' "$line" | cut -d'|' -f5)
-    [[ "$view" == "${VIEW_PREFIX}"* ]] || return 1
+    if [[ "$view" != "${VIEW_PREFIX}"* ]]; then
+      _quarantine_malformed_view_wal "$wal" "view-prefix" || return 1
+      continue
+    fi
     expected=$(_view_wal_path "$view")
-    [[ "$expected" == "$wal" ]] || { log "WARN: view WAL filename/identity mismatch preserved: $wal"; return 1; }
-    recover_view_construction "$view" || return 1
+    if [[ "$expected" != "$wal" ]]; then
+      _quarantine_malformed_view_wal "$wal" "filename-identity" || return 1
+      continue
+    fi
+    recover_rc=0
+    recover_view_construction "$view" || recover_rc=$?
+    case "$recover_rc" in
+      0) ;;
+      2)
+        source=$(printf '%s\n' "$line" | cut -d'|' -f6)
+        wid=$(printf '%s\n' "$line" | cut -d'|' -f7)
+        cmux_wal_block_view "$view" "$source" "$wid" || return 1
+        ;;
+      *) return 1 ;;
+    esac
   done
 }
 
@@ -3701,6 +4455,10 @@ dismantle_view_display() {
   local title="$1" reason="$2" generation refs ref view snapshot sid grouped active owner marker members wid
   local raw same_title_refs refs_csv view_exists=0 source_window=0 stale_state=0
   local tmux_generation tmux_current guard_snapshot guard_sid guard_grouped guard_active guard_owner guard_marker guard_members
+  if cmux_wal_title_blocked "$title"; then
+    log "WARN: view dismantle blocked by preserved construction collision: title=$title reason=$reason"
+    return 1
+  fi
   generation=$(cmux_socket_identity)
   [[ -n "$generation" ]] || return 1
   refs=$(ledger_refs_for_title "$generation" "$title")
@@ -3811,6 +4569,10 @@ create_or_replace_view_session() {
   VIEW_BUILD_OUTCOME=""
   strict_view_enabled || return 1
   case "$source_session$window_id$window_name" in *'|'*|*$'\n'*) return 1 ;; esac
+  if cmux_wal_view_blocked "$view_session"; then
+    log "WARN: linked-view build blocked by preserved construction collision: view=$view_session"
+    return 1
+  fi
   generation=$(tmux_server_generation) || { log "WARN: tmux generation unreadable; refusing linked-view build for $window_name"; return 1; }
   source_snapshot=$(_view_session_snapshot "$source_session") || return 1
   observed=$(tmux display-message -p -t "=${source_session}:${window_id}" \
@@ -3947,6 +4709,11 @@ create_workspace_for_window() {
   local window_name="$3"
   local view_session="${VIEW_PREFIX}${window_name}"
 
+  if cmux_wal_view_blocked "$view_session"; then
+    log "WARN: workspace create blocked by preserved construction collision: view=$view_session"
+    return 0
+  fi
+
   # FLY-867 (Fix B): dead-husk windows (remain-on-exit corpses, pane_dead=1)
   # must NEVER get a workspace. This breaks the CREATE↔CLEANUP oscillation:
   # cleanup_stale_conservative closes the tab after 5min of dead pane, but the
@@ -3994,6 +4761,12 @@ exists = any(w.get("title") == name for w in json.load(sys.stdin).get("workspace
 sys.exit(0 if exists else 1)
 ' "$window_name"; then
     return 0  # already exists, nothing to create
+  fi
+
+  if [[ -n "$cmux_generation" ]] \
+      && [[ -n "$(ledger_rows_for_title "$cmux_generation" "$window_name")" ]]; then
+    log "Rename-lag receipt already owns logical slot; create deferred: generation=$cmux_generation title=$window_name"
+    return 0
   fi
 
   log "Creating workspace for: $window_name ($window_id) from session $source_session"
@@ -4326,6 +5099,10 @@ END { for (name in row) print row[name] }
 
   local sid grouped active owner marker members cmux_generation current_refs
   while IFS=$'\t' read -r source wid title snapshot; do
+    if cmux_wal_title_blocked "$title"; then
+      log "WARN: invariant repair blocked by preserved construction collision: title=$title"
+      continue
+    fi
     [[ "$snapshot" == "absent" ]] && continue
     IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
     if strict_view_enabled; then
@@ -4854,15 +5631,13 @@ sync_additive_bootstrap() {
   # Run once at `--watch` startup. Additive-only: never performs aggressive
   # cleanup. This prevents a watcher restart from killing healthy Runner
   # workspaces while the event file is empty.
+  [[ -e "$CMUX_MAINTENANCE_MARKER" ]] && return 0
+  reconcile_roster_read_phase
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
-  [[ -z "$tmux_windows" ]] && return 0
 
-  # 1. Preserve FLY-98 reconcile repair: close broken workspaces (workspace
-  #    exists but linked session is dead) so the create phase can rebuild.
-  reconcile_existing_workspaces
-
-  # 2. Refresh linked sessions — fix stale current-window pointers (FLY-98).
+  # Durable WAL/ledger recovery precedes every mutation, including the
+  # conclusive-empty branch.
   if ! refresh_linked_sessions; then
     # A transient durable-state/topology read failure means this pass is
     # inconclusive. Defer the whole pass before create/heal, but keep the
@@ -4870,6 +5645,11 @@ sync_additive_bootstrap() {
     log "WARN: bootstrap linked-view refresh inconclusive; pass deferred"
     return 0
   fi
+  [[ -z "$tmux_windows" ]] && return 0
+
+  # Preserve FLY-98 reconcile repair only after WAL recovery has populated the
+  # current round's collision blocked set.
+  reconcile_existing_workspaces
 
   # 3. Create missing workspaces. No cleanup of existing ones.
   # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1 (not found).
@@ -4897,10 +5677,18 @@ sync_additive_bootstrap() {
 sync_additive() {
   # Called every 60s. Mirrors bootstrap, plus conservative cleanup, hook
   # top-up, ghost reaping (Phase 4), and dedup (Phase 6).
+  # The marker is the first operation: maintenance preserves existing episode
+  # state and authorizes neither derivation/alerting nor mutation.
+  [[ -e "$CMUX_MAINTENANCE_MARKER" ]] && return 0
+  reconcile_roster_read_phase
   register_hooks_on_new_sessions
 
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
+  if ! refresh_linked_sessions; then
+    log "WARN: periodic linked-view refresh inconclusive; pass deferred"
+    return 0
+  fi
   if [[ -z "$tmux_windows" ]]; then
     # A strict independent view may be the watched window's sole holder after
     # its source runner retires. It still needs the ordinary 60s attach-heal.
@@ -4918,11 +5706,9 @@ sync_additive() {
     return 0
   fi
 
+  # WAL recovery above owns the round's collision blocked set. Only now may
+  # exact-ref workspace reconciliation enter the mutation phase.
   reconcile_existing_workspaces
-  if ! refresh_linked_sessions; then
-    log "WARN: periodic linked-view refresh inconclusive; pass deferred"
-    return 0
-  fi
 
   # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1.
   while IFS='|' read -r src_sess wid wname; do

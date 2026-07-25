@@ -62,6 +62,8 @@ export KEEPER_INVENTORY="$TMPDIR_ROOT/keeper-inventory"  # FLY-1272
 export VIEW_ABSENT_STATE="$TMPDIR_ROOT/view-absent.state"  # FLY-1272
 export FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMPDIR_ROOT/cmux-maintenance"  # FLY-1272
 export CMUX_FLAG_STATE="$TMPDIR_ROOT/cmux-flag-state"  # FLY-1364
+export LEDGER_CONFLICT_STATE="$TMPDIR_ROOT/ledger-conflict.state"  # FLY-1446
+export ROSTER_EPISODE_STATE="$TMPDIR_ROOT/roster-episodes.state"  # FLY-1446
 export FLYWHEEL_CMUX_TMUX_GENERATION="tmux-test-generation"  # FLY-1272
 export FLYWHEEL_CMUX_CLEANUP_DELAY=30
 export FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP=300
@@ -872,6 +874,9 @@ reset_mocks() {
   FLYWHEEL_CMUX_LINKED_VIEW="0"       # pre-FLY-1272 fixtures exercise byte-compatible legacy paths
   FLYWHEEL_CMUX_VIEW_INVARIANT="0"
   FLYWHEEL_CMUX_STRICT_VIEW="1"
+  FLYWHEEL_CMUX_WAL_QUARANTINE="1"
+  FLYWHEEL_CMUX_ROSTER="0"             # roster has a dedicated hermetic suite
+  CMUX_WAL_BLOCKED_VIEWS=""
   FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="test-incarnation"
   topo_reset
   MOCK_TMUX_WINDOWS=""
@@ -963,6 +968,8 @@ reset_mocks() {
   rm -f "$TMPDIR_ROOT/cmux.next-ref"
   rm -rf "$VIEW_WAL_DIR"
   rm -f "$VIEW_LEDGER" "$KEEPER_INVENTORY" "$VIEW_ABSENT_STATE" "$FLYWHEEL_CMUX_MAINTENANCE_MARKER"
+  rm -f "$LEDGER_CONFLICT_STATE"
+  rm -f "$ROSTER_EPISODE_STATE"
   rm -f "$CMUX_FLAG_STATE" "$TMPDIR_ROOT/fly1364-alert-args"
   CMUX_CLEANUP_ALERT_LATCH=""
   CMUX_CLEANUP_ALERT_LATCH_COUNT=0
@@ -3496,13 +3503,14 @@ else
   fail "expanded PATH failed to resolve cmux/tmux from minimal env"
 fi
 
-echo "Test: FLY-177 autostart execs watcher + sets launchd PATH"
+echo "Test: FLY-177/1446 supervised autostart execs watcher + sets launchd PATH"
 AUTOSTART_SH="$SCRIPT_DIR/flywheel-cmux-autostart.sh"
-if grep -qE '^exec "\$SYNC_SCRIPT" --watch' "$AUTOSTART_SH" \
+if grep -qE '^[[:space:]]*exec "\$SYNC_SCRIPT" --watch' "$AUTOSTART_SH" \
+   && grep -q 'FLYWHEEL_CMUX_SUPERVISED' "$AUTOSTART_SH" \
    && grep -qE 'export PATH="/opt/homebrew/bin' "$AUTOSTART_SH"; then
-  pass "autostart: exec watcher (launchd manages real PID) + PATH expansion present"
+  pass "autostart: supervised launchd path execs watcher + PATH expansion present"
 else
-  fail "autostart: missing 'exec \$SYNC_SCRIPT --watch' or PATH expansion"
+  fail "autostart: missing supervised 'exec \$SYNC_SCRIPT --watch' or PATH expansion"
 fi
 
 set +e   # restore lenient mode before the FLY-254 section + summary
@@ -5370,6 +5378,167 @@ test_fly1272_p1_source_gone_collision_escrows_stage() {
   fi
 }
 
+test_fly1446_malformed_wals_quarantine_and_other_view_progresses() {
+  echo "Test: FLY-1446 E2 — syntactic WAL corruption quarantines fail-loud without stalling another view"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  FLYWHEEL_CMUX_TEST_NONCE="fly1446-other"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@52" "FLY-1446-other" 1 0
+  mkdir -p "$VIEW_WAL_DIR"
+
+  printf 'bad\nsecond-line\n' > "$VIEW_WAL_DIR/multiline.wal"
+  printf 'v1|g|create_intent|n|cmux-fields|runner-flywheel|@1|\n' > "$VIEW_WAL_DIR/fields.wal"
+  local bad_prefix_path mismatch_path stale_path
+  bad_prefix_path=$(_view_wal_path "not-a-cmux-view")
+  printf 'v1|g|create_intent|n|not-a-cmux-view|runner-flywheel|@1||\n' > "$bad_prefix_path"
+  mismatch_path="$VIEW_WAL_DIR/identity-mismatch.wal"
+  printf 'v1|g|create_intent|n|cmux-identity-mismatch|runner-flywheel|@1||\n' > "$mismatch_path"
+  stale_path=$(_view_wal_path "cmux-stale-valid")
+  _write_view_wal "$stale_path" "old-generation" create_intent stale-valid \
+    "cmux-stale-valid" "runner-flywheel" "@99" "" ""
+
+  local alerts="$TMPDIR_ROOT/fly1446-wal-alerts" saved_alert rc=0 quarantine_count root_wals
+  saved_alert=$(declare -f flywheel_alert)
+  : > "$alerts"
+  flywheel_alert() { printf '%s|%s\n' "$1" "$5" >> "$alerts"; return 0; }
+  recover_all_view_constructions || rc=$?
+  recover_all_view_constructions || rc=$?
+  eval "$saved_alert"
+
+  test_ensure_mutator_lease
+  create_workspace_for_window "runner-flywheel" "@52" "FLY-1446-other"
+  quarantine_count=$(find "$VIEW_WAL_DIR/quarantine" -type f 2>/dev/null | wc -l | tr -d ' ')
+  root_wals=$(find "$VIEW_WAL_DIR" -maxdepth 1 -name '*.wal' -type f 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$rc" -eq 0 && "$quarantine_count" == "4" && "$root_wals" == "0" \
+      && "$(grep -c 'wal-quarantined|' "$alerts" 2>/dev/null || true)" == "4" \
+      && "$(grep -c 'new-workspace ' <<< "$MOCK_CMUX_OPS")" == "1" \
+      && "$(grep -c 'FLY-1446-other' "$VIEW_LEDGER" 2>/dev/null || true)" == "1" ]]; then
+    pass "four syntactic classes are quarantined/alerted once; a valid WAL and unrelated create progress in the same round"
+  else
+    fail "quarantine/progress mismatch rc=$rc quarantine=$quarantine_count root_wals=$root_wals alerts=[$(tr '\n' ';' < "$alerts")] ops=[$MOCK_CMUX_OPS]"
+  fi
+
+  reset_mocks
+  FLYWHEEL_CMUX_WAL_QUARANTINE=0
+  mkdir -p "$VIEW_WAL_DIR"
+  printf 'malformed\nsecond-line\n' > "$VIEW_WAL_DIR/rollback.wal"
+  rc=0
+  recover_all_view_constructions >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -ne 0 && -f "$VIEW_WAL_DIR/rollback.wal" && ! -d "$VIEW_WAL_DIR/quarantine" ]]; then
+    pass "FLYWHEEL_CMUX_WAL_QUARANTINE=0 preserves the legacy global-abort behavior"
+  else
+    fail "quarantine rollback flag did not preserve malformed WAL (rc=$rc)"
+  fi
+}
+
+test_fly1446_collision_blocks_only_its_logical_view() {
+  echo "Test: FLY-1446 E2 — known collision blocks one view while unrelated create progresses"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  FLYWHEEL_CMUX_TEST_NONCE="fly1446-unblocked"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1446-blocked" 1 0
+  topo_add_window "runner-flywheel" "@43" "FLY-1446-unblocked" 0 0
+  topo_add_session "fwstage-collision" '$2' "" "runner-flywheel" "0"
+  topo_add_window "fwstage-collision" "@42" "FLY-1446-blocked" 1 0
+  topo_add_session "cmux-FLY-1446-blocked" '$9' "" "founder-session" "0"
+  topo_add_window "cmux-FLY-1446-blocked" "@99" "founder-shell" 1 0
+  local wal rc=0
+  wal=$(_view_wal_path "cmux-FLY-1446-blocked")
+  _write_view_wal "$wal" "tmux-test-generation" claim_intent collision \
+    "cmux-FLY-1446-blocked" "runner-flywheel" "@42" '$2' "@1000"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:42","title":null}]}'
+  test_ledger_upsert prepared "cmux-generation-1" "workspace:42" "FLY-1446-blocked"
+
+  recover_all_view_constructions || rc=$?
+  reconcile_prepared_ledger || rc=$?
+  repair_view_invariants || rc=$?
+  repair_view_invariants || rc=$?
+  create_workspace_for_window "runner-flywheel" "@42" "FLY-1446-blocked"
+  create_workspace_for_window "runner-flywheel" "@43" "FLY-1446-unblocked"
+
+  if [[ "$rc" -eq 0 && -f "$wal" ]] \
+      && cmux_wal_view_blocked "cmux-FLY-1446-blocked" \
+      && ! grep -q 'rename-workspace --workspace workspace:42' <<< "$MOCK_CMUX_OPS" \
+      && ! grep -q 'new-workspace .*cmux-FLY-1446-blocked' <<< "$MOCK_CMUX_OPS" \
+      && grep -q 'new-workspace .*cmux-FLY-1446-unblocked' <<< "$MOCK_CMUX_OPS" \
+      && grep -q 'FLY-1446-unblocked' "$VIEW_LEDGER"; then
+    pass "collision WAL is preserved; ledger/repair/create mutations are blocked only for its logical view"
+  else
+    fail "collision block leaked rc=$rc blocked=[$CMUX_WAL_BLOCKED_VIEWS] ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1446_wal_indeterminate_failures_still_abort() {
+  echo "Test: FLY-1446 E2 — generation/read/rename/cleanup uncertainty remains fail-closed"
+  local saved_generation saved_cat wal rc generation_ok=0 read_ok=0 rename_ok=0 cleanup_ok=0
+
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1
+  wal=$(_view_wal_path "cmux-generation-fail")
+  _write_view_wal "$wal" "tmux-test-generation" create_intent generation-fail \
+    "cmux-generation-fail" "runner-flywheel" "@42" "" ""
+  saved_generation=$(declare -f tmux_server_generation)
+  tmux_server_generation() { return 1; }
+  rc=0; recover_all_view_constructions >/dev/null 2>&1 || rc=$?
+  eval "$saved_generation"
+  [[ "$rc" -ne 0 && -f "$wal" ]] && generation_ok=1
+
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1
+  wal=$(_view_wal_path "cmux-read-fail")
+  _write_view_wal "$wal" "tmux-test-generation" create_intent read-fail \
+    "cmux-read-fail" "runner-flywheel" "@42" "" ""
+  FLY1446_UNREADABLE_WAL="$wal"
+  cat() {
+    [[ "${1:-}" == "$FLY1446_UNREADABLE_WAL" ]] && return 1
+    command cat "$@"
+  }
+  rc=0; recover_all_view_constructions >/dev/null 2>&1 || rc=$?
+  unset -f cat
+  [[ "$rc" -ne 0 && -f "$wal" && ! -d "$VIEW_WAL_DIR/quarantine" ]] && read_ok=1
+
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_TOPO_RENAME_FAIL=1
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1446-rename-fail" 1 0
+  topo_add_session "fwstage-rename-fail" '$2' "" "runner-flywheel" "0"
+  topo_add_window "fwstage-rename-fail" "@42" "FLY-1446-rename-fail" 1 0
+  wal=$(_view_wal_path "cmux-FLY-1446-rename-fail")
+  _write_view_wal "$wal" "tmux-test-generation" claim_intent rename-fail \
+    "cmux-FLY-1446-rename-fail" "runner-flywheel" "@42" '$2' "@1000"
+  rc=0; recover_all_view_constructions >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -ne 0 && -f "$wal" ]] && topo_session_exists "fwstage-rename-fail" \
+      && ! topo_session_exists "cmux-FLY-1446-rename-fail"; then
+    rename_ok=1
+  fi
+
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_TOPO_UNLINK_FAIL=1
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1446-cleanup-fail" 1 0
+  topo_add_session "fwstage-cleanup-fail" '$2' "" "runner-flywheel" "1"
+  topo_add_window "fwstage-cleanup-fail" "@1000" "__flywheel_placeholder__" 1 0
+  topo_add_window "fwstage-cleanup-fail" "@42" "FLY-1446-cleanup-fail" 0 0
+  wal=$(_view_wal_path "cmux-FLY-1446-cleanup-fail")
+  _write_view_wal "$wal" "tmux-test-generation" link_intent cleanup-fail \
+    "cmux-FLY-1446-cleanup-fail" "runner-flywheel" "@42" '$2' "@1000"
+  rc=0; recover_all_view_constructions >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -ne 0 && -f "$wal" ]] && topo_session_exists "fwstage-cleanup-fail" \
+      && topo_window_row "fwstage-cleanup-fail" "@42" >/dev/null; then
+    cleanup_ok=1
+  fi
+
+  if [[ "$generation_ok$read_ok$rename_ok$cleanup_ok" == "1111" ]]; then
+    pass "all non-syntactic uncertainty classes abort and preserve their evidence/topology"
+  else
+    fail "indeterminate contract drift generation=$generation_ok read=$read_ok rename=$rename_ok cleanup=$cleanup_ok"
+  fi
+}
+
 test_fly1272_p3_create_uses_isolated_view_by_default() {
   echo "Test: FLY-1272 P3 — create path uses exact isolated view when A is enabled"
   reset_mocks
@@ -5827,6 +5996,146 @@ test_fly1364_ledger_writer_reaps_inner_lock_only_with_verified_lease() {
     pass "lease holder reaps malformed residual inner lock and commits atomically"
   else
     fail "lease-authorized inner-lock recovery failed rc=$rc row=[$row] lock=$([[ -d "${VIEW_LEDGER}.lock" ]] && echo present || echo absent)"
+  fi
+}
+
+test_fly1446_ledger_title_rows_include_rename_lag_prepared() {
+  echo "Test: FLY-1446 E1 — ledger title lookup sees prepared and committed authority"
+  reset_mocks
+  printf '%s\n' \
+    'prepared|cmux-generation-1|workspace:100|FLY-1446-rename-lag' \
+    'committed|cmux-generation-1|workspace:101|FLY-1446-rename-lag' \
+    'committed|cmux-generation-2|workspace:102|FLY-1446-rename-lag' \
+    'prepared|cmux-generation-1|workspace:103|other-title' \
+    'malformed-row' > "$VIEW_LEDGER"
+  local rows
+  rows=$(ledger_rows_for_title "cmux-generation-1" "FLY-1446-rename-lag")
+  if [[ "$rows" == $'prepared|cmux-generation-1|workspace:100|FLY-1446-rename-lag\ncommitted|cmux-generation-1|workspace:101|FLY-1446-rename-lag' ]]; then
+    pass "strict title lookup exposes both states and excludes other generations/titles/malformed rows"
+  else
+    fail "ledger title lookup mismatch rows=[$rows]"
+  fi
+}
+
+test_fly1446_rename_lag_retry_never_creates_second_workspace() {
+  echo "Test: FLY-1446 E1 — rename-lag retry is stopped by the prepared ledger row"
+  _fly1364_legacy_create_fixture
+  local saved_guard first_row first_creates second_row second_creates
+  saved_guard=$(declare -f _prepared_rename_guard)
+  _prepared_rename_guard() { return 1; }
+  create_workspace_for_window "runner-flywheel" "@42" "FLY-1364-implement"
+  eval "$saved_guard"
+  first_row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  first_creates=$(grep -c '^new-workspace ' <<< "$MOCK_CMUX_OPS" || true)
+
+  # Model the next 60s scan, outside the short process-local create TTL. The
+  # durable prepared receipt—not FLY-825's 30s same-tick latch—must stop it.
+  rm -f "$CREATE_STATE"
+  create_workspace_for_window "runner-flywheel" "@42" "FLY-1364-implement"
+  second_row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  second_creates=$(grep -c '^new-workspace ' <<< "$MOCK_CMUX_OPS" || true)
+  if [[ "$first_row" == 'prepared|cmux-generation-1|workspace:100|FLY-1364-implement' \
+      && "$second_row" == "$first_row" && "$first_creates" == "1" && "$second_creates" == "1" ]]; then
+    pass "a hidden/provisional first workspace remains the sole create while reconcile owns its rename"
+  else
+    fail "rename-lag duplicated workspace first=[$first_row/$first_creates] second=[$second_row/$second_creates] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1446_ledger_transaction_rejects_title_conflict_inside_lock() {
+  echo "Test: FLY-1446 E1 — ledger transaction enforces one ref per generation/title"
+  reset_mocks
+  test_ensure_mutator_lease
+  local alerts="$TMPDIR_ROOT/fly1446-ledger-conflict-alerts" saved_alert saved_crash rc=0 rows
+  saved_alert=$(declare -f flywheel_alert)
+  saved_crash=$(declare -f _ledger_maybe_crash)
+  : > "$alerts"
+  flywheel_alert() { printf '%s|%s\n' "$1" "$5" >> "$alerts"; return 0; }
+  _ledger_maybe_crash() {
+    if [[ "$1" == "after-owner-mv" && ! -f "$TMPDIR_ROOT/fly1446-conflict-injected" ]]; then
+      printf '%s\n' 'prepared|cmux-generation-1|workspace:100|FLY-1446-rename-lag' > "$VIEW_LEDGER"
+      touch "$TMPDIR_ROOT/fly1446-conflict-injected"
+    fi
+    return 0
+  }
+  _ledger_upsert committed "cmux-generation-1" "workspace:101" "FLY-1446-rename-lag" || rc=$?
+  eval "$saved_crash"
+  eval "$saved_alert"
+  rows=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  if [[ "$rc" -ne 0 \
+      && "$rows" == 'prepared|cmux-generation-1|workspace:100|FLY-1446-rename-lag' \
+      && "$(grep -c 'ledger-title-conflict|FLY-1446-rename-lag|e1' "$alerts" || true)" == "1" \
+      && ! -d "${VIEW_LEDGER}.lock" ]]; then
+    pass "conflicting ref is rejected under the transaction lock, alerted once, and leaves the winner intact"
+  else
+    fail "ledger uniqueness mismatch rc=$rc rows=[$rows] alerts=[$(cat "$alerts")] lock=$([[ -d "${VIEW_LEDGER}.lock" ]] && echo present || echo absent)"
+  fi
+}
+
+test_fly1446_prepared_loser_cleanup_is_exact_and_guarded() {
+  echo "Test: FLY-1446 E1 — historical prepared loser closes only with complete exact-ref evidence"
+  reset_mocks
+  MOCK_CMUX_MUTATE_JSON=1; MOCK_SOCK_IDENT="cmux-generation-1"
+  test_ensure_mutator_lease
+  printf '%s\n' \
+    'committed|cmux-generation-1|workspace:100|FLY-1446-rename-lag' \
+    'prepared|cmux-generation-1|workspace:101|FLY-1446-rename-lag' > "$VIEW_LEDGER"
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:100\",\"title\":\"FLY-1446-rename-lag\"},{\"ref\":\"workspace:101\",\"title\":\"env -u TMUX tmux attach -t '=cmux-FLY-1446-rename-lag'\"}]}"
+  local alerts="$TMPDIR_ROOT/fly1446-loser-alerts" saved_alert rc=0 rows
+  saved_alert=$(declare -f flywheel_alert)
+  : > "$alerts"
+  flywheel_alert() { printf '%s|%s\n' "$1" "$5" >> "$alerts"; return 0; }
+  reconcile_prepared_ledger || rc=$?
+  eval "$saved_alert"
+  rows=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  if [[ "$rc" -eq 0 \
+      && "$rows" == 'committed|cmux-generation-1|workspace:100|FLY-1446-rename-lag' \
+      && "$(grep -c '^close-workspace --workspace workspace:101$' <<< "$MOCK_CMUX_OPS" || true)" == "1" ]] \
+      && grep -q 'ledger-prepared-loser-closed|FLY-1446-rename-lag|workspace:101' "$alerts"; then
+    pass "exact prepared loser is closed and its row removed while the committed owner survives"
+  else
+    fail "prepared loser did not converge rc=$rc rows=[$rows] ops=[$MOCK_CMUX_OPS] alerts=[$(cat "$alerts")]"
+  fi
+
+  reset_mocks
+  MOCK_CMUX_MUTATE_JSON=1; MOCK_SOCK_IDENT="cmux-generation-1"
+  test_ensure_mutator_lease
+  printf '%s\n' \
+    'committed|cmux-generation-1|workspace:100|FLY-1446-rename-lag' \
+    'prepared|cmux-generation-1|workspace:101|FLY-1446-rename-lag' > "$VIEW_LEDGER"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:100","title":"FLY-1446-rename-lag"},{"ref":"workspace:101","title":"founder-foreign"}]}'
+  rc=0
+  reconcile_prepared_ledger || rc=$?
+  if [[ "$rc" -eq 0 && "$(wc -l < "$VIEW_LEDGER" | tr -d ' ')" == "2" \
+      && "$MOCK_CMUX_OPS" != *'close-workspace'* ]]; then
+    pass "title drift at the loser ref authorizes zero close and preserves both receipts"
+  else
+    fail "prepared loser guard closed on incomplete evidence rc=$rc ledger=[$(cat "$VIEW_LEDGER")] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1446_historical_double_committed_alerts_without_mutation() {
+  echo "Test: FLY-1446 E1 — historical double-committed title is alert-only"
+  reset_mocks
+  MOCK_CMUX_MUTATE_JSON=1; MOCK_SOCK_IDENT="cmux-generation-1"
+  test_ensure_mutator_lease
+  printf '%s\n' \
+    'committed|cmux-generation-1|workspace:100|FLY-1446-duplicate' \
+    'committed|cmux-generation-1|workspace:101|FLY-1446-duplicate' > "$VIEW_LEDGER"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:100","title":"drifted"},{"ref":"workspace:101","title":"FLY-1446-duplicate"}]}'
+  local alerts="$TMPDIR_ROOT/fly1446-double-committed-alerts" saved_alert rc=0 before after
+  saved_alert=$(declare -f flywheel_alert)
+  : > "$alerts"
+  flywheel_alert() { printf '%s|%s\n' "$1" "$5" >> "$alerts"; return 0; }
+  before=$(cat "$VIEW_LEDGER")
+  reconcile_prepared_ledger || rc=$?
+  after=$(cat "$VIEW_LEDGER")
+  eval "$saved_alert"
+  if [[ "$rc" -eq 0 && "$after" == "$before" && -z "$MOCK_CMUX_OPS" \
+      && "$(grep -c 'ledger-title-conflict|FLY-1446-duplicate|e1' "$alerts" || true)" == "1" ]]; then
+    pass "ambiguous historical owners are preserved byte-for-byte and page for manual disposition"
+  else
+    fail "historical duplicate mutated or stayed silent rc=$rc before=[$before] after=[$after] ops=[$MOCK_CMUX_OPS] alerts=[$(cat "$alerts")]"
   fi
 }
 
@@ -7652,6 +7961,9 @@ test_fly1272_p1_rename_output_lost_recovers_claim
 test_fly1272_p1_generation_mismatch_is_read_only
 test_fly1272_skip_rc_never_kills_watcher
 test_fly1272_p1_source_gone_collision_escrows_stage
+test_fly1446_malformed_wals_quarantine_and_other_view_progresses
+test_fly1446_collision_blocks_only_its_logical_view
+test_fly1446_wal_indeterminate_failures_still_abort
 test_fly1272_p3_create_uses_isolated_view_by_default
 test_fly1272_flags_default_on_and_explicit_off
 test_fly1272_p2_dismantle_linked_preserves_source
@@ -7675,6 +7987,11 @@ echo ""
 echo "═══ FLY-1364: ledger authority + A0B1 create symmetry ═══"
 test_fly1364_ledger_writer_requires_verified_mutator_lease
 test_fly1364_ledger_writer_reaps_inner_lock_only_with_verified_lease
+test_fly1446_ledger_title_rows_include_rename_lag_prepared
+test_fly1446_rename_lag_retry_never_creates_second_workspace
+test_fly1446_ledger_transaction_rejects_title_conflict_inside_lock
+test_fly1446_prepared_loser_cleanup_is_exact_and_guarded
+test_fly1446_historical_double_committed_alerts_without_mutation
 test_fly1364_a0b1_create_records_prepared_then_committed_receipt
 test_fly1364_a0b1_create_accepts_exact_provisional_attach_title
 test_fly1364_a0b1_create_uses_independent_view_by_default

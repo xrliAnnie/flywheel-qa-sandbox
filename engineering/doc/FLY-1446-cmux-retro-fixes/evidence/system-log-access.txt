@@ -1,0 +1,10 @@
+SOURCE macOS unified log
+COLLECTED 2026-07-24 America/Los_Angeles
+
+COMMAND
+/usr/bin/log show --style syslog --start "2026-07-23 03:55:00" --end "2026-07-23 04:40:00" --predicate '(process == "tmux") OR (eventMessage CONTAINS[c] "tmux")'
+
+RESULT
+log: Cannot run while sandboxed
+
+No unified-log conclusion is claimed from this unavailable source.

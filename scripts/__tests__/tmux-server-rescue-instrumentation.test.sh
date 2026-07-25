@@ -239,6 +239,30 @@ else
   bad "replay latency leaked into hold classification rc=$REPLAY_LATENCY_RC alerts=$(cat "$ALERTS" 2>/dev/null) audit=$(tail -5 "$AUDIT" 2>/dev/null)"
 fi
 
+echo "[TEST] policy-enforce owns a distinct acquisition and long-hold episode"
+: > "$ALERTS"
+_tmux_rescue_prepare_lock_instrumentation "$SOCKET" policy-enforce policy-seed-test "$LOCK_FILE"
+POLICY_TOKEN="$_TMUX_RESCUE_TOKEN"
+POLICY_EPISODE_FILE="$_TMUX_RESCUE_EPISODE_FILE"
+POLICY_VERB="$_TMUX_RESCUE_VERB"
+export FLYWHEEL_TEST_FAKE_HOLD=2
+export FLYWHEEL_TEST_FAKE_END=102.000000
+export FLYWHEEL_TEST_CLOCK_MARKER="$TEST_ROOT/clock-${POLICY_TOKEN}"
+_tmux_rescue_python_lock 3 "$LOCK_FILE" "$CRITICAL" "$LIB" "$SOCKET" 0 normal
+POLICY_LOCK_RC=$?
+POLICY_RELEASE_END="$(_tmux_rescue_release_now 2>/dev/null || date +%s)"
+_tmux_rescue_after_lock "$SOCKET" "$POLICY_LOCK_RC" "$POLICY_RELEASE_END"
+unset FLYWHEEL_TEST_FAKE_HOLD FLYWHEEL_TEST_FAKE_END FLYWHEEL_TEST_CLOCK_MARKER
+if [ "$POLICY_LOCK_RC" -eq 0 ] \
+  && [ "$POLICY_VERB" = "policy-enforce" ] \
+  && [ -f "$POLICY_EPISODE_FILE" ] \
+  && grep -q 'verb=policy-enforce.*caller=policy-seed-test' "$AUDIT" \
+  && grep -q 'verb=policy-enforce.*caller=policy-seed-test' "$ALERTS"; then
+  ok "policy seed receipts and alerts remain distinguishable from ensure/recover"
+else
+  bad "policy verb fell out of instrumentation rc=$POLICY_LOCK_RC verb=$POLICY_VERB alerts=$(cat "$ALERTS" 2>/dev/null) audit=$(tail -5 "$AUDIT" 2>/dev/null)"
+fi
+
 echo "[TEST] release-tail episodes persist, suppress, recover, and increment"
 : > "$ALERTS"
 run_instrumented tail-episode 0 normal 0.05 0.75
@@ -392,14 +416,18 @@ RECOVER_OUT="$(cat "$MISSING_STDOUT")"
 /bin/bash "$DEPLOY/tmux-server-rescue" ensure relative extra > "$MISSING_STDOUT" 2>> "$MISSING_STDERR"
 ENSURE_RC=$?
 ENSURE_OUT="$(cat "$MISSING_STDOUT")"
+/bin/bash "$DEPLOY/tmux-server-rescue" policy-enforce relative > "$MISSING_STDOUT" 2>> "$MISSING_STDERR"
+POLICY_RC=$?
+POLICY_OUT="$(cat "$MISSING_STDOUT")"
 if [ "$INSPECT_RC" -eq 0 ] \
   && [ "$INSPECT_OUT" = '{"verdict":"unknown","socketPresent":false,"socketPath":"","reachablePid":null,"candidatePids":[],"scanComplete":false,"timedOut":false}' ] \
   && [ "$RECOVER_RC" -eq 64 ] && [ -z "$RECOVER_OUT" ] \
   && [ "$ENSURE_RC" -eq 64 ] && [ -z "$ENSURE_OUT" ] \
-  && [ "$(grep -c 'optional alert library unavailable' "$MISSING_STDERR" || true)" -eq 3 ]; then
-  ok "inspect/recover/ensure retain their historical stdout and rc in the deploy gap"
+  && [ "$POLICY_RC" -eq 64 ] && [ -z "$POLICY_OUT" ] \
+  && [ "$(grep -c 'optional alert library unavailable' "$MISSING_STDERR" || true)" -eq 4 ]; then
+  ok "inspect/recover/ensure/policy-enforce retain stdout and rc in the deploy gap"
 else
-  bad "missing-library verb contract drifted inspect=$INSPECT_RC/$INSPECT_OUT recover=$RECOVER_RC/$RECOVER_OUT ensure=$ENSURE_RC/$ENSURE_OUT stderr=$(tr '\n' ';' < "$MISSING_STDERR")"
+  bad "missing-library verb contract drifted inspect=$INSPECT_RC/$INSPECT_OUT recover=$RECOVER_RC/$RECOVER_OUT ensure=$ENSURE_RC/$ENSURE_OUT policy=$POLICY_RC/$POLICY_OUT stderr=$(tr '\n' ';' < "$MISSING_STDERR")"
 fi
 
 echo "Results: ${PASS} passed, ${FAIL} failed"

@@ -343,6 +343,72 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	// ─── env kill-switches / features, call_time → DIRECT-toggle candidates ───
 	{
+		name: "tmux_keepalive",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_TMUX_KEEPALIVE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1446: under the per-socket rescue lock, set tmux exit-empty off and maintain the flywheel-keepalive sentinel so the runner server survives losing its last business session",
+		readSites: [
+			envSite(
+				"scripts/lib/tmux-server-rescue.sh",
+				"_tmux_rescue_keepalive_enabled",
+				"call_time",
+				"dynamic",
+			),
+		],
+		toggleable: "conversational",
+		note: "owner=tmux-server-rescue；下一次 ensure/policy-enforce 调用生效。=0 只停止后续 enforcement，不自动删除 sentinel 或恢复 exit-empty on；非法值 fail-safe 回默认开启。",
+	},
+	{
+		name: "converge_cmux_symlink",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CONVERGE_CMUX_SYMLINK",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1446: converge 将 flywheel-cmux-sync/autostart 普通部署副本留档后原子恢复为 trusted main checkout symlink；=0 暂停形态收敛",
+		readSites: [
+			envSite(
+				"scripts/converge-flywheel-bin.sh",
+				"converge_cmux_symlink",
+				"cli_invocation",
+				"dynamic",
+			),
+		],
+		toggleable: "conversational",
+		note: "owner=converge CLI；每个 Lead 启动、daily update/self-ship、restart-services pre-kickstart 的下一次独立调用生效。非法值 fail-safe 回到默认开启；退役条件是全机不再存在可写部署副本路径。",
+	},
+	{
+		name: "cmux_autostart_exec",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CMUX_AUTOSTART_EXEC",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1446 incident escape: 允许 unsupervised flywheel-cmux-autostart 直接 exec --watch；默认 0 时 .zshrc 只守护/bootstrap launchd KeepAlive job",
+		readSites: [
+			envSite(
+				"scripts/flywheel-cmux-autostart.sh",
+				"load_cmux_bool_flag / Run watcher or guard the launchd job",
+				"cli_invocation",
+				"dynamic",
+			),
+		],
+		toggleable: "conversational",
+		note: "owner=autostart wrapper；inherited env > ~/.flywheel/.env，下一次 wrapper 调用生效；非法值回到默认 0。只用于 launchd 控制面故障的短时诊断，稳定后退役。",
+	},
+	{
 		name: "cmux_linked_view",
 		category: "kill_switch",
 		source: "env",
@@ -371,6 +437,62 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 		],
 		toggleable: "conversational",
+	},
+	{
+		name: "cmux_wal_quarantine",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CMUX_WAL_QUARANTINE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1446: quarantine syntactically malformed cmux construction WALs so unrelated views keep reconciling; =0 restores legacy global abort",
+		readSites: [
+			envSite(
+				"scripts/flywheel-cmux-sync.sh",
+				"wal_quarantine_enabled / recover_all_view_constructions",
+				"cli_invocation",
+				"dynamic",
+			),
+			envSite(
+				"scripts/flywheel-cmux-autostart.sh",
+				"load_cmux_bool_flag FLYWHEEL_CMUX_WAL_QUARANTINE",
+				"cli_invocation",
+				"dynamic",
+			),
+		],
+		toggleable: "conversational",
+		note: "owner=launchd watcher；inherited env > ~/.flywheel/.env，watcher kickstart 后生效；非法值 fail-safe 回到默认开启。只隔离四类纯语法/文件身份错误，generation、I/O、guard、cleanup 不确定性仍整轮 fail-closed。",
+	},
+	{
+		name: "cmux_roster",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CMUX_ROSTER",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1446: derive the loaded Lead roster from launchd/manifests and reconcile active Runner execution ids against global tmux identity options",
+		readSites: [
+			envSite(
+				"scripts/flywheel-cmux-sync.sh",
+				"roster_enabled / reconcile_roster_read_phase",
+				"cli_invocation",
+				"dynamic",
+			),
+			envSite(
+				"scripts/flywheel-cmux-autostart.sh",
+				"load_cmux_bool_flag FLYWHEEL_CMUX_ROSTER",
+				"cli_invocation",
+				"dynamic",
+			),
+		],
+		toggleable: "conversational",
+		note: "owner=launchd watcher；inherited env > ~/.flywheel/.env，watcher kickstart 后生效；非法值 fail-safe 回默认开启。关闭只暂停 roster 派生/对账，不改变既有 linked-view/cleanup 行为。",
 	},
 	{
 		name: "cmux_view_invariant",

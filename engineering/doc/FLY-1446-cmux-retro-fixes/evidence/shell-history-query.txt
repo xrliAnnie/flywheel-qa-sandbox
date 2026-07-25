@@ -1,0 +1,12 @@
+SOURCE /Users/xiaorongli/.zsh_history
+COLLECTED 2026-07-24 America/Los_Angeles
+
+COMMAND
+rg -n -i "kill-server|pkill.*tmux|killall.*tmux|tmux.*kill-session|tmux.*kill-window" /Users/xiaorongli/.zsh_history
+
+RESULT
+(no matching retained history lines)
+
+LIMITATION
+The retained history has no per-line timestamps, and absence from shell history
+cannot exclude another process, another shell, unpersisted history, or exit-empty.

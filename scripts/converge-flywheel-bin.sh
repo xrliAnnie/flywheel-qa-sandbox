@@ -175,9 +175,112 @@ symlink_source_for() {
   esac
 }
 
+symlink_source_ready() { # <source> — sane, shebang-bearing, executable
+  local src="$1"
+  [ -n "$src" ] || return 1
+  assert_sane_script_source "$src" 2>/dev/null || return 1
+  head -c 2 "$src" 2>/dev/null | grep -q '^#!' || return 1
+  if [ ! -x "$src" ]; then
+    if chmod 0755 "$src" 2>/dev/null; then
+      echo "[converge-bin] chmod 0755 on repair source $src (exec bit was missing; tsc default 0644)" >&2
+    else
+      return 1
+    fi
+  fi
+  return 0
+}
+
+converge_cmux_symlink="${FLYWHEEL_CONVERGE_CMUX_SYMLINK:-1}"
+case "$converge_cmux_symlink" in
+  0|1) ;;
+  *)
+    echo "[converge-bin] WARNING: invalid FLYWHEEL_CONVERGE_CMUX_SYMLINK=${converge_cmux_symlink}; defaulting to 1" >&2
+    converge_cmux_symlink=1
+    ;;
+esac
+
 if ! is_temp_or_worktree_root "$REPO_ROOT"; then
   for name in agent-team-transport tmux-server-rescue flywheel-cmux-sync flywheel-cmux-autostart; do
     link="$BIN_DIR/$name"
+    src="$(symlink_source_for "$name")"
+
+    # FLY-1446 P1-c': the cmux installer contract is a link to the trusted
+    # main checkout. A regular-file copy is not "healthy because its bytes
+    # happen to match today"; it is the deployment-copy disease that let the
+    # production watcher stay stale for seven days. Archive deployed bytes
+    # first, then atomically restore the link shape. Other CLI names retain
+    # the pre-FLY-1446 absent/copy behavior.
+    case "$name" in
+      flywheel-cmux-sync|flywheel-cmux-autostart)
+        if [ "$converge_cmux_symlink" = "1" ] && [ -e "$link" ] && [ ! -L "$link" ]; then
+          if [ ! -f "$link" ]; then
+            echo "[converge-bin] ERROR: $name has unsupported non-file deployment shape at $link — NOT replacing" >&2
+            alert "bin shape unhealthy: $name is not a regular file or symlink" \
+              "$link exists but is neither the required symlink nor an archivable regular file. NOT auto-repaired; inspect the path manually (FLY-1446)." \
+              "$name|copy-shape-unsupported"
+            rc=1
+            continue
+          fi
+          if ! symlink_source_ready "$src"; then
+            echo "[converge-bin] WARNING: $name is a regular-file copy but this checkout has no SANE executable source at ${src:-<none>} — NOT replacing" >&2
+            alert "bin copy shape unhealthy: $name (no sane executable source)" \
+              "$link is a regular-file deployment copy, but this checkout has no sane executable ${src:-<none>} to link (missing, failed source sanity, no shebang, or un-chmod-able). The deployed copy was preserved; repair the checkout first." \
+              "$name|copy-shape-nosource"
+            rc=1
+            continue
+          fi
+
+          archive="${link}.bak-shape-$(date +%s)-$$"
+          archive_ok=0
+          if ln "$link" "$archive" 2>/dev/null; then
+            archive_ok=1
+          else
+            # Reserve a process-unique path before copying so fallback never
+            # clobbers an older forensic archive.
+            archive="$(mktemp "${archive}.XXXXXX" 2>/dev/null || true)"
+            if [ -n "$archive" ] && cp -p "$link" "$archive" 2>/dev/null; then
+              archive_ok=1
+            elif [ -n "$archive" ]; then
+              rm -f "$archive" 2>/dev/null || true
+            fi
+          fi
+          if [ "$archive_ok" != "1" ]; then
+            echo "[converge-bin] ERROR: shape archive FAILED for $name — canonical copy preserved" >&2
+            alert "bin shape archive FAILED: $name" \
+              "Could not preserve $link before replacing its regular-file deployment shape. Canonical path was left untouched; fix bin-directory permissions/storage and re-run converge (FLY-1446)." \
+              "$name|copy-shape-archive-failed"
+            rc=1
+            continue
+          fi
+
+          # A concurrent converger may have replaced the canonical path after
+          # our initial lstat. If the archived object is a symlink, it is not
+          # historical copy evidence: discard it and let the healthy-link
+          # path below verify the winner.
+          if [ -L "$archive" ]; then
+            rm -f "$archive" 2>/dev/null || true
+          else
+            tmp="${link}.tmp.$$"
+            if ln -s "$src" "$tmp" 2>/dev/null && mv -f "$tmp" "$link"; then
+              src_sha="$(sha "$src")"
+              echo "[converge-bin] copy shape converged: $name archived at $archive -> now symlink $src" >&2
+              alert "bin deployment copy converged to symlink: $name" \
+                "$link was a regular-file deployment copy. Preserved the old bytes at $archive, then atomically restored the installer contract -> $src (sha ${src_sha:0:12}). Find the writer that broke the link shape (FLY-1446)." \
+                "$name|copy-shape-converged|${src_sha:0:12}"
+              continue
+            fi
+            rm -f "$tmp" 2>/dev/null || true
+            echo "[converge-bin] ERROR: copy-shape symlink publish FAILED for $name (archive retained at $archive)" >&2
+            alert "bin copy-shape repair FAILED: $name" \
+              "$link was archived at $archive, but atomic symlink publication to $src failed. The canonical copy remains available; manual intervention required." \
+              "$name|copy-shape-failfix"
+            rc=1
+            continue
+          fi
+        fi
+        ;;
+    esac
+
     [ -L "$link" ] || continue
     target="$(readlink "$link")"
     case "$target" in
@@ -191,7 +294,6 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
       unhealthy="temp/worktree target (${canon_target})"
     fi
     [ -n "$unhealthy" ] || continue
-    src="$(symlink_source_for "$name")"
     # Codex code R1 HIGH-2 + R2 HIGH: a symlink TARGET is invoked directly,
     # so beyond the FLY-954 content sanity it must be executable-shaped:
     #   • first line must be a shebang (every legitimate source here ships
@@ -200,19 +302,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
     #   • missing owner-exec bit is AUTO-REPAIRED with chmod 0755, mirroring
     #     syncFlywheelCliBin (FLY-142 R5: tsc emits dist at 0644 — refusing
     #     would make every fresh-build repair fail).
-    src_ok=0
-    if [ -n "$src" ] && assert_sane_script_source "$src" 2>/dev/null \
-       && head -c 2 "$src" 2>/dev/null | grep -q '^#!'; then
-      if [ ! -x "$src" ]; then
-        if chmod 0755 "$src" 2>/dev/null; then
-          echo "[converge-bin] chmod 0755 on repair source $src (exec bit was missing; tsc default 0644)" >&2
-          src_ok=1
-        fi
-      else
-        src_ok=1
-      fi
-    fi
-    if [ "$src_ok" = "1" ]; then
+    if symlink_source_ready "$src"; then
       tmp="${link}.tmp.$$"
       if ln -s "$src" "$tmp" 2>/dev/null && mv -f "$tmp" "$link"; then
         echo "[converge-bin] symlink repaired: $name was ${unhealthy} -> now $src" >&2

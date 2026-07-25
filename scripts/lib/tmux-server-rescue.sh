@@ -506,6 +506,161 @@ _tmux_rescue_validate_argv() {
   [ "$saw_socket" = true ]
 }
 
+_tmux_rescue_keepalive_enabled() {
+  case "${FLYWHEEL_TMUX_KEEPALIVE:-1}" in
+    0) return 1 ;;
+    1|'') return 0 ;;
+    *) return 0 ;;
+  esac
+}
+
+_tmux_rescue_policy_alert() {
+  local socket_path="$1" reason="$2" lock_hash
+  lock_hash="$(_tmux_rescue_lock_hash "$socket_path" 2>/dev/null || printf unknown)"
+  flywheel_alert tmux_policy_postcondition critical \
+    "tmux keepalive policy enforcement failed" \
+    "The socket-locked tmux server policy could not be established: socket=$socket_path reason=$reason. Runner creation must hold until the server generation is rechecked." \
+    "tmux_policy_postcondition|sockhash=$lock_hash|reason=$reason" \
+    >/dev/null 2>&1 || true
+  _tmux_rescue_audit "policy_postcondition_failed socket=$socket_path reason=$reason"
+}
+
+_tmux_rescue_policy_fail() {
+  local socket_path="$1" reason="$2"
+  _TMUX_RESCUE_POLICY_FAILURE_REASON="$reason"
+  _tmux_rescue_policy_alert "$socket_path" "$reason"
+  return 4
+}
+
+_tmux_rescue_policy_postcondition() {
+  # This function is called only while the caller owns the normalized socket
+  # lock. Prove the server generation before any mutation, make the policy
+  # idempotent, then prove the same generation and both postconditions.
+  local socket_path="$1" before verdict before_pid after after_verdict after_pid
+  local command_timeout output rc reason
+  _TMUX_RESCUE_POLICY_RESULT=""
+  _TMUX_RESCUE_POLICY_FAILURE_REASON=""
+  _TMUX_RESCUE_POLICY_REACHABLE_PID=""
+  _tmux_rescue_prepare_runtime
+  command_timeout="$(_tmux_rescue_effective_timeout command)"
+
+  before="$(tmux_socket_inspect "$socket_path")"
+  verdict="$(_tmux_rescue_json_field "$before" verdict)"
+  before_pid="$(_tmux_rescue_json_field "$before" reachablePid)"
+  if [ "$verdict" != "reachable" ] || [ -z "$before_pid" ] \
+      || [ "$before_pid" = "null" ]; then
+    _tmux_rescue_policy_fail "$socket_path" policy_server_unreachable
+    return $?
+  fi
+
+  if ! _tmux_rescue_keepalive_enabled; then
+    _TMUX_RESCUE_POLICY_RESULT=disabled
+    _TMUX_RESCUE_POLICY_REACHABLE_PID="$before_pid"
+    return 0
+  fi
+
+  _tmux_rescue_bounded_exec "$command_timeout" \
+    tmux -S "$socket_path" set-option -s exit-empty off >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    case "$rc" in 124|125) reason=policy_command_timeout ;; *) reason=policy_set_option_failed ;; esac
+    _tmux_rescue_policy_fail "$socket_path" "$reason"
+    return $?
+  fi
+
+  output="$(_tmux_rescue_bounded_exec "$command_timeout" \
+    tmux -S "$socket_path" show-options -sv exit-empty 2>/dev/null)"
+  rc=$?
+  if [ "$rc" -ne 0 ] || [ "$output" != "off" ]; then
+    case "$rc" in 124|125) reason=policy_command_timeout ;; *) reason=policy_option_verify_failed ;; esac
+    _tmux_rescue_policy_fail "$socket_path" "$reason"
+    return $?
+  fi
+
+  _tmux_rescue_bounded_exec "$command_timeout" \
+    tmux -S "$socket_path" has-session -t =flywheel-keepalive >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    case "$rc" in
+      124|125)
+        _tmux_rescue_policy_fail "$socket_path" policy_command_timeout
+        return $?
+        ;;
+    esac
+    # -N physically prevents a server-starting create if the proven generation
+    # exits between the read and mutation.
+    _tmux_rescue_bounded_exec "$command_timeout" \
+      tmux -N -S "$socket_path" new-session -d -s flywheel-keepalive \
+      >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      case "$rc" in 124|125) reason=policy_command_timeout ;; *) reason=policy_keepalive_create_failed ;; esac
+      _tmux_rescue_policy_fail "$socket_path" "$reason"
+      return $?
+    fi
+  fi
+
+  after="$(tmux_socket_inspect "$socket_path")"
+  after_verdict="$(_tmux_rescue_json_field "$after" verdict)"
+  after_pid="$(_tmux_rescue_json_field "$after" reachablePid)"
+  if [ "$after_verdict" != "reachable" ] || [ "$after_pid" != "$before_pid" ]; then
+    _tmux_rescue_policy_fail "$socket_path" policy_server_generation_changed
+    return $?
+  fi
+
+  output="$(_tmux_rescue_bounded_exec "$command_timeout" \
+    tmux -S "$socket_path" show-options -sv exit-empty 2>/dev/null)"
+  rc=$?
+  if [ "$rc" -ne 0 ] || [ "$output" != "off" ]; then
+    case "$rc" in 124|125) reason=policy_command_timeout ;; *) reason=policy_option_verify_failed ;; esac
+    _tmux_rescue_policy_fail "$socket_path" "$reason"
+    return $?
+  fi
+  _tmux_rescue_bounded_exec "$command_timeout" \
+    tmux -S "$socket_path" has-session -t =flywheel-keepalive >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    case "$rc" in 124|125) reason=policy_command_timeout ;; *) reason=policy_keepalive_verify_failed ;; esac
+    _tmux_rescue_policy_fail "$socket_path" "$reason"
+    return $?
+  fi
+
+  _TMUX_RESCUE_POLICY_RESULT=enforced
+  _TMUX_RESCUE_POLICY_REACHABLE_PID="$after_pid"
+  return 0
+}
+
+_tmux_rescue_ensure_success() {
+  local socket_path="$1" action="$2" create_stdout="$3" reachable_pid="$4" rc
+  _tmux_rescue_policy_postcondition "$socket_path"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '{"action":"hold_unknown","evidence":{"reason":"policy_postcondition_failed","policyReason":"%s"}}\n' \
+      "$(_tmux_rescue_json_escape "${_TMUX_RESCUE_POLICY_FAILURE_REASON:-unknown}")"
+    return "$rc"
+  fi
+  printf '{"action":"%s","createStdout":"%s","reachablePid":%s}\n' \
+    "$action" "$(_tmux_rescue_json_escape "$create_stdout")" "$reachable_pid"
+}
+
+_tmux_socket_policy_enforce_locked() {
+  local socket_path="$1" rc
+  _tmux_rescue_write_owner_metadata "$socket_path" || true
+  _tmux_rescue_prepare_runtime
+  _tmux_rescue_policy_postcondition "$socket_path"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '{"action":"hold_unknown","evidence":{"reason":"%s"}}\n' \
+      "$(_tmux_rescue_json_escape "${_TMUX_RESCUE_POLICY_FAILURE_REASON:-policy_postcondition_failed}")"
+    return "$rc"
+  fi
+  case "${_TMUX_RESCUE_POLICY_RESULT:-}" in
+    disabled) printf '{"action":"policy_disabled","reachablePid":%s}\n' "$_TMUX_RESCUE_POLICY_REACHABLE_PID" ;;
+    *) printf '{"action":"policy_enforced","reachablePid":%s}\n' "$_TMUX_RESCUE_POLICY_REACHABLE_PID" ;;
+  esac
+  return 0
+}
+
 _tmux_socket_ensure_locked() {
   local socket_path="$1"
   shift
@@ -550,8 +705,8 @@ _tmux_socket_ensure_locked() {
       after_verdict="$(_tmux_rescue_json_field "$after" verdict)"
       after_pid="$(_tmux_rescue_json_field "$after" reachablePid)"
       if [ "$after_verdict" = "reachable" ] && [ "$after_pid" = "$server_pid" ]; then
-        printf '{"action":"verified","createStdout":"","reachablePid":%s}\n' "$after_pid"
-        return 0
+        _tmux_rescue_ensure_success "$socket_path" verified "" "$after_pid"
+        return $?
       fi
     fi
 		if [ "${FLY1285_RESCUE_DRY_RUN:-0}" = "1" ]; then
@@ -571,9 +726,8 @@ _tmux_socket_ensure_locked() {
       after_verdict="$(_tmux_rescue_json_field "$after" verdict)"
       after_pid="$(_tmux_rescue_json_field "$after" reachablePid)"
       if [ "$after_verdict" = "reachable" ] && [ "$after_pid" = "$server_pid" ]; then
-        printf '{"action":"created","createStdout":"%s","reachablePid":%s}\n' \
-          "$(_tmux_rescue_json_escape "$create_stdout")" "$after_pid"
-        return 0
+        _tmux_rescue_ensure_success "$socket_path" created "$create_stdout" "$after_pid"
+        return $?
       fi
     else
       # A racing creator may have made the target after our first verify. Only
@@ -586,8 +740,8 @@ _tmux_socket_ensure_locked() {
       command_rc=$?
       if [ "$after_verdict" = "reachable" ] && [ "$after_pid" = "$server_pid" ] \
         && [ "$command_rc" -eq 0 ]; then
-        printf '{"action":"verified","createStdout":"","reachablePid":%s}\n' "$after_pid"
-        return 0
+        _tmux_rescue_ensure_success "$socket_path" verified "" "$after_pid"
+        return $?
       fi
     fi
   elif [ "$verdict" = "dead" ]; then
@@ -607,9 +761,8 @@ _tmux_socket_ensure_locked() {
       after_verdict="$(_tmux_rescue_json_field "$after" verdict)"
       after_pid="$(_tmux_rescue_json_field "$after" reachablePid)"
       if [ "$after_verdict" = "reachable" ] && [ -n "$after_pid" ] && [ "$after_pid" != "null" ]; then
-        printf '{"action":"created","createStdout":"%s","reachablePid":%s}\n' \
-          "$(_tmux_rescue_json_escape "$create_stdout")" "$after_pid"
-        return 0
+        _tmux_rescue_ensure_success "$socket_path" created "$create_stdout" "$after_pid"
+        return $?
       fi
     fi
   elif [ "$verdict" = "missing_single_orphan" ]; then
@@ -632,8 +785,8 @@ _tmux_socket_ensure_locked() {
       after_verdict="$(_tmux_rescue_json_field "$after" verdict)"
       after_pid="$(_tmux_rescue_json_field "$after" reachablePid)"
       if [ "$after_verdict" = "reachable" ] && [ "$after_pid" = "$server_pid" ]; then
-        printf '{"action":"rescued_then_verified","createStdout":"","reachablePid":%s}\n' "$after_pid"
-        return 0
+        _tmux_rescue_ensure_success "$socket_path" rescued_then_verified "" "$after_pid"
+        return $?
       fi
     fi
 		if [ "${FLY1285_RESCUE_DRY_RUN:-0}" = "1" ]; then
@@ -653,9 +806,8 @@ _tmux_socket_ensure_locked() {
       after_verdict="$(_tmux_rescue_json_field "$after" verdict)"
       after_pid="$(_tmux_rescue_json_field "$after" reachablePid)"
       if [ "$after_verdict" = "reachable" ] && [ "$after_pid" = "$server_pid" ]; then
-        printf '{"action":"rescued_then_created","createStdout":"%s","reachablePid":%s}\n' \
-          "$(_tmux_rescue_json_escape "$create_stdout")" "$after_pid"
-        return 0
+        _tmux_rescue_ensure_success "$socket_path" rescued_then_created "$create_stdout" "$after_pid"
+        return $?
       fi
     fi
   fi
@@ -841,7 +993,7 @@ _tmux_rescue_prepare_lock_instrumentation() {
   # inherits this immutable acquisition identity; nested recovery reuses it.
   local socket_path="$1" verb="$2" caller="$3" lock_file="$4"
   local lock_hash caller_hash state_dir token outer_pid outer_start_identity pid_probe
-  case "$verb" in ensure|recover) ;; *) return 1 ;; esac
+  case "$verb" in ensure|recover|policy-enforce) ;; *) return 1 ;; esac
   case "$caller" in ''|*[!A-Za-z0-9_.:-]*) caller="unknown" ;; esac
   lock_hash="$(_tmux_rescue_lock_hash "$socket_path")" || return 1
   caller_hash="$(_tmux_rescue_lock_hash "$caller")" || return 1
@@ -1191,7 +1343,7 @@ _tmux_rescue_replay_pending_decisions() {
     [ "$decision" = "$expected" ] && [ "$acquired_token" = "$token" ] || continue
     verb="$(_tmux_rescue_state_value "$acquisition" verb)"
     caller="$(_tmux_rescue_state_value "$acquisition" caller)"
-    case "$verb" in ensure|recover) ;; *) continue ;; esac
+    case "$verb" in ensure|recover|policy-enforce) ;; *) continue ;; esac
     case "$caller" in ''|*[!A-Za-z0-9_.:-]*) continue ;; esac
     outer_pid="$(_tmux_rescue_state_value "$acquisition" outerPid)"
     outer_start_identity="$(_tmux_rescue_state_value "$acquisition" outerStartIdentity)"
@@ -1385,7 +1537,7 @@ _tmux_rescue_timeout_owner_json() {
   caller="$(_tmux_rescue_state_value "$owner_file" caller)"
   case "$pid" in ''|*[!0-9]*) return 0 ;; esac
   case "$token" in ''|*[!A-Za-z0-9_.-]*) return 0 ;; esac
-  case "$verb" in ensure|recover) ;; *) return 0 ;; esac
+  case "$verb" in ensure|recover|policy-enforce) ;; *) return 0 ;; esac
   case "$caller" in ''|*[!A-Za-z0-9_.:-]*) return 0 ;; esac
   case "$acquired" in
     ''|*[!0-9.]*|.*|*.)
@@ -1494,6 +1646,7 @@ _tmux_rescue_run_with_lock() {
   case "$dispatch" in
     _ensure_locked) verb="ensure" ;;
     _recover_locked) verb="recover" ;;
+    _policy_enforce_locked) verb="policy-enforce" ;;
     *) return 64 ;;
   esac
   caller="${FLYWHEEL_TMUX_RESCUE_CALLER:-${FUNCNAME[2]:-cli}}"
@@ -1545,6 +1698,10 @@ tmux_socket_recover() {
   _tmux_rescue_run_with_lock _recover_locked "$1"
 }
 
+tmux_socket_policy_enforce() {
+  _tmux_rescue_run_with_lock _policy_enforce_locked "$1"
+}
+
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
     inspect)
@@ -1565,6 +1722,14 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
       }
       tmux_socket_ensure "$@"
       ;;
+    policy-enforce)
+      shift
+      [ "$#" -eq 1 ] || {
+        echo "usage: tmux-server-rescue policy-enforce <socket>" >&2
+        exit 64
+      }
+      tmux_socket_policy_enforce "$1"
+      ;;
     _ensure_locked)
       shift
       _tmux_rescue_locked_dispatch ensure "$1" _tmux_socket_ensure_locked "$@"
@@ -1573,8 +1738,12 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
       shift
       _tmux_rescue_locked_dispatch recover "$1" _tmux_socket_recover_locked "$@"
       ;;
+    _policy_enforce_locked)
+      shift
+      _tmux_rescue_locked_dispatch policy-enforce "$1" _tmux_socket_policy_enforce_locked "$@"
+      ;;
     *)
-      echo "usage: tmux-server-rescue inspect|recover|ensure ..." >&2
+      echo "usage: tmux-server-rescue inspect|recover|ensure|policy-enforce ..." >&2
       exit 64
       ;;
   esac

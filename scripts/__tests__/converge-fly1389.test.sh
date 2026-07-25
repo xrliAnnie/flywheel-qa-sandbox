@@ -239,6 +239,128 @@ else
   fail "S7: escape leaked into symlink repair" "$(cat "$SB/out.log" | tail -4)"
 fi
 
+# ── C1 (FLY-1446): a regular-file cmux deployment copy is itself drift.
+# Archive it first, then atomically restore the installer's symlink shape. ──
+ST="$SB/state-c1"; seed_wrappers "$ST" "$TRUSTED"
+cp "$TRUSTED/scripts/flywheel-cmux-sync.sh" "$ST/bin/flywheel-cmux-sync"
+cp "$TRUSTED/scripts/flywheel-cmux-autostart.sh" "$ST/bin/flywheel-cmux-autostart"
+: > "$SB/alerts.log"
+if run_conv "$TRUSTED" "$ST" \
+   && [[ -L "$ST/bin/flywheel-cmux-sync" ]] \
+   && [[ "$(readlink "$ST/bin/flywheel-cmux-sync")" == "$TRUSTED/scripts/flywheel-cmux-sync.sh" ]] \
+   && [[ -L "$ST/bin/flywheel-cmux-autostart" ]] \
+   && [[ "$(readlink "$ST/bin/flywheel-cmux-autostart")" == "$TRUSTED/scripts/flywheel-cmux-autostart.sh" ]] \
+   && [[ "$(find "$ST/bin" -maxdepth 1 -type f -name 'flywheel-cmux-sync.bak-shape-*' | wc -l | tr -d ' ')" -eq 1 ]] \
+   && [[ "$(find "$ST/bin" -maxdepth 1 -type f -name 'flywheel-cmux-autostart.bak-shape-*' | wc -l | tr -d ' ')" -eq 1 ]] \
+   && cmp -s "$(find "$ST/bin" -maxdepth 1 -type f -name 'flywheel-cmux-sync.bak-shape-*' | head -1)" "$TRUSTED/scripts/flywheel-cmux-sync.sh" \
+   && cmp -s "$(find "$ST/bin" -maxdepth 1 -type f -name 'flywheel-cmux-autostart.bak-shape-*' | head -1)" "$TRUSTED/scripts/flywheel-cmux-autostart.sh" \
+   && grep -q 'copy-shape-converged' "$SB/alerts.log"; then
+  pass "C1: both cmux script copies → archived + atomically converged to trusted symlinks + alerts"
+else
+  fail "C1: regular-file cmux shape convergence" "$(cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null | tail -8)"
+fi
+
+# ── C2: archive failure is fail-closed. The canonical executable remains
+# byte-identical and no temp symlink is published. ──
+ST="$SB/state-c2"; seed_wrappers "$ST" "$TRUSTED"
+cp "$TRUSTED/scripts/flywheel-cmux-autostart.sh" "$ST/bin/flywheel-cmux-autostart"
+C2_BEFORE="$(shasum -a 256 "$ST/bin/flywheel-cmux-autostart" | awk '{print $1}')"
+chmod 0555 "$ST/bin"
+: > "$SB/alerts.log"
+if run_conv "$TRUSTED" "$ST"; then
+  chmod 0755 "$ST/bin"
+  fail "C2: archive failure must leave converge non-zero"
+else
+  chmod 0755 "$ST/bin"
+  C2_AFTER="$(shasum -a 256 "$ST/bin/flywheel-cmux-autostart" | awk '{print $1}')"
+  if [[ ! -L "$ST/bin/flywheel-cmux-autostart" ]] \
+     && [[ "$C2_BEFORE" == "$C2_AFTER" ]] \
+     && [[ "$(find "$ST/bin" -maxdepth 1 -name 'flywheel-cmux-autostart.tmp.*' | wc -l | tr -d ' ')" -eq 0 ]] \
+     && grep -q 'shape archive FAILED' "$SB/alerts.log"; then
+    pass "C2: archive failure → canonical copy untouched, no temp publish, alert + rc=1"
+  else
+    fail "C2: archive-first fail-closed invariant" "$(cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null | tail -8)"
+  fi
+fi
+
+# ── C3: concurrent mounts converge idempotently. Per-process archive names
+# may both exist, but the canonical path must end at the trusted symlink. ──
+ST="$SB/state-c3"; seed_wrappers "$ST" "$TRUSTED"
+cp "$TRUSTED/scripts/flywheel-cmux-sync.sh" "$ST/bin/flywheel-cmux-sync"
+: > "$SB/alerts.log"
+env ALERT_LOG="$SB/alerts.log" FLYWHEEL_STATE_DIR="$ST" \
+  FLYWHEEL_CONVERGE_ALERT_BIN="$ALERT" \
+  bash "$TRUSTED/scripts/converge-flywheel-bin.sh" >"$SB/c3-1.log" 2>&1 &
+C3_P1=$!
+env ALERT_LOG="$SB/alerts.log" FLYWHEEL_STATE_DIR="$ST" \
+  FLYWHEEL_CONVERGE_ALERT_BIN="$ALERT" \
+  bash "$TRUSTED/scripts/converge-flywheel-bin.sh" >"$SB/c3-2.log" 2>&1 &
+C3_P2=$!
+wait "$C3_P1"; C3_R1=$?
+wait "$C3_P2"; C3_R2=$?
+if [[ "$C3_R1" -eq 0 && "$C3_R2" -eq 0 ]] \
+   && [[ -L "$ST/bin/flywheel-cmux-sync" ]] \
+   && [[ "$(readlink "$ST/bin/flywheel-cmux-sync")" == "$TRUSTED/scripts/flywheel-cmux-sync.sh" ]] \
+   && [[ "$(find "$ST/bin" -maxdepth 1 -type f -name 'flywheel-cmux-sync.bak-shape-*' | wc -l | tr -d ' ')" -ge 1 ]]; then
+  pass "C3: concurrent converge mounts → both succeed, one trusted canonical symlink"
+else
+  fail "C3: concurrent shape convergence" "rc=$C3_R1/$C3_R2 $(tail -6 "$SB/c3-1.log" "$SB/c3-2.log")"
+fi
+
+# ── C4: an insane trusted-checkout source cannot replace a deployed copy. ──
+ST="$SB/state-c4"; seed_wrappers "$ST" "$TRUSTED"
+cp "$TRUSTED/scripts/flywheel-cmux-sync.sh" "$ST/bin/flywheel-cmux-sync"
+printf '#!/bin/bash\n' > "$TRUSTED/scripts/flywheel-cmux-sync.sh"
+: > "$SB/alerts.log"
+if run_conv "$TRUSTED" "$ST"; then
+  fail "C4: insane source must fail convergence"
+elif [[ ! -L "$ST/bin/flywheel-cmux-sync" ]] \
+   && grep -q 'no sane executable source' "$SB/alerts.log"; then
+  pass "C4: insane source → copy preserved, alert-only, rc=1"
+else
+  fail "C4: insane source guard" "$(cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null | tail -8)"
+fi
+{ echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-flywheel-cmux-sync.sh-$i >/dev/null"; i=$((i+1)); done; } \
+  > "$TRUSTED/scripts/flywheel-cmux-sync.sh"
+
+# ── C5: emergency bypass preserves the legacy regular-file shape silently. ──
+ST="$SB/state-c5"; seed_wrappers "$ST" "$TRUSTED"
+cp "$TRUSTED/scripts/flywheel-cmux-sync.sh" "$ST/bin/flywheel-cmux-sync"
+: > "$SB/alerts.log"
+if run_conv "$TRUSTED" "$ST" FLYWHEEL_CONVERGE_CMUX_SYMLINK=0 \
+   && [[ ! -L "$ST/bin/flywheel-cmux-sync" ]] \
+   && [[ ! -s "$SB/alerts.log" ]]; then
+  pass "C5: FLYWHEEL_CONVERGE_CMUX_SYMLINK=0 → byte-compatible copy-shape bypass"
+else
+  fail "C5: copy-shape escape hatch" "$(cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null | tail -8)"
+fi
+
+# ── C5b: malformed input is fail-safe default-on, never an implicit bypass. ──
+ST="$SB/state-c5b"; seed_wrappers "$ST" "$TRUSTED"
+cp "$TRUSTED/scripts/flywheel-cmux-sync.sh" "$ST/bin/flywheel-cmux-sync"
+: > "$SB/alerts.log"
+if run_conv "$TRUSTED" "$ST" FLYWHEEL_CONVERGE_CMUX_SYMLINK=banana \
+   && [[ -L "$ST/bin/flywheel-cmux-sync" ]] \
+   && grep -q 'invalid FLYWHEEL_CONVERGE_CMUX_SYMLINK' "$SB/out.log"; then
+  pass "C5b: invalid shape flag → warning + fail-safe default-on convergence"
+else
+  fail "C5b: invalid flag fallback" "$(cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null | tail -8)"
+fi
+
+# ── C6: even with a sandbox state root, a worktree source is never trusted
+# to replace a regular-file cmux deployment. ──
+ST="$SB/state-c6"; seed_wrappers "$ST" "$WORKTREE"
+cp "$WORKTREE/scripts/flywheel-cmux-sync.sh" "$ST/bin/flywheel-cmux-sync"
+: > "$SB/alerts.log"
+run_conv "$WORKTREE" "$ST" || true
+if [[ ! -L "$ST/bin/flywheel-cmux-sync" ]] \
+   && grep -q 'symlink health: skipped' "$SB/out.log" \
+   && ! grep -q 'copy-shape-converged' "$SB/alerts.log"; then
+  pass "C6: worktree root never converts a cmux copy into a global-style link"
+else
+  fail "C6: worktree copy-shape repair leak" "$(cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null | tail -8)"
+fi
+
 # ── H1: hygiene mount — scan failure ORs into converger rc ──
 # Copy the REAL scanner into the trusted fake repo; point HOME at a fixture
 # home with one broken global-bin symlink. Sandbox state → print-only path.

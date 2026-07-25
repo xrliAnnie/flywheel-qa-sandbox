@@ -29,6 +29,10 @@ if ! command -v lsof >/dev/null 2>&1; then
   echo "[SKIP] lsof not installed; real-tmux predicates cannot be verified"
   exit 0
 fi
+if ! ps axww -o uid= -o pid= -o ppid= -o command= >/dev/null 2>&1; then
+  echo "[SKIP] process inspection is unavailable; real-tmux classification cannot be verified"
+  exit 0
+fi
 
 # The full suite must run on both macOS and Linux CI. The macOS-only
 # /tmp -> /private/tmp normalization case gets its own Darwin-scoped root below.
@@ -76,10 +80,60 @@ socket_inode() {
 
 start_server() { # <socket> -> echoes pid
   local sock="$1" pid
-  tmux -S "$sock" new-session -d -s live 2>/dev/null
+  tmux -S "$sock" new-session -d -s live 'sleep 120' 2>/dev/null
   pid="$(server_pid_on "$sock")"
   printf '%s' "$pid"
 }
+
+echo "[TEST] policy-enforce keeps a server alive after its last business session exits"
+SOCK_KEEP="$BASE/keepalive-on.sock"
+PID_KEEP="$(start_server "$SOCK_KEEP")"
+SPAWNED="$SPAWNED $PID_KEEP"
+export FLYWHEEL_TMUX_KEEPALIVE=1
+POLICY_KEEP="$(tmux_socket_policy_enforce "$SOCK_KEEP")"
+POLICY_KEEP_RC=$?
+PID_KEEP_AFTER_POLICY="$(server_pid_on "$SOCK_KEEP")"
+OPTION_KEEP="$(tmux -S "$SOCK_KEEP" show-options -sv exit-empty 2>/dev/null)"
+tmux -S "$SOCK_KEEP" kill-session -t =live 2>/dev/null
+sleep 0.2
+PID_KEEP_AFTER_KILL="$(server_pid_on "$SOCK_KEEP")"
+if [ "$POLICY_KEEP_RC" -eq 0 ] \
+  && [ "$(_tmux_rescue_json_field "$POLICY_KEEP" action)" = "policy_enforced" ] \
+  && [ "$PID_KEEP_AFTER_POLICY" = "$PID_KEEP" ] \
+  && [ "$OPTION_KEEP" = "off" ] \
+  && tmux -S "$SOCK_KEEP" has-session -t =flywheel-keepalive 2>/dev/null \
+  && [ "$PID_KEEP_AFTER_KILL" = "$PID_KEEP" ]; then
+  pass "exit-empty off plus the sentinel preserve the same server generation"
+else
+  fail "keepalive policy failed: rc=$POLICY_KEEP_RC out=$POLICY_KEEP pid=$PID_KEEP/$PID_KEEP_AFTER_POLICY/$PID_KEEP_AFTER_KILL option=$OPTION_KEEP"
+fi
+
+echo "[TEST] disabled policy leaves the historical exit-on-empty behavior untouched"
+SOCK_NO_KEEP="$BASE/keepalive-off.sock"
+PID_NO_KEEP="$(start_server "$SOCK_NO_KEEP")"
+SPAWNED="$SPAWNED $PID_NO_KEEP"
+export FLYWHEEL_TMUX_KEEPALIVE=0
+POLICY_NO_KEEP="$(tmux_socket_policy_enforce "$SOCK_NO_KEEP")"
+POLICY_NO_KEEP_RC=$?
+NO_KEEP_SENTINEL=0
+tmux -S "$SOCK_NO_KEEP" has-session -t =flywheel-keepalive 2>/dev/null \
+  && NO_KEEP_SENTINEL=1
+tmux -S "$SOCK_NO_KEEP" kill-session -t =live 2>/dev/null
+PID_NO_KEEP_AFTER=""
+for _ in $(seq 1 40); do
+  PID_NO_KEEP_AFTER="$(server_pid_on "$SOCK_NO_KEEP")"
+  [ -z "$PID_NO_KEEP_AFTER" ] && break
+  sleep 0.05
+done
+if [ "$POLICY_NO_KEEP_RC" -eq 0 ] \
+  && [ "$(_tmux_rescue_json_field "$POLICY_NO_KEEP" action)" = "policy_disabled" ] \
+  && [ "$NO_KEEP_SENTINEL" -eq 0 ] \
+  && [ -z "$PID_NO_KEEP_AFTER" ]; then
+  pass "kill-switch performs no persistent mutation and the empty server exits"
+else
+  fail "disabled policy changed old behavior: rc=$POLICY_NO_KEEP_RC out=$POLICY_NO_KEEP sentinel=$NO_KEEP_SENTINEL pid_after=$PID_NO_KEEP_AFTER"
+fi
+export FLYWHEEL_TMUX_KEEPALIVE=1
 
 echo "[TEST] a real daemonized tmux server is recognized as a server candidate"
 SOCK_A="$BASE/recognize.sock"

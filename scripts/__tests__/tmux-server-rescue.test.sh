@@ -29,6 +29,30 @@ if [ "$1" = "-S" ] && [ "$3" = "display-message" ]; then
   fi
 fi
 case " $* " in
+  *" set-option -s exit-empty off "*)
+    if [ -n "${FAKE_POLICY_SET_SETS_PID:-}" ] && [ -n "${FAKE_STATE_FILE:-}" ]; then
+      printf '%s' "$FAKE_POLICY_SET_SETS_PID" > "$FAKE_STATE_FILE"
+    fi
+    exit "${FAKE_POLICY_SET_RC:-0}"
+    ;;
+  *" show-options -sv exit-empty "*)
+    [ "${FAKE_POLICY_SHOW_RC:-0}" -eq 0 ] || exit "$FAKE_POLICY_SHOW_RC"
+    printf '%s\n' "${FAKE_POLICY_SHOW_VALUE:-off}"
+    exit 0
+    ;;
+  *" has-session -t =flywheel-keepalive "*)
+    if [ -n "${FAKE_KEEPALIVE_STATE_FILE:-}" ] \
+        && [ -s "$FAKE_KEEPALIVE_STATE_FILE" ]; then
+      exit 0
+    fi
+    exit "${FAKE_KEEPALIVE_RC:-0}"
+    ;;
+  *" new-session -d -s flywheel-keepalive "*)
+    if [ -n "${FAKE_KEEPALIVE_STATE_FILE:-}" ]; then
+      printf 'present\n' > "$FAKE_KEEPALIVE_STATE_FILE"
+    fi
+    exit "${FAKE_KEEPALIVE_CREATE_RC:-0}"
+    ;;
   *" has-session "*)
     [ -n "${FAKE_VERIFY_SLEEP:-}" ] && sleep "$FAKE_VERIFY_SLEEP"
     exit "${FAKE_VERIFY_RC:-1}"
@@ -155,6 +179,14 @@ export FAKE_DISPLAY_SLEEP=""
 export FAKE_PS_SLEEP=""
 export FAKE_LSOF_SLEEP=""
 export FAKE_LSOF_METADATA=""
+export FAKE_POLICY_SET_RC=0
+export FAKE_POLICY_SET_SETS_PID=""
+export FAKE_POLICY_SHOW_RC=0
+export FAKE_POLICY_SHOW_VALUE=off
+export FAKE_KEEPALIVE_RC=0
+export FAKE_KEEPALIVE_STATE_FILE=""
+export FAKE_KEEPALIVE_CREATE_RC=0
+export FLYWHEEL_TMUX_KEEPALIVE=1
 export FLYWHEEL_TMUX_RESCUE_ALERT_BIN="/usr/bin/true"
 MACOS_TMUX_COMMAND='tmux -S /private/tmp/fly1285-fixture.sock new-session -Ad -s flywheel'
 ORIGINAL_HOME="$HOME"
@@ -767,10 +799,133 @@ else
   fail "marker gate mismatch: absent=$ABSENT valid=$VALID symlink=$SYMLINK bad_file=$BAD_FILE bad_parent=$BAD_PARENT"
 fi
 
+echo "[TEST] policy-enforce is idempotent, default-on, and socket-locked"
+export HOME="$ORIGINAL_HOME"
+: > "$REQUEST_SOCKET"
+: > "$TMUX_CALL_LOG"
+export FAKE_REACHABLE_PID=4242
+export FAKE_PS_ROWS="4242 1 ${MACOS_TMUX_COMMAND}\n"
+export FAKE_SOCKET_PIDS=4242
+export FAKE_KEEPALIVE_RC=1
+export FAKE_KEEPALIVE_STATE_FILE="$TMP_DIR/keepalive-state"
+rm -f "$FAKE_KEEPALIVE_STATE_FILE"
+unset FLYWHEEL_TMUX_KEEPALIVE
+OUT="$(tmux_socket_policy_enforce "$REQUEST_SOCKET")"
+POLICY_RC=$?
+OUT_AGAIN="$(tmux_socket_policy_enforce "$REQUEST_SOCKET")"
+POLICY_AGAIN_RC=$?
+if [ "$POLICY_RC" -eq 0 ] && [ "$POLICY_AGAIN_RC" -eq 0 ] \
+  && [ "$(printf '%s' "$OUT" | jq -r '.action')" = "policy_enforced" ] \
+  && [ "$(printf '%s' "$OUT_AGAIN" | jq -r '.action')" = "policy_enforced" ] \
+  && [ "$(grep -c 'set-option -s exit-empty off' "$TMUX_CALL_LOG")" -eq 2 ] \
+  && [ "$(grep -c 'new-session -d -s flywheel-keepalive' "$TMUX_CALL_LOG")" -eq 1 ]; then
+  pass "default-on policy writes exit-empty off and creates the sentinel once"
+else
+  fail "policy enforcement was not idempotent: first=$POLICY_RC/$OUT second=$POLICY_AGAIN_RC/$OUT_AGAIN calls=$(tr '\n' ';' < "$TMUX_CALL_LOG")"
+fi
+
+echo "[TEST] keepalive kill-switch stops enforcement without mutating server state"
+: > "$TMUX_CALL_LOG"
+rm -f "$FAKE_KEEPALIVE_STATE_FILE"
+export FLYWHEEL_TMUX_KEEPALIVE=0
+OUT="$(tmux_socket_policy_enforce "$REQUEST_SOCKET")"
+POLICY_RC=$?
+if [ "$POLICY_RC" -eq 0 ] \
+  && [ "$(printf '%s' "$OUT" | jq -r '.action')" = "policy_disabled" ] \
+  && ! grep -Eq 'set-option|show-options|has-session -t =flywheel-keepalive|new-session -d -s flywheel-keepalive' "$TMUX_CALL_LOG" \
+  && [ ! -e "$FAKE_KEEPALIVE_STATE_FILE" ]; then
+  pass "disabled enforcement performs reachability proof only"
+else
+  fail "disabled policy mutated state: rc=$POLICY_RC out=$OUT calls=$(tr '\n' ';' < "$TMUX_CALL_LOG")"
+fi
+
+echo "[TEST] invalid keepalive flag fails safe to enabled"
+: > "$TMUX_CALL_LOG"
+rm -f "$FAKE_KEEPALIVE_STATE_FILE"
+export FLYWHEEL_TMUX_KEEPALIVE=invalid
+OUT="$(tmux_socket_policy_enforce "$REQUEST_SOCKET")"
+POLICY_RC=$?
+if [ "$POLICY_RC" -eq 0 ] \
+  && [ "$(printf '%s' "$OUT" | jq -r '.action')" = "policy_enforced" ] \
+  && grep -q 'set-option -s exit-empty off' "$TMUX_CALL_LOG" \
+  && grep -q 'new-session -d -s flywheel-keepalive' "$TMUX_CALL_LOG"; then
+  pass "malformed flag values retain the protective default"
+else
+  fail "malformed flag disabled protection: rc=$POLICY_RC out=$OUT calls=$(tr '\n' ';' < "$TMUX_CALL_LOG")"
+fi
+
+echo "[TEST] policy failure alerts and converts an ensure success into a typed hold"
+: > "$TMUX_CALL_LOG"
+POLICY_ALERTS="$TMP_DIR/policy-alerts"
+: > "$POLICY_ALERTS"
+POLICY_ALERT_BIN="$TMP_DIR/policy-alert-bin"
+printf '%s\n' '#!/bin/bash' \
+  'printf "%s\n" "$*" >> "$FLYWHEEL_TEST_POLICY_ALERTS"' > "$POLICY_ALERT_BIN"
+chmod +x "$POLICY_ALERT_BIN"
+export FLYWHEEL_TEST_POLICY_ALERTS="$POLICY_ALERTS"
+export FLYWHEEL_TMUX_RESCUE_ALERT_BIN="$POLICY_ALERT_BIN"
+export FLYWHEEL_TMUX_KEEPALIVE=1
+export FAKE_KEEPALIVE_RC=0
+export FAKE_KEEPALIVE_STATE_FILE=""
+export FAKE_POLICY_SET_RC=1
+export FAKE_VERIFY_RC=0
+OUT="$(tmux_socket_ensure "$REQUEST_SOCKET" \
+  --verify tmux -S "$TEST_SOCKET" has-session -t =flywheel \
+  --create tmux -S "$TEST_SOCKET" new-session -Ad -s flywheel)"
+POLICY_RC=$?
+export FAKE_POLICY_SET_RC=0
+export FLYWHEEL_TMUX_RESCUE_ALERT_BIN="/usr/bin/true"
+if [ "$POLICY_RC" -eq 4 ] \
+  && [ "$(printf '%s' "$OUT" | jq -r '.action')" = "hold_unknown" ] \
+  && [ "$(printf '%s' "$OUT" | jq -r '.evidence.reason')" = "policy_postcondition_failed" ] \
+  && grep -q 'tmux_policy_postcondition' "$POLICY_ALERTS"; then
+  pass "a failed postcondition cannot escape through an ensure success exit"
+else
+  fail "policy failure did not fail loud: rc=$POLICY_RC out=$OUT alerts=$(tr '\n' ';' < "$POLICY_ALERTS")"
+fi
+
+echo "[TEST] policy refuses success when the server generation changes mid-flight"
+: > "$TMUX_CALL_LOG"
+export FLYWHEEL_TMUX_RESCUE_ALERT_BIN="/usr/bin/true"
+export FAKE_STATE_FILE="$TMP_DIR/policy-generation"
+: > "$FAKE_STATE_FILE"
+export FAKE_REACHABLE_PID=4242
+export FAKE_PS_ROWS="4242 1 ${MACOS_TMUX_COMMAND}\n"
+export FAKE_PS_AFTER_ROWS="4343 1 ${MACOS_TMUX_COMMAND}\n"
+export FAKE_SOCKET_PIDS=4343
+export FAKE_POLICY_SET_SETS_PID=4343
+OUT="$(tmux_socket_policy_enforce "$REQUEST_SOCKET")"
+POLICY_RC=$?
+export FAKE_POLICY_SET_SETS_PID=""
+export FAKE_STATE_FILE=""
+if [ "$POLICY_RC" -eq 4 ] \
+  && [ "$(printf '%s' "$OUT" | jq -r '.evidence.reason')" = "policy_server_generation_changed" ]; then
+  pass "same-PID pre/post proof rejects a replacement generation"
+else
+  fail "server replacement escaped the policy proof: rc=$POLICY_RC out=$OUT calls=$(tr '\n' ';' < "$TMUX_CALL_LOG")"
+fi
+
+echo "[TEST] policy-enforce refuses an unreachable server without tmux mutation"
+: > "$TMUX_CALL_LOG"
+rm -f "$REQUEST_SOCKET"
+export FAKE_REACHABLE_PID=""
+export FAKE_PS_ROWS=""
+export FAKE_SOCKET_PIDS=""
+OUT="$(tmux_socket_policy_enforce "$REQUEST_SOCKET")"
+POLICY_RC=$?
+if [ "$POLICY_RC" -eq 4 ] \
+  && [ "$(printf '%s' "$OUT" | jq -r '.evidence.reason')" = "policy_server_unreachable" ] \
+  && ! grep -Eq 'set-option|show-options|has-session|new-session' "$TMUX_CALL_LOG"; then
+  pass "unreachable policy seed is non-success and mutation-free"
+else
+  fail "unreachable policy seed drifted: rc=$POLICY_RC out=$OUT calls=$(tr '\n' ';' < "$TMUX_CALL_LOG")"
+fi
+
 echo "[TEST] ensure verifies under the socket lock before considering create"
 export HOME="$ORIGINAL_HOME"
 : > "$REQUEST_SOCKET"
 : > "$TMUX_CALL_LOG"
+export FLYWHEEL_TMUX_KEEPALIVE=1
 export FAKE_REACHABLE_PID=4242
 export FAKE_PS_ROWS="4242 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=4242

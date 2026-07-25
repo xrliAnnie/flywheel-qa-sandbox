@@ -156,7 +156,8 @@ else
   fi
 fi
 
-# 7. Note: start watchers ONLY via flywheel-cmux-autostart or the launchd job.
+# 7. FLY-1446: launchd is the only normal watcher starter. The .zshrc
+# flywheel-cmux-autostart hook only verifies/bootstrap this KeepAlive job.
 # Both paths funnel into `flywheel-cmux-sync --watch`, which holds the
 # single-instance lock (FLY-129 pushed lock acquisition DOWN into the `--watch`
 # dispatcher — so `--watch` does NOT skip the lock). Concurrent autostart +

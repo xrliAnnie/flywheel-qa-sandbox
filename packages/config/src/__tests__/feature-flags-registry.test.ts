@@ -469,6 +469,27 @@ describe("feature-flag registry invariants", () => {
 		expect(cutover).toBeUndefined();
 	});
 
+	it("FLY-1446 registers tmux keepalive enforcement as a default-on kill switch", () => {
+		const flag = FEATURE_FLAGS.find(
+			(candidate) => candidate.envVar === "FLYWHEEL_TMUX_KEEPALIVE",
+		);
+		expect(flag).toMatchObject({
+			name: "tmux_keepalive",
+			category: "kill_switch",
+			scope: "bridge_global",
+			polarity: "default_on",
+			default: true,
+			toggleable: "conversational",
+		});
+		expect(flag?.readSites).toEqual([
+			expect.objectContaining({
+				file: "scripts/lib/tmux-server-rescue.sh",
+				symbol: "_tmux_rescue_keepalive_enabled",
+				timing: "call_time",
+			}),
+		]);
+	});
+
 	it("FLY-1252 registers account identity verification as a default-off external-runtime feature", () => {
 		const identity = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_ACCOUNT_IDENTITY_CHECK",

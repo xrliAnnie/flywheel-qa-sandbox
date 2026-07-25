@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1446 · cmux 稳态修复包 — 设计方案</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.65; padding:32px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:28px; }
+  .sub code { font-family:'SF Mono',monospace; font-size:12px; }
+  h2 { font-size:19px; color:#1a365d; margin:36px 0 14px; display:flex; align-items:center; gap:8px; }
+  h2 .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin-bottom:14px; }
+  .card.red { border-left:4px solid #ff3b30; } .card.amber { border-left:4px solid #ff9500; }
+  .card.blue { border-left:4px solid #007aff; } .card.green { border-left:4px solid #34c759; }
+  .card.purple { border-left:4px solid #af52de; } .card.gray { border-left:4px solid #86868b; }
+  .lede { font-size:17px; font-weight:600; }
+  .badge { display:inline-block; font-size:11px; font-weight:700; padding:2px 9px; border-radius:10px; margin-right:6px; vertical-align:middle; }
+  .badge.fix { background:#e8f2ff; color:#007aff; } .badge.ok { background:#e6f9ec; color:#34c759; }
+  .badge.warn { background:#fff3e0; color:#ff9500; } .badge.no { background:#fdeceb; color:#ff3b30; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th { text-align:left; color:#86868b; font-weight:600; padding:7px 10px; border-bottom:1px solid #e5e5ea; white-space:nowrap; }
+  td { padding:8px 10px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  tr:last-child td { border-bottom:none; }
+  code, .mono { font-family:'SF Mono',monospace; font-size:12px; background:#f5f5f7; padding:1px 5px; border-radius:4px; }
+  /* flow diagram */
+  .flow { display:flex; flex-direction:column; gap:0; margin:8px 0; }
+  .lane { display:flex; align-items:stretch; gap:10px; margin-bottom:10px; }
+  .lane-tag { flex:0 0 96px; font-size:12px; font-weight:700; color:#fff; border-radius:8px; display:flex; align-items:center; justify-content:center; text-align:center; padding:8px 6px; }
+  .steps { flex:1; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .node { background:#fff; border:1.5px solid #d2d2d7; border-radius:8px; padding:7px 11px; font-size:12.5px; box-shadow:0 1px 2px rgba(0,0,0,0.04); }
+  .node b { font-size:12.5px; }
+  .node.hot { border-color:#34c759; background:#f2fcf5; }
+  .node.alert { border-color:#ff9500; background:#fff9f0; }
+  .arr { color:#86868b; font-size:14px; font-weight:700; }
+  .legend { font-size:12px; color:#86868b; margin-top:6px; }
+  ul { padding-left:20px; } li { margin-bottom:7px; font-size:14px; }
+  .kv { font-size:14px; }
+  .kv b { color:#1a365d; }
+  .footer { color:#86868b; font-size:12px; margin-top:30px; text-align:center; }
+  @media (max-width:600px){ .lane { flex-direction:column; } .lane-tag { flex:none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>cmux 稳态修复包 — 设计方案</h1>
+<div class="sub">FLY-1446 · 2026-07-24 · design 阶段 · Codex design review <b style="color:#34c759">APPROVED</b>(4 轮,findings 8→5→3→0)· 上游:07-23 cmux 事故 Retro</div>
+
+<div class="card green">
+  <div class="lede">一句话:让「你在 cmux 侧栏永远看得见全队」变成被系统保证的事——修好部署腐化、多实例互踩、丢窗沉默、双 tab、坏账本罢工五个根因,任何一环坏了都<u>报警而不是沉默</u>。</div>
+</div>
+
+<h2><span class="dot" style="background:#ff3b30"></span>为什么要修(07-23 事故 30 秒回放)</h2>
+<div class="card red">
+  <div class="kv">
+  侧栏 tab 数一天内 18→8→7 乱跳、13 个 Lead 没有 tab、名字错挂——你完全失去了对机群的可视。根因链:<br><br>
+  <b>① 部署腐化</b>:repo 里修好的同步代码 7 天没进生产,旧版没有单实例保护 → 7 个进程互踩。<br>
+  <b>② 丢窗即沉默</b>:同步器只认「看得见的窗」,没有「应该有谁」的名册——窗丢了它不找、不报、不建。<br>
+  <b>③ tmux 地基塌了</b>:托管 runner 窗的 tmux server 整体退出,凶手至今没钉死。<br>
+  当晚又实锤两个新 bug:同一个窗被<b>收养两次</b>出双 tab;一个<b>坏账本文件</b>让同步器每轮全跳过、零报警(就是那次「tab 一直缺」的真因)。
+  </div>
+</div>
+
+<h2><span class="dot" style="background:#007aff"></span>核心流程:五层防线怎么协同</h2>
+<div class="card blue">
+  <div class="flow">
+    <div class="lane">
+      <div class="lane-tag" style="background:#af52de">C · 部署层<br>合并即部署</div>
+      <div class="steps">
+        <span class="node">PR merge 到 main</span><span class="arr">→</span>
+        <span class="node hot">生产脚本 = <b>symlink 指向主 checkout</b>(git pull 即新代码,无 cp 环节)</span><span class="arr">→</span>
+        <span class="node alert">巡检发现有人换成了副本 → 自动换回 + 报警(三个既有巡检点,零新定时器)</span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-tag" style="background:#007aff">B · 启动层<br>唯一启动者</div>
+      <div class="steps">
+        <span class="node hot"><b>launchd 是唯一启动者</b>(KeepAlive 自愈)</span><span class="arr">→</span>
+        <span class="node">.zshrc / 手动路径降级为「只确保 launchd 在位」,永不再自己拉起实例</span><span class="arr">→</span>
+        <span class="node">重启唯一手势:<code>launchctl kickstart -k</code></span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-tag" style="background:#34c759">A · 对账层<br>roster 点名</div>
+      <div class="steps">
+        <span class="node">从 launchd Lead 清单<b>自动派生名册</b>(零手工维护)</span><span class="arr">→</span>
+        <span class="node">每 60s 点名:该有窗的有没有窗、该有 tab 的有没有 tab</span><span class="arr">→</span>
+        <span class="node hot">缺 tab 且窗还在 → 自动补建</span>
+        <span class="node alert">连窗都没了 → <b>报警</b>(每次故障恰好报一次,恢复后再坏再报)</span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-tag" style="background:#ff9500">E · 账本层<br>收养纪律</div>
+      <div class="steps">
+        <span class="node">收养建 tab 前先查账:这个「槽位」已有归属 → 不再重复建(<b>根治双 tab</b>)</span><span class="arr">→</span>
+        <span class="node alert">坏账本文件 → 隔离进 quarantine + 报警 + <b>其余照常干活</b>(不再全局罢工)</span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-tag" style="background:#ff3b30">D · 地基层<br>tmux 保底</div>
+      <div class="steps">
+        <span class="node">先保全易失证据、出死因报告(不预设结论)</span><span class="arr">→</span>
+        <span class="node hot">给 server 挂<b>保底哨兵会话</b> + 关掉「最后一个会话没了就退出」→ 批量清理再也带不走整台 server</span>
+      </div>
+    </div>
+  </div>
+  <div class="legend">绿 = 自动修复路径 · 橙 = 报警路径(核心原则:<b>看不见 ≠ 没事,看不见 = 报警</b>)</div>
+</div>
+
+<h2><span class="dot" style="background:#af52de"></span>数据与结构模型(三个关键机制)</h2>
+<div class="card purple">
+  <table>
+    <tr><th>机制</th><th>是什么</th><th>为什么这样设计</th></tr>
+    <tr>
+      <td><b>Lead 名册派生</b></td>
+      <td>launchd 的 <code>com.flywheel.lead.*</code> 清单 → 期望窗名(逐字一致)→ 按「载具类型」闭集分类:Claude(tmux 窗)/ Codex TUI(精确白名单)/ 其余一律按违规报警</td>
+      <td>launchd 清单本来就是「谁存在」的唯一真相,零手工维护;分类是闭集——认不出的形态宁可报警也不静默豁免</td>
+    </tr>
+    <tr>
+      <td><b>账本唯一键</b></td>
+      <td>收养账本按「代际 + 标题」= 一个可视槽位,唯一约束写进账本<b>写事务内部</b>;改名卡住留下的半成品行由专用守卫安全收尸</td>
+      <td>07-23 双 tab 就是「按标题找 tab」被改名延迟骗过;唯一键放事务里才没有竞态窗口</td>
+    </tr>
+    <tr>
+      <td><b>报警 episode</b></td>
+      <td>每个对象一条持久状态:坏了→报一次;恢复→自动解锁;再坏→再报一次。读取失败(≠真的空)只报「对账盲区」,绝不批量误报</td>
+      <td>既不刷屏(FLY-1220 的教训)也不哑火(旧去重是永久的,恢复后再坏就再也报不出来)</td>
+    </tr>
+  </table>
+</div>
+
+<h2><span class="dot" style="background:#ff9500"></span>关键取舍(与被否掉的方案)</h2>
+<div class="card amber">
+  <ul>
+    <li><span class="badge no">否</span><b>issue 原文的「发版自动 cp + md5 对账」</b> → 改为强制 symlink 形态。cp 副本模式本身就是这病的宿主(漏跑一次就腐化);安装器的设计终态本来就是 symlink,「合并即部署」天然成立,md5 对账退化为 symlink 健康检查。<b>目标保留,手段替换</b>——Codex review 明确认可这个偏离。</li>
+    <li><span class="badge no">否</span><b>手工维护 Lead 名册</b> → launchd 清单自动派生。手工名册第一天就会过期。</li>
+    <li><span class="badge no">否</span><b>同步器代管 Lead 生命周期</b>(窗没了帮忙重建 Lead)→ 越权。窗的生死归 launchd/Lead 启动器;同步器只管「可视 + 报警」。</li>
+    <li><span class="badge warn">切单</span><b>孤儿 runner 的只读观察窗</b> → 移入 follow-up 单。四个安全启用前提(日志轮转契约、窗口所有权凭据、不可逆终态白名单、真机场景矩阵)尚未齐备,硬塞进来会带进一个能误关别人窗口的半成品;本单先交付「孤儿 runner 检测 + 报警」,启用契约已在计划里逐字钉死。</li>
+    <li><span class="badge ok">守住</span><b>fail-closed 骨架一律不动</b>:坏账本隔离只处理「纯语法坏」;一切说不清的失败仍然整轮停手——宁可这轮不干活,不可在证据不足时乱动你的窗口。</li>
+  </ul>
+</div>
+
+<h2><span class="dot" style="background:#34c759"></span>验收(issue 六条,逐条可测)</h2>
+<div class="card green">
+  <table>
+    <tr><th>#</th><th>能力</th><th>修复项</th></tr>
+    <tr><td>①</td><td>杀掉任一 Lead 的 tab/窗 → ≤2 分钟自动重建或报警,绝不沉默</td><td>A</td></tr>
+    <tr><td>②</td><td>同时从 3 个路径触发同步器 → 始终单实例</td><td>B</td></tr>
+    <tr><td>③</td><td>改 repo 脚本合并 → 部署自动同步,对账绿</td><td>C</td></tr>
+    <tr><td>④</td><td>server 死因报告 + 防复发措施落地</td><td>D</td></tr>
+    <tr><td>⑤</td><td>改名延迟下反复扫描 → 永不双收养</td><td>E1</td></tr>
+    <tr><td>⑥</td><td>人为塞坏账本 → 报警 + 隔离 + 继续建 tab</td><td>E2</td></tr>
+  </table>
+</div>
+
+<h2><span class="dot" style="background:#86868b"></span>诚实边界(这个设计不做什么)</h2>
+<div class="card gray">
+  <ul>
+    <li>Bridge 内部的 sessions 状态真相、Discord 渲染 —— 归并行单 FLY-1374(两单不同代码区,可并行)。</li>
+    <li>Lead 进程本身死活的看护 —— 归 LeadWatchdog;本单只管可视层。</li>
+    <li>cmux 应用(Electron)自身的 bug —— 只做同步器侧防御。</li>
+    <li>Codex TUI Lead 的 v1 覆盖 = 存在性检查 + 报警(不代建 TUI);孤儿 runner v1 = 检测 + 报警(观察窗 follow-up)。</li>
+    <li>keepalive 开关只「停止继续执行」,不自动还原已生效的 server 设置(真回滚是显式运维动作,写进 runbook)。</li>
+  </ul>
+</div>
+
+<div class="footer">FLY-1446 · design 节点交付物 · 设计文档:engineering/doc/FLY-1446-cmux-retro-fixes/{exploration,research,plan}.md · review 存档:design-review/(4 轮)</div>
+</div>
+</body>
+</html>
