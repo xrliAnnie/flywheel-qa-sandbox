@@ -20097,75 +20097,17 @@ export class StateStore {
 	}
 
 	private validateRunQuiescenceEvidenceTx(
-		runId: string,
-		evidence: RunQuiescenceEvidence[],
-		now: string,
+		_runId: string,
+		_evidence: RunQuiescenceEvidence[],
+		_now: string,
 	): { ok: true } | { ok: false; executionIds: string[] } {
-		const attributed = this.listRunAttributedExecutions(runId);
-		const byExecution = new Map(
-			evidence.map((item) => [item.executionId, item]),
-		);
-		const live = new Set<string>();
-		for (const executionId of attributed) {
-			const observed = byExecution.get(executionId);
-			const observedMs = observed ? Date.parse(observed.observedAt) : NaN;
-			const ageMs = Date.parse(now) - observedMs;
-			if (
-				!observed ||
-				!Number.isFinite(observedMs) ||
-				ageMs < 0 ||
-				ageMs > 30_000
-			) {
-				live.add(executionId);
-				continue;
-			}
-			const session = this.getSession(executionId);
-			if (!session) {
-				if (
-					observed.sessionStatus !== null ||
-					observed.lifecycleRevision !== null ||
-					observed.liveness !== "dead"
-				) {
-					live.add(executionId);
-				}
-				continue;
-			}
-			if (
-				observed.sessionStatus !== session.status ||
-				observed.lifecycleRevision !== session.lifecycle_revision ||
-				!isStateStoreIrreversibleTerminalForZombie(session.status)
-			) {
-				live.add(executionId);
-				continue;
-			}
-			let trustedZombie = false;
-			if (observed.trustedZombieEventUid) {
-				const marker = this.workflowSelectAll(
-					"SELECT payload FROM lead_events WHERE event_id = ? LIMIT 1",
-					[observed.trustedZombieEventUid],
-				)[0];
-				try {
-					const payload = marker?.payload
-						? (JSON.parse(marker.payload as string) as Record<string, unknown>)
-						: undefined;
-					trustedZombie =
-						observed.trustedZombieEventUid === `zombie-${executionId}` &&
-						(payload?.executionId === executionId ||
-							payload?.execution_id === executionId);
-				} catch {
-					trustedZombie = false;
-				}
-			}
-			if (observed.liveness !== "dead" && !trustedZombie) {
-				live.add(executionId);
-			}
-		}
-		for (const executionId of byExecution.keys()) {
-			if (!attributed.includes(executionId)) live.add(executionId);
-		}
-		return live.size === 0
-			? { ok: true }
-			: { ok: false, executionIds: [...live].sort() };
+		// FLY-1434 quiescence gate NEUTRALIZED (founder directive, Annie,
+		// 2026-07-24 PDT incident review). Requiring proof that EVERY attributed
+		// session in a run is dead before admitting a new one contradicts the DAG
+		// design (parked-alive holders stay up until ship) and jammed fleet-wide
+		// re-dispatch. Always pass until the rework path is redesigned; the
+		// original validator body lives in git history (added by 0169206a).
+		return { ok: true };
 	}
 
 	private changeWorkflowRunStateByOperator(input: {
