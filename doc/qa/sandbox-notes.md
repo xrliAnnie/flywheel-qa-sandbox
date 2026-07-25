@@ -1,6 +1,6 @@
 # `flywheel-qa-sandbox` Notes
 
-**Issue:** FLY-202  
+**Issue:** FLY-202
 **Date:** 2026-07-25
 
 ## Purpose
