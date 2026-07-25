@@ -18,22 +18,30 @@
 - [ ] **Step 1: Run the requirements check before creating the document**
 
 ```bash
-bash -euo pipefail -c '
-export LC_ALL=C
-target=doc/qa/sandbox-notes.md
-test -f "$target"
-test "$(awk "/^## Purpose/{inside=1;next}/^## /{inside=0} inside && NF{if (\$0 !~ /^[-*#|`]/) n++} END{print n+0}" "$target")" -ge 3
-for dir in $(git ls-tree -d --name-only HEAD); do
-  grep -Fq "| \`$dir/\` |" "$target"
-done
-test "$(awk "/^## packages\\/qa-framework\\/README.md Summary/{inside=1;next}/^## /{inside=0} inside && /^- /{n++} END{print n+0}" "$target")" -eq 10
-LC_ALL=C ls -R doc/ | head -50 > /tmp/fly-202-doc-tree.actual
-awk "/^## \`ls -R doc\\/ \\| head -50\` Output/{inside=1;next} inside && /^```/{if (open) exit; open=1; next} inside && open{print}" "$target" > /tmp/fly-202-doc-tree.documented
-cmp /tmp/fly-202-doc-tree.actual /tmp/fly-202-doc-tree.documented
+node -e '
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const { execFileSync } = require("node:child_process");
+const target = process.env.FLY202_TARGET || "doc/qa/sandbox-notes.md";
+assert.equal(fs.existsSync(target), true, `${target} must exist`);
+const text = fs.readFileSync(target, "utf8");
+const purpose = text.match(/^## Purpose\n\n([\s\S]*?)\n\n## /m);
+assert.ok(purpose, "Purpose section must exist");
+assert.ok(purpose[1].split(/\n\s*\n/).filter(Boolean).length >= 3, "Purpose needs 3 paragraphs");
+const dirs = execFileSync("git", ["ls-tree", "-d", "--name-only", "HEAD"], { encoding: "utf8" }).trim().split("\n");
+for (const dir of dirs) assert.ok(text.includes(`| \`${dir}/\` |`), `missing directory row: ${dir}`);
+const summary = text.match(/^## packages\/qa-framework\/README\.md Summary\n\n([\s\S]*?)\n\n## /m);
+assert.ok(summary, "README summary section must exist");
+assert.equal(summary[1].split("\n").filter((line) => line.startsWith("- ")).length, 10, "README summary needs 10 bullets");
+const documented = text.match(/^## `ls -R doc\/ \| head -50` Output\n\n```text\n([\s\S]*?)\n```$/m);
+assert.ok(documented, "tree output block must exist");
+const actual = execFileSync("bash", ["-c", "LC_ALL=C ls -R doc/ | head -50"], { encoding: "utf8" });
+assert.equal(`${documented[1]}\n`, actual, "tree output must match the requested command");
+console.log("FLY-202 documentation requirements: PASS");
 '
 ```
 
-Expected: FAIL at `test -f` because `doc/qa/sandbox-notes.md` does not yet exist.
+Expected: FAIL with `doc/qa/sandbox-notes.md must exist` because the target does not yet exist.
 
 ### Task 2: Create the sandbox note
 
@@ -118,7 +126,7 @@ Copy all 50 output lines verbatim under `## \`ls -R doc/ | head -50\` Output` in
 
 Run the exact shell block from Task 1.
 
-Expected: exit 0 with no output.
+Expected: exit 0 with `FLY-202 documentation requirements: PASS`.
 
 - [ ] **Step 2: Check Markdown diff hygiene**
 
