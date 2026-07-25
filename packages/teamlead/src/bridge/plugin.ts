@@ -315,7 +315,10 @@ import {
 	buildFounderConsentWiring,
 	buildGateResponsePostWriteHook,
 } from "./founder-consent/wiring.js";
-import { runFounderDecisionConvergencePass } from "./founder-decision-convergence.js";
+import {
+	recordFounderDecisionAck,
+	runFounderDecisionConvergencePass,
+} from "./founder-decision-convergence.js";
 import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 // FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
@@ -8246,11 +8249,25 @@ export async function startBridge(
 					?.leads.find((candidate) => candidate.agentId === row.lead_id);
 				const botToken = lead?.botToken ?? config.discordBotToken;
 				if (botToken) {
-					void reactToFounderMessage({
-						botToken,
-						channelId: row.thread_id,
-						messageId: row.msg_id,
-						emoji: "❓",
+					await recordFounderDecisionAck({
+						react: () =>
+							reactToFounderMessage({
+								botToken,
+								channelId: row.thread_id,
+								messageId: row.msg_id,
+								emoji: "❓",
+							}),
+						recordAudit: (eventType, payload) => {
+							store.insertEvent({
+								event_id: `founder-decision-ack:${row.thread_id}:${row.msg_id}:${row.question_id}`,
+								execution_id: row.execution_id,
+								issue_id: session.issue_id,
+								project_name: row.project_name,
+								event_type: eventType,
+								source: "bridge.founder-decision-convergence",
+								payload,
+							});
+						},
 					});
 				}
 				return true;

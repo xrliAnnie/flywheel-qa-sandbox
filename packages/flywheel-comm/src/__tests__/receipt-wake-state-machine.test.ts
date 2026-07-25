@@ -685,6 +685,46 @@ describe("FLY-1392 receipt wake state machine", () => {
 		expect(db.listPendingReceiptAlerts(["wake_failed"])).toHaveLength(1);
 	});
 
+	it("keeps typed but incomplete terminal wake evidence pending", () => {
+		const wake = admit(1, 1_000).wake;
+		const alert = db.enqueueRunnerReceiptWakeEscalation({
+			executionId: "exec-1",
+			messageId: wake.message_id,
+			reason: "terminal_wake_failed",
+			firstDetectedAtMs: wake.queued_at,
+			nowMs: 2_000,
+		});
+		(
+			db as unknown as {
+				db: { prepare(sql: string): { run(...args: unknown[]): void } };
+			}
+		).db
+			.prepare("UPDATE receipt_alert_outbox SET payload = ? WHERE id = ?")
+			.run(
+				JSON.stringify({
+					executionId: "exec-1",
+					messageId: wake.message_id,
+					identityKind: "terminal_episode",
+					terminalLifecycleId: "terminal-1",
+				}),
+				alert?.id,
+			);
+		(
+			db as unknown as {
+				db: { prepare(sql: string): { run(...args: unknown[]): void } };
+			}
+		).db
+			.prepare(
+				"UPDATE runner_phase_wakes SET state = 'finished', finished_at = ? WHERE execution_id = ? AND message_id = ?",
+			)
+			.run(2_500, "exec-1", wake.message_id);
+
+		expect(
+			db.revalidateRunnerReceiptWakeAlert(alert?.id ?? "", 3_000),
+		).toMatchObject({ id: alert?.id, canceled_at: null });
+		expect(db.listPendingReceiptAlerts(["wake_failed"])).toHaveLength(1);
+	});
+
 	it("rejects attempts to rewrite durable session receipt lineage", () => {
 		db.registerSession("exec-1", "session", "proj", "FLY-1", "lead-1");
 

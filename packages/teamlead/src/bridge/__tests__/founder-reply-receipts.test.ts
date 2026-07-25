@@ -732,6 +732,66 @@ describe("FLY-1392 founder receipt ingress", () => {
 		});
 	});
 
+	it("FLY-1448 reuses dead-letter question evidence after a crash before cursor save", async () => {
+		cursor.save(ctx.threadId, snowflakeAt(Date.now() - 120_000));
+		db.registerSession("exec-a", "runner", "flywheel", "FLY-1448", "lead-a");
+		const questionId = db.insertQuestion("exec-a", "lead-a", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const msgId = snowflakeAt(Date.now() - 30_000);
+		const rootId = `founder_msg:lead-a:${msgId}`;
+		db.enqueueFounderHubRoot({
+			id: rootId,
+			toLead: "lead-a",
+			content: JSON.stringify({
+				v: 1,
+				receiptId: rootId,
+				msgId,
+				answer: "ship it",
+				projectName: "flywheel",
+				issueId: "FLY-1448",
+				threadId: ctx.threadId,
+				isReply: false,
+			}),
+			refMessageId: msgId,
+			now: new Date().toISOString(),
+			routingState: "awaiting_rebind",
+		});
+		queue.markProcessed(rootId, {
+			now: new Date().toISOString(),
+			evidence: {
+				v: 1,
+				kind: "dead_lettered",
+				ref: questionId,
+				actor: OWNER,
+				actor_kind: "founder-writer",
+				fence: { discord_message_id: msgId },
+				basis: [`question:${questionId}`],
+			},
+		});
+		const d = leadOnlyDeps([
+			{ id: msgId, content: "ship it", author: { id: OWNER } },
+		]);
+
+		const outcome = await emitFounderReplyDeliveryForThread(ctx, [], {
+			...d,
+			retryLedger: {
+				recordFailure: vi.fn(() => ({ deadLettered: false })),
+				deadLetterNow: vi.fn(() => ({ deadLettered: true })),
+				isDeadLettered: vi.fn(() => true),
+				clear: vi.fn(),
+				clearUpTo: vi.fn(),
+			},
+		});
+
+		expect(outcome.result).toBe("advanced");
+		expect(cursor.load(ctx.threadId)).toBe(msgId);
+		expect(queue.getById(rootId)).toMatchObject({
+			routing_state: "bound",
+			processed_evidence: expect.stringContaining("dead_lettered"),
+		});
+	});
+
 	it("FLY-1448 narrows a verified Discord reply to the exact bound ship card", async () => {
 		cursor.save(ctx.threadId, snowflakeAt(Date.now() - 120_000));
 		db.registerSession("exec-a", "runner-a", "flywheel", "FLY-1448", "lead-a");

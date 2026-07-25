@@ -20,6 +20,25 @@ export interface FounderDecisionConvergencePassDeps {
 	logger?: (message: string) => void;
 }
 
+export async function recordFounderDecisionAck(input: {
+	react(): Promise<{ ok: boolean; status?: number }>;
+	recordAudit(
+		eventType: "founder_ack_reacted" | "founder_ack_failed",
+		payload: {
+			emoji: "❓";
+			outcome: "dropped";
+			status?: number;
+		},
+	): void;
+}): Promise<void> {
+	const result = await input.react();
+	input.recordAudit(result.ok ? "founder_ack_reacted" : "founder_ack_failed", {
+		emoji: "❓",
+		outcome: "dropped",
+		...(result.status ? { status: result.status } : {}),
+	});
+}
+
 /**
  * FLY-1448 C: convergence rides an existing GatePoller cadence. Resolution is
  * per question; only a durably-classified approve/reject can be claimed for a

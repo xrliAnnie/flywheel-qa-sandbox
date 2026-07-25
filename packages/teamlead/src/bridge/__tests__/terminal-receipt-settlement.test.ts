@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
 import { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -115,6 +116,7 @@ describe("FLY-1448 terminal receipt settlement projector", () => {
 				"exec-1",
 				"flywheel-eng-lead",
 				"terminal root",
+				{ checkpoint: "approve_to_ship" },
 			);
 			const queue = new LeadInboxQueue(commPath);
 			try {
@@ -137,6 +139,19 @@ describe("FLY-1448 terminal receipt settlement projector", () => {
 			});
 			if (method === "finalizeSession") comm.finalizeSession("exec-1");
 			else comm.deleteSessionAndRunnerPhaseLifecycle("exec-1");
+			comm.close();
+			const raw = new Database(commPath);
+			try {
+				raw
+					.prepare(
+						"UPDATE messages SET expires_at = ?, relay_state = 'terminal_disposed' WHERE id = ?",
+					)
+					.run("2000-01-01T00:00:00.000Z", questionId);
+			} finally {
+				raw.close();
+			}
+			comm = new CommDB(commPath);
+			expect(comm.getMessageById(questionId)).toBeUndefined();
 			comm.close();
 
 			await new TerminalReceiptSettlementProjector({

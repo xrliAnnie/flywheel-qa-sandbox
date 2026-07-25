@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FounderDecisionConvergenceRow } from "../../StateStore.js";
-import { runFounderDecisionConvergencePass } from "../founder-decision-convergence.js";
+import {
+	recordFounderDecisionAck,
+	runFounderDecisionConvergencePass,
+} from "../founder-decision-convergence.js";
 
 const row = (
 	over: Partial<FounderDecisionConvergenceRow> = {},
@@ -23,6 +26,23 @@ const row = (
 });
 
 describe("founder decision convergence pass", () => {
+	it("audits a failed founder question-mark reaction without rejecting the durable alert", async () => {
+		const recordAudit = vi.fn();
+
+		await expect(
+			recordFounderDecisionAck({
+				react: vi.fn(async () => ({ ok: false, status: 403 })),
+				recordAudit,
+			}),
+		).resolves.toBeUndefined();
+
+		expect(recordAudit).toHaveBeenCalledWith("founder_ack_failed", {
+			emoji: "❓",
+			outcome: "dropped",
+			status: 403,
+		});
+	});
+
 	it("resolves candidates per question before claiming alerts", async () => {
 		const first = row({ question_id: "q-a" });
 		const second = row({ question_id: "q-b" });

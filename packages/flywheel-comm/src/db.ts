@@ -212,6 +212,36 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_runner_phase_wakes_source
   ON runner_phase_wakes(execution_id, source_instruction_id)
   WHERE source_instruction_id IS NOT NULL;
 ${LEAD_INBOX_SCHEMA}
+CREATE TABLE IF NOT EXISTS receipt_root_lineage (
+  receipt_id     TEXT PRIMARY KEY,
+  execution_id  TEXT NOT NULL,
+  question_id   TEXT NOT NULL,
+  root_lead_id  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_receipt_root_lineage_execution
+  ON receipt_root_lineage(execution_id, receipt_id);
+INSERT OR IGNORE INTO receipt_root_lineage
+  (receipt_id, execution_id, question_id, root_lead_id)
+SELECT root.id, source.from_agent, source.id, root.to_lead
+  FROM lead_inbox root
+  JOIN messages source ON source.id = root.ref_message_id
+ WHERE root.resend_of IS NULL;
+CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_capture
+AFTER INSERT ON lead_inbox
+WHEN NEW.resend_of IS NULL AND NEW.ref_message_id IS NOT NULL
+BEGIN
+  INSERT OR IGNORE INTO receipt_root_lineage
+    (receipt_id, execution_id, question_id, root_lead_id)
+  SELECT NEW.id, source.from_agent, source.id, NEW.to_lead
+    FROM messages source
+   WHERE source.id = NEW.ref_message_id;
+END;
+CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_update
+BEFORE UPDATE ON receipt_root_lineage
+BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_delete
+BEFORE DELETE ON receipt_root_lineage
+BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
 `;
 
 /**
@@ -1574,10 +1604,10 @@ export class CommDB {
 			this.db
 				.prepare(
 					`SELECT DISTINCT root.id
-					   FROM lead_inbox root
-					   JOIN messages source ON source.id = root.ref_message_id
+					   FROM receipt_root_lineage lineage
+					   JOIN lead_inbox root ON root.id = lineage.receipt_id
 					  WHERE root.resend_of IS NULL
-					    AND source.from_agent = ?
+					    AND lineage.execution_id = ?
 					  ORDER BY root.seq`,
 				)
 				.all(executionId) as Array<{ id: string }>
@@ -1598,16 +1628,17 @@ export class CommDB {
 		return this.db
 			.prepare(
 				`SELECT root.id AS receiptId,
-				        owner.execution_id AS executionId,
-				        source.id AS questionId,
+				        lineage.execution_id AS executionId,
+				        lineage.question_id AS questionId,
 				        owner.project_name AS projectName,
 				        owner.issue_id AS issueId,
-				        root.to_lead AS rootLeadId,
+				        lineage.root_lead_id AS rootLeadId,
 				        owner.lead_id AS sessionLeadId
 				   FROM lead_inbox root
-				   JOIN messages source ON source.id = root.ref_message_id
+				   JOIN receipt_root_lineage lineage
+				     ON lineage.receipt_id = root.id
 				   JOIN session_receipt_lineage owner
-				     ON owner.execution_id = source.from_agent
+				     ON owner.execution_id = lineage.execution_id
 				  WHERE root.id = ? AND root.resend_of IS NULL`,
 			)
 			.get(receiptId) as
@@ -1658,19 +1689,17 @@ export class CommDB {
 			}
 			const lineage = this.db
 				.prepare(
-					`SELECT source.from_agent, owner.execution_id
-						   FROM messages source
-						   JOIN session_receipt_lineage owner
-						     ON owner.execution_id = source.from_agent
-						  WHERE source.id = ?`,
+					`SELECT lineage.execution_id, lineage.question_id
+					   FROM receipt_root_lineage lineage
+					  WHERE lineage.receipt_id = ?`,
 				)
-				.get(root.ref_message_id) as
-				| { from_agent: string; execution_id: string }
+				.get(root.id) as
+				| { execution_id: string; question_id: string }
 				| undefined;
 			if (
 				!lineage ||
-				lineage.from_agent !== input.expectedExecutionId ||
-				lineage.execution_id !== input.expectedExecutionId
+				lineage.execution_id !== input.expectedExecutionId ||
+				lineage.question_id !== root.ref_message_id
 			) {
 				throw new Error(
 					`receipt lineage mismatch for ${root.id}: expected ${input.expectedExecutionId}`,
@@ -2660,6 +2689,11 @@ export class CommDB {
 						}
 					} else if (inputQuestionBasis) {
 						const questionId = inputQuestionBasis.slice("question:".length);
+						if (existingEvidence.ref !== questionId) {
+							return { kind: "conflict" as const, evidenceKind };
+						}
+					} else if (existingQuestionBasis) {
+						const questionId = existingQuestionBasis.slice("question:".length);
 						if (existingEvidence.ref !== questionId) {
 							return { kind: "conflict" as const, evidenceKind };
 						}
@@ -5558,11 +5592,13 @@ export class CommDB {
 			) {
 				return alert;
 			}
-			if (
-				payload.identityKind === "terminal_episode" &&
-				typeof payload.terminalLifecycleId === "string" &&
-				typeof payload.generation === "number"
-			) {
+			if (payload.identityKind === "terminal_episode") {
+				if (
+					typeof payload.terminalLifecycleId !== "string" ||
+					typeof payload.generation !== "number"
+				) {
+					return alert;
+				}
 				const episode = this.db
 					.prepare(
 						`SELECT 1 FROM runner_wake_failure_episode
