@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1448 · 你批准了,系统必须听见</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,system-ui,"PingFang SC",sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.65; padding:24px 16px 64px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:24px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:20px 22px; margin-bottom:18px; }
+  .card.red { border-left:4px solid #ff3b30; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.gray { border-left:4px solid #86868b; }
+  h2 { font-size:18px; margin-bottom:12px; color:#1a365d; }
+  p { margin-bottom:10px; font-size:15px; }
+  .big { font-size:17px; font-weight:600; }
+  .dim { color:#86868b; font-size:13.5px; }
+  .flow { display:flex; flex-direction:column; gap:0; margin:14px 0; }
+  .steprow { display:flex; align-items:stretch; gap:10px; }
+  .node { flex:1; border-radius:10px; padding:10px 14px; font-size:14px; background:#f0f4f8; border:1px solid #d9e2ec; }
+  .node b { display:block; font-size:14px; }
+  .node.ok { background:#eafaf0; border-color:#b7ebc6; }
+  .node.bad { background:#fdeceb; border-color:#f5c1bd; }
+  .node.fix { background:#eaf3fd; border-color:#bcd9f5; }
+  .arrowdown { text-align:center; color:#86868b; font-size:16px; padding:2px 0; }
+  .tag { display:inline-block; font-size:11.5px; font-weight:600; border-radius:5px; padding:1px 8px; margin-right:6px; vertical-align:1px; }
+  .tag.bad { background:#ff3b30; color:#fff; }
+  .tag.ok { background:#34c759; color:#fff; }
+  .tag.fix { background:#007aff; color:#fff; }
+  .tag.warn { background:#ff9500; color:#fff; }
+  table { width:100%; border-collapse:collapse; font-size:14px; margin:8px 0; }
+  th { text-align:left; color:#86868b; font-weight:600; font-size:12.5px; border-bottom:1px solid #e8e8ed; padding:6px 8px; }
+  td { padding:8px; border-bottom:1px solid #f2f2f5; vertical-align:top; }
+  code { font-family:"SF Mono",Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:4px; padding:1px 5px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:640px){ .grid2{grid-template-columns:1fr;} .steprow{flex-direction:column;} }
+  .mini { border-radius:10px; padding:12px 14px; font-size:13.5px; background:#fafafa; border:1px solid #ececf0; }
+  .mini b { display:block; margin-bottom:4px; }
+  ul { margin:4px 0 10px 20px; font-size:14.5px; }
+  li { margin-bottom:5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1448 · 你批准了,系统必须听见</h1>
+  <div class="sub">批准断路修复 · 设计方案(Codex 评审 9 轮通过,含深夜现场收编)· 2026-07-23</div>
+
+  <div class="card red">
+    <h2>一句话</h2>
+    <p class="big">你在 ship 卡下面回「批准」——不管是随口一句还是标准格式——系统读到了却当没看见:不执行、不报错、不告诉任何人。这单把这条断掉的链路接回来,并保证以后任何批准要么生效、要么在 3 分钟内响亮地喊出来。</p>
+  </div>
+
+  <div class="card gray">
+    <h2>出了什么事(7-23 房测铁证)</h2>
+    <div class="flow">
+      <div class="steprow">
+        <div class="node ok"><b>① 你回复 ship 卡</b>散文「可以发」和标准 JSON 都试了,真账号真回复</div>
+        <div class="node ok"><b>② 系统读到了</b>消息游标推进过你的回复 —— 确实看见了</div>
+      </div>
+      <div class="arrowdown">↓ 然后</div>
+      <div class="steprow">
+        <div class="node bad"><b>③ 没有人接住</b>负责「把回复翻译成批准」的组件,在去年一次重构里被断了线 —— 还在代码库里,但没有任何入口调用它</div>
+        <div class="node bad"><b>④ 零告警</b>流程停在门禁上,没人被通知「founder 批了但没生效」。你看到的是:系统装死</div>
+      </div>
+    </div>
+    <p class="dim">另外查实两笔旧账:等待中的执行会话没有「合法停靠」标记,唤醒通道按合同拒绝投递(每天 16+ 条假警报的源头);已结束的会话每来一条消息就换个新指纹重复告警(告警跑步机,历史上人工消掉过 ~35 条)。</p>
+  </div>
+
+  <div class="card blue">
+    <h2>修复后的批准之路(核心流程)</h2>
+    <div class="flow">
+      <div class="steprow">
+        <div class="node fix"><b>A · 接回翻译官</b><span class="tag fix">主修</span>把被弃线的批准识别组件接回消息入口:散文、标准 JSON、✅ 表情三种批准全部走同一个已审核的写入收口,身份校验(只认你本人)、防重、防过期一样不少</div>
+      </div>
+      <div class="arrowdown">↓ 批准生效 → 流程自动往前走;万一哪天又断了 ↓</div>
+      <div class="steprow">
+        <div class="node fix"><b>C · 丢件保险丝(不是新看门狗)</b><span class="tag fix">兜底</span>按你的反馈收窄:平时完全安静,只有一种情况响 —— 你的<b>明确批准/拒绝</b>被系统证明弄丢了(3 分钟没生效)→ 告警 Lead + 你的消息标 ❓。机制修好后它的预期触发次数是零;普通聊天、含糊回复一概不报警</div>
+      </div>
+      <div class="arrowdown">↓ 底账两笔一起清 ↓</div>
+      <div class="steprow">
+        <div class="node fix"><b>B · 停靠记账对齐</b>引擎替等待中的会话打上「合法停靠」标记(而不是放松安全检查),唤醒通道恢复畅通;来自你的消息永不静默丢弃</div>
+        <div class="node fix"><b>D · 驯服现有告警(不加新的)</b>给已有的唤醒告警上笼头:同一个故障只报一次(修好后再坏才报第二次),已结束的会话彻底闭嘴 —— 目标是每晚 28 条降到接近零</div>
+      </div>
+      <div class="arrowdown">↓ 深夜现场又收编一组(Tadashi 手工 SQL 清欠账的三件事,做成自动) ↓</div>
+      <div class="steprow">
+        <div class="node fix"><b>E · 终态自动清账</b>你直接下令合并后留下的「孤儿批准卡」自动关闭;已结束的任务不再半夜 page 你(该给 Lead 的告警照发);Lead 处理告警有了正规按钮,不用再手写 SQL</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card blue">
+    <h2>你问的:要不要换一个真正的消息队列(MQ)?</h2>
+    <p><b>结论:这次不换,先把「收到消息之后怎么处置」的规矩补齐;什么时候换有明确信号。</b></p>
+    <ul>
+      <li>这波事故没有一条消息是「运输途中丢的」—— 全丢在「收到了但没人按规矩处置」。换 Redis/NATS 只换运输,处置规矩照样得写。</li>
+      <li>真 MQ 自带的确认/死信/去重机制,恰恰就是本单在补的东西;区别是 MQ 把它们放进一个要单独部署、监控、救火的新服务,而现在的做法让它们和业务账本写在同一笔账里 —— 好几处「不许出半截状态」的保证正依赖这一点。</li>
+      <li>单机 Mac 上现在没有任何吞吐或丢失的证据。<b>重新评估的信号</b>:上多机、数据库写入开始排队、或者规矩补齐后仍有实证的传输层丢失 —— 到那天只把「运输」搬去 MQ,账本仍留在本地。</li>
+    </ul>
+  </div>
+
+  <div class="card green">
+    <h2>数据与结构(改了哪些账本)</h2>
+    <table>
+      <tr><th>账本</th><th>作用</th></tr>
+      <tr><td><b>批准收敛账本</b>(新)</td><td>每条「门禁期间的 founder 回复」一行,记录读到时间、判定结果、3 分钟期限、是否已生效 —— 看门狗的依据</td></tr>
+      <tr><td><b>引擎停靠账本</b>(新)</td><td>引擎在会话进入等待时写「合法停靠」凭证(带代次,只授权唤醒投递,绝不用于清理/杀进程判断)</td></tr>
+      <tr><td><b>故障代次账本</b>(新)</td><td>同一会话同一类故障 = 一个编号;恢复后再坏 = 新编号可再报。存量老会话一次性补号,不会上线即刷屏</td></tr>
+      <tr><td><b>消息处置收据</b>(既有,补严)</td><td>每条 founder 消息的最终去向(已绑定/已暂存/已死信/交 Lead)都有带类型的落章,崩溃重启不丢不重</td></tr>
+    </table>
+  </div>
+
+  <div class="card amber">
+    <h2>关键取舍(以及否掉了什么)</h2>
+    <ul>
+      <li><b>批准由系统自动接住,而不是靠 Lead 人工转译。</b>否掉「Lead 收到你的回复后手动执行批准」:两次实证(房测 + 生产)证明押在 Lead 活性上不可靠,且批准识别本来就是系统控制面的职责(身份校验、语义判定、防重全在这里)。</li>
+      <li><b>给等待中的会话补「合法停靠」凭证,而不是放松安全检查。</b>否掉「唤醒通道直接放行所有运行中会话」:那等于把「不确认对方状态就敢往终端打字」重新合法化,之前收紧是有血的教训的。</li>
+      <li><b>「founder 消息永不静默丢弃」做成无开关的硬行为。</b>否掉给它配回滚开关:能关掉的保证不是保证。</li>
+      <li><b>复用已审组件而不是新造。</b>接回的批准识别组件是去年多轮评审、生产跑过的老将;新造第三套只会增加出错面。总开关(可整体关闭自动批准)保留。</li>
+    </ul>
+  </div>
+
+  <div class="card gray">
+    <h2>诚实边界(这单不做什么)</h2>
+    <ul>
+      <li><b>✅ 表情批准</b>:代码侧没查出毛病(房测三次点击是浏览器工具没点上),本单不动它,修完由 QA 真机补证。</li>
+      <li><b>状态显示对账</b>(Discord 显示与实际状态对齐)是 FLY-1374 的活,不并进来。</li>
+      <li><b>换 MQ</b>:本单不做(见上卡),给出了何时重评的信号。</li>
+      <li><b>生效时点</b>:代码合并后要等下一次 Bridge 重启才上线(汇入统一重启窗口,不单独重启)。</li>
+      <li><b>验收标准</b>(修完在测试房逐条过):① 散文批准生效 ② 标准 JSON 生效 ③ ✅ 表情生效 ④ 人为弄断投递 → 3 分钟内 Lead 收到告警 ⑤ 已结束会话不再重复刷告警。</li>
+    </ul>
+  </div>
+
+  <div class="sub" style="text-align:center">设计文档:engineering/doc/FLY-1448-approval-circuit-break/(exploration / research / plan / design-review)</div>
+</div>
+</body>
+</html>

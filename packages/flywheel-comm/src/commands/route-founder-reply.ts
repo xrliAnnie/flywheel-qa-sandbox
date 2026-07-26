@@ -58,6 +58,7 @@ export function routeFounderReply(
 						"A founder reply was routed to your pending question. Run flywheel-comm check for the durable response.",
 					metadata: {
 						kind: "founder_reply_routed",
+						origin: "founder",
 						msgId: args.msgId,
 						questionId: args.toQuestionId,
 					},

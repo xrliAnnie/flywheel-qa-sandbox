@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -80,6 +80,7 @@ import {
 	workflowTemplateDispatchBlockMessage,
 	workflowTemplateDispatchBlockReason,
 } from "./workflow-template-dispatch.js";
+import { isOperationalTerminalStatus } from "./operational-terminal-status.js";
 
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
@@ -600,6 +601,65 @@ export interface DetectionEscalationRow {
 	 * receipt) follows legacy identical-content semantics and never revives.
 	 * NULL = pre-migration → treated as `lead` (conservative). */
 	resolved_via: "recovery" | "residue_harvest" | "lead" | null;
+	source_receipt_id: string | null;
+	source_execution_id: string | null;
+	source_question_id: string | null;
+}
+
+export type FounderDecisionClassification =
+	| "approve"
+	| "reject"
+	| "unclear"
+	| "none";
+
+const FOUNDER_DECISION_ALERT_CLAIM_TTL_MS = 5 * 60_000;
+
+export interface FounderDecisionConvergenceRow {
+	thread_id: string;
+	msg_id: string;
+	question_id: string;
+	project_name: string;
+	lead_id: string;
+	execution_id: string;
+	classification: FounderDecisionClassification;
+	card_reference_valid: 0 | 1;
+	disposed_at_ms: number;
+	deadline_at_ms: number;
+	resolved_at_ms: number | null;
+	resolution: string | null;
+	alerted_at_ms: number | null;
+	alert_claimed_at_ms: number | null;
+}
+
+export interface WorkflowEngineParkOutboxRow {
+	row_id: number;
+	event_id: string;
+	project_name: string;
+	execution_id: string;
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	activation_id: string;
+	generation: number;
+	event: "park_opened" | "park_cleared";
+	reason: string;
+	created_at: string;
+}
+
+export interface ReceiptSettlementIntent {
+	intent_id: string;
+	authority_kind: "session_terminal" | "issue_done" | "pr_merged";
+	project_name: string;
+	execution_id: string | null;
+	issue_id: string;
+	terminal_lifecycle_id: string | null;
+	lifecycle_revision: number | null;
+	authority_credential: string | null;
+	state: "pending" | "applying" | "completed" | "fenced";
+	claim_token: string | null;
+	last_error: string | null;
+	created_at: string;
+	updated_at: string;
 }
 
 /** FLY-1282 Part D: prepare-time receipt facts (the route builds the FINAL
@@ -840,6 +900,8 @@ export interface Session {
 	 * The runner-lifecycle founder credential snapshots this; a stale confirmation
 	 * is rejected once it changes (plan §5.1). Defaults 0. */
 	lifecycle_revision?: number;
+	/** Stable identity for one continuous stay in an operational terminal state. */
+	terminal_lifecycle_id?: string;
 }
 
 // FLY-163: CleanupCandidate removed (CleanupService gone).
@@ -1353,6 +1415,15 @@ export class StateStore {
 		);
 	}
 
+	private addColumnIfMissing(
+		table: string,
+		column: string,
+		definition: string,
+	): void {
+		if (this.workflowTableColumns(table).has(column)) return;
+		this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+	}
+
 	private createWorkflowActorAndActivationTables(): void {
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_actor (
@@ -1770,6 +1841,7 @@ export class StateStore {
 				project_name TEXT NOT NULL,
 				status TEXT NOT NULL DEFAULT 'pending',
 				terminal_at TEXT,
+				terminal_lifecycle_id TEXT,
 				started_at TEXT,
 				last_activity_at TEXT,
 				tmux_session TEXT,
@@ -2121,6 +2193,36 @@ export class StateStore {
 		} catch {
 			/* exists */
 		}
+		this.addColumnIfMissing("sessions", "terminal_lifecycle_id", "TEXT");
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS receipt_settlement_intent (
+				intent_id TEXT PRIMARY KEY,
+				authority_kind TEXT NOT NULL
+					CHECK(authority_kind IN ('session_terminal','issue_done','pr_merged')),
+				project_name TEXT NOT NULL,
+				execution_id TEXT,
+				issue_id TEXT NOT NULL,
+				terminal_lifecycle_id TEXT,
+				lifecycle_revision INTEGER,
+				authority_credential TEXT,
+				state TEXT NOT NULL DEFAULT 'pending'
+					CHECK(state IN ('pending','applying','completed','fenced')),
+				claim_token TEXT,
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				UNIQUE(authority_kind, execution_id, terminal_lifecycle_id)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_receipt_settlement_intent_state ON receipt_settlement_intent(state, created_at)",
+		);
+		this.addColumnIfMissing(
+			"receipt_settlement_intent",
+			"authority_credential",
+			"TEXT",
+		);
+		this.backfillTerminalLifecycleIds();
 
 		// FLY-1185 §2.1: worktree authority binding — an INDEPENDENT column group
 		// written ONLY by the atomic `bindWorktreeOnce` (create-time, orchestrator
@@ -3104,6 +3206,9 @@ export class StateStore {
 				status TEXT NOT NULL DEFAULT 'NEW',
 				attempts INTEGER NOT NULL DEFAULT 0,
 				resolved_via TEXT,
+				source_receipt_id TEXT,
+				source_execution_id TEXT,
+				source_question_id TEXT,
 				created_at TEXT NOT NULL DEFAULT (datetime('now')),
 				PRIMARY KEY (target_key, kind, episode_fingerprint)
 			)
@@ -3117,8 +3222,85 @@ export class StateStore {
 		} catch {
 			/* column already exists */
 		}
+		for (const column of [
+			"source_receipt_id",
+			"source_execution_id",
+			"source_question_id",
+		]) {
+			this.addColumnIfMissing("detection_escalations", column, "TEXT");
+		}
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_detection_escalations_status ON detection_escalations(status)",
+		);
+
+		// FLY-1448 C: every founder message is tracked independently against
+		// every pending ship gate it could have answered. Classification lands
+		// before the gate writer, so an explicit decision can never disappear
+		// without a durable convergence obligation.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS founder_decision_convergence (
+				thread_id TEXT NOT NULL,
+				msg_id TEXT NOT NULL,
+				question_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				lead_id TEXT NOT NULL,
+				execution_id TEXT NOT NULL,
+				classification TEXT NOT NULL DEFAULT 'none'
+					CHECK(classification IN ('approve','reject','unclear','none')),
+				card_reference_valid INTEGER NOT NULL DEFAULT 0
+					CHECK(card_reference_valid IN (0,1)),
+				disposed_at_ms INTEGER NOT NULL,
+				deadline_at_ms INTEGER NOT NULL,
+				resolved_at_ms INTEGER,
+				resolution TEXT,
+				alerted_at_ms INTEGER,
+				alert_claimed_at_ms INTEGER,
+				PRIMARY KEY (thread_id, msg_id, question_id)
+			)
+		`);
+		const convergenceColumns = this.workflowTableColumns(
+			"founder_decision_convergence",
+		);
+		const migrateLegacyAlertClaims = !convergenceColumns.has(
+			"alert_claimed_at_ms",
+		);
+		this.addColumnIfMissing(
+			"founder_decision_convergence",
+			"alert_claimed_at_ms",
+			"INTEGER",
+		);
+		if (migrateLegacyAlertClaims) {
+			// Before the lease column existed, alerted_at_ms was written before the
+			// external notification. Treat those ambiguous rows as stale claims so
+			// idempotent notification can prove delivery after upgrade.
+			this.db.run(
+				`UPDATE founder_decision_convergence
+				    SET alert_claimed_at_ms = alerted_at_ms,
+				        alerted_at_ms = NULL
+				  WHERE resolved_at_ms IS NULL AND alerted_at_ms IS NOT NULL`,
+			);
+		}
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_founder_decision_convergence_due ON founder_decision_convergence(resolved_at_ms, alerted_at_ms, deadline_at_ms)",
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_engine_park_outbox (
+				row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+				event_id TEXT NOT NULL UNIQUE,
+				project_name TEXT NOT NULL,
+				execution_id TEXT NOT NULL,
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL,
+				activation_id TEXT NOT NULL,
+				generation INTEGER NOT NULL,
+				event TEXT NOT NULL CHECK(event IN ('park_opened','park_cleared')),
+				reason TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_engine_park_project_row ON workflow_engine_park_outbox(project_name, row_id)",
 		);
 
 		// FLY-1282 Part D: durable disposition-receipt outbox. Rows are created
@@ -3904,6 +4086,43 @@ export class StateStore {
 		);
 	}
 
+	/** FLY-1448: old terminal rows predate the continuous-terminal-episode
+	 * identity. Backfill once and persist it; re-opening the database must never
+	 * mint a new identity for the same terminal stay. */
+	private backfillTerminalLifecycleIds(): void {
+		this.db.transaction(() => {
+			const rows = this.workflowSelectAll(
+				`SELECT execution_id, status
+				   FROM sessions
+				  WHERE terminal_lifecycle_id IS NULL`,
+				[],
+			);
+			for (const row of rows) {
+				if (!isOperationalTerminalStatus(row.status as string | undefined)) {
+					continue;
+				}
+				this.db.run(
+					`UPDATE sessions
+					    SET terminal_lifecycle_id = ?
+					  WHERE execution_id = ?
+					    AND terminal_lifecycle_id IS NULL`,
+					[randomUUID(), row.execution_id],
+				);
+			}
+			for (const row of this.workflowSelectAll(
+				`SELECT execution_id, terminal_lifecycle_id
+				   FROM sessions
+				  WHERE terminal_lifecycle_id IS NOT NULL`,
+				[],
+			)) {
+				this.ensureTerminalSettlementIntentTx(
+					row.execution_id as string,
+					row.terminal_lifecycle_id as string,
+				);
+			}
+		});
+	}
+
 	/** FLY-1257: maintain the single SQLite-clock chronology anchor shared by
 	 * all status-write paths. First terminal entry stamps; terminal rewrites
 	 * preserve the first stamp; any revival clears it. Must run inside the
@@ -3936,12 +4155,504 @@ export class StateStore {
 				[executionId],
 			);
 		}
+
+		const wasOperationalTerminal =
+			isOperationalTerminalStatus(previousStatus);
+		const isOperationalTerminal = isOperationalTerminalStatus(nextStatus);
+		if (isOperationalTerminal && !wasOperationalTerminal) {
+			this.db.run(
+				`UPDATE sessions
+				    SET terminal_lifecycle_id = COALESCE(terminal_lifecycle_id, ?)
+				  WHERE execution_id = ?`,
+				[randomUUID(), executionId],
+			);
+			const row = this.workflowSelectAll(
+				`SELECT terminal_lifecycle_id FROM sessions
+				  WHERE execution_id = ?`,
+				[executionId],
+			)[0];
+			if (typeof row?.terminal_lifecycle_id === "string") {
+				this.ensureTerminalSettlementIntentTx(
+					executionId,
+					row.terminal_lifecycle_id,
+					previousStatus !== undefined && previousStatus !== nextStatus ? 1 : 0,
+				);
+			}
+		} else if (!isOperationalTerminal) {
+			const oldLifecycle = this.workflowSelectAll(
+				`SELECT terminal_lifecycle_id FROM sessions WHERE execution_id = ?`,
+				[executionId],
+			)[0]?.terminal_lifecycle_id;
+			if (typeof oldLifecycle === "string") {
+				this.db.run(
+					`UPDATE receipt_settlement_intent
+					    SET state = 'fenced', updated_at = datetime('now'),
+					        last_error = 'terminal_lifecycle_ended_before_claim'
+					  WHERE authority_kind = 'session_terminal'
+					    AND execution_id = ? AND terminal_lifecycle_id = ?
+					    AND state = 'pending'`,
+					[executionId, oldLifecycle],
+				);
+			}
+			this.db.run(
+				"UPDATE sessions SET terminal_lifecycle_id = NULL WHERE execution_id = ?",
+				[executionId],
+			);
+		}
 	}
 
 	/** FLY-245 D-a: read a session's current monotonic lifecycle revision (0 if
 	 * the session is absent). */
 	getLifecycleRevision(executionId: string): number {
 		return this.getSession(executionId)?.lifecycle_revision ?? 0;
+	}
+
+	/** Ensure a legacy/corrupt terminal row has an episode identity without
+	 * racing a status transition. The observed tuple is a CAS credential:
+	 * callers receive no identity once either status or revision has changed. */
+	ensureTerminalLifecycleId(
+		executionId: string,
+		observedStatus: string,
+		observedLifecycleRevision: number,
+	): string | undefined {
+		let result: string | undefined;
+		let changed = false;
+		this.db.transaction(() => {
+			const row = this.workflowSelectAll(
+				`SELECT status, lifecycle_revision, terminal_lifecycle_id
+				   FROM sessions
+				  WHERE execution_id = ?`,
+				[executionId],
+			)[0];
+			if (
+				!row ||
+				row.status !== observedStatus ||
+				Number(row.lifecycle_revision) !== observedLifecycleRevision ||
+				!isOperationalTerminalStatus(row.status as string)
+			) {
+				return;
+			}
+			if (typeof row.terminal_lifecycle_id === "string") {
+				result = row.terminal_lifecycle_id;
+				return;
+			}
+
+			const candidate = randomUUID();
+			this.db.run(
+				`UPDATE sessions
+				    SET terminal_lifecycle_id = ?
+				  WHERE execution_id = ?
+				    AND status = ?
+				    AND lifecycle_revision = ?
+				    AND terminal_lifecycle_id IS NULL`,
+				[
+					candidate,
+					executionId,
+					observedStatus,
+					observedLifecycleRevision,
+				],
+			);
+			changed = this.db.getRowsModified() === 1;
+			const current = this.workflowSelectAll(
+				`SELECT terminal_lifecycle_id
+				   FROM sessions
+				  WHERE execution_id = ?
+				    AND status = ?
+				    AND lifecycle_revision = ?`,
+				[executionId, observedStatus, observedLifecycleRevision],
+			)[0];
+			result =
+				typeof current?.terminal_lifecycle_id === "string"
+					? current.terminal_lifecycle_id
+					: undefined;
+		});
+		if (changed) this.save();
+		return result;
+	}
+
+	private receiptSettlementIntentFromRow(
+		row: Record<string, unknown>,
+	): ReceiptSettlementIntent {
+		return {
+			intent_id: row.intent_id as string,
+			authority_kind: row.authority_kind as ReceiptSettlementIntent["authority_kind"],
+			project_name: row.project_name as string,
+			execution_id: (row.execution_id as string | null) ?? null,
+			issue_id: row.issue_id as string,
+			terminal_lifecycle_id:
+				(row.terminal_lifecycle_id as string | null) ?? null,
+			lifecycle_revision:
+				typeof row.lifecycle_revision === "number"
+					? row.lifecycle_revision
+					: null,
+			authority_credential:
+				(row.authority_credential as string | null) ?? null,
+			state: row.state as ReceiptSettlementIntent["state"],
+			claim_token: (row.claim_token as string | null) ?? null,
+			last_error: (row.last_error as string | null) ?? null,
+			created_at: row.created_at as string,
+			updated_at: row.updated_at as string,
+		};
+	}
+
+	private ensureTerminalSettlementIntentTx(
+		executionId: string,
+		terminalLifecycleId: string,
+		revisionIncrement = 0,
+	): ReceiptSettlementIntent | undefined {
+		const session = this.workflowSelectAll(
+			`SELECT issue_id, project_name, status, lifecycle_revision,
+			        terminal_lifecycle_id
+			   FROM sessions WHERE execution_id = ?`,
+			[executionId],
+		)[0];
+		if (
+			!session ||
+			!isOperationalTerminalStatus(session.status as string) ||
+			session.terminal_lifecycle_id !== terminalLifecycleId
+		) {
+			return undefined;
+		}
+		const intentId = `session_terminal:${executionId}:${terminalLifecycleId}`;
+		this.db.run(
+			`INSERT OR IGNORE INTO receipt_settlement_intent
+			   (intent_id, authority_kind, project_name, execution_id, issue_id,
+			    terminal_lifecycle_id, lifecycle_revision, state, created_at, updated_at)
+			 VALUES (?, 'session_terminal', ?, ?, ?, ?, ?, 'pending',
+			         datetime('now'), datetime('now'))`,
+			[
+				intentId,
+				session.project_name,
+				executionId,
+				session.issue_id,
+				terminalLifecycleId,
+				Number(session.lifecycle_revision) + revisionIncrement,
+			],
+		);
+		return this.getReceiptSettlementIntent(intentId);
+	}
+
+	ensureTerminalSettlementIntent(
+		executionId: string,
+		terminalLifecycleId: string,
+	): ReceiptSettlementIntent | undefined {
+		let result: ReceiptSettlementIntent | undefined;
+		this.db.transaction(() => {
+			result = this.ensureTerminalSettlementIntentTx(
+				executionId,
+				terminalLifecycleId,
+			);
+		});
+		return result;
+	}
+
+	/**
+	 * FLY-1448 E1: persist one issue-authority settlement intent for every
+	 * session reached through the exact issue alias set. The credential is the
+	 * fresh Linear terminal observation (canonical UUID + updatedAt), so a
+	 * reopen followed by a later Done episode cannot reuse a completed intent.
+	 */
+	ensureIssueDoneSettlementIntents(input: {
+		projectName: string;
+		canonicalIssueId: string;
+		issueAliases: readonly string[];
+		authorityCredential: string;
+	}): ReceiptSettlementIntent[] {
+		const intents: ReceiptSettlementIntent[] = [];
+		this.db.transaction(() => {
+			const rows = this.getSessionsForIssueAliases([
+				...new Set([
+					input.canonicalIssueId,
+					...input.issueAliases.filter(Boolean),
+				]),
+			]).filter((row) => row.project_name === input.projectName);
+			const credentialHash = createHash("sha256")
+				.update(input.authorityCredential)
+				.digest("hex");
+			for (const row of rows) {
+				const intentId = `issue_done:${input.projectName}:${row.execution_id}:${credentialHash}`;
+				this.db.run(
+					`INSERT OR IGNORE INTO receipt_settlement_intent
+					   (intent_id, authority_kind, project_name, execution_id, issue_id,
+					    terminal_lifecycle_id, lifecycle_revision, authority_credential,
+					    state, created_at, updated_at)
+					 VALUES (?, 'issue_done', ?, ?, ?, NULL, ?, ?, 'pending',
+					         datetime('now'), datetime('now'))`,
+					[
+						intentId,
+						input.projectName,
+						row.execution_id,
+						input.canonicalIssueId,
+						row.lifecycle_revision,
+						input.authorityCredential,
+					],
+				);
+				const intent = this.getReceiptSettlementIntent(intentId);
+				if (intent) intents.push(intent);
+			}
+		});
+		return intents;
+	}
+
+	/** FLY-1448 E1: persist PR-MERGED authority separately from issue-Done. */
+	ensurePrMergedSettlementIntents(input: {
+		projectName: string;
+		canonicalIssueId: string;
+		issueAliases: readonly string[];
+		prNumber: number;
+		authorityCredential: string;
+	}): ReceiptSettlementIntent[] {
+		const intents: ReceiptSettlementIntent[] = [];
+		this.db.transaction(() => {
+			const rows = this.getSessionsForIssueAliases([
+				...new Set([
+					input.canonicalIssueId,
+					...input.issueAliases.filter(Boolean),
+				]),
+			]).filter(
+				(row) =>
+					row.project_name === input.projectName &&
+					this.getSession(row.execution_id)?.pr_number === input.prNumber,
+			);
+			const credentialHash = createHash("sha256")
+				.update(input.authorityCredential)
+				.digest("hex");
+			for (const row of rows) {
+				const intentId = `pr_merged:${input.projectName}:${input.prNumber}:${row.execution_id}:${credentialHash}`;
+				this.db.run(
+					`INSERT OR IGNORE INTO receipt_settlement_intent
+					   (intent_id, authority_kind, project_name, execution_id, issue_id,
+					    terminal_lifecycle_id, lifecycle_revision, authority_credential,
+					    state, created_at, updated_at)
+					 VALUES (?, 'pr_merged', ?, ?, ?, NULL, ?, ?, 'pending',
+					         datetime('now'), datetime('now'))`,
+					[
+						intentId,
+						input.projectName,
+						row.execution_id,
+						input.canonicalIssueId,
+						row.lifecycle_revision,
+						input.authorityCredential,
+					],
+				);
+				const intent = this.getReceiptSettlementIntent(intentId);
+				if (intent) intents.push(intent);
+			}
+		});
+		return intents;
+	}
+
+	getReceiptSettlementIntent(
+		intentId: string,
+	): ReceiptSettlementIntent | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM receipt_settlement_intent WHERE intent_id = ?",
+			[intentId],
+		)[0];
+		return row ? this.receiptSettlementIntentFromRow(row) : undefined;
+	}
+
+	listReceiptSettlementIntents(
+		states?: readonly ReceiptSettlementIntent["state"][],
+	): ReceiptSettlementIntent[] {
+		if (states?.length === 0) return [];
+		const rows = states
+			? this.workflowSelectAll(
+					`SELECT * FROM receipt_settlement_intent
+					  WHERE state IN (${states.map(() => "?").join(",")})
+					  ORDER BY created_at, intent_id`,
+					[...states],
+				)
+			: this.workflowSelectAll(
+					"SELECT * FROM receipt_settlement_intent ORDER BY created_at, intent_id",
+					[],
+				);
+		return rows.map((row) => this.receiptSettlementIntentFromRow(row));
+	}
+
+	claimTerminalSettlementIntent(
+		intentId: string,
+		terminalLifecycleId: string,
+	): ReceiptSettlementIntent | undefined {
+		let result: ReceiptSettlementIntent | undefined;
+		this.db.transaction(() => {
+			const intent = this.getReceiptSettlementIntent(intentId);
+			if (
+				!intent ||
+				intent.authority_kind !== "session_terminal" ||
+				intent.terminal_lifecycle_id !== terminalLifecycleId
+			) {
+				return;
+			}
+			if (intent.state === "applying" && intent.claim_token) {
+				result = intent;
+				return;
+			}
+			if (intent.state !== "pending" || !intent.execution_id) return;
+			const session = this.workflowSelectAll(
+				`SELECT status, terminal_lifecycle_id
+				   FROM sessions WHERE execution_id = ?`,
+				[intent.execution_id],
+			)[0];
+			if (
+				!session ||
+				!isOperationalTerminalStatus(session.status as string) ||
+				session.terminal_lifecycle_id !== terminalLifecycleId
+			) {
+				this.db.run(
+					`UPDATE receipt_settlement_intent
+					    SET state = 'fenced', updated_at = datetime('now'),
+					        last_error = 'terminal_lifecycle_fence_mismatch'
+					  WHERE intent_id = ? AND state = 'pending'`,
+					[intentId],
+				);
+				return;
+			}
+			const claimToken = randomUUID();
+			this.db.run(
+				`UPDATE receipt_settlement_intent
+				    SET state = 'applying', claim_token = ?,
+				        updated_at = datetime('now'), last_error = NULL
+				  WHERE intent_id = ? AND state = 'pending'`,
+				[claimToken, intentId],
+			);
+			if (this.db.getRowsModified() === 1) {
+				result = this.getReceiptSettlementIntent(intentId);
+			}
+		});
+		return result;
+	}
+
+	/**
+	 * Claim an issue-authority intent after the caller has freshly revalidated
+	 * Linear. Session status is deliberately not a guard: a Done issue may still
+	 * own a running runner, which is the debt this authority kind exists to clear.
+	 */
+	claimIssueDoneSettlementIntent(
+		intentId: string,
+		authorityCredential: string,
+	): ReceiptSettlementIntent | undefined {
+		let result: ReceiptSettlementIntent | undefined;
+		this.db.transaction(() => {
+			const intent = this.getReceiptSettlementIntent(intentId);
+			if (
+				!intent ||
+				intent.authority_kind !== "issue_done" ||
+				intent.authority_credential !== authorityCredential
+			) {
+				return;
+			}
+			if (intent.state === "applying" && intent.claim_token) {
+				result = intent;
+				return;
+			}
+			if (intent.state !== "pending" || !intent.execution_id) return;
+			const claimToken = randomUUID();
+			this.db.run(
+				`UPDATE receipt_settlement_intent
+				    SET state = 'applying', claim_token = ?,
+				        updated_at = datetime('now'), last_error = NULL
+				  WHERE intent_id = ? AND state = 'pending'
+				    AND authority_kind = 'issue_done'
+				    AND authority_credential = ?`,
+				[claimToken, intentId, authorityCredential],
+			);
+			if (this.db.getRowsModified() === 1) {
+				result = this.getReceiptSettlementIntent(intentId);
+			}
+		});
+		return result;
+	}
+
+	claimPrMergedSettlementIntent(
+		intentId: string,
+		authorityCredential: string,
+	): ReceiptSettlementIntent | undefined {
+		let result: ReceiptSettlementIntent | undefined;
+		this.db.transaction(() => {
+			const intent = this.getReceiptSettlementIntent(intentId);
+			if (
+				!intent ||
+				intent.authority_kind !== "pr_merged" ||
+				intent.authority_credential !== authorityCredential
+			) {
+				return;
+			}
+			if (intent.state === "applying" && intent.claim_token) {
+				result = intent;
+				return;
+			}
+			if (intent.state !== "pending" || !intent.execution_id) return;
+			const claimToken = randomUUID();
+			this.db.run(
+				`UPDATE receipt_settlement_intent
+				    SET state = 'applying', claim_token = ?,
+				        updated_at = datetime('now'), last_error = NULL
+				  WHERE intent_id = ? AND state = 'pending'
+				    AND authority_kind = 'pr_merged'
+				    AND authority_credential = ?`,
+				[claimToken, intentId, authorityCredential],
+			);
+			if (this.db.getRowsModified() === 1) {
+				result = this.getReceiptSettlementIntent(intentId);
+			}
+		});
+		return result;
+	}
+
+	fenceReceiptSettlementIntent(intentId: string, reason: string): boolean {
+		this.db.run(
+			`UPDATE receipt_settlement_intent
+			    SET state = 'fenced', updated_at = datetime('now'),
+			        last_error = ?
+			  WHERE intent_id = ? AND state IN ('pending','applying')`,
+			[reason.slice(0, 500), intentId],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	/**
+	 * A transient external-authority lookup is not negative authority. Release
+	 * any in-flight claim back to pending while preserving the durable error so
+	 * the same credential can be retried on the next convergence pass.
+	 */
+	retryReceiptSettlementIntent(intentId: string, reason: string): boolean {
+		this.db.run(
+			`UPDATE receipt_settlement_intent
+			    SET state = 'pending', claim_token = NULL,
+			        updated_at = datetime('now'), last_error = ?
+			  WHERE intent_id = ? AND state IN ('pending','applying')`,
+			[reason.slice(0, 500), intentId],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	completeReceiptSettlementIntent(
+		intentId: string,
+		claimToken: string,
+	): boolean {
+		this.db.run(
+			`UPDATE receipt_settlement_intent
+			    SET state = 'completed', updated_at = datetime('now'),
+			        last_error = NULL
+			  WHERE intent_id = ? AND state = 'applying' AND claim_token = ?`,
+			[intentId, claimToken],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	recordReceiptSettlementIntentError(
+		intentId: string,
+		claimToken: string,
+		error: string,
+	): boolean {
+		this.db.run(
+			`UPDATE receipt_settlement_intent
+			    SET last_error = ?, updated_at = datetime('now')
+			  WHERE intent_id = ? AND state = 'applying' AND claim_token = ?`,
+			[error.slice(0, 500), intentId, claimToken],
+		);
+		return this.db.getRowsModified() === 1;
 	}
 
 	/**
@@ -7774,11 +8485,13 @@ export class StateStore {
 		project_name: string;
 		issue_id: string;
 		issue_identifier: string | null;
+		lifecycle_revision: number;
 	}> {
 		if (keys.length === 0) return [];
 		const placeholders = keys.map(() => "?").join(", ");
 		const stmt = this.db.prepare(
-			`SELECT execution_id, status, project_name, issue_id, issue_identifier
+			`SELECT execution_id, status, project_name, issue_id, issue_identifier,
+			        lifecycle_revision
 			 FROM sessions
 			 WHERE issue_id IN (${placeholders})
 			    OR issue_identifier IN (${placeholders})`,
@@ -7790,6 +8503,7 @@ export class StateStore {
 			project_name: string;
 			issue_id: string;
 			issue_identifier: string | null;
+			lifecycle_revision: number;
 		}> = [];
 		while (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
@@ -7799,6 +8513,7 @@ export class StateStore {
 				project_name: row.project_name as string,
 				issue_id: row.issue_id as string,
 				issue_identifier: (row.issue_identifier as string) ?? null,
+				lifecycle_revision: Number(row.lifecycle_revision ?? 0),
 			});
 		}
 		stmt.free();
@@ -8981,6 +9696,8 @@ export class StateStore {
 			// FLY-245 D-a: monotonic lifecycle revision (defaults 0).
 			lifecycle_revision:
 				typeof row.lifecycle_revision === "number" ? row.lifecycle_revision : 0,
+			terminal_lifecycle_id:
+				(row.terminal_lifecycle_id as string) ?? undefined,
 		};
 	}
 
@@ -10116,8 +10833,402 @@ export class StateStore {
 
 	// --- FLY-1048 PR-C (C1): detection_escalations durable episode store ---
 
+	private founderDecisionConvergenceFromValues(
+		row: unknown[],
+	): FounderDecisionConvergenceRow {
+		return {
+			thread_id: row[0] as string,
+			msg_id: row[1] as string,
+			question_id: row[2] as string,
+			project_name: row[3] as string,
+			lead_id: row[4] as string,
+			execution_id: row[5] as string,
+			classification: row[6] as FounderDecisionClassification,
+			card_reference_valid: Number(row[7]) === 1 ? 1 : 0,
+			disposed_at_ms: Number(row[8]),
+			deadline_at_ms: Number(row[9]),
+			resolved_at_ms: row[10] === null ? null : Number(row[10]),
+			resolution: (row[11] as string | null) ?? null,
+			alerted_at_ms: row[12] === null ? null : Number(row[12]),
+			alert_claimed_at_ms: row[13] === null ? null : Number(row[13]),
+		};
+	}
+
+	private getFounderDecisionConvergence(
+		threadId: string,
+		msgId: string,
+		questionId: string,
+	): FounderDecisionConvergenceRow | undefined {
+		const result = this.db.exec(
+			`SELECT thread_id, msg_id, question_id, project_name, lead_id,
+			        execution_id, classification, card_reference_valid,
+			        disposed_at_ms, deadline_at_ms, resolved_at_ms, resolution,
+			        alerted_at_ms, alert_claimed_at_ms
+			   FROM founder_decision_convergence
+			  WHERE thread_id = ? AND msg_id = ? AND question_id = ?`,
+			[threadId, msgId, questionId],
+		);
+		const row = result[0]?.values[0];
+		return row ? this.founderDecisionConvergenceFromValues(row) : undefined;
+	}
+
+	ensureFounderDecisionConvergence(input: {
+		threadId: string;
+		msgId: string;
+		questionId: string;
+		projectName: string;
+		leadId: string;
+		executionId: string;
+		disposedAtMs: number;
+		deadlineAtMs: number;
+	}): { created: boolean; row: FounderDecisionConvergenceRow } {
+		this.db.run(
+			`INSERT OR IGNORE INTO founder_decision_convergence
+			   (thread_id, msg_id, question_id, project_name, lead_id,
+			    execution_id, disposed_at_ms, deadline_at_ms)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				input.threadId,
+				input.msgId,
+				input.questionId,
+				input.projectName,
+				input.leadId,
+				input.executionId,
+				input.disposedAtMs,
+				input.deadlineAtMs,
+			],
+		);
+		const created = this.db.getRowsModified() === 1;
+		if (created) this.save();
+		const row = this.getFounderDecisionConvergence(
+			input.threadId,
+			input.msgId,
+			input.questionId,
+		);
+		if (!row) throw new Error("founder decision convergence intent missing");
+		if (
+			row.project_name !== input.projectName ||
+			row.lead_id !== input.leadId ||
+			row.execution_id !== input.executionId
+		) {
+			throw new Error("founder decision convergence identity conflict");
+		}
+		return { created, row };
+	}
+
+	classifyFounderDecisionConvergence(input: {
+		threadId: string;
+		msgId: string;
+		questionId: string;
+		classification: FounderDecisionClassification;
+		cardReferenceValid: boolean;
+	}): FounderDecisionConvergenceRow {
+		const before = this.getFounderDecisionConvergence(
+			input.threadId,
+			input.msgId,
+			input.questionId,
+		);
+		if (!before) throw new Error("founder decision convergence intent missing");
+		if (
+			before.classification !== "none" &&
+			before.classification !== input.classification
+		) {
+			throw new Error("founder decision convergence classification conflict");
+		}
+		this.db.run(
+			`UPDATE founder_decision_convergence
+			    SET classification = ?, card_reference_valid = ?
+			  WHERE thread_id = ? AND msg_id = ? AND question_id = ?
+			    AND classification IN ('none', ?)`,
+			[
+				input.classification,
+				input.cardReferenceValid ? 1 : 0,
+				input.threadId,
+				input.msgId,
+				input.questionId,
+				input.classification,
+			],
+		);
+		if (this.db.getRowsModified() > 0) this.save();
+		const row = this.getFounderDecisionConvergence(
+			input.threadId,
+			input.msgId,
+			input.questionId,
+		);
+		if (!row) throw new Error("founder decision convergence intent missing");
+		return row;
+	}
+
+	resolveFounderDecisionConvergence(input: {
+		threadId: string;
+		msgId: string;
+		questionId: string;
+		resolution: string;
+		resolvedAtMs: number;
+	}): FounderDecisionConvergenceRow {
+		this.db.run(
+			`UPDATE founder_decision_convergence
+			    SET resolved_at_ms = COALESCE(resolved_at_ms, ?),
+			        resolution = COALESCE(resolution, ?)
+			  WHERE thread_id = ? AND msg_id = ? AND question_id = ?`,
+			[
+				input.resolvedAtMs,
+				input.resolution,
+				input.threadId,
+				input.msgId,
+				input.questionId,
+			],
+		);
+		if (this.db.getRowsModified() > 0) this.save();
+		const row = this.getFounderDecisionConvergence(
+			input.threadId,
+			input.msgId,
+			input.questionId,
+		);
+		if (!row) throw new Error("founder decision convergence intent missing");
+		return row;
+	}
+
+	listFounderDecisionConvergence(): FounderDecisionConvergenceRow[] {
+		const result = this.db.exec(
+			`SELECT thread_id, msg_id, question_id, project_name, lead_id,
+			        execution_id, classification, card_reference_valid,
+			        disposed_at_ms, deadline_at_ms, resolved_at_ms, resolution,
+			        alerted_at_ms, alert_claimed_at_ms
+			   FROM founder_decision_convergence
+			  ORDER BY thread_id, msg_id, question_id`,
+		);
+		return (result[0]?.values ?? []).map((row) =>
+			this.founderDecisionConvergenceFromValues(row),
+		);
+	}
+
+	claimOverdueFounderDecisionAlerts(
+		nowMs: number,
+	): FounderDecisionConvergenceRow[] {
+		const staleBeforeMs = nowMs - FOUNDER_DECISION_ALERT_CLAIM_TTL_MS;
+		const claimed: FounderDecisionConvergenceRow[] = [];
+		this.db.transaction(() => {
+			const due = this.db.exec(
+				`SELECT thread_id, msg_id, question_id
+				   FROM founder_decision_convergence
+				  WHERE resolved_at_ms IS NULL AND alerted_at_ms IS NULL
+				    AND (alert_claimed_at_ms IS NULL OR alert_claimed_at_ms <= ?)
+				    AND deadline_at_ms <= ?
+				    AND classification IN ('approve','reject')
+				  ORDER BY deadline_at_ms, thread_id, msg_id, question_id`,
+				[staleBeforeMs, nowMs],
+			);
+			for (const [threadId, msgId, questionId] of due[0]?.values ?? []) {
+				this.db.run(
+					`UPDATE founder_decision_convergence SET alert_claimed_at_ms = ?
+					  WHERE thread_id = ? AND msg_id = ? AND question_id = ?
+					    AND resolved_at_ms IS NULL AND alerted_at_ms IS NULL
+					    AND (alert_claimed_at_ms IS NULL OR alert_claimed_at_ms <= ?)`,
+					[nowMs, threadId, msgId, questionId, staleBeforeMs],
+				);
+				if (this.db.getRowsModified() !== 1) continue;
+				const row = this.getFounderDecisionConvergence(
+					threadId as string,
+					msgId as string,
+					questionId as string,
+				);
+				if (row) claimed.push(row);
+			}
+		});
+		if (claimed.length > 0) this.save();
+		return claimed;
+	}
+
+	releaseFounderDecisionAlertClaim(input: {
+		threadId: string;
+		msgId: string;
+		questionId: string;
+		expectedAlertClaimedAtMs: number;
+	}): boolean {
+		this.db.run(
+			`UPDATE founder_decision_convergence SET alert_claimed_at_ms = NULL
+			  WHERE thread_id = ? AND msg_id = ? AND question_id = ?
+			    AND resolved_at_ms IS NULL AND alerted_at_ms IS NULL
+			    AND alert_claimed_at_ms = ?`,
+			[
+				input.threadId,
+				input.msgId,
+				input.questionId,
+				input.expectedAlertClaimedAtMs,
+			],
+		);
+		const released = this.db.getRowsModified() === 1;
+		if (released) this.save();
+		return released;
+	}
+
+	markFounderDecisionAlertDelivered(input: {
+		threadId: string;
+		msgId: string;
+		questionId: string;
+		expectedAlertClaimedAtMs: number;
+		alertedAtMs: number;
+	}): boolean {
+		this.db.run(
+			`UPDATE founder_decision_convergence
+			    SET alerted_at_ms = ?, alert_claimed_at_ms = NULL
+			  WHERE thread_id = ? AND msg_id = ? AND question_id = ?
+			    AND resolved_at_ms IS NULL AND alerted_at_ms IS NULL
+			    AND alert_claimed_at_ms = ?`,
+			[
+				input.alertedAtMs,
+				input.threadId,
+				input.msgId,
+				input.questionId,
+				input.expectedAlertClaimedAtMs,
+			],
+		);
+		const delivered = this.db.getRowsModified() === 1;
+		if (delivered) this.save();
+		return delivered;
+	}
+
+	private workflowEngineParkOutboxFromRow(
+		row: Record<string, unknown>,
+	): WorkflowEngineParkOutboxRow {
+		return {
+			row_id: Number(row.row_id),
+			event_id: row.event_id as string,
+			project_name: row.project_name as string,
+			execution_id: row.execution_id as string,
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			activation_id: row.activation_id as string,
+			generation: Number(row.generation),
+			event: row.event as "park_opened" | "park_cleared",
+			reason: row.reason as string,
+			created_at: row.created_at as string,
+		};
+	}
+
+	private appendWorkflowEngineParkEventTx(input: {
+		eventId: string;
+		projectName: string;
+		executionId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		activationId: string;
+		event: "park_opened" | "park_cleared";
+		reason: string;
+		createdAt: string;
+	}): WorkflowEngineParkOutboxRow | undefined {
+		const prior = this.workflowSelectAll(
+			"SELECT * FROM workflow_engine_park_outbox WHERE event_id = ?",
+			[input.eventId],
+		)[0];
+		if (prior) return this.workflowEngineParkOutboxFromRow(prior);
+		const generation =
+			Number(
+				this.workflowSelectAll(
+					`SELECT COALESCE(MAX(generation), 0) AS generation
+					   FROM workflow_engine_park_outbox WHERE execution_id = ?`,
+					[input.executionId],
+				)[0]?.generation ?? 0,
+			) + 1;
+		this.db.run(
+			`INSERT INTO workflow_engine_park_outbox
+			   (event_id, project_name, execution_id, run_id, node_id, attempt,
+			    activation_id, generation, event, reason, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				input.eventId,
+				input.projectName,
+				input.executionId,
+				input.runId,
+				input.nodeId,
+				input.attempt,
+				input.activationId,
+				generation,
+				input.event,
+				input.reason,
+				input.createdAt,
+			],
+		);
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_engine_park_outbox WHERE event_id = ?",
+			[input.eventId],
+		)[0];
+		return row ? this.workflowEngineParkOutboxFromRow(row) : undefined;
+	}
+
+	appendWorkflowEngineParkEvent(input: {
+		eventId: string;
+		projectName: string;
+		executionId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		activationId: string;
+		event: "park_opened" | "park_cleared";
+		reason: string;
+		createdAt?: string;
+	}): WorkflowEngineParkOutboxRow | undefined {
+		let result: WorkflowEngineParkOutboxRow | undefined;
+		this.db.transaction(() => {
+			result = this.appendWorkflowEngineParkEventTx({
+				...input,
+				createdAt: input.createdAt ?? new Date().toISOString(),
+			});
+		});
+		if (result) this.save();
+		return result;
+	}
+
+	listWorkflowEngineParkEventsAfter(
+		projectName: string,
+		rowId: number,
+		limit = 256,
+	): WorkflowEngineParkOutboxRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_engine_park_outbox
+			  WHERE project_name = ? AND row_id > ?
+			  ORDER BY row_id ASC LIMIT ?`,
+			[projectName, rowId, limit],
+		).map((row) => this.workflowEngineParkOutboxFromRow(row));
+	}
+
+	/**
+	 * Return the open park event only when it belongs to the execution's exact
+	 * current engine activation. A historical activation, a newer clear, or an
+	 * ambiguous binding is not durable wake authority.
+	 */
+	getCurrentWorkflowEngineParkEvidence(
+		executionId: string,
+	): WorkflowEngineParkOutboxRow | undefined {
+		const activation = this.resolveCurrentWorkflowActivation(executionId);
+		if (activation.kind !== "current") return undefined;
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_engine_park_outbox
+			  WHERE execution_id = ?
+			  ORDER BY generation DESC, row_id DESC
+			  LIMIT 1`,
+			[executionId],
+		)[0];
+		if (!row) return undefined;
+		const evidence = this.workflowEngineParkOutboxFromRow(row);
+		if (
+			evidence.event !== "park_opened" ||
+			evidence.project_name !== activation.run.project_name ||
+			evidence.run_id !== activation.binding.run_id ||
+			evidence.node_id !== activation.binding.node_id ||
+			evidence.attempt !== activation.binding.attempt ||
+			evidence.activation_id !== activation.binding.activation_id
+		) {
+			return undefined;
+		}
+		return evidence;
+	}
+
 	private static readonly DETECTION_ESCALATION_COLUMNS =
-		"target_key, kind, episode_fingerprint, issue_id, owner_lead_id, first_detected_at_ms, lead_notified_at_ms, lead_ack_at_ms, founder_paged_at_ms, clearing_since_ms, status, attempts, resolved_via";
+		"target_key, kind, episode_fingerprint, issue_id, owner_lead_id, first_detected_at_ms, lead_notified_at_ms, lead_ack_at_ms, founder_paged_at_ms, clearing_since_ms, status, attempts, resolved_via, source_receipt_id, source_execution_id, source_question_id";
 
 	private detectionEscalationFromValues(
 		row: unknown[],
@@ -10140,6 +11251,9 @@ export class StateStore {
 				| "residue_harvest"
 				| "lead"
 				| null,
+			source_receipt_id: (row[13] as string | null) ?? null,
+			source_execution_id: (row[14] as string | null) ?? null,
+			source_question_id: (row[15] as string | null) ?? null,
 		};
 	}
 
@@ -10171,11 +11285,16 @@ export class StateStore {
 		issueId?: string | null;
 		ownerLeadId?: string | null;
 		firstDetectedAtMs: number;
+		sourceReceiptId?: string | null;
+		sourceExecutionId?: string | null;
+		sourceQuestionId?: string | null;
 	}): { created: boolean; row: DetectionEscalationRow } {
 		this.db.run(
 			`INSERT OR IGNORE INTO detection_escalations
-			   (target_key, kind, episode_fingerprint, issue_id, owner_lead_id, first_detected_at_ms)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
+			   (target_key, kind, episode_fingerprint, issue_id, owner_lead_id,
+			    first_detected_at_ms, source_receipt_id, source_execution_id,
+			    source_question_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				input.targetKey,
 				input.kind,
@@ -10183,9 +11302,28 @@ export class StateStore {
 				input.issueId ?? null,
 				input.ownerLeadId ?? null,
 				input.firstDetectedAtMs,
+				input.sourceReceiptId ?? null,
+				input.sourceExecutionId ?? null,
+				input.sourceQuestionId ?? null,
 			],
 		);
 		let created = this.db.getRowsModified() > 0;
+		if (
+			!created &&
+			input.sourceReceiptId &&
+			input.sourceExecutionId
+		) {
+			this.attachDetectionSettlementLineage(
+				input.targetKey,
+				input.kind,
+				input.episodeFingerprint,
+				{
+					sourceReceiptId: input.sourceReceiptId,
+					sourceExecutionId: input.sourceExecutionId,
+					sourceQuestionId: input.sourceQuestionId ?? null,
+				},
+			);
+		}
 		if (created) this.save();
 		let row = this.getDetectionEscalation(
 			input.targetKey,
@@ -10246,6 +11384,158 @@ export class StateStore {
 			}
 		}
 		return { created, row };
+	}
+
+	attachDetectionSettlementLineage(
+		targetKey: string,
+		kind: string,
+		episodeFingerprint: string,
+		lineage: {
+			sourceReceiptId: string;
+			sourceExecutionId: string;
+			sourceQuestionId: string | null;
+		},
+	): boolean {
+		const row = this.getDetectionEscalation(
+			targetKey,
+			kind,
+			episodeFingerprint,
+		);
+		if (!row) return false;
+		const current = [
+			row.source_receipt_id,
+			row.source_execution_id,
+			row.source_question_id,
+		];
+		const expected = [
+			lineage.sourceReceiptId,
+			lineage.sourceExecutionId,
+			lineage.sourceQuestionId,
+		];
+		if (current.some((value) => value !== null)) {
+			if (current.every((value, index) => value === expected[index])) {
+				return true;
+			}
+			throw new Error(
+				`detection settlement lineage conflict for ${targetKey}/${kind}/${episodeFingerprint}`,
+			);
+		}
+		this.db.run(
+			`UPDATE detection_escalations
+			    SET source_receipt_id = ?, source_execution_id = ?,
+			        source_question_id = ?
+			  WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
+			    AND source_receipt_id IS NULL
+			    AND source_execution_id IS NULL
+			    AND source_question_id IS NULL`,
+			[
+				lineage.sourceReceiptId,
+				lineage.sourceExecutionId,
+				lineage.sourceQuestionId,
+				targetKey,
+				kind,
+				episodeFingerprint,
+			],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	listActiveLegacyReceiptDetections(input: {
+		projectName: string;
+		issueAliases: readonly string[];
+	}): DetectionEscalationRow[] {
+		const issueAliases = [
+			...new Set(input.issueAliases.filter((value) => value.trim().length > 0)),
+		];
+		const issueClause =
+			issueAliases.length > 0
+				? `AND (issue_id IS NULL OR issue_id IN (${issueAliases
+						.map(() => "?")
+						.join(",")}))`
+				: "AND issue_id IS NULL";
+		const result = this.db.exec(
+			`SELECT ${StateStore.DETECTION_ESCALATION_COLUMNS}
+			   FROM detection_escalations
+			  WHERE kind LIKE 'receipt_unprocessed%'
+			    AND status != 'RESOLVED'
+			    AND source_receipt_id IS NULL
+			    AND substr(target_key, 1, length(?) + 1) = ? || ':'
+			    ${issueClause}
+			  ORDER BY first_detected_at_ms, target_key, kind, episode_fingerprint`,
+			[input.projectName, input.projectName, ...issueAliases],
+		);
+		return (result[0]?.values ?? []).map((row) =>
+			this.detectionEscalationFromValues(row),
+		);
+	}
+
+	listActiveLegacyReceiptDetectionsForReceipt(
+		receiptId: string,
+	): DetectionEscalationRow[] {
+		const result = this.db.exec(
+			`SELECT ${StateStore.DETECTION_ESCALATION_COLUMNS}
+			   FROM detection_escalations
+			  WHERE episode_fingerprint = ?
+			    AND kind LIKE 'receipt_unprocessed%'
+			    AND status != 'RESOLVED'
+			    AND source_receipt_id IS NULL
+			  ORDER BY first_detected_at_ms, target_key, kind`,
+			[receiptId],
+		);
+		return (result[0]?.values ?? []).map((row) =>
+			this.detectionEscalationFromValues(row),
+		);
+	}
+
+	attachLegacyReceiptDetectionLineage(
+		receiptId: string,
+		lineage: {
+			sourceExecutionId: string;
+			sourceQuestionId: string;
+		},
+	): number {
+		const candidates = this.workflowSelectAll(
+			`SELECT target_key, kind, episode_fingerprint
+			   FROM detection_escalations
+			  WHERE episode_fingerprint = ?
+			    AND kind LIKE 'receipt_unprocessed%'`,
+			[receiptId],
+		);
+		if (candidates.length > 1) {
+			throw new Error(
+				`ambiguous legacy receipt detection lineage for ${receiptId}`,
+			);
+		}
+		if (candidates.length === 0) return 0;
+		const candidate = candidates[0]!;
+		return this.attachDetectionSettlementLineage(
+			candidate.target_key as string,
+			candidate.kind as string,
+			candidate.episode_fingerprint as string,
+			{
+				sourceReceiptId: receiptId,
+				sourceExecutionId: lineage.sourceExecutionId,
+				sourceQuestionId: lineage.sourceQuestionId,
+			},
+		)
+			? 1
+			: 0;
+	}
+
+	resolveReceiptDetectionsForExecution(
+		executionId: string,
+		atMs: number,
+	): number {
+		this.db.run(
+			`UPDATE detection_escalations
+			    SET status = 'RESOLVED', lead_ack_at_ms = COALESCE(lead_ack_at_ms, ?),
+			        resolved_via = 'recovery'
+			  WHERE source_execution_id = ?
+			    AND kind LIKE 'receipt_unprocessed%'
+			    AND status != 'RESOLVED'`,
+			[atMs, executionId],
+		);
+		return this.db.getRowsModified();
 	}
 
 	/**
@@ -19419,6 +20709,18 @@ export class StateStore {
 		let outputCredential: string | undefined;
 		let submissionCredential: string | undefined;
 		this.db.transaction(() => {
+			this.appendWorkflowEngineParkEventTx({
+				eventId: `engine-park-clear:${activationId}`,
+				projectName: run.project_name,
+				executionId: input.executionId,
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+				activationId,
+				event: "park_cleared",
+				reason: `activation_${activationMode}_admitted`,
+				createdAt: now,
+			});
 			if (!actor) {
 				this.db.run(
 					`INSERT INTO workflow_actor
@@ -21992,6 +23294,20 @@ export class StateStore {
 				input.subjectDigest ?? null,
 			],
 		);
+		if (projectedStatus === "ship_parked") {
+			this.appendWorkflowEngineParkEventTx({
+				eventId: `engine-park-open:${binding.activation_id}`,
+				projectName: run.project_name,
+				executionId: binding.execution_id,
+				runId: binding.run_id,
+				nodeId: binding.node_id,
+				attempt: binding.attempt,
+				activationId: binding.activation_id,
+				event: "park_opened",
+				reason: "runner_ship_gate_wait",
+				createdAt: input.completedAt,
+			});
+		}
 		// FLY-1328 HIGH: this generalized-completion writer sets status='completed'
 		// but is NOT the FSM path, so it must stamp terminal_at itself. Without it a
 		// session completed here stays terminal-with-no-stamp, and the A2 ask sweep's

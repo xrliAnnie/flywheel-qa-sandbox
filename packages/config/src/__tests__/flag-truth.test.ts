@@ -37,6 +37,28 @@ describe("FLY-1393 flag truth", () => {
 		).toMatchObject({ retiredBy: "FLY-1456" });
 	});
 
+	it("FLY-1466 tombstones all three FLY-1448 controls after solidifying them on", () => {
+		const retired = [
+			"FLYWHEEL_ENGINE_DECLARED_PARK",
+			"FLYWHEEL_FOUNDER_DECISION_DEADLINE_MS",
+			"FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT",
+		] as const;
+		const registered = new Set(
+			FEATURE_FLAGS.flatMap((flag) => (flag.envVar ? [flag.envVar] : [])),
+		);
+		const tombstones = new Map(
+			RETIRED_FLAGS.map((flag) => [flag.envVar, flag.retiredBy]),
+		);
+
+		for (const envVar of retired) {
+			expect(registered.has(envVar), envVar).toBe(false);
+			expect(tombstones.get(envVar), envVar).toBe("FLY-1466");
+			const validation = validateFlagTruthEnvironment([`${envVar}=0`]);
+			expect(validation.ok, envVar).toBe(false);
+			expect(validation.errors.join("\n"), envVar).toMatch(/删这行/);
+		}
+	});
+
 	it("registers the FLY-1425 submission sentinel as non-flag plumbing", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toMatch(
 			/plumbing/i,

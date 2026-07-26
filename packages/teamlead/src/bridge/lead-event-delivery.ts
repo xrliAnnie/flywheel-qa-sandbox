@@ -443,6 +443,9 @@ export function createLeadEventDeadLetterHandler(
 			status: "LEAD_NOTIFIED",
 			attempts: 0,
 			resolved_via: null,
+			source_receipt_id: null,
+			source_execution_id: null,
+			source_question_id: null,
 		});
 		if (!posted) return false;
 		try {

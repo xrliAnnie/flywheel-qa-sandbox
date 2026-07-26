@@ -92,22 +92,50 @@ describe("FLY-1392 v2 founder ingress", () => {
 			type: 19,
 		};
 		const handoff = vi.fn(async () => true);
+		const ensureDecisionConvergence =
+			vi.fn<
+				NonNullable<FounderReplyDeliverDeps["ensureDecisionConvergence"]>
+			>();
+		const db = new CommDB(dbPath);
+		db.registerSession(
+			"exec-ship",
+			"runner",
+			"flywheel",
+			"FLY-1392",
+			"test-lead",
+		);
+		const shipQuestionId = db.insertQuestion(
+			"exec-ship",
+			"test-lead",
+			"ship?",
+			{ checkpoint: "approve_to_ship" },
+		);
+		db.close();
 
 		const outcome = await emitFounderReplyDeliveryForThread(
 			ctx(dbPath),
 			[
 				question("brainstorm", "brainstorm"),
-				question("ship", "approve_to_ship"),
+				{
+					questionId: shipQuestionId,
+					checkpoint: "approve_to_ship",
+					executionId: "exec-ship",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
 			],
 			{
 				store: store(),
 				fetchImpl: discordGet([msg]),
 				cursorStore: cursor,
 				deliverAmbiguousToLead: handoff,
+				ensureDecisionConvergence,
 			},
 		);
 
 		expect(outcome.result).toBe("advanced");
+		expect(ensureDecisionConvergence).toHaveBeenCalledOnce();
+		const convergence = ensureDecisionConvergence.mock.calls[0]?.[0];
+		expect(convergence.deadlineAtMs - convergence.disposedAtMs).toBe(180_000);
 		expect(handoff).toHaveBeenCalledOnce();
 		expect(handoff.mock.calls[0]?.[1]).toEqual({
 			issueId: "FLY-1392",

@@ -191,6 +191,53 @@ describe("attemptRunnerRecoveryNudge (FLY-368 shared audited op)", () => {
 		expect(store.getStuckDisposition("exec-1", STUCK_FP)).toBeUndefined();
 	});
 
+	it("wake_pointer mode admits the durable ship_parked session state", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-1",
+			project_name: "geo",
+			status: "ship_parked",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+
+		const out = await attemptRunnerRecoveryNudge(
+			{
+				mode: "wake_pointer",
+				actor: "receipt-patrol",
+				executionId: "exec-1",
+				leadId: "product-lead",
+				fingerprint: STUCK_FP,
+			},
+			deps({
+				isWakeBindingLive: () => true,
+			}),
+		);
+
+		expect(out.status).toBe(200);
+		expect(sendKeys).toHaveBeenCalledOnce();
+	});
+
+	it("wake_pointer mode admits a running session only while engine park remains current", async () => {
+		const isEngineParked = vi.fn(() => true);
+		const out = await attemptRunnerRecoveryNudge(
+			{
+				mode: "wake_pointer",
+				actor: "receipt-patrol",
+				executionId: "exec-1",
+				leadId: "product-lead",
+				fingerprint: STUCK_FP,
+			},
+			deps({
+				isWakeBindingLive: () => true,
+				isEngineParked,
+			}),
+		);
+
+		expect(out.status).toBe(200);
+		expect(isEngineParked).toHaveBeenCalledTimes(2);
+		expect(sendKeys).toHaveBeenCalledOnce();
+	});
+
 	it("wake_pointer mode fails closed when the causal answer is absent", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",

@@ -87,6 +87,29 @@ function deps(over: Record<string, unknown> = {}) {
 const founderMsg = { id: "MSG-1", content: "ship it", authorId: "FOUNDER-1" };
 
 describe("tryFounderShipApproval — approve path", () => {
+	it("pins before writing when durable decision classification fails", async () => {
+		const d = deps();
+		const result = await tryFounderShipApproval(
+			{
+				msg: founderMsg,
+				shipGates: oneShipGate,
+				ctx: CTX,
+				recordDecisionClassification: vi.fn(() => {
+					throw new Error("classification store unavailable");
+				}),
+			},
+			d,
+		);
+
+		expect(result).toMatchObject({
+			bound: [],
+			deferred: [],
+			retry: true,
+			stage: "decision_classification_failed",
+		});
+		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+	});
+
 	it("founder approval on the one current gate → writes approval, returns handled", async () => {
 		const cardAuthority = vi.fn().mockReturnValue({ ok: true });
 		const d = deps({ cardAuthority });

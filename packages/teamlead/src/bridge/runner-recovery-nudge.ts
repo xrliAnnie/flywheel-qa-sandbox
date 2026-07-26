@@ -51,6 +51,7 @@ export interface RunnerNudgeDeps {
 	) => boolean;
 	isWakeBindingLive?: (executionId: string, projectName: string) => boolean;
 	isDeclaredParked?: (executionId: string, projectName: string) => boolean;
+	isEngineParked?: (executionId: string, projectName: string) => boolean;
 	sendKeys: (
 		tmuxWindow: string,
 		text: string,
@@ -198,8 +199,10 @@ export async function attemptRunnerRecoveryNudge(
 		(session.status === "awaiting_review" ||
 			session.status === "approved_to_ship" ||
 			session.status === "design_done" ||
+			session.status === "ship_parked" ||
 			(session.status === "running" &&
-				deps.isDeclaredParked?.(executionId, session.project_name) === true));
+				(deps.isDeclaredParked?.(executionId, session.project_name) === true ||
+					deps.isEngineParked?.(executionId, session.project_name) === true)));
 	if (
 		(mode === "recovery" && session.status !== "running") ||
 		(mode === "wake_pointer" && !wakePointerStatusAllowed)
@@ -207,7 +210,7 @@ export async function attemptRunnerRecoveryNudge(
 		return refuse(
 			409,
 			mode === "wake_pointer"
-				? `status is "${session.status}" without a durable park — wake pointers require parked/design_done/awaiting_review`
+				? `status is "${session.status}" without a durable park — wake pointers require parked/ship_parked/design_done/awaiting_review`
 				: `status is "${session.status}" — only running sessions can be nudged`,
 			session,
 		);
@@ -293,6 +296,18 @@ export async function attemptRunnerRecoveryNudge(
 	const target = deps.getTmuxTarget(executionId, session.project_name);
 	if (!target) {
 		return refuse(409, "no tmux target found for this execution", session);
+	}
+	if (
+		mode === "wake_pointer" &&
+		session.status === "running" &&
+		deps.isDeclaredParked?.(executionId, session.project_name) !== true &&
+		deps.isEngineParked?.(executionId, session.project_name) !== true
+	) {
+		return refuse(
+			409,
+			"durable park was fenced before send — refusing stale wake pointer",
+			session,
+		);
 	}
 
 	// Audit the attempt BEFORE the keystroke. Audit store down → no keystroke.

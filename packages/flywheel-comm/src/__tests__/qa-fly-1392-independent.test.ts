@@ -379,6 +379,7 @@ describe("FLY-1392 independent QA — research §10.2 mandated fault injections"
 			executionId: "exec-wake",
 			messageId: "instruction:instruction-qa",
 			reason: "wake_pointer_capture_failed",
+			firstDetectedAtMs: 1_000,
 			nowMs,
 		});
 		expect(alert?.kind).toBe("wake_failed");
@@ -400,6 +401,7 @@ describe("FLY-1392 independent QA — research §10.2 mandated fault injections"
 			executionId: "exec-wake",
 			messageId: "instruction:instruction-qa",
 			reason: "t3_no_started_receipt",
+			firstDetectedAtMs: 1_000,
 			nowMs,
 		});
 		expect(alert).toBeTruthy();

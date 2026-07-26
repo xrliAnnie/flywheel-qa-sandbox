@@ -389,6 +389,490 @@ describe("FLY-1392 founder receipt ingress", () => {
 		});
 	});
 
+	it("FLY-1448 binds a founder ship decision only after the canonical receipt root exists", async () => {
+		cursor.save(ctx.threadId, snowflakeAt(Date.now() - 120_000));
+		db.registerSession("exec-a", "runner", "flywheel", "FLY-1448", "lead-a");
+		const questionId = db.insertQuestion("exec-a", "lead-a", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const msgId = snowflakeAt(Date.now() - 30_000);
+		const q: PendingQuestionForThread = {
+			questionId,
+			checkpoint: "approve_to_ship",
+			executionId: "exec-a",
+			createdAtMs: Date.now() - 60_000,
+			checkpointGraceMs: 0,
+		};
+		const d = leadOnlyDeps([
+			{
+				id: msgId,
+				content: '{"approved": true}',
+				author: { id: OWNER },
+			},
+		]);
+		const tryFounderShipApproval = vi.fn(async (args) => {
+			const rootId = `founder_msg:lead-a:${msgId}`;
+			expect(queue.getById(rootId)).toBeDefined();
+			expect(args).toMatchObject({
+				msg: {
+					id: msgId,
+					content: '{"approved": true}',
+					authorId: OWNER,
+				},
+				shipGates: [{ questionId, executionId: "exec-a" }],
+				founderReceipt: {
+					rootId,
+					msgId,
+					intentKey: `founder-route:lead-a:${msgId}:${questionId}`,
+					envelope: {
+						to: "exec-a",
+						metadata: {
+							origin: "founder",
+							msgId,
+							questionId,
+						},
+					},
+				},
+			});
+			expect(
+				db.insertResponse(questionId, OWNER, '{"approved": true}'),
+			).toEqual({ written: true });
+			const responseId = db.getResponse(questionId)?.id;
+			expect(responseId).toBeTruthy();
+			queue.markProcessed(rootId, {
+				now: new Date().toISOString(),
+				evidence: {
+					v: 1,
+					kind: "ship_gate_bound",
+					ref: responseId!,
+					actor: OWNER,
+					actor_kind: "founder-writer",
+					fence: { discord_message_id: msgId },
+					basis: [`question:${questionId}`],
+				},
+			});
+			return {
+				bound: [{ questionId, decision: "approve" as const }],
+				deferred: [],
+				retry: false,
+			};
+		});
+
+		const outcome = await emitFounderReplyDeliveryForThread(ctx, [q], {
+			...d,
+			tryFounderShipApproval,
+		} as FounderReplyDeliverDeps);
+
+		expect(outcome.result).toBe("advanced");
+		expect(tryFounderShipApproval).toHaveBeenCalledOnce();
+		expect(d.deliverAmbiguousToLead).not.toHaveBeenCalled();
+		expect(queue.getById(`founder_msg:lead-a:${msgId}`)).toMatchObject({
+			processed_at: expect.any(String),
+			routing_state: "bound",
+		});
+	});
+
+	it("FLY-1448 closes an open receipt when the exact ship decision was already applied", async () => {
+		cursor.save(ctx.threadId, snowflakeAt(Date.now() - 120_000));
+		db.registerSession("exec-a", "runner", "flywheel", "FLY-1448", "lead-a");
+		const questionId = db.insertQuestion("exec-a", "lead-a", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const msgId = snowflakeAt(Date.now() - 30_000);
+		const q: PendingQuestionForThread = {
+			questionId,
+			checkpoint: "approve_to_ship",
+			executionId: "exec-a",
+			createdAtMs: Date.now() - 60_000,
+			checkpointGraceMs: 0,
+		};
+		const d = leadOnlyDeps([
+			{
+				id: msgId,
+				content: '{"approved": true}',
+				author: { id: OWNER },
+			},
+		]);
+
+		const outcome = await emitFounderReplyDeliveryForThread(ctx, [q], {
+			...d,
+			tryFounderShipApproval: vi.fn(async () => ({
+				bound: [{ questionId, decision: "approve" as const }],
+				deferred: [],
+				retry: false,
+			})),
+		} as FounderReplyDeliverDeps);
+
+		expect(outcome.result).toBe("advanced");
+		expect(d.deliverAmbiguousToLead).not.toHaveBeenCalled();
+		const root = queue.getById(`founder_msg:lead-a:${msgId}`);
+		expect(root).toMatchObject({
+			processed_at: expect.any(String),
+			routing_state: "bound",
+		});
+		expect(JSON.parse(root?.processed_evidence ?? "{}")).toMatchObject({
+			kind: "already_applied",
+			ref: questionId,
+			actor: OWNER,
+			actor_kind: "founder-writer",
+			fence: { discord_message_id: msgId },
+			basis: [`question:${questionId}`],
+		});
+	});
+
+	it("FLY-1448 records a durably deferred founder decision as terminal receipt evidence", async () => {
+		cursor.save(ctx.threadId, snowflakeAt(Date.now() - 120_000));
+		db.registerSession("exec-a", "runner", "flywheel", "FLY-1448", "lead-a");
+		const questionId = db.insertQuestion("exec-a", "lead-a", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const msgId = snowflakeAt(Date.now() - 30_000);
+		const q: PendingQuestionForThread = {
+			questionId,
+			checkpoint: "approve_to_ship",
+			executionId: "exec-a",
+			createdAtMs: Date.now() - 60_000,
+			checkpointGraceMs: 0,
+		};
+		const d = leadOnlyDeps([
+			{ id: msgId, content: "ship it", author: { id: OWNER } },
+		]);
+
+		const outcome = await emitFounderReplyDeliveryForThread(ctx, [q], {
+			...d,
+			tryFounderShipApproval: vi.fn(async () => ({
+				bound: [],
+				deferred: [{ questionId, decision: "approve" as const }],
+				retry: false,
+			})),
+		} as FounderReplyDeliverDeps);
+
+		expect(outcome.result).toBe("advanced");
+		expect(d.deliverAmbiguousToLead).not.toHaveBeenCalled();
+		const root = queue.getById(`founder_msg:lead-a:${msgId}`);
+		expect(JSON.parse(root?.processed_evidence ?? "{}")).toMatchObject({
+			kind: "deferred_founder_decision",
+			ref: questionId,
+			fence: { discord_message_id: msgId },
+		});
+	});
+
+	it("FLY-1448 dead-letters an unreachable post-write failure before advancing the cursor", async () => {
+		cursor.save(ctx.threadId, snowflakeAt(Date.now() - 120_000));
+		db.registerSession("exec-a", "runner", "flywheel", "FLY-1448", "lead-a");
+		const questionId = db.insertQuestion("exec-a", "lead-a", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const msgId = snowflakeAt(Date.now() - 30_000);
+		const q: PendingQuestionForThread = {
+			questionId,
+			checkpoint: "approve_to_ship",
+			executionId: "exec-a",
+			createdAtMs: Date.now() - 60_000,
+			checkpointGraceMs: 0,
+		};
+		const d = leadOnlyDeps([
+			{ id: msgId, content: "ship it", author: { id: OWNER } },
+		]);
+		const deadLetterNow = vi.fn(() => ({ deadLettered: true }));
+
+		const outcome = await emitFounderReplyDeliveryForThread(ctx, [q], {
+			...d,
+			tryFounderShipApproval: vi.fn(async () => ({
+				bound: [],
+				deferred: [],
+				retry: false,
+				deadLetter: {
+					questionId,
+					stage: "convergence_park_failed",
+					reason: "response durable but convergence anchors failed",
+				},
+			})),
+			retryLedger: {
+				recordFailure: vi.fn(() => ({ deadLettered: false })),
+				deadLetterNow,
+				isDeadLettered: vi.fn(() => false),
+				clear: vi.fn(),
+				clearUpTo: vi.fn(),
+			},
+		} as FounderReplyDeliverDeps);
+
+		expect(outcome.result).toBe("advanced");
+		expect(deadLetterNow).toHaveBeenCalledWith(
+			expect.objectContaining({
+				msgId,
+				executionId: "exec-a",
+				stage: "convergence_park_failed",
+			}),
+		);
+		expect(d.deliverAmbiguousToLead).not.toHaveBeenCalled();
+		const root = queue.getById(`founder_msg:lead-a:${msgId}`);
+		expect(JSON.parse(root?.processed_evidence ?? "{}")).toMatchObject({
+			kind: "dead_lettered",
+			ref: questionId,
+			fence: { discord_message_id: msgId },
+		});
+	});
+
+	it("FLY-1448 repairs an open canonical root before skipping an already dead-lettered message", async () => {
+		const before = snowflakeAt(Date.now() - 120_000);
+		cursor.save(ctx.threadId, before);
+		const msgId = snowflakeAt(Date.now() - 30_000);
+		const rootId = `founder_msg:lead-a:${msgId}`;
+		db.enqueueFounderHubRoot({
+			id: rootId,
+			toLead: "lead-a",
+			content: JSON.stringify({
+				v: 1,
+				receiptId: rootId,
+				msgId,
+				answer: "ship it",
+				projectName: "flywheel",
+				issueId: "FLY-1448",
+				threadId: ctx.threadId,
+				isReply: false,
+			}),
+			refMessageId: msgId,
+			now: new Date().toISOString(),
+			routingState: "hub_recorded",
+		});
+		const d = leadOnlyDeps([
+			{ id: msgId, content: "ship it", author: { id: OWNER } },
+		]);
+
+		const outcome = await emitFounderReplyDeliveryForThread(ctx, [], {
+			...d,
+			retryLedger: {
+				recordFailure: vi.fn(() => ({ deadLettered: false })),
+				deadLetterNow: vi.fn(() => ({ deadLettered: true })),
+				isDeadLettered: vi.fn(() => true),
+				clear: vi.fn(),
+				clearUpTo: vi.fn(),
+			},
+		});
+
+		expect(outcome.result).toBe("advanced");
+		expect(cursor.load(ctx.threadId)).toBe(msgId);
+		expect(d.deliverAmbiguousToLead).not.toHaveBeenCalled();
+		const root = queue.getById(rootId);
+		expect(root).toMatchObject({
+			processed_at: expect.any(String),
+			routing_state: "bound",
+		});
+		expect(JSON.parse(root?.processed_evidence ?? "{}")).toMatchObject({
+			kind: "dead_lettered",
+			ref: msgId,
+		});
+	});
+
+	it("FLY-1448 accepts a valid bound root when replaying a post-write dead letter", async () => {
+		cursor.save(ctx.threadId, snowflakeAt(Date.now() - 120_000));
+		db.registerSession("exec-a", "runner", "flywheel", "FLY-1448", "lead-a");
+		const questionId = db.insertQuestion("exec-a", "lead-a", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		expect(db.insertResponse(questionId, OWNER, "ship it")).toEqual({
+			written: true,
+		});
+		const responseId = db.getResponse(questionId)?.id;
+		expect(responseId).toBeTruthy();
+		const msgId = snowflakeAt(Date.now() - 30_000);
+		const rootId = `founder_msg:lead-a:${msgId}`;
+		db.enqueueFounderHubRoot({
+			id: rootId,
+			toLead: "lead-a",
+			content: JSON.stringify({
+				v: 1,
+				receiptId: rootId,
+				msgId,
+				answer: "ship it",
+				projectName: "flywheel",
+				issueId: "FLY-1448",
+				threadId: ctx.threadId,
+				isReply: false,
+			}),
+			refMessageId: msgId,
+			now: new Date().toISOString(),
+			routingState: "awaiting_rebind",
+		});
+		queue.markProcessed(rootId, {
+			now: new Date().toISOString(),
+			evidence: {
+				v: 1,
+				kind: "ship_gate_bound",
+				ref: responseId!,
+				actor: OWNER,
+				actor_kind: "founder-writer",
+				fence: {
+					source_event_id: `founder-approval:${questionId}:${msgId}`,
+				},
+				basis: [`question:${questionId}`],
+			},
+		});
+		const d = leadOnlyDeps([
+			{ id: msgId, content: "ship it", author: { id: OWNER } },
+		]);
+
+		const outcome = await emitFounderReplyDeliveryForThread(ctx, [], {
+			...d,
+			retryLedger: {
+				recordFailure: vi.fn(() => ({ deadLettered: false })),
+				deadLetterNow: vi.fn(() => ({ deadLettered: true })),
+				isDeadLettered: vi.fn(() => true),
+				clear: vi.fn(),
+				clearUpTo: vi.fn(),
+			},
+		});
+
+		expect(outcome.result).toBe("advanced");
+		expect(cursor.load(ctx.threadId)).toBe(msgId);
+		expect(queue.getById(rootId)).toMatchObject({
+			routing_state: "bound",
+			processed_evidence: expect.stringContaining("ship_gate_bound"),
+		});
+	});
+
+	it("FLY-1448 reuses dead-letter question evidence after a crash before cursor save", async () => {
+		cursor.save(ctx.threadId, snowflakeAt(Date.now() - 120_000));
+		db.registerSession("exec-a", "runner", "flywheel", "FLY-1448", "lead-a");
+		const questionId = db.insertQuestion("exec-a", "lead-a", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const msgId = snowflakeAt(Date.now() - 30_000);
+		const rootId = `founder_msg:lead-a:${msgId}`;
+		db.enqueueFounderHubRoot({
+			id: rootId,
+			toLead: "lead-a",
+			content: JSON.stringify({
+				v: 1,
+				receiptId: rootId,
+				msgId,
+				answer: "ship it",
+				projectName: "flywheel",
+				issueId: "FLY-1448",
+				threadId: ctx.threadId,
+				isReply: false,
+			}),
+			refMessageId: msgId,
+			now: new Date().toISOString(),
+			routingState: "awaiting_rebind",
+		});
+		queue.markProcessed(rootId, {
+			now: new Date().toISOString(),
+			evidence: {
+				v: 1,
+				kind: "dead_lettered",
+				ref: questionId,
+				actor: OWNER,
+				actor_kind: "founder-writer",
+				fence: { discord_message_id: msgId },
+				basis: [`question:${questionId}`],
+			},
+		});
+		const d = leadOnlyDeps([
+			{ id: msgId, content: "ship it", author: { id: OWNER } },
+		]);
+
+		const outcome = await emitFounderReplyDeliveryForThread(ctx, [], {
+			...d,
+			retryLedger: {
+				recordFailure: vi.fn(() => ({ deadLettered: false })),
+				deadLetterNow: vi.fn(() => ({ deadLettered: true })),
+				isDeadLettered: vi.fn(() => true),
+				clear: vi.fn(),
+				clearUpTo: vi.fn(),
+			},
+		});
+
+		expect(outcome.result).toBe("advanced");
+		expect(cursor.load(ctx.threadId)).toBe(msgId);
+		expect(queue.getById(rootId)).toMatchObject({
+			routing_state: "bound",
+			processed_evidence: expect.stringContaining("dead_lettered"),
+		});
+	});
+
+	it("FLY-1448 narrows a verified Discord reply to the exact bound ship card", async () => {
+		cursor.save(ctx.threadId, snowflakeAt(Date.now() - 120_000));
+		db.registerSession("exec-a", "runner-a", "flywheel", "FLY-1448", "lead-a");
+		db.registerSession("exec-b", "runner-b", "flywheel", "FLY-1448", "lead-a");
+		const questionA = db.insertQuestion("exec-a", "lead-a", "ship A?", {
+			checkpoint: "approve_to_ship",
+		});
+		const questionB = db.insertQuestion("exec-b", "lead-a", "ship B?", {
+			checkpoint: "approve_to_ship",
+		});
+		const msgId = snowflakeAt(Date.now() - 30_000);
+		const questions: PendingQuestionForThread[] = [
+			{
+				questionId: questionA,
+				checkpoint: "approve_to_ship",
+				executionId: "exec-a",
+				createdAtMs: Date.now() - 60_000,
+				checkpointGraceMs: 0,
+			},
+			{
+				questionId: questionB,
+				checkpoint: "approve_to_ship",
+				executionId: "exec-b",
+				createdAtMs: Date.now() - 60_000,
+				checkpointGraceMs: 0,
+			},
+		];
+		const d = leadOnlyDeps([
+			{
+				id: msgId,
+				content: "okay",
+				type: 19,
+				author: { id: OWNER },
+				message_reference: {
+					type: 0,
+					channel_id: ctx.threadId,
+					message_id: "gate-card-b",
+				},
+			},
+		]);
+		d.store = {
+			...makeStore(),
+			getSession: vi.fn((executionId: string) => ({
+				pr_head_sha: executionId === "exec-a" ? "head-a" : "head-b",
+			})),
+		} as unknown as FounderReplyDeliverDeps["store"];
+		const tryFounderShipApproval = vi.fn(async (args) => ({
+			bound: [
+				{
+					questionId: args.shipGates[0]?.questionId ?? "",
+					decision: "approve" as const,
+				},
+			],
+			deferred: [],
+			retry: false,
+		}));
+
+		const outcome = await emitFounderReplyDeliveryForThread(ctx, questions, {
+			...d,
+			readCurrentBinding: vi.fn((_executionId: string, questionId: string) =>
+				questionId === questionB
+					? { gateMessageId: "gate-card-b" }
+					: { gateMessageId: "gate-card-a" },
+			),
+			tryFounderShipApproval,
+		} as FounderReplyDeliverDeps);
+
+		expect(outcome.result).toBe("advanced");
+		expect(tryFounderShipApproval).toHaveBeenCalledWith(
+			expect.objectContaining({
+				shipGates: [expect.objectContaining({ questionId: questionB })],
+				replyToCard: true,
+				founderReceipt: expect.objectContaining({
+					intentKey: `founder-route:lead-a:${msgId}:${questionB}`,
+					envelope: expect.objectContaining({ to: "exec-b" }),
+				}),
+			}),
+		);
+		expect(d.deliverAmbiguousToLead).not.toHaveBeenCalled();
+	});
+
 	it("preserves the full founder text in both the Lead handoff and receipt root", async () => {
 		cursor.save(ctx.threadId, snowflakeAt(Date.now() - 120_000));
 		const msgId = snowflakeAt(Date.now() - 30_000);

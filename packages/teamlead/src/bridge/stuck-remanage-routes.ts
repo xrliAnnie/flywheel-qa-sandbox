@@ -118,6 +118,141 @@ export interface StuckRemanageRouterOptions {
 	onRearm?: (executionId: string) => void;
 }
 
+export interface LeadDetectionAckRouterOptions {
+	store: StateStore;
+	projects: ProjectEntry[];
+	auth?: RequestHandler;
+	now?: () => number;
+}
+
+/**
+ * FLY-1448 E3: lead-keyed detection rows have no Session and therefore cannot
+ * use the execution-scoped route below. The target key is always derived from
+ * the configured (project, lead) pair; accepting a caller-provided raw key
+ * would be a cross-project acknowledgement primitive.
+ */
+export function createLeadDetectionAckRouter(
+	opts: LeadDetectionAckRouterOptions,
+): Router {
+	const router = Router();
+	const auth: RequestHandler = opts.auth ?? ((_req, _res, next) => next());
+	const now = opts.now ?? Date.now;
+	router.post("/:leadId/detection-ack", auth, (req, res) => {
+		const leadId = (req.params.leadId as string | undefined)?.trim() ?? "";
+		const body = (req.body ?? {}) as {
+			projectName?: unknown;
+			kind?: unknown;
+			episode_fingerprint?: unknown;
+			disposition?: unknown;
+			target_key?: unknown;
+			targetKey?: unknown;
+		};
+		if (Object.hasOwn(body, "target_key") || Object.hasOwn(body, "targetKey")) {
+			res
+				.status(400)
+				.json({ error: "raw detection target keys are forbidden" });
+			return;
+		}
+		const projectName =
+			typeof body.projectName === "string" ? body.projectName.trim() : "";
+		const kind = typeof body.kind === "string" ? body.kind.trim() : "";
+		const fingerprint =
+			typeof body.episode_fingerprint === "string"
+				? body.episode_fingerprint.trim()
+				: "";
+		const disposition = body.disposition;
+		if (!leadId || !projectName || !kind || kind.length > 100) {
+			res.status(400).json({
+				error: "leadId path, projectName, and kind are required",
+			});
+			return;
+		}
+		if (!fingerprint || fingerprint.length > 200) {
+			res.status(400).json({ error: "episode_fingerprint is required" });
+			return;
+		}
+		if (
+			disposition !== "ack" &&
+			disposition !== "resolve" &&
+			disposition !== "dismiss"
+		) {
+			res.status(400).json({
+				error: "disposition must be one of: ack, resolve, dismiss",
+			});
+			return;
+		}
+
+		const projectMatches = opts.projects.filter(
+			(project) => project.projectName === projectName,
+		);
+		if (projectMatches.length !== 1) {
+			res
+				.status(projectMatches.length === 0 ? 404 : 409)
+				.json({ error: "project is unknown or ambiguous" });
+			return;
+		}
+		const leadMatches = projectMatches[0]!.leads.filter(
+			(lead) => lead.agentId === leadId,
+		);
+		if (leadMatches.length !== 1) {
+			res
+				.status(leadMatches.length === 0 ? 404 : 409)
+				.json({ error: "lead is unknown or ambiguous in project" });
+			return;
+		}
+
+		const targetKey = `${projectName}:${leadId}`;
+		const row = opts.store.getDetectionEscalation(targetKey, kind, fingerprint);
+		if (!row) {
+			res.status(404).json({ error: "detection episode not found" });
+			return;
+		}
+		if (!row.owner_lead_id || row.owner_lead_id !== leadId) {
+			res.status(403).json({ error: "detection episode owner mismatch" });
+			return;
+		}
+
+		try {
+			const outcome = opts.store.ackDetectionEscalationWithReceipt(
+				targetKey,
+				kind,
+				fingerprint,
+				{
+					atMs: now(),
+					disposition,
+					receipt: {
+						actorLeadId: leadId,
+						rawDisposition: disposition,
+						content: formatDispositionReceipt({
+							actorLeadId: leadId,
+							kind,
+							rawDisposition: disposition,
+						}),
+						executionId: targetKey,
+						projectName,
+					},
+				},
+			);
+			const settled = opts.store.getDetectionEscalation(
+				targetKey,
+				kind,
+				fingerprint,
+			);
+			res.json({
+				ok: true,
+				status: settled?.status ?? row.status,
+				receiptPrepared: outcome.receiptPrepared,
+			});
+		} catch (error) {
+			console.error(
+				`[lead-detection-ack] transactional ack failed for ${targetKey}: ${(error as Error).message}`,
+			);
+			res.status(500).json({ error: "detection ack persist failed" });
+		}
+	});
+	return router;
+}
+
 export function createStuckRemanageRouter(
 	opts: StuckRemanageRouterOptions,
 ): Router {

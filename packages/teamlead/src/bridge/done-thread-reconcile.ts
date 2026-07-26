@@ -187,6 +187,19 @@ export interface DoneThreadReconcileDeps {
 		freshAuthority?: () => Promise<"authorized" | "reopened" | "unknown">;
 	}) => Promise<{ nodes: unknown[]; outcome: string } | undefined>;
 	/**
+	 * FLY-1448 E1: fresh Linear Done/Canceled is independent authority for
+	 * receipt settlement, including running sessions and issues without a ship
+	 * gate. The implementation must call `revalidate` before every irreversible
+	 * mutation; reopen/unknown wins.
+	 */
+	settleIssueReceipts?: (input: {
+		projectName: string;
+		canonicalIssueId: string;
+		issueAliases: string[];
+		authorityCredential: string;
+		revalidate: () => Promise<"authorized" | "reopened" | "unknown">;
+	}) => Promise<void>;
+	/**
 	 * FLY-1185 dual-switch contract (R9#4): the NEW mutators (closeout) hang
 	 * off FLYWHEEL_WORKTREE_AUTOCLEAN; the ORIGINAL FLY-1165 husk/archive
 	 * behavior stays under FLYWHEEL_DONE_THREAD_RECONCILE — neither switch
@@ -451,6 +464,25 @@ export async function reconcileDoneThreads(
 					// reconcile — this is the durable-migration recording pass.
 					result.skippedNotDone++;
 					continue;
+				}
+				if (obsProject && deps.settleIssueReceipts && !dryRun) {
+					try {
+						await deps.settleIssueReceipts({
+							projectName: obsProject,
+							canonicalIssueId: linear.id,
+							issueAliases: aliasKeys,
+							authorityCredential: `${linear.id}:${linear.updatedAt ?? ""}`,
+							revalidate: makeFreshAuthority(
+								() => lookupIssue(linearApiKey, thread.issue_id),
+								now,
+							),
+						});
+					} catch (err) {
+						result.failed++;
+						log(
+							`${thread.issue_id}: issue receipt settlement failed: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
 				}
 				const newMutatorsOn = deps.newMutatorsEnabled ?? true;
 				const runCloseout =
@@ -820,6 +852,23 @@ export async function reconcileDoneThreads(
 						linearUpdatedAt: linear.updatedAt ?? "",
 					});
 					if (!DONE_STATE_TYPES.has(linear.stateType)) continue;
+					const residueAliases = [
+						...new Set(
+							[issueKey, linear.id, linear.identifier].filter(Boolean),
+						),
+					];
+					if (deps.settleIssueReceipts && !dryRun) {
+						await deps.settleIssueReceipts({
+							projectName: residueProject,
+							canonicalIssueId: linear.id,
+							issueAliases: residueAliases,
+							authorityCredential: `${linear.id}:${linear.updatedAt ?? ""}`,
+							revalidate: makeFreshAuthority(
+								() => lookupIssue(linearApiKey, issueKey),
+								now,
+							),
+						});
+					}
 					const authorized =
 						obs.outcome !== "conflict" && obs.terminalAuthorized;
 					const canRun =
@@ -834,11 +883,7 @@ export async function reconcileDoneThreads(
 						projectName: residueProject,
 						disposition:
 							linear.stateType === "canceled" ? "canceled" : "shipped",
-						extraAliases: [
-							...new Set(
-								[issueKey, linear.id, linear.identifier].filter(Boolean),
-							),
-						],
+						extraAliases: residueAliases,
 						budget: closeoutBudget,
 						freshAuthority: makeFreshAuthority(
 							() => lookupIssue(linearApiKey, issueKey),
