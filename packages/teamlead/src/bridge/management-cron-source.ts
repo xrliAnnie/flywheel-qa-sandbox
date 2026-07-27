@@ -3,8 +3,7 @@ import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, isAbsolute, join, relative } from "node:path";
 import {
 	canonicalSubmissionDigest,
-	getModelRegistryEntry,
-	isModelSelectionSupported,
+	getModelConfigSnapshot,
 } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import {
@@ -319,10 +318,14 @@ function directModelBinding(args: unknown): {
 		};
 	}
 	const hit = hits[0]!;
-	const registered = getModelRegistryEntry(hit.model);
+	const modelSnapshot = getModelConfigSnapshot();
+	const registered = modelSnapshot.getModelRegistryEntry(hit.model);
 	if (
 		!registered ||
-		!isModelSelectionSupported({ surface: "cron", model: hit.model })
+		!modelSnapshot.isModelSelectionSupported({
+			surface: "cron",
+			model: hit.model,
+		})
 	) {
 		return {
 			selection: null,

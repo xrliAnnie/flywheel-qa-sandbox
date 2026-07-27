@@ -145,12 +145,35 @@ batch_journal_create o7 "$CF" "$SHA"
 batch_journal_claim_owner() { return 1; }
 FAIL_KEYS="" fleet_batch_apply "$CF" "$PJ" 2>/dev/null; rc=$?
 unset -f batch_journal_claim_owner
+# Restore the real helper for subsequent policy-gate coverage.
+source "${SD}/flywheel-fleet-journal.sh"
 if [ "$rc" -ne 0 ] && [ "$(batch_journal_status o7)" = "rejected" ] &&
    [ "$(cat "$PJ")" = "$before" ] &&
    [ "$(batch_key_status o7 geo-peter)" = "pending" ]; then
   pass "O7 owner-claim fail → rejected, zero mutation (fail-closed)"
 else
   fail "O7 rc=$rc status=$(batch_journal_status o7) mutated=$([ "$(cat "$PJ")" = "$before" ] && echo no || echo YES)"
+fi
+
+# ── O8 model policy is part of the locked pre-accept gate ─────────
+# There is no blocklist; the gate is resolvability. A spelling the registry
+# cannot resolve must be refused before the first byte is written.
+PJ="${TMP}/o8-config.json"; seed_config "$PJ"
+SHA="$(file_sha "$PJ")"; before="$(cat "$PJ")"
+CF="${TMP}/o8-changes.json"
+cat >"$CF" <<JSON
+{ "batchId": "o8", "expectedConfigSha": "${SHA}", "changes": [
+  { "key": "geo-peter", "from": {"model":"claude-fable-5"}, "to": {"model":"claude-not-a-model"} }
+] }
+JSON
+batch_journal_create o8 "$CF" "$SHA"
+FAIL_KEYS="" fleet_batch_apply "$CF" "$PJ" 2>/dev/null; rc=$?
+if [ "$rc" -ne 0 ] && [ "$(batch_journal_status o8)" = "rejected" ] &&
+   [ "$(cat "$PJ")" = "$before" ] &&
+   [ "$(batch_key_status o8 geo-peter)" = "pending" ]; then
+  pass "O8 unresolvable model rejected under pre-accept lock, zero mutation"
+else
+  fail "O8 rc=$rc status=$(batch_journal_status o8) mutated=$([ "$(cat "$PJ")" = "$before" ] && echo no || echo YES)"
 fi
 
 echo "=================================="

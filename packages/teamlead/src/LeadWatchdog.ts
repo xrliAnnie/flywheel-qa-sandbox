@@ -1245,6 +1245,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Claude account switched with degraded verification";
 		case "machine_account_conflict":
 			return "Claude account identity conflict";
+		case "model_config":
+			return "Lead model policy fallback";
 		case "model_cap_switched":
 			return "Claude model-cap account switched";
 		case "model_cap_unknown":
@@ -1463,6 +1465,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "The external quota monitor switched Claude accounts using the controlled degraded-verification fallback; inspect the supplied panorama evidence.";
 		case "machine_account_conflict":
 			return "The external quota monitor found conflicting active-account witnesses and refused all quota actions.";
+		case "model_config":
+			return "The Lead launcher rejected or could not resolve its configured model and used the built-in Fable fallback. Inspect projects.json, models.json, and the launcher log before the next restart.";
 		case "model_cap_switched":
 			return "The external quota monitor switched accounts for a verified model-specific cap and recorded the affected panes.";
 		case "model_cap_unknown":

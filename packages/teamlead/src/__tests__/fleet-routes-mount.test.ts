@@ -390,7 +390,9 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		const stageRes = await fetch(`${baseUrl}/api/fleet/stage`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", Origin: sameOrigin },
-			body: JSON.stringify({ changes: [{ key: "geo-peter", toModel: null }] }),
+			body: JSON.stringify({
+				changes: [{ key: "geo-peter", toModel: "claude-opus-5" }],
+			}),
 		});
 		expect(stageRes.status).toBe(200);
 		const staged = (await stageRes.json()) as {
@@ -425,7 +427,9 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		const stageRes = await fetch(`${baseUrl}/api/fleet/stage`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", Origin: sameOrigin },
-			body: JSON.stringify({ changes: [{ key: "geo-peter", toModel: null }] }),
+			body: JSON.stringify({
+				changes: [{ key: "geo-peter", toModel: "claude-opus-5" }],
+			}),
 		});
 		const staged = (await stageRes.json()) as {
 			batchId: string;

@@ -38,7 +38,7 @@ describe("buildClaudeReviewArgv", () => {
 			prompt: "round 2 delta",
 			sessionId: "uuid-1",
 			resume: true,
-			model: "custom-model",
+			model: "fable",
 		});
 		expect(reround.slice(0, 4)).toEqual([
 			"-p",
@@ -46,7 +46,18 @@ describe("buildClaudeReviewArgv", () => {
 			"--resume",
 			"uuid-1",
 		]);
-		expect(reround).toContain("custom-model");
+		expect(reround).toContain("claude-fable-5");
+	});
+
+	it("rejects an unresolvable reviewer model before spawn", () => {
+		expect(() =>
+			buildClaudeReviewArgv({
+				prompt: "p",
+				sessionId: "u",
+				resume: false,
+				model: "claude-not-a-model",
+			}),
+		).toThrow(/unknown model/i);
 	});
 
 	it("FLY-1224: an explicit effort overrides the xhigh default", () => {

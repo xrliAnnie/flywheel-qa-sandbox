@@ -40,7 +40,7 @@ describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () =
 		);
 	});
 
-	it("keeps account default as a distinct nullable Lead target", () => {
+	it("lists every model plus account-default, legacy ids readonly", () => {
 		expect(CLAUDE_TIER_OPTIONS).toEqual([
 			{ id: "claude-fable-5", label: "Fable 5" },
 			{ id: "claude-fable-5[1m]", label: "Fable 5 (1M)" },
@@ -53,7 +53,7 @@ describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () =
 			// but are readonly — visible, never offered as a new choice.
 			{ id: "claude-opus-4-8", label: "Opus 4.8", readonly: true },
 			{ id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)", readonly: true },
-			{ id: null, label: "Opus 4.8" },
+			{ id: null, label: "账号默认" },
 		]);
 	});
 
@@ -64,25 +64,26 @@ describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () =
 	});
 
 	it("computeTierOptions picks by effective backend", () => {
-		expect(computeTierOptions("claude-code")).toBe(CLAUDE_TIER_OPTIONS);
+		expect(computeTierOptions("claude-code")).toEqual(CLAUDE_TIER_OPTIONS);
 		expect(computeTierOptions("codex-app-server")).toBe(CODEX_TIER_OPTIONS);
 	});
 });
 
 describe("fleet-capabilities — allowedModelTargets (R6 #5)", () => {
-	it("Claude targets = tier ids ∪ {null} (account-default is a legal target)", () => {
+	it("Claude targets contain the selectable ids plus account-default", () => {
 		const targets = computeAllowedModelTargets("claude-code");
 		expect(targets).toContain("claude-fable-5");
-		expect(targets).toContain("claude-opus-4-8[1m]"); // FLY-360: 1M selector authorized
+		expect(targets).not.toContain("claude-opus-4-8[1m]");
 		expect(targets).toContain("claude-sonnet-4-6"); // FLY-671: cheaper tier authorized
 		expect(targets).toContain("claude-haiku-4-5-20251001"); // FLY-671: cheaper tier authorized
 		expect(targets).toContain("claude-sonnet-5"); // FLY-728: current fleet Sonnet
-		expect(targets).toContain(null); // explicit → account default is legal
 	});
 
-	it("does not duplicate null when a tier already exposes it", () => {
+	it("offers account inheritance as a legal target", () => {
+		// Readonly legacy ids stay out; null (back-to-account-default) is legal.
 		const targets = computeAllowedModelTargets("claude-code");
-		expect(targets.filter((t) => t === null)).toHaveLength(1);
+		expect(targets).toContain(null);
+		expect(targets).not.toContain("claude-opus-4-8[1m]");
 	});
 
 	it("Codex Lead targets = only null (no managed model switch)", () => {
@@ -212,7 +213,7 @@ describe("fleet-capabilities — computeLeadCapabilities bundle", () => {
 		);
 		expect(cap.currentBackend).toBe("claude-code");
 		expect(cap.backendSource).toBe("explicit");
-		expect(cap.tierOptions).toBe(CLAUDE_TIER_OPTIONS);
+		expect(cap.tierOptions).toEqual(CLAUDE_TIER_OPTIONS);
 		expect(cap.allowedModelTargets).toContain("claude-fable-5");
 	});
 

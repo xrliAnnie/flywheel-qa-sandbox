@@ -67,12 +67,12 @@ describe("fleet-console-model — buildConsoleSnapshot (R5 #1: default-off gate)
 		);
 	});
 
-	it("Lead with no model → account-default tier shown (Opus 4.8), id null", () => {
+	it("Lead with no model → built-in Fable effective model shown, id null", () => {
 		const snap = buildConsoleSnapshot([
 			{ projectName: "geo", projectRoot: "/tmp", leads: [lead()] },
 		]);
 		expect(snap.leads[0]!.currentModelId).toBeNull();
-		expect(snap.leads[0]!.currentModelLabel).toBe("Opus 4.8");
+		expect(snap.leads[0]!.currentModelLabel).toBe("Fable 5");
 	});
 
 	it("Lead with model=claude-fable-5 → 'Fable 5' label", () => {

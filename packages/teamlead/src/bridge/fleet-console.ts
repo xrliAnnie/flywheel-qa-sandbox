@@ -37,7 +37,11 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { EXECUTOR_BACKENDS, type FlagView, MODEL_TIERS } from "flywheel-config";
+import {
+	EXECUTOR_BACKENDS,
+	type FlagView,
+	getModelTiers,
+} from "flywheel-config";
 import { EFFORT_LEVELS } from "../lead-effort.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { CanonicalRequest } from "./fleet-admin.js";
@@ -129,7 +133,7 @@ export interface FleetConsoleOptions {
 export function runnerCapabilities(): RunnerCapabilities {
 	return {
 		backends: EXECUTOR_BACKENDS,
-		models: Object.values(MODEL_TIERS).map((t) => t.id),
+		models: [...new Set(Object.values(getModelTiers()).map((tier) => tier.id))],
 		efforts: EFFORT_LEVELS,
 	};
 }

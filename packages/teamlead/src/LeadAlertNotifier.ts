@@ -224,6 +224,7 @@ export const ALERT_EVENT_TYPES = [
 	"account_switched",
 	"account_switch_degraded",
 	"machine_account_conflict",
+	"model_config",
 	"model_cap_switched",
 	"model_cap_unknown",
 	"model_cap_persistent_unknown",

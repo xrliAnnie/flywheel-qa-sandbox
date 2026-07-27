@@ -3,8 +3,8 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	canonicalSubmissionDigest,
-	getModelRegistryEntry,
-	isModelSelectionSupported,
+	getModelConfigSnapshot,
+	type ModelConfigSnapshot,
 	nodeTypeWritesCode,
 } from "flywheel-config";
 import { parse } from "yaml";
@@ -152,6 +152,8 @@ export interface WorkflowManifestValidationOptions {
 	 * paths retain strict canonical-registry validation.
 	 */
 	allowUnsupportedModels?: boolean;
+	/** Internal transaction seam: one hot-config generation per validation. */
+	modelSnapshot?: ModelConfigSnapshot;
 }
 
 export function workflowSeedContentHash(
@@ -202,12 +204,16 @@ function oneOf<T extends string>(
 	return value as T;
 }
 
-function compatibleModel(vendor: WorkflowVendor, model: string): boolean {
+function compatibleModel(
+	vendor: WorkflowVendor,
+	model: string,
+	snapshot: ModelConfigSnapshot,
+): boolean {
 	// FLY-1467: judge the CANONICAL id, not the raw spelling. Config may now
 	// write a tier ("opus" / "opus-1m") instead of a version, and a tier does not
 	// carry the vendor prefix. Resolving first keeps every existing full-id
 	// spelling byte-identical while letting tiers through.
-	const canonical = getModelRegistryEntry(model)?.id ?? model;
+	const canonical = snapshot.getModelRegistryEntry(model)?.id ?? model;
 	return vendor === "claude"
 		? canonical.startsWith("claude-")
 		: canonical.startsWith("gpt-");
@@ -217,11 +223,12 @@ function canonicalWorkflowModel(
 	vendor: WorkflowVendor,
 	model: string,
 	effort?: WorkflowEffort,
+	snapshot: ModelConfigSnapshot = getModelConfigSnapshot(),
 ): string {
-	const registered = getModelRegistryEntry(model);
+	const registered = snapshot.getModelRegistryEntry(model);
 	if (
 		!registered ||
-		!isModelSelectionSupported({
+		!snapshot.isModelSelectionSupported({
 			surface: "workflow",
 			model,
 			effort,
@@ -257,6 +264,7 @@ function assertAcyclic(nodes: string[], edges: WorkflowManifestEdge[]): void {
 function validateTierPresets(
 	manifest: WorkflowManifest,
 	value: unknown,
+	modelSnapshot: ModelConfigSnapshot,
 ): Partial<Record<EngTier, WorkflowTemplateOverride>> | undefined {
 	if (value === undefined) return undefined;
 	const presets = record(value, "manifest.tier_presets");
@@ -267,7 +275,11 @@ function validateTierPresets(
 	const normalized: Partial<Record<EngTier, WorkflowTemplateOverride>> = {};
 	for (const tier of ENG_TIERS) {
 		if (presets[tier] === undefined) continue;
-		normalized[tier] = applyWorkflowOverride(manifest, presets[tier]).override;
+		normalized[tier] = applyWorkflowOverride(
+			manifest,
+			presets[tier],
+			modelSnapshot,
+		).override;
 	}
 	return normalized;
 }
@@ -277,6 +289,7 @@ function validateWorkflowManifestV1(
 	value: unknown,
 	options: WorkflowManifestValidationOptions = {},
 ): WorkflowManifestV1 {
+	const modelSnapshot = options.modelSnapshot ?? getModelConfigSnapshot();
 	const root = record(value, "manifest");
 	const isLandVariant = root.manifest_variant === "land_v1";
 	exactKeys(
@@ -422,7 +435,7 @@ function validateWorkflowManifestV1(
 			vendor && model
 				? options.allowUnsupportedModels
 					? model
-					: canonicalWorkflowModel(vendor, model, effort)
+					: canonicalWorkflowModel(vendor, model, effort, modelSnapshot)
 				: model;
 		return {
 			id,
@@ -678,7 +691,11 @@ function validateWorkflowManifestV1(
 				terminal_gate: approvalGate,
 				ship_claims: shipClaims,
 			};
-	const tierPresets = validateTierPresets(manifest, root.tier_presets);
+	const tierPresets = validateTierPresets(
+		manifest,
+		root.tier_presets,
+		modelSnapshot,
+	);
 	return tierPresets ? { ...manifest, tier_presets: tierPresets } : manifest;
 }
 
@@ -724,7 +741,9 @@ function assertSafeAgentFile(value: unknown, path: string): string {
 function validateWorkflowManifestV2(
 	value: unknown,
 	nodeWritesCode: (type: WorkflowNodeType) => boolean = nodeTypeWritesCode,
+	options: WorkflowManifestValidationOptions = {},
 ): WorkflowManifestV2 {
+	const modelSnapshot = options.modelSnapshot ?? getModelConfigSnapshot();
 	const root = record(value, "manifest");
 	exactKeys(
 		root,
@@ -824,7 +843,12 @@ function validateWorkflowManifestV2(
 		if (model && !vendor) {
 			throw new Error(`node ${id} model requires a vendor intent`);
 		}
-		if (vendor && model && !compatibleModel(vendor, model)) {
+		if (
+			vendor &&
+			model &&
+			!options.allowUnsupportedModels &&
+			!compatibleModel(vendor, model, modelSnapshot)
+		) {
 			throw new Error(
 				`node ${id} vendor ${vendor} is incompatible with model ${model}`,
 			);
@@ -1140,7 +1164,11 @@ function validateWorkflowManifestV2(
 		terminal_gate: terminalGate,
 		ship_claims: shipClaims,
 	};
-	const tierPresets = validateTierPresets(manifest, root.tier_presets);
+	const tierPresets = validateTierPresets(
+		manifest,
+		root.tier_presets,
+		modelSnapshot,
+	);
 	return tierPresets ? { ...manifest, tier_presets: tierPresets } : manifest;
 }
 
@@ -1149,12 +1177,16 @@ export function validateWorkflowManifest(
 	value: unknown,
 	options: WorkflowManifestValidationOptions = {},
 ): WorkflowManifest {
+	const modelSnapshot = options.modelSnapshot ?? getModelConfigSnapshot();
 	const root = record(value, "manifest");
 	if (root.schema_version === 1) {
-		return validateWorkflowManifestV1(value, options);
+		return validateWorkflowManifestV1(value, { ...options, modelSnapshot });
 	}
 	if (root.schema_version === 2) {
-		return validateWorkflowManifestV2(value);
+		return validateWorkflowManifestV2(value, nodeTypeWritesCode, {
+			...options,
+			modelSnapshot,
+		});
 	}
 	throw new Error(
 		"manifest.schema_version must be one of the supported versions: 1, 2",
@@ -1165,7 +1197,9 @@ export function validateWorkflowManifest(
 export function validatePinnedWorkflowManifest(
 	value: unknown,
 ): WorkflowManifestV2 {
-	return validateWorkflowManifestV2(value, () => false);
+	return validateWorkflowManifestV2(value, () => false, {
+		allowUnsupportedModels: true,
+	});
 }
 
 export function parseWorkflowManifestYaml(source: string): WorkflowManifest {
@@ -1175,8 +1209,9 @@ export function parseWorkflowManifestYaml(source: string): WorkflowManifest {
 export function applyWorkflowOverride(
 	manifestValue: unknown,
 	overrideValue: unknown,
+	modelSnapshot: ModelConfigSnapshot = getModelConfigSnapshot(),
 ): { manifest: WorkflowManifest; override: WorkflowTemplateOverride } {
-	const manifest = validateWorkflowManifest(manifestValue);
+	const manifest = validateWorkflowManifest(manifestValue, { modelSnapshot });
 	const override = record(overrideValue, "override");
 	exactKeys(override, ["reason", "nodes"], "override");
 	const reason = nonempty(override.reason, "override.reason");
@@ -1220,7 +1255,7 @@ export function applyWorkflowOverride(
 				`override.nodes.${nodeId}.model`,
 			);
 			const vendor = overrideVendor ?? node.vendor;
-			if (!vendor || !compatibleModel(vendor, model)) {
+			if (!vendor || !compatibleModel(vendor, model, modelSnapshot)) {
 				throw new Error(
 					`node ${nodeId} vendor is incompatible with override model ${model}`,
 				);
@@ -1278,7 +1313,7 @@ export function applyWorkflowOverride(
 		}
 	}
 	return {
-		manifest: validateWorkflowManifest(next),
+		manifest: validateWorkflowManifest(next, { modelSnapshot }),
 		override: {
 			reason,
 			...(Object.keys(nodeOverrides).length > 0

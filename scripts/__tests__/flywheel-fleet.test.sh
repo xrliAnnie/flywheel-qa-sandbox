@@ -339,6 +339,8 @@ if [ "$RC" -eq 0 ] && echo "$OUT" | grep -q "APPLIED" \
   && grep -q "<key>FLYWHEEL_LEAD_MODEL</key><string>claude-fable-5</string>" "$PLIST" \
   && [ "$(jq -r '.model' "$MANIFEST")" = "claude-fable-5" ] \
   && [ -x "$WRAPPER_DST" ] \
+  && [ "$(jq -r '.leads["'"$KEY"'"].original.projectModel' "${TXN_DIR}transaction.json")" = "null" ] \
+  && [ "$(jq -r '.leads["'"$KEY"'"].original.projectPreimageSource' "${TXN_DIR}transaction.json")" = "manifest" ] \
   && [ "$(jq -r '.leads["'"$KEY"'"].phase' "${TXN_DIR}transaction.json")" = "applied" ] \
   && [ "$(jq -r '.leads["'"$KEY"'"].postImage.plistSha' "${TXN_DIR}transaction.json")" != "null" ]; then
   pass "T10: apply --yes → Phase W + staged commit + model env in plist + postImage"
@@ -370,6 +372,7 @@ OUT=$(FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub2" bash "$FLEET" apply -
 if [ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ROLLED-BACK" \
   && ! grep -q "FLYWHEEL_LEAD_MODEL" "$PLIST" \
   && ! jq -e 'has("model")' "$MANIFEST" >/dev/null \
+  && ! jq -e '.[0].leads[0] | has("model")' "$PROJECTS" >/dev/null \
   && grep -q "bootstrap" "$CTL/calls.log"; then
   pass "T16a: PID-only rewrite tolerated; rollback restores pre-image plist (no model env) via backup bootstrap"
 else
@@ -379,7 +382,7 @@ kill "$NEWPID" 2>/dev/null || true
 
 # T16b: two transactions → --txn T1 blocked while T2 applied is newer.
 reset_world
-write_projects '"model-A"'
+write_projects '"claude-fable-5"'
 LIVE=$(setup_running_lead null)
 NEXT=$(spawn_live)
 echo "$LIVE" > "$CTL/kill_on_bootout"
@@ -388,7 +391,7 @@ echo "$MANIFEST" > "$CTL/manifest_path"
 FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub2" bash "$FLEET" apply --yes >/dev/null 2>&1
 TXN1=$(basename "$(ls -1d "$BACKUPS"/*/ | head -1)")
 sleep 1
-write_projects '"model-B"'
+write_projects '"claude-opus-5"'
 # manifest pid was self-written to $NEXT by the stub bootstrap (binding holds)
 NEXT2=$(spawn_live)
 echo "$NEXT" > "$CTL/kill_on_bootout"
@@ -410,7 +413,8 @@ echo "$NEXT3" > "$CTL/kill_on_bootout"
 NEXT4=$(spawn_live)
 echo "$NEXT4" > "$CTL/next_pid"
 OUT=$(FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub2" bash "$FLEET" apply --rollback --txn "$TXN1" --yes 2>&1); RC=$?
-if [ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ROLLED-BACK"; then
+if [ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ROLLED-BACK" \
+  && ! jq -e '.[0].leads[0] | has("model")' "$PROJECTS" >/dev/null; then
   pass "T16c: after rolling back T2, --txn T1 succeeds (newest-first lineage)"
 else
   fail "T16c: rc=$RC $OUT"
@@ -419,7 +423,7 @@ kill "$LIVE" 2>/dev/null || true
 
 # ── T12: verify-fail rollback e2e (old plist HAS model, manifest doesn't) ──
 reset_world
-write_projects '"new-model"'
+write_projects '"claude-opus-5"'
 LIVE=$(setup_running_lead null)
 # Hand-edit the canonical plist to carry a model env the manifest lacks —
 # the exact FLY-241 production form this issue root-cures (R1#2).
@@ -469,7 +473,7 @@ fi
 
 # ── T13: stop-timeout → manual-intervention + NO bootstrap ────────────────
 reset_world
-write_projects '"new-model"'
+write_projects '"claude-opus-5"'
 LIVE=$(setup_running_lead null)
 # default stub: bootout does NOT kill the process → stop-timeout in daemon
 OUT=$(bash "$FLEET" apply --yes 2>&1); RC=$?
@@ -485,7 +489,7 @@ kill "$LIVE" 2>/dev/null || true
 
 # ── T14: TOCTOU — config edited after confirmation → zero bootout ─────────
 reset_world
-write_projects '"new-model"'
+write_projects '"claude-opus-5"'
 LIVE=$(setup_running_lead null)
 # Daemon shim: pass-through, but the install-wrapper call (Phase W, which
 # runs after confirmation and before per-lead bootout) ALSO mutates
@@ -509,7 +513,7 @@ kill "$LIVE" 2>/dev/null || true
 
 # ── T20: probe failure → indeterminate (not external) → UNAPPLIED ─────────
 reset_world
-write_projects '"new-model"'
+write_projects '"claude-opus-5"'
 LIVE=$(setup_running_lead null)
 OUT=$(FLYWHEEL_DAEMON_LAUNCHCTL="/nonexistent/launchctl" bash "$FLEET" apply --yes 2>&1); RC=$?
 if [ "$RC" -ne 0 ] && echo "$OUT" | grep -q "UNAPPLIED management-indeterminate" \
@@ -637,8 +641,8 @@ KEY2="geo-ops-lead"
 MANIFEST2="$SANDBOX/.flywheel/manifests/${KEY2}.json"
 PLIST2="$SANDBOX/Library/LaunchAgents/com.flywheel.lead.${KEY2}.plist"
 jq -n '[{projectName: "geo", projectRoot: "'"$SANDBOX"'/proj/geo",
-   leads: [{agentId: "product-lead", chatChannel: "1", match: {labels: ["P"]}, model: "fab-A"},
-           {agentId: "ops-lead", chatChannel: "2", match: {labels: ["O"]}, model: "fab-B"}]}]' > "$PROJECTS"
+   leads: [{agentId: "product-lead", chatChannel: "1", match: {labels: ["P"]}, model: "claude-fable-5"},
+           {agentId: "ops-lead", chatChannel: "2", match: {labels: ["O"]}, model: "claude-opus-5"}]}]' > "$PROJECTS"
 # Keyed-state launchctl stub: per-label loaded/pid files — two leads can be
 # simultaneously loaded with DIFFERENT pids (single-state stubs cannot model
 # this; lead B's evidence re-run would misread lead A's state).
@@ -734,7 +738,7 @@ W_COUNT=$(wc -l < "$CTL/wrapper_installs" | tr -d ' ')
 if [ "$RC" -ne 0 ] && [ "$W_COUNT" = "1" ] \
   && [ "$(jq -r '.leads["'"$KEY"'"].phase' "${TXN_DIR}transaction.json")" = "applied" ] \
   && [ "$(jq -r '.leads["'"$KEY2"'"].phase' "${TXN_DIR}transaction.json")" = "rolled-back" ] \
-  && [ "$(jq -r '.model' "$MANIFEST")" = "fab-A" ] \
+  && [ "$(jq -r '.model' "$MANIFEST")" = "claude-fable-5" ] \
   && ! jq -e 'has("model")' "$MANIFEST2" >/dev/null \
   && [ "$(jq -r '.wrapper.phase' "${TXN_DIR}transaction.json")" = "w-committed" ]; then
   pass "T11+T15: wrapper exactly once; A applied stays applied; B failure rolled back; wrapper NOT reverted"

@@ -15,6 +15,7 @@ import {
 	migrateSystemWorkflowBindingsToLand,
 	parseWorkflowManifestYaml,
 	rollbackSystemWorkflowBindingsFromLand,
+	validatePinnedWorkflowManifest,
 	validateWorkflowManifest,
 	WORKFLOW_OUTCOME_VOCABULARY,
 } from "../workflow-template.js";
@@ -162,7 +163,7 @@ const generalizedManifest = () => ({
 			id: "review",
 			type: "review",
 			vendor: "claude",
-			model: "claude-opus-4-8",
+			model: "claude-opus-5",
 		},
 		{ id: "founder_gate", type: "gate" },
 	],
@@ -592,6 +593,25 @@ describe("workflow template manifest v1", () => {
 });
 
 describe("workflow template manifest v2", () => {
+	it("legacy-repair keeps an existing legacy pin parseable", () => {
+		// A published revision naming a legacy id must stay readable so it can be
+		// inspected and republished — there is no blocklist to trip over.
+		const v2 = generalizedManifest();
+		v2.nodes[1]!.model = "claude-opus-4-8";
+		expect(() =>
+			validateWorkflowManifest(v2, { allowUnsupportedModels: true }),
+		).not.toThrow();
+		expect(() => validatePinnedWorkflowManifest(v2)).not.toThrow();
+
+		const v1 = structuredClone(loadBundledWorkflowSeeds()[0]!.manifest);
+		const claudeNode = v1.nodes.find((node) => node.vendor === "claude");
+		expect(claudeNode).toBeDefined();
+		if (claudeNode) claudeNode.model = "claude-opus-4-8[1m]";
+		expect(() =>
+			validateWorkflowManifest(v1, { allowUnsupportedModels: true }),
+		).not.toThrow();
+	});
+
 	it("is independently default-off", () => {
 		expect(isGeneralizedTemplatesEnabled({})).toBe(false);
 		expect(
@@ -733,7 +753,7 @@ describe("workflow template manifest v2", () => {
 					nodes: {
 						produce: {
 							vendor: "claude",
-							model: "claude-opus-4-8",
+							model: "claude-opus-5",
 							effort: "high",
 						},
 					},
@@ -749,7 +769,7 @@ describe("workflow template manifest v2", () => {
 		);
 		expect(applied.manifest.nodes[0]).toMatchObject({
 			vendor: "claude",
-			model: "claude-opus-4-8",
+			model: "claude-opus-5",
 			effort: "high",
 		});
 		expect(() =>

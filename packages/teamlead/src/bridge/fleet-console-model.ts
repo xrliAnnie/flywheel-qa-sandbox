@@ -13,7 +13,7 @@
  * listed in `ConsoleLeadView` are exposed.
  */
 
-import type { FlagView } from "flywheel-config";
+import { type FlagView, MODEL_IDS } from "flywheel-config";
 import type { LeadBackendId } from "../lead-backends/lead-backend.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import { buildDagFlagPanel, type DagFlagPanel } from "./dag-flag-panel.js";
@@ -40,7 +40,7 @@ export interface ConsoleLeadView {
 	backendSource: "explicit" | "legacy" | "default";
 	/** Active model id, or `null` for the account-default tier. */
 	currentModelId: string | null;
-	/** Resolved display label for the active tier (e.g. "Fable 5", "Opus 4.8"). */
+	/** Resolved display label for the active tier (e.g. "Fable 5", "Opus 5"). */
 	currentModelLabel: string;
 	backendOptions: BackendOption[];
 	tierOptions: readonly TierOption[];
@@ -174,6 +174,9 @@ export function buildConsoleLeadView(
 	const cap = computeLeadCapabilities(lead, legacyBackend);
 	// inc1 keeps `model` absent (not normalized); absent = account default = null.
 	const currentModelId = typeof lead.model === "string" ? lead.model : null;
+	const effectiveModelForDisplay =
+		currentModelId ??
+		(cap.currentBackend === "claude-code" ? MODEL_IDS.FABLE : null);
 	// FLY-671: effort likewise absent = null = 默认 (companion → xhigh at launch).
 	const currentEffort = typeof lead.effort === "string" ? lead.effort : null;
 	return {
@@ -184,7 +187,7 @@ export function buildConsoleLeadView(
 		currentBackend: cap.currentBackend,
 		backendSource: cap.backendSource,
 		currentModelId,
-		currentModelLabel: modelLabelFor(cap.tierOptions, currentModelId),
+		currentModelLabel: modelLabelFor(cap.tierOptions, effectiveModelForDisplay),
 		backendOptions: cap.backendOptions,
 		tierOptions: cap.tierOptions,
 		allowedModelTargets: cap.allowedModelTargets,

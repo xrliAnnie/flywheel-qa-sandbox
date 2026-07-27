@@ -4,20 +4,13 @@
  * when FLY-245 (write-capable Codex) or FLY-264 (managed backend switch) land,
  * the chips light up via a server-side rule change with zero UI edits.
  *
- * Canonical model facts (verified against `~/.flywheel/fleet-model-setup.md`):
- *   - Fable 5         → explicit model id  "claude-fable-5"
- *   - Opus 4.8 (1M)   → explicit model id  "claude-opus-4-8[1m]" (FLY-360). The
- *                       `[1m]` suffix is the Claude Code CLI selector for the
- *                       1M-context window; `claude-opus-4-8` is natively a 1M
- *                       model at standard pricing, so this is a window selector,
- *                       NOT a separate/pricier API model.
- *   - Opus 4.8        → account default    = JSON `null` (no model override). In
- *                       Claude Code this defaults the effective window to ~200K.
- *   - Codex GPT-5     → display-only (the Codex thread carries no model; inc2a
- *                       does NOT switch Codex tiers — single read-only option)
+ * FLY-1496: options are derived from the hot model-policy snapshot. Legacy
+ * historical values remain visible as readonly current-state evidence but are
+ * never offered as new write targets; account-default inheritance stays a legal
+ * target. Codex remains a display-only backend option here.
  */
 
-import { buildModelCatalog, ROLE_EFFORT_LEVELS } from "flywheel-config";
+import { getModelConfigSnapshot, ROLE_EFFORT_LEVELS } from "flywheel-config";
 import {
 	effectiveLeadBackend,
 	type LeadBackendId,
@@ -42,40 +35,34 @@ export interface BackendOption {
 }
 
 /**
- * Claude tier options: Fable 5 (explicit) + Opus 4.8 (1M) (explicit window
- * selector, FLY-360) + Opus 4.8 (account default = null, ~200K window in Claude
- * Code) + Sonnet 4.6 + Haiku 4.5 (FLY-671 cheaper tiers for cost-sensitive
- * Leads — Sonnet is materially cheaper than Opus).
- *
- * FLY-671 canonical model facts:
- *   - Sonnet 4.6 → explicit model id "claude-sonnet-4-6"
- *   - Haiku 4.5  → explicit model id "claude-haiku-4-5-20251001"
- * FLY-728: Sonnet 5 (`claude-sonnet-5`) is the current fleet Sonnet (founder
- * confirmed); it is the FLY-728 simple-tier model. Kept 4.6 (don't remove a
- * FLY-671 tier) and APPENDED Sonnet 5 so all existing ordinals stay
- * byte-compatible; this only EXPANDS `computeAllowedModelTargets`.
+ * Claude options are the current snapshot's Lead catalog. Only what this list
+ * actually projects moves with config: adding a LEAD-surface model, or changing
+ * a projected field (label, Lead membership, selectability). Everything else is
+ * invisible here — a runner-only model, a `dispatch` flip, or repointing a
+ * binding all leave this list byte-identical (the catalog carries ids/labels,
+ * not aliases). There is no blocklist: what config names is what appears here.
  */
-const LEAD_CLAUDE_MODELS = buildModelCatalog("lead").providers.find(
-	(provider) => provider.id === "anthropic",
-)?.models;
-if (!LEAD_CLAUDE_MODELS) {
-	throw new Error("canonical model registry has no Anthropic Lead models");
+function claudeTierOptions(): readonly TierOption[] {
+	const snapshot = getModelConfigSnapshot();
+	const models = snapshot
+		.buildModelCatalog("lead")
+		.providers.find((provider) => provider.id === "anthropic")?.models;
+	if (!models) {
+		throw new Error("canonical model registry has no Anthropic Lead models");
+	}
+	return [
+		...models.map((model) => ({
+			id: model.id,
+			label: model.label,
+			...(model.selectable ? {} : { readonly: true as const }),
+		})),
+		{ id: null, label: "账号默认" } as const,
+	];
 }
 
+/** Import-time compatibility view; runtime consumers call computeTierOptions(). */
 export const CLAUDE_TIER_OPTIONS: readonly TierOption[] = [
-	// FLY-1467: every ACCEPTED Lead model is listed, so a Lead already pinned to
-	// a non-default (e.g. claude-opus-4-8[1m]) still renders a human label and
-	// stays a legal write target. Non-selectable ones are marked `readonly` —
-	// the same idiom the Codex option already uses for "shown, not switchable"
-	// — so they are visible but never offered as a NEW choice.
-	...LEAD_CLAUDE_MODELS.map((model) => ({
-		id: model.id,
-		label: model.label,
-		...(model.selectable ? {} : { readonly: true as const }),
-	})),
-	// `null` remains the exact persisted representation of account default. It is
-	// a write target, not a duplicate model-registry entry.
-	{ id: null, label: "Opus 4.8" },
+	...claudeTierOptions(),
 ];
 
 /** Codex tier options: single, read-only GPT-5 (display-only; not switchable). */
@@ -146,7 +133,7 @@ export function computeTierOptions(
 ): readonly TierOption[] {
 	return backend === "codex-app-server"
 		? CODEX_TIER_OPTIONS
-		: CLAUDE_TIER_OPTIONS;
+		: claudeTierOptions();
 }
 
 /**
@@ -159,8 +146,10 @@ export function computeTierOptions(
 export function computeAllowedModelTargets(
 	backend: LeadBackendId,
 ): Array<string | null> {
-	const ids = computeTierOptions(backend).map((t) => t.id);
-	return ids.includes(null) ? ids : [...ids, null];
+	if (backend === "codex-app-server") return [null];
+	return computeTierOptions(backend)
+		.filter((option) => option.readonly !== true)
+		.map((option) => option.id);
 }
 
 /**

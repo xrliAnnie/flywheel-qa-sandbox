@@ -1,219 +1,97 @@
+import {
+	BUILTIN_MODEL_TIERS,
+	type ModelTier,
+	type ModelTierSpec,
+} from "./model-builtins.js";
+import { getModelConfigSnapshot } from "./model-config.js";
+
+export type { ModelTier, ModelTierSpec };
+
 /**
- * FLY-728: per-issue model routing — the model-tier vocabulary.
- *
- * Single source of truth for three related concerns:
- *   1. The `/api/runs/start` `model` dispatch-param whitelist (Part C). The
- *      Lead's difficulty-sorter judges a tier and passes the model id; the
- *      Bridge accepts only a known tier id / alias (typos fail loud at the
- *      boundary).
- *   2. The tier → default model id mapping. This is the 728 BUILT-IN default;
- *      making the mapping per-project configurable is FLY-709's job.
- *   3. The F/O/S/H thread-title short code (Part D) shown on the `[FLY-XX]`
- *      Discord thread so the founder sees which model an issue is running.
- *
- * Canonical model ids for the 728 default mapping (the founder confirmed the
- * tiers; tier→model is FLY-709-configurable): Fable 5 `claude-fable-5`, Opus 4.8
- * `claude-opus-4-8`, Sonnet 5 `claude-sonnet-5`, Haiku 4.5
- * `claude-haiku-4-5-20251001`. The `[1m]` suffix is the Claude Code CLI
- * 1M-context-window selector at standard pricing.
- *
- * FLY-751: the medium tier dropped its `[1m]` suffix — a 1M-context Claude
- * process costs ~0.35GB more RAM per runner (FLY-753 measured) and most tasks
- * don't need the window. 1M is now an EXPLICIT opt-in: the `opus-1m` /
- * `fable-1m` dispatch aliases (and the same issue labels, see runner-label.ts)
- * resolve to the `[1m]` ids. The ship gate for this change called the flip out
- * to the founder (it reverses the FLY-728-era medium mapping she confirmed).
- *
- * The simple-tier id `claude-sonnet-5` is verified against the token pricing
- * catalog (`token-usage/pricing.ts`), the token report label map
- * (`render-html.ts` → "Sonnet 5"), and the harness model-id context — NOT a
- * guess. The founder confirmed the fleet standard is Sonnet 5 (not 4.6).
+ * Compatibility baseline for consumers that intentionally need a stable
+ * module-level default. Runtime decisions should use getModelTiers().
  */
+export const MODEL_TIERS: Readonly<Record<ModelTier, ModelTierSpec>> =
+	BUILTIN_MODEL_TIERS;
 
-import { DEFAULT_OPUS, DEFAULT_OPUS_1M, MODEL_IDS } from "./model-registry.js";
-
-export type ModelTier = "heavy" | "medium" | "light" | "trivial";
-
-export interface ModelTierSpec {
-	/** Canonical model id passed to the runner CLI `--model`. */
-	id: string;
-	/** Bare aliases accepted on the dispatch param (in addition to `id`). */
-	aliases: readonly string[];
-	/** Single-letter thread-title short code (Part D). */
-	code: "F" | "O" | "S" | "H";
+export function getModelTiers(): Readonly<Record<ModelTier, ModelTierSpec>> {
+	return getModelConfigSnapshot().tiers;
 }
 
-/** Difficulty tier → default model. 728 built-in; FLY-709 makes it configurable. */
-export const MODEL_TIERS: Readonly<Record<ModelTier, ModelTierSpec>> = {
-	heavy: { id: MODEL_IDS.FABLE, aliases: ["fable"], code: "F" },
-	// FLY-1467: medium 档指向**当前绑定**,不写死版本(Annie 原则:
-	// 配置只写档位,版本只存在 model-registry 一处)。
-	medium: { id: DEFAULT_OPUS, aliases: ["opus"], code: "O" },
-	light: { id: MODEL_IDS.SONNET_5, aliases: ["sonnet"], code: "S" },
-	trivial: { id: MODEL_IDS.HAIKU, aliases: ["haiku"], code: "H" },
-};
+export function acceptedDispatchModels(): readonly string[] {
+	return getModelConfigSnapshot().acceptedDispatchModels;
+}
 
 /**
- * FLY-751: explicit 1M-context opt-in spellings. NOT a tier — a Lead (or a
- * label) reaches for these only when a task genuinely needs the 1M window.
+ * Kept for source compatibility in error payloads. New request boundaries must
+ * call acceptedDispatchModels() after capturing a decision snapshot.
  */
-const ONE_M_DISPATCH_MODELS: ReadonlyMap<string, string> = new Map([
-	["opus-1m", DEFAULT_OPUS_1M],
-	[DEFAULT_OPUS_1M, DEFAULT_OPUS_1M],
-	["fable-1m", MODEL_IDS.FABLE_1M],
-	[MODEL_IDS.FABLE_1M, MODEL_IDS.FABLE_1M],
-]);
+export const ACCEPTED_DISPATCH_MODELS: readonly string[] =
+	getModelConfigSnapshot().acceptedDispatchModels;
 
-/**
- * FLY-1467:未被绑定的 Opus 固定身份仍必须被 dispatch 边界接受
- * (`/api/runs/start`、小红书 collection model 的旧 pin 向后兼容),
- * 但它们**不带档位 alias** —— 档位永远指向当前绑定。
- */
-const LEGACY_DISPATCH_MODELS: ReadonlyMap<string, string> = new Map(
-	[
-		MODEL_IDS.OPUS_5,
-		MODEL_IDS.OPUS_5_1M,
-		MODEL_IDS.OPUS_48,
-		MODEL_IDS.OPUS_48_1M,
-	].map((id) => [id, id] as const),
-);
-
-/** Lowercased id/alias → canonical id (built once from MODEL_TIERS + 1M opt-ins). */
-const DISPATCH_MODEL_LOOKUP: ReadonlyMap<string, string> = (() => {
-	const m = new Map<string, string>();
-	for (const spec of Object.values(MODEL_TIERS)) {
-		m.set(spec.id.toLowerCase(), spec.id);
-		for (const alias of spec.aliases) m.set(alias.toLowerCase(), spec.id);
-	}
-	for (const [alias, id] of ONE_M_DISPATCH_MODELS) m.set(alias, id);
-	for (const [alias, id] of LEGACY_DISPATCH_MODELS) m.set(alias, id);
-	return m;
-})();
-
-/**
- * FLY-751: every spelling `normalizeDispatchModel` accepts — for boundary
- * error payloads (`runs-route.ts` INVALID_MODEL `allowed`), so the 1M opt-ins
- * are discoverable and not just tribal knowledge.
- */
-export const ACCEPTED_DISPATCH_MODELS: readonly string[] = [
-	...DISPATCH_MODEL_LOOKUP.keys(),
-];
-
-/**
- * Normalize a dispatch `model` param to a canonical tier id, or `null` when it
- * is not a recognized 728 tier (empty / unknown / a non-tier model). Callers at
- * the `/api/runs/start` boundary reject `null` with `INVALID_MODEL` — a typo
- * must fail loud, never silently spawn the wrong (or account-default) model.
- * Case-insensitive + trimmed. FLY-709 widens the accepted set via config.
- */
 export function normalizeDispatchModel(raw: string): string | null {
-	const key = raw.trim().toLowerCase();
-	if (!key) return null;
-	return DISPATCH_MODEL_LOOKUP.get(key) ?? null;
+	return getModelConfigSnapshot().normalizeDispatchModel(raw);
 }
 
-/**
- * Map a RESOLVED runner model (from a label, the dispatch param, or a project
- * default) to its F/O/S/H thread-title short code, or `undefined` when there is
- * no code to show — account default (no override) or a non-Claude model. Matches
- * by family so it covers both canonical ids (`claude-fable-5`,
- * `claude-opus-4-8[1m]`) and the bare aliases the label path stores verbatim
- * (`opus`/`sonnet`/`haiku`).
- */
 export function modelShortCode(
 	model: string | null | undefined,
 ): "F" | "O" | "S" | "H" | undefined {
 	if (!model) return undefined;
-	const m = model.toLowerCase();
-	if (m === "fable" || m.startsWith("claude-fable")) return "F";
-	if (m === "opus" || m.startsWith("claude-opus")) return "O";
-	if (m === "sonnet" || m.startsWith("claude-sonnet")) return "S";
-	if (m === "haiku" || m.startsWith("claude-haiku")) return "H";
-	return undefined;
-}
-
-/**
- * FLY-1255 (Plan B — Annie): the NON-Claude single-letter thread/window short
- * codes, maintained here alongside the Claude F/O/S/H tier codes so every
- * short code lives in ONE table. Annie rejected the earlier long
- * `[Model GPT-5.6]` / `[Model kimi-for-coding]` markers; every CURATED family
- * now folds to a single letter, keyed by FAMILY (not by model version):
- *   - codex / GPT family (`gpt-*`) → `G`
- *   - kimi family (`kimi-*`)       → `K`
- * The lookup is pure table matching by family + model prefix. A model whose
- * family is NOT in the table (`gemini-3-pro`, `antigravity`) returns `undefined`
- * and the renderer falls back to the long `[Model <id>]` form — we never
- * fabricate a letter for an un-curated FAMILY. Adding a family = one row here.
- *
- * The single letter is deliberately version-less (Annie's Plan B tradeoff): a
- * future `gpt-6` is still `G` because it is the GPT family — exactly as `F` does
- * not distinguish fable-5 from a future fable-6. The full version (GPT-5.6) is
- * still rendered by the separate `modelDisplayName()` long-name path, so it is
- * not lost. Claude is intentionally absent here — its F/O/S/H codes come from
- * `modelShortCode()` and stay byte-unchanged.
- */
-interface VendorShortCodeEntry {
-	/** Resolved executor family this row applies to (`codex` / `kimi` / …). */
-	family: string;
-	/** True when this row's curated model-family prefix matches (lower-cased id). */
-	matches: (lowerModel: string) => boolean;
-	/** The single-letter thread/window short code. */
-	code: "G" | "K";
-}
-
-const VENDOR_SHORT_CODES: readonly VendorShortCodeEntry[] = [
-	// codex/GPT family: any gpt-* model (gpt-5.6-sol, a future gpt-6, …) → G.
-	// The family gate still rejects a mismatched non-gpt model on a codex row
-	// (e.g. a stray `claude-*` id), which falls back to the honest long form.
-	{ family: "codex", matches: (m) => m.startsWith("gpt-"), code: "G" },
-	{ family: "kimi", matches: (m) => m.startsWith("kimi-"), code: "K" },
-];
-
-/**
- * FLY-1255: the curated NON-Claude single-letter short code for a resolved
- * `{family, model}`, or `undefined` when the pair is not a curated entry (the
- * caller then keeps the long `[Model <id>]` fallback). Pure table lookup — no
- * letter is ever invented for an unrecognized vendor/model.
- */
-export function vendorModelShortCode(
-	family: string | null | undefined,
-	model: string | null | undefined,
-): "G" | "K" | undefined {
-	const fam = family?.toLowerCase();
-	const m = model?.toLowerCase() ?? "";
-	if (!fam || !m) return undefined;
-	for (const entry of VENDOR_SHORT_CODES) {
-		if (entry.family === fam && entry.matches(m)) return entry.code;
+	const normalized = model.toLowerCase();
+	if (normalized === "fable" || normalized.startsWith("claude-fable")) {
+		return "F";
+	}
+	if (normalized === "opus" || normalized.startsWith("claude-opus")) return "O";
+	if (normalized === "sonnet" || normalized.startsWith("claude-sonnet")) {
+		return "S";
+	}
+	if (normalized === "haiku" || normalized.startsWith("claude-haiku")) {
+		return "H";
 	}
 	return undefined;
 }
 
-/** Short code → the family display name shown in FLY-892 phase tags/headers. */
+interface VendorShortCodeEntry {
+	family: string;
+	matches: (lowerModel: string) => boolean;
+	code: "G" | "K";
+}
+
+const VENDOR_SHORT_CODES: readonly VendorShortCodeEntry[] = [
+	{ family: "codex", matches: (model) => model.startsWith("gpt-"), code: "G" },
+	{ family: "kimi", matches: (model) => model.startsWith("kimi-"), code: "K" },
+];
+
+export function vendorModelShortCode(
+	family: string | null | undefined,
+	model: string | null | undefined,
+): "G" | "K" | undefined {
+	const normalizedFamily = family?.toLowerCase();
+	const normalizedModel = model?.toLowerCase() ?? "";
+	if (!normalizedFamily || !normalizedModel) return undefined;
+	for (const entry of VENDOR_SHORT_CODES) {
+		if (entry.family === normalizedFamily && entry.matches(normalizedModel)) {
+			return entry.code;
+		}
+	}
+	return undefined;
+}
+
 const SHORT_CODE_DISPLAY_NAME: Readonly<Record<"F" | "O" | "S" | "H", string>> =
 	{ F: "Fable", O: "Opus", S: "Sonnet", H: "Haiku" };
 
-/**
- * FLY-892 (Codex R1 #3): the canonical model DISPLAY name (Fable / Opus / Sonnet
- * / Haiku / GPT) for a phase message tag / pipeline header. Reuses
- * `modelShortCode`, so it covers canonical ids, bare aliases, and `[1m]`
- * variants identically. FLY-1224: the GPT family is recognized BEFORE the
- * F/O/S/H short codes AND before the tier fallback — a codex phase session's
- * `gpt-5.6-sol` must display "GPT-5.6", never fall back to a Claude name (the
- * display lie C2 fixed). When `model` maps to no known family (account default
- * / unknown), fall back to the `fallbackTier`'s name if given, else
- * `undefined`. This is the single display-name contract so no injection point
- * re-derives it.
- */
 export function modelDisplayName(
 	model: string | null | undefined,
 	fallbackTier?: ModelTier,
 ): string | undefined {
-	const m = model?.toLowerCase();
-	if (m?.startsWith("gpt-5.6")) return "GPT-5.6";
-	if (m?.startsWith("gpt-")) return "GPT";
+	const normalized = model?.toLowerCase();
+	if (normalized?.startsWith("gpt-5.6")) return "GPT-5.6";
+	if (normalized?.startsWith("gpt-")) return "GPT";
 	const code = modelShortCode(model);
 	if (code) return SHORT_CODE_DISPLAY_NAME[code];
-	if (fallbackTier)
-		return SHORT_CODE_DISPLAY_NAME[MODEL_TIERS[fallbackTier].code];
+	if (fallbackTier) {
+		const fallbackCode = getModelTiers()[fallbackTier].code;
+		return fallbackCode ? SHORT_CODE_DISPLAY_NAME[fallbackCode] : undefined;
+	}
 	return undefined;
 }

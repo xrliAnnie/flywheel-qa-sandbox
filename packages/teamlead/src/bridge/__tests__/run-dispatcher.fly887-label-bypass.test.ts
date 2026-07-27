@@ -16,53 +16,56 @@
  * backend off claude-tmux.
  */
 
-import { resolvePhaseModel } from "flywheel-config";
+import { resolvePhaseDispatch, type ThreeStagePhase } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import { buildRunnerSpawnFields } from "../run-dispatcher.js";
 
-/** Phase dispatch shape: label layer bypassed + phase-table model. */
-function phaseSpawnFields(labels: string[], phaseModel: string) {
+/** Phase dispatch shape: label layer bypassed + the full phase-table decision. */
+function phaseSpawnFields(labels: string[], phase: ThreeStagePhase) {
+	const dispatch = resolvePhaseDispatch(phase);
 	return buildRunnerSpawnFields(
 		"exec-887",
 		undefined, // leadId — irrelevant to backend/model resolution here
 		labels,
 		undefined, // no project roles config
 		true, // ignoreRunnerLabelSelection — the phase seam under test
-		phaseModel,
+		dispatch.model,
+		undefined,
+		dispatch.vendor,
+		dispatch.effort,
 	);
 }
 
 describe("FLY-887 R2 label-bypass matrix (phase dispatch seam)", () => {
-	const designModel = resolvePhaseModel("design");
-	const implementModel = resolvePhaseModel("implement");
-	const qaModel = resolvePhaseModel("qa");
-
 	it("a `sonnet` model label cannot put a phase on Sonnet", () => {
-		for (const phaseModel of [designModel, implementModel, qaModel]) {
-			const f = phaseSpawnFields(["sonnet"], phaseModel);
-			expect(f.runnerModel).toBe(phaseModel);
-			expect(f.runnerBackend).toBe("claude-tmux");
+		for (const phase of ["design", "implement", "qa"] as const) {
+			const dispatch = resolvePhaseDispatch(phase);
+			const f = phaseSpawnFields(["sonnet"], phase);
+			expect(f.runnerModel).toBe(dispatch.model);
+			expect(f.runnerBackend).toBe(
+				dispatch.vendor === "codex" ? "codex-tmux" : "claude-tmux",
+			);
 		}
 	});
 
 	it("a `fable-1m` model label cannot override the phase model", () => {
-		const f = phaseSpawnFields(["fable-1m"], qaModel);
-		expect(f.runnerModel).toBe(qaModel);
+		const f = phaseSpawnFields(["fable-1m"], "qa");
+		expect(f.runnerModel).toBe(resolvePhaseDispatch("qa").model);
 		expect(f.runnerBackend).toBe("claude-tmux");
 	});
 
-	it("a `codex` vendor label cannot move a phase off claude-tmux", () => {
-		const f = phaseSpawnFields(["codex"], implementModel);
-		expect(f.runnerBackend).toBe("claude-tmux");
-		expect(f.runnerModel).toBe(implementModel);
+	it("a `claude` vendor label cannot move implement off its Codex phase row", () => {
+		const f = phaseSpawnFields(["claude"], "implement");
+		expect(f.runnerBackend).toBe("codex-tmux");
+		expect(f.runnerModel).toBe(resolvePhaseDispatch("implement").model);
 	});
 
 	it("a no-transport vendor label (agy/kimi) cannot select a mailbox-less backend for a phase", () => {
 		// park/wake keep-alive requires a mailbox — a no-transport backend would
 		// strand the phase at its first park.
 		for (const vendor of ["agy", "kimi"]) {
-			const f = phaseSpawnFields([vendor], implementModel);
-			expect(f.runnerBackend).toBe("claude-tmux");
+			const f = phaseSpawnFields([vendor], "implement");
+			expect(f.runnerBackend).toBe("codex-tmux");
 			expect(f.runnerTransportMode).toBeUndefined();
 		}
 	});
@@ -79,6 +82,6 @@ describe("FLY-887 R2 label-bypass matrix (phase dispatch seam)", () => {
 			undefined,
 			undefined,
 		);
-		expect(f.runnerModel).toBe("sonnet");
+		expect(f.runnerModel).toBe("claude-sonnet-5");
 	});
 });

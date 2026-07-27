@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1496 模型解钉根治 — 设计方案</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,system-ui,sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.65; padding:24px 16px 60px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:24px; }
+  .sub code { font-family:'SF Mono',monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin-bottom:18px; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.red { border-left:4px solid #ff3b30; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.purple { border-left:4px solid #af52de; }
+  .card.gray { border-left:4px solid #86868b; }
+  h2 { font-size:18px; color:#1a365d; margin-bottom:12px; }
+  h3 { font-size:15px; color:#1d1d1f; margin:14px 0 8px; }
+  p { margin-bottom:10px; font-size:14.5px; }
+  .lede { font-size:17px; font-weight:600; }
+  .dim { color:#86868b; font-size:13px; }
+  .badge { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:10px; margin-right:6px; vertical-align:middle; }
+  .badge.ok { background:#e8f7ec; color:#248a3d; }
+  .badge.bad { background:#fdeceb; color:#c72c22; }
+  .badge.info { background:#e8f1fd; color:#0a60c2; }
+  .badge.warn { background:#fff3e0; color:#b06000; }
+  code { font-family:'SF Mono',monospace; font-size:12.5px; background:#f0f0f2; border-radius:4px; padding:1px 5px; }
+  /* flow diagram */
+  .flow { display:flex; align-items:stretch; gap:0; flex-wrap:wrap; margin:14px 0; }
+  .node { background:#f8f9fb; border:1.5px solid #d2d2d7; border-radius:10px; padding:10px 12px; font-size:13px; text-align:center; flex:1; min-width:130px; display:flex; flex-direction:column; justify-content:center; }
+  .node b { font-size:13.5px; }
+  .node .n { color:#86868b; font-size:11.5px; margin-top:3px; }
+  .node.src { border-color:#007aff; background:#f0f7ff; }
+  .node.sick { border-color:#ff3b30; background:#fff5f5; }
+  .node.fix { border-color:#34c759; background:#f2fbf5; }
+  .node.dead { border-color:#d2d2d7; background:#fafafa; color:#a0a0a5; }
+  .arr { display:flex; align-items:center; padding:0 8px; color:#86868b; font-size:18px; }
+  .arr.bad { color:#ff3b30; }
+  .arr.good { color:#34c759; }
+  .arr span { font-size:11px; margin-top:-2px; }
+  .vs { text-align:center; font-size:12px; font-weight:700; color:#86868b; letter-spacing:2px; margin:10px 0 6px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:10px 0; }
+  th { text-align:left; color:#86868b; font-weight:600; font-size:12px; border-bottom:1px solid #e5e5ea; padding:6px 8px; }
+  td { border-bottom:1px solid #f0f0f2; padding:8px; vertical-align:top; }
+  td:first-child { white-space:nowrap; }
+  .mono { font-family:'SF Mono',monospace; font-size:12px; }
+  ul { margin:6px 0 10px 20px; }
+  li { font-size:14px; margin-bottom:6px; }
+  .cols { display:flex; gap:14px; flex-wrap:wrap; }
+  .cols > div { flex:1; min-width:260px; }
+  .evi { background:#1d1d1f; color:#e8e8ed; border-radius:8px; padding:12px 14px; font-family:'SF Mono',monospace; font-size:11.5px; overflow-x:auto; white-space:pre; line-height:1.7; margin:10px 0; }
+  .evi .hl { color:#ff8a80; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>模型解钉根治 — 设计方案</h1>
+  <div class="sub">FLY-1496 · 2026-07-27 · 设计已过 Codex 评审 5 轮 APPROVED · <code>engineering/doc/FLY-1496-model-unpinning/</code></div>
+
+  <!-- ① 一句话总结 -->
+  <div class="card blue">
+    <p class="lede">一句话:让"模型用哪个"只有一个真相来源、改一处配置就生效,并且机器保证 Opus 4.8 在任何角落(包括兜底路径)都跑不起来。</p>
+    <p class="dim">背景:你一晚三次把模型拨回 Fable,它一直弹回 Opus 4.8。根因已抓实——不是玄学,是一个"抄了一份然后过期"的文件在每次重启时把旧值压回来。</p>
+  </div>
+
+  <!-- ② 核心流程图:病根 vs 根治 -->
+  <div class="card red">
+    <h2>那晚发生了什么(病根,已实锤)</h2>
+    <div class="flow">
+      <div class="node src"><b>projects.json</b><div class="n">真相:该用 fable</div></div>
+      <div class="arr">→<br></div>
+      <div class="node"><b>manifest 快照文件</b><div class="n">很久前抄的一份<br>还写着 opus-4-8</div></div>
+      <div class="arr bad">→<br></div>
+      <div class="node sick"><b>Lead 启动器</b><div class="n">偏偏最信这份旧快照<br>压过一切新值</div></div>
+      <div class="arr bad">→</div>
+      <div class="node sick"><b>又变回 Opus 4.8</b><div class="n">你手动拨回 Fable →<br>半夜一重启又弹回</div></div>
+    </div>
+    <p>启动日志铁证(7月26日晚,<b>一晚 7 次重启,每次都压回</b>):</p>
+    <div class="evi">20:43:41 model drift: env=<b>claude-fable-5</b> manifest=<span class="hl">claude-opus-4-8[1m]</span> → using manifest
+21:30:35 model drift: env=claude-fable-5 manifest=<span class="hl">claude-opus-4-8[1m]</span> → using manifest
+22:03:15 … 23:27:32 … 23:57:52 (同样的行,共 7 次)</div>
+    <p class="dim">所以"session 中途漂移"的主体感 = 你没看见的后台重启 + 这份过期快照。调查阶段还会把其余零散来源逐一清点(见诚实边界)。</p>
+  </div>
+
+  <div class="card green">
+    <h2>根治后的样子</h2>
+    <div class="flow">
+      <div class="node src"><b>projects.json</b><div class="n">唯一真相:每个 Lead 用什么模型</div></div>
+      <div class="arr good">→<br><span>每次启动现读</span></div>
+      <div class="node fix"><b>Lead 启动器</b><div class="n">现场解析 + 禁用名单检查<br>再交给 Claude</div></div>
+      <div class="arr good">→</div>
+      <div class="node fix"><b>永远是配置说的那个模型</b><div class="n">重启多少次都一样</div></div>
+    </div>
+    <div class="flow">
+      <div class="node dead"><b>manifest 快照</b><div class="n">降级为"事后记录":只写不读<br>再也没资格决定任何事</div></div>
+    </div>
+    <p>同时新增一个全局模型配置文件 <code>~/.flywheel/models.json</code>:出新模型、改档位指向、改难度映射、改禁用名单——<b>改这个文件就生效,不改代码、不发版</b>。</p>
+  </div>
+
+  <!-- ③ 数据/结构模型 -->
+  <div class="card purple">
+    <h2>配置长什么样(数据模型)</h2>
+    <div class="cols">
+      <div>
+        <h3>models.json 五段</h3>
+        <table>
+          <tr><th>段</th><th>管什么</th></tr>
+          <tr><td><span class="mono">bindings</span></td><td>"opus"这个档位当前指哪个版本(现指 Opus 5)</td></tr>
+          <tr><td><span class="mono">models</span></td><td>上新模型:加一条就能派发,不改代码</td></tr>
+          <tr><td><span class="mono">tiers</span></td><td>难度 → 模型映射(右表)</td></tr>
+          <tr><td><span class="mono">phases</span></td><td>三段式 design / implement / QA 的 vendor+model+effort</td></tr>
+          <tr><td><span class="mono">banned</span></td><td>禁用名单,默认就含 Opus 4.8 两个 id</td></tr>
+        </table>
+        <p class="dim">文件缺失或写坏 = 自动回内建安全默认 + 响亮告警,绝不因配置问题让系统起不来。</p>
+      </div>
+      <div>
+        <h3>难度选型新默认(已按你的指令)</h3>
+        <table>
+          <tr><th>难度</th><th>旧默认</th><th>新默认</th></tr>
+          <tr><td>重</td><td>Fable 5</td><td>Fable 5</td></tr>
+          <tr><td>中</td><td>Opus 5</td><td><span class="badge ok">Opus 5</span></td></tr>
+          <tr><td>轻</td><td>Sonnet 5</td><td><span class="badge ok">Opus 5</span></td></tr>
+          <tr><td>琐碎</td><td>Haiku 4.5</td><td><span class="badge ok">Opus 5</span></td></tr>
+        </table>
+        <p class="dim">最终默认只有 Fable 5 / Opus 5 两个值;Sonnet 与 Haiku 仍可识别但不作默认档。Codex 是"换厂商"不是"换档位",走 executor 路由。三段式独立固定为 design=Fable、implement=Codex、QA=Opus,也由同一配置热读。</p>
+      </div>
+    </div>
+    <h3>禁 4.8 = 机器规则,分两种脾气</h3>
+    <table>
+      <tr><th>场景</th><th>撞到 4.8 时</th><th>为什么</th></tr>
+      <tr><td>派任务(runner)</td><td><span class="badge bad">直接拒绝 400</span></td><td>拒得起——失败响亮,立刻能改</td></tr>
+      <tr><td>Lead 开机</td><td><span class="badge warn">替换成 Fable + 告警</span></td><td>拒不起——不能让一台坏配置把整个团队 brick 在启动上</td></tr>
+    </table>
+    <p class="dim">覆盖所有出口:派发接口、每一层解析、fleet 改配置、模板/定时任务写入、以及最后一道"起进程前"的守卫——守卫还会把裸别名统一换成精确版本号,版本决定权不再漏给 Claude 命令行自己猜。</p>
+  </div>
+
+  <!-- ④ 关键取舍 -->
+  <div class="card amber">
+    <h2>关键取舍(和被否掉的方案)</h2>
+    <table>
+      <tr><th>决策点</th><th>选了</th><th>没选(为什么)</th></tr>
+      <tr><td>快照文件怎么办</td><td>只写不读(降级为事后记录)</td><td>彻底删掉——会破坏 fleet 的对账和回滚机制,改动大收益同</td></tr>
+      <tr><td>对账兼容</td><td>快照里保持原拼写 + 新增"实际用了什么"字段</td><td>改 fleet 全套比对逻辑——没必要,加两个字段就兼容</td></tr>
+      <tr><td>环境变量的地位</td><td>彻底退出模型决策(评审抓的:它也是一份会过期的抄写)</td><td>留作兜底——兜底时没法查禁用名单,可能把 4.8 漏回来</td></tr>
+      <tr><td>回滚撞禁用名单</td><td>整体拒绝、零改动、说清原因</td><td>回滚时悄悄替换——"精确还原"的合同不能掺假</td></tr>
+      <tr><td>定时任务旧档案</td><td>可复用清扫脚本,残留不清零就报错</td><td>每次执行前都加检查——要碰每个定时任务,复杂度不值</td></tr>
+    </table>
+    <p class="dim">Codex 评审 5 轮共揪出 14 项(含 6 项 HIGH:fleet 回滚不还原真相文件、对账会被新写法卡死、禁用检查位置太靠后、启动器兜底会漏 4.8 等),全部并入方案。</p>
+  </div>
+
+  <!-- ⑤ 诚实边界 -->
+  <div class="card gray">
+    <h2>诚实边界 — 这个设计不做什么</h2>
+    <ul>
+      <li><b>已在跑的定时任务档案</b>:改禁用名单不会穿透到它们已落盘的启动参数——靠"改完必跑清扫脚本"收口(脚本残留不清零就报错,是硬门不是口头约定)。</li>
+      <li><b>配置上新模型 ≠ 全套元数据</b>:新模型立刻可派发,但 token 计价表、单字母缩写等仍要后补一条,否则报表里按 $0 计价并告警。</li>
+      <li><b>Claude 命令行内部行为管不到</b>:撞限额时它自己的提示/切换逻辑在我们代码之外——缓解 = 所有派发都显式指定模型 + 各账号默认设置统一(调查报告会逐账号核对)。</li>
+      <li><b>不改工作流模板引擎</b>:"模板钉死模型"的根治留给 v2 后续批次(现已用开关绕开);本单只保证模板写入也过禁用检查。</li>
+      <li><b>漂移调查报告</b>在实施阶段交付:7 个候选来源已列清单,主犯(过期快照×重启)已实锤,其余逐个给"修了"或"豁免+理由"。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>验收(实施完成时你能看到)</h2>
+    <ul>
+      <li>改 models.json 加一个新模型别名 → 不改代码直接能派(现场演示);</li>
+      <li>删掉快照文件再重启 → 日志里永远不再出现 "using manifest" 压过配置;</li>
+      <li>手动往配置里塞 4.8 → 派发被 400 拒 / Lead 开机被替换成 Fable 并告警;</li>
+      <li>漂移来源调查报告 + 清扫前后对照;Codex 代码评审通过;ship 走 founder gate。</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>

@@ -12,11 +12,12 @@
 
 You (the Lead) are an LM that has followed this project. When you spawn a
 Runner (`POST /api/runs/start`), you also decide **how heavy a model the task
-warrants** — heavier tasks earn a stronger (more expensive) model, trivial
-ones a cheap fast model. There is **no separate classifier and no extra LLM
-call**: you already understand the issue at dispatch time, so you make a quick
-**holistic judgment** from the signals below and pass the chosen model on the
-same `/api/runs/start` call.
+warrants** and map that difficulty through the live fleet policy. The mapping
+is a founder decision, not a permanent price/strength ladder: today heavy work
+uses Fable while every lower bucket uses Opus 5. There is **no separate
+classifier and no extra LLM call**: you already understand the issue at
+dispatch time, so you make a quick **holistic judgment** from the signals below
+and pass the configured model on the same `/api/runs/start` call.
 
 ## The model tiers
 
@@ -24,13 +25,19 @@ same `/api/runs/start` call.
 |------------|-------|---------------|
 | **Heavy** — architecture, migration, redesign, gnarly multi-file/cross-system change, deep debugging | Fable 5 | `fable` |
 | **Medium** — a normal feature or bug fix of moderate scope | Opus 5 | `opus` |
-| **Simple** — a small, well-scoped change | Sonnet 5 | `sonnet` |
-| **Trivial** — a typo, a rename, a copy tweak, a version bump, a one-liner | Haiku 4.5 | `haiku` |
+| **Simple** — a small, well-scoped change | Opus 5 | `opus` |
+| **Trivial** — a typo, a rename, a copy tweak, a version bump, a one-liner | Opus 5 | `opus` |
 
 The bare aliases (`fable`/`opus`/`sonnet`/`haiku`) are accepted; so are the full
-ids (`claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-5`,
-`claude-haiku-4-5-20251001`). Anything else is rejected `400 INVALID_MODEL`
-(the error payload lists every accepted spelling).
+ids (`claude-fable-5`, `claude-opus-5`, `claude-sonnet-5`,
+`claude-haiku-4-5-20251001`). The live mappings come from
+`~/.flywheel/models.json`; unknown values are rejected `400 INVALID_MODEL`.
+Sonnet and Haiku remain recognizable for explicit legacy/manual choices but are
+not default difficulty tiers.
+
+There is **no model blocklist**. A model is used because config names it, so the
+difficulty table above is the whole routing decision — do not expect the Bridge
+to second-guess a value you send.
 
 ## 1M context is explicit opt-in (FLY-751)
 
@@ -117,12 +124,12 @@ choice that cannot enter three-stage fails before dispatch with
 an internal phase role. Never treat a missing receipt field as an applied
 choice.
 
-## Calibration is still being learned
+## Configuration is the authority
 
-The exact difficulty→tier boundaries are **not yet fixed** — the founder will
-tune them with real examples and an eval of each model's capability. For now,
-**trust your judgment** with the signals above; do not hard-code thresholds in
-your head. This will get sharper over time.
+The table above is the built-in fail-safe. Read the live mapping from
+`~/.flywheel/models.json` for each dispatch decision; an atomic config edit
+changes the next decision without a code release. Do not maintain a second
+mapping in prompts or scripts.
 
 ## DAG-enrolled projects (FLY-1372)
 

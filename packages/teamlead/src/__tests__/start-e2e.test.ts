@@ -822,6 +822,24 @@ describe("Start API E2E", () => {
 			expect(mockDispatcher.start).not.toHaveBeenCalled();
 		}, 15_000);
 
+		it("a legacy identity an old carrier still pins → accepted verbatim", async () => {
+			// Back-compat, not endorsement: nothing routes new work to a legacy
+			// id, but a carrier pinned before it was retired keeps dispatching.
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-TEST",
+					projectName: "TestProject",
+					model: "claude-opus-4-8[1m]",
+				}),
+			});
+			expect(res.status).toBe(200);
+			expect(mockDispatcher.start).toHaveBeenCalledWith(
+				expect.objectContaining({ dispatchModel: "claude-opus-4-8[1m]" }),
+			);
+		}, 15_000);
+
 		it("omitted model → dispatcher gets undefined dispatchModel (byte-compat)", async () => {
 			const res = await fetch(`${baseUrl}/api/runs/start`, {
 				method: "POST",

@@ -3,8 +3,8 @@
  *
  * A three-stage run is ONE Linear issue / ONE RPCI flow with three internal
  * phase-sessions handed off on one branch B: Design → Implement → QA, each with
- * its own vendor + model. This module is the single source of truth for the
- * phase sequence and each phase's dispatch spec.
+ * its own vendor + model. This module owns the phase sequence; the live dispatch
+ * specs come from the same hot models.json snapshot as the difficulty tiers.
  *
  * Dispatch per phase (Annie's directive, 2026-07-13 — FLY-1224):
  *   design    → claude claude-fable-5       — brainstorm / research / design
@@ -39,25 +39,25 @@
  *
  * REVERT (7/7, after the Fable window): flip the `pipeline.three_stage` toggle
  * OFF — a task then runs as a single session exactly as before. The table here
- * is deliberately NOT the revert lever, so it stays a fixed, obvious mapping.
+ * is deliberately NOT the revert lever.
  *
  * The FLY-767 "prefer-Fable / strong-over-weak" stance is an ISSUE-LEVEL model
  * routing concern (Lead difficulty-sort / dispatch `model` param), separate from
- * this fixed per-phase table — it is not applied here so Annie's explicit
+ * this per-phase table — it is not applied here so Annie's explicit
  * per-phase model is not silently overridden.
  */
 
-import { MODEL_IDS } from "./model-registry.js";
 import {
-	MODEL_TIERS,
-	type ModelTier,
-	modelDisplayName,
-} from "./model-tiers.js";
+	BUILTIN_PHASE_DISPATCH,
+	type ModelPhaseDispatchSpec,
+	type ModelRuntimeVendor,
+} from "./model-builtins.js";
+import { getModelConfigSnapshot } from "./model-config.js";
+import { type ModelTier, modelDisplayName } from "./model-tiers.js";
 import {
 	NODE_TYPE_REGISTRY,
 	type WorkflowNodeTypeId,
 } from "./node-type-registry.js";
-import type { RoleEffort } from "./types.js";
 
 export type ThreeStagePhase = "design" | "implement" | "qa";
 
@@ -135,7 +135,7 @@ export const DEFAULT_PHASE_TIER: Readonly<Record<ThreeStagePhase, ModelTier>> =
  * No-transport backends (antigravity/kimi) are excluded at the TYPE level so
  * they can never enter the phase table.
  */
-export type PhaseDispatchVendor = "claude" | "codex";
+export type PhaseDispatchVendor = ModelRuntimeVendor;
 
 /** Transitional public choices for a three-stage run's design author. */
 export type DesignBackend = PhaseDispatchVendor;
@@ -153,40 +153,18 @@ export interface PhaseDispatchOverride {
 	vendor: PhaseDispatchVendor;
 }
 
-export interface PhaseDispatchSpec {
-	vendor: PhaseDispatchVendor;
-	/** Model id passed to the runner CLI / codex thread (claude entries use the
-	 * canonical MODEL_TIERS ids). */
-	model: string;
-	/** Reasoning effort; absent = the account/backend default. */
-	effort?: RoleEffort;
-}
+export type PhaseDispatchSpec = ModelPhaseDispatchSpec;
+
+/** Built-in Codex fail-safe when the hot phase table has no Codex row. */
+const CODEX_STANDARD_DISPATCH = BUILTIN_PHASE_DISPATCH.implement;
 
 /**
- * Annie's standard Codex config — the ground truth is the host
- * `~/.codex/config.toml` (`model = "gpt-5.6-sol"`, `model_reasoning_effort =
- * "xhigh"`). SINGLE SOURCE OF TRUTH shared by BOTH the implement default row AND
- * the FLY-1245 design kill-switch, so a model rename is ONE line here and the two
- * codex-authored phases can never drift apart.
- */
-const CODEX_STANDARD_DISPATCH: PhaseDispatchSpec = {
-	vendor: "codex",
-	model: MODEL_IDS.CODEX_STANDARD,
-	effort: "xhigh",
-};
-
-/**
- * Annie's directive (2026-07-13): design=Fable / implement=Codex gpt-5.6-sol
- * (xhigh) / qa=Opus. The implement codex spec draws from CODEX_STANDARD_DISPATCH
- * above (single source of truth); a model rename is a one-line diff there.
+ * Fail-safe for a missing/malformed models.json. Runtime decisions consume the
+ * validated snapshot phases and may change on the next decision without restart.
  */
 export const DEFAULT_PHASE_DISPATCH: Readonly<
 	Record<ThreeStagePhase, PhaseDispatchSpec>
-> = {
-	design: { vendor: "claude", model: MODEL_TIERS.heavy.id },
-	implement: CODEX_STANDARD_DISPATCH,
-	qa: { vendor: "claude", model: MODEL_TIERS.medium.id },
-};
+> = BUILTIN_PHASE_DISPATCH;
 
 /**
  * FLY-1224 / FLY-1245 / FLY-1259: the dispatch spec for a three-stage phase,
@@ -221,22 +199,35 @@ export function resolvePhaseDispatch(
 	env: Record<string, string | undefined> = process.env,
 	override?: PhaseDispatchOverride,
 ): PhaseDispatchSpec {
+	// One immutable generation per routing decision. The next decision hot-reads
+	// an atomically replaced models.json; every override below stays within this
+	// generation.
+	const snapshot = getModelConfigSnapshot();
+	const configured = snapshot.phases;
+	const claudeDesign =
+		configured.design.vendor === "claude"
+			? configured.design
+			: DEFAULT_PHASE_DISPATCH.design;
+	const codexStandard =
+		configured.implement.vendor === "codex"
+			? configured.implement
+			: CODEX_STANDARD_DISPATCH;
 	if (phase === "design" && override?.vendor === "codex") {
-		return CODEX_STANDARD_DISPATCH;
+		return codexStandard;
 	}
 	if (phase === "design" && override?.vendor === "claude") {
-		return DEFAULT_PHASE_DISPATCH.design;
+		return claudeDesign;
 	}
 	if (
 		phase === "implement" &&
 		env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT === "0"
 	) {
-		return { vendor: "claude", model: MODEL_TIERS.heavy.id };
+		return claudeDesign;
 	}
 	if (phase === "design" && env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN === "1") {
-		return CODEX_STANDARD_DISPATCH;
+		return codexStandard;
 	}
-	return DEFAULT_PHASE_DISPATCH[phase];
+	return configured[phase];
 }
 
 /**

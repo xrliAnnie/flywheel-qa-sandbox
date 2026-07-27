@@ -545,20 +545,14 @@ if command -v jq >/dev/null 2>&1; then
   # dropping `mcpExclude` / `chromeEnabled` and re-broadening MCP scope.
   _existing_mcp_exclude=""
   _existing_chrome_enabled="false"
-  # FLY-247: preserve the fleet carrier fields (`model`, `leadBackend.backendId`)
-  # across the boot-time rewrite. fleet apply is the authoritative writer; this
-  # preserve only stops a launchd self-restart BETWEEN two applies from
-  # silently dropping the fields (and with them the FLYWHEEL_LEAD_MODEL env on
-  # the next `daemon install`). Absent fields stay absent — never injected.
-  _existing_model=""
+  # FLY-1496: model/effort are no longer preserved from this output file.
+  # projects.json is re-read for every physical launch; the resolved launch
+  # decision rewrites model/effort evidence later in _launch_claude.
   _existing_lead_backend=""
-  _existing_effort=""   # FLY-671: preserve the effort carrier across boot rewrites
   if [ -f "$MANIFEST_FILE" ]; then
     _existing_mcp_exclude=$(jq -r '.mcpExclude // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
     _existing_chrome_enabled=$(jq -r '.chromeEnabled // false' "$MANIFEST_FILE" 2>/dev/null || echo "false")
-    _existing_model=$(jq -r '.model // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
     _existing_lead_backend=$(jq -r '.leadBackend.backendId // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
-    _existing_effort=$(jq -r '.effort // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
   fi
   _final_mcp_exclude="${FLYWHEEL_LEAD_MCP_EXCLUDE-$_existing_mcp_exclude}"
   if [ "${FLYWHEEL_LEAD_CHROME_ENABLED:-}" = "true" ]; then
@@ -584,17 +578,13 @@ if command -v jq >/dev/null 2>&1; then
     --arg pid "$$" \
     --arg mcpExclude "$_final_mcp_exclude" \
     --argjson chromeEnabled "$_final_chrome_enabled" \
-    --arg model "$_existing_model" \
     --arg leadBackendId "$_existing_lead_backend" \
-    --arg effort "$_existing_effort" \
     '{
        leadId: $leadId, projectDir: $projectDir, projectName: $projectName,
        subdir: $subdir, workspace: $workspace, botTokenEnv: $botTokenEnv,
        mcpExclude: $mcpExclude, chromeEnabled: $chromeEnabled,
        pid: ($pid | tonumber)
      }
-     | (if $model != "" then . + {model: $model} else . end)
-     | (if $effort != "" then . + {effort: $effort} else . end)
      | (if $leadBackendId != "" then . + {leadBackend: {backendId: $leadBackendId}} else . end)' \
     > "$_manifest_tmp" \
     && jq empty "$_manifest_tmp" 2>/dev/null \
@@ -1540,74 +1530,121 @@ _emit_launch_plan() {
 _launch_claude() {
   local window_name="${PROJECT_NAME}-${LEAD_ID}"
   local -a launch_args=("$@")
-  local _fly1285_manifest_model=""
-  local _fly1285_manifest_effort=""
-  local _fly1285_effort_valid=false
-  local _fly1285_arg _fly1285_skip
-  local -a _fly1285_filtered=()
+  local _fly1496_entry="${FLYWHEEL_ROOT}/packages/teamlead/dist/lead-model-launch.js"
+  local _fly1496_result=""
+  local _fly1496_model="claude-fable-5"
+  local _fly1496_raw_model=""
+  local _fly1496_effort=""
+  local _fly1496_raw_effort=""
+  local _fly1496_reason="resolver_unavailable"
+  local _fly1496_substituted=true
+  local _fly1496_arg _fly1496_skip
+  local -a _fly1496_filtered=()
 
-  # FLY-1285: resolve the fleet carrier on EVERY launch, including natural
-  # crash/relaunch loops under the same supervisor PID. launchd env is frozen at
-  # supervisor start, so it is fallback only; the manifest is the applied fleet
-  # transaction carrier and therefore the runtime source of truth.
-  if command -v jq >/dev/null 2>&1 && [ -f "${MANIFEST_FILE:-}" ]; then
-    _fly1285_manifest_model=$(jq -r 'if (.model | type) == "string" then .model else "" end' "$MANIFEST_FILE" 2>/dev/null || echo "")
-    _fly1285_manifest_effort=$(jq -r 'if (.effort | type) == "string" then .effort else "" end' "$MANIFEST_FILE" 2>/dev/null || echo "")
-  fi
-  _fly1285_manifest_model="${_fly1285_manifest_model#"${_fly1285_manifest_model%%[![:space:]]*}"}"
-  _fly1285_manifest_model="${_fly1285_manifest_model%"${_fly1285_manifest_model##*[![:space:]]}"}"
-  _fly1285_manifest_effort="${_fly1285_manifest_effort#"${_fly1285_manifest_effort%%[![:space:]]*}"}"
-  _fly1285_manifest_effort="${_fly1285_manifest_effort%"${_fly1285_manifest_effort##*[![:space:]]}"}"
-  case "$_fly1285_manifest_effort" in
-    low|medium|high|xhigh|max) _fly1285_effort_valid=true ;;
-    "") ;;
-    *) log "WARN: invalid manifest effort='${_fly1285_manifest_effort}' → using env fallback" ;;
-  esac
-
-  if [ -n "$_fly1285_manifest_model" ]; then
-    _fly1285_filtered=()
-    _fly1285_skip=false
-    for _fly1285_arg in "${launch_args[@]}"; do
-      if [ "$_fly1285_skip" = true ]; then _fly1285_skip=false; continue; fi
-      if [ "$_fly1285_arg" = "--model" ]; then _fly1285_skip=true; continue; fi
-      _fly1285_filtered+=("$_fly1285_arg")
-    done
-    # FLY-1485 review NOTE (HIGH, latent): the manifest value is appended RAW
-    # and does NOT pass through the FLY-1467 tier resolver above (that runs only
-    # on the FLYWHEEL_LEAD_MODEL env path). Manifest is the "runtime source of
-    # truth", so if a Lead's manifest model is ever a tier alias (`opus` /
-    # `opus-1m`) the resolver is defeated: `opus-1m` → CLI rejects; `opus` →
-    # resolved by the CLI's own alias table, bypassing the registry binding
-    # (rollback ineffective). Latent today — production manifests carry full ids
-    # (projects.json pins are `claude-opus-4-8[1m]`, exploration §3.3). Proper
-    # fix: resolve the tier at the SINGLE final model-selection point after
-    # manifest/env precedence, not only on the env path.
-    launch_args=("${_fly1285_filtered[@]}" --model "$_fly1285_manifest_model")
-    if [ -n "${_fly241_lead_model:-}" ] && [ "$_fly241_lead_model" != "$_fly1285_manifest_model" ]; then
-      log "model drift: env=${_fly241_lead_model} manifest=${_fly1285_manifest_model} → using manifest"
-    fi
-    log "Lead model override: --model ${_fly1285_manifest_model} (using manifest)"
-  elif [ -n "${_fly241_lead_model:-}" ]; then
-    log "Lead model override: --model ${_fly241_lead_model} (using env fallback)"
+  # FLY-1496: every PHYSICAL launch re-reads projects.json through the validated
+  # ProjectConfig path and resolves the same hot model snapshot. Manifest and
+  # frozen launchd env values are evidence only — never inputs.
+  if command -v jq >/dev/null 2>&1 && [ -f "$_fly1496_entry" ]; then
+    _fly1496_result="$(
+      FLY1496_ENTRY="$_fly1496_entry" \
+      FLY1496_PROJECT="$PROJECT_NAME" \
+      FLY1496_LEAD="$LEAD_ID" \
+      node --input-type=module -e '
+        try {
+          const mod = await import(process.env.FLY1496_ENTRY);
+          const decision = mod.resolveLeadModelLaunch(
+            process.env.FLY1496_PROJECT ?? "",
+            process.env.FLY1496_LEAD ?? "",
+          );
+          process.stdout.write(JSON.stringify({ ok: true, decision }));
+        } catch (error) {
+          process.stdout.write(JSON.stringify({
+            ok: false,
+            sourceFailure: error?.code === "MODEL_SOURCE_FAILURE",
+            error: error instanceof Error ? error.message : String(error),
+          }));
+        }
+      '
+    )" || _fly1496_result=""
   fi
 
-  if [ "$_fly1285_effort_valid" = true ]; then
-    _fly1285_filtered=()
-    _fly1285_skip=false
-    for _fly1285_arg in "${launch_args[@]}"; do
-      if [ "$_fly1285_skip" = true ]; then _fly1285_skip=false; continue; fi
-      if [ "$_fly1285_arg" = "--effort" ]; then _fly1285_skip=true; continue; fi
-      _fly1285_filtered+=("$_fly1285_arg")
-    done
-    launch_args=("${_fly1285_filtered[@]}" --effort "$_fly1285_manifest_effort")
-    if [ -n "${_fly671_lead_effort:-}" ] && [ "$_fly671_lead_effort" != "$_fly1285_manifest_effort" ]; then
-      log "effort drift: env=${_fly671_lead_effort} manifest=${_fly1285_manifest_effort} → using manifest"
-    fi
-    log "Lead effort override: --effort ${_fly1285_manifest_effort} (using manifest)"
-  elif [ "${_fly671_effort_valid:-false}" = true ]; then
-    log "Lead effort override: --effort ${_fly671_lead_effort} (using env fallback)"
+  if [ -n "$_fly1496_result" ] && jq -e '.ok == true' >/dev/null 2>&1 <<<"$_fly1496_result"; then
+    _fly1496_model=$(jq -r '.decision.model' <<<"$_fly1496_result")
+    _fly1496_raw_model=$(jq -r '.decision.rawModel // ""' <<<"$_fly1496_result")
+    _fly1496_effort=$(jq -r '.decision.effort // ""' <<<"$_fly1496_result")
+    _fly1496_raw_effort=$(jq -r '.decision.rawEffort // ""' <<<"$_fly1496_result")
+    _fly1496_reason=$(jq -r '.decision.reason' <<<"$_fly1496_result")
+    _fly1496_substituted=$(jq -r '.decision.substituted' <<<"$_fly1496_result")
+  elif [ -n "$_fly1496_result" ] && jq -e '.sourceFailure == true' >/dev/null 2>&1 <<<"$_fly1496_result"; then
+    log "FATAL: $(jq -r '.error // "projects.json model source failure"' <<<"$_fly1496_result")"
+    return 1
+  else
+    # Resolver/runtime failure must not brick the fleet, but the frozen env is
+    # not a safe fallback: it is a stale carrier that cannot be canonicalized
+    # here, and the incident showed it holding a value the operator had already
+    # moved away from. Literal Fable needs neither dist nor config to be read.
+    log "model_config WARNING: resolver unavailable; using built-in ${_fly1496_model}; frozen env ignored"
+  fi
+
+  # Replace every earlier model/effort token only after all routing has settled.
+  _fly1496_skip=false
+  for _fly1496_arg in "${launch_args[@]}"; do
+    if [ "$_fly1496_skip" = true ]; then _fly1496_skip=false; continue; fi
+    case "$_fly1496_arg" in
+      --model|--effort) _fly1496_skip=true; continue ;;
+    esac
+    _fly1496_filtered+=("$_fly1496_arg")
+  done
+  launch_args=("${_fly1496_filtered[@]}" --model "$_fly1496_model")
+  if [ -n "$_fly1496_effort" ]; then
+    launch_args+=(--effort "$_fly1496_effort")
   elif [ "${IS_COMPANION_ROLE:-false}" = true ]; then
-    log "Companion: --effort xhigh (FLY-583; leak defense is the discord-reply-enforcer hook, not effort)"
+    _fly1496_effort=xhigh
+    launch_args+=(--effort xhigh)
+    log "Companion: --effort xhigh (FLY-583; no projects.json effort override)"
+  fi
+
+  if [ "$_fly1496_reason" = "resolver_unavailable" ]; then
+    log "model source: resolver unavailable → using built-in ${_fly1496_model}; env=${FLYWHEEL_LEAD_MODEL:-<unset>} ignored"
+  else
+    log "model source: projects.json=${_fly1496_raw_model:-<absent>}→${_fly1496_model} env=${FLYWHEEL_LEAD_MODEL:-<unset>} → using projects.json"
+  fi
+  if [ -n "$_fly1496_effort" ]; then
+    log "effort source: projects.json=${_fly1496_raw_effort:-<absent>}→${_fly1496_effort} env=${FLYWHEEL_LEAD_EFFORT:-<unset>} → using projects.json"
+  fi
+  if [ "$_fly1496_reason" = "model_invalid" ]; then
+    log "model_config WARNING: projects.json model '${_fly1496_raw_model}' is not resolvable; substituted with '${_fly1496_model}'"
+  fi
+
+  # Manifest is now write-only launch evidence. Preserve unrelated fields,
+  # publish raw SSOT spelling plus actual canonical argv, and never read it.
+  if command -v jq >/dev/null 2>&1 && [ -f "${MANIFEST_FILE:-}" ]; then
+    local _fly1496_manifest_tmp="${MANIFEST_FILE}.tmp.$$"
+    jq \
+      --arg rawModel "$_fly1496_raw_model" \
+      --arg resolvedModel "$_fly1496_model" \
+      --arg rawEffort "$_fly1496_raw_effort" \
+      --arg resolvedEffort "$_fly1496_effort" \
+      'if $rawModel != "" then .model = $rawModel else del(.model) end
+       | .resolvedModel = $resolvedModel
+       | if $rawEffort != "" then .effort = $rawEffort else del(.effort) end
+       | if $resolvedEffort != "" then .resolvedEffort = $resolvedEffort else del(.resolvedEffort) end' \
+      "$MANIFEST_FILE" > "$_fly1496_manifest_tmp" \
+      && jq empty "$_fly1496_manifest_tmp" 2>/dev/null \
+      && mv "$_fly1496_manifest_tmp" "$MANIFEST_FILE" \
+      || { rm -f "$_fly1496_manifest_tmp"; log "model_config WARNING: failed to write launch evidence manifest"; }
+  fi
+
+  if [ "$_fly1496_substituted" = true ] || [ "$_fly1496_reason" = "resolver_unavailable" ]; then
+    if [ -x "${FLYWHEEL_ROOT}/scripts/lead-alert.sh" ]; then
+      "${FLYWHEEL_ROOT}/scripts/lead-alert.sh" \
+        --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+        --kind model_config --severity severe \
+        --title "Lead model policy fallback" \
+        --body "${PROJECT_NAME}/${LEAD_ID}: ${_fly1496_reason}; launched ${_fly1496_model}" \
+        --signature "${_fly1496_reason}-${_fly1496_raw_model:-absent}" \
+        >/dev/null 2>&1 || log "model_config WARNING: alert delivery failed"
+    fi
   fi
 
   # FLY-231 dry-run: a structured launch-plan test (byte-compat sentinel + companion
@@ -2262,94 +2299,10 @@ CLAUDE_ARGS=(
   --permission-mode bypassPermissions
 )
 
-# FLY-241: per-Lead model override. When `FLYWHEEL_LEAD_MODEL` is set (per-Lead
-# via the launchd plist EnvironmentVariables), pass it through as `--model` so a
-# coding-heavy Lead can run a different model (e.g. claude-fable-5) while every
-# other Lead keeps the account default. UNSET (the default) appends NOTHING —
-# argv stays byte-identical to pre-FLY-241, asserted by the FLY-231 reverse-compat
-# sentinel (T8 golden has no `--model`).
-#
-# Trim surrounding whitespace before the empty check so a stray-space plist value
-# (e.g. " ") is treated as UNSET rather than injecting `--model "  "` — which the
-# claude CLI rejects and would crash the Lead at startup (failure-path hygiene).
-# Do NOT lowercase: model ids can be case-sensitive.
-_fly241_lead_model="${FLYWHEEL_LEAD_MODEL:-}"
-_fly241_lead_model="${_fly241_lead_model#"${_fly241_lead_model%%[![:space:]]*}"}"
-_fly241_lead_model="${_fly241_lead_model%"${_fly241_lead_model##*[![:space:]]}"}"
-# FLY-1467: boundary resolution — config writes only the TIER ("opus",
-# "opus-1m", "fable", ...), never a version; the version lives in
-# model-registry alone. leads[].model is deliberately NOT normalized upstream
-# (ProjectConfig only checks non-empty + control chars), and it reaches the CLI
-# verbatim — so a tier spelling must be resolved to a canonical model id HERE.
-#
-# This matters: "opus-1m" is a Flywheel-internal alias the claude CLI does not
-# know ("may not exist or you may not have access" — verified on a real
-# machine), so passing it through raw would fail to start the Lead. And bare
-# "opus" would be resolved by the CLI's own alias table rather than by our
-# registry, which would move version control out of the registry.
-#
-# FAIL-SAFE: any failure (missing dist, node error, unknown spelling) leaves the
-# value untouched and passes it through exactly as before — a resolver problem
-# must never be the reason a Lead cannot start.
-if [ -n "$_fly241_lead_model" ]; then
-  _fly1467_registry="${FLYWHEEL_ROOT}/packages/config/dist/index.js"
-  if [ -f "$_fly1467_registry" ]; then
-    _fly1467_resolved="$(
-      FLY1467_RAW="$_fly241_lead_model" \
-      FLY1467_ENTRY="$_fly1467_registry" \
-      node --input-type=module -e '
-        const { normalizeDispatchModel } = await import(process.env.FLY1467_ENTRY);
-        const resolved = normalizeDispatchModel(process.env.FLY1467_RAW ?? "");
-        if (resolved) process.stdout.write(resolved);
-      ' 2>/dev/null
-    )" || _fly1467_resolved=""
-    if [ -n "$_fly1467_resolved" ] && [ "$_fly1467_resolved" != "$_fly241_lead_model" ]; then
-      log "FLY-1467: resolved lead model tier '${_fly241_lead_model}' -> '${_fly1467_resolved}'"
-      _fly241_lead_model="$_fly1467_resolved"
-    fi
-  fi
-  CLAUDE_ARGS+=(--model "$_fly241_lead_model")
-fi
-
-# FLY-671: per-Lead effort override. When `FLYWHEEL_LEAD_EFFORT` is set (per-Lead
-# via the launchd plist, carried from projects.json → manifest → generate_plist),
-# pass it through as `--effort` so a cost-sensitive Lead can run lower effort
-# (xhigh→high/medium) to save tokens. This GENERALIZES the FLY-231/FLY-583
-# companion pin below: an explicit valid effort wins for ANY Lead (incl. companion).
-#
-# enum guard (Codex design review R2 MEDIUM-4): a bad value is treated as UNSET,
-# never injected. Critically, a bad explicit env must NOT both crash the CLI AND
-# strip a companion's FLY-583 xhigh fallback — so an invalid value falls through
-# to the companion default below, identical to "unset".
-#
-# Trim surrounding whitespace (same as FLY-241 model) before the enum check.
-_fly671_lead_effort="${FLYWHEEL_LEAD_EFFORT:-}"
-_fly671_lead_effort="${_fly671_lead_effort#"${_fly671_lead_effort%%[![:space:]]*}"}"
-_fly671_lead_effort="${_fly671_lead_effort%"${_fly671_lead_effort##*[![:space:]]}"}"
-case "$_fly671_lead_effort" in
-  low|medium|high|xhigh|max) _fly671_effort_valid=true ;;
-  "") _fly671_effort_valid=false ;;
-  *) _fly671_effort_valid=false; log "WARN: ignoring invalid FLYWHEEL_LEAD_EFFORT='${_fly671_lead_effort}' (treated as unset)" ;;
-esac
-
-# FLY-231 / FLY-583: companion effort. FLY-231 originally pinned `--effort medium`
-# on the theory that default/high effort triggered the "drafts a reply but never
-# calls the discord reply tool → goes silent" leak (FLY-306). FLY-583 disproved
-# that hypothesis with evidence: Belle leaked the reply tool-call as plain text at
-# `--effort xhigh` too, so medium did NOT prevent the leak — it only capped her
-# capability against Annie's explicit "keep Belle on xhigh" requirement. The real,
-# effort-independent leak defense is the discord-reply-enforcer Stop hook (FLY-387),
-# which catches an unexecuted reply and nudges a resend (verified recovering Belle
-# live). So pin companions to xhigh (capability), never medium.
-#
-# Precedence (FLY-671): a valid explicit FLYWHEEL_LEAD_EFFORT overrides everything;
-# otherwise a companion still gets xhigh; otherwise (non-companion, no/bad env) NO
-# `--effort` flag is appended — argv stays byte-identical to pre-FLY-671 (sentinel-asserted).
-if [ "$_fly671_effort_valid" = true ]; then
-  CLAUDE_ARGS+=(--effort "$_fly671_lead_effort")
-elif [ "$IS_COMPANION_ROLE" = true ]; then
-  CLAUDE_ARGS+=(--effort xhigh)
-fi
+# FLY-1496: model and effort are deliberately absent from this supervisor-level
+# array. _launch_claude derives both from projects.json on EVERY child launch,
+# after all static args are built. Frozen launchd env remains carrier evidence
+# for fleet tooling but has no runtime authority.
 
 # FLY-143: claude-in-chrome — env-gated, default OFF.
 # `--chrome` + `--permission-mode bypassPermissions` together set

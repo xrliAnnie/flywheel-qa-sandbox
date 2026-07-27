@@ -21,7 +21,7 @@ runners:
   available:
     claude:
       type: claude
-      model: sonnet        # Runner model; Lead model is set per-fleet (FLY-241/247)
+      model: fable         # Legacy compatibility field; active default is roles.runner.model below
 
 # FLY-728 / Annie: project-DEFAULT Runner model — the REAL knob the
 # RoleAdapterResolver reads (run-infra.ts `rolesConfig = flywheelConfig?.roles`
@@ -31,27 +31,18 @@ runners:
 # NOTE: `runners.available.claude.model` above is legacy and is NOT read by
 # the resolver — this `roles:` block is.
 #
-# FLY-788 / Annie: this is a PROJECT-WIDE FALLBACK for every runner spawn that
+# FLY-1496 / Annie: this is a PROJECT-WIDE FALLBACK for every runner spawn that
 # has no vendor/model label AND no dispatch `model` param — includes but is
 # NOT limited to the FLY-579 auto-QA pipeline (which creates a fresh
 # `QA·FLY-XX` issue and dispatches it without a label or dispatchModel, so it
-# lands exactly here). This used to default to Fable 5 (FLY-728); Annie found
-# that meant any such automatic spawn silently burned tokens on Fable
-# ("5 个 QA 全 Fable、30 分钟就烧完"). Defaulted to Opus 4.8 (1M) instead —
-# still the strongest fleet-standard tier, but the model an unlabelled/
-# un-sorted spawn should get by default, not a project opt-in choice.
+# lands exactly here). Unclassified work now follows the founder's Fable/Codex
+# preference; the explicit three-stage QA row remains the only Opus 5 default.
 roles:
   runner:
     backend: claude-tmux
-    # FLY-1485 reviewer-fix (BLOCKER): use the CLI-native full id, NOT the
-    # internal tier alias `opus-1m`. This project-default path is NOT
-    # canonicalized (ConfigLoader trims only → resolveRoleAdapter →
-    # run-dispatcher → Blueprint → TmuxAdapter `--model <verbatim>`), so a tier
-    # alias reaches the claude CLI raw and it rejects `opus-1m` ("may not exist
-    # or you may not have access") → the runner never starts. `[1m]` IS a
-    # CLI-native selector, so `claude-opus-5[1m]` is accepted (verified). Opus 5
-    # (1M), upgrading the pre-FLY-1467 `claude-opus-4-8[1m]` default.
-    model: claude-opus-5[1m]
+    # Use a canonical CLI-native id. The final resolver also canonicalizes and
+    # checks this value against the live ban policy before launch.
+    model: claude-fable-5
 
 teams:
   - name: default

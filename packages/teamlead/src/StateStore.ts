@@ -17,6 +17,7 @@ import {
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
+	type ModelConfigSnapshot,
 	type SkillFrameworkMode,
 	type SkillFrameworkVia,
 } from "flywheel-config";
@@ -15647,9 +15648,12 @@ export class StateStore {
 		createdBy: string;
 		/** Repair-only: preserve unrelated retired selections after the caller validates the edited node. */
 		allowUnsupportedModels?: boolean;
+		/** Preserve one immutable hot-config generation for the whole authoring transaction. */
+		modelSnapshot?: ModelConfigSnapshot;
 	}): WorkflowTemplatePublishResult {
 		const manifest = validateWorkflowManifest(input.manifest, {
 			allowUnsupportedModels: input.allowUnsupportedModels === true,
+			modelSnapshot: input.modelSnapshot,
 		});
 		const digest = canonicalSubmissionDigest(manifest);
 		if (!this.getWorkflowTemplate(input.templateId)) {

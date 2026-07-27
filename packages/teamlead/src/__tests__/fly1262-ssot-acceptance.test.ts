@@ -546,7 +546,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 				targetId: dag.targetId,
 				desiredValue: {
 					provider: "anthropic",
-					model: "claude-opus-4-8",
+					model: "claude-opus-5",
 					effort: null,
 				},
 				observedRevision: dag.source.revision,
@@ -625,7 +625,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 					targetId: staleRunner.targetId,
 					desiredValue: {
 						provider: "anthropic",
-						model: "claude-opus-4-8",
+						model: "claude-opus-5",
 						effort: null,
 					},
 					observedRevision: staleRunner.source.revision,

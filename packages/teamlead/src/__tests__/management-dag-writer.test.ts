@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readManagementDags } from "../bridge/management-dag-source.js";
 import { applyManagementDagEdit } from "../bridge/management-dag-writer.js";
 import { createManagementDagWriter } from "../bridge/management-existing-writers.js";
@@ -34,6 +34,7 @@ describe("management DAG writer", () => {
 		const beforeRow = store.getWorkflowTemplateRevision(dag.templateId, 1)!;
 		const before = validateWorkflowManifest(JSON.parse(beforeRow.manifest));
 		const target = dag.nodes.find((node) => node.name === "design")!;
+		const publish = vi.spyOn(store, "createAndPublishWorkflowTemplateRevision");
 		const result = applyManagementDagEdit({
 			store,
 			targetId: target.dispatch.targetId,
@@ -47,6 +48,11 @@ describe("management DAG writer", () => {
 			actor: "founder",
 		});
 		expect(result).toEqual({ status: "published", revision: 2 });
+		expect(publish.mock.calls[0]?.[0]).toMatchObject({
+			modelSnapshot: expect.objectContaining({
+				revision: expect.any(String),
+			}),
+		});
 		const after = validateWorkflowManifest(
 			JSON.parse(
 				store.getWorkflowTemplateRevision(dag.templateId, 2)!.manifest,

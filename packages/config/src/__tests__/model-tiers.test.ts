@@ -128,14 +128,12 @@ describe("vendorModelShortCode (FLY-1255 Plan B — non-Claude single letters)",
 });
 
 describe("MODEL_TIERS", () => {
-	it("carries the 4 tiers with canonical id + code (medium small-context, FLY-751)", () => {
+	it("maps heavy to Fable and every lower difficulty to Opus 5", () => {
 		expect(MODEL_TIERS.heavy.id).toBe("claude-fable-5");
 		expect(MODEL_TIERS.heavy.code).toBe("F");
-		expect(MODEL_TIERS.medium.id).toBe("claude-opus-5");
-		expect(MODEL_TIERS.medium.code).toBe("O");
-		expect(MODEL_TIERS.light.id).toBe("claude-sonnet-5");
-		expect(MODEL_TIERS.light.code).toBe("S");
-		expect(MODEL_TIERS.trivial.id).toBe("claude-haiku-4-5-20251001");
-		expect(MODEL_TIERS.trivial.code).toBe("H");
+		for (const tier of ["medium", "light", "trivial"] as const) {
+			expect(MODEL_TIERS[tier].id).toBe("claude-opus-5");
+			expect(MODEL_TIERS[tier].code).toBe("O");
+		}
 	});
 });

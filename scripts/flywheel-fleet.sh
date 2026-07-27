@@ -55,10 +55,22 @@ FLEET_BACKUPS="${HOME}/.flywheel/fleet-backups"
 LOCK_DIR="${HOME}/.flywheel/restart.lock.d"
 DAEMON_BIN="${FLYWHEEL_FLEET_DAEMON_BIN:-${SCRIPT_DIR}/flywheel-daemon.sh}"
 WRAPPER_DST="${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh"
+MODEL_POLICY_CLI="${FLYWHEEL_MODEL_POLICY_CLI:-${SCRIPT_DIR}/validate-model-policy.mjs}"
 
 flog() { echo "[fleet] $*"; }
 ferr() { echo "[fleet] ERROR: $*" >&2; }
 die() { ferr "$*"; exit 1; }
+
+validate_model_policy_value() {
+  local value="$1"
+  # projects.json absence is an authoritative Fable default, not account
+  # inheritance. Validate the effective launch value while preserving absence
+  # in the SSOT itself.
+  if [ -z "$value" ] || [ "$value" = "null" ]; then
+    value="claude-fable-5"
+  fi
+  node "$MODEL_POLICY_CLI" model "$value" lead >/dev/null
+}
 
 # ════════════════════════════════════════════════════════════════
 # Guards
@@ -798,6 +810,11 @@ cmd_apply() {
         local dm mm
         dm=$(jq -r '.desired.model // ""' <<< "$st")
         mm=$(jq -r '.carrier.manifestModel // ""' <<< "$st")
+        local policy_error
+        if ! policy_error=$(validate_model_policy_value "$dm" 2>&1); then
+          summaries+=("${key}: UNAPPLIED-MODEL-POLICY (${policy_error})")
+          continue
+        fi
         if [ "$dry_run" = "true" ]; then
           summaries+=("${key}: WOULD-APPLY model '${mm:-<none>}' → '${dm:-<none>}' (restart required)")
         elif confirm "Restart Lead ${key} to apply model '${mm:-<none>}' → '${dm:-<none>}'?" "$yes"; then
@@ -863,13 +880,63 @@ cmd_apply() {
     cp_=$(plist_path "$key")
     local m_sha p_sha proj_sha
     m_sha=$(file_sha "$cm"); p_sha=$(file_sha "$cp_"); proj_sha=$(manifest_projection_sha "$cm")
+    local pre_project_model pre_project_effort pre_project_touch_effort
+    local project_preimage_source
+    if [ "${FLEET_PROJECT_PREIMAGE_MODEL+x}" = "x" ]; then
+      # The batch/value-flags path writes projects.json itself, so it can pass
+      # the exact reviewed SSOT value from before that write.
+      [ "${FLEET_PROJECT_PREIMAGE_EFFORT+x}" = "x" ] \
+        && [ "${FLEET_PROJECT_PREIMAGE_TOUCH_EFFORT+x}" = "x" ] \
+        || die "incomplete fleet project pre-image evidence for ${key}"
+      pre_project_model="$FLEET_PROJECT_PREIMAGE_MODEL"
+      pre_project_effort="$FLEET_PROJECT_PREIMAGE_EFFORT"
+      pre_project_touch_effort="$FLEET_PROJECT_PREIMAGE_TOUCH_EFFORT"
+      project_preimage_source="batch-journal"
+    else
+      # Plain `apply` reconciles an already-edited projects.json snapshot to
+      # the currently running carriers. The snapshot is therefore the
+      # post-image, not a rollback pre-image. The raw manifest fields are the
+      # only prior launch evidence available on this path; FLY-1496 keeps them
+      # byte-aligned with the projects.json spelling on every physical launch.
+      # This is rollback evidence only — it must never re-enter model
+      # resolution. Missing fields in a valid, identity-bound manifest are
+      # preserved as the literal "null" deletion marker; an absent, malformed,
+      # or copied witness fails closed instead of guessing.
+      jq -e --arg key "$key" \
+        'type == "object"
+         and (((.projectName // "") + "-" + (.leadId // "")) == $key)' \
+        "$cm" >/dev/null 2>&1 \
+        || die "${key}: manifest rollback witness is missing, malformed, or identity-mismatched"
+      pre_project_model=$(jq -er '
+        if (has("model") | not) or .model == null or .model == ""
+        then "null"
+        elif (.model | type) == "string" then .model
+        else error("manifest model is not a string")
+        end' "$cm") || die "${key}: cannot capture manifest model pre-image"
+      pre_project_effort=$(jq -er '
+        if (has("effort") | not) or .effort == null or .effort == ""
+        then "null"
+        elif (.effort | type) == "string" then .effort
+        else error("manifest effort is not a string")
+        end' "$cm") || die "${key}: cannot capture manifest effort pre-image"
+      pre_project_touch_effort=true
+      project_preimage_source="manifest"
+    fi
     txn_update "$txn" \
       '.leads[$key] = {attempt: 1, phase: "pending",
         original: {manifestExisted: true, plistExisted: true,
-                   manifestSha: $mSha, plistSha: $pSha, manifestProjSha: $projSha},
+                   manifestSha: $mSha, plistSha: $pSha, manifestProjSha: $projSha,
+                   projectModel: $preProjectModel,
+                   projectEffort: $preProjectEffort,
+                   projectEffortTouched: ($preProjectTouchEffort == "1" or $preProjectTouchEffort == "true"),
+                   projectPreimageSource: $projectPreimageSource},
         desired: {model: $dModel, effort: $dEffort}}' \
       --arg key "$key" --arg mSha "$m_sha" --arg pSha "$p_sha" \
       --arg projSha "$proj_sha" \
+      --arg preProjectModel "$pre_project_model" \
+      --arg preProjectEffort "$pre_project_effort" \
+      --arg preProjectTouchEffort "$pre_project_touch_effort" \
+      --arg projectPreimageSource "$project_preimage_source" \
       --arg dModel "$(jq -r --arg pp "$p" --arg ll "$l" '.[] | select(.projectName==$pp) | .leads[] | select(.agentId==$ll) | .model // ""' "$snapshot")" \
       --arg dEffort "$(jq -r --arg pp "$p" --arg ll "$l" '.[] | select(.projectName==$pp) | .leads[] | select(.agentId==$ll) | .effort // ""' "$snapshot")"
   done
@@ -1169,6 +1236,93 @@ cmd_rollback() {
   fi
   [ -n "$keys" ] || die "No applied leads in transaction ${txn_id}."
 
+  # FLY-1496: WHOLE-ROLLBACK policy/SSOT preflight. Do this before the first
+  # confirmation, journal transition, bootout, or carrier write so a legacy
+  # transaction or an unresolvable pre-image cannot produce a partial rollback.
+  #
+  # projectModel/projectEffort are literal string markers ("null" means field
+  # absent). They were captured from projects.json, the SSOT, rather than from
+  # the derived manifest. Old journals without these fields cannot prove a safe
+  # SSOT rollback and therefore fail closed.
+  local preflight_error=""
+  local preflight_key
+  for preflight_key in $keys; do
+    if ! validate_key_grammar "$preflight_key"; then
+      preflight_error="unsafe key '${preflight_key}' in transaction data"
+      break
+    fi
+    if [ "$(jq -r --arg key "$preflight_key" '.leads[$key].phase // "missing"' "$txn")" != "applied" ]; then
+      preflight_error="${preflight_key}: transaction phase is not applied"
+      break
+    fi
+    local preflight_newer="" preflight_nd
+    for preflight_nd in "$FLEET_BACKUPS"/*/; do
+      [ -d "$preflight_nd" ] || continue
+      local preflight_nid
+      preflight_nid=$(basename "$preflight_nd")
+      if [[ "$preflight_nid" > "$txn_id" ]] \
+        && jq -e --arg key "$preflight_key" \
+          '.leads[$key].phase == "applied"' "${preflight_nd}transaction.json" >/dev/null 2>&1; then
+        preflight_newer="${preflight_newer}${preflight_nid} "
+      fi
+    done
+    if [ -n "$preflight_newer" ]; then
+      preflight_error="${preflight_key}: newer applied transaction(s) exist (${preflight_newer}) — roll those back first"
+      break
+    fi
+    if ! jq -e --arg key "$preflight_key" \
+      '.leads[$key].original
+       | type == "object"
+         and has("projectModel")
+         and has("projectEffort")
+         and has("projectEffortTouched")' "$txn" >/dev/null 2>&1; then
+      preflight_error="${preflight_key}: transaction lacks projects.json pre-image fields; refusing unsafe legacy rollback"
+      break
+    fi
+
+    local preflight_original_model preflight_policy_model
+    preflight_original_model=$(jq -r --arg key "$preflight_key" \
+      '.leads[$key].original.projectModel' "$txn")
+    # An absent Lead model now resolves to the built-in safe Lead default.
+    # Validate that effective value while preserving the exact absent marker
+    # for the later SSOT restore.
+    preflight_policy_model="$preflight_original_model"
+    [ "$preflight_policy_model" = "null" ] && preflight_policy_model="claude-fable-5"
+    local preflight_policy_message
+    if ! preflight_policy_message=$(validate_model_policy_value "$preflight_policy_model" 2>&1); then
+      preflight_error="${preflight_key}: rollback pre-image violates current model policy (${preflight_policy_message})"
+      break
+    fi
+
+    local preflight_desired_model preflight_current_model
+    preflight_desired_model=$(jq -r --arg key "$preflight_key" \
+      '.leads[$key].desired.model
+       | if . == null or . == "" then "null" else . end' "$txn")
+    preflight_current_model=$(fleet_batch_current_model "$PROJECTS_JSON" "$preflight_key")
+    if [ "$preflight_current_model" != "$preflight_desired_model" ]; then
+      preflight_error="${preflight_key}: projects.json model changed since apply (current='${preflight_current_model}', transaction='${preflight_desired_model}')"
+      break
+    fi
+
+    local preflight_touch_effort
+    preflight_touch_effort=$(jq -r --arg key "$preflight_key" \
+      '.leads[$key].original.projectEffortTouched' "$txn")
+    if [ "$preflight_touch_effort" = "true" ]; then
+      local preflight_desired_effort preflight_current_effort
+      preflight_desired_effort=$(jq -r --arg key "$preflight_key" \
+        '.leads[$key].desired.effort
+         | if . == null or . == "" then "null" else . end' "$txn")
+      preflight_current_effort=$(fleet_batch_current_effort "$PROJECTS_JSON" "$preflight_key")
+      if [ "$preflight_current_effort" != "$preflight_desired_effort" ]; then
+        preflight_error="${preflight_key}: projects.json effort changed since apply (current='${preflight_current_effort}', transaction='${preflight_desired_effort}')"
+        break
+      fi
+    fi
+  done
+  if [ -n "$preflight_error" ]; then
+    die "rollback preflight rejected with zero changes: ${preflight_error}"
+  fi
+
   local overall_rc=0
   local key
   for key in $keys; do
@@ -1202,22 +1356,6 @@ cmd_rollback() {
     fi
     if [ "$(manifest_projection_sha "$cm")" != "$post_proj" ]; then
       ferr "${key}: manifest launch-affecting fields changed since this transaction — refusing (would overwrite an operator change)."
-      overall_rc=1; continue
-    fi
-    local newer=""
-    local nd
-    for nd in "$FLEET_BACKUPS"/*/; do
-      [ -d "$nd" ] || continue
-      local nid
-      nid=$(basename "$nd")
-      # lexicographic txn ids: only those strictly newer than the selected one
-      if [[ "$nid" > "$txn_id" ]] \
-        && jq -e --arg key "$key" '.leads[$key].phase == "applied"' "${nd}transaction.json" >/dev/null 2>&1; then
-        newer="${newer}${nid} "
-      fi
-    done
-    if [ -n "$newer" ]; then
-      ferr "${key}: newer applied transaction(s) exist (${newer}) — roll those back first."
       overall_rc=1; continue
     fi
     # Fail-close on non-standard runtime/management (R5#5 / code-review H4):
@@ -1277,6 +1415,26 @@ cmd_rollback() {
       txn_update "$txn" '.leads[$key].phase = "manual-intervention"' --arg key "$key"
       overall_rc=1; continue
     fi
+
+    # Restore the authoritative projects.json pre-image under the same
+    # config-write lock used by forward fleet writes. This happens only after
+    # the current Lead is stopped, and before restoring/bootstrapping derived
+    # carriers, so the next physical launch derives from the restored SSOT.
+    local original_project_model original_project_effort original_project_touch_effort
+    original_project_model=$(jq -r --arg key "$key" \
+      '.leads[$key].original.projectModel' "$txn")
+    original_project_effort=$(jq -r --arg key "$key" \
+      '.leads[$key].original.projectEffort' "$txn")
+    original_project_touch_effort=$(jq -r --arg key "$key" \
+      'if .leads[$key].original.projectEffortTouched then "1" else "0" end' "$txn")
+    if ! config_write_locked "${FLEET_CONFIG_LOCK_FILE:-${PROJECTS_JSON}.cfglock}" 30 \
+      bash "$_FLEET_BATCH_LIB" write-key-fields "$PROJECTS_JSON" "$key" \
+        "$original_project_model" "$original_project_touch_effort" "$original_project_effort"; then
+      ferr "${key}: projects.json pre-image restore failed — Lead remains down; manual intervention."
+      txn_update "$txn" '.leads[$key].phase = "manual-intervention"' --arg key "$key"
+      overall_rc=1; continue
+    fi
+
     local orig_m orig_p
     orig_m=$(jq -r --arg key "$key" '.leads[$key].original.manifestSha' "$txn")
     orig_p=$(jq -r --arg key "$key" '.leads[$key].original.plistSha' "$txn")

@@ -65,7 +65,7 @@ export class RunnerSelectionService {
 	): string {
 		if (runnerType === "claude") {
 			return (
-				this.config.claudeDefaultModel || this.config.defaultModel || "opus"
+				this.config.claudeDefaultModel || this.config.defaultModel || "fable"
 			);
 		}
 		if (runnerType === "gemini") {
@@ -88,7 +88,7 @@ export class RunnerSelectionService {
 			return (
 				this.config.claudeDefaultFallbackModel ||
 				this.config.defaultFallbackModel ||
-				"sonnet"
+				"opus"
 			);
 		}
 		if (runnerType === "gemini") {
@@ -182,6 +182,7 @@ export class RunnerSelectionService {
 			const normalizedModel = model.toLowerCase();
 			if (normalizedModel.startsWith("gemini")) return "gemini";
 			if (
+				normalizedModel === "fable" ||
 				normalizedModel === "opus" ||
 				normalizedModel === "sonnet" ||
 				normalizedModel === "haiku" ||
@@ -199,11 +200,10 @@ export class RunnerSelectionService {
 		): string | undefined => {
 			const normalizedModel = model.toLowerCase();
 			if (runnerType === "claude") {
-				if (normalizedModel === "opus") return "sonnet";
-				if (normalizedModel === "sonnet") return "haiku";
-				// Keep haiku fallback on sonnet for retry behavior
-				if (normalizedModel === "haiku") return "sonnet";
-				return "sonnet";
+				// Claude fallback is policy, not a model-family heuristic. In
+				// particular, recognizing legacy Sonnet/Haiku aliases must not
+				// turn either into an implicit default tier.
+				return undefined;
 			}
 			if (runnerType === "gemini") {
 				if (

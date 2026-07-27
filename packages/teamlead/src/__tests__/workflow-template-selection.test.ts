@@ -84,7 +84,7 @@ function v2TierSeed() {
 					nodes: {
 						research: {
 							vendor: "claude" as const,
-							model: "claude-opus-4-8",
+							model: "claude-opus-5",
 							effort: "high" as const,
 						},
 					},
@@ -617,7 +617,7 @@ describe("workflow template selection", () => {
 		expect(selected).toMatchObject({ tier: "heavy" });
 		expect(selected?.node.dispatch).toMatchObject({
 			vendor: "claude",
-			model: "claude-opus-4-8",
+			model: "claude-opus-5",
 			effort: "high",
 		});
 		const run = store.getWorkflowRun("tier-run")!;

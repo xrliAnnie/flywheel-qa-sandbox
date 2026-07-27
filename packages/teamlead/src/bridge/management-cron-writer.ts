@@ -21,10 +21,7 @@ import {
 	relative,
 	resolve,
 } from "node:path";
-import {
-	getModelRegistryEntry,
-	isModelSelectionSupported,
-} from "flywheel-config";
+import { getModelConfigSnapshot } from "flywheel-config";
 import type {
 	ManagedValue,
 	ModelSelection,
@@ -372,11 +369,14 @@ export class ManagementCronWriter {
 				if (!object(desired))
 					throw new Error("model selection must be an object");
 				const selection = desired as unknown as ModelSelection;
-				const registered = getModelRegistryEntry(selection.model);
+				// Capture one hot-config generation for lookup, support, and
+				// canonicalization. The next stage request may see a replacement.
+				const modelSnapshot = getModelConfigSnapshot();
+				const registered = modelSnapshot.getModelRegistryEntry(selection.model);
 				if (
 					!registered ||
 					registered.provider !== selection.provider ||
-					!isModelSelectionSupported({
+					!modelSnapshot.isModelSelectionSupported({
 						surface: "cron",
 						model: selection.model,
 						effort: selection.effort ?? undefined,

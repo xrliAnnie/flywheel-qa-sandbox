@@ -28,7 +28,7 @@ describe("parseRunnerLabels", () => {
 	it("model labels infer agent type", () => {
 		expect(parseRunnerLabels(["opus"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "opus",
+			modelOverride: "claude-opus-5",
 		});
 		expect(parseRunnerLabels(["gpt-5.5-codex"])).toEqual({
 			runnerType: "codex",
@@ -141,19 +141,18 @@ describe("parseRunnerLabels", () => {
 		expect(kimi.modelOverride).toBeUndefined();
 	});
 
-	it("fable does not perturb existing model labels", () => {
-		// Regression guard: opus/sonnet/haiku resolve exactly as before.
+	it("canonicalizes every configured Claude family alias", () => {
 		expect(parseRunnerLabels(["opus"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "opus",
+			modelOverride: "claude-opus-5",
 		});
 		expect(parseRunnerLabels(["sonnet"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "sonnet",
+			modelOverride: "claude-sonnet-5",
 		});
 		expect(parseRunnerLabels(["haiku"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "haiku",
+			modelOverride: "claude-haiku-4-5-20251001",
 		});
 	});
 

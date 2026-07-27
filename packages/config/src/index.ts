@@ -67,6 +67,19 @@ export {
 	resolveEffectiveFounderUxConfig,
 } from "./founder-ux-config.js";
 export type {
+	LeadLaunchSelection,
+	ModelConfigSnapshot,
+	ModelPolicyErrorCode,
+} from "./model-config.js";
+export {
+	getModelConfigSnapshot,
+	ModelPolicyError,
+	resetModelConfigCacheForTests,
+	resolveAllowedCanonicalModel,
+	resolveLeadLaunchSelection,
+	validateModelWrite,
+} from "./model-config.js";
+export type {
 	RunnerModelDisplay,
 	RunnerModelDisplayInput,
 } from "./model-display.js";
@@ -103,10 +116,13 @@ export {
 export type { ModelTier, ModelTierSpec } from "./model-tiers.js";
 export {
 	ACCEPTED_DISPATCH_MODELS,
+	acceptedDispatchModels,
+	getModelTiers,
 	MODEL_TIERS,
 	modelDisplayName,
 	modelShortCode,
 	normalizeDispatchModel,
+	vendorModelShortCode,
 } from "./model-tiers.js";
 export type {
 	NodeTypeRegistryEntry,

@@ -131,8 +131,8 @@ describe("FLY-1467 旧字面量向后兼容(dispatch 边界)", () => {
 	});
 });
 
-describe("FLY-1467 运行时可接受 ≠ 可被新选(R2/R4)", () => {
-	it("legacy 4.8 保留 workflow 运行时 surface(已发布 revision 不能挂)", () => {
+describe("FLY-1496 历史运行时兼容", () => {
+	it("legacy 4.8 仍被既有载体接受(历史 revision 不会因此失效)", () => {
 		expect(
 			isModelSelectionSupported({
 				surface: "workflow",

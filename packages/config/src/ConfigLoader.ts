@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { parse } from "yaml";
 import { MIN_GATE_TIMEOUT_MS } from "./constants.js";
-import { normalizeDispatchModel } from "./model-tiers.js";
+import { getModelConfigSnapshot } from "./model-config.js";
 import type { CheckpointConfig, FlywheelConfig, RoleEffort } from "./types.js";
 import {
 	EXECUTOR_BACKENDS,
@@ -33,6 +33,9 @@ export class ConfigLoader {
 	}
 
 	private validate(config: unknown): asserts config is FlywheelConfig {
+		// A project file is one validation decision: every collection row must
+		// see the same hot model-policy generation.
+		const modelSnapshot = getModelConfigSnapshot();
 		if (!config || typeof config !== "object") {
 			throw new Error("Config must be a YAML object");
 		}
@@ -663,7 +666,7 @@ export class ConfigLoader {
 					if (
 						col.model != null &&
 						(typeof col.model !== "string" ||
-							normalizeDispatchModel(col.model) === null)
+							modelSnapshot.normalizeDispatchModel(col.model) === null)
 					) {
 						throw new Error(
 							`${where}.model must be a recognized model tier id or alias (normalizeDispatchModel), got "${col.model}"`,

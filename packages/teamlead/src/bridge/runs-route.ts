@@ -27,14 +27,13 @@ import type {
 	SkillFrameworkMode,
 } from "flywheel-config";
 import {
-	ACCEPTED_DISPATCH_MODELS,
 	ConfigLoader,
 	canonicalSubmissionDigest,
 	DESIGN_BACKENDS,
+	getModelConfigSnapshot,
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isThreeStagePhaseRole,
-	normalizeDispatchModel,
 	resolveEffectiveFounderUxConfig,
 	SKILL_FRAMEWORK_MODE_ENV,
 	SKILL_FRAMEWORK_MODES,
@@ -1149,8 +1148,11 @@ export function createRunsRouter(
 			});
 			return;
 		} else {
-			const normalized = normalizeDispatchModel(rawModel);
-			if (!normalized) {
+			// One request = one immutable generation, so the accepted set in an
+			// error payload cannot disagree with the check that produced it.
+			const modelSnapshot = getModelConfigSnapshot();
+			const canonical = modelSnapshot.getDispatchCanonical(rawModel);
+			if (!canonical) {
 				res.status(400).json({
 					success: false,
 					code: "INVALID_MODEL",
@@ -1158,12 +1160,12 @@ export function createRunsRouter(
 					// FLY-751: the FULL accepted set (tier ids + aliases + explicit
 					// 1M opt-ins like opus-1m) so a Lead can discover the spellings
 					// from the error instead of tribal knowledge.
-					allowed: [...ACCEPTED_DISPATCH_MODELS],
+					allowed: [...modelSnapshot.acceptedDispatchModels],
 					silent: false,
 				});
 				return;
 			}
-			dispatchModel = normalized;
+			dispatchModel = canonical;
 		}
 
 		// FLY-59: Per-role dedup — same issue can have main + qa concurrently.

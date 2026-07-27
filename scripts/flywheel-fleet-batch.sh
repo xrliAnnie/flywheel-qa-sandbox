@@ -8,11 +8,13 @@
 # from→to transition, so before any mutation the engine re-verifies, under the
 # config-write lock, that (a) the whole config SHA still equals the reviewed
 # expectedConfigSha AND (b) every key's current model still equals its reviewed
-# `from`. Any mismatch → reject the WHOLE batch, zero mutation.
+# `from`, and (c) every target passes one model-policy snapshot. Any mismatch
+# → reject the WHOLE batch, zero mutation.
 #
 # inc2a is model-only: a `backend` field anywhere in the request is rejected
 # (managed backend switch = FLY-264). A `to.model` must be a string or JSON null
-# (null = account default). batchId must match the safe txn-id grammar.
+# (null = authoritative absence → built-in Fable). batchId must match the safe
+# txn-id grammar.
 
 # Local file_sha fallback (the real one comes from flywheel-daemon.sh when this
 # is sourced inside flywheel-fleet.sh).
@@ -254,6 +256,18 @@ fleet_batch_verify_baseline() {
   return 0
 }
 
+# fleet_batch_verify_baseline_policy <changes_file> <projects_json> <policy_cli>
+#   One pre-accept critical section for both reviewed-baseline authorization and
+#   the model-policy snapshot. The caller holds the projects config-write lock.
+fleet_batch_verify_baseline_policy() {
+  local cf="$1" pj="$2" policy_cli="$3"
+  if ! node "$policy_cli" changes-file "$cf" lead >/dev/null; then
+    echo "model policy rejected changes-file before projects.json mutation" >&2
+    return 1
+  fi
+  fleet_batch_verify_baseline "$cf" "$pj"
+}
+
 # ════════════════════════════════════════════════════════════════
 # Orchestration (§2.1): assemble the primitives into a batch apply.
 # ════════════════════════════════════════════════════════════════
@@ -278,8 +292,9 @@ fleet_batch_apply() {
   local cf="$1" pj="$2"
   local batch_id; batch_id=$(jq -r '.batchId' "$cf")
   local lock="${FLEET_CONFIG_LOCK_FILE:-${pj}.cfglock}"
-  local deadline="${FLEET_CONFIG_LOCK_DEADLINE:-5}"
-  local cutover="${FLEET_BATCH_CUTOVER_CMD:-_fleet_batch_default_cutover}"
+	local deadline="${FLEET_CONFIG_LOCK_DEADLINE:-5}"
+	local cutover="${FLEET_BATCH_CUTOVER_CMD:-_fleet_batch_default_cutover}"
+	local policy_cli="${MODEL_POLICY_CLI:-${_FLEET_BATCH_LIB%/*}/validate-model-policy.mjs}"
 
   # env-pinned reject — pre-accept, zero mutation (R8 #4 audit/journal kept).
   if [ -n "${FLYWHEEL_PROJECTS:-}" ]; then
@@ -302,8 +317,8 @@ fleet_batch_apply() {
 
   # Pre-accept baseline authorization gate, under the config-write lock. First
   # config-lock contention here is whole-batch 'rejected' (still launching).
-  if ! config_write_locked "$lock" "$deadline" \
-        bash "$_FLEET_BATCH_LIB" verify-baseline "$cf" "$pj"; then
+	if ! config_write_locked "$lock" "$deadline" \
+	      bash "$_FLEET_BATCH_LIB" verify-baseline-policy "$cf" "$pj" "$policy_cli"; then
     batch_journal_set_status "$batch_id" rejected
     return 1
   fi
@@ -348,10 +363,17 @@ fleet_batch_apply() {
 
     # ② cutover (delegated; reuses inc1 single-key apply in production).
     batch_key_set_status "$batch_id" "$key" applying
+    # Preserve the exact reviewed SSOT pre-image in the inner transaction.
+    # The rollback contract must never infer this from a manifest carrier.
+    export FLEET_PROJECT_PREIMAGE_MODEL="$from"
+    export FLEET_PROJECT_PREIMAGE_EFFORT="$from_e"
+    export FLEET_PROJECT_PREIMAGE_TOUCH_EFFORT="$touch_effort"
     if "$cutover" "$key"; then
+      unset FLEET_PROJECT_PREIMAGE_MODEL FLEET_PROJECT_PREIMAGE_EFFORT FLEET_PROJECT_PREIMAGE_TOUCH_EFFORT
       batch_key_set_status "$batch_id" "$key" applied
       continue
     fi
+    unset FLEET_PROJECT_PREIMAGE_MODEL FLEET_PROJECT_PREIMAGE_EFFORT FLEET_PROJECT_PREIMAGE_TOUCH_EFFORT
 
     # ③ cutover failed → composite conditional restore under the lock, then stop.
     batch_key_set_status "$batch_id" "$key" config-restoring
@@ -378,7 +400,8 @@ fleet_batch_apply() {
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   _op="${1:-}"; shift || true
   case "$_op" in
-    verify-baseline)    fleet_batch_verify_baseline "$@" ;;
+		verify-baseline)    fleet_batch_verify_baseline "$@" ;;
+		verify-baseline-policy) fleet_batch_verify_baseline_policy "$@" ;;
     write-key)          fleet_batch_write_key_model "$@" ;;
     restore-key)        fleet_batch_restore_key "$@" ;;
     write-key-fields)   fleet_batch_write_key_fields "$@" ;;   # FLY-671 composite

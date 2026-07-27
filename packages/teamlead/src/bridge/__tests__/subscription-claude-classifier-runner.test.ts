@@ -104,6 +104,19 @@ describe("runSubscriptionClassifier — fail-closed", () => {
 		expect(res.ok).toBe(false);
 	});
 
+	it("an unresolvable model fails closed without spawning Claude", async () => {
+		const execFileImpl = vi.fn();
+		const res = await runSubscriptionClassifier("p", {
+			execFileImpl,
+			model: "claude-not-a-model",
+		});
+		expect(res).toEqual({
+			ok: false,
+			reason: "model_policy:INVALID_MODEL",
+		});
+		expect(execFileImpl).not.toHaveBeenCalled();
+	});
+
 	it("never throws, even if execFileImpl throws synchronously", async () => {
 		const execFileImpl = vi.fn(() => {
 			throw new Error("boom");

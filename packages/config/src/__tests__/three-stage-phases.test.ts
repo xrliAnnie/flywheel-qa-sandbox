@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { resetModelConfigCacheForTests } from "../model-config.js";
 import {
 	DEFAULT_PHASE_DISPATCH,
 	DEFAULT_PHASE_TIER,
@@ -255,6 +259,55 @@ describe("three-stage-phases (FLY-793)", () => {
 			// A first-ever completion for a fresh phase session (no DB row yet) still
 			// takes the incoming role — the dispatch's started event set it first.
 			expect(resolveCompletionSessionRole(undefined, "qa")).toBe("qa");
+		});
+	});
+});
+
+describe("three-stage phase hot configuration (FLY-1496)", () => {
+	const originalPath = process.env.FLYWHEEL_MODELS_CONFIG;
+	let root: string | undefined;
+
+	afterEach(() => {
+		if (originalPath === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
+		else process.env.FLYWHEEL_MODELS_CONFIG = originalPath;
+		resetModelConfigCacheForTests();
+		if (root) rmSync(root, { recursive: true, force: true });
+		root = undefined;
+	});
+
+	it("applies an atomic phase-table edit to the next decision without restart", () => {
+		root = mkdtempSync(join(tmpdir(), "fly1496-phases-"));
+		const path = join(root, "models.json");
+		process.env.FLYWHEEL_MODELS_CONFIG = path;
+		writeFileSync(
+			path,
+			JSON.stringify({
+				version: 1,
+				phases: {
+					design: { vendor: "claude", model: "claude-opus-5" },
+				},
+			}),
+		);
+		resetModelConfigCacheForTests();
+		expect(resolvePhaseDispatch("design", {})).toEqual({
+			vendor: "claude",
+			model: "claude-opus-5",
+		});
+
+		const replacement = join(root, "models.next");
+		writeFileSync(
+			replacement,
+			JSON.stringify({
+				version: 1,
+				phases: {
+					design: { vendor: "claude", model: "claude-fable-5" },
+				},
+			}),
+		);
+		renameSync(replacement, path);
+		expect(resolvePhaseDispatch("design", {})).toEqual({
+			vendor: "claude",
+			model: "claude-fable-5",
 		});
 	});
 });

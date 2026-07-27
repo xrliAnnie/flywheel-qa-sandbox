@@ -123,8 +123,8 @@ describe("ClaudeRunner", () => {
 			expect(mockQuery).toHaveBeenCalledWith({
 				prompt: "Hello Claude",
 				options: {
-					model: "opus",
-					fallbackModel: "sonnet",
+					model: "claude-fable-5",
+					fallbackModel: "claude-opus-5",
 					abortController: expect.any(AbortController),
 					cwd: "/tmp/test",
 					systemPrompt: { type: "preset", preset: "claude_code" },
@@ -158,8 +158,8 @@ describe("ClaudeRunner", () => {
 			expect(mockQuery).toHaveBeenCalledWith({
 				prompt: "test",
 				options: {
-					model: "opus",
-					fallbackModel: "sonnet",
+					model: "claude-fable-5",
+					fallbackModel: "claude-opus-5",
 					abortController: expect.any(AbortController),
 					cwd: "/tmp/test",
 					systemPrompt: { type: "preset", preset: "claude_code" },
@@ -193,8 +193,8 @@ describe("ClaudeRunner", () => {
 			expect(mockQuery).toHaveBeenCalledWith({
 				prompt: "test",
 				options: {
-					model: "opus",
-					fallbackModel: "sonnet",
+					model: "claude-fable-5",
+					fallbackModel: "claude-opus-5",
 					abortController: expect.any(AbortController),
 					cwd: "/tmp/test",
 					systemPrompt: "You are a helpful assistant",
@@ -206,6 +206,23 @@ describe("ClaudeRunner", () => {
 					}),
 				},
 			});
+		});
+
+		it("fails closed before SDK spawn when a fallback link cannot resolve", async () => {
+			const onError = vi.fn();
+			const runnerWithBadFallback = new ClaudeRunner({
+				...defaultConfig,
+				model: "fable",
+				fallbackModel: "sonnet,claude-not-a-model",
+				onError,
+			});
+
+			await expect(runnerWithBadFallback.start("test")).rejects.toMatchObject({
+				code: "INVALID_MODEL",
+			});
+
+			expect(mockQuery).not.toHaveBeenCalled();
+			expect(onError).not.toHaveBeenCalled();
 		});
 
 		it("should throw error if session already running", async () => {

@@ -13,7 +13,11 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import { PONYTAIL_PLUGIN, resolveCommBackend } from "flywheel-config";
+import {
+	PONYTAIL_PLUGIN,
+	resolveAllowedCanonicalModel,
+	resolveCommBackend,
+} from "flywheel-config";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -853,7 +857,19 @@ export class TmuxAdapter implements IAdapter {
 			});
 			args.push("--append-system-prompt-file", promptPath);
 		}
-		if (ctx.model) args.push("--model", ctx.model);
+		// FLY-1496 final Claude spawn seam: a bare alias must never reach the CLI,
+		// or the CLI's own alias table — not our registry — picks the version.
+		// Absent stays absent: no model means inherit the account default, which
+		// is what FLYWHEEL_RUNNER_DEFAULT_MODEL=off asks for.
+		if (ctx.model) {
+			args.push(
+				"--model",
+				resolveAllowedCanonicalModel(ctx.model, {
+					surface: "runner",
+					runtimeVendor: "claude",
+				}),
+			);
+		}
 		// FLY-671: reasoning-effort override (roles.runner.effort). Absent ⇒ no
 		// flag (byte-compat). claude-tmux only; codex/agy/kimi adapters ignore it.
 		if (ctx.effort) args.push("--effort", ctx.effort);

@@ -1,6 +1,6 @@
 import {
-	getModelRegistryEntry,
-	isModelSelectionSupported,
+	getModelConfigSnapshot,
+	type ModelConfigSnapshot,
 } from "flywheel-config";
 import type {
 	StateStore,
@@ -52,7 +52,10 @@ function workflowEffort(
 }
 
 /** Resolve the opaque target from current server state; never trust client ids. */
-function resolveTarget(input: ManagementDagEdit):
+function resolveTarget(
+	input: ManagementDagEdit,
+	modelSnapshot: ModelConfigSnapshot,
+):
 	| {
 			templateId: string;
 			revision: number;
@@ -71,6 +74,7 @@ function resolveTarget(input: ManagementDagEdit):
 			if (!revision) continue;
 			const manifest = validateWorkflowManifest(JSON.parse(revision.manifest), {
 				allowUnsupportedModels: true,
+				modelSnapshot,
 			});
 			for (const node of manifest.nodes) {
 				if (node.type === "gate") continue;
@@ -100,9 +104,12 @@ function resolveTarget(input: ManagementDagEdit):
 export function applyManagementDagEdit(
 	input: ManagementDagEdit,
 ): ManagementDagWriteResult {
+	// One immutable model generation for the complete edit decision. A hot
+	// config replacement may affect the next request, never half of this one.
+	const modelSnapshot = getModelConfigSnapshot();
 	let target: ReturnType<typeof resolveTarget>;
 	try {
-		target = resolveTarget(input);
+		target = resolveTarget(input, modelSnapshot);
 	} catch (error) {
 		return invalid(error);
 	}
@@ -114,11 +121,11 @@ export function applyManagementDagEdit(
 		return { status: "conflict", currentRevision: target.revision };
 	}
 
-	const registered = getModelRegistryEntry(input.desired.model);
+	const registered = modelSnapshot.getModelRegistryEntry(input.desired.model);
 	if (
 		!registered ||
 		registered.provider !== input.desired.provider ||
-		!isModelSelectionSupported({
+		!modelSnapshot.isModelSelectionSupported({
 			surface: "workflow",
 			model: input.desired.model,
 			effort: input.desired.effort ?? undefined,
@@ -141,6 +148,7 @@ export function applyManagementDagEdit(
 		else delete node.effort;
 		const validated = validateWorkflowManifest(next, {
 			allowUnsupportedModels: true,
+			modelSnapshot,
 		});
 		return input.store.createAndPublishWorkflowTemplateRevision({
 			templateId: target.templateId,
@@ -148,6 +156,7 @@ export function applyManagementDagEdit(
 			expectedRevision: input.expectedRevision,
 			createdBy: input.actor,
 			allowUnsupportedModels: true,
+			modelSnapshot,
 		});
 	} catch (error) {
 		return invalid(error);

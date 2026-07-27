@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import {
-	buildModelCatalog,
 	canonicalJsonString,
+	getModelConfigSnapshot,
 	type ModelSurface,
 } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -84,18 +84,21 @@ export function createManagementSsotProviders(
 		{
 			id: "model-registry",
 			sourceKind: "model_registry",
-			read: () => ({
-				revision: registrySourceRevision(1),
-				hint: "flywheel-config/model-registry",
-				fragment: {
-					modelCatalog: Object.fromEntries(
-						MODEL_SURFACES.map((surface) => [
-							surface,
-							buildModelCatalog(surface),
-						]),
-					),
-				},
-			}),
+			read: () => {
+				const snapshot = getModelConfigSnapshot();
+				return {
+					revision: registrySourceRevision(snapshot.revision),
+					hint: snapshot.sourcePath,
+					fragment: {
+						modelCatalog: Object.fromEntries(
+							MODEL_SURFACES.map((surface) => [
+								surface,
+								snapshot.buildModelCatalog(surface),
+							]),
+						),
+					},
+				};
+			},
 		},
 	];
 }

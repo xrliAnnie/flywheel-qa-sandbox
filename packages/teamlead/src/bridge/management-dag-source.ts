@@ -1,7 +1,6 @@
 import {
 	canonicalSubmissionDigest,
-	getModelRegistryEntry,
-	isModelSelectionSupported,
+	getModelConfigSnapshot,
 } from "flywheel-config";
 import type {
 	WorkflowCategoryBindingRow,
@@ -65,6 +64,7 @@ function projectDag(
 	binding: WorkflowCategoryBindingRow,
 	reader: WorkflowCatalogReader,
 ): ManagementDagView {
+	const modelSnapshot = getModelConfigSnapshot();
 	const template = reader.getWorkflowTemplate(binding.template_id);
 	try {
 		if (!template) {
@@ -95,10 +95,10 @@ function projectDag(
 				if (!node.vendor || !node.model) {
 					throw new Error(`workflow node ${node.id} has no model binding`);
 				}
-				const registered = getModelRegistryEntry(node.model);
+				const registered = modelSnapshot.getModelRegistryEntry(node.model);
 				const supported = Boolean(
 					registered &&
-						isModelSelectionSupported({
+						modelSnapshot.isModelSelectionSupported({
 							surface: "workflow",
 							model: node.model,
 							effort: node.effort,

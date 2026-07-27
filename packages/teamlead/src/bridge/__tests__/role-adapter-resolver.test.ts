@@ -50,7 +50,7 @@ describe("resolveRoleAdapter — FLY-751 runner default model", () => {
 		expect(resolved.model).toBe("claude-sonnet-5");
 	});
 
-	it("FLYWHEEL_RUNNER_DEFAULT_MODEL=off restores legacy inherit-account behavior", () => {
+	it("FLYWHEEL_RUNNER_DEFAULT_MODEL=off opts back out to the account default", () => {
 		const resolved = resolveRoleAdapter({
 			role: "runner",
 			env: { FLYWHEEL_RUNNER_DEFAULT_MODEL: "OFF" },
@@ -64,7 +64,7 @@ describe("resolveRoleAdapter — FLY-751 runner default model", () => {
 			issueLabels: ["opus"],
 			env: EMPTY_ENV,
 		});
-		expect(resolved.model).toBe("opus");
+		expect(resolved.model).toBe("claude-opus-5");
 	});
 
 	it("a 1m opt-in label wins — no default injection", () => {
@@ -77,7 +77,18 @@ describe("resolveRoleAdapter — FLY-751 runner default model", () => {
 		expect(resolved.model).toBe("claude-opus-5[1m]");
 	});
 
-	it("the dispatch model wins — no default injection", () => {
+	it("an unresolvable dispatch model fails before spawn", () => {
+		expect(() =>
+			resolveRoleAdapter({
+				role: "runner",
+				dispatchModel: "claude-not-a-model",
+				env: EMPTY_ENV,
+			}),
+		).toThrow(/unknown model/i);
+	});
+
+	it("a legacy id named explicitly reaches argv canonicalized", () => {
+		// No blocklist overrides the caller: what config asks for is what spawns.
 		const resolved = resolveRoleAdapter({
 			role: "runner",
 			dispatchModel: "claude-opus-4-8",
@@ -92,7 +103,7 @@ describe("resolveRoleAdapter — FLY-751 runner default model", () => {
 			projectRoles: { runner: { backend: "claude-tmux", model: "sonnet" } },
 			env: EMPTY_ENV,
 		});
-		expect(resolved.model).toBe("sonnet");
+		expect(resolved.model).toBe("claude-sonnet-5");
 	});
 
 	it("project roles claude-tmux WITHOUT model still gets the default", () => {
@@ -420,7 +431,7 @@ describe("resolveRoleAdapter — dispatch model param (Part C)", () => {
 			dispatchModel: "claude-fable-5",
 			env: EMPTY_ENV,
 		});
-		expect(resolved.model).toBe("opus");
+		expect(resolved.model).toBe("claude-opus-5");
 	});
 
 	it("a vendor label (codex) beats dispatchModel — no Claude model forced onto codex", () => {
@@ -450,7 +461,7 @@ describe("resolveRoleAdapter — dispatch model param (Part C)", () => {
 			projectRoles: { runner: { backend: "claude-tmux", model: "sonnet" } },
 			env: EMPTY_ENV,
 		});
-		expect(resolved.model).toBe("sonnet");
+		expect(resolved.model).toBe("claude-sonnet-5");
 	});
 });
 
@@ -583,7 +594,7 @@ describe("resolveRoleAdapter — dispatch vendor (FLY-1224 T1)", () => {
 	it("dispatchEffort applies without a vendor too (claude dispatch lane)", () => {
 		const resolved = resolveRoleAdapter({
 			role: "runner",
-			dispatchModel: "claude-opus-4-8",
+			dispatchModel: "claude-opus-5",
 			dispatchEffort: "medium",
 			env: EMPTY_ENV,
 		});

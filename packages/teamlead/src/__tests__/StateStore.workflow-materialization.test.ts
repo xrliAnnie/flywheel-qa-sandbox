@@ -50,7 +50,7 @@ async function seededStore(
 							id: REVIEW,
 							type: "review",
 							vendor: "claude",
-							model: "claude-opus-4-8",
+							model: "claude-opus-5",
 							effort: "high",
 						},
 						{ id: "founder_gate", type: "gate" },

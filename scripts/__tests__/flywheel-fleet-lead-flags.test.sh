@@ -66,9 +66,9 @@ else
 fi
 
 # L3 — effort-only: model must stay byte-identical (canonical to.model = current).
-H3="${TMP}/h3"; seed_home "$H3" '"claude-opus-4-8[1m]"'
+H3="${TMP}/h3"; seed_home "$H3" '"claude-opus-5[1m]"'
 run_flags "$H3" --lead geo-oliver --effort low --yes; rc=$?
-if [ "$rc" -eq 0 ] && [ "$(lead_field "$H3" model)" = "claude-opus-4-8[1m]" ] \
+if [ "$rc" -eq 0 ] && [ "$(lead_field "$H3" model)" = "claude-opus-5[1m]" ] \
    && [ "$(lead_field "$H3" effort)" = "low" ]; then
   pass "L3 effort-only keeps current model (to.model filled, not null)"
 else

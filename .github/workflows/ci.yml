@@ -190,6 +190,19 @@ jobs:
       - name: Test — Lead rules single-bundle load chain (FLY-1402)
         run: bash packages/teamlead/scripts/__tests__/fly1402-single-bundle.test.sh
 
+      # FLY-1496: model resolution is authoritative-source-driven, so the thing
+      # worth machining is that a launch is FAITHFUL to config — aliases
+      # canonicalize, a stale manifest never wins, and an edit takes effect on
+      # the next decision. This job enumerates suites explicitly (no glob
+      # discovery), so a suite not listed here only ever ran on its author's
+      # machine. Both are hermetic: isolated HOMEs and the real launcher in
+      # dry-run.
+      - name: Test — FLY-1496 model resolution + Lead derivation
+        run: |
+          bash scripts/__tests__/fly1496-model-policy.test.sh
+          bash packages/teamlead/scripts/__tests__/fly241-lead-model-override.test.sh
+          bash scripts/__tests__/fly1496-qa-acceptance.test.sh
+
       # FLY-519: fleet provisioning toolchain — hermetic tests for the secret
       # sanitizer, capture, and provision scripts, PLUS the zero-secret gate at
       # the git boundary. `scan_for_secrets fleet/` fails CI if the committed

@@ -21,7 +21,11 @@
  */
 
 import { spawn } from "node:child_process";
-import { DEFAULT_OPUS, type RoleEffort } from "flywheel-config";
+import {
+	getModelConfigSnapshot,
+	type RoleEffort,
+	resolveAllowedCanonicalModel,
+} from "flywheel-config";
 import { washJudgeEnv } from "./watchdog-judge.js";
 
 export interface ClaudeReviewFinding {
@@ -80,9 +84,6 @@ export interface ClaudeReviewInvocation {
 	binary?: string;
 }
 
-// FLY-1467(Annie 决策③:审查模型不写死版本):跟随当前 opus 档绑定,
-// 这样升级 = 改 model-registry 一处,审查员永远不弱于它评审的工作。
-const DEFAULT_MODEL = DEFAULT_OPUS;
 /**
  * FLY-1224 (Annie's directive): the cross-family Claude reviewer runs at
  * xhigh effort — matching the codex author's own effort so the review is not
@@ -109,6 +110,15 @@ export function buildClaudeReviewArgv(
 		effort?: RoleEffort;
 	},
 ): string[] {
+	const snapshot = getModelConfigSnapshot();
+	const canonicalModel = resolveAllowedCanonicalModel(
+		inv.model ?? snapshot.bindings.opus,
+		{
+			surface: "runner",
+			runtimeVendor: "claude",
+			snapshot,
+		},
+	);
 	return [
 		"-p",
 		inv.prompt,
@@ -117,7 +127,7 @@ export function buildClaudeReviewArgv(
 		"--output-format",
 		"json",
 		"--model",
-		inv.model ?? DEFAULT_MODEL,
+		canonicalModel,
 		// FLY-1224: reviewer effort (FLY-671 claude CLI flag), default xhigh.
 		"--effort",
 		inv.effort ?? DEFAULT_REVIEW_EFFORT,

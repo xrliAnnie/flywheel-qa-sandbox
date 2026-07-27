@@ -720,7 +720,7 @@ describe("TmuxAdapter", () => {
 		);
 	});
 
-	it("passes --model when specified", async () => {
+	it("canonicalizes and passes --model when specified", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
@@ -729,7 +729,30 @@ describe("TmuxAdapter", () => {
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const args = newWindow!.args;
 		expect(args).toContain("--model");
-		expect(args).toContain("opus");
+		expect(args).toContain("claude-opus-5");
+	});
+
+	it("omits --model entirely when no model is specified", async () => {
+		// Absent stays absent: the account default is inherited, which is what
+		// FLYWHEEL_RUNNER_DEFAULT_MODEL=off asks for. RoleAdapterResolver is the
+		// layer that injects the fleet default when nobody opted out.
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+		await adapter.execute(makeCtx());
+
+		const newWindow = calls.find((call) => call.args[0] === "new-window");
+		expect(newWindow!.args).not.toContain("--model");
+	});
+
+	it("rejects an unresolvable model before opening a tmux window", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+		await expect(
+			adapter.execute(makeCtx({ model: "claude-not-a-model" })),
+		).rejects.toThrow(/unknown model/i);
+		expect(calls.some((call) => call.args[0] === "new-window")).toBe(false);
 	});
 
 	it("passes --allowed-tools when specified", async () => {
