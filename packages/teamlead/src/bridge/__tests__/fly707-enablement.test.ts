@@ -148,15 +148,15 @@ describe("FLY-707: flywheel auto-QA + doc_flow enablement (canonical config)", (
 	// Fable and burned tokens. Pin the real canonical config + the real
 	// resolver (not a hand-built projectRoles fixture) so a future edit that
 	// silently reverts this to Fable fails loudly here.
-	// FLY-1467: configs stop pinning versions — the runner default is now the
-	// `opus-1m` alias (binds to Opus 5 1M at the launcher boundary), not a
-	// version-pinned id. The point of this test is still "not Fable".
-	it("roles.runner defaults to the opus-1m tier (Opus 5, 1M), not Fable (FLY-788)", () => {
+	// The canonical project config uses the CLI-native Opus 5 selector because
+	// the internal `opus-1m` alias is resolved only on labeled dispatch paths.
+	// The point of this test remains "not Fable".
+	it("roles.runner defaults to the CLI-native Opus 5 1M selector, not Fable (FLY-788)", () => {
 		expect(cfg.roles?.runner?.backend).toBe("claude-tmux");
-		expect(cfg.roles?.runner?.model).toBe("opus-1m");
+		expect(cfg.roles?.runner?.model).toBe("claude-opus-5[1m]");
 		expect(
 			resolveRoleAdapter({ role: "runner", projectRoles: cfg.roles, env: {} })
 				.model,
-		).toBe("opus-1m");
+		).toBe("claude-opus-5[1m]");
 	});
 });

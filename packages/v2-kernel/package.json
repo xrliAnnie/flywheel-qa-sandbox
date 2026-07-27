@@ -1,0 +1,36 @@
+{
+	"name": "flywheel-v2-kernel",
+	"version": "0.1.0",
+	"description": "Flywheel v2 authoritative SQLite schema, migrations, and single-writer kernel",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"test": "pnpm run build && tsc -p tsconfig.public-test.json && vitest run",
+		"test:watch": "vitest --watch",
+		"test:run": "pnpm run build && tsc -p tsconfig.public-test.json && vitest run",
+		"typecheck": "pnpm run build && tsc -p tsconfig.public-test.json"
+	},
+	"dependencies": {
+		"better-sqlite3": "^12.8.0"
+	},
+	"devDependencies": {
+		"@types/better-sqlite3": "^7.6.13",
+		"@types/node": "^20.0.0",
+		"typescript": "^5.3.3",
+		"vitest": "^3.1.4"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
+}

@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1497 · v2 权威库落地(批次1)设计</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.6; padding:24px 16px 64px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:4px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:24px; }
+  .sub code { font-family:'SF Mono',monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 24px; margin-bottom:20px; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.purple { border-left-color:#af52de; }
+  .card h2 { font-size:18px; color:#1a365d; margin-bottom:12px; }
+  .oneliner { font-size:17px; font-weight:600; }
+  .oneliner .hl { color:#007aff; }
+  /* flow diagram */
+  .flow { display:flex; align-items:stretch; gap:0; flex-wrap:wrap; margin:12px 0; }
+  .fbox { background:#f0f7ff; border:1.5px solid #007aff; border-radius:10px; padding:10px 14px; font-size:13px; min-width:130px; flex:1; }
+  .fbox b { display:block; font-size:14px; color:#1a365d; }
+  .fbox.done { background:#f0fff4; border-color:#34c759; }
+  .fbox.dim { background:#fafafa; border-color:#d2d2d7; color:#86868b; }
+  .fbox.dim b { color:#86868b; }
+  .arr { align-self:center; padding:0 8px; color:#86868b; font-size:18px; font-weight:700; }
+  /* table groups */
+  .tgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-top:12px; }
+  .tgroup { border:1px solid #e5e5ea; border-radius:10px; padding:12px; }
+  .tgroup h3 { font-size:13px; color:#86868b; text-transform:none; margin-bottom:8px; }
+  .tbl { display:inline-block; background:#eef4ff; color:#1a365d; border-radius:6px; padding:2px 8px; margin:2px 2px; font-family:'SF Mono',monospace; font-size:12px; }
+  .tbl.new { background:#f3e8ff; color:#5b21b6; }
+  .tbl.hot { background:#fff4e5; color:#9a5b00; }
+  .badge { display:inline-block; border-radius:6px; padding:1px 8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.g { background:#e8f9ee; color:#1d7a3e; }
+  .badge.b { background:#e8f1ff; color:#0a58c4; }
+  .badge.p { background:#f3e8ff; color:#6d28d9; }
+  .badge.r { background:#ffe9e7; color:#c22619; }
+  table.plain { width:100%; border-collapse:collapse; font-size:13.5px; margin-top:8px; }
+  table.plain th { text-align:left; color:#86868b; font-weight:600; padding:6px 8px; border-bottom:1px solid #e5e5ea; }
+  table.plain td { padding:7px 8px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  table.plain td:first-child { white-space:nowrap; font-weight:600; color:#1a365d; }
+  ul.tight { padding-left:20px; }
+  ul.tight li { margin:5px 0; font-size:14px; }
+  .kernel-diagram { display:flex; flex-direction:column; align-items:center; gap:6px; margin:14px 0; }
+  .kd-row { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }
+  .kd { border-radius:10px; padding:8px 16px; font-size:13px; text-align:center; }
+  .kd.writer { background:#1a365d; color:#fff; font-weight:600; }
+  .kd.caller { background:#fff; border:1.5px dashed #86868b; color:#48484a; }
+  .kd.db { background:#e8f9ee; border:1.5px solid #34c759; color:#1d7a3e; font-weight:600; padding:12px 28px; }
+  .kd-note { font-size:12px; color:#86868b; }
+  .vline { color:#86868b; font-size:16px; }
+  .evidence { font-size:13px; color:#48484a; background:#fafafa; border-radius:8px; padding:10px 14px; margin-top:10px; }
+  .footer { color:#86868b; font-size:12px; text-align:center; margin-top:28px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>v2 权威库落地 · 批次 1 设计</h1>
+  <div class="sub">FLY-1497 · 2026-07-27 · 设计节点交付 · plan 经 Codex design review <b style="color:#34c759">5 轮 APPROVED</b></div>
+
+  <div class="card green">
+    <h2>一句话总结</h2>
+    <p class="oneliner">给 v2 打第一块地基:建一个<span class="hl">全新的单一账本 flywheel-v2.db</span>(17 张表)+ 一条<span class="hl">唯一的写账通道</span>(kernel),纯新增、不碰任何现有生产路径——先把地基浇实,消费/调度/告警(批次 2-3)都盖在它上面。</p>
+  </div>
+
+  <div class="card">
+    <h2>① 核心流程 — 这一单在整个 v2 里的位置</h2>
+    <div class="flow">
+      <div class="fbox done"><b>v2 设计终版</b>R13 APPROVED<br>已归档进 repo</div>
+      <div class="arr">→</div>
+      <div class="fbox done"><b>批次 1(本单)</b>17 表 + 索引<br>+ kernel 写通道<br>+ 迁移/备份/测试</div>
+      <div class="arr">→</div>
+      <div class="fbox dim"><b>批次 2</b>消费循环<br>dispatcher / 探针</div>
+      <div class="arr">→</div>
+      <div class="fbox dim"><b>批次 3</b>告警 / 垫片<br>切换手册(搬家)</div>
+    </div>
+    <p style="font-size:13.5px; color:#48484a;">建库自身走四步迁移,每步有账(schema_migrations)、可校验、错了整体回滚:</p>
+    <div class="flow">
+      <div class="fbox"><b>0001</b>基础 15 表</div>
+      <div class="arr">→</div>
+      <div class="fbox"><b>0002</b>obligations 表重建<br><span style="font-size:12px;color:#86868b;">(告警表升级到终版形)</span></div>
+      <div class="arr">→</div>
+      <div class="fbox"><b>0003</b>activations +<br>processing_attempts</div>
+      <div class="arr">→</div>
+      <div class="fbox"><b>0004</b>mailbox<br>七个查询索引</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>② 数据模型 — 17 张表 + 唯一写通道</h2>
+    <div class="tgrid">
+      <div class="tgroup"><h3>任务域(活怎么流转)</h3>
+        <span class="tbl">tasks</span><span class="tbl">task_dependencies</span><span class="tbl">attempts</span><span class="tbl new">activations</span>
+      </div>
+      <div class="tgroup"><h3>消息域(话不丢不重)</h3>
+        <span class="tbl hot">mailbox</span><span class="tbl new">processing_attempts</span><span class="tbl">thread_bindings</span>
+      </div>
+      <div class="tgroup"><h3>动作域(对外只做一次)</h3>
+        <span class="tbl">commands</span><span class="tbl">command_dependencies</span><span class="tbl">gates</span><span class="tbl">capabilities</span>
+      </div>
+      <div class="tgroup"><h3>告警域(必须有人销账)</h3>
+        <span class="tbl hot">obligations</span>
+      </div>
+      <div class="tgroup"><h3>审计与账本自身</h3>
+        <span class="tbl">events</span><span class="tbl">source_receipts</span><span class="tbl">archive_manifest</span><span class="tbl">meta</span><span class="tbl">schema_migrations</span>
+      </div>
+    </div>
+    <div class="kernel-diagram">
+      <div class="kd-row">
+        <div class="kd caller">Lead / Runner / 探针 / 告警器(批次 2-3)</div>
+      </div>
+      <div class="vline">↓ 只能走这一个门</div>
+      <div class="kd writer">kernel 单写通道 · BEGIN IMMEDIATE · 改错行数=整体作废 · 旧世代进程一律拒之门外</div>
+      <div class="vline">↓</div>
+      <div class="kd db">flywheel-v2.db(单一真相)</div>
+      <div class="kd-note">库自己也带护栏:约束/触发器把「环形依赖、告警生告警、改历史、空主键」这类坏账在数据库层直接顶回去</div>
+    </div>
+  </div>
+
+  <div class="card amber">
+    <h2>③ 关键取舍(和被否掉的方案)</h2>
+    <table class="plain">
+      <tr><th>决定</th><th>为什么 / 否掉了什么</th></tr>
+      <tr><td>纯新增一个包,零接线</td><td>批次 1 对现有生产<b>零行为变化</b>;否掉「边建边接」——地基没验收前不让任何现网流量踩上来</td></tr>
+      <tr><td>设计 SQL 原文逐字落地</td><td>索引和查询语句从设计终版逐字复制,测试锁住「每条查询真的命中索引」;否掉「实现自行改写 SQL」——改一个字,性能保证就作废</td></tr>
+      <tr><td>obligations 走真实表重建迁移</td><td>老形→新形的搬家路径连同「旧数据一行不丢」一起进测试;否掉「直接建终版形」——那样搬家逻辑永远没被验证过</td></tr>
+      <tr><td>写通道用「先抢锁再干活」+ 改错行数整单作废</td><td>否掉乐观锁/事后补偿——账本宁可慢一点,不可错一笔</td></tr>
+      <tr><td>唯一例外修正案(评审共同裁定)</td><td>SQLite 有个官方怪癖:文本主键默认<b>允许空值</b>。全部 17 表显式堵死;设计归档原文不改,修正案单独记录、可审计</td></tr>
+    </table>
+    <div class="evidence"><b>评审证据:</b>plan 经 Codex 5 轮独立评审收敛(9 → 3 → 3 → 1 → 0 项),抓出并修掉的都是真问题:异步回调的「先提交后报错」窗口、UPDATE 绕过防护触发器、包深层路径绕过唯一入口、锁竞争把写通道永久卡死等。每一版 DDL 都在真数据库端到端跑通过(17 表 / 13 索引 / 全部查询命中索引 / 15 个恶意探针全被拒)。</div>
+  </div>
+
+  <div class="card red">
+    <h2>④ 诚实边界 — 这单做什么 / 不做什么</h2>
+    <table class="plain">
+      <tr><th>做(批次 1)</th><th>不做(留给批次 2-3)</th></tr>
+      <tr>
+        <td style="white-space:normal;">建库(17 表全量,带完整护栏)· 10+3 个索引且逐条验证命中 · kernel 写通道骨架 · 迁移记账 + 热备份钩子 · 全套验收测试(含真双连接并发对抗)</td>
+        <td style="white-space:normal;">消息消费循环 · dispatcher / 探针 / 告警逻辑 · 各 vendor 注入垫片 · 从 comm.db/JSON 信箱<b>搬家切换</b>(那是批次 3 的 stop-the-world 手册)——批次 1 期间新库<b>不在生产路径上</b></td>
+      </tr>
+    </table>
+    <ul class="tight" style="margin-top:10px;">
+      <li>「短事务」有时长闸兜底,但它是下限保护,不是对所有慢操作的完备证明(诚实记录在案);</li>
+      <li>events 表禁止改历史,但归档时的删除权留给 kernel 纪律(归档协议本身在批次 3 验收)。</li>
+    </ul>
+  </div>
+
+  <div class="card purple">
+    <h2>接下来</h2>
+    <p style="font-size:14px;">设计节点到此交付。同分支的 <b>Implement 节点</b>按 plan 落代码(测试先行,DDL 从 plan 逐字复制),完成后走 Codex code review + QA + founder gate 才能 ship。</p>
+  </div>
+
+  <div class="footer">FLY-1497 · 设计文档:engineering/doc/FLY-1497-v2db-schema-kernel/(exploration / research / plan / design-review 评审链)· 设计权威:doc/engineer/plan/v2/design-FINAL-v2.md</div>
+</div>
+</body>
+</html>
