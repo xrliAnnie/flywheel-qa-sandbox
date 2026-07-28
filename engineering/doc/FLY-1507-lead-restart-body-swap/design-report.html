@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1507 设计:重启要换真身,不能只换管家</title>
+<style>
+  html { color-scheme:light only; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.65; padding:24px 16px 40px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:24px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin-bottom:18px; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.green { border-left-color:#34c759; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card.navy { border-left-color:#1a365d; }
+  h2 { font-size:19px; color:#1a365d; margin-bottom:12px; }
+  h3 { font-size:15px; color:#1d1d1f; margin:14px 0 8px; }
+  p { margin-bottom:10px; font-size:15px; }
+  .lede { font-size:17px; font-weight:600; }
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:13.5px; }
+  th, td { border:1px solid #e5e5ea; padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:#f5f5f7; color:#1a365d; white-space:nowrap; }
+  .tablebox { overflow-x:auto; }
+  code { font-family:'SF Mono',monospace; font-size:12.5px; background:#f5f5f7; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; font-size:11px; font-weight:700; padding:2px 8px; border-radius:10px; margin-right:6px; vertical-align:middle; }
+  .b-green { background:#e2f8e9; color:#248a3d; }
+  .b-amber { background:#fff3e0; color:#c76a00; }
+  .flow { display:flex; flex-direction:column; gap:0; margin:14px 0; }
+  .fnode { border:1.5px solid #d2d2d7; border-radius:10px; padding:10px 14px; background:#fafafa; font-size:13.5px; }
+  .fnode b { color:#1a365d; }
+  .fnode.bad { border-color:#ff3b30; background:#fff5f5; }
+  .fnode.good { border-color:#34c759; background:#f2fbf5; }
+  .fnode.warn { border-color:#ff9500; background:#fffaf2; }
+  .farrow { text-align:center; color:#86868b; font-size:15px; padding:2px 0; }
+  .cols { display:flex; gap:16px; flex-wrap:wrap; }
+  .cols > div { flex:1; min-width:300px; }
+  .colhead { font-weight:700; font-size:14px; margin-bottom:8px; }
+  .colhead.bad { color:#ff3b30; } .colhead.good { color:#248a3d; }
+  .evi { font-family:'SF Mono',monospace; font-size:12px; background:#1a365d; color:#e8f0fe; border-radius:8px; padding:10px 14px; overflow-x:auto; margin:8px 0; white-space:pre; }
+  .note { font-size:13px; color:#6e6e73; }
+  /* comment blocks (founder contract: per-section textarea, localStorage autosave) */
+  .cblock { margin-top:14px; border-top:1px dashed #d2d2d7; padding-top:10px; }
+  .cblock label { font-size:12.5px; color:#86868b; display:block; margin-bottom:5px; }
+  .cblock textarea { width:100%; min-height:56px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font-size:14px; font-family:inherit; background:#fafafa; }
+  .cblock textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .cstate { font-size:11.5px; color:#34c759; height:14px; display:block; margin-top:3px; }
+  /* summary card */
+  #summaryCard h2 { margin-bottom:6px; }
+  #summaryList { margin:10px 0; }
+  .sitem { border:1px solid #e5e5ea; border-radius:8px; padding:8px 12px; margin-bottom:8px; background:#fafafa; font-size:14px; }
+  .sitem b { color:#1a365d; display:block; font-size:13px; margin-bottom:3px; }
+  .sempty { color:#86868b; font-size:13.5px; }
+  .btnrow { display:flex; gap:10px; margin-top:10px; align-items:center; flex-wrap:wrap; }
+  .btnrow button { font-size:13.5px; border:none; border-radius:8px; padding:8px 16px; cursor:pointer; }
+  #copyAll { background:#1a365d; color:#fff; }
+  #clearAll { background:#eeeeef; color:#6e6e73; }
+  #copyState { font-size:12.5px; color:#34c759; }
+</style>
+<meta name="robots" content="noindex">
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1507 设计:重启要换真身,不能只换管家</h1>
+  <div class="sub">设计阶段报告 · 2026-07-27 · 独立评审 6 轮通过 · 每节下方可直接留言(自动保存),页尾汇总一键复制</div>
+
+  <div class="card" data-sec="s1" data-title="一句话总结">
+    <h2>一句话总结</h2>
+    <p class="lede">今天的「重启 Lead」只是换了看门的管家,坐在屋里干活的旧真身(带着被你叫停的 Opus 4.8)根本没被请走;这次修复让每一次重启都保证「旧真身确认退场、新真身确认上岗」,并且重启报告只有在拿到新真身的出生证明后才敢说成功。</p>
+    <div class="cblock"><label>💬 对「一句话总结」的留言(自动保存)</label><textarea data-for="s1" placeholder="意见 / 裁决 / 疑问…"></textarea><span class="cstate"></span></div>
+
+  </div>
+
+  <div class="card red" data-sec="s2" data-title="出了什么事">
+    <h2>出了什么事(白话)</h2>
+    <p>每个 Lead 有两个进程:<b>管家</b>(负责拉起、看护、重启)和<b>真身</b>(tmux 窗口里真正跟你说话的 Claude)。统一重启只终止管家;真身要靠管家临终时顺手带走。一旦某次管家死得不体面(被强杀、崩溃),真身就成了<b>孤儿</b>——启动参数从此冻结。</p>
+    <p>之后每一代新管家上岗,都会被三道「防止误杀活 Lead」的安全闸拦住(它们都以「真身还活着」为判断锚点),只能永远旁观等待;而重启验证器只检查「有新管家 + 窗口有活人」——孤儿的窗口恰好满足 → <b>日志谎报重启成功</b>。模型解析(FLY-1496)只在真正拉起新真身那一刻执行,永远拉不起来,就永远落不了地。</p>
+    <h3>7/27 实机铁证</h3>
+    <div class="evi">9 个冻结真身:出生 7/22–7/25,8 个 --model claude-opus-4-8[1m],1 个旧拼写 sonnet
+它们的管家:全部是 7/27 16:3x 新生,日志每 30 秒刷一条
+    "Lead identity HOLD (denied_holder_alive)"   ← 安全闸在等孤儿让位
+重启日志同时声称: "restarted ... responsive session verified"  ← 假阳性</div>
+    <p class="note">审计还修正了 issue 里的猜测:新管家并没有「收养」旧真身,而是被安全闸拦成永久旁观——效果对你而言一样(旧模型继续当班),但修法完全不同:不动安全闸,让旧真身合规退场即可。</p>
+    <div class="cblock"><label>💬 对「出了什么事」的留言(自动保存)</label><textarea data-for="s2" placeholder="意见 / 裁决 / 疑问…"></textarea><span class="cstate"></span></div>
+
+  </div>
+
+  <div class="card" data-sec="s3" data-title="核心流程图">
+    <h2>核心流程图:修复前 vs 修复后</h2>
+    <div class="cols">
+      <div>
+        <div class="colhead bad">✗ 今天(孤儿场景)</div>
+        <div class="flow">
+          <div class="fnode">重启命令:终止<b>管家</b></div>
+          <div class="farrow">↓</div>
+          <div class="fnode bad">真身没人管 → 继续用旧模型干活</div>
+          <div class="farrow">↓</div>
+          <div class="fnode">系统自动补一个新管家</div>
+          <div class="farrow">↓</div>
+          <div class="fnode warn">三道安全闸看到真身还活着<br>→ 新管家永久旁观,永远不拉新真身</div>
+          <div class="farrow">↓</div>
+          <div class="fnode bad">验证器只看「有管家+窗口有活人」<br>→ <b>谎报成功</b>,模型永不更新</div>
+        </div>
+      </div>
+      <div>
+        <div class="colhead good">✓ 修复后</div>
+        <div class="flow">
+          <div class="fnode">开工前体检(不动任何东西):<br>配置三方对账 + 启动器身份核验</div>
+          <div class="farrow">↓</div>
+          <div class="fnode good"><b>卸载岗位</b>(bootout):管家优雅退场,<br>且系统<b>结构上</b>不可能再自动补管家</div>
+          <div class="farrow">↓</div>
+          <div class="fnode good"><b>静场证明</b>:老管家确认断气<br>(精确到进程出生时间,防顶号)</div>
+          <div class="farrow">↓</div>
+          <div class="fnode good"><b>真身清场</b>:按身份证据找出全部残留真身<br>先礼后兵(C-c→TERM→KILL),证据不足只上报不动手</div>
+          <div class="farrow">↓</div>
+          <div class="fnode good"><b>重新挂牌</b>(bootstrap):唯一新管家上岗<br>→ 安全闸自然放行 → 拉起新真身,模型热解析生效</div>
+          <div class="farrow">↓</div>
+          <div class="fnode good">验证器:旧真身全部确认断气 + 新真身<b>出生证明</b><br>+ 模型证据写进日志,才许说成功</div>
+        </div>
+      </div>
+    </div>
+    <p class="note">关键洞察:三道安全闸都以「真身活着」为锚点,所以不需要改任何安全闸——旧真身合规退场,一切自然疏通。看护脚本(claude-lead.sh)零改动,Runner 收养逻辑零改动。</p>
+    <div class="cblock"><label>💬 对「核心流程图」的留言(自动保存)</label><textarea data-for="s3" placeholder="意见 / 裁决 / 疑问…"></textarea><span class="cstate"></span></div>
+
+  </div>
+
+  <div class="card purple" data-sec="s4" data-title="数据与结构模型">
+    <h2>数据与结构模型</h2>
+    <h3>① 三道安全闸,同一个锚点</h3>
+    <div class="tablebox"><table>
+      <tr><th>安全闸</th><th>它防什么</th><th>为什么现在卡死</th><th>真身退场后</th></tr>
+      <tr><td>身份租约(lease)</td><td>两个同名 Lead 同时在写</td><td>租约持有人登记的就是孤儿真身,活着就拒绝新代</td><td>持有人断气 → 自动放行</td></tr>
+      <tr><td>窗口档案(archive)</td><td>误杀不属于自己的窗口</td><td>档案里的真身还活着 → 新管家无接管授权</td><td>档案进程已死 → 自动清档</td></tr>
+      <tr><td>进程表点名</td><td>同身份进程重复上岗</td><td>进程表里还有这个 Lead 的真身</td><td>点名无人 → 通过</td></tr>
+    </table></div>
+    <h3>② 清场快照:采集即权威</h3>
+    <p>清场前先给现场拍一张<b>完整快照</b>(窗口逐格清点 + 档案 + 进程表三个来源,按进程「PID+出生时间」双证登记)。快照头上带状态:<code>complete</code> 才有资格谈成功;任何一步拍糊了(枚举失败、读不到出生时间)= <code>indeterminate</code> = 这个 Lead 本轮永远不许判成功。防的是「快照是空的,所以谁都像新生儿」这类真空证明。</p>
+    <h3>③ 动手的证据等级</h3>
+    <div class="tablebox"><table>
+      <tr><th>等级</th><th>标准</th><th>权限</th></tr>
+      <tr><td><span class="badge b-green">full</span></td><td>身份铁证齐全:Claude 真身要「启动参数点名 + 所属项目旁证」双证;Codex 真身要「专属窗口名 + 完整启动指纹」</td><td>可以请走</td></tr>
+      <tr><td><span class="badge b-amber">detect</span></td><td>看着像但证据不齐(跨项目撞名、老式启动、窗口里混进了别的进程)</td><td>只登记上报,<b>绝不动手</b>;该 Lead 本轮记失败,交人裁决</td></tr>
+    </table></div>
+    <p class="note">多来源对同一进程意见不一致时,detect 压倒 full——证据打架本身就是不许动手的理由。整个窗口只有在<b>每一格</b>都验明正身后才允许关闭,绝不连坐。</p>
+    <h3>④ 换身不失忆</h3>
+    <p>会话档案不动,新真身用 <code>--resume</code> 接着旧对话继续——换的是身体,记忆延续。</p>
+    <div class="cblock"><label>💬 对「数据与结构模型」的留言(自动保存)</label><textarea data-for="s4" placeholder="意见 / 裁决 / 疑问…"></textarea><span class="cstate"></span></div>
+
+  </div>
+
+  <div class="card amber" data-sec="s5" data-title="关键取舍与被否方案">
+    <h2>关键取舍与被否掉的方案</h2>
+    <div class="tablebox"><table>
+      <tr><th>方案</th><th>思路</th><th>结论</th></tr>
+      <tr><td><b>A(采纳)</b></td><td>重启时在操作侧把旧真身合规请走 + 验证器要出生证明</td><td>✅ 语义干净:重启=就是要换身;安全闸零改动</td></tr>
+      <tr><td>B(否)</td><td>给新管家发「强拆令」穿透三道安全闸</td><td>❌ 要同时改三层防误杀机制,每层都得防伪造/重放,爆炸半径大</td></tr>
+      <tr><td>C(否)</td><td>只修验证器,诚实报失败</td><td>❌ 不说谎了,但孤儿继续当班,问题不收敛</td></tr>
+    </table></div>
+    <h3>评审中的一次重要推翻</h3>
+    <p>初版用「锁文件」挡系统在换岗间隙自动补管家,评审指出锁只是「检查点」不是「屏障」,仍有竞态窗口。改为<b>先卸载岗位再清场、清完再挂牌</b>——卸载期间系统结构上没有岗位可补,竞态从根上不存在,还省掉了对启动器的全部改动。</p>
+    <h3>独立评审台账(共 6 轮,前 5 轮 17 项发现全部采纳)</h3>
+    <div class="tablebox"><table>
+      <tr><th>轮</th><th>抓到的要害(节选)</th></tr>
+      <tr><td>R1</td><td>快照失败会造成真空证明;锁不是屏障;动手前身份证据不足</td></tr>
+      <tr><td>R2</td><td>Codex 管家是另一种进程形态,静场证明会漏看;失败后自动补岗会借新进程之手误关窗口</td></tr>
+      <tr><td>R3</td><td>实机核出:Mufasa 配置缺字段会被误判成 Claude;窗口清点越了测试环境边界;按窗口发按键会打错格子</td></tr>
+      <tr><td>R4</td><td>档案来源绕过项目旁证;标准启动器+Codex 声明会违反「生产 Codex 必须带窗」铁律</td></tr>
+      <tr><td>R5</td><td>清点必须是全集:连「不在任何配置里的 loaded Lead」(Anna 形态)也要点名上报,不许静默消失</td></tr>
+      <tr><td>R6</td><td><b>APPROVED</b></td></tr>
+    </table></div>
+    <div class="cblock"><label>💬 对「关键取舍与被否方案」的留言(自动保存)</label><textarea data-for="s5" placeholder="意见 / 裁决 / 疑问…"></textarea><span class="cstate"></span></div>
+
+  </div>
+
+  <div class="card gray" data-sec="s6" data-title="保护性机制表">
+    <h2>保护性机制表(可逐项裁砍)</h2>
+    <p class="note">按反过度设计规则单列:每一项都写清防什么、砍掉会怎样,你可以逐项否。</p>
+    <div class="tablebox"><table>
+      <tr><th>#</th><th>机制</th><th>防的场景</th><th>砍掉的后果</th></tr>
+      <tr><td>P1′</td><td>卸载→清场→挂牌的「无岗位窗口」</td><td>换岗间隙系统自动补管家抢跑,再被强杀 → 制造新孤儿</td><td>每次重启都可能留下失管真身,问题换形态复发</td></tr>
+      <tr><td>P2</td><td>动手前「PID+出生时间」复验</td><td>目标恰好自死、编号被无关进程顶替 → 误杀无辜</td><td>极低概率误杀任意进程;现有代码库同类操作全带此复验</td></tr>
+      <tr><td>P3′</td><td>失败时的补救与响亮告警</td><td>重启自身故障把 Lead 留在无人看管态</td><td>失败叠加 Lead 下线且无人知晓</td></tr>
+      <tr><td>P4</td><td>detect 等级(证据不齐不动手)</td><td>跨项目撞名/窗口混入他人进程</td><td>要么误杀、要么假成功,二选一都不可接受</td></tr>
+    </table></div>
+    <div class="cblock"><label>💬 对「保护性机制表」的留言(自动保存)</label><textarea data-for="s6" placeholder="意见 / 裁决 / 疑问…"></textarea><span class="cstate"></span></div>
+
+  </div>
+
+  <div class="card green" data-sec="s7" data-title="诚实边界">
+    <h2>诚实边界:这次做什么 / 不做什么</h2>
+    <p><b>做:</b>重启一次即收敛所有存量/增量孤儿(含现存 9 个 4.8 真身);验证器不再说谎,成功日志自带新真身的出生证明和模型证据;正常无孤儿的 Lead 重启体验不变。</p>
+    <p><b>不做:</b></p>
+    <p>· 两次重启<b>之间</b>管家崩溃,新管家仍旧旁观活真身(这是防脑裂的正确行为)——真身失管到下次重启,已知接受。<br>
+    · 证据不齐的疑似真身不动手:该 Lead 诚实报失败等人裁决,不拿误杀风险换收敛。<br>
+    · Codex Lead 在不安全失败态选择「下线等人工」而非自动恢复(自动恢复会借新进程之手误关窗口)。<br>
+    · 没有配置档案的 loaded Lead(如 infra-bot、Anna)本次只点名上报,不代为重启——补配置是运维活。<br>
+    · 换身后续接对话偶发确认框卡顿是既有现象,不在本单。</p>
+    <p><b>落地后:</b>需要你(或 Tadashi)再跑一次统一重启,9 个 4.8 真身一次清零——那次重启的日志会逐个列出每个 Lead 的新真身出生时间和模型,可直接对照 <code>ps</code> 验收。</p>
+    <div class="cblock"><label>💬 对「诚实边界」的留言(自动保存)</label><textarea data-for="s7" placeholder="意见 / 裁决 / 疑问…"></textarea><span class="cstate"></span></div>
+
+  </div>
+
+  <div class="card navy" id="summaryCard">
+    <h2>📋 留言汇总</h2>
+    <p class="note">实时聚合上面各节的留言(自动保存在本机浏览器)。</p>
+    <div id="summaryList"><p class="sempty">(暂无留言——在任意小节下方输入即可)</p></div>
+    <div class="btnrow">
+      <button id="copyAll">一键复制所有 comments</button>
+      <button id="clearAll">清空全部</button>
+      <span id="copyState"></span>
+    </div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY='fly1507-design-comments';
+  function load(){ try{ return JSON.parse(localStorage.getItem(KEY)||'{}'); }catch(e){ return {}; } }
+  function save(d){ try{ localStorage.setItem(KEY, JSON.stringify(d)); }catch(e){} }
+  var titles={}, order=[];
+  document.querySelectorAll('.card[data-sec]').forEach(function(card){
+    var sec=card.getAttribute('data-sec');
+    titles[sec]=card.getAttribute('data-title')||sec; order.push(sec);
+  });
+
+  function renderSummary(){
+    var d=load(), list=document.getElementById('summaryList');
+    list.textContent='';
+    var any=false;
+    order.forEach(function(k){
+      if(d[k]&&d[k].trim()){
+        any=true;
+        var item=document.createElement('div'); item.className='sitem';
+        var b=document.createElement('b'); b.textContent=titles[k];
+        var sp=document.createElement('span'); sp.textContent=d[k].trim();
+        item.appendChild(b); item.appendChild(sp); list.appendChild(item);
+      }
+    });
+    if(!any){
+      var pE=document.createElement('p'); pE.className='sempty';
+      pE.textContent='(暂无留言——在任意小节下方输入即可)';
+      list.appendChild(pE);
+    }
+  }
+
+  document.querySelectorAll('.cblock textarea[data-for]').forEach(function(ta){
+    var sec=ta.getAttribute('data-for');
+    var st=ta.parentNode.querySelector('.cstate'), timer=null;
+    var data=load();
+    if(data[sec]) ta.value=data[sec];
+    ta.addEventListener('input',function(){
+      var d=load();
+      if(ta.value.trim()) d[sec]=ta.value; else delete d[sec];
+      save(d); renderSummary();
+      if(st){ st.textContent='已保存 ✓'; if(timer) clearTimeout(timer); timer=setTimeout(function(){ st.textContent=''; },1200); }
+    });
+  });
+  renderSummary();
+
+  function collectText(){
+    var d=load(), out=[];
+    order.forEach(function(k){
+      if(d[k]&&d[k].trim()) out.push('【'+titles[k]+'】\n'+d[k].trim());
+    });
+    return out.length? 'FLY-1507 设计稿留言(Annie):\n\n'+out.join('\n\n') : '(暂无留言)';
+  }
+  function fallbackCopy(text){
+    var t=document.createElement('textarea'); t.value=text; document.body.appendChild(t); t.select();
+    var ok=false; try{ ok=document.execCommand('copy'); }catch(e){}
+    document.body.removeChild(t); return ok;
+  }
+  document.getElementById('copyAll').addEventListener('click',function(){
+    var text=collectText(), st=document.getElementById('copyState');
+    function done(ok){ st.textContent = ok?'已复制,可直接粘贴给 Tadashi ✓':'复制失败,请手动选取'; setTimeout(function(){st.textContent='';},2500); }
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){done(true);},function(){ done(fallbackCopy(text)); });
+    } else { done(fallbackCopy(text)); }
+  });
+  document.getElementById('clearAll').addEventListener('click',function(){
+    try{ localStorage.removeItem(KEY); }catch(e){}
+    document.querySelectorAll('.cblock textarea[data-for]').forEach(function(t){ t.value=''; });
+    renderSummary();
+  });
+})();
+</script>
+</body>
+</html>

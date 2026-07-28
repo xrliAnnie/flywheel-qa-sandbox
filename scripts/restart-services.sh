@@ -77,11 +77,21 @@ MAX_WAIT_SECONDS="${RESTART_MAX_WAIT:-300}"   # 5 minutes default (env override:
 POLL_INTERVAL=30        # seconds between idle checks
 BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
 LEAD_STOP_WAIT_SECONDS="${RESTART_LEAD_STOP_WAIT_SECONDS:-60}"
+LEAD_QUIESCENCE_ATTEMPTS="${RESTART_LEAD_QUIESCENCE_ATTEMPTS:-30}"
+LEAD_QUIESCENCE_INTERVAL="${RESTART_LEAD_QUIESCENCE_INTERVAL:-1}"
 LEAD_VERIFY_ATTEMPTS="${RESTART_LEAD_VERIFY_ATTEMPTS:-30}"
 LEAD_VERIFY_INTERVAL="${RESTART_LEAD_VERIFY_INTERVAL:-2}"
 if [[ ! "$LEAD_STOP_WAIT_SECONDS" =~ ^[0-9]+$ ]]; then
     echo "[restart] WARNING: invalid RESTART_LEAD_STOP_WAIT_SECONDS; using 60" >&2
     LEAD_STOP_WAIT_SECONDS=60
+fi
+if [[ ! "$LEAD_QUIESCENCE_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[restart] WARNING: invalid RESTART_LEAD_QUIESCENCE_ATTEMPTS; using 30" >&2
+    LEAD_QUIESCENCE_ATTEMPTS=30
+fi
+if [[ ! "$LEAD_QUIESCENCE_INTERVAL" =~ ^[0-9]+$ ]]; then
+    echo "[restart] WARNING: invalid RESTART_LEAD_QUIESCENCE_INTERVAL; using 1" >&2
+    LEAD_QUIESCENCE_INTERVAL=1
 fi
 if [[ ! "$LEAD_VERIFY_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
     echo "[restart] WARNING: invalid RESTART_LEAD_VERIFY_ATTEMPTS; using 30" >&2
@@ -892,25 +902,86 @@ start_bridge() {
 # Lead restart
 # ════════════════════════════════════════════════════════════════
 
-# Outcome probe for a launchd-managed Lead. A successful kickstart command is
-# not sufficient, and a slow old PID is not itself a failure: the authority is
-# a replacement launchd PID plus a responsive, non-dead Lead tmux window.
+# FLY-1507: keep all destructive identity logic in sourceable production
+# libraries. restart-services.sh owns orchestration only.
+# shellcheck source=../packages/teamlead/scripts/lib/lead-identity-preflight.sh
+# shellcheck disable=SC1091
+source "${FLYWHEEL_DIR}/packages/teamlead/scripts/lib/lead-identity-preflight.sh"
+# shellcheck source=../packages/teamlead/scripts/lib/tmux-supervisor-guard.sh
+# shellcheck disable=SC1091
+source "${FLYWHEEL_DIR}/packages/teamlead/scripts/lib/tmux-supervisor-guard.sh"
+# shellcheck source=lib/lead-body-sweep.sh
+# shellcheck disable=SC1091
+source "${FLYWHEEL_DIR}/scripts/lib/lead-body-sweep.sh"
+# shellcheck source=lib/lead-restart-lifecycle.sh
+# shellcheck disable=SC1091
+source "${FLYWHEEL_DIR}/scripts/lib/lead-restart-lifecycle.sh"
+
+# A successful launchctl command is not restart evidence. The replacement
+# supervisor must have a new PID+lstart tuple, every pre-restart body tuple must
+# be dead, and one identity-proven body must be new to the complete snapshot.
 VERIFIED_LEAD_PID=""
+VERIFIED_LEAD_START=""
+VERIFIED_BODY_PID=""
+VERIFIED_BODY_START=""
+VERIFIED_BODY_MODEL=""
 launchd_lead_outcome_ready() {
-    local daemon_target="$1" project_name="$2" lead_id="$3" old_pid="${4:-}"
-    local launchd_state daemon_pid window probe
-    launchd_state=$(launchctl print "$daemon_target" 2>/dev/null) || return 1
-    daemon_pid=$(printf '%s\n' "$launchd_state" | grep -m1 'pid =' | awk '{print $NF}' || true)
+    local daemon_target="$1" project_name="$2" lead_id="$3"
+    local old_pid="${4:-}" old_start="${5:-}" targets_file="$6"
+    local backend="$7" manifest="$8"
+    local probe daemon_pid daemon_start body_evidence body_pid body_start body_model="n/a"
+    probe="$(lead_restart_launchd_probe "$daemon_target")"
+    [[ "$probe" == loaded$'\t'* ]] || return 1
+    daemon_pid="${probe#*$'\t'}"
     [[ "$daemon_pid" =~ ^[1-9][0-9]*$ ]] || return 1
-    if [[ "$old_pid" =~ ^[1-9][0-9]*$ && "$daemon_pid" == "$old_pid" ]]; then
+    daemon_start="$(lead_restart_process_start_identity "$daemon_pid")" || return 1
+    [[ -n "$daemon_start" ]] || return 1
+    if [[ "$old_pid" =~ ^[1-9][0-9]*$ && "$daemon_pid" == "$old_pid" ]] \
+      && [[ -z "$old_start" || "$daemon_start" == "$old_start" ]]; then
         return 1
     fi
-    command -v tmux >/dev/null 2>&1 || return 1
-    window="${project_name}-${lead_id}"
-    probe=$(tmux display-message -p -t "=flywheel:=${window}" '#{window_name} #{pane_dead}' 2>/dev/null) || return 1
-    [[ "$probe" == "${window} 0" ]] || return 1
+    body_evidence="$(lead_body_newborn_ok "$project_name" "$lead_id" "$targets_file")" || return 1
+    body_pid="${body_evidence%%$'\t'*}"
+    body_start="${body_evidence#*$'\t'}"
+    [[ "$body_pid" =~ ^[1-9][0-9]*$ && -n "$body_start" ]] || return 1
+    if [[ "$backend" == "claude-code" ]]; then
+        body_model="$(lead_body_model_evidence "$body_pid" "$manifest")" || return 1
+    fi
     VERIFIED_LEAD_PID="$daemon_pid"
+    VERIFIED_LEAD_START="$daemon_start"
+    VERIFIED_BODY_PID="$body_pid"
+    VERIFIED_BODY_START="$body_start"
+    VERIFIED_BODY_MODEL="$body_model"
     return 0
+}
+
+restart_lead_bootstrap_job() {
+    local plist="$1" lead_id="$2" rc=0
+    launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 || rc=$?
+    if (( rc != 0 )); then
+        log "WARNING: launchctl bootstrap returned $rc for $lead_id; retrying once"
+        sleep 1
+        rc=0
+        launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 || rc=$?
+    fi
+    return "$rc"
+}
+
+restart_lead_recover_job_after_failure() {
+    local backend="$1" old_pid="$2" old_start="$3" sweep_safe="$4"
+    local plist="$5" lead_id="$6"
+    local old_dead=false
+    lead_restart_old_tuple_dead "$old_pid" "$old_start" && old_dead=true
+    if lead_restart_recovery_bootstrap_allowed "$backend" "$old_dead" "$sweep_safe"; then
+        if lead_restart_authority_unchanged \
+          && restart_lead_bootstrap_job "$plist" "$lead_id"; then
+            log "WARNING: Lead $lead_id restart failed, but its launchd job was restored under the verified carrier"
+            return 0
+        fi
+    fi
+    alert_severe "lead-restart-offline-${lead_id}" "Lead restart requires manual recovery" \
+        "Lead $lead_id 重启证据不完整，且无法安全恢复 launchd job。为避免双 supervisor/误清窗口，Lead 保持离线等待人工处理。"
+    return 1
 }
 
 # Returns: 0=success, 1=error
@@ -919,16 +990,25 @@ restart_lead() {
     local manifest="$1"
 
     local lead_id project_dir project_name subdir bot_token_env workspace mcp_exclude chrome_enabled
-    lead_id=$(jq -r '.leadId' "$manifest")
-    project_dir=$(jq -r '.projectDir' "$manifest")
-    project_name=$(jq -r '.projectName' "$manifest")
-    subdir=$(jq -r '.subdir // ""' "$manifest")
-    bot_token_env=$(jq -r '.botTokenEnv' "$manifest")
-    workspace=$(jq -r '.workspace // ""' "$manifest")
+    lead_id=$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest") || return 1
+    project_dir=$(jq -er '.projectDir | select(type == "string" and length > 0)' "$manifest") || return 1
+    project_name=$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest") || return 1
+    subdir=$(jq -r '.subdir // ""' "$manifest") || return 1
+    bot_token_env=$(jq -er '.botTokenEnv | select(type == "string" and length > 0)' "$manifest") || return 1
+    workspace=$(jq -r '.workspace // ""' "$manifest") || return 1
     # FLY-143: per-Lead MCP scope fields. Default empty/false for older
     # manifests so legacy nohup path matches launchd wrapper behavior.
-    mcp_exclude=$(jq -r '.mcpExclude // ""' "$manifest")
-    chrome_enabled=$(jq -r '.chromeEnabled // false' "$manifest")
+    mcp_exclude=$(jq -r '.mcpExclude // ""' "$manifest") || return 1
+    chrome_enabled=$(jq -r '.chromeEnabled // false' "$manifest") || return 1
+
+    # All preflight checks happen before bootout, TERM, or any other state
+    # change. Invalid indirect env names must not reach ${!name}.
+    if [[ ! "$bot_token_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [[ -z "${!bot_token_env:-}" ]]; then
+        log "ERROR: $bot_token_env is not set or is not a valid env name; cannot restart $lead_id"
+        alert_warning "lead-restart-failed-${lead_id}" "Lead restart failed" \
+            "Lead $lead_id 重启失败: bot token env 未定义或名称无效"
+        return 1
+    fi
 
     # FLY-80: Fallback if projectDir is a deleted worktree — resolve to main repo
     if [[ ! -d "$project_dir" ]]; then
@@ -965,92 +1045,161 @@ restart_lead() {
 
     local daemon_key="${project_name}-${lead_id}"
     local daemon_label="com.flywheel.lead.${daemon_key}"
-    local daemon_target="gui/$(id -u)/${daemon_label}"
-    local launchd_managed=false
-    if launchctl print "$daemon_target" &>/dev/null; then
-        launchd_managed=true
-    fi
-
-    # Use PID file for precise supervisor targeting
+    local daemon_target
+    daemon_target="gui/$(id -u)/${daemon_label}"
     local pid_file="${HOME}/.flywheel/pids/${project_name}-${lead_id}.pid"
-    local old_pid=""
-    if [[ -f "$pid_file" ]]; then
-        old_pid=$(cat "$pid_file")
-        if kill -0 "$old_pid" 2>/dev/null; then
-            log "Stopping Lead $lead_id (supervisor PID $old_pid)..."
-            kill -TERM "$old_pid" 2>/dev/null || true
-            local wait_count=0
-            while kill -0 "$old_pid" 2>/dev/null && (( wait_count < LEAD_STOP_WAIT_SECONDS )); do
-                sleep 1
-                # FLY-239: assignment form, not `((wait_count++))` — the latter
-                # exits 1 on the first pass (n=0) and `set -e` would abort the
-                # Lead restart here (the supervisor is always alive at this
-                # point). Same footgun fixed in stop_bridge.
-                wait_count=$((wait_count + 1))
-            done
-            if kill -0 "$old_pid" 2>/dev/null; then
-                if [[ "$launchd_managed" == "true" ]]; then
-                    log "WARNING: Old supervisor for $lead_id (PID $old_pid) still alive after ${LEAD_STOP_WAIT_SECONDS}s; continuing with launchd kickstart and judging the replacement outcome"
-                else
-                    log "ERROR: Old supervisor for $lead_id (PID $old_pid) still alive after ${LEAD_STOP_WAIT_SECONDS}s"
-                    alert_warning "supervisor-stuck-${lead_id}" "Lead supervisor stuck" \
-                        "Lead $lead_id 旧 supervisor (PID $old_pid) ${LEAD_STOP_WAIT_SECONDS}s 后仍未退出，且没有 launchd replacement authority，跳过重启避免双启动"
-                    return 1
-                fi
-            fi
-        fi
-        rm -f "$pid_file"
-    fi
-
+    local archive_file="${HOME}/.flywheel/pids/${project_name}-${lead_id}.claude.tmux"
+    local plist="${HOME}/Library/LaunchAgents/${daemon_label}.plist"
+    local projects_file="${HOME}/.flywheel/projects.json"
     local subdir_args=""
     [[ -n "$subdir" && "$subdir" != "null" ]] && subdir_args="--subdir $subdir"
-
-    # Fail-fast: bot token env must be defined
-    if [[ -z "${!bot_token_env:-}" ]]; then
-        log "ERROR: $bot_token_env is not set, cannot restart $lead_id"
-        alert_warning "lead-restart-failed-${lead_id}" "Lead restart failed" \
-            "Lead $lead_id 重启失败: \`$bot_token_env\` 未定义"
-        return 1
-    fi
 
     # Per-lead Discord state directory for channel/token isolation
     local discord_state_dir="${HOME}/.claude/channels/discord-${lead_id}"
 
-    # FLY-74: If this Lead is managed by launchd daemon, use kickstart instead
-    # of nohup to avoid double-start (launchd KeepAlive would respawn alongside
-    # the nohup'd instance).
-    if [[ "$launchd_managed" == "true" ]]; then
-        log "Lead $lead_id is managed by launchd — using kickstart"
-        local kickstart_rc=0
-        launchctl kickstart -k "$daemon_target" >/dev/null 2>&1 || kickstart_rc=$?
-        if (( kickstart_rc != 0 )); then
-            log "WARNING: launchctl kickstart returned $kickstart_rc for $lead_id; probing the actual replacement outcome before deciding"
+    # A plist on disk defines launchd lifecycle ownership even when the job is
+    # currently unloaded. This avoids misclassifying an offline daemon as legacy.
+    if [[ -f "$plist" || -L "$plist" ]]; then
+        if ! lead_restart_validate_authority "$manifest" "$plist" "$projects_file" "$daemon_label"; then
+            log "ERROR: Lead $lead_id carrier/plist/projects authority is invalid; refusing before bootout"
+            alert_warning "lead-restart-carrier-drift-${lead_id}" "Lead restart carrier drift" \
+                "Lead $lead_id 的 manifest/projects/plist 载体无法交叉验证，已在任何状态变更前拒绝重启。"
+            return 1
+        fi
+        local backend="$LEAD_RESTART_BACKEND"
+        local probe old_pid="" old_start="" probe_pid=""
+        probe="$(lead_restart_launchd_probe "$daemon_target")"
+        if [[ "$probe" == "error" ]]; then
+            log "ERROR: launchd probe failed for $lead_id; refusing before bootout"
+            return 1
+        fi
+        if [[ "$probe" == loaded$'\t'* ]]; then
+            probe_pid="${probe#*$'\t'}"
+            if [[ "$probe_pid" =~ ^[1-9][0-9]*$ ]]; then
+                old_pid="$probe_pid"
+                old_start="$(lead_restart_process_start_identity "$old_pid")" || {
+                    log "ERROR: cannot capture old supervisor start identity for $lead_id (PID $old_pid)"
+                    return 1
+                }
+                [[ -n "$old_start" ]] || return 1
+            fi
+            log "Stopping and unloading Lead $lead_id via launchd bootout (old supervisor ${old_pid:-none})..."
+            local bootout_rc=0
+            launchctl bootout "$daemon_target" >/dev/null 2>&1 || bootout_rc=$?
+            (( bootout_rc == 0 )) || log "WARNING: launchctl bootout returned $bootout_rc for $lead_id; quiescence proof remains authoritative"
+        fi
+
+        local assertion_file="${HOME}/.flywheel/state/carrier-assertions/${daemon_key}.json"
+        local quiet_rc=0
+        LEAD_RESTART_QUIESCENCE_ATTEMPTS="$LEAD_QUIESCENCE_ATTEMPTS" \
+        LEAD_RESTART_QUIESCENCE_INTERVAL="$LEAD_QUIESCENCE_INTERVAL" \
+          lead_restart_wait_quiescent \
+            "$daemon_target" "$old_pid" "$old_start" "$backend" \
+            "$project_name" "$lead_id" "$assertion_file" || quiet_rc=$?
+        if (( quiet_rc != 0 )); then
+            log "ERROR: Lead $lead_id did not reach proven launchd/supervisor quiescence (rc=$quiet_rc)"
+            restart_lead_recover_job_after_failure \
+                "$backend" "$old_pid" "$old_start" false "$plist" "$lead_id" || true
+            return 1
+        fi
+
+        local targets_file=""
+        targets_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-${daemon_key}.targets.XXXXXX")" || {
+            restart_lead_recover_job_after_failure \
+                "$backend" "$old_pid" "$old_start" false "$plist" "$lead_id" || true
+            return 1
+        }
+        local collect_rc=0 terminate_rc=0 sweep_rc=0
+        lead_body_collect_targets \
+            "$project_name" "$lead_id" "$backend" "$archive_file" "$targets_file" || collect_rc=$?
+        lead_body_terminate "$targets_file" "$lead_id" "$archive_file" || terminate_rc=$?
+        (( collect_rc == 0 && terminate_rc == 0 )) || sweep_rc=1
+        if (( sweep_rc != 0 )); then
+            log "ERROR: Lead $lead_id body sweep is incomplete/unsafe (collect=$collect_rc terminate=$terminate_rc)"
+            rm -f "$targets_file"
+            restart_lead_recover_job_after_failure \
+                "$backend" "$old_pid" "$old_start" false "$plist" "$lead_id" || true
+            return 1
+        fi
+        rm -f "$pid_file"
+
+        if ! lead_restart_authority_unchanged; then
+            log "ERROR: Lead $lead_id authority changed after bootout; refusing bootstrap"
+            rm -f "$targets_file"
+            alert_severe "lead-restart-authority-drift-${lead_id}" "Lead restart authority changed" \
+                "Lead $lead_id 在 bootout 后 manifest/projects/plist 发生漂移，已拒绝 bootstrap，等待人工处理。"
+            return 1
+        fi
+        if ! restart_lead_bootstrap_job "$plist" "$lead_id"; then
+            log "ERROR: launchctl bootstrap failed twice for $lead_id"
+            rm -f "$targets_file"
+            alert_severe "lead-restart-bootstrap-failed-${lead_id}" "Lead restart bootstrap failed" \
+                "Lead $lead_id 已完成安全清场，但 launchd bootstrap 两次失败，Lead 当前离线，需人工处理。"
+            return 1
         fi
 
         local attempt
         for (( attempt=1; attempt<=LEAD_VERIFY_ATTEMPTS; attempt++ )); do
-            if launchd_lead_outcome_ready "$daemon_target" "$project_name" "$lead_id" "$old_pid"; then
-                log "Lead $lead_id restarted via launchd (PID $VERIFIED_LEAD_PID, responsive session verified)"
+            if launchd_lead_outcome_ready \
+              "$daemon_target" "$project_name" "$lead_id" "$old_pid" "$old_start" \
+              "$targets_file" "$backend" "$manifest"; then
+                log "Lead $lead_id restarted via launchd (supervisor $VERIFIED_LEAD_PID born $VERIFIED_LEAD_START, body PID $VERIFIED_BODY_PID born $VERIFIED_BODY_START, model $VERIFIED_BODY_MODEL)"
+                rm -f "$targets_file"
                 return 0
             fi
             (( attempt < LEAD_VERIFY_ATTEMPTS )) && sleep "$LEAD_VERIFY_INTERVAL"
         done
 
-        # Required final re-probe: do not turn a slow replacement into a false
-        # failure merely because the bounded verification window just elapsed.
-        log "WARNING: Lead $lead_id replacement not yet healthy after ${LEAD_VERIFY_ATTEMPTS} probes; performing final re-probe"
+        log "WARNING: Lead $lead_id replacement lacks newborn/body evidence after ${LEAD_VERIFY_ATTEMPTS} probes; performing final re-probe"
         sleep "$LEAD_VERIFY_INTERVAL"
-        if launchd_lead_outcome_ready "$daemon_target" "$project_name" "$lead_id" "$old_pid"; then
-            log "Lead $lead_id restarted via launchd on final re-probe (PID $VERIFIED_LEAD_PID, responsive session verified)"
+        if launchd_lead_outcome_ready \
+          "$daemon_target" "$project_name" "$lead_id" "$old_pid" "$old_start" \
+          "$targets_file" "$backend" "$manifest"; then
+            log "Lead $lead_id restarted via launchd on final re-probe (supervisor $VERIFIED_LEAD_PID born $VERIFIED_LEAD_START, body PID $VERIFIED_BODY_PID born $VERIFIED_BODY_START, model $VERIFIED_BODY_MODEL)"
+            rm -f "$targets_file"
             return 0
         fi
-        log "ERROR: Lead $lead_id launchd replacement has no new supervisor + responsive session after final re-probe"
+        rm -f "$targets_file"
+        log "ERROR: Lead $lead_id launchd replacement failed newborn/body/model verification"
         alert_warning "lead-restart-failed-${lead_id}" "Lead restart failed" \
-            "Lead $lead_id launchd replacement 最终复验仍无新 supervisor + responsive tmux session (kickstart_rc=$kickstart_rc)"
+            "Lead $lead_id 最终复验未证明旧本体全灭 + 新本体唯一新生 + model 一致，绝不按成功上报。"
         return 1
     fi
 
     # Legacy path: manual nohup (Lead not daemon-managed)
+    local old_pid="" old_start=""
+    if [[ -f "$pid_file" ]]; then
+        old_pid="$(cat "$pid_file" 2>/dev/null || true)"
+        if [[ "$old_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$old_pid" 2>/dev/null; then
+            old_start="$(lead_restart_process_start_identity "$old_pid")" || return 1
+            kill -TERM "$old_pid" 2>/dev/null || true
+            local wait_count=0
+            while kill -0 "$old_pid" 2>/dev/null && (( wait_count < LEAD_STOP_WAIT_SECONDS )); do
+                sleep 1
+                wait_count=$((wait_count + 1))
+            done
+            if kill -0 "$old_pid" 2>/dev/null; then
+                local now_start=""
+                now_start="$(lead_restart_process_start_identity "$old_pid")" || return 1
+                if [[ "$now_start" == "$old_start" ]]; then
+                    kill -KILL "$old_pid" 2>/dev/null || return 1
+                fi
+            fi
+        fi
+    fi
+    local legacy_targets=""
+    legacy_targets="$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-${daemon_key}.targets.XXXXXX")" || return 1
+    local legacy_collect_rc=0 legacy_terminate_rc=0
+    lead_body_collect_targets \
+        "$project_name" "$lead_id" "claude-code" "$archive_file" "$legacy_targets" || legacy_collect_rc=$?
+    lead_body_terminate "$legacy_targets" "$lead_id" "$archive_file" || legacy_terminate_rc=$?
+    rm -f "$legacy_targets"
+    if (( legacy_collect_rc != 0 || legacy_terminate_rc != 0 )); then
+        log "ERROR: legacy Lead $lead_id body sweep failed (collect=$legacy_collect_rc terminate=$legacy_terminate_rc)"
+        return 1
+    fi
+    rm -f "$pid_file"
+
     # Replay LEAD_WORKSPACE if manifest recorded a custom one.
     # FLY-143: also propagate FLYWHEEL_LEAD_MCP_EXCLUDE / FLYWHEEL_LEAD_CHROME_ENABLED
     # so per-Lead MCP scope matches the launchd path. Use `env` with explicit
@@ -1178,62 +1327,64 @@ do_restart_all_leads() {
         fi
     fi
 
-    # Source 1: collect Lead IDs from manifests
-    local manifest_leads=""
-    shopt -s nullglob
-    local manifests=("${HOME}/.flywheel/manifests/"*.json)
-    shopt -u nullglob
-    for mf in ${manifests[@]+"${manifests[@]}"}; do
-        local lid
-        lid=$(jq -r '.leadId' "$mf")
-        manifest_leads="$manifest_leads $lid"
-    done
+    # FLY-1507: one authoritative three-source inventory (manifest + positively
+    # loaded plist + legacy supervisor process), deduplicated by exact
+    # (projectName, leadId) daemon key. QA candidates never affect counts.
+    local candidates_file=""
+    candidates_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-restart-candidates.XXXXXX")" || {
+        log "ERROR: cannot allocate Lead restart candidate inventory" >&2
+        echo "skipped:0 failed:1"
+        return 0
+    }
+    local candidate_rc=0
+    lead_restart_collect_candidates \
+        "${HOME}/.flywheel/manifests" \
+        "${HOME}/Library/LaunchAgents" \
+        "${HOME}/.flywheel/projects.json" \
+        "$candidates_file" || candidate_rc=$?
+    if (( candidate_rc != 0 )); then
+        log "ERROR: Lead candidate inventory is indeterminate (rc=$candidate_rc)" >&2
+        rm -f "$candidates_file"
+        echo "skipped:0 failed:1"
+        return 0
+    fi
 
-    # Source 2: detect running Leads without manifests (legacy migration)
-    while IFS= read -r cmd_line; do
-        [[ -z "$cmd_line" ]] && continue
-        local lid
-        lid=$(echo "$cmd_line" | awk -F'claude-lead.sh ' '{print $2}' | awk '{print $1}')
-        if [[ -n "$lid" ]] && ! echo "$manifest_leads" | grep -qw "$lid"; then
-            log "WARNING: Lead $lid is running but has no manifest — needs manual restart to generate manifest" >&2
-            skipped=$((skipped + 1))
-        fi
-    done < <(pgrep -af "claude-lead.sh" 2>/dev/null || true)
-
-    # Restart Leads that have manifests (pass manifest path directly).
-    # FLY-231 fail-closed resolver: only restart manifests whose (projectName,
-    # leadId) match the HOST production projects.json. Skip test-slot-owned
-    # manifests (leadId flywheel-test-*) WITHOUT counting them — they must not
-    # degrade Lead restart status. Any OTHER non-matching manifest (config drift /
-    # removed projects entry / typo) counts as failed → degraded status + alerts,
-    # instead of being silently restarted into claude-lead.sh's notfound fail-STOP
-    # (Codex R6 BLOCKER-1). "Cannot match" is NEVER treated as test-slot.
-    for mf in ${manifests[@]+"${manifests[@]}"}; do
-        local lid pn
-        lid=$(jq -r '.leadId' "$mf")
-        pn=$(jq -r '.projectName' "$mf")
-        case "$(_classify_restart_manifest "$lid" "$pn")" in
+    local key pn lid mf classification sources rc
+    local candidate_count=0
+    while IFS=$'\t' read -r key pn lid mf classification sources; do
+        [[ -n "$key" ]] || continue
+        candidate_count=$((candidate_count + 1))
+        case "$classification" in
             skip-test)
-                log "Skipping test-slot manifest (lifecycle-owned, not deploy-blocking): $mf (lead=$lid)" >&2
-                continue
+                log "Skipping test-slot Lead candidate (lifecycle-owned, not deploy-blocking): key=$key sources=$sources" >&2
                 ;;
             restart)
-                local rc=0
-                restart_lead "$mf" >&2 || rc=$?
-                if (( rc == 1 )); then
+                if [[ "$mf" == "-" || ! -f "$mf" ]]; then
+                    log "ERROR: restart candidate $key has no readable manifest" >&2
                     failed=$((failed + 1))
+                    continue
                 fi
+                rc=0
+                restart_lead "$mf" >&2 || rc=$?
+                (( rc == 0 )) || failed=$((failed + 1))
                 ;;
-            *)  # fail — config drift / removed entry / typo / loadProjects error.
-                # NOT a test slot and NOT a host-config match → block deploy
-                # (counts as failed → degraded status + Annie alerted).
-                log "ERROR: manifest $mf (project=$pn lead=$lid) is NOT in host projects.json and is NOT a test slot — refusing to restart (config drift?). Blocking deploy." >&2
+            manifestless)
+                log "WARNING: loaded/running Lead $key has no manifest — visible but not restarted (sources=$sources)" >&2
+                alert_warning "lead-restart-manifestless-${key}" "Lead restart skipped" \
+                    "Lead $key 已加载但没有 manifest，本次未重启；请补齐 carrier 配置后再收敛。"
+                skipped=$((skipped + 1))
+                ;;
+            probe-error|config-drift|*)
+                log "ERROR: Lead candidate $key cannot be assigned safe restart authority (class=$classification project=$pn lead=$lid sources=$sources)" >&2
+                alert_warning "lead-restart-config-drift-${key}" "Lead restart config drift" \
+                    "Lead $key 无法从 manifest/loaded plist/process 与 projects.json 得到唯一一致身份，本次拒绝重启。"
                 failed=$((failed + 1))
                 ;;
         esac
-    done
+    done < "$candidates_file"
+    rm -f "$candidates_file"
 
-    if (( ${#manifests[@]} == 0 && skipped == 0 )); then
+    if (( candidate_count == 0 )); then
         log "WARNING: No Leads found (no manifests, no running processes)" >&2
     fi
 

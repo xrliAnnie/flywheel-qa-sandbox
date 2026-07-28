@@ -1369,10 +1369,22 @@ BO_HOME="$TMPDIR_ROOT/bridge-only-home"
 BO_FLYWHEEL="$BO_HOME/Dev/flywheel"
 BO_SHIMS="$BO_HOME/.local/bin"
 BO_CALLS="$TMPDIR_ROOT/bridge-only-calls"
-mkdir -p "$BO_FLYWHEEL/scripts/lib" "$BO_HOME/.flywheel/manifests" "$BO_SHIMS" "$BO_CALLS"
+BO_LAUNCH_STATE="$BO_CALLS/lead.state"
+mkdir -p \
+  "$BO_FLYWHEEL/scripts/lib" \
+  "$BO_FLYWHEEL/packages/teamlead/scripts/lib" \
+  "$BO_HOME/.flywheel/manifests" \
+  "$BO_HOME/Library/LaunchAgents" \
+  "$BO_SHIMS" "$BO_CALLS"
 cp "$REAL_REPO_ROOT/scripts/restart-services.sh" "$BO_FLYWHEEL/scripts/"
 cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
-   "$REAL_REPO_ROOT/scripts/lib/restart-candidate.sh" "$BO_FLYWHEEL/scripts/lib/"
+   "$REAL_REPO_ROOT/scripts/lib/restart-candidate.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/lead-body-sweep.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/lead-restart-lifecycle.sh" \
+   "$BO_FLYWHEEL/scripts/lib/"
+cp "$REAL_REPO_ROOT/packages/teamlead/scripts/lib/lead-identity-preflight.sh" \
+   "$REAL_REPO_ROOT/packages/teamlead/scripts/lib/tmux-supervisor-guard.sh" \
+   "$BO_FLYWHEEL/packages/teamlead/scripts/lib/"
 cat > "$BO_FLYWHEEL/scripts/converge-flywheel-bin.sh" <<'EOF'
 #!/bin/bash
 exit 0
@@ -1386,19 +1398,63 @@ cat > "$BO_SHIMS/launchctl" <<EOF
 #!/bin/bash
 echo "\$*" >> "$BO_CALLS/launchctl.calls"
 if [[ "\${1:-}" == "print" ]]; then
-  echo "state = running"
-  echo "pid = \${FAKE_LAUNCHD_PID:-424242}"
+  if [[ "\${2:-}" == *"com.flywheel.lead.flywheel-eng" ]]; then
+    if [[ "\$(cat "$BO_LAUNCH_STATE" 2>/dev/null || echo loaded)" == "unloaded" ]]; then
+      echo "Could not find service"
+      exit 3
+    fi
+    echo "state = running"
+    echo "pid = \$(cat "$BO_CALLS/lead.pid" 2>/dev/null || echo 424242)"
+  else
+    echo "state = running"
+    echo "pid = 434343"
+  fi
+elif [[ "\${1:-}" == "bootout" && "\${2:-}" == *"com.flywheel.lead.flywheel-eng" ]]; then
+  echo unloaded > "$BO_LAUNCH_STATE"
+elif [[ "\${1:-}" == "bootstrap" ]]; then
+  echo loaded > "$BO_LAUNCH_STATE"
+  echo 424243 > "$BO_CALLS/lead.pid"
 fi
 exit 0
 EOF
 cat > "$BO_SHIMS/tmux" <<EOF
 #!/bin/bash
 echo "\$*" >> "$BO_CALLS/tmux.calls"
-if [[ "\${FAKE_LEAD_SESSION_DEAD:-0}" == "1" ]]; then
-  echo "flywheel-eng 1"
-else
+if [[ "\${1:-}" == "list-panes" ]]; then
+  n=\$(cat "$BO_CALLS/tmux-list.n" 2>/dev/null || echo 0)
+  n=\$((n + 1))
+  echo "\$n" > "$BO_CALLS/tmux-list.n"
+  if [[ "\${FAKE_TMUX_INVENTORY_FAIL_ONCE:-0}" == "1" && "\$n" == "1" ]]; then
+    exit 1
+  fi
+  if [[ "\$(cat "$BO_LAUNCH_STATE" 2>/dev/null || echo loaded)" == "loaded" ]]; then
+    if [[ "\${FAKE_LEAD_SESSION_DEAD:-0}" == "1" ]]; then
+      printf '@1\tflywheel-eng\t%%1\t55555\t1\n'
+    else
+      printf '@1\tflywheel-eng\t%%1\t55555\t0\n'
+    fi
+  fi
+elif [[ "\${1:-}" == "display-message" ]]; then
   echo "flywheel-eng 0"
 fi
+EOF
+cat > "$BO_SHIMS/ps" <<EOF
+#!/bin/bash
+args="\$*"
+case "\$args" in
+  *"-p 424242 -o lstart="*) echo "Mon Jul 27 08:00:00 2026" ;;
+  *"-p 424243 -o lstart="*) echo "Mon Jul 27 09:00:00 2026" ;;
+  *"-p 55555 -o lstart="*) echo "Mon Jul 27 09:00:01 2026" ;;
+  *"-p 55555 -o command="*)
+    echo "claude --agent eng --append-system-prompt-file /tmp/lead-rules-bundles/flywheel-eng.424243-lstart-x.md --model claude-fable-5"
+    ;;
+  *"-axo pid=,command="*)
+    if [[ "\$(cat "$BO_LAUNCH_STATE" 2>/dev/null || echo loaded)" == "loaded" ]]; then
+      echo "55555 claude --agent eng --append-system-prompt-file /tmp/lead-rules-bundles/flywheel-eng.424243-lstart-x.md --model claude-fable-5"
+    fi
+    ;;
+  *) exec /bin/ps "\$@" ;;
+esac
 EOF
 cat > "$BO_SHIMS/sleep" <<'EOF'
 #!/bin/bash
@@ -1427,17 +1483,37 @@ exit 0
 EOF
 chmod +x "$BO_SHIMS"/*
 cat > "$BO_HOME/.flywheel/manifests/flywheel-eng.json" <<EOF
-{"leadId":"eng","projectDir":"$BO_FLYWHEEL","projectName":"flywheel","botTokenEnv":"TEST_BOT_TOKEN"}
+{"leadId":"eng","projectDir":"$BO_FLYWHEEL","projectName":"flywheel","botTokenEnv":"TEST_BOT_TOKEN","leadBackend":{"backendId":"claude-code"},"resolvedModel":"claude-fable-5"}
+EOF
+cat > "$BO_HOME/.flywheel/projects.json" <<'EOF'
+[{"projectName":"flywheel","leads":[{"agentId":"eng"}]}]
+EOF
+cat > "$BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.flywheel.lead.flywheel-eng</string>
+<key>ProgramArguments</key><array>
+<string>/bin/bash</string>
+<string>$BO_HOME/.flywheel/bin/flywheel-lead-wrapper.sh</string>
+<string>$BO_HOME/.flywheel/manifests/flywheel-eng.json</string>
+</array></dict></plist>
 EOF
 
 bo_run() {
     rm -f "$BO_CALLS"/*.calls
+    echo loaded > "$BO_LAUNCH_STATE"
+    echo 424242 > "$BO_CALLS/lead.pid"
+    rm -f "$BO_CALLS/tmux-list.n"
     HOME="$BO_HOME" PATH="$BO_SHIMS:$PATH" \
         CLAUDE_INFRA_BOT_TOKEN="" FLYWHEEL_NOTIFY_CHANNEL="" \
         FLYWHEEL_FOUNDER_USER_ID="" TEST_BOT_TOKEN="test-token" \
         FAKE_FAST_SLEEP="${FAKE_FAST_SLEEP:-0}" \
         FAKE_LEAD_SESSION_DEAD="${FAKE_LEAD_SESSION_DEAD:-0}" \
+        FAKE_TMUX_INVENTORY_FAIL_ONCE="${FAKE_TMUX_INVENTORY_FAIL_ONCE:-0}" \
         RESTART_LEAD_STOP_WAIT_SECONDS="${RESTART_LEAD_STOP_WAIT_SECONDS:-60}" \
+        RESTART_LEAD_QUIESCENCE_ATTEMPTS=2 \
+        RESTART_LEAD_QUIESCENCE_INTERVAL=0 \
         RESTART_LEAD_VERIFY_ATTEMPTS="${RESTART_LEAD_VERIFY_ATTEMPTS:-2}" \
         RESTART_LEAD_VERIFY_INTERVAL="${RESTART_LEAD_VERIFY_INTERVAL:-0}" \
         bash "$BO_FLYWHEEL/scripts/restart-services.sh" "$@" 2>&1
@@ -1450,7 +1526,9 @@ out=$(bo_run) && rc=0 || rc=$?
 if (( rc == 0 )) && echo "$out" | grep -q "skipping build, continuing full restart" \
    && [[ -z "$(bo_calls pnpm)" ]] \
    && bo_calls launchctl | grep -q "com.flywheel.bridge" \
-   && bo_calls launchctl | grep -q "com.flywheel.lead.flywheel-eng"; then
+   && bo_calls launchctl | grep -q "bootout gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
+   && bo_calls launchctl | grep -q "bootstrap gui/$(id -u) $BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist" \
+   && ! bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.lead.flywheel-eng"; then
     pass "FLY-1434 order: SHA match skips build and restarts Bridge + Leads"
 else
     fail "FLY-1434 order: SHA match — rc=$rc launchctl='$(bo_calls launchctl)' out tail: $(echo "$out" | tail -3)"
@@ -1466,7 +1544,8 @@ if (( rc == 0 )) && echo "$out" | grep -q "Build skipped" \
    && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_2" ]] \
    && [[ -z "$(bo_calls pnpm)" ]] \
    && bo_calls launchctl | grep -q "com.flywheel.bridge" \
-   && bo_calls launchctl | grep -q "com.flywheel.lead.flywheel-eng"; then
+   && bo_calls launchctl | grep -q "bootout gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
+   && bo_calls launchctl | grep -q "bootstrap gui/$(id -u) $BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist"; then
     pass "FLY-1434 order: doc-only delta skips build and restarts the full fleet"
 else
     fail "FLY-1434 order: doc-only mismatch — rc=$rc sha=$(cat "$BO_HOME/.flywheel/deployed-sha") out tail: $(echo "$out" | tail -3)"
@@ -1507,7 +1586,9 @@ bo_ok=true
 echo "$out" | grep -q "Done." || bo_ok=false
 echo "$out" | grep -q "reason=env-change" || bo_ok=false
 bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.bridge" || bo_ok=false
-bo_calls launchctl | grep -q "com.flywheel.lead.flywheel-eng" || bo_ok=false
+bo_calls launchctl | grep -q "bootout gui/$(id -u)/com.flywheel.lead.flywheel-eng" || bo_ok=false
+bo_calls launchctl | grep -q "bootstrap gui/$(id -u) $BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist" || bo_ok=false
+bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.lead.flywheel-eng" && bo_ok=false
 [[ -z "$(bo_calls pnpm)" ]] || bo_ok=false
 bo_calls curl | grep -q "/health" || bo_ok=false
 [[ ! -f "$BO_HOME/.flywheel/plugin-restart-pending" ]] || bo_ok=false
@@ -1518,7 +1599,7 @@ else
 fi
 rm -f "$BO_HOME/.flywheel/plugin-restart-pending"
 
-# ── 6) a slow old supervisor is judged by the replacement outcome ──
+# ── 6) an indeterminate body snapshot can never become a false success ──
 echo "restart outcome" > "$BO_FLYWHEEL/restart-outcome.md"
 git -C "$BO_FLYWHEEL" add restart-outcome.md
 git -C "$BO_FLYWHEEL" -c user.email=t@t -c user.name=t commit -q -m "docs: restart outcome"
@@ -1529,21 +1610,22 @@ BO_STUCK_OLD_PID=$!
 /bin/sleep 0.1
 mkdir -p "$BO_HOME/.flywheel/pids"
 echo "$BO_STUCK_OLD_PID" > "$BO_HOME/.flywheel/pids/flywheel-eng.pid"
-out=$(FAKE_FAST_SLEEP=1 RESTART_LEAD_STOP_WAIT_SECONDS=0 bo_run --reason supervisor-timeout) && rc=0 || rc=$?
+out=$(FAKE_FAST_SLEEP=1 FAKE_TMUX_INVENTORY_FAIL_ONCE=1 RESTART_LEAD_STOP_WAIT_SECONDS=0 bo_run --reason supervisor-timeout) && rc=0 || rc=$?
 kill -KILL "$BO_STUCK_OLD_PID" 2>/dev/null || true
 wait "$BO_STUCK_OLD_PID" 2>/dev/null || true
 bo_status="$BO_HOME/.flywheel/leads-restart-status.json"
 if (( rc == 0 )) \
-   && echo "$out" | grep -q "continuing with launchd kickstart" \
-   && bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
-   && bo_calls tmux | grep -q "display-message" \
+   && ! echo "$out" | grep -q "responsive session verified" \
+   && bo_calls launchctl | grep -q "bootout gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
+   && bo_calls launchctl | grep -q "bootstrap gui/$(id -u) $BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist" \
+   && bo_calls tmux | grep -q "list-panes -s -t =flywheel" \
    && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_3" ]] \
    && jq -e --arg sha "$BO_HEAD_3" \
-        '.codeDeployedSha == $sha and .leadsRestartStatus == "healthy" and .failed == 0' \
+        '.codeDeployedSha == $sha and .leadsRestartStatus == "degraded" and .failed == 1' \
         "$bo_status" >/dev/null; then
-    pass "FLY-1434 outcome: stale old supervisor + successful kickstart/session is healthy and advances ledger"
+    pass "FLY-1507 outcome: indeterminate body snapshot cannot be reported healthy"
 else
-    fail "FLY-1434 outcome: rc=$rc sha=$(cat "$BO_HOME/.flywheel/deployed-sha") status=$(cat "$bo_status" 2>/dev/null || echo missing) out tail: $(echo "$out" | tail -5)"
+    fail "FLY-1507 outcome: indeterminate snapshot false-positive guard failed — rc=$rc sha=$(cat "$BO_HOME/.flywheel/deployed-sha") status=$(cat "$bo_status" 2>/dev/null || echo missing) out tail: $(echo "$out" | tail -5)"
 fi
 
 # ── 7) final session re-probe can degrade Leads without losing code truth ──
@@ -1553,7 +1635,7 @@ git -C "$BO_FLYWHEEL" -c user.email=t@t -c user.name=t commit -q -m "docs: resta
 BO_HEAD_4=$(git -C "$BO_FLYWHEEL" rev-parse HEAD)
 echo "$BO_HEAD_3" > "$BO_HOME/.flywheel/deployed-sha"
 out=$(FAKE_FAST_SLEEP=1 FAKE_LEAD_SESSION_DEAD=1 RESTART_LEAD_VERIFY_ATTEMPTS=2 bo_run --reason degraded-probe) && rc=0 || rc=$?
-tmux_probes=$(bo_calls tmux | grep -c "display-message" || true)
+tmux_probes=$(bo_calls tmux | grep -c "list-panes -s -t =flywheel" || true)
 if (( rc == 0 && tmux_probes >= 3 )) \
    && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_4" ]] \
    && jq -e --arg sha "$BO_HEAD_4" \
@@ -1687,6 +1769,202 @@ if [[ "$bo_ok" == "true" ]]; then
     pass "FLY-1224 FULL restart --wait-idle: idle gate waits (~35s, rc=$rc)"
 else
     fail "FLY-1224 FULL restart --wait-idle: rc=$rc health.n=$(cat "$BO_CALLS/health.n" 2>/dev/null || echo 0) out tail: $(echo "$out" | tail -4)"
+fi
+
+# ════════════════════════════════════════════════════════════════
+# FLY-1507: launchd/carrier lifecycle and exact-key candidate inventory.
+# These source production functions; no keep-in-sync copies.
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-1507 Lead restart lifecycle authority"
+# shellcheck source=lib/lead-restart-lifecycle.sh
+source "$REAL_REPO_ROOT/scripts/lib/lead-restart-lifecycle.sh"
+
+LR_ROOT="$TMPDIR_ROOT/fly1507-lifecycle"
+LR_MANIFESTS="$LR_ROOT/manifests"
+LR_PLISTS="$LR_ROOT/plists"
+LR_PROJECTS="$LR_ROOT/projects.json"
+mkdir -p "$LR_MANIFESTS" "$LR_PLISTS"
+
+lr_write_manifest() {
+    local key="$1" project="$2" lead="$3" backend="${4:-}"
+    jq -n --arg project "$project" --arg lead "$lead" --arg backend "$backend" \
+      '{projectName:$project,leadId:$lead,botTokenEnv:"TEST_TOKEN"}
+       + (if $backend == "" then {} else {leadBackend:{backendId:$backend}} end)' \
+      > "$LR_MANIFESTS/$key.json"
+}
+
+lr_write_plist() {
+    local key="$1" wrapper="$2" manifest_arg="${3:-}"
+    local label="com.flywheel.lead.$key"
+    {
+      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+      printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+      printf '%s\n' '<plist version="1.0"><dict>'
+      printf '<key>Label</key><string>%s</string>\n' "$label"
+      printf '%s\n' '<key>ProgramArguments</key><array>'
+      printf '%s\n' '<string>/bin/bash</string>'
+      printf '<string>/opt/flywheel/%s</string>\n' "$wrapper"
+      if [[ -n "$manifest_arg" ]]; then
+        printf '<string>%s</string>\n' "$manifest_arg"
+      fi
+      printf '%s\n' '</array></dict></plist>'
+    } > "$LR_PLISTS/$label.plist"
+}
+
+jq -n '[
+  {projectName:"flywheel",leads:[
+    {agentId:"alpha-lead"},
+    {agentId:"codex-infra-bot-lead",backend:"codex-app-server"},
+    {agentId:"legacy-lead"}
+  ]},
+  {projectName:"growth",leads:[
+    {agentId:"mufasa-lead",backend:"codex-app-server"}
+  ]}
+]' > "$LR_PROJECTS"
+
+lr_write_manifest "flywheel-alpha-lead" "flywheel" "alpha-lead"
+lr_write_plist "flywheel-alpha-lead" "flywheel-lead-wrapper.sh" \
+  "$LR_MANIFESTS/flywheel-alpha-lead.json"
+
+rc=0
+lead_restart_validate_authority \
+  "$LR_MANIFESTS/flywheel-alpha-lead.json" \
+  "$LR_PLISTS/com.flywheel.lead.flywheel-alpha-lead.plist" \
+  "$LR_PROJECTS" \
+  "com.flywheel.lead.flywheel-alpha-lead" || rc=$?
+if (( rc == 0 )) && [[ "$LEAD_RESTART_BACKEND" == "claude-code" ]]; then
+    pass "FLY-1507 standard wrapper + matching authorities resolves Claude before bootout"
+else
+    fail "FLY-1507 standard carrier authority failed (rc=$rc backend=${LEAD_RESTART_BACKEND:-unset})"
+fi
+
+if lead_restart_authority_unchanged >/dev/null 2>&1; then
+    pass "FLY-1507 unchanged manifest/projects/plist pass the destructive-boundary fence"
+else
+    fail "FLY-1507 unchanged authority was rejected"
+fi
+printf '\n' >> "$LR_PROJECTS"
+if lead_restart_authority_unchanged >/dev/null 2>&1; then
+    fail "FLY-1507 projects.json drift after bootout was accepted"
+else
+    pass "FLY-1507 projects.json drift prevents bootstrap"
+fi
+# Restore the frozen authority snapshot for later fixtures.
+jq -n '[
+  {projectName:"flywheel",leads:[
+    {agentId:"alpha-lead"},
+    {agentId:"codex-infra-bot-lead",backend:"codex-app-server"},
+    {agentId:"legacy-lead"}
+  ]},
+  {projectName:"growth",leads:[
+    {agentId:"mufasa-lead",backend:"codex-app-server"}
+  ]}
+]' > "$LR_PROJECTS"
+
+lr_write_manifest "growth-mufasa-lead" "growth" "mufasa-lead"
+lr_write_plist "growth-mufasa-lead" \
+  "flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh"
+rc=0
+lead_restart_validate_authority \
+  "$LR_MANIFESTS/growth-mufasa-lead.json" \
+  "$LR_PLISTS/com.flywheel.lead.growth-mufasa-lead.plist" \
+  "$LR_PROJECTS" \
+  "com.flywheel.lead.growth-mufasa-lead" || rc=$?
+if (( rc == 0 )) && [[ "$LEAD_RESTART_BACKEND" == "codex-app-server" ]]; then
+    pass "FLY-1507 Mufasa custom TUI carrier + null manifest backend resolves Codex"
+else
+    fail "FLY-1507 Mufasa carrier matrix failed (rc=$rc backend=${LEAD_RESTART_BACKEND:-unset})"
+fi
+
+lr_write_manifest "flywheel-bad-codex" "flywheel" "alpha-lead" "codex-app-server"
+lr_write_plist "flywheel-bad-codex" "flywheel-lead-wrapper.sh" \
+  "$LR_MANIFESTS/flywheel-bad-codex.json"
+if lead_restart_validate_authority \
+  "$LR_MANIFESTS/flywheel-bad-codex.json" \
+  "$LR_PLISTS/com.flywheel.lead.flywheel-bad-codex.plist" \
+  "$LR_PROJECTS" \
+  "com.flywheel.lead.flywheel-bad-codex" >/dev/null 2>&1; then
+    fail "FLY-1507 standard wrapper accepted a Codex declaration"
+else
+    pass "FLY-1507 standard wrapper + Codex declaration fails before bootout"
+fi
+
+lr_write_plist "growth-mufasa-lead" "flywheel-codex-lead-wrapper-mufasa-tui.sh"
+if lead_restart_validate_authority \
+  "$LR_MANIFESTS/growth-mufasa-lead.json" \
+  "$LR_PLISTS/com.flywheel.lead.growth-mufasa-lead.plist" \
+  "$LR_PROJECTS" \
+  "com.flywheel.lead.growth-mufasa-lead" >/dev/null 2>&1; then
+    fail "FLY-1507 legacy Mufasa carrier was authorized"
+else
+    pass "FLY-1507 legacy/non-approved carriers fail before bootout"
+fi
+
+LR_PRINT_MODE=loaded
+lead_restart_launchctl_print() {
+    case "$LR_PRINT_MODE" in
+      loaded) printf 'state = running\npid = 123\n' ;;
+      unloaded) echo "Could not find service"; return 3 ;;
+      error) echo "Operation not permitted"; return 1 ;;
+    esac
+}
+# shellcheck disable=SC2218 # Definition is sourced from lead-restart-lifecycle.sh above.
+if [[ "$(lead_restart_launchd_probe gui/501/com.flywheel.lead.x)" == "loaded	123" ]] \
+  && { LR_PRINT_MODE=unloaded; [[ "$(lead_restart_launchd_probe gui/501/com.flywheel.lead.x)" == "unloaded" ]]; } \
+  && { LR_PRINT_MODE=error; [[ "$(lead_restart_launchd_probe gui/501/com.flywheel.lead.x)" == "error" ]]; }; then
+    pass "FLY-1507 launchd probe distinguishes loaded, proven-unloaded, and transport error"
+else
+    fail "FLY-1507 launchd tri-state probe collapsed an error into unloaded"
+fi
+
+if lead_restart_recovery_bootstrap_allowed claude-code true false \
+  && ! lead_restart_recovery_bootstrap_allowed claude-code false true \
+  && lead_restart_recovery_bootstrap_allowed codex-app-server true true \
+  && ! lead_restart_recovery_bootstrap_allowed codex-app-server true false; then
+    pass "FLY-1507 recovery bootstrap policy preserves the Codex unsafe-offline boundary"
+else
+    fail "FLY-1507 backend-specific recovery bootstrap policy is unsafe"
+fi
+
+echo "Test: FLY-1507 fleet candidate inventory is exact-key, tri-state, and deduplicated"
+rm -f "$LR_MANIFESTS/flywheel-bad-codex.json"
+lr_write_manifest "flywheel-test-slot" "test-slot" "flywheel-test-1"
+lr_write_manifest "test-slot-flywheel-test-2" "test-slot" "flywheel-test-2"
+lr_write_plist "flywheel-codex-infra-bot-lead" \
+  "flywheel-codex-lead-wrapper-codex-infra-bot.sh"
+lr_write_plist "flywheel-anna-interviewer-lead" \
+  "flywheel-lead-wrapper.sh" "$LR_MANIFESTS/flywheel-anna-interviewer-lead.json"
+lr_write_plist "flywheel-residual-lead" \
+  "flywheel-lead-wrapper.sh" "$LR_MANIFESTS/flywheel-residual-lead.json"
+lr_write_plist "test-slot-flywheel-test-1" \
+  "flywheel-lead-wrapper.sh" "$LR_MANIFESTS/flywheel-test-slot.json"
+printf 'malformed plist\n' > "$LR_PLISTS/com.flywheel.lead.test-slot-flywheel-test-2.plist"
+LR_PRINT_MODE=loaded
+lead_restart_launchd_probe() {
+    case "$1" in
+      *flywheel-residual-lead) echo "unloaded" ;;
+      *) echo $'loaded\t777' ;;
+    esac
+}
+lead_restart_process_table() {
+    printf '%s\n' \
+      "700 /bin/bash /repo/packages/teamlead/scripts/claude-lead.sh legacy-lead /repo flywheel" \
+      "701 /bin/bash /repo/packages/teamlead/scripts/claude-lead.sh codex-infra-bot-lead /repo flywheel"
+}
+candidates="$LR_ROOT/candidates.tsv"
+rc=0
+lead_restart_collect_candidates "$LR_MANIFESTS" "$LR_PLISTS" "$LR_PROJECTS" "$candidates" || rc=$?
+if (( rc == 0 )) \
+  && [[ "$(grep -c '^flywheel-codex-infra-bot-lead	' "$candidates")" == "1" ]] \
+  && grep -q $'^flywheel-codex-infra-bot-lead\tflywheel\tcodex-infra-bot-lead\t-\tmanifestless\t' "$candidates" \
+  && grep -q $'^flywheel-anna-interviewer-lead\t-\t-\t-\tconfig-drift\t' "$candidates" \
+  && ! grep -q '^flywheel-residual-lead	' "$candidates" \
+  && grep -q $'^test-slot-flywheel-test-1\t.*\tskip-test\t' "$candidates" \
+  && grep -q $'^test-slot-flywheel-test-2\t.*\tskip-test\t' "$candidates" \
+  && grep -q $'^flywheel-legacy-lead\tflywheel\tlegacy-lead\t-\tmanifestless\t' "$candidates"; then
+    pass "FLY-1507 manifest/plist/process sources dedupe exact keys and expose manifestless drift"
+else
+    fail "FLY-1507 candidate inventory mismatch (rc=$rc): $(tr '\n' '|' < "$candidates" 2>/dev/null)"
 fi
 
 # ════════════════════════════════════════════════════════════════
