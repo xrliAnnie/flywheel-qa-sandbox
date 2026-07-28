@@ -32,6 +32,7 @@ describe("public package boundary", () => {
 				"CasViolation",
 				"DEFAULT_V2_DB_PATH",
 				"DETECTOR_SQL",
+				"FENCE",
 				"FenceViolation",
 				"Kernel",
 				"NestedWriteViolation",

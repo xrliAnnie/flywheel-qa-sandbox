@@ -36,6 +36,10 @@ describe("schema constraints and trigger bypass protection", () => {
 					.pluck()
 					.all(),
 			).toEqual([
+				"agents_agent_id_immutable",
+				"agents_generation_no_rollback",
+				"agents_kind_immutable",
+				"agents_no_delete",
 				"command_dependencies_immutable",
 				"command_dependencies_no_cycle",
 				"events_append_only",
@@ -194,6 +198,10 @@ describe("schema constraints and trigger bypass protection", () => {
 			db.prepare(
 				`INSERT INTO attempts(id, task_id, generation, desired_state)
 				 VALUES ('attempt-pk', 'task-pk', 1, 'planned')`,
+			).run();
+			db.prepare(
+				`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
+				 VALUES ('agent','runner',0,NULL,'offline')`,
 			).run();
 			db.prepare(
 				`INSERT INTO mailbox

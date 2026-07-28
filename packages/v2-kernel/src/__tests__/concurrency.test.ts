@@ -18,6 +18,11 @@ function insertMailbox(
 	messageUid: string,
 ): void {
 	db.prepare(
+		`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
+		 VALUES ('runner-1','runner',0,NULL,'offline')
+		 ON CONFLICT(agent_id) DO NOTHING`,
+	).run();
+	db.prepare(
 		`INSERT INTO mailbox
 		 (message_uid, source_kind, source_id, payload, payload_digest, to_agent,
 		  kind, retention_class, cutover_epoch, created_at)

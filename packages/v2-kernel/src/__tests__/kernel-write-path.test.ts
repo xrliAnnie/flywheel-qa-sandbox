@@ -493,6 +493,10 @@ describe("Kernel single-writer transaction discipline", () => {
 		};
 		kernel.write("seed mailbox", (tx) => {
 			tx.run(
+				`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
+				 VALUES ('runner-1','runner',0,NULL,'offline')`,
+			);
+			tx.run(
 				`INSERT INTO mailbox
 				 (message_uid, source_kind, source_id, payload, payload_digest, to_agent,
 				  kind, retention_class, cutover_epoch, created_at)

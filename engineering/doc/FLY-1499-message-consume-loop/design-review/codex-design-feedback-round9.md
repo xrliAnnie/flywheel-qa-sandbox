@@ -1,0 +1,41 @@
+# Design Review — FLY-1499 plan.md (Round 9)
+
+Date: 2026-07-27
+Author: Codex
+Status: CHANGES REQUESTED
+
+## Summary
+
+The C4/C5 delta is directionally sound and does not regress the Round 8-approved consumption state machine, fairness, settlement, liveness, or disposal protocol. However, C4 is not yet closed as an executable cross-batch dependency across `AgentIdentity`/`identitiesEqual`/landing order and has no 1499 acceptance matrix, while C5 leaves an uncancelled ephemeral-connection window and still conflicts with FLY-1501’s current plan; these gaps should be closed before implementation.
+
+## What's Good (Keep)
+
+- The reviewed delta is narrow: commit `4e03f2c6` changes only `engineering/doc/FLY-1499-message-consume-loop/plan.md` (17 insertions, 4 deletions), and its plan blob matches the worktree. Outside the version line and the stated C4/C5 additions, the Round 8-approved text is unchanged; `git diff --check` passes.
+- C4 is schema-compatible because registry identities live in JSON under `meta`; no SQLite migration is needed. Making `ownerLeadId` optional preserves legacy runner entries, and “present must be non-empty” is consistent with the existing fail-closed identity parser style.
+- The current kernel cannot silently persist a shape it cannot read: `writeRegistry` calls `parseIdentity(entry)` before executing its UPSERT, while today’s runner parser uses `hasExactKeys` for exactly five keys. An owner-bearing entry therefore throws before SQL and leaves no registry mutation; the sequencing risk is failed availability/build, not corrupt durable state.
+- The FLY-1501 worktree’s in-progress kernel change demonstrates a technically valid additive shape: it extends `AgentIdentity`, accepts exactly the legacy or owner-bearing runner keys, rejects an empty owner, round-trips both forms, and compares `ownerLeadId` in `identitiesEqual`. This confirms that C4 can be implemented without weakening the exact-key guard.
+- C5’s four generic requirements align with the approved protocol: `deliver` may be repeated, `hint` may be ineffective, `sessionRef` comes only from `activations.session_ref`, and mailbox settlement still has no shim ack path.
+- Selecting the stateless ephemeral Codex daemon connection preserves the v2 single-source-of-truth boundary. Rejecting the teams-mailbox branch is also consistent with the anti-over-reaction rule because the pump injects only into an activation that has just passed the active-consumer gate; paused/terminal handling remains with activation lifecycle and durable redelivery.
+- Existing T6/T10 already cover substantial parts of C5: total hint loss, repeated delivery with the same handle, shim reconstruction, continued redelivery, terminal stop, and a never-settling shim not wedging the coordinator.
+
+## Issues & Recommendations
+
+1. **[HIGH] C4 names only `parseIdentity`/`writeRegistry`, but the new field changes the full identity and fence contract; the prerequisite landing order is not a hard implementation gate.**  
+   Current FLY-1499 `AgentIdentity` has no `ownerLeadId`, the exact-key parser rejects it, and `RegisteredConsumer.identity` cannot carry it at the type level. The committed FLY-1501 HEAD inspected during review (`9788b49a`) contains the signed documentation but not the kernel change; the correct `AgentIdentity`/dual-parser/`identitiesEqual` implementation currently exists only as uncommitted worktree changes. If 1499 implements or lands first, an owner-bearing registration either cannot type-check or fails with `FenceViolation`. More importantly, §4.1 still describes DeathEvidence and map arbitration as exact identity comparisons, yet C4 never states whether `ownerLeadId` participates in `identitiesEqual`; omitting it would let identities with different owner routing compare equal.  
+   **Suggested fix:** amend §4.1, §9-2a, E36, and §12 to make the FLY-1501 kernel artifact a named predecessor of the C4 registration path. The prerequisite must cover the exported `AgentIdentity` type, exact legacy/additive parsing and round-trip, and explicit `identitiesEqual` semantics. Given the current sibling implementation and the plan’s “identity” wording, compare `ownerLeadId` exactly (absent versus present also differs); if it is intentionally metadata outside authority, say so explicitly and revise all “exact identity” claims. Require the prerequisite commit to be landed/rebased before 1499’s types/registration GREEN or merge, while retaining the observation that the legacy parser fails before mutation.
+
+2. **[MEDIUM] The §11 acceptance matrix was not extended for C4, despite adding both a guard and a write-path behavior.**  
+   T1 and T9 remain byte-identical to Round 8. They do not prove that `registerConsumerTx` preserves an absent owner for legacy compatibility, returns and writes a non-empty owner verbatim, rejects an empty owner with whole-transaction zero mutation, or keeps DeathEvidence/attach/map identity checks exact across owner mismatch. The generic type fixture only proves that `RunnerIdentityDraft` imports, not that the cross-package shape composes. This also conflicts with §11’s stated matrix/mutation discipline.  
+   **Suggested fix:** add a C4 matrix to T1: absent → legacy shape; non-empty present → exact registry plus `RegisteredConsumer.identity` round-trip; empty present → throw and zero mutation; same core runner fields but different/absent owner → exact-identity rejection with zero crash attribution/map change. Add a T9 cross-package type fixture against the prerequisite kernel type. Assign the kernel dual-shape, extra-key rejection, empty-owner rejection, and `identitiesEqual` mismatch tests explicitly to FLY-1501 rather than relying on an undocumented sibling test.
+
+3. **[MEDIUM] C5’s “ephemeral connect → turn/start → close” guarantee is not closed against the existing never-settling-deliver path.**  
+   §4.6 bounds only the coordinator’s wait with `Promise.race`; that does not cancel the underlying shim promise or socket. With option (a), a hung connect/RPC can therefore survive after the coordinator times out, and repeated redelivery can accumulate live connections even though the shim object has no stored state. That violates the newly frozen “close/no persistent shim state” behavior without changing any mailbox row, so the current T6 coordinator-liveness test would still pass.  
+   **Suggested fix:** freeze one enforceable cleanup rule: each vendor `deliver` must own a bounded connect/RPC timeout and close its ephemeral client in `finally` on success, error, and timeout, or extend the interface with a cancellation signal. Because C5 otherwise freezes the interface, the smaller choice is an internal shim timeout bounded by the engine’s per-call wait. Assign FLY-1501 tests that count zero open clients after success/error/timeout and after repeated calls; keep T6’s never-settling fake as the engine-side liveness test.
+
+4. **[MEDIUM] C5 is not yet synchronized with the sibling plan or fully pinned in 1499’s contract tests.**  
+   The current FLY-1501 plan still says C5 is open and W4 is blocked, continues to present option (b), and A14 requires repeated `deliver` to yield exactly one vendor turn. That last assertion conflicts with the newly frozen model and FLY-1501’s own exploration, which says repeated Codex `turn/start` may create repeated turns and relies on consumption idempotence. In this plan, T10 also does not explicitly prove opaque `sessionRef` pass-through or the two-method/no-ack surface.  
+   **Suggested fix:** update the FLY-1501 plan before treating W4 as unblocked: record option (a), delete option (b), align A14 with the chosen repeatability semantics, and add the connection-cleanup cases above. In 1499 T10/T9, pass a sentinel vendor-opaque `activations.session_ref` and assert byte-for-byte delivery on every retry, prove a no-op `hint` does not affect durable progress, and structurally assert that `InjectionShim` exposes only `hint`/`deliver` and no ack. If exactly one vendor turn across repeated calls is still required, specify the durable/vendor idempotency mechanism; it cannot be inferred from a stateless `turn/start` client.
+
+## Verdict
+
+CHANGES REQUESTED — address items above

@@ -9,6 +9,7 @@ export {
 export type { AgentIdentity } from "./fence.js";
 export {
 	consumerRegistryKey,
+	FENCE,
 	leadRegistryKey,
 } from "./fence.js";
 export type { ReadTx, WriteTx } from "./kernel.js";

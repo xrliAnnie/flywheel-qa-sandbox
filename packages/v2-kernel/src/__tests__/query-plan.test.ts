@@ -48,20 +48,34 @@ describe("canonical candidate SQL and query plans", () => {
 		temp = undefined;
 	});
 
-	it("keeps all four candidate SELECTs and the detector byte-identical to the design chain", () => {
+	it("limits each candidate revision to created_at plus its approved INDEXED BY pin", () => {
 		const designV10 = readFileSync(DESIGN_V10_PATH, "utf8");
 		const candidateBlock = sqlBlockAfter(
 			designV10,
 			"四条候选 SQL(原样入迁移与 query-plan 测试",
 		);
-		expect(candidateBlock).toBe(
-			[
-				CANDIDATE_SQL.F1,
-				CANDIDATE_SQL.F2,
-				CANDIDATE_SQL.N1,
-				CANDIDATE_SQL.N2,
-			].join("\n"),
-		);
+		const archived = candidateBlock.split(/(?=-- F[12] |-- N[12] )/);
+		const expectedIndexes = [
+			"mailbox_pending_immediate_f",
+			"mailbox_pending_scheduled_f",
+			"mailbox_pending_immediate_nf",
+			"mailbox_pending_scheduled_nf",
+		];
+		for (const [index, sql] of [
+			CANDIDATE_SQL.F1,
+			CANDIDATE_SQL.F2,
+			CANDIDATE_SQL.N1,
+			CANDIDATE_SQL.N2,
+		].entries()) {
+			expect(sql).toBe(
+				archived[index]
+					.replace(
+						"SELECT seq,message_uid,payload FROM mailbox",
+						`SELECT seq,message_uid,payload,created_at FROM mailbox INDEXED BY ${expectedIndexes[index]}`,
+					)
+					.trimEnd(),
+			);
+		}
 
 		const designV8 = readFileSync(DESIGN_V8_PATH, "utf8");
 		expect(sqlBlockAfter(designV8, "**detector exact SQL**")).toBe(
@@ -131,4 +145,18 @@ describe("canonical candidate SQL and query plans", () => {
 			}
 		},
 	);
+
+	it("fails loudly when a pinned fairness index is unavailable", () => {
+		temp = makeTempDatabase();
+		const db = openKernelDb({ path: temp.path });
+		try {
+			runMigrations(db);
+			db.exec("DROP INDEX mailbox_pending_scheduled_f");
+			expect(() => db.prepare(CANDIDATE_SQL.F2)).toThrow(
+				/no such index: mailbox_pending_scheduled_f/,
+			);
+		} finally {
+			db.close();
+		}
+	});
 });

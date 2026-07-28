@@ -1,5 +1,6 @@
 import {
 	type AgentIdentity,
+	FENCE,
 	Kernel,
 	type KernelOpenOptions,
 	type MigrateOptions,
@@ -19,6 +20,19 @@ void migrateOptions;
 void identity;
 void readTx;
 void writeTx;
+void FENCE;
+
+type KernelModule = typeof import("flywheel-v2-kernel");
+// @ts-expect-error registry identity comparison is package-private.
+type IdentitiesEqual = KernelModule["identitiesEqual"];
+// @ts-expect-error registry reads are package-private.
+type ReadRegistry = KernelModule["readRegistry"];
+// @ts-expect-error registry writes are package-private.
+type WriteRegistry = KernelModule["writeRegistry"];
+
+void (undefined as unknown as IdentitiesEqual);
+void (undefined as unknown as ReadRegistry);
+void (undefined as unknown as WriteRegistry);
 
 // @ts-expect-error async callbacks are excluded from the write contract.
 kernel.write("async is forbidden", async () => undefined);

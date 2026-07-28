@@ -22,11 +22,22 @@ import { makeTempDatabase, type TempDatabase } from "./helpers.js";
 // 且**任何配置下都不出现 USE TEMP B-TREE**。影响面是「fairness 分区可能悄悄不再被使用」
 // 的性能/公平性问题,归属批次 2(消费循环落地时)。
 
-const SCHEDULED_FAMILY = [
-	"mailbox_pending_scheduled",
-	"mailbox_pending_scheduled_f",
-	"mailbox_pending_scheduled_nf",
-];
+const EXPECTED_INDEX = {
+	F1: "mailbox_pending_immediate_f",
+	F2: "mailbox_pending_scheduled_f",
+	N1: "mailbox_pending_immediate_nf",
+	N2: "mailbox_pending_scheduled_nf",
+} as const;
+
+const FREE_CANDIDATE_SQL = Object.fromEntries(
+	Object.entries(CANDIDATE_SQL).map(([name, sql]) => [
+		name,
+		sql.replace(
+			/ INDEXED BY mailbox_pending_(?:immediate|scheduled)_(?:f|nf)/,
+			"",
+		),
+	]),
+) as Record<keyof typeof CANDIDATE_SQL, string>;
 
 interface PlanRow {
 	detail: string;
@@ -44,6 +55,12 @@ function seed(
 		 VALUES (?, ?, ?, '{}', 'digest', ?, 'instruction', 'business', 1, ?, 0, ?, '2026-07-26T00:00:00.000Z')`,
 	);
 	db.transaction(() => {
+		for (let i = 0; i < 25; i++) {
+			db.prepare(
+				`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
+				 VALUES (?, 'runner', 0, NULL, 'offline')`,
+			).run(`runner-${i}`);
+		}
 		for (let i = 0; i < rows; i++) {
 			insert.run(
 				`message-${i}`,
@@ -104,14 +121,17 @@ describe("candidate query plans once ANALYZE statistics exist", () => {
 					["F2", CANDIDATE_SQL.F2],
 					["N1", CANDIDATE_SQL.N1],
 					["N2", CANDIDATE_SQL.N2],
-					["detector", DETECTOR_SQL],
 				] as const) {
 					const details = planFor(db, sql);
 					const joined = details.join("\n");
 
-					// 不变量 1:永远是 SEARCH,永远不许退化成全表 SCAN。
+					// 不变量 1:完整统计存在时仍精确命中公平分区索引。
 					expect(
-						details.some((detail) => detail.includes("SEARCH")),
+						details.some(
+							(detail) =>
+								detail.includes("SEARCH") &&
+								detail.includes(EXPECTED_INDEX[name]),
+						),
 						`${name}: ${joined}`,
 					).toBe(true);
 					expect(
@@ -126,18 +146,23 @@ describe("candidate query plans once ANALYZE statistics exist", () => {
 						`${name}: ${joined}`,
 					).toBe(false);
 				}
+				const detectorDetails = planFor(db, DETECTOR_SQL);
+				expect(detectorDetails.join("\n")).toContain("mailbox_pending_age");
+				expect(detectorDetails.join("\n")).not.toContain("SCAN mailbox");
+				expect(detectorDetails.join("\n")).not.toContain("USE TEMP B-TREE");
 
-				// 不变量 3:两条 scheduled 候选至少落在 scheduled 家族之内(_f/_nf 还是基础索引
-				// 由 STAT4 样本决定 —— 那是下面那条测试刻画的对象,不在此处硬钉)。
-				for (const [name, sql] of [
-					["F2", CANDIDATE_SQL.F2],
-					["N2", CANDIDATE_SQL.N2],
-				] as const) {
-					const joined = planFor(db, sql).join("\n");
-					expect(
-						SCHEDULED_FAMILY.some((index) => joined.includes(index)),
-						`${name}: ${joined}`,
-					).toBe(true);
+				for (const name of Object.keys(CANDIDATE_SQL) as Array<
+					keyof typeof CANDIDATE_SQL
+				>) {
+					const pinned = db.prepare(CANDIDATE_SQL[name]).get({
+						agent: "runner-1",
+						now: "2026-07-27T00:00:00.000Z",
+					});
+					const free = db.prepare(FREE_CANDIDATE_SQL[name]).get({
+						agent: "runner-1",
+						now: "2026-07-27T00:00:00.000Z",
+					});
+					expect(pinned).toEqual(free);
 				}
 			} finally {
 				db.close();
@@ -154,7 +179,7 @@ describe("candidate query plans once ANALYZE statistics exist", () => {
 			runMigrations(db);
 
 			// 阶段 1:无任何统计 —— 精确命中 _f。
-			expect(planFor(db, CANDIDATE_SQL.F2).join("\n")).toContain(
+			expect(planFor(db, FREE_CANDIDATE_SQL.F2).join("\n")).toContain(
 				"mailbox_pending_scheduled_f",
 			);
 
@@ -166,7 +191,7 @@ describe("candidate query plans once ANALYZE statistics exist", () => {
 			expect(statTables(db)).toContain("sqlite_stat4");
 
 			// 阶段 2:完整 ANALYZE(stat1 + stat4)—— planner 改判到基础索引。
-			const withStat4 = planFor(db, CANDIDATE_SQL.F2).join("\n");
+			const withStat4 = planFor(db, FREE_CANDIDATE_SQL.F2).join("\n");
 			expect(withStat4).toContain("mailbox_pending_scheduled");
 			expect(withStat4).not.toContain("mailbox_pending_scheduled_f");
 
@@ -177,7 +202,9 @@ describe("candidate query plans once ANALYZE statistics exist", () => {
 			const reopened = openKernelDb({ path: temp.path });
 			try {
 				expect(statTables(reopened)).toContain("sqlite_stat1");
-				const withoutStat4 = planFor(reopened, CANDIDATE_SQL.F2).join("\n");
+				const withoutStat4 = planFor(reopened, FREE_CANDIDATE_SQL.F2).join(
+					"\n",
+				);
 				expect(withoutStat4).toContain("mailbox_pending_scheduled_f");
 
 				// 全程不许出现临时排序 —— 翻盘只影响选哪个索引,不影响顺序由索引满足。

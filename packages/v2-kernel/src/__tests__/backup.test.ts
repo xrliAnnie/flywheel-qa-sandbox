@@ -63,6 +63,7 @@ describe("WAL-safe backup hook", () => {
 				"0002-obligations-rebuild",
 				"0003-activations-processing-attempts",
 				"0004-mailbox-index-family",
+				"0005-agents-config-mailbox-rebuild",
 			]);
 		} finally {
 			backup.close();

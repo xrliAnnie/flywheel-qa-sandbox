@@ -7,11 +7,13 @@ import { makeTempDatabase, type TempDatabase } from "./helpers.js";
 
 const EXPECTED_TABLES = [
 	"activations",
+	"agents",
 	"archive_manifest",
 	"attempts",
 	"capabilities",
 	"command_dependencies",
 	"commands",
+	"config",
 	"events",
 	"gates",
 	"mailbox",

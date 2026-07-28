@@ -191,4 +191,8 @@ export const FENCE = {
 	attemptCasActiveTerminal: `UPDATE attempts
      SET desired_state='terminal', terminal_reason=:reason, terminal_at=:terminalAt
      WHERE id=:attemptId AND desired_state<>'terminal'`,
+	mailboxCasScheduleRetry: `UPDATE mailbox SET retry_count=retry_count+1, next_retry_at=:nextRetryAt
+   WHERE message_uid=:uid AND state='pending' AND to_agent=:agent`,
+	mailboxCasFailureDead: `UPDATE mailbox SET retry_count=retry_count+1, state='dead', next_retry_at=NULL
+   WHERE message_uid=:uid AND state='pending' AND to_agent=:agent`,
 } as const;
