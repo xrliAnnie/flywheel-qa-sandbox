@@ -36,6 +36,13 @@ describe("schema constraints and trigger bypass protection", () => {
 					.pluck()
 					.all(),
 			).toEqual([
+				"actions_current_actor_insert",
+				"actions_current_actor_outcome",
+				"actions_immutable_fields",
+				"actions_lineage_insert",
+				"actions_no_delete",
+				"actions_supersedes_insert",
+				"actions_terminal_once",
 				"agents_agent_id_immutable",
 				"agents_generation_no_rollback",
 				"agents_kind_immutable",
@@ -81,11 +88,15 @@ describe("schema constraints and trigger bypass protection", () => {
 		}
 	});
 
-	it("keeps events immutable and dependency edges acyclic and immutable", () => {
+	it("keeps events and actions immutable while preserving command dependency fences", () => {
 		temp = makeTempDatabase();
 		const db = openKernelDb({ path: temp.path });
 		try {
 			runMigrations(db);
+			db.prepare(
+				`INSERT INTO agents(agent_id, kind, generation, state)
+				 VALUES ('lead-a', 'lead', 1, 'online')`,
+			).run();
 			db.prepare(
 				`INSERT INTO events(event_uid, kind, cutover_epoch, created_at)
 				 VALUES ('event-1', 'test', 1, 'now')`,
@@ -119,12 +130,28 @@ describe("schema constraints and trigger bypass protection", () => {
 					)
 					.run(),
 			).toThrow();
+
+			db.prepare(
+				`INSERT INTO actions
+				 (id, actor_kind, actor_agent_id, actor_instance_id, actor_generation,
+				  kind, payload, payload_digest, logical_key, effect_key,
+				  cutover_epoch, created_at)
+				 VALUES ('action-1', 'lead', 'lead-a', 'session-a', 1,
+				  'custom_tool', '{}', 'payload-digest', 'logical-1', 'effect-1',
+				  1, 'now')`,
+			).run();
+			expect(() =>
+				db.prepare("UPDATE actions SET payload='{\"changed\":true}'").run(),
+			).toThrow();
+			expect(() =>
+				db.prepare("DELETE FROM actions WHERE id='action-1'").run(),
+			).toThrow(/not deletable/i);
 		} finally {
 			db.close();
 		}
 	});
 
-	it("enforces attempt terminal-reason coupling and mailbox/command enums", () => {
+	it("enforces attempt terminal-reason coupling and the mailbox enum", () => {
 		temp = makeTempDatabase();
 		const db = openKernelDb({ path: temp.path });
 		try {
@@ -157,20 +184,12 @@ describe("schema constraints and trigger bypass protection", () => {
 					)
 					.run(),
 			).toThrow();
-			expect(() =>
-				db
-					.prepare(
-						`INSERT INTO commands(id, kind, state, cutover_epoch, created_at)
-						 VALUES ('bad-command', 'test', 'unknown', 1, 'now')`,
-					)
-					.run(),
-			).toThrow();
 		} finally {
 			db.close();
 		}
 	});
 
-	it("declares textual primary keys NOT NULL and rejects the six D14 null probes", () => {
+	it("declares textual primary keys NOT NULL and rejects null writes", () => {
 		temp = makeTempDatabase();
 		const db = openKernelDb({ path: temp.path });
 		try {
@@ -210,6 +229,10 @@ describe("schema constraints and trigger bypass protection", () => {
 				 VALUES ('message-pk', 'test', 'pk', '{}', 'digest', 'agent', 'test',
 				  'business', 1, 'now')`,
 			).run();
+			db.prepare(
+				`INSERT INTO agents(agent_id, kind, generation, state)
+				 VALUES ('lead-pk', 'lead', 1, 'online')`,
+			).run();
 
 			const nullInsertSql = [
 				`INSERT INTO tasks
@@ -226,9 +249,12 @@ describe("schema constraints and trigger bypass protection", () => {
 				`INSERT INTO activations
 				 (id, attempt_id, session_ref, generation, state)
 				 VALUES (NULL, 'attempt-pk', 'session-null', 1, 'active')`,
-				`INSERT INTO obligations
-				 (id, kind, target_kind, target_task_id, opened_at)
-				 VALUES (NULL, 'notify', 'task', 'task-pk', 'now')`,
+				`INSERT INTO actions
+				 (id, actor_kind, actor_agent_id, actor_instance_id, actor_generation,
+				  kind, payload, payload_digest, logical_key, effect_key,
+				  cutover_epoch, created_at)
+				 VALUES (NULL, 'lead', 'lead-pk', 'session-pk', 1, 'custom_tool',
+				  '{}', 'payload-digest', 'logical-pk', 'effect-pk', 1, 'now')`,
 			];
 			for (const sql of nullInsertSql) {
 				expect(() => db.prepare(sql).run()).toThrow(/NOT NULL/);
@@ -254,9 +280,13 @@ describe("schema constraints and trigger bypass protection", () => {
 				 VALUES ('activation-pk', 'attempt-pk', 'session-pk', 1, 'active')`,
 			).run();
 			db.prepare(
-				`INSERT INTO obligations
-				 (id, kind, target_kind, target_task_id, opened_at)
-				 VALUES ('obligation-pk', 'notify', 'task', 'task-pk', 'now')`,
+				`INSERT INTO actions
+				 (id, actor_kind, actor_agent_id, actor_instance_id, actor_generation,
+				  kind, payload, payload_digest, logical_key, effect_key,
+				  cutover_epoch, created_at)
+				 VALUES ('action-pk', 'lead', 'lead-pk', 'session-pk', 1,
+				  'custom_tool', '{}', 'payload-digest', 'logical-pk', 'effect-pk',
+				  1, 'now')`,
 			).run();
 
 			const nullUpdateSql = [
@@ -265,11 +295,79 @@ describe("schema constraints and trigger bypass protection", () => {
 				"UPDATE meta SET key=NULL WHERE key='meta-pk'",
 				"UPDATE processing_attempts SET attempt_uid=NULL WHERE attempt_uid='processing-pk'",
 				"UPDATE activations SET id=NULL WHERE id='activation-pk'",
-				"UPDATE obligations SET id=NULL WHERE id='obligation-pk'",
 			];
 			for (const sql of nullUpdateSql) {
 				expect(() => db.prepare(sql).run()).toThrow(/NOT NULL/);
 			}
+			expect(() =>
+				db.prepare("UPDATE actions SET id=NULL WHERE id='action-pk'").run(),
+			).toThrow();
+		} finally {
+			db.close();
+		}
+	});
+
+	it("rejects malformed retry evidence through raw SQL", () => {
+		temp = makeTempDatabase();
+		const db = openKernelDb({ path: temp.path });
+		try {
+			runMigrations(db);
+			db.prepare(
+				`INSERT INTO agents(agent_id, kind, generation, state)
+				 VALUES ('lead-a', 'lead', 1, 'online')`,
+			).run();
+			const insertRoot = db.prepare(
+				`INSERT INTO actions
+				 (id, actor_kind, actor_agent_id, actor_instance_id, actor_generation,
+				  kind, payload, payload_digest, logical_key, effect_key,
+				  cutover_epoch, state, result, created_at, completed_at)
+				 VALUES (?, 'lead', 'lead-a', 'session-a', 1, 'custom_tool',
+				  '{}', 'payload-digest', ?, ?, 1, 'failed', '{}', 'now', 'now')`,
+			);
+			const insertSuccessor = db.prepare(
+				`INSERT INTO actions
+				 (id, actor_kind, actor_agent_id, actor_instance_id, actor_generation,
+				  kind, payload, payload_digest, logical_key, effect_key,
+				  supersedes_action_id, retry_basis, cutover_epoch, created_at)
+				 VALUES (?, 'lead', 'lead-a', 'session-a', 1, 'custom_tool',
+				  '{}', 'payload-digest', ?, ?, ?, ?, 1, 'now')`,
+			);
+			const invalid = [
+				null,
+				JSON.stringify({ evidence_ref: "gh://runs/1" }),
+				JSON.stringify({ reason: "verified absent" }),
+				JSON.stringify({ evidence_ref: "gh://runs/1", reason: null }),
+				JSON.stringify({ evidence_ref: null, reason: "verified absent" }),
+				JSON.stringify({ evidence_ref: 1, reason: 2 }),
+				JSON.stringify({ evidence_ref: "gh://runs/1", reason: " retry " }),
+				"{",
+			];
+			for (const [index, retryBasis] of invalid.entries()) {
+				const rootId = `root-${index}`;
+				const logicalKey = `logical-${index}`;
+				insertRoot.run(rootId, logicalKey, `root-effect-${index}`);
+				expect(() =>
+					insertSuccessor.run(
+						`successor-${index}`,
+						logicalKey,
+						`successor-effect-${index}`,
+						rootId,
+						retryBasis,
+					),
+				).toThrow();
+			}
+
+			insertRoot.run("root-valid", "logical-valid", "root-effect-valid");
+			insertSuccessor.run(
+				"successor-valid",
+				"logical-valid",
+				"successor-effect-valid",
+				"root-valid",
+				JSON.stringify({
+					evidence_ref: "gh://runs/2",
+					reason: "provider confirmed no request was accepted",
+				}),
+			);
 		} finally {
 			db.close();
 		}

@@ -1,0 +1,36 @@
+flowchart TD
+  START["command 被唯一发件员认领"]
+  A["窗口 A<br/>认领后、accept 前崩"]
+  B["窗口 B<br/>accept 后、intent 前崩"]
+  C["窗口 C<br/>外呼后、receipt 前崩"]
+
+  START --> A
+  START --> B
+  START --> C
+
+  A --> SAFE["无外部副作用<br/>租约到期后放回队列"]
+  B --> SAFE
+  C --> WAIT["先等旧请求静默窗结束<br/>绝不立刻重发"]
+  WAIT --> P["probe：去外部现场查询"]
+
+  P --> PRESENT["present · 确认已发生"]
+  P --> ABSENT["absent · 查询成功且确认没发生"]
+  P --> UNKNOWN["unknown · 查询失败或证据不足"]
+
+  PRESENT --> ADOPT["补写 receipt<br/>不重发"]
+  ABSENT --> POLICY{"这类动作可安全重做吗？"}
+  POLICY -->|"是"| RETRY["按预算重做"]
+  POLICY -->|"否：merge / 删除"| HUMAN["冻结并叫人"]
+  UNKNOWN --> BOUND["连续 3 次<br/>且跨度至少 5 分钟"]
+  BOUND --> HUMAN
+
+  DISCORD["Discord 普通消息不可可靠探测<br/>接受极罕见重复 + 动作身份证 + 更正帖"]
+  C -.-> DISCORD
+
+  classDef safe fill:#eaf8ef,stroke:#2e9958,color:#14552f;
+  classDef uncertain fill:#fff4d6,stroke:#d58b00,color:#6b4300;
+  classDef stop fill:#fff0ef,stroke:#d64b3c,color:#6f1d16;
+  class SAFE,PRESENT,ADOPT,ABSENT,RETRY safe;
+  class C,WAIT,P,UNKNOWN,BOUND,DISCORD uncertain;
+  class HUMAN stop;
+

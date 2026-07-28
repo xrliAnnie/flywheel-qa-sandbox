@@ -6,6 +6,7 @@ import { migrateDatabase, runMigrations } from "../migrator.js";
 import { makeTempDatabase, type TempDatabase } from "./helpers.js";
 
 const EXPECTED_TABLES = [
+	"actions",
 	"activations",
 	"agents",
 	"archive_manifest",
@@ -28,6 +29,12 @@ const EXPECTED_TABLES = [
 ];
 
 const EXPECTED_NAMED_INDEXES = [
+	"actions_actor_created",
+	"actions_logical_created",
+	"actions_one_root_per_logical",
+	"actions_one_successor",
+	"actions_state_created",
+	"actions_task_created",
 	"activations_one_per_attempt",
 	"activations_one_per_session",
 	"attempts_one_active_per_task",
@@ -51,7 +58,7 @@ describe("v2 migration chain", () => {
 		temp = undefined;
 	});
 
-	it("creates the authoritative 17-table schema and all named indexes from zero", () => {
+	it("runs the 0005 agents and 0006 actions migrations together from zero", () => {
 		temp = makeTempDatabase();
 		expect(migrateDatabase({ path: temp.path })).toEqual({
 			applied: MIGRATIONS.map((migration) => migration.id),

@@ -1,0 +1,35 @@
+flowchart TD
+  M["① messages 收到一件事"]
+
+  subgraph TX["② 同一笔数据库事务 · 崩在任一步 = 整笔回滚"]
+    T1["2a 处理消息"]
+    T2["2b 把消息销账"]
+    T3["2c 登记 pending command<br/>和通知前置关系"]
+    T1 --> T2 --> T3
+  end
+
+  C["③ commands 成为唯一待办来源"]
+  D["④ 每个 command.kind<br/>恰好一个唯一发件员"]
+  CLAIM["⑤ 原子认领<br/>只有一个进程赢"]
+  INTENT["⑥ 先记 intent<br/>白话：准备动手"]
+  CALL["⑦ 真实外呼<br/>GitHub / Discord / Linear / 进程<br/>不放进数据库事务"]
+  RECEIPT["⑧ 写 receipt<br/>白话：结果证据"]
+  PROBE["⑨ 定期 probe 对账<br/>白话：去现场查应有 vs 实际"]
+  DONE["⑩ 账实一致<br/>成功结清或升级给人"]
+
+  M --> T1
+  T3 -->|"事务一次提交"| C
+  C --> D --> CLAIM --> INTENT --> CALL --> RECEIPT --> PROBE --> DONE
+
+  RB["若 2a / 2b / 2c 任一步崩溃<br/>messages 不销账、command 不出现<br/>下次安全重做"]
+  TX -.-> RB
+
+  classDef tx fill:#eaf3ff,stroke:#3178c6,color:#113b64;
+  classDef external fill:#fff0d9,stroke:#d68100,color:#6f4300;
+  classDef evidence fill:#eaf8ef,stroke:#2e9958,color:#14552f;
+  classDef rollback fill:#fff0ef,stroke:#d64b3c,color:#6f1d16;
+  class M,T1,T2,T3,C,D,CLAIM tx;
+  class INTENT,RECEIPT,PROBE,DONE evidence;
+  class CALL external;
+  class RB rollback;
+

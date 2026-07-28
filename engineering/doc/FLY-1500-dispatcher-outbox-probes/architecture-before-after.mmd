@@ -1,0 +1,42 @@
+flowchart LR
+  subgraph V1["BEFORE · v1：5+ 本零散账互不相认"]
+    R["① 外发收据表<br/>只知某一步发过"]
+    W["② 唤醒指针<br/>只知读到哪里"]
+    C["③ 进程内去重缓存<br/>重启即清空"]
+    P["④ stage 进度文件<br/>只知 runner 自报"]
+    D["⑤ CommDB<br/>只知问答与指令"]
+    B["⑥ Bridge 状态机<br/>只知界面与工作流"]
+    X["没有共同提交点<br/>一本成功 ≠ 其他本成功"]
+    R --> X
+    W --> X
+    C --> X
+    P --> X
+    D --> X
+    B --> X
+    X --> DUP["病例 A：重启后重复外发"]
+    X --> LOSS["病例 B：ship / 通知静默丢失"]
+  end
+
+  CUT["批次 4<br/>删除旧账<br/>不长期双写"]
+
+  subgraph V2["AFTER · v2：1 本统一权威账"]
+    M["messages<br/>收到、处理、销账"]
+    O["commands<br/>待办 + 认领 + 回执"]
+    E["events<br/>不可改的证据"]
+    Q["obligations<br/>只放需要人处理的异常"]
+    M -->|"同一事务"| O
+    O --> E
+    O --> Q
+  end
+
+  V1 ==>|"1 本换 5+ 本<br/>净减至少 4 本"| CUT ==> V2
+
+  classDef old fill:#fff0ef,stroke:#d64b3c,color:#6f1d16;
+  classDef bad fill:#ffe0dc,stroke:#c9342b,color:#7a1711;
+  classDef good fill:#eaf8ef,stroke:#2e9958,color:#14552f;
+  classDef cut fill:#fff4d6,stroke:#d58b00,color:#6b4300;
+  class R,W,C,P,D,B old;
+  class X,DUP,LOSS bad;
+  class M,O,E,Q good;
+  class CUT cut;
+

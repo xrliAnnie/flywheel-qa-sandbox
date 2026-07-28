@@ -41,7 +41,11 @@ describe("public package boundary", () => {
 				"backupDatabase",
 				"consumerRegistryKey",
 				"leadRegistryKey",
+				"listActions",
 				"migrateDatabase",
+				"readAction",
+				"recordActionIntent",
+				"recordActionOutcome",
 			].sort(),
 		);
 	});

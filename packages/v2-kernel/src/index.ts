@@ -1,3 +1,20 @@
+export type {
+	ActionActor,
+	ActionSnapshot,
+	ActionState,
+	JsonValue,
+	ListActionsOptions,
+	RecordActionIntentOptions,
+	RecordActionIntentResult,
+	RecordActionIntentSpec,
+	RecordActionOutcomeSpec,
+} from "./actions.js";
+export {
+	listActions,
+	readAction,
+	recordActionIntent,
+	recordActionOutcome,
+} from "./actions.js";
 export { backupDatabase } from "./backup.js";
 export {
 	CasViolation,

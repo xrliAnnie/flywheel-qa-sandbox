@@ -1,0 +1,31 @@
+flowchart LR
+  INPUT["新事件进入"]
+  KIND{"这是 business<br/>还是 notice？"}
+
+  BUSINESS["business · 业务事实<br/>例如消息、command、回执"]
+  NOTICE["notice · 加速提示<br/>例如门铃、刷新提醒"]
+
+  LEDGER["闸 1 · 业务必须落统一账<br/>永不以丢弃换吞吐"]
+  DROP["过载时 notice 可丢<br/>60 秒周期扫描补回来"]
+
+  HOT["闸 2 · 热表只留处理窗口"]
+  ARCHIVE["旧明细按保留策略归档<br/>审计仍可查"]
+
+  MACHINE["机器持续对账"]
+  ALERT["闸 3 · 聚合成有行动意义的告警"]
+  HUMAN["人只看告警<br/>不逐行读数据库"]
+
+  INPUT --> KIND
+  KIND -->|"business"| BUSINESS --> LEDGER --> HOT --> MACHINE
+  KIND -->|"notice"| NOTICE --> DROP --> MACHINE
+  HOT --> ARCHIVE
+  MACHINE -->|"正常"| QUIET["静默结清"]
+  MACHINE -->|"重试耗尽 / 长期 unknown"| ALERT --> HUMAN
+
+  classDef must fill:#eaf8ef,stroke:#2e9958,color:#14552f;
+  classDef maydrop fill:#fff4d6,stroke:#d58b00,color:#6b4300;
+  classDef human fill:#eaf3ff,stroke:#3178c6,color:#113b64;
+  class BUSINESS,LEDGER,HOT,ARCHIVE,MACHINE,QUIET must;
+  class NOTICE,DROP maydrop;
+  class ALERT,HUMAN human;
+

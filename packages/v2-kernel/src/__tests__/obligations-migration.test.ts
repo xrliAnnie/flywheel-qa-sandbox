@@ -129,7 +129,7 @@ describe("obligations rebuild migration", () => {
 		temp = makeTempDatabase();
 		const db = openKernelDb({ path: temp.path });
 		try {
-			runMigrations(db);
+			runMigrations(db, MIGRATIONS.slice(0, 2));
 			insertTask(db, "task-1");
 			insertFinalObligation(db, {
 				id: "agent-obligation",
@@ -173,7 +173,7 @@ describe("obligations rebuild migration", () => {
 		temp = makeTempDatabase();
 		const db = openKernelDb({ path: temp.path });
 		try {
-			runMigrations(db);
+			runMigrations(db, MIGRATIONS.slice(0, 2));
 			insertTask(db, "task-1", "running");
 			insertFinalObligation(db, {
 				id: "task-target",
@@ -203,7 +203,7 @@ describe("obligations rebuild migration", () => {
 		temp = makeTempDatabase();
 		const db = openKernelDb({ path: temp.path });
 		try {
-			runMigrations(db);
+			runMigrations(db, MIGRATIONS.slice(0, 2));
 			insertFinalObligation(db, {
 				id: "episode-1",
 				targetKind: "agent",
@@ -236,7 +236,7 @@ describe("obligations rebuild migration", () => {
 		temp = makeTempDatabase();
 		const db = openKernelDb({ path: temp.path });
 		try {
-			runMigrations(db);
+			runMigrations(db, MIGRATIONS.slice(0, 2));
 			insertFinalObligation(db, {
 				id: "root",
 				targetKind: "agent",

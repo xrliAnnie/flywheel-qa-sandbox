@@ -126,7 +126,7 @@ describe("agents/config mailbox cutover migration", () => {
 			).run();
 
 			expect(runMigrations(db)).toEqual({
-				applied: [MIGRATIONS.at(-1)?.id],
+				applied: MIGRATIONS.slice(4).map((migration) => migration.id),
 			});
 			expect(
 				db
