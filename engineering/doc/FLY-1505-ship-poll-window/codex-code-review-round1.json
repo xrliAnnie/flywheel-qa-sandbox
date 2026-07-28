@@ -1,0 +1,36 @@
+{
+  "event": "COMMENT",
+  "body": "🤖 **Codex Code Review — Round 1**\n\nModel: default | Effort: xhigh\n\n## Verdict: CHANGES REQUESTED\n\n在指定 head `c97f4e3791505bd1320ebb068099f1c33c450440` 上发现 4 个需要修复的 MEDIUM：\n\n- **MEDIUM** — boot drain 仍晚于已经启动的 GatePoller；首个 3 秒 tick 可在抑制 marker 落库前重发 `approval_wake`，重新触发本应暂停的 ship attempt。\n- **MEDIUM** — 离线 drain 只等待了一个会正常 resolve 的 `void` effect；no-lead、no-sink 与 notifier dead-letter 都会被当成“告警成功”，随后删除最后的 complete marker。\n- **MEDIUM** — delayed marker 的 approval binding 取自消费时的 session row，而不是 attempt 事件；同 head 的 Q1 marker 可被写成 Q2 marker并错误抑制新批准轮次。\n- **MEDIUM** — `(unknown)` 的保护条件额外要求 question id 相同；Q1 的真实 head marker 会被 Q2 的 unknown attempt 覆盖，违反“unknown 永不覆盖真实 head”的 durable-evidence 合同。\n\n另有两个非阻断问题：\n\n- **LOW** — HeartbeatService 的三条 `ReconcileOutcome` 消费链未显式处理 `settled_ship_attempt_failed`；当前因 parked status 在调用前返回而不可达，但未来拓宽条件会静默 fall through 到 liveness。\n- **LOW** — `complete --route ship_attempt_failed --pr N` 强制要求 `--pr`，但 non-merged payload 不承载它，三个 sink 都改用 session row 的 PR；错误的 N 目前也会成功。\n\n我同意 QA 对 re-wake scope 的描述：同 head marker 目前同时跳过这一个 pass 的 probe/W-1 dead alert；由于 Heartbeat 的 parked-phase liveness 仍独立覆盖，这一点当前不构成阻断。`plugin.ts` 和 `HeartbeatService.ts` 中声称 marker drain 先于 FLY-324/FLY-623 的注释则已经失真，应随 boot 顺序修复一并更新。\n\n验证：edge-worker 13/13、flywheel-comm 47/47、teamlead 非监听路径 303/303 通过；三个包 typecheck 通过；19 个变更源文件 Biome 通过；`git diff --check` 通过。两份 HTTP integration 在本沙箱因 `listen EPERM 127.0.0.1` 无法执行，未将基础设施限制计为代码失败。真实 workflow 的 `trigger_comment_id` / `run_id` / `status=started` receipt 字段存在，唯一 `timeout-minutes` 为 30；COOL_ID、jq 前缀隔离/空结果和 awk 解析在 sh/bash/zsh 探针中均符合提示词。",
+  "comments": [
+    {
+      "path": "packages/teamlead/src/bridge/plugin.ts",
+      "line": 8791,
+      "body": "🤖 **Codex** — **MEDIUM — drain 仍晚于会自动 re-wake 的 timer。** `gatePoller.start()` 已在 8401 启动，生产 interval 是 3 秒，而且 tick 1 就执行 `staleApprovedShipReconcilePass`。二者之间还有可阻塞的 `await roundtableThreadManager.start()`；因此 Bridge-down 时留下的 ship-attempt marker 还没在这里写入 session suppressor，首 tick 就可能对 stale `approved_to_ship` 重发 `approval_wake`，让 Runner 在 Lead 诊断前再次发 `:cool:`。请把 GatePoller 启动移到 drain 成功/失败处理之后（或显式 gate 首 tick），并加 fake-timer 启动顺序回归；6389、6526、6674 及 Heartbeat 1553 附近的“drain 已先运行”注释也需同步。"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/auto-qa-effects.ts",
+      "line": 502,
+      "body": "🤖 **Codex** — **MEDIUM — `await` 并不等于告警被接受。** 本方法在 no-sink/no-lead 时（477-499）记录 console 后正常返回，并完全忽略这里的 `AlertResult`；而 `LeadAlertNotifier.alert()` 对 no-channel/no-token/unknown-lead/永久 4xx 也会 resolve 为 `deadLettered`/`skipped`。boot reconciler 因而会把这些都当成功并在 `complete-marker-reconciler.ts:569` 删除 marker，直接违反 design-correction 的“告警成功后才删除；失败保留重试”。请让该 effect 返回并校验明确的 accepted outcome，no-lead/no-sink/non-accepted 需 reject，使 drain 保留 marker；补 no-lead 与 non-accepted result 测试。"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/complete-marker-reconciler.ts",
+      "line": 546,
+      "body": "🤖 **Codex** — **MEDIUM — 这里把 attempt 绑定成了消费时的批准，而不是 attempt 自己的批准。** `complete` 已支持 `payload.reviewQuestionId`，但 Blueprint 的新命令没有传，三条 sink 都改用当前 session row。Bridge 已先 listen、且 drain 很晚，所以 Q1 的磁盘 marker 可以在同 head 的 Q2 review binding 写入后才到这里；head 比较仍相等，随后 marker 被错误写成 Q2 并抑制 Q2 的自动 wake。显式 `ship_attempt_failed` 应携带 step-a questionId，sink 应比较 event binding 与 current binding；旧 Q1 只消费不污染 Q2。请补 delayed Q1 → same-head Q2 的回归。"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/post-ship-finalization.ts",
+      "line": 201,
+      "body": "🤖 **Codex** — **MEDIUM — `(unknown)` 仍能覆盖真实 head。** 这个 veto 额外要求 `priorReviewQuestionId === reviewQuestionId`；因此先写 `{head_sha: A, review_question_id: Q1}`，再以 missing head + Q2 调 helper，会返回 `unknown_head_marked` 并把真实 A 改成 `(unknown)`。这与 plan/user contract 的“unknown 只写空槽、永不覆盖真实-head 条目”相反，也丢掉唯一 durable head evidence。对任何 `REAL_GIT_HEAD.test(priorHead)` 都应直接 `unknown_head_skipped`，并补 Q1-real → Q2-unknown 保持整条 marker byte-for-byte 不变的测试。"
+    },
+    {
+      "path": "packages/teamlead/src/HeartbeatService.ts",
+      "line": 882,
+      "body": "🤖 **Codex** — **LOW — 新 outcome 在 Heartbeat 的三个消费者中仍是非穷尽 fallthrough。** 928、1053、1125 附近仅处理 reconciled/duplicate、transient 与 quarantined，`settled_ship_attempt_failed`（以及既有 settled_merge_block）会继续走 liveness。当前 special settlement 要求 approved/parked，而 parked 分支在调用前 return，所以暂不可达；但任何合理的后续状态拓宽都会无提示改变行为。建议改成 exhaustive switch，或显式将两个 settled outcome 当 processed。"
+    },
+    {
+      "path": "packages/flywheel-comm/src/commands/complete.ts",
+      "line": 183,
+      "body": "🤖 **Codex** — **LOW — `--pr` 在这条 route 上只是装饰性校验。** `collectEvidence` 只在 `merged=true` 时写 PR，后面的 landingStatus 分支也仅覆盖 pr_handoff/needs_review；因此 `ship_attempt_failed --pr 999` 与正确 PR 产生相同 payload，server 最终使用 session row 的 PR。若该参数用于 attempt identity，应把它承载到 payload 并与 session PR fail-loud 比对；否则不应让 CLI 的 required check 暗示已经验证。"
+    }
+  ]
+}

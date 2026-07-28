@@ -132,6 +132,11 @@ export interface AutoQaSideEffects {
 		projectName: string;
 		reason: string;
 	}): Promise<void> | void;
+	/** FLY-1505: severe, accurately-labelled ship-attempt alert. */
+	alertShipAttemptFailed?(args: {
+		session: Session;
+		reason: string;
+	}): Promise<void> | void;
 	/**
 	 * FLY-630 ②: stamp the PARENT issue's `[FLY-XX]` chat-thread title badge to
 	 * reflect the issue's CURRENT pipeline stage during the independent-QA phase.
@@ -926,6 +931,31 @@ export class AutoQaCoordinator {
 		} catch (err) {
 			this.warn(
 				`alertMergeWithoutApproval failed for ${session.issue_id}: ${asErr(err)}`,
+			);
+		}
+	}
+
+	/**
+	 * FLY-1505: surface a failed/stalled ship attempt whose blocked completion
+	 * was deflected so the live founder approval remains usable. The durable
+	 * recovery fact lives in session_params; this notification is best-effort.
+	 */
+	async alertShipAttemptFailed(
+		session: Session,
+		reason: string,
+	): Promise<void> {
+		if (!this.deps.effects.alertShipAttemptFailed) {
+			this.warn(`alertShipAttemptFailed has no sink for ${session.issue_id}`);
+			return;
+		}
+		try {
+			await this.deps.effects.alertShipAttemptFailed({
+				session,
+				reason,
+			});
+		} catch (err) {
+			this.warn(
+				`alertShipAttemptFailed failed for ${session.issue_id}: ${asErr(err)}`,
 			);
 		}
 	}

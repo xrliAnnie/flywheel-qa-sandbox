@@ -62,6 +62,10 @@ import {
 	mergedPrCiProbe,
 	parkMergeBlock,
 } from "./merge-ship-gate.js";
+import {
+	type ShipAttemptSettle,
+	settleShipAttemptFailed,
+} from "./post-ship-finalization.js";
 import { isClosedSettledCompletion } from "./workflow-completion-settled.js";
 
 /** Default marker directory — mirrors `flywheel-comm/complete.ts` writeMarker(). */
@@ -92,6 +96,7 @@ const VALID_ROUTES = new Set([
 	"auto_approve",
 	"needs_review",
 	"blocked",
+	"ship_attempt_failed",
 	"no_code",
 	// FLY-493: pr_handoff (no-transport antigravity build+PR terminal) must be
 	// recognized here too, else a fail-close marker from
@@ -136,6 +141,10 @@ export type ReconcileOutcome =
 	// ship-eligible was parked with a merge_block marker + the complete-marker
 	// SETTLED (deleted, NOT quarantined, NOT forced completed/failed).
 	| { kind: "settled_merge_block"; head: string }
+	| {
+			kind: "settled_ship_attempt_failed";
+			settle: ShipAttemptSettle["outcome"];
+	  }
 	| { kind: "transient_failed"; error: string }
 	| {
 			kind: "quarantined";
@@ -164,6 +173,14 @@ export interface MarkerReconcilerDeps {
 	 * AutoQaCoordinator's alert channel in plugin.ts. Absent → marker + log only.
 	 */
 	alertMergeWithoutApproval?: (session: Session, reason: string) => void;
+	/**
+	 * FLY-1505: durable ship-attempt alert. A rejected Promise keeps the
+	 * complete-failed marker retryable instead of deleting the only alert receipt.
+	 */
+	alertShipAttemptFailed?: (
+		session: Session,
+		reason: string,
+	) => void | Promise<void>;
 	/** FLY-1066: direct forceStatus fallback bypasses applyTransition. */
 	onTerminalStatusPersisted?: (
 		executionId: string,
@@ -193,7 +210,13 @@ type MarkerBody = {
 	source?: string;
 	payload?: {
 		decision?: { route?: string };
-		evidence?: { landingStatus?: { status?: string }; headSha?: string };
+		evidence?: {
+			landingStatus?: { status?: string };
+			headSha?: string;
+			prNumber?: number;
+		};
+		reviewQuestionId?: string;
+		summary?: string;
 		sessionRole?: string;
 		workflowActivation?: WorkflowCompletionActivationContext;
 		[k: string]: unknown;
@@ -293,7 +316,10 @@ export function expectedStatusFromMarker(
 		return isPostApproveShip ? "completed" : "awaiting_review";
 	}
 	if (route === "blocked") {
-		return "blocked";
+		return isPostApproveShip ? "approved_to_ship" : "blocked";
+	}
+	if (route === "ship_attempt_failed") {
+		return isPostApproveShip ? "approved_to_ship" : null;
 	}
 	if (route === "no_code" || route === "pr_handoff") {
 		// FLY-222 #1 (Codex code-review MED-2 parity): no_code only terminalizes a
@@ -503,6 +529,74 @@ export async function tryReconcileComplete(
 		}
 	}
 
+	const markerLanding = body.payload?.evidence?.landingStatus?.status;
+
+	// FLY-1505: an explicit failed-attempt settlement (or a legacy blocked
+	// completion) after founder approval describes a ship ATTEMPT, not a blocked
+	// session. Generalized completions and markers claiming a merge retain their
+	// older authoritative replay/merge-block paths below.
+	if (
+		(body.payload?.decision?.route === "blocked" ||
+			body.payload?.decision?.route === "ship_attempt_failed") &&
+		currentStatus === "approved_to_ship" &&
+		!generalizedBinding &&
+		markerLanding !== "merged"
+	) {
+		let settle: ShipAttemptSettle;
+		try {
+			const markerPrNumber = body.payload?.evidence?.prNumber;
+			const markerReviewQuestionId = body.payload?.reviewQuestionId;
+			const usableMarkerPrNumber =
+				typeof markerPrNumber === "number" &&
+				Number.isInteger(markerPrNumber) &&
+				markerPrNumber > 0
+					? markerPrNumber
+					: undefined;
+			settle = settleShipAttemptFailed(deps.store, execId, {
+				attemptHeadSha: body.payload?.evidence?.headSha,
+				currentHeadSha: currentSession?.pr_head_sha,
+				prNumber:
+					usableMarkerPrNumber ?? currentSession?.pr_number ?? undefined,
+				reviewQuestionId:
+					typeof markerReviewQuestionId === "string"
+						? markerReviewQuestionId
+						: undefined,
+				currentReviewQuestionId: currentSession?.review_question_id,
+				summary: body.payload?.summary,
+			});
+			if (
+				(settle.outcome === "marked" ||
+					settle.outcome === "unknown_head_marked") &&
+				currentSession
+			) {
+				const retryPosture =
+					settle.outcome === "marked"
+						? "同 head 的自动重唤醒已暂停，请由 Lead 显式唤醒。"
+						: "本次完成未携带可验证的 head；自动重唤醒仍开启（fail-open）。";
+				// The notifier event id is approval-binding + head deduped. Await
+				// it before consuming the durable marker so a transient notifier
+				// failure is replayed after restart instead of becoming silent.
+				if (!deps.alertShipAttemptFailed) {
+					throw new Error("ship_attempt_failed durable alert sink unavailable");
+				}
+				await deps.alertShipAttemptFailed(
+					currentSession,
+					`⚠️ Runner ${execId}（${currentSession.issue_id}）报告 ship attempt 失败/停滞；会话保持 approved_to_ship，founder 批准仍有效。请检查 PR #${usableMarkerPrNumber ?? currentSession.pr_number ?? "unknown"} 的 ship workflow；诊断后重试前先重新运行 verify-approval。${retryPosture}`,
+				);
+			}
+		} catch (err) {
+			return { kind: "transient_failed", error: String(err) };
+		}
+		safeUnlink(markerPath, log);
+		log(
+			`[complete-reconciler] FLY-1505 ship_attempt_failed deflected for ${execId} — approved_to_ship preserved (${settle.outcome})`,
+		);
+		return {
+			kind: "settled_ship_attempt_failed",
+			settle: settle.outcome,
+		};
+	}
+
 	// FLY-869 B (design R2 HIGH-4): a merged marker whose session is NOT
 	// ship-eligible must NOT reconcile to `completed` (that would finalize/Done a
 	// merge_without_approval). Park it + SETTLE the marker (delete — the marker did
@@ -516,7 +610,6 @@ export async function tryReconcileComplete(
 	// the true no-out terminals ({completed, blocked, failed}); `awaiting_review` /
 	// `approved_to_ship` fall through to the eligibility check (an approved+merged row is
 	// eligible → not parked → normal completion; a parked/unapproved row → parked here).
-	const markerLanding = body.payload?.evidence?.landingStatus?.status;
 	if (
 		markerLanding === "merged" &&
 		currentSession &&
@@ -938,7 +1031,10 @@ export async function reconcileCompleteFailedMarkers(
 			outcome.kind === "duplicate_terminal" ||
 			// FLY-869 B: a settled merge_block is a successfully-PROCESSED marker
 			// (parked, not finalized) — count it as reconciled, never fall back.
-			outcome.kind === "settled_merge_block"
+			outcome.kind === "settled_merge_block" ||
+			// FLY-1505: the attempt marker was durably settled while the live
+			// approval/session status was preserved.
+			outcome.kind === "settled_ship_attempt_failed"
 		) {
 			result.reconciled += 1;
 		} else if (outcome.kind === "quarantined") {

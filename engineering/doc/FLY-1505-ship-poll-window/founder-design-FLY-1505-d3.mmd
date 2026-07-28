@@ -1,0 +1,16 @@
+flowchart TD
+    A["某个还没换新规则的 Runner<br/>(重启前已在飞的旧会话)<br/>仍然自报 blocked(卡死)"] --> B{"服务端拦截闸:<br/>这个会话是不是<br/>『已批准待合并』?"}
+    B -->|"否(普通工作中的会话)"| C["照旧处理成 blocked<br/>(一个字节都不变)"]
+    B -->|"是"| D["拦下,不翻状态"]
+    D --> E["核对版本指纹:<br/>这次失败属于哪一版代码?"]
+    E -->|"就是当前批准的这版"| F["写一条持久标记:<br/>『这版 ship 尝试失败过』"]
+    E -->|"是早已换掉的旧版"| G["按过期尝试记录归档,<br/>绝不污染当前批准"]
+    F --> H["第一次:发提醒给 Lead<br/>(重复的不再刷屏)"]
+    F --> I["暂停系统对同一版的<br/>自动叫醒重试<br/>(防止无诊断反复触发合并)"]
+    H --> J["恢复由 Lead 主导:<br/>人工唤醒 → 重跑核验 → 再 :cool:"]
+    I --> J
+    style C fill:#f2f2f7,stroke:#86868b
+    style D fill:#e8f0fe,stroke:#007aff
+    style F fill:#e8f0fe,stroke:#007aff
+    style G fill:#f2f2f7,stroke:#86868b
+    style J fill:#e8f7ee,stroke:#34c759

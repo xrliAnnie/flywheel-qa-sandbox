@@ -1,0 +1,15 @@
+flowchart TD
+    A["Runner 发出 :cool:<br/>(触发自动测试+合并)"] --> B["按旧规则只等 10 分钟<br/>(每 30 秒看一次)"]
+    B --> C["但测试全套要跑 ~20 分钟<br/>(上限 30 分钟)"]
+    C --> D["10 分钟一到,误判:<br/>『没合上,我被卡住了』"]
+    D --> E["自报 blocked(卡死)"]
+    E --> F["会话状态被翻成 blocked"]
+    F --> G["最后一道核验 verify-approval:<br/>状态不对 → 拒绝放行"]
+    G --> H["你的批准还活着<br/>却再也用不了<br/>(没有回头路,只能人工修)"]
+    C -.-> I["测试其实还在正常跑,<br/>PR 往往稍后真的合并了"]
+    I -.-> J["状态撕裂:<br/>代码已进主干,会话却写着『卡死』"]
+    style D fill:#ffe5e3,stroke:#ff3b30
+    style E fill:#ffe5e3,stroke:#ff3b30
+    style F fill:#ffe5e3,stroke:#ff3b30
+    style H fill:#ff3b30,color:#fff,stroke:#c22
+    style J fill:#fff3e0,stroke:#ff9500

@@ -1133,6 +1133,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Work-kind dispatch input rejected";
 		case "stale_approved_ship_dead":
 			return "Approved ship runner is dead";
+		case "ship_attempt_failed":
+			return "Founder-approved ship attempt failed";
 		// FLY-195: never emitted by LeadWatchdog (the stuck-runner detector owns
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_stuck_unhandled":
@@ -1371,6 +1373,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A fresh work-kind dispatch was rejected because an explicit category, tier, routing override, or template override was invalid. Correct the request and dispatch again; the dedup key in the notice identifies retries of the same input.";
 		case "stale_approved_ship_dead":
 			return "An approved_to_ship runner was proven dead through its exact tmux target. Resume the execution through the durable recovery path; this watchdog never self-ships.";
+		case "ship_attempt_failed":
+			return "A founder-approved ship attempt failed or could not be tracked to completion. The approval remains valid; inspect the workflow and explicitly wake the runner before retrying.";
 		case "receipt_foundation_off":
 			return "FLYWHEEL_RECEIPT_FOUNDATION=0 paused receipt deadline advance, resend, and escalation. Founder transport remains Lead-only; restore receipt chasing after the incident is contained.";
 		// FLY-195: never emitted by LeadWatchdog (see titleFor).

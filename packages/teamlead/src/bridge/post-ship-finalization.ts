@@ -125,6 +125,128 @@ export function markEvidenceGapCompletion(
 	}));
 }
 
+export type ShipAttemptSettle =
+	| {
+			outcome: "marked";
+			firstAttemptForHead: boolean;
+			attemptCount: number;
+	  }
+	| { outcome: "stale_attempt" }
+	| {
+			outcome: "unknown_head_marked";
+			firstAttemptForHead: boolean;
+			attemptCount: number;
+	  }
+	| { outcome: "unknown_head_skipped" };
+
+const REAL_GIT_HEAD = /^[0-9a-f]{40}$/;
+const UNKNOWN_SHIP_ATTEMPT_HEAD = "(unknown)";
+
+function normalizedGitHead(
+	value: string | null | undefined,
+): string | undefined {
+	const normalized = value?.trim().toLowerCase();
+	return normalized && REAL_GIT_HEAD.test(normalized) ? normalized : undefined;
+}
+
+/**
+ * FLY-1505: settle a failed/stalled ship ATTEMPT without changing the session
+ * status. The completion event's head is authoritative for the attempt; the
+ * session row's head is only the comparison target for the currently-live
+ * approval.
+ *
+ * A delayed attempt for an older real head is consumed without writing. An
+ * event with no usable head records an explicit fail-open sentinel, but that
+ * sentinel never overwrites a real-head marker.
+ */
+export function settleShipAttemptFailed(
+	store: StateStore,
+	executionId: string,
+	info: {
+		attemptHeadSha?: string | null;
+		currentHeadSha?: string | null;
+		prNumber?: number;
+		/** Approval binding carried by the attempt event itself. */
+		reviewQuestionId?: string | null;
+		/** Approval binding on the currently-live session row. */
+		currentReviewQuestionId?: string | null;
+		summary?: string;
+	},
+): ShipAttemptSettle {
+	const attemptHead = normalizedGitHead(info.attemptHeadSha);
+	const currentHead = normalizedGitHead(info.currentHeadSha);
+	if (attemptHead && currentHead && attemptHead !== currentHead) {
+		return { outcome: "stale_attempt" };
+	}
+	const reviewQuestionId = info.reviewQuestionId?.trim() || null;
+	const currentReviewQuestionId = info.currentReviewQuestionId?.trim() || null;
+	if (
+		reviewQuestionId &&
+		currentReviewQuestionId &&
+		reviewQuestionId !== currentReviewQuestionId
+	) {
+		return { outcome: "stale_attempt" };
+	}
+
+	let result: ShipAttemptSettle | undefined;
+	patchSessionParams(store, executionId, (cur) => {
+		const priorRaw = cur.fly1505_ship_attempt_failed;
+		const prior =
+			priorRaw && typeof priorRaw === "object" && !Array.isArray(priorRaw)
+				? (priorRaw as Record<string, unknown>)
+				: undefined;
+		const priorHead =
+			typeof prior?.head_sha === "string" ? prior.head_sha.toLowerCase() : "";
+		const priorReviewQuestionId =
+			typeof prior?.review_question_id === "string"
+				? prior.review_question_id
+				: null;
+
+		if (!attemptHead && REAL_GIT_HEAD.test(priorHead)) {
+			result = { outcome: "unknown_head_skipped" };
+			return cur;
+		}
+
+		const markerHead = attemptHead ?? UNKNOWN_SHIP_ATTEMPT_HEAD;
+		const sameApproval = priorReviewQuestionId === reviewQuestionId;
+		const sameSeries =
+			sameApproval &&
+			(priorHead === markerHead ||
+				(priorHead === UNKNOWN_SHIP_ATTEMPT_HEAD && Boolean(attemptHead)));
+		const priorCount =
+			sameSeries &&
+			typeof prior?.attempt_count === "number" &&
+			Number.isInteger(prior.attempt_count) &&
+			prior.attempt_count > 0
+				? prior.attempt_count
+				: 0;
+		const attemptCount = priorCount + 1;
+		const firstAttemptForHead = !sameSeries;
+		result = attemptHead
+			? { outcome: "marked", firstAttemptForHead, attemptCount }
+			: {
+					outcome: "unknown_head_marked",
+					firstAttemptForHead,
+					attemptCount,
+				};
+
+		return {
+			...cur,
+			fly1505_ship_attempt_failed: {
+				at: new Date().toISOString(),
+				pr_number: info.prNumber ?? null,
+				head_sha: markerHead,
+				review_question_id: reviewQuestionId,
+				summary: info.summary ?? null,
+				attempt_count: attemptCount,
+			},
+		};
+	});
+
+	// patchSessionParams invokes the callback synchronously.
+	return result ?? { outcome: "unknown_head_skipped" };
+}
+
 /**
  * FLY-1232 T9 (Codex code R1 #5): the CENTRAL late-bound shadow finalization
  * hook. runPostShipFinalization has several in-process claim contenders

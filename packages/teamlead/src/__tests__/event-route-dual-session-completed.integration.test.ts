@@ -451,23 +451,13 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 		expect(d3Params.fly208_evidence_gap?.landing_status).toBe("ready_to_merge");
 	});
 
-	// FLY-115 v1.24.5 (Codex R3 HIGH regression guard): the pre-R3 status
-	// mapping had `if (isPostApproveShip)` before the route checks, which
-	// incorrectly mapped `approved_to_ship + route="blocked"` (ship failed)
-	// to `completed` and ran post-ship cleanup on a failure. Mirrors
-	// DirectEventSink.test.ts:798-820 ("does NOT trigger finalization when
-	// approved_to_ship → blocked (ship failed)"). With the R3 fix the
-	// route="blocked" branch wins, status mapping resolves to "blocked",
-	// the FSM rejects approved_to_ship → blocked (only `completed`/`failed`/
-	// `terminated` are allowed transitions out of approved_to_ship per
-	// workflow-fsm.ts:131), `transitionRejected` is set, and the
-	// post-ship-finalization gate's `!transitionRejected` guard keeps
-	// `runPostShipFinalization` from firing. Pre-R3 the mapping resolved to
-	// "completed" which the FSM accepted, and the cleanup ran on a failed
-	// ship — that's the bug this scenario locks down.
-	it("Scenario E (Codex R3): approved_to_ship + route=blocked → no post-ship", async () => {
+	// FLY-1505: the explicit failed-attempt route preserves the live founder
+	// approval and leaves durable per-approval/head recovery evidence. The repeat
+	// uses the legacy blocked route to pin backward-compatible deflection.
+	it("Scenario E (FLY-1505): explicit ship_attempt_failed settles durably and legacy blocked stays compatible", async () => {
 		const execId = "exec-scenarioE";
 		const issueId = "issue-scenarioE";
+		const head = "e".repeat(40);
 
 		// 1. session_started → running.
 		const startRes = await postEvent({
@@ -494,7 +484,11 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 		expect(needsRes.status).toBe(200);
 		expect(store.getSession(execId)!.status).toBe("awaiting_review");
 
-		// 3. approve action → approved_to_ship.
+		// 3. Bind the actual review gate + head, then approve.
+		store.setReviewBinding(execId, {
+			questionId: "11111111-1111-1111-1111-111111111111",
+			prHeadSha: head,
+		});
 		const approveResult = applyTransition(
 			transitionOpts,
 			execId,
@@ -510,16 +504,7 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 		expect(store.getSession(execId)!.status).toBe("approved_to_ship");
 		expect(runPostShipSpy).not.toHaveBeenCalled();
 
-		// 4. Runner reports ship FAILED via session_completed with
-		//    route="blocked". The R3 fix routes through the `route==="blocked"`
-		//    branch (status="blocked") instead of the natural-completion
-		//    fallback. FLY-208 5a: the FSM now ALLOWS approved_to_ship →
-		//    blocked (the missing edge was the same stuck-state family as the
-		//    LEARN-12 incident — the rejection used to leave the session in
-		//    approved_to_ship forever with close_runner protecting it). The
-		//    regression guard stands: failed ship must NEVER trigger Runner
-		//    tmux teardown / chat thread archive — now via status="blocked"
-		//    (≠ completed) gating finalization out, not via an FSM rejection.
+		// 4. Runner reports ship FAILED via the explicit non-terminal route.
 		const blockedRes = await postEvent({
 			event_id: "evtE-blocked",
 			execution_id: execId,
@@ -527,17 +512,51 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			project_name: "geoforge3d",
 			event_type: "session_completed",
 			payload: {
-				decision: { route: "blocked", reasoning: "ship gate failed" },
-				evidence: {},
+				decision: {
+					route: "ship_attempt_failed",
+					reasoning: "ship gate failed",
+				},
+				summary: "ship workflow still in progress",
+				evidence: { headSha: head },
 			},
 		});
 		expect(blockedRes.status).toBe(200);
-		// FLY-208: ship failure lands in "blocked" (human-unblockable:
-		// deferred/shelved/terminated exits) instead of being silently
-		// swallowed by an FSM rejection.
-		expect(store.getSession(execId)!.status).toBe("blocked");
-		// Failed ship still never triggers finalization.
+		expect(await blockedRes.json()).toMatchObject({
+			ok: true,
+			warning: expect.stringContaining("approved_to_ship preserved"),
+		});
+		expect(store.getSession(execId)!.status).toBe("approved_to_ship");
 		expect(runPostShipSpy).not.toHaveBeenCalled();
+		expect(store.getSessionParams(execId)).toMatchObject({
+			fly1505_ship_attempt_failed: {
+				head_sha: head,
+				attempt_count: 1,
+				summary: "ship workflow still in progress",
+			},
+		});
+
+		// A distinct emission is settled again without changing the session.
+		const repeatRes = await postEvent({
+			event_id: "evtE-blocked-repeat",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "blocked", reasoning: "repeat" },
+				summary: "repeat blocked completion",
+				evidence: { headSha: head },
+			},
+		});
+		expect(repeatRes.status).toBe(200);
+		expect(store.getSession(execId)!.status).toBe("approved_to_ship");
+		expect(store.getSessionParams(execId)).toMatchObject({
+			fly1505_ship_attempt_failed: {
+				head_sha: head,
+				attempt_count: 2,
+				summary: "repeat blocked completion",
+			},
+		});
 	});
 
 	it("Scenario B: docs-only compressed pipeline — running → completed fires post-ship once", async () => {

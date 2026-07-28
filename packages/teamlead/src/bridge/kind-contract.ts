@@ -114,6 +114,10 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		owner: "founder_direct",
 		arc: "none_escalate",
 	},
+	ship_attempt_failed: {
+		owner: "claude",
+		arc: "human_by_design",
+	},
 	receipt_foundation_off: {
 		owner: "claude",
 		arc: "human_by_design",

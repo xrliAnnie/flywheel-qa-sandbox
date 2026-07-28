@@ -6170,6 +6170,12 @@ export async function startBridge(
 			materializedHeadAuthority,
 			commDbPathForProject,
 			onTerminalStatusPersisted: onMarkerTerminalStatusPersisted,
+			alertShipAttemptFailed: (session, reason) => {
+				void autoQaCoordinatorHolder.current?.alertShipAttemptFailed(
+					session,
+					reason,
+				);
+			},
 		},
 		48, // reviewTimeoutHours (constructor default; FLY-159/191 48h)
 		quietSignalsProbe,
@@ -6356,27 +6362,6 @@ export async function startBridge(
 	// exists. Stays null on the kill-switch / no-registry path (byte-compat).
 	reconnectHolder.current = heartbeatService;
 
-	// FLY-172: boot drain — reconcile complete-failed markers left by Runners
-	// that finished during a restart window (their `flywheel-comm complete` POST
-	// hit a down Bridge). Event-driven (boot), no new timer. Best-effort: a
-	// failure here must not block Bridge startup.
-	try {
-		await reconcileCompleteFailedMarkers({
-			store,
-			bridgeBaseUrl: loopbackBaseUrl,
-			ingestToken: config.ingestToken,
-			materializedHeadAuthority,
-			transitionOpts,
-			getTmuxTarget: getTmuxTargetFromCommDb,
-			isTmuxWindowAlive,
-			onTerminalStatusPersisted: onMarkerTerminalStatusPersisted,
-		});
-	} catch (err) {
-		console.error(
-			`[Bridge] FLY-172 boot marker drain failed (non-fatal): ${(err as Error).message}`,
-		);
-	}
-
 	// FLY-892 (Step 5): one-shot boot sweep — reconcile the legacy FLY-793 per-phase
 	// side-table threads (design/implement/qa) into the single converged issue
 	// thread. Points each at the main thread + archives it (FAIL-CLOSED: never
@@ -6401,10 +6386,10 @@ export async function startBridge(
 	// stuck: close_runner rejects them, tmux + worktree linger, the idle watchdog
 	// false-positives session_stuck. The event-route handler fixes this going
 	// forward; this one-shot sweep unsticks the EXISTING backlog whose
-	// stage_changed already fired before the fix shipped. Runs AFTER the FLY-172
-	// marker drain so any session with a pending complete marker is routed by its
-	// real `complete --route` first, leaving only true stage-set-completed
-	// zombies (no decision_route, no pr_number). Status-only; no tmux/worktree
+	// stage_changed already fired before the fix shipped. This sweep runs before
+	// the late-bound FLY-172 durable-alert drain; its pending-marker guard leaves
+	// those sessions untouched so their real `complete --route` remains
+	// authoritative. Status-only; no tmux/worktree
 	// touch — teardown stays with exec-id-scoped close_runner / boot tab-reaper.
 	// `FLYWHEEL_FLY324_SWEEP_EXCLUDE` (comma/space-separated execIds or issue
 	// identifiers) lets the Lead skip *parked* Runners — ones that reported
@@ -6538,8 +6523,8 @@ export async function startBridge(
 	// FLY-116 Terminal.app viewer's linked sessions that were never destroyed).
 	// The generation source is fixed in openTmuxViewer (cmux no longer opens
 	// viewers); this migrates the existing backlog + backstops the terminal-app
-	// path. MUST run after the FLY-172 marker drain and FLY-324 sweep above so
-	// it sees post-reconciliation statuses (Codex design review R1). One-shot,
+	// path. Runs after the FLY-324 sweep; the late-bound FLY-172 alert-aware drain
+	// runs later in boot and owns completion settlement. One-shot,
 	// fire-and-forget, best-effort. `FLYWHEEL_VIEWER_SESSION_REAPER=0` disables
 	// (same escape-hatch shape as FLYWHEEL_CRASH_REAPER).
 	if (process.env.FLYWHEEL_VIEWER_SESSION_REAPER !== "0") {
@@ -6686,9 +6671,10 @@ export async function startBridge(
 
 	// FLY-623 (Codex R2 HIGH-2 / R3 LOW-1): boot-seed reconnecting state for
 	// pre-existing `running` sessions whose in-process poll loop died with the
-	// previous Bridge process. Runs AFTER the FLY-172 marker drain AND the FLY-324
-	// done-but-running sweep (so a stage=completed zombie is terminalized first and
-	// never briefly enters reconnecting / gets a ⚠️重连中 title), and BEFORE
+	// previous Bridge process. Runs after the FLY-324 done-but-running sweep (so a
+	// stage=completed zombie is terminalized first and never briefly enters
+	// reconnecting / gets a ⚠️重连中 title), before the late-bound FLY-172
+	// alert-aware boot drain, and BEFORE
 	// heartbeatService.start() / RunnerIdleWatchdog.start() — closing the on-boot
 	// false-stuck/idle window and making the in-memory set restart-safe (re-seeded
 	// every boot → survives repeated restarts). No-op on the kill-switch path.
@@ -8413,8 +8399,6 @@ export async function startBridge(
 				}
 			: undefined,
 	});
-	gatePoller.start();
-
 	// FLY-513: one-shot boot check — surfaces an already-contaminated global codex
 	// immediately at startup (the periodic probe then covers the running window).
 	// Non-fatal: reportCodexGlobalHealth never throws.
@@ -8783,6 +8767,49 @@ export async function startBridge(
 	// guarantees GatePoller/Heartbeat suppression survives a restart, so the
 	// startup reconcile (re-spawn / re-notify / mark-stuck) safely runs after the
 	// timers. No startDispatcher (can't spawn QA) ⇒ coordinator stays dormant.
+	const autoQaEffects = new AutoQaEffects({
+		store,
+		projects,
+		config,
+		// FLY-927 (W1): route ticket-class alerts through the shared funnel.
+		leadAlertNotifier: {
+			alert: (p) =>
+				(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(p),
+		},
+		chatThreadCreator,
+		transitionOpts,
+		globalBotToken: config.discordBotToken,
+		mergedGateGuard,
+	});
+
+	// FLY-172/FLY-1505: drain complete-failed markers only AFTER the durable
+	// LeadAlertNotifier-backed effects exist. Settling a ship-attempt marker can
+	// suppress automatic re-wake, so deleting it before the alert sink is ready
+	// would strand a dead Runner silently.
+	try {
+		await reconcileCompleteFailedMarkers({
+			store,
+			bridgeBaseUrl: loopbackBaseUrl,
+			ingestToken: config.ingestToken,
+			materializedHeadAuthority,
+			transitionOpts,
+			getTmuxTarget: getTmuxTargetFromCommDb,
+			isTmuxWindowAlive,
+			onTerminalStatusPersisted: onMarkerTerminalStatusPersisted,
+			alertShipAttemptFailed: (session, reason) => {
+				return autoQaEffects.alertShipAttemptFailed({ session, reason });
+			},
+		});
+	} catch (err) {
+		console.error(
+			`[Bridge] FLY-172 boot marker drain failed (non-fatal): ${(err as Error).message}`,
+		);
+	}
+	// FLY-1505 M1: the first GatePoller tick may re-wake an approved ship
+	// runner. Start it only after durable failed-attempt markers have restored
+	// their suppression state (or the drain has failed loudly and retained them).
+	gatePoller.start();
+
 	if (startDispatcher) {
 		try {
 			const qaConfigByProject = await loadQaConfigByProject(projects);
@@ -8796,29 +8823,6 @@ export async function startBridge(
 				);
 			}).length;
 			const enabledCount = projects.length - optedOutCount;
-			const autoQaEffects = new AutoQaEffects({
-				store,
-				projects,
-				config,
-				// FLY-927 (W1): route auto-QA alerts through the routed sink (both its
-				// kinds are ticket-class, so behavior is unchanged — this closes the
-				// bypass so EVERY emission source shares the one funnel).
-				leadAlertNotifier: {
-					alert: (p) =>
-						(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(p),
-				},
-				// FLY-630 ②: drive the PARENT issue thread's stage badge across the QA
-				// phase (🧪QA while running → ⏳待批 on pass → 🔨实现中 on fail). Only
-				// set when the chat-thread feature is on; otherwise stampIssueStage
-				// no-ops.
-				chatThreadCreator,
-				// FLY-752: closeQaRunner needs the FSM transition opts (to finalize a
-				// still-running QA before close) + the global bot token (archive
-				// cascade). Same values the archive cascade uses in this boot scope.
-				transitionOpts,
-				globalBotToken: config.discordBotToken,
-				mergedGateGuard,
-			});
 			autoQaCoordinatorHolder.current = new AutoQaCoordinator({
 				store,
 				startDispatcher,

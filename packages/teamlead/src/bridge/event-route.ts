@@ -78,6 +78,7 @@ import {
 	makeFinalizeThreeStagePhases,
 	markEvidenceGapCompletion,
 	runPostShipFinalization,
+	settleShipAttemptFailed,
 } from "./post-ship-finalization.js";
 import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
 import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
@@ -1401,6 +1402,7 @@ export function createEventRouter(
 					"auto_approve",
 					"needs_review",
 					"blocked",
+					"ship_attempt_failed",
 					// FLY-222 #1: no-code/no-merge clean success → terminal completed.
 					"no_code",
 					// FLY-493: pr_handoff — no-transport antigravity build+PR terminal
@@ -1598,11 +1600,57 @@ export function createEventRouter(
 					} else {
 						status = "awaiting_review";
 					}
-				} else if (route === "blocked") {
-					// Ship failed (or otherwise blocked). Even for sessions that
-					// were previously `approved_to_ship`, an explicit blocked route
-					// means the ship did not complete — must NOT finalize.
-					// Sister branch: DirectEventSink.ts:273.
+				} else if (route === "blocked" || route === "ship_attempt_failed") {
+					if (isPostApproveShip) {
+						const settle = settleShipAttemptFailed(store, event.execution_id, {
+							attemptHeadSha: asString(evidence?.headSha),
+							currentHeadSha: existingSession?.pr_head_sha,
+							prNumber:
+								asNumber(evidence?.prNumber) ??
+								existingSession?.pr_number ??
+								undefined,
+							// Live HTTP delivery and this row snapshot share one
+							// time context, so legacy qid-less completions may use
+							// the row binding. Delayed marker replay stays event-only.
+							reviewQuestionId:
+								reviewQuestionId ?? existingSession?.review_question_id,
+							currentReviewQuestionId: existingSession?.review_question_id,
+							summary: asString(payload.summary),
+						});
+						if (
+							(settle.outcome === "marked" ||
+								settle.outcome === "unknown_head_marked") &&
+							settle.firstAttemptForHead &&
+							existingSession
+						) {
+							const retryPosture =
+								settle.outcome === "marked"
+									? "同 head 的自动重唤醒已暂停，请由 Lead 显式唤醒。"
+									: "本次完成未携带可验证的 head；自动重唤醒仍开启（fail-open）。";
+							void autoQaCoordinator?.current?.alertShipAttemptFailed(
+								existingSession,
+								`⚠️ Runner ${event.execution_id}（${existingSession.issue_id}）报告 ship attempt 失败/停滞；会话保持 approved_to_ship，founder 批准仍有效。请检查 PR #${existingSession.pr_number ?? "unknown"} 的 ship workflow；诊断后重试前先重新运行 verify-approval。${retryPosture}`,
+							);
+						}
+						console.warn(
+							`[event-route] FLY-1505 ship_attempt_failed deflected for ${event.execution_id} — approved_to_ship preserved (${settle.outcome})`,
+						);
+						res.json({
+							ok: true,
+							warning:
+								"ship_attempt_failed deflected (approved_to_ship preserved)",
+						});
+						return;
+					}
+					if (route === "ship_attempt_failed") {
+						res.status(409).json({
+							ok: false,
+							reason:
+								"ship_attempt_failed requires an approved_to_ship session",
+							retryable: false,
+						});
+						return;
+					}
 					status = "blocked";
 				} else if (route === "phase_design_complete") {
 					// FLY-793: three-stage Design phase done (docs on the shared

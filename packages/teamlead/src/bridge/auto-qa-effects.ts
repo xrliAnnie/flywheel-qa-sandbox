@@ -111,6 +111,16 @@ export interface AutoQaEffectsDeps {
 	mergedGateGuard?: MergedGateGuard;
 }
 
+function durableAlertAccepted(result: AlertResult): boolean {
+	if (result.deadLettered) return false;
+	return Boolean(
+		result.sent ||
+			result.queued ||
+			result.dmSent ||
+			result.skipped === "duplicate",
+	);
+}
+
 export class AutoQaEffects implements AutoQaSideEffects {
 	constructor(private readonly deps: AutoQaEffectsDeps) {}
 
@@ -467,6 +477,53 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			severity: "warning",
 			sessionKey: args.session ? buildSessionKey(args.session) : undefined,
 		});
+	}
+
+	/** FLY-1505: severe Lead-only alert, deduped per approval binding + head. */
+	async alertShipAttemptFailed(args: {
+		session: Session;
+		reason: string;
+	}): Promise<void> {
+		if (!this.deps.leadAlertNotifier) {
+			console.error(
+				`[auto-qa-effects] ship attempt failed (no alert sink): ${args.reason}`,
+			);
+			throw new Error("ship attempt failed: no alert sink");
+		}
+		let leadId: string | undefined;
+		try {
+			const { lead } = resolveLeadForIssue(
+				this.deps.projects,
+				args.session.project_name,
+				parseLabels(args.session.issue_labels),
+			);
+			leadId = lead.agentId;
+		} catch {
+			/* leadId stays undefined */
+		}
+		if (!leadId) {
+			console.error(
+				`[auto-qa-effects] ship attempt failed (no lead): ${args.session.issue_id}`,
+			);
+			throw new Error("ship attempt failed: no lead");
+		}
+		const binding = args.session.review_question_id ?? "unbound";
+		const head = args.session.pr_head_sha?.toLowerCase() ?? "unknown";
+		const result = await this.deps.leadAlertNotifier.alert({
+			leadId,
+			projectName: args.session.project_name,
+			eventId: `ship-attempt-failed:${args.session.execution_id}:${binding}:${head}`,
+			eventType: "ship_attempt_failed",
+			title: `Founder-approved ship attempt failed — ${args.session.issue_identifier ?? args.session.issue_id}`,
+			body: args.reason,
+			severity: "severe",
+			sessionKey: buildSessionKey(args.session),
+		});
+		if (!durableAlertAccepted(result)) {
+			throw new Error(
+				`ship attempt alert not accepted: ${JSON.stringify(result)}`,
+			);
+		}
 	}
 
 	/**

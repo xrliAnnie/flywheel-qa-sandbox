@@ -14,6 +14,7 @@ import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import {
 	applyQuarantineFallback,
 	type MarkerReconcilerDeps,
+	type ReconcileOutcome,
 	tryReconcileComplete,
 } from "./bridge/complete-marker-reconciler.js";
 import {
@@ -342,6 +343,7 @@ export interface MonitorReconcileConfig {
 		status: "failed" | "blocked",
 		projectName: string,
 	) => void;
+	alertShipAttemptFailed?: (session: Session, reason: string) => void;
 	materializedHeadAuthority?: MaterializedHeadAuthority;
 }
 
@@ -362,6 +364,15 @@ const READOPT_PARKED_STATUSES: ReadonlySet<string> = new Set([
 
 function isReadoptParkedStatus(status: string): boolean {
 	return READOPT_PARKED_STATUSES.has(status);
+}
+
+function isSettledMarkerOutcome(outcome: ReconcileOutcome): boolean {
+	return (
+		outcome.kind === "reconciled" ||
+		outcome.kind === "duplicate_terminal" ||
+		outcome.kind === "settled_merge_block" ||
+		outcome.kind === "settled_ship_attempt_failed"
+	);
 }
 
 /**
@@ -878,6 +889,7 @@ export class HeartbeatService implements ReconnectController {
 				this.monitorReconcile.materializedHeadAuthority,
 			onTerminalStatusPersisted:
 				this.monitorReconcile.onTerminalStatusPersisted,
+			alertShipAttemptFailed: this.monitorReconcile.alertShipAttemptFailed,
 		};
 	}
 
@@ -924,10 +936,7 @@ export class HeartbeatService implements ReconnectController {
 		for (const session of candidates) {
 			const execId = session.execution_id;
 			const outcome = await tryReconcileComplete(execId, deps);
-			if (
-				outcome.kind === "reconciled" ||
-				outcome.kind === "duplicate_terminal"
-			) {
+			if (isSettledMarkerOutcome(outcome)) {
 				this.notifiedMonitorLost.delete(execId);
 				continue;
 			}
@@ -1049,10 +1058,7 @@ export class HeartbeatService implements ReconnectController {
 
 		// 1) Marker-first. A valid terminal marker proves the Runner finished.
 		const outcome = await tryReconcileComplete(execId, deps);
-		if (
-			outcome.kind === "reconciled" ||
-			outcome.kind === "duplicate_terminal"
-		) {
+		if (isSettledMarkerOutcome(outcome)) {
 			this.clearReconnecting(execId);
 			return;
 		}
@@ -1121,10 +1127,7 @@ export class HeartbeatService implements ReconnectController {
 
 		// 1) Marker-first. A valid terminal marker proves the Runner finished.
 		const outcome = await tryReconcileComplete(execId, deps);
-		if (
-			outcome.kind === "reconciled" ||
-			outcome.kind === "duplicate_terminal"
-		) {
+		if (isSettledMarkerOutcome(outcome)) {
 			this.clearReconnecting(execId);
 			this.zombieDeadStreak.delete(execId);
 			return;
@@ -1548,8 +1551,9 @@ export class HeartbeatService implements ReconnectController {
 	}
 
 	/**
-	 * FLY-623 boot-seed: at Bridge boot, AFTER the FLY-172 marker drain AND the
-	 * FLY-324 done-but-running sweep, and BEFORE `start()` / RunnerIdleWatchdog,
+	 * FLY-623 boot-seed: at Bridge boot, AFTER the FLY-324 done-but-running sweep,
+	 * before the late-bound FLY-172 alert-aware drain, and BEFORE `start()` /
+	 * RunnerIdleWatchdog,
 	 * seed reconnecting state for pre-existing `running` sessions (their in-process
 	 * poll loop died with the previous Bridge process). This makes the in-memory
 	 * set restart-safe (re-seeded every boot → survives repeated restarts) and

@@ -413,6 +413,180 @@ describe("DirectEventSink — FLY-191 R5: late qid-less emission can't regress a
 	});
 });
 
+describe("DirectEventSink — FLY-1505 blocked-after-approval deflection", () => {
+	let store: StateStore;
+	const HEAD_A = "a".repeat(40);
+	const HEAD_B = "b".repeat(40);
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	afterEach(() => {
+		store.close();
+	});
+
+	function seedApproved(opts?: { bound?: boolean; head?: string }): void {
+		const bound = opts?.bound ?? true;
+		const head = opts?.head ?? HEAD_A;
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: bound ? "awaiting_review" : "approved_to_ship",
+			pr_number: 715,
+		});
+		if (bound) {
+			store.setReviewBinding("exec-1", {
+				questionId: "11111111-1111-1111-1111-111111111111",
+				prHeadSha: head,
+			});
+			store.persistTransition("exec-1", "approved_to_ship", {
+				issue_id: "issue-1",
+				project_name: "geoforge3d",
+			});
+		} else {
+			// upsertSession intentionally does not write approval bindings; use the
+			// metadata path to model a true pre-Phase-2 row (head present, qid NULL).
+			store.patchSessionMetadata("exec-1", { pr_head_sha: head });
+		}
+	}
+
+	function blockedResult(
+		headSha: string | null,
+		route: "blocked" | "ship_attempt_failed" = "blocked",
+		reviewQuestionId?: string,
+	): BlueprintResult {
+		return {
+			success: false,
+			decision: { route, reasoning: "ship poll window elapsed" },
+			reviewQuestionId,
+			evidence: {
+				headSha,
+				landingStatus: { status: "ready_to_merge", prNumber: 715 },
+			},
+		} as unknown as BlueprintResult;
+	}
+
+	function makeSink(alertShipAttemptFailed = vi.fn()) {
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		sink.autoQaCoordinator = {
+			current: {
+				alertShipAttemptFailed,
+			} as unknown as AutoQaCoordinator,
+		};
+		return { sink, alertShipAttemptFailed };
+	}
+
+	it("settles the explicit attempt route for a real bound approval and alerts once per approval/head", async () => {
+		seedApproved();
+		const { sink, alertShipAttemptFailed } = makeSink();
+
+		await sink.emitCompleted(
+			makeEnvelope(),
+			blockedResult(
+				HEAD_A,
+				"ship_attempt_failed",
+				"11111111-1111-1111-1111-111111111111",
+			),
+		);
+		await sink.emitCompleted(
+			makeEnvelope(),
+			blockedResult(
+				HEAD_A,
+				"ship_attempt_failed",
+				"11111111-1111-1111-1111-111111111111",
+			),
+		);
+
+		expect(store.getSession("exec-1")?.status).toBe("approved_to_ship");
+		expect(store.getSessionParams("exec-1")).toMatchObject({
+			fly1505_ship_attempt_failed: {
+				head_sha: HEAD_A,
+				pr_number: 715,
+				attempt_count: 2,
+				review_question_id: "11111111-1111-1111-1111-111111111111",
+			},
+		});
+		expect(alertShipAttemptFailed).toHaveBeenCalledOnce();
+		expect(alertShipAttemptFailed).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "exec-1" }),
+			expect.stringContaining("founder"),
+		);
+	});
+
+	it("keeps the legacy unbound approved_to_ship shape compatible", async () => {
+		seedApproved({ bound: false });
+		const { sink } = makeSink();
+		await sink.emitCompleted(makeEnvelope(), blockedResult(HEAD_A));
+		expect(store.getSession("exec-1")?.status).toBe("approved_to_ship");
+		expect(store.getSessionParams("exec-1")).toMatchObject({
+			fly1505_ship_attempt_failed: { head_sha: HEAD_A },
+		});
+	});
+
+	it("uses the current row binding for a live blocked event that omits its binding", async () => {
+		seedApproved();
+		const { sink, alertShipAttemptFailed } = makeSink();
+		await sink.emitCompleted(makeEnvelope(), blockedResult(HEAD_A));
+		expect(store.getSession("exec-1")?.status).toBe("approved_to_ship");
+		expect(store.getSessionParams("exec-1")).toMatchObject({
+			fly1505_ship_attempt_failed: {
+				head_sha: HEAD_A,
+				review_question_id: "11111111-1111-1111-1111-111111111111",
+				attempt_count: 1,
+			},
+		});
+		expect(alertShipAttemptFailed).toHaveBeenCalledOnce();
+	});
+
+	it("consumes a delayed head-A attempt after head-B approval without marking or alerting B", async () => {
+		seedApproved({ head: HEAD_B });
+		const { sink, alertShipAttemptFailed } = makeSink();
+		await sink.emitCompleted(makeEnvelope(), blockedResult(HEAD_A));
+		expect(store.getSession("exec-1")?.status).toBe("approved_to_ship");
+		expect(
+			store.getSessionParams("exec-1")?.fly1505_ship_attempt_failed,
+		).toBeUndefined();
+		expect(alertShipAttemptFailed).not.toHaveBeenCalled();
+	});
+
+	it("consumes a delayed same-head Q1 attempt without marking or alerting Q2", async () => {
+		seedApproved();
+		store.setReviewBinding("exec-1", {
+			questionId: "22222222-2222-2222-2222-222222222222",
+			prHeadSha: HEAD_A,
+		});
+		const { sink, alertShipAttemptFailed } = makeSink();
+		await sink.emitCompleted(
+			makeEnvelope(),
+			blockedResult(
+				HEAD_A,
+				"ship_attempt_failed",
+				"11111111-1111-1111-1111-111111111111",
+			),
+		);
+		expect(store.getSession("exec-1")?.status).toBe("approved_to_ship");
+		expect(
+			store.getSessionParams("exec-1")?.fly1505_ship_attempt_failed,
+		).toBeUndefined();
+		expect(alertShipAttemptFailed).not.toHaveBeenCalled();
+	});
+
+	it("uses result.evidence.headSha as authority: a missing event head stays unknown instead of borrowing the row head", async () => {
+		seedApproved({ head: HEAD_B });
+		const { sink, alertShipAttemptFailed } = makeSink();
+		await sink.emitCompleted(makeEnvelope(), blockedResult(null));
+		expect(store.getSessionParams("exec-1")).toMatchObject({
+			fly1505_ship_attempt_failed: {
+				head_sha: "(unknown)",
+				attempt_count: 1,
+			},
+		});
+		expect(alertShipAttemptFailed).toHaveBeenCalledOnce();
+	});
+});
+
 describe("DirectEventSink — FLY-222 #1: no_code → terminal completed", () => {
 	let store: StateStore;
 

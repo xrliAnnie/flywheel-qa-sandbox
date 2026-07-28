@@ -534,6 +534,46 @@ describe("complete command", () => {
 		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
 	});
 
+	it("FLY-1505: route=ship_attempt_failed posts a replayable head-bound attempt without merged landing evidence", async () => {
+		await complete({
+			route: "ship_attempt_failed",
+			pr: 42,
+			merged: false,
+			questionId: "11111111-1111-1111-1111-111111111111",
+			summary: "SHIP-STALLED run 123",
+		});
+		const [, opts] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(opts.body);
+		expect(body.payload.decision).toEqual({ route: "ship_attempt_failed" });
+		expect(body.payload.reviewQuestionId).toBe(
+			"11111111-1111-1111-1111-111111111111",
+		);
+		expect(body.payload.summary).toBe("SHIP-STALLED run 123");
+		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
+		expect(body.payload.evidence.prNumber).toBe(42);
+		expect(body.payload.evidence.landingStatus).toBeUndefined();
+	});
+
+	it("FLY-1505: route=ship_attempt_failed requires an unmerged PR", async () => {
+		await expect(
+			complete({ route: "ship_attempt_failed", merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(mockFetch).not.toHaveBeenCalled();
+
+		await expect(
+			complete({ route: "ship_attempt_failed", pr: 42, merged: true }),
+		).rejects.toThrow("process.exit(1)");
+		expect(mockFetch).not.toHaveBeenCalled();
+
+		await expect(
+			complete({ route: "ship_attempt_failed", pr: 42, merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("requires --question-id"),
+		);
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
 	it("FLY-1434: route=needs_review with --pr carries authoritative ready_to_merge evidence", async () => {
 		await complete({ route: "needs_review", pr: 42, merged: false });
 		expect(mockFetch).toHaveBeenCalledOnce();

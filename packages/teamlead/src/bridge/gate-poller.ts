@@ -105,6 +105,7 @@ import {
 	deadAlertAccepted,
 	type RewakeSessionProbe,
 	reconcileStaleApprovedShip,
+	shipAttemptFailedSuppressedHead,
 } from "./stale-approved-ship-reconciler.js";
 import type { UnhandledAlertSink } from "./stuck-escalation.js";
 import { lookupTmuxTarget, probeRunnerProcessLiveness } from "./tmux-lookup.js";
@@ -3825,7 +3826,14 @@ export class GatePoller {
 		if (this.config.watchdogLivenessEnabled === false) return;
 		const sessions = this.config.store
 			.getActiveSessions()
-			.filter((s) => s.status === "approved_to_ship");
+			.filter((s) => s.status === "approved_to_ship")
+			.map((s) => ({
+				...s,
+				shipAttemptFailedHead: shipAttemptFailedSuppressedHead(
+					s.session_params,
+					s.review_question_id,
+				),
+			}));
 		if (sessions.length === 0) return;
 
 		await reconcileStaleApprovedShip({

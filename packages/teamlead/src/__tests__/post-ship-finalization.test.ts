@@ -3,6 +3,7 @@ import {
 	isPostApproveShipComplete,
 	runPostShipFinalization,
 	runResumablePostShipFinalization,
+	settleShipAttemptFailed,
 	setWorkflowShadowFinalizationHook,
 } from "../bridge/post-ship-finalization.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -163,6 +164,180 @@ describe("isPostApproveShipComplete", () => {
 				landingStatus: undefined,
 			}),
 		).toBe(false);
+	});
+});
+
+describe("settleShipAttemptFailed (FLY-1505 attempt-head authority)", () => {
+	let store: StateStore;
+	const HEAD_A = "a".repeat(40);
+	const HEAD_B = "b".repeat(40);
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		store.upsertSession({
+			execution_id: "exec-ship-attempt",
+			issue_id: "FLY-1505",
+			project_name: "flywheel",
+			status: "approved_to_ship",
+		});
+		store.setSessionParams("exec-ship-attempt", {
+			unrelated: { survives: true },
+		});
+	});
+
+	afterEach(() => store.close());
+
+	it("marks a matching real head, normalizes it, and increments only the same-head attempt", () => {
+		const first = settleShipAttemptFailed(store, "exec-ship-attempt", {
+			attemptHeadSha: HEAD_A.toUpperCase(),
+			currentHeadSha: HEAD_A,
+			prNumber: 715,
+			summary: "ship job still running",
+		});
+		expect(first).toEqual({
+			outcome: "marked",
+			firstAttemptForHead: true,
+			attemptCount: 1,
+		});
+
+		const second = settleShipAttemptFailed(store, "exec-ship-attempt", {
+			attemptHeadSha: HEAD_A,
+			currentHeadSha: HEAD_A.toUpperCase(),
+			prNumber: 715,
+			summary: "repeat completion",
+		});
+		expect(second).toEqual({
+			outcome: "marked",
+			firstAttemptForHead: false,
+			attemptCount: 2,
+		});
+		expect(store.getSessionParams("exec-ship-attempt")).toMatchObject({
+			unrelated: { survives: true },
+			fly1505_ship_attempt_failed: {
+				pr_number: 715,
+				head_sha: HEAD_A,
+				summary: "repeat completion",
+				attempt_count: 2,
+			},
+		});
+	});
+
+	it("treats a real event head that differs from the current approved head as stale with zero write", () => {
+		const before = store.getSessionParams("exec-ship-attempt");
+		expect(
+			settleShipAttemptFailed(store, "exec-ship-attempt", {
+				attemptHeadSha: HEAD_A,
+				currentHeadSha: HEAD_B,
+			}),
+		).toEqual({ outcome: "stale_attempt" });
+		expect(store.getSessionParams("exec-ship-attempt")).toEqual(before);
+	});
+
+	it("treats an attempt bound to an older approval as stale even when the head is unchanged", () => {
+		const before = store.getSessionParams("exec-ship-attempt");
+		expect(
+			settleShipAttemptFailed(store, "exec-ship-attempt", {
+				attemptHeadSha: HEAD_A,
+				currentHeadSha: HEAD_A,
+				reviewQuestionId: "approval-q1",
+				currentReviewQuestionId: "approval-q2",
+			}),
+		).toEqual({ outcome: "stale_attempt" });
+		expect(store.getSessionParams("exec-ship-attempt")).toEqual(before);
+	});
+
+	it("upgrades an unknown sentinel to the real head without double-alerting and never downgrades a real marker", () => {
+		const firstUnknown = settleShipAttemptFailed(store, "exec-ship-attempt", {
+			attemptHeadSha: null,
+			currentHeadSha: HEAD_A,
+		});
+		expect(firstUnknown).toEqual({
+			outcome: "unknown_head_marked",
+			firstAttemptForHead: true,
+			attemptCount: 1,
+		});
+		expect(store.getSessionParams("exec-ship-attempt")).toMatchObject({
+			fly1505_ship_attempt_failed: {
+				head_sha: "(unknown)",
+				attempt_count: 1,
+			},
+		});
+
+		const repeatedUnknown = settleShipAttemptFailed(
+			store,
+			"exec-ship-attempt",
+			{
+				attemptHeadSha: "not-a-sha",
+				currentHeadSha: HEAD_A,
+			},
+		);
+		expect(repeatedUnknown).toEqual({
+			outcome: "unknown_head_marked",
+			firstAttemptForHead: false,
+			attemptCount: 2,
+		});
+
+		expect(
+			settleShipAttemptFailed(store, "exec-ship-attempt", {
+				attemptHeadSha: HEAD_A,
+				currentHeadSha: HEAD_A,
+			}),
+		).toEqual({
+			outcome: "marked",
+			firstAttemptForHead: false,
+			attemptCount: 3,
+		});
+		const realMarker = store.getSessionParams("exec-ship-attempt");
+
+		expect(
+			settleShipAttemptFailed(store, "exec-ship-attempt", {
+				attemptHeadSha: undefined,
+				currentHeadSha: HEAD_A,
+			}),
+		).toEqual({ outcome: "unknown_head_skipped" });
+		expect(store.getSessionParams("exec-ship-attempt")).toEqual(realMarker);
+	});
+
+	it("never lets unknown evidence from a newer binding overwrite a prior real-head marker", () => {
+		expect(
+			settleShipAttemptFailed(store, "exec-ship-attempt", {
+				attemptHeadSha: HEAD_A,
+				currentHeadSha: HEAD_A,
+				reviewQuestionId: "approval-q1",
+				currentReviewQuestionId: "approval-q1",
+			}),
+		).toMatchObject({ outcome: "marked" });
+		const realMarker = store.getSessionParams("exec-ship-attempt");
+
+		expect(
+			settleShipAttemptFailed(store, "exec-ship-attempt", {
+				attemptHeadSha: undefined,
+				currentHeadSha: HEAD_A,
+				reviewQuestionId: "approval-q2",
+				currentReviewQuestionId: "approval-q2",
+			}),
+		).toEqual({ outcome: "unknown_head_skipped" });
+		expect(store.getSessionParams("exec-ship-attempt")).toEqual(realMarker);
+	});
+
+	it("records and alerts a real attempt head when the legacy approved row has no current head authority", () => {
+		expect(
+			settleShipAttemptFailed(store, "exec-ship-attempt", {
+				attemptHeadSha: HEAD_A,
+				currentHeadSha: undefined,
+				reviewQuestionId: "legacy-q",
+			}),
+		).toEqual({
+			outcome: "marked",
+			firstAttemptForHead: true,
+			attemptCount: 1,
+		});
+		expect(store.getSessionParams("exec-ship-attempt")).toMatchObject({
+			fly1505_ship_attempt_failed: {
+				head_sha: HEAD_A,
+				review_question_id: "legacy-q",
+			},
+		});
 	});
 });
 

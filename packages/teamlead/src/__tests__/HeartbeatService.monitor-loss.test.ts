@@ -263,6 +263,18 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		expect(mockedAlive).not.toHaveBeenCalled();
 	});
 
+	it("settled ship-attempt marker is fully consumed: no tmux probe or re-adopt fallthrough", async () => {
+		mockedTry.mockResolvedValue({
+			kind: "settled_ship_attempt_failed",
+			settle: "marked",
+		});
+		store.getOrphanSessions.mockReturnValue([sess()]);
+		await service.reconcileMonitorLoss();
+		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
+		expect(store.updateHeartbeat).not.toHaveBeenCalled();
+		expect(mockedAlive).not.toHaveBeenCalled();
+	});
+
 	it("quarantined + tmux alive → re-adopt + reapOrphans skips (FLY-172 R1 HIGH parity)", async () => {
 		mockedTry.mockResolvedValue({
 			kind: "quarantined",
@@ -501,6 +513,17 @@ describe("HeartbeatService legacy (FLY-623 kill-switch FLYWHEEL_HEARTBEAT_READOP
 			status: "awaiting_review",
 		});
 		mockedAlive.mockResolvedValue(true);
+		store.getOrphanSessions.mockReturnValue([sess()]);
+		await service.reconcileMonitorLoss();
+		expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
+		expect(mockedAlive).not.toHaveBeenCalled();
+	});
+
+	it("settled ship-attempt marker is fully consumed: no legacy liveness fallthrough", async () => {
+		mockedTry.mockResolvedValue({
+			kind: "settled_ship_attempt_failed",
+			settle: "marked",
+		});
 		store.getOrphanSessions.mockReturnValue([sess()]);
 		await service.reconcileMonitorLoss();
 		expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();

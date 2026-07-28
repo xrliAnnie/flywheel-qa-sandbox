@@ -27,6 +27,48 @@ import type { RunnerLiveness } from "./tmux-lookup.js";
 export const DEFAULT_REWAKE_GRACE_MS = 5 * 60_000;
 /** Default: re-wake one stranded session at most this often. */
 export const DEFAULT_REWAKE_BACKOFF_MS = 5 * 60_000;
+const REAL_GIT_HEAD = /^[0-9a-f]{40}$/;
+
+function normalizedGitHead(value: string | undefined): string | undefined {
+	const normalized = value?.trim().toLowerCase();
+	return normalized && REAL_GIT_HEAD.test(normalized) ? normalized : undefined;
+}
+
+/**
+ * FLY-1505: parse the durable failed-ship-attempt suppressor from the raw
+ * production session_params column. Missing/malformed/sentinel data fails open:
+ * only a real 40-hex head is allowed to pause the automatic re-wake.
+ */
+export function shipAttemptFailedSuppressedHead(
+	sessionParamsRaw: string | null | undefined,
+	currentReviewQuestionId?: string,
+): string | undefined {
+	if (!sessionParamsRaw) return undefined;
+	try {
+		const params = JSON.parse(sessionParamsRaw) as unknown;
+		if (!params || typeof params !== "object" || Array.isArray(params)) {
+			return undefined;
+		}
+		const marker = (params as Record<string, unknown>)
+			.fly1505_ship_attempt_failed;
+		if (!marker || typeof marker !== "object" || Array.isArray(marker)) {
+			return undefined;
+		}
+		const markerRecord = marker as Record<string, unknown>;
+		const markerReviewQuestionId = markerRecord.review_question_id;
+		if (
+			typeof markerReviewQuestionId !== "string" ||
+			!currentReviewQuestionId ||
+			markerReviewQuestionId !== currentReviewQuestionId
+		) {
+			return undefined;
+		}
+		const rawHead = markerRecord.head_sha;
+		return typeof rawHead === "string" ? normalizedGitHead(rawHead) : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 export interface RewakeSessionProbe {
 	execution_id: string;
@@ -37,6 +79,8 @@ export interface RewakeSessionProbe {
 	pr_head_sha?: string;
 	last_activity_at?: string;
 	tmux_session?: string;
+	/** Real head parsed from fly1505_ship_attempt_failed, when present. */
+	shipAttemptFailedHead?: string;
 }
 
 /**
@@ -54,6 +98,13 @@ export function isRewakeCandidate(
 	const qid = session.review_question_id;
 	if (!qid || qid === REVIEW_BINDING_UNBOUND) return false;
 	if (!session.pr_head_sha) return false;
+	if (
+		normalizedGitHead(session.shipAttemptFailedHead) &&
+		normalizedGitHead(session.shipAttemptFailedHead) ===
+			normalizedGitHead(session.pr_head_sha)
+	) {
+		return false;
+	}
 	const lastMs = parseSqliteUtcMs(session.last_activity_at);
 	if (lastMs === null) return false;
 	return opts.nowMs - lastMs >= opts.graceMs;

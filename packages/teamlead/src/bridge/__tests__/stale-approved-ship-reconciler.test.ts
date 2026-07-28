@@ -15,9 +15,12 @@ import {
 	deadAlertAccepted,
 	isRewakeCandidate,
 	reconcileStaleApprovedShip,
+	shipAttemptFailedSuppressedHead,
 } from "../stale-approved-ship-reconciler.js";
 
 const NOW = 10_000_000;
+const HEAD_A = "a".repeat(40);
+const HEAD_B = "b".repeat(40);
 const staleActivity = new Date(NOW - 10 * 60_000)
 	.toISOString()
 	.replace("T", " ")
@@ -34,7 +37,7 @@ function candidate(over: Record<string, unknown> = {}) {
 		project_name: "proj",
 		status: "approved_to_ship",
 		review_question_id: "Q-1",
-		pr_head_sha: "sha-1",
+		pr_head_sha: HEAD_A,
 		last_activity_at: staleActivity,
 		tmux_session: "cmux-E1",
 		...over,
@@ -71,6 +74,68 @@ describe("isRewakeCandidate", () => {
 		expect(
 			isRewakeCandidate(candidate({ last_activity_at: freshActivity }), opts),
 		).toBe(false);
+	});
+	it("same-head ship-attempt failure marker suppresses ONLY the automatic re-wake", () => {
+		expect(
+			isRewakeCandidate(
+				candidate({ shipAttemptFailedHead: HEAD_A.toUpperCase() }),
+				opts,
+			),
+		).toBe(false);
+		expect(
+			isRewakeCandidate(candidate({ shipAttemptFailedHead: HEAD_B }), opts),
+		).toBe(true);
+		expect(
+			isRewakeCandidate(
+				candidate({ shipAttemptFailedHead: "(unknown)" }),
+				opts,
+			),
+		).toBe(true);
+	});
+});
+
+describe("shipAttemptFailedSuppressedHead", () => {
+	it("returns a normalized real marker head from a production session_params row", () => {
+		expect(
+			shipAttemptFailedSuppressedHead(
+				JSON.stringify({
+					unrelated: true,
+					fly1505_ship_attempt_failed: {
+						head_sha: HEAD_A.toUpperCase(),
+						attempt_count: 1,
+						review_question_id: "Q-1",
+					},
+				}),
+				"Q-1",
+			),
+		).toBe(HEAD_A);
+	});
+
+	it("fails open for a marker from an older approval binding", () => {
+		const raw = JSON.stringify({
+			fly1505_ship_attempt_failed: {
+				head_sha: HEAD_A,
+				review_question_id: "Q-old",
+			},
+		});
+		expect(shipAttemptFailedSuppressedHead(raw, "Q-new")).toBeUndefined();
+	});
+
+	it.each([
+		undefined,
+		null,
+		"",
+		"{bad-json",
+		JSON.stringify({}),
+		JSON.stringify({ fly1505_ship_attempt_failed: {} }),
+		JSON.stringify({
+			fly1505_ship_attempt_failed: { head_sha: "(unknown)" },
+		}),
+		JSON.stringify({
+			fly1505_ship_attempt_failed: { head_sha: "not-a-sha" },
+		}),
+	])("fails open for malformed, missing, or sentinel params: %j", (raw) => {
+		expect(shipAttemptFailedSuppressedHead(raw, "Q-1")).toBeUndefined();
 	});
 });
 

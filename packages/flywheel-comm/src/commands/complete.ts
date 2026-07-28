@@ -43,6 +43,9 @@ const VALID_ROUTES = new Set([
 	"auto_approve",
 	"needs_review",
 	"blocked",
+	// FLY-1505: non-terminal ship-attempt settlement. The Bridge records the
+	// failed/stalled attempt while preserving approved_to_ship.
+	"ship_attempt_failed",
 	"no_code",
 	"pr_handoff",
 	// FLY-793: three-stage Design phase completion (docs committed, no PR/merge).
@@ -68,6 +71,8 @@ type Evidence = {
 	diffSummary: string;
 	changedFilePaths: string[];
 	commitMessages: string[];
+	/** FLY-1505: PR identity for a non-terminal ship-attempt receipt. */
+	prNumber?: number;
 	/**
 	 * FLY-191 Phase 2 (§5.5.2): the worktree HEAD at completion time. For
 	 * route=needs_review this is the PR head the review request is bound to;
@@ -177,6 +182,31 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 			process.exit(1);
 		}
 	}
+	if (opts.route === "ship_attempt_failed") {
+		if (
+			opts.pr === undefined ||
+			opts.pr === null ||
+			!Number.isInteger(opts.pr) ||
+			opts.pr <= 0
+		) {
+			console.error(
+				"--route ship_attempt_failed requires --pr <positive integer>",
+			);
+			process.exit(1);
+		}
+		if (opts.merged) {
+			console.error(
+				"--route ship_attempt_failed describes an unmerged ship attempt; do not pass --merged",
+			);
+			process.exit(1);
+		}
+		if (!opts.questionId?.trim()) {
+			console.error(
+				"--route ship_attempt_failed requires --question-id <approve_to_ship question id>",
+			);
+			process.exit(1);
+		}
+	}
 
 	const execId = requireEnv("FLYWHEEL_EXEC_ID");
 	const issueId = requireEnv("FLYWHEEL_ISSUE_ID");
@@ -229,6 +259,9 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		pr: opts.pr,
 		targetRepo: opts.targetRepo,
 	});
+	if (opts.route === "ship_attempt_failed" && opts.pr !== undefined) {
+		evidence.prNumber = opts.pr;
+	}
 	const designHtmlEvidence =
 		opts.route === "phase_design_complete"
 			? collectDesignHtmlEvidence({ baseRef, issueIdentifier, evidence })
@@ -271,8 +304,9 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 			turnEpoch: workflowActivation.epoch,
 		};
 	}
-	// FLY-191 Phase 2: only meaningful for review requests; pass through as-is
-	// (Bridge validates + fail-closes on absence for needs_review).
+	// FLY-191/FLY-1505: bind review requests and failed ship attempts to the
+	// exact approval question that produced them. Consumers must not infer this
+	// from the current session row during delayed replay.
 	if (opts.questionId?.trim())
 		payload.reviewQuestionId = opts.questionId.trim();
 	// FLY-945 Fix C: re-opening review FROM approved_to_ship (an approval

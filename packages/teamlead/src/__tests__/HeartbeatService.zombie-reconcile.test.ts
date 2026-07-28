@@ -179,6 +179,18 @@ afterEach(() => {
 });
 
 describe("M2 tri-state dispatch", () => {
+	it("settled ship-attempt marker is fully consumed before the tri-state liveness chain", async () => {
+		mockedTry.mockResolvedValue({
+			kind: "settled_ship_attempt_failed",
+			settle: "marked",
+		});
+		store.getOrphanSessions.mockReturnValue([sess()]);
+		await service.reconcileMonitorLoss();
+		expect(mockedProbe).not.toHaveBeenCalled();
+		expect(store.updateHeartbeat).not.toHaveBeenCalled();
+		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
+	});
+
 	it("alive → re-adopt with probe evidence (heartbeat refresh + one aggregated notice)", async () => {
 		store.getOrphanSessions.mockReturnValue([sess()]);
 		await service.reconcileMonitorLoss();

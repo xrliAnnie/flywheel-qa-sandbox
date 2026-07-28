@@ -18,6 +18,8 @@ export interface ExecutionEvidence {
 	linesRemoved: number;
 	diffSummary: string;
 	headSha: string | null;
+	/** Explicit PR identity for non-terminal ship-attempt evidence. */
+	prNumber?: number;
 
 	// Metadata
 	partial: boolean;

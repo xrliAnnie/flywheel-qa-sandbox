@@ -80,6 +80,125 @@ function fakeClient(over?: {
 	return { client, calls };
 }
 
+describe("AutoQaEffects.alertShipAttemptFailed (FLY-1505)", () => {
+	it("emits a severe, approval-bound ship-attempt alert", async () => {
+		const alert = vi.fn(async () => ({ sent: true }));
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [
+				{
+					projectName: "proj",
+					projectRoot: "/x",
+					leads: [
+						{
+							agentId: "lead-1",
+							match: { labels: ["engineer"] },
+						},
+					],
+				} as ProjectEntry,
+			],
+			config: {} as never,
+			leadAlertNotifier: { alert: alert as never },
+		});
+		await effects.alertShipAttemptFailed({
+			session: parentSession({
+				issue_labels: JSON.stringify(["engineer"]),
+				review_question_id: "q-1",
+				pr_head_sha: SHA,
+			}),
+			reason: "SHIP-STALLED",
+		});
+		expect(alert).toHaveBeenCalledWith(
+			expect.objectContaining({
+				eventId: `ship-attempt-failed:main-1:q-1:${SHA}`,
+				eventType: "ship_attempt_failed",
+				severity: "severe",
+				body: "SHIP-STALLED",
+			}),
+		);
+	});
+
+	it("rejects when no durable alert sink is available", async () => {
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [],
+			config: {} as never,
+		});
+		await expect(
+			effects.alertShipAttemptFailed({
+				session: parentSession(),
+				reason: "SHIP-STALLED",
+			}),
+		).rejects.toThrow("no alert sink");
+	});
+
+	it("rejects when the Lead cannot be resolved", async () => {
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [],
+			config: {} as never,
+			leadAlertNotifier: {
+				alert: vi.fn(async () => ({ sent: true })),
+			},
+		});
+		await expect(
+			effects.alertShipAttemptFailed({
+				session: parentSession(),
+				reason: "SHIP-STALLED",
+			}),
+		).rejects.toThrow("no lead");
+	});
+
+	it.each([
+		{ result: { skipped: "no-channel" as const }, label: "no channel" },
+		{ result: { deadLettered: true }, label: "dead letter" },
+	])("rejects a non-accepted notifier result: $label", async ({ result }) => {
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [
+				{
+					projectName: "proj",
+					projectRoot: "/x",
+					leads: [{ agentId: "lead-1", match: { labels: [] } }],
+				} as ProjectEntry,
+			],
+			config: {} as never,
+			leadAlertNotifier: {
+				alert: vi.fn(async () => result),
+			},
+		});
+		await expect(
+			effects.alertShipAttemptFailed({
+				session: parentSession(),
+				reason: "SHIP-STALLED",
+			}),
+		).rejects.toThrow("not accepted");
+	});
+
+	it("accepts notifier dedup as durable delivery", async () => {
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [
+				{
+					projectName: "proj",
+					projectRoot: "/x",
+					leads: [{ agentId: "lead-1", match: { labels: [] } }],
+				} as ProjectEntry,
+			],
+			config: {} as never,
+			leadAlertNotifier: {
+				alert: vi.fn(async () => ({ skipped: "duplicate" })),
+			},
+		});
+		await expect(
+			effects.alertShipAttemptFailed({
+				session: parentSession(),
+				reason: "SHIP-STALLED",
+			}),
+		).resolves.toBeUndefined();
+	});
+});
+
 describe("buildQaIssueContent (FLY-643)", () => {
 	it("titles QA · <parent> — <title> and embeds parent link / PR / commit", () => {
 		const { title, description } = buildQaIssueContent({

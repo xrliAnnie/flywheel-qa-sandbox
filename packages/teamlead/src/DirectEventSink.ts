@@ -42,6 +42,7 @@ import {
 	isPostApproveShipComplete,
 	markEvidenceGapCompletion,
 	runPostShipFinalization,
+	settleShipAttemptFailed,
 } from "./bridge/post-ship-finalization.js";
 import {
 	getProofShotParams,
@@ -587,6 +588,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// transition; FLY-208 5a additionally needs it for the status mapping
 		// itself (hoisted above the mapping for that reason).
 		const preExistingSession = this.store.getSession(env.executionId);
+		const isApprovedToShip = preExistingSession?.status === "approved_to_ship";
 
 		// FLY-222 #1 (Codex code-review MED-2): no_code is ONLY a running→completed
 		// terminal. A no_code emission for a non-running (e.g. review-gated) session
@@ -746,8 +748,53 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			} else {
 				status = "awaiting_review";
 			}
-		} else if (route === "blocked") status = "blocked";
-		else if (route === "no_code" || route === "pr_handoff") {
+		} else if (route === "blocked" || route === "ship_attempt_failed") {
+			if (isApprovedToShip) {
+				const settle = settleShipAttemptFailed(this.store, env.executionId, {
+					// FLY-1505: the completion event owns the attempt head. Do
+					// not reuse desPrHead (which is deliberately row-first).
+					attemptHeadSha: result.evidence?.headSha,
+					currentHeadSha: preExistingSession?.pr_head_sha,
+					prNumber:
+						result.evidence?.prNumber ??
+						preExistingSession?.pr_number ??
+						undefined,
+					// This is a live sink: when a legacy completion omits its
+					// binding, the simultaneously-read row is authoritative.
+					// Delayed marker replay deliberately does not use this fallback.
+					reviewQuestionId:
+						result.reviewQuestionId ?? preExistingSession?.review_question_id,
+					currentReviewQuestionId: preExistingSession?.review_question_id,
+					summary,
+				});
+				if (
+					(settle.outcome === "marked" ||
+						settle.outcome === "unknown_head_marked") &&
+					settle.firstAttemptForHead &&
+					preExistingSession
+				) {
+					const retryPosture =
+						settle.outcome === "marked"
+							? "同 head 的自动重唤醒已暂停，请由 Lead 显式唤醒。"
+							: "本次完成未携带可验证的 head；自动重唤醒仍开启（fail-open）。";
+					void this.autoQaCoordinator?.current?.alertShipAttemptFailed(
+						preExistingSession,
+						`⚠️ Runner ${env.executionId}（${preExistingSession.issue_id}）报告 ship attempt 失败/停滞；会话保持 approved_to_ship，founder 批准仍有效。请检查 PR #${preExistingSession.pr_number ?? "unknown"} 的 ship workflow；诊断后重试前先重新运行 verify-approval。${retryPosture}`,
+					);
+				}
+				console.warn(
+					`[DirectEventSink] FLY-1505 ship_attempt_failed deflected for ${env.executionId} — approved_to_ship preserved (${settle.outcome})`,
+				);
+				return;
+			}
+			if (route === "ship_attempt_failed") {
+				console.warn(
+					`[DirectEventSink] ignoring ship_attempt_failed for non-approved session ${env.executionId} (status=${preExistingSession?.status ?? "missing"})`,
+				);
+				return;
+			}
+			status = "blocked";
+		} else if (route === "no_code" || route === "pr_handoff") {
 			// FLY-222 #1: no-code/no-merge clean success → terminal completed.
 			// Sister branch: event-route.ts. evidenceGap stays false (not an
 			// approved_to_ship merge-evidence gap); runPostShipFinalization is

@@ -192,6 +192,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				issueTitle: env.issueTitle,
 				evidence: result.evidence,
 				decision: result.decision,
+				reviewQuestionId: result.reviewQuestionId,
 				summary,
 				labels: result.labels,
 				projectId: result.projectId,

@@ -25,6 +25,10 @@ import {
 	reconcileCompleteFailedMarkers,
 	tryReconcileComplete,
 } from "../bridge/complete-marker-reconciler.js";
+import {
+	isRewakeCandidate,
+	shipAttemptFailedSuppressedHead,
+} from "../bridge/stale-approved-ship-reconciler.js";
 
 const mockedApplyTransition = vi.mocked(applyTransition);
 
@@ -32,6 +36,11 @@ type SessionRow = {
 	status: string;
 	project_name?: string;
 	issue_identifier?: string;
+	issue_id?: string;
+	pr_head_sha?: string;
+	pr_number?: number;
+	review_question_id?: string;
+	session_params?: string;
 };
 
 /** Minimal in-memory StateStore stub matching the reconciler's usage. */
@@ -44,6 +53,15 @@ function makeStore(initial: Record<string, SessionRow> = {}) {
 		getGeneralizedWorkflowNodeForActivation: vi.fn(() => undefined),
 		getWorkflowNodeCompletion: vi.fn(() => undefined),
 		getEventPayloadById: vi.fn(() => undefined),
+		getSessionParams: vi.fn((id: string) => {
+			const raw = sessions.get(id)?.session_params;
+			return raw ? (JSON.parse(raw) as Record<string, unknown>) : undefined;
+		}),
+		setSessionParams: vi.fn((id: string, params: Record<string, unknown>) => {
+			const cur = sessions.get(id);
+			if (!cur) throw new Error(`session not found: ${id}`);
+			sessions.set(id, { ...cur, session_params: JSON.stringify(params) });
+		}),
 		setMergeBlock: vi.fn(() => true),
 		forceStatus: vi.fn(
 			(id: string, status: string, _now: string, lastError?: string) => {
@@ -197,13 +215,14 @@ describe("expectedStatusFromMarker (event-route parity, Codex R2 #6)", () => {
 		expect(
 			expectedStatusFromMarker(mk("auto_approve", false), "approved_to_ship"),
 		).toBe("completed");
-		// Merged stays completed; blocked stays blocked (FSM edge added).
+		// Merged stays completed; a blocked completion is a failed/stalled ship
+		// ATTEMPT and preserves approved_to_ship (FLY-1505).
 		expect(
 			expectedStatusFromMarker(mk("needs_review", true), "approved_to_ship"),
 		).toBe("completed");
 		expect(
 			expectedStatusFromMarker(mk("blocked", false), "approved_to_ship"),
-		).toBe("blocked");
+		).toBe("approved_to_ship");
 	});
 
 	// FLY-945 Fix C: the recovery lap — approved_to_ship + needs_review whose
@@ -318,6 +337,261 @@ describe("tryReconcileComplete", () => {
 		const store = makeStore();
 		const r = await tryReconcileComplete("nope", baseDeps(store));
 		expect(r.kind).toBe("absent");
+	});
+
+	it("FLY-1505 settles the explicit failed-attempt route, persists the approval-bound head marker, and suppresses automatic re-wake", async () => {
+		const head = "a".repeat(40);
+		writeMarker(markerDir, "execShipAttempt", {
+			payload: {
+				decision: { route: "ship_attempt_failed" },
+				evidence: { headSha: head, prNumber: 715 },
+				reviewQuestionId: "11111111-1111-1111-1111-111111111111",
+				summary: "ship workflow still running",
+			},
+		});
+		const store = makeStore({
+			execShipAttempt: {
+				status: "approved_to_ship",
+				issue_id: "iss-1",
+				project_name: "geoforge3d",
+				pr_head_sha: head,
+				pr_number: 715,
+				review_question_id: "11111111-1111-1111-1111-111111111111",
+			},
+		});
+		const fetchFn = vi.fn();
+		const alertShipAttemptFailed = vi.fn();
+
+		const result = await tryReconcileComplete("execShipAttempt", {
+			...baseDeps(store, fetchFn as never),
+			alertShipAttemptFailed,
+		});
+
+		expect(result).toEqual({
+			kind: "settled_ship_attempt_failed",
+			settle: "marked",
+		});
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(alertShipAttemptFailed).toHaveBeenCalledOnce();
+		expect(store.sessions.get("execShipAttempt")?.status).toBe(
+			"approved_to_ship",
+		);
+		const rawParams = store.sessions.get("execShipAttempt")?.session_params;
+		expect(rawParams).toBeTruthy();
+		expect(JSON.parse(rawParams ?? "{}")).toMatchObject({
+			fly1505_ship_attempt_failed: {
+				head_sha: head,
+				attempt_count: 1,
+				review_question_id: "11111111-1111-1111-1111-111111111111",
+				summary: "ship workflow still running",
+			},
+		});
+		expect(
+			isRewakeCandidate(
+				{
+					execution_id: "execShipAttempt",
+					issue_id: "iss-1",
+					project_name: "geoforge3d",
+					status: "approved_to_ship",
+					review_question_id: "11111111-1111-1111-1111-111111111111",
+					pr_head_sha: head,
+					last_activity_at: "2026-07-27 00:00:00",
+					shipAttemptFailedHead: shipAttemptFailedSuppressedHead(
+						rawParams,
+						"11111111-1111-1111-1111-111111111111",
+					),
+				},
+				{
+					nowMs: Date.parse("2026-07-27T00:10:00Z"),
+					graceMs: 5 * 60_000,
+				},
+			),
+		).toBe(false);
+		expect(existsSync(join(markerDir, "execShipAttempt.json"))).toBe(false);
+	});
+
+	it("FLY-1505 consumes a delayed Q1 marker without suppressing the same-head Q2 approval", async () => {
+		const head = "e".repeat(40);
+		writeMarker(markerDir, "execStaleBindingAttempt", {
+			payload: {
+				decision: { route: "ship_attempt_failed" },
+				evidence: { headSha: head, prNumber: 715 },
+				reviewQuestionId: "11111111-1111-1111-1111-111111111111",
+			},
+		});
+		const store = makeStore({
+			execStaleBindingAttempt: {
+				status: "approved_to_ship",
+				issue_id: "iss-binding",
+				project_name: "geoforge3d",
+				pr_head_sha: head,
+				pr_number: 715,
+				review_question_id: "22222222-2222-2222-2222-222222222222",
+			},
+		});
+		const alertShipAttemptFailed = vi.fn();
+
+		const result = await tryReconcileComplete("execStaleBindingAttempt", {
+			...baseDeps(store, vi.fn() as never),
+			alertShipAttemptFailed,
+		});
+
+		expect(result).toEqual({
+			kind: "settled_ship_attempt_failed",
+			settle: "stale_attempt",
+		});
+		expect(
+			store.sessions.get("execStaleBindingAttempt")?.session_params,
+		).toBeUndefined();
+		expect(alertShipAttemptFailed).not.toHaveBeenCalled();
+		expect(existsSync(join(markerDir, "execStaleBindingAttempt.json"))).toBe(
+			false,
+		);
+	});
+
+	it("FLY-1505 consumes a stale head-A marker without contaminating the currently approved head B", async () => {
+		const headA = "a".repeat(40);
+		const headB = "b".repeat(40);
+		writeMarker(markerDir, "execStaleShipAttempt", {
+			payload: {
+				decision: { route: "blocked" },
+				evidence: { headSha: headA },
+			},
+		});
+		const store = makeStore({
+			execStaleShipAttempt: {
+				status: "approved_to_ship",
+				project_name: "geoforge3d",
+				pr_head_sha: headB,
+			},
+		});
+		const alertShipAttemptFailed = vi.fn();
+		const result = await tryReconcileComplete("execStaleShipAttempt", {
+			...baseDeps(store, vi.fn() as never),
+			alertShipAttemptFailed,
+		});
+
+		expect(result).toEqual({
+			kind: "settled_ship_attempt_failed",
+			settle: "stale_attempt",
+		});
+		expect(
+			store.sessions.get("execStaleShipAttempt")?.session_params,
+		).toBeUndefined();
+		expect(alertShipAttemptFailed).not.toHaveBeenCalled();
+		expect(existsSync(join(markerDir, "execStaleShipAttempt.json"))).toBe(
+			false,
+		);
+	});
+
+	it("FLY-1505 keeps the durable marker until the Lead alert succeeds", async () => {
+		const head = "d".repeat(40);
+		writeMarker(markerDir, "execShipAlertRetry", {
+			payload: {
+				decision: { route: "ship_attempt_failed" },
+				evidence: { headSha: head, prNumber: 715 },
+				reviewQuestionId: "22222222-2222-2222-2222-222222222222",
+				summary: "workflow timed out",
+			},
+		});
+		const store = makeStore({
+			execShipAlertRetry: {
+				status: "approved_to_ship",
+				issue_id: "iss-alert",
+				project_name: "geoforge3d",
+				pr_head_sha: head,
+				pr_number: 715,
+				review_question_id: "22222222-2222-2222-2222-222222222222",
+			},
+		});
+		const alertShipAttemptFailed = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("notifier unavailable"))
+			.mockResolvedValueOnce(undefined);
+
+		const first = await tryReconcileComplete("execShipAlertRetry", {
+			...baseDeps(store, vi.fn() as never),
+			alertShipAttemptFailed,
+		});
+		expect(first).toEqual({
+			kind: "transient_failed",
+			error: "Error: notifier unavailable",
+		});
+		expect(existsSync(join(markerDir, "execShipAlertRetry.json"))).toBe(true);
+		expect(store.sessions.get("execShipAlertRetry")?.status).toBe(
+			"approved_to_ship",
+		);
+
+		const second = await tryReconcileComplete("execShipAlertRetry", {
+			...baseDeps(store, vi.fn() as never),
+			alertShipAttemptFailed,
+		});
+		expect(second).toEqual({
+			kind: "settled_ship_attempt_failed",
+			settle: "marked",
+		});
+		expect(alertShipAttemptFailed).toHaveBeenCalledTimes(2);
+		expect(existsSync(join(markerDir, "execShipAlertRetry.json"))).toBe(false);
+	});
+
+	it("FLY-1505 keeps the marker retryable when no durable alert sink is wired", async () => {
+		const head = "f".repeat(40);
+		writeMarker(markerDir, "execShipNoAlertSink", {
+			payload: {
+				decision: { route: "ship_attempt_failed" },
+				evidence: { headSha: head, prNumber: 715 },
+				reviewQuestionId: "33333333-3333-3333-3333-333333333333",
+			},
+		});
+		const store = makeStore({
+			execShipNoAlertSink: {
+				status: "approved_to_ship",
+				issue_id: "iss-no-alert",
+				project_name: "geoforge3d",
+				pr_head_sha: head,
+				pr_number: 715,
+				review_question_id: "33333333-3333-3333-3333-333333333333",
+			},
+		});
+
+		const result = await tryReconcileComplete(
+			"execShipNoAlertSink",
+			baseDeps(store, vi.fn() as never),
+		);
+		expect(result).toMatchObject({
+			kind: "transient_failed",
+			error: expect.stringContaining("alert sink"),
+		});
+		expect(existsSync(join(markerDir, "execShipNoAlertSink.json"))).toBe(true);
+	});
+
+	it("FLY-1505 keeps the marker retryable when the durable session_params write fails", async () => {
+		const head = "c".repeat(40);
+		writeMarker(markerDir, "execShipWriteFail", {
+			payload: {
+				decision: { route: "blocked" },
+				evidence: { headSha: head },
+			},
+		});
+		const store = makeStore({
+			execShipWriteFail: {
+				status: "approved_to_ship",
+				project_name: "geoforge3d",
+				pr_head_sha: head,
+			},
+		});
+		store.setSessionParams.mockImplementation(() => {
+			throw new Error("sqlite busy");
+		});
+		const result = await tryReconcileComplete(
+			"execShipWriteFail",
+			baseDeps(store),
+		);
+		expect(result).toEqual({
+			kind: "transient_failed",
+			error: "Error: sqlite busy",
+		});
+		expect(existsSync(join(markerDir, "execShipWriteFail.json"))).toBe(true);
 	});
 
 	it("FLY-208 5a regression (Codex PR-2 R1 HIGH): approved_to_ship + needs_review + ready_to_merge marker reconciles to completed — NO quarantine", async () => {
@@ -1180,6 +1454,33 @@ describe("reconcileCompleteFailedMarkers (boot drain, Codex R1 #2)", () => {
 			log: () => {},
 		});
 		expect(r).toEqual({ scanned: 0, reconciled: 0, quarantined: 0 });
+	});
+
+	it("counts a settled blocked-after-approval marker as reconciled, never quarantined", async () => {
+		const head = "d".repeat(40);
+		writeMarker(markerDir, "ship-attempt", {
+			payload: {
+				decision: { route: "blocked" },
+				evidence: { headSha: head },
+			},
+		});
+		const store = makeStore({
+			"ship-attempt": {
+				status: "approved_to_ship",
+				project_name: "geoforge3d",
+				pr_head_sha: head,
+			},
+		});
+		const result = await reconcileCompleteFailedMarkers({
+			store: store as never,
+			bridgeBaseUrl: "http://127.0.0.1:9876",
+			markerDir,
+			quarantineDir,
+			alertShipAttemptFailed: vi.fn(),
+			log: () => {},
+		});
+		expect(result).toEqual({ scanned: 1, reconciled: 1, quarantined: 0 });
+		expect(existsSync(join(markerDir, "ship-attempt.json"))).toBe(false);
 	});
 
 	it("replays multiple markers; idempotent on second drain", async () => {

@@ -1,0 +1,19 @@
+flowchart TD
+    A["Runner 发出 :cool:<br/>并记下这次触发的编号"] --> B["只认本次编号的 started 回执<br/>拿到 GitHub workflow run id"]
+    B --> C["每 60 秒查询这次 run 的真实状态"]
+    C -->|"queued / in_progress"| C
+    C -->|"success"| D["确认 PR 已合并<br/>正常收尾"]
+    C -->|"failure / cancelled / timed_out"| E["立即停止等待"]
+    E --> F["报告 Lead:SHIP-FAILED<br/>(带 run id + 失败详情)"]
+    B -.->|"回执没出现 / 查询持续报错"| G["从仓库现读 workflow 的<br/>timeout-minutes + 5 分钟传播缓冲"]
+    G -->|"动态兜底预算耗尽"| H["报告 Lead:SHIP-STALLED"]
+    F --> I["原地待命,等 Lead 指示"]
+    H --> I
+    I --> J["会话保持『已批准待合并』<br/>你的批准完好无损"]
+    J --> K["Lead 排查后:<br/>显式唤醒再试<br/>或确认晚到的合并、正常收尾"]
+    B -.->|"旧 attempt 的回执"| L["编号不匹配<br/>忽略并继续等本次 run"]
+    style D fill:#e8f7ee,stroke:#34c759
+    style J fill:#e8f7ee,stroke:#34c759
+    style K fill:#e8f7ee,stroke:#34c759
+    style F fill:#fff3e0,stroke:#ff9500
+    style H fill:#fff3e0,stroke:#ff9500

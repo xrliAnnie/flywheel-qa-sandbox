@@ -63,6 +63,9 @@ function fakeEffects(opts?: {
 		alertLeadPipelineError: ({ reason }) => {
 			alerts.push(reason);
 		},
+		alertShipAttemptFailed: ({ reason }) => {
+			alerts.push(reason);
+		},
 		stampIssueStage: ({ session, stage }) => {
 			stamps.push({ issueId: session.issue_id, stage });
 		},
@@ -1869,5 +1872,19 @@ describe("FLY-869 B alertMergeWithoutApproval", () => {
 		await s.coord.onCodexReviewResult(codexEvent());
 		expect(s.start).not.toHaveBeenCalled();
 		expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+	});
+});
+
+describe("FLY-1505 alertShipAttemptFailed", () => {
+	it("routes the factual reason through the dedicated ship-attempt effect", async () => {
+		const s = await setup();
+		const main = awaitingMain(s.store);
+		await s.coord.alertShipAttemptFailed(
+			main,
+			"blocked completion deflected; approval preserved",
+		);
+		expect(s.alerts).toContain(
+			"blocked completion deflected; approval preserved",
+		);
 	});
 });
