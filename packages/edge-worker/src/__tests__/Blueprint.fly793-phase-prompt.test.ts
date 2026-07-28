@@ -112,6 +112,29 @@ describe("Blueprint three-stage phase prompt (FLY-793)", () => {
 		expect(p).toContain("3) data / structure model");
 		expect(p).toContain("4) key tradeoffs and rejected alternatives");
 		expect(p).toContain("5) honest boundary");
+		expect(p).toContain("INTERACTIVE COMMENT LAYER (MANDATORY");
+		expect(p).toContain("localStorage");
+		expect(p).toContain("location.pathname");
+		expect(p).toContain('nonce="__CSP_NONCE__"');
+		expect(p).toContain("Do NOT include your own Content-Security-Policy meta");
+		expect(p).toContain("addEventListener");
+		expect(p).toContain("HTML-escape");
+		expect(p).toContain("textContent/value");
+		expect(p).toContain("navigator.clipboard.writeText");
+		expect(p).toContain("unavailable OR its promise rejects");
+		expect(p).toContain("execCommand('copy')");
+		expect(p).toContain("DIAGRAMS AND LANGUAGE (MANDATORY");
+		expect(p).toContain("mmdc");
+		expect(p).toContain("inline that SVG");
+		expect(p).toContain("no runtime mermaid.js");
+		expect(p).toContain("first time each technical term appears");
+		expect(p).toContain("Do NOT fake diagrams with CSS boxes");
+		expect(p).toContain("retry once with standard flags");
+		expect(p).toContain("DIAGRAM PENDING LOCAL RENDER");
+		expect(p).toContain("hosted or remote diagram rendering service");
+		expect(p).toContain("mmdc --svgId");
+		expect(p).toContain("unique per diagram");
+		expect(p).toContain("plain-language explanation");
 		expect(p).toContain("doc/FLY-793-<slug>/");
 		expect(p).toContain("--publish-only");
 		expect(p).toContain("--lead product-lead");
@@ -150,6 +173,8 @@ describe("Blueprint three-stage phase prompt (FLY-793)", () => {
 		expect(p).toContain("committed design");
 		expect(p).toContain("create a GitHub PR");
 		expect(p).not.toContain("Founder design HTML (MANDATORY)");
+		expect(p).not.toContain("INTERACTIVE COMMENT LAYER");
+		expect(p).not.toContain("DIAGRAMS AND LANGUAGE");
 	});
 
 	it("QA phase: writer on the shared branch, emits qa-result, does NOT open a second PR", async () => {
@@ -163,6 +188,8 @@ describe("Blueprint three-stage phase prompt (FLY-793)", () => {
 		// PR-create / land block (no "create a GitHub PR", no landing signal).
 		expect(p).not.toContain("create a GitHub PR");
 		expect(p).not.toContain("Create a feature branch");
+		expect(p).not.toContain("INTERACTIVE COMMENT LAYER");
+		expect(p).not.toContain("DIAGRAMS AND LANGUAGE");
 	});
 
 	it("byte-compat: no shareParentBranch → default single-session prompt", async () => {
@@ -170,11 +197,15 @@ describe("Blueprint three-stage phase prompt (FLY-793)", () => {
 		expect(p).toContain("Create a feature branch");
 		expect(p).not.toContain("DESIGN phase");
 		expect(p).not.toContain("IMPLEMENT phase");
+		expect(p).not.toContain("INTERACTIVE COMMENT LAYER");
+		expect(p).not.toContain("DIAGRAMS AND LANGUAGE");
 	});
 
 	it("shareParentBranch but sessionRole main → still default (not a phase)", async () => {
 		const p = await buildPrompt({ shareParentBranch: true });
 		expect(p).toContain("Create a feature branch");
 		expect(p).not.toContain("DESIGN phase");
+		expect(p).not.toContain("INTERACTIVE COMMENT LAYER");
+		expect(p).not.toContain("DIAGRAMS AND LANGUAGE");
 	});
 });

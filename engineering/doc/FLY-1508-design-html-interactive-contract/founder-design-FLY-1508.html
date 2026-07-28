@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1508 设计 — 设计稿 HTML 永久可互动(逐节 comment + 一键汇总复制)</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, sans-serif; background:#f5f5f7; color:#1d1d1f; padding:28px 16px 60px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:24px; margin-bottom:8px; }
+  .sub { margin-bottom:22px; }
+  .badge { display:inline-block; font-size:12px; font-weight:600; border-radius:6px; padding:3px 9px; margin-right:6px; }
+  .b-blue { background:#e8f1ff; color:#007aff; }
+  .b-green { background:#e6f7ec; color:#1d804b; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:22px 24px; margin-bottom:18px; border-left:4px solid #007aff; }
+  .card h2 { font-size:17px; margin-bottom:12px; color:#1a365d; }
+  .card p { font-size:14.5px; line-height:1.75; margin-bottom:10px; }
+  .card ul { padding-left:20px; margin-bottom:10px; }
+  .card li { font-size:14.5px; line-height:1.75; margin-bottom:6px; }
+  .accent-green { border-left-color:#34c759; }
+  .accent-amber { border-left-color:#ff9500; }
+  .accent-purple { border-left-color:#af52de; }
+  .accent-navy { border-left-color:#1a365d; }
+  code { font-family:'SF Mono', monospace; font-size:12.5px; background:#f5f5f7; border-radius:4px; padding:1px 5px; }
+  .diagram-pending { margin:14px 0 8px; padding:18px; border:1.5px dashed #ff9500; border-radius:10px; background:#fff8ee; }
+  .diagram-pending strong { display:block; margin-bottom:7px; color:#9a5700; font-size:14px; }
+  .dim { color:#86868b; font-size:13px; }
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:13.5px; }
+  th, td { border:1px solid #e5e5ea; padding:7px 10px; text-align:left; vertical-align:top; line-height:1.6; }
+  th { background:#fbfbfd; color:#1a365d; }
+  /* interactive comments */
+  .cmt { margin-top:16px; border-top:1px dashed #e5e5ea; padding-top:12px; }
+  .cmt-label { font-size:12.5px; color:#86868b; font-weight:600; margin-bottom:6px; }
+  .cmt-ta { width:100%; min-height:64px; border:1.5px solid #d9dce1; border-radius:8px; padding:9px 11px; font-size:14px; font-family:inherit; resize:vertical; background:#fbfbfd; }
+  .cmt-ta:focus { outline:none; border-color:#007aff; background:#fff; }
+  #cmt-panel { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid #1a365d; padding:22px 24px; margin-bottom:18px; }
+  #cmt-panel h2 { font-size:17px; margin-bottom:8px; color:#1a365d; }
+  #cmt-preview { white-space:pre-wrap; background:#f5f5f7; border-radius:8px; padding:12px 14px; font-size:13.5px; color:#1d1d1f; min-height:40px; margin:10px 0; }
+  #cmt-copy { background:#007aff; color:#fff; border:none; border-radius:9px; padding:11px 22px; font-size:15px; font-weight:600; cursor:pointer; }
+  #cmt-copy:active { opacity:.7; }
+  #cmt-status { font-size:13px; color:#1d804b; margin-left:10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-1508 · 设计稿 HTML 从此永久可互动</h1>
+<div class="sub">
+  <span class="badge b-blue">基建 · 小修 · 设计节点</span>
+  <span class="badge b-green">Codex 设计评审 3 轮 APPROVED</span>
+</div>
+
+<div class="card">
+  <h2>一句话总结</h2>
+  <p>把「逐节留 comment(批注)+ 底部一键汇总复制」写进设计节点的<b>永久产出合同</b>——改一处模板文字,以后<b>所有项目、所有设计稿 HTML(在浏览器打开的网页文件)</b> 自动长这样,不再靠每次口头叮嘱。</p>
+  <p class="dim">你在 FLY-1501 已经用过的那个可互动版,就是以后每一份设计稿的标准形态。</p>
+</div>
+
+<div class="card accent-green">
+  <h2>核心流程</h2>
+  <div class="diagram-pending" role="img" aria-label="核心流程图待本地渲染">
+    <strong>DIAGRAM PENDING LOCAL RENDER · 核心流程图待本地渲染</strong>
+    <p>本机的 Mermaid 命令行渲染器被安全沙箱拦住,标准参数重试后仍失败。这里明确显示占位,不拿 CSS 盒子冒充流程图。</p>
+    <p class="dim">Mermaid 源文件已随本页保存为 <code>founder-design-FLY-1508-flow.mmd</code>;未使用远程画图服务。</p>
+  </div>
+  <p class="dim">永久合同只有一处模板来源,同时管文字设计、界面设计和通用工作流里的设计节点,所以改一处就会全部生效。</p>
+</div>
+
+<div class="card accent-purple">
+  <h2>合同新增的 9 条规格(结构模型)</h2>
+  <table>
+    <tr><th>条款</th><th>内容</th><th>来源</th></tr>
+    <tr><td>a</td><td>每个 section 下方 comment 输入框,输入即自动保存(按页面地址隔离,不同报告互不串)</td><td>你的要求 ①</td></tr>
+    <tr><td>b</td><td>底部汇总卡:实时聚合所有非空 comment(带节标题)+ 一键复制按钮(复制失败也有备用方案)</td><td>你的要求 ②</td></tr>
+    <tr><td>c</td><td>所有脚本内联 + 带 nonce(一次性安全通行证)占位符;禁止页面自带安全策略声明(会顶掉系统发的通行证,页面变死页)</td><td>你的要求 ③ + 评审补漏</td></tr>
+    <tr><td>d</td><td>按钮和输入框只用浏览器的标准事件绑定方式(addEventListener,也就是把点击或输入动作接到对应功能上);外部文本必须安全转义,防止它被当成页面代码执行</td><td>Tadashi 点名 + 评审补漏</td></tr>
+    <tr><td>e</td><td>沿用现行 Apple 风格,零外部依赖</td><td>你的要求 ④</td></tr>
+    <tr><td>f</td><td>流程图/架构图必须用 Mermaid(把文字描述渲染成真正图形的工具)制作;需要 UML 风格时使用 Mermaid 自带的对应图类型。再把自包含 SVG 图直接放进网页,托管成品不向外部取任何资源;禁止 CSS 盒子拼的伪图</td><td>你的反馈 ⑤</td></tr>
+    <tr><td>g</td><td>面向 founder 说人话:每个技术词第一次出现时,紧跟一句白话解释</td><td>你的反馈 ⑥</td></tr>
+    <tr><td>h</td><td>本地画图失败时用标准参数重试一次;仍失败就明确标注「待本地渲染」并保留源文件,绝不把设计内容发给远程画图服务</td><td>评审补漏</td></tr>
+    <tr><td>i</td><td>同一页有多张图时,每张图使用独立编号,避免箭头、颜色等内部元素互相串台</td><td>评审补漏</td></tr>
+  </table>
+  <p class="dim">配套自动测试会逐字检查这些要求;模板文字被误删或误改,提交检查会直接报错。</p>
+</div>
+
+<div class="card accent-amber">
+  <h2>关键取舍与被否方案</h2>
+  <ul>
+    <li><b>合同文字自包含,不贴参考链接</b> —— 托管链接 7 天过期、仓库路径跨项目无意义;被否:「贴 FLY-1501 成品链接照抄」。</li>
+    <li><b>改永久合同,不靠口头指令</b> —— 在飞的设计 runner 已被逐个叮嘱过,但那只管这一轮;本单就是把口头指令变成永久规格。</li>
+    <li><b>只管设计节点</b> —— 你明确说过范围只到 design session;被否:「所有 HTML 报告系统级泛化」。</li>
+    <li><b>机制陷阱写死进合同</b> —— 通行证机制有 4 个静默失效坑(缺占位符 / 自带安全声明 / 错误的事件绑定方式 / 不转义外部文本),任一个都会让页面看着正常但按钮没反应。全部写成显式禁令,不赌 runner 自己发现;被否:「合同只写功能要求,机制细节留给 runner」。</li>
+  </ul>
+</div>
+
+<div class="card accent-navy">
+  <h2>诚实边界 — 这个设计管什么、不管什么</h2>
+  <ul>
+    <li><b>管</b>:本单合入后,所有项目、所有后续设计节点的 founder HTML 自动带互动层;三种设计路径全覆盖。</li>
+    <li><b>不管</b>:已发布的旧报告不会追溯变互动;发布机制本身零改动;implement / QA 节点的产出不受影响。</li>
+    <li><b>要知道</b>:你的 comment 存在你自己浏览器里(换设备或清缓存不带走);「复制粘给 Lead」仍是手动一步,不是实时同步——这是你定的范围,够用且简单。</li>
+    <li><b>过渡期</b>:合同合入生效前,在飞设计 runner 继续按 Tadashi 的口头指令执行,无空档。</li>
+  </ul>
+</div>
+
+<div id="cmt-panel">
+  <h2>💬 我的所有 comments(汇总)</h2>
+  <p class="dim">每一节下面都有 comment 框,写了的会自动汇总到这里(自动保存在本机浏览器)。</p>
+  <div id="cmt-preview">(还没有 comment)</div>
+  <button id="cmt-copy">📋 一键复制所有 comments</button><span id="cmt-status"></span>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY='fly1508-cmt-'+location.pathname+'-';
+  var cards=document.querySelectorAll('.card');
+  cards.forEach(function(card,i){
+    var h2=card.querySelector('h2');
+    var title=h2?h2.textContent.trim():('段落 '+(i+1));
+    var box=document.createElement('div');
+    box.className='cmt';
+    var label=document.createElement('div');
+    label.className='cmt-label'; label.textContent='💬 你的 comment — '+title;
+    var ta=document.createElement('textarea');
+    ta.className='cmt-ta'; ta.placeholder='对这一节的意见 / 修改要求…';
+    ta.setAttribute('data-sec',title); ta.setAttribute('data-key',KEY+i);
+    try{ ta.value=localStorage.getItem(KEY+i)||''; }catch(e){}
+    ta.addEventListener('input',function(){ try{localStorage.setItem(KEY+i,ta.value);}catch(e){} refresh(); });
+    box.appendChild(label); box.appendChild(ta); card.appendChild(box);
+  });
+  function collect(){
+    var lines=[];
+    document.querySelectorAll('.cmt-ta').forEach(function(ta){
+      if(ta.value.trim()) lines.push('【'+ta.getAttribute('data-sec')+'】\n'+ta.value.trim());
+    });
+    return lines.join('\n\n');
+  }
+  function refresh(){
+    var t=collect();
+    document.getElementById('cmt-preview').textContent = t || '(还没有 comment)';
+  }
+  document.getElementById('cmt-copy').addEventListener('click',function(){
+    var t=collect();
+    if(!t){ document.getElementById('cmt-status').textContent='还没有可复制的 comment'; return; }
+    function ok(){ document.getElementById('cmt-status').textContent='✅ 已复制,直接粘给 Tadashi'; }
+    function fb(){
+      var tmp=document.createElement('textarea'); tmp.value=t; document.body.appendChild(tmp);
+      tmp.select(); try{ document.execCommand('copy'); ok(); }catch(e){ document.getElementById('cmt-status').textContent='复制失败,请手动全选上方汇总'; }
+      document.body.removeChild(tmp);
+    }
+    if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(t).then(ok,fb); } else { fb(); }
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>

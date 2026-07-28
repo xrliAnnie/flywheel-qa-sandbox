@@ -129,6 +129,15 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(designCall.appendSystemPrompt).toContain(
 			"Founder design HTML (MANDATORY)",
 		);
+		expect(designCall.appendSystemPrompt).toContain(
+			"INTERACTIVE COMMENT LAYER (MANDATORY",
+		);
+		expect(designCall.appendSystemPrompt).toContain(
+			"DIAGRAMS AND LANGUAGE (MANDATORY",
+		);
+		expect(designCall.appendSystemPrompt).toContain(
+			"plain-language explanation",
+		);
 		expect(designCall.appendSystemPrompt).toContain("--publish-only");
 		expect(designCall.appendSystemPrompt).toContain("--lead flywheel-eng-lead");
 
@@ -184,6 +193,12 @@ describe("Blueprint generalized workflow capability contract", () => {
 			.mock.calls[0]![0] as AdapterExecutionContext;
 		expect(noDesignCall.appendSystemPrompt).not.toContain(
 			"Founder design HTML (MANDATORY)",
+		);
+		expect(noDesignCall.appendSystemPrompt).not.toContain(
+			"INTERACTIVE COMMENT LAYER",
+		);
+		expect(noDesignCall.appendSystemPrompt).not.toContain(
+			"DIAGRAMS AND LANGUAGE",
 		);
 	});
 
