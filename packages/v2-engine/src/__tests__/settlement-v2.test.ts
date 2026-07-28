@@ -79,7 +79,7 @@ describe("transactional mailbox settlement", () => {
 		});
 	});
 
-	it("rolls proposal effects and settlement back together on an effect FK failure", async () => {
+	it("rolls prior effects and all settlement writes back on a later task FK failure", async () => {
 		fixture = makeEngineFixture();
 		const runner = registerRunner(fixture);
 		enqueueMailbox(fixture, {
@@ -97,11 +97,17 @@ describe("transactional mailbox settlement", () => {
 				handle: result.handle,
 				effects: [
 					{
-						kind: "command",
-						commandKind: "invalid",
+						kind: "event",
+						eventKind: "proposal.prelude",
 						payload: "{}",
-						effectKey: "invalid-effect",
-						taskId: "missing-task",
+					},
+					{
+						kind: "task",
+						taskKind: "invalid-follow-up",
+						state: "ready",
+						payload: "{}",
+						projectId: "project-a",
+						lineageRootTaskId: "missing-task",
 					},
 				],
 			}),
@@ -114,11 +120,23 @@ describe("transactional mailbox settlement", () => {
 				attempt: tx.get<{ outcome: string }>(
 					"SELECT outcome FROM processing_attempts WHERE attempt_uid='m1#1'",
 				)?.outcome,
-				commands: tx.get<{ count: number }>(
-					"SELECT count(*) AS count FROM commands WHERE effect_key='invalid-effect'",
+				priorEvents: tx.get<{ count: number }>(
+					"SELECT count(*) AS count FROM events WHERE kind='proposal.prelude'",
+				)?.count,
+				invalidTasks: tx.get<{ count: number }>(
+					"SELECT count(*) AS count FROM tasks WHERE kind='invalid-follow-up'",
+				)?.count,
+				appliedEvents: tx.get<{ count: number }>(
+					"SELECT count(*) AS count FROM events WHERE kind='mailbox.applied'",
 				)?.count,
 			})),
-		).toEqual({ mailbox: "pending", attempt: "running", commands: 0 });
+		).toEqual({
+			mailbox: "pending",
+			attempt: "running",
+			priorEvents: 0,
+			invalidTasks: 0,
+			appliedEvents: 0,
+		});
 	});
 
 	it("uses durable max-attempts and emits one exact agent-scoped dead event", async () => {

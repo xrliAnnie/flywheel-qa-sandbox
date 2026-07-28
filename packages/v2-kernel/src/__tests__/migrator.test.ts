@@ -12,14 +12,11 @@ const EXPECTED_TABLES = [
 	"archive_manifest",
 	"attempts",
 	"capabilities",
-	"command_dependencies",
-	"commands",
 	"config",
 	"events",
 	"gates",
 	"mailbox",
 	"meta",
-	"obligations",
 	"processing_attempts",
 	"scheduler_leases",
 	"scheduler_repair_leases",
@@ -48,7 +45,6 @@ const EXPECTED_NAMED_INDEXES = [
 	"mailbox_pending_scheduled",
 	"mailbox_pending_scheduled_f",
 	"mailbox_pending_scheduled_nf",
-	"obligations_episode_open",
 	"pa_one_running",
 	"scheduler_repair_due",
 	"thread_bindings_one_active",
@@ -85,6 +81,21 @@ describe("v2 migration chain", () => {
 
 			expect(tables).toEqual(EXPECTED_TABLES);
 			expect(indexes).toEqual(EXPECTED_NAMED_INDEXES);
+			expect(
+				JSON.parse(
+					db
+						.prepare(
+							`SELECT payload FROM events
+							 WHERE event_uid='migration:0008:retired-rows-discarded'`,
+						)
+						.pluck()
+						.get() as string,
+				),
+			).toEqual({
+				commands: 0,
+				command_dependencies: 0,
+				obligations: 0,
+			});
 			expect(db.pragma("foreign_key_check")).toEqual([]);
 		} finally {
 			db.close();

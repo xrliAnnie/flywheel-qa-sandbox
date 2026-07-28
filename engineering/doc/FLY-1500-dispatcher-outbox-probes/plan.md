@@ -1,5 +1,8 @@
 # FLY-1500 dispatcher + outbox + 探针 — 实施计划
 
+> **历史稿 / 已取代:** 本 plan 记录旧的集中执行版本,机制结论已被同目录
+> `mapping-v2final.md` 的 actions 黑匣子修正案整体取代,仅保留为评审轨迹。
+
 Issue: FLY-1500 (https://linear.app/geoforge3d/issue/FLY-1500/v2批次2-dispatcher-outbox-探针-外发执行与应有实际状态对账)
 日期: 2026-07-27
 基于: research.md(上游: exploration.md;设计权威 = `doc/engineer/plan/v2/design-FINAL-v2.md`,Codex R13 APPROVED)

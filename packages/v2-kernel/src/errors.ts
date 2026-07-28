@@ -12,6 +12,18 @@ export class CasViolation extends Error {
 	}
 }
 
+export class ActionSerializationError extends TypeError {
+	constructor(cause: unknown) {
+		super(
+			`action result serialization failed: ${
+				cause instanceof Error ? cause.message : String(cause)
+			}`,
+			{ cause },
+		);
+		this.name = "ActionSerializationError";
+	}
+}
+
 export class FenceViolation extends Error {
 	constructor(message: string) {
 		super(message);

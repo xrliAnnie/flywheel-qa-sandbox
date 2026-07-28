@@ -18,7 +18,9 @@ function countEvents(kernel: Kernel): number {
 	return kernel.read(
 		(tx) =>
 			(
-				tx.get<{ count: number }>("SELECT count(*) AS count FROM events") ?? {
+				tx.get<{ count: number }>(
+					"SELECT count(*) AS count FROM events WHERE kind='test'",
+				) ?? {
 					count: -1,
 				}
 			).count,

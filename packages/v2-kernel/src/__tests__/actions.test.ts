@@ -5,7 +5,7 @@ import {
 	recordActionIntent,
 	recordActionOutcome,
 } from "../actions.js";
-import { CasViolation } from "../errors.js";
+import { ActionSerializationError, CasViolation } from "../errors.js";
 import { Kernel } from "../kernel.js";
 import { migrateDatabase } from "../migrator.js";
 import { makeTempDatabase, type TempDatabase } from "./helpers.js";
@@ -83,6 +83,7 @@ describe("action black box", () => {
 		["Map", new Map([["externalId", "map-result"]])],
 		["Set", new Set(["set-result"])],
 		["class instance", new SdkResult("class-result")],
+		["boxed number", new Number(7)],
 	])(
 		"rejects a non-JSON %s payload instead of recording an empty object",
 		(_, payload) => {
@@ -117,6 +118,57 @@ describe("action black box", () => {
 			expect(kernel.read((tx) => readAction(tx, "action-non-json"))).toBeNull();
 		},
 	);
+
+	it("treats toJSON as ordinary data and never invokes callable serializers", () => {
+		temp = makeTempDatabase();
+		migrateDatabase({ path: temp.path });
+		kernel = Kernel.open({ path: temp.path });
+		kernel.write("seed current lead", (tx) => {
+			tx.run(
+				`INSERT INTO agents(agent_id, kind, generation, state)
+				 VALUES ('lead-a', 'lead', 1, 'online')`,
+			);
+		});
+		const base = {
+			actor: {
+				kind: "lead" as const,
+				agentId: "lead-a",
+				instanceId: "session-a",
+				generation: 1,
+			},
+			kind: "custom_tool_call",
+			logicalEffectId: "to-json-boundary",
+			cutoverEpoch: 7,
+		};
+		const callable = () => ({ forged: true });
+
+		expect(() =>
+			kernel?.write("reject callable toJSON", (tx) =>
+				recordActionIntent(tx, {
+					id: "action-callable-to-json",
+					...base,
+					payload: { body: "hello", toJSON: callable } as never,
+					invocationUid: "transcript:callable-to-json",
+				}),
+			),
+		).toThrow(/unsupported function value/i);
+		const data = kernel.write("record JSON-valued toJSON field", (tx) =>
+			recordActionIntent(tx, {
+				id: "action-data-to-json",
+				...base,
+				payload: { body: "hello", toJSON: { mode: "data" } },
+				invocationUid: "transcript:data-to-json",
+			}),
+		);
+
+		expect(data.action.payload).toEqual({
+			body: "hello",
+			toJSON: { mode: "data" },
+		});
+		expect(
+			kernel.read((tx) => readAction(tx, "action-callable-to-json")),
+		).toBeNull();
+	});
 
 	it("returns the original action when the same invocation is replayed", () => {
 		temp = makeTempDatabase();
@@ -155,6 +207,120 @@ describe("action black box", () => {
 			action: { id: "action-1", state: "intended" },
 		});
 		expect(kernel.read((tx) => readAction(tx, "action-2"))).toBeNull();
+	});
+
+	it("keeps the original authorization snapshot when an invocation replays", () => {
+		temp = makeTempDatabase();
+		migrateDatabase({ path: temp.path });
+		kernel = Kernel.open({ path: temp.path });
+		kernel.write("seed current lead", (tx) => {
+			tx.run(
+				`INSERT INTO agents(agent_id, kind, generation, state)
+				 VALUES ('lead-a', 'lead', 1, 'online')`,
+			);
+		});
+		const base = {
+			actor: {
+				kind: "lead" as const,
+				agentId: "lead-a",
+				instanceId: "session-a",
+				generation: 1,
+			},
+			kind: "github_merge",
+			payload: { pr: 720 },
+			logicalEffectId: "merge-pr-720",
+			invocationUid: "transcript:merge-pr-720",
+			cutoverEpoch: 7,
+		};
+		const original = kernel.write("record authorized intent", (tx) =>
+			recordActionIntent(tx, {
+				id: "action-authorized",
+				...base,
+				authorization: { gate_id: "gate-1", target_head: "abc123" },
+			}),
+		);
+
+		const replayed = kernel.write("replay under changed authorization", (tx) =>
+			recordActionIntent(tx, {
+				id: "action-authorized-replay",
+				...base,
+				authorization: { gate_id: "gate-2", target_head: "def456" },
+			}),
+		);
+
+		expect(replayed).toEqual({
+			outcome: "replayed",
+			action: original.action,
+		});
+		expect(replayed.action.authorization).toEqual({
+			gate_id: "gate-1",
+			target_head: "abc123",
+		});
+		expect(
+			kernel.read((tx) => readAction(tx, "action-authorized-replay")),
+		).toBeNull();
+	});
+
+	it("rejects non-canonical explicit action timestamps", () => {
+		temp = makeTempDatabase();
+		migrateDatabase({ path: temp.path });
+		kernel = Kernel.open({ path: temp.path });
+		const actor = {
+			kind: "lead" as const,
+			agentId: "lead-a",
+			instanceId: "session-a",
+			generation: 1,
+		};
+		kernel.write("seed current lead", (tx) => {
+			tx.run(
+				`INSERT INTO agents(agent_id, kind, generation, state)
+				 VALUES ('lead-a', 'lead', 1, 'online')`,
+			);
+		});
+
+		expect(() =>
+			kernel?.write("reject non-canonical createdAt", (tx) =>
+				recordActionIntent(tx, {
+					id: "action-invalid-created-at",
+					actor,
+					kind: "custom_tool_call",
+					payload: { body: "hello" },
+					logicalEffectId: "invalid-created-at",
+					invocationUid: "transcript:invalid-created-at",
+					cutoverEpoch: 7,
+					createdAt: "2026-07-28T08:00:00Z",
+				}),
+			),
+		).toThrow(/createdAt.*canonical ISO/i);
+		kernel.write("record action for completedAt validation", (tx) =>
+			recordActionIntent(tx, {
+				id: "action-invalid-completed-at",
+				actor,
+				kind: "custom_tool_call",
+				payload: { body: "hello" },
+				logicalEffectId: "invalid-completed-at",
+				invocationUid: "transcript:invalid-completed-at",
+				cutoverEpoch: 7,
+			}),
+		);
+		expect(() =>
+			kernel?.write("reject non-canonical completedAt", (tx) =>
+				recordActionOutcome(tx, {
+					id: "action-invalid-completed-at",
+					actor,
+					state: "succeeded",
+					result: { ok: true },
+					completedAt: "2026-07-28T08:00:01Z",
+				}),
+			),
+		).toThrow(/completedAt.*canonical ISO/i);
+		expect(
+			kernel.read((tx) => readAction(tx, "action-invalid-completed-at")),
+		).toMatchObject({
+			state: "intended",
+			result: undefined,
+			completedAt: undefined,
+		});
 	});
 
 	it("records one successful outcome with the original actor token", () => {
@@ -203,6 +369,51 @@ describe("action black box", () => {
 			completedAt: "2026-07-28T08:00:01.000Z",
 		});
 		expect(kernel.read((tx) => readAction(tx, "action-1"))).toEqual(completed);
+	});
+
+	it("types action result serialization failures without mutating the intent", () => {
+		temp = makeTempDatabase();
+		migrateDatabase({ path: temp.path });
+		kernel = Kernel.open({ path: temp.path });
+		const actor = {
+			kind: "lead" as const,
+			agentId: "lead-a",
+			instanceId: "session-a",
+			generation: 1,
+		};
+		kernel.write("seed current lead and intent", (tx) => {
+			tx.run(
+				`INSERT INTO agents(agent_id, kind, generation, state)
+				 VALUES ('lead-a', 'lead', 1, 'online')`,
+			);
+			recordActionIntent(tx, {
+				id: "action-sdk-result",
+				actor,
+				kind: "custom_tool_call",
+				payload: { body: "hello" },
+				logicalEffectId: "sdk-result",
+				invocationUid: "transcript:sdk-result",
+				cutoverEpoch: 7,
+			});
+		});
+
+		expect(() =>
+			kernel?.write("record non-JSON outcome", (tx) =>
+				recordActionOutcome(tx, {
+					id: "action-sdk-result",
+					actor,
+					state: "succeeded",
+					result: new Date("2026-07-28T08:00:00.000Z") as never,
+				}),
+			),
+		).toThrow(ActionSerializationError);
+		expect(
+			kernel.read((tx) => readAction(tx, "action-sdk-result")),
+		).toMatchObject({
+			state: "intended",
+			result: undefined,
+			completedAt: undefined,
+		});
 	});
 
 	it("records an explicit evidenced successor for a failed action", () => {
@@ -614,7 +825,7 @@ describe("action black box", () => {
 		).toBeNull();
 	});
 
-	it("replays the same invocation when retry audit metadata is regenerated", () => {
+	it("replays only the identical explicit supersede request", () => {
 		temp = makeTempDatabase();
 		migrateDatabase({ path: temp.path });
 		kernel = Kernel.open({ path: temp.path });
@@ -661,11 +872,27 @@ describe("action black box", () => {
 			}),
 		);
 
-		const replayedWithRegeneratedBasis = kernel.write(
-			"replay with regenerated audit metadata",
-			(tx) =>
+		const replayed = kernel.write("replay identical supersede intent", (tx) =>
+			recordActionIntent(tx, {
+				id: "action-retry-replayed",
+				...base,
+				invocationUid: "transcript:retry-replay",
+				supersedesActionId: "action-replay-root",
+				retryBasis: {
+					evidenceRef: "gh://runs/123",
+					reason: "provider confirmed no request was accepted at 08:00",
+				},
+			}),
+		);
+		expect(replayed).toEqual({
+			outcome: "replayed",
+			action: original.action,
+		});
+
+		expect(() =>
+			kernel?.write("reject changed supersede audit envelope", (tx) =>
 				recordActionIntent(tx, {
-					id: "action-retry-replayed",
+					id: "action-retry-changed",
 					...base,
 					invocationUid: "transcript:retry-replay",
 					supersedesActionId: "action-replay-root",
@@ -674,28 +901,20 @@ describe("action black box", () => {
 						reason: "provider confirmed no request was accepted at 08:05",
 					},
 				}),
-		);
-		const replayedWithoutRetryMetadata = kernel.write(
-			"replay without reconstructed audit metadata",
-			(tx) =>
+			),
+		).toThrow(/effect key collision/i);
+		expect(() =>
+			kernel?.write("reject dropped supersede audit envelope", (tx) =>
 				recordActionIntent(tx, {
-					id: "action-retry-replayed-without-metadata",
+					id: "action-retry-without-metadata",
 					...base,
 					invocationUid: "transcript:retry-replay",
 					retryBasis: undefined,
 					supersedesActionId: undefined,
 				}),
-		);
-
-		expect(replayedWithRegeneratedBasis).toEqual({
-			outcome: "replayed",
-			action: original.action,
-		});
-		expect(replayedWithoutRetryMetadata).toEqual({
-			outcome: "replayed",
-			action: original.action,
-		});
-		expect(replayedWithRegeneratedBasis.action).toMatchObject({
+			),
+		).toThrow(/effect key collision/i);
+		expect(original.action).toMatchObject({
 			id: "action-retry-original",
 			supersedesActionId: "action-replay-root",
 			retryBasis: {

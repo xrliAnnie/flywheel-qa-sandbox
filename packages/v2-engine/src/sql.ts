@@ -39,10 +39,16 @@ export const ENGINE_SQL = {
 		(attempt_uid,message_uid,attempt_no,instance_id,generation,activation_id,started_at,outcome)
 		VALUES (@attemptUid,@messageUid,@attemptNo,@instanceId,@generation,@activationId,@startedAt,'running')`,
 	readAttemptBinding: `SELECT pa.attempt_uid,pa.message_uid,pa.instance_id,pa.generation,
-			pa.activation_id,pa.started_at,pa.outcome,m.to_agent,m.state AS mailbox_state
+			pa.activation_id,pa.started_at,pa.outcome,m.to_agent,m.state AS mailbox_state,
+			m.cutover_epoch AS mailbox_cutover_epoch
 		FROM processing_attempts pa
 		JOIN mailbox m ON m.message_uid=pa.message_uid
 		WHERE pa.attempt_uid=@attemptUid`,
+	readRunnerActionBinding: `SELECT a.attempt_id, a.generation AS attempt_generation,
+			at.task_id
+		FROM activations a
+		JOIN attempts at ON at.id=a.attempt_id
+		WHERE a.id=@activationId`,
 	readActivation: `SELECT id,session_ref,generation,state
 		FROM activations WHERE id=@activationId`,
 	readMailboxRetry: `SELECT retry_count,state,to_agent
@@ -56,11 +62,6 @@ export const ENGINE_SQL = {
 		ON CONFLICT(event_uid) DO NOTHING`,
 	readEventByUid: `SELECT event_uid,task_id,attempt_id,kind,source_kind,source_id,payload,
 			cutover_epoch,created_at FROM events WHERE event_uid=@eventUid`,
-	insertCommand: `INSERT INTO commands
-		(id,task_id,attempt_id,generation,kind,payload,payload_digest,state,effect_key,
-		 cutover_epoch,created_at)
-		VALUES (@id,@taskId,@attemptId,@generation,@kind,@payload,@payloadDigest,
-		 'pending',@effectKey,@cutoverEpoch,@createdAt)`,
 	insertTask: `INSERT INTO tasks
 		(id,project_id,kind,state,payload,lineage_root_id,created_at)
 		VALUES (@id,@projectId,@kind,@state,@payload,@lineageRootId,@createdAt)`,

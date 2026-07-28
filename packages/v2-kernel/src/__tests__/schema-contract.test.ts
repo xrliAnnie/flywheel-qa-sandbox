@@ -47,14 +47,7 @@ describe("schema constraints and trigger bypass protection", () => {
 				"agents_generation_no_rollback",
 				"agents_kind_immutable",
 				"agents_no_delete",
-				"command_dependencies_immutable",
-				"command_dependencies_no_cycle",
 				"events_append_only",
-				"obligations_hierarchy_immutable",
-				"obligations_inherit_root",
-				"obligations_parent_depth",
-				"obligations_tombstone_attempt_terminal",
-				"obligations_tombstone_task_terminal",
 				"tasks_no_self_rework_ins",
 				"tasks_no_self_rework_upd",
 			]);
@@ -88,7 +81,7 @@ describe("schema constraints and trigger bypass protection", () => {
 		}
 	});
 
-	it("keeps events and actions immutable while preserving command dependency fences", () => {
+	it("keeps events and actions immutable", () => {
 		temp = makeTempDatabase();
 		const db = openKernelDb({ path: temp.path });
 		try {
@@ -107,30 +100,6 @@ describe("schema constraints and trigger bypass protection", () => {
 					.run(),
 			).toThrow();
 
-			const insertCommand = db.prepare(
-				`INSERT INTO commands(id, kind, cutover_epoch, created_at)
-				 VALUES (?, 'notify', 1, 'now')`,
-			);
-			insertCommand.run("command-1");
-			insertCommand.run("command-2");
-			insertCommand.run("command-3");
-			const insertEdge = db.prepare(
-				`INSERT INTO command_dependencies
-				 (command_id, depends_on_command_id, kind)
-				 VALUES (?, ?, 'notify_before')`,
-			);
-			insertEdge.run("command-1", "command-2");
-			insertEdge.run("command-2", "command-3");
-			expect(() => insertEdge.run("command-3", "command-1")).toThrow();
-			expect(() =>
-				db
-					.prepare(
-						`UPDATE command_dependencies SET depends_on_command_id='command-1'
-						 WHERE command_id='command-1'`,
-					)
-					.run(),
-			).toThrow();
-
 			db.prepare(
 				`INSERT INTO actions
 				 (id, actor_kind, actor_agent_id, actor_instance_id, actor_generation,
@@ -146,6 +115,43 @@ describe("schema constraints and trigger bypass protection", () => {
 			expect(() =>
 				db.prepare("DELETE FROM actions WHERE id='action-1'").run(),
 			).toThrow(/not deletable/i);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("removes retired command and obligation schema while retaining the discard receipt", () => {
+		temp = makeTempDatabase();
+		const db = openKernelDb({ path: temp.path });
+		try {
+			runMigrations(db);
+			expect(
+				db
+					.prepare(
+						`SELECT name FROM sqlite_master
+						 WHERE name IN (
+						   'commands','command_dependencies','obligations',
+						   'obligations_tombstone_task_terminal',
+						   'obligations_tombstone_attempt_terminal',
+						   'obligations_episode_open'
+						 )
+						 ORDER BY name`,
+					)
+					.pluck()
+					.all(),
+			).toEqual([]);
+			expect(
+				db
+					.prepare(
+						`SELECT kind,source_kind,source_id FROM events
+						 WHERE event_uid='migration:0008:retired-rows-discarded'`,
+					)
+					.get(),
+			).toEqual({
+				kind: "migration.retired_rows_discarded",
+				source_kind: "migration",
+				source_id: "0008-drop-retired-command-obligation-tables",
+			});
 		} finally {
 			db.close();
 		}

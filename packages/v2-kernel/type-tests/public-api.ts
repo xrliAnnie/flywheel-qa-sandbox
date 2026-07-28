@@ -1,4 +1,5 @@
 import {
+	ActionSerializationError,
 	type AgentIdentity,
 	FENCE,
 	Kernel,
@@ -21,6 +22,7 @@ void identity;
 void readTx;
 void writeTx;
 void FENCE;
+void ActionSerializationError;
 
 type KernelModule = typeof import("flywheel-v2-kernel");
 // @ts-expect-error registry identity comparison is package-private.

@@ -9,6 +9,8 @@ import {
 	CodexInjectionShim,
 	type CodexInjectionShimOptions,
 	type ConsumerAuthority,
+	type ConversionActionSpec,
+	type ConversionContext,
 	type ConversionProposal,
 	type ConversionResult,
 	type Converter,
@@ -38,6 +40,8 @@ declare const candidate: Candidate;
 declare const lane: CandidateLane;
 declare const candidates: CandidateSet;
 declare const authority: ConsumerAuthority;
+declare const action: ConversionActionSpec;
+declare const context: ConversionContext;
 declare const evidence: DeathEvidence;
 declare const effect: Effect;
 declare const enqueueResult: EnqueueResult;
@@ -63,6 +67,8 @@ void candidate;
 void lane;
 void candidates;
 void authority;
+void action;
+void context;
 void evidence;
 void effect;
 void enqueueResult;
@@ -84,6 +90,21 @@ void CodexInjectionShim;
 void EngineDriver;
 void DEFAULT_ENGINE_CONFIG;
 void selectNext;
+void context.performAction(action, () => ({ ok: true }));
+void new EngineDriver({} as never, runtime).performConversionAction(
+	handle,
+	action,
+	() => ({ ok: true }),
+);
+
+const commandEffect: Effect = {
+	// @ts-expect-error command effects retired in favor of conversion actions.
+	kind: "command",
+	commandKind: "legacy",
+	payload: "{}",
+	effectKey: "legacy",
+};
+void commandEffect;
 
 // @ts-expect-error AttemptStart was replaced by PollResult.
 type AttemptStart = import("flywheel-v2-engine").AttemptStart;
@@ -94,8 +115,14 @@ type EngineModule = typeof import("flywheel-v2-engine");
 type ConsumerCoordinator = EngineModule["ConsumerCoordinator"];
 // @ts-expect-error SQL assembly is package-private.
 type EngineSql = EngineModule["ENGINE_SQL"];
+// @ts-expect-error bare conversion settlement is package-private.
+type SubmitProposal = EngineModule["submitProposal"];
+// @ts-expect-error bare conversion failure settlement is package-private.
+type ReportConversionFailure = EngineModule["reportConversionFailure"];
 
 void (undefined as unknown as ConsumerCoordinator);
 void (undefined as unknown as EngineSql);
+void (undefined as unknown as SubmitProposal);
+void (undefined as unknown as ReportConversionFailure);
 void (undefined as unknown as AttemptStart);
 void (undefined as unknown as RegisteredConsumer);

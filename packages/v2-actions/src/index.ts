@@ -1,4 +1,5 @@
 import {
+	ActionSerializationError,
 	type ActionSnapshot,
 	type JsonValue,
 	type Kernel,
@@ -7,6 +8,26 @@ import {
 	recordActionOutcome,
 	type WriteTx,
 } from "flywheel-v2-kernel";
+
+function valueKind(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "Array";
+	if (typeof value !== "object") return typeof value;
+	try {
+		const prototypeConstructor = Object.getPrototypeOf(value)?.constructor as
+			| { name?: unknown }
+			| undefined;
+		if (
+			typeof prototypeConstructor?.name === "string" &&
+			prototypeConstructor.name.length > 0
+		) {
+			return prototypeConstructor.name;
+		}
+	} catch {
+		// A hostile prototype must not prevent honest terminalization.
+	}
+	return "object";
+}
 
 export interface RunRecordedActionOptions<Result extends JsonValue> {
 	kernel: Kernel;
@@ -57,14 +78,35 @@ export async function runRecordedAction<Result extends JsonValue>(
 		}
 		throw error;
 	}
-	const action = options.kernel.write("record action outcome", (tx) =>
-		recordActionOutcome(tx, {
-			id: intent.action.id,
-			actor: options.action.actor,
-			state: "succeeded",
-			result,
-		}),
-	);
+	let action: ActionSnapshot;
+	try {
+		action = options.kernel.write("record action outcome", (tx) =>
+			recordActionOutcome(tx, {
+				id: intent.action.id,
+				actor: options.action.actor,
+				state: "succeeded",
+				result,
+			}),
+		);
+	} catch (error) {
+		if (!(error instanceof ActionSerializationError)) throw error;
+		action = options.kernel.write(
+			"record action outcome serialization fallback",
+			(tx) =>
+				recordActionOutcome(tx, {
+					id: intent.action.id,
+					actor: options.action.actor,
+					state: "succeeded",
+					result: {
+						serialization_error: {
+							name: error.name,
+							message: error.message,
+						},
+						value_kind: valueKind(result),
+					},
+				}),
+		);
+	}
 	if (action.state !== "succeeded") {
 		throw new Error(`action ${action.id} did not settle as succeeded`);
 	}

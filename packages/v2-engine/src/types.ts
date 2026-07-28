@@ -102,14 +102,6 @@ export interface AttemptHandle {
 
 export type Effect =
 	| {
-			kind: "command";
-			commandKind: string;
-			payload: string;
-			effectKey: string;
-			taskId?: string;
-			attemptId?: string;
-	  }
-	| {
 			kind: "task";
 			taskKind: string;
 			state: "draft" | "ready";
@@ -132,13 +124,37 @@ export type ConversionResult =
 	| { ok: true; effects: Effect[] }
 	| { ok: false; error: string };
 
-export type Converter = (message: {
-	messageUid: string;
-	payload: string;
+export interface ConversionActionSpec {
 	kind: string;
-	sourceKind: string;
-	seq: number;
-}) => Promise<ConversionResult>;
+	payload: JsonValue;
+	logicalEffectId: string;
+	qualifier?: string;
+	authorization?: JsonValue;
+	supersedesActionId?: string;
+	retryBasis?: {
+		evidenceRef: string;
+		reason: string;
+	};
+}
+
+export interface ConversionContext {
+	handle: AttemptHandle;
+	performAction<Result extends JsonValue>(
+		action: ConversionActionSpec,
+		perform: () => Result | Promise<Result>,
+	): Promise<RunRecordedActionResult>;
+}
+
+export type Converter = (
+	message: {
+		messageUid: string;
+		payload: string;
+		kind: string;
+		sourceKind: string;
+		seq: number;
+	},
+	context: ConversionContext,
+) => Promise<ConversionResult>;
 
 export type PollResult =
 	| {
@@ -160,3 +176,6 @@ export interface InjectionShim {
 		message: { messageUid: string; payload: string; attemptUid: string },
 	): Promise<void>;
 }
+
+import type { RunRecordedActionResult } from "flywheel-v2-actions";
+import type { JsonValue } from "flywheel-v2-kernel";

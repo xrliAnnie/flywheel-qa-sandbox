@@ -217,8 +217,8 @@ describe("durable config, address allocation, and generation registration", () =
 			);
 			tx.run(
 				`INSERT INTO attempts
-				 (id,task_id,generation,desired_state,observed_state,started_at)
-				 VALUES ('attempt-a','task-a',1,'started','present',@now)`,
+				 (id,task_id,generation,desired_state,started_at)
+				 VALUES ('attempt-a','task-a',1,'started',@now)`,
 				{ now: fixture?.runtime.clock.nowIso() },
 			);
 			tx.run(

@@ -3,9 +3,11 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { openKernelDb } from "../connection.js";
 import { OBLIGATIONS_REBUILD_DDL } from "../migrations/0002-obligations-rebuild.js";
+import { RETIRED_TABLES_DDL } from "../migrations/0008-drop-retired-command-obligation-tables.js";
 import { MIGRATIONS, type Migration } from "../migrations/index.js";
 import { runMigrations } from "../migrator.js";
 import { makeTempDatabase, type TempDatabase } from "./helpers.js";
+import { seedRetiredRows } from "./retired-tables-test-helpers.js";
 
 const MIGRATION_CHILD_PATH = fileURLToPath(
 	new URL("../../test-fixtures/run-migrations.mjs", import.meta.url),
@@ -175,6 +177,80 @@ BEGIN THIS IS NOT VALID SQL; END;`,
 					.prepare("SELECT count(*) FROM schema_migrations WHERE id=?")
 					.pluck()
 					.get(brokenRebuild.id),
+			).toBe(0);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("rolls back the 0008 receipt, drops, data, triggers, and ledger together", () => {
+		temp = makeTempDatabase();
+		const db = openKernelDb({ path: temp.path });
+		const brokenDrop: Migration = {
+			id: "0008-drop-retired-command-obligation-tables-broken",
+			fkMode: "rebuild",
+			ddl: `${RETIRED_TABLES_DDL}
+CREATE TABLE deliberately_broken(`,
+		};
+		try {
+			runMigrations(db, MIGRATIONS.slice(0, -1));
+			seedRetiredRows(db);
+
+			expect(() => runMigrations(db, [brokenDrop])).toThrow();
+			expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+			expect(
+				db
+					.prepare(
+						`SELECT name FROM sqlite_master
+						 WHERE type='table'
+						   AND name IN ('commands','command_dependencies','obligations')
+						 ORDER BY name`,
+					)
+					.pluck()
+					.all(),
+			).toEqual(["command_dependencies", "commands", "obligations"]);
+			expect({
+				commands: db.prepare("SELECT count(*) FROM commands").pluck().get(),
+				commandDependencies: db
+					.prepare("SELECT count(*) FROM command_dependencies")
+					.pluck()
+					.get(),
+				obligations: db
+					.prepare("SELECT count(*) FROM obligations")
+					.pluck()
+					.get(),
+			}).toEqual({ commands: 2, commandDependencies: 1, obligations: 2 });
+			expect(
+				db
+					.prepare(
+						`SELECT name FROM sqlite_master
+						 WHERE type='trigger'
+						   AND name IN (
+						     'obligations_tombstone_task_terminal',
+						     'obligations_tombstone_attempt_terminal'
+						   )
+						 ORDER BY name`,
+					)
+					.pluck()
+					.all(),
+			).toEqual([
+				"obligations_tombstone_attempt_terminal",
+				"obligations_tombstone_task_terminal",
+			]);
+			expect(
+				db
+					.prepare(
+						`SELECT count(*) FROM events
+						 WHERE event_uid='migration:0008:retired-rows-discarded'`,
+					)
+					.pluck()
+					.get(),
+			).toBe(0);
+			expect(
+				db
+					.prepare("SELECT count(*) FROM schema_migrations WHERE id=?")
+					.pluck()
+					.get(brokenDrop.id),
 			).toBe(0);
 		} finally {
 			db.close();

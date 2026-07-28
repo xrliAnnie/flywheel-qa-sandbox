@@ -106,8 +106,8 @@ export function seedRunnerActivation(
 		);
 		tx.run(
 			`INSERT INTO attempts
-			 (id,task_id,generation,desired_state,observed_state,started_at)
-			 VALUES (@attemptId,@taskId,@generation,'started','present',@now)`,
+			 (id,task_id,generation,desired_state,started_at)
+			 VALUES (@attemptId,@taskId,@generation,'started',@now)`,
 			{
 				attemptId,
 				taskId,

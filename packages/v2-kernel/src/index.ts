@@ -17,6 +17,7 @@ export {
 } from "./actions.js";
 export { backupDatabase } from "./backup.js";
 export {
+	ActionSerializationError,
 	CasViolation,
 	FenceViolation,
 	NestedWriteViolation,

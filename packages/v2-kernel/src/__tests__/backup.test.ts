@@ -4,6 +4,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
@@ -11,9 +12,12 @@ import { basename, join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { backupDatabase } from "../backup.js";
+import { openKernelDb } from "../connection.js";
 import { Kernel } from "../kernel.js";
-import { migrateDatabase } from "../migrator.js";
+import { MIGRATIONS } from "../migrations/index.js";
+import { migrateDatabase, runMigrations } from "../migrator.js";
 import { makeTempDatabase, type TempDatabase } from "./helpers.js";
+import { seedRetiredRows } from "./retired-tables-test-helpers.js";
 
 describe("WAL-safe backup hook", () => {
 	let temp: TempDatabase | undefined;
@@ -66,6 +70,7 @@ describe("WAL-safe backup hook", () => {
 				"0005-agents-config-mailbox-rebuild",
 				"0006-actions-black-box",
 				"0007-scheduler-runtime",
+				"0008-drop-retired-command-obligation-tables",
 			]);
 		} finally {
 			backup.close();
@@ -76,6 +81,65 @@ describe("WAL-safe backup hook", () => {
 				entry.startsWith(`.${basename(destination)}.`),
 			),
 		).toEqual([]);
+	});
+
+	it("restores the pre-0008 database as the active runtime path", async () => {
+		temp = makeTempDatabase();
+		const backupPath = `${temp.path}.pre-0008`;
+		const migratedPath = `${temp.path}.migrated`;
+		const before = openKernelDb({ path: temp.path });
+		runMigrations(before, MIGRATIONS.slice(0, -1));
+		seedRetiredRows(before);
+		before.close();
+
+		await backupDatabase(temp.path, backupPath);
+		const upgraded = openKernelDb({ path: temp.path });
+		runMigrations(upgraded, MIGRATIONS.slice(-1));
+		expect(
+			upgraded
+				.prepare(
+					"SELECT count(*) FROM sqlite_master WHERE type='table' AND name='commands'",
+				)
+				.pluck()
+				.get(),
+		).toBe(0);
+		upgraded.close();
+
+		renameSync(temp.path, migratedPath);
+		for (const suffix of ["-wal", "-shm"]) {
+			if (existsSync(`${temp.path}${suffix}`)) {
+				renameSync(`${temp.path}${suffix}`, `${migratedPath}${suffix}`);
+			}
+		}
+		renameSync(backupPath, temp.path);
+
+		const restored = openKernelDb({ path: temp.path });
+		try {
+			expect(
+				restored
+					.prepare("SELECT id FROM schema_migrations ORDER BY id")
+					.pluck()
+					.all(),
+			).toEqual(MIGRATIONS.slice(0, -1).map((migration) => migration.id));
+			expect({
+				commands: restored
+					.prepare("SELECT count(*) FROM commands")
+					.pluck()
+					.get(),
+				commandDependencies: restored
+					.prepare("SELECT count(*) FROM command_dependencies")
+					.pluck()
+					.get(),
+				obligations: restored
+					.prepare("SELECT count(*) FROM obligations")
+					.pluck()
+					.get(),
+			}).toEqual({ commands: 2, commandDependencies: 1, obligations: 2 });
+			expect(restored.pragma("integrity_check", { simple: true })).toBe("ok");
+			expect(restored.pragma("foreign_key_check")).toEqual([]);
+		} finally {
+			restored.close();
+		}
 	});
 
 	it("protects a pre-existing backup directory before creating temp files", async () => {

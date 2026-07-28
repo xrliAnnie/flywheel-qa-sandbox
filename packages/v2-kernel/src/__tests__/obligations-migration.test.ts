@@ -48,7 +48,7 @@ function insertFinalObligation(
 	});
 }
 
-describe("obligations rebuild migration", () => {
+describe("historical obligations rebuild migration through 0002", () => {
 	let temp: TempDatabase | undefined;
 
 	afterEach(() => {

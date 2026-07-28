@@ -21,13 +21,11 @@ export {
 	type CodexInjectionShimOptions,
 } from "./injection/codex-shim.js";
 export { registerAgentTx } from "./registration.js";
-export {
-	reportConversionFailure,
-	submitProposal,
-} from "./settlement.js";
 export type {
 	AttemptHandle,
 	ConsumerAuthority,
+	ConversionActionSpec,
+	ConversionContext,
 	ConversionProposal,
 	ConversionResult,
 	Converter,

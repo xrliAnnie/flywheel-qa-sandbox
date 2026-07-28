@@ -1,12 +1,24 @@
-import { FENCE, FenceViolation, type Kernel } from "flywheel-v2-kernel";
+import type { RunRecordedActionResult } from "flywheel-v2-actions";
+import {
+	FENCE,
+	FenceViolation,
+	type JsonValue,
+	type Kernel,
+} from "flywheel-v2-kernel";
 import { readEngineConfigTx } from "./config.js";
 import { pollOnce, refreshHeartbeat } from "./consume-loop.js";
+import {
+	captureConversionActionContext,
+	runConversionAction,
+	validateConversionActionSpec,
+} from "./conversion-actions.js";
 import { registerAgentTx } from "./registration.js";
 import { reportConversionFailure, submitProposal } from "./settlement.js";
 import { ENGINE_SQL } from "./sql.js";
 import { settleFailureMailboxTx } from "./transitions.js";
 import {
 	type AttemptHandle,
+	type ConversionActionSpec,
 	type ConversionProposal,
 	type ConversionResult,
 	type Converter,
@@ -27,6 +39,8 @@ interface AgentState {
 	heartbeatTimer?: ReturnType<typeof setInterval>;
 	lastError?: unknown;
 	stopped: boolean;
+	inFlightActions: Set<Promise<RunRecordedActionResult>>;
+	attemptActions: Set<Promise<RunRecordedActionResult>>;
 }
 
 interface RunningRow {
@@ -91,19 +105,24 @@ export class EngineDriver {
 			if (draft.kind !== "lead") {
 				throw new FenceViolation("registerLead requires a lead identity");
 			}
+			const previous = this.#states.get(agentId);
+			if (previous) {
+				this.#assertNoInFlightActions(previous, "replace lead registration");
+			}
 			const agent = this.#kernel.write("consumer.register.lead", (tx) =>
 				registerAgentTx(tx, this.#runtime, agentId, draft, evidence),
 			);
 			const founderStreak = this.#kernel.read(
 				(tx) => readEngineConfigTx(tx).vipBurst,
 			);
-			const previous = this.#states.get(agentId);
 			if (previous) this.#stopState(previous);
 			const state: AgentState = {
 				agent,
 				converter,
 				founderStreak,
 				stopped: false,
+				inFlightActions: new Set(),
+				attemptActions: new Set(),
 			};
 			this.#states.set(agentId, state);
 			this.#startHeartbeat(state);
@@ -117,6 +136,10 @@ export class EngineDriver {
 			this.#assertRunning();
 			if (agent.kind !== "runner" || agent.agentId !== agentId) {
 				throw new FenceViolation("attachRunner requires matching runner agent");
+			}
+			const previous = this.#states.get(agentId);
+			if (previous) {
+				this.#assertNoInFlightActions(previous, "replace runner attachment");
 			}
 			this.#kernel.read((tx) => {
 				const row = tx.get<{
@@ -134,12 +157,13 @@ export class EngineDriver {
 			const founderStreak = this.#kernel.read(
 				(tx) => readEngineConfigTx(tx).vipBurst,
 			);
-			const previous = this.#states.get(agentId);
 			if (previous) this.#stopState(previous);
 			this.#states.set(agentId, {
 				agent,
 				founderStreak,
 				stopped: false,
+				inFlightActions: new Set(),
+				attemptActions: new Set(),
 			});
 		});
 	}
@@ -177,18 +201,66 @@ export class EngineDriver {
 
 	submitProposal(proposal: ConversionProposal): void {
 		const state = this.#requireHandleState(proposal.handle);
+		this.#assertNoInFlightActions(state, "submit proposal");
 		submitProposal(this.#kernel, this.#runtime, proposal);
+		state.attemptActions.clear();
 		state.currentAttemptUid = undefined;
 	}
 
 	reportConversionFailure(handle: AttemptHandle, error: string): void {
 		const state = this.#requireHandleState(handle);
+		this.#assertNoInFlightActions(state, "report conversion failure");
 		reportConversionFailure(this.#kernel, this.#runtime, handle, error);
+		state.attemptActions.clear();
 		state.currentAttemptUid = undefined;
+	}
+
+	performConversionAction<Result extends JsonValue>(
+		handle: AttemptHandle,
+		action: ConversionActionSpec,
+		perform: () => Result | Promise<Result>,
+	): Promise<RunRecordedActionResult> {
+		this.#assertRunning();
+		validateConversionActionSpec(action);
+		const state = this.#requireHandleState(handle);
+		let captured: ReturnType<typeof captureConversionActionContext>;
+		try {
+			captured = captureConversionActionContext(this.#kernel, handle);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		let resolve!: (result: RunRecordedActionResult) => void;
+		let reject!: (error: unknown) => void;
+		const pending = new Promise<RunRecordedActionResult>(
+			(resolvePromise, rejectPromise) => {
+				resolve = resolvePromise;
+				reject = rejectPromise;
+			},
+		);
+		state.inFlightActions.add(pending);
+		state.attemptActions.add(pending);
+		void pending.catch(() => undefined);
+		void pending.then(
+			() => state.inFlightActions.delete(pending),
+			() => state.inFlightActions.delete(pending),
+		);
+		queueMicrotask(() => {
+			void runConversionAction(
+				this.#kernel,
+				this.#runtime,
+				captured,
+				action,
+				perform,
+			).then(resolve, reject);
+		});
+		return pending;
 	}
 
 	stop(): void {
 		if (this.#stopped) return;
+		for (const state of this.#states.values()) {
+			this.#assertNoInFlightActions(state, "stop engine");
+		}
 		this.#stopped = true;
 		const errors: unknown[] = [];
 		try {
@@ -315,39 +387,81 @@ export class EngineDriver {
 				if (result.status === "busy") return;
 				next = result;
 			}
-			state.currentAttemptUid = next.handle.attemptUid;
+			const handle = next.handle;
+			state.currentAttemptUid = handle.attemptUid;
+			let contextClosed = false;
+			const context = {
+				handle,
+				performAction: <Result extends JsonValue>(
+					action: ConversionActionSpec,
+					perform: () => Result | Promise<Result>,
+				): Promise<RunRecordedActionResult> => {
+					if (contextClosed) {
+						const rejected = Promise.reject<RunRecordedActionResult>(
+							new FenceViolation(
+								`conversion context is closed for ${handle.attemptUid}`,
+							),
+						);
+						void rejected.catch(() => undefined);
+						return rejected;
+					}
+					return this.performConversionAction(handle, action, perform);
+				},
+			};
 			let converted: ConversionResult;
 			try {
-				converted = await (state.converter as Converter)({
-					messageUid: next.handle.messageUid,
-					payload: next.payload,
-					kind: next.kind,
-					sourceKind: next.sourceKind,
-					seq: next.seq,
-				});
+				converted = await (state.converter as Converter)(
+					{
+						messageUid: next.handle.messageUid,
+						payload: next.payload,
+						kind: next.kind,
+						sourceKind: next.sourceKind,
+						seq: next.seq,
+					},
+					context,
+				);
 			} catch (error) {
 				converted = {
 					ok: false as const,
 					error: error instanceof Error ? error.message : String(error),
 				};
 			}
+			contextClosed = true;
+			const actionOutcomes = await this.#drainAttemptActions(state);
+			const actionFailure = actionOutcomes.find(
+				(outcome): outcome is PromiseRejectedResult =>
+					outcome.status === "rejected",
+			);
+			if (actionFailure) {
+				const error = actionFailure.reason;
+				converted = {
+					ok: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
 			if (state.stopped) return;
 			if (converted.ok) {
-				submitProposal(this.#kernel, this.#runtime, {
-					handle: next.handle,
+				this.submitProposal({
+					handle,
 					effects: converted.effects,
 				});
 			} else {
-				reportConversionFailure(
-					this.#kernel,
-					this.#runtime,
-					next.handle,
-					converted.error,
-				);
+				this.reportConversionFailure(handle, converted.error);
 			}
-			state.currentAttemptUid = undefined;
 			next = undefined;
 		}
+	}
+
+	async #drainAttemptActions(
+		state: AgentState,
+	): Promise<PromiseSettledResult<RunRecordedActionResult>[]> {
+		let snapshot = [...state.attemptActions];
+		let outcomes = await Promise.allSettled(snapshot);
+		while (snapshot.length !== state.attemptActions.size) {
+			snapshot = [...state.attemptActions];
+			outcomes = await Promise.allSettled(snapshot);
+		}
+		return outcomes;
 	}
 
 	#pollState(state: AgentState, currentAttemptUid?: string): PollResult {
@@ -383,6 +497,14 @@ export class EngineDriver {
 			throw new FenceViolation(`no attached agent ${agentId}`);
 		}
 		return state;
+	}
+
+	#assertNoInFlightActions(state: AgentState, operation: string): void {
+		if (state.inFlightActions.size > 0) {
+			throw new FenceViolation(
+				`${operation} cannot run while conversion actions are in flight`,
+			);
+		}
 	}
 
 	#assertRunning(): void {

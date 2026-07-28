@@ -16,9 +16,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
 	"initializeEngineDb",
 	"provisionAgentRecipient",
 	"registerAgentTx",
-	"reportConversionFailure",
 	"selectNext",
-	"submitProposal",
 ].sort();
 
 describe("v2-engine public package boundary", () => {
@@ -30,6 +28,8 @@ describe("v2-engine public package boundary", () => {
 			"MAX_ATTEMPTS",
 			"disposeTerminalRecipient",
 			"registerConsumerTx",
+			"reportConversionFailure",
+			"submitProposal",
 		]) {
 			expect(removed in publicApi).toBe(false);
 		}
@@ -53,6 +53,7 @@ describe("v2-engine public package boundary", () => {
 			"driver",
 			"transitions",
 			"settlement",
+			"conversion-actions",
 			"dist/index.js",
 		]) {
 			const code = `try { await import('flywheel-v2-engine/${subpath}'); process.exit(2); } catch (error) { console.log(error.code); }`;

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ActionSerializationError } from "./errors.js";
 import type { ReadTx, WriteTx } from "./kernel.js";
 
 type JsonPrimitive = boolean | number | string | null;
@@ -138,6 +139,14 @@ function requireNonEmpty(value: string, name: string): string {
 function requireGeneration(value: number, name: string): number {
 	if (!Number.isInteger(value) || value < 0) {
 		throw new TypeError(`${name} must be a non-negative integer`);
+	}
+	return value;
+}
+
+function requireCanonicalIso(value: string, name: string): string {
+	const parsed = Date.parse(value);
+	if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) {
+		throw new TypeError(`${name} must be a canonical ISO timestamp`);
 	}
 	return value;
 }
@@ -384,6 +393,12 @@ export function recordActionIntent(
 	);
 	const existing = readActionRowByEffectKey(tx, effectKey);
 	if (existing) {
+		if (
+			spec.supersedesActionId !== undefined &&
+			existing.supersedes_action_id !== supersedesActionId
+		) {
+			throw new Error("action supersede must use a new invocationUid");
+		}
 		const exactEnvelope =
 			existing.kind === spec.kind &&
 			existing.payload_digest === payloadDigest &&
@@ -391,7 +406,9 @@ export function recordActionIntent(
 			existing.attempt_id === attemptId &&
 			existing.attempt_generation === attemptGeneration &&
 			existing.logical_key === logicalKey &&
-			existing.cutover_epoch === spec.cutoverEpoch;
+			existing.cutover_epoch === spec.cutoverEpoch &&
+			existing.supersedes_action_id === supersedesActionId &&
+			existing.retry_basis === retryBasis;
 		if (!exactEnvelope) {
 			throw new Error(`action effect key collision for ${effectKey}`);
 		}
@@ -434,7 +451,10 @@ export function recordActionIntent(
 			supersedesActionId,
 			retryBasis,
 			cutoverEpoch: spec.cutoverEpoch,
-			createdAt: spec.createdAt ?? new Date().toISOString(),
+			createdAt:
+				spec.createdAt === undefined
+					? new Date().toISOString()
+					: requireCanonicalIso(spec.createdAt, "createdAt"),
 		},
 	);
 	const action = readAction(tx, spec.id);
@@ -458,9 +478,16 @@ export function recordActionOutcome(
 	if (spec.state !== "succeeded" && spec.state !== "failed") {
 		throw new TypeError("action outcome state must be succeeded or failed");
 	}
-	const result = canonicalize(spec.result);
-	const completedAt = spec.completedAt ?? new Date().toISOString();
-	requireNonEmpty(completedAt, "completedAt");
+	let result: string;
+	try {
+		result = canonicalize(spec.result);
+	} catch (error) {
+		throw new ActionSerializationError(error);
+	}
+	const completedAt =
+		spec.completedAt === undefined
+			? new Date().toISOString()
+			: requireCanonicalIso(spec.completedAt, "completedAt");
 	const activationId =
 		spec.actor.kind === "runner" ? spec.actor.activationId : null;
 	tx.cas(

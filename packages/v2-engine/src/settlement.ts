@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { FENCE, type Kernel, type WriteTx } from "flywheel-v2-kernel";
 import { ENGINE_SQL } from "./sql.js";
 import {
@@ -20,7 +20,6 @@ import {
 interface PreparedEffect {
 	effect: Effect;
 	id: string;
-	payloadDigest?: string;
 }
 
 function byteLength(value: string): number {
@@ -49,20 +48,6 @@ function validateProposal(proposal: ConversionProposal): PreparedEffect[] {
 		);
 	}
 	return proposal.effects.map((effect) => {
-		if (effect.kind === "command") {
-			requireField(effect.commandKind, "commandKind");
-			requireField(effect.effectKey, "effectKey");
-			if (effect.taskId !== undefined) requireField(effect.taskId, "taskId");
-			if (effect.attemptId !== undefined)
-				requireField(effect.attemptId, "attemptId");
-			return {
-				effect,
-				id: randomUUID(),
-				payloadDigest: createHash("sha256")
-					.update(effect.payload)
-					.digest("hex"),
-			};
-		}
 		if (effect.kind === "task") {
 			requireField(effect.taskKind, "taskKind");
 			requireField(effect.projectId, "projectId");
@@ -85,21 +70,6 @@ function writeEffect(
 ): void {
 	const { effect, id } = prepared;
 	const createdAt = runtime.clock.nowIso();
-	if (effect.kind === "command") {
-		tx.run(ENGINE_SQL.insertCommand, {
-			id,
-			taskId: effect.taskId ?? null,
-			attemptId: effect.attemptId ?? null,
-			generation: proposal.handle.agent.generation,
-			kind: effect.commandKind,
-			payload: effect.payload,
-			payloadDigest: prepared.payloadDigest,
-			effectKey: effect.effectKey,
-			cutoverEpoch,
-			createdAt,
-		});
-		return;
-	}
 	if (effect.kind === "task") {
 		tx.run(ENGINE_SQL.insertTask, {
 			id,

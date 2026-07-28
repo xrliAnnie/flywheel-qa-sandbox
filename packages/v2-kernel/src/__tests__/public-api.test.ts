@@ -28,6 +28,7 @@ describe("public package boundary", () => {
 	it("exports exactly the approved runtime value set", () => {
 		expect(Object.keys(publicApi).sort()).toEqual(
 			[
+				"ActionSerializationError",
 				"CANDIDATE_SQL",
 				"CasViolation",
 				"DEFAULT_V2_DB_PATH",

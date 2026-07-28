@@ -30,7 +30,7 @@ export interface RunningMessageRow {
 	created_at: string;
 }
 
-interface AttemptBindingRow {
+export interface AttemptBindingRow {
 	attempt_uid: string;
 	message_uid: string;
 	instance_id: string;
@@ -40,6 +40,7 @@ interface AttemptBindingRow {
 	outcome: string;
 	to_agent: string;
 	mailbox_state: string;
+	mailbox_cutover_epoch: number;
 }
 
 interface EventRow {

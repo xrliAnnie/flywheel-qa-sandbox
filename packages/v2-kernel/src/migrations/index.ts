@@ -5,6 +5,7 @@ import { MAILBOX_INDEX_FAMILY_DDL } from "./0004-mailbox-index-family.js";
 import { AGENTS_CONFIG_MAILBOX_REBUILD_DDL } from "./0005-agents-config-mailbox-rebuild.js";
 import { ACTIONS_BLACK_BOX_DDL } from "./0006-actions-black-box.js";
 import { SCHEDULER_RUNTIME_DDL } from "./0007-scheduler-runtime.js";
+import { RETIRED_TABLES_DDL } from "./0008-drop-retired-command-obligation-tables.js";
 
 export interface Migration {
 	id: string;
@@ -47,5 +48,10 @@ export const MIGRATIONS: readonly Migration[] = [
 		id: "0007-scheduler-runtime",
 		ddl: SCHEDULER_RUNTIME_DDL,
 		fkMode: "on",
+	},
+	{
+		id: "0008-drop-retired-command-obligation-tables",
+		ddl: RETIRED_TABLES_DDL,
+		fkMode: "rebuild",
 	},
 ];

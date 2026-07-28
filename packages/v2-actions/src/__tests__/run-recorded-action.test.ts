@@ -142,32 +142,51 @@ describe("runRecordedAction", () => {
 		});
 	});
 
-	it("rejects a non-JSON SDK result instead of recording an empty success", async () => {
-		const { kernel: opened } = bootKernel();
+	it.each([
+		["Date", new Date("2026-07-28T08:00:00.000Z")],
+		["Map", new Map([["externalId", "external-1"]])],
+	])(
+		"terminalizes a successful effect whose %s result cannot be serialized",
+		async (valueKind, sdkResult) => {
+			const { kernel: opened } = bootKernel();
+			let performCount = 0;
 
-		await expect(
-			runRecordedAction({
+			const result = await runRecordedAction({
 				kernel: opened,
 				action: {
-					id: "action-sdk-result",
+					id: `action-sdk-result-${valueKind}`,
 					actor: LEAD_ACTOR,
 					kind: "custom_tool_call",
 					payload: { body: "hello" },
-					logicalEffectId: "sdk-result",
-					invocationUid: "transcript:sdk-result",
+					logicalEffectId: `sdk-result-${valueKind}`,
+					invocationUid: `transcript:sdk-result-${valueKind}`,
 					cutoverEpoch: 7,
 				},
-				perform: () => new Date("2026-07-28T08:00:00.000Z") as never,
-			}),
-		).rejects.toThrow(/JSON/i);
-		expect(
-			opened.read((tx) => readAction(tx, "action-sdk-result")),
-		).toMatchObject({
-			state: "intended",
-			result: undefined,
-			completedAt: undefined,
-		});
-	});
+				perform: () => {
+					performCount += 1;
+					return sdkResult as never;
+				},
+			});
+
+			expect(result).toMatchObject({
+				disposition: "performed",
+				action: {
+					state: "succeeded",
+					result: {
+						serialization_error: {
+							name: "ActionSerializationError",
+							message: expect.stringMatching(/serialization.*JSON/i),
+						},
+						value_kind: valueKind,
+					},
+				},
+			});
+			expect(performCount).toBe(1);
+			expect(
+				opened.read((tx) => readAction(tx, `action-sdk-result-${valueKind}`)),
+			).toEqual(result.action);
+		},
+	);
 
 	it("rolls back generic prepare work when intent admission fails", async () => {
 		dir = mkdtempSync(join(tmpdir(), "flywheel-v2-actions-"));
@@ -353,7 +372,7 @@ describe("runRecordedAction", () => {
 		});
 	});
 
-	it("performs an evidenced successor once and replays that successor", async () => {
+	it("performs an evidenced successor once and replays only the identical request", async () => {
 		dir = mkdtempSync(join(tmpdir(), "flywheel-v2-actions-"));
 		const path = join(dir, "v2.db");
 		migrateDatabase({ path });
@@ -419,6 +438,20 @@ describe("runRecordedAction", () => {
 			action: { ...successorAction, id: "action-successor-replayed" },
 			perform,
 		});
+		await expect(
+			runRecordedAction({
+				kernel,
+				action: {
+					...successorAction,
+					id: "action-successor-conflict",
+					retryBasis: {
+						...successorAction.retryBasis,
+						reason: "different retry evidence",
+					},
+				},
+				perform,
+			}),
+		).rejects.toThrow(/effect key collision/i);
 
 		expect(successor).toMatchObject({
 			disposition: "performed",
@@ -430,7 +463,11 @@ describe("runRecordedAction", () => {
 		});
 		expect(replayed).toMatchObject({
 			disposition: "replayed",
-			action: { id: "action-successor", state: "succeeded" },
+			action: {
+				id: "action-successor",
+				state: "succeeded",
+				supersedesActionId: "action-root",
+			},
 		});
 		expect(performCount).toBe(2);
 	});

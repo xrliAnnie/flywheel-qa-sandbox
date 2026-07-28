@@ -139,23 +139,24 @@ describe("serial explicit mailbox polling", () => {
 			ok: true,
 			effects: [
 				{
-					kind: "command",
-					commandKind: "test.command",
+					kind: "event",
+					eventKind: "proposal.prelude",
 					payload: "{}",
-					effectKey: "duplicate-key",
 				},
 				{
-					kind: "command",
-					commandKind: "test.command",
+					kind: "task",
+					taskKind: "invalid-follow-up",
+					state: "ready",
 					payload: "{}",
-					effectKey: "duplicate-key",
+					projectId: "project-a",
+					lineageRootTaskId: "missing-task",
 				},
 			],
 		}));
 
 		await vi.waitFor(() =>
 			expect(() => driver?.poll("lead-a")).toThrow(
-				/UNIQUE constraint failed: commands\.effect_key/,
+				/FOREIGN KEY constraint failed/,
 			),
 		);
 	});

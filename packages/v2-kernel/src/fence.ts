@@ -181,10 +181,9 @@ export function identitiesEqual(
 }
 
 export const FENCE = {
-	// Placeholder for FLY-1498 — intentionally unexported, uncalled and untested in
-	// this batch. FLY-1500's mapping (§3) keeps the generic capability-consume CAS in
-	// place for the gate/dispatch batch to pick up; do NOT delete it as dead code.
-	// Whoever wires it up owns adding the first call site and its tests.
+	// FLY-1498 approved this generic capability-consume CAS shape. It remains a
+	// shared kernel fence for the gate/ship path; it is not part of the retired
+	// command outbox. The first runtime caller owns focused integration tests.
 	capabilityConsume: `UPDATE capabilities SET consumed_at=:now
      WHERE id=:capabilityId AND consumed_at IS NULL AND revoked_at IS NULL
        AND (expires_at IS NULL OR expires_at > :now)
