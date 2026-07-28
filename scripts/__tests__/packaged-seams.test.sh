@@ -33,22 +33,54 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SANDBOX="$(mktemp -d -t fly1062-seams-XXXXXX)"
 trap 'rm -rf "$SANDBOX"' EXIT
 REAL_USER_HOME="$HOME"
+PACKAGED_ASSEMBLY="$SANDBOX/assembled-payload"
+
+# Build the scripts subtree through the REAL packaging assembler. Packaged
+# fixtures below must consume this tree, never hand-copy runtime dependencies
+# from the repository: a hand copy can make a seam test green for a file the
+# customer payload does not ship.
+if env PACKAGE_ONBOARD_SOURCED=1 bash -c \
+  'source "$1"; po_copy_curated_scripts "$2" "$3"' \
+  _ "$REPO_ROOT/scripts/package-onboard.sh" "$REPO_ROOT" "$PACKAGED_ASSEMBLY"; then
+  echo "1.0.0-test" > "$PACKAGED_ASSEMBLY/.flywheel-prebuilt"
+else
+  fail "S0 real packaged scripts assembly failed"
+  echo ""
+  echo "packaged-seams: PASSED=$PASSED FAILED=$FAILED"
+  exit 1
+fi
+
+closure_ok=1
+for f in restart-storm-gate.py lib/bounded-run.sh meta-alert.sh lead-alert.sh; do
+  [ -x "$PACKAGED_ASSEMBLY/scripts/$f" ] || closure_ok=0
+done
+if [ "$closure_ok" -eq 1 ]; then
+  pass "S0 packaged restart-gate runtime closure is assembled and executable"
+else
+  fail "S0 packaged restart-gate runtime closure incomplete"
+fi
 
 # ── fixture tree builder ─────────────────────────────────────────────────────
 # mk_tree <dir> [prebuilt] — a minimal tree carrying the REAL scripts under
-# test (copied, so their self-derived SCRIPT_DIR/.. lands in the fixture).
+# test. Prebuilt fixtures copy from PACKAGED_ASSEMBLY; monorepo sentinels copy
+# repository files directly.
 mk_tree() {
   local dir="$1" prebuilt="${2:-}"
   mkdir -p "$dir/scripts/lib"
+  if [ "$prebuilt" = "prebuilt" ]; then
+    cp -Rp "$PACKAGED_ASSEMBLY/scripts/." "$dir/scripts/"
+    cp -p "$PACKAGED_ASSEMBLY/.flywheel-prebuilt" "$dir/.flywheel-prebuilt"
+    return 0
+  fi
   for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper.sh daily-standup.sh \
-           update-flywheel.sh converge-flywheel-bin.sh linux-preflight.sh; do
+           update-flywheel.sh converge-flywheel-bin.sh linux-preflight.sh \
+           restart-storm-gate.py meta-alert.sh lead-alert.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$dir/scripts/$f"
   done
   for f in lib/script-sanity.sh lib/host-config.sh lib/self-ship-queue.sh \
-           lib/supervisor.sh; do
+           lib/supervisor.sh lib/bounded-run.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$dir/scripts/$f"
   done
-  [ "$prebuilt" = "prebuilt" ] && echo "1.0.0-test" > "$dir/.flywheel-prebuilt"
   return 0
 }
 
@@ -203,6 +235,7 @@ run_converge() { # <tree> <home>
   local tree="$1" h="$2"
   env -i HOME="$h" PATH="/usr/bin:/bin" \
     FLYWHEEL_STATE_DIR="$h/.flywheel" \
+    FLYWHEEL_CONVERGE_ALLOW_TEMP_ROOT=1 \
     FLYWHEEL_CONVERGE_ALERT_BIN="$h/.local/bin/alert-stub" \
     bash "$tree/scripts/converge-flywheel-bin.sh" >"$h/out.log" 2>&1
 }
@@ -319,6 +352,24 @@ if [ "$rc" -eq 0 ] && [ -f "$PLIST" ] \
   pass "S11b supervisor darwin opt-in: timer spec renders StartCalendarInterval"
 else
   fail "S11b rc=$rc out=[$out]"
+fi
+
+# interval timer spec renders StartInterval and stays non-KeepAlive
+H="$SANDBOX/s11c-home"; mk_home "$H"
+stub "$H" launchctl 'exit 0'
+LDIR="$SANDBOX/s11c-launchd"
+SPEC='{"name":"v2-scheduler","kind":"timer","exec":"/bin/bash /x/v2-scheduler-once.sh","intervalSeconds":60,"timeoutSeconds":60}'
+out="$(env HOME="$H" PATH="$H/.local/bin:$PATH" \
+  FLYWHEEL_SUPERVISOR_BACKEND=launchd FLYWHEEL_LAUNCHD_DIR="$LDIR" \
+  FLYWHEEL_SUPERVISOR_DARWIN_INSTALL=1 \
+  bash -c 'source "'"$REPO_ROOT"'/scripts/lib/supervisor.sh"; supervisor_install "$1"' _ "$SPEC" 2>&1)"; rc=$?
+PLIST="$LDIR/com.flywheel.v2-scheduler.plist"
+if [ "$rc" -eq 0 ] && [ -f "$PLIST" ] \
+   && grep -q "<key>StartInterval</key><integer>60</integer>" "$PLIST" \
+   && ! grep -q "<key>KeepAlive</key>" "$PLIST"; then
+  pass "S11c supervisor darwin opt-in: bounded interval timer renders StartInterval"
+else
+  fail "S11c rc=$rc out=[$out]"
 fi
 
 H="$SANDBOX/s12-home"; mk_home "$H"

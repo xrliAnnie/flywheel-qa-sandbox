@@ -62,13 +62,20 @@ describe("typed generalized workflow snapshot", () => {
 			template: { id: "tpl_eng_heavy", revision: 1 },
 			manifest,
 		});
-		// FLY-1467: the tpl_eng_heavy qa node repointed opus 4.8 → Opus 5, so the
-		// pinned topology digests move with the manifest content.
+		// FLY-1501: the heavy QA node reserves its 180-minute evidence window in
+		// the pinned manifest, so both topology digests move with that authority.
 		expect(snapshot.manifest_digest).toBe(
-			"4f1fef0fce28f7c086c4f31462da77f053a3e5fefdebc5bb8d021864bf39b2c4",
+			"e30dc87efef5804b7a7cb741293b45cd85e5f71482bcdd1787e5bae25abc6444",
 		);
 		expect(snapshot.snapshot_digest).toBe(
-			"f0014039d4a89de928b0907d7625cb80ec0e22be9462e89cfb150850aa1bce75",
+			"3b165a2411bcdb0c81c61b971ec20f33ef8375edfa4bde01a3e1975f857ad253",
+		);
+		expect(
+			snapshot.manifest.nodes.find((node) => node.id === "qa")
+				?.submissionWindowMinutes,
+		).toBe(180);
+		expect(parseWorkflowRunSnapshot(JSON.stringify(snapshot))).toEqual(
+			snapshot,
 		);
 	});
 

@@ -149,6 +149,11 @@ export const ALERT_EVENT_TYPES = [
 	// present in the union so a queued bypass alert drains with a known
 	// eventType and the shared kind face (lead-alert.sh ↔ TS) has no drift.
 	"restart_guard_bypass",
+	// FLY-1501: an OS-supervised service hit the durable 10-minute restart
+	// ceiling and its wrapper stopped exec'ing it. Emitted by the
+	// kernel-independent Python gate through lead-alert.sh; kept in the shared
+	// face so queued delivery and ticket routing remain type-safe.
+	"restart_storm_hold",
 	// FLY-939 (G-D): the Bridge booted on a STALE checkout — its running HEAD is
 	// strictly behind origin/main, so merged work is NOT live (the FLY-887
 	// silent-non-deploy incident shape). A Lead-only alert; the durable

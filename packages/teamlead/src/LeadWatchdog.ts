@@ -1188,6 +1188,10 @@ export function titleFor(kind: AlertEventType): string {
 		// title); case exists for switch exhaustiveness.
 		case "restart_guard_bypass":
 			return "Restart-guard BYPASS used";
+		// FLY-1501: shell/Python gate supplies the concrete title; this keeps the
+		// shared union switch readable if a queued record is rendered later.
+		case "restart_storm_hold":
+			return "Service restart storm held";
 		// FLY-939 (G-D): never emitted by LeadWatchdog (boot-sha-check builds its
 		// own title); case exists for switch exhaustiveness.
 		case "bridge_boot_stale_checkout":
@@ -1420,6 +1424,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-913: never emitted by LeadWatchdog (the restart-guard PreToolUse hook builds its own body via lead-alert.sh).
 		case "restart_guard_bypass":
 			return "An agent used the restart-guard bypass to run a manual Flywheel service restart. The command + reason are in ~/.flywheel/logs/restart-guard.log — review whether it was justified.";
+		case "restart_storm_hold":
+			return "An OS-supervised Flywheel service reached its durable restart ceiling, so the wrapper stopped launching it. Inspect the service logs and cause, then explicitly resume that child with restart-storm-gate.py.";
 		// FLY-939 (G-D): never emitted by LeadWatchdog (boot-sha-check builds its own body).
 		case "bridge_boot_stale_checkout":
 			return "The Bridge booted on a checkout whose HEAD is behind origin/main — merged work is NOT live. Pull + restart the Bridge to deploy.";

@@ -597,6 +597,16 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 					`Project "${entry.projectName}" leads[${i}].agentId: must match ${SAFE_ID} (it becomes a filesystem path component), got ${JSON.stringify(lead.agentId)}`,
 				);
 			}
+			// FLY-1501 W3: the launch wrapper derives this exact key and the
+			// restart-storm gate deliberately refuses to normalize/truncate it.
+			// Reject at the config boundary so a config accepted by Bridge can
+			// never strand its Lead behind a permanently fail-closed gate.
+			const restartChildKey = `lead.${entry.projectName}-${lead.agentId}`;
+			if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(restartChildKey)) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}]: derived restart child_key "${restartChildKey}" must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ (maximum 128 ASCII bytes)`,
+				);
+			}
 			const exactKey = `${entry.projectName}-${lead.agentId}`;
 			if (seenExactKeys.has(exactKey)) {
 				throw new Error(

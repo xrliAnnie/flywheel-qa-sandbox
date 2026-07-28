@@ -27,6 +27,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP/packages/teamlead/scripts" "$TMP/project" "$TMP/pids"
 CAP="$TMP/capture.txt"
+GATE_CAP="$TMP/gate-capture.txt"
 
 # Stubs record: "<BACKEND>" then "ARG=<each argv>" then "CWD=<pwd>".
 for be in claude codex; do
@@ -37,13 +38,21 @@ for be in claude codex; do
 EOF
 done
 chmod +x "$TMP/packages/teamlead/scripts/"*.sh
+cat > "$TMP/restart-storm-gate" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$GATE_CAP"
+EOF
+chmod +x "$TMP/restart-storm-gate"
 touch "$TMP/.env"
 
 run_wrapper() { # $1 = manifest path → sets global RC
   : > "$CAP"
+  : > "$GATE_CAP"
   FLYWHEEL_DIR="$TMP" \
   FLYWHEEL_WRAPPER_ENV_FILE="$TMP/.env" \
   FLYWHEEL_WRAPPER_PID_DIR="$TMP/pids" \
+  FLYWHEEL_RESTART_STORM_GATE_BIN="$TMP/restart-storm-gate" \
+  GATE_CAP="$GATE_CAP" \
     bash "$WRAPPER" "$1" >/dev/null 2>&1
   RC=$?
 }
@@ -93,6 +102,15 @@ if [ "$RC" -ne 0 ] && [ ! -s "$CAP" ]; then
   pass "unknown backend → non-zero exit + no launcher (fail-closed)"
 else
   fail "unknown backend should fail-closed (rc=$RC, cap='$(cat "$CAP")')"
+fi
+
+# ── Case 6: live PID no-op → no restart accounting and no launcher ──
+echo "$$" > "$TMP/pids/proj-live-lead.pid"
+run_wrapper "$(manifest "{\"leadId\":\"live-lead\",\"projectDir\":\"$TMP/project\",\"projectName\":\"proj\"}")"
+if [ "$RC" -eq 0 ] && [ ! -s "$CAP" ] && [ ! -s "$GATE_CAP" ]; then
+  pass "live PID guard exits without burning restart budget"
+else
+  fail "live PID guard should not gate or launch (rc=$RC, gate='$(cat "$GATE_CAP")', cap='$(cat "$CAP")')"
 fi
 
 echo ""

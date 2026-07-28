@@ -20,6 +20,7 @@ manifest:
       type: qa
       vendor: claude
       model: opus
+      submissionWindowMinutes: 180
       handoff_pointer: { worktree: true, design_doc: true }
     - id: founder_gate
       type: gate

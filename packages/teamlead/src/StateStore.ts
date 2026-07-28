@@ -18441,6 +18441,44 @@ export class StateStore {
 	 * launch owner is the serialization fence: only its current, unexpired,
 	 * uncommitted generation may revoke the lost ticket and create one replacement.
 	 */
+	private workflowCredentialRotationExpiryTx(
+		table:
+			| "workflow_output_credential"
+			| "workflow_submission_credential",
+		executionId: string,
+		now: string,
+		requestedExpiresAt: string,
+	): { expiresAt: string; absoluteDeadlineAt: string } | undefined {
+		// Rotation may reopen the soft submission window, but it must never move
+		// the execution's original hard stop. The earliest persisted deadline is
+		// authoritative even if an older buggy caller already minted a later row.
+		const query =
+			table === "workflow_output_credential"
+				? `SELECT absolute_deadline_at FROM workflow_output_credential
+				     WHERE execution_id = ?`
+				: `SELECT absolute_deadline_at FROM workflow_submission_credential
+				     WHERE execution_id = ?`;
+		const rows = this.workflowSelectAll(query, [executionId]);
+		if (rows.length === 0) return undefined;
+		let absoluteDeadlineMs = Number.POSITIVE_INFINITY;
+		for (const row of rows) {
+			const candidate = Date.parse(row.absolute_deadline_at as string);
+			if (!Number.isFinite(candidate)) return undefined;
+			absoluteDeadlineMs = Math.min(absoluteDeadlineMs, candidate);
+		}
+		const expiresAtMs = Math.min(
+			Date.parse(requestedExpiresAt),
+			absoluteDeadlineMs,
+		);
+		if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.parse(now)) {
+			return undefined;
+		}
+		return {
+			expiresAt: new Date(expiresAtMs).toISOString(),
+			absoluteDeadlineAt: new Date(absoluteDeadlineMs).toISOString(),
+		};
+	}
+
 	rotateGeneralizedWorkflowOutputCredential(input: {
 		executionId: string;
 		ownerId: string;
@@ -18497,6 +18535,16 @@ export class StateStore {
 				result = { ok: false, reason: "decision_credential_invariant" };
 				return;
 			}
+			const expiry = this.workflowCredentialRotationExpiryTx(
+				"workflow_output_credential",
+				input.executionId,
+				input.now,
+				input.expiresAt,
+			);
+			if (!expiry) {
+				result = { ok: false, reason: "invalid_expiry" };
+				return;
+			}
 			this.db.run(
 				`UPDATE workflow_output_credential
 				    SET revoked = 1, revoked_reason = 'prelaunch_recovery_rotation'
@@ -18517,8 +18565,8 @@ export class StateStore {
 					context.binding.execution_id,
 					context.binding.attempt,
 					input.now,
-					input.expiresAt,
-					input.absoluteDeadlineAt,
+					expiry.expiresAt,
+					expiry.absoluteDeadlineAt,
 				],
 			);
 			this.appendWorkflowRunEventCheckedTx({
@@ -18609,6 +18657,16 @@ export class StateStore {
 				result = { ok: false, reason: "repair_credential_already_rotated" };
 				return;
 			}
+			const expiry = this.workflowCredentialRotationExpiryTx(
+				"workflow_output_credential",
+				input.executionId,
+				input.now,
+				input.expiresAt,
+			);
+			if (!expiry) {
+				result = { ok: false, reason: "invalid_expiry" };
+				return;
+			}
 			this.db.run(
 				`UPDATE workflow_output_credential
 				    SET revoked = 1, revoked_reason = 'delivery_repair_rotation'
@@ -18629,8 +18687,8 @@ export class StateStore {
 					context.binding.execution_id,
 					context.binding.attempt,
 					input.now,
-					input.expiresAt,
-					input.absoluteDeadlineAt,
+					expiry.expiresAt,
+					expiry.absoluteDeadlineAt,
 				],
 			);
 			this.appendWorkflowRunEventTx({
@@ -18702,6 +18760,16 @@ export class StateStore {
 			) {
 				return;
 			}
+			const expiry = this.workflowCredentialRotationExpiryTx(
+				"workflow_submission_credential",
+				input.executionId,
+				input.now,
+				input.expiresAt,
+			);
+			if (!expiry) {
+				result = { ok: false, reason: "invalid_expiry" };
+				return;
+			}
 			this.db.run(
 				`UPDATE workflow_submission_credential
 				    SET revoked = 1, revoked_reason = 'prelaunch_recovery_rotation'
@@ -18723,8 +18791,8 @@ export class StateStore {
 					context.binding.attempt,
 					family,
 					input.now,
-					input.expiresAt,
-					input.absoluteDeadlineAt,
+					expiry.expiresAt,
+					expiry.absoluteDeadlineAt,
 				],
 			);
 			this.appendWorkflowRunEventTx({
@@ -18816,6 +18884,16 @@ export class StateStore {
 				result = { ok: false, reason: "repair_credential_already_rotated" };
 				return;
 			}
+			const expiry = this.workflowCredentialRotationExpiryTx(
+				"workflow_submission_credential",
+				input.executionId,
+				input.now,
+				input.expiresAt,
+			);
+			if (!expiry) {
+				result = { ok: false, reason: "invalid_expiry" };
+				return;
+			}
 			this.db.run(
 				`UPDATE workflow_submission_credential
 				    SET revoked = 1, revoked_reason = 'delivery_repair_rotation'
@@ -18837,8 +18915,8 @@ export class StateStore {
 					context.binding.attempt,
 					family,
 					input.now,
-					input.expiresAt,
-					input.absoluteDeadlineAt,
+					expiry.expiresAt,
+					expiry.absoluteDeadlineAt,
 				],
 			);
 			this.appendWorkflowRunEventTx({

@@ -371,6 +371,17 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 		}
 	});
 
+	it("FLY-1501 restart-storm hold is present on both faces with a human investigation contract", () => {
+		expect(ALERT_EVENT_TYPES).toContain("restart_storm_hold");
+		expect(shellAllowlist()).toContain("restart_storm_hold");
+		expect(KIND_CONTRACTS).toMatchObject({
+			restart_storm_hold: {
+				owner: "claude",
+				arc: "human_by_design",
+			},
+		});
+	});
+
 	it("the shell leg can emit the fleet kinds (bridge_abnormal_exit is load-bearing)", () => {
 		const allow = shellAllowlist();
 		for (const kind of FLEET_KINDS) {

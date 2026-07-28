@@ -82,6 +82,38 @@ if [[ -f "$PID_FILE" ]]; then
     exit 0
   fi
 fi
+
+# ── FLY-1501: durable restart-storm ceiling ─────────────────────
+# Run after both single-instance guards and before this launch writes a PID
+# file, so a pre-bind no-op bounce does not burn the restart budget.
+RESTART_STORM_GATE_BIN="${FLYWHEEL_RESTART_STORM_GATE_BIN:-${FLYWHEEL_DIR}/scripts/restart-storm-gate.py}"
+# `set -e` aborts on a bare non-zero command, so the exit code must be
+# captured in an errexit-exempt `||` list — otherwise a held brake would
+# kill this wrapper with the gate's status and launchd would read the
+# hold as a crash.
+RESTART_STORM_RC=0
+"$RESTART_STORM_GATE_BIN" gate voice-bridge || RESTART_STORM_RC=$?
+if [ "$RESTART_STORM_RC" -ne 0 ]; then
+  if [ "$RESTART_STORM_RC" -eq 126 ] || [ "$RESTART_STORM_RC" -eq 127 ]; then
+    # Bounded and synchronous, via the shared helper. Unbounded would let a
+    # hung osascript inside meta-alert.sh pin this launch path so launchd
+    # never retries once the brake is restored; detached would let launchd
+    # kill the notifier with the job's process group before it writes its
+    # marker, restoring the silence this branch removes.
+    "${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh" \
+      "${FLYWHEEL_META_ALERT_TIMEOUT_S:-15}" \
+      "${FLYWHEEL_META_ALERT_BIN:-${FLYWHEEL_DIR}/scripts/meta-alert.sh}" \
+      restart_storm_gate_unavailable_voice-bridge \
+      "Restart brake unavailable" \
+      "restart-storm-gate.py is missing or not executable (exit ${RESTART_STORM_RC}); voice-bridge will not launch until it is restored." \
+      >/dev/null 2>&1 || true
+    log "Restart brake missing or not executable (exit ${RESTART_STORM_RC}) — refusing to launch voice-bridge."
+  else
+    log "Restart-storm gate held or refused voice-bridge startup — not writing PID marker."
+  fi
+  exit 0
+fi
+
 mkdir -p "$(dirname "$PID_FILE")"
 echo $$ > "$PID_FILE"
 trap 'rm -f "$PID_FILE"' EXIT

@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import * as publicApi from "../index.js";
 
 const EXPECTED_RUNTIME_EXPORTS = [
+	"ClaudeInjectionShim",
+	"CodexInjectionShim",
 	"DEFAULT_ENGINE_CONFIG",
 	"EngineConfigError",
 	"EngineDriver",
@@ -61,5 +63,8 @@ describe("v2-engine public package boundary", () => {
 				}).trim(),
 			).toBe("ERR_PACKAGE_PATH_NOT_EXPORTED");
 		}
-	});
+		// Five synchronous node spawns: the default 5s budget is a machine-load
+		// measurement, not an API-surface assertion (QA reproduced a cold-cache
+		// failure at 5104ms).
+	}, 60_000);
 });

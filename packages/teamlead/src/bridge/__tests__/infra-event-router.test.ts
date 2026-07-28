@@ -98,6 +98,16 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 		}
 	});
 
+	it("routes restart-storm holds to the actionable ticket lane", () => {
+		expect(TICKET_KINDS).toContain("restart_storm_hold");
+		expect(
+			classifyInfraEvent({
+				eventType: "restart_storm_hold",
+				boundIssueThread: THREAD,
+			}),
+		).toBe("ticket");
+	});
+
 	it("union members outside both sets notify only when informational, otherwise fail-safe to ticket", () => {
 		const uncovered = ALERT_EVENT_TYPES.filter(
 			(k) => !TICKET_KINDS.has(k) && !ISSUE_PROGRESS_KINDS.has(k),

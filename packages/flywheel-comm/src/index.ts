@@ -119,7 +119,7 @@ Commands:
   workflow-output  Submit a generalized node's JSON output before completion
   request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>] [--target-repo <rel>])
   review-ruling  Record or revoke a supervised Lead ruling for a delivered review finding (FLY-1278)
-  codex-review-result  Emit a Codex code-review APPROVED verdict for the current head (FLY-827; await-codex-gate calls this automatically)
+  codex-review-result  Emit a Codex code-review APPROVED verdict for an explicit execution/head (FLY-827; requires --exec-id and --pr-head)
   cleanup   Delete read messages older than TTL (default 24h)
   visual-capture   Run ProofShot UI/3D capture, select artifacts, write manifest (GEO-151)
   notify    POST artifact_emitted event to Bridge after capture+Read (GEO-151)
@@ -1392,10 +1392,19 @@ async function runCodexReviewResult(args: string[]): Promise<void> {
 		},
 		allowPositionals: false,
 	});
+	const execId = values["exec-id"]?.trim();
+	const prHeadSha = values["pr-head"]?.trim().toLowerCase();
+	if (!execId || !prHeadSha || !/^[0-9a-f]{40}$/.test(prHeadSha)) {
+		console.error(
+			"Usage: flywheel-comm codex-review-result --exec-id <id> --pr-head <40-hex-sha> [--reviewed-target <target>] [--rounds <n>] [--codex-thread-id <id>]",
+		);
+		process.exit(1);
+		return;
+	}
 	const rounds = values.rounds ? Number.parseInt(values.rounds, 10) : undefined;
 	const ok = await emitCodexReviewResult({
-		execId: values["exec-id"],
-		prHeadSha: values["pr-head"],
+		execId,
+		prHeadSha,
 		reviewedTarget: values["reviewed-target"],
 		rounds: Number.isFinite(rounds) ? rounds : undefined,
 		codexThreadId: values["codex-thread-id"],

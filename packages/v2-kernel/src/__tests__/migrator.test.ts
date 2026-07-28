@@ -21,6 +21,9 @@ const EXPECTED_TABLES = [
 	"meta",
 	"obligations",
 	"processing_attempts",
+	"scheduler_leases",
+	"scheduler_repair_leases",
+	"scheduler_runs",
 	"schema_migrations",
 	"source_receipts",
 	"task_dependencies",
@@ -47,6 +50,7 @@ const EXPECTED_NAMED_INDEXES = [
 	"mailbox_pending_scheduled_nf",
 	"obligations_episode_open",
 	"pa_one_running",
+	"scheduler_repair_due",
 	"thread_bindings_one_active",
 ];
 
@@ -58,7 +62,7 @@ describe("v2 migration chain", () => {
 		temp = undefined;
 	});
 
-	it("runs the 0005 agents and 0006 actions migrations together from zero", () => {
+	it("runs actions and scheduler migrations together from zero", () => {
 		temp = makeTempDatabase();
 		expect(migrateDatabase({ path: temp.path })).toEqual({
 			applied: MIGRATIONS.map((migration) => migration.id),

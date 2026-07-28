@@ -321,6 +321,20 @@ jobs:
           bash scripts/__tests__/setup-prebuilt.test.sh
           bash scripts/__tests__/provision-prebuilt.test.sh
 
+      # FLY-1501: the restart-storm brake and the launchd heartbeat guard are
+      # the mechanisms that stop a production restart storm, so their contract
+      # suites must not be hand-run only. The script-tests job enumerates files
+      # explicitly and nothing enforces registration, so all three shipped
+      # unregistered — a green CI run proved nothing about them.
+      - name: Test — FLY-1501 restart brake + heartbeat guard contracts
+        run: |
+          bash scripts/__tests__/restart-storm-gate.test.sh
+          bash scripts/__tests__/restart-storm-wrapper-wiring.test.sh
+          bash packages/teamlead/scripts/__tests__/lead-backend-dispatch.test.sh
+          bash scripts/__tests__/v2-scheduler-install.test.sh
+          bash scripts/__tests__/qa-fly1501-brake-missing-alert.test.sh
+          bash scripts/__tests__/qa-fly1501-bounded-run.test.sh
+
       # FLY-1062: the REAL npm full chain on the real repo — pack (gated) →
       # npm install --prefix (registry fetch for the dependency union) →
       # compat mirror → bare-import matrix → better-sqlite3 native load →

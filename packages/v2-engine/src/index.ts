@@ -11,6 +11,15 @@ export type {
 	MailboxEnvelope,
 } from "./enqueue.js";
 export { enqueue, provisionAgentRecipient } from "./enqueue.js";
+export {
+	type ClaudeInjectionSessionRef,
+	ClaudeInjectionShim,
+} from "./injection/claude-shim.js";
+export {
+	type CodexInjectionSessionRef,
+	CodexInjectionShim,
+	type CodexInjectionShimOptions,
+} from "./injection/codex-shim.js";
 export { registerAgentTx } from "./registration.js";
 export {
 	reportConversionFailure,

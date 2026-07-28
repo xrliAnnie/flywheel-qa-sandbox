@@ -47,6 +47,7 @@ manifest:
       reason: eng heavy tier — xhigh implement
       nodes:
         implement: { effort: xhigh }
+        qa: { submissionWindowMinutes: 180 }
     light:
       reason: eng light tier — codex design
       nodes:

@@ -137,6 +137,43 @@ if [ -f "$PID_FILE" ]; then
   fi
 fi
 
+# ── FLY-1501: durable restart-storm ceiling ─────────────────────
+# Placement is load-bearing: the normal launchd bounce above is a no-op, not a
+# restart. Count only a wrapper invocation that survived every single-instance
+# guard and is about to dispatch a backend launcher.
+#
+# ProjectConfig rejects any project/Lead pair whose derived child key cannot
+# round-trip through the gate grammar. Do not normalize here: aliases would
+# create two independent ledgers for one service.
+RESTART_STORM_CHILD_KEY="lead.${PROJECT_NAME}-${LEAD_ID}"
+RESTART_STORM_GATE_BIN="${FLYWHEEL_RESTART_STORM_GATE_BIN:-${FLYWHEEL_DIR}/scripts/restart-storm-gate.py}"
+# `set -e` aborts on a bare non-zero command, so the exit code must be
+# captured in an errexit-exempt `||` list — otherwise a held brake would
+# kill this wrapper with the gate's status and launchd would read the
+# hold as a crash.
+RESTART_STORM_RC=0
+"$RESTART_STORM_GATE_BIN" gate "$RESTART_STORM_CHILD_KEY" || RESTART_STORM_RC=$?
+if [ "$RESTART_STORM_RC" -ne 0 ]; then
+  if [ "$RESTART_STORM_RC" -eq 126 ] || [ "$RESTART_STORM_RC" -eq 127 ]; then
+    # Bounded and synchronous, via the shared helper. Unbounded would let a
+    # hung osascript inside meta-alert.sh pin this launch path so launchd
+    # never retries once the brake is restored; detached would let launchd
+    # kill the notifier with the job's process group before it writes its
+    # marker, restoring the silence this branch removes.
+    "${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh" \
+      "${FLYWHEEL_META_ALERT_TIMEOUT_S:-15}" \
+      "${FLYWHEEL_META_ALERT_BIN:-${FLYWHEEL_DIR}/scripts/meta-alert.sh}" \
+      restart_storm_gate_unavailable_lead \
+      "Restart brake unavailable" \
+      "restart-storm-gate.py is missing or not executable (exit ${RESTART_STORM_RC}); the Lead will not launch until it is restored." \
+      >/dev/null 2>&1 || true
+    log "Restart brake missing or not executable (exit ${RESTART_STORM_RC}) — refusing to launch the Lead."
+  else
+    log "Restart-storm gate held or refused Lead '${LEAD_ID}' startup — not touching PID state."
+  fi
+  exit 0
+fi
+
 # ── Set environment variables ──────────────────────────────────
 # Resolve bot token from the named env var (e.g., PETER_BOT_TOKEN)
 export DISCORD_BOT_TOKEN="${!BOT_TOKEN_ENV:-}"

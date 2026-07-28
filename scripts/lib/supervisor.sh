@@ -71,6 +71,9 @@ _sup_linux_install() {
   local keepalive stdout
   keepalive="$(_sup_spec_get "$spec" '.keepAlive')"
   stdout="$(_sup_spec_get "$spec" '.stdout')"
+  local timeout_seconds interval_seconds
+  timeout_seconds="$(_sup_spec_get "$spec" '.timeoutSeconds')"
+  interval_seconds="$(_sup_spec_get "$spec" '.intervalSeconds')"
 
   # Always render a .service. service-kind = long-running; timer/path = oneshot.
   local svc="$dir/$name.service"
@@ -85,6 +88,7 @@ _sup_linux_install() {
     else
       echo "Type=oneshot"
       echo "ExecStart=$exec_cmd"
+      [ -n "$timeout_seconds" ] && echo "TimeoutStartSec=$timeout_seconds"
     fi
     [ -n "$stdout" ] && { echo "StandardOutput=append:$stdout"; echo "StandardError=append:$stdout"; }
     echo ""
@@ -101,7 +105,12 @@ _sup_linux_install() {
         echo "Description=Flywheel $name timer"
         echo ""
         echo "[Timer]"
-        _sup_oncalendar "$spec"
+        if [ -n "$interval_seconds" ]; then
+          echo "OnBootSec=${interval_seconds}s"
+          echo "OnUnitActiveSec=${interval_seconds}s"
+        else
+          _sup_oncalendar "$spec"
+        fi
         echo "Persistent=true"
         echo ""
         echo "[Install]"
@@ -166,6 +175,8 @@ _sup_darwin_install() {
   [ -n "$exec_cmd" ] || { _sup_err "spec '$name' missing exec"; return 1; }
   keepalive="$(_sup_spec_get "$spec" '.keepAlive')"
   stdout="$(_sup_spec_get "$spec" '.stdout')"
+  local interval_seconds
+  interval_seconds="$(_sup_spec_get "$spec" '.intervalSeconds')"
 
   local dir label plist
   dir="$(_sup_launchd_dir)"; mkdir -p "$dir" || return 1
@@ -194,6 +205,9 @@ _sup_darwin_install() {
       echo '  <array>'
       jq -r '.schedule[]? | "    <dict><key>Hour</key><integer>\(.hour // 0)</integer><key>Minute</key><integer>\(.minute // 0)</integer></dict>"' <<<"$spec"
       echo '  </array>'
+    fi
+    if [ -n "$interval_seconds" ]; then
+      echo "  <key>StartInterval</key><integer>$interval_seconds</integer>"
     fi
     if [ "$(jq -r '(.watch | length) // 0' <<<"$spec" 2>/dev/null)" -gt 0 ] 2>/dev/null; then
       echo '  <key>QueueDirectories</key>'
@@ -245,6 +259,7 @@ supervisor_stop()    { _sup_verb stop "$@"; }
 supervisor_restart() { _sup_verb restart "$@"; }
 supervisor_status()  { _sup_verb status "$@"; }
 supervisor_is_loaded(){ _sup_verb is_loaded "$@"; }
+supervisor_trigger()  { _sup_verb trigger "$@"; }
 
 _sup_verb() {
   local verb="$1" name="$2" kind="${3:-service}"
@@ -257,6 +272,7 @@ _sup_verb() {
         restart)   systemctl --user restart "$unit" ;;
         status)    systemctl --user status "$unit" ;;
         is_loaded) systemctl --user is-active "$unit" ;;
+        trigger)   systemctl --user start "$name.service" ;;
       esac
       ;;
     launchd)
@@ -268,6 +284,7 @@ _sup_verb() {
         restart)   launchctl kickstart -k "$target" ;;
         status)    launchctl print "$target" ;;
         is_loaded) launchctl print "$target" ;;
+        trigger)   launchctl kickstart "$target" ;;
       esac
       ;;
     container) _sup_err "container backend not implemented (see FLY-652)"; return 3 ;;

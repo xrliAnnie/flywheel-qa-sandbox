@@ -360,6 +360,7 @@ describe("workflow template manifest v1", () => {
 					type: "qa",
 					vendor: "claude",
 					model: "claude-opus-5",
+					submissionWindowMinutes: 180,
 				}),
 			]),
 		);
@@ -384,6 +385,9 @@ describe("workflow template manifest v1", () => {
 		expect(heavy.ship_claims).toEqual(["qa_passed", "founder_approved"]);
 
 		const light = seeds[1]!.manifest;
+		expect(
+			light.nodes.find((node) => node.id === "qa")?.submissionWindowMinutes,
+		).toBeUndefined();
 		expect(light.nodes.find((node) => node.id === "design")).toMatchObject({
 			vendor: "codex",
 			model: "gpt-5.6-sol",
@@ -420,6 +424,12 @@ describe("workflow template manifest v1", () => {
 				execution: "engine",
 			});
 		}
+		expect(
+			seeds
+				.find((seed) => seed.templateId === "tpl_eng_heavy_land_v1")!
+				.manifest.nodes.find((node) => node.id === "qa")
+				?.submissionWindowMinutes,
+		).toBe(180);
 		expect(
 			seeds
 				.filter((seed) =>
@@ -639,6 +649,56 @@ describe("workflow template manifest v2", () => {
 			loop_when: "review_fail",
 			exit_when: "review_pass",
 		});
+	});
+
+	it("accepts submission windows only on nodes identified by verdict topology", () => {
+		const heavy = structuredClone(
+			loadBundledWorkflowSeeds().find(
+				(seed) => seed.templateId === "tpl_eng_heavy",
+			)!.manifest,
+		);
+		for (const value of [0, -1, 1.5, "180"]) {
+			const invalid = structuredClone(heavy);
+			const qa = invalid.nodes.find((node) => node.id === "qa")!;
+			(qa as unknown as Record<string, unknown>).submissionWindowMinutes =
+				value;
+			expect(() => validateWorkflowManifest(invalid)).toThrow(
+				/submissionWindowMinutes.*positive integer/i,
+			);
+		}
+
+		for (const nodeId of ["implement", "founder_gate"]) {
+			const invalid = structuredClone(heavy);
+			const node = invalid.nodes.find((candidate) => candidate.id === nodeId)!;
+			(node as unknown as Record<string, unknown>).submissionWindowMinutes =
+				180;
+			expect(() => validateWorkflowManifest(invalid)).toThrow(
+				/submissionWindowMinutes.*decision/i,
+			);
+		}
+
+		for (const nodeId of ["produce", "founder_gate"]) {
+			const invalid = generalizedManifest();
+			const node = invalid.nodes.find((candidate) => candidate.id === nodeId)!;
+			(node as unknown as Record<string, unknown>).submissionWindowMinutes =
+				180;
+			expect(() => validateWorkflowManifest(invalid)).toThrow(
+				/submissionWindowMinutes.*decision/i,
+			);
+		}
+
+		const review = generalizedManifest();
+		(
+			review.nodes.find((node) => node.id === "review")! as unknown as Record<
+				string,
+				unknown
+			>
+		).submissionWindowMinutes = 180;
+		expect(
+			validateWorkflowManifest(review).nodes.find(
+				(node) => node.id === "review",
+			),
+		).toMatchObject({ submissionWindowMinutes: 180 });
 	});
 
 	it("enforces the capability-driven independent-QA invariant", () => {

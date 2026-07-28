@@ -1441,6 +1441,47 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 		);
 	});
 
+	it("accepts an uppercase restart child key containing repeated separators at the 128-byte boundary", () => {
+		const projectName = `P__${"x".repeat(57)}`;
+		const agentId = `Lead__${"y".repeat(56)}`;
+		const restartChildKey = `lead.${projectName}-${agentId}`;
+		expect(restartChildKey).toHaveLength(128);
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName,
+				projectRoot: "/tmp/upper",
+				leads: [
+					{
+						agentId,
+						chatChannel: "1",
+						match: { labels: ["P"] },
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).not.toThrow();
+	});
+
+	it("rejects a derived restart child key longer than 128 bytes at the config boundary", () => {
+		const projectName = `P__${"x".repeat(57)}`;
+		const agentId = `Lead__${"y".repeat(57)}`;
+		expect(`lead.${projectName}-${agentId}`).toHaveLength(129);
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName,
+				projectRoot: "/tmp/too-long",
+				leads: [
+					{
+						agentId,
+						chatChannel: "1",
+						match: { labels: ["P"] },
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/restart child_key.*128/);
+	});
+
 	it("rejects exact-key collisions across (projectName, agentId) pairs (R5#6)", () => {
 		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
 			{

@@ -59,6 +59,50 @@ describe("FLY-1393 flag truth", () => {
 		}
 	});
 
+	it("FLY-1501 retires the unused swap-pressure percentage knobs", () => {
+		const tombstones = new Map(
+			RETIRED_FLAGS.map((flag) => [flag.envVar, flag.retiredBy]),
+		);
+		for (const envVar of [
+			"FLYWHEEL_SWAP_PRESSURE_HIGH_PCT",
+			"FLYWHEEL_SWAP_PRESSURE_LOW_PCT",
+		]) {
+			expect(NON_FLAG_ALLOWLIST[envVar]).toBeUndefined();
+			expect(tombstones.get(envVar)).toBe("FLY-1501");
+			expect(validateFlagTruthEnvironment([`${envVar}=95`]).ok).toBe(false);
+		}
+	});
+
+	it("FLY-1501 solidifies the restart brake and registers only tuning/plumbing", () => {
+		const tombstones = new Map(
+			RETIRED_FLAGS.map((flag) => [flag.envVar, flag.retiredBy]),
+		);
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_RESTART_STORM_GATE).toBeUndefined();
+		expect(tombstones.get("FLYWHEEL_RESTART_STORM_GATE")).toBe("FLY-1501");
+		expect(
+			validateFlagTruthEnvironment(["FLYWHEEL_RESTART_STORM_GATE=0"]).ok,
+		).toBe(false);
+
+		for (const envVar of [
+			"FLYWHEEL_RESTART_STORM_WINDOW_SEC",
+			"FLYWHEEL_RESTART_STORM_MAX",
+			"FLYWHEEL_RESTART_STORM_LOCK_DEADLINE_SEC",
+			"FLYWHEEL_V2_RESTART_CONCURRENCY_MAX",
+		]) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(/numeric tuning/i);
+		}
+		for (const envVar of [
+			"FLYWHEEL_RESTART_STORM_GATE_BIN",
+			"FLYWHEEL_META_ALERT_BIN",
+			"FLYWHEEL_LEAD_ALERT_BIN",
+		]) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(/plumbing/i);
+		}
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_RESTART_STORM_FAULT).toMatch(
+			/test-only fault/i,
+		);
+	});
+
 	it("registers the FLY-1425 submission sentinel as non-flag plumbing", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toMatch(
 			/plumbing/i,

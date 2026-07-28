@@ -22,6 +22,8 @@
 		"typecheck": "pnpm run build && tsc -p tsconfig.public-test.json"
 	},
 	"dependencies": {
+		"flywheel-agent-team-transport": "workspace:*",
+		"flywheel-claude-runner": "workspace:*",
 		"flywheel-v2-kernel": "workspace:*"
 	},
 	"devDependencies": {

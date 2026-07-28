@@ -65,6 +65,7 @@ export interface WorkflowManifestNode {
 	produces_output?: boolean;
 	output?: WorkflowOutputContract;
 	execution?: "engine";
+	submissionWindowMinutes?: number;
 }
 
 export interface WorkflowManifestEdge {
@@ -133,6 +134,7 @@ export interface WorkflowTemplateOverride {
 			model?: string;
 			effort?: WorkflowEffort;
 			skip?: boolean;
+			submissionWindowMinutes?: number;
 		}
 	>;
 }
@@ -191,6 +193,46 @@ function nonempty(value: unknown, path: string): string {
 		throw new Error(`${path} must be a non-empty string`);
 	}
 	return value.trim();
+}
+
+function optionalPositiveInteger(
+	value: unknown,
+	path: string,
+): number | undefined {
+	if (value === undefined) return undefined;
+	if (!Number.isInteger(value) || Number(value) <= 0) {
+		throw new Error(`${path} must be a positive integer`);
+	}
+	return Number(value);
+}
+
+function assertSubmissionWindowsTargetDecisions(
+	manifest: Pick<WorkflowManifest, "nodes" | "edges" | "loops">,
+): void {
+	for (const node of manifest.nodes) {
+		if (node.submissionWindowMinutes === undefined) continue;
+		const verdictLoops = manifest.loops.filter(
+			(loop) =>
+				loop.from === node.id &&
+				(loop.loop_when === "qa_fail" || loop.loop_when === "review_fail"),
+		);
+		const loop = verdictLoops[0];
+		const isVerdictPair =
+			verdictLoops.length === 1 &&
+			((loop?.loop_when === "qa_fail" && loop.exit_when === "qa_pass") ||
+				(loop?.loop_when === "review_fail" &&
+					loop.exit_when === "review_pass"));
+		const exits = loop
+			? manifest.edges.filter(
+					(edge) => edge.from === node.id && edge.condition === loop.exit_when,
+				)
+			: [];
+		if (!isVerdictPair || exits.length !== 1) {
+			throw new Error(
+				`node ${node.id} submissionWindowMinutes is allowed only on a decision node identified by verdict topology`,
+			);
+		}
+	}
 }
 
 function oneOf<T extends string>(
@@ -345,8 +387,17 @@ function validateWorkflowManifestV1(
 						"effort",
 						"handoff_pointer",
 						"execution",
+						"submissionWindowMinutes",
 					]
-				: ["id", "type", "vendor", "model", "effort", "handoff_pointer"],
+				: [
+						"id",
+						"type",
+						"vendor",
+						"model",
+						"effort",
+						"handoff_pointer",
+						"submissionWindowMinutes",
+					],
 			`manifest.nodes[${index}]`,
 		);
 		const id = nonempty(node.id, `manifest.nodes[${index}].id`);
@@ -359,6 +410,10 @@ function validateWorkflowManifestV1(
 				: ["design", "implement", "qa", "gate"]) as readonly WorkflowNodeType[],
 			`manifest.nodes[${index}].type`,
 		);
+		const submissionWindowMinutes = optionalPositiveInteger(
+			node.submissionWindowMinutes,
+			`manifest.nodes[${index}].submissionWindowMinutes`,
+		);
 		if (type === "land") {
 			if (node.execution !== "engine") {
 				throw new Error(`land node ${id} must define execution: engine`);
@@ -368,7 +423,12 @@ function validateWorkflowManifestV1(
 					throw new Error(`land node ${id} cannot define ${key}`);
 				}
 			}
-			return { id, type, execution: "engine" };
+			return {
+				id,
+				type,
+				execution: "engine",
+				...(submissionWindowMinutes ? { submissionWindowMinutes } : {}),
+			};
 		}
 		if (type === "gate") {
 			for (const key of [
@@ -382,7 +442,11 @@ function validateWorkflowManifestV1(
 					throw new Error(`gate node ${id} cannot define ${key}`);
 				}
 			}
-			return { id, type };
+			return {
+				id,
+				type,
+				...(submissionWindowMinutes ? { submissionWindowMinutes } : {}),
+			};
 		}
 		if (node.execution !== undefined) {
 			throw new Error(`node ${id} cannot define execution`);
@@ -444,6 +508,7 @@ function validateWorkflowManifestV1(
 			...(canonicalModel ? { model: canonicalModel } : {}),
 			...(effort ? { effort } : {}),
 			...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
+			...(submissionWindowMinutes ? { submissionWindowMinutes } : {}),
 		};
 	});
 	if (nodes.filter((node) => node.type === "qa").length !== 1) {
@@ -696,6 +761,7 @@ function validateWorkflowManifestV1(
 		root.tier_presets,
 		modelSnapshot,
 	);
+	assertSubmissionWindowsTargetDecisions(manifest);
 	return tierPresets ? { ...manifest, tier_presets: tierPresets } : manifest;
 }
 
@@ -789,6 +855,7 @@ function validateWorkflowManifestV2(
 				"agent_file",
 				"produces_output",
 				"output",
+				"submissionWindowMinutes",
 			],
 			nodePath,
 		);
@@ -799,6 +866,10 @@ function validateWorkflowManifestV2(
 			node.type,
 			["design", "implement", "qa", "gate", "generic", "review"] as const,
 			`${nodePath}.type`,
+		);
+		const submissionWindowMinutes = optionalPositiveInteger(
+			node.submissionWindowMinutes,
+			`${nodePath}.submissionWindowMinutes`,
 		);
 		if (type === "gate") {
 			for (const key of [
@@ -815,7 +886,11 @@ function validateWorkflowManifestV2(
 					throw new Error(`gate node ${id} cannot define ${key}`);
 				}
 			}
-			return { id, type };
+			return {
+				id,
+				type,
+				...(submissionWindowMinutes ? { submissionWindowMinutes } : {}),
+			};
 		}
 		if (type !== "generic") {
 			for (const key of ["agent_file", "produces_output", "output"]) {
@@ -888,6 +963,7 @@ function validateWorkflowManifestV2(
 				...(effort ? { effort } : {}),
 				...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
 				...(role ? { role } : {}),
+				...(submissionWindowMinutes ? { submissionWindowMinutes } : {}),
 			};
 		}
 		const agentFile =
@@ -938,6 +1014,7 @@ function validateWorkflowManifestV2(
 			...(role ? { role } : {}),
 			...(agentFile ? { agent_file: agentFile } : {}),
 			...(producesOutput ? { produces_output: true, output } : {}),
+			...(submissionWindowMinutes ? { submissionWindowMinutes } : {}),
 		};
 	});
 
@@ -1169,6 +1246,7 @@ function validateWorkflowManifestV2(
 		root.tier_presets,
 		modelSnapshot,
 	);
+	assertSubmissionWindowsTargetDecisions(manifest);
 	return tierPresets ? { ...manifest, tier_presets: tierPresets } : manifest;
 }
 
@@ -1229,7 +1307,7 @@ export function applyWorkflowOverride(
 		const nodeOverride = record(raw, `override.nodes.${nodeId}`);
 		exactKeys(
 			nodeOverride,
-			["vendor", "model", "effort", "skip"],
+			["vendor", "model", "effort", "skip", "submissionWindowMinutes"],
 			`override.nodes.${nodeId}`,
 		);
 		const node = next.nodes.find((candidate) => candidate.id === nodeId);
@@ -1268,6 +1346,12 @@ export function applyWorkflowOverride(
 				nodeOverride.effort,
 				["low", "medium", "high", "xhigh", "max"] as const,
 				`override.nodes.${nodeId}.effort`,
+			);
+		}
+		if (nodeOverride.submissionWindowMinutes !== undefined) {
+			node.submissionWindowMinutes = optionalPositiveInteger(
+				nodeOverride.submissionWindowMinutes,
+				`override.nodes.${nodeId}.submissionWindowMinutes`,
 			);
 		}
 		if (

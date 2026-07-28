@@ -87,6 +87,9 @@ provision-fleet-host.sh
 daily-standup.sh
 flywheel-bridge-wrapper.sh
 flywheel-lead-wrapper.sh
+restart-storm-gate.py
+lead-alert.sh
+meta-alert.sh
 update-flywheel.sh
 converge-flywheel-bin.sh
 check-global-path-hygiene.sh
@@ -106,6 +109,7 @@ lib/supervisor.sh
 lib/bridge-port.sh
 lib/tmux-server-rescue.sh
 lib/self-ship-queue.sh
+lib/bounded-run.sh
 packaged/create-compat-mirror.sh
 packaged/bootstrap-services.sh
 packaged/restart-packaged-services.sh"}
@@ -524,20 +528,13 @@ console.log(`vendored ${dep} closure (${seen.size} pkgs) into ${destNM}`);
 EOF
 }
 
-# ── assembly ────────────────────────────────────────────────────────────────
-# po_assemble <repo-root> <tree-out-dir>
-# Deterministic + idempotent: the tree is rebuilt from scratch each run.
-po_assemble() {
+# po_copy_curated_scripts <repo-root> <tree-out-dir>
+# The one assembler for the curated scripts subtree. Tests call this same
+# function when constructing a packaged fixture, so a repository-only hand
+# copy cannot hide a missing customer runtime dependency.
+po_copy_curated_scripts() {
   local root="$1" tree="$2"
-  command -v jq >/dev/null 2>&1 || { po_err "jq required"; return 1; }
-  command -v node >/dev/null 2>&1 || { po_err "node required"; return 1; }
-  local version
-  version="$(po_release_version "$root")" || return 1
-
-  rm -rf "$tree"
-  mkdir -p "$tree/scripts" "$tree/agents" "$tree/menus" "$tree/node_modules"
-
-  # 1. curated scripts (fail-closed on any missing whitelist entry).
+  mkdir -p "$tree/scripts"
   local f
   while IFS= read -r f; do
     case "$f" in *[![:space:]]*) ;; *) continue ;; esac
@@ -552,6 +549,23 @@ po_assemble() {
     mkdir -p "$tree/scripts/$(dirname "$d")"
     cp -Rp "$root/scripts/$d" "$tree/scripts/$d" || return 1
   done <<<"$PO_SCRIPT_DIRS"
+}
+
+# ── assembly ────────────────────────────────────────────────────────────────
+# po_assemble <repo-root> <tree-out-dir>
+# Deterministic + idempotent: the tree is rebuilt from scratch each run.
+po_assemble() {
+  local root="$1" tree="$2"
+  command -v jq >/dev/null 2>&1 || { po_err "jq required"; return 1; }
+  command -v node >/dev/null 2>&1 || { po_err "node required"; return 1; }
+  local version
+  version="$(po_release_version "$root")" || return 1
+
+  rm -rf "$tree"
+  mkdir -p "$tree/scripts" "$tree/agents" "$tree/menus" "$tree/node_modules"
+
+  # 1. curated scripts (fail-closed on any missing whitelist entry).
+  po_copy_curated_scripts "$root" "$tree" || return 1
 
   # 2. packaged skin patch for the onboard entry.
   if [ -f "$tree/scripts/flywheel-onboard.sh" ]; then

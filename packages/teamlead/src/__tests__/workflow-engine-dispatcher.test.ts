@@ -1633,12 +1633,29 @@ describe("WorkflowEngineDispatcher", () => {
 
 	it("delivers a scoped decision credential to an engine-produced QA node", async () => {
 		const store = await storeWithIntent("qa");
+		const liveManifest = structuredClone(
+			loadBundledWorkflowSeeds().find(
+				(candidate) => candidate.templateId === "tpl_eng_heavy",
+			)!.manifest,
+		);
+		liveManifest.nodes.find(
+			(node) => node.id === "qa",
+		)!.submissionWindowMinutes = 30;
+		expect(
+			store.createAndPublishWorkflowTemplateRevision({
+				templateId: "tpl_eng_heavy",
+				manifest: liveManifest,
+				expectedRevision: 1,
+				createdBy: "founder",
+			}),
+		).toMatchObject({ status: "published" });
 		const fake = fakeStartDispatcher(store);
 		const dispatcher = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1307-engine-qa-")),
 			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-16T00:10:00.000Z"),
 			resolvePredecessorHead: async () => HEAD,
 		});
 		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
@@ -1648,6 +1665,14 @@ describe("WorkflowEngineDispatcher", () => {
 				executionId: "qa-1",
 				submissionCredential: expect.any(String),
 			},
+		});
+		expect(
+			store.getWorkflowSubmissionCredentialByToken(
+				fake.requests[0]!.generalizedExecution!.submissionCredential!,
+			),
+		).toMatchObject({
+			expires_at: "2026-07-16T03:10:00.000Z",
+			absolute_deadline_at: "2026-07-17T00:10:00.000Z",
 		});
 		store.close();
 	});
@@ -1686,6 +1711,14 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(
 			fake.requests[0]?.generalizedExecution?.submissionCredential,
 		).not.toBe(admitted.ok ? admitted.submissionCredential : undefined);
+		expect(
+			store.getWorkflowSubmissionCredentialByToken(
+				fake.requests[0]!.generalizedExecution!.submissionCredential!,
+			),
+		).toMatchObject({
+			expires_at: "2026-07-16T03:12:00.000Z",
+			absolute_deadline_at: "2026-07-17T00:11:00.000Z",
+		});
 		store.close();
 	});
 
@@ -1699,8 +1732,8 @@ describe("WorkflowEngineDispatcher", () => {
 			executionId: "qa-1",
 			attempt: 1,
 			now: "2026-07-16T00:11:00.000Z",
-			expiresAt: "2026-07-16T01:11:00.000Z",
-			absoluteDeadlineAt: "2026-07-17T00:11:00.000Z",
+			expiresAt: "2026-07-16T00:12:30.000Z",
+			absoluteDeadlineAt: "2026-07-16T00:13:00.000Z",
 			env: WORKFLOW_ON,
 		});
 		expect(admitted).toMatchObject({
@@ -1744,6 +1777,14 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(
 			fake.requests[0]?.generalizedExecution?.submissionCredential,
 		).not.toBe(admitted.ok ? admitted.submissionCredential : undefined);
+		expect(
+			store.getWorkflowSubmissionCredentialByToken(
+				fake.requests[0]!.generalizedExecution!.submissionCredential!,
+			),
+		).toMatchObject({
+			expires_at: "2026-07-16T00:13:00.000Z",
+			absolute_deadline_at: "2026-07-16T00:13:00.000Z",
+		});
 		expect(store.getWorkflowLaunchOwner("qa-1")).toMatchObject({
 			delivery_state: "delivered",
 			delivery_attempt: 1,

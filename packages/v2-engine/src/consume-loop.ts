@@ -119,6 +119,27 @@ export interface PollOnceResult {
 	nextFounderStreak: number;
 }
 
+export function refreshHeartbeat(
+	kernel: Kernel,
+	runtime: EngineRuntime,
+	agent: RegisteredAgent,
+): boolean {
+	return kernel.write("consume.heartbeat", (tx) => {
+		const config = readEngineConfigTx(tx);
+		const authority = requireCurrentAgentTx(tx, agent);
+		if (!heartbeatDue(authority.last_poll_at, runtime.clock.nowMs(), config)) {
+			return false;
+		}
+		tx.cas(ENGINE_SQL.casHeartbeat, {
+			agentId: agent.agentId,
+			kind: agent.kind,
+			generation: agent.generation,
+			now: runtime.clock.nowIso(),
+		});
+		return true;
+	});
+}
+
 export function pollOnce(
 	kernel: Kernel,
 	runtime: EngineRuntime,

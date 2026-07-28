@@ -80,53 +80,55 @@ describe("serial explicit mailbox polling", () => {
 	});
 
 	it("keeps heartbeat cadence alive while one converter is blocked without redelivery or a second start", async () => {
-		fixture = makeEngineFixture();
-		enqueueMailbox(fixture, { uid: "m1", agent: "lead-a" });
-		enqueueMailbox(fixture, { uid: "m2", agent: "lead-a" });
-		let release: (() => void) | undefined;
-		const blocked = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		const converter = vi.fn(async (message: { messageUid: string }) => {
-			if (message.messageUid === "m1") await blocked;
-			return { ok: true as const, effects: [] };
-		});
-		driver = new EngineDriver(fixture.kernel, fixture.runtime);
-		await driver.registerLead("lead-a", LEAD_DRAFT, converter);
-		await vi.waitFor(() => expect(converter).toHaveBeenCalledTimes(1));
+		vi.useFakeTimers();
+		try {
+			fixture = makeEngineFixture();
+			enqueueMailbox(fixture, { uid: "m1", agent: "lead-a" });
+			enqueueMailbox(fixture, { uid: "m2", agent: "lead-a" });
+			let release: (() => void) | undefined;
+			const blocked = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const converter = vi.fn(async (message: { messageUid: string }) => {
+				if (message.messageUid === "m1") await blocked;
+				return { ok: true as const, effects: [] };
+			});
+			driver = new EngineDriver(fixture.kernel, fixture.runtime);
+			await driver.registerLead("lead-a", LEAD_DRAFT, converter);
+			expect(converter).toHaveBeenCalledTimes(1);
 
-		const firstPollAt = fixture.kernel.read(
-			(tx) =>
-				tx.get<{ last_poll_at: string }>(
-					"SELECT last_poll_at FROM agents WHERE agent_id='lead-a'",
-				)?.last_poll_at,
-		);
-		fixture.clock.advance(5_000);
-		expect(driver.poll("lead-a")).toEqual({
-			status: "busy",
-			attemptUid: "m1#1",
-		});
-		expect(
-			fixture.kernel.read(
+			const firstPollAt = fixture.kernel.read(
 				(tx) =>
 					tx.get<{ last_poll_at: string }>(
 						"SELECT last_poll_at FROM agents WHERE agent_id='lead-a'",
 					)?.last_poll_at,
-			),
-		).not.toBe(firstPollAt);
-		expect(converter).toHaveBeenCalledTimes(1);
-		expect(
-			fixture.kernel.read(
-				(tx) =>
-					tx.get<{ count: number }>(
-						"SELECT count(*) AS count FROM processing_attempts WHERE outcome='running'",
-					)?.count,
-			),
-		).toBe(1);
+			);
+			fixture.clock.advance(5_000);
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(
+				fixture.kernel.read(
+					(tx) =>
+						tx.get<{ last_poll_at: string }>(
+							"SELECT last_poll_at FROM agents WHERE agent_id='lead-a'",
+						)?.last_poll_at,
+				),
+			).not.toBe(firstPollAt);
+			expect(converter).toHaveBeenCalledTimes(1);
+			expect(
+				fixture.kernel.read(
+					(tx) =>
+						tx.get<{ count: number }>(
+							"SELECT count(*) AS count FROM processing_attempts WHERE outcome='running'",
+						)?.count,
+				),
+			).toBe(1);
 
-		release?.();
-		await driver.drain("lead-a");
-		expect(converter).toHaveBeenCalledTimes(2);
+			release?.();
+			await driver.drain("lead-a");
+			expect(converter).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("surfaces an asynchronous lead settlement error on the next shell poll", async () => {

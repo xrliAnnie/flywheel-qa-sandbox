@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,18 +42,19 @@ function runCli(
 function runCliSafe(
 	args: string[],
 	env?: Record<string, string | undefined>,
-): { stdout: string; exitCode: number } {
+): { stdout: string; stderr: string; exitCode: number } {
 	try {
 		const stdout = execFileSync("node", [CLI_PATH, ...args], {
 			encoding: "utf-8",
 			env: cliEnv(env),
 			stdio: ["pipe", "pipe", "pipe"],
 		}).trim();
-		return { stdout, exitCode: 0 };
+		return { stdout, stderr: "", exitCode: 0 };
 	} catch (err: unknown) {
-		const e = err as { stdout?: string; status?: number };
+		const e = err as { stdout?: string; stderr?: string; status?: number };
 		return {
 			stdout: (e.stdout ?? "").toString().trim(),
+			stderr: (e.stderr ?? "").toString().trim(),
 			exitCode: e.status ?? 1,
 		};
 	}
@@ -100,6 +107,49 @@ describe("CLI", () => {
 			const { exitCode } = runCliSafe(["ask", "--db", dbPath, "question"]);
 			expect(exitCode).toBe(1);
 		});
+	});
+
+	describe("codex-review-result", () => {
+		it("requires explicit exec and head flags before any Bridge write", () => {
+			const fetchLog = join(tmpDir, "fetch.log");
+			const preload = join(tmpDir, "fetch-preload.mjs");
+			writeFileSync(
+				preload,
+				`import { appendFileSync } from "node:fs";
+globalThis.fetch = async () => {
+  appendFileSync(${JSON.stringify(fetchLog)}, "called\\n");
+  return { ok: true, status: 200 };
+};
+`,
+			);
+			const fullEnv = {
+				HOME: tmpDir,
+				FLYWHEEL_EXEC_ID: "env-exec-must-not-count",
+				FLYWHEEL_ISSUE_ID: "FLY-1501",
+				FLYWHEEL_PROJECT_NAME: "flywheel",
+				FLYWHEEL_BRIDGE_URL: "http://bridge.invalid",
+				NODE_OPTIONS: `--import=${preload}`,
+			};
+			for (const args of [
+				["codex-review-result"],
+				["codex-review-result", "--exec-id", "explicit-exec"],
+				["codex-review-result", "--pr-head", "a".repeat(40)],
+				[
+					"codex-review-result",
+					"--exec-id",
+					"explicit-exec",
+					"--pr-head",
+					"not-a-sha",
+				],
+			]) {
+				const result = runCliSafe(args, fullEnv);
+				expect(result.exitCode, args.join(" ")).toBe(1);
+				expect(result.stderr, args.join(" ")).toMatch(
+					/Usage:.*codex-review-result.*--exec-id.*--pr-head/i,
+				);
+			}
+			expect(existsSync(fetchLog)).toBe(false);
+		}, 15_000);
 	});
 
 	describe("check", () => {

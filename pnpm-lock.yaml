@@ -558,6 +558,12 @@ importers:
 
   packages/v2-engine:
     dependencies:
+      flywheel-agent-team-transport:
+        specifier: workspace:*
+        version: link:../agent-team-transport
+      flywheel-claude-runner:
+        specifier: workspace:*
+        version: link:../claude-runner
       flywheel-v2-kernel:
         specifier: workspace:*
         version: link:../v2-kernel
@@ -609,6 +615,25 @@ importers:
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.21
+      typescript:
+        specifier: ^5.3.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.1.4
+        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+
+  packages/v2-scheduler:
+    dependencies:
+      flywheel-v2-kernel:
+        specifier: workspace:*
+        version: link:../v2-kernel
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.21
+      better-sqlite3:
+        specifier: ^12.8.0
+        version: 12.8.0
       typescript:
         specifier: ^5.3.3
         version: 5.9.3

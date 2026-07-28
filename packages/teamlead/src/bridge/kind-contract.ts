@@ -155,6 +155,12 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	founder_milestone_undelivered: { owner: "claude", arc: "human_by_design" },
 	tui_window_lost: { owner: "claude", arc: "human_by_design" },
 	restart_guard_bypass: { owner: "claude", arc: "human_by_design" },
+	restart_storm_hold: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef:
+			"inspect the held service, then explicitly resume its restart ledger (FLY-1501)",
+	},
 	bridge_boot_stale_checkout: { owner: "claude", arc: "human_by_design" },
 	bridge_wrapper_fail: { owner: "claude", arc: "human_by_design" },
 	bin_integrity_drift: { owner: "claude", arc: "human_by_design" },

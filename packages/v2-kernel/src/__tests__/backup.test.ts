@@ -65,6 +65,7 @@ describe("WAL-safe backup hook", () => {
 				"0004-mailbox-index-family",
 				"0005-agents-config-mailbox-rebuild",
 				"0006-actions-black-box",
+				"0007-scheduler-runtime",
 			]);
 		} finally {
 			backup.close();

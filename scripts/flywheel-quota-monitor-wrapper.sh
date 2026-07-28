@@ -69,6 +69,37 @@ if [[ ! -f "$MONITOR_DIST" || ! -x "$MONITOR_BIN" ]]; then
   exit 31
 fi
 
+# ── FLY-1501: durable restart-storm ceiling ─────────────────────
+# This must precede even the legacy RUN_MARKER read: once held, launchd retries
+# must not be miscounted as fresh quota-monitor crashes or mutate either marker.
+RESTART_STORM_GATE_BIN="${FLYWHEEL_RESTART_STORM_GATE_BIN:-$FLYWHEEL_DIR/scripts/restart-storm-gate.py}"
+# `set -e` aborts on a bare non-zero command, so the exit code must be
+# captured in an errexit-exempt `||` list — otherwise a held brake would
+# kill this wrapper with the gate's status and launchd would read the
+# hold as a crash.
+RESTART_STORM_RC=0
+"$RESTART_STORM_GATE_BIN" gate quota-monitor || RESTART_STORM_RC=$?
+if [ "$RESTART_STORM_RC" -ne 0 ]; then
+  if [ "$RESTART_STORM_RC" -eq 126 ] || [ "$RESTART_STORM_RC" -eq 127 ]; then
+    # Bounded and synchronous, via the shared helper. Unbounded would let a
+    # hung osascript inside meta-alert.sh pin this launch path so launchd
+    # never retries once the brake is restored; detached would let launchd
+    # kill the notifier with the job's process group before it writes its
+    # marker, restoring the silence this branch removes.
+    "$FLYWHEEL_DIR/scripts/lib/bounded-run.sh" \
+      "${FLYWHEEL_META_ALERT_TIMEOUT_S:-15}" \
+      "${FLYWHEEL_META_ALERT_BIN:-$FLYWHEEL_DIR/scripts/meta-alert.sh}" \
+      restart_storm_gate_unavailable_quota-monitor \
+      "Restart brake unavailable" \
+      "restart-storm-gate.py is missing or not executable (exit ${RESTART_STORM_RC}); quota-monitor will not launch until it is restored." \
+      >/dev/null 2>&1 || true
+    log "Restart brake missing or not executable (exit ${RESTART_STORM_RC}) — refusing to launch quota-monitor."
+  else
+    log "restart-storm gate held or refused quota-monitor startup; legacy markers untouched"
+  fi
+  exit 0
+fi
+
 mkdir -p "$(dirname "$RUN_MARKER")" "$(dirname "$CRASH_STREAK")"
 if [[ -L "$RUN_MARKER" || -L "$CRASH_STREAK" ]]; then
   fail_loud "unsafe_marker" "Claude quota monitor marker is unsafe" \

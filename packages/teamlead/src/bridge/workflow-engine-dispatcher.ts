@@ -18,6 +18,7 @@ import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js"
 import {
 	parseWorkflowRunSnapshot,
 	resolveWorkflowDecisionContract,
+	type WorkflowRunSnapshot,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
 import {
@@ -27,6 +28,7 @@ import {
 	type WorkflowShipReadyNotice,
 	workflowShipReadyUid,
 } from "../workflow-ship-ready.js";
+import { computeSubmissionExpiry } from "../workflow-submission-expiry.js";
 import { workflowApprovalGate } from "../workflow-template.js";
 import {
 	isLandNodeEnabled,
@@ -98,6 +100,25 @@ interface WorkflowEngineDispatcherOptions {
 	reconcileWorkflowRework?: (
 		requestId: string,
 	) => Promise<WorkflowReworkCoordinatorOutcome>;
+}
+
+function credentialExpiryForNode(
+	snapshot: WorkflowRunSnapshot,
+	nodeId: string,
+	now: Date,
+): { expiresAt: string; absoluteDeadlineAt: string } {
+	const absoluteDeadlineMs = now.getTime() + 24 * 60 * 60_000;
+	const decisionContract = resolveWorkflowDecisionContract(snapshot, nodeId);
+	const configuredWindow = snapshot.manifest.nodes.find(
+		(node) => node.id === nodeId,
+	)?.submissionWindowMinutes;
+	const windowMinutes = decisionContract ? (configuredWindow ?? 60) : 60;
+	return {
+		expiresAt: new Date(
+			computeSubmissionExpiry(now.getTime(), windowMinutes, absoluteDeadlineMs),
+		).toISOString(),
+		absoluteDeadlineAt: new Date(absoluteDeadlineMs).toISOString(),
+	};
 }
 
 export interface WorkflowEngineReconcileResult {
@@ -1650,6 +1671,7 @@ export class WorkflowEngineDispatcher {
 			}
 		}
 		const now = this.now();
+		const credentialExpiry = credentialExpiryForNode(snapshot, node.id, now);
 		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 			runId: intent.run_id,
 			nodeId: intent.node_id,
@@ -1666,10 +1688,8 @@ export class WorkflowEngineDispatcher {
 			executionId: intent.execution_id,
 			attempt: intent.attempt,
 			now: now.toISOString(),
-			expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
-			absoluteDeadlineAt: new Date(
-				now.getTime() + 24 * 60 * 60_000,
-			).toISOString(),
+			expiresAt: credentialExpiry.expiresAt,
+			absoluteDeadlineAt: credentialExpiry.absoluteDeadlineAt,
 			...(reworkReplacementRequestId
 				? {
 						activationMode: "replacement" as const,
@@ -1768,10 +1788,11 @@ export class WorkflowEngineDispatcher {
 		let submissionCredential = admitted.submissionCredential;
 		const decisionContract = resolveWorkflowDecisionContract(snapshot, node.id);
 		if (admitted.idempotentReplay && launch.status === "acquired") {
-			const expiresAt = new Date(now.getTime() + 60 * 60_000).toISOString();
-			const absoluteDeadlineAt = new Date(
-				now.getTime() + 24 * 60 * 60_000,
-			).toISOString();
+			const { expiresAt, absoluteDeadlineAt } = credentialExpiryForNode(
+				snapshot,
+				node.id,
+				now,
+			);
 			if (node.capabilities.produces_output) {
 				const rotated = store.rotateGeneralizedWorkflowOutputCredential({
 					executionId: intent.execution_id,
@@ -1801,10 +1822,11 @@ export class WorkflowEngineDispatcher {
 				submissionCredential = rotated.submissionCredential;
 			}
 		} else if (deliveryRepair) {
-			const expiresAt = new Date(now.getTime() + 60 * 60_000).toISOString();
-			const absoluteDeadlineAt = new Date(
-				now.getTime() + 24 * 60 * 60_000,
-			).toISOString();
+			const { expiresAt, absoluteDeadlineAt } = credentialExpiryForNode(
+				snapshot,
+				node.id,
+				now,
+			);
 			if (node.capabilities.produces_output) {
 				const rotated =
 					store.rotateGeneralizedWorkflowOutputCredentialForDeliveryRepair({

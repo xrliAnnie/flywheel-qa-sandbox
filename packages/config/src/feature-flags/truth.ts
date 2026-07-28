@@ -92,6 +92,22 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_BRIDGE_WATCHDOG_LOG: "plumbing: watchdog log path",
 	FLYWHEEL_LEAD_ALERT_BIN:
 		"plumbing: lead-alert executable override for hermetic quota-monitor QA (FLY-1256)",
+	FLYWHEEL_RESTART_STORM_GATE_BIN:
+		"plumbing: restart-storm gate executable path override (FLY-1501)",
+	FLYWHEEL_META_ALERT_BIN:
+		"plumbing: kernel-independent meta-alert executable path override (FLY-1501)",
+	FLYWHEEL_RESTART_STORM_WINDOW_SEC:
+		"numeric tuning: restart-storm rolling window in seconds (FLY-1501)",
+	FLYWHEEL_RESTART_STORM_MAX:
+		"numeric tuning: restart-storm attempts allowed per window (FLY-1501)",
+	FLYWHEEL_RESTART_STORM_LOCK_DEADLINE_SEC:
+		"numeric tuning: restart-storm fcntl acquisition deadline (FLY-1501)",
+	FLYWHEEL_META_ALERT_TIMEOUT_S:
+		"numeric tuning: bound on the brake-unavailable alert from a launch path (FLY-1501)",
+	FLYWHEEL_V2_RESTART_CONCURRENCY_MAX:
+		"numeric tuning: v2 scheduler restart concurrency upper bound (FLY-1501)",
+	FLYWHEEL_RESTART_STORM_FAULT:
+		"internal test-only fault injection seam; never set in production launch environments (FLY-1501)",
 	FLYWHEEL_QUOTA_PIDFILE:
 		"plumbing: external quota-monitor singleton pidfile path (FLY-1256)",
 	FLYWHEEL_QUOTA_RUN_MARKER:
@@ -230,9 +246,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: per-Lead W-4 pane scan cadence ms, default 10min (FLY-1393)",
 	FLYWHEEL_IDLE_POLL_MS:
 		"tuning knob: RunnerIdleWatchdog W-1 pane scan cadence ms, default 3s (FLY-1393)",
-	FLYWHEEL_SWAP_PRESSURE_HIGH_PCT:
-		"tuning knob: memory-pressure high watermark",
-	FLYWHEEL_SWAP_PRESSURE_LOW_PCT: "tuning knob: memory-pressure low watermark",
 	FLYWHEEL_MAILBOX_WRITE_TIMEOUT_MS: "tuning knob: mailbox write timeout",
 	FLYWHEEL_LAND_CLEANUP_GRACE_MS:
 		"tuning knob: per-session land cleanup opportunity grace period (FLY-1375)",
@@ -327,6 +340,9 @@ export const RETIRED_FLAGS = [
 		envVar: "FLYWHEEL_TERMINAL_RECEIPT_SETTLEMENT",
 		retiredBy: "FLY-1466",
 	},
+	{ envVar: "FLYWHEEL_SWAP_PRESSURE_HIGH_PCT", retiredBy: "FLY-1501" },
+	{ envVar: "FLYWHEEL_SWAP_PRESSURE_LOW_PCT", retiredBy: "FLY-1501" },
+	{ envVar: "FLYWHEEL_RESTART_STORM_GATE", retiredBy: "FLY-1501" },
 ] as const;
 
 export interface FlagTruthValidation {

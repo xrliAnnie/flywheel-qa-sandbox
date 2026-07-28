@@ -3,6 +3,11 @@ import {
 	type Candidate,
 	type CandidateLane,
 	type CandidateSet,
+	type ClaudeInjectionSessionRef,
+	ClaudeInjectionShim,
+	type CodexInjectionSessionRef,
+	CodexInjectionShim,
+	type CodexInjectionShimOptions,
 	type ConsumerAuthority,
 	type ConversionProposal,
 	type ConversionResult,
@@ -26,6 +31,9 @@ import {
 } from "flywheel-v2-engine";
 
 declare const handle: AttemptHandle;
+declare const claudeSessionRef: ClaudeInjectionSessionRef;
+declare const codexSessionRef: CodexInjectionSessionRef;
+declare const codexShimOptions: CodexInjectionShimOptions;
 declare const candidate: Candidate;
 declare const lane: CandidateLane;
 declare const candidates: CandidateSet;
@@ -48,6 +56,9 @@ declare const result: ConversionResult;
 declare const converter: Converter;
 
 void handle;
+void claudeSessionRef;
+void codexSessionRef;
+void codexShimOptions;
 void candidate;
 void lane;
 void candidates;
@@ -68,6 +79,8 @@ void poll;
 void proposal;
 void result;
 void converter;
+void ClaudeInjectionShim;
+void CodexInjectionShim;
 void EngineDriver;
 void DEFAULT_ENGINE_CONFIG;
 void selectNext;

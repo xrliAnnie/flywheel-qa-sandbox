@@ -62,6 +62,7 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		"ship_attempt_failed",
 		"tui_window_lost",
 		"restart_guard_bypass",
+		"restart_storm_hold",
 		"bridge_boot_stale_checkout",
 		"auto_qa_stuck",
 		"codex_gate_blocked",

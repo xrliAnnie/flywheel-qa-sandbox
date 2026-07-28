@@ -1,6 +1,6 @@
 import { FENCE, FenceViolation, type Kernel } from "flywheel-v2-kernel";
 import { readEngineConfigTx } from "./config.js";
-import { pollOnce } from "./consume-loop.js";
+import { pollOnce, refreshHeartbeat } from "./consume-loop.js";
 import { registerAgentTx } from "./registration.js";
 import { reportConversionFailure, submitProposal } from "./settlement.js";
 import { ENGINE_SQL } from "./sql.js";
@@ -24,6 +24,7 @@ interface AgentState {
 	founderStreak: number;
 	currentAttemptUid?: string;
 	handler?: Promise<void>;
+	heartbeatTimer?: ReturnType<typeof setInterval>;
 	lastError?: unknown;
 	stopped: boolean;
 }
@@ -97,7 +98,7 @@ export class EngineDriver {
 				(tx) => readEngineConfigTx(tx).vipBurst,
 			);
 			const previous = this.#states.get(agentId);
-			if (previous) previous.stopped = true;
+			if (previous) this.#stopState(previous);
 			const state: AgentState = {
 				agent,
 				converter,
@@ -105,6 +106,7 @@ export class EngineDriver {
 				stopped: false,
 			};
 			this.#states.set(agentId, state);
+			this.#startHeartbeat(state);
 			this.#ensureLeadHandler(state);
 			return agent;
 		});
@@ -133,7 +135,7 @@ export class EngineDriver {
 				(tx) => readEngineConfigTx(tx).vipBurst,
 			);
 			const previous = this.#states.get(agentId);
-			if (previous) previous.stopped = true;
+			if (previous) this.#stopState(previous);
 			this.#states.set(agentId, {
 				agent,
 				founderStreak,
@@ -191,7 +193,7 @@ export class EngineDriver {
 		const errors: unknown[] = [];
 		try {
 			for (const state of this.#states.values()) {
-				state.stopped = true;
+				this.#stopState(state);
 				try {
 					this.#kernel.write("consumer.stop", (tx) => {
 						const current = tx.get<{
@@ -248,6 +250,35 @@ export class EngineDriver {
 		}
 		if (errors.length > 0) {
 			throw new AggregateError(errors, "one or more agents failed to stop");
+		}
+	}
+
+	#startHeartbeat(state: AgentState): void {
+		const intervalMs = this.#kernel.read(
+			(tx) => readEngineConfigTx(tx).heartbeatWriteIntervalMs,
+		);
+		state.heartbeatTimer = setInterval(() => {
+			if (state.stopped) return;
+			try {
+				refreshHeartbeat(this.#kernel, this.#runtime, state.agent);
+			} catch (error) {
+				// Preserve the failure for the driver's normal error surface while
+				// allowing the fenced timer to retry on the next cadence.
+				state.lastError ??= error;
+			}
+		}, intervalMs);
+		(
+			state.heartbeatTimer as ReturnType<typeof setInterval> & {
+				unref?: () => void;
+			}
+		).unref?.();
+	}
+
+	#stopState(state: AgentState): void {
+		state.stopped = true;
+		if (state.heartbeatTimer) {
+			clearInterval(state.heartbeatTimer);
+			state.heartbeatTimer = undefined;
 		}
 	}
 
