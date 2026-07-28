@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1498 门与派发模型 — 设计一页纸</title>
+<style>
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC",sans-serif; line-height:1.6; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 20px 64px; }
+  h1 { font-size:26px; margin:0 0 4px; color:#1a365d; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:24px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 24px; margin-bottom:20px; }
+  .card.blue { border-left:4px solid #007aff; } .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; } .card.red { border-left:4px solid #ff3b30; }
+  .card.purple { border-left:4px solid #af52de; }
+  h2 { font-size:18px; margin:0 0 12px; color:#1a365d; }
+  .onesent { font-size:17px; font-weight:600; }
+  .flow { display:flex; flex-wrap:wrap; gap:8px; align-items:stretch; margin:14px 0; }
+  .node { background:#f0f4ff; border:1px solid #c7d7ff; border-radius:10px; padding:10px 14px; flex:1; min-width:150px; font-size:13.5px; }
+  .node b { display:block; font-size:14px; margin-bottom:4px; color:#1a365d; }
+  .node.act { background:#eafbef; border-color:#a8e6b8; }
+  .node.stop { background:#fff2f0; border-color:#ffc4bd; }
+  .arrow { align-self:center; color:#86868b; font-size:18px; padding:0 2px; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; margin:10px 0; }
+  th, td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f7; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; font-size:11px; font-weight:600; border-radius:6px; padding:2px 8px; margin-right:6px; vertical-align:middle; }
+  .badge.ok { background:#eafbef; color:#1f7a37; } .badge.no { background:#fff2f0; color:#c62d1f; }
+  ul { margin:8px 0; padding-left:20px; } li { margin:4px 0; }
+  .quote { background:#fafafa; border-left:3px solid #c7d7ff; padding:8px 14px; margin:8px 0; font-size:13.5px; color:#3a3a3c; border-radius:0 8px 8px 0; }
+  .small { color:#86868b; font-size:12.5px; }
+  .cmt { margin-top:14px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .cmt label { display:block; font-size:12px; color:#86868b; margin-bottom:6px; }
+  .cmt textarea { width:100%; box-sizing:border-box; min-height:56px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font-family:inherit; font-size:13.5px; color:#1d1d1f; background:#fbfbfd; resize:vertical; }
+  .cmt textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .saved { font-size:11px; color:#34c759; margin-left:8px; opacity:0; transition:opacity .3s; }
+  .saved.show { opacity:1; }
+  #summaryCard { border-left:4px solid #1a365d; }
+  #summaryList { font-size:13.5px; }
+  #summaryList .sitem { background:#fafafa; border-radius:8px; padding:8px 12px; margin:8px 0; }
+  #summaryList .sitem b { color:#1a365d; display:block; font-size:12.5px; margin-bottom:2px; }
+  #summaryList .sitem pre { margin:0; white-space:pre-wrap; font-family:inherit; font-size:13.5px; }
+  #copyBtn { background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 16px; font-size:14px; cursor:pointer; }
+  #copyBtn:active { opacity:.8; }
+  #copyStatus { margin-left:10px; font-size:12.5px; color:#34c759; }
+  .empty { color:#86868b; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1498 门与派发模型</h1>
+  <div class="sub">v2 批次 2 · 设计终稿(Codex 设计评审 6 轮 APPROVED)· 2026-07-27 · 每张卡下方可留言,底部一键复制全部</div>
+
+  <div class="card blue" data-sec="一句话总结">
+    <h2>一句话总结</h2>
+    <div class="onesent">评审义务跟着「这次到底改了什么」走、在节点完成那一刻一次结清;ship 只剩三条对谁都一样的检查;派发器只看图,不认识"三段式"。</div>
+    <div class="quote">你的原话,逐条落成机制:<br>
+      ① "codex code review is a hard gate for implement session, not really a ship gate" → 代码评审=产出代码的那个<b>节点</b>的完成条件,ship 不再问。<br>
+      ② "the ship gate need to be very generic" → ship 前置恰三条,与内容、流程形状都无关。<br>
+      ③ "not design this for a specific scenario" → 引擎代码里 grep 不到 design/implement/qa 这些词(验收项)。<br>
+      ④ "we do not necessarily need codex code review for qa code" → 只改测试的改动,免跨族代码评审。</div>
+  </div>
+
+  <div class="card green" data-sec="核心流程">
+    <h2>核心流程:一个节点怎么"完成"</h2>
+    <div class="flow">
+      <div class="node"><b>1 · 干活</b>节点(比如 QA)在自己的工作区提交改动</div>
+      <div class="arrow">→</div>
+      <div class="node"><b>2 · 系统看 diff</b>内核自己算这次改了什么(不信任汇报),按路径分三档:产品代码 / 测试 / 文档,混合取最严</div>
+      <div class="arrow">→</div>
+      <div class="node"><b>3 · 按内容欠账</b>产品代码→欠一次跨族代码评审;只有测试或文档→不欠(你已裁定)</div>
+      <div class="arrow">→</div>
+      <div class="node act"><b>4 · 一次结清</b>完成时一笔账内同时校验:欠的评审证据齐 + 节点自declared的交付物(如 QA 的 verdict)齐 → 状态、证据、账本同一事务落定</div>
+    </div>
+    <div class="flow">
+      <div class="node act"><b>ship = 动作,不是节点</b>只查三条:① founder 批准且绑当前 head ② 图上所有节点都成功收尾 ③ head 没漂(用 GitHub 的 expected-sha 在世界边界原子核对)</div>
+      <div class="arrow">→</div>
+      <div class="node stop"><b>ship 永不重问评审</b>因为每段改动都在产出它的节点处被结清过——三条通过=构造上保证全覆盖</div>
+    </div>
+    <div class="small">CI 不建成第四条 ship 门。v2 merge lane 只有在 target branch required checks 已启用、merge actor 是不能绕规则的 non-admin 身份时才激活;否则继续走 v1 lane。激活后红 CI 由 GitHub 原子拒绝。</div>
+  </div>
+
+  <div class="card purple" data-sec="数据与结构模型">
+    <h2>数据与结构模型(权威表数不变:删 obligations,加 actions)</h2>
+    <table>
+      <tr><th>东西</th><th>放哪</th><th>管什么</th></tr>
+      <tr><td>每 issue 的形状(几个节点怎么连)</td><td>tasks + task_dependencies(建单时从模板实例化)</td><td>三段式只是一张普通模板;PRD 单=1 个文档节点;QA 单=1 个 verdict 节点</td></tr>
+      <tr><td>节点自declared的交付物</td><td>tasks.contract_json + writes_repo 显式列</td><td>如 QA 节点必须交 verdict;引擎统一读数据执行,零按名字的分支;旧 rework_of/lineage_root_id 随前向重建删除</td></tr>
+      <tr><td>评审/verdict 证据</td><td>events(只增不改)</td><td>绑「实际被审的那段 diff+实际作者」的摘要;head 一动、作者一换,旧证据自动失效</td></tr>
+      <tr><td>作者集穷尽所有评审家族</td><td>typed review_family_exhausted event + mailbox</td><td>product code 保持未完成,直到认证的第三方 family 审同一 subject;披露/同族审/founder 批准都不能冒充证据</td></tr>
+      <tr><td>founder 批准</td><td>gates(每次只认最新一张,改图/打回即作废须重批)</td><td>只有人拍板的事进 gates;机器证据全在 events</td></tr>
+      <tr><td>改动归属链</td><td>每工作区一条 merge-base anchor + span/作者链</td><td>不以当前 HEAD 惰性开链;既有分支从 merge-base 起全覆盖,谁写的按认证 attempt 记账(不信 git 署名)</td></tr>
+      <tr><td>外部动作事实</td><td>actions(替换已删 obligations,所以总表数不变)</td><td>记 agent 外呼的 prepared/executing/result;5min 对账、最多 6 次有界重试;不选择 actor、不授予权限</td></tr>
+    </table>
+  </div>
+
+  <div class="card amber" data-sec="关键取舍与被否方案">
+    <h2>关键取舍与被否掉的方案</h2>
+    <ul>
+      <li><b>按内容分档,不按节点名</b> —— 被否:v1 的做法(按 session 类型一刀切),就是它把 FLY-1497 的 QA 会话(只加了测试)挡在 ship 外。</li>
+      <li><b>评审绑「被审 diff+作者集」的摘要,不绑裸 head</b> —— 被否:只绑 head(同一 head 上换了范围/换了写者的旧评审会被错误复用)。</li>
+      <li><b>作者集穷尽时选第三方 family、fail closed</b> —— 被否:split review(没有逐贡献权威,也证明不了最终 exact subject)和「披露即放行」(会破坏 product-code 跨族合同)。</li>
+      <li><b>返工=同一节点开新一轮,不在图上画循环边</b> —— 被否:FLY-1135 的四要素循环边;也不设最大循环次数(场景明说不限,卡死由超时告警兜)。</li>
+      <li><b>系统自己算 diff,不信任何一方汇报</b> —— 被否:执行者自报清单(等于自我授权,可绕评审)。</li>
+      <li><b>ship 三条外零附加检查</b> —— 被否:在 ship 处"再确认一遍评审"(那正是要根治的病)。</li>
+    </ul>
+    <div class="small">供你砍的清单(设计里单列):测试评审档(未设)/文档评审档(未设)/循环上限(未设)/多工作区支持(首版不做)——都答不出"哪个场景需要",按你的反 over-reaction 规则默认不加。</div>
+  </div>
+
+  <div class="card red" data-sec="诚实边界">
+    <h2>诚实边界:这个设计不做什么</h2>
+    <ul>
+      <li>分档看<b>路径</b>不看语义:藏在测试文件里的代码不经跨族评审(你已裁定;要收紧改一行映射表即可,不动引擎)。</li>
+      <li>租约期间被别的进程偷偷写入,会记在租约持有者名下(单机可信环境接受;租约外的无主写入会被直接拦下)。</li>
+      <li>首版每 issue 只支持一个工作区一个 PR;多工作区是显式的未来扩展,模型不用改。</li>
+      <li>agent 拿到的 merge credential 必须是不能绕 required checks 的 non-admin 身份;该结构探针不过就不启用 v2 merge lane。</li>
+      <li>history rewrite 让旧 span anchor 不再是 HEAD 祖先时会拒绝并重新 admission 新 worktree identity,不会把当前 HEAD 当新起点吞掉旧 diff。</li>
+      <li>本单只定模型不写代码;v1 现行门照旧运转,接线在批次 3。</li>
+    </ul>
+  </div>
+
+  <div class="card blue" data-sec="验收">
+    <h2>验收怎么证明它对</h2>
+    <ul>
+      <li><span class="badge ok">通</span>FLY-1497 重放:QA 节点只加测试 → 零评审义务,ship 三条全绿,全程没人再问"codex review record"。</li>
+      <li><span class="badge ok">通</span>纯 PRD 单(只有 .md)一路畅通到 ship。</li>
+      <li><span class="badge no">拒</span>同族自审、评审后偷推 commit、绕节点写入、旧批准复用、并发打回/改图竞态——共 15 组拒绝矩阵逐项验证。</li>
+      <li><span class="badge no">拒</span>Claude+Codex 都写过同一 product-code span 时,两族都不能自审;没有已认证第三方 family 就 typed fail closed。</li>
+      <li><span class="badge ok">零</span>特例:上面所有场景走同一条引擎代码路径;引擎里 grep 不到任何节点名。</li>
+    </ul>
+    <div class="small">并稿前 mapping 的 6 轮记录不冒充当前取代版 verdict;当前设计以 PR head 绑定的 request-driven review 为准。全文:doc/engineer/plan/v2/design-chain/fly-1498-gates-dispatch.md。</div>
+  </div>
+
+  <div class="card" id="summaryCard">
+    <h2>你的 comments 汇总</h2>
+    <div id="summaryList"><div class="empty">还没有留言——在上面任意卡片下方的输入框写,这里会实时汇总。</div></div>
+    <div style="margin-top:12px;">
+      <button id="copyBtn" type="button">一键复制所有 comments</button><span id="copyStatus"></span>
+    </div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var NS = 'fly1498cmt:';
+  var cards = document.querySelectorAll('.card[data-sec]');
+  var summaryList = document.getElementById('summaryList');
+
+  function esc(s) {
+    return s.replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function collect() {
+    var items = [];
+    cards.forEach(function (card) {
+      var sec = card.getAttribute('data-sec');
+      var ta = card.querySelector('textarea');
+      if (ta && ta.value.trim()) items.push({ sec: sec, text: ta.value.trim() });
+    });
+    return items;
+  }
+
+  function renderSummary() {
+    var items = collect();
+    if (!items.length) {
+      summaryList.innerHTML = '<div class="empty">还没有留言——在上面任意卡片下方的输入框写,这里会实时汇总。</div>';
+      return;
+    }
+    summaryList.innerHTML = items.map(function (it) {
+      return '<div class="sitem"><b>' + esc(it.sec) + '</b><pre>' + esc(it.text) + '</pre></div>';
+    }).join('');
+  }
+
+  cards.forEach(function (card) {
+    var sec = card.getAttribute('data-sec');
+    var box = document.createElement('div');
+    box.className = 'cmt';
+    var label = document.createElement('label');
+    label.textContent = '留言(自动保存到本机)';
+    var saved = document.createElement('span');
+    saved.className = 'saved';
+    saved.textContent = '已保存';
+    label.appendChild(saved);
+    var ta = document.createElement('textarea');
+    ta.placeholder = '对「' + sec + '」的想法/修改意见…';
+    try { ta.value = localStorage.getItem(NS + sec) || ''; } catch (e) {}
+    var timer = null;
+    ta.addEventListener('input', function () {
+      try { localStorage.setItem(NS + sec, ta.value); } catch (e) {}
+      saved.classList.add('show');
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(function () { saved.classList.remove('show'); }, 1200);
+      renderSummary();
+    });
+    box.appendChild(label);
+    box.appendChild(ta);
+    card.appendChild(box);
+  });
+
+  renderSummary();
+
+  document.getElementById('copyBtn').addEventListener('click', function () {
+    var items = collect();
+    var status = document.getElementById('copyStatus');
+    if (!items.length) { status.textContent = '没有可复制的留言'; setTimeout(function(){status.textContent='';}, 1500); return; }
+    var text = 'FLY-1498 设计稿 comments\n' + items.map(function (it) {
+      return '\n【' + it.sec + '】\n' + it.text;
+    }).join('\n');
+    function ok() { status.textContent = '已复制 ' + items.length + ' 条'; setTimeout(function(){status.textContent='';}, 2000); }
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); ok(); } catch (e) { status.textContent = '复制失败,请手动选择'; }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(ok, fallback);
+    } else { fallback(); }
+  });
+})();
+</script>
+</body>
+</html>
