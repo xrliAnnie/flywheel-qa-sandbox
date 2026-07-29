@@ -58,10 +58,19 @@ export interface ConsumerAuthority {
 	generation: number;
 }
 
+export interface SessionBinding {
+	v: 1;
+	hostEpoch: string;
+	sessionId: string;
+	pid: number;
+	pidStart: string;
+}
+
 export type LeadIdentityDraft = {
 	kind: "lead";
 	leadId: string;
 	instanceId: string;
+	sessionBinding: SessionBinding;
 };
 
 export type RunnerIdentityDraft = {
@@ -69,6 +78,7 @@ export type RunnerIdentityDraft = {
 	agentId: string;
 	instanceId: string;
 	activationId: string;
+	sessionBinding: SessionBinding;
 };
 
 export type IdentityDraft = LeadIdentityDraft | RunnerIdentityDraft;
@@ -79,6 +89,7 @@ export type RegisteredAgent =
 			agentId: string;
 			instanceId: string;
 			generation: number;
+			sessionBinding: SessionBinding;
 	  }
 	| {
 			kind: "runner";
@@ -86,6 +97,7 @@ export type RegisteredAgent =
 			instanceId: string;
 			activationId: string;
 			generation: number;
+			sessionBinding: SessionBinding;
 	  };
 
 export interface DeathEvidence {
@@ -120,8 +132,17 @@ export interface ConversionProposal {
 	effects: Effect[];
 }
 
+export interface ProposalAuthorization {
+	capabilityId: string;
+	token: string;
+}
+
 export type ConversionResult =
-	| { ok: true; effects: Effect[] }
+	| {
+			ok: true;
+			effects: Effect[];
+			authorization?: ProposalAuthorization;
+	  }
 	| { ok: false; error: string };
 
 export interface ConversionActionSpec {

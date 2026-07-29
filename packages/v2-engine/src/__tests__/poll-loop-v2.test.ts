@@ -12,12 +12,14 @@ import {
 	enqueueMailbox,
 	makeEngineFixture,
 	seedRunnerActivation,
+	testSessionBinding,
 } from "./helpers.js";
 
 const LEAD_DRAFT = {
 	kind: "lead",
 	leadId: "lead-a",
 	instanceId: "instance-1",
+	sessionBinding: testSessionBinding("instance-1"),
 } as const;
 
 describe("serial explicit mailbox polling", () => {
@@ -73,6 +75,7 @@ describe("serial explicit mailbox polling", () => {
 					agentId: "runner-a",
 					instanceId: "instance-1",
 					activationId: "activation-1",
+					sessionBinding: testSessionBinding("instance-1"),
 				} as never,
 				async () => ({ ok: true, effects: [] }),
 			),
@@ -204,6 +207,7 @@ describe("serial explicit mailbox polling", () => {
 				agentId: "runner-a",
 				instanceId: "instance-1",
 				activationId,
+				sessionBinding: testSessionBinding("instance-1"),
 			}),
 		);
 		enqueueMailbox(fixture, {
@@ -238,6 +242,7 @@ describe("serial explicit mailbox polling", () => {
 				agentId: "runner-a",
 				instanceId: "instance-1",
 				activationId,
+				sessionBinding: testSessionBinding("instance-1"),
 			}),
 		);
 		enqueueMailbox(fixture, {
@@ -272,6 +277,7 @@ describe("serial explicit mailbox polling", () => {
 				agentId: "runner-a",
 				instanceId: "instance-1",
 				activationId,
+				sessionBinding: testSessionBinding("instance-1"),
 			}),
 		);
 		enqueueMailbox(fixture, {
@@ -350,6 +356,7 @@ describe("serial explicit mailbox polling", () => {
 				agentId: "runner-a",
 				instanceId: "instance-1",
 				activationId,
+				sessionBinding: testSessionBinding("instance-1"),
 			}),
 		) as RegisteredAgent;
 		enqueueMailbox(fixture, {
@@ -382,6 +389,7 @@ describe("serial explicit mailbox polling", () => {
 				agentId: "runner-a",
 				instanceId: "instance-1",
 				activationId,
+				sessionBinding: testSessionBinding("instance-1"),
 			}),
 		);
 		enqueueMailbox(fixture, {
@@ -424,6 +432,7 @@ describe("serial explicit mailbox polling", () => {
 				agentId: "runner-a",
 				instanceId: "instance-a",
 				activationId: activationA,
+				sessionBinding: testSessionBinding("instance-a"),
 			}),
 		);
 		const runnerB = fixture.kernel.write("test.register-runner-b", (tx) =>
@@ -432,6 +441,7 @@ describe("serial explicit mailbox polling", () => {
 				agentId: "runner-b",
 				instanceId: "instance-b",
 				activationId: activationB,
+				sessionBinding: testSessionBinding("instance-b"),
 			}),
 		);
 		enqueueMailbox(fixture, {

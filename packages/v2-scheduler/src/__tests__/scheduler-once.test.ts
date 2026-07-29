@@ -1,7 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Kernel, migrateDatabase } from "flywheel-v2-kernel";
+import {
+	initializeRollbackFenceTx,
+	Kernel,
+	migrateDatabase,
+} from "flywheel-v2-kernel";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SCHEDULER_CONFIG } from "../config.js";
 import type { MemorySample, MemoryThresholds } from "../memory-watermark.js";
@@ -23,6 +27,16 @@ const HEALTHY_SAMPLE: MemorySample = {
 	reclaimableBytes: HEALTHY_THRESHOLDS.freeClearBytes + 1,
 	swapoutsTotal: 100,
 };
+
+function sessionBinding(agentId: string, generation: number): string {
+	return JSON.stringify({
+		v: 1,
+		host_epoch: "host-1",
+		session_id: `session-${agentId}-${generation}`,
+		pid: 10_000 + generation,
+		pid_start: `start-${agentId}-${generation}`,
+	});
+}
 
 class TestClock implements SchedulerClock {
 	now = Date.parse("2026-07-27T00:01:00.000Z");
@@ -54,9 +68,19 @@ function makeFixture(): Fixture {
 	migrateDatabase({ path });
 	const kernel = Kernel.open({ path });
 	kernel.write("test.schema-seed", (tx) => {
+		initializeRollbackFenceTx(tx, {
+			authorityState: "live",
+			nowIso: "2026-07-27T00:00:00.000Z",
+		});
 		tx.run(
-			`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
-			 VALUES ('eng','lead',3,'2026-07-27T00:00:00.000Z','online')`,
+			`INSERT INTO agents(
+			   agent_id,kind,generation,instance_id,session_binding,last_poll_at,state
+			 )
+			 VALUES (
+			   'eng','lead',3,'instance-eng-3',@sessionBinding,
+			   '2026-07-27T00:00:00.000Z','online'
+			 )`,
+			{ sessionBinding: sessionBinding("eng", 3) },
 		);
 		tx.run(
 			`INSERT INTO mailbox
@@ -85,9 +109,18 @@ function seedCandidate(
 ): void {
 	fixture.kernel.write(`test.seed-candidate.${agentId}`, (tx) => {
 		tx.run(
-			`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
-			 VALUES (@agentId,'lead',3,'2026-07-27T00:00:00.000Z','online')`,
-			{ agentId },
+			`INSERT INTO agents(
+			   agent_id,kind,generation,instance_id,session_binding,last_poll_at,state
+			 )
+			 VALUES (
+			   @agentId,'lead',3,@instanceId,@sessionBinding,
+			   '2026-07-27T00:00:00.000Z','online'
+			 )`,
+			{
+				agentId,
+				instanceId: `instance-${agentId}-3`,
+				sessionBinding: sessionBinding(agentId, 3),
+			},
 		);
 		tx.run(
 			`INSERT INTO mailbox
@@ -154,9 +187,16 @@ describe("scheduler-once heartbeat repair", () => {
 			).toEqual({ outcome: "crashed" });
 			fixture.kernel.write("test.new-generation", (tx) => {
 				tx.run(
-					`UPDATE agents SET generation=4,last_poll_at=@now
+					`UPDATE agents
+					    SET generation=4,
+					        instance_id='instance-eng-4',
+					        session_binding=@sessionBinding,
+					        last_poll_at=@now
 					 WHERE agent_id='eng' AND generation=3`,
-					{ now: fixture.clock.nowIso() },
+					{
+						now: fixture.clock.nowIso(),
+						sessionBinding: sessionBinding("eng", 4),
+					},
 				);
 			});
 		});
@@ -337,9 +377,18 @@ describe("scheduler-once heartbeat repair", () => {
 			}
 			fixture.kernel.write(`test.progress.${agentId}`, (tx) => {
 				tx.run(
-					`UPDATE agents SET generation=4,last_poll_at=@now
+					`UPDATE agents
+					    SET generation=4,
+					        instance_id=@instanceId,
+					        session_binding=@sessionBinding,
+					        last_poll_at=@now
 					 WHERE agent_id=@agentId AND generation=3`,
-					{ agentId, now: fixture.clock.nowIso() },
+					{
+						agentId,
+						instanceId: `instance-${agentId}-4`,
+						sessionBinding: sessionBinding(agentId, 4),
+						now: fixture.clock.nowIso(),
+					},
 				);
 			});
 			if (agentId !== "eng") concurrent--;

@@ -7,6 +7,7 @@ import {
 	listActions,
 	recordActionIntent,
 	recordActionOutcome,
+	recordExternalEffectIntentTx,
 } from "flywheel-v2-kernel";
 import { actionLogicalKey, digestJson } from "./digests.js";
 import { DagContractError } from "./errors.js";
@@ -89,6 +90,7 @@ export async function executeShip(
 		if (!issue || !gate || !gate.data.target) {
 			throw new DagContractError("ship authority disappeared");
 		}
+		const target = gate.data.target;
 		const span = readEnvelope<{ head: string }>(
 			tx,
 			`span_tip:${issue.data.ship_worktree_id}`,
@@ -205,37 +207,49 @@ export async function executeShip(
 		if (prior?.state === "succeeded") {
 			throw new DagContractError("ship effect is already successful");
 		}
-		const recorded = recordActionIntent(tx, {
-			id: actionId,
-			...(lineage
-				? {
-						taskId: lineage.task_id,
-						attemptId: lineage.attempt_id,
-						attemptGeneration: lineage.attempt_generation,
-					}
-				: {}),
-			actor,
-			kind: "github_merge",
-			payload: {
-				repo: gate.data.target.repo,
-				pr: gate.data.target.pr,
-				head: gate.data.target.head,
-				tip: gate.data.tip,
+		const recorded = recordActionIntent(
+			tx,
+			{
+				id: actionId,
+				...(lineage
+					? {
+							taskId: lineage.task_id,
+							attemptId: lineage.attempt_id,
+							attemptGeneration: lineage.attempt_generation,
+						}
+					: {}),
+				actor,
+				kind: "github_merge",
+				payload: {
+					repo: gate.data.target.repo,
+					pr: gate.data.target.pr,
+					head: gate.data.target.head,
+					tip: gate.data.tip,
+				},
+				logicalEffectId,
+				invocationUid: input.capabilityId,
+				...(prior
+					? {
+							supersedesActionId: prior.id,
+							retryBasis: {
+								evidenceRef: `gate:${gate.data.gate_id}:${gate.revision}`,
+								reason: "authorized effect recovery",
+							},
+						}
+					: {}),
+				cutoverEpoch: epoch,
+				createdAt: ports.clock.nowIso(),
 			},
-			logicalEffectId,
-			invocationUid: input.capabilityId,
-			...(prior
-				? {
-						supersedesActionId: prior.id,
-						retryBasis: {
-							evidenceRef: `gate:${gate.data.gate_id}:${gate.revision}`,
-							reason: "authorized effect recovery",
-						},
-					}
-				: {}),
-			cutoverEpoch: epoch,
-			createdAt: ports.clock.nowIso(),
-		});
+			{
+				prepare: (writeTx) => {
+					recordExternalEffectIntentTx(writeTx, {
+						effectKey: `github:${target.repo}:${target.pr}:${input.capabilityId}`,
+						family: "github",
+						nowIso: ports.clock.nowIso(),
+					});
+				},
+			},
+		);
 		updateEnvelope(
 			tx,
 			`ship_gate:${input.issueId}`,

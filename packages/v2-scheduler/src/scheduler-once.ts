@@ -1,4 +1,4 @@
-import type { Kernel } from "flywheel-v2-kernel";
+import { type Kernel, recordExternalEffectIntentTx } from "flywheel-v2-kernel";
 import type { SchedulerConfig } from "./config.js";
 import { validateSchedulerConfig } from "./config.js";
 import { mapLeadLaunchdTarget } from "./launchd-target.js";
@@ -172,6 +172,13 @@ async function repairCandidate(
 		} else {
 			let kickstartFailed = false;
 			try {
+				input.kernel.write("scheduler.kickstart-intent", (tx) => {
+					recordExternalEffectIntentTx(tx, {
+						effectKey: `scheduler:${input.runId}:${claim.agentId}:${claim.generation}`,
+						family: "scheduler",
+						nowIso: input.clock.nowIso(),
+					});
+				});
 				await input.launchd.kickstart(target.jobLabel);
 			} catch {
 				kickstartFailed = true;

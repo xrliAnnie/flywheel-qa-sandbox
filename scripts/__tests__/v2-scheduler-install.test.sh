@@ -36,11 +36,16 @@ process.exit(1);
 EOF
 
 DB="$TMP/flywheel-v2.db"
+MARKER="$TMP/migration-complete.json"
+AUTHORITY="$TMP/cutover-authority.json"
+ARMED="$TMP/cutover-armed.json"
 LOG="$TMP/scheduler.log"
 if env HOME="$HOME_DIR" PATH="$BIN:$PATH" \
     FLYWHEEL_LAUNCHD_DIR="$LAUNCHD_DIR" \
     FLYWHEEL_SUPERVISOR_BACKEND=launchd \
-    "$INSTALL" --project flywheel --db "$DB" --cli "$CLI" \
+    "$INSTALL" --project flywheel --window window-1 --epoch 1 \
+      --db "$DB" --marker "$MARKER" --authority "$AUTHORITY" --armed "$ARMED" \
+      --cli "$CLI" \
       --gate-bin "$REPO_ROOT/scripts/restart-storm-gate.py" --log "$LOG" \
       >"$TMP/out" 2>"$TMP/err" \
   && grep -q "StartInterval</key><integer>60" "$LAUNCHD_DIR/com.flywheel.v2-scheduler.plist" \
@@ -53,9 +58,30 @@ else
   fail "launchd install contract: out=$(cat "$TMP/out") err=$(cat "$TMP/err") calls=$(cat "$CALLS" 2>/dev/null)"
 fi
 
+DEFAULT_LAUNCHD_DIR="$TMP/launchd-default"
+mkdir -p "$DEFAULT_LAUNCHD_DIR"
+if env HOME="$HOME_DIR" PATH="$BIN:$PATH" \
+    FLYWHEEL_LAUNCHD_DIR="$DEFAULT_LAUNCHD_DIR" \
+    FLYWHEEL_SUPERVISOR_BACKEND=launchd \
+    "$INSTALL" --project flywheel --window window-1 --epoch 1 \
+      --db "$DB" --marker "$MARKER" --authority "$AUTHORITY" \
+      --cli "$CLI" \
+      --gate-bin "$REPO_ROOT/scripts/restart-storm-gate.py" --log "$LOG" \
+      >"$TMP/default-out" 2>"$TMP/default-err" \
+  && grep -q "$HOME_DIR/.flywheel/v2-cutover-armed" \
+    "$DEFAULT_LAUNCHD_DIR/com.flywheel.v2-scheduler.plist" \
+  && ! grep -q "$HOME_DIR/.flywheel/v2-cutover-armed.json" \
+    "$DEFAULT_LAUNCHD_DIR/com.flywheel.v2-scheduler.plist"; then
+  pass "default armed sentinel matches the kernel authority path"
+else
+  fail "scheduler default armed sentinel drifted: $(cat "$DEFAULT_LAUNCHD_DIR/com.flywheel.v2-scheduler.plist" 2>/dev/null)"
+fi
+
 if env HOME="$HOME_DIR" PATH="$BIN:$PATH" \
     FLYWHEEL_SUPERVISOR_BACKEND=systemd-user \
-    "$INSTALL" --project flywheel --db "$DB" --cli "$CLI" \
+    "$INSTALL" --project flywheel --window window-1 --epoch 1 \
+      --db "$DB" --marker "$MARKER" --authority "$AUTHORITY" --armed "$ARMED" \
+      --cli "$CLI" \
       --gate-bin "$REPO_ROOT/scripts/restart-storm-gate.py" --log "$LOG" \
       >"$TMP/out2" 2>"$TMP/err2"; then
   fail "unsupported parallel/fallback backend was accepted"

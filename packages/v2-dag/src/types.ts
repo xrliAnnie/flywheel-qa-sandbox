@@ -1,4 +1,4 @@
-import type { RegisteredAgent } from "flywheel-v2-engine";
+import type { DeathEvidence, SessionBinding } from "flywheel-v2-engine";
 import type { Kernel } from "flywheel-v2-kernel";
 
 export interface DagClock {
@@ -24,9 +24,14 @@ export interface WorktreeRefPort {
 }
 
 export interface ProcessProbePort {
-	probe(
-		sessionRef: string,
-	): Promise<{ state: "present" | "absent"; confirmedAt: string }>;
+	probe(sessionRef: string): Promise<
+		| {
+				state: "present";
+				confirmedAt: string;
+				sessionBinding: SessionBinding;
+		  }
+		| { state: "absent"; confirmedAt: string }
+	>;
 }
 
 export interface RunnerControlPort {
@@ -41,19 +46,41 @@ export interface LaunchLockPort {
 	withSessionLock<T>(sessionRef: string, fn: () => Promise<T>): Promise<T>;
 }
 
+export interface InjectionRefBuilder {
+	build(input: {
+		taskId: string;
+		attemptId: string;
+		attemptGeneration: number;
+		activationId: string;
+		sessionRef: string;
+		agentId: string;
+		executor: ExecutorDescriptor;
+	}): string;
+}
+
+export interface RunnerLaunchIdentity {
+	kind: "runner";
+	agentId: string;
+	instanceId: string;
+	generation: number;
+	activationId: string;
+}
+
 export interface SpawnRequest {
 	taskId: string;
 	attemptId: string;
 	attemptGeneration: number;
 	activationId: string;
 	sessionRef: string;
+	injectionRef: string;
 	ownerToken: string;
-	agent: RegisteredAgent;
+	agent: RunnerLaunchIdentity;
+	deathEvidence?: DeathEvidence;
 	executor: ExecutorDescriptor;
 }
 
 export interface SpawnPort {
-	spawn(request: SpawnRequest): Promise<void>;
+	spawn(request: SpawnRequest): Promise<SessionBinding>;
 }
 
 export interface GitHubObservationPort {
@@ -89,6 +116,7 @@ export interface DagPorts {
 	process: ProcessProbePort;
 	runnerControl: RunnerControlPort;
 	host: HostPort;
+	injectionRef: InjectionRefBuilder;
 	locks: LaunchLockPort;
 	spawn: SpawnPort;
 	githubObservation?: GitHubObservationPort;

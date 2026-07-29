@@ -5,7 +5,7 @@ export type {
 	CandidateSet,
 } from "./candidates.js";
 export { selectNext } from "./candidates.js";
-export { EngineDriver } from "./driver.js";
+export { EngineDriver, type EngineDriverOptions } from "./driver.js";
 export type {
 	EnqueueResult,
 	MailboxEnvelope,
@@ -20,7 +20,19 @@ export {
 	CodexInjectionShim,
 	type CodexInjectionShimOptions,
 } from "./injection/codex-shim.js";
-export { registerAgentTx } from "./registration.js";
+export {
+	type ReattachAgentOptions,
+	reattachAgent,
+	registerAgentTx,
+	type SessionEvidenceProbe,
+} from "./registration.js";
+export {
+	canonicalProposalDigest,
+	issueProposalCapability,
+	type ProposalReceipt,
+	proposalSubjectDigest,
+	readProposalReceipt,
+} from "./settlement.js";
 export type {
 	AttemptHandle,
 	ConsumerAuthority,
@@ -38,8 +50,10 @@ export type {
 	InjectionShim,
 	LeadIdentityDraft,
 	PollResult,
+	ProposalAuthorization,
 	RegisteredAgent,
 	RunnerIdentityDraft,
+	SessionBinding,
 } from "./types.js";
 export {
 	DEFAULT_ENGINE_CONFIG,

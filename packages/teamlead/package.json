@@ -12,7 +12,8 @@
 		"flywheel-account-summary": "bin/flywheel-account-summary",
 		"flywheel-claude-pool-rebuild": "bin/flywheel-claude-pool-rebuild",
 		"flywheel-rescue-lead": "bin/flywheel-rescue-lead",
-		"flywheel-quota-monitor": "bin/flywheel-quota-monitor"
+		"flywheel-quota-monitor": "bin/flywheel-quota-monitor",
+		"flywheel-v2-discord-ingress": "dist/v2-discord-ingress.js"
 	},
 	"files": [
 		"dist",
@@ -38,6 +39,7 @@
 		"flywheel-config": "workspace:*",
 		"flywheel-core": "workspace:*",
 		"flywheel-edge-worker": "workspace:*",
+		"flywheel-v2-kernel": "workspace:*",
 		"smol-toml": "^1.6.1",
 		"sql.js": "^1.14.1",
 		"ws": "^8.19.0",

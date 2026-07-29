@@ -1,0 +1,39 @@
+# Design Review — FLY-1502 plan.md (Round 1)
+
+Date: 2026-07-28
+Author: Codex
+Status: CHANGES REQUESTED
+
+## Summary
+
+方向、范围和 SQLite 多进程写入模型基本成立，但本计划还不能在当前 batch-2 HEAD (`b8eb0ce7b5fff8350a3708ae07b0c20fbe0ec97f`) 上安全执行：它改变了锁定九步的编号/语义，并把尚不存在或彼此不兼容的 runtime 接线当成了薄壳。更严重的是，计划遗漏了独立 Lead 进程中的旧 writer，隔离预演仍可能操作生产 launchd/tmux，迁移守恒式和 T1 回滚也尚未形成可机械验证的合同。
+
+## What's Good (Keep)
+
+- 坚持“开关禁用、不删旧码”，并把 StateStore 收敛、自动 Linear ingress、legacy adoption 和物理删码留给 FLY-1503，边界符合本单裁定。
+- `Kernel.write()` 已经使用 IMMEDIATE 事务，连接工厂已有 WAL、`busy_timeout` 和 foreign-key enforcement；因此“同一 Kernel 代码路径、多个短命 CLI 进程写同一 SQLite”在原则上可行（`packages/v2-kernel/src/kernel.ts:273-309`, `packages/v2-kernel/src/connection.ts:27,71-72`）。
+- 复用 `backupDatabase(srcPath, destPath)` 的方向正确；该原语确实使用 SQLite backup API，并验证 integrity、FK 和 migration ledger（`packages/v2-kernel/src/backup.ts:20-47,62-93`）。
+- 强制隔离预演、founder 在场、逐不可逆步确认、明确全 fleet 预计暂停不超过一小时，以及用人话打印 blast radius，都是应保留的运行安全护栏。
+- 实弹旧 writer 测试放在最终 GO 之前、GitHub actor/required-checks 探针 fail closed、off-path reverse-compat 哨兵，以及不相交负例测试，方向都正确。
+
+## Issues & Recommendations
+
+1. **[BLOCKER] 计划没有逐字继承锁定九步，而是重新编号并替换了后三步。** `plan.md:93-117` 把 7/8/9 定义成 `live-fire`、`go-no-go`、`power-on`，把 rollback 降成九步外的命令；锁定合同则是 6=安全重置、7=epoch fence、8=顺序启动、9=回滚点（`design-chain/design-v1.md:72-73`, `design-v2.md:66-75`），`design-final.md:76-85` 只把消息切换并入 2-6、增加围栏和 Go/No-Go 8-10，并明确“九步不变”。这会使 founder 的逐步授权、证据编号和 T1 边界对不上权威设计。**建议：**保留锁定的九步编号和标题；把 live-fire 与 12 项 checker 作为 step 7 完成后、step 8 上电授权前的强制子闸/证据，把 step 9 明确保留为 rollback point。CLI 可以有辅助子命令，但 ledger 和 runbook 不得把它们冒充新的九步。
+
+2. **[BLOCKER] W1 所谓“复用现成库、零新业务逻辑”与当前 API 不兼容，最小生产链实际上尚未定义。** `EngineDriver.registerLead()` 的第三参是把 mailbox message 转为 `ConversionResult` 的 `Converter`，不是 `InjectionShim`（`packages/v2-engine/src/driver.ts:97-130`, `types.ts:140-178`）；生产代码中也没有 Claude shim delivery 接线。更硬的冲突是 v2-dag 把 activation `session_ref` 固定生成成 `v2dag:<attempt>:<generation>:<activation>`（`packages/v2-dag/src/dispatch.ts:270-316`），而 Claude shim 只接受包含绝对 `inboxPath`、`sidecarPath`、`toAgent` 的 exact JSON（`packages/v2-engine/src/injection/session-ref.ts:51-79`）。CLI 动词也漏掉 batch-2 API 的必需 authority：completion 需要 attempt/activation/current `RegisteredAgent`，approval 需要 approval ref、repo/PR、config digest 和 action actor，ship 需要 capabilityId/actor（`completion.ts:78-84,496-500`, `gate.ts:344-354`, `ship.ts:25-56`）；现有 driver 没有简单的 `mailbox ack` 语义。**建议：**在计划中新增一份端到端 runtime protocol：谁持有 driver、谁 poll、converter 如何调用 shim、外部投递如何经 recorded action 后 settlement、重试/heartbeat/进程重启如何恢复；同时冻结 sessionRef 兼容方案（修改 v2-dag 的 typed port/持久化形态，或新增权威映射，不能临场拼字符串）。逐个 CLI 动词列全输入、actor/capability 来源、身份校验、幂等键和底层 API；补跨进程真实链测试，而非只做薄壳 mock。
+
+3. **[BLOCKER] `plugin.ts` 不是机器范围内唯一的旧 writer/Discord ingress composition seam。** Codex Lead 的 TUI/headless 进程各自创建 `RestPollDiscordInboundSource` 和 `CodexDiscordGateway`，直接把 Discord 消息提交到 Lead journal；它们还各自打开旧 `LeadInboxQueue(config.commDbPath)`（`CodexDiscordGateway.ts:1-6,218-224`, `codex-lead-tui-runtime.ts:551-557,579-666`, `codex-lead-runtime.ts:1562-1668`）。因此只在 Bridge `plugin.ts` 分叉并重启 Lead，会把这些旧消费者/writer 原样带回来。并且 `FlywheelConfig` 明确是每项目 `.flywheel/config.yaml`（`packages/config/src/types.ts:635-640`），不能承载裁定要求的 machine-wide retirement authority。**建议：**把 writer inventory 升级为“进程/entrypoint → 旧路径 → 启停 owner → v2/off 行为”的穷举矩阵，至少覆盖 Bridge、Codex TUI/headless/gateway、Claude Lead、runner CLI、巡逻/定时任务和 launchd wrappers；为每个独立 composition root 指定修改文件与 on-path 测试。`v2_cutover` 必须有一个机器级、原子可读、fail-closed 的 authority/epoch，所有进程入口在任何旧 DB/JSON 打开之前检查；项目 config 最多作为派生配置，不能是唯一总开关。
+
+4. **[BLOCKER] 所谓隔离预演只隔离了文件路径，没有隔离服务和进程控制面。** `run` 的参数仅有 ledger/old-root/claude-root/new-db（`plan.md:84-90`），但步骤还会 `launchctl bootout/disable`、检查/启动 tmux 和 cmux、安装/启动真实 host/scheduler/Lead，并访问 GitHub。让这套命令对复制 root 跑“全部九步 --yes”（`plan.md:130-133`）要么会误停/误启生产 label，要么实现时只能 stub/skip，二者都不满足同码路演练。**建议：**仍保持单一 executor，但让唯一变化的隔离 target path 解析出一份完整 target manifest：namespaced launchd labels/plist root、fixture tmux/cmux socket/session、wrapper/credential/env、DB/JSON roots、host/scheduler/Lead 命令都从该 manifest 取得；隔离 target 必须拒绝任何生产 label、HOME 路径或 socket。预演需启动真实 namespaced legacy writer 和 v2 服务，记录生产 launchd/tmux/路径前后快照并证明零变化；不得用 mode 分支跳过控制面步骤。
+
+5. **[BLOCKER] v2 DB 的建立顺序自相矛盾，而且 production startup 会 fail open 创建空 authority。** step 2 要先把 cutover intent 写入 v2 meta，step 5 又称“新库 fresh migrate”（`plan.md:95-103`）；没有 schema 的文件无法承载 step 2。W1 又让 host 在 DB 不存在时自动 migrate/初始化（`plan.md:33-38`），现有 scheduler 每次 probe/sweep 也无条件 `migrateDatabase({path})`（`packages/v2-scheduler/src/cli.ts:207-209,266-269`）。路径打错、文件误删或归档错位时，上电会静默得到一个 epoch=1 的空库；`initializeEngineDb()` 也只是 `ON CONFLICT DO NOTHING` 初始化固定值 1（`packages/v2-engine/src/bootstrap.ts:5-12`, `sql.ts:1-5`）。**建议：**冻结一个明确序列：在 freeze 内或之前由 cutover CLI 独占地创建/迁移 staging DB、写 window/intent，再由 step 5 在同一文件执行数据导入与最终验证/原子 promote。生产 host、scheduler 和所有 agent CLI 必须改为 open-existing，并核对 realpath、window id、cutover epoch、8 条 migration ledger、完整 marker 和 permissions；缺失/不匹配立即拒绝启动，绝不自行 migrate。fresh bootstrap 只允许 cutover/rehearsal 工具调用。
+
+6. **[BLOCKER] 双源迁移的选择谓词、身份假设、守恒式和目标写 API 都不足以保证零丢失。** 计划只迁 `messages.read_at IS NULL AND relay_state='open'`，但 legacy 把 `protected` 也视为仍可回答，唯一终态是 `terminal_disposed`（`packages/flywheel-comm/src/db.ts:1785-1809,1828-1841,5916-5929`）；`lead_inbox.consumed_at IS NULL` 还会混入 `carrier='external'` 行，而生产 claim 明确只消费 `carrier='inbox'`（`lead-inbox-queue.ts:152-197,1086-1136`）。JSON unread 真值是主文件的 `read=false`，sidecar 是写入 finalization/dedupe 账；best-effort 写会生成 surrogate id，并非每个条目都有可与 comm message id 对齐的稳定 flywheelId（`ClaudeCodeAdapter.ts:202-224`, `ClaudeMailboxCodec.ts:167-206`）。此外，两源同 key 去重后，“原始源行数 = migrated+dead+tombstoned”会把 overlap 双计。目标侧普通 `enqueue()` 又会生成新 UUID、拒绝尚未 provision 的 recipient（`packages/v2-engine/src/enqueue.ts:71-85,87-123`），无法满足保留原 message_uid 的锁定合同。**建议：**逐类型冻结源状态映射（含 protected、external、processed/disposed、sidecar pending/finalized、sidecar-less/vendor-only/best-effort）及人工阻塞类别；守恒式改为 `raw_comm + raw_json = unique_canonical + overlap_copies`，再断言 `unique_canonical = migrated + dead + tombstoned`，冲突/未分类必须为零。新增 migration-only typed Kernel/engine API，在同一短事务内 provision 存续 Lead、保留原 message_uid/source key/digest/epoch 并做冲突 CAS；禁止 raw SQL 或普通 enqueue 代替。为每种负例放真实 fixture。
+
+7. **[HIGH] Go/No-Go 的若干机器检查按当前顺序无法给出它声称的证据。** checker 在 step 8、thin Bridge 在 step 9 才启动，所以“旧 Bridge token 打 thin-Bridge 端点被拒”当时没有真实目标；新增项“上电后旧路径零新写入”也不可能在上电前判定。④还计划查询不存在的 `invocationUid` 列；actions 表只有唯一 `effect_key`（`packages/v2-kernel/src/migrations/0006-actions-black-box.ts:1-22`）。进程零证明只靠 pgrep/tmux/cmux，也不能发现改名 Node 进程或仍持有旧 DB/WAL/SHM 的 fd。围栏检查只做路径集合求交，同样漏掉 `chmod 500` 的祖先目录可能是新 DB/新 session 的祖先；例如 fence `~/.flywheel/comm` 时绝不能误 chmod 共享的 `~/.flywheel`。**建议：**保持十条原文不变，但重写证据机制：在外部 effects/admission 仍被硬 hold 的状态下启动可探测的 thin endpoint，或对同一 production auth handler 做真实旧凭据调用；把“power-on 后零旧写”定义为 step 8 后的强制 acceptance gate，失败立即停新入口并进入预定义 forward-repair，而不是伪装成 pre-GO。④只验证真实 schema 的 effect_key 和 invocation→effect_key 派生合同。①增加 `lsof`/open-fd 扫描每个 legacy DB、WAL、SHM 和 inbox root；围栏用 `realpath` 做集合、祖先/后代和 symlink 三类检查，拒绝任何 fence chmod target 是 v2 路径祖先。
+
+8. **[BLOCKER] T1 目前只是逆序操作说明，不是“每个 pre-effect crash point 都可回”的合同。** step 6 同时移动目录、改权限、撤销/disable launchd 和拒绝/撤销 token（`plan.md:104-117`），但 step-level `running/done/failed` ledger 无法判断在这些子操作中途崩溃后哪些已生效；外部 credential revoke 也不能靠“卸围栏”逆转。计划没有保存 launchd loaded/enabled/disabled overrides、plist bytes、owner/mode/ACL/xattr/symlink、WAL/SHM、原 token replacement 等恢复依据，也没有一个权威“首个 v2 外部副作用已发生”水位来让 rollback fail closed。**建议：**每个有副作用的 primitive 使用 durable intent→apply→verify→complete 子账，并提供 reconcile/compensate；切换前采集并签名完整 service/filesystem manifest。旧凭据可以永久撤销，但必须预制受控 rollback credential/重新签发路径，使 T1 恢复服务而不复活泄露 secret。把 injection、spawn、Discord/GitHub send、scheduler action 等首个外部 effect 统一写入 durable watermark；`rollback-t1` 先核验水位，非零即拒绝。测试矩阵必须在每个 primitive 前后注入 crash，恢复后逐字节/权限/launchd 状态对比，而不只是“done skip/failed retry”。
+
+## Verdict
+
+CHANGES REQUESTED — address items above

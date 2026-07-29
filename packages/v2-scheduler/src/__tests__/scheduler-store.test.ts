@@ -18,6 +18,16 @@ interface Fixture {
 
 const fixtures: Fixture[] = [];
 
+function sessionBinding(agentId: string, generation: number): string {
+	return JSON.stringify({
+		v: 1,
+		host_epoch: "host-1",
+		session_id: `session-${agentId}-${generation}`,
+		pid: 10_000 + generation,
+		pid_start: `start-${agentId}-${generation}`,
+	});
+}
+
 function makeFixture(): Fixture {
 	const dir = mkdtempSync(join(tmpdir(), "flywheel-v2-scheduler-store-"));
 	const path = join(dir, "flywheel-v2.db");
@@ -41,13 +51,20 @@ function seedAgent(
 	},
 ): void {
 	fixture.kernel.write("test.seed-agent", (tx) => {
+		const generation = args.generation ?? 3;
 		tx.run(
-			`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
-			 VALUES (@agentId,@kind,@generation,@lastPollAt,@state)`,
+			`INSERT INTO agents(
+			   agent_id,kind,generation,instance_id,session_binding,last_poll_at,state
+			 )
+			 VALUES (
+			   @agentId,@kind,@generation,@instanceId,@sessionBinding,@lastPollAt,@state
+			 )`,
 			{
 				agentId: args.agentId,
 				kind: args.kind ?? "lead",
-				generation: args.generation ?? 3,
+				generation,
+				instanceId: `instance-${args.agentId}-${generation}`,
+				sessionBinding: sessionBinding(args.agentId, generation),
 				lastPollAt:
 					args.lastPollAt === undefined
 						? "2026-07-27T00:00:00.000Z"
@@ -78,7 +95,7 @@ function seedAgent(
 					{
 						attemptUid: `attempt-${args.agentId}`,
 						messageUid: `message-${args.agentId}`,
-						generation: args.generation ?? 3,
+						generation,
 					},
 				);
 			}

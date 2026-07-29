@@ -32,6 +32,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { verifyApproval } from "flywheel-comm/verify-approval";
 import { verifyLifecycleConsent } from "flywheel-comm/verify-lifecycle-consent";
+import { requireLegacyWriterAllowedFromEnvironment } from "flywheel-v2-kernel";
 import { markAutomatedDiscordText } from "../../../bridge/automated-message.js";
 import {
 	getActionClassMeta,
@@ -498,6 +499,7 @@ async function dispatchToBridge(
 export async function gatewayMain(
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
+	requireLegacyWriterAllowedFromEnvironment(env);
 	const cfg = parseGatewayConfig(env);
 
 	// Secrets ONLY via the parent broker — fail-closed (a secretless gateway

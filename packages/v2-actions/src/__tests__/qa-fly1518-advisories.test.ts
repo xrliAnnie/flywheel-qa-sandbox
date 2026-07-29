@@ -23,6 +23,14 @@ const ACTOR = {
 	instanceId: "instance-1",
 	generation: 1,
 };
+const BOUND_LEAD_SQL = `
+	INSERT INTO agents(
+		agent_id, kind, generation, state, instance_id, session_binding
+	)
+	VALUES (
+		'lead-qa', 'lead', 1, 'online', 'instance-1',
+		'{"host_epoch":"host-qa","pid":1,"pid_start":"start-qa","session_id":"instance-1","v":1}'
+	)`;
 
 describe("QA FLY-1518 advisories", () => {
 	let dir: string | undefined;
@@ -44,10 +52,7 @@ describe("QA FLY-1518 advisories", () => {
 		const opened = Kernel.open({ path });
 		kernel = opened;
 		opened.write("qa.seed-agent", (tx) => {
-			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-qa','lead',1,'online')`,
-			);
+			tx.run(BOUND_LEAD_SQL);
 		});
 		return opened;
 	}

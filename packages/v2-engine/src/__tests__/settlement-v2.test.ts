@@ -6,6 +6,7 @@ import {
 	enqueueMailbox,
 	makeEngineFixture,
 	seedRunnerActivation,
+	testSessionBinding,
 } from "./helpers.js";
 
 function registerRunner(fixture: EngineFixture) {
@@ -16,6 +17,7 @@ function registerRunner(fixture: EngineFixture) {
 			agentId: "runner-a",
 			instanceId: "instance-1",
 			activationId,
+			sessionBinding: testSessionBinding("instance-1"),
 		}),
 	);
 }

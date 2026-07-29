@@ -31,6 +31,7 @@ import {
 	enqueueMailbox,
 	makeEngineFixture,
 	seedRunnerActivation,
+	testSessionBinding,
 } from "./helpers.js";
 
 interface ActionRow {
@@ -111,6 +112,7 @@ describe("QA FLY-1518 — commands outbox guarantees on pure actions", () => {
 				agentId: "runner-a",
 				instanceId: "instance-1",
 				activationId,
+				sessionBinding: testSessionBinding("instance-1"),
 			}),
 		);
 	}
@@ -129,6 +131,7 @@ describe("QA FLY-1518 — commands outbox guarantees on pure actions", () => {
 					agentId: "runner-a",
 					instanceId: `instance-${generation + 1}`,
 					activationId: "activation-runner-a-1",
+					sessionBinding: testSessionBinding(`instance-${generation + 1}`),
 				},
 				{
 					agentId: "runner-a",
@@ -358,7 +361,12 @@ describe("QA FLY-1518 — commands outbox guarantees on pure actions", () => {
 		const driver = newDriver();
 		await driver.registerLead(
 			"lead-qa",
-			{ kind: "lead", leadId: "lead-qa", instanceId: "instance-1" },
+			{
+				kind: "lead",
+				leadId: "lead-qa",
+				instanceId: "instance-1",
+				sessionBinding: testSessionBinding("instance-1"),
+			},
 			async (_message, ctx: ConversionContext): Promise<ConversionResult> => {
 				// Deliberately NOT awaited: the driver's barrier, not the converter's
 				// discipline, has to hold settlement back.

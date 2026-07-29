@@ -3,16 +3,21 @@ export const ENGINE_SQL = {
 	initializeCutoverEpoch: `INSERT INTO meta(key,value,updated_at)
 		VALUES ('cutover_epoch','1',@now)
 		ON CONFLICT(key) DO NOTHING`,
-	readAgent: `SELECT agent_id,kind,generation,last_poll_at,state
+	readAgent: `SELECT agent_id,kind,generation,instance_id,session_binding,last_poll_at,state
 		FROM agents WHERE agent_id=@agentId`,
 	insertProvisionedAgent: `INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
 		VALUES (@agentId,@kind,0,NULL,'offline')
 		ON CONFLICT(agent_id) DO NOTHING`,
-	insertRegisteredAgent: `INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
-		VALUES (@agentId,@kind,1,NULL,'online')`,
+	insertRegisteredAgent: `INSERT INTO agents
+		(agent_id,kind,generation,instance_id,session_binding,last_poll_at,state)
+		VALUES (@agentId,@kind,1,@instanceId,@sessionBinding,NULL,'online')`,
 	casRegisterAgent: `UPDATE agents
-		SET generation=@newGeneration,last_poll_at=NULL,state='online'
+		SET generation=@newGeneration,instance_id=@instanceId,
+		    session_binding=@sessionBinding,last_poll_at=NULL,state='online'
 		WHERE agent_id=@agentId AND kind=@kind AND generation=@oldGeneration`,
+	casReattachAgent: `UPDATE agents SET last_poll_at=@now,state='online'
+		WHERE agent_id=@agentId AND kind=@kind AND generation=@generation
+		  AND instance_id=@instanceId AND session_binding=@sessionBinding`,
 	casHeartbeat: `UPDATE agents SET last_poll_at=@now,state='online'
 		WHERE agent_id=@agentId AND kind=@kind AND generation=@generation`,
 	casOffline: `UPDATE agents SET state='offline'

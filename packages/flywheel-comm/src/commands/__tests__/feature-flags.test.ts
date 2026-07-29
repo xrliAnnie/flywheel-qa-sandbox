@@ -122,7 +122,7 @@ describe("flywheel-comm feature-flags apply", () => {
 			runFeatureFlags(["apply", "--to", "off"], deps),
 		).rejects.toThrow("exit 1");
 		await expect(
-			runFeatureFlags(["apply", "--name", "x", "--to", "bogus"], deps),
+			runFeatureFlags(["apply", "--name", "x"], deps),
 		).rejects.toThrow("exit 1");
 	});
 

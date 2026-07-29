@@ -109,8 +109,15 @@ describe("launch claim recovery", () => {
 		let spawnCount = 0;
 		const { ports } = makePorts(fixture.clock, {
 			spawn: {
-				async spawn() {
+				async spawn(request) {
 					spawnCount += 1;
+					return {
+						v: 1,
+						hostEpoch: "host-1",
+						sessionId: request.sessionRef,
+						pid: 10_002,
+						pidStart: `test-start:${request.sessionRef}`,
+					};
 				},
 			},
 		});
@@ -143,6 +150,172 @@ describe("launch claim recovery", () => {
 		expect(recovered).toMatchObject({ reaped: 1, launched: 0 });
 		expect(spawnCount).toBe(1);
 		expect(next.dispatched[0]?.attemptGeneration).toBe(2);
+	});
+
+	it("adopts a spawned-but-unregistered runner and enqueues its assignment once", async () => {
+		const fixture = makeFixture();
+		fixtures.push(fixture);
+		fixture.provision("lead-a", "lead");
+		fixture.provision("agent-a", "runner");
+		let spawnCount = 0;
+		let binding:
+			| {
+					v: 1;
+					hostEpoch: string;
+					sessionId: string;
+					pid: number;
+					pidStart: string;
+			  }
+			| undefined;
+		const { ports } = makePorts(fixture.clock, {
+			spawn: {
+				async spawn(request) {
+					spawnCount += 1;
+					binding = {
+						v: 1,
+						hostEpoch: "host-1",
+						sessionId: request.sessionRef,
+						pid: 20_001,
+						pidStart: `spawned:${request.sessionRef}`,
+					};
+					return binding;
+				},
+			},
+			process: {
+				async probe() {
+					return binding
+						? {
+								state: "present" as const,
+								confirmedAt: fixture.clock.nowIso(),
+								sessionBinding: binding,
+							}
+						: {
+								state: "absent" as const,
+								confirmedAt: fixture.clock.nowIso(),
+							};
+				},
+			},
+		});
+		await admitOne(fixture, ports, "launch-after-spawn");
+
+		await expect(
+			dispatchOnce(fixture.kernel, {
+				...ports,
+				faults: {
+					hit(point) {
+						if (point === "launch_after_spawn") throw new Error("crash");
+					},
+				},
+			}),
+		).rejects.toThrow("crash");
+		expect(spawnCount).toBe(1);
+		expect(
+			fixture.kernel.read((tx) =>
+				tx.get<{ instance_id: string | null }>(
+					"SELECT instance_id FROM agents WHERE agent_id='agent-a'",
+				),
+			),
+		).toEqual({ instance_id: null });
+		expect(
+			fixture.kernel.read(
+				(tx) =>
+					tx.get<{ count: number }>(
+						"SELECT COUNT(*) AS count FROM mailbox WHERE source_kind='dag_task_dispatch'",
+					)?.count,
+			),
+		).toBe(0);
+
+		const recovered = await recoverPendingLaunches(fixture.kernel, ports);
+		await recoverPendingLaunches(fixture.kernel, ports);
+
+		expect(recovered).toMatchObject({ adopted: 1, reaped: 0 });
+		expect(spawnCount).toBe(1);
+		const registered = fixture.kernel.read((tx) =>
+			tx.get<{
+				instance_id: string;
+				generation: number;
+				session_binding: string;
+			}>(
+				"SELECT instance_id,generation,session_binding FROM agents WHERE agent_id='agent-a'",
+			),
+		);
+		expect(registered).toMatchObject({
+			instance_id: binding?.sessionId,
+			generation: 1,
+			session_binding: expect.any(String),
+		});
+		expect(JSON.parse(registered?.session_binding ?? "{}")).toMatchObject({
+			v: 1,
+			host_epoch: binding?.hostEpoch,
+			session_id: binding?.sessionId,
+			pid: binding?.pid,
+			pid_start: binding?.pidStart,
+		});
+		expect(
+			fixture.kernel.read(
+				(tx) =>
+					tx.get<{ count: number }>(
+						"SELECT COUNT(*) AS count FROM mailbox WHERE source_kind='dag_task_dispatch'",
+					)?.count,
+			),
+		).toBe(1);
+	});
+
+	it("registers a present runner while adopting an older claimed receipt", async () => {
+		const fixture = makeFixture();
+		fixtures.push(fixture);
+		fixture.provision("lead-a", "lead");
+		fixture.provision("agent-a", "runner");
+		const { ports, spawned } = makePorts(fixture.clock, {
+			process: {
+				async probe(sessionRef) {
+					return {
+						state: "present" as const,
+						confirmedAt: fixture.clock.nowIso(),
+						sessionBinding: {
+							v: 1,
+							hostEpoch: "host-1",
+							sessionId: sessionRef,
+							pid: 20_002,
+							pidStart: `claimed:${sessionRef}`,
+						},
+					};
+				},
+			},
+		});
+		await admitOne(fixture, ports, "claimed-present");
+
+		await expect(
+			dispatchOnce(fixture.kernel, {
+				...ports,
+				faults: {
+					hit(point) {
+						if (point === "dispatch_after_claim") throw new Error("crash");
+					},
+				},
+			}),
+		).rejects.toThrow("crash");
+		const recovered = await recoverPendingLaunches(fixture.kernel, ports);
+
+		expect(recovered).toMatchObject({ adopted: 1, launched: 0 });
+		expect(spawned).toHaveLength(0);
+		expect(
+			fixture.kernel.read((tx) =>
+				tx.get<{ count: number }>(
+					`SELECT COUNT(*) AS count
+					   FROM mailbox
+					  WHERE source_kind='dag_task_dispatch'
+					    AND to_agent='agent-a'`,
+				),
+			),
+		).toEqual({ count: 1 });
+		expect(
+			fixture.kernel.read((tx) =>
+				tx.get<{ instance_id: string | null }>(
+					"SELECT instance_id FROM agents WHERE agent_id='agent-a'",
+				),
+			)?.instance_id,
+		).toMatch(/^v2dag:/);
 	});
 
 	it("takes over an expired claim only after proving the process absent", async () => {

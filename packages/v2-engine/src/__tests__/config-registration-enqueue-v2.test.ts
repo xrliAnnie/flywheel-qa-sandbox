@@ -12,6 +12,7 @@ import {
 	EngineConfigError,
 	type EngineRuntime,
 } from "../types.js";
+import { testSessionBinding } from "./helpers.js";
 
 class Clock {
 	#now = Date.parse("2026-07-28T00:00:00.000Z");
@@ -54,6 +55,7 @@ const LEAD_DRAFT = {
 	kind: "lead",
 	leadId: "lead-a",
 	instanceId: "instance-1",
+	sessionBinding: testSessionBinding("instance-1"),
 } as const;
 
 describe("durable config, address allocation, and generation registration", () => {
@@ -151,6 +153,7 @@ describe("durable config, address allocation, and generation registration", () =
 			agentId: "lead-a",
 			instanceId: "instance-1",
 			generation: 1,
+			sessionBinding: testSessionBinding("instance-1"),
 		});
 
 		provisionAgentRecipient(fixture.kernel, "lead-b", "lead");
@@ -185,7 +188,11 @@ describe("durable config, address allocation, and generation registration", () =
 				tx,
 				fixture?.runtime as EngineRuntime,
 				"lead-a",
-				{ ...LEAD_DRAFT, instanceId: "instance-2" },
+				{
+					...LEAD_DRAFT,
+					instanceId: "instance-2",
+					sessionBinding: testSessionBinding("instance-2"),
+				},
 				{
 					agentId: "lead-a",
 					generation: 1,
@@ -232,6 +239,7 @@ describe("durable config, address allocation, and generation registration", () =
 				agentId: "runner-a",
 				instanceId: "instance-1",
 				activationId: "activation-1",
+				sessionBinding: testSessionBinding("instance-1"),
 			}),
 		);
 		fixture.kernel.write("test.rotate-runner-activation", (tx) => {
@@ -252,6 +260,7 @@ describe("durable config, address allocation, and generation registration", () =
 					agentId: "runner-a",
 					instanceId: "instance-2",
 					activationId: "activation-2",
+					sessionBinding: testSessionBinding("instance-2"),
 				},
 				{
 					agentId: "runner-a",
@@ -267,6 +276,7 @@ describe("durable config, address allocation, and generation registration", () =
 			instanceId: "instance-2",
 			activationId: "activation-2",
 			generation: 2,
+			sessionBinding: testSessionBinding("instance-2"),
 		});
 	});
 

@@ -3,17 +3,20 @@ import {
 	type DeathEvidence,
 	type RegisteredAgent,
 	registerAgentTx,
+	type SessionBinding,
 } from "flywheel-v2-engine";
 import {
 	FENCE,
 	type Kernel,
 	type ReadTx,
+	recordExternalEffectIntentTx,
 	type WriteTx,
 } from "flywheel-v2-kernel";
 import { parseTaskPayload } from "./contract.js";
-import { sha256 } from "./digests.js";
+import { type CanonicalValue, sha256 } from "./digests.js";
 import { DagContractError } from "./errors.js";
 import { appendEvent } from "./events.js";
+import { validateInjectionRef } from "./injection-ref.js";
 import { appendMailboxTx } from "./mailbox-append.js";
 import {
 	type Envelope,
@@ -66,6 +69,7 @@ interface LaunchClaimData {
 	state: "pending" | "claimed" | "launched" | "tombstoned";
 	owner_token: string | null;
 	lease_until: string | null;
+	death_evidence?: DeathEvidence | null;
 	launch_receipt: null | {
 		token: string;
 		activation_id: string;
@@ -232,8 +236,15 @@ function prepareDispatch(
 	head: string | null,
 	evidence?: DeathEvidence,
 ): SpawnRequest | null {
-	const task = tx.get<{ state: string; payload: string }>(
-		"SELECT state,payload FROM tasks WHERE id=@taskId",
+	const task = tx.get<{
+		state: string;
+		payload: string;
+		project_id: string;
+		external_issue_id: string;
+		kind: string;
+	}>(
+		`SELECT state,payload,project_id,external_issue_id,kind
+		   FROM tasks WHERE id=@taskId`,
 		{ taskId: candidate.id },
 	);
 	if (!task || task.state !== "ready" || !eligible(tx, candidate.id))
@@ -276,6 +287,17 @@ function prepareDispatch(
 	const sessionRef = `v2dag:${attemptId}:${generation}:${activationId}`;
 	const hostEpoch = ports.host.hostEpoch();
 	const now = ports.clock.nowIso();
+	const injectionRef = validateInjectionRef(
+		ports.injectionRef.build({
+			taskId: candidate.id,
+			attemptId,
+			attemptGeneration: generation,
+			activationId,
+			sessionRef,
+			agentId: payload.executor.logicalAgentId,
+			executor: payload.executor,
+		}),
+	);
 	tx.run(
 		`INSERT INTO attempts
 		 (id,task_id,generation,vendor,model,worktree_id,host_epoch,desired_state)
@@ -295,18 +317,22 @@ function prepareDispatch(
 		 VALUES(@id,@attemptId,@sessionRef,@generation,'active')`,
 		{ id: activationId, attemptId, sessionRef, generation },
 	);
-	const agent = registerAgentTx(
-		tx,
-		{ clock: ports.clock },
-		payload.executor.logicalAgentId,
+	tx.run(
+		`INSERT INTO meta(key,value,updated_at)
+		 VALUES (@key,@value,@now)`,
 		{
-			kind: "runner",
-			agentId: payload.executor.logicalAgentId,
-			instanceId: sessionRef,
-			activationId,
+			key: `injection_ref:${activationId}`,
+			value: injectionRef,
+			now,
 		},
-		evidence,
 	);
+	const agent = {
+		kind: "runner" as const,
+		agentId: payload.executor.logicalAgentId,
+		instanceId: sessionRef,
+		generation: (agentRow?.generation ?? 0) + 1,
+		activationId,
+	};
 	const nextBinding: AgentBindingData = {
 		state: "active",
 		activation_id: activationId,
@@ -327,6 +353,7 @@ function prepareDispatch(
 			state: "pending",
 			owner_token: null,
 			lease_until: null,
+			death_evidence: evidence ?? null,
 			launch_receipt: null,
 		}),
 		now,
@@ -377,8 +404,10 @@ function prepareDispatch(
 		attemptGeneration: generation,
 		activationId,
 		sessionRef,
+		injectionRef,
 		ownerToken: "",
 		agent,
+		...(evidence ? { deathEvidence: evidence } : {}),
 		executor: payload.executor,
 	};
 }
@@ -433,11 +462,164 @@ export async function claimLaunch(
 	return { ...request, ownerToken };
 }
 
+function appendTaskAssignmentTx(
+	tx: WriteTx,
+	ports: DagPorts,
+	request: SpawnRequest,
+): void {
+	const task = tx.get<{
+		project_id: string;
+		external_issue_id: string;
+		kind: string;
+		payload: string;
+	}>(
+		`SELECT t.project_id,t.external_issue_id,t.kind,t.payload
+		   FROM attempts a
+		   JOIN tasks t ON t.id=a.task_id
+		  WHERE a.id=@attemptId AND a.task_id=@taskId`,
+		{ attemptId: request.attemptId, taskId: request.taskId },
+	);
+	if (!task) {
+		throw new DagContractError("runner task assignment source is missing");
+	}
+	const payload = parseTaskPayload(JSON.parse(task.payload));
+	let startHead: string | null = null;
+	if (payload.writes_repo) {
+		const chain = readEnvelope<WriterChainData>(
+			tx,
+			`writer_chain:${payload.worktree_id}`,
+		);
+		if (chain?.data.open_attempt?.attempt_id !== request.attemptId) {
+			throw new DagContractError(
+				"runner task assignment writer span is not authoritative",
+			);
+		}
+		startHead = chain.data.open_attempt.start_head;
+	}
+	appendMailboxTx(tx, {
+		sourceKind: "dag_task_dispatch",
+		sourceId: request.activationId,
+		toAgent: request.agent.agentId,
+		kind: "task_assignment",
+		payload: {
+			v: 1,
+			project_id: task.project_id,
+			issue_id: task.external_issue_id,
+			task_id: request.taskId,
+			task_kind: task.kind,
+			attempt_id: request.attemptId,
+			attempt_generation: request.attemptGeneration,
+			activation_id: request.activationId,
+			session_ref: request.sessionRef,
+			host_epoch: ports.host.hostEpoch(),
+			start_head: startHead,
+			contract: payload.contract,
+			writes_repo: payload.writes_repo,
+			worktree_id: payload.worktree_id,
+			executor: payload.executor,
+		} as unknown as CanonicalValue,
+		retentionClass: "business",
+		cutoverEpoch: readCutoverEpoch(tx),
+		createdAt: ports.clock.nowIso(),
+	});
+}
+
+function storedSessionMatches(
+	serialized: string | null,
+	binding: SessionBinding,
+): boolean {
+	if (serialized === null) return false;
+	let value: unknown;
+	try {
+		value = JSON.parse(serialized);
+	} catch {
+		return false;
+	}
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		return false;
+	}
+	const stored = value as Record<string, unknown>;
+	return (
+		Object.keys(stored).sort().join(",") ===
+			"host_epoch,pid,pid_start,session_id,v" &&
+		stored.v === 1 &&
+		stored.host_epoch === binding.hostEpoch &&
+		stored.session_id === binding.sessionId &&
+		stored.pid === binding.pid &&
+		stored.pid_start === binding.pidStart
+	);
+}
+
+function registerSpawnedRunnerTx(
+	tx: WriteTx,
+	ports: DagPorts,
+	request: SpawnRequest,
+	sessionBinding: SessionBinding,
+): RegisteredAgent {
+	if (
+		sessionBinding.hostEpoch !== ports.host.hostEpoch() ||
+		sessionBinding.sessionId !== request.sessionRef
+	) {
+		throw new DagContractError(
+			"spawn returned a session binding for a different host or session",
+		);
+	}
+	const current = tx.get<{
+		kind: string;
+		generation: number;
+		instance_id: string | null;
+		session_binding: string | null;
+	}>(
+		`SELECT kind,generation,instance_id,session_binding
+		   FROM agents WHERE agent_id=@agentId`,
+		{ agentId: request.agent.agentId },
+	);
+	let registered: RegisteredAgent;
+	if (current?.instance_id === request.sessionRef) {
+		if (
+			current.kind !== "runner" ||
+			current.generation !== request.agent.generation ||
+			!storedSessionMatches(current.session_binding, sessionBinding)
+		) {
+			throw new DagContractError(
+				"durable runner registration conflicts with process evidence",
+			);
+		}
+		registered = {
+			kind: "runner",
+			agentId: request.agent.agentId,
+			instanceId: request.sessionRef,
+			activationId: request.activationId,
+			generation: current.generation,
+			sessionBinding,
+		};
+	} else {
+		registered = registerAgentTx(
+			tx,
+			{ clock: ports.clock },
+			request.agent.agentId,
+			{
+				kind: "runner",
+				agentId: request.agent.agentId,
+				instanceId: request.sessionRef,
+				activationId: request.activationId,
+				sessionBinding,
+			},
+			request.deathEvidence,
+		);
+		if (registered.generation !== request.agent.generation) {
+			throw new DagContractError("spawn registration generation drifted");
+		}
+	}
+	appendTaskAssignmentTx(tx, ports, request);
+	return registered;
+}
+
 export async function launchOnce(
 	kernel: Kernel,
 	ports: DagPorts,
 	request: SpawnRequest,
-): Promise<boolean> {
+): Promise<RegisteredAgent | false> {
 	return await ports.locks.withSessionLock(request.sessionRef, async () => {
 		const consumed = kernel.write("v2dag.launch.once", (tx) => {
 			const epoch = readCutoverEpoch(tx);
@@ -457,6 +639,11 @@ export async function launchOnce(
 			) {
 				return false;
 			}
+			recordExternalEffectIntentTx(tx, {
+				effectKey: `spawn:${request.sessionRef}`,
+				family: "spawn",
+				nowIso: ports.clock.nowIso(),
+			});
 			updateEnvelope(
 				tx,
 				key,
@@ -477,9 +664,12 @@ export async function launchOnce(
 		});
 		if (!consumed) return false;
 		hitFault(ports, "launch_after_receipt");
-		await ports.spawn.spawn(request);
+		const sessionBinding = await ports.spawn.spawn(request);
 		hitFault(ports, "launch_after_spawn");
-		return true;
+		const agent = kernel.write("v2dag.launch.register", (tx) => {
+			return registerSpawnedRunnerTx(tx, ports, request, sessionBinding);
+		});
+		return agent;
 	});
 }
 
@@ -583,7 +773,7 @@ export async function dispatchOnce(
 			continue;
 		}
 		hitFault(ports, "dispatch_after_claim");
-		let launched: boolean;
+		let launched: RegisteredAgent | false;
 		try {
 			launched = await launchOnce(kernel, ports, claimed);
 		} catch (error) {
@@ -600,7 +790,10 @@ export async function dispatchOnce(
 			continue;
 		}
 		if (launched) {
-			dispatched.push(claimed);
+			if (launched.kind !== "runner") {
+				throw new DagContractError("spawn registered a non-runner agent");
+			}
+			dispatched.push({ ...claimed, agent: launched });
 		}
 	}
 	return { dispatched, failures };
@@ -617,18 +810,22 @@ function requestForSession(
 		activation_id: string;
 		agent_id: string;
 		agent_generation: number;
+		agent_instance_id: string | null;
 		payload: string;
+		injection_ref: string;
 	}>(
 		`SELECT a.task_id,a.id AS attempt_id,
 		        a.generation AS attempt_generation,
 		        act.id AS activation_id,
 		        json_extract(t.payload,'$.executor.logicalAgentId') AS agent_id,
-		        ag.generation AS agent_generation,t.payload
+		        ag.generation AS agent_generation,ag.instance_id AS agent_instance_id,
+		        t.payload,ir.value AS injection_ref
 		   FROM activations act
 		   JOIN attempts a ON a.id=act.attempt_id
 		   JOIN tasks t ON t.id=a.task_id
 		   JOIN agents ag
 		     ON ag.agent_id=json_extract(t.payload,'$.executor.logicalAgentId')
+		   JOIN meta ir ON ir.key='injection_ref:' || act.id
 		  WHERE act.session_ref=@sessionRef
 		    AND act.state='active'
 		    AND a.desired_state IN ('dispatched','started')`,
@@ -636,18 +833,23 @@ function requestForSession(
 	);
 	if (!state) return null;
 	const payload = parseTaskPayload(JSON.parse(state.payload));
+	const injectionRef = validateInjectionRef(state.injection_ref);
+	const registered = state.agent_instance_id === sessionRef;
 	return {
 		taskId: state.task_id,
 		attemptId: state.attempt_id,
 		attemptGeneration: state.attempt_generation,
 		activationId: state.activation_id,
 		sessionRef,
+		injectionRef,
 		ownerToken: "",
 		agent: {
 			kind: "runner",
 			agentId: state.agent_id,
 			instanceId: sessionRef,
-			generation: state.agent_generation,
+			generation: registered
+				? state.agent_generation
+				: state.agent_generation + 1,
 			activationId: state.activation_id,
 		},
 		executor: payload.executor,
@@ -665,7 +867,18 @@ function recoverableClaims(kernel: Kernel): RecoverableClaim[] {
 			if (!claim || claim.data.state === "tombstoned") return [];
 			const sessionRef = row.key.slice("launch_claim:".length);
 			const request = requestForSession(tx, sessionRef);
-			return request ? [{ request, claim }] : [];
+			if (!request) return [];
+			return [
+				{
+					request: {
+						...request,
+						...(claim.data.death_evidence
+							? { deathEvidence: claim.data.death_evidence }
+							: {}),
+					},
+					claim,
+				},
+			];
 		});
 	});
 }
@@ -677,6 +890,7 @@ function markClaimLaunched(
 		request: SpawnRequest;
 		expectedRevision: number;
 		ownerToken: string;
+		sessionBinding: SessionBinding;
 	},
 ): boolean {
 	return kernel.write("v2dag.launch.recover-adopt", (tx) => {
@@ -707,6 +921,7 @@ function markClaimLaunched(
 			},
 			ports.clock.nowIso(),
 		);
+		registerSpawnedRunnerTx(tx, ports, input.request, input.sessionBinding);
 		return true;
 	});
 }
@@ -742,6 +957,7 @@ async function recoverClaimed(
 					request: entry.request,
 					expectedRevision: current.revision,
 					ownerToken: current.data.owner_token,
+					sessionBinding: probe.sessionBinding,
 				})
 					? { status: "adopted" }
 					: { status: "unchanged" };
@@ -784,6 +1000,50 @@ async function recoverClaimed(
 						request: { ...entry.request, ownerToken },
 					}
 				: { status: "unchanged" };
+		},
+	);
+}
+
+async function adoptLaunchedRunner(
+	kernel: Kernel,
+	ports: DagPorts,
+	entry: RecoverableClaim,
+): Promise<boolean> {
+	return await ports.locks.withSessionLock(
+		entry.request.sessionRef,
+		async () => {
+			const current = kernel.read((tx) =>
+				readEnvelope<LaunchClaimData>(
+					tx,
+					`launch_claim:${entry.request.sessionRef}`,
+				),
+			);
+			if (
+				!current ||
+				current.revision !== entry.claim.revision ||
+				current.data.state !== "launched"
+			) {
+				return false;
+			}
+			const probe = await ports.process.probe(entry.request.sessionRef);
+			if (probe.state !== "present") return false;
+			return kernel.write("v2dag.launch.recover-register", (tx) => {
+				const epoch = readCutoverEpoch(tx);
+				const claim = readEnvelope<LaunchClaimData>(
+					tx,
+					`launch_claim:${entry.request.sessionRef}`,
+					epoch,
+				);
+				if (
+					!claim ||
+					claim.revision !== current.revision ||
+					claim.data.state !== "launched"
+				) {
+					return false;
+				}
+				registerSpawnedRunnerTx(tx, ports, entry.request, probe.sessionBinding);
+				return true;
+			});
 		},
 	);
 }
@@ -1051,7 +1311,11 @@ export async function recoverPendingLaunches(
 				if (outcome.status === "adopted") adopted += 1;
 			} else if (entry.claim.data.state === "launched") {
 				stage = "recovery_reap";
-				if (await reapLaunched(kernel, ports, entry)) reaped += 1;
+				if (await adoptLaunchedRunner(kernel, ports, entry)) {
+					adopted += 1;
+				} else if (await reapLaunched(kernel, ports, entry)) {
+					reaped += 1;
+				}
 			}
 		} catch (error) {
 			if (error instanceof InjectedFault) throw error;

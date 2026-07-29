@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { openKernelDb } from "../connection.js";
 import { runMigrations } from "../migrator.js";
-import { makeTempDatabase, type TempDatabase } from "./helpers.js";
+import {
+	boundAgentParams,
+	INSERT_BOUND_AGENT_SQL,
+	makeTempDatabase,
+	type TempDatabase,
+} from "./helpers.js";
 
 function insertTask(
 	db: ReturnType<typeof openKernelDb>,
@@ -44,10 +49,14 @@ describe("schema constraints and trigger bypass protection", () => {
 				"actions_supersedes_insert",
 				"actions_terminal_once",
 				"agents_agent_id_immutable",
+				"agents_binding_insert_guard",
+				"agents_binding_update_guard",
 				"agents_generation_no_rollback",
 				"agents_kind_immutable",
 				"agents_no_delete",
 				"events_append_only",
+				"pa_digest_transition_guard",
+				"pa_receipt_insert_guard",
 				"tasks_no_self_rework_ins",
 				"tasks_no_self_rework_upd",
 			]);
@@ -86,10 +95,9 @@ describe("schema constraints and trigger bypass protection", () => {
 		const db = openKernelDb({ path: temp.path });
 		try {
 			runMigrations(db);
-			db.prepare(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
-			).run();
+			db.prepare(INSERT_BOUND_AGENT_SQL).run(
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
+			);
 			db.prepare(
 				`INSERT INTO events(event_uid, kind, cutover_epoch, created_at)
 				 VALUES ('event-1', 'test', 1, 'now')`,
@@ -235,10 +243,13 @@ describe("schema constraints and trigger bypass protection", () => {
 				 VALUES ('message-pk', 'test', 'pk', '{}', 'digest', 'agent', 'test',
 				  'business', 1, 'now')`,
 			).run();
-			db.prepare(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-pk', 'lead', 1, 'online')`,
-			).run();
+			db.prepare(INSERT_BOUND_AGENT_SQL).run(
+				boundAgentParams({
+					agentId: "lead-pk",
+					kind: "lead",
+					instanceId: "session-pk",
+				}),
+			);
 
 			const nullInsertSql = [
 				`INSERT INTO tasks
@@ -318,10 +329,9 @@ describe("schema constraints and trigger bypass protection", () => {
 		const db = openKernelDb({ path: temp.path });
 		try {
 			runMigrations(db);
-			db.prepare(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
-			).run();
+			db.prepare(INSERT_BOUND_AGENT_SQL).run(
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
+			);
 			const insertRoot = db.prepare(
 				`INSERT INTO actions
 				 (id, actor_kind, actor_agent_id, actor_instance_id, actor_generation,

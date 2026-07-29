@@ -17,6 +17,10 @@ export {
 export { recordEvidence } from "./evidence.js";
 export { registerReviewFamilies } from "./families.js";
 export { approveShipGate, recoverShipAuthority } from "./gate.js";
+export {
+	createInjectionRefBuilder,
+	validateInjectionRef,
+} from "./injection-ref.js";
 export { reconcileShipActions } from "./reconcile.js";
 export { resumeActivation } from "./resume.js";
 export { reworkTask } from "./rework.js";
@@ -35,11 +39,13 @@ export type {
 	GitHubObservationPort,
 	GitPort,
 	HostPort,
+	InjectionRefBuilder,
 	IssueDagDescriptor,
 	LaunchLockPort,
 	ManifestEntry,
 	ProcessProbePort,
 	RunnerControlPort,
+	RunnerLaunchIdentity,
 	SpawnPort,
 	SpawnRequest,
 	TaskDescriptor,

@@ -13,6 +13,7 @@ import {
 	enqueueMailbox,
 	makeEngineFixture,
 	seedRunnerActivation,
+	testSessionBinding,
 } from "./helpers.js";
 
 // QA (FLY-1499) — independent verification of the mapping-v2final.md contract.
@@ -28,6 +29,7 @@ const LEAD_DRAFT = {
 	kind: "lead",
 	leadId: "lead-a",
 	instanceId: "instance-1",
+	sessionBinding: testSessionBinding("instance-1"),
 } as const;
 
 function attachedRunner(
@@ -42,6 +44,7 @@ function attachedRunner(
 			agentId,
 			instanceId: `instance-${agentId}`,
 			activationId,
+			sessionBinding: testSessionBinding(`instance-${agentId}`),
 		}),
 	) as RegisteredAgent;
 	return driver.attachRunner(agentId, runner);
@@ -513,6 +516,7 @@ describe("QA FLY-1499 — liveness without doorbell, timer or watchdog", () => {
 				kind: "lead",
 				leadId: "lead-cold",
 				instanceId: "instance-cold",
+				sessionBinding: testSessionBinding("instance-cold"),
 			}),
 		);
 		expect(coldStart()).toEqual([]);
@@ -638,6 +642,7 @@ describe("QA FLY-1499 — generation fence across two connections", () => {
 					agentId: "runner-a",
 					instanceId: "instance-successor",
 					activationId,
+					sessionBinding: testSessionBinding("instance-successor"),
 				},
 				{
 					agentId: "runner-a",
@@ -683,6 +688,7 @@ describe("QA FLY-1499 — generation fence across two connections", () => {
 				agentId: "runner-a",
 				instanceId: "instance-1",
 				activationId,
+				sessionBinding: testSessionBinding("instance-1"),
 			}),
 		) as RegisteredAgent;
 		enqueueMailbox(fixture, {
@@ -698,13 +704,13 @@ describe("QA FLY-1499 — generation fence across two connections", () => {
 		// be handed the in-flight attempt as a second delivery.
 		other = Kernel.open({ path: fixture.path });
 		const duplicate = new EngineDriver(other, fixture.runtime);
-		await duplicate.attachRunner("runner-a", {
-			...agent,
-			instanceId: "instance-2",
-		} as RegisteredAgent);
-		expect(() => duplicate.poll("runner-a")).toThrow(
-			/attempt binding mismatch/,
-		);
+		await expect(
+			duplicate.attachRunner("runner-a", {
+				...agent,
+				instanceId: "instance-2",
+				sessionBinding: testSessionBinding("instance-2"),
+			} as RegisteredAgent),
+		).rejects.toThrow(/not current/);
 		expect(
 			fixture.kernel.read(
 				(tx) =>
@@ -741,6 +747,7 @@ describe("QA FLY-1499 — generation fence across two connections", () => {
 					agentId: "runner-a",
 					instanceId: "instance-successor",
 					activationId,
+					sessionBinding: testSessionBinding("instance-successor"),
 				},
 				{
 					agentId: "runner-a",

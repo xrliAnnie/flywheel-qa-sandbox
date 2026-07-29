@@ -1,4 +1,15 @@
-import { FENCE, FenceViolation, type WriteTx } from "flywheel-v2-kernel";
+import {
+	FENCE,
+	FenceViolation,
+	type Kernel,
+	type WriteTx,
+} from "flywheel-v2-kernel";
+import {
+	parseSessionBinding,
+	serializeSessionBinding,
+	sessionBindingsEqual,
+	validateSessionBinding,
+} from "./session-binding.js";
 import { ENGINE_SQL } from "./sql.js";
 import { settleFailureMailboxTx } from "./transitions.js";
 import type {
@@ -12,6 +23,8 @@ interface AgentRow {
 	agent_id: string;
 	kind: string;
 	generation: number;
+	instance_id: string | null;
+	session_binding: string | null;
 }
 
 interface RunningRow {
@@ -20,6 +33,19 @@ interface RunningRow {
 	instance_id: string;
 	generation: number;
 	activation_id: string | null;
+}
+
+export interface SessionEvidenceProbe {
+	processStart(pid: number): string | null;
+	sessionOwner(sessionId: string): { pid: number; pidStart: string } | null;
+}
+
+export interface ReattachAgentOptions {
+	kernel: Kernel;
+	runtime: EngineRuntime;
+	expected: RegisteredAgent;
+	hostEpoch: string;
+	probe: SessionEvidenceProbe;
 }
 
 function requireNonEmpty(value: string, name: string): void {
@@ -36,6 +62,7 @@ function validateDraft(agentId: string, draft: IdentityDraft): void {
 	requireNonEmpty(agentId, "agentId");
 	requireNonEmpty(draftAgentId(draft), "draft agentId");
 	requireNonEmpty(draft.instanceId, "instanceId");
+	validateSessionBinding(draft.sessionBinding);
 	if (draftAgentId(draft) !== agentId) {
 		throw new FenceViolation("identity subject does not match agent");
 	}
@@ -77,6 +104,7 @@ function registered(
 			agentId,
 			instanceId: draft.instanceId,
 			generation,
+			sessionBinding: draft.sessionBinding,
 		};
 	}
 	return {
@@ -85,6 +113,7 @@ function registered(
 		instanceId: draft.instanceId,
 		activationId: draft.activationId,
 		generation,
+		sessionBinding: draft.sessionBinding,
 	};
 }
 
@@ -127,6 +156,7 @@ export function registerAgentTx(
 				attemptUid: row.attempt_uid,
 				outcome: "crashed",
 				settledAt: runtime.clock.nowIso(),
+				proposalDigest: null,
 			});
 			settleFailureMailboxTx(tx, runtime, {
 				agentId,
@@ -150,6 +180,8 @@ export function registerAgentTx(
 		tx.run(ENGINE_SQL.insertRegisteredAgent, {
 			agentId,
 			kind: draft.kind,
+			instanceId: draft.instanceId,
+			sessionBinding: serializeSessionBinding(draft.sessionBinding),
 		});
 	} else {
 		tx.cas(ENGINE_SQL.casRegisterAgent, {
@@ -157,7 +189,120 @@ export function registerAgentTx(
 			kind: draft.kind,
 			oldGeneration: current.generation,
 			newGeneration: nextGeneration,
+			instanceId: draft.instanceId,
+			sessionBinding: serializeSessionBinding(draft.sessionBinding),
 		});
 	}
 	return registered(agentId, draft, nextGeneration);
+}
+
+function requireStoredBinding(
+	row: AgentRow | undefined,
+	expected: RegisteredAgent,
+): string {
+	if (
+		!row ||
+		row.generation < 1 ||
+		row.instance_id === null ||
+		row.session_binding === null
+	) {
+		throw new FenceViolation(`agent ${expected.agentId} is not reattachable`);
+	}
+	if (
+		row.kind !== expected.kind ||
+		row.generation !== expected.generation ||
+		row.instance_id !== expected.instanceId
+	) {
+		throw new FenceViolation(
+			`agent ${expected.agentId} durable identity does not match reattach request`,
+		);
+	}
+	const stored = parseSessionBinding(row.session_binding);
+	if (!sessionBindingsEqual(stored, expected.sessionBinding)) {
+		throw new FenceViolation(
+			`agent ${expected.agentId} session binding does not match reattach request`,
+		);
+	}
+	return row.session_binding;
+}
+
+function requireLiveSessionEvidence(
+	expected: RegisteredAgent,
+	hostEpoch: string,
+	probe: SessionEvidenceProbe,
+): void {
+	validateSessionBinding(expected.sessionBinding);
+	requireNonEmpty(hostEpoch, "hostEpoch");
+	if (expected.sessionBinding.hostEpoch !== hostEpoch) {
+		throw new FenceViolation(
+			`agent ${expected.agentId} session binding has a stale host epoch`,
+		);
+	}
+	const observedStart = probe.processStart(expected.sessionBinding.pid);
+	if (observedStart !== expected.sessionBinding.pidStart) {
+		throw new FenceViolation(
+			`agent ${expected.agentId} process start identity does not match`,
+		);
+	}
+	const owner = probe.sessionOwner(expected.sessionBinding.sessionId);
+	if (
+		!owner ||
+		owner.pid !== expected.sessionBinding.pid ||
+		owner.pidStart !== expected.sessionBinding.pidStart
+	) {
+		throw new FenceViolation(
+			`agent ${expected.agentId} session owner does not match`,
+		);
+	}
+}
+
+export function reattachAgent(options: ReattachAgentOptions): RegisteredAgent {
+	const { expected, hostEpoch, kernel, probe, runtime } = options;
+	requireNonEmpty(expected.agentId, "agentId");
+	requireNonEmpty(expected.instanceId, "instanceId");
+
+	const storedBinding = kernel.read((tx) =>
+		requireStoredBinding(
+			tx.get<AgentRow>(ENGINE_SQL.readAgent, {
+				agentId: expected.agentId,
+			}),
+			expected,
+		),
+	);
+	requireLiveSessionEvidence(expected, hostEpoch, probe);
+
+	kernel.write("consumer.reattach", (tx) => {
+		if (expected.kind === "runner") {
+			const activation = tx.get<{
+				id: string;
+				session_ref: string;
+				state: string;
+			}>(ENGINE_SQL.readActivation, {
+				activationId: expected.activationId,
+			});
+			if (
+				!activation ||
+				activation.state !== "active" ||
+				activation.session_ref !== expected.sessionBinding.sessionId
+			) {
+				throw new FenceViolation(
+					`runner ${expected.agentId} activation does not match live session`,
+				);
+			}
+		}
+		const result = tx.run(ENGINE_SQL.casReattachAgent, {
+			agentId: expected.agentId,
+			kind: expected.kind,
+			generation: expected.generation,
+			instanceId: expected.instanceId,
+			sessionBinding: storedBinding,
+			now: runtime.clock.nowIso(),
+		});
+		if (result.changes !== 1) {
+			throw new FenceViolation(
+				`agent ${expected.agentId} binding changed during reattach`,
+			);
+		}
+	});
+	return expected;
 }

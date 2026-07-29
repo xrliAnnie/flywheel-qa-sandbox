@@ -8,7 +8,12 @@ import {
 import { ActionSerializationError, CasViolation } from "../errors.js";
 import { Kernel } from "../kernel.js";
 import { migrateDatabase } from "../migrator.js";
-import { makeTempDatabase, type TempDatabase } from "./helpers.js";
+import {
+	boundAgentParams,
+	INSERT_BOUND_AGENT_SQL,
+	makeTempDatabase,
+	type TempDatabase,
+} from "./helpers.js";
 
 describe("action black box", () => {
 	let temp: TempDatabase | undefined;
@@ -31,8 +36,8 @@ describe("action black box", () => {
 		kernel = Kernel.open({ path: temp.path });
 		kernel.write("seed current lead", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 		});
 
@@ -92,8 +97,8 @@ describe("action black box", () => {
 			kernel = Kernel.open({ path: temp.path });
 			kernel.write("seed current lead", (tx) => {
 				tx.run(
-					`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+					INSERT_BOUND_AGENT_SQL,
+					boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 				);
 			});
 
@@ -125,8 +130,8 @@ describe("action black box", () => {
 		kernel = Kernel.open({ path: temp.path });
 		kernel.write("seed current lead", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 		});
 		const base = {
@@ -176,8 +181,8 @@ describe("action black box", () => {
 		kernel = Kernel.open({ path: temp.path });
 		kernel.write("seed current lead", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 		});
 		const spec = {
@@ -215,8 +220,8 @@ describe("action black box", () => {
 		kernel = Kernel.open({ path: temp.path });
 		kernel.write("seed current lead", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 		});
 		const base = {
@@ -273,8 +278,8 @@ describe("action black box", () => {
 		};
 		kernel.write("seed current lead", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 		});
 
@@ -329,8 +334,8 @@ describe("action black box", () => {
 		kernel = Kernel.open({ path: temp.path });
 		kernel.write("seed current lead", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 		});
 		const actor = {
@@ -383,8 +388,8 @@ describe("action black box", () => {
 		};
 		kernel.write("seed current lead and intent", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 			recordActionIntent(tx, {
 				id: "action-sdk-result",
@@ -422,8 +427,8 @@ describe("action black box", () => {
 		kernel = Kernel.open({ path: temp.path });
 		kernel.write("seed current lead", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 		});
 		const actor = {
@@ -486,8 +491,8 @@ describe("action black box", () => {
 		kernel = Kernel.open({ path: temp.path });
 		kernel.write("seed current lead and intents", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 			for (const [id, logicalEffectId, createdAt] of [
 				["action-1", "daily-report", "2026-07-28T08:00:00.000Z"],
@@ -528,8 +533,8 @@ describe("action black box", () => {
 		};
 		kernel.write("seed current lead and intent", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 			recordActionIntent(tx, {
 				id: "action-1",
@@ -558,7 +563,20 @@ describe("action black box", () => {
 			),
 		).toThrow(CasViolation);
 		kernel.write("advance generation", (tx) => {
-			tx.run("UPDATE agents SET generation=2 WHERE agent_id='lead-a'");
+			const successor = boundAgentParams({
+				agentId: "lead-a",
+				kind: "lead",
+				generation: 2,
+				instanceId: "session-b",
+				pid: 4343,
+			});
+			tx.run(
+				`UPDATE agents
+				 SET generation=@generation,instance_id=@instanceId,
+				     session_binding=@sessionBinding
+				 WHERE agent_id=@agentId`,
+				successor,
+			);
 		});
 		expect(() =>
 			kernel?.write("late old-generation outcome", (tx) =>
@@ -601,8 +619,8 @@ describe("action black box", () => {
 		};
 		kernel.write("seed current lead and root", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 			recordActionIntent(tx, {
 				id: "action-1",
@@ -654,8 +672,8 @@ describe("action black box", () => {
 		};
 		kernel.write("seed current lead and roots", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 			recordActionIntent(tx, {
 				id: "action-unknown",
@@ -785,8 +803,8 @@ describe("action black box", () => {
 		};
 		kernel.write("seed current lead and retry root", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 			recordActionIntent(tx, {
 				id: "action-retry-root",
@@ -844,8 +862,8 @@ describe("action black box", () => {
 		};
 		kernel.write("seed current lead and failed root", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 			recordActionIntent(tx, {
 				id: "action-replay-root",
@@ -930,9 +948,21 @@ describe("action black box", () => {
 		kernel = Kernel.open({ path: temp.path });
 		kernel.write("seed two leads", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state) VALUES
-				 ('lead-a', 'lead', 1, 'online'),
-				 ('lead-b', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({
+					agentId: "lead-a",
+					kind: "lead",
+					instanceId: "session-lead-a",
+				}),
+			);
+			tx.run(
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({
+					agentId: "lead-b",
+					kind: "lead",
+					instanceId: "session-lead-b",
+					pid: 4243,
+				}),
 			);
 		});
 		const recordFor = (agentId: string, id: string) =>
@@ -992,8 +1022,13 @@ describe("action black box", () => {
 		kernel = Kernel.open({ path: temp.path });
 		kernel.write("seed runner lineage", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('runner-a', 'runner', 3, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({
+					agentId: "runner-a",
+					kind: "runner",
+					generation: 3,
+					instanceId: "runner-instance",
+				}),
 			);
 			tx.run(
 				`INSERT INTO tasks
@@ -1066,8 +1101,8 @@ describe("action black box", () => {
 		};
 		kernel.write("seed current lead and intent", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 			recordActionIntent(tx, {
 				id: "action-handover",
@@ -1080,7 +1115,20 @@ describe("action black box", () => {
 			});
 		});
 		kernel.write("cutover to the next generation", (tx) => {
-			tx.run("UPDATE agents SET generation=2 WHERE agent_id='lead-a'");
+			const successor = boundAgentParams({
+				agentId: "lead-a",
+				kind: "lead",
+				generation: 2,
+				instanceId: "session-b",
+				pid: 4343,
+			});
+			tx.run(
+				`UPDATE agents
+				 SET generation=@generation,instance_id=@instanceId,
+				     session_binding=@sessionBinding
+				 WHERE agent_id=@agentId`,
+				successor,
+			);
 		});
 
 		expect(() =>
@@ -1123,8 +1171,8 @@ describe("action black box", () => {
 		const createdAt = "2026-07-28T08:00:00.000Z";
 		kernel.write("seed three same-timestamp intents", (tx) => {
 			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
+				INSERT_BOUND_AGENT_SQL,
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
 			);
 			for (const suffix of ["1", "2", "3"]) {
 				recordActionIntent(tx, {

@@ -15,6 +15,14 @@ import { runRecordedAction } from "../index.js";
 describe("runRecordedAction", () => {
 	let dir: string | undefined;
 	let kernel: Kernel | undefined;
+	const BOUND_LEAD_SQL = `
+		INSERT INTO agents(
+			agent_id, kind, generation, state, instance_id, session_binding
+		)
+		VALUES (
+			'lead-a', 'lead', 1, 'online', 'session-a',
+			'{"host_epoch":"host-a","pid":1,"pid_start":"start-a","session_id":"session-a","v":1}'
+		)`;
 
 	afterEach(() => {
 		kernel?.close();
@@ -33,10 +41,7 @@ describe("runRecordedAction", () => {
 		const opened = Kernel.open({ path });
 		kernel = opened;
 		opened.write("seed current lead", (tx) => {
-			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
-			);
+			tx.run(BOUND_LEAD_SQL);
 		});
 		return { kernel: opened, path };
 	}
@@ -54,10 +59,7 @@ describe("runRecordedAction", () => {
 		migrateDatabase({ path });
 		kernel = Kernel.open({ path });
 		kernel.write("seed current lead", (tx) => {
-			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
-			);
+			tx.run(BOUND_LEAD_SQL);
 		});
 		let observedDuringEffect: ActionSnapshot | null = null;
 
@@ -105,10 +107,7 @@ describe("runRecordedAction", () => {
 		migrateDatabase({ path });
 		kernel = Kernel.open({ path });
 		kernel.write("seed current lead", (tx) => {
-			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
-			);
+			tx.run(BOUND_LEAD_SQL);
 		});
 		const failure = new Error("provider unavailable");
 
@@ -194,10 +193,7 @@ describe("runRecordedAction", () => {
 		migrateDatabase({ path });
 		kernel = Kernel.open({ path });
 		kernel.write("seed authority and capability", (tx) => {
-			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
-			);
+			tx.run(BOUND_LEAD_SQL);
 			tx.run(
 				`INSERT INTO capabilities
 				 (id, token_hash, issuer, audience, action, issued_at)
@@ -320,10 +316,7 @@ describe("runRecordedAction", () => {
 		migrateDatabase({ path });
 		kernel = Kernel.open({ path });
 		kernel.write("seed current lead", (tx) => {
-			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
-			);
+			tx.run(BOUND_LEAD_SQL);
 		});
 		let prepareCount = 0;
 		let performCount = 0;
@@ -378,10 +371,7 @@ describe("runRecordedAction", () => {
 		migrateDatabase({ path });
 		kernel = Kernel.open({ path });
 		kernel.write("seed current lead", (tx) => {
-			tx.run(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
-			);
+			tx.run(BOUND_LEAD_SQL);
 		});
 		const actor = {
 			kind: "lead" as const,

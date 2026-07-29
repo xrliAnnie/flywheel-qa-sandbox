@@ -5,6 +5,7 @@ import {
 	type WriteTx,
 } from "flywheel-v2-kernel";
 import { readEngineConfigTx } from "./config.js";
+import { serializeSessionBinding } from "./session-binding.js";
 import { ENGINE_SQL } from "./sql.js";
 import type { AttemptHandle, EngineRuntime, RegisteredAgent } from "./types.js";
 
@@ -12,6 +13,8 @@ interface AgentRow {
 	agent_id: string;
 	kind: string;
 	generation: number;
+	instance_id: string | null;
+	session_binding: string | null;
 	last_poll_at: string | null;
 	state: string;
 }
@@ -80,9 +83,15 @@ export function requireCurrentAgentTx(
 	const row = tx.get<AgentRow>(ENGINE_SQL.readAgent, {
 		agentId: agent.agentId,
 	});
-	if (!row || row.kind !== agent.kind || row.generation !== agent.generation) {
+	if (
+		!row ||
+		row.kind !== agent.kind ||
+		row.generation !== agent.generation ||
+		row.instance_id !== agent.instanceId ||
+		row.session_binding !== serializeSessionBinding(agent.sessionBinding)
+	) {
 		throw new FenceViolation(
-			`agent generation is not current for ${agent.agentId}`,
+			`agent generation is not current or session binding mismatched for ${agent.agentId}`,
 		);
 	}
 	return row;

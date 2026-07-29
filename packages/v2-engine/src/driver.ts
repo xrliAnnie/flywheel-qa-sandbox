@@ -12,7 +12,15 @@ import {
 	runConversionAction,
 	validateConversionActionSpec,
 } from "./conversion-actions.js";
-import { registerAgentTx } from "./registration.js";
+import {
+	reattachAgent,
+	registerAgentTx,
+	type SessionEvidenceProbe,
+} from "./registration.js";
+import {
+	serializeSessionBinding,
+	sessionBindingsEqual,
+} from "./session-binding.js";
 import { reportConversionFailure, submitProposal } from "./settlement.js";
 import { ENGINE_SQL } from "./sql.js";
 import { settleFailureMailboxTx } from "./transitions.js";
@@ -27,6 +35,7 @@ import {
 	type LeadIdentityDraft,
 	type PollResult,
 	PollTransientError,
+	type ProposalAuthorization,
 	type RegisteredAgent,
 } from "./types.js";
 
@@ -51,12 +60,17 @@ interface RunningRow {
 	activation_id: string | null;
 }
 
+export interface EngineDriverOptions {
+	requireProposalCapability?: boolean;
+}
+
 function sameAgent(left: RegisteredAgent, right: RegisteredAgent): boolean {
 	return (
 		left.kind === right.kind &&
 		left.agentId === right.agentId &&
 		left.instanceId === right.instanceId &&
 		left.generation === right.generation &&
+		sessionBindingsEqual(left.sessionBinding, right.sessionBinding) &&
 		(left.kind === "lead" ||
 			(right.kind === "runner" && left.activationId === right.activationId))
 	);
@@ -87,11 +101,18 @@ export class EngineDriver {
 	readonly #runtime: EngineRuntime;
 	readonly #states = new Map<string, AgentState>();
 	readonly #locks = new Map<string, Promise<unknown>>();
+	readonly #requireProposalCapability: boolean;
 	#stopped = false;
 
-	constructor(kernel: Kernel, runtime: EngineRuntime) {
+	constructor(
+		kernel: Kernel,
+		runtime: EngineRuntime,
+		options: EngineDriverOptions = {},
+	) {
 		this.#kernel = kernel;
 		this.#runtime = runtime;
+		this.#requireProposalCapability =
+			options.requireProposalCapability ?? false;
 	}
 
 	registerLead(
@@ -131,6 +152,50 @@ export class EngineDriver {
 		});
 	}
 
+	reattachLead(
+		agentId: string,
+		expected: RegisteredAgent,
+		converter: Converter,
+		hostEpoch: string,
+		probe: SessionEvidenceProbe,
+	): Promise<RegisteredAgent> {
+		return this.#serialize(agentId, () => {
+			this.#assertRunning();
+			if (expected.kind !== "lead" || expected.agentId !== agentId) {
+				throw new FenceViolation(
+					"reattachLead requires a matching lead identity",
+				);
+			}
+			const previous = this.#states.get(agentId);
+			if (previous) {
+				this.#assertNoInFlightActions(previous, "replace lead reattach");
+			}
+			const agent = reattachAgent({
+				kernel: this.#kernel,
+				runtime: this.#runtime,
+				expected,
+				hostEpoch,
+				probe,
+			});
+			const founderStreak = this.#kernel.read(
+				(tx) => readEngineConfigTx(tx).vipBurst,
+			);
+			if (previous) this.#stopState(previous);
+			const state: AgentState = {
+				agent,
+				converter,
+				founderStreak,
+				stopped: false,
+				inFlightActions: new Set(),
+				attemptActions: new Set(),
+			};
+			this.#states.set(agentId, state);
+			this.#startHeartbeat(state);
+			this.#ensureLeadHandler(state);
+			return agent;
+		});
+	}
+
 	attachRunner(agentId: string, agent: RegisteredAgent): Promise<void> {
 		return this.#serialize(agentId, () => {
 			this.#assertRunning();
@@ -145,11 +210,15 @@ export class EngineDriver {
 				const row = tx.get<{
 					kind: string;
 					generation: number;
+					instance_id: string | null;
+					session_binding: string | null;
 				}>(ENGINE_SQL.readAgent, { agentId });
 				if (
 					!row ||
 					row.kind !== agent.kind ||
-					row.generation !== agent.generation
+					row.generation !== agent.generation ||
+					row.instance_id !== agent.instanceId ||
+					row.session_binding !== serializeSessionBinding(agent.sessionBinding)
 				) {
 					throw new FenceViolation(`runner ${agentId} is not current`);
 				}
@@ -199,12 +268,24 @@ export class EngineDriver {
 		if (state.lastError) throw state.lastError;
 	}
 
-	submitProposal(proposal: ConversionProposal): void {
+	submitProposal(
+		proposal: ConversionProposal,
+		authorization?: ProposalAuthorization,
+	): string {
 		const state = this.#requireHandleState(proposal.handle);
 		this.#assertNoInFlightActions(state, "submit proposal");
-		submitProposal(this.#kernel, this.#runtime, proposal);
+		if (this.#requireProposalCapability && !authorization) {
+			throw new FenceViolation("proposal capability is required");
+		}
+		const digest = submitProposal(
+			this.#kernel,
+			this.#runtime,
+			proposal,
+			authorization,
+		);
 		state.attemptActions.clear();
 		state.currentAttemptUid = undefined;
+		return digest;
 	}
 
 	reportConversionFailure(handle: AttemptHandle, error: string): void {
@@ -271,11 +352,16 @@ export class EngineDriver {
 						const current = tx.get<{
 							kind: string;
 							generation: number;
+							instance_id: string | null;
+							session_binding: string | null;
 						}>(ENGINE_SQL.readAgent, { agentId: state.agent.agentId });
 						if (
 							!current ||
 							current.kind !== state.agent.kind ||
-							current.generation !== state.agent.generation
+							current.generation !== state.agent.generation ||
+							current.instance_id !== state.agent.instanceId ||
+							current.session_binding !==
+								serializeSessionBinding(state.agent.sessionBinding)
 						) {
 							return;
 						}
@@ -299,6 +385,7 @@ export class EngineDriver {
 								attemptUid: row.attempt_uid,
 								outcome: "crashed",
 								settledAt: this.#runtime.clock.nowIso(),
+								proposalDigest: null,
 							});
 							settleFailureMailboxTx(tx, this.#runtime, {
 								agentId: state.agent.agentId,
@@ -441,10 +528,13 @@ export class EngineDriver {
 			}
 			if (state.stopped) return;
 			if (converted.ok) {
-				this.submitProposal({
-					handle,
-					effects: converted.effects,
-				});
+				this.submitProposal(
+					{
+						handle,
+						effects: converted.effects,
+					},
+					converted.authorization,
+				);
 			} else {
 				this.reportConversionFailure(handle, converted.error);
 			}

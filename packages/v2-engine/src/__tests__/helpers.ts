@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Kernel, migrateDatabase } from "flywheel-v2-kernel";
 import { initializeEngineDb } from "../bootstrap.js";
 import { enqueue, provisionAgentRecipient } from "../enqueue.js";
-import type { EngineRuntime } from "../types.js";
+import type { EngineRuntime, SessionBinding } from "../types.js";
 
 export class TestClock {
 	#nowMs: number;
@@ -24,6 +24,19 @@ export class TestClock {
 	advance(ms: number): void {
 		this.#nowMs += ms;
 	}
+}
+
+export function testSessionBinding(
+	identity = "instance-1",
+	pid = 10_001,
+): SessionBinding {
+	return {
+		v: 1,
+		hostEpoch: "test-host-epoch",
+		sessionId: `session-${identity}`,
+		pid,
+		pidStart: `test-start-${identity}`,
+	};
 }
 
 export interface EngineFixture {

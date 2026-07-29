@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { openKernelDb } from "../connection.js";
 import { runMigrations } from "../migrator.js";
-import { makeTempDatabase, type TempDatabase } from "./helpers.js";
+import {
+	boundAgentParams,
+	INSERT_BOUND_AGENT_SQL,
+	makeTempDatabase,
+	type TempDatabase,
+} from "./helpers.js";
 
 const INCIDENT_QUERIES = [
 	{
@@ -81,14 +86,17 @@ describe("action incident query plans", () => {
 		const db = openKernelDb({ path: temp.path });
 		try {
 			runMigrations(db);
-			db.prepare(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-a', 'lead', 1, 'online')`,
-			).run();
-			db.prepare(
-				`INSERT INTO agents(agent_id, kind, generation, state)
-				 VALUES ('lead-b', 'lead', 1, 'online')`,
-			).run();
+			db.prepare(INSERT_BOUND_AGENT_SQL).run(
+				boundAgentParams({ agentId: "lead-a", kind: "lead" }),
+			);
+			db.prepare(INSERT_BOUND_AGENT_SQL).run(
+				boundAgentParams({
+					agentId: "lead-b",
+					kind: "lead",
+					instanceId: "session-b",
+					pid: 4243,
+				}),
+			);
 			const insertTask = db.prepare(
 				`INSERT INTO tasks (id, project_id, kind, state, lineage_root_id, created_at)
 				 VALUES (?, 'flywheel', 'build', 'ready', ?, '2026-07-27T00:00:00.000Z')`,

@@ -282,7 +282,7 @@ describe("run-codex-lead-mufasa-fullaccess.sh (full-access cutover launcher)", (
 	});
 
 	it("dry-run sets full-access profile/sandbox/project-root + assembles founder governance", () => {
-		const { status } = run("bash", [LAUNCHER], {
+		const { status, stderr } = run("bash", [LAUNCHER], {
 			...process.env,
 			HOME: home,
 			PATH: `${shimDir}:${process.env.PATH}`,
@@ -292,7 +292,7 @@ describe("run-codex-lead-mufasa-fullaccess.sh (full-access cutover launcher)", (
 			MUFASA_BOT_TOKEN: "x",
 			FLYWHEEL_CODEX_LEAD_PROJECT_DIR: home, // a real dir (skips the non-dry checks anyway)
 		});
-		expect(status).toBe(0);
+		expect(status, stderr).toBe(0);
 		const dumped = JSON.parse(
 			execFileSync("cat", [dumpFile], { encoding: "utf8" }),
 		) as Record<string, string>;

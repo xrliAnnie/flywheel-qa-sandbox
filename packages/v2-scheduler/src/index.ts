@@ -23,6 +23,10 @@ export {
 	type RestartCapacityConfig,
 } from "./restart-capacity.js";
 export {
+	type RuntimeAuthorityOptions,
+	readMatchingRuntimeAuthority,
+} from "./runtime-authority.js";
+export {
 	type LaunchdPort,
 	type RestartGatePort,
 	type RestartGateRecordResult,

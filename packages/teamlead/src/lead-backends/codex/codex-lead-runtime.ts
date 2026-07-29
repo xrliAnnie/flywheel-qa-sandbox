@@ -31,6 +31,7 @@ import {
 	getProcessStart,
 	publishCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
+import { requireLegacyWriterAllowedFromEnvironment } from "flywheel-v2-kernel";
 import {
 	assertGatewayOnlyToolSurface,
 	GATEWAY_ACTION_TOOL_NAMES,
@@ -1824,6 +1825,7 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 export async function main(
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
+	requireLegacyWriterAllowedFromEnvironment(env);
 	const config = parseCodexLeadRuntimeConfig(env);
 
 	// DRY RUN: print the plan and exit BEFORE constructing/spawning anything.

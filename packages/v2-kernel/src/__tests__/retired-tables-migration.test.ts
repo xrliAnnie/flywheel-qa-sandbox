@@ -17,10 +17,10 @@ describe("0008 retired command and obligation tables", () => {
 		temp = makeTempDatabase();
 		const db = openKernelDb({ path: temp.path });
 		try {
-			runMigrations(db, MIGRATIONS.slice(0, -1));
+			runMigrations(db, MIGRATIONS.slice(0, 7));
 			seedRetiredRows(db);
 
-			expect(runMigrations(db, MIGRATIONS.slice(-1))).toEqual({
+			expect(runMigrations(db, MIGRATIONS.slice(7, 8))).toEqual({
 				applied: ["0008-drop-retired-command-obligation-tables"],
 			});
 			expect(

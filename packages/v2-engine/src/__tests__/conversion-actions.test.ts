@@ -10,18 +10,21 @@ import {
 } from "../conversion-actions.js";
 import { EngineDriver } from "../driver.js";
 import { registerAgentTx } from "../registration.js";
+import { serializeSessionBinding } from "../session-binding.js";
 import type { ConversionContext, RegisteredAgent } from "../types.js";
 import {
 	type EngineFixture,
 	enqueueMailbox,
 	makeEngineFixture,
 	seedRunnerActivation,
+	testSessionBinding,
 } from "./helpers.js";
 
 const LEAD_DRAFT = {
 	kind: "lead",
 	leadId: "lead-a",
 	instanceId: "instance-1",
+	sessionBinding: testSessionBinding("instance-1"),
 } as const;
 
 function deferred<Value>() {
@@ -42,6 +45,7 @@ function registerRunner(fixture: EngineFixture): RegisteredAgent {
 			agentId: "runner-a",
 			instanceId: "instance-1",
 			activationId,
+			sessionBinding: testSessionBinding("instance-1"),
 		}),
 	);
 }
@@ -183,7 +187,15 @@ describe("conversion actions", () => {
 		});
 		fixture.kernel.write("test.promote-unbound-runner", (tx) => {
 			tx.run(
-				"UPDATE agents SET generation=1,state='online' WHERE agent_id='runner-a'",
+				`UPDATE agents
+				 SET generation=1,instance_id='instance-1',
+				     session_binding=@sessionBinding,state='online'
+				 WHERE agent_id='runner-a'`,
+				{
+					sessionBinding: serializeSessionBinding(
+						testSessionBinding("instance-1"),
+					),
+				},
 			);
 		});
 		const runner: RegisteredAgent = {
@@ -192,6 +204,7 @@ describe("conversion actions", () => {
 			instanceId: "instance-1",
 			activationId: "missing-activation",
 			generation: 1,
+			sessionBinding: testSessionBinding("instance-1"),
 		};
 		driver = new EngineDriver(fixture.kernel, fixture.runtime);
 		await driver.attachRunner("runner-a", runner);
@@ -612,7 +625,11 @@ describe("conversion actions", () => {
 		await expect(
 			driver.registerLead(
 				"lead-a",
-				{ ...LEAD_DRAFT, instanceId: "instance-2" },
+				{
+					...LEAD_DRAFT,
+					instanceId: "instance-2",
+					sessionBinding: testSessionBinding("instance-2"),
+				},
 				async () => ({ ok: true, effects: [] }),
 				evidence,
 			),
@@ -632,7 +649,11 @@ describe("conversion actions", () => {
 		await driver.drain("lead-a");
 		const replacement = await driver.registerLead(
 			"lead-a",
-			{ ...LEAD_DRAFT, instanceId: "instance-2" },
+			{
+				...LEAD_DRAFT,
+				instanceId: "instance-2",
+				sessionBinding: testSessionBinding("instance-2"),
+			},
 			async () => ({ ok: true, effects: [] }),
 			evidence,
 		);
@@ -675,6 +696,7 @@ describe("conversion actions", () => {
 					agentId: "runner-a",
 					instanceId: "instance-2",
 					activationId: "activation-runner-a-1",
+					sessionBinding: testSessionBinding("instance-2"),
 				},
 				{
 					agentId: "runner-a",
@@ -733,6 +755,7 @@ describe("conversion actions", () => {
 					agentId: "runner-a",
 					instanceId: "instance-2",
 					activationId: "activation-runner-a-1",
+					sessionBinding: testSessionBinding("instance-2"),
 				},
 				{
 					agentId: "runner-a",
@@ -791,6 +814,7 @@ describe("conversion actions", () => {
 								agentId: "runner-a",
 								instanceId: "instance-2",
 								activationId: "activation-runner-a-1",
+								sessionBinding: testSessionBinding("instance-2"),
 							},
 							{
 								agentId: "runner-a",

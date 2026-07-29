@@ -193,7 +193,7 @@ BEGIN THIS IS NOT VALID SQL; END;`,
 CREATE TABLE deliberately_broken(`,
 		};
 		try {
-			runMigrations(db, MIGRATIONS.slice(0, -1));
+			runMigrations(db, MIGRATIONS.slice(0, 7));
 			seedRetiredRows(db);
 
 			expect(() => runMigrations(db, [brokenDrop])).toThrow();

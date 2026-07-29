@@ -62,16 +62,7 @@ describe("WAL-safe backup hook", () => {
 					.prepare("SELECT id FROM schema_migrations ORDER BY id")
 					.pluck()
 					.all(),
-			).toEqual([
-				"0001-base-schema",
-				"0002-obligations-rebuild",
-				"0003-activations-processing-attempts",
-				"0004-mailbox-index-family",
-				"0005-agents-config-mailbox-rebuild",
-				"0006-actions-black-box",
-				"0007-scheduler-runtime",
-				"0008-drop-retired-command-obligation-tables",
-			]);
+			).toEqual(MIGRATIONS.map((migration) => migration.id));
 		} finally {
 			backup.close();
 		}
@@ -88,13 +79,13 @@ describe("WAL-safe backup hook", () => {
 		const backupPath = `${temp.path}.pre-0008`;
 		const migratedPath = `${temp.path}.migrated`;
 		const before = openKernelDb({ path: temp.path });
-		runMigrations(before, MIGRATIONS.slice(0, -1));
+		runMigrations(before, MIGRATIONS.slice(0, 7));
 		seedRetiredRows(before);
 		before.close();
 
 		await backupDatabase(temp.path, backupPath);
 		const upgraded = openKernelDb({ path: temp.path });
-		runMigrations(upgraded, MIGRATIONS.slice(-1));
+		runMigrations(upgraded, MIGRATIONS.slice(7, 8));
 		expect(
 			upgraded
 				.prepare(
@@ -120,7 +111,7 @@ describe("WAL-safe backup hook", () => {
 					.prepare("SELECT id FROM schema_migrations ORDER BY id")
 					.pluck()
 					.all(),
-			).toEqual(MIGRATIONS.slice(0, -1).map((migration) => migration.id));
+			).toEqual(MIGRATIONS.slice(0, 7).map((migration) => migration.id));
 			expect({
 				commands: restored
 					.prepare("SELECT count(*) FROM commands")

@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { type DeathEvidence, registerAgentTx } from "flywheel-v2-engine";
+import type { DeathEvidence } from "flywheel-v2-engine";
 import { FENCE, type Kernel } from "flywheel-v2-kernel";
 import { parseTaskPayload } from "./contract.js";
 import { claimLaunch, launchOnce } from "./dispatch.js";
 import { DagConflictError, DagContractError } from "./errors.js";
 import { appendEvent } from "./events.js";
+import { validateInjectionRef } from "./injection-ref.js";
 import {
 	insertEnvelope,
 	makeEnvelope,
@@ -126,6 +127,17 @@ export async function resumeActivation(
 				});
 				const activationId = randomUUID();
 				const sessionRef = `v2dag:${input.attemptId}:${row.generation}:${activationId}`;
+				const injectionRef = validateInjectionRef(
+					ports.injectionRef.build({
+						taskId: row.task_id,
+						attemptId: input.attemptId,
+						attemptGeneration: row.generation,
+						activationId,
+						sessionRef,
+						agentId: payload.executor.logicalAgentId,
+						executor: payload.executor,
+					}),
+				);
 				tx.run(
 					`INSERT INTO activations(id,attempt_id,session_ref,generation,state)
 				 VALUES(@activationId,@attemptId,@sessionRef,@generation,'active')`,
@@ -136,18 +148,22 @@ export async function resumeActivation(
 						generation: row.generation,
 					},
 				);
-				const agent = registerAgentTx(
-					tx,
-					{ clock: ports.clock },
-					payload.executor.logicalAgentId,
+				tx.run(
+					`INSERT INTO meta(key,value,updated_at)
+					 VALUES (@key,@value,@now)`,
 					{
-						kind: "runner",
-						agentId: payload.executor.logicalAgentId,
-						instanceId: sessionRef,
-						activationId,
+						key: `injection_ref:${activationId}`,
+						value: injectionRef,
+						now: ports.clock.nowIso(),
 					},
-					freshEvidence,
 				);
+				const agent = {
+					kind: "runner" as const,
+					agentId: payload.executor.logicalAgentId,
+					instanceId: sessionRef,
+					generation: freshEvidence.generation + 1,
+					activationId,
+				};
 				updateEnvelope(
 					tx,
 					bindingKey,
@@ -194,16 +210,22 @@ export async function resumeActivation(
 					attemptGeneration: row.generation,
 					activationId,
 					sessionRef,
+					injectionRef,
 					ownerToken: "",
 					agent,
+					deathEvidence: freshEvidence,
 					executor: payload.executor,
 				} satisfies SpawnRequest;
 			});
 		},
 	);
 	const claimed = await claimLaunch(kernel, ports, prepared);
-	if (!(await launchOnce(kernel, ports, claimed))) {
+	const launched = await launchOnce(kernel, ports, claimed);
+	if (!launched) {
 		throw new DagConflictError("resume launch claim changed before spawn");
 	}
-	return claimed;
+	if (launched.kind !== "runner") {
+		throw new DagConflictError("resume registered a non-runner agent");
+	}
+	return { ...claimed, agent: launched };
 }

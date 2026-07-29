@@ -20,7 +20,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Kernel, migrateDatabase } from "flywheel-v2-kernel";
+import {
+	initializeRollbackFenceTx,
+	Kernel,
+	migrateDatabase,
+} from "flywheel-v2-kernel";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_SCHEDULER_CONFIG } from "../config.js";
 import type { MemorySample, MemoryThresholds } from "../memory-watermark.js";
@@ -49,6 +53,16 @@ const HEALTHY: MemorySample = {
 	swapoutsTotal: 100,
 };
 
+function sessionBinding(agentId: string, generation: number): string {
+	return JSON.stringify({
+		v: 1,
+		host_epoch: "host-1",
+		session_id: `session-${agentId}-${generation}`,
+		pid: 10_000 + generation,
+		pid_start: `start-${agentId}-${generation}`,
+	});
+}
+
 class TestClock implements SchedulerClock {
 	now = Date.parse("2026-07-27T00:01:00.000Z");
 	nowMs(): number {
@@ -71,8 +85,14 @@ let savedEnv: Record<string, string | undefined>;
 function seedStaleLead(): void {
 	kernel.write("test.seed", (tx) => {
 		tx.run(
-			`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
-			 VALUES ('eng','lead',3,'2026-07-27T00:00:00.000Z','online')`,
+			`INSERT INTO agents(
+			   agent_id,kind,generation,instance_id,session_binding,last_poll_at,state
+			 )
+			 VALUES (
+			   'eng','lead',3,'instance-eng-3',@sessionBinding,
+			   '2026-07-27T00:00:00.000Z','online'
+			 )`,
+			{ sessionBinding: sessionBinding("eng", 3) },
 		);
 		tx.run(
 			`INSERT INTO mailbox
@@ -174,6 +194,12 @@ beforeEach(() => {
 	const path = join(dir, "flywheel-v2.db");
 	migrateDatabase({ path });
 	kernel = Kernel.open({ path });
+	kernel.write("test.rollback-fence", (tx) => {
+		initializeRollbackFenceTx(tx, {
+			authorityState: "live",
+			nowIso: "2026-07-27T00:00:00.000Z",
+		});
+	});
 	clock = new TestClock();
 	seedStaleLead();
 });
@@ -291,8 +317,13 @@ describe("scheduler-once against the real restart brake", () => {
 			kickstart: async () => {
 				kernel.write("test.new-generation", (tx) => {
 					tx.run(
-						`UPDATE agents SET generation=4,last_poll_at='2026-07-27T00:02:00.000Z'
+						`UPDATE agents
+						    SET generation=4,
+						        instance_id='instance-eng-4',
+						        session_binding=@sessionBinding,
+						        last_poll_at='2026-07-27T00:02:00.000Z'
 						 WHERE agent_id='eng'`,
+						{ sessionBinding: sessionBinding("eng", 4) },
 					);
 				});
 			},

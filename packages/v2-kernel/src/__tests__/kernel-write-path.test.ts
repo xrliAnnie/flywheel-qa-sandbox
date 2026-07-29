@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it } from "vitest";
 import { openKernelDb } from "../connection.js";
@@ -56,6 +57,19 @@ describe("Kernel single-writer transaction discipline", () => {
 		kernels.push(kernel);
 		return kernel;
 	}
+
+	it("can require an existing writable database without creating a missing file", () => {
+		temp = makeTempDatabase();
+
+		expect(() => {
+			const kernel = Kernel.open({
+				path: temp?.path ?? "",
+				fileMustExist: true,
+			});
+			kernel.close();
+		}).toThrow(/exist|open/i);
+		expect(existsSync(temp.path)).toBe(false);
+	});
 
 	it("uses BEGIN IMMEDIATE and applies the configured busy timeout", () => {
 		const statements: string[] = [];

@@ -36,6 +36,47 @@ function boundedTimeout(value: number | undefined, fallback: number): number {
 	return resolved;
 }
 
+function deliveredCorrelationExists(
+	result: unknown,
+	clientUserMessageId: string,
+): boolean {
+	if (typeof result !== "object" || result === null || Array.isArray(result)) {
+		throw new Error("Codex thread/read returned an ambiguous result");
+	}
+	const root = result as {
+		thread?: { turns?: unknown };
+		turns?: unknown;
+	};
+	const turns = root.thread?.turns ?? root.turns;
+	if (!Array.isArray(turns)) {
+		throw new Error("Codex thread/read returned no durable turns array");
+	}
+	for (const value of turns) {
+		if (typeof value !== "object" || value === null || Array.isArray(value)) {
+			continue;
+		}
+		const turn = value as { items?: unknown; input?: unknown };
+		const items = [
+			...(Array.isArray(turn.items) ? turn.items : []),
+			...(Array.isArray(turn.input) ? turn.input : []),
+		];
+		if (
+			items.some(
+				(item) =>
+					typeof item === "object" &&
+					item !== null &&
+					!Array.isArray(item) &&
+					((item as { clientUserMessageId?: unknown }).clientUserMessageId ===
+						clientUserMessageId ||
+						(item as { clientId?: unknown }).clientId === clientUserMessageId),
+			)
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
 export class CodexInjectionShim implements InjectionShim {
 	private readonly connect: ConnectDaemon;
 	private readonly connectTimeoutMs: number;
@@ -68,11 +109,18 @@ export class CodexInjectionShim implements InjectionShim {
 				clientName: "flywheel-v2-injection",
 			});
 			await client.initialize();
-			await client.startTurn(
+			const existing = await client.readThread(
 				target.threadId,
-				encodeInjectionEnvelope(message),
 				this.rpcTimeoutMs,
 			);
+			if (!deliveredCorrelationExists(existing, message.messageUid)) {
+				await client.startTurn(
+					target.threadId,
+					encodeInjectionEnvelope(message),
+					this.rpcTimeoutMs,
+					message.messageUid,
+				);
+			}
 		} finally {
 			if (client) {
 				client.close();

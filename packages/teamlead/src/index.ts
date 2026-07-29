@@ -8,6 +8,7 @@ import {
 	createMemoryService,
 	type MemoryService,
 } from "flywheel-edge-worker";
+import { requireLegacyWriterAllowedFromEnvironment } from "flywheel-v2-kernel";
 import { runBoundedShutdown } from "./bridge/bounded-shutdown.js";
 import { EventFilter } from "./bridge/EventFilter.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
@@ -17,6 +18,7 @@ import { loadConfig } from "./config.js";
 import { loadProjects } from "./ProjectConfig.js";
 
 async function main() {
+	requireLegacyWriterAllowedFromEnvironment();
 	const config = loadConfig();
 	const projects = loadProjects();
 	if (projects.length === 0) {

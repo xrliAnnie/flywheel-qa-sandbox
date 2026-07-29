@@ -36,6 +36,7 @@ import {
 	getProcessStart,
 	publishCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
+import { requireLegacyWriterAllowedFromEnvironment } from "flywheel-v2-kernel";
 import {
 	CodexDiscordGateway,
 	type DiscordInboundMessage,
@@ -820,6 +821,7 @@ function buildTuiGeneration(
 export async function main(
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
+	requireLegacyWriterAllowedFromEnvironment(env);
 	const config = parseCodexLeadTuiRuntimeConfig(env);
 	// FLY-398 (pin ①): a windowed FULL-ACCESS TUI Lead (= Claude-equal) IS now
 	// supported — it shares the thread's workspace-write sandbox in a cmux pane.

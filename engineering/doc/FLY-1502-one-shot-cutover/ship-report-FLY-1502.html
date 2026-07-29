@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FLY-1502 一次性切换 — QA 验收报告</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px 80px;
+    background: #f5f5f7; color: #1d1d1f;
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, "Helvetica Neue", sans-serif;
+    line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  header { margin-bottom: 28px; }
+  h1 { font-size: 30px; line-height: 1.25; margin: 0 0 8px; letter-spacing: -0.02em; }
+  .sub { color: #86868b; font-size: 15px; }
+  .verdict {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: #34c759; color: #fff; font-weight: 600;
+    padding: 6px 16px; border-radius: 999px; font-size: 15px; margin-top: 14px;
+  }
+  .card {
+    background: #fff; border-radius: 12px; padding: 22px 24px; margin-bottom: 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-left: 4px solid #007aff;
+  }
+  .card.green  { border-left-color: #34c759; }
+  .card.amber  { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray   { border-left-color: #86868b; }
+  .card h2 { font-size: 19px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .card .lede { color: #86868b; font-size: 14px; margin-bottom: 14px; }
+  .card p { margin: 0 0 12px; }
+  .card p:last-of-type { margin-bottom: 0; }
+  .section-title {
+    font-size: 13px; font-weight: 600; color: #86868b; text-transform: uppercase;
+    letter-spacing: 0.06em; margin: 32px 0 12px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 6px 0 4px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid #ececee; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  tr:last-child td { border-bottom: none; }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  code, .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 0.9em; }
+  .num { font-variant-numeric: tabular-nums; }
+  .tag {
+    display: inline-block; padding: 2px 9px; border-radius: 6px;
+    font-size: 12px; font-weight: 600; white-space: nowrap;
+  }
+  .tag.fixed { background: #e3f9e9; color: #1a7f37; }
+  .tag.was   { background: #ffeceb; color: #c0362c; }
+  .tag.note  { background: #fff3e0; color: #9a5b00; }
+  .kpi { display: flex; flex-wrap: wrap; gap: 12px; margin: 4px 0 2px; }
+  .kpi div {
+    flex: 1 1 150px; background: #fafafc; border-radius: 10px; padding: 12px 14px;
+  }
+  .kpi b { display: block; font-size: 22px; letter-spacing: -0.02em; }
+  .kpi span { color: #86868b; font-size: 12.5px; }
+  .rule { display: flex; gap: 10px; align-items: baseline; margin-bottom: 8px; }
+  .rule .dot { color: #34c759; font-weight: 700; }
+  .adopt { margin-top: 16px; padding-top: 14px; border-top: 1px solid #ececee; }
+  .adopt-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button.choice {
+    font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 8px;
+    border: 1px solid #d2d2d7; background: #fff; color: #1d1d1f; cursor: pointer;
+  }
+  button.choice:hover { background: #f5f5f7; }
+  button.choice[aria-pressed="true"][data-v="yes"] { background: #34c759; border-color: #34c759; color: #fff; }
+  button.choice[aria-pressed="true"][data-v="no"]  { background: #ff3b30; border-color: #ff3b30; color: #fff; }
+  textarea {
+    font: inherit; font-size: 14px; width: 100%; margin-top: 10px; padding: 10px 12px;
+    border: 1px solid #d2d2d7; border-radius: 8px; background: #fff; color: #1d1d1f;
+    resize: vertical; min-height: 62px;
+  }
+  textarea:focus { outline: 2px solid #007aff; outline-offset: -1px; border-color: transparent; }
+  .bar {
+    position: sticky; bottom: 0; margin-top: 28px; padding: 14px 16px;
+    background: rgba(255,255,255,0.92); backdrop-filter: blur(12px);
+    border-radius: 12px; box-shadow: 0 -1px 3px rgba(0,0,0,0.06);
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  }
+  .bar button {
+    font: inherit; font-size: 14px; font-weight: 500; padding: 9px 18px;
+    border-radius: 8px; border: none; background: #007aff; color: #fff; cursor: pointer;
+  }
+  .bar button.secondary { background: #e8e8ed; color: #1d1d1f; }
+  .bar .status { color: #86868b; font-size: 13px; }
+  footer { color: #86868b; font-size: 12.5px; margin-top: 26px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>一次性切换 — 验收报告</h1>
+  <div class="sub">FLY-1502 · 九步停机切换 + 上电十条检查 + 旧系统冻结围栏 · 2026-07-29</div>
+  <div class="verdict">✓ 第三轮验收通过</div>
+</header>
+
+<div class="card green">
+  <h2>一句话结论</h2>
+  <div class="lede">给非工程视角</div>
+  <p><b>切换工具现在能在真实数据上从头跑到尾了。</b>前两轮我判了两次不通过,都是在你的<b>真库副本</b>上跑出来的——不是理论担心。这一轮九个步骤全部走完,上电前的十项检查<b>每一项都拿出了可读的证据文件</b>,而且全程没有碰过生产环境一个字节。</p>
+  <p>这三轮拦下来的两个问题,任何一个真在凌晨发生,后果都不小:一个会<b>悄悄丢消息</b>而界面显示全绿;另一个会让切换<b>卡死在半路</b>,而那时所有 Lead 已经停机。</p>
+</div>
+
+<div class="section-title">拦下了什么</div>
+
+<div class="card">
+  <h2>问题一 · 活着的 Lead 被当成已经不在了</h2>
+  <div class="lede">第一轮发现 · 会静默丢消息 · <span class="tag fixed">已修复并复验</span></div>
+  <p>切换工具判断"这个 Lead 还在不在",看的是一张<b>不可靠的表</b>——只有派过任务的 Lead 才会登记在里面。结果:16 个正在运行的 Lead 里,有 <b>13 个它完全看不见</b>,包括 sub-lead、mufasa-lead、belle-lead。这些 Lead 的待读消息会被直接丢进死信,而不是迁移过去。</p>
+  <p><b>最危险的地方是它不报错。</b>对账是平的、人工待办是零、上电十条检查显示"通过"。你会在一个全绿的界面上按下上电键。</p>
+</div>
+
+<div class="card">
+  <h2>问题二 · 切换崩在半路后再也起不来</h2>
+  <div class="lede">第一轮发现 · 窗口内无法自恢复 · <span class="tag fixed">已修复并复验</span></div>
+  <p>我在第五步(数据迁移)中间强杀了进程。这一步其实<b>已经做完了</b>,只差最后记一笔账。可是重新跑的时候,它不认这个状态,去打开一个已经不存在的临时库,然后崩掉。我又平跑了四次,四次都一样——<b>永久卡死</b>。</p>
+  <p>而这个时刻,所有 Lead 已经被第三步停掉了。</p>
+</div>
+
+<div class="card amber">
+  <h2>问题三 · 修好一半之后露出的另一半</h2>
+  <div class="lede">第二轮发现 · <span class="tag fixed">已修复并复验</span></div>
+  <p>问题一修好之后,同样的毛病在<b>另一半</b>暴露出来:Lead 那边换了可靠来源,Runner 那边没换。结果 713 条待读里 <b>597 条(84%)</b>需要人工裁定,而"人工裁定必须为零"是硬性前置——切换直接走不下去。</p>
+  <p>这次我没有直接写建议,而是<b>先去试</b>:看起来把那张权威登记表加进配置就能解决,结果<b>当场崩了</b>(那张表少一个字段)。所以运维层面绕不过去,必须改代码。这条死路我写进脚本注释了,免得下一个人再踩。</p>
+</div>
+
+<div class="section-title">这一轮实测到什么程度</div>
+
+<div class="card green">
+  <h2>九步全部走通,十项检查证据齐全</h2>
+  <div class="lede">用你真实生产数据的副本跑,不是模拟数据</div>
+  <div class="kpi">
+    <div><b class="num">9 / 9</b><span>步骤全部完成</span></div>
+    <div><b class="num">12 / 12</b><span>上电检查项全部拿出证据</span></div>
+    <div><b class="num">979</b><span>条真实待读数据参与对账</span></div>
+    <div><b class="num">0</b><span>生产环境被改动</span></div>
+  </div>
+  <p style="margin-top:14px">前两轮因为卡在第五步,十项检查<b>只产出到第 1 条</b>。这一轮是三轮里第一次走过第五步。中途我还强杀了两次进程(一次刚进第五步、一次在数据落盘之后),重新跑都正确接上了,账本的防篡改链 235 行完整。</p>
+</div>
+
+<div class="card">
+  <h2>剩下 47 条"需要人工看一眼"的,不是毛病</h2>
+  <div class="lede">这是设计上的谨慎,不是缺陷</div>
+  <div class="rule"><span class="dot">•</span><div><b>42 条</b>:收件人是<b>此刻还在跑的 Runner</b>——里面就有这个工单自己的开发会话和我自己。工具拒绝替一个还活着的对象做决定,这是对的。真正切换时不会有这一类,因为规则要求这条流水线自己先收工。</div></div>
+  <div class="rule"><span class="dot">•</span><div><b>5 条</b>:收件人 ID 是<b>被截断的乱码</b>,结构上永远送不到任何人手里,只能人工判。</div></div>
+  <p style="margin-top:12px">人工裁定的通道这一轮也补上了,我验过它是<b>真的绑定到具体那一行</b>——故意传错校验码会被拒绝。不然"能写进账本"不等于"改对了行"。</p>
+</div>
+
+<div class="card purple">
+  <h2>一个留给你拍板的小问题</h2>
+  <div class="lede">工程侧问我:凌晨人工裁定那 5 条,要不要必须经你同意</div>
+  <p><b>我的判断:不用加你的审批,但建议补一处"让你看得见"。</b></p>
+  <p>理由是:裁定不能凭空造结果(只能在既定的三种处置里选)、必须精确对上那一行、必须写理由、全程留档可追。而且它发生在<b>你已有的两道确认</b>之前。为 5 条机械判断再加一道逐条审批,凌晨的操作代价和收益不成比例。</p>
+  <p><b>但有个真空:</b>最终确认时给你看的那份检查报告里,<b>完全没有"有 N 条被人工裁过"这个信息</b>。它只藏在一个上百 MB 的数据文件里。风险不在"运维能裁",而在<b>"裁了你不知道"</b>。建议把裁定条数打进那份报告,你在已有的最后一道确认上一次性过目即可。</p>
+  <div class="adopt">
+    <div class="adopt-row">
+      <span style="font-size:13px;color:#86868b">你的决定:</span>
+      <button class="choice" data-k="advisory" data-v="yes" aria-pressed="false">采纳</button>
+      <button class="choice" data-k="advisory" data-v="no" aria-pressed="false">不采纳</button>
+    </div>
+    <textarea data-k="advisory" placeholder="想说的话写这里…"></textarea>
+  </div>
+</div>
+
+<div class="section-title">诚实交代</div>
+
+<div class="card gray">
+  <h2>这一轮我自己的测试脚本有三处 bug</h2>
+  <div class="lede">都是我的,不是产品的</div>
+  <p>因为前两轮从没走到第七步,这三处才第一次暴露:探针命令的引号被吃掉、探针指向一个已经被围栏搬走的路径、还有一处检查取的时间点不对(在系统合法重开数据库之后)。</p>
+  <p>其中第一处反而说明产品是对的——它<b>正确拒绝了</b>一个"以错误理由失败"的写入测试。失败得不对,就不能算被围栏挡住。三处都已修正,并且我改的是"测真正承诺的东西",没有把标准放松。</p>
+</div>
+
+<div class="card gray">
+  <h2>"生产零变更"的证明方法我换了</h2>
+  <div class="lede">因为原方法在生产还活着的时候必然假报警</div>
+  <p>预演发生在"停掉所有旧程序"<b>之前</b>,所以生产本来就一直在写。首次比对就抓到两处无关变化:系统 Spotlight 的后台标签在漂,以及状态库涨了 52KB——那是所有 Lead 的心跳,<b>包括我自己这个会话</b>。</p>
+  <p>改成比对"预演真写了才会变"的东西:权限位、我们自己的服务清单,再加一条决定性判据——切换的写入都是<b>新建文件</b>,所以直接在生产目录里搜它特有的那几个文件名,一个都不许出现。结果是空的。</p>
+</div>
+
+<div class="section-title">还没完成的两件事</div>
+
+<div class="card amber">
+  <h2>这两件在我手上办不了,已交工程侧</h2>
+  <div class="rule"><span class="dot" style="color:#ff9500">1</span><div><b>持续集成还在跑</b>:我提交测试证据后代码指纹变了,自动检查正在新指纹上重跑(是"进行中",不是"失败")。绿之前不开上线闸门。</div></div>
+  <div class="rule"><span class="dot" style="color:#ff9500">2</span><div><b>代码评审绑的是旧指纹</b>:评审通过的是产品代码那一版,不含我这次<b>只增加测试和文档</b>的提交。重新绑定按流程由工程侧处理,<b>我不自己开上线闸门</b>。</div></div>
+</div>
+
+<div class="bar">
+  <button id="copy">复制全部留言</button>
+  <button id="export" class="secondary">导出为文件</button>
+  <span class="status" id="status">留言会存在本机浏览器里,刷新不丢。</span>
+</div>
+
+<footer>
+  三轮验收的完整技术记录(含两个证伪实验与全部证据路径)在
+  <span class="mono">engineering/doc/FLY-1502-one-shot-cutover/qa-report.md</span>。
+</footer>
+
+</div>
+
+<script>
+(function () {
+  var KEY = "fly1502-ship-report-v1";
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { saved = {}; }
+
+  function persist() {
+    try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
+  }
+
+  document.querySelectorAll("textarea[data-k]").forEach(function (el) {
+    var k = el.getAttribute("data-k");
+    if (saved[k] && saved[k].note) el.value = saved[k].note;
+    el.addEventListener("input", function () {
+      saved[k] = saved[k] || {};
+      saved[k].note = el.value;
+      persist();
+    });
+  });
+
+  document.querySelectorAll("button.choice").forEach(function (el) {
+    var k = el.getAttribute("data-k");
+    var v = el.getAttribute("data-v");
+    if (saved[k] && saved[k].choice === v) el.setAttribute("aria-pressed", "true");
+    el.addEventListener("click", function () {
+      saved[k] = saved[k] || {};
+      saved[k].choice = saved[k].choice === v ? null : v;
+      document.querySelectorAll('button.choice[data-k="' + k + '"]').forEach(function (b) {
+        b.setAttribute("aria-pressed", String(saved[k].choice === b.getAttribute("data-v")));
+      });
+      persist();
+    });
+  });
+
+  function compose() {
+    var out = ["FLY-1502 验收报告 — Annie 的留言", ""];
+    var any = false;
+    Object.keys(saved).forEach(function (k) {
+      var e = saved[k] || {};
+      if (!e.choice && !(e.note || "").trim()) return;
+      any = true;
+      out.push("[" + k + "] " + (e.choice === "yes" ? "采纳" : e.choice === "no" ? "不采纳" : "未表态"));
+      if ((e.note || "").trim()) out.push("  " + e.note.trim());
+      out.push("");
+    });
+    if (!any) out.push("(暂无留言)");
+    return out.join("\n");
+  }
+
+  var status = document.getElementById("status");
+  function flash(msg) {
+    status.textContent = msg;
+    setTimeout(function () { status.textContent = "留言会存在本机浏览器里,刷新不丢。"; }, 2600);
+  }
+
+  document.getElementById("copy").addEventListener("click", function () {
+    var text = compose();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { flash("已复制到剪贴板。"); },
+        function () { flash("复制失败,请用「导出为文件」。"); }
+      );
+    } else {
+      flash("这个浏览器不支持直接复制,请用「导出为文件」。");
+    }
+  });
+
+  document.getElementById("export").addEventListener("click", function () {
+    var blob = new Blob([compose()], { type: "text/plain;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "FLY-1502-留言.txt";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    flash("已导出。");
+  });
+})();
+</script>
+</body>
+</html>

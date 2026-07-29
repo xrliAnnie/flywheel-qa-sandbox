@@ -51,7 +51,7 @@ export function openKernelDb(opts: InternalConnOptions): Database.Database {
 	const busyTimeoutMs = opts.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS;
 	requirePositiveFinite(busyTimeoutMs, "busyTimeoutMs");
 
-	if (!opts.readonly && opts.path !== ":memory:") {
+	if (!opts.readonly && !opts.fileMustExist && opts.path !== ":memory:") {
 		const parent = dirname(opts.path);
 		mkdirSync(parent, { recursive: true, mode: 0o700 });
 		chmodSync(parent, 0o700);
@@ -62,7 +62,7 @@ export function openKernelDb(opts: InternalConnOptions): Database.Database {
 		: undefined;
 	const db = new Database(opts.path, {
 		readonly: opts.readonly ?? false,
-		fileMustExist: opts.readonly ?? false,
+		fileMustExist: opts.fileMustExist ?? opts.readonly ?? false,
 		timeout: busyTimeoutMs,
 		verbose,
 	});

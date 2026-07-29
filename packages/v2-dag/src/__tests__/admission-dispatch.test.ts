@@ -298,7 +298,22 @@ describe("DAG admission and dispatch", () => {
 		fixture.provision("lead-a", "lead");
 		fixture.provision("legacy-agent", "runner");
 		fixture.kernel.write("test.legacy-generation", (tx) => {
-			tx.run("UPDATE agents SET generation=1 WHERE agent_id='legacy-agent'");
+			tx.run(
+				`UPDATE agents
+				    SET generation=1,
+				        instance_id='legacy-session',
+				        session_binding=@sessionBinding
+				  WHERE agent_id='legacy-agent'`,
+				{
+					sessionBinding: JSON.stringify({
+						v: 1,
+						host_epoch: "host-1",
+						session_id: "legacy-session",
+						pid: 9_999,
+						pid_start: "legacy-start",
+					}),
+				},
+			);
 		});
 		const { ports } = makePorts(fixture.clock);
 
@@ -662,6 +677,13 @@ describe("DAG admission and dispatch", () => {
 						throw new Error("ordinary spawn failure");
 					}
 					launched.push(request.taskId);
+					return {
+						v: 1,
+						hostEpoch: "host-1",
+						sessionId: request.sessionRef,
+						pid: 10_003,
+						pidStart: `test-start:${request.sessionRef}`,
+					};
 				},
 			},
 		});

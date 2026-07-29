@@ -28,14 +28,33 @@ class FakeDaemonTransport {
 	constructor(
 		private readonly mode: RpcMode,
 		private readonly onTransportClosed: () => void,
+		private readonly correlations = new Set<string>(),
 	) {}
 
 	send(frame: unknown): void {
 		this.frames.push(frame);
-		const request = frame as { id?: number; method?: string };
+		const request = frame as {
+			id?: number;
+			method?: string;
+			params?: { clientUserMessageId?: string };
+		};
 		if (typeof request.id !== "number") return;
 		if (request.method === "turn/start" && this.mode === "timeout") return;
 		queueMicrotask(() => {
+			if (request.method === "thread/read") {
+				this.messageHandler({
+					jsonrpc: "2.0",
+					id: request.id,
+					result: {
+						thread: {
+							turns: [...this.correlations].map((clientUserMessageId) => ({
+								items: [{ clientUserMessageId }],
+							})),
+						},
+					},
+				});
+				return;
+			}
 			if (request.method === "turn/start" && this.mode === "busy") {
 				this.messageHandler({
 					jsonrpc: "2.0",
@@ -43,6 +62,12 @@ class FakeDaemonTransport {
 					error: { code: -32000, message: "thread already active" },
 				});
 				return;
+			}
+			if (
+				request.method === "turn/start" &&
+				request.params?.clientUserMessageId
+			) {
+				this.correlations.add(request.params.clientUserMessageId);
 			}
 			this.messageHandler({ jsonrpc: "2.0", id: request.id, result: {} });
 		});
@@ -118,10 +143,15 @@ describe("vendor InjectionShim implementations", () => {
 
 	it("resolves when Codex persistently accepts turn/start without waiting for task completion", async () => {
 		const transports: FakeDaemonTransport[] = [];
+		const correlations = new Set<string>();
 		let active = 0;
 		const connect = vi.fn(async () => {
 			active++;
-			const transport = new FakeDaemonTransport("success", () => active--);
+			const transport = new FakeDaemonTransport(
+				"success",
+				() => active--,
+				correlations,
+			);
 			transports.push(transport);
 			return transport;
 		});
@@ -147,17 +177,33 @@ describe("vendor InjectionShim implementations", () => {
 			connectTimeoutMs: 123,
 		});
 		expect(active).toBe(0);
-		for (const transport of transports) {
-			expect(transport.closeCalls).toBe(1);
-			expect(transport.frames).toContainEqual({
+		expect(
+			transports.flatMap((transport) =>
+				transport.frames.filter(
+					(frame) => (frame as { method?: string }).method === "turn/start",
+				),
+			),
+		).toEqual([
+			{
 				jsonrpc: "2.0",
-				id: 2,
+				id: 3,
 				method: "turn/start",
 				params: {
 					threadId: "thread-1",
 					input: [{ type: "text", text: ENVELOPE }],
+					clientUserMessageId: MESSAGE.messageUid,
 				},
-			});
+			},
+		]);
+		for (const transport of transports) {
+			expect(transport.closeCalls).toBe(1);
+			expect(transport.frames).toContainEqual(
+				expect.objectContaining({
+					jsonrpc: "2.0",
+					id: 2,
+					method: "thread/read",
+				}),
+			);
 			expect(
 				transport.frames.some(
 					(frame) => (frame as { method?: string }).method === "turn/steer",

@@ -1,0 +1,24 @@
+flowchart LR
+    subgraph OLD["切换前:三处分散的账本(要退役)"]
+        C1["comm.db<br/>(每个项目一个,<br/>Runner 协调账)"]
+        J1["JSON 信箱文件<br/>(Lead↔Runner 传话)"]
+        K1["Codex Lead 流水账<br/>journal.db"]
+    end
+    subgraph MIG["切换窗口"]
+        M["对账迁移器<br/>未读消息按统一身份去重,<br/>账目双向核对"]
+    end
+    subgraph NEW["切换后:一本总账"]
+        V2[("flywheel-v2.db<br/>唯一权威库<br/>(信箱/任务/闸门/动作账)")]
+        HOST["v2 引擎常驻进程<br/>(派活、送信、心跳)"]
+        TB["瘦身版 Bridge<br/>(只管 Discord 收发)"]
+    end
+    DISCORD["Discord<br/>(Annie 的唯一窗口,不变)"]
+    C1 --> M
+    J1 --> M
+    M --> V2
+    K1 -.->|"只证清零+归档,不迁移"| MIG
+    DISCORD <--> TB
+    TB -->|"收到的消息入总账"| V2
+    HOST <--> V2
+    HOST -->|"把消息送进 Lead/Runner 会话"| AGENTS["Lead 与 Runner<br/>(Claude/Codex 会话)"]
+    AGENTS -->|"干完活提交回执"| HOST

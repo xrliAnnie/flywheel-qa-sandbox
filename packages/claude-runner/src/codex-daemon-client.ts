@@ -423,6 +423,16 @@ export class CodexDaemonClient {
 		return extractThreadId(res.result) ?? threadId;
 	}
 
+	/** thread/read with turns — used by durable injection reconciliation. */
+	async readThread(threadId: string, timeoutMs?: number): Promise<unknown> {
+		const res = await this.request(
+			"thread/read",
+			{ threadId, includeTurns: true },
+			timeoutMs,
+		);
+		return res.result;
+	}
+
 	async setGoal(
 		input: {
 			threadId: string;
@@ -500,12 +510,20 @@ export class CodexDaemonClient {
 		threadId: string,
 		text: string,
 		timeoutMs?: number,
+		clientUserMessageId?: string,
 	): Promise<void> {
+		if (
+			clientUserMessageId !== undefined &&
+			clientUserMessageId.trim().length === 0
+		) {
+			throw new TypeError("clientUserMessageId must not be empty");
+		}
 		await this.request(
 			"turn/start",
 			{
 				threadId,
 				input: [{ type: "text", text }],
+				...(clientUserMessageId ? { clientUserMessageId } : {}),
 			},
 			timeoutMs,
 		);

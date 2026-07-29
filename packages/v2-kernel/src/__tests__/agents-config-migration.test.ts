@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { openKernelDb } from "../connection.js";
 import { MIGRATIONS } from "../migrations/index.js";
 import { runMigrations } from "../migrator.js";
-import { makeTempDatabase, type TempDatabase } from "./helpers.js";
+import {
+	boundAgentParams,
+	INSERT_BOUND_AGENT_SQL,
+	makeTempDatabase,
+	type TempDatabase,
+} from "./helpers.js";
 
 const MAILBOX_INDEXES = [
 	"mailbox_pending_age",
@@ -125,8 +130,8 @@ describe("agents/config mailbox cutover migration", () => {
 				  '2026-07-28T00:00:00.000Z','running')`,
 			).run();
 
-			expect(runMigrations(db)).toEqual({
-				applied: MIGRATIONS.slice(4).map((migration) => migration.id),
+			expect(runMigrations(db, MIGRATIONS.slice(4, 8))).toEqual({
+				applied: MIGRATIONS.slice(4, 8).map((migration) => migration.id),
 			});
 			expect(
 				db
@@ -231,10 +236,13 @@ describe("agents/config mailbox cutover migration", () => {
 		const db = openKernelDb({ path: temp.path });
 		try {
 			runMigrations(db);
-			db.prepare(
-				`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
-				 VALUES ('lead-a','lead',2,NULL,'online')`,
-			).run();
+			db.prepare(INSERT_BOUND_AGENT_SQL).run(
+				boundAgentParams({
+					agentId: "lead-a",
+					kind: "lead",
+					generation: 2,
+				}),
+			);
 
 			expect(() =>
 				db.prepare("DELETE FROM agents WHERE agent_id='lead-a'").run(),

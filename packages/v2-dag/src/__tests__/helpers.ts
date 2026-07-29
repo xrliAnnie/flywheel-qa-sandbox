@@ -12,6 +12,7 @@ import type {
 	GitHubObservationPort,
 	GitPort,
 	HostPort,
+	InjectionRefBuilder,
 	LaunchLockPort,
 	ProcessProbePort,
 	RunnerControlPort,
@@ -65,6 +66,7 @@ export function makePorts(
 		runnerControl: RunnerControlPort;
 		locks: LaunchLockPort;
 		host: HostPort;
+		injectionRef: InjectionRefBuilder;
 		githubObservation: GitHubObservationPort;
 		githubMerge: GitHubMergePort;
 	}> = {},
@@ -94,6 +96,13 @@ export function makePorts(
 		({
 			async spawn(request) {
 				spawned.push(request);
+				return {
+					v: 1,
+					hostEpoch: "host-1",
+					sessionId: request.sessionRef,
+					pid: 10_001,
+					pidStart: `test-start:${request.sessionRef}`,
+				};
 			},
 		} satisfies SpawnPort);
 	return {
@@ -145,6 +154,19 @@ export function makePorts(
 						return "host-1";
 					},
 				} satisfies HostPort),
+			injectionRef:
+				overrides.injectionRef ??
+				({
+					build(input) {
+						return JSON.stringify({
+							v: 1,
+							backend: "claude",
+							inboxPath: `/tmp/flywheel-v2/${input.activationId}.json`,
+							sidecarPath: `/tmp/flywheel-v2/${input.activationId}.pending.json`,
+							toAgent: input.agentId,
+						});
+					},
+				} satisfies InjectionRefBuilder),
 			githubObservation: overrides.githubObservation,
 			githubMerge: overrides.githubMerge,
 		},

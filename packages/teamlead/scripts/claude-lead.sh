@@ -69,6 +69,16 @@
 #     node "$FLYWHEEL_COMM_CLI" capture --exec-id <exec-id>
 set -euo pipefail
 
+# FLY-1502: after the machine cutover is armed, no legacy Lead supervisor may
+# enter its restart loop. The shared v2 authority parser is deliberately used
+# here as well; a missing/corrupt armed authority fails closed. A structured
+# dry-run only renders a launch plan and never becomes a writer, so it stays
+# hermetic and does not load the runtime package before its node shim executes.
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
+  node --input-type=module -e \
+    'import("flywheel-v2-kernel").then(({requireLegacyWriterAllowedFromEnvironment}) => requireLegacyWriterAllowedFromEnvironment(process.env))'
+fi
+
 # ════════════════════════════════════════════════════════════════
 # Layer 1: One-time Preflight
 # ════════════════════════════════════════════════════════════════

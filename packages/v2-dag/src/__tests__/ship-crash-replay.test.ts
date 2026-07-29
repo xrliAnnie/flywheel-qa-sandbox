@@ -102,7 +102,20 @@ describe("external action crash replay", () => {
 		});
 		fixture.kernel.write("test.rotate-ship-actor", (tx) => {
 			tx.run(
-				"UPDATE agents SET generation=1 WHERE agent_id='ship-agent' AND generation=0",
+				`UPDATE agents
+				    SET generation=1,
+				        instance_id='ship-session',
+				        session_binding=@sessionBinding
+				  WHERE agent_id='ship-agent' AND generation=0`,
+				{
+					sessionBinding: JSON.stringify({
+						v: 1,
+						host_epoch: "host-1",
+						session_id: "ship-session",
+						pid: 9_998,
+						pid_start: "ship-start",
+					}),
+				},
 			);
 		});
 		expect(await reconcileShipActions(fixture.kernel, basePorts)).toMatchObject(

@@ -58,7 +58,12 @@ class AcceptThenKeepWorkingTransport {
 		const request = frame as { id?: number; method?: string };
 		if (typeof request.id !== "number") return;
 		queueMicrotask(() => {
-			this.onFrame({ jsonrpc: "2.0", id: request.id, result: {} });
+			this.onFrame({
+				jsonrpc: "2.0",
+				id: request.id,
+				result:
+					request.method === "thread/read" ? { thread: { turns: [] } } : {},
+			});
 			if (request.method !== "turn/start") return;
 			// Whatever the vendor does next is a later lifecycle, not this delivery.
 			if (this.afterAccept === "silence") return;
@@ -99,11 +104,12 @@ describe("Codex deliver settles on vendor acceptance, not task completion", () =
 		// "accepted" would be an assumption rather than an observation.
 		expect(transport.sent).toContainEqual({
 			jsonrpc: "2.0",
-			id: 2,
+			id: 3,
 			method: "turn/start",
 			params: {
 				threadId: "thread-1",
 				input: [{ type: "text", text: ENVELOPE }],
+				clientUserMessageId: MESSAGE.messageUid,
 			},
 		});
 		// The daemon never reported the task done, yet delivery already settled —
@@ -133,11 +139,12 @@ describe("Codex deliver settles on vendor acceptance, not task completion", () =
 			// The full envelope was the turn input in this case too.
 			expect(transport.sent).toContainEqual({
 				jsonrpc: "2.0",
-				id: 2,
+				id: 3,
 				method: "turn/start",
 				params: {
 					threadId: "thread-1",
 					input: [{ type: "text", text: ENVELOPE }],
+					clientUserMessageId: MESSAGE.messageUid,
 				},
 			});
 			// Non-vacuous: the notification really was emitted. Delivery still
@@ -167,7 +174,14 @@ describe("Codex deliver settles on vendor acceptance, not task completion", () =
 										id: request.id,
 										error: { code: -32000, message: "thread already active" },
 									}
-								: { jsonrpc: "2.0", id: request.id, result: {} },
+								: {
+										jsonrpc: "2.0",
+										id: request.id,
+										result:
+											request.method === "thread/read"
+												? { thread: { turns: [] } }
+												: {},
+									},
 						);
 					});
 				},
@@ -191,11 +205,12 @@ describe("Codex deliver settles on vendor acceptance, not task completion", () =
 		// daemon, not from the shim declining to send.
 		expect(sent).toContainEqual({
 			jsonrpc: "2.0",
-			id: 2,
+			id: 3,
 			method: "turn/start",
 			params: {
 				threadId: "thread-1",
 				input: [{ type: "text", text: ENVELOPE }],
+				clientUserMessageId: MESSAGE.messageUid,
 			},
 		});
 	});

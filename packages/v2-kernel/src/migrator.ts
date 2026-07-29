@@ -1,7 +1,10 @@
-import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { openKernelDb } from "./connection.js";
-import { MIGRATIONS, type Migration } from "./migrations/index.js";
+import {
+	MIGRATIONS,
+	type Migration,
+	migrationChecksum,
+} from "./migrations/index.js";
 import type { MigrateOptions } from "./types.js";
 
 const MIGRATION_TABLE_DDL = `CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -12,10 +15,6 @@ const MIGRATION_TABLE_DDL = `CREATE TABLE IF NOT EXISTS schema_migrations (
 
 interface AppliedMigration {
 	checksum: string;
-}
-
-function checksum(ddl: string): string {
-	return createHash("sha256").update(ddl).digest("hex");
 }
 
 function foreignKeysEnabled(db: Database.Database): boolean {
@@ -35,7 +34,7 @@ function validateAppliedChecksum(
 	if (!row) {
 		return false;
 	}
-	const expected = checksum(migration.ddl);
+	const expected = migrationChecksum(migration.ddl);
 	if (row.checksum !== expected) {
 		throw new Error(
 			`migration ${migration.id} checksum mismatch: expected ${expected}, found ${row.checksum}`,
@@ -56,7 +55,11 @@ function readApplied(
 function recordApplied(db: Database.Database, migration: Migration): void {
 	db.prepare(
 		"INSERT INTO schema_migrations (id, checksum, applied_at) VALUES (?, ?, ?)",
-	).run(migration.id, checksum(migration.ddl), new Date().toISOString());
+	).run(
+		migration.id,
+		migrationChecksum(migration.ddl),
+		new Date().toISOString(),
+	);
 }
 
 function ensureMigrationTable(db: Database.Database): void {

@@ -194,7 +194,7 @@ export const FENCE = {
 	mailboxCasPendingApplied: `UPDATE mailbox SET state='applied', applied_at=:now
      WHERE message_uid=:uid AND state='pending'`,
 	processingAttemptCasRunningSettled: `UPDATE processing_attempts
-     SET outcome=:outcome, settled_at=:settledAt
+     SET outcome=:outcome, settled_at=:settledAt, proposal_digest=:proposalDigest
      WHERE attempt_uid=:attemptUid AND outcome='running'`,
 	activationCasActiveTerminal: `UPDATE activations SET state='terminal'
      WHERE id=:activationId AND state='active'`,

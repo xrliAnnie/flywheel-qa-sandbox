@@ -3,8 +3,13 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
-import { Kernel, migrateDatabase } from "flywheel-v2-kernel";
+import {
+	type ExistingDatabaseOptions,
+	type Kernel,
+	openExistingKernel,
+} from "flywheel-v2-kernel";
 import { resolveSchedulerConfig, type SchedulerConfig } from "./config.js";
+import { readMatchingRuntimeAuthority } from "./runtime-authority.js";
 import type { SchedulerMemoryPort } from "./scheduler-once.js";
 import { runSchedulerOnce } from "./scheduler-once.js";
 import { finishSchedulerRun, startSchedulerRun } from "./scheduler-store.js";
@@ -16,6 +21,11 @@ import {
 
 interface CommonOptions {
 	dbPath: string;
+	markerPath: string;
+	authorityPath: string;
+	armedPath: string;
+	windowId: string;
+	epoch: number;
 }
 
 export interface SchedulerRunCliOptions extends CommonOptions {
@@ -49,6 +59,11 @@ export type SchedulerCliOptions =
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const VALUE_FLAGS = new Set([
 	"--db",
+	"--marker",
+	"--authority",
+	"--armed",
+	"--window",
+	"--epoch",
 	"--project",
 	"--backend",
 	"--gate-bin",
@@ -114,19 +129,62 @@ function requireBackend(values: Map<string, string | true>): "launchd" {
 	return backend;
 }
 
+function requireString(
+	values: Map<string, string | true>,
+	flag: string,
+): string {
+	const value = stringValue(values, flag);
+	if (!value) throw new TypeError(`${flag} is required`);
+	return value;
+}
+
+function commonOptions(values: Map<string, string | true>): CommonOptions {
+	const epochRaw = requireString(values, "--epoch");
+	const epoch = Number(epochRaw);
+	if (
+		!Number.isSafeInteger(epoch) ||
+		epoch <= 0 ||
+		String(epoch) !== epochRaw
+	) {
+		throw new TypeError("--epoch must be a canonical positive integer");
+	}
+	return {
+		dbPath: requireAbsolute(stringValue(values, "--db"), "--db"),
+		markerPath: requireAbsolute(stringValue(values, "--marker"), "--marker"),
+		authorityPath: requireAbsolute(
+			stringValue(values, "--authority"),
+			"--authority",
+		),
+		armedPath: requireAbsolute(stringValue(values, "--armed"), "--armed"),
+		windowId: requireString(values, "--window"),
+		epoch,
+	};
+}
+
 export function parseSchedulerCliArgs(
 	argv: readonly string[],
 ): SchedulerCliOptions {
 	const values = parseValues(argv);
-	const dbPath = requireAbsolute(stringValue(values, "--db"), "--db");
+	const common = commonOptions(values);
 	const after = stringValue(values, "--check-receipt-after");
 	if (after !== undefined) {
-		if (values.size !== 2) {
-			throw new TypeError("--check-receipt-after accepts only itself and --db");
+		const allowed = new Set([
+			"--db",
+			"--marker",
+			"--authority",
+			"--armed",
+			"--window",
+			"--epoch",
+			"--check-receipt-after",
+		]);
+		for (const flag of values.keys()) {
+			if (!allowed.has(flag)) {
+				throw new TypeError(`--check-receipt-after does not accept ${flag}`);
+			}
 		}
 		return {
 			mode: "check-receipt",
-			dbPath,
+			...common,
 			afterIso: requireIso(after, "--check-receipt-after"),
 		};
 	}
@@ -140,6 +198,11 @@ export function parseSchedulerCliArgs(
 	if (values.has("--probe")) {
 		const allowed = new Set([
 			"--db",
+			"--marker",
+			"--authority",
+			"--armed",
+			"--window",
+			"--epoch",
 			"--backend",
 			"--run-id",
 			"--host",
@@ -150,7 +213,7 @@ export function parseSchedulerCliArgs(
 				throw new TypeError(`probe mode does not accept ${flag}`);
 			}
 		}
-		return { mode: "probe", dbPath, backend, runId, host };
+		return { mode: "probe", ...common, backend, runId, host };
 	}
 
 	const projectName = stringValue(values, "--project");
@@ -178,7 +241,7 @@ export function parseSchedulerCliArgs(
 	}
 	return {
 		mode: "run",
-		dbPath,
+		...common,
 		projectName,
 		backend,
 		gateBin,
@@ -204,9 +267,21 @@ function unknownMemory(config: SchedulerConfig): SchedulerMemoryPort {
 	};
 }
 
+function openSchedulerKernel(options: CommonOptions): Kernel {
+	const contract: ExistingDatabaseOptions = {
+		dbPath: options.dbPath,
+		markerPath: options.markerPath,
+		authorityPath: options.authorityPath,
+		armedPath: options.armedPath,
+		expectedWindowId: options.windowId,
+		expectedEpoch: options.epoch,
+		allowedAuthorityStates: ["cutover", "live"],
+	};
+	return openExistingKernel(contract);
+}
+
 async function runProbe(options: SchedulerProbeCliOptions): Promise<number> {
-	migrateDatabase({ path: options.dbPath });
-	const kernel = Kernel.open({ path: options.dbPath });
+	const kernel = openSchedulerKernel(options);
 	try {
 		const now = new Date();
 		const acquired = startSchedulerRun(kernel, {
@@ -233,7 +308,7 @@ async function runProbe(options: SchedulerProbeCliOptions): Promise<number> {
 }
 
 function checkReceipt(options: SchedulerReceiptCliOptions): number {
-	const kernel = Kernel.open({ path: options.dbPath });
+	const kernel = openSchedulerKernel(options);
 	try {
 		const receipt = kernel.read((tx) =>
 			tx.get<{
@@ -265,13 +340,19 @@ function checkReceipt(options: SchedulerReceiptCliOptions): number {
 
 async function runSweep(options: SchedulerRunCliOptions): Promise<number> {
 	const config = resolveSchedulerConfig();
-	migrateDatabase({ path: options.dbPath });
-	const kernel = Kernel.open({ path: options.dbPath });
+	const kernel = openSchedulerKernel(options);
 	const timeout = setTimeout(() => {
 		process.stderr.write("scheduler-once hard timeout\n");
 		process.exit(124);
 	}, config.hardTimeoutMs);
 	try {
+		const authorityState = readMatchingRuntimeAuthority(kernel, options);
+		if (authorityState === "cutover") {
+			process.stdout.write(
+				`${JSON.stringify({ status: "held", reason: "awaiting founder final GO" })}\n`,
+			);
+			return 0;
+		}
 		let memory: SchedulerMemoryPort;
 		try {
 			memory = await DarwinMemoryPort.create(undefined, config);

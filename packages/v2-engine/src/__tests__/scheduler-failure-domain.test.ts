@@ -14,7 +14,15 @@
  */
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	advanceDatabaseAuthorityStateTx,
+	armCutoverAuthority,
+	publishLiveCutoverAuthority,
+	publishMigrationCompleteMarker,
+	seedPreCutoverAuthority,
+} from "flywheel-v2-kernel";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EngineDriver } from "../driver.js";
 import type { ConversionResult } from "../types.js";
@@ -22,6 +30,7 @@ import {
 	type EngineFixture,
 	enqueueMailbox,
 	makeEngineFixture,
+	testSessionBinding,
 } from "./helpers.js";
 
 const SCHEDULER_CLI = fileURLToPath(
@@ -35,7 +44,72 @@ const LEAD_DRAFT = {
 	kind: "lead",
 	leadId: "lead-a",
 	instanceId: "instance-1",
+	sessionBinding: testSessionBinding("instance-1"),
 } as const;
+const SCHEDULER_WINDOW = "scheduler-failure-domain";
+const SCHEDULER_EPOCH = 1;
+
+function schedulerContract(fixture: EngineFixture): {
+	markerPath: string;
+	authorityPath: string;
+	armedPath: string;
+} {
+	const markerPath = join(fixture.dir, "migration-complete.json");
+	const authorityPath = join(fixture.dir, "cutover-authority.json");
+	const armedPath = join(fixture.dir, "cutover-armed.json");
+	if (!existsSync(markerPath)) {
+		seedPreCutoverAuthority({
+			authorityPath,
+			armedPath,
+			windowId: SCHEDULER_WINDOW,
+			epoch: SCHEDULER_EPOCH,
+			nowIso: "2026-07-28T00:00:00.000Z",
+		});
+		armCutoverAuthority({
+			authorityPath,
+			armedPath,
+			windowId: SCHEDULER_WINDOW,
+			epoch: SCHEDULER_EPOCH,
+			nowIso: "2026-07-28T00:01:00.000Z",
+		});
+		fixture.kernel.write("test.scheduler-cutover-window", (tx) => {
+			tx.run(
+				`INSERT INTO meta(key,value,updated_at)
+				 VALUES ('cutover_window_id',@window,@now)
+				 ON CONFLICT(key) DO UPDATE SET
+				   value=excluded.value,updated_at=excluded.updated_at`,
+				{
+					window: SCHEDULER_WINDOW,
+					now: "2026-07-28T00:01:00.000Z",
+				},
+			);
+		});
+		publishMigrationCompleteMarker({
+			dbPath: fixture.path,
+			markerPath,
+			authorityPath,
+			armedPath,
+			expectedWindowId: SCHEDULER_WINDOW,
+			expectedEpoch: SCHEDULER_EPOCH,
+			nowIso: "2026-07-28T00:02:00.000Z",
+		});
+		fixture.kernel.write("test.scheduler-live-authority", (tx) => {
+			advanceDatabaseAuthorityStateTx(tx, {
+				expected: "cutover",
+				next: "live",
+				nowIso: "2026-07-28T00:02:01.000Z",
+			});
+		});
+		publishLiveCutoverAuthority({
+			authorityPath,
+			armedPath,
+			windowId: SCHEDULER_WINDOW,
+			epoch: SCHEDULER_EPOCH,
+			nowIso: "2026-07-28T00:02:02.000Z",
+		});
+	}
+	return { markerPath, authorityPath, armedPath };
+}
 
 /**
  * Run the real short-lived scheduler process against the shared database.
@@ -51,6 +125,7 @@ function runSchedulerCli(
 			`v2-scheduler CLI not built at ${SCHEDULER_CLI} — run \`pnpm build\` at the workspace root first`,
 		);
 	}
+	const contract = schedulerContract(fixture);
 	try {
 		execFileSync(
 			process.execPath,
@@ -58,6 +133,16 @@ function runSchedulerCli(
 				SCHEDULER_CLI,
 				"--db",
 				fixture.path,
+				"--marker",
+				contract.markerPath,
+				"--authority",
+				contract.authorityPath,
+				"--armed",
+				contract.armedPath,
+				"--window",
+				SCHEDULER_WINDOW,
+				"--epoch",
+				String(SCHEDULER_EPOCH),
 				"--project",
 				"flywheel",
 				"--backend",
