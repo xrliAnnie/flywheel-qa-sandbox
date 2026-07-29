@@ -1,0 +1,11 @@
+flowchart TB
+    C["节点完成合同 = 声明的 + 派生的"] --> D1["声明的(建图时写死)<br/>例:QA 节点要一份 verdict 判定<br/>例:要求产出某个文件"]
+    C --> D2["派生的(看实际改了什么)<br/>对比上次完成点到现在的真实 diff"]
+    D2 --> E1["改了产品代码<br/>→ 必须有另一族 AI 的<br/>逐字节 code review"]
+    D2 --> E2["只改测试 / 只改文档 / 没改<br/>→ 不要求 code review"]
+    E1 --> F["证据齐了?<br/>齐:完成状态+证据同一笔账落库<br/>不齐:节点保持未完成,发告警"]
+    E2 --> F
+    G["节点叫什么名字(design/implement/qa)<br/>完全不参与判断"] -.被消灭的旧病.- C
+    style C fill:#e8f0fe,stroke:#007aff
+    style G fill:#fee,stroke:#ff3b30
+    style F fill:#e6f7ec,stroke:#34c759

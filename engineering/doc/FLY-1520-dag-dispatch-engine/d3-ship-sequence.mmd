@@ -1,0 +1,14 @@
+sequenceDiagram
+    participant F as founder Annie
+    participant K as 权威账本 flywheel-v2.db
+    participant A as 执行 agent
+    participant G as GitHub
+    F->>K: 批准 ship 并绑定当前代码位置 head
+    K->>K: 签发一次性通行证 capability
+    K-->>A: 信箱通知 可以 ship 了
+    A->>G: 先看一眼 PR 现在的位置
+    A->>K: 短事务三条检查<br/>1 批准还绑着当前位置<br/>2 图上节点全部成功<br/>3 位置没有漂移<br/>并消费通行证 记「准备做」
+    A->>G: 执行 merge<br/>告诉 GitHub 只在位置没变时合入
+    G-->>A: 成功 或 失败
+    A->>K: 结果记进黑匣子<br/>失败按 2·4·8·15·15 分钟重试 至多 6 次
+    Note over A,K: ship 全程不再重新过问 code review · QA · 文档

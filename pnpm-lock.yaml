@@ -578,6 +578,25 @@ importers:
         specifier: ^3.1.4
         version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
+  packages/v2-dag:
+    dependencies:
+      flywheel-v2-engine:
+        specifier: workspace:*
+        version: link:../v2-engine
+      flywheel-v2-kernel:
+        specifier: workspace:*
+        version: link:../v2-kernel
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.21
+      typescript:
+        specifier: ^5.3.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.1.4
+        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+
   packages/v2-engine:
     dependencies:
       flywheel-agent-team-transport:

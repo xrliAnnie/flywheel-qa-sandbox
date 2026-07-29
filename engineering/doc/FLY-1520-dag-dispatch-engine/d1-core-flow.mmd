@@ -1,0 +1,13 @@
+flowchart LR
+    A["Linear issue<br/>(一张活)"] --> B["建图 admission<br/>把活拆成节点+依赖<br/>每个节点自带完成合同"]
+    B --> C["派发循环<br/>只看图:上游全完成<br/>且没人在干 → 派"]
+    C --> D["Runner 干活<br/>(AI 会话)"]
+    D --> E["节点完成<br/>合同证据 + 完成状态<br/>写进同一笔账"]
+    E -->|还有节点| C
+    E -->|全部完成| F["ship 门打开<br/>绑定当前代码位置"]
+    F --> G["founder 批准<br/>(Annie 点头)"]
+    G --> H["generic ship 执行<br/>只验三条通用检查"]
+    H --> I["代码合入 main<br/>黑匣子记下事实"]
+    style A fill:#e8f0fe,stroke:#007aff
+    style G fill:#fff3e0,stroke:#ff9500
+    style I fill:#e6f7ec,stroke:#34c759

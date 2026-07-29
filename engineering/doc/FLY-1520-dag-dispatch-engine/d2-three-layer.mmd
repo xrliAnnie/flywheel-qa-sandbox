@@ -1,0 +1,10 @@
+flowchart TB
+    T["task 任务<br/>(图上的一个节点,身份稳定)"] --> A1["attempt 第 1 次尝试"]
+    T --> A2["attempt 第 2 次尝试<br/>(返工=同一个任务再试一次,<br/>不造新节点、不画回头箭头)"]
+    A1 --> S1["activation 绑定一个会话<br/>(哪个 AI 进程在干)"]
+    A2 --> S2["activation 新绑定"]
+    A2 --> S3["resume:会话续命<br/>= 新 activation + 新世代号<br/>旧进程的迟到写全部被拒"]
+    W["每个 worktree(代码工作区)<br/>同一时刻至多一个活写手"] -.管着.- A1
+    W -.管着.- A2
+    style T fill:#e8f0fe,stroke:#007aff
+    style W fill:#fdf2f8,stroke:#af52de
