@@ -126,7 +126,13 @@ const VERB_FLAGS: Record<Verb, ReadonlySet<string>> = {
 	ship: new Set(["--request-file"]),
 	"reconcile-ship": new Set(),
 	status: new Set(),
-	"probe-github-lane": new Set(["--repo", "--branch", "--output", "--gh-bin"]),
+	"probe-github-lane": new Set([
+		"--repo",
+		"--branch",
+		"--output",
+		"--gh-bin",
+		"--policy-gh-config-dir",
+	]),
 };
 
 function requireValue(values: Map<string, string>, flag: string): string {
@@ -347,8 +353,15 @@ function publishEvidence(path: string, value: unknown): void {
 export async function main(argv = process.argv.slice(2)): Promise<number> {
 	const parsed = parseCliArgs(argv);
 	if (parsed.verb === "probe-github-lane") {
+		const policyGhConfigDir = parsed.values.get("--policy-gh-config-dir");
+		if (policyGhConfigDir !== undefined && !isAbsolute(policyGhConfigDir)) {
+			throw new TypeError("--policy-gh-config-dir must be absolute");
+		}
 		const result = await probeGitHubLane(
-			new GhCliLanePort(parsed.values.get("--gh-bin") ?? "gh"),
+			new GhCliLanePort(
+				parsed.values.get("--gh-bin") ?? "gh",
+				policyGhConfigDir,
+			),
 			{
 				repo: requireValue(parsed.values, "--repo"),
 				branch: requireValue(parsed.values, "--branch"),

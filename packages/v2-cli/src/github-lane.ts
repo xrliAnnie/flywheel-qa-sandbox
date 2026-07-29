@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { isAbsolute } from "node:path";
 
 export type GitHubPermission =
 	| "admin"
@@ -157,16 +158,41 @@ function strings(values: unknown[]): string[] {
 
 export class GhCliLanePort implements GitHubLanePort {
 	readonly #ghBin: string;
+	// The classic branch-protection endpoint is admin-readable only on
+	// personal repos, while the lane contract requires a non-admin probe
+	// actor. An optional second gh identity (GH_CONFIG_DIR) is used for
+	// that one policy read; actor/permission/rules keep the probe identity.
+	readonly #policyGhConfigDir?: string;
 
-	constructor(ghBin = "gh") {
+	constructor(ghBin = "gh", policyGhConfigDir?: string) {
 		if (ghBin.trim().length === 0) throw new TypeError("ghBin is required");
 		this.#ghBin = ghBin;
+		if (policyGhConfigDir !== undefined) {
+			if (
+				policyGhConfigDir.trim().length === 0 ||
+				!isAbsolute(policyGhConfigDir)
+			) {
+				throw new TypeError("policyGhConfigDir must be an absolute path");
+			}
+			this.#policyGhConfigDir = policyGhConfigDir;
+		}
 	}
 
-	#api(path: string): unknown {
+	#api(path: string, ghConfigDir?: string): unknown {
+		let env: NodeJS.ProcessEnv | undefined;
+		if (ghConfigDir) {
+			env = { ...process.env, GH_CONFIG_DIR: ghConfigDir };
+			// gh gives ambient token env vars priority over stored credentials,
+			// which would silently keep the probe identity on the policy read.
+			delete env.GH_TOKEN;
+			delete env.GITHUB_TOKEN;
+			delete env.GH_ENTERPRISE_TOKEN;
+			delete env.GITHUB_ENTERPRISE_TOKEN;
+		}
 		const stdout = execFileSync(this.#ghBin, ["api", path], {
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "pipe"],
+			...(env ? { env } : {}),
 		});
 		return JSON.parse(stdout) as unknown;
 	}
@@ -202,6 +228,7 @@ export class GhCliLanePort implements GitHubLanePort {
 		const value = record(
 			this.#api(
 				`repos/${repo}/branches/${encodeURIComponent(branch)}/protection`,
+				this.#policyGhConfigDir,
 			),
 			"branch protection",
 		);
