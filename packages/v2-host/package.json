@@ -25,7 +25,6 @@
 		"typecheck": "pnpm run build"
 	},
 	"dependencies": {
-		"flywheel-claude-runner": "workspace:*",
 		"flywheel-v2-dag": "workspace:*",
 		"flywheel-v2-engine": "workspace:*",
 		"flywheel-v2-kernel": "workspace:*",

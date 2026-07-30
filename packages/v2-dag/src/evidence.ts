@@ -1,4 +1,8 @@
-import type { RegisteredAgent } from "flywheel-v2-engine";
+import {
+	isSessionRecipient,
+	type RegisteredAgent,
+	requireCurrentRunnerTx,
+} from "flywheel-v2-engine";
 import type { Kernel, WriteTx } from "flywheel-v2-kernel";
 import { parseTaskPayload } from "./contract.js";
 import type { CanonicalValue } from "./digests.js";
@@ -34,9 +38,15 @@ export type EvidenceInput =
 			projectId: string;
 			review: string;
 			subjectDigest: string;
-			reviewer: { agentId: string; generation: number };
+			reviewer: RegisteredAgent | { agentId: string; generation: number };
 	  };
 
+/**
+ * FLY-1543 ⑤ operator-contract change (stated in the PR): the evidence
+ * producer identity is the sessionRef quad -- agentId = instanceId =
+ * activations.session_ref, generation = the attempt generation. There is no
+ * agents-table lookup and no logicalAgentId comparison any more.
+ */
 function requireProducer(
 	tx: WriteTx,
 	input: Extract<EvidenceInput, { kind: "verdict" | "artifact" }>,
@@ -48,10 +58,10 @@ function requireProducer(
 		task_id: string;
 		activation_id: string;
 		session_ref: string;
-		task_payload: string;
+		generation: number;
 	}>(
 		`SELECT a.task_id,act.id AS activation_id,act.session_ref,
-		        t.payload AS task_payload
+		        act.generation
 		   FROM attempts a
 		   JOIN activations act ON act.attempt_id=a.id
 		   JOIN tasks t ON t.id=a.task_id
@@ -61,21 +71,12 @@ function requireProducer(
 			activationId: input.producer.activationId,
 		},
 	);
-	const agent = tx.get<{ generation: number; kind: string }>(
-		"SELECT generation,kind FROM agents WHERE agent_id=@agentId",
-		{ agentId: input.producer.agentId },
-	);
-	const executor = bound
-		? parseTaskPayload(JSON.parse(bound.task_payload)).executor
-		: null;
 	if (
 		!bound ||
 		bound.task_id !== input.taskId ||
 		bound.session_ref !== input.producer.instanceId ||
-		executor?.logicalAgentId !== input.producer.agentId ||
-		!agent ||
-		agent.kind !== "runner" ||
-		agent.generation !== input.producer.generation
+		bound.session_ref !== input.producer.agentId ||
+		bound.generation !== input.producer.generation
 	) {
 		throw new DagContractError("task evidence producer binding is stale");
 	}
@@ -117,6 +118,48 @@ function insertIdempotent(
 	});
 }
 
+function reviewerRoleId(
+	tx: WriteTx,
+	reviewer: Extract<EvidenceInput, { kind: "review_approval" }>["reviewer"],
+): string {
+	if (!isSessionRecipient(reviewer.agentId)) {
+		const current = tx.get<{ generation: number; kind: string }>(
+			"SELECT generation,kind FROM agents WHERE agent_id=@agentId",
+			{ agentId: reviewer.agentId },
+		);
+		if (
+			!current ||
+			current.kind !== "lead" ||
+			current.generation !== reviewer.generation
+		) {
+			throw new DagContractError("reviewer generation is stale");
+		}
+		return reviewer.agentId;
+	}
+	if (!("kind" in reviewer) || reviewer.kind !== "runner") {
+		throw new DagContractError(
+			"runner reviewer requires the sessionRef identity quad",
+		);
+	}
+	requireCurrentRunnerTx(tx, reviewer);
+	const row = tx.get<{ payload: string }>(
+		`SELECT t.payload
+		   FROM activations act
+		   JOIN attempts a ON a.id=act.attempt_id
+		   JOIN tasks t ON t.id=a.task_id
+		  WHERE act.id=@activationId AND act.session_ref=@sessionRef
+		    AND act.state='active'`,
+		{
+			activationId: reviewer.activationId,
+			sessionRef: reviewer.agentId,
+		},
+	);
+	if (!row) {
+		throw new DagContractError("reviewer activation is stale");
+	}
+	return parseTaskPayload(JSON.parse(row.payload)).executor.logicalAgentId;
+}
+
 export function recordEvidence(
 	kernel: Kernel,
 	ports: DagPorts,
@@ -127,22 +170,14 @@ export function recordEvidence(
 	kernel.write("v2dag.evidence.record", (tx) => {
 		const epoch = readCutoverEpoch(tx);
 		if (input.kind === "review_approval") {
-			const reviewer = tx.get<{ generation: number }>(
-				"SELECT generation FROM agents WHERE agent_id=@agentId",
-				{ agentId: input.reviewer.agentId },
-			);
-			if (!reviewer || reviewer.generation !== input.reviewer.generation) {
-				throw new DagContractError("reviewer generation is stale");
-			}
+			const reviewerRole = reviewerRoleId(tx, input.reviewer);
 			const config = readEnvelope<ReviewFamilies>(
 				tx,
 				`review_families:${input.projectId}`,
 				epoch,
 			);
 			const families = Object.entries(config?.data.families ?? {})
-				.filter(
-					([, value]) => value.reviewer_agent_id === input.reviewer.agentId,
-				)
+				.filter(([, value]) => value.reviewer_agent_id === reviewerRole)
 				.map(([family]) => family);
 			if (families.length !== 1) {
 				throw new DagContractError("reviewer family is ambiguous");
@@ -154,7 +189,8 @@ export function recordEvidence(
 					project_id: input.projectId,
 					review: input.review,
 					subject_digest: input.subjectDigest,
-					reviewer_agent: input.reviewer.agentId,
+					reviewer_agent: reviewerRole,
+					reviewer_session: input.reviewer.agentId,
 					reviewer_family: families[0] as string,
 					reviewer_generation: input.reviewer.generation,
 				},

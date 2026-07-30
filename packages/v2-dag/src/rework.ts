@@ -1,4 +1,5 @@
-import { FENCE, type Kernel, type ReadTx } from "flywheel-v2-kernel";
+import type { Kernel, ReadTx } from "flywheel-v2-kernel";
+import { terminalizeAttemptTx } from "./attempt-terminal.js";
 import { parseTaskPayload, type TaskPayload } from "./contract.js";
 import type { CanonicalValue } from "./digests.js";
 import { digestJson } from "./digests.js";
@@ -31,15 +32,6 @@ interface WriterPacket {
 	worktreeId: string;
 	head: string;
 	writerRevision: number;
-}
-
-interface BindingData {
-	state: "active" | "clear";
-	activation_id: string | null;
-	attempt_id: string | null;
-	session_ref_current: string | null;
-	session_ref_last: string | null;
-	host_epoch: string | null;
 }
 
 interface ClaimData {
@@ -282,45 +274,6 @@ export async function reworkTask(
 					) {
 						throw new DagContractError("rework launch claim changed");
 					}
-					updateEnvelope(
-						tx,
-						claimKey,
-						claim,
-						{ ...claim.data, state: "tombstoned" },
-						ports.clock.nowIso(),
-					);
-					tx.cas(FENCE.activationCasActiveTerminal, {
-						activationId: suite.activationId,
-					});
-					tx.cas(FENCE.attemptCasActiveTerminal, {
-						attemptId: suite.attemptId,
-						reason: "superseded",
-						terminalAt: ports.clock.nowIso(),
-					});
-					const bindingKey = `agent_binding:${suite.payload.executor.logicalAgentId}`;
-					const binding = readEnvelope<BindingData>(tx, bindingKey, epoch);
-					if (
-						!binding ||
-						binding.data.activation_id !== suite.activationId ||
-						binding.data.attempt_id !== suite.attemptId ||
-						binding.data.session_ref_current !== suite.sessionRef
-					) {
-						throw new DagContractError("rework agent binding changed");
-					}
-					updateEnvelope(
-						tx,
-						bindingKey,
-						binding,
-						{
-							state: "clear",
-							activation_id: null,
-							attempt_id: null,
-							session_ref_current: null,
-							session_ref_last: suite.sessionRef,
-							host_epoch: null,
-						},
-						ports.clock.nowIso(),
-					);
 					if (suite.payload.writes_repo && suite.payload.worktree_id) {
 						const packet = packets.find(
 							(item) => item.worktreeId === suite.payload.worktree_id,
@@ -360,6 +313,12 @@ export async function reworkTask(
 							ports.clock.nowIso(),
 						);
 					}
+					terminalizeAttemptTx(tx, {
+						attemptId: suite.attemptId,
+						reason: "superseded",
+						cutoverEpoch: epoch,
+						nowIso: ports.clock.nowIso(),
+					});
 				}
 				for (const id of affected) {
 					tx.run(

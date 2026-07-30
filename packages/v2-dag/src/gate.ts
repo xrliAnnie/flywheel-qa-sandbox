@@ -234,19 +234,16 @@ export function maybeRefreshShipGateTx(
 	return next;
 }
 
+/**
+ * FLY-1543 ⑤: actor dispatch follows the recipient discriminator. A `v2dag:`
+ * id is a session and resolves through activations; anything else must be a
+ * lead. A tombstoned runner role name is structurally unusable.
+ */
 export function usableActor(
 	tx: ReadTx,
 	agentId: string,
 ): UsableShipActor | null {
-	const agent = tx.get<{
-		agent_id: string;
-		kind: string;
-		generation: number;
-	}>("SELECT agent_id,kind,generation FROM agents WHERE agent_id=@agentId", {
-		agentId,
-	});
-	if (!agent) return null;
-	if (agent.kind === "runner") {
+	if (agentId.startsWith("v2dag:")) {
 		const active = tx.get<{
 			activation_id: string;
 			attempt_id: string;
@@ -261,16 +258,15 @@ export function usableActor(
 			   JOIN attempts attempt
 			     ON attempt.id=act.attempt_id
 			    AND attempt.generation=act.generation
-			  JOIN meta binding ON binding.key=@bindingKey
-			 WHERE act.id=json_extract(binding.value,'$.data.activation_id')
-			   AND act.state='active'
-			   AND attempt.desired_state<>'terminal'`,
-			{ bindingKey: `agent_binding:${agentId}` },
+			  WHERE act.session_ref=@agentId
+			    AND act.state='active'
+			    AND attempt.desired_state<>'terminal'`,
+			{ agentId },
 		);
 		if (!active) return null;
 		return {
-			agent_id: agent.agent_id,
-			generation: agent.generation,
+			agent_id: agentId,
+			generation: active.attempt_generation,
 			lineage: {
 				task_id: active.task_id,
 				attempt_id: active.attempt_id,
@@ -279,6 +275,14 @@ export function usableActor(
 			},
 		};
 	}
+	const agent = tx.get<{
+		agent_id: string;
+		kind: string;
+		generation: number;
+	}>("SELECT agent_id,kind,generation FROM agents WHERE agent_id=@agentId", {
+		agentId,
+	});
+	if (!agent || agent.kind !== "lead") return null;
 	return {
 		agent_id: agent.agent_id,
 		generation: agent.generation,

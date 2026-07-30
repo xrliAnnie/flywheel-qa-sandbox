@@ -88,8 +88,8 @@ function fixture() {
 	const ports = createRuntimeDagPorts({
 		kernel,
 		hostEpoch: "host-runtime",
+		expectedEpoch: 0,
 		lockRoot: join(root, "locks"),
-		injectionRoot: join(root, "injection"),
 		launcher,
 		gitBin: "/usr/bin/git",
 		ghBin: "/usr/bin/false",

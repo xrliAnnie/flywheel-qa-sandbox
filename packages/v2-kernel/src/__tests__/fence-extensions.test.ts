@@ -14,7 +14,7 @@ function insertMailbox(
 	kernel.write("test.seed-mailbox", (tx) => {
 		tx.run(
 			`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
-			 VALUES (@agent,'runner',0,NULL,'offline')
+			 VALUES (@agent,'lead',0,NULL,'offline')
 			 ON CONFLICT(agent_id) DO NOTHING`,
 			{ agent },
 		);

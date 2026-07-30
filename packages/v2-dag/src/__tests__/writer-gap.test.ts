@@ -4,7 +4,6 @@ import {
 	adoptWriterGap,
 	dispatchOnce,
 	mintWriterAdoptionCapability,
-	observeNodeCompletion,
 	recoverPendingLaunches,
 } from "../index.js";
 import { makeFixture, makePorts } from "./helpers.js";
@@ -15,7 +14,7 @@ describe("writer gap adoption", () => {
 		for (const fixture of fixtures.splice(0)) fixture.cleanup();
 	});
 
-	it("fails dispatch closed until an audited capability adopts the exact gap", async () => {
+	it("rejects an unauthenticated writer gap without admitting any ledger rows", async () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
 		fixture.provision("lead-a", "lead");
@@ -41,105 +40,59 @@ describe("writer gap adoption", () => {
 				},
 			},
 		});
-		await admitIssueDag(fixture.kernel, ports, {
-			admissionUid: "gap-admission",
-			projectId: "project-a",
-			issueId: "issue-gap",
-			notifyAgentId: "lead-a",
-			shipWorktreeId: "wt-a",
-			worktrees: [
-				{
-					worktreeId: "wt-a",
-					repoIdentity: "owner/repo",
-					worktreePath: "/tmp/wt-a",
-					branchRef: "refs/heads/feature",
-					mergeTargetRef: "refs/heads/main",
-				},
-			],
-			tasks: [
-				{
-					localId: "node",
-					kindLabel: "opaque",
-					contract: [],
-					writesRepo: true,
-					worktreeId: "wt-a",
-					executor: {
-						logicalAgentId: "agent-a",
-						family: "family-a",
-						vendor: "vendor",
-						model: "model",
-						effort: "high",
+		await expect(
+			admitIssueDag(fixture.kernel, ports, {
+				admissionUid: "gap-admission",
+				projectId: "project-a",
+				issueId: "issue-gap",
+				notifyAgentId: "lead-a",
+				shipWorktreeId: "wt-a",
+				worktrees: [
+					{
+						worktreeId: "wt-a",
+						repoIdentity: "owner/repo",
+						worktreePath: "/tmp/wt-a",
+						branchRef: "refs/heads/feature",
+						mergeTargetRef: "refs/heads/main",
 					},
-				},
-			],
-			edges: [],
-		});
-
-		expect((await dispatchOnce(fixture.kernel, ports)).dispatched).toEqual([]);
+				],
+				tasks: [
+					{
+						localId: "node",
+						kindLabel: "opaque",
+						contract: [],
+						writesRepo: true,
+						worktreeId: "wt-a",
+						executor: {
+							logicalAgentId: "agent-a",
+							family: "family-a",
+							vendor: "vendor",
+							model: "model",
+							effort: "high",
+						},
+					},
+				],
+				edges: [],
+			}),
+		).rejects.toThrow(
+			/worktree wt-a has unauthenticated commits.*issue issue-gap/,
+		);
 		expect(
-			fixture.kernel.read(
-				(tx) =>
-					tx.get<{ count: number }>(
-						"SELECT count(*) AS count FROM events WHERE kind='writer_gap_detected'",
-					)?.count,
-			),
-		).toBe(1);
-		const capability = mintWriterAdoptionCapability(fixture.kernel, ports, {
-			authorizationUid: "authorize-gap-1",
-			worktreeId: "wt-a",
-			fromHead: anchor,
-			toHead: head,
-			attributionFamily: "family-import",
-			reason: "pre-admission commits",
-			actor: {
-				kind: "lead",
-				agentId: "lead-a",
-				instanceId: "lead-session",
-				generation: 0,
-			},
-		});
-		const adopted = await adoptWriterGap(fixture.kernel, ports, {
-			worktreeId: "wt-a",
-			fromHead: anchor,
-			toHead: head,
-			attributionFamily: "family-import",
-			reason: "pre-admission commits",
-			capabilityId: capability.capabilityId,
-			adoptionUid: "adopt-gap-1",
-			actor: {
-				kind: "lead",
-				agentId: "lead-a",
-				instanceId: "lead-session",
-				generation: 0,
-			},
-		});
-
-		expect(adopted).toEqual({ status: "adopted", worktreeId: "wt-a" });
-		const dispatched = (await dispatchOnce(fixture.kernel, ports)).dispatched;
-		expect(dispatched).toHaveLength(1);
-		expect(
-			await observeNodeCompletion(
-				fixture.kernel,
-				ports,
-				dispatched[0]?.taskId as string,
-			),
-		).toMatchObject({ base: anchor, head });
-		expect(
-			fixture.kernel.read(
-				(tx) =>
-					tx.get<{ head: string }>(
-						"SELECT json_extract(value,'$.data.head') AS head FROM meta WHERE key='span_tip:wt-a'",
-					)?.head,
-			),
-		).toBe(anchor);
-		expect(
-			fixture.kernel.read(
-				(tx) =>
-					tx.get<{ authors: string }>(
-						"SELECT json_extract(value,'$.data.span_author_set') AS authors FROM meta WHERE key='writer_chain:wt-a'",
-					)?.authors,
-			),
-		).toBe('["family-import"]');
+			fixture.kernel.read((tx) => ({
+				tasks: tx.get<{ count: number }>(
+					"SELECT count(*) AS count FROM tasks WHERE external_issue_id='issue-gap'",
+				)?.count,
+				issue: tx.get<{ count: number }>(
+					"SELECT count(*) AS count FROM meta WHERE key='dag_issue:issue-gap'",
+				)?.count,
+				worktree: tx.get<{ count: number }>(
+					"SELECT count(*) AS count FROM meta WHERE key='canonical_worktree:wt-a'",
+				)?.count,
+				events: tx.get<{ count: number }>(
+					"SELECT count(*) AS count FROM events WHERE kind='writer_gap_detected'",
+				)?.count,
+			})),
+		).toEqual({ tasks: 0, issue: 0, worktree: 0, events: 0 });
 	});
 
 	it("requires a one-shot lost-open capability before releasing an unrecoverable writer", async () => {

@@ -38,15 +38,6 @@ export function registerReviewFamilies(
 		};
 	}
 	kernel.write("v2dag.families.register", (tx) => {
-		for (const config of Object.values(normalized.families)) {
-			if (
-				!tx.get("SELECT 1 FROM agents WHERE agent_id=@agentId", {
-					agentId: config.reviewer_agent_id,
-				})
-			) {
-				throw new TypeError(`unknown reviewer ${config.reviewer_agent_id}`);
-			}
-		}
 		const epoch = readCutoverEpoch(tx);
 		const key = `review_families:${input.projectId}`;
 		const current = readEnvelope<ReviewFamilies>(tx, key, epoch);

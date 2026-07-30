@@ -1,4 +1,4 @@
-import type { DeathEvidence, SessionBinding } from "flywheel-v2-engine";
+import type { SessionBinding } from "flywheel-v2-engine";
 import type { Kernel } from "flywheel-v2-kernel";
 
 export interface DagClock {
@@ -46,22 +46,12 @@ export interface LaunchLockPort {
 	withSessionLock<T>(sessionRef: string, fn: () => Promise<T>): Promise<T>;
 }
 
-export interface InjectionRefBuilder {
-	build(input: {
-		taskId: string;
-		attemptId: string;
-		attemptGeneration: number;
-		activationId: string;
-		sessionRef: string;
-		agentId: string;
-		executor: ExecutorDescriptor;
-	}): string;
-}
-
 export interface RunnerLaunchIdentity {
 	kind: "runner";
+	/** FLY-1543 ⑤: = sessionRef. The role name never enters the ledger. */
 	agentId: string;
 	instanceId: string;
+	/** = the DAG attempt generation (activations.generation). */
 	generation: number;
 	activationId: string;
 }
@@ -72,10 +62,14 @@ export interface SpawnRequest {
 	attemptGeneration: number;
 	activationId: string;
 	sessionRef: string;
-	injectionRef: string;
 	ownerToken: string;
 	agent: RunnerLaunchIdentity;
-	deathEvidence?: DeathEvidence;
+	/**
+	 * FLY-1543 ⑤: the instruction-book pointer (executor.logicalAgentId). It
+	 * selects the prompt file, queue/window names and FLYWHEEL_V2_AGENT_ID; it
+	 * keys no ledger row and no occupancy check.
+	 */
+	roleId: string;
 	executor: ExecutorDescriptor;
 }
 
@@ -116,7 +110,6 @@ export interface DagPorts {
 	process: ProcessProbePort;
 	runnerControl: RunnerControlPort;
 	host: HostPort;
-	injectionRef: InjectionRefBuilder;
 	locks: LaunchLockPort;
 	spawn: SpawnPort;
 	githubObservation?: GitHubObservationPort;
@@ -179,12 +172,43 @@ export interface AdmissionResult {
 export interface DispatchResult {
 	dispatched: SpawnRequest[];
 	failures: DispatchFailure[];
+	/** FLY-1543 ⑥: every skipped candidate, with its visible reason. */
+	skips: DispatchSkip[];
 }
 
 export interface DispatchFailure {
 	taskId: string;
 	stage: string;
 	audited: boolean;
+}
+
+/**
+ * FLY-1543 ⑥: the full taxonomy of reasons a dispatch/recovery pass can pass a
+ * task over. Every `continue` that used to collapse into an unlabeled boolean
+ * now names one of these; the occupancy family died with the badge system.
+ */
+export type DispatchSkipReason =
+	| "ineligible_dependency"
+	| "attempt_active"
+	| "task_not_ready"
+	| "issue_receipt_missing"
+	| "worktree_receipt_missing"
+	| "writer_span_open"
+	| "writer_head_drift"
+	| "launch_claim_lost"
+	| "launch_gate_lost"
+	| "reap_grace"
+	| "reap_process_present"
+	| "reap_head_unreadable"
+	| "reap_lineage_diverged"
+	| "recovery_claim_missing"
+	| "recovery_request_unrecoverable";
+
+export interface DispatchSkip {
+	/** Null when the skipped unit cannot be tied to a task (e.g. an
+	 * unrecoverable claim whose task row is gone). */
+	taskId: string | null;
+	reason: DispatchSkipReason;
 }
 
 export interface ManifestEntry {

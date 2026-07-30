@@ -28,7 +28,7 @@ describe("0009 runtime binding and proposal receipt migration", () => {
 		temp = makeTempDatabase();
 		const db = openKernelDb({ path: temp.path });
 		try {
-			runMigrations(db);
+			runMigrations(db, MIGRATIONS.slice(0, 9));
 			const agentColumns = db
 				.pragma("table_info(agents)")
 				.map((row) => (row as { name: string }).name);
@@ -36,9 +36,7 @@ describe("0009 runtime binding and proposal receipt migration", () => {
 				.pragma("table_info(processing_attempts)")
 				.map((row) => (row as { name: string }).name);
 
-			expect(MIGRATIONS.at(-1)?.id).toBe(
-				"0009-runtime-binding-proposal-receipts",
-			);
+			expect(MIGRATIONS[8]?.id).toBe("0009-runtime-binding-proposal-receipts");
 			expect(agentColumns).toEqual(
 				expect.arrayContaining(["instance_id", "session_binding"]),
 			);

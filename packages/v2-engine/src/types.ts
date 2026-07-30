@@ -73,15 +73,20 @@ export type LeadIdentityDraft = {
 	sessionBinding: SessionBinding;
 };
 
-export type RunnerIdentityDraft = {
-	kind: "runner";
-	agentId: string;
-	instanceId: string;
-	activationId: string;
-	sessionBinding: SessionBinding;
-};
+/** FLY-1543 ①⑤: registration is lead-only; a runner's ledger identity is its
+ * `activations` row, keyed by session_ref, and never enters `agents`. */
+export type IdentityDraft = LeadIdentityDraft;
 
-export type IdentityDraft = LeadIdentityDraft | RunnerIdentityDraft;
+/**
+ * FLY-1543 ⑤: every mailbox recipient is either a lead (an `agents` row) or a
+ * session (an active `activations` row whose session_ref carries this prefix).
+ * SQL and TS share this single discriminator; a test asserts the two agree.
+ */
+export const SESSION_RECIPIENT_PREFIX = "v2dag:";
+
+export function isSessionRecipient(agentId: string): boolean {
+	return agentId.startsWith(SESSION_RECIPIENT_PREFIX);
+}
 
 export type RegisteredAgent =
 	| {
@@ -93,18 +98,18 @@ export type RegisteredAgent =
 	  }
 	| {
 			kind: "runner";
+			/** = session_ref (agentId and instanceId are the same value). */
 			agentId: string;
 			instanceId: string;
 			activationId: string;
+			/** = activations.generation (the DAG attempt generation). */
 			generation: number;
-			sessionBinding: SessionBinding;
+			/**
+			 * Absent until the spawned process is bound (bindSpawnedRunnerTx): the
+			 * first delivery envelope is prepared BEFORE the tmux session exists.
+			 */
+			sessionBinding?: SessionBinding;
 	  };
-
-export interface DeathEvidence {
-	agentId: string;
-	generation: number;
-	confirmedAbsentAt: string;
-}
 
 export interface AttemptHandle {
 	attemptUid: string;
@@ -189,14 +194,6 @@ export type PollResult =
 	  }
 	| { status: "busy"; attemptUid: string }
 	| { status: "empty"; retryAfterMs: number };
-
-export interface InjectionShim {
-	hint(sessionRef: string): Promise<void>;
-	deliver(
-		sessionRef: string,
-		message: { messageUid: string; payload: string; attemptUid: string },
-	): Promise<void>;
-}
 
 import type { RunRecordedActionResult } from "flywheel-v2-actions";
 import type { JsonValue } from "flywheel-v2-kernel";

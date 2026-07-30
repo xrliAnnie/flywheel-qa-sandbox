@@ -153,8 +153,8 @@ afterEach(() => {
 	}
 });
 
-describe("host runner injection loop", () => {
-	it("activates the registered runner, pushes the durable envelope, and settles its proposal", async () => {
+describe("host runner bootstrap loop", () => {
+	it("activates the session runner with its first envelope and settles its proposal", async () => {
 		const root = mkdtempSync(join(tmpdir(), "flywheel-v2-runner-injection-"));
 		roots.push(root);
 		chmodSync(root, 0o700);
@@ -193,12 +193,11 @@ describe("host runner injection loop", () => {
 		};
 		const bootstrap = Kernel.open({ path: database.dbPath });
 		provisionAgentRecipient(bootstrap, "lead-runtime", "lead");
-		provisionAgentRecipient(bootstrap, "engineer", "runner");
 		const bootstrapPorts = createRuntimeDagPorts({
 			kernel: bootstrap,
 			hostEpoch: HOST_EPOCH,
+			expectedEpoch: EPOCH,
 			lockRoot: join(root, "locks"),
-			injectionRoot: join(root, "injection"),
 			launcher,
 			gitBin: "/usr/bin/git",
 			ghBin: "/usr/bin/false",
@@ -263,8 +262,8 @@ describe("host runner injection loop", () => {
 					createRuntimeDagPorts({
 						kernel,
 						hostEpoch: HOST_EPOCH,
+						expectedEpoch: EPOCH,
 						lockRoot: join(root, "locks"),
-						injectionRoot: join(root, "injection"),
 						launcher,
 						gitBin: "/usr/bin/git",
 						ghBin: "/usr/bin/false",
@@ -284,27 +283,15 @@ describe("host runner injection loop", () => {
 		try {
 			await host.start();
 			await host.runCoordinatorOnce();
-			const deadline = Date.now() + 5_000;
-			while (delivered.length === 0 && Date.now() < deadline) {
-				await new Promise((resolve) => setTimeout(resolve, 10));
-			}
 			expect(launchRequests).toHaveLength(1);
 			expect(activated.length).toBeGreaterThanOrEqual(1);
 			expect(new Set(activated)).toEqual(
 				new Set([launchRequests[0]?.sessionRef]),
 			);
-			expect(
-				delivered,
-				coordinatorErrors
-					.map((error) =>
-						error instanceof Error ? `${error.name}: ${error.message}` : error,
-					)
-					.join("\n"),
-			).toHaveLength(1);
-			expect(delivered[0]?.sessionRef).toBe(launchRequests[0]?.sessionRef);
-			expect(delivered[0]?.injectionRef).toBe(launchRequests[0]?.injectionRef);
+			expect(coordinatorErrors).toEqual([]);
+			expect(delivered).toEqual([]);
 			const envelope = JSON.parse(
-				delivered[0]?.message.payload as string,
+				launchRequests[0]?.context.firstEnvelope as string,
 			) as DeliveryEnvelope;
 			expect(envelope).toMatchObject({
 				v: 1,
@@ -315,7 +302,7 @@ describe("host runner injection loop", () => {
 				handle: {
 					agent: {
 						kind: "runner",
-						agentId: "engineer",
+						agentId: launchRequests[0]?.sessionRef,
 					},
 				},
 				authorization: {
@@ -338,7 +325,7 @@ describe("host runner injection loop", () => {
 					secret,
 					action: "submit_proposal",
 					payload: {
-						agentId: "engineer",
+						agentId: launchRequests[0]?.sessionRef,
 						attemptUid: envelope.handle.attemptUid,
 						messageUid: envelope.handle.messageUid,
 						effects: [],
@@ -346,6 +333,102 @@ describe("host runner injection loop", () => {
 					},
 				}),
 			).resolves.toMatchObject({ status: "succeeded" });
+			const lead = (await sendHostRequest({
+				socketPath,
+				secret,
+				action: "register_lead",
+				payload: {
+					agentId: "lead-runtime",
+					instanceId: "lead-runtime-session",
+					sessionBinding: {
+						v: 1,
+						hostEpoch: HOST_EPOCH,
+						sessionId: "lead-runtime-session",
+						pid: PID,
+						pidStart: PID_START,
+					},
+				},
+			})) as {
+				deliveryCredential: { credentialId: string; token: string };
+			};
+			const asked = (await sendHostRequest({
+				socketPath,
+				secret,
+				action: "ask",
+				payload: {
+					sessionRef: launchRequests[0]?.sessionRef,
+					askKind: "ask",
+					payload: "Which acceptance command should I run?",
+				},
+			})) as { uid: string };
+			const leadEnvelope = (await sendHostRequest({
+				socketPath,
+				secret,
+				action: "next_delivery",
+				payload: {
+					agentId: "lead-runtime",
+					deliveryCredential: lead.deliveryCredential,
+				},
+			})) as DeliveryEnvelope;
+			expect(leadEnvelope.message).toMatchObject({
+				kind: "runner_ask",
+				sourceKind: "runner_upstream",
+			});
+			expect(JSON.parse(leadEnvelope.message.payload)).toMatchObject({
+				session_ref: launchRequests[0]?.sessionRef,
+				uid: asked.uid,
+				body: "Which acceptance command should I run?",
+			});
+			await expect(
+				sendHostRequest({
+					socketPath,
+					secret,
+					action: "enqueue",
+					payload: {
+						sourceKind: "ask_response",
+						sourceId: asked.uid,
+						payload: JSON.stringify({
+							v: 1,
+							uid: asked.uid,
+							body: "Run pnpm -r build.",
+						}),
+						toAgent: launchRequests[0]?.sessionRef,
+						kind: "ask_response",
+						retentionClass: "business",
+					},
+				}),
+			).resolves.toMatchObject({ status: "enqueued" });
+			const runnerResponse = (await sendHostRequest({
+				socketPath,
+				secret,
+				action: "next_delivery",
+				payload: { sessionRef: launchRequests[0]?.sessionRef },
+			})) as DeliveryEnvelope;
+			expect(runnerResponse.message.kind).toBe("ask_response");
+			expect(JSON.parse(runnerResponse.message.payload)).toEqual({
+				v: 1,
+				uid: asked.uid,
+				body: "Run pnpm -r build.",
+			});
+			for (const [agentId, response] of [
+				["lead-runtime", leadEnvelope],
+				[launchRequests[0]?.sessionRef, runnerResponse],
+			] as const) {
+				await expect(
+					sendHostRequest({
+						socketPath,
+						secret,
+						action: "submit_proposal",
+						payload: {
+							agentId,
+							attemptUid: response.handle.attemptUid,
+							messageUid: response.handle.messageUid,
+							effects: [],
+							authorization: response.authorization,
+						},
+					}),
+				).resolves.toMatchObject({ status: "succeeded" });
+			}
 			const inspected = Kernel.open({ path: database.dbPath });
 			expect(
 				inspected.read(

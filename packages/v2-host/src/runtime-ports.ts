@@ -14,7 +14,6 @@ import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import type {
 	DagPorts,
-	InjectionRefBuilder,
 	LaunchLockPort,
 	ProcessProbePort,
 	RunnerControlPort,
@@ -23,6 +22,11 @@ import type {
 } from "flywheel-v2-dag";
 import type { SessionBinding } from "flywheel-v2-engine";
 import { FenceViolation, type Kernel } from "flywheel-v2-kernel";
+import {
+	pollRunnerDelivery,
+	prepareDelivery,
+	recordDeliverySucceeded,
+} from "./delivery.js";
 import {
 	type ResolvedRoleInstruction,
 	resolveRoleInstruction,
@@ -36,6 +40,13 @@ export interface RuntimeLaunchRequest extends SpawnRequest {
 		issueId: string;
 		projectRoot: string;
 		instruction: ResolvedRoleInstruction;
+		/**
+		 * FLY-1543 ④: the complete first delivery envelope (message + handle +
+		 * authorization + protocol), serialized. Prepared BEFORE the vendor
+		 * process exists and embedded in the spawn prompt, so the runner opens its
+		 * eyes already holding the work and the capability to settle it.
+		 */
+		firstEnvelope: string;
 	};
 }
 
@@ -44,22 +55,14 @@ export interface RunnerLauncherPort {
 	probe(sessionRef: string): ReturnType<ProcessProbePort["probe"]>;
 	stop(sessionRef: string): Promise<void>;
 	activate?(sessionRef: string): Promise<void>;
-	deliver?(
-		sessionRef: string,
-		injectionRef: string,
-		message: {
-			messageUid: string;
-			attemptUid: string;
-			payload: string;
-		},
-	): Promise<void>;
 }
 
 export interface RuntimeDagPortsOptions {
 	kernel: Kernel;
 	hostEpoch: string;
+	/** The cutover epoch the host was started with; delivery intents pin it. */
+	expectedEpoch: number;
 	lockRoot: string;
-	injectionRoot: string;
 	launcher: RunnerLauncherPort;
 	gitBin?: string;
 	ghBin?: string;
@@ -267,7 +270,7 @@ function parseMetaEnvelope(
 function launchContext(
 	kernel: Kernel,
 	request: SpawnRequest,
-): Omit<RuntimeLaunchRequest["context"], "instruction"> {
+): Omit<RuntimeLaunchRequest["context"], "instruction" | "firstEnvelope"> {
 	return kernel.read((tx) => {
 		const task = tx.get<TaskLaunchRow>(
 			`SELECT project_id,external_issue_id,payload
@@ -277,8 +280,10 @@ function launchContext(
 		if (!task) throw new Error("spawn task is missing");
 		const payload = record(JSON.parse(task.payload), "spawn task payload");
 		const executor = record(payload.executor, "spawn task executor");
-		if (executor.logicalAgentId !== request.agent.agentId) {
-			throw new FenceViolation("spawn agent does not match task executor");
+		// FLY-1543 ⑤: the ledger identity is the sessionRef; the role id is the
+		// instruction-book pointer and must match the task's executor.
+		if (executor.logicalAgentId !== request.roleId) {
+			throw new FenceViolation("spawn role does not match task executor");
 		}
 		let worktreeId =
 			typeof payload.worktree_id === "string" ? payload.worktree_id : undefined;
@@ -313,7 +318,10 @@ function launchContext(
 function recordInstructionEvidence(input: {
 	kernel: Kernel;
 	request: SpawnRequest;
-	context: Omit<RuntimeLaunchRequest["context"], "instruction">;
+	context: Omit<
+		RuntimeLaunchRequest["context"],
+		"instruction" | "firstEnvelope"
+	>;
 	instruction: ResolvedRoleInstruction;
 	nowIso: string;
 }): InstructionEvidence {
@@ -321,7 +329,7 @@ function recordInstructionEvidence(input: {
 		v: 1 as const,
 		project_id: input.context.projectId,
 		issue_id: input.context.issueId,
-		logical_agent_id: input.request.agent.agentId,
+		logical_agent_id: input.request.roleId,
 		config_path: input.instruction.configPath,
 		source_path: input.instruction.sourcePath,
 		content_digest: input.instruction.contentDigest,
@@ -386,30 +394,76 @@ function recordInstructionEvidence(input: {
 function kernelSpawnPort(
 	kernel: Kernel,
 	launcher: RunnerLauncherPort,
-	nowIso: () => string,
+	clock: { nowMs(): number; nowIso(): string },
+	expectedEpoch: number,
 ): SpawnPort {
+	const runtime = { clock };
 	return {
 		async spawn(request) {
 			const context = launchContext(kernel, request);
 			const instruction = resolveRoleInstruction({
 				projectRoot: context.projectRoot,
-				logicalAgentId: request.agent.agentId,
+				logicalAgentId: request.roleId,
 			});
 			recordInstructionEvidence({
 				kernel,
 				request,
 				context,
 				instruction,
-				nowIso: nowIso(),
+				nowIso: clock.nowIso(),
 			});
-			return await launcher.launch({
+			// FLY-1543 ④: prepare the first delivery BEFORE any vendor process
+			// exists. The assignment row was written by the dispatch transaction
+			// (source_id = activation id); starting its processing attempt here and
+			// minting the capability gives the spawn prompt a complete envelope.
+			const assignment = kernel.read((tx) =>
+				tx.get<{ message_uid: string; state: string }>(
+					`SELECT message_uid,state FROM mailbox
+					  WHERE source_kind='dag_task_dispatch' AND source_id=@activationId`,
+					{ activationId: request.activationId },
+				),
+			);
+			if (!assignment) {
+				throw new FenceViolation(
+					`task assignment for activation ${request.activationId} is missing`,
+				);
+			}
+			const polled = pollRunnerDelivery(kernel, runtime, request.sessionRef);
+			if (
+				polled.status !== "available" ||
+				polled.message.messageUid !== assignment.message_uid
+			) {
+				throw new FenceViolation(
+					`task assignment for ${request.sessionRef} is not deliverable`,
+				);
+			}
+			const prepared = prepareDelivery(
+				kernel,
+				runtime,
+				expectedEpoch,
+				polled.message,
+				polled.handle,
+			);
+			if (!prepared.envelope) {
+				throw new FenceViolation(
+					`first delivery for ${request.sessionRef} was already recorded as handed over to a dead session`,
+				);
+			}
+			const envelope = prepared.envelope;
+			const binding = await launcher.launch({
 				...request,
 				context: {
 					...context,
 					projectRoot: instruction.projectRoot,
 					instruction,
+					firstEnvelope: JSON.stringify(envelope),
 				},
 			});
+			// The prompt has left the host with the tmux session up; record the
+			// hand-over. If this crashes first, the intent stays `intended` and a
+			// relaunch replays it with a fresh capability -- nothing is lost.
+			recordDeliverySucceeded(kernel, envelope);
+			return binding;
 		},
 	};
 }
@@ -438,61 +492,6 @@ function launchLock(root: string): LaunchLockPort {
 			} finally {
 				rmdirSync(path);
 			}
-		},
-	};
-}
-
-function injectionBuilder(root: string): InjectionRefBuilder {
-	absolute(root, "injectionRoot");
-	mkdirSync(root, { recursive: true, mode: 0o700 });
-	chmodSync(root, 0o700);
-	return {
-		build(input) {
-			const key = safeKey(input.sessionRef);
-			if (/codex/i.test(input.executor.vendor)) {
-				return JSON.stringify({
-					v: 1,
-					backend: "codex",
-					socketPath: join(root, "codex", `${key.slice(0, 24)}.sock`),
-					threadId: input.sessionRef,
-				});
-			}
-			if (/claude/i.test(input.executor.vendor)) {
-				const agentName = input.agentId
-					.replace(/[^A-Za-z0-9_-]+/g, "-")
-					.slice(0, 64);
-				const teamName = `v2-${agentName}`.toLowerCase();
-				// Codex R3 MEDIUM-5/7: the Claude root is per-ACTIVATION, not per-agent.
-				// Sharing one root across activations of the same agent broke two things
-				// at once: every launcher wrote the same .claude.json (so a live Claude
-				// process could overwrite a just-written project trust entry with its own
-				// older snapshot and send the next runner back into interactive
-				// onboarding), and the inbox carried the previous activation's unread
-				// envelopes into a new terminal. Both are the same root cause, so both
-				// are fixed by the same key.
-				const activationRoot = join(
-					root,
-					"claude",
-					safeKey(input.activationId),
-				);
-				const inboxPath = join(
-					activationRoot,
-					"teams",
-					teamName,
-					"inboxes",
-					`${agentName}.json`,
-				);
-				return JSON.stringify({
-					v: 1,
-					backend: "claude",
-					inboxPath,
-					sidecarPath: `${inboxPath}.flywheel.jsonl`,
-					toAgent: agentName,
-				});
-			}
-			throw new Error(
-				`executor vendor ${input.executor.vendor} has no injection shim`,
-			);
 		},
 	};
 }
@@ -586,8 +585,12 @@ export function createRuntimeDagPorts(
 		process: { probe: (sessionRef) => options.launcher.probe(sessionRef) },
 		runnerControl,
 		host: { hostEpoch: () => options.hostEpoch },
-		injectionRef: injectionBuilder(options.injectionRoot),
 		locks: launchLock(options.lockRoot),
-		spawn: kernelSpawnPort(options.kernel, options.launcher, clock.nowIso),
+		spawn: kernelSpawnPort(
+			options.kernel,
+			options.launcher,
+			clock,
+			options.expectedEpoch,
+		),
 	};
 }

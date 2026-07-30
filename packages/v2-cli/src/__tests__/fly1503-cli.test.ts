@@ -1,13 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseCliArgs } from "../cli.js";
 
-/**
- * FLY-1503 item 2 — the CLI surface for an evidenced generation takeover.
- *
- * registerAgentTx validated DeathEvidence and driver.registerLead forwarded it,
- * but no operator-reachable surface could supply it, so a lead whose session was
- * confirmed dead could never be replaced.
- */
 const BASE = [
 	"register-lead",
 	"--socket",
@@ -28,38 +21,48 @@ const BASE = [
 	"31002",
 ];
 
-describe("FLY-1503 item 2 — register-lead death evidence flag", () => {
-	it("accepts --death-evidence-file", () => {
-		const parsed = parseCliArgs([
-			...BASE,
-			"--death-evidence-file",
-			"/tmp/flywheel-v2/death-evidence.json",
-		]);
-		expect(parsed.verb).toBe("register-lead");
-		expect(parsed.values.get("--death-evidence-file")).toBe(
-			"/tmp/flywheel-v2/death-evidence.json",
-		);
-	});
-
-	it("still parses register-lead without the flag", () => {
+describe("FLY-1543 lead takeover and runner upstream CLI", () => {
+	it("has no death-evidence ceremony on register-lead", () => {
 		const parsed = parseCliArgs(BASE);
 		expect(parsed.values.has("--death-evidence-file")).toBe(false);
-	});
-
-	it("rejects the flag on an unrelated verb", () => {
 		expect(() =>
 			parseCliArgs([
-				"next",
-				"--socket",
-				"/tmp/flywheel-v2/host.sock",
-				"--secret",
-				"/tmp/flywheel-v2/host.secret",
-				"--agent",
-				"engineer",
+				...BASE,
 				"--death-evidence-file",
 				"/tmp/flywheel-v2/death-evidence.json",
 			]),
-		).toThrow(/unknown next option --death-evidence-file/);
+		).toThrow(/unknown register-lead option --death-evidence-file/);
+	});
+
+	it("parses runner ask without exposing a recipient flag", () => {
+		const parsed = parseCliArgs([
+			"ask",
+			"--socket",
+			"/tmp/flywheel-v2/host.sock",
+			"--secret",
+			"/tmp/flywheel-v2/host.secret",
+			"--session",
+			"v2dag:11111111-1111-4111-8111-111111111111:1:22222222-2222-4222-8222-222222222222",
+			"--ask-kind",
+			"ask",
+			"--payload",
+			"Which test should I run?",
+		]);
+		expect(parsed.verb).toBe("ask");
+		expect(parsed.values.has("--to-agent")).toBe(false);
+		expect(() =>
+			parseCliArgs([
+				"ask",
+				"--session",
+				"session",
+				"--ask-kind",
+				"ask",
+				"--payload",
+				"question",
+				"--to-agent",
+				"someone-else",
+			]),
+		).toThrow(/unknown ask option --to-agent/);
 	});
 });
 

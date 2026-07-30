@@ -213,8 +213,9 @@ describe("durable config, address allocation, and generation registration", () =
 		).toEqual({ attempt: "crashed", mailbox: 1 });
 	});
 
-	it("cuts a runner over without coupling agent generation to the task attempt generation", () => {
+	it("rejects runner registration and addresses its active session directly", () => {
 		fixture = makeFixture();
+		const sessionRef = "v2dag:attempt-a:1:activation-1";
 		fixture.kernel.write("test.seed-runner-attempt", (tx) => {
 			tx.run(
 				`INSERT INTO tasks
@@ -230,54 +231,52 @@ describe("durable config, address allocation, and generation registration", () =
 			);
 			tx.run(
 				`INSERT INTO activations(id,attempt_id,session_ref,generation,state)
-				 VALUES ('activation-1','attempt-a','session-1',1,'active')`,
+				 VALUES ('activation-1','attempt-a',@sessionRef,1,'active')`,
+				{ sessionRef },
 			);
 		});
-		const first = fixture.kernel.write("test.register-runner-one", (tx) =>
-			registerAgentTx(tx, fixture?.runtime as EngineRuntime, "runner-a", {
-				kind: "runner",
-				agentId: "runner-a",
-				instanceId: "instance-1",
-				activationId: "activation-1",
-				sessionBinding: testSessionBinding("instance-1"),
-			}),
-		);
-		fixture.kernel.write("test.rotate-runner-activation", (tx) => {
-			tx.run("UPDATE activations SET state='terminal' WHERE id='activation-1'");
-			tx.run(
-				`INSERT INTO activations(id,attempt_id,session_ref,generation,state)
-				 VALUES ('activation-2','attempt-a','session-2',1,'active')`,
-			);
-		});
-
-		const second = fixture.kernel.write("test.register-runner-two", (tx) =>
-			registerAgentTx(
-				tx,
-				fixture?.runtime as EngineRuntime,
-				"runner-a",
-				{
+		expect(() =>
+			fixture?.kernel.write("test.reject-runner-registration", (tx) =>
+				registerAgentTx(tx, fixture?.runtime as EngineRuntime, "runner-a", {
 					kind: "runner",
-					agentId: "runner-a",
-					instanceId: "instance-2",
-					activationId: "activation-2",
-					sessionBinding: testSessionBinding("instance-2"),
-				},
-				{
-					agentId: "runner-a",
-					generation: first.generation,
-					confirmedAbsentAt: fixture?.runtime.clock.nowIso() as string,
-				},
+				} as never),
 			),
-		);
+		).toThrow(/lead identities only/);
 
-		expect(second).toEqual({
-			kind: "runner",
-			agentId: "runner-a",
-			instanceId: "instance-2",
-			activationId: "activation-2",
-			generation: 2,
-			sessionBinding: testSessionBinding("instance-2"),
+		expect(
+			enqueue(fixture.kernel, fixture.runtime, {
+				sourceKind: "lead",
+				sourceId: "session-message",
+				payload: "{}",
+				toAgent: sessionRef,
+				kind: "instruction",
+				retentionClass: "business",
+				expectedCutoverEpoch: 1,
+			}).status,
+		).toBe("enqueued");
+		expect(
+			fixture.kernel.read(
+				(tx) =>
+					tx.get<{ to_agent: string }>(
+						"SELECT to_agent FROM mailbox WHERE source_id='session-message'",
+					)?.to_agent,
+			),
+		).toBe(sessionRef);
+
+		fixture.kernel.write("test.terminal-session", (tx) => {
+			tx.run("UPDATE activations SET state='terminal' WHERE id='activation-1'");
 		});
+		expect(
+			enqueue(fixture.kernel, fixture.runtime, {
+				sourceKind: "lead",
+				sourceId: "late-session-message",
+				payload: "{}",
+				toAgent: sessionRef,
+				kind: "instruction",
+				retentionClass: "business",
+				expectedCutoverEpoch: 1,
+			}),
+		).toEqual({ status: "rejected", reason: "unknown_recipient" });
 	});
 
 	it("accepts offline recipients, returns typed unknown-recipient, and parameterizes notice admission", () => {

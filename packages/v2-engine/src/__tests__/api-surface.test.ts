@@ -3,8 +3,6 @@ import { describe, expect, it } from "vitest";
 import * as publicApi from "../index.js";
 
 const EXPECTED_RUNTIME_EXPORTS = [
-	"ClaudeInjectionShim",
-	"CodexInjectionShim",
 	"DEFAULT_ENGINE_CONFIG",
 	"EngineConfigError",
 	"EngineDriver",
@@ -12,6 +10,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
 	"MAX_FIELD_BYTES",
 	"MAX_PROPOSAL_TOTAL_BYTES",
 	"PollTransientError",
+	"SESSION_RECIPIENT_PREFIX",
 	"canonicalProposalDigest",
 	// Codex R3 HIGH-1: the four-state adjudication of a process probe result is
 	// part of the public fence contract -- every consumer that decides whether a
@@ -19,13 +18,26 @@ const EXPECTED_RUNTIME_EXPORTS = [
 	"classifySessionProcess",
 	"enqueue",
 	"initializeEngineDb",
+	"isSessionRecipient",
 	"issueProposalCapability",
+	"parseSessionBinding",
+	"pollOnce",
 	"proposalSubjectDigest",
 	"provisionAgentRecipient",
 	"readProposalReceipt",
 	"reattachAgent",
+	"refreshHeartbeat",
 	"registerAgentTx",
+	"reportConversionFailure",
+	"requireAttemptBindingTx",
+	"requireCurrentAgentTx",
+	"requireCurrentRunnerTx",
 	"selectNext",
+	"serializeSessionBinding",
+	"sessionBindingsEqual",
+	"startAttemptTx",
+	"submitProposal",
+	"validateSessionBinding",
 ].sort();
 
 describe("v2-engine public package boundary", () => {
@@ -35,10 +47,11 @@ describe("v2-engine public package boundary", () => {
 			"ConsumerCoordinator",
 			"ENGINE_SQL",
 			"MAX_ATTEMPTS",
+			"ClaudeInjectionShim",
+			"CodexInjectionShim",
 			"disposeTerminalRecipient",
 			"registerConsumerTx",
-			"reportConversionFailure",
-			"submitProposal",
+			"attachRunner",
 		]) {
 			expect(removed in publicApi).toBe(false);
 		}

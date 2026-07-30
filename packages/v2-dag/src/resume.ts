@@ -1,11 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { DeathEvidence } from "flywheel-v2-engine";
 import { FENCE, type Kernel } from "flywheel-v2-kernel";
 import { parseTaskPayload } from "./contract.js";
-import { claimLaunch, launchOnce } from "./dispatch.js";
+import { appendTaskAssignmentTx, claimLaunch, launchOnce } from "./dispatch.js";
 import { DagConflictError, DagContractError } from "./errors.js";
 import { appendEvent } from "./events.js";
-import { validateInjectionRef } from "./injection-ref.js";
 import {
 	insertEnvelope,
 	makeEnvelope,
@@ -13,16 +11,8 @@ import {
 	readEnvelope,
 	updateEnvelope,
 } from "./meta.js";
+import { terminalizeSessionMailboxTx } from "./terminal-mail.js";
 import type { DagPorts, SpawnRequest } from "./types.js";
-
-interface BindingData {
-	state: "active" | "clear";
-	activation_id: string | null;
-	attempt_id: string | null;
-	session_ref_current: string | null;
-	session_ref_last: string | null;
-	host_epoch: string | null;
-}
 
 interface ClaimData {
 	state: "pending" | "claimed" | "launched" | "tombstoned";
@@ -31,10 +21,19 @@ interface ClaimData {
 	launch_receipt: unknown;
 }
 
+/**
+ * FLY-1543 ①⑤: resume takes no death evidence. The liveness check below (the
+ * session process must be POSITIVELY absent -- a present or unprobeable session
+ * refuses the resume) is kept: it probes the old session directly, which is a
+ * forward-looking safety check, not an evidence ceremony. The superseded
+ * activation's pending mail is dead-lettered and a fresh assignment is written
+ * to the NEW session, so the replacement runner starts from a clean, complete
+ * envelope.
+ */
 export async function resumeActivation(
 	kernel: Kernel,
 	ports: DagPorts,
-	input: { attemptId: string; evidence: DeathEvidence },
+	input: { attemptId: string },
 ): Promise<SpawnRequest> {
 	const current = kernel.read((tx) => {
 		const row = tx.get<{
@@ -63,12 +62,8 @@ export async function resumeActivation(
 		async () => {
 			const fresh = await ports.process.probe(current.session_ref);
 			if (fresh.state !== "absent") {
-				throw new DagContractError("resume death evidence is not fresh");
+				throw new DagContractError("resume requires an absent session process");
 			}
-			const freshEvidence: DeathEvidence = {
-				...input.evidence,
-				confirmedAbsentAt: fresh.confirmedAt,
-			};
 			return kernel.write("v2dag.activation.resume", (tx) => {
 				const epoch = readCutoverEpoch(tx);
 				const row = tx.get<{
@@ -96,17 +91,6 @@ export async function resumeActivation(
 					throw new DagContractError("active activation changed");
 				}
 				const payload = parseTaskPayload(JSON.parse(row.payload));
-				const bindingKey = `agent_binding:${payload.executor.logicalAgentId}`;
-				const binding = readEnvelope<BindingData>(tx, bindingKey, epoch);
-				if (
-					!binding ||
-					binding.data.state !== "active" ||
-					binding.data.attempt_id !== input.attemptId ||
-					binding.data.activation_id !== row.activation_id ||
-					binding.data.session_ref_current !== row.session_ref
-				) {
-					throw new DagContractError("resume binding changed");
-				}
 				const oldClaim = readEnvelope<ClaimData>(
 					tx,
 					`launch_claim:${row.session_ref}`,
@@ -125,19 +109,13 @@ export async function resumeActivation(
 				tx.cas(FENCE.activationCasActiveTerminal, {
 					activationId: row.activation_id,
 				});
+				terminalizeSessionMailboxTx(tx, {
+					sessionRef: row.session_ref,
+					cutoverEpoch: epoch,
+					nowIso: ports.clock.nowIso(),
+				});
 				const activationId = randomUUID();
 				const sessionRef = `v2dag:${input.attemptId}:${row.generation}:${activationId}`;
-				const injectionRef = validateInjectionRef(
-					ports.injectionRef.build({
-						taskId: row.task_id,
-						attemptId: input.attemptId,
-						attemptGeneration: row.generation,
-						activationId,
-						sessionRef,
-						agentId: payload.executor.logicalAgentId,
-						executor: payload.executor,
-					}),
-				);
 				tx.run(
 					`INSERT INTO activations(id,attempt_id,session_ref,generation,state)
 				 VALUES(@activationId,@attemptId,@sessionRef,@generation,'active')`,
@@ -148,36 +126,13 @@ export async function resumeActivation(
 						generation: row.generation,
 					},
 				);
-				tx.run(
-					`INSERT INTO meta(key,value,updated_at)
-					 VALUES (@key,@value,@now)`,
-					{
-						key: `injection_ref:${activationId}`,
-						value: injectionRef,
-						now: ports.clock.nowIso(),
-					},
-				);
 				const agent = {
 					kind: "runner" as const,
-					agentId: payload.executor.logicalAgentId,
+					agentId: sessionRef,
 					instanceId: sessionRef,
-					generation: freshEvidence.generation + 1,
+					generation: row.generation,
 					activationId,
 				};
-				updateEnvelope(
-					tx,
-					bindingKey,
-					binding,
-					{
-						state: "active",
-						activation_id: activationId,
-						attempt_id: input.attemptId,
-						session_ref_current: sessionRef,
-						session_ref_last: row.session_ref,
-						host_epoch: ports.host.hostEpoch(),
-					},
-					ports.clock.nowIso(),
-				);
 				insertEnvelope(
 					tx,
 					`launch_claim:${sessionRef}`,
@@ -189,6 +144,20 @@ export async function resumeActivation(
 					}),
 					ports.clock.nowIso(),
 				);
+				const request: SpawnRequest = {
+					taskId: row.task_id,
+					attemptId: input.attemptId,
+					attemptGeneration: row.generation,
+					activationId,
+					sessionRef,
+					ownerToken: "",
+					agent,
+					roleId: payload.executor.logicalAgentId,
+					executor: payload.executor,
+				};
+				// The replacement session gets its own assignment envelope, keyed on
+				// the NEW activation id -- the dead session's row was just settled.
+				appendTaskAssignmentTx(tx, ports, request);
 				appendEvent(tx, {
 					eventUid: `activation_resumed:${activationId}`,
 					taskId: row.task_id,
@@ -204,18 +173,7 @@ export async function resumeActivation(
 					cutoverEpoch: epoch,
 					createdAt: ports.clock.nowIso(),
 				});
-				return {
-					taskId: row.task_id,
-					attemptId: input.attemptId,
-					attemptGeneration: row.generation,
-					activationId,
-					sessionRef,
-					injectionRef,
-					ownerToken: "",
-					agent,
-					deathEvidence: freshEvidence,
-					executor: payload.executor,
-				} satisfies SpawnRequest;
+				return request;
 			});
 		},
 	);

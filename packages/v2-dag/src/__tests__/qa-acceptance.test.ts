@@ -664,6 +664,25 @@ describe("FLY-1520 acceptance — one live writer per worktree", () => {
 			(taskId) => taskState(fixture, taskId as string) === "running",
 		);
 		expect(runningWriters).toHaveLength(1);
+		const waitingWriter = writerIds.find(
+			(taskId) => taskId !== dispatchedWriters[0]?.taskId,
+		);
+		expect(round.skips).toContainEqual({
+			taskId: waitingWriter,
+			reason: "writer_span_open",
+		});
+		expect(
+			fixture.kernel.read((tx) =>
+				tx.get<{ task_id: string; reason: string }>(
+					`SELECT task_id,
+						        json_extract(payload,'$.failure_stage') AS reason
+						   FROM events
+						  WHERE kind='task_dispatch_skipped'
+						    AND task_id=@taskId`,
+					{ taskId: waitingWriter },
+				),
+			),
+		).toEqual({ task_id: waitingWriter, reason: "writer_span_open" });
 
 		// A second sweep must not sneak the waiting writer into the held slot.
 		const again = await dispatchOnce(fixture.kernel, ports);
@@ -770,17 +789,26 @@ describe("FLY-1520 acceptance — writer fences, isolated one at a time", () => 
 		const round = await dispatchOnce(rig.fixture.kernel, rig.ports);
 
 		expect(round.dispatched).toEqual([]);
+		expect(round.skips).toEqual([
+			{ taskId: rig.taskId, reason: "writer_head_drift" },
+		]);
+		expect(
+			rig.fixture.kernel.read((tx) =>
+				tx.get<{ reason: string }>(
+					`SELECT json_extract(payload,'$.failure_stage') AS reason
+						   FROM events
+						  WHERE kind='task_dispatch_skipped' AND task_id=@taskId`,
+					{ taskId: rig.taskId },
+				),
+			),
+		).toEqual({ reason: "writer_head_drift" });
 		expect(taskState(rig.fixture, rig.taskId)).toBe("ready");
 	});
 
-	it("refuses to dispatch over an unadopted gap even once the head matches again", async () => {
-		// Admission records a gap (head ahead of the merge base). The worktree is
-		// then reset back onto the anchor, so the head clause is satisfied and
-		// only the unadopted gap can stop this.
-		let head = B;
+	it("rejects an unadopted writer gap at admission", async () => {
 		const git: GitPort = {
 			async readHead() {
-				return head;
+				return B;
 			},
 			async mergeBase() {
 				return A;
@@ -792,25 +820,43 @@ describe("FLY-1520 acceptance — writer fences, isolated one at a time", () => 
 				return "";
 			},
 			async readRef() {
-				return head;
+				return B;
 			},
 		};
-		const rig = await writerFixture("issue-qa-gap-only", git);
-		expect(countEvents(rig.fixture, "writer_gap_detected")).toBe(1);
+		const fixture = makeFixture();
+		fixtures.push(fixture);
+		fixture.provision("lead-a", "lead");
+		const { ports } = makePorts(fixture.clock, { git });
 
-		head = A;
-		const round = await dispatchOnce(rig.fixture.kernel, rig.ports);
-
-		expect(round.dispatched).toEqual([]);
-		expect(taskState(rig.fixture, rig.taskId)).toBe("ready");
+		await expect(
+			admitIssueDag(fixture.kernel, ports, {
+				admissionUid: "qa-fence-issue-qa-gap-only",
+				projectId: "project-a",
+				issueId: "issue-qa-gap-only",
+				notifyAgentId: "lead-a",
+				shipWorktreeId: WT.worktreeId,
+				worktrees: [WT],
+				tasks: [
+					{
+						localId: "node",
+						kindLabel: "opaque",
+						contract: [],
+						writesRepo: true,
+						worktreeId: WT.worktreeId,
+						executor: executor("agent-a"),
+					},
+				],
+				edges: [],
+			}),
+		).rejects.toThrow(/unauthenticated commits/);
 		expect(
-			rig.fixture.kernel.read(
+			fixture.kernel.read(
 				(tx) =>
-					tx.get<{ gap: string | null }>(
-						"SELECT json_extract(value,'$.data.pending_gap') AS gap FROM meta WHERE key='writer_chain:wt-a'",
-					)?.gap,
+					tx.get<{ count: number }>(
+						"SELECT count(*) AS count FROM tasks WHERE external_issue_id='issue-qa-gap-only'",
+					)?.count,
 			),
-		).not.toBeNull();
+		).toBe(0);
 	});
 
 	it("refuses a completion whose writer chain moved under it mid-observation", async () => {

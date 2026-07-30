@@ -110,14 +110,28 @@ export async function executeShip(
 		if (observedHead !== gate.data.tip) {
 			throw new DagContractError("world head drifted");
 		}
-		const currentActor = tx.get<{ kind: string; generation: number }>(
-			"SELECT kind,generation FROM agents WHERE agent_id=@agentId",
-			{ agentId: input.actor.agentId },
-		);
+		// FLY-1543 ⑤: actor currency follows the discriminator -- a runner actor
+		// is a session (activations row), a lead actor is an agents row.
+		const actorCurrent = (() => {
+			if (input.actor.kind === "runner") {
+				if (!input.actor.agentId.startsWith("v2dag:")) return false;
+				const activation = tx.get<{ generation: number }>(
+					`SELECT generation FROM activations
+					  WHERE session_ref=@sessionRef AND state='active'`,
+					{ sessionRef: input.actor.agentId },
+				);
+				return activation?.generation === input.actor.generation;
+			}
+			const lead = tx.get<{ kind: string; generation: number }>(
+				"SELECT kind,generation FROM agents WHERE agent_id=@agentId",
+				{ agentId: input.actor.agentId },
+			);
+			return (
+				lead?.kind === "lead" && lead.generation === input.actor.generation
+			);
+		})();
 		if (
-			!currentActor ||
-			currentActor.kind !== input.actor.kind ||
-			currentActor.generation !== input.actor.generation ||
+			!actorCurrent ||
 			gate.data.actor_agent_id !== input.actor.agentId ||
 			gate.data.actor_generation !== input.actor.generation ||
 			gate.data.capability_id !== input.capabilityId

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { RegisteredAgent } from "flywheel-v2-engine";
 import { FENCE, type Kernel } from "flywheel-v2-kernel";
+import { terminalizeAttemptTx } from "./attempt-terminal.js";
 import type { CanonicalValue } from "./digests.js";
 import { digestJson, sha256 } from "./digests.js";
 import { DagConflictError, DagContractError } from "./errors.js";
@@ -494,24 +495,6 @@ async function adoptLostOpenAttempt(
 				) {
 					throw new DagConflictError("lost-open launch claim changed");
 				}
-				const agentBindingKey = `agent_binding:${execution.agent_id}`;
-				const agentBinding = readEnvelope<{
-					state: "active" | "clear";
-					activation_id: string | null;
-					attempt_id: string | null;
-					session_ref_current: string | null;
-					session_ref_last: string | null;
-					host_epoch: string | null;
-				}>(tx, agentBindingKey, epoch);
-				if (
-					!agentBinding ||
-					agentBinding.data.state !== "active" ||
-					agentBinding.data.activation_id !== execution.activation_id ||
-					agentBinding.data.attempt_id !== binding.attempt_id ||
-					agentBinding.data.session_ref_current !== execution.session_ref
-				) {
-					throw new DagConflictError("lost-open agent binding changed");
-				}
 				const subjectDigest = digestJson(binding as unknown as CanonicalValue);
 				const capability = tx.get<{
 					issuer: string;
@@ -544,40 +527,6 @@ async function adoptLostOpenAttempt(
 				});
 				updateEnvelope(
 					tx,
-					claimKey,
-					claim,
-					{ ...claim.data, state: "tombstoned" },
-					ports.clock.nowIso(),
-				);
-				tx.cas(FENCE.activationCasActiveTerminal, {
-					activationId: execution.activation_id,
-				});
-				tx.cas(FENCE.attemptCasActiveTerminal, {
-					attemptId: binding.attempt_id,
-					reason: "failed",
-					terminalAt: ports.clock.nowIso(),
-				});
-				tx.cas(
-					`UPDATE tasks SET state='ready',state_version=state_version+1,
-					 terminal_at=NULL WHERE id=@taskId AND state='running'`,
-					{ taskId: execution.task_id },
-				);
-				updateEnvelope(
-					tx,
-					agentBindingKey,
-					agentBinding,
-					{
-						state: "clear",
-						activation_id: null,
-						attempt_id: null,
-						session_ref_current: null,
-						session_ref_last: execution.session_ref,
-						host_epoch: null,
-					},
-					ports.clock.nowIso(),
-				);
-				updateEnvelope(
-					tx,
 					writerKey,
 					writer,
 					{
@@ -592,6 +541,17 @@ async function adoptLostOpenAttempt(
 						].sort(),
 					},
 					ports.clock.nowIso(),
+				);
+				terminalizeAttemptTx(tx, {
+					attemptId: binding.attempt_id,
+					reason: "failed",
+					cutoverEpoch: epoch,
+					nowIso: ports.clock.nowIso(),
+				});
+				tx.cas(
+					`UPDATE tasks SET state='ready',state_version=state_version+1,
+					 terminal_at=NULL WHERE id=@taskId AND state='running'`,
+					{ taskId: execution.task_id },
 				);
 				const issue = readEnvelope<{ notify_agent_id: string }>(
 					tx,

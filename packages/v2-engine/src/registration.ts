@@ -12,11 +12,11 @@ import {
 } from "./session-binding.js";
 import { ENGINE_SQL } from "./sql.js";
 import { settleFailureMailboxTx } from "./transitions.js";
-import type {
-	DeathEvidence,
-	EngineRuntime,
-	IdentityDraft,
-	RegisteredAgent,
+import {
+	type EngineRuntime,
+	type IdentityDraft,
+	isSessionRecipient,
+	type RegisteredAgent,
 } from "./types.js";
 
 interface AgentRow {
@@ -87,42 +87,13 @@ function requireNonEmpty(value: string, name: string): void {
 	}
 }
 
-function draftAgentId(draft: IdentityDraft): string {
-	return draft.kind === "lead" ? draft.leadId : draft.agentId;
-}
-
 function validateDraft(agentId: string, draft: IdentityDraft): void {
 	requireNonEmpty(agentId, "agentId");
-	requireNonEmpty(draftAgentId(draft), "draft agentId");
+	requireNonEmpty(draft.leadId, "draft agentId");
 	requireNonEmpty(draft.instanceId, "instanceId");
 	validateSessionBinding(draft.sessionBinding);
-	if (draftAgentId(draft) !== agentId) {
+	if (draft.leadId !== agentId) {
 		throw new FenceViolation("identity subject does not match agent");
-	}
-	if (draft.kind === "runner") {
-		requireNonEmpty(draft.activationId, "activationId");
-	}
-}
-
-function validateEvidence(
-	evidence: DeathEvidence | undefined,
-	current: AgentRow,
-): void {
-	if (
-		!evidence ||
-		evidence.agentId !== current.agent_id ||
-		evidence.generation !== current.generation
-	) {
-		throw new FenceViolation(
-			"death evidence does not match current generation",
-		);
-	}
-	const parsed = Date.parse(evidence.confirmedAbsentAt);
-	if (
-		!Number.isFinite(parsed) ||
-		new Date(parsed).toISOString() !== evidence.confirmedAbsentAt
-	) {
-		throw new FenceViolation("death evidence timestamp is malformed");
 	}
 }
 
@@ -131,33 +102,45 @@ function registered(
 	draft: IdentityDraft,
 	generation: number,
 ): RegisteredAgent {
-	if (draft.kind === "lead") {
-		return {
-			kind: "lead",
-			agentId,
-			instanceId: draft.instanceId,
-			generation,
-			sessionBinding: draft.sessionBinding,
-		};
-	}
 	return {
-		kind: "runner",
+		kind: "lead",
 		agentId,
 		instanceId: draft.instanceId,
-		activationId: draft.activationId,
 		generation,
 		sessionBinding: draft.sessionBinding,
 	};
 }
 
+/**
+ * FLY-1543 ①: registration IS the takeover. A new registration for an existing
+ * lead identity displaces the current generation directly -- no death evidence,
+ * no process interrogation. Displacement itself is the safety mechanism: the
+ * generation bump makes every credential, heartbeat and running attempt of the
+ * superseded generation invalid through the existing fences, so a still-live
+ * old process is just a shell that can no longer read mail or write the ledger.
+ * A same-uid impostor registering as a lead is an accepted design boundary
+ * (founder ruling recorded on the FLY-1502 lane): it already holds the host
+ * secret.
+ *
+ * FLY-1543 ⑤: lead-only. A runner's identity is its activations row; the
+ * `v2dag:` session namespace is structurally refused here so the two recipient
+ * namespaces can never collide.
+ */
 export function registerAgentTx(
 	tx: WriteTx,
 	runtime: EngineRuntime,
 	agentId: string,
 	draft: IdentityDraft,
-	evidence?: DeathEvidence,
 ): RegisteredAgent {
+	if (draft.kind !== "lead") {
+		throw new FenceViolation("registerAgentTx accepts lead identities only");
+	}
 	validateDraft(agentId, draft);
+	if (isSessionRecipient(agentId)) {
+		throw new FenceViolation(
+			"lead agent id must not use the v2dag: session namespace",
+		);
+	}
 	const current = tx.get<AgentRow>(ENGINE_SQL.readAgent, { agentId });
 	if (current && current.kind !== draft.kind) {
 		throw new FenceViolation(`agent kind collision for ${agentId}`);
@@ -174,7 +157,6 @@ export function registerAgentTx(
 
 	let nextGeneration = 1;
 	if (current && current.generation > 0) {
-		validateEvidence(evidence, current);
 		nextGeneration = current.generation + 1;
 		const foreign = running.find(
 			(row) => row.generation !== current.generation,
@@ -197,15 +179,6 @@ export function registerAgentTx(
 				attemptUid: row.attempt_uid,
 				generation: current.generation,
 			});
-		}
-	}
-
-	if (draft.kind === "runner") {
-		const activation = tx.get<{ state: string }>(ENGINE_SQL.readActivation, {
-			activationId: draft.activationId,
-		});
-		if (!activation || activation.state !== "active") {
-			throw new FenceViolation("runner activation is not active");
 		}
 	}
 
@@ -250,6 +223,11 @@ function requireStoredBinding(
 			`agent ${expected.agentId} durable identity does not match reattach request`,
 		);
 	}
+	if (!expected.sessionBinding) {
+		throw new FenceViolation(
+			`agent ${expected.agentId} reattach requires a session binding`,
+		);
+	}
 	const stored = parseSessionBinding(row.session_binding);
 	if (!sessionBindingsEqual(stored, expected.sessionBinding)) {
 		throw new FenceViolation(
@@ -264,6 +242,11 @@ function requireLiveSessionEvidence(
 	hostEpoch: string,
 	probe: SessionEvidenceProbe,
 ): void {
+	if (!expected.sessionBinding) {
+		throw new FenceViolation(
+			`agent ${expected.agentId} reattach requires a session binding`,
+		);
+	}
 	validateSessionBinding(expected.sessionBinding);
 	requireNonEmpty(hostEpoch, "hostEpoch");
 	if (expected.sessionBinding.hostEpoch !== hostEpoch) {
@@ -296,10 +279,18 @@ function requireLiveSessionEvidence(
 	}
 }
 
+/**
+ * FLY-1543 ⑤: reattach is lead-only. Runners never reattach: a runner session
+ * that comes back is the same activations row (nothing to restore), and a
+ * runner session that died is resumed as a NEW activation by the DAG lifecycle.
+ */
 export function reattachAgent(options: ReattachAgentOptions): RegisteredAgent {
 	const { expected, hostEpoch, kernel, probe, runtime } = options;
 	requireNonEmpty(expected.agentId, "agentId");
 	requireNonEmpty(expected.instanceId, "instanceId");
+	if (expected.kind !== "lead") {
+		throw new FenceViolation("reattachAgent accepts lead identities only");
+	}
 
 	const storedBinding = kernel.read((tx) =>
 		requireStoredBinding(
@@ -312,24 +303,6 @@ export function reattachAgent(options: ReattachAgentOptions): RegisteredAgent {
 	requireLiveSessionEvidence(expected, hostEpoch, probe);
 
 	kernel.write("consumer.reattach", (tx) => {
-		if (expected.kind === "runner") {
-			const activation = tx.get<{
-				id: string;
-				session_ref: string;
-				state: string;
-			}>(ENGINE_SQL.readActivation, {
-				activationId: expected.activationId,
-			});
-			if (
-				!activation ||
-				activation.state !== "active" ||
-				activation.session_ref !== expected.sessionBinding.sessionId
-			) {
-				throw new FenceViolation(
-					`runner ${expected.agentId} activation does not match live session`,
-				);
-			}
-		}
 		const result = tx.run(ENGINE_SQL.casReattachAgent, {
 			agentId: expected.agentId,
 			kind: expected.kind,

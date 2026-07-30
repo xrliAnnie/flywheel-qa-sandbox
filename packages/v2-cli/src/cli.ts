@@ -36,6 +36,7 @@ type Verb =
 	| "health"
 	| "register-lead"
 	| "enqueue"
+	| "ask"
 	| "next"
 	| "submit"
 	| "admit"
@@ -58,6 +59,7 @@ const VERBS = new Set<Verb>([
 	"health",
 	"register-lead",
 	"enqueue",
+	"ask",
 	"next",
 	"submit",
 	"admit",
@@ -94,10 +96,11 @@ const DIRECT_VERBS = new Set<Verb>([
 ]);
 const VERB_FLAGS: Record<Verb, ReadonlySet<string>> = {
 	health: new Set(),
+	// FLY-1543 ①: registration IS the takeover -- no --death-evidence-file; a
+	// new registration displaces the old one directly.
 	"register-lead": new Set([
 		"--agent",
 		"--instance",
-		"--death-evidence-file",
 		"--host-epoch",
 		"--session-id",
 		"--session-proof-root",
@@ -116,9 +119,14 @@ const VERB_FLAGS: Record<Verb, ReadonlySet<string>> = {
 		"--kind",
 		"--retention",
 	]),
-	// Codex R3 HIGH-2: a pull is authorised by the credential minted for this
-	// registration, not by the global host secret plus a self-declared --agent.
-	next: new Set(["--agent", "--delivery-credential-file"]),
+	// FLY-1543 ③: the runner->lead upstream verb. Deliberately NO --to-agent:
+	// the recipient is resolved server-side from the session's issue, so a
+	// runner cannot address arbitrary recipients.
+	ask: new Set(["--session", "--ask-kind", "--payload", "--uid"]),
+	// Codex R3 HIGH-2: a LEAD pull is authorised by the credential minted for its
+	// registration. FLY-1543 ④: a RUNNER pulls its own session mailbox with
+	// --session (the active activation is the registration).
+	next: new Set(["--agent", "--delivery-credential-file", "--session"]),
 	submit: new Set([
 		"--agent",
 		"--attempt",
@@ -477,10 +485,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 				pid,
 				pidStart: requestedStart,
 			});
-			// FLY-1503 item 2: without this the host had no way to receive death
-			// evidence, so a lead whose session was confirmed dead could never be
-			// replaced by a new generation.
-			const deathEvidencePath = parsed.values.get("--death-evidence-file");
 			const credentialOut = parsed.values.get("--delivery-credential-out");
 			if (credentialOut !== undefined && !isAbsolute(credentialOut)) {
 				throw new TypeError("--delivery-credential-out must be absolute");
@@ -495,14 +499,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 					pid,
 					pidStart: requestedStart,
 				},
-				...(deathEvidencePath === undefined
-					? {}
-					: {
-							deathEvidence: parseJsonFile(
-								deathEvidencePath,
-								"--death-evidence-file",
-							),
-						}),
 			});
 			if (credentialOut !== undefined) {
 				result = stashDeliveryCredential(credentialOut, result);
@@ -519,7 +515,31 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 				retentionClass: requireValue(parsed.values, "--retention"),
 			});
 			break;
+		case "ask":
+			result = await client.request("ask", {
+				sessionRef: requireValue(parsed.values, "--session"),
+				askKind: requireValue(parsed.values, "--ask-kind"),
+				payload: requireValue(parsed.values, "--payload"),
+				...(parsed.values.has("--uid")
+					? { uid: requireValue(parsed.values, "--uid") }
+					: {}),
+			});
+			break;
 		case "next":
+			if (parsed.values.has("--session")) {
+				if (
+					parsed.values.has("--agent") ||
+					parsed.values.has("--delivery-credential-file")
+				) {
+					throw new TypeError(
+						"--session cannot be combined with --agent or --delivery-credential-file",
+					);
+				}
+				result = await client.request("next_delivery", {
+					sessionRef: requireValue(parsed.values, "--session"),
+				});
+				break;
+			}
 			result = await client.request("next_delivery", {
 				agentId: requireValue(parsed.values, "--agent"),
 				deliveryCredential: readDeliveryCredential(

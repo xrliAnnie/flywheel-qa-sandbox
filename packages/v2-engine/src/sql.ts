@@ -56,6 +56,14 @@ export const ENGINE_SQL = {
 		WHERE a.id=@activationId`,
 	readActivation: `SELECT id,session_ref,generation,state
 		FROM activations WHERE id=@activationId`,
+	readActivationFull: `SELECT id,attempt_id,session_ref,generation,state,
+			session_binding,last_poll_at
+		FROM activations WHERE id=@activationId`,
+	readActiveActivationBySessionRef: `SELECT id,attempt_id,session_ref,generation,state,
+			session_binding,last_poll_at
+		FROM activations WHERE session_ref=@sessionRef AND state='active'`,
+	casActivationHeartbeat: `UPDATE activations SET last_poll_at=@now
+		WHERE id=@activationId AND session_ref=@sessionRef AND state='active'`,
 	readMailboxRetry: `SELECT retry_count,state,to_agent
 		FROM mailbox WHERE message_uid=@messageUid`,
 	insertEvent: `INSERT INTO events

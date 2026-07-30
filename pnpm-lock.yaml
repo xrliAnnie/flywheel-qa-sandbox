@@ -655,12 +655,6 @@ importers:
 
   packages/v2-engine:
     dependencies:
-      flywheel-agent-team-transport:
-        specifier: workspace:*
-        version: link:../agent-team-transport
-      flywheel-claude-runner:
-        specifier: workspace:*
-        version: link:../claude-runner
       flywheel-v2-actions:
         specifier: workspace:*
         version: link:../v2-actions
@@ -683,9 +677,6 @@ importers:
 
   packages/v2-host:
     dependencies:
-      flywheel-claude-runner:
-        specifier: workspace:*
-        version: link:../claude-runner
       flywheel-v2-dag:
         specifier: workspace:*
         version: link:../v2-dag

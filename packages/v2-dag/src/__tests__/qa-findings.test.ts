@@ -3,7 +3,6 @@ import {
 	admitIssueDag,
 	approveShipGate,
 	dispatchOnce,
-	executeShip,
 	type GitHubMergePort,
 	type GitHubObservationPort,
 	type GitPort,
@@ -140,7 +139,7 @@ describe("FLY-1520 QA findings — reproductions", () => {
 			projectId: "project-a",
 			review: "code",
 			subjectDigest: observation.reviewSubjectDigest,
-			reviewer: { agentId: "agent-a", generation: 0 },
+			reviewer: spawn.agent,
 		});
 		await expect(
 			submitNodeCompletion(fixture.kernel, ports, {
@@ -218,10 +217,7 @@ describe("FLY-1520 QA findings — reproductions", () => {
 			projectId: "project-a",
 			review: "code",
 			subjectDigest: observation.reviewSubjectDigest,
-			reviewer: {
-				agentId: "solo",
-				generation: spawn.agent.generation,
-			},
+			reviewer: spawn.agent,
 		});
 
 		await expect(
@@ -345,22 +341,9 @@ describe("FLY-1520 QA findings — reproductions", () => {
 	});
 
 	/**
-	 * F3 — `usableActor` deliberately accepts a runner that has a live
-	 * activation, and `approveShipGate` will pick it. But the ship action has no
-	 * task/attempt lineage, and the kernel's own actions table (migration 0006)
-	 * says a runner actor must carry the full lineage:
-	 *
-	 *   CHECK ((attempt_id IS NULL AND attempt_generation IS NULL
-	 *           AND activation_id IS NULL)
-	 *          OR (task_id IS NOT NULL AND attempt_id IS NOT NULL
-	 *              AND attempt_generation IS NOT NULL))
-	 *   CHECK (actor_kind='lead' OR activation_id IS NOT NULL)
-	 *
-	 * So a runner-authorized gate mints a capability that can never be spent:
-	 * every merge attempt dies on the CHECK, and a live founder approval is
-	 * stranded with no path forward.
-	 *
-	 * Severity HIGH — a granted founder approval that can never ship.
+	 * F3 — a logical runner role is not a recipient or action actor. Ship
+	 * authority may target a concrete live sessionRef, but must not resolve a
+	 * role name through the retired runner rows in `agents`.
 	 */
 	it("F3: never grants ship authority to an actor whose action the kernel will reject", async () => {
 		const fixture = makeFixture();
@@ -403,7 +386,7 @@ describe("FLY-1520 QA findings — reproductions", () => {
 		const { ports } = makePorts(fixture.clock, { git });
 		const allPorts = { ...ports, githubObservation, githubMerge };
 
-		// A second issue keeps busy-runner genuinely live, so usableActor accepts it.
+		// A second issue keeps a concrete busy-runner session genuinely live.
 		await admitIssueDag(fixture.kernel, allPorts, {
 			admissionUid: "qa-f3-busy",
 			projectId: "project-a",
@@ -454,7 +437,7 @@ describe("FLY-1520 QA findings — reproductions", () => {
 			completionUid: "qa-f3-completion",
 		});
 
-		// busy-runner is still live, so it becomes the ship actor.
+		// The configured value is only a role name, so no action actor is chosen.
 		const approval = approveShipGate(fixture.kernel, allPorts, {
 			issueId: "issue-qa-f3",
 			approvalRef: "qa-f3-approval",
@@ -471,31 +454,8 @@ describe("FLY-1520 QA findings — reproductions", () => {
 					"SELECT json_extract(value,'$.data.actor_agent_id') AS actor FROM meta WHERE key='ship_gate:issue-qa-f3'",
 				)?.actor,
 		);
-		expect(chosenActor).toBe("busy-runner");
-
-		// Authority was granted, so it must be spendable. Today this dies on the
-		// kernel CHECK constraint and the approval is stranded.
-		const shipped = await executeShip(fixture.kernel, allPorts, {
-			issueId: "issue-qa-f3",
-			capabilityId: approval.capabilityId as string,
-			actor: {
-				kind: "runner",
-				agentId: "busy-runner",
-				instanceId: (
-					spawns.find(
-						(request) => request.taskId !== target.taskIds.node,
-					) as SpawnRequest
-				).sessionRef,
-				generation: 1,
-				activationId: (
-					spawns.find(
-						(request) => request.taskId !== target.taskIds.node,
-					) as SpawnRequest
-				).activationId,
-			},
-		});
-
-		expect(shipped).toMatchObject({ status: "succeeded" });
-		expect(merges).toBe(1);
+		expect(chosenActor).toBeNull();
+		expect(approval.capabilityId).toBeNull();
+		expect(merges).toBe(0);
 	});
 });

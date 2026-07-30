@@ -63,14 +63,16 @@ describe("DAG admission and dispatch", () => {
 					attemptGeneration: 1,
 					agent: {
 						kind: "runner",
-						agentId: "agent-a",
 						generation: 1,
 					},
+					roleId: "agent-a",
 				},
 			],
 		});
 		expect(spawned).toHaveLength(1);
 		const request = spawned[0] as SpawnRequest;
+		expect(request.agent.agentId).toBe(request.sessionRef);
+		expect(request.agent.instanceId).toBe(request.sessionRef);
 		expect(request.sessionRef).toContain(`:${request.activationId}`);
 		expect(request.ownerToken).not.toHaveLength(0);
 
@@ -292,66 +294,124 @@ describe("DAG admission and dispatch", () => {
 		).toEqual({ events: 1, mail: 1 });
 	});
 
-	it("rejects a previously activated executor with no v2 binding", async () => {
+	it("records a visible skip when a ready task has lost its issue receipt", async () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
 		fixture.provision("lead-a", "lead");
-		fixture.provision("legacy-agent", "runner");
-		fixture.kernel.write("test.legacy-generation", (tx) => {
-			tx.run(
-				`UPDATE agents
-				    SET generation=1,
-				        instance_id='legacy-session',
-				        session_binding=@sessionBinding
-				  WHERE agent_id='legacy-agent'`,
+		const { ports } = makePorts(fixture.clock);
+		const admitted = await admitIssueDag(fixture.kernel, ports, {
+			admissionUid: "missing-issue-receipt",
+			projectId: "project-a",
+			issueId: "issue-missing-receipt",
+			notifyAgentId: "lead-a",
+			shipWorktreeId: "wt-a",
+			worktrees: [
 				{
-					sessionBinding: JSON.stringify({
-						v: 1,
-						host_epoch: "host-1",
-						session_id: "legacy-session",
-						pid: 9_999,
-						pid_start: "legacy-start",
-					}),
+					worktreeId: "wt-a",
+					repoIdentity: "owner/repo",
+					worktreePath: "/tmp/wt-a",
+					branchRef: "refs/heads/feature",
+					mergeTargetRef: "refs/heads/main",
 				},
-			);
+			],
+			tasks: [
+				{
+					localId: "node",
+					kindLabel: "opaque",
+					contract: [],
+					writesRepo: false,
+					worktreeId: null,
+					executor: {
+						logicalAgentId: "agent-a",
+						family: "family-a",
+						vendor: "vendor",
+						model: "model",
+						effort: "high",
+					},
+				},
+			],
+			edges: [],
 		});
+		fixture.kernel.write("test.remove-issue-receipt", (tx) => {
+			tx.run("DELETE FROM meta WHERE key='dag_issue:issue-missing-receipt'");
+		});
+
+		const result = await dispatchOnce(fixture.kernel, ports);
+
+		expect(result).toMatchObject({
+			dispatched: [],
+			skips: [
+				{
+					taskId: admitted.taskIds.node,
+					reason: "issue_receipt_missing",
+				},
+			],
+		});
+		expect(
+			fixture.kernel.read((tx) =>
+				tx.get<{ task_id: string; reason: string }>(
+					`SELECT task_id,
+						        json_extract(payload,'$.failure_stage') AS reason
+						   FROM events WHERE kind='task_dispatch_skipped'`,
+				),
+			),
+		).toEqual({
+			task_id: admitted.taskIds.node,
+			reason: "issue_receipt_missing",
+		});
+	});
+
+	it("does not reserve or bind a logical runner role in agents", async () => {
+		const fixture = makeFixture();
+		fixtures.push(fixture);
+		fixture.provision("lead-a", "lead");
 		const { ports } = makePorts(fixture.clock);
 
-		await expect(
-			admitIssueDag(fixture.kernel, ports, {
-				admissionUid: "legacy-binding",
-				projectId: "project-a",
-				issueId: "issue-legacy-binding",
-				notifyAgentId: "lead-a",
-				shipWorktreeId: "wt-a",
-				worktrees: [
-					{
-						worktreeId: "wt-a",
-						repoIdentity: "owner/repo",
-						worktreePath: "/tmp/wt-a",
-						branchRef: "refs/heads/feature",
-						mergeTargetRef: "refs/heads/main",
+		await admitIssueDag(fixture.kernel, ports, {
+			admissionUid: "role-without-badge",
+			projectId: "project-a",
+			issueId: "issue-role-without-badge",
+			notifyAgentId: "lead-a",
+			shipWorktreeId: "wt-a",
+			worktrees: [
+				{
+					worktreeId: "wt-a",
+					repoIdentity: "owner/repo",
+					worktreePath: "/tmp/wt-a",
+					branchRef: "refs/heads/feature",
+					mergeTargetRef: "refs/heads/main",
+				},
+			],
+			tasks: [
+				{
+					localId: "node",
+					kindLabel: "opaque",
+					contract: [],
+					writesRepo: false,
+					worktreeId: null,
+					executor: {
+						logicalAgentId: "legacy-agent",
+						family: "family-a",
+						vendor: "vendor",
+						model: "model",
+						effort: "high",
 					},
-				],
-				tasks: [
-					{
-						localId: "node",
-						kindLabel: "opaque",
-						contract: [],
-						writesRepo: false,
-						worktreeId: null,
-						executor: {
-							logicalAgentId: "legacy-agent",
-							family: "family-a",
-							vendor: "vendor",
-							model: "model",
-							effort: "high",
-						},
-					},
-				],
-				edges: [],
-			}),
-		).rejects.toThrow(/missing v2 binding/);
+				},
+			],
+			edges: [],
+		});
+
+		const [request] = (await dispatchOnce(fixture.kernel, ports)).dispatched;
+		expect(request).toMatchObject({ roleId: "legacy-agent" });
+		expect(request?.agent.agentId).toBe(request?.sessionRef);
+		expect(
+			fixture.kernel.read(
+				(tx) =>
+					tx.get<{ count: number }>(
+						"SELECT count(*) AS count FROM agents WHERE agent_id='legacy-agent'",
+					)?.count,
+			),
+		).toBe(0);
 	});
 
 	it("provisions a never-before-seen executor during dispatch", async () => {
@@ -396,56 +456,61 @@ describe("DAG admission and dispatch", () => {
 		const result = await dispatchOnce(fixture.kernel, ports);
 
 		expect(result.dispatched).toHaveLength(1);
-		expect(result.dispatched[0]?.agent).toMatchObject({
-			agentId: "fresh-agent",
-			generation: 1,
+		expect(result.dispatched[0]).toMatchObject({
+			roleId: "fresh-agent",
+			agent: { generation: 1 },
 		});
+		expect(result.dispatched[0]?.agent.agentId).toBe(
+			result.dispatched[0]?.sessionRef,
+		);
 	});
 
-	it("rejects an executor identity already owned by a lead", async () => {
+	it("keeps lead recipient names separate from logical runner roles", async () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
 		fixture.provision("lead-a", "lead");
 		const { ports } = makePorts(fixture.clock);
 
-		await expect(
-			admitIssueDag(fixture.kernel, ports, {
-				admissionUid: "kind-collision-admission",
-				projectId: "project-a",
-				issueId: "issue-kind-collision",
-				notifyAgentId: "lead-a",
-				shipWorktreeId: "wt-a",
-				worktrees: [
-					{
-						worktreeId: "wt-a",
-						repoIdentity: "owner/repo",
-						worktreePath: "/tmp/wt-a",
-						branchRef: "refs/heads/feature",
-						mergeTargetRef: "refs/heads/main",
+		await admitIssueDag(fixture.kernel, ports, {
+			admissionUid: "kind-namespace-admission",
+			projectId: "project-a",
+			issueId: "issue-kind-namespace",
+			notifyAgentId: "lead-a",
+			shipWorktreeId: "wt-a",
+			worktrees: [
+				{
+					worktreeId: "wt-a",
+					repoIdentity: "owner/repo",
+					worktreePath: "/tmp/wt-a",
+					branchRef: "refs/heads/feature",
+					mergeTargetRef: "refs/heads/main",
+				},
+			],
+			tasks: [
+				{
+					localId: "node",
+					kindLabel: "opaque",
+					contract: [],
+					writesRepo: false,
+					worktreeId: null,
+					executor: {
+						logicalAgentId: "lead-a",
+						family: "family-a",
+						vendor: "vendor",
+						model: "model",
+						effort: "high",
 					},
-				],
-				tasks: [
-					{
-						localId: "node",
-						kindLabel: "opaque",
-						contract: [],
-						writesRepo: false,
-						worktreeId: null,
-						executor: {
-							logicalAgentId: "lead-a",
-							family: "family-a",
-							vendor: "vendor",
-							model: "model",
-							effort: "high",
-						},
-					},
-				],
-				edges: [],
-			}),
-		).rejects.toThrow(/executor lead-a is a lead/);
+				},
+			],
+			edges: [],
+		});
+
+		const [request] = (await dispatchOnce(fixture.kernel, ports)).dispatched;
+		expect(request?.roleId).toBe("lead-a");
+		expect(request?.agent.agentId).toBe(request?.sessionRef);
 	});
 
-	it("audits a post-admission identity collision and dispatches later candidates", async () => {
+	it("dispatches logical roles independently of later lead registrations", async () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
 		fixture.provision("lead-a", "lead");
@@ -466,7 +531,7 @@ describe("DAG admission and dispatch", () => {
 			],
 			edges: [] as [string, string][],
 		};
-		await admitIssueDag(fixture.kernel, ports, {
+		const raced = await admitIssueDag(fixture.kernel, ports, {
 			...descriptor,
 			admissionUid: "collision-race",
 			issueId: "issue-collision-race",
@@ -522,9 +587,9 @@ describe("DAG admission and dispatch", () => {
 
 		const result = await dispatchOnce(fixture.kernel, ports);
 
-		expect(result.dispatched.map((item) => item.taskId)).toEqual([
-			healthy.taskIds.good,
-		]);
+		expect(result.dispatched.map((item) => item.taskId).sort()).toEqual(
+			[raced.taskIds.bad, healthy.taskIds.good].sort(),
+		);
 		expect(
 			fixture.kernel.read((tx) => ({
 				events: tx.get<{ count: number }>(
@@ -534,7 +599,7 @@ describe("DAG admission and dispatch", () => {
 					"SELECT count(*) AS count FROM mailbox WHERE kind='task_dispatch_invalid'",
 				)?.count,
 			})),
-		).toEqual({ events: 1, mail: 1 });
+		).toEqual({ events: 0, mail: 0 });
 	});
 
 	it("audits changing candidate-local failures without starving later candidates", async () => {
@@ -663,6 +728,65 @@ describe("DAG admission and dispatch", () => {
 		).toEqual({ events: 1, mail: 1 });
 	});
 
+	it("runs two writers with the same logical role on different worktrees", async () => {
+		const fixture = makeFixture();
+		fixtures.push(fixture);
+		fixture.provision("lead-a", "lead");
+		const { ports } = makePorts(fixture.clock);
+		const admitWriter = async (suffix: string) =>
+			await admitIssueDag(fixture.kernel, ports, {
+				admissionUid: `same-role-${suffix}`,
+				projectId: "project-a",
+				issueId: `issue-same-role-${suffix}`,
+				notifyAgentId: "lead-a",
+				shipWorktreeId: `wt-${suffix}`,
+				worktrees: [
+					{
+						worktreeId: `wt-${suffix}`,
+						repoIdentity: "owner/repo",
+						worktreePath: `/tmp/wt-${suffix}`,
+						branchRef: `refs/heads/${suffix}`,
+						mergeTargetRef: "refs/heads/main",
+					},
+				],
+				tasks: [
+					{
+						localId: "node",
+						kindLabel: "opaque",
+						contract: [],
+						writesRepo: true,
+						worktreeId: `wt-${suffix}`,
+						executor: {
+							logicalAgentId: "implement",
+							family: "family-a",
+							vendor: "vendor",
+							model: "model",
+							effort: "high",
+						},
+					},
+				],
+				edges: [],
+			});
+		const first = await admitWriter("one");
+		const second = await admitWriter("two");
+
+		const result = await dispatchOnce(fixture.kernel, ports);
+
+		expect(result.dispatched.map((request) => request.taskId).sort()).toEqual(
+			[first.taskIds.node, second.taskIds.node].sort(),
+		);
+		expect(result.dispatched.map((request) => request.roleId)).toEqual([
+			"implement",
+			"implement",
+		]);
+		expect(
+			new Set(result.dispatched.map((request) => request.sessionRef)).size,
+		).toBe(2);
+		for (const request of result.dispatched) {
+			expect(request.agent.agentId).toBe(request.sessionRef);
+		}
+	});
+
 	it("keeps ordinary launch failures isolated when a fault port is configured", async () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
@@ -673,7 +797,7 @@ describe("DAG admission and dispatch", () => {
 		const { ports } = makePorts(fixture.clock, {
 			spawn: {
 				async spawn(request) {
-					if (request.agent.agentId === "bad-agent") {
+					if (request.roleId === "bad-agent") {
 						throw new Error("ordinary spawn failure");
 					}
 					launched.push(request.taskId);

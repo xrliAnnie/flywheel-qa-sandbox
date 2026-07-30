@@ -257,8 +257,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 							return createRuntimeDagPorts({
 								kernel,
 								hostEpoch: options.hostEpoch,
+								expectedEpoch: options.epoch,
 								lockRoot: runtime.lockRoot,
-								injectionRoot: runtime.injectionRoot,
 								launcher,
 								gitBin: runtime.gitBin,
 								ghBin: runtime.ghBin,
@@ -268,21 +268,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 							? {
 									activateSession: (sessionRef: string) =>
 										launcher.activate?.(sessionRef) ?? Promise.resolve(),
-								}
-							: {}),
-						...(launcher?.deliver
-							? {
-									deliverRunner: (
-										sessionRef: string,
-										injectionRef: string,
-										message: {
-											messageUid: string;
-											attemptUid: string;
-											payload: string;
-										},
-									) =>
-										launcher.deliver?.(sessionRef, injectionRef, message) ??
-										Promise.resolve(),
 								}
 							: {}),
 						onError: failCoordinator,

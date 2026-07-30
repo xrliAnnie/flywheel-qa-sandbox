@@ -30,7 +30,6 @@ import {
 	type ConversionProposal,
 	type ConversionResult,
 	type Converter,
-	type DeathEvidence,
 	type EngineRuntime,
 	type LeadIdentityDraft,
 	type PollResult,
@@ -65,12 +64,20 @@ export interface EngineDriverOptions {
 }
 
 function sameAgent(left: RegisteredAgent, right: RegisteredAgent): boolean {
+	const bindingsMatch =
+		left.kind === "lead" && right.kind === "lead"
+			? sessionBindingsEqual(left.sessionBinding, right.sessionBinding)
+			: (left.sessionBinding === undefined) ===
+					(right.sessionBinding === undefined) &&
+				(left.sessionBinding === undefined ||
+					right.sessionBinding === undefined ||
+					sessionBindingsEqual(left.sessionBinding, right.sessionBinding));
 	return (
 		left.kind === right.kind &&
 		left.agentId === right.agentId &&
 		left.instanceId === right.instanceId &&
 		left.generation === right.generation &&
-		sessionBindingsEqual(left.sessionBinding, right.sessionBinding) &&
+		bindingsMatch &&
 		(left.kind === "lead" ||
 			(right.kind === "runner" && left.activationId === right.activationId))
 	);
@@ -119,7 +126,6 @@ export class EngineDriver {
 		agentId: string,
 		draft: LeadIdentityDraft,
 		converter: Converter,
-		evidence?: DeathEvidence,
 	): Promise<RegisteredAgent> {
 		return this.#serialize(agentId, () => {
 			this.#assertRunning();
@@ -131,7 +137,7 @@ export class EngineDriver {
 				this.#assertNoInFlightActions(previous, "replace lead registration");
 			}
 			const agent = this.#kernel.write("consumer.register.lead", (tx) =>
-				registerAgentTx(tx, this.#runtime, agentId, draft, evidence),
+				registerAgentTx(tx, this.#runtime, agentId, draft),
 			);
 			const founderStreak = this.#kernel.read(
 				(tx) => readEngineConfigTx(tx).vipBurst,
@@ -193,81 +199,6 @@ export class EngineDriver {
 			this.#startHeartbeat(state);
 			this.#ensureLeadHandler(state);
 			return agent;
-		});
-	}
-
-	attachRunner(
-		agentId: string,
-		agent: RegisteredAgent,
-		hostEpoch?: string,
-		probe?: SessionEvidenceProbe,
-	): Promise<void> {
-		return this.#serialize(agentId, () => {
-			this.#assertRunning();
-			if (agent.kind !== "runner" || agent.agentId !== agentId) {
-				throw new FenceViolation("attachRunner requires matching runner agent");
-			}
-			const previous = this.#states.get(agentId);
-			if (previous) {
-				this.#assertNoInFlightActions(previous, "replace runner attachment");
-			}
-			const durableState = this.#kernel.read((tx) => {
-				const row = tx.get<{
-					kind: string;
-					generation: number;
-					instance_id: string | null;
-					session_binding: string | null;
-					state: string;
-				}>(ENGINE_SQL.readAgent, { agentId });
-				if (
-					!row ||
-					row.kind !== agent.kind ||
-					row.generation !== agent.generation ||
-					row.instance_id !== agent.instanceId ||
-					row.session_binding !== serializeSessionBinding(agent.sessionBinding)
-				) {
-					throw new FenceViolation(`runner ${agentId} is not current`);
-				}
-				return row.state;
-			});
-			// Codex R1 MEDIUM-2: the reattach authority must not be silently
-			// skippable. A row that is not online needs the durable reattach below,
-			// so omitting the authority there is a caller bug and fails closed rather
-			// than handing out an in-memory attachment with no evidence. An already
-			// online row has nothing to restore, which is why the existing callers
-			// that legitimately omit it still work.
-			if (
-				durableState !== "online" &&
-				(hostEpoch === undefined || probe === undefined)
-			) {
-				throw new FenceViolation(
-					`runner ${agentId} reattach requires a host epoch and session probe`,
-				);
-			}
-			// FLY-1503 item 9: durably restore the binding the way reattachLead
-			// does. Shutdown casOffline's every agent, and attaching a runner used
-			// to touch only in-memory state, so casReattachAgent was unreachable
-			// for runners and a restarted host left a live runner marked offline.
-			if (hostEpoch !== undefined && probe !== undefined) {
-				reattachAgent({
-					kernel: this.#kernel,
-					runtime: this.#runtime,
-					expected: agent,
-					hostEpoch,
-					probe,
-				});
-			}
-			const founderStreak = this.#kernel.read(
-				(tx) => readEngineConfigTx(tx).vipBurst,
-			);
-			if (previous) this.#stopState(previous);
-			this.#states.set(agentId, {
-				agent,
-				founderStreak,
-				stopped: false,
-				inFlightActions: new Set(),
-				attemptActions: new Set(),
-			});
 		});
 	}
 
@@ -394,6 +325,11 @@ export class EngineDriver {
 		try {
 			for (const state of this.#states.values()) {
 				this.#stopState(state);
+				// FLY-1543 ⑤: runners never attach to the driver any more; their
+				// processing attempts survive a host restart on purpose (the tmux
+				// session outlives the host and settles by pull + submit).
+				if (state.agent.kind !== "lead") continue;
+				const leadAgent = state.agent;
 				try {
 					this.#kernel.write("consumer.stop", (tx) => {
 						const current = tx.get<{
@@ -401,28 +337,26 @@ export class EngineDriver {
 							generation: number;
 							instance_id: string | null;
 							session_binding: string | null;
-						}>(ENGINE_SQL.readAgent, { agentId: state.agent.agentId });
+						}>(ENGINE_SQL.readAgent, { agentId: leadAgent.agentId });
 						if (
 							!current ||
-							current.kind !== state.agent.kind ||
-							current.generation !== state.agent.generation ||
-							current.instance_id !== state.agent.instanceId ||
+							current.kind !== leadAgent.kind ||
+							current.generation !== leadAgent.generation ||
+							current.instance_id !== leadAgent.instanceId ||
 							current.session_binding !==
-								serializeSessionBinding(state.agent.sessionBinding)
+								serializeSessionBinding(leadAgent.sessionBinding)
 						) {
 							return;
 						}
 						const running = tx.all<RunningRow>(
 							ENGINE_SQL.readRecipientRunning,
-							{ agent: state.agent.agentId },
+							{ agent: leadAgent.agentId },
 						);
 						for (const row of running) {
-							const activationId =
-								state.agent.kind === "runner" ? state.agent.activationId : null;
 							if (
-								row.generation !== state.agent.generation ||
-								row.instance_id !== state.agent.instanceId ||
-								row.activation_id !== activationId
+								row.generation !== leadAgent.generation ||
+								row.instance_id !== leadAgent.instanceId ||
+								row.activation_id !== null
 							) {
 								throw new FenceViolation(
 									`stop found foreign running attempt ${row.attempt_uid}`,
@@ -435,16 +369,16 @@ export class EngineDriver {
 								proposalDigest: null,
 							});
 							settleFailureMailboxTx(tx, this.#runtime, {
-								agentId: state.agent.agentId,
+								agentId: leadAgent.agentId,
 								messageUid: row.message_uid,
 								attemptUid: row.attempt_uid,
-								generation: state.agent.generation,
+								generation: leadAgent.generation,
 							});
 						}
 						tx.cas(ENGINE_SQL.casOffline, {
-							agentId: state.agent.agentId,
-							kind: state.agent.kind,
-							generation: state.agent.generation,
+							agentId: leadAgent.agentId,
+							kind: leadAgent.kind,
+							generation: leadAgent.generation,
 						});
 					});
 				} catch (error) {

@@ -76,10 +76,63 @@ export function readCutoverEpochTx(tx: ReadTx): number {
 	return epoch;
 }
 
+interface ActivationRow {
+	id: string;
+	attempt_id: string;
+	session_ref: string;
+	generation: number;
+	state: string;
+	session_binding: string | null;
+	last_poll_at: string | null;
+}
+
+/**
+ * FLY-1543 ⑤: a runner's current-identity anchor is its activations row.
+ *
+ * The identity quad is {agentId = instanceId = session_ref, generation =
+ * activations.generation, activationId = activations.id} and the anti-zombie
+ * predicate is `state='active'`. The stored session binding is compared only
+ * when the caller carries one -- the first delivery envelope is prepared before
+ * the tmux process (and therefore the binding) exists.
+ */
+export function requireCurrentRunnerTx(
+	tx: ReadTx,
+	agent: Extract<RegisteredAgent, { kind: "runner" }>,
+): AgentRow {
+	const row = tx.get<ActivationRow>(ENGINE_SQL.readActivationFull, {
+		activationId: agent.activationId,
+	});
+	if (
+		!row ||
+		row.state !== "active" ||
+		row.session_ref !== agent.agentId ||
+		row.session_ref !== agent.instanceId ||
+		row.generation !== agent.generation ||
+		(agent.sessionBinding !== undefined &&
+			row.session_binding !== serializeSessionBinding(agent.sessionBinding))
+	) {
+		throw new FenceViolation(
+			`runner activation is not current for ${agent.agentId}`,
+		);
+	}
+	return {
+		agent_id: row.session_ref,
+		kind: "runner",
+		generation: row.generation,
+		instance_id: row.session_ref,
+		session_binding: row.session_binding,
+		last_poll_at: row.last_poll_at,
+		state: "online",
+	};
+}
+
 export function requireCurrentAgentTx(
 	tx: ReadTx,
 	agent: RegisteredAgent,
 ): AgentRow {
+	if (agent.kind === "runner") {
+		return requireCurrentRunnerTx(tx, agent);
+	}
 	const row = tx.get<AgentRow>(ENGINE_SQL.readAgent, {
 		agentId: agent.agentId,
 	});

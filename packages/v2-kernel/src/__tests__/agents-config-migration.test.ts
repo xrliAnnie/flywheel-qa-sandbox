@@ -74,7 +74,7 @@ describe("agents/config mailbox cutover migration", () => {
 		temp = undefined;
 	});
 
-	it("creates agents/config, the mailbox FK, and every named mailbox index from zero", () => {
+	it("creates agents/config, session recipient guards, and every mailbox index", () => {
 		temp = makeTempDatabase();
 		const db = openKernelDb({ path: temp.path });
 		try {
@@ -103,12 +103,8 @@ describe("agents/config mailbox cutover migration", () => {
 			expect(tables).toContain("agents");
 			expect(tables).toContain("config");
 			expect(indexes).toEqual(MAILBOX_INDEXES);
-			expect(foreignKeys).toContainEqual(
-				expect.objectContaining({
-					table: "agents",
-					from: "to_agent",
-					to: "agent_id",
-				}),
+			expect(foreignKeys).not.toContainEqual(
+				expect.objectContaining({ table: "agents" }),
 			);
 			expect(db.pragma("foreign_key_check")).toEqual([]);
 		} finally {

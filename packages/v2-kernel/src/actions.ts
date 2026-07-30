@@ -532,11 +532,22 @@ export function recordActionOutcome(
 		    AND actor_instance_id=@actorInstanceId
 		    AND actor_generation=@actorGeneration
 		    AND activation_id IS @activationId
-		    AND EXISTS (
-		      SELECT 1 FROM agents
-		       WHERE agent_id=@actorAgentId
-		         AND kind=@actorKind
-		         AND generation=@actorGeneration
+		    AND (
+		      (@actorKind='lead' AND EXISTS (
+		        SELECT 1 FROM agents
+		         WHERE agent_id=@actorAgentId
+		           AND kind='lead'
+		           AND generation=@actorGeneration
+		      ))
+		      OR
+		      (@actorKind='runner' AND EXISTS (
+		        SELECT 1 FROM activations
+		         WHERE id=@activationId
+		           AND session_ref=@actorAgentId
+		           AND session_ref=@actorInstanceId
+		           AND generation=@actorGeneration
+		           AND state='active'
+		      ))
 		    )`,
 		{
 			id: spec.id,

@@ -1,52 +1,41 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { EngineDriver } from "../driver.js";
-import { registerAgentTx } from "../registration.js";
+import { pollOnce } from "../consume-loop.js";
+import { reportConversionFailure, submitProposal } from "../settlement.js";
+import type { PollResult } from "../types.js";
 import {
 	type EngineFixture,
 	enqueueMailbox,
 	makeEngineFixture,
-	seedRunnerActivation,
-	testSessionBinding,
+	seedSessionRunner,
 } from "./helpers.js";
 
-function registerRunner(fixture: EngineFixture) {
-	const activationId = seedRunnerActivation(fixture);
-	return fixture.kernel.write("test.register-runner", (tx) =>
-		registerAgentTx(tx, fixture.runtime, "runner-a", {
-			kind: "runner",
-			agentId: "runner-a",
-			instanceId: "instance-1",
-			activationId,
-			sessionBinding: testSessionBinding("instance-1"),
-		}),
-	);
+function runningDelivery(fixture: EngineFixture): {
+	agentId: string;
+	result: Extract<PollResult, { status: "available" }>;
+} {
+	const { agent } = seedSessionRunner(fixture);
+	enqueueMailbox(fixture, {
+		uid: "m1",
+		agent: agent.agentId,
+		agentKind: "runner",
+	});
+	const result = pollOnce(fixture.kernel, fixture.runtime, agent, 0).result;
+	if (result.status !== "available") throw new Error("expected available");
+	return { agentId: agent.agentId, result };
 }
 
-describe("transactional mailbox settlement", () => {
+describe("transactional session mailbox settlement", () => {
 	let fixture: EngineFixture | undefined;
-	let driver: EngineDriver | undefined;
 
 	afterEach(() => {
-		driver?.stop();
 		fixture?.cleanup();
-		driver = undefined;
 		fixture = undefined;
 	});
 
-	it("commits proposal effects, mailbox applied, and attempt succeeded atomically", async () => {
+	it("commits effects, mailbox applied, and attempt succeeded atomically", () => {
 		fixture = makeEngineFixture();
-		const runner = registerRunner(fixture);
-		enqueueMailbox(fixture, {
-			uid: "m1",
-			agent: "runner-a",
-			agentKind: "runner",
-		});
-		driver = new EngineDriver(fixture.kernel, fixture.runtime);
-		await driver.attachRunner("runner-a", runner);
-		const result = driver.poll("runner-a");
-		if (result.status !== "available") throw new Error("expected available");
-
-		driver.submitProposal({
+		const { result } = runningDelivery(fixture);
+		submitProposal(fixture.kernel, fixture.runtime, {
 			handle: result.handle,
 			effects: [
 				{
@@ -58,6 +47,7 @@ describe("transactional mailbox settlement", () => {
 				},
 			],
 		});
+
 		expect(
 			fixture.kernel.read((tx) => ({
 				mailbox: tx.get<{ state: string }>(
@@ -81,38 +71,32 @@ describe("transactional mailbox settlement", () => {
 		});
 	});
 
-	it("rolls prior effects and all settlement writes back on a later task FK failure", async () => {
+	it("rolls prior effects and settlement writes back on a later task FK failure", () => {
 		fixture = makeEngineFixture();
-		const runner = registerRunner(fixture);
-		enqueueMailbox(fixture, {
-			uid: "m1",
-			agent: "runner-a",
-			agentKind: "runner",
-		});
-		driver = new EngineDriver(fixture.kernel, fixture.runtime);
-		await driver.attachRunner("runner-a", runner);
-		const result = driver.poll("runner-a");
-		if (result.status !== "available") throw new Error("expected available");
-
+		const { result } = runningDelivery(fixture);
 		expect(() =>
-			driver?.submitProposal({
-				handle: result.handle,
-				effects: [
-					{
-						kind: "event",
-						eventKind: "proposal.prelude",
-						payload: "{}",
-					},
-					{
-						kind: "task",
-						taskKind: "invalid-follow-up",
-						state: "ready",
-						payload: "{}",
-						projectId: "project-a",
-						lineageRootTaskId: "missing-task",
-					},
-				],
-			}),
+			submitProposal(
+				(fixture as EngineFixture).kernel,
+				(fixture as EngineFixture).runtime,
+				{
+					handle: result.handle,
+					effects: [
+						{
+							kind: "event",
+							eventKind: "proposal.prelude",
+							payload: "{}",
+						},
+						{
+							kind: "task",
+							taskKind: "invalid-follow-up",
+							state: "ready",
+							payload: "{}",
+							projectId: "project-a",
+							lineageRootTaskId: "missing-root",
+						},
+					],
+				},
+			),
 		).toThrow();
 		expect(
 			fixture.kernel.read((tx) => ({
@@ -141,24 +125,20 @@ describe("transactional mailbox settlement", () => {
 		});
 	});
 
-	it("uses durable max-attempts and emits one exact agent-scoped dead event", async () => {
+	it("uses durable max-attempts and emits one session-scoped dead event", () => {
 		fixture = makeEngineFixture();
-		const runner = registerRunner(fixture);
-		enqueueMailbox(fixture, {
-			uid: "m1",
-			agent: "runner-a",
-			agentKind: "runner",
-		});
+		const { agentId, result } = runningDelivery(fixture);
 		fixture.kernel.write("test.configure-dead", (tx) => {
 			tx.run("UPDATE config SET value='2' WHERE key='mailbox.max_attempts'");
 			tx.run("UPDATE mailbox SET retry_count=1 WHERE message_uid='m1'");
 		});
-		driver = new EngineDriver(fixture.kernel, fixture.runtime);
-		await driver.attachRunner("runner-a", runner);
-		const result = driver.poll("runner-a");
-		if (result.status !== "available") throw new Error("expected available");
 
-		driver.reportConversionFailure(result.handle, "conversion failed");
+		reportConversionFailure(
+			fixture.kernel,
+			fixture.runtime,
+			result.handle,
+			"conversion failed",
+		);
 		expect(
 			fixture.kernel.read((tx) => ({
 				mailbox: tx.get<{ state: string; retry_count: number }>(
@@ -185,40 +165,41 @@ describe("transactional mailbox settlement", () => {
 				event_uid: "mailbox:m1:dead",
 				kind: "mailbox.dead",
 				source_kind: "agent",
-				source_id: "runner-a",
+				source_id: agentId,
 				payload: '{"message_uid":"m1","attempt_uid":"m1#1","generation":1}',
 			},
 		});
 		expect(() =>
-			driver?.reportConversionFailure(result.handle, "late replay"),
+			reportConversionFailure(
+				(fixture as EngineFixture).kernel,
+				(fixture as EngineFixture).runtime,
+				result.handle,
+				"late replay",
+			),
 		).toThrow();
 	});
 
-	it("rolls attempt and mailbox back when the deterministic dead event collides", async () => {
+	it("rolls attempt and mailbox back when the dead event collides", () => {
 		fixture = makeEngineFixture();
-		const runner = registerRunner(fixture);
-		enqueueMailbox(fixture, {
-			uid: "m1",
-			agent: "runner-a",
-			agentKind: "runner",
-		});
+		const { agentId, result } = runningDelivery(fixture);
 		fixture.kernel.write("test.seed-collision", (tx) => {
 			tx.run("UPDATE config SET value='2' WHERE key='mailbox.max_attempts'");
 			tx.run("UPDATE mailbox SET retry_count=1 WHERE message_uid='m1'");
 			tx.run(
 				`INSERT INTO events
 				 (event_uid,kind,source_kind,source_id,payload,cutover_epoch,created_at)
-				 VALUES ('mailbox:m1:dead','wrong','agent','runner-a','{}',1,@now)`,
-				{ now: fixture?.clock.nowIso() },
+				 VALUES ('mailbox:m1:dead','wrong','agent',@agentId,'{}',1,@now)`,
+				{ agentId, now: fixture?.clock.nowIso() },
 			);
 		});
-		driver = new EngineDriver(fixture.kernel, fixture.runtime);
-		await driver.attachRunner("runner-a", runner);
-		const result = driver.poll("runner-a");
-		if (result.status !== "available") throw new Error("expected available");
 
 		expect(() =>
-			driver?.reportConversionFailure(result.handle, "conversion failed"),
+			reportConversionFailure(
+				(fixture as EngineFixture).kernel,
+				(fixture as EngineFixture).runtime,
+				result.handle,
+				"conversion failed",
+			),
 		).toThrow(/dead event collision/);
 		expect(
 			fixture.kernel.read((tx) => ({
@@ -233,8 +214,5 @@ describe("transactional mailbox settlement", () => {
 			mailbox: { state: "pending", retry_count: 1 },
 			attempt: "running",
 		});
-		// The deliberate collision leaves the attempt running; a second graceful
-		// settlement must fail loudly for the same reason, so skip stop in cleanup.
-		driver = undefined;
 	});
 });

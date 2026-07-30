@@ -1022,15 +1022,6 @@ describe("action black box", () => {
 		kernel = Kernel.open({ path: temp.path });
 		kernel.write("seed runner lineage", (tx) => {
 			tx.run(
-				INSERT_BOUND_AGENT_SQL,
-				boundAgentParams({
-					agentId: "runner-a",
-					kind: "runner",
-					generation: 3,
-					instanceId: "runner-instance",
-				}),
-			);
-			tx.run(
 				`INSERT INTO tasks
 				 (id, project_id, kind, state, lineage_root_id, created_at)
 				 VALUES ('task-1', 'flywheel', 'build', 'running', 'task-1', 'now')`,
@@ -1047,9 +1038,9 @@ describe("action black box", () => {
 		});
 		const actor = {
 			kind: "runner" as const,
-			agentId: "runner-a",
-			instanceId: "runner-instance",
-			generation: 3,
+			agentId: "session-runner",
+			instanceId: "session-runner",
+			generation: 2,
 			activationId: "activation-1",
 		};
 		const valid = kernel.write("record bound runner action", (tx) =>
@@ -1067,6 +1058,16 @@ describe("action black box", () => {
 			}),
 		);
 		expect(valid.action.actor).toEqual(actor);
+		expect(
+			kernel.write("settle bound runner action", (tx) =>
+				recordActionOutcome(tx, {
+					id: "runner-action",
+					actor,
+					state: "succeeded",
+					result: { delivered: true },
+				}),
+			),
+		).toMatchObject({ state: "succeeded", actor });
 		expect(() =>
 			kernel?.write("reject mismatched attempt generation", (tx) =>
 				recordActionIntent(tx, {

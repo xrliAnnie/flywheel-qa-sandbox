@@ -510,13 +510,13 @@ describe("Kernel single-writer transaction discipline", () => {
 		kernel.write("seed mailbox", (tx) => {
 			tx.run(
 				`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
-				 VALUES ('runner-1','runner',0,NULL,'offline')`,
+				 VALUES ('lead-recipient','lead',0,NULL,'offline')`,
 			);
 			tx.run(
 				`INSERT INTO mailbox
 				 (message_uid, source_kind, source_id, payload, payload_digest, to_agent,
 				  kind, retention_class, cutover_epoch, created_at)
-				 VALUES ('message-1', 'test', 'source-1', '{}', 'digest', 'runner-1',
+				 VALUES ('message-1', 'test', 'source-1', '{}', 'digest', 'lead-recipient',
 				  'instruction', 'business', 1, '2026-07-27T00:00:00.000Z')`,
 			);
 		});

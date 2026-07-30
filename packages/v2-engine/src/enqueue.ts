@@ -3,7 +3,7 @@ import { FenceViolation, type Kernel } from "flywheel-v2-kernel";
 import { readEngineConfigTx } from "./config.js";
 import { ENGINE_SQL } from "./sql.js";
 import { readCutoverEpochTx } from "./transitions.js";
-import type { EngineRuntime } from "./types.js";
+import { type EngineRuntime, isSessionRecipient } from "./types.js";
 
 export class CanonicalConflict extends Error {
 	constructor(sourceKind: string, sourceId: string) {
@@ -74,6 +74,18 @@ export function provisionAgentRecipient(
 	kind: "lead" | "runner",
 ): ProvisionedRecipient {
 	requireNonEmpty(agentId, "agentId");
+	// FLY-1543 ⑤: only leads live in the agents table. A runner recipient is an
+	// active activations row and is never provisioned here.
+	if (kind !== "lead") {
+		throw new FenceViolation(
+			"provisionAgentRecipient accepts lead recipients only",
+		);
+	}
+	if (isSessionRecipient(agentId)) {
+		throw new FenceViolation(
+			"lead recipient must not use the v2dag: session namespace",
+		);
+	}
 	return kernel.write("mailbox.provision-recipient", (tx) => {
 		tx.run(ENGINE_SQL.insertProvisionedAgent, { agentId, kind });
 		const row = tx.get<AgentRow>(ENGINE_SQL.readAgent, { agentId });
@@ -115,11 +127,25 @@ export function enqueue(
 		if (cutoverEpoch !== envelope.expectedCutoverEpoch) {
 			return { status: "rejected", reason: "epoch_mismatch" };
 		}
-		const agent = tx.get<AgentRow>(ENGINE_SQL.readAgent, {
-			agentId: envelope.toAgent,
-		});
-		if (!agent) {
-			return { status: "rejected", reason: "unknown_recipient" };
+		// FLY-1543 ⑤: recipient namespaces. `v2dag:` names an active session
+		// (activations row); anything else must be a lead. A tombstoned runner
+		// role name is deliberately NOT a recipient any more -- mail addressed to
+		// it would be a permanent dead letter.
+		if (isSessionRecipient(envelope.toAgent)) {
+			const activation = tx.get<{ state: string }>(
+				ENGINE_SQL.readActiveActivationBySessionRef,
+				{ sessionRef: envelope.toAgent },
+			);
+			if (!activation) {
+				return { status: "rejected", reason: "unknown_recipient" };
+			}
+		} else {
+			const agent = tx.get<AgentRow>(ENGINE_SQL.readAgent, {
+				agentId: envelope.toAgent,
+			});
+			if (!agent || agent.kind !== "lead") {
+				return { status: "rejected", reason: "unknown_recipient" };
+			}
 		}
 		if (envelope.retentionClass === "notice") {
 			const config = readEngineConfigTx(tx);

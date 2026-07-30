@@ -153,13 +153,28 @@ export async function reconcileShipActions(
 			const epoch = readCutoverEpoch(tx);
 			const match = gateForAction(tx, action);
 			if (!match?.gate || match.gate.data.settled !== null) return;
-			const currentActor = tx.get<{ kind: string; generation: number }>(
-				"SELECT kind,generation FROM agents WHERE agent_id=@agentId",
-				{ agentId: action.actor.agentId },
-			);
-			const actorCurrent =
-				currentActor?.kind === action.actor.kind &&
-				currentActor.generation === action.actor.generation;
+			// FLY-1543 ⑤: actor currency by discriminator. A runner actor is only
+			// current while its session's activation is active; a pre-cutover
+			// role-name runner actor is never current (its outcome is recorded as
+			// unsettleable, exactly like a superseded generation).
+			const actorCurrent = (() => {
+				if (action.actor.kind === "runner") {
+					if (!action.actor.agentId.startsWith("v2dag:")) return false;
+					const activation = tx.get<{ generation: number }>(
+						`SELECT generation FROM activations
+						  WHERE session_ref=@sessionRef AND state='active'`,
+						{ sessionRef: action.actor.agentId },
+					);
+					return activation?.generation === action.actor.generation;
+				}
+				const lead = tx.get<{ kind: string; generation: number }>(
+					"SELECT kind,generation FROM agents WHERE agent_id=@agentId",
+					{ agentId: action.actor.agentId },
+				);
+				return (
+					lead?.kind === "lead" && lead.generation === action.actor.generation
+				);
+			})();
 			if (observed.state === "merged") {
 				if (actorCurrent) {
 					recordActionOutcome(tx, {

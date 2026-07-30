@@ -15,50 +15,9 @@ import type { AdmissionResult, DagPorts, IssueDagDescriptor } from "./types.js";
 
 const MAX_TASKS = 500;
 
-interface AgentBindingData {
-	state: "active" | "clear";
-	activation_id: string | null;
-	attempt_id: string | null;
-	session_ref_current: string | null;
-	session_ref_last: string | null;
-	host_epoch: string | null;
-}
-
 function requiredText(value: string, label: string): void {
 	if (value.trim().length === 0)
 		throw new DagContractError(`${label} is empty`);
-}
-
-function validAgentBinding(value: unknown): value is AgentBindingData {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		return false;
-	}
-	const binding = value as Record<string, unknown>;
-	if (
-		Object.keys(binding).sort().join(",") !==
-		"activation_id,attempt_id,host_epoch,session_ref_current,session_ref_last,state"
-	) {
-		return false;
-	}
-	if (binding.state !== "active" && binding.state !== "clear") return false;
-	for (const key of [
-		"activation_id",
-		"attempt_id",
-		"session_ref_current",
-		"session_ref_last",
-		"host_epoch",
-	] as const) {
-		if (binding[key] !== null && typeof binding[key] !== "string") return false;
-	}
-	return binding.state !== "active"
-		? binding.activation_id === null &&
-				binding.attempt_id === null &&
-				binding.session_ref_current === null &&
-				binding.host_epoch === null
-		: binding.activation_id !== null &&
-				binding.attempt_id !== null &&
-				binding.session_ref_current !== null &&
-				binding.host_epoch !== null;
 }
 
 function validateGraph(descriptor: IssueDagDescriptor): void {
@@ -189,11 +148,17 @@ export async function admitIssueDag(
 		if (raced) return { ...raced, status: "replayed" };
 		const epoch = readCutoverEpoch(tx);
 		const now = ports.clock.nowIso();
-		const notify = tx.get<{ agent_id: string }>(
-			"SELECT agent_id FROM agents WHERE agent_id=@agentId",
+		// FLY-1543 ⑤: the notify recipient must be a LEAD row. Runner rows are
+		// offline tombstones after the cutover; mail addressed to one would be a
+		// permanent dead letter, and the mailbox recipient trigger would refuse it
+		// later with a less useful error.
+		const notify = tx.get<{ agent_id: string; kind: string }>(
+			"SELECT agent_id,kind FROM agents WHERE agent_id=@agentId",
 			{ agentId: descriptor.notifyAgentId },
 		);
-		if (!notify) throw new DagContractError("notify agent is unknown");
+		if (!notify || notify.kind !== "lead") {
+			throw new DagContractError("notify agent is unknown");
+		}
 		const familyAuthority = readEnvelope<ReviewFamilies>(
 			tx,
 			`review_families:${descriptor.projectId}`,
@@ -210,36 +175,34 @@ export async function admitIssueDag(
 				}
 			}
 		}
-		for (const agentId of new Set(
-			descriptor.tasks.map((task) => task.executor.logicalAgentId),
-		)) {
-			const agent = tx.get<{ generation: number; kind: string }>(
-				"SELECT generation,kind FROM agents WHERE agent_id=@agentId",
-				{ agentId },
-			);
-			if (agent && agent.kind !== "runner") {
-				throw new DagContractError(`executor ${agentId} is a ${agent.kind}`);
-			}
-			if (agent && agent.generation > 0) {
-				const binding = readEnvelope<AgentBindingData>(
-					tx,
-					`agent_binding:${agentId}`,
-					epoch,
-				);
-				if (!binding || !validAgentBinding(binding.data)) {
-					throw new DagContractError(
-						`executor ${agentId} is missing v2 binding`,
-					);
-				}
-			}
-		}
+		// FLY-1543 ⑤: no executor ledger validation here. logicalAgentId is an
+		// instruction-book pointer (it selects a prompt file), not an agents row;
+		// a missing role file fails closed at dispatch, inside
+		// resolveRoleInstruction. This also removes the old half-check that let an
+		// unregistered executor through silently.
 		if (readEnvelope(tx, `dag_issue:${descriptor.issueId}`, epoch)) {
 			throw new DagConflictError(
 				`issue ${descriptor.issueId} is already admitted`,
 			);
 		}
+		// FLY-1543 ⑥: a worktree whose head is ahead of its merge-base anchor
+		// carries unauthenticated commits. Admitting it used to bury a
+		// pending_gap in the writer chain plus an event nobody consumed, and the
+		// worktree's writes_repo tasks were then silently never dispatched.
+		// Refuse the whole admission instead: the transaction aborts with ZERO
+		// writes, the operator sees the exact worktree and heads, fixes the tree
+		// (merge the commits or use a clean worktree) and re-admits.
 		for (const observation of observations) {
-			const { worktree, head, anchor } = observation;
+			if (observation.head !== observation.anchor) {
+				throw new DagContractError(
+					`worktree ${observation.worktree.worktreeId} has unauthenticated commits: ` +
+						`head ${observation.head} is ahead of anchor ${observation.anchor} ` +
+						`(issue ${descriptor.issueId})`,
+				);
+			}
+		}
+		for (const observation of observations) {
+			const { worktree, anchor } = observation;
 			insertEnvelope(
 				tx,
 				`canonical_worktree:${worktree.worktreeId}`,
@@ -268,26 +231,13 @@ export async function admitIssueDag(
 					chain_head: anchor,
 					open_attempt: null,
 					span_author_set: [],
-					pending_gap: head === anchor ? null : { from: anchor, to: head },
+					// Admission refuses a dirty worktree above, so the seed is
+					// constant null; dispatch keeps its pending_gap guard as a ledger
+					// invariant.
+					pending_gap: null,
 				}),
 				now,
 			);
-			if (head !== anchor) {
-				appendEvent(tx, {
-					eventUid: `writer_gap_detected:${descriptor.admissionUid}:${worktree.worktreeId}`,
-					kind: "writer_gap_detected",
-					sourceKind: "admission",
-					sourceId: descriptor.admissionUid,
-					payload: {
-						issue_id: descriptor.issueId,
-						worktree_id: worktree.worktreeId,
-						from_head: anchor,
-						to_head: head,
-					},
-					cutoverEpoch: epoch,
-					createdAt: now,
-				});
-			}
 		}
 		for (const task of descriptor.tasks) {
 			const id = taskIds[task.localId];

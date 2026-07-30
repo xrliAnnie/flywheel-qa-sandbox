@@ -12,7 +12,6 @@ import type {
 	GitHubObservationPort,
 	GitPort,
 	HostPort,
-	InjectionRefBuilder,
 	LaunchLockPort,
 	ProcessProbePort,
 	RunnerControlPort,
@@ -47,7 +46,9 @@ export function makeFixture() {
 		kernel,
 		clock,
 		provision(agentId: string, kind: "lead" | "runner") {
-			return provisionAgentRecipient(kernel, agentId, kind);
+			if (kind === "lead") {
+				return provisionAgentRecipient(kernel, agentId, kind);
+			}
 		},
 		cleanup() {
 			kernel.close();
@@ -66,7 +67,6 @@ export function makePorts(
 		runnerControl: RunnerControlPort;
 		locks: LaunchLockPort;
 		host: HostPort;
-		injectionRef: InjectionRefBuilder;
 		githubObservation: GitHubObservationPort;
 		githubMerge: GitHubMergePort;
 	}> = {},
@@ -154,19 +154,6 @@ export function makePorts(
 						return "host-1";
 					},
 				} satisfies HostPort),
-			injectionRef:
-				overrides.injectionRef ??
-				({
-					build(input) {
-						return JSON.stringify({
-							v: 1,
-							backend: "claude",
-							inboxPath: `/tmp/flywheel-v2/${input.activationId}.json`,
-							sidecarPath: `/tmp/flywheel-v2/${input.activationId}.pending.json`,
-							toAgent: input.agentId,
-						});
-					},
-				} satisfies InjectionRefBuilder),
 			githubObservation: overrides.githubObservation,
 			githubMerge: overrides.githubMerge,
 		},

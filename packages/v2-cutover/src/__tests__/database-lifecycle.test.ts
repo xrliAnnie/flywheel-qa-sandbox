@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
 	advanceDatabaseAuthorityStateTx,
 	Kernel,
+	MIGRATION_MANIFEST,
 	readCutoverAuthority,
 } from "flywheel-v2-kernel";
 import { afterEach, describe, expect, it } from "vitest";
@@ -121,7 +122,7 @@ describe("fresh staging and WAL-safe promotion", () => {
 				expectedEpoch: target.epoch,
 				allowedAuthorityStates: ["cutover"],
 			}),
-		).toMatchObject({ migrationCount: 9 });
+		).toMatchObject({ migrationCount: MIGRATION_MANIFEST.length });
 	});
 
 	it("reconciles a crash after rename by validating final then publishing marker", () => {

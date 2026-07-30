@@ -1467,6 +1467,14 @@ export function migrateLegacyPlan(
 				if (writeDecisionEvent(tx, decision, plan)) events += 1;
 				continue;
 			}
+			// FLY-1543 ⑤: agents is lead-only and the v2dag: namespace belongs to
+			// sessions. The 0010 triggers enforce this in DDL; refusing here keeps
+			// the import's own error message specific.
+			if (decision.toAgent.startsWith("v2dag:")) {
+				throw new FenceViolation(
+					`migration recipient ${decision.toAgent} uses the session namespace`,
+				);
+			}
 			tx.run(
 				`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
 				 VALUES (@agentId,'lead',0,NULL,'offline')

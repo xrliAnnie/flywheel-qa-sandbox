@@ -1,10 +1,6 @@
 import type { RegisteredAgent } from "flywheel-v2-engine";
-import {
-	FENCE,
-	type Kernel,
-	type ReadTx,
-	type WriteTx,
-} from "flywheel-v2-kernel";
+import type { Kernel, ReadTx, WriteTx } from "flywheel-v2-kernel";
+import { terminalizeAttemptTx } from "./attempt-terminal.js";
 import { parseTaskPayload, type TaskPayload } from "./contract.js";
 import type { CanonicalValue } from "./digests.js";
 import { digestJson } from "./digests.js";
@@ -57,15 +53,6 @@ interface WriterData {
 	};
 	span_author_set: string[];
 	pending_gap: null | { from: string; to: string };
-}
-
-interface BindingData {
-	state: "active" | "clear";
-	activation_id: string | null;
-	attempt_id: string | null;
-	session_ref_current: string | null;
-	session_ref_last: string | null;
-	host_epoch: string | null;
 }
 
 interface ClaimData {
@@ -361,6 +348,12 @@ function completionRequestValue(
 	};
 }
 
+/**
+ * FLY-1543 ⑤ operator-contract change (stated in the PR): the completion
+ * producer identity is the sessionRef quad -- agentId = instanceId =
+ * activations.session_ref, generation = the attempt generation, activationId =
+ * the active activation. Role names are no longer accepted.
+ */
 function validateBinding(
 	tx: WriteTx,
 	request: NodeCompletionRequest,
@@ -392,10 +385,6 @@ function validateBinding(
 			activationId: request.activationId,
 		},
 	);
-	const agent = tx.get<{ kind: string; generation: number }>(
-		"SELECT kind,generation FROM agents WHERE agent_id=@agentId",
-		{ agentId: request.agent.agentId },
-	);
 	if (
 		!row ||
 		row.task_id !== request.taskId ||
@@ -404,9 +393,8 @@ function validateBinding(
 		row.attempt_generation !== row.activation_generation ||
 		request.agent.activationId !== request.activationId ||
 		request.agent.instanceId !== row.session_ref ||
-		!agent ||
-		agent.kind !== "runner" ||
-		agent.generation !== request.agent.generation
+		request.agent.agentId !== row.session_ref ||
+		request.agent.generation !== row.attempt_generation
 	) {
 		throw new DagContractError("completion identity binding is stale");
 	}
@@ -620,19 +608,11 @@ export async function submitNodeCompletion(
 					gateId: null,
 				};
 			}
-			tx.cas(FENCE.activationCasActiveTerminal, {
-				activationId: request.activationId,
-			});
-			tx.cas(FENCE.attemptCasActiveTerminal, {
-				attemptId: request.attemptId,
-				reason: "completed",
-				terminalAt: ports.clock.nowIso(),
-			});
-			tx.cas(
-				`UPDATE tasks SET state='done',state_version=state_version+1,
-				 terminal_at=@now WHERE id=@taskId AND state='running'`,
-				{ taskId: request.taskId, now: ports.clock.nowIso() },
-			);
+			const claimKey = `launch_claim:${bound.sessionRef}`;
+			const claim = readEnvelope<ClaimData>(tx, claimKey, epoch);
+			if (!claim || claim.data.state === "tombstoned") {
+				throw new DagContractError("launch claim is stale");
+			}
 			if (bound.payload.writes_repo && bound.payload.worktree_id && writer) {
 				const span = readEnvelope<SpanData>(
 					tx,
@@ -663,41 +643,16 @@ export async function submitNodeCompletion(
 					ports.clock.nowIso(),
 				);
 			}
-			const bindingKey = `agent_binding:${request.agent.agentId}`;
-			const binding = readEnvelope<BindingData>(tx, bindingKey, epoch);
-			if (
-				!binding ||
-				binding.data.activation_id !== request.activationId ||
-				binding.data.attempt_id !== request.attemptId ||
-				binding.data.session_ref_current !== bound.sessionRef
-			) {
-				throw new DagContractError("agent binding is stale");
-			}
-			updateEnvelope(
-				tx,
-				bindingKey,
-				binding,
-				{
-					state: "clear",
-					activation_id: null,
-					attempt_id: null,
-					session_ref_current: null,
-					session_ref_last: bound.sessionRef,
-					host_epoch: null,
-				},
-				ports.clock.nowIso(),
-			);
-			const claimKey = `launch_claim:${bound.sessionRef}`;
-			const claim = readEnvelope<ClaimData>(tx, claimKey, epoch);
-			if (!claim || claim.data.state === "tombstoned") {
-				throw new DagContractError("launch claim is stale");
-			}
-			updateEnvelope(
-				tx,
-				claimKey,
-				claim,
-				{ ...claim.data, state: "tombstoned" },
-				ports.clock.nowIso(),
+			terminalizeAttemptTx(tx, {
+				attemptId: request.attemptId,
+				reason: "completed",
+				cutoverEpoch: epoch,
+				nowIso: ports.clock.nowIso(),
+			});
+			tx.cas(
+				`UPDATE tasks SET state='done',state_version=state_version+1,
+				 terminal_at=@now WHERE id=@taskId AND state='running'`,
+				{ taskId: request.taskId, now: ports.clock.nowIso() },
 			);
 			const gate = maybeRefreshShipGateTx(tx, {
 				issueId: bound.task.external_issue_id,

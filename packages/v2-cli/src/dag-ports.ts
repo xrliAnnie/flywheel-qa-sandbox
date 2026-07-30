@@ -265,11 +265,6 @@ export function createOperationalDagPorts(
 			},
 		},
 		host: { hostEpoch: () => options.hostEpoch },
-		injectionRef: {
-			build() {
-				throw new Error("dispatch injection is owned by the v2 host");
-			},
-		},
 		locks: launchLock(options.lockRoot),
 		spawn: {
 			async spawn() {

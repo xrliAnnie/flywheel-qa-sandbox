@@ -53,8 +53,11 @@ describe("schema constraints and trigger bypass protection", () => {
 				"agents_binding_update_guard",
 				"agents_generation_no_rollback",
 				"agents_kind_immutable",
+				"agents_lead_only_insert",
 				"agents_no_delete",
 				"events_append_only",
+				"mailbox_recipient_insert",
+				"mailbox_recipient_update",
 				"pa_digest_transition_guard",
 				"pa_receipt_insert_guard",
 				"tasks_no_self_rework_ins",
@@ -234,7 +237,7 @@ describe("schema constraints and trigger bypass protection", () => {
 			).run();
 			db.prepare(
 				`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
-				 VALUES ('agent','runner',0,NULL,'offline')`,
+				 VALUES ('agent','lead',0,NULL,'offline')`,
 			).run();
 			db.prepare(
 				`INSERT INTO mailbox

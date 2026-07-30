@@ -42,7 +42,6 @@ function seedAgent(
 	fixture: Fixture,
 	args: {
 		agentId: string;
-		kind?: "lead" | "runner";
 		generation?: number;
 		lastPollAt?: string | null;
 		state?: "online" | "offline";
@@ -61,7 +60,7 @@ function seedAgent(
 			 )`,
 			{
 				agentId: args.agentId,
-				kind: args.kind ?? "lead",
+				kind: "lead",
 				generation,
 				instanceId: `instance-${args.agentId}-${generation}`,
 				sessionBinding: sessionBinding(args.agentId, generation),
@@ -178,7 +177,6 @@ describe("scheduler durable store", () => {
 			lastPollAt: "2026-07-27T00:00:50.000Z",
 		});
 		seedAgent(fixture, { agentId: "unknown", lastPollAt: null });
-		seedAgent(fixture, { agentId: "runner", kind: "runner" });
 		seedAgent(fixture, { agentId: "offline", state: "offline" });
 		seedAgent(fixture, { agentId: "empty", pending: false });
 

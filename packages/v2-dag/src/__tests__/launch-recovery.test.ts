@@ -152,7 +152,7 @@ describe("launch claim recovery", () => {
 		expect(next.dispatched[0]?.attemptGeneration).toBe(2);
 	});
 
-	it("adopts a spawned-but-unregistered runner and enqueues its assignment once", async () => {
+	it("adopts a spawned session binding and keeps its assignment exactly once", async () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
 		fixture.provision("lead-a", "lead");
@@ -211,11 +211,11 @@ describe("launch claim recovery", () => {
 		expect(spawnCount).toBe(1);
 		expect(
 			fixture.kernel.read((tx) =>
-				tx.get<{ instance_id: string | null }>(
-					"SELECT instance_id FROM agents WHERE agent_id='agent-a'",
+				tx.get<{ session_binding: string | null }>(
+					"SELECT session_binding FROM activations WHERE state='active'",
 				),
 			),
-		).toEqual({ instance_id: null });
+		).toEqual({ session_binding: null });
 		expect(
 			fixture.kernel.read(
 				(tx) =>
@@ -223,7 +223,7 @@ describe("launch claim recovery", () => {
 						"SELECT COUNT(*) AS count FROM mailbox WHERE source_kind='dag_task_dispatch'",
 					)?.count,
 			),
-		).toBe(0);
+		).toBe(1);
 
 		const recovered = await recoverPendingLaunches(fixture.kernel, ports);
 		await recoverPendingLaunches(fixture.kernel, ports);
@@ -232,15 +232,15 @@ describe("launch claim recovery", () => {
 		expect(spawnCount).toBe(1);
 		const registered = fixture.kernel.read((tx) =>
 			tx.get<{
-				instance_id: string;
+				session_ref: string;
 				generation: number;
 				session_binding: string;
 			}>(
-				"SELECT instance_id,generation,session_binding FROM agents WHERE agent_id='agent-a'",
+				"SELECT session_ref,generation,session_binding FROM activations WHERE state='active'",
 			),
 		);
 		expect(registered).toMatchObject({
-			instance_id: binding?.sessionId,
+			session_ref: binding?.sessionId,
 			generation: 1,
 			session_binding: expect.any(String),
 		});
@@ -261,7 +261,7 @@ describe("launch claim recovery", () => {
 		).toBe(1);
 	});
 
-	it("registers a present runner while adopting an older claimed receipt", async () => {
+	it("binds a present session while adopting an older claimed receipt", async () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
 		fixture.provision("lead-a", "lead");
@@ -305,17 +305,20 @@ describe("launch claim recovery", () => {
 					`SELECT COUNT(*) AS count
 					   FROM mailbox
 					  WHERE source_kind='dag_task_dispatch'
-					    AND to_agent='agent-a'`,
+					    AND to_agent LIKE 'v2dag:%'`,
 				),
 			),
 		).toEqual({ count: 1 });
 		expect(
 			fixture.kernel.read((tx) =>
-				tx.get<{ instance_id: string | null }>(
-					"SELECT instance_id FROM agents WHERE agent_id='agent-a'",
+				tx.get<{ session_ref: string; session_binding: string | null }>(
+					"SELECT session_ref,session_binding FROM activations WHERE state='active'",
 				),
-			)?.instance_id,
-		).toMatch(/^v2dag:/);
+			),
+		).toMatchObject({
+			session_ref: expect.stringMatching(/^v2dag:/),
+			session_binding: expect.any(String),
+		});
 	});
 
 	it("takes over an expired claim only after proving the process absent", async () => {

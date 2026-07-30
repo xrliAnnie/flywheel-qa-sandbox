@@ -14,21 +14,13 @@ import {
 	realpathSync,
 	renameSync,
 	type Stats,
+	symlinkSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import {
-	assertSocketPathFitsSunLen,
-	CodexDaemonClient,
-	connectDaemonTransport,
-} from "flywheel-claude-runner";
-import {
-	ClaudeInjectionShim,
-	CodexInjectionShim,
-	type SessionBinding,
-} from "flywheel-v2-engine";
+import type { SessionBinding } from "flywheel-v2-engine";
 import type {
 	RunnerLauncherPort,
 	RuntimeLaunchRequest,
@@ -46,20 +38,6 @@ export interface TmuxCommandPort {
 		file: string,
 		args: string[],
 	): Promise<{ stdout: string; stderr: string }>;
-}
-
-export interface CodexRunnerControlPort {
-	ensureThread(input: {
-		socketPath: string;
-		threadId: string | null;
-		cwd: string;
-		model: string;
-		baseInstructions: string;
-	}): Promise<string>;
-	deliver(
-		sessionRef: string,
-		message: { messageUid: string; attemptUid: string; payload: string },
-	): Promise<void>;
 }
 
 export interface TmuxRunnerLauncherOptions {
@@ -91,11 +69,6 @@ export interface TmuxRunnerLauncherOptions {
 	 */
 	claudeCredentialsPath: string;
 	command?: TmuxCommandPort;
-	codexControl?: CodexRunnerControlPort;
-	claudeDeliver?: (
-		sessionRef: string,
-		message: { messageUid: string; attemptUid: string; payload: string },
-	) => Promise<void>;
 	now?: () => Date;
 	processStart?: (pid: number) => string | null;
 	/**
@@ -114,10 +87,10 @@ interface RunnerState {
 	instruction_source_path: string;
 	instruction_content_digest: string;
 	instruction_content_bytes: number;
-	injection_ref: string;
+	/** The spawn bootstrap prompt, first envelope included (FLY-1543 ④). */
+	bootstrap: string;
 	model: string;
 	effort: string;
-	thread_id: string | null;
 }
 
 /**
@@ -134,21 +107,6 @@ interface OnboardingLockHolder {
 	pidStart: string | null;
 	acquiredAtMs: number;
 	ino: number;
-}
-
-interface ClaudeTarget {
-	configDir: string;
-	teamName: string;
-	agentName: string;
-	inboxPath: string;
-	sidecarPath: string;
-}
-
-interface CodexTarget {
-	v: 1;
-	backend: "codex";
-	socketPath: string;
-	threadId: string;
 }
 
 export class RunnerLaunchConfigError extends Error {
@@ -287,122 +245,46 @@ function exactKeys(
 	);
 }
 
-function parseClaudeTarget(value: string): ClaudeTarget {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(value);
-	} catch {
-		throw new RunnerLaunchConfigError(
-			"Claude injection reference is malformed",
-		);
-	}
-	const input = record(parsed, "Claude injection reference");
-	if (
-		!exactKeys(input, [
-			"backend",
-			"inboxPath",
-			"sidecarPath",
-			"toAgent",
-			"v",
-		]) ||
-		input.v !== 1 ||
-		input.backend !== "claude"
-	) {
-		throw new RunnerLaunchConfigError(
-			"Claude injection reference has an invalid shape",
-		);
-	}
-	const inboxPath = absolute(
-		text(input.inboxPath, "Claude inboxPath"),
-		"Claude inboxPath",
-	);
-	const sidecarPath = absolute(
-		text(input.sidecarPath, "Claude sidecarPath"),
-		"Claude sidecarPath",
-	);
-	const agentName = text(input.toAgent, "Claude toAgent");
-	const inboxDir = dirname(inboxPath);
-	const teamDir = dirname(inboxDir);
-	const teamsDir = dirname(teamDir);
-	const configDir = dirname(teamsDir);
-	const teamName = basename(teamDir);
-	if (
-		basename(inboxDir) !== "inboxes" ||
-		basename(teamsDir) !== "teams" ||
-		basename(inboxPath) !== `${agentName}.json` ||
-		sidecarPath !== `${inboxPath}.flywheel.jsonl` ||
-		!/^v2-[a-z0-9-]+$/.test(teamName) ||
-		!/^[A-Za-z0-9_-]+$/.test(agentName)
-	) {
-		throw new RunnerLaunchConfigError(
-			"Claude injection reference does not name the isolated stock inbox",
-		);
-	}
-	// Codex R3 MEDIUM-5/7: the config dir must be per-activation. The builder now
-	// emits `<root>/claude/<sha256(activationId)>`, and this checks that shape
-	// rather than trusting the path it was handed.
-	//
-	// A ref written before that change resolves configDir to `<root>/claude` and
-	// is still accepted, so an activation that is already in flight can still be
-	// probed and stopped across the deploy that introduces this. Only the emitted
-	// shape carries the isolation guarantee; nothing but the dispatcher writes
-	// refs, and containment confines either shape to the injection root.
-	const perActivation =
-		basename(dirname(configDir)) === "claude" &&
-		/^[0-9a-f]{64}$/.test(basename(configDir));
-	const legacyShared = basename(configDir) === "claude";
-	if (!perActivation && !legacyShared) {
-		throw new RunnerLaunchConfigError(
-			"Claude injection reference does not name a recognised config root",
-		);
-	}
-	return {
-		configDir,
-		teamName,
-		agentName,
-		inboxPath,
-		sidecarPath,
-	};
+/**
+ * FLY-1543 ④: vendor-neutral session resources are derived, not carried by an
+ * injection reference -- the reference (and the teams JSON it used to point at)
+ * is abolished. The Claude config root stays per-activation
+ * (`<root>/claude/<sha256(activationId)>`, Codex R3 MEDIUM-5/7) because the
+ * `.claude.json` onboarding preseed still needs isolation.
+ */
+function claudeConfigDir(injectionRoot: string, activationId: string): string {
+	return join(injectionRoot, "claude", safeKey(activationId));
 }
 
-function parseCodexTarget(value: string): CodexTarget {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(value);
-	} catch {
-		throw new RunnerLaunchConfigError("Codex injection reference is malformed");
-	}
-	const input = record(parsed, "Codex injection reference");
-	if (
-		!exactKeys(input, ["backend", "socketPath", "threadId", "v"]) ||
-		input.v !== 1 ||
-		input.backend !== "codex"
-	) {
-		throw new RunnerLaunchConfigError(
-			"Codex injection reference has an invalid shape",
-		);
-	}
-	return {
-		v: 1,
-		backend: "codex",
-		socketPath: absolute(
-			text(input.socketPath, "Codex socketPath"),
-			"Codex socketPath",
-		),
-		threadId: text(input.threadId, "Codex threadId"),
-	};
-}
+/**
+ * Mirrors the vendor inbox ceiling the old push channel enforced: an oversized
+ * bootstrap is refused at launch, never truncated.
+ */
+const MAX_BOOTSTRAP_PROMPT_BYTES = 1_000_000;
 
+/**
+ * FLY-1543 ④: the spawn prompt IS the first delivery. The runner opens its
+ * eyes holding the assignment envelope, the settle capability and the written
+ * protocol; later envelopes are pulled from the DB mailbox by session ref.
+ */
 function runnerPrompt(request: RuntimeLaunchRequest): string {
 	const instruction = request.context.instruction;
-	return [
+	const prompt = [
 		`Flywheel v2 runner bootstrap for ${request.context.issueId}.`,
 		`The complete role authority is pinned at ${instruction.sourcePath} with SHA-256 ${instruction.contentDigest}.`,
 		"Do not use any legacy control-plane CLI, inbox, Bridge, adapter, or database.",
-		"Wait for work delivered through this isolated v2 vendor session. Each injected envelope carries the durable issue context, exact attempt/message identities, and proposal authorization.",
-		"Submit effects only through the flywheel-v2 CLI named by FLYWHEEL_V2_CLIENT_CLI and the authenticated host socket in this session environment.",
+		"Your first work envelope is embedded below. It carries the durable issue context, the exact attempt/message identities, and the proposal authorization used to settle it; its `protocol` field is the authoritative contract.",
+		"Submit effects only through the flywheel-v2 CLI named by FLYWHEEL_V2_CLIENT_CLI over the authenticated host socket in this session environment. Pull any later envelope with `next --session <FLYWHEEL_V2_SESSION_REF>`; reach your lead during the work with the `ask` verb. Vendor team tools do not reach anyone.",
 		`Activation: ${request.activationId}. Session: ${request.sessionRef}.`,
+		"FIRST ENVELOPE:",
+		request.context.firstEnvelope,
 	].join("\n");
+	if (Buffer.byteLength(prompt, "utf8") > MAX_BOOTSTRAP_PROMPT_BYTES) {
+		throw new RunnerLaunchConfigError(
+			`runner bootstrap prompt exceeds ${MAX_BOOTSTRAP_PROMPT_BYTES} bytes`,
+		);
+	}
+	return prompt;
 }
 
 function cleanRunnerEnvironment(v2Environment: string[]): string[] {
@@ -432,6 +314,7 @@ function commandForVendor(
 	request: RuntimeLaunchRequest,
 	options: TmuxRunnerLauncherOptions,
 	kind: "claude" | "codex",
+	instruction: Buffer,
 ): { binary: string; args: string[] } {
 	if (!EFFORTS.has(request.executor.effort)) {
 		throw new RunnerLaunchConfigError(
@@ -439,7 +322,8 @@ function commandForVendor(
 		);
 	}
 	if (kind === "claude") {
-		const target = parseClaudeTarget(request.injectionRef);
+		// FLY-1543 ④: no --agent-id/--agent-name/--team-name and no agent-teams
+		// experiment flag -- the vendor team machinery is not part of the design.
 		return {
 			binary: options.claudeBin,
 			args: [
@@ -455,29 +339,27 @@ function commandForVendor(
 				request.executor.effort,
 				"--name",
 				safeName(
-					`v2-${request.context.issueId}-${request.agent.agentId}`,
+					`v2-${request.context.issueId}-${request.roleId}`,
 					"v2-runner",
 				),
-				"--agent-id",
-				`${target.agentName}@${target.teamName}`,
-				"--agent-name",
-				target.agentName,
-				"--team-name",
-				target.teamName,
 				runnerPrompt(request),
 			],
 		};
 	}
-	const target = parseCodexTarget(request.injectionRef);
 	return {
 		binary: options.codexBin,
 		args: [
-			"app-server",
-			"--remote-control",
-			"--listen",
-			`unix://${target.socketPath}`,
+			"-C",
+			request.context.projectRoot,
+			"-m",
+			request.executor.model,
+			"-s",
+			"workspace-write",
+			"-a",
+			"never",
 			"-c",
 			`model_reasoning_effort=${JSON.stringify(request.executor.effort)}`,
+			`${instruction.toString("utf8")}\n\n---\n\n${runnerPrompt(request)}`,
 		],
 	};
 }
@@ -494,60 +376,25 @@ function defaultCommand(): TmuxCommandPort {
 	};
 }
 
-function defaultCodexControl(): CodexRunnerControlPort {
-	return {
-		async ensureThread(input) {
-			const transport = await connectDaemonTransport({
-				socketPath: input.socketPath,
-				connectTimeoutMs: 10_000,
-			});
-			const client = new CodexDaemonClient({
-				transport,
-				requestTimeoutMs: 30_000,
-				clientName: "flywheel-v2-runner-launcher",
-			});
-			try {
-				await client.initialize();
-				return input.threadId
-					? await client.resumeThread(input.threadId)
-					: await client.startThread({
-							cwd: input.cwd,
-							sandbox: "workspace-write",
-							approvalPolicy: "never",
-							model: input.model,
-							baseInstructions: input.baseInstructions,
-						});
-			} finally {
-				client.close();
-			}
-		},
-		async deliver(sessionRef, message) {
-			await new CodexInjectionShim().deliver(sessionRef, message);
-		},
-	};
-}
-
 function parseRunnerState(value: unknown): RunnerState {
 	const input = record(value, "runner state");
 	if (
 		!exactKeys(input, [
+			"bootstrap",
 			"effort",
-			"injection_ref",
 			"instruction_content_bytes",
 			"instruction_content_digest",
 			"instruction_source_path",
 			"model",
 			"project_root",
 			"session_ref",
-			"thread_id",
 			"v",
 			"vendor",
 		]) ||
 		input.v !== 1 ||
 		(input.vendor !== "claude" && input.vendor !== "codex") ||
 		!Number.isSafeInteger(input.instruction_content_bytes) ||
-		(input.instruction_content_bytes as number) <= 0 ||
-		(input.thread_id !== null && typeof input.thread_id !== "string")
+		(input.instruction_content_bytes as number) <= 0
 	) {
 		throw new RunnerLaunchConfigError("runner state has an invalid shape");
 	}
@@ -571,19 +418,16 @@ function parseRunnerState(value: unknown): RunnerState {
 			"runner state instruction_content_digest",
 		),
 		instruction_content_bytes: input.instruction_content_bytes as number,
-		injection_ref: text(input.injection_ref, "runner state injection_ref"),
+		bootstrap: text(input.bootstrap, "runner state bootstrap"),
 		model: text(input.model, "runner state model"),
 		effort: text(input.effort, "runner state effort"),
-		thread_id:
-			input.thread_id === null
-				? null
-				: text(input.thread_id, "runner state thread_id"),
 	};
 }
 
 function stateFromRequest(
 	request: RuntimeLaunchRequest,
 	vendor: "claude" | "codex",
+	bootstrap: string,
 ): RunnerState {
 	return {
 		v: 1,
@@ -593,10 +437,9 @@ function stateFromRequest(
 		instruction_source_path: request.context.instruction.sourcePath,
 		instruction_content_digest: request.context.instruction.contentDigest,
 		instruction_content_bytes: request.context.instruction.contentBytes,
-		injection_ref: request.injectionRef,
+		bootstrap,
 		model: request.executor.model,
 		effort: request.executor.effort,
-		thread_id: null,
 	};
 }
 
@@ -609,7 +452,7 @@ function sameStateAuthority(left: RunnerState, right: RunnerState): boolean {
 		left.instruction_source_path === right.instruction_source_path &&
 		left.instruction_content_digest === right.instruction_content_digest &&
 		left.instruction_content_bytes === right.instruction_content_bytes &&
-		left.injection_ref === right.injection_ref &&
+		left.bootstrap === right.bootstrap &&
 		left.model === right.model &&
 		left.effort === right.effort
 	);
@@ -618,10 +461,6 @@ function sameStateAuthority(left: RunnerState, right: RunnerState): boolean {
 export class TmuxRunnerLauncher implements RunnerLauncherPort {
 	readonly #options: TmuxRunnerLauncherOptions;
 	readonly #command: TmuxCommandPort;
-	readonly #codexControl: CodexRunnerControlPort;
-	readonly #claudeDeliver: NonNullable<
-		TmuxRunnerLauncherOptions["claudeDeliver"]
-	>;
 	readonly #now: () => Date;
 	readonly #processStart: (pid: number) => string | null;
 
@@ -644,11 +483,6 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		}
 		this.#options = options;
 		this.#command = options.command ?? defaultCommand();
-		this.#codexControl = options.codexControl ?? defaultCodexControl();
-		this.#claudeDeliver =
-			options.claudeDeliver ??
-			((sessionRef, message) =>
-				new ClaudeInjectionShim().deliver(sessionRef, message));
 		this.#now = options.now ?? (() => new Date());
 		this.#processStart = options.processStart ?? readProcessStartIdentity;
 		for (const root of [options.releaseRoot, options.stateRoot]) {
@@ -691,8 +525,9 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 	#prepareState(
 		request: RuntimeLaunchRequest,
 		vendor: "claude" | "codex",
+		bootstrap: string,
 	): void {
-		const next = stateFromRequest(request, vendor);
+		const next = stateFromRequest(request, vendor, bootstrap);
 		const path = this.#statePath(request.sessionRef);
 		if (existsSync(path)) {
 			const prior = this.#readState(request.sessionRef);
@@ -758,150 +593,49 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		}
 	}
 
-	async #prepareClaudeTeam(
-		request: RuntimeLaunchRequest,
-	): Promise<ClaudeTarget> {
-		const target = parseClaudeTarget(request.injectionRef);
-		// Codex R2 MEDIUM-4: containment must be proven before ANY I/O. It used to
-		// run inside the preseed, by which point the team config.json had already
-		// been written outside the root.
-		this.#assertContainedInInjectionRoot(target.configDir);
-		this.#assertContainedInInjectionRoot(target.inboxPath);
+	/**
+	 * FLY-1543 ④: no Agent Team, no teams config.json, no vendor inbox. The
+	 * per-activation config dir exists only for credentials and the onboarding
+	 * preseed.
+	 */
+	async #prepareClaudeConfig(request: RuntimeLaunchRequest): Promise<string> {
+		const configDir = claudeConfigDir(
+			this.#options.injectionRoot,
+			request.activationId,
+		);
+		// Codex R2 MEDIUM-4: containment must be proven before ANY I/O.
+		this.#assertContainedInInjectionRoot(configDir);
 		// Before any tmux work: no credentials means fail closed with a message that
 		// names the path, never a runner parked on a login screen where only a human
 		// watching the pane would notice.
-		this.#provisionClaudeCredentials(target);
-		const teamPath = join(dirname(dirname(target.inboxPath)), "config.json");
-		const sessionId = randomUUID();
-		const createdAt = this.#now().getTime();
-		atomicFile(
-			teamPath,
-			`${JSON.stringify({
-				name: target.teamName,
-				description: `Flywheel v2 isolated runner team for ${request.context.issueId}`,
-				createdAt,
-				leadAgentId: `${target.agentName}@${target.teamName}`,
-				leadSessionId: sessionId,
-				members: [
-					{
-						agentId: `${target.agentName}@${target.teamName}`,
-						name: target.agentName,
-						agentType: request.executor.logicalAgentId,
-						model: request.executor.model,
-						joinedAt: createdAt,
-						tmuxPaneId: "pending",
-						cwd: request.context.projectRoot,
-						subscriptions: [],
-						worktreePath: request.context.projectRoot,
-						sessionId,
-						backendType: "tmux",
-						isActive: true,
-						mode: "bypassPermissions",
-					},
-				],
-			})}\n`,
-		);
-		await this.#preseedClaudeOnboarding(target, request);
-		return target;
+		this.#linkClaudeCredentials(configDir);
+		await this.#preseedClaudeOnboarding(configDir, request);
+		return configDir;
 	}
 
 	/**
-	 * FLY-1503 item 7: the isolated CLAUDE_CONFIG_DIR started empty, so a fresh
-	 * runner spawned into a interactive first-run sequence -- theme picker, then
-	 * trust-this-folder, then bypass-permissions -- and sat there forever because
-	 * nobody is at the terminal to answer. This was previously preseeded by hand.
+	 * FLY-1543 ②: ONE live credential file, shared by every activation.
 	 *
-	 * Credentials are deliberately NOT written here. .credentials.json is a secret
-	 * and stays operator-provisioned once per config dir; a launcher that copies
-	 * credentials around would spread them into every per-runner directory.
+	 * The per-activation COPY is deleted: a copy goes stale the moment the
+	 * operator/quota system refreshes the source, and a runner that opens on a
+	 * login screen has nobody watching the pane. Every launch re-points a
+	 * symlink at the shared file, so a refresh of the source is immediately
+	 * visible to every runner -- no sync, no refresher, no stale copies.
+	 *
+	 * Stated residual (recorded, not fallback-ed): if Claude's credential writer
+	 * rename-overs the path, the symlink is replaced by a regular file holding
+	 * that activation's own token, which is NOT propagated back to the shared
+	 * file; the next launch re-points the link. The shared file is maintained as
+	 * the single source of truth by the operator/quota system, and same-uid
+	 * tampering with it is an accepted design boundary.
 	 */
-	/**
-	 * Codex R4 MEDIUM-2 / R5 MEDIUM-2: give the per-activation config dir working
-	 * credentials, or refuse to launch.
-	 *
-	 * A COPY, and never an overwrite of one that already exists. The first version
-	 * of this used a symlink on the reasoning that Claude rotates the OAuth token and
-	 * writes it back through the link. That reasoning was wrong, and I verified it:
-	 * Claude's credential writer writes a temp file and renames over the path, and
-	 * POSIX rename replaces the SYMLINK itself rather than writing through it. So
-	 * after a rotation the activation directory held the only valid token as a
-	 * regular file -- and the relaunch path then unlinked it and re-linked the stale
-	 * source, destroying it. That was data loss introduced by a fix.
-	 *
-	 * So: copy the source in when the activation has no credentials yet, and if it
-	 * already has a regular file, leave it completely alone. A rotated token is never
-	 * overwritten. Accepting an 0400 source is also consistent now, because nothing
-	 * expects to write back to it.
-	 *
-	 * Residual, stated rather than glossed: a token rotated inside one activation is
-	 * not propagated back to the operator source, so the source must stay valid on
-	 * its own. That is inherent to per-activation isolation -- sharing one mutable
-	 * credential file is what the isolation removes -- and the failure mode is a
-	 * visible auth error on a new activation, not silent corruption. Same-uid
-	 * tampering with the source is an accepted design boundary and is not addressed
-	 * here.
-	 */
-	#provisionClaudeCredentials(target: ClaudeTarget): void {
+	#linkClaudeCredentials(configDir: string): void {
 		const source = this.#options.claudeCredentialsPath;
 		if (typeof source !== "string" || !isAbsolute(source)) {
 			throw new RunnerLaunchConfigError(
 				"Claude credentials path must be configured as an absolute path",
 			);
 		}
-		const destination = join(target.configDir, ".credentials.json");
-		mkdirSync(target.configDir, { recursive: true, mode: 0o700 });
-		chmodSync(target.configDir, 0o700);
-
-		// Whatever this activation already has wins: it may be a rotated token that
-		// exists nowhere else. Only a non-regular entry is refused, because reading or
-		// replacing through a link is not something to do with a credential.
-		let existing: Stats | undefined;
-		try {
-			existing = lstatSync(destination);
-		} catch (error) {
-			if ((error as { code?: string }).code !== "ENOENT") {
-				throw new RunnerLaunchConfigError(
-					`isolated Claude credentials path could not be inspected: ${destination}`,
-				);
-			}
-		}
-		if (existing) {
-			if (!existing.isFile()) {
-				throw new RunnerLaunchConfigError(
-					`isolated Claude credentials path is not a regular file: ${destination}`,
-				);
-			}
-			if (existing.size > 0) return;
-			// A zero-byte file cannot be a token; fall through and seed from source.
-		}
-
-		const bytes = this.#readClaudeCredentialSource(source);
-		const staging = join(
-			target.configDir,
-			`.credentials.json.staging.${process.pid}.${randomUUID()}`,
-		);
-		const fd = openSync(staging, "wx", 0o600);
-		try {
-			writeFileSync(fd, bytes);
-			fsyncSync(fd);
-		} finally {
-			closeSync(fd);
-		}
-		try {
-			renameSync(staging, destination);
-		} catch (error) {
-			try {
-				unlinkSync(staging);
-			} catch {
-				// already gone
-			}
-			throw error;
-		}
-		chmodSync(destination, 0o600);
-	}
-
-	/** Every rule the operator source must satisfy, checked before any tmux call. */
-	#readClaudeCredentialSource(source: string): Buffer {
 		let stats: Stats;
 		try {
 			stats = lstatSync(source);
@@ -912,40 +646,33 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 				})`,
 			);
 		}
-		// Not a symlink: following one would let anything able to create it aim the
-		// runner at another file entirely.
 		if (!stats.isFile()) {
 			throw new RunnerLaunchConfigError(
 				`Claude credentials at ${source} must be a regular file`,
 			);
 		}
-		if (stats.size === 0) {
-			throw new RunnerLaunchConfigError(
-				`Claude credentials at ${source} are empty`,
-			);
-		}
-		const mode = stats.mode & 0o777;
-		if (mode !== 0o600 && mode !== 0o400) {
-			throw new RunnerLaunchConfigError(
-				`Claude credentials at ${source} must be mode 0600 or 0400, found 0${mode.toString(8)}`,
-			);
-		}
-		const bytes = readFileSync(source);
+		const destination = join(configDir, ".credentials.json");
+		mkdirSync(configDir, { recursive: true, mode: 0o700 });
+		chmodSync(configDir, 0o700);
+		// Always re-point: keeping an existing entry is exactly the mechanism by
+		// which a stale copy used to survive.
 		try {
-			JSON.parse(bytes.toString("utf8"));
-		} catch {
-			throw new RunnerLaunchConfigError(
-				`Claude credentials at ${source} are not valid JSON`,
-			);
+			unlinkSync(destination);
+		} catch (error) {
+			if ((error as { code?: string }).code !== "ENOENT") {
+				throw new RunnerLaunchConfigError(
+					`isolated Claude credentials path could not be replaced: ${destination}`,
+				);
+			}
 		}
-		return bytes;
+		symlinkSync(source, destination);
 	}
 
 	async #preseedClaudeOnboarding(
-		target: ClaudeTarget,
+		configDir: string,
 		request: RuntimeLaunchRequest,
 	): Promise<void> {
-		const statePath = join(target.configDir, ".claude.json");
+		const statePath = join(configDir, ".claude.json");
 		this.#assertPlainFileTarget(statePath);
 		// Codex R2 MEDIUM-5 / R3 MEDIUM-5: with a per-activation config root the
 		// only writer of this file is this launcher plus the one Claude process it
@@ -1299,21 +1026,19 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 	}
 
 	async launch(request: RuntimeLaunchRequest): Promise<SessionBinding> {
-		verifyPinnedInstruction(request);
+		const instruction = verifyPinnedInstruction(request);
 		const vendor = vendorKind(request.executor.vendor);
-		const vendorCommand = commandForVendor(request, this.#options, vendor);
-		this.#prepareState(request, vendor);
-		const claudeTarget =
-			vendor === "claude" ? await this.#prepareClaudeTeam(request) : undefined;
-		if (vendor === "codex") {
-			const target = parseCodexTarget(request.injectionRef);
-			assertSocketPathFitsSunLen(target.socketPath);
-			mkdirSync(dirname(target.socketPath), {
-				recursive: true,
-				mode: 0o700,
-			});
-			chmodSync(dirname(target.socketPath), 0o700);
-		}
+		const vendorCommand = commandForVendor(
+			request,
+			this.#options,
+			vendor,
+			instruction,
+		);
+		this.#prepareState(request, vendor, runnerPrompt(request));
+		const claudeConfig =
+			vendor === "claude"
+				? await this.#prepareClaudeConfig(request)
+				: undefined;
 		const prior = await this.probe(request.sessionRef);
 		if (prior.state === "present") return prior.sessionBinding;
 
@@ -1321,25 +1046,19 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		const releasePath = this.#releasePath(request.sessionRef);
 		if (existsSync(releasePath)) unlinkSync(releasePath);
 		const windowName = safeName(
-			`v2-${request.context.issueId}-${request.agent.agentId}-${safeKey(request.sessionRef).slice(0, 8)}`,
+			`v2-${request.context.issueId}-${request.roleId}-${safeKey(request.sessionRef).slice(0, 8)}`,
 			"v2-runner",
 		);
 		const gateScript =
 			'gate="$0"; n=0; while [ ! -f "$gate" ]; do [ "$n" -ge 86400 ] && exit 75; sleep 1; n=$((n+1)); done; exec "$@"';
 		const environment = [
 			`FLYWHEEL_V2_SESSION_REF=${request.sessionRef}`,
-			`FLYWHEEL_V2_AGENT_ID=${request.agent.agentId}`,
+			`FLYWHEEL_V2_AGENT_ID=${request.roleId}`,
 			`FLYWHEEL_V2_ACTIVATION_ID=${request.activationId}`,
-			`FLYWHEEL_V2_INJECTION_REF=${request.injectionRef}`,
 			`FLYWHEEL_V2_SOCKET=${this.#options.socketPath}`,
 			`FLYWHEEL_V2_SECRET_PATH=${this.#options.secretPath}`,
 			`FLYWHEEL_V2_CLIENT_CLI=${this.#options.clientCliPath}`,
-			...(claudeTarget
-				? [
-						`CLAUDE_CONFIG_DIR=${claudeTarget.configDir}`,
-						"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1",
-					]
-				: []),
+			...(claudeConfig ? [`CLAUDE_CONFIG_DIR=${claudeConfig}`] : []),
 		];
 		try {
 			await this.#command.run(this.#options.tmuxBin, [
@@ -1422,52 +1141,6 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 			throw new Error("cannot activate an absent tmux runner");
 		}
 		atomicRelease(this.#releasePath(sessionRef));
-		if (state.vendor === "codex") {
-			const target = parseCodexTarget(state.injection_ref);
-			const threadId = await this.#codexControl.ensureThread({
-				socketPath: target.socketPath,
-				threadId: state.thread_id,
-				cwd: state.project_root,
-				model: state.model,
-				baseInstructions: readFileSync(state.instruction_source_path, "utf8"),
-			});
-			if (threadId.trim().length === 0) {
-				throw new RunnerLaunchConfigError(
-					"Codex runner activation returned an empty thread id",
-				);
-			}
-			if (state.thread_id !== threadId) {
-				this.#writeState({ ...state, thread_id: threadId });
-			}
-		}
-	}
-
-	async deliver(
-		sessionRef: string,
-		injectionRef: string,
-		message: { messageUid: string; attemptUid: string; payload: string },
-	): Promise<void> {
-		const state = this.#readState(sessionRef);
-		if (state.injection_ref !== injectionRef) {
-			throw new RunnerLaunchConfigError(
-				"runner delivery injection authority mismatch",
-			);
-		}
-		if (state.vendor === "claude") {
-			parseClaudeTarget(injectionRef);
-			await this.#claudeDeliver(injectionRef, message);
-			return;
-		}
-		const target = parseCodexTarget(injectionRef);
-		if (!state.thread_id) {
-			throw new RunnerLaunchConfigError(
-				"Codex runner delivery preceded thread activation",
-			);
-		}
-		await this.#codexControl.deliver(
-			JSON.stringify({ ...target, threadId: state.thread_id }),
-			message,
-		);
 	}
 
 	async probe(sessionRef: string): Promise<

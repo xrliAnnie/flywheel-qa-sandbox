@@ -1,95 +1,87 @@
-import { recordActionIntent } from "flywheel-v2-kernel";
+import { recordActionIntent, recordActionOutcome } from "flywheel-v2-kernel";
 import { afterEach, describe, expect, it } from "vitest";
-import { EngineDriver } from "../driver.js";
-import { registerAgentTx } from "../registration.js";
-import { issueProposalCapability, readProposalReceipt } from "../settlement.js";
+import { pollOnce } from "../consume-loop.js";
+import {
+	issueProposalCapability,
+	readProposalReceipt,
+	submitProposal,
+} from "../settlement.js";
+import type { ConversionProposal } from "../types.js";
 import {
 	type EngineFixture,
 	enqueueMailbox,
 	makeEngineFixture,
-	seedRunnerActivation,
-	testSessionBinding,
+	seedSessionRunner,
 } from "./helpers.js";
 
-function attachRunner(fixture: EngineFixture, driver: EngineDriver) {
-	const activationId = seedRunnerActivation(fixture);
-	const runner = fixture.kernel.write("test.register-runner", (tx) =>
-		registerAgentTx(tx, fixture.runtime, "runner-a", {
-			kind: "runner",
-			agentId: "runner-a",
-			instanceId: "instance-1",
-			activationId,
-			sessionBinding: testSessionBinding("instance-1"),
-		}),
-	);
-	return driver.attachRunner("runner-a", runner);
+function prepareDelivery(fixture: EngineFixture) {
+	const lineage = seedSessionRunner(fixture);
+	enqueueMailbox(fixture, {
+		uid: "m1",
+		agent: lineage.agent.agentId,
+		agentKind: "runner",
+	});
+	const polled = pollOnce(
+		fixture.kernel,
+		fixture.runtime,
+		lineage.agent,
+		0,
+	).result;
+	if (polled.status !== "available") throw new Error("expected available");
+	fixture.kernel.write("test.delivery-intent", (tx) => {
+		recordActionIntent(tx, {
+			id: "delivery-action-1",
+			taskId: lineage.taskId,
+			attemptId: lineage.attemptId,
+			attemptGeneration: lineage.agent.generation,
+			actor: lineage.agent,
+			kind: "mailbox.deliver",
+			payload: { message_uid: "m1" },
+			logicalEffectId: "deliver-m1",
+			invocationUid: "deliver:m1",
+			cutoverEpoch: 1,
+		});
+	});
+	return { lineage, polled };
 }
 
 describe("proposal capability and durable receipt", () => {
 	let fixture: EngineFixture | undefined;
-	let driver: EngineDriver | undefined;
 
 	afterEach(() => {
-		driver?.stop();
 		fixture?.cleanup();
-		driver = undefined;
 		fixture = undefined;
 	});
 
-	it("consumes an attempt-bound capability in the same transaction as settlement", async () => {
+	it("consumes an attempt-bound session capability in the settlement transaction", () => {
 		fixture = makeEngineFixture();
-		enqueueMailbox(fixture, {
-			uid: "m1",
-			agent: "runner-a",
-			agentKind: "runner",
-		});
-		driver = new EngineDriver(fixture.kernel, fixture.runtime, {
-			requireProposalCapability: true,
-		});
-		await attachRunner(fixture, driver);
-		const polled = driver.poll("runner-a");
-		if (polled.status !== "available") throw new Error("expected available");
-		fixture.kernel.write("test.delivery-intent", (tx) => {
-			recordActionIntent(tx, {
-				id: "delivery-action-1",
-				taskId: "task-runner-a-1",
-				attemptId: "attempt-runner-a-1",
-				attemptGeneration: 1,
-				actor: {
-					kind: "runner",
-					agentId: "runner-a",
-					instanceId: "instance-1",
-					generation: 1,
-					activationId: "activation-runner-a-1",
-				},
-				kind: "mailbox.deliver",
-				payload: { message_uid: "m1" },
-				logicalEffectId: "deliver-m1",
-				invocationUid: "deliver:m1",
-				cutoverEpoch: 1,
-			});
-		});
+		const { polled } = prepareDelivery(fixture);
 		const authorization = issueProposalCapability(
 			fixture.kernel,
 			fixture.runtime,
 			polled.handle,
 			"delivery-action-1",
 		);
-		const proposal = {
+		const proposal: ConversionProposal = {
 			handle: polled.handle,
 			effects: [
 				{
-					kind: "event" as const,
+					kind: "event",
 					eventKind: "proposal.completed",
 					payload: "{}",
 				},
 			],
 		};
 
-		const digest = driver.submitProposal(proposal, authorization);
+		const proposalDigest = submitProposal(
+			fixture.kernel,
+			fixture.runtime,
+			proposal,
+			authorization,
+		);
 		expect(readProposalReceipt(fixture.kernel, proposal)).toEqual({
 			status: "succeeded",
-			proposalDigest: digest,
+			proposalDigest,
 		});
 		expect(
 			fixture.kernel.read((tx) =>
@@ -100,39 +92,9 @@ describe("proposal capability and durable receipt", () => {
 		).toBe(fixture.clock.nowIso());
 	});
 
-	it("fails closed on a token bound to a different audience and rolls back consumption", async () => {
+	it("rejects a capability whose audience changed and rolls back consumption", () => {
 		fixture = makeEngineFixture();
-		enqueueMailbox(fixture, {
-			uid: "m1",
-			agent: "runner-a",
-			agentKind: "runner",
-		});
-		driver = new EngineDriver(fixture.kernel, fixture.runtime, {
-			requireProposalCapability: true,
-		});
-		await attachRunner(fixture, driver);
-		const polled = driver.poll("runner-a");
-		if (polled.status !== "available") throw new Error("expected available");
-		fixture.kernel.write("test.delivery-intent", (tx) => {
-			recordActionIntent(tx, {
-				id: "delivery-action-1",
-				taskId: "task-runner-a-1",
-				attemptId: "attempt-runner-a-1",
-				attemptGeneration: 1,
-				actor: {
-					kind: "runner",
-					agentId: "runner-a",
-					instanceId: "instance-1",
-					generation: 1,
-					activationId: "activation-runner-a-1",
-				},
-				kind: "mailbox.deliver",
-				payload: { message_uid: "m1" },
-				logicalEffectId: "deliver-m1",
-				invocationUid: "deliver:m1",
-				cutoverEpoch: 1,
-			});
-		});
+		const { polled } = prepareDelivery(fixture);
 		const authorization = issueProposalCapability(
 			fixture.kernel,
 			fixture.runtime,
@@ -141,12 +103,14 @@ describe("proposal capability and durable receipt", () => {
 		);
 		fixture.kernel.write("test.tamper-audience", (tx) => {
 			tx.run(
-				"UPDATE capabilities SET audience='runner-b' WHERE issuer='delivery-action-1'",
+				"UPDATE capabilities SET audience='v2dag:another-session' WHERE issuer='delivery-action-1'",
 			);
 		});
 
 		expect(() =>
-			driver?.submitProposal(
+			submitProposal(
+				(fixture as EngineFixture).kernel,
+				(fixture as EngineFixture).runtime,
 				{ handle: polled.handle, effects: [] },
 				authorization,
 			),
@@ -160,22 +124,24 @@ describe("proposal capability and durable receipt", () => {
 		).toBeNull();
 	});
 
-	it("requires capability authorization when the production driver fence is enabled", async () => {
+	it("refuses capability issuance after the session delivery action is terminal", () => {
 		fixture = makeEngineFixture();
-		enqueueMailbox(fixture, {
-			uid: "m1",
-			agent: "runner-a",
-			agentKind: "runner",
+		const { lineage, polled } = prepareDelivery(fixture);
+		fixture.kernel.write("test.finish-delivery-action", (tx) => {
+			recordActionOutcome(tx, {
+				id: "delivery-action-1",
+				actor: lineage.agent,
+				state: "succeeded",
+				result: { delivered: true },
+			});
 		});
-		driver = new EngineDriver(fixture.kernel, fixture.runtime, {
-			requireProposalCapability: true,
-		});
-		await attachRunner(fixture, driver);
-		const polled = driver.poll("runner-a");
-		if (polled.status !== "available") throw new Error("expected available");
-
 		expect(() =>
-			driver?.submitProposal({ handle: polled.handle, effects: [] }),
-		).toThrow(/proposal capability is required/);
+			issueProposalCapability(
+				(fixture as EngineFixture).kernel,
+				(fixture as EngineFixture).runtime,
+				polled.handle,
+				"delivery-action-1",
+			),
+		).toThrow(/does not authorize/);
 	});
 });

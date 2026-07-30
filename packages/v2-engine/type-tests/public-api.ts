@@ -3,11 +3,6 @@ import {
 	type Candidate,
 	type CandidateLane,
 	type CandidateSet,
-	type ClaudeInjectionSessionRef,
-	ClaudeInjectionShim,
-	type CodexInjectionSessionRef,
-	CodexInjectionShim,
-	type CodexInjectionShimOptions,
 	type ConsumerAuthority,
 	type ConversionActionSpec,
 	type ConversionContext,
@@ -15,7 +10,6 @@ import {
 	type ConversionResult,
 	type Converter,
 	DEFAULT_ENGINE_CONFIG,
-	type DeathEvidence,
 	type Effect,
 	type EngineClock,
 	type EngineConfig,
@@ -23,26 +17,22 @@ import {
 	type EngineRuntime,
 	type EnqueueResult,
 	type IdentityDraft,
-	type InjectionShim,
 	type LeadIdentityDraft,
 	type MailboxEnvelope,
 	type PollResult,
 	type RegisteredAgent,
-	type RunnerIdentityDraft,
+	reportConversionFailure,
 	selectNext,
+	submitProposal,
 } from "flywheel-v2-engine";
 
 declare const handle: AttemptHandle;
-declare const claudeSessionRef: ClaudeInjectionSessionRef;
-declare const codexSessionRef: CodexInjectionSessionRef;
-declare const codexShimOptions: CodexInjectionShimOptions;
 declare const candidate: Candidate;
 declare const lane: CandidateLane;
 declare const candidates: CandidateSet;
 declare const authority: ConsumerAuthority;
 declare const action: ConversionActionSpec;
 declare const context: ConversionContext;
-declare const evidence: DeathEvidence;
 declare const effect: Effect;
 declare const enqueueResult: EnqueueResult;
 declare const envelope: MailboxEnvelope;
@@ -50,26 +40,20 @@ declare const clock: EngineClock;
 declare const config: EngineConfig;
 declare const runtime: EngineRuntime;
 declare const draft: IdentityDraft;
-declare const shim: InjectionShim;
 declare const leadDraft: LeadIdentityDraft;
 declare const registered: RegisteredAgent;
-declare const runnerDraft: RunnerIdentityDraft;
 declare const poll: PollResult;
 declare const proposal: ConversionProposal;
 declare const result: ConversionResult;
 declare const converter: Converter;
 
 void handle;
-void claudeSessionRef;
-void codexSessionRef;
-void codexShimOptions;
 void candidate;
 void lane;
 void candidates;
 void authority;
 void action;
 void context;
-void evidence;
 void effect;
 void enqueueResult;
 void envelope;
@@ -77,19 +61,17 @@ void clock;
 void config;
 void runtime;
 void draft;
-void shim;
 void leadDraft;
 void registered;
-void runnerDraft;
 void poll;
 void proposal;
 void result;
 void converter;
-void ClaudeInjectionShim;
-void CodexInjectionShim;
 void EngineDriver;
 void DEFAULT_ENGINE_CONFIG;
 void selectNext;
+void reportConversionFailure;
+void submitProposal;
 void context.performAction(action, () => ({ ok: true }));
 void new EngineDriver({} as never, runtime).performConversionAction(
 	handle,
@@ -115,14 +97,7 @@ type EngineModule = typeof import("flywheel-v2-engine");
 type ConsumerCoordinator = EngineModule["ConsumerCoordinator"];
 // @ts-expect-error SQL assembly is package-private.
 type EngineSql = EngineModule["ENGINE_SQL"];
-// @ts-expect-error bare conversion settlement is package-private.
-type SubmitProposal = EngineModule["submitProposal"];
-// @ts-expect-error bare conversion failure settlement is package-private.
-type ReportConversionFailure = EngineModule["reportConversionFailure"];
-
 void (undefined as unknown as ConsumerCoordinator);
 void (undefined as unknown as EngineSql);
-void (undefined as unknown as SubmitProposal);
-void (undefined as unknown as ReportConversionFailure);
 void (undefined as unknown as AttemptStart);
 void (undefined as unknown as RegisteredConsumer);

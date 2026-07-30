@@ -19,7 +19,7 @@ function insertMailbox(
 ): void {
 	db.prepare(
 		`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
-		 VALUES ('runner-1','runner',0,NULL,'offline')
+		 VALUES ('runner-1','lead',0,NULL,'offline')
 		 ON CONFLICT(agent_id) DO NOTHING`,
 	).run();
 	db.prepare(

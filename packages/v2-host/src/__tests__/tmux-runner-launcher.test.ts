@@ -8,14 +8,13 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
-	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RuntimeLaunchRequest } from "../runtime-ports.js";
 import {
@@ -28,10 +27,12 @@ function activationKey(activationId: string): string {
 }
 
 function claudeConfigDir(request: RuntimeLaunchRequest): string {
-	const ref = JSON.parse(request.injectionRef) as { inboxPath: string };
-	// .../<configDir>/teams/<team>/inboxes/<agent>.json -- same four levels the
-	// launcher's own parseClaudeTarget walks up.
-	return dirname(dirname(dirname(dirname(ref.inboxPath))));
+	return join(
+		dirname(request.context.projectRoot),
+		"injection",
+		"claude",
+		activationKey(request.activationId),
+	);
 }
 
 describe("v2-native tmux runner launcher", () => {
@@ -49,21 +50,6 @@ describe("v2-native tmux runner launcher", () => {
 		launcher: TmuxRunnerLauncher;
 		releaseRoot: string;
 		stateRoot: string;
-		claudeDeliveries: Array<{
-			sessionRef: string;
-			message: { messageUid: string; attemptUid: string; payload: string };
-		}>;
-		codexThreads: Array<{
-			socketPath: string;
-			threadId: string | null;
-			cwd: string;
-			model: string;
-			baseInstructions: string;
-		}>;
-		codexDeliveries: Array<{
-			sessionRef: string;
-			message: { messageUid: string; attemptUid: string; payload: string };
-		}>;
 	} {
 		root = mkdtempSync(join("/tmp", "flywheel-v2-tmux-launcher-"));
 		const initialProjectRoot = join(root, "project");
@@ -84,6 +70,7 @@ describe("v2-native tmux runner launcher", () => {
 			"v2dag:11111111-1111-4111-8111-111111111111:1:22222222-2222-4222-8222-222222222222";
 		const calls: Array<{ file: string; args: string[] }> = [];
 		let present = false;
+		let presentSessionRef = sessionRef;
 		const command: TmuxCommandPort = {
 			async run(file, args) {
 				calls.push({ file, args });
@@ -101,12 +88,16 @@ describe("v2-native tmux runner launcher", () => {
 				}
 				if (args.includes("new-session")) {
 					present = true;
+					presentSessionRef =
+						args
+							.find((arg) => arg.startsWith("FLYWHEEL_V2_SESSION_REF="))
+							?.slice("FLYWHEEL_V2_SESSION_REF=".length) ?? sessionRef;
 					const session = args[args.indexOf("-s") + 1];
 					return { stdout: `${session}:@0\n`, stderr: "" };
 				}
 				if (args.includes("show-environment")) {
 					return {
-						stdout: `FLYWHEEL_V2_SESSION_REF=${sessionRef}\n`,
+						stdout: `FLYWHEEL_V2_SESSION_REF=${presentSessionRef}\n`,
 						stderr: "",
 					};
 				}
@@ -131,21 +122,6 @@ describe("v2-native tmux runner launcher", () => {
 			JSON.stringify({ claudeAiOauth: { accessToken: "fixture-token" } }),
 			{ mode: 0o600 },
 		);
-		const claudeDeliveries: Array<{
-			sessionRef: string;
-			message: { messageUid: string; attemptUid: string; payload: string };
-		}> = [];
-		const codexThreads: Array<{
-			socketPath: string;
-			threadId: string | null;
-			cwd: string;
-			model: string;
-			baseInstructions: string;
-		}> = [];
-		const codexDeliveries: Array<{
-			sessionRef: string;
-			message: { messageUid: string; attemptUid: string; payload: string };
-		}> = [];
 		const launcher = new TmuxRunnerLauncher({
 			hostEpoch: "host-a",
 			tmuxBin: "/usr/local/bin/tmux",
@@ -162,18 +138,6 @@ describe("v2-native tmux runner launcher", () => {
 				: join(root, "injection"),
 			claudeCredentialsPath,
 			command,
-			claudeDeliver: async (sessionRef, message) => {
-				claudeDeliveries.push({ sessionRef, message });
-			},
-			codexControl: {
-				async ensureThread(input) {
-					codexThreads.push(input);
-					return input.threadId ?? "actual-codex-thread";
-				},
-				async deliver(sessionRef, message) {
-					codexDeliveries.push({ sessionRef, message });
-				},
-			},
 			now: () => new Date("2026-07-28T01:00:00.000Z"),
 			processStart:
 				overrides.processStart ?? (() => "Mon Jul 28 01:00:00 2026"),
@@ -189,6 +153,7 @@ describe("v2-native tmux runner launcher", () => {
 				attemptGeneration: 1,
 				activationId: "activation-1",
 				sessionRef,
+				roleId: "engineer",
 				injectionRef:
 					vendor === "codex"
 						? JSON.stringify({
@@ -225,7 +190,7 @@ describe("v2-native tmux runner launcher", () => {
 				ownerToken: "owner-1",
 				agent: {
 					kind: "runner",
-					agentId: "engineer",
+					agentId: sessionRef,
 					instanceId: sessionRef,
 					generation: 1,
 					activationId: "activation-1",
@@ -241,6 +206,10 @@ describe("v2-native tmux runner launcher", () => {
 					projectId: "flywheel",
 					issueId: "FLY-1502",
 					projectRoot,
+					firstEnvelope: JSON.stringify({
+						v: 1,
+						message: { messageUid: "message-1", payload: "build it" },
+					}),
 					instruction: {
 						projectRoot,
 						configPath: join(projectRoot, ".flywheel", "config.yaml"),
@@ -255,9 +224,6 @@ describe("v2-native tmux runner launcher", () => {
 			launcher,
 			releaseRoot,
 			stateRoot,
-			claudeDeliveries,
-			codexThreads,
-			codexDeliveries,
 		};
 	}
 
@@ -266,7 +232,7 @@ describe("v2-native tmux runner launcher", () => {
 		root = undefined;
 	});
 
-	it("starts Claude behind a registration gate with pinned role and v2-only context", async () => {
+	it("starts Claude as a windowed TUI with pinned role and first envelope", async () => {
 		const target = fixture("claude");
 		const binding = await target.launcher.launch(target.request);
 		expect(binding).toMatchObject({
@@ -285,8 +251,12 @@ describe("v2-native tmux runner launcher", () => {
 		expect(create?.args).toContain(
 			target.request.context.instruction.sourcePath,
 		);
-		expect(create?.args).toContain("--agent-id");
-		expect(create?.args).toContain("engineer@v2-engineer");
+		expect(create?.args).toContain("--session-id");
+		expect(create?.args).toContain("--name");
+		expect(create?.args).not.toContain("--agent-id");
+		expect(create?.args).not.toContain("--agent-name");
+		expect(create?.args).not.toContain("--team-name");
+		expect(create?.args.join(" ")).not.toContain("agent-teams");
 		expect(create?.args.join(" ")).toContain(
 			`CLAUDE_CONFIG_DIR=${join(
 				root as string,
@@ -297,31 +267,10 @@ describe("v2-native tmux runner launcher", () => {
 		);
 		expect(create?.args.join(" ")).not.toContain(" next ");
 		expect(create?.args.join(" ")).not.toContain("comm.db");
-		expect(
-			JSON.parse(
-				readFileSync(
-					join(
-						root as string,
-						"injection",
-						"claude",
-						activationKey("activation-1"),
-						"teams",
-						"v2-engineer",
-						"config.json",
-					),
-					"utf8",
-				),
-			),
-		).toMatchObject({
-			name: "v2-engineer",
-			leadAgentId: "engineer@v2-engineer",
-			members: [
-				{
-					agentId: "engineer@v2-engineer",
-					cwd: target.request.context.projectRoot,
-				},
-			],
-		});
+		expect(create?.args.at(-1)).toContain('"messageUid":"message-1"');
+		expect(existsSync(join(claudeConfigDir(target.request), "teams"))).toBe(
+			false,
+		);
 		const proofFiles = readFileSync(
 			join(
 				root as string,
@@ -345,53 +294,35 @@ describe("v2-native tmux runner launcher", () => {
 		expect((await target.launcher.probe(target.request.sessionRef)).state).toBe(
 			"present",
 		);
-		await target.launcher.deliver(
-			target.request.sessionRef,
-			target.request.injectionRef,
-			{
-				messageUid: "message-1",
-				attemptUid: "message-1#1",
-				payload: "durable envelope",
-			},
-		);
-		expect(target.claudeDeliveries).toEqual([
-			{
-				sessionRef: target.request.injectionRef,
-				message: {
-					messageUid: "message-1",
-					attemptUid: "message-1#1",
-					payload: "durable envelope",
-				},
-			},
-		]);
 	});
 
-	it("starts a Codex daemon and durably binds the real thread before injection", async () => {
+	it("starts Codex as a founder-visible TUI with the role and first envelope in its initial prompt", async () => {
 		const target = fixture("codex");
 		await target.launcher.launch(target.request);
 		const create = target.calls.find((call) =>
 			call.args.includes("new-session"),
 		);
 		expect(create?.args).toContain("/opt/flywheel/bin/codex");
-		expect(create?.args).toContain("app-server");
-		expect(create?.args).toContain("--remote-control");
-		expect(create?.args).toContain(
-			`unix://${join(root as string, "injection", "codex", "runner.sock")}`,
+		expect(create?.args).not.toContain("app-server");
+		expect(create?.args).not.toContain("--remote-control");
+		expect(create?.args).not.toContain("--listen");
+		expect(create?.args).toContain("-C");
+		expect(create?.args).toContain(target.request.context.projectRoot);
+		expect(create?.args).toContain("-m");
+		expect(create?.args).toContain("test-model");
+		expect(create?.args).toContain("-s");
+		expect(create?.args).toContain("workspace-write");
+		expect(create?.args).toContain("-a");
+		expect(create?.args).toContain("never");
+		expect(create?.args).toContain('model_reasoning_effort="high"');
+		const initialPrompt = create?.args.at(-1);
+		expect(initialPrompt).toContain("# Engineer\nPinned role.");
+		expect(initialPrompt).toContain(
+			"Flywheel v2 runner bootstrap for FLY-1502.",
 		);
-		expect(
-			statSync(join(root as string, "injection", "codex")).mode & 0o777,
-		).toBe(0o700);
+		expect(initialPrompt).toContain('"messageUid":"message-1"');
 		expect(create?.args.join(" ")).not.toContain("comm.db");
 		await target.launcher.activate(target.request.sessionRef);
-		expect(target.codexThreads).toEqual([
-			expect.objectContaining({
-				socketPath: join(root as string, "injection", "codex", "runner.sock"),
-				threadId: null,
-				cwd: target.request.context.projectRoot,
-				model: "test-model",
-				baseInstructions: "# Engineer\nPinned role.\n",
-			}),
-		]);
 		const stateFile = join(
 			target.stateRoot,
 			`${createHash("sha256")
@@ -399,35 +330,12 @@ describe("v2-native tmux runner launcher", () => {
 				.digest("hex")}.json`,
 		);
 		expect(statSync(stateFile).mode & 0o777).toBe(0o600);
-		expect(JSON.parse(readFileSync(stateFile, "utf8"))).toMatchObject({
+		const state = JSON.parse(readFileSync(stateFile, "utf8"));
+		expect(state).toMatchObject({
 			session_ref: target.request.sessionRef,
 			vendor: "codex",
-			thread_id: "actual-codex-thread",
 		});
-		await target.launcher.deliver(
-			target.request.sessionRef,
-			target.request.injectionRef,
-			{
-				messageUid: "message-2",
-				attemptUid: "message-2#1",
-				payload: "proposal envelope",
-			},
-		);
-		expect(target.codexDeliveries).toEqual([
-			{
-				sessionRef: JSON.stringify({
-					v: 1,
-					backend: "codex",
-					socketPath: join(root as string, "injection", "codex", "runner.sock"),
-					threadId: "actual-codex-thread",
-				}),
-				message: {
-					messageUid: "message-2",
-					attemptUid: "message-2#1",
-					payload: "proposal envelope",
-				},
-			},
-		]);
+		expect(state).not.toHaveProperty("thread_id");
 		expect(readdirSync(target.stateRoot)).toHaveLength(1);
 	});
 
@@ -527,20 +435,6 @@ describe("v2-native tmux runner launcher", () => {
 		});
 	});
 
-	it("refuses an injection-derived config path outside the injection root", async () => {
-		// Codex R1 MEDIUM-5: configDir is walked up from an injection ref, so with no
-		// containment a crafted or corrupt ref could aim the .claude.json merge at a
-		// real user config dir such as $HOME/.claude.json.
-		const target = fixture("claude", (root) => join(root, "elsewhere"));
-		await expect(target.launcher.launch(target.request)).rejects.toThrow(
-			/escapes the configured injection root/,
-		);
-		// Nothing may be spawned once containment fails.
-		expect(target.calls.some((call) => call.args.includes("new-session"))).toBe(
-			false,
-		);
-	});
-
 	it("refuses to merge an isolated Claude config that is not a regular file", async () => {
 		// Codex R1 MEDIUM-5: readFileSync follows symlinks, so a link pointing at
 		// credentials would have its contents merged into the new file, and a FIFO
@@ -554,22 +448,6 @@ describe("v2-native tmux runner launcher", () => {
 		await expect(target.launcher.launch(target.request)).rejects.toThrow(
 			/not a regular file/,
 		);
-	});
-
-	it("writes nothing outside the root when containment fails", async () => {
-		// Codex R2 MEDIUM-4: containment used to run inside the preseed, by which
-		// point the team config.json had ALREADY been written outside the root.
-		const target = fixture("claude", (root) => join(root, "elsewhere"));
-		const configDir = claudeConfigDir(target.request);
-		const teamPath = join(
-			dirname(dirname(JSON.parse(target.request.injectionRef).inboxPath)),
-			"config.json",
-		);
-		await expect(target.launcher.launch(target.request)).rejects.toThrow(
-			/escapes the configured injection root/,
-		);
-		expect(existsSync(teamPath)).toBe(false);
-		expect(existsSync(join(configDir, ".claude.json"))).toBe(false);
 	});
 
 	it("refuses a config dir reached through a symlinked parent", async () => {
@@ -591,16 +469,12 @@ describe("v2-native tmux runner launcher", () => {
 		expect(existsSync(join(outside, ".claude.json"))).toBe(false);
 	});
 
-	it("isolates the Claude config and inbox per activation", async () => {
-		// Codex R3 MEDIUM-5/7: sharing one root across activations of the same agent
-		// meant every launcher wrote the same .claude.json (a live Claude could
-		// restore its older snapshot over a just-written trust entry) and a new
-		// terminal inherited the previous activation's unread envelopes.
+	it("isolates Claude config per activation without reading a vendor inbox ref", async () => {
 		const target = fixture("claude");
 		const configDir = claudeConfigDir(target.request);
 		expect(configDir).toBe(
 			join(
-				root as string,
+				realpathSync(root as string),
 				"injection",
 				"claude",
 				activationKey("activation-1"),
@@ -609,83 +483,29 @@ describe("v2-native tmux runner launcher", () => {
 		await target.launcher.launch(target.request);
 		expect(existsSync(join(configDir, ".claude.json"))).toBe(true);
 
-		// A second activation of the SAME agent gets a different root, so it can
-		// share neither the onboarding state nor the inbox.
-		const other = fixture("claude");
-		const secondRef = JSON.parse(other.request.injectionRef) as {
-			inboxPath: string;
-			sidecarPath: string;
-		};
-		const rebound = {
-			...other.request,
+		const rebound: RuntimeLaunchRequest = {
+			...target.request,
 			activationId: "activation-2",
-			injectionRef: JSON.stringify({
-				v: 1,
-				backend: "claude",
-				inboxPath: secondRef.inboxPath.replace(
-					activationKey("activation-1"),
-					activationKey("activation-2"),
-				),
-				sidecarPath: secondRef.sidecarPath.replace(
-					activationKey("activation-1"),
-					activationKey("activation-2"),
-				),
-				toAgent: "engineer",
-			}),
+			sessionRef:
+				"v2dag:11111111-1111-4111-8111-111111111111:1:33333333-3333-4333-8333-333333333333",
+			injectionRef: "retired-vendor-inbox-ref",
+			agent: {
+				...target.request.agent,
+				agentId:
+					"v2dag:11111111-1111-4111-8111-111111111111:1:33333333-3333-4333-8333-333333333333",
+				instanceId:
+					"v2dag:11111111-1111-4111-8111-111111111111:1:33333333-3333-4333-8333-333333333333",
+				activationId: "activation-2",
+			},
 		};
 		const secondConfigDir = claudeConfigDir(rebound);
-		expect(secondConfigDir).not.toBe(claudeConfigDir(other.request));
+		expect(secondConfigDir).not.toBe(configDir);
 		expect(secondConfigDir).toContain(activationKey("activation-2"));
-	});
-
-	it("refuses an injection ref that does not name a recognised config root", async () => {
-		const target = fixture("claude");
-		const ref = JSON.parse(target.request.injectionRef) as {
-			inboxPath: string;
-		};
-		// Drop the `claude` segment: neither the per-activation nor the legacy
-		// layout, so it must not be treated as either.
-		const inboxPath = ref.inboxPath.replace(
-			join("claude", activationKey("activation-1")),
-			"not-claude",
-		);
-		await expect(
-			target.launcher.launch({
-				...target.request,
-				injectionRef: JSON.stringify({
-					v: 1,
-					backend: "claude",
-					inboxPath,
-					sidecarPath: `${inboxPath}.flywheel.jsonl`,
-					toAgent: "engineer",
-				}),
-			}),
-		).rejects.toThrow(/does not name a recognised config root/);
-	});
-
-	it("still parses a ref written before per-activation isolation", async () => {
-		// An activation already in flight when this deploys must remain probeable
-		// and stoppable; only the emitted shape carries the isolation guarantee.
-		const target = fixture("claude");
-		const ref = JSON.parse(target.request.injectionRef) as {
-			inboxPath: string;
-		};
-		const inboxPath = ref.inboxPath.replace(
-			`${sep}${activationKey("activation-1")}`,
-			"",
-		);
-		await expect(
-			target.launcher.launch({
-				...target.request,
-				injectionRef: JSON.stringify({
-					v: 1,
-					backend: "claude",
-					inboxPath,
-					sidecarPath: `${inboxPath}.flywheel.jsonl`,
-					toAgent: "engineer",
-				}),
-			}),
-		).resolves.toMatchObject({ hostEpoch: "host-a" });
+		await target.launcher.stop(target.request.sessionRef);
+		await expect(target.launcher.launch(rebound)).resolves.toMatchObject({
+			hostEpoch: "host-a",
+		});
+		expect(existsSync(join(secondConfigDir, ".claude.json"))).toBe(true);
 	});
 
 	it("waits for a live onboarding lock and refuses rather than robbing it", async () => {
@@ -723,83 +543,43 @@ describe("v2-native tmux runner launcher", () => {
 		).toBe("live-holder");
 	});
 
-	it("copies the operator credentials into the per-activation config dir", async () => {
-		// Codex R4 MEDIUM-2: making the config root per-activation left it with no
-		// .credentials.json, while the runner is launched `env -i` with an allowlist
-		// carrying no token, so every spawn would have sat at an interactive login.
+	it("links every activation to the one live operator credential", async () => {
 		const target = fixture("claude");
 		await target.launcher.launch(target.request);
 		const credentials = join(
 			claudeConfigDir(target.request),
 			".credentials.json",
 		);
-		// A copy, not a symlink -- see the rotation case below for why.
-		expect(lstatSync(credentials).isFile()).toBe(true);
-		expect(lstatSync(credentials).isSymbolicLink()).toBe(false);
-		expect(lstatSync(credentials).mode & 0o777).toBe(0o600);
+		expect(lstatSync(credentials).isSymbolicLink()).toBe(true);
+		expect(realpathSync(credentials)).toBe(
+			realpathSync(target.claudeCredentialsPath),
+		);
 		expect(
 			JSON.parse(readFileSync(credentials, "utf8")) as {
 				claudeAiOauth: { accessToken: string };
 			},
 		).toMatchObject({ claudeAiOauth: { accessToken: "fixture-token" } });
-		expect(
-			readdirSync(claudeConfigDir(target.request)).filter((entry) =>
-				entry.includes(".credentials.json.staging."),
-			),
-		).toEqual([]);
 	});
 
-	it("never overwrites a rotated token in the activation directory", async () => {
-		// Codex R5 MEDIUM-2, and the reason this is a copy rather than a symlink.
-		// Claude's credential writer writes a temp file and renames over the path, and
-		// POSIX rename replaces the SYMLINK rather than writing through it -- verified
-		// directly. So after a rotation the activation dir holds the ONLY valid token
-		// as a regular file, and the previous relaunch path unlinked it and re-linked
-		// the stale source. That was data loss caused by the fix.
+	it("re-points a replaced activation credential to the live source on relaunch", async () => {
 		const target = fixture("claude");
 		await target.launcher.launch(target.request);
 		const credentials = join(
 			claudeConfigDir(target.request),
 			".credentials.json",
 		);
-
-		// Claude rotates: temp file renamed over the path, exactly as it does in
-		// practice.
-		const rotated = `${credentials}.tmp`;
+		rmSync(credentials);
 		writeFileSync(
-			rotated,
+			credentials,
 			JSON.stringify({ claudeAiOauth: { accessToken: "rotated-token" } }),
 			{ mode: 0o600 },
 		);
-		renameSync(rotated, credentials);
-
-		// Relaunch the same activation. The rotated token must survive untouched.
 		await target.launcher.stop(target.request.sessionRef);
 		await target.launcher.launch(target.request);
-		expect(
-			JSON.parse(readFileSync(credentials, "utf8")) as {
-				claudeAiOauth: { accessToken: string };
-			},
-		).toMatchObject({ claudeAiOauth: { accessToken: "rotated-token" } });
-		// And the operator source is untouched either way.
-		expect(
-			JSON.parse(readFileSync(target.claudeCredentialsPath, "utf8")) as {
-				claudeAiOauth: { accessToken: string };
-			},
-		).toMatchObject({ claudeAiOauth: { accessToken: "fixture-token" } });
-	});
-
-	it("reseeds when the activation credentials are absent or zero-byte", async () => {
-		const target = fixture("claude");
-		await target.launcher.launch(target.request);
-		const credentials = join(
-			claudeConfigDir(target.request),
-			".credentials.json",
+		expect(lstatSync(credentials).isSymbolicLink()).toBe(true);
+		expect(realpathSync(credentials)).toBe(
+			realpathSync(target.claudeCredentialsPath),
 		);
-		// A zero-byte file cannot be a token, so it must not be preserved.
-		writeFileSync(credentials, "", { mode: 0o600 });
-		await target.launcher.stop(target.request.sessionRef);
-		await target.launcher.launch(target.request);
 		expect(
 			JSON.parse(readFileSync(credentials, "utf8")) as {
 				claudeAiOauth: { accessToken: string };
@@ -807,39 +587,18 @@ describe("v2-native tmux runner launcher", () => {
 		).toMatchObject({ claudeAiOauth: { accessToken: "fixture-token" } });
 	});
 
-	it("fails closed before tmux when the credentials are unusable", async () => {
-		// Every rejection must name the path and happen BEFORE the session exists --
-		// a runner parked on a login prompt is only noticed by a human watching it.
-		for (const [mutate, expected] of [
-			[
-				(path: string) => rmSync(path),
-				/Claude credentials are missing at .*provision them once/,
-			],
-			[
-				(path: string) => writeFileSync(path, "", { mode: 0o600 }),
-				/Claude credentials at .* are empty/,
-			],
-			[
-				(path: string) => chmodSync(path, 0o644),
-				/must be mode 0600 or 0400, found 0644/,
-			],
-			[
-				(path: string) => writeFileSync(path, "not json", { mode: 0o600 }),
-				/are not valid JSON/,
-			],
-		] as const) {
-			const target = fixture("claude");
-			mutate(target.claudeCredentialsPath);
-			await expect(target.launcher.launch(target.request)).rejects.toThrow(
-				expected,
-			);
-			expect(
-				target.calls.some((call) => call.args.includes("new-session")),
-			).toBe(false);
-			expect(
-				existsSync(join(claudeConfigDir(target.request), ".credentials.json")),
-			).toBe(false);
-		}
+	it("fails closed before tmux when the live credential is missing", async () => {
+		const target = fixture("claude");
+		rmSync(target.claudeCredentialsPath);
+		await expect(target.launcher.launch(target.request)).rejects.toThrow(
+			/Claude credentials are missing at .*provision them once/,
+		);
+		expect(target.calls.some((call) => call.args.includes("new-session"))).toBe(
+			false,
+		);
+		expect(
+			existsSync(join(claudeConfigDir(target.request), ".credentials.json")),
+		).toBe(false);
 	});
 
 	it("refuses a credentials source that is itself a symlink", async () => {

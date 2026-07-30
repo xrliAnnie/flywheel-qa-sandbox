@@ -19,18 +19,18 @@ import {
 	type AttemptHandle,
 	type ConversionResult,
 	classifySessionProcess,
-	type DeathEvidence,
 	type Effect,
 	EngineDriver,
 	type EngineRuntime,
 	enqueue,
-	issueProposalCapability,
+	isSessionRecipient,
 	type ProposalAuthorization,
 	provisionAgentRecipient,
 	type RegisteredAgent,
 	readProposalReceipt,
 	type SessionBinding,
 	type SessionEvidenceProbe,
+	submitProposal as settleProposal,
 } from "flywheel-v2-engine";
 import {
 	type ExistingDatabaseOptions,
@@ -38,14 +38,18 @@ import {
 	type Kernel,
 	openExistingKernel,
 	readCutoverAuthority,
-	recordActionIntent,
-	recordActionOutcome,
-	recordExternalEffectIntentTx,
 } from "flywheel-v2-kernel";
 import {
 	type CoordinatorTickResult,
 	V2RuntimeCoordinator,
 } from "./coordinator.js";
+import {
+	type DeliveryEnvelope,
+	pollRunnerDelivery,
+	prepareDelivery,
+	recordDeliverySucceeded,
+	requireActiveRunnerAgent,
+} from "./delivery.js";
 import {
 	HOST_PROTOCOL_VERSION,
 	type HostRequest,
@@ -53,6 +57,13 @@ import {
 	MAX_HOST_FRAME_BYTES,
 	verifyHostRequest,
 } from "./protocol.js";
+
+export {
+	DELIVERY_PROTOCOL,
+	type DeliveryEnvelope,
+	deliveryActionId,
+	deliveryLogicalEffectId,
+} from "./delivery.js";
 
 interface PendingDelivery {
 	handle: AttemptHandle;
@@ -141,100 +152,6 @@ interface PreparedDelivery {
 	envelope?: DeliveryEnvelope;
 }
 
-/**
- * FLY-1503 item 1: the delivery contract, carried in every envelope.
- *
- * A runner or lead must be able to learn the rules from the envelope itself
- * rather than from pretrained knowledge of this repo. Reverse-engineering them
- * from the CLI source is how the settle/one-shot semantics were previously
- * discovered, which is not a contract.
- */
-const DELIVERY_PROTOCOL = {
-	v: 1,
-	settlement: "one delivery is settled by exactly one submitted proposal",
-	submit: {
-		cli: "the flywheel-v2 CLI named by FLYWHEEL_V2_CLIENT_CLI",
-		verb: "submit",
-		flags: [
-			"--socket <FLYWHEEL_V2_SOCKET>",
-			"--secret <FLYWHEEL_V2_SECRET_PATH>",
-			"--agent <handle.agent.agentId>",
-			"--attempt <handle.attemptUid>",
-			"--message <handle.messageUid>",
-			"--capability-id <authorization.capabilityId>",
-			"--token <authorization.token>",
-			"--effects-file <absolute path to a JSON array of effects>",
-		],
-		// Codex R1 MEDIUM-6: the previous wording claimed both "a second submit is
-		// refused" and "identical effects replay the receipt", which contradict.
-		// State the actual rule: the first *distinct* proposal wins; an identical
-		// re-submit is safe; a different one conflicts.
-		oneShot:
-			"exactly one distinct proposal settles this attemptUid. Re-submitting the byte-identical effects is safe and replays the stored receipt; submitting different effects is a digest conflict and is refused",
-		// Codex R2 MEDIUM-6: the previous wording asserted that "no converter is
-		// waiting" means the delivery was consumed. That is not guaranteed: the host
-		// consumes the pending delivery BEFORE durable settlement, so if the engine
-		// transaction then fails the attempt is still running while the retry is
-		// refused. Do not state a guarantee the host does not provide -- say what is
-		// actually knowable and make the ambiguity reportable.
-		retryCaveat:
-			"if a submit fails after the host accepted it but before durable settlement, retry the byte-identical effects. If a retry reports that no converter is waiting, the outcome is AMBIGUOUS -- the proposal may have settled or the delivery may have been consumed without settling. Do not change the effects and do not assume success: report the ambiguity",
-		// Codex R4 HIGH-3: state it to the executor too, since the envelope is the
-		// contract. This is operationally useful regardless of the threat model: an
-		// executor holding an envelope it cannot settle should say so.
-		noAcknowledgement:
-			"there is no acknowledgement step. The host records a delivery as sent once the response frame leaves it, which does not prove you read it -- so a crash right after receiving an envelope can leave that delivery recorded with no proposal until the attempt is crash-settled and the message is rescheduled. If you hold an envelope you cannot settle, report it as an event effect rather than assuming the host knows",
-	},
-	effects: {
-		allowedKinds: ["event", "task"],
-		event: {
-			kind: "event",
-			eventKind: "<string>",
-			payload: "<string>",
-		},
-		task: {
-			kind: "task",
-			taskKind: "<string>",
-			state: "draft | ready",
-			payload: "<string>",
-			projectId: "<string>",
-			lineageRootTaskId: "<optional string>",
-		},
-		note: "verdicts and node completion are not proposable: they are recorded by the operator-side direct kernel verbs, not by an executor",
-	},
-	reporting:
-		"there is no side channel. To report progress, ask a question, or escalate a blocker, include an `event` effect in the single proposal; anything not submitted is not durable",
-	// Codex R3: the same message CAN be delivered again on a new processing
-	// attempt after a crash, so an executor must not treat a repeat as proof that
-	// it already settled. The attemptUid is what distinguishes them.
-	redelivery:
-		"a delivery is scoped to (messageUid, attemptUid). If a crash settles the processing attempt before your proposal, the same messageUid is delivered again with a NEW attemptUid and a new capability -- settle the attemptUid you were given, and do not reuse a capability from an earlier attemptUid",
-	// Codex R3 HIGH-2: pull delivery now needs the credential minted for this
-	// registration. Say so in the envelope, since the envelope is the contract.
-	pull: {
-		verb: "next",
-		credential:
-			"pass --delivery-credential-file <path written by register-lead --delivery-credential-out>. The host secret alone no longer authorises a pull, and the token is never accepted as a flag value because argv is readable by every process sharing this uid",
-		supersession:
-			"a credential dies with its registration: after a generation takeover it is revoked, and a pull with it is refused rather than served a stale envelope",
-	},
-} as const;
-
-export interface DeliveryEnvelope {
-	v: 1;
-	message: {
-		messageUid: string;
-		payload: string;
-		kind: string;
-		sourceKind: string;
-		seq: number;
-	};
-	handle: AttemptHandle;
-	authorization: ProposalAuthorization;
-	deliveryActionId: string;
-	protocol: typeof DELIVERY_PROTOCOL;
-}
-
 export interface V2HostOptions {
 	database: ExistingDatabaseOptions;
 	socketPath: string;
@@ -246,15 +163,6 @@ export interface V2HostOptions {
 		intervalMs: number;
 		onError?(error: unknown): void;
 		activateSession?(sessionRef: string): Promise<void>;
-		deliverRunner?(
-			sessionRef: string,
-			injectionRef: string,
-			message: {
-				messageUid: string;
-				attemptUid: string;
-				payload: string;
-			},
-		): Promise<void>;
 	};
 }
 
@@ -265,12 +173,9 @@ interface AgentRow {
 	session_binding: string | null;
 }
 
-interface CurrentRunnerRow {
-	agent_id: string;
-	generation: number;
-	instance_id: string;
+interface ActiveSessionRow {
+	session_ref: string;
 	session_binding: string;
-	activation_id: string;
 }
 
 interface SubmitPayload {
@@ -282,46 +187,6 @@ interface SubmitPayload {
 }
 
 const MAX_NONCES = 10_000;
-
-/** Prefix of every mailbox delivery action id; the suffix is the attempt uid. */
-/**
- * Codex R4 MEDIUM-5: the prefix carries the logical scope, so an action written
- * before the scope changed and one written after can never share an id.
- *
- * Re-scoping the logical effect to the processing attempt (see #prepareDelivery)
- * changed the effect key, but the id was still `mailbox-delivery:<attemptUid>`.
- * recordActionIntent looks up a replay by effect key ONLY, so on a durable row
- * written by an older host it found nothing and inserted with the same id:
- * `UNIQUE constraint failed: actions.id`, retried forever. The concrete case is
- * an old host that delivered and then died with the processing attempt still
- * running -- exactly the crash this PR set out to make recoverable.
- *
- * Versioning the id fixes the whole upgrade path with no migration: the old row
- * keeps its id and its old logical key, the new row gets a distinct id and the
- * new key, and neither unique index is touched. Both records are true -- the old
- * host really did hand over bytes, and so did this one.
- */
-const DELIVERY_ACTION_PREFIX = "mailbox-delivery:pa1:";
-
-/**
- * The two identity derivations for a mailbox delivery action, exported so a test
- * cannot restate them.
- *
- * Codex R5 LOW-1: the upgrade-compatibility suite hardcoded both the id prefix and
- * the logical scope, so it would have passed a production regression back to the
- * message-only scope or the un-versioned id -- it was asserting its own constants.
- * One source of truth removes that.
- */
-export function deliveryActionId(attemptUid: string): string {
-	return `${DELIVERY_ACTION_PREFIX}${attemptUid}`;
-}
-
-export function deliveryLogicalEffectId(
-	messageUid: string,
-	attemptUid: string,
-): string {
-	return `deliver:${messageUid}:${attemptUid}`;
-}
 
 function requireRecord(value: unknown, name: string): Record<string, unknown> {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -359,31 +224,6 @@ function parseSessionBinding(value: unknown): SessionBinding {
 		sessionId: requireString(input.sessionId, "sessionBinding.sessionId"),
 		pid: requireInteger(input.pid, "sessionBinding.pid"),
 		pidStart: requireString(input.pidStart, "sessionBinding.pidStart"),
-	};
-}
-
-/**
- * FLY-1503 item 2: registerAgentTx has always accepted DeathEvidence and
- * driver.registerLead has always forwarded it, but the host never parsed any, so
- * a lead whose session was confirmed dead could not be replaced -- register_lead
- * just kept reporting "existing lead identity requires evidenced generation
- * takeover" with no way to supply that evidence.
- */
-function parseDeathEvidence(value: unknown): DeathEvidence {
-	const input = requireRecord(value, "deathEvidence");
-	if (
-		Object.keys(input).sort().join(",") !==
-		"agentId,confirmedAbsentAt,generation"
-	) {
-		throw new TypeError("deathEvidence has an invalid shape");
-	}
-	return {
-		agentId: requireString(input.agentId, "deathEvidence.agentId"),
-		generation: requireInteger(input.generation, "deathEvidence.generation"),
-		confirmedAbsentAt: requireString(
-			input.confirmedAbsentAt,
-			"deathEvidence.confirmedAbsentAt",
-		),
 	};
 }
 
@@ -556,6 +396,8 @@ export class V2Host {
 	readonly #pending = new Map<string, PendingDelivery>();
 	readonly #deliveries = new Map<string, DeliveryEnvelope[]>();
 	readonly #deliveryWaiters = new Map<string, DeliveryWaiter[]>();
+	/** FLY-1543 ④: long-poll wakers for session recipients (`next --session`). */
+	readonly #sessionWakers = new Map<string, Set<() => void>>();
 	readonly #deliveryCredentials = new Map<string, DeliveryCredentialRecord>();
 	readonly #sockets = new Set<Socket>();
 	/** Codex R6 HIGH-1: whether the dispatch loop actually started. */
@@ -701,6 +543,9 @@ export class V2Host {
 			}
 		}
 		this.#deliveryWaiters.clear();
+		// Session wakers resolve to "not woken"; their sockets are destroyed below
+		// and each pending long-poll ends with the timeout error.
+		this.#sessionWakers.clear();
 		this.#deliveryCredentials.clear();
 		if (server) {
 			// Stop accepting, then destroy what is already connected so the wait below
@@ -753,62 +598,29 @@ export class V2Host {
 	}
 
 	/**
-	 * FLY-1503 item 9: this must NOT filter on `agents.state='online'`. Shutdown
-	 * runs driver.stop(), which casOffline's every agent, so on restart a still
-	 * live runner has an offline row. Filtering on it left casReattachAgent
-	 * unreachable and orphaned the runner. Liveness is established below by
-	 * #bindingHasLiveEvidence (host epoch + pid start + session owner) together
-	 * with the active-activation join, not by that cached flag; casReattachAgent
-	 * does not filter on state either and restores it to online.
+	 * FLY-1543 ④⑤: runners never attach to the driver. The only per-tick duty
+	 * left is releasing the launch gate (and, for Codex, ensuring the thread) of
+	 * every live bound session -- delivery is pull-only through `next --session`
+	 * and needs no host-side pump.
 	 */
 	async #syncCurrentRunners(): Promise<void> {
 		const rows = this.#kernel.read((tx) =>
-			tx.all<CurrentRunnerRow>(
-				`SELECT ag.agent_id,ag.generation,ag.instance_id,
-				        ag.session_binding,act.id AS activation_id
-				   FROM agents ag
-				   JOIN activations act
-				     ON act.session_ref=ag.instance_id AND act.state='active'
-				  WHERE ag.kind='runner'
-				    AND ag.generation >= 1
-				    AND ag.instance_id IS NOT NULL
-				    AND ag.session_binding IS NOT NULL
-				  ORDER BY ag.agent_id`,
+			tx.all<ActiveSessionRow>(
+				`SELECT session_ref,session_binding
+				   FROM activations
+				  WHERE state='active' AND session_binding IS NOT NULL
+				  ORDER BY session_ref`,
 			),
 		);
 		for (const row of rows) {
 			const binding = parseStoredBinding(row.session_binding);
 			if (
-				binding.sessionId !== row.instance_id ||
+				binding.sessionId !== row.session_ref ||
 				!this.#bindingHasLiveEvidence(binding)
 			) {
 				continue;
 			}
-			const prior = this.#registered.get(row.agent_id);
-			const alreadyAttached =
-				prior?.kind === "runner" &&
-				prior.instanceId === row.instance_id &&
-				prior.generation === row.generation &&
-				prior.activationId === row.activation_id;
-			if (!alreadyAttached) {
-				const agent: RegisteredAgent = {
-					kind: "runner",
-					agentId: row.agent_id,
-					instanceId: row.instance_id,
-					generation: row.generation,
-					activationId: row.activation_id,
-					sessionBinding: binding,
-				};
-				await this.#driver.attachRunner(
-					row.agent_id,
-					agent,
-					this.#options.hostEpoch,
-					this.#options.sessionProbe,
-				);
-				this.#registered.set(row.agent_id, agent);
-			}
-			await this.#options.coordinator?.activateSession?.(binding.sessionId);
-			this.#primeRunnerDelivery(row.agent_id);
+			await this.#options.coordinator?.activateSession?.(row.session_ref);
 		}
 	}
 
@@ -931,6 +743,8 @@ export class V2Host {
 				return { result: await this.#registerLead(payload) };
 			case "enqueue":
 				return { result: this.#enqueue(payload) };
+			case "ask":
+				return { result: this.#ask(payload) };
 			case "next_delivery":
 				return this.#nextDelivery(payload, socket);
 			case "submit_proposal":
@@ -972,6 +786,25 @@ export class V2Host {
 		return databaseAuthorityState;
 	}
 
+	/**
+	 * FLY-1543 ①: registration IS the takeover. Three branches:
+	 *
+	 *   no current row / generation 0        -> fresh register
+	 *   same session, byte-equal binding     -> reattach (generation unchanged)
+	 *   anything else                        -> displace: register directly
+	 *
+	 * The death-evidence ceremony (client-asserted evidence, prior-binding
+	 * probes, seven refusal paths) is deleted. Displacement itself is the safety
+	 * mechanism: the superseded generation's delivery credential is revoked, its
+	 * waiters are cancelled, its heartbeat CAS stops matching and its running
+	 * attempts are crash-settled -- all through fences that already exist. A
+	 * still-live old process is a shell that can no longer read mail or write
+	 * the ledger. A same-uid impostor is an accepted design boundary (it already
+	 * holds the host secret; founder ruling recorded on the FLY-1502 lane).
+	 *
+	 * assertLiveBinding stays: it validates the REGISTRANT's own live session,
+	 * not the departed one's death.
+	 */
 	async #registerLead(payload: unknown): Promise<
 		RegisteredAgent & {
 			deliveryCredential: { credentialId: string; token: string };
@@ -981,10 +814,11 @@ export class V2Host {
 		const agentId = requireString(input.agentId, "agentId");
 		const instanceId = requireString(input.instanceId, "instanceId");
 		const sessionBinding = parseSessionBinding(input.sessionBinding);
-		const deathEvidence =
-			input.deathEvidence === undefined
-				? undefined
-				: parseDeathEvidence(input.deathEvidence);
+		if (isSessionRecipient(agentId)) {
+			throw new FenceViolation(
+				"lead agent id must not use the v2dag: session namespace",
+			);
+		}
 		assertLiveBinding(
 			sessionBinding,
 			this.#options.hostEpoch,
@@ -1011,111 +845,11 @@ export class V2Host {
 				},
 				converter,
 			);
-		} else if (deathEvidence !== undefined) {
-			// FLY-1503 item 2: an evidenced takeover replaces a confirmed-dead
-			// session. registerAgentTx validates the evidence against the current
-			// row (agent id + exact generation + ISO timestamp), settles the dead
-			// generation's running attempts, and bumps to generation + 1.
-			if (current.kind !== "lead") {
-				throw new FenceViolation(`agent kind collision for ${agentId}`);
-			}
-			// Codex R1 HIGH-1: deathEvidence is client-asserted and every runner is
-			// handed FLYWHEEL_V2_SECRET_PATH (tmux-runner-launcher.ts), so any runner
-			// can authenticate to this socket. registerAgentTx only checks that the
-			// evidence *names* the current agent and generation with a canonical
-			// timestamp -- it never proves the old session died. Trusting it let a
-			// runner displace a LIVE lead, settle its running attempts and inherit
-			// its mailbox. The host must therefore establish absence itself.
-			if (instanceId !== sessionBinding.sessionId) {
-				throw new FenceViolation(
-					"takeover instance id must equal the live session id",
-				);
-			}
-			if (current.instance_id === instanceId) {
-				throw new FenceViolation(
-					"takeover requires a session distinct from the current one",
-				);
-			}
-			if (!current.session_binding) {
-				throw new FenceViolation(
-					"takeover requires a recorded prior session binding",
-				);
-			}
-			const priorBinding = parseStoredBinding(current.session_binding);
-			// Fail closed rather than fail open: a binding from another host epoch
-			// cannot be probed by this host, so its death cannot be established.
-			if (priorBinding.hostEpoch !== this.#options.hostEpoch) {
-				throw new FenceViolation(
-					"takeover cannot verify a session bound to another host epoch",
-				);
-			}
-			// Codex R2 HIGH-1: #bindingHasLiveEvidence must NOT be the absence gate.
-			// It returns false whenever the session proof is missing, unreadable or
-			// mis-moded, and that proof is a 0600 file under the same uid as every
-			// runner -- so a runner could simply delete it to forge death while the
-			// lead is alive. Absence must rest on positive process identity, which is
-			// OS state a runner cannot fake.
-			//
-			// Codex R3 HIGH-1: adjudicate on the probe's four explicit states rather
-			// than on a nullable identity plus a canary. The canary read "the probe
-			// answered for some other pid" as "so its silence about THIS pid means
-			// death", which a probe that failed only for the target pid defeats. Now
-			// only positive evidence -- a different process on that pid, or no process
-			// at all -- permits a takeover; `probe_unavailable` fails closed.
-			const priorProcessState = classifySessionProcess(
-				this.#options.sessionProbe.processStart(priorBinding.pid),
-				priorBinding.pidStart,
-			);
-			if (priorProcessState === "same_process") {
-				throw new FenceViolation(
-					"takeover refused: the prior lead process is still live",
-				);
-			}
-			if (priorProcessState === "probe_unavailable") {
-				throw new FenceViolation(
-					"takeover refused: the process probe is unavailable",
-				);
-			}
-			// Codex R3 HIGH-2: revoke the superseded generation's pull access BEFORE
-			// driver.registerLead, because it starts the new generation's handler
-			// before it returns -- an old waiter that is still eligible at that moment
-			// can take the new generation's first envelope, and an old credential can
-			// still authorise a pull.
-			this.#revokeSupersededAccess(agentId, current.generation);
-			agent = await this.#driver.registerLead(
-				agentId,
-				{
-					kind: "lead",
-					leadId: agentId,
-					instanceId,
-					sessionBinding,
-				},
-				converter,
-				// Codex R2 HIGH-1: the absence timestamp is host-observed. The client
-				// supplied value is only shape-checked by validateEvidence, so letting
-				// it through would record an attacker-chosen provenance for a takeover.
-				{
-					...deathEvidence,
-					confirmedAbsentAt: this.#runtime.clock.nowIso(),
-				},
-			);
-			// Codex R1 MEDIUM-3: the takeover settles the dead generation's running
-			// attempts, but item 8's sweep only ran for runners via
-			// #primeRunnerDelivery. Any pending promise or queued envelope still held
-			// for this lead belongs to the superseded generation and carries a dead
-			// capability, so the new generation would otherwise be handed it by
-			// next_delivery -- and each takeover would leak another pending entry.
-			this.#discardSupersededDeliveries(agentId, current.generation);
-		} else {
-			if (
-				current.kind !== "lead" ||
-				current.instance_id !== instanceId ||
-				current.session_binding !== storedBinding(sessionBinding)
-			) {
-				throw new FenceViolation(
-					"existing lead identity requires evidenced generation takeover",
-				);
-			}
+		} else if (
+			current.kind === "lead" &&
+			current.instance_id === instanceId &&
+			current.session_binding === storedBinding(sessionBinding)
+		) {
 			// A reattach means this process is now the attachment of record, so any
 			// credential or waiter left by a previous attachment of the same generation
 			// is no longer the caller and must not keep pull access.
@@ -1133,6 +867,28 @@ export class V2Host {
 				this.#options.hostEpoch,
 				this.#options.sessionProbe,
 			);
+		} else {
+			if (current.kind !== "lead") {
+				throw new FenceViolation(`agent kind collision for ${agentId}`);
+			}
+			// Codex R3 HIGH-2 (FLY-1503, kept): revoke the superseded generation's
+			// pull access BEFORE driver.registerLead, because it starts the new
+			// generation's handler before it returns -- an old waiter still eligible
+			// at that moment could take the new generation's first envelope.
+			this.#revokeSupersededAccess(agentId, current.generation);
+			agent = await this.#driver.registerLead(
+				agentId,
+				{
+					kind: "lead",
+					leadId: agentId,
+					instanceId,
+					sessionBinding,
+				},
+				converter,
+			);
+			// Any pending promise or queued envelope still held for this lead
+			// belongs to the superseded generation and carries a dead capability.
+			this.#discardSupersededDeliveries(agentId, current.generation);
 		}
 		this.#registered.set(agentId, agent);
 		// Codex R3 HIGH-2: the credential is minted here, on the only path that
@@ -1144,178 +900,21 @@ export class V2Host {
 		};
 	}
 
-	/**
-	 * Codex R3: the logical scope of a delivery is (message, PROCESSING ATTEMPT).
-	 *
-	 * It used to be (message, DAG attempt generation). `actions.logical_key` digests
-	 * {attemptGeneration, attemptId, cutoverEpoch, kind, logicalEffectId, taskId,
-	 * unboundActorAgentId} and `actions_one_root_per_logical` is UNIQUE on it where
-	 * supersedes_action_id IS NULL, so redelivering one message inside the same DAG
-	 * attempt generation was a duplicate root and failed forever with
-	 * `UNIQUE constraint failed: actions.logical_key`.
-	 *
-	 * That mattered because R3 correctly refuted the claim that reap/redispatch
-	 * recovers it: driver.stop() crash-settles the processing attempt, but a
-	 * still-live runner is ADOPTED on restart rather than reaped, so the DAG attempt
-	 * generation never changes; and a lead delivery has no DAG attempt scope at all,
-	 * so there is no generation to change. The executor really was stuck.
-	 *
-	 * R3 offered two remedies -- declare a successor action, or redefine the logical
-	 * scope so a legitimate redelivery is distinguishable. This takes the second,
-	 * because the first is not available here and would not have worked:
-	 * `actions_supersedes_insert` requires the superseded intent to be `intended` or
-	 * `failed`, while a delivery action is recorded `succeeded` the moment the bytes
-	 * are handed over, and NOTHING in this repo ever records a delivery action as
-	 * failed (host.ts is the only writer of a mailbox.deliver outcome and it only
-	 * ever writes succeeded). A post-crash redelivery therefore always faces a
-	 * `succeeded` tip, which cannot be superseded.
-	 *
-	 * The second remedy is also the more accurate model. Handing message X to
-	 * processing attempt #1 and handing it to attempt #2 are two DIFFERENT external
-	 * effects: two injections, two capability issuances, two sets of bytes crossing
-	 * the boundary. Both really happened and both must be recorded. Collapsing them
-	 * into one logical effect asserted that only one of them may ever occur, which
-	 * contradicts the at-least-once mailbox the engine implements.
-	 *
-	 * What is still enforced: `effect_key` is UNIQUE and derives from
-	 * invocationUid + logicalKey, so two deliveries of one message on the SAME
-	 * processing attempt remain refused (they replay instead). Preventing two
-	 * CONCURRENT attempts for one message is the job of processing_attempts and the
-	 * generation fences, not of this index.
-	 */
 	#prepareDelivery(
 		message: DeliveryEnvelope["message"],
 		handle: AttemptHandle,
 	): PreparedDelivery {
-		const actionId = deliveryActionId(handle.attemptUid);
-		const intent = this.#kernel.write("host.delivery-intent", (tx) => {
-			const runnerScope =
-				handle.agent.kind === "runner"
-					? tx.get<{
-							task_id: string;
-							attempt_id: string;
-							attempt_generation: number;
-						}>(
-							`SELECT a.task_id,a.id AS attempt_id,
-							        a.generation AS attempt_generation
-							   FROM activations act
-							   JOIN attempts a ON a.id=act.attempt_id
-							  WHERE act.id=@activationId
-							    AND act.session_ref=@sessionRef
-							    AND act.state='active'`,
-							{
-								activationId: handle.agent.activationId,
-								sessionRef: handle.agent.instanceId,
-							},
-						)
-					: undefined;
-			if (handle.agent.kind === "runner" && !runnerScope) {
-				throw new FenceViolation(
-					"runner delivery activation scope is missing or stale",
-				);
-			}
-			const scope = runnerScope
-				? {
-						taskId: runnerScope.task_id,
-						attemptId: runnerScope.attempt_id,
-						attemptGeneration: runnerScope.attempt_generation,
-					}
-				: {};
-			return recordActionIntent(
-				tx,
-				{
-					id: actionId,
-					...scope,
-					actor:
-						handle.agent.kind === "runner"
-							? {
-									kind: "runner",
-									agentId: handle.agent.agentId,
-									instanceId: handle.agent.instanceId,
-									generation: handle.agent.generation,
-									activationId: handle.agent.activationId,
-								}
-							: {
-									kind: "lead",
-									agentId: handle.agent.agentId,
-									instanceId: handle.agent.instanceId,
-									generation: handle.agent.generation,
-								},
-					kind: "mailbox.deliver",
-					payload: {
-						message_uid: message.messageUid,
-						attempt_uid: handle.attemptUid,
-					},
-					// Codex R3: scoped to the PROCESSING ATTEMPT, not just the message.
-					logicalEffectId: deliveryLogicalEffectId(
-						message.messageUid,
-						handle.attemptUid,
-					),
-					invocationUid: `mailbox:${handle.attemptUid}`,
-					cutoverEpoch: this.#options.database.expectedEpoch,
-				},
-				{
-					prepare: (writeTx) => {
-						recordExternalEffectIntentTx(writeTx, {
-							effectKey: `deliver:${handle.attemptUid}`,
-							family: "deliver",
-							nowIso: this.#runtime.clock.nowIso(),
-						});
-					},
-				},
-			);
-		});
-		if (intent.outcome === "replayed" && intent.action.state === "succeeded") {
-			return { handle, deliveryActionId: actionId };
-		}
-		if (intent.outcome === "replayed" && intent.action.state !== "intended") {
-			throw new FenceViolation(
-				`delivery ${actionId} already escaped the host; manual evidence is required`,
-			);
-		}
-		const authorization = issueProposalCapability(
+		return prepareDelivery(
 			this.#kernel,
 			this.#runtime,
+			this.#options.database.expectedEpoch,
+			message,
 			handle,
-			actionId,
 		);
-		return {
-			handle,
-			deliveryActionId: actionId,
-			envelope: {
-				v: 1,
-				message,
-				handle,
-				authorization,
-				deliveryActionId: actionId,
-				protocol: DELIVERY_PROTOCOL,
-			},
-		};
 	}
 
 	#recordDeliverySucceeded(delivery: DeliveryEnvelope): void {
-		this.#kernel.write("host.delivery-outcome", (tx) => {
-			recordActionOutcome(tx, {
-				id: delivery.deliveryActionId,
-				actor:
-					delivery.handle.agent.kind === "runner"
-						? {
-								kind: "runner",
-								agentId: delivery.handle.agent.agentId,
-								instanceId: delivery.handle.agent.instanceId,
-								generation: delivery.handle.agent.generation,
-								activationId: delivery.handle.agent.activationId,
-							}
-						: {
-								kind: "lead",
-								agentId: delivery.handle.agent.agentId,
-								instanceId: delivery.handle.agent.instanceId,
-								generation: delivery.handle.agent.generation,
-							},
-				state: "succeeded",
-				result: { delivered: true },
-			});
-		});
+		recordDeliverySucceeded(this.#kernel, delivery);
 	}
 
 	#converter(agentId: string) {
@@ -1363,64 +962,11 @@ export class V2Host {
 		this.#deliveries.set(agentId, queue);
 	}
 
-	#runnerConverter(agentId: string) {
-		return async (
-			message: DeliveryEnvelope["message"],
-			context: { handle: AttemptHandle },
-		): Promise<ConversionResult> => {
-			const deliver = this.#options.coordinator?.deliverRunner;
-			if (!deliver || context.handle.agent.kind !== "runner") {
-				throw new FenceViolation(
-					"runner delivery requires the configured v2 injection launcher",
-				);
-			}
-			const runner = context.handle.agent;
-			if (runner.agentId !== agentId) {
-				throw new FenceViolation("runner delivery agent identity mismatch");
-			}
-			const injectionRef = this.#kernel.read(
-				(tx) =>
-					tx.get<{ value: string }>("SELECT value FROM meta WHERE key=@key", {
-						key: `injection_ref:${runner.activationId}`,
-					})?.value,
-			);
-			if (!injectionRef) {
-				throw new FenceViolation("runner injection reference is missing");
-			}
-			const prepared = this.#prepareDelivery(message, context.handle);
-			return new Promise<ConversionResult>((resolve, reject) => {
-				const pending: PendingDelivery = {
-					handle: context.handle,
-					resolve,
-					reject,
-					...(prepared.envelope ? { envelope: prepared.envelope } : {}),
-				};
-				this.#pending.set(context.handle.attemptUid, pending);
-				const envelope = prepared.envelope;
-				if (!envelope) return;
-				void deliver(runner.instanceId, injectionRef, {
-					messageUid: message.messageUid,
-					attemptUid: context.handle.attemptUid,
-					payload: JSON.stringify(envelope),
-				})
-					.then(() => {
-						this.#recordDeliverySucceeded(envelope);
-					})
-					.catch((error) => {
-						if (this.#pending.get(context.handle.attemptUid) === pending) {
-							this.#pending.delete(context.handle.attemptUid);
-						}
-						reject(error);
-					});
-			});
-		};
-	}
-
 	#enqueue(payload: unknown): unknown {
 		const input = requireRecord(payload, "enqueue payload");
 		const toAgent = requireString(input.toAgent, "toAgent");
 		const sourceKind = requireString(input.sourceKind, "sourceKind");
-		if (sourceKind === "discord") {
+		if (sourceKind === "discord" && !isSessionRecipient(toAgent)) {
 			provisionAgentRecipient(this.#kernel, toAgent, "lead");
 		}
 		const result = enqueue(this.#kernel, this.#runtime, {
@@ -1439,23 +985,111 @@ export class V2Host {
 						})(),
 			expectedCutoverEpoch: this.#options.database.expectedEpoch,
 		});
-		const registered = this.#registered.get(toAgent);
-		if (result.status === "enqueued" && registered) {
-			if (registered.kind === "runner") {
-				this.#primeRunnerDelivery(toAgent);
-			} else {
-				// #dropSettledPending used to run only for runners, via
-				// #primeRunnerDelivery. A lead's stale entry was unreachable in practice
-				// because a redelivery could never be prepared at all -- it collided on
-				// UNIQUE(actions.logical_key). Now that a redelivery succeeds, each crash
-				// leaves the superseded attempt's entry behind until the next takeover or
-				// host close, so sweep it here on the lead's own delivery trigger. Same
-				// no-new-timer argument as the runner side.
-				this.#dropSettledPending(toAgent);
-				void this.#driver.drain(toAgent).catch(() => undefined);
-			}
-		}
+		if (result.status === "enqueued") this.#wakeRecipient(toAgent);
 		return result;
+	}
+
+	/**
+	 * FLY-1543 ③④: one wake path for every enqueue. A session recipient's
+	 * long-poll waiters are woken to re-poll; a lead recipient re-enters its
+	 * driver drain loop (and gets the settled-pending sweep, same no-new-timer
+	 * argument as before).
+	 */
+	#wakeRecipient(toAgent: string): void {
+		if (isSessionRecipient(toAgent)) {
+			const wakers = this.#sessionWakers.get(toAgent);
+			if (!wakers) return;
+			this.#sessionWakers.delete(toAgent);
+			for (const wake of wakers) wake();
+			return;
+		}
+		const registered = this.#registered.get(toAgent);
+		if (!registered || registered.kind !== "lead") return;
+		this.#dropSettledPending(toAgent);
+		void this.#driver.drain(toAgent).catch(() => undefined);
+	}
+
+	/**
+	 * FLY-1543 ③: the runner->lead upstream verb. The sender must be an ACTIVE
+	 * session (terminal sessions are refused -- the upstream mirror of the
+	 * anti-zombie delivery guard); the recipient is resolved SERVER-side from the
+	 * session's issue (`dag_issue:<issueId>.notify_agent_id`), so a runner cannot
+	 * address arbitrary recipients. The returned uid is the correlation key: the
+	 * lead replies with `enqueue --to-agent <sessionRef> --kind ask_response` and
+	 * a payload carrying the same uid.
+	 */
+	#ask(payload: unknown): unknown {
+		const input = requireRecord(payload, "ask payload");
+		const sessionRef = requireString(input.sessionRef, "sessionRef");
+		const askKind = input.askKind;
+		if (askKind !== "ask" && askKind !== "progress" && askKind !== "blocked") {
+			throw new TypeError("askKind must be ask, progress or blocked");
+		}
+		const body = requireString(input.payload, "payload");
+		const uid =
+			input.uid === undefined ? randomUUID() : requireString(input.uid, "uid");
+		const agent = requireActiveRunnerAgent(this.#kernel, sessionRef);
+		const route = this.#kernel.read((tx) => {
+			const row = tx.get<{ issue_id: string }>(
+				`SELECT t.external_issue_id AS issue_id
+				   FROM activations act
+				   JOIN attempts a ON a.id=act.attempt_id
+				   JOIN tasks t ON t.id=a.task_id
+				  WHERE act.id=@activationId`,
+				{ activationId: agent.activationId },
+			);
+			if (!row) {
+				throw new FenceViolation("ask session has no task lineage");
+			}
+			const issue = tx.get<{ value: string }>(
+				"SELECT value FROM meta WHERE key=@key",
+				{ key: `dag_issue:${row.issue_id}` },
+			);
+			if (!issue) {
+				throw new FenceViolation("ask session issue receipt is missing");
+			}
+			const envelope = requireRecord(
+				JSON.parse(issue.value),
+				"issue receipt envelope",
+			);
+			if (
+				envelope.v !== 1 ||
+				envelope.cutover_epoch !== this.#options.database.expectedEpoch
+			) {
+				throw new FenceViolation("ask session issue receipt is stale");
+			}
+			const data = requireRecord(envelope.data, "issue receipt data");
+			return {
+				issueId: row.issue_id,
+				notifyAgentId: requireString(
+					data.notify_agent_id,
+					"issue notify_agent_id",
+				),
+			};
+		});
+		const result = enqueue(this.#kernel, this.#runtime, {
+			sourceKind: "runner_upstream",
+			sourceId: `${agent.activationId}:${uid}`,
+			payload: JSON.stringify({
+				v: 1,
+				session_ref: sessionRef,
+				issue_id: route.issueId,
+				ask_kind: askKind,
+				uid,
+				body,
+			}),
+			toAgent: route.notifyAgentId,
+			kind: "runner_ask",
+			// A progress note is a notice (it rides the notice backpressure limit);
+			// a question or a blocker is business traffic and must not be shed.
+			retentionClass: askKind === "progress" ? "notice" : "business",
+			expectedCutoverEpoch: this.#options.database.expectedEpoch,
+		});
+		if (result.status === "enqueued") this.#wakeRecipient(route.notifyAgentId);
+		if (result.status === "rejected") {
+			throw new FenceViolation(`ask was rejected: ${result.reason}`);
+		}
+		return { ...result, uid };
 	}
 
 	/**
@@ -1525,46 +1159,6 @@ export class V2Host {
 		}
 	}
 
-	#primeRunnerDelivery(agentId: string): void {
-		this.#dropSettledPending(agentId);
-		const registered = this.#registered.get(agentId);
-		if (
-			registered?.kind !== "runner" ||
-			[...this.#pending.values()].some(
-				(entry) => entry.handle.agent.agentId === agentId,
-			)
-		) {
-			return;
-		}
-		const polled = this.#driver.poll(agentId);
-		if (polled.status !== "available") return;
-		const pending = this.#runnerConverter(agentId)(
-			{
-				messageUid: polled.handle.messageUid,
-				payload: polled.payload,
-				kind: polled.kind,
-				sourceKind: polled.sourceKind,
-				seq: polled.seq,
-			},
-			{ handle: polled.handle },
-		);
-		void pending
-			.then((converted) => {
-				if (converted.ok) {
-					this.#driver.submitProposal(
-						{ handle: polled.handle, effects: converted.effects },
-						converted.authorization,
-					);
-				} else {
-					this.#driver.reportConversionFailure(polled.handle, converted.error);
-				}
-				this.#primeRunnerDelivery(agentId);
-			})
-			.catch((error) => {
-				this.#options.coordinator?.onError?.(error);
-			});
-	}
-
 	/**
 	 * Codex R3 HIGH-2: resolve the caller from its credential, never from the
 	 * request body. The credential is the only thing here that a process which did
@@ -1614,11 +1208,8 @@ export class V2Host {
 				"delivery credential is bound to a superseded registration",
 			);
 		}
-		if (agent.kind === "runner") {
-			throw new FenceViolation(
-				"runner delivery is push-only through the v2 injection shim",
-			);
-		}
+		// FLY-1543 ④: credentials are only ever minted for leads (registration is
+		// lead-only); the old runner push-only guard died with the push channel.
 		return { credential, agent };
 	}
 
@@ -1680,11 +1271,99 @@ export class V2Host {
 		if (waiters.length === 0) this.#deliveryWaiters.delete(waiter.agentId);
 	}
 
+	/**
+	 * FLY-1543 ④: session-addressed pull. Authorisation is host secret +
+	 * self-declared sessionRef + the active-activation check -- the activation IS
+	 * the registration, so a terminal or unknown session is refused, and a
+	 * same-uid process lying about another live sessionRef is an accepted design
+	 * boundary (settling the envelope still requires that delivery's own
+	 * capability, so eavesdropping cannot move ledger ownership).
+	 */
+	async #nextSessionDelivery(
+		sessionRef: string,
+		socket: Socket,
+	): Promise<DispatchOutcome> {
+		requireActiveRunnerAgent(this.#kernel, sessionRef);
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			const polled = pollRunnerDelivery(
+				this.#kernel,
+				this.#runtime,
+				sessionRef,
+			);
+			if (polled.status === "available") {
+				const prepared = this.#prepareDelivery(polled.message, polled.handle);
+				const envelope = prepared.envelope;
+				if (!envelope) {
+					throw new FenceViolation(
+						`delivery for attempt ${polled.handle.attemptUid} was already handed to this session; settle it before pulling again, or report the ambiguity`,
+					);
+				}
+				return {
+					result: envelope,
+					afterWrite: (flushed) => {
+						if (flushed) this.#recordDeliverySucceeded(envelope);
+					},
+				};
+			}
+			const remaining = deadline - Date.now();
+			if (
+				remaining <= 0 ||
+				!(await this.#waitForSessionWake(sessionRef, remaining, socket))
+			) {
+				throw new Error("no delivery became available before timeout");
+			}
+		}
+	}
+
+	#waitForSessionWake(
+		sessionRef: string,
+		timeoutMs: number,
+		socket: Socket,
+	): Promise<boolean> {
+		return new Promise((resolve) => {
+			let settled = false;
+			const finish = (value: boolean) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				socket.off("close", onClose);
+				const set = this.#sessionWakers.get(sessionRef);
+				if (set) {
+					set.delete(wake);
+					if (set.size === 0) this.#sessionWakers.delete(sessionRef);
+				}
+				resolve(value);
+			};
+			const wake = () => finish(true);
+			const onClose = () => finish(false);
+			const timer = setTimeout(() => finish(false), timeoutMs);
+			const wakers = this.#sessionWakers.get(sessionRef) ?? new Set();
+			wakers.add(wake);
+			this.#sessionWakers.set(sessionRef, wakers);
+			socket.once("close", onClose);
+		});
+	}
+
 	async #nextDelivery(
 		payload: unknown,
 		socket: Socket,
 	): Promise<DispatchOutcome> {
 		const input = requireRecord(payload, "next_delivery payload");
+		if (input.sessionRef !== undefined) {
+			if (
+				input.deliveryCredential !== undefined ||
+				input.agentId !== undefined
+			) {
+				throw new TypeError(
+					"session pull does not take a credential or agent id",
+				);
+			}
+			return this.#nextSessionDelivery(
+				requireString(input.sessionRef, "sessionRef"),
+				socket,
+			);
+		}
 		const { credential, agent } = this.#authorizeDeliveryCredential(input);
 		const agentId = credential.agentId;
 		const queued = this.#deliveries.get(agentId)?.shift();
@@ -1768,6 +1447,14 @@ export class V2Host {
 				token: requireString(authorizationInput.token, "authorization.token"),
 			},
 		};
+		// FLY-1543 ④⑤: a session-addressed proposal settles against the durable
+		// ledger, not against an in-memory converter -- the runner outlives host
+		// restarts, so its settle path must too. The identity is rebuilt from the
+		// activations row; a terminal activation surfaces through the receipt
+		// checks below as crashed rather than as a dangling wait.
+		if (isSessionRecipient(parsed.agentId)) {
+			return this.#submitSessionProposal(parsed);
+		}
 		const pending = this.#pending.get(parsed.attemptUid);
 		const agent = pending?.handle.agent ?? this.#registered.get(parsed.agentId);
 		if (!agent || agent.agentId !== parsed.agentId) {
@@ -1819,5 +1506,33 @@ export class V2Host {
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
 		throw new Error("proposal did not durably settle before response deadline");
+	}
+
+	#submitSessionProposal(parsed: SubmitPayload): unknown {
+		const agent = requireActiveRunnerAgent(this.#kernel, parsed.agentId);
+		const handle: AttemptHandle = {
+			attemptUid: parsed.attemptUid,
+			messageUid: parsed.messageUid,
+			agent,
+		};
+		const proposal = { handle, effects: parsed.effects };
+		const prior = readProposalReceipt(this.#kernel, proposal);
+		if (prior.status === "succeeded") return prior;
+		if (prior.status === "conflict") {
+			throw new FenceViolation("settled proposal digest conflict");
+		}
+		if (prior.status !== "running") {
+			throw new FenceViolation(`proposal attempt is ${prior.status}`);
+		}
+		// Durable settlement is synchronous here: effects + capability consume +
+		// mailbox applied + attempt succeeded land in one kernel transaction.
+		settleProposal(this.#kernel, this.#runtime, proposal, parsed.authorization);
+		const receipt = readProposalReceipt(this.#kernel, proposal);
+		if (receipt.status !== "succeeded") {
+			throw new FenceViolation(
+				`proposal settlement did not become durable (${receipt.status})`,
+			);
+		}
+		return receipt;
 	}
 }

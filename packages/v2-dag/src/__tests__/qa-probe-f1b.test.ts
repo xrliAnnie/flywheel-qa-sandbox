@@ -121,7 +121,7 @@ describe("FLY-1520 QA probe — F1 across registration ordering", () => {
 			projectId: "project-a",
 			review: "code",
 			subjectDigest: observation.reviewSubjectDigest,
-			reviewer: { agentId: "agent-a", generation: spawn.agent.generation },
+			reviewer: spawn.agent,
 		});
 
 		await expect(

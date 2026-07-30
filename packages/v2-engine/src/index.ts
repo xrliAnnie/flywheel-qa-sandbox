@@ -5,21 +5,13 @@ export type {
 	CandidateSet,
 } from "./candidates.js";
 export { selectNext } from "./candidates.js";
+export { pollOnce, refreshHeartbeat } from "./consume-loop.js";
 export { EngineDriver, type EngineDriverOptions } from "./driver.js";
 export type {
 	EnqueueResult,
 	MailboxEnvelope,
 } from "./enqueue.js";
 export { enqueue, provisionAgentRecipient } from "./enqueue.js";
-export {
-	type ClaudeInjectionSessionRef,
-	ClaudeInjectionShim,
-} from "./injection/claude-shim.js";
-export {
-	type CodexInjectionSessionRef,
-	CodexInjectionShim,
-	type CodexInjectionShimOptions,
-} from "./injection/codex-shim.js";
 export {
 	classifySessionProcess,
 	type ProcessStartProbe,
@@ -30,12 +22,26 @@ export {
 	type SessionProcessState,
 } from "./registration.js";
 export {
+	parseSessionBinding,
+	serializeSessionBinding,
+	sessionBindingsEqual,
+	validateSessionBinding,
+} from "./session-binding.js";
+export {
 	canonicalProposalDigest,
 	issueProposalCapability,
 	type ProposalReceipt,
 	proposalSubjectDigest,
 	readProposalReceipt,
+	reportConversionFailure,
+	submitProposal,
 } from "./settlement.js";
+export {
+	requireAttemptBindingTx,
+	requireCurrentAgentTx,
+	requireCurrentRunnerTx,
+	startAttemptTx,
+} from "./transitions.js";
 export type {
 	AttemptHandle,
 	ConsumerAuthority,
@@ -44,25 +50,24 @@ export type {
 	ConversionProposal,
 	ConversionResult,
 	Converter,
-	DeathEvidence,
 	Effect,
 	EngineClock,
 	EngineConfig,
 	EngineRuntime,
 	IdentityDraft,
-	InjectionShim,
 	LeadIdentityDraft,
 	PollResult,
 	ProposalAuthorization,
 	RegisteredAgent,
-	RunnerIdentityDraft,
 	SessionBinding,
 } from "./types.js";
 export {
 	DEFAULT_ENGINE_CONFIG,
 	EngineConfigError,
+	isSessionRecipient,
 	MAX_EFFECTS_PER_PROPOSAL,
 	MAX_FIELD_BYTES,
 	MAX_PROPOSAL_TOTAL_BYTES,
 	PollTransientError,
+	SESSION_RECIPIENT_PREFIX,
 } from "./types.js";

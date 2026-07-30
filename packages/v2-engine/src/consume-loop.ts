@@ -3,6 +3,7 @@ import {
 	FenceViolation,
 	type Kernel,
 	type ReadTx,
+	type WriteTx,
 } from "flywheel-v2-kernel";
 import {
 	type Candidate,
@@ -119,6 +120,28 @@ export interface PollOnceResult {
 	nextFounderStreak: number;
 }
 
+/** FLY-1543 ⑤: a runner's heartbeat lands on its activations row, not agents. */
+function casHeartbeatTx(
+	tx: WriteTx,
+	runtime: EngineRuntime,
+	agent: RegisteredAgent,
+): void {
+	if (agent.kind === "runner") {
+		tx.cas(ENGINE_SQL.casActivationHeartbeat, {
+			activationId: agent.activationId,
+			sessionRef: agent.agentId,
+			now: runtime.clock.nowIso(),
+		});
+		return;
+	}
+	tx.cas(ENGINE_SQL.casHeartbeat, {
+		agentId: agent.agentId,
+		kind: agent.kind,
+		generation: agent.generation,
+		now: runtime.clock.nowIso(),
+	});
+}
+
 export function refreshHeartbeat(
 	kernel: Kernel,
 	runtime: EngineRuntime,
@@ -130,12 +153,7 @@ export function refreshHeartbeat(
 		if (!heartbeatDue(authority.last_poll_at, runtime.clock.nowMs(), config)) {
 			return false;
 		}
-		tx.cas(ENGINE_SQL.casHeartbeat, {
-			agentId: agent.agentId,
-			kind: agent.kind,
-			generation: agent.generation,
-			now: runtime.clock.nowIso(),
-		});
+		casHeartbeatTx(tx, runtime, agent);
 		return true;
 	});
 }
@@ -201,12 +219,7 @@ export function pollOnce(
 		const authority = requireCurrentAgentTx(tx, agent);
 		const running = readRunning(tx, agent.agentId);
 		if (heartbeatDue(authority.last_poll_at, runtime.clock.nowMs(), config)) {
-			tx.cas(ENGINE_SQL.casHeartbeat, {
-				agentId: agent.agentId,
-				kind: agent.kind,
-				generation: agent.generation,
-				now: runtime.clock.nowIso(),
-			});
+			casHeartbeatTx(tx, runtime, agent);
 		}
 
 		if (running && currentAttemptUid === running.attempt_uid) {

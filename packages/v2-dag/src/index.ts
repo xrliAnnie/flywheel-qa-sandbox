@@ -17,14 +17,11 @@ export {
 export { recordEvidence } from "./evidence.js";
 export { registerReviewFamilies } from "./families.js";
 export { approveShipGate, recoverShipAuthority } from "./gate.js";
-export {
-	createInjectionRefBuilder,
-	validateInjectionRef,
-} from "./injection-ref.js";
 export { reconcileShipActions } from "./reconcile.js";
 export { resumeActivation } from "./resume.js";
 export { reworkTask } from "./rework.js";
 export { executeShip } from "./ship.js";
+export { terminalizeSessionMailboxTx } from "./terminal-mail.js";
 export type {
 	AdmissionResult,
 	CompletionObservation,
@@ -33,13 +30,14 @@ export type {
 	DeclaredContractItem,
 	DispatchFailure,
 	DispatchResult,
+	DispatchSkip,
+	DispatchSkipReason,
 	ExecutorDescriptor,
 	FaultPort,
 	GitHubMergePort,
 	GitHubObservationPort,
 	GitPort,
 	HostPort,
-	InjectionRefBuilder,
 	IssueDagDescriptor,
 	LaunchLockPort,
 	ManifestEntry,

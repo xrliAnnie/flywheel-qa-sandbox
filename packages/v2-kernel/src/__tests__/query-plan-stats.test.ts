@@ -58,7 +58,7 @@ function seed(
 		for (let i = 0; i < 25; i++) {
 			db.prepare(
 				`INSERT INTO agents(agent_id,kind,generation,last_poll_at,state)
-				 VALUES (?, 'runner', 0, NULL, 'offline')`,
+				 VALUES (?, 'lead', 0, NULL, 'offline')`,
 			).run(`runner-${i}`);
 		}
 		for (let i = 0; i < rows; i++) {

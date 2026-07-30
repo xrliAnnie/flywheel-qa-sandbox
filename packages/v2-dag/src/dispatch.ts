@@ -1,22 +1,20 @@
 import { randomUUID } from "node:crypto";
 import {
-	type DeathEvidence,
 	type RegisteredAgent,
-	registerAgentTx,
 	type SessionBinding,
+	serializeSessionBinding,
 } from "flywheel-v2-engine";
 import {
-	FENCE,
 	type Kernel,
 	type ReadTx,
 	recordExternalEffectIntentTx,
 	type WriteTx,
 } from "flywheel-v2-kernel";
+import { terminalizeAttemptTx } from "./attempt-terminal.js";
 import { parseTaskPayload } from "./contract.js";
 import { type CanonicalValue, sha256 } from "./digests.js";
 import { DagContractError } from "./errors.js";
 import { appendEvent } from "./events.js";
-import { validateInjectionRef } from "./injection-ref.js";
 import { appendMailboxTx } from "./mailbox-append.js";
 import {
 	type Envelope,
@@ -30,6 +28,8 @@ import type {
 	DagPorts,
 	DispatchFailure,
 	DispatchResult,
+	DispatchSkip,
+	DispatchSkipReason,
 	ExecutorDescriptor,
 	SpawnRequest,
 } from "./types.js";
@@ -56,20 +56,10 @@ interface WriterChainData {
 	pending_gap: null | { from: string; to: string };
 }
 
-interface AgentBindingData {
-	state: "active" | "clear";
-	activation_id: string | null;
-	attempt_id: string | null;
-	session_ref_current: string | null;
-	session_ref_last: string | null;
-	host_epoch: string | null;
-}
-
 interface LaunchClaimData {
 	state: "pending" | "claimed" | "launched" | "tombstoned";
 	owner_token: string | null;
 	lease_until: string | null;
-	death_evidence?: DeathEvidence | null;
 	launch_receipt: null | {
 		token: string;
 		activation_id: string;
@@ -79,7 +69,8 @@ interface LaunchClaimData {
 }
 
 interface RecoverableClaim {
-	request: SpawnRequest;
+	sessionRef: string;
+	request: SpawnRequest | null;
 	claim: Envelope<LaunchClaimData>;
 }
 
@@ -97,8 +88,6 @@ class InjectedFault extends Error {
 
 type DispatchFailureStage =
 	| "task_payload"
-	| "agent_binding"
-	| "process_probe"
 	| "worktree_lookup"
 	| "worktree_head"
 	| "prepare"
@@ -184,6 +173,11 @@ export function failureRecurrenceKey(eventUid: string): string {
 	return sha256(eventUid);
 }
 
+type AuditKind =
+	| "task_contract_invalid"
+	| "task_dispatch_invalid"
+	| "task_dispatch_skipped";
+
 function appendFailureRecurrence(
 	tx: WriteTx,
 	input: {
@@ -192,7 +186,7 @@ function appendFailureRecurrence(
 		epoch: number;
 		eventUid: string;
 		failureClass: string;
-		kind: string;
+		kind: AuditKind;
 		notifyAgentId: string;
 		nowIso: string;
 		payloadDigest: string;
@@ -324,93 +318,73 @@ function appendFailureRecurrence(
 	return true;
 }
 
-function auditTaskFailure(
+function auditTaskSignal(
 	kernel: Kernel,
 	ports: DagPorts,
 	candidate: CandidateRow,
-	error: unknown,
-	kind: "task_contract_invalid" | "task_dispatch_invalid",
-	stage: DispatchFailureStage,
+	input: {
+		kind: AuditKind;
+		stage: string;
+		failureClass: string;
+		diagnostic: string;
+	},
 ): boolean {
-	return kernel.write(`v2dag.dispatch.${kind}`, (tx) => {
+	return kernel.write(`v2dag.dispatch.${input.kind}`, (tx) => {
 		const epoch = readCutoverEpoch(tx);
 		const issueId = issueForTask(tx, candidate.id, epoch);
-		if (!issueId) return false;
-		const issue = readEnvelope<IssueData>(tx, `dag_issue:${issueId}`, epoch);
-		if (!issue) return false;
+		const issue = issueId
+			? readEnvelope<IssueData>(tx, `dag_issue:${issueId}`, epoch)
+			: null;
 		const payloadDigest = sha256(candidate.payload);
-		const failureClass = errorClass(error);
-		const eventUid = `${kind}:${candidate.id}:${payloadDigest}:${stage}:${failureClass}`;
+		const eventUid = `${input.kind}:${candidate.id}:${payloadDigest}:${input.stage}:${input.failureClass}`;
 		if (
 			tx.get("SELECT 1 FROM events WHERE event_uid=@eventUid", { eventUid })
 		) {
-			// FLY-1503 item 5: the event ledger stays deduped by
-			// task+digest+stage+class, but this early return used to skip the notify
-			// mailbox as well, so a failure that recurred on every coordinator tick
-			// was completely silent while callers were still told it was audited.
-			// Production hit this: seven identical launch failures produced one
-			// notification and no further signal.
-			//
-			// Codex R2 MEDIUM-3: the hour bucket bounded neither the total (the
-			// mailbox has no TTL, so a consumed notice was simply replaced next hour,
-			// forever) nor the diagnostics (event identity carries only the error
-			// *class*, so a pending "connection refused" notice permanently masked a
-			// later "invalid configuration" of the same class).
-			//
-			// Key the notice on a digest of the actual diagnostic instead. The
-			// mailbox's own (source_kind, source_id) dedup then makes an identical
-			// diagnostic a one-time row for all time -- bounded by distinct
-			// diagnostics rather than by elapsed hours -- while a changed message is a
-			// new id and is no longer suppressed.
-			// Codex R3 MEDIUM-3: keying the notice on the diagnostic digest bounded
-			// the notices for an IDENTICAL message but not for a varying one -- a
-			// diagnostic carrying a uuid, request id, temp path or timestamp produced
-			// a new digest, so a new permanent mailbox row, every time. And a
-			// one-off diagnostic that arrived while an earlier notice was still
-			// pending was dropped outright: if it never recurred the Lead never saw
-			// it at all.
-			//
-			// So the recurrence lives in a durable aggregate -- count, first/last
-			// seen, and a capped set of distinct diagnostic samples -- and the
-			// mailbox carries at most one notice at a time, up to a hard cap on how
-			// many notices one failure may ever create. A diagnostic that changes
-			// while a notice is pending is recorded in the aggregate immediately and
-			// travels in the NEXT notice, so it is delayed rather than lost.
+			// The event ledger is the minimum visibility contract. If the issue
+			// receipt itself is the broken invariant, there is no authoritative
+			// Lead recipient for a mailbox notice, but the typed event remains
+			// queryable with task id and reason.
+			if (!issue) return true;
+			// FLY-1503 item 5 / Codex R2-R4 (see appendFailureRecurrence): the event
+			// ledger stays deduped by task+digest+stage+class while recurrence lives
+			// in a durable aggregate. Steady-state repetition is one event plus a
+			// counter; a changed reason is a new event.
 			return appendFailureRecurrence(tx, {
 				candidate,
-				diagnostic: error instanceof Error ? error.message : String(error),
+				diagnostic: input.diagnostic,
 				epoch,
 				eventUid,
-				failureClass,
-				kind,
+				failureClass: input.failureClass,
+				kind: input.kind,
 				notifyAgentId: issue.data.notify_agent_id,
 				nowIso: ports.clock.nowIso(),
 				payloadDigest,
-				stage,
+				stage: input.stage,
 			});
 		}
 		const payload = {
 			task_id: candidate.id,
 			payload_digest: payloadDigest,
-			failure_stage: stage,
-			error_class: failureClass,
-			error: error instanceof Error ? error.message : String(error),
+			failure_stage: input.stage,
+			error_class: input.failureClass,
+			error: input.diagnostic,
 		};
 		appendEvent(tx, {
 			eventUid,
 			taskId: candidate.id,
-			kind,
+			kind: input.kind,
 			sourceKind: "dispatcher",
 			sourceId: candidate.id,
 			payload,
 			cutoverEpoch: epoch,
 			createdAt: ports.clock.nowIso(),
 		});
+		if (!issue) return true;
 		appendMailboxTx(tx, {
-			sourceKind: kind,
+			sourceKind: input.kind,
 			sourceId: eventUid,
 			toAgent: issue.data.notify_agent_id,
-			kind,
+			kind: input.kind,
 			payload,
 			retentionClass: "business",
 			cutoverEpoch: epoch,
@@ -429,7 +403,35 @@ function auditTaskFailureSafely(
 	stage: DispatchFailureStage,
 ): boolean {
 	try {
-		return auditTaskFailure(kernel, ports, candidate, error, kind, stage);
+		return auditTaskSignal(kernel, ports, candidate, {
+			kind,
+			stage,
+			failureClass: errorClass(error),
+			diagnostic: error instanceof Error ? error.message : String(error),
+		});
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * FLY-1543 ⑥: a skip is a first-class, visible signal -- one typed event per
+ * (task, reason) identity, recurrence-deduped through the same durable channel
+ * as dispatch failures, so a 1s tick cannot grow the events table.
+ */
+function auditTaskSkipSafely(
+	kernel: Kernel,
+	ports: DagPorts,
+	candidate: CandidateRow,
+	reason: DispatchSkipReason,
+): boolean {
+	try {
+		return auditTaskSignal(kernel, ports, candidate, {
+			kind: "task_dispatch_skipped",
+			stage: reason,
+			failureClass: "skip",
+			diagnostic: reason,
+		});
 	} catch {
 		return false;
 	}
@@ -455,7 +457,10 @@ function issueForTask(
 		: null;
 }
 
-function eligible(tx: WriteTx, taskId: string): boolean {
+function eligibility(
+	tx: WriteTx,
+	taskId: string,
+): "eligible" | "ineligible_dependency" | "attempt_active" {
 	const blocked = tx.get<{ count: number }>(
 		`SELECT count(*) AS count
 		   FROM task_dependencies d
@@ -463,21 +468,26 @@ function eligible(tx: WriteTx, taskId: string): boolean {
 		  WHERE d.task_id=@taskId AND upstream.state<>'done'`,
 		{ taskId },
 	)?.count;
+	if ((blocked ?? 0) > 0) return "ineligible_dependency";
 	const active = tx.get<{ count: number }>(
 		`SELECT count(*) AS count FROM attempts
 		  WHERE task_id=@taskId AND desired_state<>'terminal'`,
 		{ taskId },
 	)?.count;
-	return blocked === 0 && active === 0;
+	if ((active ?? 0) > 0) return "attempt_active";
+	return "eligible";
 }
+
+type PreparedDispatch =
+	| { prepared: SpawnRequest }
+	| { skip: DispatchSkipReason };
 
 function prepareDispatch(
 	tx: WriteTx,
 	ports: DagPorts,
 	candidate: CandidateRow,
 	head: string | null,
-	evidence?: DeathEvidence,
-): SpawnRequest | null {
+): PreparedDispatch {
 	const task = tx.get<{
 		state: string;
 		payload: string;
@@ -489,19 +499,14 @@ function prepareDispatch(
 		   FROM tasks WHERE id=@taskId`,
 		{ taskId: candidate.id },
 	);
-	if (!task || task.state !== "ready" || !eligible(tx, candidate.id))
-		return null;
+	if (!task || task.state !== "ready") return { skip: "task_not_ready" };
+	const eligible = eligibility(tx, candidate.id);
+	if (eligible !== "eligible") return { skip: eligible };
 	const epoch = readCutoverEpoch(tx);
-	if (!issueForTask(tx, candidate.id, epoch)) return null;
+	if (!issueForTask(tx, candidate.id, epoch)) {
+		return { skip: "issue_receipt_missing" };
+	}
 	const payload = parseTaskPayload(JSON.parse(task.payload));
-	const bindingKey = `agent_binding:${payload.executor.logicalAgentId}`;
-	const binding = readEnvelope<AgentBindingData>(tx, bindingKey, epoch);
-	if (binding?.data.state === "active") return null;
-	const agentRow = tx.get<{ generation: number }>(
-		"SELECT generation FROM agents WHERE agent_id=@agentId AND kind='runner'",
-		{ agentId: payload.executor.logicalAgentId },
-	);
-	if (agentRow && agentRow.generation > 0 && !binding) return null;
 
 	let chain: Envelope<WriterChainData> | null = null;
 	if (payload.writes_repo) {
@@ -510,13 +515,17 @@ function prepareDispatch(
 			`writer_chain:${payload.worktree_id}`,
 			epoch,
 		);
-		if (
-			!chain ||
-			chain.data.open_attempt !== null ||
-			chain.data.pending_gap !== null ||
-			head !== chain.data.chain_head
-		) {
-			return null;
+		if (!chain) return { skip: "worktree_receipt_missing" };
+		// FLY-1543 ⑥: the writer chain remains the only per-worktree serializer
+		// (same-worktree tasks stay strictly serial); the occupancy family died
+		// with the badge system, so different worktrees now run in parallel even
+		// under one roleId.
+		if (chain.data.open_attempt !== null) return { skip: "writer_span_open" };
+		// pending_gap is a ledger invariant guard: admission now refuses a dirty
+		// worktree outright (⑥), so this is unreachable in a healthy ledger --
+		// kept as double insurance, not as a fallback.
+		if (chain.data.pending_gap !== null || head !== chain.data.chain_head) {
+			return { skip: "writer_head_drift" };
 		}
 	}
 	const generation =
@@ -529,17 +538,6 @@ function prepareDispatch(
 	const sessionRef = `v2dag:${attemptId}:${generation}:${activationId}`;
 	const hostEpoch = ports.host.hostEpoch();
 	const now = ports.clock.nowIso();
-	const injectionRef = validateInjectionRef(
-		ports.injectionRef.build({
-			taskId: candidate.id,
-			attemptId,
-			attemptGeneration: generation,
-			activationId,
-			sessionRef,
-			agentId: payload.executor.logicalAgentId,
-			executor: payload.executor,
-		}),
-	);
 	tx.run(
 		`INSERT INTO attempts
 		 (id,task_id,generation,vendor,model,worktree_id,host_epoch,desired_state)
@@ -559,35 +557,13 @@ function prepareDispatch(
 		 VALUES(@id,@attemptId,@sessionRef,@generation,'active')`,
 		{ id: activationId, attemptId, sessionRef, generation },
 	);
-	tx.run(
-		`INSERT INTO meta(key,value,updated_at)
-		 VALUES (@key,@value,@now)`,
-		{
-			key: `injection_ref:${activationId}`,
-			value: injectionRef,
-			now,
-		},
-	);
 	const agent = {
 		kind: "runner" as const,
-		agentId: payload.executor.logicalAgentId,
+		agentId: sessionRef,
 		instanceId: sessionRef,
-		generation: (agentRow?.generation ?? 0) + 1,
+		generation,
 		activationId,
 	};
-	const nextBinding: AgentBindingData = {
-		state: "active",
-		activation_id: activationId,
-		attempt_id: attemptId,
-		session_ref_current: sessionRef,
-		session_ref_last: binding?.data.session_ref_last ?? null,
-		host_epoch: hostEpoch,
-	};
-	if (binding) {
-		updateEnvelope(tx, bindingKey, binding, nextBinding, now);
-	} else {
-		insertEnvelope(tx, bindingKey, makeEnvelope(epoch, nextBinding), now);
-	}
 	insertEnvelope(
 		tx,
 		`launch_claim:${sessionRef}`,
@@ -595,7 +571,6 @@ function prepareDispatch(
 			state: "pending",
 			owner_token: null,
 			lease_until: null,
-			death_evidence: evidence ?? null,
 			launch_receipt: null,
 		}),
 		now,
@@ -621,6 +596,22 @@ function prepareDispatch(
 			now,
 		);
 	}
+	const request: SpawnRequest = {
+		taskId: candidate.id,
+		attemptId,
+		attemptGeneration: generation,
+		activationId,
+		sessionRef,
+		ownerToken: "",
+		agent,
+		roleId: payload.executor.logicalAgentId,
+		executor: payload.executor,
+	};
+	// FLY-1543 ④: the assignment row is written in the SAME transaction that
+	// creates the activation, addressed to the session, so the launch path can
+	// prepare the first delivery envelope BEFORE the tmux process exists and
+	// embed it in the spawn prompt.
+	appendTaskAssignmentTx(tx, ports, request);
 	appendEvent(tx, {
 		eventUid: `attempt_dispatched:${attemptId}`,
 		taskId: candidate.id,
@@ -629,29 +620,19 @@ function prepareDispatch(
 		sourceKind: "dispatcher",
 		sourceId: attemptId,
 		payload: {
-			agent_id: agent.agentId,
+			agent_id: sessionRef,
 			instance_id: sessionRef,
-			agent_generation: agent.generation,
+			agent_generation: generation,
 			activation_id: activationId,
 			attempt_id: attemptId,
 			session_ref: sessionRef,
+			role_id: payload.executor.logicalAgentId,
 			host_epoch: hostEpoch,
 		},
 		cutoverEpoch: epoch,
 		createdAt: now,
 	});
-	return {
-		taskId: candidate.id,
-		attemptId,
-		attemptGeneration: generation,
-		activationId,
-		sessionRef,
-		injectionRef,
-		ownerToken: "",
-		agent,
-		...(evidence ? { deathEvidence: evidence } : {}),
-		executor: payload.executor,
-	};
+	return { prepared: request };
 }
 
 export async function claimLaunch(
@@ -664,7 +645,14 @@ export async function claimLaunch(
 		const epoch = readCutoverEpoch(tx);
 		const key = `launch_claim:${request.sessionRef}`;
 		const claim = readEnvelope<LaunchClaimData>(tx, key, epoch);
-		if (!claim || claim.data.state !== "pending") return false;
+		if (!claim || claim.data.state !== "pending") {
+			return {
+				claimed: false as const,
+				diagnostic: claim
+					? `launch claim for ${request.sessionRef} is ${claim.data.state}, not pending`
+					: `launch claim for ${request.sessionRef} is missing`,
+			};
+		}
 		const attempt = tx.get<{ desired_state: string }>(
 			"SELECT desired_state FROM attempts WHERE id=@attemptId",
 			{ attemptId: request.attemptId },
@@ -674,7 +662,12 @@ export async function claimLaunch(
 			(attempt.desired_state !== "dispatched" &&
 				attempt.desired_state !== "started")
 		) {
-			return false;
+			return {
+				claimed: false as const,
+				diagnostic: attempt
+					? `attempt ${request.attemptId} is ${attempt.desired_state}, not dispatchable`
+					: `attempt ${request.attemptId} is missing`,
+			};
 		}
 		const leaseUntil = new Date(
 			ports.clock.nowMs() + CLAIM_LEASE_MS,
@@ -698,9 +691,10 @@ export async function claimLaunch(
 				{ attemptId: request.attemptId, now: ports.clock.nowIso() },
 			);
 		}
-		return true;
+		return { claimed: true as const };
 	});
-	if (!claimed) throw new Error(`launch claim lost for ${request.sessionRef}`);
+	// FLY-1543 ⑥: the reason travels in the error, not a collapsed sentence.
+	if (!claimed.claimed) throw new Error(claimed.diagnostic);
 	return { ...request, ownerToken };
 }
 
@@ -741,7 +735,9 @@ function appendTaskAssignmentTx(
 	appendMailboxTx(tx, {
 		sourceKind: "dag_task_dispatch",
 		sourceId: request.activationId,
-		toAgent: request.agent.agentId,
+		// FLY-1543 ⑤: the envelope is addressed to the session, never to a role
+		// name -- who holds a badge no longer decides who receives the work.
+		toAgent: request.sessionRef,
 		kind: "task_assignment",
 		payload: {
 			v: 1,
@@ -766,33 +762,14 @@ function appendTaskAssignmentTx(
 	});
 }
 
-function storedSessionMatches(
-	serialized: string | null,
-	binding: SessionBinding,
-): boolean {
-	if (serialized === null) return false;
-	let value: unknown;
-	try {
-		value = JSON.parse(serialized);
-	} catch {
-		return false;
-	}
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		return false;
-	}
-	const stored = value as Record<string, unknown>;
-	return (
-		Object.keys(stored).sort().join(",") ===
-			"host_epoch,pid,pid_start,session_id,v" &&
-		stored.v === 1 &&
-		stored.host_epoch === binding.hostEpoch &&
-		stored.session_id === binding.sessionId &&
-		stored.pid === binding.pid &&
-		stored.pid_start === binding.pidStart
-	);
-}
+export { appendTaskAssignmentTx };
 
-function registerSpawnedRunnerTx(
+/**
+ * FLY-1543 ⑤: the spawned process is bound to its activation, not to an agents
+ * row. Write-once CAS: a NULL binding takes the observed value, a byte-equal
+ * replay is a no-op, a different value is a contract violation.
+ */
+function bindSpawnedRunnerTx(
 	tx: WriteTx,
 	ports: DagPorts,
 	request: SpawnRequest,
@@ -806,55 +783,46 @@ function registerSpawnedRunnerTx(
 			"spawn returned a session binding for a different host or session",
 		);
 	}
-	const current = tx.get<{
-		kind: string;
+	const row = tx.get<{
+		state: string;
 		generation: number;
-		instance_id: string | null;
 		session_binding: string | null;
 	}>(
-		`SELECT kind,generation,instance_id,session_binding
-		   FROM agents WHERE agent_id=@agentId`,
-		{ agentId: request.agent.agentId },
+		`SELECT state,generation,session_binding
+		   FROM activations
+		  WHERE id=@activationId AND session_ref=@sessionRef`,
+		{ activationId: request.activationId, sessionRef: request.sessionRef },
 	);
-	let registered: RegisteredAgent;
-	if (current?.instance_id === request.sessionRef) {
-		if (
-			current.kind !== "runner" ||
-			current.generation !== request.agent.generation ||
-			!storedSessionMatches(current.session_binding, sessionBinding)
-		) {
-			throw new DagContractError(
-				"durable runner registration conflicts with process evidence",
-			);
-		}
-		registered = {
-			kind: "runner",
-			agentId: request.agent.agentId,
-			instanceId: request.sessionRef,
-			activationId: request.activationId,
-			generation: current.generation,
-			sessionBinding,
-		};
-	} else {
-		registered = registerAgentTx(
-			tx,
-			{ clock: ports.clock },
-			request.agent.agentId,
-			{
-				kind: "runner",
-				agentId: request.agent.agentId,
-				instanceId: request.sessionRef,
-				activationId: request.activationId,
-				sessionBinding,
-			},
-			request.deathEvidence,
-		);
-		if (registered.generation !== request.agent.generation) {
-			throw new DagContractError("spawn registration generation drifted");
-		}
+	if (
+		!row ||
+		row.state !== "active" ||
+		row.generation !== request.attemptGeneration
+	) {
+		throw new DagContractError("spawned runner activation is not active");
 	}
-	appendTaskAssignmentTx(tx, ports, request);
-	return registered;
+	const serialized = serializeSessionBinding(sessionBinding);
+	if (row.session_binding === null) {
+		tx.cas(
+			`UPDATE activations SET session_binding=@sessionBinding
+			  WHERE id=@activationId AND session_binding IS NULL AND state='active'`,
+			{
+				activationId: request.activationId,
+				sessionBinding: serialized,
+			},
+		);
+	} else if (row.session_binding !== serialized) {
+		throw new DagContractError(
+			"spawned runner session binding conflicts with the recorded one",
+		);
+	}
+	return {
+		kind: "runner",
+		agentId: request.sessionRef,
+		instanceId: request.sessionRef,
+		generation: request.attemptGeneration,
+		activationId: request.activationId,
+		sessionBinding,
+	};
 }
 
 export async function launchOnce(
@@ -909,7 +877,7 @@ export async function launchOnce(
 		const sessionBinding = await ports.spawn.spawn(request);
 		hitFault(ports, "launch_after_spawn");
 		const agent = kernel.write("v2dag.launch.register", (tx) => {
-			return registerSpawnedRunnerTx(tx, ports, request, sessionBinding);
+			return bindSpawnedRunnerTx(tx, ports, request, sessionBinding);
 		});
 		return agent;
 	});
@@ -926,42 +894,16 @@ export async function dispatchOnce(
 	);
 	const dispatched: SpawnRequest[] = [];
 	const failures: DispatchFailure[] = [];
+	const skips: DispatchResult["skips"] = [];
+	const recordSkip = (candidate: CandidateRow, reason: DispatchSkipReason) => {
+		skips.push({ taskId: candidate.id, reason });
+		auditTaskSkipSafely(kernel, ports, candidate, reason);
+	};
 	for (const candidate of candidates) {
-		let prepared: SpawnRequest | null;
+		let outcome: PreparedDispatch;
 		let failureStage: DispatchFailureStage = "task_payload";
 		try {
 			const payload = parseTaskPayload(JSON.parse(candidate.payload));
-			let evidence: DeathEvidence | undefined;
-			failureStage = "agent_binding";
-			const prior = kernel.read((tx) => {
-				const agent = tx.get<{ generation: number }>(
-					"SELECT generation FROM agents WHERE agent_id=@agentId",
-					{ agentId: payload.executor.logicalAgentId },
-				);
-				const binding = readEnvelope<AgentBindingData>(
-					tx,
-					`agent_binding:${payload.executor.logicalAgentId}`,
-				);
-				return { agent, binding };
-			});
-			if (prior.agent && prior.agent.generation > 0) {
-				if (
-					prior.binding?.data.state !== "clear" ||
-					prior.binding.data.session_ref_last === null
-				) {
-					continue;
-				}
-				failureStage = "process_probe";
-				const probe = await ports.process.probe(
-					prior.binding.data.session_ref_last,
-				);
-				if (probe.state !== "absent") continue;
-				evidence = {
-					agentId: payload.executor.logicalAgentId,
-					generation: prior.agent.generation,
-					confirmedAbsentAt: probe.confirmedAt,
-				};
-			}
 			let head: string | null = null;
 			if (payload.writes_repo && payload.worktree_id) {
 				failureStage = "worktree_lookup";
@@ -971,13 +913,16 @@ export async function dispatchOnce(
 						`canonical_worktree:${payload.worktree_id}`,
 					),
 				);
-				if (!worktree) continue;
+				if (!worktree) {
+					recordSkip(candidate, "worktree_receipt_missing");
+					continue;
+				}
 				failureStage = "worktree_head";
 				head = await ports.git.readHead(worktree.data.worktree_path);
 			}
 			failureStage = "prepare";
-			prepared = kernel.write("v2dag.dispatch.prepare", (tx) =>
-				prepareDispatch(tx, ports, candidate, head, evidence),
+			outcome = kernel.write("v2dag.dispatch.prepare", (tx) =>
+				prepareDispatch(tx, ports, candidate, head),
 			);
 		} catch (error) {
 			const audited = auditTaskFailureSafely(
@@ -993,11 +938,14 @@ export async function dispatchOnce(
 			failures.push({ taskId: candidate.id, stage: failureStage, audited });
 			continue;
 		}
-		if (!prepared) continue;
+		if ("skip" in outcome) {
+			recordSkip(candidate, outcome.skip);
+			continue;
+		}
 		hitFault(ports, "dispatch_after_prepare");
 		let claimed: SpawnRequest;
 		try {
-			claimed = await claimLaunch(kernel, ports, prepared);
+			claimed = await claimLaunch(kernel, ports, outcome.prepared);
 		} catch (error) {
 			const audited = auditTaskFailureSafely(
 				kernel,
@@ -1012,6 +960,7 @@ export async function dispatchOnce(
 				stage: "launch_claim",
 				audited,
 			});
+			skips.push({ taskId: candidate.id, reason: "launch_claim_lost" });
 			continue;
 		}
 		hitFault(ports, "dispatch_after_claim");
@@ -1036,9 +985,13 @@ export async function dispatchOnce(
 				throw new DagContractError("spawn registered a non-runner agent");
 			}
 			dispatched.push({ ...claimed, agent: launched });
+		} else {
+			// FLY-1543 ⑥: the claimed-but-unlaunched attempt is no longer an
+			// implicit skip only recovery understands -- it is counted and audited.
+			recordSkip(candidate, "launch_gate_lost");
 		}
 	}
-	return { dispatched, failures };
+	return { dispatched, failures, skips };
 }
 
 function requestForSession(
@@ -1050,29 +1003,15 @@ function requestForSession(
 		attempt_id: string;
 		attempt_generation: number;
 		activation_id: string;
-		agent_id: string;
-		agent_generation: number;
-		agent_instance_id: string | null;
 		payload: string;
-		injection_ref: string;
 	}>(
 		`SELECT a.task_id,a.id AS attempt_id,
 		        a.generation AS attempt_generation,
 		        act.id AS activation_id,
-		        json_extract(t.payload,'$.executor.logicalAgentId') AS agent_id,
-		        COALESCE(ag.generation,0) AS agent_generation,
-		        ag.instance_id AS agent_instance_id,
-		        t.payload,ir.value AS injection_ref
+		        t.payload
 		   FROM activations act
 		   JOIN attempts a ON a.id=act.attempt_id
 		   JOIN tasks t ON t.id=a.task_id
-		   -- FLY-1503 item 4: LEFT JOIN so a launch that failed before
-		   -- registerAgentTx could create the agents row stays recoverable.
-		   -- An INNER JOIN here made recoverableClaims silently drop the claim,
-		   -- leaving the attempt reapable only by hand.
-		   LEFT JOIN agents ag
-		     ON ag.agent_id=json_extract(t.payload,'$.executor.logicalAgentId')
-		   JOIN meta ir ON ir.key='injection_ref:' || act.id
 		  WHERE act.session_ref=@sessionRef
 		    AND act.state='active'
 		    AND a.desired_state IN ('dispatched','started')`,
@@ -1080,25 +1019,21 @@ function requestForSession(
 	);
 	if (!state) return null;
 	const payload = parseTaskPayload(JSON.parse(state.payload));
-	const injectionRef = validateInjectionRef(state.injection_ref);
-	const registered = state.agent_instance_id === sessionRef;
 	return {
 		taskId: state.task_id,
 		attemptId: state.attempt_id,
 		attemptGeneration: state.attempt_generation,
 		activationId: state.activation_id,
 		sessionRef,
-		injectionRef,
 		ownerToken: "",
 		agent: {
 			kind: "runner",
-			agentId: state.agent_id,
+			agentId: sessionRef,
 			instanceId: sessionRef,
-			generation: registered
-				? state.agent_generation
-				: state.agent_generation + 1,
+			generation: state.attempt_generation,
 			activationId: state.activation_id,
 		},
+		roleId: payload.executor.logicalAgentId,
 		executor: payload.executor,
 	};
 }
@@ -1114,18 +1049,9 @@ function recoverableClaims(kernel: Kernel): RecoverableClaim[] {
 			if (!claim || claim.data.state === "tombstoned") return [];
 			const sessionRef = row.key.slice("launch_claim:".length);
 			const request = requestForSession(tx, sessionRef);
-			if (!request) return [];
-			return [
-				{
-					request: {
-						...request,
-						...(claim.data.death_evidence
-							? { deathEvidence: claim.data.death_evidence }
-							: {}),
-					},
-					claim,
-				},
-			];
+			// FLY-1543 ⑥: an unrecoverable claim is reported, never silently
+			// dropped from the recovery pass.
+			return [{ sessionRef, request, claim }];
 		});
 	});
 }
@@ -1168,7 +1094,7 @@ function markClaimLaunched(
 			},
 			ports.clock.nowIso(),
 		);
-		registerSpawnedRunnerTx(tx, ports, input.request, input.sessionBinding);
+		bindSpawnedRunnerTx(tx, ports, input.request, input.sessionBinding);
 		return true;
 	});
 }
@@ -1176,7 +1102,7 @@ function markClaimLaunched(
 async function recoverClaimed(
 	kernel: Kernel,
 	ports: DagPorts,
-	entry: RecoverableClaim,
+	entry: RecoverableClaim & { request: SpawnRequest },
 ): Promise<
 	| { status: "adopted" | "unchanged" }
 	| { status: "takeover"; request: SpawnRequest }
@@ -1254,7 +1180,7 @@ async function recoverClaimed(
 async function adoptLaunchedRunner(
 	kernel: Kernel,
 	ports: DagPorts,
-	entry: RecoverableClaim,
+	entry: RecoverableClaim & { request: SpawnRequest },
 ): Promise<boolean> {
 	return await ports.locks.withSessionLock(
 		entry.request.sessionRef,
@@ -1288,30 +1214,89 @@ async function adoptLaunchedRunner(
 				) {
 					return false;
 				}
-				registerSpawnedRunnerTx(tx, ports, entry.request, probe.sessionBinding);
+				bindSpawnedRunnerTx(tx, ports, entry.request, probe.sessionBinding);
 				return true;
 			});
 		},
 	);
 }
 
+/**
+ * FLY-1543 ⑥: the lost-open state (worktree AND branch ref both unreadable) is
+ * the one that requires the Lead to run the `lost_open_attempt` ceremony. It
+ * used to be a silent `false`; now the Lead is told, once per attempt, through
+ * the mailbox (mirroring the writer-gap adoption notice shape).
+ */
+function notifyLostOpenCandidate(
+	kernel: Kernel,
+	ports: DagPorts,
+	entry: RecoverableClaim & { request: SpawnRequest },
+): void {
+	kernel.write("v2dag.launch.lost-open-candidate", (tx) => {
+		const epoch = readCutoverEpoch(tx);
+		const issueId = issueForTask(tx, entry.request.taskId, epoch);
+		if (!issueId) return;
+		const issue = readEnvelope<IssueData>(tx, `dag_issue:${issueId}`, epoch);
+		if (!issue) return;
+		const eventUid = `attempt_lost_open_candidate:${entry.request.attemptId}`;
+		const payload = {
+			task_id: entry.request.taskId,
+			attempt_id: entry.request.attemptId,
+			session_ref: entry.request.sessionRef,
+			reason: "worktree_and_ref_unrecoverable",
+		};
+		if (
+			!tx.get("SELECT 1 FROM events WHERE event_uid=@eventUid", { eventUid })
+		) {
+			appendEvent(tx, {
+				eventUid,
+				taskId: entry.request.taskId,
+				attemptId: entry.request.attemptId,
+				kind: "attempt_lost_open_candidate",
+				sourceKind: "launch_reconciler",
+				sourceId: entry.request.sessionRef,
+				payload,
+				cutoverEpoch: epoch,
+				createdAt: ports.clock.nowIso(),
+			});
+		}
+		appendMailboxTx(tx, {
+			sourceKind: "attempt_lost_open_candidate",
+			sourceId: entry.request.attemptId,
+			toAgent: issue.data.notify_agent_id,
+			kind: "attempt_lost_open_candidate",
+			payload,
+			retentionClass: "business",
+			cutoverEpoch: epoch,
+			createdAt: ports.clock.nowIso(),
+		});
+	});
+}
+
 async function reapLaunched(
 	kernel: Kernel,
 	ports: DagPorts,
-	entry: RecoverableClaim,
-): Promise<boolean> {
+	entry: RecoverableClaim & { request: SpawnRequest },
+): Promise<
+	{ status: "reaped" } | { status: "skip"; reason: DispatchSkipReason }
+> {
 	const launchedAt = entry.claim.data.launch_receipt?.launched_at;
 	if (
 		!launchedAt ||
 		Date.parse(launchedAt) + LAUNCH_REAP_GRACE_MS > ports.clock.nowMs()
 	) {
-		return false;
+		return { status: "skip", reason: "reap_grace" };
 	}
 	return await ports.locks.withSessionLock(
 		entry.request.sessionRef,
 		async () => {
 			const probe = await ports.process.probe(entry.request.sessionRef);
-			if (probe.state !== "absent") return false;
+			if (probe.state !== "absent") {
+				return {
+					status: "skip" as const,
+					reason: "reap_process_present" as const,
+				};
+			}
 			const payload = kernel.read((tx) => {
 				const task = tx.get<{ payload: string }>(
 					"SELECT payload FROM tasks WHERE id=@taskId",
@@ -1347,7 +1332,12 @@ async function reapLaunched(
 							}
 						: null;
 				});
-				if (!snapshot?.startHead) return false;
+				if (!snapshot?.startHead) {
+					return {
+						status: "skip" as const,
+						reason: "reap_head_unreadable" as const,
+					};
+				}
 				let observedFromWorktree = await ports.worktreeRef.worktreePresent(
 					snapshot.path,
 				);
@@ -1365,12 +1355,21 @@ async function reapLaunched(
 						snapshot.branchRef,
 					);
 				}
-				if (head === null) return false;
+				if (head === null) {
+					notifyLostOpenCandidate(kernel, ports, entry);
+					return {
+						status: "skip" as const,
+						reason: "reap_head_unreadable" as const,
+					};
+				}
 				if (
 					observedFromWorktree &&
 					!(await ports.git.isAncestor(snapshot.path, snapshot.startHead, head))
 				) {
-					return false;
+					return {
+						status: "skip" as const,
+						reason: "reap_lineage_diverged" as const,
+					};
 				}
 				writerPacket = {
 					worktreeId: payload.worktree_id,
@@ -1378,7 +1377,7 @@ async function reapLaunched(
 					revision: snapshot.revision,
 				};
 			}
-			return kernel.write("v2dag.launch.reap", (tx) => {
+			const reaped = kernel.write("v2dag.launch.reap", (tx) => {
 				const epoch = readCutoverEpoch(tx);
 				const key = `launch_claim:${entry.request.sessionRef}`;
 				const claim = readEnvelope<LaunchClaimData>(tx, key, epoch);
@@ -1389,49 +1388,6 @@ async function reapLaunched(
 				) {
 					return false;
 				}
-				updateEnvelope(
-					tx,
-					key,
-					claim,
-					{ ...claim.data, state: "tombstoned" },
-					ports.clock.nowIso(),
-				);
-				tx.cas(FENCE.activationCasActiveTerminal, {
-					activationId: entry.request.activationId,
-				});
-				tx.cas(FENCE.attemptCasActiveTerminal, {
-					attemptId: entry.request.attemptId,
-					reason: "failed",
-					terminalAt: ports.clock.nowIso(),
-				});
-				tx.cas(
-					`UPDATE tasks SET state='ready',state_version=state_version+1,
-				 terminal_at=NULL WHERE id=@taskId AND state='running'`,
-					{ taskId: entry.request.taskId },
-				);
-				const bindingKey = `agent_binding:${entry.request.agent.agentId}`;
-				const binding = readEnvelope<AgentBindingData>(tx, bindingKey, epoch);
-				if (
-					!binding ||
-					binding.data.activation_id !== entry.request.activationId ||
-					binding.data.attempt_id !== entry.request.attemptId
-				) {
-					throw new Error("reap binding changed");
-				}
-				updateEnvelope(
-					tx,
-					bindingKey,
-					binding,
-					{
-						state: "clear",
-						activation_id: null,
-						attempt_id: null,
-						session_ref_current: null,
-						session_ref_last: entry.request.sessionRef,
-						host_epoch: null,
-					},
-					ports.clock.nowIso(),
-				);
 				if (writerPacket && payload?.worktree_id) {
 					const writerKey = `writer_chain:${payload.worktree_id}`;
 					const writer = readEnvelope<WriterChainData>(tx, writerKey, epoch);
@@ -1467,6 +1423,17 @@ async function reapLaunched(
 						ports.clock.nowIso(),
 					);
 				}
+				terminalizeAttemptTx(tx, {
+					attemptId: entry.request.attemptId,
+					reason: "failed",
+					cutoverEpoch: epoch,
+					nowIso: ports.clock.nowIso(),
+				});
+				tx.cas(
+					`UPDATE tasks SET state='ready',state_version=state_version+1,
+				 terminal_at=NULL WHERE id=@taskId AND state='running'`,
+					{ taskId: entry.request.taskId },
+				);
 				appendEvent(tx, {
 					eventUid: `attempt_reaped:${entry.request.attemptId}`,
 					taskId: entry.request.taskId,
@@ -1483,6 +1450,12 @@ async function reapLaunched(
 				});
 				return true;
 			});
+			return reaped
+				? { status: "reaped" as const }
+				: {
+						status: "skip" as const,
+						reason: "recovery_claim_missing" as const,
+					};
 		},
 	);
 }
@@ -1497,16 +1470,17 @@ function recordRecoveryFailure(
 		"recovery_pending" | "recovery_claimed" | "recovery_reap"
 	>,
 ): DispatchFailure {
+	const taskId = entry.request?.taskId ?? entry.sessionRef;
 	let candidate: CandidateRow | null = null;
 	try {
 		candidate = kernel.read(
 			(tx) =>
 				tx.get<CandidateRow>("SELECT id,payload FROM tasks WHERE id=@taskId", {
-					taskId: entry.request.taskId,
+					taskId,
 				}) ?? null,
 		);
 	} catch {
-		return { taskId: entry.request.taskId, stage, audited: false };
+		return { taskId, stage, audited: false };
 	}
 	const audited =
 		candidate === null
@@ -1519,7 +1493,7 @@ function recordRecoveryFailure(
 					"task_dispatch_invalid",
 					stage,
 				);
-	return { taskId: entry.request.taskId, stage, audited };
+	return { taskId, stage, audited };
 }
 
 export async function recoverPendingLaunches(
@@ -1531,37 +1505,71 @@ export async function recoverPendingLaunches(
 	adopted: number;
 	reaped: number;
 	failures: DispatchFailure[];
+	skips: DispatchSkip[];
 }> {
 	const entries = recoverableClaims(kernel);
 	let launched = 0;
 	let adopted = 0;
 	let reaped = 0;
 	const failures: DispatchFailure[] = [];
+	const skips: DispatchSkip[] = [];
 	for (const entry of entries) {
+		if (entry.request === null) {
+			// FLY-1543 ⑥: the claim exists but no active dispatchable attempt backs
+			// it -- previously an invisible drop, now a named residue.
+			skips.push({ taskId: null, reason: "recovery_request_unrecoverable" });
+			continue;
+		}
+		const recoverable = { ...entry, request: entry.request };
 		let stage: Extract<
 			DispatchFailureStage,
 			"recovery_pending" | "recovery_claimed" | "recovery_reap"
 		> = "recovery_pending";
 		try {
 			if (entry.claim.data.state === "pending") {
-				const claimed = await claimLaunch(kernel, ports, entry.request);
-				if (await launchOnce(kernel, ports, claimed)) launched += 1;
+				const claimed = await claimLaunch(kernel, ports, recoverable.request);
+				if (await launchOnce(kernel, ports, claimed)) {
+					launched += 1;
+				} else {
+					skips.push({
+						taskId: recoverable.request.taskId,
+						reason: "launch_gate_lost",
+					});
+				}
 			} else if (entry.claim.data.state === "claimed") {
 				stage = "recovery_claimed";
-				const outcome = await recoverClaimed(kernel, ports, entry);
-				if (
-					outcome.status === "takeover" &&
-					(await launchOnce(kernel, ports, outcome.request))
-				) {
-					launched += 1;
+				const outcome = await recoverClaimed(kernel, ports, recoverable);
+				if (outcome.status === "takeover") {
+					if (await launchOnce(kernel, ports, outcome.request)) {
+						launched += 1;
+					} else {
+						skips.push({
+							taskId: recoverable.request.taskId,
+							reason: "launch_gate_lost",
+						});
+					}
+				} else if (outcome.status === "adopted") {
+					adopted += 1;
+				} else {
+					skips.push({
+						taskId: recoverable.request.taskId,
+						reason: "launch_claim_lost",
+					});
 				}
-				if (outcome.status === "adopted") adopted += 1;
 			} else if (entry.claim.data.state === "launched") {
 				stage = "recovery_reap";
-				if (await adoptLaunchedRunner(kernel, ports, entry)) {
+				if (await adoptLaunchedRunner(kernel, ports, recoverable)) {
 					adopted += 1;
-				} else if (await reapLaunched(kernel, ports, entry)) {
-					reaped += 1;
+				} else {
+					const outcome = await reapLaunched(kernel, ports, recoverable);
+					if (outcome.status === "reaped") {
+						reaped += 1;
+					} else {
+						skips.push({
+							taskId: recoverable.request.taskId,
+							reason: outcome.reason,
+						});
+					}
 				}
 			}
 		} catch (error) {
@@ -1569,7 +1577,14 @@ export async function recoverPendingLaunches(
 			failures.push(recordRecoveryFailure(kernel, ports, entry, error, stage));
 		}
 	}
-	return { examined: entries.length, launched, adopted, reaped, failures };
+	return {
+		examined: entries.length,
+		launched,
+		adopted,
+		reaped,
+		failures,
+		skips,
+	};
 }
 
 export type { RegisteredAgent, ExecutorDescriptor };

@@ -226,8 +226,8 @@ function bootFixture() {
 		createRuntimeDagPorts({
 			kernel,
 			hostEpoch: HOST_EPOCH,
+			expectedEpoch: EPOCH,
 			lockRoot: join(root, "locks"),
-			injectionRoot: join(root, "injection"),
 			launcher,
 			gitBin: "/usr/bin/git",
 			ghBin: "/usr/bin/false",
@@ -236,7 +236,6 @@ function bootFixture() {
 
 	const bootstrap = Kernel.open({ path: database.dbPath });
 	provisionAgentRecipient(bootstrap, "lead-runtime", "lead");
-	provisionAgentRecipient(bootstrap, "engineer", "runner");
 	const admitted = admitIssueDag(bootstrap, ports(bootstrap), {
 		...descriptorFor(project),
 	});
@@ -305,12 +304,12 @@ function bootFixture() {
 }
 
 describe("FLY-1503 item 9 — host restart re-attaches a live runner", () => {
-	it("re-attaches a runner whose agents row was marked offline on shutdown", async () => {
+	it("re-activates a live session from the activation binding", async () => {
 		const fixture = bootFixture();
 		await fixture.ready();
 		const { database, launchRequests, makeHost } = fixture;
 
-		// First boot: launch and register the runner.
+		// First boot: launch and bind the runner session to its activation.
 		const firstActivated: string[] = [];
 		const first = makeHost(firstActivated);
 		await first.start();
@@ -318,24 +317,27 @@ describe("FLY-1503 item 9 — host restart re-attaches a live runner", () => {
 		expect(launchRequests).toHaveLength(1);
 		const sessionRef = launchRequests[0]?.sessionRef;
 		expect(sessionRef).toBeTruthy();
-		// Shutdown runs driver.stop(), which casOffline's every agent.
 		await first.close();
 
 		const afterShutdown = Kernel.open({ path: database.dbPath });
 		expect(
-			afterShutdown.read(
-				(tx) =>
-					tx.get<{ state: string }>(
-						"SELECT state FROM agents WHERE agent_id='engineer'",
-					)?.state,
+			afterShutdown.read((tx) =>
+				tx.get<{ state: string; session_binding: string | null }>(
+					`SELECT state,session_binding FROM activations
+						  WHERE session_ref=@sessionRef`,
+					{ sessionRef },
+				),
 			),
-		).toBe("offline");
+		).toMatchObject({ state: "active", session_binding: expect.any(String) });
+		expect(
+			afterShutdown.read((tx) =>
+				tx.get("SELECT 1 FROM agents WHERE agent_id='engineer'"),
+			),
+		).toBeUndefined();
 		afterShutdown.close();
 
-		// Second boot with the runner session still alive. syncCurrentRunners must
-		// re-attach it. RED before the fix: the query filtered ag.state='online',
-		// so the just-offlined row never matched, casReattachAgent was unreachable,
-		// and the live runner was orphaned by the restart.
+		// Second boot with the runner session still alive. There is no runner badge
+		// to re-register: syncCurrentRunners resolves the concrete activation binding.
 		const secondActivated: string[] = [];
 		const second = makeHost(secondActivated);
 		try {
@@ -343,13 +345,17 @@ describe("FLY-1503 item 9 — host restart re-attaches a live runner", () => {
 			expect(secondActivated).toContain(sessionRef);
 			const reattached = Kernel.open({ path: database.dbPath });
 			expect(
-				reattached.read(
-					(tx) =>
-						tx.get<{ state: string }>(
-							"SELECT state FROM agents WHERE agent_id='engineer'",
-						)?.state,
+				reattached.read((tx) =>
+					tx.get<{ state: string; session_binding: string | null }>(
+						`SELECT state,session_binding FROM activations
+							  WHERE session_ref=@sessionRef`,
+						{ sessionRef },
+					),
 				),
-			).toBe("online");
+			).toMatchObject({
+				state: "active",
+				session_binding: expect.any(String),
+			});
 			reattached.close();
 		} finally {
 			await second.close();
@@ -361,21 +367,26 @@ describe("FLY-1503 item 8 — a crash-settled attempt must not wedge the executo
 	it("keeps delivering after the in-flight attempt is settled outside the host", async () => {
 		const fixture = bootFixture();
 		await fixture.ready();
-		const { database, secret, socketPath, makeHost } = fixture;
+		const { database, secret, socketPath, launchRequests, makeHost } = fixture;
 
-		const delivered: Delivered[] = [];
-		const errors: unknown[] = [];
-		const host = makeHost([], delivered, errors);
+		const host = makeHost([]);
 		try {
 			await host.start();
 			await host.runCoordinatorOnce();
-			const deadline = Date.now() + 5_000;
-			while (delivered.length === 0 && Date.now() < deadline) {
-				await new Promise((resolve) => setTimeout(resolve, 10));
-			}
-			expect(delivered).toHaveLength(1);
-			const first = delivered[0];
-			expect(first).toBeTruthy();
+			expect(launchRequests).toHaveLength(1);
+			const sessionRef = launchRequests[0]?.sessionRef;
+			if (!sessionRef) throw new Error("runner session was not launched");
+			const firstEnvelope = JSON.parse(
+				launchRequests[0]?.context.firstEnvelope as string,
+			) as DeliveryEnvelope;
+			const first: Delivered = {
+				sessionRef,
+				message: {
+					messageUid: firstEnvelope.message.messageUid,
+					attemptUid: firstEnvelope.handle.attemptUid,
+					payload: JSON.stringify(firstEnvelope),
+				},
+			};
 
 			// A generation takeover (registration.ts) and driver.stop() both settle a
 			// running processing attempt as 'crashed'. Reproduce that settlement
@@ -404,75 +415,32 @@ describe("FLY-1503 item 8 — a crash-settled attempt must not wedge the executo
 					  WHERE message_uid=@uid AND state='pending'`,
 					{
 						uid: first?.message.messageUid,
-						dueAt: "2026-07-29T00:04:01.000Z",
+						dueAt: "2026-07-29T00:02:59.000Z",
 					},
 				);
 			});
 			settle.close();
 
-			// Touching the executor's delivery path must now retire the stale entry.
-			// Enqueuing is the ordinary trigger: it calls #primeRunnerDelivery.
-			await sendHostRequest({
+			// The concrete session pulls again; no runner registration or in-memory
+			// driver attachment is involved.
+			const envelope = (await sendHostRequest({
 				socketPath,
 				secret,
-				action: "enqueue",
+				action: "next_delivery",
 				payload: {
-					sourceKind: "fly1503_item8",
-					sourceId: "fly1503-item8-second",
-					payload: JSON.stringify({ v: 1, note: "second message" }),
-					toAgent: "engineer",
-					kind: "lead_instruction",
-					retentionClass: "business",
+					sessionRef,
 				},
-			});
-
-			// RED before the fix: nothing ever retired the entry, so #pending kept a
-			// dead attempt forever and #primeRunnerDelivery early-returned for good,
-			// silently dropping every later delivery to this executor.
-			const deadline2 = Date.now() + 5_000;
-			while (errors.length === 0 && Date.now() < deadline2) {
-				await new Promise((resolve) => setTimeout(resolve, 10));
-			}
-			expect(
-				errors.map((error) =>
-					error instanceof Error ? error.message : String(error),
-				),
-			).toContainEqual(
-				expect.stringContaining(
-					`delivery attempt ${first?.message.attemptUid} was settled as crashed outside this host`,
-				),
-			);
-
-			// Codex R3: the previous version of this test recorded that a second
-			// delivery of the same message "cannot be" -- because logical_key
-			// collided -- and called that by design. R3 refuted the reasoning: a live
-			// runner is ADOPTED on restart rather than reaped, so the attempt
-			// generation never changes and reap/redispatch is not an escape. The
-			// executor really was stuck; item 8 had only converted a silent wedge into
-			// a loud repeating failure.
-			//
-			// A redelivery is now a declared successor of the intent it replaces, so
-			// the same message is delivered again on a new processing attempt.
-			const redeliveryDeadline = Date.now() + 5_000;
-			while (
-				!delivered
-					.slice(1)
-					.some(
-						(entry) => entry.message.messageUid === first?.message.messageUid,
-					) &&
-				Date.now() < redeliveryDeadline
-			) {
-				await new Promise((resolve) => setTimeout(resolve, 10));
-			}
-			const redelivered = delivered
-				.slice(1)
-				.find(
-					(entry) => entry.message.messageUid === first?.message.messageUid,
-				);
-			expect(redelivered).toBeTruthy();
-			expect(redelivered?.message.attemptUid).not.toBe(
-				first?.message.attemptUid,
-			);
+			})) as DeliveryEnvelope;
+			const redelivered: Delivered = {
+				sessionRef,
+				message: {
+					messageUid: envelope.message.messageUid,
+					attemptUid: envelope.handle.attemptUid,
+					payload: JSON.stringify(envelope),
+				},
+			};
+			expect(redelivered.message.messageUid).toBe(first.message.messageUid);
+			expect(redelivered.message.attemptUid).not.toBe(first.message.attemptUid);
 
 			// The ledger records BOTH deliveries as distinct effects, rather than
 			// rejecting the second with UNIQUE constraint failed: actions.logical_key.
@@ -503,16 +471,13 @@ describe("FLY-1503 item 8 — a crash-settled attempt must not wedge the executo
 
 			// And it SETTLES: the executor submits against the redelivered envelope's
 			// capability and the proposal is durably recorded.
-			const envelope = JSON.parse(
-				redelivered?.message.payload as string,
-			) as DeliveryEnvelope;
 			await expect(
 				sendHostRequest({
 					socketPath,
 					secret,
 					action: "submit_proposal",
 					payload: {
-						agentId: "engineer",
+						agentId: sessionRef,
 						attemptUid: envelope.handle.attemptUid,
 						messageUid: envelope.message.messageUid,
 						effects: [
@@ -532,18 +497,11 @@ describe("FLY-1503 item 8 — a crash-settled attempt must not wedge the executo
 	});
 });
 
-describe("FLY-1503 item 2 — evidenced generation takeover for a lead", () => {
-	it("refuses a new lead session without evidence and accepts it with evidence", async () => {
+describe("FLY-1543 item 1 — lead registration is the takeover", () => {
+	it("directly displaces the prior lead generation", async () => {
 		const fixture = bootFixture();
 		await fixture.ready();
-		const {
-			secret,
-			socketPath,
-			leadSessions,
-			deadPids,
-			unprobablePids,
-			makeHost,
-		} = fixture;
+		const { secret, socketPath, leadSessions, makeHost } = fixture;
 
 		const first = {
 			sessionId: "lead-session-1",
@@ -564,10 +522,7 @@ describe("FLY-1503 item 2 — evidenced generation takeover for a lead", () => {
 			pidStart: second.pidStart,
 		});
 
-		const registerLead = (
-			session: typeof first,
-			deathEvidence?: Record<string, unknown>,
-		) =>
+		const registerLead = (session: typeof first) =>
 			sendHostRequest({
 				socketPath,
 				secret,
@@ -582,7 +537,6 @@ describe("FLY-1503 item 2 — evidenced generation takeover for a lead", () => {
 						pid: session.pid,
 						pidStart: session.pidStart,
 					},
-					...(deathEvidence ? { deathEvidence } : {}),
 				},
 			});
 
@@ -592,74 +546,7 @@ describe("FLY-1503 item 2 — evidenced generation takeover for a lead", () => {
 			await expect(registerLead(first)).resolves.toMatchObject({
 				generation: 1,
 			});
-
-			// A different live session for the same lead is a takeover, and without
-			// evidence it must still be refused.
-			await expect(registerLead(second)).rejects.toThrow(
-				/evidenced generation takeover/,
-			);
-
-			// Codex R1 HIGH-1: every runner is handed the host secret, so
-			// deathEvidence is attacker-suppliable. While the current lead session is
-			// still live the takeover MUST be refused no matter how well-formed the
-			// evidence is -- otherwise a runner could displace a live lead, settle its
-			// running attempts and inherit its mailbox.
-			await expect(
-				registerLead(second, {
-					agentId: "lead-runtime",
-					generation: 1,
-					confirmedAbsentAt: "2026-07-29T00:05:00.000Z",
-				}),
-			).rejects.toThrow(/prior lead process is still live/);
-
-			// Codex R2 HIGH-1: the session proof is a 0600 file under the same uid as
-			// every runner, so deleting it must NOT be readable as death. With the
-			// process still alive the takeover stays refused even with no proof.
-			leadSessions.delete(first.sessionId);
-			await expect(
-				registerLead(second, {
-					agentId: "lead-runtime",
-					generation: 1,
-					confirmedAbsentAt: "2026-07-29T00:05:00.000Z",
-				}),
-			).rejects.toThrow(/prior lead process is still live/);
-
-			// Codex R3 HIGH-1: a probe that cannot answer for the prior pid must be
-			// `probe_unavailable`, not absence. The previous canary read "the probe
-			// answered for some other pid" as proof, which a probe failing only for
-			// the target pid defeats -- so this case must fail closed on its own.
-			unprobablePids.add(first.pid);
-			await expect(
-				registerLead(second, {
-					agentId: "lead-runtime",
-					generation: 1,
-					confirmedAbsentAt: "2026-07-29T00:05:00.000Z",
-				}),
-			).rejects.toThrow(/process probe is unavailable/);
-			unprobablePids.delete(first.pid);
-
-			// The prior process now genuinely goes away.
-			deadPids.add(first.pid);
-
-			// Evidence that does not pin the current generation is still refused.
-			await expect(
-				registerLead(second, {
-					agentId: "lead-runtime",
-					generation: 99,
-					confirmedAbsentAt: "2026-07-29T00:05:00.000Z",
-				}),
-			).rejects.toThrow(/death evidence does not match current generation/);
-
-			// RED before item 2: registerAgentTx accepted DeathEvidence and
-			// driver.registerLead forwarded it, but #registerLead never passed any,
-			// so a lead whose session was confirmed dead could never be replaced.
-			await expect(
-				registerLead(second, {
-					agentId: "lead-runtime",
-					generation: 1,
-					confirmedAbsentAt: "2026-07-29T00:05:00.000Z",
-				}),
-			).resolves.toMatchObject({
+			await expect(registerLead(second)).resolves.toMatchObject({
 				kind: "lead",
 				agentId: "lead-runtime",
 				instanceId: second.sessionId,
@@ -1236,20 +1123,17 @@ describe("FLY-1503 item 1 — the envelope carries the delivery protocol", () =>
 	it("tells the executor how to settle without relying on pretrained knowledge", async () => {
 		const fixture = bootFixture();
 		await fixture.ready();
-		const { makeHost } = fixture;
+		const { launchRequests, makeHost } = fixture;
 
 		const delivered: Delivered[] = [];
 		const host = makeHost([], delivered);
 		try {
 			await host.start();
 			await host.runCoordinatorOnce();
-			const deadline = Date.now() + 5_000;
-			while (delivered.length === 0 && Date.now() < deadline) {
-				await new Promise((resolve) => setTimeout(resolve, 10));
-			}
-			expect(delivered).toHaveLength(1);
+			expect(launchRequests).toHaveLength(1);
+			expect(delivered).toEqual([]);
 			const envelope = JSON.parse(
-				delivered[0]?.message.payload as string,
+				launchRequests[0]?.context.firstEnvelope as string,
 			) as DeliveryEnvelope;
 
 			// RED before the fix: the envelope carried only message/handle/
@@ -1271,7 +1155,8 @@ describe("FLY-1503 item 1 — the envelope carries the delivery protocol", () =>
 			);
 			expect(envelope.protocol.effects.allowedKinds).toEqual(["event", "task"]);
 			// The reporting route matters most: there is no side channel.
-			expect(envelope.protocol.reporting).toMatch(/event.*effect/);
+			expect(envelope.protocol.reporting).toMatch(/effects.*`ask` verb/);
+			expect(envelope.protocol.reporting).toMatch(/ask_response/);
 		} finally {
 			await host.close();
 		}

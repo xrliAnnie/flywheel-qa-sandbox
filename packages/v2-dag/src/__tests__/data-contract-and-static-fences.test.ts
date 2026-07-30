@@ -202,4 +202,16 @@ describe("data-owned contracts and semantic fences", () => {
 			expect(source).not.toMatch(/observed_(state|at)|observation_kind/);
 		}
 	});
+
+	it("routes every production attempt-terminal write through one primitive", () => {
+		const terminalWriters = sourceFiles(join(import.meta.dirname, ".."))
+			.filter((path) =>
+				/FENCE\.attemptCasActiveTerminal|SET\s+desired_state\s*=\s*['"]terminal['"]/i.test(
+					readFileSync(path, "utf8"),
+				),
+			)
+			.map((path) => path.split("/").at(-1));
+
+		expect(terminalWriters).toEqual(["attempt-terminal.ts"]);
+	});
 });
