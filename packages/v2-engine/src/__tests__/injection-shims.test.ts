@@ -106,7 +106,7 @@ describe("vendor InjectionShim implementations", () => {
 		).toEqual(["constructor", "deliver", "hint"]);
 	});
 
-	it("writes a stock-compatible Claude mailbox entry and dedupes a repeated messageUid", async () => {
+	it("writes a stock-compatible Claude mailbox entry and dedupes a repeated delivery", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1501-claude-shim-"));
 		tempRoots.push(root);
 		const inboxPath = join(root, "inboxes", "runner-a.json");
@@ -136,8 +136,10 @@ describe("vendor InjectionShim implementations", () => {
 				read: false,
 			}),
 		]);
+		// FLY-1503 item 10: the sidecar id is the message/attempt pair, so a
+		// redelivery to a replacement terminal is not mistaken for a replay.
 		expect(readFileSync(sidecarPath, "utf8")).toContain(
-			`"flywheelId":"${MESSAGE.messageUid}"`,
+			`"flywheelId":"${MESSAGE.messageUid}:${MESSAGE.attemptUid}"`,
 		);
 	});
 
@@ -191,7 +193,7 @@ describe("vendor InjectionShim implementations", () => {
 				params: {
 					threadId: "thread-1",
 					input: [{ type: "text", text: ENVELOPE }],
-					clientUserMessageId: MESSAGE.messageUid,
+					clientUserMessageId: `${MESSAGE.messageUid}:${MESSAGE.attemptUid}`,
 				},
 			},
 		]);
@@ -210,6 +212,72 @@ describe("vendor InjectionShim implementations", () => {
 				),
 			).toBe(false);
 		}
+	});
+
+	it("starts a second Codex turn for the same message on a new processing attempt", async () => {
+		// Codex R4 MEDIUM-6: deduping on messageUid alone cancelled this PR's
+		// redelivery semantics. After a crash the same message is delivered again on
+		// a NEW attempt uid; the shim found attempt A's correlation, skipped
+		// turn/start and resolved, so the host recorded attempt B as delivered while
+		// the runner never received B's envelope or capability -- wedging the
+		// processing attempt again, which is the failure this PR exists to fix.
+		const transports: FakeDaemonTransport[] = [];
+		// A shared correlation set: the fake records each accepted turn/start the way
+		// a real thread persists it, so the second deliver genuinely reads back what
+		// the first one wrote.
+		const correlations = new Set<string>();
+		let active = 0;
+		const connect = vi.fn(async () => {
+			active++;
+			const transport = new FakeDaemonTransport(
+				"success",
+				() => active--,
+				correlations,
+			);
+			transports.push(transport);
+			return transport;
+		});
+		const shim = new CodexInjectionShim({
+			connect,
+			connectTimeoutMs: 123,
+			rpcTimeoutMs: 456,
+		});
+		const sessionRef = JSON.stringify({
+			v: 1,
+			backend: "codex",
+			socketPath: "/tmp/flywheel-codex.sock",
+			threadId: "thread-1",
+		});
+
+		// Attempt A was already delivered and its correlation is durable in the
+		// thread. Seed the MESSAGE-ONLY key, because that is what a pre-fix shim
+		// wrote -- so this also covers a thread carrying pre-upgrade correlations.
+		correlations.add(MESSAGE.messageUid);
+		correlations.add(`${MESSAGE.messageUid}:${MESSAGE.attemptUid}`);
+		// MESSAGE is already attempt #2, so the crash-replacement is #3.
+		const redelivered = {
+			...MESSAGE,
+			attemptUid: `${MESSAGE.messageUid}#3`,
+		};
+		await shim.deliver(sessionRef, redelivered);
+
+		const started = transports.flatMap((transport) =>
+			transport.frames
+				.filter(
+					(frame) => (frame as { method?: string }).method === "turn/start",
+				)
+				.map(
+					(frame) =>
+						(frame as { params?: { clientUserMessageId?: string } }).params
+							?.clientUserMessageId,
+				),
+		);
+		// RED before the fix: the shim matched attempt A's message correlation,
+		// skipped turn/start and resolved, so the runner never received B.
+		expect(started).toEqual([
+			`${MESSAGE.messageUid}:${redelivered.attemptUid}`,
+		]);
+		expect(active).toBe(0);
 	});
 
 	it.each([

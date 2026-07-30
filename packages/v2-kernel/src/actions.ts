@@ -25,6 +25,40 @@ export type ActionActor =
 
 export type ActionState = "intended" | "succeeded" | "failed";
 
+/**
+ * The identity of a logical effect, independent of which invocation carried it.
+ *
+ * `actions_one_root_per_logical` is UNIQUE on this WHERE supersedes_action_id IS
+ * NULL, so a second ROOT action for the same logical effect is refused while a
+ * declared successor is allowed. A caller that must legitimately re-issue an
+ * effect therefore has to find the existing chain and supersede its tip, and to
+ * do that it needs this derivation. It is exported so no caller has to
+ * reimplement it -- a divergent copy would compute a key that does not match the
+ * index the database enforces.
+ */
+export function deriveActionLogicalKey(spec: {
+	actorAgentId: string;
+	attemptGeneration?: number;
+	attemptId?: string;
+	cutoverEpoch: number;
+	kind: string;
+	logicalEffectId: string;
+	taskId?: string;
+}): string {
+	const taskId = spec.taskId ?? null;
+	return digest(
+		canonicalize({
+			attemptGeneration: spec.attemptGeneration ?? null,
+			attemptId: spec.attemptId ?? null,
+			cutoverEpoch: spec.cutoverEpoch,
+			kind: spec.kind,
+			logicalEffectId: spec.logicalEffectId,
+			taskId,
+			unboundActorAgentId: taskId === null ? spec.actorAgentId : null,
+		}),
+	);
+}
+
 export interface RecordActionIntentSpec {
 	id: string;
 	taskId?: string;
@@ -374,17 +408,15 @@ export function recordActionIntent(
 					),
 					reason: requireNonEmpty(spec.retryBasis.reason, "retryBasis.reason"),
 				});
-	const logicalKey = digest(
-		canonicalize({
-			attemptGeneration,
-			attemptId,
-			cutoverEpoch: spec.cutoverEpoch,
-			kind: spec.kind,
-			logicalEffectId: spec.logicalEffectId,
-			taskId,
-			unboundActorAgentId: taskId === null ? spec.actor.agentId : null,
-		}),
-	);
+	const logicalKey = deriveActionLogicalKey({
+		actorAgentId: spec.actor.agentId,
+		...(attemptGeneration === null ? {} : { attemptGeneration }),
+		...(attemptId === null ? {} : { attemptId }),
+		cutoverEpoch: spec.cutoverEpoch,
+		kind: spec.kind,
+		logicalEffectId: spec.logicalEffectId,
+		...(taskId === null ? {} : { taskId }),
+	});
 	const effectKey = digest(
 		canonicalize({
 			invocationUid: spec.invocationUid,

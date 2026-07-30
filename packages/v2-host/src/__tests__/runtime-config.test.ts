@@ -29,6 +29,10 @@ describe("host runtime config and launcher protocol", () => {
 					kind: "tmux",
 					tmux_bin: "/usr/local/bin/tmux",
 					claude_bin: "/opt/flywheel/claude",
+					// Codex R4 MEDIUM-2: required. Without a named credentials source a
+					// per-activation config dir has none, and the runner parks on a login
+					// screen instead of failing.
+					claude_credentials: "/opt/flywheel/claude-credentials.json",
 					codex_bin: "/opt/flywheel/codex",
 					client_cli: "/opt/flywheel/v2-cli.js",
 					release_root: "/tmp/v2-release",

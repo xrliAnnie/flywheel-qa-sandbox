@@ -7,6 +7,7 @@ import {
 	openSync,
 	readFileSync,
 	renameSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
@@ -96,11 +97,16 @@ const VERB_FLAGS: Record<Verb, ReadonlySet<string>> = {
 	"register-lead": new Set([
 		"--agent",
 		"--instance",
+		"--death-evidence-file",
 		"--host-epoch",
 		"--session-id",
 		"--session-proof-root",
 		"--pid",
 		"--pid-start",
+		// Codex R3 HIGH-2: where to keep the pull credential this registration is
+		// handed. Given, the credential is written 0600 and redacted from stdout so
+		// it does not reach a log.
+		"--delivery-credential-out",
 	]),
 	enqueue: new Set([
 		"--source-kind",
@@ -110,7 +116,9 @@ const VERB_FLAGS: Record<Verb, ReadonlySet<string>> = {
 		"--kind",
 		"--retention",
 	]),
-	next: new Set(["--agent"]),
+	// Codex R3 HIGH-2: a pull is authorised by the credential minted for this
+	// registration, not by the global host secret plus a self-declared --agent.
+	next: new Set(["--agent", "--delivery-credential-file"]),
 	submit: new Set([
 		"--agent",
 		"--attempt",
@@ -225,6 +233,69 @@ function parseEffectsFile(path: string): unknown[] {
 function parseJsonFile(path: string, flag = "--request-file"): unknown {
 	if (!isAbsolute(path)) throw new TypeError(`${flag} must be absolute`);
 	return JSON.parse(readFileSync(path, "utf8")) as unknown;
+}
+
+interface DeliveryCredential {
+	credentialId: string;
+	token: string;
+}
+
+function parseDeliveryCredential(
+	value: unknown,
+	source: string,
+): DeliveryCredential {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new TypeError(`${source} is not a delivery credential`);
+	}
+	const record = value as Record<string, unknown>;
+	if (
+		typeof record.credentialId !== "string" ||
+		record.credentialId.length === 0 ||
+		typeof record.token !== "string" ||
+		!/^[0-9a-f]{64}$/.test(record.token)
+	) {
+		throw new TypeError(`${source} is not a delivery credential`);
+	}
+	return { credentialId: record.credentialId, token: record.token };
+}
+
+/**
+ * Codex R3 HIGH-2: keep the pull credential out of argv and out of stdout.
+ *
+ * argv is world-readable to every same-uid process, which is exactly the
+ * attacker in this finding, so the credential is never passed as a flag value --
+ * only as a path to a 0600 file. Redacting it from the printed result keeps it
+ * out of whatever collects the launcher's output.
+ */
+function stashDeliveryCredential(path: string, result: unknown): unknown {
+	if (typeof result !== "object" || result === null || Array.isArray(result)) {
+		throw new TypeError("register_lead result is not an object");
+	}
+	const record = result as Record<string, unknown>;
+	const credential = parseDeliveryCredential(
+		record.deliveryCredential,
+		"register_lead result",
+	);
+	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	const fd = openSync(path, "w", 0o600);
+	try {
+		writeFileSync(fd, `${JSON.stringify(credential)}\n`);
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+	chmodSync(path, 0o600);
+	return { ...record, deliveryCredential: { storedAt: path } };
+}
+
+function readDeliveryCredential(path: string): DeliveryCredential {
+	if ((statSync(path).mode & 0o777) !== 0o600) {
+		throw new Error("delivery credential file must be mode 0600");
+	}
+	return parseDeliveryCredential(
+		parseJsonFile(path, "--delivery-credential-file"),
+		"--delivery-credential-file",
+	);
 }
 
 function databaseOptions(
@@ -406,6 +477,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 				pid,
 				pidStart: requestedStart,
 			});
+			// FLY-1503 item 2: without this the host had no way to receive death
+			// evidence, so a lead whose session was confirmed dead could never be
+			// replaced by a new generation.
+			const deathEvidencePath = parsed.values.get("--death-evidence-file");
+			const credentialOut = parsed.values.get("--delivery-credential-out");
+			if (credentialOut !== undefined && !isAbsolute(credentialOut)) {
+				throw new TypeError("--delivery-credential-out must be absolute");
+			}
 			result = await client.request("register_lead", {
 				agentId: requireValue(parsed.values, "--agent"),
 				instanceId: requireValue(parsed.values, "--instance"),
@@ -416,7 +495,18 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 					pid,
 					pidStart: requestedStart,
 				},
+				...(deathEvidencePath === undefined
+					? {}
+					: {
+							deathEvidence: parseJsonFile(
+								deathEvidencePath,
+								"--death-evidence-file",
+							),
+						}),
 			});
+			if (credentialOut !== undefined) {
+				result = stashDeliveryCredential(credentialOut, result);
+			}
 			break;
 		}
 		case "enqueue":
@@ -432,6 +522,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 		case "next":
 			result = await client.request("next_delivery", {
 				agentId: requireValue(parsed.values, "--agent"),
+				deliveryCredential: readDeliveryCredential(
+					requireAbsolute(parsed.values, "--delivery-credential-file"),
+				),
 			});
 			break;
 		case "submit":

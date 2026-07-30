@@ -27,10 +27,17 @@ exit 0
 EOF
 chmod +x "$BIN/launchctl"
 
-HOST_CLI="$TMP/fake-host.js"
-cat > "$HOST_CLI" <<'EOF'
-process.exit(1);
-EOF
+# FLY-1503 MEDIUM-1: the installer now proves the REAL host parser accepts the
+# config before anything is bounced, so this test must use the real host module.
+# The old fake host never parsed a config, which is why a config the production host
+# rejects outright still produced a green install test -- a false green that would
+# have taken the engine down on the next restart.
+REPO_ROOT_FOR_TEST="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HOST_CLI="$REPO_ROOT_FOR_TEST/packages/v2-host/dist/cli.js"
+if [[ ! -f "$HOST_CLI" ]]; then
+  echo "SKIP: build packages/v2-host before running this suite" >&2
+  exit 0
+fi
 CLIENT_CLI="$TMP/fake-client.js"
 cat > "$CLIENT_CLI" <<EOF
 if (process.argv.includes("health") && require("node:fs").existsSync("$BOOTSTRAPPED")) {
@@ -48,10 +55,13 @@ SOCKET="$TMP/v2.sock"
 SECRET="$TMP/host.secret"
 PROOFS="$TMP/session-proofs"
 RUNTIME="$TMP/runtime.json"
+CREDENTIALS="$TMP/claude-credentials.json"
 LOG="$TMP/host.log"
 touch "$DB" "$MARKER" "$AUTHORITY" "$ARMED"
 printf 'test-secret\n' > "$SECRET"
 chmod 600 "$SECRET"
+printf '{"claudeAiOauth":{"accessToken":"install-test-token"}}\n' > "$CREDENTIALS"
+chmod 600 "$CREDENTIALS"
 cat > "$RUNTIME" <<EOF
 {
   "v": 1,
@@ -62,6 +72,7 @@ cat > "$RUNTIME" <<EOF
     "kind": "tmux",
     "tmux_bin": "/bin/echo",
     "claude_bin": "/bin/echo",
+    "claude_credentials": "$CREDENTIALS",
     "codex_bin": "/bin/echo",
     "client_cli": "$CLIENT_CLI",
     "release_root": "$TMP/runtime/release",
@@ -133,6 +144,51 @@ if env HOME="$HOME_DIR" PATH="$BIN:$PATH" \
   fail "unsupported parallel/fallback backend was accepted"
 else
   pass "non-launchd backend fails loud; no fallback starts"
+fi
+
+# FLY-1503 MEDIUM-1: the exact config shape that would have taken production down --
+# the pre-upgrade launcher section with no claude_credentials. The installer must
+# refuse it, name the missing field, and never reach launchd.
+LEGACY_RUNTIME="$TMP/runtime-legacy.json"
+jq 'del(.launcher.claude_credentials)' "$RUNTIME" > "$LEGACY_RUNTIME"
+chmod 600 "$LEGACY_RUNTIME"
+LEGACY_LAUNCHD_DIR="$TMP/launchd-legacy"
+mkdir -p "$LEGACY_LAUNCHD_DIR"
+: > "$CALLS"
+LEGACY_COMMON=(
+  --window window-1 --epoch 1 --host-epoch host-1
+  --db "$DB" --marker "$MARKER" --authority "$AUTHORITY" --armed "$ARMED"
+  --socket "$SOCKET" --secret "$SECRET" --session-proof-root "$PROOFS"
+  --runtime-config "$LEGACY_RUNTIME" --host-cli "$HOST_CLI" --client-cli "$CLIENT_CLI"
+  --log "$LOG"
+)
+if env HOME="$HOME_DIR" PATH="$BIN:$PATH" \
+    FLYWHEEL_LAUNCHD_DIR="$LEGACY_LAUNCHD_DIR" \
+    FLYWHEEL_SUPERVISOR_BACKEND=launchd \
+    "$INSTALL" "${LEGACY_COMMON[@]}" >"$TMP/legacy-out" 2>"$TMP/legacy-err"; then
+  fail "installer accepted a runtime config the real host rejects"
+elif ! grep -q "claude_credentials" "$TMP/legacy-err"; then
+  fail "installer refused the pre-upgrade config without naming claude_credentials: $(cat "$TMP/legacy-err")"
+elif grep -q "launchctl bootstrap" "$CALLS"; then
+  fail "installer reached launchd with a config the real host rejects"
+else
+  pass "installer refuses a pre-upgrade runtime config before touching launchd"
+fi
+
+# --validate-only proves a good config without installing anything, so an operator
+# can check before restarting a live host.
+VALIDATE_LAUNCHD_DIR="$TMP/launchd-validate"
+mkdir -p "$VALIDATE_LAUNCHD_DIR"
+: > "$CALLS"
+if env HOME="$HOME_DIR" PATH="$BIN:$PATH" \
+    FLYWHEEL_LAUNCHD_DIR="$VALIDATE_LAUNCHD_DIR" \
+    FLYWHEEL_SUPERVISOR_BACKEND=launchd \
+    "$INSTALL" "${COMMON[@]}" --validate-only >"$TMP/validate-out" 2>"$TMP/validate-err" \
+  && ! grep -q "launchctl bootstrap" "$CALLS" \
+  && [[ ! -f "$VALIDATE_LAUNCHD_DIR/com.flywheel.v2-engine.plist" ]]; then
+  pass "--validate-only accepts a good config without installing"
+else
+  fail "--validate-only contract: out=$(cat "$TMP/validate-out") err=$(cat "$TMP/validate-err")"
 fi
 
 echo "v2-host-install.test: $PASSED passed, $FAILED failed"

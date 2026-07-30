@@ -18,7 +18,10 @@ function liveProbe(
 	overrides: Partial<SessionEvidenceProbe> = {},
 ): SessionEvidenceProbe {
 	return {
-		processStart: () => binding.pidStart,
+		processStart: () => ({
+			status: "present" as const,
+			startIdentity: binding.pidStart,
+		}),
 		sessionOwner: () => ({
 			pid: binding.pid,
 			pidStart: binding.pidStart,
@@ -111,7 +114,10 @@ describe("generation-scoped session reattach", () => {
 				expected,
 				hostEpoch: "test-host-epoch",
 				probe: liveProbe(expected.sessionBinding, {
-					processStart: () => "reused-pid-start",
+					processStart: () => ({
+						status: "present",
+						startIdentity: "reused-pid-start",
+					}),
 				}),
 			}),
 		).toThrow(/process start identity/);
@@ -198,7 +204,10 @@ describe("generation-scoped session reattach", () => {
 						),
 					);
 				}
-				return expected.sessionBinding.pidStart;
+				return {
+					status: "present",
+					startIdentity: expected.sessionBinding.pidStart,
+				};
 			},
 		});
 

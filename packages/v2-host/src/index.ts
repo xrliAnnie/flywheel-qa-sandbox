@@ -4,6 +4,8 @@ export {
 } from "./coordinator.js";
 export {
 	type DeliveryEnvelope,
+	deliveryActionId,
+	deliveryLogicalEffectId,
 	V2Host,
 	type V2HostOptions,
 } from "./host.js";
@@ -29,7 +31,10 @@ export {
 	type RuntimeLaunchRequest,
 } from "./runtime-ports.js";
 export {
+	classifyProbeOutput,
 	FileSessionEvidenceProbe,
+	probeProcessStart,
+	probeProcessStartWithBin,
 	publishSessionProof,
 	readProcessStartIdentity,
 } from "./session-evidence.js";

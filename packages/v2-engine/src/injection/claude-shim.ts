@@ -40,15 +40,25 @@ export class ClaudeInjectionShim implements InjectionShim {
 				false,
 			);
 		}
+		// FLY-1503 item 10: key the sidecar on message *and* attempt.
+		// Inbox and sidecar paths are per-agent and shared by every activation and
+		// generation, so keying on messageUid alone meant that once a message was
+		// finalized, redelivering it to a replacement terminal was skipped and
+		// reported as idempotent success -- the new terminal silently never received
+		// it. Keying on attemptUid alone is not enough either: it would let two
+		// distinct messages that share an attempt collapse into one. The pair keeps
+		// both invariants -- distinct messages always land, a new generation gets
+		// through, and a genuine replay of the same delivery attempt still dedupes.
+		const deliveryId = `${message.messageUid}:${message.attemptUid}`;
 		await writeMailboxEntry({
 			inboxPath: target.inboxPath,
 			sidecarPath: target.sidecarPath,
-			flywheelId: message.messageUid,
+			flywheelId: deliveryId,
 			payload: {
 				from: "flywheel-v2",
 				to: target.toAgent,
 				content,
-				metadata: { flywheelId: message.messageUid },
+				metadata: { flywheelId: deliveryId },
 			},
 		});
 	}

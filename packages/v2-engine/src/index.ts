@@ -21,10 +21,13 @@ export {
 	type CodexInjectionShimOptions,
 } from "./injection/codex-shim.js";
 export {
+	classifySessionProcess,
+	type ProcessStartProbe,
 	type ReattachAgentOptions,
 	reattachAgent,
 	registerAgentTx,
 	type SessionEvidenceProbe,
+	type SessionProcessState,
 } from "./registration.js";
 export {
 	canonicalProposalDigest,

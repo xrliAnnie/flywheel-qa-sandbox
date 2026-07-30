@@ -113,12 +113,23 @@ export class CodexInjectionShim implements InjectionShim {
 				target.threadId,
 				this.rpcTimeoutMs,
 			);
-			if (!deliveredCorrelationExists(existing, message.messageUid)) {
+			// Codex R4 MEDIUM-6: correlate on message AND processing attempt, the
+			// same key the Claude sidecar uses (FLY-1503 item 10).
+			//
+			// Deduping on messageUid alone cancelled the redelivery semantics this PR
+			// introduced. After a crash the same message is delivered again on a NEW
+			// attempt uid; the shim would have found attempt A's correlation, skipped
+			// turn/start and resolved, so the host recorded attempt B's delivery as
+			// succeeded while the runner never received B's envelope or capability --
+			// and the processing attempt wedged again, which is the exact failure the
+			// PR exists to fix.
+			const deliveryId = `${message.messageUid}:${message.attemptUid}`;
+			if (!deliveredCorrelationExists(existing, deliveryId)) {
 				await client.startTurn(
 					target.threadId,
 					encodeInjectionEnvelope(message),
 					this.rpcTimeoutMs,
-					message.messageUid,
+					deliveryId,
 				);
 			}
 		} finally {

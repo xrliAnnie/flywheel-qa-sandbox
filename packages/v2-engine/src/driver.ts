@@ -196,7 +196,12 @@ export class EngineDriver {
 		});
 	}
 
-	attachRunner(agentId: string, agent: RegisteredAgent): Promise<void> {
+	attachRunner(
+		agentId: string,
+		agent: RegisteredAgent,
+		hostEpoch?: string,
+		probe?: SessionEvidenceProbe,
+	): Promise<void> {
 		return this.#serialize(agentId, () => {
 			this.#assertRunning();
 			if (agent.kind !== "runner" || agent.agentId !== agentId) {
@@ -206,12 +211,13 @@ export class EngineDriver {
 			if (previous) {
 				this.#assertNoInFlightActions(previous, "replace runner attachment");
 			}
-			this.#kernel.read((tx) => {
+			const durableState = this.#kernel.read((tx) => {
 				const row = tx.get<{
 					kind: string;
 					generation: number;
 					instance_id: string | null;
 					session_binding: string | null;
+					state: string;
 				}>(ENGINE_SQL.readAgent, { agentId });
 				if (
 					!row ||
@@ -222,7 +228,35 @@ export class EngineDriver {
 				) {
 					throw new FenceViolation(`runner ${agentId} is not current`);
 				}
+				return row.state;
 			});
+			// Codex R1 MEDIUM-2: the reattach authority must not be silently
+			// skippable. A row that is not online needs the durable reattach below,
+			// so omitting the authority there is a caller bug and fails closed rather
+			// than handing out an in-memory attachment with no evidence. An already
+			// online row has nothing to restore, which is why the existing callers
+			// that legitimately omit it still work.
+			if (
+				durableState !== "online" &&
+				(hostEpoch === undefined || probe === undefined)
+			) {
+				throw new FenceViolation(
+					`runner ${agentId} reattach requires a host epoch and session probe`,
+				);
+			}
+			// FLY-1503 item 9: durably restore the binding the way reattachLead
+			// does. Shutdown casOffline's every agent, and attaching a runner used
+			// to touch only in-memory state, so casReattachAgent was unreachable
+			// for runners and a restarted host left a live runner marked offline.
+			if (hostEpoch !== undefined && probe !== undefined) {
+				reattachAgent({
+					kernel: this.#kernel,
+					runtime: this.#runtime,
+					expected: agent,
+					hostEpoch,
+					probe,
+				});
+			}
 			const founderStreak = this.#kernel.read(
 				(tx) => readEngineConfigTx(tx).vipBurst,
 			);
@@ -241,6 +275,19 @@ export class EngineDriver {
 		this.#assertRunning();
 		const state = this.#requireState(agentId);
 		let attemptHint = currentAttemptUid ?? state.currentAttemptUid;
+		// FLY-1503 item 8: driver.stop() and a generation takeover both settle a
+		// running processing attempt as 'crashed'. The in-memory hint kept pointing
+		// at that settled attempt, so pollOnce never handed out the next message
+		// and the executor stayed wedged. A hint whose attempt is no longer running
+		// is stale by definition, so ignore it for this poll.
+		//
+		// Only the local hint is dropped: state.currentAttemptUid is deliberately
+		// left alone so the generation fences that read it (#requireHandleState,
+		// and through it submitProposal) keep reporting the precise reason a stale
+		// driver was refused. It is overwritten below if a new message arrives.
+		if (attemptHint !== undefined && !this.#attemptIsRunning(attemptHint)) {
+			attemptHint = undefined;
+		}
 		if (state.lastError instanceof PollTransientError) {
 			state.lastError = undefined;
 			state.currentAttemptUid = undefined;
@@ -568,6 +615,19 @@ export class EngineDriver {
 		} catch (error) {
 			return wrapPollError(error);
 		}
+	}
+
+	/** FLY-1503 item 8: is this processing attempt still the live one? */
+	#attemptIsRunning(attemptUid: string): boolean {
+		return (
+			this.#kernel.read(
+				(tx) =>
+					tx.get<{ outcome: string }>(
+						"SELECT outcome FROM processing_attempts WHERE attempt_uid=@attemptUid",
+						{ attemptUid },
+					)?.outcome,
+			) === "running"
+		);
 	}
 
 	#requireHandleState(handle: AttemptHandle): AgentState {

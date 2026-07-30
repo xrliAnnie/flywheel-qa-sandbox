@@ -13,6 +13,10 @@ const EXPECTED_RUNTIME_EXPORTS = [
 	"MAX_PROPOSAL_TOTAL_BYTES",
 	"PollTransientError",
 	"canonicalProposalDigest",
+	// Codex R3 HIGH-1: the four-state adjudication of a process probe result is
+	// part of the public fence contract -- every consumer that decides whether a
+	// session is dead must reach the same verdict from the same evidence.
+	"classifySessionProcess",
 	"enqueue",
 	"initializeEngineDb",
 	"issueProposalCapability",

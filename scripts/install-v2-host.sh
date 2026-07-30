@@ -18,9 +18,13 @@ RUNTIME_CONFIG=""
 HOST_CLI="$REPO_ROOT/packages/v2-host/dist/cli.js"
 CLIENT_CLI="$REPO_ROOT/packages/v2-cli/dist/cli.js"
 LOG_PATH="/tmp/flywheel-v2-engine.log"
+# FLY-1503 MEDIUM-1: let an operator prove a runtime config is acceptable BEFORE
+# bouncing the host. Without this the only way to discover a rejected config was a
+# launchd KeepAlive restart loop with the engine already down.
+VALIDATE_ONLY=0
 
 usage() {
-  echo "usage: install-v2-host.sh --window <id> --epoch <n> --host-epoch <id> --runtime-config <abs> [--db <abs>] [--marker <abs>] [--authority <abs>] [--armed <abs>] [--socket <abs>] [--secret <abs>] [--session-proof-root <abs>] [--host-cli <abs>] [--client-cli <abs>] [--log <abs>]" >&2
+  echo "usage: install-v2-host.sh --window <id> --epoch <n> --host-epoch <id> --runtime-config <abs> [--db <abs>] [--marker <abs>] [--authority <abs>] [--armed <abs>] [--socket <abs>] [--secret <abs>] [--session-proof-root <abs>] [--host-cli <abs>] [--client-cli <abs>] [--log <abs>] [--validate-only]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -39,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     --host-cli) HOST_CLI="${2:-}"; shift 2 ;;
     --client-cli) CLIENT_CLI="${2:-}"; shift 2 ;;
     --log) LOG_PATH="${2:-}"; shift 2 ;;
+    --validate-only) VALIDATE_ONLY=1; shift ;;
     *) usage; exit 2 ;;
   esac
 done
@@ -79,6 +84,20 @@ file_mode() {
   echo "runtime config must have mode 0600 before installation" >&2
   exit 1
 }
+# FLY-1503 MEDIUM-1: the host validates the launcher section with an EXACT key set,
+# so a config missing claude_credentials is rejected before the socket is even
+# opened -- with launchd KeepAlive that means the engine is simply down. The
+# installer must therefore reject exactly what the host rejects. Keep this key list
+# in step with parseRuntimeConfig in packages/v2-host/src/cli.ts.
+RUNTIME_LAUNCHER_KEYS="claude_bin claude_credentials client_cli codex_bin kind release_root state_root tmux_bin"
+ACTUAL_LAUNCHER_KEYS="$(jq -r '.launcher | keys | join(" ")' "$RUNTIME_CONFIG" 2>/dev/null || echo "")"
+if [[ "$ACTUAL_LAUNCHER_KEYS" != "$RUNTIME_LAUNCHER_KEYS" ]]; then
+  echo "runtime launcher keys do not match what the host accepts" >&2
+  echo "  expected: $RUNTIME_LAUNCHER_KEYS" >&2
+  echo "  actual:   ${ACTUAL_LAUNCHER_KEYS:-<none>}" >&2
+  echo "upgrading an existing install? add launcher.claude_credentials BEFORE restarting the host" >&2
+  exit 1
+fi
 RUNTIME_BINS="$(jq -er '
   select(
     .v == 1 and
@@ -86,6 +105,7 @@ RUNTIME_BINS="$(jq -er '
     ([.launcher.tmux_bin, .launcher.claude_bin, .launcher.codex_bin] |
       all(type == "string" and startswith("/"))) and
     (.launcher.client_cli | type == "string" and startswith("/")) and
+    (.launcher.claude_credentials | type == "string" and startswith("/")) and
     (.launcher.release_root | type == "string" and startswith("/")) and
     (.launcher.state_root | type == "string" and startswith("/"))
   ) |
@@ -109,6 +129,59 @@ done <<< "$RUNTIME_BINS"
   echo "runtime config did not yield the three required tmux/vendor binaries" >&2
   exit 1
 }
+
+# FLY-1503 MEDIUM-2: the credentials source must satisfy the same rules the
+# launcher enforces at spawn time, or the first runner fails after install rather
+# than here.
+CLAUDE_CREDENTIALS="$(jq -r '.launcher.claude_credentials' "$RUNTIME_CONFIG")"
+[[ -f "$CLAUDE_CREDENTIALS" && ! -L "$CLAUDE_CREDENTIALS" ]] || {
+  echo "claude_credentials must be an existing regular file (not a symlink): $CLAUDE_CREDENTIALS" >&2
+  exit 1
+}
+[[ -s "$CLAUDE_CREDENTIALS" ]] || {
+  echo "claude_credentials is empty: $CLAUDE_CREDENTIALS" >&2
+  exit 1
+}
+case "$(file_mode "$CLAUDE_CREDENTIALS")" in
+  600|400) ;;
+  *)
+    echo "claude_credentials must have mode 0600 or 0400: $CLAUDE_CREDENTIALS" >&2
+    exit 1
+    ;;
+esac
+jq -e . "$CLAUDE_CREDENTIALS" >/dev/null 2>&1 || {
+  echo "claude_credentials is not valid JSON: $CLAUDE_CREDENTIALS" >&2
+  exit 1
+}
+
+# FLY-1503 MEDIUM-1: prove the REAL host parser accepts this config before anything
+# is bounced. The installer's jq gate and the host's exact-key check can drift; this
+# runs the host's own validation and nothing else.
+if [[ -f "$HOST_CLI" ]]; then
+  # Paths go through the environment, NOT argv: the module runs main() when
+  # process.argv[1] equals its own path, so passing the cli path as an argument
+  # would execute the host instead of just importing its parser.
+  FLYWHEEL_V2_VALIDATE_HOST_CLI="$HOST_CLI" \
+  FLYWHEEL_V2_VALIDATE_CONFIG="$RUNTIME_CONFIG" \
+  node --input-type=module -e '
+    const { readFileSync } = await import("node:fs");
+    const { pathToFileURL } = await import("node:url");
+    const mod = await import(
+      pathToFileURL(process.env.FLYWHEEL_V2_VALIDATE_HOST_CLI).href
+    );
+    mod.parseRuntimeConfig(
+      JSON.parse(readFileSync(process.env.FLYWHEEL_V2_VALIDATE_CONFIG, "utf8")),
+    );
+  ' || {
+    echo "the host runtime-config parser rejected this config; fix it BEFORE restarting the host" >&2
+    exit 1
+  }
+fi
+
+if [[ "$VALIDATE_ONLY" -eq 1 ]]; then
+  echo "runtime config validated: $RUNTIME_CONFIG"
+  exit 0
+fi
 
 # shellcheck source=lib/supervisor.sh
 source "$SELF_DIR/lib/supervisor.sh"

@@ -125,6 +125,205 @@ function errorClass(error: unknown): string {
 	return error.constructor.name || error.name || "Error";
 }
 
+/**
+ * Codex R3 MEDIUM-3: explicit capacity for the recurrence record.
+ *
+ * MAX_SAMPLES bounds how many DISTINCT diagnostics are retained (the rest are
+ * counted, so truncation is visible rather than silent). MAX_NOTICES bounds how
+ * many mailbox rows one failure may ever create, so a permanently broken task
+ * cannot grow mailbox history without limit no matter how long it runs or how
+ * often the Lead drains.
+ *
+ * What is NOT bounded, stated precisely rather than glossed: there is one meta
+ * row per distinct failure identity (kind + task + payload digest + stage + error
+ * class), and nothing prunes it. That is the same order as the `events` row this
+ * function already writes for each of those identities, so it adds a constant
+ * factor to a dimension that is unbounded by design -- it does not introduce a
+ * new one. A single failing task cannot grow it, because its identity is fixed;
+ * only new tasks and new stages can, at one row each.
+ */
+export const MAX_RECURRENCE_SAMPLES = 5;
+export const MAX_RECURRENCE_NOTICES = 8;
+
+interface RecurrenceSample {
+	digest: string;
+	error: string;
+	occurrences: number;
+	first_seen: string;
+	last_seen: string;
+}
+
+interface FailureRecurrenceData {
+	event_uid: string;
+	task_id: string;
+	payload_digest: string;
+	failure_stage: string;
+	error_class: string;
+	occurrences: number;
+	first_seen: string;
+	last_seen: string;
+	notices_created: number;
+	notice_cap_reached: boolean;
+	samples: RecurrenceSample[];
+	/** Distinct diagnostics seen but not retained, because MAX_SAMPLES was full. */
+	distinct_diagnostics_dropped: number;
+	/**
+	 * Codex R4 MEDIUM-4: a diagnostic arrived that no notice has carried yet,
+	 * because the mailbox slot was occupied when it was recorded. Durable, so the
+	 * obligation to tell the Lead outlives the process that noticed it.
+	 */
+	undelivered_signal: boolean;
+}
+
+/**
+ * Fixed-length notice key. Codex R3 MEDIUM-3 flagged that one event uid can be a
+ * string prefix of another; hashing removes that possibility structurally rather
+ * than relying on getting a separator comparison right.
+ */
+export function failureRecurrenceKey(eventUid: string): string {
+	return sha256(eventUid);
+}
+
+function appendFailureRecurrence(
+	tx: WriteTx,
+	input: {
+		candidate: CandidateRow;
+		diagnostic: string;
+		epoch: number;
+		eventUid: string;
+		failureClass: string;
+		kind: string;
+		notifyAgentId: string;
+		nowIso: string;
+		payloadDigest: string;
+		stage: string;
+	},
+): boolean {
+	const noticeKey = failureRecurrenceKey(input.eventUid);
+	const metaKey = `dag_failure_recurrence:${noticeKey}`;
+	const diagnosticDigest = sha256(input.diagnostic);
+	const current = readEnvelope<FailureRecurrenceData>(tx, metaKey, input.epoch);
+
+	const base: FailureRecurrenceData = current?.data ?? {
+		event_uid: input.eventUid,
+		task_id: input.candidate.id,
+		payload_digest: input.payloadDigest,
+		failure_stage: input.stage,
+		error_class: input.failureClass,
+		occurrences: 0,
+		first_seen: input.nowIso,
+		last_seen: input.nowIso,
+		notices_created: 0,
+		notice_cap_reached: false,
+		samples: [],
+		distinct_diagnostics_dropped: 0,
+		undelivered_signal: false,
+	};
+
+	const samples = base.samples.map((sample) => ({ ...sample }));
+	const existing = samples.find((sample) => sample.digest === diagnosticDigest);
+	let dropped = base.distinct_diagnostics_dropped;
+	if (existing) {
+		existing.occurrences += 1;
+		existing.last_seen = input.nowIso;
+	} else if (samples.length < MAX_RECURRENCE_SAMPLES) {
+		samples.push({
+			digest: diagnosticDigest,
+			error: input.diagnostic,
+			occurrences: 1,
+			first_seen: input.nowIso,
+			last_seen: input.nowIso,
+		});
+	} else {
+		dropped += 1;
+	}
+
+	// At most one outstanding notice per failure. Compared by exact prefix on a
+	// fixed-length key: LIKE would treat the underscores in ids such as
+	// `task_dispatch_invalid` as single-character wildcards.
+	const noticePrefix = `${noticeKey}:`;
+	const outstanding =
+		tx.get<{ count: number }>(
+			`SELECT count(*) AS count FROM mailbox
+			  WHERE source_kind=@sourceKind
+			    AND substr(source_id,1,@prefixLength)=@noticePrefix
+			    AND state='pending'`,
+			{
+				sourceKind: `${input.kind}_repeat`,
+				prefixLength: noticePrefix.length,
+				noticePrefix,
+			},
+		)?.count ?? 0;
+
+	// Codex R4 MEDIUM-4: a diagnostic that first appears while a notice is pending
+	// used to reach the aggregate and stop there. If the task then recovered, no
+	// further notice was ever raised and `meta` has no Lead read path, so that
+	// signal was permanently invisible. The aggregate now carries an explicit
+	// undelivered-signal flag, and the next notice is raised as soon as the mailbox
+	// slot frees -- so the obligation survives in durable state instead of
+	// depending on the failure happening to recur.
+	const sampleIsNew = !existing;
+	const pendingBlocked = outstanding > 0;
+	const undeliveredSignal =
+		base.undelivered_signal || (pendingBlocked && sampleIsNew);
+	const shouldNotify =
+		outstanding === 0 && base.notices_created < MAX_RECURRENCE_NOTICES;
+	const next: FailureRecurrenceData = {
+		...base,
+		occurrences: base.occurrences + 1,
+		last_seen: input.nowIso,
+		notices_created: base.notices_created + (shouldNotify ? 1 : 0),
+		notice_cap_reached:
+			base.notice_cap_reached ||
+			base.notices_created + (shouldNotify ? 1 : 0) >= MAX_RECURRENCE_NOTICES,
+		samples,
+		distinct_diagnostics_dropped: dropped,
+		// Cleared only by actually raising the notice that carries it.
+		undelivered_signal: shouldNotify ? false : undeliveredSignal,
+	};
+
+	if (current) {
+		updateEnvelope(tx, metaKey, current, next, input.nowIso);
+	} else {
+		insertEnvelope(tx, metaKey, makeEnvelope(input.epoch, next), input.nowIso);
+	}
+
+	if (!shouldNotify) return true;
+	appendMailboxTx(tx, {
+		sourceKind: `${input.kind}_repeat`,
+		sourceId: `${noticeKey}:n${next.notices_created}`,
+		toAgent: input.notifyAgentId,
+		kind: `${input.kind}_repeat`,
+		payload: {
+			task_id: input.candidate.id,
+			payload_digest: input.payloadDigest,
+			failure_stage: input.stage,
+			error_class: input.failureClass,
+			recurrence_key: noticeKey,
+			occurrences: next.occurrences,
+			first_seen: next.first_seen,
+			last_seen: next.last_seen,
+			notice_index: next.notices_created,
+			notice_cap_reached: next.notice_cap_reached,
+			distinct_diagnostics_dropped: next.distinct_diagnostics_dropped,
+			// True when this notice is carrying a diagnostic that an earlier round
+			// recorded but could not deliver.
+			carries_deferred_signal: undeliveredSignal,
+			samples: next.samples.map((sample) => ({
+				diagnostic_digest: sample.digest,
+				error: sample.error,
+				occurrences: sample.occurrences,
+				first_seen: sample.first_seen,
+				last_seen: sample.last_seen,
+			})),
+		},
+		retentionClass: "business",
+		cutoverEpoch: input.epoch,
+		createdAt: input.nowIso,
+	});
+	return true;
+}
+
 function auditTaskFailure(
 	kernel: Kernel,
 	ports: DagPorts,
@@ -145,7 +344,50 @@ function auditTaskFailure(
 		if (
 			tx.get("SELECT 1 FROM events WHERE event_uid=@eventUid", { eventUid })
 		) {
-			return true;
+			// FLY-1503 item 5: the event ledger stays deduped by
+			// task+digest+stage+class, but this early return used to skip the notify
+			// mailbox as well, so a failure that recurred on every coordinator tick
+			// was completely silent while callers were still told it was audited.
+			// Production hit this: seven identical launch failures produced one
+			// notification and no further signal.
+			//
+			// Codex R2 MEDIUM-3: the hour bucket bounded neither the total (the
+			// mailbox has no TTL, so a consumed notice was simply replaced next hour,
+			// forever) nor the diagnostics (event identity carries only the error
+			// *class*, so a pending "connection refused" notice permanently masked a
+			// later "invalid configuration" of the same class).
+			//
+			// Key the notice on a digest of the actual diagnostic instead. The
+			// mailbox's own (source_kind, source_id) dedup then makes an identical
+			// diagnostic a one-time row for all time -- bounded by distinct
+			// diagnostics rather than by elapsed hours -- while a changed message is a
+			// new id and is no longer suppressed.
+			// Codex R3 MEDIUM-3: keying the notice on the diagnostic digest bounded
+			// the notices for an IDENTICAL message but not for a varying one -- a
+			// diagnostic carrying a uuid, request id, temp path or timestamp produced
+			// a new digest, so a new permanent mailbox row, every time. And a
+			// one-off diagnostic that arrived while an earlier notice was still
+			// pending was dropped outright: if it never recurred the Lead never saw
+			// it at all.
+			//
+			// So the recurrence lives in a durable aggregate -- count, first/last
+			// seen, and a capped set of distinct diagnostic samples -- and the
+			// mailbox carries at most one notice at a time, up to a hard cap on how
+			// many notices one failure may ever create. A diagnostic that changes
+			// while a notice is pending is recorded in the aggregate immediately and
+			// travels in the NEXT notice, so it is delayed rather than lost.
+			return appendFailureRecurrence(tx, {
+				candidate,
+				diagnostic: error instanceof Error ? error.message : String(error),
+				epoch,
+				eventUid,
+				failureClass,
+				kind,
+				notifyAgentId: issue.data.notify_agent_id,
+				nowIso: ports.clock.nowIso(),
+				payloadDigest,
+				stage,
+			});
 		}
 		const payload = {
 			task_id: candidate.id,
@@ -818,12 +1060,17 @@ function requestForSession(
 		        a.generation AS attempt_generation,
 		        act.id AS activation_id,
 		        json_extract(t.payload,'$.executor.logicalAgentId') AS agent_id,
-		        ag.generation AS agent_generation,ag.instance_id AS agent_instance_id,
+		        COALESCE(ag.generation,0) AS agent_generation,
+		        ag.instance_id AS agent_instance_id,
 		        t.payload,ir.value AS injection_ref
 		   FROM activations act
 		   JOIN attempts a ON a.id=act.attempt_id
 		   JOIN tasks t ON t.id=a.task_id
-		   JOIN agents ag
+		   -- FLY-1503 item 4: LEFT JOIN so a launch that failed before
+		   -- registerAgentTx could create the agents row stays recoverable.
+		   -- An INNER JOIN here made recoverableClaims silently drop the claim,
+		   -- leaving the attempt reapable only by hand.
+		   LEFT JOIN agents ag
 		     ON ag.agent_id=json_extract(t.payload,'$.executor.logicalAgentId')
 		   JOIN meta ir ON ir.key='injection_ref:' || act.id
 		  WHERE act.session_ref=@sessionRef

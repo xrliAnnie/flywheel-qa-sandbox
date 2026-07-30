@@ -251,7 +251,10 @@ describe("host runner injection loop", () => {
 			secretPath,
 			hostEpoch: HOST_EPOCH,
 			sessionProbe: {
-				processStart: (pid) => (pid === PID ? PID_START : null),
+				processStart: (pid) =>
+					pid === PID
+						? { status: "present", startIdentity: PID_START }
+						: { status: "absent" },
 				sessionOwner: () => ({ pid: PID, pidStart: PID_START }),
 			},
 			coordinator: {

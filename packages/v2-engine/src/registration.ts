@@ -35,8 +35,41 @@ interface RunningRow {
 	activation_id: string | null;
 }
 
+/**
+ * Codex R3 HIGH-1: the probe used to answer `string | null`, which conflated
+ * "this pid does not exist" with "the probe itself could not answer". Reading
+ * the second as the first is fail-open: it is exactly what lets a caller claim a
+ * live session is dead. The probe therefore reports which of the two it
+ * observed, and callers must decide separately for each.
+ */
+export type ProcessStartProbe =
+	| { status: "present"; startIdentity: string }
+	| { status: "absent" }
+	| { status: "unavailable"; reason: string };
+
+/**
+ * The four states a caller can conclude about a recorded session binding.
+ * Only `different_process` and `pid_absent` are positive evidence of death.
+ */
+export type SessionProcessState =
+	| "same_process"
+	| "different_process"
+	| "pid_absent"
+	| "probe_unavailable";
+
+export function classifySessionProcess(
+	probed: ProcessStartProbe,
+	expectedStartIdentity: string,
+): SessionProcessState {
+	if (probed.status === "unavailable") return "probe_unavailable";
+	if (probed.status === "absent") return "pid_absent";
+	return probed.startIdentity === expectedStartIdentity
+		? "same_process"
+		: "different_process";
+}
+
 export interface SessionEvidenceProbe {
-	processStart(pid: number): string | null;
+	processStart(pid: number): ProcessStartProbe;
 	sessionOwner(sessionId: string): { pid: number; pidStart: string } | null;
 }
 
@@ -238,8 +271,15 @@ function requireLiveSessionEvidence(
 			`agent ${expected.agentId} session binding has a stale host epoch`,
 		);
 	}
-	const observedStart = probe.processStart(expected.sessionBinding.pid);
-	if (observedStart !== expected.sessionBinding.pidStart) {
+	// Reattach requires positive proof that the SAME process is still there, so
+	// every non-`same_process` state -- including an unavailable probe -- fails
+	// closed here.
+	if (
+		classifySessionProcess(
+			probe.processStart(expected.sessionBinding.pid),
+			expected.sessionBinding.pidStart,
+		) !== "same_process"
+	) {
 		throw new FenceViolation(
 			`agent ${expected.agentId} process start identity does not match`,
 		);

@@ -178,7 +178,8 @@ describe("Claude injection shim failure paths", () => {
 
 			await shim.deliver(goodRef, MESSAGE);
 			await shim.deliver(goodRef, { ...MESSAGE, messageUid: "message-2" });
-			// Dedupe is keyed on messageUid, so two distinct uids must both land.
+			// Dedupe is keyed on the message/attempt pair, so two distinct message
+			// uids must both land (FLY-1503 item 10).
 			expect(
 				JSON.parse(readFileSync(join(root, "inbox.json"), "utf8")),
 			).toHaveLength(2);

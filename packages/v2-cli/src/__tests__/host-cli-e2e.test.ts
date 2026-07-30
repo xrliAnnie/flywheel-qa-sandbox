@@ -43,6 +43,7 @@ interface Fixture {
 	secretPath: string;
 	proofRoot: string;
 	effectsPath: string;
+	credentialPath: string;
 	secret: Buffer;
 }
 
@@ -57,6 +58,8 @@ function createFixture(): Fixture {
 	const secretPath = join(dir, "host.secret");
 	const proofRoot = join(dir, "sessions");
 	const effectsPath = join(dir, "effects.json");
+	// Codex R3 HIGH-2: the pull credential lives in a 0600 file, never in argv.
+	const credentialPath = join(dir, "delivery-credential.json");
 	mkdirSync(proofRoot, { mode: 0o700 });
 	const secret = randomBytes(32);
 	writeFileSync(secretPath, secret, { mode: 0o600 });
@@ -145,6 +148,7 @@ function createFixture(): Fixture {
 		secretPath,
 		proofRoot,
 		effectsPath,
+		credentialPath,
 		secret,
 	};
 }
@@ -258,6 +262,8 @@ function registerLead(
 		String(agentProcess.pid),
 		"--pid-start",
 		pidStart,
+		"--delivery-credential-out",
+		fixture.credentialPath,
 	]);
 }
 
@@ -354,7 +360,13 @@ describe("real host process + real agent CLI + unix socket", () => {
 				"business",
 			]),
 		).toMatchObject({ status: "enqueued" });
-		const delivery = runCli(fixture, ["next", "--agent", "lead-e2e"]) as {
+		const delivery = runCli(fixture, [
+			"next",
+			"--agent",
+			"lead-e2e",
+			"--delivery-credential-file",
+			fixture.credentialPath,
+		]) as {
 			message: { messageUid: string };
 			handle: { attemptUid: string };
 			authorization: { capabilityId: string; token: string };

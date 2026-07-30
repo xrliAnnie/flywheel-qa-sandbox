@@ -113,6 +113,7 @@ fallback supervisor。窗口前先生成 0600 的 host secret 与 0600 runtime c
     "kind": "tmux",
     "tmux_bin": "/absolute/path/to/tmux",
     "claude_bin": "/absolute/path/to/claude",
+    "claude_credentials": "/Users/<operator>/.flywheel/v2/claude-credentials.json",
     "codex_bin": "/absolute/path/to/codex",
     "client_cli": "/absolute/path/to/packages/v2-cli/dist/cli.js",
     "release_root": "/Users/<operator>/.flywheel/v2/runner-release",
@@ -137,6 +138,60 @@ launcher 通过 `/usr/bin/env -i` 只继承 HOME/PATH/TMPDIR/locale/CODEX_HOME �
 列出的 v2 变量，不把旧 Bridge、comm.db 或第三方 secret 带进 runner。窗口前分别用
 最终 HOME/CODEX_HOME/Claude config 跑无副作用认证探针；认证缺失是 NO-GO，不允许把
 token 复制进 runtime config。
+
+### `claude_credentials` —— 必填，且**已有安装升级时必须先补**（FLY-1503）
+
+`launcher.claude_credentials` 指向 operator 一次性提供的 Claude
+`.credentials.json`（regular file、非 symlink、0600 或 0400、合法 JSON）。
+host 用**精确键集**校验 launcher 段，所以这个字段缺失时 host 会在
+**监听 socket 之前**抛 `runtime launcher has an invalid shape`，
+launchd KeepAlive 会空转重启 —— 引擎当场下线。
+
+为什么必填：FLY-1503 把 Claude config root 改成 per-activation，
+新目录里没有 `.credentials.json`，而 runner 是 `/usr/bin/env -i` + 白名单启动的，
+白名单里既没有 `CLAUDE_CODE_OAUTH_TOKEN` 也没有 `ANTHROPIC_API_KEY`。
+不配这个字段，每次 spawn 都会停在交互式登录屏。
+
+**已有安装的升级步骤（先改配置，再重启，顺序不能反）**：
+
+```bash
+# 1. 准备凭据源（若尚未单独存放）
+install -m 600 ~/.claude/.credentials.json ~/.flywheel/v2/claude-credentials.json
+
+# 2. 补字段（原子写，保持 0600）
+jq --arg p "$HOME/.flywheel/v2/claude-credentials.json" \
+   '.launcher.claude_credentials = $p' \
+   ~/.flywheel/v2/runtime-config.json > ~/.flywheel/v2/runtime-config.json.next
+chmod 600 ~/.flywheel/v2/runtime-config.json.next
+mv ~/.flywheel/v2/runtime-config.json.next ~/.flywheel/v2/runtime-config.json
+
+# 3. 先验证新配置能被真正解析（不要直接重启去试）
+#    --validate-only 会跑 host 自己的 parseRuntimeConfig，并校验 claude_credentials
+#    源文件；它在碰 launchd 之前退出，所以不会动线上服务。
+#    window / epoch / host-epoch 是脚本必填项，用当前线上值填即可（校验不依赖它们，
+#    但缺了脚本会直接退出 2）。
+scripts/install-v2-host.sh \
+  --window "$WINDOW_ID" --epoch "$EPOCH" --host-epoch "$HOST_EPOCH" \
+  --runtime-config ~/.flywheel/v2/runtime-config.json \
+  --validate-only
+echo "validate exit=$?"   # 必须为 0
+
+# 4. 只有第 3 步 exit 0 才重启 host
+launchctl kickstart -k gui/$(id -u)/com.flywheel.v2-engine
+
+# 5. 重启后确认引擎真的在调度，而不是「活着但没武装」。
+#    coordinator 必须是 armed；status=degraded 表示 host 起来了但调度没起来。
+node "$CLIENT_CLI" health \
+  --socket ~/.flywheel/v2/host.sock --secret ~/.flywheel/v2/host.secret
+```
+
+安装器的前置校验现在也检查这个字段，所以 `--validate-only` 能在重启前抓到缺失。
+
+第 5 步不是形式：host 在 socket 已监听之后才做 runner 同步，同步失败以前会留下
+「进程活着、health 绿、但什么都不调度」的形态（FLY-1503 R6 HIGH-1）。现在同步失败
+是致命的（关闭监听并非零退出，launchd 会重启），而 health 也会在 coordinator 未武装
+时回 `status=degraded` / `coordinator=not_armed` —— 所以重启后看一眼 health 的
+`coordinator` 字段就能区分「真的在跑」和「只是活着」。
 
 role authority 不来自 task payload：
 host 每次 spawn 都从项目 `.flywheel/config.yaml` 的 exact logical agent key 解析

@@ -462,25 +462,31 @@ function injectionBuilder(root: string): InjectionRefBuilder {
 					.replace(/[^A-Za-z0-9_-]+/g, "-")
 					.slice(0, 64);
 				const teamName = `v2-${agentName}`.toLowerCase();
+				// Codex R3 MEDIUM-5/7: the Claude root is per-ACTIVATION, not per-agent.
+				// Sharing one root across activations of the same agent broke two things
+				// at once: every launcher wrote the same .claude.json (so a live Claude
+				// process could overwrite a just-written project trust entry with its own
+				// older snapshot and send the next runner back into interactive
+				// onboarding), and the inbox carried the previous activation's unread
+				// envelopes into a new terminal. Both are the same root cause, so both
+				// are fixed by the same key.
+				const activationRoot = join(
+					root,
+					"claude",
+					safeKey(input.activationId),
+				);
+				const inboxPath = join(
+					activationRoot,
+					"teams",
+					teamName,
+					"inboxes",
+					`${agentName}.json`,
+				);
 				return JSON.stringify({
 					v: 1,
 					backend: "claude",
-					inboxPath: join(
-						root,
-						"claude",
-						"teams",
-						teamName,
-						"inboxes",
-						`${agentName}.json`,
-					),
-					sidecarPath: join(
-						root,
-						"claude",
-						"teams",
-						teamName,
-						"inboxes",
-						`${agentName}.json.flywheel.jsonl`,
-					),
+					inboxPath,
+					sidecarPath: `${inboxPath}.flywheel.jsonl`,
 					toAgent: agentName,
 				});
 			}

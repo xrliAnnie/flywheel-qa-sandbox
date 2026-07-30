@@ -109,7 +109,7 @@ describe("Codex deliver settles on vendor acceptance, not task completion", () =
 			params: {
 				threadId: "thread-1",
 				input: [{ type: "text", text: ENVELOPE }],
-				clientUserMessageId: MESSAGE.messageUid,
+				clientUserMessageId: `${MESSAGE.messageUid}:${MESSAGE.attemptUid}`,
 			},
 		});
 		// The daemon never reported the task done, yet delivery already settled —
@@ -144,7 +144,7 @@ describe("Codex deliver settles on vendor acceptance, not task completion", () =
 				params: {
 					threadId: "thread-1",
 					input: [{ type: "text", text: ENVELOPE }],
-					clientUserMessageId: MESSAGE.messageUid,
+					clientUserMessageId: `${MESSAGE.messageUid}:${MESSAGE.attemptUid}`,
 				},
 			});
 			// Non-vacuous: the notification really was emitted. Delivery still
@@ -210,7 +210,7 @@ describe("Codex deliver settles on vendor acceptance, not task completion", () =
 			params: {
 				threadId: "thread-1",
 				input: [{ type: "text", text: ENVELOPE }],
-				clientUserMessageId: MESSAGE.messageUid,
+				clientUserMessageId: `${MESSAGE.messageUid}:${MESSAGE.attemptUid}`,
 			},
 		});
 	});
