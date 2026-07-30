@@ -13,6 +13,9 @@ describe("v2-only Discord ingress config", () => {
 			FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "chat",
 			FLYWHEEL_LEAD_CORE_CHANNEL_ID: "core",
 			FLYWHEEL_V2_INBOUND_CURSOR: "/tmp/v2/discord-cursor.json",
+			FLYWHEEL_V2_HOST_EPOCH: "epoch-test",
+			FLYWHEEL_V2_SESSION_PROOF_ROOT: "/tmp/v2/session-proofs",
+			FLYWHEEL_V2_OUTBOUND_STATE: "/tmp/v2/outbound-state.json",
 			FLYWHEEL_COMM_DIR: "/tmp/legacy-comm",
 		});
 
@@ -21,6 +24,9 @@ describe("v2-only Discord ingress config", () => {
 			secretPath: "/tmp/v2/host.secret",
 			channelIds: ["chat", "core"],
 			cursorPath: "/tmp/v2/discord-cursor.json",
+			hostEpoch: "epoch-test",
+			sessionProofRoot: "/tmp/v2/session-proofs",
+			outboundStatePath: "/tmp/v2/outbound-state.json",
 		});
 		expect(Object.keys(config)).not.toContain("commDbPath");
 	});

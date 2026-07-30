@@ -24,6 +24,7 @@ import {
 	readEnvelope,
 	updateEnvelope,
 } from "./meta.js";
+import { appendLifecycleTx } from "./outbox.js";
 import type { DagPorts } from "./types.js";
 
 export interface ReconcileResult {
@@ -228,6 +229,17 @@ export async function reconcileShipActions(
 						merged_sha: observed.head,
 						gate_id: match.gate.data.gate_id,
 					},
+					cutoverEpoch: epoch,
+					createdAt: ports.clock.nowIso(),
+				});
+				// FLY-1544 ③: same gate-keyed outbox row as the direct ship path, so
+				// whichever settle path runs first wins and the other dedups.
+				appendLifecycleTx(tx, {
+					sourceKind: "dag_issue_merged",
+					sourceId: match.gate.data.gate_id,
+					kind: "issue_merged",
+					issueId: match.issueId,
+					payload: { merged_sha: observed.head },
 					cutoverEpoch: epoch,
 					createdAt: ports.clock.nowIso(),
 				});

@@ -82,7 +82,6 @@ describe("document-only DAG", () => {
 					writesRepo: true,
 					worktreeId: "wt-a",
 					executor: {
-						logicalAgentId: "writer-a",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",

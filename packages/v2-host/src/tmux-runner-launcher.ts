@@ -339,7 +339,7 @@ function commandForVendor(
 				request.executor.effort,
 				"--name",
 				safeName(
-					`v2-${request.context.issueId}-${request.roleId}`,
+					`v2-${request.context.issueId}-${request.taskKind}`,
 					"v2-runner",
 				),
 				runnerPrompt(request),
@@ -1045,15 +1045,20 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		const sessionName = this.#sessionName(request.sessionRef);
 		const releasePath = this.#releasePath(request.sessionRef);
 		if (existsSync(releasePath)) unlinkSync(releasePath);
+		// FLY-1544 ①: window name derives from issue + node kind.
 		const windowName = safeName(
-			`v2-${request.context.issueId}-${request.roleId}-${safeKey(request.sessionRef).slice(0, 8)}`,
+			`v2-${request.context.issueId}-${request.taskKind}-${safeKey(request.sessionRef).slice(0, 8)}`,
 			"v2-runner",
 		);
 		const gateScript =
 			'gate="$0"; n=0; while [ ! -f "$gate" ]; do [ "$n" -ge 86400 ] && exit 75; sleep 1; n=$((n+1)); done; exec "$@"';
 		const environment = [
 			`FLYWHEEL_V2_SESSION_REF=${request.sessionRef}`,
-			`FLYWHEEL_V2_AGENT_ID=${request.roleId}`,
+			`FLYWHEEL_V2_AGENT_ID=${request.taskKind}`,
+			// FLY-1544 ②: the node's executing vendor, so the instruction book's
+			// cross-vendor review rule ("claude writes -> codex reviews and vice
+			// versa") can name the OTHER vendor without any system-side validation.
+			`FLYWHEEL_V2_VENDOR=${vendor}`,
 			`FLYWHEEL_V2_ACTIVATION_ID=${request.activationId}`,
 			`FLYWHEEL_V2_SOCKET=${this.#options.socketPath}`,
 			`FLYWHEEL_V2_SECRET_PATH=${this.#options.secretPath}`,
@@ -1212,5 +1217,42 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		if (await this.#hasSession(sessionName)) {
 			throw new Error("tmux runner stop could not prove process absence");
 		}
+	}
+
+	/**
+	 * FLY-1544 doorbell: paste text into the session terminal and submit it.
+	 * Vendor-neutral — a tmux buffer paste followed by Enter works identically
+	 * for the Claude and Codex TUIs (bracketed paste keeps multi-line payloads
+	 * a single input). Fails loud when the session is absent; the caller keeps
+	 * the mailbox row pending and rings again.
+	 */
+	async deliver(sessionRef: string, text: string): Promise<void> {
+		const sessionName = this.#sessionName(sessionRef);
+		if (!(await this.#hasSession(sessionName))) {
+			throw new Error("tmux runner session is absent");
+		}
+		const buffer = `flywheel-v2-doorbell-${safeKey(sessionRef).slice(0, 12)}`;
+		const target = `=${sessionName}:0.0`;
+		await this.#command.run(this.#options.tmuxBin, [
+			"set-buffer",
+			"-b",
+			buffer,
+			text,
+		]);
+		await this.#command.run(this.#options.tmuxBin, [
+			"paste-buffer",
+			"-p",
+			"-d",
+			"-b",
+			buffer,
+			"-t",
+			target,
+		]);
+		await this.#command.run(this.#options.tmuxBin, [
+			"send-keys",
+			"-t",
+			target,
+			"Enter",
+		]);
 	}
 }

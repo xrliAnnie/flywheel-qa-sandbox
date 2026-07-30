@@ -12,11 +12,11 @@ import {
 import { makeFixture, makePorts } from "./helpers.js";
 
 /**
- * FLY-1503 item 4 — an executor whose logical agent id was never registered in
- * project config must still be reachable by launch recovery.
+ * FLY-1503 item 4 — an executor with no matching `agents` row must still be
+ * reachable by launch recovery.
  *
- * `requestForSession` INNER JOINed `agents` on the task payload's
- * `executor.logicalAgentId`; when that row was absent the join produced no row,
+ * Historically `requestForSession` INNER JOINed `agents` on the task payload's
+ * executor identity; when that row was absent the join produced no row,
  * `requestForSession` returned null, and `recoverableClaims` silently dropped
  * the claim. The engine could then never recover the attempt and an operator
  * had to reap it by hand (production: agent id `code`, FLY-1503 gap #4).
@@ -24,7 +24,6 @@ import { makeFixture, makePorts } from "./helpers.js";
 async function admitUnregisteredExecutor(
 	fixture: ReturnType<typeof makeFixture>,
 	ports: ReturnType<typeof makePorts>["ports"],
-	agentId: string,
 ) {
 	return await admitIssueDag(fixture.kernel, ports, {
 		admissionUid: "fly1503-gap4",
@@ -49,7 +48,6 @@ async function admitUnregisteredExecutor(
 				writesRepo: false,
 				worktreeId: null,
 				executor: {
-					logicalAgentId: agentId,
 					family: "family-a",
 					vendor: "vendor",
 					model: "model",
@@ -94,7 +92,7 @@ describe("FLY-1503 gap 4 — recovery covers a missing agents row", () => {
 				},
 			},
 		});
-		await admitUnregisteredExecutor(fixture, ports, "ghost-agent");
+		await admitUnregisteredExecutor(fixture, ports);
 
 		// Dispatch leaves a durable launch claim behind even though the executor
 		// could not be launched or registered.
@@ -138,7 +136,7 @@ describe("FLY-1503 item 5 — a recurring launch failure stays observable", () =
 				},
 			},
 		});
-		await admitUnregisteredExecutor(fixture, ports, "agent-a");
+		await admitUnregisteredExecutor(fixture, ports);
 
 		// First failed launch: audited, event written, Lead notified.
 		await dispatchOnce(fixture.kernel, ports).catch(() => undefined);
@@ -268,7 +266,7 @@ describe("FLY-1503 item 5 — a recurring launch failure stays observable", () =
 				},
 			},
 		});
-		await admitUnregisteredExecutor(fixture, ports, "agent-a");
+		await admitUnregisteredExecutor(fixture, ports);
 		const probe = recurrenceProbe(fixture);
 
 		// Far more failing rounds than the notice cap, each notice drained.
@@ -312,7 +310,7 @@ describe("FLY-1503 item 5 — a recurring launch failure stays observable", () =
 				},
 			},
 		});
-		await admitUnregisteredExecutor(fixture, ports, "agent-a");
+		await admitUnregisteredExecutor(fixture, ports);
 		const probe = recurrenceProbe(fixture);
 
 		for (let round = 0; round < 30; round += 1) {
@@ -351,7 +349,7 @@ describe("FLY-1503 item 5 — a recurring launch failure stays observable", () =
 				},
 			},
 		});
-		await admitUnregisteredExecutor(fixture, ports, "agent-a");
+		await admitUnregisteredExecutor(fixture, ports);
 		const probe = recurrenceProbe(fixture);
 
 		const round = async () => {

@@ -58,7 +58,6 @@ async function prepareDueRetry(
 				writesRepo: false,
 				worktreeId: null,
 				executor: {
-					logicalAgentId: "agent-a",
 					family: "family-a",
 					vendor: "vendor",
 					model: "model",
@@ -180,7 +179,6 @@ describe("ship reconciliation exhaustion", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "agent-a",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",

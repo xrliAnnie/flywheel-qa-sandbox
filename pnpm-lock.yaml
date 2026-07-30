@@ -677,6 +677,9 @@ importers:
 
   packages/v2-host:
     dependencies:
+      flywheel-teamlead:
+        specifier: workspace:*
+        version: link:../teamlead
       flywheel-v2-dag:
         specifier: workspace:*
         version: link:../v2-dag

@@ -64,6 +64,36 @@ describe("FLY-1543 lead takeover and runner upstream CLI", () => {
 			]),
 		).toThrow(/unknown ask option --to-agent/);
 	});
+
+	it("parses the FLY-1544 lead-consumption ack verb without an effects file", () => {
+		const parsed = parseCliArgs([
+			"ack",
+			"--socket",
+			"/tmp/flywheel-v2/host.sock",
+			"--secret",
+			"/tmp/flywheel-v2/host.secret",
+			"--agent",
+			"discord-messenger",
+			"--attempt",
+			"attempt-uid",
+			"--message",
+			"message-uid",
+			"--capability-id",
+			"cap-1",
+			"--token",
+			"token-1",
+		]);
+		expect(parsed.verb).toBe("ack");
+		expect(() =>
+			parseCliArgs([
+				"ack",
+				"--agent",
+				"discord-messenger",
+				"--effects-file",
+				"/tmp/effects.json",
+			]),
+		).toThrow(/unknown ack option --effects-file/);
+	});
 });
 
 describe("Codex R3 HIGH-2 — the pull credential never travels through argv", () => {

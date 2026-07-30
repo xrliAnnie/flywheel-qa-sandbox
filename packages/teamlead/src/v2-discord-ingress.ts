@@ -6,6 +6,7 @@ import { CodexDiscordGateway } from "./lead-backends/codex/CodexDiscordGateway.j
 import { FileInboundCursorStore } from "./lead-backends/codex/InboundCursorStore.js";
 import { RestPollDiscordInboundSource } from "./lead-backends/codex/RestPollDiscordInboundSource.js";
 import { V2DiscordIngress } from "./lead-backends/codex/V2DiscordIngress.js";
+import { V2DiscordOutbound } from "./v2-discord-outbound.js";
 
 export interface V2DiscordIngressConfig {
 	v2CliBin: string;
@@ -16,6 +17,10 @@ export interface V2DiscordIngressConfig {
 	botUserId: string;
 	channelIds: string[];
 	cursorPath: string;
+	/** FLY-1544 ③: outbound messenger (register-lead evidence + thread state). */
+	hostEpoch: string;
+	sessionProofRoot: string;
+	outboundStatePath: string;
 }
 
 function required(
@@ -52,6 +57,13 @@ export function readV2DiscordIngressConfig(
 		botUserId: required(env, "FLYWHEEL_LEAD_BOT_USER_ID"),
 		channelIds: [...new Set(channelIds)],
 		cursorPath: absolute(env, "FLYWHEEL_V2_INBOUND_CURSOR"),
+		// FLY-1544 ③: the ingress is now the BIDIRECTIONAL Discord messenger;
+		// the outbound half registers as the `discord-messenger` lead recipient
+		// and needs live-session evidence (the host's proof root + epoch) plus a
+		// durable issue→thread state file.
+		hostEpoch: required(env, "FLYWHEEL_V2_HOST_EPOCH"),
+		sessionProofRoot: absolute(env, "FLYWHEEL_V2_SESSION_PROOF_ROOT"),
+		outboundStatePath: absolute(env, "FLYWHEEL_V2_OUTBOUND_STATE"),
 	};
 }
 
@@ -77,11 +89,23 @@ export async function main(
 		channelIds: config.channelIds,
 		logger: console,
 	});
+	const outbound = new V2DiscordOutbound({
+		v2CliBin: config.v2CliBin,
+		socketPath: config.socketPath,
+		secretPath: config.secretPath,
+		hostEpoch: config.hostEpoch,
+		sessionProofRoot: config.sessionProofRoot,
+		statePath: config.outboundStatePath,
+		botToken: config.botToken,
+		chatChannelId: config.channelIds[0] as string,
+		logger: console,
+	});
 	await gateway.start();
+	await outbound.start();
 	process.stdout.write(
 		`${JSON.stringify({
 			status: "ready",
-			mode: "v2-only",
+			mode: "v2-bidirectional",
 			leadId: config.leadId,
 			channelIds: config.channelIds,
 		})}\n`,
@@ -90,6 +114,7 @@ export async function main(
 		process.once("SIGINT", resolve);
 		process.once("SIGTERM", resolve);
 	});
+	await outbound.stop();
 	await gateway.stop();
 	return 0;
 }

@@ -43,7 +43,6 @@ describe("DAG admission and dispatch", () => {
 					writesRepo: true,
 					worktreeId: "wt-a",
 					executor: {
-						logicalAgentId: "agent-a",
 						family: "family-a",
 						vendor: "vendor-a",
 						model: "model-a",
@@ -65,7 +64,7 @@ describe("DAG admission and dispatch", () => {
 						kind: "runner",
 						generation: 1,
 					},
-					roleId: "agent-a",
+					taskKind: "anything",
 				},
 			],
 		});
@@ -108,7 +107,6 @@ describe("DAG admission and dispatch", () => {
 			writesRepo: false,
 			worktreeId: null,
 			executor: {
-				logicalAgentId: `agent-${index}`,
 				family: "family-a",
 				vendor: "vendor",
 				model: "model",
@@ -203,7 +201,6 @@ describe("DAG admission and dispatch", () => {
 						writesRepo: false,
 						worktreeId: null,
 						executor: {
-							logicalAgentId: "agent-a",
 							family: "family-a",
 							vendor: "vendor",
 							model: "model",
@@ -247,7 +244,6 @@ describe("DAG admission and dispatch", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "agent-a",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -261,7 +257,6 @@ describe("DAG admission and dispatch", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "agent-b",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -322,7 +317,6 @@ describe("DAG admission and dispatch", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "agent-a",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -361,7 +355,7 @@ describe("DAG admission and dispatch", () => {
 		});
 	});
 
-	it("does not reserve or bind a logical runner role in agents", async () => {
+	it("does not reserve or bind any pre-registered runner identity in agents", async () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
 		fixture.provision("lead-a", "lead");
@@ -390,7 +384,6 @@ describe("DAG admission and dispatch", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "legacy-agent",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -402,13 +395,19 @@ describe("DAG admission and dispatch", () => {
 		});
 
 		const [request] = (await dispatchOnce(fixture.kernel, ports)).dispatched;
-		expect(request).toMatchObject({ roleId: "legacy-agent" });
+		expect(request).toMatchObject({ taskKind: "opaque" });
 		expect(request?.agent.agentId).toBe(request?.sessionRef);
+		// The only agents rows are the lead recipient, the Discord messenger
+		// recipient (FLY-1544 ③, provisioned by the lifecycle outbox) and the
+		// per-session runner: nothing role-shaped is reserved outside the
+		// session identity.
 		expect(
 			fixture.kernel.read(
 				(tx) =>
 					tx.get<{ count: number }>(
-						"SELECT count(*) AS count FROM agents WHERE agent_id='legacy-agent'",
+						`SELECT count(*) AS count FROM agents
+						  WHERE agent_id NOT IN (@lead,@session,'discord-messenger')`,
+						{ lead: "lead-a", session: request?.sessionRef },
 					)?.count,
 			),
 		).toBe(0);
@@ -442,7 +441,6 @@ describe("DAG admission and dispatch", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "fresh-agent",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -457,7 +455,7 @@ describe("DAG admission and dispatch", () => {
 
 		expect(result.dispatched).toHaveLength(1);
 		expect(result.dispatched[0]).toMatchObject({
-			roleId: "fresh-agent",
+			taskKind: "opaque",
 			agent: { generation: 1 },
 		});
 		expect(result.dispatched[0]?.agent.agentId).toBe(
@@ -465,7 +463,7 @@ describe("DAG admission and dispatch", () => {
 		);
 	});
 
-	it("keeps lead recipient names separate from logical runner roles", async () => {
+	it("keeps lead recipient names separate from task kinds", async () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
 		fixture.provision("lead-a", "lead");
@@ -489,12 +487,13 @@ describe("DAG admission and dispatch", () => {
 			tasks: [
 				{
 					localId: "node",
-					kindLabel: "opaque",
+					// A kind label that collides with a lead recipient name must stay
+					// an opaque label: it never resolves to the lead's identity.
+					kindLabel: "lead-a",
 					contract: [],
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "lead-a",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -506,11 +505,11 @@ describe("DAG admission and dispatch", () => {
 		});
 
 		const [request] = (await dispatchOnce(fixture.kernel, ports)).dispatched;
-		expect(request?.roleId).toBe("lead-a");
+		expect(request?.taskKind).toBe("lead-a");
 		expect(request?.agent.agentId).toBe(request?.sessionRef);
 	});
 
-	it("dispatches logical roles independently of later lead registrations", async () => {
+	it("dispatches tasks independently of later lead registrations", async () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
 		fixture.provision("lead-a", "lead");
@@ -543,7 +542,6 @@ describe("DAG admission and dispatch", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "raced-agent",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -574,7 +572,6 @@ describe("DAG admission and dispatch", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "healthy-agent",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -654,7 +651,6 @@ describe("DAG admission and dispatch", () => {
 					writesRepo: true,
 					worktreeId: "wt-gone",
 					executor: {
-						logicalAgentId: "missing-agent",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -699,7 +695,6 @@ describe("DAG admission and dispatch", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "healthy-agent",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -728,7 +723,7 @@ describe("DAG admission and dispatch", () => {
 		).toEqual({ events: 1, mail: 1 });
 	});
 
-	it("runs two writers with the same logical role on different worktrees", async () => {
+	it("runs two writers with the same task kind on different worktrees", async () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
 		fixture.provision("lead-a", "lead");
@@ -757,7 +752,6 @@ describe("DAG admission and dispatch", () => {
 						writesRepo: true,
 						worktreeId: `wt-${suffix}`,
 						executor: {
-							logicalAgentId: "implement",
 							family: "family-a",
 							vendor: "vendor",
 							model: "model",
@@ -775,9 +769,9 @@ describe("DAG admission and dispatch", () => {
 		expect(result.dispatched.map((request) => request.taskId).sort()).toEqual(
 			[first.taskIds.node, second.taskIds.node].sort(),
 		);
-		expect(result.dispatched.map((request) => request.roleId)).toEqual([
-			"implement",
-			"implement",
+		expect(result.dispatched.map((request) => request.taskKind)).toEqual([
+			"opaque",
+			"opaque",
 		]);
 		expect(
 			new Set(result.dispatched.map((request) => request.sessionRef)).size,
@@ -791,13 +785,11 @@ describe("DAG admission and dispatch", () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
 		fixture.provision("lead-a", "lead");
-		fixture.provision("bad-agent", "runner");
-		fixture.provision("good-agent", "runner");
 		const launched: string[] = [];
 		const { ports } = makePorts(fixture.clock, {
 			spawn: {
 				async spawn(request) {
-					if (request.roleId === "bad-agent") {
+					if (request.taskKind === "bad-kind") {
 						throw new Error("ordinary spawn failure");
 					}
 					launched.push(request.taskId);
@@ -811,7 +803,7 @@ describe("DAG admission and dispatch", () => {
 				},
 			},
 		});
-		const admit = async (uid: string, agentId: string) =>
+		const admit = async (uid: string, kindLabel: string) =>
 			await admitIssueDag(fixture.kernel, ports, {
 				admissionUid: uid,
 				projectId: "project-a",
@@ -830,12 +822,11 @@ describe("DAG admission and dispatch", () => {
 				tasks: [
 					{
 						localId: "node",
-						kindLabel: "opaque",
+						kindLabel,
 						contract: [],
 						writesRepo: false,
 						worktreeId: null,
 						executor: {
-							logicalAgentId: agentId,
 							family: "family-a",
 							vendor: "vendor",
 							model: "model",
@@ -845,8 +836,8 @@ describe("DAG admission and dispatch", () => {
 				],
 				edges: [],
 			});
-		const bad = await admit("bad-launch", "bad-agent");
-		const good = await admit("good-launch", "good-agent");
+		const bad = await admit("bad-launch", "bad-kind");
+		const good = await admit("good-launch", "good-kind");
 
 		const result = await dispatchOnce(fixture.kernel, {
 			...ports,

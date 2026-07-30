@@ -39,6 +39,7 @@ type Verb =
 	| "ask"
 	| "next"
 	| "submit"
+	| "ack"
 	| "admit"
 	| "complete"
 	| "evidence"
@@ -62,6 +63,7 @@ const VERBS = new Set<Verb>([
 	"ask",
 	"next",
 	"submit",
+	"ack",
 	"admit",
 	"complete",
 	"evidence",
@@ -134,6 +136,17 @@ const VERB_FLAGS: Record<Verb, ReadonlySet<string>> = {
 		"--capability-id",
 		"--token",
 		"--effects-file",
+	]),
+	// FLY-1544 ③: the lead-consumption settle verb. A pulled delivery that
+	// needs no effects (a notification the lead has read) is settled with an
+	// EMPTY proposal -- same one-shot settlement path as submit, so the mailbox
+	// row goes applied and is never silently redelivered.
+	ack: new Set([
+		"--agent",
+		"--attempt",
+		"--message",
+		"--capability-id",
+		"--token",
 	]),
 	admit: new Set(["--request-file"]),
 	complete: new Set(["--request-file"]),
@@ -545,6 +558,18 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 				deliveryCredential: readDeliveryCredential(
 					requireAbsolute(parsed.values, "--delivery-credential-file"),
 				),
+			});
+			break;
+		case "ack":
+			result = await client.submitProposalWithRetry({
+				agentId: requireValue(parsed.values, "--agent"),
+				attemptUid: requireValue(parsed.values, "--attempt"),
+				messageUid: requireValue(parsed.values, "--message"),
+				effects: [],
+				authorization: {
+					capabilityId: requireValue(parsed.values, "--capability-id"),
+					token: requireValue(parsed.values, "--token"),
+				},
 			});
 			break;
 		case "submit":

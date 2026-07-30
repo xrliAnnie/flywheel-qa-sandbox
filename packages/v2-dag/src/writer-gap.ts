@@ -370,12 +370,10 @@ async function adoptLostOpenAttempt(
 			attempt_state: string;
 			activation_id: string;
 			session_ref: string;
-			agent_id: string;
 		}>(
 			`SELECT t.id AS task_id,t.external_issue_id AS issue_id,
 			        t.state AS task_state,a.desired_state AS attempt_state,
-			        act.id AS activation_id,act.session_ref,
-			        json_extract(t.payload,'$.executor.logicalAgentId') AS agent_id
+			        act.id AS activation_id,act.session_ref
 			   FROM attempts a
 			   JOIN tasks t ON t.id=a.task_id
 			   JOIN activations act ON act.attempt_id=a.id AND act.state='active'
@@ -445,12 +443,10 @@ async function adoptLostOpenAttempt(
 					attempt_state: string;
 					activation_id: string;
 					session_ref: string;
-					agent_id: string;
 				}>(
 					`SELECT t.id AS task_id,t.external_issue_id AS issue_id,
 					        t.state AS task_state,a.desired_state AS attempt_state,
-					        act.id AS activation_id,act.session_ref,
-					        json_extract(t.payload,'$.executor.logicalAgentId') AS agent_id
+					        act.id AS activation_id,act.session_ref
 					   FROM attempts a
 					   JOIN tasks t ON t.id=a.task_id
 					   JOIN activations act

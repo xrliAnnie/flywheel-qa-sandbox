@@ -125,6 +125,10 @@ describe("automated Discord sender inventory", () => {
 			"LeadAlertNotifier.ts",
 			"bridge/AlertChannelHub.ts",
 			"bridge/ChatThreadCreator.ts",
+			// FLY-1544 ③: the shared thread-create/post REST mechanics (extracted
+			// from ChatThreadCreator; the v2 Discord messenger's one sender). Marks
+			// its own text idempotently.
+			"bridge/chat-thread-utils.ts",
 			"bridge/detection-escalation-sinks.ts",
 			"bridge/discord-post-file.ts",
 			"bridge/discord-utils.ts",

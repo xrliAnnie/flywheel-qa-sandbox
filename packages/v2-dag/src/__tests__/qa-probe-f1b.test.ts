@@ -87,7 +87,6 @@ describe("FLY-1520 QA probe — F1 across registration ordering", () => {
 					writesRepo: true,
 					worktreeId: WT.worktreeId,
 					executor: {
-						logicalAgentId: "agent-a",
 						family: "forged-family",
 						vendor: "vendor",
 						model: "model",
@@ -98,8 +97,8 @@ describe("FLY-1520 QA probe — F1 across registration ordering", () => {
 			edges: [],
 		});
 
-		// Step 2: the deployment registers its families. agent-a really belongs
-		// to actual-family — the family it did NOT declare.
+		// Step 2: the deployment registers its families. Only actual-family is
+		// authoritative — the declared "forged-family" is not among them.
 		registerReviewFamilies(fixture.kernel, ports, {
 			projectId: "project-a",
 			families: { "actual-family": { reviewerAgentId: "agent-a" } },
@@ -113,17 +112,22 @@ describe("FLY-1520 QA probe — F1 across registration ordering", () => {
 			ports,
 			admitted.taskIds.code as string,
 		);
-		// authorFamilies is ["forged-family"], which excludes nothing real, so
-		// agent-a's own family stays "eligible" and it signs off on its own code.
-		recordEvidence(fixture.kernel, ports, {
-			eventUid: "qa-f1b-self-approval",
-			kind: "review_approval",
-			projectId: "project-a",
-			review: "code",
-			subjectDigest: observation.reviewSubjectDigest,
-			reviewer: spawn.agent,
-		});
+		// FLY-1544 ①: a runner reviewer's family is its own task payload's
+		// executor.family. "forged-family" was never registered, so the approval
+		// cannot even be recorded — the family is not resolvable.
+		expect(() =>
+			recordEvidence(fixture.kernel, ports, {
+				eventUid: "qa-f1b-self-approval",
+				kind: "review_approval",
+				projectId: "project-a",
+				review: "code",
+				subjectDigest: observation.reviewSubjectDigest,
+				reviewer: spawn.agent,
+			}),
+		).toThrow(/reviewer family is ambiguous/);
 
+		// And even without that approval on file, the completion itself is
+		// refused: the frozen unvalidated family is not authoritative.
 		await expect(
 			submitNodeCompletion(fixture.kernel, ports, {
 				taskId: admitted.taskIds.code as string,

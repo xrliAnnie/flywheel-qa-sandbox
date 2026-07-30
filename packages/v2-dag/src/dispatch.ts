@@ -24,6 +24,7 @@ import {
 	readEnvelope,
 	updateEnvelope,
 } from "./meta.js";
+import { appendLifecycleTx } from "./outbox.js";
 import type {
 	DagPorts,
 	DispatchFailure,
@@ -604,7 +605,8 @@ function prepareDispatch(
 		sessionRef,
 		ownerToken: "",
 		agent,
-		roleId: payload.executor.logicalAgentId,
+		// FLY-1544 ①: the instruction book hangs off the node kind.
+		taskKind: task.kind,
 		executor: payload.executor,
 	};
 	// FLY-1543 ④: the assignment row is written in the SAME transaction that
@@ -626,8 +628,23 @@ function prepareDispatch(
 			activation_id: activationId,
 			attempt_id: attemptId,
 			session_ref: sessionRef,
-			role_id: payload.executor.logicalAgentId,
+			task_kind: task.kind,
 			host_epoch: hostEpoch,
+		},
+		cutoverEpoch: epoch,
+		createdAt: now,
+	});
+	// FLY-1544 ③: dispatch lands in the issue's Discord thread.
+	appendLifecycleTx(tx, {
+		sourceKind: "dag_task_dispatched",
+		sourceId: attemptId,
+		kind: "task_dispatched",
+		issueId: task.external_issue_id,
+		payload: {
+			task_id: candidate.id,
+			task_kind: task.kind,
+			attempt_id: attemptId,
+			session_ref: sessionRef,
 		},
 		cutoverEpoch: epoch,
 		createdAt: now,
@@ -1003,11 +1020,13 @@ function requestForSession(
 		attempt_id: string;
 		attempt_generation: number;
 		activation_id: string;
+		kind: string;
 		payload: string;
 	}>(
 		`SELECT a.task_id,a.id AS attempt_id,
 		        a.generation AS attempt_generation,
 		        act.id AS activation_id,
+		        t.kind,
 		        t.payload
 		   FROM activations act
 		   JOIN attempts a ON a.id=act.attempt_id
@@ -1033,7 +1052,7 @@ function requestForSession(
 			generation: state.attempt_generation,
 			activationId: state.activation_id,
 		},
-		roleId: payload.executor.logicalAgentId,
+		taskKind: state.kind,
 		executor: payload.executor,
 	};
 }

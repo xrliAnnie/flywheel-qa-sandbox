@@ -88,7 +88,6 @@ describe("FLY-1520 QA probe — same-family review under unvalidated family", ()
 					writesRepo: true,
 					worktreeId: WT.worktreeId,
 					executor: {
-						logicalAgentId: "author",
 						family: "ghost-family",
 						vendor: "vendor",
 						model: "model",

@@ -41,7 +41,6 @@ describe("dispatch crash replay", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "agent-a",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",

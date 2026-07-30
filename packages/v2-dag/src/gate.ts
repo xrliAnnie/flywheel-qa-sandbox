@@ -13,6 +13,7 @@ import {
 	readEnvelope,
 	updateEnvelope,
 } from "./meta.js";
+import { appendLifecycleTx } from "./outbox.js";
 import type { DagPorts } from "./types.js";
 
 export interface IssueReceiptData {
@@ -478,6 +479,20 @@ export function approveShipGate(
 				gate_id: approved.gate_id,
 				tip: approved.tip,
 				capability_id: approved.capability_id,
+			},
+			cutoverEpoch: epoch,
+			createdAt: ports.clock.nowIso(),
+		});
+		// FLY-1544 ③: the PR reaching the ship gate lands in the issue thread.
+		appendLifecycleTx(tx, {
+			sourceKind: "dag_pr_ready",
+			sourceId: `${approved.gate_id}:${input.approvalRef}`,
+			kind: "pr_ready",
+			issueId: input.issueId,
+			payload: {
+				repo: input.shipTarget.repo,
+				pr: input.shipTarget.pr,
+				head: approved.tip,
 			},
 			cutoverEpoch: epoch,
 			createdAt: ports.clock.nowIso(),

@@ -72,10 +72,11 @@ export async function resumeActivation(
 					desired_state: string;
 					activation_id: string;
 					session_ref: string;
+					kind: string;
 					payload: string;
 				}>(
 					`SELECT a.task_id,a.generation,a.desired_state,
-				        act.id AS activation_id,act.session_ref,t.payload
+				        act.id AS activation_id,act.session_ref,t.kind,t.payload
 				   FROM attempts a
 				   JOIN activations act ON act.attempt_id=a.id AND act.state='active'
 				   JOIN tasks t ON t.id=a.task_id
@@ -152,7 +153,7 @@ export async function resumeActivation(
 					sessionRef,
 					ownerToken: "",
 					agent,
-					roleId: payload.executor.logicalAgentId,
+					taskKind: row.kind,
 					executor: payload.executor,
 				};
 				// The replacement session gets its own assignment envelope, keyed on

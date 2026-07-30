@@ -47,7 +47,6 @@ describe("same-task rework", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "agent-a",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -155,7 +154,6 @@ describe("same-task rework", () => {
 					writesRepo: true,
 					worktreeId: "wt-a",
 					executor: {
-						logicalAgentId: "agent-a",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",

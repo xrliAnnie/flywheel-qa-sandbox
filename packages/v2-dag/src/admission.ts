@@ -11,6 +11,7 @@ import {
 	readCutoverEpoch,
 	readEnvelope,
 } from "./meta.js";
+import { appendLifecycleTx } from "./outbox.js";
 import type { AdmissionResult, DagPorts, IssueDagDescriptor } from "./types.js";
 
 const MAX_TASKS = 500;
@@ -175,11 +176,10 @@ export async function admitIssueDag(
 				}
 			}
 		}
-		// FLY-1543 ⑤: no executor ledger validation here. logicalAgentId is an
-		// instruction-book pointer (it selects a prompt file), not an agents row;
-		// a missing role file fails closed at dispatch, inside
-		// resolveRoleInstruction. This also removes the old half-check that let an
-		// unregistered executor through silently.
+		// FLY-1544 ①: no executor ledger validation here. The instruction book
+		// hangs off the node kind (tasks.kind -> .flywheel/agents/nodes/); a
+		// missing node instruction file fails closed at dispatch, inside
+		// resolveRoleInstruction.
 		if (readEnvelope(tx, `dag_issue:${descriptor.issueId}`, epoch)) {
 			throw new DagConflictError(
 				`issue ${descriptor.issueId} is already admitted`,
@@ -290,6 +290,19 @@ export async function admitIssueDag(
 			sourceKind: "admission",
 			sourceId: descriptor.admissionUid,
 			payload: receiptPayload(request, result as unknown as CanonicalValue),
+			cutoverEpoch: epoch,
+			createdAt: now,
+		});
+		// FLY-1544 ③: issue intake opens the `[FLY-XXXX]` Discord thread.
+		appendLifecycleTx(tx, {
+			sourceKind: "dag_issue_opened",
+			sourceId: descriptor.admissionUid,
+			kind: "issue_opened",
+			issueId: descriptor.issueId,
+			payload: {
+				project_id: descriptor.projectId,
+				task_kinds: descriptor.tasks.map((task) => task.kindLabel),
+			},
 			cutoverEpoch: epoch,
 			createdAt: now,
 		});

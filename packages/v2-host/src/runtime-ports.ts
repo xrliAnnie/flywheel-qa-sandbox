@@ -12,8 +12,13 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
+// FLY-1544 ⑥: the dirty-safe probe and the remote-branch CAS are imported from
+// teamlead — one implementation, no copy-paste (founder red line).
+import { casDeleteRemoteBranch } from "flywheel-teamlead/bridge/branch-cleanup";
+import { gitWorktreeClean } from "flywheel-teamlead/bridge/worktree-cleanup";
 import type {
 	DagPorts,
+	IssueCleanupPort,
 	LaunchLockPort,
 	ProcessProbePort,
 	RunnerControlPort,
@@ -55,6 +60,8 @@ export interface RunnerLauncherPort {
 	probe(sessionRef: string): ReturnType<ProcessProbePort["probe"]>;
 	stop(sessionRef: string): Promise<void>;
 	activate?(sessionRef: string): Promise<void>;
+	/** FLY-1544 doorbell: paste text into the session terminal (tmux paste). */
+	deliver?(sessionRef: string, text: string): Promise<void>;
 }
 
 export interface RuntimeDagPortsOptions {
@@ -78,8 +85,8 @@ interface InstructionEvidence {
 	v: 1;
 	project_id: string;
 	issue_id: string;
-	logical_agent_id: string;
-	config_path: string;
+	/** FLY-1544 ①: the node kind selects the instruction book, not a role id. */
+	task_kind: string;
 	source_path: string;
 	content_digest: string;
 	content_bytes: number;
@@ -89,6 +96,7 @@ interface InstructionEvidence {
 interface TaskLaunchRow {
 	project_id: string;
 	external_issue_id: string;
+	kind: string;
 	payload: string;
 }
 
@@ -273,17 +281,17 @@ function launchContext(
 ): Omit<RuntimeLaunchRequest["context"], "instruction" | "firstEnvelope"> {
 	return kernel.read((tx) => {
 		const task = tx.get<TaskLaunchRow>(
-			`SELECT project_id,external_issue_id,payload
+			`SELECT project_id,external_issue_id,kind,payload
 			   FROM tasks WHERE id=@taskId`,
 			{ taskId: request.taskId },
 		);
 		if (!task) throw new Error("spawn task is missing");
 		const payload = record(JSON.parse(task.payload), "spawn task payload");
-		const executor = record(payload.executor, "spawn task executor");
-		// FLY-1543 ⑤: the ledger identity is the sessionRef; the role id is the
-		// instruction-book pointer and must match the task's executor.
-		if (executor.logicalAgentId !== request.roleId) {
-			throw new FenceViolation("spawn role does not match task executor");
+		record(payload.executor, "spawn task executor");
+		// FLY-1544 ①: the ledger identity is the sessionRef; the node kind is the
+		// instruction-book pointer and must match the task row.
+		if (task.kind !== request.taskKind) {
+			throw new FenceViolation("spawn node kind does not match task");
 		}
 		let worktreeId =
 			typeof payload.worktree_id === "string" ? payload.worktree_id : undefined;
@@ -329,8 +337,7 @@ function recordInstructionEvidence(input: {
 		v: 1 as const,
 		project_id: input.context.projectId,
 		issue_id: input.context.issueId,
-		logical_agent_id: input.request.roleId,
-		config_path: input.instruction.configPath,
+		task_kind: input.request.taskKind,
 		source_path: input.instruction.sourcePath,
 		content_digest: input.instruction.contentDigest,
 		content_bytes: input.instruction.contentBytes,
@@ -403,7 +410,7 @@ function kernelSpawnPort(
 			const context = launchContext(kernel, request);
 			const instruction = resolveRoleInstruction({
 				projectRoot: context.projectRoot,
-				logicalAgentId: request.roleId,
+				taskKind: request.taskKind,
 			});
 			recordInstructionEvidence({
 				kernel,
@@ -568,6 +575,36 @@ export function createRuntimeDagPorts(
 	const runnerControl: RunnerControlPort = {
 		requestStop: (sessionRef) => options.launcher.stop(sessionRef),
 	};
+	const deliver = options.launcher.deliver?.bind(options.launcher);
+	// FLY-1544 ⑥: post-merge cleanup capability. Removal is NON-force — git
+	// itself refuses a tree that turned dirty between the probe and the call.
+	// The main repo path is derived from the worktree BEFORE removal because
+	// canonical_worktree.repo_identity is the "__main__" sentinel, not a path.
+	const issueCleanup: IssueCleanupPort = {
+		worktreeClean: (worktreePath) => gitWorktreeClean(worktreePath),
+		async removeWorktree(worktreePath) {
+			const commonDir = output(gitBin, [
+				"-C",
+				worktreePath,
+				"rev-parse",
+				"--path-format=absolute",
+				"--git-common-dir",
+			]);
+			const mainRepoPath = dirname(commonDir);
+			output(gitBin, ["-C", mainRepoPath, "worktree", "remove", worktreePath]);
+			return { mainRepoPath };
+		},
+		async deleteRemoteBranch(input) {
+			const outcome = await casDeleteRemoteBranch({
+				mainRepoPath: input.mainRepoPath,
+				branch: input.branch,
+				expectedSha: input.expectedSha,
+			});
+			return outcome.deleted
+				? { deleted: true, sha: outcome.sha }
+				: { deleted: false, reason: outcome.reason };
+		},
+	};
 	return {
 		clock,
 		git,
@@ -592,5 +629,8 @@ export function createRuntimeDagPorts(
 			clock,
 			options.expectedEpoch,
 		),
+		issueCleanup,
+		// FLY-1544 doorbell: only when the launcher can actually paste.
+		...(deliver ? { sessionDelivery: { paste: deliver } } : {}),
 	};
 }

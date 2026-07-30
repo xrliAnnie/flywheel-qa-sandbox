@@ -36,7 +36,6 @@ describe("data-owned contracts and semantic fences", () => {
 		fixture.provision("runtime-agent", "runner");
 		const { ports } = makePorts(fixture.clock);
 		const executor = {
-			logicalAgentId: "runtime-agent",
 			family: "family-a",
 			vendor: "vendor",
 			model: "model",

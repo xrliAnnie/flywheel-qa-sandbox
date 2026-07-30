@@ -21,6 +21,7 @@ import {
 	readEnvelope,
 	updateEnvelope,
 } from "./meta.js";
+import { appendLifecycleTx } from "./outbox.js";
 import type {
 	CompletionObservation,
 	DagPorts,
@@ -30,6 +31,7 @@ import type {
 interface TaskRow {
 	project_id: string;
 	external_issue_id: string;
+	kind: string;
 	state: string;
 	payload: string;
 }
@@ -79,7 +81,7 @@ export interface NodeCompletionResult {
 
 function readTask(tx: ReadTx, taskId: string): TaskRow {
 	const task = tx.get<TaskRow>(
-		`SELECT project_id,external_issue_id,state,payload
+		`SELECT project_id,external_issue_id,kind,state,payload
 		   FROM tasks WHERE id=@taskId`,
 		{ taskId },
 	);
@@ -218,9 +220,16 @@ function hasApproval(
 		projectId: string;
 		subject: string;
 		eligibleFamilies: Set<string>;
-		excludedReviewerAgentId: string;
+		/**
+		 * FLY-1544 ①: with the role layer deleted, self-review exclusion is
+		 * session-based -- an approval recorded by any session of the completing
+		 * attempt does not count. Cross-family eligibility above already excludes
+		 * the author's vendor family; this closes the same-session loophole.
+		 */
+		excludedAttemptId: string;
 	},
 ): EvidenceRecord | null {
+	const selfSessionPrefix = `v2dag:${input.excludedAttemptId}:`;
 	return (
 		allEvidence(tx, "evidence.review_approval").find(
 			({ payload }) =>
@@ -229,7 +238,10 @@ function hasApproval(
 				payload.subject_digest === input.subject &&
 				typeof payload.reviewer_family === "string" &&
 				input.eligibleFamilies.has(payload.reviewer_family) &&
-				payload.reviewer_agent !== input.excludedReviewerAgentId,
+				!(
+					typeof payload.reviewer_session === "string" &&
+					payload.reviewer_session.startsWith(selfSessionPrefix)
+				),
 		) ?? null
 	);
 }
@@ -277,7 +289,7 @@ function requireContract(
 			projectId: input.task.project_id,
 			subject: input.observation.reviewSubjectDigest,
 			eligibleFamilies,
-			excludedReviewerAgentId: input.payload.executor.logicalAgentId,
+			excludedAttemptId: input.attemptId,
 		});
 		if (!approval) {
 			throw new DagContractError("contract lacks cross-family approval");
@@ -303,7 +315,7 @@ function requireContract(
 				projectId: input.task.project_id,
 				subject: input.observation.reviewSubjectDigest,
 				eligibleFamilies,
-				excludedReviewerAgentId: input.payload.executor.logicalAgentId,
+				excludedAttemptId: input.attemptId,
 			});
 			if (!approval) {
 				throw new DagContractError("contract lacks declared approval");
@@ -679,6 +691,20 @@ export async function submitNodeCompletion(
 					manifest_digest: observation.manifestDigest,
 					satisfied_items: contract.evaluation.satisfiedItems,
 					evidence_refs: contract.evaluation.evidenceRefs,
+				},
+				cutoverEpoch: epoch,
+				createdAt: ports.clock.nowIso(),
+			});
+			// FLY-1544 ③: node completion lands in the issue's Discord thread.
+			appendLifecycleTx(tx, {
+				sourceKind: "dag_node_completed",
+				sourceId: request.completionUid,
+				kind: "node_completed",
+				issueId: bound.task.external_issue_id,
+				payload: {
+					task_id: request.taskId,
+					task_kind: bound.task.kind,
+					head: observation.head,
 				},
 				cutoverEpoch: epoch,
 				createdAt: ports.clock.nowIso(),

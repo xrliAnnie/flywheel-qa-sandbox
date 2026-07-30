@@ -16,20 +16,10 @@ const roots: string[] = [];
 function fixture() {
 	const root = mkdtempSync(join(tmpdir(), "flywheel-v2-role-"));
 	roots.push(root);
-	mkdirSync(join(root, ".flywheel", "agents"), { recursive: true });
+	mkdirSync(join(root, ".flywheel", "agents", "nodes"), { recursive: true });
 	writeFileSync(
-		join(root, ".flywheel", "config.yaml"),
-		[
-			"project: example",
-			"agents:",
-			"  engineer:",
-			"    agent_file: .flywheel/agents/engineer.md",
-			"",
-		].join("\n"),
-	);
-	writeFileSync(
-		join(root, ".flywheel", "agents", "engineer.md"),
-		"# Engineer\n\nFollow the project contract.\n",
+		join(root, ".flywheel", "agents", "nodes", "implement.md"),
+		"# Implement\n\nFollow the project contract.\n",
 	);
 	return root;
 }
@@ -40,62 +30,77 @@ afterEach(() => {
 	}
 });
 
-describe("runtime role instruction resolution", () => {
-	it("resolves the exact configured agent file and records immutable evidence", () => {
+describe("runtime node instruction resolution (FLY-1544 ①)", () => {
+	it("resolves the node instruction file by task kind", () => {
 		const root = fixture();
 		const canonicalRoot = realpathSync.native(root);
 		expect(
 			resolveRoleInstruction({
 				projectRoot: root,
-				logicalAgentId: "engineer",
+				taskKind: "implement",
 			}),
 		).toMatchObject({
 			projectRoot: canonicalRoot,
-			configPath: join(canonicalRoot, ".flywheel", "config.yaml"),
-			sourcePath: join(canonicalRoot, ".flywheel", "agents", "engineer.md"),
-			contentBytes: 41,
+			sourcePath: join(
+				canonicalRoot,
+				".flywheel",
+				"agents",
+				"nodes",
+				"implement.md",
+			),
+			contentBytes: 42,
 		});
 		expect(
 			resolveRoleInstruction({
 				projectRoot: root,
-				logicalAgentId: "engineer",
+				taskKind: "implement",
 			}).contentDigest,
 		).toMatch(/^[0-9a-f]{64}$/);
 	});
 
-	it("fails closed for unknown, escaping, or symlinked role sources", () => {
+	it("fails closed for missing, traversal-shaped, or symlinked node kinds", () => {
 		const root = fixture();
 		expect(() =>
 			resolveRoleInstruction({
 				projectRoot: root,
-				logicalAgentId: "missing",
+				taskKind: "missing",
 			}),
-		).toThrow(/agent missing/);
+		).toThrow(/node instruction for missing cannot be resolved/);
 
-		writeFileSync(
-			join(root, ".flywheel", "config.yaml"),
-			"agents:\n  engineer:\n    agent_file: ../outside.md\n",
-		);
-		expect(() =>
-			resolveRoleInstruction({
-				projectRoot: root,
-				logicalAgentId: "engineer",
-			}),
-		).toThrow(/escapes/);
+		// A kind is a path segment; anything outside the strict shape is refused
+		// before filesystem access.
+		for (const hostile of ["../outside", "a/b", "", ".hidden", "UPPER"]) {
+			expect(() =>
+				resolveRoleInstruction({
+					projectRoot: root,
+					taskKind: hostile,
+				}),
+			).toThrow(/not a valid node instruction name/);
+		}
 
-		writeFileSync(
-			join(root, ".flywheel", "config.yaml"),
-			"agents:\n  engineer:\n    agent_file: .flywheel/agents/link.md\n",
-		);
 		symlinkSync(
-			join(root, ".flywheel", "agents", "engineer.md"),
-			join(root, ".flywheel", "agents", "link.md"),
+			join(root, ".flywheel", "agents", "nodes", "implement.md"),
+			join(root, ".flywheel", "agents", "nodes", "linked.md"),
 		);
 		expect(() =>
 			resolveRoleInstruction({
 				projectRoot: root,
-				logicalAgentId: "engineer",
+				taskKind: "linked",
 			}),
 		).toThrow(/symbolic link/);
+	});
+
+	it("refuses an empty instruction file", () => {
+		const root = fixture();
+		writeFileSync(
+			join(root, ".flywheel", "agents", "nodes", "empty.md"),
+			"\n\n",
+		);
+		expect(() =>
+			resolveRoleInstruction({
+				projectRoot: root,
+				taskKind: "empty",
+			}),
+		).toThrow(/must contain role instructions/);
 	});
 });

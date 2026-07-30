@@ -1,5 +1,10 @@
 export { admitIssueDag } from "./admission.js";
 export {
+	closeShippedIssues,
+	type IssueCleanupPort,
+	type IssueClosureResult,
+} from "./closure.js";
+export {
 	observeNodeCompletion,
 	submitNodeCompletion,
 } from "./completion.js";
@@ -10,6 +15,12 @@ export {
 	recoverPendingLaunches,
 } from "./dispatch.js";
 export {
+	type DoorbellResult,
+	formatDoorbellText,
+	ringSessionDoorbells,
+	type SessionDeliveryPort,
+} from "./doorbell.js";
+export {
 	DagConflictError,
 	DagContractError,
 	DagFenceError,
@@ -17,6 +28,11 @@ export {
 export { recordEvidence } from "./evidence.js";
 export { registerReviewFamilies } from "./families.js";
 export { approveShipGate, recoverShipAuthority } from "./gate.js";
+export {
+	appendDiscordOutboxTx,
+	appendLifecycleTx,
+	DISCORD_MESSENGER_AGENT_ID,
+} from "./outbox.js";
 export { reconcileShipActions } from "./reconcile.js";
 export { resumeActivation } from "./resume.js";
 export { reworkTask } from "./rework.js";

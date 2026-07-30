@@ -42,9 +42,8 @@ const WT = {
 	mergeTargetRef: "refs/heads/main",
 } as const;
 
-function executor(logicalAgentId: string, family: string) {
+function executor(family: string) {
 	return {
-		logicalAgentId,
 		family,
 		vendor: "vendor",
 		model: "model",
@@ -67,7 +66,7 @@ describe("FLY-1520 QA findings — reproductions", () => {
 	 *
 	 * Severity HIGH — this is the cross-family review requirement, bypassed.
 	 */
-	it("F1: refuses an admission whose executor claims a family it is not in", async () => {
+	it("F1: refuses an admission whose executor claims a family outside the authority", async () => {
 		const fixture = makeFixture();
 		fixtures.push(fixture);
 		fixture.provision("lead-a", "lead");
@@ -111,8 +110,9 @@ describe("FLY-1520 QA findings — reproductions", () => {
 					contract: [],
 					writesRepo: true,
 					worktreeId: WT.worktreeId,
-					// agent-a really belongs to actual-family. It declares otherwise.
-					executor: executor("agent-a", "forged-family"),
+					// Only actual-family is authoritative; the executor declares a
+					// family the project never registered.
+					executor: executor("forged-family"),
 				},
 			],
 			edges: [],
@@ -198,7 +198,7 @@ describe("FLY-1520 QA findings — reproductions", () => {
 					contract: [],
 					writesRepo: true,
 					worktreeId: WT.worktreeId,
-					executor: executor("solo", "beta"),
+					executor: executor("beta"),
 				},
 			],
 			edges: [],
@@ -300,7 +300,7 @@ describe("FLY-1520 QA findings — reproductions", () => {
 					contract: [{ kind: "verdict" }],
 					writesRepo: false,
 					worktreeId: null,
-					executor: executor("qa-agent", "family-a"),
+					executor: executor("family-a"),
 				},
 			],
 			edges: [],
@@ -401,7 +401,7 @@ describe("FLY-1520 QA findings — reproductions", () => {
 					contract: [],
 					writesRepo: false,
 					worktreeId: null,
-					executor: executor("busy-runner", "family-a"),
+					executor: executor("family-a"),
 				},
 			],
 			edges: [],
@@ -420,7 +420,7 @@ describe("FLY-1520 QA findings — reproductions", () => {
 					contract: [],
 					writesRepo: false,
 					worktreeId: null,
-					executor: executor("target-agent", "family-a"),
+					executor: executor("family-a"),
 				},
 			],
 			edges: [],

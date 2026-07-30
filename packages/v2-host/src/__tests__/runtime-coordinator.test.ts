@@ -28,14 +28,10 @@ const roots: string[] = [];
 function fixture() {
 	const root = mkdtempSync(join(tmpdir(), "flywheel-v2-runtime-"));
 	roots.push(root);
-	mkdirSync(join(root, ".flywheel", "agents"), { recursive: true });
+	mkdirSync(join(root, ".flywheel", "agents", "nodes"), { recursive: true });
 	writeFileSync(
-		join(root, ".flywheel", "config.yaml"),
-		"project: runtime-test\nagents:\n  engineer:\n    agent_file: .flywheel/agents/engineer.md\n",
-	);
-	writeFileSync(
-		join(root, ".flywheel", "agents", "engineer.md"),
-		"# Engineer\n\nExecute the issue contract.\n",
+		join(root, ".flywheel", "agents", "nodes", "implementation.md"),
+		"# Implementation node\n\nExecute the issue contract.\n",
 	);
 	execFileSync("/usr/bin/git", ["-C", root, "init", "-q"]);
 	execFileSync("/usr/bin/git", [
@@ -118,7 +114,6 @@ function fixture() {
 				writesRepo: true,
 				worktreeId: "runtime-worktree",
 				executor: {
-					logicalAgentId: "engineer",
 					family: "codex",
 					vendor: "claude-code",
 					model: "sonnet",
@@ -172,7 +167,13 @@ describe("runtime coordinator", () => {
 				issueId: "FLY-RUNTIME",
 				projectRoot: canonicalRoot,
 				instruction: {
-					sourcePath: join(canonicalRoot, ".flywheel", "agents", "engineer.md"),
+					sourcePath: join(
+						canonicalRoot,
+						".flywheel",
+						"agents",
+						"nodes",
+						"implementation.md",
+					),
 				},
 			});
 			const attemptId = current.launched[0]?.attemptId;
@@ -187,7 +188,7 @@ describe("runtime coordinator", () => {
 				v: 1,
 				project_id: "runtime-test",
 				issue_id: "FLY-RUNTIME",
-				logical_agent_id: "engineer",
+				task_kind: "implementation",
 				content_digest: current.launched[0]?.context.instruction.contentDigest,
 			});
 			expect(
@@ -201,10 +202,10 @@ describe("runtime coordinator", () => {
 		}
 	});
 
-	it("audits and refuses dispatch when the exact logical agent is not configured", async () => {
+	it("audits and refuses dispatch when the node instruction file is missing", async () => {
 		const current = fixture();
 		try {
-			current.descriptor.tasks[0]!.executor.logicalAgentId = "missing";
+			current.descriptor.tasks[0]!.kindLabel = "missing";
 			await admitIssueDag(current.kernel, current.ports, current.descriptor);
 			const coordinator = new V2RuntimeCoordinator({
 				kernel: current.kernel,

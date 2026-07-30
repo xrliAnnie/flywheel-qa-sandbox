@@ -72,7 +72,6 @@ describe("completion contract runtime", () => {
 					writesRepo: true,
 					worktreeId: "wt-a",
 					executor: {
-						logicalAgentId: "writer-a",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -141,7 +140,6 @@ describe("completion contract runtime", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "writer-a",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -268,7 +266,6 @@ describe("completion contract runtime", () => {
 					writesRepo: true,
 					worktreeId: "wt-a",
 					executor: {
-						logicalAgentId: "writer-a",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",

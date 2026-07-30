@@ -108,7 +108,6 @@ describe("three-node DAG to generic ship", () => {
 					writesRepo: true,
 					worktreeId: "wt-a",
 					executor: {
-						logicalAgentId: "docs-agent",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -122,7 +121,6 @@ describe("three-node DAG to generic ship", () => {
 					writesRepo: true,
 					worktreeId: "wt-a",
 					executor: {
-						logicalAgentId: "code-agent",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",
@@ -136,7 +134,6 @@ describe("three-node DAG to generic ship", () => {
 					writesRepo: false,
 					worktreeId: null,
 					executor: {
-						logicalAgentId: "test-agent",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",

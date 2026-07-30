@@ -43,14 +43,12 @@ const roots: string[] = [];
 
 function prepareProject(root: string): string {
 	const project = join(root, "project");
-	mkdirSync(join(project, ".flywheel", "agents"), { recursive: true });
+	mkdirSync(join(project, ".flywheel", "agents", "nodes"), {
+		recursive: true,
+	});
 	writeFileSync(
-		join(project, ".flywheel", "config.yaml"),
-		"project: fly1503\nagents:\n  engineer:\n    agent_file: .flywheel/agents/engineer.md\n",
-	);
-	writeFileSync(
-		join(project, ".flywheel", "agents", "engineer.md"),
-		"# Engineer\n\nConsume only v2 injected envelopes.\n",
+		join(project, ".flywheel", "agents", "nodes", "implementation.md"),
+		"# Implementation node\n\nConsume only v2 injected envelopes.\n",
 	);
 	const git = (...args: string[]) =>
 		execFileSync("/usr/bin/git", [
@@ -144,7 +142,10 @@ function descriptorFor(project: string): IssueDagDescriptor {
 		admissionUid: "fly1503-admission",
 		projectId: "fly1503",
 		issueId: "FLY-1503",
-		notifyAgentId: "lead-runtime",
+		// FLY-1544 ③④: lifecycle events CC the issue's notify lead. These
+		// delivery-mechanics scenarios pull as "lead-runtime", so the CC stream
+		// goes to a DEDICATED notify lead to keep the pulled mailbox scenario-only.
+		notifyAgentId: "lead-notify",
 		shipWorktreeId: "worktree",
 		worktrees: [
 			{
@@ -163,7 +164,6 @@ function descriptorFor(project: string): IssueDagDescriptor {
 				writesRepo: true,
 				worktreeId: "worktree",
 				executor: {
-					logicalAgentId: "engineer",
 					family: "claude",
 					vendor: "claude",
 					model: "test-model",
@@ -236,6 +236,7 @@ function bootFixture() {
 
 	const bootstrap = Kernel.open({ path: database.dbPath });
 	provisionAgentRecipient(bootstrap, "lead-runtime", "lead");
+	provisionAgentRecipient(bootstrap, "lead-notify", "lead");
 	const admitted = admitIssueDag(bootstrap, ports(bootstrap), {
 		...descriptorFor(project),
 	});
@@ -1157,6 +1158,13 @@ describe("FLY-1503 item 1 — the envelope carries the delivery protocol", () =>
 			// The reporting route matters most: there is no side channel.
 			expect(envelope.protocol.reporting).toMatch(/effects.*`ask` verb/);
 			expect(envelope.protocol.reporting).toMatch(/ask_response/);
+			// FLY-1544 founder ruling: settle timing by kind travels in-band —
+			// mechanical notices settle on read, a runner_ask settles only after
+			// the reply, and the unsettled mailbox row IS the todo ledger.
+			expect(envelope.protocol.leadSettlement).toMatch(/IMMEDIATELY on read/);
+			expect(envelope.protocol.leadSettlement).toMatch(
+				/ONLY AFTER the reply was sent/,
+			);
 		} finally {
 			await host.close();
 		}

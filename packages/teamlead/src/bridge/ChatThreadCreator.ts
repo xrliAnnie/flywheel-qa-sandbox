@@ -8,6 +8,7 @@ import type { StateStore } from "../StateStore.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
 import {
 	addThreadMember,
+	createChatThread,
 	parseRetryAfterMs,
 	pinThreadMessage,
 	removeUserFromChatThread,
@@ -384,102 +385,39 @@ export class ChatThreadCreator {
 			? `${ctx.routeSummary}\n${issueMessage}`
 			: issueMessage;
 
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
-
-		try {
-			// Step 1: Post initial message to channel (visible in main channel)
-			console.log(
-				`[ChatThreadCreator] Step 1: POST message to channel=${ctx.chatChannelId} content="${messageContent.slice(0, 80)}"`,
-			);
-			const msgRes = await fetch(
-				`${DISCORD_API}/channels/${ctx.chatChannelId}/messages`,
-				{
-					method: "POST",
-					headers: {
-						Authorization: `Bot ${ctx.botToken}`,
-						"Content-Type": "application/json",
-					},
-					// FLY-162 Codex R3 #2: never let issue title / generated
-					// notification text trigger @everyone/@here/role pings.
-					body: JSON.stringify({
-						content: markAutomatedDiscordText(messageContent),
-						allowed_mentions: { parse: [] },
-					}),
-					signal: controller.signal,
-				},
-			);
-
-			if (!msgRes.ok) {
-				const body = await msgRes.text().catch(() => "");
-				console.warn(
-					`[ChatThreadCreator] Step 1 FAILED: ${msgRes.status} ${body.slice(0, 200)}`,
-				);
-				return {
-					created: false,
-					error: `Discord ${msgRes.status}: ${body.slice(0, 200)}`,
-				};
-			}
-
-			const msgData = (await msgRes.json()) as { id?: string };
-			if (!msgData.id) {
-				return { created: false, error: "no message ID in response" };
-			}
-
-			// Step 2: Create thread FROM that message (thread attaches to the message)
-			console.log(
-				`[ChatThreadCreator] Step 2: POST thread from message=${msgData.id} name="${threadName.slice(0, 60)}"`,
-			);
-			const res = await fetch(
-				`${DISCORD_API}/channels/${ctx.chatChannelId}/messages/${msgData.id}/threads`,
-				{
-					method: "POST",
-					headers: {
-						Authorization: `Bot ${ctx.botToken}`,
-						"Content-Type": "application/json",
-					},
-					body: JSON.stringify({
-						name: threadName,
-						auto_archive_duration: 4320, // 3 days
-					}),
-					signal: controller.signal,
-				},
-			);
-
-			if (!res.ok) {
-				const body = await res.text().catch(() => "");
-				return {
-					created: false,
-					error: `Discord ${res.status}: ${body.slice(0, 200)}`,
-				};
-			}
-
-			const data = (await res.json()) as { id?: string };
-			if (!data.id)
-				return { created: false, error: "no thread ID in response" };
-
-			// 3. Store mapping (FLY-892: the single (issue, channel) thread).
-			this.store.upsertChatThread(
-				data.id,
-				ctx.chatChannelId,
-				ctx.issueId,
-				ctx.leadId,
-			);
-
-			// 4. Auto-add owner as thread member (sidebar visibility + notifications)
-			if (ctx.ownerUserId) {
-				await addThreadMember(data.id, ctx.ownerUserId, ctx.botToken);
-			}
-
-			return { created: true, threadId: data.id };
-		} catch (err) {
-			if ((err as Error).name === "AbortError") {
-				return { created: false, error: "timeout" };
-			}
-			throw err;
-		} finally {
-			clearTimeout(timeout);
+		// FLY-1544 ③: the two-step REST flow lives in chat-thread-utils
+		// (createChatThread) so the v2 Discord messenger shares ONE implementation.
+		console.log(
+			`[ChatThreadCreator] create thread channel=${ctx.chatChannelId} name="${threadName.slice(0, 60)}" content="${messageContent.slice(0, 80)}"`,
+		);
+		const created = await createChatThread(
+			{
+				channelId: ctx.chatChannelId,
+				threadName,
+				messageContent: markAutomatedDiscordText(messageContent),
+				botToken: ctx.botToken,
+			},
+			{ timeoutMs: CREATE_TIMEOUT_MS },
+		);
+		if (!created.created) {
+			console.warn(`[ChatThreadCreator] create FAILED: ${created.error}`);
+			return { created: false, error: created.error };
 		}
+
+		// 3. Store mapping (FLY-892: the single (issue, channel) thread).
+		this.store.upsertChatThread(
+			created.threadId,
+			ctx.chatChannelId,
+			ctx.issueId,
+			ctx.leadId,
+		);
+
+		// 4. Auto-add owner as thread member (sidebar visibility + notifications)
+		if (ctx.ownerUserId) {
+			await addThreadMember(created.threadId, ctx.ownerUserId, ctx.botToken);
+		}
+
+		return { created: true, threadId: created.threadId };
 	}
 
 	/**

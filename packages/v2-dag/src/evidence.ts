@@ -118,9 +118,17 @@ function insertIdempotent(
 	});
 }
 
-function reviewerRoleId(
+/**
+ * FLY-1544 ①: with the role layer deleted, a reviewer's family is anchored
+ * directly. A runner reviewer carries its own executor family (from its task
+ * payload); a lead reviewer is matched against the review-families config by
+ * agent id. Either way the resolved family must be exactly one configured
+ * family, or the approval is refused.
+ */
+function reviewerFamilyTx(
 	tx: WriteTx,
 	reviewer: Extract<EvidenceInput, { kind: "review_approval" }>["reviewer"],
+	families: ReviewFamilies["families"],
 ): string {
 	if (!isSessionRecipient(reviewer.agentId)) {
 		const current = tx.get<{ generation: number; kind: string }>(
@@ -134,7 +142,13 @@ function reviewerRoleId(
 		) {
 			throw new DagContractError("reviewer generation is stale");
 		}
-		return reviewer.agentId;
+		const matched = Object.entries(families)
+			.filter(([, value]) => value.reviewer_agent_id === reviewer.agentId)
+			.map(([family]) => family);
+		if (matched.length !== 1) {
+			throw new DagContractError("reviewer family is ambiguous");
+		}
+		return matched[0] as string;
 	}
 	if (!("kind" in reviewer) || reviewer.kind !== "runner") {
 		throw new DagContractError(
@@ -157,7 +171,11 @@ function reviewerRoleId(
 	if (!row) {
 		throw new DagContractError("reviewer activation is stale");
 	}
-	return parseTaskPayload(JSON.parse(row.payload)).executor.logicalAgentId;
+	const family = parseTaskPayload(JSON.parse(row.payload)).executor.family;
+	if (!Object.hasOwn(families, family)) {
+		throw new DagContractError("reviewer family is ambiguous");
+	}
+	return family;
 }
 
 export function recordEvidence(
@@ -170,18 +188,16 @@ export function recordEvidence(
 	kernel.write("v2dag.evidence.record", (tx) => {
 		const epoch = readCutoverEpoch(tx);
 		if (input.kind === "review_approval") {
-			const reviewerRole = reviewerRoleId(tx, input.reviewer);
 			const config = readEnvelope<ReviewFamilies>(
 				tx,
 				`review_families:${input.projectId}`,
 				epoch,
 			);
-			const families = Object.entries(config?.data.families ?? {})
-				.filter(([, value]) => value.reviewer_agent_id === reviewerRole)
-				.map(([family]) => family);
-			if (families.length !== 1) {
-				throw new DagContractError("reviewer family is ambiguous");
-			}
+			const family = reviewerFamilyTx(
+				tx,
+				input.reviewer,
+				config?.data.families ?? {},
+			);
 			insertIdempotent(tx, {
 				eventUid: input.eventUid,
 				kind: "evidence.review_approval",
@@ -189,9 +205,9 @@ export function recordEvidence(
 					project_id: input.projectId,
 					review: input.review,
 					subject_digest: input.subjectDigest,
-					reviewer_agent: reviewerRole,
+					reviewer_agent: input.reviewer.agentId,
 					reviewer_session: input.reviewer.agentId,
-					reviewer_family: families[0] as string,
+					reviewer_family: family,
 					reviewer_generation: input.reviewer.generation,
 				},
 				epoch,

@@ -93,13 +93,15 @@ export function parseDeclaredContractConfig(
 
 function parseExecutor(value: unknown): ExecutorDescriptor {
 	const executor = record(value, "executor");
-	exactKeys(
-		executor,
-		["effort", "family", "logicalAgentId", "model", "vendor"],
-		"executor",
-	);
+	// FLY-1544 ①: the role layer is deleted. A `logicalAgentId` key is still
+	// TOLERATED (and dropped) so durable pre-FLY-1544 task payloads keep
+	// parsing; new payloads carry exactly the four executor fields.
+	const keys =
+		executor.logicalAgentId === undefined
+			? ["effort", "family", "model", "vendor"]
+			: ["effort", "family", "logicalAgentId", "model", "vendor"];
+	exactKeys(executor, keys, "executor");
 	return {
-		logicalAgentId: text(executor.logicalAgentId, "logicalAgentId"),
 		family: text(executor.family, "family"),
 		vendor: text(executor.vendor, "vendor"),
 		model: text(executor.model, "model"),

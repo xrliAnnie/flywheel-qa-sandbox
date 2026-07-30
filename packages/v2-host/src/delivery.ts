@@ -68,6 +68,11 @@ export const DELIVERY_PROTOCOL = {
 		"final results travel as effects in the single settling proposal. To reach the lead DURING the work -- a question, a progress note, a blocker -- use the `ask` verb: `ask --socket <FLYWHEEL_V2_SOCKET> --secret <FLYWHEEL_V2_SECRET_PATH> --session <FLYWHEEL_V2_SESSION_REF> --ask-kind ask|progress|blocked --payload <text>`. The recipient is resolved server-side (the issue's lead); the returned uid is the correlation key, and the lead's reply arrives in this session's own mailbox as an `ask_response` envelope whose payload carries the same uid. Vendor team tools (AskUserQuestion, SendMessage) do NOT reach the lead",
 	redelivery:
 		"a delivery is scoped to (messageUid, attemptUid). If a crash settles the processing attempt before your proposal, the same messageUid is delivered again with a NEW attemptUid and a new capability -- settle the attemptUid you were given, and do not reuse a capability from an earlier attemptUid",
+	// FLY-1544 (founder ruling): settle timing is decided by the message kind,
+	// with ZERO new machinery -- the mailbox's own unsettled-means-redelivered
+	// property is the ledger.
+	leadSettlement:
+		"a LEAD settles by message kind: a mechanical notice (lifecycle events such as issue_opened/task_dispatched/node_completed/pr_ready/issue_merged/issue_closed, and progress asks) is settled IMMEDIATELY on read (`ack`, an empty-effects submit). A runner_ask that requires an answer is settled ONLY AFTER the reply was sent (enqueue the ask_response first, then settle) -- an unanswered ask deliberately stays pending in the mailbox as the living todo; no receipt table, no second ledger",
 	// FLY-1543 ④⑤: pull is the only post-spawn channel, in two forms.
 	pull: {
 		verb: "next",

@@ -21,6 +21,7 @@ import {
 } from "./gate.js";
 import { appendMailboxTx } from "./mailbox-append.js";
 import { readCutoverEpoch, readEnvelope, updateEnvelope } from "./meta.js";
+import { appendLifecycleTx } from "./outbox.js";
 import type { DagPorts } from "./types.js";
 
 export interface ExecuteShipInput {
@@ -407,6 +408,18 @@ export async function executeShip(
 				merged_sha: merged.mergedSha,
 				gate_id: gate.data.gate_id,
 			},
+			cutoverEpoch: epoch,
+			createdAt: ports.clock.nowIso(),
+		});
+		// FLY-1544 ③: the merge lands in the issue thread. Keyed on the gate id
+		// so both settle paths append the same row and the later one is a no-op
+		// instead of a double post.
+		appendLifecycleTx(tx, {
+			sourceKind: "dag_issue_merged",
+			sourceId: gate.data.gate_id,
+			kind: "issue_merged",
+			issueId: input.issueId,
+			payload: { merged_sha: merged.mergedSha },
 			cutoverEpoch: epoch,
 			createdAt: ports.clock.nowIso(),
 		});

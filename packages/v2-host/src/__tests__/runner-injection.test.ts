@@ -42,14 +42,12 @@ const roots: string[] = [];
 
 function prepareProject(root: string): string {
 	const project = join(root, "project");
-	mkdirSync(join(project, ".flywheel", "agents"), { recursive: true });
+	mkdirSync(join(project, ".flywheel", "agents", "nodes"), {
+		recursive: true,
+	});
 	writeFileSync(
-		join(project, ".flywheel", "config.yaml"),
-		"project: runner-injection\nagents:\n  engineer:\n    agent_file: .flywheel/agents/engineer.md\n",
-	);
-	writeFileSync(
-		join(project, ".flywheel", "agents", "engineer.md"),
-		"# Engineer\n\nConsume only v2 injected envelopes.\n",
+		join(project, ".flywheel", "agents", "nodes", "implementation.md"),
+		"# Implementation node\n\nConsume only v2 injected envelopes.\n",
 	);
 	execFileSync("/usr/bin/git", ["-C", project, "init", "-q"]);
 	execFileSync("/usr/bin/git", [
@@ -226,7 +224,6 @@ describe("host runner bootstrap loop", () => {
 					writesRepo: true,
 					worktreeId: "worktree",
 					executor: {
-						logicalAgentId: "engineer",
 						family: "codex",
 						vendor: "codex",
 						model: "test-model",
@@ -361,15 +358,40 @@ describe("host runner bootstrap loop", () => {
 					payload: "Which acceptance command should I run?",
 				},
 			})) as { uid: string };
-			const leadEnvelope = (await sendHostRequest({
-				socketPath,
-				secret,
-				action: "next_delivery",
-				payload: {
-					agentId: "lead-runtime",
-					deliveryCredential: lead.deliveryCredential,
-				},
-			})) as DeliveryEnvelope;
+			// FLY-1544 ③④ (founder ruling): lifecycle events are CC'd to the lead's
+			// mailbox, and lead consumption is read-=-settle. Drain the CC stream in
+			// order until the ask arrives, settling each copy immediately.
+			const ccKinds: string[] = [];
+			let leadEnvelope: DeliveryEnvelope;
+			for (;;) {
+				const envelope = (await sendHostRequest({
+					socketPath,
+					secret,
+					action: "next_delivery",
+					payload: {
+						agentId: "lead-runtime",
+						deliveryCredential: lead.deliveryCredential,
+					},
+				})) as DeliveryEnvelope;
+				if (envelope.message.kind === "runner_ask") {
+					leadEnvelope = envelope;
+					break;
+				}
+				ccKinds.push(envelope.message.kind);
+				await sendHostRequest({
+					socketPath,
+					secret,
+					action: "submit_proposal",
+					payload: {
+						agentId: "lead-runtime",
+						attemptUid: envelope.handle.attemptUid,
+						messageUid: envelope.message.messageUid,
+						effects: [],
+						authorization: envelope.authorization,
+					},
+				});
+			}
+			expect(ccKinds).toEqual(["issue_opened", "task_dispatched"]);
 			expect(leadEnvelope.message).toMatchObject({
 				kind: "runner_ask",
 				sourceKind: "runner_upstream",
@@ -438,6 +460,26 @@ describe("host runner bootstrap loop", () => {
 						)?.state,
 				),
 			).toBe("applied");
+			// FLY-1544 ④: the ask was mirrored into the Discord outbox so it lands
+			// in the issue thread, alongside the lifecycle rows from admission and
+			// dispatch (③).
+			const outbox = inspected.read((tx) =>
+				tx.all<{ kind: string; source_kind: string; payload: string }>(
+					`SELECT kind,source_kind,payload FROM mailbox
+					  WHERE to_agent='discord-messenger' ORDER BY seq`,
+				),
+			);
+			expect(outbox.map((row) => row.kind)).toEqual([
+				"issue_opened",
+				"task_dispatched",
+				"runner_ask",
+			]);
+			expect(outbox[2]).toMatchObject({ source_kind: "runner_upstream_relay" });
+			expect(JSON.parse(outbox[2]?.payload as string)).toMatchObject({
+				ask_kind: "ask",
+				uid: asked.uid,
+				body: "Which acceptance command should I run?",
+			});
 			inspected.close();
 		} finally {
 			await host.close();

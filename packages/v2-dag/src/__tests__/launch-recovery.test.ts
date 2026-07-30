@@ -38,7 +38,6 @@ async function admitOne(
 				writesRepo,
 				worktreeId: writesRepo ? "wt-a" : null,
 				executor: {
-					logicalAgentId: "agent-a",
 					family: "family-a",
 					vendor: "vendor",
 					model: "model",
@@ -55,7 +54,6 @@ async function admitWriter(
 	ports: ReturnType<typeof makePorts>["ports"],
 	input: {
 		uid: string;
-		agentId: string;
 		worktreeId: string;
 		worktreePath: string;
 	},
@@ -83,7 +81,6 @@ async function admitWriter(
 				writesRepo: true,
 				worktreeId: input.worktreeId,
 				executor: {
-					logicalAgentId: input.agentId,
 					family: "family-a",
 					vendor: "vendor",
 					model: "model",
@@ -429,13 +426,11 @@ describe("launch claim recovery", () => {
 		const { ports } = makePorts(fixture.clock, { git });
 		const bad = await admitWriter(fixture, ports, {
 			uid: "bad-recovery",
-			agentId: "bad-agent",
 			worktreeId: "wt-bad",
 			worktreePath: "/tmp/gone",
 		});
 		const good = await admitWriter(fixture, ports, {
 			uid: "good-recovery",
-			agentId: "good-agent",
 			worktreeId: "wt-good",
 			worktreePath: "/tmp/good",
 		});

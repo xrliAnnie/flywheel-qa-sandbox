@@ -14,7 +14,7 @@ import {
 	type Socket,
 } from "node:net";
 import { dirname, isAbsolute } from "node:path";
-import type { DagPorts } from "flywheel-v2-dag";
+import { type DagPorts, DISCORD_MESSENGER_AGENT_ID } from "flywheel-v2-dag";
 import {
 	type AttemptHandle,
 	type ConversionResult,
@@ -1089,7 +1089,77 @@ export class V2Host {
 		if (result.status === "rejected") {
 			throw new FenceViolation(`ask was rejected: ${result.reason}`);
 		}
+		this.#relayAskToMessenger({
+			sessionRef,
+			issueId: route.issueId,
+			askKind,
+			uid,
+			body,
+			activationId: agent.activationId,
+		});
 		return { ...result, uid };
+	}
+
+	/**
+	 * FLY-1544 ④: every runner ask/progress/blocked is mirrored into the
+	 * Discord outbox so it lands in the issue's `[FLY-XXXX]` thread. The mirror
+	 * never fails the ask itself: a notice-class shed (overload) is designed
+	 * backpressure, and any other rejection is recorded as a visible event.
+	 */
+	#relayAskToMessenger(input: {
+		sessionRef: string;
+		issueId: string;
+		askKind: "ask" | "progress" | "blocked";
+		uid: string;
+		body: string;
+		activationId: string;
+	}): void {
+		provisionAgentRecipient(this.#kernel, DISCORD_MESSENGER_AGENT_ID, "lead");
+		const relayed = enqueue(this.#kernel, this.#runtime, {
+			sourceKind: "runner_upstream_relay",
+			sourceId: `${input.activationId}:${input.uid}`,
+			payload: JSON.stringify({
+				v: 1,
+				issue_id: input.issueId,
+				session_ref: input.sessionRef,
+				ask_kind: input.askKind,
+				uid: input.uid,
+				body: input.body,
+			}),
+			toAgent: DISCORD_MESSENGER_AGENT_ID,
+			kind: "runner_ask",
+			retentionClass: input.askKind === "progress" ? "notice" : "business",
+			expectedCutoverEpoch: this.#options.database.expectedEpoch,
+		});
+		if (relayed.status === "enqueued") {
+			this.#wakeRecipient(DISCORD_MESSENGER_AGENT_ID);
+			return;
+		}
+		if (
+			relayed.status === "rejected" &&
+			!(relayed.reason === "overload" && input.askKind === "progress")
+		) {
+			this.#kernel.write("host.ask-relay-failed", (tx) => {
+				tx.run(
+					`INSERT OR IGNORE INTO events
+					 (event_uid,task_id,attempt_id,kind,source_kind,source_id,payload,
+					  cutover_epoch,created_at)
+					 VALUES(@eventUid,NULL,NULL,'runner_ask_relay_failed','host',
+					        @sourceId,@payload,@epoch,@now)`,
+					{
+						eventUid: `runner_ask_relay_failed:${input.activationId}:${input.uid}`,
+						sourceId: `${input.activationId}:${input.uid}`,
+						payload: JSON.stringify({
+							issue_id: input.issueId,
+							ask_kind: input.askKind,
+							reason: relayed.reason,
+						}),
+						epoch: this.#options.database.expectedEpoch,
+						now: this.#runtime.clock.nowIso(),
+					},
+				);
+			});
+		}
 	}
 
 	/**
@@ -1366,6 +1436,13 @@ export class V2Host {
 		}
 		const { credential, agent } = this.#authorizeDeliveryCredential(input);
 		const agentId = credential.agentId;
+		// FLY-1544 ③: a pull IS a poll. Mailbox rows appended out-of-band (the
+		// operator CLI's admission/ship transactions write into the same kernel
+		// from another process) never fire #wakeRecipient in THIS process, so a
+		// lead pulling its mailbox must actively drain the kernel rather than
+		// only waiting for an in-memory wake that may never come.
+		this.#dropSettledPending(agentId);
+		void this.#driver.drain(agentId).catch(() => undefined);
 		const queued = this.#deliveries.get(agentId)?.shift();
 		const delivery =
 			queued ??

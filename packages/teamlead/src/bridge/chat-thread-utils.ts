@@ -14,6 +14,7 @@
  */
 
 import type { StateStore } from "../StateStore.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 
@@ -455,6 +456,168 @@ export async function removeUserFromChatThread(
 			`[chat-thread-utils] removeUserFromChatThread error:`,
 			(err as Error).message,
 		);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
+ * FLY-1544 ③: the pure two-step Discord thread-create flow, extracted from
+ * ChatThreadCreator so the v2 Discord messenger can import ONE implementation
+ * instead of copy-pasting the REST calls. Step 1 posts a root message to the
+ * channel (visible in the main channel — FLY-91 UX), step 2 creates the thread
+ * FROM that message. No StateStore, no dedup, no title coalescing — those stay
+ * in ChatThreadCreator; this is only the REST mechanics.
+ */
+export interface CreateChatThreadDeps {
+	/** Test seam for Discord HTTP. */
+	fetchImpl?: typeof fetch;
+	/** Abort timeout covering both steps. Default 5000ms. */
+	timeoutMs?: number;
+}
+
+export type CreateChatThreadResult =
+	| { created: true; threadId: string; rootMessageId: string }
+	| { created: false; error: string };
+
+export async function createChatThread(
+	input: {
+		channelId: string;
+		threadName: string;
+		messageContent: string;
+		botToken: string;
+		/** Discord auto_archive_duration in minutes. Default 4320 (3 days). */
+		autoArchiveMinutes?: number;
+	},
+	deps: CreateChatThreadDeps = {},
+): Promise<CreateChatThreadResult> {
+	const fetchImpl = deps.fetchImpl ?? fetch;
+	const controller = new AbortController();
+	const timer = setTimeout(
+		() => controller.abort(),
+		deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+	);
+	try {
+		const msgRes = await fetchImpl(
+			`${DISCORD_API}/channels/${input.channelId}/messages`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bot ${input.botToken}`,
+					"Content-Type": "application/json",
+				},
+				// FLY-162 Codex R3 #2: never let generated text trigger
+				// @everyone/@here/role pings. Marking is applied HERE (idempotent)
+				// so this shared sender satisfies the automated-message inventory
+				// guard regardless of caller discipline.
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(input.messageContent),
+					allowed_mentions: { parse: [] },
+				}),
+				signal: controller.signal,
+			},
+		);
+		if (!msgRes.ok) {
+			const body = await msgRes.text().catch(() => "");
+			return {
+				created: false,
+				error: `Discord ${msgRes.status}: ${body.slice(0, 200)}`,
+			};
+		}
+		const msgData = (await msgRes.json()) as { id?: string };
+		if (!msgData.id) {
+			return { created: false, error: "no message ID in response" };
+		}
+		const res = await fetchImpl(
+			`${DISCORD_API}/channels/${input.channelId}/messages/${msgData.id}/threads`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bot ${input.botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					name: input.threadName,
+					auto_archive_duration: input.autoArchiveMinutes ?? 4320,
+				}),
+				signal: controller.signal,
+			},
+		);
+		if (!res.ok) {
+			const body = await res.text().catch(() => "");
+			return {
+				created: false,
+				error: `Discord ${res.status}: ${body.slice(0, 200)}`,
+			};
+		}
+		const data = (await res.json()) as { id?: string };
+		if (!data.id) return { created: false, error: "no thread ID in response" };
+		return { created: true, threadId: data.id, rootMessageId: msgData.id };
+	} catch (err) {
+		if ((err as Error).name === "AbortError") {
+			return { created: false, error: "timeout" };
+		}
+		return { created: false, error: (err as Error).message };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
+ * FLY-1544 ③④: post one message into a channel/thread (a Discord thread IS a
+ * channel, so `channelId` may be a thread id). Pure REST, ping-safe, bounded.
+ */
+export interface PostChatMessageDeps {
+	fetchImpl?: typeof fetch;
+	timeoutMs?: number;
+}
+
+export type PostChatMessageResult =
+	| { posted: true; messageId: string }
+	| { posted: false; status?: number; error: string };
+
+export async function postChatMessage(
+	input: { channelId: string; content: string; botToken: string },
+	deps: PostChatMessageDeps = {},
+): Promise<PostChatMessageResult> {
+	const fetchImpl = deps.fetchImpl ?? fetch;
+	const controller = new AbortController();
+	const timer = setTimeout(
+		() => controller.abort(),
+		deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+	);
+	try {
+		const res = await fetchImpl(
+			`${DISCORD_API}/channels/${input.channelId}/messages`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bot ${input.botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(input.content),
+					allowed_mentions: { parse: [] },
+				}),
+				signal: controller.signal,
+			},
+		);
+		if (!res.ok) {
+			const body = await res.text().catch(() => "");
+			return {
+				posted: false,
+				status: res.status,
+				error: `Discord ${res.status}: ${body.slice(0, 200)}`,
+			};
+		}
+		const data = (await res.json()) as { id?: string };
+		if (!data.id) return { posted: false, error: "no message ID in response" };
+		return { posted: true, messageId: data.id };
+	} catch (err) {
+		if ((err as Error).name === "AbortError") {
+			return { posted: false, error: "timeout" };
+		}
+		return { posted: false, error: (err as Error).message };
 	} finally {
 		clearTimeout(timer);
 	}

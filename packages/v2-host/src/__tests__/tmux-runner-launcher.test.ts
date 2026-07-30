@@ -113,7 +113,6 @@ describe("v2-native tmux runner launcher", () => {
 		};
 		const releaseRoot = join(root, "release");
 		const stateRoot = join(root, "state");
-		const injectionRoot = join(root, "injection");
 		// Codex R4 MEDIUM-2: a per-activation config dir needs working credentials or
 		// the runner parks on a login screen. Model the operator-provisioned source.
 		const claudeCredentialsPath = join(root, "operator-credentials.json");
@@ -153,40 +152,8 @@ describe("v2-native tmux runner launcher", () => {
 				attemptGeneration: 1,
 				activationId: "activation-1",
 				sessionRef,
-				roleId: "engineer",
-				injectionRef:
-					vendor === "codex"
-						? JSON.stringify({
-								v: 1,
-								backend: "codex",
-								socketPath: join(injectionRoot, "codex", "runner.sock"),
-								threadId: sessionRef,
-							})
-						: JSON.stringify({
-								v: 1,
-								backend: "claude",
-								// Codex R3 MEDIUM-5/7: the shape the builder now emits --
-								// <root>/claude/<sha256(activationId)>/teams/...
-								inboxPath: join(
-									injectionRoot,
-									"claude",
-									activationKey("activation-1"),
-									"teams",
-									"v2-engineer",
-									"inboxes",
-									"engineer.json",
-								),
-								sidecarPath: join(
-									injectionRoot,
-									"claude",
-									activationKey("activation-1"),
-									"teams",
-									"v2-engineer",
-									"inboxes",
-									"engineer.json.flywheel.jsonl",
-								),
-								toAgent: "engineer",
-							}),
+				// FLY-1544 ①: the node kind selects the instruction book and names.
+				taskKind: "engineer",
 				ownerToken: "owner-1",
 				agent: {
 					kind: "runner",
@@ -196,7 +163,6 @@ describe("v2-native tmux runner launcher", () => {
 					activationId: "activation-1",
 				},
 				executor: {
-					logicalAgentId: "engineer",
 					family: `${vendor}-family`,
 					vendor,
 					model: "test-model",
@@ -212,7 +178,6 @@ describe("v2-native tmux runner launcher", () => {
 					}),
 					instruction: {
 						projectRoot,
-						configPath: join(projectRoot, ".flywheel", "config.yaml"),
 						sourcePath: rolePath,
 						contentDigest: createHash("sha256").update(role).digest("hex"),
 						contentBytes: Buffer.byteLength(role),
@@ -267,6 +232,9 @@ describe("v2-native tmux runner launcher", () => {
 		);
 		expect(create?.args.join(" ")).not.toContain(" next ");
 		expect(create?.args.join(" ")).not.toContain("comm.db");
+		// FLY-1544 ②: the executing vendor rides the session environment so the
+		// node manual's cross-vendor review rule can name the other vendor.
+		expect(create?.args).toContain("FLYWHEEL_V2_VENDOR=claude");
 		expect(create?.args.at(-1)).toContain('"messageUid":"message-1"');
 		expect(existsSync(join(claudeConfigDir(target.request), "teams"))).toBe(
 			false,
@@ -322,6 +290,7 @@ describe("v2-native tmux runner launcher", () => {
 		);
 		expect(initialPrompt).toContain('"messageUid":"message-1"');
 		expect(create?.args.join(" ")).not.toContain("comm.db");
+		expect(create?.args).toContain("FLYWHEEL_V2_VENDOR=codex");
 		await target.launcher.activate(target.request.sessionRef);
 		const stateFile = join(
 			target.stateRoot,
@@ -337,6 +306,30 @@ describe("v2-native tmux runner launcher", () => {
 		});
 		expect(state).not.toHaveProperty("thread_id");
 		expect(readdirSync(target.stateRoot)).toHaveLength(1);
+	});
+
+	it("FLY-1544 doorbell: delivers by buffer paste + Enter, and fails loud on an absent session", async () => {
+		const target = fixture("claude");
+		await expect(
+			target.launcher.deliver(target.request.sessionRef, "hello"),
+		).rejects.toThrow(/session is absent/);
+		await target.launcher.launch(target.request);
+		target.calls.length = 0;
+		await target.launcher.deliver(
+			target.request.sessionRef,
+			"line one\nline two",
+		);
+		const [setBuffer, pasteBuffer, sendKeys] = target.calls.filter(
+			(call) => !call.args.includes("has-session"),
+		);
+		expect(setBuffer?.args).toContain("set-buffer");
+		expect(setBuffer?.args.at(-1)).toBe("line one\nline two");
+		expect(pasteBuffer?.args).toContain("paste-buffer");
+		// Bracketed paste keeps the multi-line payload one input.
+		expect(pasteBuffer?.args).toContain("-p");
+		expect(sendKeys?.args).toContain("send-keys");
+		expect(sendKeys?.args).toContain("Enter");
+		await target.launcher.stop(target.request.sessionRef);
 	});
 
 	it("fails closed before tmux for unknown vendors or changed role content", async () => {
@@ -488,7 +481,6 @@ describe("v2-native tmux runner launcher", () => {
 			activationId: "activation-2",
 			sessionRef:
 				"v2dag:11111111-1111-4111-8111-111111111111:1:33333333-3333-4333-8333-333333333333",
-			injectionRef: "retired-vendor-inbox-ref",
 			agent: {
 				...target.request.agent,
 				agentId:

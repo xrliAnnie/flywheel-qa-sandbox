@@ -58,7 +58,6 @@ describe("attempt terminal holding release", () => {
 					writesRepo: true,
 					worktreeId: "wt-a",
 					executor: {
-						logicalAgentId: "implement",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",

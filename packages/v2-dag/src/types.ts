@@ -65,11 +65,12 @@ export interface SpawnRequest {
 	ownerToken: string;
 	agent: RunnerLaunchIdentity;
 	/**
-	 * FLY-1543 ⑤: the instruction-book pointer (executor.logicalAgentId). It
-	 * selects the prompt file, queue/window names and FLYWHEEL_V2_AGENT_ID; it
-	 * keys no ledger row and no occupancy check.
+	 * FLY-1544 ①: the DAG node kind (tasks.kind). The role layer is deleted --
+	 * the node kind selects the instruction file
+	 * (.flywheel/agents/nodes/<kind>.md) and the window name; it keys no ledger
+	 * row and no occupancy check.
 	 */
-	roleId: string;
+	taskKind: string;
 	executor: ExecutorDescriptor;
 }
 
@@ -114,6 +115,10 @@ export interface DagPorts {
 	spawn: SpawnPort;
 	githubObservation?: GitHubObservationPort;
 	githubMerge?: GitHubMergePort;
+	/** FLY-1544 ⑥: worktree/branch cleanup capability (host runtime only). */
+	issueCleanup?: import("./closure.js").IssueCleanupPort;
+	/** FLY-1544 doorbell: paste-into-terminal delivery (host runtime only). */
+	sessionDelivery?: import("./doorbell.js").SessionDeliveryPort;
 	faults?: FaultPort;
 }
 
@@ -127,8 +132,12 @@ export type DeclaredContractItem =
 			digest?: string;
 	  };
 
+/**
+ * FLY-1544 ①: no logicalAgentId. The role/岗位 layer is deleted -- an executor
+ * is a vendor+model+effort choice, and the instruction book hangs off the DAG
+ * node kind (tasks.kind), not off a role name.
+ */
 export interface ExecutorDescriptor {
-	logicalAgentId: string;
 	family: string;
 	vendor: string;
 	model: string;

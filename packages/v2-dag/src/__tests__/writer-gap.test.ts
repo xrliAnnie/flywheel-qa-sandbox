@@ -64,7 +64,6 @@ describe("writer gap adoption", () => {
 						writesRepo: true,
 						worktreeId: "wt-a",
 						executor: {
-							logicalAgentId: "agent-a",
 							family: "family-a",
 							vendor: "vendor",
 							model: "model",
@@ -151,7 +150,6 @@ describe("writer gap adoption", () => {
 					writesRepo: true,
 					worktreeId: "wt-a",
 					executor: {
-						logicalAgentId: "agent-a",
 						family: "family-a",
 						vendor: "vendor",
 						model: "model",

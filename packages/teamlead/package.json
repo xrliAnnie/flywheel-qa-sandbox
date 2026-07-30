@@ -5,6 +5,24 @@
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./bridge/chat-thread-utils": {
+			"types": "./dist/bridge/chat-thread-utils.d.ts",
+			"import": "./dist/bridge/chat-thread-utils.js"
+		},
+		"./bridge/worktree-cleanup": {
+			"types": "./dist/bridge/worktree-cleanup.d.ts",
+			"import": "./dist/bridge/worktree-cleanup.js"
+		},
+		"./bridge/branch-cleanup": {
+			"types": "./dist/bridge/branch-cleanup.d.ts",
+			"import": "./dist/bridge/branch-cleanup.js"
+		}
+	},
 	"bin": {
 		"teamlead": "dist/index.js",
 		"flywheel-claude-freshness": "bin/flywheel-claude-freshness",
