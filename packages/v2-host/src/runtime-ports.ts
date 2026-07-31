@@ -43,6 +43,9 @@ export interface RuntimeLaunchRequest extends SpawnRequest {
 	context: {
 		projectId: string;
 		issueId: string;
+		/** FLY-1547: optional human-readable issue title for the spawn prompt.
+		 * FLY-1550 also renders it into the cmux workspace/tab title. */
+		issueTitle?: string;
 		projectRoot: string;
 		instruction: ResolvedRoleInstruction;
 		/**
@@ -293,18 +296,27 @@ function launchContext(
 		if (task.kind !== request.taskKind) {
 			throw new FenceViolation("spawn node kind does not match task");
 		}
+		// FLY-1547: the issue envelope is read unconditionally now — it carries
+		// the optional human-readable title for the spawn prompt as well as the
+		// ship-worktree fallback. Its absence is only fatal when the worktree
+		// fallback is actually needed (byte-compat with the prior behavior).
+		const issueRow = tx.get<{ value: string }>(
+			"SELECT value FROM meta WHERE key=@key",
+			{ key: `dag_issue:${task.external_issue_id}` },
+		);
+		const issueData = issueRow
+			? parseMetaEnvelope(issueRow.value, "spawn issue mapping")
+			: undefined;
+		const issueTitle =
+			typeof issueData?.issue_title === "string" &&
+			issueData.issue_title.trim().length > 0
+				? issueData.issue_title
+				: undefined;
 		let worktreeId =
 			typeof payload.worktree_id === "string" ? payload.worktree_id : undefined;
 		if (!worktreeId) {
-			const issue = tx.get<{ value: string }>(
-				"SELECT value FROM meta WHERE key=@key",
-				{ key: `dag_issue:${task.external_issue_id}` },
-			);
-			if (!issue) throw new Error("spawn issue mapping is missing");
-			worktreeId = text(
-				parseMetaEnvelope(issue.value, "spawn issue mapping").ship_worktree_id,
-				"ship worktree id",
-			);
+			if (!issueData) throw new Error("spawn issue mapping is missing");
+			worktreeId = text(issueData.ship_worktree_id, "ship worktree id");
 		}
 		const worktree = tx.get<{ value: string }>(
 			"SELECT value FROM meta WHERE key=@key",
@@ -314,6 +326,7 @@ function launchContext(
 		return {
 			projectId: task.project_id,
 			issueId: task.external_issue_id,
+			...(issueTitle ? { issueTitle } : {}),
 			projectRoot: text(
 				parseMetaEnvelope(worktree.value, "spawn canonical worktree")
 					.worktree_path,

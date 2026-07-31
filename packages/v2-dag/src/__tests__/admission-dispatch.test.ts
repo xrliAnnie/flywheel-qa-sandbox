@@ -856,4 +856,86 @@ describe("DAG admission and dispatch", () => {
 		});
 		expect(launched).toEqual([good.taskIds.node]);
 	});
+
+	it("FLY-1550: carries the issue title into the dag_issue envelope for the cmux workspace name", async () => {
+		const fixture = makeFixture();
+		fixtures.push(fixture);
+		fixture.provision("lead-a", "lead");
+		const { ports } = makePorts(fixture.clock);
+		const descriptor = {
+			admissionUid: "admission-title",
+			projectId: "project-a",
+			issueId: "issue-titled",
+			notifyAgentId: "lead-a",
+			shipWorktreeId: "wt-a",
+			worktrees: [
+				{
+					worktreeId: "wt-a",
+					repoIdentity: "owner/repo",
+					worktreePath: "/tmp/wt-a",
+					branchRef: "refs/heads/feature",
+					mergeTargetRef: "refs/heads/main",
+				},
+			],
+			tasks: [
+				{
+					localId: "node-a",
+					kindLabel: "generic",
+					contract: [],
+					writesRepo: true,
+					worktreeId: "wt-a",
+					executor: {
+						family: "claude",
+						vendor: "claude",
+						model: "claude-fable-5",
+						effort: "high" as const,
+					},
+				},
+			],
+			edges: [] as [string, string][],
+		};
+		await admitIssueDag(fixture.kernel, ports, {
+			...descriptor,
+			issueTitle: "[v2] cmux 自动可见:runner 起/停自动建",
+		});
+		const envelope = fixture.kernel.read((tx) =>
+			tx.get<{ value: string }>("SELECT value FROM meta WHERE key=@key", {
+				key: "dag_issue:issue-titled",
+			}),
+		);
+		expect(
+			(JSON.parse(envelope?.value ?? "{}") as { data: Record<string, unknown> })
+				.data.issue_title,
+		).toBe("[v2] cmux 自动可见:runner 起/停自动建");
+
+		// Absent title stays a stable null (pre-FLY-1550 admissions degrade, never break).
+		await admitIssueDag(fixture.kernel, ports, {
+			...descriptor,
+			admissionUid: "admission-untitled",
+			issueId: "issue-untitled",
+			shipWorktreeId: "wt-b",
+			worktrees: [{ ...descriptor.worktrees[0], worktreeId: "wt-b" }],
+			tasks: [{ ...descriptor.tasks[0], worktreeId: "wt-b" }],
+		});
+		const untitled = fixture.kernel.read((tx) =>
+			tx.get<{ value: string }>("SELECT value FROM meta WHERE key=@key", {
+				key: "dag_issue:issue-untitled",
+			}),
+		);
+		expect(
+			(JSON.parse(untitled?.value ?? "{}") as { data: Record<string, unknown> })
+				.data.issue_title,
+		).toBeUndefined();
+
+		// A non-string title is refused at the contract boundary (the admit
+		// request arrives as cast JSON, so the type needs a runtime check).
+		await expect(
+			admitIssueDag(fixture.kernel, ports, {
+				...descriptor,
+				admissionUid: "admission-bad-title",
+				issueId: "issue-bad-title",
+				issueTitle: 123 as unknown as string,
+			}),
+		).rejects.toThrow(/issueTitle must be a string/);
+	});
 });

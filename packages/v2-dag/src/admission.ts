@@ -22,6 +22,12 @@ function requiredText(value: string, label: string): void {
 }
 
 function validateGraph(descriptor: IssueDagDescriptor): void {
+	if (
+		descriptor.issueTitle !== undefined &&
+		typeof descriptor.issueTitle !== "string"
+	) {
+		throw new DagContractError("issueTitle must be a string when present");
+	}
 	for (const [label, value] of [
 		["admissionUid", descriptor.admissionUid],
 		["projectId", descriptor.projectId],
@@ -277,6 +283,10 @@ export async function admitIssueDag(
 				admission_uid: descriptor.admissionUid,
 				notify_agent_id: descriptor.notifyAgentId,
 				ship_worktree_id: descriptor.shipWorktreeId,
+				// FLY-1547: optional human-readable title for the spawn prompt.
+				...(descriptor.issueTitle?.trim()
+					? { issue_title: descriptor.issueTitle.trim() }
+					: {}),
 				task_ids: descriptor.tasks.map(
 					(task) => taskIds[task.localId] as string,
 				),

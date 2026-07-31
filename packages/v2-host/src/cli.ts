@@ -30,13 +30,11 @@ interface RuntimeConfig {
 	v: 1;
 	dispatchIntervalMs: number;
 	lockRoot: string;
-	injectionRoot: string;
 	launcher:
 		| {
 				kind: "tmux";
 				tmuxBin: string;
 				claudeBin: string;
-				claudeCredentialsPath: string;
 				codexBin: string;
 				clientCliPath: string;
 				releaseRoot: string;
@@ -132,9 +130,13 @@ function configPath(value: unknown, label: string): string {
 
 export function parseRuntimeConfig(value: unknown): RuntimeConfig {
 	const config = object(value, "runtime config");
+	// FLY-1550: `injection_root` is gone with the per-activation Claude config
+	// dir (runners share the operator's ~/.claude). Exact-shape parsing keeps the
+	// break loud: migrate an old runtime-config.json with
+	// `install-v2-host.sh --migrate-fly1550` (atomic validate-then-replace).
 	if (
 		Object.keys(config).sort().join(",") !==
-			"dispatch_interval_ms,gh_bin,git_bin,injection_root,launcher,lock_root,v" ||
+			"dispatch_interval_ms,gh_bin,git_bin,launcher,lock_root,v" ||
 		config.v !== 1
 	) {
 		throw new TypeError("runtime config has an invalid shape");
@@ -153,19 +155,12 @@ export function parseRuntimeConfig(value: unknown): RuntimeConfig {
 	if (
 		launcher.kind === "tmux" &&
 		Object.keys(launcher).sort().join(",") ===
-			"claude_bin,claude_credentials,client_cli,codex_bin,kind,release_root,state_root,tmux_bin"
+			"claude_bin,client_cli,codex_bin,kind,release_root,state_root,tmux_bin"
 	) {
 		parsedLauncher = {
 			kind: "tmux",
 			tmuxBin: configPath(launcher.tmux_bin, "runtime tmux_bin"),
 			claudeBin: configPath(launcher.claude_bin, "runtime claude_bin"),
-			// Codex R4 MEDIUM-2: required, not optional. A per-activation config dir
-			// with no credentials parks the runner on a login screen, so the source
-			// must be named here and the launcher fails closed without it.
-			claudeCredentialsPath: configPath(
-				launcher.claude_credentials,
-				"runtime claude_credentials",
-			),
 			codexBin: configPath(launcher.codex_bin, "runtime codex_bin"),
 			clientCliPath: configPath(launcher.client_cli, "runtime client_cli"),
 			releaseRoot: configPath(launcher.release_root, "runtime release_root"),
@@ -193,7 +188,6 @@ export function parseRuntimeConfig(value: unknown): RuntimeConfig {
 		v: 1,
 		dispatchIntervalMs: config.dispatch_interval_ms as number,
 		lockRoot: configPath(config.lock_root, "runtime lock_root"),
-		injectionRoot: configPath(config.injection_root, "runtime injection_root"),
 		launcher: parsedLauncher,
 		gitBin: configPath(config.git_bin, "runtime git_bin"),
 		ghBin: configPath(config.gh_bin, "runtime gh_bin"),
@@ -220,8 +214,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 					sessionProofRoot: options.sessionProofRoot,
 					releaseRoot: runtime.launcher.releaseRoot,
 					stateRoot: runtime.launcher.stateRoot,
-					injectionRoot: runtime.injectionRoot,
-					claudeCredentialsPath: runtime.launcher.claudeCredentialsPath,
 				})
 			: new CommandRunnerLauncher({
 					command: runtime.launcher.command,

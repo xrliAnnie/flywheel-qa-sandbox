@@ -21,6 +21,10 @@
 		"./bridge/branch-cleanup": {
 			"types": "./dist/bridge/branch-cleanup.d.ts",
 			"import": "./dist/bridge/branch-cleanup.js"
+		},
+		"./bridge/cmux-close-request": {
+			"types": "./dist/bridge/cmux-close-request.d.ts",
+			"import": "./dist/bridge/cmux-close-request.js"
 		}
 	},
 	"bin": {

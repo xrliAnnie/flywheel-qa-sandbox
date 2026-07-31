@@ -183,6 +183,13 @@ export interface IssueDagDescriptor {
 	admissionUid: string;
 	projectId: string;
 	issueId: string;
+	/**
+	 * FLY-1547 (founder directive): human-readable issue title, injected into
+	 * the runner bootstrap prompt so a runner never has to ask what the issue
+	 * is called. Optional — absence changes nothing (fail-open empty).
+	 * FLY-1550 also renders it into the cmux workspace/tab title.
+	 */
+	issueTitle?: string;
 	notifyAgentId: string;
 	shipWorktreeId: string;
 	worktrees: WorktreeDescriptor[];

@@ -25,6 +25,8 @@
 		"typecheck": "pnpm run build"
 	},
 	"dependencies": {
+		"flywheel-config": "workspace:*",
+		"flywheel-core": "workspace:*",
 		"flywheel-teamlead": "workspace:*",
 		"flywheel-v2-dag": "workspace:*",
 		"flywheel-v2-engine": "workspace:*",

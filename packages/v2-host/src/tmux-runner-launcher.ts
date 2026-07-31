@@ -1,25 +1,25 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+	appendFileSync,
 	chmodSync,
 	closeSync,
 	existsSync,
-	fstatSync,
 	fsyncSync,
-	linkSync,
 	lstatSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
 	realpathSync,
 	renameSync,
-	type Stats,
-	symlinkSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
+import { renderRunnerModelDisplay } from "flywheel-config";
+import { buildWindowLabel, sanitizeTmuxName } from "flywheel-core";
+import { requestCmuxPinClose } from "flywheel-teamlead/bridge/cmux-close-request";
 import type { SessionBinding } from "flywheel-v2-engine";
 import type {
 	RunnerLauncherPort,
@@ -51,32 +51,17 @@ export interface TmuxRunnerLauncherOptions {
 	sessionProofRoot: string;
 	releaseRoot: string;
 	stateRoot: string;
-	/** Codex R1 MEDIUM-5: root that every injection-derived path must stay inside.
-	 * configDir is walked up from an injection ref, so without containment a
-	 * crafted ref could aim the writes below at $HOME/.claude.json. */
-	injectionRoot: string;
-	/**
-	 * Codex R4 MEDIUM-2: operator-provisioned Claude credentials.
-	 *
-	 * Making the config root per-activation (R3 MEDIUM-5/7) broke credentials. A
-	 * fresh CLAUDE_CONFIG_DIR contains no `.credentials.json`, Claude only reads
-	 * that file when CLAUDE_CONFIG_DIR is non-default -- not the Keychain -- and the
-	 * runner is started with `/usr/bin/env -i` and an allowlist carrying neither
-	 * CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY. So every spawn would have sat
-	 * at an interactive login. "the operator provisions once per config dir" is
-	 * incompatible with "a new dir per activation", so the source is named once
-	 * here and each activation is linked to it.
-	 */
-	claudeCredentialsPath: string;
 	command?: TmuxCommandPort;
 	now?: () => Date;
 	processStart?: (pid: number) => string | null;
 	/**
-	 * How long #acquireOnboardingLock waits for a live holder before failing
-	 * closed. Deployment-relevant (a slow disk can need longer) and lets the
-	 * contention test assert the waiting behaviour without burning the default.
+	 * FLY-1550: the v1 cmux-sync event channel (`EVENT_FILE` in
+	 * scripts/flywheel-cmux-sync.sh). The launcher appends the same
+	 * `create|session|window_id|window_name` line the tmux hooks write, so the
+	 * resident v1 watcher builds the workspace through its own create path.
+	 * Overridable for tests only; production keeps the shared default.
 	 */
-	onboardingLockTimeoutMs?: number;
+	cmuxEventFilePath?: string;
 }
 
 interface RunnerState {
@@ -94,20 +79,40 @@ interface RunnerState {
 }
 
 /**
- * Codex R3 MEDIUM-5: bounded wait rather than a spin, and a stale threshold well
- * above any plausible merge duration so a live holder is never robbed on age.
+ * FLY-1550: byte contract with `EVENT_FILE` in scripts/flywheel-cmux-sync.sh.
  */
-const ONBOARDING_LOCK_TIMEOUT_MS = 10_000;
-const ONBOARDING_LOCK_POLL_MS = 25;
-const ONBOARDING_LOCK_STALE_MS = 120_000;
+const CMUX_EVENT_FILE = "/tmp/flywheel-cmux-events";
 
-interface OnboardingLockHolder {
-	token: string;
-	pid: number;
-	pidStart: string | null;
-	acquiredAtMs: number;
-	ino: number;
-}
+/**
+ * FLY-1550 (founder direct order ①): no `/usr/bin/env -i`, no allowlist. The
+ * pane keeps the full tmux-provided environment (TERM included) exactly like a
+ * Lead pane. Only NAMED legacy variables are blocked: every environment entry
+ * whose name starts with `FLYWHEEL_BRIDGE_` (v1 control-plane pointer,
+ * forbidden to v2 runners) and `CLAUDE_CONFIG_DIR` (order ② shares the
+ * operator's ~/.claude; a stray inherited override would silently split the
+ * config again).
+ *
+ * Codex R1 HIGH-2 hardening — the blacklist must hold under a hostile
+ * environment, because the environment is exactly what is untrusted here:
+ * - `/usr/bin/env` + `/usr/bin/sed` by absolute path: the inherited PATH must
+ *   not be able to make the sweep silently no-op.
+ * - `[^=]*` in the key pattern: an environment ENTRY name is any byte string,
+ *   not a shell identifier — `FLYWHEEL_BRIDGE_X-Y` must be swept too. That is
+ *   also why removal goes through `env -u` (which takes arbitrary names)
+ *   rather than the shell builtin `unset` (identifiers only).
+ * - Fail closed: if the enumeration pipeline itself fails, the gate exits 70
+ *   instead of exec-ing the vendor with the blacklist unapplied; the
+ *   deterministic launch probe then reports the runner absent, loudly.
+ * - `set -f` + newline IFS: enumerated names must never glob or word-split.
+ *
+ * Exported for the launcher test, which runs this exact script as a real
+ * /bin/sh child and inspects the resulting environment.
+ */
+export const RUNNER_GATE_SCRIPT =
+	'gate="$0"; n=0; while [ ! -f "$gate" ]; do [ "$n" -ge 86400 ] && exit 75; sleep 1; n=$((n+1)); done; ' +
+	'bl=$(/usr/bin/env | LC_ALL=C /usr/bin/sed -n "s/^\\\\(FLYWHEEL_BRIDGE_[^=]*\\\\)=.*/\\\\1/p") || exit 70; ' +
+	'set -f; IFS="\n"; for v in $bl; do set -- -u "$v" "$@"; done; unset IFS; ' +
+	'exec /usr/bin/env -u CLAUDE_CONFIG_DIR "$@"';
 
 export class RunnerLaunchConfigError extends Error {
 	constructor(message: string) {
@@ -246,14 +251,58 @@ function exactKeys(
 }
 
 /**
- * FLY-1543 ④: vendor-neutral session resources are derived, not carried by an
- * injection reference -- the reference (and the teams JSON it used to point at)
- * is abolished. The Claude config root stays per-activation
- * (`<root>/claude/<sha256(activationId)>`, Codex R3 MEDIUM-5/7) because the
- * `.claude.json` onboarding preseed still needs isolation.
+ * FLY-1550: the founder-facing workspace name. The tmux window name IS the cmux
+ * workspace title AND the tab title (the v1 watcher's core invariant), and it
+ * follows the FLY-1255 Locked Display Contract verbatim
+ * (engineering/doc/FLY-1255-vendor-neutral-model-display/plan.md §7/§8):
+ *
+ * - three-stage node kinds keep their phase prefix: `<phase>-<windowLabel>`
+ *   (e.g. `design-claude-Fable`); every other node uses the FIXED `runner-`
+ *   producer prefix (`runner-claude-Fable`) — the cmux reaper's proof that a
+ *   window is Flywheel-produced, never an open vendor allowlist.
+ * - `windowLabel` comes from the existing pure renderer
+ *   `renderRunnerModelDisplay()` (flywheel-config) — reused, never re-derived.
+ * - the label is composed by the v1 `buildWindowLabel()` and bounded by the v1
+ *   `sanitizeTmuxName()` 50-char budget (flywheel-core); head-first truncation
+ *   is what keeps the issue identifier + model identity ahead of a long title.
+ *
+ * The runner-segment branch mirrors `runnerDisplayName()`
+ * (packages/teamlead/src/bridge/run-dispatcher.ts) for the v2 node kinds; that
+ * module is not importable here without dragging the v1 Bridge graph in.
+ * COUPLING: `is_managed_runner_title` in scripts/flywheel-cmux-sync.sh keys on
+ * the same `runner|design|implement|qa` producer namespace.
  */
-function claudeConfigDir(injectionRoot: string, activationId: string): string {
-	return join(injectionRoot, "claude", safeKey(activationId));
+const THREE_STAGE_PHASE_KINDS = new Set(["design", "implement", "qa"]);
+
+function v2RunnerSegment(
+	taskKind: string,
+	executor: RuntimeLaunchRequest["executor"],
+): string {
+	const display = renderRunnerModelDisplay({
+		vendor: vendorKind(executor.vendor),
+		model: executor.model,
+	});
+	const phase = THREE_STAGE_PHASE_KINDS.has(taskKind) ? taskKind : undefined;
+	if (display) {
+		return phase
+			? `${phase}-${display.windowLabel}`
+			: `runner-${display.windowLabel}`;
+	}
+	// Contract §7: display missing keeps the verbatim v1 fallback.
+	return phase ?? "claude";
+}
+
+export function workspaceWindowName(request: RuntimeLaunchRequest): string {
+	// The trailing slug is the FLY-1547 issue title when the admission carried
+	// one, else the node kind — so the window still says what the node is.
+	const slug = request.context.issueTitle ?? request.taskKind;
+	return sanitizeTmuxName(
+		buildWindowLabel(
+			request.context.issueId,
+			v2RunnerSegment(request.taskKind, request.executor),
+			slug,
+		),
+	);
 }
 
 /**
@@ -285,29 +334,6 @@ function runnerPrompt(request: RuntimeLaunchRequest): string {
 		);
 	}
 	return prompt;
-}
-
-function cleanRunnerEnvironment(v2Environment: string[]): string[] {
-	const inherited: string[] = [];
-	for (const key of [
-		"HOME",
-		"PATH",
-		"TMPDIR",
-		"LANG",
-		"LC_ALL",
-		"CODEX_HOME",
-	] as const) {
-		const value = process.env[key];
-		if (!value || value.includes("\0")) continue;
-		if (
-			(key === "HOME" || key === "TMPDIR" || key === "CODEX_HOME") &&
-			!isAbsolute(value)
-		) {
-			continue;
-		}
-		inherited.push(`${key}=${value}`);
-	}
-	return [...inherited, ...v2Environment];
 }
 
 function commandForVendor(
@@ -541,475 +567,13 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		this.#writeState(next);
 	}
 
-	/**
-	 * Codex R1 MEDIUM-5: refuse any injection-derived path outside the configured
-	 * injection root. parseClaudeTarget only validates basenames, so a crafted or
-	 * corrupt ref could otherwise resolve configDir to a real user config dir.
-	 */
-	#assertContainedInInjectionRoot(candidate: string): void {
-		// Codex R2 MEDIUM-4: resolve() is only lexical. If any existing ancestor
-		// inside the root is a symlink pointing outside it, a lexical check passes
-		// while the write lands outside. Canonicalise the deepest EXISTING ancestor
-		// and re-attach the not-yet-created tail.
-		mkdirSync(this.#options.injectionRoot, { recursive: true, mode: 0o700 });
-		const root = realpathSync(this.#options.injectionRoot);
-		let probe = resolve(candidate);
-		const tail: string[] = [];
-		while (!existsSync(probe)) {
-			const parent = dirname(probe);
-			if (parent === probe) break;
-			tail.unshift(basename(probe));
-			probe = parent;
-		}
-		const target = join(realpathSync(probe), ...tail);
-		if (target !== root && !target.startsWith(`${root}${sep}`)) {
-			throw new RunnerLaunchConfigError(
-				"Claude injection path escapes the configured injection root",
-			);
-		}
-	}
-
-	/**
-	 * Codex R1 MEDIUM-5: never read or replace through a symlink, and never touch
-	 * a non-regular file (a FIFO would block the launcher). A symlink here could
-	 * point at credentials, whose contents would then be merged into the new file.
-	 */
-	#assertPlainFileTarget(path: string): void {
-		let stats: Stats;
-		try {
-			stats = lstatSync(path);
-		} catch (error) {
-			// Codex R2 MEDIUM-4: only a genuine ENOENT means "absent". Treating every
-			// lstat error as absent would let a permission or I/O failure through.
-			if ((error as { code?: string }).code === "ENOENT") return;
-			throw new RunnerLaunchConfigError(
-				"isolated Claude config path could not be inspected",
-			);
-		}
-		if (!stats.isFile()) {
-			throw new RunnerLaunchConfigError(
-				"isolated Claude config path is not a regular file",
-			);
-		}
-	}
-
-	/**
-	 * FLY-1543 ④: no Agent Team, no teams config.json, no vendor inbox. The
-	 * per-activation config dir exists only for credentials and the onboarding
-	 * preseed.
-	 */
-	async #prepareClaudeConfig(request: RuntimeLaunchRequest): Promise<string> {
-		const configDir = claudeConfigDir(
-			this.#options.injectionRoot,
-			request.activationId,
-		);
-		// Codex R2 MEDIUM-4: containment must be proven before ANY I/O.
-		this.#assertContainedInInjectionRoot(configDir);
-		// Before any tmux work: no credentials means fail closed with a message that
-		// names the path, never a runner parked on a login screen where only a human
-		// watching the pane would notice.
-		this.#linkClaudeCredentials(configDir);
-		await this.#preseedClaudeOnboarding(configDir, request);
-		return configDir;
-	}
-
-	/**
-	 * FLY-1543 ②: ONE live credential file, shared by every activation.
-	 *
-	 * The per-activation COPY is deleted: a copy goes stale the moment the
-	 * operator/quota system refreshes the source, and a runner that opens on a
-	 * login screen has nobody watching the pane. Every launch re-points a
-	 * symlink at the shared file, so a refresh of the source is immediately
-	 * visible to every runner -- no sync, no refresher, no stale copies.
-	 *
-	 * Stated residual (recorded, not fallback-ed): if Claude's credential writer
-	 * rename-overs the path, the symlink is replaced by a regular file holding
-	 * that activation's own token, which is NOT propagated back to the shared
-	 * file; the next launch re-points the link. The shared file is maintained as
-	 * the single source of truth by the operator/quota system, and same-uid
-	 * tampering with it is an accepted design boundary.
-	 */
-	#linkClaudeCredentials(configDir: string): void {
-		const source = this.#options.claudeCredentialsPath;
-		if (typeof source !== "string" || !isAbsolute(source)) {
-			throw new RunnerLaunchConfigError(
-				"Claude credentials path must be configured as an absolute path",
-			);
-		}
-		let stats: Stats;
-		try {
-			stats = lstatSync(source);
-		} catch (error) {
-			throw new RunnerLaunchConfigError(
-				`Claude credentials are missing at ${source}: provision them once for this host before spawning a Claude runner (${
-					(error as { code?: string }).code ?? "unreadable"
-				})`,
-			);
-		}
-		if (!stats.isFile()) {
-			throw new RunnerLaunchConfigError(
-				`Claude credentials at ${source} must be a regular file`,
-			);
-		}
-		const destination = join(configDir, ".credentials.json");
-		mkdirSync(configDir, { recursive: true, mode: 0o700 });
-		chmodSync(configDir, 0o700);
-		// Always re-point: keeping an existing entry is exactly the mechanism by
-		// which a stale copy used to survive.
-		try {
-			unlinkSync(destination);
-		} catch (error) {
-			if ((error as { code?: string }).code !== "ENOENT") {
-				throw new RunnerLaunchConfigError(
-					`isolated Claude credentials path could not be replaced: ${destination}`,
-				);
-			}
-		}
-		symlinkSync(source, destination);
-	}
-
-	async #preseedClaudeOnboarding(
-		configDir: string,
-		request: RuntimeLaunchRequest,
-	): Promise<void> {
-		const statePath = join(configDir, ".claude.json");
-		this.#assertPlainFileTarget(statePath);
-		// Codex R2 MEDIUM-5 / R3 MEDIUM-5: with a per-activation config root the
-		// only writer of this file is this launcher plus the one Claude process it
-		// is about to start, so the last-writer-wins hazard that made this lock
-		// necessary is largely gone. The lock stays because it is still the
-		// correctness boundary for a `legacy-shared` ref and for two launches of the
-		// same activation, and because the previous implementation was itself
-		// unsound: it had no wait between the 50 attempts (so it burned them in a
-		// microsecond and failed a merely-brief contention) and it deleted any lock
-		// older than 30s with no ownership check, so it could unlink a legitimate
-		// holder's lock -- or a *later* holder's lock, having decided staleness from
-		// an earlier one.
-		const lockPath = `${statePath}.fly1503.lock`;
-		// Codex R5 MEDIUM-4: prove ownership again at the critical-section boundary. A
-		// holder can be displaced between acquiring and here, so writing without
-		// re-checking is what would put two processes in the section at once.
-		for (let attempt = 0; attempt < 2; attempt += 1) {
-			const owner = await this.#acquireOnboardingLock(lockPath);
-			try {
-				if (!this.#assertStillOwns(lockPath, owner)) continue;
-				this.#mergeClaudeOnboarding(statePath, request);
-				return;
-			} finally {
-				closeSync(owner.fd);
-				this.#releaseOnboardingLock(lockPath, owner.token);
-			}
-		}
-		throw new RunnerLaunchConfigError(
-			"isolated Claude config lock was lost twice before the merge could start",
-		);
-	}
-
-	/**
-	 * Bounded wait, owner token, inode-checked stale recovery.
-	 *
-	 * The token is written into the lock file, so release and stale reclaim both
-	 * verify they are acting on the lock they believe in. Reclaim goes through an
-	 * atomic rename: only one racer can win the rename, and the winner re-reads
-	 * the renamed file to confirm it moved the same lock it judged stale.
-	 */
-	async #acquireOnboardingLock(
-		lockPath: string,
-	): Promise<{ fd: number; token: string; ino: number }> {
-		// Deliberately the real clock, not the injected one: a lock's liveness is
-		// about elapsed wall time, and the injected clock is a fixed domain
-		// timestamp (it is frozen in tests, which would make this spin forever).
-		const deadline =
-			Date.now() +
-			(this.#options.onboardingLockTimeoutMs ?? ONBOARDING_LOCK_TIMEOUT_MS);
-		let lastHolder = "";
-		for (;;) {
-			// Codex R4 MEDIUM-3: write the content to a private temp file and link it
-			// into place, so the lock never exists in a zero-byte state. The previous
-			// create-then-write left a window where a crash produced an unattributable
-			// lock that could only ever be reclaimed by age.
-			const token = randomUUID();
-			const staging = `${lockPath}.staging.${process.pid}.${token}`;
-			// Codex R5 MEDIUM-5: every exit from here closes the fd and removes the
-			// staging file. The previous version leaked the fd when the write threw
-			// after openSync -- enough repeated launches would exhaust descriptors --
-			// and, worse, if linkSync SUCCEEDED and the staging unlink then failed it
-			// threw while leaving lockPath published, recording this still-live host
-			// pid: every later launch would refuse to reclaim it until the host exited.
-			let fd: number | undefined;
-			let acquired = false;
-			try {
-				fd = openSync(staging, "wx", 0o600);
-				writeFileSync(
-					fd,
-					`${JSON.stringify({
-						v: 1,
-						token,
-						pid: process.pid,
-						pidStart: this.#processStart(process.pid),
-						acquiredAt: new Date(Date.now()).toISOString(),
-					})}\n`,
-				);
-				fsyncSync(fd);
-				// linkSync fails with EEXIST rather than replacing, so this is the
-				// atomic acquire.
-				linkSync(staging, lockPath);
-				acquired = true;
-			} catch (error) {
-				if (fd !== undefined) closeSync(fd);
-				fd = undefined;
-				if (!acquired && (error as { code?: string }).code !== "EEXIST") {
-					throw error;
-				}
-			} finally {
-				// Always: the staging name is this process's private handle, and leaving
-				// it behind serves nothing whether the acquire won or lost.
-				try {
-					unlinkSync(staging);
-				} catch {
-					// never created, or already removed
-				}
-			}
-			if (acquired && fd !== undefined) {
-				const published = this.#readOnboardingLock(lockPath);
-				if (published === null || published.token !== token) {
-					// Lost between link and read; release nothing and retry.
-					closeSync(fd);
-				} else {
-					return { fd, token, ino: published.ino };
-				}
-			}
-			const holder = this.#readOnboardingLock(lockPath);
-			// Codex R4 MEDIUM-3: the deadline must be checked on EVERY path. A lock
-			// that reads back as null -- released between the two calls, or previously
-			// unparseable -- used to `continue` without it, so an unparseable lock
-			// spun this loop forever at full speed.
-			if (Date.now() >= deadline) {
-				throw new RunnerLaunchConfigError(
-					`isolated Claude config is locked by another launcher (holder ${
-						holder?.token || lastHolder || "unattributable"
-					})`,
-				);
-			}
-			if (holder === null) {
-				await new Promise((resolve) =>
-					setTimeout(resolve, ONBOARDING_LOCK_POLL_MS),
-				);
-				continue;
-			}
-			lastHolder = holder.token;
-			if (this.#onboardingLockIsStale(holder)) {
-				this.#reclaimOnboardingLock(lockPath, holder);
-				continue;
-			}
-			if (Date.now() >= deadline) {
-				throw new RunnerLaunchConfigError(
-					`isolated Claude config is locked by another launcher (holder ${lastHolder})`,
-				);
-			}
-			await new Promise((resolve) =>
-				setTimeout(resolve, ONBOARDING_LOCK_POLL_MS),
-			);
-		}
-	}
-
-	#readOnboardingLock(lockPath: string): OnboardingLockHolder | null {
-		let fd: number | undefined;
-		try {
-			fd = openSync(lockPath, "r");
-			const stats = fstatSync(fd);
-			if (!stats.isFile()) {
-				throw new RunnerLaunchConfigError(
-					"isolated Claude config lock is not a regular file",
-				);
-			}
-			// An unattributable lock -- unreadable JSON, or JSON that is not an object --
-			// must still be reclaimable by age. Returning null here instead (which is
-			// what invalid JSON used to do) meant such a lock could never be cleared:
-			// it wedged every later launch until the acquire timed out, every time.
-			const unattributable = {
-				token: "",
-				pid: 0,
-				pidStart: null,
-				acquiredAtMs: stats.mtimeMs,
-				ino: stats.ino,
-			};
-			let parsed: unknown;
-			try {
-				parsed = JSON.parse(readFileSync(fd, "utf8"));
-			} catch {
-				return unattributable;
-			}
-			if (
-				typeof parsed !== "object" ||
-				parsed === null ||
-				Array.isArray(parsed)
-			) {
-				return unattributable;
-			}
-			const record = parsed as Record<string, unknown>;
-			const acquiredAt =
-				typeof record.acquiredAt === "string"
-					? Date.parse(record.acquiredAt)
-					: Number.NaN;
-			return {
-				token: typeof record.token === "string" ? record.token : "",
-				pid:
-					typeof record.pid === "number" && Number.isSafeInteger(record.pid)
-						? record.pid
-						: 0,
-				pidStart:
-					typeof record.pidStart === "string" && record.pidStart.length > 0
-						? record.pidStart
-						: null,
-				acquiredAtMs: Number.isNaN(acquiredAt) ? stats.mtimeMs : acquiredAt,
-				ino: stats.ino,
-			};
-		} catch (error) {
-			if ((error as { code?: string }).code === "ENOENT") return null;
-			if (error instanceof RunnerLaunchConfigError) throw error;
-			return null;
-		} finally {
-			if (fd !== undefined) closeSync(fd);
-		}
-	}
-
-	#onboardingLockIsStale(holder: OnboardingLockHolder): boolean {
-		// Positive evidence first: a recorded pid whose process is gone -- or which
-		// is now a different process -- cannot still be holding this lock. Age alone
-		// is the fallback, and it must be long enough that a slow-but-live holder is
-		// never robbed.
-		if (holder.pid > 0 && holder.pidStart !== null) {
-			// Codex R4 MEDIUM-3: `null` conflates "the pid is gone" with "the probe
-			// could not answer" -- the fail-open fixed one layer up in R3 HIGH-1 and
-			// reintroduced here.
-			//
-			// Codex R5 MEDIUM-3: falling through to the age rule was still that same
-			// fail-open with a two-minute delay. A live holder paused or blocked on a
-			// slow filesystem for two minutes, plus one transient /bin/ps failure in
-			// the other launcher, and the live lock was taken -- two processes writing
-			// one onboarding state. An unanswerable probe now fails CLOSED: a lock that
-			// names a process is only ever stale on positive evidence that the process
-			// is gone or is a different one. If the probe stays unavailable the acquire
-			// times out, which is the correct outcome.
-			const observed = this.#processStart(holder.pid);
-			if (observed === null) return false;
-			return observed !== holder.pidStart;
-		}
-		// Only a lock that names no process at all can be reclaimed on age. This code
-		// cannot create one -- the content is staged and linked atomically -- so this
-		// covers a lock left by an older build, which would otherwise wedge every
-		// future launch permanently.
-		return Date.now() - holder.acquiredAtMs > ONBOARDING_LOCK_STALE_MS;
-	}
-
-	#reclaimOnboardingLock(lockPath: string, holder: OnboardingLockHolder): void {
-		// Codex R4 MEDIUM-3 / R5 MEDIUM-4: re-read and re-judge at the lock path
-		// before moving anything, and NEVER rename a lock back.
-		//
-		// The rename-back was the two-holder bug: R quarantines what is now S's fresh
-		// lock, sees the inode mismatch, and renames S's file back -- over a path U may
-		// already have acquired in the gap. S and U then both believe they hold the
-		// mutex. Renaming back can only ever clobber; dropping the quarantined file is
-		// the safe branch, and #assertStillOwns below is what makes it safe for the
-		// displaced holder.
-		const current = this.#readOnboardingLock(lockPath);
-		if (current === null || current.ino !== holder.ino) return;
-		if (!this.#onboardingLockIsStale(current)) return;
-		const quarantine = `${lockPath}.stale.${randomUUID()}`;
-		try {
-			// One racer wins the rename; the loser sees ENOENT and re-evaluates.
-			renameSync(lockPath, quarantine);
-		} catch {
-			return;
-		}
-		try {
-			unlinkSync(quarantine);
-		} catch {
-			// nothing further to do; the next attempt re-evaluates
-		}
-	}
-
-	/**
-	 * Codex R5 MEDIUM-4: the guarantee that makes the reclaim path safe.
-	 *
-	 * A holder can be displaced between acquiring and entering the critical section --
-	 * by a reclaimer that judged an earlier inode stale, or by any other removal. So
-	 * ownership is re-proved immediately before the merge: the lock file must still
-	 * exist, still be the inode this process created, and still carry its token. A
-	 * mismatch means the lock was lost, and the caller retries rather than writing.
-	 */
-	#assertStillOwns(
-		lockPath: string,
-		owner: { token: string; ino: number },
-	): boolean {
-		const holder = this.#readOnboardingLock(lockPath);
-		return (
-			holder !== null &&
-			holder.ino === owner.ino &&
-			holder.token === owner.token
-		);
-	}
-
-	#releaseOnboardingLock(lockPath: string, token: string): void {
-		// Only unlink the lock this process actually owns. Releasing blindly would
-		// delete a successor's lock if this holder had already been reclaimed.
-		const holder = this.#readOnboardingLock(lockPath);
-		if (holder === null || holder.token !== token) return;
-		try {
-			unlinkSync(lockPath);
-		} catch {
-			// already removed
-		}
-	}
-
-	#mergeClaudeOnboarding(
-		statePath: string,
-		request: RuntimeLaunchRequest,
-	): void {
-		let state: Record<string, unknown> = {};
-		if (existsSync(statePath)) {
-			// Merge: the config dir also holds onboarding history and cached feature
-			// state that must survive.
-			const parsed: unknown = JSON.parse(readFileSync(statePath, "utf8"));
-			if (
-				typeof parsed !== "object" ||
-				parsed === null ||
-				Array.isArray(parsed)
-			) {
-				throw new RunnerLaunchConfigError(
-					"isolated Claude config state is not an object",
-				);
-			}
-			state = parsed as Record<string, unknown>;
-		}
-		const priorProjects = state.projects;
-		const projects: Record<string, unknown> =
-			typeof priorProjects === "object" &&
-			priorProjects !== null &&
-			!Array.isArray(priorProjects)
-				? { ...(priorProjects as Record<string, unknown>) }
-				: {};
-		const priorProject = projects[request.context.projectRoot];
-		projects[request.context.projectRoot] = {
-			...(typeof priorProject === "object" &&
-			priorProject !== null &&
-			!Array.isArray(priorProject)
-				? priorProject
-				: {}),
-			hasTrustDialogAccepted: true,
-			hasCompletedProjectOnboarding: true,
-		};
-		atomicFile(
-			statePath,
-			`${JSON.stringify({
-				...state,
-				hasCompletedOnboarding: true,
-				bypassPermissionsModeAccepted: true,
-				projects,
-			})}\n`,
-		);
-	}
+	// FLY-1550 (founder direct order): NO per-activation CLAUDE_CONFIG_DIR and NO
+	// environment washing. The runner shares the operator's `~/.claude` exactly
+	// like a Lead does -- statusline, theme, plugins and credentials are the same
+	// because they are the same files. The whole isolation apparatus that used to
+	// live here (config-dir derivation, credential symlink, onboarding preseed +
+	// lock) existed for the per-activation credential copy, which FLY-1543
+	// already abolished.
 
 	async #hasSession(sessionName: string): Promise<boolean> {
 		try {
@@ -1035,23 +599,15 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 			instruction,
 		);
 		this.#prepareState(request, vendor, runnerPrompt(request));
-		const claudeConfig =
-			vendor === "claude"
-				? await this.#prepareClaudeConfig(request)
-				: undefined;
 		const prior = await this.probe(request.sessionRef);
 		if (prior.state === "present") return prior.sessionBinding;
 
 		const sessionName = this.#sessionName(request.sessionRef);
 		const releasePath = this.#releasePath(request.sessionRef);
 		if (existsSync(releasePath)) unlinkSync(releasePath);
-		// FLY-1544 ①: window name derives from issue + node kind.
-		const windowName = safeName(
-			`v2-${request.context.issueId}-${request.taskKind}-${safeKey(request.sessionRef).slice(0, 8)}`,
-			"v2-runner",
-		);
-		const gateScript =
-			'gate="$0"; n=0; while [ ! -f "$gate" ]; do [ "$n" -ge 86400 ] && exit 75; sleep 1; n=$((n+1)); done; exec "$@"';
+		// FLY-1550: the window name is the founder-facing cmux workspace title.
+		const windowName = workspaceWindowName(request);
+		const gateScript = RUNNER_GATE_SCRIPT;
 		const environment = [
 			`FLYWHEEL_V2_SESSION_REF=${request.sessionRef}`,
 			`FLYWHEEL_V2_AGENT_ID=${request.taskKind}`,
@@ -1063,10 +619,10 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 			`FLYWHEEL_V2_SOCKET=${this.#options.socketPath}`,
 			`FLYWHEEL_V2_SECRET_PATH=${this.#options.secretPath}`,
 			`FLYWHEEL_V2_CLIENT_CLI=${this.#options.clientCliPath}`,
-			...(claudeConfig ? [`CLAUDE_CONFIG_DIR=${claudeConfig}`] : []),
 		];
+		let createdWindowId: string | undefined;
 		try {
-			await this.#command.run(this.#options.tmuxBin, [
+			const created = await this.#command.run(this.#options.tmuxBin, [
 				"new-session",
 				"-d",
 				"-P",
@@ -1083,12 +639,10 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 				"-c",
 				gateScript,
 				releasePath,
-				"/usr/bin/env",
-				"-i",
-				...cleanRunnerEnvironment(environment),
 				vendorCommand.binary,
 				...vendorCommand.args,
 			]);
+			createdWindowId = /:(@\d+)\s*$/.exec(created.stdout)?.[1];
 			for (const [key, value] of [
 				["@flywheel_v2_session_ref", request.sessionRef],
 				["@flywheel_v2_activation_id", request.activationId],
@@ -1127,11 +681,47 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 			}
 			throw error;
 		}
+		this.#announceCmuxCreate(sessionName, createdWindowId, windowName);
 		const launched = await this.probe(request.sessionRef);
 		if (launched.state !== "present") {
 			throw new Error("tmux runner disappeared before registration");
 		}
 		return launched.sessionBinding;
+	}
+
+	/**
+	 * FLY-1550 ③: make the runner visible in cmux by feeding the v1 watcher's own
+	 * event channel. `after-new-window` cannot fire for a session's initial
+	 * window, so the launcher writes the byte-identical hook line itself; the
+	 * resident `flywheel-cmux-sync.sh --watch` drains it within ~15s and runs its
+	 * full v1 create path (workspace + rename-workspace + rename-tab, ledgered).
+	 * Best-effort by contract: a runner must never fail to launch because cmux
+	 * bookkeeping did -- the watcher's 60s additive sweep is the fallback.
+	 */
+	#announceCmuxCreate(
+		sessionName: string,
+		windowId: string | undefined,
+		windowName: string,
+	): void {
+		if (!windowId) {
+			console.warn(
+				`[v2-launcher] cmux create event skipped for ${sessionName}: window id unresolved`,
+			);
+			return;
+		}
+		const eventFile = this.#options.cmuxEventFilePath ?? CMUX_EVENT_FILE;
+		try {
+			appendFileSync(
+				eventFile,
+				`create|${sessionName}|${windowId}|${windowName}\n`,
+			);
+		} catch (error) {
+			console.warn(
+				`[v2-launcher] cmux create event write failed for ${windowName}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		}
 	}
 
 	async activate(sessionRef: string): Promise<void> {
@@ -1206,11 +796,34 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 	async stop(sessionRef: string): Promise<void> {
 		const sessionName = this.#sessionName(sessionRef);
 		if (await this.#hasSession(sessionName)) {
+			// FLY-1550 ③: resolve the window name while the session is still alive
+			// (the v1 ordering -- FLY-638). It is also the cmux workspace title, so
+			// after the kill the v1 close-request marker retires the workspace pin
+			// through the watcher's revalidating chokepoint (FLY-685). Best-effort:
+			// pin recycling must never block a stop; the watcher's window-unlinked
+			// hook + stale ladders remain the fallback.
+			let windowName: string | undefined;
+			try {
+				const windows = await this.#command.run(this.#options.tmuxBin, [
+					"list-windows",
+					"-t",
+					`=${sessionName}`,
+					"-F",
+					"#{window_name}",
+				]);
+				windowName = windows.stdout
+					.split("\n")
+					.map((line) => line.trim())
+					.find((line) => line.length > 0);
+			} catch {
+				// window name unresolvable; the watcher's fallbacks own the pin
+			}
 			await this.#command.run(this.#options.tmuxBin, [
 				"kill-session",
 				"-t",
 				`=${sessionName}`,
 			]);
+			if (windowName) requestCmuxPinClose(windowName);
 		}
 		const releasePath = this.#releasePath(sessionRef);
 		if (existsSync(releasePath)) unlinkSync(releasePath);

@@ -24,15 +24,10 @@ describe("host runtime config and launcher protocol", () => {
 				v: 1,
 				dispatch_interval_ms: 1000,
 				lock_root: "/tmp/v2-locks",
-				injection_root: "/tmp/v2-injection",
 				launcher: {
 					kind: "tmux",
 					tmux_bin: "/usr/local/bin/tmux",
 					claude_bin: "/opt/flywheel/claude",
-					// Codex R4 MEDIUM-2: required. Without a named credentials source a
-					// per-activation config dir has none, and the runner parks on a login
-					// screen instead of failing.
-					claude_credentials: "/opt/flywheel/claude-credentials.json",
 					codex_bin: "/opt/flywheel/codex",
 					client_cli: "/opt/flywheel/v2-cli.js",
 					release_root: "/tmp/v2-release",
@@ -53,7 +48,6 @@ describe("host runtime config and launcher protocol", () => {
 				v: 1,
 				dispatch_interval_ms: 1000,
 				lock_root: "/tmp/v2-locks",
-				injection_root: "/tmp/v2-injection",
 				launcher: {
 					kind: "command",
 					command: ["/usr/bin/node", "/opt/flywheel/launcher.js"],
@@ -73,7 +67,6 @@ describe("host runtime config and launcher protocol", () => {
 				v: 1,
 				dispatch_interval_ms: 50,
 				lock_root: "relative",
-				injection_root: "/tmp/v2-injection",
 				launcher: {
 					kind: "command",
 					command: ["node"],
@@ -83,6 +76,29 @@ describe("host runtime config and launcher protocol", () => {
 				gh_bin: "/usr/local/bin/gh",
 			}),
 		).toThrow();
+		// FLY-1550: the pre-FLY-1550 shape (per-activation config machinery) is
+		// refused loudly -- an old runtime-config.json must be regenerated, never
+		// half-honored.
+		expect(() =>
+			parseRuntimeConfig({
+				v: 1,
+				dispatch_interval_ms: 1000,
+				lock_root: "/tmp/v2-locks",
+				injection_root: "/tmp/v2-injection",
+				launcher: {
+					kind: "tmux",
+					tmux_bin: "/usr/local/bin/tmux",
+					claude_bin: "/opt/flywheel/claude",
+					claude_credentials: "/opt/flywheel/claude-credentials.json",
+					codex_bin: "/opt/flywheel/codex",
+					client_cli: "/opt/flywheel/v2-cli.js",
+					release_root: "/tmp/v2-release",
+					state_root: "/tmp/v2-runner-state",
+				},
+				git_bin: "/usr/bin/git",
+				gh_bin: "/usr/local/bin/gh",
+			}),
+		).toThrow(/invalid shape/);
 	});
 
 	it("uses a 0600 request file and exact JSON replies for launch/probe/stop", async () => {

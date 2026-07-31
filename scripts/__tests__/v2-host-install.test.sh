@@ -35,6 +35,13 @@ chmod +x "$BIN/launchctl"
 REPO_ROOT_FOR_TEST="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOST_CLI="$REPO_ROOT_FOR_TEST/packages/v2-host/dist/cli.js"
 if [[ ! -f "$HOST_CLI" ]]; then
+  # FLY-1550 (Codex R1 MEDIUM-5): in CI the build step precedes this suite, so
+  # a missing dist is a broken pipeline and must FAIL — a skip would read as
+  # green coverage that never ran.
+  if [[ "${CI:-}" == "true" ]]; then
+    echo "FAIL: packages/v2-host/dist/cli.js missing in CI — the build step must precede this suite" >&2
+    exit 1
+  fi
   echo "SKIP: build packages/v2-host before running this suite" >&2
   exit 0
 fi
@@ -60,19 +67,16 @@ LOG="$TMP/host.log"
 touch "$DB" "$MARKER" "$AUTHORITY" "$ARMED"
 printf 'test-secret\n' > "$SECRET"
 chmod 600 "$SECRET"
-printf '{"claudeAiOauth":{"accessToken":"install-test-token"}}\n' > "$CREDENTIALS"
-chmod 600 "$CREDENTIALS"
+# FLY-1550: no claude_credentials / injection_root -- runners share ~/.claude.
 cat > "$RUNTIME" <<EOF
 {
   "v": 1,
   "dispatch_interval_ms": 1000,
   "lock_root": "$TMP/runtime/locks",
-  "injection_root": "$TMP/runtime/injections",
   "launcher": {
     "kind": "tmux",
     "tmux_bin": "/bin/echo",
     "claude_bin": "/bin/echo",
-    "claude_credentials": "$CREDENTIALS",
     "codex_bin": "/bin/echo",
     "client_cli": "$CLIENT_CLI",
     "release_root": "$TMP/runtime/release",
@@ -146,11 +150,16 @@ else
   pass "non-launchd backend fails loud; no fallback starts"
 fi
 
-# FLY-1503 MEDIUM-1: the exact config shape that would have taken production down --
-# the pre-upgrade launcher section with no claude_credentials. The installer must
-# refuse it, name the missing field, and never reach launchd.
+# FLY-1503 MEDIUM-1 / FLY-1550: the exact config shape that would take production
+# down -- now the PRE-FLY-1550 launcher section that still carries
+# claude_credentials. The installer must refuse it, name the stale field, and
+# never reach launchd.
 LEGACY_RUNTIME="$TMP/runtime-legacy.json"
-jq 'del(.launcher.claude_credentials)' "$RUNTIME" > "$LEGACY_RUNTIME"
+printf '{"claudeAiOauth":{"accessToken":"install-test-token"}}\n' > "$CREDENTIALS"
+chmod 600 "$CREDENTIALS"
+jq --arg cred "$CREDENTIALS" \
+  '.launcher.claude_credentials = $cred | .injection_root = "/tmp/v2-injection"' \
+  "$RUNTIME" > "$LEGACY_RUNTIME"
 chmod 600 "$LEGACY_RUNTIME"
 LEGACY_LAUNCHD_DIR="$TMP/launchd-legacy"
 mkdir -p "$LEGACY_LAUNCHD_DIR"
@@ -189,6 +198,39 @@ if env HOME="$HOME_DIR" PATH="$BIN:$PATH" \
   pass "--validate-only accepts a good config without installing"
 else
   fail "--validate-only contract: out=$(cat "$TMP/validate-out") err=$(cat "$TMP/validate-err")"
+fi
+
+# FLY-1550: --migrate-fly1550 atomically rewrites a pre-upgrade config into the
+# accepted shape; the SAME exact-key gates and the real host parser then
+# validate the migrated file, making the documented deploy sequence executable
+# against a live installation (no hand-editing required).
+MIGRATE_RUNTIME="$TMP/runtime-migrate.json"
+cp "$LEGACY_RUNTIME" "$MIGRATE_RUNTIME"
+chmod 600 "$MIGRATE_RUNTIME"
+MIGRATE_LAUNCHD_DIR="$TMP/launchd-migrate"
+mkdir -p "$MIGRATE_LAUNCHD_DIR"
+: > "$CALLS"
+MIGRATE_COMMON=(
+  --window window-1 --epoch 1 --host-epoch host-1
+  --db "$DB" --marker "$MARKER" --authority "$AUTHORITY" --armed "$ARMED"
+  --socket "$SOCKET" --secret "$SECRET" --session-proof-root "$PROOFS"
+  --runtime-config "$MIGRATE_RUNTIME" --host-cli "$HOST_CLI" --client-cli "$CLIENT_CLI"
+  --log "$LOG"
+)
+if env HOME="$HOME_DIR" PATH="$BIN:$PATH" \
+    FLYWHEEL_LAUNCHD_DIR="$MIGRATE_LAUNCHD_DIR" \
+    FLYWHEEL_SUPERVISOR_BACKEND=launchd \
+    "$INSTALL" "${MIGRATE_COMMON[@]}" --validate-only --migrate-fly1550 \
+    >"$TMP/migrate-out" 2>"$TMP/migrate-err"; then
+  if jq -e 'has("injection_root") or (.launcher | has("claude_credentials"))' "$MIGRATE_RUNTIME" >/dev/null; then
+    fail "--migrate-fly1550 left retired keys behind: $(cat "$MIGRATE_RUNTIME")"
+  elif [[ "$(stat -f %Lp "$MIGRATE_RUNTIME" 2>/dev/null || stat -c %a "$MIGRATE_RUNTIME")" != "600" ]]; then
+    fail "--migrate-fly1550 dropped the 0600 mode on the migrated config"
+  else
+    pass "--migrate-fly1550 rewrites a pre-upgrade config to the accepted shape (proved by --validate-only)"
+  fi
+else
+  fail "--migrate-fly1550 + --validate-only rejected the migrated config: $(cat "$TMP/migrate-err")"
 fi
 
 echo "v2-host-install.test: $PASSED passed, $FAILED failed"
