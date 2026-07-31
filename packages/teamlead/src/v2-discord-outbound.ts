@@ -25,8 +25,28 @@ import {
 	createChatThread,
 	postChatMessage,
 } from "./bridge/chat-thread-utils.js";
+import type {
+	V2DisplayRecord,
+	V2DisplayStore,
+} from "./v2-display-refresher.js";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * FLY-1549: the display refresher as the messenger consumes it. Every handled
+ * lifecycle delivery triggers a coalesced refresh of the FLY-907 display
+ * surfaces; `issue_closed` awaits the refresh so the terminal ✅ lands BEFORE
+ * the thread is archived (an archived thread cannot be renamed).
+ */
+export interface V2DisplayHandle {
+	enqueue(issueId: string): void;
+	refresh(issueId: string): Promise<boolean>;
+	maybeSweep(): Promise<void>;
+	/** Per-issue fence for the inline issue_closed sequence (refresh →
+	 * archive HTTP → archivedAt stamp) — the sweep must not interleave a
+	 * verification verdict into the archive-await window (Codex R7 #1). */
+	holdIssue<T>(issueId: string, fn: () => Promise<T>): Promise<T>;
+}
 
 /** Must match flywheel-v2-dag outbox.ts DISCORD_MESSENGER_AGENT_ID. */
 export const DISCORD_MESSENGER_AGENT_ID = "discord-messenger";
@@ -52,11 +72,19 @@ export interface V2DiscordOutboundOptions {
 	fetchImpl?: typeof fetch;
 	/** Delay between pulls after an error or an idle timeout. Default 2000ms. */
 	pollDelayMs?: number;
+	/**
+	 * FLY-1549: builds the display refresher over the messenger's durable
+	 * state. Absent/null = display refresh OFF (`FLYWHEEL_V2_ISSUE_DISPLAY=0`
+	 * escape hatch) — messenger behavior is byte-identical to pre-FLY-1549.
+	 */
+	makeDisplayRefresher?: (store: V2DisplayStore) => V2DisplayHandle | null;
 }
 
 interface OutboundState {
 	v: 1;
 	threads: Record<string, string>;
+	/** FLY-1549: per-issue display records (fingerprint / header message). */
+	display?: Record<string, V2DisplayRecord>;
 }
 
 interface OutboundEnvelope {
@@ -87,6 +115,7 @@ export class V2DiscordOutbound {
 	#state: OutboundState = { v: 1, threads: {} };
 	#stopped = false;
 	#loop?: Promise<void>;
+	#display: V2DisplayHandle | null = null;
 
 	constructor(options: V2DiscordOutboundOptions) {
 		for (const [label, value] of [
@@ -115,8 +144,24 @@ export class V2DiscordOutbound {
 
 	async start(): Promise<void> {
 		this.#loadState();
+		this.#display =
+			this.#options.makeDisplayRefresher?.(this.#displayStore()) ?? null;
 		await this.#register();
 		this.#loop = this.#runLoop();
+	}
+
+	/** FLY-1549: the refresher's durable store, backed by the state file. */
+	#displayStore(): V2DisplayStore {
+		return {
+			getThreadId: (issueId) => this.#state.threads[issueId],
+			getRecord: (issueId) => this.#state.display?.[issueId],
+			setRecord: (issueId, record) => {
+				this.#state.display ??= {};
+				this.#state.display[issueId] = record;
+				this.#saveState();
+			},
+			listIssues: () => Object.keys(this.#state.threads),
+		};
 	}
 
 	async stop(): Promise<void> {
@@ -135,7 +180,13 @@ export class V2DiscordOutbound {
 				typeof parsed.threads === "object" &&
 				parsed.threads !== null
 			) {
-				this.#state = { v: 1, threads: { ...parsed.threads } };
+				this.#state = {
+					v: 1,
+					threads: { ...parsed.threads },
+					...(typeof parsed.display === "object" && parsed.display !== null
+						? { display: { ...parsed.display } }
+						: {}),
+				};
 			}
 		} catch {
 			// first run: empty state
@@ -192,6 +243,10 @@ export class V2DiscordOutbound {
 	async #runLoop(): Promise<void> {
 		const delay = this.#options.pollDelayMs ?? 2_000;
 		while (!this.#stopped) {
+			// FLY-1549: sweep piggybacks the pull loop (the pull long-polls, so
+			// this runs every few seconds) — zero new timers, internal cadence
+			// gate + catch inside maybeSweep.
+			if (this.#display) void this.#display.maybeSweep();
 			let envelope: OutboundEnvelope | null = null;
 			try {
 				envelope = await this.#pull();
@@ -417,6 +472,40 @@ export class V2DiscordOutbound {
 			return { ok: false, threadId: thread.threadId, error: posted.error };
 		}
 		if (kind === "issue_closed") {
+			// FLY-1549: the terminal ✅ display must land BEFORE the archive —
+			// an archived thread cannot be renamed. When the refresh cannot be
+			// confirmed, the archive is deferred to the sweep (which archives
+			// once the fingerprint catches up) rather than freezing a stale
+			// title forever. The whole sequence runs under the refresher's
+			// per-issue fence (Codex R7 #1): the archive-HTTP await window is
+			// otherwise invisible to the sweep's CAS and a late verification
+			// verdict landing inside it would strand the record.
+			const display = this.#display;
+			if (display) {
+				return await display.holdIssue(issueId, async () => {
+					const landed = await display.refresh(issueId);
+					if (!landed) {
+						this.#logger.warn(
+							`[v2-discord-outbound] terminal display for ${issueId} not confirmed — archive deferred to sweep`,
+						);
+						return { ok: true, threadId: thread.threadId };
+					}
+					const archived = await archiveChatThread(
+						thread.threadId,
+						this.#options.botToken,
+						this.#discordDeps(),
+					);
+					if (!archived.archived && archived.reason !== "missing") {
+						return {
+							ok: false,
+							threadId: thread.threadId,
+							error: `archive failed: ${archived.reason}`,
+						};
+					}
+					this.#markArchived(issueId);
+					return { ok: true, threadId: thread.threadId };
+				});
+			}
 			const archived = await archiveChatThread(
 				thread.threadId,
 				this.#options.botToken,
@@ -429,8 +518,22 @@ export class V2DiscordOutbound {
 					error: `archive failed: ${archived.reason}`,
 				};
 			}
+		} else {
+			// FLY-1549: every lifecycle delivery triggers a coalesced display
+			// refresh — fire-and-forget, never blocks delivery settlement.
+			this.#display?.enqueue(issueId);
 		}
 		return { ok: true, threadId: thread.threadId };
+	}
+
+	#markArchived(issueId: string): void {
+		const record = this.#state.display?.[issueId];
+		if (!record) return;
+		this.#state.display = {
+			...this.#state.display,
+			[issueId]: { ...record, archivedAt: new Date().toISOString() },
+		};
+		this.#saveState();
 	}
 }
 

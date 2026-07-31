@@ -622,3 +622,257 @@ export async function postChatMessage(
 		clearTimeout(timer);
 	}
 }
+
+/* ------------------------------------------------------------------------- *
+ * FLY-1549: minimal REST additions for the v2 display surfaces (title badge
+ * PATCH + pinned-header edit). Single-attempt, structured results; the retry
+ * policy (429 backoff / defer-to-sweep) lives in the v2 display refresher.
+ * ------------------------------------------------------------------------- */
+
+async function readRetryAfterMs(res: Response): Promise<number | undefined> {
+	const header = parseRetryAfterMs(res.headers.get("retry-after"));
+	if (header !== undefined) return header;
+	try {
+		const data = (await res.clone().json()) as { retry_after?: unknown };
+		if (typeof data.retry_after === "number" && data.retry_after >= 0) {
+			return Math.round(data.retry_after * 1000);
+		}
+	} catch {
+		// no parseable body
+	}
+	return undefined;
+}
+
+export interface DisplayRestDeps {
+	fetchImpl?: typeof fetch;
+	timeoutMs?: number;
+}
+
+export type GetChannelNameResult =
+	| { ok: true; name: string; archived?: boolean }
+	| { ok: false; status?: number; retryAfterMs?: number; error: string };
+
+/** GET the channel object and return its current name (+ archived flag). */
+export async function getChannelName(
+	channelId: string,
+	botToken: string,
+	deps: DisplayRestDeps = {},
+): Promise<GetChannelNameResult> {
+	const fetchImpl = deps.fetchImpl ?? fetch;
+	const controller = new AbortController();
+	const timer = setTimeout(
+		() => controller.abort(),
+		deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+	);
+	try {
+		const res = await fetchImpl(`${DISCORD_API}/channels/${channelId}`, {
+			headers: { Authorization: `Bot ${botToken}` },
+			signal: controller.signal,
+		});
+		if (res.status === 429) {
+			return {
+				ok: false,
+				status: 429,
+				retryAfterMs: await readRetryAfterMs(res),
+				error: "rate limited",
+			};
+		}
+		if (!res.ok) {
+			const body = await res.text().catch(() => "");
+			return {
+				ok: false,
+				status: res.status,
+				error: `Discord ${res.status}: ${body.slice(0, 200)}`,
+			};
+		}
+		const data = (await res.json()) as {
+			name?: unknown;
+			thread_metadata?: { archived?: unknown };
+		};
+		if (typeof data.name !== "string") {
+			return { ok: false, error: "no channel name in response" };
+		}
+		const archived = data.thread_metadata?.archived;
+		return {
+			ok: true,
+			name: data.name,
+			...(typeof archived === "boolean" ? { archived } : {}),
+		};
+	} catch (err) {
+		if ((err as Error).name === "AbortError") {
+			return { ok: false, error: "timeout" };
+		}
+		return { ok: false, error: (err as Error).message };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+export type RenameChannelResult =
+	| { ok: true }
+	| {
+			ok: false;
+			status?: number;
+			retryAfterMs?: number;
+			archived?: boolean;
+			error: string;
+	  };
+
+/** PATCH the channel/thread name. Thread renames are heavily rate limited
+ * (~2 per 10 min) — callers must be zero-churn and treat 429 as deferrable. */
+export async function renameChannel(
+	channelId: string,
+	name: string,
+	botToken: string,
+	deps: DisplayRestDeps = {},
+): Promise<RenameChannelResult> {
+	const fetchImpl = deps.fetchImpl ?? fetch;
+	const controller = new AbortController();
+	const timer = setTimeout(
+		() => controller.abort(),
+		deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+	);
+	try {
+		const res = await fetchImpl(`${DISCORD_API}/channels/${channelId}`, {
+			method: "PATCH",
+			headers: {
+				Authorization: `Bot ${botToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ name }),
+			signal: controller.signal,
+		});
+		if (res.ok) return { ok: true };
+		if (res.status === 429) {
+			return {
+				ok: false,
+				status: 429,
+				retryAfterMs: await readRetryAfterMs(res),
+				error: "rate limited",
+			};
+		}
+		const body = await res.text().catch(() => "");
+		// 400 code 50083 = thread archived — renames need an unarchive first.
+		const archived = res.status === 400 && body.includes("50083");
+		return {
+			ok: false,
+			status: res.status,
+			...(archived ? { archived: true } : {}),
+			error: `Discord ${res.status}: ${body.slice(0, 200)}`,
+		};
+	} catch (err) {
+		if ((err as Error).name === "AbortError") {
+			return { ok: false, error: "timeout" };
+		}
+		return { ok: false, error: (err as Error).message };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+export type EditChatMessageResult =
+	| { edited: true }
+	| { edited: false; status?: number; retryAfterMs?: number; error: string };
+
+/** PATCH an existing message's content (the pinned-header in-place refresh). */
+export async function editChatMessage(
+	input: {
+		channelId: string;
+		messageId: string;
+		content: string;
+		botToken: string;
+	},
+	deps: DisplayRestDeps = {},
+): Promise<EditChatMessageResult> {
+	const fetchImpl = deps.fetchImpl ?? fetch;
+	const controller = new AbortController();
+	const timer = setTimeout(
+		() => controller.abort(),
+		deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+	);
+	try {
+		const res = await fetchImpl(
+			`${DISCORD_API}/channels/${input.channelId}/messages/${input.messageId}`,
+			{
+				method: "PATCH",
+				headers: {
+					Authorization: `Bot ${input.botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(input.content),
+					allowed_mentions: { parse: [] },
+				}),
+				signal: controller.signal,
+			},
+		);
+		if (res.ok) return { edited: true };
+		if (res.status === 429) {
+			return {
+				edited: false,
+				status: 429,
+				retryAfterMs: await readRetryAfterMs(res),
+				error: "rate limited",
+			};
+		}
+		const body = await res.text().catch(() => "");
+		return {
+			edited: false,
+			status: res.status,
+			error: `Discord ${res.status}: ${body.slice(0, 200)}`,
+		};
+	} catch (err) {
+		if ((err as Error).name === "AbortError") {
+			return { edited: false, error: "timeout" };
+		}
+		return { edited: false, error: (err as Error).message };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+export type GetChannelMessageResult =
+	| { ok: true; pinned: boolean }
+	| { ok: false; status?: number; error: string };
+
+/** GET one message — the FLY-1549 sweep's remote verification that a
+ * converged pinned header still exists and is still pinned. */
+export async function getChannelMessage(
+	channelId: string,
+	messageId: string,
+	botToken: string,
+	deps: DisplayRestDeps = {},
+): Promise<GetChannelMessageResult> {
+	const fetchImpl = deps.fetchImpl ?? fetch;
+	const controller = new AbortController();
+	const timer = setTimeout(
+		() => controller.abort(),
+		deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+	);
+	try {
+		const res = await fetchImpl(
+			`${DISCORD_API}/channels/${channelId}/messages/${messageId}`,
+			{
+				headers: { Authorization: `Bot ${botToken}` },
+				signal: controller.signal,
+			},
+		);
+		if (!res.ok) {
+			const body = await res.text().catch(() => "");
+			return {
+				ok: false,
+				status: res.status,
+				error: `Discord ${res.status}: ${body.slice(0, 200)}`,
+			};
+		}
+		const data = (await res.json()) as { pinned?: unknown };
+		return { ok: true, pinned: data.pinned === true };
+	} catch (err) {
+		if ((err as Error).name === "AbortError") {
+			return { ok: false, error: "timeout" };
+		}
+		return { ok: false, error: (err as Error).message };
+	} finally {
+		clearTimeout(timer);
+	}
+}

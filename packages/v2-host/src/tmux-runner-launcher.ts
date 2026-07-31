@@ -18,6 +18,7 @@ import { promisify } from "node:util";
 import { renderRunnerModelDisplay } from "flywheel-config";
 import { buildWindowLabel, sanitizeTmuxName } from "flywheel-core";
 import { requestCmuxPinClose } from "flywheel-teamlead/bridge/cmux-close-request";
+import { v2RunnerTmuxSessionName } from "flywheel-teamlead/v2-issue-display";
 import type { SessionBinding } from "flywheel-v2-engine";
 import type {
 	RunnerLauncherPort,
@@ -384,7 +385,9 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 	}
 
 	#sessionName(sessionRef: string): string {
-		return `v2-${safeKey(sessionRef).slice(0, 32)}`;
+		// FLY-1549: single source with the display's attach-command derivation —
+		// drift here would render dead tmux links in the pinned issue header.
+		return v2RunnerTmuxSessionName(sessionRef);
 	}
 
 	#releasePath(sessionRef: string): string {
@@ -471,6 +474,8 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		const releasePath = this.#releasePath(request.sessionRef);
 		if (existsSync(releasePath)) unlinkSync(releasePath);
 		// FLY-1550: the window name is the founder-facing cmux workspace title.
+		// FLY-1549's cross-wire guard (v2WindowMatchesIssue) keys on the
+		// `${issueId}-` prefix that buildWindowLabel() structurally guarantees.
 		const windowName = workspaceWindowName(request);
 		const gateScript = RUNNER_GATE_SCRIPT;
 		const environment = [

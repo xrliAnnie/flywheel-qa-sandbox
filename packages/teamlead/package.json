@@ -14,6 +14,10 @@
 			"types": "./dist/bridge/chat-thread-utils.d.ts",
 			"import": "./dist/bridge/chat-thread-utils.js"
 		},
+		"./v2-issue-display": {
+			"types": "./dist/v2-issue-display.d.ts",
+			"import": "./dist/v2-issue-display.js"
+		},
 		"./bridge/worktree-cleanup": {
 			"types": "./dist/bridge/worktree-cleanup.d.ts",
 			"import": "./dist/bridge/worktree-cleanup.js"
