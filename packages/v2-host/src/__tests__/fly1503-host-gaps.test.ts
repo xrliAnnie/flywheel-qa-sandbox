@@ -1061,20 +1061,22 @@ describe("Codex R3 HIGH-2 — pull delivery is bound to the registration that ea
 	});
 });
 
-describe("Codex R6 HIGH-1 — a failed startup must not leave a resident host", () => {
-	it("tears down the listener and propagates when runner sync fails", async () => {
-		// The socket is published before runner sync runs, so a throw there used to
-		// leave a process that answers requests, dispatches nothing, and still reports
-		// healthy -- launchd KeepAlive never restarts it and the installer's health
-		// proof passes. The engine is dead with every signal green.
+describe("Codex R6 HIGH-1 × FLY-1556 — arming failures are fatal, one session's failure is not", () => {
+	it("boots, records durably, and keeps serving when one session's activation fails at startup", async () => {
+		// FLY-1556 (2026-07-30 production outage): this exact seam — a
+		// RunnerLaunchConfigError out of activate() during startup sync — used to
+		// abort start(), so launchd relaunched into the same error forever: the
+		// socket vanished, the outbound service died with it, and six healthy
+		// runners lost their control plane over ONE session's stale pin. A
+		// per-session activation failure is now that session's failure: recorded
+		// as a queryable event, the host arms and serves.
+		//
+		// The R6 property survives where it was true: a failure that prevents the
+		// coordinator from arming at all still tears the listener down (the
+		// try/catch around arming in start()), and a host that never armed says
+		// "degraded", never "ok" (test below).
 		const fixture = bootFixture();
 		await fixture.ready();
-		const failing = fixture.makeHost(
-			[],
-			[],
-			[],
-			new Error("pinned instruction changed before runner activation"),
-		);
 		// Bring a runner into existence and shut that host down, exactly as the item-9
 		// restart case does: the agents row goes offline while the session stays live,
 		// so the next boot's startup sync reaches activateSession.
@@ -1082,20 +1084,40 @@ describe("Codex R6 HIGH-1 — a failed startup must not leave a resident host", 
 		await seed.start();
 		await seed.runCoordinatorOnce();
 		await seed.close();
+		const errors: unknown[] = [];
+		const failing = fixture.makeHost(
+			[],
+			[],
+			errors,
+			new Error("pinned instruction changed before runner activation"),
+		);
 		try {
-			await expect(failing.start()).rejects.toThrow(
-				/pinned instruction changed/,
-			);
-			// The listener must be gone: nothing may answer on that socket.
-			await expect(
-				sendHostRequest({
-					socketPath: fixture.socketPath,
-					secret: fixture.secret,
-					action: "health",
-					payload: {},
-					timeoutMs: 2_000,
-				}),
-			).rejects.toThrow();
+			await failing.start();
+			const healthy = (await sendHostRequest({
+				socketPath: fixture.socketPath,
+				secret: fixture.secret,
+				action: "health",
+				payload: {},
+			})) as { status: string; coordinator: string };
+			expect(healthy).toMatchObject({ status: "ok", coordinator: "armed" });
+			expect(errors.length).toBeGreaterThanOrEqual(1);
+			const kernel = Kernel.open({ path: fixture.database.dbPath });
+			try {
+				const faults = kernel.read((tx) =>
+					tx.all<{ source_id: string; payload: string }>(
+						"SELECT source_id,payload FROM events WHERE kind='session_activation_failed'",
+					),
+				);
+				// Deduped: startup sync + the first tick hit the same diagnostic.
+				expect(faults).toHaveLength(1);
+				expect(faults[0]?.source_id).toMatch(/^v2dag:/);
+				expect(JSON.parse(faults[0]?.payload as string)).toMatchObject({
+					session_ref: faults[0]?.source_id,
+					error: "pinned instruction changed before runner activation",
+				});
+			} finally {
+				kernel.close();
+			}
 		} finally {
 			await failing.close().catch(() => undefined);
 		}

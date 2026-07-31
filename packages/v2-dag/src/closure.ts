@@ -72,6 +72,8 @@ export interface IssueClosureResult {
 	examined: number;
 	closed: number;
 	failed: number;
+	/** FLY-1556: gate rows that could not even be parsed into candidates. */
+	unreadable?: number;
 }
 
 interface Candidate {
@@ -88,27 +90,89 @@ export async function closeShippedIssues(
 	ports: DagPorts,
 ): Promise<IssueClosureResult> {
 	const result: IssueClosureResult = { examined: 0, closed: 0, failed: 0 };
+	// FLY-1556: a single unreadable gate row must not abort the enumeration —
+	// it is counted and recorded, and every other issue still closes.
+	const unreadable: Array<{ key: string; error: string }> = [];
 	const candidates = kernel.read((tx) =>
 		tx
 			.all<{ key: string }>(
 				"SELECT key FROM meta WHERE key LIKE 'ship_gate:%' ORDER BY key",
 			)
 			.flatMap((row) => {
-				const gate = readEnvelope<ShipGateData>(tx, row.key);
-				if (!gate || gate.data.settled === null) return [];
-				const issueId = row.key.slice("ship_gate:".length);
-				if (readEnvelope<ClosureMarker>(tx, markerKey(issueId))) return [];
-				return [
-					{
-						issueId,
-						mergedSha: gate.data.settled.merged_sha ?? "",
-					} satisfies Candidate,
-				];
+				try {
+					const gate = readEnvelope<ShipGateData>(tx, row.key);
+					if (!gate || gate.data.settled === null) return [];
+					const issueId = row.key.slice("ship_gate:".length);
+					if (readEnvelope<ClosureMarker>(tx, markerKey(issueId))) return [];
+					return [
+						{
+							issueId,
+							mergedSha: gate.data.settled.merged_sha ?? "",
+						} satisfies Candidate,
+					];
+				} catch (error) {
+					unreadable.push({
+						key: row.key,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return [];
+				}
 			}),
 	);
+	for (const entry of unreadable) {
+		result.unreadable = (result.unreadable ?? 0) + 1;
+		kernel.write("v2dag.closure.candidate-unreadable", (tx) => {
+			const epoch = readCutoverEpoch(tx);
+			const eventUid = `issue_closure_candidate_unreadable:${entry.key}`;
+			if (
+				tx.get("SELECT 1 FROM events WHERE event_uid=@eventUid", { eventUid })
+			) {
+				return;
+			}
+			appendEvent(tx, {
+				eventUid,
+				kind: "issue_closure_candidate_unreadable",
+				sourceKind: "issue_closure",
+				sourceId: entry.key,
+				payload: { meta_key: entry.key, error: entry.error },
+				cutoverEpoch: epoch,
+				createdAt: ports.clock.nowIso(),
+			});
+		});
+	}
 	for (const candidate of candidates) {
 		result.examined += 1;
-		const outcome = await closeIssue(kernel, ports, candidate);
+		// FLY-1556: one issue's closure blowing up (a claim/marker write that
+		// throws, not just a step failure closeIssue already contains) must not
+		// stop the remaining issues from closing.
+		let outcome: "closed" | "failed" | "skipped";
+		try {
+			outcome = await closeIssue(kernel, ports, candidate);
+		} catch (error) {
+			outcome = "failed";
+			kernel.write("v2dag.closure.candidate-threw", (tx) => {
+				const epoch = readCutoverEpoch(tx);
+				const eventUid = `issue_closure_step_failed:${candidate.issueId}:unhandled`;
+				if (
+					tx.get("SELECT 1 FROM events WHERE event_uid=@eventUid", { eventUid })
+				) {
+					return;
+				}
+				appendEvent(tx, {
+					eventUid,
+					kind: "issue_closure_step_failed",
+					sourceKind: "issue_closure",
+					sourceId: candidate.issueId,
+					payload: {
+						issue_id: candidate.issueId,
+						step: "unhandled",
+						error: error instanceof Error ? error.message : String(error),
+					},
+					cutoverEpoch: epoch,
+					createdAt: ports.clock.nowIso(),
+				});
+			});
+		}
 		if (outcome === "closed") result.closed += 1;
 		if (outcome === "failed") result.failed += 1;
 	}

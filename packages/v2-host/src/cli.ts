@@ -220,10 +220,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 					requestRoot: runtime.launcher.requestRoot,
 				})
 		: undefined;
-	let failCoordinator: (error: unknown) => void = () => {};
-	const coordinatorFailure = new Promise<never>((_resolve, reject) => {
-		failCoordinator = reject;
-	});
 	const host = new V2Host({
 		database: {
 			dbPath: options.dbPath,
@@ -262,7 +258,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 										launcher.activate?.(sessionRef) ?? Promise.resolve(),
 								}
 							: {}),
-						onError: failCoordinator,
+						// FLY-1556: deliberately NO onError→process-death wiring. A tick
+						// or session error is recorded durably by the host and the engine
+						// keeps serving; the old rejection race here is what turned one
+						// session's stale instruction pin into launchd crash-looping the
+						// whole engine, killing the socket and the outbound service.
 					},
 				}
 			: {}),
@@ -283,12 +283,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 				epoch: options.epoch,
 			})}\n`,
 		);
-		const signal = new Promise<void>((resolve) => {
+		await new Promise<void>((resolve) => {
 			const stop = () => resolve();
 			process.once("SIGINT", stop);
 			process.once("SIGTERM", stop);
 		});
-		await Promise.race([signal, coordinatorFailure]);
 	} finally {
 		await host.close();
 	}

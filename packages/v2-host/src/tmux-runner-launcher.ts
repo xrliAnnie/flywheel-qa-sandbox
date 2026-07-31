@@ -6,11 +6,9 @@ import {
 	closeSync,
 	existsSync,
 	fsyncSync,
-	lstatSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
-	realpathSync,
 	renameSync,
 	unlinkSync,
 	writeFileSync,
@@ -62,20 +60,6 @@ export interface TmuxRunnerLauncherOptions {
 	 * Overridable for tests only; production keeps the shared default.
 	 */
 	cmuxEventFilePath?: string;
-}
-
-interface RunnerState {
-	v: 1;
-	session_ref: string;
-	vendor: "claude" | "codex";
-	project_root: string;
-	instruction_source_path: string;
-	instruction_content_digest: string;
-	instruction_content_bytes: number;
-	/** The spawn bootstrap prompt, first envelope included (FLY-1543 ④). */
-	bootstrap: string;
-	model: string;
-	effort: string;
 }
 
 /**
@@ -172,47 +156,28 @@ function atomicRelease(path: string): void {
 	atomicFile(path, "activate\n");
 }
 
-function verifyInstruction(input: {
-	sourcePath: string;
-	contentDigest: string;
-	contentBytes: number;
-}): Buffer {
-	let bytes: Buffer;
-	try {
-		if (lstatSync(input.sourcePath).isSymbolicLink()) {
-			throw new RunnerLaunchConfigError(
-				"pinned role instruction became a symlink",
-			);
-		}
-		if (realpathSync(input.sourcePath) !== input.sourcePath) {
-			throw new RunnerLaunchConfigError(
-				"pinned role instruction canonical path changed",
-			);
-		}
-		bytes = readFileSync(input.sourcePath);
-	} catch (error) {
-		if (error instanceof RunnerLaunchConfigError) throw error;
-		throw new RunnerLaunchConfigError(
-			`pinned role instruction cannot be read: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	}
+/**
+ * FLY-1556: the pinned instruction CONTENT arrives in the launch request (read
+ * from the immutable git blob at spawn); the launcher never reads the mutable
+ * worktree file. This check only proves the request is internally consistent —
+ * the content matches its own pin — so a corrupted request transport fails
+ * closed with the expected/actual pair named.
+ */
+function instructionBytes(request: RuntimeLaunchRequest): Buffer {
+	const instruction = request.context.instruction;
+	const bytes = Buffer.from(instruction.content, "utf8");
+	const digest = createHash("sha256").update(bytes).digest("hex");
 	if (
-		bytes.length !== input.contentBytes ||
-		createHash("sha256").update(bytes).digest("hex") !== input.contentDigest
+		bytes.length !== instruction.contentBytes ||
+		digest !== instruction.contentDigest
 	) {
 		throw new RunnerLaunchConfigError(
-			"pinned role instruction changed before runner launch",
+			`role instruction content for ${request.sessionRef} does not match its pin: ` +
+				`expected sha256 ${instruction.contentDigest} (${instruction.contentBytes} bytes), ` +
+				`got ${digest} (${bytes.length} bytes)`,
 		);
 	}
 	return bytes;
-}
-
-function verifyPinnedInstruction(request: RuntimeLaunchRequest): Buffer {
-	return verifyInstruction({
-		sourcePath: request.context.instruction.sourcePath,
-		contentDigest: request.context.instruction.contentDigest,
-		contentBytes: request.context.instruction.contentBytes,
-	});
 }
 
 function vendorKind(value: string): "claude" | "codex" {
@@ -221,32 +186,6 @@ function vendorKind(value: string): "claude" | "codex" {
 	if (normalized === "codex") return "codex";
 	throw new RunnerLaunchConfigError(
 		`unsupported runner vendor ${value || "<empty>"}`,
-	);
-}
-
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		throw new RunnerLaunchConfigError(`${label} must be an object`);
-	}
-	return value as Record<string, unknown>;
-}
-
-function text(value: unknown, label: string): string {
-	if (typeof value !== "string" || value.length === 0 || value.includes("\0")) {
-		throw new RunnerLaunchConfigError(`${label} must be a non-empty string`);
-	}
-	return value;
-}
-
-function exactKeys(
-	value: Record<string, unknown>,
-	expected: readonly string[],
-): boolean {
-	const actual = Object.keys(value).sort();
-	const wanted = [...expected].sort();
-	return (
-		actual.length === wanted.length &&
-		actual.every((key, index) => key === wanted[index])
 	);
 }
 
@@ -316,11 +255,14 @@ const MAX_BOOTSTRAP_PROMPT_BYTES = 1_000_000;
  * eyes holding the assignment envelope, the settle capability and the written
  * protocol; later envelopes are pulled from the DB mailbox by session ref.
  */
-function runnerPrompt(request: RuntimeLaunchRequest): string {
+function runnerPrompt(
+	request: RuntimeLaunchRequest,
+	pinnedPath: string,
+): string {
 	const instruction = request.context.instruction;
 	const prompt = [
 		`Flywheel v2 runner bootstrap for ${request.context.issueId}.`,
-		`The complete role authority is pinned at ${instruction.sourcePath} with SHA-256 ${instruction.contentDigest}.`,
+		`The complete role authority is pinned at ${pinnedPath} with SHA-256 ${instruction.contentDigest}.`,
 		"Do not use any legacy control-plane CLI, inbox, Bridge, adapter, or database.",
 		"Your first work envelope is embedded below. It carries the durable issue context, the exact attempt/message identities, and the proposal authorization used to settle it; its `protocol` field is the authoritative contract.",
 		"Submit effects only through the flywheel-v2 CLI named by FLYWHEEL_V2_CLIENT_CLI over the authenticated host socket in this session environment. Pull any later envelope with `next --session <FLYWHEEL_V2_SESSION_REF>`; reach your lead during the work with the `ask` verb. Vendor team tools do not reach anyone.",
@@ -341,6 +283,7 @@ function commandForVendor(
 	options: TmuxRunnerLauncherOptions,
 	kind: "claude" | "codex",
 	instruction: Buffer,
+	pinnedPath: string,
 ): { binary: string; args: string[] } {
 	if (!EFFORTS.has(request.executor.effort)) {
 		throw new RunnerLaunchConfigError(
@@ -350,6 +293,11 @@ function commandForVendor(
 	if (kind === "claude") {
 		// FLY-1543 ④: no --agent-id/--agent-name/--team-name and no agent-teams
 		// experiment flag -- the vendor team machinery is not part of the design.
+		//
+		// FLY-1556: the system prompt file is the engine-owned content-addressed
+		// materialization, NOT the worktree file — a task that edits its own node
+		// instruction file cannot poison the authority its process was started
+		// with.
 		return {
 			binary: options.claudeBin,
 			args: [
@@ -358,7 +306,7 @@ function commandForVendor(
 				"--permission-mode",
 				"bypassPermissions",
 				"--append-system-prompt-file",
-				request.context.instruction.sourcePath,
+				pinnedPath,
 				"--model",
 				request.executor.model,
 				"--effort",
@@ -368,7 +316,7 @@ function commandForVendor(
 					`v2-${request.context.issueId}-${request.taskKind}`,
 					"v2-runner",
 				),
-				runnerPrompt(request),
+				runnerPrompt(request, pinnedPath),
 			],
 		};
 	}
@@ -385,7 +333,7 @@ function commandForVendor(
 			"never",
 			"-c",
 			`model_reasoning_effort=${JSON.stringify(request.executor.effort)}`,
-			`${instruction.toString("utf8")}\n\n---\n\n${runnerPrompt(request)}`,
+			`${instruction.toString("utf8")}\n\n---\n\n${runnerPrompt(request, pinnedPath)}`,
 		],
 	};
 }
@@ -400,88 +348,6 @@ function defaultCommand(): TmuxCommandPort {
 			return { stdout: result.stdout, stderr: result.stderr };
 		},
 	};
-}
-
-function parseRunnerState(value: unknown): RunnerState {
-	const input = record(value, "runner state");
-	if (
-		!exactKeys(input, [
-			"bootstrap",
-			"effort",
-			"instruction_content_bytes",
-			"instruction_content_digest",
-			"instruction_source_path",
-			"model",
-			"project_root",
-			"session_ref",
-			"v",
-			"vendor",
-		]) ||
-		input.v !== 1 ||
-		(input.vendor !== "claude" && input.vendor !== "codex") ||
-		!Number.isSafeInteger(input.instruction_content_bytes) ||
-		(input.instruction_content_bytes as number) <= 0
-	) {
-		throw new RunnerLaunchConfigError("runner state has an invalid shape");
-	}
-	return {
-		v: 1,
-		session_ref: text(input.session_ref, "runner state session_ref"),
-		vendor: input.vendor,
-		project_root: absolute(
-			text(input.project_root, "runner state project_root"),
-			"runner state project_root",
-		),
-		instruction_source_path: absolute(
-			text(
-				input.instruction_source_path,
-				"runner state instruction_source_path",
-			),
-			"runner state instruction_source_path",
-		),
-		instruction_content_digest: text(
-			input.instruction_content_digest,
-			"runner state instruction_content_digest",
-		),
-		instruction_content_bytes: input.instruction_content_bytes as number,
-		bootstrap: text(input.bootstrap, "runner state bootstrap"),
-		model: text(input.model, "runner state model"),
-		effort: text(input.effort, "runner state effort"),
-	};
-}
-
-function stateFromRequest(
-	request: RuntimeLaunchRequest,
-	vendor: "claude" | "codex",
-	bootstrap: string,
-): RunnerState {
-	return {
-		v: 1,
-		session_ref: request.sessionRef,
-		vendor,
-		project_root: request.context.projectRoot,
-		instruction_source_path: request.context.instruction.sourcePath,
-		instruction_content_digest: request.context.instruction.contentDigest,
-		instruction_content_bytes: request.context.instruction.contentBytes,
-		bootstrap,
-		model: request.executor.model,
-		effort: request.executor.effort,
-	};
-}
-
-function sameStateAuthority(left: RunnerState, right: RunnerState): boolean {
-	return (
-		left.v === right.v &&
-		left.session_ref === right.session_ref &&
-		left.vendor === right.vendor &&
-		left.project_root === right.project_root &&
-		left.instruction_source_path === right.instruction_source_path &&
-		left.instruction_content_digest === right.instruction_content_digest &&
-		left.instruction_content_bytes === right.instruction_content_bytes &&
-		left.bootstrap === right.bootstrap &&
-		left.model === right.model &&
-		left.effort === right.effort
-	);
 }
 
 export class TmuxRunnerLauncher implements RunnerLauncherPort {
@@ -525,46 +391,44 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		return join(this.#options.releaseRoot, `${safeKey(sessionRef)}.release`);
 	}
 
-	#statePath(sessionRef: string): string {
-		return join(this.#options.stateRoot, `${safeKey(sessionRef)}.json`);
+	/**
+	 * FLY-1556: the engine-owned, content-addressed materialization of the
+	 * pinned instruction. The name IS the sha256 of the content, the directory
+	 * is 0700 engine state, and the write is atomic — immutable by construction,
+	 * shared by every attempt whose pin resolves to the same content. This file
+	 * (not the mutable worktree file) is what the vendor process reads and what
+	 * the bootstrap prompt names.
+	 *
+	 * The per-session runner-state JSON that used to live beside it is GONE:
+	 * it duplicated facts whose single source of truth is the kernel
+	 * (`attempt_instruction:*`, attempts, the assignment mailbox row), and two
+	 * copies of one fact is exactly the drift that let a database fix change
+	 * nothing while activate kept reading the stale disk copy.
+	 */
+	#instructionPath(digest: string): string {
+		return join(this.#options.stateRoot, "instructions", `${digest}.md`);
 	}
 
-	#readState(sessionRef: string): RunnerState {
-		const state = parseRunnerState(
-			JSON.parse(readFileSync(this.#statePath(sessionRef), "utf8")) as unknown,
-		);
-		if (state.session_ref !== sessionRef) {
-			throw new RunnerLaunchConfigError(
-				"runner state session identity mismatch",
-			);
-		}
-		return state;
-	}
-
-	#writeState(state: RunnerState): void {
-		atomicFile(
-			this.#statePath(state.session_ref),
-			`${JSON.stringify(state)}\n`,
-		);
-	}
-
-	#prepareState(
+	#materializeInstruction(
 		request: RuntimeLaunchRequest,
-		vendor: "claude" | "codex",
-		bootstrap: string,
-	): void {
-		const next = stateFromRequest(request, vendor, bootstrap);
-		const path = this.#statePath(request.sessionRef);
+		bytes: Buffer,
+	): string {
+		const digest = request.context.instruction.contentDigest;
+		const path = this.#instructionPath(digest);
 		if (existsSync(path)) {
-			const prior = this.#readState(request.sessionRef);
-			if (!sameStateAuthority(prior, next)) {
+			const observed = createHash("sha256")
+				.update(readFileSync(path))
+				.digest("hex");
+			if (observed !== digest) {
 				throw new RunnerLaunchConfigError(
-					"runner session state conflicts with launch authority",
+					`materialized role instruction at ${path} does not match its content address: ` +
+						`expected sha256 ${digest}, got ${observed}`,
 				);
 			}
-			return;
+			return path;
 		}
-		this.#writeState(next);
+		atomicFile(path, bytes.toString("utf8"));
+		return path;
 	}
 
 	// FLY-1550 (founder direct order): NO per-activation CLAUDE_CONFIG_DIR and NO
@@ -590,15 +454,16 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 	}
 
 	async launch(request: RuntimeLaunchRequest): Promise<SessionBinding> {
-		const instruction = verifyPinnedInstruction(request);
+		const instruction = instructionBytes(request);
 		const vendor = vendorKind(request.executor.vendor);
+		const pinnedPath = this.#materializeInstruction(request, instruction);
 		const vendorCommand = commandForVendor(
 			request,
 			this.#options,
 			vendor,
 			instruction,
+			pinnedPath,
 		);
-		this.#prepareState(request, vendor, runnerPrompt(request));
 		const prior = await this.probe(request.sessionRef);
 		if (prior.state === "present") return prior.sessionBinding;
 
@@ -724,13 +589,16 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		}
 	}
 
+	/**
+	 * FLY-1556: activation is presence + gate release, nothing else. The old
+	 * re-verification of the instruction digest is gone with the thing it
+	 * verified: the vendor process reads the engine-owned content-addressed
+	 * materialization, which cannot drift, and the pin's single source of truth
+	 * is the kernel's `attempt_instruction:*` row. Re-checking the MUTABLE
+	 * worktree file here is what made a task that edits its own instruction
+	 * book (FLY-1547/1548) poison every later activation of its session.
+	 */
 	async activate(sessionRef: string): Promise<void> {
-		const state = this.#readState(sessionRef);
-		verifyInstruction({
-			sourcePath: state.instruction_source_path,
-			contentDigest: state.instruction_content_digest,
-			contentBytes: state.instruction_content_bytes,
-		});
 		const probe = await this.probe(sessionRef);
 		if (probe.state !== "present") {
 			throw new Error("cannot activate an absent tmux runner");

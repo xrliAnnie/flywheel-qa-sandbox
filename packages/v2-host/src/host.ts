@@ -1,4 +1,9 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+	createHash,
+	randomBytes,
+	randomUUID,
+	timingSafeEqual,
+} from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -161,6 +166,13 @@ export interface V2HostOptions {
 	coordinator?: {
 		createPorts(kernel: Kernel): DagPorts;
 		intervalMs: number;
+		/**
+		 * FLY-1556: pure OBSERVER of recorded engine faults (tests assert on it).
+		 * It must never be wired to process teardown — a coordinator error is
+		 * recorded durably and the engine keeps serving; wiring this to a fatal
+		 * path is exactly the amplification that turned one session's bad pin
+		 * into a whole-fleet outage.
+		 */
 		onError?(error: unknown): void;
 		activateSession?(sessionRef: string): Promise<void>;
 	};
@@ -472,7 +484,7 @@ export class V2Host {
 		});
 		chmodSync(this.#options.socketPath, 0o600);
 		this.#server = server;
-		// Codex R6 HIGH-1: everything past the listen must be FATAL if it fails.
+		// Codex R6 HIGH-1: a failure to ARM the coordinator must be FATAL.
 		//
 		// The socket is already published here, so an exception thrown below used to
 		// leave a process that answers requests but has no coordinator: nothing is
@@ -482,8 +494,15 @@ export class V2Host {
 		// is silently dead with every signal green. The lead has seen this exact shape
 		// in production: host alive, runner never serviced.
 		//
-		// Failing closed means tearing the listener down and propagating, so the
-		// process exits non-zero and the supervisor restarts it.
+		// FLY-1556 narrows what counts as an arming failure: a SINGLE session that
+		// cannot be activated (bad pin, dead pane, corrupt residue) is that
+		// session's problem — it is recorded durably inside #syncCurrentRunners and
+		// the boot continues. The converse amplification (one session's stale pin
+		// crash-looping the whole engine under launchd, taking the socket and the
+		// outbound service with it) is the 2026-07-30 production outage. Only a
+		// failure that prevents the dispatch loop itself from existing — the
+		// authority/db read, the timer wiring — still tears the listener down and
+		// propagates.
 		try {
 			if (this.#coordinator && this.#authorityState() === "live") {
 				await this.#syncCurrentRunners();
@@ -491,12 +510,13 @@ export class V2Host {
 			if (this.#coordinator && this.#options.coordinator) {
 				const tick = () => {
 					void this.#runCoordinatorTick().catch((error) => {
-						if (this.#options.coordinator?.onError) {
-							this.#options.coordinator.onError(error);
-							return;
-						}
-						queueMicrotask(() => {
-							throw error;
+						// FLY-1556: a tick error is recorded, never fatal. The next tick
+						// still fires; whatever broke is visible in the events ledger.
+						this.#recordEngineFault({
+							kind: "coordinator_tick_failed",
+							sourceId: "coordinator",
+							payload: {},
+							error,
 						});
 					});
 				};
@@ -511,6 +531,65 @@ export class V2Host {
 		} catch (error) {
 			await this.close().catch(() => undefined);
 			throw error;
+		}
+	}
+
+	/**
+	 * FLY-1556: the one sink for engine faults that must NOT take the process
+	 * down. Three guarantees, in order of survival: stderr always; a deduped
+	 * durable `events` row when the kernel can be written (the queryable record
+	 * the issue demands — which session, which file, expected vs actual live in
+	 * the diagnostic); the optional onError observer for tests. Never throws.
+	 */
+	#recordEngineFault(input: {
+		kind:
+			| "session_activation_failed"
+			| "coordinator_phase_failed"
+			| "coordinator_tick_failed"
+			| "delivery_record_failed";
+		sourceId: string;
+		payload: Record<string, unknown>;
+		error: unknown;
+	}): void {
+		const diagnostic =
+			input.error instanceof Error ? input.error.message : String(input.error);
+		process.stderr.write(
+			`[v2-host] ${input.kind} (${input.sourceId}): ${diagnostic}\n`,
+		);
+		try {
+			const eventUid = `${input.kind}:${input.sourceId}:${createHash("sha256")
+				.update(diagnostic)
+				.digest("hex")
+				.slice(0, 16)}`;
+			this.#kernel.write("host.engine-fault", (tx) => {
+				tx.run(
+					`INSERT OR IGNORE INTO events
+					 (event_uid,task_id,attempt_id,kind,source_kind,source_id,payload,
+					  cutover_epoch,created_at)
+					 VALUES(@eventUid,NULL,NULL,@kind,'host',@sourceId,@payload,@epoch,@now)`,
+					{
+						eventUid,
+						kind: input.kind,
+						sourceId: input.sourceId,
+						payload: JSON.stringify({ ...input.payload, error: diagnostic }),
+						epoch: this.#options.database.expectedEpoch,
+						now: this.#runtime.clock.nowIso(),
+					},
+				);
+			});
+		} catch (recordError) {
+			process.stderr.write(
+				`[v2-host] engine fault record failed: ${
+					recordError instanceof Error
+						? recordError.message
+						: String(recordError)
+				}\n`,
+			);
+		}
+		try {
+			this.#options.coordinator?.onError?.(input.error);
+		} catch {
+			// observer misbehavior must not escape a failure path
 		}
 	}
 
@@ -579,6 +658,16 @@ export class V2Host {
 			throw new Error("v2 host coordinator is not configured");
 		}
 		const result = await this.#coordinator.tick();
+		// FLY-1556: a phase that threw is contained by the coordinator; the host
+		// makes it durable and visible here, once per distinct diagnostic.
+		for (const failure of result.phaseFailures ?? []) {
+			this.#recordEngineFault({
+				kind: "coordinator_phase_failed",
+				sourceId: failure.phase,
+				payload: { phase: failure.phase },
+				error: new Error(failure.error),
+			});
+		}
 		if (result.status === "ran") await this.#syncCurrentRunners();
 		return result;
 	}
@@ -613,14 +702,28 @@ export class V2Host {
 			),
 		);
 		for (const row of rows) {
-			const binding = parseStoredBinding(row.session_binding);
-			if (
-				binding.sessionId !== row.session_ref ||
-				!this.#bindingHasLiveEvidence(binding)
-			) {
-				continue;
+			// FLY-1556: each session is its own failure domain. One session whose
+			// stored binding is corrupt or whose activation throws (this is where
+			// the 2026-07-30 RunnerLaunchConfigError crash-loop entered) is
+			// recorded and skipped; every other session is still activated and
+			// the engine process stays up.
+			try {
+				const binding = parseStoredBinding(row.session_binding);
+				if (
+					binding.sessionId !== row.session_ref ||
+					!this.#bindingHasLiveEvidence(binding)
+				) {
+					continue;
+				}
+				await this.#options.coordinator?.activateSession?.(row.session_ref);
+			} catch (error) {
+				this.#recordEngineFault({
+					kind: "session_activation_failed",
+					sourceId: row.session_ref,
+					payload: { session_ref: row.session_ref },
+					error,
+				});
 			}
-			await this.#options.coordinator?.activateSession?.(row.session_ref);
 		}
 	}
 
@@ -680,13 +783,18 @@ export class V2Host {
 					((flushed: boolean) => {
 						// Recording the delivery outcome touches the kernel, so it can fail.
 						// It runs from a socket callback, where an escaping exception is an
-						// uncaught exception. Route it to the configured error sink instead:
+						// uncaught exception. FLY-1556: record it durably and keep serving —
 						// the delivery escaped but is not recorded succeeded, which is
 						// exactly the ambiguity the envelope's retryCaveat describes.
 						try {
 							afterWrite(flushed);
 						} catch (error) {
-							this.#options.coordinator?.onError?.(error);
+							this.#recordEngineFault({
+								kind: "delivery_record_failed",
+								sourceId: id,
+								payload: {},
+								error,
+							});
 						}
 					}),
 			);

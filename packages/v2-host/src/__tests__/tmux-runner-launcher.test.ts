@@ -164,8 +164,13 @@ describe("v2-native tmux runner launcher", () => {
 					instruction: {
 						projectRoot,
 						sourcePath: rolePath,
+						// FLY-1556: the pin is a git blob; the launcher only consumes the
+						// content + digest, so the provenance shas are fixtures.
+						sourceCommit: "c".repeat(40),
+						sourceBlob: "b".repeat(40),
 						contentDigest: createHash("sha256").update(role).digest("hex"),
 						contentBytes: Buffer.byteLength(role),
+						content: role,
 					},
 					...overrides.context,
 				},
@@ -202,8 +207,24 @@ describe("v2-native tmux runner launcher", () => {
 		);
 		expect(create?.args).toContain("/opt/flywheel/bin/claude");
 		expect(create?.args).toContain("--append-system-prompt-file");
-		expect(create?.args).toContain(
+		// FLY-1556: the system prompt file is the engine-owned content-addressed
+		// materialization under stateRoot, never the mutable worktree file.
+		const pinnedPath = join(
+			target.stateRoot,
+			"instructions",
+			`${target.request.context.instruction.contentDigest}.md`,
+		);
+		expect(create?.args).toContain(pinnedPath);
+		expect(create?.args).not.toContain(
 			target.request.context.instruction.sourcePath,
+		);
+		expect(readFileSync(pinnedPath, "utf8")).toBe(
+			target.request.context.instruction.content,
+		);
+		// The bootstrap prompt names the SAME immutable copy as the pinned
+		// authority.
+		expect(create?.args.at(-1)).toContain(
+			`The complete role authority is pinned at ${pinnedPath}`,
 		);
 		expect(create?.args).toContain("--session-id");
 		expect(create?.args).toContain("--name");
@@ -349,20 +370,26 @@ describe("v2-native tmux runner launcher", () => {
 		expect(create?.args.join(" ")).not.toContain("comm.db");
 		expect(create?.args).toContain("FLYWHEEL_V2_VENDOR=codex");
 		await target.launcher.activate(target.request.sessionRef);
+		// FLY-1556: NO per-session runner-state JSON — the pin's single source of
+		// truth is the kernel; the only thing under stateRoot is the
+		// content-addressed instruction materialization.
 		const stateFile = join(
 			target.stateRoot,
 			`${createHash("sha256")
 				.update(target.request.sessionRef)
 				.digest("hex")}.json`,
 		);
-		expect(statSync(stateFile).mode & 0o777).toBe(0o600);
-		const state = JSON.parse(readFileSync(stateFile, "utf8"));
-		expect(state).toMatchObject({
-			session_ref: target.request.sessionRef,
-			vendor: "codex",
-		});
-		expect(state).not.toHaveProperty("thread_id");
-		expect(readdirSync(target.stateRoot)).toHaveLength(1);
+		expect(existsSync(stateFile)).toBe(false);
+		expect(readdirSync(target.stateRoot)).toEqual(["instructions"]);
+		const pinnedPath = join(
+			target.stateRoot,
+			"instructions",
+			`${target.request.context.instruction.contentDigest}.md`,
+		);
+		expect(statSync(pinnedPath).mode & 0o777).toBe(0o600);
+		expect(readFileSync(pinnedPath, "utf8")).toBe(
+			target.request.context.instruction.content,
+		);
 	});
 
 	it("FLY-1550 doorbell regression: delivers by buffer paste + Enter, and fails loud on an absent session", async () => {
@@ -389,7 +416,7 @@ describe("v2-native tmux runner launcher", () => {
 		await target.launcher.stop(target.request.sessionRef);
 	});
 
-	it("fails closed before tmux for unknown vendors or changed role content", async () => {
+	it("fails closed before tmux for unknown vendors or a content/pin mismatch", async () => {
 		const unknown = fixture("other");
 		await expect(unknown.launcher.launch(unknown.request)).rejects.toThrow(
 			/unsupported runner vendor/i,
@@ -398,18 +425,43 @@ describe("v2-native tmux runner launcher", () => {
 			unknown.calls.some((call) => call.args.includes("new-session")),
 		).toBe(false);
 
-		const changed = fixture("claude");
-		writeFileSync(
-			changed.request.context.instruction.sourcePath,
-			"# Changed\n",
-		);
-		chmodSync(changed.request.context.instruction.sourcePath, 0o600);
-		await expect(changed.launcher.launch(changed.request)).rejects.toThrow(
-			/role instruction changed/i,
+		// FLY-1556: the launch request must be internally consistent — content
+		// that does not hash to its own pin is refused with expected vs actual
+		// named (a corrupted request transport, not a worktree edit).
+		const corrupted = fixture("claude");
+		corrupted.request.context.instruction.content = "# Corrupted in transit\n";
+		await expect(corrupted.launcher.launch(corrupted.request)).rejects.toThrow(
+			/does not match its pin: expected sha256/i,
 		);
 		expect(
-			changed.calls.some((call) => call.args.includes("new-session")),
+			corrupted.calls.some((call) => call.args.includes("new-session")),
 		).toBe(false);
+	});
+
+	it("FLY-1556: a task editing its own instruction file cannot poison launch or activation", async () => {
+		const target = fixture("claude");
+		// The worktree copy changes BEFORE launch (e.g. a recovered claim whose
+		// prior generation already edited the book) — irrelevant: the pinned
+		// content travels in the request.
+		writeFileSync(
+			target.request.context.instruction.sourcePath,
+			"# Edited by the task itself\n",
+		);
+		chmodSync(target.request.context.instruction.sourcePath, 0o600);
+		await expect(target.launcher.launch(target.request)).resolves.toMatchObject(
+			{ hostEpoch: "host-a" },
+		);
+		// ...and changes again while the session is live. Activation is presence
+		// + gate release; it re-verifies nothing mutable.
+		writeFileSync(
+			target.request.context.instruction.sourcePath,
+			"# Edited again mid-flight\n",
+		);
+		await expect(
+			target.launcher.activate(target.request.sessionRef),
+		).resolves.toBeUndefined();
+		const releaseFiles = readdirSync(target.releaseRoot);
+		expect(releaseFiles).toHaveLength(1);
 	});
 
 	it("addresses set-option with a trailing colon so tmux 3.5a resolves the session", async () => {

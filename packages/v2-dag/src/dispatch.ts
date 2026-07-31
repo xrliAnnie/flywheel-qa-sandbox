@@ -72,8 +72,18 @@ interface LaunchClaimData {
 interface RecoverableClaim {
 	sessionRef: string;
 	request: SpawnRequest | null;
-	claim: Envelope<LaunchClaimData>;
+	/** FLY-1556: null when the claim/task rows themselves cannot be parsed —
+	 * the dirty row is reported as a named skip instead of aborting the whole
+	 * recovery enumeration. */
+	claim: Envelope<LaunchClaimData> | null;
+	diagnostic?: string;
 }
+
+/** A recoverable entry whose claim AND request both parsed. */
+type LiveRecoverableClaim = RecoverableClaim & {
+	request: SpawnRequest;
+	claim: Envelope<LaunchClaimData>;
+};
 
 const CLAIM_LEASE_MS = 60_000;
 const LAUNCH_REAP_GRACE_MS = 60_000;
@@ -1063,14 +1073,29 @@ function recoverableClaims(kernel: Kernel): RecoverableClaim[] {
 		const rows = tx.all<{ key: string }>(
 			"SELECT key FROM meta WHERE key LIKE 'launch_claim:%' ORDER BY key",
 		);
-		return rows.flatMap((row) => {
-			const claim = readEnvelope<LaunchClaimData>(tx, row.key, epoch);
-			if (!claim || claim.data.state === "tombstoned") return [];
+		return rows.flatMap((row): RecoverableClaim[] => {
 			const sessionRef = row.key.slice("launch_claim:".length);
-			const request = requestForSession(tx, sessionRef);
-			// FLY-1543 ⑥: an unrecoverable claim is reported, never silently
-			// dropped from the recovery pass.
-			return [{ sessionRef, request, claim }];
+			// FLY-1556: one corrupt claim envelope or task payload used to throw
+			// out of this read and abort the ENTIRE recovery pass — from there the
+			// tick, and before the fault domains the whole engine process. A dirty
+			// row is now that row's problem: named, skipped, everyone else recovers.
+			try {
+				const claim = readEnvelope<LaunchClaimData>(tx, row.key, epoch);
+				if (!claim || claim.data.state === "tombstoned") return [];
+				const request = requestForSession(tx, sessionRef);
+				// FLY-1543 ⑥: an unrecoverable claim is reported, never silently
+				// dropped from the recovery pass.
+				return [{ sessionRef, request, claim }];
+			} catch (error) {
+				return [
+					{
+						sessionRef,
+						request: null,
+						claim: null,
+						diagnostic: error instanceof Error ? error.message : String(error),
+					},
+				];
+			}
 		});
 	});
 }
@@ -1121,7 +1146,7 @@ function markClaimLaunched(
 async function recoverClaimed(
 	kernel: Kernel,
 	ports: DagPorts,
-	entry: RecoverableClaim & { request: SpawnRequest },
+	entry: LiveRecoverableClaim,
 ): Promise<
 	| { status: "adopted" | "unchanged" }
 	| { status: "takeover"; request: SpawnRequest }
@@ -1199,7 +1224,7 @@ async function recoverClaimed(
 async function adoptLaunchedRunner(
 	kernel: Kernel,
 	ports: DagPorts,
-	entry: RecoverableClaim & { request: SpawnRequest },
+	entry: LiveRecoverableClaim,
 ): Promise<boolean> {
 	return await ports.locks.withSessionLock(
 		entry.request.sessionRef,
@@ -1249,7 +1274,7 @@ async function adoptLaunchedRunner(
 function notifyLostOpenCandidate(
 	kernel: Kernel,
 	ports: DagPorts,
-	entry: RecoverableClaim & { request: SpawnRequest },
+	entry: LiveRecoverableClaim,
 ): void {
 	kernel.write("v2dag.launch.lost-open-candidate", (tx) => {
 		const epoch = readCutoverEpoch(tx);
@@ -1295,7 +1320,7 @@ function notifyLostOpenCandidate(
 async function reapLaunched(
 	kernel: Kernel,
 	ports: DagPorts,
-	entry: RecoverableClaim & { request: SpawnRequest },
+	entry: LiveRecoverableClaim,
 ): Promise<
 	{ status: "reaped" } | { status: "skip"; reason: DispatchSkipReason }
 > {
@@ -1448,11 +1473,22 @@ async function reapLaunched(
 					cutoverEpoch: epoch,
 					nowIso: ports.clock.nowIso(),
 				});
-				tx.cas(
-					`UPDATE tasks SET state='ready',state_version=state_version+1,
-				 terminal_at=NULL WHERE id=@taskId AND state='running'`,
+				// FLY-1556: only a still-running task goes back to ready. A task that
+				// was canceled (or otherwise moved on) under its started attempt — the
+				// zombie class from the 2026-07-30 incident — used to make this CAS
+				// throw on zero changes, so the zombie attempt could NEVER be reaped
+				// and recovery re-threw on it every tick.
+				const taskState = tx.get<{ state: string }>(
+					"SELECT state FROM tasks WHERE id=@taskId",
 					{ taskId: entry.request.taskId },
-				);
+				)?.state;
+				if (taskState === "running") {
+					tx.cas(
+						`UPDATE tasks SET state='ready',state_version=state_version+1,
+					 terminal_at=NULL WHERE id=@taskId AND state='running'`,
+						{ taskId: entry.request.taskId },
+					);
+				}
 				appendEvent(tx, {
 					eventUid: `attempt_reaped:${entry.request.attemptId}`,
 					taskId: entry.request.taskId,
@@ -1533,13 +1569,24 @@ export async function recoverPendingLaunches(
 	const failures: DispatchFailure[] = [];
 	const skips: DispatchSkip[] = [];
 	for (const entry of entries) {
+		if (entry.claim === null) {
+			// FLY-1556: the claim (or its task lineage) is unparseable dirty data.
+			// Named residue, same as the unrecoverable-request case — never a
+			// thrown enumeration.
+			skips.push({ taskId: null, reason: "recovery_claim_unreadable" });
+			continue;
+		}
 		if (entry.request === null) {
 			// FLY-1543 ⑥: the claim exists but no active dispatchable attempt backs
 			// it -- previously an invisible drop, now a named residue.
 			skips.push({ taskId: null, reason: "recovery_request_unrecoverable" });
 			continue;
 		}
-		const recoverable = { ...entry, request: entry.request };
+		const recoverable = {
+			...entry,
+			request: entry.request,
+			claim: entry.claim,
+		};
 		let stage: Extract<
 			DispatchFailureStage,
 			"recovery_pending" | "recovery_claimed" | "recovery_reap"

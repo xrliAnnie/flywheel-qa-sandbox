@@ -236,7 +236,8 @@ export type DispatchSkipReason =
 	| "reap_head_unreadable"
 	| "reap_lineage_diverged"
 	| "recovery_claim_missing"
-	| "recovery_request_unrecoverable";
+	| "recovery_request_unrecoverable"
+	| "recovery_claim_unreadable";
 
 export interface DispatchSkip {
 	/** Null when the skipped unit cannot be tied to a task (e.g. an

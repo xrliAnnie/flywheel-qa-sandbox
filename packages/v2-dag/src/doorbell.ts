@@ -124,32 +124,41 @@ export async function ringSessionDoorbells(
 		// Settle AFTER the paste, with a race re-check: if the runner pulled the
 		// row between the scan and here, an attempt now owns it — leave it to the
 		// pull path (the duplicate terminal text is harmless; a lost row is not).
-		const settled = kernel.write("v2dag.doorbell.settle", (tx) => {
-			const epoch = readCutoverEpoch(tx);
-			const owned = tx.get(
-				"SELECT 1 FROM processing_attempts WHERE message_uid=@uid",
-				{ uid: row.message_uid },
-			);
-			if (owned) return false;
-			tx.cas(FENCE.mailboxCasPendingApplied, {
-				now: ports.clock.nowIso(),
-				uid: row.message_uid,
+		// FLY-1556: a settle that throws is that ROW's failure — counted, the row
+		// stays pending for the next ring, and the remaining doorbells still ring
+		// this tick.
+		let settled: boolean;
+		try {
+			settled = kernel.write("v2dag.doorbell.settle", (tx) => {
+				const epoch = readCutoverEpoch(tx);
+				const owned = tx.get(
+					"SELECT 1 FROM processing_attempts WHERE message_uid=@uid",
+					{ uid: row.message_uid },
+				);
+				if (owned) return false;
+				tx.cas(FENCE.mailboxCasPendingApplied, {
+					now: ports.clock.nowIso(),
+					uid: row.message_uid,
+				});
+				appendEvent(tx, {
+					eventUid: `session_mail_pasted:${row.message_uid}`,
+					kind: "session_mail_pasted",
+					sourceKind: "doorbell",
+					sourceId: row.message_uid,
+					payload: {
+						message_uid: row.message_uid,
+						session_ref: row.to_agent,
+						kind: row.kind,
+					},
+					cutoverEpoch: epoch,
+					createdAt: ports.clock.nowIso(),
+				});
+				return true;
 			});
-			appendEvent(tx, {
-				eventUid: `session_mail_pasted:${row.message_uid}`,
-				kind: "session_mail_pasted",
-				sourceKind: "doorbell",
-				sourceId: row.message_uid,
-				payload: {
-					message_uid: row.message_uid,
-					session_ref: row.to_agent,
-					kind: row.kind,
-				},
-				cutoverEpoch: epoch,
-				createdAt: ports.clock.nowIso(),
-			});
-			return true;
-		});
+		} catch {
+			result.failed += 1;
+			continue;
+		}
 		if (settled) result.pasted += 1;
 		else result.raced += 1;
 	}

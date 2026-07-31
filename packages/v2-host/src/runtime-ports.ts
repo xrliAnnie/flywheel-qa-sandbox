@@ -91,6 +91,11 @@ interface InstructionEvidence {
 	/** FLY-1544 ①: the node kind selects the instruction book, not a role id. */
 	task_kind: string;
 	source_path: string;
+	/** FLY-1556: the immutable pin — commit + blob in the worktree's object
+	 * store. This meta row is the ONE source of truth for the pin; the launcher
+	 * holds no second copy (the per-session runner-state file is gone). */
+	source_commit: string;
+	source_blob: string;
 	content_digest: string;
 	content_bytes: number;
 	resolved_at: string;
@@ -352,6 +357,8 @@ function recordInstructionEvidence(input: {
 		issue_id: input.context.issueId,
 		task_kind: input.request.taskKind,
 		source_path: input.instruction.sourcePath,
+		source_commit: input.instruction.sourceCommit,
+		source_blob: input.instruction.sourceBlob,
 		content_digest: input.instruction.contentDigest,
 		content_bytes: input.instruction.contentBytes,
 	};
@@ -416,6 +423,7 @@ function kernelSpawnPort(
 	launcher: RunnerLauncherPort,
 	clock: { nowMs(): number; nowIso(): string },
 	expectedEpoch: number,
+	gitBin: string,
 ): SpawnPort {
 	const runtime = { clock };
 	return {
@@ -424,6 +432,7 @@ function kernelSpawnPort(
 			const instruction = resolveRoleInstruction({
 				projectRoot: context.projectRoot,
 				taskKind: request.taskKind,
+				gitBin,
 			});
 			recordInstructionEvidence({
 				kernel,
@@ -643,6 +652,7 @@ export function createRuntimeDagPorts(
 			options.launcher,
 			clock,
 			options.expectedEpoch,
+			gitBin,
 		),
 		issueCleanup,
 		// FLY-1544 doorbell: only when the launcher can actually paste.
