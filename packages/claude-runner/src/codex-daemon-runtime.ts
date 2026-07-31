@@ -109,6 +109,35 @@ export function buildDaemonSandboxArgs(opts: {
 	return args;
 }
 
+/**
+ * FLY-1565: apps/connector tool approval modes codex accepts (real-machine
+ * enum from codex 0.146.0 config load: `auto`, `prompt`, `writes`, `approve`).
+ * `approve` is the auto-grant state — it is exactly what codex persists
+ * per-tool after a human answers "approve, don't ask again".
+ */
+const APPS_APPROVAL_MODES = new Set(["auto", "prompt", "writes", "approve"]);
+
+/**
+ * FLY-1565: build the `-c apps._default.default_tools_approval_mode="<mode>"`
+ * daemon spawn override. Apps/connector tool calls (e.g. the GitHub connector's
+ * create_blob / create_branch / create_pull_request) elicit a PER-TOOL approval
+ * regardless of `approval_policy = "never"` — an unattended runner daemon has
+ * nobody to answer, so the elicitation wedges the turn until a human presses a
+ * key (the FLY-1564 stalls). Presetting the apps-wide default to `approve`
+ * removes the elicitation. Same defensive whitelist shape as
+ * `buildDaemonEffortArgs`: an unknown value is warned + ignored, never spliced.
+ */
+export function buildDaemonAppsApprovalArgs(mode?: string): string[] {
+	if (!mode) return [];
+	if (!APPS_APPROVAL_MODES.has(mode)) {
+		console.warn(
+			`[codex-daemon] unsupported apps approval mode "${mode}" — ignoring (daemon uses CODEX_HOME config default)`,
+		);
+		return [];
+	}
+	return ["-c", `apps._default.default_tools_approval_mode="${mode}"`];
+}
+
 /** FLY-1224: effort values the daemon spawn accepts (mirrors RoleEffort). */
 const DAEMON_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
@@ -179,6 +208,14 @@ export interface SpawnCodexDaemonOptions {
 	 * Bridge POST, `git push`, and `gh` all need it (QA Finding 1, daemon form).
 	 */
 	sandboxNetworkAccess?: boolean;
+	/**
+	 * FLY-1565: apps/connector-wide default tool approval mode delivered as a
+	 * daemon config override (`-c apps._default.default_tools_approval_mode`).
+	 * An unattended daemon cannot answer a per-tool elicitation — `approve`
+	 * presets auto-grant so connector tool calls never wedge the turn waiting
+	 * for a human. Absent → CODEX_HOME config default (byte-compatible).
+	 */
+	appsDefaultToolsApprovalMode?: string;
 	/**
 	 * FLY-1224: per-phase reasoning effort delivered as a daemon config
 	 * override (`-c model_reasoning_effort="<effort>"`) — the app-server's
@@ -466,6 +503,8 @@ export async function spawnCodexDaemon(
 				// `-c/--config`). Passed as SEPARATE argv elements (no shell) so a
 				// path with a metachar can never break out — codex parses the value.
 				...buildDaemonSandboxArgs(opts),
+				// FLY-1565: apps-wide tool approval preset (whitelisted).
+				...buildDaemonAppsApprovalArgs(opts.appsDefaultToolsApprovalMode),
 				// FLY-1224: per-phase reasoning effort override (whitelisted).
 				...buildDaemonEffortArgs(opts.effort),
 			],

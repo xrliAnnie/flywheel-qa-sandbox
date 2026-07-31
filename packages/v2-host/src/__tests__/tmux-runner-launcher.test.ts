@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { CODEX_SANDBOX_POLICY_VERSION } from "../codex-remote.js";
 import type { RuntimeLaunchRequest } from "../runtime-ports.js";
 import {
 	RUNNER_GATE_SCRIPT,
@@ -35,6 +36,7 @@ describe("v2-native tmux runner launcher", () => {
 			model?: string;
 			mailboxMcpPath?: string;
 			codexRemotePorts?: import("../codex-remote.js").CodexRemotePorts;
+			resolveGitDirs?: (cwd: string) => Promise<string[]>;
 		} = {},
 	): {
 		request: RuntimeLaunchRequest;
@@ -137,6 +139,11 @@ describe("v2-native tmux runner launcher", () => {
 			...(overrides.codexRemotePorts
 				? { codexRemotePorts: overrides.codexRemotePorts }
 				: {}),
+			// FLY-1565: the fixture projectRoot is not a git repo, so the git
+			// metadata derivation is faked unless a test injects its own.
+			resolveGitDirs:
+				overrides.resolveGitDirs ??
+				(async () => ["/fixture/main/.git", "/fixture/main/.git/worktrees/t"]),
 		});
 		return {
 			request: {
@@ -434,6 +441,22 @@ describe("v2-native tmux runner launcher", () => {
 		expect(create?.args).toContain("-a");
 		expect(create?.args).toContain("never");
 		expect(create?.args).toContain('model_reasoning_effort="high"');
+		// FLY-1565: the bare form executes locally — it needs the same
+		// mailbox-capable sandbox policy as the daemon (network for the v2 host
+		// socket, git metadata roots for worktree commits, apps auto-approve).
+		expect(create?.args).toContain(
+			`sandbox_workspace_write.writable_roots=${JSON.stringify([
+				target.request.context.projectRoot,
+				"/fixture/main/.git",
+				"/fixture/main/.git/worktrees/t",
+			])}`,
+		);
+		expect(create?.args).toContain(
+			"sandbox_workspace_write.network_access=true",
+		);
+		expect(create?.args).toContain(
+			'apps._default.default_tools_approval_mode="approve"',
+		);
 		const initialPrompt = create?.args.at(-1);
 		expect(initialPrompt).toContain("# Engineer\nPinned role.");
 		expect(initialPrompt).toContain(
@@ -921,6 +944,14 @@ describe("v2-native tmux runner launcher", () => {
 			expect(create?.args).toContain("resume");
 			expect(create?.args).toContain("--remote");
 			expect(create?.args).toContain("thread-99");
+			// FLY-1565: policy consistency — the attached pane carries the same
+			// sandbox overrides the daemon was spawned with.
+			expect(create?.args).toContain(
+				"sandbox_workspace_write.network_access=true",
+			);
+			expect(create?.args).toContain(
+				'apps._default.default_tools_approval_mode="approve"',
+			);
 			await target.launcher.activate(target.request.sessionRef);
 			await new Promise((resolve) => setTimeout(resolve, 50));
 			const assignment = turns.find((turn) =>
@@ -930,6 +961,273 @@ describe("v2-native tmux runner launcher", () => {
 			expect(assignment?.text).toContain("Flywheel v2 runner bootstrap");
 			await target.launcher.stop(target.request.sessionRef);
 			expect(daemonStopped).toBe(1);
+		});
+
+		it("FLY-1565: the codex daemon spawns with the mailbox-capable sandbox (network + git roots + apps auto-approve)", async () => {
+			const turns: Array<{ id?: string }> = [];
+			let spawnOpts: Record<string, unknown> | undefined;
+			const fakeHandle = {
+				child: { pid: 4242 },
+				socketPath: "/tmp/fake.sock",
+				stop: () => {},
+				ensureDead: async () => true,
+			};
+			const fakeClient = {
+				initialize: async () => {},
+				readThread: async () => ({
+					turns: turns.map((turn) => ({
+						status: "completed",
+						items: [{ type: "userMessage", clientId: turn.id ?? null }],
+					})),
+				}),
+				startThread: async () => "thread-99",
+				startTurn: async (
+					_threadId: string,
+					_text: string,
+					_t?: number,
+					id?: string,
+				) => {
+					turns.push({ ...(id ? { id } : {}) });
+				},
+				close: () => {},
+			};
+			const target = fixture("codex", {
+				mailboxMcpPath: "/opt/flywheel/mailbox-mcp/server-main.js",
+				codexRemotePorts: {
+					spawnDaemon: (async (opts: Record<string, unknown>) => {
+						spawnOpts = opts;
+						return fakeHandle;
+					}) as never,
+					connect: (async () => ({})) as never,
+					clientFactory: () => fakeClient as never,
+					processGroupOf: () => 4242,
+				},
+				resolveGitDirs: async (cwd) => [
+					`${cwd}/../main/.git`,
+					`${cwd}/../main/.git/worktrees/wt`,
+				],
+			});
+			await target.launcher.launch(target.request);
+			// EPERM root cause: workspace-write defaults network_access=false, and
+			// seatbelt blocks unix-socket connect — the daemon must be spawned with
+			// network access or `next`/`submit` against the host socket dies.
+			expect(spawnOpts?.sandboxNetworkAccess).toBe(true);
+			// Approval-stall root cause: apps/connector tools elicit per-tool
+			// approval regardless of approval_policy=never — preset auto-grant.
+			expect(spawnOpts?.appsDefaultToolsApprovalMode).toBe("approve");
+			// Worktree-commit root cause: a linked worktree's git metadata lives
+			// under the MAIN repo .git, outside the sandbox cwd root.
+			expect(spawnOpts?.sandboxWritableRoots).toEqual([
+				target.request.context.projectRoot,
+				`${target.request.context.projectRoot}/../main/.git`,
+				`${target.request.context.projectRoot}/../main/.git/worktrees/wt`,
+			]);
+			await target.launcher.stop(target.request.sessionRef);
+		});
+
+		it("FLY-1565 R1-HIGH: a stale-policy daemon with a DEAD pane is torn down and respawned with the current policy", async () => {
+			const turns: Array<{ id?: string }> = [];
+			let spawnOpts: Record<string, unknown> | undefined;
+			const fakeHandle = {
+				child: { pid: 4242 },
+				socketPath: "/tmp/fake.sock",
+				stop: () => {},
+				ensureDead: async () => true,
+			};
+			const fakeClient = {
+				initialize: async () => {},
+				readThread: async () => ({
+					turns: turns.map((turn) => ({
+						status: "completed",
+						items: [{ type: "userMessage", clientId: turn.id ?? null }],
+					})),
+				}),
+				startThread: async () => "thread-fresh",
+				startTurn: async (
+					_threadId: string,
+					_text: string,
+					_t?: number,
+					id?: string,
+				) => {
+					turns.push({ ...(id ? { id } : {}) });
+				},
+				close: () => {},
+			};
+			const target = fixture("codex", {
+				mailboxMcpPath: "/opt/flywheel/mailbox-mcp/server-main.js",
+				codexRemotePorts: {
+					spawnDaemon: (async (opts: Record<string, unknown>) => {
+						spawnOpts = opts;
+						return fakeHandle;
+					}) as never,
+					// The STALE daemon's socket probes dead (ECONNREFUSED) so its
+					// teardown is proof-free; the fresh daemon's socket connects.
+					connect: (async (opts: { socketPath: string }) => {
+						if (opts.socketPath === "/tmp/stale-old.sock") {
+							const error = new Error("connect ECONNREFUSED") as Error & {
+								code: string;
+							};
+							error.code = "ECONNREFUSED";
+							throw error;
+						}
+						return {};
+					}) as never,
+					clientFactory: () => fakeClient as never,
+					processGroupOf: () => 4242,
+				},
+			});
+			// Plant a pre-FLY-1565 state: thread present, NO policy_version stamp.
+			const statePath = join(
+				target.stateRoot,
+				`${createHash("sha256")
+					.update(target.request.sessionRef)
+					.digest("hex")}-codex-remote.json`,
+			);
+			mkdirSync(target.stateRoot, { recursive: true });
+			writeFileSync(
+				statePath,
+				JSON.stringify({
+					v: 1,
+					codex_daemon: {
+						socket_path: "/tmp/stale-old.sock",
+						daemon_pid: 111,
+						daemon_pgid: null,
+						thread_id: "thread-old",
+					},
+					bootstrap: "old bootstrap",
+				}),
+			);
+			await target.launcher.launch(target.request);
+			// A fresh daemon was spawned with the CURRENT policy…
+			expect(spawnOpts?.sandboxNetworkAccess).toBe(true);
+			expect(spawnOpts?.appsDefaultToolsApprovalMode).toBe("approve");
+			// …and the rewritten state is stamped + carries the fresh thread.
+			const rewritten = JSON.parse(readFileSync(statePath, "utf8"));
+			expect(rewritten.policy_version).toBe(CODEX_SANDBOX_POLICY_VERSION);
+			expect(rewritten.codex_daemon.thread_id).toBe("thread-fresh");
+			await target.launcher.stop(target.request.sessionRef);
+		});
+
+		it("FLY-1565 R1-HIGH: a stale-policy daemon under a LIVE pane fails loud instead of silent adoption", async () => {
+			const turns: Array<{ id?: string }> = [];
+			const fakeHandle = {
+				child: { pid: 4242 },
+				socketPath: "/tmp/fake.sock",
+				stop: () => {},
+				ensureDead: async () => true,
+			};
+			const fakeClient = {
+				initialize: async () => {},
+				readThread: async () => ({
+					turns: turns.map((turn) => ({
+						status: "completed",
+						items: [{ type: "userMessage", clientId: turn.id ?? null }],
+					})),
+				}),
+				startThread: async () => "thread-99",
+				startTurn: async (
+					_threadId: string,
+					_text: string,
+					_t?: number,
+					id?: string,
+				) => {
+					turns.push({ ...(id ? { id } : {}) });
+				},
+				close: () => {},
+			};
+			const target = fixture("codex", {
+				mailboxMcpPath: "/opt/flywheel/mailbox-mcp/server-main.js",
+				codexRemotePorts: {
+					spawnDaemon: (async () => fakeHandle) as never,
+					connect: (async () => ({})) as never,
+					clientFactory: () => fakeClient as never,
+					processGroupOf: () => 4242,
+				},
+			});
+			// Launch normally: the session is now live and its state is stamped.
+			await target.launcher.launch(target.request);
+			const statePath = join(
+				target.stateRoot,
+				`${createHash("sha256")
+					.update(target.request.sessionRef)
+					.digest("hex")}-codex-remote.json`,
+			);
+			const stamped = JSON.parse(readFileSync(statePath, "utf8"));
+			expect(stamped.policy_version).toBe(CODEX_SANDBOX_POLICY_VERSION);
+			// Simulate a pre-upgrade live session: strip the stamp.
+			delete stamped.policy_version;
+			writeFileSync(statePath, JSON.stringify(stamped));
+			await expect(target.launcher.launch(target.request)).rejects.toThrow(
+				/stale sandbox policy/,
+			);
+			await target.launcher.stop(target.request.sessionRef);
+		});
+
+		it("FLY-1565 R2-HIGH: activate() and codexBell() refuse to send turns to a stale-policy daemon", async () => {
+			const turns: Array<{ id?: string }> = [];
+			const fakeHandle = {
+				child: { pid: 4242 },
+				socketPath: "/tmp/fake.sock",
+				stop: () => {},
+				ensureDead: async () => true,
+			};
+			const fakeClient = {
+				initialize: async () => {},
+				readThread: async () => ({
+					turns: turns.map((turn) => ({
+						status: "completed",
+						items: [{ type: "userMessage", clientId: turn.id ?? null }],
+					})),
+				}),
+				startThread: async () => "thread-99",
+				startTurn: async (
+					_threadId: string,
+					_text: string,
+					_t?: number,
+					id?: string,
+				) => {
+					turns.push({ ...(id ? { id } : {}) });
+				},
+				close: () => {},
+			};
+			const target = fixture("codex", {
+				mailboxMcpPath: "/opt/flywheel/mailbox-mcp/server-main.js",
+				codexRemotePorts: {
+					spawnDaemon: (async () => fakeHandle) as never,
+					connect: (async () => ({})) as never,
+					clientFactory: () => fakeClient as never,
+					processGroupOf: () => 4242,
+				},
+			});
+			await target.launcher.launch(target.request);
+			// Simulate a pre-upgrade live session: strip the policy stamp.
+			const statePath = join(
+				target.stateRoot,
+				`${createHash("sha256")
+					.update(target.request.sessionRef)
+					.digest("hex")}-codex-remote.json`,
+			);
+			const state = JSON.parse(readFileSync(statePath, "utf8"));
+			delete state.policy_version;
+			writeFileSync(statePath, JSON.stringify(state));
+			const turnsBefore = turns.length;
+			// The coordinator tick's activate() on a live binding must not deliver
+			// the assignment onto the stale daemon…
+			await expect(
+				target.launcher.activate(target.request.sessionRef),
+			).rejects.toThrow(/stale sandbox policy/);
+			// …and the doorbell must not ring it as a turn either.
+			await expect(
+				target.launcher.codexBell(
+					target.request.sessionRef,
+					"bell text",
+					"bell:stale:1",
+				),
+			).rejects.toThrow(/stale sandbox policy/);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			expect(turns.length).toBe(turnsBefore); // no turn reached the daemon
+			// stop() still reads the stale state and completes safe teardown.
+			await target.launcher.stop(target.request.sessionRef);
 		});
 
 		it("FLY-1563 acceptance: the bell WAKES a remote-attached codex session as a daemon turn", async () => {

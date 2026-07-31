@@ -9,12 +9,17 @@ import {
 	mkdirSync,
 	openSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
+import {
+	buildDaemonAppsApprovalArgs,
+	buildDaemonSandboxArgs,
+} from "flywheel-claude-runner";
 import { renderRunnerModelDisplay } from "flywheel-config";
 import { buildWindowLabel, sanitizeTmuxName } from "flywheel-core";
 import { leaseIsHealthy } from "flywheel-inbox-mcp/channel-lease";
@@ -22,6 +27,7 @@ import { requestCmuxPinClose } from "flywheel-teamlead/bridge/cmux-close-request
 import { v2RunnerTmuxSessionName } from "flywheel-teamlead/v2-issue-display";
 import type { SessionBinding } from "flywheel-v2-engine";
 import {
+	CODEX_SANDBOX_POLICY_VERSION,
 	type CodexDaemonState,
 	prepareCodexRemote,
 	sendCodexTurn,
@@ -78,6 +84,13 @@ export interface TmuxRunnerLauncherOptions {
 	/** FLY-1547 §2.6 test seam: injected daemon/transport ports for the codex
 	 * remote form; production uses the real flywheel-claude-runner machinery. */
 	codexRemotePorts?: import("./codex-remote.js").CodexRemotePorts;
+	/**
+	 * FLY-1565 test seam: resolve a worktree's git metadata dirs (`--git-dir` +
+	 * `--git-common-dir`, absolute) for the codex sandbox writable roots.
+	 * Production uses the real `git rev-parse` (fail-loud — a codex runner that
+	 * cannot commit is crippled, mirroring CodexTmuxAdapter).
+	 */
+	resolveGitDirs?: (cwd: string) => Promise<string[]>;
 }
 
 /**
@@ -328,6 +341,30 @@ function runnerPrompt(
 	return prompt;
 }
 
+/**
+ * FLY-1565: the v2 codex runner sandbox policy as `-c` overrides — identical
+ * for the daemon spawn (where turns actually execute) and both pane forms:
+ *
+ * - `sandbox_workspace_write.writable_roots`: worktree + its git metadata dirs
+ *   (a linked worktree commits into the MAIN repo's `.git`, outside cwd);
+ * - `sandbox_workspace_write.network_access=true`: Seatbelt otherwise blocks
+ *   unix-socket connect — the mailbox `next`/`submit` against the host socket
+ *   died with EPERM (FLY-1564). No finer per-socket knob exists in codex;
+ *   the runner needs the network for `git push` + `gh` regardless.
+ * - `apps._default.default_tools_approval_mode="approve"`: apps/connector
+ *   tools elicit per-tool approval regardless of approval_policy=never; an
+ *   unattended runner has nobody to press the key (the FLY-1564 stalls).
+ */
+function codexSandboxPolicyArgs(writableRoots: string[]): string[] {
+	return [
+		...buildDaemonSandboxArgs({
+			sandboxWritableRoots: writableRoots,
+			sandboxNetworkAccess: true,
+		}),
+		...buildDaemonAppsApprovalArgs("approve"),
+	];
+}
+
 function commandForVendor(
 	request: RuntimeLaunchRequest,
 	options: TmuxRunnerLauncherOptions,
@@ -335,6 +372,7 @@ function commandForVendor(
 	instruction: Buffer,
 	pinnedPath: string,
 	codexDaemon?: CodexDaemonState,
+	codexWritableRoots?: string[],
 ): { binary: string; args: string[] } {
 	if (!EFFORTS.has(request.executor.effort)) {
 		throw new RunnerLaunchConfigError(
@@ -402,6 +440,8 @@ function commandForVendor(
 				"workspace-write",
 				"-c",
 				'approval_policy="never"',
+				// FLY-1565: same sandbox policy as the daemon the pane attaches to.
+				...codexSandboxPolicyArgs(codexWritableRoots ?? []),
 				codexDaemon.thread_id,
 			],
 		};
@@ -419,9 +459,55 @@ function commandForVendor(
 			"never",
 			"-c",
 			`model_reasoning_effort=${JSON.stringify(request.executor.effort)}`,
+			// FLY-1565: the bare form executes turns locally — it needs the full
+			// mailbox-capable sandbox policy itself.
+			...codexSandboxPolicyArgs(codexWritableRoots ?? []),
 			`${instruction.toString("utf8")}\n\n---\n\n${runnerPrompt(request, pinnedPath)}`,
 		],
 	};
+}
+
+/**
+ * FLY-1565: resolve the worktree's git metadata dirs for the codex sandbox
+ * writable roots. `--git-dir` = the worktree's private metadata (a linked
+ * worktree keeps index/HEAD/locks under <main>/.git/worktrees/<name>);
+ * `--git-common-dir` = the shared store (<main>/.git). `--path-format=absolute`
+ * because rev-parse otherwise emits cwd-relative paths. Failure THROWS: a
+ * codex runner that cannot commit is crippled — abort the spawn loudly
+ * (mirrors CodexTmuxAdapter.resolveGitWritableDirs).
+ */
+async function defaultResolveGitDirs(cwd: string): Promise<string[]> {
+	let stdout: string;
+	try {
+		({ stdout } = await execFileAsync(
+			"git",
+			[
+				"-C",
+				cwd,
+				"rev-parse",
+				"--path-format=absolute",
+				"--git-dir",
+				"--git-common-dir",
+			],
+			{ encoding: "utf8", timeout: 10_000 },
+		));
+	} catch (error) {
+		throw new RunnerLaunchConfigError(
+			`cannot resolve git metadata dirs for ${cwd} — a codex runner that cannot commit is crippled; refusing to spawn: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+	const lines = stdout
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0);
+	if (lines.length < 2) {
+		throw new RunnerLaunchConfigError(
+			`cannot resolve git metadata dirs for ${cwd} — unexpected rev-parse output ${JSON.stringify(stdout)}; refusing to spawn`,
+		);
+	}
+	return [...new Set(lines.map((line) => realpathSync(line)))];
 }
 
 function defaultCommand(): TmuxCommandPort {
@@ -570,6 +656,20 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		if (vendor === "claude" && this.#options.mailboxMcpPath) {
 			this.#materializeMailboxMcpConfig(request);
 		}
+		// FLY-1565: the codex sandbox writable roots — the worktree plus its git
+		// metadata dirs — derived once per launch and shared by the daemon spawn
+		// and both pane argv forms. Fail-loud derivation (crippled-runner guard).
+		let codexWritableRoots: string[] | undefined;
+		if (vendor === "codex") {
+			const resolveGitDirs =
+				this.#options.resolveGitDirs ?? defaultResolveGitDirs;
+			codexWritableRoots = [
+				...new Set([
+					request.context.projectRoot,
+					...(await resolveGitDirs(request.context.projectRoot)),
+				]),
+			];
+		}
 		// FLY-1547 §2.6 (ruling A, rebased onto the FLY-1550 launcher): with the
 		// mailbox service wired, a codex runner is the remote-attached form —
 		// daemon + thread FIRST (persisted in the launcher-owned codex state
@@ -579,10 +679,29 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		let codexDaemon: CodexDaemonState | undefined;
 		if (vendor === "codex" && this.#options.mailboxMcpPath) {
 			const priorState = this.#readCodexRemoteState(request.sessionRef);
-			if (priorState?.codex_daemon.thread_id) {
+			if (
+				priorState?.codex_daemon.thread_id &&
+				priorState.policy_version === CODEX_SANDBOX_POLICY_VERSION
+			) {
 				codexDaemon = priorState.codex_daemon;
 			} else {
 				if (priorState?.codex_daemon) {
+					// FLY-1565 (Codex R1 HIGH): a recorded daemon with a thread but a
+					// missing/older policy stamp was spawned with a STALE sandbox
+					// policy that a running process can never pick up. Under a LIVE
+					// pane, silent adoption would keep the session broken forever —
+					// fail loud and leave the stop() decision to the operator. With
+					// the pane gone, it is torn down like the R3-F5 crash orphan
+					// below and respawned fresh with the current policy.
+					if (
+						priorState.codex_daemon.thread_id &&
+						(await this.#hasSession(this.#sessionName(request.sessionRef)))
+					) {
+						throw new RunnerLaunchConfigError(
+							`codex session ${request.sessionRef} is live but its daemon was spawned with a stale sandbox policy ` +
+								`(v${priorState.policy_version ?? 1} < v${CODEX_SANDBOX_POLICY_VERSION}) — stop() the session and relaunch to apply the current policy`,
+						);
+					}
 					// R3-F5: a recorded daemon WITHOUT a thread is a crash orphan from
 					// a previous launch phase — tear it down before starting fresh
 					// (never adopt a threadless daemon, never leave it resident).
@@ -606,6 +725,7 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 				// resident.
 				this.#writeCodexRemoteState(request.sessionRef, {
 					v: 1,
+					policy_version: CODEX_SANDBOX_POLICY_VERSION,
 					codex_daemon: {
 						socket_path: socketPath,
 						daemon_pid: -1,
@@ -623,11 +743,14 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 						cwd: request.context.projectRoot,
 						model: request.executor.model,
 						effort: request.executor.effort,
+						// FLY-1565: derived above for every codex launch.
+						sandboxWritableRoots: codexWritableRoots ?? [],
 						// R3-F5 crash phase: the daemon is on the books before the thread
 						// exists — a crash here leaves a recorded orphan, not a resident.
 						onDaemonUp: (partial) => {
 							this.#writeCodexRemoteState(request.sessionRef, {
 								v: 1,
+								policy_version: CODEX_SANDBOX_POLICY_VERSION,
 								codex_daemon: { ...partial, thread_id: "" },
 								bootstrap: runnerPrompt(request, pinnedPath),
 							});
@@ -639,6 +762,7 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 				this.#daemonHandles.set(request.sessionRef, prepared.handle);
 				this.#writeCodexRemoteState(request.sessionRef, {
 					v: 1,
+					policy_version: CODEX_SANDBOX_POLICY_VERSION,
 					codex_daemon: prepared.state,
 					bootstrap: runnerPrompt(request, pinnedPath),
 				});
@@ -653,6 +777,7 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 			instruction,
 			pinnedPath,
 			codexDaemon,
+			codexWritableRoots,
 		);
 		const prior = await this.probe(request.sessionRef);
 		if (prior.state === "present") {
@@ -845,8 +970,16 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		if (probe.state !== "present") {
 			throw new Error("cannot activate an absent tmux runner");
 		}
-		atomicRelease(this.#releasePath(sessionRef));
 		const codexRemote = this.#readCodexRemoteState(sessionRef);
+		// FLY-1565 (Codex R2 HIGH): an already-bound live session is activated
+		// every coordinator tick WITHOUT re-passing launch(), so the stale-policy
+		// gate must also stand here — BEFORE the vendor gate is released and
+		// before any turn is sent to the daemon. stop() stays exempt: it reads
+		// stale state precisely to tear it down.
+		if (codexRemote?.codex_daemon.thread_id) {
+			this.#requireCurrentCodexPolicy(sessionRef, codexRemote.policy_version);
+		}
+		atomicRelease(this.#releasePath(sessionRef));
 		if (
 			codexRemote?.codex_daemon.thread_id &&
 			!this.#assignmentDone.has(sessionRef)
@@ -985,6 +1118,11 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 	): Promise<boolean> {
 		const state = this.#readCodexRemoteState(sessionRef);
 		if (!state?.codex_daemon.thread_id) return false;
+		// FLY-1565 (Codex R2 HIGH): never ring a stale-policy daemon as a turn.
+		// Throwing (not `return false`) is deliberate — the paste fallback would
+		// reach the SAME stale daemon through the attached pane; failing loud
+		// keeps the doorbell debt pending and the defect visible.
+		this.#requireCurrentCodexPolicy(sessionRef, state.policy_version);
 		const daemon = state.codex_daemon;
 		await this.#sendTurnSerial(sessionRef, () =>
 			sendCodexTurn(
@@ -995,6 +1133,21 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 			),
 		);
 		return true;
+	}
+
+	/** FLY-1565: the stale-policy gate shared by every turn-sending path — a
+	 * daemon's sandbox policy is fixed at spawn, so a stamp mismatch means the
+	 * process is still running the broken pre-upgrade sandbox. */
+	#requireCurrentCodexPolicy(
+		sessionRef: string,
+		policyVersion: number | undefined,
+	): void {
+		if (policyVersion !== CODEX_SANDBOX_POLICY_VERSION) {
+			throw new RunnerLaunchConfigError(
+				`codex session ${sessionRef} daemon was spawned with a stale sandbox policy ` +
+					`(v${policyVersion ?? 1} < v${CODEX_SANDBOX_POLICY_VERSION}) — stop() the session and relaunch before sending turns`,
+			);
+		}
 	}
 
 	/** One in-flight daemon turn per session — reconcile-then-start is only a
@@ -1176,20 +1329,29 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		);
 	}
 
-	#readCodexRemoteState(
-		sessionRef: string,
-	): { v: 1; codex_daemon: CodexDaemonState; bootstrap: string } | undefined {
+	#readCodexRemoteState(sessionRef: string):
+		| {
+				v: 1;
+				/** FLY-1565: absent on pre-upgrade states — reads as stale. */
+				policy_version?: number;
+				codex_daemon: CodexDaemonState;
+				bootstrap: string;
+		  }
+		| undefined {
 		const path = this.#codexRemoteStatePath(sessionRef);
 		if (!existsSync(path)) return undefined;
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
 		const record = parsed as {
 			v?: unknown;
+			policy_version?: unknown;
 			codex_daemon?: CodexDaemonState;
 			bootstrap?: unknown;
 		};
 		if (
 			record.v !== 1 ||
 			typeof record.bootstrap !== "string" ||
+			(record.policy_version !== undefined &&
+				typeof record.policy_version !== "number") ||
 			typeof record.codex_daemon !== "object" ||
 			record.codex_daemon === null ||
 			typeof record.codex_daemon.socket_path !== "string" ||
@@ -1201,6 +1363,7 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		}
 		return record as {
 			v: 1;
+			policy_version?: number;
 			codex_daemon: CodexDaemonState;
 			bootstrap: string;
 		};
@@ -1208,7 +1371,12 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 
 	#writeCodexRemoteState(
 		sessionRef: string,
-		state: { v: 1; codex_daemon: CodexDaemonState; bootstrap: string },
+		state: {
+			v: 1;
+			policy_version: number;
+			codex_daemon: CodexDaemonState;
+			bootstrap: string;
+		},
 	): void {
 		mkdirSync(this.#options.stateRoot, { recursive: true });
 		writeFileSync(

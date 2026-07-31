@@ -32,6 +32,20 @@ export interface CodexDaemonState {
 	daemon_pgid: number | null;
 }
 
+/**
+ * FLY-1565 (Codex R1 HIGH): the sandbox/approval policy a codex daemon was
+ * SPAWNED with is baked into its process argv — a policy upgrade cannot reach
+ * a running daemon. This version stamps the persisted codex-remote state at
+ * spawn time so the launcher can tell a current-policy daemon from a stale
+ * one: a stale daemon with a dead pane is torn down and respawned fresh
+ * (controlled restart), a stale daemon under a LIVE pane fails loud instead
+ * of being silently adopted with the broken policy.
+ *
+ * v2 = FLY-1565 (network_access + git writable roots + apps auto-approve).
+ * Pre-FLY-1565 states carry no stamp and read as stale.
+ */
+export const CODEX_SANDBOX_POLICY_VERSION = 2;
+
 export interface CodexRemotePorts {
 	spawnDaemon?: typeof spawnCodexDaemon;
 	connect?: typeof connectDaemonTransport;
@@ -119,6 +133,16 @@ export async function prepareCodexRemote(
 		cwd: string;
 		model: string;
 		effort: string;
+		/**
+		 * FLY-1565: sandbox writable roots for the daemon's workspace-write
+		 * threads — the worktree plus its git metadata dirs (`--git-dir` +
+		 * `--git-common-dir`). A linked worktree's index/HEAD/locks live under
+		 * the MAIN repo's `.git`, outside the thread cwd, so `git commit` dies
+		 * in the Seatbelt sandbox without these (real-machine: index.lock
+		 * "Operation not permitted"), and the runner is forced onto the GitHub
+		 * connector API — the FLY-1564 approval-stall path.
+		 */
+		sandboxWritableRoots: string[];
 		/** R3-F5 crash-phase hook: called the moment the daemon is up (before
 		 * thread creation) so the caller can persist {socket,pgid} — a crash
 		 * between phases leaves a RECORDED orphan the next launch tears down
@@ -137,6 +161,19 @@ export async function prepareCodexRemote(
 		codexHome: input.codexHome,
 		socketPath: input.socketPath,
 		effort: input.effort,
+		// FLY-1565: the v2 runner sandbox policy. workspace-write defaults
+		// network_access=false and Seatbelt blocks unix-socket connect, so the
+		// mailbox `next`/`submit` against the authenticated host socket died
+		// with EPERM (the FLY-1564 finding). Codex offers no per-socket-path
+		// exception — network_access=true is the smallest available knob, and
+		// the runner needs the network for `git push` + `gh` anyway (FLY-350
+		// full-access / FLY-1188 daemon QA Finding 1 precedent).
+		sandboxWritableRoots: input.sandboxWritableRoots,
+		sandboxNetworkAccess: true,
+		// FLY-1565: apps/connector tools elicit per-tool approval regardless of
+		// approval_policy=never — preset auto-grant, or an unattended turn
+		// wedges until a human presses a key.
+		appsDefaultToolsApprovalMode: "approve",
 	});
 	try {
 		// Inside the cleanup scope (R4 new-1): a throwing persistence hook must

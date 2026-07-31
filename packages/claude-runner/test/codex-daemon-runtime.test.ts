@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	assertSocketPathFitsSunLen,
+	buildDaemonAppsApprovalArgs,
 	buildDaemonEffortArgs,
 	buildDaemonSandboxArgs,
 	codexDaemonExitWaitMs,
@@ -184,6 +185,35 @@ describe("buildDaemonSandboxArgs", () => {
 	});
 });
 
+// FLY-1565 — apps/connector tool approval preset → daemon `-c` override.
+// Real-machine (codex 0.146.0): a bogus value fails config load with
+// "unknown variant `bogus-mode`, expected one of `auto`, `prompt`, `writes`,
+// `approve`", and `approve` is exactly what codex persists per-tool after a
+// human picks "don't ask again" — i.e. the auto-grant state.
+describe("buildDaemonAppsApprovalArgs", () => {
+	it("approve → the exact TOML-quoted apps._default override argv", () => {
+		expect(buildDaemonAppsApprovalArgs("approve")).toEqual([
+			"-c",
+			'apps._default.default_tools_approval_mode="approve"',
+		]);
+	});
+
+	it("absent → no argv (byte-compatible: CODEX_HOME config default applies)", () => {
+		expect(buildDaemonAppsApprovalArgs(undefined)).toEqual([]);
+		expect(buildDaemonAppsApprovalArgs("")).toEqual([]);
+	});
+
+	it("unknown value → warn + ignore, NEVER spliced into the override", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(buildDaemonAppsApprovalArgs('bogus"; rm -rf /')).toEqual([]);
+			expect(warn).toHaveBeenCalledOnce();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
 // FLY-1224 (T5): per-phase reasoning effort → daemon `-c` override.
 describe("buildDaemonEffortArgs", () => {
 	it("xhigh → the exact TOML-quoted override argv", () => {
@@ -285,6 +315,35 @@ describe("spawnCodexDaemon", () => {
 			'sandbox_workspace_write.writable_roots=["/w/tree","/main/.git"]',
 			"-c",
 			"sandbox_workspace_write.network_access=true",
+		]);
+	});
+
+	it("appends the apps approval `-c` override to the app-server argv (FLY-1565)", async () => {
+		const child = new FakeChild();
+		let spawnedArgs: string[] = [];
+		let probes = 0;
+		await spawnCodexDaemon({
+			...baseOpts(child),
+			sandboxNetworkAccess: true,
+			appsDefaultToolsApprovalMode: "approve",
+			spawnFn: (_bin, args) => {
+				spawnedArgs = args;
+				return child;
+			},
+			socketExists: () => {
+				probes += 1;
+				return probes >= 2;
+			},
+		});
+		expect(spawnedArgs).toEqual([
+			"app-server",
+			"--remote-control",
+			"--listen",
+			"unix:///tmp/fw-codex-sock/abc.sock",
+			"-c",
+			"sandbox_workspace_write.network_access=true",
+			"-c",
+			'apps._default.default_tools_approval_mode="approve"',
 		]);
 	});
 

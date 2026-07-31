@@ -56,6 +56,7 @@ export {
 export {
 	type AcquireDaemonLockFn,
 	assertSocketPathFitsSunLen,
+	buildDaemonAppsApprovalArgs,
 	buildDaemonSandboxArgs,
 	codexDaemonExitWaitMs,
 	createDefaultKillGroup,
