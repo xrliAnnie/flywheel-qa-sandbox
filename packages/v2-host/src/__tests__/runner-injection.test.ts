@@ -586,4 +586,206 @@ describe("host runner bootstrap loop", () => {
 			await host.close();
 		}
 	});
+
+	it("FLY-1563: serves the lead's ask_response to a MID-TASK runner whose assignment is still unsettled", async () => {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-v2-midtask-pull-"));
+		roots.push(root);
+		chmodSync(root, 0o700);
+		const project = prepareProject(root);
+		const database = prepareLiveDatabase(root);
+		const socketPath = join(root, "host.sock");
+		const secretPath = join(root, "host.secret");
+		const secret = randomBytes(32);
+		writeFileSync(secretPath, secret, { mode: 0o600 });
+		const launchRequests: RuntimeLaunchRequest[] = [];
+		const launcher: RunnerLauncherPort = {
+			async launch(request) {
+				launchRequests.push(request);
+				return {
+					v: 1,
+					hostEpoch: HOST_EPOCH,
+					sessionId: request.sessionRef,
+					pid: PID,
+					pidStart: PID_START,
+				};
+			},
+			async probe() {
+				return { state: "absent", confirmedAt: "2026-07-29T00:03:00.000Z" };
+			},
+			async stop() {},
+		};
+		const bootstrap = Kernel.open({ path: database.dbPath });
+		provisionAgentRecipient(bootstrap, "lead-runtime", "lead");
+		const bootstrapPorts = createRuntimeDagPorts({
+			kernel: bootstrap,
+			hostEpoch: HOST_EPOCH,
+			expectedEpoch: EPOCH,
+			lockRoot: join(root, "locks"),
+			launcher,
+			gitBin: "/usr/bin/git",
+			ghBin: "/usr/bin/false",
+			now: () => new Date("2026-07-29T00:03:00.000Z"),
+		});
+		await admitIssueDag(bootstrap, bootstrapPorts, {
+			admissionUid: "midtask-pull-admission",
+			projectId: "midtask-pull",
+			issueId: "FLY-MIDTASK-PULL",
+			notifyAgentId: "lead-runtime",
+			shipWorktreeId: "worktree",
+			worktrees: [
+				{
+					worktreeId: "worktree",
+					repoIdentity: project,
+					worktreePath: project,
+					branchRef: "HEAD",
+					mergeTargetRef: "HEAD",
+				},
+			],
+			tasks: [
+				{
+					localId: "implement",
+					kindLabel: "implementation",
+					contract: [{ kind: "verdict" }],
+					writesRepo: true,
+					worktreeId: "worktree",
+					executor: {
+						family: "claude",
+						vendor: "claude",
+						model: "test-model",
+						effort: "high",
+					},
+				},
+			],
+			edges: [],
+		});
+		bootstrap.close();
+		const host = new V2Host({
+			database: {
+				...database,
+				expectedWindowId: WINDOW,
+				expectedEpoch: EPOCH,
+				allowedAuthorityStates: ["live"],
+			},
+			socketPath,
+			secretPath,
+			hostEpoch: HOST_EPOCH,
+			sessionProbe: {
+				processStart: (pid) =>
+					pid === PID
+						? { status: "present", startIdentity: PID_START }
+						: { status: "absent" },
+				sessionOwner: () => ({ pid: PID, pidStart: PID_START }),
+			},
+			coordinator: {
+				intervalMs: 60_000,
+				createPorts: (kernel) =>
+					createRuntimeDagPorts({
+						kernel,
+						hostEpoch: HOST_EPOCH,
+						expectedEpoch: EPOCH,
+						lockRoot: join(root, "locks"),
+						launcher,
+						gitBin: "/usr/bin/git",
+						ghBin: "/usr/bin/false",
+						now: () => new Date("2026-07-29T00:03:00.000Z"),
+					}),
+				async activateSession() {},
+			},
+		});
+		try {
+			await host.start();
+			await host.runCoordinatorOnce();
+			expect(launchRequests).toHaveLength(1);
+			const sessionRef = launchRequests[0]?.sessionRef as string;
+			const assignment = JSON.parse(
+				launchRequests[0]?.context.firstEnvelope as string,
+			) as DeliveryEnvelope;
+			// The runner is MID-TASK: its assignment stays unsettled while it asks.
+			const asked = (await sendHostRequest({
+				socketPath,
+				secret,
+				action: "ask",
+				payload: {
+					sessionRef,
+					askKind: "ask",
+					payload: "Mid-task: which port?",
+				},
+			})) as { uid: string };
+			await sendHostRequest({
+				socketPath,
+				secret,
+				action: "enqueue",
+				payload: {
+					sourceKind: "ask_response",
+					sourceId: asked.uid,
+					payload: JSON.stringify({
+						v: 1,
+						uid: asked.uid,
+						body: "port 4747",
+					}),
+					toAgent: sessionRef,
+					kind: "ask_response",
+					retentionClass: "business",
+				},
+			});
+			// Before FLY-1563 this pull hit the "already handed" FenceViolation —
+			// the runner could never read the answer while its assignment was open.
+			const reply = (await sendHostRequest({
+				socketPath,
+				secret,
+				action: "next_delivery",
+				payload: { sessionRef },
+			})) as DeliveryEnvelope;
+			expect(reply.message.kind).toBe("ask_response");
+			expect(JSON.parse(reply.message.payload)).toMatchObject({
+				uid: asked.uid,
+				body: "port 4747",
+			});
+			await expect(
+				sendHostRequest({
+					socketPath,
+					secret,
+					action: "submit_proposal",
+					payload: {
+						agentId: sessionRef,
+						attemptUid: reply.handle.attemptUid,
+						messageUid: reply.message.messageUid,
+						effects: [],
+						authorization: reply.authorization,
+					},
+				}),
+			).resolves.toMatchObject({ status: "succeeded" });
+			// The assignment's own one-shot settlement still works afterwards —
+			// nothing about the spawn capability was consumed by the mid-task pull.
+			await expect(
+				sendHostRequest({
+					socketPath,
+					secret,
+					action: "submit_proposal",
+					payload: {
+						agentId: sessionRef,
+						attemptUid: assignment.handle.attemptUid,
+						messageUid: assignment.message.messageUid,
+						effects: [],
+						authorization: assignment.authorization,
+					},
+				}),
+			).resolves.toMatchObject({ status: "succeeded" });
+			const inspected = Kernel.open({ path: database.dbPath });
+			expect(
+				inspected.read((tx) =>
+					tx
+						.all<{ outcome: string }>(
+							`SELECT outcome FROM processing_attempts
+								  WHERE message_uid=@uid ORDER BY attempt_no`,
+							{ uid: assignment.message.messageUid },
+						)
+						.map((row) => row.outcome),
+				),
+			).toEqual(["succeeded"]);
+			inspected.close();
+		} finally {
+			await host.close();
+		}
+	});
 });

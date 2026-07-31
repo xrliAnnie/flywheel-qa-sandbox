@@ -2,6 +2,7 @@ import {
 	type AttemptHandle,
 	type EngineRuntime,
 	issueProposalCapability,
+	type PollOnceOptions,
 	type ProposalAuthorization,
 	parseSessionBinding,
 	pollOnce,
@@ -427,9 +428,10 @@ export function pollRunnerDelivery(
 	kernel: Kernel,
 	runtime: EngineRuntime,
 	sessionRef: string,
+	options?: PollOnceOptions,
 ): RunnerPollOutcome {
 	const agent = requireActiveRunnerAgent(kernel, sessionRef);
-	const polled = pollOnce(kernel, runtime, agent, 0);
+	const polled = pollOnce(kernel, runtime, agent, 0, undefined, options);
 	if (polled.result.status !== "available") return { status: "empty" };
 	const available = polled.result;
 	return {

@@ -5,7 +5,11 @@ import { openKernelDb } from "../connection.js";
 import { ACTIVATIONS_PROCESSING_ATTEMPTS_DDL } from "../migrations/0003-activations-processing-attempts.js";
 import { MAILBOX_INDEX_FAMILY_DDL } from "../migrations/0004-mailbox-index-family.js";
 import { runMigrations } from "../migrator.js";
-import { CANDIDATE_SQL, DETECTOR_SQL } from "../sql/candidates.js";
+import {
+	CANDIDATE_SQL,
+	CANDIDATE_SQL_BEYOND_ASSIGNMENT,
+	DETECTOR_SQL,
+} from "../sql/candidates.js";
 import { makeTempDatabase, type TempDatabase } from "./helpers.js";
 
 const DESIGN_V8_PATH = fileURLToPath(
@@ -115,6 +119,19 @@ describe("canonical candidate SQL and query plans", () => {
 		["F2", CANDIDATE_SQL.F2, "mailbox_pending_scheduled_f"],
 		["N1", CANDIDATE_SQL.N1, "mailbox_pending_immediate_nf"],
 		["N2", CANDIDATE_SQL.N2, "mailbox_pending_scheduled_nf"],
+		// FLY-1563: the beyond-assignment session-pull variants ride the SAME
+		// nf partial indexes — the extra dispatch predicate only filters rows
+		// inside the index scan, never a temp sort.
+		[
+			"N1-beyond",
+			CANDIDATE_SQL_BEYOND_ASSIGNMENT.N1,
+			"mailbox_pending_immediate_nf",
+		],
+		[
+			"N2-beyond",
+			CANDIDATE_SQL_BEYOND_ASSIGNMENT.N2,
+			"mailbox_pending_scheduled_nf",
+		],
 		["detector", DETECTOR_SQL, "mailbox_pending_age"],
 	])(
 		"uses the required index without a temporary sort for %s",

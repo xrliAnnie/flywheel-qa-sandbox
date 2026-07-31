@@ -943,12 +943,19 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 	}
 
 	/**
-	 * FLY-1547: doorbell health probe — is this session's mailbox MCP channel
-	 * alive AND fresh? Only Claude sessions with a configured mailbox MCP can
-	 * ever be healthy; everyone else takes the pointer-paste bell.
+	 * FLY-1547: doorbell health probe — is this recipient's mailbox MCP channel
+	 * alive AND fresh?
+	 *
+	 * Codex R1 M-2 (FLY-1563): `mailboxMcpPath` gates only RUNNER wiring — it is
+	 * this launcher's own spawn-time registration knob. A LEAD's channel is
+	 * enabled by claude-lead.sh independently (built server + per-lead
+	 * credential), so a lead lease is probed unconditionally; ignoring it would
+	 * double-ring a lead whose official channel is healthy.
 	 */
 	async channelHealthy(sessionRef: string): Promise<boolean> {
-		if (!this.#options.mailboxMcpPath) return false;
+		if (sessionRef.startsWith("v2dag:") && !this.#options.mailboxMcpPath) {
+			return false;
+		}
 		return leaseIsHealthy(
 			mailboxLeasePath(this.#options.stateRoot, sessionRef),
 			{
@@ -1222,8 +1229,97 @@ export class TmuxRunnerLauncher implements RunnerLauncherPort {
 		if (!(await this.#hasSession(sessionName))) {
 			throw new Error("tmux runner session is absent");
 		}
-		const buffer = `flywheel-v2-doorbell-${safeKey(sessionRef).slice(0, 12)}`;
-		const target = `=${sessionName}:0.0`;
+		await this.#pasteInto(
+			`=${sessionName}:0.0`,
+			`flywheel-v2-doorbell-${safeKey(sessionRef).slice(0, 12)}`,
+			text,
+		);
+	}
+
+	/**
+	 * FLY-1563 ③: paste the bell into a LEAD's terminal. A lead session is
+	 * created by claude-lead.sh/cmux, not by this launcher, so no tmux session
+	 * name is derivable from an id — the registration's pid (agents row session
+	 * binding) is the ground truth. The hosting pane is found by walking the
+	 * process ancestry (pid → ppid) until a pane_pid matches; a dead pid or a
+	 * process outside tmux fails loud and the doorbell keeps the debt pending.
+	 *
+	 * Codex R1 HIGH-1 (pid reuse): the pid alone is not an identity — a
+	 * recycled pid inside tmux would take the paste, the cursor would advance,
+	 * and the REAL lead would never be woken again. The binding's pidStart is
+	 * therefore verified against the live process both before and after pane
+	 * resolution; any mismatch fails loud and the debt stays pending.
+	 */
+	async deliverLead(
+		agentId: string,
+		pid: number,
+		pidStart: string,
+		text: string,
+	): Promise<void> {
+		this.#requireLeadProcessIdentity(pid, pidStart);
+		const target = await this.#resolveLeadPane(pid);
+		// The pane list and the process table are two snapshots — re-verify so a
+		// reuse in between cannot slip through the gap.
+		this.#requireLeadProcessIdentity(pid, pidStart);
+		await this.#pasteInto(
+			target,
+			`flywheel-v2-doorbell-lead-${safeKey(agentId).slice(0, 12)}`,
+			text,
+		);
+	}
+
+	#requireLeadProcessIdentity(pid: number, pidStart: string): void {
+		const observed = this.#processStart(pid);
+		if (observed !== pidStart) {
+			throw new Error(
+				`lead process ${pid} start identity mismatch (expected ${JSON.stringify(pidStart)}, observed ${JSON.stringify(observed)}) — refusing the paste (pid reuse guard)`,
+			);
+		}
+	}
+
+	async #resolveLeadPane(pid: number): Promise<string> {
+		if (!Number.isSafeInteger(pid) || pid <= 1) {
+			throw new Error(`lead pane pid ${pid} is not addressable`);
+		}
+		const panes = await this.#command.run(this.#options.tmuxBin, [
+			"list-panes",
+			"-a",
+			"-F",
+			"#{pane_pid} #{pane_id}",
+		]);
+		const paneByPid = new Map<number, string>();
+		for (const line of panes.stdout.split("\n")) {
+			const match = /^([1-9][0-9]*) (%[0-9]+)$/.exec(line.trim());
+			if (match) paneByPid.set(Number(match[1]), match[2] as string);
+		}
+		const processes = await this.#command.run("/bin/ps", [
+			"-axo",
+			"pid=,ppid=",
+		]);
+		const parentOf = new Map<number, number>();
+		for (const line of processes.stdout.split("\n")) {
+			const match = /^\s*([0-9]+)\s+([0-9]+)\s*$/.exec(line);
+			if (match) parentOf.set(Number(match[1]), Number(match[2]));
+		}
+		if (!parentOf.has(pid)) {
+			throw new Error(`lead process ${pid} is not alive`);
+		}
+		let current: number | undefined = pid;
+		const seen = new Set<number>();
+		while (current !== undefined && current > 1 && !seen.has(current)) {
+			const pane = paneByPid.get(current);
+			if (pane) return pane;
+			seen.add(current);
+			current = parentOf.get(current);
+		}
+		throw new Error(`no tmux pane hosts lead process ${pid}`);
+	}
+
+	async #pasteInto(
+		target: string,
+		buffer: string,
+		text: string,
+	): Promise<void> {
 		await this.#command.run(this.#options.tmuxBin, [
 			"set-buffer",
 			"-b",

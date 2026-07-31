@@ -253,6 +253,7 @@ export function startAttemptTx(
 	runtime: EngineRuntime,
 	agent: RegisteredAgent,
 	messageUid: string,
+	options?: { beyondInjectedAssignment?: boolean },
 ): {
 	handle: AttemptHandle;
 	message: {
@@ -283,11 +284,36 @@ export function startAttemptTx(
 	) {
 		return null;
 	}
+	// FLY-1563: through the session pull, the assignment letter is reachable in
+	// exactly one shape — the FLY-1503 item 8 redelivery (a prior attempt exists
+	// and none is running). A never-attempted dispatch row belongs to the spawn
+	// path, and a running one is the normal mid-task state the pull looks past.
+	if (
+		options?.beyondInjectedAssignment &&
+		mailbox.source_kind === "dag_task_dispatch"
+	) {
+		const attempts = tx.get<{ total: number; running: number }>(
+			`SELECT COUNT(*) AS total,
+			        COALESCE(SUM(outcome='running'),0) AS running
+			   FROM processing_attempts WHERE message_uid=@messageUid`,
+			{ messageUid },
+		);
+		if (!attempts || attempts.total === 0 || attempts.running > 0) {
+			throw new FenceViolation(
+				`message ${messageUid} is a spawn-injected assignment and cannot be pulled`,
+			);
+		}
+	}
 
-	const running = tx.all<RunningMessageRow>(
+	const allRunning = tx.all<RunningMessageRow>(
 		ENGINE_SQL.readRecipientRunningMessage,
 		{ agent: agent.agentId },
 	);
+	// FLY-1563: the open dispatch attempt does not block the transient lane —
+	// the ONE scoped relaxation of the per-recipient serial rule (lead ruling).
+	const running = options?.beyondInjectedAssignment
+		? allRunning.filter((row) => row.source_kind !== "dag_task_dispatch")
+		: allRunning;
 	if (running.length > 1) {
 		throw new FenceViolation(
 			`recipient ${agent.agentId} has multiple running attempts`,

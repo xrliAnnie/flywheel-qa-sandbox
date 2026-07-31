@@ -79,5 +79,9 @@ export {
 	recordExternalEffectIntentTx,
 	rollbackGateCas,
 } from "./rollback-fence.js";
-export { CANDIDATE_SQL, DETECTOR_SQL } from "./sql/candidates.js";
+export {
+	CANDIDATE_SQL,
+	CANDIDATE_SQL_BEYOND_ASSIGNMENT,
+	DETECTOR_SQL,
+} from "./sql/candidates.js";
 export type { KernelOpenOptions, MigrateOptions } from "./types.js";

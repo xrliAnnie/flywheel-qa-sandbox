@@ -39,7 +39,21 @@ import type { DagPorts } from "./types.js";
  */
 export interface SessionDeliveryPort {
 	paste(sessionRef: string, text: string): Promise<void>;
-	/** FLY-1547: is the session's official channel (mailbox MCP) healthy? An
+	/** FLY-1563 ③: paste into a LEAD's terminal. A lead has no derivable tmux
+	 * session name — its address is the pid its registration recorded (the
+	 * agents.session_binding), resolved to the hosting pane at delivery time.
+	 * pidStart is the binding's start identity: the implementation MUST refuse
+	 * a pid whose live start identity differs (pid reuse would otherwise paste
+	 * into a stranger's pane, advance the cursor, and silence the real lead —
+	 * codex R1 HIGH-1). Absent method = the port cannot reach leads; the bell
+	 * fails loud. */
+	leadPaste?(
+		agentId: string,
+		pid: number,
+		pidStart: string,
+		text: string,
+	): Promise<void>;
+	/** FLY-1547: is the recipient's official channel (mailbox MCP) healthy? An
 	 * absent probe means "no official channel exists" → last-resort paste. */
 	channelHealthy?(sessionRef: string): Promise<boolean>;
 	/** FLY-1547 §2.6: ring a remote-attached codex session through its own
@@ -73,6 +87,17 @@ interface PendingSessionRow {
 	pending_total: number;
 	max_seq: number;
 	oldest_kind: string;
+	/** FLY-1563: the registered lead's pane pid + process start identity
+	 * (agents.session_binding); NULL for runner sessions, whose address is
+	 * derived from the session ref. */
+	lead_pid: number | null;
+	lead_pid_start: string | null;
+}
+
+/** The two recipient namespaces never collide: `registerAgentTx` structurally
+ * refuses `v2dag:` lead ids, and every runner session ref carries the prefix. */
+function isRunnerSessionRecipient(toAgent: string): boolean {
+	return toAgent.startsWith("v2dag:");
 }
 
 interface BellCursorData {
@@ -83,13 +108,20 @@ interface BellCursorData {
 	rering_count?: number;
 }
 
-export function formatBellText(row: {
-	pendingTotal: number;
-	oldestKind: string;
-}): string {
+export function formatBellText(
+	row: {
+		pendingTotal: number;
+		oldestKind: string;
+	},
+	recipient: "session" | "lead" = "session",
+): string {
+	const pull =
+		recipient === "lead"
+			? "内容不随铃投递:用 flywheel-v2-mailbox MCP 的 next 工具取信;没有 MCP 面时用 CLI(next --agent <你的 lead id> --delivery-credential-file <register-lead 落盘的凭据文件>)。取信即留读痕;FYI 读即销账(ack),runner_ask 先回信(enqueue ask_response)再 settle。"
+			: "内容不随铃投递:用 `next --session $FLYWHEEL_V2_SESSION_REF`(经 FLYWHEEL_V2_CLIENT_CLI)取信;取信即留读痕,办完按 envelope 协议 settle。";
 	return [
 		`[flywheel-v2 mailbox bell] 你有 ${row.pendingTotal} 封新信 (最老 kind=${row.oldestKind})。`,
-		"内容不随铃投递:用 `next --session $FLYWHEEL_V2_SESSION_REF`(经 FLYWHEEL_V2_CLIENT_CLI)取信;取信即留读痕,办完按 envelope 协议 settle。",
+		pull,
 	].join("\n");
 }
 
@@ -105,6 +137,15 @@ export async function ringSessionDoorbells(
 	};
 	const delivery = ports.sessionDelivery;
 	if (!delivery) return result;
+	// FLY-1563 (founder directive): the bell is addressed by RECIPIENT, not by
+	// namespace — the old `substr(m.to_agent,1,6)='v2dag:'` filter plus the
+	// activations join structurally excluded every lead, which is why a runner
+	// ask never woke its lead. Addressability now follows the recipient family:
+	//  - runner session (`v2dag:` ref): a live activation with a session
+	//    binding, exactly as before;
+	//  - lead: a REGISTERED agents row (kind='lead') whose session binding
+	//    carries the pane pid. A provisioned-only lead (generation 0, no
+	//    binding) has no pane to ring — its mail waits for its own pull.
 	const rows = kernel.read((tx) =>
 		tx.all<PendingSessionRow>(
 			`SELECT m.to_agent,
@@ -115,16 +156,25 @@ export async function ringSessionDoorbells(
 			            AND oldest.source_kind<>'dag_task_dispatch'
 			            AND NOT EXISTS(SELECT 1 FROM processing_attempts pa
 			                            WHERE pa.message_uid=oldest.message_uid)
-			          ORDER BY oldest.seq LIMIT 1) AS oldest_kind
+			          ORDER BY oldest.seq LIMIT 1) AS oldest_kind,
+			        (SELECT CAST(json_extract(ag.session_binding,'$.pid') AS INTEGER)
+			           FROM agents ag WHERE ag.agent_id=m.to_agent) AS lead_pid,
+			        (SELECT json_extract(ag.session_binding,'$.pid_start')
+			           FROM agents ag WHERE ag.agent_id=m.to_agent) AS lead_pid_start
 			   FROM mailbox m
-			   JOIN activations act
-			     ON act.session_ref=m.to_agent AND act.state='active'
 			  WHERE m.state='pending'
-			    AND substr(m.to_agent,1,6)='v2dag:'
 			    AND m.source_kind<>'dag_task_dispatch'
-			    AND act.session_binding IS NOT NULL
 			    AND NOT EXISTS(SELECT 1 FROM processing_attempts pa
 			                    WHERE pa.message_uid=m.message_uid)
+			    AND ((substr(m.to_agent,1,6)='v2dag:'
+			          AND EXISTS(SELECT 1 FROM activations act
+			                      WHERE act.session_ref=m.to_agent
+			                        AND act.state='active'
+			                        AND act.session_binding IS NOT NULL))
+			      OR (substr(m.to_agent,1,6)<>'v2dag:'
+			          AND EXISTS(SELECT 1 FROM agents ag
+			                      WHERE ag.agent_id=m.to_agent AND ag.kind='lead'
+			                        AND ag.session_binding IS NOT NULL)))
 			  GROUP BY m.to_agent
 			  ORDER BY m.to_agent`,
 		),
@@ -210,10 +260,14 @@ async function ringOneSession(
 				return;
 			}
 		}
-		const bellText = formatBellText({
-			pendingTotal: row.pending_total,
-			oldestKind: row.oldest_kind,
-		});
+		const isRunnerSession = isRunnerSessionRecipient(row.to_agent);
+		const bellText = formatBellText(
+			{
+				pendingTotal: row.pending_total,
+				oldestKind: row.oldest_kind,
+			},
+			isRunnerSession ? "session" : "lead",
+		);
 		// FLY-1547 §2.5: the codex turn consumes tokens, so its external effect
 		// rides the intent/outcome ledger with a stable key that doubles as the
 		// daemon-side clientUserMessageId — a crash replay cannot double-ring.
@@ -221,21 +275,41 @@ async function ringOneSession(
 			rering === 0
 				? `bell:${row.to_agent}:${row.max_seq}`
 				: `bell:${row.to_agent}:${row.max_seq}#r${rering}`;
-		let channel: "codex_turn" | "paste_pointer" = "paste_pointer";
+		let channel: "codex_turn" | "paste_pointer" | "lead_paste" =
+			"paste_pointer";
 		try {
-			let rung = false;
-			if (delivery.codexBell) {
-				kernel.write("v2dag.doorbell.bell-intent", (tx) => {
-					recordExternalEffectIntentTx(tx, {
-						effectKey,
-						family: "bell",
-						nowIso: ports.clock.nowIso(),
+			if (!isRunnerSession) {
+				// FLY-1563: the lead route. The codex daemon channel is session-scoped
+				// and never applies; the pane is located by the registered pid, whose
+				// start identity travels along so the port can refuse pid reuse.
+				if (!delivery.leadPaste) {
+					throw new Error("session delivery port cannot paste to a lead pane");
+				}
+				if (row.lead_pid === null || row.lead_pid_start === null) {
+					throw new Error("lead recipient binding carries no pid identity");
+				}
+				await delivery.leadPaste(
+					row.to_agent,
+					row.lead_pid,
+					row.lead_pid_start,
+					bellText,
+				);
+				channel = "lead_paste";
+			} else {
+				let rung = false;
+				if (delivery.codexBell) {
+					kernel.write("v2dag.doorbell.bell-intent", (tx) => {
+						recordExternalEffectIntentTx(tx, {
+							effectKey,
+							family: "bell",
+							nowIso: ports.clock.nowIso(),
+						});
 					});
-				});
-				rung = await delivery.codexBell(row.to_agent, bellText, effectKey);
-				if (rung) channel = "codex_turn";
+					rung = await delivery.codexBell(row.to_agent, bellText, effectKey);
+					if (rung) channel = "codex_turn";
+				}
+				if (!rung) await delivery.paste(row.to_agent, bellText);
 			}
-			if (!rung) await delivery.paste(row.to_agent, bellText);
 		} catch (error) {
 			result.failed += 1;
 			const message = error instanceof Error ? error.message : String(error);

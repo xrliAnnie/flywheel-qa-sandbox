@@ -65,6 +65,14 @@ export interface RunnerLauncherPort {
 	activate?(sessionRef: string): Promise<void>;
 	/** FLY-1544 doorbell: paste text into the session terminal (tmux paste). */
 	deliver?(sessionRef: string, text: string): Promise<void>;
+	/** FLY-1563 ③: paste text into a registered LEAD's pane (located by pid;
+	 * pidStart is verified against the live process — pid reuse guard). */
+	deliverLead?(
+		agentId: string,
+		pid: number,
+		pidStart: string,
+		text: string,
+	): Promise<void>;
 	/** FLY-1547: is the session's official mailbox channel healthy? */
 	channelHealthy?(sessionRef: string): Promise<boolean>;
 	/** FLY-1547 §2.6: official codex bell (remote-attached sessions only). */
@@ -608,6 +616,7 @@ export function createRuntimeDagPorts(
 		requestStop: (sessionRef) => options.launcher.stop(sessionRef),
 	};
 	const deliver = options.launcher.deliver?.bind(options.launcher);
+	const deliverLead = options.launcher.deliverLead?.bind(options.launcher);
 	const channelHealthy = options.launcher.channelHealthy?.bind(
 		options.launcher,
 	);
@@ -672,6 +681,7 @@ export function createRuntimeDagPorts(
 			? {
 					sessionDelivery: {
 						paste: deliver,
+						...(deliverLead ? { leadPaste: deliverLead } : {}),
 						...(channelHealthy ? { channelHealthy } : {}),
 						...(codexBell ? { codexBell } : {}),
 					},

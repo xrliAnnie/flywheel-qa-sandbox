@@ -1605,10 +1605,18 @@ export class V2Host {
 		requireActiveRunnerAgent(this.#kernel, sessionRef);
 		const deadline = Date.now() + 10_000;
 		for (;;) {
+			// FLY-1563 (lead ruling): the session pull looks PAST the spawn-injected
+			// assignment attempt — it stays open for the whole task by design, and
+			// treating its presence as "settle first" made every mid-task pull fence
+			// out, so a runner could never read its lead's ask_response while
+			// working. Later non-dispatch mail is served on its own transient
+			// attempt; the assignment still settles only through the runner's one
+			// final proposal.
 			const polled = pollRunnerDelivery(
 				this.#kernel,
 				this.#runtime,
 				sessionRef,
+				{ beyondInjectedAssignment: true },
 			);
 			if (polled.status === "available") {
 				const prepared = this.#prepareDelivery(polled.message, polled.handle);
@@ -1618,7 +1626,9 @@ export class V2Host {
 					// succeeded, re-polled by the same session, is a lost handoff —
 					// crash-settle and immediately re-serve under a new attempt. The
 					// spawn-injected assignment is exempt: its envelope lives durably in
-					// the spawn prompt, so a re-poll is not loss evidence.
+					// the spawn prompt, so a re-poll is not loss evidence. (With the
+					// FLY-1563 beyond-assignment poll this branch is defensive — the
+					// dispatch row is no longer served here at all.)
 					if (polled.message.sourceKind === "dag_task_dispatch") {
 						throw new FenceViolation(
 							`delivery for attempt ${polled.handle.attemptUid} was already handed to this session; settle it before pulling again, or report the ambiguity`,

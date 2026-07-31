@@ -1,5 +1,6 @@
 import {
 	CANDIDATE_SQL,
+	CANDIDATE_SQL_BEYOND_ASSIGNMENT,
 	FenceViolation,
 	type Kernel,
 	type ReadTx,
@@ -47,14 +48,31 @@ function toCandidate(lane: CandidateLane, row: CandidateRow): Candidate {
 	};
 }
 
+/**
+ * FLY-1563 (lead ruling): the ONE relaxation of the per-recipient serial rule.
+ * A runner's spawn-injected `dag_task_dispatch` attempt runs from spawn to the
+ * final settling proposal; with `beyondInjectedAssignment` the session's own
+ * pulls look PAST that open attempt so later non-dispatch mail (ask_response,
+ * instruction) is reachable mid-task. Everything else — same-letter
+ * settle-before-repull, `pa_one_running`, lead semantics — is untouched.
+ */
+export interface PollOnceOptions {
+	beyondInjectedAssignment?: boolean;
+}
+
 function readCandidates(
 	tx: ReadTx,
 	agentId: string,
 	now: string,
+	options?: PollOnceOptions,
 ): CandidateSet {
 	const candidates: CandidateSet = {};
 	for (const lane of ["F1", "F2", "N1", "N2"] as const) {
-		const row = tx.get<CandidateRow>(CANDIDATE_SQL[lane], {
+		const sql =
+			options?.beyondInjectedAssignment && (lane === "N1" || lane === "N2")
+				? CANDIDATE_SQL_BEYOND_ASSIGNMENT[lane]
+				: CANDIDATE_SQL[lane];
+		const row = tx.get<CandidateRow>(sql, {
 			agent: agentId,
 			now,
 		});
@@ -66,11 +84,15 @@ function readCandidates(
 function readRunning(
 	tx: ReadTx,
 	agentId: string,
+	options?: PollOnceOptions,
 ): RunningMessageRow | undefined {
-	const rows = tx.all<RunningMessageRow>(
+	const all = tx.all<RunningMessageRow>(
 		ENGINE_SQL.readRecipientRunningMessage,
 		{ agent: agentId },
 	);
+	const rows = options?.beyondInjectedAssignment
+		? all.filter((row) => row.source_kind !== "dag_task_dispatch")
+		: all;
 	if (rows.length > 1) {
 		throw new FenceViolation(
 			`recipient ${agentId} has multiple running attempts`,
@@ -164,11 +186,12 @@ export function pollOnce(
 	agent: RegisteredAgent,
 	founderStreak: number,
 	currentAttemptUid?: string,
+	options?: PollOnceOptions,
 ): PollOnceResult {
 	const fast = kernel.read((tx) => {
 		const config = readEngineConfigTx(tx);
 		const authority = requireCurrentAgentTx(tx, agent);
-		const running = readRunning(tx, agent.agentId);
+		const running = readRunning(tx, agent.agentId, options);
 		if (
 			running &&
 			currentAttemptUid === running.attempt_uid &&
@@ -188,7 +211,7 @@ export function pollOnce(
 			return { config, needsWrite: true as const };
 		}
 		const selected = selectNext(
-			readCandidates(tx, agent.agentId, runtime.clock.nowIso()),
+			readCandidates(tx, agent.agentId, runtime.clock.nowIso(), options),
 			founderStreak,
 			runtime.clock.nowMs(),
 			config,
@@ -217,7 +240,7 @@ export function pollOnce(
 	return kernel.write("consume.poll", (tx) => {
 		const config = readEngineConfigTx(tx);
 		const authority = requireCurrentAgentTx(tx, agent);
-		const running = readRunning(tx, agent.agentId);
+		const running = readRunning(tx, agent.agentId, options);
 		if (heartbeatDue(authority.last_poll_at, runtime.clock.nowMs(), config)) {
 			casHeartbeatTx(tx, runtime, agent);
 		}
@@ -241,7 +264,7 @@ export function pollOnce(
 		}
 
 		const selected = selectNext(
-			readCandidates(tx, agent.agentId, runtime.clock.nowIso()),
+			readCandidates(tx, agent.agentId, runtime.clock.nowIso(), options),
 			founderStreak,
 			runtime.clock.nowMs(),
 			config,
@@ -260,6 +283,7 @@ export function pollOnce(
 			runtime,
 			agent,
 			selected.pick.messageUid,
+			options,
 		);
 		if (!started) {
 			return {

@@ -6,7 +6,11 @@ export type {
 } from "./candidates.js";
 export { selectNext } from "./candidates.js";
 export { readEngineConfigTx } from "./config.js";
-export { pollOnce, refreshHeartbeat } from "./consume-loop.js";
+export {
+	type PollOnceOptions,
+	pollOnce,
+	refreshHeartbeat,
+} from "./consume-loop.js";
 export { EngineDriver, type EngineDriverOptions } from "./driver.js";
 export type {
 	EnqueueResult,

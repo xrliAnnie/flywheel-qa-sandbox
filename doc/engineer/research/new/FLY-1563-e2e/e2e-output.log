@@ -1,0 +1,80 @@
+no server running on /private/tmp/tmux-501/fly1563e2e
+[e2e] host up at /tmp/fly1563-e2e-h8bQWa/host.sock root: /tmp/fly1563-e2e-h8bQWa
+[e2e] lead pane pid: 43266
+[e2e] lead registered: {"kind":"lead","agentId":"e2e-lead","instanceId":"e2e-lead-1","generation":1,"sessionBinding":{"v":1,"hostEpoch":"fly156
+[e2e] lead observed idle at 2026-07-31T04:53:51.042Z — releasing the ask
+[e2e] codex wake letter enqueued to v2dag:c69e8b11-296b-49e2-8d36-42747270fb5c:1:729f600b-a4d6-46b8-81a0-78e47cea242c
+
+[e2e] ---- runner-claude.log ----
+2026-07-31T04:53:34.686Z BOOT session=v2dag:b0a69d5f-9b49-4875-a14d-fdd825520dc5:1:911d6e10-0d3c-497a-ab82-d3142094d385 vendor=claude pid=43323
+2026-07-31T04:53:34.785Z ASSIGNMENT_HELD attempt=67d0bc35-ba28-4ddb-b80d-78290285482c#1 (deliberately NOT settled — mid-task shape)
+2026-07-31T04:53:51.475Z LEAD_IDLE_OBSERVED — sending the ask now
+2026-07-31T04:53:52.187Z ASK_SENT uid=5cd601d2-dd23-4dd9-8709-d4867cc7f1f0
+2026-07-31T04:53:54.555Z BELL_SEEN
+2026-07-31T04:53:55.454Z RECEIVED kind=ask_response message=4acefaec-fe8b-4c50-bb96-671faf66fd07 payload="{\"v\":1,\"uid\":\"5cd601d2-dd23-4dd9-8709-d4867cc7f1f0\",\"body\":\"bind port 4747\"}"
+{"status":"succeeded","proposalDigest":"7497be8e07928ba49234b3c71b9b2439c58d95e6b6d7f248884de624700f87e6"}
+2026-07-31T04:53:56.205Z SETTLED kind=ask_response message=4acefaec-fe8b-4c50-bb96-671faf66fd07
+2026-07-31T04:53:56.258Z REPLY_RECEIVED
+{"status":"succeeded","proposalDigest":"61beb40b32f4d628679418a079c92273a28486d5b820da797dcbabe5f98f3c67"}
+2026-07-31T04:53:57.082Z ASSIGNMENT_SETTLED
+
+[e2e] ---- lead.log ----
+2026-07-31T04:53:31.168Z BOOT lead=e2e-lead pid=43266
+2026-07-31T04:53:33.424Z BELL_SEEN
+2026-07-31T04:53:34.226Z RECEIVED kind=issue_opened message=79f85d45-9c80-4605-b585-e6a902c615da
+{"status":"succeeded","proposalDigest":"bfb58c8c6d078405e2f3c687afebe91b22c83b66676e45c46da536dbe3ac5d43"}
+2026-07-31T04:53:34.948Z SETTLED kind=issue_opened message=79f85d45-9c80-4605-b585-e6a902c615da
+2026-07-31T04:53:35.733Z RECEIVED kind=issue_opened message=5c2740b3-8704-43fd-b1bd-6a62badee6dd
+{"status":"succeeded","proposalDigest":"aba1c632bed34397780a19fd9f7d4e9cd3ba4dae9db8ad0e79d10eec4a9a5082"}
+2026-07-31T04:53:36.425Z SETTLED kind=issue_opened message=5c2740b3-8704-43fd-b1bd-6a62badee6dd
+2026-07-31T04:53:37.217Z RECEIVED kind=task_dispatched message=5caed448-4b19-4e09-a594-dd9227fffb6c
+{"status":"succeeded","proposalDigest":"42c60ee1576b6b74425267e3a575db2fef2560ce1fbab5d0861f5930d420fafa"}
+2026-07-31T04:53:37.931Z SETTLED kind=task_dispatched message=5caed448-4b19-4e09-a594-dd9227fffb6c
+2026-07-31T04:53:38.726Z RECEIVED kind=task_dispatched message=a74dbcbf-bd9d-4146-97ef-e5273d094ee0
+{"status":"succeeded","proposalDigest":"187c90d82a35f3dfa38f0886062058cb30028c068274b7e6b5770302f1ecd899"}
+2026-07-31T04:53:39.429Z SETTLED kind=task_dispatched message=a74dbcbf-bd9d-4146-97ef-e5273d094ee0
+Error: no delivery became available before timeout
+2026-07-31T04:53:50.168Z NEXT_EMPTY
+2026-07-31T04:53:52.586Z BELL_SEEN
+2026-07-31T04:53:53.374Z RECEIVED kind=runner_ask message=bf4741e5-0715-4819-9034-243187ee6b51
+{"status":"enqueued","messageUid":"4acefaec-fe8b-4c50-bb96-671faf66fd07"}
+2026-07-31T04:53:54.118Z REPLY_ENQUEUED uid=5cd601d2-dd23-4dd9-8709-d4867cc7f1f0 to=v2dag:b0a69d5f-9b49-4875-a14d-fdd825520dc5:1:911d6e10-0d3c-497a-ab82-d3142094d385
+{"status":"succeeded","proposalDigest":"3eca8e93175496931b885c7b74798955a989a5f661b9a69e07de9771e5fdc40d"}
+2026-07-31T04:53:54.890Z SETTLED kind=runner_ask message=bf4741e5-0715-4819-9034-243187ee6b51
+
+[e2e] ---- runner-codex.log ----
+2026-07-31T04:53:34.222Z BOOT session=v2dag:c69e8b11-296b-49e2-8d36-42747270fb5c:1:729f600b-a4d6-46b8-81a0-78e47cea242c vendor=codex pid=43378
+2026-07-31T04:53:34.316Z ASSIGNMENT_HELD attempt=f2351fe7-2133-432e-ac87-b6a719582939#1 (deliberately NOT settled — mid-task shape)
+2026-07-31T04:53:58.537Z BELL_SEEN
+2026-07-31T04:53:59.328Z RECEIVED kind=instruction message=01f6a722-15ab-444c-ab17-69595edb4086 payload="{\"v\":1,\"body\":\"codex wake probe\"}"
+{"status":"succeeded","proposalDigest":"24c6de03dff91c181982a0d965e6e08240df7e5f68607d51015d877efddd58a4"}
+2026-07-31T04:54:00.040Z SETTLED kind=instruction message=01f6a722-15ab-444c-ab17-69595edb4086
+2026-07-31T04:54:00.088Z CODEX_WAKE_COMPLETE
+
+[e2e] PASS step1: runner sent ask while HOLDING its unsettled assignment
+[e2e] PASS step2: IDLE lead (drained to NEXT_EMPTY, blocked on stdin) was woken by a fresh bell
+[e2e] PASS step2b: lead received the runner_ask only after that post-idle wake
+[e2e] PASS step3: lead answered (reply enqueued BEFORE settling the ask)
+[e2e] PASS step4: MID-TASK runner was woken and pulled the reply past its open assignment
+[e2e] PASS step4b: runner settled its assignment only AFTER the reply
+[e2e] PASS codex: bare-TUI codex-form session woken by the same bell and drained its letter
+[e2e] session_bell_rung events:
+    2026-07-31T04:53:33.417Z e2e-lead {"channel":"lead_paste","max_pending_seq":10,"pending_total":4,"session_ref":"e2e-lead"}
+    2026-07-31T04:53:52.583Z e2e-lead {"channel":"lead_paste","max_pending_seq":11,"pending_total":1,"session_ref":"e2e-lead"}
+    2026-07-31T04:53:54.554Z v2dag:b0a69d5f-9b49-4875-a14d-fdd825520dc5:1:911d6e10-0d3c-497a-ab82-d3142094d385 {"channel":"paste_pointer","max_pending_seq":12,"pending_total":1,"session_ref":"v2dag:b0a69d5f-9b49-4875-a14d-fdd825520dc5:1:911d6e10-0d3c-497a-ab82-d3142094d385"}
+    2026-07-31T04:53:58.533Z v2dag:c69e8b11-296b-49e2-8d36-42747270fb5c:1:729f600b-a4d6-46b8-81a0-78e47cea242c {"channel":"paste_pointer","max_pending_seq":13,"pending_total":1,"session_ref":"v2dag:c69e8b11-296b-49e2-8d36-42747270fb5c:1:729f600b-a4d6-46b8-81a0-78e47cea242c"}
+[e2e] PASS durable wake record: lead bell rung via lead_paste channel
+[e2e] PASS durable wake record: runner session bells rung via paste_pointer
+
+[e2e] ---- timeline ----
+  t0 runner ASK_SENT: "2026-07-31T04:53:52.187Z"
+  t1 lead BELL_SEEN (wake): ["2026-07-31T04:53:33.424Z","2026-07-31T04:53:52.586Z"]
+  t2 lead runner_ask RECEIVED: "2026-07-31T04:53:53.374Z"
+  t3 lead REPLY_ENQUEUED: "2026-07-31T04:53:54.118Z"
+  t4 runner BELL_SEEN (wake): ["2026-07-31T04:53:54.555Z"]
+  t5 runner REPLY_RECEIVED: "2026-07-31T04:53:56.258Z"
+  t6 runner ASSIGNMENT_SETTLED: "2026-07-31T04:53:57.082Z"
+  tc codex CODEX_WAKE_COMPLETE: "2026-07-31T04:54:00.088Z"
+
+[e2e] ALL PASS
+[e2e] artifacts under /tmp/fly1563-e2e-h8bQWa

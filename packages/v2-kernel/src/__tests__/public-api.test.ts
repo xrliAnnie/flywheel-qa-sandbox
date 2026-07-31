@@ -30,6 +30,7 @@ describe("public package boundary", () => {
 			[
 				"ActionSerializationError",
 				"CANDIDATE_SQL",
+				"CANDIDATE_SQL_BEYOND_ASSIGNMENT",
 				"CasViolation",
 				"DEFAULT_V2_DB_PATH",
 				"DETECTOR_SQL",

@@ -2183,13 +2183,20 @@ V2_LEAD_CREDENTIAL_FILE="${FLYWHEEL_V2_LEAD_CREDENTIAL_FILE:-${HOME}/.flywheel/v
 if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
   log "${_LOCKED_ROLE_LABEL}: v2 mailbox MCP NOT registered"
 elif [ -f "$V2_MAILBOX_MCP_BIN" ] && [ -f "$V2_LEAD_CREDENTIAL_FILE" ]; then
+  # FLY-1563: the lease path MUST be launcher-derivable — the engine doorbell
+  # probes channelHealthy(leadId) = <state_root>/<sha256(leadId)>-mailbox-lease.json
+  # (same helper as runner sessions; mailboxLeasePath in tmux-runner-launcher.ts).
+  # state_root comes from the live runtime-config; fallback = the shipped default.
+  V2_STATE_ROOT="$(jq -r '.launcher.state_root // empty' "${HOME}/.flywheel/v2/runtime-config.json" 2>/dev/null || true)"
+  [ -n "$V2_STATE_ROOT" ] || V2_STATE_ROOT="${HOME}/.flywheel/v2/runner-state"
+  V2_LEASE_KEY="$(printf '%s' "$LEAD_ID" | shasum -a 256 | awk '{print $1}')"
   v2_mailbox_server=$(jq -n \
     --arg bin "$V2_MAILBOX_MCP_BIN" \
     --arg leadId "$LEAD_ID" \
     --arg cred "$V2_LEAD_CREDENTIAL_FILE" \
     --arg sock "${FLYWHEEL_V2_SOCKET:-${HOME}/.flywheel/v2/host.sock}" \
     --arg secret "${FLYWHEEL_V2_SECRET_PATH:-${HOME}/.flywheel/v2/host.secret}" \
-    --arg lease "${HOME}/.flywheel/v2/state/${LEAD_ID}-mailbox-lease.json" \
+    --arg lease "${V2_STATE_ROOT}/${V2_LEASE_KEY}-mailbox-lease.json" \
     '{
       "flywheel-v2-mailbox": {
         command: "node",

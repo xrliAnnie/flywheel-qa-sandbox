@@ -489,6 +489,138 @@ describe("v2-native tmux runner launcher", () => {
 		await target.launcher.stop(target.request.sessionRef);
 	});
 
+	it("FLY-1563 ③: delivers a lead bell into the pane resolved by pid ancestry", async () => {
+		const target = fixture("claude");
+		const commandRun = target.command.run.bind(target.command);
+		// The lead claude process (4242) is a child of the pane shell (900),
+		// which tmux reports as pane %7. An unrelated pane %2 must not match.
+		target.command.run = async (file, args) => {
+			target.calls.push({ file, args });
+			if (args.includes("list-panes")) {
+				return { stdout: "555 %2\n900 %7\n", stderr: "" };
+			}
+			if (file === "/bin/ps") {
+				return { stdout: " 4242  900\n  900    1\n  555    1\n", stderr: "" };
+			}
+			return commandRun(file, args);
+		};
+		await target.launcher.deliverLead(
+			"flywheel-eng-lead",
+			4242,
+			"Mon Jul 28 01:00:00 2026",
+			"叮",
+		);
+		const paste = target.calls.find((call) =>
+			call.args.includes("paste-buffer"),
+		);
+		const sendKeys = target.calls.find((call) =>
+			call.args.includes("send-keys"),
+		);
+		expect(paste?.args).toContain("%7");
+		expect(sendKeys?.args).toContain("%7");
+		expect(sendKeys?.args).toContain("Enter");
+		// A runner session name is never derived for a lead.
+		expect(
+			target.calls.some((call) =>
+				call.args.some((arg) => arg.startsWith("=v2-")),
+			),
+		).toBe(false);
+	});
+
+	it("FLY-1563 (codex R1 HIGH-1): a recycled pid never takes the lead paste", async () => {
+		const target = fixture("claude", {
+			// The live process at 4242 reports a DIFFERENT start identity than the
+			// registration binding recorded — pid reuse.
+			processStart: (pid) => (pid === 4242 ? "Tue Jul 29 09:00:00 2026" : null),
+		});
+		const commandRun = target.command.run.bind(target.command);
+		target.command.run = async (file, args) => {
+			target.calls.push({ file, args });
+			if (args.includes("list-panes")) {
+				return { stdout: "4242 %7\n", stderr: "" };
+			}
+			if (file === "/bin/ps") {
+				return { stdout: " 4242    1\n", stderr: "" };
+			}
+			return commandRun(file, args);
+		};
+		await expect(
+			target.launcher.deliverLead(
+				"flywheel-eng-lead",
+				4242,
+				"Mon Jul 28 01:00:00 2026",
+				"叮",
+			),
+		).rejects.toThrow(/start identity mismatch/);
+		expect(
+			target.calls.some((call) => call.args.includes("paste-buffer")),
+		).toBe(false);
+	});
+
+	it("FLY-1563 (codex R1 M-2): a lead lease is probed even without runner mailbox wiring", async () => {
+		// No mailboxMcpPath: runner sessions stay ineligible, but a LEAD channel
+		// is enabled by claude-lead.sh independently — its lease must be honored
+		// or the doorbell double-rings a healthy channel.
+		const target = fixture("claude");
+		const { mailboxLeasePath } = await import("../tmux-runner-launcher.js");
+		const { writeLease, touchLease } = await import(
+			"flywheel-inbox-mcp/channel-lease"
+		);
+		mkdirSync(target.stateRoot, { recursive: true });
+		const leasePath = mailboxLeasePath(target.stateRoot, "flywheel-eng-lead");
+		writeLease(leasePath, { pid: process.pid });
+		touchLease(leasePath, new Date().toISOString());
+		expect(await target.launcher.channelHealthy("flywheel-eng-lead")).toBe(
+			true,
+		);
+		expect(
+			await target.launcher.channelHealthy(
+				"v2dag:11111111-1111-4111-8111-111111111111:1:22222222-2222-4222-8222-222222222222",
+			),
+		).toBe(false);
+		// A stale lease (old lastOkAt) is not healthy either.
+		touchLease(leasePath, new Date(Date.now() - 60_000).toISOString());
+		expect(await target.launcher.channelHealthy("flywheel-eng-lead")).toBe(
+			false,
+		);
+	});
+
+	it("FLY-1563 ③: lead delivery fails loud on a dead pid or a process outside tmux", async () => {
+		const target = fixture("claude");
+		const commandRun = target.command.run.bind(target.command);
+		target.command.run = async (file, args) => {
+			target.calls.push({ file, args });
+			if (args.includes("list-panes")) {
+				return { stdout: "900 %7\n", stderr: "" };
+			}
+			if (file === "/bin/ps") {
+				return { stdout: " 7777    1\n  900    1\n", stderr: "" };
+			}
+			return commandRun(file, args);
+		};
+		// Pid absent from the process table: pane resolution fails loud.
+		await expect(
+			target.launcher.deliverLead(
+				"flywheel-eng-lead",
+				4242,
+				"Mon Jul 28 01:00:00 2026",
+				"叮",
+			),
+		).rejects.toThrow(/is not alive/);
+		// Alive but hosted by no pane (walks 7777 → 1 without a pane hit).
+		await expect(
+			target.launcher.deliverLead(
+				"flywheel-eng-lead",
+				7777,
+				"Mon Jul 28 01:00:00 2026",
+				"叮",
+			),
+		).rejects.toThrow(/no tmux pane hosts/);
+		expect(
+			target.calls.some((call) => call.args.includes("paste-buffer")),
+		).toBe(false);
+	});
+
 	it("fails closed before tmux for unknown vendors or a content/pin mismatch", async () => {
 		const unknown = fixture("other");
 		await expect(unknown.launcher.launch(unknown.request)).rejects.toThrow(
@@ -798,6 +930,67 @@ describe("v2-native tmux runner launcher", () => {
 			expect(assignment?.text).toContain("Flywheel v2 runner bootstrap");
 			await target.launcher.stop(target.request.sessionRef);
 			expect(daemonStopped).toBe(1);
+		});
+
+		it("FLY-1563 acceptance: the bell WAKES a remote-attached codex session as a daemon turn", async () => {
+			const turns: Array<{ threadId: string; text: string; id?: string }> = [];
+			const fakeHandle = {
+				child: { pid: 4242 },
+				socketPath: "/tmp/fake.sock",
+				stop: () => {},
+				ensureDead: async () => true,
+			};
+			const fakeClient = {
+				initialize: async () => {},
+				readThread: async () => ({
+					turns: turns.map((turn) => ({
+						status: "completed",
+						items: [{ type: "userMessage", clientId: turn.id ?? null }],
+					})),
+				}),
+				startThread: async () => "thread-99",
+				startTurn: async (
+					threadId: string,
+					text: string,
+					_t?: number,
+					id?: string,
+				) => {
+					turns.push({ threadId, text, ...(id ? { id } : {}) });
+				},
+				close: () => {},
+			};
+			const target = fixture("codex", {
+				mailboxMcpPath: "/opt/flywheel/mailbox-mcp/server-main.js",
+				codexRemotePorts: {
+					spawnDaemon: (async () => fakeHandle) as never,
+					connect: (async () => ({})) as never,
+					clientFactory: () => fakeClient as never,
+					processGroupOf: () => 4242,
+				},
+			});
+			await target.launcher.launch(target.request);
+			const before = turns.length;
+			const rung = await target.launcher.codexBell(
+				target.request.sessionRef,
+				"[flywheel-v2 mailbox bell] 你有 1 封新信",
+				"bell:session:7",
+			);
+			expect(rung).toBe(true);
+			const bell = turns
+				.slice(before)
+				.find((turn) => turn.id === "bell:session:7");
+			expect(bell?.text).toContain("mailbox bell");
+			expect(bell?.threadId).toBe("thread-99");
+			// A session with no daemon record reports false — the doorbell falls to
+			// the vendor-neutral pointer paste for the bare TUI form.
+			expect(
+				await target.launcher.codexBell(
+					"v2dag:99999999-9999-4999-8999-999999999999:1:88888888-8888-4888-8888-888888888888",
+					"bell",
+					"bell:other:1",
+				),
+			).toBe(false);
+			await target.launcher.stop(target.request.sessionRef);
 		});
 	});
 });
