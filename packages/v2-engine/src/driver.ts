@@ -61,6 +61,13 @@ interface RunningRow {
 
 export interface EngineDriverOptions {
 	requireProposalCapability?: boolean;
+	/**
+	 * FLY-1547 §2.2: who pulls a LEAD's mailbox. "driver" (default) keeps the
+	 * historical prefetch loop; "host" retires it so the host's `next_delivery`
+	 * is the claim boundary (claim-at-next — the processing attempt IS the read
+	 * receipt and must be created by the recipient's own pull).
+	 */
+	leadMailboxPull?: "driver" | "host";
 }
 
 function sameAgent(left: RegisteredAgent, right: RegisteredAgent): boolean {
@@ -110,6 +117,7 @@ export class EngineDriver {
 	readonly #locks = new Map<string, Promise<unknown>>();
 	readonly #requireProposalCapability: boolean;
 	#stopped = false;
+	readonly #leadMailboxPull: "driver" | "host";
 
 	constructor(
 		kernel: Kernel,
@@ -120,6 +128,7 @@ export class EngineDriver {
 		this.#runtime = runtime;
 		this.#requireProposalCapability =
 			options.requireProposalCapability ?? false;
+		this.#leadMailboxPull = options.leadMailboxPull ?? "driver";
 	}
 
 	registerLead(
@@ -153,7 +162,10 @@ export class EngineDriver {
 			};
 			this.#states.set(agentId, state);
 			this.#startHeartbeat(state);
-			this.#ensureLeadHandler(state);
+			// FLY-1547 §2.2: in host-pull mode the lead mailbox is claimed at
+			// `next` by the host, never prefetched here — the read receipt must be
+			// created by the recipient's own authenticated pull.
+			if (this.#leadMailboxPull === "driver") this.#ensureLeadHandler(state);
 			return agent;
 		});
 	}
@@ -197,7 +209,7 @@ export class EngineDriver {
 			};
 			this.#states.set(agentId, state);
 			this.#startHeartbeat(state);
-			this.#ensureLeadHandler(state);
+			if (this.#leadMailboxPull === "driver") this.#ensureLeadHandler(state);
 			return agent;
 		});
 	}

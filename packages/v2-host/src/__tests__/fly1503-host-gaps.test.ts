@@ -606,7 +606,7 @@ describe("Codex R3 HIGH-2 — pull delivery is bound to the registration that ea
 				sourceId: id,
 				payload: JSON.stringify({ text: id }),
 				toAgent: "lead-runtime",
-				kind: "founder_message",
+				kind: "instruction",
 				retentionClass: "business",
 			},
 		});

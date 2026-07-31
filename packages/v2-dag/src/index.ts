@@ -16,7 +16,8 @@ export {
 } from "./dispatch.js";
 export {
 	type DoorbellResult,
-	formatDoorbellText,
+	formatBellText,
+	OVERDUE_RERING_S,
 	ringSessionDoorbells,
 	type SessionDeliveryPort,
 } from "./doorbell.js";
@@ -37,6 +38,12 @@ export {
 export { reconcileShipActions } from "./reconcile.js";
 export { resumeActivation } from "./resume.js";
 export { reworkTask } from "./rework.js";
+export {
+	CLASSIFIED_MAILBOX_KINDS,
+	MAILBOX_SEND_KINDS,
+	type SettlementDisposition,
+	settlementDisposition,
+} from "./settlement-disposition.js";
 export { CI_POLL_MS, CI_WAIT_MS, executeShip } from "./ship.js";
 export { terminalizeSessionMailboxTx } from "./terminal-mail.js";
 export type {

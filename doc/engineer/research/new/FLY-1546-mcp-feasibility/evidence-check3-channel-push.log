@@ -1,0 +1,34 @@
+
+ ▐▛███▜▌   Claude Code v2.1.220
+▝▜█████▛▘  Haiku 4.5 · Claude Max
+  ▘▘ ▝▝    ~/Dev/flywheel-FLY-1547
+
+ ⚠ CLAUDE.md is over the 40.0k-char limit (52.2k chars) · /memory to free up context
+
+ ▎ Fable 5 is now a standard part of your Max plan
+ ▎ You can use up to 50% of your weekly usage limit on Fable 5. If you hit your limit, you can
+ ▎ continue on Fable 5 with usage credits. Fable 5 draws down usage faster than Opus 4.8. Run
+ ▎ /model and select Fable to use it. Learn more:
+ ▎ https://support.claude.com/en/articles/15424964-claude-fable-5-promotional-access
+   +1 more · /status
+
+❯ You are a channel-protocol spike test session. Say READY and wait. When a channel message
+  arrives, respond with CHANNEL-RECEIVED followed by its exact content.
+
+⏺ READY
+
+✻ Baked for 6s
+
+← fly1546-spike: FLY-1546 push check: 你有新信 (message_uid=spike-proof-1785…
+
+⏺ CHANNEL-RECEIVED
+
+  FLY-1546 push check: 你有新信 (message_uid=spike-proof-1785444343)。这是经
+  notifications/claude/channel 推进来的测试消息。
+
+✻ Brewed for 2s
+
+───────────────────────────────────────────────────────────────────────────────────────────────────
+❯ send another test message
+───────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

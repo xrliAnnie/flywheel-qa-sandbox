@@ -33,6 +33,8 @@ describe("v2-native tmux runner launcher", () => {
 			cmuxEventFilePath?: (root: string) => string;
 			context?: Partial<RuntimeLaunchRequest["context"]>;
 			model?: string;
+			mailboxMcpPath?: string;
+			codexRemotePorts?: import("../codex-remote.js").CodexRemotePorts;
 		} = {},
 	): {
 		request: RuntimeLaunchRequest;
@@ -129,6 +131,12 @@ describe("v2-native tmux runner launcher", () => {
 			now: () => new Date("2026-07-28T01:00:00.000Z"),
 			processStart:
 				overrides.processStart ?? (() => "Mon Jul 28 01:00:00 2026"),
+			...(overrides.mailboxMcpPath
+				? { mailboxMcpPath: overrides.mailboxMcpPath }
+				: {}),
+			...(overrides.codexRemotePorts
+				? { codexRemotePorts: overrides.codexRemotePorts }
+				: {}),
 		});
 		return {
 			request: {
@@ -340,6 +348,71 @@ describe("v2-native tmux runner launcher", () => {
 		} finally {
 			rmSync(scratch, { recursive: true, force: true });
 		}
+	});
+
+	// R5-B1: a failed assignment send is never terminal — the done-latch is set
+	// only after sendCodexTurn resolves, so the next coordinator tick retries
+	// (and the reconcile inside sendCodexTurn keeps the retry single-effect).
+	it("retries the assignment on the next activation after a failed send", async () => {
+		const turns: Array<{ threadId: string; text: string; id?: string }> = [];
+		let failNextStart = false;
+		let startAttempts = 0;
+		const fakeHandle = {
+			child: { pid: 4242 },
+			socketPath: "/tmp/fake.sock",
+			stop: () => {},
+			ensureDead: async () => true,
+		};
+		const fakeClient = {
+			initialize: async () => {},
+			readThread: async () => ({
+				turns: turns.map((turn) => ({
+					status: "completed",
+					items: [{ type: "userMessage", clientId: turn.id ?? null }],
+				})),
+			}),
+			startThread: async () => "thread-77",
+			startTurn: async (
+				threadId: string,
+				text: string,
+				_t?: number,
+				id?: string,
+			) => {
+				if (id?.startsWith("assignment:")) {
+					startAttempts += 1;
+					if (failNextStart) {
+						failNextStart = false;
+						throw new Error("transport dropped mid-send");
+					}
+				}
+				turns.push({ threadId, text, ...(id ? { id } : {}) });
+			},
+			close: () => {},
+		};
+		const target = fixture("codex", {
+			mailboxMcpPath: "/opt/flywheel/mailbox-mcp/server-main.js",
+			codexRemotePorts: {
+				spawnDaemon: (async () => fakeHandle) as never,
+				connect: (async () => ({})) as never,
+				clientFactory: () => fakeClient as never,
+				processGroupOf: () => 4242,
+			},
+		});
+		await target.launcher.launch(target.request);
+		failNextStart = true;
+		await target.launcher.activate(target.request.sessionRef);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(startAttempts).toBe(1); // first attempt failed
+		expect(turns.some((t) => t.id?.startsWith("assignment:"))).toBe(false);
+		// Next coordinator tick: reconcile finds nothing, retries, succeeds.
+		await target.launcher.activate(target.request.sessionRef);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(startAttempts).toBe(2);
+		expect(turns.some((t) => t.id?.startsWith("assignment:"))).toBe(true);
+		// Further activations are latched — no third attempt.
+		await target.launcher.activate(target.request.sessionRef);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(startAttempts).toBe(2);
 	});
 
 	it("starts Codex as a founder-visible TUI with the role and first envelope in its initial prompt", async () => {
@@ -610,6 +683,121 @@ describe("v2-native tmux runner launcher", () => {
 			process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE = closeRequestFile;
 			await target.launcher.stop(target.request.sessionRef);
 			expect(existsSync(closeRequestFile)).toBe(false);
+		});
+	});
+
+	// FLY-1547 (rebased onto the FLY-1550 launcher): mailbox service wiring.
+	describe("FLY-1547 mailbox wiring", () => {
+		it("registers the mailbox MCP + dev channel and materializes the stateRoot config", async () => {
+			const target = fixture("claude", {
+				mailboxMcpPath: "/opt/flywheel/mailbox-mcp/server-main.js",
+			});
+			await target.launcher.launch(target.request);
+			const create = target.calls.find((call) =>
+				call.args.includes("new-session"),
+			);
+			expect(create?.args).toContain("--mcp-config");
+			expect(create?.args).toContain("--dangerously-load-development-channels");
+			expect(create?.args).toContain("server:flywheel-v2-mailbox");
+			const configPath = create?.args[
+				(create?.args.indexOf("--mcp-config") ?? -1) + 1
+			] as string;
+			expect(configPath).toContain("-mailbox-mcp.json");
+			const materialized = JSON.parse(readFileSync(configPath, "utf8")) as {
+				mcpServers: Record<string, { env: Record<string, string> }>;
+			};
+			const server = materialized.mcpServers["flywheel-v2-mailbox"];
+			expect(server?.env).toMatchObject({
+				FLYWHEEL_V2_SESSION_REF: target.request.sessionRef,
+			});
+			expect(server?.env.FLYWHEEL_V2_MAILBOX_LEASE).toContain(
+				"-mailbox-lease.json",
+			);
+			// channelHealthy: no lease -> false; a fresh lease flips it.
+			await expect(
+				target.launcher.channelHealthy(target.request.sessionRef),
+			).resolves.toBe(false);
+			writeFileSync(
+				server?.env.FLYWHEEL_V2_MAILBOX_LEASE as string,
+				JSON.stringify({
+					pid: process.pid,
+					startedAt: new Date().toISOString(),
+					lastOkAt: new Date().toISOString(),
+				}),
+			);
+			await expect(
+				target.launcher.channelHealthy(target.request.sessionRef),
+			).resolves.toBe(true);
+		});
+
+		it("keeps the spawn byte-identical when no mailbox MCP is configured", async () => {
+			const target = fixture("claude");
+			await target.launcher.launch(target.request);
+			const create = target.calls.find((call) =>
+				call.args.includes("new-session"),
+			);
+			expect(create?.args).not.toContain("--mcp-config");
+			expect(create?.args.join(" ")).not.toContain(
+				"dangerously-load-development-channels",
+			);
+		});
+
+		it("launches codex in the remote-attached form and delivers the assignment at activation", async () => {
+			const turns: Array<{ threadId: string; text: string; id?: string }> = [];
+			let daemonStopped = 0;
+			const fakeHandle = {
+				child: { pid: 4242 },
+				socketPath: "/tmp/fake.sock",
+				stop: () => {
+					daemonStopped += 1;
+				},
+				ensureDead: async () => true,
+			};
+			const fakeClient = {
+				initialize: async () => {},
+				readThread: async () => ({
+					turns: turns.map((turn) => ({
+						status: "completed",
+						items: [{ type: "userMessage", clientId: turn.id ?? null }],
+					})),
+				}),
+				startThread: async () => "thread-99",
+				startTurn: async (
+					threadId: string,
+					text: string,
+					_t?: number,
+					id?: string,
+				) => {
+					turns.push({ threadId, text, ...(id ? { id } : {}) });
+				},
+				close: () => {},
+			};
+			const target = fixture("codex", {
+				mailboxMcpPath: "/opt/flywheel/mailbox-mcp/server-main.js",
+				codexRemotePorts: {
+					spawnDaemon: (async () => fakeHandle) as never,
+					connect: (async () => ({})) as never,
+					clientFactory: () => fakeClient as never,
+					processGroupOf: () => 4242,
+				},
+			});
+			await target.launcher.launch(target.request);
+			expect(turns[0]?.text).toContain("READY");
+			const create = target.calls.find((call) =>
+				call.args.includes("new-session"),
+			);
+			expect(create?.args).toContain("resume");
+			expect(create?.args).toContain("--remote");
+			expect(create?.args).toContain("thread-99");
+			await target.launcher.activate(target.request.sessionRef);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			const assignment = turns.find((turn) =>
+				turn.id?.startsWith("assignment:"),
+			);
+			expect(assignment).toBeDefined();
+			expect(assignment?.text).toContain("Flywheel v2 runner bootstrap");
+			await target.launcher.stop(target.request.sessionRef);
+			expect(daemonStopped).toBe(1);
 		});
 	});
 });

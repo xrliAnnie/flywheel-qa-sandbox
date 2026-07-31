@@ -205,6 +205,9 @@ describe("host runner bootstrap loop", () => {
 			admissionUid: "runner-injection-admission",
 			projectId: "runner-injection",
 			issueId: "FLY-RUNNER-INJECTION",
+			// FLY-1547: the title flows admission -> dag_issue envelope -> launch
+			// context (asserted below on the recorded launch request).
+			issueTitle: "Runner injection fixture",
 			notifyAgentId: "lead-runtime",
 			shipWorktreeId: "worktree",
 			worktrees: [
@@ -358,6 +361,19 @@ describe("host runner bootstrap loop", () => {
 					payload: "Which acceptance command should I run?",
 				},
 			})) as { uid: string };
+			// FLY-1547: a progress ask too — with founder push at its default (off),
+			// even progress must NOT be mirrored to the Discord outbox (asserted at
+			// the end of this test).
+			await sendHostRequest({
+				socketPath,
+				secret,
+				action: "ask",
+				payload: {
+					sessionRef: launchRequests[0]?.sessionRef,
+					askKind: "progress",
+					payload: "Milestone: bootstrap consumed.",
+				},
+			});
 			// FLY-1544 ③④ (founder ruling): lifecycle events are CC'd to the lead's
 			// mailbox, and lead consumption is read-=-settle. Drain the CC stream in
 			// order until the ask arrives, settling each copy immediately.
@@ -420,6 +436,60 @@ describe("host runner bootstrap loop", () => {
 					},
 				}),
 			).resolves.toMatchObject({ status: "enqueued" });
+			// FLY-1547: mailbox_status — the runner sees its own pending ask_response
+			// (and only through its own session fence); the shape carries the
+			// high-water mark the bell dedup keys on.
+			const runnerStatus = (await sendHostRequest({
+				socketPath,
+				secret,
+				action: "mailbox_status",
+				payload: { sessionRef: launchRequests[0]?.sessionRef },
+			})) as {
+				pendingTotal: number;
+				inProgressTotal: number;
+				maxPendingSeq: number | null;
+				kinds: Array<{ kind: string; askKind: string | null; count: number }>;
+				pendingUids: string[];
+				pendingUidsTruncated: boolean;
+			};
+			expect(launchRequests[0]?.context.issueTitle).toBe(
+				"Runner injection fixture",
+			);
+			expect(runnerStatus.pendingTotal).toBe(1);
+			expect(runnerStatus.kinds).toEqual([
+				expect.objectContaining({
+					kind: "ask_response",
+					askKind: null,
+					count: 1,
+				}),
+			]);
+			expect(runnerStatus.maxPendingSeq).toBeGreaterThan(0);
+			expect(runnerStatus.pendingUidsTruncated).toBe(false);
+			const leadStatus = (await sendHostRequest({
+				socketPath,
+				secret,
+				action: "mailbox_status",
+				payload: { deliveryCredential: lead.deliveryCredential },
+			})) as {
+				recipient: string;
+				kinds: Array<{ kind: string; askKind: string | null }>;
+			};
+			expect(leadStatus.recipient).toBe("lead-runtime");
+			// The progress ask is still pending in the lead mailbox and carries its
+			// ask_kind extracted from the payload (chapter classification input).
+			expect(leadStatus.kinds).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ kind: "runner_ask", askKind: "progress" }),
+				]),
+			);
+			await expect(
+				sendHostRequest({
+					socketPath,
+					secret,
+					action: "mailbox_status",
+					payload: { sessionRef: "v2dag:not-a-real-session:1:nope" },
+				}),
+			).rejects.toThrow(/no active activation/);
 			const runnerResponse = (await sendHostRequest({
 				socketPath,
 				secret,
@@ -432,9 +502,25 @@ describe("host runner bootstrap loop", () => {
 				uid: asked.uid,
 				body: "Run pnpm -r build.",
 			});
+			// FLY-1547 §2.1: re-polling without settling a pull-handed envelope is
+			// the self-evidence of a lost handoff — the same message comes back
+			// under a NEW attemptUid + capability instead of the old "already
+			// handed" wedge, and the recovery leaves a visible event.
+			const redelivered = (await sendHostRequest({
+				socketPath,
+				secret,
+				action: "next_delivery",
+				payload: { sessionRef: launchRequests[0]?.sessionRef },
+			})) as DeliveryEnvelope;
+			expect(redelivered.message.messageUid).toBe(
+				runnerResponse.message.messageUid,
+			);
+			expect(redelivered.handle.attemptUid).not.toBe(
+				runnerResponse.handle.attemptUid,
+			);
 			for (const [agentId, response] of [
 				["lead-runtime", leadEnvelope],
-				[launchRequests[0]?.sessionRef, runnerResponse],
+				[launchRequests[0]?.sessionRef, redelivered],
 			] as const) {
 				await expect(
 					sendHostRequest({
@@ -455,14 +541,36 @@ describe("host runner bootstrap loop", () => {
 			expect(
 				inspected.read(
 					(tx) =>
+						tx.get<{ payload: string }>(
+							"SELECT payload FROM events WHERE kind='delivery_handoff_lost'",
+						)?.payload,
+				),
+			).toContain(runnerResponse.handle.attemptUid);
+			// The crashed first attempt and the settled second are both on the
+			// ledger — at-least-once with full lineage, no silent loss.
+			expect(
+				inspected.read((tx) =>
+					tx
+						.all<{ outcome: string }>(
+							`SELECT outcome FROM processing_attempts
+							  WHERE message_uid=@uid ORDER BY attempt_no`,
+							{ uid: redelivered.message.messageUid },
+						)
+						.map((row) => row.outcome),
+				),
+			).toEqual(["crashed", "succeeded"]);
+			expect(
+				inspected.read(
+					(tx) =>
 						tx.get<{ state: string }>(
 							"SELECT state FROM mailbox WHERE source_kind='dag_task_dispatch'",
 						)?.state,
 				),
 			).toBe("applied");
-			// FLY-1544 ④: the ask was mirrored into the Discord outbox so it lands
-			// in the issue thread, alongside the lifecycle rows from admission and
-			// dispatch (③).
+			// FLY-1547 (founder directive): founder-facing push is DEFAULT OFF.
+			// No ask of any kind — including the progress ask sent above — reaches
+			// the Discord outbox; only the lifecycle rows from admission and
+			// dispatch (FLY-1544 ③) remain.
 			const outbox = inspected.read((tx) =>
 				tx.all<{ kind: string; source_kind: string; payload: string }>(
 					`SELECT kind,source_kind,payload FROM mailbox
@@ -472,14 +580,7 @@ describe("host runner bootstrap loop", () => {
 			expect(outbox.map((row) => row.kind)).toEqual([
 				"issue_opened",
 				"task_dispatched",
-				"runner_ask",
 			]);
-			expect(outbox[2]).toMatchObject({ source_kind: "runner_upstream_relay" });
-			expect(JSON.parse(outbox[2]?.payload as string)).toMatchObject({
-				ask_kind: "ask",
-				uid: asked.uid,
-				body: "Which acceptance command should I run?",
-			});
 			inspected.close();
 		} finally {
 			await host.close();

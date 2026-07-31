@@ -1,0 +1,38 @@
+{
+	"name": "flywheel-v2-mailbox-mcp",
+	"version": "0.1.0",
+	"description": "Flywheel v2 mailbox service \u2014 MCP tool face + Claude channel bell over the v2 host socket",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"bin": {
+		"flywheel-v2-mailbox-mcp": "./dist/server-main.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"test": "pnpm run build && vitest run",
+		"test:run": "pnpm run build && vitest run",
+		"test:watch": "vitest --watch",
+		"typecheck": "pnpm run build"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.25.2",
+		"flywheel-inbox-mcp": "workspace:*",
+		"flywheel-v2-cli": "workspace:*",
+		"flywheel-v2-dag": "workspace:*",
+		"zod": "4.3.6"
+	},
+	"devDependencies": {
+		"typescript": "^5.5.4",
+		"vitest": "^3.2.4"
+	}
+}

@@ -8,6 +8,7 @@ import {
 	type RegisteredAgent,
 } from "flywheel-v2-engine";
 import {
+	FENCE,
 	FenceViolation,
 	type Kernel,
 	recordActionIntent,
@@ -73,6 +74,10 @@ export const DELIVERY_PROTOCOL = {
 	// property is the ledger.
 	leadSettlement:
 		"a LEAD settles by message kind: a mechanical notice (lifecycle events such as issue_opened/task_dispatched/node_completed/pr_ready/issue_merged/issue_closed, and progress asks) is settled IMMEDIATELY on read (`ack`, an empty-effects submit). A runner_ask that requires an answer is settled ONLY AFTER the reply was sent (enqueue the ask_response first, then settle) -- an unanswered ask deliberately stays pending in the mailbox as the living todo; no receipt table, no second ledger",
+	// FLY-1547: the mailbox MCP tool face fulfils this SAME contract — no new
+	// semantics, only a friendlier surface.
+	mailboxMcp:
+		"when a `flywheel-v2-mailbox` MCP server is registered in your session, its tools map onto this exact contract: `next`→next_delivery (the pull IS the read receipt), `settle`→submit (FYI letters auto-ack on your next mailbox tool call; actionable letters need an explicit settle, with `settle({reply})` deriving the reply route from the letter itself), `send`→enqueue (always pass a dedupe_key and reuse it on retry), `ask`→ask, `status`→mailbox_status. The bell notification only announces mail — content always comes from `next`",
 	// FLY-1543 ④⑤: pull is the only post-spawn channel, in two forms.
 	pull: {
 		verb: "next",
@@ -247,6 +252,67 @@ export function prepareDelivery(
 	};
 }
 
+/**
+ * FLY-1547 §2.1: same-recipient re-poll is the self-evidence of a lost handoff.
+ *
+ * The protocol requires settle-before-next. When the same recipient polls
+ * again while a running processing attempt exists whose delivery action has
+ * already SUCCEEDED (the host frame flushed), the only legal reading is that
+ * the handoff chain (host frame → MCP/tool result → model) died after the
+ * flush. This settles that attempt as crashed in one transaction, releasing
+ * `pa_one_running` so the very next poll re-serves the SAME message under a
+ * NEW attemptUid + capability (the envelope redelivery clause, at-least-once).
+ *
+ * Deliberately NOT applied to `dag_task_dispatch` rows: the first envelope is
+ * durably embedded in the spawn prompt, so a re-poll is not evidence of loss —
+ * crash-settling it would silently kill the embedded capability of a healthy
+ * runner that polls before settling its assignment.
+ *
+ * Known bound (documented, loud): two CONCURRENT polls from one recipient can
+ * crash-settle an envelope that is still in flight to the first caller; the
+ * first caller's settle then fails on the capability fence rather than
+ * anything being lost. Recipients are serial by protocol; the MCP tool face
+ * serializes calls.
+ */
+export function redeliverLostHandoffTx(
+	kernel: Kernel,
+	runtime: EngineRuntime,
+	input: { attemptUid: string; messageUid: string; sessionRef: string },
+): void {
+	kernel.write("host.delivery-handoff-lost", (tx) => {
+		tx.cas(FENCE.processingAttemptCasRunningSettled, {
+			attemptUid: input.attemptUid,
+			outcome: "crashed",
+			settledAt: runtime.clock.nowIso(),
+			proposalDigest: null,
+		});
+		const eventUid = `delivery_handoff_lost:${input.attemptUid}`;
+		if (
+			!tx.get("SELECT 1 FROM events WHERE event_uid=@eventUid", { eventUid })
+		) {
+			tx.run(
+				`INSERT INTO events
+				 (event_uid,task_id,attempt_id,kind,source_kind,source_id,payload,
+				  cutover_epoch,created_at)
+				 VALUES(@eventUid,NULL,NULL,'delivery_handoff_lost','host',
+				        @sourceId,@payload,
+				        (SELECT CAST(value AS INTEGER) FROM meta
+				          WHERE key='cutover_epoch'),@now)`,
+				{
+					eventUid,
+					sourceId: input.attemptUid,
+					payload: JSON.stringify({
+						message_uid: input.messageUid,
+						attempt_uid: input.attemptUid,
+						session_ref: input.sessionRef,
+					}),
+					now: runtime.clock.nowIso(),
+				},
+			);
+		}
+	});
+}
+
 export function recordDeliverySucceeded(
 	kernel: Kernel,
 	delivery: Pick<DeliveryEnvelope, "deliveryActionId" | "handle">,
@@ -316,6 +382,47 @@ export type RunnerPollOutcome =
  * exists (at-least-once), otherwise starts the next pending message addressed
  * to this session. Runner sessions never touch the driver.
  */
+export type LeadPollOutcome =
+	| {
+			status: "available";
+			message: DeliveryEnvelope["message"];
+			handle: AttemptHandle;
+			nextFounderStreak: number;
+	  }
+	| { status: "empty"; nextFounderStreak: number };
+
+/**
+ * FLY-1547 §2.2: claim-at-next for LEADS. The processing attempt (the read
+ * receipt: who/when/which) is created here, inside the recipient's own
+ * authenticated pull — never by a registration-time prefetch loop. The founder
+ * VIP streak is threaded by the caller (host keeps it per lead), preserving
+ * the driver-era founder-first ordering byte for byte.
+ */
+export function pollLeadDelivery(
+	kernel: Kernel,
+	runtime: EngineRuntime,
+	agent: RegisteredAgent,
+	founderStreak: number,
+): LeadPollOutcome {
+	const polled = pollOnce(kernel, runtime, agent, founderStreak);
+	if (polled.result.status !== "available") {
+		return { status: "empty", nextFounderStreak: polled.nextFounderStreak };
+	}
+	const available = polled.result;
+	return {
+		status: "available",
+		message: {
+			messageUid: available.handle.messageUid,
+			payload: available.payload,
+			kind: available.kind,
+			sourceKind: available.sourceKind,
+			seq: available.seq,
+		},
+		handle: available.handle,
+		nextFounderStreak: polled.nextFounderStreak,
+	};
+}
+
 export function pollRunnerDelivery(
 	kernel: Kernel,
 	runtime: EngineRuntime,

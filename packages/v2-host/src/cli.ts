@@ -39,10 +39,14 @@ interface RuntimeConfig {
 				clientCliPath: string;
 				releaseRoot: string;
 				stateRoot: string;
+				/** FLY-1547: optional mailbox MCP server entry; absent = no wiring. */
+				mailboxMcpPath?: string;
 		  }
 		| { kind: "command"; command: string[]; requestRoot: string };
 	gitBin: string;
 	ghBin: string;
+	/** FLY-1547 founder directive: founder-facing push is default OFF. */
+	founderPush: boolean;
 }
 
 const FLAGS = new Set([
@@ -134,12 +138,19 @@ export function parseRuntimeConfig(value: unknown): RuntimeConfig {
 	// dir (runners share the operator's ~/.claude). Exact-shape parsing keeps the
 	// break loud: migrate an old runtime-config.json with
 	// `install-v2-host.sh --migrate-fly1550` (atomic validate-then-replace).
+	// FLY-1547: `founder_push` is the single optional key (founder directive —
+	// absent means OFF). Both shapes are exact; anything else is refused.
+	const keyShape = Object.keys(config).sort().join(",");
 	if (
-		Object.keys(config).sort().join(",") !==
-			"dispatch_interval_ms,gh_bin,git_bin,launcher,lock_root,v" ||
+		(keyShape !== "dispatch_interval_ms,gh_bin,git_bin,launcher,lock_root,v" &&
+			keyShape !==
+				"dispatch_interval_ms,founder_push,gh_bin,git_bin,launcher,lock_root,v") ||
 		config.v !== 1
 	) {
 		throw new TypeError("runtime config has an invalid shape");
+	}
+	if ("founder_push" in config && typeof config.founder_push !== "boolean") {
+		throw new TypeError("runtime founder_push must be a boolean");
 	}
 	if (
 		!Number.isSafeInteger(config.dispatch_interval_ms) ||
@@ -152,10 +163,13 @@ export function parseRuntimeConfig(value: unknown): RuntimeConfig {
 	}
 	const launcher = object(config.launcher, "runtime launcher");
 	let parsedLauncher: RuntimeConfig["launcher"];
+	const tmuxKeyShape = Object.keys(launcher).sort().join(",");
 	if (
 		launcher.kind === "tmux" &&
-		Object.keys(launcher).sort().join(",") ===
-			"claude_bin,client_cli,codex_bin,kind,release_root,state_root,tmux_bin"
+		(tmuxKeyShape ===
+			"claude_bin,client_cli,codex_bin,kind,release_root,state_root,tmux_bin" ||
+			tmuxKeyShape ===
+				"claude_bin,client_cli,codex_bin,kind,mailbox_mcp,release_root,state_root,tmux_bin")
 	) {
 		parsedLauncher = {
 			kind: "tmux",
@@ -165,6 +179,14 @@ export function parseRuntimeConfig(value: unknown): RuntimeConfig {
 			clientCliPath: configPath(launcher.client_cli, "runtime client_cli"),
 			releaseRoot: configPath(launcher.release_root, "runtime release_root"),
 			stateRoot: configPath(launcher.state_root, "runtime state_root"),
+			...("mailbox_mcp" in launcher
+				? {
+						mailboxMcpPath: configPath(
+							launcher.mailbox_mcp,
+							"runtime mailbox_mcp",
+						),
+					}
+				: {}),
 		};
 	} else if (
 		launcher.kind === "command" &&
@@ -191,6 +213,7 @@ export function parseRuntimeConfig(value: unknown): RuntimeConfig {
 		launcher: parsedLauncher,
 		gitBin: configPath(config.git_bin, "runtime git_bin"),
 		ghBin: configPath(config.gh_bin, "runtime gh_bin"),
+		founderPush: config.founder_push === true,
 	};
 }
 
@@ -214,6 +237,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 					sessionProofRoot: options.sessionProofRoot,
 					releaseRoot: runtime.launcher.releaseRoot,
 					stateRoot: runtime.launcher.stateRoot,
+					...(runtime.launcher.mailboxMcpPath
+						? { mailboxMcpPath: runtime.launcher.mailboxMcpPath }
+						: {}),
 				})
 			: new CommandRunnerLauncher({
 					command: runtime.launcher.command,
@@ -234,6 +260,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 		secretPath: options.secretPath,
 		hostEpoch: options.hostEpoch,
 		sessionProbe: new FileSessionEvidenceProbe(options.sessionProofRoot),
+		founderPush: runtime?.founderPush === true,
 		...(runtime
 			? {
 					coordinator: {

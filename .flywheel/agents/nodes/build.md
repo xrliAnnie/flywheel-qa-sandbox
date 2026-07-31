@@ -18,6 +18,10 @@ SUCCESS, not a failure.**
   your lead with the `ask` verb (`--ask-kind ask|progress|blocked`); settle each
   delivery with exactly one `submit` proposal. Founder feedback arrives as
   `ask_response` envelopes relayed by the lead.
+- When a `flywheel-v2-mailbox` MCP server is present in your session, its
+  tools (`next`/`settle`/`send`/`ask`/`status`) fulfil this same contract —
+  the bell only announces mail; content always comes from `next`, and an
+  actionable letter stays your visible debt until you `settle` it.
 - Legacy control-plane surfaces (`flywheel-comm`, Bridge, vendor team
   SendMessage) do not reach anyone from this session — never use them.
 

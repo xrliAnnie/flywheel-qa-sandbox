@@ -1,0 +1,11 @@
+╭─────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.146.0)                      │
+│                                                 │
+│ model:     gpt-5.6-sol xhigh   /model to change │
+│ directory: /tmp/fly1547-codex-spike-cwd         │
+╰─────────────────────────────────────────────────╯
+  Tip: New Use /fast to enable our fastest inference with increased plan usage.
+› Say READY and then wait silently for further instructions.
+• READY
+› Summarize recent commits
+  gpt-5.6-sol xhigh · /tmp/fly1547-codex-spike-cwd

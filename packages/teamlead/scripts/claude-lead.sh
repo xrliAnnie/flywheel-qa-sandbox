@@ -2171,6 +2171,44 @@ else
   log "WARNING: inbox-mcp not built (${INBOX_MCP_DIR} missing), CommDB push disabled"
 fi
 
+# FLY-1547: v2 mailbox MCP — the lead's face onto the v2 host-socket mailbox
+# (five tools + channel bell). Registered only when the built server AND the
+# lead's v2 delivery credential file exist; absent leaves this lead exactly as
+# before (byte-compat rollout — enabling = building the package + registering
+# the lead with --delivery-credential-out).
+V2_MAILBOX_MCP_ENABLED=false
+v2_mailbox_server='{}'
+V2_MAILBOX_MCP_BIN="${FLYWHEEL_ROOT}/packages/v2-mailbox-mcp/dist/server-main.js"
+V2_LEAD_CREDENTIAL_FILE="${FLYWHEEL_V2_LEAD_CREDENTIAL_FILE:-${HOME}/.flywheel/v2/state/${LEAD_ID}-credential.json}"
+if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
+  log "${_LOCKED_ROLE_LABEL}: v2 mailbox MCP NOT registered"
+elif [ -f "$V2_MAILBOX_MCP_BIN" ] && [ -f "$V2_LEAD_CREDENTIAL_FILE" ]; then
+  v2_mailbox_server=$(jq -n \
+    --arg bin "$V2_MAILBOX_MCP_BIN" \
+    --arg leadId "$LEAD_ID" \
+    --arg cred "$V2_LEAD_CREDENTIAL_FILE" \
+    --arg sock "${FLYWHEEL_V2_SOCKET:-${HOME}/.flywheel/v2/host.sock}" \
+    --arg secret "${FLYWHEEL_V2_SECRET_PATH:-${HOME}/.flywheel/v2/host.secret}" \
+    --arg lease "${HOME}/.flywheel/v2/state/${LEAD_ID}-mailbox-lease.json" \
+    '{
+      "flywheel-v2-mailbox": {
+        command: "node",
+        args: [$bin],
+        env: {
+          FLYWHEEL_V2_LEAD_AGENT_ID: $leadId,
+          FLYWHEEL_V2_LEAD_CREDENTIAL_FILE: $cred,
+          FLYWHEEL_V2_SOCKET: $sock,
+          FLYWHEEL_V2_SECRET_PATH: $secret,
+          FLYWHEEL_V2_MAILBOX_LEASE: $lease
+        }
+      }
+    }')
+  V2_MAILBOX_MCP_ENABLED=true
+  log "v2 mailbox MCP: enabled (host-socket mailbox, lead mode)"
+else
+  log "v2 mailbox MCP: skipped (server or lead credential missing)"
+fi
+
 # FLY-90: gbrain MCP for project Wiki.
 gbrain_server='{}'
 if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
@@ -2234,6 +2272,7 @@ write_atomic_mcp_config "$MCP_CONFIG_FILE" \
   "$USER_MCP_FRAGMENT" \
   "$terminal_server" \
   "$inbox_server" \
+  "$v2_mailbox_server" \
   "$gbrain_server"
 log "MCP config: ${MCP_CONFIG_FILE} (mode 0600, atomic)"
 
@@ -2352,6 +2391,12 @@ if [ "$INBOX_MCP_ENABLED" = "true" ]; then
   fi
 else
   log "Channels: Discord plugin only"
+fi
+# FLY-1547: the v2 mailbox server's channel bell rides the same dev-channels
+# gate (the existing dialog poller already matches the shared dialog text).
+if [ "$V2_MAILBOX_MCP_ENABLED" = "true" ]; then
+  CLAUDE_ARGS+=(--dangerously-load-development-channels "server:flywheel-v2-mailbox")
+  log "Channels: + v2 mailbox server (dev channel)"
 fi
 
 # FLY-80: MCP servers are now in $LEAD_WORKSPACE/.mcp.json (auto-discovered by Claude from CWD).

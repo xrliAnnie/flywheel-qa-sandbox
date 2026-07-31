@@ -1,0 +1,23 @@
+[e2e] host up at /tmp/fly1547-e2e-p9zTyT/host.sock
+[e2e] enqueue fyi: enqueued
+[e2e] enqueue ask2: enqueued
+[e2e] server smoke stderr: [mailbox-mcp] ready — lead e2e-lead
+
+[e2e] server smoke stdout head: {"result":{"protocolVersion":"2024-11-05","capabilities":{"experimental":{"claude/channel":{}},"tools":{"listChanged":true}},"serverInfo":{"name":"flywheel-v2-mailbox","version":"0.1.0"}},"jsonrpc":"2
+[e2e] held-open smoke: alive-after-8s
+[e2e] held-open stderr: [mailbox-mcp] ready — lead e2e-lead
+
+[e2e] running claude -p lead session...
+[e2e] claude output tail: **E2E-DONE pending=0** |  | All workflow items processed: FYI issue_opened auto-settled, port query answered with 4747, mailbox cleared. | 
+[e2e] mailbox: [{"message_uid":"fc9111b9-4ca9-4bb6-a94d-9914a0935797","kind":"issue_opened","state":"applied","to_agent":"e2e-lead"},{"message_uid":"6ea2ca24-d446-43ff-8fa5-0d38c3f6c620","kind":"runner_ask","state":"applied","to_agent":"e2e-lead"},{"message_uid":"877a6075-12ee-46b0-9da0-bc88243ae3f2","kind":"ask_response","state":"pending","to_agent":"e2e-asker-lead"}]
+[e2e] PAs: [{"attempt_uid":"fc9111b9-4ca9-4bb6-a94d-9914a0935797#1","outcome":"succeeded"},{"attempt_uid":"6ea2ca24-d446-43ff-8fa5-0d38c3f6c620#1","outcome":"succeeded"}]
+[e2e] reply: {"payload":"{\"v\":1,\"uid\":\"q-78\",\"body\":\"port 4747\",\"answered_by\":\"e2e-lead\"}","source_id":"mailbox_reply:6ea2ca24-d446-43ff-8fa5-0d38c3f6c620","source_kind":"mailbox_reply"}
+[e2e] PASS FYI letter applied (deferred ack settled it)
+[e2e] PASS read receipts exist (PA rows)
+[e2e] PASS every consumed PA succeeded
+[e2e] PASS reply enqueued as ask_response
+[e2e] PASS reply payload carries the derived uid + body
+[e2e] PASS reply idempotency key is message-scoped
+[e2e] PASS lead long-poll woken immediately by new mail (not patrol)
+[e2e] lead wake latency after enqueue: 8ms (kind=runner_ask)
+[e2e] ALL PASS

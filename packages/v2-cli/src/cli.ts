@@ -40,6 +40,7 @@ type Verb =
 	| "next"
 	| "submit"
 	| "ack"
+	| "mailbox-status"
 	| "admit"
 	| "complete"
 	| "evidence"
@@ -64,6 +65,7 @@ const VERBS = new Set<Verb>([
 	"next",
 	"submit",
 	"ack",
+	"mailbox-status",
 	"admit",
 	"complete",
 	"evidence",
@@ -155,6 +157,11 @@ const VERB_FLAGS: Record<Verb, ReadonlySet<string>> = {
 	ship: new Set(["--request-file"]),
 	"reconcile-ship": new Set(),
 	status: new Set(),
+	"mailbox-status": new Set([
+		"--session",
+		"--agent",
+		"--delivery-credential-file",
+	]),
 	"probe-github-lane": new Set([
 		"--repo",
 		"--branch",
@@ -298,14 +305,25 @@ function stashDeliveryCredential(path: string, result: unknown): unknown {
 		"register_lead result",
 	);
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-	const fd = openSync(path, "w", 0o600);
+	// R3-F4 (FLY-1547): ATOMIC publish — private temp + fsync + rename + dir
+	// fsync. The prior open(path,"w") truncated in place, so a crash mid-write
+	// could leave an empty/partial credential AFTER the host had already
+	// revoked the previous generation.
+	const tempPath = `${path}.tmp-${process.pid}`;
+	const fd = openSync(tempPath, "wx", 0o600);
 	try {
 		writeFileSync(fd, `${JSON.stringify(credential)}\n`);
 		fsyncSync(fd);
 	} finally {
 		closeSync(fd);
 	}
-	chmodSync(path, 0o600);
+	renameSync(tempPath, path);
+	const dirFd = openSync(dirname(path), "r");
+	try {
+		fsyncSync(dirFd);
+	} finally {
+		closeSync(dirFd);
+	}
 	return { ...record, deliveryCredential: { storedAt: path } };
 }
 
@@ -375,12 +393,25 @@ async function runDirectVerb(parsed: ParsedCli): Promise<unknown> {
 				? undefined
 				: parseJsonFile(requireAbsolute(parsed.values, "--request-file"));
 		switch (parsed.verb) {
-			case "admit":
+			case "admit": {
+				// FLY-1547 R3-F8: the founder outcome is "real issues spawn with
+				// their title". The lead authors the request file by hand, so the
+				// boundary nags loudly (without gating legacy fixtures).
+				const draft = request as { issueTitle?: unknown; issueId?: unknown };
+				if (
+					typeof draft.issueTitle !== "string" ||
+					draft.issueTitle.trim().length === 0
+				) {
+					process.stderr.write(
+						`[flywheel-v2 admit] WARNING: issue ${String(draft.issueId)} is being admitted WITHOUT issueTitle — runners will not know what the issue is called. Add "issueTitle" to the admit request.\n`,
+					);
+				}
 				return await admitIssueDag(
 					kernel,
 					ports,
 					request as Parameters<typeof admitIssueDag>[2],
 				);
+			}
 			case "complete":
 				return await submitNodeCompletion(
 					kernel,
@@ -555,6 +586,32 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 			}
 			result = await client.request("next_delivery", {
 				agentId: requireValue(parsed.values, "--agent"),
+				deliveryCredential: readDeliveryCredential(
+					requireAbsolute(parsed.values, "--delivery-credential-file"),
+				),
+			});
+			break;
+		case "mailbox-status":
+			// FLY-1547: same identity forms as `next` — a runner names its session,
+			// a lead presents its delivery credential file.
+			if (parsed.values.has("--session")) {
+				if (
+					parsed.values.has("--agent") ||
+					parsed.values.has("--delivery-credential-file")
+				) {
+					throw new TypeError(
+						"--session cannot be combined with --agent or --delivery-credential-file",
+					);
+				}
+				result = await client.mailboxStatus({
+					sessionRef: requireValue(parsed.values, "--session"),
+				});
+				break;
+			}
+			result = await client.mailboxStatus({
+				...(parsed.values.has("--agent")
+					? { agentId: requireValue(parsed.values, "--agent") }
+					: {}),
 				deliveryCredential: readDeliveryCredential(
 					requireAbsolute(parsed.values, "--delivery-credential-file"),
 				),

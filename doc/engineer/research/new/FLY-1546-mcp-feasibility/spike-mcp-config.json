@@ -1,0 +1,13 @@
+{
+	"mcpServers": {
+		"fly1546-spike": {
+			"command": "node",
+			"args": [
+				"/Users/xiaorongli/Dev/flywheel-FLY-1547/doc/engineer/research/new/FLY-1546-mcp-feasibility/spike-mailbox-mcp.mjs"
+			],
+			"env": {
+				"FLYWHEEL_SPIKE_PUSH_FILE": "/tmp/fly1546-spike-push.txt"
+			}
+		}
+	}
+}

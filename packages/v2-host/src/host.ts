@@ -19,7 +19,11 @@ import {
 	type Socket,
 } from "node:net";
 import { dirname, isAbsolute } from "node:path";
-import { type DagPorts, DISCORD_MESSENGER_AGENT_ID } from "flywheel-v2-dag";
+import {
+	CLASSIFIED_MAILBOX_KINDS,
+	type DagPorts,
+	DISCORD_MESSENGER_AGENT_ID,
+} from "flywheel-v2-dag";
 import {
 	type AttemptHandle,
 	type ConversionResult,
@@ -32,6 +36,7 @@ import {
 	type ProposalAuthorization,
 	provisionAgentRecipient,
 	type RegisteredAgent,
+	readEngineConfigTx,
 	readProposalReceipt,
 	type SessionBinding,
 	type SessionEvidenceProbe,
@@ -50,9 +55,11 @@ import {
 } from "./coordinator.js";
 import {
 	type DeliveryEnvelope,
+	pollLeadDelivery,
 	pollRunnerDelivery,
 	prepareDelivery,
 	recordDeliverySucceeded,
+	redeliverLostHandoffTx,
 	requireActiveRunnerAgent,
 } from "./delivery.js";
 import {
@@ -163,6 +170,13 @@ export interface V2HostOptions {
 	secretPath: string;
 	hostEpoch: string;
 	sessionProbe: SessionEvidenceProbe;
+	/**
+	 * FLY-1547 (founder directive, 2026-07-30): anything auto-pushed toward the
+	 * founder is DEFAULT OFF. Only `ask_kind=progress` may be mirrored into the
+	 * Discord outbox, and only when this is explicitly true; ask/blocked never
+	 * leave the lead mailbox. The founder decides when to turn this on.
+	 */
+	founderPush?: boolean;
 	coordinator?: {
 		createPorts(kernel: Kernel): DagPorts;
 		intervalMs: number;
@@ -176,6 +190,19 @@ export interface V2HostOptions {
 		onError?(error: unknown): void;
 		activateSession?(sessionRef: string): Promise<void>;
 	};
+}
+
+/**
+ * FLY-1547 ask routing (founder directive): the ONLY ask traffic ever mirrored
+ * toward the founder's Discord surface is `progress`, and only behind an
+ * explicit opt-in. `ask`/`blocked` are the lead's to answer — the lead asks the
+ * founder itself when it cannot.
+ */
+export function shouldRelayAskToFounder(
+	askKind: "ask" | "progress" | "blocked",
+	founderPush: boolean,
+): boolean {
+	return askKind === "progress" && founderPush;
 }
 
 interface AgentRow {
@@ -410,6 +437,8 @@ export class V2Host {
 	readonly #deliveryWaiters = new Map<string, DeliveryWaiter[]>();
 	/** FLY-1543 ④: long-poll wakers for session recipients (`next --session`). */
 	readonly #sessionWakers = new Map<string, Set<() => void>>();
+	/** FLY-1547 §2.2: per-lead founder VIP streak (driver-era semantics kept). */
+	readonly #leadFounderStreaks = new Map<string, number>();
 	readonly #deliveryCredentials = new Map<string, DeliveryCredentialRecord>();
 	readonly #sockets = new Set<Socket>();
 	/** Codex R6 HIGH-1: whether the dispatch loop actually started. */
@@ -443,6 +472,8 @@ export class V2Host {
 		}
 		this.#kernel = openExistingKernel(options.database);
 		this.#driver = new EngineDriver(this.#kernel, this.#runtime, {
+			// FLY-1547 §2.2: the host owns lead mailbox pulls (claim-at-next).
+			leadMailboxPull: "host",
 			requireProposalCapability: true,
 		});
 		if (options.coordinator) {
@@ -735,6 +766,12 @@ export class V2Host {
 		// credential revocation, no driver.stop(), no crash-settle, no db close.
 		this.#sockets.add(socket);
 		socket.once("close", () => this.#sockets.delete(socket));
+		// FLY-1547: a client that vanishes mid-write (the mailbox MCP's 1s status
+		// cadence makes short-lived connections hot) must not crash the host —
+		// an unhandled socket 'error' (EPIPE/ECONNRESET) is fatal to the process.
+		// The write-flush callbacks still see the failure and requeue; this
+		// handler only stops the escape.
+		socket.on("error", () => socket.destroy());
 		socket.setEncoding("utf8");
 		let buffered = "";
 		socket.on("data", (chunk: string) => {
@@ -855,6 +892,8 @@ export class V2Host {
 				return { result: this.#ask(payload) };
 			case "next_delivery":
 				return this.#nextDelivery(payload, socket);
+			case "mailbox_status":
+				return { result: this.#mailboxStatus(payload) };
 			case "submit_proposal":
 				return { result: await this.#submitProposal(payload) };
 			default:
@@ -1070,10 +1109,105 @@ export class V2Host {
 		this.#deliveries.set(agentId, queue);
 	}
 
+	/**
+	 * FLY-1547: read-only mailbox visibility for the recipient itself — the
+	 * "欠账明晃晃" face. A runner sees only its own session mailbox (active
+	 * activation fence); a lead sees only the mailbox its delivery credential is
+	 * bound to. No content leaves this verb beyond kinds/uids; bodies still
+	 * travel exclusively through next_delivery.
+	 */
+	#mailboxStatus(payload: unknown): unknown {
+		const input = requireRecord(payload, "mailbox_status payload");
+		let recipient: string;
+		if (input.sessionRef !== undefined) {
+			if (
+				input.deliveryCredential !== undefined ||
+				input.agentId !== undefined
+			) {
+				throw new TypeError(
+					"mailbox_status takes sessionRef or a delivery credential, not both",
+				);
+			}
+			recipient = requireActiveRunnerAgent(
+				this.#kernel,
+				requireString(input.sessionRef, "sessionRef"),
+			).agentId;
+		} else {
+			recipient = this.#authorizeDeliveryCredential(input).credential.agentId;
+		}
+		const MAX_UIDS = 32;
+		return this.#kernel.read((tx) => {
+			const summary = tx.get<{
+				pending_total: number;
+				max_pending_seq: number | null;
+			}>(
+				`SELECT COUNT(*) AS pending_total, MAX(seq) AS max_pending_seq
+				   FROM mailbox WHERE to_agent=@recipient AND state='pending'`,
+				{ recipient },
+			);
+			const inProgress = tx.get<{ running_total: number }>(
+				`SELECT COUNT(*) AS running_total
+				   FROM processing_attempts pa
+				   JOIN mailbox m ON m.message_uid=pa.message_uid
+				  WHERE m.to_agent=@recipient AND pa.outcome='running'`,
+				{ recipient },
+			);
+			const kinds = tx.all<{
+				kind: string;
+				ask_kind: string | null;
+				count: number;
+				oldest_seq: number;
+				oldest_created_at: string;
+			}>(
+				`SELECT kind,
+				        CASE WHEN kind='runner_ask' AND json_valid(payload)
+				             THEN json_extract(payload,'$.ask_kind')
+				             WHEN kind='runner_ask' THEN 'malformed' END AS ask_kind,
+				        COUNT(*) AS count,
+				        MIN(seq) AS oldest_seq,
+				        MIN(created_at) AS oldest_created_at
+				   FROM mailbox WHERE to_agent=@recipient AND state='pending'
+				  GROUP BY kind, ask_kind ORDER BY oldest_seq`,
+				{ recipient },
+			);
+			const uids = tx.all<{ message_uid: string }>(
+				`SELECT message_uid FROM mailbox
+				  WHERE to_agent=@recipient AND state='pending'
+				  ORDER BY seq LIMIT @limit`,
+				{ recipient, limit: MAX_UIDS + 1 },
+			);
+			return {
+				v: 1,
+				recipient,
+				pendingTotal: summary?.pending_total ?? 0,
+				inProgressTotal: inProgress?.running_total ?? 0,
+				maxPendingSeq: summary?.max_pending_seq ?? null,
+				kinds: kinds.map((row) => ({
+					kind: row.kind,
+					askKind: row.ask_kind,
+					count: row.count,
+					oldestSeq: row.oldest_seq,
+					oldestCreatedAt: row.oldest_created_at,
+				})),
+				pendingUids: uids.slice(0, MAX_UIDS).map((row) => row.message_uid),
+				pendingUidsTruncated: uids.length > MAX_UIDS,
+			};
+		});
+	}
+
 	#enqueue(payload: unknown): unknown {
 		const input = requireRecord(payload, "enqueue payload");
 		const toAgent = requireString(input.toAgent, "toAgent");
 		const sourceKind = requireString(input.sourceKind, "sourceKind");
+		// FLY-1547 R4: the enqueue boundary is closed over the classified
+		// vocabulary — no caller can manufacture mailbox debt the two-chapter
+		// policy cannot read.
+		const kind = requireString(input.kind, "kind");
+		if (!CLASSIFIED_MAILBOX_KINDS.has(kind)) {
+			throw new FenceViolation(
+				`enqueue kind ${JSON.stringify(kind)} is not in the classified mailbox vocabulary`,
+			);
+		}
 		if (sourceKind === "discord" && !isSessionRecipient(toAgent)) {
 			provisionAgentRecipient(this.#kernel, toAgent, "lead");
 		}
@@ -1114,7 +1248,12 @@ export class V2Host {
 		const registered = this.#registered.get(toAgent);
 		if (!registered || registered.kind !== "lead") return;
 		this.#dropSettledPending(toAgent);
-		void this.#driver.drain(toAgent).catch(() => undefined);
+		// FLY-1547 §2.2: wake the lead's own long-poll — the claim happens inside
+		// the recipient's next_delivery, never in a drain loop here.
+		const wakers = this.#sessionWakers.get(toAgent);
+		if (!wakers) return;
+		this.#sessionWakers.delete(toAgent);
+		for (const wake of wakers) wake();
 	}
 
 	/**
@@ -1197,14 +1336,16 @@ export class V2Host {
 		if (result.status === "rejected") {
 			throw new FenceViolation(`ask was rejected: ${result.reason}`);
 		}
-		this.#relayAskToMessenger({
-			sessionRef,
-			issueId: route.issueId,
-			askKind,
-			uid,
-			body,
-			activationId: agent.activationId,
-		});
+		if (shouldRelayAskToFounder(askKind, this.#options.founderPush === true)) {
+			this.#relayAskToMessenger({
+				sessionRef,
+				issueId: route.issueId,
+				askKind,
+				uid,
+				body,
+				activationId: agent.activationId,
+			});
+		}
 		return { ...result, uid };
 	}
 
@@ -1424,6 +1565,14 @@ export class V2Host {
 				this.#deliveryCredentials.delete(credentialId);
 			}
 		}
+		// FLY-1547 §2.2: claim-at-next long-polls wait on the wake map; firing
+		// them here makes each loop re-check its (now deleted) credential and die
+		// with the loud revocation below rather than a generic timeout.
+		const wakers = this.#sessionWakers.get(agentId);
+		if (wakers) {
+			this.#sessionWakers.delete(agentId);
+			for (const wake of wakers) wake();
+		}
 		const waiters = this.#deliveryWaiters.get(agentId);
 		if (!waiters) return;
 		const live = waiters.filter(
@@ -1439,14 +1588,6 @@ export class V2Host {
 		}
 		if (live.length > 0) this.#deliveryWaiters.set(agentId, live);
 		else this.#deliveryWaiters.delete(agentId);
-	}
-
-	#removeWaiter(waiter: DeliveryWaiter): void {
-		const waiters = this.#deliveryWaiters.get(waiter.agentId);
-		if (!waiters) return;
-		const index = waiters.indexOf(waiter);
-		if (index >= 0) waiters.splice(index, 1);
-		if (waiters.length === 0) this.#deliveryWaiters.delete(waiter.agentId);
 	}
 
 	/**
@@ -1473,9 +1614,22 @@ export class V2Host {
 				const prepared = this.#prepareDelivery(polled.message, polled.handle);
 				const envelope = prepared.envelope;
 				if (!envelope) {
-					throw new FenceViolation(
-						`delivery for attempt ${polled.handle.attemptUid} was already handed to this session; settle it before pulling again, or report the ambiguity`,
-					);
+					// FLY-1547 §2.1: a pull-handed envelope whose delivery action already
+					// succeeded, re-polled by the same session, is a lost handoff —
+					// crash-settle and immediately re-serve under a new attempt. The
+					// spawn-injected assignment is exempt: its envelope lives durably in
+					// the spawn prompt, so a re-poll is not loss evidence.
+					if (polled.message.sourceKind === "dag_task_dispatch") {
+						throw new FenceViolation(
+							`delivery for attempt ${polled.handle.attemptUid} was already handed to this session; settle it before pulling again, or report the ambiguity`,
+						);
+					}
+					redeliverLostHandoffTx(this.#kernel, this.#runtime, {
+						attemptUid: polled.handle.attemptUid,
+						messageUid: polled.message.messageUid,
+						sessionRef,
+					});
+					continue;
 				}
 				return {
 					result: envelope,
@@ -1544,54 +1698,51 @@ export class V2Host {
 		}
 		const { credential, agent } = this.#authorizeDeliveryCredential(input);
 		const agentId = credential.agentId;
-		// FLY-1544 ③: a pull IS a poll. Mailbox rows appended out-of-band (the
-		// operator CLI's admission/ship transactions write into the same kernel
-		// from another process) never fire #wakeRecipient in THIS process, so a
-		// lead pulling its mailbox must actively drain the kernel rather than
-		// only waiting for an in-memory wake that may never come.
+		// FLY-1547 §2.2: claim-at-next. The pull IS the poll AND the claim — the
+		// processing attempt (read receipt) is created inside this authenticated
+		// request, mirroring the session path. No prefetch loop, no converter.
 		this.#dropSettledPending(agentId);
-		void this.#driver.drain(agentId).catch(() => undefined);
-		const queued = this.#deliveries.get(agentId)?.shift();
-		const delivery =
-			queued ??
-			(await new Promise<DeliveryEnvelope>((resolve, reject) => {
-				const waiter: DeliveryWaiter = {
-					agentId,
-					instanceId: agent.instanceId,
-					generation: agent.generation,
-					credentialId: credential.credentialId,
-					accept: (envelope) => {
-						clearTimeout(timeout);
-						socket.off("close", onClose);
-						this.#removeWaiter(waiter);
-						resolve(envelope);
-					},
-					cancel: (error) => {
-						clearTimeout(timeout);
-						socket.off("close", onClose);
-						this.#removeWaiter(waiter);
-						reject(error);
-					},
-				};
-				// Codex R3 HIGH-2: a waiter must not outlive its connection. Without
-				// this the long poll stayed eligible for up to the full timeout after
-				// the client vanished, and #converter would hand it the envelope.
-				const onClose = () =>
-					waiter.cancel(
-						new Error("delivery wait ended because the client disconnected"),
-					);
-				socket.once("close", onClose);
-				const waiters = this.#deliveryWaiters.get(agentId) ?? [];
-				waiters.push(waiter);
-				this.#deliveryWaiters.set(agentId, waiters);
-				const timeout = setTimeout(
-					() =>
-						waiter.cancel(
-							new Error("no delivery became available before timeout"),
-						),
-					10_000,
+		const deadline = Date.now() + 10_000;
+		let delivery: DeliveryEnvelope;
+		for (;;) {
+			if (!this.#deliveryCredentials.has(credential.credentialId)) {
+				throw new FenceViolation(
+					`delivery wait for ${agentId} was revoked by a generation takeover`,
 				);
-			}));
+			}
+			const streak =
+				this.#leadFounderStreaks.get(agentId) ??
+				this.#kernel.read((tx) => readEngineConfigTx(tx).vipBurst);
+			const polled = pollLeadDelivery(
+				this.#kernel,
+				this.#runtime,
+				agent,
+				streak,
+			);
+			this.#leadFounderStreaks.set(agentId, polled.nextFounderStreak);
+			if (polled.status === "available") {
+				const prepared = this.#prepareDelivery(polled.message, polled.handle);
+				if (!prepared.envelope) {
+					// §2.1 lost-handoff recovery, lead form. Leads never receive
+					// dag_task_dispatch rows, so no spawn-prompt exemption applies.
+					redeliverLostHandoffTx(this.#kernel, this.#runtime, {
+						attemptUid: polled.handle.attemptUid,
+						messageUid: polled.message.messageUid,
+						sessionRef: agentId,
+					});
+					continue;
+				}
+				delivery = prepared.envelope;
+				break;
+			}
+			const remaining = deadline - Date.now();
+			if (
+				remaining <= 0 ||
+				!(await this.#waitForSessionWake(agentId, remaining, socket))
+			) {
+				throw new Error("no delivery became available before timeout");
+			}
+		}
 		return {
 			result: delivery,
 			// Codex R3 HIGH-2: the delivery action used to be recorded as succeeded
@@ -1670,7 +1821,22 @@ export class V2Host {
 			throw new FenceViolation(`proposal attempt is ${prior.status}`);
 		}
 		if (!pending) {
-			throw new FenceViolation("no host converter is waiting for this attempt");
+			// FLY-1547 §2.2: leads settle against the durable ledger exactly like
+			// sessions — a claim made by claim-at-next has no in-memory converter,
+			// and must not need one to survive a host restart.
+			settleProposal(
+				this.#kernel,
+				this.#runtime,
+				proposal,
+				parsed.authorization,
+			);
+			const receipt = readProposalReceipt(this.#kernel, proposal);
+			if (receipt.status !== "succeeded") {
+				throw new FenceViolation(
+					`proposal settlement did not become durable (${receipt.status})`,
+				);
+			}
+			return receipt;
 		}
 		this.#pending.delete(parsed.attemptUid);
 		pending.resolve({

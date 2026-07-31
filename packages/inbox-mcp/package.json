@@ -1,7 +1,7 @@
 {
 	"name": "flywheel-inbox-mcp",
 	"version": "0.1.0",
-	"description": "MCP server for CommDB → Lead channel push delivery",
+	"description": "MCP server for CommDB \u2192 Lead channel push delivery",
 	"type": "module",
 	"main": "dist/index.js",
 	"bin": {
@@ -28,5 +28,22 @@
 		"@types/node": "^20.0.0",
 		"typescript": "^5.3.3",
 		"vitest": "^3.1.4"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./channel-lease": {
+			"types": "./dist/channel-lease.d.ts",
+			"import": "./dist/channel-lease.js"
+		}
+	},
+	"typesVersions": {
+		"*": {
+			"channel-lease": [
+				"dist/channel-lease.d.ts"
+			]
+		}
 	}
 }

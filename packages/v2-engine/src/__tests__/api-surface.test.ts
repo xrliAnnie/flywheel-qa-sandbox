@@ -24,6 +24,9 @@ const EXPECTED_RUNTIME_EXPORTS = [
 	"pollOnce",
 	"proposalSubjectDigest",
 	"provisionAgentRecipient",
+	// FLY-1547 §2.2: the host's claim-at-next lead pull threads the founder VIP
+	// streak itself, seeded from the same engine config the driver used.
+	"readEngineConfigTx",
 	"readProposalReceipt",
 	"reattachAgent",
 	"refreshHeartbeat",

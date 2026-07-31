@@ -65,6 +65,14 @@ export interface RunnerLauncherPort {
 	activate?(sessionRef: string): Promise<void>;
 	/** FLY-1544 doorbell: paste text into the session terminal (tmux paste). */
 	deliver?(sessionRef: string, text: string): Promise<void>;
+	/** FLY-1547: is the session's official mailbox channel healthy? */
+	channelHealthy?(sessionRef: string): Promise<boolean>;
+	/** FLY-1547 §2.6: official codex bell (remote-attached sessions only). */
+	codexBell?(
+		sessionRef: string,
+		text: string,
+		idempotencyKey: string,
+	): Promise<boolean>;
 }
 
 export interface RuntimeDagPortsOptions {
@@ -600,6 +608,10 @@ export function createRuntimeDagPorts(
 		requestStop: (sessionRef) => options.launcher.stop(sessionRef),
 	};
 	const deliver = options.launcher.deliver?.bind(options.launcher);
+	const channelHealthy = options.launcher.channelHealthy?.bind(
+		options.launcher,
+	);
+	const codexBell = options.launcher.codexBell?.bind(options.launcher);
 	// FLY-1544 ⑥: post-merge cleanup capability. Removal is NON-force — git
 	// itself refuses a tree that turned dirty between the probe and the call.
 	// The main repo path is derived from the worktree BEFORE removal because
@@ -656,6 +668,14 @@ export function createRuntimeDagPorts(
 		),
 		issueCleanup,
 		// FLY-1544 doorbell: only when the launcher can actually paste.
-		...(deliver ? { sessionDelivery: { paste: deliver } } : {}),
+		...(deliver
+			? {
+					sessionDelivery: {
+						paste: deliver,
+						...(channelHealthy ? { channelHealthy } : {}),
+						...(codexBell ? { codexBell } : {}),
+					},
+				}
+			: {}),
 	};
 }

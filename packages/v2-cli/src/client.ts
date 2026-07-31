@@ -36,6 +36,15 @@ export class V2Client {
 		});
 	}
 
+	/** FLY-1547: read-only mailbox visibility for the calling recipient. */
+	mailboxStatus<Result>(payload: {
+		sessionRef?: string;
+		agentId?: string;
+		deliveryCredential?: { credentialId: string; token: string };
+	}): Promise<Result> {
+		return this.request<Result>("mailbox_status", payload);
+	}
+
 	async submitProposalWithRetry<Result>(
 		payload: unknown,
 		options: { attempts?: number; retryDelayMs?: number } = {},

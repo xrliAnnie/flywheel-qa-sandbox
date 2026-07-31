@@ -31,7 +31,9 @@
 		"flywheel-v2-dag": "workspace:*",
 		"flywheel-v2-engine": "workspace:*",
 		"flywheel-v2-kernel": "workspace:*",
-		"yaml": "^2.7.1"
+		"yaml": "^2.7.1",
+		"flywheel-inbox-mcp": "workspace:*",
+		"flywheel-claude-runner": "workspace:*"
 	},
 	"devDependencies": {
 		"@types/node": "^20.0.0",

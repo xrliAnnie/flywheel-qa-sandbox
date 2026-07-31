@@ -11,13 +11,16 @@
  * flywheel_inbox_ack tool. Lease is written AFTER server.connect() so Bridge
  * never sees a "ready" signal while the MCP transport is still half-wired.
  */
-import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CommDB } from "flywheel-comm/db";
 import { z } from "zod";
+import {
+	deleteLease as deleteChannelLease,
+	writeLease as writeChannelLease,
+} from "./channel-lease.js";
 import {
 	type DeliveryMessage,
 	handleAck,
@@ -70,21 +73,15 @@ function openDb(): void {
 }
 
 // ── Lease management ──
+// FLY-1547 §2.9: shared with the v2 mailbox MCP via ./channel-lease.js —
+// same bytes, no copy. The v1 wire shape ({pid, startedAt}) is unchanged.
 
 function writeLease(): void {
-	mkdirSync(leaseDir, { recursive: true });
-	writeFileSync(
-		leasePath,
-		JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
-	);
+	writeChannelLease(leasePath, { pid: process.pid });
 }
 
 function deleteLease(): void {
-	try {
-		unlinkSync(leasePath);
-	} catch {
-		// Already deleted or never written — fine
-	}
+	deleteChannelLease(leasePath);
 }
 
 // ── MCP Server ──
