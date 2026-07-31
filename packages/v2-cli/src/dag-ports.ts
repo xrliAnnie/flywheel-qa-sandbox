@@ -147,6 +147,12 @@ function gitPort(
 				worktreePath,
 				"diff",
 				"--raw",
+				// The manifest parser requires full object names. Without this git
+				// abbreviates them and every record is rejected. --no-abbrev (not
+				// --full-index, which only affects patch-format index lines, and
+				// not --abbrev=40, which truncates sha256 names) yields the full
+				// hash for both sha1 and sha256 repositories.
+				"--no-abbrev",
 				"-z",
 				base,
 				head,

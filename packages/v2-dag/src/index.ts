@@ -28,6 +28,7 @@ export {
 export { recordEvidence } from "./evidence.js";
 export { registerReviewFamilies } from "./families.js";
 export { approveShipGate, recoverShipAuthority } from "./gate.js";
+export { parseRawManifest } from "./manifest.js";
 export {
 	appendDiscordOutboxTx,
 	appendLifecycleTx,
