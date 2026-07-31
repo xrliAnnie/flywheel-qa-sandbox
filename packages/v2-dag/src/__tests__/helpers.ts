@@ -33,6 +33,11 @@ export class TestClock implements DagClock {
 	advance(ms: number): void {
 		this.#now += ms;
 	}
+
+	/** FLY-1545 ①: sleeping advances virtual time; nothing really waits. */
+	async sleep(ms: number): Promise<void> {
+		this.#now += ms;
+	}
 }
 
 export function makeFixture() {

@@ -33,6 +33,9 @@ describe("external action crash replay", () => {
 			async readPrHead() {
 				return head;
 			},
+			async readCiState() {
+				return { state: "green" as const };
+			},
 			async readMergeState() {
 				return merged
 					? { state: "merged" as const, head }
@@ -186,6 +189,9 @@ describe("external action crash replay", () => {
 		const githubObservation: GitHubObservationPort = {
 			async readPrHead() {
 				return head;
+			},
+			async readCiState() {
+				return { state: "green" as const };
 			},
 			async readMergeState() {
 				return { state: "open" as const };
@@ -364,6 +370,9 @@ describe("external action crash replay", () => {
 			githubObservation: {
 				async readPrHead() {
 					return head;
+				},
+				async readCiState() {
+					return { state: "green" as const };
 				},
 				async readMergeState() {
 					return { state: "open" as const };

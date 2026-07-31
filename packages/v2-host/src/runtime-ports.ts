@@ -571,6 +571,8 @@ export function createRuntimeDagPorts(
 	const clock = {
 		nowMs: () => now().getTime(),
 		nowIso: () => now().toISOString(),
+		sleep: (ms: number) =>
+			new Promise<void>((resolve) => setTimeout(resolve, ms)),
 	};
 	const runnerControl: RunnerControlPort = {
 		requestStop: (sessionRef) => options.launcher.stop(sessionRef),

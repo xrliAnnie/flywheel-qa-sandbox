@@ -30,6 +30,15 @@ export interface ExecuteShipInput {
 	actor: RegisteredAgent;
 }
 
+/**
+ * FLY-1545 ①: CI wait constants. Deliberately module constants, not config --
+ * the red line for this issue forbids new flags/switches. The 30min deadline
+ * covers the full tiered CI run of this repo; the poll interval matches the
+ * ship merge poll.
+ */
+export const CI_POLL_MS = 30_000;
+export const CI_WAIT_MS = 1_800_000;
+
 export type ExecuteShipResult =
 	| { status: "succeeded"; actionId: string; mergedSha: string }
 	| { status: "failed"; actionId: string; error: string };
@@ -74,6 +83,50 @@ export async function executeShip(
 		repo: snapshot.target.repo,
 		pr: snapshot.target.pr,
 	});
+	// FLY-1545 ①: wait for CI green at the merge authority point, BEFORE the
+	// intent transaction. pending/red/deadline all happen outside the tx: no
+	// capability is consumed, no action row is written, attempt_count does not
+	// move, and the gate stays approved -- a red check rerun to green on the
+	// SAME head retries `ship` with the same capability, zero re-approval.
+	const ciDeadline = ports.clock.nowMs() + CI_WAIT_MS;
+	let ci = await ports.githubObservation.readCiState({
+		repo: snapshot.target.repo,
+		pr: snapshot.target.pr,
+		head: observedHead,
+	});
+	while (ci.state === "pending") {
+		if (ports.clock.nowMs() >= ciDeadline) {
+			throw new DagContractError(`ci wait deadline: ${ci.detail}`);
+		}
+		await ports.clock.sleep(CI_POLL_MS);
+		const reobservedHead = await ports.githubObservation.readPrHead({
+			repo: snapshot.target.repo,
+			pr: snapshot.target.pr,
+		});
+		if (reobservedHead !== observedHead) {
+			throw new DagContractError("world head drifted during ci wait");
+		}
+		ci = await ports.githubObservation.readCiState({
+			repo: snapshot.target.repo,
+			pr: snapshot.target.pr,
+			head: observedHead,
+		});
+	}
+	if (ci.state === "red") {
+		throw new DagContractError(`ci is not green: ${ci.detail}`);
+	}
+	// Codex R1 HIGH-1: confirm the head AFTER the green observation and BEFORE
+	// the intent tx. Without this, a force-push landing while the green
+	// observation returns would consume the one-shot capability (and burn an
+	// attempt) on authority that no longer describes the world; it also closes
+	// the gap where `gh pr checks` is PR-bound rather than SHA-bound.
+	const confirmedHead = await ports.githubObservation.readPrHead({
+		repo: snapshot.target.repo,
+		pr: snapshot.target.pr,
+	});
+	if (confirmedHead !== observedHead) {
+		throw new DagContractError("world head drifted after ci green");
+	}
 	const actionId = randomUUID();
 	const actor = actionActor(input.actor);
 	const intended = kernel.write("v2dag.ship.intent", (tx) => {

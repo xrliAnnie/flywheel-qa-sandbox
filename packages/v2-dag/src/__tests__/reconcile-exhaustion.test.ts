@@ -24,6 +24,9 @@ async function prepareDueRetry(
 		async readPrHead() {
 			return head;
 		},
+		async readCiState() {
+			return { state: "green" as const };
+		},
 		async readMergeState() {
 			return { state: "open" as const };
 		},
@@ -141,6 +144,9 @@ describe("ship reconciliation exhaustion", () => {
 		const githubObservation: GitHubObservationPort = {
 			async readPrHead() {
 				return head;
+			},
+			async readCiState() {
+				return { state: "green" as const };
 			},
 			async readMergeState() {
 				return {

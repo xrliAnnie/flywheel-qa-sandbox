@@ -17,9 +17,29 @@ export interface OperationalDagPortsOptions {
 	lockRoot: string;
 	shipPollMs?: number;
 	shipTimeoutMs?: number;
+	/** Test seam only (like `run`/`sleep`); the CLI never exposes it. */
+	observationTimeoutMs?: number;
 	run?: typeof execFileSync;
 	sleep?: (ms: number) => Promise<void>;
 }
+
+/**
+ * Codex R1 MEDIUM-2: every CI observation subprocess is bounded, otherwise a
+ * wedged `gh` (network hang, stuck credential helper) blocks `executeShip`
+ * inside `readCiState` and the 30min CI deadline never gets a chance to
+ * fire. Timeout/signal death maps to fail-closed red.
+ */
+export const OBSERVATION_TIMEOUT_MS = 30_000;
+
+/**
+ * FLY-1545 ①: the ship merge poll must outlive the `:cool:` ship workflow.
+ * 35min = ship-on-comment.yml `timeout-minutes: 30` + 5min propagation
+ * buffer. The two numbers are coupled: changing the workflow timeout must
+ * update this constant in the same change. The pointer is one-way (this file
+ * -> ship-on-comment.yml) because runner push credentials lack the `workflow`
+ * scope to carry the reciprocal comment.
+ */
+export const DEFAULT_SHIP_TIMEOUT_MS = 2_100_000;
 
 function output(
 	run: typeof execFileSync,
@@ -30,6 +50,62 @@ function output(
 		encoding: "utf8",
 		maxBuffer: 16 * 1024 * 1024,
 	}).trim();
+}
+
+interface StructuredRunResult {
+	status: number;
+	stdout: string;
+	stderr: string;
+}
+
+/**
+ * FLY-1545 ①: `gh pr checks` speaks through exit codes -- exit 8 means
+ * "checks pending" (even with valid `--json` output), so the throw-on-nonzero
+ * `output()` helper would collapse pending into failure (the v1
+ * ship-ci-guard structural trap). This runner surfaces {status, stdout,
+ * stderr} so the caller can treat exit 0 and exit 8 as parseable
+ * observations and everything else as fail-closed red.
+ */
+function runStructured(
+	run: typeof execFileSync,
+	file: string,
+	args: string[],
+	timeoutMs: number,
+): StructuredRunResult {
+	try {
+		const stdout = run(file, args, {
+			encoding: "utf8",
+			maxBuffer: 16 * 1024 * 1024,
+			timeout: timeoutMs,
+		});
+		return { status: 0, stdout: String(stdout), stderr: "" };
+	} catch (error) {
+		const failure = error as {
+			status?: unknown;
+			signal?: unknown;
+			code?: unknown;
+			stdout?: unknown;
+			stderr?: unknown;
+			message?: unknown;
+		};
+		// A timeout kill surfaces as ETIMEDOUT / a signal death with no exit
+		// status -- not a parseable observation, fail-closed.
+		if (failure.code === "ETIMEDOUT" || typeof failure.signal === "string") {
+			return {
+				status: -1,
+				stdout: "",
+				stderr: `gh observation timed out after ${timeoutMs}ms`,
+			};
+		}
+		return {
+			status: typeof failure.status === "number" ? failure.status : -1,
+			stdout: typeof failure.stdout === "string" ? failure.stdout : "",
+			stderr:
+				typeof failure.stderr === "string" && failure.stderr.length > 0
+					? failure.stderr
+					: String(failure.message ?? "subprocess failed"),
+		};
+	}
 }
 
 function gitPort(
@@ -100,13 +176,21 @@ function githubPorts(
 	sleep: (ms: number) => Promise<void>,
 	pollMs: number,
 	timeoutMs: number,
+	observationTimeoutMs: number,
 ): {
 	observation: GitHubObservationPort;
 	merge: GitHubMergePort;
 } {
-	const view = (repo: string, pr: number) =>
-		JSON.parse(
-			output(run, ghBin, [
+	// Codex R2: the head/merge observations are bounded like the CI ones -- a
+	// wedged `gh pr view` would otherwise hang executeShip in the head probes
+	// (before the first CI observation, per poll, and post-green) where the CI
+	// deadline is never consulted. Timeout throws, which every caller already
+	// treats as an observation failure.
+	const view = (repo: string, pr: number) => {
+		const result = runStructured(
+			run,
+			ghBin,
+			[
 				"pr",
 				"view",
 				String(pr),
@@ -114,12 +198,42 @@ function githubPorts(
 				repo,
 				"--json",
 				"headRefOid,state,mergeCommit",
-			]),
-		) as {
+			],
+			observationTimeoutMs,
+		);
+		if (result.status !== 0) {
+			throw new Error(
+				`gh pr view exited ${result.status}: ${result.stderr.trim()}`,
+			);
+		}
+		return JSON.parse(result.stdout) as {
 			headRefOid?: unknown;
 			state?: unknown;
 			mergeCommit?: { oid?: unknown } | null;
 		};
+	};
+	// FLY-1545 ①: v1 ship-ci-guard's fail-closed matrix, ported without its
+	// kill-switch and without its exit-8 trap. Every ambiguous observation is
+	// red; only a fully green (pass/skipping) non-empty check list on the
+	// expected head with a decided mergeStateStatus is green.
+	const CHECK_BUCKETS = new Set([
+		"pass",
+		"fail",
+		"pending",
+		"skipping",
+		"cancel",
+	]);
+	// Codex R1 LOW-3: the decided states are an ALLOWLIST (gh's documented
+	// enum minus the undecided/unmergeable four), so an unknown or malformed
+	// future value fails closed instead of sailing through a denylist.
+	const DECIDED_MERGE_STATES = new Set([
+		"BEHIND",
+		"BLOCKED",
+		"CLEAN",
+		"DRAFT",
+		"HAS_HOOKS",
+	]);
+	const red = (detail: string) => ({ state: "red" as const, detail });
 	return {
 		observation: {
 			async readPrHead(target) {
@@ -128,6 +242,117 @@ function githubPorts(
 					throw new Error("GitHub PR head is unavailable");
 				}
 				return result.headRefOid;
+			},
+			async readCiState(target) {
+				const viewResult = runStructured(
+					run,
+					ghBin,
+					[
+						"pr",
+						"view",
+						String(target.pr),
+						"--repo",
+						target.repo,
+						"--json",
+						"headRefOid,mergeStateStatus",
+					],
+					observationTimeoutMs,
+				);
+				if (viewResult.status !== 0) {
+					return red(
+						`gh pr view exited ${viewResult.status}: ${viewResult.stderr.trim()}`,
+					);
+				}
+				let viewJson: { headRefOid?: unknown; mergeStateStatus?: unknown };
+				try {
+					viewJson = JSON.parse(viewResult.stdout) as typeof viewJson;
+				} catch {
+					return red("gh pr view returned unparseable JSON");
+				}
+				if (viewJson.headRefOid !== target.head) {
+					return red(
+						`PR head ${String(viewJson.headRefOid)} is not the authorized head ${target.head}`,
+					);
+				}
+				if (
+					typeof viewJson.mergeStateStatus !== "string" ||
+					!DECIDED_MERGE_STATES.has(viewJson.mergeStateStatus)
+				) {
+					return red(
+						`mergeStateStatus is undecided: ${String(viewJson.mergeStateStatus)}`,
+					);
+				}
+				const checksResult = runStructured(
+					run,
+					ghBin,
+					[
+						"pr",
+						"checks",
+						String(target.pr),
+						"--repo",
+						target.repo,
+						"--json",
+						"bucket,name,state",
+					],
+					observationTimeoutMs,
+				);
+				if (checksResult.status !== 0 && checksResult.status !== 8) {
+					return red(
+						`gh pr checks exited ${checksResult.status}: ${checksResult.stderr.trim()}`,
+					);
+				}
+				let checks: unknown;
+				try {
+					checks = JSON.parse(checksResult.stdout);
+				} catch {
+					return red("gh pr checks returned unparseable JSON");
+				}
+				if (!Array.isArray(checks)) {
+					return red("gh pr checks JSON is not an array");
+				}
+				if (checks.length === 0) {
+					// This repo always has CI; an empty list is a broken observation,
+					// not a green one (v1 empty-list semantics, kept).
+					return red("PR reports an empty check list");
+				}
+				const names = (bucket: string) =>
+					checks
+						.filter(
+							(item): item is { bucket: string; name?: unknown } =>
+								typeof item === "object" &&
+								item !== null &&
+								(item as { bucket?: unknown }).bucket === bucket,
+						)
+						.map((item) => String(item.name ?? "unnamed"))
+						.join(", ");
+				for (const item of checks) {
+					const bucket =
+						typeof item === "object" && item !== null
+							? (item as { bucket?: unknown }).bucket
+							: undefined;
+					if (typeof bucket !== "string" || !CHECK_BUCKETS.has(bucket)) {
+						return red(`check bucket is out of domain: ${String(bucket)}`);
+					}
+				}
+				const typed = checks as { bucket: string }[];
+				if (typed.some((item) => item.bucket === "fail")) {
+					return red(`checks failed: ${names("fail")}`);
+				}
+				if (typed.some((item) => item.bucket === "cancel")) {
+					return red(`checks cancelled: ${names("cancel")}`);
+				}
+				if (typed.some((item) => item.bucket === "pending")) {
+					return {
+						state: "pending" as const,
+						detail: `checks pending: ${names("pending")}`,
+					};
+				}
+				if (checksResult.status === 8) {
+					// exit 8 claims pending but the JSON shows none -- contradictory
+					// observation, fail-closed.
+					return red("gh pr checks exited 8 without a pending bucket");
+				}
+				return { state: "green" as const };
 			},
 			async readMergeState(target) {
 				try {
@@ -232,11 +457,14 @@ export function createOperationalDagPorts(
 		options.sleep ??
 			((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))),
 		options.shipPollMs ?? 30_000,
-		options.shipTimeoutMs ?? 600_000,
+		options.shipTimeoutMs ?? DEFAULT_SHIP_TIMEOUT_MS,
+		options.observationTimeoutMs ?? OBSERVATION_TIMEOUT_MS,
 	);
 	const clock = {
 		nowMs: () => Date.now(),
 		nowIso: () => new Date().toISOString(),
+		sleep: (ms: number) =>
+			new Promise<void>((resolve) => setTimeout(resolve, ms)),
 	};
 	return {
 		clock,

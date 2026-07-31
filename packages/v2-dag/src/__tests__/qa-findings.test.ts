@@ -372,6 +372,9 @@ describe("FLY-1520 QA findings — reproductions", () => {
 			async readPrHead() {
 				return A;
 			},
+			async readCiState() {
+				return { state: "green" as const };
+			},
 			async readMergeState() {
 				return { state: "open" as const };
 			},

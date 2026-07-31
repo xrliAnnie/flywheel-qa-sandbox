@@ -162,16 +162,25 @@ describe("data-owned contracts and semantic fences", () => {
 			join(import.meta.dirname, "..", "ship.ts"),
 			"utf8",
 		).toLowerCase();
-		for (const forbidden of [
-			"review",
-			"verdict",
-			"artifact",
-			"docs",
-			"role",
-			"ci",
-		]) {
+		// FLY-1545 ①: "ci" left this list on purpose. The fence guards against
+		// ship gating on ledger evidence categories; the CI-green wait is a live
+		// world observation through GitHubObservationPort at the merge authority
+		// point (founder-mandated), not an evidence-row predicate.
+		for (const forbidden of ["review", "verdict", "artifact", "docs", "role"]) {
 			expect(source).not.toContain(forbidden);
 		}
+	});
+
+	it("keeps the reconcile path free of CI observation", () => {
+		// FLY-1545 ①: reconcile faces already-intended actions; after a merge
+		// GitHub reports mergeStateStatus=UNKNOWN, so re-probing CI there would
+		// kill legitimate settlements (the v1 merge-ship-gate lesson). The single
+		// authoritative CI observation lives in executeShip, before the intent tx.
+		const source = readFileSync(
+			join(import.meta.dirname, "..", "reconcile.ts"),
+			"utf8",
+		);
+		expect(source).not.toContain("readCiState");
 	});
 
 	it("keeps the package boundary and canonical task writer singular", () => {

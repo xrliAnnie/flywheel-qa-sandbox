@@ -62,6 +62,9 @@ describe("three-node DAG to generic ship", () => {
 			async readPrHead() {
 				return head;
 			},
+			async readCiState() {
+				return { state: "green" as const };
+			},
 			async readMergeState() {
 				return mergedHead === null
 					? { state: "open" as const }

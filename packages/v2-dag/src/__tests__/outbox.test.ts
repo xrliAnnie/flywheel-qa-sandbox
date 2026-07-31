@@ -65,6 +65,9 @@ describe("FLY-1544 ③ — engine lifecycle rides the Discord outbox", () => {
 			async readPrHead() {
 				return head;
 			},
+			async readCiState() {
+				return { state: "green" as const };
+			},
 			async readMergeState() {
 				return { state: "open" as const };
 			},

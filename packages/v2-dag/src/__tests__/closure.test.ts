@@ -46,6 +46,9 @@ async function shipIssue(
 		async readPrHead() {
 			return HEAD;
 		},
+		async readCiState() {
+			return { state: "green" as const };
+		},
 		async readMergeState() {
 			return { state: "open" as const };
 		},

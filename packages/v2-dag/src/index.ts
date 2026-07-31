@@ -36,7 +36,7 @@ export {
 export { reconcileShipActions } from "./reconcile.js";
 export { resumeActivation } from "./resume.js";
 export { reworkTask } from "./rework.js";
-export { executeShip } from "./ship.js";
+export { CI_POLL_MS, CI_WAIT_MS, executeShip } from "./ship.js";
 export { terminalizeSessionMailboxTx } from "./terminal-mail.js";
 export type {
 	AdmissionResult,

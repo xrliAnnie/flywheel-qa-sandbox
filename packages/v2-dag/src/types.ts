@@ -4,6 +4,9 @@ import type { Kernel } from "flywheel-v2-kernel";
 export interface DagClock {
 	nowMs(): number;
 	nowIso(): string;
+	/** FLY-1545 ①: the ship-path CI wait sleeps through the clock so tests can
+	 * advance time instead of really waiting. */
+	sleep(ms: number): Promise<void>;
 }
 
 export interface GitPort {
@@ -80,6 +83,21 @@ export interface SpawnPort {
 
 export interface GitHubObservationPort {
 	readPrHead(target: { repo: string; pr: number }): Promise<string>;
+	/**
+	 * FLY-1545 ①: one authoritative CI observation at the merge point. There is
+	 * deliberately no "unknown" arm -- every ambiguous observation (auth/network
+	 * failure, malformed JSON, empty check list, out-of-domain bucket, drifted
+	 * head, undecided mergeStateStatus) collapses fail-closed into `red`.
+	 */
+	readCiState(target: {
+		repo: string;
+		pr: number;
+		head: string;
+	}): Promise<
+		| { state: "green" }
+		| { state: "pending"; detail: string }
+		| { state: "red"; detail: string }
+	>;
 	readMergeState(target: {
 		repo: string;
 		pr: number;

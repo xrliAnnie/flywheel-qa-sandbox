@@ -65,6 +65,9 @@ function makeWorld(options: WorldOptions = {}) {
 		async readPrHead() {
 			return options.prHead ? options.prHead() : world.head;
 		},
+		async readCiState() {
+			return { state: "green" as const };
+		},
 		async readMergeState() {
 			return world.merged === null
 				? { state: "open" as const }
