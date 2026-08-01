@@ -1,0 +1,45 @@
+FLY-1581 的五份交付物在这里被落地,原因:
+
+这些文档由 FLY-1581 的 runner (exec 4a2fd779) 于 2026-07-31 完整产出并过了
+Codex design review 10 轮 APPROVED,但它的 generalized 节点是 no-write:
+契约禁止改分支 / commit / push / PR,所以一个字都进不了 git。
+
+它走 `complete --route no_code` 收工 → 系统判定「完成」→ DAG 跳过落地节点
+→ 交付物永远留在一个未提交的 worktree 里。
+
+这是 2026-07-31 夜里 FLY-1578 / 1579 / 1580 / 1581 四单共同的死法。
+
+━━━ 差一点就真的丢了 ━━━
+
+2026-08-01 00:52     本单 (FLY-1590) 读到源 worktree(尚存活),跑 `diff -r`
+                     ~/Dev/flywheel-FLY-1581/engineering/doc/FLY-1581-*/
+                     vs ~/.flywheel/evidence/FLY-1581-preemptive-20260801/
+                     → 零差异(evidence 侧另有两个 *.STALE-*.bak 中间态,未采用)
+2026-08-01 00:53:59  源 worktree 被 reset 到 2ed08e54 (PR #748)
+                     → 那五份未跟踪文件从磁盘消失(reflog 时间)
+2026-08-01 00:54     五份文档【从 evidence 备份】复制到本分支,SHA256 逐份核过
+2026-08-01 00:54     再探源 worktree:`git status` 干净、
+                     `find . -name "*1581*"` 零命中 —— 证实第一代已不在磁盘
+
+注:落地源是 evidence 备份而非 worktree,所以 reset 早于复制并不矛盾。
+   当时那次三方 SHA 校验里 worktree 那一列输出 `no such file or directory`,
+   正是 reset 已经发生的现场证据。
+
+⇒ reset 那一刻,Lead 的预防性备份是【仅存的一份】,也是本目录内容的
+  【唯一独立恢复来源】。若没有它,FLY-1581 一整夜的产出(865 行 + 4 条
+  可直接建单的 follow-up)在此刻就归零了。
+⇒ 消失的是第一代未跟踪内容,不是 worktree 本身 —— 那个 worktree 后来被
+  重新 dispatch 产出过另一批同名文档,但那批已由 Eng Lead 裁定为
+  【未授权误派产物】并叫停,不作数。本目录只有一代内容,就是这一份。
+  见上一级目录的 README.md §3。
+
+━━━ 内容口径 ━━━
+
+五份文档逐字照抄 evidence 快照,一个字未改 —— 包括 progress.md 里那条
+写坏的 Linear URL (issue/GEO/issue/FLY-1581)。本单是搬运,不是修订;
+任何改写都会让「与备份逐字一致」这条验收失去意义。
+
+plan.md 描述的修复本身【尚未实施】。它是给未来实施节点的输入,不是已完成
+的工作记录。progress.md 明写「零生产代码改动」。
+
+follow-ups.md 的 F1–F4 是四条可直接粘进 create-issue 的草稿,尚未建单。
