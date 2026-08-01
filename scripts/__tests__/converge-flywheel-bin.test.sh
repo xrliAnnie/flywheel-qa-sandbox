@@ -19,13 +19,43 @@ SB="$(mktemp -d -t fly954-converge-XXXXXX)"; trap 'rm -rf "$SB"' EXIT
 # mktemp fake repo is a temp root, so the FLY-1389 guard/symlink sections
 # self-disable and C1-C8 exercise the FLY-954 wrapper loop verbatim).
 FR="$SB/repo"; mkdir -p "$FR/scripts/lib"
+# FLY-1577: mark the fake repo worktree-shaped EXPLICITLY rather than relying on
+# mktemp landing under /tmp or /var/folders. With a valid custom TMPDIR (e.g.
+# ~/.flywheel/.../browser-tmp) it does not, is_temp_or_worktree_root judges the
+# fixture trusted, the symlink lane runs, and cases that never meant to exercise
+# it fail before reaching their copy-lane assertions.
+echo "gitdir: /main/.git/worktrees/fly954-fixture" > "$FR/.git"
 cp "$REAL_REPO_ROOT/scripts/lib/script-sanity.sh" "$FR/scripts/lib/"
 cp "$REAL_REPO_ROOT/scripts/lib/path-hygiene.sh" "$FR/scripts/lib/"
 cp "$REAL_REPO_ROOT/scripts/converge-flywheel-bin.sh" "$FR/scripts/"
 CONVERGE="$FR/scripts/converge-flywheel-bin.sh"
-for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh; do
+for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh lib/bounded-run.sh; do
   { echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-$f-$i >/dev/null"; i=$((i+1)); done; } > "$FR/scripts/$f"
 done
+# FLY-1577: the gate is PYTHON. It is in FILES because the cmux watcher's
+# fail-closed preflight loads it from <state>/bin (not from the repo), so its
+# absence refuses the watcher launch — the 2026-07-31 incident. Shaped like a
+# real .py file so this fixture EXERCISES (rather than asserts) that FLY-954's
+# language-agnostic sanity floor accepts Python sources.
+{ echo '#!/usr/bin/env python3'; echo 'import sys'; echo 'def main() -> int:'
+  i=1; while [ "$i" -le 80 ]; do echo "    print('repo-gate-$i')"; i=$((i+1)); done
+  echo '    return 0'; echo 'if __name__ == "__main__":'; echo '    sys.exit(main())'
+} > "$FR/scripts/restart-storm-gate.py"
+
+# FLY-1577: every case that is not specifically testing a missing/drifted copy
+# must start from a converged copy-lane steady state — otherwise the widened
+# FILES makes converge repair the un-seeded entries and the "exactly one alert"
+# assertions below count repairs they never meant to trigger.
+COPY_FILES="flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py lib/bounded-run.sh"
+seed_steady_state() {  # <state-dir>
+  local st="$1" f
+  for f in $COPY_FILES; do
+    mkdir -p "$(dirname "$st/bin/$f")"
+    [ -e "$st/bin/$f" ] && chmod u+w "$st/bin/$f" 2>/dev/null
+    cp "$FR/scripts/$f" "$st/bin/$f"
+    chmod 555 "$st/bin/$f"
+  done
+}
 # stub alert sink (records invocations)
 ALERT="$SB/alert.sh"
 cat > "$ALERT" <<'EOF'
@@ -44,9 +74,9 @@ run_converge() {
 
 # C1: drifted (the incident stub) → repaired + one alert
 : > "$SB/alerts.log"
+seed_steady_state "$ST"
+chmod u+w "$ST/bin/flywheel-lead-wrapper.sh"
 echo '#!/bin/bash' > "$ST/bin/flywheel-lead-wrapper.sh"
-cp "$FR/scripts/flywheel-bridge-wrapper.sh" "$ST/bin/flywheel-bridge-wrapper.sh"
-cp "$FR/scripts/restart-services.sh" "$ST/bin/restart-services.sh"
 run_converge; RC=$?
 if [ "$RC" -eq 0 ] \
    && cmp -s "$ST/bin/flywheel-lead-wrapper.sh" "$FR/scripts/flywheel-lead-wrapper.sh" \
@@ -123,6 +153,8 @@ else fail "C8: absent source was tolerated (rc=$RC)"; cat "$SB/out.log" "$SB/ale
 # original target (drill-prefix behavior of the repair alert).
 FH="$SB/fakehome"; mkdir -p "$FH/.flywheel/bin"
 : > "$SB/alerts.log"
+seed_steady_state "$FH/.flywheel"
+chmod u+w "$FH/.flywheel/bin/flywheel-lead-wrapper.sh"
 echo '#!/bin/bash' > "$FH/.flywheel/bin/flywheel-lead-wrapper.sh"   # drift
 ALERT_LOG="$SB/alerts.log" HOME="$FH" FLYWHEEL_STATE_DIR="$FH/.flywheel" \
 FLYWHEEL_CONVERGE_ALERT_BIN="$ALERT" FLYWHEEL_CONVERGE_ALLOW_TEMP_ROOT=1 \
@@ -132,6 +164,76 @@ if [ "$RC" -eq 0 ] && grep -q '^ALERT' "$SB/alerts.log" \
    && ! grep -q '🧪' "$SB/alerts.log"; then
   pass "C7: production shape (STATE_DIR == \$HOME/.flywheel) → no drill prefix"
 else fail "C7: prefix leaked into production shape (rc=$RC)"; cat "$SB/alerts.log" 2>/dev/null; fi
+
+# ── FLY-1577: the cmux watcher's hard dependencies belong to this invariant ──
+#
+# Incident 2026-07-31: ~/.flywheel/bin/restart-storm-gate.py was absent, the
+# cmux watcher's fail-closed preflight refused to launch it for hours, and
+# converge reported CLEAN the whole time — because the gate was not in FILES.
+# The founder lost her only view of what Runners were doing.
+#
+# mode is compared LITERALLY (not via `[ -w ]`): C11 has to prove 700 -> 555,
+# and a writability probe cannot tell those apart for the owning user.
+# GNU (-c) first, BSD (-f) fallback — GNU's -f means "file system status" and
+# succeeds with an unrelated multi-line block, so the reverse order never
+# falls through on Linux (same contract as scripts/flywheel-setup.sh::_fs_perm).
+t_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
+
+# C9: the incident, verbatim — gate missing from bin → repaired to 555 + LOUD.
+# "not clean" is asserted directly: converge must both say `repaired:` and emit
+# exactly one drift alert. Reporting clean here is what let the outage run.
+: > "$SB/alerts.log"
+seed_steady_state "$ST"
+rm -f "$ST/bin/restart-storm-gate.py"
+run_converge; RC=$?
+if [ "$RC" -eq 0 ] \
+   && cmp -s "$ST/bin/restart-storm-gate.py" "$FR/scripts/restart-storm-gate.py" \
+   && [ "$(t_mode "$ST/bin/restart-storm-gate.py")" = "555" ] \
+   && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 1 ] \
+   && grep -q 'bin_integrity_drift' "$SB/alerts.log" \
+   && grep -q 'repaired: restart-storm-gate.py' "$SB/out.log"; then
+  pass "C9: missing restart-storm-gate.py repaired to 555 + reported drifted (never 'clean')"
+else fail "C9: gate not converged (rc=$RC, mode=$(t_mode "$ST/bin/restart-storm-gate.py"))"
+  cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
+
+# C10: the alert TRANSPORT is a hard dependency too. bounded-run.sh is what
+# carries the "brake is missing" meta-alert out of the launch path; without it
+# the notifier is a silent no-op (see fly1577-cmux-bin-closure.test.sh A1).
+# Nested destination => install_script_atomic must create <bin>/lib itself.
+: > "$SB/alerts.log"
+seed_steady_state "$ST"
+rm -rf "$ST/bin/lib"
+run_converge; RC=$?
+if [ "$RC" -eq 0 ] && [ -d "$ST/bin/lib" ] \
+   && cmp -s "$ST/bin/lib/bounded-run.sh" "$FR/scripts/lib/bounded-run.sh" \
+   && [ "$(t_mode "$ST/bin/lib/bounded-run.sh")" = "555" ] \
+   && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 1 ]; then
+  pass "C10: missing lib/bounded-run.sh repaired to 555, <bin>/lib auto-created"
+else fail "C10: nested copy not converged (rc=$RC)"; cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
+
+# C11: the shape a human leaves behind. The Lead hand-restored the gate during
+# the incident and it landed 700; converge must tighten it to 555 without
+# alerting (mode-only drift is not a content breach — C5's contract).
+: > "$SB/alerts.log"
+seed_steady_state "$ST"
+chmod 700 "$ST/bin/restart-storm-gate.py"
+run_converge; RC=$?
+if [ "$RC" -eq 0 ] && [ "$(t_mode "$ST/bin/restart-storm-gate.py")" = "555" ] \
+   && [ ! -s "$SB/alerts.log" ]; then
+  pass "C11: hand-restored 700 gate tightened to 555, no alert"
+else fail "C11: mode convergence (rc=$RC, mode=$(t_mode "$ST/bin/restart-storm-gate.py"))"
+  cat "$SB/alerts.log" 2>/dev/null; fi
+
+# C12: mode convergence must be IDEMPOTENT. mode_of() used to try BSD `stat -f`
+# first, which on Linux succeeds in filesystem-status mode and never falls
+# through to GNU -c — so an already-555 file was re-chmod'd and re-logged on
+# every single run (every Lead start, every kickstart).
+: > "$SB/alerts.log"
+run_converge; RC=$?
+if [ "$RC" -eq 0 ] && ! grep -q 'mode tightened:' "$SB/out.log" \
+   && [ ! -s "$SB/alerts.log" ]; then
+  pass "C12: second run is a true no-op (no repeated 'mode tightened', no alert)"
+else fail "C12: mode check not idempotent (rc=$RC)"; cat "$SB/out.log" 2>/dev/null; fi
 
 echo ""; echo "Results: ${PASSED} passed, ${FAILED} failed"
 [ "$FAILED" -eq 0 ] || exit 1

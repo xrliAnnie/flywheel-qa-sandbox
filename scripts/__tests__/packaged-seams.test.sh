@@ -246,11 +246,21 @@ mk_alert_stub() { # <home>
 
 T="$SANDBOX/s7-tree"; H="$SANDBOX/s7-home"
 mk_tree "$T" prebuilt; mk_home "$H"; mk_alert_stub "$H"
+# FLY-1577: mark this converge fixture worktree-shaped EXPLICITLY instead of
+# relying on the sandbox landing somewhere path-hygiene calls temp. Under a
+# valid custom TMPDIR it does not, the tree is judged trusted, and the strict
+# meta-alert lane creates a link + alert that this zero-alert case then counts.
+# Scoped to the converge seams (S7/S8) so the other packaged/monorepo seams keep
+# their existing shape.
+echo "gitdir: /main/.git/worktrees/s7-fixture" > "$T/.git"
 # steady-state Lead start: bin copies already converged (555) — the ONLY thing
 # that could ring here is the restart-services.sh source-missing false positive
 # this branch removes.
-mkdir -p "$H/.flywheel/bin"
-for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh; do
+# FLY-1577 widened the packaged FILES with the cmux watcher's launch-path
+# dependencies (both ship in a packaged tree — see the S0 closure check above),
+# so steady state now has to include them or this case counts their repairs.
+mkdir -p "$H/.flywheel/bin/lib"
+for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-storm-gate.py lib/bounded-run.sh; do
   cp -p "$T/scripts/$f" "$H/.flywheel/bin/$f"; chmod 555 "$H/.flywheel/bin/$f"
 done
 run_converge "$T" "$H"; rc=$?
@@ -263,6 +273,7 @@ fi
 
 T="$SANDBOX/s8-tree"; H="$SANDBOX/s8-home"
 mk_tree "$T"; mk_home "$H"; mk_alert_stub "$H"
+echo "gitdir: /main/.git/worktrees/s8-fixture" > "$T/.git"   # FLY-1577: see S7
 run_converge "$T" "$H"; rc=$?
 if [ "$rc" -eq 1 ] && grep -q "repo source missing.*restart-services.sh" "$H/out.log" \
    && grep -q "srcmissing" <(calls "$H"); then

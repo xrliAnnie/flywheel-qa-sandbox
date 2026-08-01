@@ -298,6 +298,8 @@ jobs:
           bash scripts/__tests__/path-hygiene.test.sh
           bash scripts/__tests__/converge-flywheel-bin.test.sh
           bash scripts/__tests__/converge-fly1389.test.sh
+          bash scripts/__tests__/fly1577-cmux-bin-closure.test.sh
+          bash scripts/__tests__/fly1577-alert-arrival.test.sh
           bash scripts/__tests__/check-global-path-hygiene.test.sh
           bash scripts/__tests__/install-hooks-fly1389.test.sh
           bash scripts/__tests__/register-local-marketplace.test.sh

@@ -654,7 +654,21 @@ post_discord() {
 header = "Authorization: Bot ${TOKEN}"
 CURLCFG
 }
-HTTP_CODE=$(post_discord 2>/dev/null || echo "000")
+# FLY-1577: `$(post_discord || echo 000)` CONCATENATED on real network failure.
+# curl -w '%{http_code}' already prints `000` when the connection never lands,
+# and it also exits non-zero (7 on connection-refused), so the `|| echo 000`
+# appended a second one and HTTP_CODE became `000000`. That matches neither the
+# `000` transient case below nor any 5xx, so a plain network blip was classified
+# PERMANENT: dead-lettered instead of queued, and never retried once the network
+# came back. The alert was durably recorded and durably never delivered.
+# Normalize on the command's exit status instead of concatenating onto whatever
+# it printed.
+if ! HTTP_CODE=$(post_discord 2>/dev/null); then
+  HTTP_CODE="000"
+fi
+case "$HTTP_CODE" in
+  ''|*[!0-9]*) HTTP_CODE="000" ;;   # any non-numeric residue is a failed send
+esac
 
 if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] 2>/dev/null; then
   rm -f /tmp/lead-alert-$$.out

@@ -33,9 +33,15 @@ make_fake_repo() {  # <dir> <gitshape: dir|file>
     { echo '#!/bin/bash' > "$fr/scripts/lib/tmux-server-rescue.sh"; }
   cp "$REAL_REPO_ROOT/scripts/converge-flywheel-bin.sh" "$fr/scripts/"
   local f i
-  for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh flywheel-cmux-sync.sh flywheel-cmux-autostart.sh; do
+  for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh flywheel-cmux-sync.sh flywheel-cmux-autostart.sh lib/bounded-run.sh meta-alert.sh; do
     { echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-$f-$i >/dev/null"; i=$((i+1)); done; } > "$fr/scripts/$f"
   done
+  chmod 0755 "$fr/scripts/meta-alert.sh"
+  # FLY-1577 widened FILES with the cmux watcher's launch-path dependencies;
+  # the gate is Python, so the fixture keeps that shape too.
+  { echo '#!/usr/bin/env python3'; echo 'import sys'
+    i=1; while [ "$i" -le 80 ]; do echo "print('repo-gate-$i')"; i=$((i+1)); done
+    echo 'sys.exit(0)'; } > "$fr/scripts/restart-storm-gate.py"
   # dist fixture must pass the symlink-repair source bar: FLY-954 sanity
   # (>=1024B + substantive lines) AND a shebang first line. Created via
   # redirect => mode 0644, so S1 also exercises the auto-chmod leg.
@@ -55,12 +61,19 @@ exit 0
 EOF
 chmod +x "$ALERT"
 
-seed_wrappers() {  # <state-dir> <repo> — pre-converge wrapper copies (healthy)
-  mkdir -p "$1/bin"
+# FLY-1577: every case below targets the SYMLINK lane, so it has to start from
+# a converged copy lane and a healthy meta-alert.sh link — otherwise the widened
+# FILES and the strict meta-alert regime add repairs/alerts of their own and the
+# "exactly one alert" / "alerts log empty" assertions here count noise they
+# never meant to trigger.
+seed_wrappers() {  # <state-dir> <repo> — pre-converge steady state (healthy)
+  mkdir -p "$1/bin/lib"
   local f
-  for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh; do
+  for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh \
+           restart-storm-gate.py lib/bounded-run.sh; do
     cp "$2/scripts/$f" "$1/bin/$f"
   done
+  ln -sfn "$2/scripts/meta-alert.sh" "$1/bin/meta-alert.sh"
 }
 
 run_conv() {  # <repo> <state-dir> [extra env pairs...] → rc; out in $SB/out.log
