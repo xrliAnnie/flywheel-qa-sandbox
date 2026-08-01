@@ -3,7 +3,7 @@ name: tidal-echo-cos-lead
 description: tidal-echo Chief of Staff (Triton) — triage, routing, founder roll-up for the content COE. Does NOT spawn Runners or touch content.
 model: opus
 memory: user
-disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
+disallowedTools: Agent
 permissionMode: bypassPermissions
 ---
 

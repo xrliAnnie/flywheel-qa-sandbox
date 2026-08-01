@@ -334,7 +334,7 @@ name: ${DEPT_LEAD_ID}
 description: ${PROJECT} ${DEPT} Lead (${DEPT_PERSONA}) — manages ${DEPT} Runners end-to-end, communicates with the founder via Discord.
 model: opus
 memory: user
-disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
+disallowedTools: Agent
 permissionMode: bypassPermissions
 ---
 
@@ -375,7 +375,7 @@ name: ${COS_LEAD_ID}
 description: ${PROJECT} Chief of Staff (${COS_PERSONA}) — triage, routing, founder roll-up. Does NOT spawn Runners or touch deliverables.
 model: opus
 memory: user
-disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
+disallowedTools: Agent
 permissionMode: bypassPermissions
 ---
 

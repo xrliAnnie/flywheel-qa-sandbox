@@ -987,7 +987,7 @@ cat > "${SLOT_DIR}/test-identity.md" <<EOF
 name: ${AGENT_ID}
 description: Flywheel TEST slot ${SLOT} (${SLOT_ROLE}, mode=${MODE}) — automated QA environment
 model: opus
-disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
+disallowedTools: Agent
 permissionMode: bypassPermissions
 ---
 
@@ -1387,7 +1387,7 @@ EOF
 name: ${XAGENT}
 description: Flywheel TEST slot ${XSID} (${XROLE}, mode=extra-lead) — automated QA environment (campaign owner: slot ${SLOT})
 model: opus
-disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
+disallowedTools: Agent
 permissionMode: bypassPermissions
 ---
 
