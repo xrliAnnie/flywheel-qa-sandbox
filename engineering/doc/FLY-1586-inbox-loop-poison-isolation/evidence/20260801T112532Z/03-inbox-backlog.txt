@@ -1,0 +1,38 @@
+
+===== project=flywheel =====
+to_lead                undelivered  founder_rows  oldest                    newest                  
+---------------------  -----------  ------------  ------------------------  ------------------------
+flywheel-eng-lead      308          51            2026-07-28T07:29:56.000Z  2026-08-01T09:24:18.638Z
+flywheel-cos-lead      24           0             2026-07-28T06:27:38.339Z  2026-08-01T06:52:56.519Z
+flywheel-test-1        8            0             2026-07-29T01:58:41.201Z  2026-08-01T08:41:24.074Z
+flywheel-product-lead  5            0             2026-07-29T13:34:31.957Z  2026-08-01T08:41:19.014Z
+claude-infra-bot-lead  5            0             2026-07-31T08:44:48.186Z  2026-08-01T07:42:50.862Z
+
+===== project=geoforge3d =====
+to_lead       undelivered  founder_rows  oldest                    newest                  
+------------  -----------  ------------  ------------------------  ------------------------
+product-lead  2308         0             2026-07-28T06:23:04.000Z  2026-08-01T07:12:07.616Z
+ops-lead      13           0             2026-07-28T09:15:58.000Z  2026-08-01T07:12:07.627Z
+
+===== project=growth =====
+to_lead          undelivered  founder_rows  oldest                    newest                  
+---------------  -----------  ------------  ------------------------  ------------------------
+rafiki-lead      22           0             2026-07-29T13:36:43.183Z  2026-07-31T08:18:10.387Z
+reflection-lead  20           0             2026-07-29T13:32:25.102Z  2026-07-29T16:26:38.424Z
+mufasa-lead      1            0             2026-07-28T06:26:13.000Z  2026-07-28T06:26:13.000Z
+
+===== project=joycon-typeless =====
+to_lead      undelivered  founder_rows  oldest                    newest                  
+-----------  -----------  ------------  ------------------------  ------------------------
+joycon-lead  18           0             2026-07-29T13:01:32.002Z  2026-08-01T07:12:07.996Z
+
+===== project=personal-assistant =====
+to_lead                undelivered  founder_rows  oldest                    newest                  
+---------------------  -----------  ------------  ------------------------  ------------------------
+belle-lead             17           0             2026-07-31T06:56:19.712Z  2026-07-31T06:56:19.718Z
+flywheel-product-lead  1            0             2026-07-31T07:46:14.614Z  2026-07-31T07:46:14.614Z
+
+===== project=tidal-echo =====
+to_lead   undelivered  founder_rows  oldest                    newest                  
+--------  -----------  ------------  ------------------------  ------------------------
+sub-lead  71           0             2026-07-28T08:20:30.000Z  2026-08-01T07:12:08.351Z

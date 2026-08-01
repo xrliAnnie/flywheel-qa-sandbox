@@ -1,0 +1,27 @@
+flowchart LR
+    subgraph SRC["源头层 — 别再造出半个字符"]
+        C["C 码点安全截断<br/>按「字符」切,不按「码元」切<br/>7 处截断点全部换掉"]
+    end
+    subgraph ROOT["根因层 — 半个字符进不了收件箱"]
+        A["A 统一规范化<br/>写入前净化一次,写它、也比对它<br/>3 个写入口共用同一份"]
+    end
+    subgraph RESIL["韧性层 — 一行坏数据不许拖死全场"]
+        B["B 逐行隔离<br/>确定性坏行:隔离+告警+继续<br/>瞬时故障:照常重试"]
+    end
+    subgraph SAFE["安全层 — 恢复投递不许重播存量"]
+        F["F 存量冻结<br/>只投新增,存量结构性不进管道"]
+    end
+
+    C --> A --> B --> F
+
+    D1["毒行 seq 56649"] -.->|"C 防未来<br/>A 治已存"| A
+    D2["255 行存量<br/>含 40 条 founder_msg<br/>其中一条 answer=ship"] -.->|"F 全部冻住"| F
+    OUT["✅ 新 question / 新通知恢复流动<br/>❌ 存量一条不投 → 承接单 B 逐条按证据处理"]
+    F --> OUT
+
+    classDef fix fill:#e8f4ff,stroke:#007aff,stroke-width:2px,color:#1d1d1f
+    classDef danger fill:#fff1f0,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+    classDef good fill:#e9f9ee,stroke:#34c759,stroke-width:3px,color:#1d1d1f
+    class A,B,C,F fix
+    class D1,D2 danger
+    class OUT good

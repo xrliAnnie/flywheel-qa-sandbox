@@ -340,6 +340,13 @@ export const ALERT_EVENT_TYPES = [
 	"cmux_cleanup",
 	"cmux_flag_state",
 	"tmux_rescue_hold",
+	/**
+	 * FLY-1586: the boot cutover refused a deterministically-bad legacy row and
+	 * skipped it. A REAL notification is being held back, so someone has to be
+	 * told — the previous incident showed that a guard firing into a void is
+	 * indistinguishable from no problem at all.
+	 */
+	"legacy_row_quarantined",
 ] as const;
 
 export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];

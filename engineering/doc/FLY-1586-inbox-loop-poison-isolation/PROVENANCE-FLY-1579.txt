@@ -1,0 +1,19 @@
+FLY-1579 (P0: 全舰队 Lead 收件循环停摆 60 小时) 的交付物在此保全。
+
+2026-08-01 02:31:25  node_completed {"outcome":"node_done"}
+                     edge_traversed → targetNodeId: founder_gate  (跳过落地节点)
+                     gate_holder_created / approve_to_ship
+                     session 0534b206 = completed, stage=design_review
+
+实测 (Lead 复核):
+  git rev-list --count origin/main..HEAD  =  0      ← 零提交
+  PR                                      =  无
+  remote 分支                             =  无
+  唯一产出                                = 这些【未被 git 跟踪】的文档
+
+与 FLY-1580 逐字相同的失败形状 —— 同一个 no_code 路由缺陷 (见 FLY-1584)。
+
+⚠️ 这份材料的价值特别高:runner 已【实验证明】了 60 小时故障的根因
+   (lead_events seq 56649 一行毒数据 → insert-then-verify 读回≠入参 →
+    整跳回滚 → admit 在 tick 最前面 ⇒ admission+投递全没走到 → 不自愈)。
+   这份分析是重派时的起点,不要让它随 worktree 被回收。

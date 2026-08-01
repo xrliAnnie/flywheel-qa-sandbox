@@ -1,0 +1,26 @@
+FLY-1586 evidence capture
+captured_at_utc: 20260801T112532Z
+host: MacBook-Pro.local
+repo_head: 0f391bad
+out_dir: /Users/xiaorongli/Dev/flywheel-FLY-1586/engineering/doc/FLY-1586-inbox-loop-poison-isolation/evidence/20260801T112532Z
+
+target set (derived from /Users/xiaorongli/.flywheel/projects.json):
+  projects: 6
+  leads:    16   <- derived; do NOT compare against a hardcoded 14/16
+
+evidence 1 -> 02-loop-heartbeat.txt
+evidence 2 -> 03-inbox-backlog.txt
+evidence 3 -> 04-poison-row.txt
+evidence 4 -> 05-rollback-log.txt
+evidence 5 -> 06-alert-path.txt  (partial: /health.watchdogs needs a live Bridge — see NOTE below)
+evidence 6 -> 07-question-cohort.txt
+
+NOTE — what this capture does NOT contain:
+  * /health.watchdogs requires a LIVE Bridge; capture it separately before the stop.
+  * Discord-side receipts are not reachable from this host and are not faked here.
+Both gaps are written down rather than silently omitted, so a reader can tell
+'not captured' from 'captured and empty'.
+
+files written: 8 in /Users/xiaorongli/Dev/flywheel-FLY-1586/engineering/doc/FLY-1586-inbox-loop-poison-isolation/evidence/20260801T112532Z
+query_errors: 0
+DONE — capture is complete and every query returned without error.

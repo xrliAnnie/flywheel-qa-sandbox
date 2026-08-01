@@ -1,3 +1,7 @@
+import {
+	truncateCodePoints,
+	truncateCodePointsFromEnd,
+} from "flywheel-comm/text-truncate";
 import type { DesignBackend } from "flywheel-config";
 
 export interface HookPayload {
@@ -252,9 +256,9 @@ export function formatStuckEscalation(
 	if (e.terminal_tail) {
 		const tailLines = e.terminal_tail.split("\n").slice(-STUCK_TAIL_MAX_LINES);
 		let tail = tailLines.join("\n");
-		if (tail.length > STUCK_TAIL_MAX_CHARS) {
-			tail = tail.slice(-STUCK_TAIL_MAX_CHARS);
-		}
+		// FLY-1586 C: negative-direction cut — `.slice(-N)` splits a pair at the
+		// LEADING edge. A `.slice(0, N)` grep cannot even find this one.
+		tail = truncateCodePointsFromEnd(tail, STUCK_TAIL_MAX_CHARS).text;
 		lines.push(
 			"--- terminal tail (truncated; capture live before acting) ---",
 			tail,
@@ -293,8 +297,11 @@ export function formatSessionStuck(env: StuckEscalationEnvelopeLike): string {
 	if (e.issue_title) lines.push(`Title: ${e.issue_title}`);
 	if (e.status) lines.push(`Status: ${e.status}`);
 	if (e.decision_route) lines.push(`Route: ${e.decision_route}`);
-	if (e.summary) lines.push(`Summary: ${e.summary.slice(0, 300)}`);
-	if (e.last_error) lines.push(`Error: ${e.last_error.slice(0, 200)}`);
+	// FLY-1586 C: shared session-stuck renderer — both runtimes reach it.
+	if (e.summary)
+		lines.push(`Summary: ${truncateCodePoints(e.summary, 300).text}`);
+	if (e.last_error)
+		lines.push(`Error: ${truncateCodePoints(e.last_error, 200).text}`);
 	if (e.action) {
 		lines.push(
 			`Action: ${e.action} (${e.action_source_status} → ${e.action_target_status})`,
@@ -473,7 +480,7 @@ export function formatDetectionSuspicious(
 	if (e.suspicious_pane_tail) {
 		lines.push(
 			"Pane tail (▏-quoted; never share the quoted pane lines outside this inbox — not in threads, never to the founder):",
-			e.suspicious_pane_tail.slice(0, 2_000),
+			truncateCodePoints(e.suspicious_pane_tail, 2_000).text,
 			"---",
 		);
 	}

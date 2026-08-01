@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CommDB } from "../db.js";
 import { probeShipCiGreen, type ShipCiGuardResult } from "../ship-ci-guard.js";
+import { truncateWithEllipsis } from "../text-truncate.js";
 import {
 	CONTENT_REF_THRESHOLD,
 	writeContentRef,
@@ -183,10 +184,7 @@ async function gateInner(
 				timeoutBehavior: args.timeoutBehavior,
 				timeoutBehaviorSource: args.timeoutBehaviorSource ?? "default",
 				cleanupTtlHours: args.cleanupTtlHours,
-				message:
-					args.message.length > 500
-						? `${args.message.slice(0, 500)}…`
-						: args.message,
+				message: truncateWithEllipsis(args.message, 500),
 			});
 		}
 		return { status: "pending", questionId, exitCode: 0 };
@@ -345,10 +343,12 @@ async function reportGateTimedOutBestEffort(
 
 	if (!bridgeUrl || !execId || !issueId || !projectName) return;
 
-	// Truncate original_message to 500 chars to keep event payload small
+	// Truncate original_message to 500 code points to keep event payload small
 	// (full content already lives in CommDB content_ref if it was large).
-	const truncated =
-		args.message.length > 500 ? `${args.message.slice(0, 500)}…` : args.message;
+	// FLY-1586 C: code points, not code units — a cut mid-surrogate-pair produces
+	// half a character, which SQLite rewrites to U+FFFD and which then fails
+	// every insert-then-verify read-back downstream.
+	const truncated = truncateWithEllipsis(args.message, 500);
 
 	const body = {
 		event_id: randomUUID(),

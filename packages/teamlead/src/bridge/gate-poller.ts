@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import { readContentRef } from "flywheel-comm/utils";
 // FLY-927 (Task 3.2): checkpoint-park patrol wake primitive.
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
@@ -68,6 +69,7 @@ import {
 	isDiscordSnowflake,
 	parseSqliteUtcMs,
 } from "./founder-notify-utils.js";
+
 import {
 	emitFounderReplyDeliveryForThread,
 	type FounderReplyDeliverDeps,
@@ -1746,7 +1748,10 @@ export class GatePoller {
 					from_agent: m.from,
 					misroute_from: m.from,
 					misrouted_at: new Date(m.ts).toISOString(),
-					summary: m.content.slice(0, 2000),
+					// FLY-1586 C (code review R1) — this payload is persisted into
+					// lead_events, so a code-unit cut here mints exactly the poison
+					// shape that wedged the fleet. Missed in the first sweep.
+					summary: truncateCodePoints(m.content, 2000).text,
 					misroute_hint: MISROUTE_HINT,
 				};
 				const delivered = await this.deliverMisrouteEvent(

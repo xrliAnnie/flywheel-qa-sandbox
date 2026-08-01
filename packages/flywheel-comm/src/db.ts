@@ -25,6 +25,7 @@ import {
 	LEAD_INBOX_SCHEMA,
 	LeadInboxQueue,
 } from "./lead-inbox-queue.js";
+import { truncateCodePoints } from "./text-truncate.js";
 import type {
 	Message,
 	MessageProvenance,
@@ -4560,7 +4561,10 @@ export class CommDB {
 						`SELECT id, priority FROM lead_inbox
 						 WHERE resend_of IS NULL AND delivered_at IS NOT NULL
 						   AND receipt_episode_id IS NULL AND processed_at IS NULL
-						   AND disposed_at IS NULL AND receipt_exempt_reason IS NULL`,
+						   AND disposed_at IS NULL AND receipt_exempt_reason IS NULL
+						   -- FLY-1586 R2 BLOCKER: never re-arm a fenced pre-watermark root
+						   AND NOT EXISTS (SELECT 1 FROM lead_inbox_fenced_root fr
+						                    WHERE fr.inbox_id = lead_inbox.id)`,
 					)
 					.all() as Array<{ id: string; priority: 0 | 1 | 2 | 3 }>;
 				let initialized = 0;
@@ -4631,7 +4635,10 @@ export class CommDB {
 					`SELECT id, priority FROM lead_inbox
 					 WHERE resend_of IS NULL AND delivered_at IS NOT NULL
 					   AND processed_at IS NULL AND disposed_at IS NULL
-					   AND receipt_exempt_reason IS NULL`,
+					   AND receipt_exempt_reason IS NULL
+					   -- FLY-1586 R2 BLOCKER: never re-arm a fenced pre-watermark root
+					   AND NOT EXISTS (SELECT 1 FROM lead_inbox_fenced_root fr
+					                    WHERE fr.inbox_id = lead_inbox.id)`,
 				)
 				.all() as Array<{ id: string; priority: 0 | 1 | 2 | 3 }>;
 			let initialized = 0;
@@ -4755,6 +4762,10 @@ export class CommDB {
 					    AND receipt.receipt_episode_id = ?
 					    AND receipt.receipt_exempt_reason IS NULL
 					    AND receipt.disposed_at IS NULL
+					    -- FLY-1586 R2 BLOCKER: a fenced pre-watermark root must never
+					    -- mint a post-watermark child carrying the old founder payload
+					    AND NOT EXISTS (SELECT 1 FROM lead_inbox_fenced_root fr
+					                     WHERE fr.inbox_id = receipt.id)
 					  ORDER BY receipt.next_unprocessed_at, receipt.seq
 					  LIMIT ?`,
 				)
@@ -4928,7 +4939,14 @@ export class CommDB {
 			...(threadId ? { threadId } : {}),
 			firstDeliveredAt: root.delivered_at ?? root.created_at,
 			resendRound: root.delivered_rounds,
-			contentSummary: root.content.replaceAll(/\s+/g, " ").slice(0, 500),
+			// FLY-1586 C: this exact line minted lead_events seq 56649. `.slice(0,500)`
+			// cut a 🏆 in half; the lone high surrogate became U+FFFD in SQLite, so
+			// the reconciler's read-back no longer matched its own write, threw, and
+			// rolled back every boot-time cutover hop for 61 hours.
+			contentSummary: truncateCodePoints(
+				root.content.replaceAll(/\s+/g, " "),
+				500,
+			).text,
 		};
 	}
 
@@ -5553,7 +5571,14 @@ export class CommDB {
 									    AND receipt.delivered_at IS NOT NULL
 										    AND receipt.disposed_at IS NULL
 										    AND receipt.disposed_evidence IS NULL
-										    AND receipt.receipt_exempt_reason IS NULL`,
+										    AND receipt.receipt_exempt_reason IS NULL
+										    -- FLY-1586 R2 BLOCKER: an outbox created BEFORE the
+										    -- freeze stays live otherwise, and its notification
+										    -- embeds contentSummary + asks the Lead to complete
+										    -- the routing side effect — i.e. an old ship answer
+										    -- reaching the Lead a second time.
+										    AND NOT EXISTS (SELECT 1 FROM lead_inbox_fenced_root fr
+										                     WHERE fr.inbox_id = receipt.id)`,
 								)
 								.get(payload.rootId) as { 1: number } | undefined)
 						: undefined;

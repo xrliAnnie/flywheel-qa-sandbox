@@ -253,6 +253,9 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 			"zombie_session_backlog",
 			"delivery_dead_letter",
 			"inbox_loop_stalled",
+			// FLY-1586: a quarantined legacy row withholds a real notification;
+			// it escalates at enqueue for the same reason inbox_loop_stalled does.
+			"legacy_row_quarantined",
 			"stale_approved_ship_dead",
 		]);
 		for (const kind of ALERT_EVENT_TYPES) {

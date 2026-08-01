@@ -1,0 +1,40 @@
+flowchart TD
+    subgraph BEFORE["epoch 安装那一刻 — 把「存量」的四个来源全部登记成【身份】"]
+        S1["① 收件箱里已有的行<br/>(a) 还没投的<br/>(b) 会生出提醒子行的老根"]
+        S2["② 还躺在事件日志里、<br/>尚未搬过来的存量"]
+        S3["③ 还开着、但连收件箱行<br/>都还没有的提问"]
+        S4["④ Discord 上早已发出、<br/>但还没被拉取的 founder 消息"]
+    end
+
+    IDS[("冻结身份集<br/>lead_inbox_frozen_identity<br/>——<br/>登记的是【稳定身份】<br/>不是【当时看得见的行】")]
+
+    S1 --> IDS
+    S2 --> IDS
+    S3 --> IDS
+    S4 --> IDS
+
+    EPOCH[("freeze epoch<br/>一个库最多一条<br/>freezing / inert<br/>不可变")]
+    EPOCH -.->|"只有 freezing 才登记"| IDS
+
+    GATE{"投递前问一句:<br/>这一行的身份<br/>在冻结集里吗?<br/>(它的父行呢?)"}
+    IDS --> GATE
+
+    NEW["epoch 之后<br/>新产生的消息"] --> GATE
+    OLD["epoch 之前<br/>的存量"] --> GATE
+
+    GATE -->|"不在 → 投"| DELIVER["✅ 送到 Lead"]
+    GATE -->|"在 → 不投"| FROZEN["🧊 留在库里、<br/>状态诚实(没标成已投递)<br/>进清单交给人"]
+
+    NOEPOCH{"读不到 epoch?"}
+    NOEPOCH -->|"抛,不是返回空"| FAILCLOSED["⛔ 一条都不投<br/>「没 epoch 就不投」是结构性事实<br/>不靠代码调用顺序"]
+
+    classDef src fill:#f6f0ff,stroke:#af52de,stroke-width:2px,color:#1d1d1f
+    classDef store fill:#fff7e6,stroke:#ff9500,stroke-width:2px,color:#1d1d1f
+    classDef ok fill:#e9f9ee,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+    classDef cold fill:#e8f4ff,stroke:#007aff,stroke-width:2px,color:#1d1d1f
+    classDef stop fill:#fff1f0,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+    class S1,S2,S3,S4 src
+    class IDS,EPOCH store
+    class DELIVER ok
+    class FROZEN cold
+    class FAILCLOSED,NOEPOCH stop

@@ -1,0 +1,40 @@
+
+===== project=flywheel db=/Users/xiaorongli/.flywheel/comm/flywheel/comm.db =====
+lead_id                last_started_at           last_success_at           stall_episode_at          mins_since_success
+---------------------  ------------------------  ------------------------  ------------------------  ------------------
+claude-infra-bot-lead  2026-08-01T11:25:32.477Z  2026-07-29T12:59:53.554Z  2026-07-29T13:11:33.256Z  4225              
+codex-infra-bot-lead   2026-08-01T11:25:17.654Z  2026-07-29T13:00:04.727Z  2026-07-29T13:11:33.256Z  4225              
+flywheel-cos-lead      2026-08-01T11:25:32.249Z  2026-07-29T12:59:52.425Z  2026-07-29T13:11:33.256Z  4225              
+flywheel-eng-lead      2026-08-01T11:25:32.241Z  2026-07-29T13:00:21.805Z  2026-07-29T13:11:33.256Z  4225              
+flywheel-product-lead  2026-08-01T11:25:32.477Z  2026-07-29T13:00:05.601Z  2026-07-29T13:11:33.256Z  4225              
+
+===== project=geoforge3d db=/Users/xiaorongli/.flywheel/comm/geoforge3d/comm.db =====
+lead_id       last_started_at           last_success_at           stall_episode_at          mins_since_success
+------------  ------------------------  ------------------------  ------------------------  ------------------
+cos-lead      2026-08-01T11:25:17.654Z  2026-07-29T13:00:04.977Z  2026-07-29T13:11:33.256Z  4225              
+ops-lead      2026-08-01T11:25:32.477Z  2026-07-29T13:00:21.291Z  2026-07-29T13:11:33.256Z  4225              
+product-lead  2026-08-01T11:25:32.477Z  2026-07-29T13:00:20.985Z  2026-07-29T13:11:33.256Z  4225              
+
+===== project=growth db=/Users/xiaorongli/.flywheel/comm/growth/comm.db =====
+lead_id          last_started_at           last_success_at           stall_episode_at          mins_since_success
+---------------  ------------------------  ------------------------  ------------------------  ------------------
+mufasa-lead      2026-08-01T11:25:33.038Z  2026-07-29T13:00:04.765Z  2026-07-29T13:11:33.256Z  4225              
+rafiki-lead      2026-08-01T11:25:33.245Z  2026-07-29T13:00:04.988Z  2026-07-29T13:11:33.256Z  4225              
+reflection-lead  2026-08-01T11:25:32.045Z  2026-07-29T13:00:05.610Z  2026-07-29T13:11:33.256Z  4225              
+
+===== project=joycon-typeless db=/Users/xiaorongli/.flywheel/comm/joycon-typeless/comm.db =====
+lead_id      last_started_at           last_success_at           stall_episode_at          mins_since_success
+-----------  ------------------------  ------------------------  ------------------------  ------------------
+joycon-lead  2026-08-01T11:25:32.482Z  2026-07-29T13:00:21.419Z  2026-07-29T13:11:33.256Z  4225              
+
+===== project=personal-assistant db=/Users/xiaorongli/.flywheel/comm/personal-assistant/comm.db =====
+lead_id     last_started_at           last_success_at           stall_episode_at          mins_since_success
+----------  ------------------------  ------------------------  ------------------------  ------------------
+belle-lead  2026-08-01T11:25:32.896Z  2026-07-29T13:00:04.779Z  2026-07-29T13:11:33.256Z  4225              
+
+===== project=tidal-echo db=/Users/xiaorongli/.flywheel/comm/tidal-echo/comm.db =====
+lead_id                  last_started_at           last_success_at           stall_episode_at          mins_since_success
+-----------------------  ------------------------  ------------------------  ------------------------  ------------------
+sub-lead                 2026-08-01T11:25:32.709Z  2026-07-29T13:00:21.449Z  2026-07-29T13:11:33.256Z  4225              
+tidal-echo-content-lead  2026-08-01T11:25:17.452Z  2026-07-29T13:00:04.757Z  2026-07-29T13:11:33.256Z  4225              
+tidal-echo-cos-lead      2026-08-01T11:25:33.258Z  2026-07-29T13:00:04.792Z  2026-07-29T13:11:33.256Z  4225              

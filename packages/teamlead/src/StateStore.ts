@@ -1169,6 +1169,21 @@ export type RecordReviewFindingRulingResult =
  */
 export const REVIEW_BINDING_UNBOUND = "unbound";
 
+/** FLY-1586 B: one row per legacy event the cutover refused to process. */
+export interface LegacyCutoverQuarantineRow {
+	seq: number;
+	lead_id: string;
+	payload_digest: string;
+	reason: string;
+	field: string | null;
+	state: "pending_alert" | "alert_accepted" | "dead_lettered" | "replayed";
+	alert_attempts: number;
+	alert_last_error: string | null;
+	created_at: string;
+	accepted_at: string | null;
+	replayed_at: string | null;
+}
+
 export class StateStore {
 	private db: CompatDb;
 	private dbPath: string;
@@ -2334,6 +2349,78 @@ export class StateStore {
 		this.db.run(
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
+
+		// FLY-1586 B: durable record of a legacy row the cutover refused to
+		// process. Deliberately a SEPARATE table rather than reusing
+		// `lead_events.dead_lettered_at` — that column belongs to the retired ACK
+		// state machine, and setting it would neither hide the row from the
+		// cutover scan nor say anything true about delivery.
+		//
+		// This marker is the per-row COMMIT POINT: once it is committed the row is
+		// settled and the loop moves on. Alert delivery advances independently and
+		// is allowed to stay red — making Discord a precondition would just move
+		// the fleet-wide wedge to a different trigger.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS legacy_cutover_quarantine (
+				seq INTEGER PRIMARY KEY REFERENCES lead_events(seq),
+				lead_id TEXT NOT NULL,
+				payload_digest TEXT NOT NULL,
+				reason TEXT NOT NULL,
+				field TEXT,
+				state TEXT NOT NULL
+					CHECK(state IN ('pending_alert','alert_accepted','dead_lettered','replayed')),
+				created_at TEXT NOT NULL,
+				accepted_at TEXT,
+				replayed_at TEXT,
+				-- FLY-1586 R2 HIGH-5: the marker IS the alert intent, so it is
+				-- written in the same transaction as the decision to skip the row.
+				-- Delivery advances SEPARATELY and is allowed to stay red: making
+				-- Discord availability a precondition for boot admission would just
+				-- relocate the fleet-wide wedge to a different trigger.
+				alert_attempts INTEGER NOT NULL DEFAULT 0,
+				alert_last_error TEXT
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_legacy_quarantine_active ON legacy_cutover_quarantine(seq) WHERE replayed_at IS NULL",
+		);
+
+		// FLY-1586 B (code review R1 HIGH-5): a row whose payload is valid JSON but
+		// the WRONG SHAPE. The renderer dereferences typed fields and throws an
+		// untyped TypeError, which the classifier correctly refuses to quarantine
+		// (it cannot tell that apart from a transient fault) — so the row wedges
+		// the cutover on every boot, forever.
+		//
+		// It must not be quarantined either: a presentation-shape problem should
+		// not make a REAL notification disappear. So it is delivered as raw JSON
+		// and the downgrade is recorded here. Separate from the quarantine table on
+		// purpose: this row IS delivered, and nothing may suggest it was held back.
+		// FLY-1586 R3 BLOCKER: a `receipt_unprocessed` detection escalation whose
+		// subject root was frozen as stock. Its payload carries the root's
+		// contentSummary and tells the Lead to complete the routing side effect —
+		// for a founder root that IS the old instruction, arriving above the
+		// watermark through a journal mirror the freeze never saw.
+		//
+		// Separate from quarantine: this row is not poison and nothing failed. It
+		// is deliberately withheld because we already decided to hold back the
+		// thing it describes. Recorded so that decision is auditable rather than
+		// invisible.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS legacy_stock_suppressed (
+				seq INTEGER PRIMARY KEY REFERENCES lead_events(seq),
+				lead_id TEXT NOT NULL,
+				fenced_root TEXT NOT NULL,
+				suppressed_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS legacy_render_fallback (
+				seq INTEGER PRIMARY KEY REFERENCES lead_events(seq),
+				lead_id TEXT NOT NULL,
+				error_name TEXT NOT NULL,
+				fell_back_at TEXT NOT NULL
+			)
+		`);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS lead_event_delivery_attempts (
 				attempt_id TEXT PRIMARY KEY,
@@ -9985,11 +10072,221 @@ export class StateStore {
 		return (
 			this.db.raw
 				.prepare(
+					// FLY-1586 B: skip rows already quarantined and not yet replayed.
+					// Without this the reconciler rescans the same poison row on every
+					// boot and throws again — which is exactly why "just restart it"
+					// never worked. `delivered_at` is untouched: a quarantined row was
+					// NOT delivered and must never claim otherwise.
 					`SELECT * FROM lead_events
-					 WHERE delivered_at IS NULL ORDER BY seq LIMIT ?`,
+					 WHERE delivered_at IS NULL
+					   AND NOT EXISTS (
+					     SELECT 1 FROM legacy_cutover_quarantine q
+					      WHERE q.seq = lead_events.seq AND q.replayed_at IS NULL
+					   )
+					   -- FLY-1586 R3: stock-derived mirrors stay out of the scan for
+					   -- the same reason quarantined rows do — otherwise every boot
+					   -- re-materializes them above the watermark.
+					   AND NOT EXISTS (
+					     SELECT 1 FROM legacy_stock_suppressed sup
+					      WHERE sup.seq = lead_events.seq
+					   )
+					 ORDER BY seq LIMIT ?`,
 				)
 				.all(limit) as Record<string, unknown>[]
 		).map(mapLeadEventRow);
+	}
+
+	/**
+	 * FLY-1586 B: durably record a deterministically-bad legacy row.
+	 *
+	 * Returning normally is what licenses the cutover loop to skip this row, so
+	 * every failure here must throw — a silent no-op would drop a notification
+	 * with no trace.
+	 *
+	 * Idempotent: the first write wins. A later pass re-quarantining the same row
+	 * must not reset `created_at` or duplicate the record.
+	 */
+	quarantineLegacyCutoverRow(input: {
+		seq: number;
+		leadId: string;
+		reason: string;
+		field?: string;
+		now: string;
+	}): void {
+		this.db.transaction(() => {
+			const event = this.getLeadEventBySeq(input.seq);
+			if (!event) {
+				throw new Error(
+					`cannot quarantine unknown lead_event seq=${input.seq}`,
+				);
+			}
+			const digest = createHash("sha256")
+				.update(Buffer.from(event.payload, "utf16le"))
+				.digest("hex");
+			this.db.raw
+				.prepare(
+					`INSERT OR IGNORE INTO legacy_cutover_quarantine (
+					   seq, lead_id, payload_digest, reason, field, state, created_at
+					 ) VALUES (?, ?, ?, ?, ?, 'pending_alert', ?)`,
+				)
+				.run(
+					input.seq,
+					input.leadId,
+					digest,
+					input.reason,
+					input.field ?? null,
+					input.now,
+				);
+		});
+	}
+
+	/**
+	 * FLY-1586 B — record that a row was delivered as raw JSON because its
+	 * renderer threw. The row IS delivered; this only records the downgrade.
+	 * `error_name` only — never the message, which would quote the payload.
+	 */
+	recordLegacyRenderFallback(input: {
+		seq: number;
+		leadId: string;
+		errorName: string;
+		now: string;
+	}): void {
+		this.db.raw
+			.prepare(
+				`INSERT OR IGNORE INTO legacy_render_fallback (
+				   seq, lead_id, error_name, fell_back_at
+				 ) VALUES (?, ?, ?, ?)`,
+			)
+			.run(input.seq, input.leadId, input.errorName, input.now);
+	}
+
+	listLegacyRenderFallbacks(limit = 1_000): Array<{
+		seq: number;
+		lead_id: string;
+		error_name: string;
+		fell_back_at: string;
+	}> {
+		return this.db.raw
+			.prepare("SELECT * FROM legacy_render_fallback ORDER BY seq LIMIT ?")
+			.all(limit) as Array<{
+			seq: number;
+			lead_id: string;
+			error_name: string;
+			fell_back_at: string;
+		}>;
+	}
+
+	/**
+	 * FLY-1586 R2 HIGH-5 — quarantine alerts still awaiting delivery.
+	 *
+	 * Without a drainer the marker's `pending_alert` was only a label: a real
+	 * notification could be held back forever with no operator signal, which is
+	 * the same "the guard fired and nobody saw it" failure this incident already
+	 * demonstrated 16 times.
+	 */
+	/**
+	 * FLY-1586 R3 BLOCKER — record that a stock-derived journal mirror was
+	 * withheld. Never writes `delivered_at`: it was NOT delivered.
+	 */
+	recordLegacyStockSuppressed(input: {
+		seq: number;
+		leadId: string;
+		fencedRoot: string;
+		now: string;
+	}): void {
+		this.db.raw
+			.prepare(
+				`INSERT OR IGNORE INTO legacy_stock_suppressed (
+				   seq, lead_id, fenced_root, suppressed_at
+				 ) VALUES (?, ?, ?, ?)`,
+			)
+			.run(input.seq, input.leadId, input.fencedRoot, input.now);
+	}
+
+	listLegacyStockSuppressed(limit = 1_000): Array<{
+		seq: number;
+		lead_id: string;
+		fenced_root: string;
+		suppressed_at: string;
+	}> {
+		return this.db.raw
+			.prepare("SELECT * FROM legacy_stock_suppressed ORDER BY seq LIMIT ?")
+			.all(limit) as Array<{
+			seq: number;
+			lead_id: string;
+			fenced_root: string;
+			suppressed_at: string;
+		}>;
+	}
+
+	listPendingQuarantineAlerts(limit = 100): LegacyCutoverQuarantineRow[] {
+		return this.db.raw
+			.prepare(
+				`SELECT * FROM legacy_cutover_quarantine
+				  WHERE state = 'pending_alert' AND replayed_at IS NULL
+				  ORDER BY seq LIMIT ?`,
+			)
+			.all(limit) as LegacyCutoverQuarantineRow[];
+	}
+
+	markQuarantineAlertAccepted(seq: number, now: string): void {
+		this.db.raw
+			.prepare(
+				`UPDATE legacy_cutover_quarantine
+				   SET state = 'alert_accepted', accepted_at = ?
+				 WHERE seq = ? AND state = 'pending_alert'`,
+			)
+			.run(now, seq);
+	}
+
+	/**
+	 * Records a failed attempt. Deliberately keeps the row visible and retryable
+	 * rather than silently giving up — a dropped alert is indistinguishable from
+	 * no problem at all.
+	 */
+	recordQuarantineAlertFailure(
+		seq: number,
+		errorName: string,
+		deadLetterAfter: number,
+	): void {
+		this.db.transaction(() => {
+			this.db.raw
+				.prepare(
+					`UPDATE legacy_cutover_quarantine
+					   SET alert_attempts = alert_attempts + 1, alert_last_error = ?
+					 WHERE seq = ? AND state = 'pending_alert'`,
+				)
+				.run(errorName, seq);
+			this.db.raw
+				.prepare(
+					`UPDATE legacy_cutover_quarantine SET state = 'dead_lettered'
+					 WHERE seq = ? AND state = 'pending_alert' AND alert_attempts >= ?`,
+				)
+				.run(seq, deadLetterAfter);
+		});
+	}
+
+	listQuarantinedLegacyRows(limit = 1_000): LegacyCutoverQuarantineRow[] {
+		return this.db.raw
+			.prepare(
+				`SELECT * FROM legacy_cutover_quarantine
+				 ORDER BY seq LIMIT ?`,
+			)
+			.all(limit) as LegacyCutoverQuarantineRow[];
+	}
+
+	/**
+	 * Manual replay (plan §4.3): clear the fence, KEEP the audit row. Deleting the
+	 * record would erase the only evidence that the row was ever held back.
+	 */
+	markLegacyQuarantineReplayed(seq: number, now: string): void {
+		this.db.raw
+			.prepare(
+				`UPDATE legacy_cutover_quarantine
+				   SET replayed_at = ?, state = 'replayed'
+				 WHERE seq = ? AND replayed_at IS NULL`,
+			)
+			.run(now, seq);
 	}
 
 	/** FLY-1373 cutover: permanently retire the superseded ACK state machine. */

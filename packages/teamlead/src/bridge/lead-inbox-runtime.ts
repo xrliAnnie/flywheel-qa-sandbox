@@ -8,6 +8,7 @@ import {
 	ClaudeCodeAdapter,
 	probeLegacyMailboxDelivery,
 } from "flywheel-agent-team-transport";
+import { InboxWriteValidationError } from "flywheel-comm/inbox-write-normalize";
 import { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
 import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
@@ -24,6 +25,7 @@ import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import { LegacyAckDrain } from "./legacy-ack-drain.js";
 import { LegacyLeadEventReconciler } from "./legacy-lead-event-reconciler.js";
+import { LegacyRowPoisonError } from "./legacy-row-errors.js";
 import { ProtocolIngress } from "./protocol-ingress.js";
 import { QuestionAdmission } from "./question-admission.js";
 import type {
@@ -49,6 +51,24 @@ export interface LeadInboxRuntimeOptions {
 		projectName: string,
 		leadId: string,
 	) => Promise<void>;
+	/**
+	 * FLY-1586 R2 HIGH-5 — direct sink for quarantine alerts.
+	 *
+	 * MUST NOT route through `lead_inbox`: an alert about the inbox being wedged,
+	 * delivered via the inbox, is stuck inside the thing it is reporting. That
+	 * circularity is why the original outage went 61 hours unnoticed.
+	 *
+	 * Failure here must never fail `ensureCutover` — gating boot admission on
+	 * Discord availability would just relocate the fleet-wide wedge to a new
+	 * trigger. Undelivered alerts stay `pending_alert`, visible via
+	 * `listPendingQuarantineAlerts()`, and are retried.
+	 */
+	onQuarantineAlert?: (input: {
+		seq: number;
+		leadId: string;
+		projectName: string;
+		reason: string;
+	}) => Promise<void>;
 }
 
 export class LeadInboxRuntime {
@@ -203,6 +223,43 @@ export class LeadInboxRuntime {
 		return `${projectName}\u001f${leadId}`;
 	}
 
+	/**
+	 * Best-effort. A failure here leaves the marker `pending_alert` for the next
+	 * pass — the row stays skipped either way, because the marker (not the alert)
+	 * is what settles it. Deliberately swallows sink errors: an unreachable alert
+	 * channel must not be able to hold the fleet.
+	 */
+	/** Public entry so the late-bound sink can trigger a catch-up pass. */
+	async drainQuarantineAlertsNow(): Promise<void> {
+		await this.drainQuarantineAlerts();
+	}
+
+	private async drainQuarantineAlerts(): Promise<void> {
+		const sink = this.opts.onQuarantineAlert;
+		if (!sink) return;
+		for (const row of this.opts.store.listPendingQuarantineAlerts()) {
+			try {
+				const project = this.projectByLead.get(row.lead_id);
+				await sink({
+					seq: row.seq,
+					leadId: row.lead_id,
+					projectName: project?.projectName ?? "",
+					reason: row.reason,
+				});
+				this.opts.store.markQuarantineAlertAccepted(
+					row.seq,
+					new Date().toISOString(),
+				);
+			} catch (err) {
+				this.opts.store.recordQuarantineAlertFailure(
+					row.seq,
+					(err as Error).name,
+					5,
+				);
+			}
+		}
+	}
+
 	private ensureCutover(secretProvider: DeliverySecretProvider): Promise<void> {
 		if (this.cutoverPromise) return this.cutoverPromise;
 		const attempt = Promise.resolve().then(async () => {
@@ -221,6 +278,23 @@ export class LeadInboxRuntime {
 				) {
 					throw new Error("owner lease unavailable during inbox cutover");
 				}
+			}
+			// FLY-1586 F — park the pre-existing backlog BEFORE anything can
+			// deliver from it. Order is the point: A and B are about to make the
+			// cutover succeed again, and the moment it does the loop would flush
+			// 255 rows including 40 already-executed founder instructions (one of
+			// them a `ship` whose PR merged two minutes later).
+			//
+			// Durable one-shot: the first install's watermark is stored and reused
+			// forever. Recomputing MAX(seq) on each boot would freeze whatever
+			// legitimately arrived since the last one — a one-time cleanup turned
+			// into a permanent message shredder.
+			//
+			// Runs inside the same failure envelope as the rest of cutover: if it
+			// throws, ensureCutover fails and nothing is delivered this tick. That
+			// is the correct direction — better to stay wedged than to replay.
+			for (const queue of this.queues.values()) {
+				queue.freezeStockBelowWatermark({ now });
 			}
 			new LegacyAckDrain({
 				store: this.opts.store,
@@ -258,7 +332,37 @@ export class LeadInboxRuntime {
 						content,
 					});
 				},
+				// FLY-1586 B: durable sink for a deterministically-bad legacy row.
+				// The marker IS the per-row commit point — once it commits, the row
+				// is settled and the cutover carries on, so one poison row can no
+				// longer hold the whole fleet. Alert delivery is deliberately NOT a
+				// precondition: making Discord availability gate boot admission
+				// would just relocate the fleet-wide wedge.
+				//
+				// Any failure in here throws, which fails the row closed rather than
+				// skipping it silently — see LegacyLeadEventReconcilerOptions.
+				onRowQuarantine: (row, error) => {
+					this.opts.store.quarantineLegacyCutoverRow({
+						seq: row.seq,
+						leadId: row.lead_id,
+						reason:
+							error instanceof LegacyRowPoisonError
+								? error.reason
+								: error instanceof InboxWriteValidationError
+									? error.reason
+									: "unclassified",
+						...(error instanceof InboxWriteValidationError
+							? { field: error.field }
+							: {}),
+						now: new Date().toISOString(),
+					});
+				},
 			}).run();
+			// R3 HIGH — drain AFTER the reconciler, because the reconciler is what
+			// CREATES the markers. My first attempt anchored on `}).run();` and
+			// silently matched LegacyAckDrain instead, so it drained before any
+			// marker existed and a same-boot quarantine was never alerted at all.
+			await this.drainQuarantineAlerts();
 		});
 		this.cutoverPromise = attempt;
 		void attempt.catch(() => {

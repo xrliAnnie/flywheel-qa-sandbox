@@ -4571,7 +4571,25 @@ export async function startBridge(
 			"[FLY-1393 QA] refusing inbox-loop stall injection unless the effective FLYWHEEL_COMM_ROOT/FLYWHEEL_COMM_DIR is inside the process temp root and outside ~/.flywheel",
 		);
 	}
+	// FLY-1586 R2 HIGH-5 — the notifier is built much later in startBridge, so the
+	// sink is late-bound the same way the event router already does it. Until it
+	// is set the callback THROWS rather than silently succeeding: a no-op would
+	// mark the alert accepted and lose it, which is the precise failure this alert
+	// exists to prevent.
+	const quarantineAlertSink: {
+		current?: (input: {
+			seq: number;
+			leadId: string;
+			projectName: string;
+			reason: string;
+		}) => Promise<void>;
+	} = {};
 	const leadInboxRuntime = new LeadInboxRuntime({
+		onQuarantineAlert: async (input) => {
+			const send = quarantineAlertSink.current;
+			if (!send) throw new Error("quarantine alert sink not ready");
+			await send(input);
+		},
 		projects,
 		store,
 		registry,
@@ -8544,6 +8562,39 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
+	// FLY-1586 R2 HIGH-5 — bind the quarantine alert sink now that the notifier
+	// exists. Direct Discord path on purpose: an alert about the inbox being
+	// wedged must not travel through the inbox.
+	quarantineAlertSink.current = async (input) => {
+		const result = await leadAlertNotifier.alert({
+			leadId: input.leadId,
+			projectName: input.projectName,
+			eventId: `legacy_row_quarantined:${input.leadId}:${input.seq}`,
+			eventType: "legacy_row_quarantined",
+			title: "Legacy inbox row quarantined during cutover",
+			body:
+				`lead_events seq=${input.seq} was refused by the boot cutover ` +
+				`(${input.reason}) and skipped so the rest of the fleet could ` +
+				"recover. It was NOT delivered. Inspect legacy_cutover_quarantine " +
+				"and decide replay or discard.",
+			severity: "warning",
+		});
+		// R3 HIGH — `alert()` RESOLVES for permanent failures (`deadLettered`,
+		// `skipped`). Ignoring the result and marking the quarantine row
+		// `alert_accepted` would record "an operator was told" about an alert the
+		// notifier had just given up on — the same lie this alert exists to
+		// prevent. Throw so the drain records an honest failure instead.
+		if (result.deadLettered || result.skipped) {
+			throw new Error(
+				`quarantine alert not delivered: ${result.skipped ?? "dead_lettered"}`,
+			);
+		}
+	};
+	// R3 HIGH — the loop starts long before this binding exists, so cutover may
+	// already have burned a retry attempt against an unbound sink. Drain once now
+	// that a real notifier is available, otherwise a same-boot quarantine waits
+	// for the NEXT restart to even be attempted.
+	void leadInboxRuntime.drainQuarantineAlertsNow();
 	// FLY-1407: boot redrive closes the rejected-receipt→notify crash window.
 	// The periodic pass below piggybacks the existing LeadAlert drain timer, so
 	// this durable outbox adds no independent interval.

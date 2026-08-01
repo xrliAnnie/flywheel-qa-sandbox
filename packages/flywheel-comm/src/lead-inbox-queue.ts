@@ -1,6 +1,25 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
+import {
+	assertNoLoneSurrogate,
+	normalizeInboxContent,
+} from "./inbox-write-normalize.js";
+import {
+	bizClassOf,
+	FENCED_ROOT_CANDIDATE_PREDICATE,
+	FENCED_ROOT_SCHEMA,
+	FREEZE_CANDIDATE_PREDICATE,
+	FREEZE_DISPOSITION,
+	FREEZE_INSTALL_ID,
+	FREEZE_INSTALL_SCHEMA,
+	FREEZE_RESEND_ROOT_PREDICATE,
+	type FreezeInstallRow,
+	type FreezeStockResult,
+	type FrozenStockRow,
+	SANITATION_AUDIT_SCHEMA,
+	type SanitationAuditRow,
+} from "./lead-inbox-freeze.js";
 
 export type LeadInboxMessageClass = "protocol" | "model";
 export type LeadInboxPriority = 0 | 1 | 2 | 3;
@@ -490,6 +509,18 @@ export function assertProcessedEvidence(evidence: ProcessedEvidenceV1): void {
 	}
 }
 
+/**
+ * FLY-1586 R2 HIGH-3 — `conflict` and `owner_lost` must stay distinguishable.
+ * One is deterministic (quarantine and move on); the other is transient (retry).
+ * Collapsing them into a boolean is what let a deterministic conflict wedge the
+ * cutover on every single retry.
+ */
+export type ReconcileTerminalResult =
+	| { outcome: "inserted" }
+	| { outcome: "idempotent" }
+	| { outcome: "owner_lost" }
+	| { outcome: "conflict"; field: string };
+
 export class LeadInboxQueue {
 	private readonly db: Database.Database;
 	private readonly ownsConnection: boolean;
@@ -498,6 +529,15 @@ export class LeadInboxQueue {
 		if (typeof dbPathOrConnection !== "string") {
 			this.db = dbPathOrConnection;
 			this.ownsConnection = false;
+			// FLY-1586 A §3.4 — the existing-connection branch is the PRODUCTION
+			// path: `CommDB.enqueueFounderHubRoot()` always arrives here. Without
+			// this, a repaired founder reply reaches `recordSanitation()` on a
+			// fresh CommDB and dies with `no such table`, rolling back the
+			// canonical row — i.e. the sanitation audit would DESTROY the founder
+			// message it exists to document. Idempotent CREATE IF NOT EXISTS.
+			this.db.exec(SANITATION_AUDIT_SCHEMA);
+			this.db.exec(FREEZE_INSTALL_SCHEMA);
+			this.db.exec(FENCED_ROOT_SCHEMA);
 			return;
 		}
 		if (dbPathOrConnection !== ":memory:") {
@@ -508,18 +548,52 @@ export class LeadInboxQueue {
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("busy_timeout = 5000");
 		this.db.exec(LEAD_INBOX_SCHEMA);
+		this.db.exec(SANITATION_AUDIT_SCHEMA);
+		this.db.exec(FREEZE_INSTALL_SCHEMA);
+		this.db.exec(FENCED_ROOT_SCHEMA);
 		applyReceiptFoundationMigrations(this.db);
 	}
 
 	enqueue(input: EnqueueLeadInboxInput): LeadInboxRow {
-		const id = requiredText(input.id, "id");
-		const toLead = requiredText(input.toLead, "toLead");
-		const source = requiredText(input.source, "source");
-		const type = requiredText(input.type, "type");
+		// FLY-1586 A — REJECT policy on identity/routing keys. A lone surrogate
+		// here is corruption, not a message: repairing it would persist a broken
+		// routing key and then route by it. Throws the typed
+		// InboxWriteValidationError so B can classify this as deterministic poison
+		// (quarantine + carry on) rather than a transient failure (retry).
+		const id = assertNoLoneSurrogate("id", requiredText(input.id, "id"));
+		const toLead = assertNoLoneSurrogate(
+			"to_lead",
+			requiredText(input.toLead, "toLead"),
+		);
+		const source = assertNoLoneSurrogate(
+			"source",
+			requiredText(input.source, "source"),
+		);
+		const type = assertNoLoneSurrogate(
+			"type",
+			requiredText(input.type, "type"),
+		);
+		if (input.refMessageId) {
+			assertNoLoneSurrogate("ref_message_id", input.refMessageId);
+		}
+		if (input.legacyAlias) {
+			assertNoLoneSurrogate("legacy_alias", input.legacyAlias);
+		}
 		const priority = leadInboxPriority(input.priority);
 		const carrier = input.carrier ?? "inbox";
+		// R2 MEDIUM-8 — reject a lone surrogate BEFORE enum membership. Both values
+		// are persisted and read-back-compared, so malformed input here is
+		// deterministic bad data and must reach B as the typed error it classifies
+		// on. Ordinary unknown enum values keep the existing generic message.
+		assertNoLoneSurrogate("carrier", carrier);
 		if (carrier !== "inbox" && carrier !== "external") {
 			throw new Error("carrier must be inbox or external");
+		}
+		if (
+			input.receiptExemptReason !== undefined &&
+			input.receiptExemptReason !== null
+		) {
+			assertNoLoneSurrogate("receipt_exempt_reason", input.receiptExemptReason);
 		}
 		if (
 			input.receiptExemptReason !== undefined &&
@@ -535,13 +609,35 @@ export class LeadInboxQueue {
 			throw new Error("receipt exemption audit requires internal_mirror");
 		}
 		const exemptionAudit = input.receiptExemptionAudit;
+		// FLY-1586 A (code review R1 HIGH-4) — these three were validated for
+		// non-emptiness only, and their RETURN VALUES were discarded, so raw input
+		// was both persisted and compared. A lone surrogate in `actor` therefore
+		// reproduced the original insert/read-back mismatch — but as an UNTYPED
+		// generic error, which B classifies as `rethrow`, i.e. it wedges the
+		// cutover forever exactly like seq 56649 did.
+		const auditFields = exemptionAudit
+			? {
+					eventId: assertNoLoneSurrogate(
+						"receiptExemptionAudit.eventId",
+						requiredText(
+							exemptionAudit.eventId,
+							"receiptExemptionAudit.eventId",
+						),
+					),
+					actor: assertNoLoneSurrogate(
+						"receiptExemptionAudit.actor",
+						requiredText(exemptionAudit.actor, "receiptExemptionAudit.actor"),
+					),
+					changeSource: assertNoLoneSurrogate(
+						"receiptExemptionAudit.changeSource",
+						requiredText(
+							exemptionAudit.changeSource,
+							"receiptExemptionAudit.changeSource",
+						),
+					),
+				}
+			: undefined;
 		if (exemptionAudit) {
-			requiredText(exemptionAudit.eventId, "receiptExemptionAudit.eventId");
-			requiredText(exemptionAudit.actor, "receiptExemptionAudit.actor");
-			requiredText(
-				exemptionAudit.changeSource,
-				"receiptExemptionAudit.changeSource",
-			);
 			assertUtcIsoTimestamp(exemptionAudit.at, "receiptExemptionAudit.at");
 		}
 		if (input.deadlineAt) {
@@ -550,6 +646,20 @@ export class LeadInboxQueue {
 		if (input.createdAt) {
 			assertUtcIsoTimestamp(input.createdAt, "createdAt");
 		}
+
+		// FLY-1586 A — REPAIR policy for `content`, computed EXACTLY ONCE.
+		//
+		// `content` is a real message, so we do not reject the row; we substitute
+		// precisely what SQLite would have substituted (U+FFFD), up front. The
+		// value we INSERT then already equals the value we will read back, and the
+		// comparator below has nothing to disagree about.
+		//
+		// ⚠️ `normalizedContent.text` MUST be used for BOTH the INSERT bind and the
+		// `expected` object. Normalizing only the INSERT leaves `expected` holding
+		// the original poison, the comparator still throws, and this whole change
+		// does nothing — that is the single easiest way to get FLY-1586 wrong.
+		const normalizedContent = normalizeInboxContent(input.content);
+		assertNoLoneSurrogate("msg_class", input.msgClass);
 
 		const enqueue = this.db.transaction(() => {
 			this.db
@@ -569,7 +679,7 @@ export class LeadInboxQueue {
 					type,
 					input.msgClass,
 					priority,
-					input.content,
+					normalizedContent.text,
 					input.refMessageId ?? null,
 					input.legacyAlias ?? null,
 					input.deadlineAt ?? null,
@@ -586,7 +696,8 @@ export class LeadInboxQueue {
 				type,
 				msg_class: input.msgClass,
 				priority,
-				content: input.content,
+				// same normalized value as the bind above — see the note there
+				content: normalizedContent.text,
 				ref_message_id: input.refMessageId ?? null,
 				legacy_alias: input.legacyAlias ?? null,
 				deadline_at: input.deadlineAt ?? null,
@@ -600,6 +711,21 @@ export class LeadInboxQueue {
 					);
 				}
 			}
+			// FLY-1586 A §3.4 — inside THIS transaction on purpose. Repairing the
+			// poison silently would trade one failure for a quieter one: the row
+			// goes out, nobody knows a character was substituted, and the next
+			// investigation has no durable fact to work from. An audit row that
+			// could go missing independently of its subject is not evidence.
+			if (normalizedContent.repaired) {
+				this.recordSanitation({
+					inboxId: id,
+					toLead,
+					field: "content",
+					replacements: normalizedContent.replacements,
+					originalDigest: normalizedContent.originalDigest,
+					now: new Date().toISOString(),
+				});
+			}
 			if (exemptionAudit) {
 				this.db
 					.prepare(
@@ -610,11 +736,11 @@ export class LeadInboxQueue {
 						   'internal_mirror')`,
 					)
 					.run(
-						exemptionAudit.eventId,
+						auditFields?.eventId,
 						id,
-						exemptionAudit.actor,
+						auditFields?.actor,
 						exemptionAudit.at,
-						exemptionAudit.changeSource,
+						auditFields?.changeSource,
 					);
 				const audit = this.db
 					.prepare(
@@ -622,13 +748,14 @@ export class LeadInboxQueue {
 						        prev_value, new_value
 						   FROM receipt_exemption_audit WHERE event_id = ?`,
 					)
-					.get(exemptionAudit.eventId) as Record<string, unknown> | undefined;
+					.get(auditFields?.eventId) as Record<string, unknown> | undefined;
 				const expectedAudit = {
 					receipt_id: id,
 					reason: "internal_mirror",
-					actor: exemptionAudit.actor,
+					// validated values on BOTH sides — see the note above
+					actor: auditFields?.actor,
 					ts: exemptionAudit.at,
-					change_source: exemptionAudit.changeSource,
+					change_source: auditFields?.changeSource,
 					operation: "set",
 					prev_value: null,
 					new_value: "internal_mirror",
@@ -640,7 +767,7 @@ export class LeadInboxQueue {
 					)
 				) {
 					throw new Error(
-						`receipt exemption audit ${exemptionAudit.eventId} was reused`,
+						`receipt exemption audit ${auditFields?.eventId} was reused`,
 					);
 				}
 			}
@@ -654,12 +781,34 @@ export class LeadInboxQueue {
 	 * model-lane delivery itself; no protocol/consumed shadow row is created.
 	 */
 	enqueueHubRoot(input: EnqueueFounderHubRootInput): LeadInboxRow {
-		const id = requiredText(input.id, "id");
-		const toLead = requiredText(input.toLead, "toLead");
-		const content = requiredText(input.content, "content");
-		const refMessageId = requiredText(input.refMessageId, "refMessageId");
+		// FLY-1586 A — this entry point has its OWN read-back comparator wrapped
+		// around `enqueue()`. Normalizing only inside `enqueue()` would leave this
+		// outer comparator holding the raw poison, so it would still throw and the
+		// fix would accomplish nothing here. Normalize at THIS level and hand the
+		// normalized text inward, so both comparators see the same value.
+		//
+		// This is the founder_reply path — the highest-stakes class in the queue.
+		const id = assertNoLoneSurrogate("id", requiredText(input.id, "id"));
+		const toLead = assertNoLoneSurrogate(
+			"to_lead",
+			requiredText(input.toLead, "toLead"),
+		);
+		const normalized = normalizeInboxContent(
+			requiredText(input.content, "content"),
+		);
+		const content = normalized.text;
+		const refMessageId = assertNoLoneSurrogate(
+			"ref_message_id",
+			requiredText(input.refMessageId, "refMessageId"),
+		);
 		assertUtcIsoTimestamp(input.now, "now");
-		const routingState = input.routingState?.trim() || "hub_recorded";
+		// routing_state is persisted AND read-back-compared below, so it is a
+		// REJECT-policy field: a corrupted routing key must never be repaired
+		// into something that looks valid.
+		const routingState = assertNoLoneSurrogate(
+			"routing_state",
+			input.routingState?.trim() || "hub_recorded",
+		);
 		const enqueue = this.db.transaction(() => {
 			this.enqueue({
 				id,
@@ -678,6 +827,21 @@ export class LeadInboxQueue {
 					 WHERE id = ? AND routing_state IS NULL`,
 				)
 				.run(routingState, id);
+			// FLY-1586 A §3.4 — this entry point normalizes at ITS OWN level and
+			// hands the already-clean text inward, so the inner enqueue() never
+			// sees the poison and cannot audit it. The record has to be written
+			// here, in this transaction. (Caught by the audit test, not by
+			// reasoning — the repair and the record had drifted apart.)
+			if (normalized.repaired) {
+				this.recordSanitation({
+					inboxId: id,
+					toLead,
+					field: "content",
+					replacements: normalized.replacements,
+					originalDigest: normalized.originalDigest,
+					now: input.now,
+				});
+			}
 			const row = this.getById(id);
 			if (
 				!row ||
@@ -700,6 +864,208 @@ export class LeadInboxQueue {
 			return row;
 		});
 		return enqueue.immediate();
+	}
+
+	/**
+	 * FLY-1586 F — park the pre-existing backlog so restoring delivery cannot
+	 * replay it. One-time, idempotent, clock-free.
+	 *
+	 * ⚠️ R3 LOW — this overview USED to say "no new table, no new predicate".
+	 * That was true only for undelivered rows. Delivered-but-unprocessed roots
+	 * need a real durable fence (`lead_inbox_fenced_root`) plus exclusions in four
+	 * receipt selectors, because clearing a column is not a fence — activation
+	 * re-stamps it. Do not "simplify" that fence away on the strength of the old
+	 * sentence.
+	 *
+	 * For the undelivered rows it IS still predicate-free: every claim path
+	 * already filters `consumed_at IS NULL`, so marking the row is all it takes. That also means frozen
+	 * rows stop inflating `countPending()` and stop holding `stall_episode_at`
+	 * latched — which would otherwise have silenced the very watchdog that
+	 * detected this incident.
+	 *
+	 * `delivered_at` is left NULL on purpose. The row was not delivered.
+	 */
+	freezeStockBelowWatermark(input: { now: string }): FreezeStockResult {
+		assertUtcIsoTimestamp(input.now, "now");
+		const freeze = this.db.transaction(() => {
+			// ⚠️ Code review R1 BLOCKER-1 — WITHOUT this the operation is not
+			// one-shot. `MAX(seq)` is recomputed on every call, so wiring it into
+			// boot would freeze whatever legitimately arrived since the previous
+			// boot: a one-time cleanup would become a permanent message shredder.
+			// The first install's watermark is the authority forever after.
+			const prior = this.db
+				.prepare("SELECT * FROM lead_inbox_freeze_install WHERE install_id = ?")
+				.get(FREEZE_INSTALL_ID) as FreezeInstallRow | undefined;
+			if (prior) {
+				return { watermark: prior.watermark, frozen: 0 };
+			}
+			const watermark =
+				(
+					this.db
+						.prepare("SELECT COALESCE(MAX(seq), 0) AS wm FROM lead_inbox")
+						.get() as { wm: number }
+				).wm ?? 0;
+			const result = this.db
+				.prepare(
+					`UPDATE lead_inbox
+					   SET consumed_at = ?, disposition = ?
+					 WHERE ${FREEZE_CANDIDATE_PREDICATE}`,
+				)
+				.run(input.now, FREEZE_DISPOSITION, watermark);
+			// FLY-1586 BLOCKER-2 — same transaction. Freezing only undelivered rows
+			// leaves already-delivered/unprocessed roots eligible for a resend
+			// whose child content STARTS WITH the original founder payload, minted
+			// above the watermark where the freeze cannot see it.
+			// R2 BLOCKER — enrol EXPLICIT IDs. Nulling the timer alone was not a
+			// fence: activation re-stamps it with COALESCE, so the old fence lasted
+			// only until the next activation.
+			const fencedRoots = this.db
+				.prepare(
+					`SELECT id FROM lead_inbox WHERE ${FENCED_ROOT_CANDIDATE_PREDICATE}`,
+				)
+				.all(watermark) as Array<{ id: string }>;
+			const fence = this.db.prepare(
+				`INSERT OR IGNORE INTO lead_inbox_fenced_root (inbox_id, fenced_at)
+				 VALUES (?, ?)`,
+			);
+			// R2 BLOCKER (third path) — an outbox created BEFORE the freeze stays
+			// live otherwise, and its notification embeds `contentSummary` and asks
+			// the Lead to complete the routing side effect. That is an old founder
+			// answer reaching the Lead a second time, through a queue we already
+			// decided to hold back.
+			//
+			// Cancelled per EXPLICIT id (the outbox id encodes the root), never by a
+			// broad predicate.
+			const cancelOutbox = this.db.prepare(
+				`UPDATE receipt_alert_outbox SET
+				   canceled_at = ?, cancel_reason = 'fly1586_stock_frozen'
+				 WHERE (id = 'unprocessed:' || ? OR id LIKE 'unprocessed:' || ? || '@%')
+				   AND delivered_at IS NULL AND canceled_at IS NULL`,
+			);
+			for (const root of fencedRoots) {
+				fence.run(root.id, input.now);
+				cancelOutbox.run(input.now, root.id, root.id);
+			}
+			// Still clear the timer for the rows that have one — this stops the
+			// CURRENT cycle immediately. The enrolment above is what stops the
+			// NEXT one.
+			this.db
+				.prepare(
+					`UPDATE lead_inbox SET next_unprocessed_at = NULL
+					 WHERE ${FREEZE_RESEND_ROOT_PREDICATE}`,
+				)
+				.run(watermark);
+			this.db
+				.prepare(
+					`INSERT INTO lead_inbox_freeze_install (
+					   install_id, watermark, frozen_count, installed_at
+					 ) VALUES (?, ?, ?, ?)`,
+				)
+				.run(FREEZE_INSTALL_ID, watermark, result.changes, input.now);
+			return { watermark, frozen: result.changes };
+		});
+		return freeze.immediate();
+	}
+
+	/**
+	 * The frozen backlog IS the hand-off list for the follow-up triage issue —
+	 * derived straight from the rows, so there is no second copy to drift.
+	 */
+	/**
+	 * Is this id a fenced pre-watermark root?
+	 *
+	 * FLY-1586 R3 BLOCKER — the legacy reconciler needs this to decide whether a
+	 * `receipt_unprocessed` detection escalation is describing stock we already
+	 * decided to hold back.
+	 */
+	isFencedRoot(inboxId: string): boolean {
+		return Boolean(
+			this.db
+				.prepare(
+					"SELECT 1 AS ok FROM lead_inbox_fenced_root WHERE inbox_id = ?",
+				)
+				.get(inboxId),
+		);
+	}
+
+	/** The fenced pre-watermark roots, as explicit ids. */
+	listFencedRoots(
+		limit = 5_000,
+	): Array<{ inbox_id: string; fenced_at: string }> {
+		return this.db
+			.prepare("SELECT * FROM lead_inbox_fenced_root ORDER BY inbox_id LIMIT ?")
+			.all(limit) as Array<{ inbox_id: string; fenced_at: string }>;
+	}
+
+	listFrozenStock(limit = 5_000): FrozenStockRow[] {
+		const rows = this.db
+			.prepare(
+				`SELECT seq, id, to_lead, source, type, created_at, ref_message_id
+				   FROM lead_inbox
+				  WHERE disposition = ? ORDER BY seq LIMIT ?`,
+			)
+			.all(FREEZE_DISPOSITION, limit) as Array<
+			Omit<FrozenStockRow, "biz_class">
+		>;
+		return rows.map((row) => ({ ...row, biz_class: bizClassOf(row) }));
+	}
+
+	/** Append-only record of every content repair (FLY-1586 A §3.4). */
+	listSanitationAudit(limit = 1_000): SanitationAuditRow[] {
+		return this.db
+			.prepare(
+				"SELECT * FROM lead_inbox_sanitation_audit ORDER BY repaired_at, inbox_id LIMIT ?",
+			)
+			.all(limit) as SanitationAuditRow[];
+	}
+
+	/**
+	 * Write the audit row for a repaired value. MUST be called inside the same
+	 * transaction as the INSERT it describes — an audit that can go missing is
+	 * not evidence. Any failure therefore propagates.
+	 */
+	private recordSanitation(input: {
+		inboxId: string;
+		toLead: string;
+		field: string;
+		replacements: number;
+		originalDigest: string;
+		now: string;
+	}): void {
+		this.db
+			.prepare(
+				`INSERT OR IGNORE INTO lead_inbox_sanitation_audit (
+				   inbox_id, to_lead, field, replacements, original_digest, repaired_at
+				 ) VALUES (?, ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				input.inboxId,
+				input.toLead,
+				input.field,
+				input.replacements,
+				input.originalDigest,
+				input.now,
+			);
+		// R2 MEDIUM-7 — INSERT OR IGNORE alone is not "append-only", it is
+		// "first writer silently wins". Two DIFFERENT malformed originals can
+		// normalize to the same stored content under one id; without this the
+		// audit would quietly keep the first digest and could no longer say which
+		// raw input the later call actually supplied — which is the whole point of
+		// keeping a digest.
+		const stored = this.db
+			.prepare("SELECT * FROM lead_inbox_sanitation_audit WHERE inbox_id = ?")
+			.get(input.inboxId) as SanitationAuditRow | undefined;
+		if (
+			!stored ||
+			stored.to_lead !== input.toLead ||
+			stored.field !== input.field ||
+			stored.replacements !== input.replacements ||
+			stored.original_digest !== input.originalDigest
+		) {
+			throw new Error(
+				`sanitation audit for ${input.inboxId} conflicts with an existing record`,
+			);
+		}
 	}
 
 	getById(id: string): LeadInboxRow | undefined {
@@ -1576,6 +1942,15 @@ export class LeadInboxQueue {
 	 * one comm.db transaction, so a crash can never expose a live queue row after
 	 * the StateStore delivery receipt was committed.
 	 */
+	/**
+	 * FLY-1586 (code review R2 HIGH-3) — discriminated, not boolean.
+	 *
+	 * It used to answer `false` both when the owner lease was gone and when an
+	 * existing row genuinely differed. The reconciler turned either into "owner
+	 * fence lost", which the classifier correctly rethrows — so a DETERMINISTIC
+	 * conflict aborted admission on every retry, forever. The original wedge,
+	 * reached through the terminal path instead of the render path.
+	 */
 	reconcileEnqueueConsumed(
 		input: EnqueueLeadInboxInput,
 		terminal: {
@@ -1584,16 +1959,43 @@ export class LeadInboxQueue {
 			delivered: boolean;
 			now: string;
 		},
-	): boolean {
-		const id = requiredText(input.id, "id");
-		const toLead = requiredText(input.toLead, "toLead");
-		const source = requiredText(input.source, "source");
-		const type = requiredText(input.type, "type");
+	): ReconcileTerminalResult {
+		// FLY-1586 A — third authoritative entry point. It bypasses `enqueue()`
+		// entirely (its own INSERT OR IGNORE + its own comparator), so it needs its
+		// own normalization; the three entry points have genuinely different
+		// shapes and cannot be collapsed behind one fuzzy spread.
+		const id = assertNoLoneSurrogate("id", requiredText(input.id, "id"));
+		const toLead = assertNoLoneSurrogate(
+			"to_lead",
+			requiredText(input.toLead, "toLead"),
+		);
+		const source = assertNoLoneSurrogate(
+			"source",
+			requiredText(input.source, "source"),
+		);
+		const type = assertNoLoneSurrogate(
+			"type",
+			requiredText(input.type, "type"),
+		);
+		if (input.refMessageId) {
+			assertNoLoneSurrogate("ref_message_id", input.refMessageId);
+		}
+		if (input.legacyAlias) {
+			assertNoLoneSurrogate("legacy_alias", input.legacyAlias);
+		}
+		assertNoLoneSurrogate("msg_class", input.msgClass);
+		// `terminal.disposition` is persisted AND read-back-compared below — an
+		// authority string, so REJECT rather than repair.
+		assertNoLoneSurrogate("disposition", terminal.disposition);
+		// Computed once; used by BOTH the INSERT bind and the comparator.
+		const normalizedContent = normalizeInboxContent(input.content);
 		assertUtcIsoTimestamp(terminal.now, "now");
 		if (input.deadlineAt) assertUtcIsoTimestamp(input.deadlineAt, "deadlineAt");
 		if (input.createdAt) assertUtcIsoTimestamp(input.createdAt, "createdAt");
-		const reconcile = this.db.transaction(() => {
-			if (!this.isCurrentOwner(terminal.ownerEpoch, terminal.now)) return false;
+		const reconcile = this.db.transaction((): ReconcileTerminalResult => {
+			if (!this.isCurrentOwner(terminal.ownerEpoch, terminal.now)) {
+				return { outcome: "owner_lost" };
+			}
 			const result = this.db
 				.prepare(
 					`INSERT OR IGNORE INTO lead_inbox (
@@ -1612,7 +2014,7 @@ export class LeadInboxQueue {
 					type,
 					input.msgClass,
 					input.priority,
-					input.content,
+					normalizedContent.text,
 					input.refMessageId ?? null,
 					input.legacyAlias ?? null,
 					input.deadlineAt ?? null,
@@ -1622,18 +2024,61 @@ export class LeadInboxQueue {
 					terminal.now,
 					terminal.now,
 				);
-			if (result.changes === 1) return true;
+			if (result.changes === 1) {
+				// FLY-1586 A (code review R1 HIGH-4) — the audit belongs here too.
+				// Repairing content on this entry point while writing no record
+				// would leave a substitution nobody can ever prove happened, which
+				// is the exact evidence gap that made the original incident
+				// unresolvable 61 hours later.
+				if (normalizedContent.repaired) {
+					this.recordSanitation({
+						inboxId: id,
+						toLead,
+						field: "content",
+						replacements: normalizedContent.replacements,
+						originalDigest: normalizedContent.originalDigest,
+						now: terminal.now,
+					});
+				}
+				return { outcome: "inserted" };
+			}
 			const row = this.getById(id);
-			return Boolean(
-				row?.consumed_at &&
-					row.disposition === terminal.disposition &&
-					row.to_lead === toLead &&
-					row.source === source &&
-					row.type === type &&
-					row.msg_class === input.msgClass &&
-					row.priority === input.priority &&
-					row.content === input.content,
-			);
+			// FLY-1586 A (code review R1 HIGH-4) — the reuse comparator omitted
+			// ref_message_id / legacy_alias / deadline_at, and never checked
+			// delivered_at against `terminal.delivered`. It therefore answered
+			// "yes, same row" for a row differing in any of them — silently
+			// accepting a DIFFERENT message under a reused id.
+			if (!row?.consumed_at)
+				return { outcome: "conflict", field: "consumed_at" };
+			const mismatches: Array<[string, boolean]> = [
+				["disposition", row.disposition === terminal.disposition],
+				["to_lead", row.to_lead === toLead],
+				["source", row.source === source],
+				["type", row.type === type],
+				["msg_class", row.msg_class === input.msgClass],
+				["priority", row.priority === input.priority],
+				// normalized on both sides — see the note at the top
+				["content", row.content === normalizedContent.text],
+				["ref_message_id", row.ref_message_id === (input.refMessageId ?? null)],
+				["legacy_alias", row.legacy_alias === (input.legacyAlias ?? null)],
+				["deadline_at", row.deadline_at === (input.deadlineAt ?? null)],
+				// R2 MEDIUM-6: an explicit createdAt is persisted, so it must be
+				// compared. Omitted input keeps the previous semantics.
+				[
+					"created_at",
+					input.createdAt === undefined || row.created_at === input.createdAt,
+				],
+				[
+					"delivered_at",
+					terminal.delivered
+						? row.delivered_at !== null
+						: row.delivered_at === null,
+				],
+			];
+			const bad = mismatches.find(([, ok]) => !ok);
+			return bad
+				? { outcome: "conflict", field: bad[0] }
+				: { outcome: "idempotent" };
 		});
 		return reconcile.immediate();
 	}
