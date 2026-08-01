@@ -70,20 +70,41 @@ cat > "$SHIM/curl" <<'EOF'
 # loss shape. So the request has to be well-formed before any success is
 # reported; a malformed one is rejected as 400, which is a receiver saying no,
 # not a transport failure.
-out=""; url=""; body=""; method=""; ctype=""
-prev=""
+out=""; url=""; body=""; method=""; ctype=""; reads_stdin_cfg=0
+# A real option parser, not a "look at the previous token" heuristic. Without
+# consuming an option's ARGUMENT, a value that happens to read `-K` becomes an
+# option again on the next pass: `-w -K -` makes curl treat -K as the -w format
+# (and then fail on the bare `-`), while the heuristic saw a config flag and
+# blessed credentials curl never loaded.
+expect=""; opts_ended=0
 for a in "$@"; do
-  case "$prev" in
-    -o) out="$a" ;;
-    -d) body="$a" ;;
-    -X) method="$a" ;;
-    -H) case "$a" in Content-Type:*) ctype="$a" ;; esac ;;
-  esac
+  if [ -n "$expect" ]; then
+    case "$expect" in
+      -o) out="$a" ;;
+      -d) body="$a" ;;
+      -X) method="$a" ;;
+      -H) case "$a" in Content-Type:*) ctype="$a" ;; esac ;;
+      -K) [ "$a" = "-" ] && reads_stdin_cfg=1 ;;
+    esac
+    expect=""; continue          # consumed exactly once, never re-read as an option
+  fi
+  if [ "$opts_ended" = "0" ] && [ "$a" = "--" ]; then opts_ended=1; continue; fi
+  if [ "$opts_ended" = "0" ]; then
+    case "$a" in
+      -o|-d|-X|-H|-K|-w|--max-time) expect="$a"; continue ;;
+    esac
+  fi
   case "$a" in https://*) url="$a" ;; esac
-  prev="$a"
 done
-stdin_cfg="$(cat 2>/dev/null || true)"   # the -K - config carries the auth header
+
+# Read the config ONLY if curl was actually told to. Slurping stdin regardless
+# would validate a heredoc that real curl never loads: drop `-K -` from
+# production and the request goes out unauthenticated while this shim still
+# sees the credentials sitting unread on the pipe.
+stdin_cfg=""
+[ "$reads_stdin_cfg" = "1" ] && stdin_cfg="$(cat 2>/dev/null || true)" || cat >/dev/null 2>&1 || true
 { echo "URL=$url"
+  echo "RENDERED=$(printf '%s' "$body" | jq -r '.content // ""' 2>/dev/null | tr '\n\r' '  ')"
   echo "METHOD=$method"
   echo "CTYPE=$ctype"
   printf 'AUTH=%s\n' "$(printf '%s' "$stdin_cfg" | tr '\n\r' '  ')"
@@ -99,8 +120,15 @@ reject() { [ -n "$out" ] && printf '{"message":"%s"}' "$1" > "$out"; printf '400
 [ "$url" = "https://discord.com/api/v10/channels/${EXPECT_CHANNEL:?}/messages" ] || reject "wrong-endpoint"
 [ "$method" = "POST" ] || reject "wrong-method"
 [ "$ctype" = "Content-Type: application/json" ] || reject "wrong-content-type"
+[ "$reads_stdin_cfg" = "1" ] || reject "no-config-source"
 printf '%s\n' "$stdin_cfg" | grep -qxF "header = \"Authorization: Bot ${EXPECT_TOKEN:?}\"" || reject "unauthenticated"
 printf '%s' "$body" | jq -e . >/dev/null 2>&1 || reject "body-not-json"
+# Discord renders `.content` and nothing else. Payload bytes that leave the wire
+# with the alert tucked into some other key are delivered to the API and
+# invisible to the human — the precise distinction this whole issue is about.
+printf '%s' "$body" | jq -e '(.content|type=="string") and (.content|length>0)' >/dev/null 2>&1 \
+  || reject "no-renderable-content"
+printf '%s' "$body" | jq -r '.content' > "${RECEIVER_CONTENT:-/dev/null}"
 
 # Only a fully well-formed request earns this line. Cases assert on VALID
 # rather than re-deriving validity with their own loose greps — re-checking the
@@ -206,7 +234,9 @@ record_ok() {  # <dir> <receipt-state> <expected queueReason>
 assert_arrived() {
   local needle="$1"
   [ "$(deliveries_in_state sent)" -ge 1 ] || return 1
-  grep -q "BODY=.*${needle}" "$SB/receiver.log" 2>/dev/null || return 1
+  # RENDERED is `.content` — the only field Discord shows a human. Matching raw
+  # payload bytes would accept an alert hidden in a key nobody renders.
+  grep -q "RENDERED=.*${needle}" "$SB/receiver.log" 2>/dev/null || return 1
   return 0
 }
 
@@ -249,8 +279,8 @@ D1_OK=1
 [ "$RC" -eq 0 ] || { D1_OK=0; fail "D1: converge rc=$RC"; }
 assert_arrived "restart-storm-gate.py" \
   || { D1_OK=0; fail "D1: the drift alert never arrived (sent-receipts=$(deliveries_in_state sent), wire=$(wc -l < "$SB/receiver.log" | tr -d ' ') lines)"; }
-grep -q "BODY=.*bin integrity drift repaired" "$SB/receiver.log" \
-  || { D1_OK=0; fail "D1: the delivered payload is not this alert"; }
+grep -q "RENDERED=.*bin integrity drift repaired" "$SB/receiver.log" \
+  || { D1_OK=0; fail "D1: the human-visible message is not this alert"; }
 [ "$(grep -c '^URL=' "$SB/receiver.log")" -eq 1 ] \
   || { D1_OK=0; fail "D1: expected exactly one request on the wire, got $(grep -c '^URL=' "$SB/receiver.log")"; }
 [ "$(deliveries_in_state sent)" -eq 1 ] \
@@ -337,7 +367,7 @@ fi
 
 # wire bytes WITHOUT a receipt — bytes leaving is not a durable delivery
 reset_receiver
-printf 'BODY=bin integrity drift repaired: restart-storm-gate.py\n' > "$SB/receiver.log"
+printf 'RENDERED=bin integrity drift repaired: restart-storm-gate.py\n' > "$SB/receiver.log"
 if assert_arrived "restart-storm-gate.py"; then
   fail "D4c: wire bytes with no durable receipt counted as arrival — the wire clause is doing all the work"
 else

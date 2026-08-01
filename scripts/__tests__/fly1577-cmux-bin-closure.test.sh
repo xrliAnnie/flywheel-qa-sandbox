@@ -346,6 +346,115 @@ else
   fail "A4: knocking out the marker also silenced the desktop channel (rc=$RC, osa=$(grep -c '^OSASCRIPT' "$AH/osa.log" 2>/dev/null))"
 fi
 
+# A5 (FLY-1577, Lead decision "丁"): when the durable channel cannot be written,
+# the failure has to leave a trace that does not depend on the caller's stderr —
+# every launch-path caller runs the notifier as `... >/dev/null 2>&1 || true`, so
+# a shell redirect error is discarded and zero delivery reads as success.
+#
+# This asserts the FIX, not today's-behaviour-as-correct: the both-channels-down
+# state is still not blessed as acceptable, it now simply leaves evidence. The
+# exit status and the caller's redirect are deliberately untouched (this sits on
+# launchd launch paths; FLY-1501's bounded-run exists so a notifier can never
+# wedge the service it reports on).
+AH="$(setup_autostart_case a5 closed)"
+A5_TMP="$AH/fallback"; mkdir -p "$A5_TMP"
+mkdir -p "$AH/.flywheel/state/meta-alert"; chmod 500 "$AH/.flywheel/state/meta-alert"
+# BOTH channels must be down, or this proves nothing about an independent
+# escape: with the desktop stub still returning 0, a fallback that only fires
+# when osascript SUCCEEDS would pass too.
+cat > "$AH/stub/osascript" <<'OSAEOF'
+#!/bin/bash
+echo "OSA $*" >> "${OSA_LOG:?}"
+exit 1
+OSAEOF
+chmod +x "$AH/stub/osascript"
+env -i HOME="$AH" PATH="$AH/stub:/usr/bin:/bin" TMPDIR="$A5_TMP" \
+  OSA_LOG="$AH/osa.log" SYNC_SENTINEL="$AH/sync.sentinel" \
+  FLYWHEEL_CMUX_SUPERVISED=1 \
+  /bin/bash "$AH/.flywheel/bin/flywheel-cmux-autostart" >"$AH/stdout" 2>"$AH/stderr"
+RC=$?
+chmod 700 "$AH/.flywheel/state/meta-alert"
+A5_N="$(ls "$A5_TMP"/flywheel-meta-alert-undelivered-*.txt 2>/dev/null | wc -l | tr -d ' ')"
+A5_FB="$(ls "$A5_TMP"/flywheel-meta-alert-undelivered-*.txt 2>/dev/null | head -1)"
+A5_OK=1
+[ "$RC" -eq 0 ] || { A5_OK=0; fail "A5: the caller's exit status changed (rc=$RC) — the launch path must not be wedged"; }
+[ ! -e "$(marker_of "$AH")" ] || { A5_OK=0; fail "A5: precondition not built — the durable marker was writable after all"; }
+[ "$(grep -c '^OSA' "$AH/osa.log" 2>/dev/null)" -ge 1 ] \
+  || { A5_OK=0; fail "A5: precondition not built — the desktop channel was never even attempted"; }
+[ "$A5_N" = "1" ] || { A5_OK=0; fail "A5: expected exactly one fallback record, found $A5_N"; }
+if [ -n "$A5_FB" ]; then
+  # All four fields the contract promises — a trace that names none of them is
+  # not a trace of THIS alert.
+  grep -q "UNDELIVERED" "$A5_FB" || { A5_OK=0; fail "A5: trace does not say it was undelivered"; }
+  grep -q "reason=$REASON" "$A5_FB" || { A5_OK=0; fail "A5: trace does not name the reason"; }
+  grep -q "title=$TITLE" "$A5_FB" || { A5_OK=0; fail "A5: trace does not carry the title"; }
+  grep -q "intended_marker=.*meta-alert" "$A5_FB" || { A5_OK=0; fail "A5: trace does not name the marker it could not write"; }
+  grep -q "exit 127" "$A5_FB" || { A5_OK=0; fail "A5: trace does not carry the body"; }
+  [ ! -L "$A5_FB" ] || { A5_OK=0; fail "A5: the published trace is a symlink, not a regular file"; }
+  [ "$(t_mode "$A5_FB")" = "600" ] || { A5_OK=0; fail "A5: trace mode is $(t_mode "$A5_FB"), expected 600 (it can carry alert body detail)"; }
+  [ -z "$(ls "$A5_TMP"/*.XXXXXX* 2>/dev/null)" ] || { A5_OK=0; fail "A5: temp residue left behind"; }
+else
+  A5_OK=0; fail "A5: both channels down and NO trace outside the caller's discarded stderr"
+fi
+[ ! -e "$AH/sync.sentinel" ] || { A5_OK=0; fail "A5: the watcher was launched despite a missing brake"; }
+[ "$A5_OK" = "1" ] && pass "A5: both channels down → one 0600 regular trace naming reason/title/marker/body, caller still exits 0"
+
+# A6: the loss shape A5 cannot see. A marker left over from an EARLIER alert is
+# non-empty, so a fallback keyed on "is the pathname empty?" never fires — the
+# stale bytes of some other alert masquerade as this one's delivery. The trigger
+# has to be THIS write's own result, not whatever happens to sit at the path.
+# A6 drives meta-alert.sh DIRECTLY rather than through autostart. Its subject is
+# the fallback trigger, and going through the launch path added nothing except
+# the one thing that makes this undiagnosable: the caller's `>/dev/null 2>&1`
+# swallows the notifier's own stderr, so when this case failed on CI there was
+# no way to see why. The redirect this whole issue is about was hiding the
+# evidence from the test written to prove the issue.
+A6D="$SB/a6"; rm -rf "$A6D"; mkdir -p "$A6D/state" "$A6D/tmp"
+A6_BODY="body mentioning exit 127"
+run_meta() {  # <state-dir> → rc; stderr in $A6D/err
+  env -i PATH="$SHIM_PATH_FOR_META:/usr/bin:/bin" \
+    FLYWHEEL_STATE_DIR="$1" TMPDIR="$A6D/tmp" \
+    FLYWHEEL_META_ALERT_DEBOUNCE_MS=0 OSA_LOG="$A6D/osa.log" \
+    /bin/bash "$TRUSTED/scripts/meta-alert.sh" "$REASON" "$TITLE" "$A6_BODY" \
+    >"$A6D/out" 2>"$A6D/err"
+}
+SHIM_PATH_FOR_META="$A6D/stub"; mkdir -p "$SHIM_PATH_FOR_META"
+cat > "$SHIM_PATH_FOR_META/osascript" <<'OSAEOF'
+#!/bin/bash
+echo "OSA $*" >> "${OSA_LOG:?}"
+exit 1
+OSAEOF
+chmod +x "$SHIM_PATH_FOR_META/osascript"
+: > "$A6D/osa.log"
+
+# 1. let the notifier create its own marker, so the path comes from the system
+#    under test rather than being re-derived beside it
+run_meta "$A6D/state"
+A6_MARKER="$(ls "$A6D/state/meta-alert/"*.txt 2>/dev/null | head -1)"
+A6_OK=1
+[ -n "$A6_MARKER" ] || { A6_OK=0; fail "A6: setup run produced no marker — cannot build the stale-marker shape"; }
+if [ "$A6_OK" = "1" ]; then
+  printf 'STALE MARKER FROM AN EARLIER ALERT\n' > "$A6_MARKER"
+  rm -f "$A6D/tmp"/flywheel-meta-alert-undelivered-*.txt 2>/dev/null
+  # the FILE must be unwritable: `>` over an existing file needs write
+  # permission on the file, so a read-only directory would not stop it
+  chmod 444 "$A6_MARKER"
+  run_meta "$A6D/state"; RC=$?
+  chmod 644 "$A6_MARKER" 2>/dev/null
+  A6_FB="$(ls "$A6D/tmp"/flywheel-meta-alert-undelivered-*.txt 2>/dev/null | head -1)"
+  [ "$RC" -eq 0 ] || { A6_OK=0; fail "A6: meta-alert must always exit 0 (got $RC)"; }
+  grep -q "STALE MARKER" "$A6_MARKER" 2>/dev/null \
+    || { A6_OK=0; fail "A6: precondition not built — the stale marker was overwritten, so the write did not fail"; }
+  if [ -n "$A6_FB" ]; then
+    grep -q "reason=$REASON" "$A6_FB" || { A6_OK=0; fail "A6: the trace is not about this alert"; }
+  else
+    A6_OK=0
+    fail "A6: a stale marker from another alert masked this failure — no trace written" \
+      "tmp dir: [$(ls -la "$A6D/tmp" 2>&1 | tr '\n' '|')] | meta-alert stderr: [$(tr '\n' '|' < "$A6D/err" 2>/dev/null | head -c 500)]"
+  fi
+fi
+[ "$A6_OK" = "1" ] && pass "A6: stale non-empty marker + failed write → still traced (trigger is the write, not the path)"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # M: meta-alert.sh's strict terminal state in bin
 # ─────────────────────────────────────────────────────────────────────────────
