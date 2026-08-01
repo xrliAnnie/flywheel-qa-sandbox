@@ -1,0 +1,18 @@
+FLY-1580 的交付物在这里被保全,原因:
+
+2026-08-01 02:04:53  runner (bee48547) 的 no-write 设计节点 completed
+2026-08-01 02:04:54  DAG 直接开了 approve_to_ship gate,声称 "ready to ship, Head: fcd3640f"
+2026-08-01 02:05:21  该 gate 无人回答,27 秒后自行 terminal_disposed
+
+实测(Lead 复核):
+  - 分支 flywheel-FLY-1580 的 HEAD == origin/main == ab2ec6b2,零自有提交
+  - fcd3640f 在任何仓库/worktree 里都不存在(gate 报了一个从未存在的 SHA)
+  - doc/messaging-rework/design.md 未被修改
+  - 唯一产出 = 这四份【未被 git 跟踪的】文档
+
+runner 行为正确:它的节点是 no-write,plan.md 开头明写
+"本节点是 no-write ... 所以下面的 patch 没有落地。执行节点照 §1→§5 顺序走即可"
+—— 但那个执行节点从来没有运行。
+
+⇒ 这些文件是 FLY-1580 唯一的成果,且只存在于一个随时可能被回收的 worktree 里,
+   未提交、未推送。故在此保全。
