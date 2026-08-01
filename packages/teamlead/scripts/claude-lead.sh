@@ -1980,6 +1980,13 @@ _wait_tmux_window() {
         probe_err="$(mktemp -t fly1285-window-probe.XXXXXX)"
         if _tmux list-panes -t "$target" >/dev/null 2>"$probe_err"; then
           rm -f "$probe_err"
+          # FLY-1598: this recover-succeeded + probe-succeeded path had NO sleep.
+          # Under a legacy-grouped cmux topology the archive matcher at the loop
+          # top keeps failing while the probe here keeps succeeding, so this
+          # `continue` span at full speed (~130 rescue calls/min per Lead, 10
+          # Leads spinning, 650 PIDs/s, load 16+, Bridge starved). Pace it
+          # exactly like the healthy branch above.
+          interruptible_sleep 3
           continue
         elif _tmux_window_absence_proven "$(cat "$probe_err" 2>/dev/null)"; then
           rm -f "$probe_err"
