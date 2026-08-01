@@ -157,7 +157,7 @@ describe("FLY-1427 /events generalized terminal immunity", () => {
 			project_name: "flywheel",
 			event_type: "session_completed",
 			source: "flywheel-comm",
-			payload: { decision: { route: "no_code" }, evidence: {} },
+			payload: { decision: { route: "needs_review" }, evidence: {} },
 		});
 
 		expect(response.status).toBe(200);
@@ -190,7 +190,7 @@ describe("FLY-1427 /events generalized terminal immunity", () => {
 				project_name: "flywheel",
 				event_type: "session_completed",
 				source: "flywheel-comm",
-				payload: { decision: { route: "no_code" }, evidence: {} },
+				payload: { decision: { route: "needs_review" }, evidence: {} },
 			}),
 			"utf8",
 		);
@@ -235,7 +235,7 @@ describe("FLY-1427 /events generalized terminal immunity", () => {
 				payload:
 					eventType === "session_failed"
 						? { error: "runner stopped" }
-						: { decision: { route: "no_code" } },
+						: { decision: { route: "needs_review" } },
 			};
 			const response = await postEvent(body);
 

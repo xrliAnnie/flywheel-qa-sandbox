@@ -305,9 +305,10 @@ describe("typed generalized workflow snapshot", () => {
 			type: "generic",
 			dispatch: { vendor: "codex", model: "gpt-5.6-sol", effort: "low" },
 			capabilities: {
-				shared_branch_writer: false,
+				shared_branch_writer: true,
+				creates_pr: true,
 				produces_output: false,
-				completion_route: "no_code",
+				completion_route: "needs_review",
 			},
 		});
 		expect(execute?.agent?.content).toBe("Do the bounded task.\n");

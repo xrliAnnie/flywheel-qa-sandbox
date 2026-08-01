@@ -755,9 +755,9 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "produce-retry-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "replacement-complete",
-				completionSubmission: { decision: { route: "no_code" } },
+				completionSubmission: { decision: { route: "needs_review" } },
 				now: "2026-07-20T00:13:00.000Z",
 			}),
 		).toMatchObject({ ok: false, reason: "missing_output" });
@@ -1008,9 +1008,9 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "produce-dead",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "late-completion",
-				completionSubmission: { decision: { route: "no_code" } },
+				completionSubmission: { decision: { route: "needs_review" } },
 				now: "2026-07-20T00:11:00.000Z",
 			}),
 		).toEqual({ ok: false, reason: "stale_execution_superseded" });

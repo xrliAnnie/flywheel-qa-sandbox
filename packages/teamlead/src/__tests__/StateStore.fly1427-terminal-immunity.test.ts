@@ -200,9 +200,9 @@ describe("FLY-1427 enrolled completion transaction immunity", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId,
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "completion-fly1427",
-				completionSubmission: { decision: { route: "no_code" } },
+				completionSubmission: { decision: { route: "needs_review" } },
 				now: "2026-07-22T00:02:00.000Z",
 			}),
 		).toEqual({ ok: false, reason: "terminal_status_immune" });
@@ -221,7 +221,7 @@ describe("FLY-1427 enrolled completion transaction immunity", () => {
 		const store = await StateStore.create(":memory:");
 		const { runId, executionId } = createGeneralizedRun(store);
 		seedSession(store, executionId, "terminated");
-		const submission = { decision: { route: "no_code" } };
+		const submission = { decision: { route: "needs_review" } };
 		const raw = store as unknown as {
 			db: { run(sql: string, params?: unknown[]): void };
 		};
@@ -229,7 +229,7 @@ describe("FLY-1427 enrolled completion transaction immunity", () => {
 			`INSERT INTO workflow_node_completion
 			   (run_id, node_id, attempt, execution_id, route, event_uid,
 			    source_event_id, completion_submission_digest, completed_at)
-			 VALUES (?, 'execute', 1, ?, 'no_code', ?, ?, ?, ?)`,
+			 VALUES (?, 'execute', 1, ?, 'needs_review', ?, ?, ?, ?)`,
 			[
 				runId,
 				executionId,
@@ -244,7 +244,7 @@ describe("FLY-1427 enrolled completion transaction immunity", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId,
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "replay-source-event",
 				completionSubmission: submission,
 				now: "2026-07-22T00:03:00.000Z",

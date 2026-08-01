@@ -105,9 +105,9 @@ async function reviewFixture(options: {
 	expect(
 		store.commitEnrolledCompletion({
 			executionId: "research-1",
-			route: "no_code",
+			route: "needs_review",
 			sourceEventId: "research-complete",
-			completionSubmission: { decision: { route: "no_code" } },
+			completionSubmission: { decision: { route: "needs_review" } },
 			now: T0,
 		}).ok,
 	).toBe(true);
@@ -131,9 +131,9 @@ async function reviewFixture(options: {
 	expect(
 		store.commitEnrolledCompletion({
 			executionId: produceExecution,
-			route: "no_code",
+			route: "needs_review",
 			sourceEventId: "produce-complete",
-			completionSubmission: { decision: { route: "no_code" } },
+			completionSubmission: { decision: { route: "needs_review" } },
 			now: T0,
 		}).ok,
 	).toBe(true);

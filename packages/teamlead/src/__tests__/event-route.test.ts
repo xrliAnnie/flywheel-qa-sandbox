@@ -441,7 +441,7 @@ describe("Event route", () => {
 					event_id: "explicit-complete-1",
 					event_type: "session_completed",
 					source: "flywheel-comm",
-					payload: { decision: { route: "no_code" } },
+					payload: { decision: { route: "needs_review" } },
 				}),
 			),
 		});
@@ -462,9 +462,9 @@ describe("Event route", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "attempt-1-complete",
-				completionSubmission: { decision: { route: "no_code" }, round: 1 },
+				completionSubmission: { decision: { route: "needs_review" }, round: 1 },
 			}),
 		).toMatchObject({ ok: true });
 		store.upsertWorkflowRunNode({
@@ -517,7 +517,7 @@ describe("Event route", () => {
 					event_type: "session_completed",
 					source: "flywheel-comm",
 					payload: {
-						decision: { route: "no_code" },
+						decision: { route: "needs_review" },
 						round: 2,
 						workflowActivation: {
 							activationId: "activation-2",
@@ -545,6 +545,42 @@ describe("Event route", () => {
 		});
 	});
 
+	// PR #748 release condition: generic gained implement's capabilities, so its
+	// completion_route is now "needs_review". A generic node that finishes WITHOUT
+	// producing a PR (pure research, a question answered, local-only edits) must
+	// NOT park in awaiting_review waiting for an approval that can never come —
+	// that is a zombie: it looks exactly like a real pending item, nags nobody,
+	// and so nobody notices it. A false positive (an empty ship card) is louder
+	// and safer than a false negative (a silent zombie).
+	it("PR #748: a generic completion with NO PR evidence reaches a terminal state, never a zombie awaiting_review", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "generic-complete-no-pr",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "needs_review" },
+						// No `evidence.landingStatus`, no PR number: nothing to ship.
+						evidence: { commitMessages: [] },
+						summary: "Investigated the question; no code change needed.",
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session?.status).not.toBe("awaiting_review");
+		expect(["completed", "blocked"]).toContain(session?.status);
+	});
+
 	it("settles a stale generalized completion after the node execution was replaced", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		store.upsertWorkflowRunNode({
@@ -565,7 +601,7 @@ describe("Event route", () => {
 					event_id: "stale-completion-1",
 					event_type: "session_completed",
 					source: "flywheel-comm",
-					payload: { decision: { route: "no_code" } },
+					payload: { decision: { route: "needs_review" } },
 				}),
 			),
 		});
@@ -609,7 +645,7 @@ describe("Event route", () => {
 						event_type: "session_completed",
 						source: "flywheel-comm",
 						payload: {
-							decision: { route: "no_code" },
+							decision: { route: "needs_review" },
 							evidence: changed
 								? { commitMessages: ["fix after QA feedback"] }
 								: { commitMessages: ["initial completion"] },
@@ -859,7 +895,7 @@ describe("Event route", () => {
 					event_id: "teardown-complete-1",
 					event_type: "session_completed",
 					source: "direct-event-sink",
-					payload: { decision: { route: "no_code" } },
+					payload: { decision: { route: "needs_review" } },
 				}),
 			),
 		});

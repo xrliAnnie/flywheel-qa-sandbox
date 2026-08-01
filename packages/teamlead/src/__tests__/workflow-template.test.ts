@@ -701,35 +701,45 @@ describe("workflow template manifest v2", () => {
 		).toMatchObject({ submissionWindowMinutes: 180 });
 	});
 
-	it("enforces the capability-driven independent-QA invariant", () => {
+	it("enforces the independent-QA invariant for implement pipelines only", () => {
 		const base = generalizedManifest();
-		for (const writerType of ["design", "implement"] as const) {
-			expect(() =>
-				validateWorkflowManifest({
-					...base,
-					nodes: [
-						{
-							id: "writer",
-							type: writerType,
-							vendor: "codex",
-							model: "gpt-5.6-sol",
-						},
-						{ id: "founder_gate", type: "gate" },
-					],
-					edges: [
-						{
-							id: "writer_done",
-							from: "writer",
-							to: "founder_gate",
-							condition:
-								writerType === "design" ? "design_done" : "implement_done",
-						},
-					],
-					loops: [],
-					ship_claims: ["founder_approved"],
-				}),
-			).toThrow(/exactly one independent QA|qa_passed/i);
-		}
+		const singleWriterGraph = (writerType: "design" | "implement") => ({
+			...base,
+			nodes: [
+				{
+					id: "writer",
+					type: writerType,
+					vendor: "codex" as const,
+					model: "gpt-5.6-sol",
+				},
+				{ id: "founder_gate", type: "gate" as const },
+			],
+			edges: [
+				{
+					id: "writer_done",
+					from: "writer",
+					to: "founder_gate",
+					condition: (writerType === "design"
+						? "design_done"
+						: "implement_done") as "design_done" | "implement_done",
+				},
+			],
+			loops: [],
+			ship_claims: ["founder_approved" as const],
+		});
+
+		// An `implement` node means the formal engineering pipeline: independent QA
+		// guards its merge point, so it stays mandatory.
+		expect(() =>
+			validateWorkflowManifest(singleWriterGraph("implement")),
+		).toThrow(/exactly one independent QA|qa_passed/i);
+
+		// A design-only graph produces documents, not merged code. It has nowhere
+		// to put an independent QA node and must not be sentenced to death by this
+		// rule — same reason a single-stage `generic` graph must not be.
+		expect(() =>
+			validateWorkflowManifest(singleWriterGraph("design")),
+		).not.toThrow();
 
 		expect(() =>
 			validateWorkflowManifest({

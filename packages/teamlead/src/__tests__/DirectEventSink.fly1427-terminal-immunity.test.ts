@@ -152,15 +152,26 @@ describe("FLY-1427 DirectEventSink DAG closeout guard", () => {
 
 			await sink.emitCompleted(envelope, {
 				success: true,
-				decision: { route: "no_code", reasoning: "runner exited" },
+				decision: { route: "needs_review", reasoning: "runner exited" },
 			});
 
 			expect(store.getSession(envelope.executionId)?.status).toBe("terminated");
 			expect(store.getLifecycleRevision(envelope.executionId)).toBe(
 				beforeRevision,
 			);
+			// PR #748: generic now has `creates_pr`, so DirectEventSink's
+			// PR-routing guard refuses this in-process completion BEFORE the
+			// FLY-1427 terminal-immunity guard is reached — a PR-producing
+			// generalized node must complete through flywheel-comm's HTTP /events
+			// path so the Bridge re-derives repository/head authority. The
+			// terminal fact this test guards is unchanged and still asserted
+			// above (status stays `terminated`, lifecycle revision frozen); only
+			// the refusing guard moved. Terminal immunity itself keeps its
+			// dedicated coverage in StateStore.fly1427-terminal-immunity.test.ts.
 			expect(warn).toHaveBeenCalledWith(
-				expect.stringMatching(/FLY-1427.*terminal-immune/i),
+				expect.stringMatching(
+					/FLY-1427.*terminal-immune|generalized PR completion rejected/i,
+				),
 			);
 			store.close();
 		},

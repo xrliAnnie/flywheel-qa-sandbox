@@ -33,7 +33,7 @@ describe("generalized workflow node-type registry", () => {
 		);
 	});
 
-	it("models generic and review as no-code types and derives D2 writers only from capabilities", () => {
+	it("models review as a no-code type, generic as a full work-producing type, and derives D2 writers only from capabilities", () => {
 		expect(Object.keys(NODE_TYPE_REGISTRY)).toEqual([
 			"design",
 			"implement",
@@ -45,7 +45,7 @@ describe("generalized workflow node-type registry", () => {
 		]);
 		expect(nodeTypeWritesCode("design")).toBe(true);
 		expect(nodeTypeWritesCode("implement")).toBe(true);
-		expect(nodeTypeWritesCode("generic")).toBe(false);
+		expect(nodeTypeWritesCode("generic")).toBe(true);
 		expect(nodeTypeWritesCode("review")).toBe(false);
 		expect(getNodeTypeRegistryEntry("land").capabilities).toMatchObject({
 			shared_branch_writer: false,
@@ -54,13 +54,26 @@ describe("generalized workflow node-type registry", () => {
 			can_land: true,
 			completion_route: "no_code",
 		});
+		// generic is the default single-stage dispatch type: it must be able to
+		// write, open a PR, and land, otherwise the engine injects a "no-write
+		// node" instruction and single-stage work has nowhere to land.
+		// completion_route is "needs_review" because creates_pr makes this node a
+		// ship-bundle carrier, and resolveWorkflowGateAuthority rejects a carrier
+		// on any other route (incoherent_ship_bundle).
+		expect(getNodeTypeRegistryEntry("generic").capabilities).toEqual(
+			getNodeTypeRegistryEntry("implement").capabilities,
+		);
 		expect(getNodeTypeRegistryEntry("generic").capabilities).toMatchObject({
-			shared_branch_writer: false,
-			creates_pr: false,
-			can_ship: false,
-			can_land: false,
+			shared_branch_writer: true,
+			creates_pr: true,
+			can_ship: true,
+			can_land: true,
+			approval_gate_holder: true,
+			needs_review_evidence: true,
+			needs_mailbox_transport: true,
+			keepalive_park: true,
 			produces_output: false,
-			completion_route: "no_code",
+			completion_route: "needs_review",
 			output_mode: "none",
 		});
 		expect(

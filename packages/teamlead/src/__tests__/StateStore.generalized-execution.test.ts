@@ -1041,9 +1041,9 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-1",
-				completionSubmission: { decision: { route: "no_code" } },
+				completionSubmission: { decision: { route: "needs_review" } },
 				now: "2026-07-15T00:01:00.000Z",
 			}),
 		).toEqual({ ok: false, reason: "missing_output", retryable: true });
@@ -1066,9 +1066,9 @@ describe("generalized execution admission and terminal contracts", () => {
 
 		const completed = store.commitEnrolledCompletion({
 			executionId: "exec-1",
-			route: "no_code",
+			route: "needs_review",
 			sourceEventId: "complete-1",
-			completionSubmission: { decision: { route: "no_code" } },
+			completionSubmission: { decision: { route: "needs_review" } },
 			now: "2026-07-15T00:02:00.000Z",
 		});
 		expect(completed).toMatchObject({ ok: true, idempotentReplay: false });
@@ -1083,9 +1083,9 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-2",
-				completionSubmission: { decision: { route: "no_code" } },
+				completionSubmission: { decision: { route: "needs_review" } },
 				now: "2026-07-15T00:02:01.000Z",
 			}),
 		).toMatchObject({ ok: true, idempotentReplay: true });
@@ -1118,9 +1118,9 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-with-pr-1",
-				completionSubmission: { decision: { route: "no_code" } },
+				completionSubmission: { decision: { route: "needs_review" } },
 				subjectDigest: headSha,
 				prBinding: {
 					prNumber: 1434,
@@ -1193,9 +1193,9 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-1",
-				completionSubmission: { decision: { route: "no_code" } },
+				completionSubmission: { decision: { route: "needs_review" } },
 				now: "2026-07-15T00:02:00.000Z",
 			}),
 		).toMatchObject({ ok: true });
@@ -1234,9 +1234,9 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-1",
-				completionSubmission: { decision: { route: "no_code" } },
+				completionSubmission: { decision: { route: "needs_review" } },
 				now: "2026-07-15T00:02:00.000Z",
 			}),
 		).toMatchObject({ ok: true });
@@ -1277,13 +1277,13 @@ describe("generalized execution admission and terminal contracts", () => {
 			}),
 		).toEqual({ ok: true, idempotentReplay: false });
 		const originalSubmission = {
-			decision: { route: "no_code" },
+			decision: { route: "needs_review" },
 			evidence: { commitMessages: ["initial completion"] },
 		};
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-original",
 				completionSubmission: originalSubmission,
 				now: "2026-07-15T00:02:00.000Z",
@@ -1298,13 +1298,13 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 
 		const changedSubmission = {
-			decision: { route: "no_code" },
+			decision: { route: "needs_review" },
 			evidence: { commitMessages: ["fix after QA feedback"] },
 		};
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-stale-missing-context",
 				completionSubmission: changedSubmission,
 				now: "2026-07-15T00:02:30.000Z",
@@ -1324,7 +1324,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		};
 		const first = store.commitEnrolledCompletion({
 			executionId: "exec-1",
-			route: "no_code",
+			route: "needs_review",
 			sourceEventId: "complete-stale-1",
 			completionSubmission: changedSubmission,
 			workflowActivation: activation1,
@@ -1370,7 +1370,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 		const replay = store.commitEnrolledCompletion({
 			executionId: "exec-1",
-			route: "no_code",
+			route: "needs_review",
 			sourceEventId: "complete-stale-2",
 			completionSubmission: changedSubmission,
 			workflowActivation: activation1,
@@ -1419,9 +1419,9 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-1",
-				completionSubmission: { decision: { route: "no_code" }, round: 1 },
+				completionSubmission: { decision: { route: "needs_review" }, round: 1 },
 				now: "2026-07-15T00:01:00.000Z",
 			}),
 		).toMatchObject({ ok: true, idempotentReplay: false });
@@ -1461,18 +1461,18 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-2-missing-context",
-				completionSubmission: { decision: { route: "no_code" }, round: 2 },
+				completionSubmission: { decision: { route: "needs_review" }, round: 2 },
 				now: "2026-07-15T00:03:00.000Z",
 			}),
 		).toEqual({ ok: false, reason: "workflow_activation_required" });
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-2-wrong-epoch",
-				completionSubmission: { decision: { route: "no_code" }, round: 2 },
+				completionSubmission: { decision: { route: "needs_review" }, round: 2 },
 				workflowActivation: {
 					activationId: "activation-2",
 					runId: "run-1",
@@ -1492,13 +1492,13 @@ describe("generalized execution admission and terminal contracts", () => {
 			turnEpoch: 2,
 		};
 		const secondSubmission = {
-			decision: { route: "no_code" },
+			decision: { route: "needs_review" },
 			round: 2,
 		};
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-2",
 				completionSubmission: secondSubmission,
 				workflowActivation: activation2,
@@ -1514,7 +1514,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-2-replay",
 				completionSubmission: secondSubmission,
 				workflowActivation: activation2,
@@ -1524,7 +1524,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
-				route: "no_code",
+				route: "needs_review",
 				sourceEventId: "complete-2-conflict",
 				completionSubmission: { ...secondSubmission, changed: true },
 				workflowActivation: activation2,
@@ -1557,9 +1557,9 @@ describe("generalized execution admission and terminal contracts", () => {
 			expect(
 				store.commitEnrolledCompletion({
 					executionId: "exec-1",
-					route: "no_code",
+					route: "needs_review",
 					sourceEventId: "complete-original",
-					completionSubmission: { decision: { route: "no_code" } },
+					completionSubmission: { decision: { route: "needs_review" } },
 					now: "2026-07-15T00:02:00.000Z",
 				}),
 			).toMatchObject({ ok: true });
@@ -1588,10 +1588,10 @@ describe("generalized execution admission and terminal contracts", () => {
 			expect(
 				store.commitEnrolledCompletion({
 					executionId: "exec-1",
-					route: "no_code",
+					route: "needs_review",
 					sourceEventId: "complete-changed",
 					completionSubmission: {
-						decision: { route: "no_code" },
+						decision: { route: "needs_review" },
 						evidence: { changed: true },
 					},
 					now: "2026-07-15T00:03:00.000Z",

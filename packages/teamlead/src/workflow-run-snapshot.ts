@@ -707,10 +707,12 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 			"workflow snapshot resolved nodes do not cover the manifest",
 		);
 	}
-	const pinnedWritesCode = resolved.some(
-		(node) =>
-			node.capabilities.shared_branch_writer || node.capabilities.creates_pr,
-	);
+	// Mirrors the authoring-side invariant in workflow-template.ts: the
+	// independent-QA requirement keys on the formal engineering pipeline (an
+	// `implement` node), not on "can this node edit files". Keying on pinned
+	// write capability would make every single-stage (generic) run unparseable
+	// the moment generic gained the write capabilities it needs to land work.
+	const pinnedWritesCode = resolved.some((node) => node.type === "implement");
 	const qaVerdictCount = manifest.loops.filter(
 		(loop) =>
 			loop.loop_when === "qa_fail" &&

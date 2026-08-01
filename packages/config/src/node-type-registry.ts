@@ -127,7 +127,26 @@ export const NODE_TYPE_REGISTRY: Readonly<
 		isPhaseRole: false,
 		preserveCompletionRole: false,
 		badge: "🧩",
-		capabilities: noCode("no_code"),
+		// generic is the default single-stage dispatch type. With an all-false
+		// capability set the engine injected a "no-write node" instruction, so a
+		// single-stage runner could never commit, push, or open a PR — its work
+		// had nowhere to land. It carries the same capability shape as implement.
+		//
+		// completion_route MUST be "needs_review", not "no_code": creates_pr makes
+		// this node a ship-bundle carrier, and resolveWorkflowGateAuthority only
+		// accepts a carrier whose completion_route is "needs_review" — anything
+		// else throws incoherent_ship_bundle.
+		capabilities: {
+			...noCode("needs_review"),
+			shared_branch_writer: true,
+			creates_pr: true,
+			can_ship: true,
+			can_land: true,
+			approval_gate_holder: true,
+			needs_review_evidence: true,
+			needs_mailbox_transport: true,
+			keepalive_park: true,
+		},
 	},
 	review: {
 		id: "review",

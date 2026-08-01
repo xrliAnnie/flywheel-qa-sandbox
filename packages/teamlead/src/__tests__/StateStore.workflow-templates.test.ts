@@ -407,7 +407,11 @@ describe("StateStore workflow templates", () => {
 			},
 		});
 		expect(parseWorkflowRunSnapshot(run.snapshot!).schema_version).toBe(2);
-		expect(store.countWorkflowClaims(run.run_id)).toBe(1);
+		// PR #748: the automatic `qa_exempt` claim is issued only when EVERY node
+		// in the snapshot is non-writing (StateStore "all_nodes_no_write"). This
+		// v2 seed contains a generic node, and generic now writes code — so the
+		// run is correctly no longer auto-exempted from QA.
+		expect(store.countWorkflowClaims(run.run_id)).toBe(0);
 		store.close();
 	});
 

@@ -5,7 +5,6 @@ import {
 	canonicalSubmissionDigest,
 	getModelConfigSnapshot,
 	type ModelConfigSnapshot,
-	nodeTypeWritesCode,
 } from "flywheel-config";
 import { parse } from "yaml";
 import type { StateStore } from "./StateStore.js";
@@ -804,9 +803,22 @@ function assertSafeAgentFile(value: unknown, path: string): string {
 	return relative;
 }
 
+/**
+ * The independent-QA requirement keys on the formal engineering pipeline (an
+ * `implement` node), not on "can this node edit files". QA guards the merge
+ * point, not the editor — and a single-stage workflow has nowhere to put an
+ * independent QA node, so keying on write capability would sentence every
+ * single-stage graph to death.
+ */
+function requiresIndependentQa(type: WorkflowNodeType): boolean {
+	return type === "implement";
+}
+
 function validateWorkflowManifestV2(
 	value: unknown,
-	nodeWritesCode: (type: WorkflowNodeType) => boolean = nodeTypeWritesCode,
+	nodeRequiresIndependentQa: (
+		type: WorkflowNodeType,
+	) => boolean = requiresIndependentQa,
 	options: WorkflowManifestValidationOptions = {},
 ): WorkflowManifestV2 {
 	const modelSnapshot = options.modelSnapshot ?? getModelConfigSnapshot();
@@ -1148,7 +1160,10 @@ function validateWorkflowManifestV2(
 			"manifest review nodes and design_review_approved ship claim must be declared together",
 		);
 	}
-	if (nodes.some((node) => nodeWritesCode(node.type)) && qaCount !== 1) {
+	const hasImplementNode = nodes.some((node) =>
+		nodeRequiresIndependentQa(node.type),
+	);
+	if (hasImplementNode && qaCount !== 1) {
 		throw new Error(
 			"a workflow containing a code-writing node must contain exactly one independent QA node and qa_passed ship claim",
 		);
@@ -1261,7 +1276,7 @@ export function validateWorkflowManifest(
 		return validateWorkflowManifestV1(value, { ...options, modelSnapshot });
 	}
 	if (root.schema_version === 2) {
-		return validateWorkflowManifestV2(value, nodeTypeWritesCode, {
+		return validateWorkflowManifestV2(value, requiresIndependentQa, {
 			...options,
 			modelSnapshot,
 		});
