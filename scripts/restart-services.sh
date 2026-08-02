@@ -1525,12 +1525,26 @@ deploy_and_verify() {
         start_bridge
         restarted+=("Bridge")
 
-        # Health check — wait for new Bridge to be ready (up to 60s)
+        # Health check — wait for the new Bridge to be ready.
+        # FLY-1600: the window was hardcoded to 60s (30×2s) while a real Bridge
+        # boot took ~9 minutes under load — deployment was STRUCTURALLY unable
+        # to succeed: health check always timed out, rollback_and_restart reset
+        # the checkout to DEPLOYED_SHA (ejecting the just-merged fix), and the
+        # Lead wave then relaunched from the OLD script. Five deploys failed in
+        # exactly this loop on 2026-08-01/02 — including the one carrying the
+        # spin-storm hotfix whose absence was what made the boot slow.
+        # A long window is safe: the loop exits on the FIRST healthy probe, so
+        # a fast boot still passes in seconds; only a genuinely dead Bridge
+        # waits the full window before rolling back.
+        local hc_tries="${FLYWHEEL_BRIDGE_HEALTH_TRIES:-450}"   # ×2s = 15 min default
         local hc_ok=false
-        for i in $(seq 1 30); do
+        for i in $(seq 1 "$hc_tries"); do
             if curl -sf "$BRIDGE_URL/health" | jq -e '.ok' > /dev/null 2>&1; then
                 hc_ok=true
                 break
+            fi
+            if (( i % 15 == 0 )); then
+                log "Bridge health: waiting ($((i*2))s / $((hc_tries*2))s max)"
             fi
             sleep 2
         done
