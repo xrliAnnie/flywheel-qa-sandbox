@@ -56,6 +56,10 @@ export FLYWHEEL_TUI_WINDOW_ALERT=1
 # ── Infra Bot identity (matches ~/.flywheel/projects.json: flywheel / codex-infra-bot-lead) ──
 export FLYWHEEL_LEAD_ID="codex-infra-bot-lead"
 export FLYWHEEL_PROJECT_NAME="flywheel"
+# FLY-1597 audit finding: the codex lead runtime now hard-requires FLYWHEEL_COMM_DB
+# (same derivation claude-lead.sh:481 uses). These launchers predate that change —
+# Mufasa + codex-infra-bot crash-looped 205 times each on "missing required env".
+export FLYWHEEL_COMM_DB="${FLYWHEEL_COMM_DB:-${HOME}/.flywheel/comm/${FLYWHEEL_PROJECT_NAME}/comm.db}"
 # Annie sets these in ~/.flywheel/.env (the bot's Discord user id + its private channel):
 export FLYWHEEL_LEAD_BOT_USER_ID="${FLYWHEEL_INFRA_BOT_USER_ID:?FLYWHEEL_INFRA_BOT_USER_ID must be set (the Codex Infra Bot Discord user id)}"
 export FLYWHEEL_LEAD_CHAT_CHANNEL_ID="${FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID:?FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID must be set (#codex-infra-bot)}"

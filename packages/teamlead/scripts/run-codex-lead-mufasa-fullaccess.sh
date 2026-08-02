@@ -42,6 +42,10 @@ fi
 # ── Mufasa identity (from ~/.flywheel/projects.json: growth / mufasa-lead) ──
 export FLYWHEEL_LEAD_ID="mufasa-lead"
 export FLYWHEEL_PROJECT_NAME="growth"
+# FLY-1597 audit finding: the codex lead runtime now hard-requires FLYWHEEL_COMM_DB
+# (same derivation claude-lead.sh:481 uses). These launchers predate that change —
+# Mufasa + codex-infra-bot crash-looped 205 times each on "missing required env".
+export FLYWHEEL_COMM_DB="${FLYWHEEL_COMM_DB:-${HOME}/.flywheel/comm/${FLYWHEEL_PROJECT_NAME}/comm.db}"
 export FLYWHEEL_LEAD_BOT_USER_ID="1499895683287748679"     # Mufasa's Discord bot
 export FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307" # #mufasa
 # #leads-roundtable — discord_send "roundtable" alias + FLY-267 cross-dept inbound.
