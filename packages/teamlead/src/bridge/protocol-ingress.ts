@@ -47,37 +47,52 @@ function parseReceipt(content: string): AckReceiptPayload | null {
 }
 
 export class ProtocolIngress {
+	private db?: CommDB;
+
 	constructor(private readonly opts: ProtocolIngressOptions) {}
 
+	/**
+	 * FLY-1601 second site (founder-terminal profile, 2026-08-02 04:25): after
+	 * the QuestionAdmission fix landed, a fresh CPU profile showed 97.4% of CPU
+	 * in THIS class's per-tick `new CommDB` — same migration-replay-per-tick
+	 * disease, same fix: one cached connection for the instance lifetime.
+	 */
+	private commDb(): CommDB {
+		this.db ??= new CommDB(this.opts.dbPath, false);
+		return this.db;
+	}
+
+	/** Release the cached connection (tests / runtime teardown). */
+	close(): void {
+		this.db?.close();
+		this.db = undefined;
+	}
+
 	materializePending(leadId: string): number {
-		const db = new CommDB(this.opts.dbPath, false);
+		const db = this.commDb();
 		let count = 0;
-		try {
-			for (const receipt of db.getPendingAckReceipts()) {
-				const payload = parseReceipt(receipt.content);
-				if (!payload) continue;
-				const event = this.opts.store.getLeadEventBySeq(payload.event_seq);
-				if (!event) continue;
-				const owner = event.ack_owner_lead_id ?? event.lead_id;
-				if (owner !== leadId) continue;
-				this.opts.queue.enqueue({
-					id: `ack:${leadId}:${receipt.id}`,
-					toLead: leadId,
-					source: `ack_receipt:${receipt.id}`,
-					type: "ack_receipt",
-					msgClass: "protocol",
-					priority: 1,
-					content: JSON.stringify({
-						...payload,
-						receipt_id: receipt.id,
-						from_agent: receipt.from_agent,
-					} satisfies MaterializedAckReceipt),
-					refMessageId: receipt.id,
-				});
-				count++;
-			}
-		} finally {
-			db.close();
+		for (const receipt of db.getPendingAckReceipts()) {
+			const payload = parseReceipt(receipt.content);
+			if (!payload) continue;
+			const event = this.opts.store.getLeadEventBySeq(payload.event_seq);
+			if (!event) continue;
+			const owner = event.ack_owner_lead_id ?? event.lead_id;
+			if (owner !== leadId) continue;
+			this.opts.queue.enqueue({
+				id: `ack:${leadId}:${receipt.id}`,
+				toLead: leadId,
+				source: `ack_receipt:${receipt.id}`,
+				type: "ack_receipt",
+				msgClass: "protocol",
+				priority: 1,
+				content: JSON.stringify({
+					...payload,
+					receipt_id: receipt.id,
+					from_agent: receipt.from_agent,
+				} satisfies MaterializedAckReceipt),
+				refMessageId: receipt.id,
+			});
+			count++;
 		}
 		return count;
 	}
@@ -138,11 +153,6 @@ export class ProtocolIngress {
 	}
 
 	private consumeReceipt(receiptId: string): void {
-		const db = new CommDB(this.opts.dbPath, false);
-		try {
-			db.markAckReceiptConsumed(receiptId);
-		} finally {
-			db.close();
-		}
+		this.commDb().markAckReceiptConsumed(receiptId);
 	}
 }
