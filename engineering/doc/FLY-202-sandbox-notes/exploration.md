@@ -1,7 +1,9 @@
 # FLY-202 Sandbox Notes — Exploration
 
-**Issue**: FLY-202  
-**Date**: 2026-08-02  
+**Issue**: FLY-202
+
+**Date**: 2026-08-02
+
 **Based on**: 当前 sandbox worktree、`packages/qa-framework/README.md` 与 FLY-202 task brief
 
 ## Problem
