@@ -134,3 +134,25 @@ describe("QuestionAdmission", () => {
 		});
 	});
 });
+
+describe("FLY-1601 per-tick CommDB construction", () => {
+	it("materializePending reuses one connection across calls (no per-tick migrations)", async () => {
+		// CPU-profiled on the wedged 2026-08-02 Bridge: the #1 hotspot was the
+		// CommDB constructor's migration replay, entered from materializePending
+		// on EVERY tick of EVERY lead. The contract of the fix: repeated calls
+		// construct at most one CommDB.
+		const { admission } = harness();
+		const ctor = vi.spyOn(
+			admission as unknown as { commDb: () => CommDB },
+			"commDb",
+		);
+		await admission.materializePending();
+		await admission.materializePending();
+		await admission.materializePending();
+		expect(ctor).toHaveBeenCalledTimes(3);
+		const first = ctor.mock.results[0]?.value;
+		expect(ctor.mock.results[1]?.value).toBe(first);
+		expect(ctor.mock.results[2]?.value).toBe(first);
+		admission.close();
+	});
+});

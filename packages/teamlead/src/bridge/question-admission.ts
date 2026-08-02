@@ -39,22 +39,42 @@ export interface QuestionAdmissionOptions {
 
 export class QuestionAdmission {
 	private readonly now: () => Date;
+	private db?: CommDB;
 
 	constructor(private readonly opts: QuestionAdmissionOptions) {
 		this.now = opts.now ?? (() => new Date());
 	}
 
+	/**
+	 * FLY-1601: one cached connection for this admission's lifetime. The old
+	 * code built a FRESH CommDB — whose constructor replays the entire
+	 * migration suite — on EVERY materializePending() (once per tick per Lead)
+	 * and every revalidate(). CPU-profiled on the wedged 2026-08-02 Bridge:
+	 * the #1 hotspot was exec → applyReceiptFoundationMigrations → CommDB ←
+	 * materializePending ← admit ← timers. Sixteen Leads × 1s active interval
+	 * × synchronous migration exec against a contended comm.db (5s
+	 * busy_timeout) pinned the event loop so hard that /health timed out for
+	 * 20s+ while the process stayed alive — the "passed health at boot, died
+	 * under adoption load" signature.
+	 */
+	private commDb(): CommDB {
+		this.db ??= new CommDB(this.opts.dbPath, false);
+		return this.db;
+	}
+
+	/** Release the cached connection (tests / runtime teardown). */
+	close(): void {
+		this.db?.close();
+		this.db = undefined;
+	}
+
 	async materializePending(): Promise<number> {
-		const db = new CommDB(this.opts.dbPath, false);
-		try {
-			let admitted = 0;
-			for (const question of db.getPendingQuestions(this.opts.lead.agentId)) {
-				if (this.admitQuestion(db, question)) admitted++;
-			}
-			return admitted;
-		} finally {
-			db.close();
+		const db = this.commDb();
+		let admitted = 0;
+		for (const question of db.getPendingQuestions(this.opts.lead.agentId)) {
+			if (this.admitQuestion(db, question)) admitted++;
 		}
+		return admitted;
 	}
 
 	async revalidate(
@@ -70,29 +90,25 @@ export class QuestionAdmission {
 		) {
 			return { deliver: true };
 		}
-		const db = new CommDB(this.opts.dbPath, false);
-		try {
-			const question = db.getMessageById(row.ref_message_id);
-			if (!question) {
-				return { deliver: false, disposition: "revoked_missing" };
-			}
-			if (question.superseded_at) {
-				return { deliver: false, disposition: "revoked_superseded" };
-			}
-			if (
-				!db
-					.getPendingQuestions(this.opts.lead.agentId)
-					.some(({ id }) => id === question.id)
-			) {
-				return { deliver: false, disposition: "revoked_answered" };
-			}
-			const eligible = this.eligibility(question);
-			return eligible.ok
-				? { deliver: true }
-				: { deliver: false, disposition: eligible.disposition };
-		} finally {
-			db.close();
+		const db = this.commDb();
+		const question = db.getMessageById(row.ref_message_id);
+		if (!question) {
+			return { deliver: false, disposition: "revoked_missing" };
 		}
+		if (question.superseded_at) {
+			return { deliver: false, disposition: "revoked_superseded" };
+		}
+		if (
+			!db
+				.getPendingQuestions(this.opts.lead.agentId)
+				.some(({ id }) => id === question.id)
+		) {
+			return { deliver: false, disposition: "revoked_answered" };
+		}
+		const eligible = this.eligibility(question);
+		return eligible.ok
+			? { deliver: true }
+			: { deliver: false, disposition: eligible.disposition };
 	}
 
 	private admitQuestion(db: CommDB, question: Message): boolean {
