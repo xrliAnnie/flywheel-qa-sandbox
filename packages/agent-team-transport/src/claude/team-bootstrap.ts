@@ -24,6 +24,18 @@ import { ensureFileExists } from "./ClaudeMailboxCodec.js";
 
 const LOCK_OPTIONS = {
 	retries: { retries: 10, minTimeout: 5, maxTimeout: 100 },
+	// FLY-1599 second kill path: proper-lockfile's DEFAULT onCompromised THROWS
+	// from its own watcher timer — outside every try/catch — killing the whole
+	// Bridge when a Lead restart deletes the lock mid-hold (observed twice on
+	// 2026-08-02: 16:03 eng-lead lock, 02:32 cos-lead lock). Log, never throw.
+	// Same rationale as ClaudeMailboxCodec.ts LOCK_OPTIONS.
+	onCompromised: (error: Error) => {
+		console.error(
+			`[agent-team-transport] team-file lock compromised (continuing, not fatal): ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	},
 } as const;
 
 // ============================================================================

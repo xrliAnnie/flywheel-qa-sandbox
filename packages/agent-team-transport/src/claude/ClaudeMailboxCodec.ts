@@ -41,6 +41,23 @@ const LOCK_OPTIONS = {
 		minTimeout: 5,
 		maxTimeout: 100,
 	},
+	// FLY-1599 second kill path (founder-terminal capture, 2026-08-02): a Lead
+	// restart deletes its inbox .lock while this process holds it. proper-lockfile
+	// detects the compromise on its OWN watcher timer, and its DEFAULT handler
+	// THROWS from that timer — outside every try/catch in this codebase — killing
+	// the whole Bridge (observed twice: 16:03 eng-lead lock, 02:32 cos-lead lock).
+	// Deviation from stock claude-code LOCK_OPTIONS is deliberate: stock runs in a
+	// per-agent CLI where dying is cheap; this runs inside the fleet's delivery
+	// daemon. A compromised lock means our exclusivity is gone — the in-flight
+	// write may tear or duplicate, which flywheelId dedupe upstream tolerates —
+	// so we log loudly and let the write path's own error handling settle it.
+	onCompromised: (error: Error) => {
+		console.error(
+			`[agent-team-transport] mailbox lock compromised (continuing, not fatal): ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	},
 } as const;
 
 /** Stock claude-code wire shape — `teammateMailbox.ts:43-50`. */

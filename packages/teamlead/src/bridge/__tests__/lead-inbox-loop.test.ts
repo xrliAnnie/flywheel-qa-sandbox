@@ -553,3 +553,146 @@ describe("LeadInboxLoop", () => {
 		});
 	});
 });
+
+describe("FLY-1599 tick boundary hardening", () => {
+	it("keeps a throwing recordTickStarted inside the tick boundary", async () => {
+		const queue = makeQueue();
+		const consumer = loop(queue, {
+			deliverBatch: vi.fn(async (batch) => receipt(batch)),
+		});
+		const busy = vi.spyOn(queue, "recordTickStarted").mockImplementation(() => {
+			throw new Error("database is locked");
+		});
+		// Before the fix this line REJECTED (SqliteError escaped tick entirely,
+		// which in production became an unhandledRejection that killed the Bridge).
+		const result = await consumer.tick();
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("database is locked");
+		// The loop must survive the bad tick: restore the queue and tick again.
+		busy.mockRestore();
+		expect((await consumer.tick()).ok).toBe(true);
+	});
+
+	it("nextDelayMs falls back to the idle delay when countPending throws", () => {
+		const queue = makeQueue();
+		const warn = vi.fn();
+		const consumer = loop(
+			queue,
+			{ deliverBatch: vi.fn(async (batch) => receipt(batch)) },
+			{ logger: { warn } as never },
+		);
+		vi.spyOn(queue, "countPending").mockImplementation(() => {
+			throw new Error("database is locked");
+		});
+		// Before the fix this THREW inside runAndSchedule's finally block —
+		// the same process-killing escape path as the tick throw.
+		expect(consumer.nextDelayMs()).toBe(IDLE_LEAD_INBOX_INTERVAL_MS);
+		expect(warn).toHaveBeenCalledWith(
+			"Lead inbox nextDelayMs failed; using idle delay",
+			expect.objectContaining({ error: "database is locked" }),
+		);
+	});
+
+	it("nothing escapes the floating runAndSchedule promise", async () => {
+		const queue = makeQueue();
+		const warn = vi.fn();
+		const consumer = loop(
+			queue,
+			{ deliverBatch: vi.fn(async (batch) => receipt(batch)) },
+			{ logger: { warn } as never },
+		);
+		// Force a rejection PAST tick's own catch to prove the outer
+		// belt-and-suspenders boundary holds on the floating promise.
+		const tickSpy = vi
+			.spyOn(consumer as unknown as { tick: () => Promise<never> }, "tick")
+			.mockRejectedValue(new Error("boundary breach"));
+		const escaped: unknown[] = [];
+		const trap = (reason: unknown) => escaped.push(reason);
+		process.on("unhandledRejection", trap);
+		try {
+			// The loop is born stopped; start() performs the mount-time first pull
+			// as exactly the floating `void runAndSchedule()` promise under test.
+			consumer.start();
+			await vi.waitFor(() => expect(tickSpy).toHaveBeenCalled());
+			await vi.waitFor(() =>
+				expect(warn).toHaveBeenCalledWith(
+					"Lead inbox tick escaped its boundary",
+					expect.objectContaining({ error: "boundary breach" }),
+				),
+			);
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(escaped).toHaveLength(0);
+		} finally {
+			process.off("unhandledRejection", trap);
+			consumer.stop();
+		}
+	});
+});
+
+describe("FLY-1599 non-Error rejection values (codex review HIGH)", () => {
+	it("a `throw null` from sync SQL stays inside the tick boundary", async () => {
+		const queue = makeQueue();
+		const consumer = loop(queue, {
+			deliverBatch: vi.fn(async (batch) => receipt(batch)),
+		});
+		const busy = vi.spyOn(queue, "recordTickStarted").mockImplementation(() => {
+			// deliberate non-Error throw: `null` is a legal JS rejection value
+			throw null;
+		});
+		// Before the serialization fix, `(error as Error).message` threw a
+		// TypeError INSIDE the catch — escaping the boundary it exists to seal.
+		const result = await consumer.tick();
+		expect(result.ok).toBe(false);
+		expect(result.error).toBe("null");
+		busy.mockRestore();
+		expect((await consumer.tick()).ok).toBe(true);
+	});
+
+	it("a string rejection past tick's catch is serialized, not re-thrown", async () => {
+		const queue = makeQueue();
+		const warn = vi.fn();
+		const consumer = loop(
+			queue,
+			{ deliverBatch: vi.fn(async (batch) => receipt(batch)) },
+			{ logger: { warn } as never },
+		);
+		vi.spyOn(
+			consumer as unknown as { tick: () => Promise<never> },
+			"tick",
+		).mockRejectedValue("raw string failure");
+		const escaped: unknown[] = [];
+		const trap = (reason: unknown) => escaped.push(reason);
+		process.on("unhandledRejection", trap);
+		try {
+			consumer.start();
+			await vi.waitFor(() =>
+				expect(warn).toHaveBeenCalledWith(
+					"Lead inbox tick escaped its boundary",
+					expect.objectContaining({ error: "raw string failure" }),
+				),
+			);
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(escaped).toHaveLength(0);
+		} finally {
+			process.off("unhandledRejection", trap);
+			consumer.stop();
+		}
+	});
+
+	it("a rejecting afterTickStarted returns {ok:false} without touching last_success_at", async () => {
+		const queue = makeQueue();
+		const consumer = loop(
+			queue,
+			{ deliverBatch: vi.fn(async (batch) => receipt(batch)) },
+			{
+				afterTickStarted: async () => {
+					throw new Error("seam blew up");
+				},
+			},
+		);
+		const result = await consumer.tick();
+		expect(result.ok).toBe(false);
+		expect(result.error).toBe("seam blew up");
+		expect(queue.getHeartbeat("lead-a")?.last_success_at ?? null).toBeNull();
+	});
+});

@@ -71,6 +71,16 @@ export interface LeadInboxLoopOptions {
 	afterTickStarted?: () => Promise<void>;
 }
 
+/**
+ * FLY-1599 (codex review HIGH): error serialization must be TOTAL. `throw null`
+ * / `throw "string"` are valid JavaScript rejection values, and
+ * `(error as Error).message` on them throws a TypeError INSIDE the catch block
+ * — escaping the very boundary the catch exists to seal.
+ */
+function describeError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 export class LeadInboxLoop {
 	private readonly activeIntervalMs: number;
 	private readonly idleIntervalMs: number;
@@ -147,19 +157,41 @@ export class LeadInboxLoop {
 	}
 
 	nextDelayMs(): number {
-		return this.opts.hasLiveSession() ||
-			this.opts.queue.countPending(this.opts.leadId) > 0
-			? this.activeIntervalMs
-			: this.idleIntervalMs;
+		// FLY-1599: countPending is synchronous SQL and this method is evaluated
+		// inside runAndSchedule's finally block. A SQLITE_BUSY here escaped through
+		// the finally and killed the process the same way a tick throw did. A wrong
+		// (idle) delay is recoverable; a dead Bridge is not.
+		try {
+			return this.opts.hasLiveSession() ||
+				this.opts.queue.countPending(this.opts.leadId) > 0
+				? this.activeIntervalMs
+				: this.idleIntervalMs;
+		} catch (error) {
+			this.opts.logger?.warn(
+				"Lead inbox nextDelayMs failed; using idle delay",
+				{
+					leadId: this.opts.leadId,
+					error: describeError(error),
+				},
+			);
+			return this.idleIntervalMs;
+		}
 	}
 
 	async tick(): Promise<LeadInboxTickResult> {
 		const startedAt = this.isoNow();
-		this.opts.queue.recordTickStarted(this.opts.leadId, startedAt);
-		await this.opts.afterTickStarted?.();
 		let protocolConsumed = 0;
 		let modelConsumed = 0;
 		try {
+			// FLY-1599: recordTickStarted is synchronous SQL. It used to run BEFORE
+			// this try block, so a SQLITE_BUSY during a lead-restart herd escaped
+			// tick() entirely, became an unhandled rejection on the floating
+			// runAndSchedule() promise, and killed the whole Bridge (captured stack:
+			// lead-inbox-queue.ts:2376 ← lead-inbox-loop.ts:158 ← Timeout._onTimeout,
+			// exit 1, 2026-08-02). Everything the tick does — including its own
+			// bookkeeping — must stay inside the tick boundary.
+			this.opts.queue.recordTickStarted(this.opts.leadId, startedAt);
+			await this.opts.afterTickStarted?.();
 			const receiptsEnabled = this.receiptFoundationEnabled();
 			if (
 				!this.opts.queue.acquireOrRenewOwner({
@@ -259,15 +291,16 @@ export class LeadInboxLoop {
 			this.opts.queue.recordTickSuccess(this.opts.leadId, this.isoNow());
 			return { ok: true, protocolConsumed, modelConsumed };
 		} catch (error) {
+			const message = describeError(error);
 			this.opts.logger?.warn("Lead inbox tick failed", {
 				leadId: this.opts.leadId,
-				error: (error as Error).message,
+				error: message,
 			});
 			return {
 				ok: false,
 				protocolConsumed,
 				modelConsumed,
-				error: (error as Error).message,
+				error: message,
 			};
 		}
 	}
@@ -369,6 +402,16 @@ export class LeadInboxLoop {
 		this.running = true;
 		try {
 			await this.tick();
+		} catch (error) {
+			// FLY-1599: belt-and-suspenders. tick() catches its own failures today,
+			// but this method runs as a floating promise (`void this.runAndSchedule()`
+			// from a timer), so ANY escape here is an unhandledRejection that takes
+			// down the entire Bridge — one lead's bad tick must never kill delivery
+			// for the whole fleet. Log and let the finally block reschedule.
+			this.opts.logger?.warn("Lead inbox tick escaped its boundary", {
+				leadId: this.opts.leadId,
+				error: describeError(error),
+			});
 		} finally {
 			this.running = false;
 			if (!this.stopped && this.nudgePending) {
