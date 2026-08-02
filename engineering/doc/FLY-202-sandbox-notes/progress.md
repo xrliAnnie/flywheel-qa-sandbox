@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 2/7
-updated: 2026-08-02T21:35:51.455Z
-nextStep: Write and self-review the implementation plan
+phaseCursor: 3/7
+updated: 2026-08-02T21:37:14.194Z
+nextStep: Request cross-family design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (2/7)
-**next**: Write and self-review the implementation plan
+**phase**: design (3/7)
+**next**: Request cross-family design review
