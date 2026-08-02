@@ -36,6 +36,8 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
+import { parse as parseToml } from "smol-toml";
 
 /** gh tokens are `[A-Za-z0-9_]`; `-` tolerated. Same charset the adapter and
  * codex-resume validate, so a token that passes here rides a TOML
@@ -409,6 +411,46 @@ export interface RenderCodexHomeConfigOptions {
 	skillDisableNames?: string[];
 }
 
+/** FLY-1604: fixed placeholder used during structural validation. Lexically
+ * equivalent to a TOKEN_RE-constrained token inside a TOML basic string, so
+ * the placeholder-rendered candidate parses iff the real-token render would.
+ * The live token must never enter the TOML parser — parser errors quote the
+ * offending line and its neighbors, which could be the credential line. */
+const TOKEN_PLACEHOLDER = "__FLYWHEEL_GH_TOKEN_PLACEHOLDER__";
+
+/** Literal `[shell_environment_policy.set]` header line (whitespace and a
+ * trailing comment tolerated). Anchor for the surgical merge ONLY — the
+ * parsed base, not this regex, decides conflict semantics (FLY-1604). */
+const SEP_SET_HEADER_RE =
+	/^[ \t]*\[[ \t]*shell_environment_policy[ \t]*\.[ \t]*set[ \t]*\][ \t]*(?:#.*)?$/gm;
+
+function isPlainTable(v: unknown): v is Record<string, unknown> {
+	return (
+		typeof v === "object" &&
+		v !== null &&
+		!Array.isArray(v) &&
+		!(v instanceof Date)
+	);
+}
+
+/** Parse TOML with sanitized failures (FLY-1604, Codex R1 HIGH-1): smol-toml
+ * errors embed the offending source line and its neighbors — potentially a
+ * credential line — so the raw parser message never propagates. */
+function parseTomlSanitized(
+	text: string,
+	stage: "base" | "rendered",
+): Record<string, unknown> {
+	try {
+		return parseToml(text) as Record<string, unknown>;
+	} catch {
+		throw new Error(
+			stage === "base"
+				? "renderCodexHomeConfig: base config.toml is not valid TOML — refusing to merge into an unparseable config (parser detail withheld: it may quote config or credential content)."
+				: "renderCodexHomeConfig: rendered config.toml would not be valid TOML — the base declares a shape this writer cannot legally extend (e.g. an inline table); refusing to write a corrupt config (parser detail withheld: it may quote config or credential content).",
+		);
+	}
+}
+
 /**
  * Render a per-runner config.toml = base config (the seeded global) + the
  * flywheel-managed GH_TOKEN block. WS-C delivery contract:
@@ -417,10 +459,15 @@ export interface RenderCodexHomeConfigOptions {
  *   injection identical to the old `-c shell_environment_policy.set.GH_TOKEN`,
  *   but off the argv.
  * - idempotent: any prior managed block is stripped before re-adding.
- * - fails LOUDLY if the base already declares `[shell_environment_policy]`
- *   (TOML forbids table redefinition) — that needs a real TOML-aware merge,
- *   which the current minimal writer intentionally does not do; the global
- *   config is verified not to declare it.
+ * - FLY-1604 TOML-aware merge: codex itself now writes a
+ *   `[shell_environment_policy.set]` table into the global config, so a base
+ *   declaring the table is a MERGE case, not a conflict — the sentinel-wrapped
+ *   GH_TOKEN keyline (headerless) is injected directly after the existing
+ *   literal header, where TOML scopes it to that table. The parsed base is
+ *   the semantic authority; genuinely unmergeable shapes (dotted/inline/
+ *   quoted definitions, a pre-existing GH_TOKEN, unparseable TOML) still
+ *   fail loudly — with sanitized messages that never quote the token or any
+ *   config source.
  */
 export function renderCodexHomeConfig(
 	baseToml: string,
@@ -436,53 +483,174 @@ export function renderCodexHomeConfig(
 			);
 		}
 	}
-	// Conservative TOML guard (R1 LOW #5): reject ANY non-comment line that
-	// declares the shell_environment_policy namespace — table header
-	// (`[shell_environment_policy...]`, incl. spaced), OR dotted/inline key
-	// (`shell_environment_policy.set... =`, `shell_environment_policy = {...}`).
-	// Without a full TOML parser this prevents emitting a duplicate/conflicting
-	// definition; the seeded global config is verified not to declare it.
-	if (
-		ghToken &&
-		/^[ \t]*(?:\[[ \t]*shell_environment_policy\b|shell_environment_policy[ \t]*[.=])/m.test(
-			base,
-		)
-	) {
+	// Defense in depth: provisionCodexHome validates too, but render is an
+	// exported seam — an arbitrary string must never ride into TOML here.
+	// Presence = `!== undefined`, NOT truthiness (Codex code R1 MED-1): a
+	// supplied "" must fail here, never half-render as an empty credential.
+	const hasToken = ghToken !== undefined;
+	if (hasToken && !TOKEN_RE.test(ghToken)) {
 		throw new Error(
-			"renderCodexHomeConfig: base config.toml already declares the " +
-				"shell_environment_policy namespace — TOML-aware merge required (the " +
-				"seeded global config changed unexpectedly); refusing to emit a " +
-				"conflicting definition.",
+			"renderCodexHomeConfig: ghToken must match ^[A-Za-z0-9_-]{1,255}$",
 		);
 	}
-	if (
-		skillDisableNames.length > 0 &&
-		/^[ \t]*(?:\[\[?[ \t]*skills\b|skills[ \t]*[.=])/m.test(base)
-	) {
-		throw new Error(
-			"renderCodexHomeConfig: base config.toml already declares the " +
-				"skills namespace — TOML-aware merge required; refusing to emit a " +
-				"conflicting definition.",
-		);
+	if (!hasToken && skillDisableNames.length === 0) {
+		// Pure passthrough — nothing injected, no parse, no new failure surface.
+		return base ? `${base}\n` : "";
 	}
 
-	const blocks: string[] = [];
-	if (ghToken) {
-		blocks.push(
-			`${MANAGED_BEGIN}\n[shell_environment_policy.set]\nGH_TOKEN = "${ghToken}"\n${MANAGED_END}`,
-		);
+	// FLY-1604: the parsed base is the semantic authority for mergeability.
+	// The old line-regex guards misclassified relative keys under other
+	// tables as root-namespace conflicts and missed quoted headers entirely
+	// (silent duplicate-table corruption caught only at codex startup).
+	const parsedBase = parseTomlSanitized(base, "base");
+
+	// GH_TOKEN strategy: surgical (inject after the unique literal
+	// [shell_environment_policy.set] header) when the base defines the set
+	// table; otherwise append the classic full block — the candidate parse
+	// below is the final judge of whether appending a fresh table header is
+	// legal (inline tables are immutable and fail there).
+	let surgicalAnchorEnd = -1;
+	if (hasToken) {
+		const sep = parsedBase.shell_environment_policy;
+		if (sep !== undefined && !isPlainTable(sep)) {
+			throw new Error(
+				"renderCodexHomeConfig: base config.toml defines shell_environment_policy as a non-table value — cannot merge; refusing to emit a conflicting definition.",
+			);
+		}
+		const sepSet = sep === undefined ? undefined : sep.set;
+		if (isPlainTable(sepSet)) {
+			if (Object.hasOwn(sepSet, "GH_TOKEN")) {
+				throw new Error(
+					"renderCodexHomeConfig: base config.toml already sets GH_TOKEN under shell_environment_policy.set — refusing to overwrite a non-flywheel-managed credential key.",
+				);
+			}
+			const anchors = [...base.matchAll(SEP_SET_HEADER_RE)];
+			const anchor = anchors.length === 1 ? anchors[0] : undefined;
+			if (!anchor) {
+				throw new Error(
+					"renderCodexHomeConfig: base config.toml defines the shell_environment_policy.set table without exactly one literal [shell_environment_policy.set] header (quoted, dotted, or inline definition) — cannot merge surgically; refusing to emit a conflicting definition.",
+				);
+			}
+			surgicalAnchorEnd = anchor.index + anchor[0].length;
+		} else if (sepSet !== undefined) {
+			throw new Error(
+				"renderCodexHomeConfig: base config.toml defines shell_environment_policy.set as a non-table value — cannot merge; refusing to emit a conflicting definition.",
+			);
+		}
+	}
+
+	// Skills strategy: appending [[skills.config]] elements is legal
+	// array-of-tables extension. Refuse a single-table skills.config and any
+	// name overlap — codex's duplicate-name resolution is unverified, and an
+	// effect-undefined config must not be written (FLY-1604 R1 MED-3).
+	let baseSkillsCount = 0;
+	if (skillDisableNames.length > 0) {
+		const skills = parsedBase.skills;
+		if (skills !== undefined && !isPlainTable(skills)) {
+			throw new Error(
+				"renderCodexHomeConfig: base config.toml defines skills as a non-table value — cannot merge; refusing to emit a conflicting definition.",
+			);
+		}
+		const cfg = skills === undefined ? undefined : skills.config;
+		if (cfg !== undefined) {
+			if (!Array.isArray(cfg)) {
+				throw new Error(
+					"renderCodexHomeConfig: base config.toml defines skills.config as a single table — cannot extend it as an array of tables; refusing to emit a conflicting definition.",
+				);
+			}
+			baseSkillsCount = cfg.length;
+			const baseNames = new Set(
+				cfg
+					.filter(isPlainTable)
+					.map((entry) => entry.name)
+					.filter((name): name is string => typeof name === "string"),
+			);
+			if (skillDisableNames.some((name) => baseNames.has(name))) {
+				throw new Error(
+					"renderCodexHomeConfig: base config.toml already declares [[skills.config]] entries for skill names flywheel would disable — codex duplicate-name resolution is undefined; refusing to emit an ambiguous config.",
+				);
+			}
+		}
+	}
+
+	// Deterministic builder (FLY-1604 R2 HIGH-1): candidate and final are
+	// BOTH built from the original base along the same already-decided path;
+	// the token value only ever lands on the managed GH_TOKEN line. No
+	// global substitution — base bytes that happen to contain the
+	// placeholder string stay untouched.
+	const buildRendered = (tokenValue?: string): string => {
+		let body = base;
+		const blocks: string[] = [];
+		if (tokenValue !== undefined) {
+			if (surgicalAnchorEnd >= 0) {
+				body = `${base.slice(0, surgicalAnchorEnd)}\n${MANAGED_BEGIN}\nGH_TOKEN = "${tokenValue}"\n${MANAGED_END}${base.slice(surgicalAnchorEnd)}`;
+			} else {
+				blocks.push(
+					`${MANAGED_BEGIN}\n[shell_environment_policy.set]\nGH_TOKEN = "${tokenValue}"\n${MANAGED_END}`,
+				);
+			}
+		}
+		if (skillDisableNames.length > 0) {
+			const entries = skillDisableNames.map(
+				(name) => `[[skills.config]]\nname = "${name}"\nenabled = false`,
+			);
+			blocks.push(
+				`${MANAGED_SKILLS_BEGIN}\n${entries.join("\n\n")}\n${MANAGED_SKILLS_END}`,
+			);
+		}
+		if (blocks.length === 0) return body ? `${body}\n` : "";
+		const managed = blocks.join("\n\n");
+		return body ? `${body}\n\n${managed}\n` : `${managed}\n`;
+	};
+
+	// Validate the placeholder-rendered candidate BEFORE materializing the
+	// real token (the live token never enters the parser).
+	const candidate = buildRendered(hasToken ? TOKEN_PLACEHOLDER : undefined);
+	const parsedOut = parseTomlSanitized(candidate, "rendered");
+	if (hasToken) {
+		const outSep = parsedOut.shell_environment_policy;
+		const outSet = isPlainTable(outSep) ? outSep.set : undefined;
+		if (!isPlainTable(outSet) || outSet.GH_TOKEN !== TOKEN_PLACEHOLDER) {
+			throw new Error(
+				"renderCodexHomeConfig: internal invariant violated — rendered config does not carry the managed GH_TOKEN entry; refusing to write.",
+			);
+		}
+		const outRest: Record<string, unknown> = { ...outSet };
+		delete outRest.GH_TOKEN;
+		const baseSep = parsedBase.shell_environment_policy;
+		const baseSet =
+			isPlainTable(baseSep) && isPlainTable(baseSep.set) ? baseSep.set : {};
+		if (!isDeepStrictEqual(outRest, baseSet)) {
+			throw new Error(
+				"renderCodexHomeConfig: internal invariant violated — merging GH_TOKEN would alter pre-existing shell_environment_policy.set entries; refusing to write.",
+			);
+		}
 	}
 	if (skillDisableNames.length > 0) {
-		const entries = skillDisableNames.map(
-			(name) => `[[skills.config]]\nname = "${name}"\nenabled = false`,
-		);
-		blocks.push(
-			`${MANAGED_SKILLS_BEGIN}\n${entries.join("\n\n")}\n${MANAGED_SKILLS_END}`,
-		);
+		const outSkills = parsedOut.skills;
+		const outCfg = isPlainTable(outSkills) ? outSkills.config : undefined;
+		if (!Array.isArray(outCfg)) {
+			throw new Error(
+				"renderCodexHomeConfig: internal invariant violated — rendered config does not carry the managed [[skills.config]] entries; refusing to write.",
+			);
+		}
+		for (const name of skillDisableNames) {
+			const matches = outCfg.filter(
+				(entry) => isPlainTable(entry) && entry.name === name,
+			);
+			if (matches.length !== 1 || matches[0].enabled !== false) {
+				throw new Error(
+					"renderCodexHomeConfig: internal invariant violated — a managed skill-disable entry is missing or duplicated in the rendered config; refusing to write.",
+				);
+			}
+		}
+		if (outCfg.length !== baseSkillsCount + skillDisableNames.length) {
+			throw new Error(
+				"renderCodexHomeConfig: internal invariant violated — rendered skills.config entry count drifted from base plus managed entries; refusing to write.",
+			);
+		}
 	}
-	if (blocks.length === 0) return base ? `${base}\n` : "";
-	const managed = blocks.join("\n\n");
-	return base ? `${base}\n\n${managed}\n` : `${managed}\n`;
+	return buildRendered(ghToken);
 }
 
 export interface ProvisionCodexHomeOptions {

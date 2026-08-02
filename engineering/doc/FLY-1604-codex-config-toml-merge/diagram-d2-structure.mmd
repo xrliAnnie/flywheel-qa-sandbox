@@ -1,0 +1,16 @@
+flowchart TB
+    subgraph SRC["全局 ~/.codex/config.toml (Codex 的家, 我们只读不改)"]
+        S1["其他 900 多行配置<br/>(模型、沙箱、信任级别…)"]
+        S2["[shell_environment_policy.set] 表<br/>BROWSER_USE_… = …<br/>NODE_REPL_… = … ×2<br/>← Codex 自己写的三个键"]
+    end
+    SRC -- "每次开工人时<br/>整份复制为底稿" --> O1
+    subgraph OUT["每个工人的专属 config.toml (合并后的产物)"]
+        O1["底稿原文, 逐字节保留"]
+        O2["[shell_environment_policy.set] ← 原有表头, 不动"]
+        O3["flywheel-managed 起始标记行<br/>GH_TOKEN = ●●●<br/>flywheel-managed 结束标记行<br/>← 只新插这三行"]
+        O4["Codex 的三个键, 原样在表内"]
+        O1 --- O2
+        O2 --- O3
+        O3 --- O4
+    end
+    O4 -- "标记让重复渲染可识别:<br/>先剥掉旧标记块再重插<br/>= 永不重复、可干净移除" --> IDEM["幂等 + 可撤销"]

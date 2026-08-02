@@ -16,6 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse as parseToml } from "smol-toml";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	codexHomeDir,
@@ -132,17 +133,17 @@ describe("renderCodexHomeConfig (WS-C delivery)", () => {
 		expect(scrubbed).toContain('model = "gpt-5-codex"');
 	});
 
-	it("fails loudly if base declares the shell_environment_policy namespace — table, dotted-key, inline, or spaced (R1 #5)", () => {
+	it("FLY-1604 fails loudly ONLY on unmergeable shell_environment_policy shapes — root dotted key or inline table (rewrite of R1 #5)", () => {
+		// Root-level dotted/inline definitions must sit BEFORE any [table]
+		// header — appended after one they would be relative keys inside that
+		// table (exactly the false-positive class the root-aware merge fixed).
 		const variants = [
-			`${GLOBAL_CONFIG}\n[shell_environment_policy]\ninherit = "core"\n`,
-			`${GLOBAL_CONFIG}\n[shell_environment_policy.set]\nFOO = "bar"\n`,
-			`${GLOBAL_CONFIG}\nshell_environment_policy.set.FOO = "bar"\n`,
-			`${GLOBAL_CONFIG}\nshell_environment_policy = { set = { FOO = "bar" } }\n`,
-			`${GLOBAL_CONFIG}\n[ shell_environment_policy ]\ninherit = "core"\n`,
+			`shell_environment_policy.set.FOO = "bar"\n${GLOBAL_CONFIG}`,
+			`shell_environment_policy = { set = { FOO = "bar" } }\n${GLOBAL_CONFIG}`,
 		];
 		for (const base of variants) {
 			expect(() => renderCodexHomeConfig(base, TOKEN)).toThrow(
-				/shell_environment_policy namespace/,
+				/shell_environment_policy/,
 			);
 		}
 		// A comment mentioning it must NOT trip the guard.
@@ -186,18 +187,19 @@ describe("renderCodexHomeConfig (WS-C delivery)", () => {
 		);
 	});
 
-	it("FLY-1395 fails loudly when base config already declares the skills namespace", () => {
-		for (const declaration of [
-			"[skills]",
-			"[[skills.config]]",
-			'skills.config = [{ name = "x", enabled = true }]',
-			"skills = { config = [] }",
+	it("FLY-1604 fails loudly ONLY on unmergeable skills shapes — single table, dotted-inline array, inline table (rewrite of FLY-1395 guard)", () => {
+		// Header form may sit anywhere; root dotted/inline forms must sit
+		// BEFORE any [table] header to actually be root-level definitions.
+		for (const base of [
+			`${GLOBAL_CONFIG}\n[skills.config]\nname = "x"\n`,
+			`skills.config = [{ name = "x", enabled = true }]\n${GLOBAL_CONFIG}`,
+			`skills = { config = [] }\n${GLOBAL_CONFIG}`,
 		]) {
 			expect(() =>
-				renderCodexHomeConfig(`${GLOBAL_CONFIG}\n${declaration}\n`, TOKEN, {
+				renderCodexHomeConfig(base, TOKEN, {
 					skillDisableNames: ["superpowers:brainstorming"],
 				}),
-			).toThrow(/skills namespace/);
+			).toThrow(/skills|valid TOML/);
 		}
 		expect(() =>
 			renderCodexHomeConfig(
@@ -214,6 +216,268 @@ describe("renderCodexHomeConfig (WS-C delivery)", () => {
 				skillDisableNames: ['superpowers:bad"\nenabled = true'],
 			}),
 		).toThrow(/invalid Codex skill name/);
+	});
+});
+
+describe("renderCodexHomeConfig — FLY-1604 TOML-aware merge", () => {
+	const MANAGED_BEGIN =
+		"# >>> flywheel-managed credential (FLY-123) — do not edit >>>";
+	const MANAGED_END = "# <<< flywheel-managed credential (FLY-123) <<<";
+	const PLACEHOLDER = "__FLYWHEEL_GH_TOKEN_PLACEHOLDER__";
+	const CODEX_KEYS = `BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "41e1151f1e50f096c7561da32bb01123e74b6ecdd38f081e34da30091fc4f193,6d25aa7656feac858f3a3bdaea5bcbab0dbfd426c9de8e6931ce90c399ee8e4f"
+NODE_REPL_TRUSTED_CODE_PATHS = "/Users/x/.codex"`;
+	// Mirrors the real 2026-08-01 incident: codex itself wrote a
+	// [shell_environment_policy.set] table into the global config.
+	const SEP_CONFLICT_CONFIG = `${GLOBAL_CONFIG}
+[shell_environment_policy.set]
+${CODEX_KEYS}
+`;
+
+	function sepSet(out: string): Record<string, unknown> {
+		const parsed = parseToml(out) as Record<
+			string,
+			Record<string, Record<string, unknown>>
+		>;
+		return parsed.shell_environment_policy.set;
+	}
+
+	it("T1 merges GH_TOKEN into the existing [shell_environment_policy.set] table (real incident shape)", () => {
+		const out = renderCodexHomeConfig(SEP_CONFLICT_CONFIG, TOKEN);
+		const set = sepSet(out);
+		expect(Object.keys(set).sort()).toEqual([
+			"BROWSER_USE_AVAILABLE_BACKENDS",
+			"GH_TOKEN",
+			"NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S",
+			"NODE_REPL_TRUSTED_CODE_PATHS",
+		]);
+		expect(set.GH_TOKEN).toBe(TOKEN);
+		expect(set.BROWSER_USE_AVAILABLE_BACKENDS).toBe("chrome,iab");
+		// codex's own lines survive byte-for-byte
+		for (const line of CODEX_KEYS.split("\n")) {
+			expect(out).toContain(line);
+		}
+		// the sentinel-wrapped keyline sits directly after the existing header
+		expect(out).toContain(
+			`[shell_environment_policy.set]\n${MANAGED_BEGIN}\nGH_TOKEN = "${TOKEN}"\n${MANAGED_END}\nBROWSER_USE_AVAILABLE_BACKENDS`,
+		);
+		// placeholder must not leak into the final artifact (base has none)
+		expect(out).not.toContain(PLACEHOLDER);
+	});
+
+	it("T2 merge path is idempotent — re-render does not stack", () => {
+		const once = renderCodexHomeConfig(SEP_CONFLICT_CONFIG, TOKEN);
+		const twice = renderCodexHomeConfig(once, TOKEN);
+		expect(twice).toBe(once);
+		expect(once.match(/GH_TOKEN/g)).toHaveLength(1);
+		expect(once.match(/flywheel-managed credential/g)).toHaveLength(2);
+	});
+
+	it("T3 merge path scrub — re-render without token restores base verbatim", () => {
+		const merged = renderCodexHomeConfig(SEP_CONFLICT_CONFIG, TOKEN);
+		const scrubbed = renderCodexHomeConfig(merged);
+		expect(scrubbed).toBe(`${SEP_CONFLICT_CONFIG.trimEnd()}\n`);
+		expect(scrubbed).not.toContain("GH_TOKEN");
+		expect(scrubbed).not.toContain("flywheel-managed credential");
+	});
+
+	it("T4 refuses to overwrite a pre-existing non-managed GH_TOKEN", () => {
+		const base = `${GLOBAL_CONFIG}\n[shell_environment_policy.set]\nGH_TOKEN = "someone_elses_token"\n`;
+		expect(() => renderCodexHomeConfig(base, TOKEN)).toThrow(
+			/refusing to overwrite/,
+		);
+	});
+
+	it("T6 quoted header defining the set table is unmergeable — fail loud (old code silently corrupted)", () => {
+		const base = `${GLOBAL_CONFIG}\n["shell_environment_policy".set]\nFOO = "bar"\n`;
+		expect(() => renderCodexHomeConfig(base, TOKEN)).toThrow(
+			/shell_environment_policy/,
+		);
+	});
+
+	it("T7 parent-table-only base gets the appended block (legal sub-table)", () => {
+		for (const header of [
+			"[shell_environment_policy]",
+			"[ shell_environment_policy ]",
+		]) {
+			const base = `${GLOBAL_CONFIG}\n${header}\ninherit = "core"\n`;
+			const out = renderCodexHomeConfig(base, TOKEN);
+			const parsed = parseToml(out) as Record<string, Record<string, unknown>>;
+			expect(parsed.shell_environment_policy.inherit).toBe("core");
+			expect(sepSet(out).GH_TOKEN).toBe(TOKEN);
+		}
+	});
+
+	it("T8 sibling sub-table shapes are mergeable — bracket and root-dotted (root-aware, R1-HIGH-2)", () => {
+		// Bracket header may sit anywhere; the root-dotted sibling must sit
+		// BEFORE any [table] header to actually be root-level.
+		for (const base of [
+			`${GLOBAL_CONFIG}\n[shell_environment_policy.exclude]\nFOO = "x"\n`,
+			`shell_environment_policy.exclude.FOO = "x"\n${GLOBAL_CONFIG}`,
+		]) {
+			const out = renderCodexHomeConfig(base, TOKEN);
+			const parsed = parseToml(out) as Record<
+				string,
+				Record<string, Record<string, unknown>>
+			>;
+			expect(parsed.shell_environment_policy.exclude.FOO).toBe("x");
+			expect(sepSet(out).GH_TOKEN).toBe(TOKEN);
+		}
+	});
+
+	it("T9 relative same-name key under another table is NOT the root namespace — mergeable", () => {
+		const base = `${GLOBAL_CONFIG}\n[other]\nshell_environment_policy.foo = "x"\n`;
+		const out = renderCodexHomeConfig(base, TOKEN);
+		const parsed = parseToml(out) as Record<
+			string,
+			Record<string, Record<string, unknown>>
+		>;
+		expect(parsed.other.shell_environment_policy.foo).toBe("x");
+		expect(sepSet(out).GH_TOKEN).toBe(TOKEN);
+	});
+
+	it("T10 invalid TOML base fails loud before write when injecting", () => {
+		expect(() =>
+			renderCodexHomeConfig("this = is [not valid\ntoml ===", TOKEN),
+		).toThrow(/not valid TOML/);
+	});
+
+	it("T11 thrown errors never carry the token or base source fragments", () => {
+		const canary = "ZQ9_SOURCE_CANARY_77";
+		const throwers = [
+			`${GLOBAL_CONFIG}\n[shell_environment_policy.set]\nGH_TOKEN = "${canary}"\n`,
+			`${GLOBAL_CONFIG}\n["shell_environment_policy".set]\nFOO = "${canary}"\n`,
+			`shell_environment_policy = { set = { FOO = "${canary}" } }\n${GLOBAL_CONFIG}`,
+			`broken toml ${canary} ===`,
+		];
+		for (const base of throwers) {
+			let message = "";
+			try {
+				renderCodexHomeConfig(base, TOKEN);
+			} catch (err) {
+				message = err instanceof Error ? err.message : String(err);
+			}
+			expect(message).not.toBe("");
+			expect(message).not.toContain(TOKEN);
+			expect(message).not.toContain(canary);
+		}
+	});
+
+	it("T12 preservation check survives non-primitive base values (deep compare, not ===)", () => {
+		const base = `${GLOBAL_CONFIG}\n[shell_environment_policy.set]\nFOO = "bar"\nEXTRA_ARR = ["a", "b"]\n`;
+		const out = renderCodexHomeConfig(base, TOKEN);
+		const set = sepSet(out);
+		expect(set.EXTRA_ARR).toEqual(["a", "b"]);
+		expect(set.GH_TOKEN).toBe(TOKEN);
+		expect(out).toContain('EXTRA_ARR = ["a", "b"]');
+	});
+
+	it("T12b base bytes containing the placeholder literal survive verbatim (no global substitution, R2-HIGH-1)", () => {
+		const base = `${GLOBAL_CONFIG}
+# comment mentions ${PLACEHOLDER} here
+[shell_environment_policy.set]
+LOOKALIKE = "${PLACEHOLDER}"
+${CODEX_KEYS}
+
+[unrelated]
+note = "${PLACEHOLDER}"
+`;
+		const out = renderCodexHomeConfig(base, TOKEN);
+		// exactly the base's 3 placeholder occurrences — the managed line took
+		// the real token, and no base byte was substituted
+		expect(out.match(new RegExp(PLACEHOLDER, "g"))).toHaveLength(3);
+		expect(out).toContain(`LOOKALIKE = "${PLACEHOLDER}"`);
+		expect(out).toContain(`note = "${PLACEHOLDER}"`);
+		expect(out).toContain(`# comment mentions ${PLACEHOLDER} here`);
+		expect(out).toContain(`GH_TOKEN = "${TOKEN}"`);
+		expect(sepSet(out).LOOKALIKE).toBe(PLACEHOLDER);
+	});
+
+	it("T13 skills: base [[skills.config]] entries extend as array-of-tables (no overlap)", () => {
+		const base = `${GLOBAL_CONFIG}\n[[skills.config]]\nname = "existing:skill"\nenabled = true\n`;
+		const out = renderCodexHomeConfig(base, TOKEN, {
+			skillDisableNames: ["superpowers:brainstorming"],
+		});
+		const parsed = parseToml(out) as Record<
+			string,
+			Record<string, Array<Record<string, unknown>>>
+		>;
+		const cfg = parsed.skills.config;
+		expect(cfg).toHaveLength(2);
+		expect(cfg[0]).toEqual({ name: "existing:skill", enabled: true });
+		expect(cfg[1]).toEqual({
+			name: "superpowers:brainstorming",
+			enabled: false,
+		});
+	});
+
+	it("T14 skills: [skills] table, [skills.other] sub-table, and relative keys stay mergeable (root-aware)", () => {
+		for (const decl of [
+			"[skills]\nfoo = 1",
+			'[skills.other]\nfoo = "x"',
+			'[other]\nskills.foo = "x"',
+		]) {
+			const out = renderCodexHomeConfig(`${GLOBAL_CONFIG}\n${decl}\n`, TOKEN, {
+				skillDisableNames: ["superpowers:brainstorming"],
+			});
+			const parsed = parseToml(out) as Record<
+				string,
+				Record<string, Array<Record<string, unknown>>>
+			>;
+			expect(parsed.skills.config).toHaveLength(1);
+		}
+	});
+
+	it("T16 an empty-string token fails the boundary check — with and without skills (Codex code R1 MED-1)", () => {
+		// "" is present-but-invalid: truthiness must not silently drop it (no
+		// skills) or half-render an empty credential block (with skills).
+		expect(() => renderCodexHomeConfig(GLOBAL_CONFIG, "")).toThrow(
+			/ghToken must match/,
+		);
+		let message = "";
+		try {
+			renderCodexHomeConfig(GLOBAL_CONFIG, "", {
+				skillDisableNames: ["superpowers:brainstorming"],
+			});
+		} catch (err) {
+			message = err instanceof Error ? err.message : String(err);
+		}
+		expect(message).toMatch(/ghToken must match/);
+		expect(message).not.toContain('GH_TOKEN = ""');
+	});
+
+	it("T17 rendered-candidate parse failure uses the sanitized classification message (Codex code R1 LOW-2)", () => {
+		// Inline parent WITHOUT a set sub-table passes every precheck (sep is a
+		// plain table, set undefined → append path) but the appended
+		// [shell_environment_policy.set] header cannot extend an immutable
+		// inline table — the failure surfaces ONLY at the rendered-stage parse.
+		const canary = "ZQ9_RENDERED_CANARY_31";
+		const base = `shell_environment_policy = { exclude = { SECRET = "${canary}" } }\n${GLOBAL_CONFIG}`;
+		let message = "";
+		try {
+			renderCodexHomeConfig(base, TOKEN);
+		} catch (err) {
+			message = err instanceof Error ? err.message : String(err);
+		}
+		// EXACT equality (Codex code R2 LOW-1): a prefix `toContain` stays green
+		// when raw parser text is appended after the fixed message — the
+		// sanitization contract is "this fixed string and nothing else".
+		expect(message).toBe(
+			"renderCodexHomeConfig: rendered config.toml would not be valid TOML — the base declares a shape this writer cannot legally extend (e.g. an inline table); refusing to write a corrupt config (parser detail withheld: it may quote config or credential content).",
+		);
+		expect(message).not.toContain(TOKEN);
+		expect(message).not.toContain(canary);
+	});
+
+	it("T15 skills: name overlap with base entries fails loud regardless of enabled value", () => {
+		for (const enabled of ["true", "false"]) {
+			const base = `${GLOBAL_CONFIG}\n[[skills.config]]\nname = "superpowers:brainstorming"\nenabled = ${enabled}\n`;
+			expect(() =>
+				renderCodexHomeConfig(base, TOKEN, {
+					skillDisableNames: ["superpowers:brainstorming"],
+				}),
+			).toThrow(/duplicate-name|ambiguous/);
+		}
 	});
 });
 

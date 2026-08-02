@@ -89,6 +89,9 @@ importers:
       fs-extra:
         specifier: ^11.3.2
         version: 11.3.2
+      smol-toml:
+        specifier: ^1.6.1
+        version: 1.6.1
       ws:
         specifier: ^8.19.0
         version: 8.19.0
