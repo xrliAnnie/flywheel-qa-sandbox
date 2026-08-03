@@ -76,6 +76,8 @@ export interface PrMergeInfo {
 	mergeCommitOid?: string;
 	/** The PR branch head at merge time (path 2 exact-match validation). */
 	headRefOid?: string;
+	/** Bounded raw provider value retained for diagnostics and REST fallback. */
+	rawHeadRefOid?: string;
 }
 
 /**
@@ -109,16 +111,26 @@ export async function checkPrMergeViaGh(
 			mergeCommit?: { oid?: string } | null;
 			headRefOid?: string;
 		};
-		const headRefOid = parsed.headRefOid?.toLowerCase();
+		const rawHeadRefOid = parsed.headRefOid?.slice(0, 80);
+		const normalizedHead = parsed.headRefOid?.toLowerCase();
+		const headRefOid =
+			normalizedHead && /^[0-9a-f]{40}$/.test(normalizedHead)
+				? normalizedHead
+				: undefined;
 		if (parsed.mergedAt || parsed.state === "MERGED") {
 			return {
 				state: "merged",
 				mergeCommitOid: parsed.mergeCommit?.oid?.toLowerCase(),
 				headRefOid,
+				rawHeadRefOid,
 			};
 		}
-		if (parsed.state === "CLOSED") return { state: "closed", headRefOid };
-		if (parsed.state === "OPEN") return { state: "open", headRefOid };
+		if (parsed.state === "CLOSED") {
+			return { state: "closed", headRefOid, rawHeadRefOid };
+		}
+		if (parsed.state === "OPEN") {
+			return { state: "open", headRefOid, rawHeadRefOid };
+		}
 		return { state: "unknown" };
 	} catch {
 		return { state: "unknown" };

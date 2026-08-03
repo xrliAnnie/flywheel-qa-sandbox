@@ -657,7 +657,10 @@ import {
 } from "./workflow-rework-coordinator.js";
 import { drainWorkflowRouteReminders } from "./workflow-route-reminder-drain.js";
 import { createWorkflowShadowRuntimeFromEnv } from "./workflow-shadow-writer.js";
-import { createWorkflowShipReadyArm } from "./workflow-ship-ready-arm.js";
+import {
+	createWorkflowShipReadyArm,
+	enrichPrHeadViaGh,
+} from "./workflow-ship-ready-arm.js";
 import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
 import {
 	createWorkKindCutoverRouter,
@@ -5583,6 +5586,7 @@ export async function startBridge(
 			projects.find((project) => project.projectName === projectName)
 				?.projectRoot,
 		checkPrMerge: checkPrMergeViaGh,
+		enrichPrHead: enrichPrHeadViaGh,
 		log: (message) => console.warn(`[workflow-ship-ready] ${message}`),
 	});
 	const probeUnlaunchedExternalEvidence = async (

@@ -309,8 +309,17 @@ fail_preflight() {
   || fail_preflight "LINEAR_API_KEY not set (required for /api/runs/start PreHydrator)"
 gh auth status >/dev/null 2>&1 \
   || fail_preflight "gh CLI not authenticated (required for Runner gh pr create)"
-gh repo view "$SANDBOX_SLUG" >/dev/null 2>&1 \
-  || fail_preflight "sandbox repo ${SANDBOX_SLUG} missing. Run: gh repo fork xrliAnnie/flywheel --fork-name flywheel-qa-sandbox --clone=false"
+# FLY-1620: use the REST endpoint, not `gh repo view` (which goes through
+# GraphQL). Runners burn the GraphQL hourly quota with ordinary `gh pr`
+# traffic; when it hits 0 this check failed and reported the sandbox as
+# MISSING — sending the operator to run a fork command that cannot even
+# succeed (a user cannot fork their own repo). REST has its own quota.
+if ! gh api "repos/${SANDBOX_SLUG}" >/dev/null 2>&1; then
+  if ! gh api rate_limit --jq '.resources.core.remaining' >/dev/null 2>&1; then
+    fail_preflight "cannot reach the GitHub API (network or auth). Sandbox repo ${SANDBOX_SLUG} was NOT checked — this is not evidence that it is missing."
+  fi
+  fail_preflight "sandbox repo ${SANDBOX_SLUG} is not reachable with the current gh auth. Verify it exists and that this token can see it: gh api repos/${SANDBOX_SLUG}"
+fi
 # Runner needs to 'git push + gh pr create' into the sandbox. Read-only access
 # means the whole real-Runner flow fails after clone. Fail fast so the operator
 # fixes gh auth scopes / fork permissions before we start rebuilding anything.

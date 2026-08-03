@@ -529,24 +529,134 @@ export class WorkflowEngineDispatcher {
 			return;
 		}
 		for (const candidate of candidates) {
-			const probe = probes.get(candidate.questionId);
-			if (probe?.state !== "merged") continue;
-			const mergedHead = probe.headRefOid?.trim().toLowerCase();
-			if (!mergedHead || mergedHead !== candidate.subjectDigest.toLowerCase()) {
-				this.log(
-					`runner-ship merged head held for ${candidate.questionId}: expected ${candidate.subjectDigest}, observed ${mergedHead ?? "missing"}`,
-				);
-				continue;
-			}
 			try {
-				if (candidate.holderState !== "approved") {
-					store.recordRunnerShipRogueMerge({
+				const alertIdentity = this.resolveRunAlertIdentity(
+					candidate.projectName,
+					candidate.issueId,
+					candidate.runId,
+				);
+				if (candidate.authority.status === "authority_conflict") {
+					store.recordRunnerShipAuthorityConflict({
 						questionId: candidate.questionId,
-						alertIdentity: this.resolveRunAlertIdentity(
-							candidate.projectName,
-							candidate.issueId,
-							candidate.runId,
-						),
+						expectedDigest: candidate.authority.digest,
+						alertIdentity,
+						now,
+					});
+					continue;
+				}
+				if (candidate.observationConflict) {
+					store.recordRunnerShipMergedObservationConflict({
+						questionId: candidate.questionId,
+						fingerprint: candidate.observationConflict.fingerprint,
+						expectedDigest: candidate.observationConflict.digest,
+						conflictingHeads: candidate.observationConflict.conflictingHeads,
+						alertIdentity,
+						now,
+					});
+					continue;
+				}
+				const probe = probes.get(candidate.questionId);
+				if (!probe) continue;
+				if (
+					probe.failure?.notify &&
+					candidate.authority.status === "resolved" &&
+					candidate.fingerprint
+				) {
+					if (
+						probe.failure.kind === "hydration_revalidation" &&
+						candidate.mergedObserved?.status === "valid"
+					) {
+						store.recordRunnerShipHydrationRevalidationFailure({
+							questionId: candidate.questionId,
+							fingerprint: candidate.fingerprint,
+							expectedHydratedHead: candidate.mergedObserved.headSha,
+							error: probe.failure.reason,
+							alertIdentity,
+							now,
+						});
+					}
+				}
+				if (probe.state !== "merged") continue;
+				const mergedHead = probe.headRefOid?.trim().toLowerCase();
+				if (candidate.authority.status === "legacy_missing") {
+					const anomaly = !mergedHead
+						? ("head_unavailable" as const)
+						: mergedHead !== candidate.subjectDigest.toLowerCase()
+							? ("head_mismatch" as const)
+							: candidate.holderState !== "approved"
+								? ("rogue_before_approval" as const)
+								: ("legacy_completion_blocked" as const);
+					store.recordRunnerShipLegacyMergeAnomaly({
+						questionId: candidate.questionId,
+						expectedHolderState: candidate.holderState,
+						expectedHolderHead: candidate.subjectDigest,
+						observed: {
+							prNumber: candidate.authority.prNumber,
+							mergedHead: mergedHead ?? null,
+							...(probe.rawHeadRefOid !== undefined
+								? { rawHeadRefOid: probe.rawHeadRefOid }
+								: {}),
+							anomaly,
+						},
+						alertIdentity,
+						now,
+					});
+					continue;
+				}
+				if (candidate.authority.status !== "resolved") continue;
+				if (probe.evidence !== "current" && probe.evidence !== "verified") {
+					continue;
+				}
+				const persisted = store.recordRunnerShipMergedObserved({
+					questionId: candidate.questionId,
+					expectedHolderState: candidate.holderState,
+					expectedHolderHead: candidate.subjectDigest,
+					expectedAuthority: candidate.authority,
+					mergedHead: mergedHead ?? null,
+					...(probe.rawHeadRefOid !== undefined
+						? { rawHeadRefOid: probe.rawHeadRefOid }
+						: {}),
+					alertIdentity,
+					now,
+				});
+				if (
+					persisted.status === "candidate_changed" ||
+					persisted.status === "quarantined"
+				) {
+					continue;
+				}
+				if (!mergedHead) {
+					if (
+						probe.failure?.notify &&
+						probe.failure.kind === "head_enrichment" &&
+						candidate.fingerprint
+					) {
+						store.recordRunnerShipHeadEnrichmentFailure({
+							questionId: candidate.questionId,
+							fingerprint: candidate.fingerprint,
+							error: probe.failure.reason,
+							alertIdentity,
+							now,
+						});
+					}
+					continue;
+				}
+				const deadEndKind =
+					mergedHead !== candidate.subjectDigest.toLowerCase()
+						? ("head_mismatch" as const)
+						: candidate.holderState !== "approved"
+							? ("rogue_before_approval" as const)
+							: undefined;
+				if (deadEndKind) {
+					store.recordRunnerShipMergeDeadEnd({
+						questionId: candidate.questionId,
+						expectedHolderState: candidate.holderState,
+						expectedHolderHead: candidate.subjectDigest,
+						expectedAuthority: candidate.authority,
+						expectedObservationHead: mergedHead,
+						mergedHead,
+						deadEndKind,
+						alertIdentity,
 						now,
 					});
 					continue;
@@ -554,6 +664,11 @@ export class WorkflowEngineDispatcher {
 				const completed = store.completeWorkflowGateRunAfterShip({
 					questionId: candidate.questionId,
 					mergedHead,
+					expectedHolderState: candidate.holderState,
+					expectedHolderHead: candidate.subjectDigest,
+					expectedObservationHead: mergedHead,
+					observedAuthority: candidate.authority,
+					alertIdentity,
 					now,
 				});
 				if (!completed.ok) {

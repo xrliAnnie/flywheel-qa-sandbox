@@ -45,12 +45,45 @@ export type WorkflowRunnerShipMergeCandidate = {
 	subjectDigest: string;
 	sourceExecutionId: string;
 	gateOpenedAt: string;
+	authority: WorkflowRunnerShipAuthorityResolution;
+	fingerprint?: string;
+	mergedObserved?:
+		| { status: "valid"; headSha: string }
+		| { status: "needs_rest" };
+	observationConflict?: {
+		fingerprint: string;
+		digest: string;
+		conflictingHeads: string[];
+	};
+	/** Compatibility projection for legacy call sites while authority migrates. */
 	prNumber?: number;
 };
+
+export type WorkflowRunnerShipResolvedAuthority = {
+	status: "resolved";
+	repoIdentity: string;
+	probeRepoSlug: string;
+	prNumber: number;
+	source: "ship_target" | "node_binding" | "ship_target_session";
+};
+
+export type WorkflowRunnerShipAuthorityResolution =
+	| WorkflowRunnerShipResolvedAuthority
+	| { status: "legacy_missing"; prNumber: number }
+	| { status: "authority_conflict"; digest: string }
+	| { status: "unavailable" };
 
 export type WorkflowRunnerShipMergeProbe = {
 	state: "merged" | "closed" | "open" | "unknown";
 	headRefOid?: string;
+	rawHeadRefOid?: string;
+	evidence?: "current" | "verified" | "hydrated_unverified";
+	fingerprint?: string;
+	failure?: {
+		kind: "head_enrichment" | "hydration_revalidation";
+		reason: string;
+		notify: boolean;
+	};
 };
 
 export type ShipReadyMarkerPayload = {

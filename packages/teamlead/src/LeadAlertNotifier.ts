@@ -394,7 +394,14 @@ export interface AlertMetadata {
 			| "ship_ready_stalled"
 			| "ship_ready_delivery_failed"
 			| "gate_carrier_unbound"
-			| "runner_ship_merged_before_approval";
+			| "runner_ship_merged_before_approval"
+			| "runner_ship_merged_head_mismatch"
+			| "runner_ship_completion_failure"
+			| "runner_ship_legacy_merge_anomaly"
+			| "runner_ship_head_enrichment_failed"
+			| "runner_ship_hydration_reval_failed"
+			| "runner_ship_authority_conflict"
+			| "observation_corrupt";
 		launchCount?: number;
 		maxBlindReplacements?: number;
 		outputExistsForAttempt?: boolean;

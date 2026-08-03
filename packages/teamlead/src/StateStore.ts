@@ -61,7 +61,9 @@ import {
 } from "./workflow-run-snapshot.js";
 import {
 	type ShipReadyMarkerPayload,
+	type WorkflowRunnerShipAuthorityResolution,
 	type WorkflowRunnerShipMergeCandidate,
+	type WorkflowRunnerShipResolvedAuthority,
 	type WorkflowShipReadyNotice,
 	workflowShipReadyUid,
 } from "./workflow-ship-ready.js";
@@ -85,6 +87,18 @@ import { isOperationalTerminalStatus } from "./operational-terminal-status.js";
 
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
+
+type RunnerShipObservationProjection =
+	| { status: "none" }
+	| { status: "needs_rest"; fingerprint: string }
+	| { status: "valid"; fingerprint: string; headSha: string }
+	| {
+			status: "corrupt";
+			fingerprint: string;
+			digest: string;
+			conflictingHeads: string[];
+	  }
+	| { status: "quarantined"; fingerprint: string; digest: string };
 
 /**
  * FLY-663: a thin compatibility shim that exposes the exact sql.js surface
@@ -30624,7 +30638,21 @@ export class StateStore {
 		runId: string,
 		headSha: string,
 	): WorkflowNodePrBindingRow | undefined {
-		if (!/^[0-9a-f]{40}$/i.test(headSha)) return undefined;
+		const resolution = this.resolveCurrentWorkflowNodePrBindingForHead(
+			runId,
+			headSha,
+		);
+		return resolution.status === "one" ? resolution.binding : undefined;
+	}
+
+	private resolveCurrentWorkflowNodePrBindingForHead(
+		runId: string,
+		headSha: string,
+	):
+		| { status: "zero" }
+		| { status: "one"; binding: WorkflowNodePrBindingRow }
+		| { status: "many"; bindings: WorkflowNodePrBindingRow[] } {
+		if (!/^[0-9a-f]{40}$/i.test(headSha)) return { status: "zero" };
 		const rows = this.workflowSelectAll(
 			`WITH latest AS (
 			   SELECT run_id, node_id, MAX(attempt) AS attempt
@@ -30642,9 +30670,7 @@ export class StateStore {
 			  ORDER BY b.node_id, b.attempt`,
 			[runId, headSha],
 		);
-		if (rows.length !== 1) return undefined;
-		const row = rows[0]!;
-		return {
+		const bindings = rows.map((row) => ({
 			run_id: row.run_id as string,
 			node_id: row.node_id as string,
 			attempt: Number(row.attempt),
@@ -30656,7 +30682,12 @@ export class StateStore {
 			worktree_binding_generation: row.worktree_binding_generation as string,
 			receipt_id: row.receipt_id as string,
 			bound_at: row.bound_at as string,
-		};
+		}));
+		if (bindings.length === 0) return { status: "zero" };
+		if (bindings.length === 1) {
+			return { status: "one", binding: bindings[0]! };
+		}
+		return { status: "many", bindings };
 	}
 
 	listWorkflowGateHolderEvidence(
@@ -31026,6 +31057,295 @@ export class StateStore {
 		return issuePrs.size === 1 ? [...issuePrs][0] : undefined;
 	}
 
+	private resolveRunnerShipAuthority(
+		holder: Record<string, unknown>,
+	): WorkflowRunnerShipAuthorityResolution {
+		const runId = String(holder.run_id);
+		const questionId = String(holder.question_id);
+		const headSha = String(holder.head_sha).toLowerCase();
+		const sourceRows: unknown[] = [];
+		let conflict = false;
+		const shipTarget = this.workflowSelectAll(
+			`SELECT * FROM workflow_ship_target_binding
+			  WHERE approve_question_id = ? AND superseded_at IS NULL`,
+			[questionId],
+		)[0];
+		if (shipTarget) {
+			sourceRows.push({ source: "ship_target", ...shipTarget });
+			if (
+				shipTarget.run_id !== runId ||
+				String(shipTarget.frozen_head_sha).toLowerCase() !== headSha ||
+				!StateStore.workflowRepoIdentityValid(
+					String(shipTarget.target_repo_identity),
+				) ||
+				!StateStore.workflowRepoSlugValid(String(shipTarget.probe_repo_slug))
+			) {
+				conflict = true;
+			}
+		}
+		const nodeBinding = this.resolveCurrentWorkflowNodePrBindingForHead(
+			runId,
+			headSha,
+		);
+		if (nodeBinding.status === "many") {
+			conflict = true;
+			sourceRows.push(
+				...nodeBinding.bindings.map((binding) => ({
+					source: "node_binding",
+					...binding,
+				})),
+			);
+		} else if (nodeBinding.status === "one") {
+			sourceRows.push({ source: "node_binding", ...nodeBinding.binding });
+			if (
+				shipTarget &&
+				(shipTarget.target_repo_identity !==
+					nodeBinding.binding.target_repo_identity ||
+					shipTarget.probe_repo_slug !== nodeBinding.binding.probe_repo_slug)
+			) {
+				conflict = true;
+			}
+		}
+		if (conflict) {
+			return {
+				status: "authority_conflict",
+				digest: canonicalSubmissionDigest(
+					sourceRows
+						.map((row) => JSON.stringify(row))
+						.sort((left, right) => left.localeCompare(right)),
+				),
+			};
+		}
+		if (nodeBinding.status === "one") {
+			return {
+				status: "resolved",
+				repoIdentity: nodeBinding.binding.target_repo_identity,
+				probeRepoSlug: nodeBinding.binding.probe_repo_slug,
+				prNumber: nodeBinding.binding.pr_number,
+				source: shipTarget ? "ship_target" : "node_binding",
+			};
+		}
+		const sessionPr = this.getWorkflowRunPrNumber(runId, headSha);
+		if (shipTarget && sessionPr) {
+			return {
+				status: "resolved",
+				repoIdentity: String(shipTarget.target_repo_identity),
+				probeRepoSlug: String(shipTarget.probe_repo_slug),
+				prNumber: sessionPr,
+				source: "ship_target_session",
+			};
+		}
+		if (sessionPr) return { status: "legacy_missing", prNumber: sessionPr };
+		return { status: "unavailable" };
+	}
+
+	private static runnerShipFingerprint(
+		authority: Pick<
+			WorkflowRunnerShipResolvedAuthority,
+			"repoIdentity" | "probeRepoSlug" | "prNumber"
+		>,
+	): string {
+		return `${authority.repoIdentity}:${authority.probeRepoSlug}:${authority.prNumber}`;
+	}
+
+	private loadRunnerShipObservationProjections(): Map<
+		string,
+		RunnerShipObservationProjection
+	> {
+		const rows = this.workflowSelectAll(
+			`SELECT run_id, event_uid, kind, payload
+			   FROM workflow_run_event
+			  WHERE (event_uid >= 'runner_ship_merged_observed:'
+			         AND event_uid < 'runner_ship_merged_observed;')
+			     OR (event_uid >= 'runner_ship_observation_quarantine:'
+			         AND event_uid < 'runner_ship_observation_quarantine;')
+			  ORDER BY event_uid`,
+			[],
+		);
+		const quarantine = new Map<string, { digest: string }>();
+		const lineages = new Map<
+			string,
+			{
+				fingerprint?: string;
+				base?: string | null;
+				upgrades: string[];
+				invalid: boolean;
+			}
+		>();
+		for (const row of rows) {
+			const uid = String(row.event_uid);
+			const upgrade = uid.endsWith(":head");
+			const lineageUid = upgrade ? uid.slice(0, -5) : uid;
+			const observationUidParts = lineageUid.startsWith(
+				"runner_ship_merged_observed:",
+			)
+				? lineageUid
+						.slice("runner_ship_merged_observed:".length)
+						.split(":")
+				: [];
+			const uidFingerprint =
+				observationUidParts.length >= 4
+					? observationUidParts.slice(-3).join(":")
+					: undefined;
+			let payload: Record<string, unknown>;
+			try {
+				const parsed = JSON.parse(String(row.payload ?? "null")) as unknown;
+				if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+					throw new Error("runner_ship_observation_payload_not_object");
+				}
+				payload = parsed as Record<string, unknown>;
+			} catch {
+				if (uidFingerprint) {
+					lineages.set(lineageUid, {
+						fingerprint: uidFingerprint,
+						upgrades: [],
+						invalid: true,
+					});
+				} else if (uid.startsWith("runner_ship_observation_quarantine:")) {
+					const parts = uid
+						.slice("runner_ship_observation_quarantine:".length)
+						.split(":");
+					if (parts.length === 4) {
+						quarantine.set(parts.slice(0, -1).join(":"), {
+							digest: parts.at(-1)!,
+						});
+					}
+				}
+				continue;
+			}
+			if (row.kind === "runner_ship_observation_quarantine") {
+				if (
+					typeof payload.fingerprint === "string" &&
+					typeof payload.digest === "string" &&
+					uid ===
+						`runner_ship_observation_quarantine:${payload.fingerprint}:${payload.digest}`
+				) {
+					quarantine.set(payload.fingerprint, { digest: payload.digest });
+				} else if (uid.startsWith("runner_ship_observation_quarantine:")) {
+					const parts = uid
+						.slice("runner_ship_observation_quarantine:".length)
+						.split(":");
+					if (parts.length === 4) {
+						quarantine.set(parts.slice(0, -1).join(":"), {
+							digest: parts.at(-1)!,
+						});
+					}
+				}
+				continue;
+			}
+			const lineage = lineages.get(lineageUid) ?? {
+				upgrades: [],
+				invalid: false,
+			};
+			const fingerprint =
+				typeof payload.fingerprint === "string"
+					? payload.fingerprint
+					: undefined;
+			const head =
+				payload.mergedHead === null
+					? null
+					: typeof payload.mergedHead === "string" &&
+						/^[0-9a-f]{40}$/i.test(payload.mergedHead)
+						? payload.mergedHead.toLowerCase()
+						: undefined;
+			if (
+				row.kind !== "runner_ship_merged_observed" ||
+				!fingerprint ||
+				fingerprint !== uidFingerprint ||
+				head === undefined ||
+				(lineage.fingerprint !== undefined &&
+					lineage.fingerprint !== fingerprint)
+			) {
+				lineage.fingerprint ??= uidFingerprint ?? fingerprint;
+				lineage.invalid = true;
+			} else {
+				lineage.fingerprint = fingerprint;
+				if (upgrade) {
+					if (head === null) lineage.invalid = true;
+					else lineage.upgrades.push(head);
+				} else if (lineage.base !== undefined) {
+					lineage.invalid = true;
+				} else {
+					lineage.base = head;
+				}
+			}
+			lineages.set(lineageUid, lineage);
+		}
+
+		const grouped = new Map<
+			string,
+			{ heads: Set<string>; invalid: boolean; lineageIds: string[] }
+		>();
+		for (const [lineageId, lineage] of lineages) {
+			if (!lineage.fingerprint) continue;
+			const group = grouped.get(lineage.fingerprint) ?? {
+				heads: new Set<string>(),
+				invalid: false,
+				lineageIds: [],
+			};
+			group.lineageIds.push(lineageId);
+			if (
+				lineage.invalid ||
+				lineage.base === undefined ||
+				(lineage.base !== null && lineage.upgrades.length > 0) ||
+				lineage.upgrades.length > 1
+			) {
+				group.invalid = true;
+			}
+			if (lineage.base) group.heads.add(lineage.base);
+			for (const head of lineage.upgrades) group.heads.add(head);
+			grouped.set(lineage.fingerprint, group);
+		}
+
+		const projections = new Map<string, RunnerShipObservationProjection>();
+		for (const [fingerprint, group] of grouped) {
+			const quarantined = quarantine.get(fingerprint);
+			if (quarantined) {
+				projections.set(fingerprint, {
+					status: "quarantined",
+					fingerprint,
+					digest: quarantined.digest,
+				});
+				continue;
+			}
+			const conflictingHeads = [...group.heads].sort();
+			if (group.invalid || conflictingHeads.length > 1) {
+				projections.set(fingerprint, {
+					status: "corrupt",
+					fingerprint,
+					digest: canonicalSubmissionDigest({
+						fingerprint,
+						conflictingHeads,
+						invalid: group.invalid,
+						lineageIds: group.lineageIds.sort(),
+					}),
+					conflictingHeads,
+				});
+			} else if (conflictingHeads.length === 1) {
+				projections.set(fingerprint, {
+					status: "valid",
+					fingerprint,
+					headSha: conflictingHeads[0]!,
+				});
+			} else {
+				projections.set(fingerprint, {
+					status: "needs_rest",
+					fingerprint,
+				});
+			}
+		}
+		for (const [fingerprint, marker] of quarantine) {
+			if (!projections.has(fingerprint)) {
+				projections.set(fingerprint, {
+					status: "quarantined",
+					fingerprint,
+					digest: marker.digest,
+				});
+			}
+		}
+		return projections;
+	}
+
 	/**
 	 * Current runner-owned Gate authorities that still require an independent
 	 * merge observation. This intentionally includes pre-approval states so a
@@ -31045,7 +31365,9 @@ export class StateStore {
 			  ORDER BY h.created_at, h.question_id`,
 			[],
 		);
-		return holders.map((row) => {
+		const projections = this.loadRunnerShipObservationProjections();
+		const candidates: WorkflowRunnerShipMergeCandidate[] = [];
+		for (const row of holders) {
 			const head = String(row.head_sha).toLowerCase();
 			let templateId = "";
 			try {
@@ -31054,8 +31376,31 @@ export class StateStore {
 				// Keep the candidate visible to the merge guard even when its
 				// diagnostic template label is unavailable.
 			}
-			const prNumber = this.getWorkflowRunPrNumber(String(row.run_id), head);
-			return {
+			const authority = this.resolveRunnerShipAuthority(row);
+			const fingerprint =
+				authority.status === "resolved"
+					? StateStore.runnerShipFingerprint(authority)
+					: undefined;
+			const projection = fingerprint
+				? projections.get(fingerprint) ?? { status: "none" as const }
+				: { status: "none" as const };
+			if (projection.status === "quarantined") continue;
+			if (
+				fingerprint &&
+				this.workflowSelectAll(
+					"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+					[
+						`runner_ship_merge_deadend:${row.question_id}:${row.state}:${head}:${fingerprint}`,
+					],
+				).length > 0
+			) {
+				continue;
+			}
+			const prNumber =
+				authority.status === "resolved" || authority.status === "legacy_missing"
+					? authority.prNumber
+					: undefined;
+			candidates.push({
 				runId: String(row.run_id),
 				issueId: String(row.issue_id),
 				projectName: String(row.project_name),
@@ -31071,9 +31416,610 @@ export class StateStore {
 				subjectDigest: head,
 				sourceExecutionId: String(row.source_execution_id),
 				gateOpenedAt: String(row.created_at),
+				authority,
+				...(fingerprint ? { fingerprint } : {}),
+				...(projection.status === "valid"
+					? {
+							mergedObserved: {
+								status: "valid" as const,
+								headSha: projection.headSha,
+							},
+						}
+					: projection.status === "needs_rest"
+						? { mergedObserved: { status: "needs_rest" as const } }
+						: projection.status === "corrupt"
+							? {
+									observationConflict: {
+										fingerprint: projection.fingerprint,
+										digest: projection.digest,
+										conflictingHeads: projection.conflictingHeads,
+									},
+								}
+							: {}),
 				...(prNumber ? { prNumber } : {}),
+			});
+		}
+		return candidates;
+	}
+
+	private runnerShipMutationHolder(
+		questionId: string,
+	): Record<string, unknown> | undefined {
+		return this.workflowSelectAll(
+			`SELECT h.*, r.issue_id, r.project_name, r.status AS run_status,
+			        r.current_node_id, r.engine_owned, r.gate_carrier_epoch
+			   FROM workflow_gate_holder h
+			   JOIN workflow_run r ON r.run_id = h.run_id
+			  WHERE h.question_id = ?`,
+			[questionId],
+		)[0];
+	}
+
+	private static runnerShipAuthorityMatches(
+		actual: WorkflowRunnerShipAuthorityResolution,
+		expected: Pick<
+			WorkflowRunnerShipResolvedAuthority,
+			"repoIdentity" | "probeRepoSlug" | "prNumber"
+		>,
+	): actual is WorkflowRunnerShipResolvedAuthority {
+		return (
+			actual.status === "resolved" &&
+			actual.repoIdentity === expected.repoIdentity &&
+			actual.probeRepoSlug === expected.probeRepoSlug &&
+			actual.prNumber === expected.prNumber
+		);
+	}
+
+	private runnerShipHolderMembershipValid(holder: Record<string, unknown>): boolean {
+		return (
+			holder.authority_mode === "runner_ship" &&
+			["materializing", "awaiting_review", "approved"].includes(
+				String(holder.state),
+			) &&
+			holder.run_status === "active" &&
+			Number(holder.engine_owned) === 1 &&
+			Number(holder.gate_carrier_epoch) === 1 &&
+			holder.current_node_id === holder.gate_node_id
+		);
+	}
+
+	recordRunnerShipMergedObserved(input: {
+		questionId: string;
+		expectedHolderState: string;
+		expectedHolderHead: string;
+		expectedAuthority: Pick<
+			WorkflowRunnerShipResolvedAuthority,
+			"repoIdentity" | "probeRepoSlug" | "prNumber"
+		>;
+		mergedHead: string | null;
+		rawHeadRefOid?: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| { status: "persisted" | "replay" | "quarantined" }
+		| { status: "candidate_changed" } {
+		const mergedHead = input.mergedHead?.trim().toLowerCase() ?? null;
+		const rawHeadRefOid = input.rawHeadRefOid?.slice(0, 80);
+		if (
+			!input.questionId.trim() ||
+			!/^[0-9a-f]{40}$/i.test(input.expectedHolderHead) ||
+			(mergedHead !== null && !/^[0-9a-f]{40}$/.test(mergedHead)) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			throw new Error("runner_ship_merged_observation_invalid");
+		}
+		let result:
+			| { status: "persisted" | "replay" | "quarantined" }
+			| { status: "candidate_changed" } = { status: "candidate_changed" };
+		this.db.transaction(() => {
+			const holder = this.runnerShipMutationHolder(input.questionId);
+			if (
+				!holder ||
+				!this.runnerShipHolderMembershipValid(holder) ||
+				holder.state !== input.expectedHolderState ||
+				String(holder.head_sha).toLowerCase() !==
+					input.expectedHolderHead.toLowerCase()
+			) {
+				return;
+			}
+			const authority = this.resolveRunnerShipAuthority(holder);
+			if (
+				!StateStore.runnerShipAuthorityMatches(
+					authority,
+					input.expectedAuthority,
+				)
+			) {
+				return;
+			}
+			const fingerprint = StateStore.runnerShipFingerprint(authority);
+			const baseUid = `runner_ship_merged_observed:${input.questionId}:${fingerprint}`;
+			const base = this.workflowSelectAll(
+				"SELECT run_id, kind, payload FROM workflow_run_event WHERE event_uid = ?",
+				[baseUid],
+			)[0];
+			const semanticPayload = {
+				fingerprint,
+				mergedHead,
+				...(rawHeadRefOid !== undefined
+					? { rawHeadRefOid }
+					: {}),
 			};
+			if (!base) {
+				this.appendWorkflowRunEventTx({
+					runId: String(holder.run_id),
+					eventUid: baseUid,
+					kind: "runner_ship_merged_observed",
+					nodeId: String(holder.gate_node_id),
+					executionId: String(holder.source_execution_id),
+					payload: { ...semanticPayload, observedAt: input.now },
+				});
+				result = { status: "persisted" };
+				return;
+			}
+			let existing: Record<string, unknown>;
+			try {
+				existing = JSON.parse(String(base.payload)) as Record<string, unknown>;
+			} catch {
+				throw new Error(`workflow_event_uid_conflict:${baseUid}`);
+			}
+			const existingHead =
+				existing.mergedHead === null
+					? null
+					: typeof existing.mergedHead === "string"
+						? existing.mergedHead.toLowerCase()
+						: undefined;
+			if (
+				base.run_id !== holder.run_id ||
+				base.kind !== "runner_ship_merged_observed" ||
+				existing.fingerprint !== fingerprint ||
+				existingHead === undefined
+			) {
+				throw new Error(`workflow_event_uid_conflict:${baseUid}`);
+			}
+			if (existingHead === mergedHead) {
+				result = { status: "replay" };
+				return;
+			}
+			if (existingHead === null && mergedHead !== null) {
+				const upgradeUid = `${baseUid}:head`;
+				const upgrade = this.workflowSelectAll(
+					"SELECT payload FROM workflow_run_event WHERE event_uid = ?",
+					[upgradeUid],
+				)[0];
+				if (upgrade) {
+					const payload = JSON.parse(String(upgrade.payload)) as {
+						fingerprint?: string;
+						mergedHead?: string;
+					};
+					if (
+						payload.fingerprint !== fingerprint ||
+						payload.mergedHead?.toLowerCase() !== mergedHead
+					) {
+						this.recordRunnerShipObservationQuarantineBundleTx({
+							holder,
+							fingerprint,
+							conflictingHeads: [
+								payload.mergedHead?.toLowerCase() ?? "invalid",
+								mergedHead,
+							].sort(),
+							alertIdentity: input.alertIdentity,
+							now: input.now,
+						});
+						result = { status: "quarantined" };
+						return;
+					}
+					result = { status: "replay" };
+					return;
+				}
+				this.appendWorkflowRunEventTx({
+					runId: String(holder.run_id),
+					eventUid: upgradeUid,
+					kind: "runner_ship_merged_observed",
+					nodeId: String(holder.gate_node_id),
+					executionId: String(holder.source_execution_id),
+					payload: { ...semanticPayload, observedAt: input.now },
+				});
+				result = { status: "persisted" };
+				return;
+			}
+			this.recordRunnerShipObservationQuarantineBundleTx({
+				holder,
+				fingerprint,
+				conflictingHeads: [existingHead ?? "invalid", mergedHead ?? "invalid"].sort(),
+				alertIdentity: input.alertIdentity,
+				now: input.now,
+			});
+			result = { status: "quarantined" };
 		});
+		this.save();
+		return result;
+	}
+
+	private recordRunnerShipObservationQuarantineBundleTx(input: {
+		holder: Record<string, unknown>;
+		fingerprint: string;
+		conflictingHeads: string[];
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}): { digest: string; idempotentReplay: boolean } {
+		const conflictingHeads = [...new Set(input.conflictingHeads)].sort();
+		const digest = canonicalSubmissionDigest({
+			fingerprint: input.fingerprint,
+			conflictingHeads,
+		});
+		const eventUid = `runner_ship_observation_quarantine:${input.fingerprint}:${digest}`;
+		const existing = this.workflowSelectAll(
+			"SELECT payload FROM workflow_run_event WHERE event_uid = ?",
+			[eventUid],
+		)[0];
+		if (existing) return { digest, idempotentReplay: true };
+		this.appendWorkflowRunEventTx({
+			runId: String(input.holder.run_id),
+			eventUid,
+			kind: "runner_ship_observation_quarantine",
+			nodeId: String(input.holder.gate_node_id),
+			executionId: String(input.holder.source_execution_id),
+			payload: {
+				fingerprint: input.fingerprint,
+				digest,
+				conflictingHeads,
+				firstSeenQuestionId: String(input.holder.question_id),
+				firstSeenRunId: String(input.holder.run_id),
+			},
+		});
+		this.enqueueWorkflowEngineAlertTx({
+			escalationUid: eventUid,
+			runId: String(input.holder.run_id),
+			payload: {
+				leadId: input.alertIdentity.leadId,
+				projectName: input.alertIdentity.projectName,
+				eventId: eventUid,
+				eventType: "workflow_engine_issue_alert",
+				title: `Conflicting merged-PR observations for ${input.holder.issue_id}`,
+				body: `The runner-ship observation ledger for ${input.fingerprint} contains conflicting heads (${conflictingHeads.join(", ")}). The authority is quarantined; no probe or completion will run until an operator verifies the repository evidence.`,
+				severity: "severe",
+				sessionKey: `wf:${input.holder.run_id}`,
+				metadata: {
+					workflowEngine: {
+						runId: String(input.holder.run_id),
+						issueId: String(input.holder.issue_id),
+						nodeId: String(input.holder.gate_node_id),
+						executionId: String(input.holder.source_execution_id),
+						disposition: "observation_corrupt",
+						leadResolution: input.alertIdentity.leadResolution,
+					},
+				},
+			},
+			now: input.now,
+		});
+		return { digest, idempotentReplay: false };
+	}
+
+	recordRunnerShipMergedObservationConflict(input: {
+		questionId: string;
+		fingerprint: string;
+		expectedDigest: string;
+		conflictingHeads: string[];
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: "projection_changed" | "candidate_changed" } {
+		if (
+			!input.questionId.trim() ||
+			!input.fingerprint.trim() ||
+			!/^[0-9a-f]{64}$/.test(input.expectedDigest) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			throw new Error("runner_ship_observation_conflict_invalid");
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: "projection_changed" | "candidate_changed" } = {
+			ok: false,
+			reason: "candidate_changed",
+		};
+		this.db.transaction(() => {
+			const holder = this.runnerShipMutationHolder(input.questionId);
+			if (!holder || !this.runnerShipHolderMembershipValid(holder)) return;
+			const authority = this.resolveRunnerShipAuthority(holder);
+			if (
+				authority.status !== "resolved" ||
+				StateStore.runnerShipFingerprint(authority) !== input.fingerprint
+			) {
+				return;
+			}
+			const projection = this.loadRunnerShipObservationProjections().get(
+				input.fingerprint,
+			);
+			if (
+				projection?.status !== "corrupt" ||
+				projection.digest !== input.expectedDigest
+			) {
+				result = { ok: false, reason: "projection_changed" };
+				return;
+			}
+			const recorded = this.recordRunnerShipObservationQuarantineBundleTx({
+				holder,
+				fingerprint: input.fingerprint,
+				conflictingHeads: input.conflictingHeads,
+				alertIdentity: input.alertIdentity,
+				now: input.now,
+			});
+			result = { ok: true, idempotentReplay: recorded.idempotentReplay };
+		});
+		this.save();
+		return result;
+	}
+
+	recordRunnerShipAuthorityConflict(input: {
+		questionId: string;
+		expectedDigest: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: "candidate_changed" } {
+		if (
+			!input.questionId.trim() ||
+			!/^[0-9a-f]{64}$/.test(input.expectedDigest) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			throw new Error("runner_ship_authority_conflict_invalid");
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: "candidate_changed" } = {
+			ok: false,
+			reason: "candidate_changed",
+		};
+		this.db.transaction(() => {
+			const holder = this.runnerShipMutationHolder(input.questionId);
+			if (!holder || !this.runnerShipHolderMembershipValid(holder)) return;
+			const authority = this.resolveRunnerShipAuthority(holder);
+			if (
+				authority.status !== "authority_conflict" ||
+				authority.digest !== input.expectedDigest
+			) {
+				return;
+			}
+			const eventUid = `runner_ship_authority_conflict:${input.questionId}:${input.expectedDigest}`;
+			const event = this.appendWorkflowRunEventCheckedTx({
+				runId: String(holder.run_id),
+				eventUid,
+				kind: "runner_ship_authority_conflict",
+				nodeId: String(holder.gate_node_id),
+				executionId: String(holder.source_execution_id),
+				payload: {
+					questionId: input.questionId,
+					digest: input.expectedDigest,
+				},
+			});
+			const escalationUid = eventUid;
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid,
+				runId: String(holder.run_id),
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: escalationUid,
+					eventType: "workflow_engine_issue_alert",
+					title: `Conflicting runner-ship repository authority for ${holder.issue_id}`,
+					body: `The durable ship-target and PR-binding evidence for ${input.questionId} disagree (${input.expectedDigest}). The engine will not probe or complete this run until the authority is repaired.`,
+					severity: "severe",
+					sessionKey: `wf:${holder.run_id}`,
+					metadata: {
+						workflowEngine: {
+							runId: String(holder.run_id),
+							issueId: String(holder.issue_id),
+							nodeId: String(holder.gate_node_id),
+							executionId: String(holder.source_execution_id),
+							disposition: "runner_ship_authority_conflict",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+				now: input.now,
+			});
+			result = { ok: true, idempotentReplay: event.deduped };
+		});
+		this.save();
+		return result;
+	}
+
+	recordRunnerShipMergeDeadEnd(input: {
+		questionId: string;
+		expectedHolderState: string;
+		expectedHolderHead: string;
+		expectedAuthority: Pick<
+			WorkflowRunnerShipResolvedAuthority,
+			"repoIdentity" | "probeRepoSlug" | "prNumber"
+		>;
+		expectedObservationHead: string;
+		mergedHead: string;
+		deadEndKind: "head_mismatch" | "rogue_before_approval";
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| {
+				ok: false;
+				reason:
+					| "holder_unavailable"
+					| "candidate_changed"
+					| "observation_inconsistent"
+					| "observation_stale";
+		  } {
+		const mergedHead = input.mergedHead.trim().toLowerCase();
+		const expectedObservationHead = input.expectedObservationHead
+			.trim()
+			.toLowerCase();
+		if (
+			!input.questionId.trim() ||
+			!/^[0-9a-f]{40}$/i.test(input.expectedHolderHead) ||
+			!/^[0-9a-f]{40}$/.test(mergedHead) ||
+			!/^[0-9a-f]{40}$/.test(expectedObservationHead) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			throw new Error("runner_ship_merge_deadend_invalid");
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| {
+					ok: false;
+					reason:
+						| "holder_unavailable"
+						| "candidate_changed"
+						| "observation_inconsistent"
+						| "observation_stale";
+			  } = { ok: false, reason: "holder_unavailable" };
+		this.db.transaction(() => {
+			const holder = this.runnerShipMutationHolder(input.questionId);
+			if (!holder || !this.runnerShipHolderMembershipValid(holder)) return;
+			if (
+				holder.state !== input.expectedHolderState ||
+				String(holder.head_sha).toLowerCase() !==
+					input.expectedHolderHead.toLowerCase()
+			) {
+				result = { ok: false, reason: "candidate_changed" };
+				return;
+			}
+			const authority = this.resolveRunnerShipAuthority(holder);
+			if (
+				!StateStore.runnerShipAuthorityMatches(
+					authority,
+					input.expectedAuthority,
+				)
+			) {
+				result = { ok: false, reason: "candidate_changed" };
+				return;
+			}
+			const fingerprint = StateStore.runnerShipFingerprint(authority);
+			const projection = this.loadRunnerShipObservationProjections().get(
+				fingerprint,
+			);
+			if (
+				projection?.status !== "valid" ||
+				projection.headSha !== expectedObservationHead ||
+				expectedObservationHead !== mergedHead
+			) {
+				result = { ok: false, reason: "observation_stale" };
+				return;
+			}
+			const holderHead = String(holder.head_sha).toLowerCase();
+			const consistent =
+				input.deadEndKind === "head_mismatch"
+					? mergedHead !== holderHead
+					: ["materializing", "awaiting_review"].includes(
+							String(holder.state),
+						) && mergedHead === holderHead;
+			if (!consistent) {
+				result = { ok: false, reason: "observation_inconsistent" };
+				return;
+			}
+			const eventUid = `runner_ship_merge_deadend:${input.questionId}:${input.expectedHolderState}:${holderHead}:${fingerprint}`;
+			const event = this.appendWorkflowRunEventCheckedTx({
+				runId: String(holder.run_id),
+				eventUid,
+				kind: "runner_ship_merge_deadend",
+				nodeId: String(holder.gate_node_id),
+				executionId: String(holder.source_execution_id),
+				payload: {
+					questionId: input.questionId,
+					holderState: input.expectedHolderState,
+					holderHead,
+					fingerprint,
+					mergedHead,
+					kind: input.deadEndKind,
+				},
+			});
+			if (input.deadEndKind === "head_mismatch") {
+				const escalationUid = `runner_ship_merged_head_mismatch:${input.questionId}:${holderHead}:${fingerprint}`;
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: String(holder.run_id),
+					payload: {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: escalationUid,
+						eventType: "workflow_engine_issue_alert",
+						title: `Merged PR head differs from runner-ship Gate for ${holder.issue_id}`,
+						body: `The PR for ${fingerprint} merged at ${mergedHead}, while the Gate froze ${holderHead}. The run remains active and requires operator review.`,
+						severity: "severe",
+						sessionKey: `wf:${holder.run_id}`,
+						metadata: {
+							workflowEngine: {
+								runId: String(holder.run_id),
+								issueId: String(holder.issue_id),
+								nodeId: String(holder.gate_node_id),
+								executionId: String(holder.source_execution_id),
+								disposition: "runner_ship_merged_head_mismatch",
+								leadResolution: input.alertIdentity.leadResolution,
+							},
+						},
+					},
+					now: input.now,
+				});
+			} else {
+				const legacyEventUid = `runner_ship_rogue_merge:${input.questionId}`;
+				if (
+					this.workflowSelectAll(
+						"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+						[legacyEventUid],
+					).length === 0
+				) {
+					this.appendWorkflowRunEventTx({
+						runId: String(holder.run_id),
+						eventUid: legacyEventUid,
+						kind: "runner_ship_merged_before_approval",
+						nodeId: String(holder.gate_node_id),
+						executionId: String(holder.source_execution_id),
+						payload: {
+							questionId: input.questionId,
+							holderState: holder.state,
+							subjectDigest: holder.head_sha,
+						},
+					});
+				}
+				const escalationUid = `runner_ship_merged_before_approval:${input.questionId}`;
+				if (
+					this.workflowSelectAll(
+						"SELECT 1 AS x FROM workflow_alert_outbox WHERE escalation_uid = ?",
+						[escalationUid],
+					).length === 0
+				) {
+					this.enqueueWorkflowEngineAlertTx({
+						escalationUid,
+						runId: String(holder.run_id),
+						payload: {
+							leadId: input.alertIdentity.leadId,
+							projectName: input.alertIdentity.projectName,
+							eventId: escalationUid,
+							eventType: "workflow_engine_issue_alert",
+							title: `PR merged before founder approval for ${holder.issue_id}`,
+							body: `Run ${holder.run_id} is still at Gate holder state ${holder.state}, but its bound PR was observed merged. The run remains active and must not be finalized; inspect the approval bypass immediately.`,
+							severity: "severe",
+							sessionKey: `wf:${holder.run_id}`,
+							metadata: {
+								workflowEngine: {
+									runId: String(holder.run_id),
+									issueId: String(holder.issue_id),
+									nodeId: String(holder.gate_node_id),
+									executionId: String(holder.source_execution_id),
+									disposition:
+										"runner_ship_merged_before_approval",
+									leadResolution: input.alertIdentity.leadResolution,
+								},
+							},
+						},
+						now: input.now,
+					});
+				}
+			}
+			result = { ok: true, idempotentReplay: event.deduped };
+		});
+		this.save();
+		return result;
 	}
 
 	/**
@@ -31087,6 +32033,14 @@ export class StateStore {
 		questionId: string;
 		mergedHead: string;
 		now: string;
+		expectedHolderState: string;
+		expectedHolderHead: string;
+		expectedObservationHead: string;
+		observedAuthority: Pick<
+			WorkflowRunnerShipResolvedAuthority,
+			"repoIdentity" | "probeRepoSlug" | "prNumber"
+		>;
+		alertIdentity: WorkflowEngineAlertIdentity;
 	}):
 		| { ok: true; idempotentReplay: boolean }
 		| {
@@ -31094,16 +32048,27 @@ export class StateStore {
 				reason:
 					| "invalid_input"
 					| "holder_unavailable"
+					| "candidate_changed"
 					| "subject_mismatch"
+					| "observation_stale"
 					| "rogue_merge_before_approval"
 					| "ship_claims_invalid"
 					| "carrier_session_mismatch"
 					| "completion_raced";
 		  } {
 		const mergedHead = input.mergedHead.trim().toLowerCase();
+		const expectedHolderHead = input.expectedHolderHead.trim().toLowerCase();
+		const expectedObservationHead = input.expectedObservationHead
+			.trim()
+			.toLowerCase();
+		const expectedFingerprint = StateStore.runnerShipFingerprint(
+			input.observedAuthority,
+		);
 		if (
 			!input.questionId.trim() ||
 			!/^[0-9a-f]{40}$/.test(mergedHead) ||
+			!/^[0-9a-f]{40}$/.test(expectedHolderHead) ||
+			!/^[0-9a-f]{40}$/.test(expectedObservationHead) ||
 			!StateStore.workflowFiniteTimestamp(input.now)
 		) {
 			return { ok: false, reason: "invalid_input" };
@@ -31114,21 +32079,16 @@ export class StateStore {
 					ok: false;
 					reason:
 						| "holder_unavailable"
+						| "candidate_changed"
 						| "subject_mismatch"
+						| "observation_stale"
 						| "rogue_merge_before_approval"
 						| "ship_claims_invalid"
 						| "carrier_session_mismatch"
 						| "completion_raced";
 			  } = { ok: false, reason: "holder_unavailable" };
 		this.db.transaction(() => {
-			const holder = this.workflowSelectAll(
-				`SELECT h.*, r.status AS run_status, r.current_node_id,
-				        r.engine_owned, r.gate_carrier_epoch
-				   FROM workflow_gate_holder h
-				   JOIN workflow_run r ON r.run_id = h.run_id
-				  WHERE h.question_id = ?`,
-				[input.questionId],
-			)[0];
+			const holder = this.runnerShipMutationHolder(input.questionId);
 			if (
 				!holder ||
 				holder.authority_mode !== "runner_ship" ||
@@ -31136,29 +32096,70 @@ export class StateStore {
 				Number(holder.gate_carrier_epoch) !== 1 ||
 				holder.current_node_id !== holder.gate_node_id
 			) {
-				result = { ok: false, reason: "holder_unavailable" };
 				return;
 			}
 			const eventUid = `runner_ship_completed:${input.questionId}`;
 			if (holder.run_status === "completed") {
 				const event = this.workflowSelectAll(
-					"SELECT 1 AS x FROM workflow_run_event WHERE run_id = ? AND event_uid = ?",
+					"SELECT kind, payload FROM workflow_run_event WHERE run_id = ? AND event_uid = ?",
 					[holder.run_id, eventUid],
 				)[0];
-				result = event
+				let replayMatches = false;
+				if (event?.kind === "run_completed") {
+					try {
+						const payload = JSON.parse(String(event.payload)) as {
+							mergedHead?: string;
+							fingerprint?: string;
+						};
+						replayMatches =
+							payload.mergedHead?.toLowerCase() === mergedHead &&
+							payload.fingerprint === expectedFingerprint;
+					} catch {
+						// A malformed completion receipt cannot authorize a replay.
+					}
+				}
+				result = replayMatches
 					? { ok: true, idempotentReplay: true }
 					: { ok: false, reason: "completion_raced" };
 				return;
 			}
 			if (
-				holder.run_status !== "active" ||
+				!this.runnerShipHolderMembershipValid(holder) ||
 				holder.carrier_binding_state !== "bound"
 			) {
-				result = { ok: false, reason: "holder_unavailable" };
+				return;
+			}
+			if (
+				holder.state !== input.expectedHolderState ||
+				String(holder.head_sha).toLowerCase() !== expectedHolderHead
+			) {
+				result = { ok: false, reason: "candidate_changed" };
 				return;
 			}
 			if (String(holder.head_sha).toLowerCase() !== mergedHead) {
 				result = { ok: false, reason: "subject_mismatch" };
+				return;
+			}
+			const authority = this.resolveRunnerShipAuthority(holder);
+			if (
+				!StateStore.runnerShipAuthorityMatches(
+					authority,
+					input.observedAuthority,
+				)
+			) {
+				result = { ok: false, reason: "candidate_changed" };
+				return;
+			}
+			const fingerprint = StateStore.runnerShipFingerprint(authority);
+			const projection = this.loadRunnerShipObservationProjections().get(
+				fingerprint,
+			);
+			if (
+				projection?.status !== "valid" ||
+				projection.headSha !== expectedObservationHead ||
+				expectedObservationHead !== mergedHead
+			) {
+				result = { ok: false, reason: "observation_stale" };
 				return;
 			}
 			if (holder.state !== "approved") {
@@ -31172,6 +32173,13 @@ export class StateStore {
 				now: input.now,
 			});
 			if (!claims.valid) {
+				this.recordRunnerShipCompletionFailureTx({
+					holder,
+					reason: "ship_claims_invalid",
+					mergedHead,
+					alertIdentity: input.alertIdentity,
+					now: input.now,
+				});
 				result = { ok: false, reason: "ship_claims_invalid" };
 				return;
 			}
@@ -31191,14 +32199,19 @@ export class StateStore {
 				],
 			);
 			if (this.db.getRowsModified() !== 1) {
+				this.recordRunnerShipCompletionFailureTx({
+					holder,
+					reason: "carrier_session_mismatch",
+					mergedHead,
+					alertIdentity: input.alertIdentity,
+					now: input.now,
+				});
 				result = { ok: false, reason: "carrier_session_mismatch" };
 				return;
 			}
 			this.db.run(
-				`UPDATE workflow_run
-				    SET status = 'completed'
-				  WHERE run_id = ? AND status = 'active'
-				    AND current_node_id = ?`,
+				`UPDATE workflow_run SET status = 'completed'
+				  WHERE run_id = ? AND status = 'active' AND current_node_id = ?`,
 				[holder.run_id, holder.gate_node_id],
 			);
 			if (this.db.getRowsModified() !== 1) {
@@ -31221,9 +32234,384 @@ export class StateStore {
 					authorityMode: "runner_ship",
 					questionId: input.questionId,
 					mergedHead,
+					fingerprint,
 				},
 			});
 			this.bumpLifecycleRevision(String(holder.source_execution_id));
+			result = { ok: true, idempotentReplay: false };
+		});
+		this.save();
+		return result;
+	}
+
+	private recordRunnerShipCompletionFailureTx(input: {
+		holder: Record<string, unknown>;
+		reason: "ship_claims_invalid" | "carrier_session_mismatch";
+		mergedHead: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}): void {
+		const eventUid = `runner_ship_completion_failure:${input.holder.question_id}:${input.reason}:${input.mergedHead}`;
+		this.appendWorkflowRunEventCheckedTx({
+			runId: String(input.holder.run_id),
+			eventUid,
+			kind: "runner_ship_completion_failure",
+			nodeId: String(input.holder.gate_node_id),
+			executionId: String(input.holder.source_execution_id),
+			payload: {
+				questionId: String(input.holder.question_id),
+				reason: input.reason,
+				mergedHead: input.mergedHead,
+			},
+		});
+		this.enqueueWorkflowEngineAlertTx({
+			escalationUid: eventUid,
+			runId: String(input.holder.run_id),
+			payload: {
+				leadId: input.alertIdentity.leadId,
+				projectName: input.alertIdentity.projectName,
+				eventId: eventUid,
+				eventType: "workflow_engine_issue_alert",
+				title: `Runner-ship completion held for ${input.holder.issue_id}`,
+				body: `The merged PR was verified at ${input.mergedHead}, but completion failed closed (${input.reason}). The run remains active until the local authority is repaired.`,
+				severity: "severe",
+				sessionKey: `wf:${input.holder.run_id}`,
+				metadata: {
+					workflowEngine: {
+						runId: String(input.holder.run_id),
+						issueId: String(input.holder.issue_id),
+						nodeId: String(input.holder.gate_node_id),
+						executionId: String(input.holder.source_execution_id),
+						disposition: "runner_ship_completion_failure",
+						leadResolution: input.alertIdentity.leadResolution,
+					},
+				},
+			},
+			now: input.now,
+		});
+	}
+
+	recordRunnerShipLegacyMergeAnomaly(input: {
+		questionId: string;
+		expectedHolderState: string;
+		expectedHolderHead: string;
+		observed: {
+			prNumber: number;
+			mergedHead: string | null;
+			rawHeadRefOid?: string;
+			anomaly:
+				| "head_unavailable"
+				| "head_mismatch"
+				| "rogue_before_approval"
+				| "legacy_completion_blocked";
+		};
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| {
+				ok: false;
+				reason:
+					| "holder_unavailable"
+					| "candidate_changed"
+					| "binding_present"
+					| "observation_inconsistent";
+		  } {
+		const holderHead = input.expectedHolderHead.trim().toLowerCase();
+		const mergedHead = input.observed.mergedHead?.trim().toLowerCase() ?? null;
+		const rawHeadRefOid = input.observed.rawHeadRefOid?.slice(0, 80);
+		if (
+			!input.questionId.trim() ||
+			!/^[0-9a-f]{40}$/.test(holderHead) ||
+			!Number.isSafeInteger(input.observed.prNumber) ||
+			input.observed.prNumber < 1 ||
+			(mergedHead !== null && !/^[0-9a-f]{40}$/.test(mergedHead)) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			throw new Error("runner_ship_legacy_anomaly_invalid");
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| {
+					ok: false;
+					reason:
+						| "holder_unavailable"
+						| "candidate_changed"
+						| "binding_present"
+						| "observation_inconsistent";
+			  } = { ok: false, reason: "holder_unavailable" };
+		this.db.transaction(() => {
+			const holder = this.runnerShipMutationHolder(input.questionId);
+			if (!holder || !this.runnerShipHolderMembershipValid(holder)) return;
+			if (
+				holder.state !== input.expectedHolderState ||
+				String(holder.head_sha).toLowerCase() !== holderHead
+			) {
+				result = { ok: false, reason: "candidate_changed" };
+				return;
+			}
+			const activeShipTarget = this.workflowSelectAll(
+				`SELECT 1 AS x FROM workflow_ship_target_binding
+				  WHERE approve_question_id = ? AND superseded_at IS NULL`,
+				[input.questionId],
+			)[0];
+			const authority = this.resolveRunnerShipAuthority(holder);
+			if (activeShipTarget || authority.status === "resolved") {
+				result = { ok: false, reason: "binding_present" };
+				return;
+			}
+			if (
+				authority.status !== "legacy_missing" ||
+				authority.prNumber !== input.observed.prNumber
+			) {
+				result = { ok: false, reason: "candidate_changed" };
+				return;
+			}
+			const raw = rawHeadRefOid?.trim().toLowerCase();
+			const consistent =
+				input.observed.anomaly === "head_unavailable"
+					? mergedHead === null && (!raw || !/^[0-9a-f]{40}$/.test(raw))
+					: input.observed.anomaly === "head_mismatch"
+						? mergedHead !== null && mergedHead !== holderHead
+						: input.observed.anomaly === "rogue_before_approval"
+							? mergedHead === holderHead &&
+								["materializing", "awaiting_review"].includes(
+									String(holder.state),
+								)
+							: mergedHead === holderHead && holder.state === "approved";
+			if (!consistent) {
+				result = { ok: false, reason: "observation_inconsistent" };
+				return;
+			}
+			const eventUid = `runner_ship_legacy_merge_anomaly:${input.questionId}:${input.expectedHolderState}:${holderHead}:${input.observed.prNumber}:${input.observed.anomaly}`;
+			const event = this.appendWorkflowRunEventCheckedTx({
+				runId: String(holder.run_id),
+				eventUid,
+				kind: "runner_ship_legacy_merge_anomaly",
+				nodeId: String(holder.gate_node_id),
+				executionId: String(holder.source_execution_id),
+				payload: {
+					questionId: input.questionId,
+					holderState: input.expectedHolderState,
+					holderHead,
+					prNumber: input.observed.prNumber,
+					mergedHead,
+					...(rawHeadRefOid !== undefined
+						? { rawHeadRefOid }
+						: {}),
+					anomaly: input.observed.anomaly,
+				},
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: String(holder.run_id),
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: eventUid,
+					eventType: "workflow_engine_issue_alert",
+					title: `Legacy runner-ship merge held for ${holder.issue_id}`,
+					body: `PR #${input.observed.prNumber} produced ${input.observed.anomaly}, but this Gate has no durable repository binding. The engine will not auto-complete the run; verify the repository and establish authority or close it manually.`,
+					severity: "severe",
+					sessionKey: `wf:${holder.run_id}`,
+					metadata: {
+						workflowEngine: {
+							runId: String(holder.run_id),
+							issueId: String(holder.issue_id),
+							nodeId: String(holder.gate_node_id),
+							executionId: String(holder.source_execution_id),
+							disposition: "runner_ship_legacy_merge_anomaly",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+				now: input.now,
+			});
+			result = { ok: true, idempotentReplay: event.deduped };
+		});
+		this.save();
+		return result;
+	}
+
+	recordRunnerShipHeadEnrichmentFailure(input: {
+		questionId: string;
+		fingerprint: string;
+		error: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: "projection_changed" } {
+		if (
+			!input.questionId.trim() ||
+			!input.fingerprint.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			throw new Error("runner_ship_enrichment_failure_invalid");
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: "projection_changed" } = {
+			ok: false,
+			reason: "projection_changed",
+		};
+		this.db.transaction(() => {
+			const projection = this.loadRunnerShipObservationProjections().get(
+				input.fingerprint,
+			);
+			if (projection?.status !== "needs_rest") return;
+			const holder = this.runnerShipMutationHolder(input.questionId);
+			if (!holder || !this.runnerShipHolderMembershipValid(holder)) return;
+			const authority = this.resolveRunnerShipAuthority(holder);
+			if (
+				authority.status !== "resolved" ||
+				StateStore.runnerShipFingerprint(authority) !== input.fingerprint
+			) {
+				return;
+			}
+			const eventUid = `runner_ship_head_enrichment_failed:${input.questionId}:${input.fingerprint}`;
+			const existing = this.workflowSelectAll(
+				"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			)[0];
+			if (existing) {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			this.appendWorkflowRunEventTx({
+				runId: String(holder.run_id),
+				eventUid,
+				kind: "runner_ship_head_enrichment_failed",
+				nodeId: String(holder.gate_node_id),
+				executionId: String(holder.source_execution_id),
+				payload: {
+					questionId: input.questionId,
+					fingerprint: input.fingerprint,
+					error: input.error.slice(0, 240),
+				},
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: String(holder.run_id),
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: eventUid,
+					eventType: "workflow_engine_issue_alert",
+					title: `Merged PR head enrichment stalled for ${holder.issue_id}`,
+					body: `The engine observed a merged PR for ${input.fingerprint}, but five REST enrichment attempts could not obtain a valid immutable head (${input.error.slice(0, 160)}). The run remains active.`,
+					severity: "severe",
+					sessionKey: `wf:${holder.run_id}`,
+					metadata: {
+						workflowEngine: {
+							runId: String(holder.run_id),
+							issueId: String(holder.issue_id),
+							nodeId: String(holder.gate_node_id),
+							executionId: String(holder.source_execution_id),
+							disposition: "runner_ship_head_enrichment_failed",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+				now: input.now,
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		this.save();
+		return result;
+	}
+
+	recordRunnerShipHydrationRevalidationFailure(input: {
+		questionId: string;
+		fingerprint: string;
+		expectedHydratedHead: string;
+		error: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: "projection_changed" } {
+		const expectedHead = input.expectedHydratedHead.trim().toLowerCase();
+		if (
+			!input.questionId.trim() ||
+			!input.fingerprint.trim() ||
+			!/^[0-9a-f]{40}$/.test(expectedHead) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			throw new Error("runner_ship_hydration_failure_invalid");
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: "projection_changed" } = {
+			ok: false,
+			reason: "projection_changed",
+		};
+		this.db.transaction(() => {
+			const projection = this.loadRunnerShipObservationProjections().get(
+				input.fingerprint,
+			);
+			if (
+				projection?.status !== "valid" ||
+				projection.headSha !== expectedHead
+			) {
+				return;
+			}
+			const holder = this.runnerShipMutationHolder(input.questionId);
+			if (!holder || !this.runnerShipHolderMembershipValid(holder)) return;
+			const authority = this.resolveRunnerShipAuthority(holder);
+			if (
+				authority.status !== "resolved" ||
+				StateStore.runnerShipFingerprint(authority) !== input.fingerprint
+			) {
+				return;
+			}
+			const eventUid = `runner_ship_hydration_reval_failed:${input.questionId}:${input.fingerprint}`;
+			const existing = this.workflowSelectAll(
+				"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			)[0];
+			if (existing) {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			this.appendWorkflowRunEventTx({
+				runId: String(holder.run_id),
+				eventUid,
+				kind: "runner_ship_hydration_reval_failed",
+				nodeId: String(holder.gate_node_id),
+				executionId: String(holder.source_execution_id),
+				payload: {
+					questionId: input.questionId,
+					fingerprint: input.fingerprint,
+					expectedHydratedHead: expectedHead,
+					error: input.error.slice(0, 240),
+				},
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: String(holder.run_id),
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: eventUid,
+					eventType: "workflow_engine_issue_alert",
+					title: `Merged PR hydration revalidation stalled for ${holder.issue_id}`,
+					body: `The durable merged observation for ${input.fingerprint} is pinned at ${expectedHead}, but five REST revalidation attempts failed (${input.error.slice(0, 160)}). The run remains active and no irreversible action was taken.`,
+					severity: "severe",
+					sessionKey: `wf:${holder.run_id}`,
+					metadata: {
+						workflowEngine: {
+							runId: String(holder.run_id),
+							issueId: String(holder.issue_id),
+							nodeId: String(holder.gate_node_id),
+							executionId: String(holder.source_execution_id),
+							disposition: "runner_ship_hydration_reval_failed",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+				now: input.now,
+			});
 			result = { ok: true, idempotentReplay: false };
 		});
 		this.save();
@@ -31312,15 +32700,17 @@ export class StateStore {
 	): WorkflowGateHolderRow[] {
 		const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
 		return this.workflowSelectAll(
-			`SELECT * FROM workflow_gate_holder
-			  WHERE state IN ('materializing','awaiting_review')
-			    AND materialization_stage != 'completed'
+			`SELECT h.* FROM workflow_gate_holder AS h
+			  LEFT JOIN workflow_run AS r ON r.run_id = h.run_id
+			  WHERE h.state IN ('materializing','awaiting_review')
+			    AND h.materialization_stage != 'completed'
+			    AND (r.run_id IS NULL OR r.status = 'active')
 			    AND (
-			      authority_mode IS NULL
-			      OR authority_mode <> 'runner_ship'
-			      OR carrier_binding_state = 'bound'
+			      h.authority_mode IS NULL
+			      OR h.authority_mode <> 'runner_ship'
+			      OR h.carrier_binding_state = 'bound'
 			    )
-			  ORDER BY created_at ASC, question_id ASC
+			  ORDER BY h.created_at ASC, h.question_id ASC
 			  LIMIT ?`,
 			[boundedLimit],
 		) as unknown as WorkflowGateHolderRow[];
@@ -33166,7 +34556,14 @@ export interface WorkflowEngineAlertPayload {
 				| "ship_ready_stalled"
 				| "ship_ready_delivery_failed"
 				| "gate_carrier_unbound"
-				| "runner_ship_merged_before_approval";
+				| "runner_ship_merged_before_approval"
+				| "runner_ship_merged_head_mismatch"
+				| "runner_ship_completion_failure"
+				| "runner_ship_legacy_merge_anomaly"
+				| "runner_ship_head_enrichment_failed"
+				| "runner_ship_hydration_reval_failed"
+				| "runner_ship_authority_conflict"
+				| "observation_corrupt";
 			launchCount?: number;
 			maxBlindReplacements?: number;
 			outputExistsForAttempt?: boolean;

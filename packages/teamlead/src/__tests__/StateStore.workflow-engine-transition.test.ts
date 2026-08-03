@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
@@ -10,9 +13,9 @@ const engineFlags = {
 };
 
 async function engineRun(
-	options: { gateCarrier?: boolean } = {},
+	options: { gateCarrier?: boolean; dbPath?: string } = {},
 ): Promise<StateStore> {
-	const store = await StateStore.create(":memory:");
+	const store = await StateStore.create(options.dbPath ?? ":memory:");
 	const seed = loadBundledWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy",
 	)!;
@@ -147,6 +150,79 @@ async function openRunnerShipGate(
 		}),
 	).toMatchObject({ ok: true });
 	return store.getCurrentWorkflowGateHolder("run-1", "founder_gate")!;
+}
+
+function bindRunnerShipAuthority(
+	store: StateStore,
+	holder: { question_id: string },
+	prNumber = 1624,
+) {
+	store.upsertSession({
+		execution_id: "implement-1",
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "awaiting_review",
+		pr_number: prNumber,
+	});
+	store.setReviewBinding("implement-1", {
+		questionId: holder.question_id,
+		prHeadSha: "a".repeat(40),
+		shipTarget: {
+			runId: "run-1",
+			targetRepoPath: "/tmp/flywheel",
+			targetRepoIdentity: "__main__",
+			probeRepoSlug: "xrliAnnie/flywheel",
+			worktreeBindingGeneration: "generation-1",
+		},
+	});
+	return {
+		repoIdentity: "__main__",
+		probeRepoSlug: "xrliAnnie/flywheel",
+		prNumber,
+	};
+}
+
+function approveRunnerShipGate(
+	store: StateStore,
+	holder: { question_id: string },
+) {
+	for (const [stage, cardMessageId] of [
+		["question_written"],
+		["session_bound"],
+		["card_posted", "founder-card-helper"],
+		["card_bound", "founder-card-helper"],
+		["completed", "founder-card-helper"],
+	] as const) {
+		expect(
+			store.advanceWorkflowGateHolderMaterialization({
+				questionId: holder.question_id,
+				stage,
+				...(cardMessageId ? { cardMessageId } : {}),
+				now: "2026-07-16T01:16:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+	}
+	const payload = {
+		schema_version: 1,
+		run_id: "run-1",
+		issue_id: "FLY-1307",
+		question_id: holder.question_id,
+		response: { approved: true },
+		actor: "founder",
+		approved_head: "a".repeat(40),
+		classification: "founder_direct_signal",
+		authority_id: holder.question_id,
+	};
+	expect(
+		store.applyWorkflowSourceEvent({
+			project: "flywheel",
+			sourceEventId: `founder-approves-${holder.question_id}`,
+			kind: "founder_approval",
+			schemaVersion: 1,
+			payloadJson: JSON.stringify(payload),
+			payloadDigest: canonicalSubmissionDigest(payload),
+		}),
+	).toMatchObject({ kind: "founder_claim", status: "applied" });
 }
 
 describe("engine-owned snapshot transition transaction", () => {
@@ -458,6 +534,22 @@ describe("engine-owned snapshot transition transaction", () => {
 			}),
 		).toEqual({ allow: false, reason: "holder_mismatch" });
 		expect(store.listWorkflowGateHoldersForMaterialization()).toHaveLength(1);
+		const observedAuthority = bindRunnerShipAuthority(store, holder!);
+		expect(
+			store.recordRunnerShipMergedObserved({
+				questionId: holder!.question_id,
+				expectedHolderState: "materializing",
+				expectedHolderHead: "a".repeat(40),
+				expectedAuthority: observedAuthority,
+				mergedHead: "a".repeat(40),
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-16T01:15:20.000Z",
+			}),
+		).toEqual({ status: "persisted" });
 		expect(store.listRunnerShipHoldersForMergeProbe()).toMatchObject([
 			{
 				runId: "run-1",
@@ -474,6 +566,15 @@ describe("engine-owned snapshot transition transaction", () => {
 				questionId: holder!.question_id,
 				mergedHead: "a".repeat(40),
 				now: "2026-07-16T01:15:30.000Z",
+				expectedHolderState: "materializing",
+				expectedHolderHead: "a".repeat(40),
+				expectedObservationHead: "a".repeat(40),
+				observedAuthority,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
 			}),
 		).toEqual({ ok: false, reason: "rogue_merge_before_approval" });
 		const rogueAlert = {
@@ -562,6 +663,15 @@ describe("engine-owned snapshot transition transaction", () => {
 				questionId: holder!.question_id,
 				mergedHead: "a".repeat(40),
 				now: "2026-07-18T01:16:00.000Z",
+				expectedHolderState: "approved",
+				expectedHolderHead: "a".repeat(40),
+				expectedObservationHead: "a".repeat(40),
+				observedAuthority,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
 			}),
 		).toEqual({ ok: true, idempotentReplay: false });
 		expect(store.getWorkflowRun("run-1")).toMatchObject({
@@ -740,6 +850,692 @@ describe("engine-owned snapshot transition transaction", () => {
 		expect(store.getSession("implement-1")?.awaiting_review_entered_at).toBe(
 			request.now,
 		);
+		store.close();
+	});
+
+	it("persists a resolved merge dead-end across restart and rearms on holder state change", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1624-runner-ship-"));
+		const dbPath = join(dir, "teamlead.db");
+		try {
+			let store = await engineRun({ dbPath, gateCarrier: true });
+			const holder = await openRunnerShipGate(store);
+			store.upsertSession({
+				execution_id: "implement-1",
+				issue_id: "FLY-1307",
+				project_name: "flywheel",
+				status: "awaiting_review",
+				pr_number: 1624,
+				pr_head_sha: "a".repeat(40),
+				review_question_id: holder.question_id,
+			});
+			store.setReviewBinding("implement-1", {
+				questionId: holder.question_id,
+				prHeadSha: "a".repeat(40),
+				shipTarget: {
+					runId: "run-1",
+					targetRepoPath: "/tmp/flywheel",
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					worktreeBindingGeneration: "generation-1",
+				},
+			});
+
+			const candidate = store.listRunnerShipHoldersForMergeProbe()[0]!;
+			expect(candidate).toMatchObject({
+				authority: {
+					status: "resolved",
+					repoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					prNumber: 1624,
+				},
+				fingerprint: "__main__:xrliAnnie/flywheel:1624",
+			});
+			expect(
+				store.recordRunnerShipMergedObserved({
+					questionId: holder.question_id,
+					expectedHolderState: "materializing",
+					expectedHolderHead: "a".repeat(40),
+					expectedAuthority: {
+						repoIdentity: "__main__",
+						probeRepoSlug: "xrliAnnie/flywheel",
+						prNumber: 1624,
+					},
+					mergedHead: "b".repeat(40),
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now: "2026-07-16T01:20:00.000Z",
+				}),
+			).toEqual({ status: "persisted" });
+			expect(
+				store.recordRunnerShipMergeDeadEnd({
+					questionId: holder.question_id,
+					expectedHolderState: "materializing",
+					expectedHolderHead: "a".repeat(40),
+					expectedAuthority: {
+						repoIdentity: "__main__",
+						probeRepoSlug: "xrliAnnie/flywheel",
+						prNumber: 1624,
+					},
+					expectedObservationHead: "b".repeat(40),
+					mergedHead: "b".repeat(40),
+					deadEndKind: "head_mismatch",
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now: "2026-07-16T01:20:01.000Z",
+				}),
+			).toEqual({ ok: true, idempotentReplay: false });
+			expect(store.listRunnerShipHoldersForMergeProbe()).toEqual([]);
+			store.close();
+
+			store = await StateStore.create(dbPath);
+			expect(store.listRunnerShipHoldersForMergeProbe()).toEqual([]);
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run(
+				"UPDATE workflow_gate_holder SET state = 'approved' WHERE question_id = ?",
+				[holder.question_id],
+			);
+			expect(store.listRunnerShipHoldersForMergeProbe()).toMatchObject([
+				{
+					holderState: "approved",
+					mergedObserved: {
+						status: "valid",
+						headSha: "b".repeat(40),
+					},
+				},
+			]);
+			store.close();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not rematerialize holders whose workflow run is completed", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const holder = await openRunnerShipGate(store);
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			"UPDATE workflow_run SET status = 'completed' WHERE run_id = 'run-1'",
+		);
+
+		expect(holder.materialization_stage).toBe("question_intent");
+		expect(store.listWorkflowGateHoldersForMaterialization()).toEqual([]);
+		store.close();
+	});
+
+	it("distinguishes legacy, unavailable, and conflicting runner-ship repository authority", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const holder = await openRunnerShipGate(store);
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "awaiting_review",
+			pr_number: 1624,
+			pr_head_sha: "a".repeat(40),
+			review_question_id: holder.question_id,
+		});
+		expect(store.listRunnerShipHoldersForMergeProbe()[0]?.authority).toEqual({
+			status: "legacy_missing",
+			prNumber: 1624,
+		});
+
+		store.upsertSession({
+			execution_id: "another-pr",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "completed",
+			pr_number: 1625,
+			pr_head_sha: "a".repeat(40),
+		});
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			"UPDATE sessions SET pr_head_sha = ? WHERE execution_id = 'another-pr'",
+			["a".repeat(40)],
+		);
+		expect(store.listRunnerShipHoldersForMergeProbe()[0]?.authority).toEqual({
+			status: "unavailable",
+		});
+
+		store.setReviewBinding("implement-1", {
+			questionId: holder.question_id,
+			prHeadSha: "a".repeat(40),
+			shipTarget: {
+				runId: "run-1",
+				targetRepoPath: "/tmp/flywheel",
+				targetRepoIdentity: "__main__",
+				probeRepoSlug: "xrliAnnie/flywheel",
+				worktreeBindingGeneration: "generation-1",
+			},
+		});
+		db.run(
+			`INSERT INTO workflow_node_pr_binding
+			   (run_id, node_id, attempt, pr_number, head_sha, target_repo_identity,
+			    probe_repo_slug, target_repo_path, worktree_binding_generation,
+			    receipt_id, bound_at)
+			 VALUES ('run-1', 'implement', 1, 1624, ?, 'nested',
+			         'xrliAnnie/nested', '/tmp/nested', 'generation-1',
+			         'conflicting-binding', '2026-07-16T01:19:00.000Z')`,
+			["a".repeat(40)],
+		);
+		const conflict = store.listRunnerShipHoldersForMergeProbe()[0]!;
+		expect(conflict.authority).toMatchObject({
+			status: "authority_conflict",
+			digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+		});
+		if (conflict.authority.status !== "authority_conflict") {
+			throw new Error("authority conflict missing");
+		}
+		expect(
+			store.recordRunnerShipAuthorityConflict({
+				questionId: holder.question_id,
+				expectedDigest: conflict.authority.digest,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-16T01:20:00.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		expect(
+			store.recordRunnerShipAuthorityConflict({
+				questionId: holder.question_id,
+				expectedDigest: conflict.authority.digest,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-16T01:20:00.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: true });
+		store.close();
+	});
+
+	it("atomically quarantines conflicting heads in one observation lineage", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const holder = await openRunnerShipGate(store);
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "awaiting_review",
+			pr_number: 1624,
+			pr_head_sha: "a".repeat(40),
+			review_question_id: holder.question_id,
+		});
+		store.setReviewBinding("implement-1", {
+			questionId: holder.question_id,
+			prHeadSha: "a".repeat(40),
+			shipTarget: {
+				runId: "run-1",
+				targetRepoPath: "/tmp/flywheel",
+				targetRepoIdentity: "__main__",
+				probeRepoSlug: "xrliAnnie/flywheel",
+				worktreeBindingGeneration: "generation-1",
+			},
+		});
+		const base = {
+			questionId: holder.question_id,
+			expectedHolderState: "materializing",
+			expectedHolderHead: "a".repeat(40),
+			expectedAuthority: {
+				repoIdentity: "__main__",
+				probeRepoSlug: "xrliAnnie/flywheel",
+				prNumber: 1624,
+			},
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved" as const,
+			},
+			now: "2026-07-16T01:20:00.000Z",
+		};
+		expect(
+			store.recordRunnerShipMergedObserved({
+				...base,
+				mergedHead: "b".repeat(40),
+			}),
+		).toEqual({ status: "persisted" });
+		expect(
+			store.recordRunnerShipMergedObserved({
+				...base,
+				mergedHead: "c".repeat(40),
+			}),
+		).toEqual({ status: "quarantined" });
+		expect(store.listRunnerShipHoldersForMergeProbe()).toEqual([]);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "runner_ship_observation_quarantine"),
+		).toHaveLength(1);
+		expect(
+			store
+				.listWorkflowAlertOutbox()
+				.filter(
+					(row) =>
+						row.payload.metadata.workflowEngine.disposition ===
+						"observation_corrupt",
+				),
+		).toHaveLength(1);
+		store.close();
+	});
+
+	it("rejects a dead-end write when the trusted observation head changes", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const holder = await openRunnerShipGate(store);
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "awaiting_review",
+			pr_number: 1624,
+			pr_head_sha: "a".repeat(40),
+			review_question_id: holder.question_id,
+		});
+		store.setReviewBinding("implement-1", {
+			questionId: holder.question_id,
+			prHeadSha: "a".repeat(40),
+			shipTarget: {
+				runId: "run-1",
+				targetRepoPath: "/tmp/flywheel",
+				targetRepoIdentity: "__main__",
+				probeRepoSlug: "xrliAnnie/flywheel",
+				worktreeBindingGeneration: "generation-1",
+			},
+		});
+		const authority = {
+			repoIdentity: "__main__",
+			probeRepoSlug: "xrliAnnie/flywheel",
+			prNumber: 1624,
+		};
+		store.recordRunnerShipMergedObserved({
+			questionId: holder.question_id,
+			expectedHolderState: "materializing",
+			expectedHolderHead: "a".repeat(40),
+			expectedAuthority: authority,
+			mergedHead: "b".repeat(40),
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+			now: "2026-07-16T01:20:00.000Z",
+		});
+		expect(
+			store.recordRunnerShipMergeDeadEnd({
+				questionId: holder.question_id,
+				expectedHolderState: "materializing",
+				expectedHolderHead: "a".repeat(40),
+				expectedAuthority: authority,
+				expectedObservationHead: "c".repeat(40),
+				mergedHead: "c".repeat(40),
+				deadEndKind: "head_mismatch",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-16T01:20:01.000Z",
+			}),
+		).toEqual({ ok: false, reason: "observation_stale" });
+		expect(store.listWorkflowAlertOutbox()).toEqual([]);
+		store.close();
+	});
+
+	it("completes only a resolved approved authority with current persisted merge evidence", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const holder = await openRunnerShipGate(store);
+		const authority = bindRunnerShipAuthority(store, holder);
+		expect(
+			store.recordRunnerShipMergedObserved({
+				questionId: holder.question_id,
+				expectedHolderState: "materializing",
+				expectedHolderHead: "a".repeat(40),
+				expectedAuthority: authority,
+				mergedHead: "a".repeat(40),
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-16T01:20:00.000Z",
+			}),
+		).toEqual({ status: "persisted" });
+		approveRunnerShipGate(store, holder);
+		const alertIdentity = {
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			leadResolution: "resolved" as const,
+		};
+		expect(
+			store.completeWorkflowGateRunAfterShip({
+				questionId: holder.question_id,
+				mergedHead: "a".repeat(40),
+				now: "2026-07-18T01:16:00.000Z",
+				expectedHolderState: "awaiting_review",
+				expectedHolderHead: "a".repeat(40),
+				expectedObservationHead: "a".repeat(40),
+				observedAuthority: authority,
+				alertIdentity,
+			}),
+		).toEqual({ ok: false, reason: "candidate_changed" });
+		expect(store.listWorkflowAlertOutbox()).toEqual([]);
+		expect(
+			store.completeWorkflowGateRunAfterShip({
+				questionId: holder.question_id,
+				mergedHead: "a".repeat(40),
+				now: "2026-07-18T01:16:00.000Z",
+				expectedHolderState: "approved",
+				expectedHolderHead: "a".repeat(40),
+				expectedObservationHead: "a".repeat(40),
+				observedAuthority: authority,
+				alertIdentity,
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		expect(store.getWorkflowRun("run-1")?.status).toBe("completed");
+		expect(
+			store.completeWorkflowGateRunAfterShip({
+				questionId: holder.question_id,
+				mergedHead: "a".repeat(40),
+				now: "2026-07-18T01:16:00.000Z",
+				expectedHolderState: "approved",
+				expectedHolderHead: "a".repeat(40),
+				expectedObservationHead: "a".repeat(40),
+				observedAuthority: authority,
+				alertIdentity,
+			}),
+		).toEqual({ ok: true, idempotentReplay: true });
+		expect(
+			store.completeWorkflowGateRunAfterShip({
+				questionId: holder.question_id,
+				mergedHead: "a".repeat(40),
+				now: "2026-07-18T01:16:00.000Z",
+				expectedHolderState: "approved",
+				expectedHolderHead: "a".repeat(40),
+				expectedObservationHead: "a".repeat(40),
+				observedAuthority: {
+					...authority,
+					probeRepoSlug: "xrliAnnie/not-flywheel",
+				},
+				alertIdentity,
+			}),
+		).toEqual({ ok: false, reason: "completion_raced" });
+		store.close();
+	});
+
+	it("refuses completion when the merged head differs from the founder-frozen Gate head", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const holder = await openRunnerShipGate(store);
+		const authority = bindRunnerShipAuthority(store, holder);
+		expect(
+			store.recordRunnerShipMergedObserved({
+				questionId: holder.question_id,
+				expectedHolderState: "materializing",
+				expectedHolderHead: "a".repeat(40),
+				expectedAuthority: authority,
+				mergedHead: "b".repeat(40),
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-16T01:20:00.000Z",
+			}),
+		).toEqual({ status: "persisted" });
+		approveRunnerShipGate(store, holder);
+
+		expect(
+			store.completeWorkflowGateRunAfterShip({
+				questionId: holder.question_id,
+				mergedHead: "b".repeat(40),
+				now: "2026-07-18T01:16:00.000Z",
+				expectedHolderState: "approved",
+				expectedHolderHead: "a".repeat(40),
+				expectedObservationHead: "b".repeat(40),
+				observedAuthority: authority,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			}),
+		).toEqual({ ok: false, reason: "subject_mismatch" });
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+		expect(store.listWorkflowAlertOutbox()).toEqual([]);
+		store.close();
+	});
+
+	it("records legacy merge anomalies once and refuses them after a durable binding appears", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const holder = await openRunnerShipGate(store);
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "awaiting_review",
+			pr_number: 1624,
+		});
+		const anomaly = {
+			questionId: holder.question_id,
+			expectedHolderState: "materializing",
+			expectedHolderHead: "a".repeat(40),
+			observed: {
+				prNumber: 1624,
+				mergedHead: "b".repeat(40),
+				anomaly: "head_mismatch" as const,
+			},
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved" as const,
+			},
+			now: "2026-07-16T01:20:00.000Z",
+		};
+		expect(store.recordRunnerShipLegacyMergeAnomaly(anomaly)).toEqual({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(store.recordRunnerShipLegacyMergeAnomaly(anomaly)).toEqual({
+			ok: true,
+			idempotentReplay: true,
+		});
+		expect(
+			store.listWorkflowAlertOutbox()[0]?.payload.metadata.workflowEngine
+				.disposition,
+		).toBe("runner_ship_legacy_merge_anomaly");
+		bindRunnerShipAuthority(store, holder);
+		expect(store.recordRunnerShipLegacyMergeAnomaly(anomaly)).toEqual({
+			ok: false,
+			reason: "binding_present",
+		});
+		store.close();
+	});
+
+	it("deduplicates enrichment failures by durable projection rather than volatile errors", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const holder = await openRunnerShipGate(store);
+		const authority = bindRunnerShipAuthority(store, holder);
+		store.recordRunnerShipMergedObserved({
+			questionId: holder.question_id,
+			expectedHolderState: "materializing",
+			expectedHolderHead: "a".repeat(40),
+			expectedAuthority: authority,
+			mergedHead: null,
+			rawHeadRefOid: "",
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+			now: "2026-07-16T01:20:00.000Z",
+		});
+		const fingerprint = "__main__:xrliAnnie/flywheel:1624";
+		const first = store.recordRunnerShipHeadEnrichmentFailure({
+			questionId: holder.question_id,
+			fingerprint,
+			error: "timeout-A",
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+			now: "2026-07-16T01:21:00.000Z",
+		});
+		expect(first).toEqual({ ok: true, idempotentReplay: false });
+		expect(
+			store.recordRunnerShipHeadEnrichmentFailure({
+				questionId: holder.question_id,
+				fingerprint,
+				error: "spawn-B",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-16T01:22:00.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: true });
+		expect(
+			store.listWorkflowAlertOutbox()[0]?.payload.metadata.workflowEngine
+				.disposition,
+		).toBe("runner_ship_head_enrichment_failed");
+		store.close();
+	});
+
+	it("deduplicates hydrated-head revalidation failures after a null-to-valid upgrade", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const holder = await openRunnerShipGate(store);
+		const authority = bindRunnerShipAuthority(store, holder);
+		const alertIdentity = {
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			leadResolution: "resolved" as const,
+		};
+		for (const mergedHead of [null, "a".repeat(40)]) {
+			store.recordRunnerShipMergedObserved({
+				questionId: holder.question_id,
+				expectedHolderState: "materializing",
+				expectedHolderHead: "a".repeat(40),
+				expectedAuthority: authority,
+				mergedHead,
+				alertIdentity,
+				now: "2026-07-16T01:20:00.000Z",
+			});
+		}
+		const input = {
+			questionId: holder.question_id,
+			fingerprint: "__main__:xrliAnnie/flywheel:1624",
+			expectedHydratedHead: "a".repeat(40),
+			error: "nonzero-A",
+			alertIdentity,
+			now: "2026-07-16T01:21:00.000Z",
+		};
+		expect(store.recordRunnerShipHydrationRevalidationFailure(input)).toEqual({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(
+			store.recordRunnerShipHydrationRevalidationFailure({
+				...input,
+				error: "timeout-B",
+			}),
+		).toEqual({ ok: true, idempotentReplay: true });
+		expect(
+			store.listWorkflowAlertOutbox()[0]?.payload.metadata.workflowEngine
+				.disposition,
+		).toBe("runner_ship_hydration_reval_failed");
+		store.close();
+	});
+
+	it("projects malformed observation payloads as corruption and atomically quarantines them", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const holder = await openRunnerShipGate(store);
+		bindRunnerShipAuthority(store, holder);
+		const fingerprint = "__main__:xrliAnnie/flywheel:1624";
+		store.appendWorkflowRunEvent({
+			runId: "run-1",
+			eventUid: `runner_ship_merged_observed:${holder.question_id}:${fingerprint}`,
+			kind: "runner_ship_merged_observed",
+			nodeId: "founder_gate",
+			executionId: "implement-1",
+			payload: "malformed-ledger-payload",
+		});
+		const conflict =
+			store.listRunnerShipHoldersForMergeProbe()[0]?.observationConflict;
+		expect(conflict).toMatchObject({
+			fingerprint,
+			digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+		});
+		if (!conflict) throw new Error("corrupt projection missing");
+		expect(
+			store.recordRunnerShipMergedObservationConflict({
+				questionId: holder.question_id,
+				fingerprint,
+				expectedDigest: conflict.digest,
+				conflictingHeads: conflict.conflictingHeads,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-16T01:21:00.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		expect(store.listRunnerShipHoldersForMergeProbe()).toHaveLength(0);
+		expect(
+			store.listWorkflowAlertOutbox()[0]?.payload.metadata.workflowEngine
+				.disposition,
+		).toBe("observation_corrupt");
+		store.close();
+	});
+
+	it("uses the event_uid index for the global observation projection range scan", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const db = (
+			store as unknown as {
+				db: {
+					exec(sql: string): Array<{ columns: string[]; values: unknown[][] }>;
+				};
+			}
+		).db;
+		const plan = db.exec(
+			`EXPLAIN QUERY PLAN
+			 SELECT run_id, event_uid, kind, payload
+			   FROM workflow_run_event
+			  WHERE (event_uid >= 'runner_ship_merged_observed:'
+			         AND event_uid < 'runner_ship_merged_observed;')
+			     OR (event_uid >= 'runner_ship_observation_quarantine:'
+			         AND event_uid < 'runner_ship_observation_quarantine;')
+			  ORDER BY event_uid`,
+		)[0];
+		const detailIndex = plan?.columns.indexOf("detail") ?? -1;
+		const details =
+			detailIndex < 0
+				? ""
+				: (plan?.values ?? [])
+						.map((row) => String(row[detailIndex]))
+						.join("\n");
+		expect(details).toContain("USING INDEX");
+		expect(details).not.toContain("SCAN workflow_run_event");
 		store.close();
 	});
 
