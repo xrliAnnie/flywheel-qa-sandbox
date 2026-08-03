@@ -68,8 +68,13 @@ import {
 } from "./post-ship-finalization.js";
 import { isClosedSettledCompletion } from "./workflow-completion-settled.js";
 
-/** Default marker directory — mirrors `flywheel-comm/complete.ts` writeMarker(). */
+/**
+ * Default marker directory — mirrors `flywheel-comm/complete.ts` writeMarker().
+ * FLY-1608: QA slots override this path so their Bridge never drains production.
+ */
 export function defaultMarkerDir(): string {
+	const fromEnv = process.env.FLYWHEEL_COMPLETE_MARKER_DIR?.trim();
+	if (fromEnv) return fromEnv;
 	return join(
 		process.env.HOME ?? homedir(),
 		".flywheel",
@@ -78,14 +83,9 @@ export function defaultMarkerDir(): string {
 	);
 }
 
-/** Default quarantine directory for un-replayable markers. */
+/** One marker-dir knob must isolate quarantine too; never fall back separately. */
 export function defaultQuarantineDir(): string {
-	return join(
-		process.env.HOME ?? homedir(),
-		".flywheel",
-		"state",
-		"complete-failed-quarantine",
-	);
+	return `${defaultMarkerDir()}-quarantine`;
 }
 
 // FLY-222 #1 (Codex code-review MED-1): `no_code` must be a recognized route
@@ -400,7 +400,7 @@ export async function tryReconcileComplete(
 ): Promise<ReconcileOutcome> {
 	const log = deps.log ?? ((m: string) => console.log(m));
 	const markerDir = deps.markerDir ?? defaultMarkerDir();
-	const quarantineDir = deps.quarantineDir ?? defaultQuarantineDir();
+	const quarantineDir = deps.quarantineDir ?? `${markerDir}-quarantine`;
 
 	if (!safeExecId(execId)) return { kind: "absent" };
 

@@ -416,7 +416,7 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
    # this event — so all prior bookkeeping (docs archive, MEMORY/Linear
    # update, restart-services, worktree remove, docs commit+push) must be
    # done. 4 retries with exponential backoff; on all-fail, writes a marker
-   # file to `$HOME/.flywheel/state/complete-failed/${FLYWHEEL_EXEC_ID}.json`
+   # file to `${FLYWHEEL_COMPLETE_MARKER_DIR:-$HOME/.flywheel/state/complete-failed}/${FLYWHEEL_EXEC_ID}.json`
    # and exits 1 (fail-close — stale patrol reconciles later).
    if [ -z "$FLYWHEEL_COMM_CLI" ] || [ -z "$FLYWHEEL_EXEC_ID" ]; then
      echo "[complete] FATAL: FLYWHEEL_COMM_CLI or FLYWHEEL_EXEC_ID not set."
@@ -431,7 +431,7 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
        --merged \
        --session-role main ; then
      echo "[complete] ERROR: session_completed emit failed after 4 retries."
-     echo "[complete] Marker written to \$HOME/.flywheel/state/complete-failed/."
+     echo "[complete] Marker written to ${FLYWHEEL_COMPLETE_MARKER_DIR:-$HOME/.flywheel/state/complete-failed}/."
      echo "[complete] DO NOT manually mark session completed — let stale patrol reconcile."
      exit 1
    fi

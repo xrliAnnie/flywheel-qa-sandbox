@@ -21,6 +21,8 @@ import { applyTransition } from "../applyTransition.js";
 import {
 	applyQuarantineFallback,
 	buildLoopbackBaseUrl,
+	defaultMarkerDir,
+	defaultQuarantineDir,
 	expectedStatusFromMarker,
 	reconcileCompleteFailedMarkers,
 	tryReconcileComplete,
@@ -110,6 +112,41 @@ describe("buildLoopbackBaseUrl", () => {
 	});
 	it("brackets IPv6 (Codex R1 #5)", () => {
 		expect(buildLoopbackBaseUrl("::1", 9876)).toBe("http://[::1]:9876");
+	});
+});
+
+describe("complete marker default directories (FLY-1608)", () => {
+	const originalHome = process.env.HOME;
+	const originalMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
+
+	afterEach(() => {
+		if (originalHome === undefined) delete process.env.HOME;
+		else process.env.HOME = originalHome;
+		if (originalMarkerDir === undefined) {
+			delete process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
+		} else {
+			process.env.FLYWHEEL_COMPLETE_MARKER_DIR = originalMarkerDir;
+		}
+	});
+
+	it("uses the trimmed slot override for marker + derived quarantine", () => {
+		process.env.FLYWHEEL_COMPLETE_MARKER_DIR =
+			"  /tmp/fly1608-slot/complete-failed  ";
+		expect(defaultMarkerDir()).toBe("/tmp/fly1608-slot/complete-failed");
+		expect(defaultQuarantineDir()).toBe(
+			"/tmp/fly1608-slot/complete-failed-quarantine",
+		);
+	});
+
+	it("unset override is byte-compatible with the legacy HOME paths", () => {
+		delete process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
+		process.env.HOME = "/tmp/fly1608-home";
+		expect(defaultMarkerDir()).toBe(
+			"/tmp/fly1608-home/.flywheel/state/complete-failed",
+		);
+		expect(defaultQuarantineDir()).toBe(
+			"/tmp/fly1608-home/.flywheel/state/complete-failed-quarantine",
+		);
 	});
 });
 
@@ -304,8 +341,10 @@ describe("tryReconcileComplete", () => {
 	let dir: string;
 	let markerDir: string;
 	let quarantineDir: string;
+	let originalHome: string | undefined;
 
 	beforeEach(() => {
+		originalHome = process.env.HOME;
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0"; // FLY-869: FSM tests bypass ship gate
 		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		dir = mkdtempSync(join(tmpdir(), "fly172-"));
@@ -313,6 +352,8 @@ describe("tryReconcileComplete", () => {
 		quarantineDir = join(dir, "quarantine");
 	});
 	afterEach(() => {
+		if (originalHome === undefined) delete process.env.HOME;
+		else process.env.HOME = originalHome;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
@@ -337,6 +378,40 @@ describe("tryReconcileComplete", () => {
 		const store = makeStore();
 		const r = await tryReconcileComplete("nope", baseDeps(store));
 		expect(r.kind).toBe("absent");
+	});
+
+	it("derives quarantine from an explicitly resolved markerDir", async () => {
+		const legacyHome = join(dir, "legacy-home");
+		process.env.HOME = legacyHome;
+		mkdirSync(markerDir, { recursive: true });
+		writeFileSync(join(markerDir, "bad.json"), "not-json", "utf8");
+		const store = makeStore();
+		const markerOnlyDeps = {
+			store: store as never,
+			bridgeBaseUrl: "http://127.0.0.1:9876",
+			ingestToken: "tok",
+			markerDir,
+			log: () => {},
+		};
+
+		const result = await tryReconcileComplete("bad", markerOnlyDeps);
+
+		expect(result).toMatchObject({
+			kind: "quarantined",
+			quarantinePath: join(`${markerDir}-quarantine`, "bad.json"),
+		});
+		expect(existsSync(join(`${markerDir}-quarantine`, "bad.json"))).toBe(true);
+		expect(
+			existsSync(
+				join(
+					legacyHome,
+					".flywheel",
+					"state",
+					"complete-failed-quarantine",
+					"bad.json",
+				),
+			),
+		).toBe(false);
 	});
 
 	it("FLY-1505 settles the explicit failed-attempt route, persists the approval-bound head marker, and suppresses automatic re-wake", async () => {

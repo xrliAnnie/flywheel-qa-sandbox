@@ -75,8 +75,17 @@ set -euo pipefail
 # dry-run only renders a launch plan and never becomes a writer, so it stays
 # hermetic and does not load the runtime package before its node shim executes.
 if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
-  node --input-type=module -e \
-    'import("flywheel-v2-kernel").then(({requireLegacyWriterAllowedFromEnvironment}) => requireLegacyWriterAllowedFromEnvironment(process.env))'
+	V2_GUARD_PACKAGE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+	if ! (
+		cd "$V2_GUARD_PACKAGE_DIR"
+		node --input-type=module -e \
+			'import("flywheel-v2-kernel").then(({requireLegacyWriterAllowedFromEnvironment}) => requireLegacyWriterAllowedFromEnvironment(process.env))'
+	); then
+		echo "[lead] ERROR: FLY-1502 v2 legacy-writer guard failed (see error above)." >&2
+		echo "[lead]   If it is ERR_MODULE_NOT_FOUND: flywheel-v2-kernel is not installed/built in ${V2_GUARD_PACKAGE_DIR} — run 'pnpm install && pnpm -r build' at the repo root." >&2
+		echo "[lead]   Otherwise: the armed v2 cutover authority denied legacy Lead startup — this fail-closed stop is intentional (FLY-1502)." >&2
+		exit 1
+	fi
 fi
 
 # ════════════════════════════════════════════════════════════════

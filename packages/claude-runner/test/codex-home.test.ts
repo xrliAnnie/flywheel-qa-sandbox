@@ -881,6 +881,7 @@ describe("FLY-1188 full-PR HIGH-4: stripInheritedSecretEnv (daemon env leak)", (
 			FLYWHEEL_BRIDGE_URL: "http://x",
 			FLYWHEEL_COMM_DB: "/db",
 			FLYWHEEL_GATE_MARKER_DIR: "/m",
+			FLYWHEEL_COMPLETE_MARKER_DIR: "/complete",
 			PATH: "/usr/bin",
 			HOME: "/home/u",
 		});
@@ -888,6 +889,7 @@ describe("FLY-1188 full-PR HIGH-4: stripInheritedSecretEnv (daemon env leak)", (
 		expect(out.FLYWHEEL_BRIDGE_URL).toBe("http://x");
 		expect(out.FLYWHEEL_COMM_DB).toBe("/db");
 		expect(out.FLYWHEEL_GATE_MARKER_DIR).toBe("/m");
+		expect(out.FLYWHEEL_COMPLETE_MARKER_DIR).toBe("/complete");
 		expect(out.PATH).toBe("/usr/bin");
 		expect(out.HOME).toBe("/home/u");
 	});

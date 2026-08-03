@@ -9,7 +9,13 @@
  * - Git field derivation (branch parse, commit count, diff numstat)
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -79,6 +85,7 @@ describe("complete command", () => {
 		process.env.HOME = tmpHome;
 		delete process.env.FLYWHEEL_INGEST_TOKEN;
 		delete process.env.FLYWHEEL_GATE_MARKER_DIR;
+		delete process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
 		delete process.env.FLYWHEEL_COMM_DB;
 		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
 
@@ -708,6 +715,46 @@ describe("complete command", () => {
 				attempt: 2,
 				turnEpoch: 1,
 			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("Bridge 5xx writes the fail-close marker only to the slot override", async () => {
+		vi.useFakeTimers();
+		try {
+			activateCompletion();
+			const slotMarkerDir = join(tmpHome, "slot-state", "complete-failed");
+			process.env.FLYWHEEL_COMPLETE_MARKER_DIR = `  ${slotMarkerDir}  `;
+			mockFetch.mockResolvedValue({
+				ok: false,
+				status: 500,
+				text: async () => "server error",
+			});
+
+			const completion = complete({
+				route: "auto_approve",
+				pr: 42,
+				merged: true,
+			});
+			const expectation = expect(completion).rejects.toThrow("process.exit(1)");
+			await vi.advanceTimersByTimeAsync(8000);
+			await expectation;
+
+			expect(
+				readFileSync(join(slotMarkerDir, "exec-108.json"), "utf8"),
+			).toContain('"execution_id": "exec-108"');
+			expect(
+				existsSync(
+					join(
+						tmpHome,
+						".flywheel",
+						"state",
+						"complete-failed",
+						"exec-108.json",
+					),
+				),
+			).toBe(false);
 		} finally {
 			vi.useRealTimers();
 		}

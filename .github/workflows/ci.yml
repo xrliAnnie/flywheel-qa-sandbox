@@ -304,6 +304,7 @@ jobs:
           bash scripts/__tests__/install-hooks-fly1389.test.sh
           bash scripts/__tests__/register-local-marketplace.test.sh
           bash packages/teamlead/scripts/__tests__/claude-lead-resume-recovery.test.sh
+          bash scripts/__tests__/test-fly1608-lead-guard-cwd.test.sh
           bash scripts/__tests__/test-deploy-fly1389.test.sh
 
       # FLY-1062: npm distribution layer — hermetic suites: the packaging

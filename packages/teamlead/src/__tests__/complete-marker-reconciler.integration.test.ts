@@ -73,6 +73,8 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 	let markerDir: string;
 	let quarantineDir: string;
 	let tmp: string;
+	let originalHome: string | undefined;
+	let originalCompleteMarkerDir: string | undefined;
 
 	async function startRunning(execId: string, issueId: string) {
 		const res = await fetch(`${baseUrl}/events`, {
@@ -115,6 +117,8 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 	}
 
 	beforeEach(async () => {
+		originalHome = process.env.HOME;
+		originalCompleteMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
 		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the
 		// marker-replay FSM parity, not the approval gate.
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
@@ -143,6 +147,13 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 	});
 
 	afterEach(async () => {
+		if (originalHome === undefined) delete process.env.HOME;
+		else process.env.HOME = originalHome;
+		if (originalCompleteMarkerDir === undefined) {
+			delete process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
+		} else {
+			process.env.FLYWHEEL_COMPLETE_MARKER_DIR = originalCompleteMarkerDir;
+		}
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
@@ -237,6 +248,48 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 		expect(store.getSession("execD")!.status).toBe("awaiting_review");
 		expect(readdirSync(markerDir)).not.toContain("execD.json");
 		expect(r2.reconciled).toBe(1);
+	});
+
+	it("boot drain honors the slot directory and leaves production inventory untouched", async () => {
+		const fakeHome = join(tmp, "production-home");
+		const productionMarkerDir = join(
+			fakeHome,
+			".flywheel",
+			"state",
+			"complete-failed",
+		);
+		const productionQuarantineDir = `${productionMarkerDir}-quarantine`;
+		mkdirSync(productionMarkerDir, { recursive: true });
+		mkdirSync(productionQuarantineDir, { recursive: true });
+		writeFileSync(
+			join(productionMarkerDir, "production-decoy.json"),
+			"production-bytes-must-not-move",
+			"utf8",
+		);
+		writeFileSync(
+			join(productionQuarantineDir, "existing.json"),
+			"existing-quarantine-bytes",
+			"utf8",
+		);
+		const beforeMarkers = readdirSync(productionMarkerDir);
+		const beforeQuarantine = readdirSync(productionQuarantineDir);
+
+		process.env.HOME = fakeHome;
+		process.env.FLYWHEEL_COMPLETE_MARKER_DIR = markerDir;
+		await startRunning("execSlot", "iss-execSlot");
+		writeMarker("execSlot", "needs_review", false);
+
+		const result = await reconcileCompleteFailedMarkers({
+			store,
+			bridgeBaseUrl: baseUrl,
+			ingestToken: "ingest-secret",
+			log: () => {},
+		});
+
+		expect(result).toEqual({ scanned: 1, reconciled: 1, quarantined: 0 });
+		expect(store.getSession("execSlot")?.status).toBe("awaiting_review");
+		expect(readdirSync(productionMarkerDir)).toEqual(beforeMarkers);
+		expect(readdirSync(productionQuarantineDir)).toEqual(beforeQuarantine);
 	});
 
 	it("invalid route → unreplayable (route guard would 200+warning) → quarantined, session stays running", async () => {

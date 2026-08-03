@@ -1258,6 +1258,38 @@ describe("TmuxAdapter", () => {
 			expect(args.join(" ")).not.toContain("FLYWHEEL_COMM_DB");
 		});
 
+		it("passes a configured complete-marker directory into the runner window only when set", async () => {
+			const original = process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
+			try {
+				process.env.FLYWHEEL_COMPLETE_MARKER_DIR =
+					"  /tmp/fly1608-slot/complete-failed  ";
+				const present = makeMockExec({ paneDead: true });
+				await new TmuxAdapter("flywheel", present.fn, 10).execute(makeCtx());
+				const presentWindow = present.calls.find(
+					(c) => c.args[0] === "new-window",
+				);
+				expect(presentWindow?.args.join(" ")).toContain(
+					"FLYWHEEL_COMPLETE_MARKER_DIR=/tmp/fly1608-slot/complete-failed",
+				);
+
+				delete process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
+				const absent = makeMockExec({ paneDead: true });
+				await new TmuxAdapter("flywheel", absent.fn, 10).execute(makeCtx());
+				const absentWindow = absent.calls.find(
+					(c) => c.args[0] === "new-window",
+				);
+				expect(absentWindow?.args.join(" ")).not.toContain(
+					"FLYWHEEL_COMPLETE_MARKER_DIR",
+				);
+			} finally {
+				if (original === undefined) {
+					delete process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
+				} else {
+					process.env.FLYWHEEL_COMPLETE_MARKER_DIR = original;
+				}
+			}
+		});
+
 		// GEO-266: FLYWHEEL_EXEC_ID env injection
 		it("execute() always injects FLYWHEEL_EXEC_ID", async () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });

@@ -109,6 +109,12 @@ describe("FLY-1393 flag truth", () => {
 		);
 	});
 
+	it("registers the FLY-1608 complete marker path as non-flag plumbing", () => {
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_COMPLETE_MARKER_DIR).toMatch(
+			/plumbing.*marker dir/i,
+		);
+	});
+
 	it("fails tombstones and unknown variables, but permits remaining retiring flags in env", () => {
 		const tombstone = validateFlagTruthEnvironment([
 			"FLYWHEEL_DETECTION_GAP_SCAN",

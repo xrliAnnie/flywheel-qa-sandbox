@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # FLY-529: composition test — mirrors how scripts/test-deploy.sh assembles the
 # qa-room.sh lib outputs into the Lead/Bridge env arrays + the slot-local
-# projects file, plus the byte-compat default (neither --alerts nor --mode
-# roundtable => no qa-room env injected at all).
+# projects file, plus the default shape (neither --alerts nor --mode roundtable
+# still carries the always-on FLY-1608 complete-marker isolation pair).
 #
 # This complements qa-room-env.test.sh (which unit-tests each pure function) by
 # checking the same end-to-end shape test-deploy produces: the shell-side alert
@@ -25,21 +25,23 @@ cat > "${ROOT}/slots.json" <<'EOF'
  "alertChannel":{"channelId":"AL","repairBotTokenEnv":"TEST_BOT_TOKEN_1"}}
 EOF
 
-# ── byte-compat default: MODE=slot, ALERTS=0 → arrays stay empty ─────────────
-# (test-deploy only calls the lib inside `if MODE==roundtable` / `if ALERTS==1`.)
-LEAD_EXTRA_ENV=(); BRIDGE_EXTRA_ENV=()
-if [[ ${#LEAD_EXTRA_ENV[@]} -eq 0 && ${#BRIDGE_EXTRA_ENV[@]} -eq 0 ]]; then
-  pass "byte-compat: slot mode + no --alerts injects no qa-room env"
+# ── default: MODE=slot, ALERTS=0 → only complete-marker isolation ────────────
+SLOT_DIR="/tmp/flywheel-test-slot-1"
+LEAD_EXTRA_ENV=("FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed")
+BRIDGE_EXTRA_ENV=("FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed")
+if [[ ${#LEAD_EXTRA_ENV[@]} -eq 1 && ${#BRIDGE_EXTRA_ENV[@]} -eq 1 ]] \
+  && [[ "${LEAD_EXTRA_ENV[0]}" == "${BRIDGE_EXTRA_ENV[0]}" ]]; then
+  pass "default: slot mode injects only the shared complete-marker isolation path"
 else
   fail "byte-compat default" "lead=${#LEAD_EXTRA_ENV[@]} bridge=${#BRIDGE_EXTRA_ENV[@]}"
 fi
 
 # ── alerts wiring (as test-deploy assembles it for slot 1) ──────────────────
-SLOT_DIR="/tmp/flywheel-test-slot-1"
 BOT_TOKEN_ENV="TEST_BOT_TOKEN_1"; TEST_BOT_TOKEN="tok-1"; AGENT_ID="flywheel-test-1"
 ALERT_CHANNEL_ID=$(jq -r '.alertChannel.channelId' "${ROOT}/slots.json")
 ALERT_REPAIR_BOT_TOKEN_ENV=$(jq -r --arg d "$BOT_TOKEN_ENV" '.alertChannel.repairBotTokenEnv // $d' "${ROOT}/slots.json")
-LEAD_EXTRA_ENV=(); BRIDGE_EXTRA_ENV=()
+LEAD_EXTRA_ENV=("FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed")
+BRIDGE_EXTRA_ENV=("FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed")
 while IFS= read -r l; do [[ -n "$l" ]] && { BRIDGE_EXTRA_ENV+=("$l"); LEAD_EXTRA_ENV+=("$l"); }; done < <(qa_room_alert_iso_env "$SLOT_DIR")
 while IFS= read -r l; do [[ -n "$l" ]] && BRIDGE_EXTRA_ENV+=("$l"); done < <(qa_room_alert_bridge_env "$ALERT_CHANNEL_ID" "$ALERT_REPAIR_BOT_TOKEN_ENV")
 LEAD_EXTRA_ENV+=("FLYWHEEL_PROJECTS_FILE=${SLOT_DIR}/flywheel-projects.json")

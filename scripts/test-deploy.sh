@@ -607,6 +607,13 @@ mkdir -p "${SLOT_DIR}/discord-state"
 # `set -u` would otherwise abort).
 LEAD_EXTRA_ENV=()
 BRIDGE_EXTRA_ENV=()
+# FLY-1608: isolate both sides of the fail-close complete marker protocol.
+# Bridge reads/drains this directory; spawned Runners write to it via adapter
+# passthrough. Without both injections a QA slot can consume production markers
+# or leave test markers for the production Bridge.
+COMPLETE_MARKER_DIR="${SLOT_DIR}/state/complete-failed"
+LEAD_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
 # FLY-1439: opt-in isolated Claude config for pinned-plugin real-machine QA.
 # The dedicated knob is appended after the Lead launcher's `env -u
 # CLAUDE_CONFIG_DIR`, so inherited production values remain scrubbed while an
@@ -1138,26 +1145,28 @@ log "Starting test Lead: ${AGENT_ID} (project: ${TEST_PROJECT_NAME}, mode=${MODE
 # `| tail -40` doesn't stay attached to the backgrounded Lead's stdout — that
 # kept the pipe open and made the caller hang forever.
 LEAD_LOG="${SLOT_DIR}/lead.log"
-env -u DISCORD_BOT_TOKEN \
-  -u LEAD_WORKSPACE \
-  -u CLAUDE_CONFIG_DIR \
-  -u TEST_SKIP_PLUGIN_FORK_CHECK \
-  -u TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR \
-  -u FLYWHEEL_LEAD_MODEL \
-  -u FLYWHEEL_LEAD_EFFORT \
-  DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
-  DISCORD_GUILD_ID="${GUILD_ID}" \
-  BRIDGE_URL="http://localhost:${SLOT_PORT}" \
-  DISCORD_STATE_DIR="${SLOT_DIR}/discord-state" \
-  AGENT_SOURCE="${SLOT_DIR}/test-identity.md" \
-  FLYWHEEL_LEAD_ROLE="${SLOT_ROLE}" \
-  TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
-  FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
-  LEAD_WORKSPACE="${SLOT_DIR}/lead-workspace" \
-  ${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"} \
-  bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
-    "${AGENT_ID}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" \
-    > "${LEAD_LOG}" 2>&1 &
+(
+  cd "${REPO_ROOT}/packages/teamlead" || exit 1
+  exec env -u DISCORD_BOT_TOKEN \
+    -u LEAD_WORKSPACE \
+    -u CLAUDE_CONFIG_DIR \
+    -u TEST_SKIP_PLUGIN_FORK_CHECK \
+    -u TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR \
+    -u FLYWHEEL_LEAD_MODEL \
+    -u FLYWHEEL_LEAD_EFFORT \
+    DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
+    DISCORD_GUILD_ID="${GUILD_ID}" \
+    BRIDGE_URL="http://localhost:${SLOT_PORT}" \
+    DISCORD_STATE_DIR="${SLOT_DIR}/discord-state" \
+    AGENT_SOURCE="${SLOT_DIR}/test-identity.md" \
+    FLYWHEEL_LEAD_ROLE="${SLOT_ROLE}" \
+    TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
+    FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
+    LEAD_WORKSPACE="${SLOT_DIR}/lead-workspace" \
+    ${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"} \
+    bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
+      "${AGENT_ID}" "${HOST_REPO}" "${TEST_PROJECT_NAME}"
+) > "${LEAD_LOG}" 2>&1 &
 LEAD_BG_PID=$!
 log "Lead background PID: ${LEAD_BG_PID}"
 
@@ -1430,28 +1439,31 @@ EOF
     # FLY-1389 P0-a: same caller-shell leak clearing as the main Lead;
     # LEAD_WORKSPACE pinned under XDIR so the campaign manifest's
     # leadWorkspace field (teardown consumer) and reality never fork.
-    env -u DISCORD_BOT_TOKEN \
-      -u LEAD_WORKSPACE \
-      -u CLAUDE_CONFIG_DIR \
-      -u TEST_SKIP_PLUGIN_FORK_CHECK \
-      -u TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR \
-      -u FLYWHEEL_LEAD_MODEL \
-      -u FLYWHEEL_LEAD_EFFORT \
-      DISCORD_BOT_TOKEN="${XTOKEN}" \
-      DISCORD_GUILD_ID="${GUILD_ID}" \
-      BRIDGE_URL="http://localhost:${SLOT_PORT}" \
-      DISCORD_STATE_DIR="${XDIR}/discord-state" \
-      AGENT_SOURCE="${XDIR}/test-identity.md" \
-      FLYWHEEL_LEAD_ROLE="${XROLE}" \
-      TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
-      FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
-      LEAD_WORKSPACE="${XDIR}/lead-workspace" \
-      "${XLEAD_ENV[@]}" \
-      bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
-        "${XAGENT}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" \
-        < /dev/null > "${XLEAD_LOG}" 2>&1 &
-    EXTRA_LEAD_BG_PIDS+=($!)
-    log "Extra Lead ${XAGENT} background PID: $!"
+    (
+      cd "${REPO_ROOT}/packages/teamlead" || exit 1
+      exec env -u DISCORD_BOT_TOKEN \
+        -u LEAD_WORKSPACE \
+        -u CLAUDE_CONFIG_DIR \
+        -u TEST_SKIP_PLUGIN_FORK_CHECK \
+        -u TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR \
+        -u FLYWHEEL_LEAD_MODEL \
+        -u FLYWHEEL_LEAD_EFFORT \
+        DISCORD_BOT_TOKEN="${XTOKEN}" \
+        DISCORD_GUILD_ID="${GUILD_ID}" \
+        BRIDGE_URL="http://localhost:${SLOT_PORT}" \
+        DISCORD_STATE_DIR="${XDIR}/discord-state" \
+        AGENT_SOURCE="${XDIR}/test-identity.md" \
+        FLYWHEEL_LEAD_ROLE="${XROLE}" \
+        TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
+        FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
+        LEAD_WORKSPACE="${XDIR}/lead-workspace" \
+        "${XLEAD_ENV[@]}" \
+        bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
+          "${XAGENT}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" < /dev/null
+    ) > "${XLEAD_LOG}" 2>&1 &
+    XLEAD_BG_PID=$!
+    EXTRA_LEAD_BG_PIDS+=("$XLEAD_BG_PID")
+    log "Extra Lead ${XAGENT} background PID: ${XLEAD_BG_PID}"
 
     confirm_dev_channels_prompt "${TEST_PROJECT_NAME}-${XAGENT}"
 

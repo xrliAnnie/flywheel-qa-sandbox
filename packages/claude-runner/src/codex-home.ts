@@ -132,6 +132,7 @@ export function stripSecretEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  */
 const RUNNER_ALLOWED_FLYWHEEL_ENV: ReadonlySet<string> = new Set([
 	"FLYWHEEL_GATE_MARKER_DIR",
+	"FLYWHEEL_COMPLETE_MARKER_DIR",
 	"FLYWHEEL_RUNNER_BACKEND_ID",
 	"FLYWHEEL_RUNNER_VENDOR_ID",
 	"FLYWHEEL_COMM_DB",

@@ -132,6 +132,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 	let windowAliveReturns: boolean;
 
 	const origMarkerEnv = process.env.FLYWHEEL_GATE_MARKER_DIR;
+	const origCompleteMarkerEnv = process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
 	const origHomesEnv = process.env.FLYWHEEL_CODEX_HOMES_ROOT;
 	const origSrcEnv = process.env.FLYWHEEL_CODEX_SOURCE_HOME;
 	const origSessionEnv = process.env.FLYWHEEL_CODEX_SESSION_DIR;
@@ -176,6 +177,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		dbPath = join(dir, "comm.db");
 		homesRoot = join(dir, "codex-homes");
 		process.env.FLYWHEEL_GATE_MARKER_DIR = markerDir;
+		process.env.FLYWHEEL_COMPLETE_MARKER_DIR = join(dir, "complete-failed");
 		const srcCodex = join(dir, "dotcodex");
 		mkdirSync(join(srcCodex, "profiles", "personal"), { recursive: true });
 		writeFileSync(join(srcCodex, "auth.json"), '{"tokens":{"a":1}}');
@@ -223,6 +225,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			else process.env[k] = v;
 		};
 		restore("FLYWHEEL_GATE_MARKER_DIR", origMarkerEnv);
+		restore("FLYWHEEL_COMPLETE_MARKER_DIR", origCompleteMarkerEnv);
 		restore("FLYWHEEL_CODEX_HOMES_ROOT", origHomesEnv);
 		restore("FLYWHEEL_CODEX_SOURCE_HOME", origSrcEnv);
 		restore("FLYWHEEL_CODEX_SESSION_DIR", origSessionEnv);
@@ -687,11 +690,19 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(env.FLYWHEEL_RUNNER_VENDOR_ID).toBe("codex");
 		expect(env.FLYWHEEL_RUNNER_BACKEND_ID).toBe("codex-tmux");
 		expect(env.FLYWHEEL_GATE_MARKER_DIR).toBe(markerDir);
+		expect(env.FLYWHEEL_COMPLETE_MARKER_DIR).toBe(join(dir, "complete-failed"));
 		expect(env.FLYWHEEL_COMM_DB).toBe(dbPath);
 		expect(env.FLYWHEEL_BRIDGE_URL).toBe("http://b");
 		expect(env.FLYWHEEL_PROGRESS_PATH).toBe("/p");
 		expect(env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL).toBe("decision-ticket");
 		expect(env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toBe("1");
+	});
+
+	it("omits the complete-marker directory from daemon env when unset", async () => {
+		delete process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
+		await makeAdapter().execute(ctx());
+		const env = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
+		expect(env.FLYWHEEL_COMPLETE_MARKER_DIR).toBeUndefined();
 	});
 
 	it("omits the workflow submission expectation sentinel outside the engine lane", async () => {

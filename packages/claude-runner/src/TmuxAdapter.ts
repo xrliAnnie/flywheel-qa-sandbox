@@ -469,6 +469,13 @@ export class TmuxAdapter implements IAdapter {
 		if (ctx.stateDbPath) {
 			envArgs.push("-e", `FLYWHEEL_STATE_DB_PATH=${ctx.stateDbPath}`);
 		}
+		// FLY-1608: the runner is the complete-failed marker writer. A tmux
+		// window does not inherit the slot Bridge's live env, so pass the isolated
+		// directory explicitly; unset keeps the legacy HOME default.
+		const completeMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR?.trim();
+		if (completeMarkerDir) {
+			envArgs.push("-e", `FLYWHEEL_COMPLETE_MARKER_DIR=${completeMarkerDir}`);
+		}
 		// FLY-795: where a resumed runner writes its progress cursor back.
 		if (ctx.progressPath) {
 			envArgs.push("-e", `FLYWHEEL_PROGRESS_PATH=${ctx.progressPath}`);

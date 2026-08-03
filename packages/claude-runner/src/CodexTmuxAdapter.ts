@@ -1411,6 +1411,12 @@ export class CodexTmuxAdapter implements IAdapter {
 		// below) is preserved by the wash.
 		const env: NodeJS.ProcessEnv = stripInheritedSecretEnv(process.env);
 		env.FLYWHEEL_GATE_MARKER_DIR = gateMarkerDir;
+		const completeMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR?.trim();
+		if (completeMarkerDir) {
+			env.FLYWHEEL_COMPLETE_MARKER_DIR = completeMarkerDir;
+		} else {
+			delete env.FLYWHEEL_COMPLETE_MARKER_DIR;
+		}
 		env.FLYWHEEL_RUNNER_BACKEND_ID = "codex-tmux";
 		env.FLYWHEEL_RUNNER_VENDOR_ID = "codex";
 		if (ctx.commDbPath) env.FLYWHEEL_COMM_DB = ctx.commDbPath;

@@ -47,13 +47,18 @@ fi
 # ── shared hermetic fixture ─────────────────────────────────────────────────
 export FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation"
 SB="$(mktemp -d /tmp/fly1389-deploy-XXXXXX)"
-LEAD_SLOT=31; NOLEAD_SLOT=32
+EXTRA_SLOT=30; LEAD_SLOT=31; NOLEAD_SLOT=32
+# Per-process high ports keep repeated/parallel hermetic runs independent. A
+# force-stopped prior test must not make a new run accept its orphan listener.
+FIXTURE_PORT_BASE=$((20000 + ($$ % 5000)))
+LEAD_PORT=$FIXTURE_PORT_BASE
+NOLEAD_PORT=$((FIXTURE_PORT_BASE + 1))
 cleanup() {
   # Kill any stub leads / stub bridges we started, release fixture locks.
   pkill -f "fly1389-stub-lead-marker" 2>/dev/null || true
   pkill -f "fly1389-stub-bridge-marker" 2>/dev/null || true
-  rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}.lock" \
-    "/tmp/flywheel-test-slot-${LEAD_SLOT}" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}" "$SB"
+  rm -rf "/tmp/flywheel-test-slot-${EXTRA_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}.lock" \
+    "/tmp/flywheel-test-slot-${EXTRA_SLOT}" "/tmp/flywheel-test-slot-${LEAD_SLOT}" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}" "$SB"
 }
 trap cleanup EXIT
 
@@ -76,9 +81,17 @@ cat > "$FR/packages/teamlead/scripts/claude-lead.sh" <<'STUBLEAD'
 AGENT="$1"; PROJ="$3"
 SD="$(dirname "$DISCORD_STATE_DIR")"
 env | sort > "$SD/lead-env.txt"
+pwd > "$SD/lead-cwd.txt"
+echo $$ > "$SD/lead-shell-pid.txt"
 mkdir -p "$HOME/.flywheel/pids" "$HOME/.flywheel/comm/$PROJ"
 echo $$ > "$HOME/.flywheel/pids/$PROJ-$AGENT.pid"
 printf '{"pid": %s}\n' $$ > "$HOME/.flywheel/comm/$PROJ/.inbox-ready-$AGENT"
+# FLY-1608 campaign-abort fixture: the extra Lead records its true process
+# identity/cwd/env above but deliberately withholds readiness. test-deploy must
+# kill exactly this supervisor PID through its own failure path.
+if [[ "$AGENT" == "flywheel-test-30" ]]; then
+  rm -f "$HOME/.flywheel/comm/$PROJ/.inbox-ready-$AGENT"
+fi
 sleep 300
 STUBLEAD
 chmod +x "$FR/packages/teamlead/scripts/claude-lead.sh"
@@ -140,25 +153,29 @@ chmod +x "$STUB_BIN"/*
 # Fake HOME #1 (Lead-ful): identity + shared rules present.
 FH1="$SB/home1"
 mkdir -p "$FH1/.flywheel/claude-sessions" \
-  "$FH1/Dev/GeoForge3D/.lead/product-lead" "$FH1/Dev/GeoForge3D/.lead/shared"
+  "$FH1/Dev/GeoForge3D/.lead/product-lead" "$FH1/Dev/GeoForge3D/.lead/ops-lead" "$FH1/Dev/GeoForge3D/.lead/shared"
 echo "# prod identity fixture" > "$FH1/Dev/GeoForge3D/.lead/product-lead/identity.md"
+echo "# ops identity fixture" > "$FH1/Dev/GeoForge3D/.lead/ops-lead/identity.md"
 echo "# shared rule fixture" > "$FH1/Dev/GeoForge3D/.lead/shared/dept.md"
 # Fake HOME #2 (--no-lead): NO ~/Dev/GeoForge3D at all.
 FH2="$SB/home2"
 mkdir -p "$FH2/.flywheel/claude-sessions"
 
-make_slots_json() {  # <file> — 32 slots; only 31/32 carry real fixture values
-  jq -n '
+make_slots_json() {  # <file> — slots 30/31/32 carry real fixture values
+  jq -n --argjson leadPort "$LEAD_PORT" --argjson noLeadPort "$NOLEAD_PORT" '
     { guildId: "g-fixture",
-      slots: ( [range(1;31)] | map({
+      slots: ( [range(1;30)] | map({
           id: ., bridgePort: (20000 + .), botName: ("dummy-\(.)"),
           tokenEnvVar: ("DUMMY_TOKEN_\(.)"), botAppId: ("d\(.)"),
           channelId: ("dchan-\(.)"), role: "lead"
         })
-        + [ { id: 31, bridgePort: 19898, botName: "flywheel-test-31",
+        + [ { id: 30, bridgePort: ($leadPort + 2), botName: "flywheel-test-30",
+              tokenEnvVar: "TEST_BOT_TOKEN_30", botAppId: "3030",
+              channelId: "chan-30", role: "ops", identitySource: "ops-lead" },
+            { id: 31, bridgePort: $leadPort, botName: "flywheel-test-31",
               tokenEnvVar: "TEST_BOT_TOKEN_31", botAppId: "3131",
               channelId: "chan-31", role: "lead", identitySource: "product-lead" },
-            { id: 32, bridgePort: 19897, botName: "flywheel-test-32",
+            { id: 32, bridgePort: $noLeadPort, botName: "flywheel-test-32",
               tokenEnvVar: "TEST_BOT_TOKEN_32", botAppId: "3232",
               channelId: "chan-32", role: "lead", identitySource: "product-lead" } ] )
     }'
@@ -168,13 +185,15 @@ for H in "$FH1" "$FH2"; do
   cat > "$H/.flywheel/.env" <<'EOF'
 TEST_BOT_TOKEN_31=tok-31
 TEST_BOT_TOKEN_32=tok-32
+TEST_BOT_TOKEN_30=tok-30
 LINEAR_API_KEY=fixture-linear-key
 EOF
 done
 
 run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
   local home="$1" slot="$2" out="$3" err="$4"; shift 4
-  ( cd "$SB" && \
+  local caller_cwd="${FLY1608_DEPLOY_CALLER_CWD:-$SB}"
+  ( cd "$caller_cwd" && \
     env -i \
       HOME="$home" \
       PATH="$STUB_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v git)"):$(dirname "$(command -v jq)"):$(dirname "$(command -v python3)"):$(dirname "$(command -v curl)")" \
@@ -188,6 +207,8 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       TEST_SKIP_PLUGIN_FORK_CHECK=1 \
       TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR="/malicious/claude-config" \
       TEST_LEAD_CLAUDE_CONFIG_DIR="${TEST_LEAD_CLAUDE_CONFIG_DIR:-}" \
+      TEST_REPLY_BY_ISSUE="${TEST_REPLY_BY_ISSUE:-}" \
+      TEST_API_TOKEN="${TEST_API_TOKEN:-}" \
       FLYWHEEL_LEAD_MODEL="malicious-model" \
       FLYWHEEL_LEAD_EFFORT="malicious-effort" \
       bash "$FR/scripts/test-deploy.sh" "$slot" "$@" \
@@ -205,6 +226,9 @@ run_teardown() {  # <home> <slot>
       TMPDIR=/tmp \
       TMUX_STUB_LOG="$1/tmux-calls.log" \
       FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
+      FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$1/cmux-mutator.lock" \
+      FLYWHEEL_CMUX_MAINTENANCE_MARKER="$1/cmux-maintenance" \
+      FLYWHEEL_CMUX_VIEW_WAL_DIR="$1/cmux-view-wal" \
       bash "$FR/scripts/test-teardown.sh" "$2" >/dev/null 2>&1 )
 }
 
@@ -232,9 +256,17 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
     grep -q "^FLYWHEEL_LEAD_MODEL=" "$LE" && { E_OK=0; fail "E/P0-a: FLYWHEEL_LEAD_MODEL leaked into Lead env"; }
     grep -q "^FLYWHEEL_LEAD_EFFORT=" "$LE" && { E_OK=0; fail "E/P0-a: FLYWHEEL_LEAD_EFFORT leaked into Lead env"; }
     grep -q "^DISCORD_BOT_TOKEN=tok-31$" "$LE" || { E_OK=0; fail "E: slot token not delivered"; }
+    grep -q "^FLYWHEEL_COMPLETE_MARKER_DIR=${E_SLOT_DIR}/state/complete-failed$" "$LE" \
+      || { E_OK=0; fail "E/FLY-1608: complete marker dir not slot-local in Lead env"; }
   else
     E_OK=0; fail "E: stub Lead env dump missing" "$LE"
   fi
+  STUB_LEAD_PID="$(cat "$E_SLOT_DIR/lead-shell-pid.txt" 2>/dev/null || true)"
+  LOGGED_LEAD_PID="$(sed -n 's/.*Lead background PID: //p' "$E_ERR" | tail -1)"
+  [[ -n "$STUB_LEAD_PID" && "$LOGGED_LEAD_PID" == "$STUB_LEAD_PID" ]] \
+    || { E_OK=0; fail "E/FLY-1608: test-deploy PID is not the Lead supervisor" "logged=${LOGGED_LEAD_PID:-missing} stub=${STUB_LEAD_PID:-missing}"; }
+  [[ "$(cat "$E_SLOT_DIR/lead-cwd.txt" 2>/dev/null || true)" == "$FR/packages/teamlead" ]] \
+    || { E_OK=0; fail "E/FLY-1608: Lead cwd does not mirror production wrapper" "$(cat "$E_SLOT_DIR/lead-cwd.txt" 2>/dev/null || true)"; }
   # P0-d: stale session-id removed before Lead start.
   [[ ! -f "$FH1/.flywheel/claude-sessions/test-slot-${LEAD_SLOT}-flywheel-test-31.session-id" ]] \
     || { E_OK=0; fail "E/P0-d: stale session-id survived deploy"; }
@@ -243,10 +275,12 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
   if [[ -f "$BE" ]]; then
     grep -q "^FLYWHEEL_BIN_DIR=${E_SLOT_DIR}/bin$" "$BE" || { E_OK=0; fail "E/P1-a: FLYWHEEL_BIN_DIR not slot-local in Bridge env"; }
     grep -q "^FLYWHEEL_HOOKS_DIR=${E_SLOT_DIR}/hooks$" "$BE" || { E_OK=0; fail "E/P1-a: FLYWHEEL_HOOKS_DIR not slot-local in Bridge env"; }
+    grep -q "^FLYWHEEL_COMPLETE_MARKER_DIR=${E_SLOT_DIR}/state/complete-failed$" "$BE" \
+      || { E_OK=0; fail "E/FLY-1608: complete marker dir not slot-local in Bridge env"; }
   else
     E_OK=0; fail "E: Bridge env dump missing" "$BE"
   fi
-  [[ "$E_OK" == "1" ]] && pass "E: Lead-ful E2E — P0-a sanitize + P0-d pre-delete + P1-a Bridge isolation + noLead=false"
+  [[ "$E_OK" == "1" ]] && pass "E: Lead-ful E2E — sanitize + cwd/PID parity + marker isolation + noLead=false"
   run_teardown "$FH1" "$LEAD_SLOT"
   [[ ! -d "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" ]] \
     && pass "E2: teardown releases the Lead-ful slot" \
@@ -265,7 +299,10 @@ rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LE
 I_OUT="$SB/i-out.json"; I_ERR="$SB/i-err.log"
 I_CONFIG="$SB/isolated-claude-config"
 mkdir -p "$I_CONFIG/plugins"
-if TEST_LEAD_CLAUDE_CONFIG_DIR="$I_CONFIG" \
+if FLY1608_DEPLOY_CALLER_CWD="$FR/packages/teamlead" \
+    TEST_REPLY_BY_ISSUE=1 \
+    TEST_API_TOKEN="fixture-api-token" \
+    TEST_LEAD_CLAUDE_CONFIG_DIR="$I_CONFIG" \
     run_deploy "$FH1" "$LEAD_SLOT" "$I_OUT" "$I_ERR"; then
   I_SLOT_DIR="/tmp/flywheel-test-slot-${LEAD_SLOT}"
   I_LE="$I_SLOT_DIR/lead-env.txt"
@@ -276,12 +313,58 @@ if TEST_LEAD_CLAUDE_CONFIG_DIR="$I_CONFIG" \
     || { I_OK=0; fail "I: expected config sentinel did not match injected config"; }
   grep -q "^TEST_SKIP_PLUGIN_FORK_CHECK=1$" "$I_LE" \
     || { I_OK=0; fail "I: isolated config did not enable guarded fork-check skip"; }
+  grep -q "^FLYWHEEL_COMPLETE_MARKER_DIR=${I_SLOT_DIR}/state/complete-failed$" "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I: reply-by-issue Bridge lost complete-marker isolation"; }
+  grep -q "^TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true$" "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I: fixture did not exercise reply-by-issue Bridge branch"; }
+  [[ "$(cat "$I_SLOT_DIR/lead-cwd.txt" 2>/dev/null || true)" == "$FR/packages/teamlead" ]] \
+    || { I_OK=0; fail "I: package-cwd invocation did not keep production-aligned Lead cwd"; }
   [[ "$I_OK" == "1" ]] \
-    && pass "I: TEST_LEAD_CLAUDE_CONFIG_DIR opt-in reaches Lead with byte-identical expected-path sentinel"
+    && pass "I: package-cwd deploy starts Lead + reply-by-issue Bridge stays marker-isolated"
   run_teardown "$FH1" "$LEAD_SLOT"
 else
   fail "I: isolated config deploy failed" "$(tail -20 "$I_ERR")"
   run_teardown "$FH1" "$LEAD_SLOT" || true
+fi
+
+# ── C: extra-Lead campaign failure owns the true supervisor PIDs (FLY-1608) ─
+rm -rf "/tmp/flywheel-test-slot-${EXTRA_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" \
+  "/tmp/flywheel-test-slot-${EXTRA_SLOT}" "/tmp/flywheel-test-slot-${LEAD_SLOT}"
+C_OUT="$SB/c-out.json"; C_ERR="$SB/c-err.log"
+if run_deploy "$FH1" "$LEAD_SLOT" "$C_OUT" "$C_ERR" \
+    --extra-lead "${EXTRA_SLOT}:Ops-Test" --lead-ready-timeout 1; then
+  fail "C: campaign fixture should abort when extra Lead withholds readiness"
+  run_teardown "$FH1" "$LEAD_SLOT" || true
+else
+  C_OWNER_DIR="/tmp/flywheel-test-slot-${LEAD_SLOT}"
+  C_EXTRA_DIR="${C_OWNER_DIR}/extra-leads/slot-${EXTRA_SLOT}"
+  C_OK=1
+  C_MAIN_PID="$(cat "$C_OWNER_DIR/lead-shell-pid.txt" 2>/dev/null || true)"
+  C_EXTRA_PID="$(cat "$C_EXTRA_DIR/lead-shell-pid.txt" 2>/dev/null || true)"
+  C_LOGGED_MAIN_PID="$(sed -n 's/.*Lead background PID: //p' "$C_ERR" | tail -1)"
+  C_LOGGED_EXTRA_PID="$(sed -n 's/.*Extra Lead flywheel-test-30 background PID: //p' "$C_ERR" | tail -1)"
+  [[ -n "$C_MAIN_PID" && "$C_LOGGED_MAIN_PID" == "$C_MAIN_PID" ]] \
+    || { C_OK=0; fail "C: owner \$! is not its supervisor" "logged=${C_LOGGED_MAIN_PID:-missing} stub=${C_MAIN_PID:-missing}"; }
+  [[ -n "$C_EXTRA_PID" && "$C_LOGGED_EXTRA_PID" == "$C_EXTRA_PID" ]] \
+    || { C_OK=0; fail "C: extra \$! is not its supervisor" "logged=${C_LOGGED_EXTRA_PID:-missing} stub=${C_EXTRA_PID:-missing}"; }
+  [[ "$(cat "$C_OWNER_DIR/lead-cwd.txt" 2>/dev/null || true)" == "$FR/packages/teamlead" ]] \
+    || { C_OK=0; fail "C: owner Lead cwd not production-aligned"; }
+  [[ "$(cat "$C_EXTRA_DIR/lead-cwd.txt" 2>/dev/null || true)" == "$FR/packages/teamlead" ]] \
+    || { C_OK=0; fail "C: extra Lead cwd not production-aligned"; }
+  grep -q "^FLYWHEEL_COMPLETE_MARKER_DIR=${C_OWNER_DIR}/state/complete-failed$" "$C_OWNER_DIR/lead-env.txt" \
+    || { C_OK=0; fail "C: owner complete-marker env missing"; }
+  grep -q "^FLYWHEEL_COMPLETE_MARKER_DIR=${C_OWNER_DIR}/state/complete-failed$" "$C_EXTRA_DIR/lead-env.txt" \
+    || { C_OK=0; fail "C: extra complete-marker env missing"; }
+  for dead_pid in "$C_MAIN_PID" "$C_EXTRA_PID"; do
+    for _poll in $(seq 1 20); do
+      kill -0 "$dead_pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -0 "$dead_pid" 2>/dev/null \
+      && { C_OK=0; fail "C: campaign_abort left Lead alive" "$dead_pid"; }
+  done
+  [[ "$C_OK" == "1" ]] \
+    && pass "C: campaign_abort owns main+extra supervisor PID, cwd, env, and kills both"
 fi
 
 # ── N: --no-lead hermetic E2E (slot 32, HOME without GeoForge3D) ────────────

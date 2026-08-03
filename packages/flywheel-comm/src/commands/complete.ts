@@ -703,8 +703,17 @@ function writeMarker(args: {
 	attempts: number;
 	lastError: string | undefined;
 }): boolean {
-	const home = process.env.HOME ?? homedir();
-	const dir = join(home, ".flywheel", "state", "complete-failed");
+	// Mirrors teamlead complete-marker-reconciler defaultMarkerDir(). QA slots
+	// override both writer and reader; unset remains the legacy HOME path.
+	const fromEnv = process.env.FLYWHEEL_COMPLETE_MARKER_DIR?.trim();
+	const dir =
+		fromEnv ||
+		join(
+			process.env.HOME ?? homedir(),
+			".flywheel",
+			"state",
+			"complete-failed",
+		);
 	const markerPath = join(dir, `${args.execId}.json`);
 	try {
 		mkdirSync(dir, { recursive: true });
