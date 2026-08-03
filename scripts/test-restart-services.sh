@@ -30,6 +30,316 @@ TMPDIR_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 
 # ════════════════════════════════════════════════════════════════
+# FLY-1603: truthful full-restart terminal notification rendering
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-1603 restart completion rendering is truthful"
+
+RN_LIB="${SCRIPT_DIR}/lib/restart-notify.sh"
+if [[ ! -f "$RN_LIB" ]]; then
+    fail "FLY-1603 restart notification library exists"
+elif ! source "$RN_LIB"; then
+    fail "FLY-1603 restart notification library is sourceable"
+else
+    [[ "$(rn_format_duration 1023)" == "17m03s" ]] \
+      && [[ "$(rn_format_duration nope)" == "unknown" ]] \
+      && pass "FLY-1603 duration formatter handles valid and invalid input" \
+      || fail "FLY-1603 duration formatter output mismatch"
+
+    valid_counts="skipped:1 failed:2 total:5"
+    [[ "$(rn_parse_count skipped "$valid_counts")" == "1" ]] \
+      && [[ "$(rn_parse_count failed "$valid_counts")" == "2" ]] \
+      && [[ "$(rn_parse_count total "$valid_counts")" == "5" ]] \
+      && [[ "$(rn_parse_count failed $'skipped:0 failed:0 total:2\nnoise')" == "invalid" ]] \
+      && [[ "$(rn_parse_count failed "prefix skipped:0 failed:0 total:2")" == "invalid" ]] \
+      && pass "FLY-1603 count parser accepts only the complete one-line contract" \
+      || fail "FLY-1603 count parser accepted a polluted contract"
+
+    [[ "$(rn_normalize_lead_names 2 "flywheel-eng-lead, growth-lead")" == "flywheel-eng-lead, growth-lead" ]] \
+      && [[ "$(rn_normalize_lead_names 2 "flywheel-eng-lead")" == *"名单记录不完整"* ]] \
+      && pass "FLY-1603 Lead-name normalization exposes incomplete evidence" \
+      || fail "FLY-1603 Lead-name normalization hid incomplete evidence"
+
+    clean_message=$(rn_render_completion_message \
+      "1111111aaaaaaaa" "2222222bbbbbbbb" "deploy" 3 0 0 "" "" \
+      known "" ok 87 "17m03s")
+    if [[ "$clean_message" == *"✅ Flywheel 全量重启完成"* ]] \
+      && [[ "$clean_message" == *'版本: `1111111` → `2222222`'* ]] \
+      && [[ "$clean_message" == *"Lead: 3/3 重启成功"* ]] \
+      && [[ "$clean_message" == *"Bridge: healthy (/health 实测 87ms)"* ]] \
+      && [[ "$clean_message" == *"总耗时: 17m03s"* ]]; then
+        pass "FLY-1603 clean completion includes SHA, Lead evidence, Bridge latency, and duration"
+    else
+        fail "FLY-1603 clean completion payload mismatch: $clean_message"
+    fi
+
+    degraded_message=$(rn_render_completion_message \
+      "1111111aaaaaaaa" "2222222bbbbbbbb" "deploy" 4 1 1 \
+      "flywheel-eng-lead" "growth-lead" known "" ok 91 "42s")
+    if [[ "$degraded_message" == *"⚠️ Flywheel 全量重启结束 — degraded"* ]] \
+      && [[ "$degraded_message" == *"4 个里 2 个成功、1 个失败: flywheel-eng-lead、1 个跳过(无 manifest): growth-lead"* ]] \
+      && [[ "$degraded_message" == *"详情见 <#1518793447165661254>"* ]] \
+      && [[ "$degraded_message" != *"完成"* ]] \
+      && [[ "$degraded_message" != *"✅"* ]]; then
+        pass "FLY-1603 degraded completion names failed/skipped Leads and never says complete"
+    else
+        fail "FLY-1603 degraded payload is misleading: $degraded_message"
+    fi
+
+    no_candidates=$(rn_render_completion_message \
+      "" "2222222bbbbbbbb" "deploy" 0 0 0 "" "" known "" ok 10 "2s")
+    [[ "$no_candidates" == *"未发现可重启候选(0)"* ]] \
+      && [[ "$no_candidates" == *"(首次部署)"* ]] \
+      && [[ "$no_candidates" != *"完成"* ]] \
+      && pass "FLY-1603 no-candidate and first-deploy output stays non-successful and non-empty" \
+      || fail "FLY-1603 no-candidate output falsely claimed success: $no_candidates"
+
+    unreadable_message=$(rn_render_completion_message \
+      "1111111" "2222222" "deploy" 0 0 0 "" "" unreadable "" fail - unknown)
+    [[ "$unreadable_message" == *"重启结果无法读取"* ]] \
+      && [[ "$unreadable_message" != *"波次未执行"* ]] \
+      && [[ "$unreadable_message" != *"完成"* ]] \
+      && pass "FLY-1603 unreadable results are distinct from an unexecuted wave" \
+      || fail "FLY-1603 unreadable result wording is untruthful: $unreadable_message"
+
+    wave_message=$(rn_render_completion_message \
+      "1111111" "2222222" "deploy" 0 1 0 "" "" wave_not_run \
+      "清单收敛失败" ok 12 "8s")
+    [[ "$wave_message" == *"重启波次未执行(清单收敛失败),Lead 总数未知"* ]] \
+      && [[ "$wave_message" != *"重启结果无法读取"* ]] \
+      && [[ "$wave_message" != *"完成"* ]] \
+      && pass "FLY-1603 unexecuted waves preserve their explicit producer reason" \
+      || fail "FLY-1603 unexecuted wave was collapsed into another state: $wave_message"
+
+    rn_probe_bin="$TMPDIR_ROOT/rn-probe-bin"
+    rn_probe_tmp="$TMPDIR_ROOT/rn-probe-tmp"
+    mkdir -p "$rn_probe_bin" "$rn_probe_tmp"
+    cat > "$rn_probe_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+output_file=""; previous=""
+for arg in "$@"; do
+    [[ "$previous" == "-o" ]] && output_file="$arg"
+    previous="$arg"
+done
+case "${RN_PROBE_MODE:-ok}" in
+  curl_fail) exit 7 ;;
+  false) printf '%s\n' '{"ok":false}' > "$output_file"; printf '0.087' ;;
+  bad_json) printf '%s\n' 'not-json' > "$output_file"; printf '0.087' ;;
+  bad_time) printf '%s\n' '{"ok":true}' > "$output_file"; printf 'not-a-number' ;;
+  *) printf '%s\n' '{"ok":true}' > "$output_file"; printf '0.087' ;;
+esac
+EOF
+    chmod +x "$rn_probe_bin/curl"
+    probe_ok=$(PATH="$rn_probe_bin:$PATH" TMPDIR="$rn_probe_tmp" RN_PROBE_MODE=ok \
+      rn_probe_bridge_health "http://bridge")
+    probe_false=$(PATH="$rn_probe_bin:$PATH" TMPDIR="$rn_probe_tmp" RN_PROBE_MODE=false \
+      rn_probe_bridge_health "http://bridge")
+    probe_bad_json=$(PATH="$rn_probe_bin:$PATH" TMPDIR="$rn_probe_tmp" RN_PROBE_MODE=bad_json \
+      rn_probe_bridge_health "http://bridge")
+    probe_bad_time=$(PATH="$rn_probe_bin:$PATH" TMPDIR="$rn_probe_tmp" RN_PROBE_MODE=bad_time \
+      rn_probe_bridge_health "http://bridge")
+    probe_curl_fail=$(PATH="$rn_probe_bin:$PATH" TMPDIR="$rn_probe_tmp" RN_PROBE_MODE=curl_fail \
+      rn_probe_bridge_health "http://bridge")
+    probe_residue=$(find "$rn_probe_tmp" -type f -print)
+    [[ "$probe_ok" == $'ok\t87' ]] \
+      && [[ "$probe_false" == $'fail\t-' ]] \
+      && [[ "$probe_bad_json" == $'fail\t-' ]] \
+      && [[ "$probe_bad_time" == $'fail\t-' ]] \
+      && [[ "$probe_curl_fail" == $'fail\t-' ]] \
+      && [[ -z "$probe_residue" ]] \
+      && pass "FLY-1603 Bridge completion probe measures latency and cleans every failure path" \
+      || fail "FLY-1603 Bridge completion probe mismatch/residue: ok='$probe_ok' false='$probe_false' bad_json='$probe_bad_json' bad_time='$probe_bad_time' curl='$probe_curl_fail' residue='$probe_residue'"
+fi
+
+echo "Test: FLY-1603 unexpected-exit finalizer is fail-loud and rc-preserving"
+rn_finalizer_func="$TMPDIR_ROOT/restart-finalizer.sh"
+awk '/^restart_on_exit\(\)/ { capture=1 } capture { print } capture && /^}/ { exit }' \
+  "$SCRIPT_DIR/restart-services.sh" > "$rn_finalizer_func"
+rn_finalizer_root="$TMPDIR_ROOT/rn-finalizer"
+mkdir -p "$rn_finalizer_root/lock"
+printf 'prevent rmdir\n' > "$rn_finalizer_root/lock/nonempty"
+printf 'temp\n' > "$rn_finalizer_root/project.tmp"
+printf 'temp\n' > "$rn_finalizer_root/leads.tmp"
+rn_finalizer_alerts="$rn_finalizer_root/alerts"
+rn_finalizer_bodies="$rn_finalizer_root/bodies"
+: > "$rn_finalizer_alerts"
+: > "$rn_finalizer_bodies"
+set +e
+bash -c '
+  source "$1"
+  source "$2"
+  RN_FINALIZER_ALERT_FILE="$3"
+  RN_FINALIZER_BODY_FILE="$4"
+  alert_warning() { printf "warning:%s\n" "$1" >> "$RN_FINALIZER_ALERT_FILE"; }
+  alert_severe() {
+    printf "severe:%s\n" "$1" >> "$RN_FINALIZER_ALERT_FILE"
+    printf "%s\n" "$3" >> "$RN_FINALIZER_BODY_FILE"
+  }
+  RESTART_NOTICE_STARTED=true
+  RESTART_TERMINAL_REPORTED=false
+  RESTART_EXIT_SIGNAL=""
+  SCRIPT_START_EPOCH=1
+  DEPLOYED_SHA=1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  CURRENT_HEAD=2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  RESTART_REASON=test
+  LOCK_DIR="$5"
+  PROJECT_SHA_UPDATES_FILE="$6"
+  LEAD_RESTART_NAMES_FILE="$7"
+  restart_on_exit 27
+' _ "$RN_LIB" "$rn_finalizer_func" "$rn_finalizer_alerts" "$rn_finalizer_bodies" \
+  "$rn_finalizer_root/lock" "$rn_finalizer_root/project.tmp" "$rn_finalizer_root/leads.tmp"
+rn_finalizer_rc=$?
+set -e
+if (( rn_finalizer_rc == 27 )) \
+  && grep -q '^severe:restart-aborted-unexpectedly$' "$rn_finalizer_alerts" \
+  && grep -q '版本 `1111111` → `2222222`' "$rn_finalizer_bodies" \
+  && ! grep -qE '1111111a|2222222b' "$rn_finalizer_bodies" \
+  && [[ -d "$rn_finalizer_root/lock" ]] \
+  && [[ ! -e "$rn_finalizer_root/project.tmp" && ! -e "$rn_finalizer_root/leads.tmp" ]]; then
+    pass "FLY-1603 finalizer alerts before fallible cleanup and preserves the original rc"
+else
+    fail "FLY-1603 finalizer contract mismatch: rc=$rn_finalizer_rc alerts='$(cat "$rn_finalizer_alerts")'"
+fi
+
+echo "Test: FLY-1603 known terminal branches suppress the unexpected-exit finalizer"
+rn_rollback_func="$TMPDIR_ROOT/restart-rollback.sh"
+rn_deploy_func="$TMPDIR_ROOT/restart-deploy.sh"
+awk '/^rollback_and_restart\(\)/ { capture=1 }
+     capture && /^# Deploy \+ Verify$/ { exit }
+     capture { print }' "$SCRIPT_DIR/restart-services.sh" > "$rn_rollback_func"
+awk '/^deploy_and_verify\(\)/ { capture=1 }
+     capture && /^# Main$/ { exit }
+     capture { print }' "$SCRIPT_DIR/restart-services.sh" > "$rn_deploy_func"
+
+rn_run_terminal_case() {
+    local mode="$1" expected_signature="$2"
+    local alerts_file="$TMPDIR_ROOT/terminal-${mode}.alerts" rc=0
+    : > "$alerts_file"
+    set +e
+    bash -c '
+      set -uo pipefail
+      source "$1"
+      source "$2"
+      source "$3"
+      source "$4"
+      mode="$5"; alerts_file="$6"; case_root="$7"
+      log() { :; }
+      notify_routine() { :; }
+      alert_warning() { printf "warning:%s\n" "$1" >> "$alerts_file"; }
+      alert_severe() { printf "severe:%s\n" "$1" >> "$alerts_file"; }
+      git() {
+        if [[ "$*" == *"status --porcelain"* ]]; then
+          [[ "$mode" == "rollback-dirty" ]] && printf "dirty\n"
+          return 0
+        fi
+        return 0
+      }
+      pnpm() { [[ "$mode" != "rollback-build-failed" ]]; }
+      stop_bridge() { [[ "$mode" != "rollback-port-stuck" ]]; }
+      start_bridge() { :; }
+      bridge_port() { printf "9876\n"; }
+      trigger_cmux_refresh() { :; }
+      do_restart_all_leads() {
+        case "$mode" in
+          rollback-result-unreadable) printf "garbage\n" ;;
+          rollback-leads-failed) printf "skipped:0 failed:1 total:1\n" ;;
+          *) printf "skipped:0 failed:0 total:1\n" ;;
+        esac
+      }
+      RESTART_NOTICE_STARTED=true
+      RESTART_TERMINAL_REPORTED=false
+      RESTART_EXIT_SIGNAL=""
+      SCRIPT_START_EPOCH=1
+      DEPLOYED_SHA=1111111
+      CURRENT_HEAD=2222222
+      RESTART_REASON=test
+      FLYWHEEL_DIR="$case_root/flywheel"
+      LOCK_DIR="$case_root/missing-lock"
+      PROJECT_SHA_UPDATES_FILE=""
+      LEAD_RESTART_NAMES_FILE=""
+      restart_bridge=false
+      restart_all_leads=false
+      SKIP_BUILD=true
+      trap '\''restart_on_exit "$?"'\'' EXIT
+      case "$mode" in
+        deploy-port-stuck)
+          restart_bridge=true
+          stop_bridge() { (RESTART_TERMINAL_REPORTED=true); return 1; }
+          deploy_and_verify || true
+          ;;
+        rollback-no-sha)
+          rollback_and_restart "" || true
+          ;;
+        rollback-result-unreadable|rollback-leads-failed|rollback-recovered)
+          restart_all_leads=true
+          rollback_and_restart 1111111 || true
+          ;;
+        *)
+          [[ "$mode" == "rollback-port-stuck" ]] && restart_bridge=true
+          rollback_and_restart 1111111 || true
+          ;;
+      esac
+      exit 29
+    ' _ "$RN_LIB" "$rn_finalizer_func" "$rn_rollback_func" "$rn_deploy_func" \
+      "$mode" "$alerts_file" "$TMPDIR_ROOT/terminal-${mode}"
+    rc=$?
+    set -e
+    if (( rc == 29 )) \
+      && [[ "$(grep -c ":${expected_signature}$" "$alerts_file" || true)" == "1" ]] \
+      && ! grep -q ':restart-aborted-unexpectedly$' "$alerts_file"; then
+        pass "FLY-1603 parent terminal registration: $mode"
+    else
+        fail "FLY-1603 parent terminal registration mismatch: mode=$mode rc=$rc alerts='$(cat "$alerts_file")'"
+    fi
+}
+
+rn_run_terminal_case deploy-port-stuck deploy-port-stuck
+rn_run_terminal_case rollback-no-sha deploy-failed-no-rollback
+rn_run_terminal_case rollback-dirty rollback-blocked-dirty
+rn_run_terminal_case rollback-build-failed update-and-rollback-failed
+rn_run_terminal_case rollback-port-stuck rollback-port-stuck
+rn_run_terminal_case rollback-result-unreadable rollback-lead-result-unreadable
+rn_run_terminal_case rollback-leads-failed rollback-leads-failed
+rn_run_terminal_case rollback-recovered update-rolled-back
+
+echo "Test: FLY-1603 skip-test candidates never inflate the Lead total"
+rn_restart_all_func="$TMPDIR_ROOT/restart-all-leads.sh"
+awk '/^do_restart_all_leads\(\)/ { capture=1 }
+     capture && /^# Build$/ { exit }
+     capture { print }' "$SCRIPT_DIR/restart-services.sh" > "$rn_restart_all_func"
+rn_skip_root="$TMPDIR_ROOT/skip-test-total"
+mkdir -p "$rn_skip_root"
+rn_skip_manifest="$rn_skip_root/prod.json"
+rn_skip_calls="$rn_skip_root/restarts"
+printf '{}\n' > "$rn_skip_manifest"
+: > "$rn_skip_calls"
+rn_skip_result=$(bash -c '
+  set -uo pipefail
+  source "$1"
+  root="$2"; manifest="$3"; calls="$4"
+  bash() { return 0; }
+  log() { :; }
+  alert_warning() { :; }
+  record_lead_restart_detail() { :; }
+  restart_lead() { printf "%s\n" "$1" >> "$calls"; }
+  lead_restart_collect_candidates() {
+    printf "test-slot-flywheel-test-1\ttest-slot\tflywheel-test-1\t-\tskip-test\tmanifest\n" > "$4"
+    printf "flywheel-eng\tflywheel\teng\t%s\trestart\tmanifest\n" "$manifest" >> "$4"
+  }
+  HOME="$root/home"
+  FLYWHEEL_DIR="$root/repo"
+  TMPDIR="$root"
+  LEAD_RESTART_NAMES_FILE="$root/names"
+  do_restart_all_leads
+' _ "$rn_restart_all_func" "$rn_skip_root" "$rn_skip_manifest" "$rn_skip_calls")
+if [[ "$rn_skip_result" == "skipped:0 failed:0 total:1" ]] \
+  && [[ "$(wc -l < "$rn_skip_calls" | tr -d ' ')" == "1" ]] \
+  && grep -qxF "$rn_skip_manifest" "$rn_skip_calls"; then
+    pass "FLY-1603 skip-test is skipped without counting; only the production Lead enters N/M"
+else
+    fail "FLY-1603 skip-test count contract mismatch: result='$rn_skip_result' restarts='$(cat "$rn_skip_calls")'"
+fi
+
+# ════════════════════════════════════════════════════════════════
 # Test 1: classify_changes — Bridge-only changes
 # ════════════════════════════════════════════════════════════════
 echo "Test: classify_changes — Bridge-only changes"
@@ -1379,6 +1689,7 @@ mkdir -p \
 cp "$REAL_REPO_ROOT/scripts/restart-services.sh" "$BO_FLYWHEEL/scripts/"
 cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-candidate.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/restart-notify.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-body-sweep.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-restart-lifecycle.sh" \
    "$BO_FLYWHEEL/scripts/lib/"
@@ -1449,7 +1760,7 @@ case "\$args" in
     echo "claude --agent eng --append-system-prompt-file /tmp/lead-rules-bundles/flywheel-eng.424243-lstart-x.md --model claude-fable-5"
     ;;
   *"-axo pid=,command="*)
-    if [[ "\$(cat "$BO_LAUNCH_STATE" 2>/dev/null || echo loaded)" == "loaded" ]]; then
+    if [[ "\${FAKE_NO_LEAD_PROCESS:-0}" != "1" && "\$(cat "$BO_LAUNCH_STATE" 2>/dev/null || echo loaded)" == "loaded" ]]; then
       echo "55555 claude --agent eng --append-system-prompt-file /tmp/lead-rules-bundles/flywheel-eng.424243-lstart-x.md --model claude-fable-5"
     fi
     ;;
@@ -1475,13 +1786,55 @@ EOF
 cat > "$BO_SHIMS/curl" <<EOF
 #!/bin/bash
 echo "\$*" >> "$BO_CALLS/curl.calls"
-echo '{"ok":true,"sessions_count":0}'
+url=""; output_file=""; payload=""; write_timing=false; previous=""
+for arg in "\$@"; do
+  case "\$arg" in http://*|https://*) url="\$arg" ;; esac
+  [[ "\$previous" == "-o" ]] && output_file="\$arg"
+  [[ "\$previous" == "-d" ]] && payload="\$arg"
+  [[ "\$previous" == "-w" ]] && write_timing=true
+  previous="\$arg"
+done
+if [[ "\$url" == *"discord.com/api"* ]]; then
+  printf '%s|%s\n' "\$url" "\$payload" >> "$BO_CALLS/discord.calls"
+  cat >/dev/null || true
+  exit 0
+fi
+body='{"ok":true,"sessions_count":0}'
+if [[ "\${FAKE_IDLE_BUSY:-0}" == "1" && -z "\$output_file" ]]; then
+  body='{"ok":true,"sessions_count":3}'
+fi
+if [[ -n "\$output_file" ]]; then
+  if [[ "\${FAKE_COMPLETION_PROBE_FAIL:-0}" == "1" ]]; then
+    printf '%s\n' '{"ok":false}' > "\$output_file"
+  else
+    printf '%s\n' "\$body" > "\$output_file"
+  fi
+  touch "$BO_CALLS/completion-probe"
+else
+  printf '%s\n' "\$body"
+fi
+[[ "\$write_timing" == "true" ]] && printf '0.087'
+exit 0
+EOF
+cat > "$BO_SHIMS/date" <<EOF
+#!/bin/bash
+if [[ "\${1:-}" == "+%s" ]]; then
+  [[ -f "$BO_CALLS/completion-probe" ]] && echo 1123 || echo 1000
+  exit 0
+fi
+exec /bin/date "\$@"
 EOF
 cat > "$BO_SHIMS/lsof" <<'EOF'
 #!/bin/bash
 exit 0
 EOF
 chmod +x "$BO_SHIMS"/*
+cat > "$BO_FLYWHEEL/scripts/lead-alert.sh" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$BO_CALLS/lead-alert.calls"
+exit 0
+EOF
+chmod +x "$BO_FLYWHEEL/scripts/lead-alert.sh"
 cat > "$BO_HOME/.flywheel/manifests/flywheel-eng.json" <<EOF
 {"leadId":"eng","projectDir":"$BO_FLYWHEEL","projectName":"flywheel","botTokenEnv":"TEST_BOT_TOKEN","leadBackend":{"backendId":"claude-code"},"resolvedModel":"claude-fable-5"}
 EOF
@@ -1504,13 +1857,18 @@ bo_run() {
     rm -f "$BO_CALLS"/*.calls
     echo loaded > "$BO_LAUNCH_STATE"
     echo 424242 > "$BO_CALLS/lead.pid"
-    rm -f "$BO_CALLS/tmux-list.n"
+    rm -f "$BO_CALLS/tmux-list.n" "$BO_CALLS/completion-probe"
     HOME="$BO_HOME" PATH="$BO_SHIMS:$PATH" \
-        CLAUDE_INFRA_BOT_TOKEN="" FLYWHEEL_NOTIFY_CHANNEL="" \
-        FLYWHEEL_FOUNDER_USER_ID="" TEST_BOT_TOKEN="test-token" \
+        CLAUDE_INFRA_BOT_TOKEN="${BO_NOTIFY_TOKEN:-}" FLYWHEEL_NOTIFY_CHANNEL="${BO_NOTIFY_CHANNEL:-}" \
+        TEST_BOT_TOKEN="test-token" \
         FAKE_FAST_SLEEP="${FAKE_FAST_SLEEP:-0}" \
         FAKE_LEAD_SESSION_DEAD="${FAKE_LEAD_SESSION_DEAD:-0}" \
         FAKE_TMUX_INVENTORY_FAIL_ONCE="${FAKE_TMUX_INVENTORY_FAIL_ONCE:-0}" \
+        FAKE_IDLE_BUSY="${FAKE_IDLE_BUSY:-0}" \
+        FAKE_COMPLETION_PROBE_FAIL="${FAKE_COMPLETION_PROBE_FAIL:-0}" \
+        FAKE_NO_LEAD_PROCESS="${FAKE_NO_LEAD_PROCESS:-0}" \
+        FLYWHEEL_FOUNDER_USER_ID="${BO_FOUNDER_USER_ID:-}" \
+        TMPDIR="${BO_RUNTIME_TMP:-$TMPDIR_ROOT}" \
         RESTART_LEAD_STOP_WAIT_SECONDS="${RESTART_LEAD_STOP_WAIT_SECONDS:-60}" \
         RESTART_LEAD_QUIESCENCE_ATTEMPTS=2 \
         RESTART_LEAD_QUIESCENCE_INTERVAL=0 \
@@ -1519,6 +1877,133 @@ bo_run() {
         bash "$BO_FLYWHEEL/scripts/restart-services.sh" "$@" 2>&1
 }
 bo_calls() { cat "$BO_CALLS/$1.calls" 2>/dev/null || true; }
+
+# Install a test-only failure immediately after one human-visible progress
+# notice while preserving every other byte of the production script. This runs
+# the real top-level lock/trap wiring in a child process; it is deliberately not
+# a sourced-function unit test.
+bo_install_finalizer_injection() {
+    local site="$1" statement="$2" marker=""
+    case "$site" in
+      start) marker='notify_routine "🔄 开始全量重启 Flywheel' ;;
+      idle) marker='notify_routine "⏳ 等待 ${count} 个 active session idle' ;;
+      *) return 1 ;;
+    esac
+    awk -v marker="$marker" -v statement="$statement" '
+      { print }
+      index($0, marker) { print statement; inserted += 1 }
+      END { if (inserted != 1) exit 42 }
+    ' "$REAL_REPO_ROOT/scripts/restart-services.sh" > "$BO_FLYWHEEL/scripts/restart-services.sh"
+    chmod +x "$BO_FLYWHEEL/scripts/restart-services.sh"
+}
+
+bo_restore_restart_script() {
+    cp "$REAL_REPO_ROOT/scripts/restart-services.sh" "$BO_FLYWHEEL/scripts/restart-services.sh"
+    chmod +x "$BO_FLYWHEEL/scripts/restart-services.sh"
+}
+
+bo_reset_finalizer_state() {
+    rm -rf "$BO_HOME/.flywheel/restart.lock.d" "$BO_RUNTIME_TMP"
+    mkdir -p "$BO_RUNTIME_TMP"
+    rm -f "$BO_CALLS"/*.calls
+}
+
+# ── FLY-1603 B20: the installed traps, not only restart_on_exit's body ──
+echo "Test: FLY-1603 top-level finalizer traps are installed and exactly-once"
+BO_RUNTIME_TMP="$TMPDIR_ROOT/bo-finalizer-tmp"
+mkdir -p "$BO_RUNTIME_TMP"
+echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
+
+bo_restore_restart_script
+bo_reset_finalizer_state
+mkdir -p "$BO_HOME/.flywheel/restart.lock.d"
+out=$(bo_run --reason lock-contention) && rc=0 || rc=$?
+if (( rc == 0 )) \
+   && echo "$out" | grep -q 'Another restart in progress' \
+   && [[ -z "$(find "$BO_RUNTIME_TMP" -mindepth 1 -maxdepth 1 -print)" ]]; then
+    pass "FLY-1603 lock contention exits without leaking restart sidecars"
+else
+    fail "FLY-1603 lock-contention sidecar leak: rc=$rc residue='$(find "$BO_RUNTIME_TMP" -mindepth 1 -maxdepth 1 -print)' out='$(echo "$out" | tail -3)'"
+fi
+
+bo_reset_finalizer_state
+
+bo_install_finalizer_injection start '    exit 27'
+out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
+    bo_run --reason finalizer-nonzero) && rc=0 || rc=$?
+alerts=$(bo_calls lead-alert)
+discord_calls=$(bo_calls discord)
+if (( rc == 27 )) \
+   && [[ "$(echo "$alerts" | grep -c -- '--signature restart-aborted-unexpectedly-' || true)" == "1" ]] \
+   && [[ "$(echo "$discord_calls" | grep -c '开始全量重启' || true)" == "1" ]] \
+   && ! echo "$discord_calls" | grep -Eq '全量重启(完成|结束)' \
+   && ! echo "$discord_calls" | grep -q '1516209714097291335' \
+   && [[ ! -e "$BO_HOME/.flywheel/restart.lock.d" ]] \
+   && [[ -z "$(find "$BO_RUNTIME_TMP" -mindepth 1 -maxdepth 1 -print)" ]]; then
+    pass "FLY-1603 installed EXIT trap reports one unexpected terminal alert, preserves rc, and cleans up"
+else
+    fail "FLY-1603 installed EXIT trap mismatch: rc=$rc alerts='$alerts' discord='$discord_calls' residue='$(find "$BO_RUNTIME_TMP" -mindepth 1 -maxdepth 1 -print)'"
+fi
+
+bo_reset_finalizer_state
+bo_install_finalizer_injection start '    printf "blocked cleanup\n" > "$LOCK_DIR/nonempty"; rm -f "$PROJECT_SHA_UPDATES_FILE" "$LEAD_RESTART_NAMES_FILE"; mkdir "$PROJECT_SHA_UPDATES_FILE" "$LEAD_RESTART_NAMES_FILE"; exit 28'
+out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
+    bo_run --reason finalizer-cleanup-failure) && rc=0 || rc=$?
+alerts=$(bo_calls lead-alert)
+if (( rc == 28 )) \
+   && [[ "$(echo "$alerts" | grep -c -- '--signature restart-aborted-unexpectedly-' || true)" == "1" ]] \
+   && [[ -e "$BO_HOME/.flywheel/restart.lock.d/nonempty" ]] \
+   && [[ "$(find "$BO_RUNTIME_TMP" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == "2" ]]; then
+    pass "FLY-1603 finalizer alerts before fallible lock/temp cleanup and preserves the original rc"
+else
+    fail "FLY-1603 cleanup-failure finalizer mismatch: rc=$rc alerts='$alerts' residue='$(find "$BO_RUNTIME_TMP" -mindepth 1 -maxdepth 1 -print)'"
+fi
+
+bo_reset_finalizer_state
+bo_install_finalizer_injection start '    kill -INT "$$"'
+out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
+    BO_FOUNDER_USER_ID=123456789 bo_run --reason finalizer-int) && rc=0 || rc=$?
+alerts=$(bo_calls lead-alert)
+if (( rc == 130 )) \
+   && [[ "$(echo "$alerts" | grep -c -- '--signature restart-cancelled-by-operator-' || true)" == "1" ]] \
+   && echo "$alerts" | grep -q -- '--kind deploy_degraded --severity warning' \
+   && ! echo "$alerts" | grep -q -- '--mention-user'; then
+    pass "FLY-1603 installed SIGINT trap emits one warning without founder mention and returns 130"
+else
+    fail "FLY-1603 SIGINT finalizer mismatch: rc=$rc alerts='$alerts'"
+fi
+
+bo_reset_finalizer_state
+bo_install_finalizer_injection start '    kill -TERM "$$"'
+out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
+    BO_FOUNDER_USER_ID=123456789 bo_run --reason finalizer-term) && rc=0 || rc=$?
+alerts=$(bo_calls lead-alert)
+if (( rc == 143 )) \
+   && [[ "$(echo "$alerts" | grep -c -- '--signature restart-aborted-unexpectedly-' || true)" == "1" ]] \
+   && echo "$alerts" | grep -q -- '--kind deploy_failed --severity severe' \
+   && echo "$alerts" | grep -q -- '--mention-user 123456789'; then
+    pass "FLY-1603 installed SIGTERM trap emits one severe alert and returns 143"
+else
+    fail "FLY-1603 SIGTERM finalizer mismatch: rc=$rc alerts='$alerts'"
+fi
+
+bo_reset_finalizer_state
+bo_install_finalizer_injection idle '                    exit 31'
+out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
+    FAKE_IDLE_BUSY=1 bo_run --wait-idle --reason finalizer-idle) && rc=0 || rc=$?
+alerts=$(bo_calls lead-alert)
+discord_calls=$(bo_calls discord)
+if (( rc == 31 )) \
+   && [[ "$(echo "$alerts" | grep -c -- '--signature restart-aborted-unexpectedly-' || true)" == "1" ]] \
+   && [[ "$(echo "$discord_calls" | grep -c '等待 3 个 active session idle' || true)" == "1" ]] \
+   && ! echo "$discord_calls" | grep -q '开始全量重启'; then
+    pass "FLY-1603 an unexpected exit after the idle notice is finalized exactly once"
+else
+    fail "FLY-1603 idle-notice finalizer mismatch: rc=$rc alerts='$alerts' discord='$discord_calls'"
+fi
+
+bo_reset_finalizer_state
+bo_restore_restart_script
 
 # ── 1) SHA match skips build but still performs the one full restart ──
 echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
@@ -1641,10 +2126,95 @@ if (( rc == 0 && tmux_probes >= 3 )) \
    && jq -e --arg sha "$BO_HEAD_4" \
         '.codeDeployedSha == $sha and .leadsRestartStatus == "degraded" and .failed == 1' \
         "$bo_status" >/dev/null \
-   && echo "$out" | grep -q "code deployed; Lead restart status is degraded"; then
+   && echo "$out" | grep -q "code deployed; Lead restart result is degraded"; then
     pass "FLY-1434 degraded: final re-probe runs, code ledger advances, Lead status stays explicit"
 else
     fail "FLY-1434 degraded: rc=$rc probes=$tmux_probes sha=$(cat "$BO_HOME/.flywheel/deployed-sha") status=$(cat "$bo_status" 2>/dev/null || echo missing) out tail: $(echo "$out" | tail -5)"
+fi
+
+# ── 8) FLY-1603 successful terminal result posts measured evidence only to
+#         Flywheel Notification, never to the founder's Core channel ──
+echo "$BO_HEAD_4" > "$BO_HOME/.flywheel/deployed-sha"
+out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
+    bo_run --reason notify-success) && rc=0 || rc=$?
+discord_calls=$(bo_calls discord)
+if (( rc == 0 )) \
+   && echo "$discord_calls" | grep -q 'channels/1521630422918758472/messages' \
+   && echo "$discord_calls" | grep -q '✅ Flywheel 全量重启完成' \
+   && echo "$discord_calls" | grep -q 'Lead: 1/1 重启成功' \
+   && echo "$discord_calls" | grep -q 'Bridge: healthy (/health 实测 87ms)' \
+   && echo "$discord_calls" | grep -q '总耗时: 2m03s' \
+   && echo "$discord_calls" | grep -q "${BO_HEAD_4:0:7}" \
+   && ! echo "$discord_calls" | grep -q '1516209714097291335'; then
+    pass "FLY-1603 success posts truthful SHA/count/latency/duration evidence only to Notification"
+else
+    fail "FLY-1603 success notification mismatch — rc=$rc discord='$discord_calls' out tail: $(echo "$out" | tail -6)"
+fi
+
+# ── 9) FLY-1603 degraded result names the failed Lead, remains non-success,
+#         retains the retry marker, and keeps the existing alerts route ──
+echo "failed=1" > "$BO_HOME/.flywheel/plugin-restart-pending"
+out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
+    FAKE_FAST_SLEEP=1 FAKE_LEAD_SESSION_DEAD=1 RESTART_LEAD_VERIFY_ATTEMPTS=2 \
+    bo_run --reason notify-degraded) && rc=0 || rc=$?
+discord_calls=$(bo_calls discord)
+tail_alerts=$(bo_calls lead-alert | grep -c -- '--signature leads-partial-failed-' || true)
+if (( rc == 0 && tail_alerts == 1 )) \
+   && echo "$discord_calls" | grep -q '⚠️ Flywheel 全量重启结束 — degraded' \
+   && echo "$discord_calls" | grep -q '1 个里 0 个成功、1 个失败: flywheel-eng' \
+   && ! echo "$discord_calls" | grep -q '✅' \
+   && ! echo "$discord_calls" | grep -q '完成' \
+   && bo_calls lead-alert | grep -q 'flywheel-eng' \
+   && [[ -f "$BO_HOME/.flywheel/plugin-restart-pending" ]] \
+   && ! echo "$discord_calls" | grep -q '1516209714097291335'; then
+    pass "FLY-1603 degraded result names failures, stays non-successful, and keeps alerts/marker behavior"
+else
+    fail "FLY-1603 degraded notification mismatch — rc=$rc tail_alerts=$tail_alerts discord='$discord_calls' alerts='$(bo_calls lead-alert)'"
+fi
+rm -f "$BO_HOME/.flywheel/plugin-restart-pending"
+
+# ── 10) A failed measured Bridge completion probe is degraded: one warning
+#          result in Notification plus one aggregate alerts-channel summary. ──
+out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
+    FAKE_COMPLETION_PROBE_FAIL=1 bo_run --reason notify-bridge-probe-failed) && rc=0 || rc=$?
+discord_calls=$(bo_calls discord)
+tail_alerts=$(bo_calls lead-alert | grep -c -- '--signature bridge-completion-probe-failed-' || true)
+if (( rc == 0 && tail_alerts == 1 )) \
+   && echo "$discord_calls" | grep -q 'Bridge 复测异常' \
+   && echo "$discord_calls" | grep -q '/health 结束时刻探测失败' \
+   && ! echo "$discord_calls" | grep -q '✅' \
+   && ! echo "$discord_calls" | grep -q '1516209714097291335' \
+   && bo_calls lead-alert | grep -q 'Bridge.*health.*探测失败'; then
+    pass "FLY-1603 failed Bridge completion probe is non-successful and summarized once in alerts"
+else
+    fail "FLY-1603 Bridge-probe degraded routing mismatch — rc=$rc tail_alerts=$tail_alerts discord='$discord_calls' alerts='$(bo_calls lead-alert)'"
+fi
+
+# ── 11) Zero discovered Lead candidates is also degraded, never a clean
+#          completion, and receives the same one-summary alerts discipline. ──
+bo_manifest="$BO_HOME/.flywheel/manifests/flywheel-eng.json"
+bo_plist="$BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist"
+bo_projects="$BO_HOME/.flywheel/projects.json"
+mv "$bo_manifest" "${bo_manifest}.bak"
+mv "$bo_plist" "${bo_plist}.bak"
+cp "$bo_projects" "${bo_projects}.bak"
+printf '[]\n' > "$bo_projects"
+out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
+    FAKE_NO_LEAD_PROCESS=1 bo_run --reason notify-no-candidates) && rc=0 || rc=$?
+mv "${bo_manifest}.bak" "$bo_manifest"
+mv "${bo_plist}.bak" "$bo_plist"
+mv "${bo_projects}.bak" "$bo_projects"
+discord_calls=$(bo_calls discord)
+tail_alerts=$(bo_calls lead-alert | grep -c -- '--signature leads-no-candidates-' || true)
+if (( rc == 0 && tail_alerts == 1 )) \
+   && echo "$discord_calls" | grep -q '未发现 Lead 候选' \
+   && echo "$discord_calls" | grep -q '未发现可重启候选(0)' \
+   && ! echo "$discord_calls" | grep -q '✅' \
+   && ! echo "$discord_calls" | grep -q '1516209714097291335' \
+   && bo_calls lead-alert | grep -q '未发现可重启 Lead 候选'; then
+    pass "FLY-1603 zero Lead candidates is non-successful and summarized once in alerts"
+else
+    fail "FLY-1603 zero-candidate degraded routing mismatch — rc=$rc tail_alerts=$tail_alerts discord='$discord_calls' alerts='$(bo_calls lead-alert)'"
 fi
 
 # ── 8) --bridge-only --wait-idle with a BUSY first idle-poll → waits QUIETLY ──

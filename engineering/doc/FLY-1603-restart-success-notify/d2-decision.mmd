@@ -1,0 +1,15 @@
+flowchart TD
+    S["重启 run 结束<br/>(代码已部署)"] --> Q1{"Lead 重启波次<br/>本身跑起来了吗?"}
+    Q1 -- "没跑起来<br/>(环境收敛/清单失败)" --> W["⚠️『重启波次未执行(原因),<br/>Lead 总数未知』<br/>绝不伪造数字"]
+    Q1 -- "跑了" --> Q2{"找到可重启的<br/>Lead 候选了吗?"}
+    Q2 -- "0 个" --> N0["⚠️『未发现可重启候选(0)』<br/>绝不写 ✅ 0/0 全部上线"]
+    Q2 -- "M 个" --> Q3{"M 个里<br/>全部成功?"}
+    Q3 -- "有失败/跳过" --> DG["⚠️『M 个里 N 个成功、X 个失败: 名单』<br/>全文禁止出现『完成』二字"]
+    Q3 -- "全部成功" --> Q4{"结束时刻再实测一次<br/>Bridge /health 正常?"}
+    Q4 -- "异常" --> BF["⚠️『Bridge 复测异常』<br/>(端口开了≠可用,昨夜教训)"]
+    Q4 -- "正常" --> OK["✅『全量重启完成』<br/>版本从→到 + N/M + 实测毫秒 + 总耗时"]
+    style OK fill:#e8f5e9,stroke:#34c759,stroke-width:3px
+    style DG fill:#fff8e1,stroke:#ff9500,stroke-width:2px
+    style W fill:#fff8e1,stroke:#ff9500,stroke-width:2px
+    style N0 fill:#fff8e1,stroke:#ff9500,stroke-width:2px
+    style BF fill:#fff8e1,stroke:#ff9500,stroke-width:2px

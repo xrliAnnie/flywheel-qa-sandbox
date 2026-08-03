@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1603 设计:全量重启结束后,通知你</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    max-width: 960px; margin: 0 auto; padding: 24px 16px 60px;
+    line-height: 1.65;
+  }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 24px; }
+  .meta code { font-family: 'SF Mono', monospace; font-size: 12px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 20px 22px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 22px;
+    border-left: 4px solid #007aff;
+  }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .section-title { font-size: 18px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .section-title .num {
+    display: inline-block; background: #1a365d; color: #fff; border-radius: 6px;
+    font-size: 13px; padding: 1px 8px; margin-right: 8px; vertical-align: 2px;
+  }
+  p { margin-bottom: 10px; }
+  .jargon { border-bottom: 1px dotted #86868b; }
+  .diagram { overflow-x: auto; background: #fff; padding: 8px 0; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .msg-sample {
+    font-family: 'SF Mono', monospace; font-size: 13px; white-space: pre-wrap;
+    background: #f5f5f7; border-radius: 10px; padding: 14px 16px; margin: 10px 0;
+    border: 1px solid #e5e5ea;
+  }
+  .msg-sample.ok { border-left: 4px solid #34c759; }
+  .msg-sample.warn { border-left: 4px solid #ff9500; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 13px; }
+  td code, li code, p code { font-family: 'SF Mono', monospace; font-size: 12.5px; background: #f5f5f7; padding: 1px 5px; border-radius: 4px; }
+  ul, ol { margin: 6px 0 10px 22px; }
+  li { margin-bottom: 6px; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 5px; padding: 1px 7px; margin-right: 6px; vertical-align: 1px; }
+  .badge.keep { background: #e8f5e9; color: #1b7a34; }
+  .badge.new { background: #e3f2fd; color: #0a5bc4; }
+  .badge.no { background: #ffebee; color: #c62828; }
+  .comment-block { margin-top: 16px; padding-top: 12px; border-top: 1px dashed #e5e5ea; }
+  .comment-block label { font-size: 12px; color: #86868b; display: block; margin-bottom: 6px; }
+  .comment-block textarea {
+    width: 100%; min-height: 54px; border: 1px solid #d2d2d7; border-radius: 8px;
+    padding: 8px 10px; font-family: inherit; font-size: 13px; resize: vertical;
+    background: #fbfbfd; color: #1d1d1f;
+  }
+  .comment-block textarea:focus { outline: 2px solid #007aff33; border-color: #007aff; }
+  #comment-summary-list { font-size: 13.5px; }
+  #comment-summary-list .cs-item { margin-bottom: 10px; padding: 8px 10px; background: #f5f5f7; border-radius: 8px; }
+  #comment-summary-list .cs-sec { font-weight: 700; color: #1a365d; }
+  #copy-all-btn {
+    background: #007aff; color: #fff; border: none; border-radius: 8px;
+    padding: 8px 16px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 8px;
+  }
+  #copy-all-btn:active { opacity: 0.7; }
+  #copy-status { font-size: 12.5px; color: #34c759; margin-left: 10px; }
+  .footnote { color: #86868b; font-size: 12.5px; }
+</style>
+</head>
+<body>
+
+<h1>全量重启结束后,通知你</h1>
+<div class="meta">FLY-1603 · 设计方案(给 Annie 过目)· 2026-08-02 · 状态: Codex 设计评审 4 轮通过</div>
+
+<div class="card green" data-section="一句话总结">
+  <div class="section-title"><span class="num">1</span>一句话总结</div>
+  <p><strong>每次全量重启结束时,系统会往 #flywheel-notify 频道发一条「结束通知」:版本从哪到哪、几个 Lead 里几个上线了、Bridge(调度中枢,整个系统的总开关)实测响应多少毫秒、一共花了多久 —— 成功就说成功,有失败就点名说谁失败,绝不谎报。</strong></p>
+  <p>你的原话:「每次全量重启之后,它并不会告诉我重启结束了,我也不知道什么时候该 expect 你们全部上线。」这单就是修这个。落点完全按你的更正来:成功 → #flywheel-notify;完全失败 → #flywheel-alerts(现状不动);<strong>Core 主频道零新增消息</strong>。</p>
+  <div class="comment-block">
+    <label>💬 对这部分的意见(自动保存)</label>
+    <textarea data-key="s1" placeholder="写下你的想法…"></textarea>
+  </div>
+</div>
+
+<div class="card amber" data-section="昨晚发生了什么(审计发现)">
+  <div class="section-title"><span class="num">2</span>昨晚发生了什么 —— 审计发现的真实根因</div>
+  <p>查了昨夜 5 次重启的完整日志,发现问题比 issue 里写的更具体:</p>
+  <ul>
+    <li>「成功时发通知」的管道<strong>其实已经存在</strong>(之前的 FLY-1081 装的),而且配置是好的 —— 但它只在「<strong>所有 Lead 全部成功</strong>」这一种情况才会说话。</li>
+    <li>昨夜 3 次「代码部署成功」的重启,<strong>每次都有 1-2 个 Lead 没起来</strong>(术语叫 degraded,部分降级:主体成功、个别组件失败)。一碰到这种情况,程序就提前退出了,✅ 通知永远发不出来。</li>
+    <li>所以你收到的只有 alerts 频道里的「⚠️ 部分失败」告警,而且那条告警<strong>只说数量、不说是谁失败了</strong>,也从来没有一条「重启流程结束了」的收尾消息。</li>
+  </ul>
+  <p><strong>结论:不是缺一行代码,是「结束播报」没有统一的出口 —— 三种结束方式各走各的路,只有一条路上有通知。</strong>这次的修法就是给所有结束方式装一个统一的「收口点」。</p>
+  <div class="comment-block">
+    <label>💬 对这部分的意见(自动保存)</label>
+    <textarea data-key="s2" placeholder="写下你的想法…"></textarea>
+  </div>
+</div>
+
+<div class="card" data-section="核心流程图">
+  <div class="section-title"><span class="num">3</span>核心流程:重启从头到尾,新增的只有橙色那一格</div>
+  <p>全量重启的完整链路如下。<span class="jargon">Lead</span>(各部门的 AI 负责人,比如 Tadashi、Mufasa)会被逐个重启;蓝色是现有的开始通知,<strong>橙色加粗框是本次新增的「结束播报收口点」</strong>,绿色/黄色是它发出的两种结束消息:</p>
+  <div class="diagram"><svg id="FLY-1603-d1" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 642.379px; background-color: white;" viewBox="0 0 642.37890625 1508.171875" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#FLY-1603-d1{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#FLY-1603-d1 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#FLY-1603-d1 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#FLY-1603-d1 .error-icon{fill:#552222;}#FLY-1603-d1 .error-text{fill:#552222;stroke:#552222;}#FLY-1603-d1 .edge-thickness-normal{stroke-width:1px;}#FLY-1603-d1 .edge-thickness-thick{stroke-width:3.5px;}#FLY-1603-d1 .edge-pattern-solid{stroke-dasharray:0;}#FLY-1603-d1 .edge-thickness-invisible{stroke-width:0;fill:none;}#FLY-1603-d1 .edge-pattern-dashed{stroke-dasharray:3;}#FLY-1603-d1 .edge-pattern-dotted{stroke-dasharray:2;}#FLY-1603-d1 .marker{fill:#333333;stroke:#333333;}#FLY-1603-d1 .marker.cross{stroke:#333333;}#FLY-1603-d1 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#FLY-1603-d1 p{margin:0;}#FLY-1603-d1 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#FLY-1603-d1 .cluster-label text{fill:#333;}#FLY-1603-d1 .cluster-label span{color:#333;}#FLY-1603-d1 .cluster-label span p{background-color:transparent;}#FLY-1603-d1 .label text,#FLY-1603-d1 span{fill:#333;color:#333;}#FLY-1603-d1 .node rect,#FLY-1603-d1 .node circle,#FLY-1603-d1 .node ellipse,#FLY-1603-d1 .node polygon,#FLY-1603-d1 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#FLY-1603-d1 .rough-node .label text,#FLY-1603-d1 .node .label text,#FLY-1603-d1 .image-shape .label,#FLY-1603-d1 .icon-shape .label{text-anchor:middle;}#FLY-1603-d1 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#FLY-1603-d1 .rough-node .label,#FLY-1603-d1 .node .label,#FLY-1603-d1 .image-shape .label,#FLY-1603-d1 .icon-shape .label{text-align:center;}#FLY-1603-d1 .node.clickable{cursor:pointer;}#FLY-1603-d1 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#FLY-1603-d1 .arrowheadPath{fill:#333333;}#FLY-1603-d1 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#FLY-1603-d1 .flowchart-link{stroke:#333333;fill:none;}#FLY-1603-d1 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1603-d1 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#FLY-1603-d1 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1603-d1 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#FLY-1603-d1 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#FLY-1603-d1 .cluster text{fill:#333;}#FLY-1603-d1 .cluster span{color:#333;}#FLY-1603-d1 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#FLY-1603-d1 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#FLY-1603-d1 rect.text{fill:none;stroke-width:0;}#FLY-1603-d1 .icon-shape,#FLY-1603-d1 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1603-d1 .icon-shape p,#FLY-1603-d1 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#FLY-1603-d1 .icon-shape rect,#FLY-1603-d1 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1603-d1 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#FLY-1603-d1 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#FLY-1603-d1 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="FLY-1603-d1_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1603-d1_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1603-d1_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1603-d1_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1603-d1_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1603-d1_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M254.563,110L254.563,114.167C254.563,118.333,254.563,126.667,254.563,134.333C254.563,142,254.563,149,254.563,152.5L254.563,156" id="L_A_B_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_A_B_0" data-points="W3sieCI6MjU0LjU2MjUsInkiOjExMH0seyJ4IjoyNTQuNTYyNSwieSI6MTM1fSx7IngiOjI1NC41NjI1LCJ5IjoxNjB9XQ==" marker-end="url(#FLY-1603-d1_flowchart-v2-pointEnd)"/><path d="M254.563,238L254.563,242.167C254.563,246.333,254.563,254.667,254.563,262.333C254.563,270,254.563,277,254.563,280.5L254.563,284" id="L_B_C_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_B_C_0" data-points="W3sieCI6MjU0LjU2MjUsInkiOjIzOH0seyJ4IjoyNTQuNTYyNSwieSI6MjYzfSx7IngiOjI1NC41NjI1LCJ5IjoyODh9XQ==" marker-end="url(#FLY-1603-d1_flowchart-v2-pointEnd)"/><path d="M254.563,342L254.563,346.167C254.563,350.333,254.563,358.667,254.563,366.333C254.563,374,254.563,381,254.563,384.5L254.563,388" id="L_C_D_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_C_D_0" data-points="W3sieCI6MjU0LjU2MjUsInkiOjM0Mn0seyJ4IjoyNTQuNTYyNSwieSI6MzY3fSx7IngiOjI1NC41NjI1LCJ5IjozOTJ9XQ==" marker-end="url(#FLY-1603-d1_flowchart-v2-pointEnd)"/><path d="M254.563,446L254.563,450.167C254.563,454.333,254.563,462.667,254.563,470.333C254.563,478,254.563,485,254.563,488.5L254.563,492" id="L_D_E_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_D_E_0" data-points="W3sieCI6MjU0LjU2MjUsInkiOjQ0Nn0seyJ4IjoyNTQuNTYyNSwieSI6NDcxfSx7IngiOjI1NC41NjI1LCJ5Ijo0OTZ9XQ==" marker-end="url(#FLY-1603-d1_flowchart-v2-pointEnd)"/><path d="M205.944,643.554L191.92,657.823C177.895,672.093,149.846,700.632,135.821,722.402C121.797,744.172,121.797,759.172,121.797,766.672L121.797,774.172" id="L_E_F_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_E_F_0" data-points="W3sieCI6MjA1Ljk0NDM3NDgxNzcwNDUzLCJ5Ijo2NDMuNTUzNzQ5ODE3NzA0Nn0seyJ4IjoxMjEuNzk2ODc1LCJ5Ijo3MjkuMTcxODc1fSx7IngiOjEyMS43OTY4NzUsInkiOjc3OC4xNzE4NzV9XQ==" marker-end="url(#FLY-1603-d1_flowchart-v2-pointEnd)"/><path d="M121.797,832.172L121.797,838.339C121.797,844.505,121.797,856.839,121.797,866.505C121.797,876.172,121.797,883.172,121.797,886.672L121.797,890.172" id="L_F_G_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_F_G_0" data-points="W3sieCI6MTIxLjc5Njg3NSwieSI6ODMyLjE3MTg3NX0seyJ4IjoxMjEuNzk2ODc1LCJ5Ijo4NjkuMTcxODc1fSx7IngiOjEyMS43OTY4NzUsInkiOjg5NC4xNzE4NzV9XQ==" marker-end="url(#FLY-1603-d1_flowchart-v2-pointEnd)"/><path d="M303.181,643.554L317.205,657.823C331.23,672.093,359.279,700.632,373.304,720.402C387.328,740.172,387.328,751.172,387.328,756.672L387.328,762.172" id="L_E_H_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_E_H_0" data-points="W3sieCI6MzAzLjE4MDYyNTE4MjI5NTQ0LCJ5Ijo2NDMuNTUzNzQ5ODE3NzA0Nn0seyJ4IjozODcuMzI4MTI1LCJ5Ijo3MjkuMTcxODc1fSx7IngiOjM4Ny4zMjgxMjUsInkiOjc2Ni4xNzE4NzV9XQ==" marker-end="url(#FLY-1603-d1_flowchart-v2-pointEnd)"/><path d="M387.328,844.172L387.328,848.339C387.328,852.505,387.328,860.839,387.328,870.505C387.328,880.172,387.328,891.172,387.328,896.672L387.328,902.172" id="L_H_I_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_H_I_0" data-points="W3sieCI6Mzg3LjMyODEyNSwieSI6ODQ0LjE3MTg3NX0seyJ4IjozODcuMzI4MTI1LCJ5Ijo4NjkuMTcxODc1fSx7IngiOjM4Ny4zMjgxMjUsInkiOjkwNi4xNzE4NzV9XQ==" marker-end="url(#FLY-1603-d1_flowchart-v2-pointEnd)"/><path d="M387.328,984.172L387.328,990.339C387.328,996.505,387.328,1008.839,387.328,1018.505C387.328,1028.172,387.328,1035.172,387.328,1038.672L387.328,1042.172" id="L_I_J_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_I_J_0" data-points="W3sieCI6Mzg3LjMyODEyNSwieSI6OTg0LjE3MTg3NX0seyJ4IjozODcuMzI4MTI1LCJ5IjoxMDIxLjE3MTg3NX0seyJ4IjozODcuMzI4MTI1LCJ5IjoxMDQ2LjE3MTg3NX1d" marker-end="url(#FLY-1603-d1_flowchart-v2-pointEnd)"/><path d="M311.525,1172.172L301.698,1180.339C291.872,1188.505,272.219,1204.839,262.393,1220.505C252.566,1236.172,252.566,1251.172,252.566,1258.672L252.566,1266.172" id="L_J_K_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_J_K_0" data-points="W3sieCI6MzExLjUyNDY1ODIwMzEyNSwieSI6MTE3Mi4xNzE4NzV9LHsieCI6MjUyLjU2NjQwNjI1LCJ5IjoxMjIxLjE3MTg3NX0seyJ4IjoyNTIuNTY2NDA2MjUsInkiOjEyNzAuMTcxODc1fV0=" marker-end="url(#FLY-1603-d1_flowchart-v2-pointEnd)"/><path d="M463.132,1172.172L472.958,1180.339C482.784,1188.505,502.437,1204.839,512.263,1220.505C522.09,1236.172,522.09,1251.172,522.09,1258.672L522.09,1266.172" id="L_J_L_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_J_L_0" data-points="W3sieCI6NDYzLjEzMTU5MTc5Njg3NSwieSI6MTE3Mi4xNzE4NzV9LHsieCI6NTIyLjA4OTg0Mzc1LCJ5IjoxMjIxLjE3MTg3NX0seyJ4Ijo1MjIuMDg5ODQzNzUsInkiOjEyNzAuMTcxODc1fV0=" marker-end="url(#FLY-1603-d1_flowchart-v2-pointEnd)"/><path d="M522.09,1348.172L522.09,1352.339C522.09,1356.505,522.09,1364.839,522.09,1372.505C522.09,1380.172,522.09,1387.172,522.09,1390.672L522.09,1394.172" id="L_L_M_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_L_M_0" data-points="W3sieCI6NTIyLjA4OTg0Mzc1LCJ5IjoxMzQ4LjE3MTg3NX0seyJ4Ijo1MjIuMDg5ODQzNzUsInkiOjEzNzMuMTcxODc1fSx7IngiOjUyMi4wODk4NDM3NSwieSI6MTM5OC4xNzE4NzV9XQ==" marker-end="url(#FLY-1603-d1_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_A_B_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_B_C_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_C_D_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_D_E_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(121.796875, 729.171875)"><g class="label" data-id="L_E_F_0" transform="translate(-16, -12)"><foreignObject width="32" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>失败</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_F_G_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(387.328125, 729.171875)"><g class="label" data-id="L_E_H_0" transform="translate(-16, -12)"><foreignObject width="32" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>通过</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_H_I_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_I_J_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(252.56640625, 1221.171875)"><g class="label" data-id="L_J_K_0" transform="translate(-32, -12)"><foreignObject width="64" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>全部成功</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(522.08984375, 1221.171875)"><g class="label" data-id="L_J_L_0" transform="translate(-39.3046875, -24)"><foreignObject width="78.609375" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>部分失败<br />(degraded)</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_L_M_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-A-0" transform="translate(254.5625, 59)"><rect class="basic label-container" style="fill:#e3f2fd !important;stroke:#007aff !important;stroke-width:2px !important" x="-107.234375" y="-51" width="214.46875" height="102"/><g class="label" style="" transform="translate(-77.234375, -36)"><rect/><foreignObject width="154.46875" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>🔄 开始通知<br />发到 #flywheel-notify<br />(现状已有,不动)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-B-1" transform="translate(254.5625, 199)"><rect class="basic label-container" style="" x="-83.875" y="-39" width="167.75" height="78"/><g class="label" style="" transform="translate(-53.875, -24)"><rect/><foreignObject width="107.75" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>停掉 Bridge<br />(调度中枢下线)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-C-3" transform="translate(254.5625, 315)"><rect class="basic label-container" style="" x="-70" y="-27" width="140" height="54"/><g class="label" style="" transform="translate(-40, -12)"><rect/><foreignObject width="80" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>编译新代码</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-D-5" transform="translate(254.5625, 419)"><rect class="basic label-container" style="" x="-79.1640625" y="-27" width="158.328125" height="54"/><g class="label" style="" transform="translate(-49.1640625, -12)"><rect/><foreignObject width="98.328125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>启动新 Bridge</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-E-7" transform="translate(254.5625, 594.0859375)"><polygon points="98.0859375,0 196.171875,-98.0859375 98.0859375,-196.171875 0,-98.0859375" class="label-container" transform="translate(-97.5859375, 98.0859375)"/><g class="label" style="" transform="translate(-59.0859375, -24)"><rect/><foreignObject width="118.171875" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Bridge 健康检查<br />(最长等 15 分钟)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-F-9" transform="translate(121.796875, 805.171875)"><rect class="basic label-container" style="" x="-78" y="-27" width="156" height="54"/><g class="label" style="" transform="translate(-48, -12)"><rect/><foreignObject width="96" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>回滚到旧版本</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-G-11" transform="translate(121.796875, 945.171875)"><rect class="basic label-container" style="fill:#ffebee !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-113.796875" y="-51" width="227.59375" height="102"/><g class="label" style="" transform="translate(-83.796875, -36)"><rect/><foreignObject width="167.59375" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>🚨 严重告警<br />发到 #flywheel-alerts<br />并 @ 你(现状已有,不动)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-H-13" transform="translate(387.328125, 805.171875)"><rect class="basic label-container" style="" x="-108.890625" y="-39" width="217.78125" height="78"/><g class="label" style="" transform="translate(-78.890625, -24)"><rect/><foreignObject width="157.78125" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>逐个重启所有 Lead<br />(记录每个成败 + 名单)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-I-15" transform="translate(387.328125, 945.171875)"><rect class="basic label-container" style="" x="-101.734375" y="-39" width="203.46875" height="78"/><g class="label" style="" transform="translate(-71.734375, -24)"><rect/><foreignObject width="143.46875" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>记录部署完成<br />(deployed-sha 推进)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-J-17" transform="translate(387.328125, 1109.171875)"><rect class="basic label-container" style="fill:#fff3e0 !important;stroke:#ff9500 !important;stroke-width:3px !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>★ 新增: 结束播报收口点<br />算总耗时 + 再实测一次 Bridge 响应<br />+ 汇总 Lead 成败名单</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-K-19" transform="translate(252.56640625, 1309.171875)"><rect class="basic label-container" style="fill:#e8f5e9 !important;stroke:#34c759 !important;stroke-width:2px !important" x="-107.234375" y="-39" width="214.46875" height="78"/><g class="label" style="" transform="translate(-77.234375, -24)"><rect/><foreignObject width="154.46875" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>✅ 完成通知<br />发到 #flywheel-notify</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-L-21" transform="translate(522.08984375, 1309.171875)"><rect class="basic label-container" style="fill:#fff8e1 !important;stroke:#ff9500 !important;stroke-width:2px !important" x="-112.2890625" y="-39" width="224.578125" height="78"/><g class="label" style="" transform="translate(-82.2890625, -24)"><rect/><foreignObject width="164.578125" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>⚠️ 结束通知(如实分账)<br />发到 #flywheel-notify</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-M-23" transform="translate(522.08984375, 1449.171875)"><rect class="basic label-container" style="fill:#fff8e1 !important;stroke:#ff9500 !important;stroke-width:2px !important" x="-110.8125" y="-51" width="221.625" height="102"/><g class="label" style="" transform="translate(-80.8125, -36)"><rect/><foreignObject width="161.625" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>⚠️ 告警(带失败名单)<br />发到 #flywheel-alerts<br />(现状已有,本次补名单)</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+  <div class="comment-block">
+    <label>💬 对这部分的意见(自动保存)</label>
+    <textarea data-key="s3" placeholder="写下你的想法…"></textarea>
+  </div>
+</div>
+
+<div class="card" data-section="结束消息长什么样">
+  <div class="section-title"><span class="num">4</span>结束消息长什么样 —— 五种情况,五种诚实说法</div>
+  <p>收口点会按真实结果选措辞。判断顺序如下(关键原则:<strong>只要不是全部成功,全文禁止出现「完成」两个字</strong>):</p>
+  <div class="diagram"><svg id="FLY-1603-d2" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 971.793px; background-color: white;" viewBox="0 0 971.79296875 1321.6875" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#FLY-1603-d2{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#FLY-1603-d2 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#FLY-1603-d2 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#FLY-1603-d2 .error-icon{fill:#552222;}#FLY-1603-d2 .error-text{fill:#552222;stroke:#552222;}#FLY-1603-d2 .edge-thickness-normal{stroke-width:1px;}#FLY-1603-d2 .edge-thickness-thick{stroke-width:3.5px;}#FLY-1603-d2 .edge-pattern-solid{stroke-dasharray:0;}#FLY-1603-d2 .edge-thickness-invisible{stroke-width:0;fill:none;}#FLY-1603-d2 .edge-pattern-dashed{stroke-dasharray:3;}#FLY-1603-d2 .edge-pattern-dotted{stroke-dasharray:2;}#FLY-1603-d2 .marker{fill:#333333;stroke:#333333;}#FLY-1603-d2 .marker.cross{stroke:#333333;}#FLY-1603-d2 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#FLY-1603-d2 p{margin:0;}#FLY-1603-d2 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#FLY-1603-d2 .cluster-label text{fill:#333;}#FLY-1603-d2 .cluster-label span{color:#333;}#FLY-1603-d2 .cluster-label span p{background-color:transparent;}#FLY-1603-d2 .label text,#FLY-1603-d2 span{fill:#333;color:#333;}#FLY-1603-d2 .node rect,#FLY-1603-d2 .node circle,#FLY-1603-d2 .node ellipse,#FLY-1603-d2 .node polygon,#FLY-1603-d2 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#FLY-1603-d2 .rough-node .label text,#FLY-1603-d2 .node .label text,#FLY-1603-d2 .image-shape .label,#FLY-1603-d2 .icon-shape .label{text-anchor:middle;}#FLY-1603-d2 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#FLY-1603-d2 .rough-node .label,#FLY-1603-d2 .node .label,#FLY-1603-d2 .image-shape .label,#FLY-1603-d2 .icon-shape .label{text-align:center;}#FLY-1603-d2 .node.clickable{cursor:pointer;}#FLY-1603-d2 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#FLY-1603-d2 .arrowheadPath{fill:#333333;}#FLY-1603-d2 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#FLY-1603-d2 .flowchart-link{stroke:#333333;fill:none;}#FLY-1603-d2 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1603-d2 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#FLY-1603-d2 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1603-d2 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#FLY-1603-d2 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#FLY-1603-d2 .cluster text{fill:#333;}#FLY-1603-d2 .cluster span{color:#333;}#FLY-1603-d2 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#FLY-1603-d2 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#FLY-1603-d2 rect.text{fill:none;stroke-width:0;}#FLY-1603-d2 .icon-shape,#FLY-1603-d2 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1603-d2 .icon-shape p,#FLY-1603-d2 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#FLY-1603-d2 .icon-shape rect,#FLY-1603-d2 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1603-d2 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#FLY-1603-d2 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#FLY-1603-d2 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="FLY-1603-d2_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1603-d2_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1603-d2_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1603-d2_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1603-d2_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1603-d2_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M272.93,86L272.93,90.167C272.93,94.333,272.93,102.667,272.93,110.333C272.93,118,272.93,125,272.93,128.5L272.93,132" id="L_S_Q1_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_S_Q1_0" data-points="W3sieCI6MjcyLjkyOTY4NzUsInkiOjg2fSx7IngiOjI3Mi45Mjk2ODc1LCJ5IjoxMTF9LHsieCI6MjcyLjkyOTY4NzUsInkiOjEzNn1d" marker-end="url(#FLY-1603-d2_flowchart-v2-pointEnd)"/><path d="M225.833,284.778L210.996,300.794C196.159,316.81,166.486,348.843,151.649,379.429C136.813,410.016,136.813,439.156,136.813,453.727L136.813,468.297" id="L_Q1_W_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Q1_W_0" data-points="W3sieCI6MjI1LjgzMjg2MjYxMjQ3Mjc1LCJ5IjoyODQuNzc4MTc1MTEyNDcyNzV9LHsieCI6MTM2LjgxMjUsInkiOjM4MC44NzV9LHsieCI6MTM2LjgxMjUsInkiOjQ3Mi4yOTY4NzV9XQ==" marker-end="url(#FLY-1603-d2_flowchart-v2-pointEnd)"/><path d="M320.027,284.778L334.863,300.794C349.7,316.81,379.373,348.843,394.21,372.359C409.047,395.875,409.047,410.875,409.047,418.375L409.047,425.875" id="L_Q1_Q2_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Q1_Q2_0" data-points="W3sieCI6MzIwLjAyNjUxMjM4NzUyNzI1LCJ5IjoyODQuNzc4MTc1MTEyNDcyNzV9LHsieCI6NDA5LjA0Njg3NSwieSI6MzgwLjg3NX0seyJ4Ijo0MDkuMDQ2ODc1LCJ5Ijo0MjkuODc1fV0=" marker-end="url(#FLY-1603-d2_flowchart-v2-pointEnd)"/><path d="M362.963,570.634L349.482,584.482C336.001,598.329,309.04,626.024,295.559,649.194C282.078,672.365,282.078,691.01,282.078,700.333L282.078,709.656" id="L_Q2_N0_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Q2_N0_0" data-points="W3sieCI6MzYyLjk2MjYwNjQyNDE0ODYsInkiOjU3MC42MzQ0ODE0MjQxNDg2fSx7IngiOjI4Mi4wNzgxMjUsInkiOjY1My43MTg3NX0seyJ4IjoyODIuMDc4MTI1LCJ5Ijo3MTMuNjU2MjV9XQ==" marker-end="url(#FLY-1603-d2_flowchart-v2-pointEnd)"/><path d="M455.131,570.634L468.612,584.482C482.093,598.329,509.054,626.024,522.535,645.371C536.016,664.719,536.016,675.719,536.016,681.219L536.016,686.719" id="L_Q2_Q3_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Q2_Q3_0" data-points="W3sieCI6NDU1LjEzMTE0MzU3NTg1MTQsInkiOjU3MC42MzQ0ODE0MjQxNDg2fSx7IngiOjUzNi4wMTU2MjUsInkiOjY1My43MTg3NX0seyJ4Ijo1MzYuMDE1NjI1LCJ5Ijo2OTAuNzE4NzV9XQ==" marker-end="url(#FLY-1603-d2_flowchart-v2-pointEnd)"/><path d="M493.968,796.546L476.597,809.721C459.226,822.895,424.484,849.245,407.113,878.177C389.742,907.109,389.742,938.625,389.742,954.383L389.742,970.141" id="L_Q3_DG_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Q3_DG_0" data-points="W3sieCI6NDkzLjk2ODA2NTE2MzQxMTYsInkiOjc5Ni41NDYxOTAxNjM0MTE2fSx7IngiOjM4OS43NDIxODc1LCJ5Ijo4NzUuNTkzNzV9LHsieCI6Mzg5Ljc0MjE4NzUsInkiOjk3NC4xNDA2MjV9XQ==" marker-end="url(#FLY-1603-d2_flowchart-v2-pointEnd)"/><path d="M578.063,796.546L595.434,809.721C612.805,822.895,647.547,849.245,664.918,867.919C682.289,886.594,682.289,897.594,682.289,903.094L682.289,908.594" id="L_Q3_Q4_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Q3_Q4_0" data-points="W3sieCI6NTc4LjA2MzE4NDgzNjU4ODQsInkiOjc5Ni41NDYxOTAxNjM0MTE2fSx7IngiOjY4Mi4yODkwNjI1LCJ5Ijo4NzUuNTkzNzV9LHsieCI6NjgyLjI4OTA2MjUsInkiOjkxMi41OTM3NX1d" marker-end="url(#FLY-1603-d2_flowchart-v2-pointEnd)"/><path d="M625.65,1081.048L609.839,1096.655C594.028,1112.261,562.407,1143.474,546.596,1166.581C530.785,1189.688,530.785,1204.688,530.785,1212.188L530.785,1219.688" id="L_Q4_BF_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Q4_BF_0" data-points="W3sieCI6NjI1LjY0OTgxMDA1MjUxNzksInkiOjEwODEuMDQ4MjQ3NTUyNTE4fSx7IngiOjUzMC43ODUxNTYyNSwieSI6MTE3NC42ODc1fSx7IngiOjUzMC43ODUxNTYyNSwieSI6MTIyMy42ODc1fV0=" marker-end="url(#FLY-1603-d2_flowchart-v2-pointEnd)"/><path d="M738.928,1081.048L754.739,1096.655C770.55,1112.261,802.171,1143.474,817.982,1164.581C833.793,1185.688,833.793,1196.688,833.793,1202.188L833.793,1207.688" id="L_Q4_OK_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Q4_OK_0" data-points="W3sieCI6NzM4LjkyODMxNDk0NzQ4MjEsInkiOjEwODEuMDQ4MjQ3NTUyNTE4fSx7IngiOjgzMy43OTI5Njg3NSwieSI6MTE3NC42ODc1fSx7IngiOjgzMy43OTI5Njg3NSwieSI6MTIxMS42ODc1fV0=" marker-end="url(#FLY-1603-d2_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_S_Q1_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(136.8125, 380.875)"><g class="label" data-id="L_Q1_W_0" transform="translate(-74.0703125, -24)"><foreignObject width="148.140625" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>没跑起来<br />(环境收敛/清单失败)</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(409.046875, 380.875)"><g class="label" data-id="L_Q1_Q2_0" transform="translate(-16, -12)"><foreignObject width="32" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>跑了</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(282.078125, 653.71875)"><g class="label" data-id="L_Q2_N0_0" transform="translate(-14.609375, -12)"><foreignObject width="29.21875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>0 个</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(536.015625, 653.71875)"><g class="label" data-id="L_Q2_Q3_0" transform="translate(-16.0859375, -12)"><foreignObject width="32.171875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>M 个</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(389.7421875, 875.59375)"><g class="label" data-id="L_Q3_DG_0" transform="translate(-44.1953125, -12)"><foreignObject width="88.390625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>有失败/跳过</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(682.2890625, 875.59375)"><g class="label" data-id="L_Q3_Q4_0" transform="translate(-32, -12)"><foreignObject width="64" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>全部成功</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(530.78515625, 1174.6875)"><g class="label" data-id="L_Q4_BF_0" transform="translate(-16, -12)"><foreignObject width="32" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>异常</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(833.79296875, 1174.6875)"><g class="label" data-id="L_Q4_OK_0" transform="translate(-16, -12)"><foreignObject width="32" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>正常</p></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-S-0" transform="translate(272.9296875, 47)"><rect class="basic label-container" style="" x="-78.671875" y="-39" width="157.34375" height="78"/><g class="label" style="" transform="translate(-48.671875, -24)"><rect/><foreignObject width="97.34375" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>重启 run 结束<br />(代码已部署)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-Q1-1" transform="translate(272.9296875, 233.9375)"><polygon points="97.9375,0 195.875,-97.9375 97.9375,-195.875 0,-97.9375" class="label-container" transform="translate(-97.4375, 97.9375)"/><g class="label" style="" transform="translate(-58.9375, -24)"><rect/><foreignObject width="117.875" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Lead 重启波次<br />本身跑起来了吗?</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-W-3" transform="translate(136.8125, 523.296875)"><rect class="basic label-container" style="fill:#fff8e1 !important;stroke:#ff9500 !important;stroke-width:2px !important" x="-128.8125" y="-51" width="257.625" height="102"/><g class="label" style="" transform="translate(-98.8125, -36)"><rect/><foreignObject width="197.625" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>⚠️『重启波次未执行(原因),<br />Lead 总数未知』<br />绝不伪造数字</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-Q2-5" transform="translate(409.046875, 523.296875)"><polygon points="93.421875,0 186.84375,-93.421875 93.421875,-186.84375 0,-93.421875" class="label-container" transform="translate(-92.921875, 93.421875)"/><g class="label" style="" transform="translate(-54.421875, -24)"><rect/><foreignObject width="108.84375" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>找到可重启的<br />Lead 候选了吗?</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-N0-7" transform="translate(282.078125, 764.65625)"><rect class="basic label-container" style="fill:#fff8e1 !important;stroke:#ff9500 !important;stroke-width:2px !important" x="-130" y="-51" width="260" height="102"/><g class="label" style="" transform="translate(-100, -36)"><rect/><foreignObject width="200" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>⚠️『未发现可重启候选(0)』<br />绝不写 ✅ 0/0 全部上线</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-Q3-9" transform="translate(536.015625, 764.65625)"><polygon points="73.9375,0 147.875,-73.9375 73.9375,-147.875 0,-73.9375" class="label-container" transform="translate(-73.4375, 73.9375)"/><g class="label" style="" transform="translate(-34.9375, -24)"><rect/><foreignObject width="69.875" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>M 个里<br />全部成功?</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-DG-11" transform="translate(389.7421875, 1025.140625)"><rect class="basic label-container" style="fill:#fff8e1 !important;stroke:#ff9500 !important;stroke-width:2px !important" x="-130" y="-51" width="260" height="102"/><g class="label" style="" transform="translate(-100, -36)"><rect/><foreignObject width="200" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>⚠️『M 个里 N 个成功、X 个失败: 名单』<br />全文禁止出现『完成』二字</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-Q4-13" transform="translate(682.2890625, 1025.140625)"><polygon points="112.546875,0 225.09375,-112.546875 112.546875,-225.09375 0,-112.546875" class="label-container" transform="translate(-112.046875, 112.546875)"/><g class="label" style="" transform="translate(-73.546875, -24)"><rect/><foreignObject width="147.09375" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>结束时刻再实测一次<br />Bridge /health 正常?</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-BF-15" transform="translate(530.78515625, 1262.6875)"><rect class="basic label-container" style="fill:#fff8e1 !important;stroke:#ff9500 !important;stroke-width:2px !important" x="-123.0078125" y="-39" width="246.015625" height="78"/><g class="label" style="" transform="translate(-93.0078125, -24)"><rect/><foreignObject width="186.015625" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>⚠️『Bridge 复测异常』<br />(端口开了≠可用,昨夜教训)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-OK-17" transform="translate(833.79296875, 1262.6875)"><rect class="basic label-container" style="fill:#e8f5e9 !important;stroke:#34c759 !important;stroke-width:3px !important" x="-130" y="-51" width="260" height="102"/><g class="label" style="" transform="translate(-100, -36)"><rect/><foreignObject width="200" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>✅『全量重启完成』<br />版本从→到 + N/M + 实测毫秒 + 总耗时</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+  <p style="margin-top:14px;">你在 #flywheel-notify 里实际会看到的两种典型消息:</p>
+  <div class="msg-sample ok">✅ Flywheel 全量重启完成 (reason=deploy)
+版本: `fdb7422` → `26088a9`
+Lead: 7/7 全部上线
+Bridge: healthy (/health 实测 87ms)
+总耗时: 17m03s</div>
+  <div class="msg-sample warn">⚠️ Flywheel 全量重启结束 — degraded (reason=deploy)
+版本: `fdb7422` → `26088a9`
+Lead: 7 个里 5 个成功、2 个失败: flywheel-eng-lead, mufasa-lead
+Bridge: healthy (/health 实测 87ms)
+总耗时: 17m03s
+详情见 #flywheel-alerts</div>
+  <p>同时,alerts 频道那条「部分失败」告警也会补上<strong>失败者名单</strong>(现在只有数量),你不用再去翻日志猜是谁。</p>
+  <p class="footnote">「Bridge 实测 87ms」:结束时刻会对 Bridge 的健康接口(/health,一个专门用来问「你还活着吗」的探测入口)再实测一次响应时间 —— 昨夜刚验证过「端口开了 ≠ 真的可用」,所以不只看开没开,还要真测一下。</p>
+  <div class="comment-block">
+    <label>💬 对这部分的意见(自动保存)</label>
+    <textarea data-key="s4" placeholder="写下你的想法…"></textarea>
+  </div>
+</div>
+
+<div class="card purple" data-section="数据与结构模型">
+  <div class="section-title"><span class="num">5</span>数据与结构:消息里每个数字从哪来</div>
+  <table>
+    <tr><th>消息字段</th><th>数据来源</th><th>现状</th></tr>
+    <tr><td>版本 从 → 到</td><td>重启脚本一开始就记录的新旧版本指纹(sha,每次代码变更的唯一编号)</td><td><span class="badge keep">现成</span></td></tr>
+    <tr><td>Lead N/M + 失败名单</td><td>重启波次逐个记账:总数、每个成败、失败者的名字,写进一份「名单文件」</td><td><span class="badge new">新增</span></td></tr>
+    <tr><td>Bridge 实测响应</td><td>结束时刻对 /health 真实探测一次,量出毫秒数</td><td><span class="badge new">新增</span></td></tr>
+    <tr><td>总耗时</td><td>脚本开始时记一个时间戳,结束时相减</td><td><span class="badge new">新增</span></td></tr>
+    <tr><td>同样的数字进日志</td><td>结束消息原文同步写进部署日志 —— 验收要求「频道里的数字和日志逐字段一致」</td><td><span class="badge new">新增</span></td></tr>
+  </table>
+  <p>几条防说谎的硬规则(都是 Codex 评审逼出来的):</p>
+  <ul>
+    <li><strong>名单核对</strong>:如果失败 2 个但名单只记到 1 个(记录环节本身出错),消息会写「名单记录不完整(见日志)」,绝不把残缺名单冒充完整名单。</li>
+    <li><strong>波次失败</strong>:如果重启波次本身没跑起来(环境问题),消息写「重启波次未执行,Lead 总数未知」,绝不伪造「1 个 Lead 失败」这种假数字。</li>
+    <li><strong>零候选</strong>:一个 Lead 都没找到时,绝不写「✅ 0/0 全部上线」这种荒谬话。</li>
+  </ul>
+  <div class="comment-block">
+    <label>💬 对这部分的意见(自动保存)</label>
+    <textarea data-key="s5" placeholder="写下你的想法…"></textarea>
+  </div>
+</div>
+
+<div class="card gray" data-section="关键取舍与否决方案">
+  <div class="section-title"><span class="num">6</span>关键取舍 &amp; 否决掉的两个方案</div>
+  <table>
+    <tr><th>方案</th><th>结论</th><th>为什么</th></tr>
+    <tr><td><strong>A. 在重启脚本里收口播报</strong>(选定)</td><td><span class="badge keep">采用</span></td><td>重启期间 Bridge 自己正在被杀掉再拉起,能全程活着的只有这个重启脚本 —— 让它来报结束,天然可靠;而且成功侧的发送管道它已经有了,改动半径最小。</td></tr>
+    <tr><td>B. 走告警系统(lead-alert)发成功通知</td><td><span class="badge no">否决</span></td><td>告警系统的目的地是 alerts 频道,而你要的成功通知在 notify 频道;且「成功」本来就不是告警,硬塞进去语义错位。告警系统(FLY-1577)刚修好,issue 明确要求不碰它。</td></tr>
+    <tr><td>C. 让 Bridge 自己报「我重启完了」</td><td><span class="badge no">否决</span></td><td>结构性盲区:Bridge 要是没起来,就没人报了 —— 恰恰是最需要通知的时刻它最不可靠。</td></tr>
+  </table>
+  <p>另一个重要取舍:<strong>degraded 时 notify 频道也发一条结束消息</strong>(而不是只发 alerts)。理由:你盯的是 notify 频道,「流程结束了没」这个信息本身对你有价值;但措辞绝不含「完成」,并且指路去 alerts 看详情 —— 两个频道各司其职,不重复不撒谎。</p>
+  <div class="comment-block">
+    <label>💬 对这部分的意见(自动保存)</label>
+    <textarea data-key="s6" placeholder="写下你的想法…"></textarea>
+  </div>
+</div>
+
+<div class="card red" data-section="诚实边界">
+  <div class="section-title"><span class="num">7</span>诚实边界:这个设计做什么、不做什么</div>
+  <p><strong>做:</strong>代码部署成功的每一次重启(全净或 degraded),notify 频道恰好一条结束通知;degraded 的 alerts 告警补失败名单;所有数字与日志逐字段一致。</p>
+  <p><strong>不做:</strong></p>
+  <ul>
+    <li><strong>完全失败(回滚)时 notify 频道保持沉默</strong> —— 那种情况你会在 alerts 被直接 @,再发一条是重复噪音。这是按你定的落点来的,不是遗漏。</li>
+    <li><strong>不修「Lead 为什么起不来」</strong> —— 昨夜 flywheel-eng-lead 反复重启失败是另一个病(FLY-1602 那一族),本单只负责「让你知道结果」,不负责「让结果变好」。</li>
+    <li><strong>响应时间只测一次</strong>,不做 P95(持续压测统计)—— issue 原文允许「至少一次实测」,P95 需要额外采样基建,不值得为一条通知建。</li>
+    <li><strong>通知发送失败不重试排队</strong> —— 沿用现有的「大声失败」机制(往日志和桌面兜底告警写痕迹),投递可靠性归告警体系那条线管。</li>
+  </ul>
+  <div class="comment-block">
+    <label>💬 对这部分的意见(自动保存)</label>
+    <textarea data-key="s7" placeholder="写下你的想法…"></textarea>
+  </div>
+</div>
+
+<div class="card green" data-section="质量把关">
+  <div class="section-title"><span class="num">8</span>质量把关</div>
+  <ul>
+    <li><strong>Codex 设计评审 4 轮通过</strong>:R1 抓 7 项(含一个会直接打红 CI 的既有测试遗漏)、R2 抓 6 项、R3 抓 4 项、R4 零新问题 —— 每轮都是真问题在收敛,不是空转。</li>
+    <li><strong>变异判据</strong>(你在 issue 里点名要的):测试直接断言「结束消息真的发出去了、内容对得上日志」—— 把通知调用删掉,测试必红。</li>
+    <li><strong>验收动作</strong>(实施后):真跑一次成功重启 + 一次 degraded 重启,核对两个频道各收到什么、Core 主频道零新增。</li>
+  </ul>
+  <div class="comment-block">
+    <label>💬 对这部分的意见(自动保存)</label>
+    <textarea data-key="s8" placeholder="写下你的想法…"></textarea>
+  </div>
+</div>
+
+<div class="card" data-section="总评论区" id="summary-card">
+  <div class="section-title">📋 你的全部评论(实时汇总)</div>
+  <div id="comment-summary-list"><p class="footnote">还没有评论 —— 在上面任何一节的输入框里写字,这里会自动汇总。</p></div>
+  <button id="copy-all-btn" type="button">复制全部评论</button><span id="copy-status"></span>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  'use strict';
+  var PREFIX = 'fly1603-comments:' + location.pathname + ':';
+
+  function lsGet(key) {
+    try { return localStorage.getItem(PREFIX + key) || ''; } catch (e) { return ''; }
+  }
+  function lsSet(key, val) {
+    try { localStorage.setItem(PREFIX + key, val); } catch (e) { /* 隐私模式等场景下静默降级 */ }
+  }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+
+  function sectionTitleFor(area) {
+    var card = area.closest ? area.closest('.card') : null;
+    return (card && card.getAttribute('data-section')) || '未命名章节';
+  }
+
+  function collectComments() {
+    var items = [];
+    areas.forEach(function (area) {
+      var val = (area.value || '').trim();
+      if (val) items.push({ section: sectionTitleFor(area), text: val });
+    });
+    return items;
+  }
+
+  function renderSummary() {
+    var listEl = document.getElementById('comment-summary-list');
+    while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
+    var items = collectComments();
+    if (!items.length) {
+      var empty = document.createElement('p');
+      empty.className = 'footnote';
+      empty.textContent = '还没有评论 —— 在上面任何一节的输入框里写字,这里会自动汇总。';
+      listEl.appendChild(empty);
+      return;
+    }
+    items.forEach(function (it) {
+      var div = document.createElement('div');
+      div.className = 'cs-item';
+      var sec = document.createElement('div');
+      sec.className = 'cs-sec';
+      sec.textContent = '【' + it.section + '】';
+      var body = document.createElement('div');
+      body.textContent = it.text;
+      div.appendChild(sec);
+      div.appendChild(body);
+      listEl.appendChild(div);
+    });
+  }
+
+  areas.forEach(function (area) {
+    var key = area.getAttribute('data-key');
+    area.value = lsGet(key);
+    area.addEventListener('input', function () {
+      lsSet(key, area.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+
+  function legacyCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function setCopyStatus(msg) {
+    var el = document.getElementById('copy-status');
+    el.textContent = msg;
+    setTimeout(function () { el.textContent = ''; }, 2500);
+  }
+
+  document.getElementById('copy-all-btn').addEventListener('click', function () {
+    var items = collectComments();
+    if (!items.length) { setCopyStatus('没有可复制的评论'); return; }
+    var text = items.map(function (it) { return '【' + it.section + '】\n' + it.text; }).join('\n\n');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        setCopyStatus('✓ 已复制');
+      }, function () {
+        setCopyStatus(legacyCopy(text) ? '✓ 已复制' : '复制失败,请手动选择文本');
+      });
+    } else {
+      setCopyStatus(legacyCopy(text) ? '✓ 已复制' : '复制失败,请手动选择文本');
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+flowchart TD
+    A["🔄 开始通知<br/>发到 #flywheel-notify<br/>(现状已有,不动)"] --> B["停掉 Bridge<br/>(调度中枢下线)"]
+    B --> C["编译新代码"]
+    C --> D["启动新 Bridge"]
+    D --> E{"Bridge 健康检查<br/>(最长等 15 分钟)"}
+    E -- "失败" --> F["回滚到旧版本"]
+    F --> G["🚨 严重告警<br/>发到 #flywheel-alerts<br/>并 @ 你(现状已有,不动)"]
+    E -- "通过" --> H["逐个重启所有 Lead<br/>(记录每个成败 + 名单)"]
+    H --> I["记录部署完成<br/>(deployed-sha 推进)"]
+    I --> J["★ 新增: 结束播报收口点<br/>算总耗时 + 再实测一次 Bridge 响应<br/>+ 汇总 Lead 成败名单"]
+    J -- "全部成功" --> K["✅ 完成通知<br/>发到 #flywheel-notify"]
+    J -- "部分失败<br/>(degraded)" --> L["⚠️ 结束通知(如实分账)<br/>发到 #flywheel-notify"]
+    L --> M["⚠️ 告警(带失败名单)<br/>发到 #flywheel-alerts<br/>(现状已有,本次补名单)"]
+    style J fill:#fff3e0,stroke:#ff9500,stroke-width:3px
+    style K fill:#e8f5e9,stroke:#34c759,stroke-width:2px
+    style L fill:#fff8e1,stroke:#ff9500,stroke-width:2px
+    style G fill:#ffebee,stroke:#ff3b30,stroke-width:2px
+    style M fill:#fff8e1,stroke:#ff9500,stroke-width:2px
+    style A fill:#e3f2fd,stroke:#007aff,stroke-width:2px

@@ -17,6 +17,11 @@
 #   1. Orchestrator/spin post-merge bookkeeping (main path)
 #   2. update-flywheel.sh via launchd (fallback)
 set -euo pipefail
+SCRIPT_START_EPOCH=$(date +%s)
+
+RESTART_NOTICE_STARTED=false
+RESTART_TERMINAL_REPORTED=false
+RESTART_EXIT_SIGNAL=""
 
 # FLY-299: when launched by the launchd updater (com.flywheel.updater), the
 # environment may carry only a minimal default PATH that lacks /usr/local/bin,
@@ -33,6 +38,9 @@ export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/home
 FLYWHEEL_DIR="${HOME}/Dev/flywheel"
 DEPLOYED_SHA_FILE="${HOME}/.flywheel/deployed-sha"
 LOCK_DIR="${HOME}/.flywheel/restart.lock.d"
+
+# shellcheck source=lib/restart-notify.sh
+source "${FLYWHEEL_DIR}/scripts/lib/restart-notify.sh"
 
 # FLY-727 (Codex design review R2#4): mandatory markerless deployment fallback.
 # Whenever deployed-sha advances OLD→NEW, report a deployment event per merged
@@ -244,6 +252,42 @@ CURLCFG
     fire_meta_alert "notify_routine_unconfigured" "Flywheel routine notify unconfigured" \
         "CLAUDE_INFRA_BOT_TOKEN / FLYWHEEL_NOTIFY_CHANNEL missing; dropped notice: ${message}"
     return 0
+}
+
+# FLY-1603: once a human-visible progress notice has been emitted, every exit
+# must have exactly one terminal outcome. Known terminal branches set
+# RESTART_TERMINAL_REPORTED themselves; this finalizer covers only unexpected
+# exits and never routes routine output to the founder's Core channel.
+restart_on_exit() {
+    local original_rc="${1:-1}"
+    local end_epoch="" duration="unknown" body=""
+    local old_display="${DEPLOYED_SHA:-unknown}"
+    local new_display="${CURRENT_HEAD:-unknown}"
+    trap - EXIT INT TERM
+    set +e
+
+    old_display="${old_display:0:7}"
+    new_display="${new_display:0:7}"
+
+    if [[ "$RESTART_NOTICE_STARTED" == "true" && "$RESTART_TERMINAL_REPORTED" != "true" ]]; then
+        end_epoch=$(date +%s 2>/dev/null) || end_epoch=""
+        if [[ "$SCRIPT_START_EPOCH" =~ ^[0-9]+$ && "$end_epoch" =~ ^[0-9]+$ ]] \
+          && (( end_epoch >= SCRIPT_START_EPOCH )); then
+            duration=$(rn_format_duration "$((end_epoch - SCRIPT_START_EPOCH))")
+        fi
+        body="Flywheel 全量重启异常终止，状态未知。版本 \`${old_display}\` → \`${new_display}\`，reason=${RESTART_REASON:-unknown}，总耗时 ${duration}，退出码 ${original_rc}。请查部署日志。"
+        if [[ "$RESTART_EXIT_SIGNAL" == "INT" ]]; then
+            alert_warning "restart-cancelled-by-operator" "Flywheel restart cancelled" \
+                "操作员取消了全量重启，当前状态未知。版本 \`${old_display}\` → \`${new_display}\`，reason=${RESTART_REASON:-unknown}，总耗时 ${duration}。请查部署日志。"
+        else
+            alert_severe "restart-aborted-unexpectedly" "Flywheel restart aborted" "$body"
+        fi
+    fi
+
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    rm -f "${PROJECT_SHA_UPDATES_FILE:-}" 2>/dev/null || true
+    rm -f "${LEAD_RESTART_NAMES_FILE:-}" 2>/dev/null || true
+    exit "$original_rc"
 }
 
 # ════════════════════════════════════════════════════════════════
@@ -468,8 +512,43 @@ update_project_shas() {
     done < "$PROJECT_SHA_UPDATES_FILE"
 }
 
-# Temp file for project SHA updates (populated by check_project_lead_changes)
-PROJECT_SHA_UPDATES_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-project-sha-XXXXXX")
+# Allocated only after the mutual-exclusion lock is owned, so a contention exit
+# cannot leak per-run sidecars before the cleanup trap exists.
+PROJECT_SHA_UPDATES_FILE=""
+LEAD_RESTART_NAMES_FILE=""
+
+record_lead_restart_detail() {
+    local kind="${1:-}" detail="${2:-}"
+    [[ -n "$LEAD_RESTART_NAMES_FILE" ]] || return 0
+    { printf '%s\t%s\n' "$kind" "$detail" >> "$LEAD_RESTART_NAMES_FILE"; } 2>/dev/null || true
+    return 0
+}
+
+lead_restart_details_csv() {
+    local kind="${1:-}"
+    [[ -n "$LEAD_RESTART_NAMES_FILE" && -r "$LEAD_RESTART_NAMES_FILE" ]] || {
+        printf '\n'
+        return 0
+    }
+    awk -F '\t' -v wanted="$kind" '
+        $1 == wanted {
+            if (seen++) printf ", "
+            printf "%s", $2
+        }
+        END { print "" }
+    ' "$LEAD_RESTART_NAMES_FILE" 2>/dev/null || printf '\n'
+    return 0
+}
+
+lead_restart_wave_error() {
+    [[ -n "$LEAD_RESTART_NAMES_FILE" && -r "$LEAD_RESTART_NAMES_FILE" ]] || {
+        printf '\n'
+        return 0
+    }
+    awk -F '\t' '$1 == "wave_error" { print $2; exit }' \
+        "$LEAD_RESTART_NAMES_FILE" 2>/dev/null || printf '\n'
+    return 0
+}
 
 # ════════════════════════════════════════════════════════════════
 # Parse arguments
@@ -538,10 +617,19 @@ acquire_lock() {
             exit 0
         fi
     fi
-    trap 'rmdir "$LOCK_DIR" 2>/dev/null; rm -f "$PROJECT_SHA_UPDATES_FILE" 2>/dev/null; exit' EXIT INT TERM
+    trap 'restart_on_exit "$?"' EXIT
+    trap 'RESTART_EXIT_SIGNAL=INT; exit 130' INT
+    trap 'RESTART_EXIT_SIGNAL=TERM; exit 143' TERM
 }
 
 acquire_lock
+
+# Temp files are per owned restart run and are covered by restart_on_exit.
+PROJECT_SHA_UPDATES_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-project-sha-XXXXXX")
+if ! LEAD_RESTART_NAMES_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-results-XXXXXX"); then
+    log "ERROR: cannot allocate Lead restart result sidecar; terminal message will report incomplete evidence"
+    LEAD_RESTART_NAMES_FILE=""
+fi
 
 # ════════════════════════════════════════════════════════════════
 # Discord plugin detection — marker + fork check
@@ -722,6 +810,7 @@ wait_for_idle() {
             else
                 zero_streak=0   # any active session resets the stabilization streak
                 if (( elapsed == 0 || elapsed % 300 == 0 )); then
+                    RESTART_NOTICE_STARTED=true
                     notify_routine "⏳ 等待 ${count} 个 active session idle... (${elapsed}s/${MAX_WAIT_SECONDS}s)"
                 fi
             fi
@@ -1287,7 +1376,7 @@ trigger_cmux_refresh() {
     log "cmux refresh-surfaces scheduled (background, 10s delay)"
 }
 
-# Restart all Leads. Outputs "skipped:N failed:M" to stdout.
+# Restart all Leads. Outputs "skipped:N failed:M total:K" to stdout.
 # All logs go to stderr; stdout is machine-readable only.
 # FLY-231: production-candidate resolver (_prod_membership / _classify_restart_manifest)
 # lives in a sourceable lib so its deploy-gating logic is unit-testable. FLYWHEEL_DIR
@@ -1298,6 +1387,10 @@ source "${FLYWHEEL_DIR}/scripts/lib/restart-candidate.sh"
 do_restart_all_leads() {
     local skipped=0
     local failed=0
+    local eligible=0
+    if [[ -n "$LEAD_RESTART_NAMES_FILE" ]]; then
+        { : > "$LEAD_RESTART_NAMES_FILE"; } 2>/dev/null || true
+    fi
 
     # FLY-954: converge <state>/bin BEFORE kickstarting any Lead — kickstarting
     # a corrupted wrapper takes the fleet down (2026-07-06: 12-byte stub +
@@ -1315,14 +1408,16 @@ do_restart_all_leads() {
     if [ -f "${_conv_dir}/converge-flywheel-bin.sh" ]; then
         if ! bash "${_conv_dir}/converge-flywheel-bin.sh" >&2; then
             log "ERROR: flywheel-bin convergence failed — refusing to kickstart Leads on a possibly-corrupt bin (FLY-954)" >&2
-            echo "skipped:0 failed:1"
+            record_lead_restart_detail wave_error "flywheel-bin convergence 失败"
+            echo "skipped:0 failed:1 total:0"
             return 0
         fi
     else
         # bin-copy execution context (fleet host): fall back to FLYWHEEL_DIR repo
         if ! bash "${FLYWHEEL_DIR}/scripts/converge-flywheel-bin.sh" >&2; then
             log "ERROR: flywheel-bin convergence failed — refusing to kickstart Leads (FLY-954)" >&2
-            echo "skipped:0 failed:1"
+            record_lead_restart_detail wave_error "flywheel-bin convergence 失败"
+            echo "skipped:0 failed:1 total:0"
             return 0
         fi
     fi
@@ -1333,7 +1428,8 @@ do_restart_all_leads() {
     local candidates_file=""
     candidates_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-restart-candidates.XXXXXX")" || {
         log "ERROR: cannot allocate Lead restart candidate inventory" >&2
-        echo "skipped:0 failed:1"
+        record_lead_restart_detail wave_error "候选清单分配失败"
+        echo "skipped:0 failed:1 total:0"
         return 0
     }
     local candidate_rc=0
@@ -1345,7 +1441,8 @@ do_restart_all_leads() {
     if (( candidate_rc != 0 )); then
         log "ERROR: Lead candidate inventory is indeterminate (rc=$candidate_rc)" >&2
         rm -f "$candidates_file"
-        echo "skipped:0 failed:1"
+        record_lead_restart_detail wave_error "清单收敛失败(rc=$candidate_rc)"
+        echo "skipped:0 failed:1 total:0"
         return 0
     fi
 
@@ -1359,26 +1456,35 @@ do_restart_all_leads() {
                 log "Skipping test-slot Lead candidate (lifecycle-owned, not deploy-blocking): key=$key sources=$sources" >&2
                 ;;
             restart)
+                eligible=$((eligible + 1))
                 if [[ "$mf" == "-" || ! -f "$mf" ]]; then
                     log "ERROR: restart candidate $key has no readable manifest" >&2
                     failed=$((failed + 1))
+                    record_lead_restart_detail failed "$key"
                     continue
                 fi
                 rc=0
                 restart_lead "$mf" >&2 || rc=$?
-                (( rc == 0 )) || failed=$((failed + 1))
+                if (( rc != 0 )); then
+                    failed=$((failed + 1))
+                    record_lead_restart_detail failed "$key"
+                fi
                 ;;
             manifestless)
+                eligible=$((eligible + 1))
                 log "WARNING: loaded/running Lead $key has no manifest — visible but not restarted (sources=$sources)" >&2
                 alert_warning "lead-restart-manifestless-${key}" "Lead restart skipped" \
                     "Lead $key 已加载但没有 manifest，本次未重启；请补齐 carrier 配置后再收敛。"
                 skipped=$((skipped + 1))
+                record_lead_restart_detail skipped "$key"
                 ;;
             probe-error|config-drift|*)
+                eligible=$((eligible + 1))
                 log "ERROR: Lead candidate $key cannot be assigned safe restart authority (class=$classification project=$pn lead=$lid sources=$sources)" >&2
                 alert_warning "lead-restart-config-drift-${key}" "Lead restart config drift" \
                     "Lead $key 无法从 manifest/loaded plist/process 与 projects.json 得到唯一一致身份，本次拒绝重启。"
                 failed=$((failed + 1))
+                record_lead_restart_detail failed "$key"
                 ;;
         esac
     done < "$candidates_file"
@@ -1388,7 +1494,7 @@ do_restart_all_leads() {
         log "WARNING: No Leads found (no manifests, no running processes)" >&2
     fi
 
-    echo "skipped:${skipped} failed:${failed}"
+    echo "skipped:${skipped} failed:${failed} total:${eligible}"
 }
 
 # ════════════════════════════════════════════════════════════════
@@ -1430,6 +1536,7 @@ rollback_and_restart() {
         log "ERROR: No known-good SHA for rollback (first run). Manual intervention required."
         alert_severe "deploy-failed-no-rollback" "Flywheel deploy failed" \
             "Flywheel 首次部署失败且无法自动回滚（无 known-good SHA）。需要手动介入。"
+        RESTART_TERMINAL_REPORTED=true
         return 1
     fi
 
@@ -1440,6 +1547,7 @@ rollback_and_restart() {
         log "ERROR: Working directory not clean, refusing rollback"
         alert_severe "rollback-blocked-dirty" "Flywheel rollback blocked" \
             "Flywheel rollback 被阻止: 工作区不干净。需要手动介入。"
+        RESTART_TERMINAL_REPORTED=true
         return 1
     fi
 
@@ -1457,6 +1565,7 @@ rollback_and_restart() {
             if ! stop_bridge; then
                 alert_severe "rollback-port-stuck" "Flywheel deploy failed" \
                     "Flywheel 回滚时 Bridge 端口 :$(bridge_port) 未能释放 — 无法重启旧版本。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
+                RESTART_TERMINAL_REPORTED=true
                 return 1
             fi
             start_bridge
@@ -1468,20 +1577,29 @@ rollback_and_restart() {
             # severe alert, never conflated with "code rolled back" success.
             local rb_lead_result
             rb_lead_result=$(do_restart_all_leads)
-            rb_leads_failed=$(echo "$rb_lead_result" | sed 's/.*failed:\([0-9]*\).*/\1/')
+            rb_leads_failed=$(rn_parse_count failed "$rb_lead_result")
+            if [[ "$rb_leads_failed" == "invalid" ]]; then
+                alert_severe "rollback-lead-result-unreadable" "Flywheel deploy failed" \
+                    "Flywheel 已尝试回滚到 \`${rollback_sha:0:7}\`，但回滚后的 Lead 结果无法读取，恢复状态未知。请查部署日志并手动确认。"
+                RESTART_TERMINAL_REPORTED=true
+                return 1
+            fi
             # FLY-98: trigger cmux refresh after rollback restart
             trigger_cmux_refresh
         fi
         if (( rb_leads_failed > 0 )); then
             alert_severe "rollback-leads-failed" "Flywheel deploy failed" \
                 "Flywheel 回滚到 \`${rollback_sha:0:7}\` 成功，但 ${rb_leads_failed} 个 Lead（含 Eng Lead？）未恢复——KeepAlive 重拉不了坏 token/manifest/config。需要手动开 terminal 检查。"
+            RESTART_TERMINAL_REPORTED=true
         else
             alert_warning "update-rolled-back" "Flywheel update rolled back" \
                 "Flywheel 更新到 \`${CURRENT_HEAD:0:7}\` 失败。已回滚到 \`${rollback_sha:0:7}\` 并重启旧版本（Lead 已恢复）。"
+            RESTART_TERMINAL_REPORTED=true
         fi
     else
         alert_severe "update-and-rollback-failed" "Flywheel deploy failed" \
             "Flywheel 更新失败且回滚 build 也失败。服务可能处于异常状态。需要手动介入。"
+        RESTART_TERMINAL_REPORTED=true
     fi
 }
 
@@ -1490,8 +1608,7 @@ rollback_and_restart() {
 # ════════════════════════════════════════════════════════════════
 
 deploy_and_verify() {
-    local restarted=()
-
+    RESTART_NOTICE_STARTED=true
     notify_routine "🔄 开始全量重启 Flywheel (reason=${RESTART_REASON}): \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`"
 
     # Step 1: Stop Bridge FIRST (triggers stopAccepting + drain)
@@ -1504,6 +1621,7 @@ deploy_and_verify() {
             log "ERROR: stop_bridge failed to free the port — aborting deploy (deployed-sha NOT advanced)."
             alert_severe "deploy-port-stuck" "Flywheel deploy aborted" \
                 "Flywheel 部署中止: Bridge 端口未能释放,新 Bridge 无法 bind。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
+            RESTART_TERMINAL_REPORTED=true
             return 1
         fi
     fi
@@ -1523,7 +1641,6 @@ deploy_and_verify() {
     # Step 3: Start new Bridge
     if [[ "$restart_bridge" == "true" ]]; then
         start_bridge
-        restarted+=("Bridge")
 
         # Health check — wait for the new Bridge to be ready.
         # FLY-1600: the window was hardcoded to 60s (30×2s) while a real Bridge
@@ -1559,12 +1676,29 @@ deploy_and_verify() {
     # Step 4: Restart Leads (after Bridge is confirmed healthy)
     local leads_skipped=0
     local leads_failed=0
+    local leads_total=0
+    local lead_counts_known=true
+    local lead_result_state="known"
+    local lead_result_detail=""
     if [[ "$restart_all_leads" == "true" ]]; then
-        local lead_result
+        local lead_result parsed_skipped parsed_failed parsed_total
         lead_result=$(do_restart_all_leads)
-        leads_skipped=$(echo "$lead_result" | sed 's/.*skipped:\([0-9]*\).*/\1/')
-        leads_failed=$(echo "$lead_result" | sed 's/.*failed:\([0-9]*\).*/\1/')
-        restarted+=("Leads")
+        parsed_skipped=$(rn_parse_count skipped "$lead_result")
+        parsed_failed=$(rn_parse_count failed "$lead_result")
+        parsed_total=$(rn_parse_count total "$lead_result")
+        if [[ "$parsed_skipped" == "invalid" || "$parsed_failed" == "invalid" || "$parsed_total" == "invalid" ]]; then
+            lead_counts_known=false
+            lead_result_state="unreadable"
+            log "ERROR: Lead restart stdout contract is unreadable: $lead_result"
+        else
+            leads_skipped="$parsed_skipped"
+            leads_failed="$parsed_failed"
+            leads_total="$parsed_total"
+            lead_result_detail=$(lead_restart_wave_error)
+            if [[ -n "$lead_result_detail" ]]; then
+                lead_result_state="wave_not_run"
+            fi
+        fi
         # FLY-98: trigger cmux refresh after all Leads restarted
         trigger_cmux_refresh
     fi
@@ -1577,34 +1711,104 @@ deploy_and_verify() {
     log "deployed-sha updated to ${CURRENT_HEAD:0:7}"
     update_project_shas
 
-    local leads_status="healthy"
-    if (( leads_failed > 0 || leads_skipped > 0 )); then
-        leads_status="degraded"
-    fi
-    if ! write_leads_restart_status "$leads_status" "$leads_failed" "$leads_skipped"; then
-        log "ERROR: code deployed but failed to persist $LEADS_RESTART_STATUS_FILE"
-        alert_severe "restart-status-write-failed" "Lead restart status write failed" \
-            "Flywheel 代码已部署到 \`${CURRENT_HEAD:0:7}\`，但无法写入 Lead restart status。请检查 $LEADS_RESTART_STATUS_FILE。"
-    fi
-
-    if (( leads_failed > 0 )); then
-        log "ERROR: ${leads_failed} lead(s) failed to restart; code deployed; Lead restart status is degraded."
-        alert_warning "leads-partial-failed" "Lead restarts partially failed" \
-            "Flywheel 代码已部署到 \`${CURRENT_HEAD:0:7}\` 且 deployed-sha 已推进，但 ${leads_failed} 个 Lead 重启失败；状态已记为 degraded。"
-        return 0
-    fi
-
-    # Clear any stale plugin-restart-pending marker after successful deploy
-    rm -f "$PLUGIN_RESTART_PENDING"
-
-    if (( leads_skipped > 0 )); then
-        log "WARNING: ${leads_skipped} lead(s) skipped (no manifest); code deployed; Lead restart status is degraded."
-        alert_warning "leads-skipped-no-manifest" "Leads skipped (no manifest)" \
-            "Flywheel 代码已部署到 \`${CURRENT_HEAD:0:7}\` 且 deployed-sha 已推进；${leads_skipped} 个 Lead 因缺少 manifest 被跳过，状态已记为 degraded。请手动重启这些 Lead 一次以生成 manifest。"
-        return 0
+    if [[ "$lead_counts_known" == "true" ]]; then
+        local leads_status="healthy"
+        if (( leads_failed > 0 || leads_skipped > 0 )); then
+            leads_status="degraded"
+        fi
+        if ! write_leads_restart_status "$leads_status" "$leads_failed" "$leads_skipped"; then
+            log "ERROR: code deployed but failed to persist $LEADS_RESTART_STATUS_FILE"
+            alert_severe "restart-status-write-failed" "Lead restart status write failed" \
+                "Flywheel 代码已部署到 \`${CURRENT_HEAD:0:7}\`，但无法写入 Lead restart status。请检查 $LEADS_RESTART_STATUS_FILE。"
+        fi
+        # Preserve the historical retry-marker contract: failed=0 clears even
+        # for skipped-only runs. Unknown counts retain the marker.
+        if (( leads_failed == 0 )); then
+            rm -f "$PLUGIN_RESTART_PENDING"
+        fi
+    else
+        log "ERROR: not overwriting $LEADS_RESTART_STATUS_FILE because Lead counts are unknown"
     fi
 
-    notify_routine "✅ Flywheel 全量重启完成 (reason=${RESTART_REASON})。版本 \`${CURRENT_HEAD:0:7}\`，重启了: ${restarted[*]:-无}"
+    local failed_names_raw="" skipped_names_raw="" failed_names="" skipped_names=""
+    failed_names_raw=$(lead_restart_details_csv failed)
+    skipped_names_raw=$(lead_restart_details_csv skipped)
+    failed_names=$(rn_normalize_lead_names "$leads_failed" "$failed_names_raw")
+    skipped_names=$(rn_normalize_lead_names "$leads_skipped" "$skipped_names_raw")
+
+    # Probe before taking the end timestamp: total duration includes the
+    # measured end-of-restart Bridge response.
+    local bridge_probe="fail" bridge_state="fail" bridge_ms="-"
+    bridge_probe=$(rn_probe_bridge_health "$BRIDGE_URL")
+    IFS=$'\t' read -r bridge_state bridge_ms <<< "$bridge_probe" || true
+    if [[ "$bridge_state" != "ok" || ! "$bridge_ms" =~ ^[0-9]+$ ]]; then
+        bridge_state="fail"
+        bridge_ms="-"
+    fi
+
+    local end_epoch="" duration_str="unknown"
+    end_epoch=$(date +%s 2>/dev/null) || end_epoch=""
+    if [[ "$SCRIPT_START_EPOCH" =~ ^[0-9]+$ && "$end_epoch" =~ ^[0-9]+$ ]] \
+      && (( end_epoch >= SCRIPT_START_EPOCH )); then
+        duration_str=$(rn_format_duration "$((end_epoch - SCRIPT_START_EPOCH))")
+    fi
+
+    local completion_msg=""
+    completion_msg=$(rn_render_completion_message \
+        "$DEPLOYED_SHA" "$CURRENT_HEAD" "$RESTART_REASON" \
+        "$leads_total" "$leads_failed" "$leads_skipped" \
+        "$failed_names" "$skipped_names" "$lead_result_state" "$lead_result_detail" \
+        "$bridge_state" "$bridge_ms" "$duration_str" 2>/dev/null) || completion_msg=""
+    if [[ -z "$completion_msg" ]]; then
+        completion_msg="⚠️ Flywheel 全量重启结束 (reason=${RESTART_REASON}) — 播报组装失败,数字见部署日志。版本: \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`。Lead: 统计未知。Bridge: 状态未知。总耗时: ${duration_str}。"
+        log "ERROR: restart completion renderer returned an empty message"
+        fire_meta_alert "completion_render_failed" "Flywheel completion render failed" \
+            "Code deployed to ${CURRENT_HEAD:0:7}, but the restart completion payload could not be rendered."
+    fi
+
+    log "$completion_msg"
+    notify_routine "$completion_msg"
+
+    local tail_detail="" tail_signature="" tail_title="Lead restarts degraded"
+    local tail_log_subject="Lead restart result"
+    if [[ "$lead_result_state" == "wave_not_run" ]]; then
+        tail_signature="leads-wave-not-run"
+        tail_detail="波次错误: ${lead_result_detail:-原因记录失败,见部署日志}"
+    elif [[ "$lead_result_state" == "unreadable" ]]; then
+        tail_signature="leads-result-unreadable"
+        tail_detail="结果错误: 统计合同解析失败，Lead 状态未知"
+    elif (( leads_total == 0 )); then
+        tail_signature="leads-no-candidates"
+        tail_detail="未发现可重启 Lead 候选，舰队上线状态未知"
+    elif (( leads_failed > 0 || leads_skipped > 0 )); then
+        if (( leads_failed > 0 )); then
+            tail_signature="leads-partial-failed"
+            tail_detail="失败: ${failed_names}"
+        else
+            tail_signature="leads-skipped-no-manifest"
+        fi
+        if (( leads_skipped > 0 )); then
+            [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"
+            tail_detail="${tail_detail}跳过(无 manifest): ${skipped_names}"
+        fi
+    fi
+    if [[ "$bridge_state" != "ok" ]]; then
+        if [[ -z "$tail_signature" ]]; then
+            tail_signature="bridge-completion-probe-failed"
+            tail_title="Flywheel restart degraded"
+        fi
+        tail_log_subject="full restart result"
+        [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"
+        tail_detail="${tail_detail}Bridge /health 结束时刻探测失败，服务可用性需人工确认"
+    fi
+    if [[ -n "$tail_signature" ]]; then
+        log "WARNING: code deployed; ${tail_log_subject} is degraded — $tail_detail"
+        alert_warning "$tail_signature" "$tail_title" \
+            "Flywheel 代码已部署到 \`${CURRENT_HEAD:0:7}\` 且 deployed-sha 已推进；${tail_detail}。"
+    fi
+
+    RESTART_TERMINAL_REPORTED=true
+    return 0
 }
 
 # ════════════════════════════════════════════════════════════════

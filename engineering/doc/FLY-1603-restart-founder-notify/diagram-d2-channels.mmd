@@ -1,0 +1,10 @@
+flowchart LR
+    RS["restart-services.sh<br/>(全量重启脚本)"]
+    RS -->|"过程性例行消息 🔄⏳<br/>(现状,不动)"| NOTIFY["#flywheel-notify<br/>例行频道(你不看)"]
+    RS -->|"技术告警 ⚠️🚨<br/>(现状,不动)"| ALERTS["#flywheel-alerts<br/>告警频道(你不看)"]
+    RS ==>|"★ 新增:每次重启<br/>恰好一条结果通知<br/>✅ / ⚠️ / 🚨"| CORE["#flywheel-core<br/>你的主频道"]
+    RS -.->|"发不出去时<br/>桌面弹窗留痕"| META["桌面 meta-alert"]
+    style CORE fill:#eaf2ff,stroke:#007aff,stroke-width:3px
+    style NOTIFY fill:#f5f5f7,stroke:#86868b
+    style ALERTS fill:#f5f5f7,stroke:#86868b
+    style META fill:#f5f5f7,stroke:#86868b,stroke-dasharray: 5 5

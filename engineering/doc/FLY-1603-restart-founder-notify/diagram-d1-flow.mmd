@@ -1,0 +1,21 @@
+flowchart TD
+    START["🔄 全量重启开始<br/>(你批准 ship 或系统自更新触发)"] --> BUILD["编译新代码"]
+    BUILD -->|编译失败| ROLLBACK["自动回滚到旧版本<br/>并验证旧版真的活了"]
+    BUILD -->|成功| BRIDGE["重启 Bridge(总调度服务)<br/>等它健康检查通过"]
+    BRIDGE -->|健康检查超时| ROLLBACK
+    BRIDGE -->|健康| LEADS["逐个重启所有 Lead<br/>(Tadashi、Honey Lemon 等)"]
+    LEADS --> MEASURE["实测 Bridge 响应 5 次<br/>(不只看端口开没开)"]
+    MEASURE --> JUDGE{"结果判定"}
+    JUDGE -->|"全部成功<br/>且实测 5/5 通过"| OK["✅ 完成通知"]
+    JUDGE -->|"有 Lead 失败/跳过<br/>或实测不稳"| DEG["⚠️ degraded 通知<br/>点名失败的 Lead"]
+    ROLLBACK --> FAIL["🚨 失败通知<br/>写明回滚结果"]
+    CRASH["脚本中途被打断<br/>(信号/意外错误)"] -.-> GUARD["EXIT 兜底器"] -.-> ABORT["🚨 异常中止通知"]
+    OK ==> CORE["#flywheel-core<br/>你的主频道"]
+    DEG ==> CORE
+    FAIL ==> CORE
+    ABORT ==> CORE
+    style OK fill:#e8f7ee,stroke:#34c759
+    style DEG fill:#fff4e5,stroke:#ff9500
+    style FAIL fill:#feeceb,stroke:#ff3b30
+    style ABORT fill:#feeceb,stroke:#ff3b30
+    style CORE fill:#eaf2ff,stroke:#007aff,stroke-width:2px

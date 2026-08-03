@@ -11,10 +11,9 @@
 #   2. Either env missing → ZERO curl + meta-alert(notify_routine_unconfigured)
 #      + rc=0 (fail-loud, deploy never blocked, NO legacy fallback sender).
 #   3. Call-site classification: the idle-wait notice plus the unified full-fleet
-#      start/finish notices call notify_routine. The unified pair carries the
-#      reason, SHA/version and restarted-service evidence, so it preserves the
-#      old update + Lead-restart semantics after FLY-1434 removed split restart
-#      modes. Every former ⚠️/🚨 site rides alert_warning/alert_severe;
+#      start/terminal notices call notify_routine. The terminal message is first
+#      rendered from measured deployment evidence, then sent through the routine
+#      channel. Every former ⚠️/🚨 site rides alert_warning/alert_severe;
 #      notify_discord and the severe_alert() wrapper no longer exist.
 set -uo pipefail
 
@@ -122,7 +121,7 @@ grep -q "notify_routine_unconfigured" "$M3" \
 routine_sites=(
 	'notify_routine "⏳ 等待 ${count} 个 active session idle'
 	'notify_routine "🔄 开始全量重启 Flywheel (reason=${RESTART_REASON}): \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`"'
-	'notify_routine "✅ Flywheel 全量重启完成 (reason=${RESTART_REASON})。版本 \`${CURRENT_HEAD:0:7}\`，重启了: ${restarted[*]:-无}"'
+	'notify_routine "$completion_msg"'
 )
 ok=1
 for site in "${routine_sites[@]}"; do
@@ -135,6 +134,20 @@ expected_force_block=$'# FLY-1434: the only restart scope is full fleet.\nrestar
 [[ "$force_block" == "$expected_force_block" ]] \
 	|| { ok=0; fail "unified restart force block missing or no longer contiguous"; }
 [[ $ok -eq 1 ]] && pass "unified full-fleet start/finish notices preserve update + Lead-restart semantics"
+
+# Mutation sentinel: removing the measured terminal notify invocation must make
+# this test fail. The completion post must stay on FLYWHEEL_NOTIFY_CHANNEL; the
+# script must never hard-code the founder's Core channel as an alternate target.
+if grep -qF 'notify_routine "$completion_msg"' "$RS"; then
+	pass "FLY-1603 measured terminal message is posted through notify_routine"
+else
+	fail "FLY-1603 measured terminal notify invocation missing"
+fi
+if grep -qF '1516209714097291335' "$RS"; then
+	fail "FLY-1603 founder Core channel was added to restart-services.sh"
+else
+	pass "FLY-1603 restart flow contains no founder Core channel target"
+fi
 
 # Every ⚠️/🚨 message must ride alert_warning/alert_severe, never notify_routine
 # and never a raw ⚠️/🚨 string (titles/bodies carry no emoji since FLY-1081 —
