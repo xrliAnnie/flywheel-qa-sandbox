@@ -5,6 +5,7 @@ The wrapper contract is intentionally small:
   gate                         0=launch, 2=lock busy, 3=held, 4=invalid
   record-failure               0=recorded/no-op, 2=lock busy, 3=held, 4=invalid
   resume/status [--with-seq]   0=success, 2=lock busy, 4=invalid
+  arm-controlled-wave         0=armed, 2=lock busy, 3=seq changed, 4=invalid
 
 Only Python's standard library is used so this remains available while the
 Bridge, Node dependencies, or the v2 kernel are down.
@@ -18,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -158,6 +160,16 @@ def _normalize_root(raw: str | None) -> Path:
     return candidate.resolve()
 
 
+def _controlled_marker_root() -> Path:
+    raw = os.environ.get("FLYWHEEL_LEAD_REPLACEMENT_DIR")
+    if raw is None:
+        return (Path.home() / ".flywheel" / "state" / "lead-replacements").resolve()
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        raise UsageFailure("FLYWHEEL_LEAD_REPLACEMENT_DIR must be absolute")
+    return candidate.resolve()
+
+
 def _validate_child(child: str) -> str:
     if not CHILD_RE.fullmatch(child):
         raise UsageFailure(
@@ -173,6 +185,162 @@ def _parse_iso(value: object) -> datetime:
     if parsed.tzinfo is None:
         raise ValueError("timestamp must include UTC")
     return parsed.astimezone(timezone.utc)
+
+
+def _nonempty_string(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value or "\n" in value or "\t" in value:
+        raise DataFailure(f"controlled-wave marker {name} is invalid")
+    return value
+
+
+def _positive_integer(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise DataFailure(f"controlled-wave marker {name} is invalid")
+    return value
+
+
+def _validate_lease_baseline(value: object) -> None:
+    if not isinstance(value, dict) or isinstance(value, list):
+        raise DataFailure("controlled-wave marker lease_baseline is invalid")
+    status_value = value.get("status")
+    if status_value == "absent":
+        if set(value) != {"status"}:
+            raise DataFailure("controlled-wave marker absent lease_baseline is invalid")
+        return
+    expected = {
+        "status",
+        "rowFormat",
+        "generation",
+        "supervisorPid",
+        "supervisorStart",
+        "supervisorGeneration",
+        "holderPid",
+        "holderStart",
+        "boundAt",
+        "acquiredAt",
+    }
+    if status_value != "present" or set(value) != expected:
+        raise DataFailure("controlled-wave marker present lease_baseline is invalid")
+    if value.get("rowFormat") not in {"version_valid", "legacy", "malformed"}:
+        raise DataFailure("controlled-wave marker lease rowFormat is invalid")
+    _positive_integer(value.get("generation"), "lease generation")
+    _positive_integer(value.get("holderPid"), "lease holderPid")
+    _nonempty_string(value.get("holderStart"), "lease holderStart")
+    for name in ("supervisorPid", "supervisorGeneration"):
+        item = value.get(name)
+        if item is not None:
+            _positive_integer(item, f"lease {name}")
+    for name in ("supervisorStart", "boundAt"):
+        item = value.get(name)
+        if item is not None:
+            _nonempty_string(item, f"lease {name}")
+    _nonempty_string(value.get("acquiredAt"), "lease acquiredAt")
+
+
+def _read_controlled_marker(
+    raw_path: str, child: str, attempt_id: str
+) -> tuple[Path, str]:
+    if not child.startswith("lead."):
+        raise UsageFailure("arm-controlled-wave accepts only lead.<daemon_key>")
+    daemon_key = child.removeprefix("lead.")
+    _validate_child(daemon_key)
+    try:
+        parsed_attempt = uuid.UUID(attempt_id)
+    except (ValueError, AttributeError) as error:
+        raise UsageFailure("--attempt-id must be a UUID") from error
+    if str(parsed_attempt) != attempt_id:
+        raise UsageFailure("--attempt-id must be a canonical UUID")
+
+    marker_root = _controlled_marker_root()
+    marker = Path(raw_path)
+    if not marker.is_absolute() or marker.parent.resolve() != marker_root:
+        raise UsageFailure("--intent-marker must be inside the managed marker directory")
+    try:
+        marker_stat = os.lstat(marker)
+    except OSError as error:
+        raise DataFailure(f"cannot stat controlled-wave marker: {error}") from error
+    if not stat.S_ISREG(marker_stat.st_mode) or stat.S_IMODE(marker_stat.st_mode) != 0o600:
+        raise DataFailure("controlled-wave marker must be a non-symlink 0600 regular file")
+    try:
+        fd = _open_nofollow(marker, os.O_RDONLY)
+        try:
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+        finally:
+            os.close(fd)
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise DataFailure(f"cannot read controlled-wave marker: {error}") from error
+    expected_top = {
+        "schema_version",
+        "attempt_id",
+        "daemon_key",
+        "expected_label",
+        "phase",
+        "old_supervisor_tuple",
+        "authority",
+        "lease_baseline",
+        "ts",
+    }
+    if not isinstance(value, dict) or set(value) != expected_top:
+        raise DataFailure("controlled-wave marker has an invalid shape")
+    if value.get("schema_version") != 1:
+        raise DataFailure("controlled-wave marker schema_version is invalid")
+    if value.get("attempt_id") != attempt_id:
+        raise DataFailure("controlled-wave marker attempt_id does not match")
+    if value.get("daemon_key") != daemon_key or marker.name != f"{daemon_key}.json":
+        raise DataFailure("controlled-wave marker daemon_key does not match")
+    if value.get("expected_label") != f"com.flywheel.lead.{daemon_key}":
+        raise DataFailure("controlled-wave marker expected_label does not match")
+    if value.get("phase") not in {"bootout", "bootstrap"}:
+        raise DataFailure("controlled-wave marker phase is invalid")
+    old_tuple = value.get("old_supervisor_tuple")
+    if not isinstance(old_tuple, dict) or set(old_tuple) != {"pid", "start"}:
+        raise DataFailure("controlled-wave marker old_supervisor_tuple is invalid")
+    if old_tuple.get("pid") is None and old_tuple.get("start") is None:
+        pass
+    elif old_tuple.get("pid") is not None and old_tuple.get("start") is not None:
+        _positive_integer(old_tuple.get("pid"), "old supervisor pid")
+        _nonempty_string(old_tuple.get("start"), "old supervisor start")
+    else:
+        raise DataFailure("controlled-wave marker old supervisor tuple is partial")
+
+    authority = value.get("authority")
+    if not isinstance(authority, dict) or set(authority) != {"manifest", "plist", "projects"}:
+        raise DataFailure("controlled-wave marker authority is invalid")
+    manifest = authority.get("manifest")
+    if not isinstance(manifest, dict) or set(manifest) != {"path", "semantic_identity"}:
+        raise DataFailure("controlled-wave marker manifest authority is invalid")
+    _nonempty_string(manifest.get("path"), "manifest path")
+    semantic = manifest.get("semantic_identity")
+    semantic_keys = {"leadId", "projectDir", "projectName", "botTokenEnv", "leadBackend"}
+    if not isinstance(semantic, dict) or set(semantic) != semantic_keys:
+        raise DataFailure("controlled-wave marker semantic identity is invalid")
+    for name in ("leadId", "projectDir", "projectName", "botTokenEnv"):
+        _nonempty_string(semantic.get(name), f"semantic {name}")
+    backend = semantic.get("leadBackend")
+    if not isinstance(backend, dict) or set(backend) != {"backendId"}:
+        raise DataFailure("controlled-wave marker semantic backend is invalid")
+    _nonempty_string(backend.get("backendId"), "semantic backendId")
+    for name in ("plist", "projects"):
+        item = authority.get(name)
+        if not isinstance(item, dict) or set(item) != {"path", "digest"}:
+            raise DataFailure(f"controlled-wave marker {name} authority is invalid")
+        _nonempty_string(item.get("path"), f"{name} path")
+        digest = item.get("digest")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise DataFailure(f"controlled-wave marker {name} digest is invalid")
+    _validate_lease_baseline(value.get("lease_baseline"))
+    try:
+        _parse_iso(value.get("ts"))
+    except ValueError as error:
+        raise DataFailure("controlled-wave marker ts is invalid") from error
+    return marker, hashlib.sha256(raw).hexdigest()
 
 
 def _format_iso(value: datetime) -> str:
@@ -690,6 +858,107 @@ def _record_failure(root: Path, child: str, expected_seq: int) -> int:
         _release_lock(lock)
 
 
+def _append_controlled_audit(
+    root: Path, child: str, value: dict[str, Any]
+) -> None:
+    path = root / f"{child}.controlled-waves.ndjson"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    fd = _open_nofollow(path, flags, 0o600)
+    try:
+        audit_stat = os.fstat(fd)
+        if not stat.S_ISREG(audit_stat.st_mode) or stat.S_IMODE(audit_stat.st_mode) != 0o600:
+            raise DataFailure("controlled-wave audit must be a 0600 regular file")
+        _write_all(fd, _json_bytes(value))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    _fsync_dir(root)
+
+
+def _arm_controlled_wave(
+    root: Path,
+    child: str,
+    expected_seq: int,
+    marker_path: str,
+    attempt_id: str,
+) -> int:
+    lock = _acquire_lock(root, f"{child}.lock")
+    if lock is None:
+        return EXIT_LOCKED
+    try:
+        try:
+            marker, marker_digest = _read_controlled_marker(
+                marker_path, child, attempt_id
+            )
+            state_value = _read_state(root, child)
+            ledger_fd, events = _read_ledger(root, child, False)
+            try:
+                ledger_seq = events[-1]["seq"] if events else 0
+            finally:
+                if ledger_fd >= 0:
+                    os.close(ledger_fd)
+            if ledger_seq != expected_seq:
+                print(
+                    json.dumps(
+                        {
+                            "expectedSeq": expected_seq,
+                            "ledgerSeq": ledger_seq,
+                            "reason": "seq_changed",
+                            "status": "not_armed",
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+                return EXIT_HELD
+
+            common = {
+                "attempt_id": attempt_id,
+                "expected_seq": expected_seq,
+                "marker_digest": marker_digest,
+                "marker_path": str(marker),
+                "previous_state": state_value["state"],
+                "ts": _format_iso(datetime.now(timezone.utc)),
+            }
+            _append_controlled_audit(
+                root, child, {**common, "event": "prepared"}
+            )
+            _fault("after_controlled_prepared")
+            _write_state(
+                root,
+                child,
+                {"state": "resumed", "last_resumed_seq": ledger_seq},
+            )
+            _fault("after_controlled_state")
+            _append_controlled_audit(
+                root,
+                child,
+                {
+                    **common,
+                    "event": "armed",
+                    "ts": _format_iso(datetime.now(timezone.utc)),
+                },
+            )
+            print(
+                json.dumps(
+                    {
+                        "attemptId": attempt_id,
+                        "ledgerSeq": ledger_seq,
+                        "markerDigest": marker_digest,
+                        "status": "armed",
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            return EXIT_OK
+        except DataFailure as error:
+            sys.stderr.write(f"restart-storm-gate: {error}\n")
+            return EXIT_INVALID
+    finally:
+        _release_lock(lock)
+
+
 def _resume(root: Path, child: str) -> int:
     lock = _acquire_lock(root, f"{child}.lock")
     if lock is None:
@@ -778,6 +1047,15 @@ def _build_parser() -> GateArgumentParser:
         "--expected-seq", required=True, type=_parse_nonnegative_int
     )
     record.add_argument("child_key")
+
+    controlled = commands.add_parser("arm-controlled-wave")
+    controlled.add_argument("--root")
+    controlled.add_argument(
+        "--expected-seq", required=True, type=_parse_nonnegative_int
+    )
+    controlled.add_argument("--intent-marker", required=True)
+    controlled.add_argument("--attempt-id", required=True)
+    controlled.add_argument("child_key")
     return parser
 
 
@@ -790,6 +1068,14 @@ def main(argv: list[str]) -> int:
             return _gate(root, child)
         if args.command == "record-failure":
             return _record_failure(root, child, args.expected_seq)
+        if args.command == "arm-controlled-wave":
+            return _arm_controlled_wave(
+                root,
+                child,
+                args.expected_seq,
+                args.intent_marker,
+                args.attempt_id,
+            )
         if args.command == "resume":
             return _resume(root, child)
         if args.command == "status":

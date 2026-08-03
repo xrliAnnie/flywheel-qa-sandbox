@@ -237,6 +237,14 @@ source "${SCRIPT_DIR}/lib/tmux-supervisor-guard.sh"
 # after the tmux guard so the production guard can consume the shared matcher.
 # shellcheck source=lib/lead-identity-preflight.sh
 source "${SCRIPT_DIR}/lib/lead-identity-preflight.sh"
+# FLY-1602: the restart lifecycle parser is the shared disk/launchd authority
+# contract; adoption inventory is deliberately read-only before its lease CAS.
+# shellcheck source=../../../scripts/lib/lead-restart-lifecycle.sh
+source "${FLYWHEEL_ROOT}/scripts/lib/lead-restart-lifecycle.sh"
+# shellcheck source=lib/lead-launch-authority.sh
+source "${SCRIPT_DIR}/lib/lead-launch-authority.sh"
+# shellcheck source=../../../scripts/lib/lead-body-sweep.sh
+source "${FLYWHEEL_ROOT}/scripts/lib/lead-body-sweep.sh"
 # FLY-1389: resume-failure classification (pure functions) + resume transcript
 # diagnostic. Deterministic resume failures (10-15s deaths on a stale
 # session-id) must reach the fresh-start fallback instead of resetting it.
@@ -1336,7 +1344,9 @@ _tmux_normalize_hold_kind() {
 }
 
 _tmux_report_hold() {
-  local kind="$1" evidence="${2:-{}}" socket_path payload response now elapsed
+  local kind="$1" socket_path payload response now elapsed
+  local evidence="${2:-}"
+  [ -n "$evidence" ] || evidence='{}'
   kind="$(_tmux_normalize_hold_kind "$kind")"
   socket_path="$(_tmux_socket_path)" || return 1
   now="$(date +%s)"
@@ -1500,6 +1510,99 @@ _prepare_lead_launch() {
         return 3
       fi
     fi
+  fi
+  return 0
+}
+
+_lead_adopt_existing_body() {
+  local lease_rc="$1" census="" census_rc=0 evidence="" evidence_rc=0
+  local inspection="" verdict="" server_pid="" adopt_rc=0
+  ENSURE_HOLD_KIND=""
+  ENSURE_HOLD_EVIDENCE=""
+
+  if [ "$LEAD_LAUNCH_MANAGED" != true ]; then
+    ENSURE_HOLD_KIND="ambiguous"
+    ENSURE_HOLD_EVIDENCE='{"reason":"orphan_adoption_requires_managed_launchd"}'
+    return 3
+  fi
+  census="$(lead_identity_supervisor_census "$LEAD_ID" "$PROJECT_NAME" "$$")" \
+    || census_rc=$?
+  if [ "$census_rc" -ne 0 ]; then
+    ENSURE_HOLD_KIND="unknown"
+    ENSURE_HOLD_EVIDENCE='{"reason":"supervisor_census_sensor_degraded"}'
+    return 3
+  fi
+  if [ -n "$census" ]; then
+    ENSURE_HOLD_KIND="split_brain"
+    ENSURE_HOLD_EVIDENCE='{"reason":"foreign_supervisor_present"}'
+    return 3
+  fi
+
+  evidence="$(lead_body_adoption_evidence \
+    "$PROJECT_NAME" "$LEAD_ID" claude-code "$TMUX_ARCHIVE_FILE" \
+    "$LEAD_LEASE_ORPHAN_HOLDER_PID" "$LEAD_LEASE_ORPHAN_HOLDER_START")" \
+    || evidence_rc=$?
+  if [ "$evidence_rc" -ne 0 ]; then
+    ENSURE_HOLD_KIND="ambiguous"
+    if [ "$evidence_rc" -eq 2 ]; then
+      ENSURE_HOLD_EVIDENCE='{"reason":"adoption_evidence_indeterminate"}'
+    else
+      ENSURE_HOLD_EVIDENCE='{"reason":"adoption_evidence_not_closed"}'
+    fi
+    return 3
+  fi
+  if ! lead_launch_authority_recheck; then
+    ENSURE_HOLD_KIND="unknown"
+    ENSURE_HOLD_EVIDENCE="{\"reason\":\"${LEAD_LAUNCH_AUTHORITY_REASON}\"}"
+    return 3
+  fi
+
+  if [ "$lease_rc" -eq 4 ]; then
+    lead_identity_adopt_lease \
+      "$LEAD_ID" "$PROJECT_NAME" "$$" "$LEAD_LEASE_SUPERVISOR_START" \
+      "$LEAD_LEASE_ORPHAN_HOLDER_PID" "$LEAD_LEASE_ORPHAN_HOLDER_START" \
+      "$LEAD_LEASE_ORPHAN_OLD_SUP_PID" "$LEAD_LEASE_ORPHAN_OLD_SUP_START" \
+      || adopt_rc=$?
+    if [ "$adopt_rc" -ne 0 ]; then
+      ENSURE_HOLD_KIND="ambiguous"
+      ENSURE_HOLD_EVIDENCE='{"reason":"adoption_cas_lost_or_unavailable"}'
+      return 3
+    fi
+  fi
+
+  inspection="$(tmux_socket_inspect "$(_tmux_socket_path)")" || {
+    ENSURE_HOLD_KIND="unknown"
+    ENSURE_HOLD_EVIDENCE='{"reason":"adoption_tmux_socket_unavailable"}'
+    return 3
+  }
+  verdict="$(_tmux_rescue_json_field "$inspection" verdict)"
+  server_pid="$(_tmux_rescue_json_field "$inspection" reachablePid)"
+  if [ "$verdict" != reachable ]; then
+    ENSURE_HOLD_KIND="${verdict:-unknown}"
+    ENSURE_HOLD_EVIDENCE='{"reason":"adoption_tmux_socket_not_reachable"}'
+    return 3
+  fi
+  case "$server_pid" in ''|0|*[!0-9]*)
+    ENSURE_HOLD_KIND="unknown"
+    ENSURE_HOLD_EVIDENCE='{"reason":"adoption_tmux_server_pid_invalid"}'
+    return 3
+    ;;
+  esac
+  if ! lead_body_attach_adopted \
+    "$evidence" "$server_pid" "$TMUX_ARCHIVE_FILE" "$SESSION_ID_FILE" "$MANIFEST_FILE"; then
+    ENSURE_HOLD_KIND="ambiguous"
+    ENSURE_HOLD_EVIDENCE='{"reason":"adoption_attach_failed"}'
+    return 3
+  fi
+  TMUX_SERVER_PID="$server_pid"
+  LEAD_WINDOW_ID="$LEAD_ADOPTION_WINDOW_ID"
+  if [ "$LEAD_ADOPTION_MODEL_OBSERVATION" = mismatch ]; then
+    log "Adopted Lead body model differs from current manifest; preserving live body until its natural exit"
+  fi
+  if [ "$lease_rc" -eq 4 ]; then
+    _lead_identity_alert_info lead_body_adopted \
+      "Lead body adopted after supervisor replacement" \
+      "${PROJECT_NAME}/${LEAD_ID} attached supervisor $$ to the existing body PID ${LEAD_ADOPTION_PANE_PID} without changing its writer generation."
   fi
   return 0
 }
@@ -1859,6 +1962,14 @@ _launch_claude() {
     if [ "$_added_count" -gt 0 ]; then
       log "MCP env propagation: forwarded ${_added_count} required env var(s) to tmux pane"
     fi
+  fi
+
+  # FLY-1602: close the disk/launchd TOCTOU window after all launch-plan
+  # materialization and immediately before a child could be created.
+  if ! lead_launch_authority_recheck; then
+    ENSURE_HOLD_KIND="unknown"
+    ENSURE_HOLD_EVIDENCE="{\"reason\":\"${LEAD_LAUNCH_AUTHORITY_REASON}\"}"
+    return 3
   fi
 
   # FLY-231 dry-run: env_args is now fully assembled (incl. MCP-required-env
@@ -2879,6 +2990,28 @@ RULES_BUNDLE_RECEIPT_PATH="${RULES_BUNDLE_STATE_DIR}/${PROJECT_NAME}-${LEAD_ID}.
 
 # Compute this once and reuse it for filename, receipt, cleanup, and FLY-1309.
 LEAD_LEASE_SUPERVISOR_START="$(tmux_supervisor_process_start_identity "$$" || true)"
+LEAD_LAUNCH_LABEL="com.flywheel.lead.${PROJECT_NAME}-${LEAD_ID}"
+LEAD_LAUNCH_TARGET="gui/$(id -u)/${LEAD_LAUNCH_LABEL}"
+LEAD_LAUNCH_PLIST="${HOME}/Library/LaunchAgents/${LEAD_LAUNCH_LABEL}.plist"
+LEAD_LAUNCH_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
+  _lead_authority_backoff=3
+  while ! lead_launch_authority_prepare \
+    "$MANIFEST_FILE" "$LEAD_LAUNCH_PLIST" "$LEAD_LAUNCH_PROJECTS_FILE" \
+    "$LEAD_LAUNCH_LABEL" "$LEAD_LAUNCH_TARGET" \
+    "$$" "$LEAD_LEASE_SUPERVISOR_START"; do
+    log "Managed launch authority HOLD (${LEAD_LAUNCH_AUTHORITY_REASON}); retrying in ${_lead_authority_backoff}s"
+    if [ "${FLYWHEEL_LEAD_AUTHORITY_QA_EXIT:-0}" = "1" ]; then
+      log "QA authority seam requested a clean no-mutation exit"
+      exit 0
+    fi
+    interruptible_sleep "$_lead_authority_backoff"
+    [ "$_lead_authority_backoff" -ge 30 ] \
+      || _lead_authority_backoff=$((_lead_authority_backoff * 2))
+    [ "$_lead_authority_backoff" -le 30 ] || _lead_authority_backoff=30
+  done
+  unset _lead_authority_backoff
+fi
 if [ -n "$LEAD_LEASE_SUPERVISOR_START" ]; then
   _rules_bundle_generation="$$-lstart-$(_rules_bundle_start_hash "$LEAD_LEASE_SUPERVISOR_START")"
 else
@@ -3181,6 +3314,15 @@ _lead_identity_alert() {
     || true
 }
 
+_lead_identity_alert_info() {
+  local kind="$1" title="$2" body="$3"
+  [ -x "$LEAD_ALERT_SH" ] || return 0
+  "$LEAD_ALERT_SH" \
+    --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+    --kind "$kind" --severity info --title "$title" --body "$body" \
+    || true
+}
+
 log "Supervisor starting (recovery loop enabled)"
 log "Session ID file: ${SESSION_ID_FILE}"
 TMUX_HOLD_BACKOFF=3
@@ -3192,9 +3334,19 @@ while true; do
     break
   fi
 
+  if [ "$LEAD_LAUNCH_MANAGED" = true ] && ! lead_launch_authority_refresh; then
+    log "Managed launch authority HOLD (${LEAD_LAUNCH_AUTHORITY_REASON}); retrying in ${TMUX_HOLD_BACKOFF}s"
+    interruptible_sleep "$TMUX_HOLD_BACKOFF"
+    [ "$TMUX_HOLD_BACKOFF" -ge 30 ] || TMUX_HOLD_BACKOFF=$((TMUX_HOLD_BACKOFF * 2))
+    [ "$TMUX_HOLD_BACKOFF" -le 30 ] || TMUX_HOLD_BACKOFF=30
+    continue
+  fi
+
   # FLY-1309 order is deliberate: resolve → acquire, then the existing FLY-1285
   # generation guard, then the whole-process-table preflight immediately before
   # launch. Repeated HOLD passes are idempotent for this supervisor generation.
+  _lead_lease_prepare_rc=0
+  _lead_identity_ready=0
   if [ -z "$LEAD_LEASE_SUPERVISOR_START" ]; then
     LEAD_LEASE_KEY=""
     LEAD_LEASE_GENERATION=""
@@ -3202,15 +3354,34 @@ while true; do
     _lead_identity_alert lead_lease_store_broken \
       "Lead lease start identity unavailable" \
       "${PROJECT_NAME}/${LEAD_ID} could not prove its supervisor pid+lstart; launching degraded while write boundaries remain protected."
-  elif lead_identity_prepare_lease \
-    "$LEAD_ID" "$PROJECT_NAME" "$$" "$LEAD_LEASE_SUPERVISOR_START"; then
-    if [ "$LEAD_LEASE_DEGRADED" = "store_error" ]; then
-      log "WARNING: Lead lease store unavailable; launching degraded without a generation claim"
-      _lead_identity_alert lead_lease_store_broken \
-        "Lead lease store unavailable" \
-        "${PROJECT_NAME}/${LEAD_ID} could not acquire its identity lease; launch is degraded and enforce-mode writes remain fail-closed."
-    fi
+    _lead_identity_ready=1
   else
+    lead_identity_prepare_lease \
+      "$LEAD_ID" "$PROJECT_NAME" "$$" "$LEAD_LEASE_SUPERVISOR_START" \
+      || _lead_lease_prepare_rc=$?
+    case "$_lead_lease_prepare_rc" in
+      0)
+        _lead_identity_ready=1
+        if [ "$LEAD_LEASE_DEGRADED" = "store_error" ]; then
+          log "WARNING: Lead lease store unavailable; launching degraded without a generation claim"
+          _lead_identity_alert lead_lease_store_broken \
+            "Lead lease store unavailable" \
+            "${PROJECT_NAME}/${LEAD_ID} could not acquire its identity lease; launch is degraded and enforce-mode writes remain fail-closed."
+        fi
+        ;;
+      4|5)
+        if _lead_adopt_existing_body "$_lead_lease_prepare_rc"; then
+          log "Monitoring adopted Lead body PID ${LEAD_ADOPTION_PANE_PID} in tmux ${LEAD_ADOPTION_WINDOW_ID}"
+          TMUX_HOLD_BACKOFF=3
+          _wait_tmux_window
+          continue
+        fi
+        LEAD_LEASE_HOLD_REASON="adoption_hold"
+        ;;
+    esac
+  fi
+
+  if [ "$_lead_identity_ready" -ne 1 ]; then
     log "Lead identity HOLD (${LEAD_LEASE_HOLD_REASON}); retrying in ${TMUX_HOLD_BACKOFF}s"
     case "$LEAD_LEASE_HOLD_REASON" in
       identity_source_error|identity_ambiguous|identity_project_mismatch|identity_cli_unavailable|identity_invalid_response)
@@ -3222,6 +3393,15 @@ while true; do
         _lead_identity_alert lead_dual_active \
           "Lead identity already has a live holder" \
           "${PROJECT_NAME}/${LEAD_ID} refused a second writer-capable generation."
+        ;;
+      denied_sensor_degraded)
+        _lead_identity_alert lead_dual_active_sensor_degraded \
+          "Lead lease liveness sensor degraded" \
+          "${PROJECT_NAME}/${LEAD_ID} could not safely classify the current supervisor/body tuple and is held before launch."
+        ;;
+      adoption_hold)
+        _tmux_report_hold "${ENSURE_HOLD_KIND:-ambiguous}" \
+          "$(lead_body_adoption_hold_evidence "${ENSURE_HOLD_EVIDENCE:-}")" || true
         ;;
     esac
     interruptible_sleep "$TMUX_HOLD_BACKOFF"

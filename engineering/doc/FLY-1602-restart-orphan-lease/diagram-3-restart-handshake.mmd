@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant R as 重启脚本(restart-services)
+    participant G as 重启风暴刹车(storm gate)
+    participant L as launchd + 启动壳
+    participant SV as 新管家
+    Note over R: 停旧管家 → 确认安静 → 清掉旧真身<br/>(FLY-1507 既有流程,零改动)
+    R->>G: 我是合法换代,请松开这个 Lead 的刹车
+    G-->>R: 好(或明确报告松不开的原因)
+    R->>R: 再核一遍配置没被人动过(封住时间差漏洞)
+    R->>L: 安装并启动新管家
+    L->>G: 例行问刹车:能放行吗?
+    G-->>L: 放行(刚松过)
+    L->>SV: 启动管家 → 管家启动真身
+    R->>R: 六道验证 N0-N5:新管家 + 新真身 +<br/>租约三方互相咬合才算成功
+    Note over R: 失败时按真实原因报错:<br/>刹车扣住≠换身失败,再也不说错话

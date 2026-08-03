@@ -1683,6 +1683,7 @@ BO_LAUNCH_STATE="$BO_CALLS/lead.state"
 mkdir -p \
   "$BO_FLYWHEEL/scripts/lib" \
   "$BO_FLYWHEEL/packages/teamlead/scripts/lib" \
+  "$BO_FLYWHEEL/packages/flywheel-comm/dist" \
   "$BO_HOME/.flywheel/manifests" \
   "$BO_HOME/Library/LaunchAgents" \
   "$BO_SHIMS" "$BO_CALLS"
@@ -1693,6 +1694,10 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-body-sweep.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-restart-lifecycle.sh" \
    "$BO_FLYWHEEL/scripts/lib/"
+cp "$REAL_REPO_ROOT/scripts/lib/bounded-run.sh" \
+   "$BO_FLYWHEEL/scripts/lib/"
+cp "$REAL_REPO_ROOT/scripts/restart-storm-gate.py" \
+   "$BO_FLYWHEEL/scripts/"
 cp "$REAL_REPO_ROOT/packages/teamlead/scripts/lib/lead-identity-preflight.sh" \
    "$REAL_REPO_ROOT/packages/teamlead/scripts/lib/tmux-supervisor-guard.sh" \
    "$BO_FLYWHEEL/packages/teamlead/scripts/lib/"
@@ -1725,6 +1730,10 @@ elif [[ "\${1:-}" == "bootout" && "\${2:-}" == *"com.flywheel.lead.flywheel-eng"
 elif [[ "\${1:-}" == "bootstrap" ]]; then
   echo loaded > "$BO_LAUNCH_STATE"
   echo 424243 > "$BO_CALLS/lead.pid"
+  mkdir -p "$BO_HOME/.flywheel/pids"
+  echo 424243 > "$BO_HOME/.flywheel/pids/flywheel-eng.pid"
+  "$BO_FLYWHEEL/scripts/restart-storm-gate.py" gate \
+    --root "$BO_HOME/.flywheel/restart-ledger" lead.flywheel-eng >/dev/null 2>&1 || true
 fi
 exit 0
 EOF
@@ -1739,10 +1748,12 @@ if [[ "\${1:-}" == "list-panes" ]]; then
     exit 1
   fi
   if [[ "\$(cat "$BO_LAUNCH_STATE" 2>/dev/null || echo loaded)" == "loaded" ]]; then
-    if [[ "\${FAKE_LEAD_SESSION_DEAD:-0}" == "1" ]]; then
-      printf '@1\tflywheel-eng\t%%1\t55555\t1\n'
+    recover_after="\${FAKE_TMUX_RECOVER_AFTER:-0}"
+    if [[ "\${FAKE_LEAD_SESSION_DEAD:-0}" == "1" ]] \
+      || { [[ "\$recover_after" =~ ^[1-9][0-9]*$ ]] && (( n < recover_after )); }; then
+      printf '@1|flywheel-eng|%%1|55555|1\n'
     else
-      printf '@1\tflywheel-eng\t%%1\t55555\t0\n'
+      printf '@1|flywheel-eng|%%1|55555|0\n'
     fi
   fi
 elif [[ "\${1:-}" == "display-message" ]]; then
@@ -1779,9 +1790,30 @@ cat > "$BO_SHIMS/pnpm" <<EOF
 echo "\$*" >> "$BO_CALLS/pnpm.calls"
 exit 0
 EOF
-cat > "$BO_SHIMS/node" <<'EOF'
+cat > "$BO_SHIMS/node" <<EOF
 #!/bin/bash
-echo -n ok
+case "\$*" in
+  *"lead-lease progress-snapshot"*)
+    if [[ "\${FAKE_LEASE_PROGRESS:-absent}" == converging ]]; then
+      n=\$(cat "$BO_CALLS/progress.n" 2>/dev/null || echo 0)
+      n=\$((n + 1)); echo "\$n" > "$BO_CALLS/progress.n"
+      if (( n == 1 )); then
+        echo '{"status":"absent"}'
+      else
+        echo '{"status":"present","rowFormat":"version_valid","generation":2,"supervisorPid":424243,"supervisorStart":"Mon Jul 27 09:00:00 2026","supervisorGeneration":2,"holderPid":55555,"holderStart":"Mon Jul 27 09:00:01 2026","boundAt":"2999-08-02T00:00:01.000Z","acquiredAt":"2999-08-02T00:00:00.000Z"}'
+      fi
+    else
+      echo '{"status":"absent"}'
+    fi
+    ;;
+  *"lead-lease verify-bound"*) echo '{"status":"verified","generation":2}' ;;
+  *) echo -n ok ;;
+esac
+EOF
+cat > "$BO_SHIMS/bounded-run" <<'EOF'
+#!/bin/bash
+shift
+exec "$@"
 EOF
 cat > "$BO_SHIMS/curl" <<EOF
 #!/bin/bash
@@ -1857,13 +1889,16 @@ bo_run() {
     rm -f "$BO_CALLS"/*.calls
     echo loaded > "$BO_LAUNCH_STATE"
     echo 424242 > "$BO_CALLS/lead.pid"
-    rm -f "$BO_CALLS/tmux-list.n" "$BO_CALLS/completion-probe"
+    rm -f "$BO_CALLS/tmux-list.n" "$BO_CALLS/progress.n" "$BO_CALLS/completion-probe"
     HOME="$BO_HOME" PATH="$BO_SHIMS:$PATH" \
         CLAUDE_INFRA_BOT_TOKEN="${BO_NOTIFY_TOKEN:-}" FLYWHEEL_NOTIFY_CHANNEL="${BO_NOTIFY_CHANNEL:-}" \
         TEST_BOT_TOKEN="test-token" \
         FAKE_FAST_SLEEP="${FAKE_FAST_SLEEP:-0}" \
         FAKE_LEAD_SESSION_DEAD="${FAKE_LEAD_SESSION_DEAD:-0}" \
+        FAKE_TMUX_RECOVER_AFTER="${FAKE_TMUX_RECOVER_AFTER:-0}" \
+        FAKE_LEASE_PROGRESS="${FAKE_LEASE_PROGRESS:-absent}" \
         FAKE_TMUX_INVENTORY_FAIL_ONCE="${FAKE_TMUX_INVENTORY_FAIL_ONCE:-0}" \
+        FLYWHEEL_RESTART_BOUNDED_RUN_BIN="$BO_SHIMS/bounded-run" \
         FAKE_IDLE_BUSY="${FAKE_IDLE_BUSY:-0}" \
         FAKE_COMPLETION_PROBE_FAIL="${FAKE_COMPLETION_PROBE_FAIL:-0}" \
         FAKE_NO_LEAD_PROCESS="${FAKE_NO_LEAD_PROCESS:-0}" \
@@ -1874,6 +1909,8 @@ bo_run() {
         RESTART_LEAD_QUIESCENCE_INTERVAL=0 \
         RESTART_LEAD_VERIFY_ATTEMPTS="${RESTART_LEAD_VERIFY_ATTEMPTS:-2}" \
         RESTART_LEAD_VERIFY_INTERVAL="${RESTART_LEAD_VERIFY_INTERVAL:-0}" \
+        RESTART_LEAD_CONVERGENCE_TIMEOUT_SECONDS="${RESTART_LEAD_CONVERGENCE_TIMEOUT_SECONDS:-900}" \
+        RESTART_LEAD_CONVERGENCE_INTERVAL="${RESTART_LEAD_CONVERGENCE_INTERVAL:-5}" \
         bash "$BO_FLYWHEEL/scripts/restart-services.sh" "$@" 2>&1
 }
 bo_calls() { cat "$BO_CALLS/$1.calls" 2>/dev/null || true; }
@@ -2009,6 +2046,7 @@ bo_restore_restart_script
 echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
 out=$(bo_run) && rc=0 || rc=$?
 if (( rc == 0 )) && echo "$out" | grep -q "skipping build, continuing full restart" \
+   && echo "$out" | grep -Fq "Lead eng restarted via launchd (supervisor 424243 born Mon Jul 27 09:00:00 2026, body PID 55555 born Mon Jul 27 09:00:01 2026, model claude-fable-5)" \
    && [[ -z "$(bo_calls pnpm)" ]] \
    && bo_calls launchctl | grep -q "com.flywheel.bridge" \
    && bo_calls launchctl | grep -q "bootout gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
@@ -2110,7 +2148,7 @@ if (( rc == 0 )) \
         "$bo_status" >/dev/null; then
     pass "FLY-1507 outcome: indeterminate body snapshot cannot be reported healthy"
 else
-    fail "FLY-1507 outcome: indeterminate snapshot false-positive guard failed — rc=$rc sha=$(cat "$BO_HOME/.flywheel/deployed-sha") status=$(cat "$bo_status" 2>/dev/null || echo missing) out tail: $(echo "$out" | tail -5)"
+    fail "FLY-1507 outcome: indeterminate snapshot false-positive guard failed — rc=$rc sha=$(cat "$BO_HOME/.flywheel/deployed-sha") status=$(cat "$bo_status" 2>/dev/null || echo missing) launchctl=$(bo_calls launchctl | tr '\n' '|') tmux=$(bo_calls tmux | tr '\n' '|') out tail: $(echo "$out" | tail -12)"
 fi
 
 # ── 7) final session re-probe can degrade Leads without losing code truth ──
@@ -2129,12 +2167,54 @@ if (( rc == 0 && tmux_probes >= 3 )) \
    && echo "$out" | grep -q "code deployed; Lead restart result is degraded"; then
     pass "FLY-1434 degraded: final re-probe runs, code ledger advances, Lead status stays explicit"
 else
-    fail "FLY-1434 degraded: rc=$rc probes=$tmux_probes sha=$(cat "$BO_HOME/.flywheel/deployed-sha") status=$(cat "$bo_status" 2>/dev/null || echo missing) out tail: $(echo "$out" | tail -5)"
+    fail "FLY-1434 degraded: rc=$rc probes=$tmux_probes sha=$(cat "$BO_HOME/.flywheel/deployed-sha") status=$(cat "$bo_status" 2>/dev/null || echo missing) launchctl=$(bo_calls launchctl | tr '\n' '|') tmux=$(bo_calls tmux | tr '\n' '|') out tail: $(echo "$out" | tail -12)"
 fi
 
-# ── 8) FLY-1603 successful terminal result posts measured evidence only to
-#         Flywheel Notification, never to the founder's Core channel ──
+# ── 8) a slow but proven replacement converges without a premature failure ──
+echo "converging outcome" > "$BO_FLYWHEEL/restart-converging.md"
+git -C "$BO_FLYWHEEL" add restart-converging.md
+git -C "$BO_FLYWHEEL" -c user.email=t@t -c user.name=t commit -q -m "docs: restart converging"
+BO_HEAD_5=$(git -C "$BO_FLYWHEEL" rev-parse HEAD)
 echo "$BO_HEAD_4" > "$BO_HOME/.flywheel/deployed-sha"
+out=$(FAKE_FAST_SLEEP=1 FAKE_TMUX_RECOVER_AFTER=6 FAKE_LEASE_PROGRESS=converging \
+  RESTART_LEAD_VERIFY_ATTEMPTS=2 RESTART_LEAD_CONVERGENCE_TIMEOUT_SECONDS=5 \
+  RESTART_LEAD_CONVERGENCE_INTERVAL=0 bo_run --reason slow-convergence) && rc=0 || rc=$?
+if (( rc == 0 )) \
+   && echo "$out" | grep -q "replacement is converging after the quick verification window" \
+   && echo "$out" | grep -q "restarted via launchd after convergence" \
+   && ! echo "$out" | grep -q "Lead restart convergence timed out" \
+   && [[ ! -e "$BO_HOME/.flywheel/state/lead-replacements/flywheel-eng.json" ]] \
+   && jq -e --arg sha "$BO_HEAD_5" \
+        '.codeDeployedSha == $sha and .leadsRestartStatus == "healthy" and .failed == 0' \
+        "$bo_status" >/dev/null; then
+    pass "FLY-1602 slow replacement uses converging then terminal N0-N5 success"
+else
+    fail "FLY-1602 convergence: rc=$rc status=$(cat "$bo_status" 2>/dev/null || echo missing) marker=$(test -e "$BO_HOME/.flywheel/state/lead-replacements/flywheel-eng.json" && echo retained || echo absent) out tail: $(echo "$out" | tail -16)"
+fi
+
+echo "convergence deadline" > "$BO_FLYWHEEL/restart-convergence-deadline.md"
+git -C "$BO_FLYWHEEL" add restart-convergence-deadline.md
+git -C "$BO_FLYWHEEL" -c user.email=t@t -c user.name=t commit -q -m "docs: convergence deadline"
+BO_HEAD_6=$(git -C "$BO_FLYWHEEL" rev-parse HEAD)
+echo "$BO_HEAD_5" > "$BO_HOME/.flywheel/deployed-sha"
+out=$(FAKE_FAST_SLEEP=1 FAKE_TMUX_RECOVER_AFTER=999 FAKE_LEASE_PROGRESS=converging \
+  RESTART_LEAD_VERIFY_ATTEMPTS=2 RESTART_LEAD_CONVERGENCE_TIMEOUT_SECONDS=0 \
+  RESTART_LEAD_CONVERGENCE_INTERVAL=0 bo_run --reason convergence-deadline) && rc=0 || rc=$?
+if (( rc == 0 )) \
+   && [[ "$(echo "$out" | grep -c "convergence deadline expired" || true)" == 1 ]] \
+   && [[ -e "$BO_HOME/.flywheel/state/lead-replacements/flywheel-eng.json" ]] \
+   && jq -e --arg sha "$BO_HEAD_6" \
+        '.codeDeployedSha == $sha and .leadsRestartStatus == "degraded" and .failed == 1' \
+        "$bo_status" >/dev/null; then
+    pass "FLY-1602 convergence deadline counts one terminal failure and retains intent"
+else
+    fail "FLY-1602 convergence deadline: rc=$rc status=$(cat "$bo_status" 2>/dev/null || echo missing) marker=$(test -e "$BO_HOME/.flywheel/state/lead-replacements/flywheel-eng.json" && echo retained || echo absent) out tail: $(echo "$out" | tail -16)"
+fi
+rm -f "$BO_HOME/.flywheel/state/lead-replacements/flywheel-eng.json"
+
+# ── 9) FLY-1603 successful terminal result posts measured evidence only to
+#         Flywheel Notification, never to the founder's Core channel ──
+echo "$BO_HEAD_6" > "$BO_HOME/.flywheel/deployed-sha"
 out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
     bo_run --reason notify-success) && rc=0 || rc=$?
 discord_calls=$(bo_calls discord)
@@ -2144,14 +2224,14 @@ if (( rc == 0 )) \
    && echo "$discord_calls" | grep -q 'Lead: 1/1 重启成功' \
    && echo "$discord_calls" | grep -q 'Bridge: healthy (/health 实测 87ms)' \
    && echo "$discord_calls" | grep -q '总耗时: 2m03s' \
-   && echo "$discord_calls" | grep -q "${BO_HEAD_4:0:7}" \
+   && echo "$discord_calls" | grep -q "${BO_HEAD_6:0:7}" \
    && ! echo "$discord_calls" | grep -q '1516209714097291335'; then
     pass "FLY-1603 success posts truthful SHA/count/latency/duration evidence only to Notification"
 else
     fail "FLY-1603 success notification mismatch — rc=$rc discord='$discord_calls' out tail: $(echo "$out" | tail -6)"
 fi
 
-# ── 9) FLY-1603 degraded result names the failed Lead, remains non-success,
+# ── 10) FLY-1603 degraded result names the failed Lead, remains non-success,
 #         retains the retry marker, and keeps the existing alerts route ──
 echo "failed=1" > "$BO_HOME/.flywheel/plugin-restart-pending"
 out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
@@ -2173,7 +2253,7 @@ else
 fi
 rm -f "$BO_HOME/.flywheel/plugin-restart-pending"
 
-# ── 10) A failed measured Bridge completion probe is degraded: one warning
+# ── 11) A failed measured Bridge completion probe is degraded: one warning
 #          result in Notification plus one aggregate alerts-channel summary. ──
 out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
     FAKE_COMPLETION_PROBE_FAIL=1 bo_run --reason notify-bridge-probe-failed) && rc=0 || rc=$?
@@ -2190,7 +2270,7 @@ else
     fail "FLY-1603 Bridge-probe degraded routing mismatch — rc=$rc tail_alerts=$tail_alerts discord='$discord_calls' alerts='$(bo_calls lead-alert)'"
 fi
 
-# ── 11) Zero discovered Lead candidates is also degraded, never a clean
+# ── 12) Zero discovered Lead candidates is also degraded, never a clean
 #          completion, and receives the same one-summary alerts discipline. ──
 bo_manifest="$BO_HOME/.flywheel/manifests/flywheel-eng.json"
 bo_plist="$BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist"
@@ -2348,6 +2428,36 @@ fi
 echo "Test: FLY-1507 Lead restart lifecycle authority"
 # shellcheck source=lib/lead-restart-lifecycle.sh
 source "$REAL_REPO_ROOT/scripts/lib/lead-restart-lifecycle.sh"
+
+LR_STAT_SHIMS="$TMPDIR_ROOT/fly1602-gnu-stat"
+LR_MODE_FILE="$TMPDIR_ROOT/fly1602-mode-file"
+mkdir -p "$LR_STAT_SHIMS"
+printf 'mode fixture\n' > "$LR_MODE_FILE"
+chmod 600 "$LR_MODE_FILE"
+cat > "$LR_STAT_SHIMS/stat" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-f" ]]; then
+    # GNU stat can treat the BSD format token as another pathname and emit
+    # filesystem details. The portable probe must choose GNU's -c first.
+    printf '  File: "%s"\n    ID: deadbeef Namelen: 255 Type: ext2/ext3\n' "${3:-}"
+    exit 1
+fi
+if [[ "${1:-}" == "-c" ]]; then
+    case "${2:-}" in
+      %a) printf '600\n'; exit 0 ;;
+      %i) printf '424242\n'; exit 0 ;;
+    esac
+fi
+exit 2
+EOF
+chmod +x "$LR_STAT_SHIMS/stat"
+lr_mode="$(PATH="$LR_STAT_SHIMS:$PATH" _lead_restart_file_mode "$LR_MODE_FILE")"
+lr_inode="$(PATH="$LR_STAT_SHIMS:$PATH" _lead_restart_file_inode "$LR_MODE_FILE")"
+if [[ "$lr_mode" == "600" && "$lr_inode" == "424242" ]]; then
+    pass "FLY-1602 stat probes prefer GNU format before the noisy BSD fallback"
+else
+    fail "FLY-1602 GNU stat fallback polluted output: mode='$lr_mode' inode='$lr_inode'"
+fi
 
 LR_ROOT="$TMPDIR_ROOT/fly1507-lifecycle"
 LR_MANIFESTS="$LR_ROOT/manifests"
@@ -2535,6 +2645,45 @@ if (( rc == 0 )) \
     pass "FLY-1507 manifest/plist/process sources dedupe exact keys and expose manifestless drift"
 else
     fail "FLY-1507 candidate inventory mismatch (rc=$rc): $(tr '\n' '|' < "$candidates" 2>/dev/null)"
+fi
+
+echo "Test: FLY-1602 tmux hold observations preserve structured evidence"
+CLAUDE_LEAD_SH="$SCRIPT_DIR/../packages/teamlead/scripts/claude-lead.sh"
+TMUX_HOLD_FUNCTIONS="$(awk '
+  /^_tmux_normalize_hold_kind\(\)/ { capture=1 }
+  capture && /^_tmux_report_hold_resolved\(\)/ { exit }
+  capture { print }
+' "$CLAUDE_LEAD_SH")"
+TMUX_HOLD_PAYLOAD="$TMPDIR_ROOT/tmux-hold-payload.json"
+if (
+    eval "$TMUX_HOLD_FUNCTIONS"
+    LEAD_ID=flywheel-eng-lead
+    PROJECT_NAME=flywheel
+    BRIDGE_URL=http://bridge.invalid
+    TMUX_HOLD_FIRST_LOCAL_TS=
+    TMUX_HOLD_INCIDENT_ID=
+    TMUX_HOLD_FALLBACK_SENT=0
+    TMUX_HOLD_BRIDGE_ACKED=0
+    FLYWHEEL_ROOT=/nonexistent
+    _tmux_socket_path() { printf '%s\n' /tmp/flywheel-test.sock; }
+    curl() {
+        local previous="" arg
+        for arg in "$@"; do
+            [[ "$previous" == "--data-binary" ]] && printf '%s' "$arg" > "$TMUX_HOLD_PAYLOAD"
+            previous="$arg"
+        done
+        printf '%s\n' '{"incidentId":"incident-test"}'
+    }
+    _tmux_report_hold unknown '{"reason":"adoption_evidence_not_closed"}' \
+      && jq -e '
+        (.evidence | type) == "object"
+        and .evidence.reason == "adoption_evidence_not_closed"
+        and (.evidence | has("raw") | not)
+      ' "$TMUX_HOLD_PAYLOAD" >/dev/null
+); then
+    pass "FLY-1602 non-empty hold evidence reaches Bridge as an object without raw fallback"
+else
+    fail "FLY-1602 non-empty hold evidence was corrupted before Bridge serialization"
 fi
 
 # ════════════════════════════════════════════════════════════════

@@ -76,6 +76,15 @@ function makeNotifier(): NotifierStub {
 }
 
 describe("LeadWatchdog", () => {
+	it("describes safe orphan-body adoption as an informational recovery", () => {
+		expect(titleFor("lead_body_adopted")).toBe(
+			"Lead body adopted by replacement supervisor",
+		);
+		expect(bodyFor("lead_body_adopted", "ignored")).toBe(
+			"A replacement supervisor safely adopted the sole live orphaned Lead body and rebound the identity lease. No new body was launched; verify the supplied generation evidence if the recovery repeats.",
+		);
+	});
+
 	it("describes A0B1 using exact-ref and topology semantics", () => {
 		expect(titleFor("cmux_flag_state")).toBe("cmux A0B1 topology transition");
 		expect(bodyFor("cmux_flag_state", "ignored")).toBe(

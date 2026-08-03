@@ -29,7 +29,24 @@ export interface SchedulerMemoryPort {
 }
 
 export interface LaunchdPort {
-	kickstart(jobLabel: string): Promise<void>;
+	requestGracefulRestart(jobLabel: string): Promise<void>;
+}
+
+export type RestartMutationResult = "executed" | "deferred";
+
+export class RestartCoordinationError extends Error {
+	constructor(
+		message: string,
+		readonly mutationAttempted: boolean,
+	) {
+		super(message);
+		this.name = "RestartCoordinationError";
+	}
+}
+
+export interface RestartCoordinationPort {
+	withMutationLock(action: () => Promise<void>): Promise<RestartMutationResult>;
+	globalRestartActive(): Promise<boolean>;
 }
 
 export type RestartGateState =
@@ -66,6 +83,7 @@ export interface SchedulerOnceInput {
 	clock: SchedulerClock;
 	memory: SchedulerMemoryPort;
 	launchd: LaunchdPort;
+	restartCoordination: RestartCoordinationPort;
 	restartGate: RestartGatePort;
 }
 
@@ -167,27 +185,49 @@ async function repairCandidate(
 	try {
 		const before = await input.restartGate.status(target.childKey);
 		if (held(before.state)) {
-			await input.restartGate.recordFailure(target.childKey, before.ledgerSeq);
 			repairResult = "held";
 		} else {
-			let kickstartFailed = false;
+			let restartFailed = false;
+			let coordinationFailedWithoutMutation = false;
+			let mutationResult: RestartMutationResult | null = null;
 			try {
-				input.kernel.write("scheduler.kickstart-intent", (tx) => {
+				input.kernel.write("scheduler.graceful-restart-intent", (tx) => {
 					recordExternalEffectIntentTx(tx, {
 						effectKey: `scheduler:${input.runId}:${claim.agentId}:${claim.generation}`,
 						family: "scheduler",
 						nowIso: input.clock.nowIso(),
 					});
 				});
-				await input.launchd.kickstart(target.jobLabel);
-			} catch {
-				kickstartFailed = true;
+				mutationResult = await input.restartCoordination.withMutationLock(
+					async () => {
+						await input.launchd.requestGracefulRestart(target.jobLabel);
+					},
+				);
+			} catch (error) {
+				if (
+					error instanceof RestartCoordinationError &&
+					!error.mutationAttempted
+				) {
+					coordinationFailedWithoutMutation = true;
+				} else {
+					restartFailed = true;
+				}
 			}
 			const confirmed =
-				!kickstartFailed &&
+				!restartFailed &&
+				mutationResult === "executed" &&
 				(await confirmProgress(input, claim, hardDeadlineMs));
 			if (confirmed) {
 				repairResult = "succeeded";
+			} else if (
+				mutationResult === "deferred" ||
+				coordinationFailedWithoutMutation
+			) {
+				repairResult = "failed";
+			} else if (await input.restartCoordination.globalRestartActive()) {
+				// A full restart acquired the parent lock after our SIGTERM. It now
+				// owns convergence and restart-storm accounting.
+				repairResult = "failed";
 			} else {
 				const accounted = await input.restartGate.recordFailure(
 					target.childKey,

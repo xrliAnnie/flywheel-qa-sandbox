@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { hostname } from "node:os";
-import { isAbsolute } from "node:path";
+import { homedir, hostname } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
 	type ExistingDatabaseOptions,
@@ -15,6 +15,7 @@ import { runSchedulerOnce } from "./scheduler-once.js";
 import { finishSchedulerRun, startSchedulerRun } from "./scheduler-store.js";
 import {
 	DarwinMemoryPort,
+	FilesystemRestartCoordinationPort,
 	LaunchctlPort,
 	ProcessRestartGate,
 } from "./system-ports.js";
@@ -376,6 +377,14 @@ async function runSweep(options: SchedulerRunCliOptions): Promise<number> {
 			clock,
 			memory,
 			launchd: new LaunchctlPort(),
+			restartCoordination: new FilesystemRestartCoordinationPort({
+				globalLockDir: join(homedir(), ".flywheel", "restart.lock.d"),
+				mutationLockDir: join(
+					homedir(),
+					".flywheel",
+					"scheduler-repair.lock.d",
+				),
+			}),
 			restartGate: new ProcessRestartGate({
 				gateBin: options.gateBin,
 				ledgerRoot: options.ledgerRoot,

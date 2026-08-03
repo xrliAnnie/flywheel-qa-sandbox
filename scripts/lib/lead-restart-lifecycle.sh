@@ -43,6 +43,703 @@ lead_restart_process_table() {
   LC_ALL=C ps -axo pid=,command= 2>/dev/null
 }
 
+LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON=""
+
+_lead_restart_file_mode() {
+  local value
+  if value="$(stat -c %a "$1" 2>/dev/null)"; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  stat -f %Lp "$1" 2>/dev/null
+}
+
+_lead_restart_file_inode() {
+  local value
+  if value="$(stat -c %i "$1" 2>/dev/null)"; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  stat -f %i "$1" 2>/dev/null
+}
+
+# The full restart owns ~/.flywheel/restart.lock.d before calling this helper.
+# Wait for the scheduler's subordinate signal-only mutex. A live exact
+# PID+lstart owner is never deleted; a dead/mismatched exact owner may be
+# reclaimed with an identity recheck. Malformed evidence fails closed.
+lead_restart_wait_scheduler_mutation() {
+  local lock_dir="$1" timeout="${2:-15}"
+  local deadline now owner_file raw fields pid lstart created actual
+  local before_inode after_raw after_inode
+  LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON=""
+  case "$timeout" in ''|*[!0-9]*)
+    LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="timeout_invalid"
+    return 2
+    ;;
+  esac
+  deadline=$(( $(date +%s) + timeout ))
+
+  while [ -e "$lock_dir" ] || [ -L "$lock_dir" ]; do
+    if [ ! -d "$lock_dir" ] || [ -L "$lock_dir" ] \
+      || [ "$(_lead_restart_file_mode "$lock_dir")" != 700 ]; then
+      LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="lock_not_real_directory"
+      return 2
+    fi
+    owner_file="${lock_dir}/owner.json"
+    if [ ! -e "$owner_file" ] && [ ! -L "$owner_file" ]; then
+      now="$(date +%s)"
+      if [ "$now" -ge "$deadline" ]; then
+        LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="owner_missing_timeout"
+        return 1
+      fi
+      sleep 0.1
+      continue
+    fi
+    if [ ! -f "$owner_file" ] || [ -L "$owner_file" ] \
+      || [ "$(_lead_restart_file_mode "$owner_file")" != "600" ]; then
+      LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="owner_malformed"
+      return 2
+    fi
+    raw="$(cat "$owner_file" 2>/dev/null)" || {
+      LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="owner_unreadable"
+      return 2
+    }
+    fields="$(printf '%s' "$raw" | jq -er '
+      select(type == "object" and (keys == ["created_at","pid","pid_lstart"]))
+      | select(.pid | type == "number" and floor == . and . > 0)
+      | select(.pid_lstart | type == "string" and length > 0 and . == gsub("^[[:space:]]+|[[:space:]]+$"; ""))
+      | select(.created_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"))
+      | [.pid, .pid_lstart, .created_at] | @tsv
+    ' 2>/dev/null)" || {
+      LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="owner_malformed"
+      return 2
+    }
+    pid="${fields%%$'\t'*}"
+    fields="${fields#*$'\t'}"
+    lstart="${fields%%$'\t'*}"
+    created="${fields#*$'\t'}"
+    [ -n "$created" ] || {
+      LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="owner_malformed"
+      return 2
+    }
+    actual="$(lead_restart_process_start_identity "$pid" 2>/dev/null || true)"
+    if [ "$actual" != "$lstart" ]; then
+      before_inode="$(_lead_restart_file_inode "$owner_file")" || {
+        LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="owner_recheck_failed"
+        return 2
+      }
+      after_raw="$(cat "$owner_file" 2>/dev/null)" || {
+        LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="owner_recheck_failed"
+        return 2
+      }
+      after_inode="$(_lead_restart_file_inode "$owner_file")" || {
+        LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="owner_recheck_failed"
+        return 2
+      }
+      if [ "$after_raw" != "$raw" ] || [ "$after_inode" != "$before_inode" ]; then
+        LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="owner_changed"
+        return 2
+      fi
+      rm -f -- "$owner_file" || {
+        LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="stale_cleanup_failed"
+        return 2
+      }
+      rmdir "$lock_dir" 2>/dev/null || {
+        LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="stale_cleanup_failed"
+        return 2
+      }
+      continue
+    fi
+
+    now="$(date +%s)"
+    if [ "$now" -ge "$deadline" ]; then
+      LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON="live_owner_timeout"
+      return 1
+    fi
+    sleep 0.1
+  done
+  return 0
+}
+
+LEAD_RESTART_GATE_FAILURE_REASON=""
+LEAD_RESTART_GATE_LAST_STATE=""
+LEAD_RESTART_GATE_LAST_SEQ=""
+
+lead_restart_gate_exec() {
+  local timeout="$1"
+  shift
+  local flywheel_root="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
+  local bounded="${FLYWHEEL_RESTART_BOUNDED_RUN_BIN:-${flywheel_root}/scripts/lib/bounded-run.sh}"
+  local gate="${FLYWHEEL_RESTART_STORM_GATE_BIN:-${flywheel_root}/scripts/restart-storm-gate.py}"
+  "$bounded" "$timeout" "$gate" "$@"
+}
+
+_lead_restart_gate_snapshot() {
+  local deadline="$1" root="$2" child="$3"
+  local now remaining output="" rc=0 state seq
+  now="$(date +%s)"
+  remaining=$((deadline - now))
+  if (( remaining <= 0 )); then
+    LEAD_RESTART_GATE_FAILURE_REASON="gate_timeout"
+    return 1
+  fi
+  output="$(lead_restart_gate_exec \
+    "$remaining" status --with-seq --root "$root" "$child")" || rc=$?
+  if (( rc != 0 )); then
+    LEAD_RESTART_GATE_FAILURE_REASON="status_rc_${rc}"
+    return 1
+  fi
+  state="$(printf '%s' "$output" | jq -er \
+    'select(type == "object") | .state | select(. == "active" or . == "resumed" or . == "held_alert_pending" or . == "held_alert_attempted")' \
+    2>/dev/null)" || {
+      LEAD_RESTART_GATE_FAILURE_REASON="status_invalid_json"
+      return 1
+    }
+  seq="$(printf '%s' "$output" | jq -er \
+    '.ledger_seq | select(type == "number" and floor == . and . >= 0)' \
+    2>/dev/null)" || {
+      LEAD_RESTART_GATE_FAILURE_REASON="status_invalid_json"
+      return 1
+    }
+  LEAD_RESTART_GATE_LAST_STATE="$state"
+  LEAD_RESTART_GATE_LAST_SEQ="$seq"
+  return 0
+}
+
+# Opens one fresh storm-counting window for a marker-fenced launchd Lead
+# replacement. A seq race may be resampled at most three times and the whole
+# exchange shares one 15-second wall-clock budget.
+lead_restart_arm_controlled_wave() {
+  local daemon_key="$1" marker="$2" attempt_id="$3" root="$4"
+  local child="lead.${daemon_key}" marker_digest deadline try now remaining
+  local output="" rc=0 status reason armed_attempt armed_seq
+  LEAD_RESTART_GATE_FAILURE_REASON=""
+  LEAD_RESTART_GATE_LAST_STATE=""
+  LEAD_RESTART_GATE_LAST_SEQ=""
+  marker_digest="$(lead_restart_file_digest "$marker")" || {
+    LEAD_RESTART_GATE_FAILURE_REASON="marker_unreadable"
+    return 1
+  }
+  deadline=$(($(date +%s) + 15))
+
+  for try in 1 2 3; do
+    _lead_restart_gate_snapshot "$deadline" "$root" "$child" || return 1
+    lead_restart_authority_unchanged || {
+      LEAD_RESTART_GATE_FAILURE_REASON="authority_changed"
+      return 1
+    }
+    now="$(date +%s)"
+    remaining=$((deadline - now))
+    if (( remaining <= 0 )); then
+      LEAD_RESTART_GATE_FAILURE_REASON="gate_timeout"
+      return 1
+    fi
+    output=""
+    rc=0
+    output="$(lead_restart_gate_exec \
+      "$remaining" arm-controlled-wave \
+      --expected-seq "$LEAD_RESTART_GATE_LAST_SEQ" \
+      --intent-marker "$marker" --attempt-id "$attempt_id" \
+      --root "$root" "$child")" || rc=$?
+    if (( rc == 0 )); then
+      status="$(printf '%s' "$output" | jq -er '.status' 2>/dev/null || true)"
+      armed_attempt="$(printf '%s' "$output" | jq -er '.attemptId' 2>/dev/null || true)"
+      armed_seq="$(printf '%s' "$output" | jq -er \
+        '.ledgerSeq | select(type == "number" and floor == . and . >= 0)' \
+        2>/dev/null || true)"
+      if [[ "$status" == armed && "$armed_attempt" == "$attempt_id" \
+        && "$armed_seq" == "$LEAD_RESTART_GATE_LAST_SEQ" ]]; then
+        return 0
+      fi
+      LEAD_RESTART_GATE_FAILURE_REASON="arm_invalid_json"
+      return 1
+    fi
+    if (( rc != 3 )); then
+      LEAD_RESTART_GATE_FAILURE_REASON="arm_rc_${rc}"
+      return 1
+    fi
+    status="$(printf '%s' "$output" | jq -er '.status' 2>/dev/null || true)"
+    reason="$(printf '%s' "$output" | jq -er '.reason' 2>/dev/null || true)"
+    if [[ "$status" != not_armed || "$reason" != seq_changed ]]; then
+      LEAD_RESTART_GATE_FAILURE_REASON="arm_invalid_json"
+      return 1
+    fi
+    if [[ "$(lead_restart_file_digest "$marker" 2>/dev/null || true)" != "$marker_digest" ]] \
+      || [[ "$(jq -er '.attempt_id' "$marker" 2>/dev/null || true)" != "$attempt_id" ]]; then
+      LEAD_RESTART_GATE_FAILURE_REASON="marker_changed"
+      return 1
+    fi
+    lead_restart_authority_unchanged || {
+      LEAD_RESTART_GATE_FAILURE_REASON="authority_changed"
+      return 1
+    }
+  done
+  LEAD_RESTART_GATE_FAILURE_REASON="seq_changed_exhausted"
+  return 1
+}
+
+LEAD_RESTART_GATE_ATTRIBUTION=""
+
+# Post-wave attribution after quick verification is exhausted.
+# 0 = a wrapper gate event advanced the ledger and left the gate active;
+# 2 = gate control/sensor failure; 3 = gate held; 4 = no wrapper event proven.
+lead_restart_classify_wave_gate() {
+  local root="$1" child="$2" expected_seq="$3" deadline rc=0
+  LEAD_RESTART_GATE_ATTRIBUTION=""
+  case "$expected_seq" in ''|*[!0-9]*)
+    LEAD_RESTART_GATE_ATTRIBUTION="gate_control_failure"
+    return 2
+    ;;
+  esac
+  deadline=$(( $(date +%s) + 15 ))
+  _lead_restart_gate_snapshot "$deadline" "$root" "$child" || rc=$?
+  if (( rc != 0 )); then
+    LEAD_RESTART_GATE_ATTRIBUTION="gate_control_failure"
+    return 2
+  fi
+  if [[ "$LEAD_RESTART_GATE_LAST_STATE" == held_* ]]; then
+    LEAD_RESTART_GATE_ATTRIBUTION="gate_held"
+    return 3
+  fi
+  if (( LEAD_RESTART_GATE_LAST_SEQ < expected_seq )); then
+    LEAD_RESTART_GATE_ATTRIBUTION="gate_control_failure"
+    return 2
+  fi
+  if (( LEAD_RESTART_GATE_LAST_SEQ == expected_seq )); then
+    LEAD_RESTART_GATE_ATTRIBUTION="wrapper_event_unproven"
+    return 4
+  fi
+  if [[ "$LEAD_RESTART_GATE_LAST_STATE" == active ]]; then
+    LEAD_RESTART_GATE_ATTRIBUTION="gate_executed"
+    return 0
+  fi
+  LEAD_RESTART_GATE_ATTRIBUTION="gate_control_failure"
+  return 2
+}
+
+LEAD_RESTART_VERIFY_REASON=""
+LEAD_RESTART_VERIFIED_GENERATION=""
+
+lead_restart_verify_exec() {
+  local flywheel_root="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
+  local bounded="${FLYWHEEL_RESTART_BOUNDED_RUN_BIN:-${flywheel_root}/scripts/lib/bounded-run.sh}"
+  local cli="${FLYWHEEL_LEAD_LEASE_CLI:-${flywheel_root}/packages/flywheel-comm/dist/index.js}"
+  "$bounded" 15 node "$cli" lead-lease verify-bound "$@"
+}
+
+lead_restart_verify_bound() {
+  local lead_key="$1" supervisor_pid="$2" supervisor_start="$3"
+  local holder_pid="$4" holder_start="$5" output="" rc=0 reason="" generation=""
+  LEAD_RESTART_VERIFY_REASON=""
+  LEAD_RESTART_VERIFIED_GENERATION=""
+  output="$(lead_restart_verify_exec \
+    --lead-key "$lead_key" \
+    --supervisor-pid "$supervisor_pid" \
+    --supervisor-start "$supervisor_start" \
+    --holder-pid "$holder_pid" \
+    --holder-start "$holder_start" --json)" || rc=$?
+  if (( rc == 0 )); then
+    generation="$(printf '%s' "$output" | jq -er \
+      'select(type == "object" and keys == ["generation","status"] and .status == "verified")
+       | .generation | select(type == "number" and floor == . and . > 0)' \
+      2>/dev/null)" || {
+        LEAD_RESTART_VERIFY_REASON="lease_control_failure"
+        return 2
+      }
+    LEAD_RESTART_VERIFIED_GENERATION="$generation"
+    return 0
+  fi
+  if (( rc == 3 )); then
+    reason="$(printf '%s' "$output" | jq -er \
+      'select(type == "object" and keys == ["reason","status"] and .status == "mismatch")
+       | .reason
+       | select(. == "missing_lease" or . == "unbound" or . == "supervisor_mismatch"
+         or . == "holder_mismatch" or . == "supervisor_generation_mismatch"
+         or . == "missing_history")' 2>/dev/null)" || {
+        LEAD_RESTART_VERIFY_REASON="lease_control_failure"
+        return 2
+      }
+    LEAD_RESTART_VERIFY_REASON="$reason"
+    return 3
+  fi
+  LEAD_RESTART_VERIFY_REASON="lease_control_failure"
+  return 2
+}
+
+LEAD_RESTART_BASELINE_REASON=""
+LEAD_RESTART_LEASE_BASELINE=""
+
+lead_restart_progress_exec() {
+  local flywheel_root="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
+  local bounded="${FLYWHEEL_RESTART_BOUNDED_RUN_BIN:-${flywheel_root}/scripts/lib/bounded-run.sh}"
+  local cli="${FLYWHEEL_LEAD_LEASE_CLI:-${flywheel_root}/packages/flywheel-comm/dist/index.js}"
+  "$bounded" 15 node "$cli" lead-lease progress-snapshot "$@"
+}
+
+lead_restart_progress_snapshot() {
+  local lead_id="$1" project="$2" output="" rc=0 normalized="" row_format=""
+  LEAD_RESTART_BASELINE_REASON=""
+  LEAD_RESTART_LEASE_BASELINE=""
+  output="$(lead_restart_progress_exec \
+    --lead "$lead_id" --project "$project" --json)" || rc=$?
+  if (( rc != 0 )); then
+    LEAD_RESTART_BASELINE_REASON="lease_control_failure"
+    return 2
+  fi
+  normalized="$(printf '%s' "$output" | jq -ce '
+    if type != "object" then error("not object")
+    elif .status == "absent" and keys == ["status"] then .
+    elif .status == "present"
+      and keys == ["acquiredAt","boundAt","generation","holderPid","holderStart","rowFormat","status","supervisorGeneration","supervisorPid","supervisorStart"]
+      and (.rowFormat == "version_valid" or .rowFormat == "legacy" or .rowFormat == "malformed")
+      and (.generation | type == "number" and floor == . and . > 0)
+      and (.holderPid | type == "number" and floor == . and . > 0)
+      and (.holderStart | type == "string" and length > 0)
+      and (.acquiredAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"))
+      and (.boundAt == null or (.boundAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$")))
+      and (.supervisorPid == null or (.supervisorPid | type == "number" and floor == . and . > 0))
+      and (.supervisorStart == null or (.supervisorStart | type == "string" and length > 0))
+      and (.supervisorGeneration == null or (.supervisorGeneration | type == "number" and floor == . and . > 0))
+    then .
+    else error("invalid progress snapshot")
+    end' 2>/dev/null)" || {
+      LEAD_RESTART_BASELINE_REASON="lease_control_failure"
+      return 2
+    }
+  row_format="$(printf '%s' "$normalized" | jq -r '.rowFormat // "absent"')"
+  if [[ "$row_format" == malformed ]]; then
+    LEAD_RESTART_BASELINE_REASON="lease_data_malformed"
+    return 3
+  fi
+  LEAD_RESTART_LEASE_BASELINE="$normalized"
+  return 0
+}
+
+LEAD_RESTART_PROGRESS_REASON=""
+
+lead_restart_replacement_progressed() {
+  local baseline="$1" commit_ts="$2" lead_id="$3" project="$4"
+  local supervisor_pid="$5" supervisor_start="$6" snapshot_rc=0 current=""
+  LEAD_RESTART_PROGRESS_REASON=""
+  lead_restart_progress_snapshot "$lead_id" "$project" || snapshot_rc=$?
+  if (( snapshot_rc != 0 )); then
+    LEAD_RESTART_PROGRESS_REASON="${LEAD_RESTART_BASELINE_REASON:-lease_control_failure}"
+    return 2
+  fi
+  current="$LEAD_RESTART_LEASE_BASELINE"
+  if jq -en \
+      --argjson baseline "$baseline" --argjson current "$current" \
+      --arg commit "$commit_ts" --argjson supervisor_pid "$supervisor_pid" \
+      --arg supervisor_start "$supervisor_start" '
+      ($current.status == "present")
+      and ($current.rowFormat == "version_valid")
+      and ($current.supervisorPid == $supervisor_pid)
+      and ($current.supervisorStart == $supervisor_start)
+      and ($current.supervisorGeneration == $current.generation)
+      and (
+        ($baseline.status == "present" and $current.generation > $baseline.generation)
+        or ($current.acquiredAt > $commit)
+      )' >/dev/null 2>&1; then
+    LEAD_RESTART_PROGRESS_REASON="replacement_progress"
+    return 0
+  fi
+  LEAD_RESTART_PROGRESS_REASON="no_replacement_progress"
+  return 1
+}
+
+LEAD_RESTART_ATTEMPT_ID=""
+LEAD_RESTART_MARKER_FILE=""
+LEAD_RESTART_MARKER_LOAD_REASON=""
+LEAD_RESTART_LOADED_MARKER_DAEMON_KEY=""
+LEAD_RESTART_LOADED_MARKER_LABEL=""
+LEAD_RESTART_LOADED_MARKER_PHASE=""
+LEAD_RESTART_LOADED_MARKER_ATTEMPT=""
+LEAD_RESTART_LOADED_MARKER_PROJECT=""
+LEAD_RESTART_LOADED_MARKER_LEAD_ID=""
+LEAD_RESTART_LOADED_MARKER_BACKEND=""
+LEAD_RESTART_LOADED_MARKER_OLD_PID=""
+LEAD_RESTART_LOADED_MARKER_OLD_START=""
+LEAD_RESTART_LOADED_MARKER_BASELINE=""
+LEAD_RESTART_LOADED_MARKER_TS=""
+
+lead_restart_write_replacement_marker() {
+  local daemon_key="$1" expected_label="$2" old_pid="$3" old_start="$4"
+  local marker_dir="${FLYWHEEL_LEAD_REPLACEMENT_DIR:-${HOME}/.flywheel/state/lead-replacements}"
+  local marker temp semantic old_tuple now attempt
+  LEAD_RESTART_ATTEMPT_ID=""
+  LEAD_RESTART_MARKER_FILE=""
+  case "$daemon_key" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  case "$marker_dir" in /*) ;; *) return 1 ;; esac
+  [[ ! -L "$marker_dir" ]] || return 1
+  mkdir -p "$marker_dir" || return 1
+  chmod 700 "$marker_dir" 2>/dev/null || return 1
+
+  semantic="$(jq -ce '
+    {
+      leadId: .leadId,
+      projectDir: .projectDir,
+      projectName: .projectName,
+      botTokenEnv: .botTokenEnv,
+      leadBackend: {backendId: (.leadBackend.backendId // "claude-code")}
+    }
+    | select(
+        (.leadId | type == "string" and length > 0)
+        and (.projectDir | type == "string" and length > 0)
+        and (.projectName | type == "string" and length > 0)
+        and (.botTokenEnv | type == "string" and length > 0)
+        and (.leadBackend.backendId | type == "string" and length > 0)
+      )' "$LEAD_RESTART_MANIFEST_FILE" 2>/dev/null)" || return 1
+  [[ "$LEAD_RESTART_PLIST_DIGEST" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "$LEAD_RESTART_PROJECTS_DIGEST" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s' "$LEAD_RESTART_LEASE_BASELINE" | jq -e . >/dev/null 2>&1 || return 1
+  if [[ "$old_pid" =~ ^[1-9][0-9]*$ && -n "$old_start" ]]; then
+    old_tuple="$(jq -cn --argjson pid "$old_pid" --arg start "$old_start" \
+      '{pid:$pid,start:$start}')" || return 1
+  elif [[ -z "$old_pid" && -z "$old_start" ]]; then
+    old_tuple='{"pid":null,"start":null}'
+  else
+    return 1
+  fi
+  attempt="$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)" || return 1
+  [[ "$attempt" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || return 1
+  now="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+  marker="${marker_dir}/${daemon_key}.json"
+  temp="$(mktemp "${marker_dir}/.${daemon_key}.XXXXXX")" || return 1
+  if ! jq -n \
+      --arg attempt "$attempt" --arg daemon "$daemon_key" \
+      --arg label "$expected_label" --arg manifest "$LEAD_RESTART_MANIFEST_FILE" \
+      --arg plist "$LEAD_RESTART_PLIST_FILE" --arg plist_digest "$LEAD_RESTART_PLIST_DIGEST" \
+      --arg projects "$LEAD_RESTART_PROJECTS_FILE" --arg projects_digest "$LEAD_RESTART_PROJECTS_DIGEST" \
+      --arg ts "$now" --argjson semantic "$semantic" --argjson old "$old_tuple" \
+      --argjson baseline "$LEAD_RESTART_LEASE_BASELINE" \
+      '{schema_version:1,attempt_id:$attempt,daemon_key:$daemon,expected_label:$label,
+        phase:"bootout",old_supervisor_tuple:$old,
+        authority:{manifest:{path:$manifest,semantic_identity:$semantic},
+          plist:{path:$plist,digest:$plist_digest},
+          projects:{path:$projects,digest:$projects_digest}},
+        lease_baseline:$baseline,ts:$ts}' > "$temp"; then
+    rm -f "$temp"
+    return 1
+  fi
+  chmod 600 "$temp" || { rm -f "$temp"; return 1; }
+  mv -f "$temp" "$marker" || { rm -f "$temp"; return 1; }
+  python3 - "$marker_dir" 2>/dev/null <<'PY' || return 1
+import os, sys
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+fd = os.open(sys.argv[1], flags)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+  LEAD_RESTART_ATTEMPT_ID="$attempt"
+  LEAD_RESTART_MARKER_FILE="$marker"
+  return 0
+}
+
+lead_restart_update_marker_phase() {
+  local marker="$1" attempt_id="$2" phase="$3" marker_dir temp
+  local expected_dir="${FLYWHEEL_LEAD_REPLACEMENT_DIR:-${HOME}/.flywheel/state/lead-replacements}"
+  [[ "$phase" == bootout || "$phase" == bootstrap ]] || return 1
+  [[ "$expected_dir" == /* && "$(dirname "$marker")" == "$expected_dir" ]] || return 1
+  [[ -f "$marker" && ! -L "$marker" ]] || return 1
+  [[ "$(_lead_restart_file_mode "$marker")" == 600 ]] \
+    || return 1
+  [[ "$(jq -er '.attempt_id' "$marker" 2>/dev/null || true)" == "$attempt_id" ]] || return 1
+  marker_dir="$(dirname "$marker")"
+  temp="$(mktemp "${marker_dir}/.${marker##*/}.XXXXXX")" || return 1
+  if ! jq --arg phase "$phase" '.phase = $phase' "$marker" > "$temp"; then
+    rm -f "$temp"
+    return 1
+  fi
+  chmod 600 "$temp" || { rm -f "$temp"; return 1; }
+  mv -f "$temp" "$marker" || { rm -f "$temp"; return 1; }
+  python3 - "$marker_dir" 2>/dev/null <<'PY'
+import os, sys
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+fd = os.open(sys.argv[1], flags)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+}
+
+lead_restart_remove_marker() {
+  local marker="$1" attempt_id="$2" marker_dir
+  local expected_dir="${FLYWHEEL_LEAD_REPLACEMENT_DIR:-${HOME}/.flywheel/state/lead-replacements}"
+  [[ "$expected_dir" == /* && "$(dirname "$marker")" == "$expected_dir" ]] || return 1
+  [[ -f "$marker" && ! -L "$marker" ]] || return 1
+  [[ "$(_lead_restart_file_mode "$marker")" == 600 ]] || return 1
+  [[ "$(jq -er '.attempt_id' "$marker" 2>/dev/null || true)" == "$attempt_id" ]] || return 1
+  marker_dir="$(dirname "$marker")"
+  rm -f "$marker" || return 1
+  python3 - "$marker_dir" 2>/dev/null <<'PY'
+import os, sys
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+fd = os.open(sys.argv[1], flags)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+}
+
+# Strictly load one durable replacement intent and restore current carrier
+# authority into the LEAD_RESTART_* globals. Manifest comparison is semantic:
+# runtime-written pid/model/effort evidence cannot create false drift.
+lead_restart_load_replacement_marker() {
+  local marker="$1"
+  local marker_dir="${FLYWHEEL_LEAD_REPLACEMENT_DIR:-${HOME}/.flywheel/state/lead-replacements}"
+  local normalized daemon_key label phase attempt manifest plist projects
+  local expected_semantic current_semantic plist_digest projects_digest
+  local old_pid old_start baseline ts
+  LEAD_RESTART_MARKER_LOAD_REASON=""
+  LEAD_RESTART_LOADED_MARKER_DAEMON_KEY=""
+  LEAD_RESTART_LOADED_MARKER_LABEL=""
+  LEAD_RESTART_LOADED_MARKER_PHASE=""
+  LEAD_RESTART_LOADED_MARKER_ATTEMPT=""
+  LEAD_RESTART_LOADED_MARKER_PROJECT=""
+  LEAD_RESTART_LOADED_MARKER_LEAD_ID=""
+  LEAD_RESTART_LOADED_MARKER_BACKEND=""
+  LEAD_RESTART_LOADED_MARKER_OLD_PID=""
+  LEAD_RESTART_LOADED_MARKER_OLD_START=""
+  LEAD_RESTART_LOADED_MARKER_BASELINE=""
+  LEAD_RESTART_LOADED_MARKER_TS=""
+
+  if [[ "$marker_dir" != /* || "$marker" != "${marker_dir}/"* \
+    || "$(dirname "$marker")" != "$marker_dir" \
+    || ! -f "$marker" || -L "$marker" \
+    || "$(_lead_restart_file_mode "$marker")" != 600 ]]; then
+    LEAD_RESTART_MARKER_LOAD_REASON="marker_invalid"
+    return 2
+  fi
+  normalized="$(jq -ce '
+    select(type == "object" and keys == ["attempt_id","authority","daemon_key","expected_label","lease_baseline","old_supervisor_tuple","phase","schema_version","ts"])
+    | select(.schema_version == 1)
+    | select(.attempt_id | type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"))
+    | select(.daemon_key | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$"))
+    | select(.expected_label == ("com.flywheel.lead." + .daemon_key))
+    | select(.phase == "bootout" or .phase == "bootstrap")
+    | select(.old_supervisor_tuple | type == "object" and keys == ["pid","start"])
+    | select((.old_supervisor_tuple.pid == null and .old_supervisor_tuple.start == null)
+      or ((.old_supervisor_tuple.pid | type == "number" and floor == . and . > 0)
+        and (.old_supervisor_tuple.start | type == "string" and length > 0)))
+    | select(.authority | type == "object" and keys == ["manifest","plist","projects"])
+    | select(.authority.manifest | type == "object" and keys == ["path","semantic_identity"])
+    | select(.authority.manifest.path | type == "string" and startswith("/"))
+    | select(.authority.manifest.semantic_identity | type == "object" and keys == ["botTokenEnv","leadBackend","leadId","projectDir","projectName"])
+    | select(.authority.manifest.semantic_identity.leadBackend | type == "object" and keys == ["backendId"])
+    | select([.authority.manifest.semantic_identity.leadId,
+              .authority.manifest.semantic_identity.projectDir,
+              .authority.manifest.semantic_identity.projectName,
+              .authority.manifest.semantic_identity.botTokenEnv,
+              .authority.manifest.semantic_identity.leadBackend.backendId]
+      | all(type == "string" and length > 0))
+    | select(.authority.plist | type == "object" and keys == ["digest","path"])
+    | select(.authority.projects | type == "object" and keys == ["digest","path"])
+    | select(.authority.plist.path | type == "string" and startswith("/"))
+    | select(.authority.projects.path | type == "string" and startswith("/"))
+    | select(.authority.plist.digest | type == "string" and test("^[0-9a-f]{64}$"))
+    | select(.authority.projects.digest | type == "string" and test("^[0-9a-f]{64}$"))
+    | select(.lease_baseline | type == "object")
+    | select((.lease_baseline.status == "absent" and (.lease_baseline | keys == ["status"]))
+      or (.lease_baseline.status == "present"
+        and (.lease_baseline | keys == ["acquiredAt","boundAt","generation","holderPid","holderStart","rowFormat","status","supervisorGeneration","supervisorPid","supervisorStart"])
+        and (.lease_baseline.rowFormat == "version_valid" or .lease_baseline.rowFormat == "legacy")))
+    | select(.ts | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"))
+  ' "$marker" 2>/dev/null)" || {
+    LEAD_RESTART_MARKER_LOAD_REASON="marker_invalid"
+    return 2
+  }
+  daemon_key="$(printf '%s' "$normalized" | jq -er '.daemon_key')"
+  [[ "$(basename "$marker")" == "${daemon_key}.json" ]] || {
+    LEAD_RESTART_MARKER_LOAD_REASON="marker_invalid"
+    return 2
+  }
+  label="$(printf '%s' "$normalized" | jq -er '.expected_label')"
+  phase="$(printf '%s' "$normalized" | jq -er '.phase')"
+  attempt="$(printf '%s' "$normalized" | jq -er '.attempt_id')"
+  manifest="$(printf '%s' "$normalized" | jq -er '.authority.manifest.path')"
+  plist="$(printf '%s' "$normalized" | jq -er '.authority.plist.path')"
+  projects="$(printf '%s' "$normalized" | jq -er '.authority.projects.path')"
+  expected_semantic="$(printf '%s' "$normalized" | jq -c '.authority.manifest.semantic_identity')"
+  plist_digest="$(printf '%s' "$normalized" | jq -er '.authority.plist.digest')"
+  projects_digest="$(printf '%s' "$normalized" | jq -er '.authority.projects.digest')"
+  if ! lead_restart_validate_authority "$manifest" "$plist" "$projects" "$label"; then
+    LEAD_RESTART_MARKER_LOAD_REASON="authority_changed"
+    return 3
+  fi
+  current_semantic="$(jq -ce '
+    {leadId:.leadId,projectDir:.projectDir,projectName:.projectName,
+     botTokenEnv:.botTokenEnv,
+     leadBackend:{backendId:(.leadBackend.backendId // "claude-code")}}
+    | select([.leadId,.projectDir,.projectName,.botTokenEnv,.leadBackend.backendId]
+      | all(type == "string" and length > 0))
+  ' "$manifest" 2>/dev/null)" || {
+    LEAD_RESTART_MARKER_LOAD_REASON="authority_changed"
+    return 3
+  }
+  if [[ "$current_semantic" != "$expected_semantic" \
+    || "$LEAD_RESTART_PLIST_DIGEST" != "$plist_digest" \
+    || "$LEAD_RESTART_PROJECTS_DIGEST" != "$projects_digest" ]]; then
+    LEAD_RESTART_MARKER_LOAD_REASON="authority_changed"
+    return 3
+  fi
+  old_pid="$(printf '%s' "$normalized" | jq -r '.old_supervisor_tuple.pid // ""')"
+  old_start="$(printf '%s' "$normalized" | jq -r '.old_supervisor_tuple.start // ""')"
+  baseline="$(printf '%s' "$normalized" | jq -c '.lease_baseline')"
+  ts="$(printf '%s' "$normalized" | jq -er '.ts')"
+  LEAD_RESTART_LOADED_MARKER_DAEMON_KEY="$daemon_key"
+  LEAD_RESTART_LOADED_MARKER_LABEL="$label"
+  LEAD_RESTART_LOADED_MARKER_PHASE="$phase"
+  LEAD_RESTART_LOADED_MARKER_ATTEMPT="$attempt"
+  LEAD_RESTART_LOADED_MARKER_PROJECT="$LEAD_RESTART_PROJECT"
+  LEAD_RESTART_LOADED_MARKER_LEAD_ID="$LEAD_RESTART_LEAD_ID"
+  LEAD_RESTART_LOADED_MARKER_BACKEND="$LEAD_RESTART_BACKEND"
+  LEAD_RESTART_LOADED_MARKER_OLD_PID="$old_pid"
+  LEAD_RESTART_LOADED_MARKER_OLD_START="$old_start"
+  LEAD_RESTART_LOADED_MARKER_BASELINE="$baseline"
+  LEAD_RESTART_LOADED_MARKER_TS="$ts"
+  return 0
+}
+
+# Positive retirement proof for the only authority-drift case that may resolve
+# without bootstrap: both carrier files are gone and canonical projects.json
+# is readable and contains no exact project/Lead identity.
+lead_restart_marker_retired() {
+  local marker="$1"
+  local marker_dir="${FLYWHEEL_LEAD_REPLACEMENT_DIR:-${HOME}/.flywheel/state/lead-replacements}"
+  local fields manifest plist projects project lead_id
+  [[ "$marker_dir" == /* && "$(dirname "$marker")" == "$marker_dir" ]] || return 1
+  [[ -f "$marker" && ! -L "$marker" \
+    && "$(_lead_restart_file_mode "$marker")" == 600 ]] || return 1
+  fields="$(jq -er '
+    select(type == "object" and .schema_version == 1)
+    | [.authority.manifest.path,
+       .authority.plist.path,
+       .authority.projects.path,
+       .authority.manifest.semantic_identity.projectName,
+       .authority.manifest.semantic_identity.leadId]
+    | select(all(.[]; type == "string" and length > 0
+        and (contains("\t") | not) and (contains("\n") | not)))
+    | @tsv
+  ' "$marker" 2>/dev/null)" || return 1
+  manifest="${fields%%$'\t'*}"; fields="${fields#*$'\t'}"
+  plist="${fields%%$'\t'*}"; fields="${fields#*$'\t'}"
+  projects="${fields%%$'\t'*}"; fields="${fields#*$'\t'}"
+  project="${fields%%$'\t'*}"; lead_id="${fields#*$'\t'}"
+  [[ "$manifest" == /* && "$plist" == /* && "$projects" == /* ]] || return 1
+  [[ ! -e "$manifest" && ! -L "$manifest" \
+    && ! -e "$plist" && ! -L "$plist" ]] || return 1
+  [[ -f "$projects" && ! -L "$projects" ]] || return 1
+  jq -e --arg project "$project" --arg lead "$lead_id" '
+    type == "array"
+    and ([.[] | select(.projectName == $project) | (.leads // [])[]
+          | select(.agentId == $lead)] | length == 0)
+  ' "$projects" >/dev/null 2>&1
+}
+
 lead_restart_sleep() {
   sleep "$1"
 }

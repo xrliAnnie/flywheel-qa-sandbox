@@ -3,12 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runLeadLeaseCommand } from "../commands/lead-lease.js";
+import { LeadLeaseStore, type ProcessTupleState } from "../lead-lease.js";
 
 describe("flywheel-comm lead-lease", () => {
 	let dir: string;
 	let env: Record<string, string>;
 	let stdout: string[];
 	let stderr: string[];
+	let tupleStates: Record<string, ProcessTupleState>;
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1309-cli-"));
@@ -26,6 +28,7 @@ describe("flywheel-comm lead-lease", () => {
 		);
 		stdout = [];
 		stderr = [];
+		tupleStates = {};
 	});
 
 	afterEach(() => {
@@ -37,6 +40,10 @@ describe("flywheel-comm lead-lease", () => {
 			env,
 			stdout: (line) => stdout.push(line),
 			stderr: (line) => stderr.push(line),
+			leaseStoreDeps: {
+				processTupleState: (pid, start) =>
+					tupleStates[`${pid}:${start}`] ?? "dead",
+			},
 		});
 	}
 
@@ -68,6 +75,10 @@ describe("flywheel-comm lead-lease", () => {
 			status: "acquired",
 			generation: 1,
 			leadKey: "flywheel-eng-lead",
+			supervisorPid: process.pid,
+			supervisorStart: "supervisor-start",
+			holderPid: process.pid,
+			holderStart: "supervisor-start",
 		});
 
 		expect(
@@ -98,6 +109,222 @@ describe("flywheel-comm lead-lease", () => {
 		).toBe(0);
 		expect(JSON.parse(stdout.pop() ?? "")).toMatchObject({
 			status: "bound",
+			generation: 1,
+		});
+	});
+
+	it("reports atomic progress and typed verify-bound evidence", async () => {
+		expect(
+			await run([
+				"progress-snapshot",
+				"--lead",
+				"eng-lead",
+				"--project",
+				"flywheel",
+				"--json",
+			]),
+		).toBe(0);
+		expect(JSON.parse(stdout.pop() ?? "")).toEqual({ status: "absent" });
+
+		const store = new LeadLeaseStore(env.FLYWHEEL_LEAD_LEASE_DB, {
+			processAliveWithStart: () => false,
+		});
+		store.acquire({
+			leadKey: "flywheel-eng-lead",
+			project: "flywheel",
+			leadId: "eng-lead",
+			supervisorPid: 100,
+			supervisorStart: "supervisor-old",
+			acquiredBy: "seed",
+			now: "2026-08-03T01:00:00.000Z",
+		});
+		store.bind({
+			leadKey: "flywheel-eng-lead",
+			generation: 1,
+			expectedSupervisorPid: 100,
+			expectedSupervisorStart: "supervisor-old",
+			panePid: 200,
+			paneStart: "holder-old",
+			now: "2026-08-03T01:00:01.000Z",
+		});
+		store.close();
+
+		expect(
+			await run([
+				"progress-snapshot",
+				"--lead",
+				"eng-lead",
+				"--project",
+				"flywheel",
+				"--json",
+			]),
+		).toBe(0);
+		expect(JSON.parse(stdout.pop() ?? "")).toMatchObject({
+			status: "present",
+			rowFormat: "version_valid",
+			generation: 1,
+			supervisorPid: 100,
+			holderPid: 200,
+		});
+
+		expect(
+			await run([
+				"verify-bound",
+				"--lead-key",
+				"flywheel-eng-lead",
+				"--supervisor-pid",
+				"999",
+				"--supervisor-start",
+				"supervisor-old",
+				"--holder-pid",
+				"200",
+				"--holder-start",
+				"holder-old",
+				"--json",
+			]),
+		).toBe(3);
+		expect(JSON.parse(stdout.pop() ?? "")).toEqual({
+			status: "mismatch",
+			reason: "supervisor_mismatch",
+		});
+
+		expect(
+			await run([
+				"verify-bound",
+				"--lead-key",
+				"flywheel-eng-lead",
+				"--supervisor-pid",
+				"100",
+				"--supervisor-start",
+				"supervisor-old",
+				"--holder-pid",
+				"200",
+				"--holder-start",
+				"holder-old",
+				"--json",
+			]),
+		).toBe(0);
+		expect(JSON.parse(stdout.pop() ?? "")).toEqual({
+			status: "verified",
+			generation: 1,
+		});
+	});
+
+	it("classifies and atomically adopts an orphan through the CLI", async () => {
+		const holderStart = "holder-live";
+		const oldSupervisorPid = 2_000_000_000;
+		const seed = new LeadLeaseStore(env.FLYWHEEL_LEAD_LEASE_DB, {
+			processAliveWithStart: () => false,
+		});
+		seed.acquire({
+			leadKey: "flywheel-eng-lead",
+			project: "flywheel",
+			leadId: "eng-lead",
+			supervisorPid: oldSupervisorPid,
+			supervisorStart: "supervisor-old",
+			acquiredBy: "seed",
+		});
+		seed.bind({
+			leadKey: "flywheel-eng-lead",
+			generation: 1,
+			expectedSupervisorPid: oldSupervisorPid,
+			expectedSupervisorStart: "supervisor-old",
+			panePid: process.pid,
+			paneStart: holderStart,
+		});
+		seed.close();
+
+		tupleStates[`${oldSupervisorPid}:supervisor-old`] = "dead";
+		tupleStates[`${process.pid}:${holderStart}`] = "alive";
+		const newSupervisorStart = "supervisor-new";
+		expect(
+			await run([
+				"acquire",
+				"--lead",
+				"eng-lead",
+				"--project",
+				"flywheel",
+				"--supervisor-pid",
+				String(process.pid),
+				"--supervisor-start",
+				newSupervisorStart,
+				"--json",
+			]),
+		).toBe(0);
+		expect(JSON.parse(stdout.pop() ?? "")).toMatchObject({
+			status: "holder_orphaned",
+			generation: 1,
+			holderPid: process.pid,
+			supervisorPid: oldSupervisorPid,
+		});
+
+		const adoptArgs = [
+			"adopt",
+			"--lead",
+			"eng-lead",
+			"--project",
+			"flywheel",
+			"--supervisor-pid",
+			String(process.pid),
+			"--supervisor-start",
+			newSupervisorStart,
+			"--holder-pid",
+			String(process.pid),
+			"--holder-start",
+			holderStart,
+			"--old-supervisor-pid",
+			String(oldSupervisorPid),
+			"--old-supervisor-start",
+			"supervisor-old",
+			"--json",
+		];
+		expect(await run(adoptArgs)).toBe(0);
+		expect(JSON.parse(stdout.pop() ?? "")).toEqual({
+			status: "adopted",
+			generation: 1,
+			leadKey: "flywheel-eng-lead",
+		});
+		expect(await run(adoptArgs)).toBe(0);
+		expect(JSON.parse(stdout.pop() ?? "")).toMatchObject({
+			status: "idempotent_adopted",
+			generation: 1,
+		});
+	});
+
+	it("maps both fail-closed acquire denials to exit 3 without folding statuses", async () => {
+		const first = [
+			"acquire",
+			"--lead",
+			"eng-lead",
+			"--project",
+			"flywheel",
+			"--supervisor-pid",
+			"100",
+			"--supervisor-start",
+			"supervisor-old",
+			"--json",
+		];
+		expect(await run(first)).toBe(0);
+		stdout.pop();
+
+		const contender = [
+			...first.slice(0, 6),
+			"101",
+			"--supervisor-start",
+			"supervisor-new",
+			"--json",
+		];
+		tupleStates["100:supervisor-old"] = "alive";
+		expect(await run(contender)).toBe(3);
+		expect(JSON.parse(stdout.pop() ?? "")).toMatchObject({
+			status: "denied_holder_alive",
+			generation: 1,
+		});
+
+		tupleStates["100:supervisor-old"] = "sensor_error";
+		expect(await run(contender)).toBe(3);
+		expect(JSON.parse(stdout.pop() ?? "")).toMatchObject({
+			status: "denied_sensor_degraded",
 			generation: 1,
 		});
 	});

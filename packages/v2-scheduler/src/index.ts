@@ -28,10 +28,13 @@ export {
 } from "./runtime-authority.js";
 export {
 	type LaunchdPort,
+	RestartCoordinationError,
+	type RestartCoordinationPort,
 	type RestartGatePort,
 	type RestartGateRecordResult,
 	type RestartGateState,
 	type RestartGateStatus,
+	type RestartMutationResult,
 	runSchedulerOnce,
 	type SchedulerClock,
 	type SchedulerMemoryPort,
@@ -56,6 +59,8 @@ export {
 } from "./scheduler-store.js";
 export {
 	DarwinMemoryPort,
+	type FilesystemRestartCoordinationOptions,
+	FilesystemRestartCoordinationPort,
 	LaunchctlPort,
 	ProcessRestartGate,
 	runSystemCommand,

@@ -169,7 +169,7 @@ describe("FLY-1309 LeadLeaseStore", () => {
 		store.close();
 	});
 
-	it("denies acquisition while a bound pane holder is alive with matching lstart", () => {
+	it("surfaces an orphan when the supervisor is dead but its bound pane is alive", () => {
 		const holder = "Thu Jul 16 01:00:01 2026";
 		const initial = open();
 		initial.acquire(supervisor1);
@@ -191,7 +191,14 @@ describe("FLY-1309 LeadLeaseStore", () => {
 				supervisorPid: 101,
 				supervisorStart: "new-supervisor",
 			}),
-		).toEqual({ status: "denied_holder_alive", generation: 1 });
+		).toEqual({
+			status: "holder_orphaned",
+			generation: 1,
+			holderPid: 200,
+			holderStart: holder,
+			supervisorPid: 100,
+			supervisorStart: supervisor1.supervisorStart,
+		});
 		contender.close();
 	});
 

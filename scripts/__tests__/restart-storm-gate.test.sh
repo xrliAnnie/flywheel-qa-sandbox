@@ -173,6 +173,182 @@ else
   fail "record-failure hold" "exit=$RECORD_HELD_EXIT result=$(cat "$TEST_ROOT/record-held" 2>/dev/null || echo missing)"
 fi
 
+# FLY-1602: a controlled Lead replacement gets a dedicated, marker-fenced
+# counter window. The shared resume command remains held-only and byte-stable.
+CONTROL_ROOT="$TEST_ROOT/controlled-ledger"
+MARKER_ROOT="$TEST_ROOT/lead-replacements"
+mkdir -p "$MARKER_ROOT"
+export FLYWHEEL_LEAD_REPLACEMENT_DIR="$MARKER_ROOT"
+write_control_marker() { # path daemon_key phase attempt_id
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import json, os, sys
+path, daemon_key, phase, attempt_id = sys.argv[1:]
+value = {
+    "schema_version": 1,
+    "attempt_id": attempt_id,
+    "daemon_key": daemon_key,
+    "expected_label": f"com.flywheel.lead.{daemon_key}",
+    "phase": phase,
+    "old_supervisor_tuple": {"pid": 700, "start": "old-start"},
+    "authority": {
+        "manifest": {
+            "path": "/tmp/manifest.json",
+            "semantic_identity": {
+                "leadId": "eng-lead",
+                "projectDir": "/tmp/project",
+                "projectName": "flywheel",
+                "botTokenEnv": "DISCORD_BOT_TOKEN",
+                "leadBackend": {"backendId": "claude-code"},
+            },
+        },
+        "plist": {"path": "/tmp/lead.plist", "digest": "a" * 64},
+        "projects": {"path": "/tmp/projects.json", "digest": "b" * 64},
+    },
+    "lease_baseline": {"status": "absent"},
+    "ts": "2026-08-02T12:00:00.000Z",
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(value, handle, separators=(",", ":"), sort_keys=True)
+    handle.write("\n")
+os.chmod(path, 0o600)
+PY
+}
+
+CONTROL_ATTEMPT="11111111-1111-4111-8111-111111111111"
+CONTROL_MARKER="$MARKER_ROOT/flywheel-eng-lead.json"
+write_control_marker "$CONTROL_MARKER" flywheel-eng-lead bootout "$CONTROL_ATTEMPT"
+env FLYWHEEL_RESTART_STORM_MAX=1 "$GATE" gate \
+  --root "$CONTROL_ROOT" lead.flywheel-eng-lead >/dev/null 2>&1
+if run_expect 0 "$TEST_ROOT/controlled-arm" "$TEST_ROOT/err" \
+    arm-controlled-wave --expected-seq 1 --intent-marker "$CONTROL_MARKER" \
+    --attempt-id "$CONTROL_ATTEMPT" --root "$CONTROL_ROOT" lead.flywheel-eng-lead \
+  && grep -q '"status":"armed"' "$TEST_ROOT/controlled-arm" \
+  && env FLYWHEEL_RESTART_STORM_MAX=1 "$GATE" gate \
+       --root "$CONTROL_ROOT" lead.flywheel-eng-lead >/dev/null 2>&1 \
+  && [[ "$(wc -l < "$CONTROL_ROOT/lead.flywheel-eng-lead.jsonl" | tr -d ' ')" == "2" ]] \
+  && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["last_resumed_seq"])' "$CONTROL_ROOT/lead.flywheel-eng-lead.state")" == "1" ]] \
+  && [[ "$(python3 -c 'import json,sys; print([json.loads(x)["event"] for x in open(sys.argv[1])])' "$CONTROL_ROOT/lead.flywheel-eng-lead.controlled-waves.ndjson")" == "['prepared', 'armed']" ]]; then
+  pass "controlled Lead wave arms an active/maxed counter and audits prepared then armed"
+else
+  fail "controlled active arm" "out=$(cat "$TEST_ROOT/controlled-arm" 2>/dev/null || echo missing)"
+fi
+
+PREPARED_FAULT_ROOT="$TEST_ROOT/controlled-prepared-fault"
+mkdir -p "$PREPARED_FAULT_ROOT"
+printf '{"state":"active","last_resumed_seq":0}\n' \
+  > "$PREPARED_FAULT_ROOT/lead.flywheel-eng-lead.state"
+set +e
+env FLYWHEEL_RESTART_STORM_FAULT=after_controlled_prepared \
+  "$GATE" arm-controlled-wave --expected-seq 0 \
+  --intent-marker "$CONTROL_MARKER" --attempt-id "$CONTROL_ATTEMPT" \
+  --root "$PREPARED_FAULT_ROOT" lead.flywheel-eng-lead >/dev/null 2>&1
+PREPARED_FAULT_EXIT=$?
+PREPARED_AUDIT="$PREPARED_FAULT_ROOT/lead.flywheel-eng-lead.controlled-waves.ndjson"
+if [[ "$PREPARED_FAULT_EXIT" -eq 97 ]] \
+  && [[ "$(python3 -c 'import json,sys; print([json.loads(x)["event"] for x in open(sys.argv[1])])' "$PREPARED_AUDIT")" == "['prepared']" ]] \
+  && [[ "$(jq -r .state "$PREPARED_FAULT_ROOT/lead.flywheel-eng-lead.state")" == active ]] \
+  && run_expect 0 "$TEST_ROOT/out" "$TEST_ROOT/err" \
+       arm-controlled-wave --expected-seq 0 --intent-marker "$CONTROL_MARKER" \
+       --attempt-id "$CONTROL_ATTEMPT" --root "$PREPARED_FAULT_ROOT" lead.flywheel-eng-lead \
+  && [[ "$(python3 -c 'import json,sys; print([json.loads(x)["event"] for x in open(sys.argv[1])])' "$PREPARED_AUDIT")" == "['prepared', 'prepared', 'armed']" ]]; then
+  pass "crash after controlled prepared audit never records a false armed event"
+else
+  fail "controlled prepared crash audit" "exit=$PREPARED_FAULT_EXIT audit=$(cat "$PREPARED_AUDIT" 2>/dev/null || echo missing)"
+fi
+
+STATE_FAULT_ROOT="$TEST_ROOT/controlled-state-fault"
+mkdir -p "$STATE_FAULT_ROOT"
+printf '{"state":"active","last_resumed_seq":0}\n' \
+  > "$STATE_FAULT_ROOT/lead.flywheel-eng-lead.state"
+set +e
+env FLYWHEEL_RESTART_STORM_FAULT=after_controlled_state \
+  "$GATE" arm-controlled-wave --expected-seq 0 \
+  --intent-marker "$CONTROL_MARKER" --attempt-id "$CONTROL_ATTEMPT" \
+  --root "$STATE_FAULT_ROOT" lead.flywheel-eng-lead >/dev/null 2>&1
+STATE_FAULT_EXIT=$?
+STATE_AUDIT="$STATE_FAULT_ROOT/lead.flywheel-eng-lead.controlled-waves.ndjson"
+if [[ "$STATE_FAULT_EXIT" -eq 97 ]] \
+  && [[ "$(python3 -c 'import json,sys; print([json.loads(x)["event"] for x in open(sys.argv[1])])' "$STATE_AUDIT")" == "['prepared']" ]] \
+  && [[ "$(jq -r .state "$STATE_FAULT_ROOT/lead.flywheel-eng-lead.state")" == resumed ]] \
+  && run_expect 0 "$TEST_ROOT/out" "$TEST_ROOT/err" \
+       arm-controlled-wave --expected-seq 0 --intent-marker "$CONTROL_MARKER" \
+       --attempt-id "$CONTROL_ATTEMPT" --root "$STATE_FAULT_ROOT" lead.flywheel-eng-lead \
+  && [[ "$(python3 -c 'import json,sys; print([json.loads(x)["event"] for x in open(sys.argv[1])])' "$STATE_AUDIT")" == "['prepared', 'prepared', 'armed']" ]]; then
+  pass "crash after controlled state commit remains replayable without false armed audit"
+else
+  fail "controlled state crash audit" "exit=$STATE_FAULT_EXIT audit=$(cat "$STATE_AUDIT" 2>/dev/null || echo missing)"
+fi
+
+HELD_CONTROL_ROOT="$TEST_ROOT/controlled-held-ledger"
+for _ in 1 2; do
+  env FLYWHEEL_RESTART_STORM_MAX=1 "$GATE" gate \
+    --root "$HELD_CONTROL_ROOT" lead.flywheel-eng-lead >/dev/null 2>&1 || true
+done
+write_control_marker "$CONTROL_MARKER" flywheel-eng-lead bootstrap "$CONTROL_ATTEMPT"
+if run_expect 0 "$TEST_ROOT/controlled-held-arm" "$TEST_ROOT/err" \
+    arm-controlled-wave --expected-seq 2 --intent-marker "$CONTROL_MARKER" \
+    --attempt-id "$CONTROL_ATTEMPT" --root "$HELD_CONTROL_ROOT" lead.flywheel-eng-lead \
+  && env FLYWHEEL_RESTART_STORM_MAX=1 "$GATE" gate \
+       --root "$HELD_CONTROL_ROOT" lead.flywheel-eng-lead >/dev/null 2>&1 \
+  && grep -q '"state":"active"' "$HELD_CONTROL_ROOT/lead.flywheel-eng-lead.state"; then
+  pass "controlled Lead wave arms held state for both marker phases"
+else
+  fail "controlled held arm" "out=$(cat "$TEST_ROOT/controlled-held-arm" 2>/dev/null || echo missing)"
+fi
+
+STALE_CONTROL_ROOT="$TEST_ROOT/controlled-stale-ledger"
+env FLYWHEEL_RESTART_STORM_MAX=5 "$GATE" gate \
+  --root "$STALE_CONTROL_ROOT" lead.flywheel-eng-lead >/dev/null 2>&1
+STATE_BEFORE="$(shasum -a 256 "$STALE_CONTROL_ROOT/lead.flywheel-eng-lead.state" 2>/dev/null | awk '{print $1}')"
+LEDGER_BEFORE="$(shasum -a 256 "$STALE_CONTROL_ROOT/lead.flywheel-eng-lead.jsonl" | awk '{print $1}')"
+if run_expect 3 "$TEST_ROOT/controlled-stale" "$TEST_ROOT/err" \
+    arm-controlled-wave --expected-seq 0 --intent-marker "$CONTROL_MARKER" \
+    --attempt-id "$CONTROL_ATTEMPT" --root "$STALE_CONTROL_ROOT" lead.flywheel-eng-lead \
+  && grep -q '"reason":"seq_changed"' "$TEST_ROOT/controlled-stale" \
+  && [[ "$(shasum -a 256 "$STALE_CONTROL_ROOT/lead.flywheel-eng-lead.state" 2>/dev/null | awk '{print $1}')" == "$STATE_BEFORE" ]] \
+  && [[ "$(shasum -a 256 "$STALE_CONTROL_ROOT/lead.flywheel-eng-lead.jsonl" | awk '{print $1}')" == "$LEDGER_BEFORE" ]] \
+  && [[ ! -e "$STALE_CONTROL_ROOT/lead.flywheel-eng-lead.controlled-waves.ndjson" ]]; then
+  pass "controlled arm sequence race returns typed rc 3 with zero mutation"
+else
+  fail "controlled stale sequence" "out=$(cat "$TEST_ROOT/controlled-stale" 2>/dev/null || echo missing)"
+fi
+
+INVALID_MARKER="$MARKER_ROOT/flywheel-other-lead.json"
+write_control_marker "$INVALID_MARKER" flywheel-other-lead bootout "$CONTROL_ATTEMPT"
+MODE_MARKER="$MARKER_ROOT/flywheel-mode-lead.json"
+write_control_marker "$MODE_MARKER" flywheel-mode-lead bootout "$CONTROL_ATTEMPT"
+chmod 0644 "$MODE_MARKER"
+LINK_MARKER="$MARKER_ROOT/flywheel-link-lead.json"
+ln -s "$CONTROL_MARKER" "$LINK_MARKER"
+if run_expect 4 "$TEST_ROOT/out" "$TEST_ROOT/err" \
+    arm-controlled-wave --expected-seq 0 --intent-marker "$CONTROL_MARKER" \
+    --attempt-id "$CONTROL_ATTEMPT" --root "$CONTROL_ROOT" bridge \
+  && run_expect 4 "$TEST_ROOT/out" "$TEST_ROOT/err" \
+       arm-controlled-wave --expected-seq 0 --intent-marker "$INVALID_MARKER" \
+       --attempt-id "$CONTROL_ATTEMPT" --root "$CONTROL_ROOT" lead.flywheel-eng-lead \
+  && run_expect 4 "$TEST_ROOT/out" "$TEST_ROOT/err" \
+       arm-controlled-wave --expected-seq 0 --intent-marker "$MODE_MARKER" \
+       --attempt-id "$CONTROL_ATTEMPT" --root "$CONTROL_ROOT" lead.flywheel-mode-lead \
+  && run_expect 4 "$TEST_ROOT/out" "$TEST_ROOT/err" \
+       arm-controlled-wave --expected-seq 0 --intent-marker "$LINK_MARKER" \
+       --attempt-id "$CONTROL_ATTEMPT" --root "$CONTROL_ROOT" lead.flywheel-link-lead; then
+  pass "controlled arm rejects non-Lead, identity drift, unsafe mode, and symlink markers"
+else
+  fail "controlled marker validation" "stderr=$(cat "$TEST_ROOT/err" 2>/dev/null || echo missing)"
+fi
+
+RESUME_COMPAT_ROOT="$TEST_ROOT/resume-byte-compat"
+mkdir -p "$RESUME_COMPAT_ROOT"
+printf '{"state":"active","last_resumed_seq":0}\n' > "$RESUME_COMPAT_ROOT/lead.compat.state"
+RESUME_BEFORE="$(shasum -a 256 "$RESUME_COMPAT_ROOT/lead.compat.state" | awk '{print $1}')"
+if run_expect 0 "$TEST_ROOT/out" "$TEST_ROOT/err" \
+    resume --root "$RESUME_COMPAT_ROOT" lead.compat \
+  && [[ "$(shasum -a 256 "$RESUME_COMPAT_ROOT/lead.compat.state" | awk '{print $1}')" == "$RESUME_BEFORE" ]]; then
+  pass "shared resume remains a byte-compatible no-op on active state"
+else
+  fail "resume byte compatibility" "state=$(cat "$RESUME_COMPAT_ROOT/lead.compat.state" 2>/dev/null || echo missing)"
+fi
+
 TAIL_ROOT="$TEST_ROOT/tail-ledger"
 run_expect 0 "$TEST_ROOT/out" "$TEST_ROOT/err" \
   gate --root "$TAIL_ROOT" quota-monitor || true

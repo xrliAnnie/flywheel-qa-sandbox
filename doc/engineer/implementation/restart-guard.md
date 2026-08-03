@@ -45,6 +45,12 @@ FLYWHEEL_RESTART_GUARD_BYPASS="<非空理由>" <你的命令>
 这是「响-bypass」形态;若 founder 在 ship gate 拍「完全封死」,实现侧删 bypass
 分支即可(单测矩阵已隔离该路径)。
 
+### Lead 救援(FLY-1602)
+
+Lead 禁止用 `launchctl kickstart -k`、`flywheel-daemon.sh restart` 或直接强杀做救援；这些路径绕过 replacement intent、body sweep、identity lease 与 storm gate，可能留下「body 活着但 supervisor 已死」的孤儿态。唯一受控入口是 `scripts/restart-services.sh`。
+
+v2 scheduler 只会对精确 Lead launchd target 发 bounded `SIGTERM`，让 supervisor 自己 cleanup 后由 KeepAlive 重生；它和 `restart-services.sh` 通过 global/subordinate restart mutex 排他。SIGTERM 无响应时 scheduler 只 backoff，不升级 `SIGKILL`。此时等待当前 deploy wave 收敛，或运行 `scripts/restart-services.sh` 走 bootout → body sweep → controlled arm → bootstrap。若上轮留下 replacement marker，下一轮会先 reconcile；不需要也不应手工 `resume` lease。
+
 审计日志:每次 deny 与 bypass 各落一行(ts / session_id / cwd / pattern /
 decision / 命令截断 2KB / bypass 理由)。普通放行不记。
 

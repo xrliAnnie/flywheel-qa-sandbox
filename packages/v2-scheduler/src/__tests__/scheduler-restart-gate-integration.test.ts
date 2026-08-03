@@ -161,6 +161,13 @@ function schedulerInput(
 		clock,
 		memory: { thresholds: THRESHOLDS, sample: async () => memory },
 		launchd,
+		restartCoordination: {
+			withMutationLock: async (action: () => Promise<void>) => {
+				await action();
+				return "executed" as const;
+			},
+			globalRestartActive: async () => false,
+		},
 		restartGate: new ProcessRestartGate({
 			gateBin: GATE_BIN,
 			ledgerRoot: join(dir, "ledger"),
@@ -219,8 +226,8 @@ afterEach(() => {
 describe("scheduler-once against the real restart brake", () => {
 	it("accounts each failed repair as exactly one real ledger event", async () => {
 		const failing: LaunchdPort = {
-			kickstart: async () => {
-				throw new Error("launchctl kickstart exit 3");
+			requestGracefulRestart: async () => {
+				throw new Error("launchctl SIGTERM exit 3");
 			},
 		};
 
@@ -235,12 +242,12 @@ describe("scheduler-once against the real restart brake", () => {
 		expect(leadAlerts()).toHaveLength(0);
 	});
 
-	it("trips the real brake after repeated repairs and stops calling launchctl", async () => {
+	it("trips the real brake after repeated repairs and stops signaling launchd", async () => {
 		const calls: string[] = [];
 		const failing: LaunchdPort = {
-			kickstart: async (label) => {
+			requestGracefulRestart: async (label) => {
 				calls.push(label);
-				throw new Error("launchctl kickstart exit 3");
+				throw new Error("launchctl SIGTERM exit 3");
 			},
 		};
 
@@ -257,7 +264,7 @@ describe("scheduler-once against the real restart brake", () => {
 		expect(leadAlerts()).toHaveLength(1);
 		expect(leadAlerts()[0]).toContain("restart_storm_hold");
 
-		// Once held, a further tick must neither kickstart nor grow the ledger.
+		// Once held, a further tick must neither signal nor grow the ledger.
 		clearRepairBackoff();
 		const afterHold = await runSchedulerOnce(schedulerInput(failing));
 		expect(afterHold.held).toBe(1);
@@ -271,13 +278,13 @@ describe("scheduler-once against the real restart brake", () => {
 		// Mirrors the real race in the design: the launchd wrapper's own pre-exec
 		// gate appends between the guard's status read and its record-failure.
 		const racing: LaunchdPort = {
-			kickstart: async () => {
+			requestGracefulRestart: async () => {
 				execFileSync(
 					GATE_BIN,
 					["gate", "--root", join(dir, "ledger"), CHILD_KEY],
 					{ encoding: "utf8" },
 				);
-				throw new Error("kickstart raced the wrapper");
+				throw new Error("SIGTERM raced the wrapper");
 			},
 		};
 
@@ -290,8 +297,8 @@ describe("scheduler-once against the real restart brake", () => {
 
 	it("never touches the real ledger when memory pressure declines the repair", async () => {
 		const launchd: LaunchdPort = {
-			kickstart: async () => {
-				throw new Error("must not kickstart under pressure");
+			requestGracefulRestart: async () => {
+				throw new Error("must not signal under pressure");
 			},
 		};
 
@@ -314,7 +321,7 @@ describe("scheduler-once against the real restart brake", () => {
 
 	it("releases the orphaned attempt exactly once on a confirmed repair", async () => {
 		const launchd: LaunchdPort = {
-			kickstart: async () => {
+			requestGracefulRestart: async () => {
 				kernel.write("test.new-generation", (tx) => {
 					tx.run(
 						`UPDATE agents

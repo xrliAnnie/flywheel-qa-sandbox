@@ -154,6 +154,9 @@ export const ALERT_EVENT_TYPES = [
 	// kernel-independent Python gate through lead-alert.sh; kept in the shared
 	// face so queued delivery and ticket routing remain type-safe.
 	"restart_storm_hold",
+	// FLY-1602: a replacement supervisor safely attached to the one proven
+	// orphaned body. This is recovery telemetry, never a ticket/ARC incident.
+	"lead_body_adopted",
 	// FLY-939 (G-D): the Bridge booted on a STALE checkout — its running HEAD is
 	// strictly behind origin/main, so merged work is NOT live (the FLY-887
 	// silent-non-deploy incident shape). A Lead-only alert; the durable
@@ -360,6 +363,7 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
 	"cmux_flag_state",
+	"lead_body_adopted",
 ]);
 
 export function isInformationalKind(kind: AlertEventType): boolean {

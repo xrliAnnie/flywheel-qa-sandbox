@@ -1,0 +1,14 @@
+flowchart TD
+    A["某个原因杀死管家进程<br/>(强杀重启 / 崩溃 / 误杀)"] --> B["真身还活着<br/>(claude 本体跑在 tmux 里,<br/>和管家不在一棵进程树上)"]
+    B --> C["身份租约显示『有人持有』<br/>(租约登记的持有者 = 真身进程)"]
+    C --> D["launchd 自动拉起新管家<br/>新管家问租约:我能上岗吗?"]
+    D --> E["租约回答:denied_holder_alive<br/>『持有者还活着』→ 拒绝"]
+    E --> F["新管家只能干等(HOLD)<br/>同时不断发『疑似双活』告警"]
+    F --> G["救援者看到告警<br/>以为 Lead 卡死 → 再次强杀重启"]
+    G --> A
+    F --> H["反复重启触发『重启风暴刹车』<br/>此后连管家都不许启动<br/>实录最长 3 小时+"]
+    H --> I["彻底孤儿:没人监护、没人能接管<br/>只能人工确认真死后手动恢复"]
+    style A fill:#ffe5e3,stroke:#ff3b30
+    style G fill:#ffe5e3,stroke:#ff3b30
+    style H fill:#fff3e0,stroke:#ff9500
+    style I fill:#ffe5e3,stroke:#ff3b30,stroke-width:3px

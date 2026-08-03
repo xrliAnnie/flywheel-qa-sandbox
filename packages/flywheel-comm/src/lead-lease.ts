@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS lead_lease (
   project TEXT NOT NULL,
   lead_id TEXT NOT NULL,
   generation INTEGER NOT NULL,
+  supervisor_pid INTEGER,
+  supervisor_start TEXT,
+  supervisor_generation INTEGER,
   holder_pid INTEGER,
   holder_start TEXT,
   bound_at TEXT,
@@ -59,6 +62,19 @@ CREATE TABLE IF NOT EXISTS lease_audit (
   detail TEXT,
   created_at TEXT NOT NULL,
   materialized_at TEXT
+);
+CREATE TABLE IF NOT EXISTS lease_supervisor_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_key TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  event TEXT NOT NULL CHECK(event = 'adopted'),
+  old_supervisor_pid INTEGER NOT NULL,
+  old_supervisor_start TEXT NOT NULL,
+  new_supervisor_pid INTEGER NOT NULL,
+  new_supervisor_start TEXT NOT NULL,
+  holder_pid INTEGER NOT NULL,
+  holder_start TEXT NOT NULL,
+  created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS store_meta (
   k TEXT PRIMARY KEY,
@@ -91,11 +107,32 @@ export interface LeadLeaseRow {
 	project: string;
 	leadId: string;
 	generation: number;
+	supervisorPid: number | null;
+	supervisorStart: string | null;
+	supervisorGeneration: number | null;
 	holderPid: number | null;
 	holderStart: string | null;
 	boundAt: string | null;
 	acquiredAt: string;
 	acquiredBy: string;
+}
+
+export type ProcessTupleState = "alive" | "dead" | "sensor_error";
+
+export type LeadLeaseRowFormat = "version_valid" | "legacy" | "malformed";
+
+export interface LeadLeaseSupervisorAuditRow {
+	id: number;
+	leadKey: string;
+	generation: number;
+	event: "adopted";
+	oldSupervisorPid: number;
+	oldSupervisorStart: string;
+	newSupervisorPid: number;
+	newSupervisorStart: string;
+	holderPid: number;
+	holderStart: string;
+	createdAt: string;
 }
 
 export interface LeadLeaseHistoryRow {
@@ -143,16 +180,53 @@ export interface BindLeaseInput {
 	now?: string;
 }
 
+export interface AdoptLeaseInput {
+	leadKey: string;
+	expectedHolderPid: number;
+	expectedHolderStart: string;
+	oldSupervisorPid: number;
+	oldSupervisorStart: string;
+	newSupervisorPid: number;
+	newSupervisorStart: string;
+	acquiredBy: string;
+	now?: string;
+}
+
+export interface VerifyBoundLeaseInput {
+	leadKey: string;
+	expectedSupervisorPid: number;
+	expectedSupervisorStart: string;
+	expectedHolderPid: number;
+	expectedHolderStart: string;
+}
+
 interface RawLeaseRow {
 	lead_key: string;
 	project: string;
 	lead_id: string;
 	generation: number;
+	supervisor_pid: number | null;
+	supervisor_start: string | null;
+	supervisor_generation: number | null;
 	holder_pid: number | null;
 	holder_start: string | null;
 	bound_at: string | null;
 	acquired_at: string;
 	acquired_by: string;
+}
+
+interface RawSupervisorAuditRow {
+	id: number;
+	lead_key: string;
+	generation: number;
+	event: "adopted";
+	old_supervisor_pid: number;
+	old_supervisor_start: string;
+	new_supervisor_pid: number;
+	new_supervisor_start: string;
+	holder_pid: number;
+	holder_start: string;
+	created_at: string;
 }
 
 interface RawHistoryRow {
@@ -178,11 +252,32 @@ function mapLease(row: RawLeaseRow): LeadLeaseRow {
 		project: row.project,
 		leadId: row.lead_id,
 		generation: row.generation,
+		supervisorPid: row.supervisor_pid,
+		supervisorStart: row.supervisor_start,
+		supervisorGeneration: row.supervisor_generation,
 		holderPid: row.holder_pid,
 		holderStart: row.holder_start,
 		boundAt: row.bound_at,
 		acquiredAt: row.acquired_at,
 		acquiredBy: row.acquired_by,
+	};
+}
+
+function mapSupervisorAudit(
+	row: RawSupervisorAuditRow,
+): LeadLeaseSupervisorAuditRow {
+	return {
+		id: row.id,
+		leadKey: row.lead_key,
+		generation: row.generation,
+		event: row.event,
+		oldSupervisorPid: row.old_supervisor_pid,
+		oldSupervisorStart: row.old_supervisor_start,
+		newSupervisorPid: row.new_supervisor_pid,
+		newSupervisorStart: row.new_supervisor_start,
+		holderPid: row.holder_pid,
+		holderStart: row.holder_start,
+		createdAt: row.created_at,
 	};
 }
 
@@ -205,6 +300,36 @@ function mapAudit(row: RawAuditRow): LeaseAuditRow {
 		createdAt: row.created_at,
 		materializedAt: row.materialized_at,
 	};
+}
+
+function isValidProcessTuple(
+	pid: number | null,
+	start: string | null,
+): boolean {
+	return (
+		pid !== null &&
+		Number.isSafeInteger(pid) &&
+		pid > 0 &&
+		start !== null &&
+		start.trim().length > 0
+	);
+}
+
+function leaseRowFormat(row: RawLeaseRow): LeadLeaseRowFormat {
+	const supervisorFields = [
+		row.supervisor_pid,
+		row.supervisor_start,
+		row.supervisor_generation,
+	];
+	if (supervisorFields.every((value) => value === null)) return "legacy";
+	if (isValidProcessTuple(row.supervisor_pid, row.supervisor_start)) {
+		if (row.supervisor_generation === null) return "legacy";
+		if (!Number.isSafeInteger(row.supervisor_generation)) return "malformed";
+		return row.supervisor_generation === row.generation
+			? "version_valid"
+			: "legacy";
+	}
+	return "malformed";
 }
 
 /** Match both PID and immutable OS launch time, so PID reuse is not liveness. */
@@ -231,6 +356,42 @@ export function processAliveWithStart(
 		return getProcessStart(pid) === expectedStart.trim();
 	} catch {
 		return false;
+	}
+}
+
+/**
+ * Fail closed when the OS can confirm neither death nor an immutable tuple.
+ * A mismatched lstart is a conclusive PID-reuse/death result for this tuple.
+ */
+export function processTupleStateWithStart(
+	pid: number,
+	expectedStart: string,
+): ProcessTupleState {
+	if (
+		!Number.isSafeInteger(pid) ||
+		pid <= 0 ||
+		expectedStart.trim().length === 0
+	) {
+		return "sensor_error";
+	}
+	try {
+		process.kill(pid, 0);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ESRCH"
+			? "dead"
+			: "sensor_error";
+	}
+	try {
+		return getProcessStart(pid) === expectedStart.trim() ? "alive" : "dead";
+	} catch {
+		try {
+			process.kill(pid, 0);
+			return "sensor_error";
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code === "ESRCH"
+				? "dead"
+				: "sensor_error";
+		}
 	}
 }
 
@@ -319,21 +480,31 @@ export async function postCarrierClaim(input: {
 
 export class LeadLeaseStore {
 	private readonly db: Database.Database;
-	private readonly isProcessAlive: (pid: number, start: string) => boolean;
+	private readonly processTupleState: (
+		pid: number,
+		start: string,
+	) => ProcessTupleState;
 
 	constructor(
 		dbPath: string,
 		deps: {
 			processAliveWithStart?: (pid: number, start: string) => boolean;
+			processTupleState?: (pid: number, start: string) => ProcessTupleState;
 		} = {},
 	) {
-		this.isProcessAlive = deps.processAliveWithStart ?? processAliveWithStart;
+		this.processTupleState =
+			deps.processTupleState ??
+			(deps.processAliveWithStart
+				? (pid, start) =>
+						deps.processAliveWithStart?.(pid, start) ? "alive" : "dead"
+				: processTupleStateWithStart);
 		try {
 			mkdirSync(dirname(dbPath), { recursive: true });
 			this.db = new Database(dbPath);
 			this.db.pragma("journal_mode = WAL");
 			this.db.pragma("busy_timeout = 5000");
 			this.db.exec(LEAD_LEASE_SCHEMA);
+			this.migrateSupervisorColumns();
 			this.db
 				.prepare(
 					"INSERT OR IGNORE INTO store_meta (k, v) VALUES ('store_instance_id', ?)",
@@ -347,47 +518,213 @@ export class LeadLeaseStore {
 		}
 	}
 
-	acquire(
-		input: AcquireLeaseInput,
-	):
+	private migrateSupervisorColumns(): void {
+		const migrations = [
+			["supervisor_pid", "INTEGER"],
+			["supervisor_start", "TEXT"],
+			["supervisor_generation", "INTEGER"],
+		] as const;
+		for (const [column, type] of migrations) {
+			try {
+				this.db.exec(`ALTER TABLE lead_lease ADD COLUMN ${column} ${type}`);
+			} catch (error) {
+				if (
+					!(error instanceof Error) ||
+					error.message !== `duplicate column name: ${column}`
+				) {
+					throw error;
+				}
+			}
+		}
+	}
+
+	acquire(input: AcquireLeaseInput):
 		| { status: "acquired" | "idempotent"; generation: number }
-		| { status: "denied_holder_alive"; generation: number } {
+		| {
+				status: "idempotent_adopted";
+				generation: number;
+				holderPid: number;
+				holderStart: string;
+		  }
+		| {
+				status: "holder_orphaned";
+				generation: number;
+				holderPid: number;
+				holderStart: string;
+				supervisorPid: number;
+				supervisorStart: string;
+		  }
+		| {
+				status: "denied_holder_alive" | "denied_sensor_degraded";
+				generation: number;
+		  } {
 		const transaction = this.db.transaction((args: AcquireLeaseInput) => {
 			const existing = this.readLease(args.leadKey);
-			if (
-				existing !== undefined &&
-				existing.bound_at === null &&
-				existing.holder_pid === args.supervisorPid &&
-				existing.holder_start === args.supervisorStart
-			) {
-				return {
-					status: "idempotent" as const,
-					generation: existing.generation,
-				};
-			}
-			if (
-				existing !== undefined &&
-				existing.holder_pid !== null &&
-				existing.holder_start !== null &&
-				this.isProcessAlive(existing.holder_pid, existing.holder_start)
-			) {
-				return {
-					status: "denied_holder_alive" as const,
-					generation: existing.generation,
-				};
+			if (existing !== undefined) {
+				const rowFormat = leaseRowFormat(existing);
+				const requesterIsSupervisor =
+					existing.supervisor_pid === args.supervisorPid &&
+					existing.supervisor_start === args.supervisorStart;
+				const requesterIsUnboundHolder =
+					existing.bound_at === null &&
+					existing.holder_pid === args.supervisorPid &&
+					existing.holder_start === args.supervisorStart;
+
+				if (rowFormat === "malformed") {
+					return {
+						status: "denied_sensor_degraded" as const,
+						generation: existing.generation,
+					};
+				}
+
+				if (
+					existing.bound_at === null &&
+					requesterIsUnboundHolder &&
+					(rowFormat === "legacy" || requesterIsSupervisor)
+				) {
+					if (rowFormat === "legacy") {
+						this.db
+							.prepare(
+								`UPDATE lead_lease
+								 SET supervisor_pid = ?, supervisor_start = ?,
+								     supervisor_generation = generation
+								 WHERE lead_key = ? AND generation = ?
+								   AND holder_pid = ? AND holder_start = ? AND bound_at IS NULL`,
+							)
+							.run(
+								args.supervisorPid,
+								args.supervisorStart,
+								args.leadKey,
+								existing.generation,
+								args.supervisorPid,
+								args.supervisorStart,
+							);
+					}
+					return {
+						status: "idempotent" as const,
+						generation: existing.generation,
+					};
+				}
+
+				if (rowFormat === "legacy") {
+					const holderState = this.tupleState(
+						existing.holder_pid,
+						existing.holder_start,
+					);
+					if (holderState === "alive") {
+						return {
+							status: "denied_holder_alive" as const,
+							generation: existing.generation,
+						};
+					}
+					if (holderState === "sensor_error") {
+						return {
+							status: "denied_sensor_degraded" as const,
+							generation: existing.generation,
+						};
+					}
+				} else if (existing.bound_at === null) {
+					const supervisorState = this.tupleState(
+						existing.supervisor_pid,
+						existing.supervisor_start,
+					);
+					if (supervisorState === "alive") {
+						return {
+							status: "denied_holder_alive" as const,
+							generation: existing.generation,
+						};
+					}
+					if (supervisorState === "sensor_error") {
+						return {
+							status: "denied_sensor_degraded" as const,
+							generation: existing.generation,
+						};
+					}
+				} else if (requesterIsSupervisor) {
+					const holderState = this.tupleState(
+						existing.holder_pid,
+						existing.holder_start,
+					);
+					if (
+						holderState === "alive" &&
+						existing.holder_pid !== null &&
+						existing.holder_start !== null
+					) {
+						return {
+							status: "idempotent_adopted" as const,
+							generation: existing.generation,
+							holderPid: existing.holder_pid,
+							holderStart: existing.holder_start,
+						};
+					}
+					if (holderState === "sensor_error") {
+						return {
+							status: "denied_sensor_degraded" as const,
+							generation: existing.generation,
+						};
+					}
+				} else {
+					const supervisorState = this.tupleState(
+						existing.supervisor_pid,
+						existing.supervisor_start,
+					);
+					if (supervisorState === "alive") {
+						return {
+							status: "denied_holder_alive" as const,
+							generation: existing.generation,
+						};
+					}
+					if (supervisorState === "sensor_error") {
+						return {
+							status: "denied_sensor_degraded" as const,
+							generation: existing.generation,
+						};
+					}
+
+					const holderState = this.tupleState(
+						existing.holder_pid,
+						existing.holder_start,
+					);
+					if (
+						holderState === "alive" &&
+						existing.holder_pid !== null &&
+						existing.holder_start !== null &&
+						existing.supervisor_pid !== null &&
+						existing.supervisor_start !== null
+					) {
+						return {
+							status: "holder_orphaned" as const,
+							generation: existing.generation,
+							holderPid: existing.holder_pid,
+							holderStart: existing.holder_start,
+							supervisorPid: existing.supervisor_pid,
+							supervisorStart: existing.supervisor_start,
+						};
+					}
+					if (holderState === "sensor_error") {
+						return {
+							status: "denied_sensor_degraded" as const,
+							generation: existing.generation,
+						};
+					}
+				}
 			}
 
 			const generation = (existing?.generation ?? 0) + 1;
 			this.db
 				.prepare(
 					`INSERT INTO lead_lease (
-						lead_key, project, lead_id, generation, holder_pid, holder_start,
-						bound_at, acquired_at, acquired_by
-					) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+						lead_key, project, lead_id, generation,
+						supervisor_pid, supervisor_start, supervisor_generation,
+						holder_pid, holder_start, bound_at, acquired_at, acquired_by
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
 					ON CONFLICT(lead_key) DO UPDATE SET
 						project = excluded.project,
 						lead_id = excluded.lead_id,
 						generation = excluded.generation,
+						supervisor_pid = excluded.supervisor_pid,
+						supervisor_start = excluded.supervisor_start,
+						supervisor_generation = excluded.supervisor_generation,
 						holder_pid = excluded.holder_pid,
 						holder_start = excluded.holder_start,
 						bound_at = NULL,
@@ -398,6 +735,9 @@ export class LeadLeaseStore {
 					args.leadKey,
 					args.project,
 					args.leadId,
+					generation,
+					args.supervisorPid,
+					args.supervisorStart,
 					generation,
 					args.supervisorPid,
 					args.supervisorStart,
@@ -427,6 +767,8 @@ export class LeadLeaseStore {
 					`UPDATE lead_lease
 					 SET holder_pid = ?, holder_start = ?, bound_at = ?
 					 WHERE lead_key = ? AND generation = ?
+					   AND supervisor_pid = ? AND supervisor_start = ?
+					   AND supervisor_generation = generation
 					   AND holder_pid = ? AND holder_start = ? AND bound_at IS NULL`,
 				)
 				.run(
@@ -435,6 +777,8 @@ export class LeadLeaseStore {
 					boundAt,
 					args.leadKey,
 					args.generation,
+					args.expectedSupervisorPid,
+					args.expectedSupervisorStart,
 					args.expectedSupervisorPid,
 					args.expectedSupervisorStart,
 				);
@@ -469,6 +813,196 @@ export class LeadLeaseStore {
 		}
 	}
 
+	adopt(
+		input: AdoptLeaseInput,
+	):
+		| { status: "adopted" | "idempotent_adopted"; generation: number }
+		| { status: "lost_race" } {
+		const transaction = this.db.transaction((args: AdoptLeaseInput) => {
+			const existing = this.readLease(args.leadKey);
+			if (
+				existing !== undefined &&
+				existing.bound_at !== null &&
+				existing.supervisor_pid === args.newSupervisorPid &&
+				existing.supervisor_start === args.newSupervisorStart &&
+				existing.supervisor_generation === existing.generation &&
+				existing.holder_pid === args.expectedHolderPid &&
+				existing.holder_start === args.expectedHolderStart
+			) {
+				return {
+					status: "idempotent_adopted" as const,
+					generation: existing.generation,
+				};
+			}
+			if (existing === undefined) return { status: "lost_race" as const };
+
+			const adoptedAt = args.now ?? new Date().toISOString();
+			const updated = this.db
+				.prepare(
+					`UPDATE lead_lease
+					 SET supervisor_pid = ?, supervisor_start = ?,
+					     supervisor_generation = generation,
+					     acquired_at = ?, acquired_by = ?
+					 WHERE lead_key = ? AND generation = ?
+					   AND holder_pid = ? AND holder_start = ? AND bound_at IS NOT NULL
+					   AND supervisor_pid = ? AND supervisor_start = ?
+					   AND supervisor_generation = generation`,
+				)
+				.run(
+					args.newSupervisorPid,
+					args.newSupervisorStart,
+					adoptedAt,
+					args.acquiredBy,
+					args.leadKey,
+					existing.generation,
+					args.expectedHolderPid,
+					args.expectedHolderStart,
+					args.oldSupervisorPid,
+					args.oldSupervisorStart,
+				);
+			if (updated.changes !== 1) return { status: "lost_race" as const };
+
+			this.db
+				.prepare(
+					`INSERT INTO lease_supervisor_audit (
+						lead_key, generation, event,
+						old_supervisor_pid, old_supervisor_start,
+						new_supervisor_pid, new_supervisor_start,
+						holder_pid, holder_start, created_at
+					) VALUES (?, ?, 'adopted', ?, ?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					args.leadKey,
+					existing.generation,
+					args.oldSupervisorPid,
+					args.oldSupervisorStart,
+					args.newSupervisorPid,
+					args.newSupervisorStart,
+					args.expectedHolderPid,
+					args.expectedHolderStart,
+					adoptedAt,
+				);
+			return { status: "adopted" as const, generation: existing.generation };
+		});
+		try {
+			return transaction.immediate(input);
+		} catch (error) {
+			throw new LeaseStoreError(
+				`failed to adopt lead lease ${input.leadKey}`,
+				error,
+			);
+		}
+	}
+
+	verifyBound(input: VerifyBoundLeaseInput):
+		| { status: "verified"; generation: number }
+		| {
+				status: "mismatch";
+				reason:
+					| "missing_lease"
+					| "unbound"
+					| "supervisor_mismatch"
+					| "holder_mismatch"
+					| "supervisor_generation_mismatch"
+					| "missing_history";
+		  } {
+		const transaction = this.db.transaction((args: VerifyBoundLeaseInput) => {
+			const lease = this.readLease(args.leadKey);
+			if (!lease)
+				return {
+					status: "mismatch" as const,
+					reason: "missing_lease" as const,
+				};
+			if (lease.bound_at === null) {
+				return { status: "mismatch" as const, reason: "unbound" as const };
+			}
+			if (
+				lease.supervisor_pid !== args.expectedSupervisorPid ||
+				lease.supervisor_start !== args.expectedSupervisorStart
+			) {
+				return {
+					status: "mismatch" as const,
+					reason: "supervisor_mismatch" as const,
+				};
+			}
+			if (
+				lease.holder_pid !== args.expectedHolderPid ||
+				lease.holder_start !== args.expectedHolderStart
+			) {
+				return {
+					status: "mismatch" as const,
+					reason: "holder_mismatch" as const,
+				};
+			}
+			if (lease.supervisor_generation !== lease.generation) {
+				return {
+					status: "mismatch" as const,
+					reason: "supervisor_generation_mismatch" as const,
+				};
+			}
+			const history = this.db
+				.prepare(
+					"SELECT 1 FROM lease_generation_history WHERE lead_key = ? AND generation = ?",
+				)
+				.get(args.leadKey, lease.generation);
+			if (!history) {
+				return {
+					status: "mismatch" as const,
+					reason: "missing_history" as const,
+				};
+			}
+			return { status: "verified" as const, generation: lease.generation };
+		});
+		try {
+			return transaction(input);
+		} catch (error) {
+			throw new LeaseStoreError(
+				`failed to verify bound lead lease ${input.leadKey}`,
+				error,
+			);
+		}
+	}
+
+	progressSnapshot(leadKey: string):
+		| { status: "absent" }
+		| {
+				status: "present";
+				rowFormat: LeadLeaseRowFormat;
+				generation: number;
+				supervisorPid: number | null;
+				supervisorStart: string | null;
+				supervisorGeneration: number | null;
+				holderPid: number | null;
+				holderStart: string | null;
+				boundAt: string | null;
+				acquiredAt: string;
+		  } {
+		const transaction = this.db.transaction((key: string) => {
+			const row = this.readLease(key);
+			if (!row) return { status: "absent" as const };
+			return {
+				status: "present" as const,
+				rowFormat: leaseRowFormat(row),
+				generation: row.generation,
+				supervisorPid: row.supervisor_pid,
+				supervisorStart: row.supervisor_start,
+				supervisorGeneration: row.supervisor_generation,
+				holderPid: row.holder_pid,
+				holderStart: row.holder_start,
+				boundAt: row.bound_at,
+				acquiredAt: row.acquired_at,
+			};
+		});
+		try {
+			return transaction(leadKey);
+		} catch (error) {
+			throw new LeaseStoreError(
+				`failed to read lead lease progress ${leadKey}`,
+				error,
+			);
+		}
+	}
+
 	validate(input: { leaseKey: string; generation: number }):
 		| { valid: true; reason: "current_bound" }
 		| {
@@ -479,19 +1013,32 @@ export class LeadLeaseStore {
 					| "unbound"
 					| "missing_history";
 		  } {
-		const lease = this.readLease(input.leaseKey);
-		if (!lease) return { valid: false, reason: "missing_lease" };
-		if (lease.generation !== input.generation) {
-			return { valid: false, reason: "stale_generation" };
-		}
-		if (lease.bound_at === null) return { valid: false, reason: "unbound" };
-		const history = this.db
-			.prepare(
-				"SELECT 1 FROM lease_generation_history WHERE lead_key = ? AND generation = ?",
-			)
-			.get(input.leaseKey, input.generation);
-		if (!history) return { valid: false, reason: "missing_history" };
-		return { valid: true, reason: "current_bound" };
+		const transaction = this.db.transaction(
+			(args: { leaseKey: string; generation: number }) => {
+				const lease = this.readLease(args.leaseKey);
+				if (!lease)
+					return { valid: false as const, reason: "missing_lease" as const };
+				if (lease.generation !== args.generation) {
+					return {
+						valid: false as const,
+						reason: "stale_generation" as const,
+					};
+				}
+				if (lease.bound_at === null) {
+					return { valid: false as const, reason: "unbound" as const };
+				}
+				const history = this.db
+					.prepare(
+						"SELECT 1 FROM lease_generation_history WHERE lead_key = ? AND generation = ?",
+					)
+					.get(args.leaseKey, args.generation);
+				if (!history) {
+					return { valid: false as const, reason: "missing_history" as const };
+				}
+				return { valid: true as const, reason: "current_bound" as const };
+			},
+		);
+		return transaction(input);
 	}
 
 	getLease(leadKey: string): LeadLeaseRow | undefined {
@@ -509,6 +1056,19 @@ export class LeadLeaseStore {
 			)
 			.get(leadKey, generation) as RawHistoryRow | undefined;
 		return row ? mapHistory(row) : undefined;
+	}
+
+	listSupervisorAudit(leadKey?: string): LeadLeaseSupervisorAuditRow[] {
+		const rows = leadKey
+			? (this.db
+					.prepare(
+						"SELECT * FROM lease_supervisor_audit WHERE lead_key = ? ORDER BY id ASC",
+					)
+					.all(leadKey) as RawSupervisorAuditRow[])
+			: (this.db
+					.prepare("SELECT * FROM lease_supervisor_audit ORDER BY id ASC")
+					.all() as RawSupervisorAuditRow[]);
+		return rows.map(mapSupervisorAudit);
 	}
 
 	getStoreInstanceId(): string {
@@ -572,6 +1132,16 @@ export class LeadLeaseStore {
 
 	close(): void {
 		this.db.close();
+	}
+
+	private tupleState(
+		pid: number | null,
+		start: string | null,
+	): ProcessTupleState {
+		if (!isValidProcessTuple(pid, start) || pid === null || start === null) {
+			return "sensor_error";
+		}
+		return this.processTupleState(pid, start);
 	}
 
 	private readLease(leadKey: string): RawLeaseRow | undefined {

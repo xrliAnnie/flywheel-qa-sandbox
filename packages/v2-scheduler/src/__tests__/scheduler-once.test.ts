@@ -10,6 +10,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SCHEDULER_CONFIG } from "../config.js";
 import type { MemorySample, MemoryThresholds } from "../memory-watermark.js";
 import {
+	RestartCoordinationError,
+	type RestartCoordinationPort,
 	type RestartGatePort,
 	runSchedulerOnce,
 	type SchedulerClock,
@@ -166,6 +168,19 @@ function makeGate(
 	};
 }
 
+function makeCoordination(): RestartCoordinationPort & {
+	withMutationLock: ReturnType<typeof vi.fn>;
+	globalRestartActive: ReturnType<typeof vi.fn>;
+} {
+	return {
+		withMutationLock: vi.fn(async (action: () => Promise<void>) => {
+			await action();
+			return "executed" as const;
+		}),
+		globalRestartActive: vi.fn(async () => false),
+	};
+}
+
 afterEach(() => {
 	for (const fixture of fixtures.splice(0)) {
 		fixture.kernel.close();
@@ -174,10 +189,10 @@ afterEach(() => {
 });
 
 describe("scheduler-once heartbeat repair", () => {
-	it("atomically releases the stale attempt before kickstart and confirms generation progress", async () => {
+	it("atomically releases the stale attempt before graceful restart and confirms generation progress", async () => {
 		const fixture = makeFixture();
 		const gate = makeGate();
-		const kickstart = vi.fn(async () => {
+		const requestGracefulRestart = vi.fn(async () => {
 			expect(
 				fixture.kernel.read((tx) =>
 					tx.get<{ outcome: string }>(
@@ -214,7 +229,8 @@ describe("scheduler-once heartbeat repair", () => {
 				thresholds: HEALTHY_THRESHOLDS,
 				sample: vi.fn(async () => HEALTHY_SAMPLE),
 			},
-			launchd: { kickstart },
+			launchd: { requestGracefulRestart },
+			restartCoordination: makeCoordination(),
 			restartGate: gate,
 		});
 
@@ -226,13 +242,13 @@ describe("scheduler-once heartbeat repair", () => {
 			failed: 0,
 			memoryLimited: 0,
 		});
-		expect(kickstart).toHaveBeenCalledWith(
+		expect(requestGracefulRestart).toHaveBeenCalledWith(
 			"gui/501/com.flywheel.lead.flywheel-eng",
 		);
 		expect(gate.recordFailure).not.toHaveBeenCalled();
 	});
 
-	it("accounts a failed kickstart once through expected ledger seq and backs off", async () => {
+	it("accounts a failed graceful restart once through expected ledger seq and backs off", async () => {
 		const fixture = makeFixture();
 		const gate = makeGate();
 		const result = await runSchedulerOnce({
@@ -249,10 +265,11 @@ describe("scheduler-once heartbeat repair", () => {
 				sample: vi.fn(async () => HEALTHY_SAMPLE),
 			},
 			launchd: {
-				kickstart: vi.fn(async () => {
+				requestGracefulRestart: vi.fn(async () => {
 					throw new Error("launchctl failed");
 				}),
 			},
+			restartCoordination: makeCoordination(),
 			restartGate: gate,
 		});
 
@@ -278,10 +295,10 @@ describe("scheduler-once heartbeat repair", () => {
 		});
 	});
 
-	it("does not claim, crash, kickstart, or touch the restart ledger when memory is unknown", async () => {
+	it("does not claim, crash, restart, or touch the restart ledger when memory is unknown", async () => {
 		const fixture = makeFixture();
 		const gate = makeGate();
-		const kickstart = vi.fn();
+		const requestGracefulRestart = vi.fn();
 		const result = await runSchedulerOnce({
 			kernel: fixture.kernel,
 			runId: "run-memory",
@@ -295,12 +312,13 @@ describe("scheduler-once heartbeat repair", () => {
 				thresholds: HEALTHY_THRESHOLDS,
 				sample: vi.fn(async () => null),
 			},
-			launchd: { kickstart },
+			launchd: { requestGracefulRestart },
+			restartCoordination: makeCoordination(),
 			restartGate: gate,
 		});
 
 		expect(result.memoryLimited).toBe(1);
-		expect(kickstart).not.toHaveBeenCalled();
+		expect(requestGracefulRestart).not.toHaveBeenCalled();
 		expect(gate.status).not.toHaveBeenCalled();
 		expect(gate.recordFailure).not.toHaveBeenCalled();
 		expect(
@@ -315,7 +333,7 @@ describe("scheduler-once heartbeat repair", () => {
 	it("lets the held brake own the only Lead alert and never calls launchctl", async () => {
 		const fixture = makeFixture();
 		const gate = makeGate("held_alert_pending");
-		const kickstart = vi.fn();
+		const requestGracefulRestart = vi.fn();
 		const result = await runSchedulerOnce({
 			kernel: fixture.kernel,
 			runId: "run-held",
@@ -329,13 +347,14 @@ describe("scheduler-once heartbeat repair", () => {
 				thresholds: HEALTHY_THRESHOLDS,
 				sample: vi.fn(async () => HEALTHY_SAMPLE),
 			},
-			launchd: { kickstart },
+			launchd: { requestGracefulRestart },
+			restartCoordination: makeCoordination(),
 			restartGate: gate,
 		});
 
 		expect(result.held).toBe(1);
-		expect(kickstart).not.toHaveBeenCalled();
-		expect(gate.recordFailure).toHaveBeenCalledWith("lead.flywheel-eng", 7);
+		expect(requestGracefulRestart).not.toHaveBeenCalled();
+		expect(gate.recordFailure).not.toHaveBeenCalled();
 	});
 
 	it("grows healthy AIMD capacity and repairs two candidates concurrently in one tick", async () => {
@@ -355,7 +374,7 @@ describe("scheduler-once heartbeat repair", () => {
 		const secondWaveReady = new Promise<void>((resolve) => {
 			releaseSecondWave = resolve;
 		});
-		const kickstart = vi.fn(async (jobLabel: string) => {
+		const requestGracefulRestart = vi.fn(async (jobLabel: string) => {
 			const agentId = jobLabel.endsWith("-eng")
 				? "eng"
 				: jobLabel.endsWith("-ops")
@@ -407,7 +426,8 @@ describe("scheduler-once heartbeat repair", () => {
 				thresholds: HEALTHY_THRESHOLDS,
 				sample: vi.fn(async () => HEALTHY_SAMPLE),
 			},
-			launchd: { kickstart },
+			launchd: { requestGracefulRestart },
+			restartCoordination: makeCoordination(),
 			restartGate: gate,
 		});
 
@@ -419,7 +439,102 @@ describe("scheduler-once heartbeat repair", () => {
 			failed: 0,
 			memoryLimited: 0,
 		});
-		expect(kickstart).toHaveBeenCalledTimes(3);
+		expect(requestGracefulRestart).toHaveBeenCalledTimes(3);
 		expect(maxConcurrent).toBe(2);
+	});
+
+	it("defers without signaling or growing the brake while a global restart is active", async () => {
+		const fixture = makeFixture();
+		const gate = makeGate();
+		const requestGracefulRestart = vi.fn();
+		const coordination = makeCoordination();
+		coordination.withMutationLock.mockResolvedValue("deferred");
+
+		const result = await runSchedulerOnce({
+			kernel: fixture.kernel,
+			runId: "run-global-lock",
+			backend: "launchd",
+			host: "host-a",
+			projectName: "flywheel",
+			uid: 501,
+			config: { ...DEFAULT_SCHEDULER_CONFIG },
+			clock: fixture.clock,
+			memory: {
+				thresholds: HEALTHY_THRESHOLDS,
+				sample: vi.fn(async () => HEALTHY_SAMPLE),
+			},
+			launchd: { requestGracefulRestart },
+			restartCoordination: coordination,
+			restartGate: gate,
+		});
+
+		expect(result.failed).toBe(1);
+		expect(requestGracefulRestart).not.toHaveBeenCalled();
+		expect(gate.recordFailure).not.toHaveBeenCalled();
+	});
+
+	it("allows confirmation but does not charge the brake when a global restart arrives after signaling", async () => {
+		const fixture = makeFixture();
+		const gate = makeGate();
+		const coordination = makeCoordination();
+		coordination.globalRestartActive.mockResolvedValue(true);
+
+		const result = await runSchedulerOnce({
+			kernel: fixture.kernel,
+			runId: "run-global-race",
+			backend: "launchd",
+			host: "host-a",
+			projectName: "flywheel",
+			uid: 501,
+			config: {
+				...DEFAULT_SCHEDULER_CONFIG,
+				heartbeatConfirmMs: 1,
+				confirmPollMs: 1,
+			},
+			clock: fixture.clock,
+			memory: {
+				thresholds: HEALTHY_THRESHOLDS,
+				sample: vi.fn(async () => HEALTHY_SAMPLE),
+			},
+			launchd: { requestGracefulRestart: vi.fn(async () => undefined) },
+			restartCoordination: coordination,
+			restartGate: gate,
+		});
+
+		expect(result.failed).toBe(1);
+		expect(coordination.globalRestartActive).toHaveBeenCalledTimes(1);
+		expect(gate.recordFailure).not.toHaveBeenCalled();
+	});
+
+	it("does not charge the brake when restart coordination fails before signaling", async () => {
+		const fixture = makeFixture();
+		const gate = makeGate();
+		const coordination = makeCoordination();
+		coordination.withMutationLock.mockRejectedValue(
+			new RestartCoordinationError("lock evidence malformed", false),
+		);
+		const requestGracefulRestart = vi.fn();
+
+		const result = await runSchedulerOnce({
+			kernel: fixture.kernel,
+			runId: "run-coordination-failure",
+			backend: "launchd",
+			host: "host-a",
+			projectName: "flywheel",
+			uid: 501,
+			config: { ...DEFAULT_SCHEDULER_CONFIG },
+			clock: fixture.clock,
+			memory: {
+				thresholds: HEALTHY_THRESHOLDS,
+				sample: vi.fn(async () => HEALTHY_SAMPLE),
+			},
+			launchd: { requestGracefulRestart },
+			restartCoordination: coordination,
+			restartGate: gate,
+		});
+
+		expect(result.failed).toBe(1);
+		expect(requestGracefulRestart).not.toHaveBeenCalled();
+		expect(gate.recordFailure).not.toHaveBeenCalled();
 	});
 });

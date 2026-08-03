@@ -38,6 +38,10 @@ export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/home
 FLYWHEEL_DIR="${HOME}/Dev/flywheel"
 DEPLOYED_SHA_FILE="${HOME}/.flywheel/deployed-sha"
 LOCK_DIR="${HOME}/.flywheel/restart.lock.d"
+SCHEDULER_REPAIR_LOCK_DIR="${FLYWHEEL_SCHEDULER_REPAIR_LOCK_DIR:-${HOME}/.flywheel/scheduler-repair.lock.d}"
+# shellcheck source=lib/lead-restart-lifecycle.sh
+# shellcheck disable=SC1091
+source "${FLYWHEEL_DIR}/scripts/lib/lead-restart-lifecycle.sh"
 
 # shellcheck source=lib/restart-notify.sh
 source "${FLYWHEEL_DIR}/scripts/lib/restart-notify.sh"
@@ -260,7 +264,7 @@ CURLCFG
 # exits and never routes routine output to the founder's Core channel.
 restart_on_exit() {
     local original_rc="${1:-1}"
-    local end_epoch="" duration="unknown" body=""
+    local end_epoch="" duration="unknown" body="" path=""
     local old_display="${DEPLOYED_SHA:-unknown}"
     local new_display="${CURRENT_HEAD:-unknown}"
     trap - EXIT INT TERM
@@ -287,6 +291,10 @@ restart_on_exit() {
     rmdir "$LOCK_DIR" 2>/dev/null || true
     rm -f "${PROJECT_SHA_UPDATES_FILE:-}" 2>/dev/null || true
     rm -f "${LEAD_RESTART_NAMES_FILE:-}" 2>/dev/null || true
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        rm -f -- "$path" 2>/dev/null || true
+    done <<< "${RESTART_TRANSIENT_FILES:-}"
     exit "$original_rc"
 }
 
@@ -516,17 +524,24 @@ update_project_shas() {
 # cannot leak per-run sidecars before the cleanup trap exists.
 PROJECT_SHA_UPDATES_FILE=""
 LEAD_RESTART_NAMES_FILE=""
+RESTART_TRANSIENT_FILES=""
+
+register_restart_transient_file() {
+    local path="$1"
+    [[ -n "$path" && "$path" != *$'\n'* ]] || return 1
+    RESTART_TRANSIENT_FILES="${RESTART_TRANSIENT_FILES}${path}"$'\n'
+}
 
 record_lead_restart_detail() {
     local kind="${1:-}" detail="${2:-}"
-    [[ -n "$LEAD_RESTART_NAMES_FILE" ]] || return 0
+    [[ -n "${LEAD_RESTART_NAMES_FILE:-}" ]] || return 0
     { printf '%s\t%s\n' "$kind" "$detail" >> "$LEAD_RESTART_NAMES_FILE"; } 2>/dev/null || true
     return 0
 }
 
 lead_restart_details_csv() {
     local kind="${1:-}"
-    [[ -n "$LEAD_RESTART_NAMES_FILE" && -r "$LEAD_RESTART_NAMES_FILE" ]] || {
+    [[ -n "${LEAD_RESTART_NAMES_FILE:-}" && -r "$LEAD_RESTART_NAMES_FILE" ]] || {
         printf '\n'
         return 0
     }
@@ -541,7 +556,7 @@ lead_restart_details_csv() {
 }
 
 lead_restart_wave_error() {
-    [[ -n "$LEAD_RESTART_NAMES_FILE" && -r "$LEAD_RESTART_NAMES_FILE" ]] || {
+    [[ -n "${LEAD_RESTART_NAMES_FILE:-}" && -r "$LEAD_RESTART_NAMES_FILE" ]] || {
         printf '\n'
         return 0
     }
@@ -620,6 +635,13 @@ acquire_lock() {
     trap 'restart_on_exit "$?"' EXIT
     trap 'RESTART_EXIT_SIGNAL=INT; exit 130' INT
     trap 'RESTART_EXIT_SIGNAL=TERM; exit 143' TERM
+    if ! lead_restart_wait_scheduler_mutation "$SCHEDULER_REPAIR_LOCK_DIR" 15; then
+        log "ERROR: scheduler restart mutation did not drain (${LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON}); failing closed"
+        alert_severe "scheduler-restart-lock-${LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON}" \
+            "Flywheel restart coordination blocked" \
+            "restart-services 已持有全局锁，但 scheduler-repair mutation lock 未在 15 秒内安全释放 (${LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON})。本次重启未执行任何服务 mutation。"
+        exit 1
+    fi
 }
 
 acquire_lock
@@ -1002,9 +1024,7 @@ source "${FLYWHEEL_DIR}/packages/teamlead/scripts/lib/tmux-supervisor-guard.sh"
 # shellcheck source=lib/lead-body-sweep.sh
 # shellcheck disable=SC1091
 source "${FLYWHEEL_DIR}/scripts/lib/lead-body-sweep.sh"
-# shellcheck source=lib/lead-restart-lifecycle.sh
-# shellcheck disable=SC1091
-source "${FLYWHEEL_DIR}/scripts/lib/lead-restart-lifecycle.sh"
+# FLY-1602 lifecycle helpers were sourced before global lock acquisition.
 
 # A successful launchctl command is not restart evidence. The replacement
 # supervisor must have a new PID+lstart tuple, every pre-restart body tuple must
@@ -1014,33 +1034,93 @@ VERIFIED_LEAD_START=""
 VERIFIED_BODY_PID=""
 VERIFIED_BODY_START=""
 VERIFIED_BODY_MODEL=""
+VERIFIED_LEASE_GENERATION=""
+LEAD_RESTART_OUTCOME_REASON=""
+LEAD_RESTART_CONVERGING_DAEMON_TARGET=""
+LEAD_RESTART_CONVERGING_PROJECT=""
+LEAD_RESTART_CONVERGING_LEAD_ID=""
+LEAD_RESTART_CONVERGING_OLD_PID=""
+LEAD_RESTART_CONVERGING_OLD_START=""
+LEAD_RESTART_CONVERGING_BACKEND=""
+LEAD_RESTART_CONVERGING_MANIFEST=""
+LEAD_RESTART_CONVERGING_MARKER=""
+LEAD_RESTART_CONVERGING_ATTEMPT=""
+LEAD_RESTART_CONVERGING_TARGETS=""
+LEAD_RESTART_CONVERGING_REASON=""
 launchd_lead_outcome_ready() {
     local daemon_target="$1" project_name="$2" lead_id="$3"
     local old_pid="${4:-}" old_start="${5:-}" targets_file="$6"
     local backend="$7" manifest="$8"
-    local probe daemon_pid daemon_start body_evidence body_pid body_start body_model="n/a"
+    local probe daemon_pid daemon_start pid_file pid_value body_evidence body_pid body_start body_model="n/a"
+    local verify_rc=0
+    LEAD_RESTART_OUTCOME_REASON=""
+    VERIFIED_LEASE_GENERATION=""
     probe="$(lead_restart_launchd_probe "$daemon_target")"
-    [[ "$probe" == loaded$'\t'* ]] || return 1
+    [[ "$probe" == loaded$'\t'* ]] || {
+        LEAD_RESTART_OUTCOME_REASON="supervisor_not_loaded"
+        return 1
+    }
     daemon_pid="${probe#*$'\t'}"
-    [[ "$daemon_pid" =~ ^[1-9][0-9]*$ ]] || return 1
-    daemon_start="$(lead_restart_process_start_identity "$daemon_pid")" || return 1
-    [[ -n "$daemon_start" ]] || return 1
+    [[ "$daemon_pid" =~ ^[1-9][0-9]*$ ]] || {
+        LEAD_RESTART_OUTCOME_REASON="supervisor_pid_invalid"
+        return 1
+    }
+    daemon_start="$(lead_restart_process_start_identity "$daemon_pid")" || {
+        LEAD_RESTART_OUTCOME_REASON="supervisor_start_unavailable"
+        return 1
+    }
+    [[ -n "$daemon_start" ]] || {
+        LEAD_RESTART_OUTCOME_REASON="supervisor_start_unavailable"
+        return 1
+    }
     if [[ "$old_pid" =~ ^[1-9][0-9]*$ && "$daemon_pid" == "$old_pid" ]] \
       && [[ -z "$old_start" || "$daemon_start" == "$old_start" ]]; then
+        LEAD_RESTART_OUTCOME_REASON="old_supervisor_still_loaded"
         return 1
     fi
-    body_evidence="$(lead_body_newborn_ok "$project_name" "$lead_id" "$targets_file")" || return 1
+    pid_file="${HOME}/.flywheel/pids/${project_name}-${lead_id}.pid"
+    if [[ ! -f "$pid_file" || -L "$pid_file" ]]; then
+        LEAD_RESTART_OUTCOME_REASON="pid_file_missing"
+        return 1
+    fi
+    pid_value="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ "$pid_value" != "$daemon_pid" ]]; then
+        LEAD_RESTART_OUTCOME_REASON="pid_file_mismatch"
+        return 1
+    fi
+    body_evidence="$(lead_body_newborn_ok "$project_name" "$lead_id" "$targets_file")" || {
+        LEAD_RESTART_OUTCOME_REASON="newborn_body_unproven"
+        return 1
+    }
     body_pid="${body_evidence%%$'\t'*}"
     body_start="${body_evidence#*$'\t'}"
-    [[ "$body_pid" =~ ^[1-9][0-9]*$ && -n "$body_start" ]] || return 1
+    [[ "$body_pid" =~ ^[1-9][0-9]*$ && -n "$body_start" ]] || {
+        LEAD_RESTART_OUTCOME_REASON="newborn_body_invalid"
+        return 1
+    }
     if [[ "$backend" == "claude-code" ]]; then
-        body_model="$(lead_body_model_evidence "$body_pid" "$manifest")" || return 1
+        body_model="$(lead_body_model_evidence "$body_pid" "$manifest")" || {
+            LEAD_RESTART_OUTCOME_REASON="body_model_mismatch"
+            return 1
+        }
+    fi
+    lead_restart_verify_bound \
+      "${project_name}-${lead_id}" "$daemon_pid" "$daemon_start" \
+      "$body_pid" "$body_start" || verify_rc=$?
+    if (( verify_rc == 3 )); then
+        LEAD_RESTART_OUTCOME_REASON="lease_evidence_${LEAD_RESTART_VERIFY_REASON}"
+        return 1
+    fi
+    if (( verify_rc != 0 )); then
+        LEAD_RESTART_OUTCOME_REASON="lease_control_failure"
+        return 1
     fi
     VERIFIED_LEAD_PID="$daemon_pid"
     VERIFIED_LEAD_START="$daemon_start"
     VERIFIED_BODY_PID="$body_pid"
     VERIFIED_BODY_START="$body_start"
     VERIFIED_BODY_MODEL="$body_model"
+    VERIFIED_LEASE_GENERATION="$LEAD_RESTART_VERIFIED_GENERATION"
     return 0
 }
 
@@ -1058,12 +1138,17 @@ restart_lead_bootstrap_job() {
 
 restart_lead_recover_job_after_failure() {
     local backend="$1" old_pid="$2" old_start="$3" sweep_safe="$4"
-    local plist="$5" lead_id="$6"
+    local plist="$5" lead_id="$6" daemon_key="${7:-}"
+    local marker="${8:-}" attempt_id="${9:-}" gate_root="${10:-}"
     local old_dead=false
     lead_restart_old_tuple_dead "$old_pid" "$old_start" && old_dead=true
     if lead_restart_recovery_bootstrap_allowed "$backend" "$old_dead" "$sweep_safe"; then
-        if lead_restart_authority_unchanged \
+        if [[ -n "$daemon_key" && -n "$marker" && -n "$attempt_id" && -n "$gate_root" ]] \
+          && lead_restart_arm_controlled_wave \
+            "$daemon_key" "$marker" "$attempt_id" "$gate_root" \
+          && lead_restart_authority_unchanged \
           && restart_lead_bootstrap_job "$plist" "$lead_id"; then
+            lead_restart_update_marker_phase "$marker" "$attempt_id" bootstrap || true
             log "WARNING: Lead $lead_id restart failed, but its launchd job was restored under the verified carrier"
             return 0
         fi
@@ -1073,10 +1158,175 @@ restart_lead_recover_job_after_failure() {
     return 1
 }
 
+LEAD_REPLACEMENT_RECONCILE_REASON=""
+
+# Positive closure for a retained replacement marker. Returns 0 only after
+# gate + launchd + PID file + single-body/model + four-tuple lease proof.
+# Returns 4 for honest current-attempt progress, 1 for no progress, and 2 for
+# control/sensor failure. The caller alone decides whether to remove a marker.
+lead_replacement_reconcile_ready() {
+    local marker="$1" load_rc=0 gate_deadline gate_rc=0 probe supervisor_pid
+    local supervisor_start pid_file pid_value snapshot_rc=0 snapshot holder_pid holder_start
+    local archive_file evidence evidence_row body_pid body_start body_model="n/a" verify_rc=0 progress_rc=1
+    LEAD_REPLACEMENT_RECONCILE_REASON=""
+    lead_restart_load_replacement_marker "$marker" || load_rc=$?
+    if (( load_rc != 0 )); then
+        LEAD_REPLACEMENT_RECONCILE_REASON="${LEAD_RESTART_MARKER_LOAD_REASON:-marker_invalid}"
+        return 2
+    fi
+
+    gate_deadline=$(( $(date +%s) + 15 ))
+    _lead_restart_gate_snapshot "$gate_deadline" "${HOME}/.flywheel/restart-ledger" \
+      "lead.${LEAD_RESTART_LOADED_MARKER_DAEMON_KEY}" || gate_rc=$?
+    if (( gate_rc != 0 )); then
+        LEAD_REPLACEMENT_RECONCILE_REASON="gate_control_${LEAD_RESTART_GATE_FAILURE_REASON:-unknown}"
+        return 2
+    fi
+    if [[ "$LEAD_RESTART_GATE_LAST_STATE" == held_* ]]; then
+        if ! lead_restart_arm_controlled_wave \
+          "$LEAD_RESTART_LOADED_MARKER_DAEMON_KEY" "$marker" \
+          "$LEAD_RESTART_LOADED_MARKER_ATTEMPT" \
+          "${HOME}/.flywheel/restart-ledger"; then
+            LEAD_REPLACEMENT_RECONCILE_REASON="gate_control_${LEAD_RESTART_GATE_FAILURE_REASON:-unknown}"
+            return 2
+        fi
+    fi
+
+    probe="$(lead_restart_launchd_probe \
+      "gui/$(id -u)/${LEAD_RESTART_LOADED_MARKER_LABEL}")"
+    if [[ "$probe" == error ]]; then
+        LEAD_REPLACEMENT_RECONCILE_REASON="launchd_probe_error"
+        return 2
+    fi
+    if [[ "$probe" == unloaded ]]; then
+        LEAD_REPLACEMENT_RECONCILE_REASON="supervisor_unloaded"
+        return 1
+    fi
+    supervisor_pid="${probe#*$'\t'}"
+    if [[ "$supervisor_pid" == 0 ]]; then
+        LEAD_REPLACEMENT_RECONCILE_REASON="supervisor_not_started"
+        return 1
+    fi
+    if [[ ! "$supervisor_pid" =~ ^[1-9][0-9]*$ ]]; then
+        LEAD_REPLACEMENT_RECONCILE_REASON="supervisor_pid_invalid"
+        return 2
+    fi
+    supervisor_start="$(lead_restart_process_start_identity "$supervisor_pid" 2>/dev/null || true)"
+    if [[ -z "$supervisor_start" ]]; then
+        LEAD_REPLACEMENT_RECONCILE_REASON="supervisor_start_unavailable"
+        return 2
+    fi
+    if [[ "$supervisor_pid" == "$LEAD_RESTART_LOADED_MARKER_OLD_PID" \
+      && "$supervisor_start" == "$LEAD_RESTART_LOADED_MARKER_OLD_START" ]]; then
+        LEAD_REPLACEMENT_RECONCILE_REASON="old_supervisor_still_loaded"
+        return 1
+    fi
+
+    pid_file="${HOME}/.flywheel/pids/${LEAD_RESTART_LOADED_MARKER_PROJECT}-${LEAD_RESTART_LOADED_MARKER_LEAD_ID}.pid"
+    if [[ ! -f "$pid_file" || -L "$pid_file" ]]; then
+        LEAD_REPLACEMENT_RECONCILE_REASON="pid_file_missing"
+    else
+        pid_value="$(cat "$pid_file" 2>/dev/null || true)"
+        [[ "$pid_value" == "$supervisor_pid" ]] \
+          || LEAD_REPLACEMENT_RECONCILE_REASON="pid_file_mismatch"
+    fi
+
+    lead_restart_progress_snapshot \
+      "$LEAD_RESTART_LOADED_MARKER_LEAD_ID" \
+      "$LEAD_RESTART_LOADED_MARKER_PROJECT" || snapshot_rc=$?
+    if (( snapshot_rc != 0 )); then
+        LEAD_REPLACEMENT_RECONCILE_REASON="${LEAD_RESTART_BASELINE_REASON:-lease_control_failure}"
+        return 2
+    fi
+    snapshot="$LEAD_RESTART_LEASE_BASELINE"
+    if ! printf '%s' "$snapshot" | jq -e \
+      --argjson pid "$supervisor_pid" --arg start "$supervisor_start" '
+        .status == "present" and .rowFormat == "version_valid"
+        and .supervisorPid == $pid and .supervisorStart == $start
+        and .supervisorGeneration == .generation
+      ' >/dev/null 2>&1; then
+        LEAD_REPLACEMENT_RECONCILE_REASON="lease_not_bound_to_supervisor"
+    else
+        holder_pid="$(printf '%s' "$snapshot" | jq -er '.holderPid')"
+        holder_start="$(printf '%s' "$snapshot" | jq -er '.holderStart')"
+        if [[ "$LEAD_RESTART_LOADED_MARKER_BACKEND" != claude-code ]]; then
+            LEAD_REPLACEMENT_RECONCILE_REASON="backend_positive_closure_unavailable"
+        else
+            archive_file="${HOME}/.flywheel/pids/${LEAD_RESTART_LOADED_MARKER_PROJECT}-${LEAD_RESTART_LOADED_MARKER_LEAD_ID}.claude.tmux"
+            evidence="$(lead_body_adoption_evidence \
+              "$LEAD_RESTART_LOADED_MARKER_PROJECT" \
+              "$LEAD_RESTART_LOADED_MARKER_LEAD_ID" \
+              "$LEAD_RESTART_LOADED_MARKER_BACKEND" "$archive_file" \
+              "$holder_pid" "$holder_start" 2>/dev/null)" || evidence=""
+            evidence_row="$(printf '%s\n' "$evidence" | awk -F '\t' '$3 == "full" {print; exit}')"
+            body_pid="${evidence_row%%$'\t'*}"
+            body_start="${evidence_row#*$'\t'}"; body_start="${body_start%%$'\t'*}"
+            if [[ "$(printf '%s\n' "$evidence" | sed -n 's/^#status=//p' | head -1)" != complete \
+              || "$body_pid" != "$holder_pid" || "$body_start" != "$holder_start" ]]; then
+                LEAD_REPLACEMENT_RECONCILE_REASON="body_inventory_not_closed"
+            else
+                body_model="$(lead_body_model_evidence \
+                  "$body_pid" "$LEAD_RESTART_MANIFEST_FILE" 2>/dev/null || true)"
+                if [[ -z "$body_model" ]]; then
+                    LEAD_REPLACEMENT_RECONCILE_REASON="body_model_mismatch"
+                else
+                    lead_restart_verify_bound \
+                      "${LEAD_RESTART_LOADED_MARKER_PROJECT}-${LEAD_RESTART_LOADED_MARKER_LEAD_ID}" \
+                      "$supervisor_pid" "$supervisor_start" \
+                      "$body_pid" "$body_start" || verify_rc=$?
+                    if (( verify_rc == 0 )) \
+                      && [[ -z "$LEAD_REPLACEMENT_RECONCILE_REASON" ]]; then
+                        VERIFIED_LEAD_PID="$supervisor_pid"
+                        VERIFIED_LEAD_START="$supervisor_start"
+                        VERIFIED_BODY_PID="$body_pid"
+                        VERIFIED_BODY_START="$body_start"
+                        VERIFIED_BODY_MODEL="$body_model"
+                        VERIFIED_LEASE_GENERATION="$LEAD_RESTART_VERIFIED_GENERATION"
+                        return 0
+                    elif (( verify_rc == 2 )); then
+                        LEAD_REPLACEMENT_RECONCILE_REASON="lease_control_failure"
+                        return 2
+                    elif (( verify_rc == 3 )); then
+                        LEAD_REPLACEMENT_RECONCILE_REASON="lease_evidence_${LEAD_RESTART_VERIFY_REASON}"
+                    fi
+                fi
+            fi
+        fi
+    fi
+
+    progress_rc=0
+    lead_restart_replacement_progressed \
+      "$LEAD_RESTART_LOADED_MARKER_BASELINE" \
+      "$LEAD_RESTART_LOADED_MARKER_TS" \
+      "$LEAD_RESTART_LOADED_MARKER_LEAD_ID" \
+      "$LEAD_RESTART_LOADED_MARKER_PROJECT" \
+      "$supervisor_pid" "$supervisor_start" || progress_rc=$?
+    if (( progress_rc == 0 )); then
+        return 4
+    fi
+    if (( progress_rc == 2 )); then
+        LEAD_REPLACEMENT_RECONCILE_REASON="${LEAD_RESTART_PROGRESS_REASON:-lease_control_failure}"
+        return 2
+    fi
+    return 1
+}
+
 # Returns: 0=success, 1=error
 # Args: <manifest_path>  (caller passes the manifest directly, no re-globbing)
 restart_lead() {
     local manifest="$1"
+
+    LEAD_RESTART_CONVERGING_DAEMON_TARGET=""
+    LEAD_RESTART_CONVERGING_PROJECT=""
+    LEAD_RESTART_CONVERGING_LEAD_ID=""
+    LEAD_RESTART_CONVERGING_OLD_PID=""
+    LEAD_RESTART_CONVERGING_OLD_START=""
+    LEAD_RESTART_CONVERGING_BACKEND=""
+    LEAD_RESTART_CONVERGING_MANIFEST=""
+    LEAD_RESTART_CONVERGING_MARKER=""
+    LEAD_RESTART_CONVERGING_ATTEMPT=""
+    LEAD_RESTART_CONVERGING_TARGETS=""
+    LEAD_RESTART_CONVERGING_REASON=""
 
     local lead_id project_dir project_name subdir bot_token_env workspace mcp_exclude chrome_enabled
     lead_id=$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest") || return 1
@@ -1157,6 +1407,23 @@ restart_lead() {
         fi
         local backend="$LEAD_RESTART_BACKEND"
         local probe old_pid="" old_start="" probe_pid=""
+        local baseline_rc=0 replacement_marker="" replacement_attempt=""
+        local replacement_baseline="" replacement_commit_ts=""
+        local gate_root="${HOME}/.flywheel/restart-ledger" gate_wave_seq=""
+        lead_restart_progress_snapshot "$lead_id" "$project_name" || baseline_rc=$?
+        if (( baseline_rc != 0 )); then
+            if (( baseline_rc == 3 )); then
+                log "ERROR: Lead $lead_id lease baseline is malformed; refusing before marker/bootout"
+                alert_severe "lead-restart-lease-data-${lead_id}" "Lead lease data is malformed" \
+                    "Lead $lead_id 的 lease 行无法安全分类，已在 marker/bootout 前停止，需先修复 lease 数据。"
+            else
+                log "ERROR: Lead $lead_id lease baseline control failed; refusing before marker/bootout"
+                alert_warning "lead-restart-lease-control-${lead_id}" "Lead lease baseline unavailable" \
+                    "Lead $lead_id 无法读取原子 lease baseline，已在任何 replacement mutation 前停止。"
+            fi
+            return 1
+        fi
+        replacement_baseline="$LEAD_RESTART_LEASE_BASELINE"
         probe="$(lead_restart_launchd_probe "$daemon_target")"
         if [[ "$probe" == "error" ]]; then
             log "ERROR: launchd probe failed for $lead_id; refusing before bootout"
@@ -1172,6 +1439,18 @@ restart_lead() {
                 }
                 [[ -n "$old_start" ]] || return 1
             fi
+        fi
+        if ! lead_restart_write_replacement_marker \
+          "$daemon_key" "$daemon_label" "$old_pid" "$old_start"; then
+            log "ERROR: Lead $lead_id replacement intent marker could not be committed; refusing before bootout"
+            alert_severe "lead-restart-marker-${lead_id}" "Lead replacement marker failed" \
+                "Lead $lead_id 无法在 bootout 前持久化 replacement intent，已保持现状并拒绝换代。"
+            return 1
+        fi
+        replacement_marker="$LEAD_RESTART_MARKER_FILE"
+        replacement_attempt="$LEAD_RESTART_ATTEMPT_ID"
+        replacement_commit_ts="$(jq -er '.ts' "$replacement_marker")" || return 1
+        if [[ "$probe" == loaded$'\t'* ]]; then
             log "Stopping and unloading Lead $lead_id via launchd bootout (old supervisor ${old_pid:-none})..."
             local bootout_rc=0
             launchctl bootout "$daemon_target" >/dev/null 2>&1 || bootout_rc=$?
@@ -1188,16 +1467,19 @@ restart_lead() {
         if (( quiet_rc != 0 )); then
             log "ERROR: Lead $lead_id did not reach proven launchd/supervisor quiescence (rc=$quiet_rc)"
             restart_lead_recover_job_after_failure \
-                "$backend" "$old_pid" "$old_start" false "$plist" "$lead_id" || true
+                "$backend" "$old_pid" "$old_start" false "$plist" "$lead_id" \
+                "$daemon_key" "$replacement_marker" "$replacement_attempt" "$gate_root" || true
             return 1
         fi
 
         local targets_file=""
         targets_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-${daemon_key}.targets.XXXXXX")" || {
             restart_lead_recover_job_after_failure \
-                "$backend" "$old_pid" "$old_start" false "$plist" "$lead_id" || true
+                "$backend" "$old_pid" "$old_start" false "$plist" "$lead_id" \
+                "$daemon_key" "$replacement_marker" "$replacement_attempt" "$gate_root" || true
             return 1
         }
+        register_restart_transient_file "$targets_file"
         local collect_rc=0 terminate_rc=0 sweep_rc=0
         lead_body_collect_targets \
             "$project_name" "$lead_id" "$backend" "$archive_file" "$targets_file" || collect_rc=$?
@@ -1207,11 +1489,21 @@ restart_lead() {
             log "ERROR: Lead $lead_id body sweep is incomplete/unsafe (collect=$collect_rc terminate=$terminate_rc)"
             rm -f "$targets_file"
             restart_lead_recover_job_after_failure \
-                "$backend" "$old_pid" "$old_start" false "$plist" "$lead_id" || true
+                "$backend" "$old_pid" "$old_start" false "$plist" "$lead_id" \
+                "$daemon_key" "$replacement_marker" "$replacement_attempt" "$gate_root" || true
             return 1
         fi
         rm -f "$pid_file"
 
+        if ! lead_restart_arm_controlled_wave \
+          "$daemon_key" "$replacement_marker" "$replacement_attempt" "$gate_root"; then
+            log "ERROR: Lead $lead_id controlled restart gate arm failed (${LEAD_RESTART_GATE_FAILURE_REASON})"
+            rm -f "$targets_file"
+            alert_severe "lead-restart-gate-control-${lead_id}" "Lead restart gate control failed" \
+                "Lead $lead_id 已完成安全清场，但 controlled-wave gate 未武装 (${LEAD_RESTART_GATE_FAILURE_REASON})；零 bootstrap，marker 保留等待收敛。"
+            return 1
+        fi
+        gate_wave_seq="$LEAD_RESTART_GATE_LAST_SEQ"
         if ! lead_restart_authority_unchanged; then
             log "ERROR: Lead $lead_id authority changed after bootout; refusing bootstrap"
             rm -f "$targets_file"
@@ -1226,6 +1518,12 @@ restart_lead() {
                 "Lead $lead_id 已完成安全清场，但 launchd bootstrap 两次失败，Lead 当前离线，需人工处理。"
             return 1
         fi
+        if ! lead_restart_update_marker_phase \
+          "$replacement_marker" "$replacement_attempt" bootstrap; then
+            log "WARNING: Lead $lead_id bootstrap succeeded but marker phase update failed; reconcile will use the retained bootout intent"
+            alert_warning "lead-restart-marker-hygiene-${lead_id}" "Lead replacement marker update failed" \
+                "Lead $lead_id launchd bootstrap 已提交，但 replacement marker phase 未更新；保留 marker 供下一轮 reconcile。"
+        fi
 
         local attempt
         for (( attempt=1; attempt<=LEAD_VERIFY_ATTEMPTS; attempt++ )); do
@@ -1234,6 +1532,11 @@ restart_lead() {
               "$targets_file" "$backend" "$manifest"; then
                 log "Lead $lead_id restarted via launchd (supervisor $VERIFIED_LEAD_PID born $VERIFIED_LEAD_START, body PID $VERIFIED_BODY_PID born $VERIFIED_BODY_START, model $VERIFIED_BODY_MODEL)"
                 rm -f "$targets_file"
+                if ! lead_restart_remove_marker "$replacement_marker" "$replacement_attempt"; then
+                    log "WARNING: Lead $lead_id restart succeeded but replacement marker cleanup failed"
+                    alert_warning "lead-restart-marker-hygiene-${lead_id}" "Lead replacement marker cleanup failed" \
+                        "Lead $lead_id 已通过完整 N0-N5，但 replacement marker 无法删除；Lead 健康，下一轮将重试清理。"
+                fi
                 return 0
             fi
             (( attempt < LEAD_VERIFY_ATTEMPTS )) && sleep "$LEAD_VERIFY_INTERVAL"
@@ -1246,12 +1549,95 @@ restart_lead() {
           "$targets_file" "$backend" "$manifest"; then
             log "Lead $lead_id restarted via launchd on final re-probe (supervisor $VERIFIED_LEAD_PID born $VERIFIED_LEAD_START, body PID $VERIFIED_BODY_PID born $VERIFIED_BODY_START, model $VERIFIED_BODY_MODEL)"
             rm -f "$targets_file"
+            if ! lead_restart_remove_marker "$replacement_marker" "$replacement_attempt"; then
+                log "WARNING: Lead $lead_id final verification succeeded but replacement marker cleanup failed"
+                alert_warning "lead-restart-marker-hygiene-${lead_id}" "Lead replacement marker cleanup failed" \
+                    "Lead $lead_id 已通过完整 N0-N5，但 replacement marker 无法删除；Lead 健康，下一轮将重试清理。"
+            fi
             return 0
         fi
+        local gate_attribution_rc=0
+        lead_restart_classify_wave_gate \
+          "$gate_root" "lead.${daemon_key}" "$gate_wave_seq" \
+          || gate_attribution_rc=$?
+        case "$gate_attribution_rc" in
+            0) ;;
+            2)
+                rm -f "$targets_file"
+                log "ERROR: Lead $lead_id restart gate control is unreadable/inconsistent after verification (${LEAD_RESTART_GATE_FAILURE_REASON:-unknown})"
+                alert_severe "lead-restart-gate-control-${lead_id}" "Lead restart gate control failed" \
+                    "Lead $lead_id 最终复验后无法读取一致的 storm gate state/ledger (${LEAD_RESTART_GATE_FAILURE_REASON:-unknown})；marker 保留，绝不推断 wrapper 结果。"
+                return 1
+                ;;
+            3)
+                rm -f "$targets_file"
+                log "ERROR: Lead $lead_id restart gate is held after the controlled wave"
+                alert_severe "lead-restart-gate-held-${lead_id}" "Lead restart gate held" \
+                    "Lead $lead_id 的 wrapper event 进入 storm hold；supervisor 未获准启动，marker 保留等待下一次 controlled arm。"
+                return 1
+                ;;
+            4)
+                rm -f "$targets_file"
+                log "ERROR: Lead $lead_id restart gate ledger did not advance after bootstrap; no wrapper gate event is proven"
+                alert_severe "lead-restart-wrapper-event-unproven-${lead_id}" "Lead restart wrapper event unproven" \
+                    "Lead $lead_id 未证明任何 wrapper 成功提交 gate event——可能未 dispatch，也可能 gate 在 ledger commit 前失败；marker 保留。"
+                return 1
+                ;;
+            *)
+                rm -f "$targets_file"
+                log "ERROR: Lead $lead_id restart gate attribution returned unexpected rc=$gate_attribution_rc"
+                return 1
+                ;;
+        esac
+        local progress_probe="" progress_pid="" progress_start="" progress_rc=1
+        progress_probe="$(lead_restart_launchd_probe "$daemon_target")"
+        if [[ "$progress_probe" == loaded$'\t'* ]]; then
+            progress_pid="${progress_probe#*$'\t'}"
+            if [[ "$progress_pid" =~ ^[1-9][0-9]*$ ]]; then
+                progress_start="$(lead_restart_process_start_identity "$progress_pid" 2>/dev/null || true)"
+                if [[ -n "$progress_start" ]] \
+                  && ! { [[ "$progress_pid" == "$old_pid" ]] \
+                    && [[ -z "$old_start" || "$progress_start" == "$old_start" ]]; }; then
+                    progress_rc=0
+                    lead_restart_replacement_progressed \
+                      "$replacement_baseline" "$replacement_commit_ts" \
+                      "$lead_id" "$project_name" "$progress_pid" "$progress_start" \
+                      || progress_rc=$?
+                fi
+            fi
+        fi
+        if (( progress_rc == 0 )); then
+            LEAD_RESTART_CONVERGING_DAEMON_TARGET="$daemon_target"
+            LEAD_RESTART_CONVERGING_PROJECT="$project_name"
+            LEAD_RESTART_CONVERGING_LEAD_ID="$lead_id"
+            LEAD_RESTART_CONVERGING_OLD_PID="$old_pid"
+            LEAD_RESTART_CONVERGING_OLD_START="$old_start"
+            LEAD_RESTART_CONVERGING_BACKEND="$backend"
+            LEAD_RESTART_CONVERGING_MANIFEST="$manifest"
+            LEAD_RESTART_CONVERGING_MARKER="$replacement_marker"
+            LEAD_RESTART_CONVERGING_ATTEMPT="$replacement_attempt"
+            LEAD_RESTART_CONVERGING_TARGETS="$targets_file"
+            LEAD_RESTART_CONVERGING_REASON="${LEAD_RESTART_OUTCOME_REASON:-verification_pending}"
+            log "Lead $lead_id replacement is converging after the quick verification window (supervisor $progress_pid born $progress_start; lease progress proven)"
+            return 4
+        fi
         rm -f "$targets_file"
-        log "ERROR: Lead $lead_id launchd replacement failed newborn/body/model verification"
-        alert_warning "lead-restart-failed-${lead_id}" "Lead restart failed" \
-            "Lead $lead_id 最终复验未证明旧本体全灭 + 新本体唯一新生 + model 一致，绝不按成功上报。"
+        if (( progress_rc == 2 )); then
+            LEAD_RESTART_OUTCOME_REASON="lease_control_failure"
+        fi
+        if [[ "$LEAD_RESTART_OUTCOME_REASON" == lease_control_failure ]]; then
+            log "ERROR: Lead $lead_id launchd replacement reached N0-N4 but lease verification control failed"
+            alert_warning "lead-restart-lease-control-${lead_id}" "Lead restart lease verification unavailable" \
+                "Lead $lead_id 已证明新 supervisor/body/model，但 lease verify-bound 控制面不可用，绝不按成功上报。"
+        elif [[ "$LEAD_RESTART_OUTCOME_REASON" == lease_evidence_* ]]; then
+            log "ERROR: Lead $lead_id launchd replacement reached N0-N4 but lease evidence mismatched (${LEAD_RESTART_OUTCOME_REASON})"
+            alert_warning "lead-restart-lease-evidence-${lead_id}" "Lead restart lease evidence mismatch" \
+                "Lead $lead_id 已证明新 supervisor/body/model，但 lease 四 tuple/history 不闭合 (${LEAD_RESTART_OUTCOME_REASON})，绝不按成功上报。"
+        else
+            log "ERROR: Lead $lead_id launchd replacement failed newborn/body/model verification (${LEAD_RESTART_OUTCOME_REASON:-unknown})"
+            alert_warning "lead-restart-failed-${lead_id}" "Lead restart failed" \
+                "Lead $lead_id 最终复验未证明旧本体全灭 + 新本体唯一新生 + model 一致，绝不按成功上报。"
+        fi
         return 1
     fi
 
@@ -1278,6 +1664,7 @@ restart_lead() {
     fi
     local legacy_targets=""
     legacy_targets="$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-${daemon_key}.targets.XXXXXX")" || return 1
+    register_restart_transient_file "$legacy_targets"
     local legacy_collect_rc=0 legacy_terminate_rc=0
     lead_body_collect_targets \
         "$project_name" "$lead_id" "claude-code" "$archive_file" "$legacy_targets" || legacy_collect_rc=$?
@@ -1388,7 +1775,9 @@ do_restart_all_leads() {
     local skipped=0
     local failed=0
     local eligible=0
-    if [[ -n "$LEAD_RESTART_NAMES_FILE" ]]; then
+    local converging_journal=""
+    local reconciled_candidates=""
+    if [[ -n "${LEAD_RESTART_NAMES_FILE:-}" ]]; then
         { : > "$LEAD_RESTART_NAMES_FILE"; } 2>/dev/null || true
     fi
 
@@ -1432,6 +1821,7 @@ do_restart_all_leads() {
         echo "skipped:0 failed:1 total:0"
         return 0
     }
+    register_restart_transient_file "$candidates_file"
     local candidate_rc=0
     lead_restart_collect_candidates \
         "${HOME}/.flywheel/manifests" \
@@ -1445,18 +1835,164 @@ do_restart_all_leads() {
         echo "skipped:0 failed:1 total:0"
         return 0
     fi
+    converging_journal="$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-converging.XXXXXX")" || {
+        log "ERROR: cannot allocate Lead convergence journal" >&2
+        rm -f "$candidates_file"
+        record_lead_restart_detail wave_error "收敛日志分配失败"
+        echo "skipped:0 failed:1 total:0"
+        return 0
+    }
+    register_restart_transient_file "$converging_journal"
+    chmod 600 "$converging_journal"
+
+    reconciled_candidates="$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-reconciled.XXXXXX")" || {
+        log "ERROR: cannot allocate Lead reconcile disposition set" >&2
+        rm -f "$candidates_file" "$converging_journal"
+        record_lead_restart_detail wave_error "对账集合分配失败"
+        echo "skipped:0 failed:1 total:0"
+        return 0
+    }
+    register_restart_transient_file "$reconciled_candidates"
+    chmod 600 "$reconciled_candidates"
+
+    # W6: reconcile retained replacement intent before starting a fresh fleet
+    # wave. Only positive N0-N5 closure removes a marker. Authority drift falls
+    # through to the normal lifecycle, which may supersede the intent before
+    # its first mutation; malformed/control evidence blocks that daemon key.
+    local marker_dir="${FLYWHEEL_LEAD_REPLACEMENT_DIR:-${HOME}/.flywheel/state/lead-replacements}"
+    local marker marker_key marker_rc marker_probe marker_target marker_plist
+    local marker_manifest marker_project marker_lead marker_backend marker_attempt
+    local marker_old_pid marker_old_start marker_reason old_nullglob
+    old_nullglob="$(shopt -p nullglob || true)"
+    shopt -s nullglob
+    local replacement_markers=("$marker_dir"/*.json)
+    eval "$old_nullglob"
+    for marker in ${replacement_markers[@]+"${replacement_markers[@]}"}; do
+        marker_key="${marker##*/}"; marker_key="${marker_key%.json}"
+        marker_rc=0
+        lead_restart_load_replacement_marker "$marker" || marker_rc=$?
+        if (( marker_rc == 3 )); then
+            marker_attempt="$(jq -er '.attempt_id' "$marker" 2>/dev/null || true)"
+            marker_probe="$(lead_restart_launchd_probe \
+              "gui/$(id -u)/com.flywheel.lead.${marker_key}")"
+            if [[ "$marker_probe" == unloaded ]] \
+              && lead_restart_marker_retired "$marker"; then
+                if lead_restart_remove_marker "$marker" "$marker_attempt"; then
+                    log "WARNING: retired Lead $marker_key replacement marker was removed after canonical inventory proof" >&2
+                else
+                    log "WARNING: retired Lead $marker_key is proven absent but marker cleanup failed" >&2
+                fi
+                alert_warning "lead-replacement-retired-${marker_key}" \
+                    "Retired Lead replacement intent resolved" \
+                    "Lead $marker_key 的 manifest/plist 已移除且 canonical projects inventory 明确无此身份；retained intent 已按退役路径收敛。"
+                printf '%s\n' "$marker_key" >> "$reconciled_candidates"
+                continue
+            fi
+            log "WARNING: retained replacement marker authority drifted for $marker_key; preserving it and entering the current normal lifecycle" >&2
+            continue
+        fi
+        if (( marker_rc != 0 )); then
+            log "ERROR: retained replacement marker is invalid for $marker_key (${LEAD_RESTART_MARKER_LOAD_REASON:-unknown})" >&2
+            alert_severe "lead-replacement-marker-invalid-${marker_key}" \
+                "Lead replacement marker is invalid" \
+                "Lead $marker_key 的 durable replacement intent 无法严格解析，marker 已保留且本轮拒绝对该身份做 mutation。"
+            printf '%s\n' "$marker_key" >> "$reconciled_candidates"
+            failed=$((failed + 1))
+            record_lead_restart_detail failed "$marker_key"
+            continue
+        fi
+
+        marker_key="$LEAD_RESTART_LOADED_MARKER_DAEMON_KEY"
+        marker_project="$LEAD_RESTART_LOADED_MARKER_PROJECT"
+        marker_lead="$LEAD_RESTART_LOADED_MARKER_LEAD_ID"
+        marker_backend="$LEAD_RESTART_LOADED_MARKER_BACKEND"
+        marker_attempt="$LEAD_RESTART_LOADED_MARKER_ATTEMPT"
+        marker_old_pid="$LEAD_RESTART_LOADED_MARKER_OLD_PID"
+        marker_old_start="$LEAD_RESTART_LOADED_MARKER_OLD_START"
+        marker_manifest="$LEAD_RESTART_MANIFEST_FILE"
+        marker_plist="$LEAD_RESTART_PLIST_FILE"
+        marker_target="gui/$(id -u)/${LEAD_RESTART_LOADED_MARKER_LABEL}"
+        marker_probe="$(lead_restart_launchd_probe "$marker_target")"
+        if [[ "$marker_probe" == unloaded ]]; then
+            if ! lead_restart_arm_controlled_wave \
+              "$marker_key" "$marker" "$marker_attempt" \
+              "${HOME}/.flywheel/restart-ledger" \
+              || ! lead_restart_authority_unchanged \
+              || ! restart_lead_bootstrap_job "$marker_plist" "$marker_lead"; then
+                marker_reason="${LEAD_RESTART_GATE_FAILURE_REASON:-bootstrap_or_authority_failed}"
+                log "ERROR: retained replacement for $marker_lead could not safely bootstrap ($marker_reason)" >&2
+                alert_severe "lead-replacement-reconcile-${marker_lead}" \
+                    "Lead replacement reconcile blocked" \
+                    "Lead $marker_lead 的 retained replacement intent 无法安全 arm/bootstrap ($marker_reason)，marker 保留且本轮拒绝继续。"
+                printf '%s\n' "$marker_key" >> "$reconciled_candidates"
+                failed=$((failed + 1))
+                record_lead_restart_detail failed "$marker_key"
+                continue
+            fi
+            lead_restart_update_marker_phase "$marker" "$marker_attempt" bootstrap || true
+        elif [[ "$marker_probe" == error ]]; then
+            log "ERROR: retained replacement launchd probe failed for $marker_lead" >&2
+            alert_severe "lead-replacement-probe-${marker_lead}" \
+                "Lead replacement reconcile probe failed" \
+                "Lead $marker_lead 的 retained intent 无法读取 launchd 状态；marker 保留，零后续 mutation。"
+            printf '%s\n' "$marker_key" >> "$reconciled_candidates"
+            failed=$((failed + 1))
+            record_lead_restart_detail failed "$marker_key"
+            continue
+        fi
+
+        marker_rc=0
+        lead_replacement_reconcile_ready "$marker" || marker_rc=$?
+        if (( marker_rc == 0 )); then
+            if lead_restart_remove_marker "$marker" "$marker_attempt"; then
+                log "Lead $marker_lead replacement reconciled from durable intent (supervisor $VERIFIED_LEAD_PID, body $VERIFIED_BODY_PID, lease generation $VERIFIED_LEASE_GENERATION)" >&2
+            else
+                log "WARNING: Lead $marker_lead reconciled but marker cleanup failed" >&2
+                alert_warning "lead-restart-marker-hygiene-${marker_lead}" \
+                    "Lead replacement marker cleanup failed" \
+                    "Lead $marker_lead 已通过 reconcile 完整 N0-N5，但 marker 无法删除；Lead 健康，下轮重试 hygiene。"
+            fi
+            # This closes an older replacement transaction only. The current
+            # deploy has already built newer code and still owns a full-fleet
+            # restart wave, so this key must continue into the candidate loop.
+        elif (( marker_rc == 4 )); then
+            printf 'reconcile\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\n' \
+              "$marker_target" "$marker_project" "$marker_lead" \
+              "${marker_old_pid:--}" "${marker_old_start:--}" \
+              "$marker_backend" "$marker_manifest" "$marker" "$marker_attempt" \
+              "${LEAD_REPLACEMENT_RECONCILE_REASON:-verification_pending}" \
+              >> "$converging_journal"
+            printf '%s\n' "$marker_key" >> "$reconciled_candidates"
+        elif (( marker_rc == 2 )); then
+            marker_reason="${LEAD_REPLACEMENT_RECONCILE_REASON:-control_failure}"
+            log "ERROR: retained replacement reconcile blocked for $marker_lead ($marker_reason)" >&2
+            alert_severe "lead-replacement-reconcile-${marker_lead}" \
+                "Lead replacement reconcile blocked" \
+                "Lead $marker_lead 的 retained intent 遇到控制/传感失败 ($marker_reason)，marker 保留且本轮拒绝继续。"
+            printf '%s\n' "$marker_key" >> "$reconciled_candidates"
+            failed=$((failed + 1))
+            record_lead_restart_detail failed "$marker_key"
+        else
+            log "Lead $marker_lead retained intent has no proven replacement progress; entering normal lifecycle" >&2
+        fi
+    done
 
     local key pn lid mf classification sources rc
     local candidate_count=0
     while IFS=$'\t' read -r key pn lid mf classification sources; do
         [[ -n "$key" ]] || continue
         candidate_count=$((candidate_count + 1))
+        if [[ "$classification" != skip-test ]]; then
+            eligible=$((eligible + 1))
+        fi
+        if grep -Fxq "$key" "$reconciled_candidates" 2>/dev/null; then
+            continue
+        fi
         case "$classification" in
             skip-test)
                 log "Skipping test-slot Lead candidate (lifecycle-owned, not deploy-blocking): key=$key sources=$sources" >&2
                 ;;
             restart)
-                eligible=$((eligible + 1))
                 if [[ "$mf" == "-" || ! -f "$mf" ]]; then
                     log "ERROR: restart candidate $key has no readable manifest" >&2
                     failed=$((failed + 1))
@@ -1465,13 +2001,25 @@ do_restart_all_leads() {
                 fi
                 rc=0
                 restart_lead "$mf" >&2 || rc=$?
-                if (( rc != 0 )); then
+                if (( rc == 4 )); then
+                    printf 'normal\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                      "$LEAD_RESTART_CONVERGING_DAEMON_TARGET" \
+                      "$LEAD_RESTART_CONVERGING_PROJECT" \
+                      "$LEAD_RESTART_CONVERGING_LEAD_ID" \
+                      "${LEAD_RESTART_CONVERGING_OLD_PID:--}" \
+                      "${LEAD_RESTART_CONVERGING_OLD_START:--}" \
+                      "$LEAD_RESTART_CONVERGING_BACKEND" \
+                      "$LEAD_RESTART_CONVERGING_MANIFEST" \
+                      "$LEAD_RESTART_CONVERGING_MARKER" \
+                      "$LEAD_RESTART_CONVERGING_ATTEMPT" \
+                      "$LEAD_RESTART_CONVERGING_REASON" \
+                      "$LEAD_RESTART_CONVERGING_TARGETS" >> "$converging_journal"
+                elif (( rc != 0 )); then
                     failed=$((failed + 1))
                     record_lead_restart_detail failed "$key"
                 fi
                 ;;
             manifestless)
-                eligible=$((eligible + 1))
                 log "WARNING: loaded/running Lead $key has no manifest — visible but not restarted (sources=$sources)" >&2
                 alert_warning "lead-restart-manifestless-${key}" "Lead restart skipped" \
                     "Lead $key 已加载但没有 manifest，本次未重启；请补齐 carrier 配置后再收敛。"
@@ -1479,7 +2027,6 @@ do_restart_all_leads() {
                 record_lead_restart_detail skipped "$key"
                 ;;
             probe-error|config-drift|*)
-                eligible=$((eligible + 1))
                 log "ERROR: Lead candidate $key cannot be assigned safe restart authority (class=$classification project=$pn lead=$lid sources=$sources)" >&2
                 alert_warning "lead-restart-config-drift-${key}" "Lead restart config drift" \
                     "Lead $key 无法从 manifest/loaded plist/process 与 projects.json 得到唯一一致身份，本次拒绝重启。"
@@ -1488,7 +2035,73 @@ do_restart_all_leads() {
                 ;;
         esac
     done < "$candidates_file"
-    rm -f "$candidates_file"
+    rm -f "$candidates_file" "$reconciled_candidates"
+
+    local converge_timeout="${RESTART_LEAD_CONVERGENCE_TIMEOUT_SECONDS:-900}"
+    local converge_interval="${RESTART_LEAD_CONVERGENCE_INTERVAL:-5}"
+    [[ "$converge_timeout" =~ ^[0-9]+$ ]] || converge_timeout=900
+    [[ "$converge_interval" =~ ^[0-9]+$ ]] || converge_interval=5
+    local converge_deadline=$(( $(date +%s) + converge_timeout ))
+    local probe_kind daemon_target project lead_id old_pid old_start backend manifest
+    local marker attempt_id last_reason targets_file terminal now
+    while IFS=$'\t' read -r probe_kind daemon_target project lead_id old_pid old_start \
+      backend manifest marker attempt_id last_reason targets_file; do
+        [[ -n "$probe_kind" ]] || continue
+        [[ "$old_pid" == "-" ]] && old_pid=""
+        [[ "$old_start" == "-" ]] && old_start=""
+        terminal=false
+        while :; do
+            rc=0
+            if [[ "$probe_kind" == reconcile ]]; then
+                lead_replacement_reconcile_ready "$marker" || rc=$?
+                last_reason="${LEAD_REPLACEMENT_RECONCILE_REASON:-$last_reason}"
+            else
+                launchd_lead_outcome_ready \
+                  "$daemon_target" "$project" "$lead_id" "$old_pid" "$old_start" \
+                  "$targets_file" "$backend" "$manifest" || rc=$?
+                last_reason="${LEAD_RESTART_OUTCOME_REASON:-$last_reason}"
+            fi
+            if (( rc == 0 )); then
+                log "Lead $lead_id restarted via launchd after convergence (supervisor $VERIFIED_LEAD_PID born $VERIFIED_LEAD_START, body PID $VERIFIED_BODY_PID born $VERIFIED_BODY_START, model $VERIFIED_BODY_MODEL, lease generation $VERIFIED_LEASE_GENERATION)" >&2
+                if [[ "$probe_kind" == normal ]]; then
+                    rm -f "$targets_file"
+                fi
+                if ! lead_restart_remove_marker "$marker" "$attempt_id"; then
+                    log "WARNING: Lead $lead_id converged but replacement marker cleanup failed" >&2
+                    alert_warning "lead-restart-marker-hygiene-${lead_id}" "Lead replacement marker cleanup failed" \
+                        "Lead $lead_id 已在终判通过完整 N0-N5，但 replacement marker 无法删除；Lead 健康，下一轮将重试清理。"
+                fi
+                terminal=true
+                break
+            fi
+            now="$(date +%s)"
+            (( now >= converge_deadline )) && break
+            sleep "$converge_interval"
+        done
+        if [[ "$terminal" != true ]]; then
+            failed=$((failed + 1))
+            record_lead_restart_detail failed "${daemon_target##*.}"
+            if [[ "$probe_kind" == normal ]]; then
+                rm -f "$targets_file"
+            fi
+            log "ERROR: Lead $lead_id convergence deadline expired (${last_reason:-unknown})" >&2
+            case "$last_reason" in
+                lease_control_failure)
+                    alert_warning "lead-restart-lease-control-${lead_id}" "Lead restart convergence lost lease control" \
+                        "Lead $lead_id 终判到点且 lease control 不可用，已诚实记为 failed；replacement marker 保留。"
+                    ;;
+                lease_evidence_*)
+                    alert_warning "lead-restart-lease-evidence-${lead_id}" "Lead restart convergence lease mismatch" \
+                        "Lead $lead_id 终判到点且 lease evidence 不闭合 (${last_reason})，已诚实记为 failed；replacement marker 保留。"
+                    ;;
+                *)
+                    alert_warning "lead-restart-convergence-${lead_id}" "Lead restart convergence timed out" \
+                        "Lead $lead_id 换代已有新 supervisor/lease 进展，但终判未闭合 N0-N5 (${last_reason:-unknown})，已记为 failed；marker 保留。"
+                    ;;
+            esac
+        fi
+    done < "$converging_journal"
+    rm -f "$converging_journal"
 
     if (( candidate_count == 0 )); then
         log "WARNING: No Leads found (no manifests, no running processes)" >&2

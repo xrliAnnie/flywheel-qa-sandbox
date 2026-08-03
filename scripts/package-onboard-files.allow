@@ -45,6 +45,8 @@ scripts/lib/script-sanity.sh
 scripts/lib/path-hygiene.sh
 scripts/lib/supervisor.sh
 scripts/lib/bridge-port.sh
+scripts/lib/lead-restart-lifecycle.sh
+scripts/lib/lead-body-sweep.sh
 scripts/lib/tmux-server-rescue.sh
 scripts/lib/self-ship-queue.sh
 scripts/lib/bounded-run.sh
@@ -75,6 +77,7 @@ node_modules/flywheel-teamlead/scripts/inbox-ack-rule.md
 node_modules/flywheel-teamlead/scripts/screencapture-l3-skill.md
 node_modules/flywheel-teamlead/scripts/expect-dev-channels.exp
 node_modules/flywheel-teamlead/scripts/lib/lead-identity-preflight.sh
+node_modules/flywheel-teamlead/scripts/lib/lead-launch-authority.sh
 node_modules/flywheel-teamlead/scripts/lib/resume-recovery.sh
 node_modules/flywheel-teamlead/scripts/lib/mcp-inherit.sh
 node_modules/flywheel-teamlead/scripts/lib/reap-orphan-adapters.sh

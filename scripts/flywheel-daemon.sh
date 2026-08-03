@@ -7,7 +7,7 @@
 # Commands:
 #   install [lead-id|--all]   Generate plist + register with launchd
 #   uninstall [lead-id|--all] Unregister from launchd + remove plist
-#   restart [lead-id|--all]   Stop + start (launchctl kickstart -k)
+#   restart [lead-id|--all]   Refused: use restart-services.sh
 #   status                    Show all Lead daemon statuses
 #   logs [lead-id]            Tail Lead log file
 #
@@ -934,41 +934,8 @@ uninstall_one() {
 }
 
 cmd_restart() {
-  local target="${1:---all}"
-
-  if [ "$target" = "--all" ]; then
-    for manifest in $(list_manifests); do
-      local daemon_key
-      daemon_key=$(daemon_key_from_manifest "$manifest")
-      restart_one "$daemon_key"
-    done
-  else
-    local manifests
-    manifests=$(find_manifests "$target") || error "No manifest for '${target}' in ${MANIFEST_DIR}/"
-    while IFS= read -r manifest; do
-      local daemon_key
-      daemon_key=$(daemon_key_from_manifest "$manifest")
-      restart_one "$daemon_key"
-    done <<< "$manifests"
-  fi
-}
-
-restart_one() {
-  local daemon_key="$1"
-  local label
-  label=$(plist_label "$daemon_key")
-
-  if ! is_loaded "$daemon_key"; then
-    log "Daemon '${daemon_key}' is not loaded. Use 'install' first."
-    return 1
-  fi
-
-  log "Restarting ${daemon_key}..."
-  "$LAUNCHCTL" kickstart -k "${GUI_DOMAIN}/${label}"
-  sleep 2
-  local pid
-  pid=$(get_launchd_pid "$daemon_key")
-  log "Daemon '${daemon_key}' restarted (PID: ${pid})."
+  log "ERROR: direct Lead restart is unsafe and disabled. Run ${FLYWHEEL_DIR}/scripts/restart-services.sh so bootout, body sweep, controlled-wave arm, and N0-N5 verification stay atomic." >&2
+  return 1
 }
 
 cmd_status() {
@@ -1089,7 +1056,7 @@ Commands:
                             Generate a staged plist (model read from source,
                             ProgramArguments embeds the runtime/canonical path)
   uninstall [lead-id|--all] Unregister from launchd + remove plist
-  restart [lead-id|--all]   Restart Lead daemon (kickstart -k)
+  restart [lead-id|--all]   Refused; run scripts/restart-services.sh
   status                    Show all Lead daemon statuses
   logs <lead-id>            Tail Lead log file
 

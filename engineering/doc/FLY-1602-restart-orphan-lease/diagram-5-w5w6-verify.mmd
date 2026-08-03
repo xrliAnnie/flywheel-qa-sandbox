@@ -1,0 +1,17 @@
+flowchart TD
+    A["restart 换代一个 Lead"] --> B["动手前先记两笔账:<br/>①意图存证 marker(改了哪个 Lead、三份配置指纹)<br/>②租约基线(当前身份代数)"]
+    B --> C["拆旧 → 清场 → 装新<br/>(FLY-1507 既有流程,不动)"]
+    C --> D{"62 秒验证窗口内<br/>新真身出现了吗?"}
+    D -->|出现| OK["报成功(和今天一样)"]
+    D -->|"没出现,但有进展证据<br/>(新管家活着,或身份代数<br/>相对基线前进)"| CV["报『收敛中 converging』<br/>不再谎报失败"]
+    D -->|"没出现,也无进展"| F["立刻报失败(该报就报)"]
+    CV --> J{"整轮结束前的终判:<br/>最多再等 15 分钟,反复复验"}
+    J -->|收敛| OK2["报成功"]
+    J -->|到点没收敛| F2["终态失败 + 按真实原因告警<br/>(fail-closed:绝不挂着不了了之)"]
+    C -.->|"restart 进程若中途死掉"| K["下一轮 restart 按 marker 对账:<br/>配置没漂 → 补装回去<br/>配置漂了 → 告警留给人工<br/>(不再留『卸载黑洞』)"]
+    style A fill:#e8f0fe,stroke:#007aff
+    style OK fill:#e8f7ee,stroke:#34c759
+    style OK2 fill:#e8f7ee,stroke:#34c759
+    style CV fill:#fff8e1,stroke:#ff9500
+    style F2 fill:#ffe5e3,stroke:#ff3b30
+    style K fill:#f3e8fd,stroke:#af52de

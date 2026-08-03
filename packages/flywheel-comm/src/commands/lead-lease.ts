@@ -20,6 +20,7 @@ interface LeadLeaseCommandDeps {
 	fetchImpl?: typeof fetch;
 	now?: () => number;
 	leadWriteAuthorizationDeps?: LeadWriteAuthorizationDeps;
+	leaseStoreDeps?: ConstructorParameters<typeof LeadLeaseStore>[1];
 }
 
 function positiveInteger(value: string | undefined, name: string): number {
@@ -254,7 +255,7 @@ export async function runLeadLeaseCommand(
 					},
 					allowPositionals: false,
 				});
-				const store = new LeadLeaseStore(dbPath);
+				const store = new LeadLeaseStore(dbPath, deps.leaseStoreDeps);
 				try {
 					emit(
 						{
@@ -317,7 +318,7 @@ export async function runLeadLeaseCommand(
 					resolution.status === "ok"
 						? resolution.leadKey
 						: `${project}-${leadId}`;
-				const store = new LeadLeaseStore(dbPath);
+				const store = new LeadLeaseStore(dbPath, deps.leaseStoreDeps);
 				try {
 					const result = store.acquire({
 						leadKey,
@@ -333,8 +334,188 @@ export async function runLeadLeaseCommand(
 						),
 						acquiredBy: values["acquired-by"] ?? String(process.pid),
 					});
+					const lease = store.getLease(leadKey);
+					emit(
+						{
+							leadKey,
+							holderPid: lease?.holderPid ?? null,
+							holderStart: lease?.holderStart ?? null,
+							supervisorPid: lease?.supervisorPid ?? null,
+							supervisorStart: lease?.supervisorStart ?? null,
+							...result,
+						},
+						values.json,
+						stdout,
+					);
+					return result.status === "denied_holder_alive" ||
+						result.status === "denied_sensor_degraded"
+						? 3
+						: 0;
+				} finally {
+					store.close();
+				}
+			}
+			case "adopt": {
+				const { values } = parseArgs({
+					args: args.slice(1),
+					options: {
+						lead: { type: "string" },
+						project: { type: "string" },
+						"supervisor-pid": { type: "string" },
+						"supervisor-start": { type: "string" },
+						"holder-pid": { type: "string" },
+						"holder-start": { type: "string" },
+						"old-supervisor-pid": { type: "string" },
+						"old-supervisor-start": { type: "string" },
+						"acquired-by": { type: "string" },
+						json: { type: "boolean", default: false },
+					},
+					allowPositionals: false,
+				});
+				const leadId = required(values.lead, "--lead");
+				const project = required(values.project, "--project");
+				const resolution = resolveCanonicalLead({
+					leadId,
+					projectHint: project,
+					projectsPath,
+				});
+				if (
+					resolution.status === "source_error" ||
+					resolution.status === "ambiguous"
+				) {
+					stderr(`lead-lease adopt: resolver ${resolution.status}`);
+					return 1;
+				}
+				if (
+					resolution.status === "ok" &&
+					resolution.canonicalProject !== project
+				) {
+					stderr(
+						`lead-lease adopt: project mismatch (${project} != ${resolution.canonicalProject})`,
+					);
+					return 1;
+				}
+				const leadKey =
+					resolution.status === "ok"
+						? resolution.leadKey
+						: `${project}-${leadId}`;
+				const store = new LeadLeaseStore(dbPath, deps.leaseStoreDeps);
+				try {
+					const result = store.adopt({
+						leadKey,
+						expectedHolderPid: positiveInteger(
+							values["holder-pid"],
+							"--holder-pid",
+						),
+						expectedHolderStart: required(
+							values["holder-start"],
+							"--holder-start",
+						),
+						oldSupervisorPid: positiveInteger(
+							values["old-supervisor-pid"],
+							"--old-supervisor-pid",
+						),
+						oldSupervisorStart: required(
+							values["old-supervisor-start"],
+							"--old-supervisor-start",
+						),
+						newSupervisorPid: positiveInteger(
+							values["supervisor-pid"],
+							"--supervisor-pid",
+						),
+						newSupervisorStart: required(
+							values["supervisor-start"],
+							"--supervisor-start",
+						),
+						acquiredBy: values["acquired-by"] ?? String(process.pid),
+					});
 					emit({ ...result, leadKey }, values.json, stdout);
-					return result.status === "denied_holder_alive" ? 3 : 0;
+					return result.status === "lost_race" ? 3 : 0;
+				} finally {
+					store.close();
+				}
+			}
+			case "verify-bound": {
+				const { values } = parseArgs({
+					args: args.slice(1),
+					options: {
+						"lead-key": { type: "string" },
+						"supervisor-pid": { type: "string" },
+						"supervisor-start": { type: "string" },
+						"holder-pid": { type: "string" },
+						"holder-start": { type: "string" },
+						json: { type: "boolean", default: false },
+					},
+					allowPositionals: false,
+				});
+				const store = new LeadLeaseStore(dbPath, deps.leaseStoreDeps);
+				try {
+					const result = store.verifyBound({
+						leadKey: required(values["lead-key"], "--lead-key"),
+						expectedSupervisorPid: positiveInteger(
+							values["supervisor-pid"],
+							"--supervisor-pid",
+						),
+						expectedSupervisorStart: required(
+							values["supervisor-start"],
+							"--supervisor-start",
+						),
+						expectedHolderPid: positiveInteger(
+							values["holder-pid"],
+							"--holder-pid",
+						),
+						expectedHolderStart: required(
+							values["holder-start"],
+							"--holder-start",
+						),
+					});
+					emit(result, values.json, stdout);
+					return result.status === "verified" ? 0 : 3;
+				} finally {
+					store.close();
+				}
+			}
+			case "progress-snapshot": {
+				const { values } = parseArgs({
+					args: args.slice(1),
+					options: {
+						lead: { type: "string" },
+						project: { type: "string" },
+						json: { type: "boolean", default: false },
+					},
+					allowPositionals: false,
+				});
+				const leadId = required(values.lead, "--lead");
+				const project = required(values.project, "--project");
+				const resolution = resolveCanonicalLead({
+					leadId,
+					projectHint: project,
+					projectsPath,
+				});
+				if (
+					resolution.status === "source_error" ||
+					resolution.status === "ambiguous"
+				) {
+					stderr(`lead-lease progress-snapshot: resolver ${resolution.status}`);
+					return 1;
+				}
+				if (
+					resolution.status === "ok" &&
+					resolution.canonicalProject !== project
+				) {
+					stderr(
+						`lead-lease progress-snapshot: project mismatch (${project} != ${resolution.canonicalProject})`,
+					);
+					return 1;
+				}
+				const leadKey =
+					resolution.status === "ok"
+						? resolution.leadKey
+						: `${project}-${leadId}`;
+				const store = new LeadLeaseStore(dbPath, deps.leaseStoreDeps);
+				try {
+					emit(store.progressSnapshot(leadKey), values.json, stdout);
+					return 0;
 				} finally {
 					store.close();
 				}
@@ -353,7 +534,7 @@ export async function runLeadLeaseCommand(
 					},
 					allowPositionals: false,
 				});
-				const store = new LeadLeaseStore(dbPath);
+				const store = new LeadLeaseStore(dbPath, deps.leaseStoreDeps);
 				try {
 					const result = store.bind({
 						leadKey: required(values["lead-key"], "--lead-key"),

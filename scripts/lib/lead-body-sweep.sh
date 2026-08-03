@@ -37,8 +37,24 @@ _sweep_tmux() {
 # Inventory is deliberately session-scoped. `list-panes -a` ignores its target
 # and would let a QA/Runner session with the same window name enter the sweep.
 lead_body_pane_inventory() {
-  _sweep_tmux list-panes -s -t =flywheel \
-    -F '#{window_id}	#{window_name}	#{pane_id}	#{pane_pid}	#{pane_dead}' 2>/dev/null
+  local raw="" raw_rc=0
+  local window_id window_name pane_id pane_pid pane_dead
+  raw="$(_sweep_tmux list-panes -s -t =flywheel \
+    -F '#{window_id}|#{window_name}|#{pane_id}|#{pane_pid}|#{pane_dead}' 2>/dev/null)" \
+    || raw_rc=$?
+  [ "$raw_rc" -eq 0 ] || return "$raw_rc"
+  while IFS='|' read -r window_id window_name pane_id pane_pid pane_dead; do
+    [ -n "$window_id$window_name$pane_id$pane_pid$pane_dead" ] || continue
+    case "$window_id" in @|@*[!0-9]*|"") return 2 ;; @*) ;; *) return 2 ;; esac
+    [ -n "$window_name" ] || return 2
+    case "$pane_id" in %|%*[!0-9]*|"") return 2 ;; %*) ;; *) return 2 ;; esac
+    case "$pane_pid" in ''|0|*[!0-9]*) return 2 ;; esac
+    case "$pane_dead" in 0|1) ;; *) return 2 ;; esac
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$window_id" "$window_name" "$pane_id" "$pane_pid" "$pane_dead"
+  done <<EOF
+$raw
+EOF
 }
 
 _lead_body_header_value() {
@@ -360,6 +376,280 @@ EOF
   rm -f "$raw_file"
   [ "$status" = "complete" ] && return 0
   return 2
+}
+
+_lead_body_session_identity() {
+  local command="$1" token session_id="" seen=0 had_noglob=0
+  case "$-" in *f*) had_noglob=1 ;; *) set -f ;; esac
+  # shellcheck disable=SC2086
+  set -- $command
+  [ "$had_noglob" -eq 1 ] || set +f
+  while [ "$#" -gt 0 ]; do
+    token="$1"
+    shift
+    case "$token" in
+      --session-id|--resume)
+        [ "$#" -gt 0 ] || return 1
+        session_id="$1"
+        shift
+        seen=$((seen + 1))
+        ;;
+      --session-id=*|--resume=*)
+        session_id="${token#*=}"
+        seen=$((seen + 1))
+        ;;
+    esac
+  done
+  [ "$seen" -eq 1 ] && [ -n "$session_id" ] || return 1
+  case "$session_id" in *[!A-Za-z0-9-]*) return 1 ;; esac
+  printf '%s\n' "$session_id"
+}
+
+lead_body_adoption_hold_evidence() {
+  local evidence="${1:-}"
+  [ -n "$evidence" ] || evidence='{"reason":"adoption_hold"}'
+  printf '%s\n' "$evidence"
+}
+
+# Read-only evidence closure for adopting a live Claude body after its
+# supervisor died. It never calls the sweep collector because that collector is
+# allowed to remove stale archives. stdout is a snapshot whose only successful
+# row is:
+# pid<TAB>lstart<TAB>full<TAB>window<TAB>window_id<TAB>pane_id<TAB>session_id
+lead_body_adoption_evidence() {
+  local project="$1" lead_id="$2" backend="$3" archive_file="$4"
+  local holder_pid="$5" holder_start="$6"
+  local status="complete" inventory="" inventory_rc=0 tuple_rc=0
+  local window_ids="" window_count=0 live_count=0 target_window="" target_pane=""
+  local window_id window_name pane_id pane_pid pane_dead start command=""
+  local snapshot="" snapshot_rc=0 line_pid line_command matching_processes=0
+  local session_id="" archive_state=0
+
+  if [ "$backend" != "claude-code" ]; then
+    printf '#status=unsafe\n'
+    return 1
+  fi
+  tuple_rc=0
+  _lead_body_tuple_state "$holder_pid" "$holder_start" || tuple_rc=$?
+  if [ "$tuple_rc" -eq 2 ]; then
+    printf '#status=indeterminate\n'
+    return 2
+  elif [ "$tuple_rc" -ne 0 ]; then
+    printf '#status=unsafe\n'
+    return 1
+  fi
+
+  inventory="$(lead_body_pane_inventory)" || inventory_rc=$?
+  if [ "$inventory_rc" -ne 0 ]; then
+    printf '#status=indeterminate\n'
+    return 2
+  fi
+  while IFS=$'\t' read -r window_id window_name pane_id pane_pid pane_dead; do
+    [ -n "$window_id$window_name$pane_id$pane_pid$pane_dead" ] || continue
+    [ "$window_name" = "${project}-${lead_id}" ] || continue
+    case " $window_ids " in
+      *" $window_id "*) ;;
+      *)
+        window_ids="${window_ids} ${window_id}"
+        window_count=$((window_count + 1))
+        ;;
+    esac
+    [ "$pane_dead" = "0" ] || continue
+    live_count=$((live_count + 1))
+    if [ "$pane_pid" != "$holder_pid" ]; then
+      status="unsafe"
+      continue
+    fi
+    start="$(lead_body_process_start_identity "$pane_pid")" || {
+      status="indeterminate"
+      continue
+    }
+    if [ "$start" != "$holder_start" ]; then
+      status="unsafe"
+      continue
+    fi
+    command="$(lead_body_process_command "$pane_pid")" || {
+      status="indeterminate"
+      continue
+    }
+    if ! _lead_body_command_proof "$command" "$project" "$lead_id" "$backend"; then
+      status="unsafe"
+      continue
+    fi
+    target_window="$window_id"
+    target_pane="$pane_id"
+  done <<EOF
+$inventory
+EOF
+  if [ "$window_count" -ne 1 ] || [ "$live_count" -ne 1 ] \
+    || [ -z "$target_window" ] || [ -z "$target_pane" ]; then
+    [ "$status" = "indeterminate" ] || status="unsafe"
+  fi
+
+  # A stale archive is ignored only after its exact tuple is positively dead or
+  # reused. A live/sensor-uncertain archive must agree with the target closure.
+  if [ -e "$archive_file" ] || [ -L "$archive_file" ]; then
+    if ! tmux_supervisor_archive_read "$archive_file"; then
+      status="indeterminate"
+    else
+      archive_state=0
+      _lead_body_tuple_state "$TMUX_ARCHIVE_PANE_PID" "$TMUX_ARCHIVE_PANE_START" \
+        || archive_state=$?
+      if [ "$archive_state" -eq 0 ]; then
+        if [ "$TMUX_ARCHIVE_PANE_PID" != "$holder_pid" ] \
+          || [ "$TMUX_ARCHIVE_PANE_START" != "$holder_start" ] \
+          || [ "$TMUX_ARCHIVE_WINDOW_ID" != "$target_window" ]; then
+          status="unsafe"
+        fi
+      elif [ "$archive_state" -eq 2 ]; then
+        status="indeterminate"
+      fi
+    fi
+  fi
+
+  snapshot="$(lead_body_process_table)" || snapshot_rc=$?
+  if [ "$snapshot_rc" -ne 0 ]; then
+    status="indeterminate"
+  else
+    while read -r line_pid line_command; do
+      case "$line_pid" in ''|*[!0-9]*) continue ;; esac
+      lead_identity_command_matches "$line_command" "$lead_id" || continue
+      matching_processes=$((matching_processes + 1))
+      start="$(lead_body_process_start_identity "$line_pid")" || {
+        status="indeterminate"
+        continue
+      }
+      if [ "$line_pid" != "$holder_pid" ] || [ "$start" != "$holder_start" ] \
+        || ! _lead_body_command_proof "$line_command" "$project" "$lead_id" "$backend"; then
+        status="unsafe"
+        continue
+      fi
+      command="$line_command"
+    done <<EOF
+$snapshot
+EOF
+  fi
+  [ "$matching_processes" -eq 1 ] || {
+    [ "$status" = "indeterminate" ] || status="unsafe"
+  }
+  if [ "$status" = "complete" ]; then
+    session_id="$(_lead_body_session_identity "$command")" || status="unsafe"
+  fi
+
+  printf '#status=%s\n' "$status"
+  printf '#project=%s\n' "$project"
+  printf '#lead=%s\n' "$lead_id"
+  printf '#backend=%s\n' "$backend"
+  if [ "$status" = "complete" ]; then
+    printf '%s\t%s\tfull\twindow\t%s\t%s\t%s\n' \
+      "$holder_pid" "$holder_start" "$target_window" "$target_pane" "$session_id"
+    return 0
+  fi
+  [ "$status" = "indeterminate" ] && return 2
+  return 1
+}
+
+LEAD_ADOPTION_WINDOW_ID=""
+LEAD_ADOPTION_PANE_ID=""
+LEAD_ADOPTION_PANE_PID=""
+LEAD_ADOPTION_PANE_START=""
+LEAD_ADOPTION_SESSION_ID=""
+LEAD_ADOPTION_MODEL_OBSERVATION=""
+
+# Post-CAS attachment may repair missing metadata, but never overwrites
+# conflicting archive/session evidence. The pre-CAS snapshot is re-proved
+# against live tmux/process state before any metadata write.
+lead_body_attach_adopted() {
+  local snapshot="$1" server_pid="$2" archive_file="$3" session_file="$4"
+  local manifest_file="$5" status project lead_id backend row row_count
+  local pid start proof source window_id pane_id session_id
+  local inventory inventory_rc=0 match_count=0
+  local current_window current_name current_pane current_pid current_dead
+  local actual_start command session_actual temp_file
+
+  LEAD_ADOPTION_WINDOW_ID=""
+  LEAD_ADOPTION_PANE_ID=""
+  LEAD_ADOPTION_PANE_PID=""
+  LEAD_ADOPTION_PANE_START=""
+  LEAD_ADOPTION_SESSION_ID=""
+  LEAD_ADOPTION_MODEL_OBSERVATION=""
+  case "$server_pid" in ''|0|*[!0-9]*) return 2 ;; esac
+
+  status="$(printf '%s\n' "$snapshot" | sed -n 's/^#status=//p' | head -1)"
+  project="$(printf '%s\n' "$snapshot" | sed -n 's/^#project=//p' | head -1)"
+  lead_id="$(printf '%s\n' "$snapshot" | sed -n 's/^#lead=//p' | head -1)"
+  backend="$(printf '%s\n' "$snapshot" | sed -n 's/^#backend=//p' | head -1)"
+  [ "$status" = "complete" ] && [ -n "$project" ] && [ -n "$lead_id" ] \
+    && [ "$backend" = "claude-code" ] || return 2
+  row_count="$(printf '%s\n' "$snapshot" | awk -F '\t' '$1 !~ /^#/ && NF {n++} END {print n+0}')"
+  [ "$row_count" -eq 1 ] || return 2
+  row="$(printf '%s\n' "$snapshot" | awk -F '\t' '$1 !~ /^#/ && NF {print; exit}')"
+  IFS=$'\t' read -r pid start proof source window_id pane_id session_id <<EOF
+$row
+EOF
+  case "$pid" in ''|0|*[!0-9]*) return 2 ;; esac
+  [ -n "$start" ] && [ "$proof" = "full" ] && [ "$source" = "window" ] \
+    && [ -n "$window_id" ] && [ -n "$pane_id" ] && [ -n "$session_id" ] \
+    || return 2
+
+  inventory="$(lead_body_pane_inventory)" || inventory_rc=$?
+  [ "$inventory_rc" -eq 0 ] || return 2
+  while IFS=$'\t' read -r current_window current_name current_pane current_pid current_dead; do
+    [ "$current_name" = "${project}-${lead_id}" ] || continue
+    [ "$current_dead" = "0" ] || continue
+    match_count=$((match_count + 1))
+    [ "$current_window" = "$window_id" ] && [ "$current_pane" = "$pane_id" ] \
+      && [ "$current_pid" = "$pid" ] || return 2
+  done <<EOF
+$inventory
+EOF
+  [ "$match_count" -eq 1 ] || return 2
+  actual_start="$(lead_body_process_start_identity "$pid")" || return 2
+  [ "$actual_start" = "$start" ] || return 2
+  command="$(lead_body_process_command "$pid")" || return 2
+  _lead_body_command_proof "$command" "$project" "$lead_id" "$backend" || return 2
+  [ "$(_lead_body_session_identity "$command")" = "$session_id" ] || return 2
+
+  if [ -e "$archive_file" ] || [ -L "$archive_file" ]; then
+    tmux_supervisor_archive_read "$archive_file" || return 2
+    [ "$TMUX_ARCHIVE_SERVER_PID" = "$server_pid" ] \
+      && [ "$TMUX_ARCHIVE_PANE_PID" = "$pid" ] \
+      && [ "$TMUX_ARCHIVE_PANE_START" = "$start" ] \
+      && [ "$TMUX_ARCHIVE_WINDOW_ID" = "$window_id" ] || return 2
+  else
+    tmux_supervisor_archive_write \
+      "$archive_file" "$server_pid" "$pid" "$start" "$window_id" || return 2
+  fi
+
+  _sweep_tmux set-window-option -t "$window_id" remain-on-exit on \
+    >/dev/null 2>&1 || return 2
+
+  if [ -e "$session_file" ] || [ -L "$session_file" ]; then
+    [ -f "$session_file" ] && [ ! -L "$session_file" ] && [ -r "$session_file" ] \
+      || return 2
+    session_actual="$(cat "$session_file" 2>/dev/null)" || return 2
+    [ -n "$session_actual" ] && [ "$session_actual" = "$session_id" ] || return 2
+  else
+    mkdir -p "${session_file%/*}" 2>/dev/null || return 2
+    temp_file="${session_file}.tmp.$$"
+    if ! (umask 077; printf '%s\n' "$session_id" > "$temp_file") \
+      || ! mv "$temp_file" "$session_file"; then
+      rm -f "$temp_file" 2>/dev/null || true
+      return 2
+    fi
+  fi
+
+  if ! lead_body_model_evidence "$pid" "$manifest_file" >/dev/null 2>&1; then
+    LEAD_ADOPTION_MODEL_OBSERVATION="mismatch"
+  else
+    LEAD_ADOPTION_MODEL_OBSERVATION="match"
+  fi
+  LEAD_ADOPTION_WINDOW_ID="$window_id"
+  LEAD_ADOPTION_PANE_ID="$pane_id"
+  LEAD_ADOPTION_PANE_PID="$pid"
+  LEAD_ADOPTION_PANE_START="$start"
+  LEAD_ADOPTION_SESSION_ID="$session_id"
+  return 0
 }
 
 _lead_body_target_identity_matches() {

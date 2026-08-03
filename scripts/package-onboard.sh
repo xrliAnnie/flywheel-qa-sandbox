@@ -71,6 +71,7 @@ teamlead:scripts/inbox-ack-rule.md
 teamlead:scripts/screencapture-l3-skill.md
 teamlead:scripts/expect-dev-channels.exp
 teamlead:scripts/lib/lead-identity-preflight.sh
+teamlead:scripts/lib/lead-launch-authority.sh
 teamlead:scripts/lib/mcp-inherit.sh
 teamlead:scripts/lib/reap-orphan-adapters.sh
 teamlead:scripts/lib/tmux-supervisor-guard.sh
@@ -107,6 +108,8 @@ lib/script-sanity.sh
 lib/path-hygiene.sh
 lib/supervisor.sh
 lib/bridge-port.sh
+lib/lead-restart-lifecycle.sh
+lib/lead-body-sweep.sh
 lib/tmux-server-rescue.sh
 lib/self-ship-queue.sh
 lib/bounded-run.sh

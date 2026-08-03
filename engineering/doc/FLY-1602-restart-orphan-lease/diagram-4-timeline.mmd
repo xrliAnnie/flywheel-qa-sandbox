@@ -1,0 +1,14 @@
+flowchart TD
+    A["01:34 换代 → 报'失败'<br/>实际 01:38 成功,只晚了 2.6 分钟"] --> B["02:08 换代 → restart 进程自己死在中途<br/>把 launchd 任务留在'卸载'状态"]
+    B --> C["03:15 换代 → 报'失败'<br/>实际 03:17 成功,只晚了 1.6 分钟"]
+    C --> D["04:01 换代 → 报'失败'<br/>实际 04:16 成功,只晚了 14.7 分钟"]
+    D --> E["04:42 换代 → 真失败<br/>孤儿 body 扣住身份,死循环开始"]
+    E --> F["04:42–09:56<br/>5.2 小时离线,每约 6 分钟重试全被拒<br/>09:56 Cass 人工捞回"]
+    F --> G["16:16 今天再重启 → 又报'失败'<br/>实际 16:28 成功,晚 11.2 分钟<br/>= 最新代码上病还在"]
+    style A fill:#fff8e1,stroke:#ff9500
+    style C fill:#fff8e1,stroke:#ff9500
+    style D fill:#fff8e1,stroke:#ff9500
+    style G fill:#fff8e1,stroke:#ff9500
+    style B fill:#f3e8fd,stroke:#af52de
+    style E fill:#ffe5e3,stroke:#ff3b30
+    style F fill:#ffe5e3,stroke:#ff3b30

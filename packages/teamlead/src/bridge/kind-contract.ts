@@ -166,6 +166,11 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		remediationRef:
 			"inspect the held service, then explicitly resume its restart ledger (FLY-1501)",
 	},
+	lead_body_adopted: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "FLY-1602 orphan-body adoption path",
+	},
 	bridge_boot_stale_checkout: { owner: "claude", arc: "human_by_design" },
 	bridge_wrapper_fail: { owner: "claude", arc: "human_by_design" },
 	bin_integrity_drift: { owner: "claude", arc: "human_by_design" },

@@ -1,6 +1,16 @@
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	DarwinMemoryPort,
+	FilesystemRestartCoordinationPort,
 	LaunchctlPort,
 	ProcessRestartGate,
 	type SystemCommandRunner,
@@ -82,20 +92,104 @@ describe("scheduler system ports", () => {
 		);
 	});
 
-	it("invokes launchctl only through bounded kickstart -k", async () => {
+	it("requests a graceful Lead restart with bounded SIGTERM", async () => {
 		const run = vi.fn<SystemCommandRunner>(async () => ({
 			exitCode: 0,
 			stdout: "",
 			stderr: "",
 		}));
 		const launchd = new LaunchctlPort({ run, timeoutMs: 2345 });
-		await launchd.kickstart("gui/501/com.flywheel.lead.flywheel-eng");
+		await launchd.requestGracefulRestart(
+			"gui/501/com.flywheel.lead.flywheel-eng",
+		);
 		expect(run).toHaveBeenCalledWith(
 			"launchctl",
-			["kickstart", "-k", "gui/501/com.flywheel.lead.flywheel-eng"],
+			["kill", "SIGTERM", "gui/501/com.flywheel.lead.flywheel-eng"],
 			2345,
 		);
-		await expect(launchd.kickstart("system/bad")).rejects.toThrow(/target/i);
+		await expect(launchd.requestGracefulRestart("system/bad")).rejects.toThrow(
+			/target/i,
+		);
+	});
+
+	it("serializes scheduler mutation beneath the global restart lock", async () => {
+		const root = mkdtempSync(join(tmpdir(), "scheduler-coordination-"));
+		try {
+			const globalLockDir = join(root, "restart.lock.d");
+			const mutationLockDir = join(root, "scheduler-repair.lock.d");
+			const run = vi.fn<SystemCommandRunner>(async () => ({
+				exitCode: 0,
+				stdout: "Mon Aug  2 00:00:00 2026\n",
+				stderr: "",
+			}));
+			const coordination = new FilesystemRestartCoordinationPort({
+				globalLockDir,
+				mutationLockDir,
+				run,
+				pid: 4242,
+				nowIso: () => "2026-08-02T00:00:00.000Z",
+			});
+			const action = vi.fn(async () => {
+				expect(existsSync(join(mutationLockDir, "owner.json"))).toBe(true);
+			});
+
+			await expect(coordination.withMutationLock(action)).resolves.toBe(
+				"executed",
+			);
+			expect(action).toHaveBeenCalledTimes(1);
+			expect(existsSync(mutationLockDir)).toBe(false);
+
+			mkdirSync(globalLockDir);
+			await expect(coordination.withMutationLock(action)).resolves.toBe(
+				"deferred",
+			);
+			expect(action).toHaveBeenCalledTimes(1);
+			expect(existsSync(mutationLockDir)).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("reclaims only an exact stale scheduler owner and releases after errors", async () => {
+		const root = mkdtempSync(join(tmpdir(), "scheduler-stale-lock-"));
+		try {
+			const mutationLockDir = join(root, "scheduler-repair.lock.d");
+			mkdirSync(mutationLockDir, { mode: 0o700 });
+			writeFileSync(
+				join(mutationLockDir, "owner.json"),
+				`${JSON.stringify({
+					pid: 9999,
+					pid_lstart: "stale-start",
+					created_at: "2026-08-01T00:00:00.000Z",
+				})}\n`,
+				{ mode: 0o600 },
+			);
+			const run = vi.fn<SystemCommandRunner>(async (_file, args) =>
+				args[1] === "9999"
+					? { exitCode: 1, stdout: "", stderr: "" }
+					: {
+							exitCode: 0,
+							stdout: "Mon Aug  2 00:00:00 2026\n",
+							stderr: "",
+						},
+			);
+			const coordination = new FilesystemRestartCoordinationPort({
+				globalLockDir: join(root, "restart.lock.d"),
+				mutationLockDir,
+				run,
+				pid: 4242,
+				nowIso: () => "2026-08-02T00:00:00.000Z",
+			});
+
+			await expect(
+				coordination.withMutationLock(async () => {
+					throw new Error("signal failed");
+				}),
+			).rejects.toThrow("signal failed");
+			expect(existsSync(mutationLockDir)).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("samples hw.memsize, hw.pagesize, and vm_stat without importing the v1 monitor", async () => {
