@@ -91,6 +91,17 @@ describe("feature-flag registry invariants", () => {
 		expect(p?.note ?? "").toMatch(/Annie/i);
 	});
 
+	it("FLY-1609 exposes the D arm through the live skill-framework enum", () => {
+		const flag = FEATURE_FLAGS.find((f) => f.name === "skill_framework_mode");
+		expect(flag?.enumValues).toEqual([
+			"superpowers",
+			"matt",
+			"bare",
+			"bare-ponytail",
+			"split",
+		]);
+	});
+
 	it("FLY-1257 registers the resident Codex gate-wait rollback switch as default-on", () => {
 		const flag = FEATURE_FLAGS.find((f) => f.name === "codex_gate_wait");
 		expect(flag).toMatchObject({

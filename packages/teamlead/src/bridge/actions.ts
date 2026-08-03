@@ -3,7 +3,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
-import { isThreeStagePhaseRole, resolvePhaseDispatch } from "flywheel-config";
+import {
+	decodePonytailConditionForRetry,
+	isThreeStagePhaseRole,
+	resolvePhaseDispatch,
+} from "flywheel-config";
 import { ACTION_DEFINITIONS, closeRunnerTerminalView } from "flywheel-core";
 import type { ActionResult, CipherWriter } from "flywheel-edge-worker";
 import { parseDocTier } from "flywheel-edge-worker/dist/Blueprint.js";
@@ -877,6 +881,7 @@ async function handleRetry(
 	// a warning. Annie's mental model: "label the issue codex-skip, retry
 	// the Runner" — degrade gracefully on Linear unreachable.
 	let retryCodexSkip = !!session.codex_skip;
+	let retryLabelsReadable = false;
 	if (process.env.LINEAR_API_KEY) {
 		try {
 			const { LinearClient } = await import("@linear/sdk");
@@ -897,6 +902,7 @@ async function handleRetry(
 			// Persist the refreshed labels too so subsequent retries see
 			// the latest snapshot (matches the start-time semantics).
 			retryIssueLabels = labelNames;
+			retryLabelsReadable = true;
 		} catch (err) {
 			console.warn(
 				`[retry] Linear label refresh failed; using stored codex_skip=${!!session.codex_skip}: ${(err as Error).message}`,
@@ -907,6 +913,20 @@ async function handleRetry(
 			`[retry] LINEAR_API_KEY not set; using stored codex_skip=${!!session.codex_skip}`,
 		);
 	}
+	const ponytailRetryPlan = decodePonytailConditionForRetry(
+		session.ponytail_condition,
+	);
+	const ponytailRetry = {
+		...(ponytailRetryPlan?.kind === "frozen" && {
+			frozen: ponytailRetryPlan.requested,
+		}),
+		freshSignal: retryLabelsReadable
+			? {
+					labelStatus: "readable" as const,
+					labels: retryIssueLabels ?? [],
+				}
+			: { labelStatus: "unreadable" as const },
+	};
 
 	// FLY-887 R2 (Codex R1 #2): PHASE-row retries stay under the phase table.
 	// Discriminator = the durable `chat_thread_role` three-stage marker
@@ -1208,6 +1228,7 @@ async function handleRetry(
 					session.skill_framework_mode && {
 						skillFrameworkMode: session.skill_framework_mode,
 					}),
+				ponytailRetry,
 				// FLY-1224 (R1 #1, settles FLY-840): a PHASE-row retry keeps its
 				// shared-branch identity — without this the retried implement rebuilds
 				// an independent branch instead of branch B, making the codex-retry /

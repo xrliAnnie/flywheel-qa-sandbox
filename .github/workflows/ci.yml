@@ -221,6 +221,12 @@ jobs:
       - name: Test — FLY-1356 skill-framework vendor + variant contracts
         run: bash scripts/__tests__/skill-framework-variants.test.sh
 
+      # FLY-1609: the authoritative future-data analysis entry must keep all
+      # four arms visible, gate comparisons on the rollout epoch, and exclude
+      # sessions whose effective ponytail condition does not match their arm.
+      - name: Test — FLY-1609 four-arm analysis contract
+        run: bash scripts/__tests__/test-fly1609-design-compare.test.sh
+
       # FLY-648: one-command setup wizard (flywheel-setup.sh). Hermetic —
       # fixture HOMEs + stubbed curl/systemctl/loginctl + guided inputs via
       # the FLYWHEEL_SETUP_ANSWER_* automation seam. Needs the built teamlead

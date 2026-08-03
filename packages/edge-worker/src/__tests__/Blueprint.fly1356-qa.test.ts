@@ -39,8 +39,19 @@ import type { EventEnvelope } from "../ExecutionEventEmitter.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
 
-/** An identifier whose stable hash bucket is the B arm (asserted below). */
-const MATT_BUCKET_ID = "FLY-1299";
+/**
+ * Find a B-arm fixture using the current split cardinality. A fixed identifier
+ * is brittle: FLY-1299 selected matt under %3 but moved to bare under %4.
+ */
+function findMattBucketId(): string {
+	for (let sequence = 1; sequence <= 10_000; sequence += 1) {
+		const candidate = `FLY-QA-MATT-${sequence}`;
+		if (hashModeBucket(candidate) === "matt") return candidate;
+	}
+	throw new Error("unable to derive a matt-bucket fixture");
+}
+
+const MATT_BUCKET_ID = findMattBucketId();
 
 function makeMockGitChecker() {
 	return {
@@ -188,7 +199,9 @@ describe("FLY-1356 QA — kill-switch with a stale in-flight override (§验收�
 
 describe("FLY-1356 QA — sticky × fallback characterization (finding QA-1)", () => {
 	it("precondition: the fixture identifier really is a B-arm (matt) bucket", () => {
-		expect(hashModeBucket(MATT_BUCKET_ID)).toBe("matt");
+		const bucket = hashModeBucket(MATT_BUCKET_ID);
+		expect(bucket).not.toBe("superpowers");
+		expect(bucket).toBe("matt");
 	});
 
 	it("run 1 — matt bucket + failing readiness probe records superpowers/fallback_superpowers", async () => {

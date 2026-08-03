@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type http from "node:http";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type {
 	IRetryDispatcher,
@@ -10,6 +10,24 @@ import type {
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+
+const linearMock = vi.hoisted(() => ({
+	labelNames: [] as string[],
+	fail: false,
+}));
+
+vi.mock("@linear/sdk", () => ({
+	LinearClient: class {
+		async issue() {
+			if (linearMock.fail) throw new Error("linear unavailable");
+			return {
+				labels: async () => ({
+					nodes: linearMock.labelNames.map((name) => ({ name })),
+				}),
+			};
+		}
+	},
+}));
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	return {
@@ -121,6 +139,8 @@ describe("Retry E2E — composite action with mock dispatcher", () => {
 	let dispatcher: ReturnType<typeof createMockDispatcher>;
 
 	beforeEach(async () => {
+		linearMock.labelNames = [];
+		linearMock.fail = false;
 		store = await StateStore.create(":memory:");
 		dispatcher = createMockDispatcher(store);
 		const app = createBridgeApp(
@@ -225,6 +245,95 @@ describe("Retry E2E — composite action with mock dispatcher", () => {
 
 		expect(res.status).toBe(200);
 		expect(dispatcher.calls).toHaveLength(1);
+	});
+
+	it("retry carries frozen ponytail intent plus an honestly unreadable fresh selector", async () => {
+		const savedLinearKey = process.env.LINEAR_API_KEY;
+		delete process.env.LINEAR_API_KEY;
+		try {
+			store.upsertSession({
+				execution_id: "old-d-arm",
+				issue_id: "issue-d-arm",
+				project_name: "geoforge3d",
+				status: "failed",
+				ponytail_condition: "on:arm",
+				issue_labels: JSON.stringify(["ponytail"]),
+			});
+
+			const res = await fetch(`${baseUrl}/api/actions/retry`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ execution_id: "old-d-arm" }),
+			});
+
+			expect(res.status).toBe(200);
+			expect(dispatcher.calls[0]!.ponytailRetry).toEqual({
+				frozen: { want: "on", source: "arm" },
+				freshSignal: { labelStatus: "unreadable" },
+			});
+		} finally {
+			if (savedLinearKey === undefined) delete process.env.LINEAR_API_KEY;
+			else process.env.LINEAR_API_KEY = savedLinearKey;
+		}
+	});
+
+	it("retry marks only a successful Linear refresh readable for ponytail reresolution", async () => {
+		const savedLinearKey = process.env.LINEAR_API_KEY;
+		process.env.LINEAR_API_KEY = "test-key";
+		linearMock.labelNames = ["ponytail-off"];
+		try {
+			store.upsertSession({
+				execution_id: "old-selector",
+				issue_id: "issue-selector",
+				project_name: "geoforge3d",
+				status: "failed",
+				ponytail_condition: "unavailable:selector:label_unreadable",
+				issue_labels: JSON.stringify(["stale-label"]),
+			});
+			const res = await fetch(`${baseUrl}/api/actions/retry`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ execution_id: "old-selector" }),
+			});
+			expect(res.status).toBe(200);
+			expect(dispatcher.calls[0]!.ponytailRetry).toEqual({
+				freshSignal: {
+					labelStatus: "readable",
+					labels: ["ponytail-off"],
+				},
+			});
+		} finally {
+			if (savedLinearKey === undefined) delete process.env.LINEAR_API_KEY;
+			else process.env.LINEAR_API_KEY = savedLinearKey;
+		}
+	});
+
+	it("retry refresh failure never treats stored labels as a readable selector", async () => {
+		const savedLinearKey = process.env.LINEAR_API_KEY;
+		process.env.LINEAR_API_KEY = "test-key";
+		linearMock.fail = true;
+		try {
+			store.upsertSession({
+				execution_id: "old-refresh-fail",
+				issue_id: "issue-refresh-fail",
+				project_name: "geoforge3d",
+				status: "failed",
+				ponytail_condition: "unavailable:conflict",
+				issue_labels: JSON.stringify(["ponytail"]),
+			});
+			const res = await fetch(`${baseUrl}/api/actions/retry`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ execution_id: "old-refresh-fail" }),
+			});
+			expect(res.status).toBe(200);
+			expect(dispatcher.calls[0]!.ponytailRetry).toEqual({
+				freshSignal: { labelStatus: "unreadable" },
+			});
+		} finally {
+			if (savedLinearKey === undefined) delete process.env.LINEAR_API_KEY;
+			else process.env.LINEAR_API_KEY = savedLinearKey;
+		}
 	});
 
 	it("FLY-1259: retry-of-retry preserves the locked design backend", async () => {

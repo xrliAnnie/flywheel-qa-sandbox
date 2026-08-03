@@ -1,0 +1,11 @@
+flowchart TD
+    S["D 臂 session 要不要开 ponytail?<br/>五层优先级,从上往下第一个命中生效"] --> P1{"1. 本次派发<br/>显式指定了开/关?"}
+    P1 -- "指定了" --> R1["听指定的<br/>(on:run / off:run)"]
+    P1 -- "没有" --> P2{"2. issue 标签<br/>读得到吗?"}
+    P2 -- "读不到" --> R2["宁可不开也不越权:<br/>记 selector unavailable<br/>(看不见的 ponytail-off<br/>绝不能被实验盖过)"]
+    P2 -- "读到了" --> P3{"3. 标签里有<br/>ponytail / ponytail-off?"}
+    P3 -- "有" --> R3["听标签的<br/>(on:label / off:label)"]
+    P3 -- "没有" --> P4["4. D 臂注入槽位:<br/>自动开 ponytail<br/>记 on:arm"]
+    R1 --> K["全局急停后:<br/>on:arm 一律失效<br/>标签/项目的真实意愿照常"]
+    R3 --> K
+    P4 --> K

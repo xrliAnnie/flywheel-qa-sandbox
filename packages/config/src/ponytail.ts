@@ -1,8 +1,8 @@
 /**
  * FLY-615: ponytail (code-minimalism) gradual-rollout resolution — PURE logic.
  *
- * Resolves a per-run ponytail condition from a three-layer ladder:
- *   per-run flag  >  per-issue Linear label  >  per-project config  >  default off
+ * Resolves a per-run ponytail condition from a layered ladder:
+ *   per-run flag > per-issue Linear label > D-arm injection > project > default
  *
  * This module is intentionally side-effect free (no fs / exec / network) so it
  * is fully unit-testable. The impure half — checking whether the ponytail
@@ -32,7 +32,7 @@ export const PONYTAIL_LABEL_ON = "ponytail";
 export const PONYTAIL_LABEL_OFF = "ponytail-off";
 
 export type PonytailWant = "on" | "off";
-export type PonytailSource = "run" | "label" | "project" | "default";
+export type PonytailSource = "run" | "label" | "arm" | "project" | "default";
 export type PonytailEffective = "on" | "off" | "unavailable";
 
 /** The intent the ladder resolved to (before readiness). */
@@ -60,6 +60,12 @@ export interface PonytailRunSignal {
 export type PonytailInput =
 	| { kind: "start_signal"; signal: PonytailRunSignal }
 	| { kind: "frozen_requested"; requested: PonytailRequested };
+
+/** Retry carries both predecessor intent and a trustworthy current selector. */
+export interface PonytailRetryInput {
+	frozen?: PonytailRequested;
+	freshSignal: PonytailRunSignal;
+}
 
 /** Result of the pure ladder resolution. */
 export type ResolvePonytailResult =
@@ -89,6 +95,7 @@ export class PonytailLabelConflictError extends Error {
 export function resolvePonytailRequested(
 	input: PonytailInput,
 	projectConfig: PonytailConfig | undefined,
+	opts: { armInject?: boolean } = {},
 ): ResolvePonytailResult {
 	// Retry of a previously-resolved request: return verbatim, never re-resolve
 	// (keeps A/B bucket + source stable across retries).
@@ -114,7 +121,7 @@ export function resolvePonytailRequested(
 		// rolling ponytail ON (an unseen `ponytail-off` could be exempting this
 		// issue) → selector-unavailable. When the project is off/absent, ponytail
 		// was never requested → plain `off:default`, fully byte-compatible.
-		if (projectOn) {
+		if (opts.armInject || projectOn) {
 			return { kind: "selector_unavailable" };
 		}
 		return { kind: "resolved", requested: { want: "off", source: "default" } };
@@ -133,12 +140,18 @@ export function resolvePonytailRequested(
 		return { kind: "resolved", requested: { want: "on", source: "label" } };
 	}
 
-	// 3. per-project default.
+	// 3. D-arm injection. It deliberately owns attribution ahead of the project
+	// layer so a D session never masquerades as ordinary project rollout.
+	if (opts.armInject) {
+		return { kind: "resolved", requested: { want: "on", source: "arm" } };
+	}
+
+	// 4. per-project default.
 	if (projectOn) {
 		return { kind: "resolved", requested: { want: "on", source: "project" } };
 	}
 
-	// 4. default off.
+	// 5. default off.
 	return { kind: "resolved", requested: { want: "off", source: "default" } };
 }
 
@@ -242,5 +255,11 @@ function isWant(v: string | undefined): v is PonytailWant {
 	return v === "on" || v === "off";
 }
 function isSource(v: string | undefined): v is PonytailSource {
-	return v === "run" || v === "label" || v === "project" || v === "default";
+	return (
+		v === "run" ||
+		v === "label" ||
+		v === "arm" ||
+		v === "project" ||
+		v === "default"
+	);
 }

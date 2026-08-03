@@ -1027,6 +1027,31 @@ describe("Event route", () => {
 		expect(session.skill_framework_mode_via).toBe("hash");
 	});
 
+	it("FLY-1609: started events persist D attribution with effective on:arm", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					payload: {
+						issueIdentifier: "GEO-95",
+						skillFrameworkMode: "bare-ponytail",
+						skillFrameworkModeVia: "hash",
+						ponytailCondition: "on:arm",
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+		const session = store.getSession("exec-1")!;
+		expect(session.skill_framework_mode).toBe("bare-ponytail");
+		expect(session.skill_framework_mode_via).toBe("hash");
+		expect(session.ponytail_condition).toBe("on:arm");
+	});
+
 	it("FLY-1356 (R1#7): garbage skill-framework values on the untrusted wire are REJECTED", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",

@@ -141,6 +141,7 @@ export type {
 	PonytailEffective,
 	PonytailInput,
 	PonytailRequested,
+	PonytailRetryInput,
 	PonytailRetryPlan,
 	PonytailRunSignal,
 	PonytailSource,
@@ -220,6 +221,7 @@ export {
 // FLY-1356: skill_framework_mode three-way switch (A/superpowers, B/matt, C/bare).
 export type {
 	BackendSkillAssembly,
+	SkillAssemblyBaseArm,
 	SkillFrameworkMode,
 	SkillFrameworkResolveArgs,
 	SkillFrameworkVia,
@@ -238,6 +240,7 @@ export {
 	SKILL_FRAMEWORK_VIAS,
 	SUPERPOWERS_CODEX_NAMESPACE,
 	SUPERPOWERS_PLUGIN_KEY,
+	skillAssemblyBaseArm,
 } from "./skill-framework-mode.js";
 // FLY-793: three-stage pipeline phase model tiers.
 // FLY-1224: per-phase vendor dispatch table (vendor + model + effort).

@@ -827,6 +827,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 				agentName: req.agentName,
 				issueLabels: req.issueLabels,
 				owningDept: req.owningDept,
+				// FLY-1609: Blueprint validates frozen arm intent against the final mode.
+				ponytailRetry: req.ponytailRetry,
 				// FLY-205: predecessor's tier + URL — retry NEVER re-defaults the tier
 				docTier: req.docTier,
 				issueUrl: req.issueUrl,

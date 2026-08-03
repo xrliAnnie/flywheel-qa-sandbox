@@ -62,6 +62,29 @@ function makeEnvelope(overrides: Partial<EventEnvelope> = {}): EventEnvelope {
 	};
 }
 
+describe("DirectEventSink — FLY-1609 D-arm attribution", () => {
+	it("persists bare-ponytail and effective on:arm together", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const sink = new DirectEventSink(store, makeConfig(), testProjects);
+			await sink.emitStarted(
+				makeEnvelope({
+					skillFrameworkMode: "bare-ponytail",
+					skillFrameworkModeVia: "hash",
+					ponytailCondition: "on:arm",
+				}),
+			);
+			await sink.flush();
+			const row = store.getSession("exec-1")!;
+			expect(row.skill_framework_mode).toBe("bare-ponytail");
+			expect(row.skill_framework_mode_via).toBe("hash");
+			expect(row.ponytail_condition).toBe("on:arm");
+		} finally {
+			store.close();
+		}
+	});
+});
+
 describe("DirectEventSink — GEO-151 ProofShot config persistence", () => {
 	let store: StateStore;
 

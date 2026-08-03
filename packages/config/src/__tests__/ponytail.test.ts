@@ -182,6 +182,64 @@ describe("resolvePonytailRequested — frozen_requested (retry)", () => {
 	});
 });
 
+describe("resolvePonytailRequested — D-arm injection slot", () => {
+	it.each([
+		[
+			"run off wins",
+			startSignal({ runOverride: "off", labelStatus: "unreadable" }),
+			PROJECT_ON,
+			{ kind: "resolved", requested: { want: "off", source: "run" } },
+		],
+		[
+			"unreadable labels fail closed even when project is off",
+			startSignal({ labelStatus: "unreadable" }),
+			PROJECT_OFF,
+			{ kind: "selector_unavailable" },
+		],
+		[
+			"label off wins",
+			startSignal({ labels: [PONYTAIL_LABEL_OFF], labelStatus: "readable" }),
+			PROJECT_ON,
+			{ kind: "resolved", requested: { want: "off", source: "label" } },
+		],
+		[
+			"project on is attributed to the arm",
+			startSignal({ labels: [], labelStatus: "readable" }),
+			PROJECT_ON,
+			{ kind: "resolved", requested: { want: "on", source: "arm" } },
+		],
+		[
+			"project off is overridden by the arm",
+			startSignal({ labels: [], labelStatus: "readable" }),
+			PROJECT_OFF,
+			{ kind: "resolved", requested: { want: "on", source: "arm" } },
+		],
+	] as const)("%s", (_name, input, projectConfig, expected) => {
+		expect(
+			resolvePonytailRequested(input, projectConfig, { armInject: true }),
+		).toEqual(expected);
+	});
+
+	it("encodes and decodes effective and unavailable arm requests", () => {
+		expect(
+			toPonytailCondition({ want: "on", source: "arm" }, true).encoded,
+		).toBe("on:arm");
+		expect(
+			toPonytailCondition({ want: "on", source: "arm" }, false).encoded,
+		).toBe("unavailable:readiness:on:arm");
+		expect(decodePonytailConditionForRetry("on:arm")).toEqual({
+			kind: "frozen",
+			requested: { want: "on", source: "arm" },
+		});
+		expect(
+			decodePonytailConditionForRetry("unavailable:readiness:on:arm"),
+		).toEqual({
+			kind: "frozen",
+			requested: { want: "on", source: "arm" },
+		});
+	});
+});
+
 describe("toPonytailCondition — requested + readiness → effective", () => {
 	it("off request → off:<source>, ignores readiness", () => {
 		expect(

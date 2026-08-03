@@ -1,10 +1,11 @@
 /**
- * FLY-1356 — skill_framework_mode three-way switch (single source of truth).
+ * FLY-1356 / FLY-1609 — skill_framework_mode experiment switch.
  *
  * Three mutually-exclusive Runner skill-framework arms:
  *   A `superpowers` — status quo (default + kill-switch target)
  *   B `matt`        — mattpocock/skills 6-skill subset (vendored plugin)
  *   C `bare`        — neither framework installed
+ *   D `bare-ponytail` — C assembly plus ponytail code-minimalism rules
  * plus the env-only meta value `split` (per-issue stable-hash bucketing).
  *
  * This module owns the RESOLUTION semantics (plan §0 table). The apply layer
@@ -24,10 +25,24 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExecutorBackend } from "./types.js";
 
-export const SKILL_FRAMEWORK_MODES = ["superpowers", "matt", "bare"] as const;
+export const SKILL_FRAMEWORK_MODES = [
+	"superpowers",
+	"matt",
+	"bare",
+	"bare-ponytail",
+] as const;
 export type SkillFrameworkMode = (typeof SKILL_FRAMEWORK_MODES)[number];
 
-/** env-only meta value: per-issue stable-hash split across the three arms. */
+export type SkillAssemblyBaseArm = "superpowers" | "matt" | "bare";
+
+/** Keep experimental attribution values out of prompt/plugin assembly APIs. */
+export function skillAssemblyBaseArm(
+	mode: SkillFrameworkMode,
+): SkillAssemblyBaseArm {
+	return mode === "bare-ponytail" ? "bare" : mode;
+}
+
+/** env-only meta value: per-issue stable-hash split across the four arms. */
 export const SKILL_FRAMEWORK_SPLIT = "split";
 export const SKILL_FRAMEWORK_MODE_ENV = "FLYWHEEL_SKILL_FRAMEWORK_MODE";
 
@@ -89,12 +104,13 @@ export function isSkillFrameworkMode(v: unknown): v is SkillFrameworkMode {
 
 /**
  * Stable per-issue bucket: sha256(identifier) first 4 bytes as a big-endian
- * uint32, % 3, bucket order fixed [superpowers, matt, bare]. Deterministic —
+ * uint32, % 4, bucket order fixed by SKILL_FRAMEWORK_MODES. Deterministic —
  * the same identifier always lands in the same arm.
  */
 export function hashModeBucket(identifier: string): SkillFrameworkMode {
 	const digest = createHash("sha256").update(identifier).digest();
-	// % 3 is always in range; the cast satisfies noUncheckedIndexedAccess.
+	// Modulo the fixed arm count is always in range; the cast satisfies
+	// noUncheckedIndexedAccess.
 	return SKILL_FRAMEWORK_MODES[
 		digest.readUInt32BE(0) % SKILL_FRAMEWORK_MODES.length
 	] as SkillFrameworkMode;

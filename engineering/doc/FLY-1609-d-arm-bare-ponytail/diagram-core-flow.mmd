@@ -1,0 +1,16 @@
+flowchart TD
+    A["新 issue 进入实验<br/>(split 分流开启时)"] --> B{"这个 issue<br/>以前分过臂吗?"}
+    B -- "分过 (sticky 保臂)" --> C["沿用原来的臂<br/>同一 issue 永远同一臂"]
+    B -- "没分过" --> D["按 issue 号做稳定哈希<br/>% 4 均分四桶"]
+    D --> A1["A 臂 superpowers<br/>(现状全家桶)"]
+    D --> B1["B 臂 matt<br/>(6 技能精简版)"]
+    D --> C1["C 臂 bare<br/>(裸提示词)"]
+    D --> D1["D 臂 bare-ponytail<br/>(裸提示词 + 代码极简)"]
+    C --> D1
+    D1 --> E["装配:提示词与 C 臂逐字相同<br/>唯一区别 = 自动开 ponytail"]
+    E --> F{"ponytail 就绪吗?<br/>(插件在不在)"}
+    F -- "就绪" --> G["ponytail_condition = on:arm<br/>✅ 计入 D 组数据"]
+    F -- "不就绪" --> H["如实记 unavailable<br/>session 照跑裸提示词<br/>🚫 不计入 D 组"]
+    G --> I["session 干活 → 数据落库<br/>duration / token / 评审轮数"]
+    H --> I
+    I --> J["分析脚本按臂分组对比<br/>= 过度工程的直接测量"]

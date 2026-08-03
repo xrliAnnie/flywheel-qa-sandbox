@@ -11,6 +11,8 @@ import type {
 	FounderUxGateConfig,
 	PonytailConfig,
 	PonytailInput,
+	PonytailRetryInput,
+	SkillAssemblyBaseArm,
 	SkillFrameworkMode,
 	SkillFrameworkVia,
 	SkillsConfig,
@@ -31,6 +33,7 @@ import {
 	SKILL_FRAMEWORK_SPLIT,
 	SUPERPOWERS_CODEX_NAMESPACE,
 	SUPERPOWERS_PLUGIN_KEY,
+	skillAssemblyBaseArm,
 	toPonytailCondition,
 } from "flywheel-config";
 import type {
@@ -346,6 +349,12 @@ export interface BlueprintContext {
 	 * unless a label/project opts in).
 	 */
 	ponytailInput?: PonytailInput;
+	/**
+	 * FLY-1609: retry-only carrier. Blueprint alone knows the final arm, so it
+	 * decides whether a frozen arm request is still valid or must be re-resolved
+	 * from the current, trust-marked selector signal.
+	 */
+	ponytailRetry?: PonytailRetryInput;
 	// v0.2 — optional for backward compat
 	projectName?: string;
 	sessionTimeoutMs?: number;
@@ -879,20 +888,19 @@ export class Blueprint {
 		// Hydrate BEFORE emitStarted so labels are available in session_started payload
 		const hydrated = await this.hydrator.hydrate(node);
 
-		// FLY-615: resolve the ponytail condition BEFORE the event envelope so
-		// the session_started upsert carries `ponytail_condition` (the FLY-614/616
-		// A/B join key). Falls back to a start_signal from hydrated labels when no
-		// explicit ponytailInput was threaded (byte-compatible: off:default unless
-		// a label/project opts in). selector-unavailable (labels unreadable under
-		// project-on) and readiness failure both yield an `unavailable` condition
-		// (no --settings, recorded for audit, excluded from 614/616).
-		const ponytailCondition = this.resolvePonytailCondition(ctx, hydrated);
-
 		// FLY-1356: resolve the skill-framework arm BEFORE the event envelope so
 		// session_started carries `skill_framework_mode`/`_via` (the attribution
 		// join key). Returns undefined when the flag sits at its default —
 		// envelope stays byte-identical (red line #1).
 		const skillFramework = this.resolveSkillFrameworkForRun(ctx, hydrated);
+
+		// FLY-615/1609: the final arm owns the optional D-arm injection, so resolve
+		// ponytail only after readiness/fallback has finalized the attribution mode.
+		const ponytailCondition = this.resolvePonytailCondition(
+			ctx,
+			hydrated,
+			skillFramework?.mode,
+		);
 
 		const env: EventEnvelope = {
 			executionId,
@@ -983,19 +991,38 @@ export class Blueprint {
 	private resolvePonytailCondition(
 		ctx: BlueprintContext,
 		hydrated: HydratedContext,
+		skillFrameworkMode?: SkillFrameworkMode,
 	): string | undefined {
-		const input: PonytailInput = ctx.ponytailInput ?? {
-			kind: "start_signal",
-			signal: {
-				labelStatus: "readable",
-				labels: (ctx.issueLabels ?? hydrated.labels).map((l) =>
-					l.toLowerCase(),
-				),
-			},
-		};
+		let input: PonytailInput;
+		if (ctx.ponytailRetry) {
+			const frozen = ctx.ponytailRetry.frozen;
+			const frozenStillValid =
+				frozen &&
+				(frozen.source !== "arm" || skillFrameworkMode === "bare-ponytail");
+			input = frozenStillValid
+				? { kind: "frozen_requested", requested: frozen }
+				: {
+						kind: "start_signal",
+						signal: ctx.ponytailRetry.freshSignal ?? {
+							labelStatus: "unreadable",
+						},
+					};
+		} else {
+			input = ctx.ponytailInput ?? {
+				kind: "start_signal",
+				signal: {
+					labelStatus: "readable",
+					labels: (ctx.issueLabels ?? hydrated.labels).map((l) =>
+						l.toLowerCase(),
+					),
+				},
+			};
+		}
 		let resolved: ReturnType<typeof resolvePonytailRequested>;
 		try {
-			resolved = resolvePonytailRequested(input, this.ponytailConfig);
+			resolved = resolvePonytailRequested(input, this.ponytailConfig, {
+				armInject: skillFrameworkMode === "bare-ponytail",
+			});
 		} catch (err) {
 			// Conflicting ponytail / ponytail-off labels — refuse to guess. Record
 			// a DISTINCT unavailable:conflict (loud, excluded from A/B) rather than
@@ -1088,16 +1115,17 @@ export class Blueprint {
 			);
 			return { mode: "superpowers", via: "fallback_superpowers" };
 		}
+		const assemblyMode = skillAssemblyBaseArm(resolved.mode);
 		if (
 			backend === "codex-tmux" &&
-			(resolved.mode === "matt" || resolved.mode === "bare")
+			(assemblyMode === "matt" || assemblyMode === "bare")
 		) {
 			const repoRoot =
 				this.flywheelRepoRoot ??
 				path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 			try {
 				const probe = this.codexSkillAssemblyProbe({
-					mode: resolved.mode,
+					mode: assemblyMode,
 					agentsSkillsDir: defaultAgentsSkillsDir(),
 					mattSkillsSourceDir: path.join(
 						repoRoot,
@@ -1150,8 +1178,9 @@ export class Blueprint {
 		// plugin flags remain Claude-only, while prompt variants apply to every
 		// backend with native assembly capability (Claude + Codex). Default/absent
 		// → superpowers → zero contribution everywhere.
-		const skillFrameworkMode: SkillFrameworkMode =
-			env.skillFrameworkMode ?? "superpowers";
+		const skillFrameworkMode = skillAssemblyBaseArm(
+			env.skillFrameworkMode ?? "superpowers",
+		);
 		const claudePluginAssembly =
 			(ctx.runnerBackend ?? "claude-tmux") === "claude-tmux" &&
 			skillFrameworkMode !== "superpowers";
@@ -2572,7 +2601,7 @@ export class Blueprint {
 				// probe result. Default env leaves every field absent.
 				...(isCodexRunner && skillFramework
 					? {
-							skillFrameworkMode: skillFramework.mode,
+							skillFrameworkMode,
 							...(skillFramework.codexSkillDisableNames && {
 								codexSkillDisableNames: skillFramework.codexSkillDisableNames,
 							}),
@@ -2923,7 +2952,7 @@ export class Blueprint {
 async function readAgentFileWithSkillVariant(
 	repoRoot: string,
 	relativePath: string,
-	mode: SkillFrameworkMode | undefined,
+	mode: SkillAssemblyBaseArm | undefined,
 ): Promise<string | null> {
 	if ((mode === "matt" || mode === "bare") && relativePath.endsWith(".md")) {
 		const variantPath = `${relativePath.slice(0, -3)}.${mode}.md`;

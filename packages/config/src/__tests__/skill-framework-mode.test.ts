@@ -9,6 +9,7 @@ import {
 	SKILL_FRAMEWORK_MODES,
 	SUPERPOWERS_CODEX_NAMESPACE,
 	SUPERPOWERS_PLUGIN_KEY,
+	skillAssemblyBaseArm,
 } from "../skill-framework-mode.js";
 import { EXECUTOR_BACKENDS } from "../types.js";
 
@@ -25,8 +26,17 @@ function envWith(value?: string): Record<string, string | undefined> {
 }
 
 describe("constants", () => {
-	it("exposes the three modes in fixed bucket order", () => {
-		expect(SKILL_FRAMEWORK_MODES).toEqual(["superpowers", "matt", "bare"]);
+	it("exposes the four experiment arms in fixed bucket order", () => {
+		expect(SKILL_FRAMEWORK_MODES).toEqual([
+			"superpowers",
+			"matt",
+			"bare",
+			"bare-ponytail",
+		]);
+		expect(skillAssemblyBaseArm("bare-ponytail")).toBe("bare");
+		expect(skillAssemblyBaseArm("superpowers")).toBe("superpowers");
+		expect(skillAssemblyBaseArm("matt")).toBe("matt");
+		expect(skillAssemblyBaseArm("bare")).toBe("bare");
 	});
 	it("plugin keys match the real-machine spike values (research.md S2)", () => {
 		expect(SUPERPOWERS_PLUGIN_KEY).toBe("superpowers@superpowers-dev");
@@ -146,6 +156,23 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 			}),
 		).toEqual({ mode: stamp, via: "sticky" });
 	});
+
+	it.each([
+		["override", { override: "bare-ponytail" }, "override"],
+		["prior stamp", { priorStamp: "bare-ponytail" }, "sticky"],
+		["parent", { parentMode: "bare-ponytail" }, "inherited"],
+	] as const)(
+		"split + D-arm %s carrier preserves D attribution",
+		(_name, carrier, via) => {
+			expect(
+				resolveSkillFrameworkMode({
+					env: envWith("split"),
+					issueIdentifier: ID,
+					...carrier,
+				}),
+			).toEqual({ mode: "bare-ponytail", via });
+		},
+	);
 
 	it("split first admission → hash bucket", () => {
 		expect(
@@ -284,19 +311,27 @@ describe("hashModeBucket", () => {
 		for (let i = 0; i < 5; i++) expect(hashModeBucket(ID)).toBe(first);
 	});
 
-	it("bucket membership is always one of the three modes", () => {
+	it("bucket membership is always one of the four modes", () => {
 		for (const id of ["FLY-1", "GEO-100", "", "abc", "FLY-1356"]) {
 			expect(SKILL_FRAMEWORK_MODES).toContain(hashModeBucket(id));
 		}
 	});
 
-	it("distributes ~evenly over 10,000 synthetic identifiers (30%–36.7% per bucket)", () => {
-		const counts: Record<string, number> = { superpowers: 0, matt: 0, bare: 0 };
+	it("distributes ~evenly over 10,000 identifiers across exactly four buckets", () => {
+		const counts: Record<string, number> = {
+			superpowers: 0,
+			matt: 0,
+			bare: 0,
+			"bare-ponytail": 0,
+		};
 		const N = 10_000;
 		for (let i = 0; i < N; i++) counts[hashModeBucket(`FLY-${i}`)]++;
+		expect(
+			Object.entries(counts).filter(([, count]) => count > 0),
+		).toHaveLength(4);
 		for (const mode of SKILL_FRAMEWORK_MODES) {
-			expect(counts[mode] / N).toBeGreaterThanOrEqual(0.3);
-			expect(counts[mode] / N).toBeLessThanOrEqual(0.367);
+			expect(counts[mode] / N).toBeGreaterThanOrEqual(0.215);
+			expect(counts[mode] / N).toBeLessThanOrEqual(0.285);
 		}
 	});
 });

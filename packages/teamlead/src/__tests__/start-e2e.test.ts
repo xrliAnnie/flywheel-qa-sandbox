@@ -1418,7 +1418,7 @@ pipeline:
 					success: false,
 					code: "INVALID_SKILL_FRAMEWORK_MODE",
 					reason: "unknown_mode",
-					allowed: ["superpowers", "matt", "bare"],
+					allowed: ["superpowers", "matt", "bare", "bare-ponytail"],
 					silent: false,
 				});
 				expect(mockDispatcher.start).not.toHaveBeenCalled();
@@ -1439,14 +1439,18 @@ pipeline:
 			expect(mockDispatcher.start).not.toHaveBeenCalled();
 		}, 15_000);
 
-		it("valid arm under split → dispatched with skillFrameworkMode", async () => {
-			process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = "split";
-			const res = await postArm("bare");
-			expect(res.status).toBe(200);
-			expect(mockDispatcher.start).toHaveBeenCalledWith(
-				expect.objectContaining({ skillFrameworkMode: "bare" }),
-			);
-		}, 15_000);
+		it.each(["bare", "bare-ponytail"])(
+			"valid arm %s under split → dispatched with skillFrameworkMode",
+			async (arm) => {
+				process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = "split";
+				const res = await postArm(arm);
+				expect(res.status).toBe(200);
+				expect(mockDispatcher.start).toHaveBeenCalledWith(
+					expect.objectContaining({ skillFrameworkMode: arm }),
+				);
+			},
+			15_000,
+		);
 
 		it("absent arm → request carries NO skillFrameworkMode (byte-compatible)", async () => {
 			const res = await postArm(undefined);

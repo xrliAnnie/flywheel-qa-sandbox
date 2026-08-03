@@ -2768,8 +2768,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
-		// FLY-1356: the three-way skill-framework switch (A=superpowers status
-		// quo / B=matt / C=bare) + the env-only meta value `split` (per-issue
+		// FLY-1356/1609: the four-way skill-framework switch (A=superpowers status
+		// quo / B=matt / C=bare / D=bare+ponytail) plus `split` (per-issue
 		// stable-hash bucketing). KILL SEMANTICS: set back to "superpowers" (or
 		// delete the key) → every NEW dispatch resolves A immediately, no Bridge
 		// restart (call_time read + direct toggle). In-flight B/C sessions are
@@ -2783,10 +2783,10 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		envVar: "FLYWHEEL_SKILL_FRAMEWORK_MODE",
 		polarity: "default_on",
 		valueKind: "enum",
-		enumValues: ["superpowers", "matt", "bare", "split"],
+		enumValues: ["superpowers", "matt", "bare", "bare-ponytail", "split"],
 		default: "superpowers",
 		description:
-			"FLY-1356: Runner skill 框架三选一（superpowers=A 现状默认 / matt=B / bare=C / split=按 issue 稳定哈希分流）。kill = 设回 superpowers，秒级生效不重启；存量 in-flight session 不追改",
+			"FLY-1356/1609: Runner skill 框架四臂（superpowers=A / matt=B / bare=C / bare-ponytail=D / split=按 issue 稳定哈希分流）。kill = 设回 superpowers，秒级生效不重启；存量 in-flight session 不追改",
 		readSites: [
 			envSite(
 				"packages/edge-worker/src/Blueprint.ts",

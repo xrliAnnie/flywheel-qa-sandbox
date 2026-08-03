@@ -16,7 +16,7 @@ FLY-1458 原定「按 Annie 口径出三臂(A·superpowers / B·matt / C·bare)p
 
 - `comparison-current-data.html` — **主交付物**:现有数据版 interactive 对比(design 阶段多样本 + 历史三臂完整三段 + confound + 能说/不能说)。
 - `interim-findings.md` — 早期三臂-only 文字版发现(被 HTML 的扩充数据版取代,保留作记录)。
-- `scripts/design_compare.py` — design 阶段 first-pass 跨臂对比(按 skill_framework_mode 分组),HTML 主表来源。
+- `scripts/design_compare.py` — **未来数据权威入口**:design first-pass / design-review visits 四臂对比,按 `skill_framework_mode` 分组并以 `ponytail_condition` 做 eligibility。
 - `scripts/final.py` — 历史三臂:各阶段 first-pass active + review 轮数 + approve 等待 + wall-clock + 代码产出。
 - `scripts/analyze.py` — 逐 session active/review/approve/wall-clock 分段(含 parked-in-active-stage 缺陷说明)。
 - `data/stage_timelines.txt` — 全部载荷(历史3 + 今晚5)完整 stage_changed 时间线原始转储(重跑校对用)。
@@ -28,12 +28,27 @@ FLY-1458 原定「按 Annie 口径出三臂(A·superpowers / B·matt / C·bare)p
 
 ## 如何重跑(未来数据攒够后)
 
+四臂 rollout 后,从 rollout epoch 起跑权威入口(上线时把实际 ISO 时间补到下方):
+
 ```bash
-cd /Users/xiaorongli/Dev/flywheel-<issue>   # 或本 worktree
-python3 engineering/doc/FLY-1458-abc-prompt-three-arm-analysis/scripts/final.py
+python3 engineering/doc/FLY-1458-abc-prompt-three-arm-analysis/scripts/design_compare.py \
+  --since '<FOUR_ARM_ROLLOUT_ISO>'
 ```
 
-脚本用 `file:...?mode=ro` 只读连接,不碰生产状态。未来多臂数据下,把脚本里写死的三个 issue 换成「按 `sessions.skill_framework_mode` 分组」即可(该列已干净归因每个 session 的臂,见下)。
+可用 `--issues FLY-... FLY-...` 收窄 cohort。只做结构 smoke 时可显式传
+`--allow-pre-rollout`;该输出会标为 all-history,**不可当成有效四臂比较**。脚本以
+SQLite `mode=ro` 打开 `~/.flywheel/teamlead.db`,不碰生产状态。
+
+`--since` 同时接受 ISO `T`/`Z` 与 StateStore 的空格分隔时间;脚本先校验时间,
+再用 SQLite 时间语义比较,避免字符串排序静默漏掉 rollout 当天。无法解析的时间会
+直接报错,不会生成看似有效的空 D 组。
+
+Eligibility 口径固定为:D(`bare-ponytail`)只计 `ponytail_condition LIKE 'on:%'`;
+A/B/C 只计 `off:%`;其余/null/unavailable 全部逐臂进入 `EXCLUDED`,同时打印每臂
+condition 分布。`skill_framework_mode_via` 为 `noop_backend`(没有真正装配该臂)或
+`fallback_superpowers`(readiness 失败后回退)的行即使 condition 符合也会排除。
+每项均打印自己的样本数,不共用一个含混 denominator。`final.py` / `analyze.py`
+继续作为 1392/1385/1393 三个 pilot 的历史定格脚本,不承担未来四臂分析。
 
 ## 臂归因机制(已验证,支撑后续采集)
 

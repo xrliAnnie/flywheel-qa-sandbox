@@ -22,6 +22,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { PonytailConfig } from "flywheel-config";
 import {
 	hashModeBucket,
 	MATT_SKILLS_PLUGIN_KEY,
@@ -101,6 +102,8 @@ interface RunOpts {
 	ctxExtra?: Partial<BlueprintContext>;
 	participation?: (projectName: string | undefined) => boolean;
 	readiness?: (backend: string) => boolean;
+	ponytailReadiness?: (backend: string) => boolean;
+	ponytailConfig?: PonytailConfig;
 	codexProbe?: CodexSkillAssemblyProbe;
 	agentDispatcher?: AgentDispatcher;
 	projectRoot?: string;
@@ -167,8 +170,8 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 		undefined, // flywheelRepoRoot
 		undefined, // docFlowConfig
 		undefined, // founderUxGateConfig
-		undefined, // ponytailConfig
-		undefined, // ponytailReadiness (default)
+		opts.ponytailConfig,
+		opts.ponytailReadiness ?? (() => true),
 		opts.participation, // FLY-1356 participation reader
 		opts.readiness ?? (() => true), // FLY-1356 matt readiness (default ready)
 		opts.codexProbe,
@@ -339,6 +342,151 @@ describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
 		);
 	});
 
+	it("forced D records on:arm while assembling exactly bare + ponytail", async () => {
+		const { envelope, execArgs } = await runBlueprint({
+			envValue: "bare-ponytail",
+			ponytailReadiness: () => true,
+		});
+		expect(envelope.skillFrameworkMode).toBe("bare-ponytail");
+		expect(envelope.skillFrameworkModeVia).toBe("forced");
+		expect(envelope.ponytailCondition).toBe("on:arm");
+		expect(execArgs.enablePonytail).toBe(true);
+		expect(execArgs.disabledPlugins).toEqual([SUPERPOWERS_PLUGIN_KEY]);
+		expect(execArgs.enabledPluginsExtra ?? []).not.toContain(
+			MATT_SKILLS_PLUGIN_KEY,
+		);
+	});
+
+	it("forced D keeps D attribution when ponytail readiness is unavailable", async () => {
+		const { envelope, execArgs } = await runBlueprint({
+			envValue: "bare-ponytail",
+			ponytailReadiness: () => false,
+		});
+		expect(envelope.skillFrameworkMode).toBe("bare-ponytail");
+		expect(envelope.ponytailCondition).toBe("unavailable:readiness:on:arm");
+		expect(execArgs.enablePonytail).toBeUndefined();
+		expect(execArgs.disabledPlugins).toEqual([SUPERPOWERS_PLUGIN_KEY]);
+	});
+
+	it("D retry preserves a frozen explicit off instead of reopening the arm", async () => {
+		const { envelope, execArgs } = await runBlueprint({
+			envValue: "bare-ponytail",
+			ctxExtra: {
+				ponytailRetry: {
+					frozen: { want: "off", source: "run" },
+					freshSignal: { labels: [], labelStatus: "readable" },
+				},
+			} as Partial<BlueprintContext>,
+		});
+		expect(envelope.ponytailCondition).toBe("off:run");
+		expect(execArgs.enablePonytail).toBeUndefined();
+	});
+
+	it("kill drops frozen arm attribution and re-resolves the fresh label signal", async () => {
+		const { envelope, execArgs } = await runBlueprint({
+			envValue: "superpowers",
+			ctxExtra: {
+				ponytailRetry: {
+					frozen: { want: "on", source: "arm" },
+					freshSignal: { labels: ["ponytail"], labelStatus: "readable" },
+				},
+			} as Partial<BlueprintContext>,
+		});
+		expect(envelope.skillFrameworkMode).toBe("superpowers");
+		expect(envelope.ponytailCondition).toBe("on:label");
+		expect(execArgs.enablePonytail).toBe(true);
+	});
+
+	it.each([
+		[
+			"no current signal",
+			{ labels: [], labelStatus: "readable" as const },
+			undefined,
+			"off:default",
+		],
+		[
+			"project rollout",
+			{ labels: [], labelStatus: "readable" as const },
+			{ enabled: true },
+			"on:project",
+		],
+	] as const)(
+		"kill re-resolves frozen arm through ordinary FLY-615: %s",
+		async (_name, freshSignal, ponytailConfig, expected) => {
+			const { envelope } = await runBlueprint({
+				envValue: "superpowers",
+				ponytailConfig,
+				ctxExtra: {
+					ponytailRetry: {
+						frozen: { want: "on", source: "arm" },
+						freshSignal,
+					},
+				} as Partial<BlueprintContext>,
+			});
+			expect(envelope.ponytailCondition).toBe(expected);
+			expect(envelope.ponytailCondition).not.toContain(":arm");
+		},
+	);
+
+	it("D reresolve honors a freshly-read ponytail-off label", async () => {
+		const { envelope } = await runBlueprint({
+			envValue: "bare-ponytail",
+			ctxExtra: {
+				ponytailRetry: {
+					freshSignal: {
+						labels: ["ponytail-off"],
+						labelStatus: "readable",
+					},
+				},
+			} as Partial<BlueprintContext>,
+		});
+		expect(envelope.ponytailCondition).toBe("off:label");
+	});
+
+	it("D retry with a missing fresh selector fails closed", async () => {
+		const { envelope } = await runBlueprint({
+			envValue: "bare-ponytail",
+			ctxExtra: {
+				ponytailRetry: { freshSignal: undefined },
+			} as unknown as Partial<BlueprintContext>,
+		});
+		expect(envelope.ponytailCondition).toBe(
+			"unavailable:selector:label_unreadable",
+		);
+	});
+
+	it.each([
+		[
+			"run",
+			"off:run",
+			{ runOverride: "off" as const, labelStatus: "readable" as const },
+		],
+		[
+			"label",
+			"off:label",
+			{ labels: ["ponytail-off"], labelStatus: "readable" as const },
+		],
+	])(
+		"forced D preserves explicit %s off",
+		async (_source, condition, signal) => {
+			const { envelope, execArgs } = await runBlueprint({
+				envValue: "bare-ponytail",
+				ctxExtra: { ponytailInput: { kind: "start_signal", signal } },
+			});
+			expect(envelope.ponytailCondition).toBe(condition);
+			expect(execArgs.enablePonytail).toBeUndefined();
+		},
+	);
+
+	it("forced bare remains the exact C control with ponytail off", async () => {
+		const { envelope, execArgs } = await runBlueprint({ envValue: "bare" });
+		expect(envelope.skillFrameworkMode).toBe("bare");
+		expect(envelope.ponytailCondition).toBe("off:default");
+		expect(execArgs.enablePonytail).toBeUndefined();
+		expect(execArgs.disabledPlugins).toEqual([SUPERPOWERS_PLUGIN_KEY]);
+		expect(execArgs.enabledPluginsExtra).toBeUndefined();
+	});
+
 	it("forced matt (ready): superpowers disabled + matt-skills enabled, envelope matt/forced", async () => {
 		const { envelope, execArgs } = await runBlueprint({
 			envValue: "matt",
@@ -471,6 +619,19 @@ describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
 		},
 	);
 
+	it("D on a no-assembly backend stays attributed but is excluded as unavailable", async () => {
+		const { envelope, execArgs } = await runBlueprint({
+			envValue: "bare-ponytail",
+			ctxExtra: { runnerBackend: "kimi-tmux" },
+			ponytailReadiness: () => false,
+		});
+		expect(envelope.skillFrameworkMode).toBe("bare-ponytail");
+		expect(envelope.skillFrameworkModeVia).toBe("noop_backend");
+		expect(envelope.ponytailCondition).toBe("unavailable:readiness:on:arm");
+		expect(execArgs.enablePonytail).toBeUndefined();
+		expect(execArgs.disabledPlugins).toBeUndefined();
+	});
+
 	it.each([
 		["hash", {}, undefined],
 		["override", { skillFrameworkModeOverride: "bare" }, "bare"],
@@ -517,6 +678,28 @@ describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
 			"superpowers:test-driven-development",
 		]);
 		expect(execArgs.codexMattSkillsSourceDir).toBeUndefined();
+	});
+
+	it("codex D records D but probes and executes the bare base arm", async () => {
+		const codexProbe = vi.fn(() => ({
+			disableNames: ["superpowers:brainstorming"],
+		}));
+		const { envelope, execArgs } = await runBlueprint({
+			envValue: "bare-ponytail",
+			ctxExtra: { runnerBackend: "codex-tmux" },
+			ponytailReadiness: () => true,
+			codexProbe,
+		});
+		expect(codexProbe).toHaveBeenCalledWith(
+			expect.objectContaining({ mode: "bare" }),
+		);
+		expect(envelope.skillFrameworkMode).toBe("bare-ponytail");
+		expect(envelope.ponytailCondition).toBe("on:arm");
+		expect(execArgs.skillFrameworkMode).toBe("bare");
+		expect(execArgs.enablePonytail).toBe(true);
+		expect(execArgs.codexSkillDisableNames).toEqual([
+			"superpowers:brainstorming",
+		]);
 	});
 
 	it("codex matt threads the same scan result plus the verified vendor source", async () => {
@@ -678,6 +861,21 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		});
 		const { execArgs } = await runBlueprint({
 			envValue: "bare",
+			agentDispatcher: makeDispatcher(),
+			projectRoot: root,
+		});
+		expect(execArgs.appendSystemPrompt).toContain("BARE-VARIANT-MARKER");
+		expect(execArgs.appendSystemPrompt).not.toContain("BASELINE-MARKER");
+	});
+
+	it("D arm reads the same .bare.md variant as C", async () => {
+		const root = makeProjectWithAgent({
+			"exec.md": "BASELINE-MARKER",
+			"exec.bare.md": "BARE-VARIANT-MARKER",
+		});
+		const { execArgs } = await runBlueprint({
+			envValue: "bare-ponytail",
+			ponytailReadiness: () => true,
 			agentDispatcher: makeDispatcher(),
 			projectRoot: root,
 		});

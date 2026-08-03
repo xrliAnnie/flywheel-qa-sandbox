@@ -53,6 +53,20 @@ describe("FLY-1356 StateStore skill-framework columns", () => {
 		expect(row.skill_framework_mode_via).toBe("hash");
 	});
 
+	it("round-trips D attribution and returns it as the sticky stamp", () => {
+		store.upsertSession(
+			makeSession({
+				skill_framework_mode: "bare-ponytail",
+				skill_framework_mode_via: "hash",
+				ponytail_condition: "on:arm",
+			}),
+		);
+		const row = store.getSession("exec-1")!;
+		expect(row.skill_framework_mode).toBe("bare-ponytail");
+		expect(row.ponytail_condition).toBe("on:arm");
+		expect(store.getSkillFrameworkStamp("FLY-1356")).toBe("bare-ponytail");
+	});
+
 	it("absent fields leave the columns untouched (default flag → NULL columns)", () => {
 		store.upsertSession(makeSession());
 		const row = store.getSession("exec-1")!;

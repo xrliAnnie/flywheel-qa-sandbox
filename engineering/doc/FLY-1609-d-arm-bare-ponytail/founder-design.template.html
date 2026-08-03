@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1609 开 D 臂:bare + ponytail — 设计方案</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 60px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; margin-bottom: 6px; color: #1a365d; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 24px; }
+  .meta code { font-family: 'SF Mono', monospace; font-size: 12px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.gray { border-left-color: #86868b; }
+  h2 { font-size: 18px; margin-bottom: 10px; color: #1a365d; }
+  h3 { font-size: 15px; margin: 14px 0 6px; }
+  p { margin-bottom: 10px; }
+  .lead { font-size: 17px; }
+  .jargon { color: #86868b; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e8e8ed; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+  code { font-family: 'SF Mono', monospace; font-size: 12.5px; background: #f0f0f5; padding: 1px 5px; border-radius: 4px; }
+  .diagram { overflow-x: auto; margin: 12px 0; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-right: 6px; vertical-align: middle; }
+  .badge.ok { background: #e3f7e9; color: #1d804b; }
+  .badge.no { background: #fdeaea; color: #c22e2a; }
+  .badge.info { background: #e8f1fd; color: #1558b0; }
+  ul { margin: 6px 0 10px 20px; }
+  li { margin-bottom: 6px; }
+  .comment-box { margin-top: 16px; padding-top: 12px; border-top: 1px dashed #e0e0e5; }
+  .comment-box label { display: block; font-size: 12px; color: #86868b; margin-bottom: 6px; }
+  .comment-box textarea { width: 100%; min-height: 56px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 13px; resize: vertical; background: #fafafc; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  #summary-list { font-size: 13px; }
+  #summary-list .s-item { margin-bottom: 10px; padding: 8px 10px; background: #f7f7fa; border-radius: 8px; }
+  #summary-list .s-title { font-weight: 600; color: #1a365d; font-size: 12px; margin-bottom: 3px; }
+  #copy-all { margin-top: 12px; background: #007aff; color: #fff; border: none; border-radius: 8px; padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  #copy-all:active { opacity: 0.8; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+  .empty-note { color: #86868b; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1609 开 D 臂:bare + ponytail</h1>
+  <div class="meta">设计方案 · 2026-08-03 · Codex 设计评审 4 轮 APPROVED · 文档: <code>engineering/doc/FLY-1609-d-arm-bare-ponytail/</code></div>
+
+  <div class="card green" data-section="一句话总结">
+    <h2>① 一句话总结</h2>
+    <p class="lead">在现有 A/B/C 三臂提示词实验里加<strong>第四臂 D = C 的裸提示词 + 自动开启「代码极简」规则</strong>,四臂随机均分新 issue,用同一套数据口径对比耗时/token/评审轮数 —— 直接测量「我们是否在过度工程」。</p>
+    <p class="jargon">名词:「臂」= 实验分组(像药物试验的对照组);「ponytail」= 我们的代码极简规则包(FLY-615 已上线),让 AI 写最少、最直接的代码;「bare」= 不装任何技能框架、只给最裸提示词的 C 臂。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s1" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card" data-section="核心流程">
+    <h2>② 核心流程:issue 怎么进 D 臂</h2>
+    <p>新 issue 按 issue 号做<strong>稳定哈希</strong><span class="jargon">(同一个 issue 号永远算出同一个数,保证分组随机但可复现)</span>均分进四个桶;已经分过臂的 issue 有 <strong>sticky</strong><span class="jargon">(粘住:同一 issue 的所有环节永远留在同一臂,数据不串)</span>保护。命中 D 的 session,提示词与 C 臂逐字相同,唯一区别是自动开 ponytail。</p>
+    <div class="diagram"><!--SVG1--></div>
+    <p><strong>归因诚实红线</strong>:如果 ponytail 当时不可用(比如插件没装好),session 照样跑裸提示词,但会<strong>如实记录「没跑成」</strong>,这条数据不算进 D 组 —— 绝不把没开成极简规则的 session 冒充成 D 臂成果。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s2" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card" data-section="优先级与急停">
+    <h2>③ 谁说了算:五层优先级 + 急停</h2>
+    <p>D 臂的自动开启被放在一个明确的优先级槽位里:<strong>人的显式指定 &gt; issue 标签 &gt; D 臂注入 &gt; 项目默认</strong>。人说关就关,实验绝不越过人的意愿;标签读不到时宁可不开(防止看不见的「关闭」标签被实验盖过)。</p>
+    <div class="diagram"><!--SVG2--></div>
+    <p><strong>急停</strong>:把全局开关设回 A 臂,秒级生效、不用重启 —— 之后所有「实验注入的 ponytail」立即停止(包括重试的旧 issue);但你手动给某 issue 打的 ponytail 标签仍然有效(实验急停不误伤正常功能)。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s3" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="数据模型">
+    <h2>④ 数据/结构模型</h2>
+    <p>不加任何新表新列 —— 全部复用现有两列,单列分组即可出四组对比:</p>
+    <table>
+      <tr><th>列</th><th>取值</th><th>含义</th></tr>
+      <tr><td><code>skill_framework_mode</code></td><td><code>superpowers</code> / <code>matt</code> / <code>bare</code> / <strong><code>bare-ponytail</code></strong>(新)</td><td>这个 session 在哪个臂</td></tr>
+      <tr><td><code>ponytail_condition</code></td><td><code>on:arm</code>(新来源)/ <code>on:label</code> / <code>off:run</code> / <code>unavailable:…</code> 等</td><td>极简规则实际开没开、为什么</td></tr>
+    </table>
+    <table>
+      <tr><th>组</th><th>统计口径</th></tr>
+      <tr><td><span class="badge ok">D 组</span></td><td>臂 = <code>bare-ponytail</code> <strong>且</strong>实际开成(<code>on:%</code>)—— flag 传了不算,以落库列值为准</td></tr>
+      <tr><td><span class="badge info">A/B/C 对照组</span></td><td>各臂里极简规则<strong>关着</strong>的 session(<code>off:%</code>)—— 标签/项目手动开了的进「排除桶」单列可见</td></tr>
+      <tr><td><span class="badge no">排除桶</span></td><td>没跑成(unavailable)、被手动干预、历史空值 —— 逐行可见,不混进任何组</td></tr>
+    </table>
+    <p>分析入口:升级 1458 的 <code>design_compare.py</code> 为四臂通用脚本,强制从 D 臂上线时刻起算(防止新旧数据混算),自带自检(self-test)并进 CI<span class="jargon">(CI = 每次改代码自动跑的检查门)</span>。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s4" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="关键取舍">
+    <h2>⑤ 关键取舍与被否掉的方案</h2>
+    <table>
+      <tr><th>决策点</th><th>选定</th><th>否掉的方案(为什么)</th></tr>
+      <tr><td>D 怎么归因</td><td>新臂值 <code>bare-ponytail</code>,单列分组</td><td>「仍记 bare、靠第二列区分」— C 臂也可能手动开 ponytail,单列分不开;「加新列」— 全链路双写,过度工程(讽刺)</td></tr>
+      <tr><td>注入在哪做</td><td>装配层(唯一知道最终臂的地方)做,优先级写进纯函数可全枚举测试</td><td>「HTTP 边界注入」— 边界看不到 sticky/回退改写,会与最终臂脱节 → 归因撒谎</td></tr>
+      <tr><td>ponytail 不可用时</td><td>臂不降级、如实记 unavailable、数据排除</td><td>「降级回 C」— 该 issue 从此永远留在 C,D 组被静默稀释</td></tr>
+      <tr><td>四桶重排</td><td>接受(%3 变 %4,未分组 issue 重排;sticky 保护存量)</td><td>「保序迁移」— 复杂度不值,分组本来就是随机的</td></tr>
+      <tr><td>重试语义</td><td>补上「冻结 + 本次可信标签」双份携带,由装配层最终裁决(Codex 评审揪出的既有缺口)</td><td>「声称自动保留」— 解码器此前根本没接进生产,显式关闭会在重试时被实验翻开</td></tr>
+    </table>
+    <p>Codex 设计评审 4 轮:R1 六条(优先级语义/装配缝隙/重试缺口/脚本硬编码/运维承诺/边界测试)、R2 两条 HIGH(标签刷新失败冒充可读、冻结注入越过急停)、R3 一条 HIGH(重试数据载体)—— 全部采纳,R4 零阻塞 APPROVED。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s5" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card gray" data-section="诚实边界">
+    <h2>⑥ 诚实边界:这个设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>四臂随机分桶 + D 臂自动开 ponytail + 归因两列如实落库;</li>
+      <li>重试/急停/标签读不到等边角全部 fail-closed(拿不准就不开、就排除);</li>
+      <li>分析脚本四臂化 + 自检进 CI;C 臂行为逐字回归断言(零扰动)。</li>
+    </ul>
+    <h3>不做</h3>
+    <ul>
+      <li>不动 ponytail 规则包本体(FLY-615 已交付,只走它的现成通路);</li>
+      <li>不出终局分析报告 —— 数据攒够后按 1458 口径另出;</li>
+      <li>不给 agy/kimi 后端开 ponytail(它们本来就不支持,如实记 unavailable);</li>
+      <li>不加任何新开关、新表、新列;</li>
+      <li><strong>只停 D、不停实验</strong>没有热开关:急停会停整个四臂实验;只想停 D 需要回退代码重新部署(不加新 flag 的诚实代价,已在运维文档写明)。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s6" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="评论汇总">
+    <h2>💬 评论汇总</h2>
+    <div id="summary-list"><p class="empty-note">还没有评论 —— 在上面任意小节留言,这里会实时汇总。</p></div>
+    <button id="copy-all">复制全部评论</button><span id="copy-status"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var PREFIX = "fly1609-comments:" + location.pathname + ":";
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-ckey]"));
+  var summaryList = document.getElementById("summary-list");
+  function sectionTitle(box) {
+    var card = box.closest("[data-section]");
+    return card ? card.getAttribute("data-section") : "未命名小节";
+  }
+  function renderSummary() {
+    while (summaryList.firstChild) summaryList.removeChild(summaryList.firstChild);
+    var any = false;
+    boxes.forEach(function (box) {
+      var v = box.value.trim();
+      if (!v) return;
+      any = true;
+      var item = document.createElement("div");
+      item.className = "s-item";
+      var t = document.createElement("div");
+      t.className = "s-title";
+      t.textContent = "【" + sectionTitle(box) + "】";
+      var body = document.createElement("div");
+      body.textContent = v;
+      item.appendChild(t);
+      item.appendChild(body);
+      summaryList.appendChild(item);
+    });
+    if (!any) {
+      var p = document.createElement("p");
+      p.className = "empty-note";
+      p.textContent = "还没有评论 —— 在上面任意小节留言,这里会实时汇总。";
+      summaryList.appendChild(p);
+    }
+  }
+  boxes.forEach(function (box) {
+    var key = box.getAttribute("data-ckey");
+    box.value = lsGet(key);
+    box.addEventListener("input", function () {
+      lsSet(key, box.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+  function collectAll() {
+    var parts = [];
+    boxes.forEach(function (box) {
+      var v = box.value.trim();
+      if (v) parts.push("【" + sectionTitle(box) + "】\n" + v);
+    });
+    return parts.join("\n\n");
+  }
+  var status = document.getElementById("copy-status");
+  function flash(msg) {
+    status.textContent = msg;
+    setTimeout(function () { status.textContent = ""; }, 2500);
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    flash(ok ? "已复制 ✓" : "复制失败,请手动选择");
+  }
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = collectAll();
+    if (!text) { flash("没有可复制的评论"); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { flash("已复制 ✓"); }, function () { fallbackCopy(text); });
+    } else {
+      fallbackCopy(text);
+    }
+  });
+})();
+</script>
+</body>
+</html>

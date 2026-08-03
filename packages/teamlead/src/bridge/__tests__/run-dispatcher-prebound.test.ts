@@ -93,6 +93,17 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 		expect(captured[0]?.executionId).toBe("succ-9");
 	});
 
+	it("threads the retry-only ponytail carrier unchanged to Blueprint", async () => {
+		const d = makeDispatcher();
+		const ponytailRetry = {
+			frozen: { want: "on" as const, source: "arm" as const },
+			freshSignal: { labels: [], labelStatus: "readable" as const },
+		};
+		await d.dispatch({ ...baseReq, ponytailRetry });
+		await d.drain();
+		expect(captured[0]?.ponytailRetry).toEqual(ponytailRetry);
+	});
+
 	it("clears guarded retry inflight state when setup throws before Blueprint.run", async () => {
 		const onSpawnFailed = vi.fn();
 		const d = new TestRetryDispatcher(

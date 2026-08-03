@@ -7,6 +7,7 @@ import type {
 	DesignBackend,
 	PhaseDispatchVendor,
 	PonytailInput,
+	PonytailRetryInput,
 	RoleEffort,
 	SkillFrameworkMode,
 } from "flywheel-config";
@@ -113,6 +114,8 @@ export interface RetryRequest {
 	 * The resolver ignores it outside `split` (kill total-semantics, R1#1).
 	 */
 	skillFrameworkMode?: SkillFrameworkMode;
+	/** FLY-1609: frozen predecessor intent plus this retry's fresh selector. */
+	ponytailRetry?: PonytailRetryInput;
 	/**
 	 * FLY-245 D2 (plan §5.2.1): gateway pre-bound successor execution id.
 	 * When present the dispatcher MUST use it instead of generating a fresh
