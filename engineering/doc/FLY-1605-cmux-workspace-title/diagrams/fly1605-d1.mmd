@@ -1,0 +1,19 @@
+flowchart TB
+    subgraph birth["为什么会出现错名(两个根因)"]
+        direction TB
+        A0["founder 换时区(旅行)<br/>机器从 Pacific 切到 Edmonton"] --> A1["根因 A:看门人身份证过期<br/>watcher 用『本地时区渲染的进程启动时间』当身份证"]
+        A1 --> A2["同一个活进程<br/>渲染出不同字符串<br/>10:45 ≠ 11:45"]
+        A2 --> A3["自我认证失败<br/>所有账本(ledger)写入被拒"]
+        A3 --> A4["create 流程在『记账』一步失败<br/>→ rename 永远走不到"]
+        B0["根因 B:并发扰动<br/>QA 测试建删 workspace / cmux 重启"] --> B1["create 用『前后快照对比』<br/>找刚建的 workspace"]
+        B1 --> B2["对比结果含糊<br/>→ 按设计放弃 rename"]
+        A4 --> C0["workspace 诞生时<br/>名字 = 整条启动命令"]
+        B2 --> C0
+    end
+    subgraph stuck["为什么永远修不好"]
+        direction TB
+        C0 --> D1["存在性检查按『名字』找<br/>错名 ≠ 窗口名 → 以为缺失<br/>→ 再建一个 → 越积越多"]
+        C0 --> D2["三套清理机制都不认识它:<br/>· 去重在严格模式下整体关闭<br/>· 账本重启即清零(失忆)<br/>· Lead 名字根本不在管理文法内"]
+        D1 --> E0["founder 看到:16/21 全是命令串"]
+        D2 --> E0
+    end

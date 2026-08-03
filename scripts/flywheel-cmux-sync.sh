@@ -82,6 +82,11 @@ FLYWHEEL_MANIFEST_DIR="${FLYWHEEL_MANIFEST_DIR:-$HOME/.flywheel/manifests}"
 # well-formed construction WAL hit a proven canonical-name collision in the
 # current reconciliation round. Bash 3.2 has no associative arrays.
 CMUX_WAL_BLOCKED_VIEWS="${CMUX_WAL_BLOCKED_VIEWS:-}"
+# FLY-1605: process-local transition latch for periodic title-topology
+# refusals. Newline-delimited because macOS Bash 3.2 has no associative arrays.
+# Inconclusive cmux inventory reads leave it untouched; a conclusive reconcile
+# sweep replaces it with the refusals still present in that sweep.
+CMUX_TITLE_TOPOLOGY_REFUSED_KEYS="${CMUX_TITLE_TOPOLOGY_REFUSED_KEYS:-}"
 
 # FLY-254: cmux app-reopen one-shot re-attach sweep.
 # Generation state file — single line `<identity>|<state>|<attempts>`,
@@ -1168,17 +1173,27 @@ close_workspace_by_ref() {
   # logs (so a dry-run inspection still shows what would have happened).
   #
   # FLY-685 (Codex code R1 MED): records the actual cmux close rc in the global
-  # LAST_WORKSPACE_CLOSE_RC (0 = closed / dry-run). The function itself still
-  # ALWAYS returns 0 — the `|| true` semantics existing callers (ghost reaper,
-  # dedup, cleanup_workspace_for) rely on under `set -euo pipefail` are
-  # unchanged. Only close_orphan_workspace_pin_if_still_orphan reads the global,
-  # so it can distinguish a swallowed cmux close FAILURE from a real close and
-  # requeue the close-request marker instead of silently dropping it.
+  # LAST_WORKSPACE_CLOSE_RC (0 = closed / dry-run). The default mode itself
+  # still ALWAYS returns 0 — the `|| true` semantics existing callers (ghost
+  # reaper, dedup, cleanup_workspace_for) rely on under `set -euo pipefail` are
+  # unchanged. FLY-1605's explicit --guarded mode instead propagates the guard
+  # or cmux rc so title reconciliation cannot mistake a preserved duplicate for
+  # a confirmed close.
+  local guarded=0
+  if [[ "${1:-}" == "--guarded" ]]; then
+    guarded=1
+    shift
+  fi
   local ws_ref="$1" reason="$2"
   local dry="${FLYWHEEL_CMUX_DRY_RUN:-0}"
   log "[audit] close workspace=$ws_ref reason=$reason dry_run=$dry"
   LAST_WORKSPACE_CLOSE_RC=0
   [[ "$dry" == "1" ]] && return 0
+  if [[ "$guarded" == "1" ]]; then
+    cmux_call_guarded _fly1605_duplicate_close_guard \
+      close-workspace --workspace "$ws_ref" || LAST_WORKSPACE_CLOSE_RC=$?
+    return "$LAST_WORKSPACE_CLOSE_RC"
+  fi
   cmux_call close-workspace --workspace "$ws_ref" || LAST_WORKSPACE_CLOSE_RC=$?
   return 0
 }
@@ -3255,9 +3270,27 @@ tmux_server_generation() {
   server_pid=$(tmux display-message -p '#{pid}' 2>/dev/null) || return 1
   socket=$(tmux display-message -p '#{socket_path}' 2>/dev/null) || return 1
   [[ -n "$server_pid" && -n "$socket" ]] || return 1
-  started=$(ps -o lstart= -p "$server_pid" 2>/dev/null | sed 's/^[[:space:]]*//' || true)
+  # FLY-1605: `ps lstart` renders in the caller's ambient timezone. Persisting
+  # that rendering as process identity made the same live tmux server appear to
+  # restart whenever the host crossed a timezone boundary. Pin both locale and
+  # timezone so one process lifetime has one stable generation string.
+  started=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$server_pid" 2>/dev/null | sed 's/^[[:space:]]*//' || true)
   [[ -n "$started" ]] || return 1
   printf '%s|%s|%s\n' "$socket" "$server_pid" "$started"
+}
+
+# Legacy generations used the same socket|pid|started shape but rendered
+# `started` in the watcher's ambient timezone. When socket and pid still match,
+# a differing third field is indistinguishable from PID reuse after a real
+# restart. The only safe compatibility action is preserve-and-block: neither
+# explanation authorizes WAL GC or recovery mutation.
+tmux_generations_share_ambiguous_endpoint() {
+  local old="$1" current="$2" old_endpoint current_endpoint
+  case "$old" in *'|'*'|'*) ;; *) return 1 ;; esac
+  case "$current" in *'|'*'|'*) ;; *) return 1 ;; esac
+  old_endpoint=${old%|*}
+  current_endpoint=${current%|*}
+  [[ -n "$old_endpoint" && "$old_endpoint" == "$current_endpoint" && "$old" != "$current" ]]
 }
 
 _view_state_key() {
@@ -3531,13 +3564,26 @@ recover_view_construction() {
   # and is never mutated by this cleanup.
   local requested_view="$1" wal line fields
   local version generation state nonce view source wid stage_sid placeholder stage current_generation expected_title
+  local generation_socket generation_pid generation_started
   wal=$(_view_wal_path "$requested_view")
   [[ -f "$wal" ]] || return 0
   [[ "$(wc -l < "$wal" 2>/dev/null | tr -d ' ')" == "1" ]] || { log "WARN: malformed view WAL: $wal"; return 1; }
   line=$(cat "$wal" 2>/dev/null) || return 1
   fields=$(printf '%s\n' "$line" | awk -F'|' '{print NF}')
-  [[ "$fields" == "9" ]] || { log "WARN: malformed view WAL fields: $wal"; return 1; }
-  IFS='|' read -r version generation state nonce view source wid stage_sid placeholder <<< "$line"
+  case "$fields" in
+    9)
+      IFS='|' read -r version generation state nonce view source wid stage_sid placeholder <<< "$line"
+      ;;
+    11)
+      # Production tmux generations are the historical socket|pid|started
+      # tuple. Test seams use an opaque one-field generation, so recovery must
+      # accept both durable shapes without rewriting either one.
+      IFS='|' read -r version generation_socket generation_pid generation_started \
+        state nonce view source wid stage_sid placeholder <<< "$line"
+      generation="${generation_socket}|${generation_pid}|${generation_started}"
+      ;;
+    *) log "WARN: malformed view WAL fields: $wal"; return 1 ;;
+  esac
   [[ "$version" == "v1" && "$view" == "$requested_view" ]] || return 1
   expected_title=${view#"$VIEW_PREFIX"}
   [[ -n "$expected_title" && "$expected_title" != "$view" ]] || return 1
@@ -3546,6 +3592,11 @@ recover_view_construction() {
   case "$view$source$wid$stage_sid$placeholder" in *$'\n'*) return 1 ;; esac
   current_generation=$(tmux_server_generation) || return 1
   [[ "$generation" == "$current_generation" ]] || {
+    if tmux_generations_share_ambiguous_endpoint "$generation" "$current_generation"; then
+      cmux_wal_block_view "$view" "$source" "$wid" || return 1
+      log "WARN: preserving ambiguous legacy-generation view WAL for $requested_view old_generation=$generation current_generation=$current_generation"
+      return 2
+    fi
     log "GC stale-generation view WAL for $requested_view"
     rm -f "$wal" 2>/dev/null || return 1
     return 0
@@ -4055,6 +4106,437 @@ close_prepared_loser_ref() {
     "cmux_cleanup|ledger-prepared-loser-closed|$title|$loser_ref"
 }
 
+# FLY-1605: read one exact workspace title. A ref that is absent, duplicated,
+# malformed, or whose title is not a string is not mutation authority.
+workspace_title_for_ref() {
+  local ref="$1" raw
+  raw=$(get_cmux_workspaces_json) || return 1
+  printf '%s' "$raw" | python3 -c '
+import json,sys
+r=sys.argv[1]
+matches=[w for w in json.load(sys.stdin).get("workspaces", [])
+         if isinstance(w, dict) and w.get("ref") == r]
+if len(matches) != 1 or not isinstance(matches[0].get("title"), str):
+    sys.exit(1)
+title=matches[0]["title"]
+if not title or "\n" in title or "\r" in title:
+    sys.exit(1)
+print(title)
+' "$ref" || return 1
+}
+
+# FLY-1605: title migration is defined only for the ordinary one-surface cmux
+# workspace shape observed in production. Multiple/zero surfaces, bad schema,
+# or a non-string title fail closed rather than guessing which tab to rename.
+workspace_single_surface_title() {
+  local ref="$1" raw
+  raw=$(cmux_call --json list-pane-surfaces --workspace "$ref") || return 1
+  printf '%s' "$raw" | python3 -c '
+import json,sys
+try:
+    data=json.load(sys.stdin)
+    surfaces=data.get("surfaces")
+    if not isinstance(surfaces, list) or len(surfaces) != 1:
+        sys.exit(1)
+    title=surfaces[0].get("title") if isinstance(surfaces[0], dict) else None
+    if not isinstance(title, str) or not title or "\n" in title or "\r" in title:
+        sys.exit(1)
+    print(title)
+except Exception:
+    sys.exit(1)
+' || return 1
+}
+
+# Print the unique current-generation receipt state for one exact logical
+# workspace. Duplicate/conflicting rows are deliberately non-authoritative.
+ledger_exact_receipt_state() {
+  local generation="$1" ref="$2" title="$3"
+  [[ -f "$VIEW_LEDGER" ]] || return 1
+  awk -F'|' -v g="$generation" -v r="$ref" -v t="$title" '
+    NF == 4 && ($1 == "prepared" || $1 == "committed") \
+      && $2 == g && $3 == r && $4 == t { n++; state=$1 }
+    END { if (n == 1) print state; else exit 1 }
+  ' "$VIEW_LEDGER"
+}
+
+_GUARD_TITLE_GENERATION=""
+_GUARD_TITLE_REF=""
+_GUARD_TITLE=""
+_GUARD_TITLE_RAW=""
+_title_tab_rename_guard() {
+  local current receipt workspace surface
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_TITLE_GENERATION" ]] || return 1
+  receipt=$(ledger_exact_receipt_state "$current" "$_GUARD_TITLE_REF" "$_GUARD_TITLE") || return 1
+  case "$receipt" in prepared|committed) ;; *) return 1 ;; esac
+  workspace=$(workspace_title_for_ref "$_GUARD_TITLE_REF") || return 1
+  [[ "$workspace" == "$_GUARD_TITLE" ]] || return 1
+  surface=$(workspace_single_surface_title "$_GUARD_TITLE_REF") || return 1
+  [[ "$surface" == "$_GUARD_TITLE_RAW" ]] || return 1
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_TITLE_GENERATION" ]]
+}
+
+# FLY-1605 shared completion state machine. The caller must already own one
+# exact prepared/committed receipt; this helper never mints a receipt and never
+# demotes committed authority. It commits only after both founder-visible title
+# surfaces read back as the canonical tmux window name.
+complete_title_migration() {
+  local ref="$1" title="$2" generation="$3" canonical_raw="$4"
+  local receipt workspace surface current rc=0
+  receipt=$(ledger_exact_receipt_state "$generation" "$ref" "$title") || {
+    log "WARN: title migration lacks unique receipt generation=$generation ref=$ref title=$title"
+    return 1
+  }
+  workspace=$(workspace_title_for_ref "$ref") || {
+    log "WARN: title migration cannot read exact workspace ref=$ref title=$title"
+    return 1
+  }
+  [[ "$workspace" == "$title" ]] || {
+    log "WARN: title migration workspace drift ref=$ref expected=$title observed=$workspace"
+    return 1
+  }
+  surface=$(workspace_single_surface_title "$ref") || {
+    log "WARN: title migration cannot prove one surface ref=$ref title=$title"
+    return 1
+  }
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$generation" ]] || return 1
+
+  if [[ "$surface" == "$title" ]]; then
+    if [[ "$receipt" == "prepared" ]]; then
+      _ledger_upsert committed "$generation" "$ref" "$title" || return 1
+    fi
+    return 0
+  fi
+  if [[ "$surface" != "$canonical_raw" ]]; then
+    log "WARN: title migration surface drift ref=$ref expected_raw=$canonical_raw observed=$surface; preserving receipt"
+    return 1
+  fi
+
+  _GUARD_TITLE_GENERATION="$generation"
+  _GUARD_TITLE_REF="$ref"
+  _GUARD_TITLE="$title"
+  _GUARD_TITLE_RAW="$canonical_raw"
+  cmux_call_guarded _title_tab_rename_guard \
+    rename-tab --workspace "$ref" "$title" || rc=$?
+  if [[ "$GUARD_WAS_BLOCKED" == "1" || "$rc" -ne 0 ]]; then
+    log "WARN: guarded rename-tab deferred ref=$ref title=$title"
+    return 1
+  fi
+  surface=$(workspace_single_surface_title "$ref") || return 1
+  current=$(cmux_socket_identity)
+  [[ "$current" == "$generation" && "$surface" == "$title" ]] || {
+    log "WARN: rename-tab readback mismatch ref=$ref title=$title observed=$surface; preserving receipt"
+    return 1
+  }
+  if [[ "$receipt" == "prepared" ]]; then
+    _ledger_upsert committed "$generation" "$ref" "$title" || return 1
+  fi
+  return 0
+}
+
+# Prove that one roster row is still the exact live source of its canonical
+# cmux view. The strict A0B1 shape uses the existing exact matcher; the legacy
+# grouped shape is accepted for preservation only and must still contain the
+# same live window object. This function is read-only.
+title_source_authorized() {
+  local source="$1" wid="$2" title="$3" view="${VIEW_PREFIX}${title}"
+  local snapshot sid grouped active owner marker members observed name dead group
+  case "$source" in
+    v2-*) is_v2_runner_session "$source" || return 1 ;;
+    "$FLYWHEEL_SESSION"|runner-*) ;;
+    *) return 1 ;;
+  esac
+  window_source_pane_alive "$source" "$wid" || return 1
+  if _linked_view_matches "$view" "$wid" "$source" "" "$title"; then
+    return 0
+  fi
+
+  snapshot=$(_view_session_snapshot "$view") || return 1
+  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  [[ "$grouped" == "1" ]] || return 1
+  case ",$members," in *,"$wid",*) ;; *) return 1 ;; esac
+  group=$(tmux display-message -p -t "=${view}:" '#{session_group}' 2>/dev/null) || return 1
+  [[ "$group" == "$source" ]] || return 1
+  [[ -z "$owner" || "$owner" == "$source" ]] || return 1
+  [[ -z "$marker" || "$marker" == "0" ]] || return 1
+  observed=$(tmux display-message -p -t "=${view}:${wid}" \
+    '#{window_name}|#{pane_dead}' 2>/dev/null) || return 1
+  IFS='|' read -r name dead <<< "$observed"
+  [[ "$name" == "$title" && "$dead" == "0" ]]
+}
+
+# Unlike ledger_exact_receipt_state, this distinguishes an absent receipt from
+# a conflicting current-generation claim. Conflicts must never be treated as
+# unowned stock because minting a new prepared row would convert ambiguity into
+# mutation authority.
+ledger_candidate_receipt_state() {
+  local generation="$1" ref="$2" title="$3"
+  [[ -f "$VIEW_LEDGER" ]] || { printf 'none\n'; return 0; }
+  awk -F'|' -v g="$generation" -v r="$ref" -v t="$title" '
+    NF == 4 && ($1 == "prepared" || $1 == "committed") && $2 == g && $3 == r {
+      n++; state=$1; observed=$4
+    }
+    END {
+      if (n == 0) print "none"
+      else if (n == 1 && observed == t) print state
+      else print "conflict"
+    }
+  ' "$VIEW_LEDGER"
+}
+
+# Read-only stock authorization. A receipt is deliberately minted only after
+# all topology and both cmux title faces have been proved under one generation.
+authorize_stock_candidate() {
+  local source="$1" wid="$2" title="$3" generation="$4" ref="$5" raw="$6"
+  local current workspace surface
+  title_source_authorized "$source" "$wid" "$title" || return 1
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$generation" ]] || return 1
+  workspace=$(workspace_title_for_ref "$ref") || return 1
+  [[ "$workspace" == "$title" || "$workspace" == "$raw" ]] || return 1
+  surface=$(workspace_single_surface_title "$ref") || return 1
+  [[ "$surface" == "$title" || "$surface" == "$raw" ]] || return 1
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$generation" ]]
+}
+
+_GUARD_STOCK_SOURCE=""
+_GUARD_STOCK_WID=""
+_GUARD_STOCK_GENERATION=""
+_GUARD_STOCK_REF=""
+_GUARD_STOCK_TITLE=""
+_GUARD_STOCK_RAW=""
+_stock_workspace_rename_guard() {
+  local current receipt workspace surface
+  title_source_authorized "$_GUARD_STOCK_SOURCE" "$_GUARD_STOCK_WID" \
+    "$_GUARD_STOCK_TITLE" || return 1
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_STOCK_GENERATION" ]] || return 1
+  receipt=$(ledger_candidate_receipt_state "$current" "$_GUARD_STOCK_REF" \
+    "$_GUARD_STOCK_TITLE") || return 1
+  case "$receipt" in prepared|committed) ;; *) return 1 ;; esac
+  workspace=$(workspace_title_for_ref "$_GUARD_STOCK_REF") || return 1
+  [[ "$workspace" == "$_GUARD_STOCK_RAW" ]] || return 1
+  surface=$(workspace_single_surface_title "$_GUARD_STOCK_REF") || return 1
+  [[ "$surface" == "$_GUARD_STOCK_RAW" || "$surface" == "$_GUARD_STOCK_TITLE" ]] || return 1
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_STOCK_GENERATION" ]]
+}
+
+rename_stock_workspace() {
+  local source="$1" wid="$2" title="$3" generation="$4" ref="$5" raw="$6"
+  local observed current rc=0
+  _GUARD_STOCK_SOURCE="$source"
+  _GUARD_STOCK_WID="$wid"
+  _GUARD_STOCK_GENERATION="$generation"
+  _GUARD_STOCK_REF="$ref"
+  _GUARD_STOCK_TITLE="$title"
+  _GUARD_STOCK_RAW="$raw"
+  cmux_call_guarded _stock_workspace_rename_guard \
+    rename-workspace --workspace "$ref" "$title" || rc=$?
+  if [[ "$GUARD_WAS_BLOCKED" == "1" || "$rc" -ne 0 ]]; then
+    log "WARN: guarded stock rename-workspace deferred ref=$ref title=$title"
+    return 1
+  fi
+  observed=$(workspace_title_for_ref "$ref") || return 1
+  current=$(cmux_socket_identity)
+  [[ "$current" == "$generation" && "$observed" == "$title" ]] || {
+    log "WARN: stock rename-workspace readback mismatch ref=$ref title=$title observed=$observed"
+    return 1
+  }
+}
+
+title_keeper_ready() {
+  local generation="$1" ref="$2" title="$3" current workspace surface
+  [[ "$(ledger_candidate_receipt_state "$generation" "$ref" "$title")" == "committed" ]] || return 1
+  workspace=$(workspace_title_for_ref "$ref") || return 1
+  [[ "$workspace" == "$title" ]] || return 1
+  surface=$(workspace_single_surface_title "$ref") || return 1
+  [[ "$surface" == "$title" ]] || return 1
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$generation" ]]
+}
+
+_GUARD_DUP_SOURCE=""
+_GUARD_DUP_WID=""
+_GUARD_DUP_GENERATION=""
+_GUARD_DUP_KEEPER_REF=""
+_GUARD_DUP_EXTRA_REF=""
+_GUARD_DUP_TITLE=""
+_GUARD_DUP_RAW=""
+_fly1605_duplicate_close_guard() {
+  local current workspace surface
+  title_source_authorized "$_GUARD_DUP_SOURCE" "$_GUARD_DUP_WID" \
+    "$_GUARD_DUP_TITLE" || return 1
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_DUP_GENERATION" ]] || return 1
+  title_keeper_ready "$current" "$_GUARD_DUP_KEEPER_REF" "$_GUARD_DUP_TITLE" || return 1
+  workspace=$(workspace_title_for_ref "$_GUARD_DUP_EXTRA_REF") || return 1
+  [[ "$workspace" == "$_GUARD_DUP_RAW" ]] || return 1
+  surface=$(workspace_single_surface_title "$_GUARD_DUP_EXTRA_REF") || return 1
+  [[ "$surface" == "$_GUARD_DUP_RAW" ]] || return 1
+  current=$(cmux_socket_identity)
+  [[ -n "$current" && "$current" == "$_GUARD_DUP_GENERATION" ]]
+}
+
+# Select one deterministic candidate. Input rows are
+# kind|ref|pinned(0/1)|selected(0/1)|numeric-ref. The current generation's
+# receipt rank leads the ordering; stale-generation rows are intentionally
+# invisible. Prints kind|ref or returns 1 when every candidate is conflicted.
+select_title_keeper() {
+  local generation="$1" title="$2" rows="$3"
+  local kind ref pinned selected number state receipt_rank
+  local best_kind="" best_ref="" best_receipt=-1 best_pinned=-1 best_selected=-1 best_number=0
+  while IFS='|' read -r kind ref pinned selected number; do
+    [[ -n "$ref" ]] || continue
+    state=$(ledger_candidate_receipt_state "$generation" "$ref" "$title") || continue
+    case "$state" in
+      committed) receipt_rank=2 ;;
+      prepared) receipt_rank=1 ;;
+      none) receipt_rank=0 ;;
+      *) log "WARN: title stock candidate has conflicting receipt ref=$ref title=$title"; continue ;;
+    esac
+    if [[ -z "$best_ref" ]] \
+        || (( receipt_rank > best_receipt )) \
+        || (( receipt_rank == best_receipt && pinned > best_pinned )) \
+        || (( receipt_rank == best_receipt && pinned == best_pinned && selected > best_selected )) \
+        || (( receipt_rank == best_receipt && pinned == best_pinned && selected == best_selected && number < best_number )); then
+      best_kind="$kind"; best_ref="$ref"; best_receipt=$receipt_rank
+      best_pinned=$pinned; best_selected=$selected; best_number=$number
+    fi
+  done <<< "$rows"
+  [[ -n "$best_ref" ]] || return 1
+  printf '%s|%s\n' "$best_kind" "$best_ref"
+}
+
+workspace_title_candidates() {
+  local raw_json="$1" title="$2" canonical_raw="$3"
+  printf '%s' "$raw_json" | python3 -c '
+import json,re,sys
+title,raw=sys.argv[1:3]
+data=json.load(sys.stdin)
+for w in data.get("workspaces", []):
+    if not isinstance(w, dict):
+        continue
+    ref=w.get("ref")
+    match=re.fullmatch(r"workspace:([0-9]+)", ref or "")
+    if not match:
+        continue
+    digits=match.group(1)
+    if len(digits) > 18:
+        continue
+    observed=w.get("title")
+    kind="named" if observed == title else ("raw" if observed == raw else "")
+    if kind:
+        print("%s|%s|%d|%d|%d" % (
+            kind, ref, bool(w.get("pinned")), bool(w.get("selected")), int(digits)))
+' "$title" "$canonical_raw"
+}
+
+# Adopt and converge pre-existing cmux workspaces whose command/title exactly
+# maps to a live managed tmux window. The caller-provided roster is the only
+# candidate inventory for this pass; every mutation re-proves topology and cmux
+# generation, and unrecognized founder surfaces stay untouched.
+reconcile_workspace_titles() {
+  local tmux_windows="$1" generation raw_json source wid title canonical_raw candidates
+  local named_rows raw_rows named_count keeper keeper_kind keeper_ref state extra_rows extra_ref extra_state rc
+  local current_refusals="" refusal_key
+  generation=$(cmux_socket_identity)
+  [[ -n "$generation" ]] || return 0
+  raw_json=$(get_cmux_workspaces_json) || return 0
+
+  while IFS='|' read -r source wid title; do
+    [[ -n "$source" && -n "$wid" && -n "$title" ]] || continue
+    title_source_authorized "$source" "$wid" "$title" || {
+      refusal_key="$source|$wid|$title"
+      if ! printf '%s\n' "$CMUX_TITLE_TOPOLOGY_REFUSED_KEYS" | grep -qxF "$refusal_key" \
+          && ! printf '%s\n' "$current_refusals" | grep -qxF "$refusal_key"; then
+        log "WARN: title stock topology proof refused source=$source wid=$wid title=$title"
+      fi
+      current_refusals+="${current_refusals:+$'\n'}${refusal_key}"
+      continue
+    }
+    canonical_raw=$(build_attach_command "${VIEW_PREFIX}${title}") || continue
+    candidates=$(workspace_title_candidates "$raw_json" "$title" "$canonical_raw") || continue
+    [[ -n "$candidates" ]] || continue
+    named_rows=$(printf '%s\n' "$candidates" | awk -F'|' '$1 == "named"')
+    raw_rows=$(printf '%s\n' "$candidates" | awk -F'|' '$1 == "raw"')
+    named_count=$(printf '%s\n' "$named_rows" | grep -c . || true)
+    if (( named_count > 1 )); then
+      log "WARN: multiple named workspaces preserved title=$title count=$named_count"
+      continue
+    fi
+    if [[ -n "$named_rows" ]]; then
+      keeper=$(select_title_keeper "$generation" "$title" "$named_rows") || continue
+    else
+      keeper=$(select_title_keeper "$generation" "$title" "$raw_rows") || continue
+    fi
+    IFS='|' read -r keeper_kind keeper_ref <<< "$keeper"
+    state=$(ledger_candidate_receipt_state "$generation" "$keeper_ref" "$title") || continue
+    case "$state" in
+      none)
+        authorize_stock_candidate "$source" "$wid" "$title" "$generation" \
+          "$keeper_ref" "$canonical_raw" || {
+          log "WARN: unreceipted title stock preserved ref=$keeper_ref title=$title"
+          continue
+        }
+        _ledger_upsert prepared "$generation" "$keeper_ref" "$title" || continue
+        ;;
+      prepared|committed) ;;
+      *) continue ;;
+    esac
+
+    # keeper_kind came from this sweep's single list-workspaces snapshot. It is
+    # selection evidence only: raw mutations still re-read inside their final
+    # guard, while complete_title_migration re-reads a named keeper before it
+    # can commit. Avoiding a read here removes a back-to-back duplicate without
+    # weakening either mutation boundary.
+    if [[ "$keeper_kind" == "raw" ]]; then
+      rename_stock_workspace "$source" "$wid" "$title" "$generation" \
+        "$keeper_ref" "$canonical_raw" || continue
+    elif [[ "$keeper_kind" != "named" ]]; then
+      continue
+    fi
+    complete_title_migration "$keeper_ref" "$title" "$generation" "$canonical_raw" || continue
+
+    # A ready proof exists solely to authorize destructive duplicate cleanup.
+    # Do not pay for it on the overwhelmingly common no-extra steady-state
+    # path; every actual close also re-proves keeper readiness in its guard.
+    extra_rows=$(printf '%s\n' "$raw_rows" | awk -F'|' -v keep="$keeper_ref" \
+      '$2 != "" && $2 != keep')
+    [[ -n "$extra_rows" ]] || continue
+    title_keeper_ready "$generation" "$keeper_ref" "$title" || continue
+
+    while IFS='|' read -r _ extra_ref _; do
+      [[ -n "$extra_ref" ]] || continue
+      _GUARD_DUP_SOURCE="$source"
+      _GUARD_DUP_WID="$wid"
+      _GUARD_DUP_GENERATION="$generation"
+      _GUARD_DUP_KEEPER_REF="$keeper_ref"
+      _GUARD_DUP_EXTRA_REF="$extra_ref"
+      _GUARD_DUP_TITLE="$title"
+      _GUARD_DUP_RAW="$canonical_raw"
+      rc=0
+      close_workspace_by_ref --guarded "$extra_ref" "fly1605-duplicate-raw" || rc=$?
+      if [[ "$rc" -eq 0 && "${FLYWHEEL_CMUX_DRY_RUN:-0}" != "1" ]]; then
+        extra_state=$(ledger_candidate_receipt_state "$generation" "$extra_ref" "$title") || extra_state=conflict
+        case "$extra_state" in
+          prepared|committed)
+            _ledger_remove "$generation" "$extra_ref" \
+              || log "WARN: closed raw duplicate retained stale receipt ref=$extra_ref title=$title"
+            ;;
+        esac
+      else
+        log "WARN: guarded raw duplicate close deferred ref=$extra_ref title=$title"
+      fi
+    done <<< "$extra_rows"
+  done <<< "$tmux_windows"
+  CMUX_TITLE_TOPOLOGY_REFUSED_KEYS="$current_refusals"
+  return 0
+}
+
 reconcile_prepared_ledger() {
   [[ -f "$VIEW_LEDGER" ]] || return 0
   local generation raw rows ref title observed confirm current state old_generation provisional
@@ -4131,25 +4613,25 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
           if w.get("ref") == r and w.get("title") == t))
 ' "$ref" "$title") || return 1
           [[ "$observed" == "1" ]] || return 1
-          # FLY-1550 (Codex R1 MEDIUM-4): recovery promotes an unnamed
-          # workspace, so its tab still shows the raw attach command — the tab
-          # rename must hold BEFORE the row commits, mirroring first-create.
-          # Failure preserves the prepared row; the next pass retries both.
-          cmux_call rename-tab --workspace "$ref" "$title" || {
-            log "WARN: rename-tab failed for recovered $ref ($title); preserving prepared row"
-            return 1
-          }
-          _ledger_upsert committed "$generation" "$ref" "$title" || return 1
+          # FLY-1605: recovery and stock migration share one guarded tab-title
+          # completion path. It re-proves the receipt/ref/workspace/surface at
+          # the actual mutation boundary and reads the tab title back before
+          # committing, so a foreign surface or success-without-effect can
+          # never become durable authority.
+          if ! complete_title_migration "$ref" "$title" "$generation" "$provisional"; then
+            log "WARN: prepared title migration deferred ref=$ref title=$title; preserving receipt"
+            continue
+          fi
           ;;
         "$title")
           # Already-named workspace (crash landed between the two renames or
-          # after the tab rename): re-drive the tab rename idempotently before
-          # committing, so the pair can never diverge durably.
-          cmux_call rename-tab --workspace "$ref" "$title" || {
-            log "WARN: rename-tab failed for already-named $ref ($title); preserving prepared row"
-            return 1
-          }
-          _ledger_upsert committed "$generation" "$ref" "$title" || return 1
+          # after the tab rename): the same helper either performs the guarded
+          # raw→canonical tab rename or completes receipt-only when both faces
+          # already read back correctly.
+          if ! complete_title_migration "$ref" "$title" "$generation" "$provisional"; then
+            log "WARN: prepared title migration deferred ref=$ref title=$title; preserving receipt"
+            continue
+          fi
           ;;
         *)
           log "WARN: prepared ledger title drift ref=$ref expected=$title observed=$observed; preserving"
@@ -4378,11 +4860,22 @@ recover_all_view_constructions() {
       continue
     fi
     fields=$(printf '%s\n' "$line" | awk -F'|' '{print NF}')
-    if [[ "$fields" != "9" ]]; then
-      _quarantine_malformed_view_wal "$wal" "field-count" || return 1
-      continue
-    fi
-    view=$(printf '%s\n' "$line" | cut -d'|' -f5)
+    case "$fields" in
+      9)
+        view=$(printf '%s\n' "$line" | cut -d'|' -f5)
+        source=$(printf '%s\n' "$line" | cut -d'|' -f6)
+        wid=$(printf '%s\n' "$line" | cut -d'|' -f7)
+        ;;
+      11)
+        view=$(printf '%s\n' "$line" | cut -d'|' -f7)
+        source=$(printf '%s\n' "$line" | cut -d'|' -f8)
+        wid=$(printf '%s\n' "$line" | cut -d'|' -f9)
+        ;;
+      *)
+        _quarantine_malformed_view_wal "$wal" "field-count" || return 1
+        continue
+        ;;
+    esac
     if [[ "$view" != "${VIEW_PREFIX}"* ]]; then
       _quarantine_malformed_view_wal "$wal" "view-prefix" || return 1
       continue
@@ -4397,8 +4890,6 @@ recover_all_view_constructions() {
     case "$recover_rc" in
       0) ;;
       2)
-        source=$(printf '%s\n' "$line" | cut -d'|' -f6)
-        wid=$(printf '%s\n' "$line" | cut -d'|' -f7)
         cmux_wal_block_view "$view" "$source" "$wid" || return 1
         ;;
       *) return 1 ;;
@@ -5758,6 +6249,7 @@ sync_additive_bootstrap() {
   # Preserve FLY-98 reconcile repair only after WAL recovery has populated the
   # current round's collision blocked set.
   reconcile_existing_workspaces
+  reconcile_workspace_titles "$tmux_windows"
 
   # 3. Create missing workspaces. No cleanup of existing ones.
   # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1 (not found).
@@ -5817,6 +6309,7 @@ sync_additive() {
   # WAL recovery above owns the round's collision blocked set. Only now may
   # exact-ref workspace reconciliation enter the mutation phase.
   reconcile_existing_workspaces
+  reconcile_workspace_titles "$tmux_windows"
 
   # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1.
   while IFS='|' read -r src_sess wid wname; do
@@ -6047,8 +6540,14 @@ sync_once() {
   # 1. Reconcile: close workspaces with dead linked sessions (create phase will rebuild)
   reconcile_existing_workspaces
 
-  # 2. Refresh linked sessions — fix stale current-window pointers (FLY-98)
-  refresh_linked_sessions
+  # 2. Refresh linked sessions — fix stale current-window pointers (FLY-98).
+  # Durable-state/topology uncertainty authorizes neither title migration nor
+  # missing-workspace creation during this pass.
+  if ! refresh_linked_sessions; then
+    log "WARN: once linked-view refresh inconclusive; pass deferred"
+    return 0
+  fi
+  reconcile_workspace_titles "$tmux_windows"
 
   # 3. Create missing workspaces
   # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1.
@@ -6133,7 +6632,10 @@ _process_incarnation() {
     printf '%s\n' "$FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE"
     return 0
   fi
-  started=$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^[[:space:]]*//' || true)
+  # FLY-1605: process identity must not depend on the host's current timezone.
+  # This value is persisted in the mutator lease and re-read on every ledger
+  # mutation, so ambient rendering would make a live owner reject itself.
+  started=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^[[:space:]]*//' || true)
   [[ -n "$started" ]] || return 1
   printf '%s\n' "$started"
 }

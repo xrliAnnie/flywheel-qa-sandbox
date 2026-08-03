@@ -1,0 +1,12 @@
+stateDiagram-v2
+    direction LR
+    none: 无收据 none
+    prepared: 已登记 prepared
+    committed: 已确认 committed
+    ready: 两面验真 keeper ready
+    [*] --> none: 错名 workspace 被发现
+    none --> prepared: 全只读授权通过后才允许登记
+    prepared --> committed: 受保护改名加回读两面成功
+    prepared --> prepared: 中途失败下一轮自动重驱
+    committed --> ready: 最终回读收据名字画面同时为真
+    ready --> [*]: 此后才允许清理多余重复副本

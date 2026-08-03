@@ -95,6 +95,10 @@ MOCK_MUTATOR_CENSUS_SEQ="" # per-call rows; __EMPTY__ represents a conclusive em
 MOCK_PROCESS_COMMANDS=""   # lines "pid|command" for raw owner candidate checks
 MOCK_SHOW_HOOKS=""         # FLY-129 Phase 2: tmux show-hooks output — lines of "<hook>[idx] ..." per session
 MOCK_CMUX_MUTATE_JSON="0"  # FLY-1272: opt-in mutation-faithful workspace model
+MOCK_CMUX_MUTATE_SURFACES="0" # FLY-1605: opt-in mutation-faithful tab-title model
+MOCK_PS_MODE=""             # FLY-1605: hermetic timezone-sensitive lstart seam
+MOCK_TMUX_SERVER_PID="4242"
+MOCK_TMUX_SOCKET_PATH="$TMPDIR_ROOT/mock-tmux.sock"
 
 # FLY-1272 P0: opt-in, file-backed tmux topology model. The linked-view
 # state machine performs tmux reads inside command substitutions, so ordinary
@@ -496,6 +500,10 @@ tmux() {
       local session="${clean%%:*}"
       local wname="${clean##*:}"
       local original_target="$wname"
+      case "$fmt" in
+        '#{pid}') printf '%s\n' "$MOCK_TMUX_SERVER_PID"; return 0 ;;
+        '#{socket_path}') printf '%s\n' "$MOCK_TMUX_SOCKET_PATH"; return 0 ;;
+      esac
       if [[ "$wname" == @* ]]; then
         local resolved_name
         resolved_name=$(echo "$MOCK_TMUX_WINDOWS" | awk -F'|' -v s="$session" -v w="$wname" '$1 == s && $2 == w { print $3; exit }')
@@ -621,7 +629,27 @@ tmux() {
   esac
 }
 
+_fly1605_ps_mock() {
+  if [[ "${MOCK_PS_MODE:-}" == "tz-sensitive-lstart" && "$*" == *"lstart="* ]]; then
+    printf '%s|%s|%s\n' "${TZ:-<unset>}" "${LC_ALL:-<unset>}" "$*" >> "$TMPDIR_ROOT/ps.calls"
+    case "${TZ:-<unset>}" in
+      UTC) printf 'Sat Aug  1 16:45:06 2026\n' ;;
+      Asia/Tokyo) printf 'Sun Aug  2 01:45:06 2026\n' ;;
+      America/Denver) printf 'Sat Aug  1 10:45:06 2026\n' ;;
+      *) printf 'Sat Aug  1 09:45:06 2026\n' ;;
+    esac
+    return 0
+  fi
+  command ps "$@"
+}
+eval "$(declare -f _fly1605_ps_mock | sed '1s/_fly1605_ps_mock/ps/')"
+
 cmux() {
+  # External-boundary trace used by load-budget tests. File-backed because
+  # read calls often execute inside command substitutions/subshells.
+  if [[ -n "${MOCK_CMUX_TRACE_FILE:-}" ]]; then
+    printf '%s\n' "$*" >> "$MOCK_CMUX_TRACE_FILE"
+  fi
   # FLY-129: cmux_call passes `--socket "$path"` first; skip those two args
   # so the rest of the test mock keeps working unchanged.
   if [[ "${1:-}" == "--socket" ]]; then
@@ -742,6 +770,20 @@ print(json.dumps(d))' "$rename_ref" "$rename_title")
       # NB: explicit `if` — a trailing `[[…]] && return` would make this arm
       # exit 1 whenever the flag is unset (same trap as close-workspace above).
       if [[ "${MOCK_CMUX_RENAME_TAB_FAIL:-0}" == "1" ]]; then return 1; fi
+      if [[ "${MOCK_CMUX_MUTATE_SURFACES:-0}" == "1" ]]; then
+        local tab_ref="" tab_title="" tab_tmp="$TMPDIR_ROOT/cmux-surfaces.tmp"
+        shift
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --workspace) tab_ref="$2"; shift 2 ;;
+            *) tab_title="$1"; shift ;;
+          esac
+        done
+        awk -F';;' -v OFS=';;' -v r="$tab_ref" -v t="$tab_title" \
+          '$1 == r { $5=t } { print }' <<< "$MOCK_CMUX_SURFACES" > "$tab_tmp"
+        MOCK_CMUX_SURFACES=$(cat "$tab_tmp")
+        rm -f "$tab_tmp"
+      fi
       ;;
     send|send-key|refresh-surfaces)
       # FLY-169: capture send / send-key / refresh-surfaces too (with their
@@ -883,7 +925,7 @@ kill() {
   return 0
 }
 
-export -f tmux cmux pgrep kill
+export -f tmux cmux ps pgrep kill
 
 reset_mocks() {
   MOCK_TOPOLOGY_MODE="0"
@@ -903,6 +945,7 @@ reset_mocks() {
   FLYWHEEL_CMUX_WAL_QUARANTINE="1"
   FLYWHEEL_CMUX_ROSTER="0"             # roster has a dedicated hermetic suite
   CMUX_WAL_BLOCKED_VIEWS=""
+  CMUX_TITLE_TOPOLOGY_REFUSED_KEYS=""
   FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="test-incarnation"
   topo_reset
   MOCK_TMUX_WINDOWS=""
@@ -917,6 +960,7 @@ reset_mocks() {
   MOCK_TMUX_SESSIONS=""
   MOCK_TMUX_HOOKS=""
   MOCK_CMUX_OPS=""
+  MOCK_CMUX_TRACE_FILE=""
   MOCK_TMUX_KILLED=""
   MOCK_TMUX_KILLED_WINDOWS=""
   MOCK_PGREP_HIT="0"
@@ -926,7 +970,12 @@ reset_mocks() {
   MOCK_PROCESS_COMMANDS=""
   MOCK_SHOW_HOOKS=""
   MOCK_CMUX_MUTATE_JSON="0"
+  MOCK_CMUX_MUTATE_SURFACES="0"
   MOCK_CMUX_NEW_WORKSPACE_TITLE_FROM_COMMAND="0"
+  MOCK_PS_MODE=""
+  MOCK_TMUX_SERVER_PID="4242"
+  MOCK_TMUX_SOCKET_PATH="$TMPDIR_ROOT/mock-tmux.sock"
+  rm -f "$TMPDIR_ROOT/ps.calls"
   # FLY-293: tmux inventory failure knobs + orphan-pin reaper env/state.
   MOCK_TMUX_LIST_FAIL="0"        # 1 = tmux list-sessions fails (server down)
   MOCK_TMUX_LISTWINDOWS_FAIL="0" # 1 = tmux list-windows fails (per-session probe)
@@ -1036,7 +1085,7 @@ _process_command_for_pid() {
 }
 
 # Re-export mocks after sourcing (sourcing unsets them in some shells? defensive)
-export -f tmux cmux pgrep kill
+export -f tmux cmux ps pgrep kill
 
 test_ensure_mutator_lease() {
   assert_or_reuse_owned_lease 2>/dev/null || acquire_mutator_lease qa_teardown
@@ -3554,6 +3603,7 @@ set +e   # restore lenient mode before the FLY-254 section + summary
 # Identity override file takes precedence over the MOCK_ var: the cmux mock's
 # JSON-flip hook runs inside $(...) subshells and can only signal the parent
 # via a file (FLY-254 CR-R3 race tests).
+eval "$(declare -f tmux_server_generation | sed '1s/tmux_server_generation/_production_tmux_server_generation/')"
 cmux_socket_identity() {
   if [[ -f "$TMPDIR_ROOT/mock-ident.override" ]]; then
     cat "$TMPDIR_ROOT/mock-ident.override"
@@ -5749,8 +5799,12 @@ test_fly1272_p4_uncertain_source_snapshot_mutates_nothing() {
 test_fly1272_p3_prepared_ledger_recovers_exact_unnamed_ref() {
   echo "Test: FLY-1272 P3 — prepared ledger recovers only its exact unnamed ref"
   reset_mocks
-  FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1; MOCK_SOCK_IDENT="cmux-generation-1"
+  FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1; MOCK_CMUX_MUTATE_SURFACES=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:100","title":null},{"ref":"workspace:900","title":null}]}'
+  local provisional
+  provisional=$(build_attach_command 'cmux-FLY-1272-implement')
+  MOCK_CMUX_SURFACES="workspace:100;;surface:100;;terminal;;true;;$provisional"
   test_ledger_upsert prepared "cmux-generation-1" "workspace:100" "FLY-1272-implement"
   local rc=0 row foreign_title
   reconcile_prepared_ledger || rc=$?
@@ -5796,6 +5850,7 @@ test_fly1364_prepared_recovery_accepts_exact_provisional_attach_title() {
   reset_mocks
   FLYWHEEL_CMUX_LINKED_VIEW=1
   MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
   MOCK_SOCK_IDENT="generation-prepared-command"
   local provisional
   provisional=$(build_attach_command 'cmux-FLY-1364-implement')
@@ -5803,6 +5858,7 @@ test_fly1364_prepared_recovery_accepts_exact_provisional_attach_title() {
 import json,sys
 print(json.dumps({"workspaces":[{"ref":"workspace:100","title":sys.argv[1]}]}))
 ' "$provisional")
+  MOCK_CMUX_SURFACES="workspace:100;;surface:100;;terminal;;true;;$provisional"
   test_ledger_upsert prepared "generation-prepared-command" "workspace:100" "FLY-1364-implement"
   reconcile_prepared_ledger >/dev/null 2>&1 || true
   if [[ "$(cat "$VIEW_LEDGER" 2>/dev/null)" == 'committed|generation-prepared-command|workspace:100|FLY-1364-implement' \
@@ -8217,8 +8273,12 @@ test_fly1550_tab_rename_is_recoverable_state() {
   reset_mocks
   FLYWHEEL_CMUX_LINKED_VIEW=1
   MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
   MOCK_SOCK_IDENT="cmux-generation-1"
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:100","title":null}]}'
+  local provisional
+  provisional=$(build_attach_command 'cmux-FLY-1550-runner-claude-Fable-runner-lead-config')
+  MOCK_CMUX_SURFACES="workspace:100;;surface:100;;terminal;;true;;$provisional"
   test_ledger_upsert prepared "cmux-generation-1" "workspace:100" "FLY-1550-runner-claude-Fable-runner-lead-config"
   # Pass 1: workspace rename succeeds, tab rename FAILS → the row must stay
   # prepared (recoverable), never committed with a half-named pair.
@@ -8273,6 +8333,701 @@ test_fly1550_v2_is_pane_alive_sees_v2_windows
 test_fly1550_create_sets_workspace_and_tab_titles
 test_fly1550_tab_rename_is_recoverable_state
 test_fly1550_v2_attach_command_grammar_holds
+
+# ════════════════════════════════════════════════════════════════
+# FLY-1605: timezone-stable process identities
+# ════════════════════════════════════════════════════════════════
+
+test_fly1605_process_incarnation_is_timezone_stable() {
+  echo "Test: FLY-1605 — process incarnation pins ps rendering to UTC/C"
+  reset_mocks
+  FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE=""
+  MOCK_PS_MODE="tz-sensitive-lstart"
+  eval "$(declare -f _fly1605_ps_mock | sed '1s/_fly1605_ps_mock/ps/')"
+  local tokyo denver
+  tokyo=$(TZ=Asia/Tokyo _process_incarnation 4242)
+  denver=$(TZ=America/Denver _process_incarnation 4242)
+  if [[ "$tokyo" == "$denver" && "$tokyo" == "Sat Aug  1 16:45:06 2026" ]] \
+      && [[ "$(grep -c '^UTC|C|' "$TMPDIR_ROOT/ps.calls" 2>/dev/null || true)" == "2" ]]; then
+    pass "process incarnation is invariant across ambient timezone changes"
+  else
+    fail "process incarnation drifted: tokyo=[$tokyo] denver=[$denver] calls=[$(cat "$TMPDIR_ROOT/ps.calls" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_tmux_generation_is_timezone_stable() {
+  echo "Test: FLY-1605 — tmux generation pins ps rendering to UTC/C"
+  reset_mocks
+  FLYWHEEL_CMUX_TMUX_GENERATION=""
+  MOCK_PS_MODE="tz-sensitive-lstart"
+  local tokyo denver expected
+  expected="${MOCK_TMUX_SOCKET_PATH}|${MOCK_TMUX_SERVER_PID}|Sat Aug  1 16:45:06 2026"
+  eval "$(declare -f _fly1605_ps_mock | sed '1s/_fly1605_ps_mock/ps/')"
+  tokyo=$(TZ=Asia/Tokyo _production_tmux_server_generation)
+  denver=$(TZ=America/Denver _production_tmux_server_generation)
+  if [[ "$tokyo" == "$expected" && "$denver" == "$expected" ]] \
+      && [[ "$(grep -c '^UTC|C|' "$TMPDIR_ROOT/ps.calls" 2>/dev/null || true)" == "2" ]]; then
+    pass "tmux generation is invariant across ambient timezone changes"
+  else
+    fail "tmux generation drifted: tokyo=[$tokyo] denver=[$denver] calls=[$(cat "$TMPDIR_ROOT/ps.calls" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_ledger_survives_timezone_change() {
+  echo "Test: FLY-1605 — an acquired mutator lease remains valid after timezone change"
+  reset_mocks
+  FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE=""
+  MOCK_PS_MODE="tz-sensitive-lstart"
+  eval "$(declare -f _fly1605_ps_mock | sed '1s/_fly1605_ps_mock/ps/')"
+  local acquire_rc=0 write_rc=0 row
+  TZ=Asia/Tokyo acquire_mutator_lease qa_teardown || acquire_rc=$?
+  TZ=America/Denver _ledger_upsert prepared "cmux-generation-1" "workspace:1605" "FLY-1605-design-claude" \
+    >/dev/null 2>&1 || write_rc=$?
+  row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  release_mutator_lease
+  if [[ "$acquire_rc" -eq 0 && "$write_rc" -eq 0 \
+      && "$row" == "prepared|cmux-generation-1|workspace:1605|FLY-1605-design-claude" ]]; then
+    pass "ledger mutation keeps the verified lease across timezone changes"
+  else
+    fail "timezone switch invalidated lease: acquire=$acquire_rc write=$write_rc row=[$row]"
+  fi
+}
+
+test_fly1605_prepared_title_migration_renames_tab_and_commits() {
+  echo "Test: FLY-1605 — prepared named workspace migrates the tab with explicit ref before commit"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-1605-design-claude" raw rc=0 row surface before_ledger
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1605\",\"title\":\"$title\"}]}"
+  MOCK_CMUX_SURFACES="workspace:1605;;surface:1605;;terminal;;true;;$raw"
+  test_ledger_upsert prepared "cmux-generation-1" "workspace:1605" "$title"
+  before_ledger=$(cat "$VIEW_LEDGER")
+  MOCK_CMUX_OPS=""
+  complete_title_migration "workspace:1605" "$title" "cmux-generation-1" "$raw" \
+    >/dev/null 2>&1 || rc=$?
+  row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  surface=$(printf '%s\n' "$MOCK_CMUX_SURFACES" | awk -F';;' '{print $5}')
+  local ok=1
+  [[ "$rc" -eq 0 && "$row" == "committed|cmux-generation-1|workspace:1605|$title" ]] \
+    || { fail "prepared migration did not commit rc=$rc row=[$row]"; ok=0; }
+  [[ "$surface" == "$title" ]] \
+    || { fail "tab readback did not converge surface=[$surface]"; ok=0; }
+  [[ "$(grep -cF "rename-tab --workspace workspace:1605 $title" <<< "$MOCK_CMUX_OPS" || true)" == "1" ]] \
+    || { fail "missing explicit-ref rename-tab op=[$MOCK_CMUX_OPS]"; ok=0; }
+  [[ "$ok" == "1" ]] && pass "prepared migration renames the exact tab, reads it back, then commits"
+
+  MOCK_CMUX_OPS=""
+  before_ledger=$(cat "$VIEW_LEDGER")
+  rc=0
+  complete_title_migration "workspace:1605" "$title" "cmux-generation-1" "$raw" \
+    >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 0 && -z "$MOCK_CMUX_OPS" && "$(cat "$VIEW_LEDGER")" == "$before_ledger" ]]; then
+    pass "second migration pass is mutation-free and ledger-byte-idempotent"
+  else
+    fail "second pass was not idempotent rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_prepared_title_migration_refuses_foreign_surface() {
+  echo "Test: FLY-1605 — foreign surface title preserves prepared authority without mutation"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-1605-design-claude" raw before rc=0
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1605\",\"title\":\"$title\"}]}"
+  MOCK_CMUX_SURFACES="workspace:1605;;surface:1605;;terminal;;true;;npm run dev"
+  test_ledger_upsert prepared "cmux-generation-1" "workspace:1605" "$title"
+  before=$(cat "$VIEW_LEDGER")
+  MOCK_CMUX_OPS=""
+  complete_title_migration "workspace:1605" "$title" "cmux-generation-1" "$raw" \
+    >/dev/null 2>&1 || rc=$?
+  if declare -F complete_title_migration >/dev/null \
+      && [[ "$rc" -ne 0 && -z "$MOCK_CMUX_OPS" && "$(cat "$VIEW_LEDGER")" == "$before" ]]; then
+    pass "foreign surface is read-only and leaves the prepared receipt byte-identical"
+  else
+    fail "foreign surface crossed migration guard rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_prepared_recovery_uses_shared_surface_guard() {
+  echo "Test: FLY-1605 — prepared-ledger recovery preserves a foreign surface without failing the pass"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-1605-design-claude" before rc=0
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1605\",\"title\":\"$title\"}]}"
+  MOCK_CMUX_SURFACES="workspace:1605;;surface:1605;;terminal;;true;;npm run dev"
+  test_ledger_upsert prepared "cmux-generation-1" "workspace:1605" "$title"
+  before=$(cat "$VIEW_LEDGER")
+  MOCK_CMUX_OPS=""
+  reconcile_prepared_ledger >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 0 && -z "$MOCK_CMUX_OPS" && "$(cat "$VIEW_LEDGER")" == "$before" ]]; then
+    pass "shared recovery guard preserves foreign surface and prepared receipt without failing the pass"
+  else
+    fail "recovery blocked the pass or bypassed the shared guard rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_prepared_surface_drift_does_not_block_additive_pass() {
+  echo "Test: FLY-1605 — one preserved prepared surface drift cannot wedge the additive pass"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  local title="FLY-1605-design-claude" before trace rc=0
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1605\",\"title\":\"$title\"}]}"
+  MOCK_CMUX_SURFACES="workspace:1605;;surface:1605;;terminal;;true;;npm run dev"
+  test_ledger_upsert prepared "cmux-generation-1" "workspace:1605" "$title"
+  before=$(cat "$VIEW_LEDGER")
+  trace="$TMPDIR_ROOT/fly1605-prepared-drift-additive.trace"
+  : > "$trace"
+
+  (
+    reconcile_roster_read_phase() { :; }
+    register_hooks_on_new_sessions() { :; }
+    get_tmux_agent_windows() { printf 'runner-flywheel|@1605|FLY-1605-design-claude\n'; }
+    reconcile_keeper_inventory() { return 0; }
+    repair_view_invariants() { return 0; }
+    reconcile_existing_workspaces() { printf 'existing\n' >> "$trace"; }
+    reconcile_workspace_titles() { printf 'titles\n' >> "$trace"; }
+    workspace_exists_for() { printf 'exists\n' >> "$trace"; return 1; }
+    create_workspace_for_window() { printf 'create\n' >> "$trace"; }
+    self_heal_sweep_all() { printf 'heal\n' >> "$trace"; }
+    reap_ghost_workspaces() { printf 'ghost\n' >> "$trace"; }
+    dedup_workspaces_by_title() { printf 'dedup\n' >> "$trace"; }
+    reap_unledgered_stock_workspaces() { printf 'stock\n' >> "$trace"; }
+    reap_orphan_workspace_pins() { printf 'pins\n' >> "$trace"; }
+    cleanup_stale_conservative() { printf 'cleanup\n' >> "$trace"; }
+    sync_additive
+  ) >/dev/null 2>&1 || rc=$?
+
+  local expected="existing titles exists create heal ghost dedup stock pins cleanup" item ok=1
+  [[ "$rc" -eq 0 ]] || { fail "prepared surface drift escaped as additive rc=$rc"; ok=0; }
+  [[ "$(cat "$VIEW_LEDGER")" == "$before" ]] \
+    || { fail "prepared surface drift changed receipt ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"; ok=0; }
+  for item in $expected; do
+    grep -qxF "$item" "$trace" \
+      || { fail "prepared surface drift skipped downstream $item trace=[$(tr '\n' ';' < "$trace")]"; ok=0; }
+  done
+  [[ "$ok" == "1" ]] && pass "prepared surface drift stays read-only while the additive pipeline continues"
+}
+
+fly1605_seed_strict_managed_window() {
+  local source="$1" wid="$2" title="$3"
+  MOCK_TOPOLOGY_MODE="1"
+  topo_reset
+  topo_add_session "$source" '$1605'
+  topo_add_window "$source" "$wid" "$title" 1 0
+  topo_add_session "cmux-$title" '$2605' "" "$source" "0"
+  topo_add_window "cmux-$title" "$wid" "$title" 1 0
+}
+
+test_fly1605_named_stock_adoption_is_receipt_only_and_idempotent() {
+  echo "Test: FLY-1605 — exact managed named stock receives authority without cmux mutation"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  local title="FLY-1605-design-claude" roster before rc=0
+  fly1605_seed_strict_managed_window "runner-flywheel" "@1605" "$title"
+  roster="runner-flywheel|@1605|$title"
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1605\",\"title\":\"$title\"}]}"
+  MOCK_CMUX_SURFACES="workspace:1605;;surface:1605;;terminal;;true;;$title"
+  test_ensure_mutator_lease
+  MOCK_CMUX_OPS=""
+  if declare -F reconcile_workspace_titles >/dev/null; then
+    reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
+  else
+    rc=127
+  fi
+  if [[ "$rc" -eq 0 && -z "$MOCK_CMUX_OPS" \
+      && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "committed|cmux-generation-1|workspace:1605|$title" ]]; then
+    pass "named stock is authorized, receipted, and committed without a rename"
+  else
+    fail "named stock did not converge receipt-only rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+
+  before=$(cat "$VIEW_LEDGER" 2>/dev/null)
+  MOCK_CMUX_OPS=""
+  rc=0
+  if declare -F reconcile_workspace_titles >/dev/null; then
+    reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
+  else
+    rc=127
+  fi
+  if [[ "$rc" -eq 0 && -z "$MOCK_CMUX_OPS" && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "$before" ]]; then
+    pass "named stock second pass is cmux-mutation-free and ledger-byte-idempotent"
+  else
+    fail "named stock second pass mutated rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_steady_state_stays_within_cmux_ipc_budget() {
+  echo "Test: FLY-1605 — converged title reconciliation stays within the steady-state cmux IPC budget"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  local title="FLY-1605-design-claude" roster trace before rc=0 calls ws_reads surface_reads
+  fly1605_seed_strict_managed_window "runner-flywheel" "@1605" "$title"
+  roster="runner-flywheel|@1605|$title"
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1605\",\"title\":\"$title\"}]}"
+  MOCK_CMUX_SURFACES="workspace:1605;;surface:1605;;terminal;;true;;$title"
+  test_ledger_upsert committed "cmux-generation-1" "workspace:1605" "$title"
+  before=$(cat "$VIEW_LEDGER")
+  trace="$TMPDIR_ROOT/fly1605-steady-ipc.trace"
+  : > "$trace"
+  MOCK_CMUX_TRACE_FILE="$trace"
+  reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
+  MOCK_CMUX_TRACE_FILE=""
+  calls=$(grep -Ec '(^| )list-(workspaces|pane-surfaces)( |$)' "$trace" || true)
+  ws_reads=$(grep -Ec '(^| )list-workspaces( |$)' "$trace" || true)
+  surface_reads=$(grep -Ec '(^| )list-pane-surfaces( |$)' "$trace" || true)
+  if [[ "$rc" -eq 0 && "$calls" -le 3 && "$ws_reads" -ge 1 && "$surface_reads" -ge 1 \
+      && -z "$MOCK_CMUX_OPS" && "$(cat "$VIEW_LEDGER")" == "$before" ]]; then
+    pass "converged reconciliation uses at most 3 cmux reads and remains mutation-free"
+  else
+    fail "steady-state IPC budget exceeded rc=$rc calls=$calls workspaces=$ws_reads surfaces=$surface_reads ops=[$MOCK_CMUX_OPS] trace=[$(tr '\n' ';' < "$trace")]"
+  fi
+}
+
+test_fly1605_topology_refusal_warns_only_on_transition() {
+  echo "Test: FLY-1605 — topology refusal warning fires only on refusal transitions"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  local title="FLY-1605-design-claude" roster log_file rc=0 warnings
+  roster="runner-flywheel|@1605|$title"
+  log_file="$TMPDIR_ROOT/fly1605-topology-refusal.log"
+  : > "$log_file"
+
+  # The first refused observation is actionable; an unchanged periodic sweep
+  # is not. Keep this on the public reconciliation seam so a mutation back to
+  # per-sweep logging fails the regression test.
+  reconcile_workspace_titles "$roster" >/dev/null 2>>"$log_file" || rc=$?
+  reconcile_workspace_titles "$roster" >/dev/null 2>>"$log_file" || rc=$?
+  warnings=$(grep -cF "title stock topology proof refused source=runner-flywheel wid=@1605 title=$title" "$log_file" || true)
+  if [[ "$rc" -eq 0 && "$warnings" == "1" ]]; then
+    pass "unchanged refused topology emits one transition warning"
+  else
+    fail "unchanged refused topology spammed warnings rc=$rc count=$warnings log=[$(cat "$log_file")]"
+  fi
+
+  # A conclusive authorized sweep clears the refusal latch. A later topology
+  # regression is a fresh transition and must be visible again.
+  fly1605_seed_strict_managed_window "runner-flywheel" "@1605" "$title"
+  reconcile_workspace_titles "$roster" >/dev/null 2>>"$log_file" || rc=$?
+  topo_reset
+  reconcile_workspace_titles "$roster" >/dev/null 2>>"$log_file" || rc=$?
+  warnings=$(grep -cF "title stock topology proof refused source=runner-flywheel wid=@1605 title=$title" "$log_file" || true)
+  if [[ "$rc" -eq 0 && "$warnings" == "2" ]]; then
+    pass "authorized recovery re-arms the next topology refusal warning"
+  else
+    fail "topology transition warning did not re-arm rc=$rc count=$warnings log=[$(cat "$log_file")]"
+  fi
+}
+
+test_fly1605_title_matching_is_prefix_isolated() {
+  echo "Test: FLY-1605 — exact attach titles isolate neighboring issue prefixes"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-160-design-claude" neighbor="FLY-1605-design-claude"
+  local raw neighbor_raw roster neighbor_after rc=0
+  fly1605_seed_strict_managed_window "runner-flywheel" "@160" "$title"
+  roster="runner-flywheel|@160|$title"
+  raw=$(build_attach_command "cmux-$title")
+  neighbor_raw=$(build_attach_command "cmux-$neighbor")
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:160\",\"title\":\"$raw\"},{\"ref\":\"workspace:1605\",\"title\":\"$neighbor_raw\"}]}"
+  MOCK_CMUX_SURFACES="workspace:160;;surface:160;;terminal;;true;;$raw
+workspace:1605;;surface:1605;;terminal;;true;;$neighbor_raw"
+  test_ensure_mutator_lease
+  MOCK_CMUX_OPS=""
+  reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
+  neighbor_after=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
+import json,sys
+print(next(w["title"] for w in json.load(sys.stdin)["workspaces"]
+           if w.get("ref") == "workspace:1605"))
+')
+  if [[ "$rc" -eq 0 \
+      && "$(grep -cF "rename-workspace --workspace workspace:160 $title" <<< "$MOCK_CMUX_OPS" || true)" == "1" \
+      && "$MOCK_CMUX_OPS" != *"workspace:1605"* \
+      && "$neighbor_after" == "$neighbor_raw" \
+      && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "committed|cmux-generation-1|workspace:160|$title" ]]; then
+    pass "FLY-160 migration does not consume the FLY-1605 workspace"
+  else
+    fail "neighboring prefix lost isolation rc=$rc neighbor=[$neighbor_after] ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_ambiguous_surface_inventory_fails_closed() {
+  echo "Test: FLY-1605 — unreadable or ambiguous surface inventory fails closed"
+  local mode title="FLY-1605-design-claude" raw roster log_file rc warnings ok=1
+  for mode in rc invalid multiple; do
+    reset_mocks
+    FLYWHEEL_CMUX_LINKED_VIEW=1
+    MOCK_SOCK_IDENT="cmux-generation-1"
+    fly1605_seed_strict_managed_window "runner-flywheel" "@1605" "$title"
+    roster="runner-flywheel|@1605|$title"
+    raw=$(build_attach_command "cmux-$title")
+    MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1605\",\"title\":\"$raw\"}]}"
+    MOCK_CMUX_SURFACES="workspace:1605;;surface:1605;;terminal;;true;;$raw"
+    case "$mode" in
+      rc) MOCK_CMUX_SURFACES_FAIL=1 ;;
+      invalid) MOCK_CMUX_SURFACES_INVALID=1 ;;
+      multiple)
+        MOCK_CMUX_SURFACES="workspace:1605;;surface:1605;;terminal;;true;;$raw
+workspace:1605;;surface:2605;;terminal;;false;;$raw"
+        ;;
+    esac
+    test_ensure_mutator_lease
+    MOCK_CMUX_OPS=""
+    log_file="$TMPDIR_ROOT/fly1605-surface-$mode.log"
+    rc=0
+    reconcile_workspace_titles "$roster" >/dev/null 2>"$log_file" || rc=$?
+    warnings=$(grep -c "WARN:" "$log_file" || true)
+    if [[ "$rc" -ne 0 || -n "$MOCK_CMUX_OPS" || -s "$VIEW_LEDGER" || "$warnings" -lt 1 ]]; then
+      fail "surface $mode did not fail closed rc=$rc warnings=$warnings ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+      ok=0
+    fi
+  done
+  [[ "$ok" == "1" ]] && pass "surface rc, JSON, and cardinality failures preserve stock without authority"
+}
+
+test_fly1605_raw_stock_with_foreign_surface_has_zero_authority() {
+  echo "Test: FLY-1605 — raw workspace with a foreign surface receives no authority"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  local title="FLY-1605-design-claude" raw roster rc=0
+  fly1605_seed_strict_managed_window "runner-flywheel" "@1605" "$title"
+  roster="runner-flywheel|@1605|$title"
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1605\",\"title\":\"$raw\"}]}"
+  MOCK_CMUX_SURFACES="workspace:1605;;surface:1605;;terminal;;true;;npm run founder-console"
+  test_ensure_mutator_lease
+  MOCK_CMUX_OPS=""
+  if declare -F reconcile_workspace_titles >/dev/null; then
+    reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
+  else
+    rc=127
+  fi
+  if [[ "$rc" -eq 0 && -z "$MOCK_CMUX_OPS" && ! -s "$VIEW_LEDGER" ]]; then
+    pass "foreign surface blocks stock receipt minting and every cmux mutation"
+  else
+    fail "foreign surface gained authority rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_raw_duplicates_converge_through_guarded_close() {
+  echo "Test: FLY-1605 — raw duplicates migrate the numeric winner before guarded close"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-1605-design-claude" raw roster before rc=0
+  fly1605_seed_strict_managed_window "runner-flywheel" "@1605" "$title"
+  roster="runner-flywheel|@1605|$title"
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:100\",\"title\":\"$raw\"},{\"ref\":\"workspace:99\",\"title\":\"$raw\"}]}"
+  MOCK_CMUX_SURFACES="workspace:99;;surface:99;;terminal;;true;;$raw
+workspace:100;;surface:100;;terminal;;true;;$raw"
+  test_ensure_mutator_lease
+  MOCK_CMUX_OPS=""
+  reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
+  local ok=1
+  [[ "$rc" -eq 0 \
+      && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "committed|cmux-generation-1|workspace:99|$title" ]] \
+    || { fail "raw winner did not commit rc=$rc ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"; ok=0; }
+  grep -qF "rename-workspace --workspace workspace:99 $title" <<< "$MOCK_CMUX_OPS" \
+    || { fail "numeric-min winner was not renamed explicitly ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  grep -qF "rename-tab --workspace workspace:99 $title" <<< "$MOCK_CMUX_OPS" \
+    || { fail "winner tab was not renamed explicitly ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  grep -qF "close-workspace --workspace workspace:100" <<< "$MOCK_CMUX_OPS" \
+    || { fail "raw loser was not closed through exact ref ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  [[ "$ok" == "1" ]] && pass "raw duplicates choose numeric-min winner, finish both titles, then close the loser"
+
+  before=$(cat "$VIEW_LEDGER" 2>/dev/null)
+  MOCK_CMUX_OPS=""
+  rc=0
+  reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 0 && -z "$MOCK_CMUX_OPS" && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "$before" ]]; then
+    pass "raw duplicate convergence is cmux-mutation-free and ledger-byte-idempotent on the second pass"
+  else
+    fail "raw duplicate second pass mutated rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_named_keeper_closes_raw_extra_after_tab_ready() {
+  echo "Test: FLY-1605 — named keeper finishes its tab before a raw extra closes"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-1605-design-claude" raw roster rc=0
+  fly1605_seed_strict_managed_window "runner-flywheel" "@1605" "$title"
+  roster="runner-flywheel|@1605|$title"
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:200\",\"title\":\"$title\"},{\"ref\":\"workspace:100\",\"title\":\"$raw\"}]}"
+  MOCK_CMUX_SURFACES="workspace:200;;surface:200;;terminal;;true;;$raw
+workspace:100;;surface:100;;terminal;;true;;$raw"
+  test_ensure_mutator_lease
+  MOCK_CMUX_OPS=""
+  reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
+  local tab_line close_line ok=1
+  tab_line=$(grep -nF "rename-tab --workspace workspace:200 $title" <<< "$MOCK_CMUX_OPS" | cut -d: -f1)
+  close_line=$(grep -nF "close-workspace --workspace workspace:100" <<< "$MOCK_CMUX_OPS" | cut -d: -f1)
+  [[ "$rc" -eq 0 && -n "$tab_line" && -n "$close_line" && "$tab_line" -lt "$close_line" ]] \
+    || { fail "mixed stock did not make keeper ready before close rc=$rc ops=[$MOCK_CMUX_OPS]"; ok=0; }
+  [[ "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "committed|cmux-generation-1|workspace:200|$title" ]] \
+    || { fail "named keeper receipt is not committed ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"; ok=0; }
+  [[ "$ok" == "1" ]] && pass "named keeper tab reaches committed readback before guarded raw-extra close"
+}
+
+test_fly1605_v2_squatter_cannot_mint_title_authority() {
+  echo "Test: FLY-1605 — same-shape v2 session without launcher stamp cannot mint title authority"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  local source="v2-0123456789abcdef0123456789abcdef"
+  local title="FLY-1605-design-claude" raw roster rc=0
+  fly1605_seed_strict_managed_window "$source" "@1605" "$title"
+  roster="$source|@1605|$title"
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1605\",\"title\":\"$raw\"}]}"
+  MOCK_CMUX_SURFACES="workspace:1605;;surface:1605;;terminal;;true;;$raw"
+  test_ensure_mutator_lease
+  MOCK_CMUX_OPS=""
+  reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 0 && -z "$MOCK_CMUX_OPS" && ! -s "$VIEW_LEDGER" ]]; then
+    pass "unstamped v2 namespace squatter remains receipt-free and mutation-free"
+  else
+    fail "v2 squatter crossed B-0 rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_generation_flip_blocks_stock_rename() {
+  echo "Test: FLY-1605 — generation flip at guarded stock rename preserves prepared state"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-1605-design-claude" raw roster rc=0
+  fly1605_seed_strict_managed_window "runner-flywheel" "@1605" "$title"
+  roster="runner-flywheel|@1605|$title"
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1605\",\"title\":\"$raw\"}]}"
+  MOCK_CMUX_SURFACES="workspace:1605;;surface:1605;;terminal;;true;;$raw"
+  test_ensure_mutator_lease
+  MOCK_MKTEMP_HOOK='printf %s cmux-generation-2 > "$TMPDIR_ROOT/mock-ident.override"'
+  MOCK_CMUX_OPS=""
+  reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 0 && -z "$MOCK_CMUX_OPS" \
+      && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "prepared|cmux-generation-1|workspace:1605|$title" ]]; then
+    pass "final generation guard blocks rename and leaves a recoverable prepared receipt"
+  else
+    fail "generation flip crossed stock guard rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_failed_guarded_close_preserves_raw_extra() {
+  echo "Test: FLY-1605 — failed guarded close keeps the raw extra and audit evidence"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
+  MOCK_CMUX_CLOSE_FAIL=1
+  local title="FLY-1605-design-claude" raw roster log_file rc=0 remaining
+  fly1605_seed_strict_managed_window "runner-flywheel" "@1605" "$title"
+  roster="runner-flywheel|@1605|$title"
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:200\",\"title\":\"$title\"},{\"ref\":\"workspace:100\",\"title\":\"$raw\"}]}"
+  MOCK_CMUX_SURFACES="workspace:200;;surface:200;;terminal;;true;;$title
+workspace:100;;surface:100;;terminal;;true;;$raw"
+  test_ensure_mutator_lease
+  log_file="$TMPDIR_ROOT/fly1605-close-fail.log"
+  reconcile_workspace_titles "$roster" >/dev/null 2>"$log_file" || rc=$?
+  remaining=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
+import json,sys
+print(sum(1 for w in json.load(sys.stdin)["workspaces"] if w.get("ref") == "workspace:100"))
+')
+  if [[ "$rc" -eq 0 && "$remaining" == "1" \
+      && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "committed|cmux-generation-1|workspace:200|$title" ]] \
+      && grep -qF "[audit] close workspace=workspace:100 reason=fly1605-duplicate-raw" "$log_file"; then
+    pass "close rc propagates to reconciliation, which preserves the extra and its audit trail"
+  else
+    fail "failed close lost state rc=$rc remaining=$remaining ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] log=[$(cat "$log_file" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_winner_order_ignores_stale_receipt_and_prefers_pin() {
+  echo "Test: FLY-1605 — winner order ignores stale receipts and prefers pinned over selected"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
+  local title="FLY-1605-design-claude" raw roster rc=0
+  fly1605_seed_strict_managed_window "runner-flywheel" "@1605" "$title"
+  roster="runner-flywheel|@1605|$title"
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:99\",\"title\":\"$raw\"},{\"ref\":\"workspace:100\",\"title\":\"$raw\",\"selected\":true},{\"ref\":\"workspace:101\",\"title\":\"$raw\",\"pinned\":true}]}"
+  MOCK_CMUX_SURFACES="workspace:99;;surface:99;;terminal;;true;;$raw
+workspace:100;;surface:100;;terminal;;true;;$raw
+workspace:101;;surface:101;;terminal;;true;;$raw"
+  test_ledger_upsert committed "cmux-generation-stale" "workspace:99" "$title"
+  MOCK_CMUX_OPS=""
+  reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 0 \
+      && "$(grep -cF "rename-workspace --workspace workspace:101 $title" <<< "$MOCK_CMUX_OPS" || true)" == "1" \
+      && "$(grep -c '^close-workspace --workspace workspace:' <<< "$MOCK_CMUX_OPS" || true)" == "2" ]]; then
+    pass "current-generation ordering ignores stale authority and chooses the pinned candidate"
+  else
+    fail "winner ordering drifted rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1605_title_reconcile_mounts_after_refresh_before_create() {
+  echo "Test: FLY-1605 — bootstrap/additive/once mount title reconcile after refresh and before create"
+  reset_mocks
+  local mode trace expected ok=1
+  for mode in bootstrap additive once; do
+    trace="$TMPDIR_ROOT/fly1605-mount-$mode.trace"
+    : > "$trace"
+    TRACE_FILE="$trace" PASS_MODE="$mode" REFRESH_RC=0 \
+      FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMPDIR_ROOT/no-maintenance" \
+      /bin/bash -c '
+        source "$1"
+        reconcile_roster_read_phase() { printf "roster\n" >> "$TRACE_FILE"; }
+        register_hooks_on_new_sessions() { :; }
+        get_tmux_agent_windows() { printf "runner-flywheel|@1605|FLY-1605-design-claude\n"; }
+        refresh_linked_sessions() { printf "refresh\n" >> "$TRACE_FILE"; return "$REFRESH_RC"; }
+        reconcile_existing_workspaces() { printf "existing\n" >> "$TRACE_FILE"; }
+        reconcile_workspace_titles() { printf "titles:%s\n" "$1" >> "$TRACE_FILE"; }
+        workspace_exists_for() { printf "exists\n" >> "$TRACE_FILE"; return 1; }
+        create_workspace_for_window() { printf "create:%s|%s|%s\n" "$1" "$2" "$3" >> "$TRACE_FILE"; }
+        self_heal_sweep_all() { printf "heal\n" >> "$TRACE_FILE"; }
+        cleanup_stale_conservative() { :; }
+        cleanup_stale_workspaces() { :; }
+        reap_ghost_workspaces() { :; }
+        dedup_workspaces_by_title() { :; }
+        reap_unledgered_stock_workspaces() { :; }
+        reap_orphan_workspace_pins() { :; }
+        pgrep() { return 1; }
+        case "$PASS_MODE" in
+          bootstrap) sync_additive_bootstrap ;;
+          additive) sync_additive ;;
+          once) sync_once ;;
+        esac
+      ' _ "$SCRIPT_DIR/flywheel-cmux-sync.sh" >/dev/null 2>&1 || ok=0
+    expected=$(awk '
+      $0 == "refresh" { refresh=NR }
+      /^titles:runner-flywheel\|@1605\|FLY-1605-design-claude$/ { title=NR }
+      /^create:runner-flywheel\|@1605\|FLY-1605-design-claude$/ { create=NR }
+      END { print (refresh > 0 && title > refresh && create > title) ? "yes" : "no" }
+    ' "$trace")
+    [[ "$expected" == "yes" ]] || { fail "$mode title reconcile ordering drifted trace=[$(tr '\n' ';' < "$trace")]"; ok=0; }
+
+    : > "$trace"
+    TRACE_FILE="$trace" PASS_MODE="$mode" REFRESH_RC=1 \
+      FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMPDIR_ROOT/no-maintenance" \
+      /bin/bash -c '
+        source "$1"
+        reconcile_roster_read_phase() { :; }
+        register_hooks_on_new_sessions() { :; }
+        get_tmux_agent_windows() { printf "runner-flywheel|@1605|FLY-1605-design-claude\n"; }
+        refresh_linked_sessions() { printf "refresh\n" >> "$TRACE_FILE"; return "$REFRESH_RC"; }
+        reconcile_existing_workspaces() { printf "existing\n" >> "$TRACE_FILE"; }
+        reconcile_workspace_titles() { printf "titles\n" >> "$TRACE_FILE"; }
+        workspace_exists_for() { printf "exists\n" >> "$TRACE_FILE"; return 1; }
+        create_workspace_for_window() { printf "create\n" >> "$TRACE_FILE"; }
+        self_heal_sweep_all() { :; }
+        cleanup_stale_conservative() { :; }
+        cleanup_stale_workspaces() { :; }
+        reap_ghost_workspaces() { :; }
+        dedup_workspaces_by_title() { :; }
+        reap_unledgered_stock_workspaces() { :; }
+        reap_orphan_workspace_pins() { :; }
+        pgrep() { return 1; }
+        case "$PASS_MODE" in
+          bootstrap) sync_additive_bootstrap ;;
+          additive) sync_additive ;;
+          once) sync_once ;;
+        esac
+      ' _ "$SCRIPT_DIR/flywheel-cmux-sync.sh" >/dev/null 2>&1 || ok=0
+    if grep -Eq '^(titles|create|exists)' "$trace"; then
+      fail "$mode crossed an inconclusive refresh trace=[$(tr '\n' ';' < "$trace")]"
+      ok=0
+    fi
+  done
+  [[ "$ok" == "1" ]] && pass "all three passes reuse the captured roster only after conclusive refresh and before create"
+}
+
+test_fly1605_ambiguous_legacy_tmux_generation_preserves_wal() {
+  echo "Test: FLY-1605 — same socket+pid legacy generations preserve and block WAL recovery"
+  reset_mocks
+  local current="$TMPDIR_ROOT/tmux.sock|4242|Sat Aug  1 16:45:06 2026"
+  local old view source wid wal before rc label ok=1
+  FLYWHEEL_CMUX_TMUX_GENERATION="$current"
+  source="runner-flywheel"
+  wid="@1605"
+  mkdir -p "$VIEW_WAL_DIR"
+  for label in timezone-render pid-reuse; do
+    view="cmux-FLY-1605-${label}"
+    case "$label" in
+      timezone-render) old="$TMPDIR_ROOT/tmux.sock|4242|Sun Aug  2 01:45:06 2026" ;;
+      pid-reuse) old="$TMPDIR_ROOT/tmux.sock|4242|Fri Jul 31 16:45:06 2026" ;;
+    esac
+    wal=$(_view_wal_path "$view")
+    printf 'v1|%s|create_intent|fly1605-%s|%s|%s|%s||\n' \
+      "$old" "$label" "$view" "$source" "$wid" > "$wal"
+    before=$(cat "$wal")
+    CMUX_WAL_BLOCKED_VIEWS=""
+    rc=0
+    recover_all_view_constructions >/dev/null 2>&1 || rc=$?
+    if [[ "$rc" -eq 0 && -f "$wal" && "$(cat "$wal")" == "$before" ]] \
+        && cmux_wal_view_blocked "$view"; then
+      :
+    else
+      fail "$label ambiguity did not preserve+block rc=$rc wal=[$(cat "$wal" 2>/dev/null)] blocked=[$CMUX_WAL_BLOCKED_VIEWS]"
+      ok=0
+    fi
+  done
+  [[ "$ok" == "1" ]] && pass "timezone drift and true PID reuse are both preserved byte-for-byte without recovery authority"
+}
+
+echo ""
+echo "═══ FLY-1605: timezone-stable process identities ═══"
+test_fly1605_process_incarnation_is_timezone_stable
+test_fly1605_tmux_generation_is_timezone_stable
+test_fly1605_ledger_survives_timezone_change
+test_fly1605_prepared_title_migration_renames_tab_and_commits
+test_fly1605_prepared_title_migration_refuses_foreign_surface
+test_fly1605_prepared_recovery_uses_shared_surface_guard
+test_fly1605_prepared_surface_drift_does_not_block_additive_pass
+test_fly1605_named_stock_adoption_is_receipt_only_and_idempotent
+test_fly1605_steady_state_stays_within_cmux_ipc_budget
+test_fly1605_topology_refusal_warns_only_on_transition
+test_fly1605_title_matching_is_prefix_isolated
+test_fly1605_ambiguous_surface_inventory_fails_closed
+test_fly1605_raw_stock_with_foreign_surface_has_zero_authority
+test_fly1605_raw_duplicates_converge_through_guarded_close
+test_fly1605_named_keeper_closes_raw_extra_after_tab_ready
+test_fly1605_v2_squatter_cannot_mint_title_authority
+test_fly1605_generation_flip_blocks_stock_rename
+test_fly1605_failed_guarded_close_preserves_raw_extra
+test_fly1605_winner_order_ignores_stale_receipt_and_prefers_pin
+test_fly1605_title_reconcile_mounts_after_refresh_before_create
+test_fly1605_ambiguous_legacy_tmux_generation_preserves_wal
 
 set +e   # restore lenient mode for the summary
 

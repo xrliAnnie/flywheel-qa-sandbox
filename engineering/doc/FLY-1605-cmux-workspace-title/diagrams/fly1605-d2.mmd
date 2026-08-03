@@ -1,0 +1,15 @@
+flowchart TB
+    subgraph fixA["Fix A:身份证改用不变格式(止血)"]
+        FA1["进程启动时间一律用<br/>UTC 固定时区渲染"] --> FA2["换时区后身份证依旧成立<br/>账本写入恢复<br/>→ create 的 rename 重新走得通"]
+    end
+    subgraph fixB["Fix B:每 60 秒一轮的收敛修复(清账 + 防再犯)"]
+        FB0["从『受管 tmux 窗口清单』出发<br/>逐个窗口核对 cmux 里的显示名"] --> FB1{"逐个 workspace 分类"}
+        FB1 -->|"名字已正确"| FB2["确认另一面(tab 名)也正确<br/>→ 标记完成,什么都不改"]
+        FB1 -->|"名字还是启动命令<br/>且字节级全等于本窗口的命令"| FB3["先做全只读授权检查:<br/>窗口活着·归属证明·恰一个画面"]
+        FB3 -->|"授权通过"| FB4["记账(prepared)→ 受保护改名<br/>→ 回读确认 → 改 tab 名<br/>→ 回读确认 → 记账(committed)"]
+        FB3 -->|"任何一项存疑"| FB5["保留原样 + 记 WARN<br/>(绝不碰 founder 个人 tab)"]
+        FB4 --> FB6{"正名者两面都确认后<br/>(keeper ready)"}
+        FB6 -->|"是"| FB7["多余的命令串重复副本<br/>逐个经受保护关闭"]
+        FB6 -->|"否"| FB8["一个都不关<br/>下一轮继续收敛"]
+    end
+    fixA --> fixB
