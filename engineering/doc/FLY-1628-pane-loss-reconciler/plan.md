@@ -307,5 +307,9 @@ flowchart TD
 ## 10. 交付物与里程碑
 
 - PR(单个)：`pane-loss-reconcile.ts`（face + 证据核）+ `new-window -P -F` 凭证取样与 `onTmuxWindowOpened` 接线 + `probeTmuxServerStartTime` + residue-harvest face 接线 + coordinator vendor 谓词（全路径）+ HeartbeatService.check() finally 顺序调整 + in-flight/first-check holders + stale-ship 分流（probe 合同扩展）+ wake event_id 去重 + `AlertEventType` 成员与 KIND_CONTRACTS 条目 + 测试；本 plan 与 founder HTML 随分支进 main；CLAUDE.md 里程碑行 + doc 归档随 PR 最后一个 commit。
+- **实施护栏（Codex R8 APPROVED 附带的三条非阻塞 guard，实施时照办）**：
+  1. `harvestPaneLoss` 返回 typed outcome（`ran | skipped_first_check | skipped_episode | skipped_hold | skipped_server | skipped_coordinator_in_flight`），initial debt **只在 `ran` 时清**，一切 skip 保持 pending 下次派发重试；§7.1(c) 测试补「episode/hold stand-down 后最终 `ran`」序列。
+  2. settlement 通知戳字面编码 lifecycle 绑定：`pane-loss-notified-<execId>-settlement-<terminalLifecycleId>`（防复用 execution 的两代 terminal 塌缩）；债发现只查 class-specific id，绝不查「任意 pane-loss 通知」；未知 adapter 的文案映射到保守的 unknown advisory（绝不套 codex 或「body died」文案）；lifecycle id + class 进事件 payload。
+  3. direct release token：owner-only 目录下每物理 launch 的密码学 token 路径、以 shell 参数传递（不插值）、匹配壳 `exec` 前 unlink；`packages/claude-runner` 测试锁定：stale token 不能放行 replay / required 回调缺失永不放行 / `launchCommitPath`+`commitWorkflowLaunch` 字节兼容；孤儿未匹配文件安全（路径/token 永不复用），bounded best-effort 清理即可。
 - 版本：v1.5x.x（ship 时取空号）。
 - 实施顺序：RED（§7.1 全红测先行，含 FLY-1319 反例、时钟回拨、空 ledger 并发互动测试）→ GREEN（凭证写入 → 证据核 → face → 接线 → coordinator vendor 门 → check() 顺序）→ stale-ship 分流 → 通知两段戳 → 全仓门 → Codex code review → 529 QA → founder 批准 ship。
