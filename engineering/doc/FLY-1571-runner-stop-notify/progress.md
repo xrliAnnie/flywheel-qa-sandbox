@@ -1,13 +1,13 @@
 ---
 issue: FLY-1571
 phase: implement
-phaseCursor: 2/7
-updated: 2026-08-04T08:20:30.856Z
-nextStep: Audit owning code and write RED tests
+phaseCursor: 4/7
+updated: 2026-08-04T08:41:12.972Z
+nextStep: Diff audit, real CLI smoke, then full-repo gates
 chunks: []
 pointers: {}
 ---
 
 # FLY-1571 progress
-**phase**: implement (2/7)
-**next**: Audit owning code and write RED tests
+**phase**: implement (4/7)
+**next**: Diff audit, real CLI smoke, then full-repo gates
