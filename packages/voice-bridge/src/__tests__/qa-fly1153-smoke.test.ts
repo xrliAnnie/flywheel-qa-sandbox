@@ -9,20 +9,39 @@
  * runs one continuous chain to the completion announcements.
  *
  * This smoke closes that: ONE config fixture written to a temp dir drives all
- * three legs, so a regression anywhere along
+ * legs, so a regression anywhere along
  *
  *   projects.json (disk) → loadAssistantConfig → wireAssistantMode
  *     → /gemini-advanced session mounts delegate_task (/gemini stays plain)
- *     → delegate dispatch ACK → spoken completion + Discord-text landing
+ *     → dispatch of the FACTORY-PRODUCED delegate_task object
+ *     → ACK + acceptance-on-disk + spoken announce + Discord-text landing
  *
  * fails here even if each layer's own tests still pass. Expected values are
  * asserted as STRING LITERALS (never re-derived from the fixture object) so a
  * same-source drift cannot make the assertions tautologically true.
  *
+ * Leg 3 dispatches the tool object the REAL wiring handed the Live backend
+ * (Codex R1 HIGH-2: re-building the tool in the test would let a wiring
+ * regression — wrong binding, disconnected sinks — pass silently). Hermetic
+ * discipline: global fetch is stubbed to reject, so the deep loop dies at its
+ * first model call and the delegate's guaranteed-completion contract fires the
+ * REAL sinks with a failure terminal ("未完成"); binding is verified from the
+ * real audit trail (FLYWHEEL_GEMINI_AGENT_AUDIT_DIR → temp dir), which
+ * runSession writes BEFORE the first model call. The success-copy semantics
+ * (完成 + finalText) are covered by leg 4 through the _test session seam —
+ * the one part a no-network test cannot reach through the real deep loop.
+ *
  * The acoustic loop (Live STT) is not machine-verifiable — FLY-1159's declared
  * boundary; out of scope for this smoke.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -30,21 +49,37 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Capture the extraTools the REAL wiring hands the Live backend (the fly1159
 // seam technique: stub ONLY GeminiLiveBackend.createConversation, everything
 // else in voice-core stays real so makeRealConversationFactory runs for real).
-const seam = vi.hoisted(() => ({ captured: [] as string[][] }));
+interface CapturedTool {
+	declaration: { name: string };
+	handler: (
+		args: unknown,
+		opts: { signal: AbortSignal },
+	) => Promise<unknown> | unknown;
+}
+
+const seam = vi.hoisted(() => ({
+	captured: [] as string[][],
+	/** the ACTUAL LiveToolSpec objects the real wiring handed the backend. */
+	tools: [] as CapturedTool[][],
+	/** per-created-session sendText recordings — the spoken-announce surface. */
+	sessions: [] as { sentTexts: string[] }[],
+}));
 
 vi.mock("flywheel-voice-core", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("flywheel-voice-core")>();
 	class MockGeminiLiveBackend {
-		createConversation = (opts: {
-			extraTools?: Array<{ declaration: { name: string } }>;
-		}) => {
-			seam.captured.push(
-				(opts?.extraTools ?? []).map((t) => t.declaration.name),
-			);
+		createConversation = (opts: { extraTools?: CapturedTool[] }) => {
+			const tools = opts?.extraTools ?? [];
+			seam.captured.push(tools.map((t) => t.declaration.name));
+			seam.tools.push(tools);
+			const record = { sentTexts: [] as string[] };
+			seam.sessions.push(record);
 			return {
 				on: () => () => {},
 				sendAudio() {},
-				sendText() {},
+				sendText(text: string) {
+					record.sentTexts.push(text);
+				},
 				endUserTurn() {},
 				close: async () => undefined,
 			};
@@ -168,13 +203,18 @@ describe("FLY-1153 QA-6 smoke — /gemini-advanced full chain from the on-disk e
 
 	beforeEach(() => {
 		seam.captured.length = 0;
+		seam.tools.length = 0;
+		seam.sessions.length = 0;
 		fixtureDir = mkdtempSync(join(tmpdir(), "fly1153-smoke-"));
 		projectsPath = join(fixtureDir, "projects.json");
 		writeFileSync(projectsPath, PROJECTS_JSON_FIXTURE);
 		stateDir = join(fixtureDir, "state");
 		mkdirSync(stateDir);
 	});
-	afterEach(() => rmSync(fixtureDir, { recursive: true, force: true }));
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		rmSync(fixtureDir, { recursive: true, force: true });
+	});
 
 	/** the shared venue entry: every leg resolves from the DISK fixture. */
 	function loadFixtureConfig(): AssistantModeConfig {
@@ -195,7 +235,7 @@ describe("FLY-1153 QA-6 smoke — /gemini-advanced full chain from the on-disk e
 		});
 	});
 
-	async function wireFromDisk() {
+	async function wireFromDisk(extraEnv: NodeJS.ProcessEnv = {}) {
 		const f = makeFakes();
 		const runtime = await wireAssistantMode({
 			config: CONFIG,
@@ -203,7 +243,7 @@ describe("FLY-1153 QA-6 smoke — /gemini-advanced full chain from the on-disk e
 			registry: f.registry,
 			deps: f.deps,
 			earsConnection: { conn: "ears" },
-			env: { FLYWHEEL_API_TOKEN: "bridge-token", ...AGENT_ENV },
+			env: { FLYWHEEL_API_TOKEN: "bridge-token", ...AGENT_ENV, ...extraEnv },
 			log: () => {},
 			// NO createConversation → the REAL makeRealConversationFactory runs
 			fetchImpl: f.fetchImpl,
@@ -251,7 +291,88 @@ describe("FLY-1153 QA-6 smoke — /gemini-advanced full chain from the on-disk e
 		expect(plainTools).toEqual(["lookup_issue", "board_snapshot"]);
 	});
 
-	it("leg 3 — the SAME resolved advanced block drives a dispatch to completion: ACK, verbatim binding, spoken + text landing", async () => {
+	it("leg 3 — dispatching the FACTORY-PRODUCED delegate_task fires the REAL sinks: ACK, acceptance-on-disk, spoken + Discord-text announce, audit-bound binding", async () => {
+		// hermetic net-kill: the deep loop's first model call must fail HERE, not
+		// reach the network. classifyError maps a non-network-shaped message to
+		// kind "unknown" (maxRetries 0) → immediate terminal; the delegate's
+		// guaranteed-completion contract then fires the real sinks. (If an SDK
+		// layer captured fetch earlier, an invalid-key 4xx converges on the same
+		// failure terminal — the assertions below are reason-agnostic.)
+		vi.stubGlobal("fetch", () =>
+			Promise.reject(new Error("FLY-1153 smoke: outbound disabled")),
+		);
+		const auditDir = join(fixtureDir, "audit");
+		const { f, runtime } = await wireFromDisk({
+			FLYWHEEL_GEMINI_AGENT_AUDIT_DIR: auditDir,
+		});
+		try {
+			const handler = f.commandHandlers.get("gemini-advanced");
+			if (!handler) throw new Error("no chat handler for /gemini-advanced");
+			handler({ topic: undefined, userId: "annie", reply: async () => {} });
+			await vi.waitFor(() => {
+				if (seam.tools.length === 0) throw new Error("no session yet");
+			});
+
+			// the ACTUAL tool object the real wiring handed the Live backend —
+			// NOT one rebuilt by the test (Codex R1 HIGH-2).
+			const tool = seam.tools[0].find(
+				(t) => t.declaration.name === "delegate_task",
+			);
+			if (!tool) throw new Error("delegate_task not mounted by the wiring");
+
+			const ack = String(
+				await tool.handler(
+					{ instruction: "跑一遍全链冒烟" },
+					{ signal: new AbortController().signal },
+				),
+			);
+			expect(ack).toContain("已受理");
+			const taskId = /任务 ([0-9a-f-]+)/.exec(ack)?.[1];
+			if (!taskId) throw new Error(`no task id in ACK: ${ack}`);
+
+			// acceptance-on-disk happened BEFORE the ACK returned (delegate.ts) —
+			// through the real defaultAppendAudit at the env-pointed audit dir.
+			const delegateLog = readFileSync(
+				join(auditDir, "delegate.jsonl"),
+				"utf8",
+			);
+			expect(delegateLog).toContain('"type":"delegate_accept"');
+			expect(delegateLog).toContain(taskId);
+
+			// the guaranteed completion announce lands through BOTH real sinks:
+			// spoken (adapter.sendText → rotator → Live session) and Discord text
+			// (deps.sendMessage into the voice channel).
+			await vi.waitFor(
+				() => {
+					const spoken = seam.sessions.flatMap((s) => s.sentTexts).join("\n");
+					expect(spoken).toContain(`任务 ${taskId} 未完成`);
+					const sent = (
+						f.deps.sendMessage as ReturnType<typeof vi.fn>
+					).mock.calls
+						.map((c) => String(c[2]))
+						.join("\n");
+					expect(sent).toContain(`任务 ${taskId} 未完成`);
+				},
+				{ timeout: 15_000 },
+			);
+
+			// binding through the REAL chain: runSession wrote sessionStart (with
+			// the binding's projectName) to the audit trail BEFORE its first model
+			// call. Literal-checked (gate requirement b).
+			const sessionFiles = readdirSync(auditDir).filter((n) =>
+				n.includes(taskId),
+			);
+			expect(sessionFiles.length).toBeGreaterThan(0);
+			const sessionLog = sessionFiles
+				.map((n) => readFileSync(join(auditDir, n), "utf8"))
+				.join("\n");
+			expect(sessionLog).toContain('"projectName":"geoforge3d"');
+		} finally {
+			await runtime.close();
+		}
+	}, 30_000);
+
+	it("leg 4 — completed-terminal announcement semantics via the _test session seam (the success copy the hermetic real-dispatch leg cannot reach): ACK, verbatim binding, spoken + text landing", async () => {
 		const cfg = loadFixtureConfig();
 		if (!cfg.advanced) throw new Error("fixture advanced block missing");
 
