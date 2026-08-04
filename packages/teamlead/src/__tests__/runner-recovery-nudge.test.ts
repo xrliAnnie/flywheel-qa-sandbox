@@ -7,11 +7,11 @@
  *  - a clean pass sends exactly once and records handled_remanaged.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fingerprintOutput } from "../bridge/pane-fingerprint.js";
 import {
 	attemptRunnerRecoveryNudge,
 	type RunnerNudgeDeps,
 } from "../bridge/runner-recovery-nudge.js";
-import { fingerprintOutput } from "../bridge/stuck-candidate.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 

@@ -26,8 +26,11 @@ import type { StateStore } from "../StateStore.js";
 // disposition receipt (machine/auto-repair nudges never do).
 import { formatDispositionReceipt } from "./disposition-receipt.js";
 import { matchesLead } from "./lead-scope.js";
+import {
+	detectInputBoxPresent,
+	fingerprintOutput,
+} from "./pane-fingerprint.js";
 import { isCaptureError } from "./session-capture.js";
-import { detectInputBoxPresent, fingerprintOutput } from "./stuck-candidate.js";
 import type { TmuxTarget } from "./tmux-lookup.js";
 import type { CaptureSessionFn } from "./tools.js";
 

@@ -17,7 +17,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { isStuckEligibleStatus } from "./stuck-candidate.js";
+import { isStuckEligibleStatus } from "./pane-fingerprint.js";
 
 /** Why a quiet session is (or is not) exempt from a Lead wake. */
 export type QuietVerdict =

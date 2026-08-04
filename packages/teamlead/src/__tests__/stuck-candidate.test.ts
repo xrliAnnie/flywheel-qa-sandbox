@@ -3,10 +3,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	detectInputBoxPresent,
-	detectStreamErrorSignature,
-	evaluateStuckCandidate,
 	fingerprintOutput,
 	isStuckEligibleStatus,
+} from "../bridge/pane-fingerprint.js";
+import {
+	detectStreamErrorSignature,
+	evaluateStuckCandidate,
 	STUCK_THRESHOLD_MS,
 	type StuckCandidateInput,
 	type StuckEpisodeState,

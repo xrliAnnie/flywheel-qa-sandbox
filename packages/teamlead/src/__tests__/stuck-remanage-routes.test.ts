@@ -9,8 +9,8 @@
 import type http from "node:http";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fingerprintOutput } from "../bridge/pane-fingerprint.js";
 import type { CaptureError, CaptureResult } from "../bridge/session-capture.js";
-import { fingerprintOutput } from "../bridge/stuck-candidate.js";
 import {
 	createLeadDetectionAckRouter,
 	createStuckRemanageRouter,

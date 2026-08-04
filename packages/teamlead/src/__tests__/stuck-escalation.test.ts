@@ -10,6 +10,15 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	DEFAULT_IDLE_POLL_MS,
+	idleWatchdogPollMs,
+	parseNonNegativeIntEnv,
+	probeCommSignalsFromCommDb,
+	probeQuietSignals,
+	stuckCommActivityMs,
+	stuckLatchTtlMs,
+} from "../bridge/commdb-probes.js";
+import {
 	GUARDRAIL_EVENT_TYPES,
 	RETRYABLE_LEAD_EVENT_TYPES,
 } from "../bridge/lead-runtime.js";
@@ -17,15 +26,8 @@ import {
 	buildStuckRunnerDetector,
 	createStuckEscalationEmitter,
 	createStuckUnhandledAlerter,
-	DEFAULT_IDLE_POLL_MS,
-	idleWatchdogPollMs,
-	parseNonNegativeIntEnv,
-	probeCommSignalsFromCommDb,
-	probeQuietSignals,
-	stuckCommActivityMs,
 	stuckDetectionEnabled,
 	stuckEscalationEventId,
-	stuckLatchTtlMs,
 	stuckLeadGraceMs,
 	stuckThresholdMs,
 	stuckUnhandledEventId,

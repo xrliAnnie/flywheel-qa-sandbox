@@ -27,7 +27,7 @@
  * `/loop` ever being sent.
  */
 
-import { detectInputBoxPresent } from "./stuck-candidate.js";
+import { detectInputBoxPresent } from "./pane-fingerprint.js";
 
 /**
  * Default arm window: generous enough that a genuinely long first turn (hours of

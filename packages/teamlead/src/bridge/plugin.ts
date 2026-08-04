@@ -206,6 +206,15 @@ import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
+	hasPendingBlockingGateFromCommDb,
+	hasPendingGateFromCommDb,
+	idleWatchdogPollMs,
+	probeDeclaredStateFromCommDb,
+	probeQuietSignals,
+	stuckCommActivityMs,
+	stuckLatchTtlMs,
+} from "./commdb-probes.js";
+import {
 	finalizeCommDbSession,
 	pruneDeadTerminalCommDbSessions,
 	resolveCommDbPath,
@@ -335,10 +344,7 @@ import {
 	type HolderWakeCause,
 } from "./holder-wake-activation.js";
 import { buildSessionKey } from "./hook-payload.js";
-import {
-	InboxLoopHealthChecker,
-	inboxLoopStallMs,
-} from "./inbox-loop-health-checker.js";
+import { InboxLoopHealthChecker } from "./inbox-loop-health-checker.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
 	formatAccountCapOwnerAssignment,
@@ -449,6 +455,7 @@ import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
 import { resolveOrphanDetectionEscalations } from "./orphan-escalation-reconcile.js";
+import { fingerprintOutput } from "./pane-fingerprint.js";
 import { hashPane, liveRegion } from "./pane-live-region.js";
 import {
 	LEAD_ONLY_PARK_KINDS,
@@ -562,17 +569,7 @@ import {
 	reconcileStateStoreGhosts,
 	type StateStoreGhostDeps,
 } from "./statestore-ghost-reconcile.js";
-import { fingerprintOutput } from "./stuck-candidate.js";
-import {
-	buildStuckRunnerDetector,
-	hasPendingBlockingGateFromCommDb,
-	hasPendingGateFromCommDb,
-	idleWatchdogPollMs,
-	probeDeclaredStateFromCommDb,
-	probeQuietSignals,
-	stuckCommActivityMs,
-	stuckLatchTtlMs,
-} from "./stuck-escalation.js";
+import { buildStuckRunnerDetector } from "./stuck-escalation.js";
 import {
 	parseStuckConfirmKnobs,
 	type StuckConfirmResult,
@@ -625,6 +622,7 @@ import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { createVoiceRouter } from "./voice-routes.js";
 import {
 	buildWatchdogManifest,
+	inboxLoopStallMs,
 	WatchdogCheckTracker,
 } from "./watchdog-health.js";
 import {

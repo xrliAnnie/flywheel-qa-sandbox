@@ -41,8 +41,8 @@ import {
 	FLEET_ESCALATION_COPY,
 	KIND_CONTRACTS,
 } from "./kind-contract.js";
+import { fingerprintOutput } from "./pane-fingerprint.js";
 import { resolveAutoArchiveMinutes } from "./roundtable/channel-archive-default.js";
-import { fingerprintOutput } from "./stuck-candidate.js";
 import {
 	decideTicketEscalation,
 	policyForKind,

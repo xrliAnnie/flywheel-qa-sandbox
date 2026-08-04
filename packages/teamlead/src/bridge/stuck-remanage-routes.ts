@@ -31,6 +31,10 @@ import {
 	type StateStore,
 	type StuckDisposition,
 } from "../StateStore.js";
+import {
+	hasPendingGateFromCommDb,
+	STUCK_LATCH_TTL_MS,
+} from "./commdb-probes.js";
 // FLY-1282 Part D: prepare-time receipt copy (final content is built at the
 // disposition route; delivery never reconstructs semantics).
 import { formatDispositionReceipt } from "./disposition-receipt.js";
@@ -43,10 +47,6 @@ import {
 	attemptRunnerRecoveryNudge,
 	NUDGE_ALLOWLIST as SHARED_NUDGE_ALLOWLIST,
 } from "./runner-recovery-nudge.js";
-import {
-	hasPendingGateFromCommDb,
-	STUCK_LATCH_TTL_MS,
-} from "./stuck-escalation.js";
 import {
 	getTmuxTargetFromCommDb,
 	sendKeysToWindow,

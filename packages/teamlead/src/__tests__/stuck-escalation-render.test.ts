@@ -22,7 +22,7 @@ import {
 } from "../bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { MailboxLeadRuntime } from "../bridge/mailbox-lead-runtime.js";
-import { fingerprintOutput } from "../bridge/stuck-candidate.js";
+import { fingerprintOutput } from "../bridge/pane-fingerprint.js";
 import { createStuckEscalationEmitter } from "../bridge/stuck-escalation.js";
 import { createStuckRemanageRouter } from "../bridge/stuck-remanage-routes.js";
 import type { ProjectEntry } from "../ProjectConfig.js";

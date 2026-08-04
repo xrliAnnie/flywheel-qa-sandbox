@@ -20,29 +20,22 @@
  * for this pass. The Lead is the precision filter on top.
  */
 
-import { createHash } from "node:crypto";
 import {
 	type ErrorSignatureHit,
 	scanErrorSignatures,
 } from "./error-signatures.js";
+import {
+	detectInputBoxPresent,
+	fingerprintOutput,
+	isStuckEligibleStatus,
+	sigFingerprint,
+} from "./pane-fingerprint.js";
 
 /** Patient threshold: output unchanged this long ⇒ candidate. Default 10 min. */
 export const STUCK_THRESHOLD_MS = 600_000;
 
 /** Default number of trailing non-empty lines to keep as evidence. */
 const DEFAULT_TAIL_LINES = 15;
-
-/**
- * Session statuses that are NEVER stuck candidates.
- *
- * `awaiting_review` / `approved_to_ship` are the FLY-191 "idle-but-reachable"
- * states: a Runner parked there is legitimately waiting for a human, NOT stuck.
- * Only `running` is eligible. Anything else (pending/completed/failed/…) is also
- * excluded — a stuck Runner is by definition mid-work.
- */
-export function isStuckEligibleStatus(status: string): boolean {
-	return status === "running";
-}
 
 /** Reason a session was NOT flagged as a stuck candidate (for logging/audit). */
 export type StuckExclusionReason =
@@ -175,11 +168,6 @@ export interface StuckCandidateResult {
 	evidence?: StuckEvidence;
 }
 
-/** SHA-256 (first 16 hex) of the captured output — the episode key. */
-export function fingerprintOutput(output: string): string {
-	return createHash("sha256").update(output).digest("hex").slice(0, 16);
-}
-
 /**
  * Strict canonical stream-idle-timeout signature (Codex R1 HIGH-2).
  *
@@ -194,44 +182,6 @@ export function detectStreamErrorSignature(output: string): boolean {
 		if (line.test(raw)) return true;
 	}
 	return false;
-}
-
-/**
- * Detection of Claude Code's interactive input box at the bottom of a pane.
- *
- * Pinned against the REAL committed pane fixtures from FLY-193
- * (`packages/teamlead/src/__tests__/fixtures/lead-panes/`) — actual production
- * captures of the Claude Code TUI (FLY-169 lesson: never trust an assumed
- * rendering). The current TUI renders:
- *
- *     ───────────────...──────── @agent ──     ← box-top rule
- *     ❯                                         ← prompt (U+276F)
- *     ──────────────────...──────────────       ← box-bottom rule
- *     Opus 4.8/xhigh | ⚡agent | ... | ctx 11%  ← status bar
- *     ⏵⏵ bypass permissions on (shift+tab ...)
- *
- * Older TUI versions boxed the prompt as `│ > │` inside `╭─╮/╰─╯` corners —
- * both renderings are accepted. The prompt sits ABOVE the multi-line status
- * bar, so the scan window is the last 10 non-empty lines (a 4-line window
- * misses it — caught by the real fixtures).
- *
- * Used as EVIDENCE in the escalation payload AND as one of the hard gates of
- * the restricted recovery-nudge endpoint (plan §3.5): a nudge is only sent
- * into a frame that visibly shows an idle input box.
- */
-export function detectInputBoxPresent(output: string): boolean {
-	const tail = output
-		.split("\n")
-		.filter((l) => l.trim().length > 0)
-		.slice(-10);
-	// Prompt line: current TUI `❯` at line start, or legacy boxed `│ > `,
-	// or a bare `> ` prompt. With or without typed text after it.
-	const promptLine = /^\s*(❯|>\s|[│|]\s*>\s?)/;
-	// Box rule: a long run of `─` (current TUI) or rounded corners (legacy).
-	const boxBorder = /(─{8,}|[╭╰╮╯]─*)/;
-	const hasPrompt = tail.some((l) => promptLine.test(l));
-	const hasBorder = tail.some((l) => boxBorder.test(l));
-	return hasPrompt && hasBorder;
 }
 
 /** Extract trailing non-empty lines as evidence. */
@@ -372,15 +322,6 @@ export function evaluateStuckCandidate(
 		},
 		evidence,
 	};
-}
-
-/**
- * FLY-1048 (A3): stable episode fingerprint for a tracked error signature.
- * Exported for PR-C (C4): the unified flow's case-c episodes must key by the
- * SAME family the old flow uses, or the C4a mutual exclusion cannot match.
- */
-export function sigFingerprint(signature: string): string {
-	return `sig:${createHash("sha256").update(signature).digest("hex").slice(0, 16)}`;
 }
 
 /**

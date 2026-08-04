@@ -19,7 +19,7 @@ import {
 	parseDeliveryFailureFingerprint,
 } from "../detection-detector-wiring.js";
 import type { SuspicionRecord } from "../detection-gap-scan.js";
-import { fingerprintOutput } from "../stuck-candidate.js";
+import { fingerprintOutput } from "../pane-fingerprint.js";
 
 const T0 = 1_700_000_000_000;
 

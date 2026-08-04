@@ -1,4 +1,19 @@
-import type { InboxLoopHealthTarget } from "./inbox-loop-health-checker.js";
+import type { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
+
+export interface InboxLoopHealthTarget {
+	projectName: string;
+	leadId: string;
+	queue: LeadInboxQueue;
+}
+
+const DEFAULT_INBOX_LOOP_STALL_MS = 10 * 60_000;
+
+export function inboxLoopStallMs(env: NodeJS.ProcessEnv = process.env): number {
+	const minutes = Number(env.FLYWHEEL_INBOX_LOOP_STALL_MIN ?? "10");
+	return Number.isFinite(minutes) && minutes > 0
+		? minutes * 60_000
+		: DEFAULT_INBOX_LOOP_STALL_MS;
+}
 
 export type WatchdogFreshness = "not_started" | "fresh" | "stale" | "in_flight";
 

@@ -17,28 +17,25 @@
  * Lead-invoked restricted recovery-nudge endpoint (stuck-remanage-routes.ts).
  */
 
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { CommDB } from "flywheel-comm/db";
 import { phaseMessageTag } from "flywheel-config";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
-import { isDoneButRunning as isDoneButRunningSession } from "./done-running-reconciler.js";
+import {
+	probeCommSignalsFromCommDb,
+	stuckCommActivityMs,
+} from "./commdb-probes.js";
 import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
 import type { HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { parseSessionLabels } from "./lead-scope.js";
-import type { QuietSignals } from "./quiet-classifier.js";
 import {
 	dispatchLeadEventCompat,
 	type RuntimeRegistry,
 } from "./runtime-registry.js";
 import {
-	type CommSignals,
 	LEAD_GRACE_MS,
 	type StuckEscalationPayload,
 	StuckRunnerDetector,
@@ -63,20 +60,6 @@ function parsePositiveIntEnv(
 	return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-/**
- * FLY-253 (Codex R1 #6): like parsePositiveIntEnv but `0` is a VALID value
- * ("feature off"), not a fall-through to the default. Shared by the L1
- * activity window and the L2 latch TTL.
- */
-export function parseNonNegativeIntEnv(
-	raw: string | undefined,
-	fallback: number,
-): number {
-	if (raw === undefined || raw === "") return fallback;
-	const n = Number.parseInt(raw, 10);
-	return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
-
 /** `FLYWHEEL_STUCK_THRESHOLD_MS` — stagnation patience (default 10 min). */
 export function stuckThresholdMs(env: NodeJS.ProcessEnv = process.env): number {
 	return parsePositiveIntEnv(env.FLYWHEEL_STUCK_THRESHOLD_MS, 600_000);
@@ -85,218 +68,6 @@ export function stuckThresholdMs(env: NodeJS.ProcessEnv = process.env): number {
 /** `FLYWHEEL_STUCK_LEAD_GRACE_MS` — Q7 fallback grace (default 5 min). */
 export function stuckLeadGraceMs(env: NodeJS.ProcessEnv = process.env): number {
 	return parsePositiveIntEnv(env.FLYWHEEL_STUCK_LEAD_GRACE_MS, LEAD_GRACE_MS);
-}
-
-/** FLY-1393 W-1 default for {@link idleWatchdogPollMs}: 3-second liveness. */
-export const DEFAULT_IDLE_POLL_MS = 3_000;
-
-/**
- * `FLYWHEEL_IDLE_POLL_MS` — RunnerIdleWatchdog cadence. FLY-1393 removes the
- * noisy waiting/unknown/frozen delivery cohort from this timer and retains only
- * the W-1 idle/dead liveness observation, so the old FLY-628 one-hour band-aid
- * is no longer appropriate. Tunable without a redeploy via the env var.
- */
-export function idleWatchdogPollMs(
-	env: NodeJS.ProcessEnv = process.env,
-): number {
-	return parsePositiveIntEnv(env.FLYWHEEL_IDLE_POLL_MS, DEFAULT_IDLE_POLL_MS);
-}
-
-/**
- * FLY-253 L1: `FLYWHEEL_STUCK_COMM_ACTIVITY_MS` — how recently the runner
- * must have sent a CommDB message to be exempt from stuck candidacy.
- * Default 30 min; `0` disables the exemption (legacy behavior).
- */
-export const STUCK_COMM_ACTIVITY_MS = 1_800_000;
-export function stuckCommActivityMs(
-	env: NodeJS.ProcessEnv = process.env,
-): number {
-	return parseNonNegativeIntEnv(
-		env.FLYWHEEL_STUCK_COMM_ACTIVITY_MS,
-		STUCK_COMM_ACTIVITY_MS,
-	);
-}
-
-/**
- * FLY-253 L2: `FLYWHEEL_STUCK_LATCH_TTL_MS` — server-side TTL written into
- * execution-scoped `legitimate_wait` / `needs_founder` latches (as
- * `snooze_until_ms`). Default 72h; `0` = permanent latch (no expiry).
- * Parsed ONCE at the plugin/config layer and injected into the remanage
- * router as `latchTtlMs` (Codex R2 #5).
- */
-export const STUCK_LATCH_TTL_MS = 259_200_000; // 72h
-export function stuckLatchTtlMs(env: NodeJS.ProcessEnv = process.env): number {
-	return parseNonNegativeIntEnv(
-		env.FLYWHEEL_STUCK_LATCH_TTL_MS,
-		STUCK_LATCH_TTL_MS,
-	);
-}
-
-// ── Pending-gate predicate (plan §3.1.4 hard gate 2) ──
-
-/**
- * True when the runner has an unanswered CommDB question (blocking gate,
- * `gate --no-block` parked review question, or `flywheel-comm ask`) — a
- * legitimately parked runner, never a stuck candidate.
- *
- * Missing comm.db ⇒ no questions ⇒ false. Real DB errors THROW so the
- * detector's fail-closed handling treats the session as parked.
- */
-export function hasPendingGateFromCommDb(
-	executionId: string,
-	projectName: string,
-): boolean {
-	// Path traversal guard (same as tmux-lookup.ts / session-capture.ts).
-	if (/[/\\]|\.\./.test(projectName)) return false;
-	const dbPath = join(homedir(), ".flywheel", "comm", projectName, "comm.db");
-	if (!existsSync(dbPath)) return false;
-
-	let db: CommDB | undefined;
-	try {
-		db = CommDB.openReadonly(dbPath);
-		return db.hasPendingQuestionsFrom(executionId);
-	} finally {
-		db?.close();
-	}
-}
-
-/**
- * FLY-818 (Codex code review R1 #2): true if this execution has an unanswered
- * BLOCKING gate/question (`checkpoint IS NOT NULL`) — NOT a non-blocking
- * `flywheel-comm ask`. The auto-continue armer uses this so a runner that fired a
- * non-blocking ask still gets armed to self-continue (an ask must not stop the
- * loop). Mirrors {@link hasPendingGateFromCommDb} but with the checkpoint filter.
- */
-export function hasPendingBlockingGateFromCommDb(
-	executionId: string,
-	projectName: string,
-): boolean {
-	if (/[/\\]|\.\./.test(projectName)) return false;
-	const dbPath = join(homedir(), ".flywheel", "comm", projectName, "comm.db");
-	if (!existsSync(dbPath)) return false;
-
-	let db: CommDB | undefined;
-	try {
-		db = CommDB.openReadonly(dbPath);
-		return db.hasPendingBlockingGateFrom(executionId);
-	} finally {
-		db?.close();
-	}
-}
-
-/**
- * FLY-253: combined CommDB probe — BOTH liveness signals from ONE readonly
- * open per session per poll (Codex R1 #6: CommDB.db is private, so the
- * second query lives in a public CommDB method, not raw SQL here).
- *
- *   - hasPendingGate: unanswered question ⇒ legitimately parked (gate 2).
- *   - hasRecentOutbound: any message from this exec within the activity
- *     window ⇒ alive (gate 2.5, L1). `activityWindowMs = 0` SHORT-CIRCUITS
- *     to hard false BEFORE the query (Codex R2 #5: "off" must never depend
- *     on a query result). Window comparison happens entirely inside
- *     SQLite's UTC clock domain (CommDB.hasRecentMessagesFrom).
- *
- * Missing comm.db ⇒ both false (no questions, no activity). Real DB errors
- * THROW so the detector's fail-closed handling treats the session as parked.
- */
-export function probeCommSignalsFromCommDb(
-	executionId: string,
-	projectName: string,
-	activityWindowMs: number,
-): CommSignals {
-	// Path traversal guard (same as hasPendingGateFromCommDb).
-	if (/[/\\]|\.\./.test(projectName)) {
-		return { hasPendingGate: false, hasRecentOutbound: false };
-	}
-	const dbPath = join(homedir(), ".flywheel", "comm", projectName, "comm.db");
-	if (!existsSync(dbPath)) {
-		return { hasPendingGate: false, hasRecentOutbound: false };
-	}
-
-	let db: CommDB | undefined;
-	try {
-		db = CommDB.openReadonly(dbPath);
-		const hasPendingGate = db.hasPendingQuestionsFrom(executionId);
-		const hasRecentOutbound =
-			activityWindowMs > 0 &&
-			db.hasRecentMessagesFrom(executionId, Math.ceil(activityWindowMs / 1000));
-		return { hasPendingGate, hasRecentOutbound };
-	} finally {
-		db?.close();
-	}
-}
-
-/**
- * FLY-626: read the runner's CURRENTLY-EFFECTIVE self-declared marker kind
- * (`parked` / `long_task`) from CommDB, or null. Readonly + missing-table
- * tolerant (CommDB.getEffectiveDeclaredState). Missing comm.db ⇒ null.
- */
-export function probeDeclaredStateFromCommDb(
-	executionId: string,
-	projectName: string,
-	nowMs: number,
-): "parked" | "long_task" | null {
-	if (/[/\\]|\.\./.test(projectName)) return null;
-	const dbPath = join(homedir(), ".flywheel", "comm", projectName, "comm.db");
-	if (!existsSync(dbPath)) return null;
-	let db: CommDB | undefined;
-	try {
-		db = CommDB.openReadonly(dbPath);
-		return db.getEffectiveDeclaredState(executionId, nowMs)?.kind ?? null;
-	} finally {
-		db?.close();
-	}
-}
-
-/**
- * FLY-626: build the cheap, stateless {@link QuietSignals} for a session — ONE
- * readonly comm.db probe per session (gate + recent-comm) plus the declared
- * marker. Used by the stall watchdogs to consult `classifyQuiet` BEFORE a
- * token-expensive Lead wake. `hasPendingReviewSignal` is left to the caller
- * (default false): the watchdogs only poll `running` sessions, and the
- * awaiting_review/approved_to_ship review-park is already covered by the
- * status check inside `classifyQuiet`.
- */
-export function probeQuietSignals(
-	session: {
-		execution_id: string;
-		project_name: string;
-		status: string;
-		// FLY-637 #1: fields the shared `isDoneButRunning` predicate reads. The
-		// stall watchdogs already pass the full Session row, so these are present
-		// in production; optional here so callers/tests can omit them (⇒ false).
-		session_stage?: string | null;
-		decision_route?: string | null;
-		pr_number?: number | null;
-	},
-	opts: { activityWindowMs: number; nowMs: number },
-): QuietSignals {
-	const { execution_id, project_name, status } = session;
-	const comm = probeCommSignalsFromCommDb(
-		execution_id,
-		project_name,
-		opts.activityWindowMs,
-	);
-	const declaredKind = probeDeclaredStateFromCommDb(
-		execution_id,
-		project_name,
-		opts.nowMs,
-	);
-	return {
-		status,
-		hasPendingGate: comm.hasPendingGate,
-		hasRecentComm: comm.hasRecentOutbound,
-		hasPendingReviewSignal: false,
-		declaredKind,
-		// FLY-637 #1: explicit FLY-324 done-but-running skip, via the shared
-		// predicate (status=running & stage=completed & no route & no PR).
-		isDoneButRunning: isDoneButRunningSession({
-			status: session.status,
-			session_stage: session.session_stage,
-			decision_route: session.decision_route,
-			pr_number: session.pr_number,
-		}),
-	};
 }
 
 // ── Escalation emitter (plan §3.2) ──

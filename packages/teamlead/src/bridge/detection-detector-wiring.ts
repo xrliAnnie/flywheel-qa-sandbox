@@ -21,7 +21,7 @@ import { createHash } from "node:crypto";
 import type { DetectionEscalationInput } from "./detection-escalation.js";
 import type { SuspicionRecord } from "./detection-gap-scan.js";
 import type { ErrorSignatureHit } from "./error-signatures.js";
-import { fingerprintOutput, sigFingerprint } from "./stuck-candidate.js";
+import { fingerprintOutput, sigFingerprint } from "./pane-fingerprint.js";
 
 /** Session fields the builders need (a Pick of StateStore's Session). */
 export interface EscalationSessionContext {
