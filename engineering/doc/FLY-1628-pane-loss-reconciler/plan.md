@@ -16,6 +16,14 @@ Issue: FLY-1628 (https://linear.app/geoforge3d/issue/FLY-1628/pane-loss-reconcil
 
 全量重启后全舰 runner tmux 体消失，但账面没跟上：FLY-1624 在 StateStore 仍标 `running`，FLY-1482/FLY-1518 挂着死体等 gate/review，2 小时以上无自愈；GatePoller 对 `approved_to_ship` 死体每 5 分钟 re-wake 一次（`runner_wake_failed` 连发）；`monitoring_lost` 只发 FYI 不改状态。现场残留 6 个 `runner-fly758it` zsh 空壳窗——这个细节是 §2.2 根因假设的关键。
 
+**现场取证（前任 2026-08-04 生产库直接复核，随抢救稿回收）**：
+
+| 样本 | 实测形态 |
+|---|---|
+| `e3cfedd7`（FLY-1624 design holder） | CommDB `status=running`、`tmux_window=runner-flywheel:@434`；`tmux list-panes` → `can't find window: @434`（体已灭 ~23h）；`runner_declared_states` park 声明 **`expires_at` 为空 = 永不过期** |
+| `65e81f76`（FLY-1518） | StateStore `status=awaiting_review`，heartbeat 停在 2026-07-28（一周前），体已灭 |
+| 2× FLY-1378 行 | CommDB `running` 自 2026-07-19 挂到取证时（FLY-1383 存量家族样本） |
+
 ### 1.2 死因修正（eng-lead 2026-08-04 裁定，替代 issue 原文推断）
 
 `restart-services.sh` 脚本本体**对 runner 完全无认知**（全文仅 1 处注释提及 runner，无任何 runner 代码路径）。真正嫌疑是 FLY-1482 新引入的 `restart_cmux_watcher()`（`scripts/lib/restart-cmux-watcher.sh:97`）`launchctl bootout com.flywheel.cmux-watcher`：生产 tmux server 若是该 launchd job 的后代，bootout 连带整棵进程树 → 全舰 runner window 同时消失。时间线支持：FLY-1482（`05e7b451`）2026-08-03 17:00 merge，19:23 事故 = 该 commit 首次全量部署。eng-lead 独立确认死因是「tmux server 死亡（QA 台架事故），非 restart-services 重启路径」。
@@ -27,6 +35,7 @@ Issue: FLY-1628 (https://linear.app/geoforge3d/issue/FLY-1628/pane-loss-reconcil
 本 plan 由继任执行体（RC-6）完成。前任 WIP plan 的抢救提交经完整核查（全分支 git log / stash / dangling / 文件系统）不存在，已报 eng-lead；但前任与 Codex 的 design review Round 2–4 feedback 从 /tmp 完整回收（前任走的是 CommDB claims/TTL lease/step-receipt 的跨库 saga 路线，R4 仍剩 5 个 blocker、R5 进行中被杀——其教训与竞态反例已折入本 plan §4.3 fence 与 §9）。前任结论经 eng-lead 转述继承：
 
 - **teardown 时结算、不做常驻巡逻**（不新增任何 FLY-1570 刚删掉的那类追人型 watchdog/poller）。
+- （后记）前任 332 行 plan 稿其后被 eng-lead 从 git 对象库捞回（`rescue/fly1628-predecessor-plan`，本文件夹 `predecessor-plan.md`），按其指令与本版合并收敛：采纳其现场取证表、parked-不刷心跳洞察、wake 终态 fence（§4.7.3）、park-veto 卡死产线（§4.9）；架构分歧处按裁定维持本版（分谓词/vendor 语义/伤害②降级）。
 - **检测语义分 vendor**：2026-08-04 16:37 事故中，FLY-1625 的 claude 体死后靠既有 zombie 链 20 分钟才被抓；FLY-1634 的 Codex 常驻体**根本没死**——窗口消失对 codex 不等于 runner 死亡。
 - **伤害②（等 founder 审批的 parked-alive runner 被无差别拆掉，需要保护/知情而非记账）不并入本单、暂不立单**（eng-lead 裁定 a33b0dc9）。处置见 §8.1 boundary。
 
@@ -43,7 +52,8 @@ FLY-1383 = 清存量（自然漂移的僵尸 + 归属 Lead 的域内 finalize �
 | FLY-817 `commdb-fsm-reconcile.ts` | CommDB running 行 × FSM ∈ 可删集 `{completed,rejected,deferred,shelved,terminated,approved}` | FSM 是活的 `running/parked` 就永远保留，根本不探 tmux（`:232`）；且 parked 声明一律 veto（`:251-272`） |
 | FLY-1066③ `statestore-ghost-reconcile.ts` | StateStore `{pending,running}` × 同 pass CommDB **terminal** prune 提供的已证死 target | running 行结构性产不出证据（`:176-177`）；`awaiting_review/ship_parked` 不在扫描范围（`:22-25`） |
 | FLY-324 `done-running-reconciler.ts` | `running && session_stage=completed && 无 route && 无 PR` | 重启死体从没上报过 completed stage（`:71-78`） |
-| `reapOrphans`（HeartbeatService.ts:2150） | `getOrphanSessions`：`status='running' AND heartbeat_at IS NOT NULL AND heartbeat_at < now-60min`（StateStore.ts:6191） | **parked 族永远不是候选**；running 族依赖 heartbeat 老化 + 下述活锁 |
+| `reapOrphans`（HeartbeatService.ts:2150） | `getOrphanSessions`：`status='running' AND heartbeat_at IS NOT NULL AND heartbeat_at < now-60min`（StateStore.ts:6191） | **parked 族永远不是候选**；`heartbeat_at IS NULL` 的 running 行**也永远不进候选**（running-null 盲区）；其余 running 依赖 heartbeat 老化 + 下述活锁 |
+| FLY-817 park-veto（FLY-1329） | FSM **已终态**的 CommDB running 行 × park 声明存在 → 无条件保留 | **park 声明可以永不过期**（e3cfedd7 实测 `expires_at` 为空）→ FSM 终态 + 体已灭 + 声明残留 = CommDB 行卡死到永远，veto 位点在所有 finalize 路径之前（含 FLY-1066 prune）——本单 §4.9 关此产线 |
 | zombie 链（`reconcileMonitorLoss` → `declareZombie`） | running 族 orphan 候选 × tmux `dead` 连续 2 streak × `probeTmuxServer()==="up"` | 舰队级 server 死亡时 `probeTmuxServer()!=="up"` → **streak 清零**（HeartbeatService.ts:1000-1002），到不了宣告阈值；parked 族不进候选 |
 | crash-reaper（FLY-720） | orphan 候选 × `probeRunnerProcessLiveness==="dead_pin"` | **窗口整个消失 = `absent` = 显式甩给 reapOrphans**（crash-reaper.ts:216-220），回到上面两行的真空 |
 | RunnerIdleWatchdog | `status==="running"` × capture | 窗口不存在 → capture 502 → `runner-status.ts:242-250` 编码成 `unknown` → `RunnerIdleWatchdog.ts:246-250` **静默 return** |
@@ -86,7 +96,9 @@ GatePoller `staleApprovedShipReconcilePass`（gate-poller.ts:2995-3070）对 `ap
 
 ### 2.5 术语澄清：「parked」的字面账本
 
-issue 说的 CommDB 实为两库三层——StateStore（`~/.flywheel/teamlead.db`）的 FSM 状态 `ship_parked/awaiting_review/approved_to_ship/design_done`；CommDB（`~/.flywheel/comm/<project>/comm.db`）的 `sessions.status` park 时**设计上保持 `running`**（FLY-626 done-but-alive 语义）；外加 FLY-1448 `workflow_engine_park` 投影表。本单的结算对象以 **StateStore 状态**为准，CommDB 侧靠既有 terminal-commdb-sync / FLY-817 链自动跟进，不新增 CommDB 写路径。
+issue 说的 CommDB 实为两库三层——StateStore（`~/.flywheel/teamlead.db`）的 FSM 状态 `ship_parked/awaiting_review/approved_to_ship/design_done`；CommDB（`~/.flywheel/comm/<project>/comm.db`）的 `sessions.status` park 时**设计上保持 `running`**（FLY-626 done-but-alive 语义）；外加 FLY-1448 `workflow_engine_park` 投影表。本单的结算对象以 **StateStore 状态**为准，CommDB 侧靠既有 terminal-commdb-sync / FLY-817 链自动跟进（park-veto 卡死形态见 §4.9），除 §4.9 的条件 finalize 外不新增 CommDB 写路径。
+
+**关键洞察（前任稿，采纳）**：parked runner 等 gate/review 时**本来就不刷心跳**——「心跳陈旧」是 parked 的正常态，不是死亡信号。parked 家族的死活判定只能建立在 tmux 现实证据（本设计 = generation 凭证）之上，任何基于心跳老化的谓词对它们结构性无效。
 
 ## 3. 设计原则
 
@@ -213,10 +225,19 @@ flowchart TD
    - claude 同代/无凭证 absent、codex、未知 vendor → 维持现状 `indeterminate`（幂等 re-wake）；
    - `classifyStaleShipRunnerLiveness` 纯函数保持字节兼容，分流在调用方组合层实现，注释合同同步更新。
 2. **`runner-wake.ts:232` event_id 去 `Date.now()`**：改 `wake-failed-<execId>-<questionId ?? session.review_question_id ?? kind>`（`actions.ts:507` 的 approval_wake 无 WakeDetail → 从 session 行补 `review_question_id`，两代 review 绑定各记一次；均无 → kind 兜底并接受同 kind 合并）。
+3. **wake 终态 admission fence（前任稿 §8，采纳）**：`sendRunnerWake` 入口实测**没有终态 guard**——本单结算把行转成 `failed` 之后，任何 wake producer（approve/feedback wake、founder-reply 路由、workflow-rework 等）仍会对它发 transport 并制造 `runner_wake_failed`。入口重读 persisted status：终态（含 `failed`/`blocked`）→ 跳过 transport，记 `skippedReason:"terminal_status"`，**不产生 wake_failed**。回归双层：direct-helper 单测 + producer 级集成（对已转 failed 的 session 重放原始触发入口）。实施时先取证 08-03 那 4 条 `runner_wake_failed` 的确切 producer，结论写进 implement progress。
 
 ### 4.8 ServerLossCoordinator 最小 vendor 门（Codex R2 B2）
 
 定义**唯一的 auto-migratable 谓词**（`claude-tmux` + 批准过的 legacy 空值默认），并在 coordinator **所有** casualty 路径一致使用（Codex R3 H3）：初始检测（两条腿）、**活跃 server-down episode 的 claimed 扩展**（server-loss.ts:346-367）、**pending 迁移重建**（`:370-385`）、`hasPendingMigrations`、通知/ticket casualty 清单与 completion 记账（`:391-521, :762-776`）。被排除的（codex-tmux/未知 adapter）running 行**每个 check 都**进 `heldExecutionIds`（继续压制 per-runner reapers）；**升级前的 durable episode 里已 claim 的 codex id 在重放时同样拒绝迁移并从记账中忽略/移除**。行为变化方向 = 只减少迁移（narrowing），与 AC4 对齐。测试：clean-fresh ALL-gone 与 server-down 两形态各含活 detached codex（断言「零 codex/未知迁移」而非否决 claude 迁移）；活跃 episode 扩展形态；预置含 codex id 的 durable episode 重放形态。
+
+### 4.9 FLY-817 park-veto 的条件放行（关掉 e3cfedd7 型永久卡死产线；前任稿 §7.1 按本架构改写）
+
+**形态**：FSM 已终态 + CommDB `running` 行残留 + park 声明存在（可永不过期）→ FLY-1329 park-veto 无条件保留，位点在所有 finalize 路径之前 → CommDB 行与其未答 gates 卡死到永远。本单的 StateStore 结算救不了它（FSM 已终态，无从结算）。
+
+**修法（最小注入）**：`commdb-fsm-reconcile` 的 park-veto 位点接受注入 `opts.paneLossEvidence?: (execId) => "superseded" | "same_generation" | "unavailable"`（读 StateStore `session_params.pane_loss_generation` + 凭证 socket 探测，与 §4.2 同一证据核）——注入且返回 `superseded` → veto 放行；`same_generation`/`unavailable`/未注入 → **逐字节现状 keep**（reverse-compat sentinel；存量无凭证行 = `unavailable` = 永远 keep + 既有 advisory 覆盖，收尾归 FLY-1383）。TURN-holder veto、`getEffectiveDeclaredState` fail-closed 分支不动。
+
+**放行后的删除不走无 fence 的 `finalizeSessionUnlessTurnHolder`**（前任 R4#4 教训：其 IMMEDIATE 事务只重验 TURN 不重验 target）：新增条件 finalize 变体 `finalizePaneLossResidue(execId, expectedWindow)`——同一 IMMEDIATE 事务内重比 `tmux_window == expectedWindow`（并发 rebind 必然改 target → 比较失败 → abort 不删）+ 既有 TURN 检查，全过才 finalize。真竞争测试：evidence 返回后、finalize 前并发 rebind → abort 零删除。
 
 ## 5. 安全规格（FLY-1383 五人收敛规格 + destructive-verdict 合同的落位）
 
@@ -254,6 +275,8 @@ flowchart TD
 - `server-loss.test.ts` 扩展（§4.8）：clean-fresh ALL-gone / server-down 各含活 detached codex → 零 codex/未知迁移、进 heldExecutionIds、episode 收尾不被阻塞；**活跃 episode 扩展**含新出现 codex 行 → 不迁移；**预置含 codex id 的 durable episode 重放** → 拒迁移+记账忽略。
 - `stale-approved-ship-reconciler.test.ts` 扩展：修前红测（absent 无限 re-wake）→ 修后凭证换代 absent 一次 alertDead 停环；同代/无凭证 absent 维持 re-wake；codex absent 维持；alert 前绑定 re-read 变化 → 放弃。
 - `runner-wake` event_id：同绑定重试去重；两代 review 绑定各记一次；无 questionId 从 session 行补。
+- wake 终态 admission fence：终态行 wake → 跳 transport、`skippedReason:"terminal_status"`、零 `runner_wake_failed`（direct-helper 单测 + producer 级集成）。
+- §4.9 park-veto 条件放行：`superseded` 放行删除 / `same_generation`/`unavailable`/未注入 → 逐字节 keep（reverse-compat sentinel）/ 条件 finalize 并发 rebind → abort 零删除。
 - 凭证写入（`onTmuxWindowOpened` 接线，fresh + retry 两位点，claude 一律过 launch token gate 含 direct 路径）：成功路径 / `-P -F` 解析或持久化失败 → **launch abort、刚建窗口被 kill、token 不释放**（launch 不变量）/ **crash fixture（Codex R6 B1）：`new-window` 返回后、凭证落盘前杀掉 adapter/Bridge → 重启对账 → 断言无 Claude 体被释放（只剩 bounded gate 壳）、无活体可被 mutate** / 从未 stamp 的 execution → 凭证缺失（绝无 pre-body 值）；
 - **initial post-coordinator residue debt（Codex R6 H2 + R7 H1）**：(a) boot owner 横跨 tick 0 + coordinator tick-0 抛错、tick-1 成功 → 债在首个 gate-true 派发时兑现，不等小时模数；(b) 无 boot 重叠、tick 0 在 gate 为假时跑完 full pass → 同上；(c) 债只在 face 真正跑过 coordinator 前置后清除；
 - **通知分类回归（Codex R7 H2）**：(a) 已投递同代 advisory → 后来 running 结算仍恰一次发 settlement 通知；(b) 已投递 unproven parked advisory → 后来 generation-proven 升级恰一次发更强通知；
@@ -306,7 +329,7 @@ flowchart TD
 
 ## 10. 交付物与里程碑
 
-- PR(单个)：`pane-loss-reconcile.ts`（face + 证据核）+ `new-window -P -F` 凭证取样与 `onTmuxWindowOpened` 接线 + `probeTmuxServerStartTime` + residue-harvest face 接线 + coordinator vendor 谓词（全路径）+ HeartbeatService.check() finally 顺序调整 + in-flight/first-check holders + stale-ship 分流（probe 合同扩展）+ wake event_id 去重 + `AlertEventType` 成员与 KIND_CONTRACTS 条目 + 测试；本 plan 与 founder HTML 随分支进 main；CLAUDE.md 里程碑行 + doc 归档随 PR 最后一个 commit。
+- PR(单个)：`pane-loss-reconcile.ts`（face + 证据核）+ `new-window -P -F` 凭证取样与 `onTmuxWindowOpened` 接线 + `probeTmuxServerStartTime` + residue-harvest face 接线 + coordinator vendor 谓词（全路径）+ HeartbeatService.check() finally 顺序调整 + in-flight/first-check holders + initial residue debt + stale-ship 分流（probe 合同扩展）+ wake event_id 去重 + **wake 终态 admission fence** + **§4.9 park-veto 条件放行与 `finalizePaneLossResidue`** + `AlertEventType` 成员与 KIND_CONTRACTS 条目 + 测试；本 plan 与 founder HTML 随分支进 main；CLAUDE.md 里程碑行 + doc 归档随 PR 最后一个 commit。
 - **实施护栏（Codex R8 APPROVED 附带的三条非阻塞 guard，实施时照办）**：
   1. `harvestPaneLoss` 返回 typed outcome（`ran | skipped_first_check | skipped_episode | skipped_hold | skipped_server | skipped_coordinator_in_flight`），initial debt **只在 `ran` 时清**，一切 skip 保持 pending 下次派发重试；§7.1(c) 测试补「episode/hold stand-down 后最终 `ran`」序列。
   2. settlement 通知戳字面编码 lifecycle 绑定：`pane-loss-notified-<execId>-settlement-<terminalLifecycleId>`（防复用 execution 的两代 terminal 塌缩）；债发现只查 class-specific id，绝不查「任意 pane-loss 通知」；未知 adapter 的文案映射到保守的 unknown advisory（绝不套 codex 或「body died」文案）；lifecycle id + class 进事件 payload。
