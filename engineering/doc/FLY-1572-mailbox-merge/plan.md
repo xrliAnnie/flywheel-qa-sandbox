@@ -128,20 +128,30 @@ CREATE INDEX mailbox_archive_dead  ON mailbox(dead_at)  WHERE state = 'DEAD';
 ### 3.1b 身份永久占用(R3 blocker 1:归档不得释放幂等身份)
 
 ```sql
-CREATE TABLE mailbox_identity (          -- append-only registry:id/delivery_id 跨归档永久占用
+CREATE TABLE mailbox_identity (          -- registry:id/delivery_id 跨归档永久占用
   id          TEXT NOT NULL UNIQUE,
   delivery_id TEXT NOT NULL UNIQUE,
-  archived_at TEXT                       -- NULL = 活表在住;归档时盖章
+  insert_projection_hash TEXT NOT NULL,  -- versioned canonical 初始投影 hash(archived replay 的比较材料)
+  archived_at TEXT,                      -- NULL = 活表在住;归档时一次性盖章
+  UNIQUE (id, delivery_id)
 );
+-- 写协议 = registry 先行(R4 blocker 1):事务内先 reserve-or-resolve registry,后 INSERT mailbox。
+-- mailbox BEFORE INSERT 只放行「存在精确同 pair 且 archived_at IS NULL」的 registry 行:
 CREATE TRIGGER mailbox_identity_guard BEFORE INSERT ON mailbox
 BEGIN
-  SELECT RAISE(ABORT,'FLY-1572: identity already archived')
-   WHERE EXISTS (SELECT 1 FROM mailbox_identity WHERE id = NEW.id OR delivery_id = NEW.delivery_id);
+  SELECT RAISE(ABORT,'FLY-1572: identity not reserved or already archived')
+   WHERE NOT EXISTS (SELECT 1 FROM mailbox_identity
+                      WHERE id = NEW.id AND delivery_id = NEW.delivery_id
+                        AND archived_at IS NULL);
 END;
--- 活表 INSERT 与 identity INSERT 同事务;归档 DELETE 时仅盖 archived_at,registry 行永不删
+-- registry 自身:no-delete / no-rekey 触发器;UPDATE 只允许 archived_at NULL→非NULL 一次性盖章
 ```
-- **at-least-once sink replay 合同**(insertInstructionWithId / instructionAndIntent 依赖的 `INSERT OR IGNORE` 去重):撞到 registry(已归档)且 canonical payload 相同 → already-settled no-op(与今天 OR IGNORE 吃掉重复等价);payload 不同 → fail-loud。**触发器在数据库层同事务拒绝,不做 TS 层 SELECT-then-INSERT(竞态)**;`INSERT OR IGNORE` 对 RAISE(ABORT) 触发器不免疫 —— 各写入口在事务内先查 registry 归档态走 no-op 分支,触发器只作最后防线。
-- 测试:source crash→ACK→T+72h archive→迟到 replay(no-op)/异 payload 同 id(炸)/异 id 同 delivery_id(炸)/二次归档 event 幂等不卡 canonical conflict。
+- **写协议三分支**(事务内,DB 触发器兜底而非 TS SELECT-then-INSERT 独担):
+  ①新身份 → registry INSERT + mailbox INSERT(同事务,DB 可证明活行必有精确配对);
+  ②active 重放(pair 在住)→ mailbox `INSERT OR IGNORE` 照旧 no-op(触发器放行,现 sink dedupe 合同 db.ts:2571-2594 不变);
+  ③archived 重放(pair 已盖章)→ typed 分支:canonical 投影 hash 相同 → already-settled no-op;不同 → fail-loud。
+- **迁移填充 registry**(纳入覆盖对账:每个逻辑投递恰一条 identity):活行→active;直入 `migrated_history` 的 49k 历史行→**archived**(旧稳定 id 从此永久占用,迟到 source replay 走③);question/ack mirror 按双身份折叠成一条 pair。
+- 测试:active duplicate no-op / mailbox-without-registry 必炸 / cross-pair 必炸 / 历史行迟到 replay(no-op 与异投影炸)/ registry 删改被拒 / 各事务 fault point / source crash→ACK→archive→replay / 二次归档幂等。
 
 ### 3.2 mailbox_log(append-only + settlement CAS)
 
@@ -180,17 +190,18 @@ CREATE TABLE content_ref_gc_outbox (
   message_id  TEXT NOT NULL,
   path        TEXT NOT NULL,           -- 规范化路径
   content_hash TEXT NOT NULL,
-  state       TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','done','failed')),
+  state       TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','done')),
   attempts    INTEGER NOT NULL DEFAULT 0,
+  next_retry_at TEXT,                  -- 可重试错误回 pending + 退避(R4 HIGH 3:没有回不到候选集的 failed 死态)
   last_error  TEXT,
   created_at  TEXT NOT NULL,
   finished_at TEXT
 );
+CREATE INDEX content_ref_gc_due ON content_ref_gc_outbox(next_retry_at, created_at)
+  WHERE state = 'pending';
 ```
-```sql
-CREATE INDEX content_ref_gc_pending ON content_ref_gc_outbox(created_at) WHERE state = 'pending';
-```
-归档事务内:row_json 先内嵌文件 bytes(base64)+ hash → INSERT GC intent → DELETE mailbox 行,同事务提交;**commit 后**有界 drain 删文件。**严格删除原语**(现 deleteContentRef 吞一切 unlink 错误,不能复用):归档**前**读文件缺失/hash 不符 → fail-closed 保留行不归档;commit **后** drain 时文件已缺 → 幂等成功;其余错误(权限等)→ failed+last_error 留待重试;同 path 仍被活行引用 → 不删。测试:commit-before-delete crash / delete-before-ack crash 两向重放 + 权限错误重试 + 共享 path 保护。
+GC drain FSM:候选 = `state='pending' AND (next_retry_at IS NULL OR next_retry_at <= now)`(走上面索引);删除前再核 path/hash;成功或文件已缺 → done;**一切可重试错误(权限/IO/shared-path 仍有活引用)→ 留 pending + attempts+1 + next_retry_at 退避 + last_error**,不存在永久不可见的 failed 死态。测试:pending→claim/crash 重入、权限失败→到期重试→done、shared path 最后一个活引用消失后重试成功(时钟推进)。
+归档事务内:row_json 先内嵌文件 bytes(base64)+ hash → INSERT GC intent → DELETE mailbox 行,同事务提交;**commit 后**有界 drain 删文件(FSM 与索引见 §3.2b)。**严格删除原语**(现 deleteContentRef 吞一切 unlink 错误,不能复用):归档**前**读文件缺失/hash 不符 → fail-closed 保留行不归档;commit **后** drain 时文件已缺 → 幂等成功;其余错误按 §3.2b 退避重试;同 path 仍被活行引用 → 留 pending。测试:commit-before-delete crash / delete-before-ack crash 两向重放。
 
 ### 3.3 附带表
 
@@ -299,8 +310,14 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 - **新 binary 三态 open 合同(R2 HIGH 5)**:①virgin(文件不存在/零对象)→ 单事务建全套 mailbox_v1 schema + meta + 毒药 VIEW 并写 generation(新项目开箱即用,open-or-create 公开合同不变);②`schema_generation='mailbox_v1'` → 严格校验后打开;③**任何 legacy/partial/unknown schema → fail-loud 指向 migration runbook**(绝不隐式 bootstrap 跳过旧数据)。`openReadonly` 同样校验 generation。测试:全新 project / 空文件 / 旧库 / 半建 meta / 错 generation / 迁移中断库。
 - **负向测试**:用真 pre-FLY-1572 build(git worktree checkout 旧 commit)对迁移后副本跑**全部 live 旧入口**:ask/gate/send/respond/inbox/check + verify-approval/pending/complete/runner-stopped + 只读路径,逐一断言 fail-loud(而非静默空读/changes=0),并断言无附带表副作用。
 
-### 8.4 回滚(实测一次)
-verified staging copy(先校验备份完整性)→ 清/拒绝 `-wal/-shm` sidecar → atomic rename 顶替 → fsync 目录 → **`refs/` 按 manifest 逐项恢复+hash 校验**(archive+GC 后回滚 old build 的场景专门测) → readonly integrity/FK/表清单/行数校验 → 回退部署 → 起 Bridge → 旧 build 冒烟。备份文件即回滚,无 feature flag。
+### 8.4 回滚(实测一次;R4 HIGH 2:DB+refs 跨资产 crash reconciliation)
+两类资产(DB 文件 + `refs/` 树)的恢复是**一个带 durable intent 的分相流程**,不是顺手两步:
+1. **staging 全构造先行**:DB staging copy + 完整 refs staging tree 都按 manifest 逐项 hash 验证通过后,才进入交换段;
+2. **durable restore intent/phase ledger** 写在被替换 DB **之外**(`comm.db.restore-intent-<ts>.json`,记录相位:staged→db_swapped→refs_swapped→verified→done);
+3. 交换段:refs 目录与 DB 各自可恢复 rename + parent fsync;**completion receipt 落盘前,新旧 binary 一律 fail-closed**(三态 open 视 restore-intent 存在为「迁移中断库」拒绝服务);
+4. **mixed-state 重入收敛**:重跑按 intent 相位判定续作;post-backup 多出来的 refs 文件 quarantine(不静默遗留);exact-manifest 收敛后写 done、删 intent;
+5. readonly integrity/FK/表清单/行数/refs manifest 校验 → 回退部署 → 起 Bridge → 旧 build 冒烟。
+仿 v2 模式(database-lifecycle.test.ts:128-149 / rollback-t1.test.ts:144-175):对 intent、refs swap、DB rename、各 fsync、verification、completion marker **逐点 fault-inject,连跑两遍证明幂等**。备份文件即回滚,无 feature flag。
 
 ## 9. 实施顺序与 TDD
 
