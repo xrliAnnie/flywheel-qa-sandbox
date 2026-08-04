@@ -1,13 +1,14 @@
 ---
 issue: FLY-1571
 phase: implement
-phaseCursor: 1/6
-updated: 2026-08-04T09:27:51.849Z
-nextStep: "QA: diff read; next = run package/shell/python gates on head debc9784"
+phaseCursor: 3/6
+updated: 2026-08-04T09:51:43.032Z
+nextStep: "QA: gates green; 529 room up (slot2 + extra lead3); real Codex runner
+  4a95cc6c running FLY-138; waiting for first turn-ended -> RUNNER-STOPPED"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1571 progress
-**phase**: implement (1/6)
-**next**: QA: diff read; next = run package/shell/python gates on head debc9784
+**phase**: implement (3/6)
+**next**: QA: gates green; 529 room up (slot2 + extra lead3); real Codex runner 4a95cc6c running FLY-138; waiting for first turn-ended -> RUNNER-STOPPED
