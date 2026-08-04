@@ -123,7 +123,7 @@ deps 全部注入（store / probes / notifier getter / `coordinatorFirstCheckDon
 
 - 有 pending complete marker（复用 `hasPendingCompleteMarker`，FLY-172 拥有真路由）；
 - `adapter_type` 为 no-transport 后端 → 跳过；未知 adapter 值 → advisory-only 永不 mutate；legacy 空值 = claude 默认（`isTmuxBacked` 同款）；
-- **launch 宽限**（Codex R2 H5 修正后）：仅适用于 **advisory 路径**（无凭证/同代 absent），`started_at` < 10 分钟内不发 advisory（防 spawn 竞态刷 thread 噪音）。**凭证不匹配的 mutation 路径不吃任何 activity/launch 宽限**——凭证本身已证明旧代 body 不可能在当前 server 上拥有 pane，boot pass 必须当场结算（验收 1 的 SLA 依据）。
+- **launch 宽限**（Codex R2 H5 修正后）：仅适用于 **advisory 路径**（无凭证/同代 absent），`started_at` < 10 分钟内不发 advisory（防 spawn 竞态刷 thread 噪音）。**凭证不匹配的 mutation 路径不吃任何 activity/launch 宽限**——凭证本身已证明旧代 body 不可能在当前 server 上拥有 pane，首个 post-coordinator maintenance pass 必须当场结算（验收 1 的 SLA 依据；boot sweep 里 face 被 §2.3 gate 有意跳过）。
 
 **pass 前置**（任一不满足 → 本 pass 整体跳过）：`coordinatorFirstCheckDone()` 为真；`getServerLossEpisode()` 无活跃 episode 且 `listActiveTmuxHolds()` 为空；`probeTmuxServer() === "up"`。
 
@@ -154,19 +154,24 @@ flowchart TD
 
 反查（`discoverTmuxTargetByExecutionId`）只用于**豁免** stale-mapping 活体，`missing` 不构成任何证据（`@flywheel_exec_id` 发布是 best-effort，TmuxAdapter.ts:604-620）。
 
-### 4.3 running 族的结算（TOCTOU fence）
+### 4.3 running 族的结算（两段式：async 取证段 → 单同步 fence，Codex R5 B1/B2 定稿）
 
-慢速探测全部完成后，销毁段在 **issue-lifecycle mutex**（statestore-ghost-reconcile 同款，`:143-147`）内执行：
+销毁段在 **issue-lifecycle mutex**（statestore-ghost-reconcile 同款，`:143-147`）内执行，分两段：
 
-1. **re-read** `store.getSession(execId)`：`project_name` 一致、`status === "running"` 严格相等、`lifecycle_revision` 与候选读取时一致；
-2. **re-read CommDB target**（`lookupTmuxTarget` 再取一次）：与取证时严格一致——取证时 `found:<t>` 则必须仍 `found:<t>`（**变成 gone 也算变化，放弃**）；取证时 `gone` 则必须仍 `gone`。这挡住「探测后 `activateSessionForWake`/adapter 把 target 重绑到新活窗」的竞态（前任 R3 Blocker 2 的生产反例）；
-3. re-check `hasPendingCompleteMarker` 仍为假；**re-check `getServerLossEpisode()`/`listActiveTmuxHolds()` 仍为空、`coordinatorInFlight` 为假**（§2.3 串行化第 4 条；此三查与第 6 步 transition 之间无 await，同步闭合）；
-4. re-probe：凭证 socket 的 `start_time` 仍 ≠ 凭证值（server 未再换代回滚判定）；
-5. **先插 detected 证据事件**（§4.6 的 `pane-loss-<execId>`，稳定 id 只去重插入本身，**不去重结算判定**——Codex R2 H4：若本步后崩溃，下一 pass 见行仍 running 必须重评估重试 transition）；
-6. 同步执行 `applyTransition(transitionOpts, execId, "failed", {trigger: "pane_loss_reconcile"}, {last_activity_at, last_error: "pane_loss: server generation superseded (socket=<s>, recorded=<T0>, current=<T1>); target <t> absent; rediscovery missing"})`——canonical 路径，terminal invariants（`terminal_at`/`terminal_lifecycle_id`/revision bump/settlement intent/display+terminal-sync fanout）随之维持，**绝不绕过它写裸 SQL**（前任 R3 Blocker 6 的教训）；
-7. **检查 `TransitionResult.ok`**，非 ok 不记结算、不通知。
+**async 取证段**（mutex 内，允许 await）：**最后一个 awaited 操作必须是 generation probe**——`probeTmuxServerStartTime(凭证.socket_path)` 重取当前值。tmux 子进程探测（含此前的 target/rediscovery probe）全部发生在这一段。
 
-**残余窗口的诚实声明**：claude 的同 execution 体重建路径**存在且只有一条**——RetryDispatcher 的 pre-commit 重驱（§4.2）；它已由 launch 不变量封死（每次建体都必须成功重写凭证，否则该体不获运行资格）。除此之外运行中的 claude session 不存在体重建路径（wake 是 mailbox 写、cmux-sync/FLY-169 只管 workspace 不建 runner 窗），codex（有 ensure/reopen 重建路径）在本设计下永不 mutate。剩余的组合窗口（fence 与取证之间新体出现 + CommDB rebind 与 `@flywheel_exec_id` 发布双双失败 + 凭证已按不变量重写但 fence 读到旧快照）被 fence 第 1/2/4 步的 re-read 覆盖；接受的残余风险写入 §9（前任试图用 claims 收敛到零，五轮未收敛）。
+**单同步 fence**（generation probe resolve 之后，到 transition 为止**零 await**；StateStore/CommDB 均为 better-sqlite3 同步读，complete marker 为同步 fs 检查）：
+
+1. **re-read session 行**：`project_name` 一致、`status === "running"` 严格相等、`lifecycle_revision` 与候选读取时一致；
+2. **re-read 并重解析 `session_params.pane_loss_generation`**：必须与**取证时的凭证元组逐字段相等**（`socket_path` + `server_start_time`）——缺失/损坏/任一字段变化 → 放弃。这一步不可省：`setSessionParams` 是 JSON 列直写、**不 bump `lifecycle_revision`**（StateStore.ts:6321-6328），revision 检查看不见同 execution 重放体的 mandatory 凭证重写。**最终 mismatch 判定用这枚 fresh 重读的元组**对比 probe 值；
+3. **re-read CommDB target**（同步读）：与取证时严格一致——取证时 `found:<t>` 则必须仍 `found:<t>`（**变成 gone 也算变化，放弃**）；取证时 `gone` 则必须仍 `gone`（挡「探测后 `activateSessionForWake`/adapter 重绑新活窗」，前任 R3 反例）；
+4. re-check `hasPendingCompleteMarker` 仍为假；
+5. re-check `getServerLossEpisode()` / `listActiveTmuxHolds()` 为空、`coordinatorInFlight` 为假（§2.3 串行化第 4 条——放在 fence 内是因为 async 取证段挂起期间下一个 heartbeat 可能同步置起 in-flight 并 arm episode）；
+6. **插 detected 证据事件**（§4.6 的 `pane-loss-<execId>`，稳定 id 只去重插入本身，**不去重结算判定**——若本步后崩溃，下一 pass 见行仍 running 必须重评估重试 transition）；
+7. 同步执行 `applyTransition(transitionOpts, execId, "failed", {trigger: "pane_loss_reconcile"}, {last_activity_at, last_error: "pane_loss: server generation superseded (socket=<s>, recorded=<T0>, current=<T1>); target <t> absent; rediscovery missing"})`——canonical 路径，terminal invariants（`terminal_at`/`terminal_lifecycle_id`/revision bump/settlement intent/display+terminal-sync fanout）随之维持，**绝不绕过它写裸 SQL**（前任 R3 Blocker 6 的教训）；**不用 `execFileSync` 之类阻塞探测替代此结构**；
+8. **检查 `TransitionResult.ok`**，非 ok 不记结算、不通知。
+
+**残余窗口的诚实声明**：launch 不变量覆盖**每一条**生产 claude 绑定/重驱路径（RetryDispatcher pre-commit 重驱、`RunDispatcher.start()` 接受 caller-supplied execution id 的 generalized/successor 形态等——不依赖路径清单的穷尽性）：任何新体都必须成功重写凭证才获运行资格。因此「新体出现但凭证仍是旧值」结构性不存在；「新体出现且凭证已重写」被 fence 第 2 步的凭证等值重读当场看见（`setSessionParams` 不 bump revision，故必须显式比对元组）。codex（有 ensure/reopen 重建路径）在本设计下永不 mutate。前任试图用 claims 把同类窗口收敛到零，五轮未收敛（§9）。
 
 ### 4.4 parked 族（按 authority 拆分）
 
@@ -222,7 +227,7 @@ flowchart TD
 | **正向证据才 mutate** | generation 凭证不匹配（等值比较、socket 显式、spawn 时落于 session_params）；absent/反查 missing 只用于豁免活体 |
 | indeterminate = 跳过 | 证据链每个非绿分支都是 skip/advisory |
 | 永不 done=true / 不 archive 活 thread | 动词仅 failed（CRASH_PRESERVE）；parked 族不动状态 |
-| TOCTOU fence | mutex + re-read(status/revision/project/CommDB target/episode/holds/marker) + re-probe generation + `TransitionResult.ok` |
+| TOCTOU fence | mutex + 两段式（最后 await = generation probe → 单同步 fence）+ re-read(status/revision/project/**凭证元组等值**/CommDB target/episode/holds/inFlight/marker) + `TransitionResult.ok` |
 | dry-run | 注入 `mutate:false` 的 report-only 调用（QA harness），无新 CLI/flag |
 | 反例 fixture | 活体对照组；同代 absent 不 mutate；无凭证不 mutate；d0bf4e5d 型（terminal）不在候选集 |
 
@@ -238,12 +243,12 @@ flowchart TD
   - pass 前置：coordinator 首查未完成让位 / episode 活跃让位 / hold 活跃让位 / server down 跳过；
   - 凭证：无凭证 → advisory / 凭证损坏 → advisory / socket 探测失败 → 跳过 / **同代 absent → advisory 不 mutate（FLY-1319 反例）** / **时钟回拨（当前 start_time 早于凭证值）→ 仍判换代结算（等值比较语义）** / 换代+claude+running → failed / 换代+parked → advisory / 换代+codex/未知 → advisory；
   - 证据链：target alive 不碰 / dead_pin 让位 / absent+反查 found 重探（活体 → 不碰）/ **marker 发布失败的同代活体 → advisory 不 mutate（Codex R1 B2 反例）**；
-  - 排除：complete marker / no-transport / project 过滤 / advisory launch 宽限（<10min 不发）/ **凭证换代路径无任何 activity/launch 宽限（boot pass 当场结算）**；
-  - TOCTOU：探测期间 running→approved_to_ship → 放弃 / lifecycle_revision 变化 → 放弃 / **CommDB target 重绑（含 found→gone）→ 放弃（前任 R3 反例）** / fence 内 episode/hold 出现 → 放弃 / server 再换代 → 放弃 / `TransitionResult.ok=false` → 不记结算不通知；
+  - 排除：complete marker / no-transport / project 过滤 / advisory launch 宽限（<10min 不发）/ **凭证换代路径无任何 activity/launch 宽限（首个 post-coordinator pass 当场结算）**；
+  - TOCTOU：探测期间 running→approved_to_ship → 放弃 / lifecycle_revision 变化 → 放弃 / **CommDB target 重绑（含 found→gone）→ 放弃（前任 R3 反例）** / fence 内 episode/hold 出现 → 放弃 / server 再换代 → 放弃 / `TransitionResult.ok=false` → 不记结算不通知 / **凭证在取证与 fence 间被重写（Codex R5 B1 fixture：阻塞最终 generation probe → 写入凭证 B + 活 B 体 + registration/marker 双缺 → 释放 probe → 断言零 mutation）** / **barrier：coordinator 在最终 generation probe 挂起期间启动 → probe resolve 后 face 必须让位（Codex R5 B2 fixture）**；
   - crash 边界（Codex R2 H4）：detected 已插但 transition 未发生 → 下一 pass 重试 transition / transition 已发生但 notified 缺 → 通知债从 `last_error LIKE 'pane_loss:%'` 补投 / `mutate:false` → 零 transition 零事件零投递零 raw enqueue；
   - 通知：sink 未就绪 → 债保留、holder 绑定时 drain 补投 / raw fallback accepted/queued 记 delivered / 幂等；
   - **与 coordinator 互动（空 ledger 并发释放，Codex R2 B3 + R3 B2 形态）**：并发跑 coordinator check 与 face pass，两种 barrier 顺序（face 先进 fence / coordinator 先 arm）+ residue pass 横跨下一个 heartbeat tick，断言至多一个 owner 迁移、无双迁移、无 codex mutation；
-  - **凭证 A→B 换 server fixture（Codex R3 B1 反例）**：emitStarted 后、建窗前 server 换代，体建在 B、registration+marker 双失败——断言凭证 = B 或缺失、**绝不是 A**、活体不被 mutate；
+  - **凭证 A→B 换 server fixture（Codex R3 B1 反例）**：取证前 server 换代，体建在 B、registration+marker 双失败——断言 **活体存在 ⇒ 凭证必为 B**、**凭证缺失 ⇒ 无存活窗口（launch 已 abort）**、绝无「活 B 体旁挂 A 凭证」、活体不被 mutate；
   - advisory 前 re-read：已恢复/已 terminal 的行不收过期提案；
 - HeartbeatService 顺序回归：coordinator/liveness 段抛错 → maintenance 仍恰好派发一次（finally 语义，Codex R3 M4）。
 - `server-loss.test.ts` 扩展（§4.8）：clean-fresh ALL-gone / server-down 各含活 detached codex → 零 codex/未知迁移、进 heldExecutionIds、episode 收尾不被阻塞；**活跃 episode 扩展**含新出现 codex 行 → 不迁移；**预置含 codex id 的 durable episode 重放** → 拒迁移+记账忽略。
