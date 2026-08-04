@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1571 · Runner 停轮自报(带停的原因)— 设计方案</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.7; padding: 24px 16px 60px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; margin-bottom: 6px; color: #1a365d; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 24px; }
+  .meta a { color: #007aff; text-decoration: none; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 22px 24px; margin-bottom: 10px; }
+  .card.blue { border-left: 4px solid #007aff; }
+  .card.green { border-left: 4px solid #34c759; }
+  .card.amber { border-left: 4px solid #ff9500; }
+  .card.purple { border-left: 4px solid #af52de; }
+  .card.red { border-left: 4px solid #ff3b30; }
+  .card.navy { border-left: 4px solid #1a365d; }
+  h2 { font-size: 19px; color: #1a365d; margin-bottom: 12px; }
+  h3 { font-size: 15px; color: #1d1d1f; margin: 14px 0 6px; }
+  p { margin-bottom: 10px; font-size: 15px; }
+  .lead-sentence { font-size: 17px; font-weight: 600; }
+  .jargon { color: #86868b; font-size: 13.5px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
+  th, td { border: 1px solid #e5e5ea; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #fafafa; color: #1a365d; font-weight: 600; }
+  code, .mono { font-family: 'SF Mono', Menlo, monospace; font-size: 13px; background: #f2f2f7; border-radius: 4px; padding: 1px 5px; }
+  .msgline { display: block; background: #1a365d; color: #e8f4fd; border-radius: 8px; padding: 12px 14px; font-family: 'SF Mono', Menlo, monospace; font-size: 12.5px; overflow-x: auto; white-space: nowrap; margin: 10px 0; }
+  .diagram { overflow-x: auto; background: #fff; padding: 8px 0; }
+  .diagram svg { max-width: 100%; height: auto; }
+  ul, ol { margin: 6px 0 12px 22px; font-size: 15px; }
+  li { margin-bottom: 5px; }
+  .badge { display: inline-block; font-size: 11.5px; font-weight: 600; border-radius: 5px; padding: 2px 8px; margin-right: 6px; vertical-align: middle; }
+  .badge.done { background: #eafbef; color: #1d8a3e; }
+  .badge.blocked { background: #f3eafd; color: #7a2ecc; }
+  .badge.await { background: #fff8e6; color: #b56a00; }
+  .badge.quota { background: #fdeaea; color: #c72c22; }
+  .comment-box { margin-top: 16px; border-top: 1px dashed #e5e5ea; padding-top: 12px; }
+  .comment-box label { font-size: 12.5px; color: #86868b; display: block; margin-bottom: 6px; }
+  .comment-box textarea { width: 100%; min-height: 56px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 14px; resize: vertical; background: #fafafa; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  #comment-summary-list { font-size: 14px; }
+  #comment-summary-list .cmt { background: #fafafa; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+  #comment-summary-list .cmt .sec { font-weight: 600; color: #1a365d; font-size: 13px; margin-bottom: 3px; }
+  #copy-all-btn { background: #007aff; color: #fff; border: none; border-radius: 8px; padding: 10px 18px; font-size: 14.5px; font-weight: 600; cursor: pointer; }
+  #copy-all-btn:active { opacity: 0.75; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+  .empty-hint { color: #86868b; font-size: 13.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1571 · Runner 停轮自报(带停的原因)</h1>
+  <div class="meta">
+    消息层重构 · 批次 1 · B 单 — 设计方案(plan_only)· 2026-08-04 ·
+    <a href="https://linear.app/geoforge3d/issue/FLY-1571/消息层重构-b-批次1-runner-stop-通知带停的原因">Linear FLY-1571</a>
+    · 设计依据 FLY-1569 总纲 · Codex 设计评审 9 轮 APPROVED
+  </div>
+
+  <div class="card blue" data-section="一句话总结">
+    <h2>1 · 一句话总结</h2>
+    <p class="lead-sentence">以后每个 AI 员工(Runner)每次停下来,都会自己给它的主管(Lead)发一条消息:「我停了,原因是 ___」—— 不用主管再靠盯屏幕来猜它是干完了、卡住了、还是在等审批。</p>
+    <p class="jargon">名词说明:Runner = 干活的 AI 员工(写代码的那个);Lead = 管理 Runner 的 AI 主管;watchdog = 现在那套「盯着屏幕猜它死没死」的监工程序,正在被拆掉(A 单),这条自报消息就是接替它的主要手段。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s1" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card navy" data-section="为什么要做">
+    <h2>2 · 为什么要做</h2>
+    <p>过去 Lead 想知道 Runner 的状态,只能靠 watchdog 盯屏幕猜「它是不是停了」。猜错了就出两种事故:要么把好好干活的当成卡死反复去催(刷屏告警),要么真卡死了没人发现。</p>
+    <p>这一单把方向反过来:<b>不猜了,它自己说。</b>而且必须说清「为什么停」—— 因为光说「我停了」,Lead 还是得去看终端,不知道该<b>派下一个活</b>还是<b>去救它</b>。</p>
+    <table>
+      <tr><th>停的原因(reason)</th><th>意思</th><th>Lead 通常怎么办</th></tr>
+      <tr><td><span class="badge done">done</span></td><td>干完了</td><td>派下一个活</td></tr>
+      <tr><td><span class="badge await">awaiting_approval</span></td><td>等审批(比如等你批准合并)</td><td>推进审批</td></tr>
+      <tr><td><span class="badge blocked">blocked</span></td><td>卡住了 / 等回复 / 停了没说为什么</td><td>去看一眼、救它</td></tr>
+      <tr><td><span class="badge quota">quota</span></td><td>撞额度(账号被限流)</td><td>等恢复或换账号</td></tr>
+      <tr><td><span class="badge quota">context_full</span></td><td>上下文满了(脑容量用完)</td><td>接手或重开</td></tr>
+      <tr><td><span class="badge quota">error</span></td><td>出错</td><td>去看一眼</td></tr>
+    </table>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s2" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="核心流程">
+    <h2>3 · 核心流程</h2>
+    <p>两种 AI 员工(Claude 和 Codex)停下来的「感知点」不一样,但后面走的是<b>同一条路</b>。全程复用现有的消息通道,不建任何新表、新通道、新开关。</p>
+    <p class="jargon">名词说明:Stop/StopFailure 钩子 = Claude 停下来那一刻系统自动运行的小脚本(前者管正常停,后者管出错停);notify = Codex 停下来时按配置自动调用的回调程序;CommDB = Runner 和 Lead 之间现有的消息数据库;GatePoller = Bridge 里每 3 秒扫一次新消息并转发给 Lead 的现有组件。</p>
+    <div class="diagram">__SVG_D1__</div>
+    <p>发出去的消息长这样(一行,人能读、机器也能切):</p>
+    <span class="msgline">RUNNER-STOPPED kind=runner_stopped reason=awaiting_approval issue=FLY-1571 exec=33fcfd8b route=needs_review detail=PR #770 ready, awaiting founder approval</span>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s3" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="停的原因怎么判">
+    <h2>4 · 停的原因怎么判</h2>
+    <p>「为什么停」不是拍脑袋猜的,而是按固定优先级查证据:出错事件里的结构化错误码最可信,排最前;刚交活留下的「面包屑」其次(面包屑 = 交活命令顺手写在本地的一个小纸条,记着这次交的是什么活);实在什么证据都没有,就诚实地报「blocked:它什么都没说就停了」,并附上它最后说的一句话,帮 Lead 免开终端。</p>
+    <div class="diagram">__SVG_D2__</div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s4" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="数据与可靠性设计">
+    <h2>5 · 数据与可靠性设计(给较真的人看)</h2>
+    <p>这一单不改任何数据库表。所有新增状态都是每个 Runner 自己目录下的几个小文件:</p>
+    <table>
+      <tr><th>本地小账本</th><th>作用</th><th>为什么这样设计</th></tr>
+      <tr><td class="mono">turn-boundary.json</td><td>记「上一轮什么时候结束」</td><td>由停轮当刻的前台脚本原子更新(带进程崩溃自动释放的内核锁),这样判断「哪些提问属于本轮」永远不受后台发送快慢影响</td></tr>
+      <tr><td class="mono">last-complete.json</td><td>交活面包屑(交的什么活)</td><td>「等审批」这个状态只有交活命令自己知道,顺手留张纸条是最简单可靠的通路</td></tr>
+      <tr><td class="mono">consumed/ + sent/</td><td>已消费/已发送的不可变标记文件</td><td>只建不改的空文件天然免疫时钟回拨和并发覆盖;真正的防重复靠数据库里的确定性消息编号(同一轮算出同一个编号,重复插入自动吸收)</td></tr>
+    </table>
+    <p><b>可靠性口径(诚实版):</b>正常路径「一轮恰好一条」;极端情况(比如聊天记录读不到)按「宁可重复、绝不吞掉」处理 —— 重复消息对 Lead 只是噪音,吞掉消息才是事故。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s5" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card navy" data-section="关键取舍与否掉的方案">
+    <h2>6 · 关键取舍与否掉的方案</h2>
+    <ul>
+      <li><b>统一 emitter 放在 flywheel-comm 里,钩子只做薄触发</b> —— 否掉「在 shell 脚本里裸写数据库查询」:逻辑散、没法测。</li>
+      <li><b>复用现有 report 消息通道</b> —— 否掉「新建通知表/新通道」:那是 C 单的地盘,本单零 schema 改动。</li>
+      <li><b>Codex 侧改每个 Runner 自己的配置副本,不动你的全局 Codex 配置</b> —— 顺带修正:Runner 的停轮通知不再发给你个人的桌面通知器(那本来就是噪音)。</li>
+      <li><b>顺手修一个真 bug</b>:现有的 Discord 回复检查钩子会把 Runner 误认成 Lead(因为 Runner 环境里也带了 Lead 标识),评审中用真实反例证实它会误拦 Runner —— 本单给它加一行「是 Runner 就跳过」。</li>
+      <li><b>发送全部后台化、约 14 秒硬上限、任何失败静默记日志</b> —— 否掉同步发送:Runner 的正常工作绝不能被通知拖慢或搞挂(验收红线)。</li>
+      <li><b>Lead 收到通知零自动化</b> —— 否掉「自动派活/自动重启」:本单只把事实送到 Lead 眼前,决定权在 Lead(issue 红线)。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s6" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="诚实边界">
+    <h2>7 · 诚实边界 — 这单做什么、不做什么</h2>
+    <h3>做到:</h3>
+    <ul>
+      <li>Claude 和 Codex 两种 Runner,每次停轮给 Lead 一条带原因的消息;编号能唯一定位到具体 Runner。</li>
+      <li>「干完了 / 等审批 / 卡住了」三类判定可靠;「撞额度 / 上下文满」在有结构化错误证据时可靠。</li>
+    </ul>
+    <h3>明确不覆盖(都有兜底方):</h3>
+    <ul>
+      <li>进程被强杀、电脑断电这类「连遗言都来不及留」的死法 —— 这条消息发不出来,由现有的孤儿清理机制从另一个角度发现。</li>
+      <li>antigravity / kimi 等新接的 Runner 品种和 Codex 的无窗口形态 —— 不在本单(它们本来就是交完 PR 就结束的形态)。</li>
+      <li>「上下文满」若拿不到真实错误样本,先归入 error 不硬猜(评审定的硬门:没有真凭据不上分类器)。</li>
+      <li>消息表的膨胀病根 —— 那是 C/D 单的活,本单不碰也不加重。</li>
+    </ul>
+    <h3>动工前的两道硬门(评审要求,不许跳):</h3>
+    <ul>
+      <li>真机验证 Codex 的 notify 回调到底怎么传参、是否按轮串行 —— 验证不过就换更稳的设计再动工。</li>
+      <li>抓到真实的「上下文满」错误样本才实现该分类。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s7" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="评审历程与下一步">
+    <h2>8 · 评审历程与下一步</h2>
+    <p>本设计经 Codex 独立设计评审 <b>9 轮</b>收敛(10 → 6 → 7 → 4 → 4 → 3 → 4 → 4 → 0 条意见),最终 <b>APPROVED</b>。评审抓出的真问题包括:Claude 出错停轮走的是另一个钩子事件(StopFailure)、现有钩子会误拦 Runner、时钟回拨会污染判断、并发去重的三个竞态窗口 —— 全部已折入方案。</p>
+      <p>下一步:实施节点按本方案动工(先过两道硬门)→ 全仓测试 → 独立 QA 真机验收(起真 Runner 走完五条验收)→ 你批准后合入。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-ckey="s8" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card blue" data-section="意见汇总">
+    <h2>9 · 你的意见汇总</h2>
+    <div id="comment-summary-list"><p class="empty-hint">上面各节的评论会实时汇总到这里。</p></div>
+    <button id="copy-all-btn" type="button">复制全部意见</button><span id="copy-status"></span>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var PREFIX = 'fly1571-comments:' + location.pathname + ':';
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-ckey]'));
+  var summaryList = document.getElementById('comment-summary-list');
+  var copyBtn = document.getElementById('copy-all-btn');
+  var copyStatus = document.getElementById('copy-status');
+
+  function sectionTitleFor(ta) {
+    var card = ta.closest('[data-section]');
+    return card ? card.getAttribute('data-section') : '未知章节';
+  }
+
+  function collect() {
+    var items = [];
+    boxes.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) items.push({ sec: sectionTitleFor(ta), text: v });
+    });
+    return items;
+  }
+
+  function renderSummary() {
+    var items = collect();
+    while (summaryList.firstChild) summaryList.removeChild(summaryList.firstChild);
+    if (!items.length) {
+      var hint = document.createElement('p');
+      hint.className = 'empty-hint';
+      hint.textContent = '上面各节的评论会实时汇总到这里。';
+      summaryList.appendChild(hint);
+      return;
+    }
+    items.forEach(function (it) {
+      var d = document.createElement('div');
+      d.className = 'cmt';
+      var s = document.createElement('div');
+      s.className = 'sec';
+      s.textContent = '【' + it.sec + '】';
+      var t = document.createElement('div');
+      t.textContent = it.text;
+      d.appendChild(s);
+      d.appendChild(t);
+      summaryList.appendChild(d);
+    });
+  }
+
+  boxes.forEach(function (ta) {
+    var key = ta.getAttribute('data-ckey');
+    ta.value = lsGet(key);
+    ta.addEventListener('input', function () {
+      lsSet(key, ta.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+
+  function fallbackCopy(text) {
+    var tmp = document.createElement('textarea');
+    tmp.value = text;
+    tmp.setAttribute('readonly', '');
+    tmp.style.position = 'fixed';
+    tmp.style.left = '-9999px';
+    document.body.appendChild(tmp);
+    tmp.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(tmp);
+    return ok;
+  }
+
+  function showCopied(ok) {
+    copyStatus.textContent = ok ? '已复制 ✓' : '复制失败,请手动选择文本';
+    setTimeout(function () { copyStatus.textContent = ''; }, 2500);
+  }
+
+  copyBtn.addEventListener('click', function () {
+    var items = collect();
+    var text = items.length
+      ? items.map(function (it) { return '【' + it.sec + '】\n' + it.text; }).join('\n\n')
+      : '(暂无评论)';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { showCopied(true); }, function () { showCopied(fallbackCopy(text)); });
+    } else {
+      showCopied(fallbackCopy(text));
+    }
+  });
+})();
+</script>
+</body>
+</html>

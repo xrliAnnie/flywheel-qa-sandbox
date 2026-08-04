@@ -1,0 +1,28 @@
+flowchart TD
+    START["Runner 停了,原因是什么?<br/>按优先级从上往下,第一个命中即定"]
+    START --> P0{"失败停轮事件带的<br/>结构化错误?"}
+    P0 -->|"限流 rate_limit"| QUOTA["quota 撞额度"]
+    P0 -->|"上下文/超长(需真实样本)"| CTX["context_full 上下文满"]
+    P0 -->|"其他错误"| ERR["error 出错"]
+    P0 -->|"没有"| P1{"这一轮刚交过活?<br/>(complete 面包屑)"}
+    P1 -->|"needs_review 等审批"| AW["awaiting_approval 等审批"]
+    P1 -->|"no_code / pr_handoff 等干完型"| DONE["done 干完了"]
+    P1 -->|"blocked / ship 失败"| BLK["blocked 卡住了"]
+    P1 -->|"没有"| P2{"会话档案已是终态?"}
+    P2 -->|"completed"| DONE
+    P2 -->|"failed / timeout"| ERR
+    P2 -->|"不是"| P3{"自己声明过 park<br/>(干完待命)?"}
+    P3 -->|"是"| DONE
+    P3 -->|"否"| P4{"这一轮有没答的<br/>审批门问题?"}
+    P4 -->|"有"| AW
+    P4 -->|"普通提问没人答"| BLK
+    P4 -->|"没有"| P5{"Codex 最后一句话<br/>像额度/上下文问题?"}
+    P5 -->|"像"| QUOTA
+    P5 -->|"不像"| FALLBACK["blocked 兜底:<br/>什么都没说就停了<br/>(detail 附最后输出片段)"]
+    style QUOTA fill:#fdeaea,stroke:#ff3b30
+    style CTX fill:#fdeaea,stroke:#ff3b30
+    style ERR fill:#fdeaea,stroke:#ff3b30
+    style AW fill:#fff8e6,stroke:#ff9500
+    style DONE fill:#eafbef,stroke:#34c759
+    style BLK fill:#f3eafd,stroke:#af52de
+    style FALLBACK fill:#f3eafd,stroke:#af52de
