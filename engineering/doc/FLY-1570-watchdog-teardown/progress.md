@@ -1,13 +1,13 @@
 ---
 issue: FLY-1570
 phase: implement
-phaseCursor: 6/9
-updated: 2026-08-04T08:46:07.814Z
-nextStep: "Knife 7: remove orphaned chase helpers and tests"
+phaseCursor: 7/9
+updated: 2026-08-04T08:52:58.456Z
+nextStep: "Knife 8: remove retired flags, scripts references, and finish docs"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1570 progress
-**phase**: implement (6/9)
-**next**: Knife 7: remove orphaned chase helpers and tests
+**phase**: implement (7/9)
+**next**: Knife 8: remove retired flags, scripts references, and finish docs
