@@ -199,6 +199,17 @@ export class WorkflowEngineDispatcher {
 			: fallback;
 	}
 
+	private probeTerminalLaunchLiveness(
+		executionId: string,
+		projectName: string,
+	): Promise<GeneralizedLaunchLiveness> {
+		return this.options.probeLaunchLiveness
+			? this.probeLaunchLiveness(executionId, projectName)
+			: probeGeneralizedLaunchLiveness(executionId, projectName, {
+					allowMissingTargetHostAbsence: true,
+				});
+	}
+
 	constructor(private readonly options: WorkflowEngineDispatcherOptions) {
 		this.env = options.env ?? process.env;
 		this.stateRoot =
@@ -216,11 +227,7 @@ export class WorkflowEngineDispatcher {
 		this.materializedHeadAuthority =
 			options.materializedHeadAuthority ?? unavailableMaterializedHeadAuthority;
 		this.probeLaunchLiveness =
-			options.probeLaunchLiveness ??
-			((executionId, projectName) =>
-				probeGeneralizedLaunchLiveness(executionId, projectName, {
-					allowMissingTargetHostAbsence: true,
-				}));
+			options.probeLaunchLiveness ?? probeGeneralizedLaunchLiveness;
 		this.probeUnlaunchedExternalEvidence =
 			options.probeUnlaunchedExternalEvidence ?? (async () => "unknown");
 		this.captureDeadExecutionActivityBaseline =
@@ -730,7 +737,7 @@ export class WorkflowEngineDispatcher {
 				}
 				let liveness: GeneralizedLaunchLiveness;
 				try {
-					liveness = await this.probeLaunchLiveness(
+					liveness = await this.probeTerminalLaunchLiveness(
 						route.preferred_actor_execution_id,
 						run.project_name,
 					);
@@ -1393,7 +1400,7 @@ export class WorkflowEngineDispatcher {
 					}
 					let liveness: GeneralizedLaunchLiveness;
 					try {
-						liveness = await this.probeLaunchLiveness(
+						liveness = await this.probeTerminalLaunchLiveness(
 							node.execution_id,
 							run.project_name,
 						);
