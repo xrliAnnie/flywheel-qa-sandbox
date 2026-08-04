@@ -1,13 +1,13 @@
 ---
 issue: FLY-1570
 phase: implement
-phaseCursor: 7/9
-updated: 2026-08-04T08:52:58.456Z
-nextStep: "Knife 8: remove retired flags, scripts references, and finish docs"
+phaseCursor: 8/9
+updated: 2026-08-04T09:10:43.138Z
+nextStep: "Knife 9: detection-ack fail-safe repair, targeted tests, full gates"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1570 progress
-**phase**: implement (7/9)
-**next**: Knife 8: remove retired flags, scripts references, and finish docs
+**phase**: implement (8/9)
+**next**: Knife 9: detection-ack fail-safe repair, targeted tests, full gates
