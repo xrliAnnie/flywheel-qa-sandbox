@@ -303,6 +303,11 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 };
 
 export const RETIRED_FLAGS = [
+	{ envVar: "FLYWHEEL_WATCHDOG_LOOP_HEARTBEAT", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_LEAD_PENDING_ESCALATION", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_STUCK_DETECT", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_STUCK_FOUNDER_PAGE", retiredBy: "FLY-1570" },
 	{ envVar: "FLYWHEEL_DETECTION_GAP_SCAN", retiredBy: "FLY-1393" },
 	{ envVar: "FLYWHEEL_STUCK_ERRORSIG", retiredBy: "FLY-1393" },
 	{ envVar: "FLYWHEEL_DETECTION_ESCALATION", retiredBy: "FLY-1393" },

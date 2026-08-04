@@ -20,12 +20,6 @@ export function watchdogLivenessEnabled(
 	return defaultOn(env, "FLYWHEEL_WATCHDOG_LIVENESS");
 }
 
-export function watchdogLoopHeartbeatEnabled(
-	env: WatchdogEnv = process.env,
-): boolean {
-	return defaultOn(env, "FLYWHEEL_WATCHDOG_LOOP_HEARTBEAT");
-}
-
 export function watchdogBlockedEnabled(
 	env: WatchdogEnv = process.env,
 ): boolean {

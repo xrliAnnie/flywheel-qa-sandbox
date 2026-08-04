@@ -8,6 +8,22 @@ import {
 } from "../feature-flags/truth.js";
 
 describe("FLY-1393 flag truth", () => {
+	it("FLY-1570 tombstones removed chase controls", () => {
+		const tombstones = new Map(
+			RETIRED_FLAGS.map((flag) => [flag.envVar, flag.retiredBy]),
+		);
+		for (const envVar of [
+			"FLYWHEEL_WATCHDOG_LOOP_HEARTBEAT",
+			"FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN",
+			"FLYWHEEL_LEAD_PENDING_ESCALATION",
+			"FLYWHEEL_STUCK_DETECT",
+			"FLYWHEEL_STUCK_FOUNDER_PAGE",
+		]) {
+			expect(FEATURE_FLAGS.some((flag) => flag.envVar === envVar)).toBe(false);
+			expect(tombstones.get(envVar)).toBe("FLY-1570");
+		}
+	});
+
 	it("FLY-1456 tombstones CHECKPOINT_WATCHDOG instead of registering it", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_EXEC_ID).toMatch(/execution id/);
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_CHECKPOINT_WATCHDOG).toBeUndefined();

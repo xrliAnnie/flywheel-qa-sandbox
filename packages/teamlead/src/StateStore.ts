@@ -29,7 +29,6 @@ import {
 	type LeadEventAckPolicy,
 	routingSnapshotForLeadEvent,
 } from "./bridge/lead-event-ack-policy.js";
-import type { LeadNudgeRow } from "./bridge/lead-pending-escalation.js";
 import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-policy.js";
 import {
 	buildWorkflowSelectionDigestBody,
@@ -3057,24 +3056,6 @@ export class StateStore {
 				episode_fingerprint TEXT NOT NULL,
 				notified_at         TEXT NOT NULL DEFAULT (datetime('now')),
 				PRIMARY KEY (execution_id, source, episode_fingerprint)
-			)
-		`);
-
-		// FLY-637-ext: durable exponential-backoff state for the lead-pending
-		// escalation (a runner blocked on a `question` gate the Lead hasn't
-		// answered). Keyed by (execution_id, question_id) so a runner's multiple
-		// pending questions never share/overwrite backoff state (Codex R1 #1).
-		// Survives a Bridge restart so a restart doesn't re-storm nudges.
-		this.db.run(`
-			CREATE TABLE IF NOT EXISTS lead_pending_escalation (
-				execution_id        TEXT NOT NULL,
-				question_id         TEXT NOT NULL,
-				stuck_key           TEXT NOT NULL,
-				nudge_count         INTEGER NOT NULL DEFAULT 0,
-				last_nudge_at_ms    INTEGER NOT NULL DEFAULT 0,
-				next_eligible_at_ms INTEGER NOT NULL DEFAULT 0,
-				paged_annie         INTEGER NOT NULL DEFAULT 0,
-				PRIMARY KEY (execution_id, question_id)
 			)
 		`);
 
@@ -10980,93 +10961,6 @@ export class StateStore {
 		// FLY-637 (Codex code R1 LOW-1): prune runs every heartbeat (5m) / idle poll,
 		// usually a no-op. Only flush the sql.js DB to disk when rows actually
 		// changed — avoids a recurring whole-DB export for the common empty case.
-		if (this.db.getRowsModified() > 0) this.save();
-	}
-
-	// --- FLY-637-ext: lead-pending escalation durable backoff state ---
-
-	/** Read the backoff row for one (execution, blocking question), or undefined. */
-	getLeadPendingEscalation(
-		executionId: string,
-		questionId: string,
-	): LeadNudgeRow | undefined {
-		const result = this.db.exec(
-			`SELECT stuck_key, nudge_count, last_nudge_at_ms, next_eligible_at_ms, paged_annie
-			 FROM lead_pending_escalation
-			 WHERE execution_id = ? AND question_id = ?`,
-			[executionId, questionId],
-		);
-		const row = result[0]?.values[0];
-		if (!row) return undefined;
-		return {
-			stuck_key: row[0] as string,
-			nudge_count: row[1] as number,
-			last_nudge_at_ms: row[2] as number,
-			next_eligible_at_ms: row[3] as number,
-			paged_annie: (row[4] as number) === 1,
-		};
-	}
-
-	/** Upsert the backoff row. Caller commits AFTER the nudge/alert is accepted (R1 #5). */
-	upsertLeadPendingEscalation(
-		executionId: string,
-		questionId: string,
-		row: LeadNudgeRow,
-	): void {
-		this.db.run(
-			`INSERT INTO lead_pending_escalation
-			   (execution_id, question_id, stuck_key, nudge_count, last_nudge_at_ms, next_eligible_at_ms, paged_annie)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(execution_id, question_id) DO UPDATE SET
-			   stuck_key = excluded.stuck_key,
-			   nudge_count = excluded.nudge_count,
-			   last_nudge_at_ms = excluded.last_nudge_at_ms,
-			   next_eligible_at_ms = excluded.next_eligible_at_ms,
-			   paged_annie = excluded.paged_annie`,
-			[
-				executionId,
-				questionId,
-				row.stuck_key,
-				row.nudge_count,
-				row.last_nudge_at_ms,
-				row.next_eligible_at_ms,
-				row.paged_annie ? 1 : 0,
-			],
-		);
-		this.save();
-	}
-
-	/** Clear one question's row, or all of a runner's rows (question answered / gone). */
-	clearLeadPendingEscalation(executionId: string, questionId?: string): void {
-		if (questionId) {
-			this.db.run(
-				`DELETE FROM lead_pending_escalation WHERE execution_id = ? AND question_id = ?`,
-				[executionId, questionId],
-			);
-		} else {
-			this.db.run(
-				`DELETE FROM lead_pending_escalation WHERE execution_id = ?`,
-				[executionId],
-			);
-		}
-		this.save();
-	}
-
-	/**
-	 * Prune rows whose `question_id` is NOT in the current active pending set —
-	 * a question that was answered / evicted drops its escalation state so a later
-	 * genuine episode starts clean. Empty set ⇒ clear all (no `IN ()`).
-	 */
-	pruneLeadPendingEscalationNotIn(activeQuestionIds: string[]): void {
-		if (activeQuestionIds.length === 0) {
-			this.db.run(`DELETE FROM lead_pending_escalation`);
-		} else {
-			const placeholders = activeQuestionIds.map(() => "?").join(",");
-			this.db.run(
-				`DELETE FROM lead_pending_escalation WHERE question_id NOT IN (${placeholders})`,
-				activeQuestionIds,
-			);
-		}
 		if (this.db.getRowsModified() > 0) this.save();
 	}
 

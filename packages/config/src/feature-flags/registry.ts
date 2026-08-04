@@ -127,27 +127,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "Bridge boot 时捕获;修改后需重启 Bridge。",
 	},
 	{
-		name: "watchdog_loop_heartbeat",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_WATCHDOG_LOOP_HEARTBEAT",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "W-2 Lead inbox 投递循环独立心跳(=0 关闭独立循环告警)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/watchdog-minimum-set.ts",
-				"watchdogLoopHeartbeatEnabled",
-				"bridge_boot",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "Bridge boot 时捕获;修改后需重启 Bridge。",
-	},
-	{
 		name: "watchdog_blocked",
 		category: "kill_switch",
 		source: "env",
@@ -197,27 +176,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "readonly",
 		note: "行为读取是 call-time；=0 会在 Bridge 启动时立即告警并按小时周期重复告警，不得作为常态运行方式。它不会恢复 Bridge 代答或停止入账。事故结束后恢复开启并按 Bridge 重启边界验证。",
-	},
-	{
-		name: "receipt_activation_dry_run",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1392 activation episode 只计算并持久化 eligible/settled/disposed/exempt/pending 与 T1/T2/T3 容量预估，不提交 cohort deadline 或 chase artifacts",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"LeadReceiptPatrol.activationDryRun",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "运行时按 patrol cadence 读取；仅作容量验收与 rollback drill，正式 activation 必须保持关闭。",
 	},
 	// ─── FLY-1329: session lifecycle floor — liveness never authorizes alone ───
 	{
@@ -2141,26 +2099,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
-		name: "lead_pending_escalation",
-		retiring: "FLY-1393",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_LEAD_PENDING_ESCALATION",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "lead-pending 升级功能",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/lead-pending-escalation.ts",
-				"module",
-				"mixed",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
 		name: "cron_stale_guard",
 		category: "kill_switch",
 		source: "env",
@@ -2393,27 +2331,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	// ─── env features read via an injected `env` param (Codex R1 caught; the
 	//     drift scanner now also matches `env.FLYWHEEL_*`). Conservative `mixed`
 	//     timing → not direct. ───
-	{
-		name: "stuck_detect",
-		retiring: "FLY-1393",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_STUCK_DETECT",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "runner stuck 检测 + 升级",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/stuck-escalation.ts",
-				"stuck-detect gate",
-				"mixed",
-				"env-param",
-			),
-		],
-		toggleable: "conversational",
-	},
 	{
 		name: "codex_lead_typing",
 		category: "feature",
@@ -2937,28 +2854,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "readonly",
 		note: "boot-gated：plugin.ts 仅在 =1 时启动 armer poll；翻转需重启 Bridge。默认 off，先单-runner canary。",
-	},
-	{
-		name: "stuck_founder_page_killswitch",
-		retiring: "FLY-1393",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_STUCK_FOUNDER_PAGE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-818 ②: 关掉「runner 真卡住 → 在其 [FLY-XX] issue thread @founder」的直达页（default-on 安全网）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/stuck-escalation.ts",
-				"stuckFounderPageEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "额外要 owner id + store 才发页；=0 关闭直达页、退回 legacy alert 语义（需重启 Bridge 生效）。",
 	},
 	{
 		name: "fleet_sensor_tmux_killswitch",

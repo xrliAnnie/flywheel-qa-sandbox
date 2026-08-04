@@ -13,7 +13,6 @@ function retiringTruth(
 		legacy_delivery_watchdogs: false,
 		misroute_patrol: false,
 		founder_reply_watchdog: false,
-		lead_pending_escalation: false,
 		park_watch: false,
 		stuck_detect: false,
 		stuck_founder_page_killswitch: false,
@@ -66,20 +65,19 @@ describe("FLY-1393 watchdog health manifest", () => {
 		const manifest = buildWatchdogManifest({
 			nowMs,
 			bridgeStartedAtMs: nowMs - 60 * 60_000,
-			flags: { liveness: true, loopHeartbeat: true, blocked: true },
+			flags: { liveness: true, blocked: true },
 			wiring: {
 				liveness: true,
-				loopHeartbeat: true,
 				externalDrift: true,
 				blockedLead: true,
 				blockedRunner: false,
 			},
 			trackers: {
 				liveness: tracker(3_600_000),
-				loopHeartbeat: tracker(300_000),
 				blockedLead: tracker(30_000),
 				blockedRunner: tracker(300_000),
 			},
+			deliveryLoopWired: true,
 			loopStallMs: 10 * 60_000,
 			retiringEnabled: retiringTruth(),
 			loopTargets: [
@@ -118,6 +116,15 @@ describe("FLY-1393 watchdog health manifest", () => {
 			expect.objectContaining({ lead_id: "lead-stale", freshness: "stale" }),
 			expect.objectContaining({ lead_id: "lead-fresh", freshness: "fresh" }),
 		]);
+		expect(manifest.components.w2_delivery_loop).toMatchObject({
+			class: "W-2",
+			wired: true,
+			effective_enabled: true,
+			switch: "required",
+		});
+		expect(manifest.components.w2_delivery_loop).not.toHaveProperty(
+			"freshness",
+		);
 		expect(manifest.components.w3_external_drift).toMatchObject({
 			class: "W-3",
 			wired: true,

@@ -1,7 +1,7 @@
 /**
  * FLY-725: pure decision policy for the founder milestone-report patrol.
  *
- * Mirrors the FLY-637 `lead-pending-escalation.ts` split: this module is PURE
+ * This module is PURE
  * (no I/O, injected clock) and decides notify-vs-skip for ONE terminal session;
  * the GatePoller owns the durable markers, baseline seeding, Discord POST, and
  * retry budget. Keeping the decision pure makes the grace / milestone-set /

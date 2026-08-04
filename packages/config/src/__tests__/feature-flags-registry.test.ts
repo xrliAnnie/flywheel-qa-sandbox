@@ -268,23 +268,6 @@ describe("feature-flag registry invariants", () => {
 		expect(flag?.note).toContain("启动时立即告警");
 		expect(flag?.note).toContain("不得作为常态运行方式");
 
-		const dryRun = FEATURE_FLAGS.find(
-			(candidate) => candidate.name === "receipt_activation_dry_run",
-		);
-		expect(dryRun).toMatchObject({
-			category: "feature",
-			envVar: "FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN",
-			polarity: "opt_in",
-			default: false,
-			toggleable: "readonly",
-		});
-		expect(dryRun?.readSites).toEqual([
-			expect.objectContaining({
-				file: "packages/teamlead/src/bridge/plugin.ts",
-				symbol: "LeadReceiptPatrol.activationDryRun",
-				timing: "call_time",
-			}),
-		]);
 		expect(
 			FEATURE_FLAGS.some(
 				(candidate) => candidate.envVar === "FLYWHEEL_REPLY_TO_CARD",

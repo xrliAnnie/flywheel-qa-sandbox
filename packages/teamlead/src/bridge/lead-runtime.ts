@@ -23,7 +23,7 @@ export const GUARDRAIL_EVENT_TYPES = new Set([
 	"gate_timed_out", // FLY-159: Lead must reliably notify Annie when Runner gate times out (fail-close path only)
 	"session_monitoring_lost", // FLY-172: Lead must reliably learn it lost monitoring of a live Runner (fall back to tmux)
 	"runner_stuck_escalation", // FLY-195: stuck-candidate handoff to owning Lead — Lead judges + re-manages (plan §3.2)
-	"runner_lead_pending_escalation", // FLY-637-ext: Lead has not answered a runner's blocking question gate — reliable nudge (R1 #6)
+	"runner_lead_pending_escalation", // Legacy persisted event; no longer emitted.
 	"scheduled_run_blocked", // FLY-742: a scheduled/cron run-start was DECLINED by a stale session — Lead/founder must reliably learn the job is silently skipping
 	"detection_suspicious", // FLY-1048 (A5): fail-suspicious is "never silent" — a dropped delivery would BE the silence it exists to prevent
 	"detection_escalation", // FLY-1048 (C2): Lead-first leg of the unified escalation flow — the ~30min founder-grace clock starts here, so the Lead must reliably receive it

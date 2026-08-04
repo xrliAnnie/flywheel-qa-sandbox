@@ -25,7 +25,6 @@ import {
 	defaultGateMarkerDir,
 	markGateMarkerAnsweredForExecution,
 } from "flywheel-comm/gate-marker";
-import { receiptPriorityWindowsMs } from "flywheel-comm/lead-inbox-queue";
 import {
 	ensureLeaseEpisodeMaterialized,
 	reconcileLeaseEpisodeQueue,
@@ -115,7 +114,6 @@ import {
 } from "../lead-backends/codexLeadBridgeWiring.js";
 import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
 import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
-import { isWakeTerminalStatus } from "../operational-terminal-status.js";
 import {
 	type LeadConfig,
 	loadProjects,
@@ -207,7 +205,6 @@ import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
 	hasPendingBlockingGateFromCommDb,
-	hasPendingGateFromCommDb,
 	idleWatchdogPollMs,
 	probeDeclaredStateFromCommDb,
 	probeQuietSignals,
@@ -343,7 +340,6 @@ import {
 	type HolderWakeCause,
 } from "./holder-wake-activation.js";
 import { buildSessionKey } from "./hook-payload.js";
-import { InboxLoopHealthChecker } from "./inbox-loop-health-checker.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
 	formatAccountCapOwnerAssignment,
@@ -386,10 +382,6 @@ import {
 } from "./lead-event-delivery.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
-import {
-	LeadReceiptPatrol,
-	normalizeUnprocessedReceiptAlertProject,
-} from "./lead-receipt-patrol.js";
 import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
@@ -454,7 +446,6 @@ import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
 import { resolveOrphanDetectionEscalations } from "./orphan-escalation-reconcile.js";
-import { fingerprintOutput } from "./pane-fingerprint.js";
 import { hashPane, liveRegion } from "./pane-live-region.js";
 import {
 	LEAD_ONLY_PARK_KINDS,
@@ -528,11 +519,6 @@ import {
 	makeRunnerAuthScan,
 } from "./runner-auth-scan.js";
 import { makeRunnerQuotaScan } from "./runner-quota-scan.js";
-import {
-	RunnerReceiptPatrol,
-	wakeFailureNotificationFingerprint,
-} from "./runner-receipt-patrol.js";
-import { attemptRunnerRecoveryNudge } from "./runner-recovery-nudge.js";
 import {
 	handleRunnerApply,
 	handleRunnerStage,
@@ -635,13 +621,11 @@ import {
 	retiredWatchdogLaneEnabled,
 	watchdogBlockedEnabled,
 	watchdogLivenessEnabled,
-	watchdogLoopHeartbeatEnabled,
 } from "./watchdog-minimum-set.js";
 import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
 import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
-import { isExactCurrentWorkflowEnginePark } from "./workflow-engine-park-evidence.js";
 import { projectWorkflowEngineParkOutbox } from "./workflow-engine-park-projector.js";
 import { createWorkflowMenuRouter } from "./workflow-menu-routes.js";
 import {
@@ -3899,7 +3883,6 @@ export async function startBridge(
 	const legacyDeliveryWatchdogsOn = legacyDeliveryWatchdogsEnabled(process.env);
 	const watchdogFlags = {
 		liveness: watchdogLivenessEnabled(process.env),
-		loopHeartbeat: watchdogLoopHeartbeatEnabled(process.env),
 		blocked: watchdogBlockedEnabled(process.env),
 	};
 	const retiredZombieEnabled = retiredWatchdogLaneEnabled(
@@ -3910,7 +3893,6 @@ export async function startBridge(
 		legacy_delivery_watchdogs: legacyDeliveryWatchdogsOn,
 		misroute_patrol: legacyDeliveryWatchdogsOn,
 		founder_reply_watchdog: legacyDeliveryWatchdogsOn,
-		lead_pending_escalation: legacyDeliveryWatchdogsOn,
 		park_watch: legacyDeliveryWatchdogsOn,
 		stuck_detect: legacyDeliveryWatchdogsOn,
 		stuck_founder_page_killswitch: legacyDeliveryWatchdogsOn,
@@ -3920,9 +3902,6 @@ export async function startBridge(
 	const leadWatchdogPollIntervalMs = leadWatchdogIntervalMs(process.env);
 	const watchdogTrackers = {
 		liveness: new WatchdogCheckTracker({ cadenceMs: idleWatchdogPollMs() }),
-		loopHeartbeat: new WatchdogCheckTracker({
-			cadenceMs: config.stuckCheckIntervalMs,
-		}),
 		blockedLead: new WatchdogCheckTracker({
 			cadenceMs: leadWatchdogPollIntervalMs,
 		}),
@@ -3934,7 +3913,6 @@ export async function startBridge(
 	// corresponding tracker has actually been handed to its runtime component.
 	const watchdogWiring = {
 		liveness: false,
-		loopHeartbeat: false,
 		externalDrift: true,
 		blockedLead: false,
 		blockedRunner: false,
@@ -4588,6 +4566,7 @@ export async function startBridge(
 		leadInboxRuntime.nudge(leadId, projectName),
 	);
 	leadInboxRuntime.start();
+	const deliveryLoopWired = true;
 	const watchdogHealthProvider: { current?: () => unknown } = {
 		current: () =>
 			buildWatchdogManifest({
@@ -4595,6 +4574,7 @@ export async function startBridge(
 				flags: watchdogFlags,
 				wiring: watchdogWiring,
 				trackers: watchdogTrackers,
+				deliveryLoopWired,
 				loopStallMs: inboxLoopStallMs(process.env),
 				loopTargets: leadInboxRuntime.healthTargets(),
 				retiringEnabled: retiringWatchdogEnabled,
@@ -6111,18 +6091,6 @@ export async function startBridge(
 	const stuckConfirmHolder: {
 		current: ((session: Session) => Promise<StuckConfirmResult>) | null;
 	} = { current: null };
-	const inboxLoopAlertHolder: {
-		current?: { alert: (payload: AlertPayload) => Promise<unknown> };
-	} = {};
-	const inboxLoopHealthChecker = new InboxLoopHealthChecker({
-		targets: leadInboxRuntime.healthTargets(),
-		alert: (payload) =>
-			(inboxLoopAlertHolder.current ?? leadAlertNotifier).alert(payload),
-		enabled: watchdogFlags.loopHeartbeat,
-		tracker: watchdogTrackers.loopHeartbeat,
-	});
-	watchdogWiring.loopHeartbeat = true;
-
 	// FLY-1374: complete-marker fail-close can persist via forceStatus when the
 	// FSM rejects an un-replayable terminal marker. That bypasses the shared
 	// applyTransition hook, so run both exact write-after effects here: converge
@@ -6254,9 +6222,6 @@ export async function startBridge(
 		// heartbeat interval); single-flight + detached inside HeartbeatService.
 		// Tick 0 = the boot pass (orphan reap + first sweep).
 		async (tick) => {
-			// FLY-1373: the sole retained Lead-delivery alarm rides the existing
-			// heartbeat cadence; it is per-Lead and deadline-aware.
-			await inboxLoopHealthChecker.check();
 			// FLY-1066: ~hourly residue convergence rides this existing tick and is
 			// deliberately independent of the worktree-autoclean kill-switch.
 			if (residueHarvester) {
@@ -7447,7 +7412,6 @@ export async function startBridge(
 		"receipt_unprocessed",
 		"founder_decision_dropped",
 	] as const;
-	const receiptDetectionKindSet = new Set<string>(receiptDetectionKinds);
 	const detectionGraceByProject = await loadDetectionGraceByProject(projects);
 	const detectionPageFounder = createFounderPager({
 		store,
@@ -7773,373 +7737,12 @@ export async function startBridge(
 			landOperationSweepRunning = false;
 		}
 	};
-	const receiptEnvMs = (name: string, fallback: number): number => {
-		const value = Number.parseInt(process.env[name] ?? "", 10);
-		return Number.isSafeInteger(value) && value > 0 ? value : fallback;
-	};
-	const receiptEnvMinutes = (name: string, fallback: number): number => {
-		const value = Number.parseInt(process.env[name] ?? "", 10);
-		return Number.isSafeInteger(value) && value > 0 ? value * 60_000 : fallback;
-	};
-	let receiptNudgeAuditSeq = 0;
 	const terminalReceiptSettlement = new TerminalReceiptSettlementProjector({
 		store,
 		projectNames: projects.map((project) => project.projectName),
 		commDbPathForProject,
 	});
 	terminalReceiptSettlementHolder.current = terminalReceiptSettlement;
-	const isDurablyParkedForWake = (
-		projectName: string,
-		executionId: string,
-		existingDb?: CommDB,
-	): boolean => {
-		const session = store.getSession(executionId);
-		if (
-			session?.project_name === projectName &&
-			session.status === "ship_parked"
-		) {
-			return true;
-		}
-		const db =
-			existingDb ?? new CommDB(commDbPathForProject(projectName), false);
-		try {
-			return isExactCurrentWorkflowEnginePark(
-				store,
-				db,
-				projectName,
-				executionId,
-			);
-		} finally {
-			if (!existingDb) db.close();
-		}
-	};
-	const receiptWakePatrol = new RunnerReceiptPatrol({
-		projectNames: projects.map((project) => project.projectName),
-		commDbPathForProject,
-		receiptFoundationEnabled: () => receiptFoundationEnabled(),
-		resolveTargetState: ({ projectName, executionId }) => {
-			const session = store.getSession(executionId);
-			if (!session || session.project_name !== projectName) return "missing";
-			return isWakeTerminalStatus(session.status) ? "terminal" : "live";
-		},
-		terminalLifecycleIdFor: ({ projectName, executionId }) => {
-			const session = store.getSession(executionId);
-			if (
-				!session ||
-				session.project_name !== projectName ||
-				!isWakeTerminalStatus(session.status)
-			) {
-				return undefined;
-			}
-			return (
-				session.terminal_lifecycle_id ??
-				store.ensureTerminalLifecycleId(
-					executionId,
-					session.status,
-					session.lifecycle_revision ?? 0,
-				)
-			);
-		},
-		isDurablyParked: ({ projectName, executionId }) => {
-			return isDurablyParkedForWake(projectName, executionId);
-		},
-		auditWakeDisposition: ({ projectName, executionId, messageId, reason }) => {
-			const session = store.getSession(executionId);
-			store.insertEvent({
-				event_id: `wake-disposed-${executionId}-${messageId}`,
-				execution_id: executionId,
-				issue_id: session?.issue_id ?? "unknown",
-				project_name: projectName,
-				event_type: "wake_disposed",
-				source: "bridge.runner-receipt-patrol",
-				payload: { messageId, reason },
-			});
-		},
-		t1Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T1_MS", 90_000),
-		t2Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T2_MS", 5 * 60_000),
-		t3Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T3_MS", 12 * 60_000),
-		pushWake: async ({ db, projectName, wake, verified }) => {
-			let envelope: {
-				content: string;
-				metadata?: Record<string, unknown>;
-			};
-			try {
-				envelope = JSON.parse(wake.envelope_json ?? "") as typeof envelope;
-			} catch {
-				return { ok: false, error: "invalid frozen wake envelope" };
-			}
-			const session = db.getSession(wake.execution_id);
-			if (
-				wake.purpose === "message_traffic" &&
-				db.getEffectiveDeclaredState(wake.execution_id, Date.now())?.kind !==
-					"parked" &&
-				!isDurablyParkedForWake(projectName, wake.execution_id, db)
-			) {
-				return { ok: false, skippedReason: "durable_park_fence" };
-			}
-			return wakeRunnerMailbox({
-				db,
-				execId: wake.execution_id,
-				fromAgent: session?.lead_id ?? "flywheel-eng-lead",
-				content: envelope.content,
-				metadata: envelope.metadata,
-				...(session?.vendor ? { backend: session.vendor } : {}),
-				verified,
-			});
-		},
-		nudgeWakePointer: async ({ projectName, wake, causalQuestionId }) => {
-			const session = store.getSession(wake.execution_id);
-			let leadId: string | undefined;
-			try {
-				const comm = new CommDB(commDbPathForProject(projectName), false);
-				try {
-					leadId = comm.getSession(wake.execution_id)?.lead_id ?? undefined;
-				} finally {
-					comm.close();
-				}
-			} catch {
-				return { nudged: false, error: "commdb_binding_unavailable" };
-			}
-			if (!session || !leadId) {
-				return { nudged: false, error: "live_binding_missing" };
-			}
-			const capture = await defaultCaptureSession(
-				wake.execution_id,
-				projectName,
-				100,
-			);
-			if (isCaptureError(capture)) {
-				return { nudged: false, error: `capture_${capture.error}` };
-			}
-			const outcome = await attemptRunnerRecoveryNudge(
-				{
-					mode: "wake_pointer",
-					actor: "receipt-patrol",
-					executionId: wake.execution_id,
-					leadId,
-					fingerprint: fingerprintOutput(capture.output),
-					...(causalQuestionId ? { causalQuestionId } : {}),
-				},
-				{
-					store,
-					projects,
-					captureSessionFn: defaultCaptureSession,
-					hasPendingGate: hasPendingGateFromCommDb,
-					hasCausalResponse: (executionId, currentProject, questionId) => {
-						const comm = new CommDB(
-							commDbPathForProject(currentProject),
-							false,
-						);
-						try {
-							return Boolean(
-								comm.getSession(executionId) && comm.getResponse(questionId),
-							);
-						} finally {
-							comm.close();
-						}
-					},
-					isWakeBindingLive: (executionId, currentProject) => {
-						const comm = new CommDB(
-							commDbPathForProject(currentProject),
-							false,
-						);
-						try {
-							return Boolean(
-								comm.getSession(executionId) &&
-									store.getSession(executionId)?.project_name ===
-										currentProject,
-							);
-						} finally {
-							comm.close();
-						}
-					},
-					isDeclaredParked: (executionId, currentProject) => {
-						const comm = new CommDB(
-							commDbPathForProject(currentProject),
-							false,
-						);
-						try {
-							return (
-								comm.getEffectiveDeclaredState(executionId, Date.now())
-									?.kind === "parked"
-							);
-						} finally {
-							comm.close();
-						}
-					},
-					isEngineParked: (executionId, currentProject) => {
-						const comm = new CommDB(
-							commDbPathForProject(currentProject),
-							false,
-						);
-						try {
-							return isExactCurrentWorkflowEnginePark(
-								store,
-								comm,
-								currentProject,
-								executionId,
-							);
-						} finally {
-							comm.close();
-						}
-					},
-					sendKeys: sendKeysToWindow,
-					getTmuxTarget: getTmuxTargetFromCommDb,
-					now: () => Date.now(),
-					nextAuditSeq: () => ++receiptNudgeAuditSeq,
-				},
-			);
-			return {
-				nudged: outcome.body.nudged,
-				...(outcome.body.error ? { error: outcome.body.error } : {}),
-			};
-		},
-		notifyWakeFailure: async ({
-			projectName,
-			wake,
-			reason,
-			firstDetectedAtMs,
-			episodeFingerprint,
-			identityKind,
-		}) => {
-			const session = store.getSession(wake.execution_id);
-			if (!session) return false;
-			const input: DetectionEscalationInput = {
-				targetKey: wake.execution_id,
-				kind: "wake_failed",
-				episodeFingerprint: wakeFailureNotificationFingerprint({
-					executionId: wake.execution_id,
-					messageId: wake.message_id,
-					firstDetectedAtMs,
-					identityKind,
-					explicitFingerprint: episodeFingerprint,
-				}),
-				executionId: wake.execution_id,
-				issueId: session.issue_id,
-				issueIdentifier: session.issue_identifier,
-				projectName,
-				firstDetectedAtMs,
-				reason: `runner wake 未取得 started 收据(${reason})`,
-				nextStep: "Lead 检查 runner mailbox/pane,必要时人工恢复",
-			};
-			if (!resolveDetectionOwner(input)) return false;
-			const outcome = await notifyDetectionEpisodeWithOutcome(input);
-			if (outcome !== "notified" && outcome !== "already_notified") {
-				return false;
-			}
-			return (
-				store.getDetectionEscalation(
-					input.targetKey,
-					input.kind,
-					input.episodeFingerprint,
-				)?.status !== "NEW"
-			);
-		},
-	});
-	const leadReceiptPatrol = new LeadReceiptPatrol({
-		projectNames: projects.map((project) => project.projectName),
-		leadIdsForProject: (projectName) =>
-			projects
-				.find((project) => project.projectName === projectName)
-				?.leads.map((lead) => lead.agentId) ?? [],
-		commDbPathForProject,
-		receiptFoundationEnabled: () => receiptFoundationEnabled(),
-		ownerEpoch: () => leadInboxRuntime.receiptOwnerEpoch(),
-		windowMs: receiptEnvMinutes(
-			"FLYWHEEL_RECEIPT_UNPROCESSED_WINDOW_MIN",
-			30 * 60_000,
-		),
-		receiptWindowsMs: receiptPriorityWindowsMs(),
-		activationDryRun: () =>
-			process.env.FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN === "1",
-		resendCap: (() => {
-			const value = Number.parseInt(
-				process.env.FLYWHEEL_RECEIPT_RESEND_CAP ?? "",
-				10,
-			);
-			return Number.isSafeInteger(value) && value > 0 ? value : 2;
-		})(),
-		notifyUnprocessed: async ({ projectName, payload }) => {
-			const kind = "receipt_unprocessed";
-			if (!receiptDetectionKindSet.has(kind)) return false;
-			const routedPayload = normalizeUnprocessedReceiptAlertProject(
-				payload,
-				projectName,
-			);
-			if (!routedPayload) return false;
-			const firstDetectedAtMs = Date.parse(routedPayload.firstDeliveredAt);
-			const input: DetectionEscalationInput = {
-				targetKey: routedPayload.targetKey,
-				kind,
-				episodeFingerprint: routedPayload.rootId,
-				executionId: routedPayload.executionId,
-				issueId: routedPayload.issueId,
-				issueIdentifier: routedPayload.issueIdentifier,
-				projectName: routedPayload.projectName,
-				firstDetectedAtMs: Number.isFinite(firstDetectedAtMs)
-					? firstDetectedAtMs
-					: Date.now(),
-				sourceReceiptId: routedPayload.rootId,
-				sourceExecutionId: routedPayload.executionId,
-				sourceQuestionId: routedPayload.questionId,
-				reason:
-					`消息已送达并重发 ${routedPayload.resendRound} 次,仍无已处理收据` +
-					`(${routedPayload.contentSummary})`,
-				nextStep: "Lead 立即完成路由副作用或说明阻塞原因",
-			};
-			if (!resolveDetectionOwner(input)) return false;
-			const outcome = await notifyDetectionEpisodeWithOutcome(input);
-			if (outcome !== "notified" && outcome !== "already_notified") {
-				return false;
-			}
-			return (
-				store.getDetectionEscalation(
-					input.targetKey,
-					input.kind,
-					input.episodeFingerprint,
-				)?.status !== "NEW"
-			);
-		},
-		notifyAdvisory: async ({ projectName, alert }) => {
-			const sink = leadPendingAlertHolder.current;
-			if (!sink) return false;
-			let payload: Record<string, unknown>;
-			try {
-				payload = JSON.parse(alert.payload) as Record<string, unknown>;
-			} catch {
-				return false;
-			}
-			let leadId =
-				typeof payload.toLead === "string" ? payload.toLead : undefined;
-			if (!leadId && typeof payload.executionId === "string") {
-				let db: CommDB | undefined;
-				try {
-					db = new CommDB(commDbPathForProject(projectName), false);
-					leadId = db.getSession(payload.executionId)?.lead_id ?? undefined;
-				} finally {
-					db?.close();
-				}
-			}
-			if (!leadId) return false;
-			const result = await sink.alert({
-				leadId,
-				projectName,
-				eventId: `receipt-alert:${alert.id}`,
-				eventType: "delivery_dead_letter",
-				title:
-					alert.kind === "wake_cap"
-						? "Runner receipt wake cap reached"
-						: "Lead receipt delivery dead-lettered",
-				body: `receipt foundation alert ${alert.id}: ${alert.payload}`,
-				severity: "warning",
-			});
-			return (
-				(!result.skipped || result.skipped === "duplicate") &&
-				!result.deadLettered
-			);
-		},
-	});
-
 	const founderDecisionConvergenceTick = () =>
 		runFounderDecisionConvergencePass({
 			store,
@@ -8227,15 +7830,13 @@ export async function startBridge(
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
 		onLandOperationTick: landOperationTick,
-		onReceiptWakePatrolTick: async () => {
+		onReconcilePatrolTick: async () => {
 			await projectWorkflowEngineParkOutbox({
 				store,
 				projectNames: projects.map((project) => project.projectName),
 				commDbPathForProject,
 			});
 			await terminalReceiptSettlement.pass();
-			await receiptWakePatrol.pass();
-			await leadReceiptPatrol.pass();
 		},
 		onFounderDecisionConvergenceTick: async () => {
 			await founderDecisionConvergenceTick();
@@ -10505,8 +10106,6 @@ export async function startBridge(
 				`[workflow-engine] boot alert reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
 			),
 		);
-	inboxLoopAlertHolder.current = routedAlertSink;
-
 	// FLY-1204: now that the routed alert sink exists, back the late-bound
 	// orphan-parked alert closure the HeartbeatService reclaim patrol calls. It
 	// reuses the `three_stage_stuck` infra kind (owner-enriched, bound to the

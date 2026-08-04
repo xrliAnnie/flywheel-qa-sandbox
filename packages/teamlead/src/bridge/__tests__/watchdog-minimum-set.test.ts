@@ -5,23 +5,16 @@ import {
 	retiredWatchdogLaneEnabled,
 	watchdogBlockedEnabled,
 	watchdogLivenessEnabled,
-	watchdogLoopHeartbeatEnabled,
 } from "../watchdog-minimum-set.js";
 
 describe("FLY-1393 minimum-set policy", () => {
 	it("kept watchdog lanes are independent default-on kill switches", () => {
 		expect(watchdogLivenessEnabled({})).toBe(true);
-		expect(watchdogLoopHeartbeatEnabled({})).toBe(true);
 		expect(watchdogBlockedEnabled({})).toBe(true);
 
 		expect(watchdogLivenessEnabled({ FLYWHEEL_WATCHDOG_LIVENESS: "0" })).toBe(
 			false,
 		);
-		expect(
-			watchdogLoopHeartbeatEnabled({
-				FLYWHEEL_WATCHDOG_LOOP_HEARTBEAT: "0",
-			}),
-		).toBe(false);
 		expect(watchdogBlockedEnabled({ FLYWHEEL_WATCHDOG_BLOCKED: "0" })).toBe(
 			false,
 		);

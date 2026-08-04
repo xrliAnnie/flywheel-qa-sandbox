@@ -82,7 +82,6 @@ export const RETIRING_WATCHDOGS = [
 	"legacy_delivery_watchdogs",
 	"misroute_patrol",
 	"founder_reply_watchdog",
-	"lead_pending_escalation",
 	"park_watch",
 	"stuck_detect",
 	"stuck_founder_page_killswitch",
@@ -104,20 +103,19 @@ export function buildRetiringWatchdogRows(
 export function buildWatchdogManifest(input: {
 	nowMs?: number;
 	bridgeStartedAtMs: number;
-	flags: { liveness: boolean; loopHeartbeat: boolean; blocked: boolean };
+	flags: { liveness: boolean; blocked: boolean };
 	wiring: {
 		liveness: boolean;
-		loopHeartbeat: boolean;
 		externalDrift: boolean;
 		blockedLead: boolean;
 		blockedRunner: boolean;
 	};
 	trackers: {
 		liveness: WatchdogCheckTracker;
-		loopHeartbeat: WatchdogCheckTracker;
 		blockedLead: WatchdogCheckTracker;
 		blockedRunner: WatchdogCheckTracker;
 	};
+	deliveryLoopWired: boolean;
 	loopStallMs: number;
 	loopTargets: readonly InboxLoopHealthTarget[];
 	retiringEnabled: Record<RetiringWatchdogName, boolean>;
@@ -161,15 +159,10 @@ export function buildWatchdogManifest(input: {
 				{ class: "W-1", switch: "FLYWHEEL_WATCHDOG_LIVENESS" },
 			),
 			w2_delivery_loop: {
-				...tracked(
-					input.trackers.loopHeartbeat,
-					input.wiring.loopHeartbeat,
-					input.flags.loopHeartbeat,
-					{
-						class: "W-2",
-						switch: "FLYWHEEL_WATCHDOG_LOOP_HEARTBEAT",
-					},
-				),
+				class: "W-2",
+				wired: input.deliveryLoopWired,
+				effective_enabled: true,
+				switch: "required",
 				leads,
 			},
 			w3_external_drift: {
