@@ -86,12 +86,10 @@ export function buildWatchdogManifest(input: {
 		liveness: boolean;
 		externalDrift: boolean;
 		blockedLead: boolean;
-		blockedRunner: boolean;
 	};
 	trackers: {
 		liveness: WatchdogCheckTracker;
 		blockedLead: WatchdogCheckTracker;
-		blockedRunner: WatchdogCheckTracker;
 	};
 	deliveryLoopWired: boolean;
 	loopStallMs: number;
@@ -152,12 +150,6 @@ export function buildWatchdogManifest(input: {
 			w4_lead_blocked: tracked(
 				input.trackers.blockedLead,
 				input.wiring.blockedLead,
-				input.flags.blocked,
-				{ class: "W-4", switch: "FLYWHEEL_WATCHDOG_BLOCKED" },
-			),
-			w4_runner_blocked: tracked(
-				input.trackers.blockedRunner,
-				input.wiring.blockedRunner,
 				input.flags.blocked,
 				{ class: "W-4", switch: "FLYWHEEL_WATCHDOG_BLOCKED" },
 			),

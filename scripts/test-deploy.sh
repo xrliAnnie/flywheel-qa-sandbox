@@ -140,9 +140,6 @@ EXTRA_LEAD_SPECS=()       # FLY-1189: --extra-lead <slotId>:<deptLabel> (repeata
                           # THIS slot's single Bridge (N-to-N routing topology).
 LEAD_LABEL=""             # FLY-1189: --lead-label <deptLabel> narrows the MAIN lead's
                           # match.labels from ["*"] to the explicit label.
-DETECTION_LEAD_GRACE_MS="" # FLY-1189: --detection-lead-grace-ms <ms> appends
-                          # detection.lead_grace_ms to the generated canonical
-                          # .flywheel/config.yaml (PR-C per-project override seam).
 LEAD_READY_TIMEOUT_ARG="" # FLY-1389 P2-a: --lead-ready-timeout <sec> overrides the
                           # 120s Lead inbox-ready wait (cold Lead on a loaded
                           # shared machine can legitimately exceed 120s). Env
@@ -175,10 +172,6 @@ while [[ $# -gt 0 ]]; do
       LEAD_LABEL="${2:?--lead-label requires a value}"; shift 2 ;;
     --lead-label=*)
       LEAD_LABEL="${1#*=}"; shift ;;
-    --detection-lead-grace-ms)
-      DETECTION_LEAD_GRACE_MS="${2:?--detection-lead-grace-ms requires a value}"; shift 2 ;;
-    --detection-lead-grace-ms=*)
-      DETECTION_LEAD_GRACE_MS="${1#*=}"; shift ;;
     --lead-ready-timeout)
       LEAD_READY_TIMEOUT_ARG="${2:?--lead-ready-timeout requires seconds}"; shift 2 ;;
     --lead-ready-timeout=*)
@@ -272,9 +265,6 @@ fi
 # manifests all consume. Token VALUES are resolved lazily via indirection at
 # use points and never enter the JSON.
 EXTRA_LEADS_JSON="[]"
-if [[ -n "$DETECTION_LEAD_GRACE_MS" ]]; then
-  qa_multilead_validate_grace_ms "$DETECTION_LEAD_GRACE_MS" || exit 1
-fi
 if [[ -n "$LEAD_LABEL" && ! "$LEAD_LABEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "ERROR: --lead-label '${LEAD_LABEL}' invalid (charset [A-Za-z0-9._-])" >&2
   exit 1
@@ -830,20 +820,10 @@ TEST_PROJECT_NAME="test-slot-${SLOT}"
 # validation — values are inert because the sandbox never talks to real
 # Linear/Discord routing logic during the test.
 mkdir -p "${HOST_REPO}/.flywheel"
-# FLY-1189: content generation extracted to qa_multilead_config_yaml — byte-
-# identical baseline (unit-guarded, test-deploy-multilead.test.sh A3). A
-# non-empty --detection-lead-grace-ms appends the detection.lead_grace_ms
-# override: this generation point is the ONLY viable injection seam for the
-# PR-C per-project grace (deploy re-clones the sandbox, rewrites this file,
-# and starts the Bridge in one uninterruptible call; Bridge reads the config
-# once at boot).
-qa_multilead_config_yaml "${TEST_PROJECT_NAME}" "${DETECTION_LEAD_GRACE_MS}" \
+# FLY-1189: content generation extracted to qa_multilead_config_yaml.
+qa_multilead_config_yaml "${TEST_PROJECT_NAME}" \
   > "${HOST_REPO}/.flywheel/config.yaml"
-if [[ -n "$DETECTION_LEAD_GRACE_MS" ]]; then
-  log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled; detection.lead_grace_ms=${DETECTION_LEAD_GRACE_MS})"
-else
-  log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled)"
-fi
+log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled)"
 
 # ── Generate DISCORD_STATE_DIR files ──────────────────
 # .env with test bot token
@@ -1639,11 +1619,10 @@ fi
 # Bridge ready + locks finalized — disable the failure cleanup trap.
 trap - EXIT
 
-# FLY-1189: launch manifest — deploy-time ground truth for detection flag /
-# knob values + dist SHA (macOS SIP blocks reading another process's env, so
-# this record IS the S0 flag evidence). No secrets: token env NAMES only.
+# FLY-1189: launch manifest — deploy-time ground truth and dist SHA.
+# No secrets: token env NAMES only.
 qa_multilead_launch_manifest "$BRIDGE_PID" "$BRANCH_SHA" "$FROM_BRANCH" "$MODE" \
-  "${CAMPAIGN_ID}" "${LEAD_LABEL}" "${DETECTION_LEAD_GRACE_MS}" "$EXTRA_LEADS_JSON" \
+  "${CAMPAIGN_ID}" "${LEAD_LABEL}" "$EXTRA_LEADS_JSON" \
   > "${SLOT_DIR}/launch-manifest.json"
 log "Wrote ${SLOT_DIR}/launch-manifest.json"
 
@@ -1701,7 +1680,6 @@ cat <<EOF
   "campaignManifest": "${CAMPAIGN_MANIFEST_FILE:-}",
   "campaignId": "${CAMPAIGN_ID:-}",
   "leadLabel": "${LEAD_LABEL}",
-  "detectionLeadGraceConfigMs": "${DETECTION_LEAD_GRACE_MS}",
   "extraLeads": $(jq -c 'map({slotId, agentId, deptLabel, chatChannel, tokenEnvVar})' <<<"$EXTRA_LEADS_JSON")
 }
 EOF

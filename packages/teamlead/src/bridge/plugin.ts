@@ -189,8 +189,6 @@ import {
 } from "./bridge-exit-marker.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { makeCanceledPrDisposal } from "./canceled-pr-close.js";
-// FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
-import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import { killAllClaudeReviewChildren } from "./claude-review-runner.js";
 import { buildCleanupPolicies } from "./cleanup-policy.js";
@@ -223,24 +221,6 @@ import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { FileDeliverySecretProvider } from "./delivery-secret.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
-import { loadDetectionGraceByProject } from "./detection-config-source.js";
-import {
-	type DetectionEscalationInput,
-	type EscalationOwner,
-	formatEscalationLeadNote,
-	notifyLeadFirst,
-	reboundExpiredDetectionClearings,
-	reconcileDetectionEscalations,
-} from "./detection-escalation.js";
-import {
-	createFleetSink,
-	createFounderPager,
-	createReceiptAwareTargetResolver,
-} from "./detection-escalation-sinks.js";
-import type {
-	SuspiciousOwner,
-	SuspiciousReport,
-} from "./detection-suspicious.js";
 import { createDigestRouter } from "./digest-route.js";
 import { DigestService } from "./digest-service.js";
 import { createDispositionReceiptPass } from "./disposition-receipt.js";
@@ -414,7 +394,6 @@ import { receiptBackedMaterializedHeadAuthority } from "./materialized-head-auth
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
-import { resolveOrphanDetectionEscalations } from "./orphan-escalation-reconcile.js";
 import {
 	PhaseOrchestrator,
 	type PhaseSession,
@@ -517,10 +496,6 @@ import {
 	type StateStoreGhostDeps,
 } from "./statestore-ghost-reconcile.js";
 import {
-	parseStuckConfirmKnobs,
-	type StuckConfirmResult,
-} from "./stuck-pane-confirm.js";
-import {
 	createLeadDetectionAckRouter,
 	createStuckRemanageRouter,
 } from "./stuck-remanage-routes.js";
@@ -570,11 +545,6 @@ import {
 	inboxLoopStallMs,
 	WatchdogCheckTracker,
 } from "./watchdog-health.js";
-import { createWatchdogJudge } from "./watchdog-judge.js";
-import {
-	createJudgeRoutingDepsFactory,
-	createStuckConfirmRunner,
-} from "./watchdog-judge-assembly.js";
 import {
 	qaStallInboxLoopLead,
 	watchdogBlockedEnabled,
@@ -3848,9 +3818,6 @@ export async function startBridge(
 		blockedLead: new WatchdogCheckTracker({
 			cadenceMs: leadWatchdogPollIntervalMs,
 		}),
-		blockedRunner: new WatchdogCheckTracker({
-			cadenceMs: config.stuckCheckIntervalMs,
-		}),
 	};
 	// Live registration truth for /health. These bits flip only after the
 	// corresponding tracker has actually been handed to its runtime component.
@@ -3858,7 +3825,6 @@ export async function startBridge(
 		liveness: false,
 		externalDrift: true,
 		blockedLead: false,
-		blockedRunner: false,
 	};
 
 	// FLY-1082 (Task 1.1): fail-loud kind-contract validation — every alert
@@ -5098,27 +5064,6 @@ export async function startBridge(
 						);
 					}
 				},
-				resolveOrphanEscalations: () => {
-					const result = resolveOrphanDetectionEscalations({
-						store,
-						projectNames: projects.map((project) => project.projectName),
-						listCommDbExecutionIds: (projectName) =>
-							openResidueCommDb(projectName, (db) =>
-								db.listSessions().map((session) => session.execution_id),
-							) ?? [],
-						hasCommDbSession: (projectName, executionId) =>
-							openResidueCommDb(
-								projectName,
-								(db) => db.getSession(executionId) !== undefined,
-							) ?? false,
-						log: (message) => console.warn(message),
-					});
-					if (result.resolvedRows > 0) {
-						console.log(
-							`[Bridge] FLY-1066 orphan escalations: targets=${result.resolvedTargets} rows=${result.resolvedRows}`,
-						);
-					}
-				},
 				reapStateStoreGhost: async (session) =>
 					(await reapStateStoreGhost(session, residueGhostDeps)) === "reaped",
 				log: (message) => console.warn(message),
@@ -5852,9 +5797,6 @@ export async function startBridge(
 					issueDisplayRefreshHolder,
 				)
 			: {
-					// FLY-637 R1 #2: no-op notifier never persists an event → false, so
-					// checkStuck does not durably dedup a wake that never happened.
-					onSessionStuck: async () => false,
 					onSessionOrphaned: async () => {},
 					onSessionStale: async () => {},
 					onSessionMonitoringLost: async () => {},
@@ -5897,8 +5839,7 @@ export async function startBridge(
 	// from config.host + the real listening port (IPv6 bracketed).
 	const loopbackBaseUrl = buildLoopbackBaseUrl(config.host, port);
 
-	// FLY-626: shared cheap quiet-signal probe for the stall watchdogs
-	// (HeartbeatService session_stuck + RunnerIdleWatchdog runner_idle_detected).
+	// FLY-626: shared cheap quiet-signal probe for RunnerIdleWatchdog.
 	// Suppresses the (token-expensive) Lead wake for a legitimately-quiet runner
 	// (self-declared park/busy, parked at a gate, recently active).
 	// `FLYWHEEL_QUIET_CLASSIFIER=0` disables it → pre-FLY-626 all-wake behavior.
@@ -6001,16 +5942,6 @@ export async function startBridge(
 		},
 	};
 
-	// FLY-1234: late-bound stuck-confirm holder — declared BEFORE the
-	// HeartbeatService construction, bound after the watchdog judge is wired
-	// (further down this boot sequence). `heartbeatService.start()` is
-	// deliberately deferred until AFTER the binding (R2 #4): several awaits sit
-	// between construction and the judge wiring, so starting earlier would open
-	// a window where a tick observes `current === null` and fail-open-emits
-	// with a spurious confirm_unbound annotation.
-	const stuckConfirmHolder: {
-		current: ((session: Session) => Promise<StuckConfirmResult>) | null;
-	} = { current: null };
 	// FLY-1374: complete-marker fail-close can persist via forceStatus when the
 	// FSM rejects an un-replayable terminal marker. That bypasses the shared
 	// applyTransition hook, so run both exact write-after effects here: converge
@@ -6048,7 +5979,7 @@ export async function startBridge(
 			},
 		},
 		48, // reviewTimeoutHours (constructor default; FLY-159/191 48h)
-		quietSignalsProbe,
+		undefined,
 		crashReaperConfig,
 		// FLY-867: stale-terminal close — checkStaleCompleted upgrades from
 		// notify-only to notify+close for terminal-status sessions whose tmux is
@@ -6217,11 +6148,7 @@ export async function startBridge(
 				}
 			}
 		},
-		// FLY-1234: heartbeat session_stuck confirm layer (late-bound above).
-		stuckConfirmHolder,
-		watchdogTrackers.blockedRunner,
 	);
-	watchdogWiring.blockedRunner = true;
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
 	// router + idle watchdog via the late-bound holder, now that HeartbeatService
@@ -6250,7 +6177,7 @@ export async function startBridge(
 	// emitted a stage_changed event, which never transitioned the FSM off
 	// `running` (that flows through `session_completed`). Those sessions are
 	// stuck: close_runner rejects them, tmux + worktree linger, the idle watchdog
-	// false-positives session_stuck. The event-route handler fixes this going
+	// produced false stuck notices. The event-route handler fixes this going
 	// forward; this one-shot sweep unsticks the EXISTING backlog whose
 	// stage_changed already fired before the fix shipped. This sweep runs before
 	// the late-bound FLY-172 durable-alert drain; its pending-marker guard leaves
@@ -6554,12 +6481,7 @@ export async function startBridge(
 		);
 	}
 
-	// FLY-1234 (R2 #4): `heartbeatService.start()` used to live HERE — it moved
-	// below the watchdog-judge wiring + stuckConfirmHolder binding. Multiple
-	// awaits sit between this point and that wiring (transport dynamic import,
-	// milestone-config load), so starting here would open a real window where a
-	// tick observes an unbound confirm holder. seedReconnecting (above) keeps
-	// its existing before-start ordering.
+	heartbeatService.start();
 
 	// FLY-163: CleanupService removed (forum thread cleanup gone).
 
@@ -6590,7 +6512,7 @@ export async function startBridge(
 	// BridgeEventLoopWatchdog below) so general Bridge integration suites never fire
 	// a meta-alert off the test machine's real (possibly contaminated) global codex.
 	const codexHealthEnabled = !process.env.VITEST;
-	// Late-bound shared alert sink for retained detection and convergence lanes.
+	// Late-bound shared alert sink for convergence lanes.
 	const leadPendingAlertHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};
@@ -6831,317 +6753,6 @@ export async function startBridge(
 		},
 	});
 
-	// FLY-1048 (A5): shared owner-Lead resolution for suspicious reports —
-	// used by BOTH the LeadWatchdog multi-frame veto and the focused-frame
-	// unclear path (one resolver, no drift).
-	const resolveSuspiciousOwner = (
-		r: SuspiciousReport,
-	): SuspiciousOwner | null => {
-		if (r.targetKind === "lead") {
-			// State key is `<project>:<leadId>` (LeadWatchdog stateKey).
-			const idx = r.targetKey.indexOf(":");
-			if (idx <= 0 || idx === r.targetKey.length - 1) return null;
-			return {
-				projectName: r.targetKey.slice(0, idx),
-				leadId: r.targetKey.slice(idx + 1),
-			};
-		}
-		// Runner target: execId → session → label-derived owner Lead.
-		const session = store.getSession(r.targetKey);
-		if (!session?.project_name) return null;
-		const project = projects.find(
-			(p) => p.projectName === session.project_name,
-		);
-		if (!project) return null;
-		for (const lead of project.leads) {
-			try {
-				if (matchesLead(session, lead.agentId, projects)) {
-					return {
-						leadId: lead.agentId,
-						projectName: project.projectName,
-						executionId: session.execution_id,
-						issueId: session.issue_id,
-					};
-				}
-			} catch {
-				/* try the next lead */
-			}
-		}
-		return null;
-	};
-	// FLY-1048 (A5, Codex code R1 #1): the quiet issue-thread leg. Late-bound
-	// holder — alertDiscordOps is constructed further down the boot sequence;
-	// until it is wired the leg silently skips (the guardrail lead_event leg is
-	// the reliable channel; the thread note is best-effort by contract).
-	const suspiciousThreadPoster: {
-		current: ((threadId: string, content: string) => Promise<void>) | null;
-	} = { current: null };
-	// FLY-1048 PR-B (B3): the LLM judge sits in FRONT of the fail-suspicious
-	// deliverer. Env checked per call (live flip); OFF or <2 frames = PR-A
-	// behavior byte-for-byte. Accepted a/b verdicts suppress the report with a
-	// durable session_events audit; c_stuck/suspicious/null still deliver
-	// (never silent). Judge runs codex (subscription — zero Claude quota).
-	// FLY-1048 PR-C (C4): the unified-flow notify leg — every detection source
-	// (gap records / focused-frame case-c / judge-confirmed c / FN4) funnels
-	// through here. CLEARING targets are muted (C5), and notifyLeadFirst dedups
-	// once-per-episode on the durable detection_escalations row. FLY-1243: the
-	// FLYWHEEL_DETECTION_ESCALATION gate is retired (固化 default-on) — the unified
-	// flow always runs.
-	const resolveDetectionOwner = (
-		input: DetectionEscalationInput,
-	): EscalationOwner | null => {
-		for (const project of projects) {
-			if (project.projectName !== input.projectName) continue;
-			for (const lead of project.leads) {
-				if (input.targetKey === `${project.projectName}:${lead.agentId}`) {
-					return {
-						leadId: lead.agentId,
-						projectName: project.projectName,
-						executionId: input.executionId,
-						issueId: input.issueId,
-					};
-				}
-			}
-		}
-		const session = store.getSession(input.targetKey);
-		if (!session?.project_name) return null;
-		const project = projects.find(
-			(p) => p.projectName === session.project_name,
-		);
-		if (!project) return null;
-		for (const lead of project.leads) {
-			try {
-				if (matchesLead(session, lead.agentId, projects)) {
-					return {
-						leadId: lead.agentId,
-						projectName: project.projectName,
-						executionId: session.execution_id,
-						issueId: session.issue_id,
-					};
-				}
-			} catch {
-				/* try the next lead */
-			}
-		}
-		return null;
-	};
-	const detectionLeadFirstDeps = {
-		store,
-		runtimeRegistry: registry,
-		resolveOwner: resolveDetectionOwner,
-		// Quiet issue-thread leg with the A5 pre-call guard (Codex design R1 #3):
-		// no bound thread → skip this leg silently. The guardrail lead_event leg
-		// remains the reliable channel.
-		emitThreadNote: async (
-			r: DetectionEscalationInput,
-			owner: EscalationOwner,
-		) => {
-			const poster = suspiciousThreadPoster.current;
-			if (!poster) return;
-			const lead = projects
-				.find((pr) => pr.projectName === owner.projectName)
-				?.leads.find((l) => l.agentId === owner.leadId);
-			const threadId = resolveChatThreadId(store, r.issueId, lead?.chatChannel);
-			if (!threadId) return;
-			await poster(threadId, formatEscalationLeadNote(r));
-		},
-	};
-	const notifyDetectionEpisodeWithOutcome = async (
-		input: DetectionEscalationInput,
-	) => {
-		// Preserve the pre-upsert CLEARING guard used by the legacy path. The
-		// inner helper repeats the check to close the race between this read and
-		// its atomic claim.
-		if (store.hasClearingDetectionEscalationForTarget(input.targetKey)) {
-			return "target_clearing" as const;
-		}
-		return notifyLeadFirst(detectionLeadFirstDeps, input);
-	};
-	const watchdogJudge = createWatchdogJudge({
-		repoRoot: projects[0]?.projectRoot ?? process.cwd(),
-	});
-	// FLY-1234 (R1 #6 / R2 #2): shared judge-routing assembly — extracted to
-	// watchdog-judge-assembly.ts so the production composition is testable
-	// (Codex code R1 #3). deliver / onConfirmedStuck / onDecision /
-	// judgeCacheKey / errorSignatureKinds are the per-caller seams; the
-	// unified-escalation side effect (notifyDetectionEpisode) is ONLY ever the
-	// suspicious pipeline's injected onConfirmedStuck — the heartbeat confirm
-	// layer never notifies (single emission right, INV-4).
-	const buildJudgeRoutingDeps = createJudgeRoutingDepsFactory({
-		store,
-		judge: watchdogJudge,
-		judgeEnabled: () => process.env.FLYWHEEL_WATCHDOG_JUDGE === "1",
-		resolveOwner: resolveSuspiciousOwner,
-	});
-
-	// FLY-1234 (T3): bind the heartbeat stuck-confirm layer, now that the judge
-	// exists. One boot-time knob parse WITH the warn sink (a cross-field
-	// contradiction logs once here); the per-call parses inside stay quiet.
-	parseStuckConfirmKnobs(process.env, {
-		warn: (m) => console.warn(`[stuck-confirm] ${m}`),
-	});
-	stuckConfirmHolder.current = createStuckConfirmRunner({
-		buildRoutingDeps: buildJudgeRoutingDeps,
-		// R1 #7 mapping: lookup gone → "gone" (target unresolvable — the
-		// annotation never claims process death), lookup error →
-		// "indeterminate"; found → the #576 four-state process probe.
-		probeLiveness: async (s) => {
-			if (!s.project_name) return "gone";
-			const lookup = lookupTmuxTarget(s.execution_id, s.project_name);
-			if (lookup.kind === "gone") return "gone";
-			if (lookup.kind === "error") return "indeterminate";
-			return probeRunnerProcessLiveness(lookup.target.tmuxWindow);
-		},
-		captureFrame: async (s) => {
-			if (!s.project_name) return null;
-			const res = await defaultCaptureSession(
-				s.execution_id,
-				s.project_name,
-				200,
-			);
-			return "output" in res
-				? { text: res.output, capturedAtMs: Date.now() }
-				: null;
-		},
-		commCorroborationMs: () => stuckCommActivityMs(process.env),
-		logger: (m) => console.log(`[stuck-confirm] ${m}`),
-	});
-
-	// FLY-1234 (R2 #4): start the heartbeat AFTER the confirm holder is bound —
-	// no tick can ever observe the unbound-holder transient. Moved from right
-	// after seedReconnecting() (see the marker comment there).
-	heartbeatService.start();
-
-	// FLY-1048 (PR-C, C3-w): unified detection-escalation reconcile — the
-	// ~30min Lead-grace sweep + fleet guard (PRD §4.3). Env checked INSIDE the
-	// FLY-1243: the reconcile is固化 default-on (no FLYWHEEL_DETECTION_ESCALATION flip; runs every
-	// restart; unset = the tick returns immediately (byte-compat). All timing
-	// and dedup state lives in the durable detection_escalations rows, so a
-	// missed tick can only delay an escalation, never reset it.
-	//
-	const receiptDetectionKinds = [
-		"wake_failed",
-		"receipt_unprocessed",
-		"founder_decision_dropped",
-	] as const;
-	const detectionGraceByProject = await loadDetectionGraceByProject(projects);
-	const detectionPageFounder = createFounderPager({
-		store,
-		resolveTarget: createReceiptAwareTargetResolver({ store, projects }),
-		discordOwnerUserId: config.discordOwnerUserId,
-		discordBotToken: config.discordBotToken,
-		// NEVER silent (plan C3): an unaddressable/undeliverable founder page
-		// rides the FLY-915 ticket lane. The per-episode deterministic eventId
-		// claims-dedups across reconcile retries (no per-tick ticket spam); the
-		// row itself stays LEAD_NOTIFIED so the page keeps retrying.
-		onUndeliverable: async (row, reason) => {
-			const sink = leadPendingAlertHolder.current;
-			if (!sink) return;
-			const session = store.getSession(row.target_key);
-			const receiptProject = projects.find((project) =>
-				project.leads.some(
-					(lead) => row.target_key === `${project.projectName}:${lead.agentId}`,
-				),
-			);
-			await sink.alert({
-				leadId: row.owner_lead_id ?? "unassigned",
-				projectName:
-					session?.project_name ?? receiptProject?.projectName ?? "unknown",
-				eventId: `detection-page-undeliverable:${row.target_key}:${row.kind}:${row.episode_fingerprint}`,
-				eventType: "detection_page_undeliverable",
-				title: "Detection founder-page undeliverable",
-				body:
-					`无法把 detection 升级页投递进 issue thread(kind=${row.kind}, ` +
-					`target=${row.target_key}, reason=${reason})。行保持 LEAD_NOTIFIED,` +
-					`reconcile 会继续重试;请排查 thread 绑定 / bot token / 路由。`,
-				severity: "warning",
-			});
-		},
-	});
-	const detectionFleetSink = createFleetSink({
-		// Codex code R1 #3: issue_id is a Linear UUID — the project must come
-		// from the target's session row or the aggregate routes to unknown-lead.
-		resolveProject: (row) => {
-			const sessionProject = store.getSession(row.target_key)?.project_name;
-			if (sessionProject) return sessionProject;
-			return (
-				projects.find((project) =>
-					project.leads.some(
-						(lead) =>
-							row.target_key === `${project.projectName}:${lead.agentId}`,
-					),
-				)?.projectName ?? null
-			);
-		},
-		alertSink: {
-			// Throwing (not swallowing) keeps the C3 contract: an unsurfaced
-			// fleet aggregate leaves every row LEAD_NOTIFIED for the next pass.
-			// `skipped: "duplicate"` counts as SUCCESS — the claims table says the
-			// aggregate already surfaced, and treating it as failure would hold
-			// the group LEAD_NOTIFIED forever.
-			alert: async (p) => {
-				const sink = leadPendingAlertHolder.current;
-				if (!sink) throw new Error("alert sink not wired yet (holder empty)");
-				const result = await sink.alert(p);
-				if (result.skipped && result.skipped !== "duplicate") {
-					throw new Error(`fleet aggregate skipped: ${result.skipped}`);
-				}
-				if (result.deadLettered) {
-					throw new Error("fleet aggregate dead-lettered");
-				}
-				return result;
-			},
-		},
-	});
-	const receiptDetectionReconcileTick = async (): Promise<void> => {
-		const graceEnv = Number.parseInt(
-			process.env.FLYWHEEL_DETECTION_LEAD_GRACE_MS ?? "",
-			10,
-		);
-		const thresholdEnv = Number.parseInt(
-			process.env.FLYWHEEL_DETECTION_FLEET_THRESHOLD ?? "",
-			10,
-		);
-		await reconcileDetectionEscalations({
-			store,
-			pageFounder: detectionPageFounder,
-			fleetSink: detectionFleetSink,
-			kindFilter: { includeKinds: receiptDetectionKinds },
-			maintainClearing: false,
-			graceMs: Number.isFinite(graceEnv) && graceEnv > 0 ? graceEnv : undefined,
-			graceMsFor: (row) => {
-				const project = projects.find((candidate) =>
-					candidate.leads.some(
-						(lead) =>
-							row.target_key === `${candidate.projectName}:${lead.agentId}`,
-					),
-				);
-				return project
-					? detectionGraceByProject.get(project.projectName)
-					: undefined;
-			},
-			fleetThreshold:
-				Number.isFinite(thresholdEnv) && thresholdEnv > 0
-					? thresholdEnv
-					: undefined,
-		});
-	};
-	const detectionReconcileCohortsTick = async (): Promise<void> => {
-		if (!receiptFoundationEnabled()) return;
-		const clearingTtlEnv = Number.parseInt(
-			process.env.FLYWHEEL_CLEARING_TTL_MS ?? "",
-			10,
-		);
-		reboundExpiredDetectionClearings({
-			store,
-			nowMs: Date.now(),
-			clearingTtlMs:
-				Number.isFinite(clearingTtlEnv) && clearingTtlEnv > 0
-					? clearingTtlEnv
-					: undefined,
-		});
-		await receiptDetectionReconcileTick();
-	};
 	const issueGateSupersedeTick = (): void => {
 		for (const project of projects) {
 			let db: CommDB | undefined;
@@ -7296,22 +6907,19 @@ export async function startBridge(
 			},
 			notifyDropped: async (row) => {
 				const session = store.getSession(row.execution_id);
-				if (!session) return false;
-				const outcome = await notifyDetectionEpisodeWithOutcome({
-					targetKey: row.execution_id,
-					kind: "founder_decision_dropped",
-					episodeFingerprint: `${row.msg_id}:${row.question_id}`,
-					executionId: row.execution_id,
-					issueId: session.issue_id,
-					issueIdentifier: session.issue_identifier,
+				const sink = leadPendingAlertHolder.current;
+				if (!session || !sink) return false;
+				const alert = await sink.alert({
+					leadId: row.lead_id,
 					projectName: row.project_name,
-					firstDetectedAtMs: row.deadline_at_ms,
-					reason: `founder 明确 ${row.classification} 决定已被读取,但未绑定到 gate ${row.question_id}`,
-					nextStep: "Lead 立即检查 gate writer / wake 投递链并人工收敛",
+					eventId: `founder-decision-dropped:${row.msg_id}:${row.question_id}`,
+					eventType: "founder_notify_dead_letter",
+					title: "Founder decision did not converge",
+					body: `founder 明确 ${row.classification} 决定已被读取,但未绑定到 gate ${row.question_id};请立即检查 gate writer / wake 投递链并人工收敛。`,
+					severity: "warning",
+					sessionKey: row.execution_id,
 				});
-				if (outcome !== "notified" && outcome !== "already_notified") {
-					return false;
-				}
+				if (alert.skipped || alert.deadLettered) return false;
 				const lead = projects
 					.find((project) => project.projectName === row.project_name)
 					?.leads.find((candidate) => candidate.agentId === row.lead_id);
@@ -7376,25 +6984,13 @@ export async function startBridge(
 			);
 			return Number.isFinite(n) && n > 0 ? n : undefined;
 		})(),
-		// FLY-1048 (PR-C): detection-escalation reconcile piggyback (zero new
-		// timer; env-gated inside the tick — unset flag = complete no-op).
-		onDetectionReconcileTick: detectionReconcileCohortsTick,
-		// FLY-1282 Part D: disposition-receipt delivery — its OWN stage, NOT
-		// under detectionReconcileEveryNTicks (cadence 0 must not become a
-		// hidden receipt kill switch). FLYWHEEL_DISPOSITION_RECEIPT is checked
-		// inside the pass (live-flippable); the pass has its own single-flight.
+		// FLY-1282 Part D: disposition-receipt delivery has its own stage and
+		// single-flight. FLYWHEEL_DISPOSITION_RECEIPT is checked inside the pass.
 		onDispositionReceiptTick: createDispositionReceiptPass({
 			store,
 			projects: projects ?? [],
 			globalBotToken: config.discordBotToken,
 		}),
-		detectionReconcileEveryNTicks: (() => {
-			const n = Number.parseInt(
-				process.env.FLYWHEEL_DETECTION_RECONCILE_EVERY_N_TICKS ?? "",
-				10,
-			);
-			return Number.isFinite(n) && n >= 0 ? n : undefined; // default 20
-		})(),
 		// FLY-945 Fix D: run the sweeper on the patrol cadence (zero new timer).
 		externalMergeReconcile: () => externalMergeReconciler.pass(),
 		leadAlertSink: {
@@ -9076,11 +8672,6 @@ export async function startBridge(
 				logger: { warn: (message) => console.warn(message) },
 			})
 		: undefined;
-	// FLY-1048 (A5): wire the suspicious-report quiet thread leg now that the
-	// Discord ops exist (the deliverer skipped the leg while this was null).
-	suspiciousThreadPoster.current = async (threadId, content) => {
-		await alertDiscordOps.postToThread(threadId, content);
-	};
 	// FLY-1456: preserve the existing construction boundary while the fixed mode
 	// keeps it dormant. The external daemon is the only account-switch executor.
 	const accountSwitchRepair = quotaBridgeMode.attachAccountSwitch

@@ -811,9 +811,3 @@ describe("createDiscordOps (FLY-368 rework: repair chain + allowed_mentions)", (
 		expect(JSON.parse(String(init.body)).auto_archive_duration).toBe(60);
 	});
 });
-
-// NOTE: FLY-818 M3 (the genuinely-stuck-runner founder page) is NOT in the Hub.
-// It posts an @founder message into the stuck runner's OWN [FLY-XX] issue thread
-// from `createStuckUnhandledAlerter` (see stuck-escalation.test.ts) using the
-// owning Lead's bot — Annie's design; the alert-channel page was the rejected
-// FLY-523 path. This Hub only owns the alert thread + auto-repair.

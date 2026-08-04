@@ -360,12 +360,6 @@ export class AlertChannelHub {
 				`thread handling failed for ${ck}: ${(err as Error).message}`,
 			);
 		}
-		// FLY-818 M3 note: the genuinely-stuck-runner founder page is NOT here —
-		// it posts an @founder message into the STUCK RUNNER'S OWN [FLY-XX] issue
-		// thread from `createStuckUnhandledAlerter` (stuck-escalation.ts), which has
-		// the owning Lead (bot token + chat channel). This Hub only owns the alert
-		// thread + auto-repair (Annie's design; the alert-channel page was the
-		// rejected FLY-523 path).
 		return result;
 	}
 

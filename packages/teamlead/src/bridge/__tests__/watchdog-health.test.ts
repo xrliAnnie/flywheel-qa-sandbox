@@ -52,12 +52,10 @@ describe("FLY-1393 watchdog health manifest", () => {
 				liveness: true,
 				externalDrift: true,
 				blockedLead: true,
-				blockedRunner: false,
 			},
 			trackers: {
 				liveness: tracker(3_600_000),
 				blockedLead: tracker(30_000),
-				blockedRunner: tracker(300_000),
 			},
 			deliveryLoopWired: true,
 			loopStallMs: 10 * 60_000,
@@ -114,7 +112,5 @@ describe("FLY-1393 watchdog health manifest", () => {
 			switch: "required/no_switch",
 		});
 		expect(manifest.components.w4_lead_blocked.class).toBe("W-4");
-		expect(manifest.components.w4_runner_blocked.class).toBe("W-4");
-		expect(manifest.components.w4_runner_blocked.wired).toBe(false);
 	});
 });

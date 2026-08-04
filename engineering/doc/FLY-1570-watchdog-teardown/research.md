@@ -8,6 +8,10 @@ Issue: FLY-1570 (https://linear.app/geoforge3d/issue/FLY-1570/消息层重构-a-
 
 5 个只读审计并行覆盖全 scope:① patrol/loop-health 集群 ② detection 集群 + founder-reply-watchdog ③ stuck 集群 + auto-qa-coordinator ④ LeadWatchdog + 墓碑 + flag 真相层 ⑤ plugin.ts wiring + 保留清单逐条定位。全部 `rg` 全仓(packages/ + scripts/),import 精确到 file:line。本文是五份审计的裁定后合并;行号基于分支 `flywheel-FLY-1570` @ `05e7b451`。
 
+### 实施核验更正(2026-08-04)
+
+最终残留扫描证明初次审计把「确认追人告警是否误报」误当成独立保留能力,与 issue 明确要求的「卡死检测器 + 升级全删」冲突。最终以 issue scope 为准:`HeartbeatService.checkStuck()` / `onSessionStuck` 与 `stuck-pane-confirm` / `watchdog-judge*` 整链删除;`detection-config-source` / `detection-escalation*` / `detection-gap-scan` / `detection-suspicious` / orphan reconcile 整链删除。`founder_decision_dropped` 保留收敛点直接走既有 routed alert sink,不再借 detection 升级层。W-4 健康清单只留 Lead blocked 行;RunnerIdle 进程存活、crash reaper、monitor-loss readopt、quota/auth 与 founder-reply unreachable-runner 保持原链。下文与此更正冲突的预实施「保留」判断均由本段取代。
+
 ## 1. 五个改变切割方案的重大发现
 
 ### 发现 1:大半「要删的检测器」在生产里已经是死代码 —— 删除是零行为变化
@@ -39,9 +43,9 @@ Issue: FLY-1570 (https://linear.app/geoforge3d/issue/FLY-1570/消息层重构-a-
 - **FLY-220 `ownStateRegion` / episode latch 保留** —— blocked 链的 echo 免疫基座;`pane-live-region.ts` 整文件保留
 - **「2 轮判卡」(`paneHashStuckCycles`,`tickLead:537`)保留** —— blocked 的 pattern-first 确认也用它;真正只服务 pane-hash 的是「3 轮告警」(`paneHashAlertCycles:614-626`)和 `cooldownMs`(实测是**零读取的死字段**,所谓「冷却 30min」实际由 cooldownSignature 实现)
 
-### 发现 3:issue 清单里有一个误列 —— `stuck-pane-confirm.ts` 不属于 FLY-195 卡死集群
+### 发现 3(实施时纠正):`stuck-pane-confirm.ts` 仍属于要删除的追人告警链
 
-它是 **FLY-1234 心跳侧确认层**(2026-07-13 生产事故 5/5 `session_stuck` 全误报后加的),守的是 `HeartbeatService.checkStuck()` 纯 DB 管线,与 FLY-195 面板检测器是两条独立管线(文件头原话 "guard a DIFFERENT pipeline")。硬依赖方全在保留侧:`HeartbeatService.ts:47-50`、`watchdog-judge-assembly.ts:40`、`plugin.ts:581,7272`。kill-switch `FLYWHEEL_STUCK_PANE_CONFIRM` 在 registry **没有** retiring 标记。删掉 = HeartbeatService 编译失败 + FLY-1234 误报回归。**裁定:不删,向 Lead 报备此边界修正。**(它守的 HeartbeatService session_stuck 判定本身若属追人型,归后续批次重新评估,不在本单。)
+它虽然是 FLY-1234 给 `HeartbeatService.checkStuck()` 加的误报确认层,但输入仍是「多久没动/面板是否变化」,输出仍是 `session_stuck` 追人告警。保留确认层就必须保留被 issue 明确要求拆掉的卡死判定、judge、gap reader 与 suspicious 路由全家,会留下另一套完整追人系统。因此最终裁定是整链物理删除,不是把确认层留成开关。
 
 ### 发现 4:「保留 unreachable-runner」意味着要把它重新接活
 
@@ -103,10 +107,7 @@ founder-reply-watchdog 三个检测器共用 `legacyWatchdogsEnabled()` 门,**�
 - 删:路由 2 `stuck-disposition`(唯一读者是被删 detector)
 - `runner-recovery-nudge.ts` 保留;其对 stuck_dispositions 的写(:359,:390)删检测器后无读者,但牵动 disposition-receipt outbox 链 —— 单独一刀处理
 
-**`detection-escalation.ts`(677 行)— 保留 ~55%:**
-- 删:`unifiedFlowOwnsTarget`(487-512 零引用)、`resolveRecoveredDetectionTargets`(514-677,唯一消费者是死的 legacyPass)
-- 留:`notifyLeadFirst`/`reconcileDetectionEscalations`/`reboundExpiredDetectionClearings` 等 —— receipt cohort(活)+ **`founder_decision_dropped` 收敛链**(gate-poller.ts:1200 → plugin.ts:8228 → notifyLeadFirst,保留清单项)在用;`detection_escalations` 表是 6 个保留模块的共享底座
-- patrol 删除后 `wake_failed`/`receipt_unprocessed` 两个 kind 的生产者消失:plugin.ts:7517 receiptDetectionKinds 收缩,sinks describeKind 死 case 清理
+**实施更正:`detection-escalation.ts` 及其 config/sinks/reconcile/gap/suspicious 全家整删。** `founder_decision_dropped` 改走既有 routed alert sink,不再借 detection 层。receipt 首次 writer 与 `listPendingReceiptAlerts` 驱动的旧 episode 回放 writer 同时消失;生产代码对 `StateStore.upsertDetectionEscalation()` 零调用。表与历史 receipt settlement/ACK 接口保留(不创建新行),满足不动 schema 红线。QA 不以送达时间判新增,用 `max(first_detected_at_ms)` + 未结无界 COUNT 斜率 + 基线后新 rowid 三指标,观察至少两个实测 3–12h 回放周期。
 
 **`detection-reconcile-tick.ts`(333 行)— 只留 `runDetectionReconcileCohorts`(39-50):**
 - 建议把 cohorts 壳内联进 plugin.ts:7699-7720(去掉 legacyEnabled/legacyPass 参数)后整文件删;FN4 lead_events 投递对账(132-227)随之物理消失 —— 今天字节路径没跑,非回归,PR 点名让 D 单知道要重建

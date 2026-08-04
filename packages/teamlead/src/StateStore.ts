@@ -11657,35 +11657,6 @@ export class StateStore {
 	}
 
 	/**
-	 * FLY-1279 D2: persist one positive semantic observation. The monotonic
-	 * counter makes gate-row-missing require two complete scans without relying
-	 * on process memory; notification ownership remains the normal NEW→
-	 * LEAD_NOTIFIED transition.
-	 */
-	observeParkCondition(input: {
-		targetKey: string;
-		kind: string;
-		episodeFingerprint: string;
-		issueId?: string | null;
-		firstDetectedAtMs: number;
-	}): DetectionEscalationRow {
-		this.upsertDetectionEscalation(input);
-		this.db.run(
-			`UPDATE detection_escalations SET attempts = attempts + 1
-			 WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
-			   AND status = 'NEW'`,
-			[input.targetKey, input.kind, input.episodeFingerprint],
-		);
-		const row = this.getDetectionEscalation(
-			input.targetKey,
-			input.kind,
-			input.episodeFingerprint,
-		);
-		if (!row) throw new Error("park observation failed to persist");
-		return row;
-	}
-
-	/**
 	 * Stamp LEAD_NOTIFIED. The FIRST notification timestamp wins on repeats so
 	 * a re-notify can never slide the founder-grace window forward. Only moves
 	 * NEW/LEAD_NOTIFIED rows (never regresses ACKED/terminal states).

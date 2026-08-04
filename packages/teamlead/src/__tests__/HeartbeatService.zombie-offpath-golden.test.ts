@@ -77,7 +77,6 @@ type MockNotifier = Record<string, MockFn>;
 
 function makeStore(): MockStore {
 	return {
-		getStuckSessions: vi.fn().mockReturnValue([]),
 		getOrphanSessions: vi.fn().mockReturnValue([]),
 		getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 		getAwaitingReviewTimedOut: vi.fn().mockReturnValue([]),
@@ -101,7 +100,6 @@ function makeStore(): MockStore {
 
 function makeNotifier(): MockNotifier {
 	return {
-		onSessionStuck: vi.fn().mockResolvedValue(true),
 		onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
 		onSessionStale: vi.fn().mockResolvedValue(undefined),
 		onSessionMonitoringLost: vi.fn().mockResolvedValue(undefined),

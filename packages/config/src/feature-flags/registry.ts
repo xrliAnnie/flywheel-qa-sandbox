@@ -135,8 +135,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		polarity: "default_on",
 		valueKind: "bool",
 		default: true,
-		description:
-			"W-4 活着但干不了活:block 关键字(启动时读取)与 session_stuck(调用时读取;默认开启)",
+		description: "W-4 Lead block 关键字检测(启动时读取)",
 		readSites: [
 			envSite(
 				"packages/teamlead/src/bridge/watchdog-minimum-set.ts",
@@ -144,15 +143,9 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"bridge_boot",
 				"env-param",
 			),
-			envSite(
-				"packages/teamlead/src/bridge/watchdog-minimum-set.ts",
-				"watchdogBlockedEnabled (HeartbeatService live read)",
-				"call_time",
-				"env-param",
-			),
 		],
 		toggleable: "readonly",
-		note: "Annie 裁定保留且默认开:宁愿误报,不希望不报。Lead blocked-marker 修改后需重启;Runner session_stuck 下一次检查即生效。",
+		note: "Lead blocked-marker 修改后需重启 Bridge。",
 	},
 	// ─── FLY-1392: receipt foundation ───
 	{
@@ -1734,52 +1727,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "conversational",
 	},
-	// FLY-1048 (PR-B) watchdog LLM judge — opt-in, default OFF. (Its two PR-A
-	// detection siblings, stuck_errorsig + pane_multiframe, were固化 default-on
-	// and retired in FLY-1243; watchdog_judge stays gated — it spawns Codex.)
-	{
-		name: "watchdog_judge",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_WATCHDOG_JUDGE",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"watchdog LLM judge 层(机械快路可疑才升级,跑 Codex 不占 Claude 额度,FLY-1048 PR-B/FLY-976)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"buildJudgeRoutingDeps (routeSuspiciousReport judgeEnabled — suspicious 管道 + FLY-1234 心跳确认层共用)",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	// FLY-1234: the heartbeat session_stuck confirm layer (liveness probe →
-	// two-frame compare → judge). Default ON kill-switch — `=0` reverts the
-	// checkStuck emit path byte-for-byte (reverse-compat sentinel).
-	{
-		name: "stuck_pane_confirm",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_STUCK_PANE_CONFIRM",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"session_stuck 心跳告警前的 pane/进程证据确认层(liveness→双帧→judge,只因明确健康证据抑制,FLY-1234)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/HeartbeatService.ts",
-				"stuckConfirmEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
 	{
 		name: "worktree_autoclean",
 		category: "feature",
@@ -2004,7 +1951,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		valueKind: "bool",
 		default: true,
 		description:
-			"Bridge scope-free residue harvest — 清 CommDB-only 注册、StateStore ghost 与无主 detection escalation (FLY-1066)",
+			"Bridge scope-free residue harvest — 清 CommDB-only 注册与 StateStore ghost (FLY-1066)",
 		readSites: [
 			envSite(
 				"packages/teamlead/src/bridge/plugin.ts",

@@ -187,17 +187,14 @@ describe("feature-flag registry invariants", () => {
 		expect(founderReply?.retiring).toBeUndefined();
 	});
 
-	it("FLY-1393 records both W-4 read timings instead of advertising a fake live toggle", () => {
+	it("FLY-1570 leaves only the Lead W-4 boot-time control", () => {
 		const flag = FEATURE_FLAGS.find((f) => f.name === "watchdog_blocked");
 		expect(flag).toMatchObject({
 			envVar: "FLYWHEEL_WATCHDOG_BLOCKED",
 			default: true,
 			toggleable: "readonly",
 		});
-		expect(flag?.readSites.map((site) => site.timing)).toEqual([
-			"bridge_boot",
-			"call_time",
-		]);
+		expect(flag?.readSites.map((site) => site.timing)).toEqual(["bridge_boot"]);
 	});
 
 	it("FLY-1404 registers the topology-neutral design HTML governance gate", () => {

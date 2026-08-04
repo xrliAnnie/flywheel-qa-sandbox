@@ -12,7 +12,7 @@ describe("FLY-1393 flag truth", () => {
 		const retired = RETIRED_FLAGS.filter(
 			(flag) => flag.retiredBy === "FLY-1570",
 		);
-		expect(retired).toHaveLength(26);
+		expect(retired).toHaveLength(40);
 		for (const { envVar } of retired) {
 			expect(
 				FEATURE_FLAGS.some((flag) => flag.envVar === envVar),
@@ -238,7 +238,6 @@ describe("FLY-1393 flag truth", () => {
 					observation: "static_contract",
 				},
 				w4_lead_blocked: { wired: true, effective_enabled: false },
-				w4_runner_blocked: { wired: true, effective_enabled: false },
 			},
 			retiring: FEATURE_FLAGS.filter((flag) => flag.retiring).map((flag) => ({
 				name: flag.name,
@@ -252,11 +251,7 @@ describe("FLY-1393 flag truth", () => {
 		wrong.components.w2_delivery_loop.wired = false;
 		delete (wrong.components.w3_external_drift as Record<string, unknown>)
 			.observation;
-		(
-			wrong.components.w4_runner_blocked as {
-				effective_enabled: unknown;
-			}
-		).effective_enabled = "0";
+		wrong.components.w4_lead_blocked.effective_enabled = "0";
 		wrong.retiring = [{ name: "retired-patrol", effective_enabled: true }];
 		const result = validateWatchdogManifest(wrong);
 		expect(result.ok).toBe(false);
@@ -265,7 +260,7 @@ describe("FLY-1393 flag truth", () => {
 		expect(result.errors.join("\n")).toMatch(
 			/w3_external_drift.*observation=static_contract/,
 		);
-		expect(result.errors.join("\n")).toMatch(/w4_runner_blocked.*boolean/);
+		expect(result.errors.join("\n")).toMatch(/w4_lead_blocked.*boolean/);
 		expect(result.errors.join("\n")).toMatch(/effective_enabled=true/);
 	});
 
@@ -285,7 +280,6 @@ describe("FLY-1393 flag truth", () => {
 					observation: "static_contract",
 				},
 				w4_lead_blocked: { wired: true, effective_enabled: true },
-				w4_runner_blocked: { wired: true, effective_enabled: true },
 			},
 			retiring: [],
 		});

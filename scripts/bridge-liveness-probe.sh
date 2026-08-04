@@ -129,7 +129,6 @@ watchdog_manifest_valid() {
     ) and
     (.watchdogs.components.w3_external_drift | type == "object" and .wired == true and (.effective_enabled | type == "boolean") and .observation == "static_contract") and
     (.watchdogs.components.w4_lead_blocked | type == "object" and .wired == true and (.effective_enabled | type == "boolean")) and
-    (.watchdogs.components.w4_runner_blocked | type == "object" and .wired == true and (.effective_enabled | type == "boolean")) and
     ((.watchdogs.retiring // []) | all(.effective_enabled != true))
   ' >/dev/null 2>&1
 }

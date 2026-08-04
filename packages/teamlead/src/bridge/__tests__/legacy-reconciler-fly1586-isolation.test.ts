@@ -368,8 +368,8 @@ describe("FLY-1586 — poison row isolation keeps the cutover moving", () => {
 
 	it("⭐ a stock-derived receipt escalation carrying the old ship answer is suppressed", async () => {
 		// Code review R3 BLOCKER — the fifth founder-replay path, and the one with
-		// the sting: `notifyLeadFirst` durably appends this escalation BEFORE its
-		// best-effort dispatch, and the contentSummary truncation on this very path
+		// the sting: the retired detector appended this escalation before its
+		// best-effort dispatch, and contentSummary truncation on this very path
 		// is what minted seq 56649. Same pipe, not adjacent telemetry.
 		const rootId = "founder_msg:lead-1:ship-msg";
 		queue.enqueue({

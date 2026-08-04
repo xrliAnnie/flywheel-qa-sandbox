@@ -55,8 +55,7 @@ const SIGNATURE_PATTERNS: ReadonlyArray<{
 	},
 	{ kind: "not_logged_in", pattern: /\bnot logged in\b/i },
 	{ kind: "enoent_loop", pattern: /\bENOENT\b/i },
-	// Same strictness as stuck-candidate's detectStreamErrorSignature: requires
-	// `API Error:` AND `Stream idle timeout` on the SAME line.
+	// Require `API Error:` and `Stream idle timeout` on the same line.
 	{ kind: "stream_idle_timeout", pattern: /API Error:.*Stream idle timeout/i },
 ];
 

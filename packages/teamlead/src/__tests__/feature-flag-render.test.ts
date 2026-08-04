@@ -43,15 +43,6 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		expect(html).toContain('type="checkbox"');
 	});
 
-	it("marks retiring flags and never renders a control for them", () => {
-		const retiring = FLAGS.find((flag) => flag.name === "zombie_gate_resolve");
-		if (!retiring) throw new Error("missing retiring watchdog flag");
-		expect(retiring.retiring).toBe("FLY-1393");
-		const html = renderFlagCard(retiring, "console");
-		expect(html).toContain("退役中 FLY-1393");
-		expect(html).not.toContain("data-ff-apply");
-	});
-
 	it("effect label maps timing → 生效路径", () => {
 		const autoQa = FLAGS.find((f) => f.name === "auto_qa_killswitch");
 		if (!autoQa) throw new Error("missing");
@@ -59,9 +50,9 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		const remote = FLAGS.find((f) => f.name === "remote_reports");
 		if (!remote) throw new Error("missing");
 		expect(effectLabel(remote)).toBe("命令级");
-		const paneIdle = FLAGS.find((f) => f.name === "pane_idle_suppress");
-		if (!paneIdle) throw new Error("missing");
-		expect(effectLabel(paneIdle)).toBe("需重启");
+		const watchdogBlocked = FLAGS.find((f) => f.name === "watchdog_blocked");
+		if (!watchdogBlocked) throw new Error("missing");
+		expect(effectLabel(watchdogBlocked)).toBe("需重启");
 		const qaAuto = FLAGS.find((f) => f.name === "qa_auto");
 		if (!qaAuto) throw new Error("missing");
 		expect(effectLabel(qaAuto)).toBe("新 run 生效");

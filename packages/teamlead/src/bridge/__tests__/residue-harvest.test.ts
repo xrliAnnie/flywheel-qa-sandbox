@@ -23,7 +23,7 @@ function blocker(executionId = "exec-target"): Session {
 }
 
 describe("createResidueHarvester", () => {
-	it("runs CommDB + StateStore per project, isolates failures, then resolves global orphans once", async () => {
+	it("runs CommDB + StateStore per project and isolates failures", async () => {
 		const calls: string[] = [];
 		const harvester = createResidueHarvester({
 			projectNames: ["flywheel", "joycon"],
@@ -43,7 +43,6 @@ describe("createResidueHarvester", () => {
 					`state:${project}:${evidence.map((item) => item.executionId).join(",")}`,
 				);
 			}),
-			resolveOrphanEscalations: vi.fn(() => calls.push("global")),
 			reapStateStoreGhost: vi.fn(async () => false),
 			log: vi.fn(),
 		});
@@ -56,7 +55,6 @@ describe("createResidueHarvester", () => {
 			"comm:joycon",
 			"prune:joycon",
 			"state:joycon:exec-joycon",
-			"global",
 		]);
 	});
 
@@ -64,14 +62,12 @@ describe("createResidueHarvester", () => {
 		const harvestCommDb = vi.fn(async () => {});
 		const pruneTerminalCommDb = vi.fn(async () => []);
 		const harvestStateStoreGhosts = vi.fn(async () => {});
-		const resolveOrphanEscalations = vi.fn(() => undefined);
 		const harvester = createResidueHarvester({
 			projectNames: ["flywheel"],
 			commDbFsmEnabled: false,
 			harvestCommDb,
 			pruneTerminalCommDb,
 			harvestStateStoreGhosts,
-			resolveOrphanEscalations,
 			reapStateStoreGhost: vi.fn(async () => false),
 		});
 
@@ -82,7 +78,6 @@ describe("createResidueHarvester", () => {
 			"flywheel",
 			[],
 		);
-		expect(resolveOrphanEscalations).toHaveBeenCalledOnce();
 	});
 
 	it("FLYWHEEL_COMMDB_FSM_RECONCILE=0 does not gate the targeted StateStore entry", async () => {
@@ -93,7 +88,6 @@ describe("createResidueHarvester", () => {
 			harvestCommDb: vi.fn(async () => {}),
 			pruneTerminalCommDb: vi.fn(async () => []),
 			harvestStateStoreGhosts: vi.fn(async () => {}),
-			resolveOrphanEscalations: vi.fn(),
 			reapStateStoreGhost,
 		});
 
@@ -113,7 +107,6 @@ describe("createResidueHarvester", () => {
 			harvestCommDb: vi.fn(async () => held),
 			pruneTerminalCommDb: vi.fn(async () => []),
 			harvestStateStoreGhosts: vi.fn(async () => {}),
-			resolveOrphanEscalations: vi.fn(),
 			reapStateStoreGhost,
 		});
 
