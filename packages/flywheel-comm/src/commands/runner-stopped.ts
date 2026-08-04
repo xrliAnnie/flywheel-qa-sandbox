@@ -488,17 +488,6 @@ export async function runnerStopped(
 				reason: "error",
 				detail: `session ${identity.session.status}`,
 			};
-		} else {
-			const declared = db.getEffectiveDeclaredState(
-				args.execId,
-				args.nowMs ?? Date.now(),
-			);
-			if (declared?.kind === "parked") {
-				reasonDetail = {
-					reason: "done",
-					detail: `parked${declared.reason ? `: ${declared.reason}` : ""}`,
-				};
-			}
 		}
 
 		if (!reasonDetail) {
@@ -527,6 +516,19 @@ export async function runnerStopped(
 							reason: "blocked",
 							detail: `waiting on answer to ${pending.id}`,
 						};
+			}
+		}
+
+		if (!reasonDetail) {
+			const declared = db.getEffectiveDeclaredState(
+				args.execId,
+				args.nowMs ?? Date.now(),
+			);
+			if (declared?.kind === "parked") {
+				reasonDetail = {
+					reason: "done",
+					detail: `parked${declared.reason ? `: ${declared.reason}` : ""}`,
+				};
 			}
 		}
 

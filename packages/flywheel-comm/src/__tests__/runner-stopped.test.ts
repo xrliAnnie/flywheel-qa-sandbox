@@ -222,6 +222,44 @@ describe("runner-stopped", () => {
 		});
 	});
 
+	it("prioritizes an unanswered approval gate over an active park", async () => {
+		const exec2 = "exec-parked-at-gate";
+		db.registerSession(exec2, "runner:3", "flywheel", issueId, leadId);
+		db.upsertDeclaredState(
+			exec2,
+			"parked",
+			"waiting to ship",
+			Date.now(),
+			null,
+		);
+		const gateId = db.insertQuestion(exec2, leadId, "approval", {
+			checkpoint: "approve_to_ship",
+		});
+
+		const parked = await emit({ execId: exec2, turnId: "turn-parked-at-gate" });
+		expect(parked).toMatchObject({
+			reason: "awaiting_approval",
+			detail: `waiting on gate ${gateId}`,
+		});
+
+		db.insertResponse(gateId, leadId, "approved");
+		const askId = db.insertQuestion(exec2, leadId, "need an answer");
+		expect(
+			await emit({ execId: exec2, turnId: "turn-parked-at-ask" }),
+		).toMatchObject({
+			reason: "blocked",
+			detail: `waiting on answer to ${askId}`,
+		});
+
+		db.insertResponse(askId, leadId, "answered");
+		expect(
+			await emit({ execId: exec2, turnId: "turn-parked-without-pending" }),
+		).toMatchObject({
+			reason: "done",
+			detail: "parked: waiting to ship",
+		});
+	});
+
 	it("uses durable lineage after session finalization", async () => {
 		db.finalizeSession(execId);
 		const result = await emit({ turnId: "turn-after-finalize" });
