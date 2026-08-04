@@ -314,10 +314,11 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 两类资产(DB 文件 + `refs/` 树)的恢复是**一个带 durable intent 的分相流程**,不是顺手两步:
 1. **staging 全构造先行**:DB staging copy + 完整 refs staging tree 都按 manifest 逐项 hash 验证通过后,才进入交换段;
 2. **durable restore intent/phase ledger** 写在被替换 DB **之外**(`comm.db.restore-intent-<ts>.json`),相序 **`staged→refs_swapped→db_swapped→verified→done`**(R5 blocker:**refs 先换、DB swap 是最后的 commit point** —— 换 DB 之前 canonical 路径上一直是迁移后的库,旧 binary 被毒药 VIEW 挡、新 binary 被外部 intent 挡;真实 pre-FLY-1572 binary 不认识 restore-intent,所以**绝不能先换 DB**:那会在 refs 未齐时放出一个可写旧 schema 的世界。DB swap 落盘后,旧 DB 与 refs 已是一致世界,旧 binary 可以运行 —— 这正是回滚的目的);
-3. 每个 rename/fsync primitive 都按 **intent→apply→verify→complete** 四拍走:重入时**先 verify 实际 world state(pre/post image)再推进 ledger**,不盲信可能落后的 phase 字段做第二次 rename;
-4. **mixed-state 重入收敛**:重跑按 intent 相位 + 实际状态判定续作;post-backup 多出来的 refs 文件 quarantine(不静默遗留);exact-manifest 收敛后写 done、删 intent;
-5. readonly integrity/FK/表清单/行数/refs manifest 校验 → 回退部署 → 起 Bridge → 旧 build 冒烟。
-**真 pre-FLY-1572 build 测试覆盖每个 fault intermediate**:commit point(db_swapped)之前所有旧 live/只读入口必须 fail-loud 零副作用;commit point 之后允许打开,但断言 DB+refs manifest 完整一致。
+3. **canonical DB sidecar 是显式资产**(R6 blocker;`comm.db-wal`/`comm.db-shm` 不随主文件 rename 移动,漏掉会造成「旧主库 + 迁移库 WAL」混合态):`db_swapped` 之前 —— quiesce 并断言无进程持有 DB/WAL/SHM → 对迁移库 `wal_checkpoint(TRUNCATE)` 且要求 busy=0、全帧落盘 → 关连接 → WAL 非空即 fail-closed → `-wal`/`-shm` 可恢复地 quarantine/移除 + 父目录 fsync(对齐 v2 database-lifecycle.ts:208-216,264-282 的排干纪律);
+4. 每个 checkpoint/sidecar 变更与 rename/fsync primitive 都按 **intent→apply→verify→complete** 四拍走:重入时**先 verify 实际 world state(pre/post image)再推进 ledger**,不盲信可能落后的 phase 字段做第二次 rename;
+5. **mixed-state 重入收敛**:重跑按 intent 相位 + 实际状态判定续作;post-backup 多出来的 refs 文件 quarantine(不静默遗留);exact-manifest 收敛后写 done、删 intent;
+6. readonly integrity/FK/表清单/行数/refs manifest 校验 → 回退部署 → 起 Bridge → 旧 build 冒烟。
+**真 pre-FLY-1572 build 测试覆盖每个 fault intermediate**(含 checkpoint 前后、sidecar quarantine、父目录 fsync 各点):commit point(db_swapped)之前所有旧 live/只读入口必须 fail-loud 零副作用;commit point 之后允许打开,但断言 DB+refs manifest 完整一致且**无异源 sidecar 残留**。
 仿 v2 模式(database-lifecycle.test.ts:128-149 / rollback-t1.test.ts:144-175):对 intent、refs swap、DB rename、各 fsync、verification、completion marker **逐点 fault-inject,连跑两遍证明幂等**。备份文件即回滚,无 feature flag。
 
 ## 9. 实施顺序与 TDD
