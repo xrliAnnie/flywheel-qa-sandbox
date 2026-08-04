@@ -11371,6 +11371,26 @@ export class StateStore {
 		return row ? this.detectionEscalationFromValues(row) : undefined;
 	}
 
+	/** Resolve a receipt-derived episode by its bounded parent id. Ambiguous
+	 * lineage fails closed instead of acknowledging an arbitrary row. */
+	getDetectionEscalationBySourceReceiptId(
+		targetKey: string,
+		kind: string,
+		sourceReceiptId: string,
+	): DetectionEscalationRow | undefined {
+		const result = this.db.exec(
+			`SELECT ${StateStore.DETECTION_ESCALATION_COLUMNS}
+			 FROM detection_escalations
+			 WHERE target_key = ? AND kind = ? AND source_receipt_id = ?
+			 LIMIT 2`,
+			[targetKey, kind, sourceReceiptId],
+		);
+		const rows = result[0]?.values ?? [];
+		return rows.length === 1
+			? this.detectionEscalationFromValues(rows[0]!)
+			: undefined;
+	}
+
 	/**
 	 * Insert a NEW episode, or return the existing row untouched — episode
 	 * continuity: re-observing an episode must never reset its detection clock

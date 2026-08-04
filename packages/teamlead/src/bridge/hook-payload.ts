@@ -50,7 +50,7 @@ export interface HookPayload {
 	// Evidence ONLY — the Lead judges; none of these are act-triggers.
 	/** Whole minutes the runner's terminal output has been unchanged. */
 	stuck_minutes?: number;
-	/** Stable fingerprint of this stuck episode — echo it back when writing a disposition or nudging. */
+	/** Stable episode reference — receipt-derived detections use their bounded parent id. */
 	episode_fingerprint?: string;
 	/** Trailing non-empty terminal lines (helps the Lead judge fast). */
 	terminal_tail?: string;

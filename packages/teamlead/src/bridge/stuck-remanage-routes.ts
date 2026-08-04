@@ -4,6 +4,7 @@
  * keep their allowlist, live-state gates, and audit trail.
  */
 
+import { createHash } from "node:crypto";
 import { type RequestHandler, Router } from "express";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
@@ -63,6 +64,31 @@ export interface LeadDetectionAckRouterOptions {
 	now?: () => number;
 }
 
+function resolveDetectionEpisode(
+	store: StateStore,
+	targetKey: string,
+	kind: string,
+	episodeReference: string,
+) {
+	return (
+		store.getDetectionEscalation(targetKey, kind, episodeReference) ??
+		store.getDetectionEscalationBySourceReceiptId(
+			targetKey,
+			kind,
+			episodeReference,
+		)
+	);
+}
+
+function boundedEpisodeReference(
+	fingerprint: string,
+	parentId?: string | null,
+): string {
+	if (parentId) return parentId;
+	if (fingerprint.length <= 200) return fingerprint;
+	return `sha256:${createHash("sha256").update(fingerprint).digest("hex")}`;
+}
+
 /**
  * FLY-1448 E3: lead-keyed detection rows have no Session and therefore cannot
  * use the execution-scoped route below. The target key is always derived from
@@ -105,7 +131,7 @@ export function createLeadDetectionAckRouter(
 			});
 			return;
 		}
-		if (!fingerprint || fingerprint.length > 200) {
+		if (!fingerprint) {
 			res.status(400).json({ error: "episode_fingerprint is required" });
 			return;
 		}
@@ -140,9 +166,19 @@ export function createLeadDetectionAckRouter(
 		}
 
 		const targetKey = `${projectName}:${leadId}`;
-		const row = opts.store.getDetectionEscalation(targetKey, kind, fingerprint);
+		const row = resolveDetectionEpisode(
+			opts.store,
+			targetKey,
+			kind,
+			fingerprint,
+		);
 		if (!row) {
-			res.status(404).json({ error: "detection episode not found" });
+			res.status(404).json({
+				error:
+					fingerprint.length > 200
+						? "episode_fingerprint is too long and no exact legacy detection episode was found"
+						: "detection episode not found",
+			});
 			return;
 		}
 		if (!row.owner_lead_id || row.owner_lead_id !== leadId) {
@@ -154,7 +190,7 @@ export function createLeadDetectionAckRouter(
 			const outcome = opts.store.ackDetectionEscalationWithReceipt(
 				targetKey,
 				kind,
-				fingerprint,
+				row.episode_fingerprint,
 				{
 					atMs: now(),
 					disposition,
@@ -174,7 +210,7 @@ export function createLeadDetectionAckRouter(
 			const settled = opts.store.getDetectionEscalation(
 				targetKey,
 				kind,
-				fingerprint,
+				row.episode_fingerprint,
 			);
 			res.json({
 				ok: true,
@@ -235,12 +271,13 @@ export function createStuckRemanageRouter(
 			return;
 		}
 		// Detection fingerprints are kind-specific opaque strings (NOT always the
-		// 16-hex pane fingerprint) — require presence + a sane bound only.
+		// 16-hex pane fingerprint). Legacy receipt chains can exceed 200 chars, so
+		// presence is the only request-side bound; Express already caps body size.
 		const fingerprint =
 			typeof body.episode_fingerprint === "string"
 				? body.episode_fingerprint.trim()
 				: "";
-		if (!fingerprint || fingerprint.length > 200) {
+		if (!fingerprint) {
 			res.status(400).json({
 				error:
 					"episode_fingerprint is required (from the detection_escalation event)",
@@ -278,10 +315,13 @@ export function createStuckRemanageRouter(
 			return;
 		}
 
-		const row = store.getDetectionEscalation(executionId, kind, fingerprint);
+		const row = resolveDetectionEpisode(store, executionId, kind, fingerprint);
 		if (!row) {
 			res.status(404).json({
-				error: `No detection episode for (${executionId}, ${kind}, ${fingerprint})`,
+				error:
+					fingerprint.length > 200
+						? "episode_fingerprint is too long and no exact legacy detection episode was found"
+						: `No detection episode for (${executionId}, ${kind}, ${fingerprint})`,
 			});
 			return;
 		}
@@ -295,7 +335,7 @@ export function createStuckRemanageRouter(
 			ackOutcome = store.ackDetectionEscalationWithReceipt(
 				executionId,
 				kind,
-				fingerprint,
+				row.episode_fingerprint,
 				{
 					atMs: now(),
 					disposition,
@@ -332,7 +372,16 @@ export function createStuckRemanageRouter(
 				project_name: session.project_name,
 				event_type: "detection_escalation_disposition",
 				source: "bridge.stuck-remanage",
-				payload: { leadId, kind, fingerprint, disposition, status },
+				payload: {
+					leadId,
+					kind,
+					fingerprint: boundedEpisodeReference(
+						row.episode_fingerprint,
+						row.source_receipt_id,
+					),
+					disposition,
+					status,
+				},
 			});
 		} catch (err) {
 			console.error(

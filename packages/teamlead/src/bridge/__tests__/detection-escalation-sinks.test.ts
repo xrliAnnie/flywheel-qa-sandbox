@@ -127,6 +127,29 @@ describe("FLY-1048 C3-w createFounderPager", () => {
 		).toBe(true);
 	});
 
+	it("uses the bounded parent receipt id for an oversized episode ledger key", async () => {
+		const h = await pagerHarness();
+		const oversized = `receipt-chain:${"x".repeat(240)}`;
+		await expect(
+			h.pageFounder(
+				row({
+					episode_fingerprint: oversized,
+					source_receipt_id: "receipt-parent-1",
+				}),
+			),
+		).resolves.toBe(true);
+		expect(
+			h.store.getFounderPaged(
+				"detection-escalation-page-exec-1-detection_stuck_confirmed-receipt-parent-1",
+			),
+		).toBe(true);
+		expect(
+			h.store.getFounderPaged(
+				`detection-escalation-page-exec-1-detection_stuck_confirmed-${oversized}`,
+			),
+		).not.toBe(true);
+	});
+
 	it("FLY-1189: adds the founder as a thread member via the OWNER-LEAD bot before paging", async () => {
 		const addMember = vi.fn(async () => "added" as const);
 		const h = await pagerHarness({ addMember, bindThreadId: "thread-xyz" });

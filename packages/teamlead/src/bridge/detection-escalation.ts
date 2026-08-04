@@ -195,7 +195,9 @@ export async function notifyLeadFirst(
 		escalation_kind: input.kind,
 		escalation_reason: input.reason,
 		escalation_next_step: input.nextStep,
-		episode_fingerprint: input.episodeFingerprint,
+		// Receipt-derived episodes expose the bounded immutable parent id to the
+		// Lead; the exact storage key remains internal for legacy-row settlement.
+		episode_fingerprint: input.sourceReceiptId ?? input.episodeFingerprint,
 		waited_ms: parkNotice
 			? Math.max(0, nowMs - input.firstDetectedAtMs)
 			: undefined,
@@ -272,7 +274,7 @@ export async function notifyLeadFirst(
  * Retries of the same occurrence stay idempotent (the salt is unchanged).
  */
 function escalationEventId(row: DetectionEscalationRow): string {
-	return `detection-escalation-${row.target_key}-${row.kind}-${row.episode_fingerprint}-${row.first_detected_at_ms}`;
+	return `detection-escalation-${row.target_key}-${row.kind}-${row.source_receipt_id ?? row.episode_fingerprint}-${row.first_detected_at_ms}`;
 }
 
 // ── C3: ~30min grace reconcile + fleet guard ──

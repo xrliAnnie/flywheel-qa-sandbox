@@ -119,7 +119,7 @@ async function postFounderChatFallback(
 
 /** Stable, restart-durable page id for one episode (founder_page_ledger key). */
 export function founderPageEventId(row: DetectionEscalationRow): string {
-	return `detection-escalation-page-${row.target_key}-${row.kind}-${row.episode_fingerprint}`;
+	return `detection-escalation-page-${row.target_key}-${row.kind}-${row.source_receipt_id ?? row.episode_fingerprint}`;
 }
 
 /**

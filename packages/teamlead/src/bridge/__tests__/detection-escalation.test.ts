@@ -223,6 +223,28 @@ describe("notifyLeadFirst (FLY-1048 C2)", () => {
 		expect(env.event.suspicious_pane_tail).toBeUndefined();
 	});
 
+	it("renders a receipt parent id while retaining the exact oversized storage key", async () => {
+		const store = await freshStore();
+		const { deps, calls } = makeDeps(store);
+		const oversized = `receipt-chain:${"x".repeat(240)}`;
+		await notifyLeadFirst(deps, {
+			...INPUT,
+			episodeFingerprint: oversized,
+			sourceReceiptId: "receipt-parent-1",
+		});
+
+		const env = calls.find((call) => call.kind === "deliver")!.args[0] as {
+			eventId: string;
+			event: HookPayload;
+		};
+		expect(env.event.episode_fingerprint).toBe("receipt-parent-1");
+		expect(env.eventId).toContain("receipt-parent-1");
+		expect(env.eventId).not.toContain(oversized);
+		expect(
+			store.getDetectionEscalation(INPUT.targetKey, INPUT.kind, oversized),
+		).toBeDefined();
+	});
+
 	it("detection_escalation is a guardrail event type (failed delivery is re-driven)", () => {
 		expect(GUARDRAIL_EVENT_TYPES.has("detection_escalation")).toBe(true);
 	});

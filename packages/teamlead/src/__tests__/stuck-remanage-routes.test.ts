@@ -394,16 +394,27 @@ describe("POST /:executionId/detection-ack (FLY-1048 C3-w)", () => {
 		h2.store.close();
 	}
 
-	function seedEpisode(store: StateStore, targetKey = "exec-1"): void {
+	function seedEpisode(
+		store: StateStore,
+		targetKey = "exec-1",
+		fingerprint = FP,
+		sourceReceiptId?: string,
+	): void {
 		store.upsertDetectionEscalation({
 			targetKey,
 			kind: KIND,
-			episodeFingerprint: FP,
+			episodeFingerprint: fingerprint,
 			issueId: "FLY-1",
 			ownerLeadId: "product-lead",
 			firstDetectedAtMs: 0,
+			sourceReceiptId,
 		});
-		store.markDetectionEscalationLeadNotified(targetKey, KIND, FP, 1_000);
+		store.markDetectionEscalationLeadNotified(
+			targetKey,
+			KIND,
+			fingerprint,
+			1_000,
+		);
 	}
 
 	const valid = {
@@ -456,6 +467,40 @@ describe("POST /:executionId/detection-ack (FLY-1048 C3-w)", () => {
 			episode_fingerprint: "",
 		});
 		expect(r.status).toBe(400);
+		expect(r.json.error).toBe(
+			"episode_fingerprint is required (from the detection_escalation event)",
+		);
+	});
+
+	it("closes an oversized legacy fingerprint instead of stranding the episode", async () => {
+		const oversized = `receipt-chain:${"x".repeat(240)}`;
+		seedEpisode(h.store, "exec-1", oversized);
+		const r = await post(h, "/api/sessions/exec-1/detection-ack", {
+			...valid,
+			episode_fingerprint: oversized,
+		});
+
+		expect(r.status).toBe(200);
+		expect(
+			h.store.getDetectionEscalation("exec-1", KIND, oversized)?.status,
+		).toBe("ACKED");
+		const audit = h.store
+			.getEventsByExecution("exec-1")
+			.find((event) => event.event_type === "detection_escalation_disposition");
+		expect((audit?.payload as { fingerprint?: string }).fingerprint).toMatch(
+			/^sha256:[a-f0-9]{64}$/,
+		);
+	});
+
+	it("reports an unmatched oversized fingerprint as too long, not missing", async () => {
+		const r = await post(h, "/api/sessions/exec-1/detection-ack", {
+			...valid,
+			episode_fingerprint: "x".repeat(240),
+		});
+
+		expect(r.status).toBe(404);
+		expect(r.json.error).toMatch(/too long/i);
+		expect(r.json.error).not.toMatch(/required/i);
 	});
 
 	it("400 on an unknown disposition", async () => {
@@ -541,6 +586,7 @@ describe("POST /api/leads/:leadId/detection-ack (FLY-1448)", () => {
 		targetKey = "geo:product-lead",
 		ownerLeadId: string | null = "product-lead",
 		fingerprint = FP,
+		sourceReceiptId?: string,
 	): void {
 		h.store.upsertDetectionEscalation({
 			targetKey,
@@ -549,6 +595,7 @@ describe("POST /api/leads/:leadId/detection-ack (FLY-1448)", () => {
 			issueId: "FLY-1",
 			ownerLeadId,
 			firstDetectedAtMs: 1_000,
+			sourceReceiptId,
 		});
 		h.store.markDetectionEscalationLeadNotified(
 			targetKey,
@@ -570,6 +617,23 @@ describe("POST /api/leads/:leadId/detection-ack (FLY-1448)", () => {
 		});
 		expect(
 			h.store.getDetectionEscalation("geo:product-lead", KIND, FP)?.status,
+		).toBe("ACKED");
+	});
+
+	it("round-trips a bounded parent receipt id to close an oversized fingerprint", async () => {
+		const oversized = `receipt-chain:${"x".repeat(240)}`;
+		const parentId = "receipt-parent-1";
+		seedLeadEpisode("geo:product-lead", "product-lead", oversized, parentId);
+
+		const r = await post(h, "/api/leads/product-lead/detection-ack", {
+			...valid,
+			episode_fingerprint: parentId,
+		});
+
+		expect(r.status).toBe(200);
+		expect(
+			h.store.getDetectionEscalation("geo:product-lead", KIND, oversized)
+				?.status,
 		).toBe("ACKED");
 	});
 
