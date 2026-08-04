@@ -24,7 +24,7 @@ Issue: FLY-1628 (https://linear.app/geoforge3d/issue/FLY-1628/pane-loss-reconcil
 
 ### 1.3 继任交接与口径收窄
 
-本 plan 由继任执行体（RC-6）完成。前任 WIP plan 的抢救提交经完整核查（全分支 git log / stash / dangling / 文件系统）不存在，已报 eng-lead；前任结论经 eng-lead 转述继承：
+本 plan 由继任执行体（RC-6）完成。前任 WIP plan 的抢救提交经完整核查（全分支 git log / stash / dangling / 文件系统）不存在，已报 eng-lead；但前任与 Codex 的 design review Round 2–4 feedback 从 /tmp 完整回收（前任走的是 CommDB claims/TTL lease/step-receipt 的跨库 saga 路线，R4 仍剩 5 个 blocker、R5 进行中被杀——其教训与竞态反例已折入本 plan §4.3 fence 与 §9）。前任结论经 eng-lead 转述继承：
 
 - **teardown 时结算、不做常驻巡逻**（不新增任何 FLY-1570 刚删掉的那类追人型 watchdog/poller）。
 - **检测语义分 vendor**：2026-08-04 16:37 事故中，FLY-1625 的 claude 体死后靠既有 zombie 链 20 分钟才被抓；FLY-1634 的 Codex 常驻体**根本没死**——窗口消失对 codex 不等于 runner 死亡。
@@ -149,10 +149,13 @@ flowchart TD
 慢速探测全部完成后，销毁段在**issue-lifecycle mutex**（statestore-ghost-reconcile 同款，`:143-147`）内执行：
 
 1. **re-read** `store.getSession(execId)`：`project_name` 一致、`status === "running"` 严格相等（探测期间迁移到 approved_to_ship 等 → 放弃本轮）、`lifecycle_revision` 与候选读取时一致；
-2. re-check `hasPendingCompleteMarker` 仍为假；
-3. re-probe `probeTmuxServer() === "up"` 且 generation proof 仍成立（server 未在探测期间再换代）；
-4. 同步执行 `applyTransition(transitionOpts, execId, "failed", {trigger: "pane_loss_reconcile"}, {last_activity_at, last_error: "pane_loss: tmux server generation superseded (serverStart=<T> > sessionStart=<S>); target <t> absent; rediscovery missing"})`；
-5. **检查 `TransitionResult.ok`**，非 ok 不记结算、不通知。
+2. **re-read CommDB target**（`lookupTmuxTarget` 再取一次）：必须与取证时一致（同值或仍 gone）；**发生变化 → 放弃本轮**——这挡住「探测后 `activateSessionForWake`/adapter 把 target 重绑到新活窗」的竞态（前任 R3 Blocker 2 的生产反例）；
+3. re-check `hasPendingCompleteMarker` 仍为假；
+4. re-probe `probeTmuxServer() === "up"` 且 generation proof 仍成立（server 未在探测期间再换代）；
+5. 同步执行 `applyTransition(transitionOpts, execId, "failed", {trigger: "pane_loss_reconcile"}, {last_activity_at, last_error: "pane_loss: tmux server generation superseded (serverStart=<T> > sessionStart=<S>); target <t> absent; rediscovery missing"})`——canonical 路径，terminal invariants（`terminal_at`/`terminal_lifecycle_id`/revision bump/settlement intent/display+terminal-sync fanout）随之维持，**绝不绕过它写裸 SQL**（前任 R3 Blocker 6 的教训）；
+6. **检查 `TransitionResult.ok`**，非 ok 不记结算、不通知。
+
+**残余窗口的诚实声明**：若同一 execution 在取证与 fence 之间被重建了新体、且 re-register 与 `@flywheel_exec_id` 发布**双双失败**（两者均 best-effort，TmuxAdapter.ts:585-601,691-712），CommDB target 不变、反查 missing，fence 无法看见新体。这个组合在 claude 路径没有生产入口：claude 体只在 spawn 时创建窗口（宽限期覆盖），运行中的 claude session 不存在体重建路径（wake 是 mailbox 写、cmux-sync/FLY-169 只管 workspace 不建 runner 窗），codex（有 ensure/reopen 重建路径）在本设计下永不 mutate。若未来引入 claude 体重建机制，fence 第 2 步的 target 重读是接缝位。前任试图用 CommDB claims 把该窗口收敛到零，五轮未收敛（§9）。
 
 动词选 `failed` 而非新造 `orphaned`：与 orphan-reap / zombie 同族先例一致，`last_error` 前缀 `pane_loss:` 可区分可检索；CRASH_PRESERVE 语义免费获得（不 auto-archive thread）。带 `runner_declared_states` park 声明的 running 行：声明是「活着等」，server-generation proof 直接证伪其前提——但仍按 destructive-verdict 精神把 park 声明记入通知文案。CommDB 侧零新写路径（transition 触发既有 `terminalCommDbSync.enqueue(failed)`）。不触发任何 retry/respawn。
 
@@ -224,7 +227,7 @@ flowchart TD
   - pass 前置：episode 活跃让位 / hold 活跃让位 / server down 跳过 / start_time indeterminate 跳过；
   - 证据链：target alive 不碰 / dead_pin 让位 / absent+反查 found 重探（活体 → 不碰）/ **同世代 absent+反查 missing → advisory 不 mutate（FLY-1319 反例）** / generation-proven+claude+running → failed / parked 族 → 事件+不改状态 / codex → advisory / 未知 adapter → advisory / legacy 空 adapter → claude 路径；
   - 排除：宽限期（含全时间戳不可解析）/ complete marker / no-transport / project 过滤；
-  - TOCTOU：探测期间 running→approved_to_ship → 放弃 / lifecycle_revision 变化 → 放弃 / 窗口在 fence 前重建（server 再换代）→ 放弃 / `TransitionResult.ok=false` → 不记结算不通知；
+  - TOCTOU：探测期间 running→approved_to_ship → 放弃 / lifecycle_revision 变化 → 放弃 / **CommDB target 在取证后被重绑到新活窗 → 放弃（前任 R3 反例）** / 窗口在 fence 前重建（server 再换代）→ 放弃 / `TransitionResult.ok=false` → 不记结算不通知；
   - **@flywheel_exec_id 发布失败的活体**（marker 从未发布 + CommDB target stale + 同世代）→ advisory，绝不 mutate（Codex R1 Blocker 2 反例）；
   - 通知：sink 未就绪 → detected 落、notified 缺 → 下一 pass 补投；投递失败重试；幂等（detected 已存在不重复结算判定）；
   - 与 ServerLossCoordinator 互动：活跃 episode 下两路径并跑，无双迁移、无 codex mutation（Codex R1 Blocker 1 要求的 interaction test）。
@@ -269,6 +272,7 @@ flowchart TD
 | spawn 时持久化 pane PID 作为死亡证据 | 新机制+只覆盖增量行；generation proof 零机制且覆盖存量 |
 | 修 ServerLossCoordinator boot-leg 代替新 face | parked/codex advisory 不适配其 migrate 机制；running-only 候选集与 one-shot 语义都需大改一个多轮 review 加固过的模块，半径更大 |
 | teardown marker 文件（restart-services 落盘、Bridge boot 消费） | 多一个跨进程契约；generation proof 自足 |
+| CommDB claims / TTL lease / step-receipt / body-generation primitive 跨库 saga（前任 R1–R5 方向） | 线性化泥潭实证：前任与 Codex 走到 R4 仍剩 5 个 blocker（claim TTL 双语义、kill-switch 穿透、TURN saga 顺序矛盾、engine-park union 与生产账本不符…）。本设计以 StateStore-only mutation（canonical applyTransition）+ 让位规则 + parked/codex advisory 从结构上避开跨库写，残余窗口以 §4.3 fence + 诚实声明处理 |
 | routed infra alert 路径 | 需扩 AlertEventType/KIND_CONTRACTS 联合体且受 FLYWHEEL_ALERT_ROUTING 门控；直连 notifier 更小 |
 | 修 RunnerIdleWatchdog 谓词 | 见 §8.5 |
 
