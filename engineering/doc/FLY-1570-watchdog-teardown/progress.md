@@ -1,13 +1,13 @@
 ---
 issue: FLY-1570
 phase: design
-phaseCursor: 3/6
-updated: 2026-08-04T05:50:59.188Z
-nextStep: write research.md synthesis
+phaseCursor: 4/6
+updated: 2026-08-04T05:54:06.900Z
+nextStep: write plan.md then design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1570 progress
-**phase**: design (3/6)
-**next**: write research.md synthesis
+**phase**: design (4/6)
+**next**: write plan.md then design review
