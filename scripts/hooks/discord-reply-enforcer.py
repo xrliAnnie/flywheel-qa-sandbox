@@ -33,6 +33,7 @@ fail-open) but writes operationally-useful telemetry.
 
 Dependencies: python3 stdlib only.
 Env:  FLYWHEEL_LEAD_ID                 — Lead session marker (claude-lead.sh)
+      FLYWHEEL_EXEC_ID                 — Runner marker; exact early exit
       PROJECT_NAME / FLYWHEEL_PROJECT_NAME — project for token + guard scoping
       BRIDGE_URL                       — Bridge base url for reply-guard
       FLYWHEEL_PROJECTS_FILE           — projects.json override (default ~/.flywheel/projects.json)
@@ -928,6 +929,11 @@ def _loud_log_persistent(info, cwd, transcript_path) -> None:
 
 
 def main() -> int:
+    # FLY-1571: Runners also carry FLYWHEEL_LEAD_ID for approval routing. This
+    # hook protects Lead outbound replies only; entering Tier B in a Runner can
+    # block its Stop lifecycle and is a documented false-positive source.
+    if os.environ.get("FLYWHEEL_EXEC_ID"):
+        return 0
     try:
         data = json.loads(sys.stdin.read() or "{}")
     except json.JSONDecodeError:

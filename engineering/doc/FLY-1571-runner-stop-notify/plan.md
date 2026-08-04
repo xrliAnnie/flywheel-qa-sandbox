@@ -1,7 +1,7 @@
 # FLY-1571 Runner stop 通知(带停的原因) — 实施计划
 
 Issue: FLY-1571 (https://linear.app/geoforge3d/issue/FLY-1571/消息层重构-b-批次1-runner-stop-通知带停的原因)
-日期: 2026-08-04(R9,依 Codex design review R1-R8 全量修订)
+日期: 2026-08-04(R10,实施前真机硬门结论回填)
 基于: 无(设计依据 = FLY-1569 总纲,`doc/messaging-rework/design.md`)
 
 ## 0. 一句话
@@ -23,12 +23,12 @@ Runner 每次结束一轮,由一个统一的 emitter(新 `flywheel-comm runner-s
 | **`session_receipt_lineage(execution_id PK, project_name, issue_id, lead_id)` 与 session 注册同事务写入、teardown 不删** —— terminal 之后身份仍可解析 | `db.ts:72-76,6501-6542` |
 | `sessions.status` CHECK 枚举只有 `running/completed/timeout/blocked/failed`,**没有 awaiting_review** →「等审批」不能靠 CommDB 判 | `db.ts:70` |
 | `complete` 的 route 枚举:`auto_approve / needs_review / blocked / ship_attempt_failed / no_code / pr_handoff / phase_design_complete`;每次 completion 已生成唯一 `event_id`;POST 失败已有 fail-close marker | `complete.ts:43-53,328-336,408-419,706-717` |
-| Claude 钩子事件面(本机 native binary 2.1.221 验证):`Stop` 与 **`StopFailure`** 并列(`executeStopFailureHooks`),StopFailure 带 `error_details`,binary 内有 `error_type` / `rate_limit*` / `prompt_too_long` —— **quota / context / API error 类停轮走 StopFailure 不走 Stop**;Stop hook block 后,block reason 以 **isMeta user message** 注入下一轮 | `strings ~/.local/share/claude/versions/2.1.221`、本机源码 `query.ts:1258-1305`、`stopHooks.ts:257-263`(Codex 核对) |
+| Claude 钩子事件面(本机 native binary 2.1.221 验证):`Stop` 与 **`StopFailure`** 并列。原生 CLI + 受控 HTTP 错误真机 fixture 实测:`429 rate_limit_error` → `error="rate_limit"`;`400 invalid_request_error` 且 API message 含 `prompt is too long` → `error="invalid_request"`,`error_details` 保留 API JSON,终端 `terminal_reason="prompt_too_long"`;认证失败 → `error="authentication_failed"`。本地 10MB 首轮输入在发 API 前命中 `terminal_reason="blocking_limit"`,两个 stop 事件均未触发,属于 §10 已披露的 trigger-absence 边界 | 本机 Claude 2.1.221 真机 fixture + 源码 `query.ts:1174-1263`、`hooks.ts:3594-3624` |
 | 匹配的多个 Stop 钩子**并行执行**;`stop_hook_active=true` 仅表示「因某个 stop hook block 而续轮」 | 官方 hooks 文档 + 本机源码 |
 | **真实 Runner transcript 可以在最后 64KB 内 0 条 user row**(本机 3.9MB transcript 实测)—— 定长 tail 读取取不到轮锚点 | Codex R2 实测 |
 | 钩子安装机制现成:`/setup-flywheel-hooks` 幂等;**合并代码 ≠ 部署**;enforcer 部署副本在 `~/.flywheel/bin/`(claude-lead.sh 安装) | `.claude/commands/setup-flywheel-hooks.md:123-131`、enforcer docstring |
 | Codex:全局 `~/.codex/config.toml` 顶部单行 root-scope `notify = ["…/SkyComputerUseClient", "turn-ended"]`;per-runner CODEX_HOME(`~/.flywheel/codex-homes/<executionId>`)由 `renderCodexHomeConfig` 渲染,**live home 跨部署窗口存留,只有 retirement 才删**;FLY-1604 已建 TOML-aware 手术机制(`smol-toml` parse 权威 + 行锚手术 + fail-loud + 全脱敏),`smol-toml@1.6.1` 自带 serializer | `~/.codex/config.toml:7`、`codex-home.ts:274-290,810-865`、`CodexTmuxAdapter.ts:1627-1630` |
-| Codex notify 官方合同:notify program 收到一个追加 JSON argv,当前唯一事件 `agent-turn-complete`(字段含 `thread-id/turn-id/…`);exactly-once / 线程边界 / env 继承需本机实测 | OpenAI Codex config 文档 |
+| Codex 0.146.0 真机 spike(本地 TUI + 生产同形 `app-server --remote` TUI):notify 收到 argv `turn-ended` + JSON;主回合 payload `type="agent-turn-complete",client="codex-tui"`,稳定 main thread、每轮唯一 turn-id;daemon env 原样继承。**子代理也触发 notify**,payload `client=null`、另一个 thread-id,且 remote 形态会继承 parent input history,因此不能靠 inputs 为空过滤。notify 非零退出不干扰 Codex;但主回合会等 notify program 退出后才接受下一 turn,所以脚本必须只做毫秒级前台交接后 detach | 2026-08-04 本机 Codex 0.146.0 真机 spike |
 | Runner 自声明状态已有:`runner_declared_states`(park/busy/unpark) | `declare-state.ts` |
 | pending question 权威判定已有统一 predicate(protection 模式看 `relay_state != 'terminal_disposed'`,非 protection 看 expiry);messages 索引 `(to_agent, type, created_at)`,无 from_agent 索引;`created_at` 为 SQLite `YYYY-MM-DD HH:MM:SS` 格式,与 ISO 字符串**不可直接文本比较**(需 `julianday` 归一,Codex R2 probe 实证) | `db.ts:206-209,1829-1843,2458-2472` |
 
@@ -115,7 +115,7 @@ RUNNER-STOPPED kind=runner_stopped reason=<reason> issue=<issueId> exec=<executi
 | 7 | 兜底 | `blocked` | "idle without declared completion" + 最后输出片段(≤140 字符) |
 
 - **结构化失败在最顶**:一条旧的 non-blocking ask 不能掩盖真实 rate limit;测试矩阵含「旧 ask 悬置 + 当前 StopFailure(rate limit)→ quota」。
-- **StopFailure 字段合同(R7 #4 / R8 #3 硬门)**:实施前必须在本机 2.1.221 抓到**能判定 `context_full` 的特定真实 fixture**(context-overflow / prompt-too-long 的实际形态;另保留一份 rate_limit fixture),脱敏后回填字段与精确 classifier。**匹配优先级表驱动**:先 exact 判官方 `error` 枚举(`rate_limit → quota`;`invalid_request`/`max_output_tokens`/未知 → `error`);仅对**显式允许**的枚举值才用受限的 `error_details`/`last_assistant_message` pattern 升格为 `context_full`(如 context overflow 以 `invalid_request + details` 形态出现,规则精确到 fixture 证据);其他 `invalid_request` 一律 `error`;配 negative fixture(近似文本不得误判)。**若无法安全重现 context-overflow → `context_full` 路径不实施**(该形态落 `error` + detail),等权威证据补上再开。不以 binary strings 推断的字面量为实现依据。
+- **StopFailure 字段合同(R10 硬门已过)**:本机 Claude 2.1.221 原生 CLI 经受控 HTTP 429/400 真机重现并实际执行 `StopFailure` hook。精确 classifier = `error === "rate_limit" → quota`;`error === "invalid_request"` **且** `error_details` 大小写不敏感包含 API 原文 `prompt is too long` → `context_full`;其他 `invalid_request`、`max_output_tokens`、未知枚举 → `error`。`last_assistant_message` 只进 detail,不单独升格(避免近似文本误判)。fixture 原始形状分别为:`rate_limit + error_details=null + last_assistant_message="API Error: Request rejected (429)…"`;`invalid_request + error_details='400 {…"message":"prompt is too long …"…}' + last_assistant_message="Prompt is too long…"`。另用真实 10MB stdin 触发本地 preflight `blocking_limit`:CLI 在发 API 前退出且未执行 Stop/StopFailure;本单无法从不存在的触发合成通知,按 §10 trigger-absence 边界披露。
 - **#6 只服务 Codex 入口**:Claude 的失败停轮走 StopFailure,transcript 尾部嗅探对 Claude 没有触发机会。模式表保守,匹配不到不硬填,落 #7。
 - **#7** 就是 watchdog 被替代的「它停了但什么都没说」场景。
 
@@ -221,9 +221,9 @@ LIMIT 1
 - 多行数组 / 多锚行 / quoted·dotted key / root-after-table / parse 与行锚不一致 / 双定义 → **fail-loud**,固定脱敏消息;结构验证全程占位 token;产物 parse 后断言 `notify` 恰为目标数组、其余键语义不变(candidate/final 同 builder)。
 - scrub/幂等:新 sentinel strip 与 GH_TOKEN block 同款。
 - **取舍(显式)**:per-runner config 里 Sky 不再收 runner 的 turn-ended(founder 个人通知器,runner 事件是噪音);Annie 全局 `~/.codex/config.toml` 一字不动。
-- 脚本 `--codex` 模式:取**最后一个 argv** 为 payload,jq 校验 `type == "agent-turn-complete"`,抽 `last-assistant-message` + `turn-id`(唯一 key 字段,R8 #1),detached 调 `runner-stopped --source codex-notify --last-message <text> --turn-id <id>`。env 由 codex 进程从 tmux 会话继承 —— spike 实测确认。
+- 脚本 `--codex` 模式:取**最后一个 argv** 为 payload,jq 校验 `type == "agent-turn-complete"` **且 `client == "codex-tui"`**;后一个条件来自 R10 真机反例 —— 子代理也触发 notify,其 `client=null`,而 remote 子代理的 inputs 可能非空。非主回合/字段缺失都静默秒退。主回合抽 `last-assistant-message` + `turn-id`(唯一 key 字段,R8 #1),detached 调 `runner-stopped --source codex-notify --last-message <text> --turn-id <id>`。env 由 app-server daemon 从 tmux 会话继承,真机已确认。
 - 字节兼容影响:所有 per-runner 渲染产物多出 notify block —— 本单目的,非回归;`codex-home.test.ts` byte 期望随之更新(FLY-1604 合同显式重定,范围仅 notify block)。
-- **实施第一步是真机 spike(硬门,结论回填本计划前不动手)**:真实 per-runner CODEX_HOME + 生产 TUI 拓扑,记录:argv 形状、payload 字段、每主 turn 触发次数与 subagent 来源、notify hang/非零退出时 codex 行为、**codex 是否等待 notify 子进程退出**(R4 #1 —— 关系到前台交接的时序假设)、子进程实际继承 env。`turn-id` 去重语义以实测为准。
+- **R10 真机 spike 结论(硬门已过)**:真实 temp CODEX_HOME 先跑本地 TUI,再跑与生产一致的独立 `app-server --remote` + TUI。主回合每轮恰一次,main thread-id 稳定、turn-id 每轮唯一;子代理另触发一次但可由 `client=null` 排除。daemon env 继承 `FLYWHEEL_EXEC_ID/ISSUE_ID/LEAD_ID`;非零退出 17 不改变下一轮;sleep 5/12s 时下一轮直到 notify 退出才开始,证明前台段严格串行,§5.2 单指针 ledger 走分支 (a)。因此 hook 必须先过滤子代理,再做前台 ledger,并立即 detach;不得把 DB emitter 放在 notify 前台。
 
 ## 8. `flywheel-comm runner-stopped` 子命令
 
@@ -315,9 +315,9 @@ flywheel-comm runner-stopped
 
 固定顺序,每步带回滚:
 
-1. **两道前置硬门,全部回填本计划后才动手实现(R8 #3)**:
-   1a. **Codex notify 真机 spike**(§7:argv/payload/次数/串行性 go-no-go/wait/env)。回滚:无副作用(dump 脚本 + 临时 CODEX_HOME)。
-   1b. **StopFailure fixture capture**(§5:必须拿到能判定 `context_full` 的真实 fixture + rate_limit fixture;拿不到 → `context_full` 路径不实施)。回滚:无副作用。
+1. **两道前置硬门已于 2026-08-04 通过并回填 R10**:
+   1a. **Codex notify 真机 spike**(§7:argv/payload/主回合与 subagent/串行 wait/env 均已取证)。回滚:临时 CODEX_HOME、socket 与 daemon 已清理。
+   1b. **StopFailure fixture capture**(§5:Claude 原生 CLI + 受控真实 HTTP 429/400 均触发原生 hook,字段与精确 classifier 已回填)。回滚:fixture server 已停止;未修改用户 settings。
 2. 单测 / harness / 全仓门绿(必绿集按 §5.2 go/no-go 条件化)→ PR → codex code review → founder 批准 merge。
 3. **原子部署触发脚本**:mktemp 写 `~/.flywheel/hooks/runner-stop-notify.sh.tmp` → chmod +x → `mv`。同步**重部署 enforcer** 到 `~/.flywheel/bin/`(带 `.bak` 备份)。回滚:恢复 enforcer `.bak`;触发脚本的删除受第 6 步约束(见下)。
 4. **注册 settings**:备份 → jq 追加 Stop/StopFailure 条目 → parse 校验 → 原子 `mv` → `/hooks` 验证热加载 + 非 Runner no-op。回滚:恢复备份。顺序 3→4 保证不存在「settings 已注册但脚本不存在」窗口;安装用 mktemp + 并发锁。
@@ -340,7 +340,7 @@ flywheel-comm runner-stopped
 | 3. 撞审批门 → `reason=awaiting_approval` | 真 runner 走 `complete --route needs_review` | 报文 `reason=awaiting_approval route=needs_review` |
 | 4. `issueId/executionId` 唯一定位 | 取证行 `issue=/exec=` 与 sessions + lineage 逐字段比对 | sqlite 查询 |
 | 5. 零干扰 | 对照:同一 runner 挂/不挂钩子跑同任务,输出与退出行为一致;钩子返回耗时 log(毫秒级);故意注坏 CLI 路径 → runner 无感;deadline 后无孤儿进程 | 钩子 log + pane 对照 + ps 取证 |
-| (补)StopFailure 路径 | 真机制造 rate limit 不可控 → harness fixture 驱动 + 机会性真机取证 | fixture 断言 + 记录 |
+| (补)StopFailure 路径 | 实施前已用 Claude 原生 CLI + 受控 HTTP 429/400 触发真实 StopFailure;QA 再用脱敏 fixture 回放 emitter | 原生 payload 形状 + harness 断言 |
 | (补)rollback 存量 Codex | 部署后 spawn → rollback → 存量 runner 下一 turn 正常 | pane + notify log |
 
 QA 在隔离 529 房做(`FLYWHEEL_COMM_DB` 指 slot 库,生产零污染);全程不碰生产 Bridge。

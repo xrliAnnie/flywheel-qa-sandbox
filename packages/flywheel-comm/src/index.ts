@@ -57,6 +57,11 @@ import { respond } from "./commands/respond.js";
 import { reviewRuling } from "./commands/review-ruling.js";
 import { routeFounderReply } from "./commands/route-founder-reply.js";
 import { runRunnerConfig } from "./commands/runner-config.js";
+import {
+	type RunnerStopSource,
+	runnerStopped,
+	type StopFailureInput,
+} from "./commands/runner-stopped.js";
 import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
@@ -115,6 +120,7 @@ Commands:
             a 'yours' answer; the wake message text is never authority.
             --exec-id <id> (defaults to FLYWHEEL_EXEC_ID).
   complete  Emit session_completed terminal event to Bridge (Runner use)
+  runner-stopped  Emit a reasoned Runner turn-end report to its Lead (hook use)
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
   workflow-output  Submit a generalized node's JSON output before completion
@@ -267,6 +273,9 @@ async function main(): Promise<void> {
 			break;
 		case "complete":
 			await runComplete(commandArgs);
+			break;
+		case "runner-stopped":
+			await runRunnerStopped(commandArgs);
 			break;
 		case "await-codex-gate":
 			await runAwaitCodexGate(commandArgs);
@@ -1276,6 +1285,82 @@ async function runComplete(args: string[]): Promise<void> {
 		targetRepo: values["target-repo"],
 		questionId: values["question-id"],
 	});
+}
+
+async function runRunnerStopped(args: string[]): Promise<void> {
+	try {
+		const { values } = parseArgs({
+			args,
+			options: {
+				source: { type: "string" },
+				transcript: { type: "string" },
+				"error-json": { type: "string" },
+				"last-message": { type: "string" },
+				"turn-id": { type: "string" },
+				"session-id": { type: "string" },
+				"ingress-ts": { type: "string" },
+				"prev-ingress": { type: "string" },
+				"exec-id": { type: "string" },
+				"issue-id": { type: "string" },
+				db: { type: "string" },
+				project: { type: "string" },
+			},
+			allowPositionals: false,
+		});
+		const source = values.source;
+		if (
+			source !== "claude-stop" &&
+			source !== "claude-stop-failure" &&
+			source !== "codex-notify"
+		) {
+			throw new Error(
+				"--source must be claude-stop, claude-stop-failure, or codex-notify",
+			);
+		}
+		const execId = values["exec-id"] ?? process.env.FLYWHEEL_EXEC_ID;
+		if (!execId) throw new Error("--exec-id or FLYWHEEL_EXEC_ID is required");
+		if (!values["ingress-ts"]) throw new Error("--ingress-ts is required");
+		let stopFailure: StopFailureInput | undefined;
+		if (values["error-json"]) {
+			const parsed = JSON.parse(values["error-json"]) as Record<
+				string,
+				unknown
+			>;
+			if (typeof parsed.error !== "string") {
+				throw new Error("--error-json must contain a string error field");
+			}
+			stopFailure = {
+				error: parsed.error,
+				...(typeof parsed.errorDetails === "string" ||
+				parsed.errorDetails === null
+					? { errorDetails: parsed.errorDetails }
+					: {}),
+				...(typeof parsed.lastAssistantMessage === "string" ||
+				parsed.lastAssistantMessage === null
+					? { lastAssistantMessage: parsed.lastAssistantMessage }
+					: {}),
+			};
+		}
+		const result = await runnerStopped({
+			dbPath: resolveDbPath({ db: values.db, project: values.project }),
+			execId,
+			envIssueId: values["issue-id"] ?? process.env.FLYWHEEL_ISSUE_ID,
+			source: source as RunnerStopSource,
+			ingressTs: values["ingress-ts"],
+			prevIngress: values["prev-ingress"],
+			transcriptPath: values.transcript,
+			sessionId: values["session-id"],
+			stopFailure,
+			lastMessage: values["last-message"],
+			turnId: values["turn-id"],
+		});
+		console.log(result.questionId);
+	} catch (error) {
+		console.error(
+			`runner-stopped: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		process.exit(2);
+	}
 }
 
 // FLY-1188 §7.1: register a codex-author review request bound to a gate.

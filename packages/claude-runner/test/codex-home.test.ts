@@ -219,6 +219,71 @@ describe("renderCodexHomeConfig (WS-C delivery)", () => {
 	});
 });
 
+describe("renderCodexHomeConfig — FLY-1571 managed notify", () => {
+	const notifyProgramPath = '/Users/x/Flywheel Hooks/runner-"stop"\\notify.sh';
+	const opts = { notifyProgramPath };
+
+	it("replaces the real single-line root notify and preserves other semantics", () => {
+		const base = `notify = ["/Applications/Sky.app/notify", "turn-ended"]\n${GLOBAL_CONFIG}`;
+		const out = renderCodexHomeConfig(base, TOKEN, opts);
+		const parsed = parseToml(out) as Record<string, unknown>;
+		expect(parsed.notify).toEqual([notifyProgramPath, "--codex"]);
+		expect(parsed.model).toBe("gpt-5-codex");
+		expect(out).not.toContain("Sky.app");
+		expect(out).toContain("flywheel-managed notify (FLY-1571)");
+	});
+
+	it("inserts notify before the first table when the base has none", () => {
+		const out = renderCodexHomeConfig(GLOBAL_CONFIG, undefined, opts);
+		expect((parseToml(out) as Record<string, unknown>).notify).toEqual([
+			notifyProgramPath,
+			"--codex",
+		]);
+		expect(out.indexOf("notify =")).toBeLessThan(out.indexOf("[projects."));
+	});
+
+	it("is idempotent and coexists with the managed GH_TOKEN block", () => {
+		const once = renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN, opts);
+		const twice = renderCodexHomeConfig(once, TOKEN, opts);
+		expect(twice).toBe(once);
+		expect(twice.match(/flywheel-managed notify/g)).toHaveLength(2);
+		expect(twice).toContain(`GH_TOKEN = "${TOKEN}"`);
+	});
+
+	it.each([
+		[
+			"multiline",
+			`notify = [\n  "/Applications/Sky.app/notify",\n  "turn-ended",\n]\n${GLOBAL_CONFIG}`,
+		],
+		["two anchors", `notify = ["one"]\nnotify = ["two"]\n${GLOBAL_CONFIG}`],
+		[
+			"relative after table",
+			`${GLOBAL_CONFIG}\n[other]\nnotify = ["relative"]\n`,
+		],
+		["quoted key", `"notify" = ["quoted"]\n${GLOBAL_CONFIG}`],
+		["dotted key", `notify.program = "dotted"\n${GLOBAL_CONFIG}`],
+	])("fails loud for an ambiguous %s shape", (_name, base) => {
+		expect(() => renderCodexHomeConfig(base, TOKEN, opts)).toThrow(/notify/i);
+	});
+
+	it("sanitizes notify merge errors without quoting path or base canaries", () => {
+		const canary = "FLY1571_PRIVATE_SOURCE_CANARY";
+		const pathCanary = `/private/${canary}/notify`;
+		let message = "";
+		try {
+			renderCodexHomeConfig(
+				`notify = [\n"${canary}"\n]\n${GLOBAL_CONFIG}`,
+				TOKEN,
+				{ notifyProgramPath: pathCanary },
+			);
+		} catch (error) {
+			message = error instanceof Error ? error.message : String(error);
+		}
+		expect(message).toMatch(/notify/i);
+		expect(message).not.toContain(canary);
+	});
+});
+
 describe("renderCodexHomeConfig — FLY-1604 TOML-aware merge", () => {
 	const MANAGED_BEGIN =
 		"# >>> flywheel-managed credential (FLY-123) — do not edit >>>";
@@ -498,6 +563,19 @@ describe("provisionCodexHome (WS-A)", () => {
 		}
 		return source;
 	}
+
+	it("FLY-1571 provisions the managed Runner stop notify program", () => {
+		const notifyProgramPath = join(tmp, "hooks", "runner-stop-notify.sh");
+		const home = provisionCodexHome({
+			executionId: "exec-notify",
+			env,
+			notifyProgramPath,
+		});
+		const parsed = parseToml(
+			readFileSync(join(home, "config.toml"), "utf8"),
+		) as Record<string, unknown>;
+		expect(parsed.notify).toEqual([notifyProgramPath, "--codex"]);
+	});
 
 	it("creates the home, seeds auth.json (0600) and config.toml (0600) with the token", () => {
 		const home = provisionCodexHome({
