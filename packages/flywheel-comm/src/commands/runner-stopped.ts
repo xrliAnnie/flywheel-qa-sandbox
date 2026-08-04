@@ -467,6 +467,7 @@ export async function runnerStopped(
 		}
 
 		const breadcrumb = readCompletion(stateDir, args.execId, identity.issueId);
+		let usedCompletionBreadcrumb = false;
 		let reasonDetail:
 			| { reason: RunnerStopReason; detail: string; route?: string }
 			| undefined;
@@ -474,6 +475,7 @@ export async function runnerStopped(
 			reasonDetail = failureReason(args.stopFailure);
 		} else if (breadcrumb) {
 			reasonDetail = completionReason(breadcrumb);
+			usedCompletionBreadcrumb = true;
 		} else if (identity.session?.status === "completed") {
 			reasonDetail = { reason: "done", detail: "session terminal" };
 		} else if (identity.session?.status === "blocked") {
@@ -572,7 +574,9 @@ export async function runnerStopped(
 		}
 
 		markSent(stateDir, turnHash);
-		if (breadcrumb && contentMatched) createMarker(breadcrumb.consumedPath);
+		if (breadcrumb && usedCompletionBreadcrumb && contentMatched) {
+			createMarker(breadcrumb.consumedPath);
+		}
 		return {
 			status,
 			questionId,

@@ -129,6 +129,29 @@ describe("runner-stopped", () => {
 		expect(context.reason).toBe("context_full");
 	});
 
+	it("does not consume a completion breadcrumb when StopFailure takes priority", async () => {
+		const completionEventId = writeCompletion("needs_review", { pr: 73 });
+		const failed = await emit({
+			source: "claude-stop-failure",
+			turnId: "claude-rate-before-completion",
+			stopFailure: {
+				error: "rate_limit",
+				lastAssistantMessage: "API Error: Request rejected (429)",
+			},
+		});
+
+		expect(failed.reason).toBe("quota");
+		expect(existsSync(join(stateDir, "consumed", completionEventId))).toBe(
+			false,
+		);
+		expect((await emit({ turnId: "turn-after-rate-limit" })).reason).toBe(
+			"awaiting_approval",
+		);
+		expect(existsSync(join(stateDir, "consumed", completionEventId))).toBe(
+			true,
+		);
+	});
+
 	it("does not promote near-match assistant text without the proven error_details shape", async () => {
 		const result = await emit({
 			source: "claude-stop-failure",

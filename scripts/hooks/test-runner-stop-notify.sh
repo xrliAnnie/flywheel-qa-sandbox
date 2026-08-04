@@ -24,8 +24,9 @@ chmod +x "$WORK/bin/node"
 run_hook() {
   local input="$1"
   shift
+  local hook_home="${FLY1571_TEST_HOME:-$WORK/home}"
   PATH="$WORK/bin:$PATH" \
-  HOME="$WORK/home" \
+  HOME="$hook_home" \
   FLYWHEEL_COMM_CLI="$WORK/flywheel-comm.js" \
   FLYWHEEL_RUNNER_STATE_DIR="$WORK/state" \
   FLY1571_CAPTURE="$WORK/capture" \
@@ -97,6 +98,18 @@ else
 fi
 check "StopFailure source forwarded" grep -q -- 'claude-stop-failure' "$WORK/capture"
 check "StopFailure structured error forwarded" grep -q -- 'rate_limit' "$WORK/capture"
+
+rm -f "$WORK/capture"
+mkdir -p "$WORK/bad-home"
+touch "$WORK/bad-home/.flywheel"
+FLY1571_TEST_HOME="$WORK/bad-home" run_hook '{}' --codex turn-ended '{"type":"agent-turn-complete","client":"codex-tui","turn-id":"unwritable-log"}'
+if wait_capture; then
+  pass "unwritable log path still invokes detached emitter"
+else
+  fail "unwritable log path still invokes detached emitter"
+fi
+check "unwritable log fallback keeps stdout empty" test ! -s "$WORK/stdout"
+check "unwritable log fallback keeps stderr empty" test ! -s "$WORK/stderr"
 
 printf '\nrunner-stop-notify: passed=%s failed=%s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

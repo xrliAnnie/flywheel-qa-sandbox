@@ -141,7 +141,7 @@ PY
     "${emitter[@]}" &
     child_pid=$!
     child_pgid="$(ps -o pgid= -p "$child_pid" 2>/dev/null | tr -d ' ')"
-    supervisor_pgid="$(ps -o pgid= -p "$BASHPID" 2>/dev/null | tr -d ' ')"
+    supervisor_pgid="$(ps -o pgid= -p "${BASHPID:-$$}" 2>/dev/null | tr -d ' ')"
     parent_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
     (
       sleep 12
@@ -168,7 +168,7 @@ PY
       kill -TERM "$watchdog_pid" 2>/dev/null || true
     fi
     wait "$watchdog_pid" 2>/dev/null || true
-  ) </dev/null >>"$log_file" 2>&1 &
+  ) </dev/null &
   return 0
 }
 
