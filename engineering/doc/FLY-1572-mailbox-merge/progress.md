@@ -1,14 +1,13 @@
 ---
 issue: FLY-1572
 phase: design
-phaseCursor: 1/6
-updated: 2026-08-04T14:52:29.389Z
-nextStep: "parallel code audit: lead_inbox/messages writers+readers, delivery
-  loop, writer_gap history"
+phaseCursor: 2/6
+updated: 2026-08-04T14:54:16.259Z
+nextStep: await 3 audit agents; then write exploration.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-1572 progress
-**phase**: design (1/6)
-**next**: parallel code audit: lead_inbox/messages writers+readers, delivery loop, writer_gap history
+**phase**: design (2/6)
+**next**: await 3 audit agents; then write exploration.md
