@@ -1,13 +1,13 @@
 ---
 issue: FLY-1628
 phase: implement
-phaseCursor: 5/6
-updated: 2026-08-04T21:48:35.400Z
-nextStep: push branch, request code review, address findings, and open PR
+phaseCursor: 6/6
+updated: 2026-08-04T22:28:14.572Z
+nextStep: add final CLAUDE.md milestone, push reviewed branch, and open PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-1628 progress
-**phase**: implement (5/6)
-**next**: push branch, request code review, address findings, and open PR
+**phase**: implement (6/6)
+**next**: add final CLAUDE.md milestone, push reviewed branch, and open PR
