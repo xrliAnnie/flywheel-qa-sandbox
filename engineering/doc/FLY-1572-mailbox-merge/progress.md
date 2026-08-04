@@ -1,13 +1,13 @@
 ---
 issue: FLY-1572
 phase: design
-phaseCursor: 5/6
-updated: 2026-08-04T16:21:02.642Z
-nextStep: codex design review R5 (resume)
+phaseCursor: 6/6
+updated: 2026-08-04T16:39:55.852Z
+nextStep: founder design HTML → publish → report → complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1572 progress
-**phase**: design (5/6)
-**next**: codex design review R5 (resume)
+**phase**: design (6/6)
+**next**: founder design HTML → publish → report → complete
