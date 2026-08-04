@@ -1,5 +1,10 @@
 import { execFile } from "node:child_process";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+	createHash,
+	randomBytes,
+	randomUUID,
+	timingSafeEqual,
+} from "node:crypto";
 import {
 	existsSync as ffExistsSync,
 	readFileSync as ffReadFileSync,
@@ -214,6 +219,7 @@ import {
 } from "./commdb-session-prune.js";
 import {
 	buildLoopbackBaseUrl,
+	defaultMarkerDir,
 	reconcileCompleteFailedMarkers,
 } from "./complete-marker-reconciler.js";
 import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
@@ -225,6 +231,7 @@ import { createDigestRouter } from "./digest-route.js";
 import { DigestService } from "./digest-service.js";
 import { createDispositionReceiptPass } from "./disposition-receipt.js";
 import {
+	hasPendingCompleteMarker,
 	parseSweepExcludeEnv,
 	reconcileDoneButRunning,
 } from "./done-running-reconciler.js";
@@ -289,6 +296,7 @@ import {
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { materializeWorkflowGateHolder } from "./gate-materializer.js";
 import { GatePoller } from "./gate-poller.js";
+import { hasHostProcessByExecutionId } from "./generalized-launch-recovery.js";
 import {
 	activateHolderForWake,
 	type HolderWakeCause,
@@ -395,6 +403,12 @@ import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
 import {
+	isAutoMigratableClaudeTmux,
+	type PaneLossNotificationClass,
+	parsePaneLossGenerationParams,
+	reconcilePaneLoss,
+} from "./pane-loss-reconcile.js";
+import {
 	PhaseOrchestrator,
 	type PhaseSession,
 	type ThreeStageVerdictIntent,
@@ -470,7 +484,10 @@ import { createStatusQuery } from "./runner-status.js";
 import { reapRunnerMcp } from "./runner-teardown.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
-import { ServerLossCoordinator } from "./server-loss.js";
+import {
+	type ServerLossCheckResult,
+	ServerLossCoordinator,
+} from "./server-loss.js";
 import {
 	captureSession as defaultCaptureSession,
 	defaultGetCommDbPath,
@@ -530,6 +547,7 @@ import {
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
 	probeTmuxServer,
+	probeTmuxServerStartTime,
 	probeTmuxWindowLiveness,
 	sendEnterToWindow,
 	sendKeysToWindow,
@@ -3878,6 +3896,44 @@ export async function startBridge(
 	const serverLossHolder: { current: ServerLossCoordinator | null } = {
 		current: null,
 	};
+	const serverLossCheckState: {
+		active: Promise<ServerLossCheckResult> | null;
+		firstSuccessful: boolean;
+	} = { active: null, firstSuccessful: false };
+	const coordinatedServerLossCheck = (): Promise<ServerLossCheckResult> => {
+		if (serverLossCheckState.active) return serverLossCheckState.active;
+		const coordinator = serverLossHolder.current;
+		if (!coordinator) {
+			const values = new Set<string>();
+			const empty = Object.assign(values, {
+				claimed: values as ReadonlySet<string>,
+				heldExecutionIds: values as ReadonlySet<string>,
+			});
+			return Promise.resolve(empty);
+		}
+		const active = coordinator
+			.check()
+			.then((result) => {
+				serverLossCheckState.firstSuccessful = true;
+				return result;
+			})
+			.finally(() => {
+				if (serverLossCheckState.active === active) {
+					serverLossCheckState.active = null;
+				}
+			});
+		serverLossCheckState.active = active;
+		return active;
+	};
+	const paneLossNotifyHolder: {
+		current:
+			| ((
+					session: Session,
+					classification: PaneLossNotificationClass,
+					terminalStatus?: string,
+			  ) => Promise<boolean>)
+			| null;
+	} = { current: null };
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
 	// FLY-1066 Layer 1: migrate each existing project CommDB at boot, then mirror
@@ -5009,6 +5065,29 @@ export async function startBridge(
 			return [];
 		}
 	};
+	const parkedGenerationEvidence = async (
+		executionId: string,
+	): Promise<"superseded" | "same_generation" | "unavailable"> => {
+		const session = store.getSession(executionId);
+		if (!session || !isAutoMigratableClaudeTmux(session.adapter_type)) {
+			return "unavailable";
+		}
+		const generation = parsePaneLossGenerationParams(session.session_params);
+		if (!generation) return "unavailable";
+		const current = await probeTmuxServerStartTime(generation.socket_path);
+		if (current.kind !== "found") return "unavailable";
+		return current.startTime === generation.server_start_time
+			? "same_generation"
+			: "superseded";
+	};
+	const paneLossFence =
+		(): import("./pane-loss-reconcile.js").PaneLossFaceOutcome => {
+			if (!serverLossCheckState.firstSuccessful) return "skipped_first_check";
+			if (serverLossCheckState.active) return "skipped_coordinator_in_flight";
+			if (store.getServerLossEpisode()) return "skipped_episode";
+			if (store.listActiveTmuxHolds().length > 0) return "skipped_hold";
+			return "ran";
+		};
 	const residueHarvester = residueHarvestEnabled
 		? createResidueHarvester({
 				projectNames: projects.map((project) => project.projectName),
@@ -5037,6 +5116,9 @@ export async function startBridge(
 									},
 								});
 							},
+							finalizePaneLossResidue: (db, executionId, expectedTmuxWindow) =>
+								db.finalizePaneLossResidue(executionId, expectedTmuxWindow),
+							parkedGenerationEvidence,
 						},
 					);
 					if (result.reconciled > 0) {
@@ -5063,6 +5145,41 @@ export async function startBridge(
 							`[Bridge] FLY-1066 StateStore ghosts (${projectName}): scanned=${result.scanned} reaped=${result.reaped}`,
 						);
 					}
+				},
+				harvestPaneLoss: async (projectName) => {
+					const result = await reconcilePaneLoss(projectName, {
+						store,
+						transitionOpts,
+						mutate: true,
+						nowMs: () => Date.now(),
+						preflight: async () => {
+							const fenced = paneLossFence();
+							if (fenced !== "ran") return fenced;
+							return (await probeTmuxServer()) === "up"
+								? "ran"
+								: "skipped_server";
+						},
+						fence: paneLossFence,
+						lookupTarget: lookupTmuxTarget,
+						probeRunner: probeRunnerProcessLiveness,
+						discoverTarget: discoverTmuxTargetByExecutionId,
+						probeServerGeneration: probeTmuxServerStartTime,
+						isCompleteMarkerPending: (executionId) =>
+							hasPendingCompleteMarker(executionId, defaultMarkerDir()),
+						notify: (session, classification, terminalStatus) =>
+							paneLossNotifyHolder.current?.(
+								session,
+								classification,
+								terminalStatus,
+							) ?? Promise.resolve(false),
+						lifecycleMutex: residueGhostDeps.lifecycleMutex,
+					});
+					if (result.failed > 0 || result.advisories > 0) {
+						console.warn(
+							`[Bridge] FLY-1628 pane loss (${projectName}): scanned=${result.scanned} failed=${result.failed} advisories=${result.advisories}`,
+						);
+					}
+					return result.face;
 				},
 				reapStateStoreGhost: async (session) =>
 					(await reapStateStoreGhost(session, residueGhostDeps)) === "reaped",
@@ -5956,6 +6073,7 @@ export async function startBridge(
 		if (issueId) enqueueIssueDisplayRefresh(issueId);
 	};
 
+	let paneLossInitialDebt = true;
 	const heartbeatService = new HeartbeatService(
 		store,
 		notifier,
@@ -6020,8 +6138,7 @@ export async function startBridge(
 		// sink). FLYWHEEL_FLEET_SENSOR_TMUX=0 kills the phase entirely.
 		process.env.FLYWHEEL_FLEET_SENSOR_TMUX !== "0"
 			? {
-					check: async () =>
-						(await serverLossHolder.current?.check()) ?? new Set<string>(),
+					check: coordinatedServerLossCheck,
 				}
 			: undefined,
 		// FLY-1204: parked-phase reclaim chokepoint — the safety net that reclaims
@@ -6079,8 +6196,14 @@ export async function startBridge(
 				const residueEveryNTicks = residueMaintenanceEveryNTicks(
 					config.stuckCheckIntervalMs,
 				);
-				if (tick % residueEveryNTicks === 0) {
+				if (
+					(paneLossInitialDebt && serverLossCheckState.firstSuccessful) ||
+					tick % residueEveryNTicks === 0
+				) {
 					await residueHarvester.runFullPass();
+					if (residueHarvester.lastPaneLossOutcome() === "ran") {
+						paneLossInitialDebt = false;
+					}
 				}
 			}
 			// R3#1: TERM/KILL of orphan MCP processes is a NEW deletion — it
@@ -6430,7 +6553,12 @@ export async function startBridge(
 				const result = await reconcileCommDbRunningAgainstFsm(
 					projectName,
 					(executionId) => store.getSession(executionId)?.status,
-					{ onFinalizeOutcome: recordResidueFinalizeOutcome },
+					{
+						onFinalizeOutcome: recordResidueFinalizeOutcome,
+						finalizePaneLossResidue: (db, executionId, expectedTmuxWindow) =>
+							db.finalizePaneLossResidue(executionId, expectedTmuxWindow),
+						parkedGenerationEvidence,
+					},
 				);
 				if (result.reconciled > 0) {
 					console.log(
@@ -8363,6 +8491,7 @@ export async function startBridge(
 						if (!session.tmux_session) return "absent";
 						return probeRunnerProcessLiveness(session.tmux_session);
 					},
+					hasHostProcess: hasHostProcessByExecutionId,
 					assertWorktreeReady: async (session, expectedHeadSha) => {
 						const worktree = store.getSession(
 							session.execution_id,
@@ -9140,6 +9269,71 @@ export async function startBridge(
 	};
 	routedAlertSinkHolder.current = routedAlertSink;
 	workflowEngineAlertHolder.current = routedAlertSink;
+	paneLossNotifyHolder.current = async (
+		session,
+		classification,
+		terminalLifecycleId,
+	) => {
+		let lead: LeadConfig | undefined;
+		try {
+			lead = resolveLeadForIssue(
+				projects,
+				session.project_name,
+				store.getSessionLabels(session.execution_id),
+			).lead;
+		} catch {
+			// The raw alert fallback below still makes an unresolvable route visible.
+		}
+		const detail =
+			classification === "settlement"
+				? "tmux server 已换代且 runner body 已确认不存在；账面已转为 failed。"
+				: classification === "advisory_generation_superseded"
+					? "tmux server 已换代且 runner body 已确认不存在；parked 状态保持不变。"
+					: classification === "advisory_codex"
+						? "CommDB 的 tmux target 不存在，但 Codex daemon/body 仍可能存活；状态保持不变。"
+						: "tmux target 不存在不足以证明 runner body 已灭；状态保持不变。";
+		const content = [
+			`⚠️ **${session.issue_identifier ?? session.issue_id} — runner pane 失联**`,
+			detail,
+			`execution_id=${session.execution_id} adapter=${session.adapter_type ?? "legacy-claude-tmux"}`,
+			"未自动重派。",
+			`恢复提案（未执行）：close_runner {"execution_id":"${session.execution_id}","abandon":true,"reason":"pane_loss_recovery"}`,
+		].join("\n");
+		const thread = lead
+			? store.getChatThreadByIssue(session.issue_id, lead.chatChannel)
+			: undefined;
+		const direct = await emitIssueThreadInfraNotification(
+			{
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				issueIdentifier: session.issue_identifier,
+				projectName: session.project_name,
+				kind: "runner_pane_loss",
+				content,
+				thread,
+				botToken: lead?.botToken ?? config.discordBotToken,
+				onUndeliverable: (reason) =>
+					console.warn(
+						`[pane-loss] issue-thread notification failed for ${session.execution_id}: ${reason}`,
+					),
+			},
+			{ store },
+		);
+		if (direct.kind === "posted") return true;
+		const fallback = await (
+			routedAlertSinkHolder.current ?? leadAlertNotifier
+		).alert({
+			leadId: lead?.agentId ?? config.defaultLeadAgentId,
+			projectName: session.project_name,
+			eventId: `pane-loss:${session.execution_id}:${classification}:${terminalLifecycleId ?? "active"}:${randomUUID()}`,
+			eventType: "runner_pane_loss",
+			title: `Runner pane 失联 — ${session.issue_identifier ?? session.issue_id}`,
+			body: content,
+			severity: classification === "settlement" ? "severe" : "warning",
+			sessionKey: session.execution_id,
+		});
+		return !!(fallback.sent || fallback.queued);
+	};
 	void workflowEngineDispatcher
 		?.reconcileWorkflowEngineAlerts()
 		.catch((error) =>

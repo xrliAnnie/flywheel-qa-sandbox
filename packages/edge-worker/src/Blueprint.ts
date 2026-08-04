@@ -433,10 +433,13 @@ export interface BlueprintContext {
 	// FLY-245 R2 HIGH-3 — fired the instant `tmux new-window` returns, BEFORE
 	// CommDB registration. The gateway-retry dispatcher binds it to its durable
 	// launch claim so a post-crash replay adopts the live Runner instead of
-	// re-driving (which would orphan it). Best-effort.
+	// re-driving (which would orphan it). Claude launch treats this as a required
+	// durable generation fence before releasing the gated runner.
 	onTmuxWindowOpened?: (info: {
 		baseSessionName: string;
 		windowId: string;
+		socketPath: string;
+		serverStartTime: string;
 	}) => void;
 	// FLY-245 R5 HIGH — durable "Runner committed to start" record (gateway-retry
 	// path only). The adapter gates the Runner on this file + writes it at the

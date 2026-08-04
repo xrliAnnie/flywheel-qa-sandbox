@@ -1,3 +1,4 @@
+import { isStateStoreIrreversibleTerminalForZombie } from "../StateStore.js";
 import type { PhaseSession } from "./phase-orchestrator.js";
 
 /** Four-state process evidence shared by three-stage and generalized re-entry. */
@@ -7,7 +8,10 @@ export type PhaseActorReentryDecision =
 	| { kind: "wake"; reason: "registered_alive" | "persisted_target_alive" }
 	| {
 			kind: "replace";
-			reason: "registered_dead_pin" | "persisted_target_dead";
+			reason:
+				| "registered_dead_pin"
+				| "persisted_target_dead"
+				| "terminal_actor_target_and_host_absent";
 	  }
 	| {
 			kind: "hold";
@@ -27,6 +31,7 @@ export async function classifyPhaseActorReentry(input: {
 	session: PhaseSession;
 	probeRegistered(session: PhaseSession): Promise<PhaseLiveness>;
 	probePersisted(session: PhaseSession): Promise<PhaseLiveness>;
+	hasHostProcess?(executionId: string): Promise<boolean>;
 }): Promise<PhaseActorReentryDecision> {
 	const registered = await input.probeRegistered(input.session);
 	if (registered === "alive") {
@@ -39,6 +44,16 @@ export async function classifyPhaseActorReentry(input: {
 		return { kind: "hold", reason: "registered_liveness_indeterminate" };
 	}
 	if (!input.session.tmux_session) {
+		if (
+			input.hasHostProcess &&
+			isStateStoreIrreversibleTerminalForZombie(input.session.status) &&
+			!(await input.hasHostProcess(input.session.execution_id))
+		) {
+			return {
+				kind: "replace",
+				reason: "terminal_actor_target_and_host_absent",
+			};
+		}
 		return { kind: "hold", reason: "persisted_target_missing" };
 	}
 	const persisted = await input.probePersisted(input.session);

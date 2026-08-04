@@ -103,6 +103,66 @@ describe("FLY-1329 A4: reconcileCommDbRunningAgainstFsm respects a park declarat
 		}
 	});
 
+	it("releases the parked veto only with superseded generation evidence", async () => {
+		seedRunning("superseded-park", true);
+
+		const result = await reconcileCommDbRunningAgainstFsm(
+			"flywheel",
+			fsmCompleted,
+			{
+				dbPath,
+				probe: probeDead,
+				parkedGenerationEvidence: async () => "superseded",
+			},
+		);
+
+		expect(result.reconciled).toBe(1);
+		expect(result.parkedVetoed).toBe(0);
+		const db = new CommDB(dbPath);
+		try {
+			expect(db.getSession("superseded-park")).toBeFalsy();
+		} finally {
+			db.close();
+		}
+	});
+
+	it("keeps the parked row when the exact target changes at finalize", async () => {
+		seedRunning("retargeted-park", true);
+		const result = await reconcileCommDbRunningAgainstFsm(
+			"flywheel",
+			fsmCompleted,
+			{
+				dbPath,
+				probe: probeDead,
+				parkedGenerationEvidence: async () => "superseded",
+				finalizePaneLossResidue: (db, executionId) => {
+					db.registerSession(
+						executionId,
+						"runner-flywheel:@99",
+						"flywheel",
+						`issue-${executionId}`,
+						"eng-lead",
+					);
+					return db.finalizePaneLossResidue(
+						executionId,
+						`runner-flywheel:${executionId}`,
+					);
+				},
+			},
+		);
+
+		expect(result.reconciled).toBe(0);
+		expect(result.parkedVetoed).toBe(1);
+		const db = new CommDB(dbPath);
+		try {
+			expect(db.getSession("retargeted-park")?.tmux_window).toBe(
+				"runner-flywheel:@99",
+			);
+		} finally {
+			db.close();
+		}
+	});
+
 	it("fail-closed: an isParked lookup that throws keeps the row", async () => {
 		seedRunning("unknowable", true);
 

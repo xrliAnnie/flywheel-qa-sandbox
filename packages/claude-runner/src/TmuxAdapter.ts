@@ -6,6 +6,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	unlinkSync,
 	watch,
 	writeFileSync,
 } from "node:fs";
@@ -534,11 +535,11 @@ export class TmuxAdapter implements IAdapter {
 			envArgs.push("-e", `${key}=${value}`);
 		}
 
-		// FLY-245 R4/R5/R6 HIGH-3: TWO-PHASE gated launch for every path that sets
-		// `launchCommitPath`. Originally the gateway-retry path was the only one;
-		// since FLY-1232 the FRESH dispatch path also sets it when the workflow
-		// shadow write flag (FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1) is ON — flag OFF
-		// keeps the fresh path unset and byte-identical.
+		// FLY-245 / FLY-1628: every claude-tmux launch is two-phase gated. The
+		// durable workflow path keeps its deterministic commit marker; the direct
+		// path uses a private, per-physical-launch token file that the shell removes
+		// immediately before exec. In both cases the runner cannot start until the
+		// Bridge has synchronously persisted the tmux generation credential.
 		// This adapter normally starts Claude AS PART of `tmux new-window`,
 		// so a recorded-but-never-started window could be mis-adopted on replay.
 		// Instead, the gateway path opens a tiny shell that BLOCKS on the durable
@@ -557,13 +558,19 @@ export class TmuxAdapter implements IAdapter {
 		//     replay sees no commit → re-drives (writes a fresh token);
 		//   - commit written → only THIS launch's shell `exec`s Claude; a replay
 		//     sees the file exists → adopts → exactly one started Runner.
-		// The non-gateway fleet path keeps the byte-identical direct `claude` launch.
 		const commitFile = ctx.launchCommitPath;
-		const launchToken = commitFile
-			? (ctx.launchGateToken ?? randomUUID())
-			: undefined;
+		const generationGated = this.type === "claude-tmux";
+		const launchToken =
+			generationGated || commitFile
+				? (ctx.launchGateToken ?? randomUUID())
+				: undefined;
+		const directGateFile =
+			generationGated && !commitFile && launchToken
+				? join(tmpdir(), "flywheel-launch-gates", `launch-${launchToken}`)
+				: undefined;
+		const gateFile = commitFile ?? directGateFile;
 		const windowCommand =
-			commitFile && launchToken
+			gateFile && launchToken
 				? [
 						"sh",
 						"-c",
@@ -575,9 +582,10 @@ export class TmuxAdapter implements IAdapter {
 						// `-qF` = quiet fixed-string (the token is a uuid — no regex chars).
 						// FLY-493: `exec ${binaryName}` (default "claude") — byte-identical
 						// claude launch; agy launches the same gated way.
-						`cf="$0"; tok="$1"; shift; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; exec ${this.binaryName} "$@"`,
-						commitFile,
+						`cf="$0"; tok="$1"; cleanup="$2"; shift 2; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ "$cleanup" = "unlink" ] && rm -f -- "$cf"; exec ${this.binaryName} "$@"`,
+						gateFile,
 						launchToken,
+						directGateFile ? "unlink" : "keep",
 						...claudeArgs,
 					]
 				: [this.binaryName, ...claudeArgs];
@@ -588,7 +596,7 @@ export class TmuxAdapter implements IAdapter {
 			"new-window",
 			"-P",
 			"-F",
-			"#{window_id}",
+			"#{window_id}|#{socket_path}|#{start_time}",
 			"-t",
 			`=${this.sessionName}`,
 			...envArgs,
@@ -598,7 +606,32 @@ export class TmuxAdapter implements IAdapter {
 			ctx.cwd,
 			...windowCommand,
 		]);
-		const windowId = launchResult.stdout.trim();
+		// Both capture and later probe use tmux's raw `#{start_time}` decimal
+		// POSIX epoch seconds. Do not format it through Date/local timezone.
+		const launchFields = launchResult.stdout.trim().split("|");
+		const [windowId = "", socketPath = "", serverStartTime = ""] = launchFields;
+		if (
+			generationGated &&
+			(launchFields.length !== 3 ||
+				!/^@\d+$/.test(windowId) ||
+				!socketPath ||
+				!/^[0-9]+$/.test(serverStartTime))
+		) {
+			if (/^@\d+$/.test(windowId)) {
+				try {
+					this.execFileFn("tmux", [
+						"kill-window",
+						"-t",
+						`=${this.sessionName}:${windowId}`,
+					]);
+				} catch {
+					// best-effort cleanup
+				}
+			}
+			throw new Error(
+				`[TmuxAdapter] launch aborted: malformed tmux generation output for ${ctx.executionId}`,
+			);
+		}
 		const exactWindowTarget = `=${this.sessionName}:${windowId}`;
 
 		// FLY-1374: publish the execution identity on the exact window. If its
@@ -647,6 +680,39 @@ export class TmuxAdapter implements IAdapter {
 			}
 		}
 
+		// FLY-1628: this is the crash-atomic generation fence. Nothing below may
+		// release the waiting shell until the Bridge confirms the exact tuple is
+		// durable. A missing/throwing callback kills the still-gated window.
+		if (generationGated) {
+			try {
+				if (!ctx.onTmuxWindowOpened) {
+					throw new Error("generation credential callback is required");
+				}
+				ctx.onTmuxWindowOpened({
+					baseSessionName: this.sessionName,
+					windowId,
+					socketPath,
+					serverStartTime,
+				});
+			} catch (err) {
+				try {
+					this.execFileFn("tmux", ["kill-window", "-t", exactWindowTarget]);
+				} catch {
+					// best-effort cleanup; the gate is still closed.
+				}
+				if (directGateFile) {
+					try {
+						unlinkSync(directGateFile);
+					} catch {
+						// file normally does not exist yet
+					}
+				}
+				throw new Error(
+					`[TmuxAdapter] launch aborted before generation commit for ${ctx.executionId}: ${(err as Error).message}`,
+				);
+			}
+		}
+
 		// FLY-245 R5/R6 HIGH-3: write THIS launch's token to the durable COMMIT file
 		// = release ONLY this launch's gated shell. The file's existence is the
 		// dispatcher's execId-deterministic adopt record; the token content is the
@@ -655,16 +721,17 @@ export class TmuxAdapter implements IAdapter {
 		// (no file); after it, only this shell starts and a replay adopts (file
 		// present). On a write failure the gated shell never matches its token and
 		// self-reaps — a replay re-drives cleanly; no kill is required for safety.
-		if (commitFile && launchToken) {
+		if (gateFile && launchToken) {
 			try {
-				if (ctx.commitWorkflowLaunch) {
+				if (commitFile && ctx.commitWorkflowLaunch) {
 					const committed = ctx.commitWorkflowLaunch();
 					if (!committed.ok) {
 						throw new Error(committed.reason ?? "Bridge launch fence rejected");
 					}
 				} else {
-					mkdirSync(dirname(commitFile), { recursive: true });
-					writeFileSync(commitFile, launchToken);
+					mkdirSync(dirname(gateFile), { recursive: true, mode: 0o700 });
+					writeFileSync(gateFile, launchToken, { mode: 0o600 });
+					chmodSync(gateFile, 0o600);
 				}
 			} catch (err) {
 				try {
@@ -675,6 +742,13 @@ export class TmuxAdapter implements IAdapter {
 					]);
 				} catch {
 					// best-effort; the gated shell self-exits on its bounded timeout.
+				}
+				if (directGateFile) {
+					try {
+						unlinkSync(directGateFile);
+					} catch {
+						// best-effort; the killed gated shell cannot start.
+					}
 				}
 				throw new Error(
 					`[TmuxAdapter] launch aborted: could not write durable commit for ${ctx.executionId} ` +

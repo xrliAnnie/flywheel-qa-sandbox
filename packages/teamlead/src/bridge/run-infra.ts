@@ -60,6 +60,7 @@ import { EventFilter } from "./EventFilter.js";
 import type { IssueDisplayRefreshHolder } from "./issue-display-refresher.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
 import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
+import { persistPaneLossGenerationCredential } from "./pane-loss-reconcile.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import type { LifecycleShipInfra } from "./post-ship-finalization.js";
 import {
@@ -678,6 +679,8 @@ export function createRunInfraDispatcher(input: {
 		input.phaseRetryStartPointComputer,
 		// FLY-1356 (R1#4): sticky-stamp lookup — same issue keeps its arm.
 		(issueId) => input.store.getSkillFrameworkStamp(issueId),
+		(executionId, info) =>
+			persistPaneLossGenerationCredential(input.store, executionId, info),
 	);
 }
 

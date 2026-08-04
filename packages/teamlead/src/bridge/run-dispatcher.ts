@@ -96,6 +96,16 @@ export interface WorkflowClaimsAdmissionSeam {
 	}): { credential: string };
 }
 
+export type TmuxGenerationRecorder = (
+	executionId: string,
+	info: {
+		baseSessionName: string;
+		windowId: string;
+		socketPath: string;
+		serverStartTime: string;
+	},
+) => void;
+
 /**
  * FLY-795: compute the restart-resilient resume decision for a (re-)dispatch.
  * Returns a ProgressResumeInfo when a prior execution + committed progress.md on
@@ -498,6 +508,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 		protected skillFrameworkStampLookup?: (
 			issueId: string,
 		) => SkillFrameworkMode | undefined,
+		protected tmuxGenerationRecorder?: TmuxGenerationRecorder,
 	) {}
 
 	/**
@@ -881,6 +892,11 @@ export class RetryDispatcher implements IRetryDispatcher {
 						: undefined,
 				launchGateToken: req.generalizedExecution?.launchGateToken,
 				commitWorkflowLaunch: req.generalizedExecution?.commitWorkflowLaunch,
+				...(runnerSpawn.runnerBackend === "claude-tmux" &&
+					this.tmuxGenerationRecorder && {
+						onTmuxWindowOpened: (info) =>
+							this.tmuxGenerationRecorder?.(newExecutionId, info),
+					}),
 				// FLY-116: spawn macOS Terminal viewer once tmux window exists
 				onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
 					openTmuxViewer({
@@ -1121,6 +1137,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		skillFrameworkStampLookup?: (
 			issueId: string,
 		) => SkillFrameworkMode | undefined,
+		tmuxGenerationRecorder?: TmuxGenerationRecorder,
 	) {
 		super(
 			blueprintsByProject,
@@ -1131,6 +1148,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			lifecycleLaunchGuard,
 			phaseRetryStartPointComputer,
 			skillFrameworkStampLookup,
+			tmuxGenerationRecorder,
 		);
 	}
 
@@ -1470,6 +1488,11 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				launchCommitPath: shadowCommitDir,
 				launchGateToken: req.generalizedExecution?.launchGateToken,
 				commitWorkflowLaunch: req.generalizedExecution?.commitWorkflowLaunch,
+				...(runnerSpawn.runnerBackend === "claude-tmux" &&
+					this.tmuxGenerationRecorder && {
+						onTmuxWindowOpened: (info) =>
+							this.tmuxGenerationRecorder?.(executionId, info),
+					}),
 				// FLY-795: restart-resilient resume context (Blueprint renders resume mode).
 				...(resume && {
 					progressResume: {

@@ -307,6 +307,7 @@ export interface FinalizeSessionResult {
 
 export type GuardedFinalizeSessionResult =
 	| { finalized: false; reason: "turn_holder" }
+	| { finalized: false; reason: "target_changed" }
 	| { finalized: true; result: FinalizeSessionResult };
 
 function commDbProtectionEnabled(): boolean {
@@ -6928,6 +6929,38 @@ export class CommDB {
 			},
 		);
 		return finalize.immediate(executionId);
+	}
+
+	/** FLY-1628: finalize a pane-loss residue only while its exact target and
+	 * TURN-free authority still match the evidence gathered before this txn. */
+	finalizePaneLossResidue(
+		executionId: string,
+		expectedTmuxWindow: string,
+	): GuardedFinalizeSessionResult {
+		const finalize = this.db.transaction(
+			(
+				targetExecutionId: string,
+				expectedTarget: string,
+			): GuardedFinalizeSessionResult => {
+				const session = this.db
+					.prepare("SELECT tmux_window FROM sessions WHERE execution_id = ?")
+					.get(targetExecutionId) as { tmux_window?: string } | undefined;
+				if (session?.tmux_window !== expectedTarget) {
+					return { finalized: false, reason: "target_changed" };
+				}
+				const holdsTurn = this.db
+					.prepare(
+						"SELECT 1 FROM three_stage_turn WHERE holder_exec_id = ? LIMIT 1",
+					)
+					.get(targetExecutionId);
+				if (holdsTurn) return { finalized: false, reason: "turn_holder" };
+				return {
+					finalized: true,
+					result: this.finalizeSession(targetExecutionId),
+				};
+			},
+		);
+		return finalize.immediate(executionId, expectedTmuxWindow);
 	}
 
 	/**

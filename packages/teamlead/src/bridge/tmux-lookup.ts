@@ -343,6 +343,39 @@ export async function probeTmuxServer(
 	}
 }
 
+export type TmuxServerStartTimeProbe =
+	| { kind: "found"; startTime: string }
+	| { kind: "indeterminate" };
+
+/**
+ * Read tmux's native server-generation credential from an exact socket.
+ * `#{start_time}` is decimal POSIX epoch seconds: timezone/locale never enter
+ * this byte-for-byte comparison with the value captured at `new-window`.
+ */
+export async function probeTmuxServerStartTime(
+	socketPath: string,
+	runTmux: TmuxRunner = defaultTmuxRunner,
+): Promise<TmuxServerStartTimeProbe> {
+	if (!socketPath || /[\0\r\n]/.test(socketPath)) {
+		return { kind: "indeterminate" };
+	}
+	try {
+		const { stdout } = await runTmux([
+			"-S",
+			socketPath,
+			"display-message",
+			"-p",
+			"#{start_time}",
+		]);
+		const startTime = stdout.trim();
+		return /^[0-9]+$/.test(startTime)
+			? { kind: "found", startTime }
+			: { kind: "indeterminate" };
+	} catch {
+		return { kind: "indeterminate" };
+	}
+}
+
 /**
  * Tri-state per-window liveness (FLY-245 D2, Codex code-review R1 HIGH-4):
  *   - `alive`         — `list-panes` succeeded;

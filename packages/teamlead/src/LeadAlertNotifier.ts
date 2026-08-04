@@ -316,6 +316,9 @@ export const ALERT_EVENT_TYPES = [
 	// FLY-1393 W-1: exact-target process evidence proved an approved ship runner
 	// dead; stable event id, one durable alert per execution.
 	"stale_approved_ship_dead",
+	// FLY-1628: StateStore says active but the recorded tmux generation/body is
+	// gone. Recovery is proposed, never auto-redispatched.
+	"runner_pane_loss",
 	// FLY-1505: a founder-approved ship attempt reached a terminal failure or
 	// could no longer be tracked. The approval stays live; a Lead diagnoses the
 	// workflow before explicitly waking the runner for another attempt.

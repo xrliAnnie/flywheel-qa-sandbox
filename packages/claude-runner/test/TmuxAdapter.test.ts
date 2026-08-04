@@ -31,6 +31,7 @@ function makeCtx(
 		issueId: "GEO-TEST",
 		prompt: "Fix the bug in auth module",
 		cwd: "/project/geoforge3d",
+		onTmuxWindowOpened: () => {},
 		...overrides,
 	};
 }
@@ -96,7 +97,7 @@ function makeMockExec(
 			}
 
 			if (subcommand === "new-window") {
-				return { stdout: windowId };
+				return { stdout: `${windowId}|/tmp/tmux-test/default|1722700000` };
 			}
 
 			if (subcommand === "list-panes") {
@@ -151,7 +152,8 @@ function makeMockExecWithDelayedDead(
 			if (subcommand === "new-session") return { stdout: "" };
 			if (subcommand === "set-environment") return { stdout: "" };
 			if (subcommand === "set-option") return { stdout: "" };
-			if (subcommand === "new-window") return { stdout: windowId };
+			if (subcommand === "new-window")
+				return { stdout: `${windowId}|/tmp/tmux-test/default|1722700000` };
 			if (subcommand === "list-panes") {
 				pollCount++;
 				return { stdout: pollCount >= pollsBeforeDead ? "1" : "0" };
@@ -376,16 +378,51 @@ describe("TmuxAdapter", () => {
 		}
 	});
 
-	it("the NORMAL fleet path (no launchCommitPath) launches Claude DIRECTLY (byte-unchanged)", async () => {
+	it("gates the normal Claude path until the generation credential is persisted", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
-		await adapter.execute(makeCtx());
+		const opened = vi.fn();
+		await adapter.execute(makeCtx({ onTmuxWindowOpened: opened }));
 		const newWindow = calls.find(
 			(c) => c.cmd === "tmux" && c.args[0] === "new-window",
 		);
-		// command segment is `claude ...` directly — no gating shell wrapper
-		expect(newWindow?.args).toContain("claude");
-		expect(newWindow?.args).not.toContain("sh");
+		expect(newWindow?.args).toContain("sh");
+		expect(newWindow?.args.some((arg) => arg.includes("exec claude"))).toBe(
+			true,
+		);
+		expect(newWindow?.args.some((arg) => arg.includes("rm -f"))).toBe(true);
+		expect(opened).toHaveBeenCalledWith({
+			baseSessionName: "flywheel",
+			windowId: "@42",
+			socketPath: "/tmp/tmux-test/default",
+			serverStartTime: "1722700000",
+		});
+	});
+
+	it("fails closed and kills the Claude window when generation persistence is unavailable", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		await expect(
+			new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({ onTmuxWindowOpened: undefined }),
+			),
+		).rejects.toThrow(/generation credential callback is required/i);
+		expect(killWindowTargets(calls)).toContain("=flywheel:@42");
+		expect(calls.some((call) => call.args[0] === "list-panes")).toBe(false);
+	});
+
+	it("fails closed before release when generation persistence rejects the tuple", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		await expect(
+			new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({
+					onTmuxWindowOpened: () => {
+						throw new Error("terminal row");
+					},
+				}),
+			),
+		).rejects.toThrow(/terminal row/i);
+		expect(killWindowTargets(calls)).toContain("=flywheel:@42");
+		expect(calls.some((call) => call.args[0] === "list-panes")).toBe(false);
 	});
 
 	// ─── FLY-615: ponytail --settings flag ───────────
@@ -729,7 +766,7 @@ describe("TmuxAdapter", () => {
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const args = newWindow!.args;
 		expect(args).toContain("--model");
-		expect(args).toContain("claude-opus-5");
+		expect(args[args.indexOf("--model") + 1]).toMatch(/^claude-opus-5/);
 	});
 
 	it("omits --model entirely when no model is specified", async () => {
@@ -978,7 +1015,8 @@ describe("TmuxAdapter", () => {
 				if (args[0] === "new-session") return { stdout: "" };
 				if (args[0] === "set-environment") return { stdout: "" };
 				if (args[0] === "set-option") return { stdout: "" };
-				if (args[0] === "new-window") return { stdout: "@42" };
+				if (args[0] === "new-window")
+					return { stdout: "@42|/tmp/tmux-test/default|1722700000" };
 				if (args[0] === "list-panes") {
 					pollCount++;
 					if (pollCount >= 1) throw new Error("window gone");
@@ -1610,11 +1648,11 @@ describe("TmuxAdapter", () => {
 
 			const newWindow = calls.find((c) => c.args[0] === "new-window");
 			const args = newWindow!.args;
-			const claudeIdx = args.indexOf("claude");
-			expect(claudeIdx).toBeGreaterThan(-1);
-			// First flag after `claude` should be from transport (--agent-id),
-			// not from buildClaudeArgs (--session-id).
-			expect(args[claudeIdx + 1]).toBe("--agent-id");
+			// Transport identity still precedes buildClaudeArgs inside the gated
+			// command's positional argv.
+			expect(args.indexOf("--agent-id")).toBeLessThan(
+				args.indexOf("--session-id"),
+			);
 			// Last positional MUST be the prompt — never overtaken by transport flags.
 			expect(args[args.length - 1]).toBe("do work");
 		});
@@ -2021,7 +2059,9 @@ describe("FLY-1253: production claude-tmux review-wait compatibility", () => {
 				case "kill-window":
 					return { stdout: "" };
 				case "new-window":
-					return { stdout: windowId };
+					return {
+						stdout: `${windowId}|/tmp/tmux-test/default|1722700000`,
+					};
 				case "list-panes":
 					return { stdout: paneDead ? "1|0" : "0|" };
 				default:
@@ -2047,7 +2087,7 @@ describe("FLY-1253: production claude-tmux review-wait compatibility", () => {
 			"review this head",
 			{ checkpoint: "review_code" },
 		);
-		const pane = controllablePane("@bound-wait");
+		const pane = controllablePane("@42");
 		const heartbeats: string[] = [];
 		let settled = false;
 
@@ -2076,7 +2116,7 @@ describe("FLY-1253: production claude-tmux review-wait compatibility", () => {
 			const result = await run;
 
 			expect(result.timedOut).toBe(false);
-			expect(result.tmuxWindow).toBe("flywheel:@bound-wait");
+			expect(result.tmuxWindow).toBe("flywheel:@42");
 			expect(
 				pane.calls.filter((call) => call.args[0] === "new-window"),
 			).toHaveLength(1);
@@ -2091,14 +2131,14 @@ describe("FLY-1253: production claude-tmux review-wait compatibility", () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "flywheel-tmux-no-wait-"));
 		const commDbPath = join(tmpDir, "comm.db");
 		const db = new CommDB(commDbPath);
-		const pane = controllablePane("@no-wait");
+		const pane = controllablePane("@43");
 		try {
 			const adapter = new TmuxAdapter("flywheel", pane.fn, 5, 25);
 			const result = await adapter.execute(
 				makeCtx({ commDbPath, timeoutMs: 25, waitingTimeoutMs: 500 }),
 			);
 			expect(result.timedOut).toBe(true);
-			expect(killWindowTargets(pane.calls)).toContain("@no-wait");
+			expect(killWindowTargets(pane.calls)).toContain("@43");
 		} finally {
 			db.close();
 			rmSync(tmpDir, { recursive: true, force: true });

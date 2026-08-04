@@ -123,6 +123,11 @@ export async function reconcileCommDbRunningAgainstFsm(
 			nowMs: () => number;
 		};
 		finalizeSession?: (db: CommDB, executionId: string) => unknown;
+		finalizePaneLossResidue?: (
+			db: CommDB,
+			executionId: string,
+			expectedTmuxWindow: string,
+		) => unknown;
 		onFinalizeOutcome?: (
 			executionId: string,
 			projectName: string,
@@ -135,6 +140,10 @@ export async function reconcileCommDbRunningAgainstFsm(
 		 * that default (see body).
 		 */
 		isParked?: (executionId: string) => boolean;
+		parkedGenerationEvidence?: (
+			executionId: string,
+			tmuxWindow: string,
+		) => Promise<"superseded" | "same_generation" | "unavailable">;
 	} = {},
 ): Promise<CommDbFsmReconcileResult> {
 	const result: CommDbFsmReconcileResult = {
@@ -164,6 +173,10 @@ export async function reconcileCommDbRunningAgainstFsm(
 		opts.finalizeSession ??
 		((db: CommDB, executionId: string) =>
 			db.finalizeSessionUnlessTurnHolder(executionId));
+	const finalizePaneLossResidue =
+		opts.finalizePaneLossResidue ??
+		((db: CommDB, executionId: string, expectedTmuxWindow: string) =>
+			db.finalizePaneLossResidue(executionId, expectedTmuxWindow));
 
 	let db: CommDB | undefined;
 	try {
@@ -174,6 +187,7 @@ export async function reconcileCommDbRunningAgainstFsm(
 		const running = db.listSessions(projectName, ["running"]);
 		result.scanned = running.length;
 		for (const s of running) {
+			let parkedSuperseded = false;
 			// FLY-1374: a TURN holder is an active writer even when StateStore
 			// still carries the prior activation's terminal status. Never let a
 			// stale tmux target authorize deletion of its turn/mailbox identity.
@@ -263,15 +277,28 @@ export async function reconcileCommDbRunningAgainstFsm(
 					);
 				}
 				if (parked) {
-					result.parkedVetoed++;
-					console.log(
-						`[commdb-fsm-reconcile] prune_skipped_parked_conflict: ${s.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
-					);
-					continue;
+					const evidence = opts.parkedGenerationEvidence
+						? await opts
+								.parkedGenerationEvidence(s.execution_id, s.tmux_window)
+								.catch(() => "unavailable" as const)
+						: "unavailable";
+					if (evidence === "superseded") {
+						parkedSuperseded = true;
+					} else {
+						result.parkedVetoed++;
+						console.log(
+							`[commdb-fsm-reconcile] prune_skipped_parked_conflict: ${s.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
+						);
+						continue;
+					}
 				}
 			}
 			try {
-				const raw = finalizeSession(db, s.execution_id) as
+				const raw = (
+					parkedSuperseded
+						? finalizePaneLossResidue(db, s.execution_id, s.tmux_window)
+						: finalizeSession(db, s.execution_id)
+				) as
 					| {
 							finalized?: boolean;
 							reason?: string;
@@ -289,6 +316,13 @@ export async function reconcileCommDbRunningAgainstFsm(
 					result.parkedVetoed++;
 					console.log(
 						`[commdb-fsm-reconcile] prune_skipped_turn_holder_at_finalize: ${s.execution_id} (${projectName}) acquired the current TURN — KEEPING the row`,
+					);
+					continue;
+				}
+				if (raw?.finalized === false && raw.reason === "target_changed") {
+					result.parkedVetoed++;
+					console.log(
+						`[commdb-fsm-reconcile] pane-loss target changed for ${s.execution_id} — KEEPING the row`,
 					);
 					continue;
 				}

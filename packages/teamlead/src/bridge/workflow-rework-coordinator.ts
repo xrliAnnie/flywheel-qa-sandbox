@@ -148,6 +148,7 @@ export interface WorkflowReworkCoordinatorEffects {
 	getActorSession(executionId: string): PhaseSession | undefined;
 	probeRegistered(session: PhaseSession): Promise<PhaseLiveness>;
 	probePersisted(session: PhaseSession): Promise<PhaseLiveness>;
+	hasHostProcess?(executionId: string): Promise<boolean>;
 	assertWorktreeReady(
 		session: PhaseSession,
 		expectedHeadSha: string,
@@ -322,6 +323,7 @@ export class WorkflowReworkCoordinator {
 			session: actor,
 			probeRegistered: this.deps.effects.probeRegistered,
 			probePersisted: this.deps.effects.probePersisted,
+			hasHostProcess: this.deps.effects.hasHostProcess,
 		});
 		if (reentry.kind === "hold") {
 			return this.releaseAndHold({

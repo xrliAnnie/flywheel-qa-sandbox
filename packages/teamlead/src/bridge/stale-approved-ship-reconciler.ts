@@ -79,6 +79,8 @@ export interface RewakeSessionProbe {
 	pr_head_sha?: string;
 	last_activity_at?: string;
 	tmux_session?: string;
+	adapter_type?: string;
+	session_params?: string;
 	/** Real head parsed from fly1505_ship_attempt_failed, when present. */
 	shipAttemptFailedHead?: string;
 }

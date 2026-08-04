@@ -55,6 +55,46 @@ describe("generalized launch recovery liveness", () => {
 		expect(probe).not.toHaveBeenCalled();
 	});
 
+	it("FLY-1572 anchor: proves a terminal launch dead when registration, marker, and host process are all absent", async () => {
+		await expect(
+			probeGeneralizedLaunchLiveness(
+				"11e95f4a-9458-4d34-9d0c-c0f0957d103d",
+				"flywheel",
+				{
+					lookup: () => ({ kind: "gone" }),
+					probe: async () => "indeterminate",
+					discover: async () => ({ kind: "missing" }),
+					hasHostProcess: async () => false,
+					allowMissingTargetHostAbsence: true,
+				},
+			),
+		).resolves.toBe("dead");
+	});
+
+	it("holds missing registration when either a marker or host process still exists", async () => {
+		await expect(
+			probeGeneralizedLaunchLiveness("exec-1", "flywheel", {
+				lookup: () => ({ kind: "gone" }),
+				probe: async () => "indeterminate",
+				discover: async () => ({
+					kind: "found",
+					tmuxWindow: "flywheel:@42",
+				}),
+				hasHostProcess: async () => false,
+				allowMissingTargetHostAbsence: true,
+			}),
+		).resolves.toBe("unknown");
+		await expect(
+			probeGeneralizedLaunchLiveness("exec-1", "flywheel", {
+				lookup: () => ({ kind: "gone" }),
+				probe: async () => "indeterminate",
+				discover: async () => ({ kind: "missing" }),
+				hasHostProcess: async () => true,
+				allowMissingTargetHostAbsence: true,
+			}),
+		).resolves.toBe("unknown");
+	});
+
 	it("does not mistake a pending pre-registration for a dead runner while a host process still references it", async () => {
 		const lookup = vi.fn<() => GeneralizedLaunchTargetLookup>(() => ({
 			kind: "found",

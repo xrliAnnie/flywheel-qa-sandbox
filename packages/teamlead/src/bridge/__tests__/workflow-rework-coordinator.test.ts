@@ -64,6 +64,31 @@ describe("classifyPhaseActorReentry", () => {
 			);
 		},
 	);
+
+	it("replaces a targetless terminal actor only after host-process absence", async () => {
+		await expect(
+			classifyPhaseActorReentry({
+				session: { ...session, status: "terminated", tmux_session: undefined },
+				probeRegistered: async () => "absent",
+				probePersisted: async () => "absent",
+				hasHostProcess: async () => false,
+			}),
+		).resolves.toEqual({
+			kind: "replace",
+			reason: "terminal_actor_target_and_host_absent",
+		});
+	});
+
+	it("holds a targetless terminal actor while a host process still exists", async () => {
+		await expect(
+			classifyPhaseActorReentry({
+				session: { ...session, status: "terminated", tmux_session: undefined },
+				probeRegistered: async () => "absent",
+				probePersisted: async () => "absent",
+				hasHostProcess: async () => true,
+			}),
+		).resolves.toEqual({ kind: "hold", reason: "persisted_target_missing" });
+	});
 });
 
 function makeHarness(input: {

@@ -1,0 +1,38 @@
+flowchart TB
+  subgraph clocks["真正有自己时钟/线程的可靠性宿主"]
+    HB["HeartbeatService\nrunner 现实巡检"]
+    WE["WorkflowEngineDispatcher\nDAG 事务推进"]
+    GP["GatePoller\n问题与审批投递"]
+    RI["RunnerIdleWatchdog\n空闲/卡住观测"]
+    LW["LeadWatchdog\nLead 外部活性"]
+    BW["BridgeEventLoopWatchdog\n独立 worker 自杀重启"]
+    DT["DoneThread scheduler\n已结束 thread 收口"]
+    LC["Lifecycle / resource cleanup\nrepo 与旁路进程"]
+  end
+
+  HB --> SL["ServerLossCoordinator\n整服事故先分组"]
+  HB --> CR["CrashReaper\ndead-pin 清理"]
+  HB --> RH["ResidueHarvester\n一个 single-flight 宿主"]
+  RH --> CF["CommDB ↔ FSM"]
+  RH --> SG["StateStore ghost"]
+  RH --> TP["terminal CommDB prune"]
+  RH --> PL["FLY-1628 pane-loss face\n本 PR：无新时钟"]
+
+  WE --> DE["dead execution / tripwire"]
+  WE --> RW["rework delivery / successor"]
+  WE --> SH["ship-ready / land"]
+
+  GP --> Q["question relay"]
+  GP --> ZG["zombie gate / ask hygiene"]
+  GP --> SS["stale approved ship"]
+  GP --> FR["Founder reply rider"]
+
+  LC --> RR["MCP / Chrome / viewer / terminal"]
+  LC --> WT["worktree / branch sweep"]
+
+  classDef host fill:#10213f,stroke:#69a8ff,color:#f5f8ff,stroke-width:2px;
+  classDef rider fill:#172d25,stroke:#63d8a0,color:#f5fff9;
+  classDef newface fill:#3c2c13,stroke:#f4bb55,color:#fff8e8,stroke-width:2px;
+  class HB,WE,GP,RI,LW,BW,DT,LC host;
+  class SL,CR,RH,CF,SG,TP,DE,RW,SH,Q,ZG,SS,FR,RR,WT rider;
+  class PL newface;

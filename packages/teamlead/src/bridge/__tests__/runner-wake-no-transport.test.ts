@@ -112,4 +112,61 @@ describe("sendRunnerWake — FLY-493 no-transport guard", () => {
 			events.some((e) => e.event_type === "runner_wake_no_transport"),
 		).toBe(false);
 	});
+
+	it("terminal status short-circuits before transport and emits no wake_failed noise", async () => {
+		store.upsertSession({
+			execution_id: "exec-dead",
+			issue_id: "issue-dead",
+			project_name: "flywheel",
+			status: "failed",
+			adapter_type: "claude-tmux",
+		});
+
+		await sendRunnerWake(
+			store,
+			throwingDb,
+			"exec-dead",
+			{ issue_id: "issue-dead", project_name: "flywheel" },
+			"approval_wake",
+		);
+
+		expect(store.getEventsByExecution("exec-dead")).toEqual([
+			expect.objectContaining({
+				event_type: "runner_wake_skipped",
+				payload: expect.objectContaining({
+					skippedReason: "terminal_status",
+				}),
+			}),
+		]);
+	});
+
+	it("deduplicates repeated wake failures by execution and question", async () => {
+		store.upsertSession({
+			execution_id: "exec-dedupe",
+			issue_id: "issue-dedupe",
+			project_name: "flywheel",
+			status: "approved_to_ship",
+			adapter_type: "claude-tmux",
+			review_question_id: "question-1",
+		});
+		for (let attempt = 0; attempt < 2; attempt++) {
+			await sendRunnerWake(
+				store,
+				throwingDb,
+				"exec-dedupe",
+				{
+					issue_id: "issue-dedupe",
+					project_name: "flywheel",
+					review_question_id: "question-1",
+				},
+				"approval_wake",
+				{ questionId: "question-1" },
+			);
+		}
+		expect(
+			store
+				.getEventsByExecution("exec-dedupe")
+				.filter((event) => event.event_type === "runner_wake_failed"),
+		).toHaveLength(1);
+	});
 });

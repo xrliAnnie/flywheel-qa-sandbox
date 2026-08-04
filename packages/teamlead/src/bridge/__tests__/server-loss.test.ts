@@ -122,6 +122,30 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		expect(tadashi!.content).not.toContain("FLY-1006"); // honey-lemon's runner
 	});
 
+	it("server DOWN narrows auto-migration to Claude and holds Codex/unknown tmux vendors", async () => {
+		const claude = session(1, "tadashi");
+		const codex = {
+			...session(2, "tadashi"),
+			adapter_type: "codex-tmux",
+		};
+		const unknown = {
+			...session(3, "tadashi"),
+			adapter_type: "future-tmux",
+		};
+		const coordinator = makeCoordinator({
+			sessions: [claude, codex, unknown],
+			probe: "down",
+		});
+
+		const result = await coordinator.check();
+
+		expect(migrations.map((migration) => migration.execId)).toEqual(["exec-1"]);
+		expect(result.claimed).toEqual(new Set(["exec-1"]));
+		expect(result.heldExecutionIds).toEqual(new Set(["exec-2", "exec-3"]));
+		expect(store.getSession("exec-2")?.status).toBe("running");
+		expect(store.getSession("exec-3")?.status).toBe("running");
+	});
+
 	it("second check after migration is quiet (sessions left running=0 → no re-fire)", async () => {
 		const coordinator = makeCoordinator({
 			sessions: incidentFleet(),
@@ -207,6 +231,27 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		expect(claimed.size).toBe(13);
 		expect(alerts).toHaveLength(1);
 		expect(alerts[0]!.body).toContain("重启");
+	});
+
+	it("boot fresh-server leg excludes Codex/unknown runners from casualties and holds them", async () => {
+		const claude = incidentFleet().slice(0, 3);
+		const codex = { ...session(20, "tadashi"), adapter_type: "codex-tmux" };
+		const unknown = { ...session(21, "tadashi"), adapter_type: "future-tmux" };
+		const coordinator = makeCoordinator({
+			sessions: [...claude, codex, unknown],
+			probe: "up",
+			targetGone: async () => true,
+		});
+
+		const result = await coordinator.check();
+
+		expect(result.claimed).toEqual(
+			new Set(claude.map((item) => item.execution_id)),
+		);
+		expect(result.heldExecutionIds).toEqual(new Set(["exec-20", "exec-21"]));
+		expect(migrations.map((item) => item.execId)).toEqual(
+			claude.map((item) => item.execution_id),
+		);
 	});
 
 	it("boot leg respects the mass-loss threshold (2 sessions < default 3 → no fire)", async () => {
@@ -354,6 +399,34 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		expect(new Set(migrations.map((m) => m.episode))).toEqual(
 			new Set(["tmux-server-lost:1000"]),
 		);
+	});
+
+	it("upgrade replay removes a previously claimed Codex runner without migrating it", async () => {
+		const claude = session(1, "tadashi");
+		const codex = { ...session(2, "tadashi"), adapter_type: "codex-tmux" };
+		const coordinator = makeCoordinator({
+			sessions: [claude, codex],
+			probe: "down",
+		});
+		store.setServerLossEpisode("tmux-server-lost:legacy", {
+			shape: "server_down",
+			claimed: [claude.execution_id, codex.execution_id],
+			ticketDone: false,
+			notifiedLeads: [],
+			failedLeads: [],
+			notifyAttempts: {},
+		});
+
+		const result = await coordinator.check();
+
+		expect(migrations.map((item) => item.execId)).toEqual([
+			claude.execution_id,
+		]);
+		expect(result.heldExecutionIds).toContain(codex.execution_id);
+		expect(store.getSession(codex.execution_id)?.status).toBe("running");
+		expect(store.getServerLossEpisode()?.state.claimed).toEqual([
+			claude.execution_id,
+		]);
 	});
 
 	it("a stale ACTIVE ticket alone (no ledger) never swallows a NEW incident (Codex R3 HIGH-2)", async () => {

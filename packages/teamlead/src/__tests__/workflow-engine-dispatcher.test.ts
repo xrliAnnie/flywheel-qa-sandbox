@@ -1277,6 +1277,87 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
+	it("FLY-1596 anchor: recovers a held targetless rework after terminal and dead-process evidence", async () => {
+		const store = await storeWithQaFailKickback();
+		const fake = fakeStartDispatcher(store);
+		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run("UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'");
+		db.run(
+			`UPDATE workflow_rework_delivery
+			    SET state = 'held', last_error = 'persisted_target_missing'
+			  WHERE request_id = ?`,
+			[requestId],
+		);
+		const reconcileWorkflowRework = vi.fn(async () => ({
+			kind: "busy" as const,
+		}));
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1628-held-rework-")),
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-16T00:30:00.000Z"),
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness: async () => "dead",
+			reconcileWorkflowRework,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(reconcileWorkflowRework).not.toHaveBeenCalled();
+		expect(fake.start).toHaveBeenCalledOnce();
+		const launched = fake.requests[0]?.generalizedExecution?.executionId;
+		expect(launched).toEqual(expect.any(String));
+		expect(launched).not.toBe("implement-1");
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
+			state: "running",
+			execution_id: launched,
+		});
+		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+			state: "wake_delivered",
+		});
+		store.close();
+	});
+
+	it("keeps a held targetless rework frozen while its actor may still be alive", async () => {
+		const store = await storeWithQaFailKickback();
+		const fake = fakeStartDispatcher(store);
+		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run("UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'");
+		db.run(
+			`UPDATE workflow_rework_delivery
+			    SET state = 'held', last_error = 'persisted_target_missing'
+			  WHERE request_id = ?`,
+			[requestId],
+		);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			probeLaunchLiveness: async () => "alive",
+			reconcileWorkflowRework: async () => ({ kind: "busy" }),
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(fake.start).not.toHaveBeenCalled();
+		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+			state: "held",
+			last_error: "persisted_target_missing",
+		});
+		store.close();
+	});
+
 	it("fences and rolls back a proven-dead replacement that never launches", async () => {
 		const store = await storeWithQaFailKickback();
 		const start = vi.fn(async () => {

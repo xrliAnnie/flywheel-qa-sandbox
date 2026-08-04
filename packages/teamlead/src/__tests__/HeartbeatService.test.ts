@@ -116,6 +116,42 @@ describe("HeartbeatService", () => {
 		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
 	});
 
+	it("dispatches residue maintenance once after a throwing server-loss phase", async () => {
+		const order: string[] = [];
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		service = new HeartbeatService(
+			store as any,
+			notifier as any,
+			15,
+			60_000,
+			60,
+			undefined,
+			24,
+			6 * 3_600_000,
+			undefined,
+			48,
+			undefined,
+			undefined,
+			undefined,
+			{
+				check: async () => {
+					order.push("server-loss");
+					throw new Error("probe failed");
+				},
+			},
+			undefined,
+			async () => {
+				order.push("maintenance");
+			},
+		);
+
+		await service.check();
+		await vi.waitFor(() =>
+			expect(order).toEqual(["server-loss", "maintenance"]),
+		);
+		error.mockRestore();
+	});
+
 	// --- FLY-639: StateStore corruption containment + self-heal ---
 
 	it("check() never rejects on a StateStore throw — it logs, self-heals, and skips the cycle", async () => {

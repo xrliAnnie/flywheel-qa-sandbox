@@ -60,6 +60,7 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		"runner_login_expired",
 		"runner_throttle_stalled",
 		"ship_attempt_failed",
+		"runner_pane_loss",
 		"tui_window_lost",
 		"restart_guard_bypass",
 		"restart_storm_hold",

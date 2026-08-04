@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Flywheel 守护机制审计 · FLY-1628</title>
+  <style>
+    :root{--ink:#172033;--muted:#667085;--line:#d8dee9;--paper:#fff;--wash:#f4f7fb;--blue:#246bfd;--green:#14855f;--amber:#a56400;--red:#b42318;--navy:#172b4d;--shadow:0 16px 45px rgba(23,32,51,.10)}
+    *{box-sizing:border-box}html{background:#e9eef5;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",Arial,sans-serif}body{margin:0}.page{width:min(1440px,calc(100% - 40px));margin:28px auto;background:var(--paper);border:1px solid #dfe5ee;border-radius:24px;box-shadow:var(--shadow);overflow:hidden}.hero{padding:56px 64px 44px;background:linear-gradient(135deg,#f8fbff 0%,#eef5ff 55%,#f8fafc 100%);border-bottom:1px solid var(--line)}.eyebrow{font-size:13px;font-weight:700;letter-spacing:.12em;color:var(--blue);text-transform:uppercase}.hero h1{font-size:44px;line-height:1.12;letter-spacing:-.035em;margin:12px 0 14px}.hero p{font-size:19px;line-height:1.65;max-width:980px;color:#42526b;margin:0}.stamp{display:inline-flex;margin-top:24px;padding:9px 13px;border-radius:999px;background:#e9f8f1;color:#087052;font-weight:700;font-size:14px}.section{padding:42px 64px;border-bottom:1px solid var(--line)}h2{font-size:29px;letter-spacing:-.025em;margin:0 0 20px}h3{font-size:20px;margin:0 0 10px}.lead{font-size:18px;line-height:1.65;color:#42526b;max-width:1050px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:24px}.metric{background:var(--wash);border:1px solid #e0e6ef;border-radius:16px;padding:20px}.metric b{display:block;font-size:31px;letter-spacing:-.03em}.metric span{display:block;color:var(--muted);margin-top:5px;font-size:14px;line-height:1.4}.metric.ok b{color:var(--green)}.metric.warn b{color:var(--amber)}.quote{border-left:4px solid var(--blue);padding:13px 18px;margin:22px 0 0;background:#f7faff;border-radius:0 12px 12px 0;font-size:18px;line-height:1.6}.diagram{background:#0f1e36;border-radius:20px;padding:24px;overflow:auto;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}svg{display:block;width:100%;min-width:1060px;height:auto}.diagram-note{font-size:13px;color:#65758b;margin-top:12px}.legend{display:flex;gap:18px;flex-wrap:wrap;margin:0 0 14px;font-size:14px}.dot{width:10px;height:10px;display:inline-block;border-radius:999px;margin-right:7px}.host{background:#69a8ff}.rider{background:#63d8a0}.new{background:#f4bb55}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:16px}table{width:100%;border-collapse:collapse;min-width:1120px;font-size:14px}th{background:#f5f7fa;color:#475467;text-align:left;padding:12px 14px;border-bottom:1px solid var(--line);position:sticky;top:0}td{padding:13px 14px;border-bottom:1px solid #edf0f4;vertical-align:top;line-height:1.5}tr:last-child td{border-bottom:0}.tag{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}.keep{background:#e7f7ef;color:#087052}.merge{background:#fff3d6;color:#8b5900}.delete{background:#feeceb;color:#9b1c14}.rider-tag{background:#eaf1ff;color:#175cd3}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{border:1px solid var(--line);border-radius:16px;padding:20px;background:#fff}.card p,.card li{color:#536179;line-height:1.55}.card ul{padding-left:19px;margin:10px 0 0}.card.now{border-top:4px solid var(--green)}.card.next{border-top:4px solid var(--amber)}.card.stop{border-top:4px solid var(--red)}.proof{display:grid;grid-template-columns:1fr 1fr;gap:16px}.code{background:#111a2b;color:#dce8ff;border-radius:14px;padding:18px;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:auto;white-space:pre}.anchor{border:1px solid var(--line);border-radius:16px;padding:19px}.anchor strong{font-size:17px}.anchor p{margin:9px 0 0;color:#536179;line-height:1.6}.footer{padding:28px 64px 38px;color:#7b8798;font-size:13px;background:#fafbfc}.small{font-size:13px;color:var(--muted)}@media(max-width:900px){.page{width:100%;margin:0;border-radius:0}.hero,.section{padding:34px 24px}.hero h1{font-size:34px}.metrics,.grid,.proof{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<main class="page">
+  <header class="hero">
+    <div class="eyebrow">FLY-1628 · Reliability architecture audit</div>
+    <h1>Flywheel 为什么看起来有十来个“守护机制”</h1>
+    <p>结论：担忧成立，但问题主要是<strong>同一宿主里的 rider 被当成独立 watchdog 命名</strong>，加上资源清理各自长出 scheduler。FLY-1628 不再增加一个时钟；它进入现有 residue 与 workflow 两条恢复主干。</p>
+    <div class="stamp">本 PR 新增独立机制：0</div>
+  </header>
+
+  <section class="section">
+    <h2>先把数量说清楚</h2>
+    <p class="lead">代码里能搜到二十多个带 watchdog / reconciler / reaper / coordinator 名字的组件，但它们不是二十多个独立 daemon。按“谁拥有 cadence / thread”去重，本次审计得到 8 个核心可靠性宿主；其余多数是挂在宿主里的有序 face 或一次性 cleanup。</p>
+    <div class="metrics">
+      <div class="metric warn"><b>20+</b><span>带“守护/修复”语义的命名组件</span></div>
+      <div class="metric"><b>8</b><span>核心 cadence / worker 宿主</span></div>
+      <div class="metric"><b>4</b><span>已合并进 ResidueHarvester 的账实修复 face</span></div>
+      <div class="metric ok"><b>0</b><span>FLY-1628 新增 timer / daemon / worker</span></div>
+    </div>
+    <div class="quote">“我们为什么会有十来个守护机制?画个图给我看看?这个听起来已经是个问题了”</div>
+  </section>
+
+  <section class="section">
+    <h2>机制拓扑：时钟在上，rider 在下</h2>
+    <div class="legend"><span><i class="dot host"></i>独立宿主</span><span><i class="dot rider"></i>宿主内 rider / face</span><span><i class="dot new"></i>FLY-1628 新 face</span></div>
+    <div class="diagram">
+      <svg viewBox="0 0 1240 720" role="img" aria-label="Flywheel reliability mechanism topology">
+        <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6f87a9"/></marker><filter id="shadow"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-opacity=".22"/></filter></defs>
+        <g stroke="#6f87a9" stroke-width="2" fill="none" marker-end="url(#arrow)">
+          <path d="M145 120V205"/><path d="M145 120C145 165 332 165 332 205"/><path d="M145 120C145 155 525 155 525 205"/>
+          <path d="M525 275V342"/><path d="M525 275C525 315 395 315 395 342"/><path d="M525 275C525 315 655 315 655 342"/><path d="M525 275C525 305 785 305 785 342"/>
+          <path d="M425 120C425 160 938 160 938 205"/><path d="M425 120C425 160 1065 160 1065 205"/>
+          <path d="M705 120V205"/><path d="M705 120C705 165 812 165 812 205"/>
+          <path d="M985 120V342"/><path d="M1125 120V342"/>
+          <path d="M145 465V545"/><path d="M425 465V545"/><path d="M705 465V545"/><path d="M985 465V545"/>
+        </g>
+        <g font-family="-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif" text-anchor="middle" filter="url(#shadow)">
+          <g fill="#17345f" stroke="#69a8ff" stroke-width="2"><rect x="40" y="45" width="210" height="75" rx="14"/><rect x="320" y="45" width="210" height="75" rx="14"/><rect x="600" y="45" width="210" height="75" rx="14"/><rect x="880" y="45" width="210" height="75" rx="14"/><rect x="1020" y="45" width="180" height="75" rx="14"/></g>
+          <g fill="#f8fbff" font-size="16" font-weight="700"><text x="145" y="76">HeartbeatService</text><text x="145" y="99" font-size="12" font-weight="500">runner 现实巡检</text><text x="425" y="76">Workflow Engine</text><text x="425" y="99" font-size="12" font-weight="500">DAG 事务推进</text><text x="705" y="76">GatePoller</text><text x="705" y="99" font-size="12" font-weight="500">问答 / 审批</text><text x="985" y="76">Lead / Runner Idle</text><text x="985" y="99" font-size="12" font-weight="500">外部活性观测</text><text x="1110" y="76">Bridge Watchdog</text><text x="1110" y="99" font-size="12" font-weight="500">独立 worker</text></g>
+          <g fill="#183f34" stroke="#63d8a0"><rect x="40" y="205" width="210" height="70" rx="13"/><rect x="275" y="205" width="210" height="70" rx="13"/><rect x="510" y="205" width="210" height="70" rx="13"/><rect x="745" y="205" width="195" height="70" rx="13"/><rect x="955" y="205" width="215" height="70" rx="13"/></g>
+          <g fill="#effff7" font-size="14" font-weight="700"><text x="145" y="235">ServerLossCoordinator</text><text x="145" y="255" font-size="11" font-weight="500">整服事故分组</text><text x="380" y="235">dead-exec / rework</text><text x="380" y="255" font-size="11" font-weight="500">successor 事务</text><text x="615" y="235">Gate hygiene riders</text><text x="615" y="255" font-size="11" font-weight="500">zombie / stale ship / reply</text><text x="842" y="235">CrashReaper</text><text x="842" y="255" font-size="11" font-weight="500">dead-pin 清理</text><text x="1062" y="235">ResidueHarvester</text><text x="1062" y="255" font-size="11" font-weight="500">single-flight 账实修复</text></g>
+          <g fill="#183f34" stroke="#63d8a0"><rect x="275" y="342" width="160" height="60" rx="12"/><rect x="445" y="342" width="160" height="60" rx="12"/><rect x="615" y="342" width="160" height="60" rx="12"/></g><rect x="785" y="342" width="190" height="60" rx="12" fill="#4b3512" stroke="#f4bb55" stroke-width="2"/>
+          <g fill="#effff7" font-size="13" font-weight="700"><text x="355" y="369">CommDB ↔ FSM</text><text x="355" y="387" font-size="10" font-weight="500">FLY-817</text><text x="525" y="369">StateStore ghost</text><text x="525" y="387" font-size="10" font-weight="500">FLY-1066</text><text x="695" y="369">terminal prune</text><text x="695" y="387" font-size="10" font-weight="500">dead residue</text></g><g fill="#fff6dd" font-size="13" font-weight="700"><text x="880" y="369">pane-loss face</text><text x="880" y="387" font-size="10" font-weight="500">FLY-1628 · 无新时钟</text></g>
+          <g fill="#17345f" stroke="#69a8ff" stroke-width="2"><rect x="40" y="465" width="210" height="70" rx="14"/><rect x="320" y="465" width="210" height="70" rx="14"/><rect x="600" y="465" width="210" height="70" rx="14"/><rect x="880" y="465" width="210" height="70" rx="14"/></g>
+          <g fill="#f8fbff" font-size="15" font-weight="700"><text x="145" y="495">DoneThread scheduler</text><text x="145" y="516" font-size="11" font-weight="500">thread 最终收口</text><text x="425" y="495">Lifecycle sweep</text><text x="425" y="516" font-size="11" font-weight="500">worktree / branch</text><text x="705" y="495">Resource reapers</text><text x="705" y="516" font-size="11" font-weight="500">MCP / Chrome / viewer / tab</text><text x="985" y="495">Lead lease / runtime</text><text x="985" y="516" font-size="11" font-weight="500">supervisor / delivery</text></g>
+          <g fill="#183f34" stroke="#63d8a0"><rect x="55" y="545" width="180" height="58" rx="12"/><rect x="335" y="545" width="180" height="58" rx="12"/><rect x="615" y="545" width="180" height="58" rx="12"/><rect x="895" y="545" width="180" height="58" rx="12"/></g>
+          <g fill="#effff7" font-size="12" font-weight="700"><text x="145" y="579">Done/Canceled + no live body</text><text x="425" y="579">repo mutation lock</text><text x="705" y="579">TERM → KILL / UI close</text><text x="985" y="579">lease episodes / event ack</text></g>
+        </g>
+        <text x="620" y="680" text-anchor="middle" fill="#a9b9cf" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif" font-size="14">命名组件很多；真正需要独立 cadence 的宿主更少。下一步应收敛宿主，而不是继续添 watcher。</text>
+      </svg>
+    </div>
+    <p class="diagram-note">图源同时保存在 Mermaid source；本页内嵌静态 SVG，打开时不执行任何客户端脚本。</p>
+  </section>
+
+  <section class="section">
+    <h2>逐项审计：看什么、为什么存在、下一步怎么办</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>机制 / 宿主</th><th>看什么</th><th>事故背景</th><th>当前归属</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td><b>HeartbeatService</b></td><td>running/parked session 的 heartbeat、tmux、monitor loss</td><td>长期 runner orphan 与监控失联</td><td><span class="tag rider-tag">独立宿主</span></td><td><span class="tag keep">保留</span> 作为 runner reality 主时钟</td></tr>
+        <tr><td><b>ServerLossCoordinator</b></td><td>tmux server down / fresh-empty 的舰队级事故</td><td>FLY-1082：13 个 runner 同时死，被当成 13 次个人事故</td><td>Heartbeat rider</td><td><span class="tag keep">保留</span> 必须先于 per-runner reaper</td></tr>
+        <tr><td><b>CrashReaper</b></td><td>remain-on-exit 的 dead-pin</td><td>FLY-720：crash 后窗口假活、永久 readopt</td><td>Heartbeat rider</td><td><span class="tag keep">保留</span> 与 pane-loss 边界不同</td></tr>
+        <tr><td><b>ResidueHarvester</b></td><td>CommDB / StateStore / tmux 三账残差</td><td>FLY-1066：各层 ghost 各自漏清理</td><td>Heartbeat + boot rider</td><td><span class="tag keep">保留</span> 作为统一 face registry</td></tr>
+        <tr><td>CommDB ↔ FSM face</td><td>FSM 已终态但 CommDB 仍 active</td><td>FLY-817</td><td>Residue face</td><td><span class="tag merge">合并</span> 删除额外 direct boot 调用，只走 harvester</td></tr>
+        <tr><td>StateStore ghost face</td><td>StateStore 有 session、CommDB/实体已无</td><td>FLY-1066 Layer 3</td><td>Residue face</td><td><span class="tag keep">保留</span></td></tr>
+        <tr><td>Done-but-running</td><td>完成证据已在，但 row 仍 running</td><td>FLY-324</td><td>独立 boot pass</td><td><span class="tag merge">并入 Residue</span> 不应另有入口</td></tr>
+        <tr><td><b>Pane-loss face</b></td><td>active ledger 与已换代 tmux body</td><td>FLY-1628：fleet restart 成批制造</td><td>Residue face</td><td><span class="tag keep">本 PR</span> 无 timer；generation-fenced</td></tr>
+        <tr><td><b>WorkflowEngineDispatcher</b></td><td>DAG side-effect、dead exec、rework、ship-ready</td><td>FLY-1372 之后 engine-owned recovery</td><td><span class="tag rider-tag">独立宿主</span></td><td><span class="tag keep">保留</span> SQLite 事务域不同</td></tr>
+        <tr><td><b>GatePoller</b></td><td>question/gate 投递与回答</td><td>FLY-62 / FLY-161</td><td><span class="tag rider-tag">独立宿主</span></td><td><span class="tag keep">保留</span> rider 显式注册</td></tr>
+        <tr><td>Zombie gate / stale ship / Founder reply</td><td>失主 gate、旧 approval、Founder reply cursor</td><td>FLY-1099、FLY-1505 等</td><td>GatePoller riders</td><td><span class="tag delete">删旧 Z1</span> production-disabled replay seam 另立清退单</td></tr>
+        <tr><td><b>RunnerIdleWatchdog</b></td><td>pane 安静/idle shell</td><td>FLY-92</td><td><span class="tag rider-tag">独立宿主</span></td><td><span class="tag merge">评估并入 Heartbeat</span> 同为 runner pane 观测</td></tr>
+        <tr><td><b>LeadWatchdog</b></td><td>Lead pane 的 login/quota/permission 阻塞</td><td>FLY-83；静态 pane 推断已在 FLY-1570 删除</td><td><span class="tag rider-tag">独立宿主</span></td><td><span class="tag keep">保留</span> Lead plane 独立</td></tr>
+        <tr><td><b>BridgeEventLoopWatchdog</b></td><td>主线程 heartbeat</td><td>FLY-307：WASM trap 让 Bridge 挂死但不 crash</td><td><span class="tag rider-tag">独立 worker</span></td><td><span class="tag keep">必须独立</span> 同线程无法自救</td></tr>
+        <tr><td><b>Complete marker replay</b></td><td>Bridge downtime 时落盘的 completion debt</td><td>FLY-172：真完成被误判 crash</td><td>boot + Heartbeat rider</td><td><span class="tag merge">并入 Residue manifest</span></td></tr>
+        <tr><td><b>DoneThread scheduler</b></td><td>Done/Canceled issue 的遗留 thread</td><td>FLY-1165：35 个 thread 未 archive</td><td><span class="tag rider-tag">独立宿主</span></td><td><span class="tag merge">并入 Lifecycle sweep</span></td></tr>
+        <tr><td><b>Lifecycle sweep</b></td><td>worktree / branch / quarantine</td><td>FLY-1185</td><td>fleet reconcile host</td><td><span class="tag keep">保留</span> repo mutation lock 域</td></tr>
+        <tr><td>MCP / Chrome / viewer / terminal reapers</td><td>runner 旁路进程与 UI 资源</td><td>FLY-1185、FLY-754、FLY-116</td><td>多个 boot / interval 入口</td><td><span class="tag merge">合成 resource cleanup phase</span></td></tr>
+        <tr><td><b>Lead lease / runtime delivery</b></td><td>Lead lease episode、inbox/runtime event ack</td><td>Lead replacement 与重复 active</td><td>独立 control-plane host</td><td><span class="tag keep">保留</span> 与 runner lifecycle 分域</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="section">
+    <h2>建议：保留 4 条主干，停止继续长名字</h2>
+    <div class="grid">
+      <article class="card now"><h3>现在 · FLY-1628</h3><ul><li>pane-loss 进入 ResidueHarvester</li><li>DAG 锚点进入 WorkflowEngineDispatcher</li><li>不新增 timer / daemon / status machine</li><li>普通 runner 不自动重派</li></ul></article>
+      <article class="card next"><h3>下一轮 · 合并入口</h3><ul><li>Done-running、complete marker 统一注册成 residue faces</li><li>DoneThread 并入 lifecycle cadence</li><li>MCP/Chrome/viewer/tab 合成 resource cleanup phase</li><li>用一张 manifest 暴露 owner、cadence、order、kill switch</li></ul></article>
+      <article class="card stop"><h3>清退 · 删除死机制</h3><ul><li>移除重复 CommDB FSM direct boot 入口</li><li>清退 production-disabled zombie-gate Z1 seam</li><li>停止用 “Watchdog” 给普通 rider 命名</li><li>新事故默认先扩 predicate，不先建 scheduler</li></ul></article>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>时区安全证明与生产锚点</h2>
+    <div class="proof">
+      <div>
+        <h3>tmux generation 不使用墙钟</h3>
+        <div class="code">capture:
+tmux new-window -P -F
+'#{window_id}|#{socket_path}|#{start_time}'
+
+persist:
+session_params.pane_loss_generation = {
+  socket_path: string,
+  server_start_time: "^[0-9]+$"
+}
+
+probe:
+tmux -S &lt;socket&gt; display-message -p '#{start_time}'
+
+compare:
+current.startTime === recorded.server_start_time</div>
+        <p class="small">两边都是 tmux 原生 POSIX epoch 秒的十进制字符串；无 `Date`、ISO、locale、TZ 或 DST 转换。字段不可读即 `indeterminate`，不终态化。</p>
+      </div>
+      <div>
+        <h3>两个 ship 后必须收敛的锚点</h3>
+        <div class="anchor"><strong>FLY-1572 · run d0bc75a4…</strong><p>`implement@1 running` + terminal session `11e95f4a…` + CommDB/marker/host process 全无 → existing dead-exec rollback mint successor。任一证据不确定则保持。</p></div>
+        <div class="anchor" style="margin-top:12px"><strong>FLY-1596 · run 9c785ed9…</strong><p>`implement@2 pending` + run/delivery held + `persisted_target_missing` + terminal actor `695938e5…` → 单事务解冻、换 fresh execution、走原 fenced dispatch；alive/unknown 零 mutation。</p></div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">审计范围：Flywheel Bridge / Teamlead runtime 中与 liveness、账实修复、gate hygiene、lifecycle cleanup 相关的生产 wiring。代码快照：FLY-1628 worktree，2026-08-04。</footer>
+</main>
+</body>
+</html>

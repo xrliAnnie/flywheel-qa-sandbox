@@ -43,6 +43,10 @@ describe("createResidueHarvester", () => {
 					`state:${project}:${evidence.map((item) => item.executionId).join(",")}`,
 				);
 			}),
+			harvestPaneLoss: vi.fn(async (project) => {
+				calls.push(`pane:${project}`);
+				return "ran" as const;
+			}),
 			reapStateStoreGhost: vi.fn(async () => false),
 			log: vi.fn(),
 		});
@@ -52,9 +56,11 @@ describe("createResidueHarvester", () => {
 			"comm:flywheel",
 			"prune:flywheel",
 			"state:flywheel:exec-flywheel",
+			"pane:flywheel",
 			"comm:joycon",
 			"prune:joycon",
 			"state:joycon:exec-joycon",
+			"pane:joycon",
 		]);
 	});
 
@@ -68,6 +74,7 @@ describe("createResidueHarvester", () => {
 			harvestCommDb,
 			pruneTerminalCommDb,
 			harvestStateStoreGhosts,
+			harvestPaneLoss: vi.fn(async () => "ran" as const),
 			reapStateStoreGhost: vi.fn(async () => false),
 		});
 
@@ -88,6 +95,7 @@ describe("createResidueHarvester", () => {
 			harvestCommDb: vi.fn(async () => {}),
 			pruneTerminalCommDb: vi.fn(async () => []),
 			harvestStateStoreGhosts: vi.fn(async () => {}),
+			harvestPaneLoss: vi.fn(async () => "ran" as const),
 			reapStateStoreGhost,
 		});
 
@@ -107,6 +115,7 @@ describe("createResidueHarvester", () => {
 			harvestCommDb: vi.fn(async () => held),
 			pruneTerminalCommDb: vi.fn(async () => []),
 			harvestStateStoreGhosts: vi.fn(async () => {}),
+			harvestPaneLoss: vi.fn(async () => "ran" as const),
 			reapStateStoreGhost,
 		});
 

@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
 import type { WorkflowLaunchOwnerRow } from "../StateStore.js";
 import {
+	discoverTmuxTargetByExecutionId,
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
 	type RunnerLiveness,
+	type RunnerTmuxTargetDiscovery,
 	type TmuxTargetLookup,
 } from "./tmux-lookup.js";
 
@@ -11,16 +13,21 @@ export type GeneralizedLaunchLiveness = "alive" | "dead" | "unknown";
 export type GeneralizedLaunchTargetLookup = TmuxTargetLookup;
 
 interface GeneralizedLaunchProbeDeps {
-	lookup: (executionId: string, projectName: string) => TmuxTargetLookup;
-	probe: (tmuxWindow: string) => Promise<RunnerLiveness>;
+	lookup?: (executionId: string, projectName: string) => TmuxTargetLookup;
+	probe?: (tmuxWindow: string) => Promise<RunnerLiveness>;
+	discover?: (executionId: string) => Promise<RunnerTmuxTargetDiscovery>;
 	/** Does ANY process on this host reference the execution id? */
 	hasHostProcess?: (executionId: string) => Promise<boolean>;
+	/** Terminal-session callers may combine three independent absence proofs. */
+	allowMissingTargetHostAbsence?: boolean;
 }
 
 /** `pgrep -f <executionId>`: exit 0 = at least one match. Errors (incl. exit 1
  * = no match) resolve false-vs-true conservatively: only a clean "no match"
  * proves absence; spawn failures return true so the verdict stays "unknown". */
-function defaultHasHostProcess(executionId: string): Promise<boolean> {
+export function hasHostProcessByExecutionId(
+	executionId: string,
+): Promise<boolean> {
 	return new Promise((resolve) => {
 		try {
 			execFile("pgrep", ["-f", executionId], (error) => {
@@ -42,14 +49,30 @@ function defaultHasHostProcess(executionId: string): Promise<boolean> {
 export async function probeGeneralizedLaunchLiveness(
 	executionId: string,
 	projectName: string,
-	deps: GeneralizedLaunchProbeDeps = {
-		lookup: lookupTmuxTarget,
-		probe: probeRunnerProcessLiveness,
-	},
+	deps: GeneralizedLaunchProbeDeps = {},
 ): Promise<GeneralizedLaunchLiveness> {
-	const lookup = deps.lookup(executionId, projectName);
-	if (lookup.kind !== "found") {
+	const lookup = (deps.lookup ?? lookupTmuxTarget)(executionId, projectName);
+	if (lookup.kind === "error") {
 		return "unknown";
+	}
+	if (lookup.kind === "gone") {
+		if (!deps.allowMissingTargetHostAbsence) return "unknown";
+		const discovery = await (deps.discover ?? discoverTmuxTargetByExecutionId)(
+			executionId,
+		);
+		if (discovery.kind === "found") {
+			const state = await (deps.probe ?? probeRunnerProcessLiveness)(
+				discovery.tmuxWindow,
+			);
+			if (state === "alive") return "alive";
+			if (state === "dead_pin" || state === "absent") return "dead";
+			return "unknown";
+		}
+		if (discovery.kind !== "missing") return "unknown";
+		const hasProcess = await (
+			deps.hasHostProcess ?? hasHostProcessByExecutionId
+		)(executionId);
+		return hasProcess ? "unknown" : "dead";
 	}
 	if (lookup.target.tmuxWindow.endsWith(":pending")) {
 		// 2026-07-24 incident (founder-directed hotfix): a runner that dies
@@ -60,12 +83,14 @@ export async function probeGeneralizedLaunchLiveness(
 		// If NO process on this host references the execution id, the runner
 		// cannot be alive: that is death evidence, not uncertainty. Conservative
 		// direction: any matching process keeps the verdict at "unknown".
-		const hasProcess = await (deps.hasHostProcess ?? defaultHasHostProcess)(
-			executionId,
-		);
+		const hasProcess = await (
+			deps.hasHostProcess ?? hasHostProcessByExecutionId
+		)(executionId);
 		return hasProcess ? "unknown" : "dead";
 	}
-	const state = await deps.probe(lookup.target.tmuxWindow);
+	const state = await (deps.probe ?? probeRunnerProcessLiveness)(
+		lookup.target.tmuxWindow,
+	);
 	if (state === "alive") return "alive";
 	if (state === "dead_pin" || state === "absent") return "dead";
 	return "unknown";
