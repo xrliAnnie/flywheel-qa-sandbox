@@ -169,8 +169,9 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		});
 	});
 
-	it("FLY-1570 keeps legacy runner chase kinds human-only", () => {
+	it("FLY-1570 keeps legacy chase kinds human-only", () => {
 		for (const kind of [
+			"pane_hash_stuck",
 			"runner_stuck_unhandled",
 			"runner_throttle_stalled",
 		] as const) {

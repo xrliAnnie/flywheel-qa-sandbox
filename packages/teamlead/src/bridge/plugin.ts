@@ -382,7 +382,6 @@ import {
 } from "./lead-event-delivery.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
-import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { legacyDeliveryWatchdogsEnabled } from "./legacy-delivery-watchdog-policy.js";
@@ -9950,13 +9949,6 @@ export async function startBridge(
 					// inside the hub, which itself needs a channel + repair chain). Only
 					// retained safe auto-repair actions.
 					autoRepairBot: new AutoRepairBot({
-						leadResumeEnter: (input) =>
-							attemptLeadResumeEnter(input, {
-								store,
-								locateWindowFn: locateLeadWindow,
-								captureFn: leadPaneCaptureFn,
-								sendEnter: sendEnterToWindow,
-							}),
 						// FLY-696: usage_limit → Claude account switch (enqueues a
 						// pending record; the watchdog below fires it). Hoisted +
 						// gated on the account-pool presence (FLY-1243; absent →
@@ -10614,8 +10606,6 @@ export async function startBridge(
 	const leadWatchdog = new LeadWatchdog({
 		pollIntervalMs: leadWatchdogPollIntervalMs,
 		paneHashStuckCycles: 2,
-		paneHashAlertCycles: 3,
-		cooldownMs: 30 * 60_000,
 		// FLY-224 Phase 6b legacy baseline: exclude Codex-backed projects (no
 		// tmux pane) from the pane-text watchdog. BYTE-COMPAT: a project with
 		// no roles.lead config → claude-code → identical list (no-op).
@@ -10642,7 +10632,6 @@ export async function startBridge(
 				fleetLegacyBackendOf,
 				fleetPoller.snapshot(),
 			),
-		store,
 		// FLY-368: route through the unified sink (Hub adds threading + auto-repair
 		// when enabled; otherwise this is the raw notifier — byte-compat).
 		notifier: (payload) => routedAlertSink.alert(payload),
@@ -10651,7 +10640,6 @@ export async function startBridge(
 		captureFn: leadPaneCaptureFn,
 		claimsReader,
 		blockedMarkerReader,
-		legacyDeliveryWatchdogsEnabled: legacyDeliveryWatchdogsOn,
 		watchdogBlockedEnabled: watchdogFlags.blocked,
 		watchdogTracker: watchdogTrackers.blockedLead,
 		// FLY-368: real-time recovery → resolve the matching alert thread (an
@@ -10747,26 +10735,11 @@ export async function startBridge(
 				}
 			}
 		},
-		// FLY-193: default ON now that the idle-pane recognizer is validated
-		// against committed real Lead pane fixtures (see
-		// LeadWatchdog `__tests__/fixtures/lead-panes/`). The recognizer is
-		// fail-open (only suppresses a high-confidence alive-idle pane; every
-		// real freeze — resume/compact menu, frozen-mid-work — still alerts).
-		// Escape hatch: set FLYWHEEL_PANE_IDLE_SUPPRESS=0 to force suppression OFF
-		// and restore the legacy always-alert-on-stuck-pane behavior.
-		suppressIdleHealthy: process.env.FLYWHEEL_PANE_IDLE_SUPPRESS !== "0",
-		// FLY-1048 (A4): multi-frame overlay. FLY-1243: FLYWHEEL_PANE_MULTIFRAME
-		// retired (固化 default-on) — the overlay is always on in production.
-		multiFrame: true,
-		// FLY-1048 (A5): fail-suspicious → quiet owner-Lead report (guardrail
-		// lead_event; never an alert, never founder-facing). Shared deliverer +
-		// owner resolver with the focused-frame unclear path.
-		onSuspicious: deliverSuspicious,
 	});
 	watchdogWiring.blockedLead = true;
 	leadWatchdog.start();
 	console.log(
-		`[Bridge] LeadWatchdog started (${leadWatchdogPollIntervalMs}ms per-Lead staggered poll, pattern-first alert + 3-cycle pane-hash)`,
+		`[Bridge] LeadWatchdog started (${leadWatchdogPollIntervalMs}ms per-Lead staggered poll, recognized blocked conditions only)`,
 	);
 
 	// FLY-83: drain alert queue every 60s so spills from shell path (lead-alert.sh)

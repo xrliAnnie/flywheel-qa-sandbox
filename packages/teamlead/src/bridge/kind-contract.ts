@@ -91,11 +91,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 
 	// ── Provider-agnostic infra kinds — Claude workhorse default (CMP-2).
 	crash_loop: { owner: "claude", arc: "human_by_design" },
-	pane_hash_stuck: {
-		owner: "claude",
-		arc: "auto",
-		remediationRef: "lead-resume-enter (audited single Enter, FLY-368)",
-	},
+	pane_hash_stuck: { owner: "claude", arc: "human_by_design" },
 	pane_error_stalled: { owner: "claude", arc: "human_by_design" },
 	// FLY-1048 PR-C: unified detection escalation kinds. Bridge-side, provider-
 	// neutral default owner (claude); no executable auto-fix — a human decides

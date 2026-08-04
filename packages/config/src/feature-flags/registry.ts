@@ -1502,7 +1502,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	{
 		name: "founder_reply_watchdog",
-		retiring: "FLY-1393",
 		category: "kill_switch",
 		source: "env",
 		scope: "bridge_global",
@@ -1510,8 +1509,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		polarity: "default_on",
 		valueKind: "bool",
 		default: true,
-		description:
-			"founder-reply 摄取 watchdog(pass 死亡/cursor 钉死/unreachable runner 告警)",
+		description: "founder-reply unreachable runner 数据一致性告警",
 		readSites: [
 			envSite(
 				"packages/teamlead/src/bridge/founder-reply-watchdog.ts",
@@ -1775,25 +1773,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/teamlead/src/bridge/plugin.ts",
 				"startBridge",
 				"bridge_boot",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "pane_idle_suppress",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PANE_IDLE_SUPPRESS",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "抑制 alive-idle Lead pane 的 pane_hash_stuck 误报",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createBridgeApp",
-				"object_construction",
 			),
 		],
 		toggleable: "conversational",

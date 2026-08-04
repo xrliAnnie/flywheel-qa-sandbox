@@ -23,12 +23,7 @@ import {
 	type AlertResult,
 	isInformationalKind,
 } from "../LeadAlertNotifier.js";
-import {
-	classifyLeadAlertPane,
-	isIdleHealthyPane,
-	leadPaneHasErrorSignature,
-	leadPaneLiveHash,
-} from "../LeadWatchdog.js";
+import { classifyLeadAlertPane } from "../LeadWatchdog.js";
 import type { AlertThreadRow, StateStore } from "../StateStore.js";
 import { type AutoRepairBot, HUMAN_ONLY_REASON } from "./AutoRepairBot.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
@@ -301,10 +296,6 @@ const LEAD_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"login_expired",
 	"permission_blocked",
 	"crash_loop",
-	"pane_hash_stuck",
-	// FLY-1048 (A4): pane-driven like the rest — reconcile resolves it when
-	// the error signature leaves the live region (see shouldResolveLead).
-	"pane_error_stalled",
 ]);
 
 /**
@@ -341,8 +332,6 @@ export function correlationKeyFor(p: {
 export class AlertChannelHub {
 	private readonly now: () => number;
 	private readonly logger: (msg: string) => void;
-	/** In-memory last-seen live hash per correlation key for the two-capture rule. */
-	private readonly reconcileHashes = new Map<string, string>();
 
 	constructor(private readonly deps: AlertChannelHubDeps) {
 		this.now = deps.now ?? (() => Date.now());
@@ -741,7 +730,6 @@ export class AlertChannelHub {
 		await this.safePostToThread(active.thread_id, this.formatResolved(active));
 		await this.safeArchive(active.thread_id);
 		this.deps.store.resolveAlertThread(correlationKey);
-		this.reconcileHashes.delete(correlationKey);
 	}
 
 	/**
@@ -817,14 +805,7 @@ export class AlertChannelHub {
 							row.project_name,
 							row.lead_id,
 						);
-						if (
-							pane != null &&
-							(await this.shouldResolveLead(
-								row.correlation_key,
-								row.event_type,
-								pane,
-							))
-						) {
+						if (pane != null && this.shouldResolveLead(row.event_type, pane)) {
 							await this.resolve(row.correlation_key);
 							continue;
 						}
@@ -976,32 +957,8 @@ export class AlertChannelHub {
 		return fingerprintOutput(out) !== row.episode_signature;
 	}
 
-	private async shouldResolveLead(
-		correlationKey: string,
-		eventType: string,
-		pane: string,
-	): Promise<boolean> {
-		// FLY-1048 (A4): pane_error_stalled — classify() never returns this kind,
-		// so the blocked-kind rule below would resolve it instantly. Recovered
-		// iff the error signature left the live region (fail-toward-active while
-		// the error is still visible).
-		if (eventType === "pane_error_stalled") {
-			return !leadPaneHasErrorSignature(pane);
-		}
-		if (eventType !== "pane_hash_stuck") {
-			// A blocked kind (rate/usage/login/permission): recovered iff the kind
-			// is no longer present in the live pane.
-			return classifyLeadAlertPane(pane) !== eventType;
-		}
-		// pane_hash_stuck: conservative. Resolve when the pane looks idle-healthy,
-		// OR when the live hash has CHANGED across two reconcile passes (a still-
-		// identical frozen pane is still frozen).
-		if (isIdleHealthyPane(pane)) return true;
-		const hash = leadPaneLiveHash(pane);
-		const prev = this.reconcileHashes.get(correlationKey);
-		if (prev !== undefined && prev !== hash) return true;
-		this.reconcileHashes.set(correlationKey, hash);
-		return false;
+	private shouldResolveLead(eventType: string, pane: string): boolean {
+		return classifyLeadAlertPane(pane) !== eventType;
 	}
 
 	private threadName(payload: AlertPayload): string {

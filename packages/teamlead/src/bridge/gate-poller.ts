@@ -75,7 +75,10 @@ import {
 	type FounderReplyThreadCtx,
 	type PendingQuestionForThread,
 } from "./founder-reply-deliverer.js";
-import { FounderReplyWatchdog } from "./founder-reply-watchdog.js";
+import {
+	FounderReplyWatchdog,
+	founderReplyWatchdogEnabled,
+} from "./founder-reply-watchdog.js";
 import {
 	emitFounderMilestoneNotification,
 	emitFounderThreadNotification,
@@ -503,42 +506,18 @@ export function isSupersededShipGate(
 	return boundMs > qMs;
 }
 
-/**
- * Codex code R4 HIGH: founder-reply pass health (pure, testable). Unhealthy
- * when EVERY scanned thread failed (read/process/exception — the broken-
- * StateStore shape fails every scan as process_failed, never read_failed),
- * OR while ANY dead-letter write is still latched (its recovery anchor is
- * in-memory only, so the pass-dead episode must stay alive until it lands).
- */
-export function computeFounderPassHealthy(
-	scanned: number,
-	failedScans: number,
-	pendingDeadLetters: number,
-): boolean {
-	if (pendingDeadLetters > 0) return false;
-	return scanned === 0 || failedScans < scanned;
-}
-
 export class GatePoller {
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
 	private polling = false;
 	private readonly receiptFoundationOffBootMs = Date.now();
 	private reconcilePatrolPass: Promise<void> | null = null;
 	private parkWatchPass: Promise<void> | null = null;
-	// FLY-1099 §7.2: founder-reply health watchdog + its per-thread routing map
-	// (refreshed by every deliver pass; unknown threads fall back to the infra
-	// owner route).
+	// FLY-1099 §7.2: retained unreachable-runner consistency watchdog.
 	private readonly founderReplyWatchdog: FounderReplyWatchdog;
-	private readonly founderThreadRoutes = new Map<
-		string,
-		{ leadId: string; projectName: string; issueId?: string }
-	>();
 
 	constructor(private config: GatePollerConfig) {
 		this.founderReplyWatchdog = new FounderReplyWatchdog({
-			store: config.store,
 			alertSink: config.leadAlertSink,
-			resolveThreadRoute: (threadId) => this.founderThreadRoutes.get(threadId),
 			infraRoute: () => this.infraAlertRoute(),
 		});
 	}
@@ -619,17 +598,6 @@ export class GatePoller {
 		// internals are already wrapped (per-lead + founder-reply try/catch), this
 		// is belt-and-suspenders for any scaffolding throw above those.
 		this.timerHandle = setInterval(() => {
-			// FLY-1099 §7.2 (Codex R1 #5): the pass-dead HANG check lives in the
-			// interval callback's OUTERMOST layer — a pass hung inside poll()
-			// leaves `polling` true forever, so poll() itself would never observe
-			// it; this cheap clock check still runs every tick.
-			if (this.legacyWatchdogsEnabled()) {
-				try {
-					this.founderReplyWatchdog.checkHang(Date.now());
-				} catch {
-					/* the watchdog must never break the poll loop */
-				}
-			}
 			void this.poll().catch((err) => {
 				console.error(
 					"[GatePoller] unexpected poll rejection (contained, Bridge stays up):",
@@ -1081,13 +1049,8 @@ export class GatePoller {
 				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
 			) {
 				try {
-					const healthy = await this.founderReplyDeliverPass();
-					// FLY-1099 §7.2: pass health — an all-read-failed pass is NOT a
-					// success (Discord ingest is effectively down for every thread).
-					if (healthy) this.founderReplyWatchdog.notePassSuccess(Date.now());
-					else this.founderReplyWatchdog.notePassFailure(Date.now());
+					await this.founderReplyDeliverPass();
 				} catch (err) {
-					this.founderReplyWatchdog.notePassFailure(Date.now());
 					console.warn(
 						"[GatePoller] founder-reply deliver pass error:",
 						err instanceof Error ? err.message : String(err),
@@ -1141,11 +1104,10 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
-				// FLY-1099 §7.2: watchdog detector tick (pin / unreachable / pass-dead
-				// latch maintenance) — durable-table driven, cheap.
-				if (this.legacyWatchdogsEnabled()) {
+				// FLY-1099 §7.2: retained unreachable-runner detector tick.
+				if (founderReplyWatchdogEnabled()) {
 					try {
-						await this.founderReplyWatchdog.tick(Date.now());
+						await this.founderReplyWatchdog.tick();
 					} catch (err) {
 						console.warn(
 							"[GatePoller] founder-reply watchdog tick error:",
@@ -2726,17 +2688,12 @@ export class GatePoller {
 	 * once. FLY-1392's path is always a raw Lead handoff; the kill switch pauses
 	 * chasing only.
 	 *
-	 * FLY-1099 §7.2: returns pass HEALTH — false when every scanned thread
-	 * failed its Discord read (ingest effectively down), so the watchdog's
-	 * pass-dead clock is not fed by hollow "successes".
 	 */
-	private async founderReplyDeliverPass(): Promise<boolean> {
-		if (!this.config.chatThreadsEnabled) return true;
+	private async founderReplyDeliverPass(): Promise<void> {
+		if (!this.config.chatThreadsEnabled) return;
 		const ownerUserId = this.config.discordOwnerUserId;
-		if (!isDiscordSnowflake(ownerUserId)) return true;
+		if (!isDiscordSnowflake(ownerUserId)) return;
 		const graceMs = this.founderReplyDeliverGraceMs();
-		let scanned = 0;
-		let failedScans = 0;
 		// Codex code R4 HIGH: re-drive any dead-letters whose StateStore write
 		// failed on a prior pass BEFORE scanning (the store may have self-healed).
 		this.retryPendingDeadLetters();
@@ -2791,11 +2748,6 @@ export class GatePoller {
 						},
 						questions: [],
 					});
-					this.founderThreadRoutes.set(thread.thread_id, {
-						leadId: lead.agentId,
-						projectName: project.projectName,
-						issueId: session.issue_identifier ?? session.issue_id,
-					});
 				}
 				for (const q of pending) {
 					// FLY-1041 Chunk 9 (Fix D): a runner's `ask --report` status report
@@ -2842,12 +2794,6 @@ export class GatePoller {
 							questions: [],
 						};
 						byThread.set(thread.thread_id, group);
-						// FLY-1099 §7.2: refresh the watchdog's per-thread alert route.
-						this.founderThreadRoutes.set(thread.thread_id, {
-							leadId: lead.agentId,
-							projectName: project.projectName,
-							issueId: session.issue_identifier ?? session.issue_id,
-						});
 					}
 					group.questions.push({
 						questionId: q.id,
@@ -2866,39 +2812,23 @@ export class GatePoller {
 					// Founder ingress scans every live issue thread. Pending questions
 					// remain context for the Lead, never a Bridge-side admission gate.
 					try {
-						scanned++;
-						const outcome = await emitFounderReplyDeliveryForThread(
-							ctx,
-							questions,
-							{
-								store: this.config.store,
-								fetchImpl: this.config.fetchImpl,
-								cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
-								deliverAmbiguousToLead,
-								tryFounderShipApproval: this.config.tryFounderShipApproval,
-								readCurrentBinding: this.config.readCurrentBinding,
-								ensureDecisionConvergence: (input) => {
-									this.config.store.ensureFounderDecisionConvergence(input);
-								},
-								classifyDecisionConvergence: (input) => {
-									this.config.store.classifyFounderDecisionConvergence(input);
-								},
-								// FLY-1099 §7.1: bounded retry + dead-letter.
-								retryLedger: this.founderReplyRetryLedger(),
+						await emitFounderReplyDeliveryForThread(ctx, questions, {
+							store: this.config.store,
+							fetchImpl: this.config.fetchImpl,
+							cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
+							deliverAmbiguousToLead,
+							tryFounderShipApproval: this.config.tryFounderShipApproval,
+							readCurrentBinding: this.config.readCurrentBinding,
+							ensureDecisionConvergence: (input) => {
+								this.config.store.ensureFounderDecisionConvergence(input);
 							},
-						);
-						// Codex code R4 HIGH: process failures count against pass health
-						// too — a fully broken StateStore fails every scan as
-						// process_failed/exception (never read_failed), and that shape
-						// must reach the pass-dead detector.
-						if (
-							outcome.result === "read_failed" ||
-							outcome.result === "process_failed"
-						) {
-							failedScans++;
-						}
+							classifyDecisionConvergence: (input) => {
+								this.config.store.classifyFounderDecisionConvergence(input);
+							},
+							// FLY-1099 §7.1: bounded retry + dead-letter.
+							retryLedger: this.founderReplyRetryLedger(),
+						});
 					} catch (err) {
-						failedScans++;
 						console.warn(
 							`[GatePoller] founder-reply deliver error (thread=${ctx.threadId}):`,
 							err instanceof Error ? err.message : String(err),
@@ -2909,11 +2839,6 @@ export class GatePoller {
 				}
 			}
 		}
-		return computeFounderPassHealthy(
-			scanned,
-			failedScans,
-			this.pendingDeadLetters.size,
-		);
 	}
 
 	// ── FLY-1099: founder-reply reliability wiring ──────────────────────────
@@ -2992,11 +2917,9 @@ export class GatePoller {
 	 * dead-letter WRITE failed (fully broken StateStore: no retry row, no gate
 	 * rematch, nothing durable to scan). Entries are re-driven at the start of
 	 * every deliver pass (the FLY-639 self-heal may have repaired the store),
-	 * and a NON-EMPTY latch keeps the pass marked UNHEALTHY so the pass-dead
-	 * watchdog escalates instead of notePassSuccess silencing the episode.
-	 * Honest floor: a Bridge crash drops the latch — with storage fully broken
-	 * nothing durable was recordable anywhere; the sustained pass-dead alert
-	 * is the human hand-off.
+	 * and a NON-EMPTY latch keeps the pass marked UNHEALTHY.
+	 * Honest floor: a Bridge crash drops the latch when storage is fully broken
+	 * and nothing durable could be recorded anywhere.
 	 */
 	private readonly pendingDeadLetters = new Map<
 		string,
@@ -3290,9 +3213,7 @@ export class GatePoller {
 			process.env,
 			"FLYWHEEL_ZOMBIE_GATE_RESOLVE",
 		);
-		const watchdogOn =
-			this.legacyWatchdogsEnabled() &&
-			process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG !== "0";
+		const watchdogOn = founderReplyWatchdogEnabled();
 		const askOn = askHygieneEnabled();
 		// FLY-1328: the pass now hosts three capabilities — only skip it when ALL
 		// are off, or the ask sweep would be silently swallowed by the old flags.

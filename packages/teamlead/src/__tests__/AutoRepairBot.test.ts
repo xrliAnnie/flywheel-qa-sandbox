@@ -20,7 +20,6 @@ function payload(over: Partial<AlertPayload> = {}): AlertPayload {
 
 function makeBot(
 	over: {
-		leadResumeEnter?: ReturnType<typeof vi.fn>;
 		accountSwitch?: {
 			canAttempt: ReturnType<typeof vi.fn>;
 			enqueue: ReturnType<typeof vi.fn>;
@@ -28,39 +27,17 @@ function makeBot(
 		};
 	} = {},
 ) {
-	const leadResumeEnter =
-		over.leadResumeEnter ??
-		vi.fn(async () => ({ sent: true, reason: "Enter sent" }));
 	const bot = new AutoRepairBot({
-		leadResumeEnter: leadResumeEnter as never,
 		accountSwitch: over.accountSwitch as never,
 	});
-	return { bot, leadResumeEnter };
+	return { bot };
 }
 
 describe("AutoRepairBot (FLY-368)", () => {
 	const CK = "flywheel|tadashi|pane_hash_stuck|";
 
-	it("pane_hash_stuck → tries lead resume Enter → attempted when sent", async () => {
-		const { bot, leadResumeEnter } = makeBot();
-		const r = await bot.attempt(payload({ eventType: "pane_hash_stuck" }), CK);
-		expect(r.outcome).toBe("attempted");
-		expect(r.action).toBe("lead_resume_enter");
-		expect(leadResumeEnter).toHaveBeenCalledTimes(1);
-	});
-
-	it("pane_hash_stuck but not a resume menu → needs_human", async () => {
-		const leadResumeEnter = vi.fn(async () => ({
-			sent: false,
-			reason: "not the safe resume-menu shape",
-		}));
-		const { bot } = makeBot({ leadResumeEnter });
-		const r = await bot.attempt(payload({ eventType: "pane_hash_stuck" }), CK);
-		expect(r.outcome).toBe("needs_human");
-		expect(r.detail).toContain("resume-menu");
-	});
-
 	it.each([
+		"pane_hash_stuck",
 		"rate_limit",
 		"usage_limit",
 		"login_expired",
@@ -70,22 +47,19 @@ describe("AutoRepairBot (FLY-368)", () => {
 	] as const)(
 		"%s → never auto-acted, needs_human (no nudge / no enter)",
 		async (eventType) => {
-			const { bot, leadResumeEnter } = makeBot();
+			const { bot } = makeBot();
 			const r = await bot.attempt(payload({ eventType }), CK);
 			expect(r.outcome).toBe("needs_human");
 			expect(r.action).toBe("none");
-			expect(leadResumeEnter).not.toHaveBeenCalled();
 		},
 	);
 
 	// FLY-368 v1.58.0: canAttempt — pure predicate the Hub uses to word the ack
 	// honestly (only a kind the bot truly tries gets "正在尝试自动修复…").
-	it("canAttempt is true only for retained repairable kinds (no accountSwitch)", () => {
+	it("retired pane and runner chase kinds are not auto-repairable", () => {
 		const { bot } = makeBot();
-		expect(bot.canAttempt(payload({ eventType: "pane_hash_stuck" }))).toBe(
-			true,
-		);
 		for (const k of [
+			"pane_hash_stuck",
 			"rate_limit",
 			"usage_limit",
 			"login_expired",

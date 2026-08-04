@@ -1,9 +1,8 @@
 /**
  * FLY-1099 (Codex code R4 HIGH) — the pending-dead-letter latch: when the
  * dead-letter WRITE itself fails (fully broken StateStore), the entry is
- * latched in memory, the pass stays UNHEALTHY (pass-dead watchdog escalates
- * instead of notePassSuccess silencing the episode), and the latch re-drives
- * on the next pass once the store self-heals — the Codex-named two-round
+ * latched in memory and re-drives on the next pass once the store self-heals —
+ * the Codex-named two-round
  * scenario (round 1: all writes throw; round 2: store healed, gate already
  * answered/not pending → the dead-letter still lands).
  */
@@ -11,7 +10,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import type { FounderReplyThreadCtx } from "../founder-reply-deliverer.js";
-import { computeFounderPassHealthy, GatePoller } from "../gate-poller.js";
+import { GatePoller } from "../gate-poller.js";
 
 const ctx: FounderReplyThreadCtx = {
 	issueId: "FLY-1",
@@ -55,24 +54,8 @@ function makePoller(store: unknown): GatePoller {
 	});
 }
 
-describe("computeFounderPassHealthy (pure)", () => {
-	it("all scans failed (broken-store shape: process_failed, not read_failed) → UNHEALTHY", () => {
-		expect(computeFounderPassHealthy(3, 3, 0)).toBe(false);
-	});
-	it("one bad thread among many → still healthy (transients are normal)", () => {
-		expect(computeFounderPassHealthy(3, 1, 0)).toBe(true);
-	});
-	it("ANY latched dead-letter → UNHEALTHY regardless of scan results (episode stays alive)", () => {
-		expect(computeFounderPassHealthy(0, 0, 1)).toBe(false);
-		expect(computeFounderPassHealthy(5, 0, 1)).toBe(false);
-	});
-	it("no scans, no latch → healthy (idle pass)", () => {
-		expect(computeFounderPassHealthy(0, 0, 0)).toBe(true);
-	});
-});
-
 describe("pending-dead-letter latch — two-round recovery (Codex R4)", () => {
-	it("round 1: ALL DL/retry writes throw → latched (pass unhealthy); round 2: store healed, gate already answered → re-drive lands retry row + audit + emit_alert (REAL StateStore)", async () => {
+	it("round 1: ALL DL/retry writes throw → latched; round 2: store healed, gate already answered → re-drive lands retry row + audit + emit_alert (REAL StateStore)", async () => {
 		const { store, state } = await brokenThenHealedRealStore();
 		const poller = makePoller(store);
 		const ledger = (poller as any).founderReplyRetryLedger();
@@ -88,10 +71,6 @@ describe("pending-dead-letter latch — two-round recovery (Codex R4)", () => {
 		});
 		expect(r1.deadLettered).toBe(false);
 		expect((poller as any).pendingDeadLetters.size).toBe(1);
-		// the latch keeps the pass unhealthy → notePassSuccess can never fire
-		expect(
-			computeFounderPassHealthy(1, 1, (poller as any).pendingDeadLetters.size),
-		).toBe(false);
 		// nothing durable landed in round 1 (Codex R5 precondition)
 		expect(store.getFounderReplyRetry("T-1", "100")).toBeUndefined();
 
