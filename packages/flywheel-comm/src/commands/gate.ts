@@ -153,9 +153,7 @@ async function gateInner(
 	// founder-consent approval path; return immediately. Deliberately NO
 	// resolveGate/expiry here: the pending question must remain visible to
 	// GatePoller (Lead relay) and the founder-consent wrapper after this
-	// process exits. Timeout escalation moves Bridge-side
-	// (HeartbeatService.checkAwaitingReviewTimeout, keyed on the persisted
-	// awaiting_review_entered_at — NOT on this process's lifetime).
+	// process exits. There is deliberately no in-process timeout patrol.
 	//
 	// FLY-123: when FLYWHEEL_GATE_MARKER_DIR is set (Codex runner env,
 	// injected by CodexTmuxAdapter), also write the question-bound

@@ -186,7 +186,7 @@ export interface GatePollerConfig {
 	displayReconcileEveryNTicks?: number;
 	/**
 	 * FLY-1279 B2: event-independent dead auto-QA recovery. Piggybacks the
-	 * existing timer and is deliberately independent of the park-watch switch.
+	 * existing timer.
 	 */
 	onQaReconcileTick?: () => void | Promise<void>;
 	/** Cadence in poll ticks (default 20, about 60s in production). */
@@ -292,13 +292,9 @@ export interface GatePollerConfig {
 		reactionFetcherImpl: ReactionFetcher;
 	}) => Promise<{ handled: string[]; retrySafe: boolean } | null>;
 
-	// ── FLY-637-ext: lead-pending escalation ──
+	// Shared alert sink for retained GatePoller convergence failures.
 	/**
-	 * Sink for the final "page Annie" fallback when the Lead has ignored a
-	 * runner's blocking `question` gate for `pageAnnieRounds` backoff nudges.
-	 * Absent → the page step is a no-op (the lead-nudges still fire). The
-	 * LeadAlertNotifier satisfies this (FLY-182-hardened: queues on failure,
-	 * never throws).
+	 * The LeadAlertNotifier queues transient failures and never throws.
 	 */
 	leadAlertSink?: { alert(payload: AlertPayload): Promise<AlertResult> };
 
@@ -687,13 +683,7 @@ export class GatePoller {
 				}
 			}
 
-			// FLY-1048 (A6): cheap gap/state scan — same piggyback pattern as the
-			// FLY-513 health probe above (zero new timer, own catch, never blocks
-			// the poll). Cadence default 100 ticks ≈ 5min at the production 3s
-			// interval; `(tickCount - 1) % n === 0` fires on tick 1 and works for
-			// n=1 (FLY-513 Codex R1 LOW precedent).
-			// FLY-1279 B2: dead auto-QA sweep. This is not gated by park-watch;
-			// recovery remains active even when the notification feature is rolled back.
+			// FLY-1279 B2: retained dead auto-QA state-convergence sweep.
 			if (
 				this.config.onQaReconcileTick &&
 				(this.tickCount - 1) % this.qaReconcileEveryNTicks() === 0

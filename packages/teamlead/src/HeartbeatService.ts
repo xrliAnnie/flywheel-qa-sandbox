@@ -1,11 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { CommDB } from "flywheel-comm/db";
 import { phaseThreadBadge } from "flywheel-config";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "./applyTransition.js";
-import { isReviewHeld } from "./bridge/auto-qa-held.js";
 import type {
 	ChatThreadContext,
 	ChatThreadCreator,
@@ -29,7 +27,6 @@ import {
 	GUARDRAIL_EVENT_TYPES,
 	type LeadEventEnvelope,
 	type LeadRuntime,
-	RETRYABLE_LEAD_EVENT_TYPES,
 } from "./bridge/lead-runtime.js";
 import type { MaterializedHeadAuthority } from "./bridge/materialized-head-authority.js";
 import {
@@ -457,14 +454,8 @@ export class HeartbeatService implements ReconnectController {
 		private staleCheckIntervalMs: number = 6 * 3_600_000,
 		/** FLY-172: marker reconcile wiring; when absent, monitor-loss reconcile is a no-op. */
 		private monitorReconcile?: MonitorReconcileConfig,
-		/**
-		 * FLY-191 Phase 2: review window for awaiting_review sessions, anchored
-		 * on the persisted `awaiting_review_entered_at`. On expiry the Bridge
-		 * emits `gate_timed_out` via loopback /events (same FLY-159 escalation
-		 * the CLI used) — notification ONLY, the idle runner is NOT killed.
-		 * Inherits FLY-159's default: 48h.
-		 */
-		private reviewTimeoutHours: number = 48,
+		// Retains the historical positional constructor slot for downstream callers.
+		_reviewTimeoutHours: number = 48,
 		/**
 		 * FLY-626: cheap, stateless quiet-signal probe consulted BEFORE the
 		 * (token-expensive) `session_stuck` Lead wake. A legitimately-quiet runner
@@ -711,126 +702,6 @@ export class HeartbeatService implements ReconnectController {
 			// Byte-compat: old mock stores (tests) may lack the method.
 			if (typeof this.store.recoverFromCorruption === "function") {
 				this.store.recoverFromCorruption(err);
-			}
-		}
-	}
-
-	/**
-	 * FLY-191 Phase 2: Bridge-side review timeout. With `gate --no-block` the
-	 * gate CLI process no longer owns the 48h countdown (it exits immediately),
-	 * so the deadline moves here: awaiting_review sessions whose persisted
-	 * `awaiting_review_entered_at` is older than `reviewTimeoutHours` get ONE
-	 * `gate_timed_out` event via loopback /events (canonical FLY-159 path —
-	 * Lead notification + Annie escalation, classify/filter, guardrail retry).
-	 *
-	 * Deliberately does NOT kill or transition the runner — it is healthy and
-	 * idle; the timeout is a human-attention escalation, not a failure
-	 * (plan §3.3). Dedup is the persisted `gate_timeout_notified_at` stamp
-	 * (cleared on every fresh awaiting_review entry, so a re-review window
-	 * gets its own escalation; survives Bridge restarts — in-memory sets
-	 * would re-notify after every restart).
-	 *
-	 * Reuses the existing heartbeat timer (no new periodic load — FLY-169/172
-	 * norm) and the FLY-172 loopback wiring; absent that wiring (legacy/test
-	 * construction) the pass is a no-op.
-	 */
-	async checkAwaitingReviewTimeout(): Promise<void> {
-		if (!this.monitorReconcile) return;
-		const timedOut = this.store.getAwaitingReviewTimedOut(
-			this.reviewTimeoutHours,
-		);
-		if (timedOut.length === 0) return;
-
-		const fetchFn = this.monitorReconcile.fetchFn ?? fetch;
-		const headers: Record<string, string> = {
-			"Content-Type": "application/json",
-		};
-		if (this.monitorReconcile.ingestToken) {
-			headers.Authorization = `Bearer ${this.monitorReconcile.ingestToken}`;
-		}
-
-		for (const session of timedOut) {
-			const enteredAt = session.awaiting_review_entered_at;
-			if (!enteredAt) continue; // query excludes these; belt-and-braces
-			// FLY-1314: a superseded gate is an intentionally closed old lap, not
-			// an unanswered founder decision. Record that terminal observation and
-			// stamp the timeout cursor so this session does not become a permanent
-			// heartbeat hot-loop. CommDB lookup failure remains fail-open to the
-			// existing timeout path (never silently suppress a real escalation).
-			const qid = session.review_question_id;
-			const commDbPath = this.monitorReconcile.commDbPathForProject;
-			if (qid && qid !== "unbound" && commDbPath) {
-				let db: CommDB | undefined;
-				try {
-					db = CommDB.openReadonly(commDbPath(session.project_name));
-					const gate = db.getMessageById(qid);
-					if (gate?.superseded_at) {
-						this.store.insertEvent({
-							event_id: `awaiting-review-superseded-noalert-${session.execution_id}-${qid}`,
-							execution_id: session.execution_id,
-							issue_id: session.issue_id,
-							project_name: session.project_name,
-							event_type: "awaiting_review_superseded_noalert",
-							source: "bridge.heartbeat",
-							payload: {
-								questionId: qid,
-								supersededBy: gate.superseded_by,
-							},
-						});
-						this.store.markGateTimeoutNotified(session.execution_id);
-						continue;
-					}
-				} catch (error) {
-					console.warn(
-						`[HeartbeatService] FLY-1314 superseded-gate lookup failed for ${session.execution_id}: ${error instanceof Error ? error.message : String(error)}; retaining timeout behavior`,
-					);
-				} finally {
-					db?.close();
-				}
-			}
-			// FLY-579: QA-held — do NOT escalate a founder `gate_timed_out` while
-			// independent QA is still running/failed. The founder is intentionally
-			// not surfaced until QA is green; a QA stall is a Lead-only pipeline
-			// error (owned by AutoQaCoordinator), never a founder review timeout.
-			// Same isQaHeld predicate as event-route + GatePoller (no drift).
-			if (isReviewHeld(this.store, session)) continue;
-			const waitedMs =
-				Date.now() - new Date(`${enteredAt.replace(" ", "T")}Z`).getTime();
-			const body = {
-				event_id: randomUUID(),
-				execution_id: session.execution_id,
-				issue_id: session.issue_id,
-				project_name: session.project_name,
-				event_type: "gate_timed_out",
-				source: "bridge.heartbeat",
-				payload: {
-					checkpoint: "approve_to_ship",
-					exec_id: session.execution_id,
-					waited_ms: waitedMs,
-					original_message: `Review window expired: awaiting_review since ${enteredAt} (FLY-191 Bridge-side timeout). Runner is idle and reachable — NOT killed. Approve/reject/feedback to resolve.`,
-					timeout_behavior: "fail-close",
-					timeout_behavior_source: "bridge",
-				},
-			};
-			try {
-				const res = await fetchFn(
-					`${this.monitorReconcile.bridgeBaseUrl}/events`,
-					{ method: "POST", headers, body: JSON.stringify(body) },
-				);
-				if (res.ok) {
-					// Stamp ONLY on accepted delivery — a Bridge-side 5xx retries
-					// next cycle. (Lead-side delivery reliability beyond ingest is
-					// owned by the FLY-159 guardrail retry machinery.)
-					this.store.markGateTimeoutNotified(session.execution_id);
-				} else {
-					console.error(
-						`[HeartbeatService] gate_timed_out loopback HTTP ${res.status} for ${session.execution_id}; will retry next cycle`,
-					);
-				}
-			} catch (err) {
-				console.error(
-					`[HeartbeatService] gate_timed_out loopback failed for ${session.execution_id}: ${(err as Error).message}; will retry next cycle`,
-				);
 			}
 		}
 	}
@@ -2681,14 +2552,10 @@ export class HeartbeatService implements ReconnectController {
 /**
  * GEO-195 + FLY-25: Registry-based heartbeat notifier — delivers via RuntimeRegistry.
  *
- * FLY-25 upgrade: deliver() returns DeliveryResult instead of fire-and-forget.
- * Guardrail events (stuck/orphan/stale): only mark delivered on success;
- *   failures are recorded and retried next heartbeat cycle (max 3 attempts).
- * Advisory events: best-effort (mark delivered regardless of transport outcome).
+ * deliver() returns DeliveryResult instead of fire-and-forget. Guardrail
+ * failures remain durable; this notifier does not chase them with redelivery.
  */
 export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
-	static readonly MAX_DELIVERY_ATTEMPTS = 3;
-
 	constructor(
 		private registry: RuntimeRegistry,
 		private projects: ProjectEntry[],
@@ -2947,53 +2814,6 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 					err instanceof Error ? err.message : err,
 				);
 			});
-	}
-
-	/**
-	 * FLY-25: Retry undelivered guardrail events from previous cycles.
-	 * Called by HeartbeatService.retryUndelivered() each heartbeat cycle.
-	 */
-	async retryUndeliveredGuardrailEvents(): Promise<void> {
-		// Collect unique leadIds from all projects
-		const leadIds = new Set<string>();
-		for (const project of this.projects) {
-			for (const lead of project.leads) {
-				leadIds.add(lead.agentId);
-			}
-		}
-
-		const eventTypes = [...RETRYABLE_LEAD_EVENT_TYPES];
-		for (const leadId of leadIds) {
-			const undelivered = this.store.getUndeliveredGuardrailEvents(
-				leadId,
-				eventTypes,
-				RegistryHeartbeatNotifier.MAX_DELIVERY_ATTEMPTS,
-			);
-			for (const row of undelivered) {
-				try {
-					const runtime = this.registry.getForLead(leadId);
-					if (!runtime) continue;
-					const envelope: LeadEventEnvelope = {
-						seq: row.seq,
-						event: JSON.parse(row.payload),
-						sessionKey: row.session_key ?? "",
-						leadId: row.lead_id,
-						timestamp: new Date().toISOString(),
-					};
-					const result = await runtime.deliver(envelope);
-					if (result.delivered) {
-						this.store.markLeadEventDelivered(row.seq);
-					} else {
-						this.store.recordDeliveryFailure(
-							row.seq,
-							result.error ?? "unknown",
-						);
-					}
-				} catch (err) {
-					this.store.recordDeliveryFailure(row.seq, (err as Error).message);
-				}
-			}
-		}
 	}
 
 	private async deliverHook(

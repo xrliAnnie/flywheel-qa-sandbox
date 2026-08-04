@@ -13,7 +13,7 @@
  * 2. **Guardrail delivery retry** (Codex R2 Issue 1): event-route.ts:1281+
  *    previously called `.then(markLeadEventDelivered)` unconditionally; when
  *    the runtime returned `{delivered: false}` the row was wrongly marked
- *    delivered and `HeartbeatService.retryUndeliveredGuardrailEvents` could
+ *    delivered and the durable delivery-failure ledger can
  *    never see it. This test asserts:
  *      - on `{delivered: false}` the row stays undelivered and
  *        `recordDeliveryFailure` increments `delivery_attempts`,
@@ -211,7 +211,7 @@ describe("event-route gate_timed_out — payload propagation + guardrail retry",
 
 		// gate_timed_out is in GUARDRAIL_EVENT_TYPES → must remain undelivered
 		// AND have at least one delivery_attempts increment (recordDeliveryFailure
-		// called) so HeartbeatService.retryUndeliveredGuardrailEvents can pick
+		// called) so the durable delivery-failure ledger can expose
 		// it up.
 		const undelivered = store.getUndeliveredGuardrailEvents(
 			"product-lead",

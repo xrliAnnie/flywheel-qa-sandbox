@@ -414,7 +414,7 @@ export class RunnerIdleWatchdog {
 		);
 
 		// Event is now persisted — even if delivery fails here,
-		// retryUndeliveredGuardrailEvents() will pick it up next heartbeat cycle.
+		// The durable failure remains available for operator inspection.
 		const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
 		if (runtime) {
 			const envelope: LeadEventEnvelope = {

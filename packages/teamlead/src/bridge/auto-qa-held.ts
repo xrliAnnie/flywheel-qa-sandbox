@@ -10,9 +10,6 @@
  *   1. event-route always-deliver block (suppress `[Review Required]` delivery)
  *   2. GatePoller (skip relaying the parent's approve_to_ship gate question,
  *      and DON'T evict it as stale)
- *   3. HeartbeatService.checkAwaitingReviewTimeout (skip the founder
- *      `gate_timed_out` escalation)
- *
  * Held iff there is an AutoQaRecord for (execution_id, current pr_head_sha)
  * whose status is NOT `passed`. `passed` releases (founder may be surfaced);
  * `running` / `failed` / `stuck` all hold (QA not green → keep the founder out

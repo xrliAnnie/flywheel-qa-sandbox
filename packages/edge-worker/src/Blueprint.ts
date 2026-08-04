@@ -2324,8 +2324,7 @@ export class Blueprint {
 						// instead of freezing inside a 48h poll loop. Ship authority
 						// is `verify-approval` (trusted CommDB gate response +
 						// StateStore approved_to_ship + pr_head_sha) — NEVER the wake
-						// message text. The 48h timeout is Bridge-side now
-						// (HeartbeatService.checkAwaitingReviewTimeout).
+						// message text.
 						systemPromptLines.push(
 							"",
 							"APPROVE GATE (MANDATORY — do NOT skip; non-blocking review flow):",

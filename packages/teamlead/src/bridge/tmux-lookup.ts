@@ -523,11 +523,9 @@ export async function sendKeysToWindow(
 /**
  * FLY-368: send a bare Enter to a tmux window (no text typed first).
  *
- * Used ONLY by the auto-repair bot's Lead resume-menu unstick — accepting the
- * "Resume from summary (recommended)" default is a single Enter, NOT a typed
- * phrase, so `sendKeysToWindow` (which types text THEN Enter) is the wrong tool.
- * The caller gates this behind `isSafeResumeMenuForEnter` + a durable
- * audit-before-send (lead-resume-enter.ts).
+ * Accepting the "Resume from summary (recommended)" default is a single Enter,
+ * not a typed phrase, so `sendKeysToWindow` is the wrong primitive. Callers
+ * must gate this behind their live-pane safety check.
  */
 export async function sendEnterToWindow(
 	tmuxWindow: string,

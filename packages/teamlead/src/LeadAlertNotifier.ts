@@ -73,10 +73,7 @@ export const ALERT_EVENT_TYPES = [
 	"permission_blocked",
 	"crash_loop",
 	"pane_hash_stuck",
-	// FLY-1048 (A4): a known error signature (error-signatures.ts) frozen in a
-	// Lead's live render region above an idle input box across ≥2 polls — the
-	// FN0/FN2 lead-side shape isIdleHealthyPane used to suppress forever. Only
-	// emitted by the LeadWatchdog multi-frame veto (FLYWHEEL_PANE_MULTIFRAME=1).
+	// Legacy display compatibility for historical Lead pane-error alert rows.
 	"pane_error_stalled",
 	// FLY-195 (plan §3.6 Q7): a stuck-runner episode the owning Lead did not
 	// dispose of within the grace window — Bridge pages Annie directly.

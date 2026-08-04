@@ -25,9 +25,7 @@ export interface NotifyReceipts {
 }
 
 /** `FLYWHEEL_NOTIFY_RECEIPTS_PATH` override (tests) → ~/.flywheel/notify-receipts.json. */
-export function defaultReceiptsPath(
-	env: NodeJS.ProcessEnv = process.env,
-): string {
+function defaultReceiptsPath(env: NodeJS.ProcessEnv = process.env): string {
 	return (
 		env.FLYWHEEL_NOTIFY_RECEIPTS_PATH ??
 		join(homedir(), ".flywheel", "notify-receipts.json")
@@ -36,7 +34,7 @@ export function defaultReceiptsPath(
 
 /** Missing / unreadable / corrupt file ⇒ {} — the expect check treats that as
  *  "no receipt" (better one deduped alert too many than a silent gap). */
-export function readNotifyReceipts(path: string): NotifyReceipts {
+function readNotifyReceipts(path: string): NotifyReceipts {
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf-8"));
 		return parsed && typeof parsed === "object"

@@ -6590,11 +6590,7 @@ export async function startBridge(
 	// BridgeEventLoopWatchdog below) so general Bridge integration suites never fire
 	// a meta-alert off the test machine's real (possibly contaminated) global codex.
 	const codexHealthEnabled = !process.env.VITEST;
-	// FLY-637-ext: late-bound page-Annie sink for the lead-pending escalation. The
-	// GatePoller starts before the shared `alertSink` exists below; boot is
-	// synchronous so the holder is populated before the first ~3s poll tick. The
-	// page step is rare (only after the Lead ignores a runner's question for several
-	// backoff rounds), so an unset holder during boot can never reach it.
+	// Late-bound shared alert sink for retained detection and convergence lanes.
 	const leadPendingAlertHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};

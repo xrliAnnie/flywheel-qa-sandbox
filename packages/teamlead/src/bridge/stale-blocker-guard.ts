@@ -419,7 +419,7 @@ export function staleBlockerEventAnchor(blocker: Session): string {
  * Durable, deduped "scheduled run blocked" alert to the issue's Lead. Persisted
  * dedup via `tryClaimLeadEvent` on a stable `(leadId, event_id)`; the event type
  * is in GUARDRAIL_EVENT_TYPES so a failed inline delivery is redelivered by
- * `HeartbeatService.retryUndeliveredGuardrailEvents()` (reliability boundary is
+ * the durable failed-delivery row (reliability boundary is
  * the persisted lead_events row, NOT an in-memory set — Codex R1 #5).
  *
  * Ordering (Codex R2 #2): resolve lead + build payload → `tryClaimLeadEvent`
