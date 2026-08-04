@@ -96,7 +96,6 @@ function makeWatchdog(
 	};
 	const config: IdleWatchdogConfig = {
 		pollIntervalMs: 30_000,
-		waitingThresholdCycles: 2,
 		projects: testProjects,
 		store: store as unknown as IdleWatchdogConfig["store"],
 		runtimeRegistry:
@@ -212,32 +211,6 @@ describe("RunnerIdleWatchdog FLY-637 fingerprint dedup", () => {
 		);
 		await wd2.pollOnce();
 		expect(store.appendLeadEvent).toHaveBeenCalledTimes(1); // still 1, not 2
-	});
-
-	it("unknown (no pane output) uses in-memory status dedup, not the persistent table (#3 MED)", async () => {
-		const sessions = [makeSession()];
-		const store = makeStore(sessions);
-		const wd1 = makeWatchdog(
-			store,
-			[
-				{ status: "unknown", output: undefined },
-				{ status: "unknown", output: undefined }, // same status → in-memory dedup
-			],
-			unexplained,
-		);
-		await wd1.pollOnce();
-		await wd1.pollOnce();
-		expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-		// no persistent row written for the no-pane case
-		expect(store.recordQuietWakeNotified).not.toHaveBeenCalled();
-		// a fresh watchdog re-wakes (proves it was in-memory, not persistent)
-		const wd2 = makeWatchdog(
-			store,
-			[{ status: "unknown", output: undefined }],
-			unexplained,
-		);
-		await wd2.pollOnce();
-		expect(store.appendLeadEvent).toHaveBeenCalledTimes(2);
 	});
 
 	it("kill-switch FLYWHEEL_QUIET_PERSIST_DEDUP=0 reverts to MVP in-memory dedup (byte-compat)", async () => {

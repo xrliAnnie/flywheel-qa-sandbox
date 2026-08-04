@@ -2,7 +2,7 @@
  * FLY-92: Runner Idle Watchdog — system-level idle detection.
  *
  * Periodically polls active "running" sessions via createStatusQuery(),
- * detects when a Runner is stuck (waiting/idle/unknown), and emits
+ * detects when a Runner process has exited to an idle shell, and emits
  * runner_idle_detected Lead events via the existing guardrail pipeline.
  *
  * Design: external observation via tmux capture-pane, NOT prompt patches.
@@ -23,10 +23,6 @@ import {
 	dispatchLeadEventCompat,
 	type RuntimeRegistry,
 } from "./bridge/runtime-registry.js";
-import type {
-	CaptureOutcome,
-	StuckRunnerDetector,
-} from "./bridge/stuck-runner-detector.js";
 import type { CaptureSessionFn } from "./bridge/tools.js";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import { resolveLeadForIssue } from "./ProjectConfig.js";
@@ -37,21 +33,12 @@ export const DEFAULT_RUNNER_QUOTA_SCAN_INTERVAL_MS = 60 * 60_000;
 
 export interface IdleWatchdogConfig {
 	pollIntervalMs: number;
-	waitingThresholdCycles: number;
 	projects: ProjectEntry[];
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
 	captureSessionFn: CaptureSessionFn;
 	/** FLY-91: Enable per-issue chat thread hints in idle event payloads. */
 	chatThreadsEnabled?: boolean;
-	/**
-	 * FLY-195: optional stuck-runner detector, driven from THIS poll (FLY-169:
-	 * no new periodic timers) and fed this watchdog's own capture (one tmux
-	 * capture-pane per session per poll). Independent state from the idle
-	 * dedup machinery (Codex R1 LOW-8) — the 90s runner_idle_detected cadence
-	 * is unchanged.
-	 */
-	stuckDetector?: StuckRunnerDetector | null;
 	/**
 	 * FLY-626: cheap, stateless quiet-signal probe consulted BEFORE a (token-
 	 * expensive) Lead wake. When it classifies the session as legitimately quiet
@@ -87,18 +74,14 @@ export interface IdleWatchdogConfig {
 	runnerQuotaScanIntervalMs?: number;
 	/** Deterministic clock for cadence tests. */
 	now?: () => number;
-	/** FLY-1373: boot-captured reverse gate for idle/stuck alert lanes. */
-	legacyDeliveryWatchdogsEnabled?: boolean;
 	/** FLY-1393: independent W-1 process-liveness lane (idle only). */
 	watchdogLivenessEnabled?: boolean;
 	watchdogTracker?: { started(): void; completed(): void };
 }
 
-type IdleStatus = "waiting" | "idle" | "unknown";
+type IdleStatus = "idle";
 
 interface SessionIdleState {
-	lastStatus: string;
-	waitingCycleCount: number;
 	notifiedForStatus: IdleStatus | null;
 	transitionCounter: number;
 }
@@ -160,10 +143,6 @@ export class RunnerIdleWatchdog {
 			for (const key of this.lastRunnerQuotaScanAtMs.keys()) {
 				if (!activeIds.has(key)) this.lastRunnerQuotaScanAtMs.delete(key);
 			}
-			// FLY-195: stuck episodes for gone executions are dropped the same way.
-			if (this.config.legacyDeliveryWatchdogsEnabled !== false) {
-				this.config.stuckDetector?.pruneInactive(activeIds);
-			}
 			// FLY-637 #4: prune persistent quiet-wake dedup rows for sessions no
 			// longer in THIS watchdog's running surface (idle source). Empty set ⇒
 			// all idle rows cleared (no `IN ()`); the store handles the guard.
@@ -197,9 +176,7 @@ export class RunnerIdleWatchdog {
 
 	private async checkSession(session: Session): Promise<void> {
 		// FLY-623: a Runner re-adopted after a Bridge restart is alive-but-detached;
-		// its idle/stuck signals are an artifact of monitoring loss, not a real
-		// stall. Skip BOTH idle notification and stuck-detector episode advancement
-		// while reconnecting (resumes once HeartbeatService clears the state).
+		// its idle signal is an artifact of monitoring loss, not a real process exit.
 		if (this.config.isReconnecting?.(session.execution_id)) {
 			return;
 		}
@@ -209,28 +186,6 @@ export class RunnerIdleWatchdog {
 					session.execution_id,
 					session.project_name,
 				);
-
-			// FLY-195: drive the stuck detector off this SAME capture. Any capture
-			// problem (infra error or tmux-unreachable "unknown") is handed over as
-			// { ok: false } so the detector fails closed (skips without touching
-			// the episode clock).
-			if (
-				this.config.legacyDeliveryWatchdogsEnabled !== false &&
-				this.config.stuckDetector
-			) {
-				const outcome: CaptureOutcome =
-					captureErrorStatus === undefined && output !== undefined
-						? { ok: true, output }
-						: { ok: false, error: result.reason };
-				try {
-					await this.config.stuckDetector.checkSession(session, outcome);
-				} catch (err) {
-					console.warn(
-						`[IdleWatchdog] stuck check error for ${session.execution_id}:`,
-						err instanceof Error ? err.message : String(err),
-					);
-				}
-			}
 
 			// FLY-696 M1/③: reuse a valid capture for runner-side quota detection,
 			// but claim the classifier's independent cadence before invoking it. The
@@ -255,12 +210,10 @@ export class RunnerIdleWatchdog {
 			// Skip idle notification for infra errors (400/404/CommDB 502).
 			// Only tmux-unreachable (no captureErrorStatus) is a valid idle signal.
 			if (captureErrorStatus) {
-				// Reset dedup state so infra errors break the "consecutive waiting" streak.
-				// Clear both count and notifiedForStatus so a new waiting episode after
-				// infra recovery triggers a fresh alert.
+				// Clear the in-memory fallback dedup so an idle shell observed after
+				// infrastructure recovery can trigger a fresh liveness event.
 				const infraState = this.stateMap.get(session.execution_id);
 				if (infraState) {
-					infraState.waitingCycleCount = 0;
 					infraState.notifiedForStatus = null;
 				}
 				console.warn(
@@ -269,31 +222,10 @@ export class RunnerIdleWatchdog {
 				return;
 			}
 
-			// The capture and non-alert piggyback callbacks above remain alive when
-			// legacy delivery watchdogs are off; only idle/stuck emissions stop.
-			if (
-				this.config.legacyDeliveryWatchdogsEnabled === false &&
-				(this.config.watchdogLivenessEnabled === false ||
-					result.status !== "idle")
-			)
-				return;
-
 			const state = this.stateMap.get(session.execution_id) ?? {
-				lastStatus: "executing",
-				waitingCycleCount: 0,
 				notifiedForStatus: null,
 				transitionCounter: 0,
 			};
-
-			state.lastStatus = result.status;
-
-			// FLY-626: before any (token-expensive) Lead wake, consult the cheap
-			// quiet classifier. A legitimately-quiet runner (self-declared
-			// park/busy, parked at a gate, recently active, gray-zone review) is
-			// suppressed; only `quiet_unexplained` (or no probe wired = byte-compat)
-			// may wake. Advisory-only path — orphan/force-fail liveness is untouched.
-			const quietSuppressed =
-				result.status !== "executing" && this.isWakeSuppressed(session);
 
 			if (result.status === "executing") {
 				// Active — reset the IN-MEMORY dedup state only. The persistent
@@ -302,43 +234,31 @@ export class RunnerIdleWatchdog {
 				// tick reads as `executing`; clearing the row would let the very same
 				// frozen frame re-wake the Lead — defeating the fingerprint dedup).
 				// transitionCounter uses Date.now() on next idle.
-				state.waitingCycleCount = 0;
 				state.notifiedForStatus = null;
-			} else if (result.status === "waiting") {
-				state.waitingCycleCount++;
-				if (
-					state.waitingCycleCount >= this.config.waitingThresholdCycles &&
-					!this.alreadyNotifiedIdle(session, state, "waiting", output) &&
-					!quietSuppressed
-				) {
-					state.transitionCounter = Date.now();
-					const persisted = await this.emitIdleEvent(
-						session,
-						"waiting",
-						result.reason,
-						state.transitionCounter,
-					);
-					if (persisted)
-						this.markNotifiedIdle(session, state, "waiting", output);
-				}
-			} else {
-				// "idle" or "unknown" — immediate trigger; break waiting streak
-				state.waitingCycleCount = 0;
-				const idleStatus = result.status as IdleStatus;
-				if (
-					!this.alreadyNotifiedIdle(session, state, idleStatus, output) &&
-					!quietSuppressed
-				) {
-					state.transitionCounter = Date.now();
-					const persisted = await this.emitIdleEvent(
-						session,
-						idleStatus,
-						result.reason,
-						state.transitionCounter,
-					);
-					if (persisted)
-						this.markNotifiedIdle(session, state, idleStatus, output);
-				}
+				this.stateMap.set(session.execution_id, state);
+				return;
+			}
+			if (
+				this.config.watchdogLivenessEnabled === false ||
+				result.status !== "idle"
+			)
+				return;
+
+			// FLY-626: before any (token-expensive) Lead wake, consult the cheap
+			// quiet classifier. A legitimately quiet runner is suppressed; only
+			// `quiet_unexplained` (or no probe) may wake.
+			if (
+				!this.alreadyNotifiedIdle(session, state, output) &&
+				!this.isWakeSuppressed(session)
+			) {
+				state.transitionCounter = Date.now();
+				const persisted = await this.emitIdleEvent(
+					session,
+					"idle",
+					result.reason,
+					state.transitionCounter,
+				);
+				if (persisted) this.markNotifiedIdle(session, state, output);
 			}
 
 			this.stateMap.set(session.execution_id, state);
@@ -362,15 +282,13 @@ export class RunnerIdleWatchdog {
 
 	/**
 	 * FLY-637 #2/#3: has the Lead already been woken about THIS idle episode?
-	 * Pane-backed statuses (waiting / idle with captured output) dedup on the
-	 * persistent normalized fingerprint — so cosmetic jitter and Bridge restarts
-	 * don't re-wake. No-pane statuses (`unknown` / capture-fail, `output`
-	 * undefined) and the kill-switch fall back to the in-memory status dedup.
+	 * Pane-backed idle statuses dedup on the persistent normalized fingerprint —
+	 * so cosmetic jitter and Bridge restarts don't re-wake. The kill-switch falls
+	 * back to the in-memory status dedup.
 	 */
 	private alreadyNotifiedIdle(
 		session: Session,
 		state: SessionIdleState,
-		idleStatus: IdleStatus,
 		output: string | undefined,
 	): boolean {
 		if (this.quietPersistEnabled() && output !== undefined) {
@@ -380,14 +298,13 @@ export class RunnerIdleWatchdog {
 				quietFingerprint(output),
 			);
 		}
-		return state.notifiedForStatus === idleStatus;
+		return state.notifiedForStatus === "idle";
 	}
 
 	/** FLY-637: record the dedup after a PERSISTED emit (mirrors {@link alreadyNotifiedIdle}). */
 	private markNotifiedIdle(
 		session: Session,
 		state: SessionIdleState,
-		idleStatus: IdleStatus,
 		output: string | undefined,
 	): void {
 		if (this.quietPersistEnabled() && output !== undefined) {
@@ -397,7 +314,7 @@ export class RunnerIdleWatchdog {
 				quietFingerprint(output),
 			);
 		} else {
-			state.notifiedForStatus = idleStatus;
+			state.notifiedForStatus = "idle";
 		}
 	}
 

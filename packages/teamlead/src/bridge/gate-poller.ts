@@ -34,6 +34,7 @@ import {
 	phaseMessageTag,
 	SUPPORTED_MILESTONE_KINDS_V1,
 } from "flywheel-config";
+import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import {
 	encodeReactionEmoji,
 	type ReactionFetcher,
@@ -62,7 +63,6 @@ import { type ReviewHoldReason, reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 // FLY-927 (Task 3.3): truthful park wording for the lead-pending nudge.
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
-import { queueCodexCodeReviewInstructionResult } from "./codex-instruction.js";
 import { DISCORD_API, postDiscordMessageToChannel } from "./discord-utils.js";
 import { drainFounderActionLedger } from "./founder-action-drain.js";
 import {
@@ -109,7 +109,6 @@ import {
 	reconcileStaleApprovedShip,
 	shipAttemptFailedSuppressedHead,
 } from "./stale-approved-ship-reconciler.js";
-import type { UnhandledAlertSink } from "./stuck-escalation.js";
 import { lookupTmuxTarget, probeRunnerProcessLiveness } from "./tmux-lookup.js";
 import { retiredWatchdogLaneEnabled } from "./watchdog-minimum-set.js";
 import {
@@ -374,7 +373,7 @@ export interface GatePollerConfig {
 	 * LeadAlertNotifier satisfies this (FLY-182-hardened: queues on failure,
 	 * never throws).
 	 */
-	leadAlertSink?: UnhandledAlertSink;
+	leadAlertSink?: { alert(payload: AlertPayload): Promise<AlertResult> };
 	/** FLY-637-ext: prune cadence for lead_pending_escalation in poll ticks (default 20 ≈ 60s). */
 	leadPendingPruneEveryNTicks?: number;
 
@@ -3556,10 +3555,6 @@ export class GatePoller {
 				);
 				return res.ok ? { ok: true } : { ok: false, error: res.error };
 			},
-			queueCodexInstruction: ({ projectName, executionId, instructionId }) =>
-				queueCodexCodeReviewInstructionResult(projectName, executionId, {
-					instructionId,
-				}),
 			wake: async ({ projectName, executionId, content, metadata }) => {
 				let db: CommDB;
 				try {

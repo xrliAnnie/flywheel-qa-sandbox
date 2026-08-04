@@ -131,13 +131,11 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	},
 	runner_stuck_unhandled: {
 		owner: "claude",
-		arc: "auto",
-		remediationRef: "runner-recovery-nudge (audited continue, FLY-368)",
+		arc: "human_by_design",
 	},
 	runner_throttle_stalled: {
 		owner: "claude",
-		arc: "auto",
-		remediationRef: "runner-recovery-nudge (audited continue, FLY-927 W-B)",
+		arc: "human_by_design",
 	},
 	auto_qa_stuck: { owner: "claude", arc: "human_by_design" },
 	codex_gate_blocked: { owner: "claude", arc: "human_by_design" },

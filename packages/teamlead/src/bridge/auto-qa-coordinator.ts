@@ -42,7 +42,6 @@ import {
 } from "./approval-signal/gate-message-binding-store.js";
 import {
 	codexHardGateEnabled,
-	codexHoldStuckThresholdMs,
 	isCodexGateSatisfied,
 	isReviewableRole,
 } from "./codex-gate.js";
@@ -244,7 +243,7 @@ export interface AutoQaCoordinatorDeps {
 	qaAgentName?: string;
 	/** FLY-827: env for the codex hard-gate kill-switch. Defaults to process.env. */
 	env?: Record<string, string | undefined>;
-	/** FLY-863: test seam for `reconcileStuckCodexHolds`'s "now". Defaults to Date.now. */
+	/** Deterministic clock seam. Defaults to Date.now. */
 	now?: () => number;
 	/**
 	 * FLY-1251: materialize the server-owned docs-only/code-bearing decision for
@@ -707,11 +706,8 @@ export class AutoQaCoordinator {
 	 * ever reaches here (a runner's own internal `/codex-code-review` retries are
 	 * invisible to Bridge — only the final APPROVED is reported), so a "round
 	 * count" cannot distinguish a normal in-progress loop from a real stall.
-	 * The thread-post + Lead alert now live EXCLUSIVELY in
-	 * `reconcileStuckCodexHolds`, which escalates only once the SAME head has
-	 * sat unresolved for a long real-world stretch — genuinely not converging,
-	 * not a routine mid-loop moment. Best-effort: a failure here must never
-	 * surface the founder (the durable table + isReviewHeld hold independently).
+	 * Best-effort: a failure here must never surface the founder (the durable
+	 * table + isReviewHeld hold independently).
 	 */
 	private async codexHold(session: Session, sha: string): Promise<void> {
 		// FLY-827 (Codex code-review R1 MED-1): re-queue the instruction ONCE per
@@ -719,8 +715,7 @@ export class AutoQaCoordinator {
 		// first time; a restart / repeated reconcileCodexHolds replays the hold as
 		// a no-op (the founder HOLD itself is enforced by the durable record +
 		// isReviewHeld, independent of this). A NEW head is a fresh claim → it
-		// re-queues for that head. `hold_notified_at` also anchors the stuck-
-		// escalation clock in `reconcileStuckCodexHolds`.
+		// re-queues for that head.
 		const firstNotify = this.deps.store.claimCodexHoldNotify({
 			executionId: session.execution_id,
 			targetPrHeadSha: sha,
@@ -734,7 +729,7 @@ export class AutoQaCoordinator {
 			return;
 		}
 		this.log(
-			`codex-hold ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — code review not APPROVED; QA not spawned, founder held (routine — staying silent; escalates only if unresolved past the stuck threshold)`,
+			`codex-hold ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — code review not APPROVED; QA not spawned, founder held`,
 		);
 		try {
 			await this.deps.effects.queueCodexInstruction({ session });
@@ -742,170 +737,6 @@ export class AutoQaCoordinator {
 			this.warn(
 				`codexHold queueCodexInstruction failed for ${session.issue_id}: ${asErr(err)}`,
 			);
-		}
-	}
-
-	/**
-	 * FLY-863: periodic escalation pass for codex-holds that have NOT converged
-	 * after a long real-world stretch (default 3h, `FLYWHEEL_CODEX_HOLD_STUCK_MS`
-	 * tunable). This is the ONLY place the codex-hold thread-post + Lead alert
-	 * fire — a routine review-fix round (the overwhelmingly common case) never
-	 * reaches here and stays completely silent. Idempotent per head:
-	 * `claimCodexHoldStuckNotify` fires the bundle exactly once per (exec, head),
-	 * with `LeadAlertNotifier`'s own per-eventId dedup as an independent second
-	 * backstop. Safe to call repeatedly (boot + every Lead-alert poll tick —
-	 * piggybacked, no new timer) since a fully-resolved fleet is a cheap no-op
-	 * scan.
-	 */
-	async reconcileStuckCodexHolds(): Promise<void> {
-		const env = this.deps.env ?? process.env;
-		if (!codexHardGateEnabled(env)) return; // gate off → nothing held
-		const thresholdMs = codexHoldStuckThresholdMs(env);
-		const now = this.deps.now?.() ?? Date.now();
-		for (const rec of this.deps.store.listCodexHoldsPendingOlderThan(
-			now,
-			thresholdMs,
-		)) {
-			const session = this.deps.store.getSession(rec.execution_id);
-			if (!session || session.status !== "awaiting_review") continue; // moved on
-			if (session.pr_head_sha?.toLowerCase() !== rec.target_pr_head_sha) {
-				continue; // superseded by a newer head — that head's own record governs
-			}
-			if (
-				isCodexGateSatisfied(
-					this.deps.store,
-					session,
-					rec.target_pr_head_sha,
-					env,
-				)
-			) {
-				continue; // approved / skipped in the meantime
-			}
-			// FLY-1099 §6 (Codex code R1 MED-2): the durable queue+wake re-drive
-			// intents land BEFORE the once-only claim. They are INSERT OR IGNORE
-			// idempotent (re-running every pass is free), so a crash between the
-			// claim and any later side effect can no longer strand the re-drive
-			// forever — the claim only gates the once-only thread post + Lead alert.
-			this.queueCodexNudgeIntents(session, rec.target_pr_head_sha);
-			if (
-				!this.deps.store.claimCodexHoldStuckNotify(
-					rec.execution_id,
-					rec.target_pr_head_sha,
-				)
-			) {
-				continue; // already escalated for this head
-			}
-			const hours = Math.round(thresholdMs / 3_600_000);
-			this.warn(
-				`codex-hold STUCK for ${session.issue_id} (${session.execution_id}) @ ${rec.target_pr_head_sha.slice(0, 8)} — not approved after ${hours}h+, escalating`,
-			);
-			try {
-				await this.deps.effects.postThread({
-					session,
-					text: `⛔ Codex code review 已经卡了 ${hours}+ 小时还没过(head \`${rec.target_pr_head_sha.slice(0, 8)}\`)— 已重发过 /codex-code-review,但看起来没在收敛,可能需要人看一眼 runner 是不是卡住了。`,
-				});
-			} catch (err) {
-				this.warn(
-					`reconcileStuckCodexHolds postThread failed for ${session.issue_id}: ${asErr(err)}`,
-				);
-			}
-			try {
-				await this.deps.effects.alertCodexGateBlocked({
-					session,
-					sha: rec.target_pr_head_sha,
-				});
-			} catch (err) {
-				this.warn(
-					`reconcileStuckCodexHolds alertCodexGateBlocked failed for ${session.issue_id}: ${asErr(err)}`,
-				);
-			}
-		}
-	}
-
-	/**
-	 * FLY-1099 §6: durable queue+wake nudge intents for one codex-held head.
-	 * `codex-nudge-<exec>-<head>-queue` re-queues /codex-code-review (sink-side
-	 * dedup by this exact key); `...-wake` (depends_on queue — Codex R2 #2)
-	 * nudges the runner. Idempotent: INSERT OR IGNORE per key. Eligibility
-	 * (still awaiting_review + same head) is re-verified at drain time.
-	 */
-	private queueCodexNudgeIntents(session: Session, sha: string): void {
-		const head = sha.toLowerCase();
-		const queueKey = `codex-nudge-${session.execution_id}-${head}-queue`;
-		const wakeKey = `codex-nudge-${session.execution_id}-${head}-wake`;
-		try {
-			this.deps.store.insertFounderAction({
-				actionKey: queueKey,
-				kind: "codex_nudge_queue",
-				executionId: session.execution_id,
-				issueId: session.issue_id,
-				projectName: session.project_name,
-				payload: { head },
-			});
-			this.deps.store.insertFounderAction({
-				actionKey: wakeKey,
-				kind: "codex_nudge_wake",
-				executionId: session.execution_id,
-				issueId: session.issue_id,
-				projectName: session.project_name,
-				payload: {
-					head,
-					text:
-						`Codex code review 还没收敛(head ${head.slice(0, 8)})——已重新排了 /codex-code-review 指令,` +
-						"请查收 inbox 跑完 review 再继续。",
-				},
-				dependsOn: queueKey,
-			});
-		} catch (err) {
-			this.warn(
-				`queueCodexNudgeIntents failed for ${session.issue_id}: ${asErr(err)}`,
-			);
-		}
-	}
-
-	/**
-	 * FLY-1099 §6: the EARLY nudge layer — a codex_review_record pending past
-	 * `FLYWHEEL_CODEX_HOLD_NUDGE_MS` (default 30min; kill-switch
-	 * FLYWHEEL_CODEX_HOLD_NUDGE, R3 #5) gets the SAME ledger-backed
-	 * queue+wake re-drive as the 3h stuck escalation, hours earlier — no
-	 * thread post, no Lead alert (this layer is runner-facing only). Scope
-	 * identical to reconcileStuckCodexHolds: awaiting_review + same head +
-	 * gate still unsatisfied (terminal / moved-on sessions are the zombie
-	 * pass's business, never nudged).
-	 */
-	async reconcileCodexHoldNudges(): Promise<void> {
-		const env = this.deps.env ?? process.env;
-		if (!codexHardGateEnabled(env)) return;
-		if (env.FLYWHEEL_CODEX_HOLD_NUDGE === "0") return;
-		const rawThreshold = Number.parseInt(
-			env.FLYWHEEL_CODEX_HOLD_NUDGE_MS ?? "",
-			10,
-		);
-		const thresholdMs =
-			Number.isFinite(rawThreshold) && rawThreshold > 0
-				? rawThreshold
-				: 30 * 60_000;
-		const now = this.deps.now?.() ?? Date.now();
-		for (const rec of this.deps.store.listCodexHoldsPendingOlderThan(
-			now,
-			thresholdMs,
-		)) {
-			const session = this.deps.store.getSession(rec.execution_id);
-			if (!session || session.status !== "awaiting_review") continue;
-			if (session.pr_head_sha?.toLowerCase() !== rec.target_pr_head_sha) {
-				continue; // superseded by a newer head
-			}
-			if (
-				isCodexGateSatisfied(
-					this.deps.store,
-					session,
-					rec.target_pr_head_sha,
-					env,
-				)
-			) {
-				continue;
-			}
-			this.queueCodexNudgeIntents(session, rec.target_pr_head_sha);
 		}
 	}
 

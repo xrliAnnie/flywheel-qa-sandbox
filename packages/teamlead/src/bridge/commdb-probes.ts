@@ -47,15 +47,6 @@ export function stuckCommActivityMs(
 	);
 }
 
-export const STUCK_LATCH_TTL_MS = 259_200_000;
-
-export function stuckLatchTtlMs(env: NodeJS.ProcessEnv = process.env): number {
-	return parseNonNegativeIntEnv(
-		env.FLYWHEEL_STUCK_LATCH_TTL_MS,
-		STUCK_LATCH_TTL_MS,
-	);
-}
-
 function openCommDb(projectName: string): CommDB | undefined {
 	if (/[/\\]|\.\./.test(projectName)) return undefined;
 	const dbPath = join(homedir(), ".flywheel", "comm", projectName, "comm.db");

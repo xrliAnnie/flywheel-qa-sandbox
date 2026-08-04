@@ -80,12 +80,6 @@ export interface FounderActionDrainDeps {
 		projectName: string;
 		executionId: string;
 	}): Promise<{ ok: boolean; error?: string }>;
-	/** Queue /codex-code-review with the sink-stable instruction id. */
-	queueCodexInstruction(args: {
-		projectName: string;
-		executionId: string;
-		instructionId: string;
-	}): { queued: boolean; deduped?: boolean; error?: string };
 	/** Non-authoritative mailbox wake. */
 	wake(args: {
 		projectName: string;
@@ -154,30 +148,12 @@ interface ExecResult {
 
 function verifyEligibility(
 	row: FounderActionRow,
-	payload: Record<string, unknown>,
 	deps: FounderActionDrainDeps,
 ): { ok: true } | { ok: false; reason: string } {
 	// R2 #2: re-verify the expected context AT EXECUTION time — never deliver a
 	// stale action. Notice kinds rely on supersede-at-source (the terminal
 	// transaction marks pending held_reply rows superseded), so pending status
 	// itself is their eligibility.
-	if (row.kind === "codex_nudge_queue" || row.kind === "codex_nudge_wake") {
-		const session = deps.store.getSession(row.execution_id);
-		const expectedHead =
-			typeof payload.head === "string" ? payload.head.toLowerCase() : undefined;
-		if (
-			!session ||
-			session.status !== "awaiting_review" ||
-			!expectedHead ||
-			session.pr_head_sha?.toLowerCase() !== expectedHead
-		) {
-			return {
-				ok: false,
-				reason: `moved_on_${session?.status ?? "missing"}`,
-			};
-		}
-		return { ok: true };
-	}
 	if (row.kind === "feedback_wake") {
 		const session = deps.store.getSession(row.execution_id);
 		if (!session) return { ok: false, reason: "session_missing" };
@@ -203,27 +179,10 @@ async function executeAction(
 			executionId: row.execution_id,
 		});
 	}
-	if (row.kind === "codex_nudge_queue") {
-		const res = deps.queueCodexInstruction({
-			projectName: row.project_name,
-			executionId: row.execution_id,
-			// R3 #3: the action_key IS the CommDB instruction id — a redelivery
-			// after crash-before-mark is a sink-side no-op.
-			instructionId: row.action_key,
-		});
-		return res.queued
-			? { ok: true }
-			: { ok: false, error: res.error ?? "queue_failed" };
-	}
-	if (row.kind === "codex_nudge_wake" || row.kind === "feedback_wake") {
-		const content =
-			row.kind === "feedback_wake"
-				? feedbackWakeContent(
-						typeof payload.feedback === "string" ? payload.feedback : "",
-					)
-				: typeof payload.text === "string" && payload.text
-					? payload.text + NON_AUTHORITATIVE_FOOTER
-					: `Codex code review 还没收敛,已重新排了 /codex-code-review 指令——请跑完 review 再继续。${NON_AUTHORITATIVE_FOOTER}`;
+	if (row.kind === "feedback_wake") {
+		const content = feedbackWakeContent(
+			typeof payload.feedback === "string" ? payload.feedback : "",
+		);
 		return deps.wake({
 			projectName: row.project_name,
 			executionId: row.execution_id,
@@ -330,7 +289,7 @@ async function drainOne(
 
 	// 2. Eligibility re-verify.
 	const payload = parsePayload(row);
-	const elig = verifyEligibility(row, payload, deps);
+	const elig = verifyEligibility(row, deps);
 	if (!elig.ok) {
 		deps.store.cancelFounderAction(row.action_key, elig.reason);
 		return;

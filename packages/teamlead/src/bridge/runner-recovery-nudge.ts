@@ -174,7 +174,7 @@ export async function attemptRunnerRecoveryNudge(
 	if (typeof fingerprint !== "string" || !FINGERPRINT_RE.test(fingerprint)) {
 		return refuse(
 			400,
-			"episode_fingerprint must be the 16-hex fingerprint from the runner_stuck_escalation event",
+			"episode_fingerprint must be the 16-hex fingerprint from the active detection episode",
 		);
 	}
 

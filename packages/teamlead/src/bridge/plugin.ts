@@ -212,7 +212,6 @@ import {
 	probeDeclaredStateFromCommDb,
 	probeQuietSignals,
 	stuckCommActivityMs,
-	stuckLatchTtlMs,
 } from "./commdb-probes.js";
 import {
 	finalizeCommDbSession,
@@ -569,7 +568,6 @@ import {
 	reconcileStateStoreGhosts,
 	type StateStoreGhostDeps,
 } from "./statestore-ghost-reconcile.js";
-import { buildStuckRunnerDetector } from "./stuck-escalation.js";
 import {
 	parseStuckConfirmKnobs,
 	type StuckConfirmResult,
@@ -578,7 +576,6 @@ import {
 	createLeadDetectionAckRouter,
 	createStuckRemanageRouter,
 } from "./stuck-remanage-routes.js";
-import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
 import {
 	createTerminalCommDbSync,
 	type TerminalCommDbSync,
@@ -1210,15 +1207,6 @@ export interface BridgeAppOptions {
 	/** FLY-91 Round 3: Global Discord bot token for thread creation fallback. */
 	globalBotToken?: string;
 	/**
-	 * FLY-253 (Codex R2 #4): late-bound holder connecting the stuck-remanage
-	 * router's `re_arm` to the live StuckRunnerDetector. The router mounts
-	 * inside createBridgeApp (pre-listen) but the detector is only created
-	 * post-listen in startBridge — so the router gets a STABLE callback that
-	 * reads this holder at call time. `current` stays null when detection is
-	 * disabled (FLYWHEEL_STUCK_DETECT=0): re_arm still deletes the DB latch.
-	 */
-	stuckDetectorHolder?: { current: StuckRunnerDetector | null };
-	/**
 	 * FLY-623 (Codex R2 MED-5): late-bound holder connecting the event router +
 	 * idle watchdog to the live HeartbeatService reconnecting set. Both are wired
 	 * inside createBridgeApp (pre-listen) but HeartbeatService is constructed
@@ -1256,17 +1244,11 @@ export interface BridgeAppOptions {
 	 * createBridgeApp (pre-listen) but close() lives in startBridge — so /health
 	 * reads this holder at request time and close() flips it at teardown start.
 	 * Absent (standalone createBridgeApp / tests) ⇒ /health reports
-	 * shuttingDown:false (byte-compat). Mirrors stuckDetectorHolder.
+	 * shuttingDown:false (byte-compat).
 	 */
 	shutdownStateHolder?: { shuttingDown: boolean };
 	/** FLY-1393: late-bound minimum-set watchdog health manifest. */
 	watchdogHealthProvider?: { current?: () => unknown };
-	/**
-	 * FLY-253 L2: TTL for execution-scoped latches, parsed ONCE from
-	 * `FLYWHEEL_STUCK_LATCH_TTL_MS` at startup (Codex R2 #5) and injected
-	 * into the remanage router. Undefined ⇒ router default (72h).
-	 */
-	stuckLatchTtlMs?: number;
 	/**
 	 * FLY-247 inc2a: the Fleet console (founder-admin surface). When present,
 	 * `GET /` renders the console and the `/api/fleet/*` routes are mounted
@@ -1498,8 +1480,8 @@ export function createBridgeApp(
 		// shutdown begins. flywheel-bridge-wrapper.sh probes this to tell a healthy
 		// serving Bridge apart from a zombie stuck mid-close() that still answers
 		// /health 200 — the latter must yield its port, not be mistaken for a live
-		// double-start. Read at request time via the late-bound holder (mirrors
-		// stuckDetectorHolder); absent (standalone createBridgeApp) ⇒ false.
+		// double-start. Read at request time via the late-bound holder; absent
+		// (standalone createBridgeApp) ⇒ false.
 		const shuttingDown = opts?.shutdownStateHolder?.shuttingDown === true;
 		let watchdogs: unknown;
 		if (opts?.watchdogHealthProvider?.current) {
@@ -2546,13 +2528,6 @@ export function createBridgeApp(
 			projects: projects ?? [],
 			captureSessionFn: defaultCaptureSession,
 			auth: tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
-			// FLY-253: stable callback over the late-bound holder (Codex R2 #4);
-			// null holder / null detector ⇒ no-op, DB latch still deleted.
-			onRearm: (executionId) =>
-				opts?.stuckDetectorHolder?.current?.rearmExecution(executionId),
-			...(opts?.stuckLatchTtlMs !== undefined
-				? { latchTtlMs: opts.stuckLatchTtlMs }
-				: {}),
 		}),
 	);
 	app.use(
@@ -5654,13 +5629,6 @@ export async function startBridge(
 		: undefined;
 	workflowEngineDispatcher?.start();
 
-	// FLY-253 (Codex R2 #4): the remanage router mounts inside createBridgeApp,
-	// but the StuckRunnerDetector is only created post-listen — give the router
-	// a stable holder it reads at re_arm time.
-	const stuckDetectorHolder: { current: StuckRunnerDetector | null } = {
-		current: null,
-	};
-
 	// FLY-516: shared shutdown flag — /health (in createBridgeApp) reads it,
 	// close() (below) flips it at teardown start.
 	const shutdownStateHolder: { shuttingDown: boolean } = {
@@ -5926,9 +5894,6 @@ export async function startBridge(
 			})(),
 			chatThreadCreator,
 			globalBotToken: config.discordBotToken,
-			// FLY-253: holder filled after the detector is created post-listen.
-			stuckDetectorHolder,
-			stuckLatchTtlMs: stuckLatchTtlMs(),
 			fleetConsole,
 			manualQaTokens: fleetConsole?.tokens ?? new ConfirmTokenStore(),
 			// FLY-516: /health reads this; close() flips it at teardown start.
@@ -7191,33 +7156,22 @@ export async function startBridge(
 				// escalation flow (Lead-first + ~30min founder page). Runner targets
 				// only — lead-keyed targets have no session/issue to escalate into
 				// (the A5 delivery still reaches the owner Lead either way).
-				// Keyed by the OLD detector's live episode fingerprint when it is
-				// tracking this target, so the C4a mutual exclusion matches; an
-				// already-escalated old episode owns the flow and is not double-fed.
 				// FLY-1234 (INV-4): this side effect belongs ONLY to the suspicious
 				// pipeline — the heartbeat confirm layer's routing never notifies.
 				onConfirmedStuck: (r, verdict) => {
 					if (r.targetKind === "runner") {
-						const oldEpisode = stuckDetectorHolder.current?.episodeFor(
-							r.targetKey,
-						);
 						const session = store.getSession(r.targetKey);
-						if (session && !oldEpisode?.escalated) {
+						if (session) {
 							void notifyDetectionEpisode(
-								buildCaseCEscalationInput(
-									session,
-									oldEpisode?.fingerprint ?? r.episodeFingerprint,
-									{
-										// Codex code R1 #7: the unified reason travels to the
-										// (founder-visible) issue thread — free-text rationale is
-										// derived from RAW pane frames and may quote them. Closed
-										// enum only; the rationale stays on the Lead-face A5
-										// delivery + the durable judge audit event.
-										reason: `LLM judge 确认 case-c(attribution=${verdict.attribution})`,
-										firstDetectedAtMs:
-											oldEpisode?.firstStagnantAt ?? Date.now(),
-									},
-								),
+								buildCaseCEscalationInput(session, r.episodeFingerprint, {
+									// Codex code R1 #7: the unified reason travels to the
+									// (founder-visible) issue thread — free-text rationale is
+									// derived from RAW pane frames and may quote them. Closed
+									// enum only; the rationale stays on the Lead-face A5
+									// delivery + the durable judge audit event.
+									reason: `LLM judge 确认 case-c(attribution=${verdict.attribution})`,
+									firstDetectedAtMs: Date.now(),
+								}),
 							).catch((err) =>
 								console.warn(
 									`[detection-escalation] judge-confirmed notify failed: ${(err as Error).message}`,
@@ -7278,24 +7232,12 @@ export async function startBridge(
 	// the fake FLYWHEEL_DETECTION_GAP_SCAN switch has been removed.
 	const gapSuspicionRegistry = createSuspicionRegistry();
 
-	// FLY-1048 (A7): retired focused frames for gap-scan suspects. Every successful
-	// capture ALSO feeds the existing stuck-runner detector (checkSession with
-	// a precaptured outcome) — its hard gates + dispositions stay the single
-	// escalation authority, it just accumulates episode time at the focused
-	// cadence (~4min). Unclear windows go fail-suspicious (A5). Batch 1 keeps this
-	// implementation inert; Batch 2 deletes it after FLY-1392 plus observation.
+	// FLY-1048 (A7): retired focused frames for gap-scan suspects. Unclear windows
+	// go fail-suspicious (A5). This implementation remains inert until knife 6.
 	const focusedFrames = createFocusedFrameScheduler({
 		capture: async (t) => {
 			const res = await defaultCaptureSession(t.targetKey, t.projectName, 200);
 			return "output" in res ? res.output : null;
-		},
-		onFrame: async (t, frameText) => {
-			const session = store.getSession(t.targetKey);
-			if (!session) return;
-			await stuckDetectorHolder.current?.checkSession(session, {
-				ok: true,
-				output: frameText,
-			});
 		},
 		onVerdict: (v) => {
 			if (v.verdict === "unclear") {
@@ -7311,28 +7253,20 @@ export async function startBridge(
 				return;
 			}
 			// FLY-1048 PR-C (C4): a mechanical c_candidate enters the unified flow
-			// when the escalation env is ON (unset = observe-only log, PR-A
-			// behavior). Keyed by the OLD detector's live episode fingerprint when
-			// available (A7's onFrame feeds it the SAME frame just before this
-			// verdict) so the C4a mutual exclusion matches; if the old flow
-			// already escalated this episode it owns the notification.
+			// when the escalation env is ON (unset = observe-only log, PR-A behavior).
 			if (v.verdict === "c_candidate") {
-				const oldEpisode = stuckDetectorHolder.current?.episodeFor(
-					v.target.targetKey,
-				);
 				const session = store.getSession(v.target.targetKey);
-				if (session && !oldEpisode?.escalated) {
+				if (session) {
 					const reason = v.deltas.repeatedErrorSig
 						? `多帧观察窗确认 case-c:同一错误签名(${v.deltas.repeatedErrorSig.kind})跨帧重现`
 						: "多帧观察窗确认 case-c:pane 静默且无 token 流";
 					void notifyDetectionEpisode(
 						buildCaseCEscalationInput(
 							session,
-							oldEpisode?.fingerprint ??
-								fallbackCaseCFingerprint(v.deltas, v.latestFrame),
+							fallbackCaseCFingerprint(v.deltas, v.latestFrame),
 							{
 								reason,
-								firstDetectedAtMs: oldEpisode?.firstStagnantAt ?? Date.now(),
+								firstDetectedAtMs: Date.now(),
 							},
 						),
 					).catch((err) =>
@@ -8905,25 +8839,6 @@ export async function startBridge(
 						`[auto-qa] reconcileCodexHolds failed: ${(err as Error).message}`,
 					),
 				);
-			// FLY-863: catch up on any head that crossed the stuck-duration
-			// threshold WHILE the Bridge was down — don't wait for the first 30s
-			// poll tick to notice a genuinely stuck hold on restart.
-			void autoQaCoordinatorHolder.current
-				.reconcileStuckCodexHolds()
-				.catch((err) =>
-					console.warn(
-						`[auto-qa] reconcileStuckCodexHolds failed: ${(err as Error).message}`,
-					),
-				);
-			// FLY-1099 §6: the 30min ledger-backed nudge layer (queue+wake
-			// intents; execution + bounded retry live in the founder-action drain).
-			void autoQaCoordinatorHolder.current
-				.reconcileCodexHoldNudges()
-				.catch((err) =>
-					console.warn(
-						`[auto-qa] reconcileCodexHoldNudges failed: ${(err as Error).message}`,
-					),
-				);
 			console.log(
 				`[auto-qa] coordinator wired (opt-out default: ${enabledCount}/${projects.length} projects auto-QA ON)`,
 			);
@@ -10432,23 +10347,8 @@ export async function startBridge(
 					archiveDefaultProvider: alertArchiveDefaultProvider,
 					// FLY-1243: conservative auto-repair, 固化 default-on (always wired
 					// inside the hub, which itself needs a channel + repair chain). Only
-					// the two safe actions; reuses the audited runner-nudge +
-					// lead-resume-enter ops.
+					// retained safe auto-repair actions.
 					autoRepairBot: new AutoRepairBot({
-						runnerNudge: (input) =>
-							attemptRunnerRecoveryNudge(input, {
-								store,
-								projects,
-								captureSessionFn: defaultCaptureSession,
-								hasPendingGate: hasPendingGateFromCommDb,
-								sendKeys: sendKeysToWindow,
-								getTmuxTarget: getTmuxTargetFromCommDb,
-								now: () => Date.now(),
-								nextAuditSeq: (() => {
-									let n = 0;
-									return () => ++n;
-								})(),
-							}),
 						leadResumeEnter: (input) =>
 							attemptLeadResumeEnter(input, {
 								store,
@@ -10900,32 +10800,6 @@ export async function startBridge(
 	}
 
 	// FLY-92 / FLY-1393 W-1: Runner process-liveness via tmux capture-pane.
-	// FLY-195: the retired frozen-pane detector still shares the SAME poll
-	// (no new periodic timer, FLY-169) using the SAME per-session capture.
-	// Created after leadAlertNotifier because the detector's Q7 fallback
-	// (runner_stuck_unhandled) pages Annie through it.
-	const stuckDetector = buildStuckRunnerDetector({
-		store,
-		projects,
-		runtimeRegistry: registry,
-		chatThreadsEnabled: config.chatThreadsEnabled,
-		// FLY-368: route the Q7 runner_stuck_unhandled alert through the same sink
-		// as Lead alerts so it lands in the unified channel + gets a thread + the
-		// conservative auto-repair attempt (when enabled). Falls back to the raw
-		// notifier when the Hub is off (byte-compat).
-		notifier: routedAlertSink,
-		// FLY-818 M3 (default-ON, kill-switch FLYWHEEL_STUCK_FOUNDER_PAGE=0): the
-		// founder page for a genuinely-stuck runner posts an @founder message into
-		// that runner's OWN [FLY-XX] issue thread (Annie's design), using the owning
-		// Lead's bot
-		// (lead.botToken) with this as the fallback. No owner id ⇒ page disabled.
-		discordBotToken: config.discordBotToken,
-		discordOwnerUserId: config.discordOwnerUserId,
-	});
-	// FLY-253 (Codex R2 #4): late-bind the detector into the holder the
-	// remanage router already captured — re_arm can now reach the in-memory
-	// episode map. Stays null when detection is disabled.
-	stuckDetectorHolder.current = stuckDetector;
 	// FLY-1393: only the idle/dead W-1 lane remains active when the legacy delivery
 	// cohort is hard-off, so the old FLY-628 one-hour false-positive band-aid no
 	// longer applies. Restore a 3s default for process-liveness; waiting/unknown
@@ -10933,20 +10807,17 @@ export async function startBridge(
 	const idlePollMs = idleWatchdogPollMs();
 	const idleWatchdog = new RunnerIdleWatchdog({
 		pollIntervalMs: idlePollMs,
-		waitingThresholdCycles: 2,
 		projects,
 		store,
 		runtimeRegistry: registry,
 		captureSessionFn: defaultCaptureSession,
 		chatThreadsEnabled: config.chatThreadsEnabled,
-		stuckDetector,
-		legacyDeliveryWatchdogsEnabled: legacyDeliveryWatchdogsOn,
 		watchdogLivenessEnabled: watchdogFlags.liveness,
 		watchdogTracker: watchdogTrackers.liveness,
 		// FLY-626: shared quiet-signal probe (defined above with HeartbeatService).
 		quietSignalsProbe,
-		// FLY-623 (Codex R2 HIGH-3): suppress idle/stuck signals for a Runner that
-		// was re-adopted after a Bridge restart (alive-but-detached) — its idle/stuck
+		// FLY-623 (Codex R2 HIGH-3): suppress idle signals for a Runner that
+		// was re-adopted after a Bridge restart (alive-but-detached) — its idle
 		// appearance is an artifact of monitoring loss, not a real stall. Reads the
 		// live HeartbeatService set via the holder; null/kill-switch → no suppression.
 		isReconnecting: (execId) =>
@@ -10995,7 +10866,7 @@ export async function startBridge(
 	watchdogWiring.liveness = true;
 	idleWatchdog.start();
 	console.log(
-		`[Bridge] RunnerIdleWatchdog started (${Math.round(idlePollMs / 1000)}s poll${stuckDetector ? ", FLY-195 stuck detection ON" : ", FLY-195 stuck detection OFF (FLYWHEEL_STUCK_DETECT=0)"})`,
+		`[Bridge] RunnerIdleWatchdog started (${Math.round(idlePollMs / 1000)}s poll)`,
 	);
 
 	// FLY-818: opt-in auto-continue arming worker (default OFF —
@@ -11240,21 +11111,6 @@ export async function startBridge(
 						`[Bridge] alertHub.reconcile failed: ${(err as Error).message}`,
 					);
 				}
-			}
-			try {
-				await autoQaCoordinatorHolder.current?.reconcileStuckCodexHolds();
-			} catch (err) {
-				console.warn(
-					`[auto-qa] reconcileStuckCodexHolds (poll) failed: ${(err as Error).message}`,
-				);
-			}
-			// FLY-1099 §6: the 30min ledger-backed nudge layer, same cadence.
-			try {
-				await autoQaCoordinatorHolder.current?.reconcileCodexHoldNudges();
-			} catch (err) {
-				console.warn(
-					`[auto-qa] reconcileCodexHoldNudges (poll) failed: ${(err as Error).message}`,
-				);
 			}
 			if (
 				quotaBridgeMode.runAccountSwitchWatchdog &&

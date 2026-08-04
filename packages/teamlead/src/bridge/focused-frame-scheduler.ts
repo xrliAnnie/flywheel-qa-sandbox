@@ -8,8 +8,7 @@
  * captures per tick, until the window holds ≥2 frames and a mechanical
  * verdict is possible:
  *   - c_candidate (silence / repeated error signature) → the caller routes it
- *     to the EXISTING escalation entry (stuck-runner-detector via `onFrame` —
- *     its hard gates + dispositions stay authoritative);
+ *     to the detection escalation entry;
  *   - active (content flowing) → suspicion clears;
  *   - unclear → fail-suspicious (A5) or the judge (PR-B).
  * Capture failures are FAIL-CLOSED: no frame is recorded and no verdict is
@@ -44,10 +43,7 @@ export interface FocusedFrameVerdict {
 export interface FocusedFrameSchedulerDeps {
 	/** Capture the target's pane. null = capture failed (fail-closed skip). */
 	capture: (target: FocusedFrameTarget) => Promise<string | null>;
-	/** Fired for EVERY successful capture — the caller feeds the existing
-	 * stuck-runner detector (`checkSession` with a precaptured outcome), so
-	 * suspects accumulate episode time at the focused cadence instead of the
-	 * 1h sweep. Best-effort; errors are logged, never thrown. */
+	/** Fired for every successful capture. Best-effort; errors are logged. */
 	onFrame?: (
 		target: FocusedFrameTarget,
 		frameText: string,

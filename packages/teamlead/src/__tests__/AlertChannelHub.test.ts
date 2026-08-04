@@ -573,73 +573,77 @@ describe("AlertChannelHub (FLY-368)", () => {
 		expect(store.getActiveAlertThread(ck)).toBeDefined();
 	});
 
-	it("reconcile resolves a RUNNER alert when the terminal advanced while session stays running (Codex HIGH-1)", async () => {
+	it("legacy runner-stuck rows stay inert during reconcile", async () => {
 		const discord = makeDiscord();
 		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
-		store.upsertSession({
-			execution_id: "exec-7",
-			issue_id: "FLY-9",
-			project_name: "flywheel",
-			status: "running",
-		});
+		const captureRunner = vi.fn(async () => "runner moved");
 		const hub = new AlertChannelHub({
 			store,
 			notifier,
 			discord,
-			// runner moved on: live fingerprint differs from the stuck signature.
-			captureRunner: async () => "runner is making progress again now\n",
+			captureRunner,
 		});
-		await hub.handle(
-			payload({
-				eventType: "runner_stuck_unhandled",
-				eventId: "evt-rs",
-				sessionKey: "exec-7",
-				metadata: {
-					runnerStuck: {
-						executionId: "exec-7",
-						episodeFingerprint: "aaaaaaaaaaaaaaaa",
-					},
-				},
-			}),
-		);
 		const ck = "flywheel|tadashi|runner_stuck_unhandled|exec-7";
-		expect(store.getActiveAlertThread(ck)).toBeDefined();
-		await hub.reconcile(); // session still running, but fingerprint changed → resolve
-		expect(store.getActiveAlertThread(ck)).toBeUndefined();
-		expect(discord.posts.some(([, c]) => c.includes("已恢复"))).toBe(true);
+		store.openAlertThread({
+			correlationKey: ck,
+			eventId: "evt-rs",
+			episodeSignature: "aaaaaaaaaaaaaaaa",
+			threadId: "thread-rs",
+			channelId: "UNI",
+			leadId: "tadashi",
+			projectName: "flywheel",
+			eventType: "runner_stuck_unhandled",
+			sessionKey: "exec-7",
+		});
+
+		await hub.reconcile();
+
+		expect(store.getActiveAlertThread(ck)?.ticket_status).toBeNull();
+		expect(captureRunner).not.toHaveBeenCalled();
+		expect(discord.posts).toHaveLength(0);
 	});
 
-	it("reconcile does NOT resolve a runner alert when capture is unavailable (fail-closed)", async () => {
+	it("ticketed legacy runner-stuck rows use only the generic T2 lifecycle", async () => {
 		const discord = makeDiscord();
 		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
-		store.upsertSession({
-			execution_id: "exec-8",
-			issue_id: "FLY-9",
-			project_name: "flywheel",
-			status: "running",
-		});
+		const captureRunner = vi.fn(async () => "runner moved");
+		const previousBotId = process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID;
+		process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID = "111111111111111111";
 		const hub = new AlertChannelHub({
 			store,
 			notifier,
 			discord,
-			captureRunner: async () => null, // cannot tell
+			captureRunner,
 		});
-		await hub.handle(
-			payload({
-				eventType: "runner_stuck_unhandled",
-				eventId: "evt-rs2",
-				sessionKey: "exec-8",
-				metadata: {
-					runnerStuck: {
-						executionId: "exec-8",
-						episodeFingerprint: "bbbbbbbbbbbbbbbb",
-					},
-				},
-			}),
-		);
 		const ck = "flywheel|tadashi|runner_stuck_unhandled|exec-8";
-		await hub.reconcile();
-		expect(store.getActiveAlertThread(ck)).toBeDefined(); // stays active
+		store.openAlertThread({
+			correlationKey: ck,
+			eventId: "evt-rs2",
+			threadId: "thread-rs2",
+			channelId: "UNI",
+			leadId: "tadashi",
+			projectName: "flywheel",
+			eventType: "runner_stuck_unhandled",
+			sessionKey: "exec-8",
+			ticketStatus: "NEW",
+			ownerRef: "infra_bot:claude",
+			firstSeenAt: "2020-01-01 00:00:00",
+		});
+		try {
+			await hub.reconcile();
+		} finally {
+			if (previousBotId === undefined) {
+				delete process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID;
+			} else {
+				process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID = previousBotId;
+			}
+		}
+
+		expect(store.getActiveAlertThread(ck)?.ticket_status).toBe("ESCALATED");
+		expect(captureRunner).not.toHaveBeenCalled();
+		expect(discord.posts.some(([, content]) => content.includes("T2"))).toBe(
+			true,
+		);
 	});
 
 	// ── FLY-929 A5: Claude account-cap needs_human → owner-bot assignment ──

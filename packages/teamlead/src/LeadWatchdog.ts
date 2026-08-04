@@ -1203,8 +1203,7 @@ export function titleFor(kind: AlertEventType): string {
 		// exhaustiveness.
 		case "bridge_wrapper_fail":
 			return "Bridge wrapper fail-loud";
-		// FLY-927 W-B: never emitted by LeadWatchdog (the stuck-runner escalation
-		// builds its own title); case exists for switch exhaustiveness.
+		// Legacy persisted event kind; retained for rendering old queued rows.
 		case "runner_throttle_stalled":
 			return "Runner stalled after throttle";
 		// FLY-954: never emitted by LeadWatchdog (converge-flywheel-bin.sh fires
@@ -1438,9 +1437,9 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-927 (D4): never emitted by LeadWatchdog (the bridge wrapper builds its own body via lead-alert.sh).
 		case "bridge_wrapper_fail":
 			return "The Bridge launchd wrapper hit a fail-loud condition (port stuck / preflight failure) while the Bridge is down. Check ~/.flywheel/logs and the wrapper output.";
-		// FLY-927 W-B: never emitted by LeadWatchdog (the stuck-runner escalation builds its own body).
+		// Legacy persisted event kind; retained for rendering old queued rows.
 		case "runner_throttle_stalled":
-			return "A Runner is genuinely stalled after a 529/overloaded throttle (stagnant pane, throttle residue, no live retry). The auto-repair bot attempts the audited continue-nudge first.";
+			return "A legacy runner throttle-stall alert was queued before automated stuck detection was removed. Review it manually.";
 		// FLY-954: never emitted by LeadWatchdog (converge-flywheel-bin.sh builds its own body via lead-alert.sh).
 		case "bin_integrity_drift":
 			return "A ~/.flywheel/bin runtime script drifted from its repo source. This kind is emitted by scripts/converge-flywheel-bin.sh via lead-alert.sh (shell path) — the Watchdog never raises it; see the shell alert body for file + sha details (FLY-954).";

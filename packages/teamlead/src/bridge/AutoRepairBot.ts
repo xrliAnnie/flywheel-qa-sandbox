@@ -1,11 +1,9 @@
 /**
  * FLY-368: the conservative auto-repair bot.
  *
- * Given an alert, it attempts ONLY the two safe, reversible recovery actions a
- * human already does by hand — and NOTHING destructive:
- *   - `runner_stuck_unhandled` → the audited runner `continue` nudge (requires
- *     the structured `metadata.runnerStuck` fingerprint — Codex R1 HIGH-2);
- *   - `pane_hash_stuck` (Lead)  → a single Enter on the EXACT resume-menu shape
+ * Given an alert, it attempts only safe, reversible recovery actions and
+ * nothing destructive. The retained pane handler sends a single Enter on the
+ * EXACT Lead resume-menu shape
  *     (the audited `attemptLeadResumeEnter`, which itself refuses anything that
  *     is not the safe resume menu).
  *
@@ -25,10 +23,6 @@ import type {
 	LeadResumeEnterInput,
 	LeadResumeEnterOutcome,
 } from "./lead-resume-enter.js";
-import type {
-	RunnerNudgeInput,
-	RunnerNudgeOutcome,
-} from "./runner-recovery-nudge.js";
 
 /**
  * "attempted" = a safe action was sent but recovery is NOT yet confirmed (Codex
@@ -41,7 +35,7 @@ export type RepairOutcome = "attempted" | "needs_human";
 
 export interface RepairResult {
 	outcome: RepairOutcome;
-	/** "runner_nudge" | "lead_resume_enter" | "none" */
+	/** Audit label for the attempted repair, or "none". */
 	action: string;
 	/**
 	 * The line the Hub posts into the per-error thread.
@@ -54,8 +48,6 @@ export interface RepairResult {
 }
 
 export interface AutoRepairBotDeps {
-	/** Bound `attemptRunnerRecoveryNudge` (with its Bridge deps pre-applied). */
-	runnerNudge: (input: RunnerNudgeInput) => Promise<RunnerNudgeOutcome>;
 	/** Bound `attemptLeadResumeEnter` (with its Bridge deps pre-applied). */
 	leadResumeEnter: (
 		input: LeadResumeEnterInput,
@@ -86,7 +78,6 @@ export interface AutoRepairBotDeps {
 		/** infra_bot_down: `launchctl kickstart -k` the dead bot's job. */
 		infraBotKickstart?: (payload: AlertPayload) => Promise<RepairResult>;
 	};
-	logger?: (msg: string) => void;
 }
 
 // FLY-368 rework: auto-repair is attributed to Aunt Cass (the fleet-recovery
@@ -97,13 +88,7 @@ const ACTOR = "aunt-cass";
 // auto-repair. `canAttempt()` and `attempt()`'s dispatch both derive from this so
 // the Hub ack can never claim a repair that won't happen (Codex design LOW-1).
 const AUTO_ATTEMPT_EVENT_TYPES: ReadonlySet<AlertPayload["eventType"]> =
-	// FLY-927 (W-B): runner_throttle_stalled is a runner-stuck SUBTYPE — same
-	// runnerStuck metadata contract, same audited continue-nudge, all 5 gates.
-	new Set([
-		"runner_stuck_unhandled",
-		"runner_throttle_stalled",
-		"pane_hash_stuck",
-	]);
+	new Set(["pane_hash_stuck"]);
 
 /** Account/billing/login/permission kinds the bot must NEVER touch — human-only.
  * Exported (FLY-1082 Task 1.5) so the Hub's contract-driven by-design escalate
@@ -129,10 +114,6 @@ export const HUMAN_ONLY_REASON: Partial<
 
 export class AutoRepairBot {
 	constructor(private readonly deps: AutoRepairBotDeps) {}
-
-	private log(msg: string): void {
-		(this.deps.logger ?? ((m) => console.log(`[AutoRepairBot] ${m}`)))(msg);
-	}
 
 	/**
 	 * FLY-368 v1.58.0: does Cass actually attempt a repair for this alert? The Hub
@@ -175,11 +156,6 @@ export class AutoRepairBot {
 		correlationKey: string,
 	): Promise<RepairResult> {
 		switch (payload.eventType) {
-			case "runner_stuck_unhandled":
-			// FLY-927 (W-B): the throttle-stall subtype reuses the SAME audited
-			// continue-nudge (metadata.runnerStuck required — refuses blind).
-			case "runner_throttle_stalled":
-				return this.repairRunner(payload);
 			case "pane_hash_stuck":
 				return this.repairLeadPane(payload, correlationKey);
 			// FLY-1082: fleet kinds. swap / bot-down run the wired reversible
@@ -274,40 +250,6 @@ export class AutoRepairBot {
 				return { outcome: "needs_human", action: "none", detail: reason };
 			}
 		}
-	}
-
-	private async repairRunner(payload: AlertPayload): Promise<RepairResult> {
-		const meta = payload.metadata?.runnerStuck;
-		if (!meta?.executionId || !meta?.episodeFingerprint) {
-			return {
-				outcome: "needs_human",
-				action: "none",
-				detail:
-					"stuck-runner alert lacks the structured fingerprint — refusing to nudge blind.",
-			};
-		}
-		const outcome = await this.deps.runnerNudge({
-			actor: ACTOR,
-			executionId: meta.executionId,
-			leadId: payload.leadId,
-			fingerprint: meta.episodeFingerprint,
-			phrase: "continue",
-		});
-		if (outcome.body.nudged) {
-			return {
-				outcome: "attempted",
-				action: "runner_nudge",
-				detail: `🔧 已 nudge runner（发送 "continue" 到 ${outcome.body.tmuxWindow}）。观察是否前进（恢复后会自动标记 ✅）。`,
-			};
-		}
-		this.log(
-			`runner nudge refused for ${meta.executionId}: ${outcome.body.error}`,
-		);
-		return {
-			outcome: "needs_human",
-			action: "none",
-			detail: `runner nudge 被安全闸拒绝（${outcome.body.error ?? "unknown"}）。`,
-		};
 	}
 
 	private async repairLeadPane(

@@ -44,7 +44,6 @@ async function harness(over: Partial<FounderActionDrainDeps> = {}) {
 		pr_number: 42,
 	});
 	const postNotice = vi.fn(async () => ({ ok: true }));
-	const queueCodexInstruction = vi.fn(() => ({ queued: true }));
 	const wake = vi.fn(async () => ({ ok: true }));
 	const alertSink = { alert: vi.fn(async () => ({ sent: true })) };
 	const deps: FounderActionDrainDeps = {
@@ -52,7 +51,6 @@ async function harness(over: Partial<FounderActionDrainDeps> = {}) {
 			getSession: (e: string) => sessions.get(e),
 		}) as unknown as FounderActionDrainDeps["store"],
 		postNotice,
-		queueCodexInstruction,
 		wake,
 		alertSink,
 		resolveAlertRoute: () => ({ leadId: "lead-1" }),
@@ -64,7 +62,6 @@ async function harness(over: Partial<FounderActionDrainDeps> = {}) {
 		sessions,
 		deps,
 		postNotice,
-		queueCodexInstruction,
 		wake,
 		alertSink,
 	};
@@ -137,99 +134,6 @@ describe("drainFounderActionLedger — execution + outcomes", () => {
 		expect(store.getFounderAction("held-reply-Q-1-100")?.status).toBe(
 			"delivered",
 		);
-	});
-
-	it("codex_nudge_queue uses the action_key as the sink-stable instruction id (R3 #3)", async () => {
-		const { store, deps, queueCodexInstruction } = await harness();
-		store.insertFounderAction(
-			intent({
-				actionKey: `codex-nudge-E-1-${SHA_A}-queue`,
-				kind: "codex_nudge_queue",
-				payload: { head: SHA_A },
-			}),
-		);
-		await drainFounderActionLedger(deps);
-		expect(queueCodexInstruction).toHaveBeenCalledWith({
-			projectName: "proj",
-			executionId: "E-1",
-			instructionId: `codex-nudge-E-1-${SHA_A}-queue`,
-		});
-	});
-
-	it("wake depends_on queue: waits while parent pending, runs after parent delivered (R2 #2 因果)", async () => {
-		const { store, deps, wake, queueCodexInstruction } = await harness({
-			queueCodexInstruction: vi.fn(() => ({ queued: false, error: "db down" })),
-		});
-		const queueKey = `codex-nudge-E-1-${SHA_A}-queue`;
-		store.insertFounderAction(
-			intent({
-				actionKey: queueKey,
-				kind: "codex_nudge_queue",
-				payload: { head: SHA_A },
-			}),
-		);
-		store.insertFounderAction(
-			intent({
-				actionKey: `codex-nudge-E-1-${SHA_A}-wake`,
-				kind: "codex_nudge_wake",
-				payload: { head: SHA_A, text: "去跑 review" },
-				dependsOn: queueKey,
-			}),
-		);
-		await drainFounderActionLedger(deps);
-		// queue failed this pass → wake must NOT have run
-		expect(wake).not.toHaveBeenCalled();
-		void queueCodexInstruction;
-	});
-
-	it("parent failed/cancelled → child wake is CANCELLED, never permanently pending (R3 #3)", async () => {
-		const { store, deps, wake } = await harness();
-		const queueKey = `codex-nudge-E-1-${SHA_A}-queue`;
-		store.insertFounderAction(
-			intent({
-				actionKey: queueKey,
-				kind: "codex_nudge_queue",
-				payload: { head: SHA_A },
-			}),
-		);
-		store.markFounderActionFailed({
-			actionKey: queueKey,
-			error: "x",
-			nowMs: 1,
-		});
-		store.insertFounderAction(
-			intent({
-				actionKey: `codex-nudge-E-1-${SHA_A}-wake`,
-				kind: "codex_nudge_wake",
-				payload: { head: SHA_A },
-				dependsOn: queueKey,
-			}),
-		);
-		await drainFounderActionLedger(deps);
-		expect(wake).not.toHaveBeenCalled();
-		expect(
-			store.getFounderAction(`codex-nudge-E-1-${SHA_A}-wake`)?.status,
-		).toBe("cancelled");
-	});
-
-	it("drain-time eligibility: session moved on (head drift) → nudge CANCELLED, never delivered stale (R2 #2)", async () => {
-		const { store, sessions, deps, queueCodexInstruction } = await harness();
-		sessions.set("E-1", {
-			status: "awaiting_review",
-			pr_head_sha: "b".repeat(40),
-		});
-		store.insertFounderAction(
-			intent({
-				actionKey: `codex-nudge-E-1-${SHA_A}-queue`,
-				kind: "codex_nudge_queue",
-				payload: { head: SHA_A },
-			}),
-		);
-		await drainFounderActionLedger(deps);
-		expect(queueCodexInstruction).not.toHaveBeenCalled();
-		expect(
-			store.getFounderAction(`codex-nudge-E-1-${SHA_A}-queue`)?.status,
-		).toBe("cancelled");
 	});
 
 	it("feedback_wake carries the FULL feedback text to the runner (R3 #1)", async () => {

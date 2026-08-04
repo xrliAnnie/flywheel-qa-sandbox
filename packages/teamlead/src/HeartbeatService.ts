@@ -1675,11 +1675,9 @@ export class HeartbeatService implements ReconnectController {
 	}
 
 	/**
-	 * FLY-623: read-only predicate for the separate `RunnerIdleWatchdog` /
-	 * `StuckRunnerDetector` paths (which independently poll running sessions). They
-	 * skip idle notification + stuck-episode advancement while a Runner is
-	 * reconnecting, so a restart-orphaned-but-alive Runner doesn't trigger false
-	 * idle/stuck alarms.
+	 * FLY-623: read-only predicate for RunnerIdleWatchdog. It suppresses idle
+	 * notification while a Runner is reconnecting, so a restart-orphaned-but-alive
+	 * Runner does not trigger a false idle alert.
 	 */
 	isReconnecting(executionId: string): boolean {
 		return this.reconnecting.has(executionId);

@@ -387,8 +387,6 @@ export type FounderActionKind =
 	| "head_drift_notice"
 	| "rebound_notice"
 	| "feedback_wake"
-	| "codex_nudge_queue"
-	| "codex_nudge_wake"
 	| "emit_alert";
 
 export type FounderActionStatus =
@@ -526,8 +524,8 @@ export interface DeploymentEventRow {
  * FLY-195 (plan §3.4): Lead disposition receipt for one stuck episode.
  *
  * `handled_remanaged` is written IMPLICITLY by the Bridge recovery-nudge
- * endpoint on a successful nudge; the other values are written EXPLICITLY by
- * the Lead via `POST /api/sessions/:executionId/stuck-disposition`.
+ * endpoint on a successful nudge. Legacy values remain readable for existing
+ * rows until the later schema cleanup.
  */
 export const STUCK_DISPOSITIONS = [
 	"handled_remanaged",
@@ -561,14 +559,6 @@ export function normalizeChatThreadRole(role?: string | null): ChatThreadRole {
 		? (role as ChatThreadRole)
 		: "main";
 }
-
-/** Disposition values a Lead may write explicitly (handled_remanaged is implicit-only). */
-export const EXPLICIT_STUCK_DISPOSITIONS: readonly StuckDisposition[] = [
-	"false_positive",
-	"legitimate_wait",
-	"snooze",
-	"needs_founder",
-];
 
 export interface StuckDispositionRow {
 	execution_id: string;
@@ -1072,13 +1062,7 @@ export interface CodexReviewRecord {
 	 * repeated reconcile replays the hold WITHOUT re-posting / re-queueing.
 	 */
 	hold_notified_at?: string;
-	/**
-	 * FLY-863: stamped the first time this (exec, head) crosses the stuck
-	 * threshold in `reconcileStuckCodexHolds` — the ONLY place the codex-hold
-	 * thread-post + Lead alert now fire. `claimCodexHoldStuckNotify` sets it
-	 * atomically so a head is escalated exactly once, no matter how many
-	 * reconcile passes observe it after that.
-	 */
+	/** Legacy column retained until the schema cleanup batch. */
 	stuck_notified_at?: string;
 }
 
@@ -7982,63 +7966,6 @@ export class StateStore {
 		});
 	}
 
-	/**
-	 * FLY-863: still-pending holds whose FIRST notification (`hold_notified_at`)
-	 * is older than `thresholdMs` and have not yet been escalated
-	 * (`stuck_notified_at IS NULL`) — the candidates for
-	 * `AutoQaCoordinator.reconcileStuckCodexHolds`. The caller re-checks the
-	 * owning session (still awaiting_review on this exact head, gate still
-	 * unsatisfied) before firing anything — a row here is a candidate, not a
-	 * guarantee.
-	 */
-	listCodexHoldsPendingOlderThan(
-		nowMs: number,
-		thresholdMs: number,
-	): CodexReviewRecord[] {
-		const stmt = this.db.prepare(
-			`SELECT * FROM codex_review_record
-			  WHERE status = 'pending' AND hold_notified_at IS NOT NULL AND stuck_notified_at IS NULL`,
-		);
-		const out: CodexReviewRecord[] = [];
-		while (stmt.step()) {
-			const rec = this.rowToCodexReviewRecord(
-				stmt.getAsObject() as Record<string, unknown>,
-			);
-			if (!rec.hold_notified_at) continue;
-			const heldSinceMs = Date.parse(
-				`${rec.hold_notified_at.replace(" ", "T")}Z`,
-			);
-			if (!Number.isNaN(heldSinceMs) && nowMs - heldSinceMs >= thresholdMs) {
-				out.push(rec);
-			}
-		}
-		stmt.free();
-		return out;
-	}
-
-	/**
-	 * FLY-863: atomically claim the right to fire the STUCK escalation (thread
-	 * post + Lead alert) for (exec, head). Returns true only for the first
-	 * caller — a repeated `reconcileStuckCodexHolds` pass observing the same
-	 * still-unresolved head is a no-op (LeadAlertNotifier's own per-eventId
-	 * dedup is a second, independent backstop).
-	 */
-	claimCodexHoldStuckNotify(
-		executionId: string,
-		targetPrHeadSha: string,
-		targetRepoIdentity = "__main__",
-	): boolean {
-		const sha = targetPrHeadSha.toLowerCase();
-		this.db.run(
-			`UPDATE codex_review_record SET stuck_notified_at = datetime('now')
-			  WHERE execution_id = ? AND target_repo_identity = ? AND target_pr_head_sha = ? AND stuck_notified_at IS NULL`,
-			[executionId, targetRepoIdentity, sha],
-		);
-		const claimed = this.db.getRowsModified() > 0;
-		this.save();
-		return claimed;
-	}
-
 	getAutoQaRecordByQaExec(qaExecutionId: string): AutoQaRecord | undefined {
 		const stmt = this.db.prepare(
 			"SELECT * FROM auto_qa_record WHERE qa_execution_id = ?",
@@ -12085,7 +12012,7 @@ export class StateStore {
 	}
 
 	/**
-	 * FLY-1282 Part D (old stuck-disposition + recovery-nudge surfaces): the
+	 * FLY-1282 Part D (recovery-nudge surface): the
 	 * authoritative stuck_dispositions write AND every hit episode's unified
 	 * ack + receipt prepare commit in ONE transaction — any failure rolls the
 	 * whole disposition back (the C4a swallow-and-200 false success is gone;

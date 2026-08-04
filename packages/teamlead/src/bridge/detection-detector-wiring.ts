@@ -135,7 +135,7 @@ export function buildCaseCEscalationInput(
 		firstDetectedAtMs: opts.firstDetectedAtMs,
 		reason: opts.reason.replace(/\s*\n\s*/g, " "),
 		nextStep:
-			"capture terminal 判定,自愈或处置(runner_terminal_capture → detection-ack / stuck-disposition)",
+			"capture terminal 判定,自愈或处置(runner_terminal_capture → detection-ack / recovery-nudge)",
 	};
 }
 

@@ -70,17 +70,13 @@ function createWatchdog(quietSignals: QuietSignals | null) {
 	};
 	const config: IdleWatchdogConfig = {
 		pollIntervalMs: 30_000,
-		waitingThresholdCycles: 2,
 		projects: testProjects,
-		// biome-ignore lint/suspicious/noExplicitAny: test mocks
 		store: store as any,
-		// biome-ignore lint/suspicious/noExplicitAny: test mocks
 		runtimeRegistry: registry as any,
 		captureSessionFn: vi.fn(async () => ({
 			output: "idle pane",
 			executionId: "exec-1",
 			projectName: "geo",
-			// biome-ignore lint/suspicious/noExplicitAny: test mocks
 		})) as any,
 		quietSignalsProbe: quietSignals ? () => quietSignals : undefined,
 	};

@@ -2689,12 +2689,9 @@ elif [ "$IS_COS_ROLE" = false ]; then
     log "Appending base model-routing rules: ${BASE_MODEL_ROUTING_RULES}"
   fi
 
-  # ── FLY-195: Stuck-Runner Re-Manage (non-cos dept leads only) ──
-  # Defines how a Lead judges + re-manages a runner_stuck_escalation event
-  # (ladder: mailbox wake → restricted recovery nudge; disposition receipts;
-  # Annie ping cadence). Only roles that manage Runners load it. Loaded on
-  # BOTH messaging backends (the ladder references "your normal Runner
-  # messaging path", which the runner-messaging rules define per backend).
+	# ── Runner recovery safety (non-cos dept leads only) ──
+	# Defines the evidence and authority boundaries for manual Runner recovery.
+	# Only roles that manage Runners load it. Loaded on both messaging backends.
   # Optional — missing base file is a no-op (backward compat).
   BASE_STUCK_REMANAGE_RULES="${BASE_RULES_DIR}/stuck-runner-remanage.md"
   if [ -f "$BASE_STUCK_REMANAGE_RULES" ] && [ -r "$BASE_STUCK_REMANAGE_RULES" ]; then

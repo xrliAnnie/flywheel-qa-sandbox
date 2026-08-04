@@ -249,10 +249,9 @@ export interface AlertChannelHubDeps {
 	 */
 	capturePane?: (projectName: string, leadId: string) => Promise<string | null>;
 	/**
-	 * Reconcile-pass capture of a RUNNER terminal by executionId (null = cannot
-	 * capture → leave active, fail-closed). Lets a runner alert thread resolve when
-	 * the runner unsticks while its session is STILL running (Codex code R1 HIGH-1
-	 * — the common successful-nudge case).
+	 * Reconcile-pass capture of a RUNNER terminal by executionId. Retained for
+	 * login-expiry recovery, where a changed terminal fingerprint is an external
+	 * fact rather than an inactivity inference.
 	 */
 	captureRunner?: (
 		executionId: string,
@@ -270,7 +269,7 @@ export interface AlertChannelHubDeps {
 	ticketPolicy?: TicketEscalationPolicy;
 	/**
 	 * FLY-1082: fleet-kind recovery probe for the reconcile pass — the fleet
-	 * analog of capturePane/captureRunner. Returns true = the underlying fleet
+	 * analog of the retained pane/runner probes. Returns true = the underlying fleet
 	 * condition cleared (resolve quietly), false = still broken, null/absent =
 	 * cannot tell (leave active; the T2 decision still runs). Wired in
 	 * plugin.ts to the fleet-sensors module.
@@ -788,15 +787,10 @@ export class AlertChannelHub {
 					await this.reconcileTicket(row);
 					continue;
 				}
-				if (
-					row.session_key &&
-					(row.event_type === "runner_stuck_unhandled" ||
-						row.event_type === "runner_throttle_stalled" ||
-						row.event_type === "runner_login_expired")
-				) {
+				if (row.session_key && row.event_type === "runner_login_expired") {
 					// FLY-871 R2/C8: a runner_login_expired resolves by the RUNNER's
 					// pane/status (rescue closes the old session, or its fingerprint
-					// changes), NOT a Lead pane — same path as runner_stuck_unhandled.
+					// changes), NOT a Lead pane.
 					if (await this.shouldResolveRunner(row.session_key, row)) {
 						await this.resolve(row.correlation_key);
 						continue;
@@ -966,13 +960,8 @@ export class AlertChannelHub {
 	}
 
 	/**
-	 * Runner alert recovery (Codex code R1 HIGH-1). Resolve when:
-	 *  - the session is no longer running (completed/failed/...), OR
-	 *  - the session is STILL running but the live terminal fingerprint has
-	 *    changed from the stuck episode signature (the common successful-nudge
-	 *    case where the runner moved on while status stays "running").
-	 * Fail-closed: an unknown session, missing capture, or a capture error leaves
-	 * the thread active (never resolve on uncertainty).
+	 * Runner login-expiry recovery. Resolve when the session closes or its live
+	 * terminal fingerprint changes. Missing capture stays fail-closed.
 	 */
 	private async shouldResolveRunner(
 		executionId: string,

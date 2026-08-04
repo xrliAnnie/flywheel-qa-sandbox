@@ -244,7 +244,7 @@ export function formatStuckEscalation(
 		`ID: ${e.execution_id || "—"} | Issue: ${issueRef}`,
 		`STUCK candidate: output unchanged for ${e.stuck_minutes ?? "?"} min while status=${e.status ?? "running"} — judge and re-manage (candidate, NOT a verdict).`,
 		`Episode-Fingerprint: ${e.episode_fingerprint ?? "(missing)"}`,
-		'(echo this fingerprint EXACTLY as "episode_fingerprint" in your stuck-disposition / recovery-nudge call)',
+		'(echo this fingerprint EXACTLY as "episode_fingerprint" in your detection-ack / recovery-nudge call)',
 		`Evidence: input_box_present=${e.input_box_present ?? "?"} | stream_error_signature=${e.stream_error_signature ?? "?"}`,
 	];
 	// FLY-1048 (A3): the error-signature KIND behind a repeated-signature

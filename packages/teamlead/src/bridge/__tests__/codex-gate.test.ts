@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 import {
 	type CodexGateStore,
 	codexHardGateEnabled,
-	codexHoldStuckThresholdMs,
 	isCodexGateSatisfied,
 } from "../codex-gate.js";
 
@@ -71,32 +70,5 @@ describe("FLY-827 isCodexGateSatisfied", () => {
 	it("record for a different head does not satisfy this head", () => {
 		const store = fakeStore(new Set([`exec1:${"b".repeat(40)}`]));
 		expect(isCodexGateSatisfied(store, session, SHA, {})).toBe(false);
-	});
-});
-
-describe("FLY-863 codexHoldStuckThresholdMs", () => {
-	it("defaults to 3 hours when unset", () => {
-		expect(codexHoldStuckThresholdMs({})).toBe(3 * 60 * 60 * 1000);
-	});
-
-	it("honors a valid positive override", () => {
-		expect(
-			codexHoldStuckThresholdMs({ FLYWHEEL_CODEX_HOLD_STUCK_MS: "60000" }),
-		).toBe(60_000);
-	});
-
-	it("falls back to the default on a non-numeric / zero / negative value", () => {
-		const fallback = 3 * 60 * 60 * 1000;
-		expect(
-			codexHoldStuckThresholdMs({
-				FLYWHEEL_CODEX_HOLD_STUCK_MS: "not-a-number",
-			}),
-		).toBe(fallback);
-		expect(
-			codexHoldStuckThresholdMs({ FLYWHEEL_CODEX_HOLD_STUCK_MS: "0" }),
-		).toBe(fallback);
-		expect(
-			codexHoldStuckThresholdMs({ FLYWHEEL_CODEX_HOLD_STUCK_MS: "-5" }),
-		).toBe(fallback);
 	});
 });
