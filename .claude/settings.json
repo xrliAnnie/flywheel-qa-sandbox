@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "/Users/xiaorongli/.flywheel/hooks/runner-stop-notify.sh", "timeout": 10 } ] }
+    ],
+    "StopFailure": [
+      { "hooks": [ { "type": "command", "command": "/Users/xiaorongli/.flywheel/hooks/runner-stop-notify.sh", "timeout": 10 } ] }
+    ]
+  }
+}
