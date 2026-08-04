@@ -57,7 +57,11 @@ Issue: FLY-1570 (https://linear.app/geoforge3d/issue/FLY-1570/消息层重构-a-
       - detection 域:`SELECT kind, status, count(*) FROM detection_escalations WHERE status NOT IN ('RESOLVED') AND kind IN ('receipt_unprocessed','wake_failed') GROUP BY kind, status`
     - **contract delta 逐 entry pin**(R5 收窄,只降级真失去 handler 的 auto 契约,不动本来就 truthful 的值):仅 `pane_hash_stuck`/`runner_stuck_unhandled`/`runner_throttle_stalled` 三条 `arc:"auto"` → `human_by_design` + 删 remediationRef;`pane_error_stalled`/`workflow_route_input_rejected`(已 `human_by_design`)与 `runner_lead_pending_unhandled`/`inbox_loop_stalled`(已 `none_escalate`)**保持原值**加 legacy 注释 —— 统一改值会改变 residual replay 的文案/调用链/ticket lifecycle,超出必要范围
     - **三项新增验证**:①`pnpm -r build` 证明穷尽 Record 闭合;②`validateKindContracts()` 启动校验通过(真实化后的 entry);③seeded 重启测试**分路径 pin**:一条 `ticket_status=NULL` legacy 行断言 no-op、一条 ticketed `NEW` 行断言 decideTicketEscalation→T2 路径,断言不得合并三种路径
-12. **flag 处置策略**(R1):所有被本单移除的 **active** flag 一律迁入 truth.ts `RETIRED_FLAGS`,不许无痕消失:`pane_idle_suppress`(registry.ts:1865-1882,active——修正 research「影子开关」说法)、`codex_hold_nudge`、`codex_hold_nudge_ms`、`receipt_activation_dry_run`、`watchdog_loop_heartbeat`,及 truth allowlist 里的 gap/frame/receipt-patrol env。已带 `retiring: FLY-1393` 的 5 条照移;`founder_reply_watchdog` 保留为活开关、去 retiring 标记修 note
+12. **receipt 升级链覆盖核对(Lead 硬性核对项 2026-08-04,lead-instruction 92a148f8)—— 回答:部分包含,边界逐条**。背景:receipt_unprocessed 升级链自嵌套(升级事件本身是消息→也要收据→再升级时把上一代 fingerprint 整段拼进来→每代变长→第三代突破 detection-ack 端点 200 字符上限 stuck-remanage-routes.ts:171→永远无法 ack→必然 page founder;生产已清 293 行结构死类)。
+    - **包含(自嵌套的引擎整体死亡)**:resend 引擎(lead-receipt-patrol 的 advanceDueUnprocessedReceipts + markUnprocessedReceiptEscalated 全仓唯一调用者)、receipt 域升级生成器(notifyUnprocessed plugin.ts:8130-8170 / notifyWakeFailure :8065-8107,随两 patrol 闭包删)、receiptDetectionKinds 收缩(:7517)—— 刀 4 全删。**「升级的升级」从此结构性不可能:不是靠更好的上限,而是生成器物理不存在了**。替代物(租约到期原地重投不新建行 + 死信闸)= D 单按 FLY-1569 §4/§6 重建
+    - **不包含(留下的洞逐条)**:① `detection_escalations` 表 + reconcileDetectionEscalations 升级机(保留,服务 founder_decision_dropped 保留项 —— 但 receipt 域 feeder 已死,不会再长新 receipt 行);② detection-ack 端点及其 **200 字符上限本体(:171)保留**(统一检测流活接口)—— 其「超长永远关不掉却继续吵」的 fail-closed 方向反了 + too-long 误报 required 文案 + fingerprint 整段拼接三个病灶,**不折进本删除 PR**(纯删红线;且 feeder 死后病灶从「活着的 founder-pager」降级为「保留端点的潜在缺陷」),按 Lead 决定另立小单或折进 C/D;③ lead_inbox 重发记账字段(C 单);④ 存量 receipt 域 detection 行:ship checklist 已含 detection 域盘点 SQL(§3.11),非零先人工收敛
+    - 若 Lead 判定②必须本单治,追加为独立第 9 刀(带端点行为测试),不混入删除 commit
+13. **flag 处置策略**(R1):所有被本单移除的 **active** flag 一律迁入 truth.ts `RETIRED_FLAGS`,不许无痕消失:`pane_idle_suppress`(registry.ts:1865-1882,active——修正 research「影子开关」说法)、`codex_hold_nudge`、`codex_hold_nudge_ms`、`receipt_activation_dry_run`、`watchdog_loop_heartbeat`,及 truth allowlist 里的 gap/frame/receipt-patrol env。已带 `retiring: FLY-1393` 的 5 条照移;`founder_reply_watchdog` 保留为活开关、去 retiring 标记修 note
 
 ## 4. 实施步骤(8 刀,每刀独立编译 + 独立 commit)
 
@@ -92,7 +96,7 @@ Issue: FLY-1570 (https://linear.app/geoforge3d/issue/FLY-1570/消息层重构-a-
 - 删 `runner-receipt-patrol.ts` / `lead-receipt-patrol.ts` + 测试 + qa-fly-1392 e2e 脚本;plugin.ts 构造闭包(:7887-8108,:8110-8299);**:8301-8310 回调只删两行 patrol.pass(),保留 park outbox 投影 + terminal 收据结算,回调改名 onReconcilePatrolTick**(gate-poller 5 处 + 契约测试)
 - 删 `lead-pending-escalation.ts` + 3 测试 + qa-fly-695 e2e;gate-poller 手术(import 块、:1037-1040、prune 块、三个 emit 函数、seenLeadPendingQids/leadPendingPollComplete 逐处确认后清);StateStore 表 4 方法 + DDL;watchdog-health RETIRING_WATCHDOGS 摘条目
 - 删 `inbox-loop-health-checker.ts` + 测试;plugin.ts:6153-6164/:6299;**按 §3.10 契约**:`loopHeartbeat` 从 `watchdogFlags`/`watchdogTrackers`/`watchdogWiring` 类型、plugin 构造(:3932/:3953/:3967)与测试 fixtures 整体移除;W2 行改为 `wired=true`(leadInboxRuntime.start() 置位)+ `switch:"required"` + freshness 只由 `leads[]` durable heartbeat 决定;manifest 两态测试(无 not_started 假状态断言),bridge-liveness-probe 契约测试保持 GREEN
-- kind/flag 收尾按 §3.11/§3.12:`runner_lead_pending_*`/`receipt_unprocessed`/`wake_failed`/`inbox_loop_stalled` 渲染面 legacy 保留、行为面删;registry:receipt_activation_dry_run、lead_pending_escalation、watchdog_loop_heartbeat 处置
+- kind/flag 收尾按 §3.11/§3.13:`runner_lead_pending_*`/`receipt_unprocessed`/`wake_failed`/`inbox_loop_stalled` 渲染面 legacy 保留、行为面删;registry:receipt_activation_dry_run、lead_pending_escalation、watchdog_loop_heartbeat 处置
 - 已知间隙(PR 点名):external_saga_unknown 告警无人 drain;lead_inbox 重发记账字段 **lead 侧仍在写、读者消失(写了没人读)**(R1 措辞修正),C 单收
 
 ### 刀 5:LeadWatchdog + founder-reply-watchdog 原子手术(墓碑门此刻仍在 → 删除的全是死支路,零行为变化;唯一例外 = unreachable 复活,同 commit 内显式接活)
@@ -119,7 +123,7 @@ Issue: FLY-1570 (https://linear.app/geoforge3d/issue/FLY-1570/消息层重构-a-
 - 按 §6 分层谓词全仓扫残留(不限 --type ts,覆盖 .mjs/.sh/.md/lead-rules)
 
 ### 刀 8:flag 真相层 + scripts + 文档收尾
-- registry/truth 按 §3.12 策略收尾 + flag-truth.test.ts + feature-flags-registry.test.ts
+- registry/truth 按 §3.13 策略收尾 + flag-truth.test.ts + feature-flags-registry.test.ts
 - watchdog-health.ts 摘 RETIRING_WATCHDOGS/buildRetiringWatchdogRows/retiring 字段 + plugin.ts:3935-3949/:4630
 - scripts 残留 env 引用(qa-fly-1189/qa-multilead/test-deploy-multilead/qa-fly-1282 文档)
 - CLAUDE.md 里程碑行 + doc 随 PR(本项目 doc-flow:不挪 archive)
