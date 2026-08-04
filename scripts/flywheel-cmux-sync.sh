@@ -14,7 +14,29 @@
 #   register_session_hooks() for why both pane-exited AND pane-died are needed.
 set -euo pipefail
 
-_CMUX_SYNC_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_cmux_sync_source_dir() {
+  # The deployed entrypoint is normally ~/.flywheel/bin/flywheel-cmux-sync, a
+  # symlink into the main checkout. Resolve the leaf symlink chain so required
+  # repo libraries remain available immediately after git updates, before an
+  # installer convergence pass has created any sibling links in global bin.
+  local source="${BASH_SOURCE[0]}" directory target hops=0
+  while [[ -L "$source" ]]; do
+    hops=$((hops + 1))
+    (( hops <= 32 )) || return 1
+    directory="$(cd -P "$(dirname "$source")" && pwd)" || return 1
+    target="$(readlink "$source")" || return 1
+    case "$target" in
+      /*) source="$target" ;;
+      *) source="$directory/$target" ;;
+    esac
+  done
+  cd -P "$(dirname "$source")" && pwd
+}
+if ! _CMUX_SYNC_SCRIPT_DIR="$(_cmux_sync_source_dir)"; then
+  echo "[cmux-sync] ERROR: unable to resolve script source directory" >&2
+  return 1 2>/dev/null || exit 1
+fi
+unset -f _cmux_sync_source_dir
 
 FLYWHEEL_SESSION="flywheel"
 VIEW_PREFIX="cmux-"  # Linked session naming: cmux-<window_name>
@@ -72,6 +94,7 @@ VIEW_LEDGER="${VIEW_LEDGER:-$HOME/.flywheel/state/cmux-view-ledger}"
 KEEPER_INVENTORY="${KEEPER_INVENTORY:-$HOME/.flywheel/state/cmux-keeper-inventory}"
 VIEW_ABSENT_STATE="${VIEW_ABSENT_STATE:-$HOME/.flywheel/state/cmux-view-absent}"
 CMUX_MAINTENANCE_MARKER="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/state/cmux-maintenance}"
+CMUX_QA_TEARDOWN_CLAIM="${CMUX_MAINTENANCE_MARKER}.qa-teardown"
 CMUX_FLAG_STATE="${CMUX_FLAG_STATE:-$HOME/.flywheel/state/cmux-flag-state}"
 LEDGER_CONFLICT_STATE="${LEDGER_CONFLICT_STATE:-$HOME/.flywheel/state/cmux-ledger-conflicts}"
 ROSTER_EPISODE_STATE="${ROSTER_EPISODE_STATE:-$HOME/.flywheel/state/cmux-roster-episodes}"
@@ -122,6 +145,24 @@ SUPERVISED_WAIT_SECONDS="${FLYWHEEL_CMUX_SUPERVISED_WAIT:-15}"
 # don't get diagnostics mixed into the data stream. autostart redirects both
 # stdout and stderr to the log file, so on-disk log output is unchanged.
 log() { echo "[cmux-sync $(date '+%H:%M:%S')] $*" >&2; }
+
+_CMUX_PROCESS_CENSUS_LIB=""
+if [[ -r "$_CMUX_SYNC_SCRIPT_DIR/lib/cmux-mutator-process-census.sh" ]]; then
+  _CMUX_PROCESS_CENSUS_LIB="$_CMUX_SYNC_SCRIPT_DIR/lib/cmux-mutator-process-census.sh"
+elif [[ -r "$_CMUX_SYNC_SCRIPT_DIR/cmux-mutator-process-census.sh" ]]; then
+  # Deployed binaries expose shared libraries as siblings.
+  _CMUX_PROCESS_CENSUS_LIB="$_CMUX_SYNC_SCRIPT_DIR/cmux-mutator-process-census.sh"
+fi
+if [[ -z "$_CMUX_PROCESS_CENSUS_LIB" ]]; then
+  log "ERROR: required cmux process census library unavailable"
+  return 1 2>/dev/null || exit 1
+fi
+# shellcheck source=lib/cmux-mutator-process-census.sh
+if ! source "$_CMUX_PROCESS_CENSUS_LIB"; then
+  log "ERROR: required cmux process census library unavailable"
+  return 1 2>/dev/null || exit 1
+fi
+unset _CMUX_PROCESS_CENSUS_LIB
 
 # FLY-1364: alerting is optional and fail-open. Repo executions find the
 # library under scripts/lib; deployed binaries find its symlink as a sibling.
@@ -975,7 +1016,7 @@ reconcile_runner_roster() {
 
 reconcile_roster_read_phase() {
   roster_enabled || return 0
-  [[ -e "$CMUX_MAINTENANCE_MARKER" ]] && return 0
+  maintenance_requested && return 0
   reconcile_lead_roster
   reconcile_runner_roster
   return 0
@@ -1965,20 +2006,28 @@ reap_orphan_pins_oneshot() {
 # inert (byte-compat). Marker lines are untrusted local IPC (validated below).
 process_close_requests() {
   [[ "${FLYWHEEL_CMUX_CLOSE_REQUEST:-1}" == "0" ]] && return 0
-  local tmp="${CLOSE_REQUEST_FILE}.processing"
+  local tmp="${CLOSE_REQUEST_FILE}.processing" drain_rc=0
   # Crash recovery: fold a leftover .processing batch (a previous drain that was
   # interrupted) back into the live file so the drain below processes it exactly
   # once — no same-tick double-process (Codex design R2 watchpoint #4).
   if [[ -f "$tmp" ]]; then
-    cat "$tmp" >> "$CLOSE_REQUEST_FILE" 2>/dev/null || true
-    rm -f "$tmp" 2>/dev/null || true
+    if cat "$tmp" >> "$CLOSE_REQUEST_FILE" 2>/dev/null; then
+      rm -f "$tmp" 2>/dev/null || true
+    else
+      log "WARN: close-request recovery could not requeue retained batch; preserving $tmp"
+      return 0
+    fi
   fi
   [[ -f "$CLOSE_REQUEST_FILE" ]] || return 0
   # Atomically take the current batch so concurrent close_runner appends land in
   # the NEXT batch (mirrors drain_events' mv-to-.processing TOCTOU handling).
   mv "$CLOSE_REQUEST_FILE" "$tmp" 2>/dev/null || return 0
-  _drain_close_requests "$tmp"
-  rm -f "$tmp" 2>/dev/null || true
+  _drain_close_requests "$tmp" || drain_rc=$?
+  if [[ "$drain_rc" -eq 0 ]]; then
+    rm -f "$tmp" 2>/dev/null || true
+  else
+    log "WARN: close-request drain interrupted; retained unprocessed batch for replay (rc=$drain_rc)"
+  fi
   return 0
 }
 
@@ -1991,8 +2040,20 @@ process_close_requests() {
 _drain_close_requests() {
   local batch="$1"
   [[ -f "$batch" ]] || return 0
-  local closed_any=0 wname refs rc ref crc requeue
-  while IFS= read -r wname; do
+  local closed_any=0 wname refs rc ref crc requeue raw
+  local interrupted=0 inner_interrupted=0 remainder="${batch}.remaining.$$"
+  rm -f "$remainder" 2>/dev/null || true
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    if [[ "$interrupted" -eq 1 ]]; then
+      printf '%s\n' "$raw" >> "$remainder" || { rm -f "$remainder"; return 2; }
+      continue
+    fi
+    if ! watcher_mutation_latch_clear; then
+      interrupted=1
+      printf '%s\n' "$raw" >> "$remainder" || { rm -f "$remainder"; return 2; }
+      continue
+    fi
+    wname="$raw"
     # Untrusted local IPC: reject empty / tab-containing / overlong lines BEFORE
     # the managed-title gate (mirrors orphan_pin_refs' tab/newline defense).
     [[ -z "$wname" ]] && continue
@@ -2009,7 +2070,12 @@ _drain_close_requests() {
     # rc=0: refs = the (possibly empty) set of workspace refs for this title.
     [[ -z "$refs" ]] && continue   # pin already gone → nothing to close
     requeue=0
+    inner_interrupted=0
     while IFS= read -r ref; do
+      if ! watcher_mutation_latch_clear; then
+        inner_interrupted=1
+        break
+      fi
       [[ -z "$ref" ]] && continue
       crc=0
       close_orphan_workspace_pin_if_still_orphan "$ref" "$wname" || crc=$?
@@ -2020,8 +2086,19 @@ _drain_close_requests() {
       fi
       # crc=1 (predicate skip: restarted / not-orphan / gone) → drop; FLY-293 backstops.
     done <<< "$refs"
+    watcher_mutation_latch_clear || inner_interrupted=1
+    if [[ "$inner_interrupted" -eq 1 ]]; then
+      interrupted=1
+      printf '%s\n' "$raw" >> "$remainder" || { rm -f "$remainder"; return 2; }
+      continue
+    fi
     [[ $requeue -eq 1 ]] && { printf '%s\n' "$wname" >> "$CLOSE_REQUEST_FILE" 2>/dev/null || true; }
   done < "$batch"
+  if [[ "$interrupted" -eq 1 ]]; then
+    mv -f "$remainder" "$batch" 2>/dev/null || { rm -f "$remainder"; return 2; }
+    return 75
+  fi
+  rm -f "$remainder" 2>/dev/null || true
   if [[ "$closed_any" == "1" ]]; then
     cmux_call refresh-surfaces || true
   fi
@@ -3274,6 +3351,9 @@ tmux_server_generation() {
   # that rendering as process identity made the same live tmux server appear to
   # restart whenever the host crossed a timezone boundary. Pin both locale and
   # timezone so one process lifetime has one stable generation string.
+  # Preserve the legacy persisted generation byte shape. Unlike mutator-owner
+  # incarnations, this value has no separately-normalizing reader; changing its
+  # trailing padding would strand an in-flight construction WAL at cutover.
   started=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$server_pid" 2>/dev/null | sed 's/^[[:space:]]*//' || true)
   [[ -n "$started" ]] || return 1
   printf '%s|%s|%s\n' "$socket" "$server_pid" "$started"
@@ -3748,6 +3828,7 @@ _ledger_transaction() {
   local dir lock owner_tmp="" tmp="" acquired=0 lock_owner="<missing>" conflict_refs=""
   if ! assert_or_reuse_owned_lease; then
     log "WARN: ledger $action refused: current process does not hold the verified mutator lease"
+    [[ "$MUTATOR_LEASE_MODE" == "watch" && "$WATCHER_AUTHORITY_LOST" == "1" ]] && return 75
     return 1
   fi
 
@@ -5462,7 +5543,13 @@ for w in json.load(sys.stdin).get("workspaces", []):
       log "WARN: create ref diff/generation ambiguous for $window_name; leaving workspace unledgered and unnamed"
       return 0
     fi
-    if ! _ledger_upsert prepared "$cmux_generation" "$new_ref" "$window_name"; then
+    local prepared_rc=0
+    _ledger_upsert prepared "$cmux_generation" "$new_ref" "$window_name" || prepared_rc=$?
+    if [[ "$prepared_rc" -ne 0 ]]; then
+      if [[ "$prepared_rc" -eq 75 || "$WATCHER_AUTHORITY_LOST" == "1" ]]; then
+        log "ERROR: prepared ledger write lost mutator authority for $new_ref; preserving exact unreceipted workspace and aborting pass"
+        return 0
+      fi
       log "WARN: cannot persist prepared ledger row for $new_ref; rolling back exact unnamed ref"
       if ! rollback_unreceipted_workspace "$cmux_generation" "$new_ref" "$attach_cmd"; then
         log "WARN: rollback failed for unreceipted workspace generation=$cmux_generation ref=$new_ref; manual resolution required"
@@ -5573,6 +5660,7 @@ cleanup_stale_workspaces() {
   [[ -z "$linked_sessions" ]] && return 0
 
   while read -r sess; do
+    watcher_mutation_latch_clear || break
     local agent_name="${sess#"${VIEW_PREFIX}"}" pane_rc=0
     # Exact match check (not substring)
     if echo "$active_names" | grep -qx "$agent_name"; then
@@ -6035,10 +6123,21 @@ process_pending_cleanups() {
   #   - else → cleanup_workspace_for + drop the entry
   [[ ! -f "$CLEANUP_PENDING" ]] && return 0
 
-  local now remaining=""
+  local now remaining="" raw preserve_rest=0
   now=$(date +%s)
 
-  while IFS='|' read -r wname ts; do
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    if [[ "$preserve_rest" -eq 1 ]]; then
+      remaining+="${raw}"$'\n'
+      continue
+    fi
+    if ! watcher_mutation_latch_clear; then
+      preserve_rest=1
+      remaining+="${raw}"$'\n'
+      continue
+    fi
+    local wname ts
+    IFS='|' read -r wname ts <<< "$raw"
     [[ -z "$wname" || -z "$ts" ]] && continue
     # Pane alive again → cancel cleanup. Uses #{pane_dead} (not window existence)
     # because `remain-on-exit on` means window lingers after pane dies.
@@ -6060,7 +6159,18 @@ process_pending_cleanups() {
     # Delay elapsed + pane confirmed dead → clean up
     log "Event cleanup: '$wname' (exited $((now - ts))s ago)"
     cleanup_workspace_for "$wname"
+    if ! watcher_mutation_latch_clear; then
+      # Cleanup lost authority part-way through this row. Retain the current
+      # item as well as the unread tail so the replacement lease holder can
+      # revalidate and finish it; retrying is safer than guessing which
+      # sub-step completed.
+      preserve_rest=1
+      remaining+="${raw}"$'\n'
+    fi
   done < "$CLEANUP_PENDING"
+
+  [[ "$preserve_rest" -eq 1 ]] \
+    && log "WARN: cleanup-pending drain interrupted; retained current item and queue tail for replay"
 
   if [[ -n "$remaining" ]]; then
     printf '%s' "$remaining" > "$CLEANUP_PENDING"
@@ -6080,19 +6190,29 @@ drain_events() {
   # events separately avoids the TOCTOU race where rebuilding $EVENT_FILE via
   # `cat ... > merged && mv merged $EVENT_FILE` would drop concurrent hook
   # appends that landed on the old inode between snapshot and mv (Codex Round 2).
-  local tmp_events="${EVENT_FILE}.processing"
+  local tmp_events="${EVENT_FILE}.processing" drain_rc=0
 
   # Phase 1 — crash recovery: drain the leftover .processing file if present.
   if [[ -f "$tmp_events" ]]; then
-    _drain_file "$tmp_events"
-    rm -f "$tmp_events"
+    drain_rc=0; _drain_file "$tmp_events" || drain_rc=$?
+    if [[ "$drain_rc" -eq 0 ]]; then
+      rm -f "$tmp_events"
+    else
+      log "WARN: event replay interrupted; retained unprocessed batch (rc=$drain_rc)"
+      return 0
+    fi
   fi
 
   # Phase 2 — normal drain: atomically rename live event file, then drain it.
   [[ ! -f "$EVENT_FILE" ]] && return 0
   mv "$EVENT_FILE" "$tmp_events" 2>/dev/null || return 0
-  _drain_file "$tmp_events"
-  rm -f "$tmp_events"
+  drain_rc=0; _drain_file "$tmp_events" || drain_rc=$?
+  if [[ "$drain_rc" -eq 0 ]]; then
+    rm -f "$tmp_events"
+  else
+    log "WARN: event drain interrupted; retained unprocessed batch for replay (rc=$drain_rc)"
+  fi
+  return 0
 }
 
 _drain_file() {
@@ -6106,10 +6226,22 @@ _drain_file() {
   # time, producing a fixed constant. Using drain-time ~ event-arrival-time is
   # acceptable: events drain within 15s of firing, and replay after crash still
   # assigns a meaningful (though slightly-late) timestamp.
-  local now
+  local now raw remainder="${source_file}.remaining.$$" interrupted=0
   now=$(date +%s)
+  rm -f "$remainder" 2>/dev/null || true
 
-  while IFS='|' read -r etype arg1 arg2 arg3; do
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    if [[ "$interrupted" -eq 1 ]]; then
+      printf '%s\n' "$raw" >> "$remainder" || { rm -f "$remainder"; return 2; }
+      continue
+    fi
+    if ! watcher_mutation_latch_clear; then
+      interrupted=1
+      printf '%s\n' "$raw" >> "$remainder" || { rm -f "$remainder"; return 2; }
+      continue
+    fi
+    local etype arg1 arg2 arg3
+    IFS='|' read -r etype arg1 arg2 arg3 <<< "$raw"
     case "$etype" in
       create)
         local session="$arg1" wid="$arg2" wname="$arg3"
@@ -6148,6 +6280,7 @@ _drain_file() {
         local session="$arg1"
         [[ -z "$session" ]] && continue
         register_session_hooks "$session"
+        watcher_mutation_latch_clear || continue
         # FLY-169: a new session appearing = Lead restart / Runner spawn. Sweep
         # that session's windows once to re-attach any that landed as bare zsh,
         # including windows created before these hooks were registered (the
@@ -6178,6 +6311,12 @@ _drain_file() {
         ;;
     esac
   done < "$source_file"
+  if [[ "$interrupted" -eq 1 ]]; then
+    mv -f "$remainder" "$source_file" 2>/dev/null || { rm -f "$remainder"; return 2; }
+    return 75
+  fi
+  rm -f "$remainder" 2>/dev/null || true
+  return 0
 }
 
 cleanup_stale_conservative() {
@@ -6230,8 +6369,9 @@ sync_additive_bootstrap() {
   # Run once at `--watch` startup. Additive-only: never performs aggressive
   # cleanup. This prevents a watcher restart from killing healthy Runner
   # workspaces while the event file is empty.
-  [[ -e "$CMUX_MAINTENANCE_MARKER" ]] && return 0
+  maintenance_requested && return 0
   reconcile_roster_read_phase
+  watcher_mutation_latch_clear || return 0
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
 
@@ -6244,22 +6384,27 @@ sync_additive_bootstrap() {
     log "WARN: bootstrap linked-view refresh inconclusive; pass deferred"
     return 0
   fi
+  watcher_mutation_latch_clear || return 0
   [[ -z "$tmux_windows" ]] && return 0
 
   # Preserve FLY-98 reconcile repair only after WAL recovery has populated the
   # current round's collision blocked set.
   reconcile_existing_workspaces
+  watcher_mutation_latch_clear || return 0
   reconcile_workspace_titles "$tmux_windows"
+  watcher_mutation_latch_clear || return 0
 
   # 3. Create missing workspaces. No cleanup of existing ones.
   # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1 (not found).
   while IFS='|' read -r src_sess wid wname; do
+    watcher_mutation_latch_clear || break
     local _exists_rc=0
     workspace_exists_for "$wname" || _exists_rc=$?
     if [[ $_exists_rc -eq 1 ]]; then
       create_workspace_for_window "$src_sess" "$wid" "$wname"
     fi
   done <<< "$tmux_windows"
+  watcher_mutation_latch_clear || return 0
 
   # 4. (FLY-169) One-shot attach self-heal sweep — covers watcher startup /
   #    cmux restart (watcher re-spawns) / reboot. Re-attaches any pre-existing
@@ -6279,9 +6424,11 @@ sync_additive() {
   # top-up, ghost reaping (Phase 4), and dedup (Phase 6).
   # The marker is the first operation: maintenance preserves existing episode
   # state and authorizes neither derivation/alerting nor mutation.
-  [[ -e "$CMUX_MAINTENANCE_MARKER" ]] && return 0
+  maintenance_requested && return 0
   reconcile_roster_read_phase
+  watcher_mutation_latch_clear || return 0
   register_hooks_on_new_sessions
+  watcher_mutation_latch_clear || return 0
 
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
@@ -6289,17 +6436,22 @@ sync_additive() {
     log "WARN: periodic linked-view refresh inconclusive; pass deferred"
     return 0
   fi
+  watcher_mutation_latch_clear || return 0
   if [[ -z "$tmux_windows" ]]; then
     # A strict independent view may be the watched window's sole holder after
     # its source runner retires. It still needs the ordinary 60s attach-heal.
     self_heal_sweep_all
+    watcher_mutation_latch_clear || return 0
     cleanup_stale_conservative
+    watcher_mutation_latch_clear || return 0
     # Even with no agent windows, reap ghosts so cmux UI clutter doesn't
     # accumulate during quiet periods.
     reap_ghost_workspaces
+    watcher_mutation_latch_clear || return 0
     # R6 stock adoption is anchor-independent by design; the quiet state is
     # where already-closed runner tabs most commonly remain visible.
     reap_unledgered_stock_workspaces
+    watcher_mutation_latch_clear || return 0
     # FLY-293: the "all runners closed" quiet state is EXACTLY when orphan pins
     # linger — reap them here too, not only in the has-windows branch.
     reap_orphan_workspace_pins
@@ -6309,32 +6461,41 @@ sync_additive() {
   # WAL recovery above owns the round's collision blocked set. Only now may
   # exact-ref workspace reconciliation enter the mutation phase.
   reconcile_existing_workspaces
+  watcher_mutation_latch_clear || return 0
   reconcile_workspace_titles "$tmux_windows"
+  watcher_mutation_latch_clear || return 0
 
   # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1.
   while IFS='|' read -r src_sess wid wname; do
+    watcher_mutation_latch_clear || break
     local _exists_rc=0
     workspace_exists_for "$wname" || _exists_rc=$?
     if [[ $_exists_rc -eq 1 ]]; then
       create_workspace_for_window "$src_sess" "$wid" "$wname"
     fi
   done <<< "$tmux_windows"
+  watcher_mutation_latch_clear || return 0
 
   # FLY-1364 R6: recover killed/exited attach clients even when no create or
   # register hook fires. This function is reached only by the existing 60s
   # additive cadence; self_heal_sweep_all is best-effort and its ref-scoped
   # primitive performs a final zero-client check immediately before any send.
   self_heal_sweep_all
+  watcher_mutation_latch_clear || return 0
 
   # FLY-129 Phase 4 + Phase 6: ghost reap + dedup. Both fail-closed on
   # JSON-unavailable — they no-op rather than mis-acting on stale state.
   reap_ghost_workspaces
+  watcher_mutation_latch_clear || return 0
   dedup_workspaces_by_title
+  watcher_mutation_latch_clear || return 0
   reap_unledgered_stock_workspaces
+  watcher_mutation_latch_clear || return 0
   # FLY-293: anchor-independent orphan-pin reaper (closes fully-orphaned managed
   # runner pins whose linked session AND source window are both gone). Env-gated,
   # fail-closed, ref-keyed grace — see reap_orphan_workspace_pins.
   reap_orphan_workspace_pins
+  watcher_mutation_latch_clear || return 0
 
   cleanup_stale_conservative
 }
@@ -6382,6 +6543,22 @@ reopen_aware_sleep() {
   return 0
 }
 
+watcher_backoff_sleep() {
+  local total="$1" elapsed=0 step=5 remain
+  if (( total <= 15 )) \
+      || [[ "$CMUX_HEALTH_LAST_RC" != "1" && "$CMUX_HEALTH_LAST_RC" != "3" ]]; then
+    reopen_aware_sleep "$total"
+    return 0
+  fi
+  while (( elapsed < total )); do
+    remain=$((total - elapsed))
+    (( step > remain )) && step=$remain
+    reopen_aware_sleep "$step"
+    elapsed=$((elapsed + step))
+    maintenance_requested && return 0
+  done
+}
+
 watch_loop() {
   # Polling loop for --watch mode. Wrapped in a function so `local` is legal.
   # FLY-129 Phase 7: backoff while unhealthy. Healthy ticks stay at 15s so
@@ -6391,8 +6568,22 @@ watch_loop() {
     # FLY-254 (gap a): unhealthy sleeps are sliced with a pure-stat app-open
     # edge probe so a reopen is noticed in seconds instead of a full backoff
     # window (up to 300s). Healthy sleeps are byte-identical plain sleeps.
-    reopen_aware_sleep "$sleep_seconds"
+    watcher_backoff_sleep "$sleep_seconds"
     tick=$((tick + 1))
+
+    watcher_maintenance_checkpoint
+    if [[ "$WATCHER_RESYNC_REQUIRED" == "1" ]]; then
+      WATCHER_RESYNC_REQUIRED=0
+      if watcher_begin_pass; then
+        sync_additive_bootstrap
+      fi
+      watcher_finish_pass
+    fi
+
+    if ! watcher_begin_pass; then
+      watcher_finish_pass
+      continue
+    fi
 
     # FLY-129 R2: gate ALL cmux-touching work behind the health check.
     # rc=2 (Access denied / kernel perm-denied) → cmux_health_check_or_die
@@ -6424,17 +6615,18 @@ watch_loop() {
           self_heal_sweep_all
         fi
       fi
-      drain_events
-      process_pending_cleanups
+      [[ "$WATCHER_AUTHORITY_LOST" == "1" ]] || drain_events
+      [[ "$WATCHER_AUTHORITY_LOST" == "1" ]] || process_pending_cleanups
       # FLY-685: drain close_runner's close-request markers → immediate pin removal.
-      process_close_requests
-      if (( tick % 4 == 0 )); then
+      [[ "$WATCHER_AUTHORITY_LOST" == "1" ]] || process_close_requests
+      if [[ "$WATCHER_AUTHORITY_LOST" != "1" ]] && (( tick % 4 == 0 )); then
         sync_additive
       fi
       sleep_seconds=15
     else
       sleep_seconds=$(next_sleep_seconds "$CMUX_HEALTH_FAIL_COUNT")
     fi
+    watcher_finish_pass
   done
 }
 
@@ -6499,13 +6691,16 @@ watch_main() {
     # pending generation is consumable, the escalated consume REPLACES the
     # legacy bootstrap heal sweep this round (superset) and runs BEFORE the
     # first watch_loop sleep — no wasted non-escalated pass, no extra 15s.
-    reopen_detector_check
-    if reopen_pending_ready; then
-      BOOTSTRAP_SKIP_HEAL_SWEEP=1 sync_additive_bootstrap
-      consume_pending_reopen_sweep
-    else
-      sync_additive_bootstrap
+    if watcher_begin_pass; then
+      reopen_detector_check
+      if reopen_pending_ready; then
+        BOOTSTRAP_SKIP_HEAL_SWEEP=1 sync_additive_bootstrap
+        [[ "$WATCHER_AUTHORITY_LOST" == "1" ]] || consume_pending_reopen_sweep
+      else
+        sync_additive_bootstrap
+      fi
     fi
+    watcher_finish_pass
   fi
   watch_loop
 }
@@ -6621,6 +6816,12 @@ for w in json.load(sys.stdin).get("workspaces", []):
 MUTATOR_LEASE_NONCE=""
 MUTATOR_LEASE_INCARNATION=""
 MUTATOR_LEASE_MODE=""
+WATCHER_AUTHORITY_LOST=0
+WATCHER_AUTHORITY_FAILURE_STREAK=0
+WATCHER_PASS_ACTIVE=0
+WATCHER_RESYNC_REQUIRED=0
+QA_CLAIM_DEAD_SIGNATURE=""
+QA_CLAIM_DEAD_OBSERVATIONS=0
 
 _process_incarnation() {
   local pid="$1" started
@@ -6635,14 +6836,19 @@ _process_incarnation() {
   # FLY-1605: process identity must not depend on the host's current timezone.
   # This value is persisted in the mutator lease and re-read on every ledger
   # mutation, so ambient rendering would make a live owner reject itself.
-  started=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^[[:space:]]*//' || true)
+  started=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
   [[ -n "$started" ]] || return 1
   printf '%s\n' "$started"
 }
 
 _read_mutator_owner() {
-  local file="$WATCHER_LOCK_DIR/owner" line fields
-  [[ -f "$file" ]] || return 1
+  local file="$WATCHER_LOCK_DIR/owner" line fields bytes
+  [[ -e "$file" || -L "$file" ]] || return 1
+  [[ -f "$file" && ! -L "$file" ]] || return 2
+  bytes=$(wc -c < "$file" 2>/dev/null | tr -d ' ') || return 2
+  case "$bytes" in ''|*[!0-9]*) return 2 ;; esac
+  (( bytes <= 4096 )) || return 2
   [[ "$(wc -l < "$file" 2>/dev/null | tr -d ' ')" == "1" ]] || return 2
   line=$(cat "$file" 2>/dev/null) || return 2
   fields=$(printf '%s\n' "$line" | awk -F'|' '{print NF}')
@@ -6651,6 +6857,8 @@ _read_mutator_owner() {
   case "$MUTATOR_OWNER_PID" in ''|*[!0-9]*) return 2 ;; esac
   case "$MUTATOR_OWNER_MODE" in watch|bootstrap|once|refresh|reaper|qa_teardown) ;; *) return 2 ;; esac
   case "$MUTATOR_OWNER_NONCE" in ''|*[!A-Za-z0-9_.-]*) return 2 ;; esac
+  MUTATOR_OWNER_INCARNATION=$(printf '%s' "$MUTATOR_OWNER_INCARNATION" \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   [[ -n "$MUTATOR_OWNER_INCARNATION" ]] || return 2
 }
 
@@ -6662,46 +6870,52 @@ _owner_process_matches() {
 }
 
 _mutator_command_matches() {
-  # Match the executed argv shape, not a substring anywhere in shell prose.
-  # Production exposes either the script directly or through its bash shebang.
-  # An interpreter may carry execution flags before the script. Search through
-  # those argv words, but reject every short-option cluster containing `c`:
-  # `bash -lc "... flywheel-cmux-sync ..."` is shell prose, not a mutator.
-  local cmd="$1" first="" token="" verb="" saw_script=0 i
-  local -a argv=()
-  read -ra argv <<< "$cmd"
-  [[ ${#argv[@]} -gt 0 ]] || return 1
-  first="${argv[0]}"
-  case "${first##*/}" in
-    flywheel-cmux-sync|flywheel-cmux-sync.sh)
-      verb="${argv[1]:-}"
-      ;;
-    bash|sh)
-      for ((i = 1; i < ${#argv[@]}; i++)); do
-        token="${argv[$i]}"
-        case "$token" in
-          -c|+c) return 1 ;;
-          --*) ;;
-          -?*|+?*)
-            case "${token:1}" in *c*) return 1 ;; esac
-            ;;
-        esac
-        case "${token##*/}" in
-          flywheel-cmux-sync|flywheel-cmux-sync.sh)
-            verb="${argv[$((i + 1))]:-}"
-            saw_script=1
-            break
-            ;;
-        esac
-      done
-      [[ "$saw_script" == "1" ]] || return 1
-      ;;
-    *) return 1 ;;
-  esac
-  case "$verb" in
-    ""|--watch|--once|--refresh|--reap-orphan-pins|--qa-teardown) return 0 ;;
-    *) return 1 ;;
-  esac
+  cmux_mutator_command_matches "$@"
+}
+
+_read_qa_teardown_claim() {
+  local file="$CMUX_QA_TEARDOWN_CLAIM" line fields bytes
+  [[ -e "$file" || -L "$file" ]] || return 1
+  [[ -f "$file" && ! -L "$file" ]] || return 2
+  bytes=$(wc -c < "$file" 2>/dev/null | tr -d ' ') || return 2
+  case "$bytes" in ''|*[!0-9]*) return 2 ;; esac
+  (( bytes <= 4096 )) || return 2
+  [[ "$(wc -l < "$file" 2>/dev/null | tr -d ' ')" == "1" ]] || return 2
+  line=$(cat "$file" 2>/dev/null) || return 2
+  fields=$(printf '%s\n' "$line" | awk -F'|' '{print NF}')
+  [[ "$fields" == "4" ]] || return 2
+  IFS='|' read -r QA_CLAIM_PID QA_CLAIM_INCARNATION QA_CLAIM_MODE QA_CLAIM_NONCE <<< "$line"
+  case "$QA_CLAIM_PID" in ''|*[!0-9]*) return 2 ;; esac
+  [[ "$QA_CLAIM_MODE" == "qa_teardown" ]] || return 2
+  case "$QA_CLAIM_NONCE" in ''|*[!A-Za-z0-9_.-]*) return 2 ;; esac
+  QA_CLAIM_INCARNATION=$(printf '%s' "$QA_CLAIM_INCARNATION" \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [[ -n "$QA_CLAIM_INCARNATION" ]] || return 2
+  QA_CLAIM_LINE="$line"
+}
+
+_qa_claim_owner_matches() {
+  local observed
+  kill -0 "$QA_CLAIM_PID" 2>/dev/null || return 1
+  observed=$(_process_incarnation "$QA_CLAIM_PID") || return 1
+  [[ "$observed" == "$QA_CLAIM_INCARNATION" ]]
+}
+
+maintenance_requested() {
+  [[ -e "$CMUX_MAINTENANCE_MARKER" || -L "$CMUX_MAINTENANCE_MARKER" \
+     || -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" ]]
+}
+
+_alert_malformed_qa_teardown_claim() {
+  local bytes hash signature
+  bytes=$(cat "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null || printf '<unreadable>')
+  hash=$(_cmux_alert_hash "$bytes")
+  signature="cmux_cleanup|qa-teardown-claim-malformed|sha256=$hash"
+  log "ERROR: malformed qa_teardown claim preserved fail-closed path=$CMUX_QA_TEARDOWN_CLAIM sha256=$hash"
+  _alert_cmux_cleanup \
+    "cmux QA teardown claim malformed" \
+    "cmux-sync parked fail-closed because $CMUX_QA_TEARDOWN_CLAIM is malformed or unsafe; sha256=$hash." \
+    "$signature"
 }
 
 _snapshot_live_mutator_processes() {
@@ -6734,11 +6948,7 @@ _snapshot_live_mutator_processes() {
 }
 
 _process_command_for_pid() {
-  local pid="$1" command
-  command=$(ps -o command= -p "$pid" 2>/dev/null) || return 2
-  command=$(printf '%s' "$command" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-  [[ -n "$command" ]] || return 2
-  printf '%s\n' "$command"
+  cmux_process_command_for_pid "$@"
 }
 
 _bounded_candidate_pid() {
@@ -6949,6 +7159,83 @@ _release_reap_mutex() {
   REAP_MUTEX_HELD=0
 }
 
+_lock_claim_fence_fd() {
+  local fd="$1" lock_rc=0
+  if command -v lockf >/dev/null 2>&1; then
+    command lockf -s -t 0 "$fd" || lock_rc=$?
+    case "$lock_rc" in 0) return 0 ;; 75) return 1 ;; *) return 2 ;; esac
+  elif command -v flock >/dev/null 2>&1; then
+    command flock -n "$fd" || lock_rc=$?
+    case "$lock_rc" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+  fi
+  return 2
+}
+
+_reap_stale_qa_teardown_claim() {
+  local mutex_rc=0 claim_rc=0 fence_rc=0 signature observed
+  [[ -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" ]] || {
+    QA_CLAIM_DEAD_SIGNATURE=""
+    QA_CLAIM_DEAD_OBSERVATIONS=0
+    return 0
+  }
+  _acquire_reap_mutex || mutex_rc=$?
+  if [[ "$mutex_rc" -ne 0 ]]; then
+    [[ "$mutex_rc" -eq 2 ]] \
+      && log "ERROR: qa_teardown claim reap mutex unavailable; claim preserved fail-closed"
+    return "$mutex_rc"
+  fi
+  _read_qa_teardown_claim || claim_rc=$?
+  if [[ "$claim_rc" -ne 0 ]]; then
+    _release_reap_mutex
+    _alert_malformed_qa_teardown_claim
+    return 2
+  fi
+  if _qa_claim_owner_matches; then
+    QA_CLAIM_DEAD_SIGNATURE=""
+    QA_CLAIM_DEAD_OBSERVATIONS=0
+    _release_reap_mutex
+    return 1
+  fi
+  signature=$(_cmux_alert_hash "$QA_CLAIM_LINE")
+  if [[ "$QA_CLAIM_DEAD_SIGNATURE" != "$signature" ]]; then
+    QA_CLAIM_DEAD_SIGNATURE="$signature"
+    QA_CLAIM_DEAD_OBSERVATIONS=1
+    _release_reap_mutex
+    return 1
+  fi
+  QA_CLAIM_DEAD_OBSERVATIONS=$((QA_CLAIM_DEAD_OBSERVATIONS + 1))
+  if (( QA_CLAIM_DEAD_OBSERVATIONS < 2 )); then
+    _release_reap_mutex
+    return 1
+  fi
+  # Read-only open is deliberate: unlike <>, it cannot recreate a claim that
+  # disappeared between classification and the fence probe.
+  exec 7<"$CMUX_QA_TEARDOWN_CLAIM" || {
+    _release_reap_mutex
+    return 1
+  }
+  _lock_claim_fence_fd 7 || fence_rc=$?
+  if [[ "$fence_rc" -ne 0 ]]; then
+    exec 7>&-
+    _release_reap_mutex
+    [[ "$fence_rc" -eq 2 ]] \
+      && log "ERROR: qa_teardown claim activity fence unavailable; claim preserved fail-closed"
+    return "$fence_rc"
+  fi
+  observed=$(cat "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null || true)
+  if [[ "$observed" != "$QA_CLAIM_LINE" ]] \
+      || ! rm -f "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null; then
+    exec 7>&-
+    _release_reap_mutex
+    return 1
+  fi
+  exec 7>&-
+  _release_reap_mutex
+  log "[audit] reaped dead qa_teardown claim pid=$QA_CLAIM_PID path=$CMUX_QA_TEARDOWN_CLAIM"
+  QA_CLAIM_DEAD_SIGNATURE=""
+  QA_CLAIM_DEAD_OBSERVATIONS=0
+}
+
 acquire_mutator_lease() {
   local mode="$1" read_rc=0 attempt=0 class_rc=0 create_rc=0
   local quarantine="" rebuild_reason="" had_old=0 restore_rc=0 prune_rc=0
@@ -7032,22 +7319,69 @@ acquire_mutator_lease() {
   return 1
 }
 
-assert_or_reuse_owned_lease() {
+mutator_lease_owned_by_self() {
   local rc=0
   _read_mutator_owner || rc=$?
   [[ $rc -eq 0 && "$MUTATOR_OWNER_PID" == "$$" \
      && "$MUTATOR_OWNER_INCARNATION" == "$MUTATOR_LEASE_INCARNATION" \
+     && "$MUTATOR_OWNER_MODE" == "$MUTATOR_LEASE_MODE" \
      && "$MUTATOR_OWNER_NONCE" == "$MUTATOR_LEASE_NONCE" ]] || return 1
   _owner_process_matches
 }
 
+mark_watcher_authority_lost() {
+  local context="${1:-unknown}"
+  [[ "$MUTATOR_LEASE_MODE" == "watch" && "$WATCHER_PASS_ACTIVE" == "1" ]] || return 0
+  if [[ "$WATCHER_AUTHORITY_LOST" != "1" ]]; then
+    WATCHER_AUTHORITY_LOST=1
+    log "ERROR: watcher mutator authority lost during $context; aborting remaining pass mutation"
+  fi
+}
+
+watcher_mutation_latch_clear() {
+  [[ "${WATCHER_AUTHORITY_LOST:-0}" != "1" ]]
+}
+
+assert_or_reuse_owned_lease() {
+  if mutator_lease_owned_by_self; then
+    return 0
+  fi
+  mark_watcher_authority_lost lease-verification
+  return 1
+}
+
 release_mutator_lease() {
-  local rc=0
-  _read_mutator_owner || rc=$?
-  if [[ $rc -eq 0 && "$MUTATOR_OWNER_PID" == "$$" \
-     && "$MUTATOR_OWNER_INCARNATION" == "$MUTATOR_LEASE_INCARNATION" \
-     && "$MUTATOR_OWNER_NONCE" == "$MUTATOR_LEASE_NONCE" ]]; then
+  if mutator_lease_owned_by_self; then
     rm -rf "$WATCHER_LOCK_DIR" 2>/dev/null || true
+  fi
+}
+
+watcher_begin_pass() {
+  WATCHER_PASS_ACTIVE=1
+  WATCHER_AUTHORITY_LOST=0
+  if mutator_lease_owned_by_self; then
+    return 0
+  fi
+  mark_watcher_authority_lost pass-start
+  return 1
+}
+
+watcher_finish_pass() {
+  WATCHER_PASS_ACTIVE=0
+  if [[ "$WATCHER_AUTHORITY_LOST" == "1" ]]; then
+    WATCHER_AUTHORITY_FAILURE_STREAK=$((WATCHER_AUTHORITY_FAILURE_STREAK + 1))
+    log "ERROR: watcher lease verification failed for pass (${WATCHER_AUTHORITY_FAILURE_STREAK}/3)"
+    if (( WATCHER_AUTHORITY_FAILURE_STREAK >= 3 )); then
+      _alert_cmux_cleanup \
+        "cmux watcher lost mutator authority" \
+        "The watcher failed its owned-lease verification for 3 consecutive passes and is exiting for supervised replacement." \
+        "cmux_cleanup|watcher-authority-lost|pid=$$"
+      log "FATAL: watcher mutator authority failed 3 consecutive passes; exiting for supervisor recovery"
+      release_mutator_lease
+      exit 1
+    fi
+  else
+    WATCHER_AUTHORITY_FAILURE_STREAK=0
   fi
 }
 
@@ -7064,11 +7398,23 @@ probe_mutator_lease() {
   done
 }
 
+_maintenance_poll_seconds() {
+  local value="${FLYWHEEL_CMUX_MAINTENANCE_POLL_SECONDS:-1}"
+  case "$value" in ''|*[!0-9]*) value=1 ;; esac
+  (( value < 1 )) && value=1
+  printf '%s\n' "$value"
+}
+
 maintenance_entry_allowed() {
-  local mode="$1" logged=0 wait_s="${FLYWHEEL_CMUX_MAINTENANCE_POLL_SECONDS:-15}"
-  [[ -e "$CMUX_MAINTENANCE_MARKER" ]] || return 0
+  local mode="$1" logged=0 wait_s
+  wait_s=$(_maintenance_poll_seconds)
+  if [[ "$mode" == "watch" ]]; then
+    [[ -e "$CMUX_MAINTENANCE_MARKER" || -L "$CMUX_MAINTENANCE_MARKER" ]] || return 0
+  else
+    maintenance_requested || return 0
+  fi
   if [[ "$mode" == "watch" && "${FLYWHEEL_CMUX_SUPERVISED:-0}" == "1" ]]; then
-    while [[ -e "$CMUX_MAINTENANCE_MARKER" ]]; do
+    while [[ -e "$CMUX_MAINTENANCE_MARKER" || -L "$CMUX_MAINTENANCE_MARKER" ]]; do
       if [[ "$logged" == "0" ]]; then
         log "maintenance marker present; supervised watcher waiting without lease"
         logged=1
@@ -7080,6 +7426,45 @@ maintenance_entry_allowed() {
   fi
   log "maintenance marker present; $mode mutator not started"
   return 1
+}
+
+watcher_maintenance_checkpoint() {
+  # Keep one operational cadence and one default for both maintenance entry
+  # and the yielded/parked watcher state. One second preserves the stale-claim
+  # two-observation recovery bound (~2s) while teardown has a 60s handoff budget.
+  local poll_s release_logged=0 reap_rc=0
+  poll_s=$(_maintenance_poll_seconds)
+  while maintenance_requested; do
+    if mutator_lease_owned_by_self; then
+      [[ "$release_logged" == "1" ]] || log "maintenance requested; watcher yielding mutator lease"
+      release_logged=1
+      release_mutator_lease
+      if mutator_lease_owned_by_self; then
+        _alert_cmux_cleanup \
+          "cmux watcher could not yield mutator lease" \
+          "The watcher remains holding its verified lease while maintenance is requested; all watcher mutation is paused and release will be retried." \
+          "cmux_cleanup|watcher-yield-failed|pid=$$"
+        sleep "$poll_s"
+        continue
+      fi
+      WATCHER_RESYNC_REQUIRED=1
+    fi
+    if [[ -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" ]]; then
+      reap_rc=0; _reap_stale_qa_teardown_claim || reap_rc=$?
+    fi
+    maintenance_requested && sleep "$poll_s"
+  done
+  if ! mutator_lease_owned_by_self; then
+    acquire_watcher_lock
+  fi
+  # A claim can appear between reacquisition and this read. Never bootstrap
+  # through that window: immediately yield again and repeat.
+  if maintenance_requested; then
+    watcher_maintenance_checkpoint
+    return $?
+  fi
+  [[ "$release_logged" == "1" ]] && log "maintenance cleared; watcher reacquired mutator lease"
+  return 0
 }
 
 run_mutator_once() {
@@ -7133,17 +7518,30 @@ _pid_is_watcher() {
 # a same-label bootout/bootstrap cycle). Poll for `flywheel-cmux-sync --watch`
 # process(es) to actually disappear before the caller (flywheel-cmux-install.sh)
 # bootstraps a fresh instance, so a new launchd-tracked instance never has to
-# coexist with a not-fully-dead predecessor. Bounded ~5s real time (10 x 0.5s);
-# falls through to an explicit, PID-targeted TERM-then-KILL (never a broad
-# `pkill`) if bootout's own signal didn't land in time. Every PID killed is
-# logged for audit. Exposed as its own function (not inlined in the install
+# coexist with a not-fully-dead predecessor. Bounded ~5s before an explicit,
+# PID-targeted TERM-then-KILL (never a broad `pkill`), followed by a bounded
+# conclusive-absence read-back. Every PID killed is logged for audit. Exposed
+# as its own function (not inlined in the install
 # script, which has no BASH_SOURCE guard and top-level side effects) so it is
 # covered by this file's existing bash-3.2 `source`-based test harness.
+_watcher_process_pids() {
+  cmux_watcher_process_pids "$@"
+}
+
 wait_for_watcher_exit() {
-  local half_seconds=0 pids pid
+  local half_seconds=0 pids pid pids_rc=0 confirm_polls confirm_interval confirm_i
+  confirm_polls="${FLYWHEEL_CMUX_EXIT_CONFIRM_POLLS:-10}"
+  confirm_interval="${FLYWHEEL_CMUX_EXIT_CONFIRM_INTERVAL:-0.1}"
+  case "$confirm_polls" in ''|*[!0-9]*) confirm_polls=10 ;; esac
+  (( confirm_polls >= 1 && confirm_polls <= 100 )) || confirm_polls=10
+  [[ "$confirm_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] || confirm_interval=0.1
   while true; do
-    pids=$(pgrep -f "flywheel-cmux-sync(\.sh)? +--watch" 2>/dev/null || true)
-    [[ -z "$pids" ]] && return 0
+    pids_rc=0; pids=$(_watcher_process_pids) || pids_rc=$?
+    [[ "$pids_rc" -eq 1 ]] && return 0
+    if [[ "$pids_rc" -ne 0 ]]; then
+      log "ERROR: wait_for_watcher_exit: process census unavailable"
+      return 2
+    fi
     if (( half_seconds >= 10 )); then
       log "wait_for_watcher_exit: still alive after 5s, escalating to TERM: $pids"
       for pid in $pids; do
@@ -7151,12 +7549,26 @@ wait_for_watcher_exit() {
         kill -TERM "$pid" 2>/dev/null || true
       done
       sleep 1
-      pids=$(pgrep -f "flywheel-cmux-sync(\.sh)? +--watch" 2>/dev/null || true)
+      pids_rc=0; pids=$(_watcher_process_pids) || pids_rc=$?
+      [[ "$pids_rc" -eq 1 ]] && return 0
+      [[ "$pids_rc" -eq 0 ]] || return 2
       for pid in $pids; do
         log "wait_for_watcher_exit: KILL pid=$pid (survived TERM)"
         kill -KILL "$pid" 2>/dev/null || true
       done
-      return 0
+      # Signal delivery is not proof of death. Conclusively observe absence
+      # before a caller is allowed to bootstrap a replacement watcher.
+      for ((confirm_i = 1; confirm_i <= confirm_polls; confirm_i++)); do
+        pids_rc=0; pids=$(_watcher_process_pids) || pids_rc=$?
+        [[ "$pids_rc" -eq 1 ]] && return 0
+        if [[ "$pids_rc" -eq 2 ]]; then
+          log "ERROR: wait_for_watcher_exit: post-KILL process census unavailable"
+          return 2
+        fi
+        (( confirm_i < confirm_polls )) && sleep "$confirm_interval"
+      done
+      log "ERROR: wait_for_watcher_exit: watcher survived TERM/KILL: $pids"
+      return 1
     fi
     sleep 0.5
     half_seconds=$((half_seconds + 1))
@@ -7222,6 +7634,10 @@ case "${1:-}" in
     # respawn, etc.). Lock release is wired via trap inside acquire_watcher_lock.
     maintenance_entry_allowed watch || exit 0
     acquire_watcher_lock
+    # A QA claim intentionally does not block cold-start acquisition: once the
+    # lease is held, this checkpoint can safely reap a stale claim or yield to
+    # a live teardown before watch_main performs any side effect.
+    watcher_maintenance_checkpoint
     # FLY-129: full --watch body lives in watch_main() so it can use `local`
     # and so health-check gating can wrap cmux ops cleanly.
     watch_main

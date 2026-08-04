@@ -1004,7 +1004,14 @@ run_v6() {
     # meant trial 1 in `all` mode used post-V4b-teardown state (no slot).
     # In standalone `--scenario v6` it also meant trial 1 had no deploy.
     log "[V6 trial $((i+1))] Reset slot"
-    "${REPO_ROOT}/scripts/test-teardown.sh" "$SLOT" > "${trial_dir}/teardown.stdout" 2>&1 || true
+    if ! (
+      unset QA_TEARDOWN_FINALIZER_INVOCATION QA_TEARDOWN_FINALIZER_ACTIVE QA_TEARDOWN_FINALIZER_RC
+      # shellcheck source=lib/qa-teardown-finalize.sh
+      source "${REPO_ROOT}/scripts/lib/qa-teardown-finalize.sh"
+      qa_finalize_teardown_slots "$trial_dir" "$SLOT"
+    ); then
+      warn "V6 trial $((i+1)) teardown failed; continuing by suite contract (receipt: /tmp/flywheel-test-slot-${SLOT}.teardown-failed)"
+    fi
     "${REPO_ROOT}/scripts/test-deploy.sh" "$SLOT" > "${trial_dir}/deploy.stdout" 2> "${trial_dir}/deploy.stderr" || {
       echo "INFRA_FAIL" > "${trial_dir}/verdict.txt"; ((infra_fail++)); continue
     }

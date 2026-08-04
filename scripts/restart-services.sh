@@ -45,6 +45,8 @@ source "${FLYWHEEL_DIR}/scripts/lib/lead-restart-lifecycle.sh"
 
 # shellcheck source=lib/restart-notify.sh
 source "${FLYWHEEL_DIR}/scripts/lib/restart-notify.sh"
+# shellcheck source=lib/restart-cmux-watcher.sh
+source "${FLYWHEEL_DIR}/scripts/lib/restart-cmux-watcher.sh"
 
 # FLY-727 (Codex design review R2#4): mandatory markerless deployment fallback.
 # Whenever deployed-sha advances OLD→NEW, report a deployment event per merged
@@ -2293,6 +2295,8 @@ deploy_and_verify() {
     local lead_counts_known=true
     local lead_result_state="known"
     local lead_result_detail=""
+    local watcher_state="unverifiable"
+    local watcher_detail="watcher restart not attempted"
     if [[ "$restart_all_leads" == "true" ]]; then
         local lead_result parsed_skipped parsed_failed parsed_total
         lead_result=$(do_restart_all_leads)
@@ -2312,7 +2316,18 @@ deploy_and_verify() {
                 lead_result_state="wave_not_run"
             fi
         fi
-        # FLY-98: trigger cmux refresh after all Leads restarted
+    fi
+
+    # FLY-1482: a full-fleet restart also replaces the long-lived watcher.
+    # Run this after Lead outcome capture even when the Lead wave degraded.
+    # Bootstrap is forbidden until old-process absence is conclusive, and the
+    # replacement is healthy only after a fresh PID owns the mode=watch lease.
+    restart_cmux_watcher
+    watcher_state="$CMUX_WATCHER_RESTART_STATE"
+    watcher_detail="$CMUX_WATCHER_RESTART_DETAIL"
+
+    # FLY-98: trigger cmux refresh after watcher restart outcome capture.
+    if [[ "$restart_all_leads" == "true" ]]; then
         trigger_cmux_refresh
     fi
 
@@ -2371,9 +2386,10 @@ deploy_and_verify() {
         "$DEPLOYED_SHA" "$CURRENT_HEAD" "$RESTART_REASON" \
         "$leads_total" "$leads_failed" "$leads_skipped" \
         "$failed_names" "$skipped_names" "$lead_result_state" "$lead_result_detail" \
-        "$bridge_state" "$bridge_ms" "$duration_str" 2>/dev/null) || completion_msg=""
+        "$bridge_state" "$bridge_ms" "$duration_str" "$watcher_state" "$watcher_detail" \
+        2>/dev/null) || completion_msg=""
     if [[ -z "$completion_msg" ]]; then
-        completion_msg="⚠️ Flywheel 全量重启结束 (reason=${RESTART_REASON}) — 播报组装失败,数字见部署日志。版本: \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`。Lead: 统计未知。Bridge: 状态未知。总耗时: ${duration_str}。"
+        completion_msg="⚠️ Flywheel 全量重启结束 (reason=${RESTART_REASON}) — 播报组装失败,数字见部署日志。版本: \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`。Lead: 统计未知。Bridge: 状态未知。cmux watcher: ${watcher_state}。总耗时: ${duration_str}。"
         log "ERROR: restart completion renderer returned an empty message"
         fire_meta_alert "completion_render_failed" "Flywheel completion render failed" \
             "Code deployed to ${CURRENT_HEAD:0:7}, but the restart completion payload could not be rendered."
@@ -2413,6 +2429,15 @@ deploy_and_verify() {
         tail_log_subject="full restart result"
         [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"
         tail_detail="${tail_detail}Bridge /health 结束时刻探测失败，服务可用性需人工确认"
+    fi
+    if [[ "$watcher_state" != "healthy" ]]; then
+        if [[ -z "$tail_signature" ]]; then
+            tail_signature="cmux-watcher-${watcher_state}"
+        fi
+        tail_title="Flywheel restart degraded"
+        tail_log_subject="full restart result"
+        [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"
+        tail_detail="${tail_detail}cmux watcher=${watcher_state}: ${watcher_detail}"
     fi
     if [[ -n "$tail_signature" ]]; then
         log "WARNING: code deployed; ${tail_log_subject} is degraded — $tail_detail"

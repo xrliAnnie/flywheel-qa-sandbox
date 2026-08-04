@@ -1,0 +1,14 @@
+sequenceDiagram
+    participant T as 清理脚本
+    participant C as 让路请求单<br/>(claim 文件)
+    participant W as 生产 watcher
+    participant L as 互斥锁 (lease)
+    Note over W,L: 常态: watcher 持锁巡逻
+    T->>C: 1. 先攥住保险锁, 再挂出让路请求单
+    W->>C: 2. 巡逻间隙看到请求单
+    W->>L: 3. 主动放锁, 原地待命(放锁失败会大声告警, 绝不装样子)
+    T->>L: 4. 拿锁(最多等 60 秒, 超时就大声报错退出)
+    T->>T: 5. 执行清理(步骤与今天完全相同)
+    T->>L: 6. 还锁
+    T->>C: 7. 撤下请求单
+    W->>L: 8. 重新拿锁, 补一轮同步, 恢复巡逻

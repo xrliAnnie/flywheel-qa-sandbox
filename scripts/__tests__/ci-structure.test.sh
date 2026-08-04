@@ -188,11 +188,18 @@ for step in ci_ok_steps:
         )
 require(len(aggregate_steps) == 1, "ci-ok must contain exactly one NEEDS_JSON aggregate step")
 
-for job_id, job in (("unit-tests", unit_tests), ("script-tests", script_tests)):
+timeout_floors = {
+    "unit-tests": (unit_tests, 15),
+    # FLY-1482: the shell job's main-branch baseline reached 13m42s and a PR
+    # replay was cancelled at the old 15-minute ceiling. Keep enough capacity
+    # for the required real-watcher teardown coverage and ordinary CI variance.
+    "script-tests": (script_tests, 20),
+}
+for job_id, (job, timeout_floor) in timeout_floors.items():
     timeout = job.get("timeout-minutes")
     require(
-        isinstance(timeout, int) and timeout >= 15,
-        f"{job_id}.timeout-minutes must be at least 15",
+        isinstance(timeout, int) and timeout >= timeout_floor,
+        f"{job_id}.timeout-minutes must be at least {timeout_floor}",
     )
 
 script_steps = script_tests.get("steps")
@@ -228,6 +235,11 @@ expected_fly1364_commands = [
     "bash scripts/__tests__/tmux-server-rescue-real-tmux.test.sh",
     "bash scripts/__tests__/flywheel-cmux-install-link-only.test.sh",
     "bash scripts/__tests__/test-cmux-autostart-flags.test.sh",
+    "bash scripts/__tests__/test-teardown-cmux-ownership.test.sh",
+    "bash scripts/__tests__/test-teardown-live-watcher-e2e.test.sh",
+    "bash scripts/__tests__/test-teardown-lease-contract.test.sh",
+    "bash scripts/__tests__/qa-teardown-finalize.test.sh",
+    "bash scripts/__tests__/restart-cmux-watcher.test.sh",
 ]
 require(
     fly1364_commands == expected_fly1364_commands,

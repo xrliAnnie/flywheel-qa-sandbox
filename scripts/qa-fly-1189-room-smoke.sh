@@ -24,6 +24,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/qa-teardown-finalize.sh
+source "${SCRIPT_DIR}/lib/qa-teardown-finalize.sh"
 INJECTOR="${SCRIPT_DIR}/qa-fly-1189-fault-inject.sh"
 DRIVER="${SCRIPT_DIR}/qa-fly-1189-nton-driver.sh"
 
@@ -106,8 +108,21 @@ PROJECTS_FILE=$(jq -r '.flywheelProjectsFile' <<<"$DEPLOY_JSON")
 LAUNCH_MANIFEST=$(jq -r '.launchManifest' <<<"$DEPLOY_JSON")
 CAMPAIGN_MANIFEST=$(jq -r '.campaignManifest' <<<"$DEPLOY_JSON")
 
-cleanup() { bash "${SCRIPT_DIR}/test-teardown.sh" "$SLOT" >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+cleanup() { qa_finalize_teardown_slots "$CAMPAIGN_ROOT" "$SLOT"; }
+cleanup_on_exit() {
+	local primary_rc=$? cleanup_rc=0
+	trap - EXIT
+	set +e
+	cleanup
+	cleanup_rc=$?
+	if (( primary_rc != 0 )); then exit "$primary_rc"; fi
+	if (( cleanup_rc != 0 )); then
+		log "PASS_WITH_TEARDOWN_FAILURE: smoke assertions passed but slot cleanup failed"
+		exit 2
+	fi
+	exit 0
+}
+trap cleanup_on_exit EXIT
 
 # 1. Two leads present.
 LEAD_CNT=$(jq '.[0].leads | length' "$PROJECTS_FILE" 2>/dev/null || echo 0)
@@ -155,8 +170,7 @@ log "      — this smoke proves deploy + manifests + anchor refusal; the inject
 log "      rejection/accept matrix itself is CI-covered (qa-fly-1189-fault-inject)."
 
 # 5. Teardown + prod zero-taint.
-cleanup
-trap - EXIT
+cleanup || true
 bash "$INJECTOR" prod-snapshot smoke-after > "${CAMPAIGN_ROOT}/prod-after.json" 2>/dev/null || true
 if [[ -f "${CAMPAIGN_ROOT}/prod-before.json" && -f "${CAMPAIGN_ROOT}/prod-after.json" ]]; then
 	# File-set must not have gained entries under the monitored prod roots.

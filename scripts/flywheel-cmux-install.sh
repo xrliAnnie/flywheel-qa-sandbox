@@ -40,6 +40,7 @@ mkdir -p "$INSTALL_DIR"
 # 2. Symlink scripts (FLY-98: repo updates take effect immediately without re-install)
 ln -sf "$REPO_DIR/scripts/flywheel-cmux-sync.sh" "$INSTALL_DIR/flywheel-cmux-sync"
 ln -sf "$REPO_DIR/scripts/flywheel-cmux-autostart.sh" "$INSTALL_DIR/flywheel-cmux-autostart"
+ln -sf "$REPO_DIR/scripts/lib/cmux-mutator-process-census.sh" "$INSTALL_DIR/cmux-mutator-process-census.sh"
 ln -sf "$REPO_DIR/scripts/lib/flywheel-alert-lib.sh" "$INSTALL_DIR/flywheel-alert-lib.sh"
 ln -sf "$REPO_DIR/scripts/lead-alert.sh" "$INSTALL_DIR/lead-alert.sh"
 ln -sf "$REPO_DIR/scripts/meta-alert.sh" "$INSTALL_DIR/meta-alert.sh"
@@ -147,7 +148,10 @@ else
     # flywheel-cmux-sync.sh:wait_for_watcher_exit for why bootout alone left a
     # production orphan, pid 64108, running for hours) before bootstrapping a
     # fresh instance.
-    "$REPO_DIR/scripts/flywheel-cmux-sync.sh" --wait-for-watcher-exit
+    if ! "$REPO_DIR/scripts/flywheel-cmux-sync.sh" --wait-for-watcher-exit; then
+      echo "[install] ERROR: watcher shutdown could not be verified; bootstrap skipped" >&2
+      exit 1
+    fi
     if launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST" 2>/dev/null; then
       echo "[install] ✓ launchd watcher bootstrapped (KeepAlive)"
     else

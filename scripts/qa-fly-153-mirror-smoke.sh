@@ -39,6 +39,8 @@ if (( BASH_VERSINFO[0] < 4 )); then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/qa-teardown-finalize.sh
+source "${SCRIPT_DIR}/lib/qa-teardown-finalize.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 ENV_FILE="${HOME}/.flywheel/.env"
@@ -114,11 +116,23 @@ done
 # test-teardown.sh calls for slots that never claimed a lock.
 DEPLOYED_SLOTS=()
 cleanup() {
-  for s in "${DEPLOYED_SLOTS[@]}"; do
-    "${SCRIPT_DIR}/test-teardown.sh" "$s" >/dev/null 2>&1 || true
-  done
+  (( ${#DEPLOYED_SLOTS[@]} > 0 )) || return 0
+  qa_finalize_teardown_slots "$ARTIFACT_DIR" "${DEPLOYED_SLOTS[@]}"
 }
-trap cleanup EXIT
+cleanup_on_exit() {
+  local primary_rc=$? cleanup_rc=0
+  trap - EXIT
+  set +e
+  cleanup
+  cleanup_rc=$?
+  if (( primary_rc != 0 )); then exit "$primary_rc"; fi
+  if (( cleanup_rc != 0 )); then
+    log "PASS_WITH_TEARDOWN_FAILURE: smoke assertions passed but slot cleanup failed"
+    exit 2
+  fi
+  exit 0
+}
+trap cleanup_on_exit EXIT
 
 # Deploy slots 1-3 in mirror mode
 declare -A DEPLOY_JSON=()

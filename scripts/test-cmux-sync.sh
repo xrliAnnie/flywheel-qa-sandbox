@@ -882,6 +882,7 @@ pgrep() {
   # rc. MOCK_KILL_CALLS/kill() below mutates MOCK_PGREP_PIDS to simulate a
   # process actually dying. Falls back to the legacy rc-only MOCK_PGREP_HIT
   # (no stdout) for existing sync_once tests that only check the exit code.
+  [[ "${MOCK_PGREP_ERROR:-0}" == "1" ]] && return 2
   if [[ -n "${MOCK_PGREP_PIDS:-}" ]]; then
     printf '%s\n' $MOCK_PGREP_PIDS
     return 0
@@ -917,6 +918,9 @@ kill() {
     -*) sig="${1#-}"; pid="$2" ;;
   esac
   MOCK_KILL_CALLS+="${sig} ${pid}"$'\n'
+  if [[ "$sig" == "KILL" ]] && printf ' %s ' "$MOCK_KILL_ALWAYS_SURVIVES" | grep -q " $pid "; then
+    return 0
+  fi
   if [[ "$sig" == "TERM" ]] && printf ' %s ' "$MOCK_KILL_SURVIVES" | grep -q " $pid "; then
     return 0   # survives TERM — pid stays in MOCK_PGREP_PIDS
   fi
@@ -968,6 +972,7 @@ reset_mocks() {
   MOCK_MUTATOR_CENSUS_FAIL="0"
   MOCK_MUTATOR_CENSUS_SEQ=""
   MOCK_PROCESS_COMMANDS=""
+  MOCK_PROCESS_GONE_PIDS=""
   MOCK_SHOW_HOOKS=""
   MOCK_CMUX_MUTATE_JSON="0"
   MOCK_CMUX_MUTATE_SURFACES="0"
@@ -1038,6 +1043,8 @@ reset_mocks() {
   MOCK_PGREP_PIDS=""            # pgrep mock: space-separated PID list to echo
   MOCK_KILL_CALLS=""            # captured "SIGNAL PID" lines from the kill mock
   MOCK_KILL_SURVIVES=""         # space-separated PIDs that ignore TERM (still match pgrep after)
+  MOCK_KILL_ALWAYS_SURVIVES=""  # space-separated PIDs that also survive mocked KILL
+  MOCK_PGREP_ERROR="0"          # 1 = process census unavailable (not no matches)
   MOCK_KILL_INTERCEPT="0"       # 0 (default) = kill() delegates to the REAL builtin
                                  # (byte-compat with every pre-existing real-process test);
                                  # 1 = wait_for_watcher_exit tests opt in to recording-only mode
@@ -1046,6 +1053,8 @@ reset_mocks() {
   rm -f "$TMPDIR_ROOT/cmux.next-ref"
   rm -rf "$VIEW_WAL_DIR"
   rm -f "$VIEW_LEDGER" "$KEEPER_INVENTORY" "$VIEW_ABSENT_STATE" "$FLYWHEEL_CMUX_MAINTENANCE_MARKER"
+  CMUX_QA_TEARDOWN_CLAIM="${FLYWHEEL_CMUX_MAINTENANCE_MARKER}.qa-teardown"
+  rm -f "$CMUX_QA_TEARDOWN_CLAIM"
   rm -f "$LEDGER_CONFLICT_STATE"
   rm -f "$ROSTER_EPISODE_STATE"
   rm -f "$CMUX_FLAG_STATE" "$TMPDIR_ROOT/fly1364-alert-args"
@@ -1053,6 +1062,12 @@ reset_mocks() {
   CMUX_CLEANUP_ALERT_LATCH_COUNT=0
   CMUX_CLEANUP_ALERT_LATCH_GENERATION=""
   CMUX_CLEANUP_ALERT_SATURATION_WARNED=0
+  WATCHER_AUTHORITY_LOST=0
+  WATCHER_AUTHORITY_FAILURE_STREAK=0
+  WATCHER_PASS_ACTIVE=0
+  WATCHER_RESYNC_REQUIRED=0
+  QA_CLAIM_DEAD_SIGNATURE=""
+  QA_CLAIM_DEAD_OBSERVATIONS=0
   rm -rf "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" "${FLYWHEEL_CMUX_WATCHER_LOCK_DIR}.reap"
 }
 
@@ -1077,8 +1092,11 @@ _snapshot_live_mutator_processes() {
   fi
   printf '%s' "$MOCK_MUTATOR_CENSUS"
 }
-_process_command_for_pid() {
+cmux_process_command_for_pid() {
   local pid="$1" row
+  if printf ' %s ' "$MOCK_PROCESS_GONE_PIDS" | grep -q " $pid "; then
+    return 1
+  fi
   row=$(printf '%s\n' "$MOCK_PROCESS_COMMANDS" | awk -F'|' -v p="$pid" '$1 == p { sub(/^[^|]*\|/, ""); print; exit }')
   [[ -n "$row" ]] || return 2
   printf '%s\n' "$row"
@@ -3984,9 +4002,10 @@ else fail "missing recovery-sweep coalesce guard"; fi
 if grep -q 'BOOTSTRAP_SKIP_HEAL_SWEEP=1 sync_additive_bootstrap' "$SYNC_SH"; then
   pass "bootstrap consume replaces the legacy bootstrap sweep when pending"
 else fail "missing bootstrap replace wiring"; fi
-if grep -q 'reopen_aware_sleep "\$sleep_seconds"' "$SYNC_SH"; then
-  pass "watch_loop sleeps through reopen_aware_sleep"
-else fail "watch_loop still uses plain sleep"; fi
+if grep -q 'watcher_backoff_sleep "\$sleep_seconds"' "$SYNC_SH" \
+    && awk '/^watcher_backoff_sleep\(\)/,/^}/' "$SYNC_SH" | grep -q 'reopen_aware_sleep'; then
+  pass "watch_loop keeps reopen-aware sleep inside the maintenance-sliced backoff wrapper"
+else fail "watch_loop bypasses reopen-aware or maintenance-aware sleep"; fi
 if grep -q 'REOPEN_CACHE_STATE" == "pending"' "$SYNC_SH"; then
   pass "watch_loop consume is cache-gated (CR-M6: settled done = zero file IO)"
 else fail "missing cache gate on the consume call"; fi
@@ -5033,6 +5052,7 @@ test_fly825_wait_for_watcher_exit_term_then_kill() {
   echo "Test: wait_for_watcher_exit waits ~5s (10x0.5s) then TERM, then KILL if still alive"
   reset_mocks
   MOCK_PGREP_PIDS="4242"
+  MOCK_PROCESS_COMMANDS="4242|/bin/bash /tmp/flywheel-cmux-sync.sh --watch"
   MOCK_KILL_SURVIVES="4242"   # ignores TERM — proves the KILL escalation path
   MOCK_KILL_INTERCEPT="1"     # "4242" is a fake pgrep PID, not a real process — opt in to recording
   wait_for_watcher_exit
@@ -5050,6 +5070,7 @@ test_fly825_wait_for_watcher_exit_multiple_pids_logged_individually() {
   echo "Test: wait_for_watcher_exit kills multiple PIDs individually (not a blanket pkill)"
   reset_mocks
   MOCK_PGREP_PIDS="111 222"
+  MOCK_PROCESS_COMMANDS=$'111|/bin/bash /tmp/flywheel-cmux-sync.sh --watch\n222|/bin/bash /opt/flywheel-cmux-sync --watch'
   MOCK_KILL_SURVIVES=""   # both die cleanly on TERM
   MOCK_KILL_INTERCEPT="1" # fake pgrep PIDs, not real processes — opt in to recording
   wait_for_watcher_exit
@@ -5065,6 +5086,59 @@ test_fly825_wait_for_watcher_exit_multiple_pids_logged_individually() {
   fi
 }
 
+test_fly1482_wait_for_watcher_exit_rejects_prompt_decoy() {
+  echo "Test: FLY-1482 wait_for_watcher_exit never signals a Runner whose prompt mentions the watcher"
+  reset_mocks
+  MOCK_PGREP_PIDS="111 222"
+  MOCK_PROCESS_COMMANDS=$'111|/bin/bash /tmp/flywheel-cmux-sync.sh --watch\n222|/opt/claude --prompt restart flywheel-cmux-sync --watch after QA'
+  MOCK_KILL_INTERCEPT="1"
+  wait_for_watcher_exit
+  if grep -qx "TERM 111" <<< "$MOCK_KILL_CALLS" \
+      && ! grep -qE '^(TERM|KILL) 222$' <<< "$MOCK_KILL_CALLS"; then
+    pass "argv-shape verification signals the real watcher and rejects the prompt-only Runner candidate"
+  else
+    fail "prompt-only Runner received a signal; calls=[$MOCK_KILL_CALLS]"
+  fi
+}
+
+test_fly1482_wait_for_watcher_exit_skips_vanished_candidate() {
+  echo "Test: FLY-1482 wait_for_watcher_exit treats a pgrep-to-ps exit as absence"
+  reset_mocks
+  MOCK_PGREP_PIDS="111 222"
+  MOCK_PROCESS_COMMANDS="111|/bin/bash /tmp/flywheel-cmux-sync.sh --watch"
+  MOCK_PROCESS_GONE_PIDS="222"
+  MOCK_KILL_INTERCEPT="1"
+  local rc=0
+  wait_for_watcher_exit || rc=$?
+  if [[ "$rc" -eq 0 ]] && grep -qx "TERM 111" <<< "$MOCK_KILL_CALLS" \
+      && ! grep -qE '^(TERM|KILL) 222$' <<< "$MOCK_KILL_CALLS"; then
+    pass "a vanished candidate is skipped while the verified watcher still shuts down"
+  else
+    fail "vanished candidate poisoned census rc=$rc calls=[$MOCK_KILL_CALLS]"
+  fi
+}
+
+test_fly1482_wait_for_watcher_exit_requires_conclusive_absence() {
+  echo "Test: FLY-1482 wait_for_watcher_exit never greenlights a KILL survivor"
+  reset_mocks
+  MOCK_PGREP_PIDS="4242"
+  MOCK_PROCESS_COMMANDS="4242|/bin/bash /tmp/flywheel-cmux-sync.sh --watch"
+  MOCK_KILL_SURVIVES="4242"
+  MOCK_KILL_ALWAYS_SURVIVES="4242"
+  MOCK_KILL_INTERCEPT="1"
+  FLYWHEEL_CMUX_EXIT_CONFIRM_POLLS=2
+  FLYWHEEL_CMUX_EXIT_CONFIRM_INTERVAL=0
+  local rc=0
+  wait_for_watcher_exit >/dev/null 2>&1 || rc=$?
+  unset FLYWHEEL_CMUX_EXIT_CONFIRM_POLLS FLYWHEEL_CMUX_EXIT_CONFIRM_INTERVAL
+  if [[ "$rc" -ne 0 && "$MOCK_PGREP_PIDS" == "4242" \
+      && "$(grep -c '^KILL 4242$' <<< "$MOCK_KILL_CALLS" || true)" == "1" ]]; then
+    pass "post-KILL survivor returns non-zero, so fleet restart must skip bootstrap"
+  else
+    fail "KILL survivor falsely passed rc=$rc pids=[$MOCK_PGREP_PIDS] calls=[$MOCK_KILL_CALLS]"
+  fi
+}
+
 echo ""
 echo "═══ FLY-825: create-vs-create dedup + orphan-watcher wait helper ═══"
 test_fly825_create_dedup_same_window_id
@@ -5076,6 +5150,9 @@ test_fly825_gc_create_state_file
 test_fly825_wait_for_watcher_exit_no_process
 test_fly825_wait_for_watcher_exit_term_then_kill
 test_fly825_wait_for_watcher_exit_multiple_pids_logged_individually
+test_fly1482_wait_for_watcher_exit_rejects_prompt_decoy
+test_fly1482_wait_for_watcher_exit_skips_vanished_candidate
+test_fly1482_wait_for_watcher_exit_requires_conclusive_absence
 
 
 # ════════════════════════════════════════════════════════════════
@@ -6054,6 +6131,262 @@ test_fly1272_maintenance_marker_blocks_oneshot_without_locking() {
     pass "maintenance window is non-holding for one-shot mutators"
   else
     fail "maintenance one-shot gate held lease or invoked mutation rc=$rc mutation=$([[ -e "$mutation_probe" ]] && echo yes || echo no)"
+  fi
+}
+
+test_fly1482_qa_claim_blocks_oneshot_without_mutation() {
+  echo "Test: FLY-1482 — QA yield claim makes one-shot release without mutation"
+  reset_mocks
+  printf '%s|%s|qa_teardown|claim-nonce\n' "$$" "$FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE" \
+    > "$CMUX_QA_TEARDOWN_CLAIM"
+  local rc=0 mutation_probe="$TMPDIR_ROOT/claim-mutation"
+  fly1482_claim_mutation_probe() { touch "$mutation_probe"; }
+  run_mutator_once once fly1482_claim_mutation_probe || rc=$?
+  unset -f fly1482_claim_mutation_probe
+  if [[ "$rc" -eq 0 && ! -e "$mutation_probe" \
+      && ! -d "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" && -f "$CMUX_QA_TEARDOWN_CLAIM" ]]; then
+    pass "one-shot observes the unified maintenance predicate and never consumes the QA claim"
+  else
+    fail "claim gate mutated or retained lease rc=$rc mutation=$([[ -e "$mutation_probe" ]] && echo yes || echo no)"
+  fi
+}
+
+test_fly1482_stale_claim_reap_is_fenced_and_two_observation() {
+  echo "Test: FLY-1482 — dead QA claim needs two observations and a free kernel fence"
+  reset_mocks
+  printf '999999|dead-incarnation|qa_teardown|dead-claim\n' > "$CMUX_QA_TEARDOWN_CLAIM"
+  local first_rc=0 second_rc=0
+  _reap_stale_qa_teardown_claim || first_rc=$?
+  [[ -f "$CMUX_QA_TEARDOWN_CLAIM" ]] || first_rc=99
+  _reap_stale_qa_teardown_claim || second_rc=$?
+  if [[ "$first_rc" -eq 1 && "$second_rc" -eq 0 && ! -e "$CMUX_QA_TEARDOWN_CLAIM" ]]; then
+    pass "one dead observation preserves; the second free-fence observation reaps"
+  else
+    fail "stale claim decision mismatch first=$first_rc second=$second_rc present=$([[ -e "$CMUX_QA_TEARDOWN_CLAIM" ]] && echo yes || echo no)"
+  fi
+}
+
+test_fly1482_malformed_claim_fails_closed() {
+  echo "Test: FLY-1482 — malformed QA claim remains parked and operator-visible"
+  reset_mocks
+  printf 'malformed\n' > "$CMUX_QA_TEARDOWN_CLAIM"
+  local rc=0 log_file="$TMPDIR_ROOT/malformed-qa-claim.log"
+  _reap_stale_qa_teardown_claim 2>"$log_file" || rc=$?
+  if [[ "$rc" -eq 2 && -f "$CMUX_QA_TEARDOWN_CLAIM" \
+      && "$(cat "$log_file")" == *"malformed"* ]]; then
+    pass "malformed claim authorizes zero deletion and emits a fail-closed warning"
+  else
+    fail "malformed claim was not preserved rc=$rc log=[$(cat "$log_file")]"
+  fi
+}
+
+test_fly1482_owner_and_self_verification_share_timezone_stable_identity() {
+  echo "Test: FLY-1482 — outward owner and inward self-verification cannot disagree across TZ"
+  reset_mocks
+  FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE=""
+  MOCK_PS_MODE="tz-sensitive-lstart"
+  eval "$(declare -f _fly1605_ps_mock | sed '1s/_fly1605_ps_mock/ps/')"
+  local acquire_rc=0 external_rc=0 self_rc=0
+  TZ=Asia/Tokyo acquire_mutator_lease watch || acquire_rc=$?
+  TZ=America/Denver _read_mutator_owner || external_rc=$?
+  if [[ "$external_rc" -eq 0 ]]; then
+    TZ=America/Denver _owner_process_matches || external_rc=$?
+  fi
+  TZ=America/Denver mutator_lease_owned_by_self || self_rc=$?
+  release_mutator_lease
+  if [[ "$acquire_rc" -eq 0 && "$external_rc" -eq 0 && "$self_rc" -eq 0 ]]; then
+    pass "the same UTC-pinned identity proves both external liveness and internal authority"
+  else
+    fail "ownership predicates diverged acquire=$acquire_rc external=$external_rc self=$self_rc"
+  fi
+}
+
+test_fly1482_watcher_authority_loss_exits_on_third_pass() {
+  echo "Test: FLY-1482 — watcher exits fail-loud after three mid-pass authority-loss passes"
+  reset_mocks
+  local rc=0 log_file="$TMPDIR_ROOT/watcher-authority-loss.log" survived="$TMPDIR_ROOT/watcher-survived"
+  (
+    acquire_mutator_lease watch
+    for i in 1 2 3; do
+      # Each pass starts with valid authority, then loses it before its first
+      # mutation. This is the production contradiction FLY-1482 must heal;
+      # testing only a bad pass-start would miss loss inside a long reconcile.
+      printf '%s|%s|watch|%s\n' "$$" "$MUTATOR_LEASE_INCARNATION" "$MUTATOR_LEASE_NONCE" \
+        > "$WATCHER_LOCK_DIR/owner"
+      watcher_begin_pass
+      printf '%s|wrong-incarnation|watch|%s\n' "$$" "$MUTATOR_LEASE_NONCE" \
+        > "$WATCHER_LOCK_DIR/owner"
+      assert_or_reuse_owned_lease || true
+      watcher_finish_pass
+    done
+    : > "$survived"
+  ) 2>"$log_file" || rc=$?
+  if [[ "$rc" -ne 0 && ! -e "$survived" \
+      && "$(grep -c 'watcher lease verification failed for pass' "$log_file" 2>/dev/null || true)" == "3" \
+      && "$(cat "$log_file")" == *"FATAL"* ]]; then
+    pass "bad lease is observable on each pass and triggers supervised replacement at the fixed threshold"
+  else
+    fail "authority-loss threshold mismatch rc=$rc survived=$([[ -e "$survived" ]] && echo yes || echo no) log=[$(cat "$log_file")]"
+  fi
+}
+
+test_fly1482_midpass_authority_loss_preserves_unreceipted_workspace() {
+  echo "Test: FLY-1482 — mid-pass lease loss preserves an unreceipted workspace for recovery"
+  _fly1364_legacy_create_fixture
+  release_mutator_lease
+  acquire_mutator_lease watch
+  WATCHER_PASS_ACTIVE=1
+  local saved_upsert remaining rc=0 log_file="$TMPDIR_ROOT/unreceipted-authority-loss.log"
+  saved_upsert=$(declare -f _ledger_upsert)
+  eval "$(declare -f _ledger_upsert | sed '1s/_ledger_upsert/_ledger_upsert_impl/')"
+  _ledger_upsert() {
+    printf '%s|wrong-incarnation|watch|%s\n' "$$" "$MUTATOR_LEASE_NONCE" \
+      > "$WATCHER_LOCK_DIR/owner"
+    _ledger_upsert_impl "$@"
+  }
+  create_workspace_for_window "runner-flywheel" "@42" "FLY-1364-implement" \
+    > /dev/null 2>"$log_file" || rc=$?
+  eval "$saved_upsert"
+  unset -f _ledger_upsert_impl
+  WATCHER_PASS_ACTIVE=0
+  remaining=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c \
+    'import json,sys; print(len(json.load(sys.stdin).get("workspaces", [])))')
+  if [[ "$rc" -eq 0 && "$remaining" == "1" && "$WATCHER_AUTHORITY_LOST" == "1" \
+      && "$(grep -c '^close-workspace ' <<< "$MOCK_CMUX_OPS" || true)" == "0" \
+      && "$(cat "$log_file")" == *"preserving exact unreceipted workspace"* ]]; then
+    pass "authority loss aborts the pass without rolling back a workspace the watcher no longer owns"
+  else
+    fail "authority-loss preservation mismatch rc=$rc remaining=$remaining latch=$WATCHER_AUTHORITY_LOST ops=[$MOCK_CMUX_OPS] log=[$(cat "$log_file")]"
+  fi
+}
+
+test_fly1482_clean_pass_resets_authority_streak() {
+  echo "Test: FLY-1482 — only a complete clean pass resets the authority-loss streak"
+  reset_mocks
+  acquire_mutator_lease watch
+  WATCHER_AUTHORITY_FAILURE_STREAK=1
+  watcher_begin_pass && watcher_finish_pass
+  local after_clean="$WATCHER_AUTHORITY_FAILURE_STREAK"
+  printf '%s|wrong-incarnation|watch|%s\n' "$$" "$MUTATOR_LEASE_NONCE" > "$WATCHER_LOCK_DIR/owner"
+  watcher_begin_pass || true
+  watcher_finish_pass
+  local after_failure="$WATCHER_AUTHORITY_FAILURE_STREAK"
+  if [[ "$after_clean" == "0" && "$after_failure" == "1" ]]; then
+    pass "failure → clean → failure restarts the streak at one"
+  else
+    fail "streak reset mismatch clean=$after_clean failure=$after_failure"
+  fi
+}
+
+test_fly1482_authority_latch_stops_inner_batch_loops() {
+  echo "Test: FLY-1482 — authority loss stops the current event and additive batches"
+  reset_mocks
+  local trace="$TMPDIR_ROOT/fly1482-authority-trace"
+  printf 'create|runner-flywheel|@1|FLY-1482-one\ncreate|runner-flywheel|@2|FLY-1482-two\n' > "$EVENT_FILE"
+  : > "$trace"
+  WATCHER_AUTHORITY_LOST=0
+  workspace_exists_for() { return 1; }
+  create_workspace_for_window() {
+    printf 'create:%s\n' "$3" >> "$trace"
+    WATCHER_AUTHORITY_LOST=1
+  }
+  drain_events
+  local event_creates event_tail replay_creates
+  event_creates=$(grep -c '^create:' "$trace" 2>/dev/null || true)
+  event_tail=$(cat "${EVENT_FILE}.processing" 2>/dev/null || true)
+  WATCHER_AUTHORITY_LOST=0
+  create_workspace_for_window() { printf 'replay:%s\n' "$3" >> "$trace"; }
+  drain_events
+  replay_creates=$(grep -c '^replay:' "$trace" 2>/dev/null || true)
+
+  printf 'FLY-1482-clean-one|1\nFLY-1482-clean-two|2\nFLY-1482-clean-three|3\n' > "$CLEANUP_PENDING"
+  WATCHER_AUTHORITY_LOST=0
+  date() { printf '100\n'; }
+  is_pane_alive() { return 1; }
+  CLEANUP_DELAY_SECONDS=0
+  cleanup_workspace_for() {
+    printf 'cleanup:%s\n' "$1" >> "$trace"
+    WATCHER_AUTHORITY_LOST=1
+  }
+  process_pending_cleanups
+  local cleanup_calls cleanup_tail
+  cleanup_calls=$(grep -c '^cleanup:' "$trace" 2>/dev/null || true)
+  cleanup_tail=$(cat "$CLEANUP_PENDING" 2>/dev/null || true)
+
+  printf 'FLY-1482-close-one\nFLY-1482-close-two\nFLY-1482-close-three\n' > "$CLOSE_REQUEST_FILE"
+  WATCHER_AUTHORITY_LOST=0
+  is_managed_runner_title() { return 0; }
+  workspace_refs_for() { printf 'workspace:1482\n'; }
+  close_orphan_workspace_pin_if_still_orphan() {
+    printf 'close:%s\n' "$2" >> "$trace"
+    WATCHER_AUTHORITY_LOST=1
+  }
+  cmux_call() { printf 'close-tail-mutation\n' >> "$trace"; }
+  process_close_requests
+  local close_calls close_tail close_tail_mutations
+  close_calls=$(grep -c '^close:' "$trace" 2>/dev/null || true)
+  close_tail=$(cat "${CLOSE_REQUEST_FILE}.processing" 2>/dev/null || true)
+  close_tail_mutations=$(grep -c '^close-tail-mutation$' "$trace" 2>/dev/null || true)
+
+  : > "$trace"
+  TRACE_FILE="$trace" FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMPDIR_ROOT/no-maintenance" \
+    /bin/bash -c '
+      source "$1"
+      WATCHER_AUTHORITY_LOST=0
+      reconcile_roster_read_phase() { :; }
+      register_hooks_on_new_sessions() { :; }
+      get_tmux_agent_windows() {
+        printf "runner-flywheel|@1|FLY-1482-one\nrunner-flywheel|@2|FLY-1482-two\n"
+      }
+      refresh_linked_sessions() { return 0; }
+      reconcile_existing_workspaces() { :; }
+      reconcile_workspace_titles() { :; }
+      workspace_exists_for() { return 1; }
+      create_workspace_for_window() {
+        printf "create:%s\n" "$3" >> "$TRACE_FILE"
+        WATCHER_AUTHORITY_LOST=1
+      }
+      self_heal_sweep_all() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
+      cleanup_stale_conservative() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
+      reap_ghost_workspaces() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
+      dedup_workspaces_by_title() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
+      reap_unledgered_stock_workspaces() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
+      reap_orphan_workspace_pins() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
+      sync_additive
+    ' _ "$SCRIPT_DIR/flywheel-cmux-sync.sh" >/dev/null 2>&1
+  local additive_creates tail_mutations
+  additive_creates=$(grep -c '^create:' "$trace" 2>/dev/null || true)
+  tail_mutations=$(grep -c '^tail-mutation$' "$trace" 2>/dev/null || true)
+  if [[ "$event_creates" == "1" \
+    && "$event_tail" == 'create|runner-flywheel|@2|FLY-1482-two' \
+    && "$replay_creates" == "1" \
+    && ! -e "${EVENT_FILE}.processing" \
+    && "$cleanup_calls" == "1" \
+    && "$cleanup_tail" == $'FLY-1482-clean-one|1\nFLY-1482-clean-two|2\nFLY-1482-clean-three|3' \
+    && "$close_calls" == "1" \
+    && "$close_tail" == $'FLY-1482-close-one\nFLY-1482-close-two\nFLY-1482-close-three' \
+    && "$close_tail_mutations" == "0" \
+    && "$additive_creates" == "1" \
+    && "$tail_mutations" == "0" ]]; then
+    pass "latched authority loss defers durable queue tails and prevents later batch mutations"
+  else
+    fail "authority latch lost work event=$event_creates event_tail=[$event_tail] replay=$replay_creates cleanup=$cleanup_calls cleanup_tail=[$cleanup_tail] close=$close_calls close_tail=[$close_tail] close_tail_mutations=$close_tail_mutations additive=$additive_creates tail=$tail_mutations trace=[$(cat "$trace")]"
+  fi
+}
+
+test_fly1482_claim_reap_errors_are_not_mislabelled_malformed() {
+  echo "Test: FLY-1482 — reap infrastructure errors are not reported as malformed claims"
+  reset_mocks
+  printf '%s|%s|qa_teardown|claim-nonce\n' "$$" "$FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE" \
+    > "$CMUX_QA_TEARDOWN_CLAIM"
+  local malformed_alerts=0 rc=0
+  _acquire_reap_mutex() { return 2; }
+  _alert_malformed_qa_teardown_claim() { malformed_alerts=$((malformed_alerts + 1)); }
+  _reap_stale_qa_teardown_claim || rc=$?
+  if [[ "$rc" -eq 2 && "$malformed_alerts" == "0" ]]; then
+    pass "mutex/fence uncertainty stays distinct from malformed claim evidence"
+  else
+    fail "reap error was misclassified rc=$rc malformed_alerts=$malformed_alerts"
   fi
 }
 
@@ -7058,10 +7391,14 @@ test_fly1364_alert_library_forwards_exact_argv_and_fails_open() {
 test_fly1364_optional_alert_library_missing_is_noop() {
   echo "Test: FLY-1364 Fix D — missing deployed alert library warns once and installs a no-op"
   reset_mocks
-  local deploy="$TMPDIR_ROOT/fly1364-deployed" stdout="$TMPDIR_ROOT/fly1364-missing.stdout"
+  local deploy="$TMPDIR_ROOT/fly1364-deployed" source_tree="$TMPDIR_ROOT/fly1364-source"
+  local stdout="$TMPDIR_ROOT/fly1364-missing.stdout"
   local stderr="$TMPDIR_ROOT/fly1364-missing.stderr" rc=0
-  mkdir -p "$deploy"
-  ln -s "$SCRIPT_DIR/flywheel-cmux-sync.sh" "$deploy/flywheel-cmux-sync"
+  mkdir -p "$deploy" "$source_tree/lib"
+  cp "$SCRIPT_DIR/flywheel-cmux-sync.sh" "$source_tree/flywheel-cmux-sync.sh"
+  ln -s "$SCRIPT_DIR/lib/cmux-mutator-process-census.sh" \
+    "$source_tree/lib/cmux-mutator-process-census.sh"
+  ln -s "$source_tree/flywheel-cmux-sync.sh" "$deploy/flywheel-cmux-sync"
   /bin/bash -c 'source "$1"; flywheel_alert cmux_cleanup warning title body signature; printf host-ok' _ \
     "$deploy/flywheel-cmux-sync" >"$stdout" 2>"$stderr" || rc=$?
   if [[ "$rc" -eq 0 && "$(cat "$stdout")" == "host-ok" \
@@ -8070,6 +8407,12 @@ test_fly1272_p5_bootstrap_converges_once_then_is_quiet
 test_fly1272_p1_generalized_mutator_lease
 test_fly1272_p1_probe_lease_fail_closed_on_malformed_record
 test_fly1272_maintenance_marker_blocks_oneshot_without_locking
+test_fly1482_qa_claim_blocks_oneshot_without_mutation
+test_fly1482_stale_claim_reap_is_fenced_and_two_observation
+test_fly1482_malformed_claim_fails_closed
+test_fly1482_owner_and_self_verification_share_timezone_stable_identity
+test_fly1482_watcher_authority_loss_exits_on_third_pass
+test_fly1482_clean_pass_resets_authority_streak
 
 echo ""
 echo "═══ FLY-1364: ledger authority + A0B1 create symmetry ═══"
@@ -8086,6 +8429,7 @@ test_fly1364_a0b1_create_uses_independent_view_by_default
 test_fly1364_strict_view_rollback_restores_grouped_topology
 test_fly1364_a0b0_create_keeps_legacy_no_ledger_contract
 test_fly1364_first_receipt_failure_rolls_back_exact_unnamed_ref
+test_fly1482_midpass_authority_loss_preserves_unreceipted_workspace
 test_fly1364_prepared_recovery_repins_generation_at_rename
 test_fly1364_prepared_recovery_accepts_exact_provisional_attach_title
 test_fly1364_create_snapshot_is_generation_bound_before_ref_diff
@@ -9028,6 +9372,11 @@ test_fly1605_failed_guarded_close_preserves_raw_extra
 test_fly1605_winner_order_ignores_stale_receipt_and_prefers_pin
 test_fly1605_title_reconcile_mounts_after_refresh_before_create
 test_fly1605_ambiguous_legacy_tmux_generation_preserves_wal
+
+echo ""
+echo "═══ FLY-1482: authority-loss review regressions ═══"
+test_fly1482_authority_latch_stops_inner_batch_loops
+test_fly1482_claim_reap_errors_are_not_mislabelled_malformed
 
 set +e   # restore lenient mode for the summary
 

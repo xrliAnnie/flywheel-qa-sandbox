@@ -15,6 +15,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/qa-teardown-finalize.sh
+source "${SCRIPT_DIR}/lib/qa-teardown-finalize.sh"
 ENV_FILE="${HOME}/.flywheel/.env"
 SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
 PROD_CURSOR="${HOME}/.flywheel/roundtable-inbound-cursor.json"
@@ -43,10 +45,22 @@ HOST_CURSOR="/tmp/flywheel-test-slot-${HOST_SLOT}/roundtable-inbound-cursor.json
 
 cleanup() {
   log "teardown"
-  bash "${SCRIPT_DIR}/test-teardown.sh" "$HOST_SLOT"  >/dev/null 2>&1 || true
-  bash "${SCRIPT_DIR}/test-teardown.sh" "$MEMBER_SLOT" >/dev/null 2>&1 || true
+  qa_finalize_teardown_slots "/tmp/qa-fly-529-roundtable-smoke-$$" "$HOST_SLOT" "$MEMBER_SLOT"
 }
-trap cleanup EXIT
+cleanup_on_exit() {
+  local primary_rc=$? cleanup_rc=0
+  trap - EXIT
+  set +e
+  cleanup
+  cleanup_rc=$?
+  if (( primary_rc != 0 )); then exit "$primary_rc"; fi
+  if (( cleanup_rc != 0 )); then
+    log "PASS_WITH_TEARDOWN_FAILURE: smoke assertions passed but slot cleanup failed"
+    exit 2
+  fi
+  exit 0
+}
+trap cleanup_on_exit EXIT
 
 # Baseline production cursor mtime (isolation check).
 PROD_CURSOR_MTIME_BEFORE="missing"

@@ -1,0 +1,19 @@
+flowchart LR
+    subgraph FIX["修复主体 (C1-C5)"]
+        F1["统一锁语义<br/>(两边都用内核文件锁)"]
+        F2["让路握手<br/>(claim 文件 + watcher 主动让锁<br/>+ 崩溃自愈保险锁)"]
+        F3["清理失败可观测<br/>(4 个 QA 脚本不再静默吞错)"]
+    end
+    subgraph PROD["生产实锤追加 (C6 + §4.4/4.5)"]
+        G1["时区归一补全<br/>(FLY-1605 的 teardown 侧收尾)"]
+        G2["验锁连续失败自愈<br/>(3 次即告警 + 受控换新进程)"]
+        G3["舰队重启覆盖 watcher<br/>(卡死不再穿越重启,<br/>失败绝不报「完成」)"]
+    end
+    T1["生产 watcher 活着时<br/>teardown 也能成功清理"]
+    S1["watcher 不再静默烂 2 天"]
+    F1 --> T1
+    F2 --> T1
+    F3 --> T1
+    G1 --> S1
+    G2 --> S1
+    G3 --> S1

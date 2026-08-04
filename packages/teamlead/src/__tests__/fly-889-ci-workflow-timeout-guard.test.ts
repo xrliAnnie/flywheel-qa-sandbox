@@ -44,18 +44,25 @@ function loadCiJobs(): Record<string, unknown> | undefined {
 }
 
 describe("FLY-889 regression guard — CI job timeout headroom + merged apt-get", () => {
-	it("unit-tests and script-tests stay at/above the 15min timeout floor", () => {
+	it("long-running jobs retain measured timeout headroom", () => {
 		const jobs = loadCiJobs();
 		if (!jobs) {
 			// Sparse/standalone checkout without .github — nothing to regress here.
 			expect(true).toBe(true);
 			return;
 		}
-		for (const jobId of ["unit-tests", "script-tests"]) {
+		const timeoutFloors = new Map([
+			["unit-tests", 15],
+			// FLY-1482: main reached 13m42s and the PR replay hit the old 15m cap.
+			["script-tests", 20],
+		]);
+		for (const [jobId, timeoutFloor] of timeoutFloors) {
 			const job = jobs[jobId] as Record<string, unknown> | undefined;
 			expect(job, `ci.yml exists but jobs.${jobId} is missing`).toBeDefined();
 			expect(typeof job?.["timeout-minutes"]).toBe("number");
-			expect(job?.["timeout-minutes"] as number).toBeGreaterThanOrEqual(15);
+			expect(job?.["timeout-minutes"] as number).toBeGreaterThanOrEqual(
+				timeoutFloor,
+			);
 		}
 	});
 

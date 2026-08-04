@@ -69,7 +69,10 @@ mkdir -p "$FR/scripts/lib" "$FR/packages/teamlead/scripts" \
   "$FR/packages/edge-worker/dist" \
   "$FR/node_modules/.pnpm/better-sqlite3@11.0.0/node_modules/better-sqlite3/build/Release"
 cp "${SCRIPT_DIR}/test-deploy.sh" "${SCRIPT_DIR}/test-teardown.sh" "$FR/scripts/"
-cp "${SCRIPT_DIR}/lib/qa-room.sh" "${SCRIPT_DIR}/lib/qa-multilead.sh" "$FR/scripts/lib/"
+cp "${SCRIPT_DIR}/lib/qa-room.sh" \
+  "${SCRIPT_DIR}/lib/qa-multilead.sh" \
+  "${SCRIPT_DIR}/lib/cmux-mutator-process-census.sh" \
+  "$FR/scripts/lib/"
 echo "// fixture" > "$FR/scripts/run-bridge.ts"
 echo "FLYWHEEL_RUNNER_START_POINT fixture" > "$FR/packages/edge-worker/dist/WorktreeManager.js"
 echo "fake-binding" > "$FR/node_modules/.pnpm/better-sqlite3@11.0.0/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
@@ -220,17 +223,47 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
 extract_json() { sed -n '/^{/,$p' "$1"; }
 
 run_teardown() {  # <home> <slot>
+  local home="$1" slot="$2"
+  local out="$SB/teardown-slot-${slot}.stdout.log"
+  local err="$SB/teardown-slot-${slot}.stderr.log"
+  local rc=0
   ( env -i \
-      HOME="$1" \
+      HOME="$home" \
       PATH="$STUB_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v git)"):$(dirname "$(command -v jq)")" \
       TMPDIR=/tmp \
-      TMUX_STUB_LOG="$1/tmux-calls.log" \
+      TMUX_STUB_LOG="$home/tmux-calls.log" \
       FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
-      FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$1/cmux-mutator.lock" \
-      FLYWHEEL_CMUX_MAINTENANCE_MARKER="$1/cmux-maintenance" \
-      FLYWHEEL_CMUX_VIEW_WAL_DIR="$1/cmux-view-wal" \
-      bash "$FR/scripts/test-teardown.sh" "$2" >/dev/null 2>&1 )
+      FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$home/cmux-mutator.lock" \
+      FLYWHEEL_CMUX_MAINTENANCE_MARKER="$home/cmux-maintenance" \
+      FLYWHEEL_CMUX_VIEW_WAL_DIR="$home/cmux-view-wal" \
+      bash "$FR/scripts/test-teardown.sh" "$slot" >"$out" 2>"$err" ) || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    printf '[TEST] teardown slot %s stdout (%s):\n' "$slot" "$out" >&2
+    cat "$out" >&2
+    printf '[TEST] teardown slot %s stderr (%s):\n' "$slot" "$err" >&2
+    cat "$err" >&2
+  fi
+  return "$rc"
 }
+
+# A cleanup regression must leave its full subprocess evidence in CI instead
+# of collapsing into a later lock assertion with no cause.
+TEARDOWN_CENSUS_LIB="$FR/scripts/lib/cmux-mutator-process-census.sh"
+TEARDOWN_CENSUS_SAVED="$TEARDOWN_CENSUS_LIB.saved"
+TEARDOWN_DIAGNOSTIC="$SB/teardown-missing-census.diagnostic.log"
+mv "$TEARDOWN_CENSUS_LIB" "$TEARDOWN_CENSUS_SAVED"
+if run_teardown "$FH1" 99 2>"$TEARDOWN_DIAGNOSTIC"; then
+  fail "D: teardown fixture should fail when its required census library is missing"
+elif [[ -f "$SB/teardown-slot-99.stdout.log" \
+    && -f "$SB/teardown-slot-99.stderr.log" \
+    && "$(cat "$SB/teardown-slot-99.stderr.log")" == *"required cmux process census library unavailable"* \
+    && "$(cat "$TEARDOWN_DIAGNOSTIC")" == *"teardown slot 99 stderr"* \
+    && "$(cat "$TEARDOWN_DIAGNOSTIC")" == *"required cmux process census library unavailable"* ]]; then
+  pass "D: failed teardown persists and dumps subprocess stdout/stderr"
+else
+  fail "D: failed teardown did not preserve actionable CI diagnostics" "$(cat "$TEARDOWN_DIAGNOSTIC")"
+fi
+mv "$TEARDOWN_CENSUS_SAVED" "$TEARDOWN_CENSUS_LIB"
 
 # ── E: Lead-ful hermetic E2E (slot 31) ──────────────────────────────────────
 rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}"

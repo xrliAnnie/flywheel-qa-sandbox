@@ -95,11 +95,11 @@ jobs:
   script-tests:
     name: Script Tests (shell suites)
     runs-on: ubuntu-latest
-    # FLY-889: long-running test jobs stay well under this 15min ceiling, leaving
-    # roughly 3x headroom so runner timeouts cannot mask real failures. FLY-1338
-    # moved package tests into the sharded unit matrix above; this job retains
-    # the ordered shell suites.
-    timeout-minutes: 15
+    # FLY-889/FLY-1482: the ordered shell suites now take ~14min on main, and a
+    # PR replay was cancelled by the old 15min ceiling after all cmux teardown
+    # coverage passed. Keep a 20min capacity floor so runner variance cannot
+    # mask real failures; package tests remain in the sharded matrix above.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -158,9 +158,11 @@ jobs:
       - name: Integration test — cmux-sync hooks
         run: bash scripts/test-cmux-sync-hooks-integration.sh
 
-      # FLY-1364: the cmux sync repair spans the exact-ref authority ledger,
+      # FLY-1364/1482: cmux repair spans the exact-ref authority ledger,
       # conservative cleanup, rescue-lock instrumentation, and deployed-link
-      # surface. These suites are hermetic on CI (private state roots and tmux
+      # surface. FLY-1482 also keeps a real isolated watcher alive while
+      # teardown claims/yields the lease and verifies observable QA cleanup.
+      # These suites are hermetic on CI (private state roots and tmux
       # sockets); the instrumentation case uses real kernel locks/processes so
       # CI records the previously-missing green observation environment.
       - name: Test — FLY-1364 cmux sync repair
@@ -176,6 +178,11 @@ jobs:
           bash scripts/__tests__/tmux-server-rescue-real-tmux.test.sh
           bash scripts/__tests__/flywheel-cmux-install-link-only.test.sh
           bash scripts/__tests__/test-cmux-autostart-flags.test.sh
+          bash scripts/__tests__/test-teardown-cmux-ownership.test.sh
+          bash scripts/__tests__/test-teardown-live-watcher-e2e.test.sh
+          bash scripts/__tests__/test-teardown-lease-contract.test.sh
+          bash scripts/__tests__/qa-teardown-finalize.test.sh
+          bash scripts/__tests__/restart-cmux-watcher.test.sh
 
       # FLY-183: Discord adapter orphan reaper tests. Hermetic — the reaper's
       # process-table source is injected (FLY183_PS_OVERRIDE) and all spawned

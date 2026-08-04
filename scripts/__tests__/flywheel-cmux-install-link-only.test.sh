@@ -18,6 +18,7 @@ for path in \
   scripts/flywheel-cmux-autostart.sh \
   scripts/lead-alert.sh \
   scripts/meta-alert.sh \
+  scripts/lib/cmux-mutator-process-census.sh \
   scripts/lib/flywheel-alert-lib.sh \
   scripts/lib/path-hygiene.sh; do
   ln -s "$ROOT/$path" "$FIXTURE_ROOT/$path"
@@ -45,6 +46,7 @@ assert_link() {
 
 assert_link flywheel-cmux-sync scripts/flywheel-cmux-sync.sh
 assert_link flywheel-cmux-autostart scripts/flywheel-cmux-autostart.sh
+assert_link cmux-mutator-process-census.sh scripts/lib/cmux-mutator-process-census.sh
 assert_link flywheel-alert-lib.sh scripts/lib/flywheel-alert-lib.sh
 assert_link lead-alert.sh scripts/lead-alert.sh
 assert_link meta-alert.sh scripts/meta-alert.sh

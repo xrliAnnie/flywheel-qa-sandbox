@@ -121,7 +121,9 @@ rn_render_completion_message() {
     local bridge_state="${11:-}"
     local bridge_ms="${12:-}"
     local duration_str="${13:-}"
-    local old_display="" new_display="" first_line="" lead_line="" bridge_line=""
+    local watcher_state="${14:-healthy}"
+    local watcher_detail="${15:-}"
+    local old_display="" new_display="" first_line="" lead_line="" bridge_line="" watcher_line=""
     local lead_success=0 clean_leads=false
 
     [[ -n "$reason" ]] || reason="unknown"
@@ -149,6 +151,11 @@ rn_render_completion_message() {
       known|wave_not_run|unreadable) ;;
       *) lead_result_state="unreadable" ;;
     esac
+    case "$watcher_state" in
+      healthy|missing_plist|bootstrap_failed|probe_failed|unverifiable) ;;
+      *) watcher_state="unverifiable"; watcher_detail="watcher outcome contract unreadable" ;;
+    esac
+    watcher_detail=$(printf '%s' "$watcher_detail" | tr '\r\n' '  ')
     if [[ "$lead_result_state" == "known" ]] \
       && (( lead_failed + lead_skipped > lead_total )); then
         lead_result_state="unreadable"
@@ -161,9 +168,11 @@ rn_render_completion_message() {
         fi
     fi
 
-    if [[ "$clean_leads" == "true" && "$bridge_state" == "ok" && "$bridge_ms" =~ ^[0-9]+$ ]]; then
+    if [[ "$clean_leads" == "true" && "$bridge_state" == "ok" \
+      && "$bridge_ms" =~ ^[0-9]+$ && "$watcher_state" == "healthy" ]]; then
         first_line="✅ Flywheel 全量重启完成 (reason=${reason})"
-    elif [[ "$lead_result_state" != "known" ]] || (( lead_failed > 0 || lead_skipped > 0 )); then
+    elif [[ "$watcher_state" != "healthy" || "$lead_result_state" != "known" ]] \
+      || (( lead_failed > 0 || lead_skipped > 0 )); then
         first_line="⚠️ Flywheel 全量重启结束 — degraded (reason=${reason})"
     elif (( lead_total == 0 )); then
         first_line="⚠️ Flywheel 全量重启结束 — 未发现 Lead 候选 (reason=${reason})"
@@ -204,8 +213,14 @@ rn_render_completion_message() {
         bridge_line="Bridge: ⚠️ /health 结束时刻探测失败"
     fi
 
-    printf '%s\n版本: %s → %s\n%s\n%s\n总耗时: %s' \
-        "$first_line" "$old_display" "$new_display" "$lead_line" "$bridge_line" "$duration_str"
+    if [[ "$watcher_state" == "healthy" ]]; then
+        watcher_line="cmux watcher: healthy${watcher_detail:+ (${watcher_detail})}"
+    else
+        watcher_line="cmux watcher: ⚠️ ${watcher_state}${watcher_detail:+ (${watcher_detail})}"
+    fi
+
+    printf '%s\n版本: %s → %s\n%s\n%s\n%s\n总耗时: %s' \
+        "$first_line" "$old_display" "$new_display" "$lead_line" "$bridge_line" "$watcher_line" "$duration_str"
     if [[ "$first_line" == *"degraded"* ]]; then
         printf '\n详情见 <#1518793447165661254>'
     fi

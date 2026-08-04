@@ -61,11 +61,12 @@ else
 
     clean_message=$(rn_render_completion_message \
       "1111111aaaaaaaa" "2222222bbbbbbbb" "deploy" 3 0 0 "" "" \
-      known "" ok 87 "17m03s")
+      known "" ok 87 "17m03s" healthy "pid=222")
     if [[ "$clean_message" == *"✅ Flywheel 全量重启完成"* ]] \
       && [[ "$clean_message" == *'版本: `1111111` → `2222222`'* ]] \
       && [[ "$clean_message" == *"Lead: 3/3 重启成功"* ]] \
       && [[ "$clean_message" == *"Bridge: healthy (/health 实测 87ms)"* ]] \
+      && [[ "$clean_message" == *"cmux watcher: healthy"* ]] \
       && [[ "$clean_message" == *"总耗时: 17m03s"* ]]; then
         pass "FLY-1603 clean completion includes SHA, Lead evidence, Bridge latency, and duration"
     else
@@ -74,7 +75,7 @@ else
 
     degraded_message=$(rn_render_completion_message \
       "1111111aaaaaaaa" "2222222bbbbbbbb" "deploy" 4 1 1 \
-      "flywheel-eng-lead" "growth-lead" known "" ok 91 "42s")
+      "flywheel-eng-lead" "growth-lead" known "" ok 91 "42s" healthy "pid=222")
     if [[ "$degraded_message" == *"⚠️ Flywheel 全量重启结束 — degraded"* ]] \
       && [[ "$degraded_message" == *"4 个里 2 个成功、1 个失败: flywheel-eng-lead、1 个跳过(无 manifest): growth-lead"* ]] \
       && [[ "$degraded_message" == *"详情见 <#1518793447165661254>"* ]] \
@@ -109,6 +110,16 @@ else
       && [[ "$wave_message" != *"完成"* ]] \
       && pass "FLY-1603 unexecuted waves preserve their explicit producer reason" \
       || fail "FLY-1603 unexecuted wave was collapsed into another state: $wave_message"
+
+    watcher_degraded=$(rn_render_completion_message \
+      "1111111" "2222222" "deploy" 3 0 0 "" "" known "" ok 12 "8s" \
+      unverifiable "old watcher survived KILL")
+    [[ "$watcher_degraded" == *"⚠️ Flywheel 全量重启结束 — degraded"* ]] \
+      && [[ "$watcher_degraded" == *"cmux watcher: ⚠️ unverifiable"* ]] \
+      && [[ "$watcher_degraded" == *"old watcher survived KILL"* ]] \
+      && [[ "$watcher_degraded" != *"完成"* ]] \
+      && pass "FLY-1482 non-healthy watcher outcome can never render a completed fleet restart" \
+      || fail "FLY-1482 watcher degradation was hidden: $watcher_degraded"
 
     rn_probe_bin="$TMPDIR_ROOT/rn-probe-bin"
     rn_probe_tmp="$TMPDIR_ROOT/rn-probe-tmp"
@@ -1691,6 +1702,8 @@ cp "$REAL_REPO_ROOT/scripts/restart-services.sh" "$BO_FLYWHEEL/scripts/"
 cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-candidate.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-notify.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/restart-cmux-watcher.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/cmux-mutator-process-census.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-body-sweep.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-restart-lifecycle.sh" \
    "$BO_FLYWHEEL/scripts/lib/"
@@ -1725,8 +1738,14 @@ if [[ "\${1:-}" == "print" ]]; then
     echo "state = running"
     echo "pid = 434343"
   fi
+elif [[ "\${1:-}" == "bootout" && "\${2:-}" == *"com.flywheel.cmux-watcher" ]]; then
+  :
 elif [[ "\${1:-}" == "bootout" && "\${2:-}" == *"com.flywheel.lead.flywheel-eng" ]]; then
   echo unloaded > "$BO_LAUNCH_STATE"
+elif [[ "\${1:-}" == "bootstrap" && "\$*" == *"com.flywheel.cmux-watcher.plist" ]]; then
+  mkdir -p "$BO_HOME/.flywheel/state/cmux-watcher.lock"
+  echo 334 > "$BO_CALLS/watcher.pids"
+  echo '334|watcher-new|watch|watcher-nonce' > "$BO_HOME/.flywheel/state/cmux-watcher.lock/owner"
 elif [[ "\${1:-}" == "bootstrap" ]]; then
   echo loaded > "$BO_LAUNCH_STATE"
   echo 424243 > "$BO_CALLS/lead.pid"
@@ -1770,6 +1789,12 @@ case "\$args" in
   *"-p 55555 -o command="*)
     echo "claude --agent eng --append-system-prompt-file /tmp/lead-rules-bundles/flywheel-eng.424243-lstart-x.md --model claude-fable-5"
     ;;
+  *"-o command= -p 333"*)
+    echo "/bin/bash $BO_FLYWHEEL/scripts/flywheel-cmux-sync.sh --watch"
+    ;;
+  *"-o command= -p 334"*)
+    echo "/bin/bash $BO_FLYWHEEL/scripts/flywheel-cmux-sync.sh --watch"
+    ;;
   *"-axo pid=,command="*)
     if [[ "\${FAKE_NO_LEAD_PROCESS:-0}" != "1" && "\$(cat "$BO_LAUNCH_STATE" 2>/dev/null || echo loaded)" == "loaded" ]]; then
       echo "55555 claude --agent eng --append-system-prompt-file /tmp/lead-rules-bundles/flywheel-eng.424243-lstart-x.md --model claude-fable-5"
@@ -1784,6 +1809,15 @@ if [[ "${FAKE_FAST_SLEEP:-0}" == "1" ]]; then
   exit 0
 fi
 exec /bin/sleep "$@"
+EOF
+cat > "$BO_SHIMS/pgrep" <<EOF
+#!/bin/bash
+if [[ "\$*" == *"flywheel-cmux-sync"* ]]; then
+  [[ -s "$BO_CALLS/watcher.pids" ]] || exit 1
+  cat "$BO_CALLS/watcher.pids"
+  exit 0
+fi
+exit 1
 EOF
 cat > "$BO_SHIMS/pnpm" <<EOF
 #!/bin/bash
@@ -1861,6 +1895,13 @@ cat > "$BO_SHIMS/lsof" <<'EOF'
 exit 0
 EOF
 chmod +x "$BO_SHIMS"/*
+cat > "$BO_FLYWHEEL/scripts/flywheel-cmux-sync.sh" <<EOF
+#!/bin/bash
+echo wait-for-watcher-exit >> "$BO_CALLS/watcher.calls"
+: > "$BO_CALLS/watcher.pids"
+exit 0
+EOF
+chmod +x "$BO_FLYWHEEL/scripts/flywheel-cmux-sync.sh"
 cat > "$BO_FLYWHEEL/scripts/lead-alert.sh" <<EOF
 #!/bin/bash
 printf '%s\n' "\$*" >> "$BO_CALLS/lead-alert.calls"
@@ -1884,11 +1925,15 @@ cat > "$BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist" <<EOF
 <string>$BO_HOME/.flywheel/manifests/flywheel-eng.json</string>
 </array></dict></plist>
 EOF
+printf '<plist/>\n' > "$BO_HOME/Library/LaunchAgents/com.flywheel.cmux-watcher.plist"
 
 bo_run() {
     rm -f "$BO_CALLS"/*.calls
     echo loaded > "$BO_LAUNCH_STATE"
     echo 424242 > "$BO_CALLS/lead.pid"
+    echo 333 > "$BO_CALLS/watcher.pids"
+    mkdir -p "$BO_HOME/.flywheel/state/cmux-watcher.lock"
+    echo '333|watcher-old|watch|watcher-old-nonce' > "$BO_HOME/.flywheel/state/cmux-watcher.lock/owner"
     rm -f "$BO_CALLS/tmux-list.n" "$BO_CALLS/progress.n" "$BO_CALLS/completion-probe"
     HOME="$BO_HOME" PATH="$BO_SHIMS:$PATH" \
         CLAUDE_INFRA_BOT_TOKEN="${BO_NOTIFY_TOKEN:-}" FLYWHEEL_NOTIFY_CHANNEL="${BO_NOTIFY_CHANNEL:-}" \
@@ -1903,6 +1948,7 @@ bo_run() {
         FAKE_COMPLETION_PROBE_FAIL="${FAKE_COMPLETION_PROBE_FAIL:-0}" \
         FAKE_NO_LEAD_PROCESS="${FAKE_NO_LEAD_PROCESS:-0}" \
         FLYWHEEL_FOUNDER_USER_ID="${BO_FOUNDER_USER_ID:-}" \
+        FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$BO_HOME/.flywheel/state/cmux-watcher.lock" \
         TMPDIR="${BO_RUNTIME_TMP:-$TMPDIR_ROOT}" \
         RESTART_LEAD_STOP_WAIT_SECONDS="${RESTART_LEAD_STOP_WAIT_SECONDS:-60}" \
         RESTART_LEAD_QUIESCENCE_ATTEMPTS=2 \
