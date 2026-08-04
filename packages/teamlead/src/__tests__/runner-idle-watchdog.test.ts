@@ -145,7 +145,6 @@ function createMockRegistry(runtime?: ReturnType<typeof createMockRuntime>) {
 type StatusResponse = {
 	result: { status: string; reason: string; stale_seconds?: number };
 	captureErrorStatus?: number;
-	/** FLY-195: raw capture passthrough for the stuck detector. */
 	output?: string;
 };
 
@@ -154,8 +153,6 @@ function createTestWatchdog(opts: {
 	sessions?: Session[];
 	statusResponses?: StatusResponse[];
 	delivered?: boolean;
-	/** FLY-195: fake stuck detector to assert the wiring contract. */
-	stuckDetector?: { checkSession: any; pruneInactive: any };
 }) {
 	const sessions = opts.sessions ?? [makeSession()];
 	const store = createMockStore(sessions);
@@ -177,12 +174,10 @@ function createTestWatchdog(opts: {
 
 	const config: IdleWatchdogConfig = {
 		pollIntervalMs: 30_000,
-		waitingThresholdCycles: 2,
 		projects: testProjects,
 		store: store as any,
 		runtimeRegistry: registry as any,
 		captureSessionFn: captureSessionFn as any,
-		stuckDetector: opts.stuckDetector as any,
 	};
 
 	const watchdog = new RunnerIdleWatchdog(config);
@@ -211,87 +206,17 @@ describe("RunnerIdleWatchdog", () => {
 		vi.useRealTimers();
 	});
 
-	describe("state transitions", () => {
-		it("executing→waiting→waiting triggers notification after 2 cycles", async () => {
+	describe("liveness boundary", () => {
+		it("waiting never emits a liveness notification", async () => {
 			const { watchdog, store } = createTestWatchdog({
 				statusResponses: [
-					{ result: { status: "executing", reason: "active" } },
 					{ result: { status: "waiting", reason: "permission prompt" } },
 					{ result: { status: "waiting", reason: "permission prompt" } },
 				],
 			});
-
-			// Cycle 1: executing — no event
+			await watchdog.pollOnce();
 			await watchdog.pollOnce();
 			expect(store.appendLeadEvent).not.toHaveBeenCalled();
-
-			// Cycle 2: waiting (1st) — below threshold
-			await watchdog.pollOnce();
-			expect(store.appendLeadEvent).not.toHaveBeenCalled();
-
-			// Cycle 3: waiting (2nd) — threshold met, should notify
-			await watchdog.pollOnce();
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-			const payload = JSON.parse(store.appendLeadEvent.mock.calls[0][3]);
-			expect(payload.event_type).toBe("runner_idle_detected");
-			expect(payload.status).toBe("waiting");
-
-			watchdog.stop();
-		});
-
-		it("executing clears dedup state, counter uses Date.now()", async () => {
-			const { watchdog, store } = createTestWatchdog({
-				statusResponses: [
-					{ result: { status: "waiting", reason: "prompt" } },
-					{ result: { status: "waiting", reason: "prompt" } },
-					// → triggers (counter=Date.now())
-					{ result: { status: "executing", reason: "active" } },
-					// → clears dedup
-					{ result: { status: "waiting", reason: "prompt2" } },
-					{ result: { status: "waiting", reason: "prompt2" } },
-					// → triggers again (counter=Date.now(), different)
-				],
-			});
-
-			await watchdog.pollOnce(); // waiting 1
-			vi.advanceTimersByTime(1); // ensure different Date.now()
-			await watchdog.pollOnce(); // waiting 2 → trigger
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-			const eventId1 = store.appendLeadEvent.mock.calls[0][1];
-			expect(eventId1).toContain("_waiting_");
-
-			await watchdog.pollOnce(); // executing → clear dedup
-
-			await watchdog.pollOnce(); // waiting 1 (new cycle)
-			vi.advanceTimersByTime(1);
-			await watchdog.pollOnce(); // waiting 2 → trigger again
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(2);
-			const eventId2 = store.appendLeadEvent.mock.calls[1][1];
-			expect(eventId2).toContain("_waiting_");
-			// Different timestamps → different eventIds
-			expect(eventId1).not.toBe(eventId2);
-
-			watchdog.stop();
-		});
-	});
-
-	describe("dedup", () => {
-		it("same waiting status doesn't re-notify within one transition", async () => {
-			const { watchdog, store } = createTestWatchdog({
-				statusResponses: [
-					{ result: { status: "waiting", reason: "prompt" } },
-					{ result: { status: "waiting", reason: "prompt" } },
-					// → triggers
-					{ result: { status: "waiting", reason: "prompt" } },
-					// → should NOT trigger again
-				],
-			});
-
-			await watchdog.pollOnce();
-			await watchdog.pollOnce(); // trigger
-			await watchdog.pollOnce(); // should be deduped
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-
 			watchdog.stop();
 		});
 	});
@@ -317,7 +242,7 @@ describe("RunnerIdleWatchdog", () => {
 			watchdog.stop();
 		});
 
-		it("unknown status triggers without debounce", async () => {
+		it("unknown status does not emit a liveness notification", async () => {
 			const { watchdog, store } = createTestWatchdog({
 				statusResponses: [
 					{
@@ -330,9 +255,7 @@ describe("RunnerIdleWatchdog", () => {
 			});
 
 			await watchdog.pollOnce();
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-			const payload = JSON.parse(store.appendLeadEvent.mock.calls[0][3]);
-			expect(payload.status).toBe("unknown");
+			expect(store.appendLeadEvent).not.toHaveBeenCalled();
 
 			watchdog.stop();
 		});
@@ -506,7 +429,7 @@ describe("RunnerIdleWatchdog", () => {
 			watchdog.stop();
 		});
 
-		it("triggers for tmux-unreachable (no captureErrorStatus)", async () => {
+		it("does not emit for tmux-unreachable unknown status", async () => {
 			const { watchdog, store } = createTestWatchdog({
 				statusResponses: [
 					{
@@ -520,7 +443,7 @@ describe("RunnerIdleWatchdog", () => {
 			});
 
 			await watchdog.pollOnce();
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
+			expect(store.appendLeadEvent).not.toHaveBeenCalled();
 
 			watchdog.stop();
 		});
@@ -617,133 +540,6 @@ describe("RunnerIdleWatchdog", () => {
 		});
 	});
 
-	describe("interleaving resets waitingCycleCount", () => {
-		it("waiting→idle→waiting does NOT trigger prematurely", async () => {
-			const { watchdog, store } = createTestWatchdog({
-				statusResponses: [
-					{ result: { status: "waiting", reason: "prompt" } },
-					// waitingCycleCount=1
-					{
-						result: {
-							status: "idle",
-							reason: "shell prompt",
-						},
-					},
-					// idle triggers immediately, BUT also resets waitingCycleCount=0
-					{ result: { status: "waiting", reason: "prompt again" } },
-					// waitingCycleCount=1 — below threshold(2), should NOT trigger
-				],
-			});
-
-			await watchdog.pollOnce(); // waiting (count=1, below threshold)
-			expect(store.appendLeadEvent).not.toHaveBeenCalled();
-
-			vi.advanceTimersByTime(1);
-			await watchdog.pollOnce(); // idle → triggers immediately
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-
-			await watchdog.pollOnce(); // waiting (count=1 again, below threshold)
-			// Should NOT trigger — the idle in between broke the waiting streak
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-
-			watchdog.stop();
-		});
-
-		it("waiting→unknown→waiting does NOT trigger prematurely", async () => {
-			const { watchdog, store } = createTestWatchdog({
-				statusResponses: [
-					{ result: { status: "waiting", reason: "prompt" } },
-					{
-						result: {
-							status: "unknown",
-							reason: "tmux not found",
-						},
-					},
-					// unknown triggers immediately, resets waitingCycleCount
-					{ result: { status: "waiting", reason: "prompt" } },
-					// waitingCycleCount=1 — below threshold
-				],
-			});
-
-			await watchdog.pollOnce(); // waiting (count=1)
-			expect(store.appendLeadEvent).not.toHaveBeenCalled();
-
-			vi.advanceTimersByTime(1);
-			await watchdog.pollOnce(); // unknown → triggers
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-
-			await watchdog.pollOnce(); // waiting (count=1, not 2)
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-
-			watchdog.stop();
-		});
-
-		it("waiting→captureErrorStatus→waiting does NOT trigger prematurely", async () => {
-			const { watchdog, store } = createTestWatchdog({
-				statusResponses: [
-					{ result: { status: "waiting", reason: "prompt" } },
-					// waitingCycleCount=1
-					{
-						result: {
-							status: "unknown",
-							reason: "CommDB 502",
-						},
-						captureErrorStatus: 502,
-					},
-					// infra error → skipped, BUT resets waitingCycleCount=0
-					{ result: { status: "waiting", reason: "prompt" } },
-					// waitingCycleCount=1, below threshold — should NOT trigger
-				],
-			});
-
-			await watchdog.pollOnce(); // waiting (count=1)
-			expect(store.appendLeadEvent).not.toHaveBeenCalled();
-
-			await watchdog.pollOnce(); // captureErrorStatus → skip, reset count
-			expect(store.appendLeadEvent).not.toHaveBeenCalled();
-
-			await watchdog.pollOnce(); // waiting (count=1, NOT 2)
-			// Should NOT trigger — infra error broke the waiting streak
-			expect(store.appendLeadEvent).not.toHaveBeenCalled();
-
-			watchdog.stop();
-		});
-
-		it("waiting(alerted)→captureErrorStatus→waiting→waiting re-alerts", async () => {
-			const { watchdog, store } = createTestWatchdog({
-				statusResponses: [
-					{ result: { status: "waiting", reason: "prompt" } },
-					{ result: { status: "waiting", reason: "prompt" } },
-					// → triggers (notifiedForStatus = "waiting")
-					{
-						result: {
-							status: "unknown",
-							reason: "CommDB 502",
-						},
-						captureErrorStatus: 502,
-					},
-					// infra error → clears waitingCycleCount AND notifiedForStatus
-					{ result: { status: "waiting", reason: "prompt again" } },
-					{ result: { status: "waiting", reason: "prompt again" } },
-					// → should trigger again (fresh alert after infra recovery)
-				],
-			});
-
-			await watchdog.pollOnce(); // waiting (count=1)
-			await watchdog.pollOnce(); // waiting (count=2) → trigger
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-
-			await watchdog.pollOnce(); // captureErrorStatus → reset all dedup state
-
-			await watchdog.pollOnce(); // waiting (count=1)
-			vi.advanceTimersByTime(1);
-			await watchdog.pollOnce(); // waiting (count=2) → should trigger again
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(2);
-
-			watchdog.stop();
-		});
-	});
-
 	describe("cross-restart eventId uniqueness", () => {
 		it("Date.now()-based transitionCounter avoids post-restart collisions", async () => {
 			// Simulate: first process emits an event at time T=1000
@@ -776,7 +572,6 @@ describe("RunnerIdleWatchdog", () => {
 			const registry2 = createMockRegistry(runtime2);
 			const config2: IdleWatchdogConfig = {
 				pollIntervalMs: 30_000,
-				waitingThresholdCycles: 2,
 				projects: testProjects,
 				store: store as any,
 				runtimeRegistry: registry2 as any,
@@ -801,101 +596,6 @@ describe("RunnerIdleWatchdog", () => {
 			expect(runtime2.deliver).toHaveBeenCalledTimes(1);
 
 			watchdog2.stop();
-		});
-	});
-
-	describe("FLY-195 stuck-detector wiring", () => {
-		function fakeDetector() {
-			return {
-				checkSession: vi.fn(async () => null),
-				pruneInactive: vi.fn(),
-			};
-		}
-
-		it("passes its OWN capture to the detector as a precaptured outcome", async () => {
-			const detector = fakeDetector();
-			const { watchdog } = createTestWatchdog({
-				statusResponses: [
-					{
-						result: { status: "executing", reason: "active" },
-						output: "live terminal frame",
-					},
-				],
-				stuckDetector: detector,
-			});
-			await watchdog.pollOnce();
-			expect(detector.checkSession).toHaveBeenCalledTimes(1);
-			const [sessionArg, outcomeArg] = detector.checkSession.mock.calls[0];
-			expect(sessionArg.execution_id).toBe("exec-1");
-			expect(outcomeArg).toEqual({ ok: true, output: "live terminal frame" });
-			watchdog.stop();
-		});
-
-		it("hands infra errors over as { ok:false } (detector fails closed)", async () => {
-			const detector = fakeDetector();
-			const { watchdog } = createTestWatchdog({
-				statusResponses: [
-					{
-						result: { status: "unknown", reason: "CommDB 502" },
-						captureErrorStatus: 502,
-					},
-				],
-				stuckDetector: detector,
-			});
-			await watchdog.pollOnce();
-			const [, outcomeArg] = detector.checkSession.mock.calls[0];
-			expect(outcomeArg.ok).toBe(false);
-			watchdog.stop();
-		});
-
-		it("tmux-unreachable (unknown, no HTTP status) is also { ok:false }", async () => {
-			const detector = fakeDetector();
-			const { watchdog } = createTestWatchdog({
-				statusResponses: [
-					{ result: { status: "unknown", reason: "tmux window not found" } },
-				],
-				stuckDetector: detector,
-			});
-			await watchdog.pollOnce();
-			const [, outcomeArg] = detector.checkSession.mock.calls[0];
-			expect(outcomeArg.ok).toBe(false);
-			watchdog.stop();
-		});
-
-		it("prunes detector episodes with the active running set each poll", async () => {
-			const detector = fakeDetector();
-			const { watchdog } = createTestWatchdog({ stuckDetector: detector });
-			await watchdog.pollOnce();
-			expect(detector.pruneInactive).toHaveBeenCalledWith(new Set(["exec-1"]));
-			watchdog.stop();
-		});
-
-		it("a throwing detector does not break idle detection", async () => {
-			const detector = {
-				checkSession: vi.fn(async () => {
-					throw new Error("detector boom");
-				}),
-				pruneInactive: vi.fn(),
-			};
-			const { watchdog, store } = createTestWatchdog({
-				statusResponses: [
-					{ result: { status: "idle", reason: "bare shell" }, output: "$" },
-				],
-				stuckDetector: detector,
-			});
-			await watchdog.pollOnce();
-			// idle event still emitted despite the stuck-detector throwing
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-			watchdog.stop();
-		});
-
-		it("watchdog without a detector behaves exactly as before (no-op)", async () => {
-			const { watchdog, store } = createTestWatchdog({
-				statusResponses: [{ result: { status: "idle", reason: "bare shell" } }],
-			});
-			await watchdog.pollOnce();
-			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
-			watchdog.stop();
 		});
 	});
 

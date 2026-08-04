@@ -15,16 +15,19 @@ import { FounderReplyWatchdog } from "../founder-reply-watchdog.js";
 import { GatePoller } from "../gate-poller.js";
 import { defaultGetCommDbPath } from "../session-capture.js";
 import {
-	runZombieGateHygiene,
+	runZombieGateHygiene as runZombieGateHygieneRaw,
 	type ZombieCommDb,
+	type ZombieGateHygieneDeps,
 } from "../zombie-gate-hygiene.js";
 
 afterEach(() => {
-	delete process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE;
 	delete process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG;
 	delete process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER;
 	vi.restoreAllMocks();
 });
+
+const runZombieGateHygiene = (deps: ZombieGateHygieneDeps) =>
+	runZombieGateHygieneRaw({ ...deps, resolveDeadGates: true });
 
 async function freshStore(): Promise<StateStore> {
 	return StateStore.create(":memory:");
@@ -172,8 +175,7 @@ describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 		expect(res.unreachable).toEqual([]);
 	});
 
-	it("kill-switch OFF short-circuits BEFORE the intent write (R2 #4: zero new side effects)", async () => {
-		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "0";
+	it("production policy skips Z1 before the intent write", async () => {
 		const store = await freshStore();
 		const s = Object.assign(store, {
 			getSession: () => ({
@@ -183,11 +185,12 @@ describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 			}),
 		});
 		const { db, retireShipGate } = fakeZombieDb({ commSession: false });
-		await runZombieGateHygiene({
+		await runZombieGateHygieneRaw({
 			store: s as never,
 			projectName: "proj",
 			pendingGateQuestions: [q("Q-1")],
 			db,
+			resolveDeadGates: false,
 		});
 		expect(retireShipGate).not.toHaveBeenCalled();
 		expect(store.getEventsByExecution("E-1")).toHaveLength(0);
@@ -465,11 +468,8 @@ describe("zombie gate hygiene — R2 #4 outcome re-read (false ≠ answered)", (
 	});
 });
 
-describe("FounderReplyWatchdog — episode salts + latching (FLY-220 discipline)", () => {
-	function wd(opts: {
-		retries?: Array<Record<string, unknown>>;
-		now?: number;
-	}) {
+describe("FounderReplyWatchdog — unreachable-runner detector", () => {
+	function wd(now = 0) {
 		// Permanent claims.db-style dedup: the sink remembers every eventId forever.
 		const seenEventIds = new Set<string>();
 		const posted: string[] = [];
@@ -481,12 +481,9 @@ describe("FounderReplyWatchdog — episode salts + latching (FLY-220 discipline)
 				return { sent: true };
 			}),
 		};
-		let retries = opts.retries ?? [];
-		const clock = { now: opts.now ?? 0 };
+		const clock = { now };
 		const watchdog = new FounderReplyWatchdog({
-			store: { listFounderReplyRetries: () => retries as never },
 			alertSink: alertSink as never,
-			resolveThreadRoute: () => ({ leadId: "lead", projectName: "proj" }),
 			infraRoute: () => ({ leadId: "infra-lead", projectName: "flywheel" }),
 			nowMs: () => clock.now,
 		});
@@ -495,70 +492,11 @@ describe("FounderReplyWatchdog — episode salts + latching (FLY-220 discipline)
 			posted,
 			alertSink,
 			clock,
-			setRetries: (r: Array<Record<string, unknown>>) => {
-				retries = r;
-			},
 		};
 	}
 
-	const pin = (firstSeenMs: number, over: Record<string, unknown> = {}) => ({
-		thread_id: "T-1",
-		msg_id: "100",
-		attempts: 3,
-		first_seen: "",
-		first_seen_ms: firstSeenMs,
-		last_stage: "wake_no_session_lead",
-		last_error: "no_session_lead",
-		...over,
-	});
-
-	it("pin detector: alerts once per episode; a NEW episode (new first_seen_ms) re-alerts despite permanent dedup (R1 #5)", async () => {
-		const { watchdog, posted, setRetries } = wd({ retries: [pin(0)] });
-		const pins = () => posted.filter((e) => e.startsWith("founder-reply-pin-"));
-		const later = 11 * 60_000;
-		watchdog.notePassSuccess(later); // pass healthy — isolate the pin detector
-		await watchdog.tick(later);
-		await watchdog.tick(later + 60_000); // same episode → latched, no repost
-		expect(pins()).toEqual([`founder-reply-pin-T-1-100-0`]);
-		// episode ends (row cleared), a SECOND episode starts with a new salt
-		setRetries([]);
-		await watchdog.tick(later + 120_000);
-		setRetries([pin(later + 120_000)]);
-		watchdog.notePassSuccess(later + 120_000 + 11 * 60_000);
-		await watchdog.tick(later + 120_000 + 11 * 60_000);
-		expect(pins()).toHaveLength(2);
-		expect(pins()[1]).toBe(`founder-reply-pin-T-1-100-${later + 120_000}`);
-	});
-
-	it("dead-lettered rows are excluded (their alert fired at source)", async () => {
-		const { watchdog, posted } = wd({
-			retries: [pin(0, { dead_lettered_at: "2026-07-10 00:00:00" })],
-		});
-		await watchdog.tick(11 * 60_000);
-		expect(posted).toHaveLength(0);
-	});
-
-	it("pass-dead: fires once per stall episode via checkHang (the outer-layer hook), recovery re-arms", async () => {
-		const { watchdog, posted } = wd({ retries: [] });
-		watchdog.notePassSuccess(0);
-		watchdog.checkHang(16 * 60_000); // stalled past 15min
-		watchdog.checkHang(17 * 60_000); // same episode → latched
-		expect(posted).toEqual(["founder-reply-pass-dead-0"]);
-		watchdog.notePassSuccess(18 * 60_000); // recovery ends the episode
-		watchdog.checkHang(18 * 60_000 + 16 * 60_000);
-		expect(posted).toHaveLength(2);
-	});
-
-	it("FLYWHEEL_FOUNDER_REPLY_DELIVER=0 → pass-dead SILENT (ops off-switch ≠ failure, R3 #5)", async () => {
-		process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER = "0";
-		const { watchdog, posted } = wd({ retries: [] });
-		watchdog.notePassSuccess(0);
-		watchdog.checkHang(60 * 60_000);
-		expect(posted).toHaveLength(0);
-	});
-
 	it("unreachable-runner (Z2): one alert per episode; sweep-clear ends the episode; re-detection re-alerts with a NEW salt", async () => {
-		const { watchdog, posted, clock } = wd({ retries: [] });
+		const { watchdog, posted, clock } = wd();
 		const detect = () => {
 			watchdog.beginUnreachableSweep();
 			watchdog.noteUnreachableRunner({
@@ -571,9 +509,9 @@ describe("FounderReplyWatchdog — episode salts + latching (FLY-220 discipline)
 		};
 		clock.now = 0;
 		detect();
-		await watchdog.tick(0);
+		await watchdog.tick();
 		detect(); // still unreachable — same episode, already alerted
-		await watchdog.tick(1000);
+		await watchdog.tick();
 		expect(
 			posted.filter((e) => e.startsWith("founder-reply-unreachable-E-9")),
 		).toHaveLength(1);
@@ -582,18 +520,24 @@ describe("FounderReplyWatchdog — episode salts + latching (FLY-220 discipline)
 		watchdog.endUnreachableSweep();
 		clock.now = 5000;
 		detect();
-		await watchdog.tick(5000);
+		await watchdog.tick();
 		expect(
 			posted.filter((e) => e.startsWith("founder-reply-unreachable-E-9")),
 		).toHaveLength(2);
 	});
 
-	it("kill-switch FLYWHEEL_FOUNDER_REPLY_WATCHDOG=0 → all detectors inert", async () => {
+	it("kill-switch FLYWHEEL_FOUNDER_REPLY_WATCHDOG=0 keeps the detector inert", async () => {
 		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
-		const { watchdog, posted } = wd({ retries: [pin(0)] });
-		watchdog.notePassSuccess(0);
-		await watchdog.tick(60 * 60_000);
-		watchdog.checkHang(60 * 60_000);
+		const { watchdog, posted } = wd();
+		watchdog.beginUnreachableSweep();
+		watchdog.noteUnreachableRunner({
+			executionId: "E-9",
+			issueId: "FLY-1049",
+			projectName: "proj",
+			questionId: "Q-9",
+		});
+		watchdog.endUnreachableSweep();
+		await watchdog.tick();
 		expect(posted).toHaveLength(0);
 	});
 });
@@ -643,7 +587,6 @@ describe("Codex code R1 MED-1: dangling-intent reconcile", () => {
 
 describe("Codex code R8 MED-1: GatePoller wrapper — empty filtered candidate set still reconciles dangling intents", () => {
 	it("formal retirement leaves dangling legacy intent untouched and never touches the tracked gate", async () => {
-		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "1";
 		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
 		const originalHome = process.env.HOME;
 		const tmpHome = join(

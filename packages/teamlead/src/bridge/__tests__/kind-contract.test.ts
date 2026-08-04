@@ -169,6 +169,19 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		});
 	});
 
+	it("FLY-1570 keeps legacy chase kinds human-only", () => {
+		for (const kind of [
+			"pane_hash_stuck",
+			"runner_stuck_unhandled",
+			"runner_throttle_stalled",
+		] as const) {
+			expect(KIND_CONTRACTS[kind]).toEqual({
+				owner: "claude",
+				arc: "human_by_design",
+			});
+		}
+	});
+
 	it("FLY-1364 cmux/rescue kinds have the exact approved contracts", () => {
 		for (const kind of CMUX_SYNC_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);

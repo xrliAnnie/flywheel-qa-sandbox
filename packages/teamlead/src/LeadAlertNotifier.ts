@@ -73,10 +73,7 @@ export const ALERT_EVENT_TYPES = [
 	"permission_blocked",
 	"crash_loop",
 	"pane_hash_stuck",
-	// FLY-1048 (A4): a known error signature (error-signatures.ts) frozen in a
-	// Lead's live render region above an idle input box across ≥2 polls — the
-	// FN0/FN2 lead-side shape isIdleHealthyPane used to suppress forever. Only
-	// emitted by the LeadWatchdog multi-frame veto (FLYWHEEL_PANE_MULTIFRAME=1).
+	// Legacy display compatibility for historical Lead pane-error alert rows.
 	"pane_error_stalled",
 	// FLY-195 (plan §3.6 Q7): a stuck-runner episode the owning Lead did not
 	// dispose of within the grace window — Bridge pages Annie directly.
@@ -186,12 +183,8 @@ export const ALERT_EVENT_TYPES = [
 	// session that is not ship-eligible. Lead-only — the session is NOT
 	// finalized/archived; a human must look at the merge.
 	"external_merge_suspect",
-	// FLY-929 B2/C2: the daily token report was NOT delivered (no receipt by the
-	// 01:00 deadline — Bridge expect-tick) or its pipeline step failed in place
-	// (token-usage-daily.sh fail-loud via lead-alert.sh). Only exists under
-	// P-expect (FLYWHEEL_NOTIFY_DIGEST_EXPECT=1); eventId embeds the expected
-	// report date → at most one alert per expected day (claims-table dedup,
-	// shared kind face with the lead-alert.sh allowlist).
+	// FLY-929 C2: the daily token report pipeline failed in place
+	// (token-usage-daily.sh fail-loud via lead-alert.sh).
 	"notify_digest_failed",
 	// ── FLY-1099: founder-reply ingest reliability (账本诚实性 — a founder
 	// approval must never disappear silently again). All five carry a durable

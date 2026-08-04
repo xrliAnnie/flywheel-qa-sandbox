@@ -129,7 +129,6 @@ describe("automated Discord sender inventory", () => {
 			// from ChatThreadCreator; the v2 Discord messenger's one sender). Marks
 			// its own text idempotently.
 			"bridge/chat-thread-utils.ts",
-			"bridge/detection-escalation-sinks.ts",
 			"bridge/discord-post-file.ts",
 			"bridge/discord-utils.ts",
 			// FLY-1282 Part D: disposition-receipt delivery (bounded, marked).

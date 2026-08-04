@@ -1,9 +1,7 @@
 /**
  * FLY-1048 (Task A1): shared error-signature table + line normalization.
  *
- * Pure functions consumed by BOTH detection sides:
- *  - runner side: `evaluateStuckCandidate` repeated-error-signature path (A3);
- *  - lead side: `LeadWatchdog` multi-frame veto (A4) via `computeFrameDeltas` (A2).
+ * Pure functions consumed by the retained runner process-liveness judge.
  *
  * The table covers the FLY-942 PRD false-negative strings the existing
  * recognizers structurally miss (exploration §1.4): "Server error mid-response"
@@ -15,9 +13,7 @@
  * Echo-immunity constraints:
  *  - alert bodies must NEVER echo `line` back into a pane-visible message
  *    (FLY-220 storm family) — callers render kind + suggested action only;
- *  - lines quoted with the `▏` prefix (the A5 suspicious-report quote marker)
- *    are skipped, so a delivered suspicious report re-captured in a Lead pane
- *    can never re-trigger the scanner.
+ *  - lines quoted with the historical `▏` prefix are skipped.
  */
 
 export type ErrorSignatureKind =
@@ -59,8 +55,7 @@ const SIGNATURE_PATTERNS: ReadonlyArray<{
 	},
 	{ kind: "not_logged_in", pattern: /\bnot logged in\b/i },
 	{ kind: "enoent_loop", pattern: /\bENOENT\b/i },
-	// Same strictness as stuck-candidate's detectStreamErrorSignature: requires
-	// `API Error:` AND `Stream idle timeout` on the SAME line.
+	// Require `API Error:` and `Stream idle timeout` on the same line.
 	{ kind: "stream_idle_timeout", pattern: /API Error:.*Stream idle timeout/i },
 ];
 

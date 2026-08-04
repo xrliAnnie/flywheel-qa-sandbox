@@ -8,10 +8,7 @@
  * applyStuckDispositionWithReceipts, same transaction as the ack); this module
  * is the single delivery consumer:
  *
- *   - runs on its OWN GatePoller piggyback stage (NOT the detection-reconcile
- *     tick — that one is legitimately disabled by
- *     FLYWHEEL_DETECTION_RECONCILE_EVERY_N_TICKS=0 and must not become a
- *     hidden receipt kill switch);
+ *   - runs on its OWN GatePoller piggyback stage;
  *   - in-process single-flight (the piggyback is fire-and-forget, so
  *     overlapping passes ARE possible) + bounded per-post AbortController
  *     timeout so one hung Discord request can never wedge the queue;

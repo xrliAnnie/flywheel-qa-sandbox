@@ -92,8 +92,7 @@ export const ALERT_ECHO_START = new RegExp(
 /**
  * FLY-220 — the Lead's OWN live state text: the live render region (FLY-193) with
  * inbound-Discord echoes and the Bridge's own alert template removed (line by
- * line). EVERY blocked-keyword read (`classify`, `isIdleHealthyPane`,
- * `isTransientThrottlePane`) goes through this, so an alert echoed back into a
+ * line). Every retained blocked-state read goes through this, so an alert echoed back into a
  * pane (or a stale one in the live region) can never re-trigger the same alert —
  * root cure for the cross-Lead alert-amplification loop on a shared channel.
  *

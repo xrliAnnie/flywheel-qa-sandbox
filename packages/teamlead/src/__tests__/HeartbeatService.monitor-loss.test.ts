@@ -74,7 +74,6 @@ type MockNotifier = Record<string, ReturnType<typeof vi.fn>>;
 
 function makeStore(): MockStore {
 	return {
-		getStuckSessions: vi.fn().mockReturnValue([]),
 		getOrphanSessions: vi.fn().mockReturnValue([]),
 		getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 		getAwaitingReviewTimedOut: vi.fn().mockReturnValue([]),
@@ -99,8 +98,6 @@ function makeStore(): MockStore {
 
 function makeNotifier(): MockNotifier {
 	return {
-		// FLY-637: onSessionStuck returns a "persisted" boolean now.
-		onSessionStuck: vi.fn().mockResolvedValue(true),
 		onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
 		onSessionStale: vi.fn().mockResolvedValue(undefined),
 		onSessionMonitoringLost: vi.fn().mockResolvedValue(undefined),
@@ -182,15 +179,6 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
 	});
 
-	it("regression guard (§3.4): re-adopted + stale last_activity does NOT fire session_stuck", async () => {
-		const s = sess();
-		store.getOrphanSessions.mockReturnValue([s]);
-		store.getStuckSessions.mockReturnValue([s]); // stale last_activity_at
-		await service.check();
-		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(1);
-		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
-	});
-
 	it("stay through marker-first: a later valid terminal marker reconciles (no refresh past terminal)", async () => {
 		const s = sess();
 		store.getOrphanSessions.mockReturnValue([s]);
@@ -228,22 +216,15 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		);
 	});
 
-	it("clear-on-event: clearReconnecting removes from set + restamps; stuck detection resumes", async () => {
+	it("clear-on-event: clearReconnecting removes from set + restamps", async () => {
 		const s = sess();
 		store.getOrphanSessions.mockReturnValue([s]);
-		store.getStuckSessions.mockReturnValue([s]);
-		await service.check(); // re-adopt + stuck suppressed
-		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
+		await service.check();
 
 		// a genuine runner event proves the channel live → clear
 		service.clearReconnecting("exec-1");
 		expect(service.isReconnecting("exec-1")).toBe(false);
 		expect(notifier.clearReconnectStamp).toHaveBeenCalledTimes(1);
-
-		// next check: no longer suppressed → session_stuck fires
-		store.getOrphanSessions.mockReturnValue([]); // heartbeat was refreshed
-		await service.check();
-		expect(notifier.onSessionStuck).toHaveBeenCalledTimes(1);
 	});
 
 	it("clearReconnecting is a no-op when not reconnecting (never restamps)", () => {
@@ -293,18 +274,14 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		expect(store.forceStatus).not.toHaveBeenCalled();
 	});
 
-	it("boot-seed: seedReconnecting re-adopts pre-existing running+alive sessions; stuck suppressed", async () => {
+	it("boot-seed: seedReconnecting re-adopts pre-existing running+alive sessions", async () => {
 		const s = sess();
 		store.getActiveSessions.mockReturnValue([s]);
 		store.getReadoptCandidateSessions.mockReturnValue([s]);
-		store.getStuckSessions.mockReturnValue([s]);
 		await service.seedReconnecting();
 		expect(store.updateHeartbeat).toHaveBeenCalledWith("exec-1");
 		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(1);
 		expect(service.isReconnecting("exec-1")).toBe(true);
-		// the on-boot false-stuck window is closed
-		await service.checkStuck();
-		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
 	});
 
 	it("boot seed returns only newly re-adopted execs and activates both layers", async () => {
@@ -390,18 +367,15 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		expect(service.settleReconnectTitles()).toEqual([]);
 	});
 
-	it("settles only the title layer and keeps monitor-loss suppression", async () => {
+	it("settles only the title layer and keeps monitor-loss state", async () => {
 		const s = sess();
 		store.getActiveSessions.mockReturnValue([s]);
 		store.getReadoptCandidateSessions.mockReturnValue([s]);
-		store.getStuckSessions.mockReturnValue([s]);
 		const seeded = await service.seedReconnecting();
 
 		expect(service.settleReconnectTitles(seeded)).toEqual([s]);
 		expect(service.isReconnectTitleActive("exec-1")).toBe(false);
 		expect(service.isReconnecting("exec-1")).toBe(true);
-		await service.checkStuck();
-		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
 		expect(notifier.clearReconnectStamp).not.toHaveBeenCalled();
 	});
 
@@ -556,20 +530,6 @@ describe("HeartbeatService legacy (FLY-623 kill-switch FLYWHEEL_HEARTBEAT_READOP
 				routeStatus: "blocked",
 			}),
 		);
-	});
-
-	it("checkStuck suppressed for monitor-lost session; resumes after death", async () => {
-		const s = sess();
-		store.getOrphanSessions.mockReturnValue([s]);
-		store.getStuckSessions.mockReturnValue([s]);
-
-		await service.check();
-		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledTimes(1);
-		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
-
-		mockedAlive.mockResolvedValue(false);
-		await service.check();
-		expect(notifier.onSessionStuck).toHaveBeenCalledTimes(1);
 	});
 
 	it("no CommDB target (gone) → not protected → reapOrphans force-fails", async () => {

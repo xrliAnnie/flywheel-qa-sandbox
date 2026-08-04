@@ -1,23 +1,14 @@
 /**
  * FLY-626: shared, cheap, STATELESS quiet classifier.
  *
- * The stall watchdogs (RunnerIdleWatchdog, HeartbeatService) consult this BEFORE
- * the token-expensive Lead wake. It answers one question from cheap signals only
- * (CommDB / StateStore reads + the runner's self-declared marker — no Lead wake,
- * no LLM): is this quiet legitimately explained, or is it the one case
- * (`quiet_unexplained`) that may escalate to a Lead wake (subject to the wiring
- * layer's threshold + backoff)?
- *
- * SCOPE (Codex R1 #1): this covers cheap STATELESS exemptions only. It does NOT
- * subsume the FLY-253 `stuck_dispositions` state machine or the Q7 Annie
- * fallback — those stay in StuckRunnerDetector. FLY-195's `evaluateStuckCandidate`
- * keeps its own raw-fingerprint episode logic untouched (byte-compat).
+ * HeartbeatService uses this cheap signal classifier to distinguish legitimate
+ * quiet from an unexplained missed heartbeat without inspecting terminal text.
  *
  * Shared with FLY-623 (restart heartbeat reconnect uses the same predicate).
  */
 
 import { createHash } from "node:crypto";
-import { isStuckEligibleStatus } from "./stuck-candidate.js";
+import { isStuckEligibleStatus } from "./pane-fingerprint.js";
 
 /** Why a quiet session is (or is not) exempt from a Lead wake. */
 export type QuietVerdict =

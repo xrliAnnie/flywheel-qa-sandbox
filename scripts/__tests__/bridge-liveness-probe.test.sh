@@ -108,7 +108,7 @@ fi
 
 healthy_manifest() {
 	local leads_json="$1"
-	jq -cn --argjson leads "$leads_json" '{ok:true,uptime:9999,watchdogs:{schema_version:1,components:{w1_process_liveness:{wired:true,effective_enabled:true},w2_delivery_loop:{wired:true,effective_enabled:true,leads:$leads},w3_external_drift:{wired:true,effective_enabled:true,observation:"static_contract"},w4_lead_blocked:{wired:true,effective_enabled:true},w4_runner_blocked:{wired:true,effective_enabled:true}},retiring:[]}}'
+	jq -cn --argjson leads "$leads_json" '{ok:true,uptime:9999,watchdogs:{schema_version:1,components:{w1_process_liveness:{wired:true,effective_enabled:true},w2_delivery_loop:{wired:true,effective_enabled:true,leads:$leads},w3_external_drift:{wired:true,effective_enabled:true,observation:"static_contract"},w4_lead_blocked:{wired:true,effective_enabled:true}},retiring:[]}}'
 }
 
 if watchdog_manifest_valid <<<"$(healthy_manifest '[]' | jq '.watchdogs.components.w4_lead_blocked.effective_enabled = false')" \
@@ -182,13 +182,13 @@ export FLYWHEEL_WATCHDOG_MANIFEST_DEGRADED_MIN=999
 rm -f "$FLYWHEEL_PROBE_STATE_FILE"
 : > "$POSTS"
 NOW=3200
-HEALTH_JSON="$(healthy_manifest '[{"lead_id":"A","freshness":"stale"}]' | jq '.watchdogs.components.w4_lead_blocked.effective_enabled = false | .watchdogs.components.w4_runner_blocked.effective_enabled = false')"
+HEALTH_JSON="$(healthy_manifest '[{"lead_id":"A","freshness":"stale"}]' | jq '.watchdogs.components.w4_lead_blocked.effective_enabled = false')"
 probe_output="$(probe_once)"
-if [[ "$probe_output" == *"disabled=w4_lead_blocked,w4_runner_blocked"* ]] \
+if [[ "$probe_output" == *"disabled=w4_lead_blocked"* ]] \
   && [[ "$(posts)" == "2" ]] \
-  && grep -q 'watchdog minimum-set lanes disabled: w4_lead_blocked,w4_runner_blocked' "$POSTS" \
+  && grep -q 'watchdog minimum-set lanes disabled: w4_lead_blocked' "$POSTS" \
   && grep -q 'Lead inbox loop stalled: A' "$POSTS" \
-  && jq -e '.schemaVersion == 3 and .disabled.members == ["w4_lead_blocked","w4_runner_blocked"] and .disabled.lastNotifiedAt == 3200 and .stalled.escalated == true' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
+  && jq -e '.schemaVersion == 3 and .disabled.members == ["w4_lead_blocked"] and .disabled.lastNotifiedAt == 3200 and .stalled.escalated == true' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
   pass "T9 disabled lanes warn durably without masking W-2 stalled"
 else
   fail "T9 disabled-state reporting masked stalled: output=$probe_output posts=$(cat "$POSTS")"

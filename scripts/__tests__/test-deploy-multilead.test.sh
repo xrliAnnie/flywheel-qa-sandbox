@@ -4,14 +4,12 @@
 #
 #   A1  FLYWHEEL_PROJECTS builder byte-compat (slotRole=lead, no new flags)
 #   A2  FLYWHEEL_PROJECTS builder byte-compat (slotRole=cos → generalChannel)
-#   A3  canonical config.yaml byte-compat (no grace override)
+#   A3  canonical config.yaml byte-compat
 #   B1  --extra-lead → leads[] has exactly 2 entries, field-by-field
 #   B2  --lead-label narrows main lead labels
 #   C1  invalid --extra-lead specs rejected
 #   C2  slot with missing/null fields rejected
-#   C3  invalid --detection-lead-grace-ms rejected, valid accepted
 #   C4  campaign args: dup slot / spec==main / non-slot mode / no main slot → rejected
-#   G1  grace override → YAML gains exactly the detection block (diff-only-addition)
 #   D1  claim-set: second slot already locked → zero side effects (main lock rolled back)
 #   D2  claim-set success → all locks claimed, sorted output
 #   E1  claim-set partial failure (3rd of 3 held) → first two rolled back
@@ -22,7 +20,7 @@
 #   F3  release_borrowed_locks removes exactly the borrowed locks
 #   W1  test-teardown.sh refuses a borrowed slot (fail-loud, lock intact)
 #   W2  test-teardown.sh owner slot consumes campaign manifest (extra-lead residue gone)
-#   L1  launch manifest records flags/knobs/dist SHA, no token VALUES
+#   L1  launch manifest records dist SHA, no token VALUES
 #   S1  test-deploy.sh wiring sentinels (lib sourced, builders single-sourced, flags parsed)
 set -uo pipefail
 
@@ -45,7 +43,7 @@ fi
 # shellcheck source=/dev/null
 source "$LIB"
 for fn in qa_multilead_build_projects qa_multilead_config_yaml \
-  qa_multilead_validate_grace_ms qa_multilead_parse_spec qa_multilead_slot_fields \
+  qa_multilead_parse_spec qa_multilead_slot_fields \
   qa_multilead_validate_campaign_args qa_multilead_claim_one qa_multilead_claim_set \
   qa_multilead_finalize_locks qa_multilead_lock_is_borrowed \
   qa_multilead_teardown_extra_leads qa_multilead_release_borrowed_locks \
@@ -155,7 +153,7 @@ done
 
 # ── A3: config.yaml byte-compat ──
 ref="$(reference_config_yaml test-slot-2)"
-new="$(qa_multilead_config_yaml test-slot-2 "")"
+new="$(qa_multilead_config_yaml test-slot-2)"
 if [[ "$ref" == "$new" ]]; then
   pass "A3: config.yaml byte-compat (no grace → byte-identical)"
 else
@@ -222,16 +220,6 @@ else
 fi
 [[ "$C2_OK" == "1" ]] && pass "C2: slot fields validation"
 
-# ── C3: grace validation ──
-C3_OK=1
-for bad in "abc" "-5" "" "0" "12.5" "1e3"; do
-  if qa_multilead_validate_grace_ms "$bad" 2>/dev/null; then
-    C3_OK=0; fail "C3: grace '$bad' should be rejected"
-  fi
-done
-qa_multilead_validate_grace_ms "120000" 2>/dev/null || { C3_OK=0; fail "C3: grace 120000 should be accepted"; }
-[[ "$C3_OK" == "1" ]] && pass "C3: grace validation matrix"
-
 # ── C4: campaign-args validation ──
 C4_OK=1
 # dup extra slot
@@ -258,18 +246,6 @@ else
   C4_OK=0; fail "C4: valid campaign args should pass"
 fi
 [[ "$C4_OK" == "1" ]] && pass "C4: campaign args validation matrix"
-
-# ── G1: grace override → YAML gains exactly the detection block ──
-base="$(qa_multilead_config_yaml test-slot-2 "")"
-with="$(qa_multilead_config_yaml test-slot-2 "120000")"
-added="$(diff <(printf '%s\n' "$base") <(printf '%s\n' "$with") | grep '^>' | sed 's/^> //')"
-G1_OK=1
-grep -q '^detection:$' <<<"$added" || { G1_OK=0; fail "G1: added lines missing 'detection:'"; }
-grep -q '^  lead_grace_ms: 120000$' <<<"$added" || { G1_OK=0; fail "G1: added lines missing lead_grace_ms"; }
-removed="$(diff <(printf '%s\n' "$base") <(printf '%s\n' "$with") | grep -c '^<' || true)"
-[[ "$removed" == "0" ]] || { G1_OK=0; fail "G1: grace override must be pure addition (removed ${removed} baseline lines)"; }
-[[ "$(grep -c '^detection:$' <<<"$with")" == "1" ]] || { G1_OK=0; fail "G1: detection block must appear exactly once"; }
-[[ "$G1_OK" == "1" ]] && pass "G1: grace override is a pure YAML addition"
 
 # ── Lock tests — all against a temp lock root ──
 LOCK_ROOT="${TMP}/locks"
@@ -480,26 +456,19 @@ W2_OK=1
 [[ "$W2_OK" == "1" ]] && pass "W2: owner teardown consumes campaign manifest (no extra-Lead residue)"
 rm -rf "$W2_SLOT_DIR" "$W2_LOCK" "$W2_BLOCK"
 
-# ── L1: launch manifest (flags/knobs/SHA present; no token values) ──
-export FLYWHEEL_DETECTION_GAP_SCAN=1 FLYWHEEL_PANE_MULTIFRAME=1 FLYWHEEL_STUCK_ERRORSIG=1 \
-  FLYWHEEL_WATCHDOG_JUDGE=1 FLYWHEEL_DETECTION_ESCALATION=1 \
-  FLYWHEEL_GAP_SCAN_EVERY_N_TICKS=5 FLYWHEEL_DETECTION_LEAD_GRACE_MS=180000
+# ── L1: launch manifest (SHA present; no token values) ──
 FAKE_TOKEN_VALUE="supersecret-token-value-xyz"
 export TEST_BOT_TOKEN_3="$FAKE_TOKEN_VALUE"
-lm="$(qa_multilead_launch_manifest 12345 deadbeefsha main slot camp-1 "Product-Test" "120000" "$EXTRAS")"
+lm="$(qa_multilead_launch_manifest 12345 deadbeefsha main slot camp-1 "Product-Test" "$EXTRAS")"
 L1_OK=1
 jq -e '.bridgePid == 12345' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: bridgePid missing"; }
 jq -e '.distSha == "deadbeefsha"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: distSha missing"; }
-jq -e '.flags.FLYWHEEL_DETECTION_ESCALATION == "1"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: flag value missing"; }
-jq -e '.knobs.FLYWHEEL_GAP_SCAN_EVERY_N_TICKS == "5"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: knob value missing"; }
-jq -e '.knobs.FLYWHEEL_DETECTION_LEAD_GRACE_MS == "180000"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: grace knob missing"; }
-jq -e '.detectionLeadGraceConfigMs == "120000"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: config grace missing"; }
 jq -e '.extraLeads[0].agentId == "flywheel-test-3" and .extraLeads[0].deptLabel == "Ops-Test"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: extraLeads missing"; }
 if grep -q "$FAKE_TOKEN_VALUE" <<<"$lm"; then
   L1_OK=0; fail "L1: manifest must NOT contain token VALUES"
 fi
 unset TEST_BOT_TOKEN_3
-[[ "$L1_OK" == "1" ]] && pass "L1: launch manifest records flags/knobs/SHA without secrets"
+[[ "$L1_OK" == "1" ]] && pass "L1: launch manifest records SHA without secrets"
 
 # ── S1: test-deploy.sh wiring sentinels ──
 S1_OK=1
@@ -509,7 +478,6 @@ bash -n "${SCRIPT_DIR}/test-teardown.sh" 2>/dev/null || { S1_OK=0; fail "S1: tes
 grep -q 'qa-multilead.sh' "$DEPLOY" || { S1_OK=0; fail "S1: test-deploy.sh must source lib/qa-multilead.sh"; }
 grep -q -- '--extra-lead' "$DEPLOY" || { S1_OK=0; fail "S1: --extra-lead flag not parsed"; }
 grep -q -- '--lead-label' "$DEPLOY" || { S1_OK=0; fail "S1: --lead-label flag not parsed"; }
-grep -q -- '--detection-lead-grace-ms' "$DEPLOY" || { S1_OK=0; fail "S1: --detection-lead-grace-ms flag not parsed"; }
 grep -q 'qa_multilead_build_projects' "$DEPLOY" || { S1_OK=0; fail "S1: FLYWHEEL_PROJECTS must be built via qa_multilead_build_projects"; }
 grep -q 'qa_multilead_config_yaml' "$DEPLOY" || { S1_OK=0; fail "S1: config.yaml must be generated via qa_multilead_config_yaml"; }
 # The old inline builder must be GONE (single source) — its distinctive line:

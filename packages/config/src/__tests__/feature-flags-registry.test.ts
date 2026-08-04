@@ -171,17 +171,30 @@ describe("feature-flag registry invariants", () => {
 		expect(flag).toBeUndefined();
 	});
 
-	it("FLY-1393 records both W-4 read timings instead of advertising a fake live toggle", () => {
+	it("FLY-1570 removes chase patrols but keeps founder-reply consistency detection", () => {
+		for (const name of ["misroute_patrol", "zombie_gate_resolve"]) {
+			expect(
+				FEATURE_FLAGS.find((flag) => flag.name === name),
+				name,
+			).toBeUndefined();
+		}
+		const founderReply = FEATURE_FLAGS.find(
+			(flag) => flag.name === "founder_reply_watchdog",
+		);
+		expect(founderReply).toMatchObject({
+			envVar: "FLYWHEEL_FOUNDER_REPLY_WATCHDOG",
+		});
+		expect(founderReply?.retiring).toBeUndefined();
+	});
+
+	it("FLY-1570 leaves only the Lead W-4 boot-time control", () => {
 		const flag = FEATURE_FLAGS.find((f) => f.name === "watchdog_blocked");
 		expect(flag).toMatchObject({
 			envVar: "FLYWHEEL_WATCHDOG_BLOCKED",
 			default: true,
 			toggleable: "readonly",
 		});
-		expect(flag?.readSites.map((site) => site.timing)).toEqual([
-			"bridge_boot",
-			"call_time",
-		]);
+		expect(flag?.readSites.map((site) => site.timing)).toEqual(["bridge_boot"]);
 	});
 
 	it("FLY-1404 registers the topology-neutral design HTML governance gate", () => {
@@ -268,23 +281,6 @@ describe("feature-flag registry invariants", () => {
 		expect(flag?.note).toContain("启动时立即告警");
 		expect(flag?.note).toContain("不得作为常态运行方式");
 
-		const dryRun = FEATURE_FLAGS.find(
-			(candidate) => candidate.name === "receipt_activation_dry_run",
-		);
-		expect(dryRun).toMatchObject({
-			category: "feature",
-			envVar: "FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN",
-			polarity: "opt_in",
-			default: false,
-			toggleable: "readonly",
-		});
-		expect(dryRun?.readSites).toEqual([
-			expect.objectContaining({
-				file: "packages/teamlead/src/bridge/plugin.ts",
-				symbol: "LeadReceiptPatrol.activationDryRun",
-				timing: "call_time",
-			}),
-		]);
 		expect(
 			FEATURE_FLAGS.some(
 				(candidate) => candidate.envVar === "FLYWHEEL_REPLY_TO_CARD",

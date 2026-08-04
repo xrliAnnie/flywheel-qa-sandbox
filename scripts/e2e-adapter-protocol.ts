@@ -155,7 +155,6 @@ async function main() {
 
 		// Test HeartbeatService lifecycle (start/stop, check doesn't crash)
 		const notifier = {
-			onSessionStuck: async () => {},
 			onSessionOrphaned: async () => {},
 		};
 		const svc = new HeartbeatService(store, notifier, 15, 60000, 60);

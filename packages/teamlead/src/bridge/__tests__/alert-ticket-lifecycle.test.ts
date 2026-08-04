@@ -73,8 +73,9 @@ function stubBot(outcome: "attempted" | "needs_human"): AutoRepairBot {
 		canAttempt: () => outcome === "attempted",
 		attempt: vi.fn(async () => ({
 			outcome,
-			action: outcome === "attempted" ? "runner_nudge" : "none",
-			detail: outcome === "attempted" ? "🔧 已 nudge。" : "no safe repair",
+			action: outcome === "attempted" ? "safe_repair" : "none",
+			detail:
+				outcome === "attempted" ? "🔧 已尝试安全修复。" : "no safe repair",
 		})),
 	} as unknown as AutoRepairBot;
 }

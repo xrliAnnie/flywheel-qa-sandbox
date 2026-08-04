@@ -112,7 +112,7 @@ async function setup(opts?: {
 	retestWakeOk?: boolean;
 	env?: Record<string, string | undefined>;
 	closeQaRunnerImpl?: () => Promise<void> | void;
-	/** FLY-863: test seam for reconcileStuckCodexHolds's "now". */
+	/** Deterministic clock seam. */
 	now?: () => number;
 	ensureShipRelevantDiff?: (session: { execution_id: string }) => Promise<void>;
 }) {
@@ -1123,11 +1123,7 @@ describe("FLY-827 AutoQaCoordinator codex hard gate (gate ON)", () => {
 
 	// FLY-863 (Annie 2026-07-04): a routine codex-hold — the normal,
 	// self-recovering first step nearly every PR passes through before Codex
-	// has even run — must stay SILENT (no thread post, no Lead alert). Only
-	// `reconcileStuckCodexHolds` (own describe block below) surfaces anything,
-	// and only once a head has sat unresolved past the stuck threshold. This
-	// replaces the old "holds + alerts immediately" behavior this test used to
-	// lock in.
+	// has even run — must stay SILENT (no thread post, no Lead alert).
 	it("codex NOT approved → does NOT spawn QA; re-queues instruction, stays SILENT (no thread post, no alert)", async () => {
 		const s = await gateOnSetup();
 		const main = awaitingMain(s.store);
@@ -1217,9 +1213,7 @@ describe("FLY-827 AutoQaCoordinator codex hard gate (gate ON)", () => {
 		await s.coord.onMainAwaitingReview(mainB);
 
 		// No retest wake, owner record NOT retargeted to B; codex-hold instead.
-		// FLY-863: the new head's hold is ALSO routine (self-recovering) → no
-		// alert fires immediately; only reconcileStuckCodexHolds could ever
-		// surface it, and only past the stuck threshold.
+		// The new head's hold is also routine and stays silent.
 		expect(s.retests).toEqual([]);
 		expect(s.codexAlerts.some((a) => a.sha === SHA2)).toBe(false);
 		expect(s.store.getAutoQaRecord("main-1", SHA2)).toBeUndefined();
@@ -1301,125 +1295,6 @@ describe("FLY-827 AutoQaCoordinator codex hard gate (gate ON)", () => {
 // FLY-863: the ONLY place the codex-hold thread-post + Lead alert now fire —
 // once a head has sat unresolved past the stuck-duration threshold. A routine
 // hold (covered above) never reaches here.
-describe("FLY-863 AutoQaCoordinator.reconcileStuckCodexHolds", () => {
-	const STUCK_MS = 1000;
-
-	function setupStuck(nowFn: () => number) {
-		return setup({
-			env: { FLYWHEEL_CODEX_HOLD_STUCK_MS: String(STUCK_MS) },
-			now: nowFn,
-		});
-	}
-
-	it("does nothing before the threshold elapses", async () => {
-		const clock = Date.now();
-		const s = await setupStuck(() => clock);
-		const main = awaitingMain(s.store);
-		await s.coord.onMainAwaitingReview(main); // routine hold, silent
-		expect(s.codexAlerts).toHaveLength(0);
-
-		await s.coord.reconcileStuckCodexHolds(); // 0ms elapsed — not stuck yet
-		expect(s.codexAlerts).toHaveLength(0);
-		expect(s.postTexts()).toHaveLength(0);
-	});
-
-	it("escalates once the SAME head has been held past the threshold — posts + alerts exactly once", async () => {
-		let clock = Date.now();
-		const s = await setupStuck(() => clock);
-		const main = awaitingMain(s.store);
-		await s.coord.onMainAwaitingReview(main);
-
-		// StateStore stamps hold_notified_at with SQLite's real wall clock. Under a
-		// loaded shard, async setup can take longer than STUCK_MS, so advancing the
-		// pre-setup clock is still earlier than the stored hold. Re-anchor after the
-		// hold exists, then cross the threshold deterministically.
-		clock = Date.now() + STUCK_MS + 1;
-		await s.coord.reconcileStuckCodexHolds();
-		expect(s.codexAlerts).toEqual([{ execId: "main-1", sha: SHA }]);
-		expect(
-			s.postTexts().filter((t) => t.includes("Codex code review")),
-		).toHaveLength(1);
-
-		// Idempotent — further passes (even long after) never re-fire for this head.
-		clock += STUCK_MS * 100;
-		await s.coord.reconcileStuckCodexHolds();
-		await s.coord.reconcileStuckCodexHolds();
-		expect(s.codexAlerts).toHaveLength(1);
-		expect(
-			s.postTexts().filter((t) => t.includes("Codex code review")),
-		).toHaveLength(1);
-	});
-
-	it("skips a head that got approved before the reconcile pass ran", async () => {
-		let clock = Date.now();
-		const s = await setupStuck(() => clock);
-		const main = awaitingMain(s.store);
-		await s.coord.onMainAwaitingReview(main);
-		s.store.recordCodexReviewApproved({
-			executionId: "main-1",
-			targetPrHeadSha: SHA,
-			issueId: "FLY-1",
-			projectName: "proj",
-		});
-
-		clock += STUCK_MS + 1;
-		await s.coord.reconcileStuckCodexHolds();
-		expect(s.codexAlerts).toHaveLength(0);
-	});
-
-	it("skips a head the session has moved past (a NEW head superseded it)", async () => {
-		let clock = Date.now();
-		const s = await setupStuck(() => clock);
-		const main = awaitingMain(s.store);
-		await s.coord.onMainAwaitingReview(main); // hold on SHA
-
-		s.store.setReviewBinding("main-1", { questionId: "q2", prHeadSha: SHA2 });
-
-		clock += STUCK_MS + 1;
-		await s.coord.reconcileStuckCodexHolds();
-		// The stale SHA record is skipped — the session is no longer on that head.
-		expect(s.codexAlerts.some((a) => a.sha === SHA)).toBe(false);
-	});
-
-	it("skips when the parent session is no longer awaiting_review", async () => {
-		let clock = Date.now();
-		const s = await setupStuck(() => clock);
-		const main = awaitingMain(s.store);
-		await s.coord.onMainAwaitingReview(main);
-
-		s.store.upsertSession({
-			execution_id: "main-1",
-			issue_id: "FLY-1",
-			project_name: "proj",
-			status: "approved_to_ship",
-		});
-
-		clock += STUCK_MS + 1;
-		await s.coord.reconcileStuckCodexHolds();
-		expect(s.codexAlerts).toHaveLength(0);
-	});
-
-	it("gate OFF (kill switch) → does nothing, even past the threshold", async () => {
-		let clock = Date.now();
-		const s = await setup({
-			env: {
-				FLYWHEEL_CODEX_HARD_GATE: "0",
-				FLYWHEEL_CODEX_HOLD_STUCK_MS: String(STUCK_MS),
-			},
-			now: () => clock,
-		});
-		const main = awaitingMain(s.store);
-		await s.coord.onMainAwaitingReview(main); // gate off → spawns QA normally, no hold record
-		expect(s.start).toHaveBeenCalledTimes(1);
-
-		clock += STUCK_MS + 1;
-		await s.coord.reconcileStuckCodexHolds();
-		expect(s.codexAlerts).toHaveLength(0);
-	});
-});
-
-// ── FLY-846: spawn gates (QA-of-QA / premature / duplicate — runaway guards) ──
-
 describe("AutoQaCoordinator FLY-846 spawn gates", () => {
 	let s: Awaited<ReturnType<typeof setup>>;
 	beforeEach(async () => {
@@ -1843,8 +1718,7 @@ describe("FLY-869 B alertMergeWithoutApproval", () => {
 	// reserved for a REAL violation (merged-without-approval). It must NOT re-noise
 	// the routine codex hold that FLY-863 deliberately silenced — a normal
 	// awaiting_review session whose Codex review simply hasn't APPROVED yet posts
-	// no thread + fires NO Lead alert (the escalation is FLY-863's separate
-	// reconcileStuckCodexHolds, only after a long stall).
+	// no thread + fires NO Lead alert.
 	it("does NOT fire on a routine codex hold (863's silenced normal state stays silent)", async () => {
 		const s = await setup({ env: {} }); // codex hard gate ON, no approval
 		const main = awaitingMain(s.store);

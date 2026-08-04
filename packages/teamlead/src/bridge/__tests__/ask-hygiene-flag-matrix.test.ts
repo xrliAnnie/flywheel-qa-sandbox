@@ -42,7 +42,10 @@ const GATE: ZombieCandidateQuestion = {
 	created_at: agedSqliteUtc(),
 };
 
-function harness(env: Record<string, string | undefined>) {
+function harness(
+	env: Record<string, string | undefined>,
+	resolveDeadGates = true,
+) {
 	const events: string[] = [];
 	const retire = vi.fn().mockReturnValue(true);
 	const deps = {
@@ -65,12 +68,13 @@ function harness(env: Record<string, string | undefined>) {
 			isQuestionPending: vi.fn().mockReturnValue(false),
 		},
 		env,
+		resolveDeadGates,
 	} as unknown as ZombieGateHygieneDeps;
 	return { deps, events, retire };
 }
 
 describe("FLY-1328 flag matrix (ASK × ZOMBIE)", () => {
-	it("ASK=0 + ZOMBIE on: the gate branch behaves exactly as it does today, the ask is untouched", async () => {
+	it("ASK=0 + Z1 audit replay: the gate branch runs and the ask is untouched", async () => {
 		const h = harness({ FLYWHEEL_ASK_HYGIENE: "0" });
 		const result = await runZombieGateHygiene(h.deps);
 
@@ -92,8 +96,8 @@ describe("FLY-1328 flag matrix (ASK × ZOMBIE)", () => {
 		});
 	});
 
-	it("ASK on + ZOMBIE=0: the ask sweep runs; the gate branch does not even write an intent", async () => {
-		const h = harness({ FLYWHEEL_ZOMBIE_GATE_RESOLVE: "0" });
+	it("ASK on + production Z1 policy: the ask sweep runs without a gate intent", async () => {
+		const h = harness({}, false);
 		const result = await runZombieGateHygiene(h.deps);
 
 		// Positive control: the ask branch fires, so the gate silence below is a
@@ -108,7 +112,7 @@ describe("FLY-1328 flag matrix (ASK × ZOMBIE)", () => {
 		expect(h.retire.mock.calls.filter(([id]) => id === "q-gate")).toEqual([]);
 	});
 
-	it("both flags on: each branch handles its own candidate and neither leaks into the other", async () => {
+	it("ASK and Z1 audit replay each handle their own candidate", async () => {
 		const h = harness({});
 		const result = await runZombieGateHygiene(h.deps);
 
@@ -122,11 +126,8 @@ describe("FLY-1328 flag matrix (ASK × ZOMBIE)", () => {
 		]);
 	});
 
-	it("both flags off: the pass writes nothing and touches no CommDB row", async () => {
-		const h = harness({
-			FLYWHEEL_ASK_HYGIENE: "0",
-			FLYWHEEL_ZOMBIE_GATE_RESOLVE: "0",
-		});
+	it("ASK off + production Z1 policy writes nothing", async () => {
+		const h = harness({ FLYWHEEL_ASK_HYGIENE: "0" }, false);
 		const result = await runZombieGateHygiene(h.deps);
 
 		expect(result).toEqual({ resolved: [], unreachable: [], retiredAsks: [] });

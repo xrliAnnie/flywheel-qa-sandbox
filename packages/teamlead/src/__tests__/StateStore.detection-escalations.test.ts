@@ -711,8 +711,7 @@ describe("StateStore detection_escalations RESOLVED-revive boundary (Codex R1 #1
 
 	it("a residue-harvested fingerprint revives on a later detection and resets every episode field", async () => {
 		const s = await freshStore();
-		s.observeParkCondition({ ...KEY, firstDetectedAtMs: 1_000 });
-		s.observeParkCondition({ ...KEY, firstDetectedAtMs: 1_000 });
+		s.upsertDetectionEscalation({ ...KEY, firstDetectedAtMs: 1_000 });
 		s.markDetectionEscalationLeadNotified(
 			KEY.targetKey,
 			KEY.kind,
@@ -747,7 +746,7 @@ describe("StateStore detection_escalations RESOLVED-revive boundary (Codex R1 #1
 		});
 
 		const clearingFingerprint = "fp:clearing-residue";
-		s.observeParkCondition({
+		s.upsertDetectionEscalation({
 			...KEY,
 			episodeFingerprint: clearingFingerprint,
 			firstDetectedAtMs: 20_000,

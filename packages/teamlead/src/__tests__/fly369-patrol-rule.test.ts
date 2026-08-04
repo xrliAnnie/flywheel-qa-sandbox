@@ -43,7 +43,6 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		for (const ev of [
 			"session_completed",
 			"session_failed",
-			"runner_stuck_escalation",
 			"runner_question",
 		]) {
 			expect(patrol).toContain(ev);

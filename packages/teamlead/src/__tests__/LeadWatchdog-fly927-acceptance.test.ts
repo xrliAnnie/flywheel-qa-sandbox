@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { isIdleHealthyPane, isTransientThrottlePane } from "../LeadWatchdog.js";
+import { isTransientThrottlePane } from "../LeadWatchdog.js";
 
 const FIXTURES_DIR = join(
 	dirname(fileURLToPath(import.meta.url)),
@@ -22,28 +22,6 @@ const FIXTURES_DIR = join(
 );
 const loadFixture = (name: string): string =>
 	readFileSync(join(FIXTURES_DIR, name), "utf-8");
-
-describe("FLY-927 acceptance: idle 1h ≠ frozen (isIdleHealthyPane)", () => {
-	it.each([
-		"idle-cos-lead.txt",
-		"idle-ops-lead.txt",
-		"idle-product-lead.txt",
-		// The Peter trap (FLY-193): 100%-ctx idle pane MUST stay suppressed.
-		"idle-product-lead-ctx100.txt",
-	])("MUST-SUPPRESS real idle fixture %s", (fixture) => {
-		expect(isIdleHealthyPane(loadFixture(fixture))).toBe(true);
-	});
-
-	it.each([
-		// A resume/compact menu replaces the TUI — a human must answer it.
-		"freeze-resume-menu.txt",
-		"freeze-compact-prompt.txt",
-		// A frozen auto-compact is a REAL stuck condition.
-		"freeze-compacting.txt",
-	])("MUST-ALERT real freeze fixture %s (never idle-suppressed)", (fixture) => {
-		expect(isIdleHealthyPane(loadFixture(fixture))).toBe(false);
-	});
-});
 
 describe("FLY-927 acceptance: 529 — healthy transient suppressed, true blocks alert", () => {
 	it("MUST-SUPPRESS: live 529 backoff (lead alive, self-resolves)", () => {

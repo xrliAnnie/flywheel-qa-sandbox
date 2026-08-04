@@ -72,7 +72,6 @@ describe("FLY-1066 B2 Layer 1 × Layer 2 flag interactions", () => {
 					harvestCommDb,
 					pruneTerminalCommDb: () => pruneCommDb(true),
 					harvestStateStoreGhosts: async () => {},
-					resolveOrphanEscalations: () => {},
 					reapStateStoreGhost: async () => false,
 				})
 			: undefined;
@@ -188,7 +187,6 @@ describe("FLY-1066 B2 Layer 1 × Layer 2 flag interactions", () => {
 						}),
 					});
 				},
-				resolveOrphanEscalations: () => {},
 				reapStateStoreGhost: async () => false,
 			});
 

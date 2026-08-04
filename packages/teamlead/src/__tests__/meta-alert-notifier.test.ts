@@ -110,8 +110,7 @@ describe("MetaAlertNotifier", () => {
 			logger: () => {},
 		});
 		await n.notify({ reason: "drain_stuck", title: "a", body: "b" });
-		await n.notify({ reason: "mailbox_overflow", title: "c", body: "d" });
-		expect(exec).toHaveBeenCalledTimes(2);
+		expect(exec).toHaveBeenCalledTimes(1);
 	});
 
 	it("never throws when osascript fails — file channel still used", async () => {

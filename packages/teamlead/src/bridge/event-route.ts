@@ -3109,7 +3109,7 @@ export function createEventRouter(
 					// FLY-159 (Codex R2 Issue 1): runtime.deliver() returns {delivered:
 					// false, error} instead of throwing on Lead-side failures. Without
 					// recordDeliveryFailure on that branch, GUARDRAIL_EVENT_TYPES retry
-					// (HeartbeatService.retryUndeliveredGuardrailEvents) would never see
+					// the durable delivery-failure ledger would never see
 					// these rows. Pattern mirrors HeartbeatService.ts:416.
 					const isGuardrail = GUARDRAIL_EVENT_TYPES.has(event.event_type);
 					registry

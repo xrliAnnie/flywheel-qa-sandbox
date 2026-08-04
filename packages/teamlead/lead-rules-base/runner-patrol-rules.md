@@ -13,7 +13,7 @@ unified alerting) belongs to **FLY-271** and **FLY-368**, NOT here.
 ## 1. Proactive patrol — sweep your Runners, don't wait to be paged (RC-3)
 
 Reactive detection already exists (Bridge pushes `runner_idle_detected`,
-`runner_stuck_escalation`, `session_stuck`/`session_orphaned`, gate events to your
+`session_stuck`/`session_orphaned`, gate events to your
 inbox). But **parked / done-lingering Runners produce no new event** — "no alert"
 is silently read as "all fine." So you must **actively** take stock.
 
@@ -31,7 +31,7 @@ that work is accepted.
 
 | Class | What it means | Your move |
 |---|---|---|
-| `running` | actively working | check output freshness; stale → judge per `stuck-runner-remanage.md` and relay status |
+| `running` | actively working | inspect current process/session facts; do not infer failure from unchanged pane text |
 | `parked-alive` | finished a unit, idle at prompt, **re-engageable** | re-engage (see `runner-reengage-rules.md`) for the next unit, or wrap up + close — **never leave it sitting silently** |
 | `dead` / done-lingering | terminal / tmux gone | wrap up + close (`done-running-reconciler` FLY-324 + the close-driven archive, FLY-369 RC-5) |
 
@@ -52,7 +52,6 @@ fallbacks: see `department-lead-rules.md` §"Issue-Bound Reply"). This is a
 
 - `session_completed` — Runner finished / opened a PR.
 - `session_failed` — Runner errored / blocked.
-- `runner_stuck_escalation` — per `stuck-runner-remanage.md` cadence (act → ping once; false alarm → stay silent + write disposition).
 - `runner_question` / `gate_question` — surface the question + your answer.
 - parked-awaiting-lead — a Runner waiting on you for a decision/approval.
 

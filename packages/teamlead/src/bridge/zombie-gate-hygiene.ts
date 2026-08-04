@@ -20,9 +20,8 @@
  *     (dedicated unreachable-runner alert) while the founder messages flow
  *     through the bounded retry → dead-letter path.
  *
- * Kill-switch FLYWHEEL_ZOMBIE_GATE_RESOLVE (default ON): OFF short-circuits
- * the WHOLE Z1 branch BEFORE the intent write (zero new side effects — Codex
- * R2 #4); Z2 detection is governed by the watchdog's own switch.
+ * Z1 is retained as a low-level audit-replay seam only. Production does not
+ * enable it; Z2 detection and checkpoint-less ask hygiene remain live.
  */
 
 import { askHygieneEnabled, type CommDB } from "flywheel-comm/db";
@@ -31,14 +30,6 @@ import {
 	type SessionEvent,
 } from "../StateStore.js";
 import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
-
-export function zombieGateResolveEnabled(
-	env: Record<string, string | undefined> = process.env,
-): boolean {
-	// The low-level algorithm remains directly testable for historical audit
-	// replay. Production GatePoller passes an explicit OFF policy in FLY-1393.
-	return env.FLYWHEEL_ZOMBIE_GATE_RESOLVE !== "0";
-}
 
 export { askHygieneEnabled };
 
@@ -115,6 +106,8 @@ export interface ZombieGateHygieneDeps {
 		projectName: string;
 		questionId: string;
 	}) => void;
+	/** Historical Z1 audit replay only; production leaves this false. */
+	resolveDeadGates?: boolean;
 	env?: Record<string, string | undefined>;
 }
 
@@ -364,8 +357,7 @@ export async function runZombieGateHygiene(
 			}
 		}
 
-		// ── Z1: kill-switch BEFORE the intent write (OFF = today's byte path).
-		if (!zombieGateResolveEnabled(env)) continue;
+		if (!deps.resolveDeadGates) continue;
 
 		const issueId = session?.issue_id ?? "unknown";
 		// Phase 1 — durable intent (idempotent per question; a crash between
@@ -426,9 +418,8 @@ export async function runZombieGateHygiene(
 	// guarded mutation and the outcome audit leaves an intent with no outcome —
 	// and since the retired question is no longer pending, the candidate loop
 	// above will never revisit it. Re-read + classify those here so the
-	// three-phase audit always converges. Same kill-switch as Z1 (OFF = zero
-	// side effects).
-	if (zombieGateResolveEnabled(env)) {
+	// three-phase audit always converges when audit replay is requested.
+	if (deps.resolveDeadGates) {
 		try {
 			reconcileDanglingIntents(deps, GATE_INTENT_FAMILY);
 		} catch (err) {

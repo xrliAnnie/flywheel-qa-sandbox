@@ -7,7 +7,6 @@ import {
 	bodyFor,
 	computeEventId,
 	DEFAULT_LEAD_WATCHDOG_INTERVAL_MS,
-	isIdleHealthyPane,
 	isTransientThrottlePane,
 	LeadWatchdog,
 	leadWatchdogIntervalMs,
@@ -221,150 +220,6 @@ describe("LeadWatchdog", () => {
 		expect(p.body.toLowerCase()).toContain("billing");
 	});
 
-	it("falls back to pane_hash_stuck when unchanged pane has no blocked keywords", async () => {
-		const notifier = makeNotifier();
-		const wd = new LeadWatchdog({
-			pollIntervalMs: 30_000,
-			paneHashStuckCycles: 2,
-			paneHashAlertCycles: 3,
-			cooldownMs: 300_000,
-			projects,
-			store,
-			notifier: notifier.alert,
-			locateWindowFn: async () => ({
-				windowId: "@7",
-				windowName: "geoforge3d-cos-lead",
-			}),
-			captureFn: async () => "idle working...",
-			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
-			now: () => 0,
-		});
-		await wd.pollOnce();
-		await wd.pollOnce();
-		// Without a recognized pattern, stays in Suspicious until cycle 3.
-		expect(wd.getState("cos-lead")).toBe("Suspicious");
-		expect(notifier.alert).not.toHaveBeenCalled();
-		await wd.pollOnce();
-		expect(notifier.alert).toHaveBeenCalledTimes(1);
-		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
-	});
-
-	it("FLY-182 B3: suppressIdleHealthy=true → does NOT alert on an idle-ready pane", async () => {
-		const notifier = makeNotifier();
-		const wd = new LeadWatchdog({
-			pollIntervalMs: 30_000,
-			paneHashStuckCycles: 2,
-			paneHashAlertCycles: 3,
-			cooldownMs: 300_000,
-			projects,
-			store,
-			notifier: notifier.alert,
-			locateWindowFn: async () => ({
-				windowId: "@7",
-				windowName: "geoforge3d-cos-lead",
-			}),
-			captureFn: async () =>
-				'│ > Try "edit <file>"                    │\n? for shortcuts',
-			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
-			now: () => 0,
-			suppressIdleHealthy: true,
-		});
-		await wd.pollOnce();
-		await wd.pollOnce();
-		await wd.pollOnce();
-		await wd.pollOnce();
-		// Idle-but-alive pane: never escalated to pane_hash_stuck.
-		expect(notifier.alert).not.toHaveBeenCalled();
-		expect(wd.getState("cos-lead")).toBe("Healthy");
-	});
-
-	it("FLY-182 B3: suppressIdleHealthy=true → STILL alerts on a frozen WORKING pane", async () => {
-		const notifier = makeNotifier();
-		const wd = new LeadWatchdog({
-			pollIntervalMs: 30_000,
-			paneHashStuckCycles: 2,
-			paneHashAlertCycles: 3,
-			cooldownMs: 300_000,
-			projects,
-			store,
-			notifier: notifier.alert,
-			locateWindowFn: async () => ({
-				windowId: "@7",
-				windowName: "geoforge3d-cos-lead",
-			}),
-			// Frozen mid-operation (spinner / esc to interrupt) → a REAL stuck.
-			captureFn: async () => "Thinking… (esc to interrupt)",
-			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
-			now: () => 0,
-			suppressIdleHealthy: true,
-		});
-		await wd.pollOnce();
-		await wd.pollOnce();
-		await wd.pollOnce();
-		expect(notifier.alert).toHaveBeenCalledTimes(1);
-		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
-	});
-
-	it("FLY-182 B3: suppressIdleHealthy=false (default) → alerts on idle pane (unchanged behavior)", async () => {
-		const notifier = makeNotifier();
-		const wd = new LeadWatchdog({
-			pollIntervalMs: 30_000,
-			paneHashStuckCycles: 2,
-			paneHashAlertCycles: 3,
-			cooldownMs: 300_000,
-			projects,
-			store,
-			notifier: notifier.alert,
-			locateWindowFn: async () => ({
-				windowId: "@7",
-				windowName: "geoforge3d-cos-lead",
-			}),
-			captureFn: async () => "? for shortcuts",
-			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
-			now: () => 0,
-			// suppressIdleHealthy omitted → default OFF.
-		});
-		await wd.pollOnce();
-		await wd.pollOnce();
-		await wd.pollOnce();
-		expect(notifier.alert).toHaveBeenCalledTimes(1);
-	});
-
-	it("resets stuck counter and stays Healthy when pane changes", async () => {
-		const notifier = makeNotifier();
-		let tick = 0;
-		const captures = ["first", "first", "second", "third"];
-		const wd = new LeadWatchdog({
-			pollIntervalMs: 30_000,
-			paneHashStuckCycles: 2,
-			paneHashAlertCycles: 3,
-			cooldownMs: 300_000,
-			projects,
-			store,
-			notifier: notifier.alert,
-			locateWindowFn: async () => ({
-				windowId: "@7",
-				windowName: "geoforge3d-cos-lead",
-			}),
-			captureFn: async () => captures[tick++]!,
-			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
-			now: () => 0,
-		});
-		await wd.pollOnce();
-		await wd.pollOnce();
-		expect(wd.getState("cos-lead")).toBe("Suspicious");
-		await wd.pollOnce();
-		expect(wd.getState("cos-lead")).toBe("Healthy");
-		await wd.pollOnce();
-		expect(wd.getState("cos-lead")).toBe("Healthy");
-		expect(notifier.alert).not.toHaveBeenCalled();
-	});
-
 	it("early-exits to Silent when a blocked marker file is present", async () => {
 		const notifier = makeNotifier();
 		const wd = new LeadWatchdog({
@@ -417,54 +272,6 @@ describe("LeadWatchdog", () => {
 		await wd.pollOnce();
 		expect(wd.getState("cos-lead")).toBe("Silent");
 		expect(notifier.alert).not.toHaveBeenCalled();
-	});
-
-	it("Fix 4: Cooldown immediately drops to Healthy when pane content changes", async () => {
-		const notifier = makeNotifier();
-		let tick = 0;
-		// poll 1: baseline | poll 2: alert | poll 3: changed → Healthy | poll 4: stay Healthy
-		const captures = [
-			"rate limit reached, please try again.\n> ",
-			"rate limit reached, please try again.\n> ",
-			"working on issue FLY-83 step 1...\n> ", // pane recovered
-			"working on issue FLY-83 step 1...\n> ",
-		];
-		let nowMs = 1_700_000_000_000;
-		const wd = new LeadWatchdog({
-			pollIntervalMs: 30_000,
-			paneHashStuckCycles: 2,
-			paneHashAlertCycles: 3,
-			cooldownMs: 300_000,
-			projects,
-			store,
-			notifier: notifier.alert,
-			locateWindowFn: async () => ({
-				windowId: "@7",
-				windowName: "geoforge3d-cos-lead",
-			}),
-			captureFn: async () => captures[tick++]!,
-			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
-			now: () => nowMs,
-		});
-		await wd.pollOnce();
-		await wd.pollOnce();
-		expect(wd.getState("cos-lead")).toBe("Cooldown");
-		expect(notifier.alert).toHaveBeenCalledTimes(1);
-
-		// Pane changes — Cooldown drops to Healthy WELL BEFORE cooldownMs
-		// elapses. (Old behavior would have stayed Cooldown until 5min.)
-		nowMs += 30_000;
-		await wd.pollOnce();
-		expect(wd.getState("cos-lead")).toBe("Healthy");
-
-		// Pane stays new (non-pattern) content — accumulates a stuckCycle but
-		// does NOT fire a new alert (no recognizable pattern + only at 2/3
-		// cycles → Suspicious, not Cooldown).
-		nowMs += 30_000;
-		await wd.pollOnce();
-		expect(wd.getState("cos-lead")).toBe("Suspicious");
-		expect(notifier.alert).toHaveBeenCalledTimes(1);
 	});
 
 	it("Fix 4: re-alerts when a NEW stuck pattern appears after recovery", async () => {
@@ -696,124 +503,6 @@ describe("LeadWatchdog", () => {
 	});
 });
 
-describe("isIdleHealthyPane (FLY-182 B3 recognizer)", () => {
-	it("returns true for a high-confidence idle-ready pane", () => {
-		expect(isIdleHealthyPane("│ > │\n? for shortcuts")).toBe(true);
-		expect(isIdleHealthyPane('Try "fix the bug"\nshift+tab to cycle')).toBe(
-			true,
-		);
-	});
-
-	it("returns false when actively working (must not suppress a real freeze)", () => {
-		expect(
-			isIdleHealthyPane("Thinking… (esc to interrupt)\n? for shortcuts"),
-		).toBe(false);
-		expect(isIdleHealthyPane("Working… 1234 tokens used")).toBe(false);
-	});
-
-	it("returns false for blocked patterns (let them alert as classified)", () => {
-		expect(isIdleHealthyPane("usage limit reached\n? for shortcuts")).toBe(
-			false,
-		);
-		expect(isIdleHealthyPane("rate-limit hit\n? for shortcuts")).toBe(false);
-	});
-
-	it("returns false on uncertainty (no idle marker) — fail-open to alerting", () => {
-		expect(isIdleHealthyPane("")).toBe(false);
-		expect(isIdleHealthyPane("some random frozen output")).toBe(false);
-	});
-});
-
-describe("isIdleHealthyPane — real Lead pane fixtures (FLY-193)", () => {
-	// must-SUPPRESS: real captures of healthy, idle Leads (2026-06-02, the
-	// production GeoForge3D cos/ops/product Leads). `idle-product-lead-ctx100.txt`
-	// is the ctx-100% idle pane from the production incident — proof that a full
-	// context window does NOT by itself defeat the recognizer (the leak was stale
-	// scrollback, not the `ctx 100%` line).
-	it.each([
-		["idle-cos-lead.txt"],
-		["idle-ops-lead.txt"],
-		["idle-product-lead.txt"],
-		["idle-product-lead-ctx100.txt"],
-	])("suppresses a real healthy-idle Lead pane: %s", (fixture) => {
-		expect(isIdleHealthyPane(loadFixture(fixture))).toBe(true);
-	});
-
-	// must-NOT-SUPPRESS: genuine freezes / stuck operations. The resume menu is
-	// the exact text from the documented production freeze ("Resume from
-	// summary?"); the compact PROMPT is the context-limit gate ("esc to cancel");
-	// `freeze-compacting.txt` is a real auto-compact in progress (a frozen one is
-	// a genuine stuck operation). Suppressing any would HIDE a real problem.
-	it.each([
-		["freeze-resume-menu.txt"],
-		["freeze-compact-prompt.txt"],
-		["freeze-compacting.txt"],
-	])(
-		"does NOT suppress a real freeze / stuck op — still alerts: %s",
-		(fixture) => {
-			expect(isIdleHealthyPane(loadFixture(fixture))).toBe(false);
-		},
-	);
-
-	it("ignores STALE working-markers in scrollback — only the live region counts", () => {
-		const pane = loadFixture("idle-product-lead.txt");
-		// Guard: the fixture genuinely contains the whole-page-scan trap (stale
-		// "working"/"thinking"/"tokens used" chatter in history above the box).
-		// If a future re-capture loses it, this assertion flags that the fixture
-		// no longer exercises the regression.
-		expect(/\bworking\b|\bthinking\b|tokens?\b.*\bused\b/i.test(pane)).toBe(
-			true,
-		);
-		// …yet the live render region is a clean idle prompt → suppressed.
-		expect(isIdleHealthyPane(pane)).toBe(true);
-	});
-});
-
-describe("LeadWatchdog — suppression wired through tickLead on real fixtures (FLY-193)", () => {
-	let store: StateStore;
-	beforeEach(async () => {
-		store = await StateStore.create(":memory:");
-	});
-
-	const makeWatchdog = (fixture: string, notifier: NotifierStub) =>
-		new LeadWatchdog({
-			pollIntervalMs: 30_000,
-			paneHashStuckCycles: 2,
-			paneHashAlertCycles: 3,
-			cooldownMs: 300_000,
-			projects,
-			store,
-			notifier: notifier.alert,
-			locateWindowFn: async () => ({
-				windowId: "@7",
-				windowName: "geoforge3d-cos-lead",
-			}),
-			captureFn: async () => loadFixture(fixture),
-			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
-			now: () => 0,
-			suppressIdleHealthy: true,
-		});
-
-	it("does NOT alert across many cycles on a real idle Lead pane", async () => {
-		const notifier = makeNotifier();
-		const wd = makeWatchdog("idle-product-lead.txt", notifier);
-		for (let i = 0; i < 5; i++) await wd.pollOnce();
-		expect(notifier.alert).not.toHaveBeenCalled();
-		expect(wd.getState("cos-lead")).toBe("Healthy");
-	});
-
-	it("STILL alerts on a real resume-menu freeze even with suppression ON", async () => {
-		const notifier = makeNotifier();
-		const wd = makeWatchdog("freeze-resume-menu.txt", notifier);
-		await wd.pollOnce();
-		await wd.pollOnce();
-		await wd.pollOnce();
-		expect(notifier.alert).toHaveBeenCalledTimes(1);
-		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
-	});
-});
-
 describe("isTransientThrottlePane (FLY-218 recognizer)", () => {
 	// A live 529 always renders inside the normal TUI, so the status bar (the
 	// live-TUI anchor the recognizer requires) is present. These minimal panes
@@ -1022,48 +711,6 @@ describe("LeadWatchdog — FLY-218 transient-529 suppression wired through tickL
 		expect(notifier.alert).toHaveBeenCalledTimes(1);
 		expect(notifier.results[0]!.eventType).toBe("usage_limit");
 	});
-
-	it("MASKING GUARD b: a frozen resume menu above a stale 529 STILL alerts pane_hash_stuck", async () => {
-		// suppressIdleHealthy ON (production default) — the menu has no idle anchor,
-		// so it is neither throttle-suppressed nor idle-suppressed → it must alert.
-		const notifier = makeNotifier();
-		const wd = makeWatchdog(
-			"throttle-529-then-resume-menu.txt",
-			notifier,
-			true,
-		);
-		await wd.pollOnce();
-		await wd.pollOnce();
-		await wd.pollOnce();
-		expect(notifier.alert).toHaveBeenCalledTimes(1);
-		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
-	});
-
-	it("MASKING GUARD c: a frozen auto-compact above a stale 529 STILL alerts pane_hash_stuck", async () => {
-		// "Compacting conversation" is a FLY-193 must-alert and never a 529 retry,
-		// so the throttle suppression is vetoed and the freeze still escalates.
-		const notifier = makeNotifier();
-		const wd = makeWatchdog("throttle-529-then-compacting.txt", notifier, true);
-		await wd.pollOnce();
-		await wd.pollOnce();
-		await wd.pollOnce();
-		expect(notifier.alert).toHaveBeenCalledTimes(1);
-		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
-	});
-
-	it("MASKING GUARD d: a frozen normal turn (no retry hint) above a stale 529 STILL alerts pane_hash_stuck", async () => {
-		const notifier = makeNotifier();
-		const wd = makeWatchdog(
-			"throttle-529-then-frozen-work.txt",
-			notifier,
-			true,
-		);
-		await wd.pollOnce();
-		await wd.pollOnce();
-		await wd.pollOnce();
-		expect(notifier.alert).toHaveBeenCalledTimes(1);
-		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
-	});
 });
 
 describe("LeadWatchdog — FLY-220 alert-echo loop (blocked-keyword classifier echo immunity)", () => {
@@ -1117,14 +764,6 @@ describe("LeadWatchdog — FLY-220 alert-echo loop (blocked-keyword classifier e
 		}
 	});
 
-	it("isIdleHealthyPane treats an idle Lead with an echoed alert as healthy", () => {
-		// Without echo-stripping the echoed "rate limit" in the live region makes
-		// isIdleHealthyPane return false (blocked keyword) — wrongly un-suppressing.
-		expect(isIdleHealthyPane(loadFixture("rate-limit-alert-echo.txt"))).toBe(
-			true,
-		);
-	});
-
 	it("a REAL rate-limit pane (Lead's own 429, no echo) STILL alerts rate_limit once", async () => {
 		const notifier = makeNotifier();
 		const wd = makeWatchdog("rate-limit-real.txt", notifier, true);
@@ -1132,10 +771,6 @@ describe("LeadWatchdog — FLY-220 alert-echo loop (blocked-keyword classifier e
 		await wd.pollOnce();
 		expect(notifier.alert).toHaveBeenCalledTimes(1);
 		expect(notifier.results[0]!.eventType).toBe("rate_limit");
-	});
-
-	it("a real rate-limit pane is NOT idle-healthy (must alert)", () => {
-		expect(isIdleHealthyPane(loadFixture("rate-limit-real.txt"))).toBe(false);
 	});
 
 	// Codex R1 HIGH-2: the fix must cover ALL blocked kinds, not just rate_limit.
@@ -1236,7 +871,6 @@ describe("LeadWatchdog — FLY-220 episode dedup + recovery (real block alerts o
 	const makeWd = (
 		notifier: NotifierStub,
 		captureFn: () => string,
-		legacyDeliveryWatchdogsEnabled = true,
 		onPollComplete?: () => void,
 		watchdogBlockedEnabled = true,
 	) =>
@@ -1256,32 +890,9 @@ describe("LeadWatchdog — FLY-220 episode dedup + recovery (real block alerts o
 			claimsReader: async () => new Set(),
 			blockedMarkerReader: async () => [],
 			now: () => 1_700_000_000_000,
-			suppressIdleHealthy: true,
-			legacyDeliveryWatchdogsEnabled,
 			watchdogBlockedEnabled,
 			onPollComplete,
 		});
-
-	it("reverse flag suppresses frozen-pane lanes while blocked alerts and poll callbacks stay live", async () => {
-		const frozenNotifier = makeNotifier();
-		const onPollComplete = vi.fn();
-		const frozen = makeWd(
-			frozenNotifier,
-			() => "unclassified frozen lead pane",
-			false,
-			onPollComplete,
-		);
-		for (let i = 0; i < 4; i++) await frozen.pollOnce();
-		expect(frozenNotifier.alert).not.toHaveBeenCalled();
-		expect(onPollComplete).toHaveBeenCalledTimes(4);
-
-		const blockedNotifier = makeNotifier();
-		const blocked = makeWd(blockedNotifier, () => realBlock(0), false);
-		await blocked.pollOnce();
-		await blocked.pollOnce();
-		expect(blockedNotifier.results).toHaveLength(1);
-		expect(blockedNotifier.results[0]?.eventType).toBe("rate_limit");
-	});
 
 	it("blocked kill-switch gates before opening an episode or recovery state", async () => {
 		const notifier = makeNotifier();
@@ -1289,7 +900,6 @@ describe("LeadWatchdog — FLY-220 episode dedup + recovery (real block alerts o
 		const blockedOff = makeWd(
 			notifier,
 			() => realBlock(0),
-			false,
 			onPollComplete,
 			false,
 		);

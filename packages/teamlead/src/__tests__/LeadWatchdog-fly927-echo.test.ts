@@ -17,11 +17,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ALERT_EVENT_TYPES } from "../LeadAlertNotifier.js";
-import {
-	ALERT_ECHO_START,
-	classifyLeadAlertPane,
-	isIdleHealthyPane,
-} from "../LeadWatchdog.js";
+import { ALERT_ECHO_START, classifyLeadAlertPane } from "../LeadWatchdog.js";
 
 const FIXTURES_DIR = join(
 	dirname(fileURLToPath(import.meta.url)),
@@ -73,20 +69,6 @@ describe("FLY-927 echo-immunity parity (kind table ↔ ALERT_ECHO_START)", () =>
 			"the rate limit handling looks fine", // wording alone, no signature
 		]) {
 			expect(ALERT_ECHO_START.test(line), line).toBe(false);
-		}
-	});
-
-	it("MUST-SUPPRESS: idle pane + full new-format echo (first line + 🎫 + ← body) stays idle-healthy", () => {
-		for (const kind of ALERT_EVENT_TYPES) {
-			const pane = injectAboveInputBox(loadFixture("idle-cos-lead.txt"), [
-				`🚨 **Runner stalled after throttle** (flywheel-eng-lead / ${kind})`,
-				"🎫 flywheel · 首见 09:05 · owner <@123456789012345678> · 状态 NEW",
-				"← discord · Cass: 🚨 **Runner stalled after throttle** (flywheel-eng-lead / …",
-			]);
-			expect(
-				isIdleHealthyPane(pane),
-				`idle pane with a ${kind} echo must stay idle-healthy`,
-			).toBe(true);
 		}
 	});
 

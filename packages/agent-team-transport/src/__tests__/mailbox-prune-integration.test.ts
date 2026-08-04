@@ -50,7 +50,6 @@ describe("mailbox prune — end-to-end via codec", () => {
 		// by resolvePrunePolicy and falls back to the default, so use 1.)
 		process.env.FLYWHEEL_MAILBOX_READ_KEEP = "1";
 		process.env.FLYWHEEL_MAILBOX_READ_RETENTION_MS = "1";
-		process.env.FLYWHEEL_MAILBOX_UNREAD_WARN = "100000"; // no overflow here
 
 		await write("a", "id-a");
 		await write("b", "id-b");

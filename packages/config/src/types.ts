@@ -257,20 +257,6 @@ export interface CleanupConfig {
 	protected_branches?: string[];
 }
 
-/**
- * FLY-1048 PR-C (C3-w): per-project detection-escalation knobs (PRD §4.3:
- * the ~30min Lead grace before a founder page is "global + per-project 可配").
- * Absent block / absent field → the global env / built-in default applies.
- */
-export interface DetectionConfig {
-	/**
-	 * Lead handling grace (ms) before an unacked LEAD_NOTIFIED episode
-	 * escalates to a founder page. Overrides FLYWHEEL_DETECTION_LEAD_GRACE_MS
-	 * (default 30min) for THIS project only.
-	 */
-	lead_grace_ms?: number;
-}
-
 export interface QaConfig {
 	/**
 	 * Auto-spawn an independent QA Runner after code review passes, hold the
@@ -679,8 +665,6 @@ export interface FlywheelConfig {
 	skill_framework?: SkillFrameworkConfig;
 	/** FLY-579: auto-QA pipeline policy. Absent or auto:false = off (byte-compatible). */
 	qa?: QaConfig;
-	/** FLY-1048 PR-C: per-project detection-escalation knobs. Absent = globals apply. */
-	detection?: DetectionConfig;
 	/** FLY-793: three-stage pipeline toggle. Absent or three_stage:false = off (byte-compatible). */
 	pipeline?: PipelineConfig;
 	/** FLY-222: periodic Xiaohongshu-collection learning. Absent = off. */

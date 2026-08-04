@@ -10,9 +10,7 @@
  * envs unset, the dormant-merge guarantee has regressed (same convention as
  * FLY-696's account-selfheal-bytecompat sentinel).
  *
- * FLY-1243: the P-expect gate (FLYWHEEL_NOTIFY_DIGEST_EXPECT) that used to be
- * covered here is retired — writeTokenReportReceipt/notifyDigestExpectTick
- * off-path coverage moved out (see notify-digest-expect.test.ts).
+ * FLY-1243: the former digest expectation gate is retired.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -25,7 +23,6 @@ import {
 const FLY929_ENVS = [
 	"CLAUDE_INFRA_BOT_TOKEN",
 	"FLYWHEEL_NOTIFY_CHANNEL",
-	"FLYWHEEL_NOTIFY_DIGEST_EXPECT",
 	"FLYWHEEL_NOTIFY_RECEIPTS_PATH",
 ] as const;
 
@@ -91,9 +88,6 @@ describe("FLY-929 reverse-compat sentinel", () => {
 		});
 	}
 
-	// FLY-1243: the P-expect gate (FLYWHEEL_NOTIFY_DIGEST_EXPECT) is retired —
-	// writeTokenReportReceipt always writes and notifyDigestExpectTick no
-	// longer has an "inactive" outcome. Both off-path sentinels formerly
-	// living here are deleted; the remaining P-identity byte-compat coverage
-	// above (dormant states, digest post NO-OP, A5 owner routing) still holds.
+	// The remaining P-identity byte-compat coverage above (dormant states,
+	// digest post NO-OP, A5 owner routing) still holds.
 });

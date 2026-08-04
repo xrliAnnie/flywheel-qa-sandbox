@@ -1,7 +1,7 @@
 # FLY-1282 真机重演脚本(独立 QA 用)
 
 Issue: FLY-1282 (https://linear.app/geoforge3d/issue/FLY-1282)
-范围: Part A(僵尸探真)+ Part B(delivery_unconsumed V2)+ Part C(终态自动归档)+ Part D(处置回执)+ INV-10(Lead-only 路由)
+范围: Part A(僵尸探真)+ Part C(终态自动归档)+ Part D(处置回执)+ INV-10(Lead-only 路由)
 执行者: **独立 QA session**(FLY-1211 硬门——实现 runner 不自验)。
 前置: 本 PR 已 merge + 生产 Bridge 已用新 dist 重启(与 Lead 协调重启窗口,勿与其他 agent 撞)。
 
@@ -26,13 +26,6 @@ Issue: FLY-1282 (https://linear.app/geoforge3d/issue/FLY-1282)
 1. `FLYWHEEL_ZOMBIE_RECONCILE=0` 重启 Bridge,重复场景 1 步骤 1-4。
 2. 断言:行为回到旧世界(候选沉默落入 orphan 路径;零 zombie 事件;零 pane probe 日志)。M0 golden 套件是代码级哨兵,这里做真机抽查即可。
 
-## 场景 3 — Part B(delivery_unconsumed V2)
-
-1. 让一个 runner 进入 `awaiting_review`(正常跑完一单到 gate),给它发一条 lead instruction(mailbox),**不让它标 read_at**。
-2. 等超过 unconsumed 阈值(默认 30min,可调 `FLYWHEEL_GAP_UNCONSUMED_MS` 缩短)。
-3. 断言:**零** `delivery_unconsumed` 检测事件(parked/等待态永不触发)。
-4. 对一个 running runner 发指令、由它在回报里引用完整 `[lead-instruction <id>]` → 同样零触发(全 id 回执 = 消费证明);不引用 id 的旧式回报 → 照常触发(诚实残余)。
-
 ## 场景 4 — Part C(终态分钟级归档)
 
 1. 选一个测试 issue,让其全部 session 到 `completed`(含三段式:design/implement/QA 各 phase 全 completed)+ Linear 置 Done。
@@ -49,7 +42,7 @@ Issue: FLY-1282 (https://linear.app/geoforge3d/issue/FLY-1282)
    `🧾 处置回执:<lead> 已处理「…」— 判定:…`;无 @、无 pane 文本。
 3. 对照(R19 #3):`FLYWHEEL_DETECTION_RECONCILE_EVERY_N_TICKS=0` 时回执照发(独立 stage);`FLYWHEEL_DISPOSITION_RECEIPT=0` 时零回执、重开后 7 天窗口内补投。
 4. 同一 episode 第二次处置 → 零第二条回执。
-5. **INV-10 总验收(founder 直令)**:全程翻查 founder 可见的 issue thread 与 @提及——**0 条原始检测事件**(zombie/reestablished/stuck/unconsumed 均只进 Lead 队列);founder 面只允许出现 Lead 的处置回执与 Lead-first 超时升级链的 page。
+5. **INV-10 总验收(founder 直令)**:全程翻查 founder 可见的 issue thread 与 @提及——**0 条原始检测事件**;founder 面只允许出现 Lead 的处置回执。
 
 ## 证据留存
 

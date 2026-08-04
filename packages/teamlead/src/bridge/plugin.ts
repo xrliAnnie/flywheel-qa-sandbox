@@ -25,7 +25,6 @@ import {
 	defaultGateMarkerDir,
 	markGateMarkerAnsweredForExecution,
 } from "flywheel-comm/gate-marker";
-import { receiptPriorityWindowsMs } from "flywheel-comm/lead-inbox-queue";
 import {
 	ensureLeaseEpisodeMaterialized,
 	reconcileLeaseEpisodeQueue,
@@ -115,7 +114,6 @@ import {
 } from "../lead-backends/codexLeadBridgeWiring.js";
 import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
 import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
-import { isWakeTerminalStatus } from "../operational-terminal-status.js";
 import {
 	type LeadConfig,
 	loadProjects,
@@ -128,7 +126,6 @@ import {
 	RunnerIdleWatchdog,
 } from "../RunnerIdleWatchdog.js";
 import {
-	OUTCOME_STATUSES,
 	REVIEW_BINDING_UNBOUND,
 	type Session,
 	StateStore,
@@ -192,8 +189,6 @@ import {
 } from "./bridge-exit-marker.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { makeCanceledPrDisposal } from "./canceled-pr-close.js";
-// FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
-import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import { killAllClaudeReviewChildren } from "./claude-review-runner.js";
 import { buildCleanupPolicies } from "./cleanup-policy.js";
@@ -205,6 +200,13 @@ import {
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
+import {
+	hasPendingBlockingGateFromCommDb,
+	idleWatchdogPollMs,
+	probeDeclaredStateFromCommDb,
+	probeQuietSignals,
+	stuckCommActivityMs,
+} from "./commdb-probes.js";
 import {
 	finalizeCommDbSession,
 	pruneDeadTerminalCommDbSessions,
@@ -219,47 +221,6 @@ import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { FileDeliverySecretProvider } from "./delivery-secret.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
-import { loadDetectionGraceByProject } from "./detection-config-source.js";
-import {
-	buildCaseCEscalationInput,
-	buildGapEscalationInput,
-	CASE_C_ESCALATION_KIND,
-	fallbackCaseCFingerprint,
-	GAP_ESCALATION_KINDS,
-} from "./detection-detector-wiring.js";
-import {
-	type DetectionEscalationInput,
-	type EscalationOwner,
-	formatEscalationLeadNote,
-	notifyLeadFirst,
-	reboundExpiredDetectionClearings,
-	reconcileDetectionEscalations,
-} from "./detection-escalation.js";
-import {
-	createFleetSink,
-	createFounderPager,
-	createReceiptAwareTargetResolver,
-} from "./detection-escalation-sinks.js";
-import {
-	createSuspicionRegistry,
-	defaultGapThresholds,
-	evaluatedGapConditions,
-	evaluateGapSuspicion,
-	openGapReader,
-	type SuspicionRecord,
-} from "./detection-gap-scan.js";
-import {
-	resolveClearedGapEpisodes,
-	runDetectionReconcileCohorts,
-	runDetectionReconcileTick,
-} from "./detection-reconcile-tick.js";
-import {
-	buildPaneTail,
-	deliverSuspiciousReport,
-	formatSuspiciousThreadNote,
-	type SuspiciousOwner,
-	type SuspiciousReport,
-} from "./detection-suspicious.js";
 import { createDigestRouter } from "./digest-route.js";
 import { DigestService } from "./digest-service.js";
 import { createDispositionReceiptPass } from "./disposition-receipt.js";
@@ -309,7 +270,6 @@ import {
 	loopbackSelfOrigin,
 } from "./fleet-routes.js";
 import { FleetSensors } from "./fleet-sensors.js";
-import { createFocusedFrameScheduler } from "./focused-frame-scheduler.js";
 import { startWorkflowSourceProjector } from "./founder-approval-projector.js";
 import {
 	buildFounderConsentWiring,
@@ -320,7 +280,6 @@ import {
 	runFounderDecisionConvergencePass,
 } from "./founder-decision-convergence.js";
 import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
-import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 // FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
 import {
 	emitFounderStuckNotification,
@@ -335,10 +294,6 @@ import {
 	type HolderWakeCause,
 } from "./holder-wake-activation.js";
 import { buildSessionKey } from "./hook-payload.js";
-import {
-	InboxLoopHealthChecker,
-	inboxLoopStallMs,
-} from "./inbox-loop-health-checker.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
 	formatAccountCapOwnerAssignment,
@@ -375,20 +330,11 @@ import {
 	type LeadScanTarget,
 	LeaseAuditOutbox,
 } from "./lead-dual-active-scan.js";
-import {
-	createLeadEventDeadLetterHandler,
-	LeadEventDeliveryCoordinator,
-} from "./lead-event-delivery.js";
+import { LeadEventDeliveryCoordinator } from "./lead-event-delivery.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
-import {
-	LeadReceiptPatrol,
-	normalizeUnprocessedReceiptAlertProject,
-} from "./lead-receipt-patrol.js";
-import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
-import { legacyDeliveryWatchdogsEnabled } from "./legacy-delivery-watchdog-policy.js";
 import { reconcileLegacyPhaseThreads } from "./legacy-phase-thread-sweep.js";
 import { assertIssueNotLifecycleClosed } from "./lifecycle-admission.js";
 import {
@@ -448,16 +394,6 @@ import { receiptBackedMaterializedHeadAuthority } from "./materialized-head-auth
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
-import { notifyDigestExpectTick } from "./notify-digest-expect.js";
-import { defaultReceiptsPath } from "./notify-receipts.js";
-import { resolveOrphanDetectionEscalations } from "./orphan-escalation-reconcile.js";
-import { hashPane, liveRegion } from "./pane-live-region.js";
-import {
-	LEAD_ONLY_PARK_KINDS,
-	PARK_KIND_PREFIX,
-	parkFounderGraceMs,
-	runParkWatch,
-} from "./park-watch.js";
 import {
 	PhaseOrchestrator,
 	type PhaseSession,
@@ -525,11 +461,6 @@ import {
 } from "./runner-auth-scan.js";
 import { makeRunnerQuotaScan } from "./runner-quota-scan.js";
 import {
-	RunnerReceiptPatrol,
-	wakeFailureNotificationFingerprint,
-} from "./runner-receipt-patrol.js";
-import { attemptRunnerRecoveryNudge } from "./runner-recovery-nudge.js";
-import {
 	handleRunnerApply,
 	handleRunnerStage,
 	type RunnerCanonical,
@@ -564,26 +495,10 @@ import {
 	reconcileStateStoreGhosts,
 	type StateStoreGhostDeps,
 } from "./statestore-ghost-reconcile.js";
-import { fingerprintOutput } from "./stuck-candidate.js";
-import {
-	buildStuckRunnerDetector,
-	hasPendingBlockingGateFromCommDb,
-	hasPendingGateFromCommDb,
-	idleWatchdogPollMs,
-	probeDeclaredStateFromCommDb,
-	probeQuietSignals,
-	stuckCommActivityMs,
-	stuckLatchTtlMs,
-} from "./stuck-escalation.js";
-import {
-	parseStuckConfirmKnobs,
-	type StuckConfirmResult,
-} from "./stuck-pane-confirm.js";
 import {
 	createLeadDetectionAckRouter,
 	createStuckRemanageRouter,
 } from "./stuck-remanage-routes.js";
-import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
 import {
 	createTerminalCommDbSync,
 	type TerminalCommDbSync,
@@ -627,35 +542,24 @@ import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { createVoiceRouter } from "./voice-routes.js";
 import {
 	buildWatchdogManifest,
+	inboxLoopStallMs,
 	WatchdogCheckTracker,
 } from "./watchdog-health.js";
 import {
-	createWatchdogJudge,
-	routeSuspiciousReport,
-} from "./watchdog-judge.js";
-import {
-	createJudgeRoutingDepsFactory,
-	createStuckConfirmRunner,
-} from "./watchdog-judge-assembly.js";
-import {
 	qaStallInboxLoopLead,
-	retiredWatchdogLaneEnabled,
 	watchdogBlockedEnabled,
 	watchdogLivenessEnabled,
-	watchdogLoopHeartbeatEnabled,
 } from "./watchdog-minimum-set.js";
 import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
 import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
-import { isExactCurrentWorkflowEnginePark } from "./workflow-engine-park-evidence.js";
 import { projectWorkflowEngineParkOutbox } from "./workflow-engine-park-projector.js";
 import { createWorkflowMenuRouter } from "./workflow-menu-routes.js";
 import {
 	grantWorkflowReworkTurn,
 	WorkflowReworkCoordinator,
 } from "./workflow-rework-coordinator.js";
-import { drainWorkflowRouteReminders } from "./workflow-route-reminder-drain.js";
 import { createWorkflowShadowRuntimeFromEnv } from "./workflow-shadow-writer.js";
 import {
 	createWorkflowShipReadyArm,
@@ -1215,15 +1119,6 @@ export interface BridgeAppOptions {
 	/** FLY-91 Round 3: Global Discord bot token for thread creation fallback. */
 	globalBotToken?: string;
 	/**
-	 * FLY-253 (Codex R2 #4): late-bound holder connecting the stuck-remanage
-	 * router's `re_arm` to the live StuckRunnerDetector. The router mounts
-	 * inside createBridgeApp (pre-listen) but the detector is only created
-	 * post-listen in startBridge — so the router gets a STABLE callback that
-	 * reads this holder at call time. `current` stays null when detection is
-	 * disabled (FLYWHEEL_STUCK_DETECT=0): re_arm still deletes the DB latch.
-	 */
-	stuckDetectorHolder?: { current: StuckRunnerDetector | null };
-	/**
 	 * FLY-623 (Codex R2 MED-5): late-bound holder connecting the event router +
 	 * idle watchdog to the live HeartbeatService reconnecting set. Both are wired
 	 * inside createBridgeApp (pre-listen) but HeartbeatService is constructed
@@ -1261,17 +1156,11 @@ export interface BridgeAppOptions {
 	 * createBridgeApp (pre-listen) but close() lives in startBridge — so /health
 	 * reads this holder at request time and close() flips it at teardown start.
 	 * Absent (standalone createBridgeApp / tests) ⇒ /health reports
-	 * shuttingDown:false (byte-compat). Mirrors stuckDetectorHolder.
+	 * shuttingDown:false (byte-compat).
 	 */
 	shutdownStateHolder?: { shuttingDown: boolean };
 	/** FLY-1393: late-bound minimum-set watchdog health manifest. */
 	watchdogHealthProvider?: { current?: () => unknown };
-	/**
-	 * FLY-253 L2: TTL for execution-scoped latches, parsed ONCE from
-	 * `FLYWHEEL_STUCK_LATCH_TTL_MS` at startup (Codex R2 #5) and injected
-	 * into the remanage router. Undefined ⇒ router default (72h).
-	 */
-	stuckLatchTtlMs?: number;
 	/**
 	 * FLY-247 inc2a: the Fleet console (founder-admin surface). When present,
 	 * `GET /` renders the console and the `/api/fleet/*` routes are mounted
@@ -1503,8 +1392,8 @@ export function createBridgeApp(
 		// shutdown begins. flywheel-bridge-wrapper.sh probes this to tell a healthy
 		// serving Bridge apart from a zombie stuck mid-close() that still answers
 		// /health 200 — the latter must yield its port, not be mistaken for a live
-		// double-start. Read at request time via the late-bound holder (mirrors
-		// stuckDetectorHolder); absent (standalone createBridgeApp) ⇒ false.
+		// double-start. Read at request time via the late-bound holder; absent
+		// (standalone createBridgeApp) ⇒ false.
 		const shuttingDown = opts?.shutdownStateHolder?.shuttingDown === true;
 		let watchdogs: unknown;
 		if (opts?.watchdogHealthProvider?.current) {
@@ -2551,13 +2440,6 @@ export function createBridgeApp(
 			projects: projects ?? [],
 			captureSessionFn: defaultCaptureSession,
 			auth: tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
-			// FLY-253: stable callback over the late-bound holder (Codex R2 #4);
-			// null holder / null detector ⇒ no-op, DB latch still deleted.
-			onRearm: (executionId) =>
-				opts?.stuckDetectorHolder?.current?.rearmExecution(executionId),
-			...(opts?.stuckLatchTtlMs !== undefined
-				? { latchTtlMs: opts.stuckLatchTtlMs }
-				: {}),
 		}),
 	);
 	app.use(
@@ -3926,48 +3808,23 @@ export async function startBridge(
 		);
 	}
 	const bridgeBootTs = Date.now();
-	const legacyDeliveryWatchdogsOn = legacyDeliveryWatchdogsEnabled(process.env);
 	const watchdogFlags = {
 		liveness: watchdogLivenessEnabled(process.env),
-		loopHeartbeat: watchdogLoopHeartbeatEnabled(process.env),
 		blocked: watchdogBlockedEnabled(process.env),
-	};
-	const retiredZombieEnabled = retiredWatchdogLaneEnabled(
-		process.env,
-		"FLYWHEEL_ZOMBIE_GATE_RESOLVE",
-	);
-	const retiringWatchdogEnabled = {
-		legacy_delivery_watchdogs: legacyDeliveryWatchdogsOn,
-		misroute_patrol: legacyDeliveryWatchdogsOn,
-		founder_reply_watchdog: legacyDeliveryWatchdogsOn,
-		lead_pending_escalation: legacyDeliveryWatchdogsOn,
-		park_watch: legacyDeliveryWatchdogsOn,
-		stuck_detect: legacyDeliveryWatchdogsOn,
-		stuck_founder_page_killswitch: legacyDeliveryWatchdogsOn,
-		zombie_gate_resolve: retiredZombieEnabled,
-		checkpoint_watchdog: false,
 	};
 	const leadWatchdogPollIntervalMs = leadWatchdogIntervalMs(process.env);
 	const watchdogTrackers = {
 		liveness: new WatchdogCheckTracker({ cadenceMs: idleWatchdogPollMs() }),
-		loopHeartbeat: new WatchdogCheckTracker({
-			cadenceMs: config.stuckCheckIntervalMs,
-		}),
 		blockedLead: new WatchdogCheckTracker({
 			cadenceMs: leadWatchdogPollIntervalMs,
-		}),
-		blockedRunner: new WatchdogCheckTracker({
-			cadenceMs: config.stuckCheckIntervalMs,
 		}),
 	};
 	// Live registration truth for /health. These bits flip only after the
 	// corresponding tracker has actually been handed to its runtime component.
 	const watchdogWiring = {
 		liveness: false,
-		loopHeartbeat: false,
 		externalDrift: true,
 		blockedLead: false,
-		blockedRunner: false,
 	};
 
 	// FLY-1082 (Task 1.1): fail-loud kind-contract validation — every alert
@@ -4548,18 +4405,6 @@ export async function startBridge(
 	const deliverySecretProvider = testDeliverySecret
 		? { getActive: () => testDeliverySecret }
 		: new FileDeliverySecretProvider({ store });
-	let deliverySecretBootError: string | undefined;
-	if (legacyDeliveryWatchdogsOn) {
-		try {
-			deliverySecretProvider.getActive();
-		} catch (error) {
-			deliverySecretBootError =
-				error instanceof Error ? error.message : String(error);
-			console.error(
-				`[lead-event-delivery] ACK cohort paused: ${deliverySecretBootError}`,
-			);
-		}
-	}
 
 	// FLY-1373: comm.db is now the one durable Lead-delivery authority. Start
 	// every per-Lead consumer before mounting the app so the nudge route and all
@@ -4618,6 +4463,7 @@ export async function startBridge(
 		leadInboxRuntime.nudge(leadId, projectName),
 	);
 	leadInboxRuntime.start();
+	const deliveryLoopWired = true;
 	const watchdogHealthProvider: { current?: () => unknown } = {
 		current: () =>
 			buildWatchdogManifest({
@@ -4625,26 +4471,16 @@ export async function startBridge(
 				flags: watchdogFlags,
 				wiring: watchdogWiring,
 				trackers: watchdogTrackers,
+				deliveryLoopWired,
 				loopStallMs: inboxLoopStallMs(process.env),
 				loopTargets: leadInboxRuntime.healthTargets(),
-				retiringEnabled: retiringWatchdogEnabled,
 			}),
 	};
 
-	const deliveryDeadLetterAlertHolder: {
-		current?: (
-			row: NonNullable<ReturnType<StateStore["getLeadEventBySeq"]>>,
-		) => Promise<boolean>;
-	} = {};
 	const leadEventDelivery = new LeadEventDeliveryCoordinator({
 		store,
 		runtimeForLead: (leadId) => registry.getRawForLead(leadId),
-		commDbPaths: () =>
-			projects.map((project) => commDbPathForProject(project.projectName)),
 		secretProvider: deliverySecretProvider,
-		onDeadLetter: async (row) =>
-			deliveryDeadLetterAlertHolder.current?.(row) ?? false,
-		enabled: legacyDeliveryWatchdogsOn,
 	});
 	registry.setDeliveryInterceptor((runtime, envelope) =>
 		leadEventDelivery.deliver(envelope, runtime),
@@ -5228,27 +5064,6 @@ export async function startBridge(
 						);
 					}
 				},
-				resolveOrphanEscalations: () => {
-					const result = resolveOrphanDetectionEscalations({
-						store,
-						projectNames: projects.map((project) => project.projectName),
-						listCommDbExecutionIds: (projectName) =>
-							openResidueCommDb(projectName, (db) =>
-								db.listSessions().map((session) => session.execution_id),
-							) ?? [],
-						hasCommDbSession: (projectName, executionId) =>
-							openResidueCommDb(
-								projectName,
-								(db) => db.getSession(executionId) !== undefined,
-							) ?? false,
-						log: (message) => console.warn(message),
-					});
-					if (result.resolvedRows > 0) {
-						console.log(
-							`[Bridge] FLY-1066 orphan escalations: targets=${result.resolvedTargets} rows=${result.resolvedRows}`,
-						);
-					}
-				},
 				reapStateStoreGhost: async (session) =>
 					(await reapStateStoreGhost(session, residueGhostDeps)) === "reaped",
 				log: (message) => console.warn(message),
@@ -5659,13 +5474,6 @@ export async function startBridge(
 		: undefined;
 	workflowEngineDispatcher?.start();
 
-	// FLY-253 (Codex R2 #4): the remanage router mounts inside createBridgeApp,
-	// but the StuckRunnerDetector is only created post-listen — give the router
-	// a stable holder it reads at re_arm time.
-	const stuckDetectorHolder: { current: StuckRunnerDetector | null } = {
-		current: null,
-	};
-
 	// FLY-516: shared shutdown flag — /health (in createBridgeApp) reads it,
 	// close() (below) flips it at teardown start.
 	const shutdownStateHolder: { shuttingDown: boolean } = {
@@ -5931,9 +5739,6 @@ export async function startBridge(
 			})(),
 			chatThreadCreator,
 			globalBotToken: config.discordBotToken,
-			// FLY-253: holder filled after the detector is created post-listen.
-			stuckDetectorHolder,
-			stuckLatchTtlMs: stuckLatchTtlMs(),
 			fleetConsole,
 			manualQaTokens: fleetConsole?.tokens ?? new ConfirmTokenStore(),
 			// FLY-516: /health reads this; close() flips it at teardown start.
@@ -5992,9 +5797,6 @@ export async function startBridge(
 					issueDisplayRefreshHolder,
 				)
 			: {
-					// FLY-637 R1 #2: no-op notifier never persists an event → false, so
-					// checkStuck does not durably dedup a wake that never happened.
-					onSessionStuck: async () => false,
 					onSessionOrphaned: async () => {},
 					onSessionStale: async () => {},
 					onSessionMonitoringLost: async () => {},
@@ -6037,8 +5839,7 @@ export async function startBridge(
 	// from config.host + the real listening port (IPv6 bracketed).
 	const loopbackBaseUrl = buildLoopbackBaseUrl(config.host, port);
 
-	// FLY-626: shared cheap quiet-signal probe for the stall watchdogs
-	// (HeartbeatService session_stuck + RunnerIdleWatchdog runner_idle_detected).
+	// FLY-626: shared cheap quiet-signal probe for RunnerIdleWatchdog.
 	// Suppresses the (token-expensive) Lead wake for a legitimately-quiet runner
 	// (self-declared park/busy, parked at a gate, recently active).
 	// `FLYWHEEL_QUIET_CLASSIFIER=0` disables it → pre-FLY-626 all-wake behavior.
@@ -6141,28 +5942,6 @@ export async function startBridge(
 		},
 	};
 
-	// FLY-1234: late-bound stuck-confirm holder — declared BEFORE the
-	// HeartbeatService construction, bound after the watchdog judge is wired
-	// (further down this boot sequence). `heartbeatService.start()` is
-	// deliberately deferred until AFTER the binding (R2 #4): several awaits sit
-	// between construction and the judge wiring, so starting earlier would open
-	// a window where a tick observes `current === null` and fail-open-emits
-	// with a spurious confirm_unbound annotation.
-	const stuckConfirmHolder: {
-		current: ((session: Session) => Promise<StuckConfirmResult>) | null;
-	} = { current: null };
-	const inboxLoopAlertHolder: {
-		current?: { alert: (payload: AlertPayload) => Promise<unknown> };
-	} = {};
-	const inboxLoopHealthChecker = new InboxLoopHealthChecker({
-		targets: leadInboxRuntime.healthTargets(),
-		alert: (payload) =>
-			(inboxLoopAlertHolder.current ?? leadAlertNotifier).alert(payload),
-		enabled: watchdogFlags.loopHeartbeat,
-		tracker: watchdogTrackers.loopHeartbeat,
-	});
-	watchdogWiring.loopHeartbeat = true;
-
 	// FLY-1374: complete-marker fail-close can persist via forceStatus when the
 	// FSM rejects an un-replayable terminal marker. That bypasses the shared
 	// applyTransition hook, so run both exact write-after effects here: converge
@@ -6200,7 +5979,7 @@ export async function startBridge(
 			},
 		},
 		48, // reviewTimeoutHours (constructor default; FLY-159/191 48h)
-		quietSignalsProbe,
+		undefined,
 		crashReaperConfig,
 		// FLY-867: stale-terminal close — checkStaleCompleted upgrades from
 		// notify-only to notify+close for terminal-status sessions whose tmux is
@@ -6294,9 +6073,6 @@ export async function startBridge(
 		// heartbeat interval); single-flight + detached inside HeartbeatService.
 		// Tick 0 = the boot pass (orphan reap + first sweep).
 		async (tick) => {
-			// FLY-1373: the sole retained Lead-delivery alarm rides the existing
-			// heartbeat cadence; it is per-Lead and deadline-aware.
-			await inboxLoopHealthChecker.check();
 			// FLY-1066: ~hourly residue convergence rides this existing tick and is
 			// deliberately independent of the worktree-autoclean kill-switch.
 			if (residueHarvester) {
@@ -6372,12 +6148,7 @@ export async function startBridge(
 				}
 			}
 		},
-		// FLY-1234: heartbeat session_stuck confirm layer (late-bound above).
-		stuckConfirmHolder,
-		legacyDeliveryWatchdogsOn,
-		watchdogTrackers.blockedRunner,
 	);
-	watchdogWiring.blockedRunner = true;
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
 	// router + idle watchdog via the late-bound holder, now that HeartbeatService
@@ -6406,7 +6177,7 @@ export async function startBridge(
 	// emitted a stage_changed event, which never transitioned the FSM off
 	// `running` (that flows through `session_completed`). Those sessions are
 	// stuck: close_runner rejects them, tmux + worktree linger, the idle watchdog
-	// false-positives session_stuck. The event-route handler fixes this going
+	// produced false stuck notices. The event-route handler fixes this going
 	// forward; this one-shot sweep unsticks the EXISTING backlog whose
 	// stage_changed already fired before the fix shipped. This sweep runs before
 	// the late-bound FLY-172 durable-alert drain; its pending-marker guard leaves
@@ -6710,42 +6481,20 @@ export async function startBridge(
 		);
 	}
 
-	// FLY-1234 (R2 #4): `heartbeatService.start()` used to live HERE — it moved
-	// below the watchdog-judge wiring + stuckConfirmHolder binding. Multiple
-	// awaits sit between this point and that wiring (transport dynamic import,
-	// milestone-config load), so starting here would open a real window where a
-	// tick observes an unbound confirm holder. seedReconnecting (above) keeps
-	// its existing before-start ordering.
+	heartbeatService.start();
 
 	// FLY-163: CleanupService removed (forum thread cleanup gone).
 
 	// FLY-62: Gate question poller
-	// FLY-208 A2: wire the black-hole inbox patrol transport. Mailbox mode
-	// only — commdb/rollback mode leaves transport undefined and the patrol is
-	// a complete no-op. There is no reusable transport instance in scope here
-	// (createLeadRuntime builds its own per-runtime instance), so build one;
-	// wiring failure is non-fatal (patrol off, question relay unaffected).
-	let misroutePatrolTransport:
-		| import("./gate-poller.js").MisroutePatrolTransport
-		| undefined;
-	let misrouteArchiveDir: string | undefined;
 	// FLY-605: persistent founder-reply thread cursor path (state dir is only
 	// reachable through the dynamically-imported getStateDir below). Unset →
 	// GatePoller falls back to an in-memory cursor.
 	let founderReplyCursorPath: string | undefined;
 	if (resolveCommBackend() === "mailbox") {
 		try {
-			const { AgentTeamTransportFactory, getStateDir } = await import(
-				"flywheel-agent-team-transport"
-			);
-			misroutePatrolTransport = AgentTeamTransportFactory.fromEnv();
-			misrouteArchiveDir = join(getStateDir(), "misroute-archive");
+			const { getStateDir } = await import("flywheel-agent-team-transport");
 			founderReplyCursorPath = join(getStateDir(), "founder-reply-cursor.json");
-		} catch (err) {
-			console.warn(
-				`[Bridge] FLY-208 misroute patrol wiring failed (patrol off, non-fatal): ${(err as Error).message}`,
-			);
-		}
+		} catch {}
 	}
 	// FLY-182 Track B / FLY-513: Discord-independent meta-alert sink. Constructed
 	// HERE (before GatePoller) so the FLY-513 global-codex drift probe can reuse
@@ -6763,11 +6512,7 @@ export async function startBridge(
 	// BridgeEventLoopWatchdog below) so general Bridge integration suites never fire
 	// a meta-alert off the test machine's real (possibly contaminated) global codex.
 	const codexHealthEnabled = !process.env.VITEST;
-	// FLY-637-ext: late-bound page-Annie sink for the lead-pending escalation. The
-	// GatePoller starts before the shared `alertSink` exists below; boot is
-	// synchronous so the holder is populated before the first ~3s poll tick. The
-	// page step is rare (only after the Lead ignores a runner's question for several
-	// backoff rounds), so an unset holder during boot can never reach it.
+	// Late-bound shared alert sink for convergence lanes.
 	const leadPendingAlertHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};
@@ -7008,722 +6753,6 @@ export async function startBridge(
 		},
 	});
 
-	// FLY-1048 (A5): shared owner-Lead resolution for suspicious reports —
-	// used by BOTH the LeadWatchdog multi-frame veto and the focused-frame
-	// unclear path (one resolver, no drift).
-	const resolveSuspiciousOwner = (
-		r: SuspiciousReport,
-	): SuspiciousOwner | null => {
-		if (r.targetKind === "lead") {
-			// State key is `<project>:<leadId>` (LeadWatchdog stateKey).
-			const idx = r.targetKey.indexOf(":");
-			if (idx <= 0 || idx === r.targetKey.length - 1) return null;
-			return {
-				projectName: r.targetKey.slice(0, idx),
-				leadId: r.targetKey.slice(idx + 1),
-			};
-		}
-		// Runner target: execId → session → label-derived owner Lead.
-		const session = store.getSession(r.targetKey);
-		if (!session?.project_name) return null;
-		const project = projects.find(
-			(p) => p.projectName === session.project_name,
-		);
-		if (!project) return null;
-		for (const lead of project.leads) {
-			try {
-				if (matchesLead(session, lead.agentId, projects)) {
-					return {
-						leadId: lead.agentId,
-						projectName: project.projectName,
-						executionId: session.execution_id,
-						issueId: session.issue_id,
-					};
-				}
-			} catch {
-				/* try the next lead */
-			}
-		}
-		return null;
-	};
-	// FLY-1048 (A5, Codex code R1 #1): the quiet issue-thread leg. Late-bound
-	// holder — alertDiscordOps is constructed further down the boot sequence;
-	// until it is wired the leg silently skips (the guardrail lead_event leg is
-	// the reliable channel; the thread note is best-effort by contract).
-	const suspiciousThreadPoster: {
-		current: ((threadId: string, content: string) => Promise<void>) | null;
-	} = { current: null };
-	const deliverSuspiciousDirect = (report: SuspiciousReport): void => {
-		void deliverSuspiciousReport(
-			{
-				store,
-				runtimeRegistry: registry,
-				resolveOwner: resolveSuspiciousOwner,
-				// Pre-call guard (plan A5 / Codex design R1 #3): only post when an
-				// issue thread is actually bound AND the poster is wired — never
-				// call the thread leg with an undefined thread. Reason only, no
-				// mention, never the pane (formatSuspiciousThreadNote).
-				emitThreadNote: async (r, owner) => {
-					const poster = suspiciousThreadPoster.current;
-					if (!poster || !owner.issueId) return;
-					const lead = projects
-						.find((p) => p.projectName === owner.projectName)
-						?.leads.find((l) => l.agentId === owner.leadId);
-					const threadId = resolveChatThreadId(
-						store,
-						owner.issueId,
-						lead?.chatChannel,
-					);
-					if (!threadId) return;
-					await poster(threadId, formatSuspiciousThreadNote(r));
-				},
-			},
-			report,
-		).catch((err) =>
-			console.warn(
-				`[detection-suspicious] delivery failed: ${(err as Error).message}`,
-			),
-		);
-	};
-
-	// FLY-1048 PR-B (B3): the LLM judge sits in FRONT of the fail-suspicious
-	// deliverer. Env checked per call (live flip); OFF or <2 frames = PR-A
-	// behavior byte-for-byte. Accepted a/b verdicts suppress the report with a
-	// durable session_events audit; c_stuck/suspicious/null still deliver
-	// (never silent). Judge runs codex (subscription — zero Claude quota).
-	// FLY-1048 PR-C (C4): the unified-flow notify leg — every detection source
-	// (gap records / focused-frame case-c / judge-confirmed c / FN4) funnels
-	// through here. CLEARING targets are muted (C5), and notifyLeadFirst dedups
-	// once-per-episode on the durable detection_escalations row. FLY-1243: the
-	// FLYWHEEL_DETECTION_ESCALATION gate is retired (固化 default-on) — the unified
-	// flow always runs.
-	const resolveDetectionOwner = (
-		input: DetectionEscalationInput,
-	): EscalationOwner | null => {
-		for (const project of projects) {
-			if (project.projectName !== input.projectName) continue;
-			for (const lead of project.leads) {
-				if (input.targetKey === `${project.projectName}:${lead.agentId}`) {
-					return {
-						leadId: lead.agentId,
-						projectName: project.projectName,
-						executionId: input.executionId,
-						issueId: input.issueId,
-					};
-				}
-			}
-		}
-		const session = store.getSession(input.targetKey);
-		if (!session?.project_name) return null;
-		const project = projects.find(
-			(p) => p.projectName === session.project_name,
-		);
-		if (!project) return null;
-		for (const lead of project.leads) {
-			try {
-				if (matchesLead(session, lead.agentId, projects)) {
-					return {
-						leadId: lead.agentId,
-						projectName: project.projectName,
-						executionId: session.execution_id,
-						issueId: session.issue_id,
-					};
-				}
-			} catch {
-				/* try the next lead */
-			}
-		}
-		return null;
-	};
-	const detectionLeadFirstDeps = {
-		store,
-		runtimeRegistry: registry,
-		resolveOwner: resolveDetectionOwner,
-		// Quiet issue-thread leg with the A5 pre-call guard (Codex design R1 #3):
-		// no bound thread → skip this leg silently. The guardrail lead_event leg
-		// remains the reliable channel.
-		emitThreadNote: async (
-			r: DetectionEscalationInput,
-			owner: EscalationOwner,
-		) => {
-			const poster = suspiciousThreadPoster.current;
-			if (!poster) return;
-			const lead = projects
-				.find((pr) => pr.projectName === owner.projectName)
-				?.leads.find((l) => l.agentId === owner.leadId);
-			const threadId = resolveChatThreadId(store, r.issueId, lead?.chatChannel);
-			if (!threadId) return;
-			await poster(threadId, formatEscalationLeadNote(r));
-		},
-	};
-	const notifyDetectionEpisodeWithOutcome = async (
-		input: DetectionEscalationInput,
-	) => {
-		// Preserve the pre-upsert CLEARING guard used by the legacy path. The
-		// inner helper repeats the check to close the race between this read and
-		// its atomic claim.
-		if (store.hasClearingDetectionEscalationForTarget(input.targetKey)) {
-			return "target_clearing" as const;
-		}
-		return notifyLeadFirst(detectionLeadFirstDeps, input);
-	};
-	const notifyDetectionEpisode = (
-		input: DetectionEscalationInput,
-	): Promise<void> => notifyDetectionEpisodeWithOutcome(input).then(() => {});
-
-	const watchdogJudge = createWatchdogJudge({
-		repoRoot: projects[0]?.projectRoot ?? process.cwd(),
-	});
-	// FLY-1234 (R1 #6 / R2 #2): shared judge-routing assembly — extracted to
-	// watchdog-judge-assembly.ts so the production composition is testable
-	// (Codex code R1 #3). deliver / onConfirmedStuck / onDecision /
-	// judgeCacheKey / errorSignatureKinds are the per-caller seams; the
-	// unified-escalation side effect (notifyDetectionEpisode) is ONLY ever the
-	// suspicious pipeline's injected onConfirmedStuck — the heartbeat confirm
-	// layer never notifies (single emission right, INV-4).
-	const buildJudgeRoutingDeps = createJudgeRoutingDepsFactory({
-		store,
-		judge: watchdogJudge,
-		judgeEnabled: () => process.env.FLYWHEEL_WATCHDOG_JUDGE === "1",
-		resolveOwner: resolveSuspiciousOwner,
-	});
-
-	const deliverSuspicious = (report: SuspiciousReport): void => {
-		void routeSuspiciousReport(
-			buildJudgeRoutingDeps({
-				deliver: deliverSuspiciousDirect,
-				// FLY-1048 PR-C (C4): a judge-confirmed case-c enters the UNIFIED
-				// escalation flow (Lead-first + ~30min founder page). Runner targets
-				// only — lead-keyed targets have no session/issue to escalate into
-				// (the A5 delivery still reaches the owner Lead either way).
-				// Keyed by the OLD detector's live episode fingerprint when it is
-				// tracking this target, so the C4a mutual exclusion matches; an
-				// already-escalated old episode owns the flow and is not double-fed.
-				// FLY-1234 (INV-4): this side effect belongs ONLY to the suspicious
-				// pipeline — the heartbeat confirm layer's routing never notifies.
-				onConfirmedStuck: (r, verdict) => {
-					if (r.targetKind === "runner") {
-						const oldEpisode = stuckDetectorHolder.current?.episodeFor(
-							r.targetKey,
-						);
-						const session = store.getSession(r.targetKey);
-						if (session && !oldEpisode?.escalated) {
-							void notifyDetectionEpisode(
-								buildCaseCEscalationInput(
-									session,
-									oldEpisode?.fingerprint ?? r.episodeFingerprint,
-									{
-										// Codex code R1 #7: the unified reason travels to the
-										// (founder-visible) issue thread — free-text rationale is
-										// derived from RAW pane frames and may quote them. Closed
-										// enum only; the rationale stays on the Lead-face A5
-										// delivery + the durable judge audit event.
-										reason: `LLM judge 确认 case-c(attribution=${verdict.attribution})`,
-										firstDetectedAtMs:
-											oldEpisode?.firstStagnantAt ?? Date.now(),
-									},
-								),
-							).catch((err) =>
-								console.warn(
-									`[detection-escalation] judge-confirmed notify failed: ${(err as Error).message}`,
-								),
-							);
-						}
-					}
-				},
-			}),
-			report,
-		).catch((err) =>
-			console.warn(
-				`[watchdog-judge] routing failed: ${(err as Error).message}`,
-			),
-		);
-	};
-
-	// FLY-1234 (T3): bind the heartbeat stuck-confirm layer, now that the judge
-	// exists. One boot-time knob parse WITH the warn sink (a cross-field
-	// contradiction logs once here); the per-call parses inside stay quiet.
-	parseStuckConfirmKnobs(process.env, {
-		warn: (m) => console.warn(`[stuck-confirm] ${m}`),
-	});
-	stuckConfirmHolder.current = createStuckConfirmRunner({
-		buildRoutingDeps: buildJudgeRoutingDeps,
-		// R1 #7 mapping: lookup gone → "gone" (target unresolvable — the
-		// annotation never claims process death), lookup error →
-		// "indeterminate"; found → the #576 four-state process probe.
-		probeLiveness: async (s) => {
-			if (!s.project_name) return "gone";
-			const lookup = lookupTmuxTarget(s.execution_id, s.project_name);
-			if (lookup.kind === "gone") return "gone";
-			if (lookup.kind === "error") return "indeterminate";
-			return probeRunnerProcessLiveness(lookup.target.tmuxWindow);
-		},
-		captureFrame: async (s) => {
-			if (!s.project_name) return null;
-			const res = await defaultCaptureSession(
-				s.execution_id,
-				s.project_name,
-				200,
-			);
-			return "output" in res
-				? { text: res.output, capturedAtMs: Date.now() }
-				: null;
-		},
-		commCorroborationMs: () => stuckCommActivityMs(process.env),
-		logger: (m) => console.log(`[stuck-confirm] ${m}`),
-	});
-
-	// FLY-1234 (R2 #4): start the heartbeat AFTER the confirm holder is bound —
-	// no tick can ever observe the unbound-holder transient. Moved from right
-	// after seedReconnecting() (see the marker comment there).
-	heartbeatService.start();
-
-	// FLY-1048 (A6): retired gap/state scan implementation retained until Batch 2.
-	// FLY-1393 hard-disconnects its scheduler through legacyDeliveryWatchdogsOn;
-	// the fake FLYWHEEL_DETECTION_GAP_SCAN switch has been removed.
-	const gapSuspicionRegistry = createSuspicionRegistry();
-
-	// FLY-1048 (A7): retired focused frames for gap-scan suspects. Every successful
-	// capture ALSO feeds the existing stuck-runner detector (checkSession with
-	// a precaptured outcome) — its hard gates + dispositions stay the single
-	// escalation authority, it just accumulates episode time at the focused
-	// cadence (~4min). Unclear windows go fail-suspicious (A5). Batch 1 keeps this
-	// implementation inert; Batch 2 deletes it after FLY-1392 plus observation.
-	const focusedFrames = createFocusedFrameScheduler({
-		capture: async (t) => {
-			const res = await defaultCaptureSession(t.targetKey, t.projectName, 200);
-			return "output" in res ? res.output : null;
-		},
-		onFrame: async (t, frameText) => {
-			const session = store.getSession(t.targetKey);
-			if (!session) return;
-			await stuckDetectorHolder.current?.checkSession(session, {
-				ok: true,
-				output: frameText,
-			});
-		},
-		onVerdict: (v) => {
-			if (v.verdict === "unclear") {
-				deliverSuspicious({
-					targetKind: "runner",
-					targetKey: v.target.targetKey,
-					reason:
-						"focused_frames_unclear: multi-frame window is neither flowing nor a clean silence/error loop — mechanical layer cannot conclude",
-					paneTail: buildPaneTail(v.latestFrame),
-					episodeFingerprint: hashPane(liveRegion(v.latestFrame)),
-					frames: v.window,
-				});
-				return;
-			}
-			// FLY-1048 PR-C (C4): a mechanical c_candidate enters the unified flow
-			// when the escalation env is ON (unset = observe-only log, PR-A
-			// behavior). Keyed by the OLD detector's live episode fingerprint when
-			// available (A7's onFrame feeds it the SAME frame just before this
-			// verdict) so the C4a mutual exclusion matches; if the old flow
-			// already escalated this episode it owns the notification.
-			if (v.verdict === "c_candidate") {
-				const oldEpisode = stuckDetectorHolder.current?.episodeFor(
-					v.target.targetKey,
-				);
-				const session = store.getSession(v.target.targetKey);
-				if (session && !oldEpisode?.escalated) {
-					const reason = v.deltas.repeatedErrorSig
-						? `多帧观察窗确认 case-c:同一错误签名(${v.deltas.repeatedErrorSig.kind})跨帧重现`
-						: "多帧观察窗确认 case-c:pane 静默且无 token 流";
-					void notifyDetectionEpisode(
-						buildCaseCEscalationInput(
-							session,
-							oldEpisode?.fingerprint ??
-								fallbackCaseCFingerprint(v.deltas, v.latestFrame),
-							{
-								reason,
-								firstDetectedAtMs: oldEpisode?.firstStagnantAt ?? Date.now(),
-							},
-						),
-					).catch((err) =>
-						console.warn(
-							`[detection-escalation] case-c notify failed: ${(err as Error).message}`,
-						),
-					);
-				}
-			}
-			console.log(
-				`[focused-frames] ${v.target.targetKey.slice(0, 8)} verdict=${v.verdict} (span=${Math.round(v.deltas.spanMs / 1000)}s)`,
-			);
-		},
-		intervalMs: (() => {
-			const n = Number.parseInt(
-				process.env.FLYWHEEL_FRAME_INTERVAL_MS ?? "",
-				10,
-			);
-			return Number.isFinite(n) && n > 0 ? n : undefined; // default 4min
-		})(),
-		capturesPerTick: (() => {
-			const n = Number.parseInt(
-				process.env.FLYWHEEL_FRAME_CAPTURES_PER_TICK ?? "",
-				10,
-			);
-			return Number.isFinite(n) && n > 0 ? n : undefined; // default 2
-		})(),
-	});
-	const gapScanTick = async (): Promise<void> => {
-		// FLY-1243: FLYWHEEL_DETECTION_GAP_SCAN retired (固化 default-on) — the
-		// zero-token gap/state scan always runs.
-		const nowMs = Date.now();
-		const thresholds = defaultGapThresholds(process.env);
-		// FLY-1282 Part B (Codex R10 #2): ONE per-tick V2 snapshot, threaded
-		// into the reader AND both pure judgement functions — never mixed.
-		const deliveryUnconsumedV2 = true;
-		const records: SuspicionRecord[] = [];
-		const byProject = new Map<string, Session[]>();
-		for (const s of store.getActiveSessions()) {
-			const list = byProject.get(s.project_name) ?? [];
-			list.push(s);
-			byProject.set(s.project_name, list);
-		}
-		// Codex R4 #1/#2 (supersedes the R3 project-level set): the keys whose
-		// judgement COMPLETELY ran this sweep — the only keys whose absence from
-		// activeConditionKeys is durable "condition cleared" evidence. Skipped
-		// projects, degraded signals, and non-active keep-alive sessions
-		// contribute nothing here, so their episodes are conservatively held.
-		const evaluatedConditionKeys = new Set<string>();
-		for (const [projectName, projectSessions] of byProject) {
-			const reader = openGapReader(defaultGetCommDbPath(projectName));
-			// Fail-closed: unreadable/missing comm.db → skip this project's
-			// comm-derived judgements this round.
-			if (!reader) continue;
-			try {
-				for (const session of projectSessions) {
-					const comm = reader.evidenceFor(session.execution_id, null, nowMs, {
-						deliveryUnconsumedV2,
-					});
-					let founderNotified: boolean | null = null;
-					try {
-						founderNotified = store
-							.getEventsByExecution(session.execution_id)
-							.some(
-								(e) =>
-									e.event_type === "founder_thread_notified" ||
-									e.event_id?.startsWith("founder-thread-notify-"),
-							);
-					} catch {
-						founderNotified = null; // unreadable → gap1 degrades (fail-closed)
-					}
-					const rawActivity = session.last_activity_at;
-					const parsedActivity = rawActivity ? Date.parse(rawActivity) : NaN;
-					const lastActivityAtMs = Number.isFinite(parsedActivity)
-						? parsedActivity
-						: rawActivity
-							? parseSqliteUtcMs(rawActivity)
-							: null;
-					const gapInput = {
-						session: {
-							executionId: session.execution_id,
-							projectName,
-							status: session.status,
-							lastActivityAtMs,
-						},
-						comm,
-						founderNotified,
-						nowMs,
-						thresholds,
-						deliveryUnconsumedV2,
-					};
-					records.push(...evaluateGapSuspicion(gapInput));
-					for (const kind of evaluatedGapConditions(gapInput)) {
-						evaluatedConditionKeys.add(
-							`${GAP_ESCALATION_KINDS[kind]}|${session.execution_id}`,
-						);
-					}
-				}
-			} finally {
-				reader.close();
-			}
-		}
-		gapSuspicionRegistry.sweep(records, nowMs);
-		if (records.length > 0) {
-			console.log(
-				`[gap-scan] ${records.length} suspicion(s): ${records
-					.map((r) => `${r.kind}:${r.targetKey.slice(0, 8)}`)
-					.join(", ")}`,
-			);
-		}
-		// FLY-1048 PR-C (C4): the gap notify leg — 漏①/漏②/consumed-ack enter the
-		// unified flow when the escalation env is ON (unset = observe-only, the
-		// PR-A contract). The registry preserves firstSeenMs while a condition
-		// persists, so the derived episode fingerprint is stable and
-		// notifyLeadFirst dedups to once per episode. FLY-1243: unconditional now
-		// (FLYWHEEL_DETECTION_ESCALATION retired, 固化 default-on).
-		{
-			const activeConditionKeys = new Set<string>();
-			for (const record of gapSuspicionRegistry.snapshot()) {
-				if (record.kind !== "pane_progress_suspect") {
-					activeConditionKeys.add(
-						`${GAP_ESCALATION_KINDS[record.kind]}|${record.targetKey}`,
-					);
-				}
-				const session = store.getSession(record.targetKey);
-				if (!session) continue;
-				const input = buildGapEscalationInput(record, session);
-				if (!input) continue; // pane_progress_suspect only feeds A7
-				try {
-					await notifyDetectionEpisode(input);
-				} catch (err) {
-					console.warn(
-						`[detection-escalation] gap notify failed for ${record.kind}:${record.targetKey.slice(0, 8)}: ${(err as Error).message}`,
-					);
-				}
-			}
-			// A gap condition ABSENT from this sweep has provably cleared — close
-			// its episode so the ~30min grace can never page the founder about an
-			// already-resolved matter (and a genuine recurrence can revive).
-			try {
-				resolveClearedGapEpisodes(
-					{ store },
-					activeConditionKeys,
-					evaluatedConditionKeys,
-					nowMs,
-				);
-			} catch (err) {
-				console.warn(
-					`[detection-escalation] gap clear pass failed: ${(err as Error).message}`,
-				);
-			}
-		}
-		// FLY-1048 (A7): focused frames for the progress suspects surfaced above.
-		await focusedFrames.tick(
-			gapSuspicionRegistry
-				.snapshot()
-				.filter((r) => r.kind === "pane_progress_suspect")
-				.map((r) => ({ targetKey: r.targetKey, projectName: r.projectName })),
-		);
-	};
-
-	// FLY-1048 (PR-C, C3-w): unified detection-escalation reconcile — the
-	// ~30min Lead-grace sweep + fleet guard (PRD §4.3). Env checked INSIDE the
-	// FLY-1243: the reconcile is固化 default-on (no FLYWHEEL_DETECTION_ESCALATION flip; runs every
-	// restart; unset = the tick returns immediately (byte-compat). All timing
-	// and dedup state lives in the durable detection_escalations rows, so a
-	// missed tick can only delay an escalation, never reset it.
-	//
-	// Done/gone outcomes for the recovery auto-RESOLVE. approved_to_ship is
-	// excluded (the Runner is still alive to ship) and awaiting_review is
-	// deliberately NOT terminal — a parked runner still needs its pane, so
-	// M1-style episodes on it stay live.
-	const detectionTerminalStatuses = new Set<string>(
-		OUTCOME_STATUSES.filter((s) => s !== "approved_to_ship"),
-	);
-	const receiptDetectionKinds = [
-		"wake_failed",
-		"receipt_unprocessed",
-		"founder_decision_dropped",
-	] as const;
-	const receiptDetectionKindSet = new Set<string>(receiptDetectionKinds);
-	const detectionGraceByProject = await loadDetectionGraceByProject(projects);
-	const detectionPageFounder = createFounderPager({
-		store,
-		resolveTarget: createReceiptAwareTargetResolver({ store, projects }),
-		discordOwnerUserId: config.discordOwnerUserId,
-		discordBotToken: config.discordBotToken,
-		// NEVER silent (plan C3): an unaddressable/undeliverable founder page
-		// rides the FLY-915 ticket lane. The per-episode deterministic eventId
-		// claims-dedups across reconcile retries (no per-tick ticket spam); the
-		// row itself stays LEAD_NOTIFIED so the page keeps retrying.
-		onUndeliverable: async (row, reason) => {
-			const sink = leadPendingAlertHolder.current;
-			if (!sink) return;
-			const session = store.getSession(row.target_key);
-			const receiptProject = projects.find((project) =>
-				project.leads.some(
-					(lead) => row.target_key === `${project.projectName}:${lead.agentId}`,
-				),
-			);
-			await sink.alert({
-				leadId: row.owner_lead_id ?? "unassigned",
-				projectName:
-					session?.project_name ?? receiptProject?.projectName ?? "unknown",
-				eventId: `detection-page-undeliverable:${row.target_key}:${row.kind}:${row.episode_fingerprint}`,
-				eventType: "detection_page_undeliverable",
-				title: "Detection founder-page undeliverable",
-				body:
-					`无法把 detection 升级页投递进 issue thread(kind=${row.kind}, ` +
-					`target=${row.target_key}, reason=${reason})。行保持 LEAD_NOTIFIED,` +
-					`reconcile 会继续重试;请排查 thread 绑定 / bot token / 路由。`,
-				severity: "warning",
-			});
-		},
-	});
-	const detectionFleetSink = createFleetSink({
-		// Codex code R1 #3: issue_id is a Linear UUID — the project must come
-		// from the target's session row or the aggregate routes to unknown-lead.
-		resolveProject: (row) => {
-			const sessionProject = store.getSession(row.target_key)?.project_name;
-			if (sessionProject) return sessionProject;
-			return (
-				projects.find((project) =>
-					project.leads.some(
-						(lead) =>
-							row.target_key === `${project.projectName}:${lead.agentId}`,
-					),
-				)?.projectName ?? null
-			);
-		},
-		alertSink: {
-			// Throwing (not swallowing) keeps the C3 contract: an unsurfaced
-			// fleet aggregate leaves every row LEAD_NOTIFIED for the next pass.
-			// `skipped: "duplicate"` counts as SUCCESS — the claims table says the
-			// aggregate already surfaced, and treating it as failure would hold
-			// the group LEAD_NOTIFIED forever.
-			alert: async (p) => {
-				const sink = leadPendingAlertHolder.current;
-				if (!sink) throw new Error("alert sink not wired yet (holder empty)");
-				const result = await sink.alert(p);
-				if (result.skipped && result.skipped !== "duplicate") {
-					throw new Error(`fleet aggregate skipped: ${result.skipped}`);
-				}
-				if (result.deadLettered) {
-					throw new Error("fleet aggregate dead-lettered");
-				}
-				return result;
-			},
-		},
-	});
-	const detectionReconcileTick = async (): Promise<void> => {
-		// FLY-1243: FLYWHEEL_DETECTION_ESCALATION retired (固化 default-on) — the
-		// ~30min Lead-grace reconcile + fleet guard always runs.
-		const graceEnv = Number.parseInt(
-			process.env.FLYWHEEL_DETECTION_LEAD_GRACE_MS ?? "",
-			10,
-		);
-		const thresholdEnv = Number.parseInt(
-			process.env.FLYWHEEL_DETECTION_FLEET_THRESHOLD ?? "",
-			10,
-		);
-		const clearingTtlEnv = Number.parseInt(
-			process.env.FLYWHEEL_CLEARING_TTL_MS ?? "",
-			10,
-		);
-		// One assembled pass (detection-reconcile-tick.ts, C4+C5): clearing-TTL
-		// rebound → recovery auto-RESOLVE → FN4 fire+clear → the ~30min grace
-		// escalation (founder page / fleet lane).
-		await runDetectionReconcileTick({
-			store,
-			pageFounder: detectionPageFounder,
-			fleetSink: detectionFleetSink,
-			notify: notifyDetectionEpisode,
-			recoveryProbe: (targetKey) => {
-				const session = store.getSession(targetKey);
-				if (!session) return null; // lead-keyed / unknown — never auto-resolve
-				const rawActivity = session.last_activity_at;
-				const parsed = rawActivity ? Date.parse(rawActivity) : NaN;
-				return {
-					terminal: detectionTerminalStatuses.has(session.status),
-					lastActivityAtMs: Number.isFinite(parsed)
-						? parsed
-						: rawActivity
-							? parseSqliteUtcMs(rawActivity)
-							: null,
-				};
-			},
-			// Progress refutes "stuck" only — an unanswered ask / unconsumed
-			// delivery / unreported park stays live on a working runner (漏②'s
-			// typical shape). Terminal still resolves every kind.
-			progressResolvableKinds: new Set([CASE_C_ESCALATION_KIND]),
-			preserveOnTerminal: (row) => row.kind.startsWith(PARK_KIND_PREFIX),
-			pagePolicy: (row) =>
-				LEAD_ONLY_PARK_KINDS.has(row.kind)
-					? "lead_only"
-					: row.kind.startsWith(PARK_KIND_PREFIX)
-						? "page_no_fleet"
-						: "page",
-			graceMs: Number.isFinite(graceEnv) && graceEnv > 0 ? graceEnv : undefined,
-			// Per-project override (detection.lead_grace_ms in the project's
-			// CANONICAL .flywheel/config.yaml — loaded once at boot).
-			graceMsFor: (row) => {
-				if (row.kind.startsWith(PARK_KIND_PREFIX)) {
-					return parkFounderGraceMs();
-				}
-				const session = store.getSession(row.target_key);
-				return session
-					? detectionGraceByProject.get(session.project_name)
-					: undefined;
-			},
-			fleetThreshold:
-				Number.isFinite(thresholdEnv) && thresholdEnv > 0
-					? thresholdEnv
-					: undefined,
-			clearingTtlMs:
-				Number.isFinite(clearingTtlEnv) && clearingTtlEnv > 0
-					? clearingTtlEnv
-					: undefined,
-			kindFilter: { excludeKinds: receiptDetectionKinds },
-			maintainClearing: false,
-			// FN4 undelivered-age rides the same knob family as consumed-ack
-			// (FLYWHEEL_GAP_UNCONSUMED_MS, default 30min) — one semantic, one knob.
-			fn4OverdueMs: defaultGapThresholds(process.env).unconsumedMs,
-		});
-	};
-	const receiptDetectionReconcileTick = async (): Promise<void> => {
-		const graceEnv = Number.parseInt(
-			process.env.FLYWHEEL_DETECTION_LEAD_GRACE_MS ?? "",
-			10,
-		);
-		const thresholdEnv = Number.parseInt(
-			process.env.FLYWHEEL_DETECTION_FLEET_THRESHOLD ?? "",
-			10,
-		);
-		await reconcileDetectionEscalations({
-			store,
-			pageFounder: detectionPageFounder,
-			fleetSink: detectionFleetSink,
-			kindFilter: { includeKinds: receiptDetectionKinds },
-			maintainClearing: false,
-			graceMs: Number.isFinite(graceEnv) && graceEnv > 0 ? graceEnv : undefined,
-			graceMsFor: (row) => {
-				const project = projects.find((candidate) =>
-					candidate.leads.some(
-						(lead) =>
-							row.target_key === `${candidate.projectName}:${lead.agentId}`,
-					),
-				);
-				return project
-					? detectionGraceByProject.get(project.projectName)
-					: undefined;
-			},
-			fleetThreshold:
-				Number.isFinite(thresholdEnv) && thresholdEnv > 0
-					? thresholdEnv
-					: undefined,
-		});
-	};
-	const detectionReconcileCohortsTick = (): Promise<void> => {
-		const clearingTtlEnv = Number.parseInt(
-			process.env.FLYWHEEL_CLEARING_TTL_MS ?? "",
-			10,
-		);
-		return runDetectionReconcileCohorts({
-			legacyEnabled: legacyDeliveryWatchdogsOn,
-			receiptEnabled: receiptFoundationEnabled(),
-			rebound: () => {
-				reboundExpiredDetectionClearings({
-					store,
-					nowMs: Date.now(),
-					clearingTtlMs:
-						Number.isFinite(clearingTtlEnv) && clearingTtlEnv > 0
-							? clearingTtlEnv
-							: undefined,
-				});
-			},
-			legacyPass: detectionReconcileTick,
-			receiptPass: receiptDetectionReconcileTick,
-		});
-	};
-	const parkWatchTick = (): Promise<void> =>
-		runParkWatch({
-			store,
-			commDbPathForProject: defaultGetCommDbPath,
-			notify: notifyDetectionEpisode,
-		});
 	const issueGateSupersedeTick = (): void => {
 		for (const project of projects) {
 			let db: CommDB | undefined;
@@ -7844,373 +6873,12 @@ export async function startBridge(
 			landOperationSweepRunning = false;
 		}
 	};
-	const receiptEnvMs = (name: string, fallback: number): number => {
-		const value = Number.parseInt(process.env[name] ?? "", 10);
-		return Number.isSafeInteger(value) && value > 0 ? value : fallback;
-	};
-	const receiptEnvMinutes = (name: string, fallback: number): number => {
-		const value = Number.parseInt(process.env[name] ?? "", 10);
-		return Number.isSafeInteger(value) && value > 0 ? value * 60_000 : fallback;
-	};
-	let receiptNudgeAuditSeq = 0;
 	const terminalReceiptSettlement = new TerminalReceiptSettlementProjector({
 		store,
 		projectNames: projects.map((project) => project.projectName),
 		commDbPathForProject,
 	});
 	terminalReceiptSettlementHolder.current = terminalReceiptSettlement;
-	const isDurablyParkedForWake = (
-		projectName: string,
-		executionId: string,
-		existingDb?: CommDB,
-	): boolean => {
-		const session = store.getSession(executionId);
-		if (
-			session?.project_name === projectName &&
-			session.status === "ship_parked"
-		) {
-			return true;
-		}
-		const db =
-			existingDb ?? new CommDB(commDbPathForProject(projectName), false);
-		try {
-			return isExactCurrentWorkflowEnginePark(
-				store,
-				db,
-				projectName,
-				executionId,
-			);
-		} finally {
-			if (!existingDb) db.close();
-		}
-	};
-	const receiptWakePatrol = new RunnerReceiptPatrol({
-		projectNames: projects.map((project) => project.projectName),
-		commDbPathForProject,
-		receiptFoundationEnabled: () => receiptFoundationEnabled(),
-		resolveTargetState: ({ projectName, executionId }) => {
-			const session = store.getSession(executionId);
-			if (!session || session.project_name !== projectName) return "missing";
-			return isWakeTerminalStatus(session.status) ? "terminal" : "live";
-		},
-		terminalLifecycleIdFor: ({ projectName, executionId }) => {
-			const session = store.getSession(executionId);
-			if (
-				!session ||
-				session.project_name !== projectName ||
-				!isWakeTerminalStatus(session.status)
-			) {
-				return undefined;
-			}
-			return (
-				session.terminal_lifecycle_id ??
-				store.ensureTerminalLifecycleId(
-					executionId,
-					session.status,
-					session.lifecycle_revision ?? 0,
-				)
-			);
-		},
-		isDurablyParked: ({ projectName, executionId }) => {
-			return isDurablyParkedForWake(projectName, executionId);
-		},
-		auditWakeDisposition: ({ projectName, executionId, messageId, reason }) => {
-			const session = store.getSession(executionId);
-			store.insertEvent({
-				event_id: `wake-disposed-${executionId}-${messageId}`,
-				execution_id: executionId,
-				issue_id: session?.issue_id ?? "unknown",
-				project_name: projectName,
-				event_type: "wake_disposed",
-				source: "bridge.runner-receipt-patrol",
-				payload: { messageId, reason },
-			});
-		},
-		t1Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T1_MS", 90_000),
-		t2Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T2_MS", 5 * 60_000),
-		t3Ms: receiptEnvMs("FLYWHEEL_RECEIPT_WAKE_T3_MS", 12 * 60_000),
-		pushWake: async ({ db, projectName, wake, verified }) => {
-			let envelope: {
-				content: string;
-				metadata?: Record<string, unknown>;
-			};
-			try {
-				envelope = JSON.parse(wake.envelope_json ?? "") as typeof envelope;
-			} catch {
-				return { ok: false, error: "invalid frozen wake envelope" };
-			}
-			const session = db.getSession(wake.execution_id);
-			if (
-				wake.purpose === "message_traffic" &&
-				db.getEffectiveDeclaredState(wake.execution_id, Date.now())?.kind !==
-					"parked" &&
-				!isDurablyParkedForWake(projectName, wake.execution_id, db)
-			) {
-				return { ok: false, skippedReason: "durable_park_fence" };
-			}
-			return wakeRunnerMailbox({
-				db,
-				execId: wake.execution_id,
-				fromAgent: session?.lead_id ?? "flywheel-eng-lead",
-				content: envelope.content,
-				metadata: envelope.metadata,
-				...(session?.vendor ? { backend: session.vendor } : {}),
-				verified,
-			});
-		},
-		nudgeWakePointer: async ({ projectName, wake, causalQuestionId }) => {
-			const session = store.getSession(wake.execution_id);
-			let leadId: string | undefined;
-			try {
-				const comm = new CommDB(commDbPathForProject(projectName), false);
-				try {
-					leadId = comm.getSession(wake.execution_id)?.lead_id ?? undefined;
-				} finally {
-					comm.close();
-				}
-			} catch {
-				return { nudged: false, error: "commdb_binding_unavailable" };
-			}
-			if (!session || !leadId) {
-				return { nudged: false, error: "live_binding_missing" };
-			}
-			const capture = await defaultCaptureSession(
-				wake.execution_id,
-				projectName,
-				100,
-			);
-			if (isCaptureError(capture)) {
-				return { nudged: false, error: `capture_${capture.error}` };
-			}
-			const outcome = await attemptRunnerRecoveryNudge(
-				{
-					mode: "wake_pointer",
-					actor: "receipt-patrol",
-					executionId: wake.execution_id,
-					leadId,
-					fingerprint: fingerprintOutput(capture.output),
-					...(causalQuestionId ? { causalQuestionId } : {}),
-				},
-				{
-					store,
-					projects,
-					captureSessionFn: defaultCaptureSession,
-					hasPendingGate: hasPendingGateFromCommDb,
-					hasCausalResponse: (executionId, currentProject, questionId) => {
-						const comm = new CommDB(
-							commDbPathForProject(currentProject),
-							false,
-						);
-						try {
-							return Boolean(
-								comm.getSession(executionId) && comm.getResponse(questionId),
-							);
-						} finally {
-							comm.close();
-						}
-					},
-					isWakeBindingLive: (executionId, currentProject) => {
-						const comm = new CommDB(
-							commDbPathForProject(currentProject),
-							false,
-						);
-						try {
-							return Boolean(
-								comm.getSession(executionId) &&
-									store.getSession(executionId)?.project_name ===
-										currentProject,
-							);
-						} finally {
-							comm.close();
-						}
-					},
-					isDeclaredParked: (executionId, currentProject) => {
-						const comm = new CommDB(
-							commDbPathForProject(currentProject),
-							false,
-						);
-						try {
-							return (
-								comm.getEffectiveDeclaredState(executionId, Date.now())
-									?.kind === "parked"
-							);
-						} finally {
-							comm.close();
-						}
-					},
-					isEngineParked: (executionId, currentProject) => {
-						const comm = new CommDB(
-							commDbPathForProject(currentProject),
-							false,
-						);
-						try {
-							return isExactCurrentWorkflowEnginePark(
-								store,
-								comm,
-								currentProject,
-								executionId,
-							);
-						} finally {
-							comm.close();
-						}
-					},
-					sendKeys: sendKeysToWindow,
-					getTmuxTarget: getTmuxTargetFromCommDb,
-					now: () => Date.now(),
-					nextAuditSeq: () => ++receiptNudgeAuditSeq,
-				},
-			);
-			return {
-				nudged: outcome.body.nudged,
-				...(outcome.body.error ? { error: outcome.body.error } : {}),
-			};
-		},
-		notifyWakeFailure: async ({
-			projectName,
-			wake,
-			reason,
-			firstDetectedAtMs,
-			episodeFingerprint,
-			identityKind,
-		}) => {
-			const session = store.getSession(wake.execution_id);
-			if (!session) return false;
-			const input: DetectionEscalationInput = {
-				targetKey: wake.execution_id,
-				kind: "wake_failed",
-				episodeFingerprint: wakeFailureNotificationFingerprint({
-					executionId: wake.execution_id,
-					messageId: wake.message_id,
-					firstDetectedAtMs,
-					identityKind,
-					explicitFingerprint: episodeFingerprint,
-				}),
-				executionId: wake.execution_id,
-				issueId: session.issue_id,
-				issueIdentifier: session.issue_identifier,
-				projectName,
-				firstDetectedAtMs,
-				reason: `runner wake 未取得 started 收据(${reason})`,
-				nextStep: "Lead 检查 runner mailbox/pane,必要时人工恢复",
-			};
-			if (!resolveDetectionOwner(input)) return false;
-			const outcome = await notifyDetectionEpisodeWithOutcome(input);
-			if (outcome !== "notified" && outcome !== "already_notified") {
-				return false;
-			}
-			return (
-				store.getDetectionEscalation(
-					input.targetKey,
-					input.kind,
-					input.episodeFingerprint,
-				)?.status !== "NEW"
-			);
-		},
-	});
-	const leadReceiptPatrol = new LeadReceiptPatrol({
-		projectNames: projects.map((project) => project.projectName),
-		leadIdsForProject: (projectName) =>
-			projects
-				.find((project) => project.projectName === projectName)
-				?.leads.map((lead) => lead.agentId) ?? [],
-		commDbPathForProject,
-		receiptFoundationEnabled: () => receiptFoundationEnabled(),
-		ownerEpoch: () => leadInboxRuntime.receiptOwnerEpoch(),
-		windowMs: receiptEnvMinutes(
-			"FLYWHEEL_RECEIPT_UNPROCESSED_WINDOW_MIN",
-			30 * 60_000,
-		),
-		receiptWindowsMs: receiptPriorityWindowsMs(),
-		activationDryRun: () =>
-			process.env.FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN === "1",
-		resendCap: (() => {
-			const value = Number.parseInt(
-				process.env.FLYWHEEL_RECEIPT_RESEND_CAP ?? "",
-				10,
-			);
-			return Number.isSafeInteger(value) && value > 0 ? value : 2;
-		})(),
-		notifyUnprocessed: async ({ projectName, payload }) => {
-			const kind = "receipt_unprocessed";
-			if (!receiptDetectionKindSet.has(kind)) return false;
-			const routedPayload = normalizeUnprocessedReceiptAlertProject(
-				payload,
-				projectName,
-			);
-			if (!routedPayload) return false;
-			const firstDetectedAtMs = Date.parse(routedPayload.firstDeliveredAt);
-			const input: DetectionEscalationInput = {
-				targetKey: routedPayload.targetKey,
-				kind,
-				episodeFingerprint: routedPayload.rootId,
-				executionId: routedPayload.executionId,
-				issueId: routedPayload.issueId,
-				issueIdentifier: routedPayload.issueIdentifier,
-				projectName: routedPayload.projectName,
-				firstDetectedAtMs: Number.isFinite(firstDetectedAtMs)
-					? firstDetectedAtMs
-					: Date.now(),
-				sourceReceiptId: routedPayload.rootId,
-				sourceExecutionId: routedPayload.executionId,
-				sourceQuestionId: routedPayload.questionId,
-				reason:
-					`消息已送达并重发 ${routedPayload.resendRound} 次,仍无已处理收据` +
-					`(${routedPayload.contentSummary})`,
-				nextStep: "Lead 立即完成路由副作用或说明阻塞原因",
-			};
-			if (!resolveDetectionOwner(input)) return false;
-			const outcome = await notifyDetectionEpisodeWithOutcome(input);
-			if (outcome !== "notified" && outcome !== "already_notified") {
-				return false;
-			}
-			return (
-				store.getDetectionEscalation(
-					input.targetKey,
-					input.kind,
-					input.episodeFingerprint,
-				)?.status !== "NEW"
-			);
-		},
-		notifyAdvisory: async ({ projectName, alert }) => {
-			const sink = leadPendingAlertHolder.current;
-			if (!sink) return false;
-			let payload: Record<string, unknown>;
-			try {
-				payload = JSON.parse(alert.payload) as Record<string, unknown>;
-			} catch {
-				return false;
-			}
-			let leadId =
-				typeof payload.toLead === "string" ? payload.toLead : undefined;
-			if (!leadId && typeof payload.executionId === "string") {
-				let db: CommDB | undefined;
-				try {
-					db = new CommDB(commDbPathForProject(projectName), false);
-					leadId = db.getSession(payload.executionId)?.lead_id ?? undefined;
-				} finally {
-					db?.close();
-				}
-			}
-			if (!leadId) return false;
-			const result = await sink.alert({
-				leadId,
-				projectName,
-				eventId: `receipt-alert:${alert.id}`,
-				eventType: "delivery_dead_letter",
-				title:
-					alert.kind === "wake_cap"
-						? "Runner receipt wake cap reached"
-						: "Lead receipt delivery dead-lettered",
-				body: `receipt foundation alert ${alert.id}: ${alert.payload}`,
-				severity: "warning",
-			});
-			return (
-				(!result.skipped || result.skipped === "duplicate") &&
-				!result.deadLettered
-			);
-		},
-	});
-
 	const founderDecisionConvergenceTick = () =>
 		runFounderDecisionConvergencePass({
 			store,
@@ -8239,22 +6907,19 @@ export async function startBridge(
 			},
 			notifyDropped: async (row) => {
 				const session = store.getSession(row.execution_id);
-				if (!session) return false;
-				const outcome = await notifyDetectionEpisodeWithOutcome({
-					targetKey: row.execution_id,
-					kind: "founder_decision_dropped",
-					episodeFingerprint: `${row.msg_id}:${row.question_id}`,
-					executionId: row.execution_id,
-					issueId: session.issue_id,
-					issueIdentifier: session.issue_identifier,
+				const sink = leadPendingAlertHolder.current;
+				if (!session || !sink) return false;
+				const alert = await sink.alert({
+					leadId: row.lead_id,
 					projectName: row.project_name,
-					firstDetectedAtMs: row.deadline_at_ms,
-					reason: `founder 明确 ${row.classification} 决定已被读取,但未绑定到 gate ${row.question_id}`,
-					nextStep: "Lead 立即检查 gate writer / wake 投递链并人工收敛",
+					eventId: `founder-decision-dropped:${row.msg_id}:${row.question_id}`,
+					eventType: "founder_notify_dead_letter",
+					title: "Founder decision did not converge",
+					body: `founder 明确 ${row.classification} 决定已被读取,但未绑定到 gate ${row.question_id};请立即检查 gate writer / wake 投递链并人工收敛。`,
+					severity: "warning",
+					sessionKey: row.execution_id,
 				});
-				if (outcome !== "notified" && outcome !== "already_notified") {
-					return false;
-				}
+				if (alert.skipped || alert.deadLettered) return false;
 				const lead = projects
 					.find((project) => project.projectName === row.project_name)
 					?.leads.find((candidate) => candidate.agentId === row.lead_id);
@@ -8292,29 +6957,22 @@ export async function startBridge(
 		projects,
 		store,
 		runtimeRegistry: registry,
-		legacyDeliveryWatchdogsEnabled: legacyDeliveryWatchdogsOn,
 		watchdogLivenessEnabled: watchdogFlags.liveness,
 		ensureShipRelevantDiff,
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
 		onLandOperationTick: landOperationTick,
-		onReceiptWakePatrolTick: async () => {
+		onReconcilePatrolTick: async () => {
 			await projectWorkflowEngineParkOutbox({
 				store,
 				projectNames: projects.map((project) => project.projectName),
 				commDbPathForProject,
 			});
 			await terminalReceiptSettlement.pass();
-			await receiptWakePatrol.pass();
-			await leadReceiptPatrol.pass();
 		},
 		onFounderDecisionConvergenceTick: async () => {
 			await founderDecisionConvergenceTick();
 		},
-		onDeliveryReconcileTick: legacyDeliveryWatchdogsOn
-			? () => leadEventDelivery.reconcile()
-			: undefined,
-		onParkWatchTick: legacyDeliveryWatchdogsOn ? parkWatchTick : undefined,
 		// FLY-1279 B2: the holder is populated after GatePoller construction;
 		// periodic recovery and boot reconcile share the coordinator's single-flight.
 		onQaReconcileTick: () =>
@@ -8326,34 +6984,13 @@ export async function startBridge(
 			);
 			return Number.isFinite(n) && n > 0 ? n : undefined;
 		})(),
-		// FLY-1048 (A6): gap-scan piggyback (zero new timer; env-gated inside).
-		onGapScanTick: legacyDeliveryWatchdogsOn ? gapScanTick : undefined,
-		gapScanEveryNTicks: (() => {
-			const n = Number.parseInt(
-				process.env.FLYWHEEL_GAP_SCAN_EVERY_N_TICKS ?? "",
-				10,
-			);
-			return Number.isFinite(n) && n > 0 ? n : undefined; // default 100
-		})(),
-		// FLY-1048 (PR-C): detection-escalation reconcile piggyback (zero new
-		// timer; env-gated inside the tick — unset flag = complete no-op).
-		onDetectionReconcileTick: detectionReconcileCohortsTick,
-		// FLY-1282 Part D: disposition-receipt delivery — its OWN stage, NOT
-		// under detectionReconcileEveryNTicks (cadence 0 must not become a
-		// hidden receipt kill switch). FLYWHEEL_DISPOSITION_RECEIPT is checked
-		// inside the pass (live-flippable); the pass has its own single-flight.
+		// FLY-1282 Part D: disposition-receipt delivery has its own stage and
+		// single-flight. FLYWHEEL_DISPOSITION_RECEIPT is checked inside the pass.
 		onDispositionReceiptTick: createDispositionReceiptPass({
 			store,
 			projects: projects ?? [],
 			globalBotToken: config.discordBotToken,
 		}),
-		detectionReconcileEveryNTicks: (() => {
-			const n = Number.parseInt(
-				process.env.FLYWHEEL_DETECTION_RECONCILE_EVERY_N_TICKS ?? "",
-				10,
-			);
-			return Number.isFinite(n) && n >= 0 ? n : undefined; // default 20
-		})(),
 		// FLY-945 Fix D: run the sweeper on the patrol cadence (zero new timer).
 		externalMergeReconcile: () => externalMergeReconciler.pass(),
 		leadAlertSink: {
@@ -8363,10 +7000,6 @@ export async function startBridge(
 					: Promise.resolve({ skipped: "unknown-lead" } as AlertResult),
 		},
 		chatThreadsEnabled: config.chatThreadsEnabled,
-		transport: legacyDeliveryWatchdogsOn ? misroutePatrolTransport : undefined,
-		misrouteArchiveDir: legacyDeliveryWatchdogsOn
-			? misrouteArchiveDir
-			: undefined,
 		// FLY-907 (Step 4.5): issue-display reconcile sweep — piggybacked on this
 		// existing poll tick (zero new timer). The holder is populated post-listen;
 		// an empty holder / flag=0 makes the tick a no-op.
@@ -8599,67 +7232,6 @@ export async function startBridge(
 	// that a real notifier is available, otherwise a same-boot quarantine waits
 	// for the NEXT restart to even be attempted.
 	void leadInboxRuntime.drainQuarantineAlertsNow();
-	// FLY-1407: boot redrive closes the rejected-receipt→notify crash window.
-	// The periodic pass below piggybacks the existing LeadAlert drain timer, so
-	// this durable outbox adds no independent interval.
-	void drainWorkflowRouteReminders({
-		store,
-		notifier: leadAlertNotifier,
-	}).catch((error: Error) => {
-		console.warn(
-			`[Bridge] workflow route reminder boot drain failed: ${error.message}`,
-		);
-	});
-	deliveryDeadLetterAlertHolder.current = createLeadEventDeadLetterHandler({
-		pageFounder: detectionPageFounder,
-		mirror: async (row) => {
-			let payload: Record<string, unknown> = {};
-			let route: Record<string, unknown> = {};
-			try {
-				payload = JSON.parse(row.payload) as Record<string, unknown>;
-			} catch {}
-			try {
-				route = row.routing_snapshot
-					? (JSON.parse(row.routing_snapshot) as Record<string, unknown>)
-					: {};
-			} catch {}
-			const projectName = String(
-				route.projectName ?? payload.project_name ?? "flywheel",
-			);
-			const leadId = row.ack_owner_lead_id ?? row.lead_id;
-			await leadAlertNotifier.alert({
-				leadId,
-				projectName,
-				eventId: `delivery-dead-letter:${row.seq}`,
-				eventType: "delivery_dead_letter",
-				title: `Lead delivery exhausted — event #${row.seq}`,
-				body:
-					`Bridge exhausted bounded delivery for ${row.event_type} (${row.event_id}). ` +
-					`Issue: ${String(payload.issue_identifier ?? payload.issue_id ?? "unknown")}; ` +
-					`owner: ${leadId}. Founder intervention is required.`,
-				severity: "severe",
-				sessionKey: row.session_key,
-			});
-		},
-	});
-	if (deliverySecretBootError) {
-		const fallbackProject =
-			projects.find((project) => project.projectName === "flywheel") ??
-			projects[0];
-		const fallbackLead = fallbackProject?.leads[0];
-		if (fallbackProject && fallbackLead) {
-			void leadAlertNotifier.alert({
-				leadId: fallbackLead.agentId,
-				projectName: fallbackProject.projectName,
-				eventId: "delivery-secret-unavailable",
-				eventType: "delivery_dead_letter",
-				title: "Lead delivery ACK secret unavailable",
-				body: `${deliverySecretBootError}. ACK-cohort work is paused; legacy ACK-exempt delivery remains available.`,
-				severity: "severe",
-			});
-		}
-	}
-
 	// FLY-907: build the unified issue-display refresher. The holder is read
 	// late-bound by EVERY trigger surface (applyTransition hook,
 	// DirectEventSink, event router, actions router, park/wake effects, sweep,
@@ -8919,25 +7491,6 @@ export async function startBridge(
 				.catch((err) =>
 					console.warn(
 						`[auto-qa] reconcileCodexHolds failed: ${(err as Error).message}`,
-					),
-				);
-			// FLY-863: catch up on any head that crossed the stuck-duration
-			// threshold WHILE the Bridge was down — don't wait for the first 30s
-			// poll tick to notice a genuinely stuck hold on restart.
-			void autoQaCoordinatorHolder.current
-				.reconcileStuckCodexHolds()
-				.catch((err) =>
-					console.warn(
-						`[auto-qa] reconcileStuckCodexHolds failed: ${(err as Error).message}`,
-					),
-				);
-			// FLY-1099 §6: the 30min ledger-backed nudge layer (queue+wake
-			// intents; execution + bounded retry live in the founder-action drain).
-			void autoQaCoordinatorHolder.current
-				.reconcileCodexHoldNudges()
-				.catch((err) =>
-					console.warn(
-						`[auto-qa] reconcileCodexHoldNudges failed: ${(err as Error).message}`,
 					),
 				);
 			console.log(
@@ -10119,11 +8672,6 @@ export async function startBridge(
 				logger: { warn: (message) => console.warn(message) },
 			})
 		: undefined;
-	// FLY-1048 (A5): wire the suspicious-report quiet thread leg now that the
-	// Discord ops exist (the deliverer skipped the leg while this was null).
-	suspiciousThreadPoster.current = async (threadId, content) => {
-		await alertDiscordOps.postToThread(threadId, content);
-	};
 	// FLY-1456: preserve the existing construction boundary while the fixed mode
 	// keeps it dormant. The external daemon is the only account-switch executor.
 	const accountSwitchRepair = quotaBridgeMode.attachAccountSwitch
@@ -10448,30 +8996,8 @@ export async function startBridge(
 					archiveDefaultProvider: alertArchiveDefaultProvider,
 					// FLY-1243: conservative auto-repair, 固化 default-on (always wired
 					// inside the hub, which itself needs a channel + repair chain). Only
-					// the two safe actions; reuses the audited runner-nudge +
-					// lead-resume-enter ops.
+					// retained safe auto-repair actions.
 					autoRepairBot: new AutoRepairBot({
-						runnerNudge: (input) =>
-							attemptRunnerRecoveryNudge(input, {
-								store,
-								projects,
-								captureSessionFn: defaultCaptureSession,
-								hasPendingGate: hasPendingGateFromCommDb,
-								sendKeys: sendKeysToWindow,
-								getTmuxTarget: getTmuxTargetFromCommDb,
-								now: () => Date.now(),
-								nextAuditSeq: (() => {
-									let n = 0;
-									return () => ++n;
-								})(),
-							}),
-						leadResumeEnter: (input) =>
-							attemptLeadResumeEnter(input, {
-								store,
-								locateWindowFn: locateLeadWindow,
-								captureFn: leadPaneCaptureFn,
-								sendEnter: sendEnterToWindow,
-							}),
 						// FLY-696: usage_limit → Claude account switch (enqueues a
 						// pending record; the watchdog below fires it). Hoisted +
 						// gated on the account-pool presence (FLY-1243; absent →
@@ -10621,8 +9147,6 @@ export async function startBridge(
 				`[workflow-engine] boot alert reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
 			),
 		);
-	inboxLoopAlertHolder.current = routedAlertSink;
-
 	// FLY-1204: now that the routed alert sink exists, back the late-bound
 	// orphan-parked alert closure the HeartbeatService reclaim patrol calls. It
 	// reuses the `three_stage_stuck` infra kind (owner-enriched, bound to the
@@ -10916,32 +9440,6 @@ export async function startBridge(
 	}
 
 	// FLY-92 / FLY-1393 W-1: Runner process-liveness via tmux capture-pane.
-	// FLY-195: the retired frozen-pane detector still shares the SAME poll
-	// (no new periodic timer, FLY-169) using the SAME per-session capture.
-	// Created after leadAlertNotifier because the detector's Q7 fallback
-	// (runner_stuck_unhandled) pages Annie through it.
-	const stuckDetector = buildStuckRunnerDetector({
-		store,
-		projects,
-		runtimeRegistry: registry,
-		chatThreadsEnabled: config.chatThreadsEnabled,
-		// FLY-368: route the Q7 runner_stuck_unhandled alert through the same sink
-		// as Lead alerts so it lands in the unified channel + gets a thread + the
-		// conservative auto-repair attempt (when enabled). Falls back to the raw
-		// notifier when the Hub is off (byte-compat).
-		notifier: routedAlertSink,
-		// FLY-818 M3 (default-ON, kill-switch FLYWHEEL_STUCK_FOUNDER_PAGE=0): the
-		// founder page for a genuinely-stuck runner posts an @founder message into
-		// that runner's OWN [FLY-XX] issue thread (Annie's design), using the owning
-		// Lead's bot
-		// (lead.botToken) with this as the fallback. No owner id ⇒ page disabled.
-		discordBotToken: config.discordBotToken,
-		discordOwnerUserId: config.discordOwnerUserId,
-	});
-	// FLY-253 (Codex R2 #4): late-bind the detector into the holder the
-	// remanage router already captured — re_arm can now reach the in-memory
-	// episode map. Stays null when detection is disabled.
-	stuckDetectorHolder.current = stuckDetector;
 	// FLY-1393: only the idle/dead W-1 lane remains active when the legacy delivery
 	// cohort is hard-off, so the old FLY-628 one-hour false-positive band-aid no
 	// longer applies. Restore a 3s default for process-liveness; waiting/unknown
@@ -10949,20 +9447,17 @@ export async function startBridge(
 	const idlePollMs = idleWatchdogPollMs();
 	const idleWatchdog = new RunnerIdleWatchdog({
 		pollIntervalMs: idlePollMs,
-		waitingThresholdCycles: 2,
 		projects,
 		store,
 		runtimeRegistry: registry,
 		captureSessionFn: defaultCaptureSession,
 		chatThreadsEnabled: config.chatThreadsEnabled,
-		stuckDetector,
-		legacyDeliveryWatchdogsEnabled: legacyDeliveryWatchdogsOn,
 		watchdogLivenessEnabled: watchdogFlags.liveness,
 		watchdogTracker: watchdogTrackers.liveness,
 		// FLY-626: shared quiet-signal probe (defined above with HeartbeatService).
 		quietSignalsProbe,
-		// FLY-623 (Codex R2 HIGH-3): suppress idle/stuck signals for a Runner that
-		// was re-adopted after a Bridge restart (alive-but-detached) — its idle/stuck
+		// FLY-623 (Codex R2 HIGH-3): suppress idle signals for a Runner that
+		// was re-adopted after a Bridge restart (alive-but-detached) — its idle
 		// appearance is an artifact of monitoring loss, not a real stall. Reads the
 		// live HeartbeatService set via the holder; null/kill-switch → no suppression.
 		isReconnecting: (execId) =>
@@ -11011,7 +9506,7 @@ export async function startBridge(
 	watchdogWiring.liveness = true;
 	idleWatchdog.start();
 	console.log(
-		`[Bridge] RunnerIdleWatchdog started (${Math.round(idlePollMs / 1000)}s poll${stuckDetector ? ", FLY-195 stuck detection ON" : ", FLY-195 stuck detection OFF (FLYWHEEL_STUCK_DETECT=0)"})`,
+		`[Bridge] RunnerIdleWatchdog started (${Math.round(idlePollMs / 1000)}s poll)`,
 	);
 
 	// FLY-818: opt-in auto-continue arming worker (default OFF —
@@ -11160,8 +9655,6 @@ export async function startBridge(
 	const leadWatchdog = new LeadWatchdog({
 		pollIntervalMs: leadWatchdogPollIntervalMs,
 		paneHashStuckCycles: 2,
-		paneHashAlertCycles: 3,
-		cooldownMs: 30 * 60_000,
 		// FLY-224 Phase 6b legacy baseline: exclude Codex-backed projects (no
 		// tmux pane) from the pane-text watchdog. BYTE-COMPAT: a project with
 		// no roles.lead config → claude-code → identical list (no-op).
@@ -11188,7 +9681,6 @@ export async function startBridge(
 				fleetLegacyBackendOf,
 				fleetPoller.snapshot(),
 			),
-		store,
 		// FLY-368: route through the unified sink (Hub adds threading + auto-repair
 		// when enabled; otherwise this is the raw notifier — byte-compat).
 		notifier: (payload) => routedAlertSink.alert(payload),
@@ -11197,7 +9689,6 @@ export async function startBridge(
 		captureFn: leadPaneCaptureFn,
 		claimsReader,
 		blockedMarkerReader,
-		legacyDeliveryWatchdogsEnabled: legacyDeliveryWatchdogsOn,
 		watchdogBlockedEnabled: watchdogFlags.blocked,
 		watchdogTracker: watchdogTrackers.blockedLead,
 		// FLY-368: real-time recovery → resolve the matching alert thread (an
@@ -11257,21 +9748,6 @@ export async function startBridge(
 					);
 				}
 			}
-			try {
-				await autoQaCoordinatorHolder.current?.reconcileStuckCodexHolds();
-			} catch (err) {
-				console.warn(
-					`[auto-qa] reconcileStuckCodexHolds (poll) failed: ${(err as Error).message}`,
-				);
-			}
-			// FLY-1099 §6: the 30min ledger-backed nudge layer, same cadence.
-			try {
-				await autoQaCoordinatorHolder.current?.reconcileCodexHoldNudges();
-			} catch (err) {
-				console.warn(
-					`[auto-qa] reconcileCodexHoldNudges (poll) failed: ${(err as Error).message}`,
-				);
-			}
 			if (
 				quotaBridgeMode.runAccountSwitchWatchdog &&
 				accountSwitchRepair &&
@@ -11307,46 +9783,12 @@ export async function startBridge(
 					);
 				}
 			}
-			// FLY-929 B2: notify-digest expectation check — the daily token
-			// report must leave a delivery receipt by 01:00 (report tz) or ONE
-			// deduped notify_digest_failed alert fires per expected day. The tick
-			// itself is固化 default-on (FLY-1243; the check runs every tick;
-			// "inactive", zero side effects). Same piggybacked poll — no timer.
-			try {
-				await notifyDigestExpectTick({
-					now: new Date(),
-					tz: process.env.TOKEN_USAGE_TIMEZONE ?? "America/Los_Angeles",
-					receiptsPath: defaultReceiptsPath(),
-					alert: (p) => leadAlertNotifier.alert(p),
-				});
-			} catch (err) {
-				console.warn(
-					`[Bridge] FLY-929 notify-digest expect tick failed: ${
-						err instanceof Error ? err.message : String(err)
-					}`,
-				);
-			}
 		},
-		// FLY-193: default ON now that the idle-pane recognizer is validated
-		// against committed real Lead pane fixtures (see
-		// LeadWatchdog `__tests__/fixtures/lead-panes/`). The recognizer is
-		// fail-open (only suppresses a high-confidence alive-idle pane; every
-		// real freeze — resume/compact menu, frozen-mid-work — still alerts).
-		// Escape hatch: set FLYWHEEL_PANE_IDLE_SUPPRESS=0 to force suppression OFF
-		// and restore the legacy always-alert-on-stuck-pane behavior.
-		suppressIdleHealthy: process.env.FLYWHEEL_PANE_IDLE_SUPPRESS !== "0",
-		// FLY-1048 (A4): multi-frame overlay. FLY-1243: FLYWHEEL_PANE_MULTIFRAME
-		// retired (固化 default-on) — the overlay is always on in production.
-		multiFrame: true,
-		// FLY-1048 (A5): fail-suspicious → quiet owner-Lead report (guardrail
-		// lead_event; never an alert, never founder-facing). Shared deliverer +
-		// owner resolver with the focused-frame unclear path.
-		onSuspicious: deliverSuspicious,
 	});
 	watchdogWiring.blockedLead = true;
 	leadWatchdog.start();
 	console.log(
-		`[Bridge] LeadWatchdog started (${leadWatchdogPollIntervalMs}ms per-Lead staggered poll, pattern-first alert + 3-cycle pane-hash)`,
+		`[Bridge] LeadWatchdog started (${leadWatchdogPollIntervalMs}ms per-Lead staggered poll, recognized blocked conditions only)`,
 	);
 
 	// FLY-83: drain alert queue every 60s so spills from shell path (lead-alert.sh)
@@ -11358,45 +9800,6 @@ export async function startBridge(
 	// a drain stalls past the 60s interval (slow Discord), an overlapping drain
 	// would re-POST the same still-present queue file → duplicate alert, which
 	// breaks the "one alert per 10-min bucket" invariant. Skip when busy.
-	// FLY-182 §4.5 / §3.1.4: connect Track A's mailbox-overflow markers to
-	// alerting. A marker means a Lead's unread inbox crossed the threshold
-	// (not consuming) — surface it via the Discord-independent channel.
-	const checkMailboxOverflowMarkers = async (
-		meta: MetaAlertNotifier,
-	): Promise<void> => {
-		try {
-			const { getStateDir } = await import("flywheel-agent-team-transport");
-			const { readdir, readFile } = await import("node:fs/promises");
-			const { join: pjoin } = await import("node:path");
-			const dir = pjoin(getStateDir(), "mailbox-overflow");
-			let files: string[];
-			try {
-				files = (await readdir(dir)).filter((f) => f.endsWith(".json"));
-			} catch {
-				return; // dir absent → nothing to report
-			}
-			if (files.length === 0) return;
-			const leads: string[] = [];
-			for (const f of files) {
-				try {
-					const m = JSON.parse(await readFile(pjoin(dir, f), "utf-8"));
-					leads.push(`${m.team}/${m.recipient}(unread=${m.unread})`);
-				} catch {
-					/* skip unreadable marker */
-				}
-			}
-			await meta.notify({
-				reason: "mailbox_overflow",
-				title: "Lead not consuming mailbox",
-				body: `Unread mailbox overflow: ${leads.join(", ") || files.join(", ")}. A Lead may be stuck or not consuming its inbox.`,
-			});
-		} catch (err) {
-			console.warn(
-				`[Bridge] mailbox-overflow check failed: ${(err as Error).message}`,
-			);
-		}
-	};
-
 	// FLY-182 §4.5: self-monitoring thresholds (env-tunable). The watchdog must
 	// not go silent — meta-alerts ride the EXISTING 60s drain timer (no new
 	// periodic load, FLY-129). MetaAlertNotifier debounces per reason (10min),
@@ -11419,18 +9822,6 @@ export async function startBridge(
 		leadAlertNotifier
 			.drainQueue()
 			.then(async ({ sent, remaining, deadLettered, delivered }) => {
-				const routeReminderResult = await drainWorkflowRouteReminders({
-					store,
-					notifier: leadAlertNotifier,
-				});
-				if (
-					routeReminderResult.accepted > 0 ||
-					routeReminderResult.failed > 0
-				) {
-					console.log(
-						`[Bridge] workflow route reminder drain attempted=${routeReminderResult.attempted} accepted=${routeReminderResult.accepted} failed=${routeReminderResult.failed}`,
-					);
-				}
 				if (sent > 0 || remaining > 0 || deadLettered > 0) {
 					console.log(
 						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining} deadLettered=${deadLettered}`,
@@ -11473,8 +9864,6 @@ export async function startBridge(
 						body: `The alert queue holds ${remaining} entries (> ${alertQueueOverflow}).`,
 					});
 				}
-				// Track A mailbox-overflow markers → a Lead is not consuming its inbox.
-				await checkMailboxOverflowMarkers(metaAlertNotifier);
 			})
 			.catch((err: Error) => {
 				console.warn(`[Bridge] LeadAlert drain failed: ${err.message}`);

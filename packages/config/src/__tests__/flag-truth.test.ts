@@ -8,6 +8,40 @@ import {
 } from "../feature-flags/truth.js";
 
 describe("FLY-1393 flag truth", () => {
+	it("FLY-1570 tombstones removed chase controls", () => {
+		const retired = RETIRED_FLAGS.filter(
+			(flag) => flag.retiredBy === "FLY-1570",
+		);
+		expect(retired).toHaveLength(40);
+		for (const { envVar } of retired) {
+			expect(
+				FEATURE_FLAGS.some((flag) => flag.envVar === envVar),
+				envVar,
+			).toBe(false);
+			expect(validateFlagTruthEnvironment([`${envVar}=1`]).ok, envVar).toBe(
+				false,
+			);
+		}
+	});
+
+	it("keeps delivery-path receipt tuning outside the retired patrol controls", () => {
+		for (const envVar of [
+			"FLYWHEEL_RECEIPT_EXEC_PUSH_CAP",
+			"FLYWHEEL_RECEIPT_EXEC_PUSH_WINDOW_MIN",
+			"FLYWHEEL_RECEIPT_WAKE_T1_MS",
+			"FLYWHEEL_RECEIPT_WINDOW_P0_MIN",
+			"FLYWHEEL_RECEIPT_WINDOW_P1_MIN",
+			"FLYWHEEL_RECEIPT_WINDOW_P2_MIN",
+			"FLYWHEEL_RECEIPT_WINDOW_P3_MIN",
+		]) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toBeDefined();
+			expect(
+				RETIRED_FLAGS.some((flag) => flag.envVar === envVar),
+				envVar,
+			).toBe(false);
+		}
+	});
+
 	it("FLY-1456 tombstones CHECKPOINT_WATCHDOG instead of registering it", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_EXEC_ID).toMatch(/execution id/);
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_CHECKPOINT_WATCHDOG).toBeUndefined();
@@ -115,7 +149,7 @@ describe("FLY-1393 flag truth", () => {
 		);
 	});
 
-	it("fails tombstones and unknown variables, but permits remaining retiring flags in env", () => {
+	it("fails tombstones and unknown variables", () => {
 		const tombstone = validateFlagTruthEnvironment([
 			"FLYWHEEL_DETECTION_GAP_SCAN",
 		]);
@@ -131,11 +165,6 @@ describe("FLY-1393 flag truth", () => {
 		]);
 		expect(retiredLegacy.ok).toBe(false);
 		expect(retiredLegacy.errors.join("\n")).toMatch(/删这行/);
-
-		const retiring = validateFlagTruthEnvironment([
-			"FLYWHEEL_ZOMBIE_GATE_RESOLVE",
-		]);
-		expect(retiring).toEqual({ ok: true, errors: [] });
 	});
 
 	it("tombstones all three fake historical switches", () => {
@@ -191,7 +220,7 @@ describe("FLY-1393 flag truth", () => {
 		}
 	});
 
-	it("runtime validation catches a missing minimum-set row and any revived retiring lane", () => {
+	it("runtime validation catches a missing minimum-set row and a revived retired lane", () => {
 		const active = () => ({ wired: true, effective_enabled: true });
 		const valid = {
 			schema_version: 1,
@@ -209,7 +238,6 @@ describe("FLY-1393 flag truth", () => {
 					observation: "static_contract",
 				},
 				w4_lead_blocked: { wired: true, effective_enabled: false },
-				w4_runner_blocked: { wired: true, effective_enabled: false },
 			},
 			retiring: FEATURE_FLAGS.filter((flag) => flag.retiring).map((flag) => ({
 				name: flag.name,
@@ -223,12 +251,8 @@ describe("FLY-1393 flag truth", () => {
 		wrong.components.w2_delivery_loop.wired = false;
 		delete (wrong.components.w3_external_drift as Record<string, unknown>)
 			.observation;
-		(
-			wrong.components.w4_runner_blocked as {
-				effective_enabled: unknown;
-			}
-		).effective_enabled = "0";
-		wrong.retiring[0]!.effective_enabled = true;
+		wrong.components.w4_lead_blocked.effective_enabled = "0";
+		wrong.retiring = [{ name: "retired-patrol", effective_enabled: true }];
 		const result = validateWatchdogManifest(wrong);
 		expect(result.ok).toBe(false);
 		expect(result.errors.join("\n")).toMatch(/w1_process_liveness/);
@@ -236,7 +260,7 @@ describe("FLY-1393 flag truth", () => {
 		expect(result.errors.join("\n")).toMatch(
 			/w3_external_drift.*observation=static_contract/,
 		);
-		expect(result.errors.join("\n")).toMatch(/w4_runner_blocked.*boolean/);
+		expect(result.errors.join("\n")).toMatch(/w4_lead_blocked.*boolean/);
 		expect(result.errors.join("\n")).toMatch(/effective_enabled=true/);
 	});
 
@@ -256,7 +280,6 @@ describe("FLY-1393 flag truth", () => {
 					observation: "static_contract",
 				},
 				w4_lead_blocked: { wired: true, effective_enabled: true },
-				w4_runner_blocked: { wired: true, effective_enabled: true },
 			},
 			retiring: [],
 		});

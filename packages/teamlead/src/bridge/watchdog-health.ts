@@ -1,4 +1,19 @@
-import type { InboxLoopHealthTarget } from "./inbox-loop-health-checker.js";
+import type { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
+
+export interface InboxLoopHealthTarget {
+	projectName: string;
+	leadId: string;
+	queue: LeadInboxQueue;
+}
+
+const DEFAULT_INBOX_LOOP_STALL_MS = 10 * 60_000;
+
+export function inboxLoopStallMs(env: NodeJS.ProcessEnv = process.env): number {
+	const minutes = Number(env.FLYWHEEL_INBOX_LOOP_STALL_MIN ?? "10");
+	return Number.isFinite(minutes) && minutes > 0
+		? minutes * 60_000
+		: DEFAULT_INBOX_LOOP_STALL_MS;
+}
 
 export type WatchdogFreshness = "not_started" | "fresh" | "stale" | "in_flight";
 
@@ -63,49 +78,22 @@ export class WatchdogCheckTracker {
 	}
 }
 
-export const RETIRING_WATCHDOGS = [
-	"legacy_delivery_watchdogs",
-	"misroute_patrol",
-	"founder_reply_watchdog",
-	"lead_pending_escalation",
-	"park_watch",
-	"stuck_detect",
-	"stuck_founder_page_killswitch",
-	"zombie_gate_resolve",
-	"checkpoint_watchdog",
-] as const;
-
-export type RetiringWatchdogName = (typeof RETIRING_WATCHDOGS)[number];
-
-export function buildRetiringWatchdogRows(
-	effective: Record<RetiringWatchdogName, boolean>,
-): Array<{ name: RetiringWatchdogName; effective_enabled: boolean }> {
-	return RETIRING_WATCHDOGS.map((name) => ({
-		name,
-		effective_enabled: effective[name] === true,
-	}));
-}
-
 export function buildWatchdogManifest(input: {
 	nowMs?: number;
 	bridgeStartedAtMs: number;
-	flags: { liveness: boolean; loopHeartbeat: boolean; blocked: boolean };
+	flags: { liveness: boolean; blocked: boolean };
 	wiring: {
 		liveness: boolean;
-		loopHeartbeat: boolean;
 		externalDrift: boolean;
 		blockedLead: boolean;
-		blockedRunner: boolean;
 	};
 	trackers: {
 		liveness: WatchdogCheckTracker;
-		loopHeartbeat: WatchdogCheckTracker;
 		blockedLead: WatchdogCheckTracker;
-		blockedRunner: WatchdogCheckTracker;
 	};
+	deliveryLoopWired: boolean;
 	loopStallMs: number;
 	loopTargets: readonly InboxLoopHealthTarget[];
-	retiringEnabled: Record<RetiringWatchdogName, boolean>;
 }) {
 	const nowMs = input.nowMs ?? Date.now();
 	const tracked = (
@@ -146,15 +134,10 @@ export function buildWatchdogManifest(input: {
 				{ class: "W-1", switch: "FLYWHEEL_WATCHDOG_LIVENESS" },
 			),
 			w2_delivery_loop: {
-				...tracked(
-					input.trackers.loopHeartbeat,
-					input.wiring.loopHeartbeat,
-					input.flags.loopHeartbeat,
-					{
-						class: "W-2",
-						switch: "FLYWHEEL_WATCHDOG_LOOP_HEARTBEAT",
-					},
-				),
+				class: "W-2",
+				wired: input.deliveryLoopWired,
+				effective_enabled: true,
+				switch: "required",
 				leads,
 			},
 			w3_external_drift: {
@@ -170,13 +153,6 @@ export function buildWatchdogManifest(input: {
 				input.flags.blocked,
 				{ class: "W-4", switch: "FLYWHEEL_WATCHDOG_BLOCKED" },
 			),
-			w4_runner_blocked: tracked(
-				input.trackers.blockedRunner,
-				input.wiring.blockedRunner,
-				input.flags.blocked,
-				{ class: "W-4", switch: "FLYWHEEL_WATCHDOG_BLOCKED" },
-			),
 		},
-		retiring: buildRetiringWatchdogRows(input.retiringEnabled),
 	};
 }

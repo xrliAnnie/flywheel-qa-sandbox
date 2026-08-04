@@ -257,7 +257,6 @@ async function main() {
 	// Run HeartbeatService to detect and reap
 	const reapedSessions: string[] = [];
 	const notifier = {
-		onSessionStuck: async () => {},
 		onSessionOrphaned: async (session: any) => {
 			reapedSessions.push(session.execution_id);
 			log(

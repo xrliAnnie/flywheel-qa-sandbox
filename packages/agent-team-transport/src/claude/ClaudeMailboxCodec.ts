@@ -31,7 +31,6 @@ import {
 	pruneMainEntries,
 	pruneSidecarRecords,
 	resolvePrunePolicy,
-	updateOverflowMarker,
 } from "./mailbox-prune.js";
 
 // Stock claude-code lock options. MUST match exactly (see plan §2.0.6).
@@ -318,7 +317,7 @@ export async function markEntriesAsReadUnderLock(args: {
 	// Return overflow info from the locked critical section so control-flow
 	// analysis sees the assignment (assigning a captured `let` inside the
 	// async callback would not narrow the type for the post-lock read).
-	const overflow = await withFileLock(args.inboxPath, lockPath, async () => {
+	await withFileLock(args.inboxPath, lockPath, async () => {
 		const messages = await readMailboxEntries(args.inboxPath);
 		const next = messages.map((m) => {
 			if (args.predicate(m) && !m.read) {
@@ -337,18 +336,6 @@ export async function markEntriesAsReadUnderLock(args: {
 			await writeFile(tempPath, JSON.stringify(pruned.kept, null, 2), "utf-8");
 			await rename(tempPath, args.inboxPath);
 		}
-		return {
-			unreadCount: pruned.unreadCount,
-			oldestUnreadTs: pruned.oldestUnreadTs,
-		};
-	});
-	// FLY-182: update unread-overflow marker outside the lock (best-effort).
-	await updateOverflowMarker({
-		inboxPath: args.inboxPath,
-		unreadCount: overflow.unreadCount,
-		oldestUnreadTs: overflow.oldestUnreadTs,
-		policy,
-		now: Date.now(),
 	});
 	return flipped;
 }
@@ -864,9 +851,8 @@ async function writeBatchMainUnderLock(args: {
 	const policy = resolvePrunePolicy();
 	const lockPath = `${args.inboxPath}.lock`;
 	let outcome: "written" | "already_present" = "already_present";
-	let overflow: { unreadCount: number; oldestUnreadTs: number | null };
 	try {
-		overflow = await withFileLock(args.inboxPath, lockPath, async () => {
+		await withFileLock(args.inboxPath, lockPath, async () => {
 			const messages = await readMailboxEntries(args.inboxPath);
 			const hits = args.records.map((record, index) => {
 				const ref = record.mainEntryRef;
@@ -915,10 +901,6 @@ async function writeBatchMainUnderLock(args: {
 				);
 				await rename(tempPath, args.inboxPath);
 			}
-			return {
-				unreadCount: pruned.unreadCount,
-				oldestUnreadTs: pruned.oldestUnreadTs,
-			};
 		});
 	} catch (error) {
 		if (
@@ -935,13 +917,6 @@ async function writeBatchMainUnderLock(args: {
 			{ cause: error as Error },
 		);
 	}
-	await updateOverflowMarker({
-		inboxPath: args.inboxPath,
-		unreadCount: overflow.unreadCount,
-		oldestUnreadTs: overflow.oldestUnreadTs,
-		policy,
-		now: Date.now(),
-	});
 	return outcome;
 }
 
@@ -951,12 +926,8 @@ async function writeMainEntryUnderLock(args: WriteMainArgs): Promise<void> {
 
 	const policy = resolvePrunePolicy();
 	const lockPath = `${args.inboxPath}.lock`;
-	let overflow: { unreadCount: number; oldestUnreadTs: number | null };
 	try {
-		// Return overflow info from the locked section (see note in
-		// markEntriesAsReadUnderLock — direct assignment from `await` narrows
-		// correctly; a callback-captured `let` would not).
-		overflow = await withFileLock(args.inboxPath, lockPath, async () => {
+		await withFileLock(args.inboxPath, lockPath, async () => {
 			// Re-read after lock acquired (matches stock pattern at
 			// teammateMailbox.ts:171).
 			const messages = await readMailboxEntries(args.inboxPath);
@@ -976,10 +947,6 @@ async function writeMainEntryUnderLock(args: WriteMainArgs): Promise<void> {
 				.slice(2, 8)}`;
 			await writeFile(tempPath, JSON.stringify(pruned.kept, null, 2), "utf-8");
 			await rename(tempPath, args.inboxPath);
-			return {
-				unreadCount: pruned.unreadCount,
-				oldestUnreadTs: pruned.oldestUnreadTs,
-			};
 		});
 	} catch (error) {
 		if (error instanceof MailboxWriteError) throw error;
@@ -991,16 +958,6 @@ async function writeMainEntryUnderLock(args: WriteMainArgs): Promise<void> {
 			{ cause: error as Error },
 		);
 	}
-
-	// FLY-182: update unread-overflow marker outside the lock (best-effort,
-	// never throws — exposes "Lead not consuming" without dropping unread).
-	await updateOverflowMarker({
-		inboxPath: args.inboxPath,
-		unreadCount: overflow.unreadCount,
-		oldestUnreadTs: overflow.oldestUnreadTs,
-		policy,
-		now: Date.now(),
-	});
 }
 
 // ============================================================================

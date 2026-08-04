@@ -23,12 +23,7 @@ import {
 	type AlertResult,
 	isInformationalKind,
 } from "../LeadAlertNotifier.js";
-import {
-	classifyLeadAlertPane,
-	isIdleHealthyPane,
-	leadPaneHasErrorSignature,
-	leadPaneLiveHash,
-} from "../LeadWatchdog.js";
+import { classifyLeadAlertPane } from "../LeadWatchdog.js";
 import type { AlertThreadRow, StateStore } from "../StateStore.js";
 import { type AutoRepairBot, HUMAN_ONLY_REASON } from "./AutoRepairBot.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
@@ -41,8 +36,8 @@ import {
 	FLEET_ESCALATION_COPY,
 	KIND_CONTRACTS,
 } from "./kind-contract.js";
+import { fingerprintOutput } from "./pane-fingerprint.js";
 import { resolveAutoArchiveMinutes } from "./roundtable/channel-archive-default.js";
-import { fingerprintOutput } from "./stuck-candidate.js";
 import {
 	decideTicketEscalation,
 	policyForKind,
@@ -249,10 +244,9 @@ export interface AlertChannelHubDeps {
 	 */
 	capturePane?: (projectName: string, leadId: string) => Promise<string | null>;
 	/**
-	 * Reconcile-pass capture of a RUNNER terminal by executionId (null = cannot
-	 * capture → leave active, fail-closed). Lets a runner alert thread resolve when
-	 * the runner unsticks while its session is STILL running (Codex code R1 HIGH-1
-	 * — the common successful-nudge case).
+	 * Reconcile-pass capture of a RUNNER terminal by executionId. Retained for
+	 * login-expiry recovery, where a changed terminal fingerprint is an external
+	 * fact rather than an inactivity inference.
 	 */
 	captureRunner?: (
 		executionId: string,
@@ -270,7 +264,7 @@ export interface AlertChannelHubDeps {
 	ticketPolicy?: TicketEscalationPolicy;
 	/**
 	 * FLY-1082: fleet-kind recovery probe for the reconcile pass — the fleet
-	 * analog of capturePane/captureRunner. Returns true = the underlying fleet
+	 * analog of the retained pane/runner probes. Returns true = the underlying fleet
 	 * condition cleared (resolve quietly), false = still broken, null/absent =
 	 * cannot tell (leave active; the T2 decision still runs). Wired in
 	 * plugin.ts to the fleet-sensors module.
@@ -302,10 +296,6 @@ const LEAD_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"login_expired",
 	"permission_blocked",
 	"crash_loop",
-	"pane_hash_stuck",
-	// FLY-1048 (A4): pane-driven like the rest — reconcile resolves it when
-	// the error signature leaves the live region (see shouldResolveLead).
-	"pane_error_stalled",
 ]);
 
 /**
@@ -342,8 +332,6 @@ export function correlationKeyFor(p: {
 export class AlertChannelHub {
 	private readonly now: () => number;
 	private readonly logger: (msg: string) => void;
-	/** In-memory last-seen live hash per correlation key for the two-capture rule. */
-	private readonly reconcileHashes = new Map<string, string>();
 
 	constructor(private readonly deps: AlertChannelHubDeps) {
 		this.now = deps.now ?? (() => Date.now());
@@ -372,12 +360,6 @@ export class AlertChannelHub {
 				`thread handling failed for ${ck}: ${(err as Error).message}`,
 			);
 		}
-		// FLY-818 M3 note: the genuinely-stuck-runner founder page is NOT here —
-		// it posts an @founder message into the STUCK RUNNER'S OWN [FLY-XX] issue
-		// thread from `createStuckUnhandledAlerter` (stuck-escalation.ts), which has
-		// the owning Lead (bot token + chat channel). This Hub only owns the alert
-		// thread + auto-repair (Annie's design; the alert-channel page was the
-		// rejected FLY-523 path).
 		return result;
 	}
 
@@ -742,7 +724,6 @@ export class AlertChannelHub {
 		await this.safePostToThread(active.thread_id, this.formatResolved(active));
 		await this.safeArchive(active.thread_id);
 		this.deps.store.resolveAlertThread(correlationKey);
-		this.reconcileHashes.delete(correlationKey);
 	}
 
 	/**
@@ -788,15 +769,10 @@ export class AlertChannelHub {
 					await this.reconcileTicket(row);
 					continue;
 				}
-				if (
-					row.session_key &&
-					(row.event_type === "runner_stuck_unhandled" ||
-						row.event_type === "runner_throttle_stalled" ||
-						row.event_type === "runner_login_expired")
-				) {
+				if (row.session_key && row.event_type === "runner_login_expired") {
 					// FLY-871 R2/C8: a runner_login_expired resolves by the RUNNER's
 					// pane/status (rescue closes the old session, or its fingerprint
-					// changes), NOT a Lead pane — same path as runner_stuck_unhandled.
+					// changes), NOT a Lead pane.
 					if (await this.shouldResolveRunner(row.session_key, row)) {
 						await this.resolve(row.correlation_key);
 						continue;
@@ -823,14 +799,7 @@ export class AlertChannelHub {
 							row.project_name,
 							row.lead_id,
 						);
-						if (
-							pane != null &&
-							(await this.shouldResolveLead(
-								row.correlation_key,
-								row.event_type,
-								pane,
-							))
-						) {
+						if (pane != null && this.shouldResolveLead(row.event_type, pane)) {
 							await this.resolve(row.correlation_key);
 							continue;
 						}
@@ -966,13 +935,8 @@ export class AlertChannelHub {
 	}
 
 	/**
-	 * Runner alert recovery (Codex code R1 HIGH-1). Resolve when:
-	 *  - the session is no longer running (completed/failed/...), OR
-	 *  - the session is STILL running but the live terminal fingerprint has
-	 *    changed from the stuck episode signature (the common successful-nudge
-	 *    case where the runner moved on while status stays "running").
-	 * Fail-closed: an unknown session, missing capture, or a capture error leaves
-	 * the thread active (never resolve on uncertainty).
+	 * Runner login-expiry recovery. Resolve when the session closes or its live
+	 * terminal fingerprint changes. Missing capture stays fail-closed.
 	 */
 	private async shouldResolveRunner(
 		executionId: string,
@@ -987,32 +951,8 @@ export class AlertChannelHub {
 		return fingerprintOutput(out) !== row.episode_signature;
 	}
 
-	private async shouldResolveLead(
-		correlationKey: string,
-		eventType: string,
-		pane: string,
-	): Promise<boolean> {
-		// FLY-1048 (A4): pane_error_stalled — classify() never returns this kind,
-		// so the blocked-kind rule below would resolve it instantly. Recovered
-		// iff the error signature left the live region (fail-toward-active while
-		// the error is still visible).
-		if (eventType === "pane_error_stalled") {
-			return !leadPaneHasErrorSignature(pane);
-		}
-		if (eventType !== "pane_hash_stuck") {
-			// A blocked kind (rate/usage/login/permission): recovered iff the kind
-			// is no longer present in the live pane.
-			return classifyLeadAlertPane(pane) !== eventType;
-		}
-		// pane_hash_stuck: conservative. Resolve when the pane looks idle-healthy,
-		// OR when the live hash has CHANGED across two reconcile passes (a still-
-		// identical frozen pane is still frozen).
-		if (isIdleHealthyPane(pane)) return true;
-		const hash = leadPaneLiveHash(pane);
-		const prev = this.reconcileHashes.get(correlationKey);
-		if (prev !== undefined && prev !== hash) return true;
-		this.reconcileHashes.set(correlationKey, hash);
-		return false;
+	private shouldResolveLead(eventType: string, pane: string): boolean {
+		return classifyLeadAlertPane(pane) !== eventType;
 	}
 
 	private threadName(payload: AlertPayload): string {

@@ -1,5 +1,5 @@
 /**
- * FLY-368: AutoRepairBot — conservative dispatch to the two safe actions only.
+ * FLY-368: AutoRepairBot — conservative safe-action dispatch.
  */
 import { describe, expect, it, vi } from "vitest";
 import { AutoRepairBot } from "../bridge/AutoRepairBot.js";
@@ -20,8 +20,6 @@ function payload(over: Partial<AlertPayload> = {}): AlertPayload {
 
 function makeBot(
 	over: {
-		runnerNudge?: ReturnType<typeof vi.fn>;
-		leadResumeEnter?: ReturnType<typeof vi.fn>;
 		accountSwitch?: {
 			canAttempt: ReturnType<typeof vi.fn>;
 			enqueue: ReturnType<typeof vi.fn>;
@@ -29,136 +27,46 @@ function makeBot(
 		};
 	} = {},
 ) {
-	const runnerNudge =
-		over.runnerNudge ??
-		vi.fn(async () => ({
-			status: 200,
-			body: { nudged: true, tmuxWindow: "w:@1" },
-		}));
-	const leadResumeEnter =
-		over.leadResumeEnter ??
-		vi.fn(async () => ({ sent: true, reason: "Enter sent" }));
 	const bot = new AutoRepairBot({
-		runnerNudge: runnerNudge as never,
-		leadResumeEnter: leadResumeEnter as never,
 		accountSwitch: over.accountSwitch as never,
-		logger: () => {},
 	});
-	return { bot, runnerNudge, leadResumeEnter };
+	return { bot };
 }
 
 describe("AutoRepairBot (FLY-368)", () => {
 	const CK = "flywheel|tadashi|pane_hash_stuck|";
 
-	it("runner_stuck_unhandled WITH structured fingerprint → nudges → attempted", async () => {
-		const { bot, runnerNudge } = makeBot();
-		const r = await bot.attempt(
-			payload({
-				eventType: "runner_stuck_unhandled",
-				metadata: {
-					runnerStuck: {
-						executionId: "exec-9",
-						episodeFingerprint: "abcdef0123456789",
-					},
-				},
-			}),
-			CK,
-		);
-		expect(r.outcome).toBe("attempted");
-		expect(r.action).toBe("runner_nudge");
-		expect(runnerNudge).toHaveBeenCalledTimes(1);
-		expect(runnerNudge.mock.calls[0]![0]).toMatchObject({
-			actor: "aunt-cass",
-			executionId: "exec-9",
-			fingerprint: "abcdef0123456789",
-			phrase: "continue",
-		});
-	});
-
-	it("runner_stuck_unhandled WITHOUT structured fingerprint → needs_human, no nudge", async () => {
-		const { bot, runnerNudge } = makeBot();
-		const r = await bot.attempt(
-			payload({ eventType: "runner_stuck_unhandled" }),
-			CK,
-		);
-		expect(r.outcome).toBe("needs_human");
-		expect(runnerNudge).not.toHaveBeenCalled();
-	});
-
-	it("runner nudge refused by a gate → needs_human", async () => {
-		const runnerNudge = vi.fn(async () => ({
-			status: 409,
-			body: { nudged: false, error: "fingerprint mismatch" },
-		}));
-		const { bot } = makeBot({ runnerNudge });
-		const r = await bot.attempt(
-			payload({
-				eventType: "runner_stuck_unhandled",
-				metadata: {
-					runnerStuck: {
-						executionId: "exec-9",
-						episodeFingerprint: "abcdef0123456789",
-					},
-				},
-			}),
-			CK,
-		);
-		expect(r.outcome).toBe("needs_human");
-		expect(r.detail).toContain("fingerprint mismatch");
-	});
-
-	it("pane_hash_stuck → tries lead resume Enter → attempted when sent", async () => {
-		const { bot, leadResumeEnter } = makeBot();
-		const r = await bot.attempt(payload({ eventType: "pane_hash_stuck" }), CK);
-		expect(r.outcome).toBe("attempted");
-		expect(r.action).toBe("lead_resume_enter");
-		expect(leadResumeEnter).toHaveBeenCalledTimes(1);
-	});
-
-	it("pane_hash_stuck but not a resume menu → needs_human", async () => {
-		const leadResumeEnter = vi.fn(async () => ({
-			sent: false,
-			reason: "not the safe resume-menu shape",
-		}));
-		const { bot } = makeBot({ leadResumeEnter });
-		const r = await bot.attempt(payload({ eventType: "pane_hash_stuck" }), CK);
-		expect(r.outcome).toBe("needs_human");
-		expect(r.detail).toContain("resume-menu");
-	});
-
 	it.each([
+		"pane_hash_stuck",
 		"rate_limit",
 		"usage_limit",
 		"login_expired",
 		"permission_blocked",
+		"runner_stuck_unhandled",
+		"runner_throttle_stalled",
 	] as const)(
 		"%s → never auto-acted, needs_human (no nudge / no enter)",
 		async (eventType) => {
-			const { bot, runnerNudge, leadResumeEnter } = makeBot();
+			const { bot } = makeBot();
 			const r = await bot.attempt(payload({ eventType }), CK);
 			expect(r.outcome).toBe("needs_human");
 			expect(r.action).toBe("none");
-			expect(runnerNudge).not.toHaveBeenCalled();
-			expect(leadResumeEnter).not.toHaveBeenCalled();
 		},
 	);
 
 	// FLY-368 v1.58.0: canAttempt — pure predicate the Hub uses to word the ack
-	// honestly (only the two kinds the bot truly tries get "正在尝试自动修复…").
-	it("canAttempt is true only for the two repairable kinds (no accountSwitch)", () => {
+	// honestly (only a kind the bot truly tries gets "正在尝试自动修复…").
+	it("retired pane and runner chase kinds are not auto-repairable", () => {
 		const { bot } = makeBot();
-		expect(
-			bot.canAttempt(payload({ eventType: "runner_stuck_unhandled" })),
-		).toBe(true);
-		expect(bot.canAttempt(payload({ eventType: "pane_hash_stuck" }))).toBe(
-			true,
-		);
 		for (const k of [
+			"pane_hash_stuck",
 			"rate_limit",
 			"usage_limit",
 			"login_expired",
 			"permission_blocked",
 			"crash_loop",
+			"runner_stuck_unhandled",
+			"runner_throttle_stalled",
 		] as const) {
 			expect(bot.canAttempt(payload({ eventType: k }))).toBe(false);
 		}

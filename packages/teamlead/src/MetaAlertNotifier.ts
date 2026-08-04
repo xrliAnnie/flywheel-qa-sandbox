@@ -37,7 +37,6 @@ export type MetaAlertReason =
 	| "alert_dead_lettered"
 	| "drain_stuck"
 	| "queue_overflow"
-	| "mailbox_overflow"
 	| "alert_unreachable_config"
 	// FLY-1435: roundtable metadata convergence permanently failed (typically
 	// missing MANAGE_THREADS). This must not be mistaken for successful repair.

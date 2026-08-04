@@ -173,8 +173,8 @@ export class LegacyLeadEventReconciler {
 			const envelope = leadEventEnvelopeFromJournalRow(row);
 			// FLY-1586 R3 BLOCKER — the fifth founder-replay path.
 			//
-			// `notifyLeadFirst` durably appends a `receipt_unprocessed` escalation
-			// to lead_events BEFORE its best-effort dispatch, and that payload
+			// The retired detector appended `receipt_unprocessed` escalations to
+			// lead_events before best-effort dispatch, and that payload
 			// carries the subject root's contentSummary plus a next step telling
 			// the Lead to complete the routing side effect. For a founder root that
 			// IS the old instruction. If the original enqueue died on the poison
@@ -187,8 +187,7 @@ export class LegacyLeadEventReconciler {
 			//
 			// Deliberately NARROW: only receipt_unprocessed escalations whose
 			// subject is an explicitly fenced root. Blanket-suppressing every
-			// detection_escalation would create fresh silence — most have no other
-			// canonical delivery.
+			// historical detection_escalation rows would create fresh silence.
 			//
 			// `episode_fingerprint` is the subject root's lead_inbox id (verified
 			// against production: founder_msg / chat / lead_event fingerprints each

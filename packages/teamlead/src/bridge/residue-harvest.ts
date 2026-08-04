@@ -28,7 +28,6 @@ export interface ResidueHarvesterDeps {
 		projectName: string,
 		provenDeadTargets: readonly ProvenDeadTmuxTarget[],
 	) => Promise<unknown>;
-	resolveOrphanEscalations: () => unknown;
 	reapStateStoreGhost: (session: Session) => Promise<boolean>;
 	log?: (message: string) => void;
 }
@@ -70,13 +69,6 @@ export function createResidueHarvester(
 							`[residue-harvest] StateStore pass failed for ${projectName} (non-fatal): ${(err as Error).message}`,
 						);
 					}
-				}
-				try {
-					deps.resolveOrphanEscalations();
-				} catch (err) {
-					log(
-						`[residue-harvest] orphan-escalation pass failed (non-fatal): ${(err as Error).message}`,
-					);
 				}
 				return "completed";
 			} finally {

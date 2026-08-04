@@ -71,9 +71,8 @@ fi
 
 # FLY-929 C2 / FLY-1243: fail-loud — a failing pipeline step raises a
 # notify_digest_failed alert via lead-alert.sh (claims-deduped, Bridge-independent).
-# The FLYWHEEL_NOTIFY_DIGEST_EXPECT gate is retired (固化 default-on) — the alert
-# always fires on failure. Best-effort ('|| true'): the alert must never mask the
-# original exit code.
+# The alert always fires on failure. Best-effort ('|| true'): the alert must
+# never mask the original exit code.
 raise_alert() {
 	local step="$1" code="$2"
 	local alert_sh="${REPO}/scripts/lead-alert.sh"

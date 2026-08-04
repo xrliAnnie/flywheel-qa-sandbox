@@ -26,8 +26,11 @@ import type { StateStore } from "../StateStore.js";
 // disposition receipt (machine/auto-repair nudges never do).
 import { formatDispositionReceipt } from "./disposition-receipt.js";
 import { matchesLead } from "./lead-scope.js";
+import {
+	detectInputBoxPresent,
+	fingerprintOutput,
+} from "./pane-fingerprint.js";
 import { isCaptureError } from "./session-capture.js";
-import { detectInputBoxPresent, fingerprintOutput } from "./stuck-candidate.js";
 import type { TmuxTarget } from "./tmux-lookup.js";
 import type { CaptureSessionFn } from "./tools.js";
 
@@ -171,7 +174,7 @@ export async function attemptRunnerRecoveryNudge(
 	if (typeof fingerprint !== "string" || !FINGERPRINT_RE.test(fingerprint)) {
 		return refuse(
 			400,
-			"episode_fingerprint must be the 16-hex fingerprint from the runner_stuck_escalation event",
+			"episode_fingerprint must be the 16-hex fingerprint from the active detection episode",
 		);
 	}
 

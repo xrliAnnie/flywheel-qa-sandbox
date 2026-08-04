@@ -29,7 +29,6 @@ import {
 	type LeadEventAckPolicy,
 	routingSnapshotForLeadEvent,
 } from "./bridge/lead-event-ack-policy.js";
-import type { LeadNudgeRow } from "./bridge/lead-pending-escalation.js";
 import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-policy.js";
 import {
 	buildWorkflowSelectionDigestBody,
@@ -387,8 +386,6 @@ export type FounderActionKind =
 	| "head_drift_notice"
 	| "rebound_notice"
 	| "feedback_wake"
-	| "codex_nudge_queue"
-	| "codex_nudge_wake"
 	| "emit_alert";
 
 export type FounderActionStatus =
@@ -526,8 +523,8 @@ export interface DeploymentEventRow {
  * FLY-195 (plan §3.4): Lead disposition receipt for one stuck episode.
  *
  * `handled_remanaged` is written IMPLICITLY by the Bridge recovery-nudge
- * endpoint on a successful nudge; the other values are written EXPLICITLY by
- * the Lead via `POST /api/sessions/:executionId/stuck-disposition`.
+ * endpoint on a successful nudge. Legacy values remain readable for existing
+ * rows until the later schema cleanup.
  */
 export const STUCK_DISPOSITIONS = [
 	"handled_remanaged",
@@ -561,14 +558,6 @@ export function normalizeChatThreadRole(role?: string | null): ChatThreadRole {
 		? (role as ChatThreadRole)
 		: "main";
 }
-
-/** Disposition values a Lead may write explicitly (handled_remanaged is implicit-only). */
-export const EXPLICIT_STUCK_DISPOSITIONS: readonly StuckDisposition[] = [
-	"false_positive",
-	"legitimate_wait",
-	"snooze",
-	"needs_founder",
-];
 
 export interface StuckDispositionRow {
 	execution_id: string;
@@ -1072,13 +1061,7 @@ export interface CodexReviewRecord {
 	 * repeated reconcile replays the hold WITHOUT re-posting / re-queueing.
 	 */
 	hold_notified_at?: string;
-	/**
-	 * FLY-863: stamped the first time this (exec, head) crosses the stuck
-	 * threshold in `reconcileStuckCodexHolds` — the ONLY place the codex-hold
-	 * thread-post + Lead alert now fire. `claimCodexHoldStuckNotify` sets it
-	 * atomically so a head is escalated exactly once, no matter how many
-	 * reconcile passes observe it after that.
-	 */
+	/** Legacy column retained until the schema cleanup batch. */
 	stuck_notified_at?: string;
 }
 
@@ -3073,24 +3056,6 @@ export class StateStore {
 				episode_fingerprint TEXT NOT NULL,
 				notified_at         TEXT NOT NULL DEFAULT (datetime('now')),
 				PRIMARY KEY (execution_id, source, episode_fingerprint)
-			)
-		`);
-
-		// FLY-637-ext: durable exponential-backoff state for the lead-pending
-		// escalation (a runner blocked on a `question` gate the Lead hasn't
-		// answered). Keyed by (execution_id, question_id) so a runner's multiple
-		// pending questions never share/overwrite backoff state (Codex R1 #1).
-		// Survives a Bridge restart so a restart doesn't re-storm nudges.
-		this.db.run(`
-			CREATE TABLE IF NOT EXISTS lead_pending_escalation (
-				execution_id        TEXT NOT NULL,
-				question_id         TEXT NOT NULL,
-				stuck_key           TEXT NOT NULL,
-				nudge_count         INTEGER NOT NULL DEFAULT 0,
-				last_nudge_at_ms    INTEGER NOT NULL DEFAULT 0,
-				next_eligible_at_ms INTEGER NOT NULL DEFAULT 0,
-				paged_annie         INTEGER NOT NULL DEFAULT 0,
-				PRIMARY KEY (execution_id, question_id)
 			)
 		`);
 
@@ -5263,23 +5228,6 @@ export class StateStore {
 	getActiveSessions(): Session[] {
 		const stmt = this.db.prepare(
 			"SELECT * FROM sessions WHERE status IN ('running', 'ship_parked', 'awaiting_review', 'approved_to_ship')",
-		);
-		const rows: Session[] = [];
-		while (stmt.step()) {
-			rows.push(
-				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
-			);
-		}
-		stmt.free();
-		return rows;
-	}
-
-	/** FLY-1279 D2: bounded semantic park inventory (includes truthful blocked). */
-	listParkWatchSessions(): Session[] {
-		const stmt = this.db.prepare(
-			`SELECT * FROM sessions
-			 WHERE status IN ('running','ship_parked','awaiting_review','approved_to_ship','blocked')
-			 ORDER BY execution_id`,
 		);
 		const rows: Session[] = [];
 		while (stmt.step()) {
@@ -7982,63 +7930,6 @@ export class StateStore {
 		});
 	}
 
-	/**
-	 * FLY-863: still-pending holds whose FIRST notification (`hold_notified_at`)
-	 * is older than `thresholdMs` and have not yet been escalated
-	 * (`stuck_notified_at IS NULL`) — the candidates for
-	 * `AutoQaCoordinator.reconcileStuckCodexHolds`. The caller re-checks the
-	 * owning session (still awaiting_review on this exact head, gate still
-	 * unsatisfied) before firing anything — a row here is a candidate, not a
-	 * guarantee.
-	 */
-	listCodexHoldsPendingOlderThan(
-		nowMs: number,
-		thresholdMs: number,
-	): CodexReviewRecord[] {
-		const stmt = this.db.prepare(
-			`SELECT * FROM codex_review_record
-			  WHERE status = 'pending' AND hold_notified_at IS NOT NULL AND stuck_notified_at IS NULL`,
-		);
-		const out: CodexReviewRecord[] = [];
-		while (stmt.step()) {
-			const rec = this.rowToCodexReviewRecord(
-				stmt.getAsObject() as Record<string, unknown>,
-			);
-			if (!rec.hold_notified_at) continue;
-			const heldSinceMs = Date.parse(
-				`${rec.hold_notified_at.replace(" ", "T")}Z`,
-			);
-			if (!Number.isNaN(heldSinceMs) && nowMs - heldSinceMs >= thresholdMs) {
-				out.push(rec);
-			}
-		}
-		stmt.free();
-		return out;
-	}
-
-	/**
-	 * FLY-863: atomically claim the right to fire the STUCK escalation (thread
-	 * post + Lead alert) for (exec, head). Returns true only for the first
-	 * caller — a repeated `reconcileStuckCodexHolds` pass observing the same
-	 * still-unresolved head is a no-op (LeadAlertNotifier's own per-eventId
-	 * dedup is a second, independent backstop).
-	 */
-	claimCodexHoldStuckNotify(
-		executionId: string,
-		targetPrHeadSha: string,
-		targetRepoIdentity = "__main__",
-	): boolean {
-		const sha = targetPrHeadSha.toLowerCase();
-		this.db.run(
-			`UPDATE codex_review_record SET stuck_notified_at = datetime('now')
-			  WHERE execution_id = ? AND target_repo_identity = ? AND target_pr_head_sha = ? AND stuck_notified_at IS NULL`,
-			[executionId, targetRepoIdentity, sha],
-		);
-		const claimed = this.db.getRowsModified() > 0;
-		this.save();
-		return claimed;
-	}
-
 	getAutoQaRecordByQaExec(qaExecutionId: string): AutoQaRecord | undefined {
 		const stmt = this.db.prepare(
 			"SELECT * FROM auto_qa_record WHERE qa_execution_id = ?",
@@ -8094,24 +7985,6 @@ export class StateStore {
 	listRunningAutoQaRecords(): AutoQaRecord[] {
 		const stmt = this.db.prepare(
 			"SELECT * FROM auto_qa_record WHERE status = 'running' ORDER BY started_at",
-		);
-		const out: AutoQaRecord[] = [];
-		while (stmt.step()) {
-			out.push(
-				this.rowToAutoQaRecord(stmt.getAsObject() as Record<string, unknown>),
-			);
-		}
-		stmt.free();
-		return out;
-	}
-
-	/** FLY-1279 D2: all records that can semantically hold an implementer. */
-	listParkWatchAutoQaRecords(): AutoQaRecord[] {
-		const stmt = this.db.prepare(
-			`SELECT * FROM auto_qa_record
-			 WHERE status IN
-			  ('running','awaiting_retest','retry_pending','retry_starting','stuck')
-			 ORDER BY started_at`,
 		);
 		const out: AutoQaRecord[] = [];
 		while (stmt.step()) {
@@ -11056,93 +10929,6 @@ export class StateStore {
 		if (this.db.getRowsModified() > 0) this.save();
 	}
 
-	// --- FLY-637-ext: lead-pending escalation durable backoff state ---
-
-	/** Read the backoff row for one (execution, blocking question), or undefined. */
-	getLeadPendingEscalation(
-		executionId: string,
-		questionId: string,
-	): LeadNudgeRow | undefined {
-		const result = this.db.exec(
-			`SELECT stuck_key, nudge_count, last_nudge_at_ms, next_eligible_at_ms, paged_annie
-			 FROM lead_pending_escalation
-			 WHERE execution_id = ? AND question_id = ?`,
-			[executionId, questionId],
-		);
-		const row = result[0]?.values[0];
-		if (!row) return undefined;
-		return {
-			stuck_key: row[0] as string,
-			nudge_count: row[1] as number,
-			last_nudge_at_ms: row[2] as number,
-			next_eligible_at_ms: row[3] as number,
-			paged_annie: (row[4] as number) === 1,
-		};
-	}
-
-	/** Upsert the backoff row. Caller commits AFTER the nudge/alert is accepted (R1 #5). */
-	upsertLeadPendingEscalation(
-		executionId: string,
-		questionId: string,
-		row: LeadNudgeRow,
-	): void {
-		this.db.run(
-			`INSERT INTO lead_pending_escalation
-			   (execution_id, question_id, stuck_key, nudge_count, last_nudge_at_ms, next_eligible_at_ms, paged_annie)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(execution_id, question_id) DO UPDATE SET
-			   stuck_key = excluded.stuck_key,
-			   nudge_count = excluded.nudge_count,
-			   last_nudge_at_ms = excluded.last_nudge_at_ms,
-			   next_eligible_at_ms = excluded.next_eligible_at_ms,
-			   paged_annie = excluded.paged_annie`,
-			[
-				executionId,
-				questionId,
-				row.stuck_key,
-				row.nudge_count,
-				row.last_nudge_at_ms,
-				row.next_eligible_at_ms,
-				row.paged_annie ? 1 : 0,
-			],
-		);
-		this.save();
-	}
-
-	/** Clear one question's row, or all of a runner's rows (question answered / gone). */
-	clearLeadPendingEscalation(executionId: string, questionId?: string): void {
-		if (questionId) {
-			this.db.run(
-				`DELETE FROM lead_pending_escalation WHERE execution_id = ? AND question_id = ?`,
-				[executionId, questionId],
-			);
-		} else {
-			this.db.run(
-				`DELETE FROM lead_pending_escalation WHERE execution_id = ?`,
-				[executionId],
-			);
-		}
-		this.save();
-	}
-
-	/**
-	 * Prune rows whose `question_id` is NOT in the current active pending set —
-	 * a question that was answered / evicted drops its escalation state so a later
-	 * genuine episode starts clean. Empty set ⇒ clear all (no `IN ()`).
-	 */
-	pruneLeadPendingEscalationNotIn(activeQuestionIds: string[]): void {
-		if (activeQuestionIds.length === 0) {
-			this.db.run(`DELETE FROM lead_pending_escalation`);
-		} else {
-			const placeholders = activeQuestionIds.map(() => "?").join(",");
-			this.db.run(
-				`DELETE FROM lead_pending_escalation WHERE question_id NOT IN (${placeholders})`,
-				activeQuestionIds,
-			);
-		}
-		if (this.db.getRowsModified() > 0) this.save();
-	}
-
 	// --- FLY-1048 PR-C (C1): detection_escalations durable episode store ---
 
 	private founderDecisionConvergenceFromValues(
@@ -11585,6 +11371,26 @@ export class StateStore {
 		return row ? this.detectionEscalationFromValues(row) : undefined;
 	}
 
+	/** Resolve a receipt-derived episode by its bounded parent id. Ambiguous
+	 * lineage fails closed instead of acknowledging an arbitrary row. */
+	getDetectionEscalationBySourceReceiptId(
+		targetKey: string,
+		kind: string,
+		sourceReceiptId: string,
+	): DetectionEscalationRow | undefined {
+		const result = this.db.exec(
+			`SELECT ${StateStore.DETECTION_ESCALATION_COLUMNS}
+			 FROM detection_escalations
+			 WHERE target_key = ? AND kind = ? AND source_receipt_id = ?
+			 LIMIT 2`,
+			[targetKey, kind, sourceReceiptId],
+		);
+		const rows = result[0]?.values ?? [];
+		return rows.length === 1
+			? this.detectionEscalationFromValues(rows[0]!)
+			: undefined;
+	}
+
 	/**
 	 * Insert a NEW episode, or return the existing row untouched — episode
 	 * continuity: re-observing an episode must never reset its detection clock
@@ -11851,35 +11657,6 @@ export class StateStore {
 	}
 
 	/**
-	 * FLY-1279 D2: persist one positive semantic observation. The monotonic
-	 * counter makes gate-row-missing require two complete scans without relying
-	 * on process memory; notification ownership remains the normal NEW→
-	 * LEAD_NOTIFIED transition.
-	 */
-	observeParkCondition(input: {
-		targetKey: string;
-		kind: string;
-		episodeFingerprint: string;
-		issueId?: string | null;
-		firstDetectedAtMs: number;
-	}): DetectionEscalationRow {
-		this.upsertDetectionEscalation(input);
-		this.db.run(
-			`UPDATE detection_escalations SET attempts = attempts + 1
-			 WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
-			   AND status = 'NEW'`,
-			[input.targetKey, input.kind, input.episodeFingerprint],
-		);
-		const row = this.getDetectionEscalation(
-			input.targetKey,
-			input.kind,
-			input.episodeFingerprint,
-		);
-		if (!row) throw new Error("park observation failed to persist");
-		return row;
-	}
-
-	/**
 	 * Stamp LEAD_NOTIFIED. The FIRST notification timestamp wins on repeats so
 	 * a re-notify can never slide the founder-grace window forward. Only moves
 	 * NEW/LEAD_NOTIFIED rows (never regresses ACKED/terminal states).
@@ -12085,7 +11862,7 @@ export class StateStore {
 	}
 
 	/**
-	 * FLY-1282 Part D (old stuck-disposition + recovery-nudge surfaces): the
+	 * FLY-1282 Part D (recovery-nudge surface): the
 	 * authoritative stuck_dispositions write AND every hit episode's unified
 	 * ack + receipt prepare commit in ONE transaction — any failure rolls the
 	 * whole disposition back (the C4a swallow-and-200 false success is gone;
@@ -15663,30 +15440,6 @@ export class StateStore {
 			"CREATE UNIQUE INDEX IF NOT EXISTS ux_workflow_route_decision_rejected ON workflow_route_decision(dedup_key) WHERE dedup_key IS NOT NULL",
 		);
 		this.db.run(`
-			CREATE TABLE IF NOT EXISTS workflow_route_reminder_outbox (
-				dedup_key TEXT PRIMARY KEY,
-				decision_id INTEGER NOT NULL UNIQUE,
-				project TEXT NOT NULL,
-				issue_id TEXT NOT NULL,
-				error_code TEXT NOT NULL,
-				payload_json TEXT NOT NULL,
-				recipient_lead_id TEXT NOT NULL,
-				status TEXT NOT NULL DEFAULT 'pending'
-				 CHECK(status IN ('pending','accepted','dead_letter')),
-				attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
-				claim_owner TEXT,
-				claim_expires_at TEXT,
-				accepted_at TEXT,
-				last_error TEXT,
-				created_at TEXT NOT NULL,
-				updated_at TEXT NOT NULL,
-				FOREIGN KEY (decision_id) REFERENCES workflow_route_decision(id)
-			)
-		`);
-		this.db.run(
-			"CREATE INDEX IF NOT EXISTS idx_workflow_route_reminder_pending ON workflow_route_reminder_outbox(status, claim_expires_at, created_at)",
-		);
-		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_launch_owner (
 				execution_id TEXT PRIMARY KEY,
 				owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
@@ -17535,12 +17288,11 @@ export class StateStore {
 		return changed;
 	}
 
-	insertRejectedRouteDecisionWithReminder(input: {
+	insertRejectedRouteDecision(input: {
 		project: string;
 		issueId: string;
 		errorCode: string;
 		payload: unknown;
-		recipientLeadId: string;
 		owningDept?: string;
 		selectedBy?: string;
 		now?: string;
@@ -17573,72 +17325,7 @@ export class StateStore {
 				],
 			);
 			inserted = this.db.getRowsModified() === 1;
-			if (!inserted) return;
-			const decision = this.workflowSelectAll(
-				"SELECT id FROM workflow_route_decision WHERE dedup_key = ?",
-				[dedupKey],
-			)[0];
-			this.db.run(
-				`INSERT INTO workflow_route_reminder_outbox
-				 (dedup_key, decision_id, project, issue_id, error_code,
-				  payload_json, recipient_lead_id, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					dedupKey,
-					Number(decision!.id),
-					input.project,
-					input.issueId,
-					input.errorCode,
-					JSON.stringify(input.payload),
-					input.recipientLeadId,
-					now,
-					now,
-				],
-			);
 		});
-		this.save();
-		return { inserted, dedupKey };
-	}
-
-	insertWorkflowRouteDecisionReminder(input: {
-		idempotencyKey?: string;
-		executionId?: string;
-		code: string;
-		payload: unknown;
-		recipientLeadId: string;
-		now?: string;
-	}): { inserted: boolean; dedupKey: string } {
-		const decision = this.getWorkflowRouteDecisionByIdentity(input);
-		if (!decision || decision.status === "rejected") {
-			throw new Error("workflow route reminder requires a successful decision");
-		}
-		const now = input.now ?? new Date().toISOString();
-		const payloadHash = canonicalSubmissionDigest(input.payload);
-		const dedupKey = canonicalSubmissionDigest({
-			decisionId: decision.id,
-			project: decision.project,
-			issueId: decision.issue_id,
-			code: input.code,
-			payloadHash,
-		});
-		this.db.run(
-			`INSERT OR IGNORE INTO workflow_route_reminder_outbox
-			 (dedup_key, decision_id, project, issue_id, error_code,
-			  payload_json, recipient_lead_id, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				dedupKey,
-				decision.id,
-				decision.project,
-				decision.issue_id,
-				input.code,
-				JSON.stringify(input.payload),
-				input.recipientLeadId,
-				now,
-				now,
-			],
-		);
-		const inserted = this.db.getRowsModified() === 1;
 		this.save();
 		return { inserted, dedupKey };
 	}
@@ -17648,110 +17335,6 @@ export class StateStore {
 			"SELECT * FROM workflow_route_decision ORDER BY id",
 			[],
 		) as unknown as WorkflowRouteDecisionRow[];
-	}
-
-	listWorkflowRouteReminderOutbox(): WorkflowRouteReminderOutboxRow[] {
-		return this.workflowSelectAll(
-			"SELECT * FROM workflow_route_reminder_outbox ORDER BY created_at, dedup_key",
-			[],
-		) as unknown as WorkflowRouteReminderOutboxRow[];
-	}
-
-	claimWorkflowRouteReminder(input: {
-		owner: string;
-		now: string;
-		leaseExpiresAt: string;
-		maxAttempts?: number;
-	}): WorkflowRouteReminderClaim | undefined {
-		if (
-			!StateStore.workflowFiniteTimestamp(input.now) ||
-			!StateStore.workflowFiniteTimestamp(input.leaseExpiresAt) ||
-			Date.parse(input.leaseExpiresAt) <= Date.parse(input.now)
-		) {
-			throw new Error("invalid workflow route reminder lease");
-		}
-		const maxAttempts = input.maxAttempts ?? 3;
-		let claimed: WorkflowRouteReminderClaim | undefined;
-		this.db.transaction(() => {
-			const candidate = this.workflowSelectAll(
-				`SELECT * FROM workflow_route_reminder_outbox
-				  WHERE status = 'pending'
-				    AND attempts < ?
-				    AND (claim_expires_at IS NULL OR claim_expires_at <= ?)
-				  ORDER BY created_at, dedup_key
-				  LIMIT 1`,
-				[maxAttempts, input.now],
-			)[0] as unknown as WorkflowRouteReminderOutboxRow | undefined;
-			if (!candidate) return;
-			const attempt = Number(candidate.attempts) + 1;
-			this.db.run(
-				`UPDATE workflow_route_reminder_outbox
-				    SET attempts = ?, claim_owner = ?, claim_expires_at = ?,
-				        updated_at = ?
-				  WHERE dedup_key = ? AND status = 'pending' AND attempts = ?
-				    AND (claim_expires_at IS NULL OR claim_expires_at <= ?)`,
-				[
-					attempt,
-					input.owner,
-					input.leaseExpiresAt,
-					input.now,
-					candidate.dedup_key,
-					candidate.attempts,
-					input.now,
-				],
-			);
-			if (this.db.getRowsModified() !== 1) return;
-			claimed = {
-				dedupKey: candidate.dedup_key,
-				attempt,
-				eventId: `${candidate.dedup_key}#${attempt}`,
-				project: candidate.project,
-				issueId: candidate.issue_id,
-				errorCode: candidate.error_code,
-				payload: JSON.parse(candidate.payload_json) as unknown,
-				recipientLeadId: candidate.recipient_lead_id,
-			};
-		});
-		if (claimed) this.save();
-		return claimed;
-	}
-
-	completeWorkflowRouteReminder(input: {
-		dedupKey: string;
-		owner: string;
-		attempt: number;
-		outcome: "accepted" | "retry";
-		error?: string;
-		now?: string;
-		maxAttempts?: number;
-	}): boolean {
-		const now = input.now ?? new Date().toISOString();
-		const maxAttempts = input.maxAttempts ?? 3;
-		const status =
-			input.outcome === "accepted"
-				? "accepted"
-				: input.attempt >= maxAttempts
-					? "dead_letter"
-					: "pending";
-		this.db.run(
-			`UPDATE workflow_route_reminder_outbox
-			    SET status = ?, accepted_at = ?, last_error = ?,
-			        claim_owner = NULL, claim_expires_at = NULL, updated_at = ?
-			  WHERE dedup_key = ? AND status = 'pending'
-			    AND claim_owner = ? AND attempts = ?`,
-			[
-				status,
-				status === "accepted" ? now : null,
-				input.error ?? null,
-				now,
-				input.dedupKey,
-				input.owner,
-				input.attempt,
-			],
-		);
-		const changed = this.db.getRowsModified() === 1;
-		if (changed) this.save();
-		return changed;
 	}
 
 	summarizeCategorySuggestionAlignment(
@@ -33640,35 +33223,6 @@ export type WorkflowRouteDecisionClaimResult =
 			decision: WorkflowRouteDecisionRow;
 	  }
 	| { status: "conflict"; decision: WorkflowRouteDecisionRow };
-
-export interface WorkflowRouteReminderOutboxRow {
-	dedup_key: string;
-	decision_id: number;
-	project: string;
-	issue_id: string;
-	error_code: string;
-	payload_json: string;
-	recipient_lead_id: string;
-	status: "pending" | "accepted" | "dead_letter";
-	attempts: number;
-	claim_owner: string | null;
-	claim_expires_at: string | null;
-	accepted_at: string | null;
-	last_error: string | null;
-	created_at: string;
-	updated_at: string;
-}
-
-export interface WorkflowRouteReminderClaim {
-	dedupKey: string;
-	attempt: number;
-	eventId: string;
-	project: string;
-	issueId: string;
-	errorCode: string;
-	payload: unknown;
-	recipientLeadId: string;
-}
 
 export interface WorkflowCategorySuggestionSummary {
 	project: string;

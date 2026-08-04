@@ -90,7 +90,6 @@ type MockNotifier = Record<string, MockFn>;
 
 function makeStore(): MockStore {
 	const store: MockStore = {
-		getStuckSessions: vi.fn().mockReturnValue([]),
 		getOrphanSessions: vi.fn().mockReturnValue([]),
 		getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 		getAwaitingReviewTimedOut: vi.fn().mockReturnValue([]),
@@ -117,7 +116,6 @@ function makeStore(): MockStore {
 
 function makeNotifier(): MockNotifier {
 	return {
-		onSessionStuck: vi.fn().mockResolvedValue(true),
 		onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
 		onSessionStale: vi.fn().mockResolvedValue(undefined),
 		onSessionMonitoringLost: vi.fn().mockResolvedValue(undefined),
@@ -209,7 +207,6 @@ describe("M2 tri-state dispatch", () => {
 		mockedProbe.mockResolvedValue("indeterminate");
 		const s = sess();
 		store.getOrphanSessions.mockReturnValue([s]);
-		store.getStuckSessions.mockReturnValue([s]);
 		await service.check();
 		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
 		expect(store.updateHeartbeat).not.toHaveBeenCalled();
@@ -219,8 +216,7 @@ describe("M2 tri-state dispatch", () => {
 			expect.any(Number),
 			{ unverified: true },
 		);
-		// suppression: no stuck wake, no orphan force-fail
-		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
+		// suppression: no orphan force-fail
 		expect(store.forceStatus).not.toHaveBeenCalled();
 	});
 
@@ -233,15 +229,13 @@ describe("M2 tri-state dispatch", () => {
 		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledTimes(1);
 	});
 
-	it("absent x1 → zombieHeld suppression: even past orphan threshold, NOT generic-reaped, no session_stuck", async () => {
+	it("absent x1 → zombieHeld suppression: even past orphan threshold, NOT generic-reaped", async () => {
 		mockedProbe.mockResolvedValue("absent");
 		const s = sess({ heartbeat_at: "2026-07-15 06:00:00" }); // hours stale
 		store.getOrphanSessions.mockReturnValue([s]);
-		store.getStuckSessions.mockReturnValue([s]);
 		await service.check(); // one full pass: absent#1
 		expect(store.forceStatus).not.toHaveBeenCalled();
 		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
-		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
 		expect(notifier.prepareSessionZombieDetected).not.toHaveBeenCalled();
 	});
 

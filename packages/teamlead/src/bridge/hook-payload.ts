@@ -50,7 +50,7 @@ export interface HookPayload {
 	// Evidence ONLY — the Lead judges; none of these are act-triggers.
 	/** Whole minutes the runner's terminal output has been unchanged. */
 	stuck_minutes?: number;
-	/** Stable fingerprint of this stuck episode — echo it back when writing a disposition or nudging. */
+	/** Stable episode reference — receipt-derived detections use their bounded parent id. */
 	episode_fingerprint?: string;
 	/** Trailing non-empty terminal lines (helps the Lead judge fast). */
 	terminal_tail?: string;
@@ -244,7 +244,7 @@ export function formatStuckEscalation(
 		`ID: ${e.execution_id || "—"} | Issue: ${issueRef}`,
 		`STUCK candidate: output unchanged for ${e.stuck_minutes ?? "?"} min while status=${e.status ?? "running"} — judge and re-manage (candidate, NOT a verdict).`,
 		`Episode-Fingerprint: ${e.episode_fingerprint ?? "(missing)"}`,
-		'(echo this fingerprint EXACTLY as "episode_fingerprint" in your stuck-disposition / recovery-nudge call)',
+		'(echo this fingerprint EXACTLY as "episode_fingerprint" in your detection-ack / recovery-nudge call)',
 		`Evidence: input_box_present=${e.input_box_present ?? "?"} | stream_error_signature=${e.stream_error_signature ?? "?"}`,
 	];
 	// FLY-1048 (A3): the error-signature KIND behind a repeated-signature

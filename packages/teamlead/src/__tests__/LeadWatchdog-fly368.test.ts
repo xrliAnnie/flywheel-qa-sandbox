@@ -11,7 +11,6 @@ import {
 	classifyLeadAlertPane,
 	isSafeResumeMenuForEnter,
 	LeadWatchdog,
-	leadPaneLiveHash,
 } from "../LeadWatchdog.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -49,19 +48,9 @@ describe("classifyLeadAlertPane (FLY-368 public classifier)", () => {
 			"usage_limit",
 		);
 	});
-	it("an idle-healthy pane is not a blocked kind (pane_hash_stuck default)", () => {
+	it("returns the legacy sentinel when no blocked kind is present", () => {
 		expect(classifyLeadAlertPane(fx("idle-cos-lead.txt"))).toBe(
 			"pane_hash_stuck",
-		);
-	});
-});
-
-describe("leadPaneLiveHash (FLY-368 two-capture rule helper)", () => {
-	it("is stable for identical panes and differs for different live state", () => {
-		const a = fx("idle-cos-lead.txt");
-		expect(leadPaneLiveHash(a)).toBe(leadPaneLiveHash(a));
-		expect(leadPaneLiveHash(a)).not.toBe(
-			leadPaneLiveHash(fx("rate-limit-real.txt")),
 		);
 	});
 });
@@ -160,29 +149,6 @@ describe("LeadWatchdog FLY-368 hooks", () => {
 			"geoforge3d",
 			"cos-lead",
 			"rate_limit",
-		);
-	});
-
-	it("fires onRecovery with pane_hash_stuck when an unknown freeze recovers", async () => {
-		const onRecovery = vi.fn();
-		const frozen = "frozen unknown pane, no markers\n";
-		const healthy = "now moving along differently\n";
-		const seq = [frozen, frozen, frozen, frozen, healthy];
-		let i = 0;
-		const wd = makeWatchdog(store, {
-			capture: async () => seq[Math.min(i++, seq.length - 1)]!,
-			onRecovery,
-		});
-		// pane_hash_stuck fires at paneHashAlertCycles (3).
-		await wd.pollOnce();
-		await wd.pollOnce();
-		await wd.pollOnce();
-		await wd.pollOnce();
-		await wd.pollOnce(); // recovered
-		expect(onRecovery).toHaveBeenCalledWith(
-			"geoforge3d",
-			"cos-lead",
-			"pane_hash_stuck",
 		);
 	});
 
