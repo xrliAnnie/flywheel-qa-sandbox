@@ -57,7 +57,7 @@ Issue: FLY-1570 (https://linear.app/geoforge3d/issue/FLY-1570/消息层重构-a-
       - detection 域:`SELECT kind, status, count(*) FROM detection_escalations WHERE status NOT IN ('RESOLVED') AND kind IN ('receipt_unprocessed','wake_failed') GROUP BY kind, status`
     - **contract delta 逐 entry pin**(R5 收窄,只降级真失去 handler 的 auto 契约,不动本来就 truthful 的值):仅 `pane_hash_stuck`/`runner_stuck_unhandled`/`runner_throttle_stalled` 三条 `arc:"auto"` → `human_by_design` + 删 remediationRef;`pane_error_stalled`/`workflow_route_input_rejected`(已 `human_by_design`)与 `runner_lead_pending_unhandled`/`inbox_loop_stalled`(已 `none_escalate`)**保持原值**加 legacy 注释 —— 统一改值会改变 residual replay 的文案/调用链/ticket lifecycle,超出必要范围
     - **三项新增验证**:①`pnpm -r build` 证明穷尽 Record 闭合;②`validateKindContracts()` 启动校验通过(真实化后的 entry);③seeded 重启测试**分路径 pin**:一条 `ticket_status=NULL` legacy 行断言 no-op、一条 ticketed `NEW` 行断言 decideTicketEscalation→T2 路径,断言不得合并三种路径
-12. **receipt 升级链覆盖核对(Lead 硬性核对项 2026-08-04,lead-instruction 92a148f8)—— 回答:部分包含,边界逐条**。背景:receipt_unprocessed 升级链自嵌套(升级事件本身是消息→也要收据→再升级时把上一代 fingerprint 整段拼进来→每代变长→第三代突破 detection-ack 端点 200 字符上限 stuck-remanage-routes.ts:171→永远无法 ack→必然 page founder;生产已清 293 行结构死类)。
+12. **receipt 升级链覆盖核对(Lead 硬性核对项 2026-08-04,lead-instruction 92a148f8 + 修正版 0e76355c,以修正版框架为准)—— 裁定:这类检测不该以 watchdog 形式存在,明确删除,不留死着装样子的 watchdog**。背景(CoS 阳性对照实测):receipt_unprocessed 升级链自嵌套(升级事件本身是消息→也要收据→再升级时把上一代 fingerprint 整段拼进来→每代变长→第三代突破 detection-ack 端点 200 字符上限 stuck-remanage-routes.ts:171),且 **fingerprint>200 的 1649 行 0 次 page(≤200 的行 3759 次 page,pager 活着)、>7 天未结的 170 条同样 0 page ⇒ ack 与 page 双路全死 = 假阴性静默失效**:watchdog 自以为在盯这一类,类内任何真实故障永远到不了人眼前。这**加强**了拆除裁定 —— 本单删的不是一个工作中的保障,而是一个只剩形骸的假保障;生产已清 293 行结构死类。「值得检测的那部分职能」不由新 watchdog 承接,由 D 单的**结构性队列语义**取代(FLY-1569 §4/§6:租约到期同一条消息原地重新可见、不新建行;重投 3 次 → 死信闸打包给 Lead 决策)—— 送没送到从此是队列属性,不是巡逻检测,自嵌套与长度上限问题在结构上不存在。
     - **包含(自嵌套的引擎整体死亡)**:resend 引擎(lead-receipt-patrol 的 advanceDueUnprocessedReceipts + markUnprocessedReceiptEscalated 全仓唯一调用者)、receipt 域升级生成器(notifyUnprocessed plugin.ts:8130-8170 / notifyWakeFailure :8065-8107,随两 patrol 闭包删)、receiptDetectionKinds 收缩(:7517)—— 刀 4 全删。**「升级的升级」从此结构性不可能:不是靠更好的上限,而是生成器物理不存在了**。替代物(租约到期原地重投不新建行 + 死信闸)= D 单按 FLY-1569 §4/§6 重建
     - **不包含(留下的洞逐条)**:① `detection_escalations` 表 + reconcileDetectionEscalations 升级机(保留,服务 founder_decision_dropped 保留项 —— 但 receipt 域 feeder 已死,不会再长新 receipt 行);② detection-ack 端点及其 **200 字符上限本体(:171)保留**(统一检测流活接口)—— 其「超长永远关不掉却继续吵」的 fail-closed 方向反了 + too-long 误报 required 文案 + fingerprint 整段拼接三个病灶,**不折进本删除 PR**(纯删红线;且 feeder 死后病灶从「活着的 founder-pager」降级为「保留端点的潜在缺陷」),按 Lead 决定另立小单或折进 C/D;③ lead_inbox 重发记账字段(C 单);④ 存量 receipt 域 detection 行:ship checklist 已含 detection 域盘点 SQL(§3.11),非零先人工收敛
     - 若 Lead 判定②必须本单治,追加为独立第 9 刀(带端点行为测试),不混入删除 commit
@@ -141,6 +141,11 @@ Issue: FLY-1570 (https://linear.app/geoforge3d/issue/FLY-1570/消息层重构-a-
 3. **Bridge 起得来 + fleet 12/12**:QA 阶段真机重启 Bridge(self-hosting ship 纪律,ship 窗执行),`/health` watchdog manifest 校验通过(w1/w2/w4 行在,w2 wired=true 且心跳 fresh)+ `scripts/bridge-liveness-probe.sh` 契约不降级
 4. **真机一轮无追命告警**:起 1 个 runner 跑完整轮,断言零 `wake_failed`/`receipt_unprocessed`/`runner_lead_pending_*`/`stuck_*`/`pane_hash_stuck` 新告警(claims.db + lead_events + Discord 三处取证)
 5. **保留清单逐项点名**(research.md §3 表为底稿):BridgeEventLoopWatchdog(SIGKILL 沙箱验证或 /health 心跳 fresh)、RunnerIdleWatchdog W-1(kill 进程留裸 shell → runner_idle_detected)、quota/auth 扫描(1h 窗口证据)、五 reaper 抽查、GatePoller 搭车对账单测 GREEN + tick 日志、onPollComplete 保留 rider 照跑、**unreachable-runner 正面注入验证**(复活项)、**founder reply 投递 + deferred rebind 照常**(§3.7 红线回归)、account-switch(daemon 侧证据)、W-2 manifest fresh/stale 两态 + 外部探针
+6. **QA 节点硬性要求(founder 直令 2026-08-04 06:01,lead-instruction 974746ff;QA 节点按此验收,不许 stub 替代)**:
+   - **529 测试房真机 E2E**:真组件搭台(真数据库/真进程/真链路),参照 FLY-1624 标准 —— stub 测不到真调用,bug 会躲过评审
+   - **真 Discord 腿**:凡本单涉及「通知/消息送达」的行为(保留告警链 W-4/unreachable-runner 复活/退休 kind 残留线程重放路径),把真实产物经真实发送链路发进 529 隔离频道,真送达 + 读取确认;生产频道零污染
+   - **结论绑定精确 head**;修前/修后对照数字(追命告警计数、claims.db/lead_events 证据)进 QA 报告
+   - **涉及重启行为的验收必须真实重启**(Bridge 重启 + fleet 12/12、seeded 退休-kind 行重启重放测试);不适用项在 QA 报告里说明为何不适用,不许沉默跳过
 
 ## 6. 风险与回滚
 
