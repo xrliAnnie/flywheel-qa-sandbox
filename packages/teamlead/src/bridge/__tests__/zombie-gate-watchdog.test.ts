@@ -15,16 +15,19 @@ import { FounderReplyWatchdog } from "../founder-reply-watchdog.js";
 import { GatePoller } from "../gate-poller.js";
 import { defaultGetCommDbPath } from "../session-capture.js";
 import {
-	runZombieGateHygiene,
+	runZombieGateHygiene as runZombieGateHygieneRaw,
 	type ZombieCommDb,
+	type ZombieGateHygieneDeps,
 } from "../zombie-gate-hygiene.js";
 
 afterEach(() => {
-	delete process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE;
 	delete process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG;
 	delete process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER;
 	vi.restoreAllMocks();
 });
+
+const runZombieGateHygiene = (deps: ZombieGateHygieneDeps) =>
+	runZombieGateHygieneRaw({ ...deps, resolveDeadGates: true });
 
 async function freshStore(): Promise<StateStore> {
 	return StateStore.create(":memory:");
@@ -172,8 +175,7 @@ describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 		expect(res.unreachable).toEqual([]);
 	});
 
-	it("kill-switch OFF short-circuits BEFORE the intent write (R2 #4: zero new side effects)", async () => {
-		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "0";
+	it("production policy skips Z1 before the intent write", async () => {
 		const store = await freshStore();
 		const s = Object.assign(store, {
 			getSession: () => ({
@@ -183,11 +185,12 @@ describe("zombie gate hygiene — Z1/Z2 判定矩阵", () => {
 			}),
 		});
 		const { db, retireShipGate } = fakeZombieDb({ commSession: false });
-		await runZombieGateHygiene({
+		await runZombieGateHygieneRaw({
 			store: s as never,
 			projectName: "proj",
 			pendingGateQuestions: [q("Q-1")],
 			db,
+			resolveDeadGates: false,
 		});
 		expect(retireShipGate).not.toHaveBeenCalled();
 		expect(store.getEventsByExecution("E-1")).toHaveLength(0);
@@ -584,7 +587,6 @@ describe("Codex code R1 MED-1: dangling-intent reconcile", () => {
 
 describe("Codex code R8 MED-1: GatePoller wrapper — empty filtered candidate set still reconciles dangling intents", () => {
 	it("formal retirement leaves dangling legacy intent untouched and never touches the tracked gate", async () => {
-		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "1";
 		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
 		const originalHome = process.env.HOME;
 		const tmpHome = join(

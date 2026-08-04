@@ -226,8 +226,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: stuck-confirm per-tick candidate budget, bounded ≤20, default 3 — beyond-budget candidates take the legacy emit (FLY-1234)",
 	FLYWHEEL_STUCK_CONFIRM_DEADLINE_MS:
 		"tuning knob: stuck-confirm end-to-end deadline ms, bounded ≤300s, default 90s — expiry fail-opens to emit (FLY-1234)",
-	FLYWHEEL_GAP_SCAN_EVERY_N_TICKS:
-		"tuning knob: gap-scan cadence in GatePoller ticks (FLY-1048 A6)",
 	FLYWHEEL_DETECTION_LEAD_GRACE_MS:
 		"tuning knob: detection-escalation Lead grace ms before the founder page (FLY-1048 PR-C; per-project override via detection.lead_grace_ms)",
 	FLYWHEEL_DETECTION_FLEET_THRESHOLD:
@@ -236,10 +234,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: detection-escalation reconcile cadence in GatePoller ticks (FLY-1048 PR-C)",
 	FLYWHEEL_CLEARING_TTL_MS:
 		"tuning knob: CLEARING mute TTL ms before an unfinished cleanup re-arms its episodes, default 2h (FLY-1048 PR-C C5)",
-	FLYWHEEL_FRAME_INTERVAL_MS:
-		"tuning knob: focused-frame capture interval ms (FLY-1048 A7)",
-	FLYWHEEL_FRAME_CAPTURES_PER_TICK:
-		"tuning knob: focused-frame capture budget per tick (FLY-1048 A7)",
 	FLYWHEEL_REPORT_SHOT_WIDTH: "tuning knob: screenshot width",
 	FLYWHEEL_ALERT_DRAIN_STUCK_CYCLES: "tuning knob: alert drain cycles",
 	FLYWHEEL_ALERT_QUEUE_MAX: "tuning knob: alert queue max",
@@ -273,22 +267,20 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: dead auto-QA recovery reconcile cadence (FLY-1279 D3b)",
 	FLYWHEEL_POOL_REBUILD_TIMEOUT_MS:
 		"tuning knob: pool-rebuild launchd transition and health wait timeout (FLY-1182)",
-	FLYWHEEL_RECEIPT_UNPROCESSED_WINDOW_MIN:
-		"tuning knob: first unprocessed-receipt deadline in minutes (FLY-1392)",
-	FLYWHEEL_RECEIPT_REBIND_WINDOW_MIN:
-		"tuning knob: founder-reply issue rebind window in minutes (FLY-1392)",
-	FLYWHEEL_RECEIPT_RESEND_CAP:
-		"tuning knob: unprocessed-receipt resend attempts before escalation (FLY-1392)",
 	FLYWHEEL_RECEIPT_EXEC_PUSH_CAP:
-		"tuning knob: per-execution mailbox push budget (FLY-1392)",
+		"tuning knob: initial per-execution mailbox push budget (FLY-1392)",
 	FLYWHEEL_RECEIPT_EXEC_PUSH_WINDOW_MIN:
-		"tuning knob: per-execution mailbox push budget window in minutes (FLY-1392)",
+		"tuning knob: initial mailbox push budget window in minutes (FLY-1392)",
 	FLYWHEEL_RECEIPT_WAKE_T1_MS:
-		"tuning knob: receipt resend mailbox wake delay in milliseconds (FLY-1392)",
-	FLYWHEEL_RECEIPT_WAKE_T2_MS:
-		"tuning knob: receipt resend terminal wake delay in milliseconds (FLY-1392)",
-	FLYWHEEL_RECEIPT_WAKE_T3_MS:
-		"tuning knob: receipt wake-failure escalation delay in milliseconds (FLY-1392)",
+		"tuning knob: initial send terminal wake delay in milliseconds (FLY-1392)",
+	FLYWHEEL_RECEIPT_WINDOW_P0_MIN:
+		"tuning knob: P0 Lead-inbox receipt deadline in minutes (FLY-1426)",
+	FLYWHEEL_RECEIPT_WINDOW_P1_MIN:
+		"tuning knob: P1 Lead-inbox receipt deadline in minutes (FLY-1426)",
+	FLYWHEEL_RECEIPT_WINDOW_P2_MIN:
+		"tuning knob: P2 Lead-inbox receipt deadline in minutes (FLY-1426)",
+	FLYWHEEL_RECEIPT_WINDOW_P3_MIN:
+		"tuning knob: P3 Lead-inbox receipt deadline in minutes (FLY-1426)",
 	// FLY-927 infra-alert ticket-queue rollout levers (all default-off = current
 	// behavior; ops-flipped in ~/.flywheel/.env + Bridge restart, NOT founder
 	// dashboard toggles yet — same class as the internal ops levers above). When
@@ -308,6 +300,30 @@ export const RETIRED_FLAGS = [
 	{ envVar: "FLYWHEEL_LEAD_PENDING_ESCALATION", retiredBy: "FLY-1570" },
 	{ envVar: "FLYWHEEL_STUCK_DETECT", retiredBy: "FLY-1570" },
 	{ envVar: "FLYWHEEL_STUCK_FOUNDER_PAGE", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_MISROUTE_PATROL", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_ZOMBIE_GATE_RESOLVE", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_PANE_IDLE_SUPPRESS", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_CODEX_HOLD_NUDGE", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_CODEX_HOLD_NUDGE_MS", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_GAP_SCAN_EVERY_N_TICKS", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_GAP_ASK_UNANSWERED_MS", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_GAP_UNCONSUMED_MS", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_GAP_COMM_WINDOW_MS", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_GAP_PROGRESS_STALL_MS", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_FRAME_INTERVAL_MS", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_FRAME_CAPTURES_PER_TICK", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_RECEIPT_UNPROCESSED_WINDOW_MIN", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_RECEIPT_REBIND_WINDOW_MIN", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_RECEIPT_RESEND_CAP", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_RECEIPT_WAKE_T2_MS", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_RECEIPT_WAKE_T3_MS", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_LEAD_NUDGE_BACKOFF_FACTOR", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_LEAD_NUDGE_CAP_MS", retiredBy: "FLY-1570" },
+	{ envVar: "FLYWHEEL_LEAD_NUDGE_GRACE_MS", retiredBy: "FLY-1570" },
+	{
+		envVar: "FLYWHEEL_LEAD_NUDGE_PAGE_ANNIE_ROUNDS",
+		retiredBy: "FLY-1570",
+	},
 	{ envVar: "FLYWHEEL_DETECTION_GAP_SCAN", retiredBy: "FLY-1393" },
 	{ envVar: "FLYWHEEL_STUCK_ERRORSIG", retiredBy: "FLY-1393" },
 	{ envVar: "FLYWHEEL_DETECTION_ESCALATION", retiredBy: "FLY-1393" },

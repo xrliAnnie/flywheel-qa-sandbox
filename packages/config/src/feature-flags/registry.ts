@@ -1206,28 +1206,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "由每次 flywheel-comm CLI invocation 读取；默认开启，=0 仅用于 GitHub/gh 证据链故障的紧急恢复。",
 	},
 	{
-		name: "misroute_patrol",
-		retiring: "FLY-1393",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_MISROUTE_PATROL",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "Lead-inbox 误投巡检（每 poll 读）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/gate-poller.ts",
-				"GatePoller.poll",
-				"call_time",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"resolve.direct-toggle.test:misroute_patrol live-observe",
-	},
-	{
 		name: "founder_thread_notify",
 		category: "feature",
 		source: "env",
@@ -1514,27 +1492,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			envSite(
 				"packages/teamlead/src/bridge/founder-reply-watchdog.ts",
 				"founderReplyWatchdogEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-	},
-	{
-		name: "zombie_gate_resolve",
-		retiring: "FLY-1393",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ZOMBIE_GATE_RESOLVE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"僵尸 gate 自动 retire(Z1 三段式;OFF 连 intent 都不写=今日字节路径)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/zombie-gate-hygiene.ts",
-				"zombieGateResolveEnabled",
 				"call_time",
 			),
 		],

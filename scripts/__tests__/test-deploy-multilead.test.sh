@@ -481,17 +481,14 @@ W2_OK=1
 rm -rf "$W2_SLOT_DIR" "$W2_LOCK" "$W2_BLOCK"
 
 # ── L1: launch manifest (flags/knobs/SHA present; no token values) ──
-export FLYWHEEL_DETECTION_GAP_SCAN=1 FLYWHEEL_PANE_MULTIFRAME=1 FLYWHEEL_STUCK_ERRORSIG=1 \
-  FLYWHEEL_WATCHDOG_JUDGE=1 FLYWHEEL_DETECTION_ESCALATION=1 \
-  FLYWHEEL_GAP_SCAN_EVERY_N_TICKS=5 FLYWHEEL_DETECTION_LEAD_GRACE_MS=180000
+export FLYWHEEL_WATCHDOG_JUDGE=1 FLYWHEEL_DETECTION_LEAD_GRACE_MS=180000
 FAKE_TOKEN_VALUE="supersecret-token-value-xyz"
 export TEST_BOT_TOKEN_3="$FAKE_TOKEN_VALUE"
 lm="$(qa_multilead_launch_manifest 12345 deadbeefsha main slot camp-1 "Product-Test" "120000" "$EXTRAS")"
 L1_OK=1
 jq -e '.bridgePid == 12345' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: bridgePid missing"; }
 jq -e '.distSha == "deadbeefsha"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: distSha missing"; }
-jq -e '.flags.FLYWHEEL_DETECTION_ESCALATION == "1"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: flag value missing"; }
-jq -e '.knobs.FLYWHEEL_GAP_SCAN_EVERY_N_TICKS == "5"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: knob value missing"; }
+jq -e '.flags.FLYWHEEL_WATCHDOG_JUDGE == "1"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: flag value missing"; }
 jq -e '.knobs.FLYWHEEL_DETECTION_LEAD_GRACE_MS == "180000"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: grace knob missing"; }
 jq -e '.detectionLeadGraceConfigMs == "120000"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: config grace missing"; }
 jq -e '.extraLeads[0].agentId == "flywheel-test-3" and .extraLeads[0].deptLabel == "Ops-Test"' >/dev/null 2>&1 <<<"$lm" || { L1_OK=0; fail "L1: extraLeads missing"; }

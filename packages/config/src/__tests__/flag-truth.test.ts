@@ -9,18 +9,36 @@ import {
 
 describe("FLY-1393 flag truth", () => {
 	it("FLY-1570 tombstones removed chase controls", () => {
-		const tombstones = new Map(
-			RETIRED_FLAGS.map((flag) => [flag.envVar, flag.retiredBy]),
+		const retired = RETIRED_FLAGS.filter(
+			(flag) => flag.retiredBy === "FLY-1570",
 		);
+		expect(retired).toHaveLength(26);
+		for (const { envVar } of retired) {
+			expect(
+				FEATURE_FLAGS.some((flag) => flag.envVar === envVar),
+				envVar,
+			).toBe(false);
+			expect(validateFlagTruthEnvironment([`${envVar}=1`]).ok, envVar).toBe(
+				false,
+			);
+		}
+	});
+
+	it("keeps delivery-path receipt tuning outside the retired patrol controls", () => {
 		for (const envVar of [
-			"FLYWHEEL_WATCHDOG_LOOP_HEARTBEAT",
-			"FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN",
-			"FLYWHEEL_LEAD_PENDING_ESCALATION",
-			"FLYWHEEL_STUCK_DETECT",
-			"FLYWHEEL_STUCK_FOUNDER_PAGE",
+			"FLYWHEEL_RECEIPT_EXEC_PUSH_CAP",
+			"FLYWHEEL_RECEIPT_EXEC_PUSH_WINDOW_MIN",
+			"FLYWHEEL_RECEIPT_WAKE_T1_MS",
+			"FLYWHEEL_RECEIPT_WINDOW_P0_MIN",
+			"FLYWHEEL_RECEIPT_WINDOW_P1_MIN",
+			"FLYWHEEL_RECEIPT_WINDOW_P2_MIN",
+			"FLYWHEEL_RECEIPT_WINDOW_P3_MIN",
 		]) {
-			expect(FEATURE_FLAGS.some((flag) => flag.envVar === envVar)).toBe(false);
-			expect(tombstones.get(envVar)).toBe("FLY-1570");
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toBeDefined();
+			expect(
+				RETIRED_FLAGS.some((flag) => flag.envVar === envVar),
+				envVar,
+			).toBe(false);
 		}
 	});
 
@@ -131,7 +149,7 @@ describe("FLY-1393 flag truth", () => {
 		);
 	});
 
-	it("fails tombstones and unknown variables, but permits remaining retiring flags in env", () => {
+	it("fails tombstones and unknown variables", () => {
 		const tombstone = validateFlagTruthEnvironment([
 			"FLYWHEEL_DETECTION_GAP_SCAN",
 		]);
@@ -147,11 +165,6 @@ describe("FLY-1393 flag truth", () => {
 		]);
 		expect(retiredLegacy.ok).toBe(false);
 		expect(retiredLegacy.errors.join("\n")).toMatch(/删这行/);
-
-		const retiring = validateFlagTruthEnvironment([
-			"FLYWHEEL_ZOMBIE_GATE_RESOLVE",
-		]);
-		expect(retiring).toEqual({ ok: true, errors: [] });
 	});
 
 	it("tombstones all three fake historical switches", () => {
@@ -207,7 +220,7 @@ describe("FLY-1393 flag truth", () => {
 		}
 	});
 
-	it("runtime validation catches a missing minimum-set row and any revived retiring lane", () => {
+	it("runtime validation catches a missing minimum-set row and a revived retired lane", () => {
 		const active = () => ({ wired: true, effective_enabled: true });
 		const valid = {
 			schema_version: 1,
@@ -244,7 +257,7 @@ describe("FLY-1393 flag truth", () => {
 				effective_enabled: unknown;
 			}
 		).effective_enabled = "0";
-		wrong.retiring[0]!.effective_enabled = true;
+		wrong.retiring = [{ name: "retired-patrol", effective_enabled: true }];
 		const result = validateWatchdogManifest(wrong);
 		expect(result.ok).toBe(false);
 		expect(result.errors.join("\n")).toMatch(/w1_process_liveness/);

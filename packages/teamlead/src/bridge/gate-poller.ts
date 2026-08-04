@@ -2863,10 +2863,8 @@ export class GatePoller {
 							kind: q.kind,
 						})),
 						db: db as unknown as ZombieCommDb,
-						env: {
-							...process.env,
-							FLYWHEEL_ZOMBIE_GATE_RESOLVE: "0",
-						},
+						env: process.env,
+						resolveDeadGates: false,
 						noteUnreachableRunner: watchdogOn
 							? (a) => this.founderReplyWatchdog.noteUnreachableRunner(a)
 							: undefined,

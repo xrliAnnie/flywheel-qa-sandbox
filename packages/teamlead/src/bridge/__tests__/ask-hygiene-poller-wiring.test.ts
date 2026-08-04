@@ -80,7 +80,6 @@ describe("FLY-1328 A2 sweep — real GatePoller wiring", () => {
 			process.env.FLYWHEEL_COMM_DIR = originalCommDir;
 		else delete process.env.FLYWHEEL_COMM_DIR;
 		delete process.env.FLYWHEEL_ASK_HYGIENE;
-		delete process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE;
 		delete process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG;
 		rmSync(tmpHome, { recursive: true, force: true });
 		warnSpy.mockRestore();
@@ -177,8 +176,7 @@ describe("FLY-1328 A2 sweep — real GatePoller wiring", () => {
 		expect(row.resolved_via).toBeNull();
 	});
 
-	it("ASK-only (zombie+watchdog off) does NOT touch the watchdog's unreachable-sweep bookkeeping", async () => {
-		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "0";
+	it("ASK-only does NOT touch disabled watchdog bookkeeping", async () => {
 		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
 		const qid = seedOwnerlessAsk();
 		const poller = makePoller();
@@ -206,7 +204,6 @@ describe("FLY-1328 A2 sweep — real GatePoller wiring", () => {
 	});
 
 	it("with the watchdog ON, the same pass DOES run the bookkeeping (control for the case above)", async () => {
-		process.env.FLYWHEEL_ZOMBIE_GATE_RESOLVE = "0";
 		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "1";
 		seedOwnerlessAsk();
 		const poller = makePoller();

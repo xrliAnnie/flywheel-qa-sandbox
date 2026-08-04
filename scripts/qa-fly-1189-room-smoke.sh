@@ -89,8 +89,7 @@ bash "$INJECTOR" prod-snapshot smoke-before > "${CAMPAIGN_ROOT}/prod-before.json
 
 log "deploying slot ${SLOT} with extra lead ${EXTRA_SLOT}:${EXTRA_LABEL}"
 DEPLOY_JSON=$(TEST_REPLY_BY_ISSUE=1 \
-	FLYWHEEL_DETECTION_GAP_SCAN=1 FLYWHEEL_PANE_MULTIFRAME=1 FLYWHEEL_STUCK_ERRORSIG=1 \
-	FLYWHEEL_WATCHDOG_JUDGE=1 FLYWHEEL_DETECTION_ESCALATION=1 \
+	FLYWHEEL_WATCHDOG_JUDGE=1 \
 	bash "${SCRIPT_DIR}/test-deploy.sh" "$SLOT" \
 	  --extra-lead "${EXTRA_SLOT}:${EXTRA_LABEL}" --lead-label "$MAIN_LABEL" --alerts 2>"${CAMPAIGN_ROOT}/deploy.log") \
 	|| { bad "deploy failed (see ${CAMPAIGN_ROOT}/deploy.log)"; cat "${CAMPAIGN_ROOT}/deploy.log" >&2; exit 1; }
@@ -132,8 +131,8 @@ jq -e '.[0].leads[0].match.labels == ["Product-Test"] and .[0].leads[1].match.la
 
 # 2. Launch + campaign manifests present, secret-free.
 [[ -f "$LAUNCH_MANIFEST" ]] && ok "launch manifest present" || bad "launch manifest missing"
-jq -e '.flags.FLYWHEEL_DETECTION_ESCALATION == "1"' "$LAUNCH_MANIFEST" >/dev/null 2>&1 \
-	&& ok "launch manifest records 5 flags" || bad "launch manifest flags missing"
+jq -e '.flags.FLYWHEEL_WATCHDOG_JUDGE == "1"' "$LAUNCH_MANIFEST" >/dev/null 2>&1 \
+	&& ok "launch manifest records watchdog judge" || bad "launch manifest flag missing"
 [[ -f "$CAMPAIGN_MANIFEST" ]] && ok "campaign manifest present" || bad "campaign manifest missing"
 
 # 3. Two Lead procs alive (lease files).

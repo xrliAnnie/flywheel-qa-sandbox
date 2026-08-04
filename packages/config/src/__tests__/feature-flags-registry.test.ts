@@ -171,6 +171,22 @@ describe("feature-flag registry invariants", () => {
 		expect(flag).toBeUndefined();
 	});
 
+	it("FLY-1570 removes chase patrols but keeps founder-reply consistency detection", () => {
+		for (const name of ["misroute_patrol", "zombie_gate_resolve"]) {
+			expect(
+				FEATURE_FLAGS.find((flag) => flag.name === name),
+				name,
+			).toBeUndefined();
+		}
+		const founderReply = FEATURE_FLAGS.find(
+			(flag) => flag.name === "founder_reply_watchdog",
+		);
+		expect(founderReply).toMatchObject({
+			envVar: "FLYWHEEL_FOUNDER_REPLY_WATCHDOG",
+		});
+		expect(founderReply?.retiring).toBeUndefined();
+	});
+
 	it("FLY-1393 records both W-4 read timings instead of advertising a fake live toggle", () => {
 		const flag = FEATURE_FLAGS.find((f) => f.name === "watchdog_blocked");
 		expect(flag).toMatchObject({
