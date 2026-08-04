@@ -14,6 +14,7 @@ export type ResidueHarvestPassOutcome = "completed" | "skipped_in_flight";
 
 export interface ResidueHarvester {
 	runFullPass(): Promise<ResidueHarvestPassOutcome>;
+	runPaneLossPass(): Promise<ResidueHarvestPassOutcome>;
 	reapTarget(session: Session): Promise<boolean>;
 	lastPaneLossOutcome(): PaneLossFaceOutcome | undefined;
 }
@@ -48,6 +49,8 @@ export function createResidueHarvester(
 			if (inFlight) return "skipped_in_flight";
 			inFlight = true;
 			lastPaneLoss = undefined;
+			let aggregatePaneLoss: PaneLossFaceOutcome = "ran";
+			let paneLossErrored = false;
 			try {
 				for (const projectName of projectNames) {
 					if (deps.commDbFsmEnabled) {
@@ -75,13 +78,44 @@ export function createResidueHarvester(
 						);
 					}
 					try {
-						lastPaneLoss = await deps.harvestPaneLoss(projectName);
+						const outcome = await deps.harvestPaneLoss(projectName);
+						if (aggregatePaneLoss === "ran" && outcome !== "ran") {
+							aggregatePaneLoss = outcome;
+						}
 					} catch (err) {
+						paneLossErrored = true;
 						log(
 							`[residue-harvest] pane-loss pass failed for ${projectName} (non-fatal): ${(err as Error).message}`,
 						);
 					}
 				}
+				lastPaneLoss = paneLossErrored ? undefined : aggregatePaneLoss;
+				return "completed";
+			} finally {
+				inFlight = false;
+			}
+		},
+
+		async runPaneLossPass() {
+			if (inFlight) return "skipped_in_flight";
+			inFlight = true;
+			lastPaneLoss = undefined;
+			let aggregatePaneLoss: PaneLossFaceOutcome = "ran";
+			try {
+				for (const projectName of projectNames) {
+					try {
+						const outcome = await deps.harvestPaneLoss(projectName);
+						if (aggregatePaneLoss === "ran" && outcome !== "ran") {
+							aggregatePaneLoss = outcome;
+						}
+					} catch (err) {
+						log(
+							`[residue-harvest] pane-loss pass failed for ${projectName} (non-fatal): ${(err as Error).message}`,
+						);
+						return "completed";
+					}
+				}
+				lastPaneLoss = aggregatePaneLoss;
 				return "completed";
 			} finally {
 				inFlight = false;

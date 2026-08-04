@@ -1,9 +1,12 @@
 import { spawn } from "node:child_process";
 import {
+	chmodSync,
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -397,6 +400,25 @@ describe("TmuxAdapter", () => {
 			socketPath: "/tmp/tmux-test/default",
 			serverStartTime: "1722700000",
 		});
+	});
+
+	it("repairs an existing direct launch-gate directory to owner-only permissions", async () => {
+		const gateDir = join(tmpdir(), "flywheel-launch-gates");
+		mkdirSync(gateDir, { recursive: true });
+		chmodSync(gateDir, 0o777);
+		let gateFile: string | undefined;
+		try {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());
+			const newWindow = calls.find(
+				(call) => call.cmd === "tmux" && call.args[0] === "new-window",
+			);
+			gateFile = newWindow?.args.find((arg) => arg.startsWith(`${gateDir}/`));
+			expect(statSync(gateDir).mode & 0o777).toBe(0o700);
+		} finally {
+			chmodSync(gateDir, 0o700);
+			if (gateFile) rmSync(gateFile, { force: true });
+		}
 	});
 
 	it("fails closed and kills the Claude window when generation persistence is unavailable", async () => {

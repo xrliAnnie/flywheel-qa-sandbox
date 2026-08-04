@@ -128,6 +128,53 @@ describe("createResidueHarvester", () => {
 		expect(await harvester.reapTarget(blocker())).toBe(true);
 		expect(reapStateStoreGhost).toHaveBeenCalledOnce();
 	});
+
+	it.each([
+		["skipped project first", ["flywheel", "joycon"]],
+		["skipped project last", ["joycon", "flywheel"]],
+	] as const)(
+		"aggregates pane-loss debt across every project: %s",
+		async (_label, projectNames) => {
+			const harvester = createResidueHarvester({
+				projectNames,
+				commDbFsmEnabled: false,
+				harvestCommDb: vi.fn(async () => {}),
+				pruneTerminalCommDb: vi.fn(async () => []),
+				harvestStateStoreGhosts: vi.fn(async () => {}),
+				harvestPaneLoss: vi.fn(async (project) =>
+					project === "flywheel" ? "skipped_episode" : "ran",
+				),
+				reapStateStoreGhost: vi.fn(async () => false),
+			});
+
+			await harvester.runFullPass();
+
+			expect(harvester.lastPaneLossOutcome()).toBe("skipped_episode");
+		},
+	);
+
+	it("retries pane-loss debt without rerunning the other residue faces", async () => {
+		const harvestCommDb = vi.fn(async () => {});
+		const pruneTerminalCommDb = vi.fn(async () => []);
+		const harvestStateStoreGhosts = vi.fn(async () => {});
+		const harvestPaneLoss = vi.fn(async () => "skipped_server" as const);
+		const harvester = createResidueHarvester({
+			projectNames: ["flywheel", "joycon"],
+			commDbFsmEnabled: true,
+			harvestCommDb,
+			pruneTerminalCommDb,
+			harvestStateStoreGhosts,
+			harvestPaneLoss,
+			reapStateStoreGhost: vi.fn(async () => false),
+		});
+
+		await harvester.runPaneLossPass();
+
+		expect(harvestPaneLoss).toHaveBeenCalledTimes(2);
+		expect(harvestCommDb).not.toHaveBeenCalled();
+		expect(pruneTerminalCommDb).not.toHaveBeenCalled();
+		expect(harvestStateStoreGhosts).not.toHaveBeenCalled();
+	});
 });
 
 describe("runResidueAwareBootSweep", () => {

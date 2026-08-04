@@ -146,6 +146,19 @@ describe("ServerLossCoordinator (FLY-1082 Task 2.3)", () => {
 		expect(store.getSession("exec-3")?.status).toBe("running");
 	});
 
+	it("does not suppress per-runner reapers for a non-Claude runner when there is no incident", async () => {
+		const codex = {
+			...session(2, "tadashi"),
+			adapter_type: "codex-tmux",
+		};
+		const coordinator = makeCoordinator({ sessions: [codex], probe: "up" });
+
+		const result = await coordinator.check();
+
+		expect(result.claimed).toEqual(new Set());
+		expect(result.heldExecutionIds).toEqual(new Set());
+	});
+
 	it("second check after migration is quiet (sessions left running=0 → no re-fire)", async () => {
 		const coordinator = makeCoordinator({
 			sessions: incidentFleet(),

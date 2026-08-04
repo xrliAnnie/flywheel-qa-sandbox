@@ -752,15 +752,24 @@ export class WorkflowEngineDispatcher {
 					result.held += 1;
 					continue;
 				}
-				const materialized =
-					this.options.store.materializeWorkflowReworkReplacement({
-						requestId: delivery.request_id,
-						deadExecutionId: route.preferred_actor_execution_id,
-						newExecutionId: randomUUID(),
-						reason: "persisted_target_missing_and_dead_probe",
-						observedAt: this.now().toISOString(),
-						recoverHeldPaneLoss: true,
-					});
+				let materialized: { ok: boolean; reason?: string };
+				try {
+					materialized =
+						this.options.store.materializeWorkflowReworkReplacement({
+							requestId: delivery.request_id,
+							deadExecutionId: route.preferred_actor_execution_id,
+							newExecutionId: randomUUID(),
+							reason: "persisted_target_missing_and_dead_probe",
+							observedAt: this.now().toISOString(),
+							recoverHeldPaneLoss: true,
+						});
+				} catch (error) {
+					result.held += 1;
+					this.log(
+						`workflow held rework recovery failed for ${delivery.request_id}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					continue;
+				}
 				if (!materialized.ok) {
 					result.held += 1;
 					this.log(

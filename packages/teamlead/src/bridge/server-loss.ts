@@ -197,11 +197,10 @@ export class ServerLossCoordinator {
 			.getRunningSessions()
 			.filter(isTmuxBacked);
 		const running = allRunning.filter(isAutoMigratable);
-		const heldExecutionIds = new Set(
-			allRunning
-				.filter((session) => !isAutoMigratable(session))
-				.map((session) => session.execution_id),
-		);
+		const nonMigratableIds = allRunning
+			.filter((session) => !isAutoMigratable(session))
+			.map((session) => session.execution_id);
+		const heldExecutionIds = new Set<string>();
 
 		// Completion check: the episode is over when the ticket landed, every
 		// owed Lead is either notified or terminally failed, and nothing claimed
@@ -227,6 +226,7 @@ export class ServerLossCoordinator {
 		// tmux-backed execution is held and no migration side effect runs.
 		const activeHolds = this.deps.store.listActiveTmuxHolds();
 		if (activeHolds.length > 0 && this.deps.inspectSocket) {
+			for (const id of nonMigratableIds) heldExecutionIds.add(id);
 			try {
 				for (const hold of activeHolds) {
 					for (const id of hold.affectedExecutionIds) {
@@ -286,10 +286,7 @@ export class ServerLossCoordinator {
 						);
 						return checkResult(
 							[],
-							[
-								...heldExecutionIds,
-								...running.map((session) => session.execution_id),
-							],
+							allRunning.map((session) => session.execution_id),
 						);
 					}
 					if (inspection.verdict === "dead" && inspection.scanComplete) {
@@ -303,14 +300,14 @@ export class ServerLossCoordinator {
 						await this.emitHoldAlerts(hold);
 						return checkResult(
 							[],
-							[...heldExecutionIds, ...hold.affectedExecutionIds],
+							[...nonMigratableIds, ...hold.affectedExecutionIds],
 						);
 					} else {
 						const hold = this.openHold(inspection, running);
 						await this.emitHoldAlerts(hold);
 						return checkResult(
 							[],
-							[...heldExecutionIds, ...hold.affectedExecutionIds],
+							[...nonMigratableIds, ...hold.affectedExecutionIds],
 						);
 					}
 				} else {
@@ -342,10 +339,7 @@ export class ServerLossCoordinator {
 				} catch {
 					return checkResult(
 						[],
-						[
-							...heldExecutionIds,
-							...running.map((session) => session.execution_id),
-						],
+						allRunning.map((session) => session.execution_id),
 					);
 				}
 				if (
@@ -357,7 +351,7 @@ export class ServerLossCoordinator {
 					await this.emitHoldAlerts(hold);
 					return checkResult(
 						[],
-						[...heldExecutionIds, ...hold.affectedExecutionIds],
+						[...nonMigratableIds, ...hold.affectedExecutionIds],
 					);
 				}
 			}
@@ -379,6 +373,7 @@ export class ServerLossCoordinator {
 			ledger = { signature, state };
 		}
 
+		for (const id of nonMigratableIds) heldExecutionIds.add(id);
 		const state = ledger.state;
 		const claimed = new Set(state.claimed);
 		let stateDirty = false;

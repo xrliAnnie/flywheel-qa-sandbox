@@ -363,14 +363,15 @@ export async function reconcilePaneLoss(
 				result.kept++;
 				return;
 			}
-			if (!deps.mutate) return;
+			if (!deps.mutate) {
+				if (decision.action === "fail") result.failed++;
+				else result.advisories++;
+				return;
+			}
 
-			const weak =
-				decision.action === "advisory" &&
-				decision.notificationClass === "advisory_absence_unproven";
 			const started = startedAtMs(snapshot);
 			if (
-				weak &&
+				decision.action === "advisory" &&
 				(started === undefined ||
 					deps.nowMs() - started < (deps.launchGraceMs ?? 10 * 60_000))
 			) {

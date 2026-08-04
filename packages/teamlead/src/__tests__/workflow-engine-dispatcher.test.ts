@@ -1358,6 +1358,47 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
+	it("contains a held pane-loss replacement CAS failure to that delivery", async () => {
+		const store = await storeWithQaFailKickback();
+		const fake = fakeStartDispatcher(store);
+		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run("UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'");
+		db.run(
+			`UPDATE workflow_rework_delivery
+			    SET state = 'held', last_error = 'persisted_target_missing'
+			  WHERE request_id = ?`,
+			[requestId],
+		);
+		vi.spyOn(store, "materializeWorkflowReworkReplacement").mockImplementation(
+			() => {
+				throw new Error("synthetic pane-loss CAS failure");
+			},
+		);
+		const log = vi.fn();
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			probeLaunchLiveness: async () => "dead",
+			reconcileWorkflowRework: async () => ({ kind: "busy" }),
+			log,
+		});
+
+		await expect(dispatcher.reconcile()).resolves.toEqual({
+			started: 0,
+			held: 1,
+		});
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining("synthetic pane-loss CAS failure"),
+		);
+		store.close();
+	});
+
 	it("fences and rolls back a proven-dead replacement that never launches", async () => {
 		const store = await storeWithQaFailKickback();
 		const start = vi.fn(async () => {

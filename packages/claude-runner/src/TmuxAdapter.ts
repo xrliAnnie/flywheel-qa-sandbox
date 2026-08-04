@@ -730,6 +730,7 @@ export class TmuxAdapter implements IAdapter {
 					}
 				} else {
 					mkdirSync(dirname(gateFile), { recursive: true, mode: 0o700 });
+					if (directGateFile) chmodSync(dirname(gateFile), 0o700);
 					writeFileSync(gateFile, launchToken, { mode: 0o600 });
 					chmodSync(gateFile, 0o600);
 				}

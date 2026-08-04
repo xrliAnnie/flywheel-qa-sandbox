@@ -273,6 +273,24 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 		expect(d.notify).not.toHaveBeenCalled();
 	});
 
+	it("keeps a Codex advisory quiet during launch grace", async () => {
+		seed("new-codex", { generation: false });
+		store.upsertSession({
+			execution_id: "new-codex",
+			issue_id: "issue-new-codex",
+			project_name: "flywheel",
+			status: "running",
+			started_at: "2026-08-04 11:55:00",
+			adapter_type: "codex-tmux",
+		});
+		const d = deps();
+
+		await reconcilePaneLoss("flywheel", d);
+
+		expect(store.getEventsByExecution("new-codex")).toEqual([]);
+		expect(d.notify).not.toHaveBeenCalled();
+	});
+
 	it("skips a candidate owned by a pending complete marker", async () => {
 		seed("marker-owned");
 		const d = deps({ isCompleteMarkerPending: vi.fn(() => true) });
@@ -360,8 +378,9 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 		seed("dry-run");
 		const d = deps({ mutate: false });
 
-		await reconcilePaneLoss("flywheel", d);
+		const result = await reconcilePaneLoss("flywheel", d);
 
+		expect(result).toMatchObject({ scanned: 1, failed: 1, advisories: 0 });
 		expect(store.getSession("dry-run")?.status).toBe("running");
 		expect(store.getEventsByExecution("dry-run")).toEqual([]);
 		expect(d.notify).not.toHaveBeenCalled();

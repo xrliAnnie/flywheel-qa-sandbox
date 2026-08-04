@@ -6196,12 +6196,18 @@ export async function startBridge(
 				const residueEveryNTicks = residueMaintenanceEveryNTicks(
 					config.stuckCheckIntervalMs,
 				);
+				const scheduled = tick % residueEveryNTicks === 0;
 				if (
-					(paneLossInitialDebt && serverLossCheckState.firstSuccessful) ||
-					tick % residueEveryNTicks === 0
+					scheduled ||
+					(paneLossInitialDebt && serverLossCheckState.firstSuccessful)
 				) {
-					await residueHarvester.runFullPass();
-					if (residueHarvester.lastPaneLossOutcome() === "ran") {
+					const outcome = await (scheduled
+						? residueHarvester.runFullPass()
+						: residueHarvester.runPaneLossPass());
+					if (
+						outcome === "completed" &&
+						residueHarvester.lastPaneLossOutcome() === "ran"
+					) {
 						paneLossInitialDebt = false;
 					}
 				}
