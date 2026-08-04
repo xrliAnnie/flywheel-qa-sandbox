@@ -291,15 +291,62 @@ describe("FLY-1153 QA-6 smoke — /gemini-advanced full chain from the on-disk e
 		expect(plainTools).toEqual(["lookup_issue", "board_snapshot"]);
 	});
 
-	it("leg 3 — dispatching the FACTORY-PRODUCED delegate_task fires the REAL sinks: ACK, acceptance-on-disk, spoken + Discord-text announce, audit-bound binding", async () => {
-		// hermetic net-kill: the deep loop's first model call must fail HERE, not
-		// reach the network. classifyError maps a non-network-shaped message to
-		// kind "unknown" (maxRetries 0) → immediate terminal; the delegate's
-		// guaranteed-completion contract then fires the real sinks. (If an SDK
-		// layer captured fetch earlier, an invalid-key 4xx converges on the same
-		// failure terminal — the assertions below are reason-agnostic.)
-		vi.stubGlobal("fetch", () =>
-			Promise.reject(new Error("FLY-1153 smoke: outbound disabled")),
+	it("leg 3 — dispatching the FACTORY-PRODUCED delegate_task fires the REAL sinks: ACK, acceptance-on-disk, spoken + Discord-text announce, FULL verbatim binding on the real path", async () => {
+		// Hermetic network boundary (Codex R2 HIGH: leadId/deptLabel must be
+		// observed on the REAL wiring path, not via a rebuilt tool). The stub
+		// plays the smallest conversation that surfaces the whole binding:
+		//   1st interactions call  → canned function_call step: save_memory —
+		//      its REQUEST body carries the real system prompt, where the
+		//      binding's deptLabel is embedded verbatim (context.ts);
+		//   bridge /api/memory/add → the REAL registry attaches project_name +
+		//      agent_id(=binding.leadId) to the body (registry.ts) — captured,
+		//      answered ok;
+		//   2nd interactions call  → rejected → failure terminal → the
+		//      delegate's guaranteed-completion contract fires the real sinks.
+		const fetchLog: { url: string; body: string }[] = [];
+		let cannedServed = false;
+		vi.stubGlobal(
+			"fetch",
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input instanceof Request ? input.url : input);
+				// the SDK may carry the payload as a Request object, a string, or
+				// a byte/stream body — normalize all of them for the assertions.
+				let body = "";
+				if (input instanceof Request) {
+					body = await input
+						.clone()
+						.text()
+						.catch(() => "");
+				} else if (typeof init?.body === "string") {
+					body = init.body;
+				} else if (init?.body != null) {
+					body = await new Response(init.body as BodyInit)
+						.text()
+						.catch(() => "");
+				}
+				fetchLog.push({ url, body });
+				if (url.startsWith("http://127.0.0.1:9/")) {
+					return Promise.resolve(Response.json({ ok: true }));
+				}
+				if (!cannedServed) {
+					cannedServed = true;
+					return Promise.resolve(
+						Response.json({
+							id: "int-fly1153",
+							steps: [
+								{
+									type: "function_call",
+									id: "fc-1",
+									name: "save_memory",
+									arguments: { content: "FLY-1153 smoke checkpoint" },
+								},
+							],
+							usage: { total_input_tokens: 1, total_output_tokens: 1 },
+						}),
+					);
+				}
+				return Promise.reject(new Error("FLY-1153 smoke: outbound disabled"));
+			},
 		);
 		const auditDir = join(fixtureDir, "audit");
 		const { f, runtime } = await wireFromDisk({
@@ -356,9 +403,11 @@ describe("FLY-1153 QA-6 smoke — /gemini-advanced full chain from the on-disk e
 				{ timeout: 15_000 },
 			);
 
-			// binding through the REAL chain: runSession wrote sessionStart (with
-			// the binding's projectName) to the audit trail BEFORE its first model
-			// call. Literal-checked (gate requirement b).
+			// binding through the REAL chain, ALL THREE fields literal-checked
+			// (gate requirement b + Codex R2 HIGH — never re-derived from the
+			// fixture object):
+			// (1) projectName: runSession wrote sessionStart to the audit trail
+			//     BEFORE its first model call.
 			const sessionFiles = readdirSync(auditDir).filter((n) =>
 				n.includes(taskId),
 			);
@@ -367,6 +416,22 @@ describe("FLY-1153 QA-6 smoke — /gemini-advanced full chain from the on-disk e
 				.map((n) => readFileSync(join(auditDir, n), "utf8"))
 				.join("\n");
 			expect(sessionLog).toContain('"projectName":"geoforge3d"');
+			// (2) deptLabel: embedded verbatim in the system prompt the REAL
+			//     session sent on its first model call (context.ts).
+			const modelBodies = fetchLog
+				.filter((c) => !c.url.startsWith("http://127.0.0.1:9/"))
+				.map((c) => c.body)
+				.join("\n");
+			expect(modelBodies).toContain("QA-Smoke");
+			// (3) leadId: the REAL registry attached agent_id from the session
+			//     binding to the bridge save_memory body (registry.ts) — the model
+			//     never supplies it, so only correct wiring can put it there.
+			const bridgeBodies = fetchLog
+				.filter((c) => c.url.startsWith("http://127.0.0.1:9/"))
+				.map((c) => c.body)
+				.join("\n");
+			expect(bridgeBodies).toContain('"agent_id":"qa-smoke-lead"');
+			expect(bridgeBodies).toContain('"project_name":"geoforge3d"');
 		} finally {
 			await runtime.close();
 		}
