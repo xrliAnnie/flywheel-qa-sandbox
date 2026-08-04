@@ -1,0 +1,18 @@
+flowchart LR
+    subgraph SPAWN["runner 出生 (spawn)"]
+        S1["tmux 建窗命令\n同一条命令原子带回\n窗口ID + socket + server启动时间"] --> S2["凭证写入 session 档案\n(既有 JSON 字段,零建表)"]
+        S2 -- "写失败 = 这个体不放行\n(先落档,再开工)" --> S1
+    end
+    subgraph LEDGERS["两本账"]
+        L1["StateStore 账本\n(工作流状态: running /\n等审批 / 已完成…)"]
+        L2["CommDB 账本\n(消息/审批门/tmux 窗口路由)"]
+    end
+    subgraph SETTLE["对账时"]
+        R1["读凭证"] --> R2["探当前 tmux server\n(只读命令,不抢锁)"]
+        R2 --> R3["换代证据成立才动账\n动账只走既有正规通道\n(applyTransition)"]
+        R3 --> N1["issue 帖子通知\n(至少一次送达,分级去重)"]
+    end
+    S2 --> L1
+    L1 --> R1
+    L2 --> R2
+    R3 --> L1
