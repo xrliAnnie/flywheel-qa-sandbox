@@ -75,7 +75,7 @@ FLY-1383 = 清存量（自然漂移的僵尸 + 归属 Lead 的域内 finalize �
 **串行化（Codex R2 B3 + R3 B2：让位检查不是互斥，要「顺序 + 进程内 in-flight holder + fence 内同步终查」三件套）**：
 
 1. **coordinator in-flight holder**（进程内）：每次 `serverLoss.check()` 的调用被同步包上 `coordinatorInFlight` 标记（重叠的 check 共享/跳过同一 promise）。pane-loss face 必须在 **pass 入口**与 **§4.3 fence 内、同步 `applyTransition` 之前**两处都看到「not in flight」——JS 单线程调用栈上，fence 内的同步检查 + 同步 transition 关闭了「check 刚启动尚未 arm episode」的窗口，无需表或 lease。
-2. **`coordinatorFirstCheckDone` holder**：仅在一次**完整返回**（含其内部 fail-closed 返回）的 coordinator check 之后置真；check 抛异常不置真（下 tick 重试）。coordinator 未构造/禁用 → 恒假 → face 恒跳过并一次性 log（诚实：无 owner 串行化则 face 不跑）。**plugin 构造顺序不动**——boot residue sweep 里本 face 因 gate 为假而空跑，首次真实运行在首个 heartbeat check 的 maintenance tick（默认 ≤5 分钟，仍满足验收 1 的「一个 reconcile 周期内」）。**tick-0 单飞补跑（Codex R6 H2）**：boot sweep 可能仍在 `runFullPass()` 里占着单飞，tick-0 的调用会得 `skipped_in_flight`（residue-harvest.ts:43-45），而下次尝试按小时模数要等 ~1h——因此 tick-0 遇 in-flight 时 **coalesce 恰一次补跑**：当前 owner 结束后立即跑一个 post-coordinator full pass，然后回归既有小时节奏（骑既有单飞机制，零新 timer）。
+2. **`coordinatorFirstCheckDone` holder**：仅在一次**完整返回**（含其内部 fail-closed 返回）的 coordinator check 之后置真；check 抛异常不置真（下 tick 重试）。coordinator 未构造/禁用 → 恒假 → face 恒跳过并一次性 log（诚实：无 owner 串行化则 face 不跑）。**plugin 构造顺序不动**——boot residue sweep 里本 face 因 gate 为假而空跑，首次真实运行在首个 heartbeat check 的 maintenance tick（默认 ≤5 分钟，仍满足验收 1 的「一个 reconcile 周期内」）。**initial post-coordinator residue debt（Codex R6 H2 + R7 H1）**：初次结算的债**锚定「首个成功的 coordinator check」而非 tick 0**——一枚进程内 boot 债：`coordinatorFirstCheckDone` 为假期间保持 pending；首个观察到 holder 为真的 maintenance 派发**无视小时模数**请求一次 full pass；harvester 忙则 coalesce；**债只在 pane-loss face 真正跑过其 coordinator 前置之后清除**（不因某次泛 full pass 返回 `completed` 而清）。这覆盖两个丢失序列：boot owner 横跨 tick 0 + coordinator tick 0 抛错 tick 1 才成功；以及无 boot 重叠但 tick 0 在 gate 为假时跑完 full pass。骑既有 heartbeat/单飞机制，零新 timer/poller。
 3. **周期顺序**：`HeartbeatService.check()` 内把 detached maintenance 派发移到 serverLoss/liveness 段**之后**，且必须放在 `finally`/post-catch 位置**恰好一次**——保持既有「core 段抛错不得吞 maintenance」的语义（HeartbeatService.ts:529-539 的现约定，Codex R3 M4；加抛错回归测试）。
 4. **mutex 内重查**：§4.3 fence 在 transition 之前再查 `getServerLossEpisode()` / `listActiveTmuxHolds()` / `coordinatorInFlight`，任一非空/在飞 → 放弃本轮。
 5. 互动测试从**空 ledger 并发释放两条路径**开始，覆盖两种 barrier 顺序（face 先进 fence vs coordinator 先 arm）+「residue pass 横跨下一个 heartbeat tick」形态。
@@ -115,7 +115,7 @@ deps 全部注入（store / probes / notifier getter / `coordinatorFirstCheckDon
 
 **凭证写入（建窗命令原子取样，Codex R2 B1 + R3 B1 的回答）**：凭证必须与**它要授权结算的那个 body** 绑定，而不是与 spawn 流程的任意时点绑定（`emitStarted` 是 fire-and-forget、先于 adapter 建窗——那里取样会出现「凭证记 server A、体建在 server B」的 AC4 反例）。落点：`TmuxAdapter` 的 `tmux new-window` 扩展 `-P -F '#{window_id}|#{socket_path}|#{start_time}'`，**从创建窗口的同一条命令**原子取回三元组；经**已声明但从未被调用**的 `onTmuxWindowOpened` 回调（`packages/core/src/adapter-types.ts:357-367`，Blueprint 已转发）把 `pane_loss_generation: {socket_path, server_start_time}` 并入该 session 的 `session_params`（既有 JSON 列 + 既有 update 路径，零迁移；fresh 与 retry 两个 Bridge 绑定位点显式接线）。
 
-**launch 不变量（Codex R4 B1 + R6 B1）**：「不存在与 stale 凭证共存的已 commit/存活 claude 体」，且必须 **crash-atomic**——普通 direct 路径（`ctx.launchCommitPath` 缺失时 `new-window` 直接 exec Claude，TmuxAdapter.ts:560-600）在「`new-window` 返回后、凭证落盘前」被 SIGKILL 会留下带 stale 凭证的活体，单靠异常处理杀窗封不死。因此**每一个 auto-migratable claude-tmux 体（含 direct 路径）都过既有 per-launch token gate**：窗口先以 bounded 等待壳创建 → 原子取回三元组 → 同步 merge 持久化并**回读核对** → 才释放该 launch token 让 Claude exec。持久化/释放前的任何 crash 只留下一个永远成不了 Claude 的 bounded gate 壳。`onTmuxWindowOpened` 合同对 claude 从 best-effort 升级为 **required**。这是既有 launch-gate primitive 的小扩展，不是 claims/TTL/新表。这封死 RetryDispatcher 同 execution 重驱（run-dispatcher.ts:608-666：durable launch claim 无 commit marker 时重放同 execId）的反例：attempt 1 在 server A 落凭证 A → crash 于 commit 前 → replay 在 server B 建体、第二次写失败——若凭证是 best-effort，`session_params` merge 会保留 A，活 B 体旁边躺着 A 凭证。mandatory-pre-commit 语义下该路径直接 fail launch，不产生带错误凭证的活体。从未 stamp 过的 execution 的失败仍是凭证缺失 → advisory（fail-safe）。这是「一枚落在既有表/既有位点的小凭证」，不是前任的 claims 机制。
+**launch 不变量（Codex R4 B1 + R6 B1）**：「不存在与 stale 凭证共存的已 commit/存活 claude 体」，且必须 **crash-atomic**——普通 direct 路径（`ctx.launchCommitPath` 缺失时 `new-window` 直接 exec Claude，TmuxAdapter.ts:560-600）在「`new-window` 返回后、凭证落盘前」被 SIGKILL 会留下带 stale 凭证的活体，单靠异常处理杀窗封不死。因此**每一个 auto-migratable claude-tmux 体（含 direct 路径）都过 per-launch token gate**：窗口先以 bounded 等待壳创建 → 原子取回三元组 → 同步 merge 持久化并**回读核对** → 才释放该 launch token 让 Claude exec。持久化/释放前的任何 crash 只留下一个永远成不了 Claude 的 bounded gate 壳。`onTmuxWindowOpened` 合同对 claude 从 best-effort 升级为 **required**（回调缺失 = 释放前 fail-closed）。**gate 载体（Codex R7 M3，明确选型）**：`launchCommitPath` **保持专属**于既有 durable adoption 流（RetryDispatcher/workflow adoption marker 语义，adapter-types.ts:369-382，不为普通 direct launch 合成——避免打开 stale-marker/false-adoption 新洞）；普通 direct 路径用**独立的、每物理 launch 唯一的 bounded release token 文件**：等待壳匹配后删除之，后续任何 replay 不可能写出同一 token。此选型进 §6 与 reverse-compat 测试矩阵。这是既有 launch-gate primitive 的小扩展，不是 claims/TTL/新表。这封死 RetryDispatcher 同 execution 重驱（run-dispatcher.ts:608-666：durable launch claim 无 commit marker 时重放同 execId）的反例：attempt 1 在 server A 落凭证 A → crash 于 commit 前 → replay 在 server B 建体、第二次写失败——若凭证是 best-effort，`session_params` merge 会保留 A，活 B 体旁边躺着 A 凭证。mandatory-pre-commit 语义下该路径直接 fail launch，不产生带错误凭证的活体。从未 stamp 过的 execution 的失败仍是凭证缺失 → advisory（fail-safe）。这是「一枚落在既有表/既有位点的小凭证」，不是前任的 claims 机制。
 
 **凭证判定**：结算 authority = 凭证存在且完好 ∧ 用凭证的 `socket_path` 显式探测（`tmux -S <socket> display-message -p '#{start_time}'`，新 tri-state helper `probeTmuxServerStartTime(socketPath)`）成功 ∧ **当前值 ≠ 凭证值**。语义：tmux window/pane 进程不能脱离创建它们的 server 化身存在（claude runner 不 detach，server 死亡即 SIGHUP 收割）；`start_time` 是 server 进程级常量（tmux format.c/server.c），同 socket 不等 ⇒ 换代 ⇒ 旧代 pane 必已消亡。**同值 ⇒ 同代 ⇒ `absent` 遵守 FLY-1319 合同只 advisory**；无凭证（存量行/写失败）⇒ advisory。
 
@@ -201,7 +201,7 @@ flowchart TD
 **stamps 语义（Codex R2 H4）**：
 
 - `pane-loss-<execId>`（detected/evidence）：在 fence 内、transition **之前**插入（§4.3 同步 fence 第 6 步）；稳定 id 只去重插入，不去重决策——行仍 running 时每个后续 pass 重评估重试。
-- `pane-loss-notified-<execId>`（delivered）：thread 投递**被接受**后插入；**raw fallback 的 accepted/queued 也算 delivered**（记录渠道于 payload），杜绝每小时重复入队。
+- **delivered 戳按处置/证据类分身份**（Codex R7 H2：单一 per-exec 戳会让早先的弱 advisory 吞掉后来更强的结算/升级通知）：`pane-loss-notified-<execId>-<class>`，class ∈ `advisory_absence_unproven` / `advisory_codex` / `advisory_generation_superseded`（parked 从 unproven 升级到 generation-proven 允许**恰一次**更强通知）/ `settlement`（绑定 `terminal_lifecycle_id`，早先任何 advisory 戳都不满足 settlement 债）。thread 投递**被接受**后插入；raw fallback 依 §上文 sent/queued 规则计 delivered（记录渠道于 payload）。
 - **通知债的发现集**（崩溃恢复）：(a) `failed` 且 `last_error LIKE 'pane_loss:%'` 且无 notified 戳的行（transition 后崩溃）；(b) 有 detected 戳且无 notified 戳的 advisory 行。每个 pass 补投；文案从**当前**处置状态派生。
 - **boot 补投**：notifier holder 在 plugin 组装点绑定时，直接触发一次通知债 drain（一次函数调用，无 timer）——避免 boot 期结算的首次通知等到下一个小时 pass。
 
@@ -233,7 +233,7 @@ flowchart TD
 
 ## 6. 数据/结构模型
 
-零新表、零新列、零迁移、零新 env flag。新增：`session_params` JSON 新键 `pane_loss_generation`（`tmux new-window -P -F` 原子取样 → `onTmuxWindowOpened` 回调写入）；`insertEvent` 事件 `runner_pane_loss_detected` / `runner_pane_loss_notified`；`AlertEventType` 成员 `runner_pane_loss` + exhaustive `KIND_CONTRACTS` 条目；`last_error` 前缀 `pane_loss:`；只读探针 helper `probeTmuxServerStartTime(socketPath?)`（tmux-lookup.ts，tri-state）；进程内 `coordinatorInFlight` / `coordinatorFirstCheckDone` holder。
+零新表、零新列、零迁移、零新 env flag。新增：`session_params` JSON 新键 `pane_loss_generation`（`tmux new-window -P -F` 原子取样 → `onTmuxWindowOpened` 回调写入）；`insertEvent` 事件 `runner_pane_loss_detected` / `runner_pane_loss_notified`；`AlertEventType` 成员 `runner_pane_loss` + exhaustive `KIND_CONTRACTS` 条目；`last_error` 前缀 `pane_loss:`；只读探针 helper `probeTmuxServerStartTime(socketPath?)`（tmux-lookup.ts，tri-state）；进程内 `coordinatorInFlight` / `coordinatorFirstCheckDone` holder + initial residue debt；**direct 路径 per-physical-launch release token 文件**（bounded、一次性、等待壳匹配后删除；`launchCommitPath` 专属 durable adoption 流不动——此选型入 reverse-compat 矩阵）。
 
 ## 7. 测试与验收
 
@@ -255,7 +255,8 @@ flowchart TD
 - `stale-approved-ship-reconciler.test.ts` 扩展：修前红测（absent 无限 re-wake）→ 修后凭证换代 absent 一次 alertDead 停环；同代/无凭证 absent 维持 re-wake；codex absent 维持；alert 前绑定 re-read 变化 → 放弃。
 - `runner-wake` event_id：同绑定重试去重；两代 review 绑定各记一次；无 questionId 从 session 行补。
 - 凭证写入（`onTmuxWindowOpened` 接线，fresh + retry 两位点，claude 一律过 launch token gate 含 direct 路径）：成功路径 / `-P -F` 解析或持久化失败 → **launch abort、刚建窗口被 kill、token 不释放**（launch 不变量）/ **crash fixture（Codex R6 B1）：`new-window` 返回后、凭证落盘前杀掉 adapter/Bridge → 重启对账 → 断言无 Claude 体被释放（只剩 bounded gate 壳）、无活体可被 mutate** / 从未 stamp 的 execution → 凭证缺失（绝无 pre-body 值）；
-- **tick-0 单飞补跑（Codex R6 H2）**：暂停 boot owner 横跨 tick 0 → 观察 `skipped_in_flight` → owner 结束后恰一次 post-coordinator full pass 补跑，不等小时模数；
+- **initial post-coordinator residue debt（Codex R6 H2 + R7 H1）**：(a) boot owner 横跨 tick 0 + coordinator tick-0 抛错、tick-1 成功 → 债在首个 gate-true 派发时兑现，不等小时模数；(b) 无 boot 重叠、tick 0 在 gate 为假时跑完 full pass → 同上；(c) 债只在 face 真正跑过 coordinator 前置后清除；
+- **通知分类回归（Codex R7 H2）**：(a) 已投递同代 advisory → 后来 running 结算仍恰一次发 settlement 通知；(b) 已投递 unproven parked advisory → 后来 generation-proven 升级恰一次发更强通知；
 - **同 execution 重驱 replay fixture（Codex R4 B1 反例）**：预置凭证 A + 建窗后 commit 前 crash + 同 execId 在 server B 重放 + 第二次 parse/写失败 + registration+marker 双失败——断言不存在「带 A 凭证的活 B 体」、pane-loss 零 mutation；
 - 通知投递：claim 赢了但 POST 前 crash → 下个 debt pass 新 attempt id 重试、duplicate 不落 notified 戳、最终 sent/queued 才落（Codex R4 H2 fixture）；
 - 反向兼容哨兵：`FLYWHEEL_COMMDB_RESIDUE_HARVEST=0` 时本 face 一行不跑；coordinator vendor 门外的行为逐字节不变。
@@ -265,7 +266,7 @@ flowchart TD
 
 映射 issue 四条验收（验收 1 措辞按 §4.4 收窄：**running 族（有凭证）**在首个**完成的** post-coordinator maintenance pass 当场自动离开（含 tick-0 单飞补跑语义，§2.3.2）；parked 族一个周期内可见 thread 告知+一条工具调用收尾指引；无凭证存量行 advisory）：
 
-1. **制造条件（healthy fresh server 形态）**：529 隔离房起 active claude runner（凭证已落）→ kill tmux server → **重建空 server** → 重启 slot Bridge → **首个 coordinator check 之后的第一个 heartbeat maintenance pass 内**（默认 ≤5 分钟，= 一个 reconcile 周期；boot sweep 里 face 因 §2.3 gate 有意跳过）该 session `running→failed`，`last_error` 前缀 `pane_loss:`（无宽限延迟）。（server 保持 down 的形态归 coordinator，其 vendor 门由 §7.1 单测覆盖。）
+1. **制造条件（healthy fresh server 形态）**：529 隔离房起 active claude runner（凭证已落）→ kill tmux server → **重建空 server** → 重启 slot Bridge → **首个成功的 coordinator check 之后的第一个完成的 maintenance pass 内**（正常时序默认 ≤5 分钟；coordinator 首查失败/boot 重叠时由 initial debt 保证紧随其后，= 一个 reconcile 周期）该 session `running→failed`，`last_error` 前缀 `pane_loss:`（无宽限延迟）。（server 保持 down 的形态归 coordinator，其 vendor 门由 §7.1 单测覆盖。）
 2. **thread 说明**：issue thread 出现状态说明+恢复提案+真实 close_runner 调用体，且无自动重派（无新 session 行）。
 3. **wake 回归**：制造凭证换代的 `approved_to_ship` 死体 → 观察 ≥3 个 backoff 窗口：`runner_wake_failed` 增量 0、`alertDead` 恰 1 次。
 4. **反向安全（对照组，硬门）**：同房并跑 ≥1 个活 claude runner + 1 个活 codex runner 穿越整个 pass——账面零变化、零通知；另加同代 absent 构造（改 CommDB target 指向不存在窗名）→ 只 advisory 不 mutate。无对照组的 PASS 无效。
