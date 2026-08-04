@@ -8,7 +8,7 @@ Issue: FLY-1628 (https://linear.app/geoforge3d/issue/FLY-1628/pane-loss-reconcil
 
 ## 0. 一句话总结
 
-给 Bridge 的既有 residue-harvest 骨架加一个 **pane-loss 结算 face**：spawn 时在既有 `session_params` 里留下一枚 **server-generation 凭证**（`{socket_path, server_start_time}`，Bridge 在 emitStarted 同步位点写入，零迁移）；boot 与既有维护 pass 里，凭证 socket 匹配且当前 server `start_time` **不等于**凭证值 ⇒ 承载该 session 的 server 化身已死、pane 进程必已随 SIGHUP 消亡 ⇒ 把「体已灭、账面仍 running」的 claude runner 结算成 `failed`。founder-bound 的 parked 族、codex 族、无凭证存量行只记账+出恢复提案；同世代/无凭证的 `absent` 严格遵守 FLY-1319 合同（absent ≠ 死亡）。与 FLY-1082 ServerLossCoordinator 以**调用顺序**串行化 ownership，并给 coordinator 补最小 vendor 门（活 codex 不再被舰队迁移误埋）。零新表、零新列、零新 env flag、零新 timer、不自动重派。
+给 Bridge 的既有 residue-harvest 骨架加一个 **pane-loss 结算 face**：spawn 时在既有 `session_params` 里留下一枚 **server-generation 凭证**（`{socket_path, server_start_time}`，从 `tmux new-window -P -F` 建窗命令原子取样、经 `onTmuxWindowOpened` 回调作为 launch 的 pre-commit 必要步骤写入，零迁移）；既有维护 pass 里，凭证 socket 匹配且当前 server `start_time` **不等于**凭证值 ⇒ 承载该 session 的 server 化身已死、pane 进程必已随 SIGHUP 消亡 ⇒ 把「体已灭、账面仍 running」的 claude runner 结算成 `failed`。founder-bound 的 parked 族、codex 族、无凭证存量行只记账+出恢复提案；同世代/无凭证的 `absent` 严格遵守 FLY-1319 合同（absent ≠ 死亡）。与 FLY-1082 ServerLossCoordinator 以**调用顺序**串行化 ownership，并给 coordinator 补最小 vendor 门（活 codex 不再被舰队迁移误埋）。零新表、零新列、零新 env flag、零新 timer、不自动重派。
 
 ## 1. 背景与范围裁定
 
@@ -113,7 +113,9 @@ deps 全部注入（store / probes / notifier getter / `coordinatorFirstCheckDon
 
 ### 4.2 generation 凭证与证据链（谓词）
 
-**凭证写入（建窗命令原子取样，Codex R2 B1 + R3 B1 的回答）**：凭证必须与**它要授权结算的那个 body** 绑定，而不是与 spawn 流程的任意时点绑定（`emitStarted` 是 fire-and-forget、先于 adapter 建窗——那里取样会出现「凭证记 server A、体建在 server B」的 AC4 反例）。落点：`TmuxAdapter` 的 `tmux new-window` 扩展 `-P -F '#{window_id}|#{socket_path}|#{start_time}'`，**从创建窗口的同一条命令**原子取回三元组；经**已声明但从未被调用**的 `onTmuxWindowOpened` 回调（`packages/core/src/adapter-types.ts:357-367`，Blueprint 已转发）把 `pane_loss_generation: {socket_path, server_start_time}` 并入该 session 的 `session_params`（既有 JSON 列 + 既有 update 路径，零迁移；fresh 与 retry 两个 Bridge 绑定位点显式接线）。best-effort：回调/写失败 → 凭证**缺失**（绝不留下 pre-body 值）→ 该行永远走 advisory（fail-safe 方向安全）。这是「一枚落在既有表/既有位点的小凭证」，不是前任的 claims 机制。
+**凭证写入（建窗命令原子取样，Codex R2 B1 + R3 B1 的回答）**：凭证必须与**它要授权结算的那个 body** 绑定，而不是与 spawn 流程的任意时点绑定（`emitStarted` 是 fire-and-forget、先于 adapter 建窗——那里取样会出现「凭证记 server A、体建在 server B」的 AC4 反例）。落点：`TmuxAdapter` 的 `tmux new-window` 扩展 `-P -F '#{window_id}|#{socket_path}|#{start_time}'`，**从创建窗口的同一条命令**原子取回三元组；经**已声明但从未被调用**的 `onTmuxWindowOpened` 回调（`packages/core/src/adapter-types.ts:357-367`，Blueprint 已转发）把 `pane_loss_generation: {socket_path, server_start_time}` 并入该 session 的 `session_params`（既有 JSON 列 + 既有 update 路径，零迁移；fresh 与 retry 两个 Bridge 绑定位点显式接线）。
+
+**launch 不变量（Codex R4 B1）**：「不存在与 stale 凭证共存的已 commit/存活 claude 体」。凭证的元组校验 + 同步持久化是两条生产 claude 绑定的 **pre-commit 必要步骤**——失败则在释放 gated launch 之前 abort/kill 刚建的窗口（普通 direct launch 同样 fail）。这封死 RetryDispatcher 同 execution 重驱（run-dispatcher.ts:608-666：durable launch claim 无 commit marker 时重放同 execId）的反例：attempt 1 在 server A 落凭证 A → crash 于 commit 前 → replay 在 server B 建体、第二次写失败——若凭证是 best-effort，`session_params` merge 会保留 A，活 B 体旁边躺着 A 凭证。mandatory-pre-commit 语义下该路径直接 fail launch，不产生带错误凭证的活体。从未 stamp 过的 execution 的失败仍是凭证缺失 → advisory（fail-safe）。这是「一枚落在既有表/既有位点的小凭证」，不是前任的 claims 机制。
 
 **凭证判定**：结算 authority = 凭证存在且完好 ∧ 用凭证的 `socket_path` 显式探测（`tmux -S <socket> display-message -p '#{start_time}'`，新 tri-state helper `probeTmuxServerStartTime(socketPath)`）成功 ∧ **当前值 ≠ 凭证值**。语义：tmux window/pane 进程不能脱离创建它们的 server 化身存在（claude runner 不 detach，server 死亡即 SIGHUP 收割）；`start_time` 是 server 进程级常量（tmux format.c/server.c），同 socket 不等 ⇒ 换代 ⇒ 旧代 pane 必已消亡。**同值 ⇒ 同代 ⇒ `absent` 遵守 FLY-1319 合同只 advisory**；无凭证（存量行/写失败）⇒ advisory。
 
@@ -164,7 +166,7 @@ flowchart TD
 6. 同步执行 `applyTransition(transitionOpts, execId, "failed", {trigger: "pane_loss_reconcile"}, {last_activity_at, last_error: "pane_loss: server generation superseded (socket=<s>, recorded=<T0>, current=<T1>); target <t> absent; rediscovery missing"})`——canonical 路径，terminal invariants（`terminal_at`/`terminal_lifecycle_id`/revision bump/settlement intent/display+terminal-sync fanout）随之维持，**绝不绕过它写裸 SQL**（前任 R3 Blocker 6 的教训）；
 7. **检查 `TransitionResult.ok`**，非 ok 不记结算、不通知。
 
-**残余窗口的诚实声明**：若同一 execution 在取证与 fence 之间被重建了新体、且 re-register 与 `@flywheel_exec_id` 发布**双双失败**（两者均 best-effort），CommDB target 不变、反查 missing，fence 无法看见新体。该组合在 claude 路径没有生产入口：claude 体只在 spawn 时创建窗口（新体 = 新 session 行），运行中的 claude session 不存在体重建路径（wake 是 mailbox 写、cmux-sync/FLY-169 只管 workspace 不建 runner 窗），codex（有 ensure/reopen 重建路径）在本设计下永不 mutate。且新体建在当前 server 上会刷新凭证吗？——不会（凭证只在 emitStarted 写一次），但新体若真出现，其窗口必在当前代 server 上，CommDB rebind 成功即被 fence 第 2 步看见；双失败窗口接受为残余风险并写入 §9（前任试图用 claims 收敛到零，五轮未收敛）。
+**残余窗口的诚实声明**：claude 的同 execution 体重建路径**存在且只有一条**——RetryDispatcher 的 pre-commit 重驱（§4.2）；它已由 launch 不变量封死（每次建体都必须成功重写凭证，否则该体不获运行资格）。除此之外运行中的 claude session 不存在体重建路径（wake 是 mailbox 写、cmux-sync/FLY-169 只管 workspace 不建 runner 窗），codex（有 ensure/reopen 重建路径）在本设计下永不 mutate。剩余的组合窗口（fence 与取证之间新体出现 + CommDB rebind 与 `@flywheel_exec_id` 发布双双失败 + 凭证已按不变量重写但 fence 读到旧快照）被 fence 第 1/2/4 步的 re-read 覆盖；接受的残余风险写入 §9（前任试图用 claims 收敛到零，五轮未收敛）。
 
 ### 4.4 parked 族（按 authority 拆分）
 
@@ -189,7 +191,7 @@ flowchart TD
 
 ### 4.6 通知路径：at-least-once 两段戳（含类型完备的 fallback）
 
-**直连 `emitIssueThreadInfraNotification`**（founder-thread-notifier.ts:627，call-site 照抄 plugin.ts:5336-5376 的 land notifier：resolveLeadForIssue → getChatThreadByIssue → 直接调用）。fallback：`onUndeliverable` → raw `leadAlertNotifier.alert()`——其 `AlertPayload.eventType` 要求 `AlertEventType` 联合体成员（LeadAlertNotifier.ts:508-515），**新增成员 `runner_pane_loss`** 并**补全 exhaustive `KIND_CONTRACTS` 条目**（kind-contract.ts 缺项= 设计上的编译/启动失败，Codex R3 M4）：owner = bridge/infra、ARC posture = notify-only（无自动动作）、接受集 `sent`/`queued`/`duplicate`（= already-owned，计 delivered）、`dead_letter`/`skipped` = 失败（不落 notified 戳，下 pass 重试）。dedupe id 复用 `pane-loss-<execId>`。
+**直连 `emitIssueThreadInfraNotification`**（founder-thread-notifier.ts:627，call-site 照抄 plugin.ts:5336-5376 的 land notifier：resolveLeadForIssue → getChatThreadByIssue → 直接调用）。fallback：`onUndeliverable` → raw `leadAlertNotifier.alert()`——其 `AlertPayload.eventType` 要求 `AlertEventType` 联合体成员（LeadAlertNotifier.ts:508-515），**新增成员 `runner_pane_loss`** 并**补全 exhaustive `KIND_CONTRACTS` 条目**（kind-contract.ts 缺项= 设计上的编译/启动失败）：取值用**现有合法联合体**（Codex R4 M3）`{ owner: "claude", arc: "human_by_design" }`（与相邻 provider-agnostic infra kind 一致）。**delivered 判定（Codex R4 H2：`skipped:"duplicate"` 是 claim 所有权证据不是投递证据**——claim 赢了但 crash 于 POST 前的进程会让下个 debt pass 收到 duplicate）：每次 raw fallback 尝试用**新 attempt id**；notified 戳只在 `result.sent === true` 或 `result.queued === true` 时落；`skipped === "duplicate"` / `deadLettered` = 未投递，下 pass 继续重试。at-least-once 允许「POST 后戳前崩溃」产生一条重复消息——比静默丢失诚实。
 
 **stamps 语义（Codex R2 H4）**：
 
@@ -247,7 +249,9 @@ flowchart TD
 - `server-loss.test.ts` 扩展（§4.8）：clean-fresh ALL-gone / server-down 各含活 detached codex → 零 codex/未知迁移、进 heldExecutionIds、episode 收尾不被阻塞；**活跃 episode 扩展**含新出现 codex 行 → 不迁移；**预置含 codex id 的 durable episode 重放** → 拒迁移+记账忽略。
 - `stale-approved-ship-reconciler.test.ts` 扩展：修前红测（absent 无限 re-wake）→ 修后凭证换代 absent 一次 alertDead 停环；同代/无凭证 absent 维持 re-wake；codex absent 维持；alert 前绑定 re-read 变化 → 放弃。
 - `runner-wake` event_id：同绑定重试去重；两代 review 绑定各记一次；无 questionId 从 session 行补。
-- 凭证写入（`onTmuxWindowOpened` 接线，fresh + retry 两位点）：成功路径 / `-P -F` 解析失败或回调失败 → 行无凭证（且 spawn 不受影响、绝无 pre-body 值）。
+- 凭证写入（`onTmuxWindowOpened` 接线，fresh + retry 两位点）：成功路径 / `-P -F` 解析或持久化失败 → **launch abort、刚建窗口被 kill、gated launch 不释放**（launch 不变量）/ 从未 stamp 的 execution → 凭证缺失（绝无 pre-body 值）；
+- **同 execution 重驱 replay fixture（Codex R4 B1 反例）**：预置凭证 A + 建窗后 commit 前 crash + 同 execId 在 server B 重放 + 第二次 parse/写失败 + registration+marker 双失败——断言不存在「带 A 凭证的活 B 体」、pane-loss 零 mutation；
+- 通知投递：claim 赢了但 POST 前 crash → 下个 debt pass 新 attempt id 重试、duplicate 不落 notified 戳、最终 sent/queued 才落（Codex R4 H2 fixture）；
 - 反向兼容哨兵：`FLYWHEEL_COMMDB_RESIDUE_HARVEST=0` 时本 face 一行不跑；coordinator vendor 门外的行为逐字节不变。
 - 突变测试：把凭证等值比较改成恒真 → 同代反例必须变红；把 TOCTOU 的 CommDB target 重读摘掉 → rebind race 用例必须变红。
 
@@ -255,7 +259,7 @@ flowchart TD
 
 映射 issue 四条验收（验收 1 措辞按 §4.4 收窄：**running 族（有凭证）** boot pass 当场自动离开；parked 族一个周期内可见 thread 告知+一条工具调用收尾指引；无凭证存量行 advisory）：
 
-1. **制造条件（healthy fresh server 形态）**：529 隔离房起 active claude runner（凭证已落）→ kill tmux server → **重建空 server** → 重启 slot Bridge → **首个 boot residue pass 内**该 session `running→failed`，`last_error` 前缀 `pane_loss:`（无宽限延迟）。（server 保持 down 的形态归 coordinator，其 vendor 门由 §7.1 单测覆盖。）
+1. **制造条件（healthy fresh server 形态）**：529 隔离房起 active claude runner（凭证已落）→ kill tmux server → **重建空 server** → 重启 slot Bridge → **首个 coordinator check 之后的第一个 heartbeat maintenance pass 内**（默认 ≤5 分钟，= 一个 reconcile 周期；boot sweep 里 face 因 §2.3 gate 有意跳过）该 session `running→failed`，`last_error` 前缀 `pane_loss:`（无宽限延迟）。（server 保持 down 的形态归 coordinator，其 vendor 门由 §7.1 单测覆盖。）
 2. **thread 说明**：issue thread 出现状态说明+恢复提案+真实 close_runner 调用体，且无自动重派（无新 session 行）。
 3. **wake 回归**：制造凭证换代的 `approved_to_ship` 死体 → 观察 ≥3 个 backoff 窗口：`runner_wake_failed` 增量 0、`alertDead` 恰 1 次。
 4. **反向安全（对照组，硬门）**：同房并跑 ≥1 个活 claude runner + 1 个活 codex runner 穿越整个 pass——账面零变化、零通知；另加同代 absent 构造（改 CommDB target 指向不存在窗名）→ 只 advisory 不 mutate。无对照组的 PASS 无效。
@@ -274,6 +278,7 @@ flowchart TD
 6. **`workflow_engine_park` 投影一致性纠偏**：FLY-1448 权威链自会收敛。
 7. **Bridge 存活期间 parked 族死体的小时级延迟**：接受并明示。
 8. **ship_parked/design_done 的自动结算**：需 DAG wake-carrier 配套，v2 候选。
+9. **tmux `start_time` 秒级精度的安全假阴性**：同一秒内 server 重建会比出相等值 → 该行走 advisory（漏一次自动清理，不误杀活体；下次换代自然分辨）。若未来要求秒内重建也必须自动结算，需给凭证加额外世代判别子——目前不加（简单为主，方向安全）。
 
 ## 9. Rejected alternatives
 
