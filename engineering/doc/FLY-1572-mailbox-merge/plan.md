@@ -113,11 +113,35 @@ CREATE TABLE mailbox (
 );
 CREATE INDEX mailbox_live  ON mailbox(to_agent, seq) WHERE state IN ('QUEUED','LEASED');
 CREATE INDEX mailbox_claim ON mailbox(to_agent, msg_class, priority, seq)
-  WHERE carrier = 'inbox' AND state = 'QUEUED';
+  WHERE carrier = 'inbox' AND state = 'QUEUED';                                  -- per-Lead equality lane
+CREATE INDEX mailbox_claim_runner ON mailbox(priority, seq)
+  WHERE carrier = 'inbox' AND state = 'QUEUED' AND recipient_kind = 'runner';    -- RunnerLane 跨 exec 谓词(R3 M5)
+CREATE INDEX mailbox_claim_bridge ON mailbox(from_agent, priority, seq)
+  WHERE carrier = 'inbox' AND state = 'QUEUED' AND recipient_kind = 'bridge';    -- protocol lane
 CREATE UNIQUE INDEX mailbox_unique_response ON mailbox(ref_id) WHERE type = 'response';
 CREATE INDEX mailbox_archive_acked ON mailbox(acked_at) WHERE state = 'ACKED';
 CREATE INDEX mailbox_archive_dead  ON mailbox(dead_at)  WHERE state = 'DEAD';
 ```
+
+三条 lane 与归档/GC 候选查询用 `EXPLAIN QUERY PLAN` 测试钉死不做全表扫描(R3 MEDIUM 5)。
+
+### 3.1b 身份永久占用(R3 blocker 1:归档不得释放幂等身份)
+
+```sql
+CREATE TABLE mailbox_identity (          -- append-only registry:id/delivery_id 跨归档永久占用
+  id          TEXT NOT NULL UNIQUE,
+  delivery_id TEXT NOT NULL UNIQUE,
+  archived_at TEXT                       -- NULL = 活表在住;归档时盖章
+);
+CREATE TRIGGER mailbox_identity_guard BEFORE INSERT ON mailbox
+BEGIN
+  SELECT RAISE(ABORT,'FLY-1572: identity already archived')
+   WHERE EXISTS (SELECT 1 FROM mailbox_identity WHERE id = NEW.id OR delivery_id = NEW.delivery_id);
+END;
+-- 活表 INSERT 与 identity INSERT 同事务;归档 DELETE 时仅盖 archived_at,registry 行永不删
+```
+- **at-least-once sink replay 合同**(insertInstructionWithId / instructionAndIntent 依赖的 `INSERT OR IGNORE` 去重):撞到 registry(已归档)且 canonical payload 相同 → already-settled no-op(与今天 OR IGNORE 吃掉重复等价);payload 不同 → fail-loud。**触发器在数据库层同事务拒绝,不做 TS 层 SELECT-then-INSERT(竞态)**;`INSERT OR IGNORE` 对 RAISE(ABORT) 触发器不免疫 —— 各写入口在事务内先查 registry 归档态走 no-op 分支,触发器只作最后防线。
+- 测试:source crash→ACK→T+72h archive→迟到 replay(no-op)/异 payload 同 id(炸)/异 id 同 delivery_id(炸)/二次归档 event 幂等不卡 canonical conflict。
 
 ### 3.2 mailbox_log(append-only + settlement CAS)
 
@@ -144,6 +168,7 @@ CREATE UNIQUE INDEX mailbox_log_settlement_slot ON mailbox_log(subject_id)
 ```
 
 - **settlement API 合同**:`markProcessed`/`markDisposed` 的替代实现 = 事务内 INSERT settlement 行;UNIQUE 槽冲突时回读、canonical 比对证据,同值幂等、异值 fail-loud —— 与现版 CAS 语义逐条对齐(lead-inbox-queue.ts:1298-1370),受 vitest 竞争/重放测试保护。live 调用者(settleFounderHubRoot / routeFounderReply / handleReceipt / settleChatReceipt / ExternalReceiptSaga.handle / terminal-receipt-settlement)逐一列出新 API 映射(§9 步 3)。
+- **settlement 主体命名空间唯一(R3 HIGH 3)**:`subject_id` **恒为 mailbox.id(逻辑 id),仅此一个 namespace**。receipt-facing API 一律收 typed `deliveryId` 参数,在同一事务内经 `receipt_root_lineage` / `mailbox_identity` 解析成逻辑 id 再插 `settled:<logical-id>`;逻辑侧 caller 直接用 message id;迁移把旧 mirror 行的 settlement 主体归一到逻辑 id(evidence 内原 receipt ref 原样保留)。测试:同一 question 先按 message id processed、再按 delivery id disposed → 必须冲突;反向竞争;归档后迟到 settlement。
 - **`receipt_root_lineage` 保留不动**(生产 1,153 行,live 查询在 terminal-receipt-settlement);其 AFTER INSERT 捕获触发器移植到 mailbox,**typed 映射显式定稿**:`receipt_id = NEW.delivery_id, question_id = NEW.id, execution_id = NEW.from_agent, root_lead_id = NEW.to_agent`(question 行触发;不依赖 question 自身的 ref_id —— 那本来是 NULL)。**live 正确性禁止依赖扫 row_json** —— 血缘走这张表,settlement 走 UNIQUE 槽。
 - progress(ProofShot)直接写 `mailbox_log(event='progress')`,attachments 进 row_json。
 
@@ -162,7 +187,10 @@ CREATE TABLE content_ref_gc_outbox (
   finished_at TEXT
 );
 ```
-归档事务内:row_json 先内嵌文件 bytes(base64)+ hash → INSERT GC intent → DELETE mailbox 行,同事务提交;**commit 后**有界 drain 删文件(文件已不存在 = 幂等成功;失败留 pending 重试)。测试:commit-before-delete crash / delete-before-ack crash 两向重放。
+```sql
+CREATE INDEX content_ref_gc_pending ON content_ref_gc_outbox(created_at) WHERE state = 'pending';
+```
+归档事务内:row_json 先内嵌文件 bytes(base64)+ hash → INSERT GC intent → DELETE mailbox 行,同事务提交;**commit 后**有界 drain 删文件。**严格删除原语**(现 deleteContentRef 吞一切 unlink 错误,不能复用):归档**前**读文件缺失/hash 不符 → fail-closed 保留行不归档;commit **后** drain 时文件已缺 → 幂等成功;其余错误(权限等)→ failed+last_error 留待重试;同 path 仍被活行引用 → 不删。测试:commit-before-delete crash / delete-before-ack crash 两向重放 + 权限错误重试 + 共享 path 保护。
 
 ### 3.3 附带表
 
@@ -236,13 +264,15 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 ## 7. 保留期与归档(替代 72h DELETE;R1 HIGH 7 的修正案)
 
 - 触发点:CommDB 读写 open(零新定时器),**有界批次**(单次 open 至多 N family,防同步 open 热点),走 `mailbox_archive_*` 部分索引。
-- **归档原子单位 = RPC family**(question + 其 response;无 ref 关系的行自成 family):family 内**所有行都终态**(ACKED/DEAD)且 RPC 维度终局(已答 或 relay_state='terminal_disposed'),retention anchor = family 最晚终态时间 + 72h。FLY-1279 保护语义(未答未终局的 question 永不归档)自然成立。逐行 INSERT log(event='archived', row_json **内嵌 content 与 content_ref 文件内容 bytes(base64)+ hash**)+ INSERT GC intent + DELETE,同一事务;文件删除由 §3.2b `content_ref_gc_outbox` 的 post-commit 有界 drain 承担(现 purge **没有**账本 —— 它先删文件后删行,本方案是修正而非照抄)。
+- **归档原子单位 = RPC family**(question + 其 response;无 ref 关系的行自成 family):family 内**所有行都终态**(ACKED/DEAD)且 RPC 维度终局(已答 或 relay_state='terminal_disposed'),retention anchor = family 最晚终态时间 + 72h。FLY-1279 保护语义(未答未终局的 question 永不归档)自然成立。逐行 INSERT log(event='archived', row_json **内嵌 content 与 content_ref 文件内容 bytes(base64)+ hash**)+ INSERT GC intent + **盖 `mailbox_identity.archived_at`(registry 行永不删,身份跨归档占用,§3.1b)** + DELETE,同一事务;文件删除由 §3.2b `content_ref_gc_outbox` 的 post-commit 有界 drain 承担(现 purge **没有**账本 —— 它先删文件后删行,本方案是修正而非照抄)。
 - 测试:T0 ACK 问 + T+71h 答 + response 未拉 → 不归档;verify-approval 在归档边界前后语义不变;content_ref 文件删除失败可重放;归档事务 crash 重放幂等。
 
 ## 8. 数据迁移(R1 blocker 3/4/5 的修正案)
 
-### 8.1 备份原语(自研,不用 v2-kernel wrapper)
-`backupCommDb()`:SQLite online backup API → `.tmp`(0600)→ `integrity_check` + `foreign_key_check` + **comm.db 自己的表清单/schema hash 校验**(v2 的 `schema_migrations` 校验对 comm.db 不适用 —— 生产实测无此表)→ rename 落 `comm.db.pre-fly1572-<ts>`。磁盘 preflight:源库 + WAL + 新表/log 峰值 + 备份 ≈ 3× 现库,非只看 145MB。
+### 8.1 备份原语(自研,不用 v2-kernel wrapper;R3 blocker 2:`refs/` 纳入备份 authority)
+`backupCommDb()`:SQLite online backup API → `.tmp`(0600)→ `integrity_check` + `foreign_key_check` + **comm.db 自己的表清单/schema hash 校验**(v2 的 `schema_migrations` 校验对 comm.db 不适用 —— 生产实测无此表)→ rename 落 `comm.db.pre-fly1572-<ts>`。
+**`<comm-db-dir>/refs/` 外部大内容文件同窗备份**(content-ref.ts:24-45,DB-only 备份救不回被 GC 删掉的文件):逐文件复制 + path/hash/size manifest;恢复时逐项验证,缺失/hash 不符 fail-loud。生产当前 content_ref=0 行只是巧合,不是 invariant。
+磁盘 preflight:源库 + WAL + 新表/log 峰值 + 备份 + refs ≈ 3× 现库,非只看 145MB。
 
 ### 8.2 迁移脚本(`scripts/migrate-fly1572-mailbox.ts`)
 - **停机窗 = quiesce 所有 writer**(不只 Bridge:所有 Lead/Runner/CLI 都直接写 comm.db)。runbook:停 Bridge → 停 Leads(舰队本来随 Bridge 重启波次管理)→ `fuser`/lsof 断言无进程持有 comm.db → `wal_checkpoint(TRUNCATE)` 全排干 → 备份 → 迁移 → 部署新 binary → 重启。任一步失败的停止点与回退动作逐条写明。
@@ -257,7 +287,7 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 | messages instruction | read→ACKED;delivered 未读→**LEASED**;未投→QUEUED(retry_count 保留) |
 | messages response | delivered(已 consume)→ACKED;未→QUEUED |
 | messages progress | → log(event='progress') |
-| messages 过期/terminal 历史 | → log('migrated_history') |
+| messages 过期/terminal 历史 | → log('migrated_history');**content_ref 非空的历史行同样先内嵌 bytes(base64)+hash 进 row_json、同事务建 GC intent**(R3 blocker 2 —— 不留 dangling 路径) |
 | lead_inbox external(chat/xdept) | 未 complete→QUEUED;delivered→ACKED;disposed→DEAD |
 | lead_inbox 其余 pending(inbox lane) | → QUEUED |
 | lead_inbox frozen/quarantine/consumed 历史 | → log('migrated_history')(disposition 映射记录在 row_json) |
@@ -270,7 +300,7 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 - **负向测试**:用真 pre-FLY-1572 build(git worktree checkout 旧 commit)对迁移后副本跑**全部 live 旧入口**:ask/gate/send/respond/inbox/check + verify-approval/pending/complete/runner-stopped + 只读路径,逐一断言 fail-loud(而非静默空读/changes=0),并断言无附带表副作用。
 
 ### 8.4 回滚(实测一次)
-verified staging copy(先校验备份完整性)→ 清/拒绝 `-wal/-shm` sidecar → atomic rename 顶替 → fsync 目录 → readonly integrity/FK/表清单/行数校验 → 回退部署 → 起 Bridge → 旧 build 冒烟。备份文件即回滚,无 feature flag。
+verified staging copy(先校验备份完整性)→ 清/拒绝 `-wal/-shm` sidecar → atomic rename 顶替 → fsync 目录 → **`refs/` 按 manifest 逐项恢复+hash 校验**(archive+GC 后回滚 old build 的场景专门测) → readonly integrity/FK/表清单/行数校验 → 回退部署 → 起 Bridge → 旧 build 冒烟。备份文件即回滚,无 feature flag。
 
 ## 9. 实施顺序与 TDD
 
