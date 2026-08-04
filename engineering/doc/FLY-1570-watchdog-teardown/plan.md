@@ -60,7 +60,7 @@ Issue: FLY-1570 (https://linear.app/geoforge3d/issue/FLY-1570/消息层重构-a-
 12. **receipt 升级链覆盖核对(Lead 硬性核对项 2026-08-04,lead-instruction 92a148f8 + 修正版 0e76355c,以修正版框架为准)—— 裁定:这类检测不该以 watchdog 形式存在,明确删除,不留死着装样子的 watchdog**。背景(CoS 阳性对照实测):receipt_unprocessed 升级链自嵌套(升级事件本身是消息→也要收据→再升级时把上一代 fingerprint 整段拼进来→每代变长→第三代突破 detection-ack 端点 200 字符上限 stuck-remanage-routes.ts:171),且 **fingerprint>200 的 1649 行 0 次 page(≤200 的行 3759 次 page,pager 活着)、>7 天未结的 170 条同样 0 page ⇒ ack 与 page 双路全死 = 假阴性静默失效**:watchdog 自以为在盯这一类,类内任何真实故障永远到不了人眼前。这**加强**了拆除裁定 —— 本单删的不是一个工作中的保障,而是一个只剩形骸的假保障;生产已清 293 行结构死类。「值得检测的那部分职能」不由新 watchdog 承接,由 D 单的**结构性队列语义**取代(FLY-1569 §4/§6:租约到期同一条消息原地重新可见、不新建行;重投 3 次 → 死信闸打包给 Lead 决策)—— 送没送到从此是队列属性,不是巡逻检测,自嵌套与长度上限问题在结构上不存在。
     - **包含(自嵌套的引擎整体死亡)**:resend 引擎(lead-receipt-patrol 的 advanceDueUnprocessedReceipts + markUnprocessedReceiptEscalated 全仓唯一调用者)、receipt 域升级生成器(notifyUnprocessed plugin.ts:8130-8170 / notifyWakeFailure :8065-8107,随两 patrol 闭包删)、receiptDetectionKinds 收缩(:7517)—— 刀 4 全删。**「升级的升级」从此结构性不可能:不是靠更好的上限,而是生成器物理不存在了**。替代物(租约到期原地重投不新建行 + 死信闸)= D 单按 FLY-1569 §4/§6 重建
     - **不包含(留下的洞逐条)**:① `detection_escalations` 表 + reconcileDetectionEscalations 升级机(保留,服务 founder_decision_dropped 保留项 —— 但 receipt 域 feeder 已死,不会再长新 receipt 行);② detection-ack 端点及其 **200 字符上限本体(:171)保留**(统一检测流活接口)—— 其「超长永远关不掉却继续吵」的 fail-closed 方向反了 + too-long 误报 required 文案 + fingerprint 整段拼接三个病灶,**不折进本删除 PR**(纯删红线;且 feeder 死后病灶从「活着的 founder-pager」降级为「保留端点的潜在缺陷」),按 Lead 决定另立小单或折进 C/D;③ lead_inbox 重发记账字段(C 单);④ 存量 receipt 域 detection 行:ship checklist 已含 detection 域盘点 SQL(§3.11),非零先人工收敛
-    - 若 Lead 判定②必须本单治,追加为独立第 9 刀(带端点行为测试),不混入删除 commit
+    - **第 9 刀:Lead 已裁定【执行】**(2026-08-04 回复 43c71d71,founder 过夜预批范围内):detection-ack 端点作为统一检测接口保留,就不允许它带着已知的「关不掉也叫不响」失败方向活着。独立 commit,不混入任何纯删 commit,带端点行为测试,三项修复:①too-long 的 fail-closed 方向纠正 —— 超长 fingerprint 可截断/哈希后**仍可关闭**,而不是永远关不掉;②错误文案区分 missing 与 too-long(现在把 too-long 说成 required,把运维引去猜字段名);③fingerprint 改用 parent id 引用而非整段拼接
 13. **flag 处置策略**(R1):所有被本单移除的 **active** flag 一律迁入 truth.ts `RETIRED_FLAGS`,不许无痕消失:`pane_idle_suppress`(registry.ts:1865-1882,active——修正 research「影子开关」说法)、`codex_hold_nudge`、`codex_hold_nudge_ms`、`receipt_activation_dry_run`、`watchdog_loop_heartbeat`,及 truth allowlist 里的 gap/frame/receipt-patrol env。已带 `retiring: FLY-1393` 的 5 条照移;`founder_reply_watchdog` 保留为活开关、去 retiring 标记修 note
 
 ## 4. 实施步骤(8 刀,每刀独立编译 + 独立 commit)
@@ -127,6 +127,9 @@ Issue: FLY-1570 (https://linear.app/geoforge3d/issue/FLY-1570/消息层重构-a-
 - watchdog-health.ts 摘 RETIRING_WATCHDOGS/buildRetiringWatchdogRows/retiring 字段 + plugin.ts:3935-3949/:4630
 - scripts 残留 env 引用(qa-fly-1189/qa-multilead/test-deploy-multilead/qa-fly-1282 文档)
 - CLAUDE.md 里程碑行 + doc 随 PR(本项目 doc-flow:不挪 archive)
+
+### 刀 9(Lead 裁定执行,唯一的非删除刀):detection-ack 端点 fail-safe 修复
+- 按 §3.12 三项:too-long 可截断/哈希后仍可关闭、错误文案区分 missing/too-long、fingerprint 用 parent id 引用;独立 commit + 端点行为测试(too-long 关闭路径、文案断言、parent-id 往返);顺序放在刀 8 之后(它改保留代码的行为,与删除刀完全隔离)
 
 ## 5. 验收标准映射(issue 5 条 → 机器可验)
 
