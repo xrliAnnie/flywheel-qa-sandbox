@@ -327,6 +327,12 @@ flywheel-comm runner-stopped
 
 ## 13. 真机 QA(逐条映射验收标准)
 
+**QA 硬性要求(founder 直令 2026-08-04,lead-instruction 79e9e640;QA 节点按此验收,不许降级)**:
+1. **真组件搭台**:529 测试房真机 E2E —— 真数据库 / 真进程 / 真链路,不是 stub/harness 模拟(FLY-1624 教训:stub 测不到真调用,bug 躲过两轮评审)。本单落点:真 tmux Runner、真 comm.db(slot 库)、真 Bridge GatePoller、真钩子/notify 触发。
+2. **真 Discord 腿**:本单核心行为就是「通知送达」—— RUNNER-STOPPED 报文必须经真实发送链路(CommDB → GatePoller → runner_question → Lead → Discord)送进 **529 隔离频道**,以「真送达 + 读取确认」取证;生产频道零污染。
+3. **结论绑定精确 head**;修前/修后对照数字进 QA 报告(如:修 enforcer 前 Runner env 回放 → block,修后 → 零 block;挂钩子前后 Runner 停轮时 Lead 侧可见性对照)。
+4. **涉及重启行为的验收必须真实重启**:本单 codex-home 改动需 Bridge 重启才作用于新 spawn —— QA 中该段用 529 房 Bridge 真实重启验证;与生产 Bridge 无关的段在 QA 报告里写明为何不适用,不许沉默跳过。
+
 | 验收 | 做法 | 取证 |
 |---|---|---|
 | 1. Claude runner 干完 → `reason=done` | 529 房起真 Claude runner 跑一个 no_code/phase 类小单到 complete | slot comm.db `messages` 里的 RUNNER-STOPPED 行(kind=report,确定性 id)+ Lead pane 收到 relay |
