@@ -6775,8 +6775,9 @@ export class CommDB {
 	}
 
 	/**
-	 * Highest-priority unanswered question opened by this runner in the current
-	 * turn window. Reports cannot make a later stop look blocked.
+	 * Highest-priority unanswered question opened by this runner. Checkpoints are
+	 * durable across turns; ordinary asks are limited to the current turn window.
+	 * Reports cannot make a later stop look blocked.
 	 */
 	getPendingRunnerQuestion(
 		executionId: string,
@@ -6799,7 +6800,7 @@ export class CommDB {
 				      WHERE r.parent_id = q.id AND r.type = 'response'
 				   )
 				   AND ${answerable}
-				   AND (? IS NULL OR julianday(q.created_at) >= julianday(?))
+				   AND (q.checkpoint IS NOT NULL OR ? IS NULL OR julianday(q.created_at) >= julianday(?))
 				 ORDER BY (q.checkpoint IS NOT NULL) DESC, q.created_at, q.rowid
 				 LIMIT 1`,
 			)

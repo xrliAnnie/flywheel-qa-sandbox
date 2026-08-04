@@ -9,10 +9,12 @@ Issue: FLY-1571 (https://linear.app/geoforge3d/issue/FLY-1571/消息层重构-b-
 两者冲突时,仅以下 park 优先级修正以本文件为准。
 
 active park 不再无条件映射为 `done`。在得出 park 的 `done` 结论前,必须先查询
-本轮相关的未答 pending 信号:
+未答 pending 信号:
 
-1. 有未答 checkpoint question → `awaiting_approval`;
-2. 否则有未答普通 question → `blocked`;
+1. 有未答 checkpoint question → `awaiting_approval`;checkpoint 是跨 turn 的 durable
+   approval state,不受当前 turn lower bound 过滤;
+2. 否则有本轮相关的未答普通 question → `blocked`;普通 ask 继续受当前 turn lower
+   bound 约束,避免旧 ask 污染新一轮;
 3. 两者都没有 → `done`,detail 仍为 `parked: <park reason>`。
 
 ## QA verdict 关键段(逐字)
@@ -33,13 +35,21 @@ active park 不再无条件映射为 `done`。在得出 park 的 `done` 结论�
   terminal status、Codex quota/context 尾部识别与最终 blocked 兜底均不变。
 - 三个触发点全部保留:Claude `Stop`、Claude `StopFailure`、Codex
   `notify + turn-ended`。
-- pending 查询的本轮边界、checkpoint 优先普通 ask、report 排除、幂等键与既有
-  `flywheel-comm` 上行通道全部保留。
+- pending 查询中普通 ask 的本轮边界、checkpoint 优先普通 ask、report 排除、幂等键
+  与既有 `flywheel-comm` 上行通道全部保留;唯一修正是 checkpoint 不受该边界过滤。
 - park 在没有未答 pending 信号时仍报告 `done`,detail 形状不变。
 
 ## 增量验收
 
-- active park + 未答 `approve_to_ship` → `awaiting_approval`,detail 指向该 gate。
+- active park + 未答 `approve_to_ship` → `awaiting_approval`,detail 指向该 gate;即使 gate
+  的 `created_at` 早于本轮 `prevIngress`,结论也不变。
 - active park + 未答普通 ask → `blocked`,detail 指向该 question。
 - active park + 无未答 pending → `done`,detail 仍为原 park reason。
 - 原 §5 其余 reason 矩阵继续全绿。
+
+## 增量评审 R3 纠正
+
+评审 finding `pending-gate-window-hides-live-approval` 证明第一版修正测试没有携带
+`prevIngress`,因此未覆盖跨 turn 的真实审批门。最终 SQL 约束为:checkpoint 无条件绕过
+时间下界;只有 `checkpoint IS NULL` 的普通 ask 才应用 turn lower bound。本节是同一
+design-correction lap 的收敛,仍不改写原 `plan.md` §5/§5.3。

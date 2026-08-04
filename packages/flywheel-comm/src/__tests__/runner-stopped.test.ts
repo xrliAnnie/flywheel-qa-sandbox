@@ -235,8 +235,16 @@ describe("runner-stopped", () => {
 		const gateId = db.insertQuestion(exec2, leadId, "approval", {
 			checkpoint: "approve_to_ship",
 		});
+		const raw = new Database(dbPath);
+		raw
+			.prepare("UPDATE messages SET created_at = ? WHERE id = ?")
+			.run("2026-08-04 11:59:30", gateId);
 
-		const parked = await emit({ execId: exec2, turnId: "turn-parked-at-gate" });
+		const parked = await emit({
+			execId: exec2,
+			turnId: "turn-parked-at-gate",
+			prevIngress: "2026-08-04T12:00:00.000Z",
+		});
 		expect(parked).toMatchObject({
 			reason: "awaiting_approval",
 			detail: `waiting on gate ${gateId}`,
@@ -244,8 +252,16 @@ describe("runner-stopped", () => {
 
 		db.insertResponse(gateId, leadId, "approved");
 		const askId = db.insertQuestion(exec2, leadId, "need an answer");
+		raw
+			.prepare("UPDATE messages SET created_at = ? WHERE id = ?")
+			.run("2026-08-04 12:00:05", askId);
+		raw.close();
 		expect(
-			await emit({ execId: exec2, turnId: "turn-parked-at-ask" }),
+			await emit({
+				execId: exec2,
+				turnId: "turn-parked-at-ask",
+				prevIngress: "2026-08-04T12:00:00.000Z",
+			}),
 		).toMatchObject({
 			reason: "blocked",
 			detail: `waiting on answer to ${askId}`,
