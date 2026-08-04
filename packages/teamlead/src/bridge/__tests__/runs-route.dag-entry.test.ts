@@ -399,7 +399,6 @@ describe("FLY-1372 DAG dispatch entry — fresh domain", () => {
 			expect(json.code).toBe("INVALID_TASK_CATEGORY");
 		}
 		expect(h.store.listWorkflowRouteDecisions()).toHaveLength(1);
-		expect(h.store.listWorkflowRouteReminderOutbox()).toHaveLength(1);
 	});
 
 	it("#2b workflow_generalized_templates OFF does NOT block v1 DAG entry (not a v1 rollback lever)", async () => {
@@ -727,12 +726,6 @@ describe("FLY-1407 work-kind entry gate", () => {
 				error_code: "INVALID_ROUTING_OVERRIDE",
 			},
 		]);
-		expect(h.store.listWorkflowRouteReminderOutbox()).toMatchObject([
-			{
-				status: "pending",
-				error_code: "INVALID_ROUTING_OVERRIDE",
-			},
-		]);
 	});
 
 	it.each([
@@ -971,7 +964,6 @@ describe("FLY-1407 work-kind entry gate", () => {
 				category_source: "default_fallback",
 			},
 		]);
-		expect(h.store.listWorkflowRouteReminderOutbox()).toHaveLength(1);
 	});
 
 	it("rolls back the legacy launch claim when the route decision digest conflicts", async () => {
@@ -1170,7 +1162,6 @@ describe("FLY-1407 work-kind entry gate", () => {
 			expect(json.code).toBe("TEMPLATE_NOT_FRESH_ELIGIBLE");
 		}
 		expect(h.store.listWorkflowRouteDecisions()).toHaveLength(1);
-		expect(h.store.listWorkflowRouteReminderOutbox()).toHaveLength(1);
 		expect(h.calls).toHaveLength(0);
 	});
 

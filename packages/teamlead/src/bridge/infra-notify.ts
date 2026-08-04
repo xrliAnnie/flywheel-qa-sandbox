@@ -10,9 +10,8 @@
  * (`FLYWHEEL_NOTIFY_CHANNEL` is only written in the FLY-929 §6 enable window).
  *
  * Once P-identity holds there is NO silent fallback to the legacy sender on a
- * delivery failure — fail-loud is owned by the P-expect receipt check
- * (notify-digest-expect.ts). Digest posting here is best-effort by contract:
- * the Alerts-channel posts remain the authoritative incident record.
+ * delivery failure. Digest posting here is best-effort by contract; the
+ * Alerts-channel posts remain the authoritative incident record.
  */
 
 import type { AccountRotationNotice } from "../account-heal/account-rotation-notice.js";

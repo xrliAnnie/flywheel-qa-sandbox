@@ -1557,36 +1557,20 @@ export function createRunsRouter(
 			projectName,
 			normalizedIssueLabels,
 		);
-		const resolveWorkKindReminderRecipient = (): string => {
-			const project = projects.find(
-				(candidate) => candidate.projectName === projectName,
-			);
-			const departmentLead =
-				typeof owningDept === "string"
-					? project?.leads.find(
-							(candidate) => candidate.department === owningDept,
-						)?.agentId
-					: undefined;
-			const cosLead = project?.leads.find(
-				(candidate) => candidate.agentId === "cos-lead",
-			)?.agentId;
-			return leadId ?? departmentLead ?? cosLead ?? "cos-lead";
-		};
 		const rejectWorkKindRequest = (input: {
 			status: number;
 			code: string;
 			reason?: string;
 			response?: Record<string, unknown>;
 			payload: unknown;
-			remind: boolean;
+			record: boolean;
 		}): void => {
-			if (input.remind) {
-				store.insertRejectedRouteDecisionWithReminder({
+			if (input.record) {
+				store.insertRejectedRouteDecision({
 					project: projectName,
 					issueId,
 					errorCode: input.code,
 					payload: input.payload,
-					recipientLeadId: resolveWorkKindReminderRecipient(),
 					...(typeof owningDept === "string" ? { owningDept } : {}),
 					selectedBy: leadId ?? "unassigned",
 				});
@@ -1928,7 +1912,7 @@ export function createRunsRouter(
 					reason: overrides.reason,
 					response: { allowed: ["no-three-stage"], silent: false },
 					payload: { routingOverrides: req.body.routingOverrides },
-					remind: true,
+					record: true,
 				});
 				return;
 			}
@@ -1946,7 +1930,7 @@ export function createRunsRouter(
 						silent: false,
 					},
 					payload: { taskCategory: req.body.taskCategory },
-					remind: true,
+					record: true,
 				});
 				return;
 			}
@@ -2073,7 +2057,7 @@ export function createRunsRouter(
 						reason: parsedTier.reason,
 						response: { allowed: [...ENG_TIERS], silent: false },
 						payload: { tier: req.body.tier },
-						remind: true,
+						record: true,
 					});
 					return;
 				}
@@ -2154,7 +2138,7 @@ export function createRunsRouter(
 							templateId: req.body.templateId,
 							tier: req.body.tier,
 						},
-						remind:
+						record:
 							err.code === "TEMPLATE_NOT_FRESH_ELIGIBLE" ||
 							err.code === "TIER_NOT_SUPPORTED",
 					});
@@ -2456,7 +2440,7 @@ export function createRunsRouter(
 							templateId: req.body.templateId,
 							tier: req.body.tier,
 						},
-						remind:
+						record:
 							err.code === "TEMPLATE_NOT_FRESH_ELIGIBLE" ||
 							err.code === "TIER_NOT_SUPPORTED",
 					});
@@ -3332,18 +3316,6 @@ export function createRunsRouter(
 				});
 				return;
 			}
-			if (genericFallback) {
-				store.insertWorkflowRouteDecisionReminder({
-					executionId: legacyEntryExecutionId,
-					code: "WORK_KIND_DEFAULT_FALLBACK",
-					payload: {
-						taskCategory: null,
-						fallback: "generic",
-					},
-					recipientLeadId: resolveWorkKindReminderRecipient(),
-				});
-			}
-
 			res.json({
 				success: true,
 				executionId: result.executionId,

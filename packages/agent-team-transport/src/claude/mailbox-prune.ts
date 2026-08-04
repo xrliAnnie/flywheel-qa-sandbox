@@ -1,5 +1,5 @@
 /**
- * FLY-182 Track A — mailbox + sidecar bounding (prune) + unread-overflow marker.
+ * FLY-182 Track A — mailbox + sidecar bounding (prune).
  *
  * Root cause (FLY-182): the claude-code mailbox (`<teams>/<lead>/inboxes/<agent>.json`)
  * and its `.flywheel.jsonl` sidecar are both append-only with no prune. Stock
@@ -27,10 +27,6 @@
  *   timed-out-but-eventually-finalized `flywheelId` retry path.
  */
 
-import { createHash } from "node:crypto";
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { getStateDir } from "../path-helpers.js";
 import type { SidecarRecord, TeammateMessage } from "./ClaudeMailboxCodec.js";
 
 // ----------------------------------------------------------------------------
@@ -42,8 +38,6 @@ export interface PrunePolicy {
 	readKeep: number;
 	/** Read entries older than this (and beyond readKeep) are dropped. ms. */
 	readRetentionMs: number;
-	/** Unread count >= this triggers the overflow marker. */
-	unreadWarn: number;
 	/** Finalized sidecar records older than this MAY be dropped. ms. */
 	sidecarRetentionMs: number;
 	/** Extra protection: keep the most recent N finalized records older than retention. */
@@ -53,7 +47,6 @@ export interface PrunePolicy {
 export const DEFAULT_PRUNE_POLICY: PrunePolicy = {
 	readKeep: 50,
 	readRetentionMs: 86_400_000, // 24h
-	unreadWarn: 200,
 	sidecarRetentionMs: 604_800_000, // 7 days
 	sidecarKeep: 2000,
 };
@@ -81,10 +74,6 @@ export function resolvePrunePolicy(): PrunePolicy {
 		readRetentionMs: envPositiveInt(
 			"FLYWHEEL_MAILBOX_READ_RETENTION_MS",
 			DEFAULT_PRUNE_POLICY.readRetentionMs,
-		),
-		unreadWarn: envPositiveInt(
-			"FLYWHEEL_MAILBOX_UNREAD_WARN",
-			DEFAULT_PRUNE_POLICY.unreadWarn,
 		),
 		sidecarRetentionMs: envPositiveInt(
 			"FLYWHEEL_MAILBOX_SIDECAR_RETENTION_MS",
@@ -115,10 +104,6 @@ function parseTs(entry: TeammateMessage): number | null {
 export interface MainPruneResult {
 	/** The entries to write back, in ORIGINAL order (only old read dropped). */
 	kept: TeammateMessage[];
-	/** Number of unread entries (all preserved). */
-	unreadCount: number;
-	/** Oldest unread timestamp (ms), or null when no unread. */
-	oldestUnreadTs: number | null;
 	/** How many read entries were dropped. */
 	droppedCount: number;
 }
@@ -136,16 +121,10 @@ export function pruneMainEntries(
 	now: number,
 ): MainPruneResult {
 	const readItems: Array<{ entry: TeammateMessage; idx: number }> = [];
-	let unreadCount = 0;
-	let oldestUnreadTs: number | null = null;
 
 	entries.forEach((entry, idx) => {
 		if (isUnread(entry)) {
-			unreadCount++;
-			const ts = parseTs(entry);
-			if (ts !== null && (oldestUnreadTs === null || ts < oldestUnreadTs)) {
-				oldestUnreadTs = ts;
-			}
+			return;
 		} else {
 			readItems.push({ entry, idx });
 		}
@@ -155,8 +134,6 @@ export function pruneMainEntries(
 	if (readItems.length === 0) {
 		return {
 			kept: entries.slice(),
-			unreadCount,
-			oldestUnreadTs,
 			droppedCount: 0,
 		};
 	}
@@ -197,7 +174,7 @@ export function pruneMainEntries(
 		}
 	});
 
-	return { kept, unreadCount, oldestUnreadTs, droppedCount };
+	return { kept, droppedCount };
 }
 
 // ----------------------------------------------------------------------------
@@ -249,97 +226,4 @@ export function pruneSidecarRecords(
 		}
 		return true; // pending OR within-retention finalized → always keep
 	});
-}
-
-// ----------------------------------------------------------------------------
-// Unread-overflow marker
-// ----------------------------------------------------------------------------
-
-/** Parse `<...>/teams/<team>/inboxes/<recipient>.json` → identity. */
-export function parseInboxIdentity(inboxPath: string): {
-	team: string;
-	recipient: string;
-} {
-	const parts = inboxPath.split(/[/\\]/);
-	const last = parts[parts.length - 1] ?? "";
-	const recipient = last.replace(/\.json$/, "");
-	const inboxesIdx = parts.lastIndexOf("inboxes");
-	const team =
-		inboxesIdx > 0 ? (parts[inboxesIdx - 1] ?? "unknown") : "unknown";
-	return { team, recipient };
-}
-
-/** Directory holding overflow markers. */
-export function overflowMarkerDir(): string {
-	return join(getStateDir(), "mailbox-overflow");
-}
-
-/** Marker path = `<stateDir>/mailbox-overflow/<sha1(inboxPath)>.json`. */
-export function overflowMarkerPath(inboxPath: string): string {
-	const hash = createHash("sha1").update(inboxPath).digest("hex");
-	return join(overflowMarkerDir(), `${hash}.json`);
-}
-
-export interface OverflowMarker {
-	team: string;
-	recipient: string;
-	inboxPath: string;
-	unread: number;
-	oldestUnreadTs: number | null;
-	observedAt: string;
-}
-
-/**
- * Write the overflow marker when unread >= threshold, else delete it.
- *
- * Idempotent: overwrite (atomic temp+rename) on overflow; unlink (ignore
- * ENOENT) when unread drops below threshold so PR2 self-monitoring does not
- * alert on stale markers. Never throws — marker I/O must not break delivery.
- */
-export async function updateOverflowMarker(args: {
-	inboxPath: string;
-	unreadCount: number;
-	oldestUnreadTs: number | null;
-	policy: PrunePolicy;
-	now: number;
-	logger?: (msg: string, ctx?: Record<string, unknown>) => void;
-}): Promise<void> {
-	const markerPath = overflowMarkerPath(args.inboxPath);
-	const log =
-		args.logger ??
-		((msg, ctx) => {
-			console.warn(`[mailbox-prune] ${msg}`, ctx ?? {});
-		});
-	try {
-		if (args.unreadCount >= args.policy.unreadWarn) {
-			const { team, recipient } = parseInboxIdentity(args.inboxPath);
-			const marker: OverflowMarker = {
-				team,
-				recipient,
-				inboxPath: args.inboxPath,
-				unread: args.unreadCount,
-				oldestUnreadTs: args.oldestUnreadTs,
-				observedAt: new Date(args.now).toISOString(),
-			};
-			await mkdir(dirname(markerPath), { recursive: true });
-			const tmp = `${markerPath}.tmp.${process.pid}.${args.now}`;
-			await writeFile(tmp, JSON.stringify(marker, null, 2), "utf-8");
-			await rename(tmp, markerPath);
-			log("unread overflow — Lead not consuming mailbox", {
-				team,
-				recipient,
-				unread: args.unreadCount,
-				threshold: args.policy.unreadWarn,
-			});
-		} else {
-			await unlink(markerPath).catch((err) => {
-				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-			});
-		}
-	} catch (err) {
-		// Marker I/O is best-effort — never break the delivery write path.
-		log(`overflow marker update failed: ${(err as Error).message}`, {
-			inboxPath: args.inboxPath,
-		});
-	}
 }

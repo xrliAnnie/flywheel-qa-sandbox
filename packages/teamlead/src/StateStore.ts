@@ -15663,30 +15663,6 @@ export class StateStore {
 			"CREATE UNIQUE INDEX IF NOT EXISTS ux_workflow_route_decision_rejected ON workflow_route_decision(dedup_key) WHERE dedup_key IS NOT NULL",
 		);
 		this.db.run(`
-			CREATE TABLE IF NOT EXISTS workflow_route_reminder_outbox (
-				dedup_key TEXT PRIMARY KEY,
-				decision_id INTEGER NOT NULL UNIQUE,
-				project TEXT NOT NULL,
-				issue_id TEXT NOT NULL,
-				error_code TEXT NOT NULL,
-				payload_json TEXT NOT NULL,
-				recipient_lead_id TEXT NOT NULL,
-				status TEXT NOT NULL DEFAULT 'pending'
-				 CHECK(status IN ('pending','accepted','dead_letter')),
-				attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
-				claim_owner TEXT,
-				claim_expires_at TEXT,
-				accepted_at TEXT,
-				last_error TEXT,
-				created_at TEXT NOT NULL,
-				updated_at TEXT NOT NULL,
-				FOREIGN KEY (decision_id) REFERENCES workflow_route_decision(id)
-			)
-		`);
-		this.db.run(
-			"CREATE INDEX IF NOT EXISTS idx_workflow_route_reminder_pending ON workflow_route_reminder_outbox(status, claim_expires_at, created_at)",
-		);
-		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_launch_owner (
 				execution_id TEXT PRIMARY KEY,
 				owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
@@ -17535,12 +17511,11 @@ export class StateStore {
 		return changed;
 	}
 
-	insertRejectedRouteDecisionWithReminder(input: {
+	insertRejectedRouteDecision(input: {
 		project: string;
 		issueId: string;
 		errorCode: string;
 		payload: unknown;
-		recipientLeadId: string;
 		owningDept?: string;
 		selectedBy?: string;
 		now?: string;
@@ -17573,72 +17548,7 @@ export class StateStore {
 				],
 			);
 			inserted = this.db.getRowsModified() === 1;
-			if (!inserted) return;
-			const decision = this.workflowSelectAll(
-				"SELECT id FROM workflow_route_decision WHERE dedup_key = ?",
-				[dedupKey],
-			)[0];
-			this.db.run(
-				`INSERT INTO workflow_route_reminder_outbox
-				 (dedup_key, decision_id, project, issue_id, error_code,
-				  payload_json, recipient_lead_id, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					dedupKey,
-					Number(decision!.id),
-					input.project,
-					input.issueId,
-					input.errorCode,
-					JSON.stringify(input.payload),
-					input.recipientLeadId,
-					now,
-					now,
-				],
-			);
 		});
-		this.save();
-		return { inserted, dedupKey };
-	}
-
-	insertWorkflowRouteDecisionReminder(input: {
-		idempotencyKey?: string;
-		executionId?: string;
-		code: string;
-		payload: unknown;
-		recipientLeadId: string;
-		now?: string;
-	}): { inserted: boolean; dedupKey: string } {
-		const decision = this.getWorkflowRouteDecisionByIdentity(input);
-		if (!decision || decision.status === "rejected") {
-			throw new Error("workflow route reminder requires a successful decision");
-		}
-		const now = input.now ?? new Date().toISOString();
-		const payloadHash = canonicalSubmissionDigest(input.payload);
-		const dedupKey = canonicalSubmissionDigest({
-			decisionId: decision.id,
-			project: decision.project,
-			issueId: decision.issue_id,
-			code: input.code,
-			payloadHash,
-		});
-		this.db.run(
-			`INSERT OR IGNORE INTO workflow_route_reminder_outbox
-			 (dedup_key, decision_id, project, issue_id, error_code,
-			  payload_json, recipient_lead_id, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				dedupKey,
-				decision.id,
-				decision.project,
-				decision.issue_id,
-				input.code,
-				JSON.stringify(input.payload),
-				input.recipientLeadId,
-				now,
-				now,
-			],
-		);
-		const inserted = this.db.getRowsModified() === 1;
 		this.save();
 		return { inserted, dedupKey };
 	}
@@ -17648,110 +17558,6 @@ export class StateStore {
 			"SELECT * FROM workflow_route_decision ORDER BY id",
 			[],
 		) as unknown as WorkflowRouteDecisionRow[];
-	}
-
-	listWorkflowRouteReminderOutbox(): WorkflowRouteReminderOutboxRow[] {
-		return this.workflowSelectAll(
-			"SELECT * FROM workflow_route_reminder_outbox ORDER BY created_at, dedup_key",
-			[],
-		) as unknown as WorkflowRouteReminderOutboxRow[];
-	}
-
-	claimWorkflowRouteReminder(input: {
-		owner: string;
-		now: string;
-		leaseExpiresAt: string;
-		maxAttempts?: number;
-	}): WorkflowRouteReminderClaim | undefined {
-		if (
-			!StateStore.workflowFiniteTimestamp(input.now) ||
-			!StateStore.workflowFiniteTimestamp(input.leaseExpiresAt) ||
-			Date.parse(input.leaseExpiresAt) <= Date.parse(input.now)
-		) {
-			throw new Error("invalid workflow route reminder lease");
-		}
-		const maxAttempts = input.maxAttempts ?? 3;
-		let claimed: WorkflowRouteReminderClaim | undefined;
-		this.db.transaction(() => {
-			const candidate = this.workflowSelectAll(
-				`SELECT * FROM workflow_route_reminder_outbox
-				  WHERE status = 'pending'
-				    AND attempts < ?
-				    AND (claim_expires_at IS NULL OR claim_expires_at <= ?)
-				  ORDER BY created_at, dedup_key
-				  LIMIT 1`,
-				[maxAttempts, input.now],
-			)[0] as unknown as WorkflowRouteReminderOutboxRow | undefined;
-			if (!candidate) return;
-			const attempt = Number(candidate.attempts) + 1;
-			this.db.run(
-				`UPDATE workflow_route_reminder_outbox
-				    SET attempts = ?, claim_owner = ?, claim_expires_at = ?,
-				        updated_at = ?
-				  WHERE dedup_key = ? AND status = 'pending' AND attempts = ?
-				    AND (claim_expires_at IS NULL OR claim_expires_at <= ?)`,
-				[
-					attempt,
-					input.owner,
-					input.leaseExpiresAt,
-					input.now,
-					candidate.dedup_key,
-					candidate.attempts,
-					input.now,
-				],
-			);
-			if (this.db.getRowsModified() !== 1) return;
-			claimed = {
-				dedupKey: candidate.dedup_key,
-				attempt,
-				eventId: `${candidate.dedup_key}#${attempt}`,
-				project: candidate.project,
-				issueId: candidate.issue_id,
-				errorCode: candidate.error_code,
-				payload: JSON.parse(candidate.payload_json) as unknown,
-				recipientLeadId: candidate.recipient_lead_id,
-			};
-		});
-		if (claimed) this.save();
-		return claimed;
-	}
-
-	completeWorkflowRouteReminder(input: {
-		dedupKey: string;
-		owner: string;
-		attempt: number;
-		outcome: "accepted" | "retry";
-		error?: string;
-		now?: string;
-		maxAttempts?: number;
-	}): boolean {
-		const now = input.now ?? new Date().toISOString();
-		const maxAttempts = input.maxAttempts ?? 3;
-		const status =
-			input.outcome === "accepted"
-				? "accepted"
-				: input.attempt >= maxAttempts
-					? "dead_letter"
-					: "pending";
-		this.db.run(
-			`UPDATE workflow_route_reminder_outbox
-			    SET status = ?, accepted_at = ?, last_error = ?,
-			        claim_owner = NULL, claim_expires_at = NULL, updated_at = ?
-			  WHERE dedup_key = ? AND status = 'pending'
-			    AND claim_owner = ? AND attempts = ?`,
-			[
-				status,
-				status === "accepted" ? now : null,
-				input.error ?? null,
-				now,
-				input.dedupKey,
-				input.owner,
-				input.attempt,
-			],
-		);
-		const changed = this.db.getRowsModified() === 1;
-		if (changed) this.save();
-		return changed;
 	}
 
 	summarizeCategorySuggestionAlignment(
@@ -33640,35 +33446,6 @@ export type WorkflowRouteDecisionClaimResult =
 			decision: WorkflowRouteDecisionRow;
 	  }
 	| { status: "conflict"; decision: WorkflowRouteDecisionRow };
-
-export interface WorkflowRouteReminderOutboxRow {
-	dedup_key: string;
-	decision_id: number;
-	project: string;
-	issue_id: string;
-	error_code: string;
-	payload_json: string;
-	recipient_lead_id: string;
-	status: "pending" | "accepted" | "dead_letter";
-	attempts: number;
-	claim_owner: string | null;
-	claim_expires_at: string | null;
-	accepted_at: string | null;
-	last_error: string | null;
-	created_at: string;
-	updated_at: string;
-}
-
-export interface WorkflowRouteReminderClaim {
-	dedupKey: string;
-	attempt: number;
-	eventId: string;
-	project: string;
-	issueId: string;
-	errorCode: string;
-	payload: unknown;
-	recipientLeadId: string;
-}
 
 export interface WorkflowCategorySuggestionSummary {
 	project: string;

@@ -448,8 +448,6 @@ import { receiptBackedMaterializedHeadAuthority } from "./materialized-head-auth
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
-import { notifyDigestExpectTick } from "./notify-digest-expect.js";
-import { defaultReceiptsPath } from "./notify-receipts.js";
 import { resolveOrphanDetectionEscalations } from "./orphan-escalation-reconcile.js";
 import { hashPane, liveRegion } from "./pane-live-region.js";
 import {
@@ -655,7 +653,6 @@ import {
 	grantWorkflowReworkTurn,
 	WorkflowReworkCoordinator,
 } from "./workflow-rework-coordinator.js";
-import { drainWorkflowRouteReminders } from "./workflow-route-reminder-drain.js";
 import { createWorkflowShadowRuntimeFromEnv } from "./workflow-shadow-writer.js";
 import {
 	createWorkflowShipReadyArm,
@@ -8599,17 +8596,6 @@ export async function startBridge(
 	// that a real notifier is available, otherwise a same-boot quarantine waits
 	// for the NEXT restart to even be attempted.
 	void leadInboxRuntime.drainQuarantineAlertsNow();
-	// FLY-1407: boot redrive closes the rejected-receipt→notify crash window.
-	// The periodic pass below piggybacks the existing LeadAlert drain timer, so
-	// this durable outbox adds no independent interval.
-	void drainWorkflowRouteReminders({
-		store,
-		notifier: leadAlertNotifier,
-	}).catch((error: Error) => {
-		console.warn(
-			`[Bridge] workflow route reminder boot drain failed: ${error.message}`,
-		);
-	});
 	deliveryDeadLetterAlertHolder.current = createLeadEventDeadLetterHandler({
 		pageFounder: detectionPageFounder,
 		mirror: async (row) => {
@@ -11307,25 +11293,6 @@ export async function startBridge(
 					);
 				}
 			}
-			// FLY-929 B2: notify-digest expectation check — the daily token
-			// report must leave a delivery receipt by 01:00 (report tz) or ONE
-			// deduped notify_digest_failed alert fires per expected day. The tick
-			// itself is固化 default-on (FLY-1243; the check runs every tick;
-			// "inactive", zero side effects). Same piggybacked poll — no timer.
-			try {
-				await notifyDigestExpectTick({
-					now: new Date(),
-					tz: process.env.TOKEN_USAGE_TIMEZONE ?? "America/Los_Angeles",
-					receiptsPath: defaultReceiptsPath(),
-					alert: (p) => leadAlertNotifier.alert(p),
-				});
-			} catch (err) {
-				console.warn(
-					`[Bridge] FLY-929 notify-digest expect tick failed: ${
-						err instanceof Error ? err.message : String(err)
-					}`,
-				);
-			}
 		},
 		// FLY-193: default ON now that the idle-pane recognizer is validated
 		// against committed real Lead pane fixtures (see
@@ -11358,45 +11325,6 @@ export async function startBridge(
 	// a drain stalls past the 60s interval (slow Discord), an overlapping drain
 	// would re-POST the same still-present queue file → duplicate alert, which
 	// breaks the "one alert per 10-min bucket" invariant. Skip when busy.
-	// FLY-182 §4.5 / §3.1.4: connect Track A's mailbox-overflow markers to
-	// alerting. A marker means a Lead's unread inbox crossed the threshold
-	// (not consuming) — surface it via the Discord-independent channel.
-	const checkMailboxOverflowMarkers = async (
-		meta: MetaAlertNotifier,
-	): Promise<void> => {
-		try {
-			const { getStateDir } = await import("flywheel-agent-team-transport");
-			const { readdir, readFile } = await import("node:fs/promises");
-			const { join: pjoin } = await import("node:path");
-			const dir = pjoin(getStateDir(), "mailbox-overflow");
-			let files: string[];
-			try {
-				files = (await readdir(dir)).filter((f) => f.endsWith(".json"));
-			} catch {
-				return; // dir absent → nothing to report
-			}
-			if (files.length === 0) return;
-			const leads: string[] = [];
-			for (const f of files) {
-				try {
-					const m = JSON.parse(await readFile(pjoin(dir, f), "utf-8"));
-					leads.push(`${m.team}/${m.recipient}(unread=${m.unread})`);
-				} catch {
-					/* skip unreadable marker */
-				}
-			}
-			await meta.notify({
-				reason: "mailbox_overflow",
-				title: "Lead not consuming mailbox",
-				body: `Unread mailbox overflow: ${leads.join(", ") || files.join(", ")}. A Lead may be stuck or not consuming its inbox.`,
-			});
-		} catch (err) {
-			console.warn(
-				`[Bridge] mailbox-overflow check failed: ${(err as Error).message}`,
-			);
-		}
-	};
-
 	// FLY-182 §4.5: self-monitoring thresholds (env-tunable). The watchdog must
 	// not go silent — meta-alerts ride the EXISTING 60s drain timer (no new
 	// periodic load, FLY-129). MetaAlertNotifier debounces per reason (10min),
@@ -11419,18 +11347,6 @@ export async function startBridge(
 		leadAlertNotifier
 			.drainQueue()
 			.then(async ({ sent, remaining, deadLettered, delivered }) => {
-				const routeReminderResult = await drainWorkflowRouteReminders({
-					store,
-					notifier: leadAlertNotifier,
-				});
-				if (
-					routeReminderResult.accepted > 0 ||
-					routeReminderResult.failed > 0
-				) {
-					console.log(
-						`[Bridge] workflow route reminder drain attempted=${routeReminderResult.attempted} accepted=${routeReminderResult.accepted} failed=${routeReminderResult.failed}`,
-					);
-				}
 				if (sent > 0 || remaining > 0 || deadLettered > 0) {
 					console.log(
 						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining} deadLettered=${deadLettered}`,
@@ -11473,8 +11389,6 @@ export async function startBridge(
 						body: `The alert queue holds ${remaining} entries (> ${alertQueueOverflow}).`,
 					});
 				}
-				// Track A mailbox-overflow markers → a Lead is not consuming its inbox.
-				await checkMailboxOverflowMarkers(metaAlertNotifier);
 			})
 			.catch((err: Error) => {
 				console.warn(`[Bridge] LeadAlert drain failed: ${err.message}`);

@@ -116,7 +116,7 @@ describe("HeartbeatService", () => {
 		service.stop();
 	});
 
-	// --- Stuck detection (inherited from StuckWatcher) ---
+	// --- Stuck detection ---
 
 	it("check() detects stuck session and notifies", async () => {
 		const session = makeSession();

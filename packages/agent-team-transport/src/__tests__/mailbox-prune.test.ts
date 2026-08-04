@@ -1,30 +1,23 @@
 /**
- * FLY-182 Track A — mailbox/sidecar prune + unread-overflow marker tests.
+ * FLY-182 Track A — mailbox/sidecar prune tests.
  *
  * Validates the safety invariants from the Codex-approved plan:
  * - NEVER drop read:false (A1); malformed read → unread.
  * - Output preserves original order (only old read dropped).
  * - Sidecar idempotency-first (within-retention finalized never dropped by cap).
- * - Overflow marker write/overwrite/cleanup + {team,recipient} identity.
  */
 
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type {
 	SidecarRecord,
 	TeammateMessage,
 } from "../claude/ClaudeMailboxCodec.js";
 import {
 	DEFAULT_PRUNE_POLICY,
-	overflowMarkerPath,
 	type PrunePolicy,
-	parseInboxIdentity,
 	pruneMainEntries,
 	pruneSidecarRecords,
 	resolvePrunePolicy,
-	updateOverflowMarker,
 } from "../claude/mailbox-prune.js";
 
 const NOW = Date.parse("2026-05-29T12:00:00.000Z");
@@ -58,7 +51,6 @@ describe("pruneMainEntries", () => {
 		];
 		const r = pruneMainEntries(entries, policy({ readKeep: 1 }), NOW);
 		expect(r.kept).toHaveLength(3);
-		expect(r.unreadCount).toBe(3);
 		expect(r.droppedCount).toBe(0);
 	});
 
@@ -80,7 +72,6 @@ describe("pruneMainEntries", () => {
 		];
 		const r = pruneMainEntries(entries, policy({ readKeep: 0 }), NOW);
 		expect(r.kept).toHaveLength(2);
-		expect(r.unreadCount).toBe(2);
 		expect(r.droppedCount).toBe(0);
 	});
 
@@ -201,18 +192,6 @@ describe("pruneMainEntries", () => {
 	it("handles empty array", () => {
 		const r = pruneMainEntries([], policy(), NOW);
 		expect(r.kept).toEqual([]);
-		expect(r.unreadCount).toBe(0);
-		expect(r.oldestUnreadTs).toBeNull();
-	});
-
-	it("reports oldestUnreadTs as the minimum unread timestamp", () => {
-		const entries = [
-			msg({ read: false, tsOffsetMs: -2 * DAY }),
-			msg({ read: false, tsOffsetMs: -5 * DAY }),
-			msg({ read: false, tsOffsetMs: -1 * DAY }),
-		];
-		const r = pruneMainEntries(entries, policy(), NOW);
-		expect(r.oldestUnreadTs).toBe(NOW - 5 * DAY);
 	});
 });
 
@@ -294,30 +273,6 @@ describe("pruneSidecarRecords", () => {
 	});
 });
 
-describe("parseInboxIdentity", () => {
-	it("parses standard inbox path", () => {
-		expect(
-			parseInboxIdentity(
-				"/home/u/.claude/teams/product-lead/inboxes/product-lead.json",
-			),
-		).toEqual({ team: "product-lead", recipient: "product-lead" });
-	});
-
-	it("distinguishes team vs recipient for the team-lead-in-product-lead case", () => {
-		expect(
-			parseInboxIdentity(
-				"/home/u/.claude/teams/product-lead/inboxes/team-lead.json",
-			),
-		).toEqual({ team: "product-lead", recipient: "team-lead" });
-	});
-
-	it("parses runner inbox", () => {
-		expect(
-			parseInboxIdentity("/x/teams/ops-lead/inboxes/runner-abcd1234.json"),
-		).toEqual({ team: "ops-lead", recipient: "runner-abcd1234" });
-	});
-});
-
 describe("resolvePrunePolicy", () => {
 	const saved = { ...process.env };
 	afterEach(() => {
@@ -328,7 +283,6 @@ describe("resolvePrunePolicy", () => {
 		for (const k of [
 			"FLYWHEEL_MAILBOX_READ_KEEP",
 			"FLYWHEEL_MAILBOX_READ_RETENTION_MS",
-			"FLYWHEEL_MAILBOX_UNREAD_WARN",
 			"FLYWHEEL_MAILBOX_SIDECAR_RETENTION_MS",
 			"FLYWHEEL_MAILBOX_SIDECAR_KEEP",
 		]) {
@@ -339,118 +293,15 @@ describe("resolvePrunePolicy", () => {
 
 	it("honors valid positive-int env overrides", () => {
 		process.env.FLYWHEEL_MAILBOX_READ_KEEP = "10";
-		process.env.FLYWHEEL_MAILBOX_UNREAD_WARN = "500";
 		const p = resolvePrunePolicy();
 		expect(p.readKeep).toBe(10);
-		expect(p.unreadWarn).toBe(500);
 	});
 
 	it("falls back to default on invalid/zero/negative env", () => {
 		process.env.FLYWHEEL_MAILBOX_READ_KEEP = "0";
-		process.env.FLYWHEEL_MAILBOX_UNREAD_WARN = "-5";
 		process.env.FLYWHEEL_MAILBOX_SIDECAR_KEEP = "abc";
 		const p = resolvePrunePolicy();
 		expect(p.readKeep).toBe(DEFAULT_PRUNE_POLICY.readKeep);
-		expect(p.unreadWarn).toBe(DEFAULT_PRUNE_POLICY.unreadWarn);
 		expect(p.sidecarKeep).toBe(DEFAULT_PRUNE_POLICY.sidecarKeep);
-	});
-});
-
-describe("updateOverflowMarker", () => {
-	let stateDir: string;
-	const savedStateDir = process.env.FLYWHEEL_STATE_DIR;
-	const inboxPath =
-		"/home/u/.claude/teams/product-lead/inboxes/product-lead.json";
-
-	beforeEach(async () => {
-		stateDir = await mkdtemp(join(tmpdir(), "fly182-overflow-"));
-		process.env.FLYWHEEL_STATE_DIR = stateDir;
-	});
-	afterEach(async () => {
-		if (savedStateDir === undefined) delete process.env.FLYWHEEL_STATE_DIR;
-		else process.env.FLYWHEEL_STATE_DIR = savedStateDir;
-		await rm(stateDir, { recursive: true, force: true });
-	});
-
-	it("writes marker with {team,recipient,inboxPath} when unread >= threshold", async () => {
-		await updateOverflowMarker({
-			inboxPath,
-			unreadCount: 250,
-			oldestUnreadTs: NOW - 5 * DAY,
-			policy: policy({ unreadWarn: 200 }),
-			now: NOW,
-			logger: () => {},
-		});
-		const raw = await readFile(overflowMarkerPath(inboxPath), "utf-8");
-		const m = JSON.parse(raw);
-		expect(m.team).toBe("product-lead");
-		expect(m.recipient).toBe("product-lead");
-		expect(m.inboxPath).toBe(inboxPath);
-		expect(m.unread).toBe(250);
-	});
-
-	it("idempotently overwrites (not appends)", async () => {
-		const args = {
-			inboxPath,
-			oldestUnreadTs: NOW,
-			policy: policy({ unreadWarn: 200 }),
-			now: NOW,
-			logger: () => {},
-		};
-		await updateOverflowMarker({ ...args, unreadCount: 250 });
-		await updateOverflowMarker({ ...args, unreadCount: 300 });
-		const raw = await readFile(overflowMarkerPath(inboxPath), "utf-8");
-		const m = JSON.parse(raw); // single valid JSON object, not appended
-		expect(m.unread).toBe(300);
-	});
-
-	it("deletes marker when unread drops below threshold", async () => {
-		await updateOverflowMarker({
-			inboxPath,
-			unreadCount: 250,
-			oldestUnreadTs: NOW,
-			policy: policy({ unreadWarn: 200 }),
-			now: NOW,
-			logger: () => {},
-		});
-		await updateOverflowMarker({
-			inboxPath,
-			unreadCount: 5,
-			oldestUnreadTs: NOW,
-			policy: policy({ unreadWarn: 200 }),
-			now: NOW,
-			logger: () => {},
-		});
-		await expect(stat(overflowMarkerPath(inboxPath))).rejects.toThrow();
-	});
-
-	it("is a no-op (no throw) when clearing a non-existent marker", async () => {
-		await expect(
-			updateOverflowMarker({
-				inboxPath,
-				unreadCount: 0,
-				oldestUnreadTs: null,
-				policy: policy({ unreadWarn: 200 }),
-				now: NOW,
-				logger: () => {},
-			}),
-		).resolves.toBeUndefined();
-	});
-
-	it("never throws even if the marker write target is invalid", async () => {
-		// Point at a path whose parent cannot be created (a file as a dir).
-		const filePath = join(stateDir, "afile");
-		await writeFile(filePath, "x", "utf-8");
-		process.env.FLYWHEEL_STATE_DIR = filePath; // state dir is a file → mkdir fails
-		await expect(
-			updateOverflowMarker({
-				inboxPath,
-				unreadCount: 999,
-				oldestUnreadTs: NOW,
-				policy: policy({ unreadWarn: 200 }),
-				now: NOW,
-				logger: () => {},
-			}),
-		).resolves.toBeUndefined();
 	});
 });

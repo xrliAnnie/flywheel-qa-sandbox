@@ -2,9 +2,7 @@
  * FLY-929 B1 — the notify delivery receipt file.
  *
  * Written by the Bridge (single writer) after a successful token-report
- * delivery; read by the digest-expect watchdog (notify-digest-expect.ts).
- * FLY-1243: the notify self-health check is固化 default-on (the
- * FLYWHEEL_NOTIFY_DIGEST_EXPECT gate is retired) — the receipt is always written.
+ * delivery.
  *
  * Date contract (Codex design R1#5): the receipt `date` is the report day the
  * CLI computed under `TOKEN_USAGE_TIMEZONE` and passed through
