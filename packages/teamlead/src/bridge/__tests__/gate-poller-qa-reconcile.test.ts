@@ -1,6 +1,6 @@
 /**
  * FLY-1279 B2: dead auto-QA recovery rides the existing GatePoller timer.
- * It is independent of park-watch and fully error-isolated.
+ * The retained QA state-convergence pass is fully error-isolated.
  */
 import { describe, expect, it, vi } from "vitest";
 import { GatePoller, type GatePollerConfig } from "../gate-poller.js";
@@ -53,42 +53,6 @@ describe("FLY-1279 GatePoller auto-QA recovery piggyback", () => {
 		});
 		await expect(tick(poller, 3)).resolves.toBeUndefined();
 		expect(onQaReconcileTick).toHaveBeenCalledTimes(3);
-	});
-
-	it("keeps park-watch passes single-flight while a prior inventory is unresolved", async () => {
-		let release!: () => void;
-		const firstPass = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		const onParkWatchTick = vi
-			.fn<() => Promise<void>>()
-			.mockReturnValueOnce(firstPass)
-			.mockResolvedValue(undefined);
-		const poller = makePoller({
-			onParkWatchTick,
-			parkWatchEveryNTicks: 1,
-		});
-
-		await tick(poller, 3);
-		expect(onParkWatchTick).toHaveBeenCalledTimes(1);
-
-		release();
-		await firstPass;
-		await vi.waitFor(() =>
-			expect(
-				(poller as unknown as { parkWatchPass: Promise<void> | null })
-					.parkWatchPass,
-			).toBeNull(),
-		);
-		await tick(poller, 1);
-		expect(onParkWatchTick).toHaveBeenCalledTimes(2);
-	});
-
-	it("defaults delivery reconciliation to the shared 20-tick maintenance cadence", async () => {
-		const onDeliveryReconcileTick = vi.fn();
-		const poller = makePoller({ onDeliveryReconcileTick });
-		await tick(poller, 21);
-		expect(onDeliveryReconcileTick).toHaveBeenCalledTimes(2);
 	});
 
 	it("surfaces a CommDB migration outage through the Lead alert sink", async () => {

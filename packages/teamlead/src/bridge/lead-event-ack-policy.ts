@@ -1,5 +1,4 @@
 import type { HookPayload } from "./hook-payload.js";
-import { legacyDeliveryWatchdogsEnabled } from "./legacy-delivery-watchdog-policy.js";
 
 export type LeadEventAckPolicy =
 	| "question_response"
@@ -7,16 +6,16 @@ export type LeadEventAckPolicy =
 	| "founder_surface_confirmed";
 
 export function deliveryAckEnabled(
-	env: NodeJS.ProcessEnv = process.env,
-): boolean {
-	return legacyDeliveryWatchdogsEnabled(env);
+	_env: NodeJS.ProcessEnv = process.env,
+): false {
+	return false;
 }
 
 /** Reverse feature flag for the superseded scanner/redelivery cohort. */
 export function legacyLeadWatchdogEnabled(
-	env: NodeJS.ProcessEnv = process.env,
-): boolean {
-	return legacyDeliveryWatchdogsEnabled(env);
+	_env: NodeJS.ProcessEnv = process.env,
+): false {
+	return false;
 }
 
 export function ackPolicyForLeadEvent(

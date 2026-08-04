@@ -122,9 +122,6 @@ describe("GatePoller (FLY-161)", () => {
 		circuitThreshold?: number;
 		circuitCooldownTicks?: number;
 		evictionRetryTicks?: number;
-		patrolEveryNTicks?: number;
-		transport?: import("../bridge/gate-poller.js").MisroutePatrolTransport;
-		misrouteArchiveDir?: string;
 		ensureShipRelevantDiff?: (
 			session: import("../StateStore.js").Session,
 		) => Promise<void>;
@@ -138,9 +135,6 @@ describe("GatePoller (FLY-161)", () => {
 			circuitThreshold: opts?.circuitThreshold,
 			circuitCooldownTicks: opts?.circuitCooldownTicks,
 			evictionRetryTicks: opts?.evictionRetryTicks,
-			patrolEveryNTicks: opts?.patrolEveryNTicks,
-			transport: opts?.transport,
-			misrouteArchiveDir: opts?.misrouteArchiveDir,
 			ensureShipRelevantDiff: opts?.ensureShipRelevantDiff,
 		});
 	}
@@ -684,55 +678,6 @@ describe("GatePoller (FLY-161)", () => {
 			if (prev === undefined) delete process.env.FLYWHEEL_GATEPOLLER_CIRCUIT;
 			else process.env.FLYWHEEL_GATEPOLLER_CIRCUIT = prev;
 		}
-	});
-
-	it("Case 10d (FLY-307 B): a relay failure skips the misroute patrol in the same tick", async () => {
-		insertSession("exec-patrolskip", {
-			status: "running",
-			labels: ["product"],
-		});
-		insertQuestion({
-			execId: "exec-patrolskip",
-			leadId: "product-lead",
-			content: "fails before patrol",
-		});
-		const getSessionSpy = vi
-			.spyOn(store, "getSession")
-			.mockImplementation(() => {
-				// Neutral non-corruption fault: these FLY-307 circuit tests only
-				// need getSession to FAIL repeatedly; the cause is irrelevant to
-				// circuit counting. (Avoid a sql.js-corruption signature so the
-				// FLY-639 self-heal does not rebuild the :memory: store mid-test.)
-				throw new Error("simulated getSession failure (FLY-307 circuit)");
-			});
-		const readUnread = vi.fn(async () => []);
-		const transport = {
-			readUnread,
-			ack: vi.fn(async () => {}),
-		};
-		const archiveDir = join(tmpHome, "misroute-archive");
-
-		// patrolEveryNTicks=2 → patrol due on ticks 1,3,... — exactly the ticks
-		// where the relay fails (and on tick 3 the circuit also opens).
-		const poller = makePoller({
-			circuitThreshold: 3,
-			patrolEveryNTicks: 2,
-			transport,
-			misrouteArchiveDir: archiveDir,
-		});
-		await runPoll(poller); // tick1: patrolDue, relay fails → patrol skipped
-		await runPoll(poller); // tick2
-		await runPoll(poller); // tick3: patrolDue + circuit opens → patrol skipped
-
-		// The failing lead's patrol must never run (it would re-touch sql.js).
-		// Other leads (ops-lead, whose relay did NOT fail) still patrol normally —
-		// proving the skip is scoped to the failing lead, not a global disable.
-		const calls = readUnread.mock.calls.map(
-			(c) => (c[0] as { leadName: string }).leadName,
-		);
-		expect(calls.filter((l) => l === "product-lead")).toHaveLength(0);
-		expect(calls.filter((l) => l === "ops-lead").length).toBeGreaterThan(0);
-		getSessionSpy.mockRestore();
 	});
 
 	it("Case 9: skips gate_question when source session resolves to a different Lead (lead-scope check)", async () => {

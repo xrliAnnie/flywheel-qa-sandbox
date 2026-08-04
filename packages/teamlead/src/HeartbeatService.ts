@@ -542,8 +542,6 @@ export class HeartbeatService implements ReconnectController {
 		private stuckConfirmHolder?: {
 			current: ((session: Session) => Promise<StuckConfirmResult>) | null;
 		},
-		/** FLY-1373: boot-captured reverse gate for legacy delivery alert lanes. */
-		private legacyDeliveryWatchdogsEnabled: boolean = true,
 		/** FLY-1393: W-4 health tracker; optional for compatibility tests. */
 		private watchdogBlockedTracker?: { started(): void; completed(): void },
 	) {}
@@ -605,14 +603,6 @@ export class HeartbeatService implements ReconnectController {
 		// stages keep running. OFF → no guard, current overlap semantics.
 		const zombieOn = this.zombieMachineryEnabled();
 		try {
-			// FLY-25: Retry undelivered guardrail events from PREVIOUS cycles first,
-			// before detection generates new events in this cycle.
-			if (
-				this.legacyDeliveryWatchdogsEnabled &&
-				this.notifier instanceof RegistryHeartbeatNotifier
-			) {
-				await this.notifier.retryUndeliveredGuardrailEvents();
-			}
 			// FLY-1282 (R5 #4): recurring zombie-alert backfill — an INDEPENDENT
 			// stage outside the liveness guard (a hung liveness pass must not pause
 			// alert recovery), with its own single-flight inside.
@@ -713,9 +703,6 @@ export class HeartbeatService implements ReconnectController {
 			// (independent throttle; inert unless wired). Its own try/guards keep a
 			// failure best-effort — the outer catch is the belt-and-suspenders.
 			await this.checkStaleParkedPhases();
-			if (this.legacyDeliveryWatchdogsEnabled) {
-				await this.checkAwaitingReviewTimeout();
-			}
 		} catch (err) {
 			console.error(
 				"[HeartbeatService] check error (skipping cycle, Bridge stays up):",

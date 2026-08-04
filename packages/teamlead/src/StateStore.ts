@@ -5239,23 +5239,6 @@ export class StateStore {
 		return rows;
 	}
 
-	/** FLY-1279 D2: bounded semantic park inventory (includes truthful blocked). */
-	listParkWatchSessions(): Session[] {
-		const stmt = this.db.prepare(
-			`SELECT * FROM sessions
-			 WHERE status IN ('running','ship_parked','awaiting_review','approved_to_ship','blocked')
-			 ORDER BY execution_id`,
-		);
-		const rows: Session[] = [];
-		while (stmt.step()) {
-			rows.push(
-				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
-			);
-		}
-		stmt.free();
-		return rows;
-	}
-
 	/**
 	 * FLY-793 (Codex R1+R2): a same-issue session that OCCUPIES the shared branch-B
 	 * worktree — so a fresh three-stage re-dispatch here must be rejected, or it
@@ -8002,24 +7985,6 @@ export class StateStore {
 	listRunningAutoQaRecords(): AutoQaRecord[] {
 		const stmt = this.db.prepare(
 			"SELECT * FROM auto_qa_record WHERE status = 'running' ORDER BY started_at",
-		);
-		const out: AutoQaRecord[] = [];
-		while (stmt.step()) {
-			out.push(
-				this.rowToAutoQaRecord(stmt.getAsObject() as Record<string, unknown>),
-			);
-		}
-		stmt.free();
-		return out;
-	}
-
-	/** FLY-1279 D2: all records that can semantically hold an implementer. */
-	listParkWatchAutoQaRecords(): AutoQaRecord[] {
-		const stmt = this.db.prepare(
-			`SELECT * FROM auto_qa_record
-			 WHERE status IN
-			  ('running','awaiting_retest','retry_pending','retry_starting','stuck')
-			 ORDER BY started_at`,
 		);
 		const out: AutoQaRecord[] = [];
 		while (stmt.step()) {

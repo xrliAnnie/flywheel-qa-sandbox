@@ -21,10 +21,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import { readContentRef } from "flywheel-comm/utils";
 // FLY-927 (Task 3.2): checkpoint-park patrol wake primitive.
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
@@ -105,72 +102,25 @@ import {
 	shipAttemptFailedSuppressedHead,
 } from "./stale-approved-ship-reconciler.js";
 import { lookupTmuxTarget, probeRunnerProcessLiveness } from "./tmux-lookup.js";
-import { retiredWatchdogLaneEnabled } from "./watchdog-minimum-set.js";
 import {
 	askHygieneEnabled,
 	runZombieGateHygiene,
 	type ZombieCommDb,
 } from "./zombie-gate-hygiene.js";
 
-/**
- * FLY-208 A2: minimal structural view of the agent-team transport used by the
- * misroute patrol. `ClaudeCodeAdapter` satisfies it; tests can stub it.
- * Production code must reach mailbox files through this interface only (the
- * CI grep gate forbids direct claude path-helper calls outside the transport
- * package).
- */
-export interface MisrouteMailboxMessage {
-	/** Vendor-stable dedupe id (`${from}:${timestamp}` for claude-code). */
-	id: string;
-	from: string;
-	content: string;
-	/** Epoch ms of the original mailbox entry. */
-	ts: number;
-	read: boolean;
-}
-
-export interface MisroutePatrolTransport {
-	readUnread(args: {
-		leadName: string;
-		agentName: string;
-	}): Promise<MisrouteMailboxMessage[]>;
-	ack(args: {
-		leadName: string;
-		agentName: string;
-		messageIds: string[];
-	}): Promise<void>;
-}
-
 export interface GatePollerConfig {
 	pollIntervalMs: number;
 	projects: ProjectEntry[];
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
-	/** FLY-1373: boot-captured reverse gate for superseded alert lanes. */
-	legacyDeliveryWatchdogsEnabled?: boolean;
 	/** FLY-1393: independent W-1 human-alert lane. */
 	watchdogLivenessEnabled?: boolean;
 	/** FLY-1251: async producer for the exact-head ship-diff hold snapshot. */
 	ensureShipRelevantDiff?: (session: Session) => Promise<void> | void;
 	/** FLY-91: Enable per-issue chat thread hints in gate_question payloads. */
 	chatThreadsEnabled?: boolean;
-	/**
-	 * FLY-208 A2: transport for the black-hole inbox patrol. Absent (commdb /
-	 * rollback mode, or wiring failure) → patrol is a complete no-op.
-	 */
-	transport?: MisroutePatrolTransport;
-	/**
-	 * FLY-208 A2: root dir for backlog JSONL archives
-	 * (`<dir>/<leadId>/<aggregateId>.jsonl`). Required for the patrol — the
-	 * aggregate path MUST archive before bulk-ack (mailbox read-retention
-	 * pruning can delete acked originals). transport set but archiveDir
-	 * missing → patrol no-op + one warning.
-	 */
-	misrouteArchiveDir?: string;
 	/** FLY-208 A2: patrol cadence in poll ticks (default 20 ≈ 60s at 3s). */
 	patrolEveryNTicks?: number;
-	/** FLY-208 A2: unread count above which the aggregate path kicks in (default 10). */
-	backlogThreshold?: number;
 	/** FLY-307 B: consecutive per-lead poll failures before the circuit opens (default 3). */
 	circuitThreshold?: number;
 	/** FLY-307 B: poll ticks a lead's circuit stays open before a probe (default 20 ≈ 60s at 3s). */
@@ -235,30 +185,12 @@ export interface GatePollerConfig {
 	 */
 	displayReconcileEveryNTicks?: number;
 	/**
-	 * FLY-1048 (A6): the cheap gap/state scan, piggybacked on this same tick
-	 * (zero new periodic timer — FLY-513 pattern). MUST stay zero-pane /
-	 * zero-token (StateStore + readonly CommDB reads only); fully
-	 * error-isolated. Absent → complete no-op (byte-compat).
-	 */
-	onGapScanTick?: () => void | Promise<void>;
-	/** FLY-1048 (A6): cadence in poll ticks (default 100 ≈ 5min at 3s; plugin
-	 * reads FLYWHEEL_GAP_SCAN_EVERY_N_TICKS). */
-	gapScanEveryNTicks?: number;
-	/**
 	 * FLY-1279 B2: event-independent dead auto-QA recovery. Piggybacks the
 	 * existing timer and is deliberately independent of the park-watch switch.
 	 */
 	onQaReconcileTick?: () => void | Promise<void>;
 	/** Cadence in poll ticks (default 20, about 60s in production). */
 	qaReconcileEveryNTicks?: number;
-	/** FLY-1279 D1: durable ACK/reminder/dead-letter reconciliation. */
-	onDeliveryReconcileTick?: () => void | Promise<void>;
-	/** Cadence in poll ticks (default every tick). */
-	deliveryReconcileEveryNTicks?: number;
-	/** FLY-1279 D2: semantic park inventory and durable Lead-first notification. */
-	onParkWatchTick?: () => void | Promise<void>;
-	/** Cadence in poll ticks (default 20, about 60s in production). */
-	parkWatchEveryNTicks?: number;
 
 	// ── FLY-605: bidirectional in-thread founder relay fallback ──
 	/** Global Discord bot token fallback (lead.botToken takes precedence). */
@@ -396,24 +328,13 @@ export interface GatePollerConfig {
 	founderMilestoneGraceMs?: number;
 }
 
-/** The black-hole recipient name (stock claude-code lead convention). */
-const MISROUTE_AGENT_NAME = "team-lead";
 const DEFAULT_PATROL_EVERY_N_TICKS = 20;
 const DEFAULT_RECEIPT_FOUNDATION_OFF_ALERT_EVERY_N_TICKS = 1_200;
-const DEFAULT_BACKLOG_THRESHOLD = 10;
 // FLY-307 B: per-lead circuit breaker defaults.
 const DEFAULT_CIRCUIT_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_COOLDOWN_TICKS = 20;
 // FLY-307 A: backoff before retrying a failed stale-gate eviction write.
 const DEFAULT_EVICTION_RETRY_TICKS = 20;
-
-const MISROUTE_HINT =
-	"Reply to the Runner via `flywheel-comm send` (NOT SendMessage). " +
-	"The Runner may be on a pre-FLY-208 prompt that doesn't know the report-back protocol.";
-
-function sha16(input: string): string {
-	return createHash("sha256").update(input).digest("hex").slice(0, 16);
-}
 
 /** FLY-725: parse a strictly-positive int env, else fall back. */
 function positiveIntEnv(raw: string | undefined, fallback: number): number {
@@ -511,7 +432,6 @@ export class GatePoller {
 	private polling = false;
 	private readonly receiptFoundationOffBootMs = Date.now();
 	private reconcilePatrolPass: Promise<void> | null = null;
-	private parkWatchPass: Promise<void> | null = null;
 	// FLY-1099 §7.2: retained unreachable-runner consistency watchdog.
 	private readonly founderReplyWatchdog: FounderReplyWatchdog;
 
@@ -520,10 +440,6 @@ export class GatePoller {
 			alertSink: config.leadAlertSink,
 			infraRoute: () => this.infraAlertRoute(),
 		});
-	}
-
-	private legacyWatchdogsEnabled(): boolean {
-		return this.config.legacyDeliveryWatchdogsEnabled !== false;
 	}
 
 	/**
@@ -776,19 +692,6 @@ export class GatePoller {
 			// the poll). Cadence default 100 ticks ≈ 5min at the production 3s
 			// interval; `(tickCount - 1) % n === 0` fires on tick 1 and works for
 			// n=1 (FLY-513 Codex R1 LOW precedent).
-			if (
-				this.config.onGapScanTick &&
-				(this.tickCount - 1) % this.gapScanEveryNTicks() === 0
-			) {
-				void Promise.resolve()
-					.then(() => this.config.onGapScanTick?.())
-					.catch((err) =>
-						console.warn(
-							`[GatePoller] FLY-1048 gap-scan tick error (non-fatal): ${(err as Error).message}`,
-						),
-					);
-			}
-
 			// FLY-1279 B2: dead auto-QA sweep. This is not gated by park-watch;
 			// recovery remains active even when the notification feature is rolled back.
 			if (
@@ -804,34 +707,6 @@ export class GatePoller {
 					);
 			}
 
-			if (
-				this.config.onDeliveryReconcileTick &&
-				(this.tickCount - 1) % this.deliveryReconcileEveryNTicks() === 0
-			) {
-				void Promise.resolve()
-					.then(() => this.config.onDeliveryReconcileTick?.())
-					.catch((err) =>
-						console.warn(
-							`[GatePoller] FLY-1279 delivery reconcile error (non-fatal): ${(err as Error).message}`,
-						),
-					);
-			}
-
-			if (
-				this.config.onParkWatchTick &&
-				(this.tickCount - 1) % this.parkWatchEveryNTicks() === 0
-			) {
-				void this.runParkWatchPass().catch((err) =>
-					console.warn(
-						`[GatePoller] FLY-1279 park-watch error (non-fatal): ${(err as Error).message}`,
-					),
-				);
-			}
-
-			const patrolDue =
-				this.misroutePatrolEnabled() &&
-				this.tickCount % this.patrolEveryNTicks() === 1;
-
 			// FLY-161: iterate (project, lead) pairs directly instead of starting
 			// from getActiveSessions(). This lets runner_question survive Runner
 			// completion — a question whose source session has transitioned to
@@ -845,11 +720,8 @@ export class GatePoller {
 				}
 				for (const lead of project.leads) {
 					const leadKey = `${project.projectName}::${lead.agentId}`;
-					// FLY-307 B: while a lead's circuit is open, skip BOTH the
-					// question-relay duty AND the misroute patrol for that lead — the
-					// patrol also touches sql.js StateStore (deliverMisrouteEvent), so
-					// skipping only the relay would not fully isolate a poisoned WASM
-					// heap. `tickCount` still advances once per poll (above).
+					// FLY-307 B: while a lead's circuit is open, skip question relay for
+					// that lead. `tickCount` still advances once per poll (above).
 					if (this.circuitEnabled() && this.circuitOpen(leadKey)) {
 						continue;
 					}
@@ -996,25 +868,6 @@ export class GatePoller {
 						// Complementary to the FLY-307 circuit: circuit isolates the poisoned
 						// path, recover repairs the underlying store.
 						this.maybeRecoverStore(err);
-					}
-
-					// FLY-208 A2: black-hole inbox patrol — fully isolated from
-					// the question-relay main duty (own try/catch; any error is
-					// a warn + skip, never a poll abort). FLY-307 B: a relay failure
-					// (which may have just opened the circuit) skips the patrol for
-					// this lead too — the patrol also touches sql.js StateStore, so
-					// running it after the failure would not isolate a poisoned heap.
-					if (this.legacyWatchdogsEnabled() && patrolDue && !relayFailed) {
-						try {
-							await this.misroutePatrol(project, lead);
-						} catch (err) {
-							console.warn(
-								`[GatePoller] misroute patrol error for ${lead.agentId}:`,
-								err instanceof Error ? err.message : String(err),
-							);
-							// FLY-639 (Codex code R1 HIGH): misroutePatrol → deliverMisrouteEvent touches StateStore (isLeadEventDelivered / appendLeadEvent / markLeadEventDelivered / recordDeliveryFailure) — self-heal on corruption.
-							this.maybeRecoverStore(err);
-						}
 					}
 				}
 
@@ -1191,10 +1044,7 @@ export class GatePoller {
 		}
 	}
 
-	// ── FLY-208 A2: black-hole inbox patrol ─────────────────────────────────
-
 	private tickCount = 0;
-	private warnedMissingArchiveDir = false;
 
 	// FLY-307 A: stale gate_question eviction bookkeeping (process-local).
 	// `evictedGateIds` = cleanup write succeeded → skip permanently and silently.
@@ -1332,40 +1182,9 @@ export class GatePoller {
 		return this.config.displayReconcileEveryNTicks ?? 60;
 	}
 
-	/** FLY-1048 (A6): gap-scan cadence (default 100 ≈ 5min at 3s). */
-	private gapScanEveryNTicks(): number {
-		return this.config.gapScanEveryNTicks ?? 100;
-	}
-
 	/** FLY-1279 B2: dead auto-QA recovery cadence (default 20 ≈ 60s). */
 	private qaReconcileEveryNTicks(): number {
 		return this.config.qaReconcileEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
-	}
-
-	private deliveryReconcileEveryNTicks(): number {
-		return Math.max(
-			1,
-			this.config.deliveryReconcileEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS,
-		);
-	}
-
-	private parkWatchEveryNTicks(): number {
-		return Math.max(
-			1,
-			this.config.parkWatchEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS,
-		);
-	}
-
-	private runParkWatchPass(): Promise<void> {
-		if (this.parkWatchPass) return this.parkWatchPass;
-		const pass = Promise.resolve()
-			.then(() => this.config.onParkWatchTick?.())
-			.then(() => undefined);
-		const guarded = pass.finally(() => {
-			if (this.parkWatchPass === guarded) this.parkWatchPass = null;
-		});
-		this.parkWatchPass = guarded;
-		return guarded;
 	}
 
 	private ensureCommDbMigrated(dbPath: string, project: ProjectEntry): boolean {
@@ -1438,10 +1257,6 @@ export class GatePoller {
 		) {
 			this.commDbMigrationAlerted.delete(dbPath);
 		}
-	}
-
-	private backlogThreshold(): number {
-		return this.config.backlogThreshold ?? DEFAULT_BACKLOG_THRESHOLD;
 	}
 
 	// ── FLY-307 A: stale gate eviction ──────────────────────────────────────
@@ -1533,200 +1348,6 @@ export class GatePoller {
 				`[GatePoller] circuit OPEN for ${leadKey} after ${n} consecutive poll failures; cooling down ${this.circuitCooldownTicks()} ticks`,
 			);
 		}
-	}
-
-	/**
-	 * Patrol is ON by default when a transport is wired; `=0` is the explicit
-	 * bypass (FLY-193 default-ON precedent). Env read per-poll so tests and
-	 * live ops can flip it without a restart.
-	 */
-	private misroutePatrolEnabled(): boolean {
-		if (!this.config.transport) return false;
-		if (process.env.FLYWHEEL_MISROUTE_PATROL === "0") return false;
-		if (!this.config.misrouteArchiveDir) {
-			if (!this.warnedMissingArchiveDir) {
-				this.warnedMissingArchiveDir = true;
-				console.warn(
-					"[GatePoller] misroute patrol disabled: transport wired but misrouteArchiveDir missing (archive-before-ack is mandatory)",
-				);
-			}
-			return false;
-		}
-		return true;
-	}
-
-	/**
-	 * Scan `teams/<leadId>/inboxes/team-lead.json` for unread entries — every
-	 * one of them is a misrouted message (the recipient "team-lead" does not
-	 * exist in Flywheel's lead-named teams; stock SendMessage auto-created the
-	 * file and reported success to the sender).
-	 *
-	 * Semantics (Codex R1 #1/#2/#6):
-	 *  - delivery dedupe (isLeadEventDelivered) is DECOUPLED from ack retry: an
-	 *    already-delivered event skips re-delivery but its message id still
-	 *    joins ackCandidates — otherwise an ack failure would strand the entry
-	 *    unread forever behind the dedupe early-return.
-	 *  - backlog (> threshold): archive the FULL batch as JSONL BEFORE ack
-	 *    (mailbox read-retention pruning may delete acked originals), then one
-	 *    aggregate advisory. Aggregate eventId is content-addressed from the
-	 *    sorted message dedupe ids — stable across restarts and ack retries;
-	 *    the archive filename reuses it so a retry overwrites idempotently.
-	 *  - ack only after the advisory was delivered (now or previously);
-	 *    delivery failure → recordDeliveryFailure, no ack, retried next patrol.
-	 */
-	private async misroutePatrol(
-		project: ProjectEntry,
-		lead: LeadConfig,
-	): Promise<void> {
-		const transport = this.config.transport;
-		const archiveRoot = this.config.misrouteArchiveDir;
-		if (!transport || !archiveRoot) return;
-		// A lead actually NAMED "team-lead" would make this file its real
-		// inbox, not a black hole.
-		if (lead.agentId === MISROUTE_AGENT_NAME) return;
-
-		const unread = (
-			await transport.readUnread({
-				leadName: lead.agentId,
-				agentName: MISROUTE_AGENT_NAME,
-			})
-		).filter((m) => !m.read);
-		if (unread.length === 0) return;
-
-		const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
-		const ackCandidates: string[] = [];
-
-		if (unread.length > this.backlogThreshold()) {
-			// Aggregate path.
-			const sortedIds = unread.map((m) => m.id).sort();
-			const aggId = `misroute_agg_${sha16(`${lead.agentId}|${sortedIds.join("|")}`)}`;
-
-			// Archive BEFORE any ack — deterministic filename (= aggId) so an
-			// ack-retry pass overwrites instead of duplicating.
-			const leadDir = join(archiveRoot, lead.agentId);
-			mkdirSync(leadDir, { recursive: true });
-			const archivePath = join(leadDir, `${aggId}.jsonl`);
-			writeFileSync(
-				archivePath,
-				`${unread.map((m) => JSON.stringify(m)).join("\n")}\n`,
-			);
-
-			const tsRange = unread.map((m) => m.ts).sort((a, b) => a - b);
-			const senders = [...new Set(unread.map((m) => m.from))].sort();
-			const payload: HookPayload = {
-				event_type: "runner_misrouted_report",
-				execution_id: "misroute-backlog",
-				issue_id: "unknown",
-				project_name: project.projectName,
-				status: "misrouted_backlog",
-				summary:
-					`${unread.length} misrouted runner report(s) from [${senders.join(", ")}] ` +
-					`between ${new Date(tsRange[0] ?? 0).toISOString()} and ${new Date(tsRange[tsRange.length - 1] ?? 0).toISOString()} — archived, not replayed.`,
-				misroute_count: unread.length,
-				misroute_archive_path: archivePath,
-				misroute_hint: MISROUTE_HINT,
-			};
-			const delivered = await this.deliverMisrouteEvent(
-				lead,
-				aggId,
-				payload,
-				runtime,
-			);
-			if (delivered) ackCandidates.push(...unread.map((m) => m.id));
-		} else {
-			// Per-message path.
-			for (const m of unread) {
-				const eventId = `misroute_${sha16(`${m.id}:${lead.agentId}`)}`;
-				const payload: HookPayload = {
-					event_type: "runner_misrouted_report",
-					execution_id: m.from,
-					issue_id: "unknown",
-					project_name: project.projectName,
-					status: "misrouted_report",
-					from_agent: m.from,
-					misroute_from: m.from,
-					misrouted_at: new Date(m.ts).toISOString(),
-					// FLY-1586 C (code review R1) — this payload is persisted into
-					// lead_events, so a code-unit cut here mints exactly the poison
-					// shape that wedged the fleet. Missed in the first sweep.
-					summary: truncateCodePoints(m.content, 2000).text,
-					misroute_hint: MISROUTE_HINT,
-				};
-				const delivered = await this.deliverMisrouteEvent(
-					lead,
-					eventId,
-					payload,
-					runtime,
-				);
-				if (delivered) ackCandidates.push(m.id);
-			}
-		}
-
-		if (ackCandidates.length > 0) {
-			try {
-				await transport.ack({
-					leadName: lead.agentId,
-					agentName: MISROUTE_AGENT_NAME,
-					messageIds: ackCandidates,
-				});
-			} catch (err) {
-				// Retried next patrol: the events are already delivered, so the
-				// dedupe skips re-delivery but the ids re-enter ackCandidates
-				// (delivered-event-still-acks rule above).
-				console.warn(
-					`[GatePoller] misroute ack failed for ${lead.agentId} (will retry next patrol):`,
-					err instanceof Error ? err.message : String(err),
-				);
-			}
-		}
-	}
-
-	/**
-	 * Deliver one misroute advisory with the relayToLead persistence pattern.
-	 * Returns true when the Lead has the event (delivered now OR on a previous
-	 * patrol) — the caller acks on either (ack-retry decoupled from delivery
-	 * dedupe).
-	 */
-	private async deliverMisrouteEvent(
-		lead: LeadConfig,
-		eventId: string,
-		payload: HookPayload,
-		runtime: ReturnType<RuntimeRegistry["getForLead"]>,
-	): Promise<boolean> {
-		if (this.config.store.isLeadEventDelivered(lead.agentId, eventId)) {
-			return true; // previously delivered — still an ack candidate
-		}
-		const seq = this.config.store.appendLeadEvent(
-			lead.agentId,
-			eventId,
-			payload.event_type,
-			JSON.stringify(payload),
-			payload.execution_id,
-		);
-		if (!runtime) return false;
-		const envelope: LeadEventEnvelope = {
-			eventId,
-			seq,
-			event: payload,
-			sessionKey: payload.execution_id,
-			leadId: lead.agentId,
-			timestamp: new Date().toISOString(),
-		};
-		const result = await dispatchLeadEvent(
-			this.config.runtimeRegistry,
-			runtime,
-			envelope,
-		);
-		if (result.queued) return false;
-		if (result.delivered) {
-			this.config.store.markLeadEventDelivered(seq);
-			return true;
-		}
-		this.config.store.recordDeliveryFailure(
-			seq,
-			result.error ?? "deliver returned false",
-		);
-		return false;
 	}
 
 	private getPendingQuestions(
@@ -3206,24 +2827,10 @@ export class GatePoller {
 
 	/** §5: zombie gate hygiene (Z1 guarded retire + Z2 unreachable detection). */
 	private async zombieGateHygienePass(): Promise<void> {
-		// FLY-1393: Z1 is formally retired. Keep the low-level audit algorithm
-		// testable, but production policy is an unconditional OFF that env cannot
-		// revive. ASK hygiene and W-2 bookkeeping remain independent.
-		const zombieOn = retiredWatchdogLaneEnabled(
-			process.env,
-			"FLYWHEEL_ZOMBIE_GATE_RESOLVE",
-		);
 		const watchdogOn = founderReplyWatchdogEnabled();
 		const askOn = askHygieneEnabled();
-		// FLY-1328: the pass now hosts three capabilities — only skip it when ALL
-		// are off, or the ask sweep would be silently swallowed by the old flags.
-		if (!zombieOn && !watchdogOn && !askOn) return;
-		// The unreachable-sweep bookkeeping belongs to the Z1/Z2 capabilities. In
-		// an ASK-only configuration we must not touch it: begin/end would clear the
-		// watchdog's in-memory unreachable episodes without either capability
-		// having looked for them.
-		const sweepBookkeeping = zombieOn || watchdogOn;
-		if (sweepBookkeeping) this.founderReplyWatchdog.beginUnreachableSweep();
+		if (!watchdogOn && !askOn) return;
+		if (watchdogOn) this.founderReplyWatchdog.beginUnreachableSweep();
 		for (const project of this.config.projects) {
 			for (const lead of project.leads) {
 				let db: CommDB;
@@ -3285,7 +2892,7 @@ export class GatePoller {
 				}
 			}
 		}
-		if (sweepBookkeeping) this.founderReplyWatchdog.endUnreachableSweep();
+		if (watchdogOn) this.founderReplyWatchdog.endUnreachableSweep();
 	}
 
 	/** FLY-799: minimum spacing between reaction-checks for one ship gate. */

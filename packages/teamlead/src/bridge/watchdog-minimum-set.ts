@@ -4,12 +4,6 @@ import { resolve, sep } from "node:path";
 /** FLY-1393: the independently controlled watchdog minimum set. */
 export type WatchdogEnv = Record<string, string | undefined>;
 
-/** Discoverable migration tombs; none is consulted as runtime authority. */
-export const RETIRED_WATCHDOG_ENV_VARS = [
-	"FLYWHEEL_ZOMBIE_GATE_RESOLVE",
-] as const;
-export type RetiredWatchdogEnvVar = (typeof RETIRED_WATCHDOG_ENV_VARS)[number];
-
 function defaultOn(env: WatchdogEnv, name: string): boolean {
 	return env[name] !== "0";
 }
@@ -24,17 +18,6 @@ export function watchdogBlockedEnabled(
 	env: WatchdogEnv = process.env,
 ): boolean {
 	return defaultOn(env, "FLYWHEEL_WATCHDOG_BLOCKED");
-}
-
-/**
- * Retired delivery watchdogs are policy-hard-off. Environment variables remain
- * temporarily registered for truthful discovery, but cannot revive a lane.
- */
-export function retiredWatchdogLaneEnabled(
-	_env: WatchdogEnv = process.env,
-	_envVar?: RetiredWatchdogEnvVar,
-): false {
-	return false;
 }
 
 /**

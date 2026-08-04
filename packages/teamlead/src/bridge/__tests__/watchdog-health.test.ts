@@ -1,26 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-	buildRetiringWatchdogRows,
 	buildWatchdogManifest,
-	type RetiringWatchdogName,
 	WatchdogCheckTracker,
 } from "../watchdog-health.js";
-
-function retiringTruth(
-	overrides: Partial<Record<RetiringWatchdogName, boolean>> = {},
-): Record<RetiringWatchdogName, boolean> {
-	return {
-		legacy_delivery_watchdogs: false,
-		misroute_patrol: false,
-		founder_reply_watchdog: false,
-		park_watch: false,
-		stuck_detect: false,
-		stuck_founder_page_killswitch: false,
-		zombie_gate_resolve: false,
-		checkpoint_watchdog: false,
-		...overrides,
-	};
-}
 
 describe("FLY-1393 watchdog health manifest", () => {
 	it("tracks started/completed/in-flight timestamps with cadence-aware freshness", () => {
@@ -79,7 +61,6 @@ describe("FLY-1393 watchdog health manifest", () => {
 			},
 			deliveryLoopWired: true,
 			loopStallMs: 10 * 60_000,
-			retiringEnabled: retiringTruth(),
 			loopTargets: [
 				{
 					projectName: "flywheel",
@@ -135,21 +116,5 @@ describe("FLY-1393 watchdog health manifest", () => {
 		expect(manifest.components.w4_lead_blocked.class).toBe("W-4");
 		expect(manifest.components.w4_runner_blocked.class).toBe("W-4");
 		expect(manifest.components.w4_runner_blocked.wired).toBe(false);
-		expect(manifest.retiring.length).toBeGreaterThan(0);
-		expect(manifest.retiring.every((lane) => !lane.effective_enabled)).toBe(
-			true,
-		);
-	});
-
-	it("derives retiring truth from evaluated runtime gates", () => {
-		const rows = buildRetiringWatchdogRows(
-			retiringTruth({
-				checkpoint_watchdog: true,
-			}),
-		);
-		expect(rows.find((row) => row.name === "checkpoint_watchdog")).toEqual({
-			name: "checkpoint_watchdog",
-			effective_enabled: true,
-		});
 	});
 });

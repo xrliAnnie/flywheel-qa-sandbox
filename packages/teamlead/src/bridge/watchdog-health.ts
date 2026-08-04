@@ -78,28 +78,6 @@ export class WatchdogCheckTracker {
 	}
 }
 
-export const RETIRING_WATCHDOGS = [
-	"legacy_delivery_watchdogs",
-	"misroute_patrol",
-	"founder_reply_watchdog",
-	"park_watch",
-	"stuck_detect",
-	"stuck_founder_page_killswitch",
-	"zombie_gate_resolve",
-	"checkpoint_watchdog",
-] as const;
-
-export type RetiringWatchdogName = (typeof RETIRING_WATCHDOGS)[number];
-
-export function buildRetiringWatchdogRows(
-	effective: Record<RetiringWatchdogName, boolean>,
-): Array<{ name: RetiringWatchdogName; effective_enabled: boolean }> {
-	return RETIRING_WATCHDOGS.map((name) => ({
-		name,
-		effective_enabled: effective[name] === true,
-	}));
-}
-
 export function buildWatchdogManifest(input: {
 	nowMs?: number;
 	bridgeStartedAtMs: number;
@@ -118,7 +96,6 @@ export function buildWatchdogManifest(input: {
 	deliveryLoopWired: boolean;
 	loopStallMs: number;
 	loopTargets: readonly InboxLoopHealthTarget[];
-	retiringEnabled: Record<RetiringWatchdogName, boolean>;
 }) {
 	const nowMs = input.nowMs ?? Date.now();
 	const tracked = (
@@ -185,6 +162,5 @@ export function buildWatchdogManifest(input: {
 				{ class: "W-4", switch: "FLYWHEEL_WATCHDOG_BLOCKED" },
 			),
 		},
-		retiring: buildRetiringWatchdogRows(input.retiringEnabled),
 	};
 }

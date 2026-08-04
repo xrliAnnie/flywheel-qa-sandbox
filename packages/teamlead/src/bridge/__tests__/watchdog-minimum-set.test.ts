@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
 	qaStallInboxLoopLead,
-	RETIRED_WATCHDOG_ENV_VARS,
-	retiredWatchdogLaneEnabled,
 	watchdogBlockedEnabled,
 	watchdogLivenessEnabled,
 } from "../watchdog-minimum-set.js";
@@ -18,16 +16,6 @@ describe("FLY-1393 minimum-set policy", () => {
 		expect(watchdogBlockedEnabled({ FLYWHEEL_WATCHDOG_BLOCKED: "0" })).toBe(
 			false,
 		);
-	});
-
-	it("retired delivery lanes are hard-off even when legacy flags try to revive them", () => {
-		expect(RETIRED_WATCHDOG_ENV_VARS).toEqual(["FLYWHEEL_ZOMBIE_GATE_RESOLVE"]);
-		expect(retiredWatchdogLaneEnabled({})).toBe(false);
-		expect(
-			retiredWatchdogLaneEnabled({
-				FLYWHEEL_ZOMBIE_GATE_RESOLVE: "1",
-			}),
-		).toBe(false);
 	});
 
 	it("enables the destructive inbox-loop stall seam only under an isolated comm root", () => {

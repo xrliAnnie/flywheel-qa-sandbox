@@ -95,7 +95,7 @@ describe("StateStore", () => {
 		expect(ids).toEqual(["e1", "e2", "e5"]);
 	});
 
-	it("classifies ship_parked as re-adoptable, dedup-blocking, patrolled, and worktree-protected", () => {
+	it("classifies ship_parked as re-adoptable, dedup-blocking, and worktree-protected", () => {
 		store.upsertSession(
 			makeSession({
 				execution_id: "ship-carrier",
@@ -112,9 +112,6 @@ describe("StateStore", () => {
 			store
 				.getReadoptCandidateSessions()
 				.map((session) => session.execution_id),
-		).toContain("ship-carrier");
-		expect(
-			store.listParkWatchSessions().map((session) => session.execution_id),
 		).toContain("ship-carrier");
 		expect(store.getActivePhaseSessionForIssue("FLY-1441")?.execution_id).toBe(
 			"ship-carrier",
