@@ -21,7 +21,7 @@ generic fallback，而不是错配进某个 dept executor。
 | 路由表核对 | `grep -n "Ops-Test" .flywheel/config.yaml` → 零命中；`engineer/qa/product-designer/pm/prototype/designer` 的 `match.labels` 均不含该 label |
 | Dispatch 结果 | 本 session 以 **shipped `agents/generic-executor.md`** fallback 提示词 spawn（FLY-1356 C-arm 变体，`skill_framework_mode=bare`）——即 mismatch 走到了 generic fallback 路径 |
 | 工作分支 | `project-slot-3-FLY-139`（QA slot 3 worktree） |
-| Linear issue 状态 | 真 Linear 中已 Canceled（2026-07-25）；沙箱重放不改动 issue 本身，label 原样保留 |
+| Linear issue 状态 | 曾于 2026-07-25 Canceled，2026-08-04 12:52 UTC 由 campaign 重开为 In Progress（本次重放窗口内，state history 实测）；本 session 不改动 issue 本身，label 原样保留 |
 
 ## 重试谱系（Lead 执行要求 #2）
 
