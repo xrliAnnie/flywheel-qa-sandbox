@@ -1,14 +1,13 @@
 ---
 issue: FLY-1628
 phase: design
-phaseCursor: 4/5
-updated: 2026-08-04T19:50:28.697Z
-nextStep: Codex design review 8 轮 APPROVED。产 founder HTML(mermaid->mmdc
-  SVG+评论层+nonce)->publish-report->报 Tadashi->phase_design_complete
+phaseCursor: 5/5
+updated: 2026-08-04T20:14:25.976Z
+nextStep: HTML 已发布已报 Tadashi。complete phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1628 progress
-**phase**: design (4/5)
-**next**: Codex design review 8 轮 APPROVED。产 founder HTML(mermaid->mmdc SVG+评论层+nonce)->publish-report->报 Tadashi->phase_design_complete
+**phase**: design (5/5)
+**next**: HTML 已发布已报 Tadashi。complete phase_design_complete
