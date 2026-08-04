@@ -121,7 +121,6 @@ describe("FLY-1393 flag truth", () => {
 			"FLYWHEEL_RESTART_STORM_WINDOW_SEC",
 			"FLYWHEEL_RESTART_STORM_MAX",
 			"FLYWHEEL_RESTART_STORM_LOCK_DEADLINE_SEC",
-			"FLYWHEEL_V2_RESTART_CONCURRENCY_MAX",
 		]) {
 			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(/numeric tuning/i);
 		}

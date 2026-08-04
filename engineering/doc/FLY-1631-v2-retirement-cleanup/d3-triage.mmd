@@ -1,0 +1,9 @@
+flowchart LR
+    P["v2 旧单与残留全量扫描<br/>(Linear + 引擎账本 +<br/>会话记录 + 未关 PR 四路交叉)"] --> C1["关闭 10 单<br/>纯 v2 工作对象<br/>随体系一起废弃"]
+    P --> C2["改写保留 2 单<br/>挂错 v2 标签的<br/>v1 真问题(1522/1523)"]
+    P --> C3["只提示不动 2 单<br/>重名或边界单<br/>(878/1561)"]
+    P --> C4["管理性收尾<br/>3 个旧 PR 关闭 +<br/>1 条卡壳会话收账(1518)"]
+    style C1 fill:#ffe9e7,stroke:#ff3b30
+    style C2 fill:#fff7e6,stroke:#ff9500
+    style C3 fill:#f2f2f7,stroke:#86868b
+    style C4 fill:#e8f2ff,stroke:#007aff

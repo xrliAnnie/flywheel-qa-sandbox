@@ -6,7 +6,6 @@ import {
 	DEFAULT_GATE_TIMEOUT_MS,
 	DEFAULT_TIMEOUT_BEHAVIOR,
 } from "flywheel-config";
-import { requireLegacyWriterAllowedFromEnvironment } from "flywheel-v2-kernel";
 import {
 	type AccountRotationNotifyArgs,
 	accountRotationNotify,
@@ -197,8 +196,6 @@ async function main(): Promise<void> {
 		printUsage();
 		process.exit(0);
 	}
-	requireLegacyWriterAllowedFromEnvironment(process.env);
-
 	// Parse global options from remaining args
 	const commandArgs = args.slice(1);
 

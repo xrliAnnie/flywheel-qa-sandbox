@@ -1,0 +1,13 @@
+flowchart LR
+    A["阶段 A · engine 下线<br/>founder 贴一行命令<br/>(今天可做)"] --> B["阶段 B · 数据目录归档<br/>一次改名 · 3GB 原样保留<br/>(随时可逆)"]
+    A --> C["阶段 C · 代码整批删除<br/>单个 PR 一次删干净<br/>(founder 批准后合入)"]
+    B --> C
+    D["阶段 D · 旧单再分诊<br/>清单呈 founder 拍板<br/>(与 A/B/C 并行)"]
+    C --> E["阶段 E · 7 天观察 + 验收<br/>观察钟从 C 部署成功起算"]
+    D --> E
+    A --> E
+    style A fill:#e8f2ff,stroke:#007aff,stroke-width:2px
+    style B fill:#fff7e6,stroke:#ff9500,stroke-width:2px
+    style C fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
+    style D fill:#f3e8ff,stroke:#af52de,stroke-width:2px
+    style E fill:#e9f9ee,stroke:#34c759,stroke-width:2px

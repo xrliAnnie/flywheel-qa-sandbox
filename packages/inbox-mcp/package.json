@@ -33,17 +33,6 @@
 		".": {
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
-		},
-		"./channel-lease": {
-			"types": "./dist/channel-lease.d.ts",
-			"import": "./dist/channel-lease.js"
-		}
-	},
-	"typesVersions": {
-		"*": {
-			"channel-lease": [
-				"dist/channel-lease.d.ts"
-			]
 		}
 	}
 }

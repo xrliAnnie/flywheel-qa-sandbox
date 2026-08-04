@@ -98,14 +98,14 @@ fi
 
 # ── S3b: bounded interval timer + explicit trigger ──
 : > "$CALLS"; rm -rf "$UNIT_DIR"
-SPEC='{"name":"v2-scheduler","kind":"timer","exec":"/bin/bash /opt/fw/scripts/v2-scheduler-once.sh","intervalSeconds":60,"timeoutSeconds":60}'
+SPEC='{"name":"interval-worker","kind":"timer","exec":"/bin/bash /opt/fw/scripts/interval-worker-once.sh","intervalSeconds":60,"timeoutSeconds":60}'
 sup systemd-user supervisor_install "$SPEC" >/dev/null 2>&1
-SVC="$UNIT_DIR/v2-scheduler.service"; TMR="$UNIT_DIR/v2-scheduler.timer"
-sup systemd-user supervisor_trigger "v2-scheduler" "timer" >/dev/null 2>&1
+SVC="$UNIT_DIR/interval-worker.service"; TMR="$UNIT_DIR/interval-worker.timer"
+sup systemd-user supervisor_trigger "interval-worker" "timer" >/dev/null 2>&1
 if grep -q "TimeoutStartSec=60" "$SVC" \
    && grep -q "OnBootSec=60s" "$TMR" \
    && grep -q "OnUnitActiveSec=60s" "$TMR" \
-   && grep -q "systemctl --user start v2-scheduler.service" "$CALLS"; then
+   && grep -q "systemctl --user start interval-worker.service" "$CALLS"; then
   pass "S3b bounded interval timer renders and triggers its oneshot service"
 else
   fail "S3b interval timer: svc=$(cat "$SVC" 2>/dev/null) tmr=$(cat "$TMR" 2>/dev/null) calls=$(cat "$CALLS")"

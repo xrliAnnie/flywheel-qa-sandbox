@@ -14,10 +14,6 @@
 			"types": "./dist/bridge/chat-thread-utils.d.ts",
 			"import": "./dist/bridge/chat-thread-utils.js"
 		},
-		"./v2-issue-display": {
-			"types": "./dist/v2-issue-display.d.ts",
-			"import": "./dist/v2-issue-display.js"
-		},
 		"./bridge/worktree-cleanup": {
 			"types": "./dist/bridge/worktree-cleanup.d.ts",
 			"import": "./dist/bridge/worktree-cleanup.js"
@@ -38,8 +34,7 @@
 		"flywheel-account-summary": "bin/flywheel-account-summary",
 		"flywheel-claude-pool-rebuild": "bin/flywheel-claude-pool-rebuild",
 		"flywheel-rescue-lead": "bin/flywheel-rescue-lead",
-		"flywheel-quota-monitor": "bin/flywheel-quota-monitor",
-		"flywheel-v2-discord-ingress": "dist/v2-discord-ingress.js"
+		"flywheel-quota-monitor": "bin/flywheel-quota-monitor"
 	},
 	"files": [
 		"dist",
@@ -65,7 +60,6 @@
 		"flywheel-config": "workspace:*",
 		"flywheel-core": "workspace:*",
 		"flywheel-edge-worker": "workspace:*",
-		"flywheel-v2-kernel": "workspace:*",
 		"smol-toml": "^1.6.1",
 		"sql.js": "^1.14.1",
 		"ws": "^8.19.0",

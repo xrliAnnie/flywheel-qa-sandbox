@@ -118,5 +118,3 @@ node_modules/flywheel-linear-event-transport/package.json
 node_modules/flywheel-linear-event-transport/dist/*
 node_modules/flywheel-slack-event-transport/package.json
 node_modules/flywheel-slack-event-transport/dist/*
-node_modules/flywheel-v2-kernel/package.json
-node_modules/flywheel-v2-kernel/dist/*

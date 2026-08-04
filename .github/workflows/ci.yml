@@ -317,7 +317,7 @@ jobs:
           bash scripts/__tests__/install-hooks-fly1389.test.sh
           bash scripts/__tests__/register-local-marketplace.test.sh
           bash packages/teamlead/scripts/__tests__/claude-lead-resume-recovery.test.sh
-          bash scripts/__tests__/test-fly1608-lead-guard-cwd.test.sh
+          bash scripts/__tests__/v2-retirement-cleanup.test.sh
           bash scripts/__tests__/test-deploy-fly1389.test.sh
           bash scripts/__tests__/test-deploy-preflight-github.test.sh
 
@@ -348,7 +348,6 @@ jobs:
           bash scripts/__tests__/restart-storm-gate.test.sh
           bash scripts/__tests__/restart-storm-wrapper-wiring.test.sh
           bash packages/teamlead/scripts/__tests__/lead-backend-dispatch.test.sh
-          bash scripts/__tests__/v2-scheduler-install.test.sh
           bash scripts/__tests__/qa-fly1501-brake-missing-alert.test.sh
           bash scripts/__tests__/qa-fly1501-bounded-run.test.sh
 

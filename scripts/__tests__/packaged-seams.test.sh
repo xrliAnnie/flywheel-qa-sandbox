@@ -369,12 +369,12 @@ fi
 H="$SANDBOX/s11c-home"; mk_home "$H"
 stub "$H" launchctl 'exit 0'
 LDIR="$SANDBOX/s11c-launchd"
-SPEC='{"name":"v2-scheduler","kind":"timer","exec":"/bin/bash /x/v2-scheduler-once.sh","intervalSeconds":60,"timeoutSeconds":60}'
+SPEC='{"name":"interval-worker","kind":"timer","exec":"/bin/bash /x/interval-worker-once.sh","intervalSeconds":60,"timeoutSeconds":60}'
 out="$(env HOME="$H" PATH="$H/.local/bin:$PATH" \
   FLYWHEEL_SUPERVISOR_BACKEND=launchd FLYWHEEL_LAUNCHD_DIR="$LDIR" \
   FLYWHEEL_SUPERVISOR_DARWIN_INSTALL=1 \
   bash -c 'source "'"$REPO_ROOT"'/scripts/lib/supervisor.sh"; supervisor_install "$1"' _ "$SPEC" 2>&1)"; rc=$?
-PLIST="$LDIR/com.flywheel.v2-scheduler.plist"
+PLIST="$LDIR/com.flywheel.interval-worker.plist"
 if [ "$rc" -eq 0 ] && [ -f "$PLIST" ] \
    && grep -q "<key>StartInterval</key><integer>60</integer>" "$PLIST" \
    && ! grep -q "<key>KeepAlive</key>" "$PLIST"; then

@@ -464,24 +464,6 @@ tmux() {
       done
       echo "$MOCK_TMUX_SESSIONS" | grep -qx "$target"
       ;;
-    show-options)
-      # FLY-1550: session-option read used by is_v2_runner_session. Sessions
-      # named in MOCK_TMUX_V2_STAMPED carry the launcher stamp; a read failure
-      # is simulated with MOCK_TMUX_SHOW_OPTIONS_FAIL=1 (rc2 tri-state tests).
-      [[ "${MOCK_TMUX_SHOW_OPTIONS_FAIL:-0}" == "1" ]] && return 1
-      shift
-      local target=""
-      while [[ $# -gt 0 ]]; do
-        case "$1" in
-          -t) target="${2#=}"; target="${target%:}"; shift 2 ;;
-          *) shift ;;
-        esac
-      done
-      if printf '%s\n' "${MOCK_TMUX_V2_STAMPED:-}" | grep -qxF "$target"; then
-        printf '@flywheel_v2_session_ref v2dag:mock-attempt:1:mock-activation\n'
-      fi
-      return 0
-      ;;
     display-message)
       # FLY-867: simulate display-message failure (husk-reaper probe fail-closed test).
       [[ "${MOCK_TMUX_DISPLAY_FAIL:-0}" == "1" ]] && return 1
@@ -954,8 +936,6 @@ reset_mocks() {
   topo_reset
   MOCK_TMUX_WINDOWS=""
   MOCK_PANE_DEAD=""
-  MOCK_TMUX_V2_STAMPED=""
-  MOCK_TMUX_SHOW_OPTIONS_FAIL="0"
   MOCK_CMUX_RENAME_TAB_FAIL="0"
   MOCK_CMUX_WORKSPACES=""
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
@@ -4458,7 +4438,7 @@ test_fly293_managed_title_gate() {
            "FLY-1550·tight" "lead · dashboard" "1550 · bare-number" "fly-1550 · lowercase" "· headless"; do
     if is_managed_runner_title "$t"; then fail "expected NON-managed: $t"; ok=0; fi
   done
-  [[ "$ok" == "1" ]] && pass "managed gate matches claude|runner|design|implement|qa (FLY-1550 v2 windows land inside the same namespace); rejects direct vendors / Lead / user tab / bare-id / near-misses"
+  [[ "$ok" == "1" ]] && pass "managed gate matches claude|runner|design|implement|qa; rejects direct vendors / Lead / user tab / bare-id / near-misses"
 }
 
 test_fly293_orphan_pin_refs_identifies_only_orphan() {
@@ -8489,122 +8469,17 @@ test_fly1364_cleanup_alert_latch_resets_per_generation
 test_fly1364_cleanup_episode_signatures_cover_each_refusal_class
 
 # ════════════════════════════════════════════════════════════════
-# FLY-1550: v2 runner sessions join the watcher's roster
-# ════════════════════════════════════════════════════════════════
-
-test_fly1550_v2_sessions_in_agent_roster() {
-  echo "Test: FLY-1550 — v2 launcher-shaped sessions are scanned; namespace squatters are not"
-  reset_mocks
-  MOCK_TMUX_SESSIONS=$'flywheel\nrunner-flywheel\nv2-0123456789abcdef0123456789abcdef\nv2-attacker\nunrelated'
-  MOCK_TMUX_WINDOWS=$'flywheel|@1|flywheel-eng-lead\nrunner-flywheel|@2|FLY-9-claude-x\nv2-0123456789abcdef0123456789abcdef|@3|FLY-1550-runner-claude-Fable-runner-lead-config\nv2-attacker|@4|FLY-1550-runner-claude-Fable-fake'
-  local out
-  out=$(get_tmux_agent_windows)
-  if echo "$out" | grep -qF 'v2-0123456789abcdef0123456789abcdef|@3|FLY-1550-runner-claude-Fable-runner-lead-config'; then
-    pass "v2 launcher-shaped session window appears in the agent roster"
-  else
-    fail "v2 session window missing from roster: [$out]"
-  fi
-  # Codex R1 HIGH-1: `v2-` is a namespace, not an identity — a same-prefix
-  # session that is NOT the launcher's hex32 shape must stay out.
-  if echo "$out" | grep -q '^v2-attacker|'; then
-    fail "v2-namespace squatter leaked into the roster"
-  else
-    pass "v2-namespace squatter stays out of the roster"
-  fi
-  if echo "$out" | grep -q '^unrelated|'; then
-    fail "foreign session leaked into the roster"
-  else
-    pass "foreign sessions stay out of the roster"
-  fi
-}
-
-test_fly1550_v2_create_requires_launcher_stamp() {
-  echo "Test: FLY-1550 — create authority requires the launcher stamp (tri-state fail-closed)"
-  reset_mocks
-  FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=0
-  MOCK_CMUX_MUTATE_JSON=1
-  MOCK_TMUX_SESSIONS=$'v2-0123456789abcdef0123456789abcdef'
-  MOCK_TMUX_WINDOWS=$'v2-0123456789abcdef0123456789abcdef|@3|FLY-1550-runner-claude-Fable-runner-lead-config'
-  MOCK_PANE_DEAD=$'v2-0123456789abcdef0123456789abcdef:@3=0'
-  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
-  # (a) shape-valid but UNSTAMPED → refuse (rc1).
-  create_workspace_for_window "v2-0123456789abcdef0123456789abcdef" "@3" "FLY-1550-runner-claude-Fable-runner-lead-config" >/dev/null 2>&1 || true
-  if echo "$MOCK_CMUX_OPS" | grep -q "^new-workspace"; then
-    fail "unstamped v2 session was adopted by the create path. ops=[$MOCK_CMUX_OPS]"
-  else
-    pass "unstamped v2 session refused by the create chokepoint"
-  fi
-  # (b) stamped but tmux option read fails → rc2 must also refuse.
-  MOCK_TMUX_V2_STAMPED="v2-0123456789abcdef0123456789abcdef"
-  MOCK_TMUX_SHOW_OPTIONS_FAIL="1"
-  : > "$CREATE_STATE" 2>/dev/null || true
-  create_workspace_for_window "v2-0123456789abcdef0123456789abcdef" "@3" "FLY-1550-runner-claude-Fable-runner-lead-config" >/dev/null 2>&1 || true
-  if echo "$MOCK_CMUX_OPS" | grep -q "^new-workspace"; then
-    fail "rc2 (tmux truth unavailable) still minted create authority. ops=[$MOCK_CMUX_OPS]"
-  else
-    pass "unreadable stamp (rc2) refused by the create chokepoint"
-  fi
-  # (c) bad shape never reaches the stamp read.
-  MOCK_TMUX_SHOW_OPTIONS_FAIL="0"
-  create_workspace_for_window "v2-attacker" "@4" "FLY-1550-runner-claude-Fable-fake" >/dev/null 2>&1 || true
-  if echo "$MOCK_CMUX_OPS" | grep -q "^new-workspace"; then
-    fail "namespace-squatter session was adopted by the create path. ops=[$MOCK_CMUX_OPS]"
-  else
-    pass "namespace squatter refused by the create chokepoint"
-  fi
-}
-
-test_fly1550_v2_cleanup_event_source_allowed() {
-  echo "Test: FLY-1550 — exited/unlinked events from v2-* sessions mark cleanup; foreign sessions cannot"
-  reset_mocks
-  if cleanup_event_source_allowed "v2-0123456789abcdef0123456789abcdef" "FLY-1550-runner-claude-Fable-runner-lead-config"; then
-    pass "v2 session may source a cleanup event"
-  else
-    fail "v2 session cleanup event rejected"
-  fi
-  if cleanup_event_source_allowed "attacker-session" "FLY-1550-runner-claude-Fable-runner-lead-config"; then
-    fail "foreign session could source a cleanup event"
-  else
-    pass "foreign session cleanup event still rejected"
-  fi
-  # Codex R1 HIGH-1: same-prefix namespace squatters cannot mint cleanup
-  # candidates either (shape gate; stamp is not required because the legit
-  # source session is usually already dead when its exit event drains).
-  if cleanup_event_source_allowed "v2-attacker" "FLY-1550-runner-claude-Fable-runner-lead-config"; then
-    fail "v2-namespace squatter could source a cleanup event"
-  else
-    pass "v2-namespace squatter cleanup event rejected"
-  fi
-}
-
-test_fly1550_v2_is_pane_alive_sees_v2_windows() {
-  echo "Test: FLY-1550 — is_pane_alive resolves a live v2 window (cleanup ladders preserve it)"
-  reset_mocks
-  MOCK_TMUX_SESSIONS=$'v2-0123456789abcdef0123456789abcdef'
-  MOCK_TMUX_WINDOWS=$'v2-0123456789abcdef0123456789abcdef|@3|FLY-1550-runner-claude-Fable-runner-lead-config'
-  MOCK_PANE_DEAD=$'v2-0123456789abcdef0123456789abcdef:@3=0'
-  local rc=0
-  is_pane_alive "FLY-1550-runner-claude-Fable-runner-lead-config" || rc=$?
-  if [[ "$rc" -eq 0 ]]; then
-    pass "live v2 pane reads alive (rc=0)"
-  else
-    fail "live v2 pane read rc=$rc (would authorize a wrong cleanup)"
-  fi
-}
-
 test_fly1550_create_sets_workspace_and_tab_titles() {
   echo "Test: FLY-1550 — create path renames the workspace AND the tab (legacy rename branch)"
   reset_mocks
   FLYWHEEL_CMUX_LINKED_VIEW=0
   FLYWHEEL_CMUX_VIEW_INVARIANT=0
   MOCK_CMUX_MUTATE_JSON=1
-  MOCK_TMUX_V2_STAMPED="v2-0123456789abcdef0123456789abcdef"
-  MOCK_TMUX_SESSIONS=$'v2-0123456789abcdef0123456789abcdef'
-  MOCK_TMUX_WINDOWS=$'v2-0123456789abcdef0123456789abcdef|@3|FLY-1550-runner-claude-Fable-runner-lead-config'
-  MOCK_PANE_DEAD=$'v2-0123456789abcdef0123456789abcdef:@3=0'
+  MOCK_TMUX_SESSIONS=$'runner-flywheel'
+  MOCK_TMUX_WINDOWS=$'runner-flywheel|@3|FLY-1550-runner-claude-Fable-runner-lead-config'
+  MOCK_PANE_DEAD=$'runner-flywheel:@3=0'
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
-  create_workspace_for_window "v2-0123456789abcdef0123456789abcdef" "@3" "FLY-1550-runner-claude-Fable-runner-lead-config" >/dev/null 2>&1 || true
+  create_workspace_for_window "runner-flywheel" "@3" "FLY-1550-runner-claude-Fable-runner-lead-config" >/dev/null 2>&1 || true
   local ok=1
   echo "$MOCK_CMUX_OPS" | grep -q "^new-workspace" || { fail "no new-workspace issued. ops=[$MOCK_CMUX_OPS]"; ok=0; }
   echo "$MOCK_CMUX_OPS" | grep -qF "rename-workspace --workspace workspace:100 FLY-1550-runner-claude-Fable-runner-lead-config" || { fail "workspace title not set. ops=[$MOCK_CMUX_OPS]"; ok=0; }
@@ -8649,15 +8524,15 @@ test_fly1550_tab_rename_is_recoverable_state() {
   [[ "$ok" == "1" ]] && pass "next pass re-drives the tab rename and commits — the title pair cannot diverge durably"
 }
 
-test_fly1550_v2_attach_command_grammar_holds() {
-  echo "Test: FLY-1550 — the canonical attach grammar accepts a v2 FLY-1255-shaped window title"
+test_fly1550_attach_command_grammar_holds() {
+  echo "Test: FLY-1550 — the canonical attach grammar accepts a managed window title"
   reset_mocks
   local cmd rc=0
   cmd=$(build_attach_command "cmux-FLY-1550-runner-claude-Fable-runner-lead-config") || rc=$?
   if [[ "$rc" -eq 0 && "$cmd" == "env -u TMUX tmux attach -t '=cmux-FLY-1550-runner-claude-Fable-runner-lead-config'" ]]; then
-    pass "attach command stays byte-canonical around the v2 title"
+    pass "attach command stays byte-canonical around the managed title"
   else
-    fail "attach grammar broke for the v2 title rc=$rc cmd=[$cmd]"
+    fail "attach grammar broke for the managed title rc=$rc cmd=[$cmd]"
   fi
   rc=0
   build_attach_command "cmux-FLY-1550-bad'quote" >/dev/null 2>&1 || rc=$?
@@ -8669,14 +8544,10 @@ test_fly1550_v2_attach_command_grammar_holds() {
 }
 
 echo ""
-echo "═══ FLY-1550: v2 runner sessions in the v1 watcher ═══"
-test_fly1550_v2_sessions_in_agent_roster
-test_fly1550_v2_create_requires_launcher_stamp
-test_fly1550_v2_cleanup_event_source_allowed
-test_fly1550_v2_is_pane_alive_sees_v2_windows
+echo "═══ FLY-1550: managed Runner workspace titles ═══"
 test_fly1550_create_sets_workspace_and_tab_titles
 test_fly1550_tab_rename_is_recoverable_state
-test_fly1550_v2_attach_command_grammar_holds
+test_fly1550_attach_command_grammar_holds
 
 # ════════════════════════════════════════════════════════════════
 # FLY-1605: timezone-stable process identities
@@ -9135,28 +9006,6 @@ workspace:100;;surface:100;;terminal;;true;;$raw"
   [[ "$ok" == "1" ]] && pass "named keeper tab reaches committed readback before guarded raw-extra close"
 }
 
-test_fly1605_v2_squatter_cannot_mint_title_authority() {
-  echo "Test: FLY-1605 — same-shape v2 session without launcher stamp cannot mint title authority"
-  reset_mocks
-  FLYWHEEL_CMUX_LINKED_VIEW=1
-  MOCK_SOCK_IDENT="cmux-generation-1"
-  local source="v2-0123456789abcdef0123456789abcdef"
-  local title="FLY-1605-design-claude" raw roster rc=0
-  fly1605_seed_strict_managed_window "$source" "@1605" "$title"
-  roster="$source|@1605|$title"
-  raw=$(build_attach_command "cmux-$title")
-  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1605\",\"title\":\"$raw\"}]}"
-  MOCK_CMUX_SURFACES="workspace:1605;;surface:1605;;terminal;;true;;$raw"
-  test_ensure_mutator_lease
-  MOCK_CMUX_OPS=""
-  reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
-  if [[ "$rc" -eq 0 && -z "$MOCK_CMUX_OPS" && ! -s "$VIEW_LEDGER" ]]; then
-    pass "unstamped v2 namespace squatter remains receipt-free and mutation-free"
-  else
-    fail "v2 squatter crossed B-0 rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
-  fi
-}
-
 test_fly1605_generation_flip_blocks_stock_rename() {
   echo "Test: FLY-1605 — generation flip at guarded stock rename preserves prepared state"
   reset_mocks
@@ -9366,7 +9215,6 @@ test_fly1605_ambiguous_surface_inventory_fails_closed
 test_fly1605_raw_stock_with_foreign_surface_has_zero_authority
 test_fly1605_raw_duplicates_converge_through_guarded_close
 test_fly1605_named_keeper_closes_raw_extra_after_tab_ready
-test_fly1605_v2_squatter_cannot_mint_title_authority
 test_fly1605_generation_flip_blocks_stock_rename
 test_fly1605_failed_guarded_close_preserves_raw_extra
 test_fly1605_winner_order_ignores_stale_receipt_and_prefers_pin

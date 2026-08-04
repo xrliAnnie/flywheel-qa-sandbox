@@ -1,0 +1,16 @@
+flowchart TB
+    subgraph DEAD["废弃 v2(尸体,本单清理对象)"]
+        ENG["v2-engine<br/>仍在跑:每秒对着一个<br/>早已删除的目录报错<br/>(已刷 43.7 万条错误日志)"]
+        SCH["v2-scheduler<br/>第①步已拔牙:名册清空<br/>plist 已退休"]
+        ING["v2-ingress(对外收发件员)<br/>从未安装 —— v2 与 Discord<br/>之间本来就是断的"]
+        DATA["数据目录 ~/.flywheel/v2<br/>3GB:账本数据库 + 292 封<br/>未投递信 + 若干明文钥匙"]
+        ENG --- DATA
+    end
+    subgraph LIVE["现役 v1(活人,一根汗毛不动)"]
+        BR["Bridge 主进程"]
+        LD["13 个 Lead"]
+        COMM["flywheel-comm 命令行"]
+    end
+    LIVE -. "唯一连接点:开机安全检查(guard)<br/>实测在生产从来只是空转放行<br/>删除 = 行为零变化,但必须与<br/>v2 代码在同一个 PR 里一起删" .-> DEAD
+    style DEAD fill:#fff5f5,stroke:#ff3b30
+    style LIVE fill:#f0fff4,stroke:#34c759

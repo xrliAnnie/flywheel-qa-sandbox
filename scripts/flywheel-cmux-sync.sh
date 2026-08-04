@@ -551,24 +551,18 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
 
 get_tmux_agent_windows() {
   # Returns: session_name|window_id|window_name per line
-  # Scans 'flywheel' (Leads), 'runner-*' (v1 Runners) and 'v2-*' (FLY-1550:
-  # v2 runner sessions, one per runner) sessions.
+  # Scans 'flywheel' (Leads) and 'runner-*' (Runners) sessions.
   # Excludes default shell windows (zsh/bash).
   local all_windows=""
 
   # 1. Flywheel session (Leads)
   all_windows+=$(tmux list-windows -t "$FLYWHEEL_SESSION" -F "#{session_name}|#{window_id}|#{window_name}" 2>/dev/null || true)
 
-  # 2. Runner sessions: runner-<projectName> (v1) and v2-<hash> (FLY-1550)
+  # 2. Runner sessions: runner-<projectName>
   local runner_sessions
-  runner_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^(runner-|v2-)' || true)
+  runner_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^runner-' || true)
   if [[ -n "$runner_sessions" ]]; then
     while read -r rsess; do
-      # FLY-1550 (Codex R1 HIGH-1): `v2-` is a namespace, not an identity —
-      # only the launcher's exact hex32 shape joins the roster.
-      case "$rsess" in
-        v2-*) is_v2_session_shape "$rsess" || continue ;;
-      esac
       local rwindows
       rwindows=$(tmux list-windows -t "$rsess" -F "#{session_name}|#{window_id}|#{window_name}" 2>/dev/null || true)
       if [[ -n "$rwindows" ]]; then
@@ -684,7 +678,6 @@ read_roster_tmux_inventory() {
     [[ -n "$session" ]] || continue
     case "$session" in
       flywheel|runner-*) relevant+="${relevant:+$'\n'}${session}" ;;
-      v2-*) is_v2_session_shape "$session" && relevant+="${relevant:+$'\n'}${session}" ;;
     esac
   done <<< "$sessions"
   if [[ -z "$relevant" ]]; then
@@ -1365,40 +1358,6 @@ for title, group in by_title.items():
 # alternation here (and test-cmux-sync.sh) in lockstep. Deliberately excludes
 # direct vendor names (codex/gemini/cursor/kimi/agy — not a managed namespace)
 # and Lead windows ("<project>-<lead>", never a close_runner target).
-# ── FLY-1550 (Codex R1 HIGH-1): v2 session validation ──
-#
-# `v2-` is a NAMESPACE, not an identity. A legitimate launcher session has a
-# provable narrow shape: its name is `v2-<32 lowercase hex>` (a sha256 prefix
-# of the session ref — tmux-runner-launcher.ts #sessionName) AND the launcher
-# stamps `@flywheel_v2_session_ref` as a session option right after creation.
-# Two predicates with deliberately different authority:
-#
-#   is_v2_session_shape   — pure string check (rc0/rc1). For PRESERVATION and
-#     inventory paths, where the worst a same-shape foreign session can do is
-#     BLOCK a cleanup (the conservative direction), and for owner/group checks
-#     on views whose source session may already be dead (no live options to
-#     read).
-#   is_v2_runner_session  — shape AND live launcher stamp (rc0 yes / rc1 no /
-#     rc2 tmux truth unavailable). For ADOPTION paths that mint authority
-#     (hook registration, workspace creation): rc1 and rc2 must both refuse.
-is_v2_session_shape() {
-  local re='^v2-[0-9a-f]{32}$'
-  [[ "$1" =~ $re ]]
-}
-
-is_v2_runner_session() {
-  is_v2_session_shape "$1" || return 1
-  local opts
-  opts=$(tmux show-options -t "=$1:" 2>/dev/null) || return 2
-  printf '%s\n' "$opts" | grep -q '^@flywheel_v2_session_ref ' || return 1
-  return 0
-}
-
-# FLY-1550: v2 runner windows (workspaceWindowName in
-# packages/v2-host/src/tmux-runner-launcher.ts) follow the FLY-1255 Locked
-# Display Contract and therefore land inside this SAME producer namespace
-# (`FLY-1550-runner-claude-Fable-…`, `FLY-1548-design-claude-Fable-…`) — no
-# regex widening needed or allowed.
 is_managed_runner_title() {
   local re='^[A-Z][A-Z0-9]*-[0-9]+-(claude|runner|design|implement|qa)(-|$)'
   [[ "$1" =~ $re ]]
@@ -1506,10 +1465,7 @@ stock_topology_fingerprint() {
   sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 2
   while IFS= read -r sess; do
     [[ -z "$sess" ]] && continue
-    case "$sess" in flywheel|runner-*) ;;
-      v2-*) is_v2_session_shape "$sess" || continue ;;
-      *) continue ;;
-    esac
+    case "$sess" in flywheel|runner-*) ;; *) continue ;; esac
     current=$(tmux list-windows -t "=$sess" \
       -F '#{session_name}|#{window_id}|#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
     [[ -n "$current" ]] && rows+="${rows:+$'\n'}${current}"
@@ -1532,13 +1488,8 @@ stock_topology_fingerprint() {
   # Group name, title, and pane-dead are mutable topology, so they can preserve
   # a candidate but can never mint the first close receipt. Already-receipted
   # grouped views still migrate through repair_view_invariants.
-  case "$owner" in flywheel|runner-*) ;;
-    v2-*)
-      if ! is_v2_session_shape "$owner"; then
-        printf 'foreign-view:%s\n' "$(_cmux_alert_hash "$snapshot")"
-        return 3
-      fi
-      ;;
+  case "$owner" in
+    flywheel|runner-*) ;;
     *)
       printf 'foreign-view:%s\n' "$(_cmux_alert_hash "$snapshot")"
       return 3
@@ -1708,7 +1659,7 @@ reap_unledgered_stock_workspaces() {
 }
 
 # collect_agent_window_names_strict <sessions_snapshot> — print live agent window
-# names (flywheel Leads + runner-*/v2-* Runners, minus default zsh/bash windows).
+# names (flywheel Leads + runner-* Runners, minus default zsh/bash windows).
 # STRICT / fail-closed (FLY-293, Codex R1 HIGH-2): any `tmux list-windows`
 # failure for a snapshot session → rc=2 (uncertain → caller MUST skip). Takes the
 # already-captured session snapshot so we never re-issue `list-sessions`
@@ -1721,7 +1672,6 @@ collect_agent_window_names_strict() {
     [[ -z "$sess" ]] && continue
     case "$sess" in
       flywheel|runner-*) ;;
-      v2-*) is_v2_session_shape "$sess" || continue ;;
       *) continue ;;
     esac
     w=$(tmux list-windows -t "$sess" -F "#{session_name}|#{window_id}|#{window_name}" 2>/dev/null) || return 2
@@ -2157,7 +2107,7 @@ is_pane_alive() {
   # cleanups elsewhere via the inverted predicate at cleanup_stale_conservative.
   sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 2
   while IFS= read -r sess; do
-    case "$sess" in flywheel|runner-*) ;; v2-*) is_v2_session_shape "$sess" || continue ;; *) continue ;; esac
+    case "$sess" in flywheel|runner-*) ;; *) continue ;; esac
     current=$(tmux list-windows -t "$sess" \
       -F '#{session_name}|#{window_id}|#{window_name}' 2>/dev/null) || return 2
     [[ -n "$current" ]] && rows+="${rows:+$'\n'}${current}"
@@ -3141,7 +3091,7 @@ strict_view_heal_titles() {
     is_managed_runner_title "$title" || continue
     snapshot=$(_view_session_snapshot "$session") || continue
     IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
-    case "$owner" in flywheel|runner-*) ;; v2-*) is_v2_session_shape "$owner" || continue ;; *) continue ;; esac
+    case "$owner" in flywheel|runner-*) ;; *) continue ;; esac
     [[ -n "$sid" && "$grouped" == "0" && -n "$active" \
         && "$marker" == "0" && "$members" == "$active" ]] || continue
     observed=$(tmux display-message -p -t "=${session}:${active}" '#{window_name}' 2>/dev/null) || continue
@@ -3492,7 +3442,7 @@ _view_shell_owned_for_title() {
   [[ -n "$sid" && -n "$active" ]] || return 1
 
   if [[ "$grouped" == "0" ]]; then
-    case "$owner" in flywheel|runner-*) ;; v2-*) is_v2_session_shape "$owner" || return 1 ;; *) return 1 ;; esac
+    case "$owner" in flywheel|runner-*) ;; *) return 1 ;; esac
     [[ "$marker" == "0" && "$members" == "$active" ]] || return 1
     observed=$(tmux display-message -p -t "=${session}:${active}" \
       '#{window_name}|#{pane_dead}' 2>/dev/null) || return 1
@@ -3502,7 +3452,7 @@ _view_shell_owned_for_title() {
     [[ "$require_live" != "1" || "$dead" == "0" ]] || return 1
   elif [[ "$allow_grouped" == "1" && "$grouped" == "1" ]]; then
     group=$(tmux display-message -p -t "=${session}:" '#{session_group}' 2>/dev/null) || return 1
-    case "$group" in flywheel|runner-*) ;; v2-*) is_v2_session_shape "$group" || return 1 ;; *) return 1 ;; esac
+    case "$group" in flywheel|runner-*) ;; *) return 1 ;; esac
     [[ -z "$owner" || "$owner" == "$group" ]] || return 1
     [[ -z "$marker" || "$marker" == "0" ]] || return 1
   else
@@ -4325,7 +4275,6 @@ title_source_authorized() {
   local source="$1" wid="$2" title="$3" view="${VIEW_PREFIX}${title}"
   local snapshot sid grouped active owner marker members observed name dead group
   case "$source" in
-    v2-*) is_v2_runner_session "$source" || return 1 ;;
     "$FLYWHEEL_SESSION"|runner-*) ;;
     *) return 1 ;;
   esac
@@ -5345,23 +5294,6 @@ create_workspace_for_window() {
   local window_name="$3"
   local view_session="${VIEW_PREFIX}${window_name}"
 
-  # FLY-1550 (Codex R1 HIGH-1): the single ADOPTION chokepoint for v2 sources —
-  # covers the event-driven path AND the 60s additive sweep. A `v2-*` source
-  # must be a session the launcher provably created: exact hex32 shape AND the
-  # live `@flywheel_v2_session_ref` stamp. rc1 (foreign session squatting the
-  # namespace) and rc2 (tmux truth unavailable) both refuse; the next event or
-  # sweep retries a transient rc2.
-  case "$source_session" in
-    v2-*)
-      local v2_rc=0
-      is_v2_runner_session "$source_session" || v2_rc=$?
-      if [[ "$v2_rc" -ne 0 ]]; then
-        log "WARN: refusing workspace create for unverified v2 source session=$source_session window=$window_name rc=$v2_rc"
-        return 0
-      fi
-      ;;
-  esac
-
   if cmux_wal_view_blocked "$view_session"; then
     log "WARN: workspace create blocked by preserved construction collision: view=$view_session"
     return 0
@@ -5742,7 +5674,7 @@ repair_view_invariants() {
     return 1
   }
   while IFS= read -r session; do
-    case "$session" in flywheel|runner-*) ;; v2-*) is_v2_session_shape "$session" || continue ;; *) continue ;; esac
+    case "$session" in flywheel|runner-*) ;; *) continue ;; esac
     rows=$(tmux list-windows -t "$session" \
       -F '#{session_name}|#{window_id}|#{window_name}|#{pane_dead}' 2>/dev/null) || {
       log "WARN: tmux window inventory unavailable for $session; invariant pass skipped"
@@ -5948,15 +5880,11 @@ for w in json.load(sys.stdin).get("workspaces", []):
 
 register_session_hooks() {
   # Register per-session tmux hooks that write events to $EVENT_FILE.
-  # Scope: flywheel (Leads), runner-* (v1 Runners) and v2-* (FLY-1550 v2 runner) sessions only.
+  # Scope: flywheel (Leads) and runner-* (Runners) sessions only.
   # Idempotent: repeated registration overwrites the same array index [500].
   local session="$1"
   case "$session" in
     flywheel|runner-*) ;;
-    # ADOPTION authority: hooks may only be installed on a session the v2
-    # launcher provably created (shape + live @flywheel_v2_session_ref stamp).
-    # rc1 (foreign) and rc2 (tmux truth unavailable) both refuse.
-    v2-*) is_v2_runner_session "$session" || return 0 ;;
     *) return 0 ;;
   esac
 
@@ -6018,7 +5946,7 @@ register_session_hooks() {
 
 register_global_hooks() {
   # Global session-created hook fires for every new tmux session.
-  # The watcher filters by name (only flywheel / runner-* / v2-*) during event drain.
+  # The watcher filters by name (only flywheel / runner-*) during event drain.
   # Use #{session_name} rather than #{hook_session_name} for consistency with
   # after-new-window / pane-exited (see register_session_hooks comment).
   tmux set-hook -g 'session-created[500]' \
@@ -6040,7 +5968,7 @@ register_global_hooks() {
   # registers the hook (show-hooks confirms it) but the hook NEVER fires
   # when a pane in that session dies. `set-hook -g pane-died[N] ...` does
   # fire correctly. Therefore pane-died is registered globally here.
-  # `drain_events()` filters by session name (`flywheel|runner-*|v2-*`) so the
+  # `drain_events()` filters by session name (`flywheel|runner-*`) so the
   # global scope does not introduce noise from other tmux sessions.
   #
   # Reference: tmux 3.5a man page —
@@ -6072,7 +6000,7 @@ register_global_hooks() {
 }
 
 register_hooks_on_new_sessions() {
-  # Scan live sessions and register hooks on any flywheel/runner-*/v2-* that lack them.
+  # Scan live sessions and register hooks on any flywheel/runner-* that lack them.
   # Called at startup and during each 60s additive poll as a safety net for
   # sessions that existed before the watcher started, or whose hooks were cleared.
   local sessions
@@ -6081,7 +6009,7 @@ register_hooks_on_new_sessions() {
 
   while read -r sess; do
     case "$sess" in
-      flywheel|runner-*|v2-*) register_session_hooks "$sess" ;;
+      flywheel|runner-*) register_session_hooks "$sess" ;;
     esac
   done <<< "$sessions"
 }
@@ -6100,10 +6028,6 @@ cleanup_event_source_allowed() {
   local session="$1" wname="$2"
   case "$session" in
     flywheel|runner-*) return 0 ;;
-    # Shape only: the v2 session is usually ALREADY GONE when its exit event
-    # drains (no remain-on-exit), so a live-stamp read cannot gate cleanup
-    # marking. The later close paths still revalidate title + exact-ref ledger.
-    v2-*) is_v2_session_shape "$session" && return 0 ;;
   esac
   # A strict independent view can outlive the runner session that spawned it.
   # Its pane-died event is then the only prompt signal that the watched window
@@ -6248,10 +6172,9 @@ _drain_file() {
         [[ -z "$wname" ]] && continue
         # Skip default shell windows
         [[ "$wname" == "zsh" || "$wname" == "bash" ]] && continue
-        # Only handle windows from flywheel/runner-*/v2-* sessions
+        # Only handle windows from flywheel/runner-* sessions
         case "$session" in
           flywheel|runner-*) ;;
-          v2-*) is_v2_session_shape "$session" || continue ;;
           *) continue ;;
         esac
         # FLY-129 Phase 3 (R3-1): tri-state workspace_exists_for.

@@ -106,8 +106,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"numeric tuning: restart-storm fcntl acquisition deadline (FLY-1501)",
 	FLYWHEEL_META_ALERT_TIMEOUT_S:
 		"numeric tuning: bound on the brake-unavailable alert from a launch path (FLY-1501)",
-	FLYWHEEL_V2_RESTART_CONCURRENCY_MAX:
-		"numeric tuning: v2 scheduler restart concurrency upper bound (FLY-1501)",
 	FLYWHEEL_RESTART_STORM_FAULT:
 		"internal test-only fault injection seam; never set in production launch environments (FLY-1501)",
 	FLYWHEEL_QUOTA_PIDFILE:

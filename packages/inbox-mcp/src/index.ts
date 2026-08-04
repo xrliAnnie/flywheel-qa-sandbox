@@ -73,8 +73,7 @@ function openDb(): void {
 }
 
 // ── Lease management ──
-// FLY-1547 §2.9: shared with the v2 mailbox MCP via ./channel-lease.js —
-// same bytes, no copy. The v1 wire shape ({pid, startedAt}) is unchanged.
+// The v1 wire shape is {pid, startedAt}.
 
 function writeLease(): void {
 	writeChannelLease(leasePath, { pid: process.pid });
