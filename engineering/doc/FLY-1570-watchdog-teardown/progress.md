@@ -1,13 +1,13 @@
 ---
 issue: FLY-1570
 phase: implement
-phaseCursor: 0/8
-updated: 2026-08-04T07:09:14.751Z
-nextStep: audit current watchdog modules and establish RED residual scan
+phaseCursor: 1/8
+updated: 2026-08-04T07:21:10.146Z
+nextStep: move shared probes and fingerprint helpers before deleting stuck cluster
 chunks: []
 pointers: {}
 ---
 
 # FLY-1570 progress
-**phase**: implement (0/8)
-**next**: audit current watchdog modules and establish RED residual scan
+**phase**: implement (1/8)
+**next**: move shared probes and fingerprint helpers before deleting stuck cluster
