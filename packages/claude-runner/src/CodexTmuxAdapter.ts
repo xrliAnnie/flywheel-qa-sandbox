@@ -399,6 +399,12 @@ export class CodexTmuxAdapter implements IAdapter {
 		const codexHome = provisionCodexHome({
 			executionId: ctx.executionId,
 			ghToken,
+			notifyProgramPath: join(
+				homedir(),
+				".flywheel",
+				"hooks",
+				"runner-stop-notify.sh",
+			),
 			...(ctx.skillFrameworkMode && {
 				skillFrameworkMode: ctx.skillFrameworkMode,
 			}),

@@ -231,6 +231,18 @@ export interface RunnerDeclaredState {
 	updated_at: number;
 }
 
+export interface SessionReceiptIdentity {
+	execution_id: string;
+	project_name: string;
+	issue_id: string | null;
+	lead_id: string | null;
+}
+
+export interface PendingRunnerQuestion {
+	id: string;
+	checkpoint: string | null;
+}
+
 /**
  * FLY-887: the three-stage TURN — which phase-session (identified by its
  * `holder_exec_id`) currently holds the exclusive right to touch the shared
@@ -6748,6 +6760,53 @@ export class CommDB {
 		return this.db
 			.prepare("SELECT * FROM sessions WHERE execution_id = ?")
 			.get(executionId) as Session | undefined;
+	}
+
+	/** Durable runner identity retained after the live session row is finalized. */
+	getSessionReceiptIdentity(
+		executionId: string,
+	): SessionReceiptIdentity | undefined {
+		return this.db
+			.prepare(
+				`SELECT execution_id, project_name, issue_id, lead_id
+				   FROM session_receipt_lineage WHERE execution_id = ?`,
+			)
+			.get(executionId) as SessionReceiptIdentity | undefined;
+	}
+
+	/**
+	 * Highest-priority unanswered question opened by this runner. Checkpoints are
+	 * durable across turns; ordinary asks are limited to the current turn window.
+	 * Reports cannot make a later stop look blocked.
+	 */
+	getPendingRunnerQuestion(
+		executionId: string,
+		leadId: string,
+		lowerBound?: string,
+	): PendingRunnerQuestion | undefined {
+		const answerable = commDbProtectionEnabled()
+			? "q.relay_state != 'terminal_disposed'"
+			: "q.expires_at > datetime('now')";
+		return this.db
+			.prepare(
+				`SELECT q.id, q.checkpoint FROM messages q
+				 WHERE q.to_agent = ?
+				   AND q.type = 'question'
+				   AND q.from_agent = ?
+				   AND (q.kind IS NULL OR q.kind <> 'report')
+				   AND q.superseded_at IS NULL
+				   AND NOT EXISTS (
+				     SELECT 1 FROM messages r
+				      WHERE r.parent_id = q.id AND r.type = 'response'
+				   )
+				   AND ${answerable}
+				   AND (q.checkpoint IS NOT NULL OR ? IS NULL OR julianday(q.created_at) >= julianday(?))
+				 ORDER BY (q.checkpoint IS NOT NULL) DESC, q.created_at, q.rowid
+				 LIMIT 1`,
+			)
+			.get(leadId, executionId, lowerBound ?? null, lowerBound ?? null) as
+			| PendingRunnerQuestion
+			| undefined;
 	}
 
 	/**

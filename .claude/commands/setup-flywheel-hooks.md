@@ -8,13 +8,16 @@ Install Flywheel PostToolUse hooks for Runner operation.
 
 ## What This Does
 
-Installs the PostToolUse hook:
+Installs the Runner lifecycle hooks:
 
 1. **inbox-check** — checks CommDB for unread Lead instructions after every tool call
+2. **runner-stop-notify** — reports every Runner turn end to its Lead with a reason
 
 After installation:
 - `~/.flywheel/hooks/inbox-check.sh` — instruction delivery hook
-- `~/.claude/settings.json` — PostToolUse hook registered with absolute path
+- `~/.flywheel/hooks/runner-stop-notify.sh` — Stop / StopFailure reporter
+- `~/.flywheel/bin/discord-reply-enforcer.py` — Lead-only Stop guard (Runner-safe)
+- `~/.claude/settings.json` — hooks registered with absolute paths
 
 ---
 
@@ -48,6 +51,15 @@ Verify both are available before proceeding.
    ```bash
    cp scripts/hooks/inbox-check.sh ~/.flywheel/hooks/inbox-check.sh
    chmod +x ~/.flywheel/hooks/inbox-check.sh
+   STOP_TMP="$(mktemp ~/.flywheel/hooks/runner-stop-notify.sh.XXXXXX)"
+   cp scripts/hooks/runner-stop-notify.sh "$STOP_TMP"
+   chmod +x "$STOP_TMP"
+   mv "$STOP_TMP" ~/.flywheel/hooks/runner-stop-notify.sh
+   mkdir -p ~/.flywheel/bin
+   ENFORCER_TMP="$(mktemp ~/.flywheel/bin/discord-reply-enforcer.py.XXXXXX)"
+   cp scripts/hooks/discord-reply-enforcer.py "$ENFORCER_TMP"
+   chmod +x "$ENFORCER_TMP"
+   mv "$ENFORCER_TMP" ~/.flywheel/bin/discord-reply-enforcer.py
    ```
 
    **If Flywheel repo is not available** (e.g., running on a different machine), write the script content directly using the Write tool. The canonical content is in `scripts/hooks/`.
@@ -55,6 +67,11 @@ Verify both are available before proceeding.
 3. Verify script exits cleanly without env vars:
    ```bash
    FLYWHEEL_EXEC_ID= FLYWHEEL_COMM_DB= ~/.flywheel/hooks/inbox-check.sh; echo "Exit code: $?"
+   ```
+   Expected: `Exit code: 0` with no output.
+
+   ```bash
+   FLYWHEEL_EXEC_ID= ~/.flywheel/hooks/runner-stop-notify.sh </dev/null; echo "Exit code: $?"
    ```
    Expected: `Exit code: 0` with no output.
 
@@ -70,15 +87,24 @@ Verify both are available before proceeding.
 2. **Resolve absolute path** (important — `~` expansion doesn't work in hook commands):
    ```bash
    INBOX_HOOK="$HOME/.flywheel/hooks/inbox-check.sh"
+   STOP_HOOK="$HOME/.flywheel/hooks/runner-stop-notify.sh"
    ```
 
 3. **Register hook** (idempotent — skips if already registered):
    ```bash
-   jq --arg inbox "$INBOX_HOOK" '
+   jq --arg inbox "$INBOX_HOOK" --arg stop "$STOP_HOOK" '
      .hooks.PostToolUse //= [] |
+     .hooks.Stop //= [] |
+     .hooks.StopFailure //= [] |
      # Add inbox-check if not present
      if ([.hooks.PostToolUse[].hooks[]?.command // empty] | any(. == $inbox)) then . else
        .hooks.PostToolUse += [{"matcher": "*", "hooks": [{"type": "command", "command": $inbox, "timeout": 5}]}]
+     end |
+     if ([.hooks.Stop[].hooks[]?.command // empty] | any(. == $stop)) then . else
+       .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop, "timeout": 10}]}]
+     end |
+     if ([.hooks.StopFailure[].hooks[]?.command // empty] | any(. == $stop)) then . else
+       .hooks.StopFailure += [{"hooks": [{"type": "command", "command": $stop, "timeout": 10}]}]
      end
    ' ~/.claude/settings.json > /tmp/flywheel-settings-merged.json
    ```
@@ -106,12 +132,14 @@ Verify both are available before proceeding.
 2. Confirm script is executable and exits cleanly:
    ```bash
    FLYWHEEL_EXEC_ID= ~/.flywheel/hooks/inbox-check.sh; echo "inbox-check: $?"
+   jq '{Stop: [.hooks.Stop[].hooks[].command], StopFailure: [.hooks.StopFailure[].hooks[].command]}' ~/.claude/settings.json
    ```
 
 3. Report success:
    ```
    Flywheel hook installed:
       1. inbox-check.sh — Lead instruction delivery
+      2. runner-stop-notify.sh — reasoned Runner Stop / StopFailure delivery
       Registered in: ~/.claude/settings.json (PostToolUse, matcher: *)
       Timeout: 5s
 

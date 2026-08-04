@@ -34,10 +34,10 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { parse as parseToml } from "smol-toml";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
 /** gh tokens are `[A-Za-z0-9_]`; `-` tolerated. Same charset the adapter and
  * codex-resume validate, so a token that passes here rides a TOML
@@ -53,6 +53,9 @@ const MANAGED_END = "# <<< flywheel-managed credential (FLY-123) <<<";
 const MANAGED_SKILLS_BEGIN =
 	"# >>> flywheel-managed skills (FLY-1395) — do not edit >>>";
 const MANAGED_SKILLS_END = "# <<< flywheel-managed skills (FLY-1395) <<<";
+const MANAGED_NOTIFY_BEGIN =
+	"# >>> flywheel-managed notify (FLY-1571) — do not edit >>>";
+const MANAGED_NOTIFY_END = "# <<< flywheel-managed notify (FLY-1571) <<<";
 const CODEX_SKILL_NAME_RE = /^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$/;
 const MATT_CODEX_SKILL_DIRS = [
 	"code-review",
@@ -408,8 +411,18 @@ function stripManagedSkillsBlock(toml: string): string {
 	return toml.replace(re, "\n");
 }
 
+function stripManagedNotifyBlock(toml: string): string {
+	const re = new RegExp(
+		`\\n*${escapeRegExp(MANAGED_NOTIFY_BEGIN)}[\\s\\S]*?${escapeRegExp(MANAGED_NOTIFY_END)}\\n?`,
+		"g",
+	);
+	return toml.replace(re, "\n").replace(/^\n+/, "");
+}
+
 export interface RenderCodexHomeConfigOptions {
 	skillDisableNames?: string[];
+	/** Absolute deployed hook path used by Codex's root-scope notify setting. */
+	notifyProgramPath?: string;
 }
 
 /** FLY-1604: fixed placeholder used during structural validation. Lexically
@@ -424,6 +437,8 @@ const TOKEN_PLACEHOLDER = "__FLYWHEEL_GH_TOKEN_PLACEHOLDER__";
  * parsed base, not this regex, decides conflict semantics (FLY-1604). */
 const SEP_SET_HEADER_RE =
 	/^[ \t]*\[[ \t]*shell_environment_policy[ \t]*\.[ \t]*set[ \t]*\][ \t]*(?:#.*)?$/gm;
+const ROOT_NOTIFY_RE = /^[ \t]*notify[ \t]*=.*$/gm;
+const TABLE_HEADER_RE = /^[ \t]*\[{1,2}[^\n]+$/m;
 
 function isPlainTable(v: unknown): v is Record<string, unknown> {
 	return (
@@ -475,7 +490,20 @@ export function renderCodexHomeConfig(
 	ghToken?: string,
 	opts: RenderCodexHomeConfigOptions = {},
 ): string {
-	const base = stripManagedSkillsBlock(stripManagedBlock(baseToml)).trimEnd();
+	const hasNotify = opts.notifyProgramPath !== undefined;
+	if (
+		hasNotify &&
+		(!opts.notifyProgramPath ||
+			!isAbsolute(opts.notifyProgramPath) ||
+			opts.notifyProgramPath.includes("\0"))
+	) {
+		throw new Error(
+			"renderCodexHomeConfig: notifyProgramPath must be a non-empty absolute path without NUL bytes",
+		);
+	}
+	const base = stripManagedSkillsBlock(
+		stripManagedBlock(hasNotify ? stripManagedNotifyBlock(baseToml) : baseToml),
+	).trimEnd();
 	const skillDisableNames = [...new Set(opts.skillDisableNames ?? [])].sort();
 	for (const name of skillDisableNames) {
 		if (!CODEX_SKILL_NAME_RE.test(name)) {
@@ -494,7 +522,7 @@ export function renderCodexHomeConfig(
 			"renderCodexHomeConfig: ghToken must match ^[A-Za-z0-9_-]{1,255}$",
 		);
 	}
-	if (!hasToken && skillDisableNames.length === 0) {
+	if (!hasToken && skillDisableNames.length === 0 && !hasNotify) {
 		// Pure passthrough — nothing injected, no parse, no new failure surface.
 		return base ? `${base}\n` : "";
 	}
@@ -503,7 +531,55 @@ export function renderCodexHomeConfig(
 	// The old line-regex guards misclassified relative keys under other
 	// tables as root-namespace conflicts and missed quoted headers entirely
 	// (silent duplicate-table corruption caught only at codex startup).
+	const notifyAnchors = hasNotify ? [...base.matchAll(ROOT_NOTIFY_RE)] : [];
+	if (hasNotify && notifyAnchors.length > 1) {
+		throw new Error(
+			"renderCodexHomeConfig: base config.toml has an ambiguous notify definition — refusing to replace it",
+		);
+	}
+	if (hasNotify && notifyAnchors[0]) {
+		try {
+			const parsedLine = parseToml(notifyAnchors[0][0]) as Record<
+				string,
+				unknown
+			>;
+			if (!Array.isArray(parsedLine.notify)) throw new Error("not an array");
+		} catch {
+			throw new Error(
+				"renderCodexHomeConfig: root notify must be exactly one complete single-line array assignment — refusing an ambiguous shape",
+			);
+		}
+	}
 	const parsedBase = parseTomlSanitized(base, "base");
+	let notifyAnchor: RegExpMatchArray | undefined;
+	if (hasNotify) {
+		const parsedNotify = parsedBase.notify;
+		if (parsedNotify !== undefined && !Array.isArray(parsedNotify)) {
+			throw new Error(
+				"renderCodexHomeConfig: base config.toml defines notify with an unsupported quoted, dotted, or non-array shape",
+			);
+		}
+		notifyAnchor = notifyAnchors[0];
+		if (parsedNotify !== undefined && !notifyAnchor) {
+			throw new Error(
+				"renderCodexHomeConfig: base config.toml defines notify without one literal root assignment — refusing an ambiguous shape",
+			);
+		}
+		if (notifyAnchor) {
+			const notifyIndex = notifyAnchor.index ?? -1;
+			const firstTable = TABLE_HEADER_RE.exec(base);
+			if (notifyIndex < 0 || (firstTable && notifyIndex > firstTable.index)) {
+				throw new Error(
+					"renderCodexHomeConfig: notify assignment is not in the root namespace — refusing to rewrite a relative table key",
+				);
+			}
+			if (parsedNotify === undefined) {
+				throw new Error(
+					"renderCodexHomeConfig: notify line does not resolve to the root namespace",
+				);
+			}
+		}
+	}
 
 	// GH_TOKEN strategy: surgical (inject after the unique literal
 	// [shell_environment_policy.set] header) when the base defines the set
@@ -579,7 +655,10 @@ export function renderCodexHomeConfig(
 	// the token value only ever lands on the managed GH_TOKEN line. No
 	// global substitution — base bytes that happen to contain the
 	// placeholder string stay untouched.
-	const buildRendered = (tokenValue?: string): string => {
+	const buildRendered = (
+		tokenValue?: string,
+		notifyProgramPath?: string,
+	): string => {
 		let body = base;
 		const blocks: string[] = [];
 		if (tokenValue !== undefined) {
@@ -589,6 +668,28 @@ export function renderCodexHomeConfig(
 				blocks.push(
 					`${MANAGED_BEGIN}\n[shell_environment_policy.set]\nGH_TOKEN = "${tokenValue}"\n${MANAGED_END}`,
 				);
+			}
+		}
+		if (notifyProgramPath !== undefined) {
+			const notifyLine = stringifyToml({
+				notify: [notifyProgramPath, "--codex"],
+			}).trim();
+			if (notifyLine.includes("\n")) {
+				throw new Error(
+					"renderCodexHomeConfig: internal notify serializer emitted a multiline assignment",
+				);
+			}
+			const block = `${MANAGED_NOTIFY_BEGIN}\n${notifyLine}\n${MANAGED_NOTIFY_END}`;
+			if (notifyAnchor) {
+				const notifyIndex = notifyAnchor.index ?? -1;
+				if (notifyIndex < 0) {
+					throw new Error(
+						"renderCodexHomeConfig: internal notify anchor has no source offset",
+					);
+				}
+				body = `${body.slice(0, notifyIndex)}${block}${body.slice(notifyIndex + notifyAnchor[0].length)}`;
+			} else {
+				body = body ? `${block}\n${body}` : block;
 			}
 		}
 		if (skillDisableNames.length > 0) {
@@ -606,8 +707,46 @@ export function renderCodexHomeConfig(
 
 	// Validate the placeholder-rendered candidate BEFORE materializing the
 	// real token (the live token never enters the parser).
-	const candidate = buildRendered(hasToken ? TOKEN_PLACEHOLDER : undefined);
+	const notifyPlaceholder = "/__FLYWHEEL_RUNNER_STOP_NOTIFY_PLACEHOLDER__";
+	const candidate = buildRendered(
+		hasToken ? TOKEN_PLACEHOLDER : undefined,
+		hasNotify ? notifyPlaceholder : undefined,
+	);
 	const parsedOut = parseTomlSanitized(candidate, "rendered");
+	if (hasNotify) {
+		if (
+			!Array.isArray(parsedOut.notify) ||
+			parsedOut.notify.length !== 2 ||
+			parsedOut.notify[0] !== notifyPlaceholder ||
+			parsedOut.notify[1] !== "--codex"
+		) {
+			throw new Error(
+				"renderCodexHomeConfig: internal invariant violated — managed notify is missing or malformed",
+			);
+		}
+		const baseWithoutNotify = { ...parsedBase };
+		const outWithoutNotify = { ...parsedOut };
+		delete baseWithoutNotify.notify;
+		delete outWithoutNotify.notify;
+		// Credential and skill additions are validated separately below; restore
+		// their base values before comparing the remaining config semantics.
+		if (hasToken) {
+			if (parsedBase.shell_environment_policy === undefined)
+				delete outWithoutNotify.shell_environment_policy;
+			else
+				outWithoutNotify.shell_environment_policy =
+					parsedBase.shell_environment_policy;
+		}
+		if (skillDisableNames.length > 0) {
+			if (parsedBase.skills === undefined) delete outWithoutNotify.skills;
+			else outWithoutNotify.skills = parsedBase.skills;
+		}
+		if (!isDeepStrictEqual(outWithoutNotify, baseWithoutNotify)) {
+			throw new Error(
+				"renderCodexHomeConfig: internal invariant violated — notify rewrite altered unrelated config",
+			);
+		}
+	}
 	if (hasToken) {
 		const outSep = parsedOut.shell_environment_policy;
 		const outSet = isPlainTable(outSep) ? outSep.set : undefined;
@@ -651,7 +790,7 @@ export function renderCodexHomeConfig(
 			);
 		}
 	}
-	return buildRendered(ghToken);
+	return buildRendered(ghToken, opts.notifyProgramPath);
 }
 
 export interface ProvisionCodexHomeOptions {
@@ -667,6 +806,8 @@ export interface ProvisionCodexHomeOptions {
 	codexSkillDisableNames?: string[];
 	/** Verified source containing the six vendored Matt skill directories. */
 	codexMattSkillsSourceDir?: string;
+	/** Stable deployed hook path installed by setup-flywheel-hooks. */
+	notifyProgramPath?: string;
 }
 
 /**
@@ -747,6 +888,7 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 			cfgPath,
 			renderCodexHomeConfig(baseToml, opts.ghToken, {
 				skillDisableNames: opts.codexSkillDisableNames,
+				notifyProgramPath: opts.notifyProgramPath,
 			}),
 			{
 				encoding: "utf-8",

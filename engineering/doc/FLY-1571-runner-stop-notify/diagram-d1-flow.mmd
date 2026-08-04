@@ -1,0 +1,20 @@
+flowchart TD
+    subgraph turnend ["Runner 停下来的那一刻"]
+        CS["Claude Runner 正常停轮<br/>(Stop 钩子)"]
+        CF["Claude Runner 失败停轮<br/>(StopFailure 钩子:撞额度 / 上下文满 / API 出错)"]
+        CX["Codex Runner 停轮<br/>(config.toml notify 回调)"]
+    end
+    CS --> HK["同一个触发脚本 runner-stop-notify.sh<br/>先原子记下轮边界,毫秒级返回<br/>发送转入后台(约14秒硬上限)"]
+    CF --> HK
+    CX --> HK
+    HK --> CMD["flywheel-comm runner-stopped<br/>统一 emitter:查身份 + 推导 reason"]
+    CMD --> MSG["RUNNER-STOPPED reason=done/blocked/...<br/>issue=FLY-XXX exec=xxxx detail=一句话"]
+    MSG --> DB[("CommDB<br/>现有 report 通道,零新表")]
+    DB --> GP["Bridge GatePoller<br/>约3秒内转发"]
+    GP --> LI["Lead 收件箱"]
+    LI --> LEAD["Lead 自己判断:<br/>派下一个活 还是 去救它<br/>(零自动决策)"]
+    style CS fill:#e8f4fd,stroke:#007aff
+    style CF fill:#fdeaea,stroke:#ff3b30
+    style CX fill:#eafbef,stroke:#34c759
+    style MSG fill:#fff8e6,stroke:#ff9500
+    style LEAD fill:#f3eafd,stroke:#af52de

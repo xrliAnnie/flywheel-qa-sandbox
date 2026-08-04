@@ -86,6 +86,7 @@ describe("complete command", () => {
 		delete process.env.FLYWHEEL_INGEST_TOKEN;
 		delete process.env.FLYWHEEL_GATE_MARKER_DIR;
 		delete process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
+		delete process.env.FLYWHEEL_RUNNER_STATE_DIR;
 		delete process.env.FLYWHEEL_COMM_DB;
 		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
 
@@ -198,6 +199,67 @@ describe("complete command", () => {
 		// FLY-191 Phase 2 (§5.5.2): completion binds the exact worktree HEAD —
 		// the Bridge persists it as pr_head_sha for verify-approval.
 		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
+	});
+
+	it("writes an atomic runner-stop breadcrumb before delivering completion", async () => {
+		const stateDir = join(tmpHome, "runner-state", "exec-108");
+		process.env.FLYWHEEL_RUNNER_STATE_DIR = stateDir;
+		mockFetch.mockImplementation(async (_url, init) => {
+			const breadcrumb = JSON.parse(
+				readFileSync(join(stateDir, "last-complete.json"), "utf8"),
+			);
+			const body = JSON.parse(String(init?.body));
+			expect(breadcrumb).toMatchObject({
+				v: 1,
+				completionEventId: body.event_id,
+				executionId: "exec-108",
+				issueId: "issue-108",
+				route: "needs_review",
+				pr: 91,
+			});
+			expect(breadcrumb.sanitizedSummary.length).toBeLessThanOrEqual(200);
+			expect(new Date(breadcrumb.createdAt).toISOString()).toBe(
+				breadcrumb.createdAt,
+			);
+			return { ok: true, status: 200, text: async () => "" };
+		});
+
+		await complete({
+			route: "needs_review",
+			pr: 91,
+			merged: false,
+			summary: "ready\nfor\u0000 review",
+		});
+	});
+
+	it("derives the same state directory for Codex when no explicit dir is set", async () => {
+		delete process.env.FLYWHEEL_RUNNER_STATE_DIR;
+		await complete({ route: "no_code", merged: false });
+		expect(
+			existsSync(
+				join(
+					tmpHome,
+					".flywheel",
+					"runner-state",
+					"exec-108",
+					"last-complete.json",
+				),
+			),
+		).toBe(true);
+	});
+
+	it("fails open when the breadcrumb cannot be written", async () => {
+		const notDirectory = join(tmpHome, "not-a-directory");
+		writeFileSync(notDirectory, "occupied");
+		process.env.FLYWHEEL_RUNNER_STATE_DIR = notDirectory;
+
+		await expect(
+			complete({ route: "no_code", merged: false }),
+		).resolves.toBeUndefined();
+		expect(mockFetch).toHaveBeenCalledOnce();
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("runner-stop breadcrumb"),
+		);
 	});
 
 	it("attaches the exact current activation and TURN epoch to completion", async () => {

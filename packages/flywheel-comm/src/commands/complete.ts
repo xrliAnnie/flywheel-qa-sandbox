@@ -18,6 +18,8 @@ import {
 	mkdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -27,6 +29,8 @@ import {
 	type DesignHtmlEvidence,
 	findDesignHtmlPaths,
 } from "../design-html-evidence.js";
+import { resolveRunnerStateDir } from "../runner-state.js";
+import { truncateCodePoints } from "../text-truncate.js";
 import { currentWorkflowActivationFromEnv } from "./workflow-activation.js";
 
 // FLY-222 #1: `no_code` is the terminal route for a runner-driven no-code /
@@ -334,6 +338,14 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		source: "flywheel-comm",
 		payload,
 	};
+	writeRunnerStopBreadcrumb({
+		execId,
+		issueId,
+		eventId: body.event_id,
+		route: opts.route,
+		pr: opts.pr,
+		summary,
+	});
 
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
@@ -419,6 +431,53 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		`[complete] FAIL-CLOSE: ${attemptsMade} attempts failed. ${markerStatus} Last error: ${lastError}`,
 	);
 	process.exit(1);
+}
+
+function writeRunnerStopBreadcrumb(args: {
+	execId: string;
+	issueId: string;
+	eventId: string;
+	route: string;
+	pr?: number;
+	summary?: string;
+}): void {
+	const dir = resolveRunnerStateDir(args.execId);
+	const target = join(dir, "last-complete.json");
+	const temp = join(dir, `.last-complete.${process.pid}.${randomUUID()}.tmp`);
+	try {
+		mkdirSync(dir, { recursive: true });
+		const sanitizedSummary = truncateCodePoints(
+			(args.summary ?? "")
+				.replace(/\p{Cc}/gu, " ")
+				.replace(/\s+/g, " ")
+				.trim(),
+			200,
+		).text;
+		writeFileSync(
+			temp,
+			`${JSON.stringify({
+				v: 1,
+				completionEventId: args.eventId,
+				executionId: args.execId,
+				issueId: args.issueId,
+				route: args.route,
+				...(args.pr !== undefined ? { pr: args.pr } : {}),
+				sanitizedSummary,
+				createdAt: new Date().toISOString(),
+			})}\n`,
+			{ encoding: "utf8", mode: 0o600 },
+		);
+		renameSync(temp, target);
+	} catch (error) {
+		try {
+			unlinkSync(temp);
+		} catch {
+			// Nothing to clean up.
+		}
+		console.error(
+			`[complete] runner-stop breadcrumb write failed (continuing): ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 }
 
 function collectDesignHtmlEvidence(args: {
