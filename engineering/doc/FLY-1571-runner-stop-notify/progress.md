@@ -1,13 +1,13 @@
 ---
 issue: FLY-1571
 phase: implement
-phaseCursor: 4/7
-updated: 2026-08-04T08:41:12.972Z
-nextStep: Diff audit, real CLI smoke, then full-repo gates
+phaseCursor: 5/7
+updated: 2026-08-04T08:56:11.669Z
+nextStep: Commit implementation and request Codex code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1571 progress
-**phase**: implement (4/7)
-**next**: Diff audit, real CLI smoke, then full-repo gates
+**phase**: implement (5/7)
+**next**: Commit implementation and request Codex code review
