@@ -1,14 +1,14 @@
 ---
 issue: FLY-1628
 phase: design
-phaseCursor: 3/5
-updated: 2026-08-04T19:11:28.572Z
-nextStep: Codex design review R3 已折入(建窗命令原子凭证/coordinatorInFlight holder/vendor
-  谓词全路径/KIND_CONTRACTS)。发 R4 delta
+phaseCursor: 4/5
+updated: 2026-08-04T19:50:28.697Z
+nextStep: Codex design review 8 轮 APPROVED。产 founder HTML(mermaid->mmdc
+  SVG+评论层+nonce)->publish-report->报 Tadashi->phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1628 progress
-**phase**: design (3/5)
-**next**: Codex design review R3 已折入(建窗命令原子凭证/coordinatorInFlight holder/vendor 谓词全路径/KIND_CONTRACTS)。发 R4 delta
+**phase**: design (4/5)
+**next**: Codex design review 8 轮 APPROVED。产 founder HTML(mermaid->mmdc SVG+评论层+nonce)->publish-report->报 Tadashi->phase_design_complete
