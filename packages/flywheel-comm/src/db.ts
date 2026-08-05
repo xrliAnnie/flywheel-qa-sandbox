@@ -916,7 +916,7 @@ export class CommDB {
 			 * founder-reply binding candidate set; all other question semantics
 			 * (relay, pending, liveness) unchanged. */
 			kind?: "report";
-			/** Queue-native SLA copied into lead_inbox during admission. */
+			/** Queue-native SLA carried by the canonical mailbox row. */
 			deadlineAt?: string;
 		},
 	): string {

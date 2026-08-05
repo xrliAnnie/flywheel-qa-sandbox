@@ -44,7 +44,7 @@ export interface GateArgs {
 	shipCiProbe?: () => ShipCiGuardResult;
 	/** Best-effort queue doorbell; durable DB state remains authoritative. */
 	nudge?: () => Promise<void>;
-	/** Queue-native SLA copied to lead_inbox by the Bridge admission pass. */
+	/** Queue-native SLA carried by the canonical mailbox row. */
 	deadlineAt?: string;
 	/** Engine-owned workflow gates use a deterministic insert-or-verify id. */
 	questionId?: string;

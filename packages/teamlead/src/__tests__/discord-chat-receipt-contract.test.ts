@@ -68,10 +68,10 @@ describe("Discord chat durable-receipt Lead contract", () => {
 			priority: 0,
 			content: "founder: ship the report",
 			carrier: "external",
-			createdAt: "2026-07-22T12:00:00.000Z",
+			createdAt: "2099-07-22T12:00:00.000Z",
 			senderRef: encodeSenderRef(),
 		});
-		queue.markExternalDelivered(receiptId, "2026-07-22T12:00:01.000Z");
+		queue.markExternalDelivered(receiptId, "2099-07-22T12:00:01.000Z");
 
 		const holderStart = "test-holder-start";
 		const lease = new LeadLeaseStore(leaseDbPath);

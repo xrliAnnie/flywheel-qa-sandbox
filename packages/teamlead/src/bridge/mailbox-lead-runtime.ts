@@ -347,7 +347,7 @@ export class MailboxLeadRuntime implements LeadRuntime {
 		if (e.status) lines.push(`Status: ${e.status}`);
 		if (e.decision_route) lines.push(`Route: ${e.decision_route}`);
 		// FLY-1586 C: render-time truncation mints poison just as readily as
-		// write-time truncation — this text goes straight into lead_inbox.content.
+		// write-time truncation — this text goes straight into mailbox.content.
 		if (e.summary)
 			lines.push(`Summary: ${truncateCodePoints(e.summary, 300).text}`);
 		if (e.last_error)

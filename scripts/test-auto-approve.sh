@@ -130,8 +130,8 @@ fi
 # Runner is correctly blocked inside the gate's polling loop (see header
 # comment for the Round 4 deadlock).
 #
-# Schema mirror (packages/flywheel-comm/src/db.ts:8-37, :82-99, :248-265):
-#   messages(id, from_agent, to_agent, type, content, parent_id,
+# Schema mirror (packages/flywheel-comm/src/mailbox-schema.ts):
+#   mailbox(id, from_agent, to_agent, type, content, ref_id,
 #            checkpoint, content_ref, content_type, expires_at, ...);
 #   pending = from_agent=runner-execution-id, type='question',
 #             checkpoint='approve_to_ship', no response child, not expired.
@@ -147,15 +147,15 @@ while [[ $(date +%s) -lt $DEADLINE ]]; do
     # recently created pending gate, which under normal Runner behaviour is
     # also the only one (gates are 1:1 with execution).
     QUESTION_ID=$(sqlite3 -batch -cmd ".timeout 2000" "$COMM_DB" "
-      SELECT q.id FROM messages q
+      SELECT q.id FROM mailbox q
       WHERE q.from_agent = '${EXECUTION_ID}'
         AND q.type = 'question'
         AND q.checkpoint = 'approve_to_ship'
         AND NOT EXISTS (
-          SELECT 1 FROM messages r
-          WHERE r.parent_id = q.id AND r.type = 'response'
+          SELECT 1 FROM mailbox r
+          WHERE r.ref_id = q.id AND r.type = 'response'
         )
-        AND q.expires_at > datetime('now')
+        AND datetime(q.expires_at) > datetime('now')
       ORDER BY q.created_at DESC
       LIMIT 1;
     " 2>/dev/null || echo "")

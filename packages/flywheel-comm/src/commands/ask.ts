@@ -15,7 +15,7 @@ export interface AskArgs {
 	 * (the FLY-910 `founder_reply_ambiguous` noise source).
 	 */
 	report?: boolean;
-	/** Queue-native SLA copied to lead_inbox by the Bridge admission pass. */
+	/** Queue-native SLA carried by the canonical mailbox row. */
 	deadlineAt?: string;
 	/** Injectable for tests. */
 	env?: NodeJS.ProcessEnv;

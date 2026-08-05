@@ -58,7 +58,7 @@ export interface LeadInboxRuntimeOptions {
 	/**
 	 * FLY-1586 R2 HIGH-5 — direct sink for quarantine alerts.
 	 *
-	 * MUST NOT route through `lead_inbox`: an alert about the inbox being wedged,
+	 * MUST NOT route through `mailbox`: an alert about the inbox being wedged,
 	 * delivered via the inbox, is stuck inside the thing it is reporting. That
 	 * circularity is why the original outage went 61 hours unnoticed.
 	 *

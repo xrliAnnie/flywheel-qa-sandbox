@@ -23,6 +23,27 @@ trap cleanup EXIT
 
 pass() { PASS=$((PASS + 1)); echo "  ✅ $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  ❌ $1: $2"; }
+create_mailbox_db() {
+  sqlite3 "$1" "
+CREATE TABLE mailbox (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  from_agent TEXT NOT NULL,
+  to_agent TEXT NOT NULL,
+  type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  ref_id TEXT,
+  state TEXT NOT NULL DEFAULT 'QUEUED',
+  acked_at TEXT,
+  claimed_by TEXT,
+  claim_expires_at TEXT,
+  next_retry_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  expires_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now','+72 hours'))
+);
+PRAGMA journal_mode=WAL;
+"
+}
 
 echo "Testing inbox-check.sh hook"
 echo "=========================="
@@ -51,20 +72,7 @@ fi
 echo ""
 echo "Test 3: Empty DB → silent exit"
 DB3="$TMPDIR/test3.db"
-sqlite3 "$DB3" "
-CREATE TABLE messages (
-  id TEXT PRIMARY KEY,
-  from_agent TEXT NOT NULL,
-  to_agent TEXT NOT NULL,
-  type TEXT NOT NULL,
-  content TEXT NOT NULL,
-  parent_id TEXT,
-  read_at DATETIME,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
-);
-PRAGMA journal_mode=WAL;
-"
+create_mailbox_db "$DB3"
 OUTPUT=$(FLYWHEEL_EXEC_ID="test-exec" FLYWHEEL_COMM_DB="$DB3" bash "$HOOK" 2>&1) || true
 if [ -z "$OUTPUT" ]; then
   pass "No output for empty DB"
@@ -76,22 +84,11 @@ fi
 echo ""
 echo "Test 4: Unread instructions → JSON output"
 DB4="$TMPDIR/test4.db"
+create_mailbox_db "$DB4"
 sqlite3 "$DB4" "
-CREATE TABLE messages (
-  id TEXT PRIMARY KEY,
-  from_agent TEXT NOT NULL,
-  to_agent TEXT NOT NULL,
-  type TEXT NOT NULL,
-  content TEXT NOT NULL,
-  parent_id TEXT,
-  read_at DATETIME,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
-);
-PRAGMA journal_mode=WAL;
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('msg-1', 'product-lead', 'exec-42', 'instruction', 'Please report your progress');
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('msg-2', 'product-lead', 'exec-42', 'instruction', 'Also check the tests');
 "
 OUTPUT=$(FLYWHEEL_EXEC_ID="exec-42" FLYWHEEL_COMM_DB="$DB4" bash "$HOOK" 2>&1)
@@ -115,28 +112,17 @@ fi
 echo ""
 echo "Test 5: Targeted read-marking"
 DB5="$TMPDIR/test5.db"
+create_mailbox_db "$DB5"
 sqlite3 "$DB5" "
-CREATE TABLE messages (
-  id TEXT PRIMARY KEY,
-  from_agent TEXT NOT NULL,
-  to_agent TEXT NOT NULL,
-  type TEXT NOT NULL,
-  content TEXT NOT NULL,
-  parent_id TEXT,
-  read_at DATETIME,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
-);
-PRAGMA journal_mode=WAL;
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('msg-a', 'lead', 'exec-99', 'instruction', 'First instruction');
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('msg-b', 'lead', 'other-exec', 'instruction', 'For different runner');
 "
 FLYWHEEL_EXEC_ID="exec-99" FLYWHEEL_COMM_DB="$DB5" bash "$HOOK" > /dev/null 2>&1 || true
 
 # msg-a should be marked read
-READ_A=$(sqlite3 "$DB5" "SELECT read_at IS NOT NULL FROM messages WHERE id='msg-a';")
+READ_A=$(sqlite3 "$DB5" "SELECT state = 'ACKED' FROM mailbox WHERE id='msg-a';")
 if [ "$READ_A" = "1" ]; then
   pass "msg-a (target) marked as read"
 else
@@ -144,7 +130,7 @@ else
 fi
 
 # msg-b should still be unread (different exec-id)
-READ_B=$(sqlite3 "$DB5" "SELECT read_at IS NULL FROM messages WHERE id='msg-b';")
+READ_B=$(sqlite3 "$DB5" "SELECT state = 'QUEUED' FROM mailbox WHERE id='msg-b';")
 if [ "$READ_B" = "1" ]; then
   pass "msg-b (different runner) still unread"
 else
@@ -165,20 +151,9 @@ fi
 echo ""
 echo "Test 7: Multi-line instruction content"
 DB7="$TMPDIR/test7.db"
+create_mailbox_db "$DB7"
 sqlite3 "$DB7" "
-CREATE TABLE messages (
-  id TEXT PRIMARY KEY,
-  from_agent TEXT NOT NULL,
-  to_agent TEXT NOT NULL,
-  type TEXT NOT NULL,
-  content TEXT NOT NULL,
-  parent_id TEXT,
-  read_at DATETIME,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
-);
-PRAGMA journal_mode=WAL;
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('msg-ml', 'product-lead', 'exec-ml', 'instruction', 'Line one
 Line two
 Line three');
@@ -207,19 +182,9 @@ fi
 echo ""
 echo "Test S1: mailbox sentinel present → hook noops (FLY-142 PR 1.4)"
 DB_S1="$TMPDIR/test_s1.db"
+create_mailbox_db "$DB_S1"
 sqlite3 "$DB_S1" "
-CREATE TABLE messages (
-  id TEXT PRIMARY KEY,
-  from_agent TEXT NOT NULL,
-  to_agent TEXT NOT NULL,
-  type TEXT NOT NULL,
-  content TEXT NOT NULL,
-  parent_id TEXT,
-  read_at DATETIME,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
-);
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('s1-msg', 'lead', 'exec-s1', 'instruction', 'Should NOT be delivered when sentinel present');
 "
 SENTINEL_DIR_S1="$TMPDIR/runner-state/exec-s1"
@@ -235,30 +200,20 @@ else
   fail "Sentinel should suppress output" "got: $OUTPUT"
 fi
 # Verify the message was NOT marked as read (sentinel skipped the SQL path entirely)
-READ_AT=$(sqlite3 "$DB_S1" "SELECT read_at FROM messages WHERE id='s1-msg';")
+READ_AT=$(sqlite3 "$DB_S1" "SELECT acked_at FROM mailbox WHERE id='s1-msg';")
 if [ -z "$READ_AT" ]; then
   pass "Sentinel present → message NOT marked read (proves SQL path skipped)"
 else
   fail "Sentinel should leave message unread" "read_at=$READ_AT"
 fi
 
-# Test S2: FLY-142 PR 1.4 sentinel absent → legacy CommDB path runs
+# Test S2: FLY-142 PR 1.4 sentinel absent → CommDB fallback runs
 echo ""
-echo "Test S2: sentinel absent → legacy CommDB delivery still works (rollback)"
+echo "Test S2: sentinel absent → CommDB fallback delivery works"
 DB_S2="$TMPDIR/test_s2.db"
+create_mailbox_db "$DB_S2"
 sqlite3 "$DB_S2" "
-CREATE TABLE messages (
-  id TEXT PRIMARY KEY,
-  from_agent TEXT NOT NULL,
-  to_agent TEXT NOT NULL,
-  type TEXT NOT NULL,
-  content TEXT NOT NULL,
-  parent_id TEXT,
-  read_at DATETIME,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
-);
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('s2-msg', 'lead', 'exec-s2', 'instruction', 'Rollback path delivery');
 "
 # Explicitly point sentinel dir at empty location → no sentinel
@@ -269,21 +224,16 @@ OUTPUT=$(FLYWHEEL_EXEC_ID="exec-s2" \
 if echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext' > /dev/null 2>&1; then
   pass "No sentinel → CommDB delivery still works"
 else
-  fail "Expected legacy delivery output" "$OUTPUT"
+  fail "Expected CommDB delivery output" "$OUTPUT"
 fi
 
-# Test S3: FLY_DISABLE_MAILBOX_SENTINEL=1 → ignore sentinel, run legacy path
+# Test S3: FLY_DISABLE_MAILBOX_SENTINEL=1 → ignore sentinel, run fallback
 echo ""
 echo "Test S3: FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 ignores sentinel"
 DB_S3="$TMPDIR/test_s3.db"
+create_mailbox_db "$DB_S3"
 sqlite3 "$DB_S3" "
-CREATE TABLE messages (
-  id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL,
-  type TEXT NOT NULL, content TEXT NOT NULL, parent_id TEXT,
-  read_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
-);
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('s3-msg', 'lead', 'exec-s3', 'instruction', 'Override delivery');
 "
 SENTINEL_DIR_S3="$TMPDIR/runner-state/exec-s3"
@@ -295,9 +245,9 @@ OUTPUT=$(FLYWHEEL_EXEC_ID="exec-s3" \
          FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 \
          bash "$HOOK" 2>&1)
 if echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext' > /dev/null 2>&1; then
-  pass "DISABLE_MAILBOX_SENTINEL=1 → sentinel ignored, legacy delivery runs"
+  pass "DISABLE_MAILBOX_SENTINEL=1 → sentinel ignored, fallback delivery runs"
 else
-  fail "Expected legacy delivery despite sentinel" "$OUTPUT"
+  fail "Expected fallback delivery despite sentinel" "$OUTPUT"
 fi
 
 # Test S4: Default sentinel path (~/.flywheel/runner-state/<exec>/mailbox-active)
@@ -305,14 +255,9 @@ fi
 echo ""
 echo "Test S4: default sentinel path picked up via HOME-derived fallback"
 DB_S4="$TMPDIR/test_s4.db"
+create_mailbox_db "$DB_S4"
 sqlite3 "$DB_S4" "
-CREATE TABLE messages (
-  id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL,
-  type TEXT NOT NULL, content TEXT NOT NULL, parent_id TEXT,
-  read_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
-);
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('s4-msg', 'lead', 'exec-s4', 'instruction', 'Default-path test');
 "
 # Override HOME so the default path resolves into TMPDIR
@@ -332,24 +277,18 @@ fi
 # Test 8: FLY-142 — type='response' is delivered (the wake bug fix).
 # A parked/idle runner asked the lead a question, then went idle. The lead's
 # `respond` writes a type='response' row to the runner's inbox. The legacy
-# CommDB path MUST now inject it (with parent question context) so the runner
-# wakes on its next Bash. Sentinel deliberately absent (legacy path).
+# CommDB fallback MUST now inject it (with parent question context) so the runner
+# wakes on its next Bash. Sentinel deliberately absent.
 echo ""
 echo "Test 8: Lead response to a parked runner → injected with parent context"
 DB8="$TMPDIR/test8.db"
+create_mailbox_db "$DB8"
 sqlite3 "$DB8" "
-CREATE TABLE messages (
-  id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL,
-  type TEXT NOT NULL, content TEXT NOT NULL, parent_id TEXT,
-  read_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
-);
-PRAGMA journal_mode=WAL;
 -- runner asked the lead a question (from runner → to lead)
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('q-1', 'exec-r8', 'product-lead', 'question', 'Which API version should I target?');
--- lead responded (from lead → to runner); parent_id links back to the question
-INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
+-- lead responded (from lead → to runner); ref_id links back to the question
+INSERT INTO mailbox (id, from_agent, to_agent, type, content, ref_id)
   VALUES ('r-1', 'product-lead', 'exec-r8', 'response', 'Target v2 of the API.', 'q-1');
 "
 OUTPUT=$(FLYWHEEL_EXEC_ID="exec-r8" \
@@ -377,7 +316,7 @@ if echo "$CTX" | grep -q "q-1"; then
 else
   fail "Missing parent question id" "$CTX"
 fi
-READ_R=$(sqlite3 "$DB8" "SELECT read_at IS NOT NULL FROM messages WHERE id='r-1';")
+READ_R=$(sqlite3 "$DB8" "SELECT state = 'ACKED' FROM mailbox WHERE id='r-1';")
 if [ "$READ_R" = "1" ]; then
   pass "Response marked read (no re-injection)"
 else
@@ -385,7 +324,7 @@ else
 fi
 # The parent question (to_agent=lead) is the lead's inbox item, not the runner's:
 # it must NOT be marked read and must NOT appear as its own injected line.
-READ_Q=$(sqlite3 "$DB8" "SELECT read_at IS NULL FROM messages WHERE id='q-1';")
+READ_Q=$(sqlite3 "$DB8" "SELECT state = 'QUEUED' FROM mailbox WHERE id='q-1';")
 if [ "$READ_Q" = "1" ]; then
   pass "Parent question left untouched (not the runner's inbox item)"
 else
@@ -415,19 +354,13 @@ fi
 echo ""
 echo "Test 10: instruction + response together → both delivered"
 DB10="$TMPDIR/test10.db"
+create_mailbox_db "$DB10"
 sqlite3 "$DB10" "
-CREATE TABLE messages (
-  id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL,
-  type TEXT NOT NULL, content TEXT NOT NULL, parent_id TEXT,
-  read_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
-);
-PRAGMA journal_mode=WAL;
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('i-1', 'lead', 'exec-mix', 'instruction', 'Do the thing now');
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('q-2', 'exec-mix', 'lead', 'question', 'Ready to merge?');
-INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content, ref_id)
   VALUES ('r-2', 'lead', 'exec-mix', 'response', 'Yes, go ahead', 'q-2');
 "
 OUTPUT=$(FLYWHEEL_EXEC_ID="exec-mix" \
@@ -452,17 +385,11 @@ fi
 echo ""
 echo "Test 11: a 'question' row addressed to the runner is NOT injected"
 DB11="$TMPDIR/test11.db"
+create_mailbox_db "$DB11"
 sqlite3 "$DB11" "
-CREATE TABLE messages (
-  id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL,
-  type TEXT NOT NULL, content TEXT NOT NULL, parent_id TEXT,
-  read_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
-);
-PRAGMA journal_mode=WAL;
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('qq-1', 'someone', 'exec-q', 'question', 'A question pointed at the runner');
-INSERT INTO messages (id, from_agent, to_agent, type, content)
+INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('pp-1', 'someone', 'exec-q', 'progress', 'A progress note');
 "
 OUTPUT=$(FLYWHEEL_EXEC_ID="exec-q" \

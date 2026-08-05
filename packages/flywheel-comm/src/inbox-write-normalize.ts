@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
  *
  * ## The failure this closes
  *
- * `lead_inbox` writes are insert-then-verify: INSERT, read the row back, compare
+ * `mailbox` writes are insert-then-verify: INSERT, read the row back, compare
  * field by field, throw on mismatch. SQLite cannot store an unpaired surrogate —
  * it substitutes U+FFFD. So when a value containing one is written, the read-back
  * differs from the value the caller passed, the comparator throws, and the whole
@@ -25,7 +25,7 @@ import { createHash } from "node:crypto";
  * A protects **value drift at the authoritative enqueue insert/verify boundary**.
  * Later diagnostic mutations (`last_error` and friends) do not participate in the
  * comparator and are made well-formed by SQLite's own read-back. This does **not**
- * claim every TEXT column in `lead_inbox` is normalized.
+ * claim every TEXT column in `mailbox` is normalized.
  *
  * `String.prototype.isWellFormed()` / `toWellFormed()` are ES2024; this repo
  * targets ES2022, so they do not typecheck here.

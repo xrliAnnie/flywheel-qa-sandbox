@@ -62,7 +62,7 @@ export function countCodePoints(value: string): number {
 
 /**
  * Keep at most `limit` code points from the START of `value`.
- * Replaces `value.slice(0, limit)` at every boundary that can reach `lead_inbox`.
+ * Replaces `value.slice(0, limit)` at every boundary that can reach `mailbox`.
  */
 export function truncateCodePoints(
 	value: string,
