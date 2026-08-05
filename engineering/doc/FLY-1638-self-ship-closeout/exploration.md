@@ -47,6 +47,8 @@ FLY-1625 病理报告 + 业界 DeepResearch(判词:**小而保守的对账层 + 
 3. **terminated run 复活**:已 terminated 的 run 仍能经 dead-execution 重试通道 admit 新 exec(1591 实证:8-01 走完+terminated,8-05 03:50 仍 spawn runner 去做 4 天前完成的事)。
 4. **generic 节点没有合法非 needs_review 出口**:取消/无产出单关不掉(route 硬绑 + 必须 --pr),1623 这类取消单只能伪造 PR 号或永远挂着。
 
+> **注**:代码审计对子缺陷 ①③ 的前提有实质修正(① 真 throw 点在 `workflow-run-snapshot.ts:176-177` 非 workflow-menu.ts;③ terminated run 本就进不了通道,真缺陷是死亡谓词把「complete 吃 500 的诚实 runner」判成真死)—— 详见 research.md §4。
+
 ### 2.6 重启前暂停接活(admission pause)
 
 **现象**:1634 部署期间派发 → 乱账。DeepResearch 控制面四步模型(pause → drain → swap → resume)中我们唯一缺 pause 这一步。
