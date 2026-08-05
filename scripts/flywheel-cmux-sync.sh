@@ -75,6 +75,11 @@ ORPHAN_PIN_STATE="${ORPHAN_PIN_STATE:-/tmp/flywheel-cmux-orphan-pin.state}"
 # This must not share STALE_STATE/ORPHAN_PIN_STATE because their lifecycles and
 # cleanup keys differ.
 ADOPTION_STATE="${ADOPTION_STATE:-$HOME/.flywheel/state/cmux-stock-adoption}"
+# FLY-1596: durable transaction markers for adopting restored cmux rows. This
+# state must remain separate from ADOPTION_STATE because the stock reaper owns
+# a whole-file rewrite and intentionally does not preserve foreign schemas.
+RESTORED_STATE="${RESTORED_STATE:-$HOME/.flywheel/state/cmux-restored-adoption}"
+RESTORED_BOOTSTRAP_PASS=0
 
 # FLY-685: close-request marker file. close_runner (Bridge, no cmux socket)
 # appends a runner's window_name here on a successful window kill; the watcher
@@ -95,9 +100,12 @@ KEEPER_INVENTORY="${KEEPER_INVENTORY:-$HOME/.flywheel/state/cmux-keeper-inventor
 VIEW_ABSENT_STATE="${VIEW_ABSENT_STATE:-$HOME/.flywheel/state/cmux-view-absent}"
 CMUX_MAINTENANCE_MARKER="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/state/cmux-maintenance}"
 CMUX_QA_TEARDOWN_CLAIM="${CMUX_MAINTENANCE_MARKER}.qa-teardown"
+CMUX_OPS_REBUILD_CLAIM="${CMUX_MAINTENANCE_MARKER}.ops-rebuild"
+CMUX_REBUILD_REPORT_DIR="${FLYWHEEL_CMUX_REBUILD_REPORT_DIR:-$HOME/.flywheel/state/cmux-rebuild-reports}"
 CMUX_FLAG_STATE="${CMUX_FLAG_STATE:-$HOME/.flywheel/state/cmux-flag-state}"
 LEDGER_CONFLICT_STATE="${LEDGER_CONFLICT_STATE:-$HOME/.flywheel/state/cmux-ledger-conflicts}"
 ROSTER_EPISODE_STATE="${ROSTER_EPISODE_STATE:-$HOME/.flywheel/state/cmux-roster-episodes}"
+CMUX_LOG_EPISODE_STATE="${CMUX_LOG_EPISODE_STATE:-$HOME/.flywheel/state/cmux-log-episodes}"
 FLYWHEEL_ENV_FILE="${FLYWHEEL_ENV_FILE:-$HOME/.flywheel/.env}"
 FLYWHEEL_LEAD_PLIST_DIR="${FLYWHEEL_LEAD_PLIST_DIR:-$HOME/Library/LaunchAgents}"
 FLYWHEEL_MANIFEST_DIR="${FLYWHEEL_MANIFEST_DIR:-$HOME/.flywheel/manifests}"
@@ -639,25 +647,43 @@ PY
 
 LEAD_ROSTER_STATE="indeterminate"
 LEAD_ROSTER_ROWS=""
+LEAD_ROSTER_REASONS=""
 derive_lead_roster() {
   # Rows: carrier|launchd-label|expected-title. No row is published until
   # every loaded job has been parsed and classified successfully.
   local plist label slug wrapper manifest fields project lead backend carrier title rows=""
   LEAD_ROSTER_STATE="indeterminate"
   LEAD_ROSTER_ROWS=""
+  LEAD_ROSTER_REASONS=""
   for plist in "$FLYWHEEL_LEAD_PLIST_DIR"/com.flywheel.lead.*.plist; do
     [[ -f "$plist" ]] || continue
     label=$(basename "$plist" .plist)
     lead_job_loaded "$label" || continue
-    wrapper=$(lead_plist_wrapper_basename "$plist") || return 1
     slug=${label#com.flywheel.lead.}
+    wrapper=$(lead_plist_wrapper_basename "$plist") || {
+      LEAD_ROSTER_REASONS="roster-authority-unavailable: invalid plist $slug"
+      return 1
+    }
     manifest="$FLYWHEEL_MANIFEST_DIR/${slug}.json"
-    fields=$(lead_manifest_fields "$manifest" 2>/dev/null) || return 1
+    [[ -f "$manifest" ]] || {
+      LEAD_ROSTER_REASONS="roster-authority-unavailable: missing manifest $slug"
+      return 1
+    }
+    fields=$(lead_manifest_fields "$manifest" 2>/dev/null) || {
+      LEAD_ROSTER_REASONS="roster-authority-unavailable: invalid manifest $slug"
+      return 1
+    }
     IFS='|' read -r project lead backend <<< "$fields"
     title="${project}-${lead}"
     # The launchd label and manifest identity must describe the same slot.
-    [[ "$slug" == "$title" ]] || return 1
-    carrier=$(classify_lead_carrier "$wrapper" "$backend") || return 1
+    [[ "$slug" == "$title" ]] || {
+      LEAD_ROSTER_REASONS="roster-authority-unavailable: manifest identity mismatch $slug"
+      return 1
+    }
+    carrier=$(classify_lead_carrier "$wrapper" "$backend") || {
+      LEAD_ROSTER_REASONS="roster-authority-unavailable: carrier classification failed $slug"
+      return 1
+    }
     rows+="${rows:+$'\n'}${carrier}|${label}|${title}"
   done
   LEAD_ROSTER_ROWS="$rows"
@@ -3971,6 +3997,734 @@ END { if (NR > 0) emit() }
   return 0
 }
 
+# Print validated restored markers as tab-separated decoded records:
+# kind, generation, ref, title, original receipt state, fingerprint, epoch.
+# Any malformed byte in the file invalidates the entire authority namespace.
+_restored_parse_records() {
+  [[ -e "$RESTORED_STATE" || -L "$RESTORED_STATE" ]] || return 0
+  [[ -f "$RESTORED_STATE" && ! -L "$RESTORED_STATE" ]] || return 2
+  [[ -s "$RESTORED_STATE" ]] || return 0
+  python3 - "$RESTORED_STATE" <<'PY' || return 2
+import base64
+import os
+import re
+import sys
+import time
+
+path = sys.argv[1]
+try:
+    with open(path, "rb") as handle:
+        payload = handle.read()
+except OSError:
+    raise SystemExit(2)
+try:
+    text = payload.decode("utf-8")
+except UnicodeDecodeError:
+    raise SystemExit(2)
+
+def decode_canonical(value):
+    try:
+        raw = base64.b64decode(value, validate=True)
+        if base64.b64encode(raw).decode("ascii") != value:
+            raise ValueError()
+        return raw.decode("utf-8")
+    except Exception:
+        raise SystemExit(2)
+
+records = []
+seen = set()
+now = int(time.time())
+for line in text.splitlines():
+    if not line:
+        raise SystemExit(2)
+    fields = line.split("|")
+    if len(fields) != 8:
+        raise SystemExit(2)
+    version, kind, generation, ref, title_b64, orig_b64, fingerprint, epoch_raw = fields
+    if version != "restoredv1" or kind not in {"W1", "W1p", "W1dead"}:
+        raise SystemExit(2)
+    if not generation or any(ord(ch) < 32 or ord(ch) == 127 for ch in generation):
+        raise SystemExit(2)
+    if not re.fullmatch(r"workspace:[0-9]+", ref):
+        raise SystemExit(2)
+    if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        raise SystemExit(2)
+    if not re.fullmatch(r"[0-9]+", epoch_raw):
+        raise SystemExit(2)
+    epoch = int(epoch_raw)
+    if epoch > now:
+        raise SystemExit(2)
+    title = decode_canonical(title_b64)
+    if not title or "|" in title or any(ord(ch) < 32 or ord(ch) == 127 for ch in title):
+        raise SystemExit(2)
+    original = decode_canonical(orig_b64)
+    orig = original.split("|", 3)
+    if len(orig) != 4:
+        raise SystemExit(2)
+    orig_state, orig_generation, orig_ref, orig_title = orig
+    if orig_state not in {"none", "prepared", "committed"}:
+        raise SystemExit(2)
+    if (orig_generation, orig_ref, orig_title) != (generation, ref, title):
+        raise SystemExit(2)
+    if kind in {"W1", "W1dead"} and orig_state != "none":
+        raise SystemExit(2)
+    if kind == "W1p" and orig_state != "prepared":
+        raise SystemExit(2)
+    key = (generation, ref, title)
+    if key in seen:
+        raise SystemExit(2)
+    seen.add(key)
+    records.append((kind, generation, ref, title, orig_state, fingerprint, str(epoch)))
+
+if payload and not text.endswith("\n"):
+    raise SystemExit(2)
+for record in records:
+    print("\t".join(record))
+PY
+}
+
+# rc=0 exact in-flight marker; rc=1 no marker; rc=2 unreadable/malformed
+# namespace. rc=2 is deliberately global fail-closed, not tuple-local.
+restored_inflight_state() {
+  local generation="$1" ref="$2" title="$3" records rc=0 count
+  records=$(_restored_parse_records) || rc=$?
+  [[ "$rc" -eq 0 ]] || return 2
+  count=$(printf '%s\n' "$records" | awk -F'\t' -v g="$generation" -v r="$ref" -v t="$title" \
+    '$2 == g && $3 == r && $4 == t { n++ } END { print n+0 }')
+  case "$count" in
+    0) return 1 ;;
+    1) return 0 ;;
+    *) return 2 ;;
+  esac
+}
+
+_restored_marker_exact() {
+  local kind="$1" generation="$2" ref="$3" title="$4" fingerprint="$5"
+  local records rc=0 count
+  records=$(_restored_parse_records) || rc=$?
+  [[ "$rc" -eq 0 ]] || return 2
+  count=$(printf '%s\n' "$records" | awk -F'\t' \
+    -v k="$kind" -v g="$generation" -v r="$ref" -v t="$title" -v f="$fingerprint" \
+    '$1 == k && $2 == g && $3 == r && $4 == t && $6 == f { n++ } END { print n+0 }')
+  [[ "$count" == "1" ]]
+}
+
+RESTORED_CAP_KIND=""
+RESTORED_CAP_GENERATION=""
+RESTORED_CAP_REF=""
+RESTORED_CAP_TITLE=""
+RESTORED_CAP_FINGERPRINT=""
+
+_restored_recovery_cap_clear() {
+  RESTORED_CAP_KIND=""
+  RESTORED_CAP_GENERATION=""
+  RESTORED_CAP_REF=""
+  RESTORED_CAP_TITLE=""
+  RESTORED_CAP_FINGERPRINT=""
+}
+
+_restored_recovery_cap_enter() {
+  local kind="$1" generation="$2" ref="$3" title="$4" fingerprint="$5"
+  _restored_recovery_cap_clear
+  _restored_marker_exact "$kind" "$generation" "$ref" "$title" "$fingerprint" || return 1
+  restored_inflight_state "$generation" "$ref" "$title" || return 1
+  RESTORED_CAP_KIND="$kind"
+  RESTORED_CAP_GENERATION="$generation"
+  RESTORED_CAP_REF="$ref"
+  RESTORED_CAP_TITLE="$title"
+  RESTORED_CAP_FINGERPRINT="$fingerprint"
+}
+
+_restored_recovery_cap_valid() {
+  local generation="$1" ref="$2" title="$3"
+  [[ -n "$RESTORED_CAP_KIND" && "$RESTORED_CAP_GENERATION" == "$generation" \
+      && "$RESTORED_CAP_REF" == "$ref" && "$RESTORED_CAP_TITLE" == "$title" \
+      && -n "$RESTORED_CAP_FINGERPRINT" ]] || return 1
+  _restored_marker_exact "$RESTORED_CAP_KIND" "$generation" "$ref" "$title" \
+    "$RESTORED_CAP_FINGERPRINT"
+}
+
+# Marker-authorized, generation-scoped CAS used only by restored settlement.
+# It never uses _ledger_upsert because that primitive replaces rows by ref
+# across generations and could erase a current-generation ref reuse.
+_restored_ledger_cas() {
+  local action="$1" kind="$2" generation="$3" ref="$4" title="$5" fingerprint="$6"
+  local records rc=0 marker_state summary committed prepared other dir lock tmp
+  case "$action" in delete|restore-prepared) ;; *) return 1 ;; esac
+  _restored_marker_exact "$kind" "$generation" "$ref" "$title" "$fingerprint" || return 1
+  records=$(_restored_parse_records) || rc=$?
+  [[ "$rc" -eq 0 ]] || return 1
+  marker_state=$(printf '%s\n' "$records" | awk -F'\t' \
+    -v k="$kind" -v g="$generation" -v r="$ref" -v t="$title" -v f="$fingerprint" \
+    '$1 == k && $2 == g && $3 == r && $4 == t && $6 == f { print $5; exit }')
+  if [[ "$action" == "delete" ]]; then
+    [[ "$marker_state" == "none" ]] || return 1
+  else
+    [[ "$kind" == "W1p" && "$marker_state" == "prepared" ]] || return 1
+  fi
+  assert_or_reuse_owned_lease || return 1
+  dir=$(dirname "$VIEW_LEDGER")
+  mkdir -p "$dir" 2>/dev/null || return 1
+  lock="${VIEW_LEDGER}.lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    log "[audit] reaping residual ledger inner lock for restored CAS under verified mutator lease: $lock"
+    rm -rf "$lock" 2>/dev/null || return 1
+    mkdir "$lock" 2>/dev/null || return 1
+  fi
+  touch "$VIEW_LEDGER" 2>/dev/null || { _ledger_release_inner_lock "$lock"; return 1; }
+  summary=$(awk -F'|' -v g="$generation" -v r="$ref" -v t="$title" '
+    $2 == g && $3 == r {
+      if (NF == 4 && $4 == t && $1 == "committed") committed++
+      else if (NF == 4 && $4 == t && $1 == "prepared") prepared++
+      else other++
+    }
+    END { print committed+0 "|" prepared+0 "|" other+0 }
+  ' "$VIEW_LEDGER") || { _ledger_release_inner_lock "$lock"; return 1; }
+  IFS='|' read -r committed prepared other <<< "$summary"
+  if [[ "$action" == "delete" ]]; then
+    if [[ "$committed" == "0" && "$prepared" == "0" && "$other" == "0" ]]; then
+      _ledger_release_inner_lock "$lock"
+      return 0
+    fi
+    [[ "$committed" == "1" && "$prepared" == "0" && "$other" == "0" ]] || {
+      _ledger_release_inner_lock "$lock"; return 1;
+    }
+  else
+    if [[ "$committed" == "0" && "$prepared" == "1" && "$other" == "0" ]]; then
+      _ledger_release_inner_lock "$lock"
+      return 0
+    fi
+    [[ "$committed" == "1" && "$prepared" == "0" && "$other" == "0" ]] || {
+      _ledger_release_inner_lock "$lock"; return 1;
+    }
+  fi
+  tmp=$(mktemp "${VIEW_LEDGER}.XXXX" 2>/dev/null) || {
+    _ledger_release_inner_lock "$lock"; return 1;
+  }
+  if [[ "$action" == "delete" ]]; then
+    awk -F'|' -v g="$generation" -v r="$ref" -v t="$title" \
+      '!(NF == 4 && $1 == "committed" && $2 == g && $3 == r && $4 == t) { print }' \
+      "$VIEW_LEDGER" > "$tmp" 2>/dev/null || {
+      rm -f "$tmp"; _ledger_release_inner_lock "$lock"; return 1;
+    }
+  else
+    awk -F'|' -v g="$generation" -v r="$ref" -v t="$title" '
+      NF == 4 && $1 == "committed" && $2 == g && $3 == r && $4 == t {
+        print "prepared|" g "|" r "|" t; next
+      }
+      { print }
+    ' "$VIEW_LEDGER" > "$tmp" 2>/dev/null || {
+      rm -f "$tmp"; _ledger_release_inner_lock "$lock"; return 1;
+    }
+  fi
+  mv "$tmp" "$VIEW_LEDGER" 2>/dev/null || {
+    rm -f "$tmp"; _ledger_release_inner_lock "$lock"; return 1;
+  }
+  _ledger_release_inner_lock "$lock"
+}
+
+restored_adoption_enabled() {
+  case "${FLYWHEEL_CMUX_RESTORED_ADOPTION:-1}" in
+    0) return 1 ;;
+    1|"") return 0 ;;
+    *)
+      log "WARN: invalid FLYWHEEL_CMUX_RESTORED_ADOPTION='${FLYWHEEL_CMUX_RESTORED_ADOPTION}' — using 1"
+      return 0
+      ;;
+  esac
+}
+
+_restored_b64() {
+  printf '%s' "$1" | base64 | tr -d '\n'
+}
+
+_restored_marker_upsert() {
+  local kind="$1" generation="$2" ref="$3" title="$4" orig_state="$5" fingerprint="$6"
+  local title_b64 orig_b64 epoch dir tmp records rc=0
+  case "$kind" in W1|W1p|W1dead) ;; *) return 1 ;; esac
+  case "$orig_state" in none|prepared) ;; *) return 1 ;; esac
+  [[ "$kind" == "W1p" && "$orig_state" == "prepared" \
+      || "$kind" != "W1p" && "$orig_state" == "none" ]] || return 1
+  case "$ref" in workspace:[0-9]*) case "${ref#workspace:}" in ''|*[!0-9]*) return 1 ;; esac ;; *) return 1 ;; esac
+  case "$fingerprint" in *[!0-9a-f]*|"") return 1 ;; esac
+  [[ ${#fingerprint} -eq 64 ]] || return 1
+  case "$generation$title" in *'|'*|*$'\t'*|*$'\n'*) return 1 ;; esac
+  assert_or_reuse_owned_lease || return 1
+  records=$(_restored_parse_records) || rc=$?
+  [[ "$rc" -eq 0 ]] || return 2
+  title_b64=$(_restored_b64 "$title") || return 1
+  orig_b64=$(_restored_b64 "$orig_state|$generation|$ref|$title") || return 1
+  epoch=$(date +%s) || return 1
+  dir=$(dirname "$RESTORED_STATE")
+  mkdir -p "$dir" 2>/dev/null || return 1
+  touch "$RESTORED_STATE" 2>/dev/null || return 1
+  tmp=$(mktemp "${RESTORED_STATE}.XXXX" 2>/dev/null) || return 1
+  awk -F'|' -v g="$generation" -v r="$ref" -v b="$title_b64" \
+    '!(NF == 8 && $1 == "restoredv1" && $3 == g && $4 == r && $5 == b) { print }' \
+    "$RESTORED_STATE" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  printf 'restoredv1|%s|%s|%s|%s|%s|%s|%s\n' \
+    "$kind" "$generation" "$ref" "$title_b64" "$orig_b64" "$fingerprint" "$epoch" \
+    >> "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$RESTORED_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  _restored_parse_records >/dev/null || return 2
+  log "[audit] persisted restored adoption marker kind=$kind generation=$generation ref=$ref title=$title fingerprint=$fingerprint"
+}
+
+_restored_marker_remove_exact() {
+  local generation="$1" ref="$2" title="$3" fingerprint="$4" title_b64 tmp rc=0
+  assert_or_reuse_owned_lease || return 1
+  _restored_parse_records >/dev/null || rc=$?
+  [[ "$rc" -eq 0 ]] || return 2
+  [[ -f "$RESTORED_STATE" ]] || return 0
+  title_b64=$(_restored_b64 "$title") || return 1
+  tmp=$(mktemp "${RESTORED_STATE}.XXXX" 2>/dev/null) || return 1
+  awk -F'|' -v g="$generation" -v r="$ref" -v b="$title_b64" -v f="$fingerprint" \
+    '!(NF == 8 && $1 == "restoredv1" && $3 == g && $4 == r && $5 == b && $7 == f) { print }' \
+    "$RESTORED_STATE" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$RESTORED_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  log "[audit] cleared restored adoption marker generation=$generation ref=$ref title=$title fingerprint=$fingerprint"
+}
+
+# Strict typed snapshot. rc=2 means no conclusion may be drawn from presence
+# or absence; rc=0 with empty output is a conclusive empty inventory.
+strict_agent_window_snapshot() {
+  local sessions session rows observed_session wid title dead extra out=""
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 2
+  while IFS= read -r session; do
+    [[ -n "$session" ]] || continue
+    case "$session" in flywheel|runner-*) ;; *) continue ;; esac
+    rows=$(tmux list-windows -t "=$session" \
+      -F '#{session_name}|#{window_id}|#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
+    while IFS='|' read -r observed_session wid title dead extra; do
+      [[ -n "$observed_session$wid$title$dead${extra:-}" ]] || continue
+      [[ -z "${extra:-}" && "$observed_session" == "$session" ]] || return 2
+      case "$wid" in @*) case "${wid#@}" in ''|*[!0-9]*) return 2 ;; esac ;; *) return 2 ;; esac
+      case "$dead" in 0|1) ;; *) return 2 ;; esac
+      case "$title" in ''|zsh|bash) continue ;; *'|'*|*$'\t'*|*$'\n'*) return 2 ;; esac
+      out+="${out:+$'\n'}${observed_session}|${wid}|${title}|${dead}"
+    done <<< "$rows"
+  done <<< "$sessions"
+  printf '%s\n' "$out" | grep -v '^$' || true
+  return 0
+}
+
+_restored_title_in_lead_roster() {
+  local title="$1" count
+  derive_lead_roster || return 2
+  [[ "$LEAD_ROSTER_STATE" == "ok" ]] || return 2
+  count=$(printf '%s\n' "$LEAD_ROSTER_ROWS" | awk -F'|' -v t="$title" '$3 == t { n++ } END { print n+0 }')
+  [[ "$count" == "1" ]]
+}
+
+RESTORED_PROBE_FINGERPRINT=""
+RESTORED_PROBE_SOURCE=""
+RESTORED_PROBE_WID=""
+RESTORED_PROBE_RAW_TITLE=""
+RESTORED_PROBE_SURFACE=""
+
+# Shared resident/ops evidence probe. rc=0 exact evidence, rc=1 conclusive
+# drift/refusal, rc=2 inventory uncertainty.
+_restored_candidate_probe() {
+  local kind="$1" generation="$2" ref="$3" title="$4" expected="${5:-}"
+  local current raw canonical candidates candidate_count candidate_kind candidate_ref pinned selected number
+  local evidence raw_title surface snapshot live_rows live_count any_count
+  RESTORED_PROBE_FINGERPRINT="" RESTORED_PROBE_SOURCE="" RESTORED_PROBE_WID=""
+  RESTORED_PROBE_RAW_TITLE="" RESTORED_PROBE_SURFACE=""
+  current=$(cmux_socket_identity) || return 2
+  [[ -n "$current" && "$current" == "$generation" ]] || return 1
+  raw=$(get_cmux_workspaces_json) || return 2
+  canonical=$(build_attach_command "${VIEW_PREFIX}${title}") || return 2
+  candidates=$(workspace_title_candidates "$raw" "$title" "$canonical") || return 2
+  candidate_count=$(printf '%s\n' "$candidates" | grep -c . || true)
+  [[ "$candidate_count" == "1" ]] || return 1
+  IFS='|' read -r candidate_kind candidate_ref pinned selected number <<< "$candidates"
+  [[ "$candidate_ref" == "$ref" ]] || return 1
+  case "$candidate_kind" in
+    named) raw_title="$title" ;;
+    raw) raw_title="$canonical" ;;
+    *) return 2 ;;
+  esac
+  # A restored receipt follows the row identity, not transient presentation
+  # state. Focus and pin changes must not reset the two-pass stability latch.
+  evidence="$candidate_kind|$candidate_ref|$number"
+  surface=$(workspace_single_surface_title "$ref") || return 2
+  linked_session_exists "${VIEW_PREFIX}${title}" && return 1
+  snapshot=$(strict_agent_window_snapshot) || return 2
+  live_rows=$(printf '%s\n' "$snapshot" | awk -F'|' -v t="$title" '$3 == t && $4 == "0" { print }')
+  live_count=$(printf '%s\n' "$live_rows" | grep -c . || true)
+  any_count=$(printf '%s\n' "$snapshot" | awk -F'|' -v t="$title" '$3 == t { n++ } END { print n+0 }')
+  case "$kind" in
+    W1|W1p)
+      [[ "$live_count" == "1" ]] || return 1
+      IFS='|' read -r RESTORED_PROBE_SOURCE RESTORED_PROBE_WID _ _ <<< "$(printf '%s\n' "$live_rows" | head -1)"
+      ;;
+    W1dead)
+      [[ "$any_count" == "0" ]] || return 1
+      _restored_title_in_lead_roster "$title" || { [[ $? -eq 2 ]] && return 2 || return 1; }
+      RESTORED_PROBE_SOURCE="absent"
+      RESTORED_PROBE_WID="absent"
+      ;;
+    *) return 1 ;;
+  esac
+  if [[ "$kind" == "W1p" ]]; then
+    [[ "$surface" != "$title" && "$surface" != "$raw_title" ]] || return 1
+  else
+    [[ "$surface" == "$title" || "$surface" == "$raw_title" || "$surface" == "~" ]] || return 1
+  fi
+  current=$(cmux_socket_identity) || return 2
+  [[ "$current" == "$generation" ]] || return 1
+  RESTORED_PROBE_RAW_TITLE="$raw_title"
+  RESTORED_PROBE_SURFACE="$surface"
+  RESTORED_PROBE_FINGERPRINT=$(_cmux_alert_hash \
+    "$kind|$generation|$ref|$title|$raw_title|$surface|$RESTORED_PROBE_SOURCE|$RESTORED_PROBE_WID|$evidence")
+  [[ -z "$expected" || "$RESTORED_PROBE_FINGERPRINT" == "$expected" ]]
+}
+
+_restored_ref_presence() {
+  local ref="$1" raw
+  raw=$(get_cmux_workspaces_json) || return 2
+  printf '%s' "$raw" | python3 -c '
+import json,sys
+r=sys.argv[1]
+try:
+    matches=[w for w in json.load(sys.stdin).get("workspaces", [])
+             if isinstance(w,dict) and w.get("ref") == r]
+except Exception:
+    raise SystemExit(2)
+if not matches:
+    print("absent")
+elif len(matches) == 1:
+    print("present")
+else:
+    print("ambiguous")
+' "$ref" || return 2
+}
+
+_GUARD_RESTORED_KIND=""
+_GUARD_RESTORED_GENERATION=""
+_GUARD_RESTORED_REF=""
+_GUARD_RESTORED_TITLE=""
+_GUARD_RESTORED_FINGERPRINT=""
+_restored_final_close_guard() {
+  _restored_marker_exact "$_GUARD_RESTORED_KIND" "$_GUARD_RESTORED_GENERATION" \
+    "$_GUARD_RESTORED_REF" "$_GUARD_RESTORED_TITLE" "$_GUARD_RESTORED_FINGERPRINT" || return 1
+  _restored_candidate_probe "$_GUARD_RESTORED_KIND" "$_GUARD_RESTORED_GENERATION" \
+    "$_GUARD_RESTORED_REF" "$_GUARD_RESTORED_TITLE" "$_GUARD_RESTORED_FINGERPRINT"
+}
+
+_restored_abort_marker() {
+  local kind="$1" generation="$2" ref="$3" title="$4" fingerprint="$5" ledger_state="$6"
+  case "$kind:$ledger_state" in
+    W1:committed|W1dead:committed)
+      _restored_ledger_cas delete "$kind" "$generation" "$ref" "$title" "$fingerprint" || return 1
+      ;;
+    W1p:committed)
+      _restored_ledger_cas restore-prepared "$kind" "$generation" "$ref" "$title" "$fingerprint" || return 1
+      ;;
+    W1:none|W1dead:none|W1p:prepared) ;;
+    *) return 1 ;;
+  esac
+  _restored_marker_remove_exact "$generation" "$ref" "$title" "$fingerprint"
+}
+
+# Pure, ordered implementation of plan §3.1's recovery table. Inputs are
+# already typed observations; output is exactly one `row|action` decision.
+_restored_recovery_decision() {
+  local generation_relation="$1" kind="$2" ledger_state="$3" presence="$4"
+  local flag="$5" evidence="$6" readiness="$7"
+  if [[ "$generation_relation" == "inconclusive" || "$presence" == "inconclusive" \
+      || "$evidence" == "inconclusive" ]]; then
+    printf '0|quarantine\n'; return 0
+  fi
+  if [[ "$generation_relation" == "unknown" ]]; then
+    printf '1|wait\n'; return 0
+  fi
+  if [[ "$ledger_state" == "conflict" ]]; then
+    printf '20|quarantine\n'; return 0
+  fi
+  if [[ "$generation_relation" == "stale" ]]; then
+    case "$kind:$ledger_state" in
+      W1:none|W1dead:none|W1p:none) printf '2|marker-delete\n' ;;
+      W1:committed|W1dead:committed) printf '3|cas-delete-marker\n' ;;
+      W1p:committed) printf '4|cas-restore-marker\n' ;;
+      W1p:prepared) printf '5|marker-delete\n' ;;
+      *) printf '6|quarantine\n' ;;
+    esac
+    return 0
+  fi
+  [[ "$generation_relation" == "current" ]] || { printf '0|quarantine\n'; return 0; }
+  case "$kind" in
+    W1|W1dead)
+      case "$ledger_state:$presence" in
+        none:absent) printf '9|marker-delete\n' ;;
+        none:present)
+          if [[ "$flag" == "off" || "$evidence" == "drift" ]]; then
+            printf '8|marker-delete\n'
+          elif [[ "$readiness" != "ready" ]]; then
+            printf '6.5|wait\n'
+          else
+            printf '7|advance\n'
+          fi
+          ;;
+        committed:absent) printf '12|gc-wait\n' ;;
+        committed:present)
+          if [[ "$flag" == "on" && "$evidence" == "stable" ]]; then
+            printf '10|recovery-close\n'
+          else
+            printf '11|cas-delete-marker\n'
+          fi
+          ;;
+        *) printf '20|quarantine\n' ;;
+      esac
+      ;;
+    W1p)
+      case "$ledger_state:$presence" in
+        prepared:present)
+          if [[ "$flag" == "off" || "$evidence" == "drift" ]]; then
+            printf '14|marker-delete\n'
+          elif [[ "$readiness" != "ready" ]]; then
+            printf '6.5|wait\n'
+          else
+            printf '13|advance\n'
+          fi
+          ;;
+        prepared:absent) printf '14|marker-delete\n' ;;
+        committed:absent) printf '17|gc-wait\n' ;;
+        committed:present)
+          if [[ "$flag" == "on" && "$evidence" == "stable" ]]; then
+            printf '15|recovery-close\n'
+          else
+            printf '16|cas-restore-marker\n'
+          fi
+          ;;
+        none:absent) printf '18|marker-delete\n' ;;
+        none:present) printf '19|quarantine\n' ;;
+        *) printf '20|quarantine\n' ;;
+      esac
+      ;;
+    *) printf '0|quarantine\n' ;;
+  esac
+}
+
+restored_action_budget() {
+  local count="$1" bootstrap="${2:-0}" configured="${FLYWHEEL_CMUX_ADOPTION_BUDGET:-}" budget
+  case "$count" in ''|*[!0-9]*) return 1 ;; esac
+  if [[ -n "$configured" ]]; then
+    case "$configured" in ''|*[!0-9]*) return 1 ;; esac
+    budget=$((10#$configured))
+    (( budget >= 1 && budget <= 1000 )) || return 1
+  else
+    budget=$(((10#$count + 2) / 3))
+    (( budget < 4 )) && budget=4
+  fi
+  [[ "$bootstrap" == "1" ]] && budget=$((budget * 2))
+  printf '%s\n' "$budget"
+}
+
+recover_restored_transactions() {
+  local target_scope="${1:-}"
+  local records rc=0 kind generation ref title orig_state fingerprint epoch current state presence probe_rc now grace
+  local relation flag evidence readiness decision row action marker_count budget actions=0
+  records=$(_restored_parse_records) || rc=$?
+  [[ "$rc" -eq 0 ]] || return 2
+  [[ -n "$records" ]] || return 0
+  current=$(cmux_socket_identity) || return 2
+  [[ -n "$current" ]] || return 2
+  now=$(date +%s) || return 2
+  grace="${FLYWHEEL_CMUX_ADOPTION_GRACE:-$CONSERVATIVE_CLEANUP_SECONDS}"
+  case "$grace" in ''|*[!0-9]*) grace=300 ;; esac
+  marker_count=$(printf '%s\n' "$records" | grep -c . || true)
+  budget=$(restored_action_budget "$marker_count" "${RESTORED_BOOTSTRAP_PASS:-0}") || return 2
+  while IFS=$'\t' read -r kind generation ref title orig_state fingerprint epoch; do
+    [[ -n "$kind" ]] || continue
+    if [[ -n "$target_scope" ]] \
+        && ! printf '%s\n' "$target_scope" | grep -qxF "$title"; then
+      log "[audit] restored transaction outside ops scope preserved title=$title ref=$ref"
+      continue
+    fi
+    state=$(ledger_candidate_receipt_state "$generation" "$ref" "$title") || state=conflict
+    relation=current
+    [[ "$generation" == "$current" ]] || relation=stale
+    presence=present
+    if [[ "$relation" == "current" ]]; then
+      presence=$(_restored_ref_presence "$ref") || presence=inconclusive
+    fi
+    restored_adoption_enabled && flag=on || flag=off
+    evidence=stable
+    readiness=ready
+    if [[ "$relation" == "current" && "$presence" == "present" && "$flag" == "on" ]]; then
+      probe_rc=0
+      _restored_candidate_probe "$kind" "$generation" "$ref" "$title" "$fingerprint" || probe_rc=$?
+      case "$probe_rc" in 0) evidence=stable ;; 1) evidence=drift ;; *) evidence=inconclusive ;; esac
+    elif [[ "$flag" == "off" ]]; then
+      evidence=drift
+    fi
+    if [[ "$kind" == "W1dead" ]] && (( now - 10#$epoch < grace )); then
+      readiness=not-ready
+    fi
+    decision=$(_restored_recovery_decision "$relation" "$kind" "$state" "$presence" \
+      "$flag" "$evidence" "$readiness") || return 2
+    IFS='|' read -r row action <<< "$decision"
+    case "$action" in
+      wait|gc-wait) continue ;;
+      quarantine)
+        log "WARN: restored transaction quarantined decision=$row kind=$kind generation=$generation ref=$ref title=$title state=$state presence=$presence evidence=$evidence"
+        continue
+        ;;
+    esac
+    (( actions < budget )) || break
+    case "$action" in
+      marker-delete)
+        if ! _restored_marker_remove_exact "$generation" "$ref" "$title" "$fingerprint"; then
+          log "WARN: restored transaction action failed; marker preserved decision=$row action=$action generation=$generation ref=$ref title=$title"
+          continue
+        fi
+        actions=$((actions + 1))
+        ;;
+      cas-delete-marker)
+        if ! _restored_ledger_cas delete "$kind" "$generation" "$ref" "$title" "$fingerprint"; then
+          log "WARN: restored transaction action failed; marker preserved decision=$row action=cas-delete generation=$generation ref=$ref title=$title"
+          continue
+        fi
+        if ! _restored_marker_remove_exact "$generation" "$ref" "$title" "$fingerprint"; then
+          log "WARN: restored transaction action incomplete; marker preserved decision=$row action=marker-delete generation=$generation ref=$ref title=$title"
+          continue
+        fi
+        actions=$((actions + 1))
+        ;;
+      cas-restore-marker)
+        if ! _restored_ledger_cas restore-prepared "$kind" "$generation" "$ref" "$title" "$fingerprint"; then
+          log "WARN: restored transaction action failed; marker preserved decision=$row action=cas-restore generation=$generation ref=$ref title=$title"
+          continue
+        fi
+        if ! _restored_marker_remove_exact "$generation" "$ref" "$title" "$fingerprint"; then
+          log "WARN: restored transaction action incomplete; marker preserved decision=$row action=marker-delete generation=$generation ref=$ref title=$title"
+          continue
+        fi
+        actions=$((actions + 1))
+        ;;
+      advance)
+        if ! _ledger_upsert committed "$generation" "$ref" "$title"; then
+          log "WARN: restored transaction action failed; marker preserved decision=$row action=advance generation=$generation ref=$ref title=$title"
+          continue
+        fi
+        state=committed
+        log "[audit] restored adoption minted synthetic committed receipt decision=$row kind=$kind generation=$generation ref=$ref title=$title"
+        # Advance and close are one per-title transaction and consume one
+        # action budget only after the final close succeeds.
+        action=recovery-close
+        ;;
+      recovery-close) ;;
+      *) return 2 ;;
+    esac
+    if [[ "$action" == "recovery-close" ]]; then
+        if ! _restored_recovery_cap_enter "$kind" "$generation" "$ref" "$title" "$fingerprint"; then
+          log "WARN: restored transaction action failed; marker preserved decision=$row action=cap-enter generation=$generation ref=$ref title=$title"
+          continue
+        fi
+        _GUARD_RESTORED_KIND="$kind"
+        _GUARD_RESTORED_GENERATION="$generation"
+        _GUARD_RESTORED_REF="$ref"
+        _GUARD_RESTORED_TITLE="$title"
+        _GUARD_RESTORED_FINGERPRINT="$fingerprint"
+        if close_ledger_workspace_ref "$generation" "$ref" "$title" \
+            "restored-adoption-${kind}-${title}" _restored_final_close_guard; then
+          if _restored_marker_remove_exact "$generation" "$ref" "$title" "$fingerprint"; then
+            actions=$((actions + 1))
+            log "[audit] restored adoption closed row decision=$row kind=$kind generation=$generation ref=$ref title=$title"
+          else
+            log "WARN: restored transaction close completed but marker clear failed; marker preserved decision=$row generation=$generation ref=$ref title=$title"
+          fi
+        else
+          log "WARN: restored transaction close failed; marker preserved decision=$row generation=$generation ref=$ref title=$title"
+        fi
+        _restored_recovery_cap_clear
+    fi
+  done <<< "$records"
+  return 0
+}
+
+adopt_restored_workspaces() {
+  local mode="${1:-live}" recovery_mode="${2:-recover}"
+  local generation raw snapshot candidate_titles="" title dead canonical candidates candidate_count candidate_kind ref
+  local pinned selected number rc=0 state kind probe_rc
+  local roster_adapter roster_label roster_title
+  # Direct read-only sync fixtures and a watcher that just lost authority must
+  # not turn this optional discovery phase into a hard pass failure. The lease
+  # verifier marks watcher authority loss; the caller's latch check then stops
+  # every later mutation in production.
+  assert_or_reuse_owned_lease || return 0
+  if [[ "$recovery_mode" != "discover-only" ]]; then
+    recover_restored_transactions || rc=$?
+    [[ "$rc" -eq 0 ]] || return "$rc"
+  fi
+  restored_adoption_enabled || return 0
+  generation=$(cmux_socket_identity) || return 2
+  [[ -n "$generation" ]] || return 2
+  raw=$(get_cmux_workspaces_json) || return 2
+  case "$mode" in
+    live)
+      snapshot=$(strict_agent_window_snapshot) || return 2
+      while IFS='|' read -r _ _ title dead; do
+        [[ -n "$title" && "$dead" == "0" ]] || continue
+        if is_managed_runner_title "$title"; then
+          candidate_titles+="${candidate_titles:+$'\n'}${title}"
+        fi
+      done <<< "$snapshot"
+      if derive_lead_roster && [[ "$LEAD_ROSTER_STATE" == "ok" ]]; then
+        while IFS='|' read -r roster_adapter roster_label roster_title; do
+          [[ -n "$roster_adapter$roster_label$roster_title" && -n "$roster_title" ]] || continue
+          if printf '%s\n' "$snapshot" | awk -F'|' -v t="$roster_title" \
+              '$3 == t && $4 == "0" { found=1 } END { exit(found ? 0 : 1) }'; then
+            candidate_titles+="${candidate_titles:+$'\n'}${roster_title}"
+          fi
+        done <<< "$LEAD_ROSTER_ROWS"
+      fi
+      candidate_titles=$(printf '%s\n' "$candidate_titles" | sed '/^$/d' | sort -u)
+      ;;
+    dead)
+      if derive_lead_roster && [[ "$LEAD_ROSTER_STATE" == "ok" ]]; then
+        candidate_titles=$(printf '%s\n' "$LEAD_ROSTER_ROWS" | awk -F'|' 'NF >= 3 { print $3 }' | sort -u)
+      else
+        # Dead-title discovery is optional. A partial Lead manifest must not
+        # defer reconciliation for every unrelated title on every pass.
+        candidate_titles=""
+      fi
+      ;;
+    *) return 2 ;;
+  esac
+  while IFS= read -r title; do
+    [[ -n "$title" ]] || continue
+    canonical=$(build_attach_command "${VIEW_PREFIX}${title}") || return 2
+    candidates=$(workspace_title_candidates "$raw" "$title" "$canonical") || return 2
+    candidate_count=$(printf '%s\n' "$candidates" | grep -c . || true)
+    [[ "$candidate_count" == "1" ]] || continue
+    IFS='|' read -r candidate_kind ref pinned selected number <<< "$candidates"
+    case "$candidate_kind" in
+      named) ;;
+      raw) continue ;;
+      *) return 2 ;;
+    esac
+    restored_inflight_state "$generation" "$ref" "$title" && continue
+    rc=$?
+    [[ "$rc" -eq 1 ]] || return 2
+    state=$(ledger_candidate_receipt_state "$generation" "$ref" "$title") || continue
+    kind=""
+    case "$mode:$state" in
+      live:none) kind=W1 ;;
+      live:prepared) kind=W1p ;;
+      dead:none) kind=W1dead ;;
+      *) continue ;;
+    esac
+    probe_rc=0
+    _restored_candidate_probe "$kind" "$generation" "$ref" "$title" || probe_rc=$?
+    [[ "$probe_rc" -eq 0 ]] || continue
+    _restored_marker_upsert "$kind" "$generation" "$ref" "$title" "$state" \
+      "$RESTORED_PROBE_FINGERPRINT" || return 1
+  done <<< "$candidate_titles"
+  return 0
+}
+
 _GUARD_LEDGER_GENERATION=""
 _GUARD_LEDGER_REF=""
 _GUARD_LEDGER_TITLE=""
@@ -4007,11 +4761,30 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
 }
 
 close_ledger_workspace_ref() {
-  local generation="$1" ref="$2" title="$3" reason="$4" extra_guard="${5:-}" rc=0
+  local generation="$1" ref="$2" title="$3" reason="$4" extra_guard="${5:-}" rc=0 restored_rc=0
   if cmux_wal_title_blocked "$title"; then
+    _restored_recovery_cap_clear
     log "WARN: workspace close blocked by preserved construction collision: title=$title ref=$ref"
     return 1
   fi
+  restored_inflight_state "$generation" "$ref" "$title" || restored_rc=$?
+  case "$restored_rc" in
+    0)
+      if ! _restored_recovery_cap_valid "$generation" "$ref" "$title"; then
+        _restored_recovery_cap_clear
+        log "WARN: workspace close blocked by restored in-flight transaction: title=$title ref=$ref"
+        return 1
+      fi
+      ;;
+    1)
+      _restored_recovery_cap_clear
+      ;;
+    *)
+      _restored_recovery_cap_clear
+      log "WARN: workspace close blocked by malformed/unreadable restored transaction state: title=$title ref=$ref"
+      return 1
+      ;;
+  esac
   _GUARD_LEDGER_GENERATION="$generation"
   _GUARD_LEDGER_REF="$ref"
   _GUARD_LEDGER_TITLE="$title"
@@ -4020,9 +4793,14 @@ close_ledger_workspace_ref() {
   cmux_call_guarded _ledger_close_guard close-workspace --workspace "$ref" || rc=$?
   _GUARD_LEDGER_EXTRA_GUARD=""
   if [[ "$GUARD_WAS_BLOCKED" == "1" || "$rc" -ne 0 ]]; then
+    _restored_recovery_cap_clear
     return 1
   fi
-  _ledger_remove "$generation" "$ref" || return 1
+  if ! _ledger_remove "$generation" "$ref"; then
+    _restored_recovery_cap_clear
+    return 1
+  fi
+  _restored_recovery_cap_clear
   return 0
 }
 
@@ -4120,7 +4898,12 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
 }
 
 close_prepared_loser_ref() {
-  local generation="$1" loser_ref="$2" owner_ref="$3" title="$4" provisional rc=0
+  local generation="$1" loser_ref="$2" owner_ref="$3" title="$4" provisional rc=0 restored_rc=0
+  restored_inflight_state "$generation" "$loser_ref" "$title" || restored_rc=$?
+  if [[ "$restored_rc" -eq 0 || "$restored_rc" -eq 2 ]]; then
+    log "WARN: prepared loser close blocked by restored transaction state title=$title ref=$loser_ref rc=$restored_rc"
+    return 1
+  fi
   provisional=$(build_attach_command "${VIEW_PREFIX}${title}") || return 1
   _GUARD_PREPARED_LOSER_GENERATION="$generation"
   _GUARD_PREPARED_LOSER_REF="$loser_ref"
@@ -4214,7 +4997,12 @@ _title_tab_rename_guard() {
 # surfaces read back as the canonical tmux window name.
 complete_title_migration() {
   local ref="$1" title="$2" generation="$3" canonical_raw="$4"
-  local receipt workspace surface current rc=0
+  local receipt workspace surface current rc=0 restored_rc=0
+  restored_inflight_state "$generation" "$ref" "$title" || restored_rc=$?
+  if [[ "$restored_rc" -eq 0 || "$restored_rc" -eq 2 ]]; then
+    log "WARN: title migration blocked by restored transaction state generation=$generation ref=$ref title=$title rc=$restored_rc"
+    return 1
+  fi
   receipt=$(ledger_exact_receipt_state "$generation" "$ref" "$title") || {
     log "WARN: title migration lacks unique receipt generation=$generation ref=$ref title=$title"
     return 1
@@ -4505,6 +5293,12 @@ reconcile_workspace_titles() {
     fi
     IFS='|' read -r keeper_kind keeper_ref <<< "$keeper"
     state=$(ledger_candidate_receipt_state "$generation" "$keeper_ref" "$title") || continue
+    rc=0
+    restored_inflight_state "$generation" "$keeper_ref" "$title" || rc=$?
+    if [[ "$rc" -eq 0 || "$rc" -eq 2 ]]; then
+      log "WARN: title reconciliation skipped restored in-flight tuple ref=$keeper_ref title=$title rc=$rc"
+      continue
+    fi
     case "$state" in
       none)
         authorize_stock_candidate "$source" "$wid" "$title" "$generation" \
@@ -4541,6 +5335,12 @@ reconcile_workspace_titles() {
 
     while IFS='|' read -r _ extra_ref _; do
       [[ -n "$extra_ref" ]] || continue
+      rc=0
+      restored_inflight_state "$generation" "$extra_ref" "$title" || rc=$?
+      if [[ "$rc" -eq 0 || "$rc" -eq 2 ]]; then
+        log "WARN: duplicate cleanup skipped restored in-flight tuple ref=$extra_ref title=$title rc=$rc"
+        continue
+      fi
       _GUARD_DUP_SOURCE="$source"
       _GUARD_DUP_WID="$wid"
       _GUARD_DUP_GENERATION="$generation"
@@ -4580,6 +5380,12 @@ reconcile_prepared_ledger() {
     had_current_prepared=1
     while IFS='|' read -r ref title; do
       [[ -z "$ref" || -z "$title" ]] && continue
+      local restored_rc=0
+      restored_inflight_state "$generation" "$ref" "$title" || restored_rc=$?
+      if [[ "$restored_rc" -eq 0 || "$restored_rc" -eq 2 ]]; then
+        log "WARN: prepared ledger reconciliation skipped restored transaction state title=$title ref=$ref rc=$restored_rc"
+        continue
+      fi
       if cmux_wal_title_blocked "$title"; then
         log "WARN: prepared ledger reconciliation blocked by construction collision: title=$title ref=$ref"
         continue
@@ -4741,47 +5547,132 @@ else:
   return 0
 }
 
+_inventory_fail() {
+  local stage="$1" reason="$2"
+  log "WARN: keeper inventory transaction failed stage=$stage reason=$reason path=$KEEPER_INVENTORY"
+  return 1
+}
+
+_inventory_acquire_inner_lock() {
+  # The global incarnation-bound mutator lease excludes every legitimate
+  # inventory writer. The inner directory is only an atomic file-replacement
+  # guard, so the verified sole writer may reap an empty crash residue. A
+  # non-empty or non-directory path remains fail-closed for inspection.
+  local dir lock="${KEEPER_INVENTORY}.lock"
+  if ! assert_or_reuse_owned_lease; then
+    log "WARN: keeper inventory mutation refused: current process does not hold the verified mutator lease"
+    [[ "$MUTATOR_LEASE_MODE" == "watch" && "$WATCHER_AUTHORITY_LOST" == "1" ]] && return 75
+    return 1
+  fi
+  dir=$(dirname "$KEEPER_INVENTORY")
+  mkdir -p "$dir" 2>/dev/null || { _inventory_fail preflight state-directory-unavailable; return 1; }
+  if mkdir "$lock" 2>/dev/null; then
+    return 0
+  fi
+  [[ -d "$lock" && ! -L "$lock" ]] || {
+    _inventory_fail inner-lock residual-path-not-directory; return 1;
+  }
+  if ! rmdir "$lock" 2>/dev/null; then
+    log "WARN: keeper inventory residual lock is not empty; preserving fail-closed: $lock"
+    return 1
+  fi
+  log "[audit] reaped stale keeper inventory lock under verified mutator lease: $lock"
+  mkdir "$lock" 2>/dev/null || { _inventory_fail inner-lock reacquire-failed; return 1; }
+}
+
+_inventory_maybe_crash() {
+  # Deterministic test seam. Production leaves this variable unset; tests run
+  # the writer in a disposable child so SIGKILL leaves the real filesystem
+  # residue produced at each transaction boundary.
+  [[ "${FLYWHEEL_CMUX_INVENTORY_CRASH_AT:-}" == "$1" ]] || return 0
+  kill -KILL "$$"
+  return 137
+}
+
+_inventory_release_inner_lock() {
+  local lock="$1"
+  rmdir "$lock" 2>/dev/null || return 1
+  _inventory_maybe_crash after-lock-rmdir
+}
+
+_inventory_generation_token() {
+  # tmux_server_generation is historically persisted as socket|pid|started in
+  # construction WALs. Keeper inventory is itself pipe-delimited, so that raw
+  # production identity cannot cross this boundary. Preserve already-safe
+  # opaque generations for compatibility and digest only delimiter-bearing
+  # production identities.
+  local generation="$1" digest
+  [[ -n "$generation" ]] || return 1
+  case "$generation" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  case "$generation" in
+    *'|'*)
+      digest=$(printf '%s' "$generation" | shasum -a 256 2>/dev/null | awk '{print $1}') || return 1
+      case "$digest" in ''|*[!0-9a-f]*) return 1 ;; esac
+      [[ ${#digest} -eq 64 ]] || return 1
+      printf 'sha256:%s\n' "$digest"
+      ;;
+    *)
+      printf '%s\n' "$generation"
+      ;;
+  esac
+}
+
 _inventory_upsert() {
   # generation|session_id|exact_name|owner|window_ids|state|epoch
   local generation="$1" sid="$2" exact_name="$3" owner="$4" members="$5" state="$6"
-  local dir lock tmp now
+  local lock tmp now
   case "$state" in prepared|committed) ;; *) return 1 ;; esac
   case "$generation$sid$exact_name$owner$members" in *'|'*|*$'\n'*) return 1 ;; esac
-  dir=$(dirname "$KEEPER_INVENTORY")
-  mkdir -p "$dir" 2>/dev/null || return 1
   lock="${KEEPER_INVENTORY}.lock"
-  mkdir "$lock" 2>/dev/null || return 1
-  touch "$KEEPER_INVENTORY" 2>/dev/null || { rmdir "$lock" 2>/dev/null || true; return 1; }
-  tmp=$(mktemp "${KEEPER_INVENTORY}.XXXX" 2>/dev/null) || { rmdir "$lock" 2>/dev/null || true; return 1; }
+  _inventory_acquire_inner_lock || return $?
+  _inventory_maybe_crash after-inner-mkdir
+  touch "$KEEPER_INVENTORY" 2>/dev/null || {
+    rmdir "$lock" 2>/dev/null || true; _inventory_fail upsert inventory-touch-failed; return 1;
+  }
+  tmp=$(mktemp "${KEEPER_INVENTORY}.XXXX" 2>/dev/null) || {
+    rmdir "$lock" 2>/dev/null || true; _inventory_fail upsert temp-create-failed; return 1;
+  }
   awk -F'|' -v s="$sid" '$2 != s { print }' "$KEEPER_INVENTORY" > "$tmp" 2>/dev/null || {
-    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; return 1;
+    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; _inventory_fail upsert inventory-read-failed; return 1;
   }
   now=$(date +%s)
   printf '%s|%s|%s|%s|%s|%s|%s\n' "$generation" "$sid" "$exact_name" \
     "$owner" "$members" "$state" "$now" >> "$tmp" || {
-    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; return 1;
+    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; _inventory_fail upsert temp-write-failed; return 1;
   }
+  _inventory_maybe_crash after-inventory-tmp-write
   mv "$tmp" "$KEEPER_INVENTORY" 2>/dev/null || {
-    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; return 1;
+    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; _inventory_fail upsert atomic-replace-failed; return 1;
   }
-  rmdir "$lock" 2>/dev/null || true
+  _inventory_maybe_crash after-inventory-mv
+  _inventory_release_inner_lock "$lock" || { _inventory_fail upsert lock-release-failed; return 1; }
 }
 
 _inventory_remove_sid() {
   local generation="$1" sid="$2" tmp lock="${KEEPER_INVENTORY}.lock"
+  if ! assert_or_reuse_owned_lease; then
+    log "WARN: keeper inventory removal refused: current process does not hold the verified mutator lease"
+    [[ "$MUTATOR_LEASE_MODE" == "watch" && "$WATCHER_AUTHORITY_LOST" == "1" ]] && return 75
+    return 1
+  fi
   [[ -f "$KEEPER_INVENTORY" ]] || return 0
-  mkdir "$lock" 2>/dev/null || return 1
-  tmp=$(mktemp "${KEEPER_INVENTORY}.XXXX" 2>/dev/null) || { rmdir "$lock" 2>/dev/null || true; return 1; }
+  _inventory_acquire_inner_lock || return $?
+  _inventory_maybe_crash after-inner-mkdir
+  tmp=$(mktemp "${KEEPER_INVENTORY}.XXXX" 2>/dev/null) || {
+    rmdir "$lock" 2>/dev/null || true; _inventory_fail remove temp-create-failed; return 1;
+  }
   # Malformed rows and other generations are preserved verbatim and never
   # authorize a mutation. Only the exact well-formed identity is removed.
   awk -F'|' -v g="$generation" -v s="$sid" \
     'NF != 7 || !($1 == g && $2 == s) { print }' "$KEEPER_INVENTORY" > "$tmp" 2>/dev/null || {
-    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; return 1;
+    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; _inventory_fail remove inventory-read-failed; return 1;
   }
+  _inventory_maybe_crash after-inventory-tmp-write
   mv "$tmp" "$KEEPER_INVENTORY" 2>/dev/null || {
-    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; return 1;
+    rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; _inventory_fail remove atomic-replace-failed; return 1;
   }
-  rmdir "$lock" 2>/dev/null || true
+  _inventory_maybe_crash after-inventory-mv
+  _inventory_release_inner_lock "$lock" || { _inventory_fail remove lock-release-failed; return 1; }
 }
 
 reconcile_keeper_inventory() {
@@ -4789,9 +5680,10 @@ reconcile_keeper_inventory() {
   # Rebuild missing rows from live, self-identifying keepers; promote a
   # prepared row only after exact identity/topology readback; GC only a
   # committed row whose exact session is conclusively absent.
-  local generation sessions rows line fields row_generation sid exact owner members state _epoch
+  local raw_generation generation sessions rows line fields row_generation sid exact owner members state _epoch
   local snapshot observed_sid grouped active observed_owner marker observed_members original
-  generation=$(tmux_server_generation) || return 1
+  raw_generation=$(tmux_server_generation) || return 1
+  generation=$(_inventory_generation_token "$raw_generation") || return 1
   sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 1
   rows=$(cat "$KEEPER_INVENTORY" 2>/dev/null || true)
 
@@ -4928,11 +5820,23 @@ recover_all_view_constructions() {
 }
 
 prepare_linked_view_state() {
+  local phase="${1:-all}"
   if linked_view_enabled || view_invariant_enabled; then
-    tmux_server_generation >/dev/null || return 1
-    recover_all_view_constructions || return 1
-    reconcile_prepared_ledger || return 1
-    reconcile_keeper_inventory || return 1
+    case "$phase" in
+      pre|all)
+        tmux_server_generation >/dev/null || return 1
+        recover_all_view_constructions || return 1
+        # Keeper recovery consumes no cmux receipt and must precede restored
+        # recovery so an escrow residue is visible without letting prepared
+        # ledger consumers run first.
+        reconcile_keeper_inventory || return 1
+        ;;
+    esac
+    case "$phase" in
+      post|all)
+        reconcile_prepared_ledger || return 1
+        ;;
+    esac
   fi
 }
 
@@ -4949,6 +5853,123 @@ clear_view_mismatch_latch() {
     rm -f "$tmp"; return 1;
   }
   mv "$tmp" "$VIEW_ABSENT_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+}
+
+_cmux_log_episode_state_valid() {
+  local line kind title evidence last suppressed extra bytes now
+  [[ -e "$CMUX_LOG_EPISODE_STATE" || -L "$CMUX_LOG_EPISODE_STATE" ]] || return 0
+  [[ -f "$CMUX_LOG_EPISODE_STATE" && ! -L "$CMUX_LOG_EPISODE_STATE" ]] || return 1
+  bytes=$(wc -c < "$CMUX_LOG_EPISODE_STATE" 2>/dev/null | tr -d ' ') || return 1
+  case "$bytes" in ''|*[!0-9]*) return 1 ;; esac
+  (( bytes <= 1048576 )) || return 1
+  now=$(date +%s) || return 1
+  while IFS='|' read -r kind title evidence last suppressed extra || [[ -n "$kind$title$evidence$last$suppressed${extra:-}" ]]; do
+    [[ -n "$kind$title$evidence$last$suppressed" && -z "${extra:-}" ]] || return 1
+    case "$kind" in
+      view-invariant-mismatch|view-mismatch-pending|legacy-grouped-refused|invariant-repair-deferred) ;;
+      *) return 1 ;;
+    esac
+    case "$title" in *'|'*|*$'\t'*|*$'\n'*|*$'\r'*) return 1 ;; esac
+    [[ -n "$title" && ${#title} -le 255 ]] || return 1
+    case "$evidence" in *[!0-9a-f]*|"") return 1 ;; esac
+    [[ ${#evidence} -eq 64 ]] || return 1
+    case "$last$suppressed" in *[!0-9]*) return 1 ;; esac
+    [[ ${#last} -le 12 && ${#suppressed} -le 12 ]] || return 1
+    (( 10#$last <= 10#$now )) || return 1
+  done < "$CMUX_LOG_EPISODE_STATE"
+}
+
+_cmux_log_episode_commit() {
+  local kind="$1" title="$2" evidence="$3" last="$4" suppressed="$5" tmp dir
+  mutator_lease_owned_by_self || return 1
+  _cmux_log_episode_state_valid || return 1
+  dir=$(dirname "$CMUX_LOG_EPISODE_STATE")
+  mkdir -p "$dir" 2>/dev/null || return 1
+  touch "$CMUX_LOG_EPISODE_STATE" 2>/dev/null || return 1
+  tmp=$(mktemp "${CMUX_LOG_EPISODE_STATE}.XXXX" 2>/dev/null) || return 1
+  awk -F'|' -v k="$kind" -v t="$title" '!($1 == k && $2 == t) { print }' \
+    "$CMUX_LOG_EPISODE_STATE" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  printf '%s|%s|%s|%s|%s\n' "$kind" "$title" "$evidence" "$last" "$suppressed" \
+    >> "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$CMUX_LOG_EPISODE_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+}
+
+log_cmux_episode() {
+  local kind="$1" title="$2" evidence_raw="$3" message="$4"
+  local repeat now evidence previous previous_hash last suppressed elapsed summary=""
+  repeat="${FLYWHEEL_CMUX_LOG_REPEAT_SECONDS:-3600}"
+  case "$repeat" in ''|*[!0-9]*) repeat=3600 ;; esac
+  [[ ${#repeat} -le 7 ]] || repeat=3600
+  repeat=$((10#$repeat))
+  if (( repeat == 0 )); then
+    log "$message"
+    return 0
+  fi
+  case "$kind" in
+    view-invariant-mismatch|view-mismatch-pending|legacy-grouped-refused|invariant-repair-deferred) ;;
+    *) log "$message"; return 0 ;;
+  esac
+  case "$title" in ''|*'|'*|*$'\t'*|*$'\n'*|*$'\r'*) log "$message"; return 0 ;; esac
+  if ! mutator_lease_owned_by_self; then
+    log "$message"
+    return 0
+  fi
+  if ! _cmux_log_episode_state_valid; then
+    log "$message"
+    log "WARN: cmux log episode state malformed; suppression disabled path=$CMUX_LOG_EPISODE_STATE"
+    return 0
+  fi
+  now=$(date +%s) || { log "$message"; return 0; }
+  evidence=$(_cmux_alert_hash "$evidence_raw")
+  previous=$(awk -F'|' -v k="$kind" -v t="$title" '$1 == k && $2 == t { print $3 "|" $4 "|" $5; exit }' \
+    "$CMUX_LOG_EPISODE_STATE" 2>/dev/null || true)
+  if [[ -z "$previous" ]]; then
+    _cmux_log_episode_commit "$kind" "$title" "$evidence" "$now" 0 || true
+    log "$message"
+    return 0
+  fi
+  IFS='|' read -r previous_hash last suppressed <<< "$previous"
+  if [[ "$previous_hash" != "$evidence" ]]; then
+    _cmux_log_episode_commit "$kind" "$title" "$evidence" "$now" 0 || true
+    log "$message"
+    return 0
+  fi
+  elapsed=$((10#$now - 10#$last))
+  if (( elapsed < repeat )); then
+    suppressed=$((10#$suppressed + 1))
+    if ! _cmux_log_episode_commit "$kind" "$title" "$evidence" "$last" "$suppressed"; then
+      log "$message"
+    fi
+    return 0
+  fi
+  (( suppressed > 0 )) && summary=" (suppressed ${suppressed} repeats)"
+  _cmux_log_episode_commit "$kind" "$title" "$evidence" "$now" 0 || true
+  log "${message}${summary}"
+}
+
+clear_cmux_log_episodes_for_title() {
+  local title="$1" tmp
+  mutator_lease_owned_by_self || return 0
+  [[ -f "$CMUX_LOG_EPISODE_STATE" ]] || return 0
+  _cmux_log_episode_state_valid || return 1
+  tmp=$(mktemp "${CMUX_LOG_EPISODE_STATE}.XXXX" 2>/dev/null) || return 1
+  awk -F'|' -v t="$title" '$2 != t { print }' "$CMUX_LOG_EPISODE_STATE" > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$CMUX_LOG_EPISODE_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+}
+
+gc_cmux_log_episodes() {
+  local active_titles="$1" tmp active
+  mutator_lease_owned_by_self || return 0
+  [[ -f "$CMUX_LOG_EPISODE_STATE" ]] || return 0
+  _cmux_log_episode_state_valid || return 1
+  tmp=$(mktemp "${CMUX_LOG_EPISODE_STATE}.XXXX" 2>/dev/null) || return 1
+  active=$(mktemp "${CMUX_LOG_EPISODE_STATE}.active.XXXX" 2>/dev/null) || { rm -f "$tmp"; return 1; }
+  printf '%s\n' "$active_titles" | sed '/^$/d' | sort -u > "$active" || { rm -f "$tmp" "$active"; return 1; }
+  awk -F'|' 'NR == FNR { live[$1]=1; next } ($2 in live) { print }' "$active" \
+    "$CMUX_LOG_EPISODE_STATE" > "$tmp" 2>/dev/null || { rm -f "$tmp" "$active"; return 1; }
+  rm -f "$active"
+  mv "$tmp" "$CMUX_LOG_EPISODE_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
 }
 
 view_mismatch_confirmed() {
@@ -4974,28 +5995,57 @@ view_mismatch_confirmed() {
   return 1
 }
 
+_escrow_fail() {
+  local session="$1" stage="$2" reason="$3"
+  log "WARN: view escrow failed view=$session stage=$stage reason=$reason"
+  return 1
+}
+
 escrow_view_session() {
   local session="$1" allow_placeholder="${2:-0}"
   local expected_generation="${3:-}" expected_sid="${4:-}" expected_snapshot="${5:-}"
-  local generation snapshot sid grouped active owner marker members group
+  local generation inventory_generation snapshot sid grouped active owner marker members group
   local keeper post current
-  generation=$(tmux_server_generation) || return 1
+  generation=$(tmux_server_generation) || {
+    _escrow_fail "$session" preflight generation-unavailable; return 1;
+  }
+  inventory_generation=$(_inventory_generation_token "$generation") || {
+    _escrow_fail "$session" preflight inventory-generation-token-unavailable; return 1;
+  }
   if [[ -n "$expected_generation$expected_sid$expected_snapshot" ]]; then
-    [[ -n "$expected_generation" && -n "$expected_sid" && -n "$expected_snapshot" ]] || return 1
-    [[ "$generation" == "$expected_generation" ]] || return 1
+    [[ -n "$expected_generation" && -n "$expected_sid" && -n "$expected_snapshot" ]] || {
+      _escrow_fail "$session" preflight incomplete-expected-proof; return 1;
+    }
+    [[ "$generation" == "$expected_generation" ]] || {
+      _escrow_fail "$session" preflight expected-generation-mismatch; return 1;
+    }
   fi
-  snapshot=$(_view_session_snapshot "$session") || return 1
-  [[ -z "$expected_snapshot" || "$snapshot" == "$expected_snapshot" ]] || return 1
-  current=$(tmux_server_generation) || return 1
-  [[ "$current" == "$generation" ]] || return 1
+  snapshot=$(_view_session_snapshot "$session") || {
+    _escrow_fail "$session" preflight snapshot-unavailable; return 1;
+  }
+  [[ -z "$expected_snapshot" || "$snapshot" == "$expected_snapshot" ]] || {
+    _escrow_fail "$session" preflight expected-snapshot-mismatch; return 1;
+  }
+  current=$(tmux_server_generation) || {
+    _escrow_fail "$session" preflight generation-recheck-unavailable; return 1;
+  }
+  [[ "$current" == "$generation" ]] || {
+    _escrow_fail "$session" preflight generation-changed; return 1;
+  }
   IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
-  [[ -z "$expected_sid" || "$sid" == "$expected_sid" ]] || return 1
+  [[ -z "$expected_sid" || "$sid" == "$expected_sid" ]] || {
+    _escrow_fail "$session" preflight expected-session-id-mismatch; return 1;
+  }
   if [[ "$grouped" == "0" ]]; then
-    [[ -n "$owner" ]] || return 1
-    [[ "$marker" == "0" || "$allow_placeholder" == "1" ]] || return 1
+    [[ -n "$owner" ]] || { _escrow_fail "$session" preflight owner-missing; return 1; }
+    [[ "$marker" == "0" || "$allow_placeholder" == "1" ]] || {
+      _escrow_fail "$session" preflight placeholder-not-authorized; return 1;
+    }
   elif [[ "$grouped" == "1" ]]; then
-    group=$(tmux display-message -p -t "=$session:" '#{session_group}' 2>/dev/null) || return 1
-    [[ -n "$group" ]] || return 1
+    group=$(tmux display-message -p -t "=$session:" '#{session_group}' 2>/dev/null) || {
+      _escrow_fail "$session" owner-publication group-unavailable; return 1;
+    }
+    [[ -n "$group" ]] || { _escrow_fail "$session" owner-publication group-empty; return 1; }
     owner="$group"
     # Persist the source identity before the grouped name changes; teardown
     # can then prove slot ownership even after the source session disappears.
@@ -5005,55 +6055,117 @@ escrow_view_session() {
     _GUARD_TMUX_GROUP="$group"
     tmux_call_guarded _tmux_session_snapshot_guard \
       set-option -t "=$session:" @flywheel_cmux_owner "$owner" \
-      2>/dev/null || return 1
-    [[ "$(tmux show-options -v -t "=$session:" @flywheel_cmux_owner 2>/dev/null || true)" == "$owner" ]] || return 1
-    snapshot=$(_view_session_snapshot "$session") || return 1
+      2>/dev/null || { _escrow_fail "$session" owner-publication guarded-set-failed; return 1; }
+    [[ "$(tmux show-options -v -t "=$session:" @flywheel_cmux_owner 2>/dev/null || true)" == "$owner" ]] || {
+      _escrow_fail "$session" owner-publication readback-mismatch; return 1;
+    }
+    snapshot=$(_view_session_snapshot "$session") || {
+      _escrow_fail "$session" owner-publication snapshot-readback-failed; return 1;
+    }
     IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
-    [[ "$grouped" == "1" && "$owner" == "$group" ]] || return 1
+    [[ "$grouped" == "1" && "$owner" == "$group" ]] || {
+      _escrow_fail "$session" owner-publication topology-readback-mismatch; return 1;
+    }
   else
+    _escrow_fail "$session" preflight invalid-grouped-state
     return 1
   fi
   keeper="fwkeeper-${sid#\$}-${session}"
-  _inventory_upsert "$generation" "$sid" "$keeper" "$owner" "$members" prepared || return 1
+  _inventory_upsert "$inventory_generation" "$sid" "$keeper" "$owner" "$members" prepared || {
+    _escrow_fail "$session" inventory-prepared prepared-write-failed; return 1;
+  }
   _GUARD_TMUX_GENERATION="$generation"
   _GUARD_TMUX_SESSION="$session"
   _GUARD_TMUX_SNAPSHOT="$snapshot"
   _GUARD_TMUX_GROUP="${group:-}"
   tmux_call_guarded _tmux_session_snapshot_guard \
-    rename-session -t "=$session" "$keeper" 2>/dev/null || return 1
-  post=$(_view_session_snapshot "$keeper") || return 1
+    rename-session -t "=$session" "$keeper" 2>/dev/null || {
+      _escrow_fail "$session" rename guarded-rename-failed; return 1;
+    }
+  post=$(_view_session_snapshot "$keeper") || {
+    _escrow_fail "$session" rename keeper-readback-failed; return 1;
+  }
   IFS='|' read -r post _ <<< "$post"
-  [[ "$post" == "$sid" ]] || return 1
-  current=$(tmux_server_generation) || return 1
-  [[ "$current" == "$generation" ]] || return 1
-  linked_session_exists "$session" && return 1
-  _inventory_upsert "$generation" "$sid" "$keeper" "$owner" "$members" committed || return 1
+  [[ "$post" == "$sid" ]] || { _escrow_fail "$session" rename session-id-readback-mismatch; return 1; }
+  current=$(tmux_server_generation) || {
+    _escrow_fail "$session" inventory-commit generation-recheck-unavailable; return 1;
+  }
+  [[ "$current" == "$generation" ]] || {
+    _escrow_fail "$session" inventory-commit generation-changed; return 1;
+  }
+  if linked_session_exists "$session"; then
+    _escrow_fail "$session" inventory-commit canonical-name-still-present
+    return 1
+  fi
+  _inventory_upsert "$inventory_generation" "$sid" "$keeper" "$owner" "$members" committed || {
+    _escrow_fail "$session" inventory-commit committed-write-failed; return 1;
+  }
   printf '%s\n' "$keeper"
 }
 
+DISMANTLE_OUTCOME=""
+DISMANTLE_REASON=""
+
+_dismantle_fail() {
+  local outcome="$1" detail="$2" title="$3" trigger_reason="$4"
+  DISMANTLE_OUTCOME="$outcome"
+  DISMANTLE_REASON="$detail"
+  log "WARN: view dismantle failed title=$title trigger=$trigger_reason outcome=$outcome reason=$detail"
+  return 1
+}
+
 dismantle_view_display() {
-  # Close only current-generation ledger refs, then dismantle only the proven
-  # Flywheel view shell. An unledgered title is split into three states:
-  # inventory unavailable (fail closed), present same-title refs (foreign,
-  # preserve), or conclusively zero refs (the tab is already gone, so only the
-  # existing owner/group-guarded tmux shell teardown may continue).
-  local title="$1" reason="$2" generation refs ref view snapshot sid grouped active owner marker members wid
+  # Prove and dismantle the independently addressed tmux shell before
+  # consuming any cmux receipt. A tmux refusal therefore leaves the visible
+  # workspace and its exact ledger authority intact for a later retry.
+  local title="$1" trigger_reason="$2" generation refs ref view snapshot sid grouped active owner marker members wid
   local raw same_title_refs refs_csv view_exists=0 source_window=0 stale_state=0
   local tmux_generation tmux_current guard_snapshot guard_sid guard_grouped guard_active guard_owner guard_marker guard_members
+  local tmux_started=0 restored_rc=0
+  DISMANTLE_OUTCOME=""
+  DISMANTLE_REASON=""
   if cmux_wal_title_blocked "$title"; then
-    log "WARN: view dismantle blocked by preserved construction collision: title=$title reason=$reason"
+    _dismantle_fail preflight-refused construction-collision "$title" "$trigger_reason"
     return 1
   fi
-  generation=$(cmux_socket_identity)
-  [[ -n "$generation" ]] || return 1
+  generation=$(cmux_socket_identity) || {
+    _dismantle_fail preflight-refused cmux-generation-unavailable "$title" "$trigger_reason"
+    return 1
+  }
+  if [[ -z "$generation" ]]; then
+    _dismantle_fail preflight-refused cmux-generation-empty "$title" "$trigger_reason"
+    return 1
+  fi
   refs=$(ledger_refs_for_title "$generation" "$title")
+  _restored_parse_records >/dev/null || restored_rc=$?
+  if [[ "$restored_rc" -ne 0 ]]; then
+    _dismantle_fail preflight-refused restored-state-invalid "$title" "$trigger_reason"
+    return 1
+  fi
+  while IFS= read -r ref; do
+    [[ -z "$ref" ]] && continue
+    restored_rc=0
+    restored_inflight_state "$generation" "$ref" "$title" || restored_rc=$?
+    case "$restored_rc" in
+      0)
+        _dismantle_fail preflight-refused restored-inflight "$title" "$trigger_reason"
+        return 1
+        ;;
+      1) ;;
+      *)
+        _dismantle_fail preflight-refused restored-state-invalid "$title" "$trigger_reason"
+        return 1
+        ;;
+    esac
+  done <<< "$refs"
   if [[ -z "$refs" ]]; then
     if ! raw=$(get_cmux_workspaces_json); then
       log "WARN: unledgered cleanup refused generation=$generation title=$title reason=workspace-json-unavailable"
       _alert_cmux_cleanup \
         "cmux cleanup refused: workspace inventory unavailable" \
-        "An unledgered cleanup candidate was preserved because workspace JSON was unavailable: generation=$generation title=$title reason=$reason." \
+        "An unledgered cleanup candidate was preserved because workspace JSON was unavailable: generation=$generation title=$title reason=$trigger_reason." \
         "cmux_cleanup|generation=$generation|title=$title|refs_sha256=$(_cmux_alert_hash '__unavailable__')|reason=workspace-json-unavailable"
+      _dismantle_fail preflight-refused workspace-json-unavailable "$title" "$trigger_reason"
       return 1
     fi
     same_title_refs=$(printf '%s' "$raw" | python3 -c '
@@ -5069,8 +6181,9 @@ for w in json.load(sys.stdin).get("workspaces", []):
       log "WARN: unledgered cleanup refused generation=$generation title=$title reason=workspace-json-unparseable"
       _alert_cmux_cleanup \
         "cmux cleanup refused: workspace inventory unparseable" \
-        "An unledgered cleanup candidate was preserved because workspace JSON could not be parsed: generation=$generation title=$title reason=$reason." \
+        "An unledgered cleanup candidate was preserved because workspace JSON could not be parsed: generation=$generation title=$title reason=$trigger_reason." \
         "cmux_cleanup|generation=$generation|title=$title|refs_sha256=$(_cmux_alert_hash '__unparseable__')|reason=workspace-json-unparseable"
+      _dismantle_fail preflight-refused workspace-json-unparseable "$title" "$trigger_reason"
       return 1
     }
     if [[ -n "$same_title_refs" ]]; then
@@ -5096,50 +6209,107 @@ for w in json.load(sys.stdin).get("workspaces", []):
         "cmux cleanup refused: unledgered workspace present" \
         "A same-title cmux workspace has no current-generation receipt and was preserved: generation=$generation title=$title refs=$refs_csv view_exists=$view_exists grouped=$grouped owner=$owner source_window=$source_window stale_state=$stale_state." \
         "cmux_cleanup|generation=$generation|title=$title|refs_sha256=$(_cmux_alert_hash "$(printf '%s\n' "$same_title_refs" | sort)")|reason=present-same-title-ref"
+      _dismantle_fail preflight-refused present-same-title-ref "$title" "$trigger_reason"
       return 1
     fi
   fi
-  while IFS= read -r ref; do
-    [[ -z "$ref" ]] && continue
-    close_ledger_workspace_ref "$generation" "$ref" "$title" "$reason" || return 1
-  done <<< "$refs"
 
   view="${VIEW_PREFIX}${title}"
-  linked_session_exists "$view" || return 0
-  # The workspace ledger authorizes only cmux refs. Prove the independently
-  # addressed tmux shell before any unlink/rename operation.
-  tmux_generation=$(tmux_server_generation) || return 1
-  _view_shell_owned_for_title "$view" "$title" 1 0 0 || return 1
-  tmux_current=$(tmux_server_generation) || return 1
-  [[ "$tmux_current" == "$tmux_generation" ]] || return 1
-  snapshot="$OWNED_VIEW_SNAPSHOT"
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
-  if [[ "$grouped" == "1" ]]; then
-    escrow_view_session "$view" >/dev/null || return 1
-    return 0
-  fi
-  [[ "$grouped" == "0" && -n "$owner" && "$marker" == "0" ]] || return 1
-  while IFS= read -r wid; do
-    [[ -z "$wid" ]] && continue
-    guard_snapshot=$(_view_session_snapshot "$view") || return 1
-    IFS='|' read -r guard_sid guard_grouped guard_active guard_owner guard_marker guard_members <<< "$guard_snapshot"
-    [[ "$guard_sid" == "$sid" && "$guard_grouped" == "0" \
-        && "$guard_owner" == "$owner" && "$guard_marker" == "0" ]] || return 1
-    case ",$guard_members," in *",$wid,"*) ;; *) return 1 ;; esac
-    _GUARD_TMUX_GENERATION="$tmux_generation"
-    _GUARD_TMUX_SESSION="$view"
-    _GUARD_TMUX_SNAPSHOT="$guard_snapshot"
-    _GUARD_TMUX_GROUP=""
-    if ! tmux_call_guarded _tmux_session_snapshot_guard \
-        unlink-window -t "=${view}:${wid}" 2>/dev/null; then
-      # Atomic last-reference refusal means this view is now the sole holder;
-      # preserve it by escrow rename instead of escalating to -k/kill-window.
-      escrow_view_session "$view" >/dev/null || return 1
-      return 0
+  if linked_session_exists "$view"; then
+    tmux_generation=$(tmux_server_generation) || {
+      _dismantle_fail preflight-refused tmux-generation-unavailable "$title" "$trigger_reason"
+      return 1
+    }
+    if ! _view_shell_owned_for_title "$view" "$title" 1 0 0; then
+      _dismantle_fail preflight-refused tmux-ownership-unproven "$title" "$trigger_reason"
+      return 1
     fi
-    linked_session_exists "$view" || return 0
-  done <<< "$(printf '%s' "$members" | tr ',' '\n')"
-  linked_session_exists "$view" && return 1
+    tmux_current=$(tmux_server_generation) || {
+      _dismantle_fail preflight-refused tmux-generation-recheck-unavailable "$title" "$trigger_reason"
+      return 1
+    }
+    if [[ "$tmux_current" != "$tmux_generation" ]]; then
+      _dismantle_fail preflight-refused tmux-generation-changed "$title" "$trigger_reason"
+      return 1
+    fi
+    snapshot="$OWNED_VIEW_SNAPSHOT"
+    IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+    if [[ "$grouped" == "1" ]]; then
+      tmux_started=1
+      if ! escrow_view_session "$view" >/dev/null; then
+        _dismantle_fail tmux-partial-recoverable grouped-escrow-failed "$title" "$trigger_reason"
+        return 1
+      fi
+    else
+      if [[ "$grouped" != "0" || -z "$owner" || "$marker" != "0" ]]; then
+        _dismantle_fail preflight-refused independent-shape-unproven "$title" "$trigger_reason"
+        return 1
+      fi
+      while IFS= read -r wid; do
+        [[ -z "$wid" ]] && continue
+        if ! guard_snapshot=$(_view_session_snapshot "$view"); then
+          if [[ "$tmux_started" == "1" ]]; then
+            _dismantle_fail tmux-partial-recoverable tmux-snapshot-unavailable "$title" "$trigger_reason"
+          else
+            _dismantle_fail preflight-refused tmux-snapshot-unavailable "$title" "$trigger_reason"
+          fi
+          return 1
+        fi
+        IFS='|' read -r guard_sid guard_grouped guard_active guard_owner guard_marker guard_members <<< "$guard_snapshot"
+        if [[ "$guard_sid" != "$sid" || "$guard_grouped" != "0" \
+            || "$guard_owner" != "$owner" || "$guard_marker" != "0" ]]; then
+          if [[ "$tmux_started" == "1" ]]; then
+            _dismantle_fail tmux-partial-recoverable tmux-snapshot-changed "$title" "$trigger_reason"
+          else
+            _dismantle_fail preflight-refused tmux-snapshot-changed "$title" "$trigger_reason"
+          fi
+          return 1
+        fi
+        case ",$guard_members," in
+          *",$wid,"*) ;;
+          *)
+            if [[ "$tmux_started" == "1" ]]; then
+              _dismantle_fail tmux-partial-recoverable tmux-member-disappeared "$title" "$trigger_reason"
+            else
+              _dismantle_fail preflight-refused tmux-member-disappeared "$title" "$trigger_reason"
+            fi
+            return 1
+            ;;
+        esac
+        _GUARD_TMUX_GENERATION="$tmux_generation"
+        _GUARD_TMUX_SESSION="$view"
+        _GUARD_TMUX_SNAPSHOT="$guard_snapshot"
+        _GUARD_TMUX_GROUP=""
+        tmux_started=1
+        if ! tmux_call_guarded _tmux_session_snapshot_guard \
+            unlink-window -t "=${view}:${wid}" 2>/dev/null; then
+          # Atomic last-reference refusal means this view is now the sole
+          # holder; preserve it by escrow rename instead of killing a window.
+          if ! escrow_view_session "$view" >/dev/null; then
+            _dismantle_fail tmux-partial-recoverable independent-escrow-failed "$title" "$trigger_reason"
+            return 1
+          fi
+          break
+        fi
+        linked_session_exists "$view" || break
+      done <<< "$(printf '%s' "$members" | tr ',' '\n')"
+      if linked_session_exists "$view"; then
+        _dismantle_fail tmux-partial-recoverable tmux-shell-still-present "$title" "$trigger_reason"
+        return 1
+      fi
+    fi
+  fi
+
+  while IFS= read -r ref; do
+    [[ -z "$ref" ]] && continue
+    if ! close_ledger_workspace_ref "$generation" "$ref" "$title" "$trigger_reason"; then
+      _dismantle_fail tmux-complete-cmux-pending "cmux-close-failed:$ref" "$title" "$trigger_reason"
+      return 1
+    fi
+  done <<< "$refs"
+  DISMANTLE_OUTCOME="complete"
+  DISMANTLE_REASON=""
+  log "[audit] view dismantle complete title=$title trigger=$trigger_reason"
   return 0
 }
 
@@ -5314,7 +6484,8 @@ create_workspace_for_window() {
   # sync_additive (same tick, tick % 4 == 0) from both creating a tab for the
   # same window. Keyed by window_id too, so a genuine restart (same name,
   # fresh window_id) is never suppressed.
-  if create_recently_attempted "$window_name" "$window_id"; then
+  if create_recently_attempted "$window_name" "$window_id" \
+      && ! ops_rebuild_authorizes_create "$source_session" "$window_id" "$window_name"; then
     log "Skipping duplicate create for: $window_name ($window_id) (attempted within last $(_create_dedup_seconds)s)"
     return 0
   fi
@@ -5707,24 +6878,31 @@ END { for (name in row) print row[name] }
     fi
   done <<< "$winners"
 
-  local sid grouped active owner marker members cmux_generation current_refs
+  local sid grouped active owner marker members cmux_generation current_refs mismatch_signature active_titles
   while IFS=$'\t' read -r source wid title snapshot; do
     if cmux_wal_title_blocked "$title"; then
       log "WARN: invariant repair blocked by preserved construction collision: title=$title"
       continue
     fi
-    [[ "$snapshot" == "absent" ]] && continue
+    if [[ "$snapshot" == "absent" ]]; then
+      clear_cmux_log_episodes_for_title "$title" || true
+      continue
+    fi
     IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
     if strict_view_enabled; then
       if [[ "$grouped" == "0" && "$active" == "$wid" && "$owner" == "$source" \
          && "$marker" == "0" && "$members" == "$wid" ]]; then
         clear_view_mismatch_latch "$title" || { rm -f "$plan"; return 1; }
+        clear_cmux_log_episodes_for_title "$title" || true
         continue
       fi
-      log "Invariant mismatch: ${VIEW_PREFIX}${title} grouped=$grouped active=$active members=$members expected=$wid"
+      mismatch_signature="$repair_generation|$source|$wid|$sid|$grouped|$active|$owner|$marker|$members"
+      log_cmux_episode view-invariant-mismatch "$title" "$mismatch_signature" \
+        "Invariant mismatch: ${VIEW_PREFIX}${title} grouped=$grouped active=$active members=$members expected=$wid"
       if ! view_mismatch_confirmed "$title" \
-          "$repair_generation|$source|$wid|$sid|$grouped|$active|$owner|$marker|$members"; then
-        log "Invariant mismatch pending second conclusive pass: ${VIEW_PREFIX}${title}"
+          "$mismatch_signature"; then
+        log_cmux_episode view-mismatch-pending "$title" "$mismatch_signature" \
+          "Invariant mismatch pending second conclusive pass: ${VIEW_PREFIX}${title}"
         continue
       fi
       if [[ "$grouped" == "1" && -z "$owner" && -z "$marker" ]]; then
@@ -5738,7 +6916,9 @@ END { for (name in row) print row[name] }
             "cmux legacy grouped migration refused" \
             "A legacy grouped view was preserved because no current-generation exact workspace receipt authorizes migration: generation=$cmux_generation title=$title view=${VIEW_PREFIX}${title}." \
             "cmux_cleanup|legacy-grouped|generation=$cmux_generation|title=$title|reason=missing-exact-receipt"
-          log "WARN: legacy grouped migration refused for $title; no exact receipt"
+          log_cmux_episode legacy-grouped-refused "$title" \
+            "$cmux_generation|missing-exact-receipt|$mismatch_signature" \
+            "WARN: legacy grouped migration refused for $title; no exact receipt"
           continue
         fi
       fi
@@ -5747,14 +6927,18 @@ END { for (name in row) print row[name] }
           rm -f "$plan"; return 1;
         }
         clear_view_mismatch_latch "$title" || { rm -f "$plan"; return 1; }
+        clear_cmux_log_episodes_for_title "$title" || true
       else
         # Most commonly an unledgered founder/pre-upgrade collision. The
         # alert/manual contract forbids inventing authority or touching it.
-        log "WARN: invariant repair deferred for $title (no ledger authority)"
+        log_cmux_episode invariant-repair-deferred "$title" \
+          "$mismatch_signature|${DISMANTLE_OUTCOME:-preflight-refused}|${DISMANTLE_REASON:-unknown}" \
+          "WARN: invariant repair deferred for $title outcome=${DISMANTLE_OUTCOME:-preflight-refused} reason=${DISMANTLE_REASON:-unknown}"
       fi
     elif view_invariant_enabled; then
       if [[ "$grouped" == "1" ]]; then
         clear_view_mismatch_latch "$title" || { rm -f "$plan"; return 1; }
+        clear_cmux_log_episodes_for_title "$title" || true
         tmux select-window -t "=${VIEW_PREFIX}${title}:${wid}" 2>/dev/null || {
           rm -f "$plan"; return 1;
         }
@@ -5773,11 +6957,15 @@ END { for (name in row) print row[name] }
             rm -f "$plan"; return 1;
           }
           clear_view_mismatch_latch "$title" || { rm -f "$plan"; return 1; }
+          clear_cmux_log_episodes_for_title "$title" || true
         fi
       fi
     fi
   done < "$plan"
   rm -f "$plan"
+  active_titles=$(printf '%s\n' "$winners" | awk -F'|' 'NF == 3 { print $3 }' | sort -u)
+  gc_cmux_log_episodes "$active_titles" || \
+    log "WARN: cannot GC cmux log episode state at $CMUX_LOG_EPISODE_STATE"
   return 0
 }
 
@@ -5796,8 +6984,16 @@ refresh_linked_sessions() {
   # periodic load (FLY-129) — runs only inside the existing additive/bootstrap
   # passes, so it does not touch the FLY-102 high-frequency surface.
   if linked_view_enabled || view_invariant_enabled; then
-    prepare_linked_view_state || {
+    prepare_linked_view_state pre || {
       log "WARN: linked-view durable state reconciliation failed; refresh skipped"
+      return 1
+    }
+    recover_restored_transactions || {
+      log "WARN: restored transaction recovery failed; refresh skipped"
+      return 1
+    }
+    prepare_linked_view_state post || {
+      log "WARN: linked-view ledger reconciliation failed; refresh skipped"
       return 1
     }
     repair_view_invariants
@@ -6300,11 +7496,19 @@ sync_additive_bootstrap() {
 
   # Durable WAL/ledger recovery precedes every mutation, including the
   # conclusive-empty branch.
+  RESTORED_BOOTSTRAP_PASS=1
   if ! refresh_linked_sessions; then
+    RESTORED_BOOTSTRAP_PASS=0
     # A transient durable-state/topology read failure means this pass is
     # inconclusive. Defer the whole pass before create/heal, but keep the
     # long-running watcher alive under `set -e`.
     log "WARN: bootstrap linked-view refresh inconclusive; pass deferred"
+    return 0
+  fi
+  RESTORED_BOOTSTRAP_PASS=0
+  watcher_mutation_latch_clear || return 0
+  if ! adopt_restored_workspaces dead discover-only; then
+    log "WARN: bootstrap restored dead-title discovery inconclusive; pass deferred"
     return 0
   fi
   watcher_mutation_latch_clear || return 0
@@ -6315,6 +7519,11 @@ sync_additive_bootstrap() {
   reconcile_existing_workspaces
   watcher_mutation_latch_clear || return 0
   reconcile_workspace_titles "$tmux_windows"
+  watcher_mutation_latch_clear || return 0
+  if ! adopt_restored_workspaces live discover-only; then
+    log "WARN: bootstrap restored live-title discovery inconclusive; pass deferred"
+    return 0
+  fi
   watcher_mutation_latch_clear || return 0
 
   # 3. Create missing workspaces. No cleanup of existing ones.
@@ -6355,8 +7564,14 @@ sync_additive() {
 
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
+  RESTORED_BOOTSTRAP_PASS=0
   if ! refresh_linked_sessions; then
     log "WARN: periodic linked-view refresh inconclusive; pass deferred"
+    return 0
+  fi
+  watcher_mutation_latch_clear || return 0
+  if ! adopt_restored_workspaces dead discover-only; then
+    log "WARN: periodic restored dead-title discovery inconclusive; pass deferred"
     return 0
   fi
   watcher_mutation_latch_clear || return 0
@@ -6386,6 +7601,11 @@ sync_additive() {
   reconcile_existing_workspaces
   watcher_mutation_latch_clear || return 0
   reconcile_workspace_titles "$tmux_windows"
+  watcher_mutation_latch_clear || return 0
+  if ! adopt_restored_workspaces live discover-only; then
+    log "WARN: periodic restored live-title discovery inconclusive; pass deferred"
+    return 0
+  fi
   watcher_mutation_latch_clear || return 0
 
   # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1.
@@ -6420,7 +7640,796 @@ sync_additive() {
   reap_orphan_workspace_pins
   watcher_mutation_latch_clear || return 0
 
-  cleanup_stale_conservative
+cleanup_stale_conservative
+}
+
+# FLY-1596: audited operator-only convergence path. Argument parsing is kept
+# deliberately separate from semantic reads so malformed argv performs zero
+# tmux/cmux/roster IPC and publishes no handover claim.
+OPS_REBUILD_ALL_LEADS=0
+OPS_REBUILD_EXECUTE=0
+OPS_REBUILD_HANDOVER=0
+OPS_REBUILD_TARGET_SPECS=""
+OPS_REBUILD_TARGETS=""
+OPS_REBUILD_ACTIVE_TARGET=""
+OPS_REBUILD_RESULTS=""
+
+_ops_title_valid() {
+  local title="$1"
+  [[ -n "$title" && ${#title} -le 255 ]] || return 1
+  case "$title" in *'|'*|*'='*|*$'\t'*|*$'\n'*|*$'\r'*) return 1 ;; esac
+  LC_ALL=C printf '%s' "$title" | grep -q '^[[:print:]]\{1,255\}$'
+}
+
+parse_rebuild_views_args() {
+  local all=0 execute=0 handover=0 specs="" arg value title ref duplicate
+  while [[ $# -gt 0 ]]; do
+    arg="$1"; shift
+    case "$arg" in
+      --all-leads) [[ "$all" == 0 ]] || return 1; all=1 ;;
+      --execute) [[ "$execute" == 0 ]] || return 1; execute=1 ;;
+      --handover) [[ "$handover" == 0 ]] || return 1; handover=1 ;;
+      --target)
+        [[ $# -gt 0 ]] || return 1
+        value="$1"; shift
+        title="$value"; ref=""
+        if [[ "$value" == *'='* ]]; then
+          title="${value%%=*}"
+          ref="${value#*=}"
+        fi
+        _ops_title_valid "$title" || return 1
+        if [[ -n "$ref" ]]; then
+          case "$ref" in workspace:[0-9]*) case "${ref#workspace:}" in ''|*[!0-9]*) return 1 ;; esac ;; *) return 1 ;; esac
+        fi
+        duplicate=$(printf '%s\n' "$specs" | awk -F'|' -v t="$title" '$1 == t { n++ } END { print n+0 }')
+        [[ "$duplicate" == 0 ]] || return 1
+        specs+="${specs:+$'\n'}${title}|${ref}"
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  [[ "$handover" == 0 || "$execute" == 1 ]] || return 1
+  if [[ "$all" == 1 ]]; then
+    [[ -z "$specs" ]] || return 1
+  else
+    [[ -n "$specs" ]] || return 1
+  fi
+  OPS_REBUILD_ALL_LEADS="$all"
+  OPS_REBUILD_EXECUTE="$execute"
+  OPS_REBUILD_HANDOVER="$handover"
+  OPS_REBUILD_TARGET_SPECS=$(printf '%s\n' "$specs" | sed '/^$/d' | sort)
+}
+
+OPS_VERIFY_JSON=0
+OPS_VERIFY_TARGETS=""
+VERIFY_SIDEBAR_REASONS=""
+VERIFY_SIDEBAR_CAVEATS=""
+SIDEBAR_TARGET_ROSTER_ROWS=""
+SIDEBAR_TARGET_AUTHORITY=""
+
+_verify_sidebar_append_unique() {
+  local variable="$1" value="$2" current
+  [[ -n "$value" ]] || return 0
+  eval "current=\${$variable:-}"
+  printf '%s\n' "$current" | grep -qxF "$value" && return 0
+  current+="${current:+$'\n'}${value}"
+  printf -v "$variable" '%s' "$current"
+}
+
+_verify_sidebar_inconclusive() {
+  _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS "$1"
+  return 2
+}
+
+_derive_sidebar_target_authority() {
+  local targets="$1" agent_snapshot="${2:-}" title label plist manifest wrapper fields project lead backend carrier
+  local plist_hash manifest_hash rows="" authority=""
+  local window_evidence ledger_evidence keeper_evidence evidence_sources evidence_hash evidence_bundle
+  SIDEBAR_TARGET_ROSTER_ROWS=""
+  SIDEBAR_TARGET_AUTHORITY=""
+  while IFS= read -r title; do
+    [[ -n "$title" ]] || continue
+    if is_managed_runner_title "$title"; then
+      window_evidence=$(printf '%s\n' "$agent_snapshot" \
+        | awk -F'|' -v t="$title" 'NF == 4 && $3 == t { print }' | sort)
+      ledger_evidence=""
+      if [[ -f "$VIEW_LEDGER" && ! -L "$VIEW_LEDGER" ]]; then
+        ledger_evidence=$(awk -F'|' -v t="$title" \
+          'NF == 4 && ($1 == "prepared" || $1 == "committed") && $3 ~ /^workspace:[0-9]+$/ && $4 == t { print }' \
+          "$VIEW_LEDGER" 2>/dev/null | sort) || return 2
+      fi
+      keeper_evidence=""
+      if [[ -f "$KEEPER_INVENTORY" && ! -L "$KEEPER_INVENTORY" ]]; then
+        keeper_evidence=$(awk -F'|' -v t="$title" \
+          'NF == 7 && ($6 == "prepared" || $6 == "committed") && $2 ~ /^\$[0-9]+$/ \
+            && $3 == "fwkeeper-" substr($2, 2) "-cmux-" t { print }' \
+          "$KEEPER_INVENTORY" 2>/dev/null | sort) || return 2
+      fi
+      if [[ -z "$window_evidence$ledger_evidence$keeper_evidence" ]]; then
+        _verify_sidebar_inconclusive "target-unknown: no independent runner evidence $title"
+        return 2
+      fi
+      evidence_sources=""
+      [[ -n "$window_evidence" ]] && evidence_sources="window"
+      [[ -n "$ledger_evidence" ]] && evidence_sources+="${evidence_sources:+,}ledger"
+      [[ -n "$keeper_evidence" ]] && evidence_sources+="${evidence_sources:+,}keeper"
+      evidence_bundle="window
+$window_evidence
+ledger
+$ledger_evidence
+keeper
+$keeper_evidence"
+      evidence_hash=$(printf '%s' "$evidence_bundle" | shasum -a 256 | awk '{print $1}') || return 2
+      authority+="${authority:+$'\n'}runner|${title}|${evidence_sources}|${evidence_hash}"
+      continue
+    fi
+    label="com.flywheel.lead.${title}"
+    plist="$FLYWHEEL_LEAD_PLIST_DIR/${label}.plist"
+    manifest="$FLYWHEEL_MANIFEST_DIR/${title}.json"
+    [[ -f "$plist" ]] || {
+      _verify_sidebar_inconclusive "target-authority-unavailable: missing loaded plist $title"
+      return 2
+    }
+    lead_job_loaded "$label" || {
+      _verify_sidebar_inconclusive "target-authority-unavailable: plist not loaded $title"
+      return 2
+    }
+    wrapper=$(lead_plist_wrapper_basename "$plist") || {
+      _verify_sidebar_inconclusive "target-authority-unavailable: invalid plist $title"
+      return 2
+    }
+    [[ -f "$manifest" ]] || {
+      _verify_sidebar_inconclusive "target-authority-unavailable: missing manifest $title"
+      return 2
+    }
+    fields=$(lead_manifest_fields "$manifest" 2>/dev/null) || {
+      _verify_sidebar_inconclusive "target-authority-unavailable: invalid manifest $title"
+      return 2
+    }
+    IFS='|' read -r project lead backend <<< "$fields"
+    [[ "${project}-${lead}" == "$title" ]] || {
+      _verify_sidebar_inconclusive "target-authority-unavailable: manifest identity mismatch $title"
+      return 2
+    }
+    carrier=$(classify_lead_carrier "$wrapper" "$backend") || {
+      _verify_sidebar_inconclusive "target-authority-unavailable: carrier classification failed $title"
+      return 2
+    }
+    plist_hash=$(shasum -a 256 "$plist" | awk '{print $1}') || return 2
+    manifest_hash=$(shasum -a 256 "$manifest" | awk '{print $1}') || return 2
+    rows+="${rows:+$'\n'}${carrier}|${label}|${title}"
+    authority+="${authority:+$'\n'}lead|${label}|${title}|${wrapper}|${fields}|${plist_hash}|${manifest_hash}"
+  done <<< "$targets"
+  SIDEBAR_TARGET_ROSTER_ROWS=$(printf '%s\n' "$rows" | sed '/^$/d' | sort)
+  SIDEBAR_TARGET_AUTHORITY=$(printf '%s\n' "$authority" | sed '/^$/d' | sort)
+}
+
+parse_verify_sidebar_args() {
+  local json=0 targets="" arg title duplicate
+  while [[ $# -gt 0 ]]; do
+    arg="$1"; shift
+    case "$arg" in
+      --json) [[ "$json" == 0 ]] || return 1; json=1 ;;
+      --target)
+        [[ $# -gt 0 ]] || return 1
+        title="$1"; shift
+        _ops_title_valid "$title" || return 1
+        duplicate=$(printf '%s\n' "$targets" | grep -cxF "$title" || true)
+        [[ "$duplicate" == 0 ]] || return 1
+        targets+="${targets:+$'\n'}${title}"
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  OPS_VERIFY_JSON="$json"
+  OPS_VERIFY_TARGETS=$(printf '%s\n' "$targets" | sed '/^$/d' | sort)
+}
+
+_resolve_sidebar_subjects() {
+  local snapshot roster_titles live_titles known title
+  snapshot=$(strict_agent_window_snapshot) || {
+    _verify_sidebar_inconclusive "subject-inventory-unavailable: tmux snapshot unavailable"
+    return 2
+  }
+  if [[ -n "$OPS_VERIFY_TARGETS" ]]; then
+    _derive_sidebar_target_authority "$OPS_VERIFY_TARGETS" "$snapshot" || return 2
+    if ! derive_lead_roster || [[ "$LEAD_ROSTER_STATE" != "ok" ]]; then
+      _verify_sidebar_append_unique VERIFY_SIDEBAR_CAVEATS \
+        "${LEAD_ROSTER_REASONS:-roster-authority-unavailable: roster derivation failed}"
+    fi
+    return 0
+  fi
+  derive_lead_roster || {
+    _verify_sidebar_inconclusive "${LEAD_ROSTER_REASONS:-roster-authority-unavailable: roster derivation failed}"
+    return 2
+  }
+  [[ "$LEAD_ROSTER_STATE" == "ok" ]] || {
+    _verify_sidebar_inconclusive "${LEAD_ROSTER_REASONS:-roster-authority-unavailable: roster derivation failed}"
+    return 2
+  }
+  roster_titles=$(printf '%s\n' "$LEAD_ROSTER_ROWS" | awk -F'|' 'NF == 3 && $3 != "" { print $3 }' | sort -u)
+  live_titles=$(printf '%s\n' "$snapshot" | awk -F'|' 'NF == 4 && $3 != "" { print $3 }' | sort -u)
+  known=$(printf '%s\n%s\n' "$roster_titles" "$live_titles" | sed '/^$/d' | sort -u)
+  [[ -n "$known" ]] || return 1
+  OPS_VERIFY_TARGETS="$known"
+}
+
+OPS_REBUILD_RESOLVED=""
+resolve_rebuild_targets() {
+  local snapshot raw generation specs roster_titles live_titles known resolved=""
+  local title requested source_rows live_count any_count source wid canonical row_info mapped_count observed_ref state
+  local marker_rc class clients=0 roster_count fallback_leads
+  snapshot=$(strict_agent_window_snapshot) || return 2
+  raw=$(get_cmux_workspaces_json) || return 2
+  generation=$(cmux_socket_identity) || return 2
+  [[ -n "$generation" ]] || return 2
+  _restored_parse_records >/dev/null || return 2
+  roster_titles=""
+  if derive_lead_roster && [[ "$LEAD_ROSTER_STATE" == "ok" ]]; then
+    roster_titles=$(printf '%s\n' "$LEAD_ROSTER_ROWS" | awk -F'|' 'NF == 3 && $3 != "" { print $3 }' | sort -u)
+  fi
+  live_titles=$(printf '%s\n' "$snapshot" | awk -F'|' 'NF == 4 && $3 != "" { print $3 }' | sort -u)
+  known=$(printf '%s\n%s\n' "$roster_titles" "$live_titles" | sed '/^$/d' | sort -u)
+  specs="$OPS_REBUILD_TARGET_SPECS"
+  if [[ "$OPS_REBUILD_ALL_LEADS" == 1 ]]; then
+    if [[ -n "$roster_titles" ]]; then
+      specs=$(printf '%s\n' "$roster_titles" | sed 's/$/|/')
+    else
+      fallback_leads=$(printf '%s\n' "$live_titles" | awk '/-lead$/')
+      [[ -n "$fallback_leads" ]] || return 1
+      specs=$(printf '%s\n' "$fallback_leads" | sed 's/$/|/')
+    fi
+  fi
+
+  while IFS='|' read -r title requested; do
+    [[ -n "$title" ]] || continue
+    printf '%s\n' "$known" | grep -qxF "$title" || return 1
+    source_rows=$(printf '%s\n' "$snapshot" | awk -F'|' -v t="$title" '$3 == t && $4 == "0" { print }')
+    live_count=$(printf '%s\n' "$source_rows" | grep -c . || true)
+    any_count=$(printf '%s\n' "$snapshot" | awk -F'|' -v t="$title" '$3 == t { n++ } END { print n+0 }')
+    (( live_count <= 1 && any_count <= 1 )) || return 1
+    source="absent"; wid="absent"
+    if [[ "$live_count" == 1 ]]; then
+      IFS='|' read -r source wid _ _ <<< "$(printf '%s\n' "$source_rows" | head -1)"
+    fi
+    canonical=$(build_attach_command "${VIEW_PREFIX}${title}") || return 2
+    row_info=$(printf '%s' "$raw" | python3 -c '
+import json,sys
+t,canonical,requested=sys.argv[1:4]
+try:
+    rows=json.load(sys.stdin).get("workspaces", [])
+except Exception:
+    raise SystemExit(2)
+matches=[]
+for w in rows:
+    if not isinstance(w,dict):
+        continue
+    ref=w.get("ref")
+    observed=w.get("title")
+    if observed in (t,canonical) and isinstance(ref,str):
+        matches.append(ref)
+if len(matches) > 1 or len(set(matches)) != len(matches):
+    print("ambiguous|")
+elif not matches:
+    print("0|")
+elif requested and matches[0] != requested:
+    print("mismatch|" + matches[0])
+else:
+    print("1|" + matches[0])
+' "$title" "$canonical" "$requested") || return 2
+    IFS='|' read -r mapped_count observed_ref <<< "$row_info"
+    case "$mapped_count" in ambiguous|mismatch) return 1 ;; 0|1) ;; *) return 2 ;; esac
+    [[ -z "$requested" || "$mapped_count" == 1 ]] || return 1
+    class=""
+    if [[ "$mapped_count" == 0 ]]; then
+      if linked_session_exists "${VIEW_PREFIX}${title}"; then class=W2; else class=absent; fi
+    else
+      state=$(ledger_candidate_receipt_state "$generation" "$observed_ref" "$title") || state=conflict
+      marker_rc=0
+      restored_inflight_state "$generation" "$observed_ref" "$title" || marker_rc=$?
+      [[ "$marker_rc" -ne 2 ]] || return 2
+      if [[ "$marker_rc" == 0 ]]; then
+        class=restored
+      else
+        case "$state" in
+          none) [[ "$live_count" == 1 ]] && class=W1 || class=W1dead ;;
+          prepared) [[ "$live_count" == 1 ]] || return 1; class=W1p ;;
+          committed)
+            if [[ "$live_count" == 1 ]] \
+                && _linked_view_matches "${VIEW_PREFIX}${title}" "$wid" "$source" "" "$title"; then
+              clients=$(view_session_client_count "${VIEW_PREFIX}${title}") || return 2
+              (( clients >= 1 )) && class=healthy || class=W2
+            else
+              class=W2
+            fi
+            ;;
+          *) return 1 ;;
+        esac
+      fi
+    fi
+    roster_count=$(printf '%s\n' "$roster_titles" | grep -cxF "$title" || true)
+    [[ "$class" != W1dead || "$roster_count" == 1 ]] || return 1
+    resolved+="${resolved:+$'\n'}${title}|${requested}|${source}|${wid}|${observed_ref}|${class}|${generation}"
+  done <<< "$specs"
+  [[ -n "$resolved" ]] || return 1
+  OPS_REBUILD_RESOLVED=$(printf '%s\n' "$resolved" | sort)
+}
+
+ops_rebuild_authorizes_create() {
+  local source="$1" wid="$2" title="$3" active_title active_source active_wid
+  [[ "$MUTATOR_LEASE_MODE" == "ops_rebuild" ]] || return 1
+  mutator_lease_owned_by_self || return 1
+  IFS='|' read -r active_title _ active_source active_wid _ <<< "$OPS_REBUILD_ACTIVE_TARGET"
+  [[ "$active_title" == "$title" && "$active_source" == "$source" && "$active_wid" == "$wid" ]] || return 1
+  printf '%s\n' "$OPS_REBUILD_TARGETS" | awk -F'|' -v t="$title" -v s="$source" -v w="$wid" \
+    '$1 == t && $3 == s && $4 == w { found=1 } END { exit(found ? 0 : 1) }'
+}
+
+VERIFY_SIDEBAR_REPORT=""
+VERIFY_SIDEBAR_EVIDENCE=""
+
+_verify_sidebar_once() {
+  local targets="$1" authority_mode="${2:-global}" cmux_generation tmux_generation raw canonical_json
+  local agent_snapshot restored_snapshot roster_snapshot authority_snapshot=""
+  local ledger_bytes="" title source_rows live_count source wid canonical_raw row_shape named_count mapped_count ref
+  local report="" evidence="" failures=0 view pane_source pane_view source_name source_dead view_name view_dead view_matches
+  local source_pid view_pid clients receipt rows_count marker_count current_cmux current_tmux
+  local surface_ref screen screen_last render_state title_failures_before roster_count
+  cmux_generation=$(cmux_socket_identity) || return 2
+  [[ -n "$cmux_generation" ]] || return 2
+  tmux_generation=$(tmux_server_generation) || return 2
+  raw=$(get_cmux_workspaces_json) || return 2
+  canonical_json=$(printf '%s' "$raw" | python3 -c '
+import json,sys
+try:
+    data=json.load(sys.stdin)
+except Exception:
+    raise SystemExit(2)
+if isinstance(data,dict) and isinstance(data.get("workspaces"),list):
+    data["workspaces"]=sorted(data["workspaces"],key=lambda item:json.dumps(item,sort_keys=True,separators=(",",":")))
+print(json.dumps(data, sort_keys=True, separators=(",", ":")))
+') || return 2
+  agent_snapshot=$(strict_agent_window_snapshot | sort) || return 2
+  restored_snapshot=$(_restored_parse_records | sort) || return 2
+  if [[ "$authority_mode" == "target" ]]; then
+    VERIFY_SIDEBAR_CAVEATS=""
+    _derive_sidebar_target_authority "$targets" "$agent_snapshot" || return 2
+    roster_snapshot="$SIDEBAR_TARGET_ROSTER_ROWS"
+    authority_snapshot="$SIDEBAR_TARGET_AUTHORITY"
+    if ! derive_lead_roster || [[ "$LEAD_ROSTER_STATE" != "ok" ]]; then
+      _verify_sidebar_append_unique VERIFY_SIDEBAR_CAVEATS \
+        "${LEAD_ROSTER_REASONS:-roster-authority-unavailable: roster derivation failed}"
+    fi
+  else
+    derive_lead_roster || {
+      _verify_sidebar_inconclusive "${LEAD_ROSTER_REASONS:-roster-authority-unavailable: roster derivation failed}"
+      return 2
+    }
+    [[ "$LEAD_ROSTER_STATE" == "ok" ]] || {
+      _verify_sidebar_inconclusive "${LEAD_ROSTER_REASONS:-roster-authority-unavailable: roster derivation failed}"
+      return 2
+    }
+    roster_snapshot=$(printf '%s\n' "$LEAD_ROSTER_ROWS" | sed '/^$/d' | sort)
+  fi
+  [[ ! -e "$VIEW_LEDGER" || (-f "$VIEW_LEDGER" && ! -L "$VIEW_LEDGER") ]] || return 2
+  [[ -f "$VIEW_LEDGER" ]] && ledger_bytes=$(cat "$VIEW_LEDGER") || true
+
+  while IFS= read -r title; do
+    [[ -n "$title" ]] || continue
+    case "$title" in *'|'*|*$'\t'*|*$'\n'*) return 2 ;; esac
+    title_failures_before=$failures
+    roster_count=$(printf '%s\n' "$roster_snapshot" | awk -F'|' -v t="$title" '$3 == t { n++ } END { print n+0 }')
+    source_rows=$(printf '%s\n' "$agent_snapshot" | awk -F'|' -v t="$title" '$3 == t && $4 == "0" { print }')
+    live_count=$(printf '%s\n' "$source_rows" | grep -c . || true)
+    canonical_raw=$(build_attach_command "${VIEW_PREFIX}${title}") || return 2
+    row_shape=$(printf '%s' "$canonical_json" | python3 -c '
+import json,sys
+t,raw=sys.argv[1:3]
+d=json.load(sys.stdin)
+named=[]; mapped=[]
+for w in d.get("workspaces", []):
+    if not isinstance(w,dict):
+        continue
+    observed=w.get("title")
+    if observed == t:
+        named.append(w.get("ref", ""))
+        mapped.append(w.get("ref", ""))
+    elif observed == raw:
+        mapped.append(w.get("ref", ""))
+print("%d|%d|%s" % (len(named), len(mapped), named[0] if len(named)==1 else ""))
+' "$title" "$canonical_raw") || return 2
+    IFS='|' read -r named_count mapped_count ref <<< "$row_shape"
+    view="${VIEW_PREFIX}${title}"
+    if [[ "$live_count" == "1" ]]; then
+      IFS='|' read -r source wid _ _ <<< "$(printf '%s\n' "$source_rows" | head -1)"
+      if [[ "$named_count" != "1" || "$mapped_count" != "1" \
+          || "$ref" != workspace:* ]]; then
+        report+="${report:+$'\n'}FAIL $title rule=row-live expected=one-named observed=named:$named_count,mapped:$mapped_count"
+        failures=$((failures + 1))
+      fi
+      view_matches=0
+      if _linked_view_matches "$view" "$wid" "$source" "" "$title"; then
+        view_matches=1
+      else
+        report+="${report:+$'\n'}FAIL $title rule=a1-topology"
+        failures=$((failures + 1))
+      fi
+      pane_source=$(tmux display-message -p -t "=${source}:${wid}" '#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
+      source_pid=$(tmux display-message -p -t "=${source}:${wid}" '#{pane_pid}' 2>/dev/null) || return 2
+      IFS='|' read -r source_name source_dead <<< "$pane_source"
+      pane_view="unavailable"; view_name=""; view_dead=""; view_pid=""; clients="not-measured"
+      if [[ "$view_matches" == 1 ]]; then
+        pane_view=$(tmux display-message -p -t "=${view}:${wid}" '#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
+        view_pid=$(tmux display-message -p -t "=${view}:${wid}" '#{pane_pid}' 2>/dev/null) || return 2
+        IFS='|' read -r view_name view_dead <<< "$pane_view"
+        clients=$(view_session_client_count "$view") || return 2
+      fi
+      if [[ "$source_name" != "$title" || "$source_dead" != "0" || -z "$source_pid" \
+          || "$view_matches" != 1 || "$view_name" != "$title" || "$view_dead" != "0" \
+          || "$source_pid" != "$view_pid" ]]; then
+        report+="${report:+$'\n'}FAIL $title rule=pane-identity"
+        failures=$((failures + 1))
+      fi
+      if [[ "$clients" == "not-measured" ]]; then
+        report+="${report:+$'\n'}FAIL $title rule=client-count observed=not-measured"
+        failures=$((failures + 1))
+      elif (( clients < 1 )); then
+        report+="${report:+$'\n'}FAIL $title rule=client-count observed=$clients"
+        failures=$((failures + 1))
+      fi
+      surface_ref="not-applicable"; screen=""; render_state="unavailable"
+      if [[ "$named_count" == "1" && "$mapped_count" == "1" && "$ref" == workspace:* ]]; then
+        surface_ref=$(workspace_terminal_surface_ref "$ref") || return 2
+        if screen=$(cmux_call read-screen --workspace "$ref" --surface "$surface_ref"); then
+          screen_last=$(printf '%s\n' "$screen" | awk 'NF{line=$0} END{print line}' | sed 's/[[:space:]]*$//')
+          render_state="nonbare"
+          case "$screen_last" in
+            ''|*'%'|*'$'|*'#')
+              render_state="bare"
+              report+="${report:+$'\n'}FAIL $title rule=render observed=bare-or-empty"
+              failures=$((failures + 1))
+              ;;
+          esac
+        else
+          report+="${report:+$'\n'}FAIL $title rule=render observed=unavailable"
+          failures=$((failures + 1))
+        fi
+      fi
+      receipt=$(ledger_candidate_receipt_state "$cmux_generation" "$ref" "$title") || receipt=conflict
+      rows_count=$(printf '%s\n' "$(ledger_rows_for_title "$cmux_generation" "$title")" | grep -c . || true)
+      if [[ "$receipt" != "committed" || "$rows_count" != "1" ]]; then
+        report+="${report:+$'\n'}FAIL $title rule=receipt observed=$receipt,count:$rows_count"
+        failures=$((failures + 1))
+      fi
+      marker_count=$(printf '%s\n' "$restored_snapshot" | awk -F'\t' -v t="$title" '$4 == t { n++ } END { print n+0 }')
+      if (( marker_count > 0 )); then
+        report+="${report:+$'\n'}FAIL $title rule=restored-marker observed=$marker_count"
+        failures=$((failures + 1))
+      fi
+      if [[ "$failures" -eq "$title_failures_before" ]]; then
+        report+="${report:+$'\n'}PASS $title live ref=$ref source=$source:$wid"
+      fi
+      evidence+="${evidence:+$'\n'}$title|live|$source|$wid|$row_shape|$pane_source|$pane_view|$source_pid|$view_pid|$clients|$receipt|$rows_count|$marker_count|$surface_ref|render:$render_state"
+    elif [[ "$live_count" == "0" ]]; then
+      if (( roster_count > 0 )); then
+        report+="${report:+$'\n'}FAIL $title rule=roster-lead-absent"
+        failures=$((failures + 1))
+      fi
+      if [[ "$mapped_count" != "0" ]]; then
+        report+="${report:+$'\n'}FAIL $title rule=row-dead observed=$mapped_count"
+        failures=$((failures + 1))
+      fi
+      if linked_session_exists "$view"; then
+        report+="${report:+$'\n'}FAIL $title rule=view-dead-present"
+        failures=$((failures + 1))
+      fi
+      rows_count=$(printf '%s\n' "$(ledger_rows_for_title "$cmux_generation" "$title")" | grep -c . || true)
+      if [[ "$rows_count" != "0" ]]; then
+        report+="${report:+$'\n'}FAIL $title rule=receipt-dead observed=$rows_count"
+        failures=$((failures + 1))
+      fi
+      marker_count=$(printf '%s\n' "$restored_snapshot" | awk -F'\t' -v t="$title" '$4 == t { n++ } END { print n+0 }')
+      if (( marker_count > 0 )); then
+        report+="${report:+$'\n'}FAIL $title rule=restored-marker-dead observed=$marker_count"
+        failures=$((failures + 1))
+      fi
+      if [[ "$failures" -eq "$title_failures_before" ]]; then
+        report+="${report:+$'\n'}PASS $title absent"
+      fi
+      evidence+="${evidence:+$'\n'}$title|absent|$row_shape|$rows_count|$marker_count"
+    else
+      report+="${report:+$'\n'}FAIL $title rule=source-unique observed=$live_count"
+      failures=$((failures + 1))
+      evidence+="${evidence:+$'\n'}$title|ambiguous-source|$live_count|$row_shape"
+    fi
+  done <<< "$targets"
+  current_cmux=$(cmux_socket_identity) || return 2
+  current_tmux=$(tmux_server_generation) || return 2
+  [[ "$current_cmux" == "$cmux_generation" && "$current_tmux" == "$tmux_generation" ]] || return 2
+  VERIFY_SIDEBAR_REPORT="$report"
+  VERIFY_SIDEBAR_EVIDENCE="$cmux_generation
+$tmux_generation
+$canonical_json
+$agent_snapshot
+$roster_snapshot
+$authority_snapshot
+$VERIFY_SIDEBAR_CAVEATS
+$ledger_bytes
+$restored_snapshot
+$evidence"
+  [[ "$failures" -eq 0 ]] && return 0
+  return 1
+}
+
+verify_sidebar_targets() {
+  local targets="$1" authority_mode="${2:-global}" first_rc=0 second_rc=0
+  local first_evidence second_report second_evidence
+  VERIFY_SIDEBAR_REPORT=""
+  VERIFY_SIDEBAR_EVIDENCE=""
+  _verify_sidebar_once "$targets" "$authority_mode" || first_rc=$?
+  first_evidence="$VERIFY_SIDEBAR_EVIDENCE"
+  if [[ "$first_rc" -eq 2 ]]; then
+    [[ -n "$VERIFY_SIDEBAR_REASONS" ]] \
+      || _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS \
+        "sidebar-snapshot-unavailable: first snapshot could not be proven"
+    return 2
+  fi
+  _verify_sidebar_once "$targets" "$authority_mode" || second_rc=$?
+  second_report="$VERIFY_SIDEBAR_REPORT"
+  second_evidence="$VERIFY_SIDEBAR_EVIDENCE"
+  if [[ "$second_rc" -eq 2 ]]; then
+    [[ -n "$VERIFY_SIDEBAR_REASONS" ]] \
+      || _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS \
+        "sidebar-snapshot-unavailable: second snapshot could not be proven"
+    return 2
+  fi
+  if [[ "$first_rc" != "$second_rc" || "$first_evidence" != "$second_evidence" ]]; then
+    VERIFY_SIDEBAR_REPORT="INCONCLUSIVE snapshot-drift"
+    _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS \
+      "snapshot-drift: composite authority changed between reads"
+    return 2
+  fi
+  VERIFY_SIDEBAR_REPORT="$second_report"
+  VERIFY_SIDEBAR_EVIDENCE="$second_evidence"
+  return "$second_rc"
+}
+
+_ops_adopt_restored_candidate() {
+  local kind="$1" generation="$2" ref="$3" title="$4" expected_state="$5"
+  local first_fingerprint first_source first_wid second_fingerprint probe_rc=0 interval
+  _restored_candidate_probe "$kind" "$generation" "$ref" "$title" || probe_rc=$?
+  [[ "$probe_rc" -eq 0 ]] || return "$probe_rc"
+  [[ "$RESTORED_PROBE_RAW_TITLE" == "$title" ]] || return 1
+  first_fingerprint="$RESTORED_PROBE_FINGERPRINT"
+  first_source="$RESTORED_PROBE_SOURCE"
+  first_wid="$RESTORED_PROBE_WID"
+  interval="${FLYWHEEL_CMUX_OPS_REPROBE_SECONDS:-1}"
+  case "$interval" in ''|*[!0-9]*) interval=1 ;; esac
+  (( interval > 5 )) && interval=5
+  sleep "$interval"
+  probe_rc=0
+  _restored_candidate_probe "$kind" "$generation" "$ref" "$title" "$first_fingerprint" || probe_rc=$?
+  [[ "$probe_rc" -eq 0 ]] || return "$probe_rc"
+  second_fingerprint="$RESTORED_PROBE_FINGERPRINT"
+  [[ "$second_fingerprint" == "$first_fingerprint" \
+      && "$RESTORED_PROBE_SOURCE" == "$first_source" \
+      && "$RESTORED_PROBE_WID" == "$first_wid" \
+      && "$RESTORED_PROBE_RAW_TITLE" == "$title" ]] || return 1
+  [[ "$(ledger_candidate_receipt_state "$generation" "$ref" "$title")" == "$expected_state" ]] || return 1
+  _restored_marker_upsert "$kind" "$generation" "$ref" "$title" "$expected_state" \
+    "$first_fingerprint" || return $?
+  local FLYWHEEL_CMUX_ADOPTION_GRACE=0
+  recover_restored_transactions "$title"
+}
+
+_ops_refresh_resolved_line() {
+  local title="$1" line
+  resolve_rebuild_targets || return $?
+  line=$(printf '%s\n' "$OPS_REBUILD_RESOLVED" | awk -F'|' -v t="$title" '$1 == t { print; exit }')
+  [[ -n "$line" ]] || return 1
+  printf '%s\n' "$line"
+}
+
+execute_ops_rebuild_targets() {
+  local targets="$1" line title requested source wid ref class generation action rc=0 refreshed before_rc before_hash
+  OPS_REBUILD_RESULTS=""
+  OPS_REBUILD_TARGETS="$targets"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    IFS='|' read -r title requested source wid ref class generation <<< "$line"
+    OPS_REBUILD_ACTIVE_TARGET="$line"
+    action="$class"
+    log "[audit] ops rebuild title start title=$title class=$class ref=${ref:-none} source=$source wid=$wid"
+    before_rc=0
+    verify_sidebar_targets "$title" target || before_rc=$?
+    [[ "$before_rc" -ne 2 ]] || {
+      OPS_REBUILD_RESULTS+="${OPS_REBUILD_RESULTS:+$'\n'}${title}|${class}|pre-verify-inconclusive|FAILED:2"
+      return 2
+    }
+    before_hash=$(_cmux_alert_hash "$VERIFY_SIDEBAR_REPORT")
+    log "[audit] ops rebuild pre-verify title=$title rc=$before_rc report_sha256=$before_hash"
+    case "$class" in
+      healthy) action=noop-healthy ;;
+      restored)
+        local FLYWHEEL_CMUX_ADOPTION_GRACE=0
+        recover_restored_transactions "$title" || rc=$?
+        if [[ "$rc" -eq 0 ]]; then
+          refreshed=$(_ops_refresh_resolved_line "$title") || rc=$?
+        fi
+        if [[ "$rc" -eq 0 ]]; then
+          IFS='|' read -r title requested source wid ref class generation <<< "$refreshed"
+          OPS_REBUILD_ACTIVE_TARGET="$refreshed"
+          case "$class" in
+            healthy) action=recovered-healthy ;;
+            absent) action=recovered-absent ;;
+            *) rc=1 ;;
+          esac
+        fi
+        ;;
+      W1|W1p|W1dead)
+        local kind expected_state
+        kind="$class"; expected_state=none
+        [[ "$class" == W1p ]] && expected_state=prepared
+        _ops_adopt_restored_candidate "$kind" "$generation" "$ref" "$title" "$expected_state" || rc=$?
+        action="adopt-${class}"
+        ;;
+      W2)
+        dismantle_view_display "$title" ops-rebuild || rc=$?
+        action="dismantle-${DISMANTLE_OUTCOME:-failed}"
+        ;;
+      absent) action=already-absent ;;
+      *) rc=2 ;;
+    esac
+    if [[ "$rc" -eq 0 && "$source" != "absent" && "$class" != healthy \
+        && "$class" != restored ]]; then
+      create_workspace_for_window "$source" "$wid" "$title" || rc=$?
+      action="${action}+create"
+    elif [[ "$rc" -eq 0 && "$source" != "absent" && "$class" == restored \
+        && "$action" == recovered-absent ]]; then
+      create_workspace_for_window "$source" "$wid" "$title" || rc=$?
+      action="${action}+create"
+    fi
+    if [[ "$rc" -eq 0 ]]; then
+      verify_sidebar_targets "$title" target || rc=$?
+    fi
+    if [[ "$rc" -eq 0 ]]; then
+      OPS_REBUILD_RESULTS+="${OPS_REBUILD_RESULTS:+$'\n'}${title}|${class}|before:${before_rc}:${before_hash}|${action}|PASS"
+      log "[audit] ops rebuild title complete title=$title action=$action"
+    else
+      OPS_REBUILD_RESULTS+="${OPS_REBUILD_RESULTS:+$'\n'}${title}|${class}|before:${before_rc}:${before_hash}|${action}|FAILED:${rc}"
+      log "ERROR: ops rebuild stopped title=$title class=$class action=$action rc=$rc report=${VERIFY_SIDEBAR_REPORT:-none}"
+      OPS_REBUILD_ACTIVE_TARGET=""
+      return "$rc"
+    fi
+  done <<< "$targets"
+  OPS_REBUILD_ACTIVE_TARGET=""
+  return 0
+}
+
+OPS_REBUILD_REPORT_PATH=""
+write_ops_rebuild_report() {
+  local preflight="$1" result_rc="$2" timestamp nonce tmp
+  timestamp=$(date -u '+%Y%m%dT%H%M%SZ') || return 1
+  nonce="${MUTATOR_LEASE_NONCE:-${OPS_CLAIM_NONCE:-$$}}"
+  case "$nonce" in ''|*[!A-Za-z0-9_.-]*) nonce="$$" ;; esac
+  mkdir -p "$CMUX_REBUILD_REPORT_DIR" 2>/dev/null || return 1
+  OPS_REBUILD_REPORT_PATH="$CMUX_REBUILD_REPORT_DIR/${timestamp}-${nonce}.txt"
+  tmp=$(mktemp "${OPS_REBUILD_REPORT_PATH}.XXXXXX" 2>/dev/null) || return 1
+  {
+    printf 'FLY-1596 cmux ops rebuild\n'
+    printf 'timestamp_utc=%s\n' "$timestamp"
+    printf 'pid=%s\n' "$$"
+    printf 'result_rc=%s\n' "$result_rc"
+    printf 'preflight:\n%s\n' "$preflight"
+    printf 'results:\n%s\n' "${OPS_REBUILD_RESULTS:-none}"
+    printf 'verify:\n%s\n' "${VERIFY_SIDEBAR_REPORT:-not-run}"
+  } > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$OPS_REBUILD_REPORT_PATH" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  printf 'report=%s\n' "$OPS_REBUILD_REPORT_PATH"
+}
+
+run_rebuild_views() {
+  local preflight refreshed rc=0 lease_rc=0 waited=0 wait_limit
+  parse_rebuild_views_args "$@" || {
+    log "ERROR: invalid --rebuild-views arguments"
+    return 2
+  }
+  resolve_rebuild_targets || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    log "ERROR: rebuild semantic preflight refused rc=$rc"
+    return "$rc"
+  fi
+  preflight="$OPS_REBUILD_RESOLVED"
+  printf 'cmux rebuild plan:\n%s\n' "$preflight"
+  [[ "$OPS_REBUILD_EXECUTE" == 1 ]] || return 0
+
+  if [[ "$OPS_REBUILD_HANDOVER" == 1 ]]; then
+    publish_ops_rebuild_claim || {
+      log "ERROR: unable to publish ops_rebuild handover claim"
+      return 1
+    }
+  fi
+  trap 'release_mutator_lease; release_ops_rebuild_claim' EXIT
+  trap 'release_mutator_lease; release_ops_rebuild_claim; exit 130' INT
+  trap 'release_mutator_lease; release_ops_rebuild_claim; exit 143' TERM
+  wait_limit="${FLYWHEEL_CMUX_OPS_HANDOVER_SECONDS:-90}"
+  case "$wait_limit" in ''|*[!0-9]*) wait_limit=90 ;; esac
+  (( wait_limit > 300 )) && wait_limit=300
+  while true; do
+    lease_rc=0; acquire_mutator_lease ops_rebuild || lease_rc=$?
+    [[ "$lease_rc" -eq 0 ]] && break
+    if [[ "$lease_rc" -eq 2 || "$OPS_REBUILD_HANDOVER" != 1 || "$waited" -ge "$wait_limit" ]]; then
+      log "ERROR: ops rebuild could not acquire mutator lease rc=$lease_rc waited=${waited}s"
+      release_ops_rebuild_claim
+      trap - EXIT INT TERM
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if ! maintenance_entry_allowed ops_rebuild; then
+    rc=1
+  else
+    resolve_rebuild_targets || rc=$?
+    refreshed="$OPS_REBUILD_RESOLVED"
+    if [[ "$rc" -eq 0 && "$refreshed" != "$preflight" ]]; then
+      log "ERROR: ops rebuild preflight drifted during handoff; zero target mutation performed"
+      rc=1
+    fi
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    execute_ops_rebuild_targets "$refreshed" || rc=$?
+  fi
+  write_ops_rebuild_report "$preflight" "$rc" || {
+    log "ERROR: unable to persist ops rebuild audit report"
+    [[ "$rc" -ne 0 ]] || rc=1
+  }
+  _alert_cmux_cleanup \
+    "cmux ops rebuild completed" \
+    "FLY-1596 audited rebuild finished rc=$rc report=${OPS_REBUILD_REPORT_PATH:-unavailable}." \
+    "cmux_cleanup|ops-rebuild|pid=$$|rc=$rc"
+  release_mutator_lease
+  release_ops_rebuild_claim
+  trap - EXIT INT TERM
+  return "$rc"
+}
+
+run_verify_sidebar() {
+  local rc=0 status reason caveat authority_mode=global
+  VERIFY_SIDEBAR_REPORT=""
+  VERIFY_SIDEBAR_REASONS=""
+  VERIFY_SIDEBAR_CAVEATS=""
+  if ! parse_verify_sidebar_args "$@"; then
+    rc=2
+    _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS \
+      "invalid-arguments: expected repeated --target TITLE and optional --json"
+  else
+    [[ -n "$OPS_VERIFY_TARGETS" ]] && authority_mode=target
+    _resolve_sidebar_subjects || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+      verify_sidebar_targets "$OPS_VERIFY_TARGETS" "$authority_mode" || rc=$?
+    fi
+  fi
+  if [[ "$rc" -eq 2 && -z "$VERIFY_SIDEBAR_REASONS" ]]; then
+    _verify_sidebar_append_unique VERIFY_SIDEBAR_REASONS \
+      "sidebar-authority-unavailable: conclusive verification was not possible"
+  fi
+  if [[ "$OPS_VERIFY_JSON" == 1 ]]; then
+    [[ "$rc" == 0 ]] && status=pass || { [[ "$rc" == 1 ]] && status=fail || status=inconclusive; }
+    python3 -c 'import json,sys; print(json.dumps({"status":sys.argv[1],"exit_code":int(sys.argv[2]),"report":sys.argv[3].splitlines(),"reasons":sys.argv[4].splitlines(),"caveats":sys.argv[5].splitlines()},sort_keys=True))' \
+      "$status" "$rc" "$VERIFY_SIDEBAR_REPORT" "$VERIFY_SIDEBAR_REASONS" "$VERIFY_SIDEBAR_CAVEATS"
+  else
+    [[ -n "$VERIFY_SIDEBAR_REPORT" ]] && printf '%s\n' "$VERIFY_SIDEBAR_REPORT"
+    if [[ "$rc" -eq 2 ]]; then
+      while IFS= read -r reason; do
+        [[ -n "$reason" ]] && printf 'INCONCLUSIVE %s\n' "$reason"
+      done <<< "$VERIFY_SIDEBAR_REASONS"
+    fi
+    while IFS= read -r caveat; do
+      [[ -n "$caveat" ]] && printf 'CAVEAT %s\n' "$caveat"
+    done <<< "$VERIFY_SIDEBAR_CAVEATS"
+  fi
+  return "$rc"
 }
 
 # FLY-254 (gap a): unhealthy-state sleep with app-open edge detection.
@@ -6745,6 +8754,8 @@ WATCHER_PASS_ACTIVE=0
 WATCHER_RESYNC_REQUIRED=0
 QA_CLAIM_DEAD_SIGNATURE=""
 QA_CLAIM_DEAD_OBSERVATIONS=0
+OPS_CLAIM_DEAD_SIGNATURE=""
+OPS_CLAIM_DEAD_OBSERVATIONS=0
 
 _process_incarnation() {
   local pid="$1" started
@@ -6778,7 +8789,7 @@ _read_mutator_owner() {
   [[ "$fields" == "4" ]] || return 2
   IFS='|' read -r MUTATOR_OWNER_PID MUTATOR_OWNER_INCARNATION MUTATOR_OWNER_MODE MUTATOR_OWNER_NONCE <<< "$line"
   case "$MUTATOR_OWNER_PID" in ''|*[!0-9]*) return 2 ;; esac
-  case "$MUTATOR_OWNER_MODE" in watch|bootstrap|once|refresh|reaper|qa_teardown) ;; *) return 2 ;; esac
+  case "$MUTATOR_OWNER_MODE" in watch|bootstrap|once|refresh|reaper|qa_teardown|ops_rebuild) ;; *) return 2 ;; esac
   case "$MUTATOR_OWNER_NONCE" in ''|*[!A-Za-z0-9_.-]*) return 2 ;; esac
   MUTATOR_OWNER_INCARNATION=$(printf '%s' "$MUTATOR_OWNER_INCARNATION" \
     | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -6824,9 +8835,39 @@ _qa_claim_owner_matches() {
   [[ "$observed" == "$QA_CLAIM_INCARNATION" ]]
 }
 
+OPS_REBUILD_CLAIM_LINE=""
+_read_ops_rebuild_claim() {
+  local file="$CMUX_OPS_REBUILD_CLAIM" line fields bytes
+  [[ -e "$file" || -L "$file" ]] || return 1
+  [[ -f "$file" && ! -L "$file" ]] || return 2
+  bytes=$(wc -c < "$file" 2>/dev/null | tr -d ' ') || return 2
+  case "$bytes" in ''|*[!0-9]*) return 2 ;; esac
+  (( bytes <= 4096 )) || return 2
+  [[ "$(wc -l < "$file" 2>/dev/null | tr -d ' ')" == "1" ]] || return 2
+  line=$(cat "$file" 2>/dev/null) || return 2
+  fields=$(printf '%s\n' "$line" | awk -F'|' '{print NF}')
+  [[ "$fields" == "4" ]] || return 2
+  IFS='|' read -r OPS_CLAIM_PID OPS_CLAIM_INCARNATION OPS_CLAIM_MODE OPS_CLAIM_NONCE <<< "$line"
+  case "$OPS_CLAIM_PID" in ''|*[!0-9]*) return 2 ;; esac
+  [[ "$OPS_CLAIM_MODE" == "ops_rebuild" ]] || return 2
+  case "$OPS_CLAIM_NONCE" in ''|*[!A-Za-z0-9_.-]*) return 2 ;; esac
+  OPS_CLAIM_INCARNATION=$(printf '%s' "$OPS_CLAIM_INCARNATION" \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [[ -n "$OPS_CLAIM_INCARNATION" ]] || return 2
+  OPS_CLAIM_LINE="$line"
+}
+
+_ops_claim_owner_matches() {
+  local observed
+  kill -0 "$OPS_CLAIM_PID" 2>/dev/null || return 1
+  observed=$(_process_incarnation "$OPS_CLAIM_PID") || return 1
+  [[ "$observed" == "$OPS_CLAIM_INCARNATION" ]]
+}
+
 maintenance_requested() {
   [[ -e "$CMUX_MAINTENANCE_MARKER" || -L "$CMUX_MAINTENANCE_MARKER" \
-     || -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" ]]
+     || -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" \
+     || -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]]
 }
 
 _alert_malformed_qa_teardown_claim() {
@@ -6838,6 +8879,18 @@ _alert_malformed_qa_teardown_claim() {
   _alert_cmux_cleanup \
     "cmux QA teardown claim malformed" \
     "cmux-sync parked fail-closed because $CMUX_QA_TEARDOWN_CLAIM is malformed or unsafe; sha256=$hash." \
+    "$signature"
+}
+
+_alert_malformed_ops_rebuild_claim() {
+  local bytes hash signature
+  bytes=$(cat "$CMUX_OPS_REBUILD_CLAIM" 2>/dev/null || printf '<unreadable>')
+  hash=$(_cmux_alert_hash "$bytes")
+  signature="cmux_cleanup|ops-rebuild-claim-malformed|sha256=$hash"
+  log "ERROR: malformed ops_rebuild claim preserved fail-closed path=$CMUX_OPS_REBUILD_CLAIM sha256=$hash"
+  _alert_cmux_cleanup \
+    "cmux ops rebuild claim malformed" \
+    "cmux-sync parked fail-closed because $CMUX_OPS_REBUILD_CLAIM is malformed or unsafe; sha256=$hash." \
     "$signature"
 }
 
@@ -7094,6 +9147,58 @@ _lock_claim_fence_fd() {
   return 2
 }
 
+publish_ops_rebuild_claim() {
+  local dir incarnation nonce line temp mutex_rc=0 fence_rc=0 readback
+  [[ ! -e "$CMUX_MAINTENANCE_MARKER" && ! -L "$CMUX_MAINTENANCE_MARKER" \
+      && ! -e "$CMUX_QA_TEARDOWN_CLAIM" && ! -L "$CMUX_QA_TEARDOWN_CLAIM" \
+      && ! -e "$CMUX_OPS_REBUILD_CLAIM" && ! -L "$CMUX_OPS_REBUILD_CLAIM" ]] || return 1
+  dir=$(dirname "$CMUX_OPS_REBUILD_CLAIM")
+  mkdir -p "$dir" 2>/dev/null || return 1
+  incarnation=$(_process_incarnation "$$") || return 1
+  nonce="$(date +%s)-$$-$RANDOM"
+  line="$$|${incarnation}|ops_rebuild|${nonce}"
+  temp=$(mktemp "${CMUX_OPS_REBUILD_CLAIM}.tmp.XXXXXX" 2>/dev/null) || return 1
+  exec 6>"$temp" || { rm -f "$temp"; return 1; }
+  printf '%s\n' "$line" >&6 || { exec 6>&-; rm -f "$temp"; return 1; }
+  _lock_claim_fence_fd 6 || fence_rc=$?
+  if [[ "$fence_rc" -ne 0 ]]; then
+    exec 6>&-; rm -f "$temp"; return 1
+  fi
+  _acquire_reap_mutex || mutex_rc=$?
+  if [[ "$mutex_rc" -ne 0 ]]; then
+    exec 6>&-; rm -f "$temp"; return 1
+  fi
+  if [[ -e "$CMUX_MAINTENANCE_MARKER" || -L "$CMUX_MAINTENANCE_MARKER" \
+      || -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" \
+      || -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]] \
+      || ! ln "$temp" "$CMUX_OPS_REBUILD_CLAIM" 2>/dev/null; then
+    _release_reap_mutex; exec 6>&-; rm -f "$temp"; return 1
+  fi
+  readback=$(cat "$CMUX_OPS_REBUILD_CLAIM" 2>/dev/null || true)
+  if [[ "$readback" != "$line" ]]; then
+    [[ "$(cat "$CMUX_OPS_REBUILD_CLAIM" 2>/dev/null || true)" == "$line" ]] \
+      && rm -f "$CMUX_OPS_REBUILD_CLAIM" 2>/dev/null || true
+    _release_reap_mutex; exec 6>&-; rm -f "$temp"; return 1
+  fi
+  rm -f "$temp"
+  OPS_REBUILD_CLAIM_LINE="$line"
+  _release_reap_mutex
+  log "[audit] ops_rebuild handover claim published pid=$$ path=$CMUX_OPS_REBUILD_CLAIM"
+}
+
+release_ops_rebuild_claim() {
+  local observed
+  if [[ -n "$OPS_REBUILD_CLAIM_LINE" ]]; then
+    observed=$(cat "$CMUX_OPS_REBUILD_CLAIM" 2>/dev/null || true)
+    if [[ "$observed" == "$OPS_REBUILD_CLAIM_LINE" ]]; then
+      rm -f "$CMUX_OPS_REBUILD_CLAIM" 2>/dev/null \
+        || log "WARN: unable to remove owned ops_rebuild claim at $CMUX_OPS_REBUILD_CLAIM"
+    fi
+  fi
+  exec 6>&- 2>/dev/null || true
+  OPS_REBUILD_CLAIM_LINE=""
+}
+
 _reap_stale_qa_teardown_claim() {
   local mutex_rc=0 claim_rc=0 fence_rc=0 signature observed
   [[ -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" ]] || {
@@ -7159,10 +9264,67 @@ _reap_stale_qa_teardown_claim() {
   QA_CLAIM_DEAD_OBSERVATIONS=0
 }
 
+_reap_stale_ops_rebuild_claim() {
+  local mutex_rc=0 claim_rc=0 fence_rc=0 signature observed
+  [[ -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]] || {
+    OPS_CLAIM_DEAD_SIGNATURE=""
+    OPS_CLAIM_DEAD_OBSERVATIONS=0
+    return 0
+  }
+  _acquire_reap_mutex || mutex_rc=$?
+  if [[ "$mutex_rc" -ne 0 ]]; then
+    [[ "$mutex_rc" -eq 2 ]] \
+      && log "ERROR: ops_rebuild claim reap mutex unavailable; claim preserved fail-closed"
+    return "$mutex_rc"
+  fi
+  _read_ops_rebuild_claim || claim_rc=$?
+  if [[ "$claim_rc" -ne 0 ]]; then
+    _release_reap_mutex
+    _alert_malformed_ops_rebuild_claim
+    return 2
+  fi
+  if _ops_claim_owner_matches; then
+    OPS_CLAIM_DEAD_SIGNATURE=""
+    OPS_CLAIM_DEAD_OBSERVATIONS=0
+    _release_reap_mutex
+    return 1
+  fi
+  signature=$(_cmux_alert_hash "$OPS_CLAIM_LINE")
+  if [[ "$OPS_CLAIM_DEAD_SIGNATURE" != "$signature" ]]; then
+    OPS_CLAIM_DEAD_SIGNATURE="$signature"
+    OPS_CLAIM_DEAD_OBSERVATIONS=1
+    _release_reap_mutex
+    return 1
+  fi
+  OPS_CLAIM_DEAD_OBSERVATIONS=$((OPS_CLAIM_DEAD_OBSERVATIONS + 1))
+  if (( OPS_CLAIM_DEAD_OBSERVATIONS < 2 )); then
+    _release_reap_mutex
+    return 1
+  fi
+  exec 7<"$CMUX_OPS_REBUILD_CLAIM" || { _release_reap_mutex; return 1; }
+  _lock_claim_fence_fd 7 || fence_rc=$?
+  if [[ "$fence_rc" -ne 0 ]]; then
+    exec 7>&-; _release_reap_mutex
+    [[ "$fence_rc" -eq 2 ]] \
+      && log "ERROR: ops_rebuild claim activity fence unavailable; claim preserved fail-closed"
+    return "$fence_rc"
+  fi
+  observed=$(cat "$CMUX_OPS_REBUILD_CLAIM" 2>/dev/null || true)
+  if [[ "$observed" != "$OPS_CLAIM_LINE" ]] \
+      || ! rm -f "$CMUX_OPS_REBUILD_CLAIM" 2>/dev/null; then
+    exec 7>&-; _release_reap_mutex; return 1
+  fi
+  exec 7>&-
+  _release_reap_mutex
+  log "[audit] reaped dead ops_rebuild claim pid=$OPS_CLAIM_PID path=$CMUX_OPS_REBUILD_CLAIM"
+  OPS_CLAIM_DEAD_SIGNATURE=""
+  OPS_CLAIM_DEAD_OBSERVATIONS=0
+}
+
 acquire_mutator_lease() {
   local mode="$1" read_rc=0 attempt=0 class_rc=0 create_rc=0
   local quarantine="" rebuild_reason="" had_old=0 restore_rc=0 prune_rc=0
-  case "$mode" in watch|bootstrap|once|refresh|reaper|qa_teardown) ;; *) return 2 ;; esac
+  case "$mode" in watch|bootstrap|once|refresh|reaper|qa_teardown|ops_rebuild) ;; *) return 2 ;; esac
   while (( attempt < 3 )); do
     attempt=$((attempt + 1))
     if [[ -L "$WATCHER_LOCK_DIR" \
@@ -7329,10 +9491,24 @@ _maintenance_poll_seconds() {
 }
 
 maintenance_entry_allowed() {
-  local mode="$1" logged=0 wait_s
+  local mode="$1" logged=0 wait_s claim_rc=0
   wait_s=$(_maintenance_poll_seconds)
   if [[ "$mode" == "watch" ]]; then
     [[ -e "$CMUX_MAINTENANCE_MARKER" || -L "$CMUX_MAINTENANCE_MARKER" ]] || return 0
+  elif [[ "$mode" == "ops_rebuild" ]]; then
+    if [[ ! -e "$CMUX_MAINTENANCE_MARKER" && ! -L "$CMUX_MAINTENANCE_MARKER" \
+        && ! -e "$CMUX_QA_TEARDOWN_CLAIM" && ! -L "$CMUX_QA_TEARDOWN_CLAIM" \
+        && ! -e "$CMUX_OPS_REBUILD_CLAIM" && ! -L "$CMUX_OPS_REBUILD_CLAIM" ]]; then
+      return 0
+    fi
+    [[ ! -e "$CMUX_MAINTENANCE_MARKER" && ! -L "$CMUX_MAINTENANCE_MARKER" \
+        && ! -e "$CMUX_QA_TEARDOWN_CLAIM" && ! -L "$CMUX_QA_TEARDOWN_CLAIM" ]] || return 1
+    _read_ops_rebuild_claim || claim_rc=$?
+    [[ "$claim_rc" -eq 0 && -n "$OPS_REBUILD_CLAIM_LINE" \
+        && "$OPS_CLAIM_LINE" == "$OPS_REBUILD_CLAIM_LINE" \
+        && "$OPS_CLAIM_PID" == "$$" ]] || return 1
+    _ops_claim_owner_matches
+    return $?
   else
     maintenance_requested || return 0
   fi
@@ -7355,7 +9531,7 @@ watcher_maintenance_checkpoint() {
   # Keep one operational cadence and one default for both maintenance entry
   # and the yielded/parked watcher state. One second preserves the stale-claim
   # two-observation recovery bound (~2s) while teardown has a 60s handoff budget.
-  local poll_s release_logged=0 reap_rc=0
+  local poll_s release_logged=0
   poll_s=$(_maintenance_poll_seconds)
   while maintenance_requested; do
     if mutator_lease_owned_by_self; then
@@ -7373,7 +9549,10 @@ watcher_maintenance_checkpoint() {
       WATCHER_RESYNC_REQUIRED=1
     fi
     if [[ -e "$CMUX_QA_TEARDOWN_CLAIM" || -L "$CMUX_QA_TEARDOWN_CLAIM" ]]; then
-      reap_rc=0; _reap_stale_qa_teardown_claim || reap_rc=$?
+      _reap_stale_qa_teardown_claim || true
+    fi
+    if [[ -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]]; then
+      _reap_stale_ops_rebuild_claim || true
     fi
     maintenance_requested && sleep "$poll_s"
   done
@@ -7596,6 +9775,14 @@ case "${1:-}" in
     # live --watch (narrow + idempotent + per-ref final revalidation).
     run_mutator_once reaper reap_orphan_pins_oneshot
     ;;
+  --rebuild-views)
+    shift
+    run_rebuild_views "$@"
+    ;;
+  --verify-sidebar)
+    shift
+    run_verify_sidebar "$@"
+    ;;
   --probe-lease)
     # Read-only migration gate: absent passes; a live owner waits within the
     # configured budget; malformed/stale-present state fails closed and is
@@ -7603,7 +9790,7 @@ case "${1:-}" in
     probe_mutator_lease
     ;;
   *)
-    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--probe-lease|--wait-for-watcher-exit|--list-lead-refs|--list-orphan-pins|--reap-orphan-pins]"
+    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--probe-lease|--wait-for-watcher-exit|--list-lead-refs|--list-orphan-pins|--reap-orphan-pins|--rebuild-views|--verify-sidebar]"
     echo "  --once              Full sync with aggressive cleanup (cmux + tmux). Manual use from inside cmux."
     echo "  --watch             Event-signaled polling (hooks + 15s drain + 60s additive). From inside cmux."
     echo "  --refresh           tmux-only linked session repair. Safe from anywhere."
@@ -7612,6 +9799,9 @@ case "${1:-}" in
     echo "  --list-lead-refs    Print Lead cmux workspace refs (Phase 8 Path A)."
     echo "  --list-orphan-pins  FLY-293: print orphan runner cmux pins (read-only preview)."
     echo "  --reap-orphan-pins  FLY-293: close orphan runner cmux pins now (one-shot, revalidated)."
+    echo "  --rebuild-views     FLY-1596: audited rebuild; requires --all-leads or repeated --target T[=workspace:N]."
+    echo "                      Add --execute to mutate; add --handover to make the resident watcher yield."
+    echo "  --verify-sidebar    FLY-1596: read-only terminal-state judge; accepts repeated --target T and --json."
     exit 1
     ;;
 esac

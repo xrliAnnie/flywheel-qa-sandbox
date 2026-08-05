@@ -1,0 +1,17 @@
+flowchart TD
+    subgraph P0["第一层:不再自毁(Fix 1)"]
+        F1["迁移顺序反转:先证明建设的一半能完成<br/>才允许动破坏的一半;所有失败必留日志"]
+    end
+    subgraph P1["第二层:自己会好(Fix 2)"]
+        F2["cmux 重启恢复出的孤儿行 → 自动收编重建<br/>21 行决策表管全部崩溃/重启中间态"]
+    end
+    subgraph P2["第三层:运维有路(Fix 3)"]
+        F3["flywheel-cmux-sync --rebuild-views<br/>守护进程主动让位 → 带审计重建 → 自动复岗<br/>(替代一切手敲命令)"]
+    end
+    subgraph P3["第四层:结果有判官(Fix 4)"]
+        F4["--verify-sidebar 只读体检:<br/>活的必有行 · 死的必无行 · 画面真在动"]
+    end
+    F1 --> F2 --> ACC["验收:任何重启后 ≤5 分钟<br/>侧栏全员在列且画面真活(机器判定,禁 stub)"]
+    F3 --> ACC
+    F4 --> ACC
+    style ACC fill:#e6f9ec,stroke:#34c759

@@ -39,6 +39,7 @@ CMUX_MUTATOR_LOCK_DIR="${FLYWHEEL_CMUX_WATCHER_LOCK_DIR:-/tmp/flywheel-cmux-watc
 CMUX_MUTATOR_REAP_MUTEX="${CMUX_MUTATOR_LOCK_DIR}.reap"
 CMUX_MAINTENANCE_MARKER="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/state/cmux-maintenance}"
 CMUX_QA_TEARDOWN_CLAIM="${CMUX_MAINTENANCE_MARKER}.qa-teardown"
+CMUX_OPS_REBUILD_CLAIM="${CMUX_MAINTENANCE_MARKER}.ops-rebuild"
 CMUX_VIEW_WAL_DIR="${FLYWHEEL_CMUX_VIEW_WAL_DIR:-$HOME/.flywheel/state/cmux-view-wal}"
 CMUX_LEASE_NONCE=""
 CMUX_LEASE_INCARNATION=""
@@ -73,7 +74,7 @@ read_cmux_mutator_owner() {
   [[ "$fields" == "4" ]] || return 2
   IFS='|' read -r CMUX_OWNER_PID CMUX_OWNER_INCARNATION CMUX_OWNER_MODE CMUX_OWNER_NONCE <<< "$line"
   case "$CMUX_OWNER_PID" in ''|*[!0-9]*) return 2 ;; esac
-  case "$CMUX_OWNER_MODE" in watch|bootstrap|once|refresh|reaper|qa_teardown) ;; *) return 2 ;; esac
+  case "$CMUX_OWNER_MODE" in watch|bootstrap|once|refresh|reaper|qa_teardown|ops_rebuild) ;; *) return 2 ;; esac
   case "$CMUX_OWNER_NONCE" in ''|*[!A-Za-z0-9_.-]*) return 2 ;; esac
   CMUX_OWNER_INCARNATION=$(printf '%s' "$CMUX_OWNER_INCARNATION" \
     | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -416,6 +417,10 @@ acquire_cmux_qa_teardown_claim() {
     log "ERROR: cmux maintenance marker present at ${CMUX_MAINTENANCE_MARKER}; refusing teardown"
     return 1
   }
+  [[ ! -e "$CMUX_OPS_REBUILD_CLAIM" && ! -L "$CMUX_OPS_REBUILD_CLAIM" ]] || {
+    log "ERROR: cmux ops_rebuild claim present at ${CMUX_OPS_REBUILD_CLAIM}; refusing teardown"
+    return 1
+  }
   dir=$(dirname "$CMUX_QA_TEARDOWN_CLAIM")
   mkdir -p "$dir" 2>/dev/null || return 1
   incarnation=$(cmux_process_incarnation "$$") || return 1
@@ -465,6 +470,11 @@ acquire_cmux_qa_teardown_claim() {
       return 1
     fi
     exec 7>&-
+  fi
+  if [[ -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]]; then
+    cmux_release_reap_mutex; exec 8>&-; rm -f "$temp"
+    log "ERROR: cmux ops_rebuild claim appeared during QA claim publication; refusing teardown"
+    return 1
   fi
   if ! ln "$temp" "$CMUX_QA_TEARDOWN_CLAIM" 2>/dev/null; then
     cmux_release_reap_mutex; exec 8>&-; rm -f "$temp"
@@ -1036,6 +1046,10 @@ test_teardown_main() {
     log "ERROR: cmux maintenance marker present at ${CMUX_MAINTENANCE_MARKER}; refusing whole teardown"
     return 1
   fi
+  if [[ -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]]; then
+    log "ERROR: cmux ops_rebuild claim present at ${CMUX_OPS_REBUILD_CLAIM}; refusing whole teardown"
+    return 1
+  fi
   if ! acquire_cmux_qa_teardown_claim; then
     log "ERROR: unable to publish qa_teardown yield claim; no teardown action taken"
     return 1
@@ -1051,8 +1065,9 @@ test_teardown_main() {
 
   # Recheck after lease handoff: a foreign migration can begin while teardown
   # waits. In that case release both owned resources and mutate nothing.
-  if [[ -e "$CMUX_MAINTENANCE_MARKER" || -L "$CMUX_MAINTENANCE_MARKER" ]]; then
-    log "ERROR: cmux maintenance marker present at ${CMUX_MAINTENANCE_MARKER}; refusing whole teardown"
+  if [[ -e "$CMUX_MAINTENANCE_MARKER" || -L "$CMUX_MAINTENANCE_MARKER" \
+      || -e "$CMUX_OPS_REBUILD_CLAIM" || -L "$CMUX_OPS_REBUILD_CLAIM" ]]; then
+    log "ERROR: foreign cmux maintenance authority appeared after QA handoff; refusing whole teardown"
     return 1
   fi
 

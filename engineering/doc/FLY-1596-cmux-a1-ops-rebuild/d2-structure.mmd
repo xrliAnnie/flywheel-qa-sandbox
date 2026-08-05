@@ -1,0 +1,17 @@
+flowchart LR
+    subgraph TMUX["tmux(终端服务器)"]
+        W["源窗口<br/>每个 Lead 一个,真正干活的终端"]
+        V["视图会话 cmux-〈名字〉<br/>只放一个窗口的「单间」"]
+    end
+    subgraph CMUX["cmux(侧栏应用)"]
+        R["侧栏行 workspace<br/>Annie 看到并点击的那一行"]
+    end
+    subgraph STATE["守护进程的账本(磁盘)"]
+        L["收据账本 ledger<br/>「这行是我建的」的产权证"]
+        M["restoredv1 在途标记(本单新增)<br/>「这行正在被收编,谁都别动」"]
+    end
+    W -->|"只放它一个"| V
+    R -->|"打开就连到"| V
+    L -.->|"授权 建/拆"| R
+    M -.->|"围住所有消费者"| L
+    style M fill:#e8f4ff,stroke:#007aff

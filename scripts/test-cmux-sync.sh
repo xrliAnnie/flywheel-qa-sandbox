@@ -38,6 +38,9 @@ fail() { echo "  ✗ $1"; FAIL=$((FAIL + 1)); }
 # Isolate file-based state in a tempdir
 TMPDIR_ROOT=$(mktemp -d)
 TMUX_INT_SOCKET=""
+export FLYWHEEL_LEAD_PLIST_DIR="$TMPDIR_ROOT/lead-plists"
+export FLYWHEEL_MANIFEST_DIR="$TMPDIR_ROOT/manifests"
+mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
 cleanup_test_state() {
   if [[ -n "$TMUX_INT_SOCKET" ]] && command -v tmux >/dev/null 2>&1; then
     command tmux -S "$TMUX_INT_SOCKET" kill-server 2>/dev/null || true
@@ -59,11 +62,14 @@ export HUSK_STATE="$TMPDIR_ROOT/husk.state"  # FLY-867
 export VIEW_WAL_DIR="$TMPDIR_ROOT/view-wal"  # FLY-1272
 export VIEW_LEDGER="$TMPDIR_ROOT/view-ledger"  # FLY-1272
 export KEEPER_INVENTORY="$TMPDIR_ROOT/keeper-inventory"  # FLY-1272
+export RESTORED_STATE="$TMPDIR_ROOT/restored-adoption"  # FLY-1596
 export VIEW_ABSENT_STATE="$TMPDIR_ROOT/view-absent.state"  # FLY-1272
 export FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMPDIR_ROOT/cmux-maintenance"  # FLY-1272
+export FLYWHEEL_CMUX_REBUILD_REPORT_DIR="$TMPDIR_ROOT/cmux-rebuild-reports"  # FLY-1596
 export CMUX_FLAG_STATE="$TMPDIR_ROOT/cmux-flag-state"  # FLY-1364
 export LEDGER_CONFLICT_STATE="$TMPDIR_ROOT/ledger-conflict.state"  # FLY-1446
 export ROSTER_EPISODE_STATE="$TMPDIR_ROOT/roster-episodes.state"  # FLY-1446
+export CMUX_LOG_EPISODE_STATE="$TMPDIR_ROOT/cmux-log-episodes.state"  # FLY-1596
 export FLYWHEEL_CMUX_TMUX_GENERATION="tmux-test-generation"  # FLY-1272
 export FLYWHEEL_CMUX_CLEANUP_DELAY=30
 export FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP=300
@@ -700,6 +706,10 @@ r=sys.argv[1]; d=json.load(sys.stdin)
 d["workspaces"]=[w for w in d.get("workspaces",[]) if w.get("ref") != r]
 print(json.dumps(d))' "$close_ref")
         MOCK_CMUX_WORKSPACES_JSON="$close_json"
+        if [[ "${MOCK_CMUX_MUTATE_SURFACES:-0}" == "1" ]]; then
+          MOCK_CMUX_SURFACES=$(printf '%s\n' "$MOCK_CMUX_SURFACES" \
+            | awk -F';;' -v r="$close_ref" '$1 != r')
+        fi
       fi
       ;;
     new-workspace)
@@ -726,6 +736,9 @@ title=None if sys.argv[2] == "__NULL__" else sys.argv[2]
 d.setdefault("workspaces",[]).append({"ref":sys.argv[1],"title":title})
 print(json.dumps(d))' "$next_ref" "$create_title")
         MOCK_CMUX_WORKSPACES_JSON="$new_json"
+        if [[ "${MOCK_CMUX_MUTATE_SURFACES:-0}" == "1" ]]; then
+          MOCK_CMUX_SURFACES+="${MOCK_CMUX_SURFACES:+$'\n'}${next_ref};;surface:${next_n};;terminal;;true;;${create_command}"
+        fi
       fi
       ;;
     rename-workspace)
@@ -970,6 +983,10 @@ reset_mocks() {
   rm -f "$ORPHAN_PIN_STATE" 2>/dev/null
   ADOPTION_STATE="$TMPDIR_ROOT/adoption.state"
   rm -f "$ADOPTION_STATE" 2>/dev/null
+  FLYWHEEL_CMUX_RESTORED_ADOPTION=1
+  FLYWHEEL_CMUX_ADOPTION_GRACE=300
+  FLYWHEEL_CMUX_ADOPTION_BUDGET=""
+  RESTORED_BOOTSTRAP_PASS=0
   # FLY-685: close-request marker file + kill-switch (default on).
   CLOSE_REQUEST_FILE="$TMPDIR_ROOT/close-requested"
   FLYWHEEL_CMUX_CLOSE_REQUEST=1
@@ -1032,22 +1049,38 @@ reset_mocks() {
   rm -f "$CMUX_SOCK_IDENT_FILE" "$TMPDIR_ROOT"/readscreen.n "$TMPDIR_ROOT"/wsjson.n "$TMPDIR_ROOT"/wsjson.[0-9]* 2>/dev/null
   rm -f "$TMPDIR_ROOT/cmux.next-ref"
   rm -rf "$VIEW_WAL_DIR"
-  rm -f "$VIEW_LEDGER" "$KEEPER_INVENTORY" "$VIEW_ABSENT_STATE" "$FLYWHEEL_CMUX_MAINTENANCE_MARKER"
+  rm -f "$VIEW_LEDGER" "$KEEPER_INVENTORY" "$RESTORED_STATE" "$VIEW_ABSENT_STATE" "$FLYWHEEL_CMUX_MAINTENANCE_MARKER"
+  rm -rf "${KEEPER_INVENTORY}.lock"
   CMUX_QA_TEARDOWN_CLAIM="${FLYWHEEL_CMUX_MAINTENANCE_MARKER}.qa-teardown"
+  CMUX_OPS_REBUILD_CLAIM="${FLYWHEEL_CMUX_MAINTENANCE_MARKER}.ops-rebuild"
   rm -f "$CMUX_QA_TEARDOWN_CLAIM"
+  rm -f "$CMUX_OPS_REBUILD_CLAIM"
   rm -f "$LEDGER_CONFLICT_STATE"
   rm -f "$ROSTER_EPISODE_STATE"
+  CMUX_LOG_EPISODE_STATE="$TMPDIR_ROOT/cmux-log-episodes.state"
+  rm -f "$CMUX_LOG_EPISODE_STATE"
   rm -f "$CMUX_FLAG_STATE" "$TMPDIR_ROOT/fly1364-alert-args"
   CMUX_CLEANUP_ALERT_LATCH=""
   CMUX_CLEANUP_ALERT_LATCH_COUNT=0
   CMUX_CLEANUP_ALERT_LATCH_GENERATION=""
   CMUX_CLEANUP_ALERT_SATURATION_WARNED=0
+  DISMANTLE_OUTCOME=""
+  DISMANTLE_REASON=""
   WATCHER_AUTHORITY_LOST=0
   WATCHER_AUTHORITY_FAILURE_STREAK=0
   WATCHER_PASS_ACTIVE=0
   WATCHER_RESYNC_REQUIRED=0
   QA_CLAIM_DEAD_SIGNATURE=""
   QA_CLAIM_DEAD_OBSERVATIONS=0
+  OPS_CLAIM_DEAD_SIGNATURE=""
+  OPS_CLAIM_DEAD_OBSERVATIONS=0
+  OPS_REBUILD_CLAIM_LINE=""
+  OPS_REBUILD_TARGETS=""
+  OPS_REBUILD_TARGET_SPECS=""
+  OPS_REBUILD_ACTIVE_TARGET=""
+  OPS_REBUILD_REPORT_PATH=""
+  CMUX_REBUILD_REPORT_DIR="$TMPDIR_ROOT/cmux-rebuild-reports"
+  rm -rf "$CMUX_REBUILD_REPORT_DIR"
   rm -rf "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" "${FLYWHEEL_CMUX_WATCHER_LOCK_DIR}.reap"
 }
 
@@ -5506,8 +5539,10 @@ test_fly1272_p1_source_gone_collision_escrows_stage() {
   wal=$(_view_wal_path "cmux-FLY-1272-implement")
   _write_view_wal "$wal" "tmux-test-generation" claim_intent collision \
     "cmux-FLY-1272-implement" "runner-flywheel" "@42" '$2' "@1000"
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
   recover_view_construction "cmux-FLY-1272-implement" >/dev/null 2>&1 || rc=$?
   keeper=$(awk -F'|' '$6 == "committed" { print $3; exit }' "$KEEPER_INVENTORY" 2>/dev/null || true)
+  release_mutator_lease
   if [[ "$rc" -ne 0 && -f "$wal" && "$keeper" == fwkeeper-* ]] \
       && topo_session_exists "$keeper" && topo_session_exists "cmux-FLY-1272-implement" \
       && ! topo_session_exists "fwstage-collision"; then
@@ -6044,6 +6079,7 @@ test_fly1272_p2_keeper_inventory_reconciliation() {
   printf 'tmux-test-generation|$3|fwkeeper-3-old|runner-old|@9|committed|1\n' > "$KEEPER_INVENTORY"
   printf 'malformed-row\n' >> "$KEEPER_INVENTORY"
   local rc=0 rebuilt malformed stale
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
   reconcile_keeper_inventory || rc=$?
   rebuilt=$(awk -F'|' '$2 == "$2" { print $1 "|" $2 "|" $3 "|" $4 "|" $5 "|" $6 }' "$KEEPER_INVENTORY" 2>/dev/null || true)
   malformed=$(grep -c '^malformed-row$' "$KEEPER_INVENTORY" 2>/dev/null || true)
@@ -6053,6 +6089,1245 @@ test_fly1272_p2_keeper_inventory_reconciliation() {
     pass "live keeper is reconstructed, missing committed identity is GCed, malformed row is non-authoritative and preserved"
   else
     fail "inventory reconcile rc=$rc rebuilt=[$rebuilt] malformed=$malformed stale=$stale rows=[$(cat "$KEEPER_INVENTORY" 2>/dev/null)]"
+  fi
+}
+
+test_fly1596_dismantle_proves_tmux_before_consuming_receipt() {
+  echo "Test: FLY-1596 Fix 1 — tmux refusal preserves the cmux row and exact receipt"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "FLY-1596-implement" 1 0
+  tmux new-session -d -t "runner-flywheel" -s "cmux-FLY-1596-implement"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-implement"}]}'
+  test_ledger_upsert committed "cmux-generation-1" "workspace:1596" "FLY-1596-implement"
+  MOCK_TOPO_RENAME_FAIL=1
+  MOCK_CMUX_OPS=""
+  local rc=0 ledger_row workspace_count
+
+  dismantle_view_display "FLY-1596-implement" "view-invariant-mismatch" \
+    >/dev/null 2>&1 || rc=$?
+  ledger_row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  workspace_count=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
+import json,sys
+print(sum(1 for w in json.load(sys.stdin)["workspaces"] if w.get("ref") == "workspace:1596"))
+')
+
+  if [[ "$rc" -ne 0 \
+      && "$DISMANTLE_OUTCOME" == "tmux-partial-recoverable" \
+      && -n "$DISMANTLE_REASON" \
+      && "$ledger_row" == "committed|cmux-generation-1|workspace:1596|FLY-1596-implement" \
+      && "$workspace_count" == "1" \
+      && ! "$MOCK_CMUX_OPS" =~ close-workspace ]]; then
+    pass "tmux-side failure is named and leaves the visible row plus receipt available for retry"
+  else
+    fail "dismantle consumed authority before tmux proof rc=$rc outcome=[$DISMANTLE_OUTCOME] reason=[$DISMANTLE_REASON] ledger=[$ledger_row] workspaces=$workspace_count ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1596_inventory_requires_lease_and_recovers_residual_lock() {
+  echo "Test: FLY-1596 Fix 1 — keeper inventory is lease-bound and recovers its crash lock"
+  reset_mocks
+  local unleased_rc=0 leased_rc=0 log_file="$TMPDIR_ROOT/fly1596-inventory.log"
+  _inventory_upsert tmux-test-generation '$51' fwkeeper-51 owner '@51' committed \
+    >/dev/null 2>&1 || unleased_rc=$?
+  rm -f "$KEEPER_INVENTORY"
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  mkdir -p "${KEEPER_INVENTORY}.lock"
+
+  _inventory_upsert tmux-test-generation '$52' fwkeeper-52 owner '@52' committed \
+    >/dev/null 2>"$log_file" || leased_rc=$?
+  release_mutator_lease
+
+  if [[ "$unleased_rc" -ne 0 && "$leased_rc" -eq 0 \
+      && "$(cat "$KEEPER_INVENTORY" 2>/dev/null || true)" == 'tmux-test-generation|$52|fwkeeper-52|owner|@52|committed|'* \
+      && ! -d "${KEEPER_INVENTORY}.lock" \
+      && "$(cat "$log_file")" == *"[audit] reaped stale keeper inventory lock"* ]]; then
+    pass "unleased inventory writes fail closed; the verified sole writer reaps a crash residue"
+  else
+    fail "inventory lease/lock contract mismatch unleased_rc=$unleased_rc leased_rc=$leased_rc row=[$(cat "$KEEPER_INVENTORY" 2>/dev/null)] lock=$([[ -d "${KEEPER_INVENTORY}.lock" ]] && echo present || echo absent) log=[$(cat "$log_file" 2>/dev/null)]"
+  fi
+}
+
+test_fly1596_inventory_reconciles_production_generation_token() {
+  echo "Test: FLY-1596 QA rework — keeper inventory reads and writes one production-generation token"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1
+  local saved_tmux_generation="$FLYWHEEL_CMUX_TMUX_GENERATION" rc=0 row
+  local production_tmux_generation='/private/tmp/tmux-501/default|51104|Wed Aug  5 07:00:00 2026'
+  local expected_inventory_generation
+  expected_inventory_generation="sha256:$(printf '%s' "$production_tmux_generation" | shasum -a 256 | awk '{print $1}')"
+  FLYWHEEL_CMUX_TMUX_GENERATION="$production_tmux_generation"
+  topo_add_session fwkeeper-52-cmux-FLY-1596-implement '$52' '' owner 0
+  topo_add_window fwkeeper-52-cmux-FLY-1596-implement '@52' FLY-1596-implement 1 0
+  printf '%s|$52|fwkeeper-52-cmux-FLY-1596-implement|owner|@52|prepared|1\n' \
+    "$expected_inventory_generation" > "$KEEPER_INVENTORY"
+  test_ensure_mutator_lease || {
+    FLYWHEEL_CMUX_TMUX_GENERATION="$saved_tmux_generation"
+    fail "cannot acquire fixture mutator lease"
+    return
+  }
+
+  reconcile_keeper_inventory >/dev/null 2>&1 || rc=$?
+  row=$(cat "$KEEPER_INVENTORY" 2>/dev/null || true)
+  release_mutator_lease
+  FLYWHEEL_CMUX_TMUX_GENERATION="$saved_tmux_generation"
+  if [[ "$rc" -eq 0 \
+      && "$row" == "$expected_inventory_generation|"'$52|fwkeeper-52-cmux-FLY-1596-implement|owner|@52|committed|'* ]]; then
+    pass "production generation is tokenized consistently across inventory reconciliation"
+  else
+    fail "production inventory reconciliation mismatch rc=$rc row=[$row] expected_generation=[$expected_inventory_generation]"
+  fi
+}
+
+test_fly1596_inventory_crash_boundaries_converge_under_next_lease_holder() {
+  echo "Test: FLY-1596 Fix 1 — inventory crash boundaries converge under the next lease holder"
+  reset_mocks
+  local base_inventory="$KEEPER_INVENTORY" base_lock="$FLYWHEEL_CMUX_WATCHER_LOCK_DIR"
+  local point case_dir child_rc rc row ok=1
+  for point in after-inner-mkdir after-inventory-tmp-write after-inventory-mv after-lock-rmdir; do
+    case_dir="$TMPDIR_ROOT/fly1596-inventory-crash-$point"
+    mkdir -p "$case_dir"
+    child_rc=0
+    KEEPER_INVENTORY="$case_dir/keeper-inventory" \
+    FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$case_dir/watcher.lock" \
+    FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="child-$point" \
+    FLYWHEEL_CMUX_INVENTORY_CRASH_AT="$point" \
+      /bin/bash -c 'source "$1"; acquire_mutator_lease once; _inventory_upsert gen "$2" keeper owner @42 committed' \
+        _ "$SCRIPT_DIR/flywheel-cmux-sync.sh" '$42' >/dev/null 2>&1 || child_rc=$?
+    [[ "$child_rc" == "137" ]] || ok=0
+
+    KEEPER_INVENTORY="$case_dir/keeper-inventory"
+    FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$case_dir/watcher.lock"
+    WATCHER_LOCK_DIR="$FLYWHEEL_CMUX_WATCHER_LOCK_DIR"
+    WATCHER_REAP_MUTEX="${WATCHER_LOCK_DIR}.reap"
+    FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="test-incarnation"
+    MUTATOR_LEASE_NONCE=""; MUTATOR_LEASE_INCARNATION=""; MUTATOR_LEASE_MODE=""
+    rc=0
+    acquire_mutator_lease qa_teardown || rc=$?
+    _inventory_upsert gen '$42' keeper owner '@42' committed || rc=$?
+    row=$(cat "$KEEPER_INVENTORY" 2>/dev/null || true)
+    if [[ "$rc" -ne 0 || "$row" != 'gen|$42|keeper|owner|@42|committed|'* \
+        || -d "${KEEPER_INVENTORY}.lock" ]]; then
+      ok=0
+    fi
+    release_mutator_lease
+  done
+  KEEPER_INVENTORY="$base_inventory"
+  FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$base_lock"
+  WATCHER_LOCK_DIR="$base_lock"
+  WATCHER_REAP_MUTEX="${base_lock}.reap"
+  unset FLYWHEEL_CMUX_INVENTORY_CRASH_AT
+  if [[ "$ok" == "1" ]]; then
+    pass "lock/temp/replace/release crash points converge without duplicate authority"
+  else
+    fail "one or more inventory crash points did not SIGKILL and recover cleanly"
+  fi
+}
+
+test_fly1596_restored_marker_parser_is_strict_and_tri_state() {
+  echo "Test: FLY-1596 Fix 2 — restored marker parser is strict and tri-state"
+  reset_mocks
+  local title="FLY-1596-restored" generation="cmux-generation-1" ref="workspace:1596"
+  local title_b64 orig_b64 fingerprint epoch valid_rc=0 malformed_rc=0
+  title_b64=$(printf '%s' "$title" | base64 | tr -d '\n')
+  orig_b64=$(printf 'none|%s|%s|%s' "$generation" "$ref" "$title" | base64 | tr -d '\n')
+  fingerprint=$(printf '%064d' 0)
+  epoch=$(date +%s)
+  printf 'restoredv1|W1|%s|%s|%s|%s|%s|%s\n' \
+    "$generation" "$ref" "$title_b64" "$orig_b64" "$fingerprint" "$epoch" > "$RESTORED_STATE"
+  restored_inflight_state "$generation" "$ref" "$title" || valid_rc=$?
+  printf 'restoredv1|W1|too|few\n' > "$RESTORED_STATE"
+  restored_inflight_state "$generation" "$ref" "$title" || malformed_rc=$?
+  if [[ "$valid_rc" -eq 0 && "$malformed_rc" -eq 2 ]]; then
+    pass "valid exact markers block with rc=0; malformed state fails closed with rc=2"
+  else
+    fail "restored parser tri-state mismatch valid_rc=$valid_rc malformed_rc=$malformed_rc"
+  fi
+}
+
+test_fly1596_restored_inflight_blocks_ordinary_close_and_dismantle() {
+  echo "Test: FLY-1596 Fix 2 — restored in-flight authority blocks ordinary consumers"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_CMUX_MUTATE_JSON=1
+  local title="FLY-1596-restored" generation="cmux-generation-1" ref="workspace:1596"
+  local title_b64 orig_b64 fingerprint epoch close_rc=0 dismantle_rc=0 row
+  title_b64=$(printf '%s' "$title" | base64 | tr -d '\n')
+  orig_b64=$(printf 'none|%s|%s|%s' "$generation" "$ref" "$title" | base64 | tr -d '\n')
+  fingerprint=$(printf '%064d' 0)
+  epoch=$(date +%s)
+  printf 'restoredv1|W1|%s|%s|%s|%s|%s|%s\n' \
+    "$generation" "$ref" "$title_b64" "$orig_b64" "$fingerprint" "$epoch" > "$RESTORED_STATE"
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-restored"}]}'
+  test_ledger_upsert committed "$generation" "$ref" "$title"
+  close_ledger_workspace_ref "$generation" "$ref" "$title" ordinary-consumer || close_rc=$?
+  row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@42" "$title" 1 0
+  tmux new-session -d -t runner-flywheel -s "cmux-$title"
+  : > "$TOPO_JOURNAL"
+  dismantle_view_display "$title" view-invariant-mismatch || dismantle_rc=$?
+  if [[ "$close_rc" -ne 0 && "$dismantle_rc" -ne 0 \
+      && "$row" == "committed|$generation|$ref|$title" \
+      && "$DISMANTLE_OUTCOME" == preflight-refused \
+      && "$DISMANTLE_REASON" == restored-inflight \
+      && -z "$MOCK_CMUX_OPS" \
+      && ! -s "$TOPO_JOURNAL" ]]; then
+    pass "ordinary close and dismantle preserve an in-flight restored transaction byte-for-byte"
+  else
+    fail "restored consumer gate mismatch close_rc=$close_rc dismantle_rc=$dismantle_rc row=[$row] outcome=$DISMANTLE_OUTCOME reason=$DISMANTLE_REASON ops=[$MOCK_CMUX_OPS] journal=[$(tr '\n' ';' < "$TOPO_JOURNAL")]"
+  fi
+}
+
+test_fly1596_restored_ledger_cas_preserves_reused_current_ref() {
+  echo "Test: FLY-1596 Fix 2 — restored ledger CAS is generation-scoped"
+  reset_mocks
+  local title="FLY-1596-restored" old="cmux-generation-old" current="cmux-generation-1" ref="workspace:1596"
+  local title_b64 orig_b64 fingerprint epoch delete_rc=0 restore_rc=0 current_row old_row
+  title_b64=$(printf '%s' "$title" | base64 | tr -d '\n')
+  fingerprint=$(printf '%064d' 0)
+  epoch=$(date +%s)
+  orig_b64=$(printf 'none|%s|%s|%s' "$old" "$ref" "$title" | base64 | tr -d '\n')
+  printf 'restoredv1|W1|%s|%s|%s|%s|%s|%s\n' \
+    "$old" "$ref" "$title_b64" "$orig_b64" "$fingerprint" "$epoch" > "$RESTORED_STATE"
+  printf '%s\n' \
+    "committed|$old|$ref|$title" \
+    "committed|$current|$ref|FLY-1596-current" > "$VIEW_LEDGER"
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  _restored_ledger_cas delete W1 "$old" "$ref" "$title" "$fingerprint" || delete_rc=$?
+  current_row=$(grep "^committed|$current|$ref|FLY-1596-current$" "$VIEW_LEDGER" 2>/dev/null || true)
+  old_row=$(grep "|$old|$ref|" "$VIEW_LEDGER" 2>/dev/null || true)
+
+  orig_b64=$(printf 'prepared|%s|%s|%s' "$old" "$ref" "$title" | base64 | tr -d '\n')
+  printf 'restoredv1|W1p|%s|%s|%s|%s|%s|%s\n' \
+    "$old" "$ref" "$title_b64" "$orig_b64" "$fingerprint" "$epoch" > "$RESTORED_STATE"
+  printf 'committed|%s|%s|%s\n' "$old" "$ref" "$title" >> "$VIEW_LEDGER"
+  _restored_ledger_cas restore-prepared W1p "$old" "$ref" "$title" "$fingerprint" || restore_rc=$?
+  release_mutator_lease
+  if [[ "$delete_rc" -eq 0 && "$restore_rc" -eq 0 && -z "$old_row" \
+      && -n "$current_row" \
+      && "$(grep -c "^prepared|$old|$ref|$title$" "$VIEW_LEDGER" || true)" == "1" \
+      && "$(grep -c "^committed|$current|$ref|FLY-1596-current$" "$VIEW_LEDGER" || true)" == "1" ]]; then
+    pass "delete/restore touch only the marker-authorized old-generation tuple"
+  else
+    fail "restored CAS mismatch delete_rc=$delete_rc restore_rc=$restore_rc old_before=[$old_row] current=[$current_row] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1596_w1_two_pass_adoption_closes_restored_row() {
+  echo "Test: FLY-1596 Fix 2 — W1 two-pass adoption closes the restored row"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  FLYWHEEL_CMUX_RESTORED_ADOPTION=1; MOCK_CMUX_MUTATE_JSON=1
+  local title="FLY-1596-implement" generation="cmux-generation-1" ref="workspace:1596"
+  local first_marker first_ledger first_ops rc=0
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-implement"}]}'
+  MOCK_CMUX_SURFACES="workspace:1596;;surface:1;;terminal;;true;;$title"
+  topo_add_session runner-flywheel '$1'
+  topo_add_window runner-flywheel '@42' "$title" 1 0
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+
+  adopt_restored_workspaces live || rc=$?
+  first_marker=$(cat "$RESTORED_STATE" 2>/dev/null || true)
+  first_ledger=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  first_ops="$MOCK_CMUX_OPS"
+  adopt_restored_workspaces live || rc=$?
+  release_mutator_lease
+  if [[ "$rc" -eq 0 && "$first_marker" == restoredv1'|'W1'|'* \
+      && -z "$first_ledger" && -z "$first_ops" \
+      && "$(cat "$RESTORED_STATE" 2>/dev/null || true)" == "" \
+      && "$(cat "$VIEW_LEDGER" 2>/dev/null || true)" == "" \
+      && "$MOCK_CMUX_WORKSPACES_JSON" == '{"workspaces": []}' \
+      && "$(grep -c '^close-workspace --workspace workspace:1596$' <<< "$MOCK_CMUX_OPS" || true)" == "1" ]]; then
+    pass "first pass persists evidence only; second pass closes via a synthetic committed receipt"
+  else
+    fail "W1 adoption mismatch rc=$rc first_marker=[$first_marker] first_ledger=[$first_ledger] first_ops=[$first_ops] marker=[$(cat "$RESTORED_STATE" 2>/dev/null)] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] json=[$MOCK_CMUX_WORKSPACES_JSON] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1596_restored_adoption_accepts_production_lead_titles() {
+  echo "Test: FLY-1596 Fix 2 — restored adoption includes production Lead titles"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  FLYWHEEL_CMUX_RESTORED_ADOPTION=1; MOCK_CMUX_MUTATE_JSON=1
+  local title="flywheel-flywheel-cos-lead" generation="cmux-generation-1" ref="workspace:60"
+  local first_marker original_derive rc=0
+  original_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() {
+    LEAD_ROSTER_STATE=ok
+    LEAD_ROSTER_ROWS="claude-tmux|com.flywheel.lead.cos|flywheel-flywheel-cos-lead"
+  }
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:60","title":"flywheel-flywheel-cos-lead"}]}'
+  MOCK_CMUX_SURFACES="workspace:60;;surface:60;;terminal;;true;;$title"
+  topo_add_session flywheel '$1'
+  topo_add_window flywheel '@60' "$title" 1 0
+  test_ensure_mutator_lease || { eval "$original_derive"; fail "cannot acquire fixture mutator lease"; return; }
+
+  adopt_restored_workspaces live || rc=$?
+  first_marker=$(cat "$RESTORED_STATE" 2>/dev/null || true)
+  adopt_restored_workspaces live || rc=$?
+  release_mutator_lease
+  eval "$original_derive"
+  if [[ "$rc" -eq 0 && "$first_marker" == restoredv1'|'W1'|'* \
+      && ! -s "$RESTORED_STATE" && ! -s "$VIEW_LEDGER" \
+      && "$MOCK_CMUX_WORKSPACES_JSON" == '{"workspaces": []}' \
+      && "$(grep -c '^close-workspace --workspace workspace:60$' <<< "$MOCK_CMUX_OPS" || true)" == "1" ]]; then
+    pass "the exact lowercase Lead title follows the same two-pass adoption transaction"
+  else
+    fail "production Lead adoption mismatch rc=$rc first=[$first_marker] marker=[$(cat "$RESTORED_STATE" 2>/dev/null)] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] json=[$MOCK_CMUX_WORKSPACES_JSON] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1596_restored_adoption_rejects_unrostered_live_titles() {
+  echo "Test: FLY-1596 Fix 2 — restored adoption rejects unrostered live titles"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  FLYWHEEL_CMUX_RESTORED_ADOPTION=1; MOCK_CMUX_MUTATE_JSON=1
+  local title="founder-scratch" generation="cmux-generation-1"
+  local before original_derive rc=0
+  original_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() {
+    LEAD_ROSTER_STATE=ok
+    LEAD_ROSTER_ROWS="claude-tmux|com.flywheel.lead.cos|flywheel-flywheel-cos-lead"
+  }
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:61","title":"founder-scratch"}]}'
+  MOCK_CMUX_SURFACES="workspace:61;;surface:61;;terminal;;true;;$title"
+  topo_add_session flywheel '$1'
+  topo_add_window flywheel '@61' "$title" 1 0
+  before="$MOCK_CMUX_WORKSPACES_JSON"
+  test_ensure_mutator_lease || { eval "$original_derive"; fail "cannot acquire fixture mutator lease"; return; }
+
+  adopt_restored_workspaces live || rc=$?
+  release_mutator_lease
+  eval "$original_derive"
+  if [[ "$rc" -eq 0 && ! -s "$RESTORED_STATE" && ! -s "$VIEW_LEDGER" \
+      && "$MOCK_CMUX_WORKSPACES_JSON" == "$before" && -z "$MOCK_CMUX_OPS" ]]; then
+    pass "a live title needs runner grammar or exact Lead-roster authority before adoption"
+  else
+    fail "unrostered title received authority rc=$rc marker=[$(cat "$RESTORED_STATE" 2>/dev/null)] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] json=[$MOCK_CMUX_WORKSPACES_JSON] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1596_dead_discovery_roster_failure_is_nonfatal() {
+  echo "Test: FLY-1596 Fix 2 — dead discovery degrades on roster failure"
+  reset_mocks
+  FLYWHEEL_CMUX_RESTORED_ADOPTION=1
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  local original_derive rc=0
+  original_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() { LEAD_ROSTER_STATE=unavailable; return 1; }
+  test_ensure_mutator_lease || { eval "$original_derive"; fail "cannot acquire fixture mutator lease"; return; }
+
+  adopt_restored_workspaces dead discover-only || rc=$?
+  release_mutator_lease
+  eval "$original_derive"
+  if [[ "$rc" -eq 0 && ! -s "$RESTORED_STATE" && ! -s "$VIEW_LEDGER" ]]; then
+    pass "an underivable Lead roster skips dead candidates without deferring the watcher pass"
+  else
+    fail "roster failure escaped dead discovery rc=$rc marker=[$(cat "$RESTORED_STATE" 2>/dev/null)]"
+  fi
+}
+
+test_fly1596_restored_fingerprint_ignores_focus_state() {
+  echo "Test: FLY-1596 Fix 2 — restored fingerprint ignores cmux focus state"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_RESTORED_ADOPTION=1; MOCK_CMUX_MUTATE_JSON=1
+  local title="FLY-1596-implement" generation="cmux-generation-1" rc=0 first
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-implement","pinned":false,"selected":false}]}'
+  MOCK_CMUX_SURFACES="workspace:1596;;surface:1;;terminal;;true;;$title"
+  topo_add_session runner-flywheel '$1'
+  topo_add_window runner-flywheel '@42' "$title" 1 0
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+
+  adopt_restored_workspaces live || rc=$?
+  first=$(cat "$RESTORED_STATE" 2>/dev/null || true)
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-implement","pinned":true,"selected":true}]}'
+  adopt_restored_workspaces live || rc=$?
+  release_mutator_lease
+  if [[ "$rc" -eq 0 && "$first" == restoredv1'|'W1'|'* \
+      && ! -s "$RESTORED_STATE" && ! -s "$VIEW_LEDGER" \
+      && "$MOCK_CMUX_WORKSPACES_JSON" == '{"workspaces": []}' ]]; then
+    pass "focus and pin presentation changes cannot starve the two-pass adoption latch"
+  else
+    fail "focus drift changed restored authority rc=$rc first=[$first] marker=[$(cat "$RESTORED_STATE" 2>/dev/null)] json=[$MOCK_CMUX_WORKSPACES_JSON]"
+  fi
+}
+
+test_fly1596_raw_attach_title_never_enters_restored_inflight() {
+  echo "Test: FLY-1596 Fix 2 — raw attach titles stay outside restored authority"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_RESTORED_ADOPTION=1; MOCK_CMUX_MUTATE_JSON=1
+  local title="FLY-1596-implement" generation="cmux-generation-1" canonical before rc=0 ops_rc=0
+  MOCK_SOCK_IDENT="$generation"
+  canonical=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON=$(printf '{"workspaces":[{"ref":"workspace:1596","title":"%s"}]}' "$canonical")
+  MOCK_CMUX_SURFACES="workspace:1596;;surface:1;;terminal;;true;;~"
+  topo_add_session runner-flywheel '$1'
+  topo_add_window runner-flywheel '@42' "$title" 1 0
+  before="$MOCK_CMUX_WORKSPACES_JSON"
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+
+  adopt_restored_workspaces live || rc=$?
+  FLYWHEEL_CMUX_OPS_REPROBE_SECONDS=0 \
+    _ops_adopt_restored_candidate W1 "$generation" workspace:1596 "$title" none || ops_rc=$?
+  release_mutator_lease
+  if [[ "$rc" -eq 0 && "$ops_rc" -eq 1 && ! -s "$RESTORED_STATE" && ! -s "$VIEW_LEDGER" \
+      && "$MOCK_CMUX_WORKSPACES_JSON" == "$before" && -z "$MOCK_CMUX_OPS" ]]; then
+    pass "raw rows remain available to title reconciliation and both adoption paths refuse them"
+  else
+    fail "raw row entered restored authority rc=$rc ops_rc=$ops_rc marker=[$(cat "$RESTORED_STATE" 2>/dev/null)] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1596_one_restored_action_failure_does_not_abort_later_markers() {
+  echo "Test: FLY-1596 Fix 2 — one restored action failure is tuple-local"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_RESTORED_ADOPTION=1
+  local blocked="FLY-1596-implement" later="FLY-1596-qa"
+  local generation="cmux-generation-1" old_generation="cmux-generation-old"
+  local blocked_ref="workspace:1596" later_ref="workspace:1597"
+  local blocked_fingerprint later_fingerprint blocked_b64 later_b64 blocked_orig later_orig epoch
+  local saved_upsert rc=0 remaining
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-implement"}]}'
+  MOCK_CMUX_SURFACES="workspace:1596;;surface:1;;terminal;;true;;$blocked"
+  topo_add_session runner-flywheel '$1'
+  topo_add_window runner-flywheel '@42' "$blocked" 1 0
+  _restored_candidate_probe W1 "$generation" "$blocked_ref" "$blocked" || {
+    fail "cannot derive blocked-marker fixture fingerprint"; return;
+  }
+  blocked_fingerprint="$RESTORED_PROBE_FINGERPRINT"
+  later_fingerprint=$(printf '%064d' 7)
+  blocked_b64=$(_restored_b64 "$blocked"); later_b64=$(_restored_b64 "$later")
+  blocked_orig=$(_restored_b64 "none|$generation|$blocked_ref|$blocked")
+  later_orig=$(_restored_b64 "none|$old_generation|$later_ref|$later")
+  epoch=$(date +%s)
+  printf 'restoredv1|W1|%s|%s|%s|%s|%s|%s\n' \
+    "$generation" "$blocked_ref" "$blocked_b64" "$blocked_orig" "$blocked_fingerprint" "$epoch" > "$RESTORED_STATE"
+  printf 'restoredv1|W1|%s|%s|%s|%s|%s|%s\n' \
+    "$old_generation" "$later_ref" "$later_b64" "$later_orig" "$later_fingerprint" "$epoch" >> "$RESTORED_STATE"
+  saved_upsert=$(declare -f _ledger_upsert)
+  _ledger_upsert() { return 1; }
+  test_ensure_mutator_lease || { eval "$saved_upsert"; fail "cannot acquire fixture mutator lease"; return; }
+  recover_restored_transactions || rc=$?
+  release_mutator_lease
+  eval "$saved_upsert"
+  remaining=$(_restored_parse_records 2>/dev/null || true)
+  if [[ "$rc" -eq 0 && "$remaining" == *$'W1\tcmux-generation-1\tworkspace:1596\tFLY-1596-implement'* \
+      && "$remaining" != *"$later"* ]]; then
+    pass "the failed tuple stays durable while a later independently-actionable marker converges"
+  else
+    fail "tuple-local recovery mismatch rc=$rc remaining=[$remaining]"
+  fi
+}
+
+test_fly1596_flag_off_aborts_synthetic_receipt_without_close() {
+  echo "Test: FLY-1596 Fix 2 — flag-off abort rolls back synthetic authority non-destructively"
+  reset_mocks
+  FLYWHEEL_CMUX_RESTORED_ADOPTION=0; MOCK_CMUX_MUTATE_JSON=1
+  local title="FLY-1596-implement" generation="cmux-generation-1" ref="workspace:1596"
+  local title_b64 orig_b64 fingerprint epoch rc=0
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-implement"}]}'
+  title_b64=$(printf '%s' "$title" | base64 | tr -d '\n')
+  orig_b64=$(printf 'none|%s|%s|%s' "$generation" "$ref" "$title" | base64 | tr -d '\n')
+  fingerprint=$(printf '%064d' 0)
+  epoch=$(date +%s)
+  printf 'restoredv1|W1|%s|%s|%s|%s|%s|%s\n' \
+    "$generation" "$ref" "$title_b64" "$orig_b64" "$fingerprint" "$epoch" > "$RESTORED_STATE"
+  printf 'committed|%s|%s|%s\n' "$generation" "$ref" "$title" > "$VIEW_LEDGER"
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
+  recover_restored_transactions || rc=$?
+  release_mutator_lease
+  if [[ "$rc" -eq 0 && ! -s "$RESTORED_STATE" && ! -s "$VIEW_LEDGER" \
+      && "$MOCK_CMUX_WORKSPACES_JSON" == '{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-implement"}]}' \
+      && -z "$MOCK_CMUX_OPS" ]]; then
+    pass "flag off drains marker and synthetic receipt without touching the cmux row"
+  else
+    fail "flag-off abort mismatch rc=$rc marker=[$(cat "$RESTORED_STATE" 2>/dev/null)] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] json=[$MOCK_CMUX_WORKSPACES_JSON] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1596_w1p_promotes_then_closes_drifted_prepared_row() {
+  echo "Test: FLY-1596 Fix 2 — W1p promotes then closes through the committed choke"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  FLYWHEEL_CMUX_RESTORED_ADOPTION=1; MOCK_CMUX_MUTATE_JSON=1
+  local title="FLY-1596-implement" generation="cmux-generation-1" ref="workspace:1596" rc=0 first
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-implement"}]}'
+  MOCK_CMUX_SURFACES="workspace:1596;;surface:1;;terminal;;true;;${title}:5"
+  topo_add_session runner-flywheel '$1'
+  topo_add_window runner-flywheel '@42' "$title" 1 0
+  test_ledger_upsert prepared "$generation" "$ref" "$title"
+  adopt_restored_workspaces live || rc=$?
+  first=$(cat "$RESTORED_STATE" 2>/dev/null || true)
+  adopt_restored_workspaces live || rc=$?
+  release_mutator_lease
+  if [[ "$rc" -eq 0 && "$first" == restoredv1'|'W1p'|'* \
+      && ! -s "$RESTORED_STATE" && ! -s "$VIEW_LEDGER" \
+      && "$MOCK_CMUX_WORKSPACES_JSON" == '{"workspaces": []}' \
+      && "$(grep -c '^close-workspace --workspace workspace:1596$' <<< "$MOCK_CMUX_OPS" || true)" == "1" ]]; then
+    pass "prepared drift is marked first, promoted once, then closed by exact committed authority"
+  else
+    fail "W1p adoption mismatch rc=$rc first=[$first] marker=[$(cat "$RESTORED_STATE" 2>/dev/null)] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] json=[$MOCK_CMUX_WORKSPACES_JSON] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1596_w1dead_is_roster_only_and_leaves_runner_stock() {
+  echo "Test: FLY-1596 Fix 2 — W1-dead authority is roster-only"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  FLYWHEEL_CMUX_RESTORED_ADOPTION=1; FLYWHEEL_CMUX_ADOPTION_GRACE=0; MOCK_CMUX_MUTATE_JSON=1
+  local lead="FLY-1596-qa" runner="FLY-1596-runner" generation="cmux-generation-1" rc=0
+  local original_derive first
+  original_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() {
+    LEAD_ROSTER_STATE=ok
+    LEAD_ROSTER_ROWS="claude-tmux|com.flywheel.lead.test|FLY-1596-qa"
+  }
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-qa"},{"ref":"workspace:1597","title":"FLY-1596-runner"}]}'
+  MOCK_CMUX_SURFACES="workspace:1596;;surface:1;;terminal;;true;;$lead
+workspace:1597;;surface:2;;terminal;;true;;$runner"
+  test_ensure_mutator_lease || { eval "$original_derive"; fail "cannot acquire fixture mutator lease"; return; }
+  adopt_restored_workspaces dead || rc=$?
+  first=$(cat "$RESTORED_STATE" 2>/dev/null || true)
+  adopt_restored_workspaces dead || rc=$?
+  release_mutator_lease
+  eval "$original_derive"
+  if [[ "$rc" -eq 0 && "$first" == *'|W1dead|'* && "$first" != *"$(_restored_b64 "$runner")"* \
+      && ! -s "$RESTORED_STATE" && ! -s "$VIEW_LEDGER" \
+      && "$MOCK_CMUX_WORKSPACES_JSON" == '{"workspaces": [{"ref": "workspace:1597", "title": "FLY-1596-runner"}]}' ]]; then
+    pass "dead lead row closes after roster proof; runner grammar receives no new close authority"
+  else
+    fail "W1dead roster boundary mismatch rc=$rc first=[$first] marker=[$(cat "$RESTORED_STATE" 2>/dev/null)] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] json=[$MOCK_CMUX_WORKSPACES_JSON] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1596_all_normal_receipt_consumers_skip_restored_inflight() {
+  echo "Test: FLY-1596 Fix 2 — all normal receipt consumers skip restored in-flight tuples"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  local title="FLY-1596-implement" generation="cmux-generation-1" ref="workspace:1596"
+  local title_b64 orig_b64 fingerprint epoch canonical before rc=0
+  MOCK_SOCK_IDENT="$generation"
+  canonical=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-implement"}]}'
+  MOCK_CMUX_SURFACES="workspace:1596;;surface:1;;terminal;;true;;$canonical"
+  topo_add_session runner-flywheel '$1'
+  topo_add_window runner-flywheel '@42' "$title" 1 0
+  topo_add_session "cmux-$title" '$2' "" runner-flywheel 0
+  topo_add_window "cmux-$title" '@42' "$title" 1 0
+  test_ledger_upsert prepared "$generation" "$ref" "$title"
+  title_b64=$(printf '%s' "$title" | base64 | tr -d '\n')
+  orig_b64=$(printf 'prepared|%s|%s|%s' "$generation" "$ref" "$title" | base64 | tr -d '\n')
+  fingerprint=$(printf '%064d' 0)
+  epoch=$(date +%s)
+  printf 'restoredv1|W1p|%s|%s|%s|%s|%s|%s\n' \
+    "$generation" "$ref" "$title_b64" "$orig_b64" "$fingerprint" "$epoch" > "$RESTORED_STATE"
+  before=$(cat "$VIEW_LEDGER")
+  : > "$TOPO_JOURNAL"; MOCK_CMUX_OPS=""
+  complete_title_migration "$ref" "$title" "$generation" "$canonical" >/dev/null 2>&1 || true
+  reconcile_prepared_ledger >/dev/null 2>&1 || rc=$?
+  reconcile_workspace_titles "runner-flywheel|@42|$title" >/dev/null 2>&1 || rc=$?
+  release_mutator_lease
+  if [[ "$rc" -eq 0 && "$(cat "$VIEW_LEDGER")" == "$before" \
+      && -z "$MOCK_CMUX_OPS" ]] \
+      && ! grep -Eq '^(new-session|link-window|unlink-window|rename-session|kill-session|kill-window|set-option|select-window)' "$TOPO_JOURNAL"; then
+    pass "prepared recovery, title completion, and title reconcile perform zero mutation on in-flight authority"
+  else
+    fail "normal consumer exclusion mismatch rc=$rc before=[$before] ledger=[$(cat "$VIEW_LEDGER")] ops=[$MOCK_CMUX_OPS] journal=[$(tr '\n' ';' < "$TOPO_JOURNAL")]"
+  fi
+}
+
+test_fly1596_recovery_decision_table_is_total_and_preserves_phase_invariants() {
+  echo "Test: FLY-1596 Fix 2 — recovery decision table is total and phase-safe"
+  reset_mocks
+  local cases line relation kind ledger presence flag evidence readiness expected observed ok=1
+  cases=$'inconclusive|W1|none|present|on|stable|ready|0\nunknown|W1|none|present|on|stable|ready|1\nstale|W1|none|present|on|stable|ready|2\nstale|W1|committed|present|on|stable|ready|3\nstale|W1p|committed|present|on|stable|ready|4\nstale|W1p|prepared|present|on|stable|ready|5\nstale|W1|prepared|present|on|stable|ready|6\ncurrent|W1|none|present|on|stable|not-ready|6.5\ncurrent|W1|none|present|on|stable|ready|7\ncurrent|W1|none|present|off|drift|ready|8\ncurrent|W1|none|absent|off|drift|ready|9\ncurrent|W1|committed|present|on|stable|ready|10\ncurrent|W1|committed|present|off|drift|ready|11\ncurrent|W1|committed|absent|off|drift|ready|12\ncurrent|W1p|prepared|present|on|stable|ready|13\ncurrent|W1p|prepared|present|off|drift|ready|14\ncurrent|W1p|committed|present|on|stable|ready|15\ncurrent|W1p|committed|present|off|drift|ready|16\ncurrent|W1p|committed|absent|off|drift|ready|17\ncurrent|W1p|none|absent|on|drift|ready|18\ncurrent|W1p|none|present|on|stable|ready|19\ncurrent|W1|conflict|present|on|stable|ready|20'
+  while IFS='|' read -r relation kind ledger presence flag evidence readiness expected; do
+    observed=$(_restored_recovery_decision "$relation" "$kind" "$ledger" "$presence" "$flag" "$evidence" "$readiness")
+    [[ "${observed%%|*}" == "$expected" && "$(wc -l <<< "$observed" | tr -d ' ')" == "1" ]] || ok=0
+  done <<< "$cases"
+
+  local state action
+  for kind in W1 W1dead W1p; do
+    for state in none prepared committed conflict; do
+      for presence in present absent; do
+        for flag in on off; do
+          for evidence in stable drift; do
+            for readiness in not-ready ready; do
+              observed=$(_restored_recovery_decision current "$kind" "$state" "$presence" "$flag" "$evidence" "$readiness")
+              [[ -n "${observed%%|*}" && "$observed" == *'|'* ]] || ok=0
+              action=${observed#*|}
+              [[ "$kind" == W1p || "$action" != cas-restore-marker ]] || ok=0
+              [[ "$kind" != W1p || "$action" != cas-delete-marker ]] || ok=0
+            done
+          done
+        done
+      done
+    done
+  done
+  if [[ "$ok" == "1" ]]; then
+    pass "all 21 rows are reachable; concrete state products map once without illegal phase rollback"
+  else
+    fail "restored recovery table coverage or phase invariant failed"
+  fi
+}
+
+test_fly1596_adoption_budget_meets_five_minute_restart_bound() {
+  echo "Test: FLY-1596 Fix 2 — 15-title adoption budget meets the five-minute bound"
+  reset_mocks
+  local normal bootstrap action_passes total_seconds
+  normal=$(restored_action_budget 15 0)
+  bootstrap=$(restored_action_budget 15 1)
+  action_passes=$(((15 + normal - 1) / normal))
+  total_seconds=$(((1 + action_passes) * 60))
+  if [[ "$normal" == "5" && "$bootstrap" == "10" && "$total_seconds" -lt 300 ]]; then
+    pass "15 titles converge after one latch plus $action_passes action passes (${total_seconds}s); bootstrap budget=$bootstrap"
+  else
+    fail "adoption budget mismatch normal=$normal bootstrap=$bootstrap passes=$action_passes seconds=$total_seconds"
+  fi
+}
+
+_fly1596_setup_healthy_sidebar_fixture() {
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  local title="${1:-FLY-1596-implement}" source="${2:-runner-flywheel}"
+  local generation="cmux-generation-1"
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_WORKSPACES_JSON=$(printf '%s' "$title" | python3 -c '
+import json,sys
+print(json.dumps({"workspaces":[{"ref":"workspace:1596","title":sys.stdin.read()}]}))
+')
+  MOCK_CMUX_SURFACES="workspace:1596;;surface:1596;;terminal;;true;;$title"
+  MOCK_CMUX_READSCREEN=$'⚡ FLY-1596-implement\n[cmux attached]'
+  topo_add_session "$source" '$1'
+  topo_add_window "$source" '@42' "$title" 1 0
+  topo_add_session "cmux-$title" '$2' "" "$source" 0
+  topo_add_window "cmux-$title" '@42' "$title" 1 0
+  MOCK_TMUX_CLIENTS="cmux-$title=1"
+  test_ledger_upsert committed "$generation" workspace:1596 "$title"
+}
+
+test_fly1596_sidebar_judge_passes_only_complete_live_terminal_state() {
+  echo "Test: FLY-1596 Fix 4 — sidebar judge passes the complete live terminal state"
+  _fly1596_setup_healthy_sidebar_fixture
+  local rc=0
+  verify_sidebar_targets "FLY-1596-implement" || rc=$?
+  release_mutator_lease
+  if [[ "$rc" -eq 0 && "$VERIFY_SIDEBAR_REPORT" == *'PASS FLY-1596-implement'* ]]; then
+    pass "stable row/view/pane/client/receipt state passes the read-only judge"
+  else
+    fail "healthy sidebar judge mismatch rc=$rc report=[$VERIFY_SIDEBAR_REPORT]"
+  fi
+}
+
+test_fly1596_sidebar_judge_ignores_live_screen_bytes_for_snapshot_stability() {
+  echo "Test: FLY-1596 Fix 4 — live screen content is not cross-pass drift evidence"
+  _fly1596_setup_healthy_sidebar_fixture
+  local rc=0
+  MOCK_CMUX_READSCREEN_SEQ='⚡ tick-one,⚡ tick-two'
+  verify_sidebar_targets "FLY-1596-implement" || rc=$?
+  release_mutator_lease
+  if [[ "$rc" -eq 0 && "$VERIFY_SIDEBAR_REPORT" == *'PASS FLY-1596-implement'* ]]; then
+    pass "two non-bare renders may differ while structural authority remains stable"
+  else
+    fail "live screen drift manufactured an inconclusive judge rc=$rc report=[$VERIFY_SIDEBAR_REPORT]"
+  fi
+}
+
+test_fly1596_sidebar_judge_localizes_render_unavailability() {
+  echo "Test: FLY-1596 Fix 4 — sidebar judge localizes render unavailability"
+  _fly1596_setup_healthy_sidebar_fixture
+  local rc=0
+  MOCK_CMUX_READSCREEN_FAIL=1
+  verify_sidebar_targets "FLY-1596-implement" || rc=$?
+  release_mutator_lease
+  if [[ "$rc" -eq 1 && "$VERIFY_SIDEBAR_REPORT" == *'rule=render observed=unavailable'* ]]; then
+    pass "an unreadable pane is a stable per-title FAIL rather than a fleet-wide inconclusive result"
+  else
+    fail "render failure escaped its title rc=$rc report=[$VERIFY_SIDEBAR_REPORT]"
+  fi
+}
+
+test_fly1596_sidebar_judge_fails_missing_roster_lead() {
+  echo "Test: FLY-1596 Fix 4 — sidebar judge fails a missing roster Lead"
+  reset_mocks
+  local title="growth-rafiki-lead" original_derive rc=0
+  original_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() {
+    LEAD_ROSTER_STATE=ok
+    LEAD_ROSTER_ROWS="claude-tmux|com.flywheel.lead.rafiki|growth-rafiki-lead"
+  }
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  verify_sidebar_targets "$title" || rc=$?
+  eval "$original_derive"
+  if [[ "$rc" -eq 1 && "$VERIFY_SIDEBAR_REPORT" == *'rule=roster-lead-absent'* ]]; then
+    pass "exit 0 cannot call a loaded-but-missing Lead complete"
+  else
+    fail "missing roster Lead false-passed rc=$rc report=[$VERIFY_SIDEBAR_REPORT]"
+  fi
+}
+
+test_fly1596_sidebar_judge_is_inconclusive_when_roster_derivation_fails() {
+  echo "Test: FLY-1596 Fix 4 — global judge remains fail-closed without roster authority"
+  _fly1596_setup_healthy_sidebar_fixture
+  local title="FLY-1596-implement" original_derive subject_rc=0 judge_rc=0 report caveats
+  original_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() { LEAD_ROSTER_STATE=unavailable; return 1; }
+
+  OPS_VERIFY_TARGETS="$title"
+  _resolve_sidebar_subjects >/dev/null 2>&1 || subject_rc=$?
+  caveats="$VERIFY_SIDEBAR_CAVEATS"
+  verify_sidebar_targets "$title" >/dev/null 2>&1 || judge_rc=$?
+  report="$VERIFY_SIDEBAR_REPORT"
+
+  eval "$original_derive"
+  release_mutator_lease
+  if [[ "$subject_rc" -eq 0 && "$caveats" == *'roster-authority-unavailable'* \
+      && "$judge_rc" -eq 2 && "$report" != *'PASS '* ]]; then
+    pass "explicit runner resolution records a caveat while the global judge stays inconclusive"
+  else
+    fail "roster authority split mismatch subject_rc=$subject_rc caveats=[$caveats] judge_rc=$judge_rc report=[$report]"
+  fi
+}
+
+test_fly1596_verify_sidebar_renders_roster_inconclusive_text_and_json() {
+  echo "Test: FLY-1596 Fix 4 closeout — roster failures render named INCONCLUSIVE output"
+  _fly1596_setup_healthy_sidebar_fixture
+  local original_derive text_rc=0 json_rc=0 text_output json_output json_ok=0
+  original_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() {
+    LEAD_ROSTER_STATE=indeterminate
+    LEAD_ROSTER_ROWS=""
+    LEAD_ROSTER_REASONS="roster-authority-unavailable: missing manifest flywheel-codex-infra-bot-lead"
+    return 1
+  }
+
+  text_output=$(run_verify_sidebar 2>&1) || text_rc=$?
+  json_output=$(run_verify_sidebar --json 2>/dev/null) || json_rc=$?
+  if printf '%s' "$json_output" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+reason="roster-authority-unavailable: missing manifest flywheel-codex-infra-bot-lead"
+assert d["status"] == "inconclusive"
+assert d["exit_code"] == 2
+assert d["reasons"] == [reason]
+assert d["caveats"] == []
+'; then
+    json_ok=1
+  fi
+
+  eval "$original_derive"
+  release_mutator_lease
+  if [[ "$text_rc" -eq 2 && "$json_rc" -eq 2 && "$json_ok" -eq 1 \
+      && "$text_output" == *'INCONCLUSIVE'* \
+      && "$text_output" == *'missing manifest flywheel-codex-infra-bot-lead'* ]]; then
+    pass "exit 2 is non-empty in both modes and names the missing authority"
+  else
+    fail "inconclusive renderer mismatch text_rc=$text_rc json_rc=$json_rc json_ok=$json_ok text=[$text_output] json=[$json_output]"
+  fi
+}
+
+test_fly1596_verify_sidebar_target_local_authority_matrix() {
+  echo "Test: FLY-1596 Fix 4 closeout — explicit targets use target-local Lead authority"
+  local title="growth-rafiki-lead" unrelated="flywheel-codex-infra-bot-lead"
+  local saved_loaded saved_wrapper saved_tmux_generation
+  local text_rc=0 json_rc=0 absent_rc=0 own_rc=0 global_rc=0 drift_rc=0
+  local text_output json_output absent_output own_output global_output drift_output json_ok=0
+  local target_manifest="$FLYWHEEL_MANIFEST_DIR/${title}.json"
+  local drift_counter="$TMPDIR_ROOT/fly1596-target-authority-drift.n" n
+  saved_loaded=$(declare -f lead_job_loaded)
+  saved_wrapper=$(declare -f lead_plist_wrapper_basename)
+  saved_tmux_generation=$(declare -f tmux_server_generation)
+  lead_job_loaded() { return 0; }
+  lead_plist_wrapper_basename() { printf '%s\n' flywheel-lead-wrapper.sh; }
+
+  _fly1596_setup_healthy_sidebar_fixture "$title" flywheel
+  command rm -rf "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${title}.plist"
+  : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${unrelated}.plist"
+  printf '%s\n' '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"}}' > "$target_manifest"
+  text_output=$(run_verify_sidebar --target "$title" 2>&1) || text_rc=$?
+  json_output=$(run_verify_sidebar --target "$title" --json 2>/dev/null) || json_rc=$?
+  if printf '%s' "$json_output" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+assert d["status"] == "pass" and d["exit_code"] == 0
+assert d["reasons"] == []
+assert d["caveats"] == ["roster-authority-unavailable: missing manifest flywheel-codex-infra-bot-lead"]
+'; then
+    json_ok=1
+  fi
+
+  reset_mocks
+  command rm -rf "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${title}.plist"
+  : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${unrelated}.plist"
+  printf '%s\n' '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"}}' > "$target_manifest"
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  absent_output=$(run_verify_sidebar --target "$title" 2>&1) || absent_rc=$?
+
+  reset_mocks
+  command rm -rf "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${title}.plist"
+  MOCK_SOCK_IDENT="cmux-generation-1"
+  own_output=$(run_verify_sidebar --target "$title" 2>&1) || own_rc=$?
+
+  _fly1596_setup_healthy_sidebar_fixture "$title" flywheel
+  command rm -rf "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${title}.plist"
+  : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${unrelated}.plist"
+  printf '%s\n' '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"}}' > "$target_manifest"
+  global_output=$(run_verify_sidebar 2>&1) || global_rc=$?
+
+  _fly1596_setup_healthy_sidebar_fixture "$title" flywheel
+  command rm -rf "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${title}.plist"
+  printf '%s\n' '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"}}' > "$target_manifest"
+  : > "$drift_counter"
+  tmux_server_generation() {
+    n=$(wc -l < "$drift_counter" | tr -d ' ')
+    printf 'x\n' >> "$drift_counter"
+    if [[ "$n" -eq 1 ]]; then
+      printf '%s\n' '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"},"revision":2}' > "$target_manifest"
+    fi
+    printf '%s\n' tmux-test-generation
+  }
+  drift_output=$(run_verify_sidebar --target "$title" 2>&1) || drift_rc=$?
+
+  eval "$saved_loaded"
+  eval "$saved_wrapper"
+  eval "$saved_tmux_generation"
+  command rm -rf "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
+  release_mutator_lease
+  if [[ "$text_rc" -eq 0 && "$json_rc" -eq 0 && "$json_ok" -eq 1 \
+      && "$text_output" == *"PASS $title"* \
+      && "$text_output" == *"CAVEAT roster-authority-unavailable: missing manifest $unrelated"* \
+      && "$absent_rc" -eq 1 && "$absent_output" == *'rule=roster-lead-absent'* \
+      && "$own_rc" -eq 2 && "$own_output" == *"target-authority-unavailable: missing manifest $title"* \
+      && "$global_rc" -eq 2 && "$global_output" == *"roster-authority-unavailable: missing manifest $unrelated"* \
+      && "$drift_rc" -eq 2 && "$drift_output" == *'snapshot-drift'* ]]; then
+    pass "the five-cell target/global authority matrix is fail-closed without unrelated-roster coupling"
+  else
+    fail "target authority matrix mismatch text=$text_rc json=$json_rc json_ok=$json_ok absent=$absent_rc own=$own_rc global=$global_rc drift=$drift_rc text=[$text_output] absent_out=[$absent_output] own_out=[$own_output] global_out=[$global_output] drift_out=[$drift_output]"
+  fi
+}
+
+test_fly1596_verify_sidebar_rejects_unknown_runner_target() {
+  echo "Test: FLY-1596 QA R3 — explicit runner targets require independent evidence"
+  reset_mocks
+  local title="FLY-1596-implement-typo" text_rc=0 json_rc=0
+  local text_output json_output json_ok=0
+  MOCK_SOCK_IDENT="cmux-generation-1"
+
+  text_output=$(run_verify_sidebar --target "$title" 2>&1) || text_rc=$?
+  json_output=$(run_verify_sidebar --target "$title" --json 2>/dev/null) || json_rc=$?
+  if printf '%s' "$json_output" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+reason="target-unknown: no independent runner evidence FLY-1596-implement-typo"
+assert d["status"] == "inconclusive" and d["exit_code"] == 2
+assert d["reasons"] == [reason] and d["caveats"] == []
+'; then
+    json_ok=1
+  fi
+
+  if [[ "$text_rc" -eq 2 && "$json_rc" -eq 2 && "$json_ok" -eq 1 \
+      && "$text_output" == *"INCONCLUSIVE target-unknown: no independent runner evidence $title"* ]]; then
+    pass "argv runner grammar cannot make an unknown title PASS absent"
+  else
+    fail "unknown runner target escaped text_rc=$text_rc json_rc=$json_rc json_ok=$json_ok text=[$text_output] json=[$json_output]"
+  fi
+}
+
+test_fly1596_sidebar_judge_rejects_each_false_pass_family() {
+  echo "Test: FLY-1596 Fix 4 — sidebar judge rejects false-pass families"
+  local rc missing grouped grouped_report clients receipt marker malformed ok=1 title="FLY-1596-implement"
+  local title_b64 orig_b64 fingerprint epoch
+
+  _fly1596_setup_healthy_sidebar_fixture
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  rc=0; verify_sidebar_targets "$title" >/dev/null 2>&1 || rc=$?; missing=$rc
+  release_mutator_lease
+
+  _fly1596_setup_healthy_sidebar_fixture
+  topo_set_session_field "cmux-$title" 3 runner-flywheel
+  rc=0; verify_sidebar_targets "$title" >/dev/null 2>&1 || rc=$?; grouped=$rc
+  grouped_report="$VERIFY_SIDEBAR_REPORT"
+  release_mutator_lease
+
+  _fly1596_setup_healthy_sidebar_fixture
+  MOCK_TMUX_CLIENTS="cmux-$title=0"
+  rc=0; verify_sidebar_targets "$title" >/dev/null 2>&1 || rc=$?; clients=$rc
+  release_mutator_lease
+
+  _fly1596_setup_healthy_sidebar_fixture
+  printf 'prepared|cmux-generation-1|workspace:1596|%s\n' "$title" > "$VIEW_LEDGER"
+  rc=0; verify_sidebar_targets "$title" >/dev/null 2>&1 || rc=$?; receipt=$rc
+  release_mutator_lease
+
+  _fly1596_setup_healthy_sidebar_fixture
+  title_b64=$(printf '%s' "$title" | base64 | tr -d '\n')
+  orig_b64=$(printf 'none|cmux-generation-1|workspace:1596|%s' "$title" | base64 | tr -d '\n')
+  fingerprint=$(printf '%064d' 0); epoch=$(date +%s)
+  printf 'restoredv1|W1|cmux-generation-1|workspace:1596|%s|%s|%s|%s\n' \
+    "$title_b64" "$orig_b64" "$fingerprint" "$epoch" > "$RESTORED_STATE"
+  rc=0; verify_sidebar_targets "$title" >/dev/null 2>&1 || rc=$?; marker=$rc
+  printf 'malformed\n' > "$RESTORED_STATE"
+  rc=0; verify_sidebar_targets "$title" >/dev/null 2>&1 || rc=$?; malformed=$rc
+  release_mutator_lease
+
+  [[ "$missing" == 1 && "$grouped" == 1 && "$clients" == 1 \
+      && "$receipt" == 1 && "$marker" == 1 && "$malformed" == 2 \
+      && "$grouped_report" == *'rule=client-count observed=not-measured'* \
+      && "$grouped_report" != *'rule=client-count observed=0'* ]] || ok=0
+  if [[ "$ok" == "1" ]]; then
+    pass "missing row, grouped topology, zero client, bad receipt, marker, and malformed state all fail distinctly"
+  else
+    fail "sidebar false-pass matrix mismatch missing=$missing grouped=$grouped clients=$clients receipt=$receipt marker=$marker malformed=$malformed grouped_report=[$grouped_report]"
+  fi
+}
+
+test_fly1596_sidebar_judge_covers_stale_markers_render_and_roster_drift() {
+  echo "Test: FLY-1596 Fix 4 — stale markers, bare render, and roster drift cannot false-pass"
+  local title="FLY-1596-implement" title_b64 orig_b64 fingerprint epoch rc=0 stale bare drift dead
+  local saved_roster calls="$TMPDIR_ROOT/fly1596-roster-calls"
+
+  _fly1596_setup_healthy_sidebar_fixture
+  title_b64=$(printf '%s' "$title" | base64 | tr -d '\n')
+  orig_b64=$(printf 'none|old-generation|workspace:999|%s' "$title" | base64 | tr -d '\n')
+  fingerprint=$(printf '%064d' 0); epoch=$(date +%s)
+  printf 'restoredv1|W1|old-generation|workspace:999|%s|%s|%s|%s\n' \
+    "$title_b64" "$orig_b64" "$fingerprint" "$epoch" > "$RESTORED_STATE"
+  rc=0; verify_sidebar_targets "$title" >/dev/null 2>&1 || rc=$?; stale=$rc
+  release_mutator_lease
+
+  _fly1596_setup_healthy_sidebar_fixture
+  MOCK_CMUX_READSCREEN='user@host ~ %'
+  rc=0; verify_sidebar_targets "$title" >/dev/null 2>&1 || rc=$?; bare=$rc
+  release_mutator_lease
+
+  _fly1596_setup_healthy_sidebar_fixture
+  saved_roster=$(declare -f derive_lead_roster)
+  : > "$calls"
+  derive_lead_roster() {
+    local n=0
+    [[ -f "$calls" ]] && n=$(wc -l < "$calls" | tr -d ' ')
+    echo x >> "$calls"
+    LEAD_ROSTER_STATE=ok
+    if (( n == 0 )); then
+      LEAD_ROSTER_ROWS='claude-tmux|com.flywheel.lead.a|FLY-1596-a'
+    else
+      LEAD_ROSTER_ROWS='claude-tmux|com.flywheel.lead.b|FLY-1596-b'
+    fi
+  }
+  rc=0; verify_sidebar_targets "$title" >/dev/null 2>&1 || rc=$?; drift=$rc
+  eval "$saved_roster"
+  release_mutator_lease
+
+  reset_mocks
+  MOCK_SOCK_IDENT=cmux-generation-1
+  saved_roster=$(declare -f derive_lead_roster)
+  derive_lead_roster() {
+    LEAD_ROSTER_STATE=ok
+    LEAD_ROSTER_ROWS='claude-tmux|com.flywheel.lead.dead|FLY-1596-dead'
+  }
+  title_b64=$(printf '%s' FLY-1596-dead | base64 | tr -d '\n')
+  orig_b64=$(printf 'none|old-generation|workspace:998|FLY-1596-dead' | base64 | tr -d '\n')
+  printf 'restoredv1|W1dead|old-generation|workspace:998|%s|%s|%s|%s\n' \
+    "$title_b64" "$orig_b64" "$fingerprint" "$epoch" > "$RESTORED_STATE"
+  rc=0; verify_sidebar_targets FLY-1596-dead >/dev/null 2>&1 || rc=$?; dead=$rc
+  eval "$saved_roster"
+
+  if [[ "$stale" == 1 && "$bare" == 1 && "$drift" == 2 && "$dead" == 1 ]]; then
+    pass "current/stale/dead restored markers fail, bare shells fail, and same-generation roster drift is inconclusive"
+  else
+    fail "expanded sidebar judge mismatch stale=$stale bare=$bare drift=$drift dead=$dead"
+  fi
+}
+
+test_fly1596_rebuild_parser_rejects_before_any_ipc() {
+  echo "Test: FLY-1596 Fix 3 — rebuild argv validation is complete before IPC"
+  reset_mocks
+  local calls="$TMPDIR_ROOT/fly1596-parser-ipc" rc=0 valid_rc=0
+  local saved_roster saved_snapshot saved_cmux saved_lease
+  : > "$calls"
+  saved_roster=$(declare -f derive_lead_roster)
+  saved_snapshot=$(declare -f strict_agent_window_snapshot)
+  saved_cmux=$(declare -f get_cmux_workspaces_json)
+  saved_lease=$(declare -f acquire_mutator_lease)
+  derive_lead_roster() { echo roster >> "$calls"; return 1; }
+  strict_agent_window_snapshot() { echo tmux >> "$calls"; return 2; }
+  get_cmux_workspaces_json() { echo cmux >> "$calls"; return 1; }
+  acquire_mutator_lease() { echo lease >> "$calls"; return 1; }
+
+  parse_rebuild_views_args --target FLY-1596-implement --target FLY-1596-implement \
+    --execute --handover >/dev/null 2>&1 || rc=$?
+  parse_rebuild_views_args --target 'bad|title' >/dev/null 2>&1 || true
+  parse_rebuild_views_args --all-leads --target FLY-1596-implement >/dev/null 2>&1 || true
+  parse_rebuild_views_args --target FLY-1596-implement --execute --handover \
+    >/dev/null 2>&1 || valid_rc=$?
+
+  eval "$saved_roster"; eval "$saved_snapshot"; eval "$saved_cmux"; eval "$saved_lease"
+  if [[ "$rc" -ne 0 && "$valid_rc" -eq 0 && ! -s "$calls" \
+      && "$OPS_REBUILD_TARGET_SPECS" == 'FLY-1596-implement|' \
+      && "$OPS_REBUILD_EXECUTE" == 1 && "$OPS_REBUILD_HANDOVER" == 1 ]]; then
+    pass "duplicate/conflicting/unsafe argv fail lexically; a valid target+handover parses without IPC"
+  else
+    fail "rebuild parser crossed its lexical boundary rc=$rc valid_rc=$valid_rc calls=[$(tr '\n' ';' < "$calls")] specs=[$OPS_REBUILD_TARGET_SPECS]"
+  fi
+}
+
+test_fly1596_ops_resolution_falls_back_to_live_leads_when_roster_is_partial() {
+  echo "Test: FLY-1596 Fix 3/4 — rebuild fallback stays usable but verification requires roster authority"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1
+  local title="growth-rafiki-lead" generation="cmux-generation-1" original_derive rc=0 verify_rc=0
+  original_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() { LEAD_ROSTER_STATE=unavailable; return 1; }
+  MOCK_SOCK_IDENT="$generation"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"growth-rafiki-lead"}]}'
+  topo_add_session runner-flywheel '$1'
+  topo_add_window runner-flywheel '@42' "$title" 1 0
+
+  parse_rebuild_views_args --all-leads || rc=$?
+  resolve_rebuild_targets || rc=$?
+  OPS_VERIFY_TARGETS="$title"
+  _resolve_sidebar_subjects || verify_rc=$?
+  eval "$original_derive"
+  if [[ "$rc" -eq 0 && "$verify_rc" -eq 2 \
+      && "$OPS_REBUILD_RESOLVED" == "$title||runner-flywheel|@42|workspace:1596|W1|"* ]]; then
+    pass "live Lead titles keep rebuild planning operable while verification stays inconclusive"
+  else
+    fail "partial roster boundary mismatch rc=$rc verify_rc=$verify_rc resolved=[$OPS_REBUILD_RESOLVED]"
+  fi
+}
+
+test_fly1596_ops_claim_is_self_bound_and_qa_exclusive() {
+  echo "Test: FLY-1596 Fix 3 — ops handover claim is self-bound and QA-exclusive"
+  reset_mocks
+  local incarnation rc_qa=0 rc_self=0 rc_foreign=0
+  incarnation=$(_process_incarnation "$$") || { fail "cannot derive fixture incarnation"; return; }
+  printf '%s|%s|qa_teardown|qa-nonce\n' "$$" "$incarnation" > "$CMUX_QA_TEARDOWN_CLAIM"
+  publish_ops_rebuild_claim >/dev/null 2>&1 || rc_qa=$?
+  rm -f "$CMUX_QA_TEARDOWN_CLAIM"
+  publish_ops_rebuild_claim >/dev/null 2>&1 || rc_self=$?
+  maintenance_entry_allowed ops_rebuild >/dev/null 2>&1 || rc_self=$?
+  printf '999999|foreign|ops_rebuild|foreign-nonce\n' > "$CMUX_OPS_REBUILD_CLAIM"
+  maintenance_entry_allowed ops_rebuild >/dev/null 2>&1 || rc_foreign=$?
+  release_ops_rebuild_claim >/dev/null 2>&1 || true
+
+  if [[ "$rc_qa" -ne 0 && "$rc_self" -eq 0 && "$rc_foreign" -ne 0 \
+      && -f "$CMUX_OPS_REBUILD_CLAIM" ]]; then
+    pass "QA wins first-claim ordering; only the byte-exact ops owner receives the maintenance exception"
+  else
+    fail "ops claim authority mismatch qa=$rc_qa self=$rc_self foreign=$rc_foreign claim=[$(cat "$CMUX_OPS_REBUILD_CLAIM" 2>/dev/null)]"
+  fi
+}
+
+test_fly1596_ops_mode_is_a_known_mutator_everywhere() {
+  echo "Test: FLY-1596 Fix 3 — ops rebuild is enumerated by lease, census, and teardown"
+  reset_mocks
+  local lease_rc=0 census_rc=0 owner_mode teardown_modes
+  acquire_mutator_lease ops_rebuild || lease_rc=$?
+  owner_mode=$(cut -d'|' -f3 "$WATCHER_LOCK_DIR/owner" 2>/dev/null || true)
+  cmux_mutator_command_matches '/bin/bash /tmp/flywheel-cmux-sync.sh --rebuild-views --target FLY-1596-implement --execute' \
+    || census_rc=$?
+  teardown_modes=$(sed -n '/case "$CMUX_OWNER_MODE"/,/esac/p' "$SCRIPT_DIR/test-teardown.sh")
+  release_mutator_lease
+  if [[ "$lease_rc" -eq 0 && "$census_rc" -eq 0 && "$owner_mode" == ops_rebuild \
+      && "$teardown_modes" == *ops_rebuild* ]]; then
+    pass "no process census or teardown grammar can misclassify a live ops mutator"
+  else
+    fail "ops mode enumeration incomplete lease=$lease_rc census=$census_rc owner=$owner_mode teardown=[$teardown_modes]"
+  fi
+}
+
+test_fly1596_ops_create_bypass_is_exact_and_lease_bound() {
+  echo "Test: FLY-1596 Fix 3 — create TTL bypass requires the exact leased ops target"
+  reset_mocks
+  local unleased=0 wrong=0 exact=0
+  OPS_REBUILD_TARGETS='FLY-1596-implement|workspace:1596|runner-flywheel|@42'
+  OPS_REBUILD_ACTIVE_TARGET='FLY-1596-implement|workspace:1596|runner-flywheel|@42'
+  ops_rebuild_authorizes_create runner-flywheel @42 FLY-1596-implement || unleased=$?
+  acquire_mutator_lease ops_rebuild >/dev/null 2>&1 || true
+  ops_rebuild_authorizes_create runner-flywheel @43 FLY-1596-implement || wrong=$?
+  ops_rebuild_authorizes_create runner-flywheel @42 FLY-1596-implement || exact=$?
+  release_mutator_lease
+  if [[ "$unleased" -ne 0 && "$wrong" -ne 0 && "$exact" -eq 0 ]]; then
+    pass "resident and neighboring targets retain the TTL; only the exact ops tuple can bypass it"
+  else
+    fail "ops create bypass widened unleased=$unleased wrong=$wrong exact=$exact"
+  fi
+}
+
+test_fly1596_rebuild_dry_run_and_exact_ref_are_read_only() {
+  echo "Test: FLY-1596 Fix 3 — semantic dry-run and bad exact-ref remain read-only"
+  _fly1596_setup_healthy_sidebar_fixture
+  release_mutator_lease
+  : > "$TOPO_JOURNAL"; MOCK_CMUX_OPS=""
+  local dry_rc=0 exact_rc=0 mutation_count report_count
+  run_rebuild_views --target FLY-1596-implement >/dev/null 2>&1 || dry_rc=$?
+  run_rebuild_views --target FLY-1596-implement=workspace:999 >/dev/null 2>&1 || exact_rc=$?
+  mutation_count=$(grep -Ec '^(new-session|link-window|unlink-window|rename-session|kill-window|kill-session)' "$TOPO_JOURNAL" || true)
+  report_count=$(find "$CMUX_REBUILD_REPORT_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$dry_rc" -eq 0 && "$exact_rc" -ne 0 && "$mutation_count" == 0 \
+      && -z "$MOCK_CMUX_OPS" && ! -d "$WATCHER_LOCK_DIR" \
+      && ! -e "$CMUX_OPS_REBUILD_CLAIM" && "$report_count" == 0 ]]; then
+    pass "phase-B planning reads truth but creates no lease/claim/report and rejects an unreachable exact ref"
+  else
+    fail "dry-run boundary mismatch dry=$dry_rc exact=$exact_rc mutations=$mutation_count ops=[$MOCK_CMUX_OPS] lock=$([[ -d "$WATCHER_LOCK_DIR" ]] && echo yes || echo no) reports=$report_count"
+  fi
+}
+
+test_fly1596_rebuild_executes_grouped_to_verified_a1_and_preserves_out_of_scope_marker() {
+  echo "Test: FLY-1596 Fix 3 — production generation converges one grouped target and preserves unrelated in-flight state"
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_CMUX_MUTATE_JSON=1; MOCK_CMUX_MUTATE_SURFACES=1; MOCK_SOCK_IDENT=cmux-generation-1
+  FLYWHEEL_CMUX_OPS_REPROBE_SECONDS=0
+  local title=FLY-1596-implement other=FLY-1596-other title_b64 orig_b64 fingerprint epoch rc=0
+  local saved_tmux_generation="$FLYWHEEL_CMUX_TMUX_GENERATION" saved_derive
+  local production_tmux_generation='/private/tmp/tmux-501/default|51104|Wed Aug  5 07:00:00 2026'
+  local expected_inventory_generation inventory_generation
+  expected_inventory_generation="sha256:$(printf '%s' "$production_tmux_generation" | shasum -a 256 | awk '{print $1}')"
+  FLYWHEEL_CMUX_TMUX_GENERATION="$production_tmux_generation"
+  topo_add_session runner-flywheel '$1'
+  topo_add_window runner-flywheel '@42' "$title" 1 0
+  tmux new-session -d -t runner-flywheel -s "cmux-$title"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-implement"}]}'
+  MOCK_CMUX_SURFACES="workspace:1596;;surface:1596;;terminal;;true;;$title"
+  MOCK_CMUX_READSCREEN=$'⚡ FLY-1596-implement\n[cmux attached]'
+  MOCK_TMUX_CLIENTS="cmux-$title=1"
+  test_ledger_upsert committed cmux-generation-1 workspace:1596 "$title"
+  release_mutator_lease
+  printf '%s|%s|%s\n' "$title" '@42' "$(date +%s)" > "$CREATE_STATE"
+  title_b64=$(printf '%s' "$other" | base64 | tr -d '\n')
+  orig_b64=$(printf 'none|old-generation|workspace:999|%s' "$other" | base64 | tr -d '\n')
+  fingerprint=$(printf '%064d' 0); epoch=$(date +%s)
+  printf 'restoredv1|W1|old-generation|workspace:999|%s|%s|%s|%s\n' \
+    "$title_b64" "$orig_b64" "$fingerprint" "$epoch" > "$RESTORED_STATE"
+  local marker_before
+  marker_before=$(cat "$RESTORED_STATE")
+  saved_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() {
+    LEAD_ROSTER_STATE=indeterminate
+    LEAD_ROSTER_ROWS=""
+    LEAD_ROSTER_REASONS="roster-authority-unavailable: missing manifest unrelated-lead"
+    return 1
+  }
+
+  run_rebuild_views --target "$title=workspace:1596" --execute >/dev/null 2>&1 || rc=$?
+  eval "$saved_derive"
+  inventory_generation=$(awk -F'|' '$6 == "committed" { print $1; exit }' "$KEEPER_INVENTORY" 2>/dev/null || true)
+  FLYWHEEL_CMUX_TMUX_GENERATION="$saved_tmux_generation"
+  if [[ "$rc" -eq 0 && "$VERIFY_SIDEBAR_REPORT" == *"PASS $title"* \
+      && "$inventory_generation" == "$expected_inventory_generation" \
+      && "$(cat "$RESTORED_STATE")" == "$marker_before" \
+      && "$(awk -F'|' -v t="$title" '$1 == "committed" && $2 == "cmux-generation-1" && $3 ~ /^workspace:[0-9]+$/ && $4 == t { n++ } END { print n+0 }' "$VIEW_LEDGER")" == 1 \
+      && ! -d "$WATCHER_LOCK_DIR" && -n "$OPS_REBUILD_REPORT_PATH" \
+      && -f "$OPS_REBUILD_REPORT_PATH" ]]; then
+    pass "grouped receipt is retired, TTL is bypassed only for the target, A1 verifies, and target-B marker bytes survive"
+  else
+    fail "ops grouped convergence mismatch rc=$rc verify=[$VERIFY_SIDEBAR_REPORT] inventory_generation=[$inventory_generation] expected_inventory_generation=[$expected_inventory_generation] marker=[$(cat "$RESTORED_STATE" 2>/dev/null)] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] report=[$OPS_REBUILD_REPORT_PATH] ops=[$MOCK_CMUX_OPS]"
+  fi
+  unset FLYWHEEL_CMUX_OPS_REPROBE_SECONDS
+}
+
+test_fly1596_handover_yields_then_revalidates_before_mutation() {
+  echo "Test: FLY-1596 Fix 3 — handover waits for watcher yield and revalidates after lease acquisition"
+  local rc_ok=0 rc_drift=0 sleeps_ok claim_ok drift_ops drift_ledger
+
+  _fly1596_setup_healthy_sidebar_fixture
+  release_mutator_lease
+  acquire_mutator_lease watch >/dev/null 2>&1 || { fail "cannot create watcher lease fixture"; return; }
+  MOCK_SLEEP_HOOK='rm -rf "$WATCHER_LOCK_DIR"; MUTATOR_LEASE_NONCE=""; MUTATOR_LEASE_INCARNATION=""; MUTATOR_LEASE_MODE=""; MOCK_SLEEP_HOOK=""'
+  run_rebuild_views --target FLY-1596-implement --execute --handover >/dev/null 2>&1 || rc_ok=$?
+  sleeps_ok="$MOCK_SLEEPS"
+  claim_ok=0
+  [[ ! -e "$CMUX_OPS_REBUILD_CLAIM" && ! -d "$WATCHER_LOCK_DIR" ]] && claim_ok=1
+
+  _fly1596_setup_healthy_sidebar_fixture
+  release_mutator_lease
+  acquire_mutator_lease watch >/dev/null 2>&1 || { fail "cannot create drift watcher lease fixture"; return; }
+  MOCK_CMUX_OPS=""
+  MOCK_SLEEP_HOOK='MOCK_CMUX_WORKSPACES_JSON='"'"'{"workspaces":[]}'"'"'; rm -rf "$WATCHER_LOCK_DIR"; MUTATOR_LEASE_NONCE=""; MUTATOR_LEASE_INCARNATION=""; MUTATOR_LEASE_MODE=""; MOCK_SLEEP_HOOK=""'
+  run_rebuild_views --target FLY-1596-implement --execute --handover >/dev/null 2>&1 || rc_drift=$?
+  drift_ops="$MOCK_CMUX_OPS"
+  drift_ledger=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+
+  if [[ "$rc_ok" -eq 0 && "$sleeps_ok" -ge 1 && "$claim_ok" == 1 \
+      && "$rc_drift" -ne 0 && -z "$drift_ops" \
+      && "$drift_ledger" == 'committed|cmux-generation-1|workspace:1596|FLY-1596-implement' \
+      && ! -e "$CMUX_OPS_REBUILD_CLAIM" && ! -d "$WATCHER_LOCK_DIR" ]]; then
+    pass "watcher-held lease yields to the self claim; handoff drift aborts before cmux or ledger mutation"
+  else
+    fail "handover contract mismatch ok=$rc_ok sleeps=$sleeps_ok claim=$claim_ok drift=$rc_drift ops=[$drift_ops] ledger=[$drift_ledger]"
+  fi
+}
+
+test_fly1596_log_episodes_are_bounded_stateful_and_reversible() {
+  echo "Test: FLY-1596 Fix 5 — log episodes emit transitions, summarize repeats, and support byte-compat mode"
+  reset_mocks
+  test_ensure_mutator_lease || { fail "cannot acquire log episode fixture lease"; return; }
+  local log_file="$TMPDIR_ROOT/fly1596-log-episodes.log" first_count changed_count summary_count suppressed
+  local zero_file="$TMPDIR_ROOT/fly1596-log-episodes-zero.log" zero_count rows
+  : > "$log_file"
+  FLYWHEEL_CMUX_LOG_REPEAT_SECONDS=3600
+  log_cmux_episode view-invariant-mismatch FLY-1596-implement evidence-a \
+    'Invariant mismatch: cmux-FLY-1596-implement grouped=1' 2>>"$log_file"
+  log_cmux_episode view-invariant-mismatch FLY-1596-implement evidence-a \
+    'Invariant mismatch: cmux-FLY-1596-implement grouped=1' 2>>"$log_file"
+  log_cmux_episode view-invariant-mismatch FLY-1596-implement evidence-a \
+    'Invariant mismatch: cmux-FLY-1596-implement grouped=1' 2>>"$log_file"
+  first_count=$(grep -cF 'Invariant mismatch: cmux-FLY-1596-implement grouped=1' "$log_file" || true)
+  suppressed=$(awk -F'|' '$1 == "view-invariant-mismatch" && $2 == "FLY-1596-implement" { print $5 }' "$CMUX_LOG_EPISODE_STATE")
+
+  log_cmux_episode view-invariant-mismatch FLY-1596-implement evidence-b \
+    'Invariant mismatch: cmux-FLY-1596-implement grouped=0 active=@99' 2>>"$log_file"
+  changed_count=$(grep -cF 'grouped=0 active=@99' "$log_file" || true)
+  awk -F'|' -v OFS='|' '{ $4=1; $5=2; print }' "$CMUX_LOG_EPISODE_STATE" > "${CMUX_LOG_EPISODE_STATE}.old"
+  mv "${CMUX_LOG_EPISODE_STATE}.old" "$CMUX_LOG_EPISODE_STATE"
+  log_cmux_episode view-invariant-mismatch FLY-1596-implement evidence-b \
+    'Invariant mismatch: cmux-FLY-1596-implement grouped=0 active=@99' 2>>"$log_file"
+  summary_count=$(grep -cF '(suppressed 2 repeats)' "$log_file" || true)
+
+  log_cmux_episode legacy-grouped-refused FLY-1596-implement missing-receipt \
+    'WARN: legacy grouped migration refused for FLY-1596-implement; no exact receipt' 2>>"$log_file"
+  rows=$(wc -l < "$CMUX_LOG_EPISODE_STATE" | tr -d ' ')
+  clear_cmux_log_episodes_for_title FLY-1596-implement
+
+  : > "$zero_file"
+  FLYWHEEL_CMUX_LOG_REPEAT_SECONDS=0
+  log_cmux_episode view-invariant-mismatch FLY-1596-zero same 'Invariant mismatch: zero' 2>>"$zero_file"
+  log_cmux_episode view-invariant-mismatch FLY-1596-zero same 'Invariant mismatch: zero' 2>>"$zero_file"
+  zero_count=$(grep -cF 'Invariant mismatch: zero' "$zero_file" || true)
+  release_mutator_lease
+  unset FLYWHEEL_CMUX_LOG_REPEAT_SECONDS
+
+  if [[ "$first_count" == 1 && "$suppressed" == 2 && "$changed_count" == 1 \
+      && "$summary_count" == 1 && "$rows" == 2 && ! -s "$CMUX_LOG_EPISODE_STATE" \
+      && "$zero_count" == 2 ]]; then
+    pass "first/change/hourly-summary stay visible, per-kind rows are bounded, healthy clears, and repeat=0 logs every call"
+  else
+    fail "log episode contract mismatch first=$first_count suppressed=$suppressed changed=$changed_count summary=$summary_count rows=$rows state=[$(cat "$CMUX_LOG_EPISODE_STATE" 2>/dev/null)] zero=$zero_count"
   fi
 }
 
@@ -6805,8 +8080,10 @@ test_fly1364_unledgered_zero_ref_converges_only_view_shell() {
   tmux new-session -d -t "runner-flywheel" -s "cmux-FLY-1364-implement"
   : > "$TOPO_JOURNAL"
   local rc=0 keeper
+  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
   dismantle_view_display "FLY-1364-implement" "manual-tab-already-closed" || rc=$?
   keeper=$(awk -F'|' '$6 == "committed" { print $3; exit }' "$KEEPER_INVENTORY" 2>/dev/null || true)
+  release_mutator_lease
   if [[ "$rc" -eq 0 && "$keeper" == fwkeeper-* ]] \
       && ! topo_session_exists "cmux-FLY-1364-implement" \
       && topo_session_exists "$keeper" \
@@ -8375,6 +9652,45 @@ test_fly1272_p2_dismantle_linked_preserves_source
 test_fly1272_p2_sole_holder_escrows_instead_of_destroying
 test_fly1272_p2_grouped_view_always_escrows
 test_fly1272_p2_keeper_inventory_reconciliation
+test_fly1596_dismantle_proves_tmux_before_consuming_receipt
+test_fly1596_inventory_requires_lease_and_recovers_residual_lock
+test_fly1596_inventory_reconciles_production_generation_token
+test_fly1596_inventory_crash_boundaries_converge_under_next_lease_holder
+test_fly1596_restored_marker_parser_is_strict_and_tri_state
+test_fly1596_restored_inflight_blocks_ordinary_close_and_dismantle
+test_fly1596_restored_ledger_cas_preserves_reused_current_ref
+test_fly1596_w1_two_pass_adoption_closes_restored_row
+test_fly1596_restored_adoption_accepts_production_lead_titles
+test_fly1596_restored_adoption_rejects_unrostered_live_titles
+test_fly1596_dead_discovery_roster_failure_is_nonfatal
+test_fly1596_restored_fingerprint_ignores_focus_state
+test_fly1596_raw_attach_title_never_enters_restored_inflight
+test_fly1596_one_restored_action_failure_does_not_abort_later_markers
+test_fly1596_flag_off_aborts_synthetic_receipt_without_close
+test_fly1596_w1p_promotes_then_closes_drifted_prepared_row
+test_fly1596_w1dead_is_roster_only_and_leaves_runner_stock
+test_fly1596_all_normal_receipt_consumers_skip_restored_inflight
+test_fly1596_recovery_decision_table_is_total_and_preserves_phase_invariants
+test_fly1596_adoption_budget_meets_five_minute_restart_bound
+test_fly1596_sidebar_judge_passes_only_complete_live_terminal_state
+test_fly1596_sidebar_judge_ignores_live_screen_bytes_for_snapshot_stability
+test_fly1596_sidebar_judge_localizes_render_unavailability
+test_fly1596_sidebar_judge_fails_missing_roster_lead
+test_fly1596_sidebar_judge_is_inconclusive_when_roster_derivation_fails
+test_fly1596_verify_sidebar_renders_roster_inconclusive_text_and_json
+test_fly1596_verify_sidebar_target_local_authority_matrix
+test_fly1596_verify_sidebar_rejects_unknown_runner_target
+test_fly1596_sidebar_judge_rejects_each_false_pass_family
+test_fly1596_sidebar_judge_covers_stale_markers_render_and_roster_drift
+test_fly1596_rebuild_parser_rejects_before_any_ipc
+test_fly1596_ops_resolution_falls_back_to_live_leads_when_roster_is_partial
+test_fly1596_ops_claim_is_self_bound_and_qa_exclusive
+test_fly1596_ops_mode_is_a_known_mutator_everywhere
+test_fly1596_ops_create_bypass_is_exact_and_lease_bound
+test_fly1596_rebuild_dry_run_and_exact_ref_are_read_only
+test_fly1596_rebuild_executes_grouped_to_verified_a1_and_preserves_out_of_scope_marker
+test_fly1596_handover_yields_then_revalidates_before_mutation
+test_fly1596_log_episodes_are_bounded_stateful_and_reversible
 test_fly1272_p2_foreign_same_title_is_untouched
 test_fly1272_p4_grouped_husk_cannot_back_wrong_tab
 test_fly1272_p4_uncertain_source_snapshot_mutates_nothing
