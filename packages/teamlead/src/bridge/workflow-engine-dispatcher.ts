@@ -1380,6 +1380,26 @@ export class WorkflowEngineDispatcher {
 					) {
 						continue;
 					}
+					if (session?.status === "completed") {
+						const held = store.holdCompletedWorkflowExecutionWithoutReceipt({
+							runId: run.run_id,
+							nodeId: workflowNode.id,
+							attempt: node.attempt,
+							executionId: node.execution_id,
+							alertIdentity: this.resolveRunAlertIdentity(
+								run.project_name,
+								run.issue_id,
+								run.run_id,
+							),
+							now: this.now().toISOString(),
+						});
+						if (!held.ok) {
+							this.log(
+								`workflow engine completion-receipt hold refused for ${node.execution_id}: ${held.reason}`,
+							);
+						}
+						continue;
+					}
 					const launches = store
 						.listWorkflowSideEffects(run.run_id)
 						.filter(

@@ -22752,6 +22752,126 @@ export class StateStore {
 	}
 
 	/**
+	 * A completed lifecycle session is positive evidence that the runner already
+	 * finished its work. When its engine node is still running only because the
+	 * completion receipt is missing, replaying the work is never safe: freeze the
+	 * run and alert the Lead instead of entering blind dead-execution recovery.
+	 */
+	holdCompletedWorkflowExecutionWithoutReceipt(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now?: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		const now = input.now ?? new Date().toISOString();
+		if (
+			!input.runId ||
+			!input.nodeId ||
+			!input.executionId ||
+			!Number.isInteger(input.attempt) ||
+			input.attempt < 1 ||
+			!StateStore.workflowFiniteTimestamp(now)
+		) {
+			return { ok: false, reason: "invalid_completion_receipt_hold" };
+		}
+		const eventUid = `completion_receipt_missing:${input.runId}:${input.nodeId}:${input.attempt}:${input.executionId}`;
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "completion_receipt_hold_not_committed",
+		};
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				"SELECT kind FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			)[0];
+			if (prior) {
+				result =
+					prior.kind === "completion_receipt_missing"
+						? { ok: true, idempotentReplay: true }
+						: { ok: false, reason: "completion_receipt_hold_conflict" };
+				return;
+			}
+			const run = this.getWorkflowRun(input.runId);
+			if (!run || run.engine_owned !== 1 || run.status !== "active") {
+				result = { ok: false, reason: "engine_run_not_active" };
+				return;
+			}
+			const node = this.getWorkflowRunNode(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+			);
+			if (
+				node?.state !== "running" ||
+				node.execution_id !== input.executionId
+			) {
+				result = { ok: false, reason: "node_execution_not_current" };
+				return;
+			}
+			if (this.getSession(input.executionId)?.status !== "completed") {
+				result = { ok: false, reason: "session_not_completed" };
+				return;
+			}
+			if (
+				this.getWorkflowNodeCompletion(input.runId, input.nodeId, input.attempt)
+			) {
+				result = { ok: false, reason: "receipt_exists" };
+				return;
+			}
+			this.db.run(
+				"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+				[input.runId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "completion_receipt_hold_race" };
+				return;
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid,
+				kind: "completion_receipt_missing",
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload: { attempt: input.attempt, at: now },
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: input.runId,
+				now,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: eventUid,
+					eventType: "workflow_engine_escalation",
+					severity: "severe",
+					sessionKey: `wf:${input.runId}`,
+					title: `Completion receipt missing for ${run.issue_id}`,
+					body: `Execution ${input.executionId} completed, but run ${input.runId} node ${input.nodeId} attempt ${input.attempt} has no completion receipt. The run was held and no replacement was spawned.`,
+					metadata: {
+						workflowEngine: {
+							runId: input.runId,
+							issueId: run.issue_id,
+							nodeId: input.nodeId,
+							executionId: input.executionId,
+							disposition: "completion_receipt_missing",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	/**
 	 * Replace one proven-dead physical launch without rewriting its immutable
 	 * launch history. The node attempt stays the same; only its execution owner
 	 * and the appended launch ordinal advance.
@@ -34196,6 +34316,7 @@ export interface WorkflowEngineAlertPayload {
 			disposition:
 				| "held"
 				| "partial"
+				| "completion_receipt_missing"
 				| "probe_unknown"
 				| "stale_resubmission"
 				| "dead_execution_activity_after_replacement"

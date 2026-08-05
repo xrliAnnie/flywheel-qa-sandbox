@@ -380,6 +380,7 @@ export interface AlertMetadata {
 		disposition:
 			| "held"
 			| "partial"
+			| "completion_receipt_missing"
 			| "probe_unknown"
 			| "stale_resubmission"
 			| "dead_execution_activity_after_replacement"

@@ -2043,6 +2043,81 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
+	it("holds a completed session with no receipt and never respawns it", async () => {
+		const store = await storeWithIntent("implement");
+		const fake = fakeStartDispatcher(store);
+		const probeLaunchLiveness = vi.fn(async () => "dead" as const);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1638-completed-no-receipt-")),
+			env: WORKFLOW_ON,
+			now: () => new Date("2099-07-22T00:00:00.000Z"),
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness,
+			resolveRunAlertIdentity: (projectName) => ({
+				leadId: "flywheel-eng-lead",
+				projectName,
+				leadResolution: "resolved",
+			}),
+		});
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "completed",
+			workflow_node_id: "implement",
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(probeLaunchLiveness).not.toHaveBeenCalled();
+		expect(fake.requests).toHaveLength(1);
+		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
+			state: "running",
+			execution_id: "implement-1",
+		});
+		expect(store.listWorkflowSideEffects("run-1")).toHaveLength(1);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "completion_receipt_missing"),
+		).toHaveLength(1);
+		const alerts = store.listWorkflowAlertOutbox();
+		expect(alerts).toHaveLength(1);
+		expect(alerts[0]?.payload.metadata.workflowEngine).toMatchObject({
+			runId: "run-1",
+			nodeId: "implement",
+			executionId: "implement-1",
+			disposition: "completion_receipt_missing",
+		});
+
+		// Fresh Bridge instances observe held and cannot create another launch.
+		const restarted = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1638-completed-restart-")),
+			env: WORKFLOW_ON,
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness,
+		});
+		expect(await restarted.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(
+			await new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				stateRoot: mkdtempSync(join(tmpdir(), "fly1638-completed-restart-2-")),
+				env: WORKFLOW_ON,
+				resolvePredecessorHead: async () => HEAD,
+				probeLaunchLiveness,
+			}).reconcile(),
+		).toEqual({ started: 0, held: 0 });
+		expect(fake.requests).toHaveLength(1);
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+		store.close();
+	});
+
 	it("observes the dead-exec sweep kill switch on every tick without a restart", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);
