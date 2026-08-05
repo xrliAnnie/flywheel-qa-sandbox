@@ -1,14 +1,13 @@
 ---
 issue: FLY-1572
-phase: design
-phaseCursor: 5/5
-updated: 2026-08-05T07:36:24.294Z
-nextStep: design node complete (R18 APPROVED, HTML published+reported);
-  successor = implement node via DAG orchestrator
+phase: implement
+phaseCursor: 0/8
+updated: 2026-08-05T07:39:12.411Z
+nextStep: audit implementation surfaces and write RED schema/state/open-contract tests
 chunks: []
 pointers: {}
 ---
 
 # FLY-1572 progress
-**phase**: design (5/5)
-**next**: design node complete (R18 APPROVED, HTML published+reported); successor = implement node via DAG orchestrator
+**phase**: implement (0/8)
+**next**: audit implementation surfaces and write RED schema/state/open-contract tests
