@@ -682,6 +682,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				progressPath: "/p",
 				workflowSubmissionCredential: "decision-ticket",
 				workflowSubmissionExpected: true,
+				workflowOutputCredential: "output-ticket",
 			}),
 		);
 		const env = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
@@ -696,6 +697,138 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(env.FLYWHEEL_PROGRESS_PATH).toBe("/p");
 		expect(env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL).toBe("decision-ticket");
 		expect(env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toBe("1");
+		expect(env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL).toBe("output-ticket");
+	});
+
+	it("FLY-1643: authors only the reviewed runner FLYWHEEL_ environment", async () => {
+		const transport = {
+			buildRunnerSpawnConfig: vi.fn(() => ({
+				args: [],
+				env: {
+					FLYWHEEL_AGENT_TEAM_NAME: "eng",
+					FLYWHEEL_AGENT_NAME: "runner",
+					FLYWHEEL_RUNNER_VENDOR_ID: "codex",
+				},
+			})),
+			createReceiver: vi.fn(() => null),
+		};
+		await makeAdapter({ transport }).execute(
+			ctx({
+				agentName: "runner",
+				teamName: "eng",
+				bridgeUrl: "http://bridge",
+				bridgeIngestToken: "ingest-ticket",
+				stateDbPath: "/state.db",
+				progressPath: "/progress.md",
+				sentinelPath: "/land.json",
+				workflowSubmissionCredential: "decision-ticket",
+				workflowSubmissionExpected: true,
+				workflowOutputCredential: "output-ticket",
+			}),
+		);
+		const daemonEnv = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
+		expect(
+			Object.keys(daemonEnv)
+				.filter(
+					(key) => key.startsWith("FLYWHEEL_") && key !== "FLYWHEEL_COMM_CLI",
+				)
+				.sort(),
+		).toEqual(
+			[
+				"FLYWHEEL_AGENT_NAME",
+				"FLYWHEEL_AGENT_TEAM_NAME",
+				"FLYWHEEL_BRIDGE_URL",
+				"FLYWHEEL_COMM_DB",
+				"FLYWHEEL_COMPLETE_MARKER_DIR",
+				"FLYWHEEL_EXEC_ID",
+				"FLYWHEEL_GATE_MARKER_DIR",
+				"FLYWHEEL_INGEST_TOKEN",
+				"FLYWHEEL_ISSUE_ID",
+				"FLYWHEEL_LAND_STATUS_PATH",
+				"FLYWHEEL_LEAD_ID",
+				"FLYWHEEL_PROGRESS_PATH",
+				"FLYWHEEL_PROJECT_NAME",
+				"FLYWHEEL_RUNNER_BACKEND_ID",
+				"FLYWHEEL_RUNNER_VENDOR_ID",
+				"FLYWHEEL_STATE_DB_PATH",
+				"FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL",
+				"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
+				"FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED",
+			].sort(),
+		);
+	});
+
+	it("FLY-1643: workflow capabilities come only from the execution context", async () => {
+		const names = [
+			"FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL",
+			"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
+			"FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED",
+		] as const;
+		const previous = names.map((name) => process.env[name]);
+		try {
+			process.env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL = "stale-output";
+			process.env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL = "stale-submission";
+			process.env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED = "1";
+
+			await makeAdapter().execute(ctx());
+			let daemonEnv = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
+			for (const name of names) expect(daemonEnv[name]).toBeUndefined();
+
+			await makeAdapter().execute(
+				ctx({
+					workflowOutputCredential: "current-output",
+					workflowSubmissionCredential: "current-submission",
+					workflowSubmissionExpected: true,
+				}),
+			);
+			daemonEnv = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
+			expect(daemonEnv.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL).toBe(
+				"current-output",
+			);
+			expect(daemonEnv.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL).toBe(
+				"current-submission",
+			);
+			expect(daemonEnv.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toBe("1");
+		} finally {
+			for (const [index, name] of names.entries()) {
+				const value = previous[index];
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
+	});
+
+	it("FLY-1643: treats empty workflow credentials as absent", async () => {
+		await makeAdapter().execute(
+			ctx({
+				workflowOutputCredential: "",
+				workflowSubmissionCredential: "",
+			}),
+		);
+		const daemonEnv = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
+		expect(daemonEnv.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL).toBeUndefined();
+		expect(daemonEnv.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL).toBeUndefined();
+	});
+
+	it("FLY-1643: rejects a changed workflow capability before runtime creation", async () => {
+		const transport = {
+			buildRunnerSpawnConfig: vi.fn(() => ({
+				args: [],
+				env: { FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL: "wrong-ticket" },
+			})),
+			createReceiver: vi.fn(() => null),
+		};
+		await expect(
+			makeAdapter({ transport }).execute(
+				ctx({
+					agentName: "runner",
+					teamName: "eng",
+					workflowOutputCredential: "current-ticket",
+				}),
+			),
+		).rejects.toThrow(/FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL/);
+		expect(capturedOpts).toBeUndefined();
+		expect(fake.gitConfigCalls).toEqual([]);
 	});
 
 	it("omits the complete-marker directory from daemon env when unset", async () => {

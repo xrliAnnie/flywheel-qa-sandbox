@@ -36,7 +36,7 @@ import {
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { stripInheritedSecretEnv } from "./codex-home.js";
+import { stripInheritedSecretEnv, stripSecretEnv } from "./codex-home.js";
 import { withSyncOpMarker } from "./sync-op-marker.js";
 
 /** macOS sockaddr_un.sun_path is 104 bytes; keep a byte of headroom. */
@@ -510,14 +510,11 @@ export async function spawnCodexDaemon(
 			],
 			{
 				// R-M4c HIGH: NEVER let a GitHub token reach the codex process env
-				// — it lives only in the 0600 config.toml (FLY-123). Wash the base
-				// env, then layer CODEX_HOME on.
+				// — it lives only in the 0600 config.toml (FLY-123). The adapter's
+				// explicitly constructed env is authoritative; the defensive fallback
+				// constructs a safe base with no inherited FLYWHEEL_* values.
 				env: {
-					// Codex full-PR review HIGH-4: broaden the wash to strip ALL of
-					// the Bridge's third-party creds (Discord/Linear/DB/API), not just
-					// the GH family — the daemon's model-driven shell must not inherit
-					// them. FLYWHEEL_* (the daemon's own scoped tokens) is preserved.
-					...stripInheritedSecretEnv(opts.env ?? process.env),
+					...stripSecretEnv(opts.env ?? stripInheritedSecretEnv(process.env)),
 					CODEX_HOME: opts.codexHome,
 				},
 			},

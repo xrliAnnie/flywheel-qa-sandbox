@@ -122,48 +122,14 @@ export function stripSecretEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /**
- * FLY-1188 (Codex full-PR review HIGH-4 R4): the EXACT `FLYWHEEL_` variable names
- * the resident codex daemon's model-driven shell legitimately needs. These are the
- * SAME names the adapter's `buildDaemonEnv` sets explicitly for the daemon (comm
- * CLI + db + ids + the scoped ingest token). An EXACT allowlist — not a
- * `FLYWHEEL_` name/shape PATTERN — because the Bridge env carries FLYWHEEL_ handles
- * whose names are not secret-shaped but ARE auth-capable and must NOT reach the
- * network-enabled model shell: `FLYWHEEL_*_KEYCHAIN_SERVICE`/`_ACCOUNT` (Keychain
- * credential coordinates), `FLYWHEEL_WRAPPER_ENV_FILE` (a secret .env path),
- * `FLYWHEEL_GATEWAY_BROKER_SOCKET` (a permission-broker socket) (R4 HIGH). Any
- * FLYWHEEL_ var not on this list is DROPPED.
- */
-const RUNNER_ALLOWED_FLYWHEEL_ENV: ReadonlySet<string> = new Set([
-	"FLYWHEEL_GATE_MARKER_DIR",
-	"FLYWHEEL_COMPLETE_MARKER_DIR",
-	"FLYWHEEL_RUNNER_BACKEND_ID",
-	"FLYWHEEL_RUNNER_VENDOR_ID",
-	"FLYWHEEL_COMM_DB",
-	"FLYWHEEL_COMM_CLI",
-	"FLYWHEEL_EXEC_ID",
-	"FLYWHEEL_ISSUE_ID",
-	"FLYWHEEL_BRIDGE_URL",
-	"FLYWHEEL_INGEST_TOKEN",
-	"FLYWHEEL_STATE_DB_PATH",
-	"FLYWHEEL_PROGRESS_PATH",
-	"FLYWHEEL_PROJECT_NAME",
-	"FLYWHEEL_LEAD_ID",
-	"FLYWHEEL_LAND_STATUS_PATH",
-	// Agent Team identity injected by the transport (CodexAdapter) — internal,
-	// non-secret name strings the spawn contract requires (R4 MEDIUM).
-	"FLYWHEEL_AGENT_TEAM_NAME",
-	"FLYWHEEL_AGENT_NAME",
-]);
-
-/**
  * FLY-1188 (Codex full-PR review HIGH-4 R3): a SAFE-BASE ALLOWLIST of OS/shell
  * environment names the daemon legitimately needs. An allowlist — not a
  * secret-name denylist — because a denylist by name misses auth-CAPABLE vars whose
  * names don't look secret (`SSH_AUTH_SOCK` → host SSH agent,
  * `AWS_SHARED_CREDENTIALS_FILE`/`GOOGLE_APPLICATION_CREDENTIALS` → cloud creds,
  * `KUBECONFIG` → cluster creds). Proxy vars are handled SEPARATELY (R4) so their
- * `user:pass@` userinfo can be stripped. Everything not on this list, not an exact
- * runner FLYWHEEL_ var, and not an `LC_*` locale var is DROPPED.
+ * `user:pass@` userinfo can be stripped. Everything not on this list or an `LC_*`
+ * locale var is DROPPED; inherited `FLYWHEEL_*` values are never retained.
  */
 const SAFE_BASE_ENV: ReadonlySet<string> = new Set([
 	"PATH",
@@ -236,9 +202,7 @@ function sanitizeProxyValue(v: string): string | undefined {
 /** FLY-1188 HIGH-4 R4: is `k` safe for the model-driven daemon to inherit AS-IS? */
 function keepInheritedEnv(k: string): boolean {
 	return (
-		RUNNER_ALLOWED_FLYWHEEL_ENV.has(k) ||
-		k.startsWith("LC_") || // locale
-		SAFE_BASE_ENV.has(k)
+		!k.startsWith("FLYWHEEL_") && (k.startsWith("LC_") || SAFE_BASE_ENV.has(k))
 	);
 }
 
@@ -249,12 +213,12 @@ function keepInheritedEnv(k: string): boolean {
  * passwords, a FLYWHEEL_ Bridge secret (alert bot token / Keychain coords / wrapper
  * env-file / broker socket), OR auth-CAPABLE handles whose names don't look secret
  * (SSH_AUTH_SOCK, cloud credential-file pointers, KUBECONFIG). So the wash is a
- * strict ALLOWLIST (R4): a var is kept ONLY if it is an EXACT runner `FLYWHEEL_`
- * var, an `LC_*` locale var, or a name in `SAFE_BASE_ENV`; proxy vars are kept but
- * with credential userinfo stripped. Everything else is DROPPED. Codex reads its
- * own auth from CODEX_HOME files (re-layered by the caller), never env, so
- * over-removal is safe. Apply on the INHERITED env BEFORE layering the runner's
- * explicit `FLYWHEEL_*`/`CODEX_HOME`.
+ * strict ALLOWLIST (R4): a var is kept ONLY if it is an `LC_*` locale var or a
+ * name in `SAFE_BASE_ENV`; proxy vars are kept but with credential userinfo
+ * stripped. Every inherited `FLYWHEEL_*` and everything else is DROPPED. Codex
+ * reads its own auth from CODEX_HOME files (re-layered by the caller), never env.
+ * The adapter applies this once to inherited env, then explicitly layers the
+ * runner's execution-scoped protocol values.
  */
 export function stripInheritedSecretEnv(
 	env: NodeJS.ProcessEnv,
@@ -269,7 +233,7 @@ export function stripInheritedSecretEnv(
 		}
 		if (keepInheritedEnv(k)) out[k] = v;
 	}
-	// GH family is stripped even if it somehow slipped the allowlist above.
+	// GH family is stripped even if it somehow slipped the safe base above.
 	for (const k of SECRET_ENV_VARS) delete out[k];
 	return out;
 }

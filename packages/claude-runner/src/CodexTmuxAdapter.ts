@@ -388,6 +388,11 @@ export class CodexTmuxAdapter implements IAdapter {
 		// crippled; see resolveGitWritableDirs for the FLY-793 detail).
 		const sandboxCwd = realpathSync(ctx.cwd);
 		const gitWritableDirs = this.resolveGitWritableDirs(sandboxCwd);
+		// Build and validate in the fail-loud zone. This must stay before GitHub
+		// credential/CODEX_HOME provisioning so a rejection cannot leak a live token.
+		const gateMarkerDir = defaultGateMarkerDir();
+		const daemonEnv = this.buildDaemonEnv(ctx, gateMarkerDir);
+		this.assertWorkflowCapabilities(ctx, daemonEnv);
 
 		// FLY-209 (credentials): host gh token + worktree git credential helper.
 		const ghToken = this.provisionGitHubCredential(ctx);
@@ -458,7 +463,6 @@ export class CodexTmuxAdapter implements IAdapter {
 			registeredSession = this.registerCommDbSession(ctx, windowName);
 			ctx.onHeartbeat?.(ctx.executionId);
 
-			const gateMarkerDir = defaultGateMarkerDir();
 			const writableRoots = buildDaemonSandboxWritableRoots({
 				flywheelRoot: join(homedir(), ".flywheel"),
 				gateMarkerDir,
@@ -502,7 +506,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				// FLY-1224: per-phase reasoning effort → daemon spawn config override
 				// (-c model_reasoning_effort=). Absent → CODEX_HOME config default.
 				...(ctx.effort ? { effort: ctx.effort } : {}),
-				env: this.buildDaemonEnv(ctx, gateMarkerDir),
+				env: daemonEnv,
 				sandboxWritableRoots: writableRoots,
 				networkAccess: true,
 				logger: (m) => this.log(m),
@@ -1400,11 +1404,11 @@ export class CodexTmuxAdapter implements IAdapter {
 	}
 
 	/**
-	 * Build the daemon process env: process.env + the FLYWHEEL_* protocol vars
+	 * Build the daemon process env: a safe host base + the FLYWHEEL_* protocol vars
 	 * the runner's shell commands (flywheel-comm gate/stage/complete) need +
-	 * transport identity. GitHub-token vars are stripped in spawnCodexDaemon
-	 * (stripSecretEnv) so they never reach the codex process env; CODEX_HOME is
-	 * layered on there too.
+	 * transport identity. No inherited FLYWHEEL_* value enters the base. The spawn
+	 * boundary strips the GitHub-token family and layers CODEX_HOME, but otherwise
+	 * preserves this explicitly constructed environment.
 	 */
 	private buildDaemonEnv(
 		ctx: AdapterExecutionContext,
@@ -1413,9 +1417,13 @@ export class CodexTmuxAdapter implements IAdapter {
 		// Codex full-PR review HIGH-4: wash the Bridge's third-party creds out of
 		// the INHERITED env before layering this runner's own FLYWHEEL_* values —
 		// the resident daemon runs model-driven shells and must never inherit
-		// Discord/Linear/DB/API secrets. FLYWHEEL_* (incl. the ingest token set
-		// below) is preserved by the wash.
+		// Discord/Linear/DB/API secrets. No inherited FLYWHEEL_* value is preserved.
 		const env: NodeJS.ProcessEnv = stripInheritedSecretEnv(process.env);
+		// Workflow capability provenance is execution context only. Never let a
+		// stale value cross executions, even if the base construction changes later.
+		delete env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL;
+		delete env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL;
+		delete env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED;
 		env.FLYWHEEL_GATE_MARKER_DIR = gateMarkerDir;
 		const completeMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR?.trim();
 		if (completeMarkerDir) {
@@ -1465,6 +1473,35 @@ export class CodexTmuxAdapter implements IAdapter {
 			}
 		}
 		return env;
+	}
+
+	/** Guard the workflow capabilities this execution declared before side effects. */
+	private assertWorkflowCapabilities(
+		ctx: AdapterExecutionContext,
+		env: NodeJS.ProcessEnv,
+	): void {
+		const expected = [
+			[
+				"FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL",
+				ctx.workflowOutputCredential || undefined,
+			],
+			[
+				"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
+				ctx.workflowSubmissionCredential || undefined,
+			],
+			[
+				"FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED",
+				ctx.workflowSubmissionExpected ? "1" : undefined,
+			],
+		] as const;
+		const mismatched = expected
+			.filter(([key, value]) => env[key] !== value)
+			.map(([key]) => key);
+		if (mismatched.length > 0) {
+			throw new Error(
+				`runner workflow capability missing or changed: ${mismatched.join(", ")}`,
+			);
+		}
 	}
 
 	/**

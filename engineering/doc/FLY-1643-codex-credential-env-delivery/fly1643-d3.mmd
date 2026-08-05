@@ -1,0 +1,12 @@
+flowchart LR
+    subgraph L1["防线 1 · 测试层(防代码漂移)"]
+        T1["守卫测试:适配器构造的环境<br/>过一遍真清洗,断言全部存活"]
+        T2["哨兵测试:陈旧凭据毒化环境<br/>断言绝不冒充进新任务"]
+        T3["终点取证:在真 spawn 边界<br/>断言凭据到达子进程"]
+    end
+    subgraph L2["防线 2 · 运行时(防环境差异)"]
+        R1["launch 自检:会被丢的变量<br/>= 启动即失败,点名报错"]
+    end
+    L1 --> X["第四次有人加变量忘注册<br/>→ 测试红 / 启动炸<br/>不再是静默死亡"]
+    L2 --> X
+    style X fill:#eef4ff,stroke:#007aff,stroke-width:2px

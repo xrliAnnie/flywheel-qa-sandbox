@@ -1,0 +1,15 @@
+flowchart TB
+    subgraph UP["上游(健康)"]
+        A["Bridge 签发作业凭据<br/>(一次性、带过期时间)"] --> B["派发链路透传<br/>Blueprint → 适配器 ctx"]
+    end
+    B --> C1["Claude 适配器<br/>tmux -e 直接注入"]
+    B --> C2["Codex 适配器<br/>buildDaemonEnv 设置凭据 ✓"]
+    C1 --> D1["Claude Runner 拿到凭据 ✅<br/>16:41 消费成功、作业落账"]
+    C2 --> E["spawn 前二次清洗<br/>stripInheritedSecretEnv"]
+    E --> F{"精确白名单<br/>17 个名字"}
+    F -- "凭据名不在名单上" --> G["🕳 三个凭据被静默丢弃"]
+    G --> H["Codex 进程从没见过凭据"]
+    H --> I["Runner 零报错跑完<br/>但交不出作业 ❌<br/>completed_no_artifact"]
+    style G fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style I fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style D1 fill:#e8f8ee,stroke:#34c759,stroke-width:2px
