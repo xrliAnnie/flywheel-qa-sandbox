@@ -289,6 +289,54 @@ describe("spawnCodexDaemon", () => {
 		expect(spawnedEnv.CODEX_HOME).toBe("/home/x/.flywheel/codex-homes/exec-1");
 	});
 
+	it("FLY-1643: delivers workflow capabilities to the spawned codex process", async () => {
+		const child = new FakeChild();
+		let spawnedEnv: NodeJS.ProcessEnv = {};
+		await spawnCodexDaemon({
+			...baseOpts(child),
+			env: {
+				FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL: "output-ticket",
+				FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL: "submission-ticket",
+				FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED: "1",
+				GH_TOKEN: "must-not-leak",
+			},
+			spawnFn: (_bin, _args, options) => {
+				spawnedEnv = options.env;
+				return child;
+			},
+			socketExists: () => true,
+		});
+		expect(spawnedEnv.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL).toBe(
+			"output-ticket",
+		);
+		expect(spawnedEnv.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL).toBe(
+			"submission-ticket",
+		);
+		expect(spawnedEnv.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toBe("1");
+		expect(spawnedEnv.GH_TOKEN).toBeUndefined();
+	});
+
+	it("FLY-1643: the defensive fallback inherits no FLYWHEEL_ variables", async () => {
+		const previous = process.env.FLYWHEEL_COMM_DB;
+		process.env.FLYWHEEL_COMM_DB = "/stale/comm.db";
+		try {
+			const child = new FakeChild();
+			let spawnedEnv: NodeJS.ProcessEnv = {};
+			await spawnCodexDaemon({
+				...baseOpts(child),
+				spawnFn: (_bin, _args, options) => {
+					spawnedEnv = options.env;
+					return child;
+				},
+				socketExists: () => true,
+			});
+			expect(spawnedEnv.FLYWHEEL_COMM_DB).toBeUndefined();
+		} finally {
+			if (previous === undefined) delete process.env.FLYWHEEL_COMM_DB;
+			else process.env.FLYWHEEL_COMM_DB = previous;
+		}
+	});
+
 	it("appends the sandbox `-c` overrides to the app-server argv (M4d)", async () => {
 		const child = new FakeChild();
 		let spawnedArgs: string[] = [];

@@ -953,40 +953,22 @@ describe("FLY-1188 full-PR HIGH-4: stripInheritedSecretEnv (daemon env leak)", (
 		}
 	});
 
-	it("KEEPS the allowlisted ingest token + non-secret FLYWHEEL_ dirs/urls/ids", () => {
+	it("FLY-1643: drops every inherited FLYWHEEL_ var and keeps the safe OS base", () => {
 		const out = stripInheritedSecretEnv({
-			FLYWHEEL_INGEST_TOKEN: "it", // secret-shaped but the daemon NEEDS it (allowlist)
+			FLYWHEEL_INGEST_TOKEN: "it",
 			FLYWHEEL_BRIDGE_URL: "http://x",
 			FLYWHEEL_COMM_DB: "/db",
 			FLYWHEEL_GATE_MARKER_DIR: "/m",
 			FLYWHEEL_COMPLETE_MARKER_DIR: "/complete",
+			FLYWHEEL_AGENT_TEAM_NAME: "eng",
+			FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL: "output-ticket",
+			FLYWHEEL_ALERT_BOT_TOKEN: "alert-secret",
 			PATH: "/usr/bin",
 			HOME: "/home/u",
 		});
-		expect(out.FLYWHEEL_INGEST_TOKEN).toBe("it");
-		expect(out.FLYWHEEL_BRIDGE_URL).toBe("http://x");
-		expect(out.FLYWHEEL_COMM_DB).toBe("/db");
-		expect(out.FLYWHEEL_GATE_MARKER_DIR).toBe("/m");
-		expect(out.FLYWHEEL_COMPLETE_MARKER_DIR).toBe("/complete");
+		for (const key of Object.keys(out)) expect(key).not.toMatch(/^FLYWHEEL_/);
 		expect(out.PATH).toBe("/usr/bin");
 		expect(out.HOME).toBe("/home/u");
-	});
-
-	// R2 HIGH: a blanket FLYWHEEL_ prefix exemption would leak OTHER FLYWHEEL_
-	// Bridge secrets into the model-driven daemon. Only the explicit allowlist is
-	// kept; every other secret-shaped FLYWHEEL_ var is stripped like any 3rd-party
-	// cred.
-	it("STRIPS non-allowlisted FLYWHEEL_ secrets (e.g. an alert bot token)", () => {
-		const out = stripInheritedSecretEnv({
-			FLYWHEEL_INGEST_TOKEN: "keep",
-			FLYWHEEL_ALERT_BOT_TOKEN: "leak",
-			FLYWHEEL_WEBHOOK_SECRET: "leak2",
-			FLYWHEEL_SIGNING_KEY: "leak3",
-		});
-		expect(out.FLYWHEEL_INGEST_TOKEN).toBe("keep");
-		expect(out.FLYWHEEL_ALERT_BOT_TOKEN).toBeUndefined();
-		expect(out.FLYWHEEL_WEBHOOK_SECRET).toBeUndefined();
-		expect(out.FLYWHEEL_SIGNING_KEY).toBeUndefined();
 	});
 
 	// R3 HIGH: a NAME denylist misses auth-CAPABLE handles whose names don't look
@@ -1028,28 +1010,8 @@ describe("FLY-1188 full-PR HIGH-4: stripInheritedSecretEnv (daemon env leak)", (
 		expect(out.LANG).toBe("en_US.UTF-8");
 		expect(out.LC_ALL).toBe("en_US.UTF-8");
 		expect(out.HTTPS_PROXY).toBe("http://proxy:8080");
-		expect(out.FLYWHEEL_GATE_MARKER_DIR).toBe("/m");
-		expect(out.FLYWHEEL_INGEST_TOKEN).toBe("it");
-	});
-
-	// R4 HIGH: an exact FLYWHEEL_ allowlist — a FLYWHEEL_ name/shape PATTERN pass
-	// leaked auth-CAPABLE FLYWHEEL_ handles (Keychain coords / secret .env path /
-	// broker socket) whose names aren't secret-shaped.
-	it("R4: DROPS auth-capable FLYWHEEL_ vars not on the exact allowlist", () => {
-		const out = stripInheritedSecretEnv({
-			FLYWHEEL_INGEST_TOKEN: "keep", // exact-allowlisted → kept
-			FLYWHEEL_COMM_CLI: "/cli.js", // exact-allowlisted → kept
-			FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE: "svc", // Keychain coords → dropped
-			FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT: "acct",
-			FLYWHEEL_WRAPPER_ENV_FILE: "/secret.env", // secret .env path → dropped
-			FLYWHEEL_GATEWAY_BROKER_SOCKET: "/broker.sock", // broker socket → dropped
-		});
-		expect(out.FLYWHEEL_INGEST_TOKEN).toBe("keep");
-		expect(out.FLYWHEEL_COMM_CLI).toBe("/cli.js");
-		expect(out.FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE).toBeUndefined();
-		expect(out.FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT).toBeUndefined();
-		expect(out.FLYWHEEL_WRAPPER_ENV_FILE).toBeUndefined();
-		expect(out.FLYWHEEL_GATEWAY_BROKER_SOCKET).toBeUndefined();
+		expect(out.FLYWHEEL_GATE_MARKER_DIR).toBeUndefined();
+		expect(out.FLYWHEEL_INGEST_TOKEN).toBeUndefined();
 	});
 
 	// R4/R5 HIGH: a proxy URL can embed `user:pass@` (incl. `@` inside the pass, no
@@ -1084,17 +1046,6 @@ describe("FLY-1188 full-PR HIGH-4: stripInheritedSecretEnv (daemon env leak)", (
 		expect(out.HTTPS_PROXY).toBeUndefined();
 		expect(out.HTTP_PROXY).toBeUndefined();
 		expect(out.ALL_PROXY).toBe("http://proxy:8080");
-	});
-
-	it("R5: keeps the transport-injected Agent Team identity (exact-allowlisted)", () => {
-		const out = stripInheritedSecretEnv({
-			FLYWHEEL_AGENT_TEAM_NAME: "eng",
-			FLYWHEEL_AGENT_NAME: "codex-runner",
-			FLYWHEEL_RUNNER_VENDOR_ID: "codex",
-		});
-		expect(out.FLYWHEEL_AGENT_TEAM_NAME).toBe("eng");
-		expect(out.FLYWHEEL_AGENT_NAME).toBe("codex-runner");
-		expect(out.FLYWHEEL_RUNNER_VENDOR_ID).toBe("codex");
 	});
 });
 

@@ -1038,6 +1038,35 @@ describe("Blueprint", () => {
 			expect(emitter.emitFailed).toHaveBeenCalledTimes(1);
 		});
 
+		it("preserves an adapter launch rejection in the emitted failure", async () => {
+			const error = new Error(
+				"runner workflow capability missing or changed: FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL",
+			);
+			const emitter = makeStubEmitter();
+			const blueprint = new Blueprint(
+				makeHydrator(),
+				makeMockGitChecker(),
+				() => makeThrowingAdapter(error),
+				makeMockShell(),
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				emitter,
+			);
+
+			const result = await blueprint.run(makeNode(), "/project", makeContext());
+
+			expect(result).toMatchObject({ success: false, error: error.message });
+			expect(emitter.emitFailed).toHaveBeenCalledWith(
+				expect.any(Object),
+				error.message,
+				undefined,
+				undefined,
+			);
+		});
+
 		it("handles emitter exception defensively", async () => {
 			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
