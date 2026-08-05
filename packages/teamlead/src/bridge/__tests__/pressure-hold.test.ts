@@ -63,9 +63,10 @@ describe("StateStore admission_pause", () => {
 			set_by: "restart-services",
 			reason: "deploy",
 		});
-		expect(
-			store.getAdmissionPause("2026-08-05T12:30:00.001Z"),
-		).toMatchObject({ active: false, remainingSeconds: 0 });
+		expect(store.getAdmissionPause("2026-08-05T12:30:00.001Z")).toMatchObject({
+			active: false,
+			remainingSeconds: 0,
+		});
 	});
 
 	it("caps the operator lease at one hour and resume is idempotent", () => {

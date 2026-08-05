@@ -238,9 +238,7 @@ export class RunnerAdmissionController {
 	}
 
 	setAdmissionPauseProbe(
-		probe:
-			| (() => { detail: string; retryAfterSeconds: number } | null)
-			| null,
+		probe: (() => { detail: string; retryAfterSeconds: number } | null) | null,
 	): void {
 		this.admissionPauseProbe = probe;
 	}

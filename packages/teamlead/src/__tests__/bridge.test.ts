@@ -95,14 +95,11 @@ describe("Bridge scaffold", () => {
 	it("fails the admission control API closed when the master token is absent", async () => {
 		const store = await StateStore.create(":memory:");
 		const app = createBridgeApp(store, [], makeConfig());
-		const res = await fetch(
-			await startAndGetUrl(app, "/api/admission/pause"),
-			{
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ durationSeconds: 1_800 }),
-			},
-		);
+		const res = await fetch(await startAndGetUrl(app, "/api/admission/pause"), {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ durationSeconds: 1_800 }),
+		});
 		expect(res.status).toBe(503);
 		store.close();
 	});

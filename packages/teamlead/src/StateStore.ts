@@ -1892,11 +1892,22 @@ export class StateStore {
 							delivery_lease_expires_at TEXT,
 							delivery_state TEXT NOT NULL DEFAULT 'pending'
 							  CHECK (delivery_state IN ('pending','repairing','delivered')),
+							released_generation INTEGER,
+							released_at TEXT,
+							released_reason TEXT,
 							CHECK (committed_generation IS NULL OR committed_generation = owner_generation),
 							FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
 						);
 						INSERT INTO workflow_launch_owner_next
-						SELECT * FROM workflow_launch_owner;
+							(execution_id, owner_generation, owner_id, acquired_at,
+							 lease_expires_at, committed_generation, delivery_attempt,
+							 delivery_owner, delivery_lease_expires_at, delivery_state,
+							 released_generation, released_at, released_reason)
+						SELECT execution_id, owner_generation, owner_id, acquired_at,
+						       lease_expires_at, committed_generation, delivery_attempt,
+						       delivery_owner, delivery_lease_expires_at, delivery_state,
+						       released_generation, released_at, released_reason
+						  FROM workflow_launch_owner;
 						DROP TABLE workflow_launch_owner;
 						ALTER TABLE workflow_launch_owner_next RENAME TO workflow_launch_owner;
 					`);
