@@ -1,13 +1,13 @@
 ---
 issue: FLY-1638
 phase: implement
-phaseCursor: 6/11
-updated: 2026-08-05T07:58:48.497Z
-nextStep: Implement QA credential windows across all issuance paths
+phaseCursor: 7/11
+updated: 2026-08-05T08:07:08.607Z
+nextStep: Implement admission pause and restart-services brake
 chunks: []
 pointers: {}
 ---
 
 # FLY-1638 progress
-**phase**: implement (6/11)
-**next**: Implement QA credential windows across all issuance paths
+**phase**: implement (7/11)
+**next**: Implement admission pause and restart-services brake
