@@ -3,7 +3,7 @@
  * runner-admission `pressure_hold` deferral, and the per-kind escalation
  * policy (legacy byte-compat + the swap slow-variable window).
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import { RunnerAdmissionController } from "../runner-admission.js";
 import {
@@ -198,6 +198,20 @@ describe("RunnerAdmissionController admission pause", () => {
 		const controller = RunnerAdmissionController.alwaysAdmit();
 		controller.setAdmissionPauseProbe(() => null);
 		expect(controller.tryAdmit()).toEqual({ admit: true });
+	});
+
+	it("a throwing pause probe fails open with an explicit operational warning", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const controller = RunnerAdmissionController.alwaysAdmit();
+		controller.setAdmissionPauseProbe(() => {
+			throw new Error("state db unavailable");
+		});
+
+		expect(controller.tryAdmit()).toEqual({ admit: true });
+		expect(warn).toHaveBeenCalledWith(
+			"[runner-admission] admission pause probe failed; failing open: state db unavailable",
+		);
+		warn.mockRestore();
 	});
 });
 

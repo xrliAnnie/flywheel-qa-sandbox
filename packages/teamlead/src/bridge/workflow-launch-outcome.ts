@@ -1,11 +1,19 @@
 import type { LaunchPrecommitOutcome } from "flywheel-core";
-import { WORKFLOW_LAUNCH_HEARTBEAT_MS } from "../StateStore.js";
+import {
+	WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS,
+	WORKFLOW_LAUNCH_HEARTBEAT_MS,
+} from "../StateStore.js";
+
+/** Leave one full heartbeat interval before the launch owner's hard horizon. */
+export const WAIT_FOR_WORKFLOW_LAUNCH_PRECOMMIT_MS =
+	WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS - WORKFLOW_LAUNCH_HEARTBEAT_MS;
 
 export async function waitForWorkflowLaunchOutcome(input: {
 	outcome: Promise<LaunchPrecommitOutcome>;
-	timeoutMs: number;
+	timeoutMs?: number;
 	heartbeat: () => void;
 }): Promise<LaunchPrecommitOutcome | undefined> {
+	const timeoutMs = input.timeoutMs ?? WAIT_FOR_WORKFLOW_LAUNCH_PRECOMMIT_MS;
 	let timeout: ReturnType<typeof setTimeout> | undefined;
 	const heartbeat = setInterval(() => {
 		try {
@@ -29,7 +37,7 @@ export async function waitForWorkflowLaunchOutcome(input: {
 								physicalEvidence: "unknown",
 							},
 						}),
-					input.timeoutMs,
+					timeoutMs,
 				);
 				timeout.unref?.();
 			}),

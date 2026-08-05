@@ -57,8 +57,6 @@ import type { AdmissionDecision } from "./runner-admission.js";
 import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
 import type { WorkflowReworkCoordinatorOutcome } from "./workflow-rework-coordinator.js";
 
-const ENGINE_LAUNCH_OUTCOME_WAIT_MS = 90_000;
-
 interface WorkflowEngineDispatcherOptions {
 	store: StateStore;
 	startDispatcher: IStartDispatcher;
@@ -2290,7 +2288,6 @@ export class WorkflowEngineDispatcher {
 		if (startResult.launchOutcome && launchReleaseFence) {
 			const outcome = await waitForWorkflowLaunchOutcome({
 				outcome: startResult.launchOutcome,
-				timeoutMs: ENGINE_LAUNCH_OUTCOME_WAIT_MS,
 				heartbeat: () => {
 					const heartbeatNow = this.now();
 					store.renewWorkflowLaunchOwner({

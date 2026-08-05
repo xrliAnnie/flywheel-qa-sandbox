@@ -254,7 +254,10 @@ export class RunnerAdmissionController {
 			let pause: { detail: string; retryAfterSeconds: number } | null = null;
 			try {
 				pause = this.admissionPauseProbe();
-			} catch {
+			} catch (error) {
+				console.warn(
+					`[runner-admission] admission pause probe failed; failing open: ${error instanceof Error ? error.message : String(error)}`,
+				);
 				pause = null;
 			}
 			if (pause) {

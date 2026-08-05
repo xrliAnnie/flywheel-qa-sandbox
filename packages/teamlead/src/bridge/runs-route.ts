@@ -2961,7 +2961,6 @@ export function createRunsRouter(
 					if (startResult.launchOutcome && launchReleaseFence) {
 						const outcome = await waitForWorkflowLaunchOutcome({
 							outcome: startResult.launchOutcome,
-							timeoutMs: GHOST_GUARD_SESSION_WAIT_MS,
 							heartbeat: () => {
 								const heartbeatNow = new Date();
 								store.renewWorkflowLaunchOwner({

@@ -381,7 +381,7 @@ describe("FLY-1372 DAG recovery domain", () => {
 		h.behavior.commitLaunch = false; // crash between spawn and launch commit
 		const first = await post(h.url);
 		expect(first.status).toBe(202);
-		expect(first.json.code).toBe("GENERALIZED_LAUNCH_PENDING");
+		expect(first.json.code).toBe("LAUNCH_PENDING");
 		// 202 carries the same advisory echo shape as the 200 (plan #10b).
 		expect(first.json.templateAuthority).toEqual({ overrode: [] });
 
