@@ -128,7 +128,8 @@ schema-v2 的 completion 路径已写 `workflow_node_pr_binding`(`recordWorkflow
 - **run status 检查其实存在且多处**(sweep 侧 `listActiveWorkflowRuns` 只取 `status='active'`,commit 侧 `:22832-22836` 复查)—— 六单现在显示 terminated 是**事后**被终止的;`workflow_side_effect_ledger` 证明每次重派都发生在 run 仍 `active` 时。issue 前提 ③ 需修正表述。
 - **真缺陷**:死亡谓词 `ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES`(`StateStore.ts:312-320`)**含 `"completed"`** —— sweep 的"死"定义 = terminal session status + 无 completion receipt。complete 吃 500 的诚实 runner 留下的正是 `session.status='completed' ∧ node.state='running' ∧ 无 receipt`,与 crashed runner **字节不可分** → liveness probe 也如实确认进程没了 → `rollbackDeadWorkflowNodeExecution`(attempt 不变,launch_ordinal+1)→ 新 runner 重做已 merge 的活 → complete 再 500 → 闭环。
 - **重启触发签名**:`start()` 构造即打 `reconcile()`(`workflow-engine-dispatcher.ts:260-274`)—— ledger 里两簇密集爆发(03:03:49-03:06:14 与 03:50:44-03:53:17,六单同 node 同 attempt、launch_ordinal 递增)= 连续两次 Bridge boot。引擎自己都发过 `repeated_dead_execution_pattern`(deathNumber: 2)—— 报警响了,循环照跑。
-- **既有刹车**:`MAX_BLIND_REPLACEMENTS = 3`(`StateStore.ts:88`,backoff 60s/5m/15m,耗尽 → run held + founder alert,FLY-1606 就是跑满的那个)—— 但计数按 Bridge 生命周期,**每次重启清零重来**。
+- **既有刹车**:`MAX_BLIND_REPLACEMENTS = 3`(`StateStore.ts:88`,backoff 60s/5m/15m,耗尽 → run held + founder alert,FLY-1606 就是跑满的那个)。
+  > **更正(Codex design review R1#4)**:初判「计数按 Bridge 生命周期、重启清零」有误 —— 计数从 `workflow_side_effect_ledger` durable 行派生,`rollbackDeadWorkflowNodeExecution` 独立 count 同一账本后执行 cap,**跨重启持久**。8-05 两次 boot 各重派一轮是 cap=3 尚未耗尽,非清零。修复不需要动计数,只需 5③ 的 completed-without-receipt 分支阻断错误 respawn。
 
 ### 4.4 generic 节点出口(子缺陷 ④)
 
