@@ -175,3 +175,40 @@ schema-v2 的 completion 路径已写 `workflow_node_pr_binding`(`recordWorkflow
 - 机器调用 → **习语 A:Bearer master token**(`tokenAuthMiddleware`,`plugin.ts:957-987`)+ fail-closed 503 包装(`plugin.ts:2122-2134`,无 token 时不静默裸奔)。fleet-console 的 loopback+confirmToken 习语是浏览器专用,脚本用不了。
 - 注意:若挂在 `/api/runs` 前缀下,gemini scoped token 也够得着 —— 要么挂独立前缀(如 `/api/admission/pause`),要么加 `MASTER_AUTH_REQUIRED` 内层校验(`runs-route.ts:371-384` 先例)。
 - 审计建议的执行位点:`run-dispatcher.ts:1208`(覆盖 `start()` 全部六 lane)**加上** `dispatch()`(`:578`)补检,闭合 retry/dead-exec 缺口;429 响应带 `Retry-After` 头(剩余 pause 窗口)。
+
+## 6. launch 点火孤儿自锁(修复面 7,2026-08-05 追加)— 审计完成
+
+> **一个机制修正**:「同名撞名 → 500」不是 `tmux new-window -n` 的字面拒绝 —— tmux 同名窗**不报错**。真因见 §6.1。
+
+### 6.1 撞名的真机制:session 级饱和,非 window 级拒绝
+
+- 窗名是 (Linear identifier, role, title) 的纯函数(`tmux-naming.ts:36-42` `buildWindowLabel`,`Blueprint.ts:2597` 调用)—— **不含 execution id、不含代数**,两代 design 窗名字节相同。
+- `ensureRunnerSession`(`TmuxAdapter.ts:1509-1620`)是 **session** 级 ensure(经 `tmux-server-rescue ensure`,1s 重试至 210s deadline);hold kinds = saturated/split_brain/ambiguous/…(`:68-74`)。`TmuxSessionHoldError` 即 `tmux session ensure held: <kind>`(`:76-85`)。
+- 因果链:上代 completed 窗未收 → stale 窗堆积在共享 `runner-<project>` session → server/命令队列**饱和** → ensure held → throw。**修法 = 收掉同名 completed 窗以消除饱和源**,不是给 new-window 加改名。
+- 窗创建(`TmuxAdapter.ts:595-608`)前**没有任何** list-windows/同名检查。
+- **现成先例(照抄)**:`purgeSameNameWindowsAsync`(`codex-runner-tui-window.ts:608-649`,FLY-1239)—— list → 按不可变 `@id` kill 同名窗 → re-ensure → 复查为零否则拒建;现只用于 founder TUI 窗,runner launch 路径没有。结构同 FLY-99 worktree 前置回收(`WorktreeManager.ts:382-421`)。
+
+### 6.2 launch owner 孤儿:无补偿写 + 永不能自我接管
+
+- owner INSERT:`recoverOrAcquireWorkflowLaunch`(`StateStore.ts:18128-18281`,`owner_generation=1` 即错误串里的 generation 1)。
+- **60min 租约是 5 处内联字面量**(`runs-route.ts:2663/2718/2758/2781`、`workflow-engine-dispatcher.ts:1911`)—— 降租约要么全改要么抽常量。
+- retry 每次 mint 新 `launchOwnerId = randomUUID()`(`runs-route.ts:2650`)→ `owner_id !== input.ownerId` 恒真(`StateStore.ts:18240-18246`)→ typed 409 `GENERALIZED_LAUNCH_HELD`;**重试永远无法收养自己上一次的死租约**,只有 60min 到期或显式 cancellation 行能放。
+- **generalized 路径无回滚**:`runs-route.ts:2831` 的 `startDispatcher.start` **不在任何 try/catch 内**(仅 legacy 路径 `:3153-3343` 有 catch 并 `casLaunchClaimState("starting","cancelled")` 回滚 `:3344`)。owner 行在 `:2659` 已 durable(`StateStore.ts:18279` 无条件 save),三行后 start 抛 → run+owner 在盘、session 永不降生、零补偿写。
+
+### 6.3 `engine_predecessor_unavailable`:两种状态混判 + 1s 无限重试
+
+- throw 点 `workflow-engine-dispatcher.ts:1814-1817`:three-stage 角色(含 design)要求 predecessor 存在。
+- `startRetryExecutionId`(`:1773-1787`):首节点无 `edge_traversed` → transition undefined → start reservation 指向本 node/attempt/execution → **predecessor = 自己**(start-retry 场景的有意设计,用于从自身 session 分支头解 startPoint)。缺陷:`:1815` 把「无前任(attempt=1 合法态)」与「前任 session 行缺失」混为一谈 —— 孤儿(session 无行)→ throw。
+- throw 后 `:325-336` 只 log+计数,side-effect 行留在 `intent_recorded` → 下一 tick 重选 → **1s 无限重试**,无退避、无 attempt 计数、无状态转移(与修复面 2 的刷屏同形)。
+
+### 6.4 tripwire 存在但被租约互锁 + 无 operator 触发
+
+- `reconcileUnlaunchedWorkflowStalls`(`workflow-engine-dispatcher.ts:1090-1100`):alert 10min / rollback 60min,env `FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS`/`..._ROLLBACK_MS` 已可调(call-time 读)。
+- **真自锁**:`beginUnlaunchedWorkflowCancellation` 被 `launch_owner_live` 守卫挡(`StateStore.ts:17560-17561`),且引擎侧**静默吞**该 reason(`:1211-1222` 不升级)。rollback 阈值与租约同为 60min → 两个定时器精确互锁,tripwire 到点撞上恰好还活着的租约 no-op。**只降 `ROLLBACK_MS` 没用** —— 会更早撞 `launch_owner_live`;租约必须一起降,或教守卫识别「路由已返回错误的 owner」为可回收。
+- **operator 触发不存在**:`beginUnlaunchedWorkflowCancellation` 唯一 caller 是引擎 tick;无 HTTP 路由/CLI。最干净插入点 = `runs-route.ts:792` `router.post("/:runId/rework")` 旁新增 master-auth 路由。
+
+### 6.5 500 形状与 typed 化模式
+
+- 现状:`:2831` 无 catch → express 5 async 冒泡 → `plugin.ts:3788-3801` 兜底 `{error:"internal error"}`,**只打 err.message 不打 stack**,`TmuxSessionHoldError.kind/evidence` 全丢。
+- 照抄模式:typed error class → typed 响应(`InvalidAgentNameError` → 400+code,`AdmissionDeferredError` → 429+reason,`runs-route.ts:3352-3381`);hold 类 409+code+reason 家族(`GENERALIZED_LAUNCH_HELD` 等 5 个)。`TmuxSessionHoldError` → 409 + `code:"LAUNCH_TMUX_SESSION_HELD"` + `reason: err.kind` + evidence。
+- 反例明示:`:3382-3390` 的字符串匹配 fallback(FLY-123 注释点名要避免)。

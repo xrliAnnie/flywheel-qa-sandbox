@@ -182,12 +182,20 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 - server log 用 `console.error` 记录 issue/run/node/execution/owner generation + 原始 error stack;HTTP body 不回传 stack、路径或 secret。
 - 结构化失败只有在 7.2 原子 release 成功后才声明 retryable;release 竞态失败而 durable launch 可能已前进时返回 pending,避免客户端重试制造双 launch。
 
-### 7.5 测试
+### 7.5 审计补注(research §6,四点增量 —— 不改写 7.1-7.4 的设计)
+
+1. **病灶阶段核实(机制注记)**:审计确认 `tmux new-window -n` 同名**不报错**;事故的 throw 来自 **session 级** `ensureRunnerSession`(`TmuxAdapter.ts:1509-1620`,hold kinds 是 rescue helper 的 server 分类)—— stale 窗与 500 的关联机制是「窗堆积 → server/命令队列饱和 → ensure held」(research §6.1)。7.1 的 preflight 位于 `ensureSession()` **之后**,若 ensure 先挂则到不了。实施第一步先真机复现确认 500 的精确阶段;若确证 ensure 阶段饱和,同名 terminal 窗清理需前移到 ensure 之前(或由既有 boot sweep 兜底),7.1 preflight 保留为第二道。两种机制下「清 terminal 同名窗」都是对的,只是位置要对准病灶。
+2. **`@flywheel_exec_id` 是新契约**:现窗口**不发布**任何 execution 变量(窗名是 (identifier, role, title) 纯函数,research §6.1)。7.1 依赖它 → 显式两半:新窗创建时 `set-option -w @flywheel_exec_id <execId>`(与 CommDB/StateStore 映射同步);**legacy 窗(无变量)天然落入 7.1 的「无 identity → 不猜杀 → 换名后缀」分支**,不误杀。
+3. **tripwire rollback 阈值必须随 lease 一起降**:7.2 把 lease 降到 5min,但 crash 型孤儿(无人调显式 release)靠 tripwire 回收 —— `FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS` 默认仍 60min(`workflow-engine-dispatcher.ts:1097`),lease 过期后 admission 仍要等到 60min 才被清,「孤儿存活 ≤5min」锚在 crash 场景不达标。默认降至 **10min**(> lease 5min,保持「先 lease 后 rollback」时序;alert 10min 不变);同时把引擎对 `launch_owner_live` 的**静默吞**(`:1211-1222`)改为计数+日志可见(research §6.4)。operator 手动触发(master-auth 路由复用 `beginUnlaunchedWorkflowCancellation`)列为可选项,若时序默认已达锚则不加。
+4. **5min lease 与慢 launch 的时序核对**:ensure deadline 210s + ghost-guard `waitForSession` 90s ≈ 最坏 ~5min —— 5min 初始 lease 靠**既有 renew**(`renewWorkflowLaunchOwner`,`runs-route.ts:2781`)续命慢路径;测试须含「合法慢 launch 在 renew 下不被误回收」一例。
+
+### 7.5a 测试
 
 - adapter/dispatcher seam:terminal 同名窗口按 immutable id 被关闭后正常 launch;活窗口不被关闭且新窗使用确定性后缀;identity 缺失/多候选不误杀。
 - route + StateStore:launch throw 与 session-never-born 各一例 → generation 1 立即 fenced/released、同 key 取得 generation 2;generation 1 迟到 commit 失败;显式 release 与 commit/session race 只有一个赢家;Bridge crash 无 release 时 store clock +5min 可接管。
 - engine root:attempt=1 无入边 design 可 dispatch 且 `startPoint` 缺省;implement、qa、design retry 缺 predecessor 仍拒绝;start reservation 自指回归。
 - HTTP:每个已知失败的 status + `code/reason/executionId/retryable` 精确断言,未知异常有结构化 500 且日志含 stack、响应不含 stack。
+- 补注组(7.5):crash 型孤儿在 10min rollback 内被 tripwire 回收(lease 5min < rollback 10min 时序断言);合法慢 launch 经 renew 不被误回收;`launch_owner_live` 吞噬计数可见;legacy 无变量窗走换名分支不被杀。
 
 ## 8. 验收锚映射(全部活体)
 
