@@ -300,10 +300,11 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 | messages progress | → log(event='progress') |
 | messages 过期/terminal 历史 | → log('migrated_history');**content_ref 非空的历史行同样先内嵌 bytes(base64)+hash 进 row_json、同事务建 GC intent**(R3 blocker 2 —— 不留 dangling 路径) |
 | lead_inbox external(chat/xdept) | 未 complete→QUEUED;delivered→ACKED;disposed→DEAD |
-| lead_inbox 其余 pending(inbox lane) | → QUEUED |
-| lead_inbox frozen/quarantine/consumed 历史 | → log('migrated_history')(disposition 映射记录在 row_json) |
+| lead_inbox 其余 pending(inbox lane) | → QUEUED。**pending 的精确谓词 = 真未读三空条件**(§12.B1,issue 2026-08-05 迁移硬约束):`carrier='inbox' AND processed_at IS NULL AND consumed_at IS NULL AND delivered_at IS NULL`。灰区行不进 QUEUED:consumed_at NULL 但 processed_at 非空(已 settle)→ log('migrated_history') + settlement 槽;consumed_at NULL 但 delivered_at 非空且 carrier='inbox' 的孤例逐行人工判定(08-05 全机实测仅 1 行) |
+| lead_inbox frozen/quarantine/consumed 历史 | → log('migrated_history')(disposition 映射记录在 row_json)。**⚠️ 假未读陷阱**:`processed_at IS NULL` 单条件会把「送到了、消费了、只差销账」的行(08-05 全机实测 9,079 行:flywheel 8,630 / growth 301 / personal-assistant 122 / tidal-echo 23 / geoforge3d 3)当成未读搬进新库 —— 它们必须按 consumed 历史进 log,绝不 QUEUED |
 - **对账 = 覆盖记录合同,不是行数求和**:每个源物理行恰有一条覆盖记录(成为 mailbox 行 或 log 行);每个「逻辑投递」恰一行 mailbox(镜像对折算一)。**成为活 mailbox 行的源行同时写 `migration_snapshot` log 行**(row_json 全列)—— 被删旧列的值永不丢。log 幂等键 = `event_id UNIQUE`('migrated:<src>:<rowid>'),crash 重放 INSERT OR IGNORE + canonical 比对。
-- **前置断言(fail-closed)**:pending batch=0、pending claim=0、candidates_json 全零(生产已实测为 0;非 0 即 abort 待人工处置)。
+- **未读集 id 恒等锚(issue 2026-08-05 验收锚,写进脚本终局对账 + QA 验收)**:迁移后 `mailbox` 中 `state='QUEUED' AND carrier='inbox'` 且源自 lead_inbox 的 id 集合,必须与旧库真未读集(上述三空谓词)**数量 + 逐 id 恒等**;不满足即整体 ROLLBACK。external QUEUED 行与 messages 来源行单列对账(不属「未读」口径)。
+- **前置断言(fail-closed)**:pending batch=0、pending claim=0、candidates_json 全零(生产已实测为 0;非 0 即 abort 待人工处置)。**相邻通则(issue 2026-08-05)**:`chat-receipt pending = 0` 只覆盖 `chat:` 前缀、未 disposed 的 external 收据,`founder_msg:` / `lead_event:` / `question:` 三个 lane 结构上不在其定义域 —— runbook preflight 不得拿它当「旧库已清空」证据,quiesce 断言按 per-lane 计数逐一列出。
 
 ### 8.3 硬 cutover 守卫(无 flag;R2 blocker 3 修正)
 - **毒药 VIEW(读写全路径 fail-loud)**:DROP 后建同名 VIEW `messages`/`lead_inbox`,各指向刻意不存在的 sentinel 表(`CREATE VIEW messages AS SELECT * FROM fly1572_poison_messages_use_mailbox`)。SQLite 建 VIEW 不校验引用、prepare 时才解析 —— 旧 binary 的 `CREATE TABLE IF NOT EXISTS` 因同名对象 no-op,而 **SELECT 与一切写都会在 prepare/执行时报 `no such table: fly1572_poison_...`** —— 空表墓碑做不到的(SELECT 静默返 0 行、未命中行的 UPDATE/DELETE 不触发行级触发器)这里全覆盖。
@@ -351,3 +352,25 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 | LEASED 行滞留(C 无租约扫描) | 与今天「wake 后无重推」行为一致;拉取可 ACK LEASED;D 单接管;监控台账列 LEASED 计数 |
 | settlement 并发冲突 | UNIQUE 槽 + canonical 比对 + fail-loud(§3.2),竞争测试 |
 | sender_ref 畸形 | fail-closed + quarantine,绝不降级(§6) |
+
+## 12. 重基核查与 issue 新约束折入(2026-08-05,继任设计节点)
+
+> 本计划成稿于 base `dd165ee5`(2026-08-04);原设计执行体死亡(FLY-1628 文档将其记为 dead-exec 案例 `FLY-1572 / run d0bc75a4`),继任节点在 base `779ebc21` 上逐项复核。§12 之前的正文语义零改动;本节只记录核查结论与 issue 08-05 新增硬约束的折入位点(已就地改 §8.2)。
+
+### 12.A 对三个新合入 main 的 PR 的失效核查
+
+| PR | 核查结论 |
+| -- | -- |
+| FLY-1631(#775,v2 运行时退役) | `packages/v2-cutover` / `packages/v2-kernel` 已从树上删除;§5(research)与 §8.4 引用的 v2 文件(migration.ts / database-lifecycle.ts / backup.ts / database-lifecycle.test.ts / rollback-t1.test.ts)**现仅存于 git 历史,锚点 commit `dd165ee5`**。判决不变:备份/回滚原语本就是「自研、不依赖 v2 wrapper」,v2 引用是模式参照 —— 实施时从历史 commit 读模式,不依赖树内文件。§3 的 mailbox 命名冲突声明降级为历史注记:v2 包已删、生产 `~/.flywheel/flywheel-v2.db` 实测不存在(2026-08-05);声明本身保留,防读旧文档的人混淆 |
+| FLY-1634(#773,restart 净删除) | 仅删 lead-lease **收养**机制(`AdoptLeaseInput` / supervisor audit);§6 sender_ref 依赖的 lease/generation provenance 与 `processedFenceFromProvenance` 三级降级梯(db.ts:3068,08-05 复核在位)原样存活。无影响 |
+| FLY-1628(#776,pane-loss reconciler) | db.ts 仅新增 `finalizePaneLossResidue`(触 sessions / three_stage_turn)+ `GuardedFinalizeSessionResult` 新 union 分支;**未新增任何 messages / lead_inbox 读写者**。实施步 4/5 核对 CommDB 方法清单时把它计入。另:FLY-1628 审计把「messages 4 个抵达列全空(763 条 question)」列为本单硬输入 —— 与 §4.2「列语义由状态机接管、不原样搬」一致,无需改动 |
+
+### 12.B issue 2026-08-05 新增迁移硬约束(Cass 实测)的折入
+
+1. **真未读谓词**(已改入 §8.2 矩阵):真未读 = `processed_at IS NULL AND consumed_at IS NULL AND delivered_at IS NULL`。按 `processed_at IS NULL` 单条件搬 = 全机 9,079 条幽灵未读(08-05 逐库实测数字见 §8.2)。
+2. **未读集 id 恒等锚**(已改入 §8.2 对账):数量 + 逐 id 恒等,不满足整体 ROLLBACK;这是验收标准 5 的精确化 —— 「行数对得上」不够。
+3. **chat-receipt pending=0 定义域通则**(已改入 §8.2 前置断言):preflight 不得拿它当全库清空证据。
+
+### 12.C 多项目库迁移明确化
+
+迁移脚本按 `~/.flywheel/comm/<project>/comm.db` **逐库执行**(仅处理含 `lead_inbox` 表的库;无表的 QA 残库跳过并记录)。08-05 实测清单:flywheel 52,309(真未读 8)/ geoforge3d 36,831 / tidal-echo 2,861 / growth 868 / joycon-typeless 278 / personal-assistant 225 / sub 0 / test-slot-2·4 0。每库独立:备份 → 迁移 → 对账 → completed marker;任一库失败只回滚该库,runbook 里写明「部分完成」态的处置(未迁库继续被毒药前的旧 binary 语义约束 —— 因此**部署新 binary 必须在全部生产库迁移完成之后**,新 binary 三态 open 合同(§8.3)会把 legacy 库 fail-loud 挡下,天然防半迁移态跑飞)。生产快照与验收 5 以迁移时刻实测为准。
