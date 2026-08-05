@@ -1,13 +1,14 @@
 ---
 issue: FLY-1572
 phase: design
-phaseCursor: 7/7
-updated: 2026-08-05T05:59:45.840Z
-nextStep: poll design review b515d6ba; then enter implement and start schema TDD
+phaseCursor: 1/5
+updated: 2026-08-05T06:38:21.122Z
+nextStep: "fix Bridge design-review round-2 (c51f5e70) findings: 2 HIGH blockers
+  + 3 advisories in plan.md, then resubmit design_review gate"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1572 progress
-**phase**: design (7/7)
-**next**: poll design review b515d6ba; then enter implement and start schema TDD
+**phase**: design (1/5)
+**next**: fix Bridge design-review round-2 (c51f5e70) findings: 2 HIGH blockers + 3 advisories in plan.md, then resubmit design_review gate
