@@ -205,6 +205,7 @@ schema-v2 的 completion 路径已写 `workflow_node_pr_binding`(`recordWorkflow
 ### 6.4 tripwire 存在但被租约互锁 + 无 operator 触发
 
 - `reconcileUnlaunchedWorkflowStalls`(`workflow-engine-dispatcher.ts:1090-1100`):alert 10min / rollback 60min,env `FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS`/`..._ROLLBACK_MS` 已可调(call-time 读)。
+- **R2 复审新增事实**:同一对 env 还被 `reconcileWorkflowReworkStalls` 当 alert/hold threshold 读取;pending delivery 的 age 又从原始 `requested_at` 算,不随 budget retry reset。若直接把 rollback 降到10min,会在1+2+4+8≈15min的第5击前 force-held并双告警。实现必须拆出 `FLYWHEEL_ENGINE_REWORK_ALERT_MS/HOLD_MS`(默认30m/60m),launch才用5m/10m。
 - **真自锁**:`beginUnlaunchedWorkflowCancellation` 被 `launch_owner_live` 守卫挡(`StateStore.ts:17560-17561`),且引擎侧**静默吞**该 reason(`:1211-1222` 不升级)。rollback 阈值与租约同为 60min → 两个定时器精确互锁,tripwire 到点撞上恰好还活着的租约 no-op。**只降 `ROLLBACK_MS` 没用** —— 会更早撞 `launch_owner_live`;租约必须一起降,或教守卫识别「路由已返回错误的 owner」为可回收。
 - **operator 触发不存在**:`beginUnlaunchedWorkflowCancellation` 唯一 caller 是引擎 tick;无 HTTP 路由/CLI。最干净插入点 = `runs-route.ts:792` `router.post("/:runId/rework")` 旁新增 master-auth 路由。
 
