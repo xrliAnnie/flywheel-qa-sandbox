@@ -1,13 +1,13 @@
 ---
 issue: FLY-1643
 phase: implement
-phaseCursor: 2/8
-updated: 2026-08-05T19:35:35.654Z
-nextStep: add self-check behavior tests, then implement the approved minimal fix
+phaseCursor: 3/8
+updated: 2026-08-05T19:37:09.608Z
+nextStep: self-review diff, run targeted type/lint, then full-repo gates
 chunks: []
 pointers: {}
 ---
 
 # FLY-1643 progress
-**phase**: implement (2/8)
-**next**: add self-check behavior tests, then implement the approved minimal fix
+**phase**: implement (3/8)
+**next**: self-review diff, run targeted type/lint, then full-repo gates
