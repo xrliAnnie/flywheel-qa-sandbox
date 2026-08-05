@@ -1,13 +1,13 @@
 ---
 issue: FLY-1572
 phase: implement
-phaseCursor: 3/4
-updated: 2026-08-05T19:51:32.686Z
-nextStep: 补 plan §8.2 与 migration runbook 容量实测，然后跑全套门禁
+phaseCursor: 4/4
+updated: 2026-08-05T19:55:21.176Z
+nextStep: 提交并 push lap N+1 四项修复，申请 fresh code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1572 progress
-**phase**: implement (3/4)
-**next**: 补 plan §8.2 与 migration runbook 容量实测，然后跑全套门禁
+**phase**: implement (4/4)
+**next**: 提交并 push lap N+1 四项修复，申请 fresh code review
