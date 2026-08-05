@@ -474,3 +474,7 @@ R16(R15 折入核验全确认)返回 2 HIGH + 1 MEDIUM,全采纳:
 
 R17(R16 折入核验全确认,并本地实测验证了「0444 下只读 online backup 含 WAL 帧」的核心原语)返回 1 HIGH,采纳:
 - **HIGH**:abort-all 的未换入库复原从「只复原 mode」升级为**内容 + mode 双复原** —— sidecar 已 quarantine 后裸主文件独缺 WAL-only 提交(Codex 实测:备份含该行、裸主文件 `no such table`)。intent 增 `sidecars_quarantined` 相位与 sidecar restoration 状态;优先用已验证 durable backup 原子替换 canonical(WAL 帧已物化)再复原 mode;all-legacy 出口门比对复原后投影/hash/行数 vs 权威备份;专属 fault fixture 证真旧 build 重启后读到 WAL-only 行。
+
+### 12.J 终局:R18 APPROVED(2026-08-05)
+
+R18 复核 R17 折入并端到端本地复现优先 abort 路径(WAL-only 行历经只读 backup → sidecar quarantine → 原子替换 → mode 复原 → integrity check 存活)后 **APPROVED — ready to implement**。全程 18 轮:R1-R7(初版)、R8-R11(继任重基核验)、R12-R13(Bridge gate lane)、R14-R18(本继任 exec)。实施期守则(R18 叮嘱):forward-intent 每相位的 fault injection 不得裁剪;内容等价 + mode 双检通过前,旧 binary 一律不得启动。
