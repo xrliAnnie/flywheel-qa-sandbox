@@ -381,6 +381,7 @@ export interface AlertMetadata {
 			| "held"
 			| "partial"
 			| "completion_receipt_missing"
+			| "rework_suppressed_idle_spin"
 			| "probe_unknown"
 			| "stale_resubmission"
 			| "dead_execution_activity_after_replacement"

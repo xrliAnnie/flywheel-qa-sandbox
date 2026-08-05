@@ -26142,6 +26142,120 @@ export class StateStore {
 				};
 				return;
 			}
+			const qaDecisionProducers = snapshot.resolved.nodes.flatMap((node) => {
+				const contract = resolveWorkflowDecisionContract(snapshot, node.id);
+				return contract?.family === "qa_verdict" &&
+					contract.passPredicate === "qa_passed"
+					? [{ nodeId: node.id }]
+					: [];
+			});
+			const qaDecisionNodeId =
+				qaDecisionProducers.length === 1
+					? qaDecisionProducers[0]!.nodeId
+					: undefined;
+			const qaDecisionAttempt = qaDecisionNodeId
+				? this.listWorkflowRunNodes(input.runId, qaDecisionNodeId).at(-1)
+						?.attempt
+				: undefined;
+			const suppressQaIdleSpin =
+				authorityKickback === "qa" &&
+				!supersedingRework &&
+				qaDecisionNodeId !== undefined &&
+				qaDecisionAttempt !== undefined &&
+				/^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "") &&
+				this.resolveWorkflowDecisionClaim({
+					runId: input.runId,
+					nodeId: qaDecisionNodeId,
+					decisionKind: "qa_verdict",
+					predicate: "qa_passed",
+					requiredAttempt: qaDecisionAttempt,
+					subjectKind: "git_head",
+					subjectDigest: input.subjectDigest!.toLowerCase(),
+					now,
+				}).valid;
+			if (suppressQaIdleSpin) {
+				this.upsertWorkflowRunNodeTx({
+					runId: input.runId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+					state: "done",
+					executionId: input.executionId,
+					endedAt: now,
+				});
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid:
+						input.nodeCompletionEventUid ??
+						`engine_node_completed:${input.runId}:${input.nodeId}:${input.attempt}`,
+					kind: "node_completed",
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					payload: { attempt: input.attempt, outcome: input.outcome },
+				});
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+					[input.runId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_rework_idle_spin_run_cas_failed");
+				}
+				const receipt = {
+					edgeId: selectedId,
+					targetNodeId: target.id,
+					targetAttempt,
+					sourceAttempt: input.attempt,
+					outcome: input.outcome,
+					loopIteration,
+					escalated: true,
+					reason: "current_qa_pass_already_exists",
+				};
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid: transitionUid,
+					kind: "rework_suppressed_idle_spin",
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					payload: receipt,
+				});
+				if (input.alertIdentity) {
+					this.enqueueWorkflowEngineAlertTx({
+						escalationUid: transitionUid,
+						runId: input.runId,
+						now,
+						payload: {
+							leadId: input.alertIdentity.leadId,
+							projectName: input.alertIdentity.projectName,
+							eventId: transitionUid,
+							eventType: "workflow_engine_escalation",
+							severity: "severe",
+							sessionKey: `wf:${input.runId}`,
+							title: `QA rework idle spin suppressed for ${run.issue_id}`,
+							body: `Run ${input.runId} already has a valid QA PASS for head ${input.subjectDigest!.toLowerCase()}, so the duplicate ${input.outcome} rework was suppressed and the run was held for Lead review.`,
+							metadata: {
+								workflowEngine: {
+									runId: input.runId,
+									issueId: run.issue_id,
+									nodeId: input.nodeId,
+									executionId: input.executionId,
+									disposition: "rework_suppressed_idle_spin",
+									subjectDigest: input.subjectDigest!.toLowerCase(),
+									leadResolution: input.alertIdentity.leadResolution,
+								},
+							},
+						},
+					});
+				}
+				result = {
+					ok: true,
+					idempotentReplay: false,
+					edgeId: selectedId,
+					targetNodeId: target.id,
+					targetAttempt,
+					...(loopIteration ? { loopIteration } : {}),
+					escalated: true,
+				};
+				return;
+			}
 			const successorExecutionId =
 				target.type === "gate"
 					? undefined
@@ -34317,6 +34431,7 @@ export interface WorkflowEngineAlertPayload {
 				| "held"
 				| "partial"
 				| "completion_receipt_missing"
+				| "rework_suppressed_idle_spin"
 				| "probe_unknown"
 				| "stale_resubmission"
 				| "dead_execution_activity_after_replacement"

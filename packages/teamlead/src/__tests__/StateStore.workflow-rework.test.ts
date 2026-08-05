@@ -695,6 +695,115 @@ describe("FLY-1423 durable unified rework request", () => {
 		}
 	});
 
+	it("suppresses a QA ghost rework when the same head already has a current PASS", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			expect(
+				advanceHeavy(store, {
+					nodeId: "design",
+					attempt: 1,
+					executionId: "design-exec",
+					outcome: "design_done",
+					successorExecutionId: "implement-exec",
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				advanceHeavy(store, {
+					nodeId: "implement",
+					attempt: 1,
+					executionId: "implement-exec",
+					outcome: "implement_done",
+					successorExecutionId: "qa-exec",
+				}),
+			).toMatchObject({ ok: true });
+
+			const capability = store.issueWorkflowDecisionCapability({
+				runId: "run-heavy",
+				nodeId: "qa",
+				executionId: "qa-exec",
+				attempt: 1,
+				allowedPredicateFamily: "qa_verdict",
+				expiresAt: "2026-07-23T02:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+			});
+			if (!capability.ok) throw new Error(capability.reason);
+			expect(
+				store.submitWorkflowDecisionClaim({
+					token: capability.token,
+					clientRequestId: "qa-pass-before-ghost",
+					predicate: "qa_passed",
+					subjectKind: "git_head",
+					subjectDigest: "a".repeat(40),
+					issuerVendor: "claude",
+					issuerModel: "opus",
+					subjectProducerExecutionId: "implement-exec",
+					subjectProducerVendor: "codex",
+					claimExpiresAt: "2026-07-23T02:00:00.000Z",
+					now: "2026-07-23T00:09:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			const effectsBefore = store.listWorkflowSideEffects("run-heavy");
+			const input = {
+				runId: "run-heavy",
+				nodeId: "qa",
+				attempt: 1,
+				executionId: "qa-exec",
+				outcome: "qa_fail",
+				subjectDigest: "a".repeat(40),
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved" as const,
+				},
+				now: "2026-07-23T00:10:00.000Z",
+			};
+
+			const suppressed = store.commitWorkflowTransitionTx(input);
+			expect(suppressed).toMatchObject({
+				ok: true,
+				idempotentReplay: false,
+				edgeId: "qa_retry",
+				targetNodeId: "implement",
+				targetAttempt: 2,
+				escalated: true,
+			});
+			expect(suppressed).not.toHaveProperty("reworkRequestId");
+			expect(store.getWorkflowRun("run-heavy")).toMatchObject({
+				status: "held",
+				current_node_id: "qa",
+			});
+			expect(store.getWorkflowRunNode("run-heavy", "qa", 1)?.state).toBe(
+				"done",
+			);
+			expect(
+				store.getWorkflowRunNode("run-heavy", "implement", 2),
+			).toBeUndefined();
+			expect(store.listWorkflowSideEffects("run-heavy")).toEqual(effectsBefore);
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.filter(
+						(event) =>
+							event.kind === "edge_traversed" && event.node_id === "qa",
+					),
+			).toEqual([]);
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.filter((event) => event.kind === "rework_suppressed_idle_spin"),
+			).toHaveLength(1);
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+			expect(store.commitWorkflowTransitionTx(input)).toMatchObject({
+				ok: true,
+				idempotentReplay: true,
+				escalated: true,
+			});
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("appends a founder route correction before grant and freezes it after grant", async () => {
 		const store = await createHeavyEngineRun();
 		try {
