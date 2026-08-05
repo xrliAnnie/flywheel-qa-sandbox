@@ -179,6 +179,46 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(queue.getById("B")?.state).toBe("ACKED");
 	});
 
+	it("does not shrink a frozen batch when revalidation would revoke a member", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "A");
+		enqueueModel(queue, "B");
+		const now = "2099-07-19T12:00:00.000Z";
+		queue.acquireOrRenewOwner({
+			ownerEpoch: "epoch-a",
+			now,
+			leaseTtlMs: 30_000,
+		});
+		queue.claimLeadBatch({
+			toAgent: "lead-a",
+			msgClass: "model",
+			ownerEpoch: "epoch-a",
+			batchId: "batch-before-crash",
+			now,
+			claimTtlMs: 30_000,
+		});
+
+		const adapter = { deliverBatch: vi.fn(async (batch) => receipt(batch)) };
+		const revalidateModel = vi.fn(async (row: MailboxRow) =>
+			row.id === "A"
+				? ({ deliver: false, disposition: "revoked_orphan" } as const)
+				: ({ deliver: true } as const),
+		);
+		expect(
+			await loop(queue, adapter, {
+				revalidateModel,
+				batchIdFactory: () => "batch-after-crash",
+			}).tick(),
+		).toMatchObject({ ok: true, modelConsumed: 2 });
+		expect(revalidateModel).not.toHaveBeenCalled();
+		expect(adapter.deliverBatch.mock.calls[0]?.[0].members).toEqual([
+			expect.objectContaining({ deliveryId: "A" }),
+			expect.objectContaining({ deliveryId: "B" }),
+		]);
+		expect(queue.getById("A")?.state).toBe("ACKED");
+		expect(queue.getById("B")?.state).toBe("ACKED");
+	});
+
 	it("releases a transiently-held question for 30 seconds without hot-looping", async () => {
 		const queue = makeQueue();
 		enqueueModel(queue, "question-1");

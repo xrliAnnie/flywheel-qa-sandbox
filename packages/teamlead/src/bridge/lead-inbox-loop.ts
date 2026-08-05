@@ -224,21 +224,24 @@ export class LeadInboxLoop {
 				}
 			}
 
+			const candidateBatchId = this.batchIdFactory();
 			const claimed = this.opts.queue.claimLeadBatch({
 				toAgent: this.opts.leadId,
 				msgClass: "model",
 				ownerEpoch: this.opts.ownerEpoch,
-				batchId: this.batchIdFactory(),
+				batchId: candidateBatchId,
 				now: this.isoNow(),
 				claimTtlMs: this.claimTtlMs,
 				maxBatchSize: this.maxBatchSize,
 			});
 			if (claimed.length > 0) {
+				const freshBatch = claimed[0]?.batch_id === candidateBatchId;
 				const deliverable: MailboxRow[] = [];
 				for (const row of claimed) {
-					// attempts>0 means this immutable membership may already exist at the
-					// adapter; never mutate it during a retry.
+					// A frozen membership may already exist at the adapter even when a
+					// crash left retry_count at zero. Revalidate only a new batch.
 					const verdict =
+						freshBatch &&
 						row.state === "LEASED" &&
 						row.retry_count === 0 &&
 						this.opts.revalidateModel
