@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import { MailboxQueue, type MailboxRow } from "flywheel-comm/mailbox-queue";
 import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -137,6 +137,46 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		]);
 		expect(batches[0]?.modelPayload).toBe("[receipt:A]\nA\n\n[receipt:B]\nB");
 		expect(queue.getById("C")?.state).toBe("QUEUED");
+	});
+
+	it("skips revalidation for terminal members of a frozen batch", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "A");
+		enqueueModel(queue, "B");
+		const now = "2099-07-19T12:00:00.000Z";
+		queue.acquireOrRenewOwner({
+			ownerEpoch: "epoch-a",
+			now,
+			leaseTtlMs: 30_000,
+		});
+		queue.claimLeadBatch({
+			toAgent: "lead-a",
+			msgClass: "model",
+			ownerEpoch: "epoch-a",
+			batchId: "batch-1",
+			now,
+			claimTtlMs: 30_000,
+		});
+		expect(queue.ack("A", now)).toBe(true);
+
+		const adapter = { deliverBatch: vi.fn(async (batch) => receipt(batch)) };
+		const revalidateModel = vi.fn(async (row: MailboxRow) =>
+			row.id === "A"
+				? ({ deliver: false, disposition: "revoked_answered" } as const)
+				: ({ deliver: true } as const),
+		);
+		expect(
+			await loop(queue, adapter, { revalidateModel }).tick(),
+		).toMatchObject({ ok: true, modelConsumed: 2 });
+		expect(revalidateModel).toHaveBeenCalledTimes(1);
+		expect(revalidateModel).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "B" }),
+		);
+		expect(adapter.deliverBatch.mock.calls[0]?.[0].members).toEqual([
+			expect.objectContaining({ deliveryId: "A" }),
+			expect.objectContaining({ deliveryId: "B" }),
+		]);
+		expect(queue.getById("B")?.state).toBe("ACKED");
 	});
 
 	it("releases a transiently-held question for 30 seconds without hot-looping", async () => {

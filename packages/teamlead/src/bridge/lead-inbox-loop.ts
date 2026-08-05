@@ -239,7 +239,9 @@ export class LeadInboxLoop {
 					// attempts>0 means this immutable membership may already exist at the
 					// adapter; never mutate it during a retry.
 					const verdict =
-						row.retry_count === 0 && this.opts.revalidateModel
+						row.state === "LEASED" &&
+						row.retry_count === 0 &&
+						this.opts.revalidateModel
 							? await this.opts.revalidateModel(row)
 							: ({ deliver: true } as const);
 					if (!verdict.deliver) {
