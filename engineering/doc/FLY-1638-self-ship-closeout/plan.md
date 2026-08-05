@@ -2,7 +2,12 @@
 
 Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动化收尾1625-修复合一单-ship-绑定修复-重试封顶-防空转-qa-ttl-预配-重启前暂停接活)
 日期: 2026-08-04
-基于: research.md(Codex design review R1 反馈已全量折入)
+基于: research.md
+状态: **Codex design review 6 轮 APPROVED**(R1 11 项 / R2 6 项 / R3 2 项 / R4 2 项 / R5 1 项全折入;R6 APPROVED)
+
+> **R6 非阻塞实施守则**(不改结论,实施节点必读):
+> 1. 仓库枚举失败**不得**丢弃既有 lifecycle worktree binding —— `Blueprint` 现对 `emitWorktreeReady()` 异常是 log+继续 launch;path/branch/generation 照常绑定,baseline 字段落 null(=不合格 no_code),核心 binding 落盘前不抛。
+> 2. `repo_baseline_set_json`/`repo_baseline_set_digest` 加进既有 sessions worktree-binding 列组(legacy null);`grant_started_at` 显式进 `workflow_rework_delivery` rebuild/copy/双 boot fixture;baseline digest 用既有 canonical SHA-256 helper **重算比对**,不把存储的 JSON 与 digest 当两个独立可信输入。
 
 ## 0. 总原则
 
