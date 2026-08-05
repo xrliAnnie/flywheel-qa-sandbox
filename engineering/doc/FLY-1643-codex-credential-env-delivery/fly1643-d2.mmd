@@ -1,0 +1,11 @@
+flowchart TB
+    A["execute() 开始"] --> B["构造 daemon 环境变量<br/>① 先清洗继承环境<br/>② 无条件删掉三个凭据名(防陈旧残留)<br/>③ 只从本次任务 ctx 重新注入(唯一供值来源)"]
+    B --> C{"launch 自检<br/>每个 FLYWHEEL_ 变量<br/>都能通过下游清洗?"}
+    C -- "有变量会被丢" --> D["立刻拒绝启动<br/>报错点名变量<br/>Lead 收到 session_failed 🔔"]
+    C -- "全部可投递" --> E["才开始供给 GitHub 凭据<br/>创建 CODEX_HOME"]
+    E --> F["spawn 二次清洗<br/>白名单已 +3 → 凭据存活 ✓"]
+    F --> G["Codex 进程环境里有凭据 ✅"]
+    G --> H["消费凭据 → 交作业 → 开审批门"]
+    style D fill:#fff4e5,stroke:#ff9500,stroke-width:2px
+    style G fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style H fill:#e8f8ee,stroke:#34c759,stroke-width:2px
