@@ -67,9 +67,7 @@ describe("gate --no-block (FLY-191 Phase 2)", () => {
 			expect(q?.type).toBe("question");
 			// TTL untouched: expires_at is the schema default (+72h), NOT
 			// shortened by a resolveGate cleanup.
-			const expires = new Date(
-				`${(q?.expires_at as string).replace(" ", "T")}Z`,
-			).getTime();
+			const expires = new Date(q?.expires_at as string).getTime();
 			expect(expires - Date.now()).toBeGreaterThan(70 * 3_600_000);
 		} finally {
 			db.close();

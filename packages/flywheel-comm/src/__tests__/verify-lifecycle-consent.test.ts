@@ -182,7 +182,7 @@ describe("verifyLifecycleConsent (FLY-245 D-c)", () => {
 		answer(q, goodResponse());
 		const db = new Database(dbPath);
 		db.prepare(
-			"UPDATE messages SET expires_at = datetime('now', '-1 minute') WHERE id = ?",
+			"UPDATE mailbox SET expires_at = datetime('now', '-1 minute') WHERE id = ?",
 		).run(q);
 		db.close();
 		expect(verifyLifecycleConsent(args({ questionId: q })).reason).toBe(
@@ -195,9 +195,7 @@ describe("verifyLifecycleConsent (FLY-245 D-c)", () => {
 		const q = createQuestion();
 		answer(q, goodResponse());
 		const db = new Database(dbPath);
-		db.prepare("UPDATE messages SET expires_at = 'garbage' WHERE id = ?").run(
-			q,
-		);
+		db.prepare("UPDATE mailbox SET expires_at = 'garbage' WHERE id = ?").run(q);
 		db.close();
 		expect(verifyLifecycleConsent(args({ questionId: q })).reason).toBe(
 			"question_expired",
@@ -210,7 +208,7 @@ describe("verifyLifecycleConsent (FLY-245 D-c)", () => {
 		answer(q, goodResponse());
 		const db = new Database(dbPath);
 		db.prepare(
-			"UPDATE messages SET resolved_at = datetime('now') WHERE id = ?",
+			"UPDATE mailbox SET resolved_at = datetime('now') WHERE id = ?",
 		).run(q);
 		db.close();
 		expect(verifyLifecycleConsent(args({ questionId: q })).reason).toBe(

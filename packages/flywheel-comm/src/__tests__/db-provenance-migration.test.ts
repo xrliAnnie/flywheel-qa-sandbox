@@ -27,11 +27,11 @@ describe("FLY-1309 CommDB provenance migration", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	function columns(): string[] {
+	function columns(table: string): string[] {
 		const raw = new Database(dbPath, { readonly: true });
 		try {
 			return (
-				raw.prepare("PRAGMA table_info(messages)").all() as Array<{
+				raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{
 					name: string;
 				}>
 			).map((column) => column.name);
@@ -40,13 +40,19 @@ describe("FLY-1309 CommDB provenance migration", () => {
 		}
 	}
 
-	it("creates all six nullable provenance columns on a fresh database", () => {
+	it("stores provenance in one sender_ref while preserving the read projection", () => {
 		const db = new CommDB(dbPath);
 		db.close();
-		expect(columns()).toEqual(expect.arrayContaining([...PROVENANCE_COLUMNS]));
+		expect(columns("mailbox")).toContain("sender_ref");
+		expect(columns("mailbox")).not.toEqual(
+			expect.arrayContaining([...PROVENANCE_COLUMNS]),
+		);
+		expect(columns("mailbox_message_projection")).toEqual(
+			expect.arrayContaining([...PROVENANCE_COLUMNS]),
+		);
 	});
 
-	it("preserves provenance columns and legacy rows through pre-ack schema rebuild", () => {
+	it("rejects a pre-cutover provenance schema until FLY-1572 migration runs", () => {
 		const legacy = new Database(dbPath);
 		legacy.exec(`
 			CREATE TABLE messages (
@@ -64,22 +70,7 @@ describe("FLY-1309 CommDB provenance migration", () => {
 		`);
 		legacy.close();
 
-		const migrated = new CommDB(dbPath);
-		expect(migrated.getMessageById("legacy-1")).toMatchObject({
-			content: "keep me",
-			sender_lease_key: null,
-			sender_generation: null,
-			sender_holder_pid: null,
-			sender_holder_start: null,
-			writer_pid: null,
-			writer_start: null,
-		});
-		migrated.close();
-		expect(columns()).toEqual(expect.arrayContaining([...PROVENANCE_COLUMNS]));
-
-		const reopened = new CommDB(dbPath);
-		expect(reopened.getMessageById("legacy-1")?.content).toBe("keep me");
-		reopened.close();
+		expect(() => new CommDB(dbPath)).toThrow(/FLY-1572 mailbox migration/);
 	});
 
 	it("round-trips pane-holder and writer provenance for instructions and responses", () => {

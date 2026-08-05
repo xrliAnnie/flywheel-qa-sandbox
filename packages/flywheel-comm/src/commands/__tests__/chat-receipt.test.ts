@@ -315,7 +315,7 @@ describe("FLY-1426 chat-receipt command", () => {
 				dbPath,
 				leadId: "flywheel-eng-lead",
 				messageId: "100000000000000003",
-				now: "2026-07-22T13:00:00.000Z",
+				now: "2099-07-22T13:00:00.000Z",
 			}),
 		).toMatchObject({ quarantined: true });
 		expect(
@@ -323,7 +323,7 @@ describe("FLY-1426 chat-receipt command", () => {
 				dbPath,
 				leadId: "flywheel-eng-lead",
 				messageId: "100000000000000003",
-				now: "2026-07-22T13:05:00.000Z",
+				now: "2099-07-22T13:05:00.000Z",
 			}),
 		).toMatchObject({ quarantined: true });
 		expect(() =>
@@ -331,7 +331,7 @@ describe("FLY-1426 chat-receipt command", () => {
 				dbPath,
 				leadId: "flywheel-eng-lead",
 				messageId: "100000000000000003",
-				now: "2026-07-22T13:06:00.000Z",
+				now: "2099-07-22T13:06:00.000Z",
 				env: {},
 			}),
 		).toThrow(/not found or not external/);

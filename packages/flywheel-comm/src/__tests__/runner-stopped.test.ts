@@ -56,7 +56,7 @@ describe("runner-stopped", () => {
 		try {
 			return raw
 				.prepare(
-					"SELECT id, content, kind FROM messages WHERE from_agent = ? AND kind = 'report' ORDER BY rowid",
+					"SELECT id, content, kind FROM mailbox_message_projection WHERE from_agent = ? AND kind = 'report' ORDER BY rowid",
 				)
 				.all(execId) as Array<{ id: string; content: string; kind: string }>;
 		} finally {
@@ -175,7 +175,7 @@ describe("runner-stopped", () => {
 		});
 		db.insertQuestion(execId, leadId, "old stop report", { kind: "report" });
 		raw
-			.prepare("UPDATE messages SET created_at = ? WHERE from_agent = ?")
+			.prepare("UPDATE mailbox SET created_at = ? WHERE from_agent = ?")
 			.run("2026-08-04 12:00:05", execId);
 		raw.close();
 
@@ -196,7 +196,7 @@ describe("runner-stopped", () => {
 		const raw = new Database(dbPath);
 		raw
 			.prepare(
-				"UPDATE messages SET superseded_at = datetime('now') WHERE id = ?",
+				"UPDATE mailbox SET superseded_at = datetime('now') WHERE id = ?",
 			)
 			.run(superseded);
 		raw.close();
@@ -237,7 +237,7 @@ describe("runner-stopped", () => {
 		});
 		const raw = new Database(dbPath);
 		raw
-			.prepare("UPDATE messages SET created_at = ? WHERE id = ?")
+			.prepare("UPDATE mailbox SET created_at = ? WHERE id = ?")
 			.run("2026-08-04 11:59:30", gateId);
 
 		const parked = await emit({
@@ -253,7 +253,7 @@ describe("runner-stopped", () => {
 		db.insertResponse(gateId, leadId, "approved");
 		const askId = db.insertQuestion(exec2, leadId, "need an answer");
 		raw
-			.prepare("UPDATE messages SET created_at = ? WHERE id = ?")
+			.prepare("UPDATE mailbox SET created_at = ? WHERE id = ?")
 			.run("2026-08-04 12:00:05", askId);
 		raw.close();
 		expect(
@@ -314,7 +314,7 @@ describe("runner-stopped", () => {
 		const old = db.insertQuestion(execId, leadId, "old ask");
 		const raw = new Database(dbPath);
 		raw
-			.prepare("UPDATE messages SET created_at = ? WHERE id = ?")
+			.prepare("UPDATE mailbox SET created_at = ? WHERE id = ?")
 			.run("2026-08-04 11:59:59", old);
 		raw.close();
 

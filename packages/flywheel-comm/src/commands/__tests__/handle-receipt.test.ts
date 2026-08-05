@@ -38,7 +38,7 @@ describe("handle-receipt command", () => {
 				receiptId: "receipt-1",
 				leadId: "lead-a",
 				action: "ack",
-				now: () => new Date("2026-07-21T12:00:00.000Z"),
+				now: () => new Date("2099-07-21T12:00:00.000Z"),
 				authorize: () => ({
 					disposition: "lease_validated",
 					provenance: {
@@ -48,7 +48,7 @@ describe("handle-receipt command", () => {
 				}),
 			}),
 		).toThrow(/receipt_not_delivered/);
-		queue.ack("receipt-1", "2026-07-21T11:59:30.000Z");
+		queue.ack("receipt-1", "2099-07-21T11:59:30.000Z");
 		queue.close();
 
 		const result = handleReceipt({
@@ -58,7 +58,7 @@ describe("handle-receipt command", () => {
 			leadId: "lead-a",
 			action: "ack",
 			reason: "read and handled",
-			now: () => new Date("2026-07-21T12:00:00.000Z"),
+			now: () => new Date("2099-07-21T12:00:00.000Z"),
 			authorize: () => ({
 				disposition: "lease_validated",
 				provenance: {
@@ -72,7 +72,7 @@ describe("handle-receipt command", () => {
 		const verify = new MailboxQueue(dbPath);
 		expect(verify.getSettlement("receipt-1")).toMatchObject({
 			event: "processed",
-			at: "2026-07-21T12:00:00.000Z",
+			at: "2099-07-21T12:00:00.000Z",
 		});
 		verify.close();
 	});

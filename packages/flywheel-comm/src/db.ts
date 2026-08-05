@@ -15,7 +15,11 @@ import {
 	type MailboxRow,
 	type ProcessedEvidenceV1,
 } from "./mailbox-queue.js";
-import { MAILBOX_SCHEMA, MAILBOX_SCHEMA_GENERATION } from "./mailbox-schema.js";
+import {
+	MAILBOX_POISON_VIEWS,
+	MAILBOX_SCHEMA,
+	MAILBOX_SCHEMA_GENERATION,
+} from "./mailbox-schema.js";
 import { encodeSenderRef } from "./sender-ref.js";
 import type {
 	Message,
@@ -668,8 +672,10 @@ export class CommDB {
 	 * @param createIfMissing - When false, throws if the DB file doesn't exist.
 	 *   Read-only commands (check, pending) should pass false to avoid masking
 	 *   configuration errors as "no pending questions".
+	 * @param archiveOnOpen - Disable only when the caller must run a sweep with
+	 *   an explicit retention window and report that sweep's own count.
 	 */
-	constructor(dbPath: string, createIfMissing = true) {
+	constructor(dbPath: string, createIfMissing = true, archiveOnOpen = true) {
 		const existed = existsSync(dbPath);
 		if (!createIfMissing && !existed) {
 			throw new Error(
@@ -691,8 +697,16 @@ export class CommDB {
 			).count === 0;
 		if (!isVirgin) assertMailboxGeneration(this.db, dbPath);
 		this.db.exec(SCHEMA);
-		this.applyMigrations();
-		this.purgeExpired();
+		this.db
+			.transaction(() => {
+				this.db.exec(
+					"DROP VIEW IF EXISTS messages; DROP VIEW IF EXISTS lead_inbox;",
+				);
+				this.applyMigrations();
+				this.db.exec(MAILBOX_POISON_VIEWS);
+			})
+			.immediate();
+		if (archiveOnOpen) this.purgeExpired();
 	}
 
 	/**
@@ -858,7 +872,9 @@ export class CommDB {
 
 	purgeExpired(): number {
 		const queue = new MailboxQueue(this.db);
-		const archived = queue.archiveDueFamilies({ now: new Date().toISOString() });
+		const archived = queue.archiveDueFamilies({
+			now: new Date().toISOString(),
+		});
 		queue.drainContentRefGc({ now: new Date().toISOString() });
 		return archived.archivedMessages;
 	}
@@ -980,7 +996,7 @@ export class CommDB {
 				`UPDATE mailbox SET resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 				 relay_state = 'terminal_disposed'
          WHERE id = ? AND type = 'question' AND checkpoint = ?
-           AND resolved_at IS NULL AND expires_at > datetime('now')`,
+			   AND resolved_at IS NULL AND datetime(expires_at) > datetime('now')`,
 			)
 			.run(questionId, checkpoint);
 		return info.changes === 1;
@@ -1365,7 +1381,7 @@ export class CommDB {
 	isQuestionPending(questionId: string): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		const row = this.db
 			.prepare(
 				`SELECT 1 AS hit FROM mailbox_message_projection q
@@ -1383,7 +1399,7 @@ export class CommDB {
 	getGatesForSupersede(): GateSupersedeRow[] {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		return this.db
 			.prepare(
 				`SELECT q.rowid AS row_id, q.id, q.from_agent, q.checkpoint,
@@ -1434,7 +1450,7 @@ export class CommDB {
 	canSupersedeGate(questionId: string, supersessorId: string): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "old.relay_state != 'terminal_disposed'"
-			: "old.expires_at > datetime('now')";
+			: "datetime(old.expires_at) > datetime('now')";
 		const hit = this.db
 			.prepare(
 				`SELECT 1 AS hit
@@ -1547,7 +1563,7 @@ export class CommDB {
 			.prepare(
 				`SELECT * FROM mailbox_message_projection
 				 WHERE type = 'ack_receipt' AND read_at IS NULL
-				   AND expires_at > datetime('now')
+				   AND datetime(expires_at) > datetime('now')
 				 ORDER BY created_at, id`,
 			)
 			.all() as Message[];
@@ -1612,7 +1628,7 @@ export class CommDB {
 	}): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "relay_state != 'terminal_disposed'"
-			: "expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')";
+			: "datetime(expires_at) > datetime('now')";
 		return this.db
 			.transaction(() => {
 				const question = this.db
@@ -1968,7 +1984,7 @@ export class CommDB {
 	getPendingQuestions(leadId: string): Message[] {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		return this.db
 			.prepare(
 				`SELECT q.* FROM mailbox_message_projection q
@@ -2012,7 +2028,7 @@ export class CommDB {
 	): Message | undefined {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		return this.db
 			.prepare(
 				`SELECT q.* FROM mailbox_message_projection q
@@ -3106,7 +3122,7 @@ export class CommDB {
 			.prepare(
 				`SELECT * FROM mailbox_message_projection
          WHERE to_agent = ? AND type = 'instruction' AND read_at IS NULL
-         AND expires_at > datetime('now')
+		 AND datetime(expires_at) > datetime('now')
          ORDER BY created_at ASC`,
 			)
 			.all(agentId) as Message[];
@@ -4068,7 +4084,7 @@ export class CommDB {
          WHERE to_agent = ? AND type = 'instruction' AND read_at IS NULL
          AND (delivered_at IS NULL
               OR delivered_at < datetime('now', '-' || ? || ' seconds'))
-         AND expires_at > datetime('now')
+		 AND datetime(expires_at) > datetime('now')
          ORDER BY created_at ASC`,
 			)
 			.all(agentId, retryWindowSec) as Message[];
@@ -4127,7 +4143,7 @@ export class CommDB {
 	hasPendingQuestionsFrom(execId: string): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		const row = this.db
 			.prepare(
 				`SELECT COUNT(*) as cnt FROM mailbox_message_projection q
@@ -4152,7 +4168,7 @@ export class CommDB {
 	hasPendingBlockingGateFrom(execId: string): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		const row = this.db
 			.prepare(
 				`SELECT COUNT(*) as cnt FROM mailbox_message_projection q
@@ -4962,7 +4978,7 @@ export class CommDB {
 	): PendingRunnerQuestion | undefined {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		return this.db
 			.prepare(
 				`SELECT q.id, q.checkpoint FROM mailbox_message_projection q

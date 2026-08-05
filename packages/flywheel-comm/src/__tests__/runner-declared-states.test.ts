@@ -100,7 +100,7 @@ describe("CommDB runner_declared_states (FLY-626)", () => {
 		const snapshotMessages = () =>
 			raw
 				.prepare(
-					"SELECT id, parent_id, type, content FROM messages ORDER BY created_at, id",
+					"SELECT id, parent_id, type, content FROM mailbox_message_projection ORDER BY created_at, id",
 				)
 				.all();
 		const before = snapshotMessages();

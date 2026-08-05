@@ -55,7 +55,7 @@ describe("FLY-1392 v2 Lead founder relay compatibility wrapper", () => {
 		);
 	});
 
-	it("atomically relays one canonical root, records the Lead evidence, and admits one wake", () => {
+	it("atomically relays one canonical root and records the Lead evidence", () => {
 		const questionId = db.insertQuestion("exec-a", "lead-a", "which option?");
 		const rootId = seedRoot();
 		const input = {
@@ -67,14 +67,6 @@ describe("FLY-1392 v2 Lead founder relay compatibility wrapper", () => {
 				senderLeaseKey: "lead-lease-a",
 				senderGeneration: 17,
 			},
-			intentKey: `founder-route:lead-a:discord-1:${questionId}`,
-			envelope: {
-				id: `founder-route-wake:lead-a:discord-1:${questionId}`,
-				to: "exec-a",
-				content: "founder reply routed",
-				metadata: { msgId: "discord-1", questionId },
-			},
-			queuedAtMs: Date.parse(T1),
 		};
 
 		const first = db.routeFounderReply(input);
@@ -96,11 +88,7 @@ describe("FLY-1392 v2 Lead founder relay compatibility wrapper", () => {
 				basis: [`question:${questionId}`],
 			},
 		});
-		const wakes = db.listRunnerPhaseWakes("exec-a");
-		expect(wakes).toHaveLength(1);
-		expect(JSON.parse(wakes[0]?.envelope_json ?? "{}")).toMatchObject({
-			metadata: { origin: "founder" },
-		});
+		expect(db.listRunnerPhaseWakes("exec-a")).toEqual([]);
 	});
 
 	it("lets only Lead explicitly close a canonical founder receipt as no-route", () => {
@@ -138,13 +126,6 @@ describe("FLY-1392 v2 Lead founder relay compatibility wrapper", () => {
 				toQuestionId: questionId,
 				now: T1,
 				provenance: { senderGeneration: 17 },
-				intentKey: "wrong-lead",
-				envelope: {
-					id: "wrong-lead",
-					to: "exec-a",
-					content: "must reject",
-				},
-				queuedAtMs: Date.parse(T1),
 			}),
 		).toThrow(/unavailable/);
 		expect(() =>
