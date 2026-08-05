@@ -17,7 +17,7 @@ Issue: FLY-1572 (https://linear.app/geoforge3d/issue/FLY-1572/消息层重构-c-
    npx tsx scripts/migrate-fly1572-mailbox.ts --inventory
    ```
 
-   发现集必须覆盖 `~/.flywheel/comm/<project>/comm.db`、`~/.flywheel/comm.db`、`FLYWHEEL_COMM_DB` 指向及扫描命中库。重复 inode、unknown schema 均须先处理。
+   显式白名单必须覆盖 `~/.flywheel/comm/<project>/comm.db`、`~/.flywheel/comm.db`、`FLYWHEEL_COMM_DB` 与 `--db` 指向;`db-backups/`、`teamlead.db`、v2-era leftovers 不自动纳入。重复 inode、messages-only 或 unknown schema 均须先处理。
 3. 执行迁移。脚本先检查磁盘至少可容纳源资产的 3 倍,随后逐库执行连续写闸、只读 online backup、sidecar quarantine、同盘私有 staging、单事务 cutover、原子 rename、目录 fsync 与终局校验:
 
    ```sh
@@ -25,6 +25,8 @@ Issue: FLY-1572 (https://linear.app/geoforge3d/issue/FLY-1572/消息层重构-c-
    ```
 
    单库可用 `--db /absolute/path/comm.db`。每库输出 backup、intent 与精确 rollback 命令。
+
+   2026-08-05 生产副本实演中,geoforge3d 单库磁盘占用由 112MB 增至 392MB,约 **3.5×**。这与计划的 3× preflight 属同一量级,但证明 3× 不是精确峰值;正式窗口须在脚本最低门槛之外继续保留运维余量。
 4. 任一库失败时保持 quiesced,只允许二选一:修复后原命令续跑;或按下节把已处理库全部回滚。不得在 mixed state 启动服务。
 5. 全部库均为 `mailbox_v1` 后部署新 binary。先起 Bridge,再起 Leads/Runner;检查四条流、ACK 状态、Bridge 健康与 fleet 在线数。
 
@@ -47,6 +49,7 @@ npx tsx scripts/migrate-fly1572-mailbox.ts --rollback --confirm-quiesced --db /a
 - `messages`、`lead_inbox` 均为物理 table,行数与权威 backup 相同;
 - DB 内容 hash、`integrity_check`、`foreign_key_check` 与 refs manifest 全部通过;
 - 无异源 `-wal`/`-shm` 留在 canonical 路径;
+- `restore-intent.json`、本轮 `.fly1572-quarantine` / `.fly1572-rollback-quarantine-*` 与 `<backup>.tmp-<uuid>{,-journal,-wal,-shm}` 均已清理;
 - 仅在所有 inventory 库都回到 legacy 后部署旧 binary 并启动舰队。
 
 ## 验收锚

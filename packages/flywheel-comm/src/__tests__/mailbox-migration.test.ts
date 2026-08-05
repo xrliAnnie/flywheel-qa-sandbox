@@ -1,7 +1,9 @@
 import {
 	chmodSync,
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
@@ -341,17 +343,17 @@ describe("FLY-1572 legacy mailbox migration", () => {
 		);
 	});
 
-	it("logs sender-less historical xdept evidence and lists every retained row", () => {
+	it("trusts only delivered-and-consumed plain-text sender-less xdept rows", () => {
 		const legacy = new Database(dbPath);
 		insertLead(legacy, {
-			id: "xdept:flywheel-eng-lead:old",
+			id: "xdept:flywheel-eng-lead:terminal-alert",
 			to_lead: "flywheel-eng-lead",
 			source: "discord_cross_department",
 			type: "external_delivery",
 			carrier: "external",
-			content: "legacy payload without sender identity",
-			created_at: "2026-07-01T00:00:00.000Z",
-			delivered_at: "2026-07-01T00:01:00.000Z",
+			content: "legacy rate-limit alert without sender identity",
+			delivered_at: "2026-08-05T10:01:00.000Z",
+			consumed_at: "2026-08-05T10:02:00.000Z",
 		});
 		legacy.close();
 		expect(() => migrateLegacyDatabaseFile(dbPath, { now: NOW })).not.toThrow();
@@ -359,9 +361,9 @@ describe("FLY-1572 legacy mailbox migration", () => {
 		try {
 			expect(
 				migrated
-					.prepare("SELECT archived_at FROM mailbox_identity WHERE id=?")
-					.get("xdept:flywheel-eng-lead:old"),
-			).toMatchObject({ archived_at: NOW });
+					.prepare("SELECT from_agent, state FROM mailbox WHERE id=?")
+					.get("xdept:flywheel-eng-lead:terminal-alert"),
+			).toEqual({ from_agent: "bridge", state: "ACKED" });
 		} finally {
 			migrated.close();
 		}
@@ -385,11 +387,21 @@ describe("FLY-1572 legacy mailbox migration", () => {
 			type: "external_delivery",
 			carrier: "external",
 			content: "another legacy payload without sender identity",
-			consumed_at: "2026-08-05T11:00:00.000Z",
+			delivered_at: "2026-08-05T11:00:00.000Z",
+		});
+		insertLead(live, {
+			id: "xdept:flywheel-eng-lead:live-json",
+			to_lead: "flywheel-eng-lead",
+			source: "discord_cross_department",
+			type: "external_delivery",
+			carrier: "external",
+			content: '{"message":"no sender identity"}',
+			delivered_at: "2026-08-05T11:30:00.000Z",
+			consumed_at: "2026-08-05T11:31:00.000Z",
 		});
 		live.close();
 		expect(() => migrateLegacyDatabaseFile(livePath, { now: NOW })).toThrow(
-			/sender is missing on live rows:.*xdept:flywheel-eng-lead:live.*retention_expires_at=2026-08-08T10:00:00.000Z.*xdept:flywheel-eng-lead:live-2.*retention_expires_at=2026-08-08T11:00:00.000Z/,
+			/sender is missing on live rows:.*xdept:flywheel-eng-lead:live.*retention_expires_at=2026-08-08T10:00:00.000Z.*xdept:flywheel-eng-lead:live-2.*retention_expires_at=2026-08-08T11:00:00.000Z.*xdept:flywheel-eng-lead:live-json.*retention_expires_at=2026-08-08T11:31:00.000Z/,
 		);
 	});
 
@@ -723,6 +735,10 @@ describe("FLY-1572 legacy mailbox migration", () => {
 		expect((await migrateCommDbWithSwap(dbPath, { now: NOW })).intentPath).toBe(
 			result.intentPath,
 		);
+		mkdirSync(join(dir, "refs"), { recursive: true });
+		writeFileSync(join(dir, "refs", "post-backup.txt"), "extra ref");
+		writeFileSync(`${dbPath}-wal`, "");
+		writeFileSync(`${dbPath}-shm`, "");
 
 		expect(rollbackMailboxMigration(dbPath)).toMatchObject({
 			sourceMessages: 1,
@@ -739,6 +755,12 @@ describe("FLY-1572 legacy mailbox migration", () => {
 		} finally {
 			restored.close();
 		}
+		expect(existsSync(`${dbPath}.restore-intent.json`)).toBe(false);
+		expect(
+			readdirSync(dir).filter((name) =>
+				name.includes(".fly1572-rollback-quarantine-"),
+			),
+		).toEqual([]);
 		expect(() => rollbackMailboxMigration(dbPath)).not.toThrow();
 	});
 
@@ -807,12 +829,40 @@ describe("FLY-1572 legacy mailbox migration", () => {
 		const stale = `${backupPath}.tmp-00000000-0000-4000-8000-000000000000`;
 		writeFileSync(stale, "partial backup");
 		writeFileSync(`${stale}-journal`, "partial journal");
+		writeFileSync(`${stale}-wal`, "partial wal");
+		writeFileSync(`${stale}-shm`, "partial shm");
 
 		await backupCommDb(dbPath, backupPath);
 
 		expect(existsSync(stale)).toBe(false);
 		expect(existsSync(`${stale}-journal`)).toBe(false);
+		expect(existsSync(`${stale}-wal`)).toBe(false);
+		expect(existsSync(`${stale}-shm`)).toBe(false);
 		expect(existsSync(backupPath)).toBe(true);
+	});
+
+	it("removes forward sidecar quarantines after cutover converges", async () => {
+		const path = join(dir, "forward-cleanup.db");
+		const legacy = new Database(path);
+		legacy.exec(LEGACY_SCHEMA);
+		insertMessage(legacy, {
+			id: "question-forward-cleanup",
+			from_agent: "exec-1",
+			to_agent: "flywheel-eng-lead",
+			type: "question",
+		});
+		legacy.close();
+		await expect(
+			migrateCommDbWithSwap(path, { now: NOW, faultAfter: "backed_up" }),
+		).rejects.toThrow(/fault injection/);
+		writeFileSync(`${path}-wal`, "");
+		writeFileSync(`${path}-shm`, "");
+
+		await expect(
+			migrateCommDbWithSwap(path, { now: NOW }),
+		).resolves.toMatchObject({ status: "migrated" });
+		expect(existsSync(`${path}-wal.fly1572-quarantine`)).toBe(false);
+		expect(existsSync(`${path}-shm.fly1572-quarantine`)).toBe(false);
 	});
 
 	it("resumes idempotently after every durable forward-swap phase", async () => {
@@ -913,6 +963,7 @@ describe("FLY-1572 legacy mailbox migration", () => {
 				rollbackMailboxMigration(path, { faultAfter: phase }),
 			).toThrow(/fault injection/);
 			expect(() => rollbackMailboxMigration(path)).not.toThrow();
+			expect(existsSync(`${path}.restore-intent.json`)).toBe(false);
 			const restored = new Database(path, { readonly: true });
 			try {
 				expect(

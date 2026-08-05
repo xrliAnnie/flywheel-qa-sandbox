@@ -104,6 +104,7 @@ interface MailboxRestoreIntent {
 	dbStage: string;
 	refsStage: string;
 	refsQuarantine: string;
+	quarantinedSidecars?: string[];
 	phase: MailboxRestorePhase;
 	createdAt: string;
 }
@@ -218,7 +219,9 @@ function assertKnownLeadSourceFamilies(
 			)
 			.all() as LegacyRow[]
 	).flatMap((row) => {
-		if (crossDepartmentSender(row)) return [];
+		if (crossDepartmentSender(row) || isBridgeCrossDepartmentAlert(row)) {
+			return [];
+		}
 		const classified = classifyLead(row, now);
 		const endedAt = classified.ackedAt ?? classified.deadAt;
 		const retentionExpiresAt = endedAt
@@ -462,6 +465,24 @@ function crossDepartmentSender(row: LegacyRow): string | undefined {
 	return undefined;
 }
 
+function isBridgeCrossDepartmentAlert(row: LegacyRow): boolean {
+	const content = text(row, "content");
+	if (
+		text(row, "source") !== "discord_cross_department" ||
+		!content ||
+		!text(row, "delivered_at") ||
+		!text(row, "consumed_at")
+	) {
+		return false;
+	}
+	try {
+		JSON.parse(content);
+		return false;
+	} catch {
+		return true;
+	}
+}
+
 function leadFromAgent(row: LegacyRow): string {
 	const source = text(row, "source") ?? "";
 	const family = leadSourceFamily(source);
@@ -477,6 +498,7 @@ function leadFromAgent(row: LegacyRow): string {
 	if (family === "discord_cross_department") {
 		const sender = crossDepartmentSender(row);
 		if (sender) return sender;
+		if (isBridgeCrossDepartmentAlert(row)) return "bridge";
 		throw new Error(`cross-department sender is missing: ${row.id}`);
 	}
 	throw new Error(`unknown lead_inbox source family ${source}: ${row.id}`);
@@ -1139,20 +1161,7 @@ export async function backupCommDb(
 	dbPath: string,
 	backupPath = `${dbPath}.pre-fly1572-${Date.now()}`,
 ): Promise<string> {
-	const stalePrefix = `${basename(backupPath)}.tmp-`;
-	for (const entry of readdirSync(dirname(backupPath), {
-		withFileTypes: true,
-	})) {
-		if (!entry.isFile() || !entry.name.startsWith(stalePrefix)) continue;
-		const suffix = entry.name.slice(stalePrefix.length);
-		if (
-			/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:-journal|-wal|-shm)?$/i.test(
-				suffix,
-			)
-		) {
-			rmSync(join(dirname(backupPath), entry.name), { force: true });
-		}
-	}
+	cleanupBackupTemps(backupPath);
 	if (existsSync(backupPath)) {
 		verifySqlite(backupPath);
 		if (!existsSync(`${backupPath}.refs-manifest.json`)) {
@@ -1176,9 +1185,25 @@ export async function backupCommDb(
 		backupRefs(dbPath, backupPath);
 		verifyRefsBackup(backupPath);
 		return backupPath;
-	} catch (error) {
-		rmSync(temp, { force: true });
-		throw error;
+	} finally {
+		cleanupBackupTemps(backupPath);
+	}
+}
+
+function cleanupBackupTemps(backupPath: string): void {
+	const stalePrefix = `${basename(backupPath)}.tmp-`;
+	for (const entry of readdirSync(dirname(backupPath), {
+		withFileTypes: true,
+	})) {
+		if (!entry.isFile() || !entry.name.startsWith(stalePrefix)) continue;
+		const suffix = entry.name.slice(stalePrefix.length);
+		if (
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:-journal|-wal|-shm)?$/i.test(
+				suffix,
+			)
+		) {
+			rmSync(join(dirname(backupPath), entry.name), { force: true });
+		}
 	}
 }
 
@@ -1371,6 +1396,11 @@ export async function migrateCommDbWithSwap(
 	const migrated = verifyMigratedDatabase(dbPath);
 	if (!reached("verified")) advance("verified");
 	if (!reached("done")) advance("done");
+	for (const path of intent.quarantinedSidecars) {
+		rmSync(path, { force: true });
+	}
+	cleanupBackupTemps(intent.backupPath);
+	fsyncDirectory(dirname(dbPath));
 	return { ...migrated, backupPath: intent.backupPath, intentPath };
 }
 
@@ -1437,6 +1467,7 @@ export function rollbackMailboxMigration(
 			dbStage,
 			refsStage,
 			refsQuarantine: `${join(dirname(dbPath), "refs")}.fly1572-rollback-quarantine-${randomUUID()}`,
+			quarantinedSidecars: [],
 			phase: "staged",
 			createdAt: new Date().toISOString(),
 		};
@@ -1486,10 +1517,27 @@ export function rollbackMailboxMigration(
 			}
 			for (const sidecar of [`${dbPath}-wal`, `${dbPath}-shm`]) {
 				if (existsSync(sidecar)) {
-					renameSync(
-						sidecar,
-						`${sidecar}.fly1572-rollback-quarantine-${randomUUID()}`,
-					);
+					const prefix = `${sidecar}.fly1572-rollback-quarantine-`;
+					let target: string | undefined = (
+						restoreIntent.quarantinedSidecars ?? []
+					).find((path) => path.startsWith(prefix));
+					if (!target) {
+						target = `${prefix}${randomUUID()}`;
+						restoreIntent = {
+							...restoreIntent,
+							quarantinedSidecars: [
+								...(restoreIntent.quarantinedSidecars ?? []),
+								target,
+							],
+						};
+						durableJson(restoreIntentPath, restoreIntent);
+					}
+					if (existsSync(target)) {
+						throw new Error(
+							`rollback sidecar quarantine already exists: ${target}`,
+						);
+					}
+					renameSync(sidecar, target);
 				}
 			}
 			renameSync(restoreIntent.dbStage, dbPath);
@@ -1514,6 +1562,14 @@ export function rollbackMailboxMigration(
 	if (!restoreReached("done")) advanceRestore("done");
 	intent = { ...intent, phase: "aborted" };
 	durableJson(intentPath, intent);
+	for (const path of [
+		restoreIntent.refsQuarantine,
+		...(restoreIntent.quarantinedSidecars ?? []),
+	]) {
+		rmSync(path, { recursive: true, force: true });
+	}
+	rmSync(restoreIntentPath, { force: true });
+	fsyncDirectory(dirname(dbPath));
 	return {
 		status: "already_migrated",
 		sourceMessages: counts.messages,
