@@ -1,0 +1,18 @@
+stateDiagram-v2
+    [*] --> pending: 返工单创建
+    pending --> turn_granted: 投递尝试
+    turn_granted --> wake_delivered: 唤醒执行者
+    wake_delivered --> completed: 正常完成
+    turn_granted --> pending: 失败(计数+1,退避 1/2/4/8 分钟)
+    pending --> needs_lead: 连续失败 5 次
+    needs_lead --> [*]: Lead 处理后可开新单
+    note right of pending
+        修复前:每秒重试、无上限,
+        失败一次给 founder 发一条
+        (实录刷了 980 代)
+    end note
+    note right of needs_lead
+        修复后:5 次封顶,
+        只给 Lead 发一条告警,
+        founder 频道零打扰
+    end note

@@ -1,0 +1,13 @@
+sequenceDiagram
+    participant F as founder(批准)
+    participant B as Bridge(引擎)
+    participant R as runner(执行者)
+    Note over B: 修复前:批准通过了,<br/>但『批准对应哪个代码版本』<br/>这张凭证从来没写
+    F->>B: 批准 ship ✅
+    R->>B: 核验批准(verify-approval)
+    B-->>R: ❌ 找不到绑定凭证<br/>(第 17 次撞墙,每次都要人来救)
+    Note over B: 修复后:批准之门打开时<br/>就把『代码版本 ↔ 批准』<br/>凭证写死在账本里
+    F->>B: 批准 ship ✅
+    R->>B: 核验批准
+    B-->>R: ✅ 凭证在,版本一致
+    R->>R: 自动合入,全程零人工
