@@ -119,7 +119,7 @@ git add doc/qa/sandbox-notes.md engineering/doc/FLY-202-sandbox-notes
 git commit -m "docs(fly-202): add QA sandbox notes"
 ```
 
-- [ ] **Step 2: Push a clean, run-unique issue feature branch**
+- [x] **Step 2: Push a clean, run-unique issue feature branch**
 
 The original harness branch name already exists remotely with a prior open fixture PR, and the first run-unique recovery branch inherited an upstream test start point that conflicts with sandbox `main`. Preserve both histories rather than force-pushing; replay only the FLY-202 documentation commits on a clean `origin/main` branch.
 
@@ -128,6 +128,6 @@ git switch -c project-slot-1-FLY-202-d716a70d-clean origin/main
 git push -u origin project-slot-1-FLY-202-d716a70d-clean
 ```
 
-- [ ] **Step 3: Open a PR against sandbox `main`**
+- [x] **Step 3: Open a PR against sandbox `main`**
 
 Use `gh pr create --base main --head project-slot-1-FLY-202-d716a70d-clean` with an English title/body containing the requirement checklist and verification evidence. Then proceed through the mandatory Flywheel code-review, CI, founder-approval, and `:cool:` landing workflow.
