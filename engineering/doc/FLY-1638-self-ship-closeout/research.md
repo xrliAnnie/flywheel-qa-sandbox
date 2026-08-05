@@ -212,5 +212,5 @@ schema-v2 的 completion 路径已写 `workflow_node_pr_binding`(`recordWorkflow
 ### 6.5 500 形状与 typed 化模式
 
 - 现状:adapter error 被 RunDispatcher background catch 消费,route 只得到早到的逻辑 session/pending;若同步边界另抛则 express 5 落 `plugin.ts:3788-3801` 兜底 `{error:"internal error"}`,**只打 err.message 不打 stack**,`TmuxSessionHoldError.kind/evidence` 全丢。typed 化的前提是先打通上面的 pre-commit outcome seam。
-- 照抄模式:typed error class → typed 响应(`InvalidAgentNameError` → 400+code,`AdmissionDeferredError` → 429+reason,`runs-route.ts:3352-3381`);hold 类 409+code+reason 家族(`GENERALIZED_LAUNCH_HELD` 等 5 个)。`TmuxSessionHoldError` → 409 + `code:"LAUNCH_TMUX_SESSION_HELD"` + `reason: err.kind` + evidence。
+- 照抄模式:typed error class → typed 响应(`InvalidAgentNameError` → 400+code,`AdmissionDeferredError` → 429+reason,`runs-route.ts:3352-3381`);hold 类 409+code+reason 家族(`GENERALIZED_LAUNCH_HELD` 等 5 个)。`TmuxSessionHoldError` → 409 + `code:"LAUNCH_TMUX_SESSION_HELD"` + `reason: err.kind`;**evidence 只进结构化 server log,不出 HTTP**(含 owner/process 元数据,非公共 DTO —— 见 plan §7.4 allowlist 契约)。
 - 反例明示:`:3382-3390` 的字符串匹配 fallback(FLY-123 注释点名要避免)。
