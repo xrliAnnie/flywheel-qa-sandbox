@@ -1,13 +1,13 @@
 ---
 issue: FLY-1638
-phase: design
-phaseCursor: 7/7
-updated: 2026-08-05T07:15:15.458Z
-nextStep: poll design R3; resume implement on approval
+phase: implement
+phaseCursor: 0/11
+updated: 2026-08-05T07:20:40.195Z
+nextStep: RED runner-ship authority resolver and gate proof
 chunks: []
 pointers: {}
 ---
 
 # FLY-1638 progress
-**phase**: design (7/7)
-**next**: poll design R3; resume implement on approval
+**phase**: implement (0/11)
+**next**: RED runner-ship authority resolver and gate proof
