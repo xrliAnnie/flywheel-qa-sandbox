@@ -69,6 +69,44 @@ CREATE INDEX IF NOT EXISTS mailbox_archive_acked
 CREATE INDEX IF NOT EXISTS mailbox_archive_dead
   ON mailbox(dead_at) WHERE state = 'DEAD';
 
+-- Internal read-only compatibility projection while CommDB keeps its public
+-- Message shape. The legacy object names remain poisoned below.
+CREATE VIEW IF NOT EXISTS mailbox_message_projection AS
+SELECT
+	seq AS rowid,
+  id,
+  from_agent,
+  to_agent,
+  type,
+  content,
+  ref_id AS parent_id,
+  CASE WHEN state = 'ACKED' THEN acked_at END AS read_at,
+  created_at,
+  expires_at,
+  deadline_at,
+  relay_state,
+  resolved_via,
+  NULL AS logical_event_id,
+  superseded_at,
+  superseded_by,
+  json_extract(sender_ref, '$.lease_key') AS sender_lease_key,
+  json_extract(sender_ref, '$.generation') AS sender_generation,
+  json_extract(sender_ref, '$.holder_pid') AS sender_holder_pid,
+  json_extract(sender_ref, '$.holder_start') AS sender_holder_start,
+  json_extract(sender_ref, '$.writer_pid') AS writer_pid,
+  json_extract(sender_ref, '$.writer_start') AS writer_start,
+  checkpoint,
+  content_ref,
+  COALESCE(content_type, 'text') AS content_type,
+  resolved_at,
+  CASE
+    WHEN state = 'LEASED' THEN claim_expires_at
+    WHEN state = 'ACKED' THEN acked_at
+  END AS delivered_at,
+  NULL AS attachments,
+  kind
+FROM mailbox;
+
 CREATE TABLE IF NOT EXISTS mailbox_identity (
   id TEXT NOT NULL UNIQUE,
   delivery_id TEXT NOT NULL UNIQUE,
@@ -150,6 +188,14 @@ BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_delete
 BEFORE DELETE ON receipt_root_lineage
 BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS mailbox_receipt_root_lineage_insert
+AFTER INSERT ON mailbox
+WHEN NEW.type = 'question' AND NEW.recipient_kind = 'lead'
+BEGIN
+  INSERT INTO receipt_root_lineage
+    (receipt_id, execution_id, question_id, root_lead_id)
+  VALUES (NEW.delivery_id, NEW.from_agent, NEW.id, NEW.to_agent);
+END;
 
 CREATE TABLE IF NOT EXISTS receipt_alert_outbox (
   id TEXT PRIMARY KEY,

@@ -18,13 +18,14 @@ import type {
 	ReceiptPriorityWindowsMs,
 } from "./lead-inbox-queue.js";
 import {
-	applyReceiptFoundationMigrations,
 	assertProcessedEvidence,
 	assertUtcIsoTimestamp,
 	CHAT_DELIVERY_UNCONFIRMED_REASON,
-	LEAD_INBOX_SCHEMA,
 	LeadInboxQueue,
 } from "./lead-inbox-queue.js";
+import { MailboxQueue } from "./mailbox-queue.js";
+import { MAILBOX_SCHEMA, MAILBOX_SCHEMA_GENERATION } from "./mailbox-schema.js";
+import { encodeSenderRef } from "./sender-ref.js";
 import { truncateCodePoints } from "./text-truncate.js";
 import type {
 	Message,
@@ -35,30 +36,6 @@ import type {
 import { deleteContentRef as deleteContentRefFile } from "./utils/content-ref.js";
 
 const SCHEMA = `
-CREATE TABLE IF NOT EXISTS messages (
-  id          TEXT PRIMARY KEY,
-  from_agent  TEXT NOT NULL,
-  to_agent    TEXT NOT NULL,
-  type        TEXT NOT NULL CHECK(type IN ('question','response','instruction','progress','ack_receipt')),
-  content     TEXT NOT NULL,
-  parent_id   TEXT,
-  read_at     DATETIME,
-  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at  DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
-  deadline_at TEXT,
-  relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed')),
-  resolved_via TEXT,
-  logical_event_id TEXT,
-  superseded_at DATETIME,
-  superseded_by TEXT,
-  sender_lease_key TEXT,
-  sender_generation INTEGER,
-  sender_holder_pid INTEGER,
-  sender_holder_start TEXT,
-  writer_pid INTEGER,
-  writer_start TEXT,
-  FOREIGN KEY (parent_id) REFERENCES messages(id)
-);
 CREATE TABLE IF NOT EXISTS sessions (
   execution_id  TEXT PRIMARY KEY,
   tmux_window   TEXT NOT NULL,
@@ -203,16 +180,12 @@ BEGIN SELECT RAISE(ABORT, 'turn_source_history is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS turn_source_history_no_delete
 BEFORE DELETE ON turn_source_history
 BEGIN SELECT RAISE(ABORT, 'turn_source_history is append-only'); END;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_response ON messages(parent_id) WHERE type = 'response';
-CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(to_agent, type, created_at);
-CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_id);
-CREATE INDEX IF NOT EXISTS idx_messages_expires ON messages(expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_name);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runner_phase_wakes_source
   ON runner_phase_wakes(execution_id, source_instruction_id)
   WHERE source_instruction_id IS NOT NULL;
-${LEAD_INBOX_SCHEMA}
+${MAILBOX_SCHEMA}
 `;
 
 /**
@@ -760,6 +733,40 @@ function provenanceValues(
 	];
 }
 
+function assertMailboxGeneration(db: Database.Database, dbPath: string): void {
+	const metaTable = db
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mailbox_migration_meta'",
+		)
+		.get();
+	if (!metaTable) {
+		throw new Error(
+			`Legacy or partial CommDB at ${dbPath}; run the FLY-1572 mailbox migration before opening it`,
+		);
+	}
+	const meta = db
+		.prepare(
+			"SELECT schema_generation FROM mailbox_migration_meta WHERE singleton = 1",
+		)
+		.get() as { schema_generation?: string } | undefined;
+	if (meta?.schema_generation !== MAILBOX_SCHEMA_GENERATION) {
+		throw new Error(
+			`Unsupported CommDB schema generation at ${dbPath}: ${meta?.schema_generation ?? "missing"}`,
+		);
+	}
+	if (
+		!db
+			.prepare(
+				"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mailbox'",
+			)
+			.get()
+	) {
+		throw new Error(
+			`Partial mailbox schema at ${dbPath}: mailbox table missing`,
+		);
+	}
+}
+
 export class CommDB {
 	private db: Database.Database;
 
@@ -771,7 +778,8 @@ export class CommDB {
 	 *   configuration errors as "no pending questions".
 	 */
 	constructor(dbPath: string, createIfMissing = true) {
-		if (!createIfMissing && !existsSync(dbPath)) {
+		const existed = existsSync(dbPath);
+		if (!createIfMissing && !existed) {
 			throw new Error(
 				`Database not found: ${dbPath}. Has a question been asked yet?`,
 			);
@@ -780,6 +788,16 @@ export class CommDB {
 		this.db = new Database(dbPath);
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("busy_timeout = 5000");
+		const isVirgin =
+			!existed ||
+			(
+				this.db
+					.prepare(
+						"SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+					)
+					.get() as { count: number }
+			).count === 0;
+		if (!isVirgin) assertMailboxGeneration(this.db, dbPath);
 		this.db.exec(SCHEMA);
 		this.applyMigrations();
 		this.purgeExpired();
@@ -794,179 +812,16 @@ export class CommDB {
 		const instance = Object.create(CommDB.prototype) as CommDB;
 		instance.db = new Database(dbPath, { readonly: true });
 		instance.db.pragma("busy_timeout = 5000");
+		try {
+			assertMailboxGeneration(instance.db, dbPath);
+		} catch (error) {
+			instance.db.close();
+			throw error;
+		}
 		return instance;
 	}
 
 	private applyMigrations(): void {
-		applyReceiptFoundationMigrations(this.db);
-		this.applyReceiptRootLineageMigration();
-		const columns = this.db
-			.prepare("PRAGMA table_info(messages)")
-			.all() as Array<{ name: string }>;
-
-		if (!columns.some((c) => c.name === "read_at")) {
-			this.db.exec("ALTER TABLE messages ADD COLUMN read_at DATETIME");
-		}
-		if (!columns.some((c) => c.name === "deadline_at")) {
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN deadline_at TEXT");
-			} catch (error) {
-				if (
-					!/duplicate column name: deadline_at/i.test((error as Error).message)
-				) {
-					throw error;
-				}
-			}
-		}
-		if (!columns.some((c) => c.name === "checkpoint")) {
-			this.db.exec("ALTER TABLE messages ADD COLUMN checkpoint TEXT");
-		}
-		if (!columns.some((c) => c.name === "content_ref")) {
-			this.db.exec("ALTER TABLE messages ADD COLUMN content_ref TEXT");
-		}
-		if (!columns.some((c) => c.name === "content_type")) {
-			this.db.exec(
-				"ALTER TABLE messages ADD COLUMN content_type TEXT DEFAULT 'text'",
-			);
-		}
-		if (!columns.some((c) => c.name === "resolved_at")) {
-			this.db.exec("ALTER TABLE messages ADD COLUMN resolved_at DATETIME");
-		}
-		if (!columns.some((c) => c.name === "delivered_at")) {
-			// FLY-109: ALTER is not atomic w.r.t. the PRAGMA read above, so two
-			// concurrent openers of the same DB can both pass the guard and race
-			// on ADD COLUMN. Swallow the racing side's "duplicate column" error —
-			// the column is present either way, which is all we need.
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN delivered_at DATETIME");
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: delivered_at/i.test(msg)) {
-					throw err;
-				}
-			}
-		}
-		if (!columns.some((c) => c.name === "attachments")) {
-			// GEO-151: ProofShot artifact paths stored as JSON-encoded string[].
-			// Same race-tolerance pattern as delivered_at above.
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT");
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: attachments/i.test(msg)) {
-					throw err;
-				}
-			}
-		}
-		if (!columns.some((c) => c.name === "kind")) {
-			// FLY-1041: 'report' marks a fire-and-forget runner→Lead status report
-			// (`ask --report`). Deliberately NOT the checkpoint column — GatePoller
-			// gives checkpoints gate-eviction / nudge semantics that do not apply
-			// to reports. Transport-wise a report is still a question (relayToLead,
-			// pending CLI, liveness all unchanged); ONLY the founder-reply
-			// candidate set excludes it. Same race-tolerance as delivered_at.
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN kind TEXT");
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: kind/i.test(msg)) {
-					throw err;
-				}
-			}
-		}
-		if (!columns.some((c) => c.name === "relay_state")) {
-			try {
-				this.db.exec(
-					"ALTER TABLE messages ADD COLUMN relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed'))",
-				);
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: relay_state/i.test(msg)) throw err;
-			}
-		}
-		if (!columns.some((c) => c.name === "logical_event_id")) {
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN logical_event_id TEXT");
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: logical_event_id/i.test(msg)) throw err;
-			}
-		}
-		for (const name of ["superseded_at", "superseded_by"] as const) {
-			if (columns.some((column) => column.name === name)) continue;
-			try {
-				this.db.exec(`ALTER TABLE messages ADD COLUMN ${name} TEXT`);
-			} catch (error) {
-				if (
-					!new RegExp(`duplicate column name: ${name}`, "i").test(
-						(error as Error).message,
-					)
-				) {
-					throw error;
-				}
-			}
-		}
-		const provenanceColumns = [
-			["sender_lease_key", "TEXT"],
-			["sender_generation", "INTEGER"],
-			["sender_holder_pid", "INTEGER"],
-			["sender_holder_start", "TEXT"],
-			["writer_pid", "INTEGER"],
-			["writer_start", "TEXT"],
-		] as const;
-		for (const [name, sqlType] of provenanceColumns) {
-			if (columns.some((column) => column.name === name)) continue;
-			try {
-				this.db.exec(`ALTER TABLE messages ADD COLUMN ${name} ${sqlType}`);
-			} catch (error) {
-				if (
-					!new RegExp(`duplicate column name: ${name}`, "i").test(
-						(error as Error).message,
-					)
-				) {
-					throw error;
-				}
-			}
-		}
-		this.migrateMessageTypeConstraint();
-		// FLY-1328: who disposed of this question — 'owner_closed' (the owning
-		// runner's teardown cascade) / 'owner_closed_sweep' (the patrol catching a
-		// runner that died without one). NULL for every pre-FLY-1328 row and for
-		// every disposal the flag is off for. Deliberately added AFTER the rebuild
-		// above: that rebuild carries a fixed column list, so a pre-FLY-1279
-		// database must rebuild first and gain the column second, or the column is
-		// dropped on the way through. (The converse — a database with resolved_via
-		// but no ack_receipt — cannot exist: within one open, rebuild always runs
-		// before this ADD.) Same duplicate-column race tolerance as delivered_at.
-		const postRebuildColumns = this.db
-			.prepare("PRAGMA table_info(messages)")
-			.all() as Array<{ name: string }>;
-		if (!postRebuildColumns.some((c) => c.name === "resolved_via")) {
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN resolved_via TEXT");
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: resolved_via/i.test(msg)) throw err;
-			}
-		}
-		// Existing answered/resolved questions already have machine evidence of a
-		// terminal disposition. Do not revive them as actionable during migration.
-		this.db.exec(`
-			UPDATE messages AS q SET relay_state = 'terminal_disposed'
-			 WHERE q.type = 'question'
-			   AND q.relay_state != 'terminal_disposed'
-			   AND (q.resolved_at IS NOT NULL OR EXISTS (
-			     SELECT 1 FROM messages r
-			      WHERE r.parent_id = q.id AND r.type = 'response'
-			   ))
-		`);
-		this.db.exec(
-			"CREATE INDEX IF NOT EXISTS idx_messages_checkpoint ON messages(checkpoint) WHERE checkpoint IS NOT NULL",
-		);
-		this.db.exec(
-			"CREATE INDEX IF NOT EXISTS idx_messages_logical_event ON messages(logical_event_id) WHERE logical_event_id IS NOT NULL",
-		);
-
 		const sessionColumns = this.db
 			.prepare("PRAGMA table_info(sessions)")
 			.all() as Array<{ name: string }>;
@@ -1109,181 +964,12 @@ export class CommDB {
 		`);
 	}
 
-	/** FLY-1279: SQLite cannot ALTER a CHECK constraint, so add ack_receipt by
-	 * rebuilding the table once. All columns are present before this runs. */
-	private migrateMessageTypeConstraint(): void {
-		const schema = this.db
-			.prepare(
-				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
-			)
-			.get() as { sql?: string } | undefined;
-		if (schema?.sql?.includes("'ack_receipt'")) return;
-
-		this.db.pragma("foreign_keys = OFF");
-		try {
-			this.db.transaction(() => {
-				this.db.exec(`
-					ALTER TABLE messages RENAME TO messages_fly1279_legacy;
-					CREATE TABLE messages (
-					  id TEXT PRIMARY KEY,
-					  from_agent TEXT NOT NULL,
-					  to_agent TEXT NOT NULL,
-					  type TEXT NOT NULL CHECK(type IN ('question','response','instruction','progress','ack_receipt')),
-					  content TEXT NOT NULL,
-					  parent_id TEXT,
-					  read_at DATETIME,
-					  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-					  expires_at DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
-					  deadline_at TEXT,
-					  checkpoint TEXT,
-					  content_ref TEXT,
-					  content_type TEXT DEFAULT 'text',
-					  resolved_at DATETIME,
-					  delivered_at DATETIME,
-					  attachments TEXT,
-					  kind TEXT,
-					  relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed')),
-					  logical_event_id TEXT,
-					  sender_lease_key TEXT,
-					  sender_generation INTEGER,
-					  sender_holder_pid INTEGER,
-					  sender_holder_start TEXT,
-					  writer_pid INTEGER,
-					  writer_start TEXT,
-					  FOREIGN KEY (parent_id) REFERENCES messages(id)
-					);
-					INSERT INTO messages (
-					  id, from_agent, to_agent, type, content, parent_id, read_at,
-					  created_at, expires_at, deadline_at, checkpoint, content_ref, content_type,
-					  resolved_at, delivered_at, attachments, kind, relay_state,
-					  logical_event_id, sender_lease_key, sender_generation,
-					  sender_holder_pid, sender_holder_start, writer_pid, writer_start
-					)
-					SELECT id, from_agent, to_agent, type, content, parent_id, read_at,
-					  created_at, expires_at, deadline_at, checkpoint, content_ref, content_type,
-					  resolved_at, delivered_at, attachments, kind, relay_state,
-					  logical_event_id, sender_lease_key, sender_generation,
-					  sender_holder_pid, sender_holder_start, writer_pid, writer_start
-					FROM messages_fly1279_legacy;
-					DROP TABLE messages_fly1279_legacy;
-					CREATE UNIQUE INDEX idx_unique_response ON messages(parent_id) WHERE type = 'response';
-					CREATE INDEX idx_messages_to_agent ON messages(to_agent, type, created_at);
-					CREATE INDEX idx_messages_parent ON messages(parent_id);
-					CREATE INDEX idx_messages_expires ON messages(expires_at);
-				`);
-			})();
-		} finally {
-			this.db.pragma("foreign_keys = ON");
-		}
-	}
-
-	private applyReceiptRootLineageMigration(): void {
-		this.db.exec(`
-			CREATE TABLE IF NOT EXISTS receipt_root_lineage (
-			  receipt_id     TEXT PRIMARY KEY,
-			  execution_id  TEXT NOT NULL,
-			  question_id   TEXT NOT NULL,
-			  root_lead_id  TEXT NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS idx_receipt_root_lineage_execution
-			  ON receipt_root_lineage(execution_id, receipt_id);
-			INSERT OR IGNORE INTO receipt_root_lineage
-			  (receipt_id, execution_id, question_id, root_lead_id)
-			SELECT root.id, source.from_agent, source.id, root.to_lead
-			  FROM lead_inbox root
-			  JOIN messages source ON source.id = root.ref_message_id
-			 WHERE root.resend_of IS NULL;
-			CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_capture
-			AFTER INSERT ON lead_inbox
-			WHEN NEW.resend_of IS NULL AND NEW.ref_message_id IS NOT NULL
-			BEGIN
-			  INSERT OR IGNORE INTO receipt_root_lineage
-			    (receipt_id, execution_id, question_id, root_lead_id)
-			  SELECT NEW.id, source.from_agent, source.id, NEW.to_lead
-			    FROM messages source
-			   WHERE source.id = NEW.ref_message_id;
-			END;
-			CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_update
-			BEFORE UPDATE ON receipt_root_lineage
-			BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
-			CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_delete
-			BEFORE DELETE ON receipt_root_lineage
-			BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
-		`);
-	}
-
 	purgeExpired(): number {
-		return this.purgeExpiredWithRefs();
+		return 0;
 	}
 
 	purgeExpiredWithRefs(): number {
-		if (!commDbProtectionEnabled()) {
-			// Exact pre-FLY-1279 behavior for emergency rollback.
-			const refs = this.db
-				.prepare(
-					`SELECT content_ref FROM messages
-					 WHERE (expires_at < datetime('now')
-					    OR parent_id IN (SELECT id FROM messages WHERE expires_at < datetime('now')))
-					   AND content_ref IS NOT NULL`,
-				)
-				.all() as Array<{ content_ref: string }>;
-			for (const { content_ref } of refs) deleteContentRefFile(content_ref);
-			const childResult = this.db
-				.prepare(
-					"DELETE FROM messages WHERE parent_id IN (SELECT id FROM messages WHERE expires_at < datetime('now'))",
-				)
-				.run();
-			const parentResult = this.db
-				.prepare("DELETE FROM messages WHERE expires_at < datetime('now')")
-				.run();
-			return childResult.changes + parentResult.changes;
-		}
-
-		const deletableExpired = (
-			alias: string,
-		) => `${alias}.expires_at < datetime('now')
-			AND NOT (
-				${alias}.type = 'question'
-				AND ${alias}.relay_state != 'terminal_disposed'
-				AND NOT EXISTS (
-					SELECT 1 FROM messages response
-					 WHERE response.parent_id = ${alias}.id AND response.type = 'response'
-				)
-			)`;
-		// Collect content_ref files from both expired messages and their children
-		const refs = this.db
-			.prepare(
-				`SELECT message.content_ref FROM messages message
-				 WHERE (${deletableExpired("message")}
-				    OR message.parent_id IN (
-				      SELECT parent.id FROM messages parent
-				       WHERE ${deletableExpired("parent")}
-				    ))
-				   AND message.content_ref IS NOT NULL`,
-			)
-			.all() as Array<{ content_ref: string }>;
-		for (const { content_ref } of refs) {
-			deleteContentRefFile(content_ref);
-		}
-		// FLY-80: Delete child messages (responses) before parents to satisfy FK constraint.
-		// better-sqlite3 enforces foreign_keys=ON by default.
-		const childResult = this.db
-			.prepare(
-				`DELETE FROM messages WHERE parent_id IN (
-				   SELECT parent.id FROM messages parent
-				    WHERE ${deletableExpired("parent")}
-				 )`,
-			)
-			.run();
-		const parentResult = this.db
-			.prepare(
-				`DELETE FROM messages WHERE id IN (
-				   SELECT message.id FROM messages message
-				    WHERE ${deletableExpired("message")}
-				 )`,
-			)
-			.run();
-		return childResult.changes + parentResult.changes;
+		return this.purgeExpired();
 	}
 
 	cleanupReadMessages(ttlHours = 24): number {
@@ -1299,7 +985,7 @@ export class CommDB {
 						${alias}.type = 'question'
 						AND ${alias}.relay_state != 'terminal_disposed'
 						AND NOT EXISTS (
-							SELECT 1 FROM messages response
+							SELECT 1 FROM mailbox_message_projection response
 							 WHERE response.parent_id = ${alias}.id AND response.type = 'response'
 						)
 					)`
@@ -1307,10 +993,10 @@ export class CommDB {
 			}`;
 		const refs = this.db
 			.prepare(
-				`SELECT message.content_ref FROM messages message
+				`SELECT message.content_ref FROM mailbox_message_projection message
 			 WHERE (${cleanupCondition("message")}
 			    OR message.parent_id IN (
-			      SELECT parent.id FROM messages parent
+			      SELECT parent.id FROM mailbox_message_projection parent
 			       WHERE ${cleanupCondition("parent")}
 			    ))
 			 AND message.content_ref IS NOT NULL`,
@@ -1319,19 +1005,19 @@ export class CommDB {
 		for (const { content_ref } of refs) {
 			deleteContentRefFile(content_ref);
 		}
-		// FLY-80: Delete child messages before parents to satisfy FK constraint
+		// FLY-80: Delete child mailbox_message_projection before parents to satisfy FK constraint
 		const childResult = this.db
 			.prepare(
-				`DELETE FROM messages WHERE parent_id IN (
-				   SELECT parent.id FROM messages parent
+				`DELETE FROM mailbox_message_projection WHERE parent_id IN (
+				   SELECT parent.id FROM mailbox_message_projection parent
 				    WHERE ${cleanupCondition("parent")}
 				 )`,
 			)
 			.run(ttlHours);
 		const parentResult = this.db
 			.prepare(
-				`DELETE FROM messages WHERE id IN (
-				   SELECT message.id FROM messages message
+				`DELETE FROM mailbox_message_projection WHERE id IN (
+				   SELECT message.id FROM mailbox_message_projection message
 				    WHERE ${cleanupCondition("message")}
 				 )`,
 			)
@@ -1376,7 +1062,7 @@ export class CommDB {
 				.prepare(
 					`SELECT id, from_agent, to_agent, type, content, checkpoint,
 					        content_ref, content_type, kind, deadline_at
-					   FROM messages WHERE id = ?`,
+					   FROM mailbox_message_projection WHERE id = ?`,
 				)
 				.get(id) as Message | undefined;
 			if (existing) {
@@ -1396,43 +1082,28 @@ export class CommDB {
 				return id;
 			}
 		}
-		if (customTtl) {
-			this.db
-				.prepare(
-					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type, kind, deadline_at, expires_at)
-		 VALUES (?, ?, ?, 'question', ?, ?, ?, ?, ?, ?, datetime('now', ?))`,
-				)
-				.run(
-					id,
-					fromAgent,
-					toAgent,
-					content,
-					opts?.checkpoint ?? null,
-					opts?.contentRef ?? null,
-					opts?.contentType ?? "text",
-					opts?.kind ?? null,
-					opts?.deadlineAt ?? null,
-					`+${Math.floor(ttl as number)} seconds`,
-				);
-		} else {
-			// Default-TTL path (byte-compat with the pre-FLY-245 schema default).
-			this.db
-				.prepare(
-					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type, kind, deadline_at)
-		 VALUES (?, ?, ?, 'question', ?, ?, ?, ?, ?, ?)`,
-				)
-				.run(
-					id,
-					fromAgent,
-					toAgent,
-					content,
-					opts?.checkpoint ?? null,
-					opts?.contentRef ?? null,
-					opts?.contentType ?? "text",
-					opts?.kind ?? null,
-					opts?.deadlineAt ?? null,
-				);
-		}
+		const now = new Date();
+		new MailboxQueue(this.db).enqueue({
+			id,
+			deliveryId: `question:${toAgent}:${id}`,
+			fromAgent,
+			toAgent,
+			recipientKind: toAgent === "bridge" ? "bridge" : "lead",
+			type: "question",
+			content,
+			checkpoint: opts?.checkpoint ?? null,
+			contentRef: opts?.contentRef ?? null,
+			contentType: opts?.contentType ?? "text",
+			kind: opts?.kind ?? null,
+			deadlineAt: opts?.deadlineAt ?? null,
+			expiresAt: new Date(
+				now.getTime() +
+					(customTtl ? Math.floor(ttl as number) * 1000 : 72 * 60 * 60 * 1000),
+			).toISOString(),
+			createdAt: now.toISOString(),
+			priority: opts?.kind === "report" ? 2 : 1,
+			senderRef: encodeSenderRef(),
+		});
 		return id;
 	}
 
@@ -1449,7 +1120,7 @@ export class CommDB {
 	claimLifecycleConsent(questionId: string, checkpoint: string): boolean {
 		const info = this.db
 			.prepare(
-				`UPDATE messages SET resolved_at = datetime('now'),
+				`UPDATE mailbox SET resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 				 relay_state = 'terminal_disposed'
          WHERE id = ? AND type = 'question' AND checkpoint = ?
            AND resolved_at IS NULL AND expires_at > datetime('now')`,
@@ -1475,21 +1146,22 @@ export class CommDB {
 	): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "relay_state != 'terminal_disposed'"
-			: "expires_at > datetime('now')";
+			: "datetime(expires_at) > datetime('now')";
 		const info = this.db
 			.prepare(
-				`UPDATE messages SET
-				 resolved_at = datetime('now'),
-				 read_at = COALESCE(read_at, datetime('now')),
-				 expires_at = datetime('now'),
+				`UPDATE mailbox SET
+				 resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+				 state = 'ACKED',
+				 acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+				 expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 				 relay_state = 'terminal_disposed',
-				 superseded_at = CASE WHEN ? IS NULL THEN superseded_at ELSE datetime('now') END,
+				 superseded_at = CASE WHEN ? IS NULL THEN superseded_at ELSE strftime('%Y-%m-%dT%H:%M:%fZ','now') END,
 				 superseded_by = COALESCE(?, superseded_by)
 				 WHERE id = ? AND type = 'question'
 				 AND checkpoint = 'approve_to_ship'
 				 AND ${answerable}
 				 AND NOT EXISTS (
-				   SELECT 1 FROM messages r WHERE r.parent_id = messages.id AND r.type = 'response'
+				   SELECT 1 FROM mailbox r WHERE r.ref_id = mailbox.id AND r.type = 'response'
 				 )`,
 			)
 			.run(opts?.supersededBy ?? null, opts?.supersededBy ?? null, questionId);
@@ -1517,7 +1189,7 @@ export class CommDB {
 			const question = this.db
 				.prepare(
 					`SELECT id, checkpoint, relay_state, resolved_via
-					   FROM messages WHERE id = ? AND type = 'question'`,
+					   FROM mailbox_message_projection WHERE id = ? AND type = 'question'`,
 				)
 				.get(input.questionId) as
 				| {
@@ -1532,7 +1204,7 @@ export class CommDB {
 			}
 			const response = this.db
 				.prepare(
-					"SELECT 1 FROM messages WHERE parent_id = ? AND type = 'response' LIMIT 1",
+					"SELECT 1 FROM mailbox_message_projection WHERE parent_id = ? AND type = 'response' LIMIT 1",
 				)
 				.get(input.questionId);
 			if (response) {
@@ -1544,9 +1216,10 @@ export class CommDB {
 			if (!alreadySettled) {
 				const updated = this.db
 					.prepare(
-						`UPDATE messages SET
+						`UPDATE mailbox SET
 						   resolved_at = ?,
-						   read_at = COALESCE(read_at, ?),
+						   state = 'ACKED',
+						   acked_at = COALESCE(acked_at, ?),
 						   expires_at = ?,
 						   relay_state = 'terminal_disposed',
 						   resolved_via = ?,
@@ -1555,8 +1228,8 @@ export class CommDB {
 						   AND checkpoint = 'approve_to_ship'
 						   AND relay_state != 'terminal_disposed'
 						   AND NOT EXISTS (
-						     SELECT 1 FROM messages response
-						      WHERE response.parent_id = messages.id
+						     SELECT 1 FROM mailbox response
+						      WHERE response.ref_id = mailbox.id
 						        AND response.type = 'response'
 						   )`,
 					)
@@ -1571,7 +1244,7 @@ export class CommDB {
 				if (updated.changes !== 1) {
 					const lateResponse = this.db
 						.prepare(
-							"SELECT 1 FROM messages WHERE parent_id = ? AND type = 'response' LIMIT 1",
+							"SELECT 1 FROM mailbox_message_projection WHERE parent_id = ? AND type = 'response' LIMIT 1",
 						)
 						.get(input.questionId);
 					return {
@@ -1586,15 +1259,16 @@ export class CommDB {
 			const receiptIds = (
 				this.db
 					.prepare(
-						`SELECT id FROM lead_inbox
-						  WHERE resend_of IS NULL AND ref_message_id = ?
-						  ORDER BY seq`,
+						`SELECT receipt_id FROM receipt_root_lineage
+						  WHERE question_id = ? ORDER BY receipt_id`,
 					)
-					.all(input.questionId) as Array<{ id: string }>
-			).map((row) => row.id);
-			const queue = new LeadInboxQueue(this.db);
+					.all(input.questionId) as Array<{ receipt_id: string }>
+			).map((row) => row.receipt_id);
+			const queue = new MailboxQueue(this.db);
 			for (const receiptId of receiptIds) {
-				queue.markDisposed(receiptId, {
+				queue.settle({
+					messageOrDeliveryId: receiptId,
+					event: "disposed",
 					now: input.now,
 					evidence: {
 						v: 1,
@@ -1623,15 +1297,13 @@ export class CommDB {
 		return (
 			this.db
 				.prepare(
-					`SELECT DISTINCT root.id
-					   FROM receipt_root_lineage lineage
-					   JOIN lead_inbox root ON root.id = lineage.receipt_id
-					  WHERE root.resend_of IS NULL
-					    AND lineage.execution_id = ?
-					  ORDER BY root.seq`,
+					`SELECT DISTINCT receipt_id
+					   FROM receipt_root_lineage
+					  WHERE execution_id = ?
+					  ORDER BY receipt_id`,
 				)
-				.all(executionId) as Array<{ id: string }>
-		).map((row) => row.id);
+				.all(executionId) as Array<{ receipt_id: string }>
+		).map((row) => row.receipt_id);
 	}
 
 	getReceiptSettlementLineage(receiptId: string):
@@ -1647,19 +1319,20 @@ export class CommDB {
 		| undefined {
 		return this.db
 			.prepare(
-				`SELECT root.id AS receiptId,
+				`SELECT lineage.receipt_id AS receiptId,
 				        lineage.execution_id AS executionId,
 				        lineage.question_id AS questionId,
 				        owner.project_name AS projectName,
 				        owner.issue_id AS issueId,
 				        lineage.root_lead_id AS rootLeadId,
 				        owner.lead_id AS sessionLeadId
-				   FROM lead_inbox root
-				   JOIN receipt_root_lineage lineage
-				     ON lineage.receipt_id = root.id
+				   FROM receipt_root_lineage lineage
+				   JOIN mailbox_identity identity
+				     ON identity.delivery_id = lineage.receipt_id
+				    AND identity.id = lineage.question_id
 				   JOIN session_receipt_lineage owner
 				     ON owner.execution_id = lineage.execution_id
-				  WHERE root.id = ? AND root.resend_of IS NULL`,
+				  WHERE lineage.receipt_id = ?`,
 			)
 			.get(receiptId) as
 			| {
@@ -1695,74 +1368,66 @@ export class CommDB {
 		| { kind: "missing"; receiptId: string } {
 		assertUtcIsoTimestamp(input.now, "now");
 		const settle = this.db.transaction(() => {
-			const queue = new LeadInboxQueue(this.db);
-			const root = queue.getById(input.receiptId);
-			if (!root)
-				return { kind: "missing" as const, receiptId: input.receiptId };
-			if (root.resend_of !== null) {
-				throw new Error(
-					`receipt lineage requires a canonical root: ${root.id}`,
-				);
-			}
-			if (!root.ref_message_id) {
-				throw new Error(`receipt lineage has no source message: ${root.id}`);
-			}
 			const lineage = this.db
 				.prepare(
 					`SELECT lineage.execution_id, lineage.question_id
 					   FROM receipt_root_lineage lineage
+					   JOIN mailbox_identity identity
+					     ON identity.delivery_id = lineage.receipt_id
+					    AND identity.id = lineage.question_id
 					  WHERE lineage.receipt_id = ?`,
 				)
-				.get(root.id) as
+				.get(input.receiptId) as
 				| { execution_id: string; question_id: string }
 				| undefined;
-			if (
-				!lineage ||
-				lineage.execution_id !== input.expectedExecutionId ||
-				lineage.question_id !== root.ref_message_id
-			) {
+			if (!lineage)
+				return { kind: "missing" as const, receiptId: input.receiptId };
+			if (lineage.execution_id !== input.expectedExecutionId) {
 				throw new Error(
-					`receipt lineage mismatch for ${root.id}: expected ${input.expectedExecutionId}`,
+					`receipt lineage mismatch for ${input.receiptId}: expected ${input.expectedExecutionId}`,
 				);
 			}
-			if (root.processed_at !== null || root.processed_evidence !== null) {
-				if (root.processed_at === null || root.processed_evidence === null) {
-					throw new Error(`receipt ${root.id} has partial processed evidence`);
-				}
-				return { kind: "processing_won" as const, receiptId: root.id };
-			}
+			const queue = new MailboxQueue(this.db);
+			const existing = queue.getSettlement(input.receiptId);
+			if (existing?.event === "processed")
+				return { kind: "processing_won" as const, receiptId: input.receiptId };
 			const evidence: ProcessedEvidenceV1 = {
 				v: 1,
 				kind: "terminal_subject_settlement",
-				ref: root.id,
+				ref: input.receiptId,
 				actor: "terminal-receipt-projector",
 				actor_kind: "bridge-protocol",
 				fence: {
 					execution_id: input.expectedExecutionId,
 					reason: input.reason,
 				},
-				basis: [`receipt:${root.id}`, `source:${root.ref_message_id}`],
+				basis: [`receipt:${input.receiptId}`, `source:${lineage.question_id}`],
 			};
-			if (root.disposed_at !== null || root.disposed_evidence !== null) {
-				if (root.disposed_at === null || root.disposed_evidence === null) {
-					throw new Error(`receipt ${root.id} has partial disposed evidence`);
-				}
+			if (existing?.event === "disposed") {
 				if (
 					!isEquivalentTerminalReceiptDisposal(
-						root.disposed_evidence,
-						root.id,
-						root.ref_message_id,
+						JSON.stringify(existing.evidence),
+						input.receiptId,
+						lineage.question_id,
 						input.expectedExecutionId,
 					)
 				) {
 					throw new Error(
-						`receipt ${root.id} has conflicting disposed evidence`,
+						`receipt ${input.receiptId} has conflicting disposed evidence`,
 					);
 				}
-				return { kind: "already_disposed" as const, receiptId: root.id };
+				return {
+					kind: "already_disposed" as const,
+					receiptId: input.receiptId,
+				};
 			}
-			queue.markDisposed(root.id, { now: input.now, evidence });
-			return { kind: "disposed" as const, receiptId: root.id };
+			queue.settle({
+				messageOrDeliveryId: input.receiptId,
+				event: "disposed",
+				now: input.now,
+				evidence,
+			});
+			return { kind: "disposed" as const, receiptId: input.receiptId };
 		});
 		return settle.immediate();
 	}
@@ -1809,7 +1474,7 @@ export class CommDB {
 				: "datetime('now')";
 		const info = this.db
 			.prepare(
-				`UPDATE messages SET
+				`UPDATE mailbox_message_projection SET
 				 resolved_at = datetime('now'),
 				 read_at = COALESCE(read_at, datetime('now')),
 				 expires_at = ${expiry},
@@ -1821,7 +1486,7 @@ export class CommDB {
 				 AND from_agent = ?
 				 AND ${answerable}
 				 AND NOT EXISTS (
-				   SELECT 1 FROM messages r WHERE r.parent_id = messages.id AND r.type = 'response'
+				   SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = mailbox_message_projection.id AND r.type = 'response'
 				 )`,
 			)
 			.run(
@@ -1845,10 +1510,10 @@ export class CommDB {
 			: "q.expires_at > datetime('now')";
 		const row = this.db
 			.prepare(
-				`SELECT 1 AS hit FROM messages q
+				`SELECT 1 AS hit FROM mailbox_message_projection q
 	       WHERE q.id = ? AND q.type = 'question'
 	       AND NOT EXISTS (
-	         SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+	         SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
 	       )
 	       AND ${answerable}`,
 			)
@@ -1866,14 +1531,14 @@ export class CommDB {
 				`SELECT q.rowid AS row_id, q.id, q.from_agent, q.checkpoint,
 				        q.created_at, q.superseded_at, q.superseded_by,
 				        CASE WHEN EXISTS (
-				          SELECT 1 FROM messages r
+				          SELECT 1 FROM mailbox_message_projection r
 				           WHERE r.parent_id = q.id AND r.type = 'response'
 				        ) THEN 1 ELSE 0 END AS answered,
 				        CASE WHEN ${answerable} AND NOT EXISTS (
-				          SELECT 1 FROM messages r
+				          SELECT 1 FROM mailbox_message_projection r
 				           WHERE r.parent_id = q.id AND r.type = 'response'
 				        ) THEN 1 ELSE 0 END AS pending
-				   FROM messages q
+				   FROM mailbox_message_projection q
 				  WHERE q.type = 'question'
 				    AND q.checkpoint IN ('approve_to_ship','review_design','review_code')
 				    AND q.superseded_at IS NULL
@@ -1889,11 +1554,11 @@ export class CommDB {
 				`SELECT q.rowid AS row_id, q.id, q.from_agent, q.checkpoint,
 				        q.created_at, q.superseded_at, q.superseded_by,
 				        CASE WHEN EXISTS (
-				          SELECT 1 FROM messages r
+				          SELECT 1 FROM mailbox_message_projection r
 				           WHERE r.parent_id = q.id AND r.type = 'response'
 				        ) THEN 1 ELSE 0 END AS answered,
 				        0 AS pending
-				   FROM messages q
+				   FROM mailbox_message_projection q
 				  WHERE q.type = 'question'
 				    AND q.checkpoint IN ('approve_to_ship','review_design','review_code')
 				    AND q.superseded_at IS NOT NULL
@@ -1915,8 +1580,8 @@ export class CommDB {
 		const hit = this.db
 			.prepare(
 				`SELECT 1 AS hit
-				   FROM messages old
-				   JOIN messages newer ON newer.id = ?
+				   FROM mailbox_message_projection old
+				   JOIN mailbox_message_projection newer ON newer.id = ?
 				  WHERE old.id = ?
 				    AND old.type = 'question' AND newer.type = 'question'
 				    AND old.checkpoint = newer.checkpoint
@@ -1925,7 +1590,7 @@ export class CommDB {
 				    AND newer.superseded_at IS NULL
 				    AND ${answerable}
 				    AND NOT EXISTS (
-				      SELECT 1 FROM messages r
+				      SELECT 1 FROM mailbox_message_projection r
 				       WHERE r.parent_id = old.id AND r.type = 'response'
 				    )
 				    AND (newer.created_at > old.created_at OR
@@ -1942,10 +1607,11 @@ export class CommDB {
 	resolveGate(questionId: string, cleanupTtlHours = 24): void {
 		this.db
 			.prepare(
-				`UPDATE messages SET
-				 resolved_at = datetime('now'),
-				 read_at = COALESCE(read_at, datetime('now')),
-				 expires_at = datetime('now', '+' || ? || ' hours'),
+				`UPDATE mailbox SET
+				 resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+				 state = 'ACKED',
+				 acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+				 expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '+' || ? || ' hours'),
 				 relay_state = 'terminal_disposed'
 				 WHERE id = ? AND type = 'question'`,
 			)
@@ -1958,65 +1624,35 @@ export class CommDB {
 		content: string,
 		provenance?: MessageProvenance,
 	): ResponseWriteResult {
-		const question = this.db
-			.prepare("SELECT * FROM messages WHERE id = ? AND type = 'question'")
-			.get(parentId) as Message | undefined;
-		if (!question) {
-			throw new Error(`Question ${parentId} not found`);
-		}
 		return this.db.transaction((): ResponseWriteResult => {
-			const id = randomUUID();
+			const question = this.db
+				.prepare(
+					"SELECT * FROM mailbox_message_projection WHERE id = ? AND type = 'question'",
+				)
+				.get(parentId) as Message | undefined;
+			if (!question) throw new Error(`Question ${parentId} not found`);
 			if (question.checkpoint === "approve_to_ship") {
-				const answerable = commDbProtectionEnabled()
-					? "q.relay_state != 'terminal_disposed'"
-					: "q.expires_at > datetime('now')";
-				const result = this.db
-					.prepare(
-						`INSERT INTO messages (
-						  id, from_agent, to_agent, type, content, parent_id,
-						  sender_lease_key, sender_generation, sender_holder_pid,
-						  sender_holder_start, writer_pid, writer_start
-						)
-						 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-						   FROM messages q
-						  WHERE q.id = ? AND q.type = 'question'
-						    AND q.checkpoint = 'approve_to_ship'
-						    AND q.resolved_at IS NULL
-						    AND q.superseded_at IS NULL
-						    AND ${answerable}
-						    AND NOT EXISTS (
-						      SELECT 1 FROM messages r
-						       WHERE r.parent_id = q.id AND r.type = 'response'
-						    )`,
-					)
-					.run(
-						id,
-						fromAgent,
-						content,
-						...provenanceValues(provenance),
-						parentId,
-					);
-				if (result.changes !== 1) {
+				if (
+					question.resolved_at !== null ||
+					question.superseded_at !== null ||
+					question.relay_state === "terminal_disposed" ||
+					this.getResponse(parentId)
+				) {
 					return { written: false, reason: "gate_not_open" };
 				}
-			} else {
-				this.db
-					.prepare(
-						`INSERT INTO messages (
-					  id, from_agent, to_agent, type, content, parent_id,
-					  sender_lease_key, sender_generation, sender_holder_pid,
-					  sender_holder_start, writer_pid, writer_start
-					) VALUES (?, ?, ?, 'response', ?, ?, ?, ?, ?, ?, ?, ?)`,
-					)
-					.run(
-						id,
-						fromAgent,
-						question.from_agent,
-						content,
-						parentId,
-						...provenanceValues(provenance),
-					);
 			}
+			new MailboxQueue(this.db).enqueue({
+				id: randomUUID(),
+				fromAgent,
+				toAgent: question.from_agent,
+				recipientKind: "runner",
+				type: "response",
+				content,
+				refId: parentId,
+				createdAt: new Date().toISOString(),
+				expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+				senderRef: encodeSenderRef(provenance),
+			});
 			this.markQuestionTerminalDisposed(parentId);
 			return { written: true };
 		})();
@@ -2032,23 +1668,26 @@ export class CommDB {
 		}
 		if (!ackToken) throw new Error("ackToken is required");
 		const id = randomUUID();
-		this.db
-			.prepare(
-				`INSERT INTO messages (id, from_agent, to_agent, type, content)
-				 VALUES (?, ?, 'bridge', 'ack_receipt', ?)`,
-			)
-			.run(
-				id,
-				fromAgent,
-				JSON.stringify({ event_seq: eventSeq, ack_token: ackToken }),
-			);
+		new MailboxQueue(this.db).enqueue({
+			id,
+			deliveryId: `ack:${fromAgent}:${id}`,
+			fromAgent,
+			toAgent: "bridge",
+			recipientKind: "bridge",
+			type: "ack_receipt",
+			msgClass: "protocol",
+			content: JSON.stringify({ event_seq: eventSeq, ack_token: ackToken }),
+			createdAt: new Date().toISOString(),
+			expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+			senderRef: encodeSenderRef(),
+		});
 		return id;
 	}
 
 	getPendingAckReceipts(): Message[] {
 		return this.db
 			.prepare(
-				`SELECT * FROM messages
+				`SELECT * FROM mailbox_message_projection
 				 WHERE type = 'ack_receipt' AND read_at IS NULL
 				   AND expires_at > datetime('now')
 				 ORDER BY created_at, id`,
@@ -2057,26 +1696,19 @@ export class CommDB {
 	}
 
 	markAckReceiptConsumed(id: string): boolean {
-		return (
-			this.db
-				.prepare(
-					`UPDATE messages SET read_at = datetime('now')
-					 WHERE id = ? AND type = 'ack_receipt' AND read_at IS NULL`,
-				)
-				.run(id).changes === 1
-		);
+		return new MailboxQueue(this.db).ack(id, new Date().toISOString());
 	}
 
 	markQuestionProtected(questionId: string, logicalEventId: string): boolean {
 		if (!commDbProtectionEnabled()) return true;
 		const result = this.db
 			.prepare(
-				`UPDATE messages SET
+				`UPDATE mailbox SET
 				   relay_state = 'protected',
-				   logical_event_id = COALESCE(logical_event_id, ?)
+				   source_ref = COALESCE(source_ref, ?)
 				 WHERE id = ? AND type = 'question'
 				   AND relay_state != 'terminal_disposed'
-				   AND (logical_event_id IS NULL OR logical_event_id = ?)`,
+				   AND (source_ref IS NULL OR source_ref = ?)`,
 			)
 			.run(logicalEventId, questionId, logicalEventId);
 		return result.changes === 1;
@@ -2085,7 +1717,7 @@ export class CommDB {
 	markQuestionTerminalDisposed(questionId: string): boolean {
 		const result = this.db
 			.prepare(
-				`UPDATE messages SET relay_state = 'terminal_disposed'
+				`UPDATE mailbox SET relay_state = 'terminal_disposed'
 				 WHERE id = ? AND type = 'question'
 				   AND relay_state != 'terminal_disposed'`,
 			)
@@ -2112,43 +1744,44 @@ export class CommDB {
 		provenance?: MessageProvenance;
 	}): boolean {
 		const answerable = commDbProtectionEnabled()
-			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
-		return this.db.transaction(() => {
-			const id = randomUUID();
-			const result = this.db
-				.prepare(
-					`INSERT INTO messages (
-					  id, from_agent, to_agent, type, content, parent_id,
-					  sender_lease_key, sender_generation, sender_holder_pid,
-					  sender_holder_start, writer_pid, writer_start
+			? "relay_state != 'terminal_disposed'"
+			: "expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')";
+		return this.db
+			.transaction(() => {
+				const question = this.db
+					.prepare(
+						`SELECT * FROM mailbox_message_projection
+					 WHERE id = ? AND type = 'question' AND from_agent = ?
+					   AND checkpoint = ? AND resolved_at IS NULL AND ${answerable}`,
 					)
-				 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-				   FROM messages q
-				  WHERE q.id = ?
-				    AND q.type = 'question'
-				    AND q.from_agent = ?
-				    AND q.checkpoint = ?
-				    AND q.resolved_at IS NULL
-				    AND ${answerable}
-				    AND NOT EXISTS (
-				      SELECT 1 FROM messages r
-				       WHERE r.parent_id = q.id AND r.type = 'response'
-				    )`,
-				)
-				.run(
-					id,
-					input.fromAgent,
-					input.content,
-					...provenanceValues(input.provenance),
-					input.questionId,
-					input.expectedOwner,
-					input.expectedCheckpoint,
-				);
-			if (result.changes !== 1) return false;
-			this.markQuestionTerminalDisposed(input.questionId);
-			return true;
-		})();
+					.get(
+						input.questionId,
+						input.expectedOwner,
+						input.expectedCheckpoint,
+					) as Message | undefined;
+				if (
+					!question ||
+					question.relay_state === "terminal_disposed" ||
+					this.getResponse(input.questionId)
+				) {
+					return false;
+				}
+				new MailboxQueue(this.db).enqueue({
+					id: randomUUID(),
+					fromAgent: input.fromAgent,
+					toAgent: question.from_agent,
+					recipientKind: "runner",
+					type: "response",
+					content: input.content,
+					refId: input.questionId,
+					createdAt: new Date().toISOString(),
+					expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+					senderRef: encodeSenderRef(input.provenance),
+				});
+				this.markQuestionTerminalDisposed(input.questionId);
+				return true;
+			})
+			.immediate();
 	}
 
 	/**
@@ -2176,13 +1809,13 @@ export class CommDB {
 			const responseId = randomUUID();
 			const result = this.db
 				.prepare(
-					`INSERT INTO messages (
+					`INSERT INTO mailbox_message_projection (
 					  id, from_agent, to_agent, type, content, parent_id,
 					  sender_lease_key, sender_generation, sender_holder_pid,
 					  sender_holder_start, writer_pid, writer_start
 					)
 					 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-					   FROM messages q
+					   FROM mailbox_message_projection q
 					  WHERE q.id = ?
 					    AND q.type = 'question'
 					    AND q.from_agent = ?
@@ -2191,7 +1824,7 @@ export class CommDB {
 					    AND q.superseded_at IS NULL
 					    AND ${answerable}
 					    AND NOT EXISTS (
-					      SELECT 1 FROM messages r
+					      SELECT 1 FROM mailbox_message_projection r
 					       WHERE r.parent_id = q.id AND r.type = 'response'
 					    )`,
 				)
@@ -2319,54 +1952,49 @@ export class CommDB {
 			input.graceHours > 0
 				? Math.floor(input.graceHours)
 				: 24;
-		const insertResponse = this.db.prepare(
-			`INSERT INTO messages (
-			   id, from_agent, to_agent, type, content, parent_id,
-			   sender_lease_key, sender_generation, sender_holder_pid,
-			   sender_holder_start, writer_pid, writer_start
-			 )
-			 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-			   FROM messages q
-			  WHERE q.id = ?
-			    AND q.type = 'question'
-			    AND q.from_agent = ?
-			    AND q.checkpoint = ?
-			    AND q.resolved_at IS NULL
-			    AND q.relay_state != 'terminal_disposed'
-			    AND NOT EXISTS (
-			      SELECT 1 FROM messages r
-			       WHERE r.parent_id = q.id AND r.type = 'response'
-			    )`,
-		);
 		const bumpGrace = this.db.prepare(
-			`UPDATE messages SET
-			 resolved_at = datetime('now'),
-			 read_at = COALESCE(read_at, datetime('now')),
-			 expires_at = datetime('now', '+' || ? || ' hours'),
+			`UPDATE mailbox SET
+			 resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+			 state = 'ACKED',
+			 acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			 expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '+' || ? || ' hours'),
 			 relay_state = 'terminal_disposed'
 			 WHERE id = ? AND type = 'question'`,
 		);
 		const txn = this.db.transaction((): boolean => {
-			const res = insertResponse.run(
-				randomUUID(),
-				input.fromAgent,
-				input.content,
-				...provenanceValues(input.provenance),
-				input.questionId,
-				input.expectedOwner,
-				input.expectedCheckpoint,
-			);
-			if (res.changes === 0) return false;
+			const question = this.db
+				.prepare(
+					`SELECT * FROM mailbox_message_projection
+					 WHERE id = ? AND type = 'question' AND from_agent = ?
+					   AND checkpoint = ? AND resolved_at IS NULL
+					   AND relay_state != 'terminal_disposed'`,
+				)
+				.get(input.questionId, input.expectedOwner, input.expectedCheckpoint) as
+				| Message
+				| undefined;
+			if (!question || this.getResponse(input.questionId)) return false;
+			new MailboxQueue(this.db).enqueue({
+				id: randomUUID(),
+				fromAgent: input.fromAgent,
+				toAgent: question.from_agent,
+				recipientKind: "runner",
+				type: "response",
+				content: input.content,
+				refId: input.questionId,
+				createdAt: new Date().toISOString(),
+				expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+				senderRef: encodeSenderRef(input.provenance),
+			});
 			bumpGrace.run(graceHours, input.questionId);
 			return true;
 		});
-		return txn();
+		return txn.immediate();
 	}
 
 	getResponse(questionId: string): Message | undefined {
 		return this.db
 			.prepare(
-				"SELECT * FROM messages WHERE parent_id = ? AND type = 'response'",
+				"SELECT * FROM mailbox_message_projection WHERE parent_id = ? AND type = 'response'",
 			)
 			.get(questionId) as Message | undefined;
 	}
@@ -2463,9 +2091,9 @@ export class CommDB {
 	 * `checkpoint` field without trusting a caller-supplied value.
 	 */
 	getMessageById(id: string): Message | undefined {
-		return this.db.prepare("SELECT * FROM messages WHERE id = ?").get(id) as
-			| Message
-			| undefined;
+		return this.db
+			.prepare("SELECT * FROM mailbox_message_projection WHERE id = ?")
+			.get(id) as Message | undefined;
 	}
 
 	getPendingQuestions(leadId: string): Message[] {
@@ -2474,10 +2102,10 @@ export class CommDB {
 			: "q.expires_at > datetime('now')";
 		return this.db
 			.prepare(
-				`SELECT q.* FROM messages q
+				`SELECT q.* FROM mailbox_message_projection q
          WHERE q.to_agent = ? AND q.type = 'question'
          AND NOT EXISTS (
-           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+           SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
          )
 		 AND ${answerable}
          ORDER BY q.created_at ASC`,
@@ -2493,13 +2121,13 @@ export class CommDB {
 	getPendingGatesByRunner(runnerId: string): Message[] {
 		return this.db
 			.prepare(
-				`SELECT q.* FROM messages q
+				`SELECT q.* FROM mailbox_message_projection q
          WHERE q.from_agent = ? AND q.type = 'question'
          AND q.checkpoint IS NOT NULL
          AND NOT EXISTS (
-           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+           SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
          )
-         AND q.expires_at > datetime('now')
+         AND datetime(q.expires_at) > datetime('now')
          ORDER BY q.created_at ASC`,
 			)
 			.all(runnerId) as Message[];
@@ -2518,11 +2146,11 @@ export class CommDB {
 			: "q.expires_at > datetime('now')";
 		return this.db
 			.prepare(
-				`SELECT q.* FROM messages q
+				`SELECT q.* FROM mailbox_message_projection q
          WHERE q.from_agent = ? AND q.type = 'question'
          AND q.checkpoint = ?
          AND NOT EXISTS (
-           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+           SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
          )
 		 AND ${answerable}
          ORDER BY q.created_at DESC
@@ -2553,7 +2181,7 @@ export class CommDB {
 		const id = opts?.dedupeId ?? randomUUID();
 		this.db
 			.prepare(
-				`INSERT ${opts?.dedupeId ? "OR IGNORE " : ""}INTO messages (
+				`INSERT ${opts?.dedupeId ? "OR IGNORE " : ""}INTO mailbox_message_projection (
 				  id, from_agent, to_agent, type, content,
 				  sender_lease_key, sender_generation, sender_holder_pid,
 				  sender_holder_start, writer_pid, writer_start
@@ -2585,7 +2213,7 @@ export class CommDB {
 	): boolean {
 		const info = this.db
 			.prepare(
-				`INSERT OR IGNORE INTO messages (
+				`INSERT OR IGNORE INTO mailbox_message_projection (
 				  id, from_agent, to_agent, type, content,
 				  sender_lease_key, sender_generation, sender_holder_pid,
 				  sender_holder_start, writer_pid, writer_start
@@ -2691,7 +2319,7 @@ export class CommDB {
 						const response = this.db
 							.prepare(
 								`SELECT parent_id, from_agent, type
-								   FROM messages WHERE id = ?`,
+								   FROM mailbox_message_projection WHERE id = ?`,
 							)
 							.get(existingEvidence.ref) as
 							| {
@@ -3010,7 +2638,7 @@ export class CommDB {
 				const responseId = randomUUID();
 				this.db
 					.prepare(
-						`INSERT INTO messages (
+						`INSERT INTO mailbox_message_projection (
 					  id, from_agent, to_agent, type, content, parent_id,
 					  sender_lease_key, sender_generation, sender_holder_pid,
 					  sender_holder_start, writer_pid, writer_start
@@ -3176,7 +2804,7 @@ export class CommDB {
 			.transaction((): InstructionAndIntentResult => {
 				this.db
 					.prepare(
-						`INSERT OR IGNORE INTO messages (
+						`INSERT OR IGNORE INTO mailbox_message_projection (
 					  id, from_agent, to_agent, type, content,
 					  sender_lease_key, sender_generation, sender_holder_pid,
 					  sender_holder_start, writer_pid, writer_start
@@ -3191,7 +2819,7 @@ export class CommDB {
 					);
 				const instruction = this.db
 					.prepare(
-						"SELECT id, from_agent, to_agent, type, content FROM messages WHERE id = ?",
+						"SELECT id, from_agent, to_agent, type, content FROM mailbox_message_projection WHERE id = ?",
 					)
 					.get(input.instructionId) as
 					| {
@@ -3357,7 +2985,7 @@ export class CommDB {
 					const question = this.db
 						.prepare(
 							`SELECT id, from_agent, resolved_at, superseded_at, relay_state
-							   FROM messages WHERE id = ? AND type = 'question'`,
+							   FROM mailbox_message_projection WHERE id = ? AND type = 'question'`,
 						)
 						.get(questionId) as
 						| {
@@ -3383,7 +3011,7 @@ export class CommDB {
 					responseId = randomUUID();
 					this.db
 						.prepare(
-							`INSERT INTO messages (
+							`INSERT INTO mailbox_message_projection (
 							   id, from_agent, to_agent, type, content, parent_id,
 							   sender_lease_key, sender_generation, sender_holder_pid,
 							   sender_holder_start, writer_pid, writer_start
@@ -3486,7 +3114,7 @@ export class CommDB {
 			const question = this.db
 				.prepare(
 					`SELECT id, from_agent, checkpoint, relay_state, resolved_at,
-					        superseded_at FROM messages
+					        superseded_at FROM mailbox_message_projection
 					 WHERE id = ? AND type = 'question'`,
 				)
 				.get(input.questionId) as
@@ -3508,18 +3136,18 @@ export class CommDB {
 				const responseId = randomUUID();
 				const inserted = this.db
 					.prepare(
-						`INSERT INTO messages (
+						`INSERT INTO mailbox_message_projection (
 						  id, from_agent, to_agent, type, content, parent_id,
 						  sender_lease_key, sender_generation, sender_holder_pid,
 						  sender_holder_start, writer_pid, writer_start
 						)
 						SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-						  FROM messages q
+						  FROM mailbox_message_projection q
 						 WHERE q.id = ? AND q.type = 'question'
 						   AND q.resolved_at IS NULL AND q.superseded_at IS NULL
 						   AND q.relay_state != 'terminal_disposed'
 						   AND NOT EXISTS (
-						     SELECT 1 FROM messages r
+						     SELECT 1 FROM mailbox_message_projection r
 						      WHERE r.parent_id = q.id AND r.type = 'response'
 						   )`,
 					)
@@ -3581,7 +3209,7 @@ export class CommDB {
 				const question = this.db
 					.prepare(
 						`SELECT id, from_agent, resolved_at, superseded_at, relay_state
-					 FROM messages WHERE id = ? AND type = 'question'`,
+					 FROM mailbox_message_projection WHERE id = ? AND type = 'question'`,
 					)
 					.get(input.questionId) as
 					| {
@@ -3599,18 +3227,18 @@ export class CommDB {
 					const responseId = randomUUID();
 					const inserted = this.db
 						.prepare(
-							`INSERT INTO messages (
+							`INSERT INTO mailbox_message_projection (
 						  id, from_agent, to_agent, type, content, parent_id,
 						  sender_lease_key, sender_generation, sender_holder_pid,
 						  sender_holder_start, writer_pid, writer_start
 						)
 						SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-						  FROM messages q
+						  FROM mailbox_message_projection q
 						 WHERE q.id = ? AND q.type = 'question'
 						   AND q.resolved_at IS NULL AND q.superseded_at IS NULL
 						   AND q.relay_state != 'terminal_disposed'
 						   AND NOT EXISTS (
-						     SELECT 1 FROM messages r
+						     SELECT 1 FROM mailbox_message_projection r
 						      WHERE r.parent_id = q.id AND r.type = 'response'
 						   )`,
 						)
@@ -4069,13 +3697,13 @@ export class CommDB {
 	/**
 	 * GEO-151: best-effort audit row for a ProofShot artifact_emitted event.
 	 * Uses `type='progress'` + `content_type='artifact'` since the existing
-	 * messages.type CHECK constraint only allows
+	 * mailbox_message_projection.type CHECK constraint only allows
 	 * ('question','response','instruction','progress') — see schema at top of
 	 * file. Attachments stored as JSON-encoded string[] in the `attachments`
 	 * column added by the GEO-151 migration above.
 	 *
 	 * `content` carries a short summary line ("artifact_emitted: N file(s)")
-	 * so the audit row is human-readable in `messages` inspections.
+	 * so the audit row is human-readable in `mailbox_message_projection` inspections.
 	 *
 	 * Caller-side is fail-open: notify command catches throws and continues
 	 * (the primary path is POST /events).
@@ -4089,7 +3717,7 @@ export class CommDB {
 		const summary = `artifact_emitted: ${paths.length} file(s)`;
 		this.db
 			.prepare(
-				`INSERT INTO messages (id, from_agent, to_agent, type, content, content_type, attachments)
+				`INSERT INTO mailbox_message_projection (id, from_agent, to_agent, type, content, content_type, attachments)
          VALUES (?, ?, ?, 'progress', ?, 'artifact', ?)`,
 			)
 			.run(id, fromAgent, toAgent, summary, JSON.stringify(paths));
@@ -4099,7 +3727,7 @@ export class CommDB {
 	getUnreadInstructions(agentId: string): Message[] {
 		return this.db
 			.prepare(
-				`SELECT * FROM messages
+				`SELECT * FROM mailbox_message_projection
          WHERE to_agent = ? AND type = 'instruction' AND read_at IS NULL
          AND expires_at > datetime('now')
          ORDER BY created_at ASC`,
@@ -4109,7 +3737,9 @@ export class CommDB {
 
 	markInstructionRead(id: string): void {
 		this.db
-			.prepare("UPDATE messages SET read_at = datetime('now') WHERE id = ?")
+			.prepare(
+				"UPDATE mailbox_message_projection SET read_at = datetime('now') WHERE id = ?",
+			)
 			.run(id);
 	}
 
@@ -4165,7 +3795,9 @@ export class CommDB {
 
 			if (sourceInstructionId) {
 				const instruction = this.db
-					.prepare("SELECT id, to_agent, type FROM messages WHERE id = ?")
+					.prepare(
+						"SELECT id, to_agent, type FROM mailbox_message_projection WHERE id = ?",
+					)
 					.get(sourceInstructionId) as
 					| { id: string; to_agent: string; type: string }
 					| undefined;
@@ -4198,7 +3830,7 @@ export class CommDB {
 			if (sourceInstructionId) {
 				this.db
 					.prepare(
-						`UPDATE messages SET read_at = COALESCE(read_at, datetime('now'))
+						`UPDATE mailbox_message_projection SET read_at = COALESCE(read_at, datetime('now'))
 						 WHERE id = ? AND to_agent = ? AND type = 'instruction'`,
 					)
 					.run(sourceInstructionId, executionId);
@@ -4243,10 +3875,10 @@ export class CommDB {
 						        question.resolved_at, question.superseded_at,
 						        question.relay_state
 					   FROM lead_inbox receipt
-					   JOIN messages question
+					   JOIN mailbox_message_projection question
 					     ON question.id = receipt.ref_message_id
 					    AND question.type = 'question'
-						   LEFT JOIN messages response
+						   LEFT JOIN mailbox_message_projection response
 					     ON response.parent_id = question.id
 					    AND response.type = 'response'
 					  WHERE receipt.resend_of IS NULL
@@ -5521,7 +5153,7 @@ export class CommDB {
 	}
 
 	/**
-	 * The first still-open failed wake defines the episode. Later messages for
+	 * The first still-open failed wake defines the episode. Later mailbox_message_projection for
 	 * the same execution reuse this timestamp; once receipts move every member
 	 * out of pending, the next failure naturally starts a new episode.
 	 */
@@ -5872,7 +5504,7 @@ export class CommDB {
 	): Message[] {
 		return this.db
 			.prepare(
-				`SELECT * FROM messages
+				`SELECT * FROM mailbox_message_projection
          WHERE to_agent = ? AND type = 'instruction' AND read_at IS NULL
          AND (delivered_at IS NULL
               OR delivered_at < datetime('now', '-' || ? || ' seconds'))
@@ -5885,7 +5517,7 @@ export class CommDB {
 	markInstructionDelivered(id: string): void {
 		this.db
 			.prepare(
-				"UPDATE messages SET delivered_at = datetime('now') WHERE id = ?",
+				"UPDATE mailbox_message_projection SET delivered_at = datetime('now') WHERE id = ?",
 			)
 			.run(id);
 	}
@@ -5903,8 +5535,8 @@ export class CommDB {
 			const response = this.db
 				.prepare(
 					`SELECT response.*
-					   FROM messages response
-					   JOIN messages question ON question.id = response.parent_id
+					   FROM mailbox_message_projection response
+					   JOIN mailbox_message_projection question ON question.id = response.parent_id
 					  WHERE question.id = ? AND question.type = 'question'
 					    AND question.from_agent = ?
 					    AND response.type = 'response'`,
@@ -5914,7 +5546,7 @@ export class CommDB {
 			const nowMs = Date.now();
 			this.db
 				.prepare(
-					`UPDATE messages
+					`UPDATE mailbox_message_projection
 					    SET delivered_at = COALESCE(delivered_at, datetime('now'))
 					  WHERE id = ? AND type = 'response'`,
 				)
@@ -5930,7 +5562,7 @@ export class CommDB {
 				)
 				.run(nowMs, executionId, response.id);
 			return this.db
-				.prepare("SELECT * FROM messages WHERE id = ?")
+				.prepare("SELECT * FROM mailbox_message_projection WHERE id = ?")
 				.get(response.id) as Message;
 		});
 		return consume.immediate();
@@ -5944,7 +5576,7 @@ export class CommDB {
 	ackInstructionRead(id: string): void {
 		this.db
 			.prepare(
-				"UPDATE messages SET read_at = datetime('now') WHERE id = ? AND read_at IS NULL",
+				"UPDATE mailbox_message_projection SET read_at = datetime('now') WHERE id = ? AND read_at IS NULL",
 			)
 			.run(id);
 	}
@@ -5957,10 +5589,10 @@ export class CommDB {
 			: "q.expires_at > datetime('now')";
 		const row = this.db
 			.prepare(
-				`SELECT COUNT(*) as cnt FROM messages q
+				`SELECT COUNT(*) as cnt FROM mailbox_message_projection q
          WHERE q.from_agent = ? AND q.type = 'question'
          AND NOT EXISTS (
-           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+           SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
          )
 		 AND ${answerable}`,
 			)
@@ -5982,11 +5614,11 @@ export class CommDB {
 			: "q.expires_at > datetime('now')";
 		const row = this.db
 			.prepare(
-				`SELECT COUNT(*) as cnt FROM messages q
+				`SELECT COUNT(*) as cnt FROM mailbox_message_projection q
          WHERE q.from_agent = ? AND q.type = 'question'
          AND q.checkpoint IS NOT NULL
          AND NOT EXISTS (
-           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+           SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
          )
 		 AND ${answerable}`,
 			)
@@ -6009,7 +5641,7 @@ export class CommDB {
 		const seconds = Math.max(0, Math.floor(windowSeconds));
 		const row = this.db
 			.prepare(
-				`SELECT 1 as hit FROM messages
+				`SELECT 1 as hit FROM mailbox_message_projection
          WHERE from_agent = ?
          AND created_at > datetime('now', '-' || ? || ' seconds')
          LIMIT 1`,
@@ -6025,7 +5657,9 @@ export class CommDB {
 	 */
 	countMessagesFrom(execId: string): number {
 		const row = this.db
-			.prepare("SELECT COUNT(*) AS count FROM messages WHERE from_agent = ?")
+			.prepare(
+				"SELECT COUNT(*) AS count FROM mailbox_message_projection WHERE from_agent = ?",
+			)
 			.get(execId) as { count: number };
 		return Number(row.count);
 	}
@@ -6604,7 +6238,7 @@ export class CommDB {
 	/**
 	 * FLY-1374: restore the exact CommDB identity a proven-live parked holder
 	 * needs before its wake is committed. Existing rows are revived in place so
-	 * questions/messages/receipts survive; their registered tmux target remains
+	 * questions/mailbox_message_projection/receipts survive; their registered tmux target remains
 	 * authoritative. Missing rows may be inserted only with a complete,
 	 * caller-proven identity.
 	 */
@@ -6790,14 +6424,14 @@ export class CommDB {
 			: "q.expires_at > datetime('now')";
 		return this.db
 			.prepare(
-				`SELECT q.id, q.checkpoint FROM messages q
+				`SELECT q.id, q.checkpoint FROM mailbox_message_projection q
 				 WHERE q.to_agent = ?
 				   AND q.type = 'question'
 				   AND q.from_agent = ?
 				   AND (q.kind IS NULL OR q.kind <> 'report')
 				   AND q.superseded_at IS NULL
 				   AND NOT EXISTS (
-				     SELECT 1 FROM messages r
+				     SELECT 1 FROM mailbox_message_projection r
 				      WHERE r.parent_id = q.id AND r.type = 'response'
 				   )
 				   AND ${answerable}
@@ -6829,7 +6463,7 @@ export class CommDB {
 			// protection prevents TTL/hygiene loss, not intentional lifecycle closeout.
 			const retired = this.db
 				.prepare(
-					`UPDATE messages AS q SET
+					`UPDATE mailbox_message_projection AS q SET
 					   resolved_at = datetime('now'),
 					   read_at = COALESCE(read_at, datetime('now')),
 					   expires_at = datetime('now'),
@@ -6846,7 +6480,7 @@ export class CommDB {
 					   AND q.checkpoint NOT IN ('review_design', 'review_code')
 					   AND q.resolved_at IS NULL
 					   AND NOT EXISTS (
-					     SELECT 1 FROM messages r
+					     SELECT 1 FROM mailbox_message_projection r
 					      WHERE r.parent_id = q.id AND r.type = 'response'
 					   )`,
 				)
@@ -6865,7 +6499,7 @@ export class CommDB {
 						"+0 seconds";
 				retiredAsks = this.db
 					.prepare(
-						`UPDATE messages AS q SET
+						`UPDATE mailbox_message_projection AS q SET
 						   resolved_at = datetime('now'),
 						   read_at = COALESCE(read_at, datetime('now')),
 						   expires_at = datetime('now', '${forensicTtl}'),
@@ -6878,7 +6512,7 @@ export class CommDB {
 						   AND q.relay_state != 'terminal_disposed'
 						   AND q.created_at <= datetime('now', ?)
 						   AND NOT EXISTS (
-						     SELECT 1 FROM messages r
+						     SELECT 1 FROM mailbox_message_projection r
 						      WHERE r.parent_id = q.id AND r.type = 'response'
 						   )`,
 					)

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
+import { canonicalJsonString } from "flywheel-config";
 import {
 	assertNoLoneSurrogate,
 	normalizeInboxContent,
@@ -90,6 +91,12 @@ export interface EnqueueMailboxInput {
 export type EnqueueMailboxResult =
 	| { outcome: "inserted" | "active"; row: MailboxRow }
 	| { outcome: "archived" };
+
+export interface MailboxSettlement {
+	event: "processed" | "disposed";
+	at: string;
+	evidence: unknown;
+}
 
 function requiredText(value: string, field: string): string {
 	const trimmed = value.trim();
@@ -489,7 +496,7 @@ export class MailboxQueue {
 						`mailbox identity not found: ${input.messageOrDeliveryId}`,
 					);
 				}
-				const rowJson = JSON.stringify(input.evidence);
+				const rowJson = canonicalJsonString(input.evidence);
 				const existing = this.db
 					.prepare(
 						"SELECT event, at, row_json FROM mailbox_log WHERE subject_id = ? AND event IN ('processed','disposed')",
@@ -498,11 +505,7 @@ export class MailboxQueue {
 					| { event: string; at: string; row_json: string }
 					| undefined;
 				if (existing) {
-					if (
-						existing.event === input.event &&
-						existing.at === input.now &&
-						existing.row_json === rowJson
-					) {
+					if (existing.event === input.event && existing.row_json === rowJson) {
 						return "idempotent";
 					}
 					throw new Error(`mailbox settlement conflict: ${identity.id}`);
@@ -522,6 +525,23 @@ export class MailboxQueue {
 				return "inserted";
 			})
 			.immediate();
+	}
+
+	getSettlement(messageOrDeliveryId: string): MailboxSettlement | undefined {
+		const row = this.db
+			.prepare(
+				`SELECT log.event, log.at, log.row_json
+				   FROM mailbox_identity identity
+				   JOIN mailbox_log log ON log.subject_id = identity.id
+				  WHERE (identity.id = ? OR identity.delivery_id = ?)
+				    AND log.event IN ('processed','disposed')`,
+			)
+			.get(messageOrDeliveryId, messageOrDeliveryId) as
+			| { event: "processed" | "disposed"; at: string; row_json: string }
+			| undefined;
+		return row
+			? { event: row.event, at: row.at, evidence: JSON.parse(row.row_json) }
+			: undefined;
 	}
 
 	archive(id: string, now: string): "archived" | "idempotent" {

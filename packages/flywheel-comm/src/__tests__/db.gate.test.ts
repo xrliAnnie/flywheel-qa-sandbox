@@ -100,7 +100,7 @@ describe("CommDB gate methods", () => {
 				}
 			).db
 				.prepare(
-					"UPDATE messages SET expires_at = datetime('now','-1 hour') WHERE id = ?",
+					"UPDATE mailbox SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour') WHERE id = ?",
 				)
 				.run(gateId);
 			expect(db.getPendingGatesByRunner("exec-1")).toEqual([]);
@@ -242,7 +242,7 @@ describe("CommDB gate methods", () => {
 				}
 			).db
 				.prepare(
-					"UPDATE messages SET expires_at = datetime('now','-1 hour') WHERE id = ?",
+					"UPDATE mailbox SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour') WHERE id = ?",
 				)
 				.run(id);
 			expect(db.insertResponseIfGateOpen(args(id))).toBe(true);
@@ -265,7 +265,7 @@ describe("CommDB gate methods", () => {
 				}
 			).db
 				.prepare(
-					"UPDATE messages SET expires_at = datetime('now','-1 hour') WHERE id = ?",
+					"UPDATE mailbox SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour') WHERE id = ?",
 				)
 				.run(id);
 
