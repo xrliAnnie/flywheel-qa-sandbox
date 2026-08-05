@@ -3,7 +3,7 @@
 Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动化收尾1625-修复合一单-ship-绑定修复-重试封顶-防空转-qa-ttl-预配-重启前暂停接活)
 日期: 2026-08-04
 基于: research.md
-状态: **Codex design review 6 轮 APPROVED**(R1 11 项 / R2 6 项 / R3 2 项 / R4 2 项 / R5 1 项全折入;R6 APPROVED);2026-08-05 新增修复面 7 待复审
+状态: **Codex design review 6 轮 APPROVED**(R1 11 项 / R2 6 项 / R3 2 项 / R4 2 项 / R5 1 项全折入;R6 APPROVED);2026-08-05 新增修复面 7 的复审 R1 CHANGES 已折入,待 R2
 
 > **R6 非阻塞实施守则**(不改结论,实施节点必读):
 > 1. 仓库枚举失败**不得**丢弃既有 lifecycle worktree binding —— `Blueprint` 现对 `emitWorktreeReady()` 异常是 log+继续 launch;path/branch/generation 照常绑定,baseline 字段落 null(=不合格 no_code),核心 binding 落盘前不抛。
@@ -53,20 +53,21 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 - founder-only generic manifest 走完真实 gate 物化:无 throw(两个错误名都不抛)。
 - schema-v2 run 真 gate 物化 → 真 `workflow-gate:*` question id 调 `POST /api/workflow/head-authority` → ok + frozen head 一致(research §2.4 零覆盖 seam)。
 - 替换 gate 的 supersede;rebind 路径同断言。
+- **heavy schema-v2 主路径回归**:carrier 在 PR 建立后继续 push 时,先由现有 completion seam 更新不可变的当前-attempt PR binding 到 holder head;QA PASS 开 gate 后仍 bound、session 升 `awaiting_review`、ship-target row 的 frozen head 等于 holder head。若 binding 仍是旧 head则明确 unbound + 单发升级,不静默绑定错 head。
 - resolver 消费点回归:land 与 engine_terminal 行为逐字不变。
 
 ## 2. 修复面 2:rework 重试封顶(≤5 → needs_lead,告警走 Lead ticket lane)
 
 ### 2.1 状态与迁移(R1#7 契约化)
 
-- `workflow_rework_delivery` 新终态 `needs_lead` + 新列 `hold_count INTEGER NOT NULL DEFAULT 0`、`next_retry_at TEXT`(见 2.2 退避)。
+- `workflow_rework_delivery` 新终态 `needs_lead` + 新列 `hold_count INTEGER NOT NULL DEFAULT 0`、`next_retry_at TEXT`(见 2.2 退避)。这里**复用**既有 `escalateWorkflowReworkStall(action:"hold")` 的 run-held + ticket-lane 事务语义,不是另造 alert/parking 机制;新增 delivery 终态只为把「可由 FLY-1596 pane-loss 自动恢复的 `held`」与「预算耗尽、必须 Lead 明示复活」持久区分。若继续共用 `held`,dispatcher 的 `persisted_target_missing` 特例仍会自动复活预算已耗尽的 delivery,无法满足 issue 明示的 `needs_lead` 终局。
 - **迁移契约**(table-rebuild,模板 `StateStore.ts:15009-15090`):`sqlite_master` SQL 嗅探 + 列存在检测 → `workflow_rework_delivery_next` 携带**全部**现约束/外键 + 新 CHECK/新列 → 数据拷贝(`hold_count=0`)→ swap → 外键恢复 → **二次 boot 幂等**。测试:含全部旧 state 与被引用 route 的 fixture、`PRAGMA foreign_key_check`、store 重开两次、零行/零约束丢失。
 - 同步更新:`advanceWorkflowReworkDelivery` allowed 表、`claimWorkflowReworkDelivery` claimable 集、`listWorkflowReworkDeliveries` 默认、dispatcher 扫描态(**排除** needs_lead)、row mapper 与 `WorkflowReworkDeliveryRow["state"]` union。
 
 ### 2.2 原子封顶(R1#6)
 
-- **单事务 CAS**:新 store 方法(如 `settleWorkflowReworkFailure`)一次事务内:验 owner/generation/state → `hold_count+1` → 若 `< 5`:release + 写 `next_retry_at = now + backoff(hold_count)`(指数:1m/2m/4m/8m,总窗 ~15m —— 1s tick 下裸计数 5 次=5 秒即枯竭,必须退避才配叫「重试 5 次」);若 `>= 5`:state → `needs_lead` + 同事务 `enqueueWorkflowEngineAlertTx`(`workflow_engine_escalation`,携带既有 `WorkflowEngineAlertIdentity` 载荷)**恰一次**。coordinator 的 `releaseAndHold` / `releaseRetryable` 改为都走此方法 —— **retryable 类失败(missing context/actor、corrupt authority、admission、turn grant、projection failure)同样消耗预算**(否则那几类照样无限转,R1#6);claim/list 查询排除 `next_retry_at > now`。
-- **止血刷屏**:删除每迭代 `effects.alertHold`;`three_stage_stuck` 发射点随之移除(dead code 清单给 review)。告警只在转 needs_lead 时发一次,走 ticket lane(`workflow_engine_escalation` 不在 `ISSUE_PROGRESS_KINDS` → Lead alert channel,不进 founder thread)。
+- **单事务 CAS**:新 store 方法(如 `settleWorkflowReworkFailure`)一次事务内:验 owner/generation/state → `hold_count+1` → 若 `< 5`:release + 写 `next_retry_at = now + backoff(hold_count)`(指数:1m/2m/4m/8m,总窗 ~15m —— 1s tick 下裸计数 5 次=5 秒即枯竭,必须退避才配叫「重试 5 次」);若 `>= 5`:state → `needs_lead` + 同事务复用 `enqueueWorkflowEngineAlertTx`(`workflow_engine_escalation`,携带既有 `WorkflowEngineAlertIdentity` 载荷)**恰一次**。预算只计算 **run 仍 active 且本次 delivery 真可重试**的 missing actor/context、corrupt authority、admission、turn grant、projection failure;`run.status !== active` 的 `rework_context_unavailable` 不记次也不二次告警;`persisted_target_missing` 保留既有 FLY-1596 pane-loss `held` 自愈路径并**豁免预算**,绝不转 `needs_lead`。claim/list 查询排除 `next_retry_at > now`。
+- **止血刷屏**:删除 rework coordinator 每迭代的 `effects.alertHold` 及 `plugin.ts` 对应**单一发射点**;`three_stage_stuck` kind 与 LeadWatchdog/infra router 等其他发射/消费路径全部保留。告警只在转 needs_lead 时发一次,走 ticket lane(`workflow_engine_escalation` 不在 `ISSUE_PROGRESS_KINDS` → Lead alert channel,不进 founder thread)。
 - **Lead 复活路径:stage-aware 终局(R1#6 + R2#3 + R3#2 crash-safe 三态)**:`openOperatorRework` 现会被 reserved target 的 `target_attempt_already_reserved` 拒;且第 5 次失败发生的阶段不同,预约「从未成功投递」并不总成立。coordinator 实际序:admit(activation+credential)→ 解析 authority context → 外呼 `grantTurn` → 本地记 turn → 外呼 `wakeActor`。终局按**三个显式 disposition** 分派(R3#2:「admitted 但尚未 dispatch」是独立区间,`authority_context_corrupt` 即现例;`grantTurn`/`wakeActor` 抛错即便本地行未推进也是 ambiguous):
   1. **pre-admission**(admit 未发生):直接 settle:target 预约回滚 + verification path settle + `needs_lead`。
   2. **admitted 且可证明未发起 grant**(如 authority context 解析失败):原子 revoke 未用 credential + abandon activation + 预约回滚 + settle + `needs_lead`。
@@ -82,24 +83,25 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 - crash/race:第 5 次失败与另一 tick 并发 claim → CAS 单赢家。
 - **stage-aware 终局(R2#3 + R3#2 + R4#2)**:第 5 次失败分别发生在 admission / turn grant/projection / wake / post-wake projection 各阶段的终局断言;**crash 边界三组(R4#2 修订)**:`grant_started_at` 标记**前**崩、标记**后外呼前**崩、外呼可能成功后本地投影前崩 → 重启后 disposition 从 durable facts 复推(前者 →2,后两者 →3);**迟到的 credential 提交或延迟 wake 不得复活被取代的 attempt;任何测试不得观察到两个可行动 attempt**。
 - needs_lead 后 dispatcher 不再扫描;pre-delivery 形 → `openOperatorRework` 可开新单;post-delivery 形 → operator 路径先证 quiescence。
-- retryable 类失败同预算断言。
+- retryable 类失败同预算断言;run 已 held 不记次/不重复告警;`persisted_target_missing` 连续出现仍保持 held 且可被既有 pane-loss recovery 消费。
 
 ## 3. 修复面 3:防空转谓词(R1#8 重定义)
 
 插入点不变(mint 单一闸门 `StateStore.ts:26074`,事务内纯读),**谓词重定义**:
 
-1. **谓词:复用既有 claim resolver,不写弱化 raw query(R2#2)**:从 pinned decision contract 解析 QA 节点与其当前 attempt,调 `resolveWorkflowDecisionClaim({ decisionKind: "qa_verdict", predicate: "qa_passed", requiredAttempt, subjectKind: "git_head", subjectDigest })` —— **仅 `valid: true` 时抑制**。
+1. **谓词:只封 QA ghost,复用既有 claim resolver,不写弱化 raw query(R2#2)**:仅当 mint flavor 为 **QA kickback**(`authorityKickback === "qa"`)时,从 pinned decision contract 解析 QA 节点与其当前 attempt,调 `resolveWorkflowDecisionClaim({ decisionKind: "qa_verdict", predicate: "qa_passed", requiredAttempt, subjectKind: "git_head", subjectDigest })` —— **仅 `valid: true` 时抑制**。`subjectDigest` 缺失或不是可信 40-hex head 时 fail-open(照铸),不查 `"unavailable"`,不 throw。
    - resolver 已内建:run/node/decision-kind/subject 定界、`requiredAttempt` 的 latest-physical-attempt 铁律、同 attempt 矛盾 predicate 检测、选中后的 revocation + expiry 复查 —— raw「ORDER BY … LIMIT 1」形在 revocation 先于 LIMIT、expiry、同 attempt 冲突、跨 decision family 混比四处都有歧义(R2#2 逐条点名),弃用。
-   - 不比较 `activeRequest?.base_revision`(initial kickback 无 activeRequest,R1#8)。attempt-1 PASS + attempt-2 FAIL 同 head → resolver 按 requiredAttempt 解析为 not-valid → 照铸(latest 铁律);幽灵场景(当前 attempt 的 PASS 有效在册还要铸)才被抑制。三种 mint 味道统一走此谓词。
+	- 不比较 `activeRequest?.base_revision`(initial kickback 无 activeRequest,R1#8)。attempt-1 PASS + attempt-2 FAIL 同 head → resolver 按 requiredAttempt 解析为 not-valid → 照铸(latest 铁律);幽灵场景(当前 attempt 的 PASS 有效在册还要铸)才被抑制。
+	- **四种 mint flavor 明确分流**:QA kickback 走上述 predicate;founder feedback kickback **永远照铸**(gate 打开本来就必有同 head QA PASS,不能把 founder 修改意见变 held);chained verify 与 superseding request 也照铸,除非以后各自引入与其 authority family 对称的独立幂等证据,本单不拿 QA claim 代替它们。
 2. **命中后的走向**:transition 照常**原子完成源节点**;跳过 rework 四表 INSERT 与 target 预约;**不** append `edge_traversed`、**不**把 `current_node_id` 指向被跳过的目标(R1#8);记 `rework_suppressed_idle_spin` 幂等事件;除非存在被证明的真实替代边,否则 run → `held` + 复用修复面 2 的单发 ticket-lane 升级。
 3. **operator 路径不加谓词**(R1#8):`openOperatorRework` 无 head 输入,且 master 授权 + quiescence 检查的 operator 路径就是预期 escape hatch。
 
-测试:四种 mint 味道 × 谓词命中/不命中;**同 head PASS-then-FAIL → 照铸**(latest 铁律回归);revoked-latest / expired-latest / 同 attempt PASS+FAIL 冲突 / 其他 subject 上更新的 QA attempt / 无关高 attempt founder/review claims(R2#2 五组)→ 全部照铸;命中 → 无 rework 行、无 target 预约、无 edge_traversed、事件幂等。
+测试:QA flavor 谓词命中/不命中;**founder kickback 在已打开/已批准 gate 且同 head QA PASS 仍照铸**;chained/superseding 各自照铸;subjectDigest 缺失照铸;**同 head PASS-then-FAIL → 照铸**(latest 铁律回归);revoked-latest / expired-latest / 同 attempt PASS+FAIL 冲突 / 其他 subject 上更新的 QA attempt / 无关高 attempt founder/review claims(R2#2 五组)→ 全部照铸;QA 命中 → 无 rework 行、无 target 预约、无 edge_traversed、事件幂等。
 
 ## 4. 修复面 4:QA 节点 TTL 预配(qa 默认 6h)
 
 1. **registry 默认**:`node-type-registry.ts` `NodeTypeRegistryEntry` 加平级字段 `submissionWindowMinutes?: number`(不进 capabilities —— 后者序列化进快照);`qa` entry 设 `360`。
-2. **解析序**:`credentialExpiryForNode` 改为 `manifest 显式值 ?? registry[type] 默认 ?? 60`。
+2. **解析序**:保留现有 decision-contract topology gate:先要求 `resolveWorkflowDecisionContract(snapshot,nodeId)` 成功;仅 decision node 才用 `manifest 显式值 ?? registry[type] 默认 ?? 60`,非 decision node 一律 60m,避免仅凭 type=qa 给无 verdict topology 的节点扩窗。
 3. **语义诚实化(R1#9)**:registry 默认是**可变的 issuance-time 运营策略** —— 明确文档 + 测试:已 pin run 的**新发**凭证也吃新默认(这正是「预配」要的:1628 类存量 run 立即受益);已发凭证不动;snapshot digest 不动(`workflow-run-snapshot.test.ts:63-79` 哨兵)。不做「pin 进新快照」变体 —— 那会让运营调窗永远追不上已 pin run,与验收锚背道而驰。
 4. **堵三个旁路发行点**:共享 helper `credentialWindowForNode(snapshot, nodeId, now)`(复用 `computeSubmissionExpiry`),`runs-route.ts:2568-2578`、`workflow-rework-coordinator.ts:380-397`、`actions.ts:989-997` 改走 helper。**明示并测试 actions retry 路径的窗口扩张**(15m/60m → 按节点类型窗 + 24h absolute;qa retry 撞墙与 1628 同病,扩张是修复不是副作用,R1#9)。
 5. seed 层不动(heavy tier 180m 显式声明优先于 registry 默认,自然覆盖)。
@@ -122,7 +124,7 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 
 ### 5④ generic 节点 no_code 出口:窄事务闭环(R1#5 + R2#4/#5 完整化)
 
-- **能力面(R2#4 DTO 适配)**:`GeneralizedExecutionDispatch.capabilities` 与 `BlueprintContext.workflowCapabilities` 现型为 `Record<string, boolean | string>` —— 数组装不进。改用 **boolean capability** `allow_no_code_completion: true`(registry generic entry;现 DTO 零类型改动)。快照 capability exact parser、物化器同步接受可选新字段;digest 哨兵 = 无该字段的旧快照 digest 不变。
+- **能力面(R2#4 DTO 适配 + 复审 R1 存量策略)**:`GeneralizedExecutionDispatch.capabilities` 与 `BlueprintContext.workflowCapabilities` 现型为 `Record<string, boolean | string>` —— 数组装不进。改用 **boolean capability** `allow_no_code_completion: true`(registry generic entry;现 DTO 零类型改动)。新 pin 快照照常带 capability;为让已 pin 的 `tpl_generic` / `tpl_generic_menu` 也能诚实关闭,completion 边界另用**窄 live-policy resolver**:`snapshot template id 属于内建 generic allowlist ∧ live registry 对该 node type 显式 allow_no_code_completion=true` 时,只放宽 `no_code` 这一条备选 route;任意自定义 template、未知 registry、registry 关闭都 fail-closed。它与 TTL 一样是 issuance/completion-time 运营策略,不改旧 snapshot/digest,且不放宽 `needs_review` 的 pinned route。prompt 只对新 launch 生效;存量 runner 若仍在跑可通过 CLI 明示 route,已 completed-without-receipt 则由 5③ held 且不重派,不会伪造新 completion。
 - **prompt 贯通(R2#4)**:Blueprint 现只渲染 primary route(`needs_review` + `produces_output: true` → 指示 runner 提交 output 走 needs_review),新出口 runner 根本看不见。渲染显式 no-artifact 完成指令(「确无产出/取消时用 `complete --route no_code`,禁伪造 PR」)。
 - **`produces_output` 修正**:no_code 分支放行「无 output credential 提交」的完成形,needs_review 分支维持现约束;**同事务 revoke 未用 output credential**(R2#4 —— 否则 run 完结后旧 credential 仍可被消费)。
 - **⚠️ 缺失证据的信任规则(R2#4 安全洞 + R3#1 权威源具体化)**:**不能只信 runner 选的 route** —— 否则产出了 PR 的 runner 可省略 PR 证据、选 no_code、绕过 founder gate。no_code 分支 fail-closed 校验:
@@ -138,21 +140,22 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 - `needs_review` 完成(有 PR)→ 照走 gate → §1 打通的 runner_ship ship 链。
 - **诊断步**:实施时读一个 pre-#748 generic run 的 event ledger,确认 engine_terminal 历史停滞点;若属独立断裂,如实报 Lead 拆 follow-up,不静默扩科。
 
-测试:no_code 完成 → run completed、无 gate holder、无 node 预约、replay 幂等;**PR/output 在场 → 拒**;**R3#1 七组**:root 未变 / untracked+dirty / 已提交 delta / 仅嵌套仓库 delta / run 期间目标分支推进 / worktree generation 过期 / 完成-探针竞态;**R5#1 两组**:run 期间新建嵌套仓库 → 拒(集合不等)/ containment+重复 identity → 拒;legacy-null 行不可用 no_code;未用 credential 事务后不可消费;prompt 渲染断言(DTO/build);已 cancel Linear issue 经既有 reconcile 收尾;`produces_output` 两分支;needs_review + PR → gate → binding(接 §1);两 template id 过 5② 断言。
+测试:no_code 完成 → run completed、无 gate holder、无 node 预约、replay 幂等;**PR/output 在场 → 拒**;live-policy 对已 pin 两 generic template 放行 no_code、custom template/registry-off 拒绝且旧 snapshot digest 不变;**R3#1 七组**:root 未变 / untracked+dirty / 已提交 delta / 仅嵌套仓库 delta / run 期间目标分支推进 / worktree generation 过期 / 完成-探针竞态;**R5#1 两组**:run 期间新建嵌套仓库 → 拒(集合不等)/ containment+重复 identity → 拒;legacy-null 行不可用 no_code;未用 credential 事务后不可消费;prompt 渲染断言(DTO/build);已 cancel Linear issue 经既有 reconcile 收尾;`produces_output` 两分支;needs_review + PR → gate → binding(接 §1);两 template id 过 5② 断言。
 
 ## 6. 修复面 6:admission pause(R1#10 补 bootstrap/覆盖/时长)
 
 1. **持久单行**:新表 `admission_pause(id=1 CHECK, paused_until, set_by, reason)`,镜像 `fleet_pressure_hold`。无 timer:probe 现读比较 now,过期自动失效;durable(重启保刹车)。
 2. **执行点(覆盖证明,R1#10)**:
    - `RunnerAdmissionController.tryAdmit()` 加 sibling probe → typed reason `"admission_paused"`;`AdmissionDecision`/`AdmissionDeferredError` 增 `retryAfterSeconds`,`runs-route.ts` 直接 precheck 与 typed-error handler **两处**都带 `Retry-After` 头。
-   - retry chokepoint 是 **`RetryDispatcher.dispatch()`**(`runnerAdmission` 现只属 `RunDispatcher`,R1#10 纠正)—— probe 穿线进基类(或显式 override),并以测试**证明**六类 lane(HTTP start、phase handoff、auto-QA、rescue、retry、dead-exec replacement)全部过闸。
+   - retry chokepoint 是 **`RetryDispatcher.dispatch()`**(`runnerAdmission` 现只属 `RunDispatcher`,R1#10 纠正)—— probe 穿线进基类(或显式 override)。**engine auto-advance 必须在 `admitGeneralizedWorkflowExecution` 写 activation/credentials 之前先 probe pause**;命中 pause 时本 tick 零 durable admission/credential/launch-owner 写入,避免制造 admitted-but-unlaunched stall。以测试证明七类 lane(HTTP start、**engine auto-advance**、phase handoff、auto-QA、rescue、retry、dead-exec replacement)全部过闸。
    - pause 检查放在 untyped `accepting` shutdown 判定**之前** —— 重启窗口的契约统一为 429,不落 500。
 3. **端点**:`POST /api/admission/pause {durationSeconds}` / `POST /api/admission/resume`。独立前缀(gemini scoped token 够不着)+ Bearer master token + fail-closed 503 包装(`plugin.ts:2122-2134` 习语)。durationSeconds 上限 1h。
 4. **restart-services.sh + staged rollout(R1#10 bootstrap 悖论)**:
-   - **本单(阶段 1)**:land 端点 + probe + 脚本 Step 0(`deploy_and_verify` 内、self-detach 块之后,`notify_routine` 后 `stop_bridge` 前)POST pause,**默认 lease = 上限 1h**(600s 短于既有 15m health 窗 + build + stop,必然过期,R1#10);post-health 后显式 resume(失败不致命,TTL 兜底);`rollback_and_restart` 同 Step 0。**脚本侧 best-effort**:首次自部署时旧 Bridge 没有 pause 端点,失败必须放行 —— 并在输出里明示「pause unavailable (pre-feature Bridge), proceeding without brake」。首次部署的一次性人工 quiesce 要求写进 ship 备注。
+   - **本单(阶段 1)**:land 端点 + probe + 脚本 Step 0(`deploy_and_verify` 内、self-detach 块之后,`notify_routine` 后 `stop_bridge` 前)POST pause,**默认 lease = 1800s(30m,大于既有 15m health gate、小于 1h cap)**;post-health 后显式 resume(失败不致命,TTL 兜底);`rollback_and_restart` 同 Step 0。**脚本侧 best-effort**:首次自部署时旧 Bridge 没有 pause 端点,失败必须放行 —— 并在输出里明示「pause unavailable (pre-feature Bridge), proceeding without brake」。首次部署的一次性人工 quiesce 要求写进 ship 备注。
+   - **防静默冻结**:Bridge `/health` 暴露 `admissionPause: {active, remainingSeconds}`(无 secret/reason 原文);pause-aware Bridge boot 后若 pause 连续 active 5m,复用 durable `workflow_engine_escalation` 向 Lead ticket lane 发按 pause generation 去重的单次告警。健康检查仍可判 Bridge 存活,operator 同时能看到刹车状态;resume/TTL 过期自动清 active 状态。
    - **阶段 2(follow-up,兼容性确立后)**:pause 确认失败转 fail-closed。本单不做,写进 honest boundary。
    - **回滚边界措辞(R2#6 修正)**:回滚到前置版 Bridge 后,该 Bridge 在其运行期间**立即且无限期**无视 pause row —— TTL 只防「pause-aware 版本回来后的陈旧刹车」,**不防**回滚期间的 admission。如实记为已知边界。
-5. 测试:pause → `/api/runs/start` 429 + Retry-After;retry lane 同拒;六 lane 覆盖证明;TTL 过期放行;mid-boot 持久;resume 即时;无 token → 503;`test-restart-services.sh` 补 Step 0 时序、secret 不进 argv、expiry>health-timeout、确认失败放行、rollback 行为。
+5. 测试:pause → `/api/runs/start` 429 + Retry-After;retry lane 同拒;**七 lane** 覆盖证明且 engine auto-advance 命中时无 activation/credential 写入;TTL 过期放行;mid-boot 持久;resume 即时;health 显示 remainingSeconds;boot 后 5m 仍 active 只发一条 Lead alert;无 token → 503;`test-restart-services.sh` 补 Step 0 时序、secret 不进 argv、1800s>health-timeout、确认失败放行、rollback 行为。
 
 ## 7. 修复面 7:launch(点火)孤儿自锁
 
@@ -160,16 +163,20 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 
 ### 7.1 completed 代同名 tmux 窗口冲突
 
-- 在 adapter 的真实 launch seam(`ensureSession()` 后、`tmux new-window` 前)做**精确窗口名 preflight**。命中同名窗口时读取该窗口已发布的 `@flywheel_exec_id` 与不可变 window id,再由 Bridge 注入的只读判定确认旧 execution 已 terminal。
-- **仅 terminal + identity 对齐**时按 window id 自动关闭旧窗口并复查同名目标已消失;活跃、无 execution identity、多个候选或探针异常都不得猜杀。不能证明可安全关闭时,为新 generation 使用带 execution 短后缀的确定性窗口名,避免同名 target 再把启动打成 500;该实际窗口名照常进入 CommDB / StateStore 映射。
-- 不按模糊名字批量 `kill-window`,不关闭共享 tmux session,不把一个窗口冲突升级成 server rescue。
+- **病灶前置顺序**:在会抛 `TmuxSessionHoldError` 的 `ensureSession()` **之前**执行 `purgeTerminalSameNameWorkflowWindows`:若目标 tmux session 存在,按精确窗口名列出不可变 window id + 既有 `@flywheel_exec_id` + 新增 `@flywheel_launch_generation`/非秘密 fingerprint,由 Bridge 注入的只读 predicate 查询不可变 execution/generation authority;只有「不同 execution 已 terminal」或「同 execution 的旧 generation 已 durable released/fenced」且 identity 三元组全对齐时,才按 window id 逐个关闭,随后 re-list 证明候选归零。`needs_lead` 不算 terminal;5③ 的 completed-without-receipt 只有 dead-exec CAS 已提交后才算 terminal。session 不存在则直接进入 ensure。顺序固定为 **purge → ensure → verify-zero → new-window**,与 `codex-runner-tui-window.ts` 的既有 precedent 对齐。
+- 若首次 ensure 仍返回 hold,只允许再做一次 bounded purge + re-ensure;第二次失败转 7.4 typed error + 7.2 owner release,不无限 rescue。测试 fixture 必须让「stale terminal windows 存在时 ensure 会 hold、purge 后 ensure 成功」,不能只测 non-saturated duplicate-name。
+- **仅 terminal + identity 对齐**时自动关闭;活跃、无 execution identity、多个候选或探针异常都不得猜杀。predicate 未注入的 adapter caller 默认是 **cannot prove terminal**(绝不 fail-open kill)。legacy/option-write 失败导致无 `@flywheel_exec_id` 是正常形,走不杀分支。
+- ensure 成功后若仍有不可证明可杀的同名窗,新 generation 使用包含 **execution 短 hash + owner generation** 的确定性 suffix;先为 suffix 在 50-char sanitize 上限内预留空间再截 canonical 部分,并对最终选择名再 preflight,避免 suffix 被截掉。实际窗口名与 launch fingerprint 写入 CommDB / StateStore;同时发一次去重 Lead orphan-window alert。后续 generation 清掉可证 stale 窗后应回归 canonical label,不永久漂移。suffix 只解决 name collision,**不宣称解决 server capacity**;若 capacity 已 hold,仍走 bounded failure/release。
+- 不按模糊名字批量 `kill-window`,不关闭共享 tmux session,不把一个窗口冲突升级成 server rescue。`@flywheel_exec_id` 已由 FLY-1374 存在,本单是**复用并加固**:generalized 窗在 launch commit 前必须成功发布 execution + generation/fingerprint,失败即 pre-commit failure(可 release);legacy 非 generalized caller 保留 best-effort 兼容,无 identity 自然不杀。
 
 ### 7.2 内联点火失败释放未提交 owner(≤5min)
 
-- 把 generalized launch owner lease 从散落的 60min 字面值收口成共享常量,初始 acquire / renew 的默认窗口设为 **5min**;已 committed generation 与 delivery repair 的既有终态语义不变。
-- 新增 StateStore 原子原语(如 `releaseFailedWorkflowLaunch`):同一事务复查 execution + owner id + generation、`committed_generation IS NULL`、无 durable session/marker,然后把当前 generation 标成不可再 commit 且 lease 立即到期,并 revoke 本 generation 未消费的 submission/output credential。保留 immutable execution/admission/reservation,让同 idempotency key 立即以 generation+1 恢复;绝不 DELETE owner 后复用 generation 1 token。
-- `/api/runs/start` 在同步 launch throw 或 bounded `waitForSession` 确认 session 未出生时调用该原语。若 CAS 发现 marker/session/commit 已出现,说明 launch 已越过回滚边界,转回既有 `GENERALIZED_LAUNCH_PENDING` 收敛路径,不得误回滚一个真实 runner。
-- generation 1 的迟到 fenced commit 必须被拒;generation 2 的 token 不会释放 generation 1 的 gated shell。Bridge crash 未走显式 release 时也由 5min lease 封顶,满足 launch 孤儿存活期 ≤5min。
+- **先打通 pre-commit outcome seam**:`RunDispatcher.start()` 返回一个 launch handle,其 `outcome` promise 只覆盖 Blueprint/adapter 的 pre-commit 生命周期(不是 runner lifetime):`committed` 或 typed `precommit_failed`。`Blueprint` 现有早到 `session_started` 逻辑行不算 physical launch;`TmuxAdapter` 的 ensure/window/identity failure 必须穿过 background promise catch 落到 outcome,HTTP route 与 engine successor dispatch 共用。HTTP 可 bounded wait 后返回 typed pending,但只有收到 precommit failure 且 release 成功才返回 `retryable:true`;不再用 `waitForSession()` 逻辑行判断物理出生。
+- 把真正的 uncommitted owner lease 收口成 `UNCOMMITTED_WORKFLOW_LAUNCH_LEASE_MS = 5min`,只用于 initial acquire/renew;output credential TTL 与 committed delivery-repair lease 原样。pause 必须在 owner acquire 之前 probe,命中 pause 时 owner generation/credential 零 churn。
+- outcome in-flight 期间启动 **≤60s cadence heartbeat**,每次用 execution + owner id + generation + delivery attempt CAS renew;任一 renew 失败即 fence 本地 launch、不得越过下一 side-effect boundary。engine reconcile 的同 stable owner polling**不得隐式续租**,只能由这个明确 in-flight heartbeat renew。pre-commit hard deadline <10min tripwire;合法 210s ensure 可跨 5min 持续 renew,Bridge crash则 heartbeat 停止。
+- owner 表加显式 released-generation tombstone(如 `released_generation` + `released_at/reason`)。`releaseFailedWorkflowLaunch` 单事务复查 execution + owner id + generation + delivery attempt、`committed_generation IS NULL`、marker 缺失、pane/window callback 无匹配 physical generation,然后把 generation 标成永久不可 renew/commit、lease 立即到期并 revoke 本 generation 未消费 credential。**早到逻辑 session 行不否决 release**。保留 immutable execution/admission/reservation,下一 acquire 无论 random route owner 还是同 stable engine owner都 CAS 到恰好 generation+1;绝不 DELETE owner,不用永久 cancellation。
+- outcome 报同步 throw/ensure hold/identity publish failure或 hard deadline 前确认无 physical commit时调 release。若 CAS 发现 marker/physical window/commit 已出现,说明越过回滚边界,返回既有 `GENERALIZED_LAUNCH_PENDING` 收敛,不得误回滚真实 runner。
+- generation 1 的迟到 renew/commit/marker/window-publish 全部检查 `generation > released_generation` 并拒绝;generation 2 token不释放 generation 1 gated shell。自然接管也复查无 durable marker/physical-generation/committed generation。Bridge crash无显式 release时,5min lease到期即可 generation+1 接管;10min tripwire另清 admission residue,两锚分开。
 
 ### 7.3 attempt=1 design 的 predecessor 合法空态
 
@@ -178,23 +185,23 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 
 ### 7.4 start 错误合同与诊断
 
-- generalized start 边界统一返回 machine-readable body:`code`(稳定顶层错误码)、`reason`(稳定分类)、`executionId`、`retryable`;已知 tmux hold/窗口冲突/launch timeout 映射到 typed 409/503。未分类异常可保留 500,但不得再是裸 `internal error`。
+- generalized start 边界消费 7.2 outcome 并统一返回 machine-readable body:`code`(稳定顶层错误码)、`reason`(稳定分类)、`executionId`、`retryable`;已知 tmux hold/窗口 identity/launch timeout 映射到 typed 409/503;仍在 in-flight 则 202/pending。未分类异常可保留结构化 500,但不得再是裸 `internal error`。
 - server log 用 `console.error` 记录 issue/run/node/execution/owner generation + 原始 error stack;HTTP body 不回传 stack、路径或 secret。
 - 结构化失败只有在 7.2 原子 release 成功后才声明 retryable;release 竞态失败而 durable launch 可能已前进时返回 pending,避免客户端重试制造双 launch。
 
 ### 7.5 审计补注(research §6,四点增量 —— 不改写 7.1-7.4 的设计)
 
-1. **病灶阶段核实(机制注记)**:审计确认 `tmux new-window -n` 同名**不报错**;事故的 throw 来自 **session 级** `ensureRunnerSession`(`TmuxAdapter.ts:1509-1620`,hold kinds 是 rescue helper 的 server 分类)—— stale 窗与 500 的关联机制是「窗堆积 → server/命令队列饱和 → ensure held」(research §6.1)。7.1 的 preflight 位于 `ensureSession()` **之后**,若 ensure 先挂则到不了。实施第一步先真机复现确认 500 的精确阶段;若确证 ensure 阶段饱和,同名 terminal 窗清理需前移到 ensure 之前(或由既有 boot sweep 兜底),7.1 preflight 保留为第二道。两种机制下「清 terminal 同名窗」都是对的,只是位置要对准病灶。
-2. **`@flywheel_exec_id` 是新契约**:现窗口**不发布**任何 execution 变量(窗名是 (identifier, role, title) 纯函数,research §6.1)。7.1 依赖它 → 显式两半:新窗创建时 `set-option -w @flywheel_exec_id <execId>`(与 CommDB/StateStore 映射同步);**legacy 窗(无变量)天然落入 7.1 的「无 identity → 不猜杀 → 换名后缀」分支**,不误杀。
-3. **tripwire rollback 阈值必须随 lease 一起降**:7.2 把 lease 降到 5min,但 crash 型孤儿(无人调显式 release)靠 tripwire 回收 —— `FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS` 默认仍 60min(`workflow-engine-dispatcher.ts:1097`),lease 过期后 admission 仍要等到 60min 才被清,「孤儿存活 ≤5min」锚在 crash 场景不达标。默认降至 **10min**(> lease 5min,保持「先 lease 后 rollback」时序;alert 10min 不变);同时把引擎对 `launch_owner_live` 的**静默吞**(`:1211-1222`)改为计数+日志可见(research §6.4)。operator 手动触发(master-auth 路由复用 `beginUnlaunchedWorkflowCancellation`)列为可选项,若时序默认已达锚则不加。
-4. **5min lease 与慢 launch 的时序核对**:ensure deadline 210s + ghost-guard `waitForSession` 90s ≈ 最坏 ~5min —— 5min 初始 lease 靠**既有 renew**(`renewWorkflowLaunchOwner`,`runs-route.ts:2781`)续命慢路径;测试须含「合法慢 launch 在 renew 下不被误回收」一例。
+1. **病灶阶段核实(机制注记)**:审计确认 `tmux new-window -n` 同名**不报错**;事故的 throw 来自 **session 级** `ensureRunnerSession`(`TmuxAdapter.ts:1509-1620`,hold kinds 是 rescue helper 的 server 分类)—— stale 窗与 500 的关联机制是「窗堆积 → server/命令队列饱和 → ensure held」(research §6.1)。因此 7.1 已把清理固定前移到 ensure 之前;实施第一步真机复现并记录精确 hold 分类,但不得把清理退回 ensure 之后。
+2. **identity 契约加固**:`@flywheel_exec_id` 已存在且 lookup 已消费,但当前写入 best-effort、execution-only。generalized 路径新增 generation/fingerprint 并在 commit 前 fail-closed 发布;legacy caller 无变量/写失败仍落「不猜杀 → generation suffix」分支,不误杀。
+3. **tripwire 与 owner 接管分工**:`FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS` 从 60min 降到 **10min**(> lease 5min,保持「先允许 generation 接管,后清 admission residue」时序;alert 10min 不变)。5min 锚针对阻止重派的 live owner lock;10min tripwire负责已可重派后的 admission/credential residue cleanup。同时把引擎对 `launch_owner_live` 的静默吞(`:1211-1222`)改为计数+结构化日志可见。operator 手动触发若默认时序已达锚则不加。
+4. **5min lease 与慢 launch 的时序核对**:早到逻辑 session 使现有 `waitForSession` 90s 不能当物理 budget;权威 budget 改为 outcome seam 的 pre-commit deadline(<10min)。heartbeat 从 pre-worktree 开始、≤60s renew,在 outcome settle/finally 停止。测试覆盖跨完整 ensure budget的合法慢 launch、Bridge crash、stuck in-process launch与 stable engine owner。
 
 ### 7.5a 测试
 
-- adapter/dispatcher seam:terminal 同名窗口按 immutable id 被关闭后正常 launch;活窗口不被关闭且新窗使用确定性后缀;identity 缺失/多候选不误杀。
-- route + StateStore:launch throw 与 session-never-born 各一例 → generation 1 立即 fenced/released、同 key 取得 generation 2;generation 1 迟到 commit 失败;显式 release 与 commit/session race 只有一个赢家;Bridge crash 无 release 时 store clock +5min 可接管。
+- adapter/dispatcher seam:**可复现 ensure-hold 的 stale terminal window fixture**在 pre-ensure purge 后正常 launch;terminal 同名窗仅按 immutable id 关闭;活窗口不关闭且新窗用确定性后缀;identity 缺失/多候选/uninjected predicate 不误杀并发单次 Lead alert;第二次 ensure hold typed fail,无无限循环。
+- route + StateStore:真实 typed `TmuxSessionHoldError` 穿过 background dispatcher outcome → generation 1 立即 tombstone/release → HTTP typed retryable;早到逻辑 session 不阻止 release;同 key分别用 random route owner与同 stable engine owner取得 generation 2;generation 1 迟到 renew/commit/marker失败;release 与 physical commit race单赢家;Bridge crash无 release时 clock +5min 可接管。
 - engine root:attempt=1 无入边 design 可 dispatch 且 `startPoint` 缺省;implement、qa、design retry 缺 predecessor 仍拒绝;start reservation 自指回归。
-- HTTP:每个已知失败的 status + `code/reason/executionId/retryable` 精确断言,未知异常有结构化 500 且日志含 stack、响应不含 stack。
+- HTTP:每个已知 failure/pending 的 status + `code/reason/executionId/retryable` 精确断言,未知异常有结构化 500且日志含 stack、响应不含 stack;engine auto-advance用同 outcome补偿且 pause命中时不 acquire owner。
 - 补注组(7.5):crash 型孤儿在 10min rollback 内被 tripwire 回收(lease 5min < rollback 10min 时序断言);合法慢 launch 经 renew 不被误回收;`launch_owner_live` 吞噬计数可见;legacy 无变量窗走换名分支不被杀。
 
 ## 8. 验收锚映射(全部活体)
@@ -237,6 +244,7 @@ Codex code review(`codex:rescue`)循环至 APPROVED;真机 E2E 由独立 QA 节�
 
 - 消息层展示形态(通知折叠、held 告警措辞)→ FLY-1569 D/E。
 - runner no-code verdict 推动**活** Linear issue 到 Done = 新权威/effect 机制 → 单独立项(R2#5);本单只做 DB 侧原子闭环 + 已终态 issue 的既有 reconcile 收尾。
+- no_code baseline sealing 只在 Bridge-local `emitWorktreeReady`/`bindWorktreeOnce` 权威路径可用;HTTP `ExecutionEventEmitter` 为避免 runner-visible token 篡改 binding 会接受但不传 baseline,该模式因此 fail-closed 不可 no_code(仍可 needs_review),另行补可信 server-side binding transport 前不放宽。
 - pause 的 fail-closed enforcement(阶段 2)与「回滚到前置版 Bridge 运行期间无视 pause row」边界 → 兼容性确立后的 follow-up;本单 best-effort + TTL 自愈。
 - pre-#748 generic run 的 engine_terminal 历史停滞若属独立断裂 → 诊断后如实上报拆单。
 - `held` 既有语义、`MAX_BLIND_REPLACEMENTS` 数值与其 ledger 计数权威、founder-only merge 契约、`verify-approval` 安全检查、`ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES` 常量:全部不动。
