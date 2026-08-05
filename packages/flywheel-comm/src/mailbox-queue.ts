@@ -1069,7 +1069,9 @@ export class MailboxQueue {
 			return "not_due";
 		}
 		const terminalTimes = rows.map((row) =>
-			Date.parse(row.state === "ACKED" ? (row.acked_at ?? "") : (row.dead_at ?? "")),
+			Date.parse(
+				row.state === "ACKED" ? (row.acked_at ?? "") : (row.dead_at ?? ""),
+			),
 		);
 		if (
 			terminalTimes.some((value) => !Number.isFinite(value)) ||
@@ -1110,7 +1112,9 @@ export class MailboxQueue {
 			}
 			const rowJson = canonicalJsonString({
 				...row,
-				...(contentRefArchive ? { content_ref_archive: contentRefArchive } : {}),
+				...(contentRefArchive
+					? { content_ref_archive: contentRefArchive }
+					: {}),
 			});
 			familyBytes += Buffer.byteLength(rowJson);
 			snapshots.push({
@@ -1169,9 +1173,13 @@ export class MailboxQueue {
 							)
 							.run(input.now, snapshot.row.id).changes !== 1
 					) {
-						throw new Error(`mailbox identity archive conflict: ${snapshot.row.id}`);
+						throw new Error(
+							`mailbox identity archive conflict: ${snapshot.row.id}`,
+						);
 					}
-					this.db.prepare("DELETE FROM mailbox WHERE id = ?").run(snapshot.row.id);
+					this.db
+						.prepare("DELETE FROM mailbox WHERE id = ?")
+						.run(snapshot.row.id);
 				}
 				return "archived";
 			})
@@ -1207,15 +1215,25 @@ export class MailboxQueue {
 						if (
 							(
 								this.db
-									.prepare("SELECT COUNT(*) AS count FROM mailbox WHERE content_ref = ?")
+									.prepare(
+										"SELECT COUNT(*) AS count FROM mailbox WHERE content_ref = ?",
+									)
 									.get(intent.path) as { count: number }
 							).count > 0
 						) {
-							this.deferContentRefGc(intent, input.now, "path still has a live mailbox reference");
+							this.deferContentRefGc(
+								intent,
+								input.now,
+								"path still has a live mailbox reference",
+							);
 							return "pending";
 						}
 						if (!isValidRefPath(intent.path)) {
-							this.deferContentRefGc(intent, input.now, "invalid content_ref path");
+							this.deferContentRefGc(
+								intent,
+								input.now,
+								"invalid content_ref path",
+							);
 							return "pending";
 						}
 						let bytes: Buffer;
@@ -1226,19 +1244,32 @@ export class MailboxQueue {
 								this.finishContentRefGc(intent.intent_id, input.now);
 								return "done";
 							}
-							this.deferContentRefGc(intent, input.now, (error as Error).message);
+							this.deferContentRefGc(
+								intent,
+								input.now,
+								(error as Error).message,
+							);
 							return "pending";
 						}
 						if (
-							createHash("sha256").update(bytes).digest("hex") !== intent.content_hash
+							createHash("sha256").update(bytes).digest("hex") !==
+							intent.content_hash
 						) {
-							this.deferContentRefGc(intent, input.now, "content_ref hash mismatch");
+							this.deferContentRefGc(
+								intent,
+								input.now,
+								"content_ref hash mismatch",
+							);
 							return "pending";
 						}
 						try {
 							(input.removeFile ?? unlinkSync)(intent.path);
 						} catch (error) {
-							this.deferContentRefGc(intent, input.now, (error as Error).message);
+							this.deferContentRefGc(
+								intent,
+								input.now,
+								(error as Error).message,
+							);
 							return "pending";
 						}
 						this.finishContentRefGc(intent.intent_id, input.now);
@@ -1291,7 +1322,11 @@ export class MailboxQueue {
 				    SET attempts = attempts + 1, next_retry_at = ?, last_error = ?
 				  WHERE intent_id = ? AND state = 'pending'`,
 			)
-			.run(new Date(Date.parse(now) + delayMs).toISOString(), error, intent.intent_id);
+			.run(
+				new Date(Date.parse(now) + delayMs).toISOString(),
+				error,
+				intent.intent_id,
+			);
 	}
 
 	private finishContentRefGc(intentId: string, now: string): void {

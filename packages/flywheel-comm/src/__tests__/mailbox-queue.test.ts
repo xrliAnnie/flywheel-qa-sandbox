@@ -454,7 +454,9 @@ describe("FLY-1572 MailboxQueue", () => {
 				bytes: 9,
 				content_base64: Buffer.from("full body").toString("base64"),
 			});
-			expect(queue.drainContentRefGc({ now: "2026-08-05T00:00:01.000Z" })).toEqual({
+			expect(
+				queue.drainContentRefGc({ now: "2026-08-05T00:00:01.000Z" }),
+			).toEqual({
 				done: 1,
 				pending: 0,
 			});
@@ -550,7 +552,9 @@ describe("FLY-1572 MailboxQueue", () => {
 			expect(
 				queue.archiveFamily({ id: "first", now: "2026-08-05T00:00:00.000Z" }),
 			).toBe("archived");
-			expect(queue.drainContentRefGc({ now: "2026-08-05T00:00:01.000Z" })).toEqual({
+			expect(
+				queue.drainContentRefGc({ now: "2026-08-05T00:00:01.000Z" }),
+			).toEqual({
 				done: 0,
 				pending: 1,
 			});
@@ -568,12 +572,16 @@ describe("FLY-1572 MailboxQueue", () => {
 					},
 				}),
 			).toEqual({ done: 0, pending: 2 });
-			expect(queue.drainContentRefGc({ now: "2026-08-05T00:00:03.000Z" })).toEqual({
+			expect(
+				queue.drainContentRefGc({ now: "2026-08-05T00:00:03.000Z" }),
+			).toEqual({
 				done: 1,
 				pending: 0,
 			});
 			expect(existsSync(refPath)).toBe(false);
-			expect(queue.drainContentRefGc({ now: "2026-08-05T00:00:04.000Z" })).toEqual({
+			expect(
+				queue.drainContentRefGc({ now: "2026-08-05T00:00:04.000Z" }),
+			).toEqual({
 				done: 1,
 				pending: 0,
 			});
@@ -611,9 +619,11 @@ describe("FLY-1572 MailboxQueue", () => {
 			const raw = new Database(dbPath, { readonly: true });
 			try {
 				expect(
-					(raw.prepare("SELECT COUNT(*) AS count FROM mailbox").get() as {
-						count: number;
-					}).count,
+					(
+						raw.prepare("SELECT COUNT(*) AS count FROM mailbox").get() as {
+							count: number;
+						}
+					).count,
 				).toBe(2);
 			} finally {
 				raw.close();

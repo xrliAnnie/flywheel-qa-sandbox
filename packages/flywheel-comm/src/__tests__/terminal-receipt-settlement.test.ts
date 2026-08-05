@@ -212,9 +212,11 @@ describe("FLY-1448 terminal receipt settlement primitives", () => {
 			queue.ack(questionId, NOW);
 			const raw = new Database(dbPath);
 			try {
-				raw.prepare(
-					"UPDATE mailbox SET relay_state = 'terminal_disposed' WHERE id = ?",
-				).run(questionId);
+				raw
+					.prepare(
+						"UPDATE mailbox SET relay_state = 'terminal_disposed' WHERE id = ?",
+					)
+					.run(questionId);
 			} finally {
 				raw.close();
 			}
