@@ -103,3 +103,26 @@ The Round 10 exhaustiveness issue is fully resolved. The carrier-aware `lead_inb
 ## Verdict
 
 APPROVED — ready to implement
+# Design Review — plan.md (Round 12, Bridge design-review gate lane)
+
+Date: 2026-08-05
+Author: Bridge design-review lane (gate `b515d6ba` / request `d1027baa`)
+Status: CHANGES REQUESTED → fixed in commit 97aadb83 (prior exec d65b5262)
+
+2 HIGH(§5.3a Lead/bridge claim-TTL 重领需保留为旧能力平移;folded question 的 type/ref_id 权威与 discriminator)+ advisories(lineage 永久解引用、orphan mirror、transient admission、append-only 容量、priority/index、Bridge 依赖、发现式 inventory、registry replay、delivery fallback、archive contention)。全部就地折入,见 plan §12.D。
+
+# Design Review — plan.md (Round 13, Bridge design-review gate lane)
+
+Date: 2026-08-05
+Author: Bridge design-review lane (request `c51f5e70` round 2)
+Status: CHANGES REQUESTED → fixed by successor design exec a939207a
+
+- HIGH `orphan-branch-overreaches-founder-hub`: orphan 镜像分支谓词误捕 founder_reply(1,046)/discord_cross_department(2)构造性 dangling 行 → 谓词收窄到 `source LIKE 'question:%'/'ack_receipt:%'`,新增非镜像矩阵行,恒等锚同步收窄。
+- HIGH `lead-failed-batch-requeue-gap`: §5.3a 重领谓词缺 `claimed_by IS NULL` 三路条件;失败路径产出 NULL-claim 态会永久搁浅 → 三路谓词逐字入合同,Lead/bridge 失败转移 + batch_id 生命周期显式定稿,transient 释放清 batch_id。
+- MEDIUM `reclaim-index-column-order`: 重领索引排序键前有非等值列,EXPLAIN 断言自败 → 双索引重排为等值前缀+排序键,claim/TTL 判定移 CAS 步。
+- MEDIUM `orphan-row-notnull-columns-undefined`: 合成 orphan 行 from_agent/content 无定义 → lineage→legacy_alias→fail-closed 三级派生,lineage 触发器迁移后创建。
+- LOW `inventory-detects-poison-views`: 库态分类按 `sqlite_master.type`+schema_generation,毒药 VIEW 不误报 legacy。
+- LOW `archive-single-family-size-unbounded`: 单 family 2MB 内嵌体积上限 + 显式维护路径 + 合成 fixture。
+- LOW `question-priority-derivation`: priority 逐 producer 派生表落 §5.3(hub 0 / question 1 / protocol 1 / report question 2 / lead_event 2)。
+
+全部 7 项折入 plan(§3.1/§5.3/§5.3a/§7/§8.2/§12.C/§12.E)。
