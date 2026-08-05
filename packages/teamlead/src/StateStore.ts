@@ -11,9 +11,11 @@ import { dirname } from "node:path";
 import BetterSqlite3, { type Database as BetterDb } from "better-sqlite3";
 import { askHygieneEnabled } from "flywheel-comm/db";
 import {
+	canonicalJsonString,
 	canonicalSubmissionDigest,
 	crossFamilyReviewSatisfied,
 	type DesignBackend,
+	getNodeTypeRegistryEntry,
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
@@ -91,6 +93,69 @@ export const MAX_BLIND_REPLACEMENTS = 3;
 export const WORKFLOW_LAUNCH_SOFT_LEASE_MS = 5 * 60_000;
 export const WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS = 10 * 60_000;
 export const WORKFLOW_LAUNCH_HEARTBEAT_MS = 60_000;
+
+type StoredWorkflowLaunchWindow =
+	| { status: "none" }
+	| { status: "incomplete" }
+	| { status: "exact"; identity: WorkflowLaunchWindowIdentity };
+
+function parseStoredWorkflowLaunchWindow(
+	rawParams: string | null | undefined,
+): StoredWorkflowLaunchWindow {
+	if (!rawParams) return { status: "none" };
+	try {
+		const params = JSON.parse(rawParams) as Record<string, unknown>;
+		if (!("pane_loss_generation" in params)) return { status: "none" };
+		const raw = params.pane_loss_generation;
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+			return { status: "incomplete" };
+		}
+		const record = raw as Record<string, unknown>;
+		if (
+			typeof record.socket_path !== "string" ||
+			!record.socket_path ||
+			typeof record.server_start_time !== "string" ||
+			!/^[0-9]+$/.test(record.server_start_time) ||
+			typeof record.window_id !== "string" ||
+			!/^@\d+$/.test(record.window_id) ||
+			typeof record.execution_id !== "string" ||
+			!record.execution_id ||
+			!Number.isInteger(record.launch_generation) ||
+			Number(record.launch_generation) < 1 ||
+			typeof record.launch_fingerprint !== "string" ||
+			!/^([a-f0-9]{64})$/i.test(record.launch_fingerprint)
+		) {
+			return { status: "incomplete" };
+		}
+		return {
+			status: "exact",
+			identity: {
+				socketPath: record.socket_path,
+				serverStartTime: record.server_start_time,
+				windowId: record.window_id,
+				executionId: record.execution_id,
+				launchGeneration: Number(record.launch_generation),
+				launchFingerprint: record.launch_fingerprint,
+			},
+		};
+	} catch {
+		return { status: "incomplete" };
+	}
+}
+
+function sameWorkflowLaunchWindow(
+	left: WorkflowLaunchWindowIdentity,
+	right: WorkflowLaunchWindowIdentity,
+): boolean {
+	return (
+		left.socketPath === right.socketPath &&
+		left.serverStartTime === right.serverStartTime &&
+		left.windowId === right.windowId &&
+		left.executionId === right.executionId &&
+		left.launchGeneration === right.launchGeneration &&
+		left.launchFingerprint === right.launchFingerprint
+	);
+}
 
 type RunnerShipObservationProjection =
 	| { status: "none" }
@@ -2368,6 +2433,8 @@ export class StateStore {
 			"worktree_binding_branch",
 			"worktree_binding_generation",
 			"worktree_binding_locked_at",
+			"repo_baseline_set_json",
+			"repo_baseline_set_digest",
 		]) {
 			try {
 				this.db.run(`ALTER TABLE sessions ADD COLUMN ${col} TEXT`);
@@ -13904,7 +13971,13 @@ export class StateStore {
 	 */
 	bindWorktreeOnce(
 		executionId: string,
-		binding: { path: string; branch: string; generation: string },
+		binding: {
+			path: string;
+			branch: string;
+			generation: string;
+			repoBaselineSetJson?: string;
+			repoBaselineSetDigest?: string;
+		},
 		context?: { issueId?: string; projectName?: string },
 	): { bound: boolean; reason?: "already_bound" } {
 		let bound = false;
@@ -13915,8 +13988,9 @@ export class StateStore {
 				this.db.run(
 					`INSERT INTO sessions (execution_id, issue_id, project_name, status,
 						worktree_binding_path, worktree_binding_branch,
-						worktree_binding_generation, worktree_binding_locked_at)
-					 VALUES (?, ?, ?, 'pending', ?, ?, ?, datetime('now'))`,
+						worktree_binding_generation, worktree_binding_locked_at,
+						repo_baseline_set_json, repo_baseline_set_digest)
+					 VALUES (?, ?, ?, 'pending', ?, ?, ?, datetime('now'), ?, ?)`,
 					[
 						executionId,
 						context?.issueId ?? "",
@@ -13924,6 +13998,8 @@ export class StateStore {
 						binding.path,
 						binding.branch,
 						binding.generation,
+						binding.repoBaselineSetJson ?? null,
+						binding.repoBaselineSetDigest ?? null,
 					],
 				);
 				bound = true;
@@ -13934,9 +14010,18 @@ export class StateStore {
 					worktree_binding_path = ?,
 					worktree_binding_branch = ?,
 					worktree_binding_generation = ?,
-					worktree_binding_locked_at = datetime('now')
+					worktree_binding_locked_at = datetime('now'),
+					repo_baseline_set_json = ?,
+					repo_baseline_set_digest = ?
 				 WHERE execution_id = ? AND worktree_binding_generation IS NULL`,
-				[binding.path, binding.branch, binding.generation, executionId],
+				[
+					binding.path,
+					binding.branch,
+					binding.generation,
+					binding.repoBaselineSetJson ?? null,
+					binding.repoBaselineSetDigest ?? null,
+					executionId,
+				],
 			);
 			if (this.db.getRowsModified() > 0) {
 				bound = true;
@@ -13956,11 +14041,14 @@ export class StateStore {
 				branch: string;
 				generation: string;
 				lockedAt: string | null;
+				repoBaselineSetJson?: string;
+				repoBaselineSetDigest?: string;
 		  }
 		| undefined {
 		const stmt = this.db.prepare(
 			`SELECT worktree_binding_path AS p, worktree_binding_branch AS b,
-			        worktree_binding_generation AS g, worktree_binding_locked_at AS l
+			        worktree_binding_generation AS g, worktree_binding_locked_at AS l,
+			        repo_baseline_set_json AS bj, repo_baseline_set_digest AS bd
 			 FROM sessions WHERE execution_id = ?`,
 		);
 		stmt.bind([executionId]);
@@ -13970,6 +14058,8 @@ export class StateStore {
 					branch: string;
 					generation: string;
 					lockedAt: string | null;
+					repoBaselineSetJson?: string;
+					repoBaselineSetDigest?: string;
 			  }
 			| undefined;
 		if (stmt.step()) {
@@ -13980,6 +14070,8 @@ export class StateStore {
 					branch: row.b as string,
 					generation: row.g as string,
 					lockedAt: (row.l as string) ?? null,
+					...(row.bj ? { repoBaselineSetJson: row.bj as string } : {}),
+					...(row.bd ? { repoBaselineSetDigest: row.bd as string } : {}),
 				};
 			}
 		}
@@ -17887,6 +17979,22 @@ export class StateStore {
 				return;
 			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			const storedWindow = parseStoredWorkflowLaunchWindow(
+				this.getSession(input.executionId)?.session_params,
+			);
+			if (storedWindow.status === "incomplete") {
+				result = { ok: false, reason: "precise_window_identity_incomplete" };
+				return;
+			}
+			if (
+				storedWindow.status === "exact" &&
+				(!owner ||
+					storedWindow.identity.executionId !== input.executionId ||
+					storedWindow.identity.launchGeneration !== owner.owner_generation)
+			) {
+				result = { ok: false, reason: "precise_window_identity_mismatch" };
+				return;
+			}
 			if (owner?.committed_generation != null) {
 				result = { ok: false, reason: "launch_committed" };
 				return;
@@ -17942,6 +18050,7 @@ export class StateStore {
 		markerPath: string;
 		now: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
+		preciseWindowEvidence?: WorkflowLaunchWindowEvidence;
 	}): UnlaunchedWorkflowRollbackResult {
 		if (
 			!input.markerPath ||
@@ -18016,6 +18125,28 @@ export class StateStore {
 			}
 			if (existsSync(input.markerPath)) {
 				result = { ok: false, reason: "launch_marker_present" };
+				return;
+			}
+			const storedWindow = parseStoredWorkflowLaunchWindow(
+				this.getSession(input.executionId)?.session_params,
+			);
+			if (storedWindow.status === "incomplete") {
+				result = { ok: false, reason: "precise_window_identity_incomplete" };
+				return;
+			}
+			if (
+				storedWindow.status === "exact" &&
+				(!input.preciseWindowEvidence ||
+					!sameWorkflowLaunchWindow(
+						storedWindow.identity,
+						input.preciseWindowEvidence,
+					) ||
+					!(
+						input.preciseWindowEvidence.physicalEvidence === "absent" ||
+						input.preciseWindowEvidence.physicalEvidence === "cleaned"
+					))
+			) {
+				result = { ok: false, reason: "precise_window_evidence_present" };
 				return;
 			}
 			const latest = this.workflowSelectAll(
@@ -24295,7 +24426,9 @@ export class StateStore {
 				: undefined;
 		const previousStatus = this.getSession(binding.execution_id)?.status;
 		const projectedStatus =
-			gateAuthority?.mode === "runner_ship" &&
+			input.route === "no_code"
+				? "completed"
+				: gateAuthority?.mode === "runner_ship" &&
 			gateAuthority.carrierNodeId === binding.node_id
 				? previousStatus === "awaiting_review"
 					? "awaiting_review"
@@ -25731,6 +25864,12 @@ export class StateStore {
 			targetRepoPath: string;
 			worktreeBindingGeneration: string;
 		};
+		/** Bridge-derived proof; runner-visible completion payloads cannot set it. */
+		noCodeAttestation?: {
+			worktreeBindingGeneration: string;
+			baselineDigest: string;
+			currentDigest: string;
+		};
 		now?: string;
 	}): WorkflowCompletionResult {
 		const now = input.now ?? new Date().toISOString();
@@ -25802,14 +25941,92 @@ export class StateStore {
 			!Array.isArray(completionRecord.evidence)
 				? (completionRecord.evidence as Record<string, unknown>)
 				: undefined;
-		const genericNoCodeExit =
+		const genericNoCodeRequested =
 			input.route === "no_code" &&
 			context.node.type === "generic" &&
-			context.node.capabilities.completion_route === "needs_review" &&
-			input.prBinding === undefined &&
-			!Number.isInteger(evidence?.prNumber) &&
-			(evidence?.landingStatus === undefined ||
-				evidence.landingStatus === null);
+			context.node.capabilities.completion_route === "needs_review";
+		let genericNoCodeExit = false;
+		if (genericNoCodeRequested) {
+			const liveNoCodeEnabled = (() => {
+				try {
+					return (
+						(context.snapshot.template.id === "tpl_generic" ||
+							context.snapshot.template.id === "tpl_generic_menu") &&
+						getNodeTypeRegistryEntry("generic").capabilities
+							.allow_no_code_completion === true
+					);
+				} catch {
+					return false;
+				}
+			})();
+			if (!liveNoCodeEnabled) {
+				return { ok: false, reason: "no_code_not_allowed" };
+			}
+			const persistedOutput = this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_node_output_current
+				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND execution_id = ?`,
+				[
+					context.binding.run_id,
+					context.binding.node_id,
+					context.binding.attempt,
+					context.binding.execution_id,
+				],
+			)[0];
+			const persistedPr = this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_node_pr_binding
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+				[
+					context.binding.run_id,
+					context.binding.node_id,
+					context.binding.attempt,
+				],
+			)[0];
+			const session = this.getSession(input.executionId);
+			if (
+				input.prBinding !== undefined ||
+				Number.isInteger(evidence?.prNumber) ||
+				(evidence?.landingStatus !== undefined &&
+					evidence.landingStatus !== null) ||
+				persistedOutput ||
+				persistedPr ||
+				Number.isInteger(session?.pr_number) ||
+				/^[0-9a-f]{40}$/i.test(session?.pr_head_sha ?? "")
+			) {
+				return { ok: false, reason: "no_code_artifact_present" };
+			}
+			const binding = this.getWorktreeBinding(input.executionId);
+			const attestation = input.noCodeAttestation;
+			if (
+				!binding?.repoBaselineSetJson ||
+				!binding.repoBaselineSetDigest ||
+				!attestation
+			) {
+				return { ok: false, reason: "no_code_attestation_missing" };
+			}
+			const sealedBaselineValid = (() => {
+				try {
+					const parsed = JSON.parse(binding.repoBaselineSetJson);
+					return (
+						canonicalJsonString(parsed) === binding.repoBaselineSetJson &&
+						canonicalSubmissionDigest(parsed) ===
+							binding.repoBaselineSetDigest
+					);
+				} catch {
+					return false;
+				}
+			})();
+			if (!sealedBaselineValid) {
+				return { ok: false, reason: "no_code_attestation_missing" };
+			}
+			if (
+				attestation.worktreeBindingGeneration !== binding.generation ||
+				attestation.baselineDigest !== binding.repoBaselineSetDigest ||
+				attestation.currentDigest !== binding.repoBaselineSetDigest
+			) {
+				return { ok: false, reason: "no_code_attestation_stale" };
+			}
+			genericNoCodeExit = true;
+		}
 		if (
 			input.route !== context.node.capabilities.completion_route &&
 			!genericNoCodeExit
@@ -25985,11 +26202,13 @@ export class StateStore {
 					? declaredCompletionEdges[0]!.condition
 					: undefined;
 		const sessionHead = this.getSession(input.executionId)?.pr_head_sha;
-		const completionSubjectDigest = input.subjectDigest
-			? input.subjectDigest.toLowerCase()
-			: /^[0-9a-f]{40}$/i.test(sessionHead ?? "")
-				? sessionHead!.toLowerCase()
-				: undefined;
+		const completionSubjectDigest = genericNoCodeExit
+			? undefined
+			: input.subjectDigest
+				? input.subjectDigest.toLowerCase()
+				: /^[0-9a-f]{40}$/i.test(sessionHead ?? "")
+					? sessionHead!.toLowerCase()
+					: undefined;
 		let transitionRefusal: string | undefined;
 		let terminalImmuneRefusal = false;
 		try {
@@ -26045,26 +26264,63 @@ export class StateStore {
 					],
 				);
 				if (context.run.engine_owned === 1) {
-					if (!engineOutcome) {
+					if (genericNoCodeExit) {
+						this.upsertWorkflowRunNodeTx({
+							runId: context.binding.run_id,
+							nodeId: context.binding.node_id,
+							attempt: context.binding.attempt,
+							state: "done",
+							executionId: context.binding.execution_id,
+							endedAt: now,
+						});
+						this.db.run(
+							`UPDATE workflow_run SET status = 'completed'
+							  WHERE run_id = ? AND status = 'active' AND current_node_id = ?`,
+							[context.binding.run_id, context.binding.node_id],
+						);
+						if (this.db.getRowsModified() !== 1) {
+							transitionRefusal = "no_code_run_state_conflict";
+							throw new Error("engine_completion_transition_refused");
+						}
+						this.db.run(
+							`UPDATE workflow_output_credential
+							    SET revoked = 1, revoked_reason = 'completed_no_artifact'
+							  WHERE activation_id = ? AND consumed_at IS NULL AND revoked = 0`,
+							[context.binding.activation_id],
+						);
+						this.appendWorkflowRunEventTx({
+							runId: context.binding.run_id,
+							eventUid: `completed_no_artifact:${context.binding.run_id}:${context.binding.node_id}:${context.binding.attempt}`,
+							kind: "completed_no_artifact",
+							nodeId: context.binding.node_id,
+							executionId: context.binding.execution_id,
+							payload: {
+								attempt: context.binding.attempt,
+								baselineDigest: input.noCodeAttestation!.baselineDigest,
+							},
+						});
+					} else if (!engineOutcome) {
 						transitionRefusal = "decision_required";
 						throw new Error("engine_completion_transition_refused");
 					}
-					const transition = this.commitWorkflowTransitionTx({
-						runId: context.binding.run_id,
-						nodeId: context.binding.node_id,
-						attempt: context.binding.attempt,
-						executionId: context.binding.execution_id,
-						outcome: engineOutcome,
-						nodeCompletionEventUid: eventUid,
-						...(completionSubjectDigest
-							? { subjectDigest: completionSubjectDigest }
-							: {}),
-						alertIdentity: input.alertIdentity,
-						now,
-					});
-					if (!transition.ok) {
-						transitionRefusal = transition.reason;
-						throw new Error("engine_completion_transition_refused");
+					if (!genericNoCodeExit) {
+						const transition = this.commitWorkflowTransitionTx({
+							runId: context.binding.run_id,
+							nodeId: context.binding.node_id,
+							attempt: context.binding.attempt,
+							executionId: context.binding.execution_id,
+							outcome: engineOutcome!,
+							nodeCompletionEventUid: eventUid,
+							...(completionSubjectDigest
+								? { subjectDigest: completionSubjectDigest }
+								: {}),
+							alertIdentity: input.alertIdentity,
+							now,
+						});
+						if (!transition.ok) {
+							transitionRefusal = transition.reason;
+							throw new Error("engine_completion_transition_refused");
+						}
 					}
 				}
 				this.projectGeneralizedCompletionTx({
@@ -26953,6 +27209,25 @@ export class StateStore {
 			if (!target) {
 				result = { ok: false, reason: "transition_target_missing" };
 				return;
+			}
+			if (target.type === "gate" && run.gate_carrier_epoch === 1) {
+				let gateAuthority: ReturnType<typeof resolveWorkflowGateAuthority>;
+				try {
+					gateAuthority = resolveWorkflowGateAuthority(snapshot);
+				} catch {
+					result = { ok: false, reason: "gate_authority_incoherent" };
+					return;
+				}
+				if (
+					gateAuthority.mode === "runner_ship" &&
+					!/^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "")
+				) {
+					// A runner-ship gate is always bound to an immutable git head. Refuse
+					// the transition before mutating the source attempt; a missing head is
+					// a held/evidence state, never an exception that escapes as HTTP 500.
+					result = { ok: false, reason: "runner_ship_head_unavailable" };
+					return;
+				}
 			}
 			const activePathRow = this.workflowSelectAll(
 				`SELECT * FROM workflow_rework_verification_path
@@ -28897,7 +29172,9 @@ export class StateStore {
 						holder.head_sha !== approvedHead ||
 						!holder.card_message_id ||
 						!holder.authority_mode ||
-						!holder.subject_kind
+						!holder.subject_kind ||
+						(holder.authority_mode === "runner_ship" &&
+							holder.carrier_binding_state !== "bound")
 					) {
 						throw new Error(
 							"founder approval source payload invalid: gate holder",
@@ -35172,6 +35449,20 @@ export interface WorkflowLaunchCancellationRow {
 	created_at: string;
 }
 
+export interface WorkflowLaunchWindowIdentity {
+	socketPath: string;
+	serverStartTime: string;
+	windowId: string;
+	executionId: string;
+	launchGeneration: number;
+	launchFingerprint: string;
+}
+
+export interface WorkflowLaunchWindowEvidence
+	extends WorkflowLaunchWindowIdentity {
+	physicalEvidence: "absent" | "cleaned";
+}
+
 export type UnlaunchedWorkflowCancellationResult =
 	| { ok: true; generation: number; idempotentReplay: boolean }
 	| { ok: false; reason: string };
@@ -35274,6 +35565,10 @@ export type WorkflowCompletionResult =
 				| "not_enrolled"
 				| "route_mismatch"
 				| "completion_conflict"
+				| "no_code_not_allowed"
+				| "no_code_artifact_present"
+				| "no_code_attestation_missing"
+				| "no_code_attestation_stale"
 				| "terminal_status_immune"
 				| "stale_resubmission_identity_missing"
 				| "transition_refused";

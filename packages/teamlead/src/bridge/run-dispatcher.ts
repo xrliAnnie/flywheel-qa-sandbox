@@ -987,6 +987,15 @@ export class RetryDispatcher implements IRetryDispatcher {
 						? committedDir
 						: undefined,
 				launchGateToken: req.generalizedExecution?.launchGateToken,
+				launchGeneration: req.generalizedExecution?.launchGeneration,
+				launchFingerprint:
+					req.generalizedExecution?.launchGeneration !== undefined
+						? createHash("sha256")
+								.update(
+									`${newExecutionId}:${req.generalizedExecution.launchGeneration}:${req.generalizedExecution.launchGateToken ?? ""}`,
+								)
+								.digest("hex")
+						: undefined,
 				commitWorkflowLaunch: req.generalizedExecution?.commitWorkflowLaunch,
 				workflowTmuxWindowAuthority: (candidate) =>
 					this.tmuxWindowAuthority?.(newExecutionId, candidate) ?? "keep",

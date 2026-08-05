@@ -539,6 +539,7 @@ import {
 } from "./tmux-hold-route.js";
 import {
 	captureRunnerScrollback,
+	cleanupExactWorkflowTmuxWindow,
 	discoverTmuxTargetByExecutionId,
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
@@ -5661,6 +5662,8 @@ export async function startBridge(
 						reason: "rework_coordinator_unavailable",
 					}),
 				probeUnlaunchedExternalEvidence,
+				cleanupUnlaunchedWorkflowWindow: (identity) =>
+					cleanupExactWorkflowTmuxWindow(identity),
 			})
 		: undefined;
 	workflowEngineDispatcher?.start();

@@ -2934,6 +2934,10 @@ export function createRunsRouter(
 							},
 						});
 					} catch (error) {
+						console.error(
+							`[runs-route] generalized launch start failed issue=${issueId} run=${generalizedSelection.runId} node=${generalizedSelection.nodeId} execution=${generalizedSelection.executionId}`,
+							error,
+						);
 						if (launchReleaseFence) {
 							store.releaseFailedWorkflowLaunch({
 								executionId: generalizedSelection.executionId,
@@ -2948,7 +2952,9 @@ export function createRunsRouter(
 						res.status(500).json({
 							success: false,
 							code: "LAUNCH_PRECOMMIT_FAILED",
-							reason: error instanceof Error ? error.message : String(error),
+							reason: "dispatcher_start_failed",
+							executionId: generalizedSelection.executionId,
+							retryable: false,
 						});
 						return;
 					}
@@ -2972,17 +2978,31 @@ export function createRunsRouter(
 						if (!outcome) {
 							res.status(202).json({
 								success: false,
-								code: "GENERALIZED_LAUNCH_PENDING",
+								code: "LAUNCH_PENDING",
 								reason: "precommit outcome is still pending",
+								executionId: generalizedSelection.executionId,
+								retryable: false,
 							});
 							return;
 						}
 						if (outcome.status === "precommit_failed") {
+							if (outcome.failure.code === "LAUNCH_PRECOMMIT_TIMEOUT") {
+								res.status(503).json({
+									success: false,
+									code: outcome.failure.code,
+									reason: outcome.failure.reason,
+									executionId: generalizedSelection.executionId,
+									retryable: false,
+								});
+								return;
+							}
 							if (outcome.failure.physicalEvidence === "unknown") {
 								res.status(202).json({
 									success: false,
-									code: "GENERALIZED_LAUNCH_PENDING",
+									code: "LAUNCH_PENDING",
 									reason: outcome.failure.reason,
+									executionId: generalizedSelection.executionId,
+									retryable: false,
 								});
 								return;
 							}
@@ -2998,15 +3018,28 @@ export function createRunsRouter(
 							if (!released.ok) {
 								res.status(202).json({
 									success: false,
-									code: "GENERALIZED_LAUNCH_PENDING",
+									code: "LAUNCH_PENDING",
 									reason: released.reason,
+									executionId: generalizedSelection.executionId,
+									retryable: false,
 								});
 								return;
 							}
-							res.status(500).json({
+							const status =
+								outcome.failure.code === "LAUNCH_TMUX_SESSION_HELD" ||
+								outcome.failure.code === "LAUNCH_WINDOW_IDENTITY_FAILED"
+									? 409
+									: 500;
+							const retryable =
+								(outcome.failure.code === "LAUNCH_TMUX_SESSION_HELD" &&
+									outcome.failure.reason === "lock_unavailable") ||
+								outcome.failure.code === "LAUNCH_WINDOW_IDENTITY_FAILED";
+							res.status(status).json({
 								success: false,
 								code: outcome.failure.code,
 								reason: outcome.failure.reason,
+								executionId: generalizedSelection.executionId,
+								retryable,
 							});
 							return;
 						}
@@ -3067,8 +3100,10 @@ export function createRunsRouter(
 				res.status(202).json({
 					success: true,
 					pending: true,
-					code: "GENERALIZED_LAUNCH_PENDING",
+					code: "LAUNCH_PENDING",
 					executionId: generalizedSelection.executionId,
+					reason: "launch delivery confirmation is pending",
+					retryable: false,
 					issueId,
 					workflowRunId: generalizedSelection.runId,
 					workflowNodeId: generalizedSelection.nodeId,

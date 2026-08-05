@@ -362,6 +362,9 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 		expect(r.status, JSON.stringify(r.json)).toBe(202);
 		expect(r.json).toMatchObject({ success: true, pending: true });
 		expect(dispatched).toHaveLength(1);
+		expect(dispatched[0]?.generalizedExecution).toMatchObject({
+			launchGeneration: 1,
+		});
 		expect(store.getSession("pred-1")?.retry_successor).toBe(SUCC);
 		expect(store.getRetryDispatchIntent("gwreq-12345")?.state).toBe(
 			"dispatched",

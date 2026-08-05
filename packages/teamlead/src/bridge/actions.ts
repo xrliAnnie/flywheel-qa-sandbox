@@ -1060,6 +1060,7 @@ async function handleRetry(
 		let outputCredential = admitted.outputCredential;
 		let submissionCredential = admitted.submissionCredential;
 		let launchGateToken: string | undefined;
+		let launchGeneration: number | undefined;
 		let commitWorkflowLaunch:
 			| (() => { ok: boolean; reason?: string })
 			| undefined;
@@ -1108,6 +1109,7 @@ async function handleRetry(
 					};
 				}
 				launchGateToken = repair.token;
+				launchGeneration = repair.generation;
 				commitWorkflowLaunch = () =>
 					store.commitWorkflowLaunchDeliveryRepair({
 						executionId: successorExecutionId,
@@ -1176,6 +1178,7 @@ async function handleRetry(
 				};
 			}
 			launchGateToken = launch.token;
+			launchGeneration = launch.generation;
 			commitWorkflowLaunch = () =>
 				store.fencedCommitWorkflowLaunch({
 					executionId: successorExecutionId,
@@ -1201,6 +1204,7 @@ async function handleRetry(
 				submissionCredential,
 				idempotencyKey: `retry:${executionId}:${successorExecutionId}`,
 				launchGateToken,
+				launchGeneration,
 				commitWorkflowLaunch,
 			};
 		}

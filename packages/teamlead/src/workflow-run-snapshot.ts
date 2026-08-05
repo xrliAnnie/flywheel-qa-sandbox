@@ -155,13 +155,7 @@ export function resolveWorkflowGateAuthority(
 			capabilities.creates_pr || capabilities.can_ship || capabilities.can_land
 		);
 	});
-	const outputCarriers = shipCapable.filter(
-		(node) => node.capabilities.produces_output,
-	);
-	const candidates =
-		shipCapable.length > 1 && outputCarriers.length === 1
-			? outputCarriers
-			: shipCapable;
+	const candidates = shipCapable;
 	if (candidates.length === 0) {
 		return { mode: "engine_terminal", subjectKind: claimSubjectKind };
 	}
@@ -360,10 +354,27 @@ export function buildWorkflowRunSnapshotV2(input: {
 	if (validated.schema_version !== 2) {
 		throw new Error("typed generalized snapshot requires schema_version 2");
 	}
+	const hasArtifactProducingGeneric = validated.nodes.some(
+		(node) => node.type === "generic" && node.produces_output === true,
+	);
 	const resolved: ResolvedWorkflowNode[] = validated.nodes.map((node) => {
 		const registry = getNodeTypeRegistryEntry(node.type);
+		const isAuxiliaryGeneric =
+			node.type === "generic" &&
+			node.produces_output !== true &&
+			hasArtifactProducingGeneric;
 		const capabilities: WorkflowNodeCapabilities = {
 			...registry.capabilities,
+			...(isAuxiliaryGeneric
+				? {
+						creates_pr: false,
+						can_ship: false,
+						can_land: false,
+						approval_gate_holder: false,
+						needs_review_evidence: false,
+						completion_route: "no_code" as const,
+					}
+				: {}),
 			...(node.type === "generic" && node.produces_output
 				? { produces_output: true, output_mode: "json_v1" as const }
 				: {}),
@@ -442,6 +453,7 @@ const CAPABILITY_KEYS = [
 	"produces_output",
 	"completion_route",
 	"output_mode",
+	"allow_no_code_completion",
 ] as const;
 
 const LAND_CAPABILITY_KEY = "can_request_ship_approval" as const;
@@ -462,6 +474,12 @@ function parseCapabilities(
 		if (typeof raw[key] !== "boolean") {
 			throw new Error(`${path}.${key} must be boolean`);
 		}
+	}
+	if (
+		raw.allow_no_code_completion !== undefined &&
+		typeof raw.allow_no_code_completion !== "boolean"
+	) {
+		throw new Error(`${path}.allow_no_code_completion must be boolean`);
 	}
 	if (
 		landVariant &&

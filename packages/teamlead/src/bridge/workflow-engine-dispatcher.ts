@@ -13,6 +13,7 @@ import {
 	type WorkflowDeadExecutionActivityEvidence,
 	type WorkflowDeadExecutionWatchRow,
 	type WorkflowEngineAlertIdentity,
+	type WorkflowLaunchWindowIdentity,
 	type WorkflowSideEffectRow,
 } from "../StateStore.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
@@ -50,6 +51,7 @@ import {
 	type MaterializedHeadAuthority,
 	unavailableMaterializedHeadAuthority,
 } from "./materialized-head-authority.js";
+import { parsePaneLossGenerationParams } from "./pane-loss-reconcile.js";
 import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
 import type { AdmissionDecision } from "./runner-admission.js";
 import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
@@ -78,6 +80,9 @@ interface WorkflowEngineDispatcherOptions {
 		executionId: string,
 		projectName: string,
 	) => Promise<"absent" | "present" | "unknown">;
+	cleanupUnlaunchedWorkflowWindow?: (
+		identity: WorkflowLaunchWindowIdentity,
+	) => Promise<"absent" | "cleaned" | "present" | "unknown">;
 	captureDeadExecutionActivityBaseline?: (
 		executionId: string,
 		projectName: string,
@@ -141,6 +146,9 @@ export class WorkflowEngineDispatcher {
 	) => Promise<GeneralizedLaunchLiveness>;
 	private readonly probeUnlaunchedExternalEvidence: NonNullable<
 		WorkflowEngineDispatcherOptions["probeUnlaunchedExternalEvidence"]
+	>;
+	private readonly cleanupUnlaunchedWorkflowWindow: NonNullable<
+		WorkflowEngineDispatcherOptions["cleanupUnlaunchedWorkflowWindow"]
 	>;
 	private readonly captureDeadExecutionActivityBaseline: NonNullable<
 		WorkflowEngineDispatcherOptions["captureDeadExecutionActivityBaseline"]
@@ -227,6 +235,8 @@ export class WorkflowEngineDispatcher {
 			options.probeLaunchLiveness ?? probeGeneralizedLaunchLiveness;
 		this.probeUnlaunchedExternalEvidence =
 			options.probeUnlaunchedExternalEvidence ?? (async () => "unknown");
+		this.cleanupUnlaunchedWorkflowWindow =
+			options.cleanupUnlaunchedWorkflowWindow ?? (async () => "unknown");
 		this.captureDeadExecutionActivityBaseline =
 			options.captureDeadExecutionActivityBaseline ??
 			((executionId, projectName, sessionCommitCount) =>
@@ -915,7 +925,7 @@ export class WorkflowEngineDispatcher {
 		const nowMs = now.getTime();
 		const alertMs = this.reworkThresholdMs(
 			"FLYWHEEL_ENGINE_REWORK_ALERT_MS",
-			10 * 60_000,
+			30 * 60_000,
 		);
 		const holdMs = this.reworkThresholdMs(
 			"FLYWHEEL_ENGINE_REWORK_HOLD_MS",
@@ -1123,6 +1133,44 @@ export class WorkflowEngineDispatcher {
 		}
 	}
 
+	private persistedUnlaunchedWindow(
+		executionId: string,
+	):
+		| { status: "none" }
+		| { status: "incomplete" }
+		| { status: "exact"; identity: WorkflowLaunchWindowIdentity } {
+		const rawParams =
+			this.options.store.getSession(executionId)?.session_params;
+		if (!rawParams) return { status: "none" };
+		try {
+			const params = JSON.parse(rawParams) as Record<string, unknown>;
+			if (!("pane_loss_generation" in params)) return { status: "none" };
+		} catch {
+			return { status: "incomplete" };
+		}
+		const parsed = parsePaneLossGenerationParams(rawParams);
+		if (
+			!parsed?.window_id ||
+			parsed.execution_id !== executionId ||
+			parsed.launch_generation === undefined ||
+			!parsed.launch_fingerprint ||
+			!/^([a-f0-9]{64})$/i.test(parsed.launch_fingerprint)
+		) {
+			return { status: "incomplete" };
+		}
+		return {
+			status: "exact",
+			identity: {
+				socketPath: parsed.socket_path,
+				serverStartTime: parsed.server_start_time,
+				windowId: parsed.window_id,
+				executionId,
+				launchGeneration: parsed.launch_generation,
+				launchFingerprint: parsed.launch_fingerprint,
+			},
+		};
+	}
+
 	private async reconcileUnlaunchedWorkflowStalls(): Promise<void> {
 		const store = this.options.store;
 		const nowMs = this.now().getTime();
@@ -1219,11 +1267,23 @@ export class WorkflowEngineDispatcher {
 				});
 				continue;
 			}
+			const preciseWindow = this.persistedUnlaunchedWindow(intent.execution_id);
+			if (preciseWindow.status === "incomplete") {
+				this.escalateUnlaunchedStall({
+					intent,
+					action: "hold",
+					sourceAt,
+					reason: "precise_window_identity_incomplete",
+					projectName: run.project_name,
+					issueId: run.issue_id,
+				});
+				continue;
+			}
 			const externalBeforeFence = await this.probeUnlaunchedEvidence(
 				intent.execution_id,
 				run.project_name,
 			);
-			if (externalBeforeFence !== "absent") {
+			if (preciseWindow.status === "none" && externalBeforeFence !== "absent") {
 				this.escalateUnlaunchedStall({
 					intent,
 					action: "hold",
@@ -1257,12 +1317,39 @@ export class WorkflowEngineDispatcher {
 				}
 				continue;
 			}
+			let preciseWindowEvidence:
+				| (WorkflowLaunchWindowIdentity & {
+						physicalEvidence: "absent" | "cleaned";
+				  })
+				| undefined;
+			if (preciseWindow.status === "exact") {
+				const cleanup = await this.cleanupUnlaunchedWorkflowWindow(
+					preciseWindow.identity,
+				);
+				if (cleanup !== "absent" && cleanup !== "cleaned") {
+					this.escalateUnlaunchedStall({
+						intent,
+						action: "hold",
+						sourceAt,
+						reason: `precise_window_cleanup_${cleanup}`,
+						projectName: run.project_name,
+						issueId: run.issue_id,
+					});
+					continue;
+				}
+				preciseWindowEvidence = {
+					...preciseWindow.identity,
+					physicalEvidence: cleanup,
+				};
+			}
 			const externalAfterFence = existsSync(markerPath)
 				? "present"
-				: await this.probeUnlaunchedEvidence(
-						intent.execution_id,
-						run.project_name,
-					);
+				: preciseWindowEvidence
+					? "absent"
+					: await this.probeUnlaunchedEvidence(
+							intent.execution_id,
+							run.project_name,
+						);
 			if (externalAfterFence !== "absent") {
 				this.escalateUnlaunchedStall({
 					intent,
@@ -1283,6 +1370,7 @@ export class WorkflowEngineDispatcher {
 				fenceGeneration: cancellation.generation,
 				markerPath,
 				now: this.now().toISOString(),
+				...(preciseWindowEvidence && { preciseWindowEvidence }),
 				alertIdentity: this.resolveRunAlertIdentity(
 					run.project_name,
 					run.issue_id,
@@ -1834,11 +1922,11 @@ export class WorkflowEngineDispatcher {
 			intent.attempt === 1 &&
 			!snapshot.manifest.edges.some((edge) => edge.to === node.id);
 		const startRetryExecutionId =
-			!isRootDesignFirstAttempt &&
 			!transition &&
 			startReservation?.node_id === intent.node_id &&
 			startReservation.attempt === intent.attempt &&
-			startReservation.execution_id === transitionExecutionId
+			startReservation.execution_id === transitionExecutionId &&
+			transitionExecutionId !== intent.execution_id
 				? transitionExecutionId
 				: undefined;
 		const predecessorExecutionId =

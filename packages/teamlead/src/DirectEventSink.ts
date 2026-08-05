@@ -403,7 +403,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	async emitWorktreeReady(
 		env: EventEnvelope,
 		worktreePath: string,
-		binding?: { branch: string; generation: string },
+		binding?: {
+			branch: string;
+			generation: string;
+			repoBaselineSetJson?: string;
+			repoBaselineSetDigest?: string;
+		},
 	): Promise<void> {
 		if (!worktreePath || worktreePath.length === 0) {
 			console.warn(
@@ -443,6 +448,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					path: worktreePath,
 					branch: binding.branch,
 					generation: binding.generation,
+					...(binding.repoBaselineSetJson && binding.repoBaselineSetDigest
+						? {
+								repoBaselineSetJson: binding.repoBaselineSetJson,
+								repoBaselineSetDigest: binding.repoBaselineSetDigest,
+							}
+						: {}),
 				},
 				{ issueId: env.issueId, projectName: env.projectName },
 			);

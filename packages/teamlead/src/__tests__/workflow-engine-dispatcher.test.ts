@@ -1762,6 +1762,81 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
+	it("fences, cleans, and verifies a persisted exact precommit window before rollback", async () => {
+		const store = await storeWithIntent("implement");
+		const start = vi.fn(async () => {
+			throw new Error("synthetic prelaunch failure");
+		});
+		const startDispatcher = {
+			start,
+			getInflightCount: () => 0,
+			validateAgentName: () => ({ ok: true as const }),
+		} as IStartDispatcher;
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly1638-exact-window-"));
+		const env = {
+			...WORKFLOW_ON,
+			FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS: "1000",
+			FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS: "2000",
+		};
+		expect(
+			await new WorkflowEngineDispatcher({
+				store,
+				startDispatcher,
+				stateRoot,
+				env,
+				now: () => new Date("2026-07-16T00:07:00.000Z"),
+				resolvePredecessorHead: async () => HEAD,
+				probeUnlaunchedExternalEvidence: async () => "absent",
+			}).reconcile(),
+		).toEqual({ started: 0, held: 1 });
+		const fingerprint = "f".repeat(64);
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			session_params: JSON.stringify({
+				pane_loss_generation: {
+					socket_path: "/tmp/flywheel.sock",
+					server_start_time: "123",
+					window_id: "@7",
+					execution_id: "implement-1",
+					launch_generation: 1,
+					launch_fingerprint: fingerprint,
+				},
+			}),
+		});
+		const cleanup = vi.fn(async () => "cleaned" as const);
+		expect(
+			await new WorkflowEngineDispatcher({
+				store,
+				startDispatcher,
+				stateRoot,
+				env,
+				now: () => new Date("2026-07-16T01:08:00.000Z"),
+				resolvePredecessorHead: async () => HEAD,
+				probeUnlaunchedExternalEvidence: async () => "present",
+				cleanupUnlaunchedWorkflowWindow: cleanup,
+				resolveRunAlertIdentity: () => ({
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				}),
+			}).reconcile(),
+		).toEqual({ started: 0, held: 0 });
+		expect(cleanup).toHaveBeenCalledWith({
+			socketPath: "/tmp/flywheel.sock",
+			serverStartTime: "123",
+			windowId: "@7",
+			executionId: "implement-1",
+			launchGeneration: 1,
+			launchFingerprint: fingerprint,
+		});
+		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		expect(store.getSession("implement-1")?.status).toBe("failed");
+		store.close();
+	});
+
 	it("holds without rollback when external launch evidence is present at the hard TTL", async () => {
 		const store = await storeWithIntent("implement");
 		const start = vi.fn(async () => {
@@ -2778,6 +2853,7 @@ describe("WorkflowEngineDispatcher", () => {
 				runStatus: store.getWorkflowRun("run-1")?.status,
 				requestCount: fake.requests.length,
 				dispatch: fake.requests[0]?.generalizedExecution?.dispatch,
+				startPoint: fake.requests[0]?.startPoint,
 				alertCount: store.listWorkflowAlertOutbox().length,
 				rollback: rollback
 					? {
@@ -2793,6 +2869,7 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(outcomes[0]).toMatchObject({
 			runStatus: "active",
 			requestCount: 1,
+			startPoint: HEAD,
 			alertCount: 0,
 			rollback: {
 				kind: "execution_dead_rolled_back",

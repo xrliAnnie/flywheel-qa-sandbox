@@ -18,8 +18,19 @@ export async function waitForWorkflowLaunchOutcome(input: {
 	try {
 		return await Promise.race([
 			input.outcome,
-			new Promise<undefined>((resolve) => {
-				timeout = setTimeout(() => resolve(undefined), input.timeoutMs);
+			new Promise<LaunchPrecommitOutcome>((resolve) => {
+				timeout = setTimeout(
+					() =>
+						resolve({
+							status: "precommit_failed",
+							failure: {
+								code: "LAUNCH_PRECOMMIT_TIMEOUT",
+								reason: "deadline_exhausted",
+								physicalEvidence: "unknown",
+							},
+						}),
+					input.timeoutMs,
+				);
 				timeout.unref?.();
 			}),
 		]);

@@ -468,6 +468,49 @@ describe("TmuxAdapter", () => {
 		expect(killWindowTargets(base.calls)).not.toContain("=flywheel:@7");
 	});
 
+	it("reserves room for execution and owner-generation suffixes on long labels", async () => {
+		const canonical = "A".repeat(50);
+		const base = makeMockExec({
+			paneDead: true,
+			hasSessionError: false,
+			listWindows: `@7|${canonical}|live-exec|2|live-fingerprint`,
+		});
+		await new TmuxAdapter("flywheel", base.fn, 10).execute(
+			makeCtx({
+				label: canonical,
+				executionId: "test-execution-id",
+				launchGeneration: 3,
+				workflowTmuxWindowAuthority: () => "keep",
+			}),
+		);
+		const newWindow = base.calls.find((call) => call.args[0] === "new-window")!;
+		const selected = newWindow.args[newWindow.args.indexOf("-n") + 1]!;
+		expect(selected).toHaveLength(50);
+		expect(selected).toMatch(/-test-exe-g3$/);
+	});
+
+	it("preflights the suffixed fallback and selects a bounded unique retry name", async () => {
+		const base = makeMockExec({
+			paneDead: true,
+			hasSessionError: false,
+			listWindows:
+				"@7|GEO-TEST|live-exec|2|live-fingerprint\n" +
+				"@8|GEO-TEST-test-exe-g3|other-exec|1|other-fingerprint",
+		});
+		await new TmuxAdapter("flywheel", base.fn, 10).execute(
+			makeCtx({
+				label: "GEO-TEST",
+				executionId: "test-execution-id",
+				launchGeneration: 3,
+				workflowTmuxWindowAuthority: () => "keep",
+			}),
+		);
+		const newWindow = base.calls.find((call) => call.args[0] === "new-window")!;
+		expect(newWindow.args[newWindow.args.indexOf("-n") + 1]).toBe(
+			"GEO-TEST-test-exe-g3-r1",
+		);
+	});
+
 	it("fails a workflow launch closed with a typed result when exact window identity cannot be published", async () => {
 		const base = makeMockExec({ paneDead: true });
 		let killed = false;

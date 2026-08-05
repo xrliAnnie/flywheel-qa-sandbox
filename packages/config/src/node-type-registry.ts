@@ -29,6 +29,8 @@ export interface WorkflowNodeCapabilities {
 	produces_output: boolean;
 	completion_route: WorkflowCompletionRoute;
 	output_mode: WorkflowOutputMode;
+	/** Live-policy opt-in for a proof-backed, artifact-free terminal closeout. */
+	allow_no_code_completion?: boolean;
 }
 
 export interface NodeTypeRegistryEntry {
@@ -141,6 +143,7 @@ export const NODE_TYPE_REGISTRY: Readonly<
 		// else throws incoherent_ship_bundle.
 		capabilities: {
 			...noCode("needs_review"),
+			allow_no_code_completion: true,
 			shared_branch_writer: true,
 			creates_pr: true,
 			can_ship: true,

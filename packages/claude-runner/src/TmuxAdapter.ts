@@ -1412,10 +1412,12 @@ export class TmuxAdapter implements IAdapter {
 			return windowName;
 		}
 		let collisionRemains = false;
+		const occupiedNames = new Set<string>();
 		for (const line of listed.split("\n")) {
 			if (!line.trim()) continue;
 			const [windowId, candidateName, executionId, rawGeneration, fingerprint] =
 				line.split("|");
+			if (candidateName) occupiedNames.add(candidateName);
 			if (candidateName !== windowName) continue;
 			if (!windowId || !/^@\d+$/.test(windowId)) {
 				collisionRemains = true;
@@ -1442,9 +1444,26 @@ export class TmuxAdapter implements IAdapter {
 				collisionRemains = true;
 			}
 		}
-		return collisionRemains
-			? this.sanitizeWindowName(`${windowName}-${ctx.executionId.slice(0, 8)}`)
-			: windowName;
+		if (!collisionRemains) return windowName;
+		const identitySuffix = `-${ctx.executionId.slice(0, 8)}${
+			ctx.launchGeneration === undefined ? "" : `-g${ctx.launchGeneration}`
+		}`;
+		// tmux permits duplicate display names, so the fallback must itself be
+		// preflighted. A session cannot hold this many windows under our admission
+		// cap; the bound still makes a corrupt inventory fail closed.
+		for (let retry = 0; retry <= 100; retry += 1) {
+			const suffix = `${identitySuffix}${retry === 0 ? "" : `-r${retry}`}`;
+			const availableBaseLength = Math.max(1, 50 - suffix.length);
+			const selected = this.sanitizeWindowName(
+				`${windowName.slice(0, availableBaseLength)}${suffix}`,
+			);
+			if (!occupiedNames.has(selected)) return selected;
+		}
+		throw new TmuxSessionHoldError(
+			"ambiguous",
+			{ windowName, executionId: ctx.executionId },
+			"tmux session ensure held: no unique workflow window name",
+		);
 	}
 
 	private async ensureSession(): Promise<void> {

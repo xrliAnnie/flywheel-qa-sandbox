@@ -330,6 +330,39 @@ describe("typed generalized workflow snapshot", () => {
 		});
 	});
 
+	it("rejects snapshots that still expose more than one ship-capable carrier", () => {
+		const { root, manifest } = fixture();
+		manifest.nodes.splice(1, 0, {
+			id: "also_execute",
+			type: "generic",
+			vendor: "codex",
+			model: "gpt-5.6-sol",
+			effort: "low",
+			agent_file: "agents/generic.md",
+		});
+		manifest.edges.splice(0, 1, {
+			id: "first_done",
+			from: "execute",
+			to: "also_execute",
+			condition: "node_done",
+		});
+		manifest.edges.push({
+			id: "second_done",
+			from: "also_execute",
+			to: "founder_gate",
+			condition: "node_done",
+		});
+		const snapshot = buildWorkflowRunSnapshotV2({
+			template: { id: "tpl_ambiguous", revision: 1 },
+			manifest,
+			canonicalRoot: root,
+		});
+
+		expect(() => resolveWorkflowGateAuthority(snapshot)).toThrow(
+			"incoherent_ship_bundle",
+		);
+	});
+
 	it("pins and parses work-kind provenance while old snapshots stay field-free", () => {
 		const { root, manifest } = fixture();
 		const legacy = buildWorkflowRunSnapshotV2({

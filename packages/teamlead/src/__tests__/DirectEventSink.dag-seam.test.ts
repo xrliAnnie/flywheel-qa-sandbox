@@ -85,6 +85,31 @@ const baseEnv: EventEnvelope = {
 };
 
 describe("FLY-1372 DirectEventSink behavior-field seam", () => {
+	it("persists the repository baseline in the immutable worktree binding", async () => {
+		const { sink, store } = await harness();
+		await sink.emitStarted(baseEnv);
+		await sink.emitWorktreeReady(baseEnv, "/tmp/flywheel-seam", {
+			branch: "flywheel-FLY-802",
+			generation: "generation-1",
+			repoBaselineSetJson: '{"repositories":[],"version":1}',
+			repoBaselineSetDigest: "digest-1",
+		});
+		expect(store.getWorktreeBinding("seam-1")).toMatchObject({
+			path: "/tmp/flywheel-seam",
+			branch: "flywheel-FLY-802",
+			generation: "generation-1",
+			repoBaselineSetJson: '{"repositories":[],"version":1}',
+			repoBaselineSetDigest: "digest-1",
+		});
+		await sink.emitWorktreeReady(baseEnv, "/tmp/rebound", {
+			branch: "rebound",
+			generation: "generation-2",
+			repoBaselineSetJson: "{}",
+			repoBaselineSetDigest: "digest-2",
+		});
+		expect(store.getWorktreeBinding("seam-1")?.generation).toBe("generation-1");
+	});
+
 	it("persists the four behavior fields atomically with session-row creation", async () => {
 		const { sink, raw } = await harness();
 		await sink.emitStarted({

@@ -19,6 +19,7 @@ import type {
 } from "flywheel-config";
 import {
 	BACKEND_SKILL_ASSEMBLY,
+	captureRepositoryBaselineSet,
 	DEFAULT_GATE_TIMEOUT_MS,
 	defaultAgentsSkillsDir,
 	isFounderUxGateEnabled,
@@ -1390,6 +1391,24 @@ export class Blueprint {
 			// gate hangs until timeout.
 			if (this.eventEmitter && worktreeInfo) {
 				try {
+					let repositoryBaseline: { json: string; digest: string } | undefined;
+					if (
+						worktreeInfo.generation &&
+						ctx.workflowCapabilities?.allow_no_code_completion === true
+					) {
+						try {
+							repositoryBaseline = captureRepositoryBaselineSet(
+								worktreeInfo.worktreePath,
+							);
+						} catch (error) {
+							// Baseline proof is optional for launch but mandatory for no_code.
+							// A probe failure therefore preserves the core worktree binding and
+							// makes only the no-artifact exit fail closed.
+							console.warn(
+								`[Blueprint] repository baseline unavailable for ${hydrated.issueId}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					}
 					// FLY-1185 §2.1: carry the create-time binding (branch + generation).
 					// Only the bridge-local DirectEventSink turns this into StateStore
 					// authority; the HTTP client never transmits it. Empty generation
@@ -1402,6 +1421,10 @@ export class Blueprint {
 							{
 								branch: worktreeInfo.branch,
 								generation: worktreeInfo.generation,
+								...(repositoryBaseline && {
+									repoBaselineSetJson: repositoryBaseline.json,
+									repoBaselineSetDigest: repositoryBaseline.digest,
+								}),
 							},
 						);
 					} else {
