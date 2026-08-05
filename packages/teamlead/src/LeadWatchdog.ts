@@ -988,8 +988,6 @@ export function titleFor(kind: AlertEventType): string {
 			return "Lead identity lease store unavailable";
 		case "lead_lease_bypass_used":
 			return "Lead identity lease bypass used";
-		case "lead_body_adopted":
-			return "Lead body adopted by replacement supervisor";
 		case "lead_lease_would_block":
 			return "Lead identity lease would block a write";
 		case "lead_lease_control_broken":
@@ -1218,8 +1216,6 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "The durable Lead identity lease store is unavailable or corrupt. Mutating Lead actions are fail-closed until the store is repaired and the carrier generation is revalidated.";
 		case "lead_lease_bypass_used":
 			return "An explicit emergency bypass performed a Lead mutation without a normal lease grant. Review the audit provenance and restore ordinary lease enforcement immediately.";
-		case "lead_body_adopted":
-			return "A replacement supervisor safely adopted the sole live orphaned Lead body and rebound the identity lease. No new body was launched; verify the supplied generation evidence if the recovery repeats.";
 		case "lead_lease_would_block":
 			return "Observe-mode lease enforcement detected a Lead mutation that would have been rejected. Reconcile the active holder and backend before enabling enforcement.";
 		case "lead_lease_control_broken":

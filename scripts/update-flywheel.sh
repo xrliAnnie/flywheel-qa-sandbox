@@ -85,7 +85,7 @@ default_deploy() {
   if ! git -C "$FLYWHEEL_DIR" pull origin main --ff-only --quiet 2>/dev/null; then
     log "git pull --ff-only failed (transient: untracked collision / non-ff)"; return 2
   fi
-  if "${SCRIPT_DIR}/restart-services.sh"; then return 0; else
+  if FLYWHEEL_RESTART_FOREGROUND=1 "${SCRIPT_DIR}/restart-services.sh"; then return 0; else
     log "restart-services.sh failed (deterministic)"; return 3
   fi
 }

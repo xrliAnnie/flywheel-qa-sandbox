@@ -219,7 +219,7 @@ source "${SCRIPT_DIR}/lib/tmux-supervisor-guard.sh"
 # shellcheck source=lib/lead-identity-preflight.sh
 source "${SCRIPT_DIR}/lib/lead-identity-preflight.sh"
 # FLY-1602: the restart lifecycle parser is the shared disk/launchd authority
-# contract; adoption inventory is deliberately read-only before its lease CAS.
+# contract; body inventory is deliberately read-only before any hard clear.
 # shellcheck source=../../../scripts/lib/lead-restart-lifecycle.sh
 source "${FLYWHEEL_ROOT}/scripts/lib/lead-restart-lifecycle.sh"
 # shellcheck source=lib/lead-launch-authority.sh
@@ -1495,97 +1495,44 @@ _prepare_lead_launch() {
   return 0
 }
 
-_lead_adopt_existing_body() {
-  local lease_rc="$1" census="" census_rc=0 evidence="" evidence_rc=0
-  local inspection="" verdict="" server_pid="" adopt_rc=0
-  ENSURE_HOLD_KIND=""
-  ENSURE_HOLD_EVIDENCE=""
+_lead_restore_orphan_session() {
+  local command="" session_id="" tmp=""
+  [ -f "$SESSION_ID_FILE" ] && return 0
+  command="$(lead_body_process_command "$LEAD_LEASE_ORPHAN_HOLDER_PID")" || return 1
+  _lead_body_command_proof "$command" "$PROJECT_NAME" "$LEAD_ID" claude-code \
+    || return 1
+  session_id="$(_lead_body_session_identity "$command")" || return 1
+  mkdir -p "${SESSION_ID_FILE%/*}" 2>/dev/null || return 1
+  tmp="${SESSION_ID_FILE}.tmp.$$"
+  (umask 077 && printf '%s\n' "$session_id" > "$tmp") || return 1
+  mv "$tmp" "$SESSION_ID_FILE"
+}
 
-  if [ "$LEAD_LAUNCH_MANAGED" != true ]; then
-    ENSURE_HOLD_KIND="ambiguous"
-    ENSURE_HOLD_EVIDENCE='{"reason":"orphan_adoption_requires_managed_launchd"}'
-    return 3
+_lead_clear_orphan_body() {
+  if _lead_restore_orphan_session; then
+    log "Recovered session identity before clearing orphan Lead body"
+  else
+    log "WARNING: orphan Lead body session identity was unavailable; clearing exact holder tuple"
   fi
-  census="$(lead_identity_supervisor_census "$LEAD_ID" "$PROJECT_NAME" "$$")" \
-    || census_rc=$?
-  if [ "$census_rc" -ne 0 ]; then
-    ENSURE_HOLD_KIND="unknown"
-    ENSURE_HOLD_EVIDENCE='{"reason":"supervisor_census_sensor_degraded"}'
-    return 3
-  fi
-  if [ -n "$census" ]; then
-    ENSURE_HOLD_KIND="split_brain"
-    ENSURE_HOLD_EVIDENCE='{"reason":"foreign_supervisor_present"}'
-    return 3
-  fi
+  lead_body_hard_clear \
+    "$PROJECT_NAME" "$LEAD_ID" claude-code \
+    "$LEAD_LEASE_ORPHAN_HOLDER_PID" "$LEAD_LEASE_ORPHAN_HOLDER_START"
+}
 
-  evidence="$(lead_body_adoption_evidence \
-    "$PROJECT_NAME" "$LEAD_ID" claude-code "$TMUX_ARCHIVE_FILE" \
-    "$LEAD_LEASE_ORPHAN_HOLDER_PID" "$LEAD_LEASE_ORPHAN_HOLDER_START")" \
-    || evidence_rc=$?
-  if [ "$evidence_rc" -ne 0 ]; then
-    ENSURE_HOLD_KIND="ambiguous"
-    if [ "$evidence_rc" -eq 2 ]; then
-      ENSURE_HOLD_EVIDENCE='{"reason":"adoption_evidence_indeterminate"}'
-    else
-      ENSURE_HOLD_EVIDENCE='{"reason":"adoption_evidence_not_closed"}'
-    fi
-    return 3
-  fi
-  if ! lead_launch_authority_recheck; then
-    ENSURE_HOLD_KIND="unknown"
-    ENSURE_HOLD_EVIDENCE="{\"reason\":\"${LEAD_LAUNCH_AUTHORITY_REASON}\"}"
-    return 3
-  fi
-
-  if [ "$lease_rc" -eq 4 ]; then
-    lead_identity_adopt_lease \
-      "$LEAD_ID" "$PROJECT_NAME" "$$" "$LEAD_LEASE_SUPERVISOR_START" \
-      "$LEAD_LEASE_ORPHAN_HOLDER_PID" "$LEAD_LEASE_ORPHAN_HOLDER_START" \
-      "$LEAD_LEASE_ORPHAN_OLD_SUP_PID" "$LEAD_LEASE_ORPHAN_OLD_SUP_START" \
-      || adopt_rc=$?
-    if [ "$adopt_rc" -ne 0 ]; then
-      ENSURE_HOLD_KIND="ambiguous"
-      ENSURE_HOLD_EVIDENCE='{"reason":"adoption_cas_lost_or_unavailable"}'
-      return 3
-    fi
-  fi
-
-  inspection="$(tmux_socket_inspect "$(_tmux_socket_path)")" || {
-    ENSURE_HOLD_KIND="unknown"
-    ENSURE_HOLD_EVIDENCE='{"reason":"adoption_tmux_socket_unavailable"}'
-    return 3
-  }
-  verdict="$(_tmux_rescue_json_field "$inspection" verdict)"
-  server_pid="$(_tmux_rescue_json_field "$inspection" reachablePid)"
-  if [ "$verdict" != reachable ]; then
-    ENSURE_HOLD_KIND="${verdict:-unknown}"
-    ENSURE_HOLD_EVIDENCE='{"reason":"adoption_tmux_socket_not_reachable"}'
-    return 3
-  fi
-  case "$server_pid" in ''|0|*[!0-9]*)
-    ENSURE_HOLD_KIND="unknown"
-    ENSURE_HOLD_EVIDENCE='{"reason":"adoption_tmux_server_pid_invalid"}'
-    return 3
-    ;;
-  esac
-  if ! lead_body_attach_adopted \
-    "$evidence" "$server_pid" "$TMUX_ARCHIVE_FILE" "$SESSION_ID_FILE" "$MANIFEST_FILE"; then
-    ENSURE_HOLD_KIND="ambiguous"
-    ENSURE_HOLD_EVIDENCE='{"reason":"adoption_attach_failed"}'
-    return 3
-  fi
-  TMUX_SERVER_PID="$server_pid"
-  LEAD_WINDOW_ID="$LEAD_ADOPTION_WINDOW_ID"
-  if [ "$LEAD_ADOPTION_MODEL_OBSERVATION" = mismatch ]; then
-    log "Adopted Lead body model differs from current manifest; preserving live body until its natural exit"
-  fi
-  if [ "$lease_rc" -eq 4 ]; then
-    _lead_identity_alert_info lead_body_adopted \
-      "Lead body adopted after supervisor replacement" \
-      "${PROJECT_NAME}/${LEAD_ID} attached supervisor $$ to the existing body PID ${LEAD_ADOPTION_PANE_PID} without changing its writer generation."
-  fi
-  return 0
+# rc 0: this supervisor's bound body and archived tmux window are the same
+# executable tuple. rc 1: holder is dead/zombie. rc 2: process sensor failed.
+# rc 3: a live holder exists, but its window/archive identity is not closed.
+_lead_bound_body_ready() {
+  local tuple_rc=0
+  _lead_body_tuple_state \
+    "$LEAD_LEASE_ORPHAN_HOLDER_PID" "$LEAD_LEASE_ORPHAN_HOLDER_START" \
+    || tuple_rc=$?
+  [ "$tuple_rc" -eq 0 ] || return "$tuple_rc"
+  [ -n "$LEAD_WINDOW_ID" ] || return 3
+  _tmux_target_matches_archive "$LEAD_WINDOW_ID" true || return 3
+  [ "$TMUX_ARCHIVE_PANE_PID" = "$LEAD_LEASE_ORPHAN_HOLDER_PID" ] \
+    && [ "$TMUX_ARCHIVE_PANE_START" = "$LEAD_LEASE_ORPHAN_HOLDER_START" ] \
+    || return 3
 }
 
 # FLY-231: structured dry-run launch plan (FLYWHEEL_LEAD_DRY_RUN=1). Emits the
@@ -3239,15 +3186,6 @@ _lead_identity_alert() {
     || true
 }
 
-_lead_identity_alert_info() {
-  local kind="$1" title="$2" body="$3"
-  [ -x "$LEAD_ALERT_SH" ] || return 0
-  "$LEAD_ALERT_SH" \
-    --lead "$LEAD_ID" --project "$PROJECT_NAME" \
-    --kind "$kind" --severity info --title "$title" --body "$body" \
-    || true
-}
-
 log "Supervisor starting (recovery loop enabled)"
 log "Session ID file: ${SESSION_ID_FILE}"
 TMUX_HOLD_BACKOFF=3
@@ -3294,14 +3232,28 @@ while true; do
             "${PROJECT_NAME}/${LEAD_ID} could not acquire its identity lease; launch is degraded and enforce-mode writes remain fail-closed."
         fi
         ;;
-      4|5)
-        if _lead_adopt_existing_body "$_lead_lease_prepare_rc"; then
-          log "Monitoring adopted Lead body PID ${LEAD_ADOPTION_PANE_PID} in tmux ${LEAD_ADOPTION_WINDOW_ID}"
+      4)
+        if _lead_clear_orphan_body; then
+          log "Cleared orphan Lead body; reacquiring a fresh lease generation"
+          TMUX_HOLD_BACKOFF=3
+          continue
+        fi
+        LEAD_LEASE_HOLD_REASON="denied_sensor_degraded"
+        ;;
+      5)
+        _lead_bound_body_rc=0
+        _lead_bound_body_ready || _lead_bound_body_rc=$?
+        if [ "$_lead_bound_body_rc" -eq 0 ]; then
+          log "Monitoring existing bound Lead body PID ${LEAD_LEASE_ORPHAN_HOLDER_PID}"
           TMUX_HOLD_BACKOFF=3
           _wait_tmux_window
           continue
+        elif [ "$_lead_bound_body_rc" -eq 1 ] && _lead_clear_orphan_body; then
+          log "Cleared stale bound Lead body; reacquiring a fresh lease generation"
+          TMUX_HOLD_BACKOFF=3
+          continue
         fi
-        LEAD_LEASE_HOLD_REASON="adoption_hold"
+        LEAD_LEASE_HOLD_REASON="denied_sensor_degraded"
         ;;
     esac
   fi
@@ -3323,10 +3275,6 @@ while true; do
         _lead_identity_alert lead_dual_active_sensor_degraded \
           "Lead lease liveness sensor degraded" \
           "${PROJECT_NAME}/${LEAD_ID} could not safely classify the current supervisor/body tuple and is held before launch."
-        ;;
-      adoption_hold)
-        _tmux_report_hold "${ENSURE_HOLD_KIND:-ambiguous}" \
-          "$(lead_body_adoption_hold_evidence "${ENSURE_HOLD_EVIDENCE:-}")" || true
         ;;
     esac
     interruptible_sleep "$TMUX_HOLD_BACKOFF"

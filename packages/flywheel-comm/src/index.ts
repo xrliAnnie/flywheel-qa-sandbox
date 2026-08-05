@@ -107,7 +107,7 @@ Commands:
   handle-receipt  Category-agnostic Lead action: ack/no-route/relay/respond a receipt
   chat-receipt  Durable Discord-chat receipt producer (begin|complete|settle|pending|quarantine)
   send      Send an instruction to a runner (Lead use)
-  lead-lease  Manage the Lead identity lease (acquire|bind|adopt|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
+  lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
   sessions           List runner sessions
   sessions register  Register a runner session in CommDB

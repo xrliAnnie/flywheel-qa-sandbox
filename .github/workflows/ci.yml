@@ -135,11 +135,14 @@ jobs:
         run: node --test scripts/__tests__/workkind-cutover.test.mjs
 
       # FLY-889: tmux/lsof/sqlite3 are each needed by a later hermetic test step
-      # (cmux-sync / FLY-183 orphan-reaper / FLY-697 codex-log-guard). Installing
-      # all three here in one apt-get avoids repeating `apt-get update` three
-      # times for the same effect.
-      - name: Install tmux/lsof/sqlite3 for hermetic test scripts
-        run: sudo apt-get update && sudo apt-get install -y tmux lsof sqlite3
+      # (cmux-sync / FLY-183 orphan-reaper / FLY-697 codex-log-guard). ripgrep is
+      # needed by the shell suites that assert on production source anchors
+      # (test-lead-identity-preflight, restart-self-detach) — it is NOT preinstalled
+      # on the runner, and a missing `rg` makes those assertions fail as if the
+      # production seam were gone. Installing them here in one apt-get avoids
+      # repeating `apt-get update` for the same effect.
+      - name: Install tmux/lsof/sqlite3/ripgrep for hermetic test scripts
+        run: sudo apt-get update && sudo apt-get install -y tmux lsof sqlite3 ripgrep
 
       # FLY-1327: deterministic cycle-time analytics use real WAL backup +
       # immutable-snapshot reads against fixture DBs. Keep the sqlite preflight
@@ -350,6 +353,16 @@ jobs:
           bash packages/teamlead/scripts/__tests__/lead-backend-dispatch.test.sh
           bash scripts/__tests__/qa-fly1501-brake-missing-alert.test.sh
           bash scripts/__tests__/qa-fly1501-bounded-run.test.sh
+
+      # FLY-1634: restart subtraction. Keep the single hard-clear verdict,
+      # marker breadcrumb, supervisor orphan fallback, and self-detach PGID
+      # contract in the required gate; this job enumerates shell suites.
+      - name: Test — FLY-1634 restart net-deletion contracts
+        run: |
+          bash scripts/__tests__/lead-body-hard-clear.test.sh
+          bash scripts/__tests__/lead-restart-controlled-wave.test.sh
+          bash packages/teamlead/scripts/__tests__/test-lead-identity-preflight.sh
+          bash scripts/__tests__/restart-self-detach.test.sh
 
       # FLY-1062: the REAL npm full chain on the real repo — pack (gated) →
       # npm install --prefix (registry fetch for the dependency union) →

@@ -934,7 +934,7 @@ uninstall_one() {
 }
 
 cmd_restart() {
-  log "ERROR: direct Lead restart is unsafe and disabled. Run ${FLYWHEEL_DIR}/scripts/restart-services.sh so bootout, body sweep, controlled-wave arm, and N0-N5 verification stay atomic." >&2
+  log "ERROR: direct Lead restart is disabled. Run ${FLYWHEEL_DIR}/scripts/restart-services.sh for the launchd-managed restart path." >&2
   return 1
 }
 

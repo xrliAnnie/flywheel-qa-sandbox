@@ -65,7 +65,6 @@ const QUOTA_INFORMATIONAL_KINDS = new Set([
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
 	"cmux_flag_state",
-	"lead_body_adopted",
 ]);
 const QUOTA_GUARD_KINDS = ["quota_guard_bypassed"] as const;
 
@@ -207,16 +206,6 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 
 	it("keeps the frozen root-only notice kinds informational", () => {
 		expect(INFORMATIONAL_KINDS).toEqual(QUOTA_INFORMATIONAL_KINDS);
-	});
-
-	it("FLY-1602 routes adopted-body recovery as notify-only telemetry", () => {
-		expect(ALERT_EVENT_TYPES).toContain("lead_body_adopted");
-		expect(INFORMATIONAL_KINDS.has("lead_body_adopted")).toBe(true);
-		expect(KIND_CONTRACTS.lead_body_adopted).toEqual({
-			owner: "claude",
-			arc: "human_by_design",
-			remediationRef: "FLY-1602 orphan-body adoption path",
-		});
 	});
 
 	it("FLY-1182 explicitly classifies every actionable quota kind as a manual daemon-state ticket", () => {

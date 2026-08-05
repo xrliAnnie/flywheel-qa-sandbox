@@ -63,19 +63,6 @@ CREATE TABLE IF NOT EXISTS lease_audit (
   created_at TEXT NOT NULL,
   materialized_at TEXT
 );
-CREATE TABLE IF NOT EXISTS lease_supervisor_audit (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  lead_key TEXT NOT NULL,
-  generation INTEGER NOT NULL,
-  event TEXT NOT NULL CHECK(event = 'adopted'),
-  old_supervisor_pid INTEGER NOT NULL,
-  old_supervisor_start TEXT NOT NULL,
-  new_supervisor_pid INTEGER NOT NULL,
-  new_supervisor_start TEXT NOT NULL,
-  holder_pid INTEGER NOT NULL,
-  holder_start TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS store_meta (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
@@ -120,20 +107,6 @@ export interface LeadLeaseRow {
 export type ProcessTupleState = "alive" | "dead" | "sensor_error";
 
 export type LeadLeaseRowFormat = "version_valid" | "legacy" | "malformed";
-
-export interface LeadLeaseSupervisorAuditRow {
-	id: number;
-	leadKey: string;
-	generation: number;
-	event: "adopted";
-	oldSupervisorPid: number;
-	oldSupervisorStart: string;
-	newSupervisorPid: number;
-	newSupervisorStart: string;
-	holderPid: number;
-	holderStart: string;
-	createdAt: string;
-}
 
 export interface LeadLeaseHistoryRow {
 	leadKey: string;
@@ -180,18 +153,6 @@ export interface BindLeaseInput {
 	now?: string;
 }
 
-export interface AdoptLeaseInput {
-	leadKey: string;
-	expectedHolderPid: number;
-	expectedHolderStart: string;
-	oldSupervisorPid: number;
-	oldSupervisorStart: string;
-	newSupervisorPid: number;
-	newSupervisorStart: string;
-	acquiredBy: string;
-	now?: string;
-}
-
 export interface VerifyBoundLeaseInput {
 	leadKey: string;
 	expectedSupervisorPid: number;
@@ -213,20 +174,6 @@ interface RawLeaseRow {
 	bound_at: string | null;
 	acquired_at: string;
 	acquired_by: string;
-}
-
-interface RawSupervisorAuditRow {
-	id: number;
-	lead_key: string;
-	generation: number;
-	event: "adopted";
-	old_supervisor_pid: number;
-	old_supervisor_start: string;
-	new_supervisor_pid: number;
-	new_supervisor_start: string;
-	holder_pid: number;
-	holder_start: string;
-	created_at: string;
 }
 
 interface RawHistoryRow {
@@ -260,24 +207,6 @@ function mapLease(row: RawLeaseRow): LeadLeaseRow {
 		boundAt: row.bound_at,
 		acquiredAt: row.acquired_at,
 		acquiredBy: row.acquired_by,
-	};
-}
-
-function mapSupervisorAudit(
-	row: RawSupervisorAuditRow,
-): LeadLeaseSupervisorAuditRow {
-	return {
-		id: row.id,
-		leadKey: row.lead_key,
-		generation: row.generation,
-		event: row.event,
-		oldSupervisorPid: row.old_supervisor_pid,
-		oldSupervisorStart: row.old_supervisor_start,
-		newSupervisorPid: row.new_supervisor_pid,
-		newSupervisorStart: row.new_supervisor_start,
-		holderPid: row.holder_pid,
-		holderStart: row.holder_start,
-		createdAt: row.created_at,
 	};
 }
 
@@ -345,6 +274,22 @@ export function getProcessStart(pid: number): string {
 	return actual;
 }
 
+export function processStateIsZombie(state: string): boolean {
+	return state.trimStart().startsWith("Z");
+}
+
+export function getProcessState(pid: number): string {
+	if (!Number.isSafeInteger(pid) || pid <= 0) {
+		throw new Error(`invalid pid: ${pid}`);
+	}
+	const state = execFileSync("ps", ["-o", "state=", "-p", String(pid)], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+	}).trim();
+	if (!state) throw new Error(`process ${pid} has no state`);
+	return state;
+}
+
 export function processAliveWithStart(
 	pid: number,
 	expectedStart: string,
@@ -382,7 +327,8 @@ export function processTupleStateWithStart(
 			: "sensor_error";
 	}
 	try {
-		return getProcessStart(pid) === expectedStart.trim() ? "alive" : "dead";
+		if (getProcessStart(pid) !== expectedStart.trim()) return "dead";
+		return processStateIsZombie(getProcessState(pid)) ? "dead" : "alive";
 	} catch {
 		try {
 			process.kill(pid, 0);
@@ -813,87 +759,6 @@ export class LeadLeaseStore {
 		}
 	}
 
-	adopt(
-		input: AdoptLeaseInput,
-	):
-		| { status: "adopted" | "idempotent_adopted"; generation: number }
-		| { status: "lost_race" } {
-		const transaction = this.db.transaction((args: AdoptLeaseInput) => {
-			const existing = this.readLease(args.leadKey);
-			if (
-				existing !== undefined &&
-				existing.bound_at !== null &&
-				existing.supervisor_pid === args.newSupervisorPid &&
-				existing.supervisor_start === args.newSupervisorStart &&
-				existing.supervisor_generation === existing.generation &&
-				existing.holder_pid === args.expectedHolderPid &&
-				existing.holder_start === args.expectedHolderStart
-			) {
-				return {
-					status: "idempotent_adopted" as const,
-					generation: existing.generation,
-				};
-			}
-			if (existing === undefined) return { status: "lost_race" as const };
-
-			const adoptedAt = args.now ?? new Date().toISOString();
-			const updated = this.db
-				.prepare(
-					`UPDATE lead_lease
-					 SET supervisor_pid = ?, supervisor_start = ?,
-					     supervisor_generation = generation,
-					     acquired_at = ?, acquired_by = ?
-					 WHERE lead_key = ? AND generation = ?
-					   AND holder_pid = ? AND holder_start = ? AND bound_at IS NOT NULL
-					   AND supervisor_pid = ? AND supervisor_start = ?
-					   AND supervisor_generation = generation`,
-				)
-				.run(
-					args.newSupervisorPid,
-					args.newSupervisorStart,
-					adoptedAt,
-					args.acquiredBy,
-					args.leadKey,
-					existing.generation,
-					args.expectedHolderPid,
-					args.expectedHolderStart,
-					args.oldSupervisorPid,
-					args.oldSupervisorStart,
-				);
-			if (updated.changes !== 1) return { status: "lost_race" as const };
-
-			this.db
-				.prepare(
-					`INSERT INTO lease_supervisor_audit (
-						lead_key, generation, event,
-						old_supervisor_pid, old_supervisor_start,
-						new_supervisor_pid, new_supervisor_start,
-						holder_pid, holder_start, created_at
-					) VALUES (?, ?, 'adopted', ?, ?, ?, ?, ?, ?, ?)`,
-				)
-				.run(
-					args.leadKey,
-					existing.generation,
-					args.oldSupervisorPid,
-					args.oldSupervisorStart,
-					args.newSupervisorPid,
-					args.newSupervisorStart,
-					args.expectedHolderPid,
-					args.expectedHolderStart,
-					adoptedAt,
-				);
-			return { status: "adopted" as const, generation: existing.generation };
-		});
-		try {
-			return transaction.immediate(input);
-		} catch (error) {
-			throw new LeaseStoreError(
-				`failed to adopt lead lease ${input.leadKey}`,
-				error,
-			);
-		}
-	}
-
 	verifyBound(input: VerifyBoundLeaseInput):
 		| { status: "verified"; generation: number }
 		| {
@@ -1056,19 +921,6 @@ export class LeadLeaseStore {
 			)
 			.get(leadKey, generation) as RawHistoryRow | undefined;
 		return row ? mapHistory(row) : undefined;
-	}
-
-	listSupervisorAudit(leadKey?: string): LeadLeaseSupervisorAuditRow[] {
-		const rows = leadKey
-			? (this.db
-					.prepare(
-						"SELECT * FROM lease_supervisor_audit WHERE lead_key = ? ORDER BY id ASC",
-					)
-					.all(leadKey) as RawSupervisorAuditRow[])
-			: (this.db
-					.prepare("SELECT * FROM lease_supervisor_audit ORDER BY id ASC")
-					.all() as RawSupervisorAuditRow[]);
-		return rows.map(mapSupervisorAudit);
 	}
 
 	getStoreInstanceId(): string {

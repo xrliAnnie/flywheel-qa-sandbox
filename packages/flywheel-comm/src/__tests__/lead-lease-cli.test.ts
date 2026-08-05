@@ -210,7 +210,7 @@ describe("flywheel-comm lead-lease", () => {
 		});
 	});
 
-	it("classifies and atomically adopts an orphan through the CLI", async () => {
+	it("classifies an orphan through the CLI", async () => {
 		const holderStart = "holder-live";
 		const oldSupervisorPid = 2_000_000_000;
 		const seed = new LeadLeaseStore(env.FLYWHEEL_LEAD_LEASE_DB, {
@@ -256,38 +256,6 @@ describe("flywheel-comm lead-lease", () => {
 			generation: 1,
 			holderPid: process.pid,
 			supervisorPid: oldSupervisorPid,
-		});
-
-		const adoptArgs = [
-			"adopt",
-			"--lead",
-			"eng-lead",
-			"--project",
-			"flywheel",
-			"--supervisor-pid",
-			String(process.pid),
-			"--supervisor-start",
-			newSupervisorStart,
-			"--holder-pid",
-			String(process.pid),
-			"--holder-start",
-			holderStart,
-			"--old-supervisor-pid",
-			String(oldSupervisorPid),
-			"--old-supervisor-start",
-			"supervisor-old",
-			"--json",
-		];
-		expect(await run(adoptArgs)).toBe(0);
-		expect(JSON.parse(stdout.pop() ?? "")).toEqual({
-			status: "adopted",
-			generation: 1,
-			leadKey: "flywheel-eng-lead",
-		});
-		expect(await run(adoptArgs)).toBe(0);
-		expect(JSON.parse(stdout.pop() ?? "")).toMatchObject({
-			status: "idempotent_adopted",
-			generation: 1,
 		});
 	});
 

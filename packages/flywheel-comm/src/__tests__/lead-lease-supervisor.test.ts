@@ -1,3 +1,4 @@
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,8 +7,58 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	LeadLeaseStore,
 	type ProcessTupleState,
+	processStateIsZombie,
 	processTupleStateWithStart,
 } from "../lead-lease.js";
+
+async function spawnZombieFixture(): Promise<{
+	pid: number;
+	stop: () => Promise<void>;
+}> {
+	const fixture = spawn(
+		"python3",
+		[
+			"-c",
+			[
+				"import os, time",
+				"pid = os.fork()",
+				"if pid == 0: os._exit(0)",
+				"print(pid, flush=True)",
+				"time.sleep(30)",
+			].join("\n"),
+		],
+		{ stdio: ["ignore", "pipe", "ignore"] },
+	);
+	const pid = await new Promise<number>((resolve, reject) => {
+		let output = "";
+		const timer = setTimeout(
+			() => reject(new Error("timed out waiting for zombie fixture pid")),
+			2_000,
+		);
+		fixture.once("error", (error) => {
+			clearTimeout(timer);
+			reject(error);
+		});
+		fixture.stdout.on("data", (chunk: Buffer) => {
+			output += chunk.toString("utf8");
+			const line = output.split("\n", 1)[0]?.trim();
+			if (!line) return;
+			clearTimeout(timer);
+			resolve(Number(line));
+		});
+	});
+	return {
+		pid,
+		stop: async () => {
+			if (fixture.exitCode === null && fixture.signalCode === null) {
+				fixture.kill("SIGKILL");
+				await new Promise<void>((resolve) =>
+					fixture.once("close", () => resolve()),
+				);
+			}
+		},
+	};
+}
 
 describe("FLY-1602 supervisor-aware Lead leases", () => {
 	let dir: string;
@@ -60,6 +111,77 @@ describe("FLY-1602 supervisor-aware Lead leases", () => {
 		});
 		store.close();
 	}
+
+	it("treats every Z-prefixed process state as non-executable", () => {
+		expect(processStateIsZombie("Z")).toBe(true);
+		expect(processStateIsZombie(" Z+")).toBe(true);
+		expect(processStateIsZombie("S+")).toBe(false);
+	});
+
+	it("classifies a real zombie tuple as dead", async (context) => {
+		try {
+			execFileSync("/bin/ps", ["-o", "state=", "-p", String(process.pid)], {
+				encoding: "utf8",
+			});
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EPERM") {
+				context.skip("managed sandbox denies /bin/ps process inspection");
+				return;
+			}
+			throw error;
+		}
+		const fixture = await spawnZombieFixture();
+		try {
+			let state = "";
+			for (let attempt = 0; attempt < 50; attempt += 1) {
+				state = execFileSync(
+					"ps",
+					["-o", "state=", "-p", String(fixture.pid)],
+					{ encoding: "utf8" },
+				).trim();
+				if (processStateIsZombie(state)) break;
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			const start = execFileSync(
+				"ps",
+				["-o", "lstart=", "-p", String(fixture.pid)],
+				{ encoding: "utf8" },
+			).trim();
+			expect(state).toMatch(/^Z/);
+			expect(processTupleStateWithStart(fixture.pid, start)).toBe("dead");
+		} finally {
+			await fixture.stop();
+		}
+	});
+
+	it("advances and binds a new generation after a zombie-equivalent holder dies", () => {
+		seedBound({ leadKey: "flywheel-eng-lead" });
+		const store = open({
+			"100:supervisor-old": "dead",
+			"200:holder-old": processStateIsZombie("Z+") ? "dead" : "alive",
+		});
+		expect(
+			store.acquire({
+				leadKey: "flywheel-eng-lead",
+				project: "flywheel",
+				leadId: "eng-lead",
+				supervisorPid: 300,
+				supervisorStart: "supervisor-new",
+				acquiredBy: "replacement",
+			}),
+		).toEqual({ status: "acquired", generation: 2 });
+		expect(
+			store.bind({
+				leadKey: "flywheel-eng-lead",
+				generation: 2,
+				expectedSupervisorPid: 300,
+				expectedSupervisorStart: "supervisor-new",
+				panePid: 400,
+				paneStart: "holder-new",
+			}),
+		).toEqual({ status: "bound", generation: 2 });
+		store.close();
+	});
 
 	it("stores independent supervisor and holder tuples and verifies one snapshot", () => {
 		const store = open();
@@ -212,78 +334,6 @@ describe("FLY-1602 supervisor-aware Lead leases", () => {
 			expect(result, testCase.name).toEqual(testCase.expected);
 			store.close();
 		}
-	});
-
-	it("adopts an orphan with one CAS without changing writer capability", () => {
-		seedBound({ leadKey: "flywheel-eng-lead" });
-		const store = open({
-			"100:supervisor-old": "dead",
-			"200:holder-old": "alive",
-		});
-		expect(
-			store.acquire({
-				leadKey: "flywheel-eng-lead",
-				project: "flywheel",
-				leadId: "eng-lead",
-				supervisorPid: 300,
-				supervisorStart: "supervisor-new",
-				acquiredBy: "successor",
-			}),
-		).toMatchObject({ status: "holder_orphaned", generation: 1 });
-
-		expect(
-			store.adopt({
-				leadKey: "flywheel-eng-lead",
-				expectedHolderPid: 200,
-				expectedHolderStart: "holder-old",
-				oldSupervisorPid: 100,
-				oldSupervisorStart: "supervisor-old",
-				newSupervisorPid: 300,
-				newSupervisorStart: "supervisor-new",
-				acquiredBy: "successor",
-				now: "2026-08-03T01:02:00.000Z",
-			}),
-		).toEqual({ status: "adopted", generation: 1 });
-		expect(store.getLease("flywheel-eng-lead")).toMatchObject({
-			generation: 1,
-			supervisorPid: 300,
-			supervisorStart: "supervisor-new",
-			supervisorGeneration: 1,
-			holderPid: 200,
-			holderStart: "holder-old",
-		});
-		expect(
-			store.validate({ leaseKey: "flywheel-eng-lead", generation: 1 }),
-		).toEqual({ valid: true, reason: "current_bound" });
-		expect(store.listSupervisorAudit()).toEqual([
-			expect.objectContaining({
-				leadKey: "flywheel-eng-lead",
-				generation: 1,
-				event: "adopted",
-				oldSupervisorPid: 100,
-				oldSupervisorStart: "supervisor-old",
-				newSupervisorPid: 300,
-				newSupervisorStart: "supervisor-new",
-				holderPid: 200,
-				holderStart: "holder-old",
-				createdAt: "2026-08-03T01:02:00.000Z",
-			}),
-		]);
-
-		expect(
-			store.adopt({
-				leadKey: "flywheel-eng-lead",
-				expectedHolderPid: 200,
-				expectedHolderStart: "holder-old",
-				oldSupervisorPid: 100,
-				oldSupervisorStart: "supervisor-old",
-				newSupervisorPid: 300,
-				newSupervisorStart: "supervisor-new",
-				acquiredBy: "successor",
-			}),
-		).toEqual({ status: "idempotent_adopted", generation: 1 });
-		expect(store.listSupervisorAudit()).toHaveLength(1);
-		store.close();
 	});
 
 	it("repairs only legacy same-requester unbound rows and fails closed otherwise", () => {
@@ -500,13 +550,6 @@ describe("FLY-1602 supervisor-aware Lead leases", () => {
 				"supervisor_generation",
 			]),
 		);
-		expect(
-			inspect
-				.prepare(
-					"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'lease_supervisor_audit'",
-				)
-				.get(),
-		).toEqual({ name: "lease_supervisor_audit" });
 		inspect.close();
 
 		expect(processTupleStateWithStart(0, "invalid")).toBe("sensor_error");

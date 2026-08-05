@@ -204,7 +204,6 @@ value = {
         "plist": {"path": "/tmp/lead.plist", "digest": "a" * 64},
         "projects": {"path": "/tmp/projects.json", "digest": "b" * 64},
     },
-    "lease_baseline": {"status": "absent"},
     "ts": "2026-08-02T12:00:00.000Z",
 }
 with open(path, "w", encoding="utf-8") as handle:

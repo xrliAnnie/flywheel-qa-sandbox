@@ -199,44 +199,6 @@ def _positive_integer(value: object, name: str) -> int:
     return value
 
 
-def _validate_lease_baseline(value: object) -> None:
-    if not isinstance(value, dict) or isinstance(value, list):
-        raise DataFailure("controlled-wave marker lease_baseline is invalid")
-    status_value = value.get("status")
-    if status_value == "absent":
-        if set(value) != {"status"}:
-            raise DataFailure("controlled-wave marker absent lease_baseline is invalid")
-        return
-    expected = {
-        "status",
-        "rowFormat",
-        "generation",
-        "supervisorPid",
-        "supervisorStart",
-        "supervisorGeneration",
-        "holderPid",
-        "holderStart",
-        "boundAt",
-        "acquiredAt",
-    }
-    if status_value != "present" or set(value) != expected:
-        raise DataFailure("controlled-wave marker present lease_baseline is invalid")
-    if value.get("rowFormat") not in {"version_valid", "legacy", "malformed"}:
-        raise DataFailure("controlled-wave marker lease rowFormat is invalid")
-    _positive_integer(value.get("generation"), "lease generation")
-    _positive_integer(value.get("holderPid"), "lease holderPid")
-    _nonempty_string(value.get("holderStart"), "lease holderStart")
-    for name in ("supervisorPid", "supervisorGeneration"):
-        item = value.get(name)
-        if item is not None:
-            _positive_integer(item, f"lease {name}")
-    for name in ("supervisorStart", "boundAt"):
-        item = value.get(name)
-        if item is not None:
-            _nonempty_string(item, f"lease {name}")
-    _nonempty_string(value.get("acquiredAt"), "lease acquiredAt")
-
-
 def _read_controlled_marker(
     raw_path: str, child: str, attempt_id: str
 ) -> tuple[Path, str]:
@@ -284,7 +246,6 @@ def _read_controlled_marker(
         "phase",
         "old_supervisor_tuple",
         "authority",
-        "lease_baseline",
         "ts",
     }
     if not isinstance(value, dict) or set(value) != expected_top:
@@ -335,7 +296,6 @@ def _read_controlled_marker(
         digest = item.get("digest")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise DataFailure(f"controlled-wave marker {name} digest is invalid")
-    _validate_lease_baseline(value.get("lease_baseline"))
     try:
         _parse_iso(value.get("ts"))
     except ValueError as error:
