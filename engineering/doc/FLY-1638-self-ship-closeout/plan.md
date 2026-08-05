@@ -11,7 +11,7 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 
 ## 0. 总原则
 
-- **机制数不升**:修复面 2/3/5 是给既有机制加谓词/收窄判定;唯一新增小机制是修复面 6 的 admission pause(issue 明示的 DR 四步模型缺口);修复面 5③ 反而**删除**一类错误重派行为。修复面 7 的 outcome promise、`released_generation` 列、bounded per-launch heartbeat **均归类为既有 generalized launch-owner/launch-gate 机制的扩展**(同一状态机、同一表、同一 tick),不是第二套点火机制(item-7 R2#4)。
+- **机制数不升**:修复面 2/3/5 是给既有机制加谓词/收窄判定;唯一新增小机制是修复面 6 的 admission pause(issue 明示的 DR 四步模型缺口);修复面 5③ 反而**删除**一类错误重派行为。修复面 7 的 outcome promise、`released_generation` 列、bounded per-launch heartbeat **均归类为既有 generalized launch-owner/launch-gate 机制的扩展**(同一 launch attempt/authority record、同一 owner 表与状态机;heartbeat 是 per-launch 有界定时器,非引擎 reconcile tick),不是第二套点火机制(item-7 R2#4/R3#5)。
 - **不动 `workflow_v2` DAG 引擎本体**;不动 founder-gated merge 权限模型(verify-approval 安全检查逐字保留,只修它读不到数据的断链)。
 - **三个前提修正**(research §4 + Codex R1#4):
   1. 子缺陷 ① 真 throw 点在 `workflow-run-snapshot.ts:176-177`(非 workflow-menu.ts);
@@ -165,9 +165,9 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 
 ### 7.1 completed 代同名 tmux 窗口冲突
 
-- **病灶前置顺序**:在会抛 `TmuxSessionHoldError` 的 `ensureSession()` **之前**执行 `purgeTerminalSameNameWorkflowWindows`:若目标 tmux session 存在,按精确窗口名列出不可变 window id + 既有 `@flywheel_exec_id` + 新增 `@flywheel_launch_generation`/非秘密 fingerprint,由 Bridge 注入的只读 predicate 查询不可变 execution/generation authority;只有「不同 execution 已 terminal」或「同 execution 的旧 generation 已 durable released/fenced」且 identity 三元组全对齐时,才按 window id 逐个关闭,随后 re-list 证明候选归零。`needs_lead` 不算 terminal;5③ 的 completed-without-receipt 只有 dead-exec CAS 已提交后才算 terminal。session 不存在则直接进入 ensure。顺序固定为 **purge → ensure → verify-zero → new-window**,与 `codex-runner-tui-window.ts` 的既有 precedent 对齐。
+- **病灶前置顺序**:在会抛 `TmuxSessionHoldError` 的 `ensureSession()` **之前**执行 `purgeTerminalSameNameWorkflowWindows`:若目标 tmux session 存在,按精确窗口名列出不可变 window id + 既有 `@flywheel_exec_id` + 新增 `@flywheel_launch_generation`/非秘密 fingerprint,由 Bridge 注入的只读 predicate 查询不可变 execution/generation authority;删除授权按下方「两种删除权威分立」两案判定(不同 execution 已 terminal → 不需 generation;同 execution → 必须 generation+tombstone),命中才按 window id 逐个关闭,随后 re-list 证明候选归零。`needs_lead` 不算 terminal;5③ 的 completed-without-receipt 只有 dead-exec CAS 已提交后才算 terminal。session 不存在则直接进入 ensure。顺序固定为 **purge → ensure → verify-zero → new-window**,与 `codex-runner-tui-window.ts` 的既有 precedent 对齐。
 - 若首次 ensure 仍返回 hold,只允许再做一次 bounded purge + re-ensure;第二次失败转 7.4 typed error + 7.2 owner release,不无限 rescue。测试 fixture 必须让「stale terminal windows 存在时 ensure 会 hold、purge 后 ensure 成功」,不能只测 non-saturated duplicate-name。
-- **仅 terminal + identity 对齐**时自动关闭;活跃、无 execution identity、多个候选或探针异常都不得猜杀。predicate 未注入的 adapter caller 默认是 **cannot prove terminal**(绝不 fail-open kill)。legacy/option-write 失败导致无 `@flywheel_exec_id` 是正常形,走不杀分支。
+- 自动关闭的授权**完全由下方「两种删除权威分立」两案定义**(R3#2:不再有「一律三元组对齐」的通用句 —— 那会让 pre-item-7 的存量事故窗永远清不掉);活跃、无 execution identity、多个候选或探针异常都不得猜杀。predicate 未注入的 adapter caller 默认是 **cannot prove terminal**(绝不 fail-open kill)。legacy/option-write 失败导致无 `@flywheel_exec_id` 是正常形,走不杀分支。
 - **两种删除权威分立(item-7 R2#3 —— 否则今晚的实际事故窗修不了)**:存量窗(pre-item-7 部署)只有 `@flywheel_exec_id`、**不可能有**新 generation option,若一律要求三元组对齐,旧 terminal 窗永远不可清、其致的 ensure 饱和也到不了 suffix 分支(ensure 在 new-window 之前就挂):
   1. **不同 execution 且该 execution 已 immutably terminal** → 精确 window id + 既有 execution id + terminal 权威**即足够**(缺 generation 不碍事 —— 整个 execution 已终局);
   2. **同 execution**(跨 generation 重试)→ **必须** generation/fingerprint + released-generation tombstone 对齐;缺 generation 一律不杀。
@@ -188,6 +188,11 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
   1. marker 或 committed generation 存在 → **committed,绝不 release**;
   2. 精确持久 `(socket, server start, window id, execution, owner generation/fingerprint)` 在册、或其探针 indeterminate → **pending/held,绝不 release**(callback 持久化随本单扩到含 window id + generation,凭证才成「精确窗口」级);
   3. 无 callback 记录、或该精确记录窗已 fenced/清理并**证明缺席** → pre-commit release/cancellation 放行,**早到逻辑 session 行与 lifecycle claim 不构成否决**;放行的 rollback 在同事务内原子关闭/fence 这些 pre-commit 逻辑残迹(session 行、lifecycle claim),之后 generation+1 才可 launch。
+- **具名收敛转移:expired-uncommitted-exact-window(item-7 R3#1)**:adapter 实序是 `new-window` → identity/remain-on-exit → `onTmuxWindowOpened` 持久化 → `commitWorkflowLaunch` —— **callback 持久后、commit 前 Bridge crash** 会留下一个 remain-on-exit 的精确死窗:无 marker、无 committed generation,但 branch 2 看到「精确窗在册」→ 永久 pending/held,takeover 与 10min tripwire 全被同一谓词挡死。补一条有界转移,仅对「**owner 已过绝对 horizon 且 uncommitted 且存在精确匹配 gated 窗**」:
+  1. 先在 StateStore 赢一次 **fence CAS**(对抗 late commit/renew —— commit 赢家或 renew 成功 → 转移中止,保持 pending);
+  2. 按持久化的不可变 window id **精确 kill** 并验证缺席(kill 失败或探针 indeterminate → 保持 pending,下轮再试);
+  3. 缺席证明后才 finalize release/cancellation + 逻辑残迹清理(即 branch 3),`released_generation` fence 同步落。
+  顺序固定 fence → kill → verify → release,真 committed runner 与迟到 generation 都无法穿越。
 
 ### 7.3 attempt=1 design 的 predecessor 合法空态
 
@@ -198,7 +203,7 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 ### 7.4 start 错误合同与诊断
 
 - generalized start 边界消费 7.2 outcome 并统一返回 machine-readable body:`code`(稳定顶层错误码)、`reason`(稳定分类)、`executionId`、`retryable`;仍在 in-flight 则 202/pending。未分类异常可保留结构化 500,但不得再是裸 `internal error`。
-- **精确映射(item-7 R2#4,7.5a 按此逐条断言)**:`TmuxSessionHoldError`(saturated/split_brain/ambiguous/rescue_failed/lock_unavailable)→ **409** `code:"LAUNCH_TMUX_SESSION_HELD"` + `reason: <kind>`;identity publish 失败(pre-commit)→ **409** `code:"LAUNCH_WINDOW_IDENTITY_FAILED"`;pre-commit deadline 超时 → **503** `code:"LAUNCH_PRECOMMIT_TIMEOUT"`;in-flight → **202** `code:"LAUNCH_PENDING"`。`retryable:true` 的必要条件是 release 成功,**非充分** —— saturated 等「重试大概率再撞」的 hold kind 即便 release 成功也标 `retryable:false` + 指引 Lead。
+- **精确映射(item-7 R2#4 + R3#4,7.5a 按此逐条断言)**:`TmuxSessionHoldError` **全部六个 kind**(saturated/split_brain/ambiguous/**unknown**/rescue_failed/lock_unavailable)→ **409** `code:"LAUNCH_TMUX_SESSION_HELD"` + `reason: <kind>`;identity publish 失败(pre-commit)→ **409** `code:"LAUNCH_WINDOW_IDENTITY_FAILED"`;pre-commit deadline 超时 → **503** `code:"LAUNCH_PRECOMMIT_TIMEOUT"`;in-flight → **202** `code:"LAUNCH_PENDING"`。**retryable 封闭表(R3#4)**:release 成功是 `retryable:true` 的必要条件;在此之上仅 `lock_unavailable`(瞬态锁)与 `LAUNCH_WINDOW_IDENTITY_FAILED`(已精确清窗)可为 true;`saturated`/`split_brain`/`ambiguous`/`unknown`/`rescue_failed`/`LAUNCH_PRECOMMIT_TIMEOUT` 一律 false + 指引 Lead;release 失败或 indeterminate → 覆盖为 **202 pending**(不给 retryable 判定)。
 - **evidence 不出 HTTP**(item-7 R2#4,修正 research §6.5 的早期表述):`TmuxSessionHoldError.evidence` 含 owner/process 元数据,非公共 DTO —— 完整 evidence 只进结构化 server log;HTTP body 恒为上述 allowlist 四字段,无路径、无 secret、无 stack。
 - server log 用 `console.error` 记录 issue/run/node/execution/owner generation + 原始 error stack;HTTP body 不回传 stack、路径或 secret。
 - 结构化失败只有在 7.2 原子 release 成功后才声明 retryable;release 竞态失败而 durable launch 可能已前进时返回 pending,避免客户端重试制造双 launch。
@@ -218,7 +223,10 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 - route + StateStore:真实 typed `TmuxSessionHoldError` 穿过 background dispatcher outcome → generation 1 立即 tombstone/release → HTTP typed retryable;早到逻辑 session 不阻止 release;同 key分别用 random route owner与同 stable engine owner取得 generation 2;generation 1 迟到 renew/commit/marker失败;release 与 physical commit race单赢家;Bridge crash无 release时 clock +5min 可接管。
 - engine root:attempt=1 无入边 design 可 dispatch 且 `startPoint` 缺省;implement、qa、design retry 缺 predecessor 仍拒绝;start reservation 自指回归。
 - HTTP:每个已知 failure/pending 的 status + `code/reason/executionId/retryable` 精确断言,未知异常有结构化 500且日志含 stack、响应不含 stack;engine auto-advance用同 outcome补偿且 pause命中时不 acquire owner。
-- 补注组(7.5):crash 型孤儿在 10min rollback 内被 tripwire 回收(lease 5min < rollback 10min 时序断言);合法慢 launch 经 renew 不被误回收;`launch_owner_live` 吞噬计数可见;legacy 无变量窗走换名分支不被杀。
+- 补注组(7.5):crash 型孤儿在 10min rollback 内被 tripwire 回收;合法慢 launch 经 renew 不被误回收;`launch_owner_live` 吞噬计数可见;legacy 无变量窗走换名分支不被杀。
+- **horizon 边界组(R3#3,fake clock)**:horizon 前一刻的 renew 被封顶在 horizon(不是 now+5min);随后立即 crash → age-10 tripwire **不被挡**;horizon 等值时 renew 失败;in-process attempt 在封顶后尝试迟到 side effect → 被 fence 拒;物理缺席 rollback 在**同一事务**关闭/fence 早到 session 行与 lifecycle claim,之后 generation+1 才 launch。
+- **post-callback crash 组(R3#1)**:`onTmuxWindowOpened` 持久化 → Bridge 死 → 无 marker/commit:horizon 过后收敛转移 fence→kill→verify→release 生效;release-vs-late-commit race 单赢家(commit 赢 → 转移中止);kill/探针 indeterminate → 保持 pending 下轮重试。
+- **rollout 形态 fixture(R3#2)**:`@flywheel_exec_id`-only(无 generation option)的**他 execution** terminal 窗致 ensure hold → 按精确 window id + exec id + terminal 权威安全清除 → launch 一发即中;同 execution 无 generation 窗 → 不杀走 suffix。
 - 默认时序交叉断言:launch alert/rollback=5m/10m;rework budget≈15m < rework alert/hold=30m/60m,两 reconciler互不读错 knob。
 
 ## 8. 验收锚映射(全部活体)
