@@ -63,7 +63,7 @@ Add one table row for every name printed by Task 1 Step 2, with a one-sentence d
 
 - [x] **Step 3: Write exactly ten README summary bullets**
 
-Summarize these ten topics from `packages/qa-framework/README.md`: reusable framework purpose; two-layer architecture; quick-start configuration; five-step protocol; real-Runner slot isolation; deploy/inject/teardown scripts; prerequisites/start-point behavior; specialized hard-gate suite; mirror/roundtable/alert modes and their boundaries; contracts plus test-room operational safeguards.
+Summarize these ten topics from `packages/qa-framework/README.md`: reusable framework purpose; two-layer architecture; quick-start configuration; five-step protocol; real-Runner slot isolation; deploy/inject/teardown scripts; prerequisites/start-point behavior; specialized hard-gate suite; mirror/roundtable/alert modes and their boundaries; plan-source and skill-interface contracts.
 
 - [x] **Step 4: Add the exact command transcript**
 
@@ -119,15 +119,15 @@ git add doc/qa/sandbox-notes.md engineering/doc/FLY-202-sandbox-notes
 git commit -m "docs(fly-202): add QA sandbox notes"
 ```
 
-- [x] **Step 2: Push a run-unique issue feature branch**
+- [ ] **Step 2: Push a clean, run-unique issue feature branch**
 
-The original harness branch name already exists remotely with a prior open fixture PR. Preserve that evidence rather than force-pushing over it; use the execution-specific suffix for this run.
+The original harness branch name already exists remotely with a prior open fixture PR, and the first run-unique recovery branch inherited an upstream test start point that conflicts with sandbox `main`. Preserve both histories rather than force-pushing; replay only the FLY-202 documentation commits on a clean `origin/main` branch.
 
 ```bash
-git branch -m project-slot-1-FLY-202-d716a70d
-git push -u origin project-slot-1-FLY-202-d716a70d
+git switch -c project-slot-1-FLY-202-d716a70d-clean origin/main
+git push -u origin project-slot-1-FLY-202-d716a70d-clean
 ```
 
-- [x] **Step 3: Open a PR against sandbox `main`**
+- [ ] **Step 3: Open a PR against sandbox `main`**
 
-Use `gh pr create --base main --head project-slot-1-FLY-202-d716a70d` with an English title/body containing the requirement checklist and verification evidence. Then proceed through the mandatory Flywheel code-review, CI, founder-approval, and `:cool:` landing workflow.
+Use `gh pr create --base main --head project-slot-1-FLY-202-d716a70d-clean` with an English title/body containing the requirement checklist and verification evidence. Then proceed through the mandatory Flywheel code-review, CI, founder-approval, and `:cool:` landing workflow.

@@ -22,7 +22,6 @@ Because GitHub does not allow a same-account fork of the source repository, this
 | `docs` | Contains contributor guidance, operational runbooks, and supporting operations documentation. |
 | `engineering` | Stores issue-scoped engineering designs, implementation records, fixtures, and spikes. |
 | `fleet` | Documents fleet management and provides example host manifests and environment configuration. |
-| `menus` | Defines reusable task-shape menus for code, design, PRD, prototype, and generic work. |
 | `packages` | Contains the TypeScript packages that make up the Flywheel pnpm monorepo. |
 | `patches` | Holds package-manager patches applied to third-party dependencies. |
 | `product` | Stores issue-scoped product documents and prototype artifacts. |
@@ -30,7 +29,6 @@ Because GitHub does not allow a same-account fork of the source repository, this
 | `qa-fly310` | Preserves FLY-310 adversarial and end-to-end QA scripts, reports, and evidence. |
 | `scripts` | Provides setup, deployment, QA, release, maintenance, and operational automation. |
 | `supabase` | Contains Supabase project metadata and database migrations. |
-| `vendor` | Holds vendored external skill packages and their provenance metadata. |
 
 The top-level `=` entry is an empty file, not a directory, so it is intentionally not included as a directory-table row.
 
@@ -45,7 +43,7 @@ The top-level `=` entry is an empty file, not a directory, so it is intentionall
 - Real-Runner E2E requires a visible Linear issue, authenticated sandbox push access, a sandbox branch under test, and a Bridge-only `FLYWHEEL_RUNNER_START_POINT` override that leaves production defaults unchanged.
 - The FLY-60 suite exercises hard-gate behavior through the production approval wire, records evidence from the correct state stores, and uses manual Chrome-driven steps where Discord interaction is required.
 - Mirror, roundtable, and alert modes provide specialized shared-channel or alert isolation, with explicit boundaries that keep ordinary Runner E2E in the standard slot topology.
-- Operational safeguards include cold-Lead and Bridge-only deploy controls, sandbox-specific token accounting, disabled-by-default auto-QA in test rooms, and explicit plan-source and skill-interface contracts.
+- The framework defines explicit contracts for obtaining plan files across worktrees and for the interface every QA test skill must implement.
 
 ## doc/ Listing
 
@@ -61,7 +59,6 @@ Output:
 VERSION
 architecture
 engineer
-messaging-rework
 plan
 qa
 reference
@@ -108,4 +105,5 @@ multi-agent-architecture-best-practices.md
 doc/engineer/exploration:
 archive
 backlog
+new
 ```
