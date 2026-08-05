@@ -439,13 +439,23 @@ lead_body_hard_clear() {
     attempt=$((attempt + 1))
   done
 
-  rc=0
-  windows="$(_lead_body_target_windows "$project" "$lead_id")" || rc=$?
-  if [ "$backend" = claude-code ]; then
-    tuples="$(_lead_body_claude_tuples "$project" "$lead_id")" || rc=$?
-  else
-    tuples="$codex_tuples"
-  fi
+  # Re-census before KILL retries transient sensor loss exactly like the
+  # initial census; persistent failure still fails closed.
+  attempt=0
+  while [ "$attempt" -lt "$((term_attempts + kill_attempts))" ]; do
+    rc=0
+    windows="$(_lead_body_target_windows "$project" "$lead_id")" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      if [ "$backend" = claude-code ]; then
+        tuples="$(_lead_body_claude_tuples "$project" "$lead_id")" || rc=$?
+      else
+        tuples="$codex_tuples"
+      fi
+    fi
+    [ "$rc" -eq 0 ] && break
+    lead_body_sleep "$interval"
+    attempt=$((attempt + 1))
+  done
   [ "$rc" -eq 0 ] || return 2
   _lead_body_kill_windows "$windows"
   _lead_body_signal_tuples "$tuples" KILL || true

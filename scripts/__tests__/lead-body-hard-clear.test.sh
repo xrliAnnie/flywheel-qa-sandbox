@@ -76,6 +76,9 @@ SIGNAL_CALLS=""
 TMUX_CALLS=""
 KILLED_WINDOWS=""
 EXACT_COMMAND_OVERRIDE=""
+INVENTORY_FAIL_AT_CALLS=""
+TERM_IMMUNE=0
+INVENTORY_CALL_COUNT_FILE="$TEST_ROOT/inventory-call-count"
 PROCESS_TABLE_FAILURES_FILE="$TEST_ROOT/process-table-failures"
 PARENT_TABLE_FAILURES_FILE="$TEST_ROOT/parent-table-failures"
 
@@ -148,11 +151,20 @@ lead_body_process_parent_table() {
 lead_body_signal() {
   local signal="$1" pid="$2"
   SIGNAL_CALLS="${SIGNAL_CALLS}${signal}:${pid}"$'\n'
+  if [ "$TERM_IMMUNE" -eq 1 ] && [ "$signal" = TERM ]; then
+    return 0
+  fi
   DEAD_PIDS="${DEAD_PIDS} ${pid}"
 }
 lead_body_sleep() { return 0; }
 lead_body_pane_inventory() {
-  local window_id window_name pane_id pane_pid pane_dead
+  local call_count=0 window_id window_name pane_id pane_pid pane_dead
+  call_count="$(cat "$INVENTORY_CALL_COUNT_FILE" 2>/dev/null || echo 0)"
+  call_count=$((call_count + 1))
+  printf '%s\n' "$call_count" > "$INVENTORY_CALL_COUNT_FILE"
+  case " $INVENTORY_FAIL_AT_CALLS " in
+    *" $call_count "*) return 2 ;;
+  esac
   while IFS=$'\t' read -r window_id window_name pane_id pane_pid pane_dead; do
     [ -n "$window_id" ] || continue
     case " $KILLED_WINDOWS " in *" $window_id "*) continue ;; esac
@@ -202,6 +214,9 @@ reset_fixture() {
   TMUX_CALLS=""
   KILLED_WINDOWS=""
   EXACT_COMMAND_OVERRIDE=""
+  INVENTORY_FAIL_AT_CALLS=""
+  TERM_IMMUNE=0
+  printf '0\n' > "$INVENTORY_CALL_COUNT_FILE"
   printf '0\n' > "$PROCESS_TABLE_FAILURES_FILE"
   printf '0\n' > "$PARENT_TABLE_FAILURES_FILE"
   LEAD_BODY_CLEAR_TERM_ATTEMPTS=1
@@ -266,6 +281,69 @@ if [ "$rc" -eq 0 ] \
   pass "Codex target set excludes the other Lead"
 else
   fail "Codex isolation mismatch (rc=$rc signals=$SIGNAL_CALLS tmux=$TMUX_CALLS)"
+fi
+
+echo "Test: Claude re-census retries one transient inventory failure"
+reset_fixture
+INVENTORY=$'@1\tproj-lead\t%1\t101\t0'
+PROCESS_TABLE="101 $(fixture_command 101)"
+INVENTORY_FAIL_AT_CALLS="3"
+TERM_IMMUNE=1
+rc=0
+lead_body_hard_clear proj lead claude-code || rc=$?
+if [ "$rc" -eq 0 ] \
+  && printf '%s' "$SIGNAL_CALLS" | grep -q '^KILL:101$'; then
+  pass "Claude re-census absorbs one transient inventory failure"
+else
+  fail "Claude re-census latched transient failure (rc=$rc signals=$SIGNAL_CALLS)"
+fi
+
+echo "Test: Codex re-census retries one transient inventory failure"
+reset_fixture
+INVENTORY=$'@1\tproj-lead\t%1\t201\t0\n@2\tother-lead\t%2\t202\t0'
+PARENT_TABLE=$'201 1\n203 201\n202 1'
+INVENTORY_FAIL_AT_CALLS="3"
+TERM_IMMUNE=1
+rc=0
+lead_body_hard_clear proj lead codex-app-server || rc=$?
+if [ "$rc" -eq 0 ] \
+  && printf '%s' "$SIGNAL_CALLS" | grep -q '^KILL:201$' \
+  && printf '%s' "$SIGNAL_CALLS" | grep -q '^KILL:203$' \
+  && ! printf '%s' "$SIGNAL_CALLS" | grep -q ':202$'; then
+  pass "Codex re-census absorbs one transient inventory failure without widening"
+else
+  fail "Codex re-census latched or widened transient failure (rc=$rc signals=$SIGNAL_CALLS)"
+fi
+
+echo "Test: persistent re-census inventory loss is bounded and fail-closed"
+reset_fixture
+INVENTORY=$'@1\tproj-lead\t%1\t101\t0'
+PROCESS_TABLE="101 $(fixture_command 101)"
+INVENTORY_FAIL_AT_CALLS="3 4"
+TERM_IMMUNE=1
+rc=0
+lead_body_hard_clear proj lead claude-code || rc=$?
+inventory_calls="$(cat "$INVENTORY_CALL_COUNT_FILE")"
+if [ "$rc" -eq 2 ] \
+  && [ "$inventory_calls" -eq 4 ] \
+  && ! printf '%s' "$SIGNAL_CALLS" | grep -q '^KILL:'; then
+  pass "persistent re-census loss consumes exactly the bounded retry budget"
+else
+  fail "persistent re-census loss was unbounded or mutated (rc=$rc calls=$inventory_calls signals=$SIGNAL_CALLS)"
+fi
+
+echo "Test: re-census fixture converges without injected inventory loss"
+reset_fixture
+INVENTORY=$'@1\tproj-lead\t%1\t101\t0'
+PROCESS_TABLE="101 $(fixture_command 101)"
+TERM_IMMUNE=1
+rc=0
+lead_body_hard_clear proj lead claude-code || rc=$?
+if [ "$rc" -eq 0 ] \
+  && printf '%s' "$SIGNAL_CALLS" | grep -q '^KILL:101$'; then
+  pass "re-census fixture converges without failure injection"
+else
+  fail "re-census fixture failed without injection (rc=$rc signals=$SIGNAL_CALLS)"
 fi
 
 echo "Test: exact-tuple mode never signals a reused PID"
