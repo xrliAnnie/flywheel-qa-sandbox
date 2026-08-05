@@ -633,6 +633,34 @@ async function storeWithQaFailKickback() {
 }
 
 describe("WorkflowEngineDispatcher", () => {
+	it("launches an attempt-1 root design without inventing a predecessor", async () => {
+		const store = await storeWithIntent("design");
+		const fake = fakeStartDispatcher(store);
+		const resolvePredecessorHead = vi.fn(async () => HEAD);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-16T00:01:00.000Z"),
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1638-root-design-")),
+			resolvePredecessorHead,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(fake.requests).toHaveLength(1);
+		expect(fake.requests[0]).toMatchObject({
+			sessionRole: "design",
+			generalizedExecution: {
+				executionId: "design-1",
+				nodeId: "design",
+				attempt: 1,
+			},
+		});
+		expect(fake.requests[0]?.startPoint).toBeUndefined();
+		expect(resolvePredecessorHead).not.toHaveBeenCalled();
+		store.close();
+	});
+
 	it("sends one Lead-only alert when an admission pause stays active for five minutes", async () => {
 		const store = await StateStore.create(":memory:");
 		store.setAdmissionPause({
@@ -1527,7 +1555,10 @@ describe("WorkflowEngineDispatcher", () => {
 			mode: "replacement",
 		});
 		expect(store.getWorkflowLaunchOwner(replacement!)).toMatchObject({
-			lease_expires_at: "2026-07-16T01:16:00.000Z",
+			lease_expires_at: "2026-07-16T00:16:00.000Z",
+			released_generation: 1,
+			released_reason:
+				"dispatcher_start_failed:synthetic replacement prelaunch failure",
 		});
 		expect(
 			store
@@ -1544,7 +1575,7 @@ describe("WorkflowEngineDispatcher", () => {
 			startDispatcher,
 			stateRoot,
 			env,
-			now: () => new Date("2026-07-16T01:17:00.000Z"),
+			now: () => new Date("2026-07-16T00:22:00.000Z"),
 			resolvePredecessorHead: async () => HEAD,
 			probeUnlaunchedExternalEvidence: async () => "absent",
 			resolveRunAlertIdentity: () => ({

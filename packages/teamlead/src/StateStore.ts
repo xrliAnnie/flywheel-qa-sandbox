@@ -87,6 +87,11 @@ import { isOperationalTerminalStatus } from "./operational-terminal-status.js";
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
 
+/** FLY-1638: uncommitted launch owners heartbeat in short, bounded windows. */
+export const WORKFLOW_LAUNCH_SOFT_LEASE_MS = 5 * 60_000;
+export const WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS = 10 * 60_000;
+export const WORKFLOW_LAUNCH_HEARTBEAT_MS = 60_000;
+
 type RunnerShipObservationProjection =
 	| { status: "none" }
 	| { status: "needs_rest"; fingerprint: string }
@@ -5941,6 +5946,26 @@ export class StateStore {
 					},
 				});
 				if (binding.shipTarget.runId) {
+					this.db.run(
+						`UPDATE workflow_gate_holder
+						    SET carrier_binding_state = 'bound', source_execution_id = ?,
+						        updated_at = datetime('now')
+						  WHERE question_id = ? AND run_id = ?
+						    AND authority_mode = 'runner_ship'
+						    AND lower(head_sha) = lower(?)
+						    AND state IN ('materializing','awaiting_review','approved')`,
+						[
+							executionId,
+							binding.questionId,
+							binding.shipTarget.runId,
+							binding.prHeadSha,
+						],
+					);
+					this.db.run(
+						`DELETE FROM workflow_alert_outbox
+						  WHERE escalation_uid = ? AND state = 'pending'`,
+						[`gate_carrier_unbound:${binding.questionId}`],
+					);
 					this.db.run(
 						`UPDATE workflow_ship_target_binding
 						    SET superseded_at = datetime('now')
@@ -15743,10 +15768,20 @@ export class StateStore {
 				delivery_lease_expires_at TEXT,
 				delivery_state TEXT NOT NULL DEFAULT 'pending'
 				  CHECK (delivery_state IN ('pending','repairing','delivered')),
+				released_generation INTEGER,
+				released_at TEXT,
+				released_reason TEXT,
 				CHECK (committed_generation IS NULL OR committed_generation = owner_generation),
 				FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
 			)
 		`);
+		this.addColumnIfMissing(
+			"workflow_launch_owner",
+			"released_generation",
+			"INTEGER",
+		);
+		this.addColumnIfMissing("workflow_launch_owner", "released_at", "TEXT");
+		this.addColumnIfMissing("workflow_launch_owner", "released_reason", "TEXT");
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_launch_cancellation (
 				execution_id TEXT PRIMARY KEY,
@@ -17724,6 +17759,12 @@ export class StateStore {
 				(row.delivery_lease_expires_at as string) ?? null,
 			delivery_state:
 				row.delivery_state as WorkflowLaunchOwnerRow["delivery_state"],
+			released_generation:
+				row.released_generation == null
+					? null
+					: Number(row.released_generation),
+			released_at: (row.released_at as string) ?? null,
+			released_reason: (row.released_reason as string) ?? null,
 		};
 	}
 
@@ -17832,15 +17873,6 @@ export class StateStore {
 				latest.state !== "intent_recorded"
 			) {
 				result = { ok: false, reason: "launch_intent_mismatch" };
-				return;
-			}
-			const claim = this.getLaunchClaim(input.executionId);
-			if (claim?.state === "starting" || claim?.state === "active") {
-				result = { ok: false, reason: "lifecycle_claim_present" };
-				return;
-			}
-			if (this.getSession(input.executionId)) {
-				result = { ok: false, reason: "session_present" };
 				return;
 			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
@@ -17966,15 +17998,6 @@ export class StateStore {
 				result = { ok: false, reason: "execution_binding_mismatch" };
 				return;
 			}
-			const claim = this.getLaunchClaim(input.executionId);
-			if (claim?.state === "starting" || claim?.state === "active") {
-				result = { ok: false, reason: "lifecycle_claim_present" };
-				return;
-			}
-			if (this.getSession(input.executionId)) {
-				result = { ok: false, reason: "session_present" };
-				return;
-			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
 			if (owner?.committed_generation != null) {
 				result = { ok: false, reason: "launch_committed" };
@@ -18011,6 +18034,19 @@ export class StateStore {
 					[input.executionId],
 				);
 			}
+			this.db.run(
+				`UPDATE lifecycle_launch_claims
+				    SET state = 'closed', updated_at = datetime('now')
+				  WHERE execution_id = ? AND state IN ('starting','active')`,
+				[input.executionId],
+			);
+			this.db.run(
+				`UPDATE sessions
+				    SET status = 'failed', terminal_at = COALESCE(terminal_at, ?)
+				  WHERE execution_id = ?
+				    AND status NOT IN ('completed','cancelled','merged','superseded')`,
+				[input.now, input.executionId],
+			);
 			this.db.run(
 				`UPDATE workflow_side_effect_ledger
 				    SET state = 'abandoned', reason = 'unlaunched_admission_rolled_back',
@@ -18514,11 +18550,17 @@ export class StateStore {
 				return;
 			}
 			if (!owner) {
+				const leaseExpiresAt = new Date(
+					Math.min(
+						Date.parse(input.leaseExpiresAt),
+						Date.parse(input.now) + WORKFLOW_LAUNCH_SOFT_LEASE_MS,
+					),
+				).toISOString();
 				this.db.run(
 					`INSERT INTO workflow_launch_owner
 					   (execution_id, owner_generation, owner_id, acquired_at, lease_expires_at)
 					 VALUES (?, 1, ?, ?, ?)`,
-					[input.executionId, input.ownerId, input.now, input.leaseExpiresAt],
+					[input.executionId, input.ownerId, input.now, leaseExpiresAt],
 				);
 				result = {
 					status: "acquired",
@@ -18528,17 +18570,33 @@ export class StateStore {
 				};
 				return;
 			}
-			if (
-				owner.owner_id !== input.ownerId &&
-				Date.parse(input.now) < Date.parse(owner.lease_expires_at)
-			) {
+			const ownerIsLive =
+				Date.parse(input.now) < Date.parse(owner.lease_expires_at);
+			if (owner.owner_id !== input.ownerId && ownerIsLive) {
 				result = { status: "busy", generation: owner.owner_generation };
 				return;
 			}
+			if (owner.owner_id === input.ownerId && ownerIsLive) {
+				result = {
+					status: "acquired",
+					generation: owner.owner_generation,
+					deliveryAttempt: owner.delivery_attempt,
+					token: StateStore.workflowLaunchToken(
+						input.executionId,
+						owner.owner_generation,
+						owner.delivery_attempt,
+					),
+				};
+				return;
+			}
 			const generation =
-				owner.owner_id === input.ownerId
-					? owner.owner_generation
-					: owner.owner_generation + 1;
+				Math.max(owner.owner_generation, owner.released_generation ?? 0) + 1;
+			const leaseExpiresAt = new Date(
+				Math.min(
+					Date.parse(input.leaseExpiresAt),
+					Date.parse(input.now) + WORKFLOW_LAUNCH_SOFT_LEASE_MS,
+				),
+			).toISOString();
 			this.db.run(
 				`UPDATE workflow_launch_owner
 				    SET owner_generation = ?, owner_id = ?, acquired_at = ?,
@@ -18551,7 +18609,7 @@ export class StateStore {
 					generation,
 					input.ownerId,
 					input.now,
-					input.leaseExpiresAt,
+					leaseExpiresAt,
 					input.executionId,
 					owner.owner_generation,
 				],
@@ -18560,6 +18618,12 @@ export class StateStore {
 				result = { status: "busy", generation: owner.owner_generation };
 				return;
 			}
+			this.db.run(
+				`UPDATE lifecycle_launch_claims
+				    SET state = 'starting', updated_at = datetime('now')
+				  WHERE execution_id = ? AND state = 'closed'`,
+				[input.executionId],
+			);
 			result = {
 				status: "acquired",
 				generation,
@@ -18587,27 +18651,42 @@ export class StateStore {
 		}
 		let renewed = false;
 		let cancelled = false;
+		let horizonExhausted = false;
 		this.db.transaction(() => {
 			if (this.getWorkflowLaunchCancellation(input.executionId)) {
 				cancelled = true;
 				return;
 			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			const horizonAt = owner
+				? Date.parse(owner.acquired_at) + WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS
+				: Number.NaN;
 			if (
 				!owner ||
 				owner.owner_id !== input.ownerId ||
 				owner.owner_generation !== input.generation ||
 				owner.committed_generation != null ||
-				Date.parse(input.now) >= Date.parse(owner.lease_expires_at)
+				(owner.released_generation ?? 0) >= input.generation
 			) {
 				return;
 			}
+			if (Date.parse(input.now) >= horizonAt) {
+				horizonExhausted = true;
+				return;
+			}
+			const effectiveLeaseExpiresAt = new Date(
+				Math.min(
+					Date.parse(input.leaseExpiresAt),
+					Date.parse(input.now) + WORKFLOW_LAUNCH_SOFT_LEASE_MS,
+					horizonAt,
+				),
+			).toISOString();
 			this.db.run(
 				`UPDATE workflow_launch_owner SET lease_expires_at = ?
 				  WHERE execution_id = ? AND owner_id = ? AND owner_generation = ?
 				    AND committed_generation IS NULL AND lease_expires_at > ?`,
 				[
-					input.leaseExpiresAt,
+					effectiveLeaseExpiresAt,
 					input.executionId,
 					input.ownerId,
 					input.generation,
@@ -18618,7 +18697,102 @@ export class StateStore {
 		});
 		this.save();
 		if (cancelled) return { ok: false, reason: "launch_cancelled" };
+		if (horizonExhausted)
+			return { ok: false, reason: "launch_horizon_exhausted" };
 		return renewed ? { ok: true } : { ok: false, reason: "stale_launch_owner" };
+	}
+
+	releaseFailedWorkflowLaunch(input: {
+		executionId: string;
+		ownerId: string;
+		generation: number;
+		markerPath: string;
+		now: string;
+		reason: string;
+		physicalEvidence: "absent" | "cleaned";
+	}): { ok: true; generation: number } | { ok: false; reason: string } {
+		if (
+			!input.executionId ||
+			!input.ownerId ||
+			!input.markerPath ||
+			!input.reason ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!(["absent", "cleaned"] as const).includes(input.physicalEvidence)
+		) {
+			return { ok: false, reason: "invalid_launch_release" };
+		}
+		if (existsSync(input.markerPath)) {
+			return { ok: false, reason: "launch_marker_present" };
+		}
+		let result:
+			| { ok: true; generation: number }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_launch_owner",
+		};
+		this.db.transaction(() => {
+			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if (!owner) return;
+			if ((owner.released_generation ?? 0) >= input.generation) {
+				result = { ok: true, generation: input.generation };
+				return;
+			}
+			if (
+				owner.owner_id !== input.ownerId ||
+				owner.owner_generation !== input.generation ||
+				owner.committed_generation != null
+			) {
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_launch_owner
+				    SET lease_expires_at = ?, released_generation = ?,
+				        released_at = ?, released_reason = ?
+				  WHERE execution_id = ? AND owner_id = ? AND owner_generation = ?
+				    AND committed_generation IS NULL
+				    AND (released_generation IS NULL OR released_generation < ?)`,
+				[
+					input.now,
+					input.generation,
+					input.now,
+					input.reason,
+					input.executionId,
+					input.ownerId,
+					input.generation,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			for (const table of [
+				"workflow_output_credential",
+				"workflow_submission_credential",
+			] as const) {
+				this.db.run(
+					`UPDATE ${table}
+					    SET revoked = 1, revoked_reason = ?
+					  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+					[`launch_release:${input.reason}`, input.executionId],
+				);
+			}
+			this.db.run(
+				`UPDATE lifecycle_launch_claims
+				    SET state = 'closed', updated_at = datetime('now')
+				  WHERE execution_id = ? AND state IN ('starting','active')`,
+				[input.executionId],
+			);
+			this.db.run(
+				`UPDATE sessions
+				    SET status = 'failed', terminal_at = COALESCE(terminal_at, ?)
+				  WHERE execution_id = ?
+				    AND status NOT IN ('completed','cancelled','merged','superseded')`,
+				[input.now, input.executionId],
+			);
+			result = { ok: true, generation: input.generation };
+		});
+		this.save();
+		return result;
 	}
 
 	/**
@@ -18803,6 +18977,10 @@ export class StateStore {
 		};
 		this.db.transaction(() => {
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if ((owner?.released_generation ?? 0) >= input.generation) {
+				result = { ok: false, reason: "launch_generation_released" };
+				return;
+			}
 			if (
 				!owner ||
 				owner.committed_generation !== input.generation ||
@@ -19039,6 +19217,10 @@ export class StateStore {
 		};
 		this.db.transaction(() => {
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if ((owner?.released_generation ?? 0) >= input.generation) {
+				result = { ok: false, reason: "launch_generation_released" };
+				return;
+			}
 			if (
 				!owner ||
 				owner.committed_generation !== input.generation ||
@@ -19304,6 +19486,10 @@ export class StateStore {
 				return;
 			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if ((owner?.released_generation ?? 0) >= input.generation) {
+				result = { ok: false, reason: "launch_generation_released" };
+				return;
+			}
 			if (
 				!owner ||
 				owner.owner_id !== input.ownerId ||
@@ -25593,7 +25779,30 @@ export class StateStore {
 			context = this.generalizedExecutionContext(input.executionId);
 		}
 		if (!context) return { ok: false, reason: "not_enrolled" };
-		if (input.route !== context.node.capabilities.completion_route) {
+		const completionRecord =
+			input.completionSubmission &&
+			typeof input.completionSubmission === "object" &&
+			!Array.isArray(input.completionSubmission)
+				? (input.completionSubmission as Record<string, unknown>)
+				: undefined;
+		const evidence =
+			completionRecord?.evidence &&
+			typeof completionRecord.evidence === "object" &&
+			!Array.isArray(completionRecord.evidence)
+				? (completionRecord.evidence as Record<string, unknown>)
+				: undefined;
+		const genericNoCodeExit =
+			input.route === "no_code" &&
+			context.node.type === "generic" &&
+			context.node.capabilities.completion_route === "needs_review" &&
+			input.prBinding === undefined &&
+			!Number.isInteger(evidence?.prNumber) &&
+			(evidence?.landingStatus === undefined ||
+				evidence.landingStatus === null);
+		if (
+			input.route !== context.node.capabilities.completion_route &&
+			!genericNoCodeExit
+		) {
 			return { ok: false, reason: "route_mismatch" };
 		}
 		const digest = canonicalSubmissionDigest(input.completionSubmission);
@@ -25735,7 +25944,7 @@ export class StateStore {
 		if (currentNode?.execution_id !== context.binding.execution_id) {
 			return { ok: false, reason: "stale_execution_superseded" };
 		}
-		if (context.node.capabilities.produces_output) {
+		if (context.node.capabilities.produces_output && !genericNoCodeExit) {
 			const current = this.workflowSelectAll(
 				`SELECT * FROM workflow_node_output_current
 				  WHERE run_id = ? AND node_id = ?`,
@@ -28677,9 +28886,7 @@ export class StateStore {
 						holder.head_sha !== approvedHead ||
 						!holder.card_message_id ||
 						!holder.authority_mode ||
-						!holder.subject_kind ||
-						(holder.authority_mode === "runner_ship" &&
-							holder.carrier_binding_state !== "bound")
+						!holder.subject_kind
 					) {
 						throw new Error(
 							"founder approval source payload invalid: gate holder",
@@ -34942,6 +35149,9 @@ export interface WorkflowLaunchOwnerRow {
 	delivery_owner: string | null;
 	delivery_lease_expires_at: string | null;
 	delivery_state: "pending" | "repairing" | "delivered";
+	released_generation: number | null;
+	released_at: string | null;
+	released_reason: string | null;
 }
 
 export interface WorkflowLaunchCancellationRow {

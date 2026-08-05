@@ -110,7 +110,7 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 	let projectRoot: string;
 	let start: ReturnType<typeof vi.fn>;
 	let commitLaunch: (() => { ok: boolean; reason?: string }) | undefined;
-	let dispatchMode: "session_only" | "delivered" | "ghost";
+	let dispatchMode: "session_only" | "delivered" | "ghost" | "tmux_hold";
 	let savedFlags: Record<(typeof workflowFlags)[number], string | undefined>;
 	let savedLinearApiKey: string | undefined;
 
@@ -150,7 +150,7 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 				return { executionId: `classic-${req.issueId}`, issueId: req.issueId };
 			}
 			commitLaunch = generalized.commitWorkflowLaunch;
-			if (dispatchMode !== "ghost") {
+			if (dispatchMode !== "ghost" && dispatchMode !== "tmux_hold") {
 				store.upsertSession({
 					execution_id: generalized.executionId,
 					issue_id: req.issueId,
@@ -166,6 +166,16 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 			return {
 				executionId: generalized.executionId,
 				issueId: req.issueId,
+				...(dispatchMode === "tmux_hold" && {
+					launchOutcome: Promise.resolve({
+						status: "precommit_failed" as const,
+						failure: {
+							code: "LAUNCH_TMUX_SESSION_HELD" as const,
+							reason: "saturated" as const,
+							physicalEvidence: "absent" as const,
+						},
+					}),
+				}),
 			};
 		});
 		const dispatcher: IStartDispatcher = {
@@ -296,6 +306,29 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 			success: false,
 			code: "GENERALIZED_START_NOT_LIVE",
 		});
+	});
+
+	it("returns a structured tmux hold and releases that uncommitted generation immediately", async () => {
+		dispatchMode = "tmux_hold";
+		const response = await postStart("FLY-HOLD", "hold-key");
+		expect(response.status).toBe(500);
+		expect(await response.json()).toMatchObject({
+			success: false,
+			code: "LAUNCH_TMUX_SESSION_HELD",
+			reason: "saturated",
+		});
+		const run = store.getActiveWorkflowRunForIssue("FLY-HOLD")!;
+		const reservation = store.getWorkflowStartReservationForRun(run.run_id)!;
+		expect(
+			store.getWorkflowLaunchOwner(reservation.execution_id),
+		).toMatchObject({
+			owner_generation: 1,
+			released_generation: 1,
+			released_reason: "saturated",
+		});
+		expect(
+			start.mock.calls[0]?.[0].generalizedExecution?.launchGeneration,
+		).toBe(1);
 	});
 
 	it("keeps classic pre-session ghosts on the existing 500 contract", async () => {

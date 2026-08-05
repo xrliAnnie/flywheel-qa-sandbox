@@ -24,6 +24,8 @@ export type {
 	AdapterSession,
 	ClaudeAdapterConfig,
 	IAdapter,
+	LaunchPrecommitFailure,
+	LaunchPrecommitOutcome,
 	TerminalFailureInfo,
 	TerminalFailureKind,
 } from "./adapter-types.js";

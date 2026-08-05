@@ -51,10 +51,11 @@ import {
 	resolveCanonicalProjectName,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
-import type {
-	Session,
-	StateStore,
-	WorkflowStartReservationRow,
+import {
+	type Session,
+	type StateStore,
+	WORKFLOW_LAUNCH_SOFT_LEASE_MS,
+	type WorkflowStartReservationRow,
 } from "../StateStore.js";
 import {
 	canonicalizeEngTier,
@@ -105,7 +106,7 @@ import {
 } from "./generalized-launch-recovery.js";
 import { resolveLifecycleRootKey } from "./lifecycle-root-key.js";
 import { loopbackSelfOrigin } from "./loopback-origin.js";
-import type { IStartDispatcher } from "./retry-dispatcher.js";
+import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
 import { collectRunQuiescenceEvidence } from "./run-quiescence.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
@@ -118,6 +119,7 @@ import {
 	resolveGlobalThreeStageKillSwitch,
 	resolveThreeStageEntry,
 } from "./three-stage-policy.js";
+import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
 
 /** Poll interval / max wait for chat thread_id to appear on session (FLY-91). */
 const THREAD_POLL_INTERVAL_MS = 500;
@@ -2658,8 +2660,16 @@ export function createRunsRouter(
 			let workflowOutputCredential = workflowAdmission.outputCredential;
 			let workflowSubmissionCredential = workflowAdmission.submissionCredential;
 			let launchGateToken: string | undefined;
+			let launchGeneration: number | undefined;
 			let commitWorkflowLaunch:
 				| (() => { ok: boolean; reason?: string })
+				| undefined;
+			let launchReleaseFence:
+				| {
+						ownerId: string;
+						generation: number;
+						markerPath: string;
+				  }
 				| undefined;
 			// Codex code R1 #2: a session row alone is NOT launch evidence —
 			// Blueprint creates it BEFORE the adapter's launch commit, so a crash
@@ -2686,7 +2696,7 @@ export function createRunsRouter(
 					ownerId: launchOwnerId,
 					now: launchNow.toISOString(),
 					leaseExpiresAt: new Date(
-						launchNow.getTime() + 60 * 60_000,
+						launchNow.getTime() + WORKFLOW_LAUNCH_SOFT_LEASE_MS,
 					).toISOString(),
 					markerPath: launchMarkerPath,
 				});
@@ -2758,6 +2768,7 @@ export function createRunsRouter(
 							return;
 						}
 						launchGateToken = repair.token;
+						launchGeneration = repair.generation;
 						commitWorkflowLaunch = () =>
 							store.commitWorkflowLaunchDeliveryRepair({
 								executionId: generalizedSelection!.executionId,
@@ -2770,6 +2781,12 @@ export function createRunsRouter(
 						shouldDispatch = true;
 					}
 				} else {
+					launchGeneration = launch.generation;
+					launchReleaseFence = {
+						ownerId: launchOwnerId,
+						generation: launch.generation,
+						markerPath: launchMarkerPath,
+					};
 					const rotationNow = new Date();
 					const rotationWindow = credentialWindowForNode(
 						selectedSnapshot,
@@ -2826,7 +2843,7 @@ export function createRunsRouter(
 						generation: launch.generation,
 						now: renewalNow.toISOString(),
 						leaseExpiresAt: new Date(
-							renewalNow.getTime() + 60 * 60_000,
+							renewalNow.getTime() + WORKFLOW_LAUNCH_SOFT_LEASE_MS,
 						).toISOString(),
 					});
 					if (!renewed.ok) {
@@ -2875,44 +2892,125 @@ export function createRunsRouter(
 									: {}),
 							})
 						: undefined;
-					await startDispatcher.start({
-						issueId,
-						projectName,
-						leadId,
-						issueTitle,
-						issueIdentifier,
-						routeSummary,
-						sessionRole: workflowRole,
-						shareParentBranch: workflowRole === "main" ? undefined : true,
-						issueLabels: normalizedIssueLabels,
-						owningDept,
-						codexSkip:
-							dagBehavior?.codexSkip ??
-							normalizedIssueLabels.includes("codex-skip"),
-						docTier: dagBehavior ? (docTier ?? "full") : docTier,
-						...(dagBehavior && {
-							founderFacingUx: dagBehavior.founderFacingUx,
-							ponytailInput: buildPonytailInput(),
-						}),
-						issueUrl,
-						generalizedExecution: {
-							engineOwned: true,
-							executionId: generalizedSelection.executionId,
-							runId: generalizedSelection.runId,
-							nodeId: generalizedSelection.nodeId,
-							attempt: 1,
-							snapshotDigest: generalizedSelection.snapshotDigest,
-							gateCarrierEpoch: generalizedSelection.gateCarrierEpoch,
-							dispatch: workflowRuntimeDispatch,
-							capabilities: { ...generalizedSelection.node.capabilities },
-							agentContent: workflowAgentContent,
-							outputCredential: workflowOutputCredential,
-							submissionCredential: workflowSubmissionCredential,
-							idempotencyKey: generalizedSelection.idempotencyKey,
-							launchGateToken,
-							commitWorkflowLaunch,
-						},
-					});
+					let startResult: StartResult;
+					try {
+						startResult = await startDispatcher.start({
+							issueId,
+							projectName,
+							leadId,
+							issueTitle,
+							issueIdentifier,
+							routeSummary,
+							sessionRole: workflowRole,
+							shareParentBranch: workflowRole === "main" ? undefined : true,
+							issueLabels: normalizedIssueLabels,
+							owningDept,
+							codexSkip:
+								dagBehavior?.codexSkip ??
+								normalizedIssueLabels.includes("codex-skip"),
+							docTier: dagBehavior ? (docTier ?? "full") : docTier,
+							...(dagBehavior && {
+								founderFacingUx: dagBehavior.founderFacingUx,
+								ponytailInput: buildPonytailInput(),
+							}),
+							issueUrl,
+							generalizedExecution: {
+								engineOwned: true,
+								executionId: generalizedSelection.executionId,
+								runId: generalizedSelection.runId,
+								nodeId: generalizedSelection.nodeId,
+								attempt: 1,
+								snapshotDigest: generalizedSelection.snapshotDigest,
+								gateCarrierEpoch: generalizedSelection.gateCarrierEpoch,
+								dispatch: workflowRuntimeDispatch,
+								capabilities: { ...generalizedSelection.node.capabilities },
+								agentContent: workflowAgentContent,
+								outputCredential: workflowOutputCredential,
+								submissionCredential: workflowSubmissionCredential,
+								idempotencyKey: generalizedSelection.idempotencyKey,
+								launchGateToken,
+								launchGeneration,
+								commitWorkflowLaunch,
+							},
+						});
+					} catch (error) {
+						if (launchReleaseFence) {
+							store.releaseFailedWorkflowLaunch({
+								executionId: generalizedSelection.executionId,
+								ownerId: launchReleaseFence.ownerId,
+								generation: launchReleaseFence.generation,
+								markerPath: launchReleaseFence.markerPath,
+								now: new Date().toISOString(),
+								reason: "dispatcher_start_failed",
+								physicalEvidence: "absent",
+							});
+						}
+						res.status(500).json({
+							success: false,
+							code: "LAUNCH_PRECOMMIT_FAILED",
+							reason: error instanceof Error ? error.message : String(error),
+						});
+						return;
+					}
+					if (startResult.launchOutcome && launchReleaseFence) {
+						const outcome = await waitForWorkflowLaunchOutcome({
+							outcome: startResult.launchOutcome,
+							timeoutMs: GHOST_GUARD_SESSION_WAIT_MS,
+							heartbeat: () => {
+								const heartbeatNow = new Date();
+								store.renewWorkflowLaunchOwner({
+									executionId: generalizedSelection!.executionId,
+									ownerId: launchReleaseFence!.ownerId,
+									generation: launchReleaseFence!.generation,
+									now: heartbeatNow.toISOString(),
+									leaseExpiresAt: new Date(
+										heartbeatNow.getTime() + WORKFLOW_LAUNCH_SOFT_LEASE_MS,
+									).toISOString(),
+								});
+							},
+						});
+						if (!outcome) {
+							res.status(202).json({
+								success: false,
+								code: "GENERALIZED_LAUNCH_PENDING",
+								reason: "precommit outcome is still pending",
+							});
+							return;
+						}
+						if (outcome.status === "precommit_failed") {
+							if (outcome.failure.physicalEvidence === "unknown") {
+								res.status(202).json({
+									success: false,
+									code: "GENERALIZED_LAUNCH_PENDING",
+									reason: outcome.failure.reason,
+								});
+								return;
+							}
+							const released = store.releaseFailedWorkflowLaunch({
+								executionId: generalizedSelection.executionId,
+								ownerId: launchReleaseFence.ownerId,
+								generation: launchReleaseFence.generation,
+								markerPath: launchReleaseFence.markerPath,
+								now: new Date().toISOString(),
+								reason: outcome.failure.reason,
+								physicalEvidence: outcome.failure.physicalEvidence,
+							});
+							if (!released.ok) {
+								res.status(202).json({
+									success: false,
+									code: "GENERALIZED_LAUNCH_PENDING",
+									reason: released.reason,
+								});
+								return;
+							}
+							res.status(500).json({
+								success: false,
+								code: outcome.failure.code,
+								reason: outcome.failure.reason,
+							});
+							return;
+						}
+					}
 					store.advanceWorkflowStartStage(
 						generalizedSelection.idempotencyKey,
 						"commdb_registered",

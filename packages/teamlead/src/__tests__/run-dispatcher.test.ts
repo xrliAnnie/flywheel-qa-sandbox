@@ -126,6 +126,54 @@ class CleanupObservingRunDispatcher extends RunDispatcher {
 }
 
 describe("RunDispatcher", () => {
+	it("returns a non-rejecting typed precommit outcome for a generalized tmux hold", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		vi.mocked(runtime.blueprint.run).mockResolvedValue({
+			success: false,
+			error: "tmux session ensure held: saturated",
+			launchFailure: {
+				code: "LAUNCH_TMUX_SESSION_HELD",
+				reason: "saturated",
+				physicalEvidence: "absent",
+			},
+		});
+		const dispatcher = new CleanupObservingRunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+
+		const result = await dispatcher.start({
+			issueId: "FLY-1638",
+			projectName: "TestProject",
+			leadId: "flywheel-eng-lead",
+			generalizedExecution: {
+				engineOwned: true,
+				executionId: "launch-exec",
+				runId: "launch-run",
+				nodeId: "execute",
+				attempt: 1,
+				snapshotDigest: "digest",
+				gateCarrierEpoch: 0,
+				dispatch: { vendor: "claude", model: "claude-opus-5" },
+				capabilities: {},
+				agentContent: "Execute.",
+				idempotencyKey: "launch-key",
+				launchGateToken: "launch-token",
+				commitWorkflowLaunch: vi.fn(() => ({ ok: true })),
+			},
+		});
+
+		await expect(result.launchOutcome).resolves.toEqual({
+			status: "precommit_failed",
+			failure: {
+				code: "LAUNCH_TMUX_SESSION_HELD",
+				reason: "saturated",
+				physicalEvidence: "absent",
+			},
+		});
+	});
+
 	it("fails closed before launch when a design node has no resolved Lead", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
 		const dispatcher = new RunDispatcher(

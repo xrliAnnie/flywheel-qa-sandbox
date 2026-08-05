@@ -6,7 +6,7 @@
  * is started via index.ts instead of scripts/run-bridge.ts).
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -27,11 +27,16 @@ import {
 	SKILL_FRAMEWORK_MODE_ENV,
 	SKILL_FRAMEWORK_SPLIT,
 } from "flywheel-config";
-import { openTmuxViewer } from "flywheel-core";
+import {
+	type LaunchPrecommitFailure,
+	type LaunchPrecommitOutcome,
+	openTmuxViewer,
+} from "flywheel-core";
 import type { AgentDispatcher } from "flywheel-edge-worker";
 import type {
 	Blueprint,
 	BlueprintContext,
+	BlueprintResult,
 } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { LaunchClaimStore } from "./launch-claim-store.js";
 import { resolveCommBackend } from "./plugin.js";
@@ -103,8 +108,79 @@ export type TmuxGenerationRecorder = (
 		windowId: string;
 		socketPath: string;
 		serverStartTime: string;
+		executionId: string;
+		launchGeneration?: number;
+		launchFingerprint?: string;
 	},
 ) => void;
+
+export type TmuxWorkflowWindowAuthority = (
+	launchExecutionId: string,
+	candidate: {
+		windowId: string;
+		windowName: string;
+		executionId?: string;
+		launchGeneration?: number;
+		launchFingerprint?: string;
+	},
+) => "prune" | "keep";
+
+interface LaunchOutcomeDeferred {
+	promise: Promise<LaunchPrecommitOutcome>;
+	commit: (() => { ok: boolean; reason?: string }) | undefined;
+	observeResult(result: BlueprintResult): void;
+	observeError(error: unknown): void;
+}
+
+function createLaunchOutcomeDeferred(
+	commit: (() => { ok: boolean; reason?: string }) | undefined,
+): LaunchOutcomeDeferred {
+	let settled = false;
+	let resolve!: (outcome: LaunchPrecommitOutcome) => void;
+	const promise = new Promise<LaunchPrecommitOutcome>((done) => {
+		resolve = done;
+	});
+	const settle = (outcome: LaunchPrecommitOutcome) => {
+		if (settled) return;
+		settled = true;
+		resolve(outcome);
+	};
+	const genericFailure = (error: unknown): LaunchPrecommitFailure => ({
+		code: "LAUNCH_PRECOMMIT_FAILED",
+		reason: error instanceof Error ? error.message : String(error),
+		physicalEvidence: "unknown",
+	});
+	return {
+		promise,
+		commit: commit
+			? () => {
+					const result = commit();
+					if (result.ok) settle({ status: "committed" });
+					return result;
+				}
+			: undefined,
+		observeResult(result) {
+			if (result.success) {
+				settle({
+					status: "precommit_failed",
+					failure: genericFailure(
+						"Blueprint completed without committing its workflow launch fence",
+					),
+				});
+				return;
+			}
+			settle({
+				status: "precommit_failed",
+				failure:
+					result.launchFailure ??
+					genericFailure(result.error ?? "Blueprint launch failed"),
+			});
+		},
+		observeError(error) {
+			settle({ status: "precommit_failed", failure: genericFailure(error) });
+		},
+	};
+}
 
 /**
  * FLY-795: compute the restart-resilient resume decision for a (re-)dispatch.
@@ -471,7 +547,11 @@ export function assertDesignDispatchContract(
 export class RetryDispatcher implements IRetryDispatcher {
 	protected inflight = new Map<
 		string,
-		{ executionId: string; promise: Promise<void> }
+		{
+			executionId: string;
+			promise: Promise<void>;
+			launchOutcome?: Promise<LaunchPrecommitOutcome>;
+		}
 	>();
 	protected accepting = true;
 
@@ -510,8 +590,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 		) => SkillFrameworkMode | undefined,
 		protected tmuxGenerationRecorder?: TmuxGenerationRecorder,
 		/** FLY-1638: one admission controller shared by fresh and retry lanes. */
-		protected runnerAdmission: RunnerAdmissionController =
-			RunnerAdmissionController.alwaysAdmit(),
+		protected runnerAdmission: RunnerAdmissionController = RunnerAdmissionController.alwaysAdmit(),
+		protected tmuxWindowAuthority?: TmuxWorkflowWindowAuthority,
 	) {}
 
 	/** Typed fleet admission check, deliberately before shutdown semantics. */
@@ -908,6 +988,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 						: undefined,
 				launchGateToken: req.generalizedExecution?.launchGateToken,
 				commitWorkflowLaunch: req.generalizedExecution?.commitWorkflowLaunch,
+				workflowTmuxWindowAuthority: (candidate) =>
+					this.tmuxWindowAuthority?.(newExecutionId, candidate) ?? "keep",
 				...(runnerSpawn.runnerBackend === "claude-tmux" &&
 					this.tmuxGenerationRecorder && {
 						onTmuxWindowOpened: (info) =>
@@ -1154,6 +1236,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			issueId: string,
 		) => SkillFrameworkMode | undefined,
 		tmuxGenerationRecorder?: TmuxGenerationRecorder,
+		tmuxWindowAuthority?: TmuxWorkflowWindowAuthority,
 	) {
 		super(
 			blueprintsByProject,
@@ -1166,6 +1249,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			skillFrameworkStampLookup,
 			tmuxGenerationRecorder,
 			runnerAdmission,
+			tmuxWindowAuthority,
 		);
 	}
 
@@ -1232,7 +1316,13 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.generalizedExecution &&
 			inflightEntry.executionId === req.generalizedExecution.executionId
 		) {
-			return { executionId: inflightEntry.executionId, issueId: req.issueId };
+			return {
+				executionId: inflightEntry.executionId,
+				issueId: req.issueId,
+				...(inflightEntry.launchOutcome && {
+					launchOutcome: inflightEntry.launchOutcome,
+				}),
+			};
 		}
 		if (inflightEntry) {
 			throw new Error(
@@ -1273,9 +1363,15 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			role,
 		});
 
+		const launchOutcome = req.generalizedExecution
+			? createLaunchOutcomeDeferred(
+					req.generalizedExecution.commitWorkflowLaunch,
+				)
+			: undefined;
 		const entry = {
 			executionId,
 			promise: null! as Promise<void>,
+			...(launchOutcome && { launchOutcome: launchOutcome.promise }),
 		};
 		this.inflight.set(key, entry);
 		try {
@@ -1365,6 +1461,14 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					// best-effort; the adapter also mkdir's defensively
 				}
 			}
+			const launchFingerprint =
+				req.generalizedExecution?.launchGeneration !== undefined
+					? createHash("sha256")
+							.update(
+								`${executionId}:${req.generalizedExecution.launchGeneration}:${req.generalizedExecution.launchGateToken ?? ""}`,
+							)
+							.digest("hex")
+					: undefined;
 
 			// FLY-80: Pre-register in CommDB before blueprint starts.
 			// FLY-1188: see the retry path — the pending row carries the resolved
@@ -1500,7 +1604,13 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				// (undefined otherwise, byte-compatible with the normal-path sentinel).
 				launchCommitPath: shadowCommitDir,
 				launchGateToken: req.generalizedExecution?.launchGateToken,
-				commitWorkflowLaunch: req.generalizedExecution?.commitWorkflowLaunch,
+				launchGeneration: req.generalizedExecution?.launchGeneration,
+				launchFingerprint,
+				workflowTmuxWindowAuthority: (candidate) =>
+					this.tmuxWindowAuthority?.(executionId, candidate) ?? "keep",
+				commitWorkflowLaunch:
+					launchOutcome?.commit ??
+					req.generalizedExecution?.commitWorkflowLaunch,
 				...(runnerSpawn.runnerBackend === "claude-tmux" &&
 					this.tmuxGenerationRecorder && {
 						onTmuxWindowOpened: (info) =>
@@ -1560,6 +1670,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			entry.promise = runtime.blueprint
 				.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
 				.then((result) => {
+					launchOutcome?.observeResult(result);
 					if (result.worktreePath) {
 						console.log(
 							`[RunDispatcher] ${executionId} ran in worktree: ${result.worktreePath}`,
@@ -1600,6 +1711,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					}
 				})
 				.catch((err: unknown) => {
+					launchOutcome?.observeError(err);
 					console.error(
 						`[RunDispatcher] ${executionId} failed:`,
 						err instanceof Error ? err.message : err,
@@ -1628,7 +1740,11 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					this.inflight.delete(key);
 				});
 
-			return { executionId, issueId: req.issueId };
+			return {
+				executionId,
+				issueId: req.issueId,
+				...(launchOutcome && { launchOutcome: launchOutcome.promise }),
+			};
 		} catch (err) {
 			if (this.inflight.get(key) === entry) {
 				this.abortPreLaunch(

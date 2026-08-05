@@ -53,7 +53,10 @@ import { Blueprint } from "flywheel-edge-worker/dist/Blueprint.js";
 import { PreHydrator } from "flywheel-edge-worker/dist/PreHydrator.js";
 import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import type { StateStore } from "../StateStore.js";
+import {
+	isStateStoreIrreversibleTerminalForZombie,
+	type StateStore,
+} from "../StateStore.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { EventFilter } from "./EventFilter.js";
@@ -681,6 +684,33 @@ export function createRunInfraDispatcher(input: {
 		(issueId) => input.store.getSkillFrameworkStamp(issueId),
 		(executionId, info) =>
 			persistPaneLossGenerationCredential(input.store, executionId, info),
+		(launchExecutionId, candidate) => {
+			if (!candidate.executionId) return "keep";
+			if (candidate.executionId === launchExecutionId) {
+				if (candidate.launchGeneration === undefined) return "keep";
+				const owner = input.store.getWorkflowLaunchOwner(launchExecutionId);
+				return (owner?.released_generation ?? 0) >= candidate.launchGeneration
+					? "prune"
+					: "keep";
+			}
+			const session = input.store.getSession(candidate.executionId);
+			if (!isStateStoreIrreversibleTerminalForZombie(session?.status)) {
+				return "keep";
+			}
+			if (session?.status !== "completed") return "prune";
+			const binding = input.store.getWorkflowExecutionBinding(
+				candidate.executionId,
+			);
+			if (!binding) return "prune";
+			const completion = input.store.getWorkflowNodeCompletion(
+				binding.run_id,
+				binding.node_id,
+				binding.attempt,
+			);
+			return completion?.execution_id === candidate.executionId
+				? "prune"
+				: "keep";
+		},
 	);
 }
 
