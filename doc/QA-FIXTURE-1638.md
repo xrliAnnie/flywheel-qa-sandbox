@@ -1,0 +1,5 @@
+# QA-FIXTURE FLY-1638
+
+1. 2026-08-05 17:07:06 UTC
+2. git rev-parse HEAD: 576b14ac262621f0d6618f807b6b4b5de68dced2
+3. FLY-1638 529 real-machine E2E fixture
