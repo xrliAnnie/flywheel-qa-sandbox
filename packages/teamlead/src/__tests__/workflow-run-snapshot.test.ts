@@ -7,6 +7,7 @@ import {
 	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
 	parseWorkflowRunSnapshot,
+	resolveWorkflowGateAuthority,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
 import { loadBundledWorkflowSeeds } from "../workflow-template.js";
@@ -65,10 +66,10 @@ describe("typed generalized workflow snapshot", () => {
 		// FLY-1501: the heavy QA node reserves its 180-minute evidence window in
 		// the pinned manifest, so both topology digests move with that authority.
 		expect(snapshot.manifest_digest).toBe(
-			"e30dc87efef5804b7a7cb741293b45cd85e5f71482bcdd1787e5bae25abc6444",
+			"48a29b62bb0311b800962e85ae265188f241d57abc5bf5e3614066941b915705",
 		);
 		expect(snapshot.snapshot_digest).toBe(
-			"3b165a2411bcdb0c81c61b971ec20f33ef8375edfa4bde01a3e1975f857ad253",
+			"a22bdda9d3b55a2876f0c1dfa5234394c9b50637f2e83a14563c2eb26daad9d1",
 		);
 		expect(
 			snapshot.manifest.nodes.find((node) => node.id === "qa")
@@ -312,6 +313,21 @@ describe("typed generalized workflow snapshot", () => {
 			},
 		});
 		expect(execute?.agent?.content).toBe("Do the bounded task.\n");
+	});
+
+	it("binds a founder-only generic ship carrier to git-head authority", () => {
+		const { root, manifest } = fixture();
+		const snapshot = buildWorkflowRunSnapshotV2({
+			template: { id: "tpl_generic", revision: 1 },
+			manifest,
+			canonicalRoot: root,
+		});
+
+		expect(resolveWorkflowGateAuthority(snapshot)).toEqual({
+			mode: "runner_ship",
+			subjectKind: "git_head",
+			carrierNodeId: "execute",
+		});
 	});
 
 	it("pins and parses work-kind provenance while old snapshots stay field-free", () => {

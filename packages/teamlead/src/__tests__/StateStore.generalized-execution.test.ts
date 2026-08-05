@@ -1167,6 +1167,130 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
+	it("materializes a founder-only generic gate as unbound when PR evidence is missing", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store, { output: true });
+		const db = (
+			store as unknown as { db: { run(sql: string, params?: unknown[]): void } }
+		).db;
+		db.run(
+			"UPDATE workflow_run SET gate_carrier_epoch = 1 WHERE run_id = 'run-1'",
+		);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
+		expect(admitted.outputCredential).toBeTypeOf("string");
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: admitted.outputCredential!,
+				clientRequestId: "generic-output-1",
+				payload: '{"ok":true}',
+				now: "2026-07-15T00:01:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		const headSha = "a".repeat(40);
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "generic-complete-without-pr",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: headSha,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		const holder = store.getCurrentWorkflowGateHolder("run-1", "founder_gate");
+		expect(holder).toMatchObject({
+			authority_mode: "runner_ship",
+			subject_kind: "git_head",
+			head_sha: headSha,
+			carrier_binding_state: "unbound",
+		});
+		expect(store.getSession("exec-1")?.status).toBe("ship_parked");
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+		store.close();
+	});
+
+	it("binds a running generic carrier and freezes its ship target at gate creation", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store, { output: true });
+		const db = (
+			store as unknown as { db: { run(sql: string, params?: unknown[]): void } }
+		).db;
+		db.run(
+			"UPDATE workflow_run SET gate_carrier_epoch = 1 WHERE run_id = 'run-1'",
+		);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
+		expect(admitted.outputCredential).toBeTypeOf("string");
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: admitted.outputCredential!,
+				clientRequestId: "generic-output-with-pr",
+				payload: '{"ok":true}',
+				now: "2026-07-15T00:01:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		const headSha = "b".repeat(40);
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "generic-complete-with-pr",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: headSha,
+				prBinding: {
+					prNumber: 1638,
+					headSha,
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					targetRepoPath: "/tmp/flywheel-FLY-1638",
+					worktreeBindingGeneration: "generation-1",
+				},
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		const holder = store.getCurrentWorkflowGateHolder("run-1", "founder_gate");
+		expect(holder).toMatchObject({
+			authority_mode: "runner_ship",
+			subject_kind: "git_head",
+			head_sha: headSha,
+			carrier_binding_state: "bound",
+			source_execution_id: "exec-1",
+		});
+		expect(store.getSession("exec-1")).toMatchObject({
+			status: "awaiting_review",
+			review_question_id: holder!.question_id,
+			pr_head_sha: headSha,
+		});
+		expect(
+			store.getWorkflowShipTargetBinding(holder!.question_id),
+		).toMatchObject({
+			run_id: "run-1",
+			frozen_head_sha: headSha,
+			target_repo_identity: "__main__",
+			probe_repo_slug: "xrliAnnie/flywheel",
+		});
+		expect(store.listWorkflowAlertOutbox()).toEqual([]);
+		store.close();
+	});
+
 	it("bumps lifecycle revision only when generalized completion changes status", async () => {
 		const store = await StateStore.create(":memory:");
 		createRun(store);

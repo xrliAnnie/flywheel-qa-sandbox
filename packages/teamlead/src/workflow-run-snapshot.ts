@@ -142,21 +142,28 @@ export function resolveWorkflowDecisionContract(
 export function resolveWorkflowGateAuthority(
 	snapshot: WorkflowRunSnapshot,
 ): WorkflowGateAuthority {
-	const subjectKind: WorkflowGateSubjectKind =
+	const claimSubjectKind: WorkflowGateSubjectKind =
 		snapshot.manifest.ship_claims.some((claim) => claim !== "founder_approved")
 			? "git_head"
 			: "snapshot_digest";
 	if (isWorkflowManifestV1Land(snapshot.manifest)) {
 		return { mode: "land", subjectKind: "git_head" };
 	}
-	const candidates = snapshot.resolved.nodes.filter((node) => {
+	const shipCapable = snapshot.resolved.nodes.filter((node) => {
 		const capabilities = node.capabilities;
 		return (
 			capabilities.creates_pr || capabilities.can_ship || capabilities.can_land
 		);
 	});
+	const outputCarriers = shipCapable.filter(
+		(node) => node.capabilities.produces_output,
+	);
+	const candidates =
+		shipCapable.length > 1 && outputCarriers.length === 1
+			? outputCarriers
+			: shipCapable;
 	if (candidates.length === 0) {
-		return { mode: "engine_terminal", subjectKind };
+		return { mode: "engine_terminal", subjectKind: claimSubjectKind };
 	}
 	if (candidates.length !== 1) {
 		throw new Error("incoherent_ship_bundle");
@@ -173,12 +180,9 @@ export function resolveWorkflowGateAuthority(
 	) {
 		throw new Error("incoherent_ship_bundle");
 	}
-	if (subjectKind !== "git_head") {
-		throw new Error("incoherent_ship_bundle");
-	}
 	return {
 		mode: "runner_ship",
-		subjectKind,
+		subjectKind: "git_head",
 		carrierNodeId: carrier.id,
 	};
 }

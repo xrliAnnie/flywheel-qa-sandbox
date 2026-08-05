@@ -23260,12 +23260,14 @@ export class StateStore {
 			run.gate_carrier_epoch === 1
 				? resolveWorkflowGateAuthority(input.context.snapshot)
 				: undefined;
+		const previousStatus = this.getSession(binding.execution_id)?.status;
 		const projectedStatus =
 			gateAuthority?.mode === "runner_ship" &&
 			gateAuthority.carrierNodeId === binding.node_id
-				? "ship_parked"
+				? previousStatus === "awaiting_review"
+					? "awaiting_review"
+					: "ship_parked"
 				: "completed";
-		const previousStatus = this.getSession(binding.execution_id)?.status;
 		this.db.run(
 			`UPDATE workflow_run_node SET state = 'done', ended_at = ?
 			  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
@@ -23346,8 +23348,9 @@ export class StateStore {
 		try {
 			const snapshot = parseWorkflowRunSnapshot(run.snapshot);
 			return (
-				snapshot.schema_version === 1 &&
-				isWorkflowManifestV1Land(snapshot.manifest)
+				(snapshot.schema_version === 1 &&
+					isWorkflowManifestV1Land(snapshot.manifest)) ||
+				resolveWorkflowGateAuthority(snapshot).mode === "runner_ship"
 			);
 		} catch {
 			return false;
@@ -26309,6 +26312,9 @@ export class StateStore {
 						attempt: targetAttempt,
 						sourceExecutionId: input.executionId,
 						snapshot,
+						...(input.subjectDigest
+							? { runnerShipHeadSha: input.subjectDigest }
+							: {}),
 						alertIdentity: input.alertIdentity,
 						now,
 					});
@@ -28013,6 +28019,7 @@ export class StateStore {
 	private resolveWorkflowGateEvidenceTx(input: {
 		runId: string;
 		snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+		runnerShipHeadSha?: string;
 		now: string;
 	}): {
 		subjectKind: WorkflowGateSubjectKind;
@@ -28029,6 +28036,17 @@ export class StateStore {
 		const required = input.snapshot.manifest.ship_claims.filter(
 			(predicate) => predicate !== "founder_approved",
 		);
+		if (authority.mode === "runner_ship" && required.length === 0) {
+			const headSha = input.runnerShipHeadSha?.trim().toLowerCase();
+			if (!headSha || !/^[0-9a-f]{40}$/.test(headSha)) {
+				throw new Error("workflow_gate_runner_ship_head_unavailable");
+			}
+			return {
+				subjectKind: "git_head",
+				subjectDigest: headSha,
+				evidence: [],
+			};
+		}
 		if (required.length === 0) {
 			return {
 				subjectKind: "snapshot_digest",
@@ -28139,6 +28157,7 @@ export class StateStore {
 		attempt: number;
 		sourceExecutionId: string;
 		snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+		runnerShipHeadSha?: string;
 		alertIdentity?: WorkflowEngineAlertIdentity;
 		now: string;
 	}): WorkflowGateHolderRow {
@@ -28146,6 +28165,9 @@ export class StateStore {
 		const proof = this.resolveWorkflowGateEvidenceTx({
 			runId: input.runId,
 			snapshot: input.snapshot,
+			...(input.runnerShipHeadSha
+				? { runnerShipHeadSha: input.runnerShipHeadSha }
+				: {}),
 			now: input.now,
 		});
 		if (proof.subjectKind !== authority.subjectKind) {
@@ -28179,10 +28201,16 @@ export class StateStore {
 				candidate?.execution_id == null
 					? undefined
 					: this.getSession(candidate.execution_id);
+			const prBinding = this.getCurrentWorkflowNodePrBindingForHead(
+				input.runId,
+				proof.subjectDigest,
+			);
 			if (
 				candidate?.execution_id &&
 				activation &&
-				session?.status === "ship_parked" &&
+				(session?.status === "running" || session?.status === "ship_parked") &&
+				prBinding?.node_id === authority.carrierNodeId &&
+				prBinding.attempt === candidate.attempt &&
 				session.pr_head_sha?.toLowerCase() === proof.subjectDigest.toLowerCase()
 			) {
 				this.db.run(
@@ -28194,9 +28222,9 @@ export class StateStore {
 					        gate_timeout_notified_at = NULL,
 					        last_activity_at = ?,
 					        terminal_at = NULL
-					  WHERE execution_id = ?
-					    AND status = 'ship_parked'
-					    AND review_question_id IS NULL
+				  WHERE execution_id = ?
+				    AND status IN ('running','ship_parked')
+				    AND review_question_id IS NULL
 					    AND lower(pr_head_sha) = lower(?)`,
 					[
 						questionId,
@@ -28214,6 +28242,11 @@ export class StateStore {
 				}
 			}
 		}
+		this.supersedeWorkflowShipTargetsForCurrentGateTx({
+			runId: input.runId,
+			gateNodeId: input.gateNodeId,
+			now: input.now,
+		});
 		this.db.run(
 			`UPDATE workflow_gate_holder
 			    SET state = 'superseded',
@@ -28266,6 +28299,13 @@ export class StateStore {
 					input.now,
 				],
 			);
+		}
+		if (carrierBindingState === "bound") {
+			this.bindWorkflowShipTargetForGateTx({
+				runId: input.runId,
+				questionId,
+				headSha: proof.subjectDigest,
+			});
 		}
 		this.appendWorkflowRunEventTx({
 			runId: input.runId,
@@ -30387,9 +30427,15 @@ export class StateStore {
 			return undefined;
 		}
 		const session = this.getSession(candidateExecutionId);
+		const prBinding = this.getCurrentWorkflowNodePrBindingForHead(
+			String(holder.run_id),
+			String(holder.head_sha),
+		);
 		if (
 			session?.status !== "ship_parked" ||
 			session.review_question_id != null ||
+			prBinding?.node_id !== authority.carrierNodeId ||
+			prBinding.attempt !== candidate.attempt ||
 			session.pr_head_sha?.toLowerCase() !==
 				String(holder.head_sha).toLowerCase()
 		) {
@@ -30556,9 +30602,16 @@ export class StateStore {
 				return;
 			}
 			const session = this.getSession(input.candidateExecutionId);
+			const prBinding = this.getCurrentWorkflowNodePrBindingForHead(
+				String(holder.run_id),
+				String(holder.head_sha),
+			);
 			if (
 				session?.status !== "ship_parked" ||
 				session.review_question_id != null ||
+				prBinding == null ||
+				prBinding.node_id !== authority.carrierNodeId ||
+				prBinding.attempt !== candidate.attempt ||
 				session.pr_head_sha?.toLowerCase() !==
 					String(holder.head_sha).toLowerCase()
 			) {
@@ -30601,6 +30654,12 @@ export class StateStore {
 			if (this.db.getRowsModified() !== 1) {
 				throw new Error("workflow_gate_carrier_rebind_session_raced");
 			}
+			this.bindWorkflowShipTargetForGateTx({
+				runId: String(holder.run_id),
+				questionId: input.questionId,
+				headSha: String(holder.head_sha),
+				sourceRequestId: input.requestId,
+			});
 			this.db.run(
 				`INSERT INTO workflow_gate_carrier_rebind_receipt
 				   (request_id, canonical_digest, question_id, run_id, gate_node_id,

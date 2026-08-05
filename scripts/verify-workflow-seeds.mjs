@@ -22,6 +22,14 @@ const teamleadDist = join(repoRoot, "packages/teamlead/dist");
 const { validateWorkflowManifest, loadBundledWorkflowSeeds } = require(
 	join(teamleadDist, "workflow-template.js"),
 );
+const { loadWorkflowMenuSeeds } = require(
+	join(teamleadDist, "workflow-menu.js"),
+);
+const {
+	buildWorkflowRunSnapshotV1,
+	buildWorkflowRunSnapshotV2,
+	resolveWorkflowGateAuthority,
+} = require(join(teamleadDist, "workflow-run-snapshot.js"));
 const { parse } = require(
 	join(repoRoot, "packages/teamlead/node_modules/yaml"),
 );
@@ -67,6 +75,31 @@ try {
 } catch (err) {
 	failed += 1;
 	console.log(`❌ ${err instanceof Error ? err.message : String(err)}`);
+}
+
+console.log("\nGate authority — bundled + compiled menu snapshots:");
+for (const seed of [
+	...loadBundledWorkflowSeeds(),
+	...loadWorkflowMenuSeeds(),
+]) {
+	try {
+		const template = { id: seed.templateId, revision: 1 };
+		const snapshot =
+			seed.manifest.schema_version === 1
+				? buildWorkflowRunSnapshotV1({ template, manifest: seed.manifest })
+				: buildWorkflowRunSnapshotV2({
+						template,
+						manifest: seed.manifest,
+						canonicalRoot: repoRoot,
+					});
+		const authority = resolveWorkflowGateAuthority(snapshot);
+		console.log(`✅ ${seed.templateId}: ${authority.mode}`);
+	} catch (err) {
+		failed += 1;
+		console.log(
+			`❌ ${seed.templateId}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
 }
 
 console.log(

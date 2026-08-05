@@ -16,7 +16,10 @@ import {
 	resolveMenuOverrides,
 	WorkflowMenuValidationError,
 } from "../workflow-menu.js";
-import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
+import {
+	buildWorkflowRunSnapshotV2,
+	resolveWorkflowGateAuthority,
+} from "../workflow-run-snapshot.js";
 import { importBundledWorkflowSeeds } from "../workflow-template.js";
 import { resolveWorkflowTemplateSelection } from "../workflow-template-selection.js";
 
@@ -240,6 +243,22 @@ describe("founder-approved workflow menu source", () => {
 		}
 	});
 
+	it("resolves coherent gate authority for every compiled menu snapshot", () => {
+		for (const menu of loadWorkflowMenuLibrary()) {
+			const seed = compileWorkflowMenuSeed(menu);
+			const snapshot = buildWorkflowRunSnapshotV2({
+				template: { id: seed.templateId, revision: 1 },
+				manifest: seed.manifest,
+				canonicalRoot: REPO_ROOT,
+			});
+
+			expect(
+				() => resolveWorkflowGateAuthority(snapshot),
+				menu.shape,
+			).not.toThrow();
+		}
+	});
+
 	it("imports the five compiled identities into the SQLite registry", async () => {
 		const store = await StateStore.create(":memory:");
 		importWorkflowMenuSeeds(store);
@@ -409,7 +428,7 @@ describe("workflow menu override validation", () => {
 				overridden: false,
 			},
 			qa: {
-				model: "opus (= claude-opus-5)",
+				model: "opus (= claude-opus-5[1m])",
 				effort: "xhigh",
 				overridden: false,
 			},

@@ -41,6 +41,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Verify workflow seed authority
+        run: pnpm verify:workflow-seeds
+
       - name: Typecheck
         run: pnpm typecheck
 

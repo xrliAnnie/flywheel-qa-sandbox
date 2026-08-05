@@ -15,6 +15,7 @@
 		"test:packages:run": "pnpm --filter './packages/*' test:run",
 		"test:apps": "pnpm --filter './apps/*' test",
 		"test:cycle-time": "node --test scripts/cycle-time/__tests__/*.test.mjs",
+		"verify:workflow-seeds": "node scripts/verify-workflow-seeds.mjs",
 		"typecheck": "pnpm -r typecheck",
 		"prepare": "husky"
 	},
