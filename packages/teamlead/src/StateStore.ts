@@ -2749,6 +2749,24 @@ export class StateStore {
 			)
 		`);
 
+		// FLY-1638: operator/deploy admission brake. Unlike the sensor-owned
+		// fleet pressure hold this lease has a hard expiry, so a crashed restart
+		// script cannot freeze the fleet indefinitely. The row is retained after
+		// expiry for attribution; readers derive active state from their clock.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS admission_pause (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				paused_until TEXT NOT NULL,
+				set_by TEXT NOT NULL,
+				reason TEXT NOT NULL,
+				set_at TEXT NOT NULL,
+				alert_state TEXT NOT NULL DEFAULT 'pending'
+					CHECK (alert_state IN ('pending', 'claimed', 'sent')),
+				alert_attempt_at TEXT,
+				alerted_at TEXT
+			)
+		`);
+
 		// FLY-1082 (Task 3.2): escalation-event ledger — alert_threads UPSERTs one
 		// row per correlation key, so repeated episodes overwrite their history;
 		// the runbook-gap counter ("same kind ESCALATED ≥N in 7 days ⇒ auto-file
@@ -9060,6 +9078,169 @@ export class StateStore {
 		const changed = this.db.getRowsModified();
 		if (changed > 0) this.save();
 		return changed > 0;
+	}
+
+	// ── FLY-1638: bounded operator admission pause (single durable row) ──
+
+	setAdmissionPause(input: {
+		durationSeconds: number;
+		setBy: string;
+		reason: string;
+		now?: string;
+	}): {
+		active: true;
+		remainingSeconds: number;
+		paused_until: string;
+		set_by: string;
+		reason: string;
+		set_at: string;
+	} {
+		if (
+			!Number.isSafeInteger(input.durationSeconds) ||
+			input.durationSeconds < 1 ||
+			input.durationSeconds > 3_600
+		) {
+			throw new Error("durationSeconds must be an integer between 1 and 3600");
+		}
+		const setBy = input.setBy.trim();
+		const reason = input.reason.trim();
+		if (!setBy || !reason) {
+			throw new Error("admission pause setBy and reason are required");
+		}
+		const setAt = input.now ?? new Date().toISOString();
+		const setAtMs = Date.parse(setAt);
+		if (!Number.isFinite(setAtMs)) {
+			throw new Error("admission pause now must be an ISO timestamp");
+		}
+		const pausedUntil = new Date(
+			setAtMs + input.durationSeconds * 1_000,
+		).toISOString();
+		this.db.run(
+			`INSERT INTO admission_pause
+				(id, paused_until, set_by, reason, set_at)
+			 VALUES (1, ?, ?, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET
+				paused_until = excluded.paused_until,
+				set_by = excluded.set_by,
+				reason = excluded.reason,
+				set_at = excluded.set_at,
+				alert_state = 'pending',
+				alert_attempt_at = NULL,
+				alerted_at = NULL`,
+			[pausedUntil, setBy, reason, setAt],
+		);
+		this.save();
+		return {
+			active: true,
+			remainingSeconds: input.durationSeconds,
+			paused_until: pausedUntil,
+			set_by: setBy,
+			reason,
+			set_at: setAt,
+		};
+	}
+
+	getAdmissionPause(now = new Date().toISOString()):
+		| {
+				active: boolean;
+				remainingSeconds: number;
+				paused_until: string;
+				set_by: string;
+				reason: string;
+				set_at: string;
+		  }
+		| undefined {
+		const stmt = this.db.prepare(
+			"SELECT paused_until, set_by, reason, set_at FROM admission_pause WHERE id = 1",
+		);
+		let row: Record<string, unknown> | undefined;
+		if (stmt.step()) row = stmt.getAsObject() as Record<string, unknown>;
+		stmt.free();
+		if (!row) return undefined;
+		const remainingSeconds = Math.max(
+			0,
+			Math.ceil((Date.parse(row.paused_until as string) - Date.parse(now)) / 1_000),
+		);
+		return {
+			active: remainingSeconds > 0,
+			remainingSeconds,
+			paused_until: row.paused_until as string,
+			set_by: row.set_by as string,
+			reason: row.reason as string,
+			set_at: row.set_at as string,
+		};
+	}
+
+	clearAdmissionPause(): boolean {
+		this.db.run("DELETE FROM admission_pause WHERE id = 1", []);
+		const changed = this.db.getRowsModified();
+		if (changed > 0) this.save();
+		return changed > 0;
+	}
+
+	claimAdmissionPauseAlert(input: {
+		now: string;
+		minAgeMs: number;
+	}):
+		| {
+				paused_until: string;
+				set_by: string;
+				reason: string;
+				set_at: string;
+		  }
+		| undefined {
+		const pause = this.getAdmissionPause(input.now);
+		if (
+			!pause?.active ||
+			!Number.isFinite(input.minAgeMs) ||
+			input.minAgeMs < 0 ||
+			Date.parse(input.now) - Date.parse(pause.set_at) < input.minAgeMs
+		) {
+			return undefined;
+		}
+		const staleClaimBefore = new Date(
+			Date.parse(input.now) - 60_000,
+		).toISOString();
+		this.db.run(
+			`UPDATE admission_pause
+			    SET alert_state = 'claimed', alert_attempt_at = ?
+			  WHERE id = 1 AND set_at = ? AND paused_until > ?
+			    AND (alert_state = 'pending'
+			      OR (alert_state = 'claimed' AND alert_attempt_at < ?))`,
+			[input.now, pause.set_at, input.now, staleClaimBefore],
+		);
+		if (this.db.getRowsModified() !== 1) return undefined;
+		this.save();
+		return {
+			paused_until: pause.paused_until,
+			set_by: pause.set_by,
+			reason: pause.reason,
+			set_at: pause.set_at,
+		};
+	}
+
+	finishAdmissionPauseAlert(input: {
+		setAt: string;
+		outcome: "sent" | "failed";
+		now?: string;
+	}): boolean {
+		const now = input.now ?? new Date().toISOString();
+		this.db.run(
+			`UPDATE admission_pause
+			    SET alert_state = ?,
+			        alert_attempt_at = NULL,
+			        alerted_at = CASE WHEN ? = 'sent' THEN ? ELSE alerted_at END
+			  WHERE id = 1 AND set_at = ? AND alert_state = 'claimed'`,
+			[
+				input.outcome === "sent" ? "sent" : "pending",
+				input.outcome,
+				now,
+				input.setAt,
+			],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
 	}
 
 	// ── FLY-1082 (Task 3.2): runbook-gap ledger ──

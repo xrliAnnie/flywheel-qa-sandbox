@@ -509,7 +509,22 @@ export class RetryDispatcher implements IRetryDispatcher {
 			issueId: string,
 		) => SkillFrameworkMode | undefined,
 		protected tmuxGenerationRecorder?: TmuxGenerationRecorder,
+		/** FLY-1638: one admission controller shared by fresh and retry lanes. */
+		protected runnerAdmission: RunnerAdmissionController =
+			RunnerAdmissionController.alwaysAdmit(),
 	) {}
+
+	/** Typed fleet admission check, deliberately before shutdown semantics. */
+	protected assertRunnerAdmission(): void {
+		const decision = this.runnerAdmission.tryAdmit();
+		if (!decision.admit) {
+			throw new AdmissionDeferredError(
+				decision.reason,
+				decision.detail,
+				decision.retryAfterSeconds,
+			);
+		}
+	}
 
 	/**
 	 * FLY-1356 (Bar-Raiser MED-1 + Codex R1 HIGH-2): sticky-stamp read,
@@ -576,6 +591,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 	}
 
 	async dispatch(req: RetryRequest): Promise<RetryResult> {
+		this.assertRunnerAdmission();
 		if (!this.accepting) {
 			throw new Error("RetryDispatcher is shutting down");
 		}
@@ -1108,7 +1124,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 	constructor(
 		blueprintsByProject: Map<string, ProjectRuntime>,
 		cleanupHandles: Array<() => Promise<void>>,
-		private runnerAdmission: RunnerAdmissionController = RunnerAdmissionController.alwaysAdmit(),
+		runnerAdmission: RunnerAdmissionController = RunnerAdmissionController.alwaysAdmit(),
 		/** FLY-245 R1 HIGH-3: durable launch claim (gateway pre-bound retry path). */
 		launchClaims?: LaunchClaimStore,
 		/** FLY-245 R5: test seam for the commit-record existence check. */
@@ -1149,6 +1165,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			phaseRetryStartPointComputer,
 			skillFrameworkStampLookup,
 			tmuxGenerationRecorder,
+			runnerAdmission,
 		);
 	}
 
@@ -1197,6 +1214,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 	}
 
 	async start(req: StartRequest): Promise<StartResult> {
+		this.assertRunnerAdmission();
 		if (!this.accepting) {
 			throw new Error("RunDispatcher is shutting down");
 		}
@@ -1205,11 +1223,6 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		// FLY-123 WS-D (P4): resource-based admission — defer only under real
 		// load/memory pressure, never a count cap. Typed error → route maps to
 		// 429 with the reason (R1 MED #4), never a 500 string-match miss.
-		const decision = this.runnerAdmission.tryAdmit();
-		if (!decision.admit) {
-			throw new AdmissionDeferredError(decision.reason, decision.detail);
-		}
-
 		const role = req.sessionRole ?? "main";
 		const key = this.inflightKey(req.issueId, role);
 

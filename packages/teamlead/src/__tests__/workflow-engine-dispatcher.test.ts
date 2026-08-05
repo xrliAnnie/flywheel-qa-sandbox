@@ -633,6 +633,71 @@ async function storeWithQaFailKickback() {
 }
 
 describe("WorkflowEngineDispatcher", () => {
+	it("sends one Lead-only alert when an admission pause stays active for five minutes", async () => {
+		const store = await StateStore.create(":memory:");
+		store.setAdmissionPause({
+			durationSeconds: 1_800,
+			setBy: "restart-services",
+			reason: "deploy",
+			now: "2026-08-05T12:00:00.000Z",
+		});
+		const alert = vi.fn(async () => ({ sent: true as const }));
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-08-05T12:05:00.000Z"),
+			alertSink: { current: { alert } },
+		});
+
+		await dispatcher.reconcile();
+		await dispatcher.reconcile();
+		expect(alert).toHaveBeenCalledOnce();
+		expect(alert).toHaveBeenCalledWith(
+			expect.objectContaining({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				eventType: "workflow_engine_escalation",
+			}),
+		);
+		store.close();
+	});
+
+	it("holds an engine auto-advance before activation and credential writes while admission is paused", async () => {
+		const store = await storeWithIntent("implement");
+		const startDispatcher = inertStartDispatcher();
+		const admissionProbe = vi.fn(() => ({
+			admit: false as const,
+			reason: "admission_paused" as const,
+			detail: "operator deployment pause",
+			retryAfterSeconds: 300,
+		}));
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-08-05T12:00:00.000Z"),
+			resolvePredecessorHead: async () => HEAD,
+			admissionProbe,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(admissionProbe).toHaveBeenCalledOnce();
+		expect(startDispatcher.start).not.toHaveBeenCalled();
+		expect(store.getWorkflowExecutionBinding("implement-1")).toBeUndefined();
+		expect(
+			store.getWorkflowActivationForAttempt({
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 1,
+			}),
+		).toBeUndefined();
+		expect(store.listWorkflowSideEffects("run-1")[0]?.state).toBe(
+			"intent_recorded",
+		);
+		store.close();
+	});
+
 	it("executes an engine-owned land node and terminalizes the run from its durable receipt", async () => {
 		const store = await storeWithLandIntent();
 		const landExecutor = vi.fn(async (operationId: string) => {

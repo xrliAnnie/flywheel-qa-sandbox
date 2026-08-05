@@ -450,6 +450,25 @@ describe("RunDispatcher", () => {
 		).rejects.toThrow("shutting down");
 	});
 
+	it("admission pause returns its typed retry contract before shutdown", async () => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const admission = RunnerAdmissionController.alwaysAdmit();
+		admission.setAdmissionPauseProbe(() => ({
+			detail: "deployment pause",
+			retryAfterSeconds: 90,
+		}));
+		const dispatcher = new RunDispatcher(runtimes, [], admission);
+		dispatcher.stopAccepting();
+
+		await expect(
+			dispatcher.start({ issueId: "FLY-1638", projectName: "TestProject" }),
+		).rejects.toMatchObject({
+			name: "AdmissionDeferredError",
+			reason: "admission_paused",
+			retryAfterSeconds: 90,
+		});
+	});
+
 	it("FLY-123 WS-D (P4): start() defers under resource pressure (not a count cap)", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		// Admission controller under load → defers regardless of count.
@@ -559,6 +578,41 @@ describe("RunDispatcher", () => {
 });
 
 describe("RetryDispatcher", () => {
+	it("routes retry/dead-replacement dispatch through the admission pause", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const admission = RunnerAdmissionController.alwaysAdmit();
+		admission.setAdmissionPauseProbe(() => ({
+			detail: "deployment pause",
+			retryAfterSeconds: 120,
+		}));
+		const dispatcher = new RetryDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			admission,
+		);
+
+		await expect(
+			dispatcher.dispatch({
+				oldExecutionId: "old-exec",
+				issueId: "FLY-1638",
+				projectName: "TestProject",
+				runAttempt: 2,
+			}),
+		).rejects.toMatchObject({
+			name: "AdmissionDeferredError",
+			reason: "admission_paused",
+			retryAfterSeconds: 120,
+		});
+		expect(runtime.blueprint.run).not.toHaveBeenCalled();
+	});
+
 	it("fails closed before retry launch when a design node has no resolved Lead", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
 		const dispatcher = new RetryDispatcher(new Map([[name, runtime]]), []);

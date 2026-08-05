@@ -1348,6 +1348,9 @@ export function createRunsRouter(
 		// matched "Max concurrent" message).
 		const admission = runnerAdmission.tryAdmit();
 		if (!admission.admit) {
+			if (admission.retryAfterSeconds !== undefined) {
+				res.setHeader("Retry-After", String(admission.retryAfterSeconds));
+			}
 			const runningInStore = activeSessions.filter(
 				(s) => s.status === "running",
 			).length;
@@ -3415,7 +3418,13 @@ export function createRunsRouter(
 			// threshold in between). It throws a typed AdmissionDeferredError →
 			// 429 with the reason, never a 500 string-match miss.
 			if (err instanceof Error && err.name === "AdmissionDeferredError") {
-				const e = err as Error & { reason?: string };
+				const e = err as Error & {
+					reason?: string;
+					retryAfterSeconds?: number;
+				};
+				if (e.retryAfterSeconds !== undefined) {
+					res.setHeader("Retry-After", String(e.retryAfterSeconds));
+				}
 				res.status(429).json({
 					success: false,
 					reason: e.reason,

@@ -38,6 +38,109 @@ describe("StateStore fleet_pressure_hold", () => {
 	});
 });
 
+describe("StateStore admission_pause", () => {
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("persists a bounded lease and expires it from the reader clock", () => {
+		const now = "2026-08-05T12:00:00.000Z";
+		expect(
+			store.setAdmissionPause({
+				durationSeconds: 1_800,
+				setBy: "restart-services",
+				reason: "deploy",
+				now,
+			}),
+		).toMatchObject({
+			active: true,
+			remainingSeconds: 1_800,
+		});
+		expect(store.getAdmissionPause(now)).toMatchObject({
+			active: true,
+			remainingSeconds: 1_800,
+			set_by: "restart-services",
+			reason: "deploy",
+		});
+		expect(
+			store.getAdmissionPause("2026-08-05T12:30:00.001Z"),
+		).toMatchObject({ active: false, remainingSeconds: 0 });
+	});
+
+	it("caps the operator lease at one hour and resume is idempotent", () => {
+		expect(() =>
+			store.setAdmissionPause({
+				durationSeconds: 3_601,
+				setBy: "operator",
+				reason: "too-long",
+				now: "2026-08-05T12:00:00.000Z",
+			}),
+		).toThrow("durationSeconds");
+		store.setAdmissionPause({
+			durationSeconds: 60,
+			setBy: "operator",
+			reason: "maintenance",
+			now: "2026-08-05T12:00:00.000Z",
+		});
+		expect(store.clearAdmissionPause()).toBe(true);
+		expect(store.clearAdmissionPause()).toBe(false);
+		expect(store.getAdmissionPause()).toBeUndefined();
+	});
+
+	it("claims one Lead alert after five minutes and retries only failed delivery", () => {
+		store.setAdmissionPause({
+			durationSeconds: 1_800,
+			setBy: "restart-services",
+			reason: "deploy",
+			now: "2026-08-05T12:00:00.000Z",
+		});
+		expect(
+			store.claimAdmissionPauseAlert({
+				now: "2026-08-05T12:04:59.999Z",
+				minAgeMs: 5 * 60_000,
+			}),
+		).toBeUndefined();
+		const first = store.claimAdmissionPauseAlert({
+			now: "2026-08-05T12:05:00.000Z",
+			minAgeMs: 5 * 60_000,
+		});
+		expect(first).toMatchObject({
+			set_at: "2026-08-05T12:00:00.000Z",
+			reason: "deploy",
+		});
+		expect(
+			store.claimAdmissionPauseAlert({
+				now: "2026-08-05T12:05:01.000Z",
+				minAgeMs: 5 * 60_000,
+			}),
+		).toBeUndefined();
+		expect(
+			store.finishAdmissionPauseAlert({
+				setAt: first!.set_at,
+				outcome: "failed",
+			}),
+		).toBe(true);
+		const retry = store.claimAdmissionPauseAlert({
+			now: "2026-08-05T12:05:02.000Z",
+			minAgeMs: 5 * 60_000,
+		});
+		expect(retry).toBeDefined();
+		expect(
+			store.finishAdmissionPauseAlert({
+				setAt: retry!.set_at,
+				outcome: "sent",
+			}),
+		).toBe(true);
+		expect(
+			store.claimAdmissionPauseAlert({
+				now: "2026-08-05T12:06:00.000Z",
+				minAgeMs: 5 * 60_000,
+			}),
+		).toBeUndefined();
+	});
+});
+
 describe("RunnerAdmissionController pressure_hold (Task 2.2)", () => {
 	it("hold present → defer with the typed pressure_hold reason", () => {
 		const controller = RunnerAdmissionController.alwaysAdmit();
@@ -72,6 +175,28 @@ describe("RunnerAdmissionController pressure_hold (Task 2.2)", () => {
 		expect(RunnerAdmissionController.alwaysDefer().tryAdmit()).toMatchObject({
 			reason: "load_pressure",
 		});
+	});
+});
+
+describe("RunnerAdmissionController admission pause", () => {
+	it("operator pause wins before resource probes and carries Retry-After", () => {
+		const controller = RunnerAdmissionController.alwaysDefer();
+		controller.setAdmissionPauseProbe(() => ({
+			detail: "operator deployment pause",
+			retryAfterSeconds: 73,
+		}));
+		expect(controller.tryAdmit()).toEqual({
+			admit: false,
+			reason: "admission_paused",
+			detail: "operator deployment pause",
+			retryAfterSeconds: 73,
+		});
+	});
+
+	it("expired pause admits immediately", () => {
+		const controller = RunnerAdmissionController.alwaysAdmit();
+		controller.setAdmissionPauseProbe(() => null);
+		expect(controller.tryAdmit()).toEqual({ admit: true });
 	});
 });
 

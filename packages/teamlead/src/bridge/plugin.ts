@@ -1276,6 +1276,65 @@ export function createBridgeApp(
 
 	app.use(express.json({ limit: "512kb" }));
 
+	// FLY-1638: restart/operator admission brake. This is deliberately outside
+	// /api/runs so scoped Gemini run tokens cannot mutate fleet-wide admission.
+	// No master token means fail closed rather than inheriting tokenAuth's legacy
+	// tokenless pass-through behavior.
+	if (config.apiToken) {
+		app.post(
+			"/api/admission/pause",
+			tokenAuthMiddleware(config.apiToken),
+			(req, res) => {
+				const durationSeconds = Number(req.body?.durationSeconds);
+				if (
+					!Number.isSafeInteger(durationSeconds) ||
+					durationSeconds < 1 ||
+					durationSeconds > 3_600
+				) {
+					res.status(400).json({
+						ok: false,
+						error: "durationSeconds must be an integer between 1 and 3600",
+					});
+					return;
+				}
+				const reason =
+					typeof req.body?.reason === "string" && req.body.reason.trim()
+						? req.body.reason.trim().slice(0, 200)
+						: "operator maintenance";
+				const pause = store.setAdmissionPause({
+					durationSeconds,
+					setBy: "bridge-admission-api",
+					reason,
+				});
+				res.json({
+					ok: true,
+					admissionPause: {
+						active: pause.active,
+						remainingSeconds: pause.remainingSeconds,
+					},
+				});
+			},
+		);
+		app.post(
+			"/api/admission/resume",
+			tokenAuthMiddleware(config.apiToken),
+			(_req, res) => {
+				store.clearAdmissionPause();
+				res.json({
+					ok: true,
+					admissionPause: { active: false, remainingSeconds: 0 },
+				});
+			},
+		);
+	} else {
+		app.use("/api/admission", (_req, res) => {
+			res.status(503).json({
+				ok: false,
+				error: "admission API requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
+
 	// FLY-1285: supervisor observations are bearer-authenticated inside this
 	// dedicated router (including an explicit 503 when apiToken is absent) and
 	// hydrate the durable hold before any heartbeat reaper can act.
@@ -1405,6 +1464,7 @@ export function createBridgeApp(
 	// Health — no auth
 	app.get("/health", (_req, res) => {
 		const active = store.getActiveSessions();
+		const admissionPause = store.getAdmissionPause();
 		// FLY-516: startBridge's close() flips shutdownStateHolder.shuttingDown at
 		// the top of teardown, so /health stops claiming "ready" the moment
 		// shutdown begins. flywheel-bridge-wrapper.sh probes this to tell a healthy
@@ -1436,6 +1496,10 @@ export function createBridgeApp(
 			shuttingDown,
 			uptime: process.uptime(),
 			sessions_count: active.length,
+			admissionPause: {
+				active: admissionPause?.active === true,
+				remainingSeconds: admissionPause?.remainingSeconds ?? 0,
+			},
 			...(watchdogs === undefined ? {} : { watchdogs }),
 		});
 	});
@@ -4015,6 +4079,15 @@ export async function startBridge(
 			? `fleet pressure-hold active since ${hold.set_at} (by ${hold.set_by}, memory ${hold.watermark ?? "?"}) — lifts automatically once real memory pressure is proven healthy (free% recovered + swapout quiet)`
 			: null;
 	});
+	config.runnerAdmission?.setAdmissionPauseProbe(() => {
+		const pause = store.getAdmissionPause();
+		return pause?.active
+			? {
+					detail: "operator deployment pause is active",
+					retryAfterSeconds: pause.remainingSeconds,
+				}
+			: null;
+	});
 
 	// FLY-142 PR #186 amend (QA hybrid-swap, 2026-05-13): auto-deploy runtime
 	// hooks from `scripts/hooks/` to `~/.flywheel/hooks/` on Bridge boot.
@@ -5550,6 +5623,7 @@ export async function startBridge(
 		? new WorkflowEngineDispatcher({
 				store,
 				startDispatcher,
+				admissionProbe: () => config.runnerAdmission.tryAdmit(),
 				env: process.env,
 				resolveLeadId: (executionId) => {
 					const session = store.getSession(executionId);

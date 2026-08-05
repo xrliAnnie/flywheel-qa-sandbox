@@ -38,6 +38,7 @@ import {
 	probeDeadExecutionActivity,
 } from "./dead-exec-activity.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
+import type { AdmissionDecision } from "./runner-admission.js";
 import {
 	type GeneralizedLaunchLiveness,
 	getGeneralizedLaunchDelivery,
@@ -99,6 +100,8 @@ interface WorkflowEngineDispatcherOptions {
 	reconcileWorkflowRework?: (
 		requestId: string,
 	) => Promise<WorkflowReworkCoordinatorOutcome>;
+	/** FLY-1638: checked before durable execution admission/credential writes. */
+	admissionProbe?: () => AdmissionDecision;
 }
 
 export interface WorkflowEngineReconcileResult {
@@ -275,6 +278,7 @@ export class WorkflowEngineDispatcher {
 		const result = { started: 0, held: 0 };
 		try {
 			await this.reconcileWorkflowEngineAlerts();
+			await this.reconcileAdmissionPauseAlert();
 			this.reconcileWorkflowDivergence();
 			await this.reconcileDeadExecutionTripwires();
 			if (this.deadExecutionSweepEnabled()) {
@@ -335,6 +339,40 @@ export class WorkflowEngineDispatcher {
 		} finally {
 			this.reconciling = false;
 		}
+	}
+
+	private async reconcileAdmissionPauseAlert(): Promise<void> {
+		const sink = this.alertSink?.current;
+		if (!sink) return;
+		const now = this.now();
+		const claim = this.options.store.claimAdmissionPauseAlert({
+			now: now.toISOString(),
+			minAgeMs: 5 * 60_000,
+		});
+		if (!claim) return;
+		let sent = false;
+		try {
+			const result = await sink.alert({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				eventId: `admission-pause:${claim.set_at}`,
+				eventType: "workflow_engine_escalation",
+				severity: "severe",
+				sessionKey: `admission-pause:${claim.set_at}`,
+				title: "Runner admission pause has remained active for 5 minutes",
+				body: `The operator admission brake set by ${claim.set_by} is still active. It expires at ${claim.paused_until}. Check the restart/deploy before resuming it.`,
+			});
+			sent = result.sent === true || result.queued === true;
+		} catch (error) {
+			this.log(
+				`admission pause alert held: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		this.options.store.finishAdmissionPauseAlert({
+			setAt: claim.set_at,
+			outcome: sent ? "sent" : "failed",
+			now: this.now().toISOString(),
+		});
 	}
 
 	private async reconcileWorkflowShipReady(): Promise<void> {
@@ -1879,6 +1917,10 @@ export class WorkflowEngineDispatcher {
 		)
 			? intent.reason.slice("rework_replacement:".length)
 			: undefined;
+		const admission = this.options.admissionProbe?.();
+		if (admission && !admission.admit) {
+			throw new Error(`engine_admission_${admission.reason}`);
+		}
 		const admitted = store.admitGeneralizedWorkflowExecution({
 			runId: intent.run_id,
 			nodeId: intent.node_id,

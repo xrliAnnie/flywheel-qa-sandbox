@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createBridgeApp, startBridge } from "../bridge/plugin.js";
+import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { loadConfig } from "../config.js";
 import { StateStore } from "../StateStore.js";
@@ -14,6 +15,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
+		runnerAdmission: RunnerAdmissionController.alwaysAdmit(),
 		...overrides,
 	};
 }
@@ -42,6 +44,117 @@ describe("Bridge scaffold", () => {
 		expect(body.sessions_count).toBe(0);
 
 		store.close();
+	});
+
+	it("exposes a master-auth admission pause with TTL health and explicit resume", async () => {
+		const store = await StateStore.create(":memory:");
+		const app = createBridgeApp(
+			store,
+			[],
+			makeConfig({ apiToken: "master-secret" }),
+		);
+		const pauseUrl = await startAndGetUrl(app, "/api/admission/pause");
+		const unauthorized = await fetch(pauseUrl, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ durationSeconds: 1_800 }),
+		});
+		expect(unauthorized.status).toBe(401);
+
+		const paused = await fetch(pauseUrl, {
+			method: "POST",
+			headers: {
+				Authorization: "Bearer master-secret",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ durationSeconds: 1_800, reason: "deploy" }),
+		});
+		expect(paused.status).toBe(200);
+		expect(await paused.json()).toMatchObject({
+			ok: true,
+			admissionPause: { active: true },
+		});
+
+		const health = await (await fetch(new URL("/health", pauseUrl))).json();
+		expect(health.admissionPause.active).toBe(true);
+		expect(health.admissionPause.remainingSeconds).toBeGreaterThan(1_790);
+		expect(health.admissionPause.reason).toBeUndefined();
+
+		const resumed = await fetch(new URL("/api/admission/resume", pauseUrl), {
+			method: "POST",
+			headers: { Authorization: "Bearer master-secret" },
+		});
+		expect(resumed.status).toBe(200);
+		expect(await resumed.json()).toEqual({
+			ok: true,
+			admissionPause: { active: false, remainingSeconds: 0 },
+		});
+		store.close();
+	});
+
+	it("fails the admission control API closed when the master token is absent", async () => {
+		const store = await StateStore.create(":memory:");
+		const app = createBridgeApp(store, [], makeConfig());
+		const res = await fetch(
+			await startAndGetUrl(app, "/api/admission/pause"),
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ durationSeconds: 1_800 }),
+			},
+		);
+		expect(res.status).toBe(503);
+		store.close();
+	});
+
+	it("returns admission_paused with Retry-After before a run start writes state", async () => {
+		const store = await StateStore.create(":memory:");
+		const admission = RunnerAdmissionController.alwaysAdmit();
+		admission.setAdmissionPauseProbe(() => ({
+			detail: "operator deployment pause is active",
+			retryAfterSeconds: 77,
+		}));
+		const startDispatcher = {
+			start: async () => ({ executionId: "must-not-start", issueId: "FLY-1" }),
+			getInflightCount: () => 0,
+			validateAgentName: () => ({ ok: true as const }),
+		};
+		const app = createBridgeApp(
+			store,
+			[],
+			makeConfig({ runnerAdmission: admission }),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			startDispatcher,
+		);
+		const previousLinearKey = process.env.LINEAR_API_KEY;
+		process.env.LINEAR_API_KEY = "test-key";
+		try {
+			const res = await fetch(await startAndGetUrl(app, "/api/runs/start"), {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ issueId: "FLY-1", projectName: "flywheel" }),
+			});
+			expect(res.status).toBe(429);
+			expect(res.headers.get("retry-after")).toBe("77");
+			expect(await res.json()).toMatchObject({
+				success: false,
+				reason: "admission_paused",
+			});
+			expect(store.getActiveSessions()).toHaveLength(0);
+		} finally {
+			if (previousLinearKey === undefined) delete process.env.LINEAR_API_KEY;
+			else process.env.LINEAR_API_KEY = previousLinearKey;
+			store.close();
+		}
 	});
 
 	// FLY-516: when the shared shutdown holder is flipped (close() does this at
