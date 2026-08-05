@@ -145,7 +145,7 @@ schema-v2 的 completion 路径已写 `workflow_node_pr_binding`(`recordWorkflow
 |---|---|
 | ① menu.ts:368-371 carrier→git-head claim | seed/registry 矛盾:generic 是 carrier 但 `ship_claims` 无 git_head 蕴含。修 = 让 generic seed 的 ship_claims 与 carrier 能力一致(或 generic 不再当 carrier)—— 两个 template id 都要修 + 已 pin 的旧 run 快照要能收尾 |
 | ② seed 合成断言 | 成立,归宿 = table-driven 测试(两 seed 家族 × live registry)+ mjs 接 CI |
-| ③ terminated run 不得再 spawn | 表述修正:真修点 = 死亡谓词区分「诚实完成但 receipt 丢失」与「真死」;replacement 计数持久化(不随 Bridge 重启清零) |
+| ③ terminated run 不得再 spawn | 表述修正:真修点 = 死亡判定区分「诚实完成但 receipt 丢失」与「真死」(dead-exec 专属分支,不动共享终态常量);replacement 计数**本已持久**(ledger 派生,见 §4.3 更正),不需要改 |
 | ④ generic 非 needs_review 出口 | 成立,修法 = 合法终态 route 集(至少放行 `no_code`)|
 
 ## 5. admission pause(修复面 6)— 审计完成
