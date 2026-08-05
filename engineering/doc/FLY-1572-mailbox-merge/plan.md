@@ -72,7 +72,8 @@ CREATE TABLE mailbox (
   recipient_kind TEXT NOT NULL CHECK(recipient_kind IN ('lead','runner','bridge')),
   source_kind  TEXT,                   -- 审计血缘(原 lead_inbox.source 的职责拆出)
   source_ref   TEXT,                   -- 如 lead_event seq —— markLeadEventDelivered 依赖
-  type         TEXT NOT NULL,
+  type         TEXT NOT NULL,          -- RPC/message 类型;折叠 question 时以 messages.type='question' 为权威。
+                                       -- 旧镜像 gate_question/runner_question 不占此列,按 checkpoint 派生(§5.3)
   msg_class    TEXT NOT NULL DEFAULT 'model' CHECK(msg_class IN ('protocol','model')),
   content      TEXT NOT NULL,          -- 发送方原始内容(不可变)
   delivery_content TEXT,               -- claim 时物化的渲染投递内容(CAS 一次性写入后不可变;§5.3)
@@ -107,23 +108,29 @@ CREATE TABLE mailbox (
   sender_ref   TEXT,                   -- §6:versioned canonical JSON。NULL 仅限迁移史料,**新写禁止 NULL**:
                                        -- 未保护写必须落显式 {"v":1,"authority":"unprotected",...};唯一写入口校验+负向测试
 
-  priority     INTEGER,               -- 字段位;claim 沿用 ORDER BY COALESCE(priority,99), seq
+  priority     INTEGER NOT NULL DEFAULT 1 CHECK(priority BETWEEN 0 AND 3),
+                                       -- 保持现版有序批合同;claim 只用 ORDER BY priority, seq
   batch_id     TEXT,
   collapse_key TEXT
 );
 CREATE INDEX mailbox_live  ON mailbox(to_agent, seq) WHERE state IN ('QUEUED','LEASED');
 CREATE INDEX mailbox_claim ON mailbox(to_agent, msg_class, priority, seq)
-  WHERE carrier = 'inbox' AND state = 'QUEUED';                                  -- per-Lead equality lane
+  WHERE carrier = 'inbox' AND state = 'QUEUED' AND recipient_kind = 'lead';      -- per-Lead 新批
+CREATE INDEX mailbox_lead_reclaim ON mailbox(to_agent, msg_class, batch_id, claim_expires_at, priority, seq)
+  WHERE carrier = 'inbox' AND state = 'LEASED' AND recipient_kind = 'lead'
+    AND batch_id IS NOT NULL;                                                     -- 兼容旧 Lead batch TTL 重领(§5.3a)
 CREATE INDEX mailbox_claim_runner ON mailbox(priority, seq)
   WHERE carrier = 'inbox' AND state = 'QUEUED' AND recipient_kind = 'runner';    -- RunnerLane 跨 exec 谓词(R3 M5)
 CREATE INDEX mailbox_claim_bridge ON mailbox(from_agent, priority, seq)
   WHERE carrier = 'inbox' AND state = 'QUEUED' AND recipient_kind = 'bridge';    -- protocol lane
+CREATE INDEX mailbox_bridge_reclaim ON mailbox(from_agent, claim_expires_at, priority, seq)
+  WHERE carrier = 'inbox' AND state = 'LEASED' AND recipient_kind = 'bridge';    -- 兼容旧 protocol claim TTL
 CREATE UNIQUE INDEX mailbox_unique_response ON mailbox(ref_id) WHERE type = 'response';
 CREATE INDEX mailbox_archive_acked ON mailbox(acked_at) WHERE state = 'ACKED';
 CREATE INDEX mailbox_archive_dead  ON mailbox(dead_at)  WHERE state = 'DEAD';
 ```
 
-三条 lane 与归档/GC 候选查询用 `EXPLAIN QUERY PLAN` 测试钉死不做全表扫描(R3 MEDIUM 5)。
+三条 lane、Lead frozen-batch 重领与归档/GC 候选查询用 `EXPLAIN QUERY PLAN` 测试钉死不做全表扫描或 TEMP B-TREE 排序(R3 MEDIUM 5/R12 `priority-nullable-and-order-by`)。
 
 ### 3.1b 身份永久占用(R3 blocker 1:归档不得释放幂等身份)
 
@@ -146,10 +153,10 @@ BEGIN
 END;
 -- registry 自身:no-delete / no-rekey 触发器;UPDATE 只允许 archived_at NULL→非NULL 一次性盖章
 ```
-- **写协议三分支**(事务内,DB 触发器兜底而非 TS SELECT-then-INSERT 独担):
+- **写协议三分支**(事务内,DB 触发器兜底而非 TS SELECT-then-INSERT 独担;所有写入口先走 typed registry resolver,不让 raw `INSERT OR IGNORE` 直接撞 archived trigger):
   ①新身份 → registry INSERT + mailbox INSERT(同事务,DB 可证明活行必有精确配对);
-  ②active 重放(pair 在住)→ mailbox `INSERT OR IGNORE` 照旧 no-op(触发器放行,现 sink dedupe 合同 db.ts:2571-2594 不变);
-  ③archived 重放(pair 已盖章)→ typed 分支:canonical 投影 hash 相同 → already-settled no-op;不同 → fail-loud。
+  ②active 重放(pair 在住)→ resolver canonical compare 后返回 already-active/no-op;
+  ③archived 重放(pair 已盖章)→ resolver canonical 投影 hash 相同则 already-settled/no-op,不同则 fail-loud。`insertInstructionWithId` 等 at-least-once sink 改走 resolver,同投影仍返回 `false`,不依赖 `RAISE(ABORT)` 被 `OR IGNORE` 吞掉(它不会)。
 - **迁移填充 registry**(纳入覆盖对账:每个逻辑投递恰一条 identity):活行→active;直入 `migrated_history` 的 49k 历史行→**archived**(旧稳定 id 从此永久占用,迟到 source replay 走③);question/ack mirror 按双身份折叠成一条 pair。
 - 测试:active duplicate no-op / mailbox-without-registry 必炸 / cross-pair 必炸 / 历史行迟到 replay(no-op 与异投影炸)/ registry 删改被拒 / 各事务 fault point / source crash→ACK→archive→replay / 二次归档幂等。
 
@@ -179,7 +186,7 @@ CREATE UNIQUE INDEX mailbox_log_settlement_slot ON mailbox_log(subject_id)
 
 - **settlement API 合同**:`markProcessed`/`markDisposed` 的替代实现 = 事务内 INSERT settlement 行;UNIQUE 槽冲突时回读、canonical 比对证据,同值幂等、异值 fail-loud —— 与现版 CAS 语义逐条对齐(lead-inbox-queue.ts:1298-1370),受 vitest 竞争/重放测试保护。live 调用者(settleFounderHubRoot / routeFounderReply / handleReceipt / settleChatReceipt / ExternalReceiptSaga.handle / terminal-receipt-settlement)逐一列出新 API 映射(§9 步 3)。
 - **settlement 主体命名空间唯一(R3 HIGH 3)**:`subject_id` **恒为 mailbox.id(逻辑 id),仅此一个 namespace**。receipt-facing API 一律收 typed `deliveryId` 参数,在同一事务内经 `receipt_root_lineage` / `mailbox_identity` 解析成逻辑 id 再插 `settled:<logical-id>`;逻辑侧 caller 直接用 message id;迁移把旧 mirror 行的 settlement 主体归一到逻辑 id(evidence 内原 receipt ref 原样保留)。测试:同一 question 先按 message id processed、再按 delivery id disposed → 必须冲突;反向竞争;归档后迟到 settlement。
-- **`receipt_root_lineage` 保留不动**(生产 1,153 行,live 查询在 terminal-receipt-settlement);其 AFTER INSERT 捕获触发器移植到 mailbox,**typed 映射显式定稿**:`receipt_id = NEW.delivery_id, question_id = NEW.id, execution_id = NEW.from_agent, root_lead_id = NEW.to_agent`(question 行触发;不依赖 question 自身的 ref_id —— 那本来是 NULL)。**live 正确性禁止依赖扫 row_json** —— 血缘走这张表,settlement 走 UNIQUE 槽。
+- **`receipt_root_lineage` 保留不动**(生产 1,153 行,live 查询在 terminal-receipt-settlement);其 AFTER INSERT 捕获触发器移植到 mailbox,**typed 映射显式定稿**:`receipt_id = NEW.delivery_id, question_id = NEW.id, execution_id = NEW.from_agent, root_lead_id = NEW.to_agent`(question 行触发;不依赖 question 自身的 ref_id —— 那本来是 NULL)。`listReceiptRootsForExecution` / `getReceiptSettlementLineage` / terminal settlement **改为只从永久 `receipt_root_lineage` + `session_receipt_lineage` + `mailbox_identity` 解引用**,不得 JOIN 会被迁移/归档删除的 live mailbox row;一致性断言改为 lineage 的 `question_id` 与 identity 中 `delivery_id=receipt_id` 对应的 `id` 相等。迁移/归档后以及 detection 延迟到达时仍可结算。**live 正确性禁止依赖扫 row_json** —— 血缘走永久表,settlement 走 UNIQUE 槽。测试覆盖 live root、已归档 root、迁移直入 log 的 consumed root 与无效 pair fail-loud。
 - progress(ProofShot)直接写 `mailbox_log(event='progress')`,attachments 进 row_json。
 
 ### 3.2b content_ref GC outbox(R2 HIGH 4:现 purge 并无可抄的账本 —— 先删文件后删行,本就有取证缺口)
@@ -213,8 +220,8 @@ GC drain FSM:候选 = `state='pending' AND (next_retry_at IS NULL OR next_retry_
 
 | 去向 | 列 |
 | -- | -- |
-| 进 mailbox 改名 | to_lead→to_agent、ref_message_id→ref_id(仅迁移映射)、attempts→retry_count;**source 拆二**:审计血缘→source_kind/source_ref,发送者身份→from_agent(按 source 值域映射表:`lead_event:<seq>`→source_ref;`discord_chat` 等→source_kind) |
-| 进 mailbox 原名 | id、type、msg_class、priority、content、created_at、deadline_at、last_error、claimed_by、claim_expires_at、next_retry_at、carrier、batch_id(列留,旧值不迁 —— 前置断言 pending batch=0,§8) |
+| 进 mailbox 改名 | to_lead→to_agent、attempts→retry_count;**非镜像行** ref_message_id→ref_id;**折叠 question/ack 镜像**的 ref_message_id 是 logical-id join key,进 mailbox.id 而不是 ref_id。**source 拆二**:审计血缘→source_kind/source_ref,发送者身份→from_agent(按 source 值域映射表:`lead_event:<seq>`→source_ref;`discord_chat` 等→source_kind) |
+| 进 mailbox 原名 | id、type、msg_class、priority、content、created_at、deadline_at、last_error、claimed_by、claim_expires_at、next_retry_at、carrier、batch_id(列留,旧值不迁 —— 前置断言 pending batch=0,§8)。**折叠行例外**:messages.type 是权威,旧镜像 `gate_question|runner_question`/protocol type 只留 migration snapshot并按 checkpoint/source 派生 live event type |
 | 语义进状态机 | consumed_at→ACKED+acked_at;disposition→state+dead_reason(delivered→ACKED;frozen/quarantine→DEAD);delivered_at(external)→acked_at |
 | settle 证据进 log | processed_at/processed_evidence/disposed_at/disposed_evidence(settlement CAS,§3.2;F 单 task 表接手「办没办」) |
 | 删(历史值经迁移快照进 log) | read_at、escalated_at、next_unprocessed_at、resend_of、resend_round、delivered_rounds、routing_state、candidates_json(P10:有史以来 0 行)、family_root_id、legacy_alias、receipt_exempt_reason、receipt_episode_id |
@@ -223,7 +230,7 @@ GC drain FSM:候选 = `state='pending' AND (next_retry_at IS NULL OR next_retry_
 
 | 去向 | 列 |
 | -- | -- |
-| 进 mailbox | id、from_agent、to_agent(+派生 recipient_kind)、type、content、parent_id→ref_id、created_at、expires_at、checkpoint、content_ref、content_type、resolved_at、kind、relay_state、superseded_at/by、resolved_via、deadline_at |
+| 进 mailbox | id、from_agent、to_agent(+派生 recipient_kind)、type、content、parent_id→ref_id、created_at、expires_at、checkpoint、content_ref、content_type、resolved_at、kind、relay_state、superseded_at/by、resolved_via、deadline_at。与 lead_inbox 镜像折叠时这些 RPC 列(尤其 type/ref_id/checkpoint)为权威 |
 | 语义进状态机 | read_at→ACKED(instruction 的 agent-ack);**delivered_at 不是 ACK**(db.ts:5854-5864 状态机注释):instruction delivered-未读→LEASED;response 被 consume(delivered_at 有值)→ACKED |
 | 压缩 | 6 sender 列→sender_ref(§6) |
 | 删 | logical_event_id(零 SELECT 读者);attachments(progress 随行进 log) |
@@ -239,20 +246,26 @@ begin→INSERT(carrier='external', state='QUEUED');complete→ACKED;settle→log
 enqueueFounderHubRoot→mailbox(inbox lane, priority 0)照旧进循环;routing_state 删;settle→log settlement;未投家族行→DEAD('superseded')。legacy promoted-family 分支删除(P10)。
 
 ### 5.3 Runner→Lead(杀双写 ①,QuestionAdmission 改造而非退役)
-`insertQuestion` 写一行 mailbox(to_agent=lead,id=question id,delivery_id=`question:<lead>:<qid>` —— 与现镜像行 id 同构,在途 receipt 与 Lead 可见字节不断链)。**QuestionAdmission 保留为 claim 时 fail-closed 准入服务**,合同定名 `materializeForDelivery`(R2 blocker 2):
-1. eligibility 全套照旧(missing/superseded/answered/session 存活/workflow gate ownership/Lead scope/terminal/QA hold,question-admission.ts:80-111,188-228)—— 不合格 → 按原因 DEAD 或跳过,fail-closed;
+`insertQuestion` 写一行 mailbox(`type='question'`,to_agent=lead,id=question id,delivery_id=`question:<lead>:<qid>` —— 与现镜像行 id 同构,在途 receipt 与 Lead 可见字节不断链)。折叠后 **messages 列是 RPC 权威**:`type` 永远为 `question`,`ref_id` 永远只表示旧 `parent_id`(question 通常 NULL);原镜像 `gate_question|runner_question` 只进 migration snapshot,live event type 用 `checkpoint IS NOT NULL ? 'gate_question' : 'runner_question'` 派生。**QuestionAdmission 保留为 claim 时 fail-closed 准入服务**,合同定名 `materializeForDelivery`(R2 blocker 2):
+1. 准入 discriminator 改为 `row.type='question' AND recipient_kind='lead' AND delivery_id=question:<to_agent>:<id>`,直接以 `row.id` / 同一 mailbox row 做 RPC/eligibility 检查,**不再拿 ref_id 或旧镜像 type 当开关**。missing/superseded/answered/session 存活/workflow gate ownership/Lead scope/terminal/QA hold 全套照旧(question-admission.ts:80-111,188-228)。首次 materialize 前(`source_ref IS NULL`)的 eligibility 失败沿用今天 `admitQuestion=false` 的可重试语义:释放 claim 回 QUEUED、写 `next_retry_at=now+30s`,不建 StateStore event,且 deliverable count 排除未到期行避免 1s 热循环;`revoked_superseded`/`revoked_answered` 以及**已 materialize** 后的 revalidate 失败才 DEAD(保存具体 dead_reason),fail-closed。测试逐项覆盖 transient hold→解除→送达、terminal reason→DEAD 与 hot-loop 计数;
 2. **append-or-canonical-compare** StateStore lead event:确定性 event id;UNIQUE 冲突时回读并 canonical 比对 type/payload/session key,异值 fail-loud(现 appendLeadEvent 只回读 seq 不比对 —— 须补);
 3. 在 comm.db 内按 `id + state='LEASED' + claimed_by=<ownerEpoch> + batch_id + retry_count=0` **CAS 一次性写入不可变的 `delivery_content`(renderEnvelope 产物)+ `source_kind/source_ref`**(seq);CAS 已完成 → 仅允许 canonical-equal 重放,异值 quarantine;
-4. **reload 该行**再构建 batch member(loop 现拿 claim 前旧行 —— 须改为物化后重读);adapter 失败重试(retry_count>0 跳过 revalidation,现行为)读到的是已物化字段,**不再变化**。
+4. **reload 该行**再构建 batch member(loop 现拿 claim 前旧行 —— 须改为物化后重读);member content 固定为 `COALESCE(delivery_content, content)`(question 用前者,enqueueLeadEvent/founder hub 等 enqueue 时已渲染 producer 用后者);adapter 失败重试读已物化字段,**不再变化**。
 loop 收 receipt 后 `markLeadEventDelivered` 从 source_ref 取 seq(lead-inbox-runtime.ts:148-153 平移)。adapter 可见 `deliveryId = mailbox.delivery_id`。测试:crash-after-StateStore-append / crash-after-CAS / adapter-failure→retry 字节不变 / event 冲突 fail-loud + **Claude/Codex 逐字节 golden**。
+
+### 5.3a Lead/bridge 旧 claim-TTL 兼容重领(C 边界澄清,R12 HIGH)
+现版 `claimModelBatch` 会先找 `batch_id IS NOT NULL AND consumed_at IS NULL` 的 frozen batch,仅在别的 owner claim 尚未过期时拒绝;Bridge/owner-fence/adapter receipt 后 crash 可在 15s 后按同 membership 重领,adapter 用 `accepted_duplicate_same_membership` 去重。合表必须保留这条**已有**可靠性,不能把它误算成 D 的新增能力:
+- 每次 Lead model tick 先查 `recipient_kind='lead' AND carrier='inbox' AND msg_class='model' AND state='LEASED' AND batch_id IS NOT NULL`,选最早 frozen batch;`claimed_by=<本 owner>` 或 `claim_expires_at < now` 才 CAS 更新 `claimed_by/claim_expires_at`,**不改 state/batch_id/delivery_content/source_ref/member 顺序**;尚未过期的 foreign claim 返回空。成功/冲突/failure 位点逐字平移现版。
+- bridge protocol lane 同样保留旧 `lead_inbox` 的 expired-claim 重领(单行 membership);这是旧能力平移。Runner lane 原 `messages` 无这项能力,仍按 §5.4 停在 LEASED 等 pull ACK,D 才增加通用 lease-expiry 扫描/重投/死信。
+- 测试:frozen batch 在 owner-fence-before-handoff / adapter-accept-after-audit-before-ACK / Bridge crash 三个 fault seam,时钟过 TTL 后同 membership 重领且 adapter 字节相同;未过期 foreign owner 不抢;Runner LEASED 不被这条查询命中。
 
 ### 5.4 Lead→Runner(循环收编;R1 blocker 1 的修正案)
 - **耐久 `to_agent` = 完整 execution id**;`runner-<exec8>` 只是 transport alias,仅在适配器边界经 `deriveRunnerMailboxIdentity()` 派生(8 字节碰撞与回查问题不进耐久层)。`recipient_kind='runner'` 由写入方(send/respond)落列。
 - **lane 所有权**:每 project 恰一个 `RunnerLane`(挂在 MailboxDeliveryRuntime 里,与 per-Lead loops 平级、共享 ownerEpoch 与 1s/30s 节奏,零新增定时器)。claim 谓词按 recipient_kind 分区:Lead loop 只认 `recipient_kind='lead' AND to_agent=<自己>`;RunnerLane 只认 `recipient_kind='runner'`;**结构上不存在两个 loop 扫同一收件人**。
-- **状态机(无租约到期扫描 = C 的边界)**:claim→LEASED(盖 30min claim_expires_at);doorbell 投递成功/`transport:'none'` 跳过 → **停在 LEASED**(不回 QUEUED —— 杜绝热循环与重复认领);投递失败→QUEUED+retry_count+1+next_retry_at 退避(沿用现逻辑),超限→DEAD。**C 不扫过期租约**(LEASED 行没有任何自动出路 —— 这正是「D 单让租约转起来」的准确留白);Runner 拉取(`flywheel-comm inbox` / `check` / `gate`)对 QUEUED **和 LEASED** 行 ACK。
+- **Runner 状态机(无通用租约到期扫描 = C 的边界)**:claim→LEASED(盖 30min claim_expires_at);doorbell 投递成功/`transport:'none'` 跳过 → **停在 LEASED**(不回 QUEUED —— 杜绝热循环与重复认领);投递失败→QUEUED+retry_count+1+next_retry_at 退避(沿用现逻辑),超限→DEAD。Runner LEASED 没有自动出路,由拉取(`flywheel-comm inbox` / `check` / `gate`)对 QUEUED **和 LEASED** 行 ACK;这不取消 §5.3a 对旧 Lead/bridge claim-TTL 重领能力的兼容平移。
 - **活跃判定/deliverable count 只数 QUEUED**(LEASED 与 pull-only 行不驱动 tick)—— 循环永不为它们发任何东西(红线①)。
 - **RunnerLane 自有 envelope**(不复用 LeadDeliveryBatch):`{mailboxId, executionId, type, kind, contentRef?, content, metadata, intentKey}`,足以逐字重建今天 send.ts/respond.ts 的 wake payload 与 `runner_phase_wakes` intent key(`instruction:<id>` / `gate-answer:<qid>` 映射表落在设计里,账本本身不动);`RunnerMailboxDeliveryAdapter` 内部 = 今天 send.ts:127-186 机制原样搬入(claim push→wakeRunnerMailbox→complete push)。最后一公里 transport.write 一行不改。
-- Bridge 内部纯 wake 位点(park_wake 重推)不是新消息,不经 mailbox,保持直呼。
+- **可用性变化显式接受**:普通 `send/respond` 的耐久行先入 mailbox,doorbell 改由 Bridge RunnerLane 发,因此 Bridge 停机时不再像今天 CLI 同步直推,恢复 Bridge 后再送;数据不丢、延迟上升,列入 §11。`plugin.ts` three-stage QA fix/workflow activation、`gate-poller.ts` 与 `auto-qa-effects.ts` 的现存直呼虽然携带新 instruction 内容,但属于 workflow/park control-plane,本单明确不收编、仍写 `runner_phase_wakes` + transport;所以 C 后仍有 mailbox data-plane 与 control-plane direct wake 两条 Runner 路径,不是“content-free wake”。
 - 测试:full-id 无碰撞、成功后无热循环(tick 计数断言)、首 doorbell 丢失后拉取仍达、pull-ACK、no-transport、多 Lead 并发不重复认领。
 
 ### 5.5 Lead→Lead(xdept)与 Bridge 事件
@@ -274,9 +287,10 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 
 ## 7. 保留期与归档(替代 72h DELETE;R1 HIGH 7 的修正案)
 
-- 触发点:CommDB 读写 open(零新定时器),**有界批次**(单次 open 至多 N family,防同步 open 热点),走 `mailbox_archive_*` 部分索引。
+- 触发点:CommDB 读写 open(零新定时器),**有界批次固定为最多 10 个 family/open**,走 `mailbox_archive_*` 部分索引;单 family 事务,`BEGIN IMMEDIATE` busy 时跳过本次 sweep 而不让维护竞争使 CLI open 失败。并发测试把 10-family sweep 与 Lead tick/ask/send 对撞,断言无 `SQLITE_BUSY` 逸出、锁持有 p95 <50ms;超过预算先把 limit 下调,不另造定时器。
 - **归档原子单位 = RPC family**(question + 其 response;无 ref 关系的行自成 family):family 内**所有行都终态**(ACKED/DEAD)且 RPC 维度终局(已答 或 relay_state='terminal_disposed'),retention anchor = family 最晚终态时间 + 72h。FLY-1279 保护语义(未答未终局的 question 永不归档)自然成立。逐行 INSERT log(event='archived', row_json **内嵌 content 与 content_ref 文件内容 bytes(base64)+ hash**)+ INSERT GC intent + **盖 `mailbox_identity.archived_at`(registry 行永不删,身份跨归档占用,§3.1b)** + DELETE,同一事务;文件删除由 §3.2b `content_ref_gc_outbox` 的 post-commit 有界 drain 承担(现 purge **没有**账本 —— 它先删文件后删行,本方案是修正而非照抄)。
 - 测试:T0 ACK 问 + T+71h 答 + response 未拉 → 不归档;verify-approval 在归档边界前后语义不变;content_ref 文件删除失败可重放;归档事务 crash 重放幂等。
+- **容量取舍显式接受**:`mailbox_log` 按 issue 是 append-only/永不删,本单不做 retention/compaction;这是证据保留成本,不是遗漏。cutover 的 full snapshot 即 post-cutover 容量基线;preflight 要求 `free_bytes >= source + 备份 + 估算 log/refs 峰值 + 20%`(至少原库 3×),迁移演练记录 bytes/source-row。steady-state 只允许 live mailbox 的终态 family 归档,不删除 log;运行盘点报告 post-cutover baseline、月增长率与 `QUEUED/LEASED` age。Runner LEASED/无人 Lead 的 QUEUED 在 D 前可能增长,容量验收明确接受并要求磁盘预警,不得用恢复 72h DELETE 偷删证据。`DROP TABLE` 不宣称回收文件空间;若运维要 compact,只能在备份已验证、舰队 quiesced 后单独 `VACUUM INTO` 新文件并走与 §8.4 同级的原子替换验证,不属于本单默认 cutover。
 
 ## 8. 数据迁移(R1 blocker 3/4/5 的修正案)
 
@@ -287,8 +301,8 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 
 ### 8.2 迁移脚本(`scripts/migrate-fly1572-mailbox.ts`)
 - **停机窗 = quiesce 所有 writer,舰队级、跨全部生产库**(不只 Bridge:所有 Lead/Runner/CLI 都直接写 comm.db)。runbook(normative,R8 MEDIUM 3:混合态没有可重启的 binary —— 旧 binary 撞已迁库毒药、新 binary 撞未迁库 legacy fail-loud,§8.3 三态合同保证混合态起不来,这是防呆不是恢复路径):
-  1. 停 Bridge → 停 Leads(舰队本来随 Bridge 重启波次管理)→ `fuser`/lsof 断言无进程持有**任何一个**生产 comm.db;
-  2. 按 §12.C 清单**逐库** `wal_checkpoint(TRUNCATE)` 排干 → 备份 → 迁移 → 对账;**全部库迁完前舰队保持 quiesced**;
+  1. 先按 §12.C 做**发现式 inventory**(默认项目 glob + `--db`/`FLYWHEEL_COMM_DB` 配置与 live launchd/wrapper 环境 + `~/.flywheel` 下实际含 `lead_inbox` 的 SQLite);发现集与显式迁移清单不恒等即 fail-closed。再停 Bridge → 停 Leads(舰队本来随 Bridge 重启波次管理)→ `fuser`/lsof 断言无进程持有 inventory 中**任何一个**生产 comm.db;
+  2. 按冻结后的 inventory **逐库** `wal_checkpoint(TRUNCATE)` 排干 → 备份 → 迁移 → 对账;**全部库迁完前舰队保持 quiesced**;
   3. 任一库失败 → 舰队继续 quiesced,二选一**显式**恢复,禁止第三种:(a)修复后续跑剩余库(优先;已迁库的 completed marker 幂等跳过);(b)放弃本窗 —— 已迁库**全部**按 §8.4 回滚,复验 inventory 全为 legacy 态后,才允许重启旧 binary;
   4. 全部目标库 completed marker + inventory 对账通过 → 部署新 binary → 重启舰队 → 冒烟。
   任一步失败的停止点与回退动作逐条写明。
@@ -305,6 +319,7 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 | -- | -- | -- |
 | messages question(未过期未 terminal)× lead_inbox 镜像行(join ref_message_id) | 镜像 settled / consumed / 真未读(三空)/ 无镜像 | **合一行**:settled→ACKED(见下方合行规则)/ consumed→ACKED / 三空→QUEUED / 无镜像→QUEUED。**双身份各归其位:`id`=messages.id,`delivery_id`=镜像行 id(`question:<lead>:<qid>`);无镜像 → delivery_id 按同构规则生成**;两 id 迁移时 canonical compare |
 | **合行规则:settled 镜像 × 活 messages 行**(08-05 实测 50 行,不能 abort-for-manual) | 镜像有 settle 证据、question 无 response 且未 terminal_disposed | 合行 state=**ACKED**(投递维度已由授权 settle 终局,不得再投),acked_at=COALESCE(consumed_at, settle 时间);settle 证据照写 settlement 槽(processed/disposed 各归各);relay_state 从 messages 行原样带走;**迁移不造答案** —— RPC 维度保持未答,与今天语义一致。专属 fixture |
+| **orphan question/gate 镜像**(`lead_inbox.ref_message_id` 无对应 messages;flywheel 实测 3,222) | settled/consumed/delivered-only / 真未读三空 | logical identity 仍取 `id=ref_message_id`,`delivery_id=mirror.id`,identity 永久占位。历史/settled 档只进 log + archived identity,settlement subject 归一到 ref_message_id;真未读档为满足旧未读覆盖锚先建 QUEUED row(`type='question'`,`source_kind='question_orphan'`,snapshot 保留旧 mirror type),首次 claim 按现版 `revoked_missing` **不投递而 DEAD**。不凭空造 RPC answer/active source row;专属 fixture 覆盖四档与 anchor→claim 转 DEAD |
 | messages ack_receipt(未读)× protocol 镜像行(`ack:<lead>:<receipt>`) | 同 question 行(先过全局优先级) | **合一行** to_agent='bridge';`id`=messages.id,`delivery_id`=镜像 id |
 | 其余全部行 | — | `delivery_id = id` |
 | messages instruction | read→ACKED;delivered 未读→**LEASED**;未投→QUEUED(retry_count 保留) |
@@ -315,7 +330,7 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 | lead_inbox 其余 pending(inbox lane) | → QUEUED。**pending 的精确谓词 = 真未读三空条件**(§12.B1,issue 2026-08-05 迁移硬约束):`carrier='inbox' AND processed_at IS NULL AND consumed_at IS NULL AND delivered_at IS NULL`。灰区处置见全局优先级 ①-③ |
 | lead_inbox frozen/quarantine/consumed 历史 | → log('migrated_history')(disposition 映射记录在 row_json)。**⚠️ 假未读陷阱**:`processed_at IS NULL` 单条件会把「送到了、消费了、只差销账」的行(08-05 全机实测 9,079 行:flywheel 8,630 / growth 301 / personal-assistant 122 / tidal-echo 23 / geoforge3d 3)当成未读搬进新库 —— 它们必须按 consumed 历史进 log,绝不 QUEUED |
 - **对账 = 覆盖记录合同,不是行数求和**:每个源物理行恰有一条覆盖记录(成为 mailbox 行 或 log 行);每个「逻辑投递」恰一行 mailbox(镜像对折算一)。**成为活 mailbox 行的源行同时写 `migration_snapshot` log 行**(row_json 全列)—— 被删旧列的值永不丢。log 幂等键 = `event_id UNIQUE`('migrated:<src>:<rowid>'),crash 重放 INSERT OR IGNORE + canonical 比对。
-- **未读集恒等锚 = 覆盖投影,不是裸 mailbox.id 比较(issue 2026-08-05 验收锚 + R8 BLOCKER 1 修正,写进脚本终局对账 + QA 验收)**:折叠镜像行的旧 lead_inbox id 落在 `delivery_id`(`mailbox.id` = messages.id),裸比 `mailbox.id` 集合会让正确迁移必挂。正确锚:旧库每条真未读(三空)inbox 行,经覆盖记录**恰有一条** `state='QUEUED' AND carrier='inbox'` 的 mailbox 行与之对应,且 **`delivery_id` = 旧行 id**;折叠镜像行另须 `mailbox.id` = 旧行 ref_message_id;非镜像行须 `id = delivery_id = 旧行 id`。恒等比较在「旧真未读 id 集合」与「QUEUED 行的 `delivery_id` 投影集合」之间做(数量 + 逐 id),不满足即整体 ROLLBACK。测试必含真未读 question-mirror 与 ack-mirror fixture(两 id 不同的行过锚)。external QUEUED 行与 messages 来源行单列对账(不属「未读」口径)。
+- **未读集恒等锚 = 覆盖投影,不是裸 mailbox.id 比较(issue 2026-08-05 验收锚 + R8 BLOCKER 1 修正,写进脚本终局对账 + QA 验收)**:折叠/孤儿镜像行的旧 lead_inbox id 落在 `delivery_id`(`mailbox.id` = 旧 ref_message_id),裸比 `mailbox.id` 集合会让正确迁移必挂。正确锚:旧库每条真未读(三空)inbox 行,经覆盖记录**恰有一条** `state='QUEUED' AND carrier='inbox'` 的 mailbox 行与之对应,且 **`delivery_id` = 旧行 id**;有 ref_message_id 的镜像行(有源或 orphan)另须 `mailbox.id = 旧行 ref_message_id`;非镜像行须 `id = delivery_id = 旧行 id`。恒等比较在「旧真未读 id 集合」与「QUEUED 行的 `delivery_id` 投影集合」之间做(数量 + 逐 id),不满足即整体 ROLLBACK。测试必含真未读 question-mirror、orphan-question-mirror 与 ack-mirror fixture(两 id 不同的行过锚);orphan 随后的 `revoked_missing→DEAD` 是运行态准入,不改 cutover 时刻覆盖证明。external QUEUED 行与 messages 来源行单列对账(不属「未读」口径)。
 - **前置断言(fail-closed)**:pending batch=0、pending claim=0、candidates_json 全零(生产已实测为 0;非 0 即 abort 待人工处置)。**相邻通则(issue 2026-08-05)**:`chat-receipt pending = 0` 只覆盖 `chat:` 前缀、未 disposed 的 external 收据,`founder_msg:` / `lead_event:` / `question:` 三个 lane 结构上不在其定义域 —— runbook preflight 不得拿它当「旧库已清空」证据,quiesce 断言按 per-lane 计数逐一列出。
 
 ### 8.3 硬 cutover 守卫(无 flag;R2 blocker 3 修正)
@@ -352,7 +367,7 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 
 ## 10. 不做什么
 
-租约到期重投/合批/死信闸/agent-ack 闭环(D=FLY-1573;LEASED 无自动出路是刻意留白)、Discord 直推收编(E;carrier 保留)、task 表(F;settle 证据暂入 log settlement 槽)、feature flag(禁令;cutover 靠 schema_generation+毒药墓碑,不靠开关)、优先级/折叠逻辑、runner_phase_wakes 改革(park_wake 泄漏行为修复归 D;本单交付统一 id 模型 + intent key 映射表)。
+**通用**租约到期扫描/重投、合批、死信闸、agent-ack 闭环(D=FLY-1573;Runner LEASED 无自动出路是刻意留白;但 §5.3a 必须平移旧 Lead/bridge 已有的 claim-TTL frozen-batch 重领)、Discord 直推收编(E;carrier 保留)、task 表(F;settle 证据暂入 log settlement 槽)、feature flag(禁令;cutover 靠 schema_generation+毒药墓碑,不靠开关)、新优先级/折叠策略、runner_phase_wakes 改革(park/workflow direct wake 与泄漏行为修复归 D;本单只把 ordinary send/respond 数据流收进 mailbox + intent key 映射表)。
 
 ## 11. 风险
 
@@ -361,7 +376,9 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 | 版本错配窗口 | 毒药墓碑写必炸 + schema_generation 守卫 + runbook quiesce/进程断言 + 旧 build 负向测试(§8.3) |
 | 迁移时长/体积(49k 行全量 JSON 入 log) | 单事务批量;演练实测;磁盘 preflight 3× |
 | 渲染移到 claim 时改变 Lead 可见字节 | renderEnvelope 本体复用 + Claude/Codex 逐字节 golden |
-| LEASED 行滞留(C 无租约扫描) | 与今天「wake 后无重推」行为一致;拉取可 ACK LEASED;D 单接管;监控台账列 LEASED 计数 |
+| LEASED 行滞留 | Lead/bridge 旧 frozen batch 按 §5.3a 保留 TTL 重领;仅 Runner LEASED 保持 pull-ACK、无通用扫描,D 单接管;监控按 recipient_kind 列 age/count |
+| ordinary Lead→Runner 依赖 Bridge liveness | mailbox 耐久先写,Bridge 恢复后 RunnerLane 送;冒烟覆盖 Bridge down 写入→restart→送达,接受相对现版同步 CLI doorbell 的延迟变化 |
+| append-only log / 非终态 live 行增长 | 永不删是 issue 证据合同;按 §7 建 baseline/增长率/磁盘预警,D 后再收敛 Runner lease,不恢复 72h 证据删除 |
 | settlement 并发冲突 | UNIQUE 槽 + canonical 比对 + fail-loud(§3.2),竞争测试 |
 | sender_ref 畸形 | fail-closed + quarantine,绝不降级(§6) |
 
@@ -385,4 +402,10 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 
 ### 12.C 多项目库迁移明确化
 
-迁移脚本按 `~/.flywheel/comm/<project>/comm.db` **逐库执行**(仅处理含 `lead_inbox` 表的库;无表的 QA 残库跳过并记录)。08-05 实测清单:flywheel 52,309(真未读 8)/ geoforge3d 36,831 / tidal-echo 2,861 / growth 868 / joycon-typeless 278 / personal-assistant 225 / sub 0 / test-slot-2·4 0。每库独立:备份 → 迁移 → 对账 → completed marker(库内事务原子性照 §8.2)。**部分失败的舰队级出口以 §8.2 runbook 第 3 步为准**(R8 MEDIUM 3):舰队保持 quiesced,显式二选一 —— 续跑剩余库(优先)或全量回滚已迁库后重启旧 binary;**部署新 binary 必须在全部生产库 completed marker + inventory 对账通过之后**,§8.3 三态 open 合同把混合态 fail-loud 挡死(防呆,非恢复路径)。生产快照与验收 5 以迁移时刻实测为准。
+迁移目标不是单一 glob,而是**发现式 inventory**。seed = `~/.flywheel/comm/<project>/comm.db` + `resolveDbPath` 的 `--db`/`FLYWHEEL_COMM_DB` 来源(launchd plist、wrapper/env 文件、运行进程环境能读取者)；再受控扫描 `~/.flywheel` 下 SQLite header 文件,只读检查是否含 `lead_inbox`/`messages`,把命中的任意路径并入。08-05 reviewer 另发现 glob 外 `~/.flywheel/comm.db`(含两旧表),证明该步骤不可省。脚本输出 canonical path+device/inode+schema fingerprint 的冻结 manifest;任一配置引用路径不在 manifest、同 inode 多别名、扫描命中未分类库,或 quiesce 后 inventory 漂移都 fail-closed,禁止部署新 binary。
+
+08-05 原 glob 实测清单仅作 seed 证据:flywheel 52,309(真未读 8)/ geoforge3d 36,831 / tidal-echo 2,861 / growth 868 / joycon-typeless 278 / personal-assistant 225 / sub 0 / test-slot-2·4 0,另加上述根目录 `comm.db`;最终以迁移窗冻结 manifest 为准。仅含旧表者逐库执行;无表 QA 残库跳过并记录,但新 binary 启动前同样须被 generation 合同分类。每库独立:备份 → 迁移 → 对账 → completed marker(库内事务原子性照 §8.2)。**部分失败的舰队级出口以 §8.2 runbook 第 3 步为准**(R8 MEDIUM 3):舰队保持 quiesced,显式二选一 —— 续跑剩余库(优先)或全量回滚已迁库后重启旧 binary;**部署新 binary 必须在全部 manifest 目标库 completed marker + inventory 对账通过之后**,§8.3 三态 open 合同把混合态 fail-loud 挡死(防呆,非恢复路径)。生产快照与验收 5 以迁移时刻实测为准。
+
+### 12.D 当前 exec 设计复审 R12 修订(2026-08-05)
+
+正式 gate `b515d6ba-94b1-429e-a23e-4ee78097df69` / request `d1027baa-06c2-4fb9-b4dd-4d6d194587e2` 返回 `CHANGES_REQUESTED`。两项 HIGH 已就地修正:① §5.3a 明确保留 Lead/bridge 旧 claim-TTL frozen-batch 重领,只把 Runner 通用 lease expiry 留给 D;② §3.1/§4/§5.3 明确 folded question 的 `type/ref_id` 权威与新 discriminator,不再绕过 gate admission。同轮 advisories 的 lineage 永久解引用、orphan mirror、transient admission、append-only 容量接受、priority/index、Bridge 依赖、发现式 DB inventory、registry replay、delivery fallback 与 archive-open contention 也一并就地定稿;新 gate 以本版全文为审查对象。
