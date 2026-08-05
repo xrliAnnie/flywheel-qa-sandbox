@@ -182,6 +182,7 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 
 - `workflow-engine-dispatcher` predecessor resolver 先排除 `startRetryExecutionId === intent.execution_id` 的自指。`node.type === "design" && attempt === 1` 且 snapshot 无入边时是 root launch:不查 predecessor、不填 `startPoint`,直接走项目默认 base。
 - implement / qa、design attempt>1、或 manifest 声明有 predecessor 的 design 仍 fail-closed `engine_predecessor_unavailable`;不把缺失证据普遍放宽。
+- 剩余 fail-closed predecessor 错误不计入 §2 rework delivery budget、也不直接改 `needs_lead`;按 run/node/attempt 去重并退避日志,由 unlaunched tripwire 在 10min 边界做 durable 升级/rollback,消除 1s 空转。
 
 ### 7.4 start 错误合同与诊断
 
@@ -199,6 +200,7 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 ### 7.5a 测试
 
 - adapter/dispatcher seam:**可复现 ensure-hold 的 stale terminal window fixture**在 pre-ensure purge 后正常 launch;terminal 同名窗仅按 immutable id 关闭;活窗口不关闭且新窗用确定性后缀;identity 缺失/多候选/uninjected predicate 不误杀并发单次 Lead alert;第二次 ensure hold typed fail,无无限循环。
+- terminal predicate:workflow `needs_lead` 不可杀;completed-without-receipt 在 dead-exec CAS 前不可杀、提交后可按 exact identity 清;released older generation 可杀当前 execution 的旧 pane。
 - route + StateStore:真实 typed `TmuxSessionHoldError` 穿过 background dispatcher outcome → generation 1 立即 tombstone/release → HTTP typed retryable;早到逻辑 session 不阻止 release;同 key分别用 random route owner与同 stable engine owner取得 generation 2;generation 1 迟到 renew/commit/marker失败;release 与 physical commit race单赢家;Bridge crash无 release时 clock +5min 可接管。
 - engine root:attempt=1 无入边 design 可 dispatch 且 `startPoint` 缺省;implement、qa、design retry 缺 predecessor 仍拒绝;start reservation 自指回归。
 - HTTP:每个已知 failure/pending 的 status + `code/reason/executionId/retryable` 精确断言,未知异常有结构化 500且日志含 stack、响应不含 stack;engine auto-advance用同 outcome补偿且 pause命中时不 acquire owner。
@@ -232,7 +234,7 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 6. **rework 迁移**(2.1)→ **原子封顶 + backoff + 预约回滚**(2.2)。
 7. **防空转谓词**(3,在 latest-claim 规则确立后)。
 8. **TTL**(4)。
-9. **launch 孤儿闭环**(7):root predecessor → terminal-window preflight → owner release/5min cap → typed route errors。
+9. **launch 孤儿闭环**(7),内部依赖序:**released-generation tombstone + 5min owner/heartbeat** → **pre-commit outcome plumbing**(adapter→Blueprint→dispatcher,route/engine共用)→ root predecessor + bounded tripwire → generation-safe window identity/name + pre-ensure purge → typed route mapping。pause-before-owner 与 §6 交叉测试先过,再接 window side effect。
 10. **pause API/probe → 脚本 Step 0**(6,API 先于脚本依赖)。
 11. docs/milestone 尾提交。
 
