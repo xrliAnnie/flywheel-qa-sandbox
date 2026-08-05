@@ -10,8 +10,8 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import Database from "better-sqlite3";
 import {
+	Database,
 	migrateCommDbWithSwap,
 	rollbackMailboxMigration,
 } from "../packages/flywheel-comm/src/mailbox-migration.js";
@@ -39,6 +39,11 @@ function scan(root: string): string[] {
 	const found: string[] = [];
 	for (const entry of readdirSync(root, { withFileTypes: true })) {
 		const path = join(root, entry.name);
+		if (
+			entry.name.includes(".fly1572-") ||
+			entry.name.includes(".pre-fly1572-")
+		)
+			continue;
 		if (entry.isDirectory()) found.push(...scan(path));
 		else if (entry.isFile() && sqliteFile(path)) found.push(path);
 	}

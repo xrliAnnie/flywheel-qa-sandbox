@@ -18,6 +18,9 @@ import {
 } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import Database from "better-sqlite3";
+
+export { Database };
+
 import { canonicalJsonString } from "flywheel-config";
 import {
 	type EnqueueMailboxInput,

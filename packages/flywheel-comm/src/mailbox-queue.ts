@@ -609,9 +609,9 @@ export class MailboxQueue {
 					if (updated.changes !== ids.length) return [];
 					return this.db
 						.prepare(
-							"SELECT * FROM mailbox WHERE batch_id = ? ORDER BY priority, seq",
+							"SELECT * FROM mailbox WHERE batch_id = ? AND state = 'LEASED' AND claimed_by = ? ORDER BY priority, seq",
 						)
-						.all(frozen.batch_id) as MailboxRow[];
+						.all(frozen.batch_id, input.ownerEpoch) as MailboxRow[];
 				}
 
 				const limit = input.maxBatchSize ?? 10_000;
@@ -818,30 +818,46 @@ export class MailboxQueue {
 		memberIds: readonly string[];
 		now: string;
 	}): boolean {
+		if (input.memberIds.length === 0) return false;
 		return this.db
 			.transaction(() => {
 				const rows = this.db
 					.prepare(
-						"SELECT id, delivery_id FROM mailbox WHERE batch_id = ? AND state = 'LEASED' AND claimed_by = ? ORDER BY priority, seq",
+						"SELECT delivery_id, state, claimed_by FROM mailbox WHERE batch_id = ? ORDER BY priority, seq",
 					)
-					.all(input.batchId, input.ownerEpoch) as Array<{
-					id: string;
+					.all(input.batchId) as Array<{
 					delivery_id: string;
+					state: MailboxState;
+					claimed_by: string | null;
 				}>;
+				const memberIds = new Set(input.memberIds);
+				const members = rows.filter((row) => memberIds.has(row.delivery_id));
 				if (
-					rows.length !== input.memberIds.length ||
-					rows.some((row, index) => row.delivery_id !== input.memberIds[index])
+					members.length !== input.memberIds.length ||
+					members.some(
+						(row, index) => row.delivery_id !== input.memberIds[index],
+					) ||
+					members.some(
+						(row) =>
+							row.state !== "ACKED" &&
+							row.state !== "DEAD" &&
+							(row.state !== "LEASED" || row.claimed_by !== input.ownerEpoch),
+					)
 				) {
 					return false;
 				}
+				const leasedCount = members.filter(
+					(row) => row.state === "LEASED",
+				).length;
 				const result = this.db
 					.prepare(
 						`UPDATE mailbox SET state = 'ACKED', acked_at = COALESCE(acked_at, ?),
 					   claimed_by = NULL, claim_expires_at = NULL, next_retry_at = NULL
-					 WHERE batch_id = ? AND state = 'LEASED' AND claimed_by = ?`,
+					 WHERE batch_id = ? AND delivery_id IN (${placeholders(input.memberIds.length)})
+					   AND state = 'LEASED' AND claimed_by = ?`,
 					)
-					.run(input.now, input.batchId, input.ownerEpoch);
-				return result.changes === rows.length;
+					.run(input.now, input.batchId, ...input.memberIds, input.ownerEpoch);
+				return result.changes === leasedCount;
 			})
 			.immediate();
 	}

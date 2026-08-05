@@ -158,6 +158,40 @@ describe("FLY-1572 MailboxQueue", () => {
 		}
 	});
 
+	it("tolerates an out-of-band ACK inside an accepted Lead batch", () => {
+		const queue = new MailboxQueue(":memory:");
+		try {
+			enqueueLead(queue, "q1");
+			enqueueLead(queue, "q2");
+			queue.acquireOrRenewOwner({
+				ownerEpoch: "epoch-1",
+				now: NOW,
+				leaseTtlMs: 10_000,
+			});
+			queue.claimLeadBatch({
+				toAgent: "lead-a",
+				msgClass: "model",
+				ownerEpoch: "epoch-1",
+				batchId: "batch-1",
+				now: NOW,
+				claimTtlMs: 30_000,
+			});
+			expect(queue.ack("q1", "2026-08-05T12:00:04.000Z")).toBe(true);
+			expect(
+				queue.ackBatch({
+					batchId: "batch-1",
+					ownerEpoch: "epoch-1",
+					memberIds: ["q1", "q2"],
+					now: "2026-08-05T12:00:05.000Z",
+				}),
+			).toBe(true);
+			expect(queue.getById("q1")?.state).toBe("ACKED");
+			expect(queue.getById("q2")?.state).toBe("ACKED");
+		} finally {
+			queue.close();
+		}
+	});
+
 	it("keeps Lead delivery failures in the frozen batch until retry is due", () => {
 		const queue = new MailboxQueue(":memory:");
 		try {
@@ -214,6 +248,52 @@ describe("FLY-1572 MailboxQueue", () => {
 					claimTtlMs: 30_000,
 				}),
 			).toHaveLength(1);
+		} finally {
+			queue.close();
+		}
+	});
+
+	it("excludes terminal members when reclaiming a frozen Lead batch", () => {
+		const queue = new MailboxQueue(":memory:");
+		try {
+			enqueueLead(queue, "q1");
+			enqueueLead(queue, "q2");
+			queue.acquireOrRenewOwner({
+				ownerEpoch: "epoch-1",
+				now: NOW,
+				leaseTtlMs: 10_000,
+			});
+			queue.claimLeadBatch({
+				toAgent: "lead-a",
+				msgClass: "model",
+				ownerEpoch: "epoch-1",
+				batchId: "batch-1",
+				now: NOW,
+				claimTtlMs: 30_000,
+			});
+			queue.recordLeadDeliveryFailure({
+				batchId: "batch-1",
+				ownerEpoch: "epoch-1",
+				now: "2026-08-05T12:00:01.000Z",
+				nextRetryAt: "2026-08-05T12:05:00.000Z",
+				error: "transport down",
+				maxAttempts: 5,
+			});
+			expect(queue.ack("q1", "2026-08-05T12:03:00.000Z")).toBe(true);
+			queue.acquireOrRenewOwner({
+				ownerEpoch: "epoch-1",
+				now: "2026-08-05T12:05:00.000Z",
+				leaseTtlMs: 10_000,
+			});
+			const reclaimed = queue.claimLeadBatch({
+				toAgent: "lead-a",
+				msgClass: "model",
+				ownerEpoch: "epoch-1",
+				batchId: "ignored-for-reclaim",
+				now: "2026-08-05T12:05:00.000Z",
+				claimTtlMs: 30_000,
+			});
+			expect(reclaimed.map((row) => row.id)).toEqual(["q2"]);
 		} finally {
 			queue.close();
 		}
