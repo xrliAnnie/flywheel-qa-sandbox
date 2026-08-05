@@ -857,7 +857,10 @@ export class CommDB {
 	}
 
 	purgeExpired(): number {
-		return 0;
+		const queue = new MailboxQueue(this.db);
+		const archived = queue.archiveDueFamilies({ now: new Date().toISOString() });
+		queue.drainContentRefGc({ now: new Date().toISOString() });
+		return archived.archivedMessages;
 	}
 
 	purgeExpiredWithRefs(): number {
@@ -869,8 +872,14 @@ export class CommDB {
 	}
 
 	cleanupReadMessagesWithRefs(ttlHours = 24): number {
-		void ttlHours;
-		return 0;
+		const retentionMs = Math.max(72, ttlHours) * 60 * 60_000;
+		const queue = new MailboxQueue(this.db);
+		const archived = queue.archiveDueFamilies({
+			now: new Date().toISOString(),
+			retentionMs,
+		});
+		queue.drainContentRefGc({ now: new Date().toISOString() });
+		return archived.archivedMessages;
 	}
 
 	insertQuestion(

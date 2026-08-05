@@ -210,7 +210,20 @@ describe("FLY-1448 terminal receipt settlement primitives", () => {
 		const queue = new MailboxQueue(dbPath);
 		try {
 			queue.ack(questionId, NOW);
-			queue.archive(questionId, "2026-07-24T00:02:00.000Z");
+			const raw = new Database(dbPath);
+			try {
+				raw.prepare(
+					"UPDATE mailbox SET relay_state = 'terminal_disposed' WHERE id = ?",
+				).run(questionId);
+			} finally {
+				raw.close();
+			}
+			expect(
+				queue.archiveFamily({
+					id: questionId,
+					now: "2026-07-28T00:02:00.000Z",
+				}),
+			).toBe("archived");
 		} finally {
 			queue.close();
 		}
@@ -226,7 +239,7 @@ describe("FLY-1448 terminal receipt settlement primitives", () => {
 				receiptId: id,
 				expectedExecutionId: "exec-1",
 				reason: "session_terminal",
-				now: "2026-07-24T00:03:00.000Z",
+				now: "2026-07-28T00:03:00.000Z",
 			}),
 		).toEqual({ kind: "disposed", receiptId: id });
 	});

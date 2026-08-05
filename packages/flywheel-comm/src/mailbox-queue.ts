@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { canonicalJsonString } from "flywheel-config";
@@ -9,6 +9,7 @@ import {
 } from "./inbox-write-normalize.js";
 import { MAILBOX_SCHEMA } from "./mailbox-schema.js";
 import { decodeSenderRef } from "./sender-ref.js";
+import { isValidRefPath } from "./utils/content-ref.js";
 
 export type MailboxState = "QUEUED" | "LEASED" | "ACKED" | "DEAD";
 export type MailboxRecipientKind = "lead" | "runner" | "bridge";
@@ -123,6 +124,21 @@ export interface MailboxLoopHeartbeat {
 	last_success_at: string | null;
 	stall_episode_at: string | null;
 }
+
+export interface MailboxArchiveSweepResult {
+	archivedFamilies: number;
+	archivedMessages: number;
+	skippedOversized: number;
+	skippedInvalidContentRef: number;
+	busy: boolean;
+}
+
+export type MailboxArchiveFamilyResult =
+	| "archived"
+	| "idempotent"
+	| "not_due"
+	| "oversized"
+	| "invalid_content_ref";
 
 function requiredText(value: string, field: string): string {
 	const trimmed = value.trim();
@@ -935,34 +951,357 @@ export class MailboxQueue {
 			: undefined;
 	}
 
-	archive(id: string, now: string): "archived" | "idempotent" {
+	archiveDueFamilies(input: {
+		now: string;
+		retentionMs?: number;
+		maxFamilies?: number;
+		maxFamilyBytes?: number;
+	}): MailboxArchiveSweepResult {
+		const retentionMs = input.retentionMs ?? 72 * 60 * 60_000;
+		const maxFamilies = input.maxFamilies ?? 10;
+		const maxFamilyBytes = input.maxFamilyBytes ?? 2 * 1024 * 1024;
+		assertUtcIsoTimestamp(input.now, "now");
+		if (!Number.isSafeInteger(retentionMs) || retentionMs < 0) {
+			throw new Error("retentionMs must be a non-negative safe integer");
+		}
+		if (!Number.isSafeInteger(maxFamilies) || maxFamilies <= 0) {
+			throw new Error("maxFamilies must be a positive safe integer");
+		}
+		const cutoff = new Date(Date.parse(input.now) - retentionMs).toISOString();
+		const candidateLimit = maxFamilies * 4;
+		const candidates = [
+			...(this.db
+				.prepare(
+					`SELECT id, acked_at AS terminal_at FROM mailbox
+					  WHERE state = 'ACKED' AND acked_at <= ?
+					  ORDER BY acked_at, seq LIMIT ?`,
+				)
+				.all(cutoff, candidateLimit) as Array<{
+				id: string;
+				terminal_at: string;
+			}>),
+			...(this.db
+				.prepare(
+					`SELECT id, dead_at AS terminal_at FROM mailbox
+					  WHERE state = 'DEAD' AND dead_at <= ?
+					  ORDER BY dead_at, seq LIMIT ?`,
+				)
+				.all(cutoff, candidateLimit) as Array<{
+				id: string;
+				terminal_at: string;
+			}>),
+		].sort((left, right) => left.terminal_at.localeCompare(right.terminal_at));
+		const result: MailboxArchiveSweepResult = {
+			archivedFamilies: 0,
+			archivedMessages: 0,
+			skippedOversized: 0,
+			skippedInvalidContentRef: 0,
+			busy: false,
+		};
+		const seen = new Set<string>();
+		for (const candidate of candidates) {
+			if (result.archivedFamilies >= maxFamilies) break;
+			const row = this.getById(candidate.id);
+			if (!row) continue;
+			const rootId = this.familyRootId(row);
+			if (seen.has(rootId)) continue;
+			seen.add(rootId);
+			const memberCount = this.loadFamily(rootId).length;
+			try {
+				const outcome = this.archiveFamily({
+					id: rootId,
+					now: input.now,
+					retentionMs,
+					maxFamilyBytes,
+				});
+				if (outcome === "archived") {
+					result.archivedFamilies++;
+					result.archivedMessages += memberCount;
+				} else if (outcome === "oversized") {
+					result.skippedOversized++;
+				} else if (outcome === "invalid_content_ref") {
+					result.skippedInvalidContentRef++;
+				}
+			} catch (error) {
+				if ((error as { code?: string }).code !== "SQLITE_BUSY") throw error;
+				result.busy = true;
+				break;
+			}
+		}
+		return result;
+	}
+
+	archiveFamily(input: {
+		id: string;
+		now: string;
+		retentionMs?: number;
+		maxFamilyBytes?: number;
+	}): MailboxArchiveFamilyResult {
+		assertUtcIsoTimestamp(input.now, "now");
+		const retentionMs = input.retentionMs ?? 72 * 60 * 60_000;
+		if (!Number.isSafeInteger(retentionMs) || retentionMs < 0) {
+			throw new Error("retentionMs must be a non-negative safe integer");
+		}
+		const member = this.getById(input.id);
+		if (!member) {
+			const identity = this.db
+				.prepare("SELECT archived_at FROM mailbox_identity WHERE id = ?")
+				.get(input.id) as { archived_at: string | null } | undefined;
+			if (identity?.archived_at) return "idempotent";
+			throw new Error(`mailbox row not found: ${input.id}`);
+		}
+		const rootId = this.familyRootId(member);
+		const rows = this.loadFamily(rootId);
+		if (
+			rows.length === 0 ||
+			rows.some((row) => row.state !== "ACKED" && row.state !== "DEAD")
+		) {
+			return "not_due";
+		}
+		const question = rows.find(
+			(row) => row.id === rootId && row.type === "question",
+		);
+		if (
+			question &&
+			question.relay_state !== "terminal_disposed" &&
+			!rows.some((row) => row.type === "response" && row.ref_id === rootId)
+		) {
+			return "not_due";
+		}
+		const terminalTimes = rows.map((row) =>
+			Date.parse(row.state === "ACKED" ? (row.acked_at ?? "") : (row.dead_at ?? "")),
+		);
+		if (
+			terminalTimes.some((value) => !Number.isFinite(value)) ||
+			Math.max(...terminalTimes) + retentionMs > Date.parse(input.now)
+		) {
+			return "not_due";
+		}
+
+		const snapshots: Array<{
+			row: MailboxRow;
+			rowJson: string;
+			ref?: { path: string; hash: string };
+		}> = [];
+		let familyBytes = 0;
+		for (const row of rows) {
+			let contentRefArchive:
+				| {
+						path: string;
+						bytes: number;
+						sha256: string;
+						content_base64: string;
+				  }
+				| undefined;
+			if (row.content_ref) {
+				if (!isValidRefPath(row.content_ref)) return "invalid_content_ref";
+				let bytes: Buffer;
+				try {
+					bytes = readFileSync(row.content_ref);
+				} catch {
+					return "invalid_content_ref";
+				}
+				contentRefArchive = {
+					path: row.content_ref,
+					bytes: bytes.length,
+					sha256: createHash("sha256").update(bytes).digest("hex"),
+					content_base64: bytes.toString("base64"),
+				};
+			}
+			const rowJson = canonicalJsonString({
+				...row,
+				...(contentRefArchive ? { content_ref_archive: contentRefArchive } : {}),
+			});
+			familyBytes += Buffer.byteLength(rowJson);
+			snapshots.push({
+				row,
+				rowJson,
+				...(contentRefArchive
+					? {
+							ref: {
+								path: contentRefArchive.path,
+								hash: contentRefArchive.sha256,
+							},
+						}
+					: {}),
+			});
+		}
+		if (familyBytes > (input.maxFamilyBytes ?? 2 * 1024 * 1024)) {
+			return "oversized";
+		}
+
 		return this.db
-			.transaction(() => {
-				const row = this.getById(id);
-				if (!row) {
-					const identity = this.db
-						.prepare("SELECT archived_at FROM mailbox_identity WHERE id = ?")
-						.get(id) as { archived_at: string | null } | undefined;
-					if (identity?.archived_at) return "idempotent";
-					throw new Error(`mailbox row not found: ${id}`);
+			.transaction((): MailboxArchiveFamilyResult => {
+				const liveRows = this.loadFamily(rootId);
+				if (canonicalJsonString(liveRows) !== canonicalJsonString(rows)) {
+					return "not_due";
 				}
-				if (row.state !== "ACKED" && row.state !== "DEAD") {
-					throw new Error(`mailbox row is not terminal: ${id}`);
+				for (const snapshot of snapshots) {
+					this.db
+						.prepare(
+							"INSERT INTO mailbox_log (event_id, message_id, event, at, row_json) VALUES (?, ?, 'archived', ?, ?)",
+						)
+						.run(
+							`archived:${snapshot.row.id}`,
+							snapshot.row.id,
+							input.now,
+							snapshot.rowJson,
+						);
+					if (snapshot.ref) {
+						this.db
+							.prepare(
+								`INSERT INTO content_ref_gc_outbox
+								 (intent_id, message_id, path, content_hash, created_at)
+								 VALUES (?, ?, ?, ?, ?)`,
+							)
+							.run(
+								`gc:${snapshot.row.id}`,
+								snapshot.row.id,
+								snapshot.ref.path,
+								snapshot.ref.hash,
+								input.now,
+							);
+					}
+					if (
+						this.db
+							.prepare(
+								"UPDATE mailbox_identity SET archived_at = ? WHERE id = ? AND archived_at IS NULL",
+							)
+							.run(input.now, snapshot.row.id).changes !== 1
+					) {
+						throw new Error(`mailbox identity archive conflict: ${snapshot.row.id}`);
+					}
+					this.db.prepare("DELETE FROM mailbox WHERE id = ?").run(snapshot.row.id);
 				}
-				this.db
-					.prepare(
-						"INSERT INTO mailbox_log (event_id, message_id, event, at, row_json) VALUES (?, ?, 'archived', ?, ?)",
-					)
-					.run(`archived:${id}`, id, now, JSON.stringify(row));
-				this.db
-					.prepare(
-						"UPDATE mailbox_identity SET archived_at = ? WHERE id = ? AND archived_at IS NULL",
-					)
-					.run(now, id);
-				this.db.prepare("DELETE FROM mailbox WHERE id = ?").run(id);
 				return "archived";
 			})
 			.immediate();
+	}
+
+	drainContentRefGc(input: {
+		now: string;
+		limit?: number;
+		removeFile?: (path: string) => void;
+	}): { done: number; pending: number } {
+		assertUtcIsoTimestamp(input.now, "now");
+		const limit = input.limit ?? 10;
+		const intents = this.db
+			.prepare(
+				`SELECT intent_id, path, content_hash, attempts
+				   FROM content_ref_gc_outbox
+				  WHERE state = 'pending'
+				    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+				  ORDER BY created_at LIMIT ?`,
+			)
+			.all(input.now, limit) as Array<{
+			intent_id: string;
+			path: string;
+			content_hash: string;
+			attempts: number;
+		}>;
+		const result = { done: 0, pending: 0 };
+		for (const intent of intents) {
+			try {
+				const status = this.db
+					.transaction((): "done" | "pending" => {
+						if (
+							(
+								this.db
+									.prepare("SELECT COUNT(*) AS count FROM mailbox WHERE content_ref = ?")
+									.get(intent.path) as { count: number }
+							).count > 0
+						) {
+							this.deferContentRefGc(intent, input.now, "path still has a live mailbox reference");
+							return "pending";
+						}
+						if (!isValidRefPath(intent.path)) {
+							this.deferContentRefGc(intent, input.now, "invalid content_ref path");
+							return "pending";
+						}
+						let bytes: Buffer;
+						try {
+							bytes = readFileSync(intent.path);
+						} catch (error) {
+							if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+								this.finishContentRefGc(intent.intent_id, input.now);
+								return "done";
+							}
+							this.deferContentRefGc(intent, input.now, (error as Error).message);
+							return "pending";
+						}
+						if (
+							createHash("sha256").update(bytes).digest("hex") !== intent.content_hash
+						) {
+							this.deferContentRefGc(intent, input.now, "content_ref hash mismatch");
+							return "pending";
+						}
+						try {
+							(input.removeFile ?? unlinkSync)(intent.path);
+						} catch (error) {
+							this.deferContentRefGc(intent, input.now, (error as Error).message);
+							return "pending";
+						}
+						this.finishContentRefGc(intent.intent_id, input.now);
+						return "done";
+					})
+					.immediate();
+				result[status]++;
+			} catch (error) {
+				if ((error as { code?: string }).code !== "SQLITE_BUSY") throw error;
+				result.pending++;
+				break;
+			}
+		}
+		return result;
+	}
+
+	private familyRootId(row: MailboxRow): string {
+		if (
+			row.type === "response" &&
+			row.ref_id &&
+			this.db
+				.prepare("SELECT 1 FROM mailbox WHERE id = ? AND type = 'question'")
+				.get(row.ref_id)
+		) {
+			return row.ref_id;
+		}
+		return row.id;
+	}
+
+	private loadFamily(rootId: string): MailboxRow[] {
+		const root = this.getById(rootId);
+		if (!root) return [];
+		if (root.type !== "question") return [root];
+		return this.db
+			.prepare(
+				"SELECT * FROM mailbox WHERE id = ? OR (type = 'response' AND ref_id = ?) ORDER BY seq",
+			)
+			.all(rootId, rootId) as MailboxRow[];
+	}
+
+	private deferContentRefGc(
+		intent: { intent_id: string; attempts: number },
+		now: string,
+		error: string,
+	): void {
+		const delayMs = Math.min(60 * 60_000, 1_000 * 2 ** intent.attempts);
+		this.db
+			.prepare(
+				`UPDATE content_ref_gc_outbox
+				    SET attempts = attempts + 1, next_retry_at = ?, last_error = ?
+				  WHERE intent_id = ? AND state = 'pending'`,
+			)
+			.run(new Date(Date.parse(now) + delayMs).toISOString(), error, intent.intent_id);
+	}
+
+	private finishContentRefGc(intentId: string, now: string): void {
+		this.db
+			.prepare(
+				`UPDATE content_ref_gc_outbox SET state = 'done', finished_at = ?,
+				 next_retry_at = NULL, last_error = NULL
+				 WHERE intent_id = ? AND state = 'pending'`,
+			)
+			.run(now, intentId);
 	}
 
 	close(): void {
