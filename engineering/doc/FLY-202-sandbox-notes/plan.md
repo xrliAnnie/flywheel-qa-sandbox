@@ -18,7 +18,7 @@
 - Read: `doc/qa/framework/sandbox-sync-guide.md`
 - Create: `doc/qa/sandbox-notes.md`
 
-- [ ] **Step 1: Verify the deliverable is absent (RED)**
+- [x] **Step 1: Verify the deliverable is absent (RED)**
 
 Run:
 
@@ -28,7 +28,7 @@ test -f doc/qa/sandbox-notes.md
 
 Expected: exit 1 because the requested document does not exist yet.
 
-- [ ] **Step 2: Capture the top-level directory inventory**
+- [x] **Step 2: Capture the top-level directory inventory**
 
 Run:
 
@@ -38,7 +38,7 @@ find . -mindepth 1 -maxdepth 1 -type d -not -path './.git' -exec basename {} \; 
 
 Expected: one sorted row per top-level directory, including `.claude`, `.flywheel`, `.github`, `.lead`, and `.serena`.
 
-- [ ] **Step 3: Capture the requested recursive listing**
+- [x] **Step 3: Capture the requested recursive listing**
 
 Run exactly:
 
@@ -53,19 +53,19 @@ Expected: 50 stdout lines beginning with `VERSION`, `architecture`, and the othe
 **Files:**
 - Create: `doc/qa/sandbox-notes.md`
 
-- [ ] **Step 1: Write the purpose section**
+- [x] **Step 1: Write the purpose section**
 
 Write 2–3 English paragraphs explaining that the standalone sandbox mirrors Flywheel closely enough for realistic test-slot work while providing a safe remote for Runner pushes and PRs; describe the deploy/inject/observe/teardown lifecycle and the manual sync boundary.
 
-- [ ] **Step 2: Write the complete directory table**
+- [x] **Step 2: Write the complete directory table**
 
 Add one table row for every name printed by Task 1 Step 2, with a one-sentence description grounded in the directory's checked-out contents. Add a note that the top-level `=` entry is a file and therefore is not a directory-table row.
 
-- [ ] **Step 3: Write exactly ten README summary bullets**
+- [x] **Step 3: Write exactly ten README summary bullets**
 
 Summarize these ten topics from `packages/qa-framework/README.md`: reusable framework purpose; two-layer architecture; quick-start configuration; five-step protocol; real-Runner slot isolation; deploy/inject/teardown scripts; prerequisites/start-point behavior; specialized hard-gate suite; mirror/roundtable/alert modes and their boundaries; contracts plus test-room operational safeguards.
 
-- [ ] **Step 4: Add the exact command transcript**
+- [x] **Step 4: Add the exact command transcript**
 
 Add a `## doc/ Listing` section, show the literal command, and paste Task 1 Step 3 stdout unchanged into a `text` fenced block.
 
@@ -74,7 +74,7 @@ Add a `## doc/ Listing` section, show the literal command, and paste Task 1 Step
 **Files:**
 - Verify: `doc/qa/sandbox-notes.md`
 
-- [ ] **Step 1: Verify required headings and note structure**
+- [x] **Step 1: Verify required headings and note structure**
 
 Run:
 
@@ -84,19 +84,19 @@ rg -n '^# |^## |^\| `|^```' doc/qa/sandbox-notes.md
 
 Expected: one title; purpose, directory, QA summary, and listing sections; a directory table; and one balanced transcript fence.
 
-- [ ] **Step 2: Compare filesystem and documented directory sets**
+- [x] **Step 2: Compare filesystem and documented directory sets**
 
 Extract the filesystem inventory and the first-column backticked names from the directory table into temporary sorted files, then run `comm -3`. Expected: no output.
 
-- [ ] **Step 3: Count README bullets**
+- [x] **Step 3: Count README bullets**
 
 Count `- ` lines between `## QA Framework Summary` and `## doc/ Listing`. Expected: `10`.
 
-- [ ] **Step 4: Compare transcript with a fresh command run**
+- [x] **Step 4: Compare transcript with a fresh command run**
 
 Extract the `text` fenced block and compare it with fresh output from `ls -R doc/ | head -50`. Expected: `diff` exit 0 and no output.
 
-- [ ] **Step 5: Run final Markdown hygiene checks**
+- [x] **Step 5: Run final Markdown hygiene checks**
 
 Run:
 
