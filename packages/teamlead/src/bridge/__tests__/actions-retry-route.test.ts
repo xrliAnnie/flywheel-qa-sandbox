@@ -357,6 +357,7 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 
 	it("returns 202 pending only after healthy lineage and WAL writes are durable", async () => {
 		bindPredecessorToGeneralizedWorkflow();
+		const admit = vi.spyOn(store, "admitGeneralizedWorkflowExecution");
 		const r = await postRetry({ execution_id: "pred-1", ...gw });
 		expect(r.status, JSON.stringify(r.json)).toBe(202);
 		expect(r.json).toMatchObject({ success: true, pending: true });
@@ -366,6 +367,13 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 			"dispatched",
 		);
 		expect(store.getSession("pred-1")?.status).toBe("failed");
+		const admission = admit.mock.calls[0]?.[0];
+		expect(Date.parse(admission!.expiresAt) - Date.parse(admission!.now!)).toBe(
+			60 * 60_000,
+		);
+		expect(
+			Date.parse(admission!.absoluteDeadlineAt) - Date.parse(admission!.now!),
+		).toBe(24 * 60 * 60_000);
 	});
 
 	it("still attempts the WAL write and returns accepted-pending when lineage persistence throws", async () => {

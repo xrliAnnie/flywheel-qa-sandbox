@@ -36,6 +36,8 @@ export interface NodeTypeRegistryEntry {
 	isPhaseRole: boolean;
 	preserveCompletionRole: boolean;
 	badge: string;
+	/** Mutable issuance-time default; intentionally excluded from pinned capabilities. */
+	submissionWindowMinutes?: number;
 	capabilities: Readonly<WorkflowNodeCapabilities>;
 }
 
@@ -94,6 +96,7 @@ export const NODE_TYPE_REGISTRY: Readonly<
 		isPhaseRole: true,
 		preserveCompletionRole: true,
 		badge: "🧪QA",
+		submissionWindowMinutes: 360,
 		capabilities: {
 			...noCode("no_code"),
 			shared_branch_writer: true,

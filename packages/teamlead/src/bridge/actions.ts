@@ -26,8 +26,10 @@ import {
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import {
 	parseWorkflowRunSnapshot,
+	resolveWorkflowDecisionContract,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
+import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import type { GateAuthorityView } from "./approval-signal/gate-authority-view.js";
 import {
 	type FounderApprovalCardAuthority,
@@ -981,6 +983,8 @@ async function handleRetry(
 		const successorExecutionId =
 			gatewayDispatch?.successorExecutionId ?? randomUUID();
 		const now = new Date();
+		const credentialWindow = credentialWindowForNode(snapshot, node.id, now);
+		const decisionContract = resolveWorkflowDecisionContract(snapshot, node.id);
 		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 			runId: predecessorBinding.run_id,
 			nodeId: predecessorBinding.node_id,
@@ -991,8 +995,8 @@ async function handleRetry(
 			nodeId: predecessorBinding.node_id,
 			executionId: successorExecutionId,
 			attempt: predecessorBinding.attempt + 1,
-			expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
-			absoluteDeadlineAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+			expiresAt: credentialWindow.expiresAt,
+			absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
 			now: now.toISOString(),
 			dispatchResolution,
 		});
@@ -1054,7 +1058,7 @@ async function handleRetry(
 			};
 		}
 		let outputCredential = admitted.outputCredential;
-		const submissionCredential = admitted.submissionCredential;
+		let submissionCredential = admitted.submissionCredential;
 		let launchGateToken: string | undefined;
 		let commitWorkflowLaunch:
 			| (() => { ok: boolean; reason?: string })
@@ -1115,19 +1119,20 @@ async function handleRetry(
 					});
 			}
 		} else {
+			const rotationNow = new Date();
+			const rotationWindow = credentialWindowForNode(
+				snapshot,
+				node.id,
+				rotationNow,
+			);
 			if (node.capabilities.produces_output && !outputCredential) {
-				const rotationNow = new Date();
 				const rotated = store.rotateGeneralizedWorkflowOutputCredential({
 					executionId: successorExecutionId,
 					ownerId: launchOwnerId,
 					generation: launch.generation,
 					now: rotationNow.toISOString(),
-					expiresAt: new Date(
-						rotationNow.getTime() + 15 * 60_000,
-					).toISOString(),
-					absoluteDeadlineAt: new Date(
-						rotationNow.getTime() + 60 * 60_000,
-					).toISOString(),
+					expiresAt: rotationWindow.expiresAt,
+					absoluteDeadlineAt: rotationWindow.absoluteDeadlineAt,
 				});
 				if (!rotated.ok) {
 					return {
@@ -1136,6 +1141,23 @@ async function handleRetry(
 					};
 				}
 				outputCredential = rotated.outputCredential;
+			}
+			if (decisionContract && !submissionCredential) {
+				const rotated = store.rotateGeneralizedWorkflowSubmissionCredential({
+					executionId: successorExecutionId,
+					ownerId: launchOwnerId,
+					generation: launch.generation,
+					now: rotationNow.toISOString(),
+					expiresAt: rotationWindow.expiresAt,
+					absoluteDeadlineAt: rotationWindow.absoluteDeadlineAt,
+				});
+				if (!rotated.ok) {
+					return {
+						success: false,
+						message: `Retry dispatch held: generalized submission credential rotation ${rotated.reason}`,
+					};
+				}
+				submissionCredential = rotated.submissionCredential;
 			}
 			const renewalNow = new Date();
 			const renewed = store.renewWorkflowLaunchOwner({

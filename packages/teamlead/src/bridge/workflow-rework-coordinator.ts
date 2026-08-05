@@ -9,6 +9,8 @@ import type {
 	WorkflowRunNodeRow,
 	WorkflowRunRow,
 } from "../StateStore.js";
+import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
+import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import {
 	classifyPhaseActorReentry,
 	type PhaseLiveness,
@@ -217,6 +219,11 @@ export class WorkflowReworkCoordinator {
 			resolveAlertIdentity: (
 				run: WorkflowRunRow,
 			) => WorkflowEngineAlertIdentity;
+			resolveCredentialWindow?: (
+				run: WorkflowRunRow,
+				nodeId: string,
+				now: Date,
+			) => { expiresAt: string; absoluteDeadlineAt: string };
 			env?: Record<string, string | undefined>;
 		},
 	) {
@@ -408,12 +415,25 @@ export class WorkflowReworkCoordinator {
 		}
 
 		const activationId = `activation:${requestId}`;
-		const credentialExpiresAt = new Date(
-			now.getTime() + 60 * 60_000,
-		).toISOString();
-		const absoluteDeadlineAt = new Date(
-			now.getTime() + 24 * 60 * 60_000,
-		).toISOString();
+		let credentialWindow: {
+			expiresAt: string;
+			absoluteDeadlineAt: string;
+		};
+		try {
+			credentialWindow = this.deps.resolveCredentialWindow
+				? this.deps.resolveCredentialWindow(run, route.target_node_id, now)
+				: credentialWindowForNode(
+						parseWorkflowRunSnapshot(run.snapshot!),
+						route.target_node_id,
+						now,
+					);
+		} catch (error) {
+			return this.releaseRetryable({
+				requestId,
+				generation: claim.generation,
+				reason: `credential_window_unavailable:${(error as Error).message}`,
+			});
+		}
 		const admission = this.deps.store.admitGeneralizedWorkflowExecution({
 			runId: request.run_id,
 			nodeId: route.target_node_id,
@@ -422,8 +442,8 @@ export class WorkflowReworkCoordinator {
 			activationId,
 			activationMode: "wake",
 			reworkRequestId: requestId,
-			expiresAt: credentialExpiresAt,
-			absoluteDeadlineAt,
+			expiresAt: credentialWindow.expiresAt,
+			absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
 			now: now.toISOString(),
 			env: this.deps.env,
 		});

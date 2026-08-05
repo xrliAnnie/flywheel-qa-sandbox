@@ -79,6 +79,10 @@ describe("generalized workflow node-type registry", () => {
 		expect(
 			getNodeTypeRegistryEntry("review").capabilities.needs_review_evidence,
 		).toBe(true);
+		expect(getNodeTypeRegistryEntry("qa").submissionWindowMinutes).toBe(360);
+		expect(
+			getNodeTypeRegistryEntry("review").submissionWindowMinutes,
+		).toBeUndefined();
 	});
 
 	it("fails closed for an unknown node type", () => {

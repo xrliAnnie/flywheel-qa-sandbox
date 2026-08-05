@@ -77,8 +77,10 @@ import {
 } from "../workflow-menu.js";
 import {
 	parseWorkflowRunSnapshot,
+	resolveWorkflowDecisionContract,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
+import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import {
 	isWorkflowTemplateDispatchEnabled,
 	workflowTemplateDispatchBlockReason,
@@ -2560,6 +2562,29 @@ export function createRunsRouter(
 				return;
 			}
 			const now = new Date();
+			const selectedRun = store.getWorkflowRun(generalizedSelection.runId);
+			let selectedSnapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+			try {
+				if (!selectedRun?.snapshot)
+					throw new Error("workflow snapshot missing");
+				selectedSnapshot = parseWorkflowRunSnapshot(selectedRun.snapshot);
+			} catch (error) {
+				res.status(409).json({
+					success: false,
+					code: "GENERALIZED_SNAPSHOT_INVALID",
+					reason: (error as Error).message,
+				});
+				return;
+			}
+			const credentialWindow = credentialWindowForNode(
+				selectedSnapshot,
+				generalizedSelection.nodeId,
+				now,
+			);
+			const decisionContract = resolveWorkflowDecisionContract(
+				selectedSnapshot,
+				generalizedSelection.nodeId,
+			);
 			const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 				runId: generalizedSelection.runId,
 				nodeId: generalizedSelection.nodeId,
@@ -2571,10 +2596,8 @@ export function createRunsRouter(
 				executionId: generalizedSelection.executionId,
 				attempt: 1,
 				now: now.toISOString(),
-				expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
-				absoluteDeadlineAt: new Date(
-					now.getTime() + 24 * 60 * 60_000,
-				).toISOString(),
+				expiresAt: credentialWindow.expiresAt,
+				absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
 				env: process.env,
 				idempotencyKey: generalizedSelection.idempotencyKey,
 				dispatchResolution,
@@ -2630,8 +2653,7 @@ export function createRunsRouter(
 			}
 			let startedSession = store.getSession(generalizedSelection.executionId);
 			let workflowOutputCredential = workflowAdmission.outputCredential;
-			const workflowSubmissionCredential =
-				workflowAdmission.submissionCredential;
+			let workflowSubmissionCredential = workflowAdmission.submissionCredential;
 			let launchGateToken: string | undefined;
 			let commitWorkflowLaunch:
 				| (() => { ok: boolean; reason?: string })
@@ -2745,22 +2767,23 @@ export function createRunsRouter(
 						shouldDispatch = true;
 					}
 				} else {
+					const rotationNow = new Date();
+					const rotationWindow = credentialWindowForNode(
+						selectedSnapshot,
+						generalizedSelection.nodeId,
+						rotationNow,
+					);
 					if (
 						generalizedSelection.node.capabilities.produces_output &&
 						!workflowOutputCredential
 					) {
-						const rotationNow = new Date();
 						const rotated = store.rotateGeneralizedWorkflowOutputCredential({
 							executionId: generalizedSelection.executionId,
 							ownerId: launchOwnerId,
 							generation: launch.generation,
 							now: rotationNow.toISOString(),
-							expiresAt: new Date(
-								rotationNow.getTime() + 60 * 60_000,
-							).toISOString(),
-							absoluteDeadlineAt: new Date(
-								rotationNow.getTime() + 24 * 60 * 60_000,
-							).toISOString(),
+							expiresAt: rotationWindow.expiresAt,
+							absoluteDeadlineAt: rotationWindow.absoluteDeadlineAt,
 						});
 						if (!rotated.ok) {
 							res.status(409).json({
@@ -2771,6 +2794,27 @@ export function createRunsRouter(
 							return;
 						}
 						workflowOutputCredential = rotated.outputCredential;
+					}
+					if (decisionContract && !workflowSubmissionCredential) {
+						const rotated = store.rotateGeneralizedWorkflowSubmissionCredential(
+							{
+								executionId: generalizedSelection.executionId,
+								ownerId: launchOwnerId,
+								generation: launch.generation,
+								now: rotationNow.toISOString(),
+								expiresAt: rotationWindow.expiresAt,
+								absoluteDeadlineAt: rotationWindow.absoluteDeadlineAt,
+							},
+						);
+						if (!rotated.ok) {
+							res.status(409).json({
+								success: false,
+								code: "GENERALIZED_START_RECOVERY_HELD",
+								reason: rotated.reason,
+							});
+							return;
+						}
+						workflowSubmissionCredential = rotated.submissionCredential;
 					}
 					const renewalNow = new Date();
 					const renewed = store.renewWorkflowLaunchOwner({

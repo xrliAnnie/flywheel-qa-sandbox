@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
+import {
+	loadBundledWorkflowSeeds,
+	workflowSeedContentHash,
+} from "../../workflow-template.js";
 import { WorkflowReworkCoordinator } from "../workflow-rework-coordinator.js";
 
 const WORKFLOW_ON = {
@@ -30,10 +33,16 @@ async function createHarness() {
 	roots.push(root);
 	const store = await StateStore.create(join(root, "state.db"));
 	const comm = new CommDB(join(root, "comm.db"));
-	const seed = loadBundledWorkflowSeeds().find(
-		(candidate) => candidate.templateId === "tpl_eng_heavy",
+	const seed = structuredClone(
+		loadBundledWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		),
 	);
 	if (!seed) throw new Error("tpl_eng_heavy seed missing");
+	const qaSeed = seed.manifest.nodes.find((node) => node.id === "qa");
+	if (!qaSeed) throw new Error("tpl_eng_heavy QA node missing");
+	delete qaSeed.submissionWindowMinutes;
+	seed.contentHash = workflowSeedContentHash(seed);
 	store.importWorkflowTemplateSeed(seed);
 	store.bindWorkflowCategory({
 		project: "flywheel",
@@ -330,6 +339,15 @@ describe("FLY-1423 capability-level rework flow", () => {
 				node_id: "qa",
 				attempt: 2,
 				epoch: 5,
+			});
+			expect(qaActivation?.submission_credential).toEqual(expect.any(String));
+			expect(
+				store.getWorkflowSubmissionCredentialByToken(
+					qaActivation!.submission_credential!,
+				),
+			).toMatchObject({
+				expires_at: "2026-07-23T06:20:00.000Z",
+				absolute_deadline_at: "2026-07-24T00:20:00.000Z",
 			});
 			const passed = store.commitWorkflowTransitionTx({
 				runId: "run-e2e",

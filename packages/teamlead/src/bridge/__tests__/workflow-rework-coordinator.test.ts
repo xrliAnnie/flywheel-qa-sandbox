@@ -284,6 +284,12 @@ function makeHarness(input: {
 			projectName: "flywheel",
 			leadResolution: "resolved",
 		}),
+		resolveCredentialWindow: (_run, _nodeId, now) => ({
+			expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+			absoluteDeadlineAt: new Date(
+				now.getTime() + 24 * 60 * 60_000,
+			).toISOString(),
+		}),
 		env: {
 			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
 			FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -352,6 +358,12 @@ describe("WorkflowReworkCoordinator", () => {
 			epoch: 4,
 		});
 		expect(h.effects.assertWorktreeReady).toHaveBeenCalledWith(session, HEAD);
+		expect(h.store.admitGeneralizedWorkflowExecution).toHaveBeenCalledWith(
+			expect.objectContaining({
+				expiresAt: "2026-07-23T01:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+			}),
+		);
 		expect(h.effects.activateActorForWake).toHaveBeenCalledWith(session);
 		expect(
 			h.effects.activateActorForWake.mock.invocationCallOrder[0],
