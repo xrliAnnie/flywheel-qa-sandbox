@@ -68,10 +68,11 @@ function insertMessage(
 	db.prepare(
 		`INSERT INTO messages
 		 (id, from_agent, to_agent, type, content, parent_id, read_at, created_at,
-		  expires_at, relay_state, resolved_at, delivered_at, checkpoint, kind)
+		  expires_at, relay_state, resolved_at, delivered_at, checkpoint, kind,
+		  logical_event_id)
 		 VALUES (@id, @from_agent, @to_agent, @type, @content, @parent_id, @read_at,
 		  @created_at, @expires_at, @relay_state, @resolved_at, @delivered_at,
-		  @checkpoint, @kind)`,
+		  @checkpoint, @kind, @logical_event_id)`,
 	).run({
 		content: input.id,
 		parent_id: null,
@@ -83,6 +84,7 @@ function insertMessage(
 		delivered_at: null,
 		checkpoint: null,
 		kind: null,
+		logical_event_id: null,
 		...input,
 	});
 }
@@ -152,6 +154,8 @@ describe("FLY-1572 legacy mailbox migration", () => {
 			from_agent: "exec-1",
 			to_agent: "flywheel-eng-lead",
 			type: "question",
+			content: "Should I merge PR #123?",
+			logical_event_id: "4242",
 		});
 		insertMessage(legacy, {
 			id: "instruction-1",
@@ -163,6 +167,7 @@ describe("FLY-1572 legacy mailbox migration", () => {
 			id: "question:flywheel-eng-lead:question-1",
 			to_lead: "flywheel-eng-lead",
 			source: "question:1",
+			content: '{"event_type":"gate_question","question_id":"question-1"}',
 			ref_message_id: "question-1",
 			legacy_alias: "flywheel-eng-lead-1-exec-1",
 		});
@@ -218,6 +223,19 @@ describe("FLY-1572 legacy mailbox migration", () => {
 					state: "QUEUED",
 				},
 			]);
+			expect(
+				migrated
+					.prepare(
+						"SELECT content, delivery_content, source_kind, source_ref FROM mailbox WHERE id='question-1'",
+					)
+					.get(),
+			).toEqual({
+				content: "Should I merge PR #123?",
+				delivery_content:
+					'{"event_type":"gate_question","question_id":"question-1"}',
+				source_kind: "question",
+				source_ref: "4242",
+			});
 			expect(
 				migrated
 					.prepare(
