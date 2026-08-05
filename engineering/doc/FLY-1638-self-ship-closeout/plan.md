@@ -3,7 +3,11 @@
 Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动化收尾1625-修复合一单-ship-绑定修复-重试封顶-防空转-qa-ttl-预配-重启前暂停接活)
 日期: 2026-08-04
 基于: research.md
-状态: **Codex design review 6 轮 APPROVED**(R1 11 项 / R2 6 项 / R3 2 项 / R4 2 项 / R5 1 项全折入;R6 APPROVED);2026-08-05 新增修复面 7 的复审 R1/R2 CHANGES 已折入,待 R3
+状态: **Codex design review APPROVED**(主体 6 轮:R1 11 / R2 6 / R3 2 / R4 2 / R5 1 全折入,R6 APPROVED;修复面 7 增量 4 轮:R1 5B+1M / R2 3B+1M / R3 1B+3M+1m 全折入,R4 APPROVED)
+
+> **item-7 R4 非阻塞交接注**(实施节点必读):
+> 1. 具名收敛 fence 实现为 durable、可幂等续跑的 StateStore authority;fence CAS 与最终 release 之间保持 acquisition 阻塞 —— §7.2 的顺序契约要在子步骤间 crash 后逐字保持。
+> 2. (编辑性)本状态行即 R4 批准记录。
 
 > **R6 非阻塞实施守则**(不改结论,实施节点必读):
 > 1. 仓库枚举失败**不得**丢弃既有 lifecycle worktree binding —— `Blueprint` 现对 `emitWorktreeReady()` 异常是 log+继续 launch;path/branch/generation 照常绑定,baseline 字段落 null(=不合格 no_code),核心 binding 落盘前不抛。
