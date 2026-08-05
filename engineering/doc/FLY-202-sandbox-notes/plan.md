@@ -112,19 +112,22 @@ Expected: exit 0 and no output. Then manually confirm the purpose section contai
 - Commit: `doc/qa/sandbox-notes.md`
 - Commit: `engineering/doc/FLY-202-sandbox-notes/{exploration.md,plan.md,progress.md}`
 
-- [ ] **Step 1: Commit the verified deliverable**
+- [x] **Step 1: Commit the verified deliverable**
 
 ```bash
 git add doc/qa/sandbox-notes.md engineering/doc/FLY-202-sandbox-notes
 git commit -m "docs(fly-202): add QA sandbox notes"
 ```
 
-- [ ] **Step 2: Push the existing issue-specific feature branch**
+- [ ] **Step 2: Push a run-unique issue feature branch**
+
+The original harness branch name already exists remotely with a prior open fixture PR. Preserve that evidence rather than force-pushing over it; use the execution-specific suffix for this run.
 
 ```bash
-git push -u origin project-slot-1-FLY-202
+git branch -m project-slot-1-FLY-202-d716a70d
+git push -u origin project-slot-1-FLY-202-d716a70d
 ```
 
 - [ ] **Step 3: Open a PR against sandbox `main`**
 
-Use `gh pr create --base main --head project-slot-1-FLY-202` with an English title/body containing the requirement checklist and verification evidence. Then proceed through the mandatory Flywheel code-review, CI, founder-approval, and `:cool:` landing workflow.
+Use `gh pr create --base main --head project-slot-1-FLY-202-d716a70d` with an English title/body containing the requirement checklist and verification evidence. Then proceed through the mandatory Flywheel code-review, CI, founder-approval, and `:cool:` landing workflow.
