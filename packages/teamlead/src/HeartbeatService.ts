@@ -527,10 +527,6 @@ export class HeartbeatService implements ReconnectController {
 	}
 
 	async check(): Promise<void> {
-		// FLY-1185 §2.5: maintenance dispatch OUTSIDE the core try — detached,
-		// so neither direction can affect the other (a core-cycle throw doesn't
-		// skip maintenance; a maintenance failure never touches the core chain).
-		this.dispatchMaintenanceTick();
 		// FLY-639: the whole cycle is wrapped so a StateStore sql.js error
 		// (getOrphanSessions / getActiveSessions / …) can NEVER
 		// crash the Bridge via this heartbeat loop. Contract: check() itself never
@@ -649,6 +645,12 @@ export class HeartbeatService implements ReconnectController {
 			if (typeof this.store.recoverFromCorruption === "function") {
 				this.store.recoverFromCorruption(err);
 			}
+		} finally {
+			// FLY-1628: residue maintenance includes pane-loss reconciliation. Run it
+			// only after this tick's server-loss coordinator has classified/claimed any
+			// fleet-level outage. It remains detached, so neither failure path can
+			// affect the other and even a failed core cycle still schedules maintenance.
+			this.dispatchMaintenanceTick();
 		}
 	}
 

@@ -19,6 +19,7 @@ import {
 	readGateMarker,
 } from "flywheel-comm/gate-marker";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
+import { isWakeTerminalStatus } from "../operational-terminal-status.js";
 import type { StateStore } from "../StateStore.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 
@@ -41,6 +42,7 @@ export type WakeKind = "approval_wake" | "feedback_wake";
 export interface WakeSessionInfo {
 	issue_id: string;
 	project_name: string;
+	review_question_id?: string;
 }
 
 export interface WakeDetail {
@@ -118,6 +120,26 @@ export async function sendRunnerWake(
 	// runners at `pr_handoff` so this path is normally unreachable; this guard
 	// guarantees no false wake-success from ANY surface.)
 	const persisted = store.getSession(executionId);
+	if (isWakeTerminalStatus(persisted?.status)) {
+		try {
+			store.insertEvent({
+				event_id: `wake-skipped-terminal-${executionId}-${kind}-${persisted?.status}`,
+				execution_id: executionId,
+				issue_id: session.issue_id,
+				project_name: session.project_name,
+				event_type: "runner_wake_skipped",
+				source: "bridge.runner-wake",
+				payload: {
+					kind,
+					skippedReason: "terminal_status",
+					status: persisted?.status,
+				},
+			});
+		} catch {
+			// best-effort telemetry; terminal admission still rejects the wake.
+		}
+		return;
+	}
 	if (isNoTransportBackend(persisted?.adapter_type)) {
 		console.warn(
 			`[runner-wake] ${kind} SKIPPED for ${executionId}: no-transport backend ` +
@@ -227,7 +249,12 @@ export async function sendRunnerWake(
 	);
 	try {
 		store.insertEvent({
-			event_id: `wake-failed-${executionId}-${Date.now()}`,
+			event_id: `wake-failed-${executionId}-${
+				wakeDetail?.questionId ??
+				persisted?.review_question_id ??
+				session.review_question_id ??
+				kind
+			}`,
 			execution_id: executionId,
 			issue_id: session.issue_id,
 			project_name: session.project_name,

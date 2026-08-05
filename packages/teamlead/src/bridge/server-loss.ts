@@ -113,6 +113,11 @@ function isTmuxBacked(session: Session): boolean {
 	return (session.adapter_type ?? "claude-tmux").includes("tmux");
 }
 
+function isAutoMigratable(session: Session): boolean {
+	const adapter = session.adapter_type?.trim();
+	return !adapter || adapter === "claude-tmux";
+}
+
 function checkResult(
 	claimedInput: Iterable<string>,
 	heldInput: Iterable<string>,
@@ -167,7 +172,7 @@ export class ServerLossCoordinator {
 		const claimed = new Set(episode.state.claimed);
 		return this.deps.store
 			.getRunningSessions()
-			.some((s) => claimed.has(s.execution_id));
+			.some((s) => isAutoMigratable(s) && claimed.has(s.execution_id));
 	}
 
 	/**
@@ -188,13 +193,29 @@ export class ServerLossCoordinator {
 	async check(): Promise<ServerLossCheckResult> {
 		const wasFirst = this.firstCheck;
 		this.firstCheck = false;
-		const running = this.deps.store.getRunningSessions().filter(isTmuxBacked);
+		const allRunning = this.deps.store
+			.getRunningSessions()
+			.filter(isTmuxBacked);
+		const running = allRunning.filter(isAutoMigratable);
+		const nonMigratableIds = allRunning
+			.filter((session) => !isAutoMigratable(session))
+			.map((session) => session.execution_id);
 		const heldExecutionIds = new Set<string>();
 
 		// Completion check: the episode is over when the ticket landed, every
 		// owed Lead is either notified or terminally failed, and nothing claimed
 		// still runs. An episode still OWING side effects is kept and replayed.
 		let ledger = this.deps.store.getServerLossEpisode();
+		if (ledger) {
+			const claimed = ledger.state.claimed.filter((executionId) => {
+				const session = this.deps.store.getSession(executionId);
+				return !session || isAutoMigratable(session);
+			});
+			if (claimed.length !== ledger.state.claimed.length) {
+				ledger.state.claimed = claimed;
+				this.deps.store.setServerLossEpisode(ledger.signature, ledger.state);
+			}
+		}
 		if (ledger && this.episodeComplete(ledger.state, running)) {
 			this.deps.store.clearServerLossEpisode();
 			ledger = undefined;
@@ -205,10 +226,11 @@ export class ServerLossCoordinator {
 		// tmux-backed execution is held and no migration side effect runs.
 		const activeHolds = this.deps.store.listActiveTmuxHolds();
 		if (activeHolds.length > 0 && this.deps.inspectSocket) {
+			for (const id of nonMigratableIds) heldExecutionIds.add(id);
 			try {
 				for (const hold of activeHolds) {
 					for (const id of hold.affectedExecutionIds) {
-						if (running.some((session) => session.execution_id === id)) {
+						if (allRunning.some((session) => session.execution_id === id)) {
 							heldExecutionIds.add(id);
 						}
 					}
@@ -228,7 +250,10 @@ export class ServerLossCoordinator {
 				);
 				return checkResult(
 					[],
-					running.map((session) => session.execution_id),
+					[
+						...heldExecutionIds,
+						...running.map((session) => session.execution_id),
+					],
 				);
 			}
 			ledger = this.deps.store.getServerLossEpisode();
@@ -261,7 +286,7 @@ export class ServerLossCoordinator {
 						);
 						return checkResult(
 							[],
-							running.map((session) => session.execution_id),
+							allRunning.map((session) => session.execution_id),
 						);
 					}
 					if (inspection.verdict === "dead" && inspection.scanComplete) {
@@ -270,14 +295,20 @@ export class ServerLossCoordinator {
 						const rescued = await this.deps
 							.recoverSocket?.()
 							.catch(() => false);
-						if (rescued) return checkResult([], []);
+						if (rescued) return checkResult([], heldExecutionIds);
 						const hold = this.openHold(inspection, running);
 						await this.emitHoldAlerts(hold);
-						return checkResult([], hold.affectedExecutionIds);
+						return checkResult(
+							[],
+							[...nonMigratableIds, ...hold.affectedExecutionIds],
+						);
 					} else {
 						const hold = this.openHold(inspection, running);
 						await this.emitHoldAlerts(hold);
-						return checkResult([], hold.affectedExecutionIds);
+						return checkResult(
+							[],
+							[...nonMigratableIds, ...hold.affectedExecutionIds],
+						);
 					}
 				} else {
 					// Legacy/test path: pre-FLY-1285 proof was probeServer=down.
@@ -308,7 +339,7 @@ export class ServerLossCoordinator {
 				} catch {
 					return checkResult(
 						[],
-						running.map((session) => session.execution_id),
+						allRunning.map((session) => session.execution_id),
 					);
 				}
 				if (
@@ -318,7 +349,10 @@ export class ServerLossCoordinator {
 				) {
 					const hold = this.openHold(inspection, running);
 					await this.emitHoldAlerts(hold);
-					return checkResult([], hold.affectedExecutionIds);
+					return checkResult(
+						[],
+						[...nonMigratableIds, ...hold.affectedExecutionIds],
+					);
 				}
 			}
 			const signature = `tmux-server-lost:${this.now()}`;
@@ -339,6 +373,7 @@ export class ServerLossCoordinator {
 			ledger = { signature, state };
 		}
 
+		for (const id of nonMigratableIds) heldExecutionIds.add(id);
 		const state = ledger.state;
 		const claimed = new Set(state.claimed);
 		let stateDirty = false;
@@ -572,7 +607,10 @@ export class ServerLossCoordinator {
 
 		const affected = hold.affectedExecutionIds
 			.map((id) => this.deps.store.getSession(id))
-			.filter((session): session is Session => session?.status === "running");
+			.filter(
+				(session): session is Session =>
+					session?.status === "running" && isAutoMigratable(session),
+			);
 		if (affected.length === 0) {
 			this.resolveHold(hold, heldExecutionIds);
 			return;
@@ -659,6 +697,13 @@ export class ServerLossCoordinator {
 		inspection: TmuxSocketInspection,
 		heldExecutionIds: Set<string>,
 	): Promise<void> {
+		claimedExecutionIds = claimedExecutionIds.filter((executionId) => {
+			const session = this.deps.store.getSession(executionId);
+			if (!session || isAutoMigratable(session)) return true;
+			heldExecutionIds.add(executionId);
+			return false;
+		});
+		if (claimedExecutionIds.length === 0) return;
 		this.deps.store.getOrCreateActiveTmuxHold(hold.normalizedSocketPath, {
 			incidentId: hold.incidentId,
 			reason: hold.currentReason,
@@ -686,7 +731,7 @@ export class ServerLossCoordinator {
 			leadIdsByExecutionId,
 		});
 		if (transitioned) {
-			for (const id of hold.affectedExecutionIds) heldExecutionIds.delete(id);
+			for (const id of claimedExecutionIds) heldExecutionIds.delete(id);
 			await this.deps.resolveHoldAlert?.(hold.incidentId);
 		}
 	}
@@ -698,7 +743,10 @@ export class ServerLossCoordinator {
 				hold.incidentId,
 			)
 		) {
-			for (const id of hold.affectedExecutionIds) heldExecutionIds.delete(id);
+			for (const id of hold.affectedExecutionIds) {
+				const session = this.deps.store.getSession(id);
+				if (!session || isAutoMigratable(session)) heldExecutionIds.delete(id);
+			}
 			void this.deps
 				.resolveHoldAlert?.(hold.incidentId)
 				.catch((error) =>

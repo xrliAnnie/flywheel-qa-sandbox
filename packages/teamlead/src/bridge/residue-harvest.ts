@@ -8,12 +8,15 @@
 
 import type { Session } from "../StateStore.js";
 import type { ProvenDeadTmuxTarget } from "./commdb-session-prune.js";
+import type { PaneLossFaceOutcome } from "./pane-loss-reconcile.js";
 
 export type ResidueHarvestPassOutcome = "completed" | "skipped_in_flight";
 
 export interface ResidueHarvester {
 	runFullPass(): Promise<ResidueHarvestPassOutcome>;
+	runPaneLossPass(): Promise<ResidueHarvestPassOutcome>;
 	reapTarget(session: Session): Promise<boolean>;
+	lastPaneLossOutcome(): PaneLossFaceOutcome | undefined;
 }
 
 export interface ResidueHarvesterDeps {
@@ -28,6 +31,7 @@ export interface ResidueHarvesterDeps {
 		projectName: string,
 		provenDeadTargets: readonly ProvenDeadTmuxTarget[],
 	) => Promise<unknown>;
+	harvestPaneLoss: (projectName: string) => Promise<PaneLossFaceOutcome>;
 	reapStateStoreGhost: (session: Session) => Promise<boolean>;
 	log?: (message: string) => void;
 }
@@ -36,6 +40,7 @@ export function createResidueHarvester(
 	deps: ResidueHarvesterDeps,
 ): ResidueHarvester {
 	let inFlight = false;
+	let lastPaneLoss: PaneLossFaceOutcome | undefined;
 	const log = deps.log ?? ((message: string) => console.warn(message));
 	const projectNames = [...new Set(deps.projectNames)];
 
@@ -43,6 +48,9 @@ export function createResidueHarvester(
 		async runFullPass() {
 			if (inFlight) return "skipped_in_flight";
 			inFlight = true;
+			lastPaneLoss = undefined;
+			let aggregatePaneLoss: PaneLossFaceOutcome = "ran";
+			let paneLossErrored = false;
 			try {
 				for (const projectName of projectNames) {
 					if (deps.commDbFsmEnabled) {
@@ -69,7 +77,45 @@ export function createResidueHarvester(
 							`[residue-harvest] StateStore pass failed for ${projectName} (non-fatal): ${(err as Error).message}`,
 						);
 					}
+					try {
+						const outcome = await deps.harvestPaneLoss(projectName);
+						if (aggregatePaneLoss === "ran" && outcome !== "ran") {
+							aggregatePaneLoss = outcome;
+						}
+					} catch (err) {
+						paneLossErrored = true;
+						log(
+							`[residue-harvest] pane-loss pass failed for ${projectName} (non-fatal): ${(err as Error).message}`,
+						);
+					}
 				}
+				lastPaneLoss = paneLossErrored ? undefined : aggregatePaneLoss;
+				return "completed";
+			} finally {
+				inFlight = false;
+			}
+		},
+
+		async runPaneLossPass() {
+			if (inFlight) return "skipped_in_flight";
+			inFlight = true;
+			lastPaneLoss = undefined;
+			let aggregatePaneLoss: PaneLossFaceOutcome = "ran";
+			try {
+				for (const projectName of projectNames) {
+					try {
+						const outcome = await deps.harvestPaneLoss(projectName);
+						if (aggregatePaneLoss === "ran" && outcome !== "ran") {
+							aggregatePaneLoss = outcome;
+						}
+					} catch (err) {
+						log(
+							`[residue-harvest] pane-loss pass failed for ${projectName} (non-fatal): ${(err as Error).message}`,
+						);
+						return "completed";
+					}
+				}
+				lastPaneLoss = aggregatePaneLoss;
 				return "completed";
 			} finally {
 				inFlight = false;
@@ -89,6 +135,10 @@ export function createResidueHarvester(
 			} finally {
 				inFlight = false;
 			}
+		},
+
+		lastPaneLossOutcome() {
+			return lastPaneLoss;
 		},
 	};
 }

@@ -199,6 +199,17 @@ export class WorkflowEngineDispatcher {
 			: fallback;
 	}
 
+	private probeTerminalLaunchLiveness(
+		executionId: string,
+		projectName: string,
+	): Promise<GeneralizedLaunchLiveness> {
+		return this.options.probeLaunchLiveness
+			? this.probeLaunchLiveness(executionId, projectName)
+			: probeGeneralizedLaunchLiveness(executionId, projectName, {
+					allowMissingTargetHostAbsence: true,
+				});
+	}
+
 	constructor(private readonly options: WorkflowEngineDispatcherOptions) {
 		this.env = options.env ?? process.env;
 		this.stateRoot =
@@ -694,7 +705,7 @@ export class WorkflowEngineDispatcher {
 		>;
 		try {
 			deliveries = this.options.store.listWorkflowReworkDeliveries({
-				states: ["pending", "turn_granted"],
+				states: ["pending", "turn_granted", "held"],
 			});
 		} catch (error) {
 			result.held += 1;
@@ -710,6 +721,63 @@ export class WorkflowEngineDispatcher {
 			const run = request
 				? this.options.store.getWorkflowRun(request.run_id)
 				: undefined;
+			if (
+				delivery.state === "held" &&
+				request &&
+				run?.engine_owned === 1 &&
+				run.status === "held" &&
+				delivery.last_error === "persisted_target_missing"
+			) {
+				const route = this.options.store.getLatestWorkflowReworkRoute(
+					delivery.request_id,
+				);
+				if (!route) {
+					result.held += 1;
+					continue;
+				}
+				let liveness: GeneralizedLaunchLiveness;
+				try {
+					liveness = await this.probeTerminalLaunchLiveness(
+						route.preferred_actor_execution_id,
+						run.project_name,
+					);
+				} catch (error) {
+					result.held += 1;
+					this.log(
+						`workflow rework pane-loss probe held for ${delivery.request_id}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					continue;
+				}
+				if (liveness !== "dead") {
+					result.held += 1;
+					continue;
+				}
+				let materialized: { ok: boolean; reason?: string };
+				try {
+					materialized =
+						this.options.store.materializeWorkflowReworkReplacement({
+							requestId: delivery.request_id,
+							deadExecutionId: route.preferred_actor_execution_id,
+							newExecutionId: randomUUID(),
+							reason: "persisted_target_missing_and_dead_probe",
+							observedAt: this.now().toISOString(),
+							recoverHeldPaneLoss: true,
+						});
+				} catch (error) {
+					result.held += 1;
+					this.log(
+						`workflow held rework recovery failed for ${delivery.request_id}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					continue;
+				}
+				if (!materialized.ok) {
+					result.held += 1;
+					this.log(
+						`workflow held rework recovery failed for ${delivery.request_id}: ${materialized.reason}`,
+					);
+				}
+				continue;
+			}
 			if (
 				!request ||
 				!run ||
@@ -1341,7 +1409,7 @@ export class WorkflowEngineDispatcher {
 					}
 					let liveness: GeneralizedLaunchLiveness;
 					try {
-						liveness = await this.probeLaunchLiveness(
+						liveness = await this.probeTerminalLaunchLiveness(
 							node.execution_id,
 							run.project_name,
 						);

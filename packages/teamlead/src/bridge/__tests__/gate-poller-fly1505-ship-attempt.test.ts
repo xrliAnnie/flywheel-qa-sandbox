@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	commDbPath: "",
 	sendRunnerWake: vi.fn(async () => ({ ok: true })),
+	liveness: "alive" as "alive" | "absent",
+	serverStartTime: "1722700001",
+	alert: vi.fn(async () => ({ sent: true })),
 }));
 
 vi.mock("../session-capture.js", () => ({
@@ -22,7 +25,12 @@ vi.mock("../tmux-lookup.js", () => ({
 		kind: "found",
 		target: { tmuxWindow: "runner-flywheel:@1505" },
 	}),
-	probeRunnerProcessLiveness: async () => "alive",
+	probeRunnerProcessLiveness: async () => mocks.liveness,
+	discoverTmuxTargetByExecutionId: async () => ({ kind: "missing" }),
+	probeTmuxServerStartTime: async () => ({
+		kind: "found",
+		startTime: mocks.serverStartTime,
+	}),
 }));
 
 import { GatePoller, type GatePollerConfig } from "../gate-poller.js";
@@ -52,11 +60,26 @@ function staleSession(sessionParams?: string) {
 function makePoller(session: ReturnType<typeof staleSession>): GatePoller {
 	return new GatePoller({
 		pollIntervalMs: 3_000,
-		projects: [],
+		projects: [
+			{
+				projectName: "flywheel",
+				projectRoot: "/tmp/flywheel",
+				leads: [
+					{
+						agentId: "flywheel-eng-lead",
+						chatChannel: "thread",
+						match: { labels: [] },
+					},
+				],
+			},
+		],
 		store: {
 			getActiveSessions: () => [session],
+			getSession: () => session,
+			insertEvent: vi.fn(() => true),
 		} as unknown as GatePollerConfig["store"],
 		runtimeRegistry: {} as GatePollerConfig["runtimeRegistry"],
+		leadAlertSink: { alert: mocks.alert },
 	});
 }
 
@@ -69,6 +92,9 @@ describe("FLY-1505 GatePoller same-head ship-attempt suppression", () => {
 		mkdirSync(dirname(mocks.commDbPath), { recursive: true });
 		new CommDB(mocks.commDbPath).close();
 		mocks.sendRunnerWake.mockClear();
+		mocks.alert.mockClear();
+		mocks.liveness = "alive";
+		mocks.serverStartTime = "1722700001";
 	});
 
 	afterEach(() => {
@@ -112,5 +138,59 @@ describe("FLY-1505 GatePoller same-head ship-attempt suppression", () => {
 			makePoller(staleSession()) as unknown as PrivatePoller
 		).staleApprovedShipReconcilePass();
 		expect(mocks.sendRunnerWake).toHaveBeenCalledOnce();
+	});
+
+	it("classifies superseded-generation absence as dead once and stops re-wake noise", async () => {
+		mocks.liveness = "absent";
+		const session = staleSession(
+			JSON.stringify({
+				pane_loss_generation: {
+					socket_path: "/tmp/tmux-501/default",
+					server_start_time: "1722700000",
+				},
+			}),
+		);
+		const poller = makePoller(session) as unknown as PrivatePoller;
+
+		await poller.staleApprovedShipReconcilePass();
+		await poller.staleApprovedShipReconcilePass();
+
+		expect(mocks.sendRunnerWake).not.toHaveBeenCalled();
+		expect(mocks.alert).toHaveBeenCalledOnce();
+	});
+
+	it("keeps same-generation absence fail-open to the idempotent re-wake", async () => {
+		mocks.liveness = "absent";
+		mocks.serverStartTime = "1722700000";
+		const session = staleSession(
+			JSON.stringify({
+				pane_loss_generation: {
+					socket_path: "/tmp/tmux-501/default",
+					server_start_time: "1722700000",
+				},
+			}),
+		);
+
+		await (
+			makePoller(session) as unknown as PrivatePoller
+		).staleApprovedShipReconcilePass();
+
+		expect(mocks.sendRunnerWake).toHaveBeenCalledOnce();
+		expect(mocks.alert).not.toHaveBeenCalled();
+	});
+
+	it("never classifies a Codex tmux absence as dead", async () => {
+		mocks.liveness = "absent";
+		const session = {
+			...staleSession(),
+			adapter_type: "codex-tmux",
+		};
+
+		await (
+			makePoller(session) as unknown as PrivatePoller
+		).staleApprovedShipReconcilePass();
+
+		expect(mocks.sendRunnerWake).toHaveBeenCalledOnce();
+		expect(mocks.alert).not.toHaveBeenCalled();
 	});
 });

@@ -85,6 +85,10 @@ import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import type { MergedGateGuard } from "./merged-gate-guard.js";
 import { decideMilestoneReport } from "./milestone-report-policy.js";
+import {
+	isAutoMigratableClaudeTmux,
+	parsePaneLossGenerationParams,
+} from "./pane-loss-reconcile.js";
 import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import {
@@ -101,7 +105,12 @@ import {
 	reconcileStaleApprovedShip,
 	shipAttemptFailedSuppressedHead,
 } from "./stale-approved-ship-reconciler.js";
-import { lookupTmuxTarget, probeRunnerProcessLiveness } from "./tmux-lookup.js";
+import {
+	discoverTmuxTargetByExecutionId,
+	lookupTmuxTarget,
+	probeRunnerProcessLiveness,
+	probeTmuxServerStartTime,
+} from "./tmux-lookup.js";
 import {
 	askHygieneEnabled,
 	runZombieGateHygiene,
@@ -3014,12 +3023,37 @@ export class GatePoller {
 			backoff: this.staleShipRewakeBackoff,
 			deadAlerted: this.staleShipDeadAlerted,
 			probe: async (s) => {
+				if (!isAutoMigratableClaudeTmux(s.adapter_type)) {
+					return "indeterminate";
+				}
 				const target = lookupTmuxTarget(s.execution_id, s.project_name);
-				if (target.kind !== "found") return "indeterminate";
-				const verdict = await probeRunnerProcessLiveness(
-					target.target.tmuxWindow,
-				);
-				return classifyStaleShipRunnerLiveness(verdict);
+				if (target.kind === "error") return "indeterminate";
+				if (target.kind === "found") {
+					const verdict = await probeRunnerProcessLiveness(
+						target.target.tmuxWindow,
+					);
+					const classified = classifyStaleShipRunnerLiveness(verdict);
+					if (classified !== "indeterminate") return classified;
+					if (verdict === "indeterminate") return "indeterminate";
+				}
+				const discovery = await discoverTmuxTargetByExecutionId(s.execution_id);
+				if (discovery.kind === "found") {
+					const verdict = await probeRunnerProcessLiveness(
+						discovery.tmuxWindow,
+					);
+					const classified = classifyStaleShipRunnerLiveness(verdict);
+					if (classified !== "indeterminate") return classified;
+					if (verdict === "indeterminate") return "indeterminate";
+				} else if (discovery.kind !== "missing") {
+					return "indeterminate";
+				}
+				const generation = parsePaneLossGenerationParams(s.session_params);
+				if (!generation) return "indeterminate";
+				const current = await probeTmuxServerStartTime(generation.socket_path);
+				return current.kind === "found" &&
+					current.startTime !== generation.server_start_time
+					? "dead"
+					: "indeterminate";
 			},
 			reWake: async (s) => {
 				const dbPath = defaultGetCommDbPath(s.project_name);
@@ -3034,7 +3068,11 @@ export class GatePoller {
 						this.config.store,
 						db,
 						s.execution_id,
-						{ issue_id: s.issue_id, project_name: s.project_name },
+						{
+							issue_id: s.issue_id,
+							project_name: s.project_name,
+							review_question_id: s.review_question_id,
+						},
 						"approval_wake",
 						{ questionId: s.review_question_id },
 					);
@@ -3043,6 +3081,14 @@ export class GatePoller {
 				}
 			},
 			alertDead: async (s) => {
+				const current = this.config.store.getSession(s.execution_id);
+				if (
+					current?.status !== "approved_to_ship" ||
+					current.review_question_id !== s.review_question_id ||
+					current.pr_head_sha !== s.pr_head_sha
+				) {
+					return false;
+				}
 				console.warn(
 					`[GatePoller] FLY-799: approved_to_ship runner ${s.execution_id} (issue ${s.issue_id}) appears DEAD while stranded post-approval — founder approved but the runner cannot self-ship. Deferring to FLY-795 (durable resume).`,
 				);

@@ -814,6 +814,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Work-kind dispatch input rejected";
 		case "stale_approved_ship_dead":
 			return "Approved ship runner is dead";
+		case "runner_pane_loss":
+			return "Runner pane/body ownership lost";
 		case "ship_attempt_failed":
 			return "Founder-approved ship attempt failed";
 		// FLY-195: never emitted by LeadWatchdog (the stuck-runner detector owns
@@ -1062,6 +1064,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A fresh work-kind dispatch was rejected because an explicit category, tier, routing override, or template override was invalid. Correct the request and dispatch again; the dedup key in the notice identifies retries of the same input.";
 		case "stale_approved_ship_dead":
 			return "An approved_to_ship runner was proven dead through its exact tmux target. Resume the execution through the durable recovery path; this watchdog never self-ships.";
+		case "runner_pane_loss":
+			return "A runner's recorded tmux body is missing. Follow the issue-thread recovery proposal; Flywheel does not automatically redispatch this session.";
 		case "ship_attempt_failed":
 			return "A founder-approved ship attempt failed or could not be tracked to completion. The approval remains valid; inspect the workflow and explicitly wake the runner before retrying.";
 		case "receipt_foundation_off":

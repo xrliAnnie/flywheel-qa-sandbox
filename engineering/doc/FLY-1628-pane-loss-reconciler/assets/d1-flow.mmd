@@ -1,0 +1,13 @@
+flowchart TD
+    subgraph BEFORE["现状:出事之后没人收账"]
+        A1["tmux server 死亡\n(全舰 runner 窗口一起消失)"] --> A2["账面仍写着 running / 等审批"]
+        A2 --> A3["2 小时以上无自愈\n系统还每 5 分钟去叫醒死体"]
+    end
+    subgraph AFTER["新设计:出生留凭证 · 事后按凭证收账"]
+        B0["runner 出生时\n把『当时的 tmux server 身份』\n存进自己的档案(凭证)"] --> B1["Bridge 例行对账\n(开机后 + 每小时,不加新闹钟)"]
+        B1 --> B2{"当前 server 身份\n== 凭证记录?"}
+        B2 -- "不等 = server 已换代\n旧窗口必已死" --> B3["claude 干活中的行\n自动转 failed + 在 issue 帖子里说明"]
+        B2 -- "不等 但行在等审批 / 是 Codex" --> B4["只发说明+恢复提案\n不动任何审批绑定,不自动重派"]
+        B2 -- "相等 = 同一代\n查无实据" --> B5["按安全合同只提醒,绝不动账"]
+    end
+    BEFORE -.修复.-> AFTER

@@ -7,8 +7,38 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	captureRunnerScrollback,
 	probeRunnerProcessLiveness,
+	probeTmuxServerStartTime,
 	type TmuxRunner,
 } from "../bridge/tmux-lookup.js";
+
+describe("probeTmuxServerStartTime (FLY-1628)", () => {
+	it("reads the selected socket's native tmux start_time", async () => {
+		const runner = vi.fn<TmuxRunner>(async () => ({ stdout: "1722700000\n" }));
+		expect(
+			await probeTmuxServerStartTime("/tmp/tmux-501/default", runner),
+		).toEqual({ kind: "found", startTime: "1722700000" });
+		expect(runner).toHaveBeenCalledWith([
+			"-S",
+			"/tmp/tmux-501/default",
+			"display-message",
+			"-p",
+			"#{start_time}",
+		]);
+	});
+
+	it("fails closed on command errors or malformed native output", async () => {
+		expect(
+			await probeTmuxServerStartTime("/tmp/tmux-501/default", async () => {
+				throw new Error("timeout");
+			}),
+		).toEqual({ kind: "indeterminate" });
+		expect(
+			await probeTmuxServerStartTime("/tmp/tmux-501/default", async () => ({
+				stdout: "not-a-time",
+			})),
+		).toEqual({ kind: "indeterminate" });
+	});
+});
 
 describe("probeRunnerProcessLiveness (FLY-720)", () => {
 	it("returns dead_pin when the window exists and every pane is a corpse", async () => {

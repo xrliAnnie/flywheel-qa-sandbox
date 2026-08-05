@@ -359,11 +359,15 @@ export interface AdapterExecutionContext {
 	 * before the agent is usable. The gateway-retry dispatcher binds this to its
 	 * durable launch claim so a post-crash replay can discover the live Runner by
 	 * execId and adopt it rather than re-driving (which would orphan it). Distinct
-	 * from `onTmuxWindowCreated` (viewer spawn, fired later). Best-effort.
+	 * from `onTmuxWindowCreated` (viewer spawn, fired later). For claude-tmux this
+	 * is a required launch fence: the callback must durably persist and re-read
+	 * the tmux generation tuple before the gated runner is released.
 	 */
 	onTmuxWindowOpened?: (info: {
 		baseSessionName: string;
 		windowId: string;
+		socketPath: string;
+		serverStartTime: string;
 	}) => void;
 	/**
 	 * FLY-245 R5 HIGH — the DURABLE "this Runner is committed to start" record.

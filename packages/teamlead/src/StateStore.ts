@@ -19553,6 +19553,7 @@ export class StateStore {
 		newExecutionId: string;
 		reason: string;
 		observedAt: string;
+		recoverHeldPaneLoss?: boolean;
 	}):
 		| {
 				ok: true;
@@ -19618,14 +19619,22 @@ export class StateStore {
 			const route = this.getLatestWorkflowReworkRoute(input.requestId);
 			const delivery = this.getWorkflowReworkDelivery(input.requestId);
 			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+			const deadSession = this.getSession(input.deadExecutionId);
+			const heldPaneLossRecovery =
+				input.recoverHeldPaneLoss === true &&
+				run?.status === "held" &&
+				delivery?.state === "held" &&
+				delivery.last_error === "persisted_target_missing" &&
+				isStateStoreIrreversibleTerminalForZombie(deadSession?.status);
 			if (
 				!request ||
 				!route ||
 				!delivery ||
 				!run ||
 				run.engine_owned !== 1 ||
-				run.status !== "active" ||
-				delivery.state !== "replacement_pending" ||
+				(!heldPaneLossRecovery &&
+					(run.status !== "active" ||
+						delivery.state !== "replacement_pending")) ||
 				delivery.route_revision !== route.revision ||
 				route.preferred_actor_execution_id !== input.deadExecutionId
 			) {
@@ -19644,6 +19653,30 @@ export class StateStore {
 			) {
 				result = { ok: false, reason: "rework_replacement_target_changed" };
 				return;
+			}
+			if (heldPaneLossRecovery) {
+				this.db.run(
+					"UPDATE workflow_run SET status = 'active' WHERE run_id = ? AND status = 'held'",
+					[request.run_id],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_rework_pane_loss_run_cas_failed");
+				}
+				this.db.run(
+					`UPDATE workflow_rework_delivery
+					    SET state = 'replacement_pending', last_error = ?, updated_at = ?
+					  WHERE request_id = ? AND route_revision = ? AND state = 'held'
+					    AND last_error = 'persisted_target_missing'`,
+					[
+						input.reason,
+						input.observedAt,
+						input.requestId,
+						route.revision,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_rework_pane_loss_delivery_cas_failed");
+				}
 			}
 			for (const table of [
 				"workflow_output_credential",
@@ -19744,7 +19777,6 @@ export class StateStore {
 				    AND state IN ('pending','active')`,
 				[nextRevision, input.observedAt, input.requestId, route.revision],
 			);
-			const session = this.getSession(input.deadExecutionId);
 			this.db.run(
 				`INSERT OR IGNORE INTO workflow_dead_execution_watch
 				   (dead_execution_id, run_id, node_id, attempt, new_execution_id,
@@ -19762,9 +19794,9 @@ export class StateStore {
 					JSON.stringify({
 						commitMarker: { state: "unknown" },
 						commDbMessageCount: null,
-						tmuxTarget: session?.tmux_session ?? null,
+						tmuxTarget: deadSession?.tmux_session ?? null,
 						tmuxOutputDigest: null,
-						sessionCommitCount: session?.commit_count ?? null,
+						sessionCommitCount: deadSession?.commit_count ?? null,
 					}),
 				],
 			);
@@ -19799,8 +19831,9 @@ export class StateStore {
 					newExecutionId: input.newExecutionId,
 					launchOrdinal,
 					routeRevision: nextRevision,
-					reason: input.reason,
-				},
+						reason: input.reason,
+						heldPaneLossRecovery,
+					},
 			});
 			result = {
 				ok: true,
