@@ -1,15 +1,14 @@
 ---
 issue: FLY-1572
 phase: implement
-phaseCursor: 0/5
-updated: 2026-08-05T17:44:20.932Z
-nextStep: "RC-6: add failing tests for shm fence, legacy source-family
-  preflight, bidirectional unread anchor, bounded inventory, and staging debris
-  cleanup"
+phaseCursor: 5/5
+updated: 2026-08-05T17:52:41.921Z
+nextStep: run six-database copy drill, targeted migration/rollback verification,
+  then full repository gates
 chunks: []
 pointers: {}
 ---
 
 # FLY-1572 progress
-**phase**: implement (0/5)
-**next**: RC-6: add failing tests for shm fence, legacy source-family preflight, bidirectional unread anchor, bounded inventory, and staging debris cleanup
+**phase**: implement (5/5)
+**next**: run six-database copy drill, targeted migration/rollback verification, then full repository gates
