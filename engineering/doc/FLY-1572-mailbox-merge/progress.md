@@ -1,14 +1,14 @@
 ---
 issue: FLY-1572
 phase: implement
-phaseCursor: 4/8
-updated: 2026-08-05T08:32:33.628Z
-nextStep: implement Runner mailbox lane; remove ordinary send/respond direct
-  wakes; then delete dead receipt chain
+phaseCursor: 5/8
+updated: 2026-08-05T09:13:31.184Z
+nextStep: implement bounded family archive + GC, then hard-cutover
+  migration/backup/rollback
 chunks: []
 pointers: {}
 ---
 
 # FLY-1572 progress
-**phase**: implement (4/8)
-**next**: implement Runner mailbox lane; remove ordinary send/respond direct wakes; then delete dead receipt chain
+**phase**: implement (5/8)
+**next**: implement bounded family archive + GC, then hard-cutover migration/backup/rollback
