@@ -286,24 +286,36 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 磁盘 preflight:源库 + WAL + 新表/log 峰值 + 备份 + refs ≈ 3× 现库,非只看 145MB。
 
 ### 8.2 迁移脚本(`scripts/migrate-fly1572-mailbox.ts`)
-- **停机窗 = quiesce 所有 writer**(不只 Bridge:所有 Lead/Runner/CLI 都直接写 comm.db)。runbook:停 Bridge → 停 Leads(舰队本来随 Bridge 重启波次管理)→ `fuser`/lsof 断言无进程持有 comm.db → `wal_checkpoint(TRUNCATE)` 全排干 → 备份 → 迁移 → 部署新 binary → 重启。任一步失败的停止点与回退动作逐条写明。
+- **停机窗 = quiesce 所有 writer,舰队级、跨全部生产库**(不只 Bridge:所有 Lead/Runner/CLI 都直接写 comm.db)。runbook(normative,R8 MEDIUM 3:混合态没有可重启的 binary —— 旧 binary 撞已迁库毒药、新 binary 撞未迁库 legacy fail-loud,§8.3 三态合同保证混合态起不来,这是防呆不是恢复路径):
+  1. 停 Bridge → 停 Leads(舰队本来随 Bridge 重启波次管理)→ `fuser`/lsof 断言无进程持有**任何一个**生产 comm.db;
+  2. 按 §12.C 清单**逐库** `wal_checkpoint(TRUNCATE)` 排干 → 备份 → 迁移 → 对账;**全部库迁完前舰队保持 quiesced**;
+  3. 任一库失败 → 舰队继续 quiesced,二选一**显式**恢复,禁止第三种:(a)修复后续跑剩余库(优先;已迁库的 completed marker 幂等跳过);(b)放弃本窗 —— 已迁库**全部**按 §8.4 回滚,复验 inventory 全为 legacy 态后,才允许重启旧 binary;
+  4. 全部目标库 completed marker + inventory 对账通过 → 部署新 binary → 重启舰队 → 冒烟。
+  任一步失败的停止点与回退动作逐条写明。
 - **单事务硬 cutover**:`BEGIN IMMEDIATE` 内完成 建表/索引/触发器 → 逐 type 迁移 → 全量 log 快照 → DROP 旧表 → 毒药墓碑 → 对账 → **completed marker 最后一条写入**(`mailbox_migration_meta`,含源行数快照与 schema_generation)。中途任何失败 = 整体 ROLLBACK,库回到未迁移态。幂等:completed 已在 → 校验后 no-op;每阶段 fault injection 测试。
-- **逐 type source-state 矩阵**(实施前在测试中全覆盖):
+- **lead_inbox 行状态分类优先级(R8 HIGH 2 + R9 HIGH 1:适用域 = 全部物理 `lead_inbox` 源行 —— 含折叠镜像行与 external 行,无豁免;`messages`-only 行**不走**此阶梯,它没有 processed_at/consumed_at/disposed_at/carrier 列、其 delivered_at 逐 type 语义不同,按下方 messages 各行映射;折叠对先用阶梯给 lead_inbox 镜像行定档,再套合行规则)**:
+  ① **settled 证据优先**:`processed_at IS NOT NULL OR disposed_at IS NOT NULL`(带 evidence)→ settlement 槽 + 该行绝不 QUEUED(external 行同律 —— 现行 external-lane 查询本就排除 processed,08-05 实测存在 1 行 processed-without-delivered external);
+  ② **consumed 历史次之**:`consumed_at IS NOT NULL` → log('migrated_history')(参与镜像折叠时见下方合行规则);
+  ③ **delivered-only(consumed/processed 皆空)按 carrier 分支**:carrier='inbox' → 逐行人工判定并记录(08-05 全机实测 1 行);carrier='external' → ACKED(external delivered 生命周期终态,对循环不可见);
+  ④ **三空按 carrier 分支**:carrier='inbox' → **真未读** QUEUED(唯一进「未读」口径的档);carrier='external' → 未 complete 且未 settle 的 external 行 QUEUED(08-05 实测 3 行;external 生命周期未完成,**不属「未读」口径**,恒等锚外单列对账)。
+  任何 `lead_inbox` 物理源行必须恰好落进一档;实施测试覆盖 question 镜像 × ack 镜像 × 普通 inbox × external 的 processed-only / delivered-only / consumed-only / 三空 交叉积 fixture。
+- **逐 type source-state 矩阵**(实施前在测试中全覆盖;涉及 `lead_inbox` 行的「状态」判定一律先过上方阶梯,messages-only 行按本矩阵各行映射):
 
 | 源 | 状态 | 去向 |
 | -- | -- | -- |
-| messages question(未过期未 terminal)× lead_inbox 镜像行(join ref_message_id) | 镜像 consumed / pending / 无镜像 | **合一行**:ACKED / QUEUED / QUEUED。**双身份各归其位:`id`=messages.id,`delivery_id`=镜像行 id(`question:<lead>:<qid>`);无镜像 → delivery_id 按同构规则生成**;两 id 迁移时 canonical compare |
-| messages ack_receipt(未读)× protocol 镜像行(`ack:<lead>:<receipt>`) | 同上 | **合一行** to_agent='bridge';`id`=messages.id,`delivery_id`=镜像 id |
+| messages question(未过期未 terminal)× lead_inbox 镜像行(join ref_message_id) | 镜像 settled / consumed / 真未读(三空)/ 无镜像 | **合一行**:settled→ACKED(见下方合行规则)/ consumed→ACKED / 三空→QUEUED / 无镜像→QUEUED。**双身份各归其位:`id`=messages.id,`delivery_id`=镜像行 id(`question:<lead>:<qid>`);无镜像 → delivery_id 按同构规则生成**;两 id 迁移时 canonical compare |
+| **合行规则:settled 镜像 × 活 messages 行**(08-05 实测 50 行,不能 abort-for-manual) | 镜像有 settle 证据、question 无 response 且未 terminal_disposed | 合行 state=**ACKED**(投递维度已由授权 settle 终局,不得再投),acked_at=COALESCE(consumed_at, settle 时间);settle 证据照写 settlement 槽(processed/disposed 各归各);relay_state 从 messages 行原样带走;**迁移不造答案** —— RPC 维度保持未答,与今天语义一致。专属 fixture |
+| messages ack_receipt(未读)× protocol 镜像行(`ack:<lead>:<receipt>`) | 同 question 行(先过全局优先级) | **合一行** to_agent='bridge';`id`=messages.id,`delivery_id`=镜像 id |
 | 其余全部行 | — | `delivery_id = id` |
 | messages instruction | read→ACKED;delivered 未读→**LEASED**;未投→QUEUED(retry_count 保留) |
 | messages response | delivered(已 consume)→ACKED;未→QUEUED |
 | messages progress | → log(event='progress') |
 | messages 过期/terminal 历史 | → log('migrated_history');**content_ref 非空的历史行同样先内嵌 bytes(base64)+hash 进 row_json、同事务建 GC intent**(R3 blocker 2 —— 不留 dangling 路径) |
-| lead_inbox external(chat/xdept) | 未 complete→QUEUED;delivered→ACKED;disposed→DEAD |
-| lead_inbox 其余 pending(inbox lane) | → QUEUED。**pending 的精确谓词 = 真未读三空条件**(§12.B1,issue 2026-08-05 迁移硬约束):`carrier='inbox' AND processed_at IS NULL AND consumed_at IS NULL AND delivered_at IS NULL`。灰区行不进 QUEUED:consumed_at NULL 但 processed_at 非空(已 settle)→ log('migrated_history') + settlement 槽;consumed_at NULL 但 delivered_at 非空且 carrier='inbox' 的孤例逐行人工判定(08-05 全机实测仅 1 行) |
+| lead_inbox external(chat/xdept) | 先过全局优先级:settled(processed/disposed)→ settlement 槽,不 QUEUED(processed-without-delivered 实测 1 行走这档);disposed→DEAD;delivered 未 settle→ACKED;**未 complete 且未 settle**(08-05 实测 3 行)→QUEUED |
+| lead_inbox 其余 pending(inbox lane) | → QUEUED。**pending 的精确谓词 = 真未读三空条件**(§12.B1,issue 2026-08-05 迁移硬约束):`carrier='inbox' AND processed_at IS NULL AND consumed_at IS NULL AND delivered_at IS NULL`。灰区处置见全局优先级 ①-③ |
 | lead_inbox frozen/quarantine/consumed 历史 | → log('migrated_history')(disposition 映射记录在 row_json)。**⚠️ 假未读陷阱**:`processed_at IS NULL` 单条件会把「送到了、消费了、只差销账」的行(08-05 全机实测 9,079 行:flywheel 8,630 / growth 301 / personal-assistant 122 / tidal-echo 23 / geoforge3d 3)当成未读搬进新库 —— 它们必须按 consumed 历史进 log,绝不 QUEUED |
 - **对账 = 覆盖记录合同,不是行数求和**:每个源物理行恰有一条覆盖记录(成为 mailbox 行 或 log 行);每个「逻辑投递」恰一行 mailbox(镜像对折算一)。**成为活 mailbox 行的源行同时写 `migration_snapshot` log 行**(row_json 全列)—— 被删旧列的值永不丢。log 幂等键 = `event_id UNIQUE`('migrated:<src>:<rowid>'),crash 重放 INSERT OR IGNORE + canonical 比对。
-- **未读集 id 恒等锚(issue 2026-08-05 验收锚,写进脚本终局对账 + QA 验收)**:迁移后 `mailbox` 中 `state='QUEUED' AND carrier='inbox'` 且源自 lead_inbox 的 id 集合,必须与旧库真未读集(上述三空谓词)**数量 + 逐 id 恒等**;不满足即整体 ROLLBACK。external QUEUED 行与 messages 来源行单列对账(不属「未读」口径)。
+- **未读集恒等锚 = 覆盖投影,不是裸 mailbox.id 比较(issue 2026-08-05 验收锚 + R8 BLOCKER 1 修正,写进脚本终局对账 + QA 验收)**:折叠镜像行的旧 lead_inbox id 落在 `delivery_id`(`mailbox.id` = messages.id),裸比 `mailbox.id` 集合会让正确迁移必挂。正确锚:旧库每条真未读(三空)inbox 行,经覆盖记录**恰有一条** `state='QUEUED' AND carrier='inbox'` 的 mailbox 行与之对应,且 **`delivery_id` = 旧行 id**;折叠镜像行另须 `mailbox.id` = 旧行 ref_message_id;非镜像行须 `id = delivery_id = 旧行 id`。恒等比较在「旧真未读 id 集合」与「QUEUED 行的 `delivery_id` 投影集合」之间做(数量 + 逐 id),不满足即整体 ROLLBACK。测试必含真未读 question-mirror 与 ack-mirror fixture(两 id 不同的行过锚)。external QUEUED 行与 messages 来源行单列对账(不属「未读」口径)。
 - **前置断言(fail-closed)**:pending batch=0、pending claim=0、candidates_json 全零(生产已实测为 0;非 0 即 abort 待人工处置)。**相邻通则(issue 2026-08-05)**:`chat-receipt pending = 0` 只覆盖 `chat:` 前缀、未 disposed 的 external 收据,`founder_msg:` / `lead_event:` / `question:` 三个 lane 结构上不在其定义域 —— runbook preflight 不得拿它当「旧库已清空」证据,quiesce 断言按 per-lane 计数逐一列出。
 
 ### 8.3 硬 cutover 守卫(无 flag;R2 blocker 3 修正)
@@ -373,4 +385,4 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 
 ### 12.C 多项目库迁移明确化
 
-迁移脚本按 `~/.flywheel/comm/<project>/comm.db` **逐库执行**(仅处理含 `lead_inbox` 表的库;无表的 QA 残库跳过并记录)。08-05 实测清单:flywheel 52,309(真未读 8)/ geoforge3d 36,831 / tidal-echo 2,861 / growth 868 / joycon-typeless 278 / personal-assistant 225 / sub 0 / test-slot-2·4 0。每库独立:备份 → 迁移 → 对账 → completed marker;任一库失败只回滚该库,runbook 里写明「部分完成」态的处置(未迁库继续被毒药前的旧 binary 语义约束 —— 因此**部署新 binary 必须在全部生产库迁移完成之后**,新 binary 三态 open 合同(§8.3)会把 legacy 库 fail-loud 挡下,天然防半迁移态跑飞)。生产快照与验收 5 以迁移时刻实测为准。
+迁移脚本按 `~/.flywheel/comm/<project>/comm.db` **逐库执行**(仅处理含 `lead_inbox` 表的库;无表的 QA 残库跳过并记录)。08-05 实测清单:flywheel 52,309(真未读 8)/ geoforge3d 36,831 / tidal-echo 2,861 / growth 868 / joycon-typeless 278 / personal-assistant 225 / sub 0 / test-slot-2·4 0。每库独立:备份 → 迁移 → 对账 → completed marker(库内事务原子性照 §8.2)。**部分失败的舰队级出口以 §8.2 runbook 第 3 步为准**(R8 MEDIUM 3):舰队保持 quiesced,显式二选一 —— 续跑剩余库(优先)或全量回滚已迁库后重启旧 binary;**部署新 binary 必须在全部生产库 completed marker + inventory 对账通过之后**,§8.3 三态 open 合同把混合态 fail-loud 挡死(防呆,非恢复路径)。生产快照与验收 5 以迁移时刻实测为准。
