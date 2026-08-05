@@ -134,6 +134,9 @@ function makeHarness(input: {
 		lease_expires_at: null,
 		route_revision: 1,
 		state: "pending",
+		hold_count: 0,
+		next_retry_at: null,
+		grant_started_at: null,
 		last_error: null,
 		updated_at: NOW,
 	};
@@ -189,6 +192,37 @@ function makeHarness(input: {
 			};
 			return { ok: true as const };
 		}),
+		settleWorkflowReworkFailure: vi.fn((failure) => {
+			if (
+				delivery.owner_id !== failure.ownerId ||
+				delivery.generation !== failure.generation
+			) {
+				return { ok: false as const, reason: "stale_delivery_owner" };
+			}
+			delivery = {
+				...delivery,
+				owner_id: null,
+				lease_expires_at: null,
+				hold_count: delivery.hold_count + 1,
+				last_error: failure.reason,
+			};
+			return {
+				ok: true as const,
+				holdCount: delivery.hold_count,
+				state: delivery.state as "pending" | "turn_granted",
+				nextRetryAt: null,
+			};
+		}),
+		markWorkflowReworkGrantStarted: vi.fn((grant) => {
+			if (
+				delivery.owner_id !== grant.ownerId ||
+				delivery.generation !== grant.generation
+			) {
+				return { ok: false as const, reason: "stale_delivery_owner" };
+			}
+			delivery = { ...delivery, grant_started_at: grant.now };
+			return { ok: true as const };
+		}),
 		advanceWorkflowReworkDelivery: vi.fn((advance) => {
 			if (
 				delivery.owner_id !== advance.ownerId ||
@@ -239,13 +273,17 @@ function makeHarness(input: {
 		activateActorForWake: vi.fn(async () => ({ ok: true })),
 		grantTurn: vi.fn(async () => ({ epoch: 4, grantedAt: NOW })),
 		wakeActor: vi.fn(async () => wakeResults.shift() ?? { ok: true }),
-		alertHold: vi.fn(async () => undefined),
 	};
 	const coordinator = new WorkflowReworkCoordinator({
 		store,
 		ownerId: "coordinator-a",
 		now: () => new Date(NOW),
 		effects,
+		resolveAlertIdentity: () => ({
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			leadResolution: "resolved",
+		}),
 		env: {
 			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
 			FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -290,7 +328,7 @@ describe("WorkflowReworkCoordinator", () => {
 		}
 	});
 
-	it("holds and alerts without probing or spawning when re-entry is disabled", async () => {
+	it("holds without probing, spawning, or an immediate alert when re-entry is disabled", async () => {
 		const h = makeHarness({ reentryEnabled: false });
 		await expect(h.coordinator.reconcile("rework-1")).resolves.toEqual({
 			kind: "held",
@@ -299,7 +337,6 @@ describe("WorkflowReworkCoordinator", () => {
 		expect(h.effects.probeRegistered).not.toHaveBeenCalled();
 		expect(h.effects.grantTurn).not.toHaveBeenCalled();
 		expect(h.effects.wakeActor).not.toHaveBeenCalled();
-		expect(h.effects.alertHold).toHaveBeenCalledOnce();
 		expect(h.getDelivery()).toMatchObject({
 			state: "pending",
 			last_error: "rework_reentry_disabled",

@@ -8482,6 +8482,16 @@ export async function startBridge(
 				store,
 				ownerId: `bridge:${process.pid}`,
 				env: process.env,
+				resolveAlertIdentity: (run) =>
+					resolveWorkflowRunAlertIdentity({
+						store,
+						projects,
+						defaultLeadAgentId: config.defaultLeadAgentId,
+						projectName: run.project_name,
+						issueId: run.issue_id,
+						runId: run.run_id,
+						log: (message) => console.warn(`[workflow-rework] ${message}`),
+					}),
 				effects: {
 					getActorSession: (executionId) =>
 						store.getSession(executionId) as PhaseSession | undefined,
@@ -8597,31 +8607,6 @@ export async function startBridge(
 							db.close();
 							issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
 						}
-					},
-					alertHold: async ({ session, requestId, reason }) => {
-						const projectName = session.project_name ?? "";
-						let leadId = config.defaultLeadAgentId;
-						try {
-							leadId = resolveLeadForIssue(
-								projects,
-								projectName,
-								parseJsonStringArray(
-									store.getSession(session.execution_id)?.issue_labels,
-								),
-							).lead.agentId;
-						} catch {
-							// Fall back to the configured Lead; durable request state remains authority.
-						}
-						await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
-							leadId,
-							projectName,
-							eventId: `workflow-rework-held:${requestId}:${reason}`,
-							eventType: "three_stage_stuck",
-							title: `Workflow rework held — ${session.issue_identifier ?? session.issue_id}`,
-							body: `Request ${requestId} could not safely re-enter actor ${session.execution_id}: ${reason}`,
-							severity: "warning",
-							sessionKey: session.execution_id,
-						});
 					},
 				},
 			});

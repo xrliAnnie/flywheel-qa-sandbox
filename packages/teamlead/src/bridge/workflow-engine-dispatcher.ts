@@ -199,6 +199,16 @@ export class WorkflowEngineDispatcher {
 			: fallback;
 	}
 
+	private reworkThresholdMs(
+		name: "FLYWHEEL_ENGINE_REWORK_ALERT_MS" | "FLYWHEEL_ENGINE_REWORK_HOLD_MS",
+		fallback: number,
+	): number {
+		const configured = Number(this.env[name]);
+		return Number.isFinite(configured) && configured > 0
+			? configured
+			: fallback;
+	}
+
 	private probeTerminalLaunchLiveness(
 		executionId: string,
 		projectName: string,
@@ -706,6 +716,7 @@ export class WorkflowEngineDispatcher {
 		try {
 			deliveries = this.options.store.listWorkflowReworkDeliveries({
 				states: ["pending", "turn_granted", "held"],
+				now: this.now().toISOString(),
 			});
 		} catch (error) {
 			result.held += 1;
@@ -880,12 +891,12 @@ export class WorkflowEngineDispatcher {
 	private reconcileWorkflowReworkStalls(): void {
 		const now = this.now();
 		const nowMs = now.getTime();
-		const alertMs = this.unlaunchedThresholdMs(
-			"FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS",
+		const alertMs = this.reworkThresholdMs(
+			"FLYWHEEL_ENGINE_REWORK_ALERT_MS",
 			10 * 60_000,
 		);
-		const holdMs = this.unlaunchedThresholdMs(
-			"FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS",
+		const holdMs = this.reworkThresholdMs(
+			"FLYWHEEL_ENGINE_REWORK_HOLD_MS",
 			60 * 60_000,
 		);
 		let deliveries: ReturnType<
@@ -900,6 +911,9 @@ export class WorkflowEngineDispatcher {
 			return;
 		}
 		for (const delivery of deliveries) {
+			// Retryable failures have their own 1/2/4/8-minute budget and terminal
+			// fifth strike. The legacy stall clock must not race that owner.
+			if (delivery.hold_count > 0) continue;
 			const request = this.options.store.getWorkflowReworkRequest(
 				delivery.request_id,
 			);

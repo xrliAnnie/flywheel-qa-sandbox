@@ -106,8 +106,8 @@ function admit(
 	});
 }
 
-async function createHeavyEngineRun(): Promise<StateStore> {
-	const store = await StateStore.create(":memory:");
+async function createHeavyEngineRun(dbPath = ":memory:"): Promise<StateStore> {
+	const store = await StateStore.create(dbPath);
 	const seed = loadBundledWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy",
 	);
@@ -390,6 +390,123 @@ describe("FLY-1423 stable workflow actor activations", () => {
 });
 
 describe("FLY-1423 durable unified rework request", () => {
+	it("rebuilds every legacy delivery state with budget columns exactly once", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1638-rework-migration-"));
+		roots.push(root);
+		const dbPath = join(root, "state.db");
+		const original = await createHeavyEngineRun(dbPath);
+		advanceHeavy(original, {
+			nodeId: "design",
+			attempt: 1,
+			executionId: "design-exec",
+			outcome: "design_done",
+			successorExecutionId: "implement-exec",
+		});
+		advanceHeavy(original, {
+			nodeId: "implement",
+			attempt: 1,
+			executionId: "implement-exec",
+			outcome: "implement_done",
+			successorExecutionId: "qa-exec",
+		});
+		const failed = advanceHeavy(original, {
+			nodeId: "qa",
+			attempt: 1,
+			executionId: "qa-exec",
+			outcome: "qa_fail",
+			subjectDigest: "a".repeat(40),
+		});
+		if (!failed.ok || !failed.reworkRequestId) {
+			throw new Error("migration rework request missing");
+		}
+		original.close();
+
+		const states = [
+			"pending",
+			"turn_granted",
+			"wake_delivered",
+			"replacement_pending",
+			"completed",
+			"held",
+		] as const;
+		const raw = new Database(dbPath);
+		raw.pragma("foreign_keys = OFF");
+		for (const [index, state] of states.entries()) {
+			const requestId = `legacy-${state}`;
+			raw
+				.prepare(
+					`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, founder_feedback_verbatim, requested_at)
+				 SELECT ?, run_id, ?, authority, source_node_id, source_attempt,
+				        base_revision, authority_context_json, authority_context_digest,
+				        founder_feedback_verbatim, requested_at
+				   FROM workflow_rework_request WHERE request_id = ?`,
+				)
+				.run(requestId, `legacy-source-${index}`, failed.reworkRequestId);
+			raw
+				.prepare(
+					`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 SELECT ?, revision, target_node_id, target_attempt,
+				        preferred_actor_execution_id, invalidation_scope_json,
+				        verification_policy_json, interpreted_by,
+				        interpretation_reason, created_at
+				   FROM workflow_rework_route_revision
+				  WHERE request_id = ? AND revision = 1`,
+				)
+				.run(requestId, failed.reworkRequestId);
+		}
+		raw.exec(`
+			DROP TABLE workflow_rework_delivery;
+			CREATE TABLE workflow_rework_delivery (
+				request_id TEXT PRIMARY KEY,
+				owner_id TEXT,
+				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+				lease_expires_at TEXT,
+				route_revision INTEGER NOT NULL CHECK (route_revision > 0),
+				state TEXT NOT NULL CHECK (state IN
+				 ('pending','turn_granted','wake_delivered','replacement_pending','completed','held')),
+				last_error TEXT,
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (request_id, route_revision)
+					REFERENCES workflow_rework_route_revision(request_id, revision)
+			);
+		`);
+		for (const state of states) {
+			raw
+				.prepare(
+					`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES (?, 1, ?, '2026-07-23T00:10:00.000Z')`,
+				)
+				.run(`legacy-${state}`, state);
+		}
+		raw.close();
+
+		for (let boot = 0; boot < 2; boot += 1) {
+			const migrated = await StateStore.create(dbPath);
+			for (const state of states) {
+				expect(
+					migrated.getWorkflowReworkDelivery(`legacy-${state}`),
+				).toMatchObject({
+					state,
+					hold_count: 0,
+					next_retry_at: null,
+					grant_started_at: null,
+				});
+			}
+			const db = (migrated as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			expect(db.pragma("foreign_key_check")).toEqual([]);
+			migrated.close();
+		}
+	});
+
 	it("reopens a completed run into one idempotent operator rework attempt", async () => {
 		const store = await createHeavyEngineRun();
 		try {
@@ -580,6 +697,365 @@ describe("FLY-1423 durable unified rework request", () => {
 				generation: 2,
 				idempotentReplay: false,
 			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("backs off retryable rework failures and stops at five with one Lead alert", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			advanceHeavy(store, {
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-exec",
+				outcome: "design_done",
+				successorExecutionId: "implement-exec",
+			});
+			advanceHeavy(store, {
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "implement-exec",
+				outcome: "implement_done",
+				successorExecutionId: "qa-exec",
+			});
+			const failed = advanceHeavy(store, {
+				nodeId: "qa",
+				attempt: 1,
+				executionId: "qa-exec",
+				outcome: "qa_fail",
+				subjectDigest: "a".repeat(40),
+			});
+			if (!failed.ok || !failed.reworkRequestId) {
+				throw new Error("rework request not returned");
+			}
+			const times = [
+				"2026-07-23T00:11:00.000Z",
+				"2026-07-23T00:12:00.000Z",
+				"2026-07-23T00:14:00.000Z",
+				"2026-07-23T00:18:00.000Z",
+				"2026-07-23T00:26:00.000Z",
+			];
+			const expectedNext = [
+				"2026-07-23T00:12:00.000Z",
+				"2026-07-23T00:14:00.000Z",
+				"2026-07-23T00:18:00.000Z",
+				"2026-07-23T00:26:00.000Z",
+			];
+			for (let index = 0; index < times.length; index += 1) {
+				const claimed = store.claimWorkflowReworkDelivery({
+					requestId: failed.reworkRequestId,
+					ownerId: "coordinator",
+					now: times[index]!,
+					leaseExpiresAt: new Date(
+						Date.parse(times[index]!) + 30_000,
+					).toISOString(),
+				});
+				expect(claimed).toMatchObject({ ok: true });
+				if (!claimed.ok) throw new Error(claimed.reason);
+				const settled = store.settleWorkflowReworkFailure({
+					requestId: failed.reworkRequestId,
+					ownerId: "coordinator",
+					generation: claimed.generation,
+					reason: "actor_session_missing",
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now: times[index]!,
+				});
+				expect(settled).toMatchObject({
+					ok: true,
+					holdCount: index + 1,
+					state: index === 4 ? "needs_lead" : "pending",
+				});
+				if (index < 4) {
+					expect(settled).toMatchObject({ nextRetryAt: expectedNext[index] });
+					expect(
+						store.claimWorkflowReworkDelivery({
+							requestId: failed.reworkRequestId,
+							ownerId: "too-early",
+							now: new Date(Date.parse(expectedNext[index]!) - 1).toISOString(),
+							leaseExpiresAt: new Date(
+								Date.parse(expectedNext[index]!) + 30_000,
+							).toISOString(),
+						}),
+					).toEqual({ ok: false, reason: "delivery_backoff" });
+				}
+			}
+			expect(
+				store.getWorkflowReworkDelivery(failed.reworkRequestId),
+			).toMatchObject({
+				state: "needs_lead",
+				hold_count: 5,
+				next_retry_at: null,
+			});
+			expect(store.getWorkflowRun("run-heavy")?.status).toBe("held");
+			expect(
+				store.getWorkflowRunNode("run-heavy", "implement", 2),
+			).toMatchObject({ state: "superseded" });
+			expect(
+				store.getWorkflowReworkVerificationPath(failed.reworkRequestId),
+			).toMatchObject({ state: "needs_lead" });
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+			expect(
+				store.listWorkflowAlertOutbox()[0]?.payload.metadata.workflowEngine,
+			).toMatchObject({
+				runId: "run-heavy",
+				disposition: "rework_retry_exhausted",
+			});
+			expect(
+				store.listWorkflowReworkDeliveries({ states: ["needs_lead"] }),
+			).toHaveLength(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("revokes an admitted activation before grant, but retains ambiguous grant-started work", async () => {
+		for (const grantStarted of [false, true]) {
+			const store = await createHeavyEngineRun();
+			try {
+				advanceHeavy(store, {
+					nodeId: "design",
+					attempt: 1,
+					executionId: "design-exec",
+					outcome: "design_done",
+					successorExecutionId: "implement-exec",
+				});
+				advanceHeavy(store, {
+					nodeId: "implement",
+					attempt: 1,
+					executionId: "implement-exec",
+					outcome: "implement_done",
+					successorExecutionId: "qa-exec",
+				});
+				const failed = advanceHeavy(store, {
+					nodeId: "qa",
+					attempt: 1,
+					executionId: "qa-exec",
+					outcome: "qa_fail",
+					subjectDigest: "a".repeat(40),
+				});
+				if (!failed.ok || !failed.reworkRequestId) {
+					throw new Error("rework request not returned");
+				}
+				const admission = store.admitGeneralizedWorkflowExecution({
+					runId: "run-heavy",
+					nodeId: "implement",
+					executionId: "implement-exec",
+					attempt: 2,
+					activationId: `activation-budget-${grantStarted}`,
+					activationMode: "wake",
+					reworkRequestId: failed.reworkRequestId,
+					expiresAt: "2026-07-23T02:00:00.000Z",
+					absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+					now: "2026-07-23T00:10:00.000Z",
+					env: enabled,
+				});
+				expect(admission).toMatchObject({ ok: true });
+				const raw = (store as unknown as { db: { raw: Database.Database } }).db
+					.raw;
+				raw
+					.prepare(
+						`INSERT INTO workflow_output_credential
+					   (activation_id, credential_hash, run_id, node_id, execution_id,
+					    attempt, issued_at, expires_at, absolute_deadline_at)
+					 VALUES (?, ?, 'run-heavy', 'implement', 'implement-exec', 2,
+					         '2026-07-23T00:10:00.000Z', '2026-07-23T02:00:00.000Z',
+					         '2026-07-24T00:00:00.000Z')`,
+					)
+					.run(
+						`activation-budget-${grantStarted}`,
+						`credential-budget-${grantStarted}`,
+					);
+
+				const times = [11, 12, 14, 18, 26].map(
+					(minute) => `2026-07-23T00:${minute}:00.000Z`,
+				);
+				for (const [index, now] of times.entries()) {
+					const claim = store.claimWorkflowReworkDelivery({
+						requestId: failed.reworkRequestId,
+						ownerId: "coordinator",
+						now,
+						leaseExpiresAt: new Date(Date.parse(now) + 30_000).toISOString(),
+					});
+					if (!claim.ok) throw new Error(claim.reason);
+					if (grantStarted && index === 0) {
+						expect(
+							store.markWorkflowReworkGrantStarted({
+								requestId: failed.reworkRequestId,
+								ownerId: "coordinator",
+								generation: claim.generation,
+								now,
+							}),
+						).toEqual({ ok: true });
+					}
+					expect(
+						store.settleWorkflowReworkFailure({
+							requestId: failed.reworkRequestId,
+							ownerId: "coordinator",
+							generation: claim.generation,
+							reason: "retryable_failure",
+							alertIdentity: {
+								leadId: "flywheel-eng-lead",
+								projectName: "flywheel",
+								leadResolution: "resolved",
+							},
+							now,
+						}),
+					).toMatchObject({ ok: true, holdCount: index + 1 });
+				}
+
+				expect(
+					store.getWorkflowRunNode("run-heavy", "implement", 2),
+				).toMatchObject({ state: grantStarted ? "admitted" : "superseded" });
+				expect(
+					store.getWorkflowReworkVerificationPath(failed.reworkRequestId),
+				).toMatchObject({ state: grantStarted ? "pending" : "needs_lead" });
+				expect(
+					raw
+						.prepare(
+							"SELECT revoked FROM workflow_output_credential WHERE activation_id = ?",
+						)
+						.get(`activation-budget-${grantStarted}`),
+				).toEqual({ revoked: grantStarted ? 0 : 1 });
+			} finally {
+				store.close();
+			}
+		}
+	});
+
+	it("lets an operator quiesce a grant-started needs_lead attempt before minting its successor", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			advanceHeavy(store, {
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-exec",
+				outcome: "design_done",
+				successorExecutionId: "implement-exec",
+			});
+			advanceHeavy(store, {
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "implement-exec",
+				outcome: "implement_done",
+				successorExecutionId: "qa-exec",
+			});
+			const failed = advanceHeavy(store, {
+				nodeId: "qa",
+				attempt: 1,
+				executionId: "qa-exec",
+				outcome: "qa_fail",
+				subjectDigest: "a".repeat(40),
+			});
+			if (!failed.ok || !failed.reworkRequestId) {
+				throw new Error("rework request not returned");
+			}
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					runId: "run-heavy",
+					nodeId: "implement",
+					executionId: "implement-exec",
+					attempt: 2,
+					activationId: "activation-needs-lead",
+					activationMode: "wake",
+					reworkRequestId: failed.reworkRequestId,
+					expiresAt: "2026-07-23T02:00:00.000Z",
+					absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+					now: "2026-07-23T00:10:00.000Z",
+					env: enabled,
+				}),
+			).toMatchObject({ ok: true });
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			raw
+				.prepare(
+					`INSERT INTO workflow_output_credential
+				   (activation_id, credential_hash, run_id, node_id, execution_id,
+				    attempt, issued_at, expires_at, absolute_deadline_at)
+				 VALUES ('activation-needs-lead', 'credential-needs-lead', 'run-heavy',
+				         'implement', 'implement-exec', 2, '2026-07-23T00:10:00.000Z',
+				         '2026-07-23T02:00:00.000Z', '2026-07-24T00:00:00.000Z')`,
+				)
+				.run();
+			const times = [11, 12, 14, 18, 26].map(
+				(minute) => `2026-07-23T00:${minute}:00.000Z`,
+			);
+			for (const [index, now] of times.entries()) {
+				const claim = store.claimWorkflowReworkDelivery({
+					requestId: failed.reworkRequestId,
+					ownerId: "coordinator",
+					now,
+					leaseExpiresAt: new Date(Date.parse(now) + 30_000).toISOString(),
+				});
+				if (!claim.ok) throw new Error(claim.reason);
+				if (index === 0) {
+					store.markWorkflowReworkGrantStarted({
+						requestId: failed.reworkRequestId,
+						ownerId: "coordinator",
+						generation: claim.generation,
+						now,
+					});
+				}
+				store.settleWorkflowReworkFailure({
+					requestId: failed.reworkRequestId,
+					ownerId: "coordinator",
+					generation: claim.generation,
+					reason: "wake_failed",
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now,
+				});
+			}
+
+			const evidence = store
+				.listRunAttributedExecutions("run-heavy")
+				.map((executionId) => ({
+					executionId,
+					sessionStatus: null,
+					lifecycleRevision: null,
+					liveness: "dead" as const,
+					observedAt: "2026-07-23T00:26:30.000Z",
+				}));
+			const reopened = store.openOperatorRework({
+				runId: "run-heavy",
+				targetNodeId: "implement",
+				feedback: "retry after Lead inspection",
+				clientRequestId: "operator-needs-lead",
+				principal: "master",
+				evidence,
+				now: "2026-07-23T00:26:30.000Z",
+			});
+
+			expect(reopened).toMatchObject({ ok: true, targetAttempt: 3 });
+			expect(store.getWorkflowRun("run-heavy")).toMatchObject({
+				status: "active",
+				current_node_id: "implement",
+			});
+			expect(
+				store.getWorkflowRunNode("run-heavy", "implement", 2),
+			).toMatchObject({ state: "superseded" });
+			expect(
+				store.getWorkflowRunNode("run-heavy", "implement", 3),
+			).toMatchObject({ state: "pending" });
+			expect(
+				raw
+					.prepare(
+						"SELECT revoked FROM workflow_output_credential WHERE activation_id = 'activation-needs-lead'",
+					)
+					.get(),
+			).toEqual({ revoked: 1 });
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.filter((event) => event.kind === "rework_needs_lead_cleaned"),
+			).toHaveLength(1);
 		} finally {
 			store.close();
 		}

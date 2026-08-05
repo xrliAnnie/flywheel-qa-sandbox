@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import { WorkflowReworkCoordinator } from "../workflow-rework-coordinator.js";
@@ -154,6 +154,11 @@ async function createHarness() {
 		ownerId: "e2e-coordinator",
 		now: () => NOW,
 		env: WORKFLOW_ON,
+		resolveAlertIdentity: () => ({
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			leadResolution: "resolved",
+		}),
 		effects: {
 			getActorSession: (executionId) => store.getSession(executionId),
 			probeRegistered: async () => "alive",
@@ -192,7 +197,6 @@ async function createHarness() {
 				});
 				return { ok: true };
 			},
-			alertHold: vi.fn(async () => undefined),
 		},
 	});
 

@@ -1509,8 +1509,8 @@ describe("WorkflowEngineDispatcher", () => {
 		const fake = fakeStartDispatcher(store);
 		const env = {
 			...WORKFLOW_ON,
-			FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS: "1000",
-			FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS: "2000",
+			FLYWHEEL_ENGINE_REWORK_ALERT_MS: "1000",
+			FLYWHEEL_ENGINE_REWORK_HOLD_MS: "2000",
 		};
 		const reconcileWorkflowRework = vi.fn(async () => ({
 			kind: "busy" as const,
@@ -1541,6 +1541,62 @@ describe("WorkflowEngineDispatcher", () => {
 				.listWorkflowRunEvents("run-1")
 				.filter((event) => event.kind === "rework_activation_stalled_held"),
 		).toHaveLength(1);
+		store.close();
+	});
+
+	it("does not let the legacy stall timer race a budget-managed rework", async () => {
+		const store = await storeWithQaFailKickback();
+		const delivery = store.listWorkflowReworkDeliveries({
+			states: ["pending"],
+			now: "2026-07-16T00:11:00.000Z",
+		})[0];
+		if (!delivery) throw new Error("pending rework missing");
+		const claim = store.claimWorkflowReworkDelivery({
+			requestId: delivery.request_id,
+			ownerId: "budget-owner",
+			now: "2026-07-16T00:11:00.000Z",
+			leaseExpiresAt: "2026-07-16T00:11:30.000Z",
+		});
+		if (!claim.ok) throw new Error(claim.reason);
+		expect(
+			store.settleWorkflowReworkFailure({
+				requestId: delivery.request_id,
+				ownerId: "budget-owner",
+				generation: claim.generation,
+				reason: "actor_session_missing",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-16T00:11:00.000Z",
+			}),
+		).toMatchObject({ ok: true, holdCount: 1 });
+		const fake = fakeStartDispatcher(store);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_ENGINE_REWORK_ALERT_MS: "1000",
+				FLYWHEEL_ENGINE_REWORK_HOLD_MS: "2000",
+			},
+			now: () => new Date("2026-07-16T00:20:00.000Z"),
+			reconcileWorkflowRework: vi.fn(async () => ({ kind: "busy" as const })),
+			resolveRunAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			}),
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind.startsWith("rework_activation_stalled_")),
+		).toEqual([]);
 		store.close();
 	});
 
