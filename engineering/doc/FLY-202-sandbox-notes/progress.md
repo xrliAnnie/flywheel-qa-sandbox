@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 2/4
-updated: 2026-08-05T20:51:52.147Z
-nextStep: Request brainstorm approval
+phaseCursor: 3/4
+updated: 2026-08-05T20:53:04.517Z
+nextStep: Write implementation plan
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (2/4)
-**next**: Request brainstorm approval
+**phase**: design (3/4)
+**next**: Write implementation plan
