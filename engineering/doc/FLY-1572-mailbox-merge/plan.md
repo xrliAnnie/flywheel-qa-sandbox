@@ -320,13 +320,14 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
 ### 8.2 迁移脚本(`scripts/migrate-fly1572-mailbox.ts`)
 - **停机窗 = quiesce 所有 writer,舰队级、跨全部生产库**(不只 Bridge:所有 Lead/Runner/CLI 都直接写 comm.db)。runbook(normative,R8 MEDIUM 3:混合态没有可重启的 binary —— 旧 binary 撞已迁库毒药、新 binary 撞未迁库 legacy fail-loud,§8.3 三态合同保证混合态起不来,这是防呆不是恢复路径):
   1. 先按 §12.C 做**发现式 inventory**(默认项目 glob + `--db`/`FLYWHEEL_COMM_DB` 配置与 live launchd/wrapper 环境 + `~/.flywheel` 下实际含 `lead_inbox` 的 SQLite);发现集与显式迁移清单不恒等即 fail-closed。再停 Bridge → 停 Leads → **停/park 全部 Runner session 并禁止新 launch(R14 HIGH:Runner 与一次性 CLI/MCP 是按需 open 的写者,lsof 快照抓不住不持文件的它们)** → `pgrep`/launchd 断言无任何 flywheel 进程存活 → `fuser`/lsof 断言无进程持有 inventory 中**任何一个**生产 comm.db;
-  2. 按冻结后的 inventory **逐库**执行**连续写闸 + staging 迁移**(R15 HIGH:chmod 是文件级不是进程级,同 user 的迟到 CLI 在「临时解除」窗内照样能 open 读写 —— `CommDB` 构造即读写 open + 建 WAL + 跑 migrations + purge(db.ts:773-785),所以 canonical legacy 文件的写闸**一经上闸绝不解除**,cutover 不在 canonical 上原地做):
-     a. 迁移进程读写 open canonical → `wal_checkpoint(TRUNCATE)` 排干 → 关连接;
-     b. **chmod 0444 canonical DB(含残余 WAL/SHM)= 写闸 ON**;随即复验 zero-holders + WAL 缺席/为空 + 文件 hash 与 checkpoint 后一致 —— 不一致说明 a→b 缝隙有迟到写,**回到 a 重来直至收敛**;
-     c. 写闸在位下备份(§8.1,只读即可)→ 复制出 **staging copy**(私有目录)→ cutover 单事务在 **staging** 上做(§8.2 下条)→ 对账通过;
-     d. 按 §8.4 的 sidecar/fsync 纪律**原子 rename 换入** canonical(rename 只需父目录写权,文件级写闸不挡它);换入后的迁移库由毒药 VIEW + schema_generation 接防(chmod 恢复常规),legacy 内容自 b 起到换入落盘**连续**不可写;
-     e. 迟到旧 CLI 全程两态挨打:换入前撞 0444 `SQLITE_READONLY`/`CANTOPEN`,换入后撞毒药 VIEW —— 无窗口。
-     **全部库迁完前舰队保持 quiesced**。负向/race 测试:在 a→b 缝隙、写闸在位、staging 迁移中(迁移进程正持写能力)、换入后四个 seam 各注入旧 CLI 写尝试,全部 fail-loud 零行变更;fault-injected 证明**不存在 post-backup legacy write**(备份后旧写会让回滚丢数据 —— 这是围栏要挡死的事故形态);
+  2. 按冻结后的 inventory **逐库**执行**连续写闸 + staging 迁移**(R15 HIGH + R16 HIGH 修正:chmod 是文件级不是进程级,同 user 的迟到 CLI 能在任何解闸窗 open 读写 —— `CommDB` 构造即读写 open + 建 WAL + 跑 migrations + purge(db.ts:773-785)。canonical legacy 文件的写闸**一经上闸绝不解除**(唯一例外 = abort-all 回退,经 intent 显式复原);post-fence 不存在任何 canonical 写路径,cutover 不在 canonical 上原地做):
+     a. (可选优化)迁移进程读写 open canonical → `wal_checkpoint(TRUNCATE)` → 关连接 —— **仅为缩小 WAL,非正确性依赖**;
+     b. **chmod 0444 canonical DB + 现存 WAL/SHM = 写闸 ON**;等待 pre-fence holders 排空(lsof 轮询至零)。**冻结快照权威 = DB 文件 + 已提交 WAL 帧**:a→b 缝隙迟到的合法提交**被检出并纳入快照**,不假装它必须失败(R16 HIGH:0444 后无法回读写 checkpoint,收敛环与永不解除自相矛盾 —— 删掉收敛环,改为快照含 WAL);
+     c. §8.1 online backup API **只读**跑在冻结 canonical 上(**backup API 天然含 WAL 帧**)→ integrity/FK/schema 校验 → 备份 durable 后、换入前把 canonical sidecars quarantine(其内容已入备份);
+     d. staging = 备份快照的私有拷贝,cutover 单事务在 **staging** 上做(§8.2 下条)→ 对账通过 = `staging_verified`;
+     e. **同文件系统原子换入(R16 MEDIUM)**:staging 目录 0700、**紧邻 canonical 且断言同 `st_dev`**(跨设备 `EXDEV` fail-closed,**绝不**降级 copy-overwrite),staging 文件 0600;rename + 父目录 fsync 换入 canonical(rename 只需父目录写权,文件级写闸不挡它);换入后的迁移库由毒药 VIEW + schema_generation 接防(chmod 恢复常规),legacy 内容自 b 起到换入落盘**连续**不可写;迟到旧 CLI 两态挨打:换入前撞 0444 `SQLITE_READONLY`/`CANTOPEN`,换入后撞毒药 VIEW —— 无窗口;
+     f. **forward `migration-swap-intent-<ts>.json`(R16 HIGH:§8.4 是回滚方向 ledger,两个世界相反、无 refs 换相,不可逐字借用)**:写在被换 DB 之外,含 canonical/staging/backup hash、原文件 mode、sidecar 状态;相序 **`fenced → backed_up → staging_verified → canonical_swapped → dir_fsynced → verified → done`**;重入先核对实际 schema/hash/世界态再推进 ledger;**abort-all(放弃本窗)必须给每个未换入的 verified-legacy 库复原原始 mode**(0444 不是可遗留态)—— 步 3(b) 的「复验 inventory 全 legacy」含 mode 复原;逐相位 fault-inject 且 recovery 连跑两遍证幂等。
+     race 测试语义分层:pre-fence(a→b 缝)注入的合法提交 → **检出并纳入权威备份**;post-fence 三个 seam(备份中 / staging 迁移中 / 换入后)注入 → fail-loud 零行变更。**全部库迁完前舰队保持 quiesced**;fault-injected 证明**不存在 post-backup legacy write**(备份后旧写会让回滚丢数据 —— 这是围栏要挡死的事故形态);
   3. 任一库失败 → 舰队继续 quiesced,二选一**显式**恢复,禁止第三种:(a)修复后续跑剩余库(优先;已迁库的 completed marker 幂等跳过);(b)放弃本窗 —— 已迁库**全部**按 §8.4 回滚,复验 inventory 全为 legacy 态后,才允许重启旧 binary;
   4. 全部目标库 completed marker + inventory 对账通过 → 部署新 binary → 重启舰队 → 冒烟。
   任一步失败的停止点与回退动作逐条写明。
@@ -462,3 +463,9 @@ R14(新 thread 全量复审,含 R13 折入核验 —— 七项全确认在位)�
 R15(R14 折入核验全确认 + 新查)返回 2 HIGH + 2 MEDIUM,全采纳:
 - **HIGH**:family 入史谓词补 **72h 保留门**(08-05 实测 363 个全终局 family 全在窗内,缺门会 cutover 提前送史;窗内终局 family 留 mailbox 交 §7 稳态归档;T+71h/T+73h fixture);写闸改**连续型**(chmod 文件级非进程级,「临时解除」是 TOCTOU —— canonical legacy 一经上闸绝不解除,cutover 在 staging copy 上做、§8.4 纪律原子换入,换入后毒药 VIEW 接防;checkpoint→上闸缝隙以 hash/WAL 复验收敛;四 seam race 测试)。
 - **MEDIUM**:family-override 保留 root 的确定性映射(已答/terminal root 恒 ACKED + acked_at 派生序,受保护未答 root QUEUED,terminal-root fixture 无镜像形态);锚措辞三分显式(source-backed 折叠 / dangling question 合成 / dangling ack 断零),未读 ack fixture 标 source-backed。
+
+### 12.H 继任 exec Codex 复审 R16 折入(2026-08-05)
+
+R16(R15 折入核验全确认)返回 2 HIGH + 1 MEDIUM,全采纳:
+- **HIGH**:删掉 checkpoint→fence 收敛环(与「永不解除」自相矛盾)—— checkpoint 降级为可选优化,**冻结快照权威 = DB + 已提交 WAL 帧**,§8.1 online backup 只读含 WAL;pre-fence 缝隙合法提交改「检出并纳入备份」,post-fence 三 seam 才要求 fail-loud 零变更;forward **`migration-swap-intent` 独立 ledger**(§8.4 是回滚方向不可逐字借用):七相序 + 重入核实际世界态 + abort-all 复原每个未换入库的原始 mode + 逐相位 fault-inject 双跑。
+- **MEDIUM**:staging 目录 0700 紧邻 canonical、断言同 `st_dev`、`EXDEV` fail-closed 绝不 copy-overwrite,staging 文件 0600,fsync 纳入 forward intent。
