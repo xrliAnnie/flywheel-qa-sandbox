@@ -66,7 +66,8 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
   1. **pre-admission**(admit 未发生):直接 settle:target 预约回滚 + verification path settle + `needs_lead`。
   2. **admitted 且可证明未发起 grant**(如 authority context 解析失败):原子 revoke 未用 credential + abandon activation + 预约回滚 + settle + `needs_lead`。
   3. **grant/wake 已投递或 ambiguous**(外呼已发出/抛错/结果不明):`needs_lead` + **fence 后续重试**,**保留预约**。
-  - **disposition 从 durable facts 推导**:终局 CAS 复查 activation / credential / turn / delivery / reservation 持久行,**不信 coordinator 本地 stage flag**;crash 后证据不足 → 一律取 disposition 3(ambiguous/retain)。
+  - **grant-dispatch intent 持久标记(R4#2)**:`authority_context_corrupt`(→2)与「`grantTurn` 可能成功但 `recordWorkflowActivationTurn` 未跑」(→3)在 StateStore 持久行上**不可分辨**(grant 活在 CommDB/外部效果空间)。外呼 `grantTurn` **之前**,在同一 owner/generation CAS 下持久写 monotonic intent(利用已计划的 rebuild 加 nullable `grant_started_at` 列)。判定规则:**标记不存在的同步失败 → disposition 2;标记一旦存在 → 任何错误/crash 一律 disposition 3**(即便网络调用实际没发出)。wake 无需独立标记 —— grant 已启动即选 retain。
+  - **disposition 从 durable facts 推导**:终局 CAS 复查 activation / credential / turn / delivery / reservation / `grant_started_at` 持久行,**不信 coordinator 本地 stage flag**;crash 后证据不足 → 一律取 disposition 3(ambiguous/retain)。
   - **operator 清理事务具名(R3#2)**:扩展 `openOperatorRework` 的 quiescence-authorized 事务(或其调用的既有 operator cleanup 事务):revoke/fence 旧 activation 与 credentials → settle 旧 target/预约 → **然后才**铸后继 attempt。
   预算仍是同一个 hold_count,不加第二计数。
 
@@ -74,7 +75,7 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 
 - 连续失败 → hold_count 递进 + backoff 生效(claim 被 `next_retry_at` 挡住)→ 第 5 次转 needs_lead,outbox 恰 1 条,founder thread 0 条。
 - crash/race:第 5 次失败与另一 tick 并发 claim → CAS 单赢家。
-- **stage-aware 终局(R2#3 + R3#2)**:第 5 次失败分别发生在 admission / turn grant/projection / wake / post-wake projection 各阶段的终局断言;**crash 边界三组**:admit 后 grant 前崩、grant 可能成功后 projection 前崩、wake 可能成功后 delivery projection 前崩 → 重启后 disposition 从 durable facts 复推、证据不足取 retain;**迟到的 credential 提交或延迟 wake 不得复活被取代的 attempt;任何测试不得观察到两个可行动 attempt**。
+- **stage-aware 终局(R2#3 + R3#2 + R4#2)**:第 5 次失败分别发生在 admission / turn grant/projection / wake / post-wake projection 各阶段的终局断言;**crash 边界三组(R4#2 修订)**:`grant_started_at` 标记**前**崩、标记**后外呼前**崩、外呼可能成功后本地投影前崩 → 重启后 disposition 从 durable facts 复推(前者 →2,后两者 →3);**迟到的 credential 提交或延迟 wake 不得复活被取代的 attempt;任何测试不得观察到两个可行动 attempt**。
 - needs_lead 后 dispatcher 不再扫描;pre-delivery 形 → `openOperatorRework` 可开新单;post-delivery 形 → operator 路径先证 quiescence。
 - retryable 类失败同预算断言。
 
@@ -121,7 +122,7 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 - **`produces_output` 修正**:no_code 分支放行「无 output credential 提交」的完成形,needs_review 分支维持现约束;**同事务 revoke 未用 output credential**(R2#4 —— 否则 run 完结后旧 credential 仍可被消费)。
 - **⚠️ 缺失证据的信任规则(R2#4 安全洞 + R3#1 权威源具体化)**:**不能只信 runner 选的 route** —— 否则产出了 PR 的 runner 可省略 PR 证据、选 no_code、绕过 founder gate。no_code 分支 fail-closed 校验:
   1. 存在当前 output / PR binding / PR 证据 → **拒**(`no_code_artifact_present`)。
-  2. **权威源(R3#1:现源码没有可用的 admitted baseline —— worktree binding 只存 path/branch/generation,generic 节点无 startPoint)**:admission 时扩展**不可变 activation/execution binding**,写入 server-resolved 的 admitted baseline SHA + repository identity + worktree generation(引擎派发时本就解析 base,只是没落盘 —— 既有机制加列,非新机制)。
+  2. **权威源(R3#1 + R4#1 封存点修正)**:admission 时封存**不可行** —— `admitGeneralizedWorkflowExecution` 发生在 `startDispatcher.start()` 之前,generic 无 `startPoint`,worktree 与其 generation 此刻尚不存在;`workflow_execution_binding` 有 no-update 触发器,可空列后补会弱化不可变性;单一 SHA/repo 对也表达不了多仓库。**改在既有权威 worktree-creation seam 封存**:`WorktreeManager.create()` 之后、runner launch 之前,Bridge-local `emitWorktreeReady`/`bindWorktreeOnce` 路径解析 **canonical repository-baseline 集合**(命名权威的 configured-repository inventory 与 canonical 编码 —— `resolveBoundRepositoryAuthority()` 现只解析单个 caller 选定仓库),与 path/branch/generation 一起进**既有 set-once worktree-binding 权威组**;不把 activation binding 变通用可变。**不完整集合与 legacy activation 一律不可用 no_code**(fail-closed)。补 sealing replay/ABA 测试。
   3. **完成时 fenced attestation**:no_code 完成前做仓库探测(HEAD、clean/dirty、未合入提交),closeout 事务内**复查 activation/worktree generation** —— generation 不符/证明缺失/过期 → 拒(探针 freshness 边界)。
   4. **仓库范围**:证明覆盖 bound worktree 内**全部已配置仓库**;嵌套仓库 scope 不明 → **fail-closed 拒**,绝不静默只查 root(嵌套仓库可藏 shippable delta)。
   5. 若实施中发现证据链无法在本单范围内补齐 → **`allow_no_code_completion` 保持关闭、出口拆 follow-up**,绝不弱化 founder-gate 边界(R3#1 兜底指令)。
@@ -169,7 +170,7 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 1. **gate-proof + resolver**(1.1+1.2,含消费点回归测试)——一切 ship 链的地基。
 2. **seed 合成断言**(5②)——立即锁住 1 的成果。
 3. **binding 写入 + supersede + rebind**(1.3,bound 谓词收紧)。
-4. **generic no_code 窄事务闭环**(5④,含 produces_output 修正)。
+4. **generic no_code 出口**(5④)—— 内部顺序:**authority capture 先行**(worktree-creation seam 的 baseline 集合封存,R4#1)→ capability/prompt → closeout 事务(含 produces_output 修正)。
 5. **completed-without-receipt 专属分支**(5③,不动共享终态常量)+ 双重启回归。
 6. **rework 迁移**(2.1)→ **原子封顶 + backoff + 预约回滚**(2.2)。
 7. **防空转谓词**(3,在 latest-claim 规则确立后)。
