@@ -1481,10 +1481,13 @@ export class CodexTmuxAdapter implements IAdapter {
 		env: NodeJS.ProcessEnv,
 	): void {
 		const expected = [
-			["FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL", ctx.workflowOutputCredential],
+			[
+				"FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL",
+				ctx.workflowOutputCredential || undefined,
+			],
 			[
 				"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
-				ctx.workflowSubmissionCredential,
+				ctx.workflowSubmissionCredential || undefined,
 			],
 			[
 				"FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED",

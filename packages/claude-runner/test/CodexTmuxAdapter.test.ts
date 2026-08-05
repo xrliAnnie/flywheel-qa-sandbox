@@ -798,6 +798,18 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		}
 	});
 
+	it("FLY-1643: treats empty workflow credentials as absent", async () => {
+		await makeAdapter().execute(
+			ctx({
+				workflowOutputCredential: "",
+				workflowSubmissionCredential: "",
+			}),
+		);
+		const daemonEnv = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
+		expect(daemonEnv.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL).toBeUndefined();
+		expect(daemonEnv.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL).toBeUndefined();
+	});
+
 	it("FLY-1643: rejects a changed workflow capability before runtime creation", async () => {
 		const transport = {
 			buildRunnerSpawnConfig: vi.fn(() => ({

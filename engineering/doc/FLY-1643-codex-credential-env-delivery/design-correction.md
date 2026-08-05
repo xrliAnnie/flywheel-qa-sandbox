@@ -77,6 +77,13 @@ GitHub 凭据继续只落进 runner 自有 `CODEX_HOME`/git credential helper,�
 需要这些控制面能力的路径应由当前 execution ctx 提供,缺失时由 `flywheel-comm` 等调用点
 按现有机制 fail loud。`FLYWHEEL_COMM_CLI` 解析失败仍保留既有 manual fallback。
 
+已知边界:`spawnCodexDaemon()` 是公开导出且 `opts.env` 类型仍是
+`NodeJS.ProcessEnv`;它信任调用方已完成 safe-base 构造,只再移除 GitHub token 四个
+精确名。现有生产路径只有 `CodexTmuxAdapter.buildDaemonEnv()`(含 account rotation 对同一
+已构造 env 的复用),没有 live leak。未来新调用方若直接传 `process.env`,会绕过 host secret
+隔离;本单按 founder 定案不另加一层过滤。adapter 测试锁定显式 `FLYWHEEL_*` 集合,
+non-`FLYWHEEL_*` safe-base 隔离由 `codex-home.test.ts` 的 sanitizer 测试守卫。
+
 Codex 的 `shell_environment_policy` 是 process env 之后的下一跳。三个 workflow 名不命中
 默认的 `*KEY*`、`*TOKEN*`、`*SECRET*` 排除模式;`FLYWHEEL_INGEST_TOKEN` 则会命中
 `*TOKEN*`,所以本单不声称它能进入 model shell。process-env 单测只证明 daemon launch
@@ -91,8 +98,9 @@ workflow capability 的端到端证明。
    `CODEX_HOME`;只有调用方未传 env 的防御性路径才从 host 构造安全 base,同样零继承
    `FLYWHEEL_*`。
 3. launch 自检改为 ctx→最终 env 的 workflow capability 等值校验;保留副作用前位置。
-   output/submission credential 原值映射;`workflowSubmissionExpected=true` 精确映射为
-   `"1"`,false/undefined 精确映射为变量缺席。
+   非空 output/submission credential 原值映射,空串映射为变量缺席;
+   `workflowSubmissionExpected=true` 精确映射为 `"1"`,false/undefined 精确映射为变量
+   缺席。
 4. 测试证明:继承的任意 `FLYWHEEL_*` 全丢、显式构造的三个能力抵达最终 child env、
    transport 覆写能力会在 runtime 创建前具名拒绝、stale provenance 仍被清除、
    Blueprint 保留拒绝原文、Claude adapter 代码零改动。
