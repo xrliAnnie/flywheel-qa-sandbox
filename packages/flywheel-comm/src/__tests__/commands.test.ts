@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ask } from "../commands/ask.js";
 import { capture } from "../commands/capture.js";
@@ -390,7 +391,7 @@ describe("cleanup-messages command", () => {
 		db.markInstructionRead(instId);
 		(db as any).db
 			.prepare(
-				"UPDATE messages SET created_at = datetime('now', '-25 hours') WHERE id = ?",
+				"UPDATE mailbox SET state = 'ACKED', acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours') WHERE id = ?",
 			)
 			.run(instId);
 		db.close();
@@ -399,24 +400,30 @@ describe("cleanup-messages command", () => {
 		expect(result.cleaned).toBe(1);
 	});
 
-	it("should respect custom TTL", () => {
+	it("should respect a custom TTL above the 72-hour retention floor", () => {
 		const db = new CommDB(dbPath);
-		const instId = db.insertInstruction("product-lead", "exec-1", "2h old msg");
+		const instId = db.insertInstruction(
+			"product-lead",
+			"exec-1",
+			"96h old msg",
+		);
 		db.markInstructionRead(instId);
 		(db as any).db
 			.prepare(
-				"UPDATE messages SET created_at = datetime('now', '-3 hours') WHERE id = ?",
+				"UPDATE mailbox SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-96 hours') WHERE id = ?",
 			)
 			.run(instId);
 		db.close();
 
-		// 24h TTL: should NOT clean (only 3h old)
-		const result24 = cleanupMessages({ dbPath, ttlHours: 24 });
-		expect(result24.cleaned).toBe(0);
-
-		// 2h TTL: should clean
-		const result2 = cleanupMessages({ dbPath, ttlHours: 2 });
-		expect(result2.cleaned).toBe(1);
+		expect(cleanupMessages({ dbPath, ttlHours: 120 }).cleaned).toBe(0);
+		const raw = new Database(dbPath);
+		raw
+			.prepare(
+				"UPDATE mailbox SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-121 hours') WHERE id = ?",
+			)
+			.run(instId);
+		raw.close();
+		expect(cleanupMessages({ dbPath, ttlHours: 120 }).cleaned).toBe(1);
 	});
 
 	it("should return 0 when DB does not exist", () => {

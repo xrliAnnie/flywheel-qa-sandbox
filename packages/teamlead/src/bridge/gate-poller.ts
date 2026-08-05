@@ -396,8 +396,8 @@ export { isReviewGateCheckpoint };
  * ship gate.
  *
  * ACCEPTED CONSERVATIVE TRADEOFF (Codex R1 #5): this sweeper is a backstop,
- * not a completeness guarantee. Under a same-second re-fire (SQLite
- * `created_at` has 1s resolution) where the main event-route retire ALSO
+ * not a completeness guarantee. Under an equal-timestamp re-fire where the
+ * main event-route retire ALSO
  * failed, the old gate stays pending until its TTL — safe side: noise over a
  * false kill of the founder's only bindable gate. The main path (event-route)
  * retires by EXACT qid and is unaffected by same-second timing. Do NOT widen

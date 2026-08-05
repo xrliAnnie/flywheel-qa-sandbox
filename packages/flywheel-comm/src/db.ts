@@ -6,59 +6,29 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
-import type { FrozenFounderRouteCandidatesV1 } from "./founder-reply-routing.js";
+import { founderMessageRootId } from "./founder-reply-routing.js";
 import {
-	founderMessageRootId,
-	founderRouteRowId,
-} from "./founder-reply-routing.js";
-import type {
-	EnqueueFounderHubRootInput,
-	LeadInboxRow,
-	ProcessedEvidenceV1,
-	ReceiptPriorityWindowsMs,
-} from "./lead-inbox-queue.js";
-import {
-	applyReceiptFoundationMigrations,
 	assertProcessedEvidence,
 	assertUtcIsoTimestamp,
 	CHAT_DELIVERY_UNCONFIRMED_REASON,
-	LEAD_INBOX_SCHEMA,
-	LeadInboxQueue,
-} from "./lead-inbox-queue.js";
-import { truncateCodePoints } from "./text-truncate.js";
+	MailboxQueue,
+	type MailboxRow,
+	type ProcessedEvidenceV1,
+} from "./mailbox-queue.js";
+import {
+	MAILBOX_POISON_VIEWS,
+	MAILBOX_SCHEMA,
+	MAILBOX_SCHEMA_GENERATION,
+} from "./mailbox-schema.js";
+import { encodeSenderRef } from "./sender-ref.js";
 import type {
 	Message,
 	MessageProvenance,
 	ResponseWriteResult,
 	Session,
 } from "./types.js";
-import { deleteContentRef as deleteContentRefFile } from "./utils/content-ref.js";
 
 const SCHEMA = `
-CREATE TABLE IF NOT EXISTS messages (
-  id          TEXT PRIMARY KEY,
-  from_agent  TEXT NOT NULL,
-  to_agent    TEXT NOT NULL,
-  type        TEXT NOT NULL CHECK(type IN ('question','response','instruction','progress','ack_receipt')),
-  content     TEXT NOT NULL,
-  parent_id   TEXT,
-  read_at     DATETIME,
-  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-  expires_at  DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
-  deadline_at TEXT,
-  relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed')),
-  resolved_via TEXT,
-  logical_event_id TEXT,
-  superseded_at DATETIME,
-  superseded_by TEXT,
-  sender_lease_key TEXT,
-  sender_generation INTEGER,
-  sender_holder_pid INTEGER,
-  sender_holder_start TEXT,
-  writer_pid INTEGER,
-  writer_start TEXT,
-  FOREIGN KEY (parent_id) REFERENCES messages(id)
-);
 CREATE TABLE IF NOT EXISTS sessions (
   execution_id  TEXT PRIMARY KEY,
   tmux_window   TEXT NOT NULL,
@@ -203,16 +173,12 @@ BEGIN SELECT RAISE(ABORT, 'turn_source_history is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS turn_source_history_no_delete
 BEFORE DELETE ON turn_source_history
 BEGIN SELECT RAISE(ABORT, 'turn_source_history is append-only'); END;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_response ON messages(parent_id) WHERE type = 'response';
-CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(to_agent, type, created_at);
-CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_id);
-CREATE INDEX IF NOT EXISTS idx_messages_expires ON messages(expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_name);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runner_phase_wakes_source
   ON runner_phase_wakes(execution_id, source_instruction_id)
   WHERE source_instruction_id IS NOT NULL;
-${LEAD_INBOX_SCHEMA}
+${MAILBOX_SCHEMA}
 `;
 
 /**
@@ -421,9 +387,19 @@ export interface RunnerWakeFailureEpisode {
 
 export interface TerminalWakeCompletion {
 	wake: RunnerPhaseWake;
-	alert: import("./lead-inbox-queue.js").ReceiptAlertOutboxRow;
+	alert: ReceiptAlertOutboxRow;
 	identityKind: "terminal_episode" | "founder_message";
 	episodeFingerprint: string;
+}
+
+export interface ReceiptAlertOutboxRow {
+	id: string;
+	kind: string;
+	payload: string;
+	created_at: string;
+	delivered_at: string | null;
+	canceled_at: string | null;
+	cancel_reason: string | null;
 }
 
 function runnerWakeMetadata(wake: RunnerPhaseWake): Record<string, unknown> {
@@ -459,45 +435,11 @@ function runnerWakeMetadata(wake: RunnerPhaseWake): Record<string, unknown> {
 	return stored;
 }
 
-function founderWakeEnvelope(envelope: PhaseWakeInput): PhaseWakeInput {
-	return {
-		...envelope,
-		metadata: {
-			...(envelope.metadata ?? {}),
-			origin: "founder",
-		},
-	};
-}
-
-export interface ReceiptWakePolicy {
-	transportAvailable?: boolean;
-	execPushCap?: number;
-	execPushWindowMs?: number;
-}
-
 export interface RunnerReceiptWakePushClaim {
 	wake: RunnerPhaseWake;
 	claimToken: string;
 	attempt: number;
 	envelope: PhaseWakeInput;
-}
-
-export interface InstructionAndIntentInput {
-	instructionId: string;
-	fromAgent: string;
-	executionId: string;
-	content: string;
-	intentKey: string;
-	envelope: PhaseWakeInput;
-	queuedAtMs: number;
-	provenance?: MessageProvenance;
-	wakePolicy?: ReceiptWakePolicy;
-}
-
-export interface InstructionAndIntentResult {
-	kind: "queued" | "duplicate";
-	instructionId: string;
-	wake: RunnerPhaseWake;
 }
 
 export interface RespondAndReceiptInput {
@@ -507,37 +449,19 @@ export interface RespondAndReceiptInput {
 	rootId: string;
 	evidence: Omit<ProcessedEvidenceV1, "ref">;
 	now: string;
-	intentKey: string;
-	envelope: PhaseWakeInput;
-	queuedAtMs: number;
 	provenance?: MessageProvenance;
-}
-
-export interface ResponseAndIntentInput {
-	questionId: string;
-	fromAgent: string;
-	content: string;
-	intentKey: string;
-	envelope: PhaseWakeInput;
-	queuedAtMs: number;
-	provenance?: MessageProvenance;
-	wakePolicy?: ReceiptWakePolicy;
 }
 
 export interface RespondAndReceiptResult {
 	responseId: string;
-	wake: RunnerPhaseWake;
 }
 
-export interface ReviewResponseAndWakeInput {
+export interface ReviewResponseInput {
 	questionId: string;
 	fromAgent: string;
 	content: string;
 	expectedOwner: string;
 	expectedCheckpoint: "review_design" | "review_code";
-	summary: string;
-	queuedAtMs: number;
-	wakePolicy?: ReceiptWakePolicy;
 }
 
 export type ReceiptHandleAction = "relay" | "respond" | "no-route" | "ack";
@@ -552,11 +476,8 @@ export interface HandleReceiptInput {
 	targetQuestionId?: string;
 	content?: string;
 	reason?: string;
-	intentKey?: string;
-	envelope?: PhaseWakeInput;
-	queuedAtMs?: number;
 	/** Test-only transaction seam injection. */
-	testCrashAfter?: "effect" | "terminal" | "wake";
+	testCrashAfter?: "effect" | "terminal";
 }
 
 export interface HandleReceiptResult {
@@ -564,7 +485,6 @@ export interface HandleReceiptResult {
 	receiptId: string;
 	action: ReceiptHandleAction;
 	responseId?: string;
-	wake?: RunnerPhaseWake;
 }
 
 export interface TrustedFounderApprovalAndReceiptInput {
@@ -578,9 +498,6 @@ export interface TrustedFounderApprovalAndReceiptInput {
 	rootId: string;
 	evidence: Omit<ProcessedEvidenceV1, "ref">;
 	now: string;
-	intentKey: string;
-	envelope: PhaseWakeInput;
-	queuedAtMs: number;
 	provenance?: MessageProvenance;
 }
 
@@ -592,9 +509,6 @@ export interface TrustedFounderGateResponseAndReceiptInput {
 	rootId: string;
 	msgId: string;
 	now: string;
-	intentKey: string;
-	envelope: PhaseWakeInput;
-	queuedAtMs: number;
 	approvalSource?: {
 		project: string;
 		sourceEventId: string;
@@ -609,9 +523,16 @@ export interface RouteFounderReplyInput {
 	noRouteReason?: string;
 	now: string;
 	provenance?: MessageProvenance;
-	intentKey?: string;
-	envelope?: PhaseWakeInput;
-	queuedAtMs?: number;
+}
+
+export interface EnqueueFounderHubRootInput {
+	id: string;
+	toLead: string;
+	content: string;
+	refMessageId: string;
+	now: string;
+	nextUnprocessedAt?: string | null;
+	routingState?: string | null;
 }
 
 export type RouteFounderReplyResult =
@@ -619,7 +540,6 @@ export type RouteFounderReplyResult =
 			kind: "routed";
 			questionId: string;
 			responseId: string;
-			wake: RunnerPhaseWake;
 	  }
 	| {
 			kind: "stale_candidate";
@@ -627,27 +547,6 @@ export type RouteFounderReplyResult =
 			winningResponseId: string;
 	  }
 	| { kind: "no_route"; winningResponseId?: string };
-
-export type UnprocessedReceiptAdvance =
-	| { kind: "resent"; rootId: string; round: number; resendId: string }
-	| { kind: "escalation_queued"; rootId: string; outboxId: string };
-
-export interface UnprocessedReceiptAlertPayload {
-	rootId: string;
-	episodeId: string;
-	targetKey: string;
-	toLead: string;
-	type: string;
-	projectName: string;
-	issueId: string;
-	issueIdentifier?: string;
-	executionId: string;
-	questionId?: string;
-	threadId?: string;
-	firstDeliveredAt: string;
-	resendRound: number;
-	contentSummary: string;
-}
 
 export interface RunnerShutdownControl {
 	execution_id: string;
@@ -730,34 +629,38 @@ function isMissingTableError(error: unknown, table: string): boolean {
 	);
 }
 
-function positiveReceiptEnv(name: string, fallback: number): number {
-	const raw = process.env[name];
-	if (raw === undefined || !raw.trim()) return fallback;
-	const value = Number(raw);
-	if (!Number.isSafeInteger(value) || value <= 0) {
-		throw new Error(`invalid positive receipt configuration ${name}=${raw}`);
+function assertMailboxGeneration(db: Database.Database, dbPath: string): void {
+	const metaTable = db
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mailbox_migration_meta'",
+		)
+		.get();
+	if (!metaTable) {
+		throw new Error(
+			`Legacy or partial CommDB at ${dbPath}; run the FLY-1572 mailbox migration before opening it`,
+		);
 	}
-	return value;
-}
-
-function provenanceValues(
-	provenance: MessageProvenance | undefined,
-): [
-	string | null,
-	number | null,
-	number | null,
-	string | null,
-	number | null,
-	string | null,
-] {
-	return [
-		provenance?.senderLeaseKey ?? null,
-		provenance?.senderGeneration ?? null,
-		provenance?.senderHolderPid ?? null,
-		provenance?.senderHolderStart ?? null,
-		provenance?.writerPid ?? null,
-		provenance?.writerStart ?? null,
-	];
+	const meta = db
+		.prepare(
+			"SELECT schema_generation FROM mailbox_migration_meta WHERE singleton = 1",
+		)
+		.get() as { schema_generation?: string } | undefined;
+	if (meta?.schema_generation !== MAILBOX_SCHEMA_GENERATION) {
+		throw new Error(
+			`Unsupported CommDB schema generation at ${dbPath}: ${meta?.schema_generation ?? "missing"}`,
+		);
+	}
+	if (
+		!db
+			.prepare(
+				"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mailbox'",
+			)
+			.get()
+	) {
+		throw new Error(
+			`Partial mailbox schema at ${dbPath}: mailbox table missing`,
+		);
+	}
 }
 
 export class CommDB {
@@ -769,9 +672,12 @@ export class CommDB {
 	 * @param createIfMissing - When false, throws if the DB file doesn't exist.
 	 *   Read-only commands (check, pending) should pass false to avoid masking
 	 *   configuration errors as "no pending questions".
+	 * @param archiveOnOpen - Disable only when the caller must run a sweep with
+	 *   an explicit retention window and report that sweep's own count.
 	 */
-	constructor(dbPath: string, createIfMissing = true) {
-		if (!createIfMissing && !existsSync(dbPath)) {
+	constructor(dbPath: string, createIfMissing = true, archiveOnOpen = true) {
+		const existed = existsSync(dbPath);
+		if (!createIfMissing && !existed) {
 			throw new Error(
 				`Database not found: ${dbPath}. Has a question been asked yet?`,
 			);
@@ -780,9 +686,27 @@ export class CommDB {
 		this.db = new Database(dbPath);
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("busy_timeout = 5000");
+		const isVirgin =
+			!existed ||
+			(
+				this.db
+					.prepare(
+						"SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+					)
+					.get() as { count: number }
+			).count === 0;
+		if (!isVirgin) assertMailboxGeneration(this.db, dbPath);
 		this.db.exec(SCHEMA);
-		this.applyMigrations();
-		this.purgeExpired();
+		this.db
+			.transaction(() => {
+				this.db.exec(
+					"DROP VIEW IF EXISTS messages; DROP VIEW IF EXISTS lead_inbox;",
+				);
+				this.applyMigrations();
+				this.db.exec(MAILBOX_POISON_VIEWS);
+			})
+			.immediate();
+		if (archiveOnOpen) this.purgeExpired();
 	}
 
 	/**
@@ -794,179 +718,16 @@ export class CommDB {
 		const instance = Object.create(CommDB.prototype) as CommDB;
 		instance.db = new Database(dbPath, { readonly: true });
 		instance.db.pragma("busy_timeout = 5000");
+		try {
+			assertMailboxGeneration(instance.db, dbPath);
+		} catch (error) {
+			instance.db.close();
+			throw error;
+		}
 		return instance;
 	}
 
 	private applyMigrations(): void {
-		applyReceiptFoundationMigrations(this.db);
-		this.applyReceiptRootLineageMigration();
-		const columns = this.db
-			.prepare("PRAGMA table_info(messages)")
-			.all() as Array<{ name: string }>;
-
-		if (!columns.some((c) => c.name === "read_at")) {
-			this.db.exec("ALTER TABLE messages ADD COLUMN read_at DATETIME");
-		}
-		if (!columns.some((c) => c.name === "deadline_at")) {
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN deadline_at TEXT");
-			} catch (error) {
-				if (
-					!/duplicate column name: deadline_at/i.test((error as Error).message)
-				) {
-					throw error;
-				}
-			}
-		}
-		if (!columns.some((c) => c.name === "checkpoint")) {
-			this.db.exec("ALTER TABLE messages ADD COLUMN checkpoint TEXT");
-		}
-		if (!columns.some((c) => c.name === "content_ref")) {
-			this.db.exec("ALTER TABLE messages ADD COLUMN content_ref TEXT");
-		}
-		if (!columns.some((c) => c.name === "content_type")) {
-			this.db.exec(
-				"ALTER TABLE messages ADD COLUMN content_type TEXT DEFAULT 'text'",
-			);
-		}
-		if (!columns.some((c) => c.name === "resolved_at")) {
-			this.db.exec("ALTER TABLE messages ADD COLUMN resolved_at DATETIME");
-		}
-		if (!columns.some((c) => c.name === "delivered_at")) {
-			// FLY-109: ALTER is not atomic w.r.t. the PRAGMA read above, so two
-			// concurrent openers of the same DB can both pass the guard and race
-			// on ADD COLUMN. Swallow the racing side's "duplicate column" error —
-			// the column is present either way, which is all we need.
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN delivered_at DATETIME");
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: delivered_at/i.test(msg)) {
-					throw err;
-				}
-			}
-		}
-		if (!columns.some((c) => c.name === "attachments")) {
-			// GEO-151: ProofShot artifact paths stored as JSON-encoded string[].
-			// Same race-tolerance pattern as delivered_at above.
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT");
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: attachments/i.test(msg)) {
-					throw err;
-				}
-			}
-		}
-		if (!columns.some((c) => c.name === "kind")) {
-			// FLY-1041: 'report' marks a fire-and-forget runner→Lead status report
-			// (`ask --report`). Deliberately NOT the checkpoint column — GatePoller
-			// gives checkpoints gate-eviction / nudge semantics that do not apply
-			// to reports. Transport-wise a report is still a question (relayToLead,
-			// pending CLI, liveness all unchanged); ONLY the founder-reply
-			// candidate set excludes it. Same race-tolerance as delivered_at.
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN kind TEXT");
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: kind/i.test(msg)) {
-					throw err;
-				}
-			}
-		}
-		if (!columns.some((c) => c.name === "relay_state")) {
-			try {
-				this.db.exec(
-					"ALTER TABLE messages ADD COLUMN relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed'))",
-				);
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: relay_state/i.test(msg)) throw err;
-			}
-		}
-		if (!columns.some((c) => c.name === "logical_event_id")) {
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN logical_event_id TEXT");
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: logical_event_id/i.test(msg)) throw err;
-			}
-		}
-		for (const name of ["superseded_at", "superseded_by"] as const) {
-			if (columns.some((column) => column.name === name)) continue;
-			try {
-				this.db.exec(`ALTER TABLE messages ADD COLUMN ${name} TEXT`);
-			} catch (error) {
-				if (
-					!new RegExp(`duplicate column name: ${name}`, "i").test(
-						(error as Error).message,
-					)
-				) {
-					throw error;
-				}
-			}
-		}
-		const provenanceColumns = [
-			["sender_lease_key", "TEXT"],
-			["sender_generation", "INTEGER"],
-			["sender_holder_pid", "INTEGER"],
-			["sender_holder_start", "TEXT"],
-			["writer_pid", "INTEGER"],
-			["writer_start", "TEXT"],
-		] as const;
-		for (const [name, sqlType] of provenanceColumns) {
-			if (columns.some((column) => column.name === name)) continue;
-			try {
-				this.db.exec(`ALTER TABLE messages ADD COLUMN ${name} ${sqlType}`);
-			} catch (error) {
-				if (
-					!new RegExp(`duplicate column name: ${name}`, "i").test(
-						(error as Error).message,
-					)
-				) {
-					throw error;
-				}
-			}
-		}
-		this.migrateMessageTypeConstraint();
-		// FLY-1328: who disposed of this question — 'owner_closed' (the owning
-		// runner's teardown cascade) / 'owner_closed_sweep' (the patrol catching a
-		// runner that died without one). NULL for every pre-FLY-1328 row and for
-		// every disposal the flag is off for. Deliberately added AFTER the rebuild
-		// above: that rebuild carries a fixed column list, so a pre-FLY-1279
-		// database must rebuild first and gain the column second, or the column is
-		// dropped on the way through. (The converse — a database with resolved_via
-		// but no ack_receipt — cannot exist: within one open, rebuild always runs
-		// before this ADD.) Same duplicate-column race tolerance as delivered_at.
-		const postRebuildColumns = this.db
-			.prepare("PRAGMA table_info(messages)")
-			.all() as Array<{ name: string }>;
-		if (!postRebuildColumns.some((c) => c.name === "resolved_via")) {
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN resolved_via TEXT");
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: resolved_via/i.test(msg)) throw err;
-			}
-		}
-		// Existing answered/resolved questions already have machine evidence of a
-		// terminal disposition. Do not revive them as actionable during migration.
-		this.db.exec(`
-			UPDATE messages AS q SET relay_state = 'terminal_disposed'
-			 WHERE q.type = 'question'
-			   AND q.relay_state != 'terminal_disposed'
-			   AND (q.resolved_at IS NOT NULL OR EXISTS (
-			     SELECT 1 FROM messages r
-			      WHERE r.parent_id = q.id AND r.type = 'response'
-			   ))
-		`);
-		this.db.exec(
-			"CREATE INDEX IF NOT EXISTS idx_messages_checkpoint ON messages(checkpoint) WHERE checkpoint IS NOT NULL",
-		);
-		this.db.exec(
-			"CREATE INDEX IF NOT EXISTS idx_messages_logical_event ON messages(logical_event_id) WHERE logical_event_id IS NOT NULL",
-		);
-
 		const sessionColumns = this.db
 			.prepare("PRAGMA table_info(sessions)")
 			.all() as Array<{ name: string }>;
@@ -1109,181 +870,17 @@ export class CommDB {
 		`);
 	}
 
-	/** FLY-1279: SQLite cannot ALTER a CHECK constraint, so add ack_receipt by
-	 * rebuilding the table once. All columns are present before this runs. */
-	private migrateMessageTypeConstraint(): void {
-		const schema = this.db
-			.prepare(
-				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
-			)
-			.get() as { sql?: string } | undefined;
-		if (schema?.sql?.includes("'ack_receipt'")) return;
-
-		this.db.pragma("foreign_keys = OFF");
-		try {
-			this.db.transaction(() => {
-				this.db.exec(`
-					ALTER TABLE messages RENAME TO messages_fly1279_legacy;
-					CREATE TABLE messages (
-					  id TEXT PRIMARY KEY,
-					  from_agent TEXT NOT NULL,
-					  to_agent TEXT NOT NULL,
-					  type TEXT NOT NULL CHECK(type IN ('question','response','instruction','progress','ack_receipt')),
-					  content TEXT NOT NULL,
-					  parent_id TEXT,
-					  read_at DATETIME,
-					  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-					  expires_at DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
-					  deadline_at TEXT,
-					  checkpoint TEXT,
-					  content_ref TEXT,
-					  content_type TEXT DEFAULT 'text',
-					  resolved_at DATETIME,
-					  delivered_at DATETIME,
-					  attachments TEXT,
-					  kind TEXT,
-					  relay_state TEXT NOT NULL DEFAULT 'open' CHECK(relay_state IN ('open','protected','terminal_disposed')),
-					  logical_event_id TEXT,
-					  sender_lease_key TEXT,
-					  sender_generation INTEGER,
-					  sender_holder_pid INTEGER,
-					  sender_holder_start TEXT,
-					  writer_pid INTEGER,
-					  writer_start TEXT,
-					  FOREIGN KEY (parent_id) REFERENCES messages(id)
-					);
-					INSERT INTO messages (
-					  id, from_agent, to_agent, type, content, parent_id, read_at,
-					  created_at, expires_at, deadline_at, checkpoint, content_ref, content_type,
-					  resolved_at, delivered_at, attachments, kind, relay_state,
-					  logical_event_id, sender_lease_key, sender_generation,
-					  sender_holder_pid, sender_holder_start, writer_pid, writer_start
-					)
-					SELECT id, from_agent, to_agent, type, content, parent_id, read_at,
-					  created_at, expires_at, deadline_at, checkpoint, content_ref, content_type,
-					  resolved_at, delivered_at, attachments, kind, relay_state,
-					  logical_event_id, sender_lease_key, sender_generation,
-					  sender_holder_pid, sender_holder_start, writer_pid, writer_start
-					FROM messages_fly1279_legacy;
-					DROP TABLE messages_fly1279_legacy;
-					CREATE UNIQUE INDEX idx_unique_response ON messages(parent_id) WHERE type = 'response';
-					CREATE INDEX idx_messages_to_agent ON messages(to_agent, type, created_at);
-					CREATE INDEX idx_messages_parent ON messages(parent_id);
-					CREATE INDEX idx_messages_expires ON messages(expires_at);
-				`);
-			})();
-		} finally {
-			this.db.pragma("foreign_keys = ON");
-		}
-	}
-
-	private applyReceiptRootLineageMigration(): void {
-		this.db.exec(`
-			CREATE TABLE IF NOT EXISTS receipt_root_lineage (
-			  receipt_id     TEXT PRIMARY KEY,
-			  execution_id  TEXT NOT NULL,
-			  question_id   TEXT NOT NULL,
-			  root_lead_id  TEXT NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS idx_receipt_root_lineage_execution
-			  ON receipt_root_lineage(execution_id, receipt_id);
-			INSERT OR IGNORE INTO receipt_root_lineage
-			  (receipt_id, execution_id, question_id, root_lead_id)
-			SELECT root.id, source.from_agent, source.id, root.to_lead
-			  FROM lead_inbox root
-			  JOIN messages source ON source.id = root.ref_message_id
-			 WHERE root.resend_of IS NULL;
-			CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_capture
-			AFTER INSERT ON lead_inbox
-			WHEN NEW.resend_of IS NULL AND NEW.ref_message_id IS NOT NULL
-			BEGIN
-			  INSERT OR IGNORE INTO receipt_root_lineage
-			    (receipt_id, execution_id, question_id, root_lead_id)
-			  SELECT NEW.id, source.from_agent, source.id, NEW.to_lead
-			    FROM messages source
-			   WHERE source.id = NEW.ref_message_id;
-			END;
-			CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_update
-			BEFORE UPDATE ON receipt_root_lineage
-			BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
-			CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_delete
-			BEFORE DELETE ON receipt_root_lineage
-			BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
-		`);
-	}
-
 	purgeExpired(): number {
-		return this.purgeExpiredWithRefs();
+		const queue = new MailboxQueue(this.db);
+		const archived = queue.archiveDueFamilies({
+			now: new Date().toISOString(),
+		});
+		queue.drainContentRefGc({ now: new Date().toISOString() });
+		return archived.archivedMessages;
 	}
 
 	purgeExpiredWithRefs(): number {
-		if (!commDbProtectionEnabled()) {
-			// Exact pre-FLY-1279 behavior for emergency rollback.
-			const refs = this.db
-				.prepare(
-					`SELECT content_ref FROM messages
-					 WHERE (expires_at < datetime('now')
-					    OR parent_id IN (SELECT id FROM messages WHERE expires_at < datetime('now')))
-					   AND content_ref IS NOT NULL`,
-				)
-				.all() as Array<{ content_ref: string }>;
-			for (const { content_ref } of refs) deleteContentRefFile(content_ref);
-			const childResult = this.db
-				.prepare(
-					"DELETE FROM messages WHERE parent_id IN (SELECT id FROM messages WHERE expires_at < datetime('now'))",
-				)
-				.run();
-			const parentResult = this.db
-				.prepare("DELETE FROM messages WHERE expires_at < datetime('now')")
-				.run();
-			return childResult.changes + parentResult.changes;
-		}
-
-		const deletableExpired = (
-			alias: string,
-		) => `${alias}.expires_at < datetime('now')
-			AND NOT (
-				${alias}.type = 'question'
-				AND ${alias}.relay_state != 'terminal_disposed'
-				AND NOT EXISTS (
-					SELECT 1 FROM messages response
-					 WHERE response.parent_id = ${alias}.id AND response.type = 'response'
-				)
-			)`;
-		// Collect content_ref files from both expired messages and their children
-		const refs = this.db
-			.prepare(
-				`SELECT message.content_ref FROM messages message
-				 WHERE (${deletableExpired("message")}
-				    OR message.parent_id IN (
-				      SELECT parent.id FROM messages parent
-				       WHERE ${deletableExpired("parent")}
-				    ))
-				   AND message.content_ref IS NOT NULL`,
-			)
-			.all() as Array<{ content_ref: string }>;
-		for (const { content_ref } of refs) {
-			deleteContentRefFile(content_ref);
-		}
-		// FLY-80: Delete child messages (responses) before parents to satisfy FK constraint.
-		// better-sqlite3 enforces foreign_keys=ON by default.
-		const childResult = this.db
-			.prepare(
-				`DELETE FROM messages WHERE parent_id IN (
-				   SELECT parent.id FROM messages parent
-				    WHERE ${deletableExpired("parent")}
-				 )`,
-			)
-			.run();
-		const parentResult = this.db
-			.prepare(
-				`DELETE FROM messages WHERE id IN (
-				   SELECT message.id FROM messages message
-				    WHERE ${deletableExpired("message")}
-				 )`,
-			)
-			.run();
-		return childResult.changes + parentResult.changes;
+		return this.purgeExpired();
 	}
 
 	cleanupReadMessages(ttlHours = 24): number {
@@ -1291,52 +888,14 @@ export class CommDB {
 	}
 
 	cleanupReadMessagesWithRefs(ttlHours = 24): number {
-		const cleanupCondition = (alias: string) => `${alias}.read_at IS NOT NULL
-			AND ${alias}.created_at < datetime('now', '-' || ? || ' hours')
-			${
-				commDbProtectionEnabled()
-					? `AND NOT (
-						${alias}.type = 'question'
-						AND ${alias}.relay_state != 'terminal_disposed'
-						AND NOT EXISTS (
-							SELECT 1 FROM messages response
-							 WHERE response.parent_id = ${alias}.id AND response.type = 'response'
-						)
-					)`
-					: ""
-			}`;
-		const refs = this.db
-			.prepare(
-				`SELECT message.content_ref FROM messages message
-			 WHERE (${cleanupCondition("message")}
-			    OR message.parent_id IN (
-			      SELECT parent.id FROM messages parent
-			       WHERE ${cleanupCondition("parent")}
-			    ))
-			 AND message.content_ref IS NOT NULL`,
-			)
-			.all(ttlHours, ttlHours) as Array<{ content_ref: string }>;
-		for (const { content_ref } of refs) {
-			deleteContentRefFile(content_ref);
-		}
-		// FLY-80: Delete child messages before parents to satisfy FK constraint
-		const childResult = this.db
-			.prepare(
-				`DELETE FROM messages WHERE parent_id IN (
-				   SELECT parent.id FROM messages parent
-				    WHERE ${cleanupCondition("parent")}
-				 )`,
-			)
-			.run(ttlHours);
-		const parentResult = this.db
-			.prepare(
-				`DELETE FROM messages WHERE id IN (
-				   SELECT message.id FROM messages message
-				    WHERE ${cleanupCondition("message")}
-				 )`,
-			)
-			.run(ttlHours);
-		return childResult.changes + parentResult.changes;
+		const retentionMs = Math.max(72, ttlHours) * 60 * 60_000;
+		const queue = new MailboxQueue(this.db);
+		const archived = queue.archiveDueFamilies({
+			now: new Date().toISOString(),
+			retentionMs,
+		});
+		queue.drainContentRefGc({ now: new Date().toISOString() });
+		return archived.archivedMessages;
 	}
 
 	insertQuestion(
@@ -1357,7 +916,7 @@ export class CommDB {
 			 * founder-reply binding candidate set; all other question semantics
 			 * (relay, pending, liveness) unchanged. */
 			kind?: "report";
-			/** Queue-native SLA copied into lead_inbox during admission. */
+			/** Queue-native SLA carried by the canonical mailbox row. */
 			deadlineAt?: string;
 		},
 	): string {
@@ -1376,7 +935,7 @@ export class CommDB {
 				.prepare(
 					`SELECT id, from_agent, to_agent, type, content, checkpoint,
 					        content_ref, content_type, kind, deadline_at
-					   FROM messages WHERE id = ?`,
+					   FROM mailbox_message_projection WHERE id = ?`,
 				)
 				.get(id) as Message | undefined;
 			if (existing) {
@@ -1396,43 +955,28 @@ export class CommDB {
 				return id;
 			}
 		}
-		if (customTtl) {
-			this.db
-				.prepare(
-					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type, kind, deadline_at, expires_at)
-		 VALUES (?, ?, ?, 'question', ?, ?, ?, ?, ?, ?, datetime('now', ?))`,
-				)
-				.run(
-					id,
-					fromAgent,
-					toAgent,
-					content,
-					opts?.checkpoint ?? null,
-					opts?.contentRef ?? null,
-					opts?.contentType ?? "text",
-					opts?.kind ?? null,
-					opts?.deadlineAt ?? null,
-					`+${Math.floor(ttl as number)} seconds`,
-				);
-		} else {
-			// Default-TTL path (byte-compat with the pre-FLY-245 schema default).
-			this.db
-				.prepare(
-					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type, kind, deadline_at)
-		 VALUES (?, ?, ?, 'question', ?, ?, ?, ?, ?, ?)`,
-				)
-				.run(
-					id,
-					fromAgent,
-					toAgent,
-					content,
-					opts?.checkpoint ?? null,
-					opts?.contentRef ?? null,
-					opts?.contentType ?? "text",
-					opts?.kind ?? null,
-					opts?.deadlineAt ?? null,
-				);
-		}
+		const now = new Date();
+		new MailboxQueue(this.db).enqueue({
+			id,
+			deliveryId: `question:${toAgent}:${id}`,
+			fromAgent,
+			toAgent,
+			recipientKind: toAgent === "bridge" ? "bridge" : "lead",
+			type: "question",
+			content,
+			checkpoint: opts?.checkpoint ?? null,
+			contentRef: opts?.contentRef ?? null,
+			contentType: opts?.contentType ?? "text",
+			kind: opts?.kind ?? null,
+			deadlineAt: opts?.deadlineAt ?? null,
+			expiresAt: new Date(
+				now.getTime() +
+					(customTtl ? Math.floor(ttl as number) * 1000 : 72 * 60 * 60 * 1000),
+			).toISOString(),
+			createdAt: now.toISOString(),
+			priority: opts?.kind === "report" ? 2 : 1,
+			senderRef: encodeSenderRef(),
+		});
 		return id;
 	}
 
@@ -1449,10 +993,10 @@ export class CommDB {
 	claimLifecycleConsent(questionId: string, checkpoint: string): boolean {
 		const info = this.db
 			.prepare(
-				`UPDATE messages SET resolved_at = datetime('now'),
+				`UPDATE mailbox SET resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 				 relay_state = 'terminal_disposed'
          WHERE id = ? AND type = 'question' AND checkpoint = ?
-           AND resolved_at IS NULL AND expires_at > datetime('now')`,
+			   AND resolved_at IS NULL AND datetime(expires_at) > datetime('now')`,
 			)
 			.run(questionId, checkpoint);
 		return info.changes === 1;
@@ -1475,21 +1019,22 @@ export class CommDB {
 	): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "relay_state != 'terminal_disposed'"
-			: "expires_at > datetime('now')";
+			: "datetime(expires_at) > datetime('now')";
 		const info = this.db
 			.prepare(
-				`UPDATE messages SET
-				 resolved_at = datetime('now'),
-				 read_at = COALESCE(read_at, datetime('now')),
-				 expires_at = datetime('now'),
+				`UPDATE mailbox SET
+				 resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+				 state = 'ACKED',
+				 acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+				 expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 				 relay_state = 'terminal_disposed',
-				 superseded_at = CASE WHEN ? IS NULL THEN superseded_at ELSE datetime('now') END,
+				 superseded_at = CASE WHEN ? IS NULL THEN superseded_at ELSE strftime('%Y-%m-%dT%H:%M:%fZ','now') END,
 				 superseded_by = COALESCE(?, superseded_by)
 				 WHERE id = ? AND type = 'question'
 				 AND checkpoint = 'approve_to_ship'
 				 AND ${answerable}
 				 AND NOT EXISTS (
-				   SELECT 1 FROM messages r WHERE r.parent_id = messages.id AND r.type = 'response'
+				   SELECT 1 FROM mailbox r WHERE r.ref_id = mailbox.id AND r.type = 'response'
 				 )`,
 			)
 			.run(opts?.supersededBy ?? null, opts?.supersededBy ?? null, questionId);
@@ -1517,7 +1062,7 @@ export class CommDB {
 			const question = this.db
 				.prepare(
 					`SELECT id, checkpoint, relay_state, resolved_via
-					   FROM messages WHERE id = ? AND type = 'question'`,
+					   FROM mailbox_message_projection WHERE id = ? AND type = 'question'`,
 				)
 				.get(input.questionId) as
 				| {
@@ -1532,7 +1077,7 @@ export class CommDB {
 			}
 			const response = this.db
 				.prepare(
-					"SELECT 1 FROM messages WHERE parent_id = ? AND type = 'response' LIMIT 1",
+					"SELECT 1 FROM mailbox_message_projection WHERE parent_id = ? AND type = 'response' LIMIT 1",
 				)
 				.get(input.questionId);
 			if (response) {
@@ -1544,9 +1089,10 @@ export class CommDB {
 			if (!alreadySettled) {
 				const updated = this.db
 					.prepare(
-						`UPDATE messages SET
+						`UPDATE mailbox SET
 						   resolved_at = ?,
-						   read_at = COALESCE(read_at, ?),
+						   state = 'ACKED',
+						   acked_at = COALESCE(acked_at, ?),
 						   expires_at = ?,
 						   relay_state = 'terminal_disposed',
 						   resolved_via = ?,
@@ -1555,8 +1101,8 @@ export class CommDB {
 						   AND checkpoint = 'approve_to_ship'
 						   AND relay_state != 'terminal_disposed'
 						   AND NOT EXISTS (
-						     SELECT 1 FROM messages response
-						      WHERE response.parent_id = messages.id
+						     SELECT 1 FROM mailbox response
+						      WHERE response.ref_id = mailbox.id
 						        AND response.type = 'response'
 						   )`,
 					)
@@ -1571,7 +1117,7 @@ export class CommDB {
 				if (updated.changes !== 1) {
 					const lateResponse = this.db
 						.prepare(
-							"SELECT 1 FROM messages WHERE parent_id = ? AND type = 'response' LIMIT 1",
+							"SELECT 1 FROM mailbox_message_projection WHERE parent_id = ? AND type = 'response' LIMIT 1",
 						)
 						.get(input.questionId);
 					return {
@@ -1586,15 +1132,16 @@ export class CommDB {
 			const receiptIds = (
 				this.db
 					.prepare(
-						`SELECT id FROM lead_inbox
-						  WHERE resend_of IS NULL AND ref_message_id = ?
-						  ORDER BY seq`,
+						`SELECT receipt_id FROM receipt_root_lineage
+						  WHERE question_id = ? ORDER BY receipt_id`,
 					)
-					.all(input.questionId) as Array<{ id: string }>
-			).map((row) => row.id);
-			const queue = new LeadInboxQueue(this.db);
+					.all(input.questionId) as Array<{ receipt_id: string }>
+			).map((row) => row.receipt_id);
+			const queue = new MailboxQueue(this.db);
 			for (const receiptId of receiptIds) {
-				queue.markDisposed(receiptId, {
+				queue.settle({
+					messageOrDeliveryId: receiptId,
+					event: "disposed",
 					now: input.now,
 					evidence: {
 						v: 1,
@@ -1623,15 +1170,13 @@ export class CommDB {
 		return (
 			this.db
 				.prepare(
-					`SELECT DISTINCT root.id
-					   FROM receipt_root_lineage lineage
-					   JOIN lead_inbox root ON root.id = lineage.receipt_id
-					  WHERE root.resend_of IS NULL
-					    AND lineage.execution_id = ?
-					  ORDER BY root.seq`,
+					`SELECT DISTINCT receipt_id
+					   FROM receipt_root_lineage
+					  WHERE execution_id = ?
+					  ORDER BY receipt_id`,
 				)
-				.all(executionId) as Array<{ id: string }>
-		).map((row) => row.id);
+				.all(executionId) as Array<{ receipt_id: string }>
+		).map((row) => row.receipt_id);
 	}
 
 	getReceiptSettlementLineage(receiptId: string):
@@ -1647,19 +1192,20 @@ export class CommDB {
 		| undefined {
 		return this.db
 			.prepare(
-				`SELECT root.id AS receiptId,
+				`SELECT lineage.receipt_id AS receiptId,
 				        lineage.execution_id AS executionId,
 				        lineage.question_id AS questionId,
 				        owner.project_name AS projectName,
 				        owner.issue_id AS issueId,
 				        lineage.root_lead_id AS rootLeadId,
 				        owner.lead_id AS sessionLeadId
-				   FROM lead_inbox root
-				   JOIN receipt_root_lineage lineage
-				     ON lineage.receipt_id = root.id
+				   FROM receipt_root_lineage lineage
+				   JOIN mailbox_identity identity
+				     ON identity.delivery_id = lineage.receipt_id
+				    AND identity.id = lineage.question_id
 				   JOIN session_receipt_lineage owner
 				     ON owner.execution_id = lineage.execution_id
-				  WHERE root.id = ? AND root.resend_of IS NULL`,
+				  WHERE lineage.receipt_id = ?`,
 			)
 			.get(receiptId) as
 			| {
@@ -1695,74 +1241,66 @@ export class CommDB {
 		| { kind: "missing"; receiptId: string } {
 		assertUtcIsoTimestamp(input.now, "now");
 		const settle = this.db.transaction(() => {
-			const queue = new LeadInboxQueue(this.db);
-			const root = queue.getById(input.receiptId);
-			if (!root)
-				return { kind: "missing" as const, receiptId: input.receiptId };
-			if (root.resend_of !== null) {
-				throw new Error(
-					`receipt lineage requires a canonical root: ${root.id}`,
-				);
-			}
-			if (!root.ref_message_id) {
-				throw new Error(`receipt lineage has no source message: ${root.id}`);
-			}
 			const lineage = this.db
 				.prepare(
 					`SELECT lineage.execution_id, lineage.question_id
 					   FROM receipt_root_lineage lineage
+					   JOIN mailbox_identity identity
+					     ON identity.delivery_id = lineage.receipt_id
+					    AND identity.id = lineage.question_id
 					  WHERE lineage.receipt_id = ?`,
 				)
-				.get(root.id) as
+				.get(input.receiptId) as
 				| { execution_id: string; question_id: string }
 				| undefined;
-			if (
-				!lineage ||
-				lineage.execution_id !== input.expectedExecutionId ||
-				lineage.question_id !== root.ref_message_id
-			) {
+			if (!lineage)
+				return { kind: "missing" as const, receiptId: input.receiptId };
+			if (lineage.execution_id !== input.expectedExecutionId) {
 				throw new Error(
-					`receipt lineage mismatch for ${root.id}: expected ${input.expectedExecutionId}`,
+					`receipt lineage mismatch for ${input.receiptId}: expected ${input.expectedExecutionId}`,
 				);
 			}
-			if (root.processed_at !== null || root.processed_evidence !== null) {
-				if (root.processed_at === null || root.processed_evidence === null) {
-					throw new Error(`receipt ${root.id} has partial processed evidence`);
-				}
-				return { kind: "processing_won" as const, receiptId: root.id };
-			}
+			const queue = new MailboxQueue(this.db);
+			const existing = queue.getSettlement(input.receiptId);
+			if (existing?.event === "processed")
+				return { kind: "processing_won" as const, receiptId: input.receiptId };
 			const evidence: ProcessedEvidenceV1 = {
 				v: 1,
 				kind: "terminal_subject_settlement",
-				ref: root.id,
+				ref: input.receiptId,
 				actor: "terminal-receipt-projector",
 				actor_kind: "bridge-protocol",
 				fence: {
 					execution_id: input.expectedExecutionId,
 					reason: input.reason,
 				},
-				basis: [`receipt:${root.id}`, `source:${root.ref_message_id}`],
+				basis: [`receipt:${input.receiptId}`, `source:${lineage.question_id}`],
 			};
-			if (root.disposed_at !== null || root.disposed_evidence !== null) {
-				if (root.disposed_at === null || root.disposed_evidence === null) {
-					throw new Error(`receipt ${root.id} has partial disposed evidence`);
-				}
+			if (existing?.event === "disposed") {
 				if (
 					!isEquivalentTerminalReceiptDisposal(
-						root.disposed_evidence,
-						root.id,
-						root.ref_message_id,
+						JSON.stringify(existing.evidence),
+						input.receiptId,
+						lineage.question_id,
 						input.expectedExecutionId,
 					)
 				) {
 					throw new Error(
-						`receipt ${root.id} has conflicting disposed evidence`,
+						`receipt ${input.receiptId} has conflicting disposed evidence`,
 					);
 				}
-				return { kind: "already_disposed" as const, receiptId: root.id };
+				return {
+					kind: "already_disposed" as const,
+					receiptId: input.receiptId,
+				};
 			}
-			queue.markDisposed(root.id, { now: input.now, evidence });
-			return { kind: "disposed" as const, receiptId: root.id };
+			queue.settle({
+				messageOrDeliveryId: input.receiptId,
+				event: "disposed",
+				now: input.now,
+				evidence,
+			});
+			return { kind: "disposed" as const, receiptId: input.receiptId };
 		});
 		return settle.immediate();
 	}
@@ -1799,29 +1337,30 @@ export class CommDB {
 		const protection = commDbProtectionEnabled();
 		const answerable = protection
 			? "relay_state != 'terminal_disposed'"
-			: "expires_at > datetime('now')";
+			: "datetime(expires_at) > datetime('now')";
 		// Legacy pending filters on expires_at, so the forensic window only applies
 		// where relay_state does the filtering — otherwise the row would linger in
 		// the very queue this is clearing.
 		const expiry =
 			opts.retention === "ask_forensic" && protection
-				? `datetime('now', '${ASK_FORENSIC_TTL_SQL}')`
-				: "datetime('now')";
+				? `strftime('%Y-%m-%dT%H:%M:%fZ','now', '${ASK_FORENSIC_TTL_SQL}')`
+				: "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 		const info = this.db
 			.prepare(
-				`UPDATE messages SET
-				 resolved_at = datetime('now'),
-				 read_at = COALESCE(read_at, datetime('now')),
+				`UPDATE mailbox SET
+				 resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+				 state = 'ACKED',
+				 acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 				 expires_at = ${expiry},
 				 relay_state = 'terminal_disposed',
-				 superseded_at = CASE WHEN ? IS NULL THEN superseded_at ELSE datetime('now') END,
+				 superseded_at = CASE WHEN ? IS NULL THEN superseded_at ELSE strftime('%Y-%m-%dT%H:%M:%fZ','now') END,
 				 superseded_by = COALESCE(?, superseded_by)
 				 ${opts.resolvedVia ? ", resolved_via = ?" : ""}
 				 WHERE id = ? AND type = 'question'
 				 AND from_agent = ?
 				 AND ${answerable}
 				 AND NOT EXISTS (
-				   SELECT 1 FROM messages r WHERE r.parent_id = messages.id AND r.type = 'response'
+				   SELECT 1 FROM mailbox r WHERE r.ref_id = mailbox.id AND r.type = 'response'
 				 )`,
 			)
 			.run(
@@ -1842,13 +1381,13 @@ export class CommDB {
 	isQuestionPending(questionId: string): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		const row = this.db
 			.prepare(
-				`SELECT 1 AS hit FROM messages q
+				`SELECT 1 AS hit FROM mailbox_message_projection q
 	       WHERE q.id = ? AND q.type = 'question'
 	       AND NOT EXISTS (
-	         SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+	         SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
 	       )
 	       AND ${answerable}`,
 			)
@@ -1860,20 +1399,20 @@ export class CommDB {
 	getGatesForSupersede(): GateSupersedeRow[] {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		return this.db
 			.prepare(
 				`SELECT q.rowid AS row_id, q.id, q.from_agent, q.checkpoint,
 				        q.created_at, q.superseded_at, q.superseded_by,
 				        CASE WHEN EXISTS (
-				          SELECT 1 FROM messages r
+				          SELECT 1 FROM mailbox_message_projection r
 				           WHERE r.parent_id = q.id AND r.type = 'response'
 				        ) THEN 1 ELSE 0 END AS answered,
 				        CASE WHEN ${answerable} AND NOT EXISTS (
-				          SELECT 1 FROM messages r
+				          SELECT 1 FROM mailbox_message_projection r
 				           WHERE r.parent_id = q.id AND r.type = 'response'
 				        ) THEN 1 ELSE 0 END AS pending
-				   FROM messages q
+				   FROM mailbox_message_projection q
 				  WHERE q.type = 'question'
 				    AND q.checkpoint IN ('approve_to_ship','review_design','review_code')
 				    AND q.superseded_at IS NULL
@@ -1889,11 +1428,11 @@ export class CommDB {
 				`SELECT q.rowid AS row_id, q.id, q.from_agent, q.checkpoint,
 				        q.created_at, q.superseded_at, q.superseded_by,
 				        CASE WHEN EXISTS (
-				          SELECT 1 FROM messages r
+				          SELECT 1 FROM mailbox_message_projection r
 				           WHERE r.parent_id = q.id AND r.type = 'response'
 				        ) THEN 1 ELSE 0 END AS answered,
 				        0 AS pending
-				   FROM messages q
+				   FROM mailbox_message_projection q
 				  WHERE q.type = 'question'
 				    AND q.checkpoint IN ('approve_to_ship','review_design','review_code')
 				    AND q.superseded_at IS NOT NULL
@@ -1911,12 +1450,12 @@ export class CommDB {
 	canSupersedeGate(questionId: string, supersessorId: string): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "old.relay_state != 'terminal_disposed'"
-			: "old.expires_at > datetime('now')";
+			: "datetime(old.expires_at) > datetime('now')";
 		const hit = this.db
 			.prepare(
 				`SELECT 1 AS hit
-				   FROM messages old
-				   JOIN messages newer ON newer.id = ?
+				   FROM mailbox_message_projection old
+				   JOIN mailbox_message_projection newer ON newer.id = ?
 				  WHERE old.id = ?
 				    AND old.type = 'question' AND newer.type = 'question'
 				    AND old.checkpoint = newer.checkpoint
@@ -1925,7 +1464,7 @@ export class CommDB {
 				    AND newer.superseded_at IS NULL
 				    AND ${answerable}
 				    AND NOT EXISTS (
-				      SELECT 1 FROM messages r
+				      SELECT 1 FROM mailbox_message_projection r
 				       WHERE r.parent_id = old.id AND r.type = 'response'
 				    )
 				    AND (newer.created_at > old.created_at OR
@@ -1942,10 +1481,11 @@ export class CommDB {
 	resolveGate(questionId: string, cleanupTtlHours = 24): void {
 		this.db
 			.prepare(
-				`UPDATE messages SET
-				 resolved_at = datetime('now'),
-				 read_at = COALESCE(read_at, datetime('now')),
-				 expires_at = datetime('now', '+' || ? || ' hours'),
+				`UPDATE mailbox SET
+				 resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+				 state = 'ACKED',
+				 acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+				 expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '+' || ? || ' hours'),
 				 relay_state = 'terminal_disposed'
 				 WHERE id = ? AND type = 'question'`,
 			)
@@ -1958,65 +1498,35 @@ export class CommDB {
 		content: string,
 		provenance?: MessageProvenance,
 	): ResponseWriteResult {
-		const question = this.db
-			.prepare("SELECT * FROM messages WHERE id = ? AND type = 'question'")
-			.get(parentId) as Message | undefined;
-		if (!question) {
-			throw new Error(`Question ${parentId} not found`);
-		}
 		return this.db.transaction((): ResponseWriteResult => {
-			const id = randomUUID();
+			const question = this.db
+				.prepare(
+					"SELECT * FROM mailbox_message_projection WHERE id = ? AND type = 'question'",
+				)
+				.get(parentId) as Message | undefined;
+			if (!question) throw new Error(`Question ${parentId} not found`);
 			if (question.checkpoint === "approve_to_ship") {
-				const answerable = commDbProtectionEnabled()
-					? "q.relay_state != 'terminal_disposed'"
-					: "q.expires_at > datetime('now')";
-				const result = this.db
-					.prepare(
-						`INSERT INTO messages (
-						  id, from_agent, to_agent, type, content, parent_id,
-						  sender_lease_key, sender_generation, sender_holder_pid,
-						  sender_holder_start, writer_pid, writer_start
-						)
-						 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-						   FROM messages q
-						  WHERE q.id = ? AND q.type = 'question'
-						    AND q.checkpoint = 'approve_to_ship'
-						    AND q.resolved_at IS NULL
-						    AND q.superseded_at IS NULL
-						    AND ${answerable}
-						    AND NOT EXISTS (
-						      SELECT 1 FROM messages r
-						       WHERE r.parent_id = q.id AND r.type = 'response'
-						    )`,
-					)
-					.run(
-						id,
-						fromAgent,
-						content,
-						...provenanceValues(provenance),
-						parentId,
-					);
-				if (result.changes !== 1) {
+				if (
+					question.resolved_at !== null ||
+					question.superseded_at !== null ||
+					question.relay_state === "terminal_disposed" ||
+					this.getResponse(parentId)
+				) {
 					return { written: false, reason: "gate_not_open" };
 				}
-			} else {
-				this.db
-					.prepare(
-						`INSERT INTO messages (
-					  id, from_agent, to_agent, type, content, parent_id,
-					  sender_lease_key, sender_generation, sender_holder_pid,
-					  sender_holder_start, writer_pid, writer_start
-					) VALUES (?, ?, ?, 'response', ?, ?, ?, ?, ?, ?, ?, ?)`,
-					)
-					.run(
-						id,
-						fromAgent,
-						question.from_agent,
-						content,
-						parentId,
-						...provenanceValues(provenance),
-					);
 			}
+			new MailboxQueue(this.db).enqueue({
+				id: randomUUID(),
+				fromAgent,
+				toAgent: question.from_agent,
+				recipientKind: "runner",
+				type: "response",
+				content,
+				refId: parentId,
+				createdAt: new Date().toISOString(),
+				expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+				senderRef: encodeSenderRef(provenance),
+			});
 			this.markQuestionTerminalDisposed(parentId);
 			return { written: true };
 		})();
@@ -2032,25 +1542,28 @@ export class CommDB {
 		}
 		if (!ackToken) throw new Error("ackToken is required");
 		const id = randomUUID();
-		this.db
-			.prepare(
-				`INSERT INTO messages (id, from_agent, to_agent, type, content)
-				 VALUES (?, ?, 'bridge', 'ack_receipt', ?)`,
-			)
-			.run(
-				id,
-				fromAgent,
-				JSON.stringify({ event_seq: eventSeq, ack_token: ackToken }),
-			);
+		new MailboxQueue(this.db).enqueue({
+			id,
+			deliveryId: `ack:${fromAgent}:${id}`,
+			fromAgent,
+			toAgent: "bridge",
+			recipientKind: "bridge",
+			type: "ack_receipt",
+			msgClass: "protocol",
+			content: JSON.stringify({ event_seq: eventSeq, ack_token: ackToken }),
+			createdAt: new Date().toISOString(),
+			expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+			senderRef: encodeSenderRef(),
+		});
 		return id;
 	}
 
 	getPendingAckReceipts(): Message[] {
 		return this.db
 			.prepare(
-				`SELECT * FROM messages
+				`SELECT * FROM mailbox_message_projection
 				 WHERE type = 'ack_receipt' AND read_at IS NULL
-				   AND expires_at > datetime('now')
+				   AND datetime(expires_at) > datetime('now')
 				 ORDER BY created_at, id`,
 			)
 			.all() as Message[];
@@ -2060,8 +1573,10 @@ export class CommDB {
 		return (
 			this.db
 				.prepare(
-					`UPDATE messages SET read_at = datetime('now')
-					 WHERE id = ? AND type = 'ack_receipt' AND read_at IS NULL`,
+					`UPDATE mailbox SET state = 'ACKED',
+					   acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+					 WHERE id = ? AND type = 'ack_receipt'
+					   AND state IN ('QUEUED','LEASED')`,
 				)
 				.run(id).changes === 1
 		);
@@ -2071,12 +1586,12 @@ export class CommDB {
 		if (!commDbProtectionEnabled()) return true;
 		const result = this.db
 			.prepare(
-				`UPDATE messages SET
+				`UPDATE mailbox SET
 				   relay_state = 'protected',
-				   logical_event_id = COALESCE(logical_event_id, ?)
+				   source_ref = COALESCE(source_ref, ?)
 				 WHERE id = ? AND type = 'question'
 				   AND relay_state != 'terminal_disposed'
-				   AND (logical_event_id IS NULL OR logical_event_id = ?)`,
+				   AND (source_ref IS NULL OR source_ref = ?)`,
 			)
 			.run(logicalEventId, questionId, logicalEventId);
 		return result.changes === 1;
@@ -2085,7 +1600,7 @@ export class CommDB {
 	markQuestionTerminalDisposed(questionId: string): boolean {
 		const result = this.db
 			.prepare(
-				`UPDATE messages SET relay_state = 'terminal_disposed'
+				`UPDATE mailbox SET relay_state = 'terminal_disposed'
 				 WHERE id = ? AND type = 'question'
 				   AND relay_state != 'terminal_disposed'`,
 			)
@@ -2112,43 +1627,44 @@ export class CommDB {
 		provenance?: MessageProvenance;
 	}): boolean {
 		const answerable = commDbProtectionEnabled()
-			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
-		return this.db.transaction(() => {
-			const id = randomUUID();
-			const result = this.db
-				.prepare(
-					`INSERT INTO messages (
-					  id, from_agent, to_agent, type, content, parent_id,
-					  sender_lease_key, sender_generation, sender_holder_pid,
-					  sender_holder_start, writer_pid, writer_start
+			? "relay_state != 'terminal_disposed'"
+			: "datetime(expires_at) > datetime('now')";
+		return this.db
+			.transaction(() => {
+				const question = this.db
+					.prepare(
+						`SELECT * FROM mailbox_message_projection
+					 WHERE id = ? AND type = 'question' AND from_agent = ?
+					   AND checkpoint = ? AND resolved_at IS NULL AND ${answerable}`,
 					)
-				 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-				   FROM messages q
-				  WHERE q.id = ?
-				    AND q.type = 'question'
-				    AND q.from_agent = ?
-				    AND q.checkpoint = ?
-				    AND q.resolved_at IS NULL
-				    AND ${answerable}
-				    AND NOT EXISTS (
-				      SELECT 1 FROM messages r
-				       WHERE r.parent_id = q.id AND r.type = 'response'
-				    )`,
-				)
-				.run(
-					id,
-					input.fromAgent,
-					input.content,
-					...provenanceValues(input.provenance),
-					input.questionId,
-					input.expectedOwner,
-					input.expectedCheckpoint,
-				);
-			if (result.changes !== 1) return false;
-			this.markQuestionTerminalDisposed(input.questionId);
-			return true;
-		})();
+					.get(
+						input.questionId,
+						input.expectedOwner,
+						input.expectedCheckpoint,
+					) as Message | undefined;
+				if (
+					!question ||
+					question.relay_state === "terminal_disposed" ||
+					this.getResponse(input.questionId)
+				) {
+					return false;
+				}
+				new MailboxQueue(this.db).enqueue({
+					id: randomUUID(),
+					fromAgent: input.fromAgent,
+					toAgent: question.from_agent,
+					recipientKind: "runner",
+					type: "response",
+					content: input.content,
+					refId: input.questionId,
+					createdAt: new Date().toISOString(),
+					expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+					senderRef: encodeSenderRef(input.provenance),
+				});
+				this.markQuestionTerminalDisposed(input.questionId);
+				return true;
+			})
+			.immediate();
 	}
 
 	/**
@@ -2171,18 +1687,12 @@ export class CommDB {
 		const at = new Date().toISOString();
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
-		return this.db.transaction(() => {
-			const responseId = randomUUID();
-			const result = this.db
-				.prepare(
-					`INSERT INTO messages (
-					  id, from_agent, to_agent, type, content, parent_id,
-					  sender_lease_key, sender_generation, sender_holder_pid,
-					  sender_holder_start, writer_pid, writer_start
-					)
-					 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-					   FROM messages q
+			: "datetime(q.expires_at) > datetime('now')";
+		return this.db
+			.transaction(() => {
+				const question = this.db
+					.prepare(
+						`SELECT q.* FROM mailbox_message_projection q
 					  WHERE q.id = ?
 					    AND q.type = 'question'
 					    AND q.from_agent = ?
@@ -2191,43 +1701,51 @@ export class CommDB {
 					    AND q.superseded_at IS NULL
 					    AND ${answerable}
 					    AND NOT EXISTS (
-					      SELECT 1 FROM messages r
+					      SELECT 1 FROM mailbox_message_projection r
 					       WHERE r.parent_id = q.id AND r.type = 'response'
 					    )`,
-				)
-				.run(
-					responseId,
-					input.fromAgent,
-					input.content,
-					...provenanceValues(input.provenance),
-					input.questionId,
-					input.expectedOwner,
-				);
-			if (result.changes !== 1) return false;
-			this.markQuestionTerminalDisposed(input.questionId);
-			const response = input.payload as
-				| { approved?: unknown; response?: { approved?: unknown } }
-				| undefined;
-			const kind =
-				response?.response?.approved === true || response?.approved === true
-					? "founder_approval"
-					: "founder_feedback";
-			this.db
-				.prepare(
-					`INSERT INTO workflow_source_event
+					)
+					.get(input.questionId, input.expectedOwner) as Message | undefined;
+				if (!question) return false;
+				new MailboxQueue(this.db).enqueue({
+					id: randomUUID(),
+					fromAgent: input.fromAgent,
+					toAgent: question.from_agent,
+					recipientKind: "runner",
+					type: "response",
+					content: input.content,
+					refId: input.questionId,
+					createdAt: at,
+					expiresAt: new Date(
+						Date.parse(at) + 72 * 60 * 60 * 1000,
+					).toISOString(),
+					senderRef: encodeSenderRef(input.provenance),
+				});
+				this.markQuestionTerminalDisposed(input.questionId);
+				const response = input.payload as
+					| { approved?: unknown; response?: { approved?: unknown } }
+					| undefined;
+				const kind =
+					response?.response?.approved === true || response?.approved === true
+						? "founder_approval"
+						: "founder_feedback";
+				this.db
+					.prepare(
+						`INSERT INTO workflow_source_event
 					   (project, source_event_id, kind, payload, payload_digest, schema_version, at)
 					 VALUES (?, ?, ?, ?, ?, 1, ?)`,
-				)
-				.run(
-					input.project,
-					input.sourceEventId,
-					kind,
-					payload,
-					payloadDigest,
-					at,
-				);
-			return true;
-		})();
+					)
+					.run(
+						input.project,
+						input.sourceEventId,
+						kind,
+						payload,
+						payloadDigest,
+						at,
+					);
+				return true;
+			})
+			.immediate();
 	}
 
 	listWorkflowSourceEvents(): WorkflowSourceEvent[] {
@@ -2319,54 +1837,49 @@ export class CommDB {
 			input.graceHours > 0
 				? Math.floor(input.graceHours)
 				: 24;
-		const insertResponse = this.db.prepare(
-			`INSERT INTO messages (
-			   id, from_agent, to_agent, type, content, parent_id,
-			   sender_lease_key, sender_generation, sender_holder_pid,
-			   sender_holder_start, writer_pid, writer_start
-			 )
-			 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-			   FROM messages q
-			  WHERE q.id = ?
-			    AND q.type = 'question'
-			    AND q.from_agent = ?
-			    AND q.checkpoint = ?
-			    AND q.resolved_at IS NULL
-			    AND q.relay_state != 'terminal_disposed'
-			    AND NOT EXISTS (
-			      SELECT 1 FROM messages r
-			       WHERE r.parent_id = q.id AND r.type = 'response'
-			    )`,
-		);
 		const bumpGrace = this.db.prepare(
-			`UPDATE messages SET
-			 resolved_at = datetime('now'),
-			 read_at = COALESCE(read_at, datetime('now')),
-			 expires_at = datetime('now', '+' || ? || ' hours'),
+			`UPDATE mailbox SET
+			 resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+			 state = 'ACKED',
+			 acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			 expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '+' || ? || ' hours'),
 			 relay_state = 'terminal_disposed'
 			 WHERE id = ? AND type = 'question'`,
 		);
 		const txn = this.db.transaction((): boolean => {
-			const res = insertResponse.run(
-				randomUUID(),
-				input.fromAgent,
-				input.content,
-				...provenanceValues(input.provenance),
-				input.questionId,
-				input.expectedOwner,
-				input.expectedCheckpoint,
-			);
-			if (res.changes === 0) return false;
+			const question = this.db
+				.prepare(
+					`SELECT * FROM mailbox_message_projection
+					 WHERE id = ? AND type = 'question' AND from_agent = ?
+					   AND checkpoint = ? AND resolved_at IS NULL
+					   AND relay_state != 'terminal_disposed'`,
+				)
+				.get(input.questionId, input.expectedOwner, input.expectedCheckpoint) as
+				| Message
+				| undefined;
+			if (!question || this.getResponse(input.questionId)) return false;
+			new MailboxQueue(this.db).enqueue({
+				id: randomUUID(),
+				fromAgent: input.fromAgent,
+				toAgent: question.from_agent,
+				recipientKind: "runner",
+				type: "response",
+				content: input.content,
+				refId: input.questionId,
+				createdAt: new Date().toISOString(),
+				expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+				senderRef: encodeSenderRef(input.provenance),
+			});
 			bumpGrace.run(graceHours, input.questionId);
 			return true;
 		});
-		return txn();
+		return txn.immediate();
 	}
 
 	getResponse(questionId: string): Message | undefined {
 		return this.db
 			.prepare(
-				"SELECT * FROM messages WHERE parent_id = ? AND type = 'response'",
+				"SELECT * FROM mailbox_message_projection WHERE parent_id = ? AND type = 'response'",
 			)
 			.get(questionId) as Message | undefined;
 	}
@@ -2463,21 +1976,21 @@ export class CommDB {
 	 * `checkpoint` field without trusting a caller-supplied value.
 	 */
 	getMessageById(id: string): Message | undefined {
-		return this.db.prepare("SELECT * FROM messages WHERE id = ?").get(id) as
-			| Message
-			| undefined;
+		return this.db
+			.prepare("SELECT * FROM mailbox_message_projection WHERE id = ?")
+			.get(id) as Message | undefined;
 	}
 
 	getPendingQuestions(leadId: string): Message[] {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		return this.db
 			.prepare(
-				`SELECT q.* FROM messages q
+				`SELECT q.* FROM mailbox_message_projection q
          WHERE q.to_agent = ? AND q.type = 'question'
          AND NOT EXISTS (
-           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+           SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
          )
 		 AND ${answerable}
          ORDER BY q.created_at ASC`,
@@ -2493,13 +2006,13 @@ export class CommDB {
 	getPendingGatesByRunner(runnerId: string): Message[] {
 		return this.db
 			.prepare(
-				`SELECT q.* FROM messages q
+				`SELECT q.* FROM mailbox_message_projection q
          WHERE q.from_agent = ? AND q.type = 'question'
          AND q.checkpoint IS NOT NULL
          AND NOT EXISTS (
-           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+           SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
          )
-         AND q.expires_at > datetime('now')
+         AND datetime(q.expires_at) > datetime('now')
          ORDER BY q.created_at ASC`,
 			)
 			.all(runnerId) as Message[];
@@ -2515,14 +2028,14 @@ export class CommDB {
 	): Message | undefined {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		return this.db
 			.prepare(
-				`SELECT q.* FROM messages q
+				`SELECT q.* FROM mailbox_message_projection q
          WHERE q.from_agent = ? AND q.type = 'question'
          AND q.checkpoint = ?
          AND NOT EXISTS (
-           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+           SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
          )
 		 AND ${answerable}
          ORDER BY q.created_at DESC
@@ -2551,21 +2064,35 @@ export class CommDB {
 		// same primary key and is ignored instead of duplicated (FLY-1082,
 		// Codex R6). Without it, behavior is byte-identical to before.
 		const id = opts?.dedupeId ?? randomUUID();
-		this.db
-			.prepare(
-				`INSERT ${opts?.dedupeId ? "OR IGNORE " : ""}INTO messages (
-				  id, from_agent, to_agent, type, content,
-				  sender_lease_key, sender_generation, sender_holder_pid,
-				  sender_holder_start, writer_pid, writer_start
-				) VALUES (?, ?, ?, 'instruction', ?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.run(
-				id,
-				fromAgent,
-				toAgent,
-				content,
-				...provenanceValues(opts?.provenance),
-			);
+		if (opts?.dedupeId) {
+			const existing = new MailboxQueue(this.db).getById(id);
+			if (existing) {
+				if (
+					existing.from_agent !== fromAgent ||
+					existing.to_agent !== toAgent ||
+					existing.type !== "instruction" ||
+					existing.content !== content ||
+					existing.sender_ref !== encodeSenderRef(opts.provenance)
+				) {
+					throw new Error(
+						`instruction id ${id} was reused with different content`,
+					);
+				}
+				return id;
+			}
+		}
+		new MailboxQueue(this.db).enqueue({
+			id,
+			fromAgent,
+			toAgent,
+			recipientKind:
+				toAgent === "lead" || toAgent.endsWith("-lead") ? "lead" : "runner",
+			type: "instruction",
+			content,
+			createdAt: new Date().toISOString(),
+			expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+			senderRef: encodeSenderRef(opts?.provenance),
+		});
 		return id;
 	}
 
@@ -2583,20 +2110,57 @@ export class CommDB {
 		content: string,
 		provenance?: MessageProvenance,
 	): boolean {
-		const info = this.db
-			.prepare(
-				`INSERT OR IGNORE INTO messages (
-				  id, from_agent, to_agent, type, content,
-				  sender_lease_key, sender_generation, sender_holder_pid,
-				  sender_holder_start, writer_pid, writer_start
-				) VALUES (?, ?, ?, 'instruction', ?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.run(id, fromAgent, toAgent, content, ...provenanceValues(provenance));
-		return info.changes > 0;
+		const existing = new MailboxQueue(this.db).getById(id);
+		if (existing) {
+			if (
+				existing.from_agent !== fromAgent ||
+				existing.to_agent !== toAgent ||
+				existing.type !== "instruction" ||
+				existing.content !== content ||
+				existing.sender_ref !== encodeSenderRef(provenance)
+			) {
+				throw new Error(
+					`instruction id ${id} was reused with different content`,
+				);
+			}
+			return false;
+		}
+		return (
+			new MailboxQueue(this.db).enqueue({
+				id,
+				fromAgent,
+				toAgent,
+				recipientKind:
+					toAgent === "lead" || toAgent.endsWith("-lead") ? "lead" : "runner",
+				type: "instruction",
+				content,
+				createdAt: new Date().toISOString(),
+				expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+				senderRef: encodeSenderRef(provenance),
+			}).outcome === "inserted"
+		);
 	}
 
-	enqueueFounderHubRoot(input: EnqueueFounderHubRootInput): LeadInboxRow {
-		return new LeadInboxQueue(this.db).enqueueHubRoot(input);
+	enqueueFounderHubRoot(input: EnqueueFounderHubRootInput): MailboxRow {
+		const result = new MailboxQueue(this.db).enqueue({
+			id: input.id,
+			fromAgent: "founder",
+			toAgent: input.toLead,
+			recipientKind: "lead",
+			sourceKind: "founder_reply",
+			sourceRef: input.refMessageId,
+			type: "founder_reply",
+			msgClass: "model",
+			priority: 0,
+			content: input.content,
+			refId: input.refMessageId,
+			createdAt: input.now,
+			senderRef: encodeSenderRef(),
+		});
+		if (result.outcome === "archived") {
+			throw new Error(`founder hub root was already archived: ${input.id}`);
+		}
+		return result.row;
 	}
 
 	/**
@@ -2618,14 +2182,11 @@ export class CommDB {
 		const accepted = new Set(input.acceptedProcessedKinds);
 		return this.db
 			.transaction(() => {
-				const queue = new LeadInboxQueue(this.db);
+				const queue = new MailboxQueue(this.db);
 				const root = queue.getById(input.rootId);
 				if (!root) return { kind: "missing" as const };
-				if (
-					root.disposed_at !== null ||
-					root.disposed_evidence !== null ||
-					(root.processed_at === null) !== (root.processed_evidence === null)
-				) {
+				const settlement = queue.getSettlement(input.rootId);
+				if (settlement?.event === "disposed") {
 					return { kind: "conflict" as const };
 				}
 				let rootPayload: ReturnType<CommDB["parseFounderRootPayload"]>;
@@ -2635,7 +2196,7 @@ export class CommDB {
 					return { kind: "conflict" as const };
 				}
 				if (
-					root.ref_message_id !== rootPayload.msgId ||
+					root.ref_id !== rootPayload.msgId ||
 					input.evidence.actor_kind !== "founder-writer" ||
 					input.evidence.fence.discord_message_id !== rootPayload.msgId
 				) {
@@ -2651,12 +2212,10 @@ export class CommDB {
 				const inputQuestionBasis = inputQuestionBasisEntries[0];
 				let result: "marked" | "verified";
 				let evidenceKind: string;
-				if (root.processed_at !== null && root.processed_evidence !== null) {
+				if (settlement?.event === "processed") {
 					let existingEvidence: ProcessedEvidenceV1;
 					try {
-						existingEvidence = JSON.parse(
-							root.processed_evidence,
-						) as ProcessedEvidenceV1;
+						existingEvidence = settlement.evidence as ProcessedEvidenceV1;
 						assertProcessedEvidence(existingEvidence);
 					} catch {
 						return { kind: "conflict" as const };
@@ -2691,7 +2250,7 @@ export class CommDB {
 						const response = this.db
 							.prepare(
 								`SELECT parent_id, from_agent, type
-								   FROM messages WHERE id = ?`,
+								   FROM mailbox_message_projection WHERE id = ?`,
 							)
 							.get(existingEvidence.ref) as
 							| {
@@ -2733,24 +2292,14 @@ export class CommDB {
 					}
 					result = "verified";
 				} else {
-					queue.markProcessed(input.rootId, {
+					queue.settle({
+						messageOrDeliveryId: input.rootId,
+						event: "processed",
 						now: input.now,
 						evidence: input.evidence,
 					});
 					evidenceKind = input.evidence.kind;
 					result = "marked";
-				}
-				const updated = this.db
-					.prepare(
-						`UPDATE lead_inbox SET routing_state = 'bound',
-						   next_unprocessed_at = NULL
-						 WHERE id = ? AND processed_at IS NOT NULL
-						   AND processed_evidence IS NOT NULL
-						   AND disposed_at IS NULL`,
-					)
-					.run(input.rootId);
-				if (updated.changes !== 1) {
-					return { kind: "conflict" as const, evidenceKind };
 				}
 				return { kind: result, evidenceKind };
 			})
@@ -2764,9 +2313,10 @@ export class CommDB {
 		limit?: number;
 		createdBefore?: string;
 		excludeQuarantined?: boolean;
-	}): LeadInboxRow[] {
-		return new LeadInboxQueue(this.db).listExternalPendingForLane({
+	}): MailboxRow[] {
+		return new MailboxQueue(this.db).listExternalPending({
 			...input,
+			toAgent: input.toLead,
 			idPrefix: `chat:${input.toLead}:`,
 		});
 	}
@@ -2776,22 +2326,17 @@ export class CommDB {
 	 * the same external row delivered. The fixed reason keeps retries idempotent.
 	 */
 	quarantineChatReceipt(input: { receiptId: string; now: string }): boolean {
-		const queue = new LeadInboxQueue(this.db);
-		queue.quarantineExternalDelivery(input.receiptId, {
-			now: input.now,
-			reason: CHAT_DELIVERY_UNCONFIRMED_REASON,
-		});
-		const row = queue.getById(input.receiptId);
-		const alert = queue.getReceiptAlertOutbox(
-			`external_saga_unknown:${input.receiptId}`,
+		const queue = new MailboxQueue(this.db);
+		queue.markDead(
+			input.receiptId,
+			input.now,
+			CHAT_DELIVERY_UNCONFIRMED_REASON,
 		);
+		const row = queue.getById(input.receiptId);
 		return Boolean(
 			row?.carrier === "external" &&
-				row.delivered_at === null &&
-				row.disposed_at === null &&
-				row.disposition === "delivery_quarantined" &&
-				row.last_error === CHAT_DELIVERY_UNCONFIRMED_REASON &&
-				alert?.kind === "external_saga_unknown",
+				row.state === "DEAD" &&
+				row.dead_reason === CHAT_DELIVERY_UNCONFIRMED_REASON,
 		);
 	}
 
@@ -2800,7 +2345,7 @@ export class CommDB {
 	 * eligible pending runner question, or close it explicitly as no-route.
 	 * New FLY-1392 roots carry no Bridge-generated candidates; legacy promoted
 	 * families retain their frozen-candidate checks. The business write,
-	 * processed receipt(s), and wake intent share this transaction.
+	 * response and processed receipt(s) share this transaction.
 	 */
 	routeFounderReply(input: RouteFounderReplyInput): RouteFounderReplyResult {
 		assertUtcIsoTimestamp(input.now, "now");
@@ -2816,74 +2361,40 @@ export class CommDB {
 			);
 		}
 		const rootId = founderMessageRootId(leadId, msgId);
-		const routeId = founderRouteRowId(leadId, msgId);
 		const fence = this.processedFenceFromProvenance(input.provenance);
 
 		return this.db
 			.transaction((): RouteFounderReplyResult => {
-				const queue = new LeadInboxQueue(this.db);
+				const queue = new MailboxQueue(this.db);
 				const root = queue.getById(rootId);
-				const route = queue.getById(routeId);
 				if (
 					!root ||
-					root.to_lead !== leadId ||
-					root.source !== "founder_reply" ||
+					root.to_agent !== leadId ||
+					root.source_kind !== "founder_reply" ||
 					root.type !== "founder_reply" ||
-					root.ref_message_id !== msgId
+					root.ref_id !== msgId
 				) {
 					throw new Error(
 						`founder receipt root ${leadId}:${msgId} is unavailable`,
 					);
 				}
-				if (
-					route &&
-					(route.to_lead !== leadId ||
-						route.family_root_id !== rootId ||
-						!route.candidates_json)
-				) {
-					throw new Error(
-						`founder route family ${leadId}:${msgId} is unavailable`,
-					);
-				}
 				const rootPayload = this.parseFounderRootPayload(root.content);
-				const candidates = route
-					? this.parseFounderRouteCandidates(route.candidates_json as string)
-					: null;
-				if (candidates && candidates.leadId !== leadId) {
-					throw new Error("founder route lead scope mismatch");
-				}
-
-				if (
-					root.processed_at !== null ||
-					(route !== undefined && route.processed_at !== null)
-				) {
-					if (
-						root.processed_at === null ||
-						!root.processed_evidence ||
-						(route !== undefined &&
-							(route.processed_at === null ||
-								root.processed_evidence !== route.processed_evidence))
-					) {
-						throw new Error("founder route family has split processed state");
+				const settlement = queue.getSettlement(rootId);
+				if (settlement) {
+					if (settlement.event !== "processed") {
+						throw new Error("founder route was disposed by another action");
 					}
-					const evidence = JSON.parse(
-						root.processed_evidence,
-					) as ProcessedEvidenceV1;
+					const evidence = settlement.evidence as ProcessedEvidenceV1;
 					if (
 						toQuestionId &&
 						evidence.kind === "lead_routed" &&
 						evidence.actor === leadId &&
 						evidence.basis?.includes(`question:${toQuestionId}`)
 					) {
-						const wake = this.db
-							.prepare("SELECT * FROM runner_phase_wakes WHERE message_id = ?")
-							.get(input.intentKey ?? "") as RunnerPhaseWake | undefined;
-						if (!wake) throw new Error("routed founder reply wake is missing");
 						return {
 							kind: "routed",
 							questionId: toQuestionId,
 							responseId: evidence.ref,
-							wake,
 						};
 					}
 					if (
@@ -2907,13 +2418,10 @@ export class CommDB {
 				if (noRouteReason) {
 					let winningResponseId: string | undefined;
 					if (noRouteReason === "already_answered") {
-						for (const questionId of candidates?.questionIds ?? []) {
-							const response = this.getResponse(questionId);
-							if (response) {
-								winningResponseId = response.id;
-								break;
-							}
-						}
+						const response = toQuestionId
+							? this.getResponse(toQuestionId)
+							: undefined;
+						winningResponseId = response?.id;
 						if (!winningResponseId) {
 							throw new Error(
 								"already_answered requires a winning frozen-candidate response",
@@ -2923,31 +2431,18 @@ export class CommDB {
 					const evidence: ProcessedEvidenceV1 = {
 						v: 1,
 						kind: "lead_no_route",
-						ref: winningResponseId ?? route?.id ?? rootId,
+						ref: winningResponseId ?? rootId,
 						actor: leadId,
 						actor_kind: "lead",
 						fence,
 						basis: [noRouteReason],
 					};
-					queue.markProcessed(rootId, { now: input.now, evidence });
-					if (route) {
-						queue.markProcessed(routeId, { now: input.now, evidence });
-					}
-					const familyIds = route ? [rootId, routeId] : [rootId];
-					const closed = this.db
-						.prepare(
-							`UPDATE lead_inbox SET routing_state = 'no_route',
-						   next_unprocessed_at = NULL,
-						   consumed_at = COALESCE(consumed_at, ?),
-						   disposition = CASE WHEN id = ? THEN 'lead_no_route'
-						                      ELSE disposition END
-						 WHERE id IN (${familyIds.map(() => "?").join(",")})
-						   AND processed_at IS NOT NULL`,
-						)
-						.run(input.now, route?.id ?? rootId, ...familyIds);
-					if (closed.changes !== familyIds.length) {
-						throw new Error("founder no-route family closure failed");
-					}
+					queue.settle({
+						messageOrDeliveryId: rootId,
+						event: "processed",
+						now: input.now,
+						evidence,
+					});
 					return {
 						kind: "no_route",
 						...(winningResponseId ? { winningResponseId } : {}),
@@ -2955,9 +2450,6 @@ export class CommDB {
 				}
 
 				const questionId = toQuestionId as string;
-				if (candidates && !candidates.questionIds.includes(questionId)) {
-					throw new Error(`question ${questionId} is not a frozen candidate`);
-				}
 				const question = this.getMessageById(questionId);
 				if (!question || question.type !== "question") {
 					throw new Error(`founder route question ${questionId} was not found`);
@@ -2975,11 +2467,7 @@ export class CommDB {
 					!session ||
 					session.lead_id !== leadId ||
 					session.project_name !== rootPayload.projectName ||
-					session.issue_id !== rootPayload.issueId ||
-					(candidates !== null &&
-						(candidates.projectName !== rootPayload.projectName ||
-							candidates.issueId !== rootPayload.issueId ||
-							candidates.threadId !== rootPayload.threadId))
+					session.issue_id !== rootPayload.issueId
 				) {
 					throw new Error(
 						`question ${questionId} founder route scope mismatch`,
@@ -3000,30 +2488,21 @@ export class CommDB {
 				) {
 					throw new Error(`question ${questionId} is no longer pending`);
 				}
-				if (
-					!input.intentKey ||
-					!input.envelope ||
-					input.queuedAtMs === undefined
-				) {
-					throw new Error("question route requires a wake intent");
-				}
 				const responseId = randomUUID();
-				this.db
-					.prepare(
-						`INSERT INTO messages (
-					  id, from_agent, to_agent, type, content, parent_id,
-					  sender_lease_key, sender_generation, sender_holder_pid,
-					  sender_holder_start, writer_pid, writer_start
-					) VALUES (?, ?, ?, 'response', ?, ?, ?, ?, ?, ?, ?, ?)`,
-					)
-					.run(
-						responseId,
-						leadId,
-						question.from_agent,
-						rootPayload.answer,
-						questionId,
-						...provenanceValues(input.provenance),
-					);
+				new MailboxQueue(this.db).enqueue({
+					id: responseId,
+					fromAgent: leadId,
+					toAgent: question.from_agent,
+					recipientKind: "runner",
+					type: "response",
+					content: rootPayload.answer,
+					refId: questionId,
+					createdAt: input.now,
+					expiresAt: new Date(
+						Date.parse(input.now) + 72 * 60 * 60 * 1000,
+					).toISOString(),
+					senderRef: encodeSenderRef(input.provenance),
+				});
 				this.markQuestionTerminalDisposed(questionId);
 				const evidence: ProcessedEvidenceV1 = {
 					v: 1,
@@ -3034,33 +2513,13 @@ export class CommDB {
 					fence,
 					basis: [`question:${questionId}`],
 				};
-				queue.markProcessed(rootId, { now: input.now, evidence });
-				if (route) {
-					queue.markProcessed(routeId, { now: input.now, evidence });
-				}
-				const familyIds = route ? [rootId, routeId] : [rootId];
-				const closed = this.db
-					.prepare(
-						`UPDATE lead_inbox SET routing_state = 'bound',
-					   next_unprocessed_at = NULL,
-					   consumed_at = COALESCE(consumed_at, ?),
-					   disposition = CASE WHEN id = ? THEN 'routed_question'
-					                      ELSE disposition END
-					 WHERE id IN (${familyIds.map(() => "?").join(",")})
-					   AND processed_at IS NOT NULL`,
-					)
-					.run(input.now, route?.id ?? rootId, ...familyIds);
-				if (closed.changes !== familyIds.length) {
-					throw new Error("founder route family closure failed");
-				}
-				const wake = this.admitReceiptWakeIntent({
-					executionId: question.from_agent,
-					intentKey: input.intentKey,
-					envelope: founderWakeEnvelope(input.envelope),
-					queuedAtMs: input.queuedAtMs,
-					purpose: "park_wake",
+				queue.settle({
+					messageOrDeliveryId: rootId,
+					event: "processed",
+					now: input.now,
+					evidence,
 				});
-				return { kind: "routed", questionId, responseId, wake };
+				return { kind: "routed", questionId, responseId };
 			})
 			.immediate();
 	}
@@ -3083,30 +2542,6 @@ export class CommDB {
 			return { writer_pid: provenance.writerPid };
 		}
 		return { authority: "lead_write_unprotected" };
-	}
-
-	private parseFounderRouteCandidates(
-		encoded: string,
-	): FrozenFounderRouteCandidatesV1 {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(encoded);
-		} catch {
-			throw new Error("founder route candidates_json is invalid JSON");
-		}
-		const value = parsed as Partial<FrozenFounderRouteCandidatesV1>;
-		if (
-			value?.v !== 1 ||
-			!Array.isArray(value.questionIds) ||
-			value.questionIds.some((id) => typeof id !== "string" || !id.trim()) ||
-			typeof value.leadId !== "string" ||
-			typeof value.projectName !== "string" ||
-			typeof value.issueId !== "string" ||
-			typeof value.threadId !== "string"
-		) {
-			throw new Error("founder route candidates_json has invalid shape");
-		}
-		return value as FrozenFounderRouteCandidatesV1;
 	}
 
 	private parseFounderRootPayload(encoded: string): {
@@ -3144,122 +2579,6 @@ export class CommDB {
 	}
 
 	/**
-	 * FLY-1392: one CommDB unit of work for a Lead instruction and the wake
-	 * intent that must make that instruction observable to the target runner.
-	 * Transport I/O deliberately happens after this durable commit.
-	 */
-	instructionAndIntent(
-		input: InstructionAndIntentInput,
-	): InstructionAndIntentResult {
-		for (const [field, value] of [
-			["instructionId", input.instructionId],
-			["fromAgent", input.fromAgent],
-			["executionId", input.executionId],
-			["content", input.content],
-			["intentKey", input.intentKey],
-			["envelope.id", input.envelope.id],
-			["envelope.content", input.envelope.content],
-		] as const) {
-			if (!value.trim()) throw new Error(`${field} is required`);
-		}
-		if (input.envelope.to !== input.executionId) {
-			throw new Error(
-				`wake envelope target mismatch: expected ${input.executionId}, got ${input.envelope.to}`,
-			);
-		}
-		if (!Number.isSafeInteger(input.queuedAtMs) || input.queuedAtMs < 0) {
-			throw new Error("queuedAtMs must be a non-negative safe integer");
-		}
-		const envelopeJson = JSON.stringify(input.envelope);
-
-		return this.db
-			.transaction((): InstructionAndIntentResult => {
-				this.db
-					.prepare(
-						`INSERT OR IGNORE INTO messages (
-					  id, from_agent, to_agent, type, content,
-					  sender_lease_key, sender_generation, sender_holder_pid,
-					  sender_holder_start, writer_pid, writer_start
-					) VALUES (?, ?, ?, 'instruction', ?, ?, ?, ?, ?, ?, ?)`,
-					)
-					.run(
-						input.instructionId,
-						input.fromAgent,
-						input.executionId,
-						input.content,
-						...provenanceValues(input.provenance),
-					);
-				const instruction = this.db
-					.prepare(
-						"SELECT id, from_agent, to_agent, type, content FROM messages WHERE id = ?",
-					)
-					.get(input.instructionId) as
-					| {
-							id: string;
-							from_agent: string;
-							to_agent: string;
-							type: string;
-							content: string;
-					  }
-					| undefined;
-				if (
-					!instruction ||
-					instruction.from_agent !== input.fromAgent ||
-					instruction.to_agent !== input.executionId ||
-					instruction.type !== "instruction" ||
-					instruction.content !== input.content
-				) {
-					throw new Error(
-						`instruction id ${input.instructionId} was reused with different content`,
-					);
-				}
-
-				const existing = this.db
-					.prepare(
-						`SELECT * FROM runner_phase_wakes
-					 WHERE execution_id = ?
-					   AND (message_id = ? OR source_instruction_id = ?)
-					 ORDER BY queue_seq LIMIT 1`,
-					)
-					.get(input.executionId, input.intentKey, input.instructionId) as
-					| RunnerPhaseWake
-					| undefined;
-				if (existing) {
-					if (
-						existing.message_id !== input.intentKey ||
-						existing.source_instruction_id !== input.instructionId ||
-						existing.envelope_json !== envelopeJson
-					) {
-						throw new Error(
-							`wake intent ${input.intentKey} was reused with different content`,
-						);
-					}
-					return {
-						kind: "duplicate",
-						instructionId: input.instructionId,
-						wake: existing,
-					};
-				}
-
-				const wake = this.admitReceiptWakeIntent({
-					executionId: input.executionId,
-					intentKey: input.intentKey,
-					envelope: input.envelope,
-					queuedAtMs: input.queuedAtMs,
-					sourceInstructionId: input.instructionId,
-					wakePolicy: input.wakePolicy,
-					purpose: "message_traffic",
-				});
-				return {
-					kind: "queued",
-					instructionId: input.instructionId,
-					wake,
-				};
-			})
-			.immediate();
-	}
-
-	/**
 	 * Category-agnostic Lead handle action. The optional business effect, receipt
 	 * terminal write, and runner wake share one SQLite transaction; request id +
 	 * canonical payload digest makes retries deterministic.
@@ -3287,23 +2606,12 @@ export class CommDB {
 		) {
 			throw new Error(`${input.action} requires targetQuestionId and content`);
 		}
-		if (
-			(input.action === "relay" || input.action === "respond") &&
-			(!input.intentKey?.trim() ||
-				!input.envelope ||
-				input.queuedAtMs === undefined)
-		) {
-			throw new Error(`${input.action} requires a wake intent`);
-		}
-
 		const payloadDigest = canonicalSubmissionDigest({
 			receiptId,
 			action: input.action,
 			targetQuestionId: input.targetQuestionId?.trim(),
 			content: input.content?.trim(),
 			reason: input.reason?.trim(),
-			intentKey: input.intentKey?.trim(),
-			envelope: input.envelope,
 		});
 
 		return this.db
@@ -3332,32 +2640,32 @@ export class CommDB {
 					return JSON.parse(existingRequest.result_json) as HandleReceiptResult;
 				}
 
-				const queue = new LeadInboxQueue(this.db);
+				const queue = new MailboxQueue(this.db);
 				const receipt = queue.getById(receiptId);
 				if (!receipt) throw new Error(`receipt_not_found: ${receiptId}`);
-				if (receipt.to_lead !== authenticatedLead) {
+				if (receipt.to_agent !== authenticatedLead) {
 					throw new Error(
-						`not_authorized: receipt belongs to ${receipt.to_lead}`,
+						`not_authorized: receipt belongs to ${receipt.to_agent}`,
 					);
 				}
-				if (receipt.delivered_at === null) {
+				if (receipt.state !== "ACKED") {
 					throw new Error(`receipt_not_delivered: ${receiptId}`);
 				}
-				if (receipt.processed_at !== null) {
+				const settlement = queue.getSettlement(receiptId);
+				if (settlement?.event === "processed") {
 					throw new Error(`already_processed: ${receiptId}`);
 				}
-				if (receipt.disposed_at !== null) {
+				if (settlement?.event === "disposed") {
 					throw new Error(`already_disposed: ${receiptId}`);
 				}
 
 				let responseId: string | undefined;
-				let wake: RunnerPhaseWake | undefined;
 				if (input.action === "relay" || input.action === "respond") {
 					const questionId = input.targetQuestionId?.trim() as string;
 					const question = this.db
 						.prepare(
 							`SELECT id, from_agent, resolved_at, superseded_at, relay_state
-							   FROM messages WHERE id = ? AND type = 'question'`,
+							   FROM mailbox_message_projection WHERE id = ? AND type = 'question'`,
 						)
 						.get(questionId) as
 						| {
@@ -3377,26 +2685,21 @@ export class CommDB {
 					) {
 						throw new Error(`business_object_not_pending: ${questionId}`);
 					}
-					if (input.envelope?.to !== question.from_agent) {
-						throw new Error("wake target must match the question owner");
-					}
 					responseId = randomUUID();
-					this.db
-						.prepare(
-							`INSERT INTO messages (
-							   id, from_agent, to_agent, type, content, parent_id,
-							   sender_lease_key, sender_generation, sender_holder_pid,
-							   sender_holder_start, writer_pid, writer_start
-							 ) VALUES (?, ?, ?, 'response', ?, ?, ?, ?, ?, ?, ?, ?)`,
-						)
-						.run(
-							responseId,
-							authenticatedLead,
-							question.from_agent,
-							input.content?.trim(),
-							questionId,
-							...provenanceValues(input.provenance),
-						);
+					new MailboxQueue(this.db).enqueue({
+						id: responseId,
+						fromAgent: authenticatedLead,
+						toAgent: question.from_agent,
+						recipientKind: "runner",
+						type: "response",
+						content: input.content?.trim() as string,
+						refId: questionId,
+						createdAt: input.now,
+						expiresAt: new Date(
+							Date.parse(input.now) + 72 * 60 * 60 * 1000,
+						).toISOString(),
+						senderRef: encodeSenderRef(input.provenance),
+					});
 					this.markQuestionTerminalDisposed(questionId);
 				}
 				if (input.testCrashAfter === "effect") {
@@ -3412,22 +2715,14 @@ export class CommDB {
 					fence: this.processedFenceFromProvenance(input.provenance),
 					...(input.reason?.trim() ? { basis: [input.reason.trim()] } : {}),
 				};
-				queue.markProcessed(receiptId, { now: input.now, evidence });
+				queue.settle({
+					messageOrDeliveryId: receiptId,
+					event: "processed",
+					now: input.now,
+					evidence,
+				});
 				if (input.testCrashAfter === "terminal") {
 					throw new Error("injected receipt handle crash after terminal");
-				}
-
-				if (input.action === "relay" || input.action === "respond") {
-					wake = this.admitReceiptWakeIntent({
-						executionId: input.envelope?.to as string,
-						intentKey: input.intentKey as string,
-						envelope: input.envelope as PhaseWakeInput,
-						queuedAtMs: input.queuedAtMs as number,
-						purpose: "park_wake",
-					});
-				}
-				if (input.testCrashAfter === "wake") {
-					throw new Error("injected receipt handle crash after wake");
 				}
 
 				const result: HandleReceiptResult = {
@@ -3435,7 +2730,6 @@ export class CommDB {
 					receiptId,
 					action: input.action,
 					...(responseId ? { responseId } : {}),
-					...(wake ? { wake } : {}),
 				};
 				this.db
 					.prepare(
@@ -3459,7 +2753,7 @@ export class CommDB {
 
 	/**
 	 * FLY-1392 composite response UOW: the business response, its processed
-	 * evidence, and the runner wake intent either all commit or all roll back.
+	 * evidence commit or roll back together; Runner delivery reads the response.
 	 */
 	respondAndReceipt(input: RespondAndReceiptInput): RespondAndReceiptResult {
 		for (const [field, value] of [
@@ -3467,7 +2761,6 @@ export class CommDB {
 			["fromAgent", input.fromAgent],
 			["content", input.content],
 			["rootId", input.rootId],
-			["intentKey", input.intentKey],
 		] as const) {
 			if (!value.trim()) throw new Error(`${field} is required`);
 		}
@@ -3486,7 +2779,7 @@ export class CommDB {
 			const question = this.db
 				.prepare(
 					`SELECT id, from_agent, checkpoint, relay_state, resolved_at,
-					        superseded_at FROM messages
+					        superseded_at FROM mailbox_message_projection
 					 WHERE id = ? AND type = 'question'`,
 				)
 				.get(input.questionId) as
@@ -3506,33 +2799,27 @@ export class CommDB {
 			let response = this.getResponse(input.questionId);
 			if (!response) {
 				const responseId = randomUUID();
-				const inserted = this.db
-					.prepare(
-						`INSERT INTO messages (
-						  id, from_agent, to_agent, type, content, parent_id,
-						  sender_lease_key, sender_generation, sender_holder_pid,
-						  sender_holder_start, writer_pid, writer_start
-						)
-						SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-						  FROM messages q
-						 WHERE q.id = ? AND q.type = 'question'
-						   AND q.resolved_at IS NULL AND q.superseded_at IS NULL
-						   AND q.relay_state != 'terminal_disposed'
-						   AND NOT EXISTS (
-						     SELECT 1 FROM messages r
-						      WHERE r.parent_id = q.id AND r.type = 'response'
-						   )`,
-					)
-					.run(
-						responseId,
-						input.fromAgent,
-						input.content,
-						...provenanceValues(input.provenance),
-						input.questionId,
-					);
-				if (inserted.changes !== 1) {
+				if (
+					question.resolved_at !== null ||
+					question.superseded_at !== null ||
+					question.relay_state === "terminal_disposed"
+				) {
 					throw new Error(`question ${input.questionId} is no longer open`);
 				}
+				new MailboxQueue(this.db).enqueue({
+					id: responseId,
+					fromAgent: input.fromAgent,
+					toAgent: question.from_agent,
+					recipientKind: "runner",
+					type: "response",
+					content: input.content,
+					refId: input.questionId,
+					createdAt: input.now,
+					expiresAt: new Date(
+						Date.parse(input.now) + 72 * 60 * 60 * 1000,
+					).toISOString(),
+					senderRef: encodeSenderRef(input.provenance),
+				});
 				this.markQuestionTerminalDisposed(input.questionId);
 				response = this.getResponse(input.questionId);
 			}
@@ -3550,103 +2837,18 @@ export class CommDB {
 				...input.evidence,
 				ref: response.id,
 			};
-			const queue = new LeadInboxQueue(this.db);
-			queue.markProcessed(input.rootId, { now: input.now, evidence });
-			const rootUpdated = this.db
-				.prepare(
-					`UPDATE lead_inbox SET routing_state = 'bound',
-					   next_unprocessed_at = NULL
-					 WHERE id = ? AND processed_at IS NOT NULL
-					   AND processed_evidence IS NOT NULL`,
-				)
-				.run(input.rootId);
-			if (rootUpdated.changes !== 1) {
+			const queue = new MailboxQueue(this.db);
+			if (!queue.getById(input.rootId)) {
 				throw new Error(`founder receipt root ${input.rootId} is unavailable`);
 			}
-			const wake = this.admitReceiptWakeIntent({
-				executionId: question.from_agent,
-				intentKey: input.intentKey,
-				envelope: input.envelope,
-				queuedAtMs: input.queuedAtMs,
-				purpose: "park_wake",
+			queue.settle({
+				messageOrDeliveryId: input.rootId,
+				event: "processed",
+				now: input.now,
+				evidence,
 			});
-			return { responseId: response.id, wake };
+			return { responseId: response.id };
 		})();
-	}
-
-	/** Response + wake intent in one transaction for gate/ask answers. */
-	responseAndIntent(input: ResponseAndIntentInput): RespondAndReceiptResult {
-		return this.db
-			.transaction(() => {
-				const question = this.db
-					.prepare(
-						`SELECT id, from_agent, resolved_at, superseded_at, relay_state
-					 FROM messages WHERE id = ? AND type = 'question'`,
-					)
-					.get(input.questionId) as
-					| {
-							id: string;
-							from_agent: string;
-							resolved_at: string | null;
-							superseded_at: string | null;
-							relay_state: string;
-					  }
-					| undefined;
-				if (!question)
-					throw new Error(`Question ${input.questionId} not found`);
-				let response = this.getResponse(input.questionId);
-				if (!response) {
-					const responseId = randomUUID();
-					const inserted = this.db
-						.prepare(
-							`INSERT INTO messages (
-						  id, from_agent, to_agent, type, content, parent_id,
-						  sender_lease_key, sender_generation, sender_holder_pid,
-						  sender_holder_start, writer_pid, writer_start
-						)
-						SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-						  FROM messages q
-						 WHERE q.id = ? AND q.type = 'question'
-						   AND q.resolved_at IS NULL AND q.superseded_at IS NULL
-						   AND q.relay_state != 'terminal_disposed'
-						   AND NOT EXISTS (
-						     SELECT 1 FROM messages r
-						      WHERE r.parent_id = q.id AND r.type = 'response'
-						   )`,
-						)
-						.run(
-							responseId,
-							input.fromAgent,
-							input.content,
-							...provenanceValues(input.provenance),
-							input.questionId,
-						);
-					if (inserted.changes !== 1) {
-						throw new Error(`question ${input.questionId} is no longer open`);
-					}
-					this.markQuestionTerminalDisposed(input.questionId);
-					response = this.getResponse(input.questionId);
-				}
-				if (
-					!response ||
-					response.from_agent !== input.fromAgent ||
-					response.content !== input.content
-				) {
-					throw new Error(
-						`question ${input.questionId} was answered by another actor`,
-					);
-				}
-				const wake = this.admitReceiptWakeIntent({
-					executionId: question.from_agent,
-					intentKey: input.intentKey,
-					envelope: input.envelope,
-					queuedAtMs: input.queuedAtMs,
-					wakePolicy: input.wakePolicy,
-					purpose: "park_wake",
-				});
-				return { responseId: response.id, wake };
-			})
-			.immediate();
 	}
 
 	trustedFounderApprovalAndReceipt(
@@ -3707,27 +2909,17 @@ export class CommDB {
 				...input.evidence,
 				ref: response.id,
 			};
-			const queue = new LeadInboxQueue(this.db);
-			queue.markProcessed(input.rootId, { now: input.now, evidence });
-			const rootUpdated = this.db
-				.prepare(
-					`UPDATE lead_inbox SET routing_state = 'bound',
-					   next_unprocessed_at = NULL
-					 WHERE id = ? AND processed_at IS NOT NULL
-					   AND processed_evidence IS NOT NULL`,
-				)
-				.run(input.rootId);
-			if (rootUpdated.changes !== 1) {
+			const queue = new MailboxQueue(this.db);
+			if (!queue.getById(input.rootId)) {
 				throw new Error(`founder receipt root ${input.rootId} is unavailable`);
 			}
-			const wake = this.admitReceiptWakeIntent({
-				executionId: input.expectedOwner,
-				intentKey: input.intentKey,
-				envelope: founderWakeEnvelope(input.envelope),
-				queuedAtMs: input.queuedAtMs,
-				purpose: "park_wake",
+			queue.settle({
+				messageOrDeliveryId: input.rootId,
+				event: "processed",
+				now: input.now,
+				evidence,
 			});
-			return { responseId: response.id, wake };
+			return { responseId: response.id };
 		})();
 	}
 
@@ -3789,7 +2981,7 @@ export class CommDB {
 						`founder ship gate ${input.questionId} was answered by another action`,
 					);
 				}
-				const queue = new LeadInboxQueue(this.db);
+				const queue = new MailboxQueue(this.db);
 				const root = queue.getById(input.rootId);
 				if (!root)
 					throw new Error(
@@ -3810,242 +3002,59 @@ export class CommDB {
 						: { discord_message_id: input.msgId },
 					basis: [`question:${input.questionId}`],
 				};
-				queue.markProcessed(input.rootId, { now: input.now, evidence });
-				const updated = this.db
-					.prepare(
-						`UPDATE lead_inbox SET routing_state = 'bound',
-					   next_unprocessed_at = NULL
-					 WHERE id = ? AND processed_at IS NOT NULL`,
-					)
-					.run(input.rootId);
-				if (updated.changes !== 1) {
-					throw new Error(
-						`founder receipt root ${input.rootId} is unavailable`,
-					);
-				}
-				const wake = this.admitReceiptWakeIntent({
-					executionId: input.expectedOwner,
-					intentKey: input.intentKey,
-					envelope: founderWakeEnvelope(input.envelope),
-					queuedAtMs: input.queuedAtMs,
-					purpose: "park_wake",
+				queue.settle({
+					messageOrDeliveryId: input.rootId,
+					event: "processed",
+					now: input.now,
+					evidence,
 				});
-				return { responseId: response.id, wake };
+				return { responseId: response.id };
 			})
 			.immediate();
 	}
 
-	private admitReceiptWakeIntent(input: {
-		executionId: string;
-		intentKey: string;
-		envelope: PhaseWakeInput;
-		queuedAtMs: number;
-		sourceInstructionId?: string | null;
-		wakePolicy?: ReceiptWakePolicy;
-		purpose: NonNullable<RunnerPhaseWake["purpose"]>;
-	}): RunnerPhaseWake {
-		if (input.envelope.to !== input.executionId) {
-			throw new Error(
-				`wake envelope target mismatch: expected ${input.executionId}, got ${input.envelope.to}`,
-			);
-		}
-		if (!Number.isSafeInteger(input.queuedAtMs) || input.queuedAtMs < 0) {
-			throw new Error("queuedAtMs must be a non-negative safe integer");
-		}
-		const envelopeJson = JSON.stringify(input.envelope);
-		const metadataJson = input.envelope.metadata
-			? JSON.stringify(input.envelope.metadata)
-			: null;
-		const existing = this.db
-			.prepare(
-				`SELECT * FROM runner_phase_wakes
-				 WHERE execution_id = ?
-				   AND (message_id = ? OR (? IS NOT NULL AND source_instruction_id = ?))
-				 ORDER BY queue_seq LIMIT 1`,
-			)
-			.get(
-				input.executionId,
-				input.intentKey,
-				input.sourceInstructionId ?? null,
-				input.sourceInstructionId ?? null,
-			) as RunnerPhaseWake | undefined;
-		if (existing) {
-			if (
-				existing.message_id !== input.intentKey ||
-				existing.source_instruction_id !==
-					(input.sourceInstructionId ?? existing.source_instruction_id) ||
-				existing.envelope_json !== envelopeJson ||
-				existing.purpose !== input.purpose
-			) {
-				throw new Error(
-					`wake intent ${input.intentKey} was reused with different content`,
-				);
-			}
-			return existing;
-		}
-
-		const policy = input.wakePolicy ?? {};
-		const registeredVendor = (
-			this.db
-				.prepare("SELECT vendor FROM sessions WHERE execution_id = ?")
-				.get(input.executionId) as { vendor: string | null } | undefined
-		)?.vendor;
-		const transportAvailable =
-			policy.transportAvailable ?? registeredVendor !== "none";
-		const execPushCap =
-			policy.execPushCap ??
-			positiveReceiptEnv("FLYWHEEL_RECEIPT_EXEC_PUSH_CAP", 6);
-		const execPushWindowMs =
-			policy.execPushWindowMs ??
-			positiveReceiptEnv("FLYWHEEL_RECEIPT_EXEC_PUSH_WINDOW_MIN", 10) * 60_000;
-		if (!Number.isSafeInteger(execPushCap) || execPushCap < 1) {
-			throw new Error("execPushCap must be a positive safe integer");
-		}
-		if (!Number.isSafeInteger(execPushWindowMs) || execPushWindowMs < 1) {
-			throw new Error("execPushWindowMs must be a positive safe integer");
-		}
-		const windowStart =
-			Math.floor(input.queuedAtMs / execPushWindowMs) * execPushWindowMs;
-		const admittedInWindow = (
-			this.db
-				.prepare(
-					`SELECT COUNT(*) AS count FROM runner_phase_wakes
-					 WHERE execution_id = ? AND admission_state = 'queued'
-					   AND purpose != 'gate_response'
-					   AND queued_at > ? AND queued_at <= ?`,
-				)
-				.get(
-					input.executionId,
-					input.queuedAtMs - execPushWindowMs,
-					input.queuedAtMs,
-				) as { count: number }
-		).count;
-		const admissionState: NonNullable<RunnerPhaseWake["admission_state"]> =
-			!transportAvailable
-				? "skipped_no_transport"
-				: input.purpose !== "gate_response" && admittedInWindow >= execPushCap
-					? "suppressed_cap"
-					: "queued";
-		this.db
-			.prepare(
-				`INSERT INTO runner_phase_wakes (
-				  execution_id, message_id, content, metadata_json,
-				  source_instruction_id, state, queued_at, admission_state,
-				  envelope_json, push_attempts, purpose
-				) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 0, ?)`,
-			)
-			.run(
-				input.executionId,
-				input.intentKey,
-				input.envelope.content,
-				metadataJson,
-				input.sourceInstructionId ?? null,
-				input.queuedAtMs,
-				admissionState,
-				envelopeJson,
-				input.purpose,
-			);
-		if (admissionState === "suppressed_cap") {
-			const outboxId = `wake_cap:${input.executionId}:${windowStart}`;
-			this.db
-				.prepare(
-					`INSERT OR IGNORE INTO receipt_alert_outbox
-					 (id, kind, payload, created_at)
-					 VALUES (?, 'wake_cap', ?, ?)`,
-				)
-				.run(
-					outboxId,
-					JSON.stringify({
-						executionId: input.executionId,
-						windowStart,
-						windowMs: execPushWindowMs,
-						cap: execPushCap,
-					}),
-					new Date(input.queuedAtMs).toISOString(),
-				);
-		}
-		return this.db
-			.prepare(
-				"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
-			)
-			.get(input.executionId, input.intentKey) as RunnerPhaseWake;
-	}
-
 	/**
-	 * FLY-1434 ⑧: atomically persist a Bridge-owned review response and the
-	 * purpose-bound wake that makes it observable. An exact replay repairs an
-	 * older owned response that committed before the wake existed. Foreign
-	 * answers and non-queued admissions fail closed.
+	 * Atomically persist an owned review response. Runner delivery consumes the
+	 * response row directly, so no second wake record is created.
 	 */
-	insertReviewResponseWithWakeIfGateOpen(
-		input: ReviewResponseAndWakeInput,
+	insertReviewResponseIfGateOpen(
+		input: ReviewResponseInput,
 	): RespondAndReceiptResult | null {
-		class ReviewWakeAdmissionError extends Error {}
-		try {
-			return this.db
-				.transaction((): RespondAndReceiptResult | null => {
-					let response = this.getResponse(input.questionId);
-					if (response) {
+		return this.db
+			.transaction((): RespondAndReceiptResult | null => {
+				let response = this.getResponse(input.questionId);
+				if (response) {
+					if (
+						response.from_agent !== input.fromAgent ||
+						response.content !== input.content
+					) {
+						return null;
+					}
+				} else {
+					const inserted = this.insertResponseIfGateOpen({
+						questionId: input.questionId,
+						fromAgent: input.fromAgent,
+						content: input.content,
+						expectedOwner: input.expectedOwner,
+						expectedCheckpoint: input.expectedCheckpoint,
+					});
+					if (!inserted) {
+						response = this.getResponse(input.questionId);
 						if (
+							!response ||
 							response.from_agent !== input.fromAgent ||
 							response.content !== input.content
 						) {
 							return null;
 						}
 					} else {
-						const inserted = this.insertResponseIfGateOpen({
-							questionId: input.questionId,
-							fromAgent: input.fromAgent,
-							content: input.content,
-							expectedOwner: input.expectedOwner,
-							expectedCheckpoint: input.expectedCheckpoint,
-						});
-						if (!inserted) {
-							response = this.getResponse(input.questionId);
-							if (
-								!response ||
-								response.from_agent !== input.fromAgent ||
-								response.content !== input.content
-							) {
-								return null;
-							}
-						} else {
-							response = this.getResponse(input.questionId);
-						}
+						response = this.getResponse(input.questionId);
 					}
-					if (!response) return null;
-					const wake = this.admitReceiptWakeIntent({
-						executionId: input.expectedOwner,
-						intentKey: response.id,
-						envelope: {
-							id: response.id,
-							to: input.expectedOwner,
-							content:
-								`Your review request has been answered: ${input.summary} ` +
-								`(question ${input.questionId}). Read the durable answer with ` +
-								`flywheel-comm check ${input.questionId}. This wake carries NO authority.`,
-							metadata: {
-								kind: "review_response",
-								questionId: input.questionId,
-								responseId: response.id,
-							},
-						},
-						queuedAtMs: input.queuedAtMs,
-						wakePolicy: input.wakePolicy,
-						purpose: "gate_response",
-					});
-					if (wake.admission_state !== "queued") {
-						throw new ReviewWakeAdmissionError(
-							`review response wake admission failed: ${wake.admission_state}`,
-						);
-					}
-					return { responseId: response.id, wake };
-				})
-				.immediate();
-		} catch (error) {
-			if (error instanceof ReviewWakeAdmissionError) return null;
-			throw error;
-		}
+				}
+				if (!response) return null;
+				return { responseId: response.id };
+			})
+			.immediate();
 	}
 
 	private assertCurrentProtocolOwner(
@@ -4069,13 +3078,13 @@ export class CommDB {
 	/**
 	 * GEO-151: best-effort audit row for a ProofShot artifact_emitted event.
 	 * Uses `type='progress'` + `content_type='artifact'` since the existing
-	 * messages.type CHECK constraint only allows
+	 * mailbox_message_projection.type CHECK constraint only allows
 	 * ('question','response','instruction','progress') — see schema at top of
 	 * file. Attachments stored as JSON-encoded string[] in the `attachments`
 	 * column added by the GEO-151 migration above.
 	 *
 	 * `content` carries a short summary line ("artifact_emitted: N file(s)")
-	 * so the audit row is human-readable in `messages` inspections.
+	 * so the audit row is human-readable in `mailbox_message_projection` inspections.
 	 *
 	 * Caller-side is fail-open: notify command catches throws and continues
 	 * (the primary path is POST /events).
@@ -4089,28 +3098,38 @@ export class CommDB {
 		const summary = `artifact_emitted: ${paths.length} file(s)`;
 		this.db
 			.prepare(
-				`INSERT INTO messages (id, from_agent, to_agent, type, content, content_type, attachments)
-         VALUES (?, ?, ?, 'progress', ?, 'artifact', ?)`,
+				`INSERT INTO mailbox_log
+				 (event_id, message_id, event, at, row_json)
+				 VALUES (?, ?, 'progress', strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?)`,
 			)
-			.run(id, fromAgent, toAgent, summary, JSON.stringify(paths));
+			.run(
+				id,
+				id,
+				canonicalJsonString({
+					from_agent: fromAgent,
+					to_agent: toAgent,
+					type: "progress",
+					content: summary,
+					content_type: "artifact",
+					attachments: paths,
+				}),
+			);
 		return id;
 	}
 
 	getUnreadInstructions(agentId: string): Message[] {
 		return this.db
 			.prepare(
-				`SELECT * FROM messages
+				`SELECT * FROM mailbox_message_projection
          WHERE to_agent = ? AND type = 'instruction' AND read_at IS NULL
-         AND expires_at > datetime('now')
+		 AND datetime(expires_at) > datetime('now')
          ORDER BY created_at ASC`,
 			)
 			.all(agentId) as Message[];
 	}
 
 	markInstructionRead(id: string): void {
-		this.db
-			.prepare("UPDATE messages SET read_at = datetime('now') WHERE id = ?")
-			.run(id);
+		new MailboxQueue(this.db).ack(id, new Date().toISOString());
 	}
 
 	/**
@@ -4165,7 +3184,9 @@ export class CommDB {
 
 			if (sourceInstructionId) {
 				const instruction = this.db
-					.prepare("SELECT id, to_agent, type FROM messages WHERE id = ?")
+					.prepare(
+						"SELECT id, to_agent, type FROM mailbox_message_projection WHERE id = ?",
+					)
 					.get(sourceInstructionId) as
 					| { id: string; to_agent: string; type: string }
 					| undefined;
@@ -4198,8 +3219,10 @@ export class CommDB {
 			if (sourceInstructionId) {
 				this.db
 					.prepare(
-						`UPDATE messages SET read_at = COALESCE(read_at, datetime('now'))
-						 WHERE id = ? AND to_agent = ? AND type = 'instruction'`,
+						`UPDATE mailbox SET state = 'ACKED',
+						   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+						 WHERE id = ? AND to_agent = ? AND type = 'instruction'
+						   AND state IN ('QUEUED','LEASED','ACKED')`,
 					)
 					.run(sourceInstructionId, executionId);
 			}
@@ -4231,738 +3254,6 @@ export class CommDB {
 	 * Derive authorized Lead handling or an objective business-terminal disposal
 	 * before any reminder is admitted. Receipt category never participates.
 	 */
-	deriveProcessedReceipts(now: string): number {
-		assertUtcIsoTimestamp(now, "now");
-		const derive = this.db.transaction(() => {
-			const candidates = this.db
-				.prepare(
-					`SELECT receipt.id AS receipt_id, receipt.to_lead AS expected_lead,
-						        question.id AS question_id,
-						        response.id AS response_id, response.from_agent,
-						        response.sender_lease_key, response.sender_generation,
-						        question.resolved_at, question.superseded_at,
-						        question.relay_state
-					   FROM lead_inbox receipt
-					   JOIN messages question
-					     ON question.id = receipt.ref_message_id
-					    AND question.type = 'question'
-						   LEFT JOIN messages response
-					     ON response.parent_id = question.id
-					    AND response.type = 'response'
-					  WHERE receipt.resend_of IS NULL
-						    AND receipt.processed_at IS NULL
-						    AND receipt.processed_evidence IS NULL
-						    AND receipt.disposed_at IS NULL
-						    AND receipt.disposed_evidence IS NULL
-						    AND (response.id IS NOT NULL OR question.resolved_at IS NOT NULL
-						      OR question.superseded_at IS NOT NULL
-						      OR question.relay_state = 'terminal_disposed')
-					  ORDER BY receipt.seq`,
-				)
-				.all() as Array<{
-				receipt_id: string;
-				expected_lead: string;
-				question_id: string;
-				response_id: string | null;
-				from_agent: string | null;
-				sender_lease_key: string | null;
-				sender_generation: number | null;
-				resolved_at: string | null;
-				superseded_at: string | null;
-				relay_state: string;
-			}>;
-			const copiedEvidence = new Map<string, ProcessedEvidenceV1>();
-			for (const row of this.db
-				.prepare(
-					`SELECT processed_evidence FROM lead_inbox
-					  WHERE processed_evidence IS NOT NULL`,
-				)
-				.all() as Array<{ processed_evidence: string }>) {
-				try {
-					const evidence = JSON.parse(
-						row.processed_evidence,
-					) as ProcessedEvidenceV1;
-					assertProcessedEvidence(evidence);
-					copiedEvidence.set(evidence.ref, evidence);
-				} catch {
-					// Invalid legacy evidence is not authority and cannot be copied.
-				}
-			}
-
-			const queue = new LeadInboxQueue(this.db);
-			let derived = 0;
-			for (const candidate of candidates) {
-				let evidence: ProcessedEvidenceV1 | null = null;
-				if (
-					candidate.from_agent === candidate.expected_lead &&
-					candidate.response_id !== null &&
-					candidate.sender_generation !== null
-				) {
-					evidence = {
-						v: 1,
-						kind: "response_observed",
-						ref: candidate.response_id,
-						actor: candidate.from_agent,
-						actor_kind: "lead",
-						fence: {
-							...(candidate.sender_lease_key
-								? { lease_key: candidate.sender_lease_key }
-								: {}),
-							lease_generation: candidate.sender_generation,
-						},
-						basis: [`question:${candidate.question_id}`],
-					};
-				} else if (candidate.response_id !== null) {
-					const source = copiedEvidence.get(candidate.response_id);
-					if (
-						source?.actor === candidate.expected_lead &&
-						source.actor_kind === "lead"
-					) {
-						evidence = {
-							v: 1,
-							kind: "response_observed",
-							ref: candidate.response_id,
-							actor: source.actor,
-							actor_kind: source.actor_kind,
-							fence: { ...source.fence },
-							basis: [
-								`question:${candidate.question_id}`,
-								`source_evidence:${source.kind}`,
-							],
-						};
-					}
-				}
-				if (evidence) {
-					if (queue.markProcessed(candidate.receipt_id, { now, evidence })) {
-						derived++;
-					}
-					continue;
-				}
-				const disposalEvidence: ProcessedEvidenceV1 = {
-					v: 1,
-					kind: "business_object_terminal",
-					ref: candidate.response_id ?? candidate.question_id,
-					actor: candidate.from_agent ?? "commdb",
-					actor_kind: candidate.from_agent?.startsWith("founder")
-						? "founder-writer"
-						: candidate.from_agent
-							? "runner"
-							: "bridge-protocol",
-					fence:
-						candidate.sender_generation !== null
-							? {
-									...(candidate.sender_lease_key
-										? { lease_key: candidate.sender_lease_key }
-										: {}),
-									lease_generation: candidate.sender_generation,
-								}
-							: { authority: "commdb_business_terminal" },
-					basis: [`question:${candidate.question_id}`],
-				};
-				queue.markDisposed(candidate.receipt_id, {
-					now,
-					evidence: disposalEvidence,
-				});
-			}
-			return derived;
-		});
-		return derive.immediate();
-	}
-
-	reconcileReceiptActivation(input: {
-		enabled: boolean;
-		now: string;
-		receiptWindowsMs: ReceiptPriorityWindowsMs;
-		highWaterMark: string;
-		dryRun?: boolean;
-	}): {
-		episodeId: string;
-		status: "disabled" | "dry_run" | "active";
-		activatedAt: string | null;
-		derived: number;
-		initialized: number;
-		dryRunCounts: Record<string, unknown>;
-		commitCounts: Record<string, unknown> | null;
-	} {
-		assertUtcIsoTimestamp(input.now, "now");
-		if (
-			input.receiptWindowsMs.some(
-				(window) => !Number.isSafeInteger(window) || window <= 0,
-			)
-		) {
-			throw new Error("receiptWindowsMs must contain four positive integers");
-		}
-		if (!/^\d+$/.test(input.highWaterMark)) {
-			throw new Error("highWaterMark must be a Discord snowflake lower bound");
-		}
-		type EpisodeRow = {
-			episode_id: string;
-			disabled_at: string | null;
-			enabled_at: string | null;
-			activation_at: string | null;
-			status: "disabled" | "dry_run" | "active";
-			dry_run_counts: string;
-			commit_counts: string | null;
-			high_water_mark: string | null;
-		};
-		const reconcile = this.db.transaction(() => {
-			const latest = (): EpisodeRow | undefined =>
-				this.db
-					.prepare(
-						`SELECT * FROM receipt_activation_episodes
-						  ORDER BY rowid DESC LIMIT 1`,
-					)
-					.get() as EpisodeRow | undefined;
-			const parseCounts = (
-				encoded: string | null,
-			): Record<string, unknown> | null =>
-				encoded ? (JSON.parse(encoded) as Record<string, unknown>) : null;
-			const emptyCounts = (): Record<string, unknown> => ({
-				eligible: 0,
-				pending: 0,
-				exempt: 0,
-				autoSettled: 0,
-				disposed: 0,
-				byPriority: { 0: 0, 1: 0, 2: 0, 3: 0 },
-				estimated: { t1: 0, t2: 0, t3: 0, outboxPeak: 0 },
-			});
-			const activationCounts = (): Record<string, unknown> => {
-				const rows = this.db
-					.prepare(
-						`SELECT priority,
-						        SUM(CASE WHEN delivered_at IS NOT NULL
-						          AND processed_at IS NULL AND disposed_at IS NULL
-						          AND receipt_exempt_reason IS NULL THEN 1 ELSE 0 END) eligible,
-						        SUM(CASE WHEN processed_at IS NULL AND disposed_at IS NULL
-						          AND receipt_exempt_reason IS NULL THEN 1 ELSE 0 END) pending,
-						        SUM(CASE WHEN receipt_exempt_reason IS NOT NULL THEN 1 ELSE 0 END) exempt,
-						        SUM(CASE WHEN processed_at IS NOT NULL THEN 1 ELSE 0 END) settled,
-						        SUM(CASE WHEN disposed_at IS NOT NULL THEN 1 ELSE 0 END) disposed
-						   FROM lead_inbox WHERE resend_of IS NULL GROUP BY priority`,
-					)
-					.all() as Array<{
-					priority: 0 | 1 | 2 | 3;
-					eligible: number;
-					pending: number;
-					exempt: number;
-					settled: number;
-					disposed: number;
-				}>;
-				const counts = emptyCounts();
-				const byPriority = counts.byPriority as Record<string, number>;
-				for (const row of rows) {
-					counts.eligible = Number(counts.eligible) + row.eligible;
-					counts.pending = Number(counts.pending) + row.pending;
-					counts.exempt = Number(counts.exempt) + row.exempt;
-					counts.autoSettled = Number(counts.autoSettled) + row.settled;
-					counts.disposed = Number(counts.disposed) + row.disposed;
-					byPriority[String(row.priority)] = row.eligible;
-				}
-				const eligible = Number(counts.eligible);
-				counts.estimated = {
-					t1: eligible,
-					t2: eligible,
-					t3: eligible,
-					outboxPeak: eligible,
-				};
-				return counts;
-			};
-
-			let current = latest();
-			if (!input.enabled) {
-				if (!current) {
-					const episodeId = `receipt:${Date.parse(input.now)}:1`;
-					const counts = emptyCounts();
-					this.db
-						.prepare(
-							`INSERT INTO receipt_activation_episodes
-							 (episode_id, disabled_at, enabled_at, activation_at, status,
-							  dry_run_counts, commit_counts, high_water_mark)
-							 VALUES (?, ?, NULL, NULL, 'disabled', ?, NULL, ?)`,
-						)
-						.run(
-							episodeId,
-							input.now,
-							JSON.stringify(counts),
-							input.highWaterMark,
-						);
-					current = latest();
-				} else if (current.status !== "disabled") {
-					this.db
-						.prepare(
-							`UPDATE receipt_activation_episodes
-							 SET disabled_at = ?, status = 'disabled'
-							 WHERE episode_id = ? AND status != 'disabled'`,
-						)
-						.run(input.now, current.episode_id);
-					this.db
-						.prepare(
-							`UPDATE lead_inbox SET consumed_at = ?, disposition = 'superseded',
-							   claimed_by = NULL, claim_expires_at = NULL
-							 WHERE resend_of IS NOT NULL AND consumed_at IS NULL`,
-						)
-						.run(input.now);
-					this.db
-						.prepare(
-							`UPDATE receipt_alert_outbox SET canceled_at = ?,
-							   cancel_reason = 'receipt_foundation_disabled'
-							 WHERE kind = 'receipt_unprocessed' AND delivered_at IS NULL
-							   AND canceled_at IS NULL`,
-						)
-						.run(input.now);
-					current = latest();
-				}
-				if (!current) throw new Error("receipt disable episode is unavailable");
-				return {
-					episodeId: current.episode_id,
-					status: "disabled" as const,
-					activatedAt: current.activation_at,
-					derived: 0,
-					initialized: 0,
-					dryRunCounts: parseCounts(current.dry_run_counts) ?? emptyCounts(),
-					commitCounts: parseCounts(current.commit_counts),
-				};
-			}
-
-			const derived = this.deriveProcessedReceipts(input.now);
-			if (!current || current.status === "disabled") {
-				const count = (
-					this.db
-						.prepare("SELECT COUNT(*) count FROM receipt_activation_episodes")
-						.get() as { count: number }
-				).count;
-				const episodeId = `receipt:${Date.parse(input.now)}:${count + 1}`;
-				const counts = activationCounts();
-				this.db
-					.prepare(
-						`INSERT INTO receipt_activation_episodes
-						 (episode_id, disabled_at, enabled_at, activation_at, status,
-						  dry_run_counts, commit_counts, high_water_mark)
-						 VALUES (?, NULL, ?, NULL, 'dry_run', ?, NULL, ?)`,
-					)
-					.run(
-						episodeId,
-						input.now,
-						JSON.stringify(counts),
-						input.highWaterMark,
-					);
-				current = latest();
-			}
-			if (!current)
-				throw new Error("receipt activation episode is unavailable");
-			const dryRunCounts = activationCounts();
-			this.db
-				.prepare(
-					`UPDATE receipt_activation_episodes
-					 SET dry_run_counts = ? WHERE episode_id = ?`,
-				)
-				.run(JSON.stringify(dryRunCounts), current.episode_id);
-			if (input.dryRun) {
-				return {
-					episodeId: current.episode_id,
-					status: "dry_run" as const,
-					activatedAt: null,
-					derived,
-					initialized: 0,
-					dryRunCounts,
-					commitCounts: null,
-				};
-			}
-			if (current.status === "active" && current.activation_at) {
-				const newlyDelivered = this.db
-					.prepare(
-						`SELECT id, priority FROM lead_inbox
-						 WHERE resend_of IS NULL AND delivered_at IS NOT NULL
-						   AND receipt_episode_id IS NULL AND processed_at IS NULL
-						   AND disposed_at IS NULL AND receipt_exempt_reason IS NULL
-						   -- FLY-1586 R2 BLOCKER: never re-arm a fenced pre-watermark root
-						   AND NOT EXISTS (SELECT 1 FROM lead_inbox_fenced_root fr
-						                    WHERE fr.inbox_id = lead_inbox.id)`,
-					)
-					.all() as Array<{ id: string; priority: 0 | 1 | 2 | 3 }>;
-				let initialized = 0;
-				for (const row of newlyDelivered) {
-					initialized += this.db
-						.prepare(
-							`UPDATE lead_inbox SET receipt_episode_id = ?,
-							   next_unprocessed_at = COALESCE(next_unprocessed_at, ?)
-							 WHERE id = ? AND receipt_episode_id IS NULL
-							   AND processed_at IS NULL AND disposed_at IS NULL`,
-						)
-						.run(
-							current.episode_id,
-							new Date(
-								Date.parse(input.now) + input.receiptWindowsMs[row.priority],
-							).toISOString(),
-							row.id,
-						).changes;
-				}
-				return {
-					episodeId: current.episode_id,
-					status: "active" as const,
-					activatedAt: current.activation_at,
-					derived,
-					initialized,
-					dryRunCounts,
-					commitCounts: parseCounts(current.commit_counts),
-				};
-			}
-
-			// One-time legacy accounting: only durably delivered reminder effects
-			// consume a logical round. Merely materialized v1 children are superseded.
-			const legacyRounds = this.db
-				.prepare(
-					`SELECT resend_of root_id, COUNT(DISTINCT resend_round) rounds
-					   FROM lead_inbox
-					  WHERE resend_of IS NOT NULL AND delivered_at IS NOT NULL
-					    AND resend_round IS NOT NULL
-					  GROUP BY resend_of`,
-				)
-				.all() as Array<{ root_id: string; rounds: number }>;
-			for (const row of legacyRounds) {
-				this.db
-					.prepare(
-						`UPDATE lead_inbox SET delivered_rounds = ?
-						 WHERE id = ? AND delivered_rounds < ?`,
-					)
-					.run(row.rounds, row.root_id, row.rounds);
-			}
-			this.db
-				.prepare(
-					`UPDATE lead_inbox SET consumed_at = ?, disposition = 'superseded'
-					 WHERE resend_of IS NOT NULL AND delivered_at IS NULL
-					   AND consumed_at IS NULL AND receipt_episode_id IS NULL`,
-				)
-				.run(input.now);
-			this.db
-				.prepare(
-					`UPDATE receipt_alert_outbox SET canceled_at = ?,
-					   cancel_reason = 'legacy_generation_superseded'
-					 WHERE kind IN ('unprocessed','receipt_unprocessed')
-					   AND delivered_at IS NULL AND canceled_at IS NULL`,
-				)
-				.run(input.now);
-
-			const eligible = this.db
-				.prepare(
-					`SELECT id, priority FROM lead_inbox
-					 WHERE resend_of IS NULL AND delivered_at IS NOT NULL
-					   AND processed_at IS NULL AND disposed_at IS NULL
-					   AND receipt_exempt_reason IS NULL
-					   -- FLY-1586 R2 BLOCKER: never re-arm a fenced pre-watermark root
-					   AND NOT EXISTS (SELECT 1 FROM lead_inbox_fenced_root fr
-					                    WHERE fr.inbox_id = lead_inbox.id)`,
-				)
-				.all() as Array<{ id: string; priority: 0 | 1 | 2 | 3 }>;
-			let initialized = 0;
-			const initialize = this.db.prepare(
-				`UPDATE lead_inbox SET next_unprocessed_at = ?, receipt_episode_id = ?
-				 WHERE id = ? AND processed_at IS NULL AND disposed_at IS NULL
-				   AND receipt_exempt_reason IS NULL AND delivered_at IS NOT NULL`,
-			);
-			for (const row of eligible) {
-				initialized += initialize.run(
-					new Date(
-						Date.parse(input.now) + input.receiptWindowsMs[row.priority],
-					).toISOString(),
-					current.episode_id,
-					row.id,
-				).changes;
-			}
-			const commitCounts = activationCounts();
-			this.db
-				.prepare(
-					`UPDATE receipt_activation_episodes SET activation_at = ?,
-					   status = 'active', commit_counts = ? WHERE episode_id = ?`,
-				)
-				.run(input.now, JSON.stringify(commitCounts), current.episode_id);
-			return {
-				episodeId: current.episode_id,
-				status: "active" as const,
-				activatedAt: input.now,
-				derived,
-				initialized,
-				dryRunCounts,
-				commitCounts,
-			};
-		});
-		return reconcile.immediate();
-	}
-
-	/** Compatibility wrapper; v2 activation authority is receipt_activation_episodes. */
-	bootstrapUnprocessedReceipts(input: {
-		now: string;
-		windowMs: number;
-		receiptWindowsMs?: ReceiptPriorityWindowsMs;
-	}): { activationAt: string; derived: number; initialized: number } {
-		assertUtcIsoTimestamp(input.now, "now");
-		if (!Number.isSafeInteger(input.windowMs) || input.windowMs <= 0) {
-			throw new Error("windowMs must be a positive safe integer");
-		}
-		const receiptWindows =
-			input.receiptWindowsMs ??
-			([
-				input.windowMs,
-				input.windowMs,
-				input.windowMs,
-				input.windowMs,
-			] as const);
-		const activation = this.reconcileReceiptActivation({
-			enabled: true,
-			now: input.now,
-			receiptWindowsMs: receiptWindows,
-			highWaterMark: String(Date.parse(input.now)),
-		});
-		return {
-			activationAt: activation.activatedAt ?? input.now,
-			derived: activation.derived,
-			initialized: activation.initialized,
-		};
-	}
-
-	advanceDueUnprocessedReceipts(input: {
-		now: string;
-		windowMs: number;
-		receiptWindowsMs?: ReceiptPriorityWindowsMs;
-		resendCap: number;
-		limit?: number;
-	}): UnprocessedReceiptAdvance[] {
-		assertUtcIsoTimestamp(input.now, "now");
-		for (const [field, value] of [
-			["windowMs", input.windowMs],
-			["resendCap", input.resendCap],
-			["limit", input.limit ?? 100],
-		] as const) {
-			if (!Number.isSafeInteger(value) || value <= 0) {
-				throw new Error(`${field} must be a positive safe integer`);
-			}
-		}
-		const limit = input.limit ?? 100;
-		const receiptWindows =
-			input.receiptWindowsMs ??
-			([
-				input.windowMs,
-				input.windowMs,
-				input.windowMs,
-				input.windowMs,
-			] as const);
-		if (
-			receiptWindows.some(
-				(window) => !Number.isSafeInteger(window) || window <= 0,
-			)
-		) {
-			throw new Error("receiptWindowsMs must contain four positive integers");
-		}
-		const advance = this.db.transaction(() => {
-			const episode = this.db
-				.prepare(
-					`SELECT episode_id FROM receipt_activation_episodes
-					 WHERE status = 'active' AND activation_at IS NOT NULL
-					 ORDER BY rowid DESC LIMIT 1`,
-				)
-				.get() as { episode_id: string } | undefined;
-			if (!episode) return [];
-			const roots = this.db
-				.prepare(
-					`SELECT receipt.* FROM lead_inbox receipt
-					  WHERE receipt.resend_of IS NULL
-					    AND receipt.processed_at IS NULL
-					    AND receipt.processed_evidence IS NULL
-					    AND receipt.delivered_at IS NOT NULL
-					    AND receipt.escalated_at IS NULL
-					    AND receipt.next_unprocessed_at IS NOT NULL
-					    AND receipt.next_unprocessed_at <= ?
-					    AND receipt.receipt_episode_id = ?
-					    AND receipt.receipt_exempt_reason IS NULL
-					    AND receipt.disposed_at IS NULL
-					    -- FLY-1586 R2 BLOCKER: a fenced pre-watermark root must never
-					    -- mint a post-watermark child carrying the old founder payload
-					    AND NOT EXISTS (SELECT 1 FROM lead_inbox_fenced_root fr
-					                     WHERE fr.inbox_id = receipt.id)
-					  ORDER BY receipt.next_unprocessed_at, receipt.seq
-					  LIMIT ?`,
-				)
-				.all(input.now, episode.episode_id, limit) as LeadInboxRow[];
-			const outcomes: UnprocessedReceiptAdvance[] = [];
-			for (const root of roots) {
-				const round = root.delivered_rounds;
-				if (round < input.resendCap) {
-					const nextRound = round + 1;
-					const resendId = `${root.id}#r${nextRound}@${episode.episode_id}`;
-					const updated = this.db
-						.prepare(
-							`UPDATE lead_inbox SET next_unprocessed_at = NULL
-							  WHERE id = ? AND processed_at IS NULL AND disposed_at IS NULL
-							    AND receipt_exempt_reason IS NULL
-							    AND delivered_rounds = ? AND receipt_episode_id = ?
-							    AND next_unprocessed_at <= ?`,
-						)
-						.run(root.id, round, episode.episode_id, input.now);
-					if (updated.changes !== 1) continue;
-					const content = `${root.content}\n\n⚠️ 第 ${nextRound} 次重发,首投 ${root.delivered_at},仍无处理收据。`;
-					const resendClass =
-						root.type === "founder_reply" ? "model" : root.msg_class;
-					this.db
-						.prepare(
-							`INSERT OR IGNORE INTO lead_inbox (
-							   id, to_lead, source, type, msg_class, priority, content,
-							   ref_message_id, created_at, resend_of, resend_round,
-							   receipt_episode_id
-							 ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
-						)
-						.run(
-							resendId,
-							root.to_lead,
-							`receipt_resend:${root.id}`,
-							root.type,
-							resendClass,
-							root.priority,
-							content,
-							input.now,
-							root.id,
-							nextRound,
-							episode.episode_id,
-						);
-					const resend = new LeadInboxQueue(this.db).getById(resendId);
-					if (
-						!resend ||
-						resend.resend_of !== root.id ||
-						resend.resend_round !== nextRound ||
-						resend.ref_message_id !== null ||
-						resend.msg_class !== resendClass ||
-						resend.content !== content ||
-						resend.receipt_episode_id !== episode.episode_id
-					) {
-						throw new Error(`receipt resend id ${resendId} was reused`);
-					}
-					outcomes.push({
-						kind: "resent",
-						rootId: root.id,
-						round: nextRound,
-						resendId,
-					});
-					continue;
-				}
-
-				const outboxId = `unprocessed:${root.id}@${episode.episode_id}`;
-				const payload = this.buildUnprocessedReceiptAlertPayload(root);
-				const inserted = this.db
-					.prepare(
-						`INSERT OR IGNORE INTO receipt_alert_outbox
-						 (id, kind, payload, created_at)
-						 VALUES (?, 'receipt_unprocessed', ?, ?)`,
-					)
-					.run(outboxId, JSON.stringify(payload), input.now);
-				this.db
-					.prepare(
-						`UPDATE lead_inbox SET next_unprocessed_at = NULL
-						  WHERE id = ? AND processed_at IS NULL AND disposed_at IS NULL`,
-					)
-					.run(root.id);
-				if (inserted.changes !== 1) continue;
-				outcomes.push({
-					kind: "escalation_queued",
-					rootId: root.id,
-					outboxId,
-				});
-			}
-			return outcomes;
-		});
-		return advance.immediate();
-	}
-
-	/** v2 retires Bridge attribution/rebind promotion; Lead handles the canonical row. */
-	promoteDueFounderRebinds(input: {
-		ownerEpoch: string;
-		now: string;
-		limit?: number;
-	}): LeadInboxRow[] {
-		assertUtcIsoTimestamp(input.now, "now");
-		void input.ownerEpoch;
-		void input.limit;
-		return [];
-	}
-
-	listPendingReceiptAlerts(
-		kinds: readonly string[],
-		limit = 100,
-	): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow[] {
-		if (kinds.length === 0) return [];
-		if (!Number.isSafeInteger(limit) || limit <= 0) {
-			throw new Error("alert limit must be a positive safe integer");
-		}
-		const placeholders = kinds.map(() => "?").join(",");
-		return this.db
-			.prepare(
-				`SELECT * FROM receipt_alert_outbox
-				  WHERE delivered_at IS NULL AND canceled_at IS NULL
-				    AND kind IN (${placeholders})
-				  ORDER BY created_at, id LIMIT ?`,
-			)
-			.all(
-				...kinds,
-				limit,
-			) as import("./lead-inbox-queue.js").ReceiptAlertOutboxRow[];
-	}
-
-	private buildUnprocessedReceiptAlertPayload(
-		root: LeadInboxRow,
-	): UnprocessedReceiptAlertPayload {
-		let projectName = "unknown";
-		let issueId = "unknown";
-		let executionId = `${root.to_lead}:receipt`;
-		let threadId: string | undefined;
-		if (root.ref_message_id) {
-			const question = this.getMessageById(root.ref_message_id);
-			const session = question
-				? this.getSession(question.from_agent)
-				: undefined;
-			if (session) {
-				projectName = session.project_name;
-				issueId = session.issue_id ?? issueId;
-				executionId = session.execution_id;
-			}
-		}
-		const familyRoot = root.family_root_id
-			? new LeadInboxQueue(this.db).getById(root.family_root_id)
-			: root.type === "founder_reply"
-				? root
-				: undefined;
-		if (familyRoot) {
-			try {
-				const payload = this.parseFounderRootPayload(familyRoot.content);
-				projectName = payload.projectName;
-				issueId = payload.issueId;
-				threadId = payload.threadId;
-				executionId = `${projectName}:${root.to_lead}`;
-			} catch {
-				// Preserve an honest, routable fallback; delivery will retry/no-owner.
-			}
-		}
-		return {
-			rootId: root.id,
-			episodeId: root.receipt_episode_id ?? "legacy/v1",
-			targetKey: `${projectName}:${root.to_lead}`,
-			toLead: root.to_lead,
-			type: root.type,
-			projectName,
-			issueId,
-			executionId,
-			...(root.ref_message_id ? { questionId: root.ref_message_id } : {}),
-			...(threadId ? { threadId } : {}),
-			firstDeliveredAt: root.delivered_at ?? root.created_at,
-			resendRound: root.delivered_rounds,
-			// FLY-1586 C: this exact line minted lead_events seq 56649. `.slice(0,500)`
-			// cut a 🏆 in half; the lone high surrogate became U+FFFD in SQLite, so
-			// the reconciler's read-back no longer matched its own write, threw, and
-			// rolled back every boot-time cutover hop for 61 hours.
-			contentSummary: truncateCodePoints(
-				root.content.replaceAll(/\s+/g, " "),
-				500,
-			).text,
-		};
-	}
-
 	listPendingRunnerReceiptWakes(limit = 100): RunnerPhaseWake[] {
 		if (!Number.isSafeInteger(limit) || limit < 1) {
 			throw new Error("wake list limit must be a positive safe integer");
@@ -4975,6 +3266,25 @@ export class CommDB {
 				 ORDER BY queued_at ASC, queue_seq ASC LIMIT ?`,
 			)
 			.all(limit) as RunnerPhaseWake[];
+	}
+
+	listPendingReceiptAlerts(
+		kinds: readonly string[],
+		limit = 100,
+	): ReceiptAlertOutboxRow[] {
+		if (kinds.length === 0) return [];
+		if (!Number.isSafeInteger(limit) || limit <= 0) {
+			throw new Error("alert limit must be a positive safe integer");
+		}
+		const placeholders = kinds.map(() => "?").join(",");
+		return this.db
+			.prepare(
+				`SELECT * FROM receipt_alert_outbox
+				  WHERE delivered_at IS NULL AND canceled_at IS NULL
+				    AND kind IN (${placeholders})
+				  ORDER BY created_at, id LIMIT ?`,
+			)
+			.all(...kinds, limit) as ReceiptAlertOutboxRow[];
 	}
 
 	findPendingRunnerReceiptWakeForQuestion(
@@ -5474,7 +3784,7 @@ export class CommDB {
 		reason: string;
 		firstDetectedAtMs: number;
 		nowMs: number;
-	}): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | null {
+	}): ReceiptAlertOutboxRow | null {
 		if (!input.reason.trim())
 			throw new Error("wake escalation reason is required");
 		if (
@@ -5521,7 +3831,7 @@ export class CommDB {
 	}
 
 	/**
-	 * The first still-open failed wake defines the episode. Later messages for
+	 * The first still-open failed wake defines the episode. Later mailbox_message_projection for
 	 * the same execution reuse this timestamp; once receipts move every member
 	 * out of pending, the next failure naturally starts a new episode.
 	 */
@@ -5538,85 +3848,20 @@ export class CommDB {
 		return row.started_at;
 	}
 
-	getReceiptAlertOutbox(
-		id: string,
-	): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | undefined {
+	getReceiptAlertOutbox(id: string): ReceiptAlertOutboxRow | undefined {
 		return this.db
 			.prepare("SELECT * FROM receipt_alert_outbox WHERE id = ?")
-			.get(id) as
-			| import("./lead-inbox-queue.js").ReceiptAlertOutboxRow
-			| undefined;
+			.get(id) as ReceiptAlertOutboxRow | undefined;
 	}
 
 	/** Revalidate immediately before any external receipt notification effect. */
 	revalidateReceiptAlert(
 		outboxId: string,
 		nowMs: number,
-	): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | null {
+	): ReceiptAlertOutboxRow | null {
 		const check = this.db.transaction(() => {
 			const alert = this.getReceiptAlertOutbox(outboxId);
 			if (!alert || alert.delivered_at || alert.canceled_at) return null;
-			if (
-				alert.kind === "receipt_unprocessed" ||
-				alert.kind === "unprocessed"
-			) {
-				let payload: { rootId?: string; episodeId?: string };
-				try {
-					payload = JSON.parse(alert.payload) as typeof payload;
-				} catch {
-					payload = {};
-				}
-				const activeEpisode = this.db
-					.prepare(
-						`SELECT episode_id FROM receipt_activation_episodes
-						 WHERE status = 'active' AND activation_at IS NOT NULL
-						 ORDER BY rowid DESC LIMIT 1`,
-					)
-					.get() as { episode_id: string } | undefined;
-				const live =
-					typeof payload.rootId === "string"
-						? (this.db
-								.prepare(
-									`SELECT 1 FROM lead_inbox receipt
-									  WHERE receipt.id = ? AND receipt.resend_of IS NULL
-									    AND receipt.processed_at IS NULL
-									    AND receipt.processed_evidence IS NULL
-									    AND receipt.delivered_at IS NOT NULL
-										    AND receipt.disposed_at IS NULL
-										    AND receipt.disposed_evidence IS NULL
-										    AND receipt.receipt_exempt_reason IS NULL
-										    -- FLY-1586 R2 BLOCKER: an outbox created BEFORE the
-										    -- freeze stays live otherwise, and its notification
-										    -- embeds contentSummary + asks the Lead to complete
-										    -- the routing side effect — i.e. an old ship answer
-										    -- reaching the Lead a second time.
-										    AND NOT EXISTS (SELECT 1 FROM lead_inbox_fenced_root fr
-										                     WHERE fr.inbox_id = receipt.id)`,
-								)
-								.get(payload.rootId) as { 1: number } | undefined)
-						: undefined;
-				if (
-					!live ||
-					alert.created_at > new Date(nowMs).toISOString() ||
-					payload.episodeId !== activeEpisode?.episode_id
-				) {
-					this.db
-						.prepare(
-							`UPDATE receipt_alert_outbox
-							 SET canceled_at = ?, cancel_reason = ?
-							 WHERE id = ? AND delivered_at IS NULL AND canceled_at IS NULL`,
-						)
-						.run(
-							new Date(nowMs).toISOString(),
-							payload.episodeId !== activeEpisode?.episode_id
-								? "stale_activation_episode"
-								: "source_no_longer_unprocessed",
-							outboxId,
-						);
-					return null;
-				}
-				return alert;
-			}
 			if (alert.kind !== "wake_failed") return alert;
 			let payload: {
 				executionId?: string;
@@ -5700,7 +3945,7 @@ export class CommDB {
 	revalidateRunnerReceiptWakeAlert(
 		outboxId: string,
 		nowMs: number,
-	): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | null {
+	): ReceiptAlertOutboxRow | null {
 		return this.revalidateReceiptAlert(outboxId, nowMs);
 	}
 
@@ -5713,43 +3958,6 @@ export class CommDB {
 				)
 				.run(new Date(nowMs).toISOString(), outboxId).changes === 1
 		);
-	}
-
-	markUnprocessedReceiptEscalated(outboxId: string, nowMs: number): boolean {
-		const now = new Date(nowMs).toISOString();
-		const mark = this.db.transaction(() => {
-			const alert = this.getReceiptAlertOutbox(outboxId);
-			if (
-				!alert ||
-				(alert.kind !== "receipt_unprocessed" &&
-					alert.kind !== "unprocessed") ||
-				alert.canceled_at
-			) {
-				return false;
-			}
-			let payload: { rootId?: string };
-			try {
-				payload = JSON.parse(alert.payload) as typeof payload;
-			} catch {
-				return false;
-			}
-			if (typeof payload.rootId !== "string") return false;
-			this.db
-				.prepare(
-					`UPDATE receipt_alert_outbox SET delivered_at = COALESCE(delivered_at, ?)
-					  WHERE id = ? AND canceled_at IS NULL`,
-				)
-				.run(now, outboxId);
-			this.db
-				.prepare(
-					`UPDATE lead_inbox SET escalated_at = COALESCE(escalated_at, ?),
-					   next_unprocessed_at = NULL
-					 WHERE id = ?`,
-				)
-				.run(now, payload.rootId);
-			return this.getReceiptAlertOutbox(outboxId)?.delivered_at !== null;
-		});
-		return mark.immediate();
 	}
 
 	markRunnerPhaseWakeStarted(
@@ -5872,11 +4080,11 @@ export class CommDB {
 	): Message[] {
 		return this.db
 			.prepare(
-				`SELECT * FROM messages
+				`SELECT * FROM mailbox_message_projection
          WHERE to_agent = ? AND type = 'instruction' AND read_at IS NULL
          AND (delivered_at IS NULL
-              OR delivered_at < datetime('now', '-' || ? || ' seconds'))
-         AND expires_at > datetime('now')
+              OR datetime(delivered_at) < datetime('now', '-' || ? || ' seconds'))
+		 AND datetime(expires_at) > datetime('now')
          ORDER BY created_at ASC`,
 			)
 			.all(agentId, retryWindowSec) as Message[];
@@ -5885,15 +4093,17 @@ export class CommDB {
 	markInstructionDelivered(id: string): void {
 		this.db
 			.prepare(
-				"UPDATE messages SET delivered_at = datetime('now') WHERE id = ?",
+				`UPDATE mailbox SET state = 'LEASED', claimed_by = 'legacy-push',
+				 claim_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+				 WHERE id = ? AND type = 'instruction' AND state = 'QUEUED'`,
 			)
 			.run(id);
 	}
 
 	/**
 	 * The only consuming read for a gate response. Internal probes continue to
-	 * use getResponse(), which is intentionally pure. Consumption stamps the
-	 * response and finishes only its exact purpose-bound wake.
+	 * use getResponse(), which is intentionally pure. Consumption ACKs the
+	 * canonical mailbox response; there is no secondary wake record.
 	 */
 	consumeGateResponse(
 		questionId: string,
@@ -5903,34 +4113,17 @@ export class CommDB {
 			const response = this.db
 				.prepare(
 					`SELECT response.*
-					   FROM messages response
-					   JOIN messages question ON question.id = response.parent_id
+					   FROM mailbox_message_projection response
+					   JOIN mailbox_message_projection question ON question.id = response.parent_id
 					  WHERE question.id = ? AND question.type = 'question'
 					    AND question.from_agent = ?
 					    AND response.type = 'response'`,
 				)
 				.get(questionId, executionId) as Message | undefined;
 			if (!response) return undefined;
-			const nowMs = Date.now();
-			this.db
-				.prepare(
-					`UPDATE messages
-					    SET delivered_at = COALESCE(delivered_at, datetime('now'))
-					  WHERE id = ? AND type = 'response'`,
-				)
-				.run(response.id);
-			this.db
-				.prepare(
-					`UPDATE runner_phase_wakes
-					    SET state = 'finished', finished_at = ?,
-					        claim_token = NULL, claim_expires_at = NULL
-					  WHERE execution_id = ? AND message_id = ?
-					    AND purpose = 'gate_response'
-					    AND state IN ('pending','started')`,
-				)
-				.run(nowMs, executionId, response.id);
+			new MailboxQueue(this.db).ack(response.id, new Date().toISOString());
 			return this.db
-				.prepare("SELECT * FROM messages WHERE id = ?")
+				.prepare("SELECT * FROM mailbox_message_projection WHERE id = ?")
 				.get(response.id) as Message;
 		});
 		return consume.immediate();
@@ -5942,11 +4135,7 @@ export class CommDB {
 	 * confirms it has processed a message. No-op for unknown ids.
 	 */
 	ackInstructionRead(id: string): void {
-		this.db
-			.prepare(
-				"UPDATE messages SET read_at = datetime('now') WHERE id = ? AND read_at IS NULL",
-			)
-			.run(id);
+		new MailboxQueue(this.db).ack(id, new Date().toISOString());
 	}
 
 	// ── Dynamic Timeout (Phase 2) ──
@@ -5954,13 +4143,13 @@ export class CommDB {
 	hasPendingQuestionsFrom(execId: string): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		const row = this.db
 			.prepare(
-				`SELECT COUNT(*) as cnt FROM messages q
+				`SELECT COUNT(*) as cnt FROM mailbox_message_projection q
          WHERE q.from_agent = ? AND q.type = 'question'
          AND NOT EXISTS (
-           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+           SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
          )
 		 AND ${answerable}`,
 			)
@@ -5979,14 +4168,14 @@ export class CommDB {
 	hasPendingBlockingGateFrom(execId: string): boolean {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		const row = this.db
 			.prepare(
-				`SELECT COUNT(*) as cnt FROM messages q
+				`SELECT COUNT(*) as cnt FROM mailbox_message_projection q
          WHERE q.from_agent = ? AND q.type = 'question'
          AND q.checkpoint IS NOT NULL
          AND NOT EXISTS (
-           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+           SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
          )
 		 AND ${answerable}`,
 			)
@@ -6000,18 +4189,17 @@ export class CommDB {
 	 * detector — a runner that recently messaged its Lead (DONE report,
 	 * instruction receipt, question) is alive, however static its pane looks.
 	 *
-	 * The comparison stays entirely in SQLite's UTC clock domain
-	 * (`created_at` DEFAULT CURRENT_TIMESTAMP vs `datetime('now', ...)`) —
-	 * no JS date parsing of timezone-less strings. Strict `>`: a message
+	 * The comparison stays entirely in SQLite's UTC clock domain by normalizing
+	 * the ISO-Z mailbox timestamp with `datetime(created_at)`. Strict `>`: a message
 	 * exactly at the window edge is outside.
 	 */
 	hasRecentMessagesFrom(execId: string, windowSeconds: number): boolean {
 		const seconds = Math.max(0, Math.floor(windowSeconds));
 		const row = this.db
 			.prepare(
-				`SELECT 1 as hit FROM messages
+				`SELECT 1 as hit FROM mailbox_message_projection
          WHERE from_agent = ?
-         AND created_at > datetime('now', '-' || ? || ' seconds')
+         AND datetime(created_at) > datetime('now', '-' || ? || ' seconds')
          LIMIT 1`,
 			)
 			.get(execId, seconds) as { hit: number } | undefined;
@@ -6025,7 +4213,9 @@ export class CommDB {
 	 */
 	countMessagesFrom(execId: string): number {
 		const row = this.db
-			.prepare("SELECT COUNT(*) AS count FROM messages WHERE from_agent = ?")
+			.prepare(
+				"SELECT COUNT(*) AS count FROM mailbox_message_projection WHERE from_agent = ?",
+			)
 			.get(execId) as { count: number };
 		return Number(row.count);
 	}
@@ -6604,7 +4794,7 @@ export class CommDB {
 	/**
 	 * FLY-1374: restore the exact CommDB identity a proven-live parked holder
 	 * needs before its wake is committed. Existing rows are revived in place so
-	 * questions/messages/receipts survive; their registered tmux target remains
+	 * questions/mailbox_message_projection/receipts survive; their registered tmux target remains
 	 * authoritative. Missing rows may be inserted only with a complete,
 	 * caller-proven identity.
 	 */
@@ -6787,17 +4977,17 @@ export class CommDB {
 	): PendingRunnerQuestion | undefined {
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
+			: "datetime(q.expires_at) > datetime('now')";
 		return this.db
 			.prepare(
-				`SELECT q.id, q.checkpoint FROM messages q
+				`SELECT q.id, q.checkpoint FROM mailbox_message_projection q
 				 WHERE q.to_agent = ?
 				   AND q.type = 'question'
 				   AND q.from_agent = ?
 				   AND (q.kind IS NULL OR q.kind <> 'report')
 				   AND q.superseded_at IS NULL
 				   AND NOT EXISTS (
-				     SELECT 1 FROM messages r
+				     SELECT 1 FROM mailbox_message_projection r
 				      WHERE r.parent_id = q.id AND r.type = 'response'
 				   )
 				   AND ${answerable}
@@ -6829,10 +5019,11 @@ export class CommDB {
 			// protection prevents TTL/hygiene loss, not intentional lifecycle closeout.
 			const retired = this.db
 				.prepare(
-					`UPDATE messages AS q SET
-					   resolved_at = datetime('now'),
-					   read_at = COALESCE(read_at, datetime('now')),
-					   expires_at = datetime('now'),
+					`UPDATE mailbox AS q SET
+					   resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+					   state = 'ACKED',
+					   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+					   expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 					   relay_state = 'terminal_disposed'
 					   ${askHygiene ? ", resolved_via = 'owner_closed'" : ""}
 					 WHERE q.from_agent = ?
@@ -6846,7 +5037,7 @@ export class CommDB {
 					   AND q.checkpoint NOT IN ('review_design', 'review_code')
 					   AND q.resolved_at IS NULL
 					   AND NOT EXISTS (
-					     SELECT 1 FROM messages r
+					     SELECT 1 FROM mailbox_message_projection r
 					      WHERE r.parent_id = q.id AND r.type = 'response'
 					   )`,
 				)
@@ -6865,10 +5056,11 @@ export class CommDB {
 						"+0 seconds";
 				retiredAsks = this.db
 					.prepare(
-						`UPDATE messages AS q SET
-						   resolved_at = datetime('now'),
-						   read_at = COALESCE(read_at, datetime('now')),
-						   expires_at = datetime('now', '${forensicTtl}'),
+						`UPDATE mailbox AS q SET
+						   resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+						   state = 'ACKED',
+						   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+						   expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '${forensicTtl}'),
 						   relay_state = 'terminal_disposed',
 						   resolved_via = 'owner_closed'
 						 WHERE q.from_agent = ?
@@ -6876,9 +5068,9 @@ export class CommDB {
 						   AND q.checkpoint IS NULL
 						   AND q.resolved_at IS NULL
 						   AND q.relay_state != 'terminal_disposed'
-						   AND q.created_at <= datetime('now', ?)
+						   AND datetime(q.created_at) <= datetime('now', ?)
 						   AND NOT EXISTS (
-						     SELECT 1 FROM messages r
+						     SELECT 1 FROM mailbox_message_projection r
 						      WHERE r.parent_id = q.id AND r.type = 'response'
 						   )`,
 					)

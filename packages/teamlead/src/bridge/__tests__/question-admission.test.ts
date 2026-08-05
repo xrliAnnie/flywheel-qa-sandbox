@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LeadConfig, ProjectEntry } from "../../ProjectConfig.js";
 import type { LeadRuntime } from "../lead-runtime.js";
@@ -35,12 +35,18 @@ const projects: ProjectEntry[] = [
 ];
 
 function harness(labels = ["Engineering"]) {
-	const dir = mkdtempSync(join(tmpdir(), "fly1373-admission-"));
-	const dbPath = join(dir, "comm.db");
+	const dbPath = join(
+		mkdtempSync(join(tmpdir(), "fly1572-admission-")),
+		"comm.db",
+	);
 	const db = new CommDB(dbPath);
-	resources.push(db);
-	const queue = new LeadInboxQueue(dbPath);
-	resources.push(queue);
+	const queue = new MailboxQueue(dbPath);
+	resources.push(db, queue);
+	queue.acquireOrRenewOwner({
+		ownerEpoch: "owner-1",
+		now: "2026-08-05T12:00:00.000Z",
+		leaseTtlMs: 60_000,
+	});
 	const session = {
 		execution_id: "exec-1",
 		issue_id: "issue-1",
@@ -52,7 +58,6 @@ function harness(labels = ["Engineering"]) {
 	};
 	const store = {
 		getSession: vi.fn(() => session),
-		isLeadEventDelivered: vi.fn(() => false),
 		appendLeadEvent: vi.fn(() => 41),
 	};
 	const registry = new RuntimeRegistry();
@@ -71,88 +76,83 @@ function harness(labels = ["Engineering"]) {
 		projects,
 		store: store as never,
 		runtimeRegistry: registry,
-		now: () => new Date("2026-07-19T12:00:00.000Z"),
 	});
-	return { db, queue, store, session, admission };
+	resources.push(admission);
+	return { admission, db, queue, store };
 }
 
-describe("QuestionAdmission", () => {
-	it("materializes an eligible gate with content, deadline, and protection", async () => {
+function claim(queue: MailboxQueue) {
+	return queue.claimLeadBatch({
+		toAgent: "lead-a",
+		msgClass: "model",
+		ownerEpoch: "owner-1",
+		batchId: "batch-1",
+		now: "2026-08-05T12:00:00.000Z",
+		claimTtlMs: 60_000,
+	})[0]!;
+}
+
+describe("QuestionAdmission mailbox claim service", () => {
+	it("materializes an eligible gate on its existing mailbox row", async () => {
 		const h = harness();
-		const deadline = "2026-07-20T12:00:00.000Z";
-		const qid = h.db.insertQuestion("exec-1", "lead-a", "need approval", {
+		const deadline = "2026-08-06T12:00:00.000Z";
+		const id = h.db.insertQuestion("exec-1", "lead-a", "need approval", {
 			checkpoint: "question",
 			deadlineAt: deadline,
 		});
-		expect(await h.admission.materializePending()).toBe(1);
-		expect(h.queue.getById(`question:lead-a:${qid}`)).toMatchObject({
-			type: "gate_question",
-			priority: 1,
-			content: "rendered:need approval",
-			ref_message_id: qid,
-			deadline_at: deadline,
-			created_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/),
+		expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+			deliver: true,
 		});
-		expect(h.db.getMessageById(qid)).toMatchObject({
+		expect(h.queue.getById(id)).toMatchObject({
+			id,
+			delivery_id: `question:lead-a:${id}`,
+			type: "question",
+			source_kind: "question",
+			source_ref: "41",
+			delivery_content: "rendered:need approval",
 			relay_state: "protected",
-			logical_event_id: "41",
+			deadline_at: deadline,
 		});
 		expect(h.store.appendLeadEvent).toHaveBeenCalledTimes(1);
 	});
 
-	it("materializes reports at report priority and dedupes repeated scans", async () => {
-		const h = harness();
-		const qid = h.db.insertQuestion("exec-1", "lead-a", "DONE: shipped", {
-			kind: "report",
-		});
-		expect(await h.admission.materializePending()).toBe(1);
-		expect(await h.admission.materializePending()).toBe(1);
-		expect(h.queue.getById(`question:lead-a:${qid}`)?.priority).toBe(2);
-		expect(h.queue.countPending()).toBe(1);
-	});
-
-	it("rejects a gate whose source session resolves to another Lead", async () => {
+	it("returns a retry verdict for a transient pre-materialization hold", async () => {
 		const h = harness(["Operations"]);
 		h.db.insertQuestion("exec-1", "lead-a", "misrouted", {
 			checkpoint: "question",
 		});
-		expect(await h.admission.materializePending()).toBe(0);
-		expect(h.queue.countPending()).toBe(0);
+		expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+			deliver: false,
+			disposition: "revoked_lead_scope",
+			retry: true,
+		});
+		expect(h.store.appendLeadEvent).not.toHaveBeenCalled();
 	});
 
-	it("revalidates an answered question as revoked before dispatch", async () => {
+	it("terminally revokes an answered question", async () => {
 		const h = harness();
-		const qid = h.db.insertQuestion("exec-1", "lead-a", "answer me");
-		await h.admission.materializePending();
-		expect(h.db.insertResponse(qid, "lead-a", "answered")).toMatchObject({
+		const id = h.db.insertQuestion("exec-1", "lead-a", "answer me");
+		expect(h.db.insertResponse(id, "lead-a", "answered")).toMatchObject({
 			written: true,
 		});
-		const row = h.queue.getById(`question:lead-a:${qid}`)!;
-		expect(await h.admission.revalidate(row)).toEqual({
+		expect(await h.admission.revalidate(claim(h.queue))).toEqual({
 			deliver: false,
 			disposition: "revoked_answered",
 		});
 	});
-});
 
-describe("FLY-1601 per-tick CommDB construction", () => {
-	it("materializePending reuses one connection across calls (no per-tick migrations)", async () => {
-		// CPU-profiled on the wedged 2026-08-02 Bridge: the #1 hotspot was the
-		// CommDB constructor's migration replay, entered from materializePending
-		// on EVERY tick of EVERY lead. The contract of the fix: repeated calls
-		// construct at most one CommDB.
-		const { admission } = harness();
-		const ctor = vi.spyOn(
-			admission as unknown as { commDb: () => CommDB },
+	it("reuses one CommDB connection across revalidation calls", async () => {
+		const h = harness();
+		h.db.insertQuestion("exec-1", "lead-a", "question");
+		const row = claim(h.queue);
+		const accessor = vi.spyOn(
+			h.admission as unknown as { commDb: () => CommDB },
 			"commDb",
 		);
-		await admission.materializePending();
-		await admission.materializePending();
-		await admission.materializePending();
-		expect(ctor).toHaveBeenCalledTimes(3);
-		const first = ctor.mock.results[0]?.value;
-		expect(ctor.mock.results[1]?.value).toBe(first);
-		expect(ctor.mock.results[2]?.value).toBe(first);
-		admission.close();
+		await h.admission.revalidate(row);
+		await h.admission.revalidate(h.queue.getById(row.id)!);
+		expect(accessor.mock.results[1]?.value).toBe(
+			accessor.mock.results[0]?.value,
+		);
 	});
 });

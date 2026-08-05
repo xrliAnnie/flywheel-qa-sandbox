@@ -133,7 +133,7 @@ describe("CommDB", () => {
 			});
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
 				)
 				.run(qId);
 
@@ -155,11 +155,16 @@ describe("CommDB", () => {
 			});
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
 				)
 				.run(qId);
 
 			expect(db.markQuestionTerminalDisposed(qId)).toBe(true);
+			(db as any).db
+				.prepare(
+					"UPDATE mailbox SET state = 'ACKED', acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours') WHERE id = ?",
+				)
+				.run(qId);
 			expect(db.purgeExpired()).toBe(1);
 			expect(db.getMessageById(qId)).toBeUndefined();
 		});
@@ -175,7 +180,7 @@ describe("CommDB", () => {
 			});
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
 				)
 				.run(qId);
 
@@ -197,8 +202,9 @@ describe("CommDB", () => {
 			const qId = db.insertQuestion("runner-1", "product-lead", "Still open?");
 			(db as any).db
 				.prepare(
-					`UPDATE messages SET read_at = datetime('now', '-48 hours'),
-					 created_at = datetime('now', '-48 hours') WHERE id = ?`,
+					`UPDATE mailbox SET state = 'ACKED',
+					 acked_at = datetime('now', '-96 hours'),
+					 created_at = datetime('now', '-96 hours') WHERE id = ?`,
 				)
 				.run(qId);
 
@@ -206,19 +212,19 @@ describe("CommDB", () => {
 			expect(db.isQuestionPending(qId)).toBe(true);
 		});
 
-		it("preserves legacy expiry deletion when protection is explicitly off", () => {
+		it("hides an expired question without deleting queued evidence when protection is off", () => {
 			process.env.FLYWHEEL_COMMDB_PROTECTION = "0";
 			// Insert a question, then manually set expires_at to past
 			const qId = db.insertQuestion("runner-1", "product-lead", "Old Q?");
 			// Access internal db to force expire
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
 				)
 				.run(qId);
 
 			const purged = db.purgeExpired();
-			expect(purged).toBe(1);
+			expect(purged).toBe(0);
 
 			// Should not appear in pending
 			expect(db.getPendingQuestions("product-lead")).toHaveLength(0);
@@ -251,7 +257,7 @@ describe("CommDB", () => {
 	});
 
 	describe("schema migration", () => {
-		it("should add read_at column to existing database on reopen", () => {
+		it("should expose read_at through the mailbox compatibility projection on reopen", () => {
 			const dbPath = join(tmpDir, "migrate.db");
 			const db1 = new CommDB(dbPath);
 			const qId = db1.insertQuestion("runner-1", "lead", "Q?");
@@ -260,7 +266,7 @@ describe("CommDB", () => {
 			// Reopen — migration should run
 			const db2 = new CommDB(dbPath);
 			const columns = (db2 as any).db
-				.prepare("PRAGMA table_info(messages)")
+				.prepare("PRAGMA table_info(mailbox_message_projection)")
 				.all() as Array<{ name: string }>;
 			expect(columns.some((c: { name: string }) => c.name === "read_at")).toBe(
 				true,
@@ -282,21 +288,21 @@ describe("CommDB", () => {
 			);
 		});
 
-		it("adds durable relay protection columns idempotently", () => {
+		it("keeps durable relay protection columns on mailbox idempotently", () => {
 			const dbPath = join(tmpDir, "relay-migrate.db");
 			const first = new CommDB(dbPath);
 			first.close();
 			const second = new CommDB(dbPath);
 			const columns = (second as any).db
-				.prepare("PRAGMA table_info(messages)")
+				.prepare("PRAGMA table_info(mailbox)")
 				.all() as Array<{ name: string }>;
 			expect(columns.map((column) => column.name)).toEqual(
-				expect.arrayContaining(["relay_state", "logical_event_id"]),
+				expect.arrayContaining(["relay_state", "source_ref"]),
 			);
 			second.close();
 		});
 
-		it("rebuilds the legacy message type constraint without losing parent-child rows", () => {
+		it("rejects an unmigrated legacy message table", () => {
 			const dbPath = join(tmpDir, "legacy-message-types.db");
 			const legacy = new Database(dbPath);
 			legacy.exec(`
@@ -318,24 +324,7 @@ describe("CommDB", () => {
 			`);
 			legacy.close();
 
-			const migrated = new CommDB(dbPath);
-			try {
-				const schema = (migrated as any).db
-					.prepare(
-						"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
-					)
-					.get() as { sql: string };
-				expect(schema.sql).toContain("'ack_receipt'");
-				expect(migrated.getMessageById("legacy-r")).toMatchObject({
-					parent_id: "legacy-q",
-					content: "old response",
-				});
-				expect(
-					migrated.insertAckReceipt("lead", 9, "migrated-token"),
-				).toBeTruthy();
-			} finally {
-				migrated.close();
-			}
+			expect(() => new CommDB(dbPath)).toThrow(/FLY-1572 mailbox migration/);
 		});
 	});
 
@@ -426,7 +415,7 @@ describe("CommDB", () => {
 			const raw = new Database(join(tmpDir, "comm.db"));
 			raw
 				.prepare(
-					`UPDATE messages SET created_at = datetime('now', '-' || ? || ' seconds')
+					`UPDATE mailbox SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '-' || ? || ' seconds')
 					 WHERE from_agent = ?`,
 				)
 				.run(seconds, execId);
@@ -490,8 +479,10 @@ describe("CommDB", () => {
 	describe("session CRUD", () => {
 		it("FLY-1066: migrates the blocked-era sessions schema and persists failed", () => {
 			const legacyPath = join(tmpDir, "fly1066-legacy.db");
+			new CommDB(legacyPath).close();
 			const legacy = new Database(legacyPath);
 			legacy.exec(`
+				DROP TABLE sessions;
 				CREATE TABLE sessions (
 					execution_id TEXT PRIMARY KEY,
 					tmux_window TEXT NOT NULL,
@@ -552,8 +543,10 @@ describe("CommDB", () => {
 
 		it("FLY-1279: migrates legacy session status constraints and persists blocked", () => {
 			const legacyPath = join(tmpDir, "legacy.db");
+			new CommDB(legacyPath).close();
 			const legacy = new Database(legacyPath);
 			legacy.exec(`
+				DROP TABLE sessions;
 				CREATE TABLE sessions (
 					execution_id TEXT PRIMARY KEY,
 					tmux_window TEXT NOT NULL,
@@ -822,17 +815,17 @@ describe("CommDB", () => {
 	});
 
 	describe("cleanupReadMessages", () => {
-		it("should delete read messages older than TTL", () => {
+		it("should archive ACKED messages after the 72-hour retention floor", () => {
 			const instId = db.insertInstruction(
 				"product-lead",
 				"exec-123",
 				"Old instruction",
 			);
 			db.markInstructionRead(instId);
-			// Backdate created_at to 25 hours ago
+			// Terminal retention is measured from acked_at, not creation time.
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET created_at = datetime('now', '-25 hours') WHERE id = ?",
+					"UPDATE mailbox SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours') WHERE id = ?",
 				)
 				.run(instId);
 
@@ -840,7 +833,7 @@ describe("CommDB", () => {
 			expect(cleaned).toBe(1);
 		});
 
-		it("should NOT delete read messages within TTL window", () => {
+		it("should NOT archive ACKED messages within the retention window", () => {
 			const instId = db.insertInstruction(
 				"product-lead",
 				"exec-123",
@@ -862,7 +855,7 @@ describe("CommDB", () => {
 			// Backdate but do NOT mark as read
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET created_at = datetime('now', '-48 hours') WHERE id = ?",
+					"UPDATE mailbox SET created_at = datetime('now', '-96 hours') WHERE id = ?",
 				)
 				.run(instId);
 
@@ -874,7 +867,7 @@ describe("CommDB", () => {
 			expect(unread).toHaveLength(1);
 		});
 
-		it("should use 24h default TTL when no argument provided", () => {
+		it("should use the 72-hour retention floor when no argument is provided", () => {
 			const instId = db.insertInstruction(
 				"product-lead",
 				"exec-123",
@@ -883,7 +876,7 @@ describe("CommDB", () => {
 			db.markInstructionRead(instId);
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET created_at = datetime('now', '-25 hours') WHERE id = ?",
+					"UPDATE mailbox SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours') WHERE id = ?",
 				)
 				.run(instId);
 
@@ -895,10 +888,10 @@ describe("CommDB", () => {
 			const qId = db.insertQuestion("runner-1", "product-lead", "Q?");
 			db.insertResponse(qId, "product-lead", "A");
 
-			// Mark both as read and backdate
+			// Mark the whole family terminal and past the retention floor.
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET read_at = datetime('now', '-25 hours'), created_at = datetime('now', '-25 hours')",
+					"UPDATE mailbox SET state = 'ACKED', acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours')",
 				)
 				.run();
 
@@ -946,14 +939,14 @@ describe("CommDB", () => {
 	// ── FLY-109: push-path helpers (delivered_at + ack semantics) ──
 
 	describe("FLY-109 push-path helpers", () => {
-		it("should add delivered_at column via migration", () => {
+		it("should expose delivery state through the mailbox projection", () => {
 			const dbPath = join(tmpDir, "delivered-migrate.db");
 			const db1 = new CommDB(dbPath);
 			db1.close();
 
 			const db2 = new CommDB(dbPath);
 			const columns = (db2 as any).db
-				.prepare("PRAGMA table_info(messages)")
+				.prepare("PRAGMA table_info(mailbox_message_projection)")
 				.all() as Array<{ name: string }>;
 			expect(
 				columns.some((c: { name: string }) => c.name === "delivered_at"),
@@ -972,41 +965,6 @@ describe("CommDB", () => {
 				const db3 = new CommDB(dbPath);
 				db3.close();
 			}).not.toThrow();
-		});
-
-		it("migration re-apply is race-safe against duplicate delivered_at ADD COLUMN", () => {
-			// Regression for the race Codex flagged in Round 1: two inbox-mcp
-			// openers of the same old-schema DB both see delivered_at missing,
-			// both issue ADD COLUMN, one wins and the loser used to crash with
-			// "duplicate column name". The catch in applyMigrations must swallow
-			// it. We simulate the precondition by forcing the column-missing
-			// branch to run on an opener that already has the column.
-			const dbPath = join(tmpDir, "delivered-race.db");
-
-			const first = new CommDB(dbPath);
-			first.close();
-
-			// Second opener: force re-run of applyMigrations; the column is
-			// already present, so the PRAGMA guard skips it. Then force the
-			// ALTER path anyway via explicit invocation — should not throw.
-			const racer = new CommDB(dbPath);
-			expect(() => {
-				(racer as any).db.prepare("PRAGMA table_info(messages)").all();
-				// Directly re-run the guarded ALTER: this is the exact statement
-				// applyMigrations runs; with the FLY-109 try/catch, the duplicate
-				// error from ADD COLUMN on an already-migrated DB must be swallowed.
-				try {
-					(racer as any).db.exec(
-						"ALTER TABLE messages ADD COLUMN delivered_at DATETIME",
-					);
-				} catch (err) {
-					const msg = (err as Error).message ?? "";
-					if (!/duplicate column name: delivered_at/i.test(msg)) {
-						throw err;
-					}
-				}
-			}).not.toThrow();
-			racer.close();
 		});
 
 		it("getPendingPushInstructions returns undelivered instructions", () => {
@@ -1033,7 +991,7 @@ describe("CommDB", () => {
 			// Backdate delivered_at 60s ago
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET delivered_at = datetime('now', '-60 seconds') WHERE id = ?",
+					"UPDATE mailbox SET claim_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-60 seconds') WHERE id = ?",
 				)
 				.run(id);
 
@@ -1050,7 +1008,7 @@ describe("CommDB", () => {
 			// Backdate delivered_at far past retry window
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET delivered_at = datetime('now', '-600 seconds') WHERE id = ?",
+					"UPDATE mailbox SET claim_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-600 seconds') WHERE id = ?",
 				)
 				.run(id);
 
@@ -1063,30 +1021,36 @@ describe("CommDB", () => {
 			db.markInstructionDelivered(id);
 
 			const row = (db as any).db
-				.prepare("SELECT delivered_at FROM messages WHERE id = ?")
+				.prepare(
+					"SELECT delivered_at FROM mailbox_message_projection WHERE id = ?",
+				)
 				.get(id) as { delivered_at: string | null };
 			expect(row.delivered_at).not.toBeNull();
 		});
 
-		it("markInstructionDelivered is idempotent — refreshes delivered_at on repeat", () => {
+		it("markInstructionDelivered is idempotent — preserves the first lease timestamp", () => {
 			const id = db.insertInstruction("bridge", "lead-1", "msg");
 			db.markInstructionDelivered(id);
 			// Backdate delivered_at
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET delivered_at = datetime('now', '-60 seconds') WHERE id = ?",
+					"UPDATE mailbox SET claim_expires_at = datetime('now', '-60 seconds') WHERE id = ?",
 				)
 				.run(id);
 			const before = (db as any).db
-				.prepare("SELECT delivered_at FROM messages WHERE id = ?")
+				.prepare(
+					"SELECT delivered_at FROM mailbox_message_projection WHERE id = ?",
+				)
 				.get(id) as { delivered_at: string };
 
 			// Re-deliver
 			db.markInstructionDelivered(id);
 			const after = (db as any).db
-				.prepare("SELECT delivered_at FROM messages WHERE id = ?")
+				.prepare(
+					"SELECT delivered_at FROM mailbox_message_projection WHERE id = ?",
+				)
 				.get(id) as { delivered_at: string };
-			expect(after.delivered_at > before.delivered_at).toBe(true);
+			expect(after.delivered_at).toBe(before.delivered_at);
 		});
 
 		it("ackInstructionRead sets read_at", () => {
@@ -1095,7 +1059,7 @@ describe("CommDB", () => {
 			db.ackInstructionRead(id);
 
 			const row = (db as any).db
-				.prepare("SELECT read_at FROM messages WHERE id = ?")
+				.prepare("SELECT read_at FROM mailbox_message_projection WHERE id = ?")
 				.get(id) as { read_at: string | null };
 			expect(row.read_at).not.toBeNull();
 		});
@@ -1106,13 +1070,13 @@ describe("CommDB", () => {
 			db.ackInstructionRead(id);
 
 			const first = (db as any).db
-				.prepare("SELECT read_at FROM messages WHERE id = ?")
+				.prepare("SELECT read_at FROM mailbox_message_projection WHERE id = ?")
 				.get(id) as { read_at: string };
 
 			db.ackInstructionRead(id);
 
 			const second = (db as any).db
-				.prepare("SELECT read_at FROM messages WHERE id = ?")
+				.prepare("SELECT read_at FROM mailbox_message_projection WHERE id = ?")
 				.get(id) as { read_at: string };
 			expect(second.read_at).toBe(first.read_at);
 		});
@@ -1146,7 +1110,7 @@ describe("CommDB", () => {
 			const id = db.insertInstruction("bridge", "lead-1", "expired");
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
 				)
 				.run(id);
 
@@ -1298,7 +1262,7 @@ describe("CommDB", () => {
 			).toThrow();
 			expect(db.listRunnerPhaseWakes("exec-1")).toEqual([]);
 			const row = (db as any).db
-				.prepare("SELECT read_at FROM messages WHERE id = ?")
+				.prepare("SELECT read_at FROM mailbox_message_projection WHERE id = ?")
 				.get(instructionId) as { read_at: string | null } | undefined;
 			expect(row?.read_at ?? null).toBeNull();
 		});
@@ -1325,15 +1289,14 @@ describe("CommDB", () => {
 			});
 		});
 
-		it("readonly missing phase table is empty while other database errors throw", () => {
+		it("readonly fails closed on a database without the mailbox generation", () => {
 			const legacyPath = join(tmpDir, "legacy-readonly.db");
 			const legacy = new Database(legacyPath);
 			legacy.exec("CREATE TABLE legacy_only (id TEXT PRIMARY KEY)");
 			legacy.close();
-			const readonly = CommDB.openReadonly(legacyPath);
-			expect(readonly.listRunnerPhaseWakes("exec-1")).toEqual([]);
-			readonly.close();
-			expect(() => readonly.listRunnerPhaseWakes("exec-1")).toThrow();
+			expect(() => CommDB.openReadonly(legacyPath)).toThrow(
+				/FLY-1572 mailbox migration/,
+			);
 		});
 
 		it("uses idempotent request-bound shutdown CAS", () => {
@@ -1382,15 +1345,14 @@ describe("CommDB", () => {
 			});
 		});
 
-		it("readonly missing shutdown table returns null", () => {
+		it("readonly shutdown lookup fails closed without the mailbox generation", () => {
 			const legacyPath = join(tmpDir, "legacy-shutdown-readonly.db");
 			const legacy = new Database(legacyPath);
 			legacy.exec("CREATE TABLE legacy_only (id TEXT PRIMARY KEY)");
 			legacy.close();
-			const readonly = CommDB.openReadonly(legacyPath);
-			expect(readonly.getRunnerShutdown("exec-1")).toBeNull();
-			readonly.close();
-			expect(() => readonly.getRunnerShutdown("exec-1")).toThrow();
+			expect(() => CommDB.openReadonly(legacyPath)).toThrow(
+				/FLY-1572 mailbox migration/,
+			);
 		});
 
 		it("atomically deletes phase rows, shutdown control, and the session", () => {
@@ -1424,7 +1386,7 @@ describe("CommDB — FLY-245 D-b lifecycle consent (ttl + atomic claim)", () => 
 		const m = db.getMessageById(id);
 		expect(m).toBeDefined();
 		// default +72h → well beyond 1h from now
-		expect(new Date(`${m?.expires_at}Z`).getTime()).toBeGreaterThan(
+		expect(new Date(m?.expires_at ?? "").getTime()).toBeGreaterThan(
 			Date.now() + 60 * 60 * 1000,
 		);
 	});
@@ -1435,7 +1397,7 @@ describe("CommDB — FLY-245 D-b lifecycle consent (ttl + atomic claim)", () => 
 			ttlSeconds: 120,
 		});
 		const m = db.getMessageById(id);
-		const exp = new Date(`${m?.expires_at}Z`).getTime();
+		const exp = new Date(m?.expires_at ?? "").getTime();
 		// ~2 minutes out, definitely under 1h
 		expect(exp).toBeLessThan(Date.now() + 60 * 60 * 1000);
 		expect(exp).toBeGreaterThan(Date.now());
@@ -1444,7 +1406,7 @@ describe("CommDB — FLY-245 D-b lifecycle consent (ttl + atomic claim)", () => 
 	it("a non-positive ttlSeconds falls back to the default", () => {
 		const id = db.insertQuestion("lead", "founder", "q", { ttlSeconds: 0 });
 		const m = db.getMessageById(id);
-		expect(new Date(`${m?.expires_at}Z`).getTime()).toBeGreaterThan(
+		expect(new Date(m?.expires_at ?? "").getTime()).toBeGreaterThan(
 			Date.now() + 60 * 60 * 1000,
 		);
 	});
@@ -1529,7 +1491,7 @@ describe("CommDB — FLY-245 D-b lifecycle consent (ttl + atomic claim)", () => 
 		// suite above) — the `expires_at > now` guard must reject the claim.
 		(db as unknown as { db: import("better-sqlite3").Database }).db
 			.prepare(
-				"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+				"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
 			)
 			.run(id);
 		expect(db.claimLifecycleConsent(id, "runner_lifecycle:terminate")).toBe(

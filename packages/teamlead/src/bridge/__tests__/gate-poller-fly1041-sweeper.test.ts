@@ -50,7 +50,7 @@ describe("isSupersededShipGate (pure judgement — FLY-1041)", () => {
 		).toBe(true);
 	});
 
-	it("false: same-second creation (SQLite 1s resolution) — NEVER widen to >=", () => {
+	it("false: equal creation timestamps — NEVER widen to >=", () => {
 		expect(
 			isSupersededShipGate(
 				gate({ created_at: NOW }),
@@ -189,17 +189,28 @@ describe("GatePoller.maybeSweepSupersededShipGate (integration with real CommDB)
 		};
 	}
 
-	it("sweeps a superseded gate: retired from pending + audit event + returns true (skip relay)", async () => {
+	function setCreatedAt(db: CommDB, timestamp: string, ...ids: string[]): void {
+		(
+			db as unknown as {
+				db: { prepare(sql: string): { run(...args: unknown[]): unknown } };
+			}
+		).db
+			.prepare(
+				`UPDATE mailbox SET created_at = ? WHERE id IN (${ids.map(() => "?").join(",")})`,
+			)
+			.run(timestamp, ...ids);
+	}
+
+	it("sweeps a superseded gate: retired from pending + audit event + returns true (skip relay)", () => {
 		const db = new CommDB(dbPath);
 		const q1 = db.insertQuestion("exec-sw", "lead", "old gate", {
 			checkpoint: "approve_to_ship",
 		});
-		// SQLite created_at has 1s resolution — the strictly-later judgement
-		// needs a real second boundary between the two gates.
-		await new Promise((r) => setTimeout(r, 1_100));
 		const q2 = db.insertQuestion("exec-sw", "lead", "new gate", {
 			checkpoint: "approve_to_ship",
 		});
+		setCreatedAt(db, "2026-08-05T12:00:00.000Z", q1);
+		setCreatedAt(db, "2026-08-05T12:00:00.001Z", q2);
 
 		const poller = makePoller();
 		const swept = poller.maybeSweepSupersededShipGate(
@@ -224,7 +235,7 @@ describe("GatePoller.maybeSweepSupersededShipGate (integration with real CommDB)
 		db.close();
 	}, 15_000);
 
-	it("same-second pair is NOT swept (conservative tradeoff — accepted noise over false kill)", () => {
+	it("equal-timestamp pair is NOT swept (conservative tradeoff — accepted noise over false kill)", () => {
 		const db = new CommDB(dbPath);
 		const q1 = db.insertQuestion("exec-sw", "lead", "old gate", {
 			checkpoint: "approve_to_ship",
@@ -232,6 +243,7 @@ describe("GatePoller.maybeSweepSupersededShipGate (integration with real CommDB)
 		const q2 = db.insertQuestion("exec-sw", "lead", "new gate", {
 			checkpoint: "approve_to_ship",
 		});
+		setCreatedAt(db, "2026-08-05T12:00:00.000Z", q1, q2);
 
 		const poller = makePoller();
 		const swept = poller.maybeSweepSupersededShipGate(

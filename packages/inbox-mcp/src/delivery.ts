@@ -74,23 +74,8 @@ export function handleAck(
 	messageId: string,
 	toAgent: string,
 ): AckResult {
-	// biome lint/complexity/noBannedTypes — replace `Function` with explicit
-	// shape covering only the prepare().get() chain we actually use.
-	const rawDb = (
-		db as unknown as {
-			db: {
-				prepare: (sql: string) => {
-					get: (...args: unknown[]) => unknown;
-				};
-			};
-		}
-	).db;
-	const row = rawDb
-		.prepare(
-			"SELECT id FROM messages WHERE id = ? AND to_agent = ? AND type = 'instruction'",
-		)
-		.get(messageId, toAgent);
-	if (!row) {
+	const row = db.getMessageById(messageId);
+	if (!row || row.to_agent !== toAgent || row.type !== "instruction") {
 		return { ok: false, error: `unknown message_id: ${messageId}` };
 	}
 	db.ackInstructionRead(messageId);

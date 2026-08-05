@@ -32,8 +32,6 @@ export type {
 	PhaseWakeInput,
 	RunnerPhaseWake,
 	RunnerShutdownControl,
-	UnprocessedReceiptAdvance,
-	UnprocessedReceiptAlertPayload,
 } from "./db.js";
 export { askHygieneEnabled, CommDB } from "./db.js";
 export type {
@@ -48,16 +46,23 @@ export {
 export type { LeadInboxNudgeArgs } from "./lead-inbox-nudge.js";
 export { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
 export type {
-	EnqueueLeadInboxInput,
-	LeadInboxMessageClass,
-	LeadInboxPriority,
-	LeadInboxRow,
-} from "./lead-inbox-queue.js";
+	EnqueueMailboxInput,
+	EnqueueMailboxResult,
+	MailboxLoopHeartbeat,
+	MailboxMessageClass,
+	MailboxPriority,
+	MailboxRecipientKind,
+	MailboxRow,
+	MailboxSettlement,
+	MailboxState,
+	ProcessedEvidenceV1,
+} from "./mailbox-queue.js";
 export {
+	assertProcessedEvidence,
 	assertUtcIsoTimestamp,
-	LEAD_INBOX_SCHEMA,
-	LeadInboxQueue,
-} from "./lead-inbox-queue.js";
+	CHAT_DELIVERY_UNCONFIRMED_REASON,
+	MailboxQueue,
+} from "./mailbox-queue.js";
 export type {
 	ArtifactFile,
 	SelectionResult,

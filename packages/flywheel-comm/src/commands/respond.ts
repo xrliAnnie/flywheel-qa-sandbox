@@ -1,13 +1,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { hasApprovalIntent } from "../approval-intent.js";
-import { CommDB, type RunnerPhaseWake } from "../db.js";
+import { CommDB } from "../db.js";
 import { isReservedApprovalAttribution } from "../founder-attribution.js";
 import { FounderConsentAuditStore } from "../founder-consent-audit.js";
 import {
 	defaultGateMarkerDir,
 	markGateMarkerAnswered,
-	readAskMarker,
 	readGateMarker,
 	removeAskMarker,
 } from "../gate-marker.js";
@@ -17,14 +16,7 @@ import {
 	type LeadWriteAuthorizationDeps,
 	postCarrierClaim,
 } from "../lead-lease.js";
-import type { MessageProvenance } from "../types.js";
-import { wakeRunnerMailbox } from "../wake.js";
 
-/**
- * Checkpoints that MUST route founder consent through the Bridge before the
- * CommDB response is written (FLY-175 Track 2 §11.2). The CLI reads the
- * checkpoint from the DB — it NEVER trusts a caller-supplied `--checkpoint`.
- */
 export const GATED_CHECKPOINTS = new Set(["approve_to_ship"]);
 
 export interface RespondArgs {
@@ -32,54 +24,25 @@ export interface RespondArgs {
 	fromAgent: string;
 	answer: string;
 	dbPath: string;
-	/** --bridge-url flag (falls back to BRIDGE_URL / FLYWHEEL_BRIDGE_URL env). */
 	bridgeUrl?: string;
-	/** Resolved project name (for the wrapper POST body path derivation). */
 	projectName?: string;
-	/** Injectable for tests. */
 	env?: NodeJS.ProcessEnv;
 	fetchImpl?: typeof fetch;
-	/** Injectable OS-process seams for deterministic tests. */
 	authorizationDeps?: LeadWriteAuthorizationDeps;
-	/** Internal wake propagation; callers do not set this. */
-	senderProvenance?: MessageProvenance;
 }
 
-/**
- * Respond to a runner's question. For gated checkpoints (`approve_to_ship`)
- * this is FAIL-CLOSED: the response is only written after the Bridge wrapper
- * confirms founder consent. A drifted caller that skips `--bridge-url` cannot
- * silently write the gate — it must either set BRIDGE_URL or explicitly use
- * the emergency `FLYWHEEL_COMM_BYPASS_BRIDGE=1` env (loud audit + warning).
- */
+/** Persist one response; the Bridge Runner lane owns the delivery doorbell. */
 export async function respond(args: RespondArgs): Promise<void> {
 	const env = args.env ?? process.env;
 	const db = new CommDB(args.dbPath, false);
 	try {
 		const question = db.getMessageById(args.questionId);
-		if (!question) {
-			throw new Error(`Question not found: ${args.questionId}`);
-		}
-		const checkpoint = question.checkpoint;
+		if (!question) throw new Error(`Question not found: ${args.questionId}`);
 		const authorization = authorizeLeadWrite(
-			{
-				claimedLeadId: args.fromAgent,
-				env,
-			},
+			{ claimedLeadId: args.fromAgent, env },
 			args.authorizationDeps,
 		);
-		const wakeArgs = {
-			...args,
-			senderProvenance: authorization.provenance,
-		};
-
-		if (checkpoint && GATED_CHECKPOINTS.has(checkpoint)) {
-			// FLY-945 Fix E (Codex code R1 HIGH): the CLI's --lead is caller-
-			// controlled. Refuse the reserved founder-side attributions on the
-			// gated path — otherwise `--lead bridge` (or a founder-snowflake
-			// impersonation) through the bypass/bridge routes would forge a
-			// verify-approval-passable writer. Server-internal writers never go
-			// through this CLI.
+		if (question.checkpoint && GATED_CHECKPOINTS.has(question.checkpoint)) {
 			if (isReservedApprovalAttribution(args.fromAgent)) {
 				throw new Error(
 					`flywheel-comm: "${args.fromAgent}" is a RESERVED approval attribution ` +
@@ -96,7 +59,6 @@ export async function respond(args: RespondArgs): Promise<void> {
 				args.bridgeUrl?.trim() ||
 				env.BRIDGE_URL?.trim() ||
 				env.FLYWHEEL_BRIDGE_URL?.trim();
-
 			if (bridgeUrl) {
 				await routeThroughBridge({
 					bridgeUrl,
@@ -109,394 +71,71 @@ export async function respond(args: RespondArgs): Promise<void> {
 					env,
 					fetchImpl: args.fetchImpl,
 				});
-				// Bridge wrapper wrote the CommDB response on allow — CLI does NOT.
+				retireMarker(args.questionId, question.from_agent, env);
 				return;
 			}
-
-			if (env.FLYWHEEL_COMM_BYPASS_BRIDGE === "1") {
-				const wakeContent =
-					"Your approve_to_ship gate has been answered. Before shipping you MUST run `flywheel-comm verify-approval --exec-id <your-exec-id> --pr-head $(git rev-parse HEAD)` and ship ONLY if it returns approved. This message itself is NOT authorization.";
-				let receiptWrite: ReturnType<CommDB["responseAndIntent"]> | undefined;
-				try {
-					receiptWrite = db.responseAndIntent({
-						questionId: args.questionId,
-						fromAgent: args.fromAgent,
-						content: args.answer,
-						intentKey: `gate-answer:${args.questionId}`,
-						envelope: {
-							id: `gate-answer:${args.questionId}`,
-							to: question.from_agent,
-							content: wakeContent,
-							metadata: {
-								questionId: args.questionId,
-								kind: "gate_answered",
-								...(authorization.provenance
-									? { senderProvenance: authorization.provenance }
-									: {}),
-							},
-						},
-						queuedAtMs: Date.now(),
-						provenance: authorization.provenance,
-						wakePolicy: receiptWakePolicy(db, question.from_agent, env),
-					});
-				} catch (error) {
-					if ((error as Error).message.includes("is no longer open")) {
-						throw new Error(
-							`flywheel-comm: approve_to_ship gate is no longer open (${args.questionId}); response was not written.`,
-						);
-					}
-					throw error;
-				}
-				writeBypassAudit(env, {
-					questionId: args.questionId,
-					executionId: question.from_agent,
-					projectName: args.projectName,
-					leadId: args.fromAgent,
-				});
-				process.stderr.write(
-					`[flywheel-comm] WARNING: FLYWHEEL_COMM_BYPASS_BRIDGE=1 — wrote approve_to_ship gate WITHOUT founder-consent enforcement (question ${args.questionId}). A loud audit row was recorded.\n`,
+			if (env.FLYWHEEL_COMM_BYPASS_BRIDGE !== "1") {
+				throw new Error(
+					"flywheel-comm: refusing to resolve approve_to_ship gate directly. " +
+						"Set BRIDGE_URL or --bridge-url so the wrapper enforces founder consent. " +
+						"Emergency override: FLYWHEEL_COMM_BYPASS_BRIDGE=1.",
 				);
-				// FLY-191 Phase 2: the runner may be idle (gate --no-block), not
-				// polling — wake it. The wake text is a HINT only; ship authority
-				// is verify-approval. Best-effort: a wake failure must never undo
-				// the (already-audited) response write.
-				const wake = await pushReceiptWake(
-					db,
-					receiptWrite.wake,
-					args.fromAgent,
-				);
-				if (!wake.ok && wake.error) {
-					process.stderr.write(
-						`[flywheel-comm] mailbox wake failed for ${question.from_agent}: ${wake.error}\n`,
-					);
-				}
-				return;
 			}
-
-			throw new Error(
-				"flywheel-comm: refusing to resolve approve_to_ship gate directly. " +
-					"Set BRIDGE_URL or --bridge-url so the wrapper enforces founder consent. " +
-					"Emergency override: FLYWHEEL_COMM_BYPASS_BRIDGE=1.",
-			);
-		}
-
-		const plan = receiptWakePlan(db, wakeArgs, env);
-		if (plan) {
-			const write = db.responseAndIntent({
-				questionId: args.questionId,
-				fromAgent: args.fromAgent,
-				content: args.answer,
-				intentKey: `gate-answer:${args.questionId}`,
-				envelope: {
-					id: `gate-answer:${args.questionId}`,
-					to: question.from_agent,
-					content: plan.content,
-					metadata: plan.metadata,
-				},
-				queuedAtMs: Date.now(),
-				provenance: authorization.provenance,
-				wakePolicy: receiptWakePolicy(db, question.from_agent, env),
-			});
-			plan.afterCommit();
-			const wake = await pushReceiptWake(
-				db,
-				write.wake,
+			const written = db.insertResponse(
+				args.questionId,
 				args.fromAgent,
-				plan.backend,
+				args.answer,
+				authorization.provenance,
 			);
-			if (!wake.ok && wake.error) {
-				process.stderr.write(
-					`[flywheel-comm] receipt wake failed for ${question.from_agent}: ${wake.error}\n`,
+			if (!written.written) {
+				throw new Error(
+					`flywheel-comm: approve_to_ship gate is no longer open (${args.questionId}); response was not written.`,
 				);
 			}
+			writeBypassAudit(env, {
+				questionId: args.questionId,
+				executionId: question.from_agent,
+				projectName: args.projectName,
+				leadId: args.fromAgent,
+			});
+			process.stderr.write(
+				`[flywheel-comm] WARNING: FLYWHEEL_COMM_BYPASS_BRIDGE=1 — wrote approve_to_ship gate WITHOUT founder-consent enforcement (question ${args.questionId}). A loud audit row was recorded.\n`,
+			);
+			retireMarker(args.questionId, question.from_agent, env);
 			return;
 		}
 
-		// Blocking/markerless questions have no parked runner wake to admit.
 		db.insertResponse(
 			args.questionId,
 			args.fromAgent,
 			args.answer,
 			authorization.provenance,
 		);
-
-		// FLY-123 (Codex design review R3 #1): a Codex runner registers
-		// no-block gates and EXITS — it is not inside a blocking
-		// `flywheel-comm gate` poll loop, so writing the CommDB response
-		// alone would leave it idle forever. When a question-bound
-		// unanswered-gate marker exists, dual-write a mailbox wake routed by
-		// the TARGET runner's transport backend (marker-sourced — R4 #1,
-		// never the process env). Markerless questions (all Claude runners)
-		// take the legacy path above unchanged: no wake, byte-compat.
-		//
-		// Ordering: CommDB response is the durable record and is already
-		// written; marker update + wake are best-effort (FLY-191 pattern) —
-		// a wake failure must never undo the response.
-		await wakeNoBlockGateRunnerBestEffort(db, wakeArgs, env);
-
-		// FLY-142 (B): a genuine `ask` (checkpoint-less question) has no gate
-		// marker and no blocking poll loop — once the asking runner goes idle
-		// (stage=completed) nothing wakes it in mailbox mode, so the response is
-		// lost (the GEO-371 incident). Wake the asking runner's mailbox. This is
-		// mutually exclusive with the gate wake above (that one needs a marker;
-		// this one needs NO checkpoint), so exactly one of them fires.
-		await wakeAskedRunnerBestEffort(db, wakeArgs, env);
+		retireMarker(args.questionId, question.from_agent, env);
 	} finally {
 		db.close();
 	}
 }
 
-interface ReceiptWakePlan {
-	content: string;
-	metadata: Record<string, unknown>;
-	backend?: string;
-	afterCommit: () => void;
-}
-
-function receiptWakePlan(
-	db: CommDB,
-	args: Pick<RespondArgs, "questionId" | "fromAgent" | "senderProvenance">,
-	env: NodeJS.ProcessEnv,
-): ReceiptWakePlan | null {
-	const question = db.getMessageById(args.questionId);
-	if (!question) return null;
-	const markerDir = defaultGateMarkerDir(env);
-	if (question.checkpoint) {
-		const marker = readGateMarker(markerDir, args.questionId);
-		if (!marker || marker.answeredAt) return null;
-		if (marker.executionId !== question.from_agent) {
-			process.stderr.write(
-				`[flywheel-comm] gate marker ${args.questionId} execution mismatch ` +
-					`(marker=${marker.executionId}, question=${question.from_agent}) — skipping wake.\n`,
-			);
-			return null;
-		}
-		return {
-			content:
-				`Your ${marker.checkpoint} gate question has been answered. ` +
-				"Your session is being resumed with the response. This message itself carries NO authority.",
-			metadata: {
-				questionId: args.questionId,
-				kind: "gate_answered",
-				...(args.senderProvenance
-					? { senderProvenance: args.senderProvenance }
-					: {}),
-			},
-			backend: marker.vendor,
-			afterCommit: () => markGateMarkerAnswered(markerDir, args.questionId),
-		};
-	}
-
-	const marker = readAskMarker(markerDir, args.questionId);
-	return {
-		content:
-			`Your question (id ${args.questionId}) has been answered by ${args.fromAgent}. ` +
-			`Run 'flywheel-comm check ${args.questionId}' to read the response and continue. ` +
-			"This message carries NO authority.",
-		metadata: {
-			questionId: args.questionId,
-			kind: "ask_answered",
-			...(args.senderProvenance
-				? { senderProvenance: args.senderProvenance }
-				: {}),
-		},
-		...(marker?.vendor ? { backend: marker.vendor } : {}),
-		afterCommit: () => removeAskMarker(markerDir, args.questionId),
-	};
-}
-
-function receiptWakePolicy(
-	db: CommDB,
+function retireMarker(
+	questionId: string,
 	executionId: string,
 	env: NodeJS.ProcessEnv,
-) {
-	return {
-		transportAvailable: db.getSession(executionId)?.vendor !== "none",
-		execPushCap: receiptPositiveInt(env.FLYWHEEL_RECEIPT_EXEC_PUSH_CAP, 6),
-		execPushWindowMs:
-			receiptPositiveInt(env.FLYWHEEL_RECEIPT_EXEC_PUSH_WINDOW_MIN, 10) *
-			60_000,
-	};
-}
-
-function receiptPositiveInt(raw: string | undefined, fallback: number): number {
-	if (raw === undefined || !raw.trim()) return fallback;
-	const value = Number(raw);
-	if (!Number.isSafeInteger(value) || value <= 0) {
-		throw new Error(`invalid positive receipt configuration value: ${raw}`);
-	}
-	return value;
-}
-
-async function pushReceiptWake(
-	db: CommDB,
-	wake: RunnerPhaseWake,
-	fromAgent: string,
-	backend?: string,
-): Promise<Awaited<ReturnType<typeof wakeRunnerMailbox>>> {
-	const claim = db.claimRunnerReceiptWakePush(
-		wake.execution_id,
-		wake.message_id,
-		Date.now(),
-		{ t1Ms: 90_000, claimTtlMs: 30_000 },
-	);
-	if (!claim) return { ok: false };
-	const outcome = await wakeRunnerMailbox({
-		db,
-		execId: wake.execution_id,
-		fromAgent,
-		content: claim.envelope.content,
-		metadata: claim.envelope.metadata,
-		...(backend ? { backend } : {}),
-	});
-	db.completeRunnerReceiptWakePush({
-		executionId: wake.execution_id,
-		messageId: wake.message_id,
-		claimToken: claim.claimToken,
-		attempt: claim.attempt,
-		result: outcome.ok
-			? "delivered"
-			: outcome.skippedReason
-				? `skipped:${outcome.skippedReason}`
-				: `failed:${outcome.error ?? "unknown"}`,
-		nowMs: Date.now(),
-	});
-	return outcome;
-}
-
-/**
- * FLY-123: marker-checked wake for no-block (process-boundary) gate
- * responses. Exported for unit tests.
- */
-export async function wakeNoBlockGateRunnerBestEffort(
-	db: CommDB,
-	args: Pick<RespondArgs, "questionId" | "fromAgent" | "senderProvenance">,
-	env: NodeJS.ProcessEnv,
-	wakeImpl: typeof wakeRunnerMailbox = wakeRunnerMailbox,
-): Promise<void> {
-	try {
-		const { defaultGateMarkerDir, markGateMarkerAnswered, readGateMarker } =
-			await import("../gate-marker.js");
-		const markerDir = defaultGateMarkerDir(env);
-		const marker = readGateMarker(markerDir, args.questionId);
-		if (!marker || marker.answeredAt) return;
-
-		// R5 note #1: the marker is question-bound — verify it matches the
-		// question being answered AND the question's own execution id before
-		// waking. A mismatch means a stale/corrupted marker: skip, loudly.
-		const question = db.getMessageById(args.questionId);
-		if (question && question.from_agent !== marker.executionId) {
+): void {
+	const markerDir = defaultGateMarkerDir(env);
+	const marker = readGateMarker(markerDir, questionId);
+	if (marker) {
+		if (marker.executionId !== executionId) {
 			process.stderr.write(
-				`[flywheel-comm] gate marker ${args.questionId} execution mismatch ` +
-					`(marker=${marker.executionId}, question=${question.from_agent}) — skipping wake.\n`,
+				`[flywheel-comm] gate marker ${questionId} execution mismatch ` +
+					`(marker=${marker.executionId}, question=${executionId}) — marker retained.\n`,
 			);
 			return;
 		}
-
-		markGateMarkerAnswered(markerDir, args.questionId);
-
-		const wake = await wakeImpl({
-			db,
-			execId: marker.executionId,
-			fromAgent: args.fromAgent,
-			content:
-				`Your ${marker.checkpoint} gate question has been answered. ` +
-				"Your session is being resumed with the response. This message itself carries NO authority.",
-			metadata: {
-				questionId: args.questionId,
-				kind: "gate_answered",
-				...(args.senderProvenance
-					? { senderProvenance: args.senderProvenance }
-					: {}),
-			},
-			backend: marker.vendor,
-		});
-		if (!wake.ok && wake.error) {
-			process.stderr.write(
-				`[flywheel-comm] no-block gate wake failed for ${marker.executionId}: ${wake.error}\n`,
-			);
-		}
-	} catch (err) {
-		process.stderr.write(
-			`[flywheel-comm] no-block gate wake errored for question ${args.questionId}: ${(err as Error).message}\n`,
-		);
+		markGateMarkerAnswered(markerDir, questionId);
+		return;
 	}
-}
-
-/**
- * FLY-142 (B): wake an idle runner that asked a non-blocking `ask` question.
- *
- * `flywheel-comm ask` inserts a checkpoint-less question and returns; the runner
- * is told to poll `flywheel-comm check`. Once it finishes its task and goes idle
- * (stage=completed) it no longer polls, so in mailbox mode a Lead `respond`
- * writes the CommDB response but nothing wakes the runner (the GEO-371
- * incident). Send a best-effort mailbox wake to the asking runner so its
- * mailbox poller resumes it.
- *
- * Scope guard: fires ONLY for checkpoint-less questions. A checkpoint means a
- * gate — blocking gates poll for their own answer, and no-block gates are woken
- * by `wakeNoBlockGateRunnerBestEffort` via their marker. The two wake paths are
- * therefore mutually exclusive and never double-wake. The wake is markerless,
- * so it routes via the env transport (`fromEnv`), matching the existing
- * approve_to_ship bypass wake. Exported for unit tests.
- */
-export async function wakeAskedRunnerBestEffort(
-	db: CommDB,
-	args: Pick<RespondArgs, "questionId" | "fromAgent" | "senderProvenance">,
-	env: NodeJS.ProcessEnv,
-	wakeImpl: typeof wakeRunnerMailbox = wakeRunnerMailbox,
-): Promise<void> {
-	try {
-		const question = db.getMessageById(args.questionId);
-		if (!question) return;
-		// A checkpoint => a gate (handled elsewhere). Only genuine asks wake here.
-		if (question.checkpoint) return;
-
-		const targetExecId = question.from_agent;
-
-		// FLY-142 (Option Y): a Codex runner's `ask` drops a vendor-bearing
-		// ask-marker (in the marker dir's `ask/` subdir, isolated from gate
-		// markers) so the wake routes to its OWN mailbox backend. Claude runners
-		// write no marker → backend undefined → wakeRunnerMailbox uses
-		// fromEnv = claude-code (byte-compatible). This is the vendor-neutral
-		// half of the GEO-371 fix.
-		const { defaultGateMarkerDir, readAskMarker, removeAskMarker } =
-			await import("../gate-marker.js");
-		const markerDir = defaultGateMarkerDir(env);
-		const marker = readAskMarker(markerDir, args.questionId);
-
-		const wake = await wakeImpl({
-			db,
-			execId: targetExecId,
-			fromAgent: args.fromAgent,
-			content:
-				`Your question (id ${args.questionId}) has been answered by ${args.fromAgent}. ` +
-				`Run 'flywheel-comm check ${args.questionId}' to read the response and continue. ` +
-				"This message carries NO authority.",
-			metadata: {
-				questionId: args.questionId,
-				kind: "ask_answered",
-				...(args.senderProvenance
-					? { senderProvenance: args.senderProvenance }
-					: {}),
-			},
-			backend: marker?.vendor,
-		});
-		if (!wake.ok && wake.error) {
-			process.stderr.write(
-				`[flywheel-comm] ask wake failed for ${targetExecId}: ${wake.error}\n`,
-			);
-		}
-
-		// One-shot: a question gets exactly one response (UNIQUE index on
-		// parent_id), so the ask-marker has served its purpose — remove it
-		// (best-effort) to bound accumulation.
-		removeAskMarker(markerDir, args.questionId);
-	} catch (err) {
-		process.stderr.write(
-			`[flywheel-comm] ask wake errored for question ${args.questionId}: ${(err as Error).message}\n`,
-		);
-	}
+	removeAskMarker(markerDir, questionId);
 }
 
 async function routeThroughBridge(opts: {
@@ -518,7 +157,6 @@ async function routeThroughBridge(opts: {
 		);
 	}
 	const url = `${opts.bridgeUrl.replace(/\/+$/, "")}/api/founder-consent/runner-gate-response`;
-	const doFetch = opts.fetchImpl ?? fetch;
 	const body = {
 		questionId: opts.questionId,
 		leadId: opts.leadId,
@@ -532,54 +170,37 @@ async function routeThroughBridge(opts: {
 		"content-type": "application/json",
 		Authorization: `Bearer ${token}`,
 	};
-	const res = opts.authorization.carrierClaim
+	const fetchImpl = opts.fetchImpl ?? fetch;
+	const response = opts.authorization.carrierClaim
 		? await postCarrierClaim({
 				url,
 				carrierClaim: opts.authorization.carrierClaim,
 				body,
 				headers,
-				fetchImpl: doFetch,
+				fetchImpl,
 			})
-		: await doFetch(url, {
+		: await fetchImpl(url, {
 				method: "POST",
 				headers,
-				body: JSON.stringify({
-					questionId: opts.questionId,
-					leadId: opts.leadId,
-					answer: opts.answer,
-					executionId: opts.executionId,
-					projectName: opts.projectName,
-					leaseClaim: opts.authorization.leaseClaim,
-					provenance: opts.authorization.provenance,
-				}),
+				body: JSON.stringify(body),
 			});
-	if (!res.ok) {
-		let detail = "";
+	if (!response.ok) {
+		let detail = `HTTP ${response.status}`;
 		try {
-			detail = JSON.stringify(await res.json());
-		} catch {
-			detail = `HTTP ${res.status}`;
-		}
+			detail = JSON.stringify(await response.json());
+		} catch {}
 		throw new Error(
-			`flywheel-comm: Bridge refused approve_to_ship gate (HTTP ${res.status}): ${detail}`,
+			`flywheel-comm: Bridge refused approve_to_ship gate (HTTP ${response.status}): ${detail}`,
 		);
 	}
-
-	// FLY-208 6b: the gate-response endpoint flags plain-text replies with
-	// approval intent (only JSON {"approved": true} actually approves; the
-	// production incident's "APPROVE — ..." text was silently recorded as
-	// feedback). Surface the warning to the Lead on stderr — stdout stays
-	// reserved for the caller's structured output.
 	try {
-		const body = (await res.json()) as { warning?: string };
-		if (body?.warning) {
+		const result = (await response.json()) as { warning?: string };
+		if (result.warning) {
 			process.stderr.write(
-				`[flywheel-comm respond] WARNING: ${body.warning}\n`,
+				`[flywheel-comm respond] WARNING: ${result.warning}\n`,
 			);
 		}
-	} catch {
-		// Non-JSON success body — nothing to surface.
-	}
+	} catch {}
 }
 
 function writeBypassAudit(
@@ -602,7 +223,6 @@ function writeBypassAudit(
 			evaluator_version: "cli-bypass",
 			decision_mode: "cli",
 			action: "approve_to_ship_gate",
-			// CLI lacks issue context; record the runner exec id as best-effort.
 			issue_id: ctx.executionId ?? "(cli-bypass-unknown)",
 			execution_id: ctx.executionId ?? null,
 			actor_source: "gate_response_wrapper",
@@ -613,9 +233,9 @@ function writeBypassAudit(
 			comm_question_id: ctx.questionId,
 			comm_project_name: ctx.projectName ?? null,
 		});
-	} catch (err) {
+	} catch (error) {
 		process.stderr.write(
-			`[flywheel-comm] WARNING: failed to write bypass audit row: ${(err as Error).message}\n`,
+			`[flywheel-comm] WARNING: failed to write bypass audit row: ${(error as Error).message}\n`,
 		);
 	} finally {
 		store?.close();

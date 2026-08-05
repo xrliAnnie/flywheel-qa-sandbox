@@ -126,7 +126,7 @@ Commands:
   request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>] [--target-repo <rel>])
   review-ruling  Record or revoke a supervised Lead ruling for a delivered review finding (FLY-1278)
   codex-review-result  Emit a Codex code-review APPROVED verdict for an explicit execution/head (FLY-827; requires --exec-id and --pr-head)
-  cleanup   Delete read messages older than TTL (default 24h)
+  cleanup   Archive terminal mailbox families (72h minimum)
   visual-capture   Run ProofShot UI/3D capture, select artifacts, write manifest (GEO-151)
   notify    POST artifact_emitted event to Bridge after capture+Read (GEO-151)
   publish-report   Publish HTML report to hosting + deliver to Discord as

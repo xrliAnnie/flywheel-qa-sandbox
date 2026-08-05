@@ -4,7 +4,10 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommDB } from "../db.js";
-import { LeadInboxQueue } from "../lead-inbox-queue.js";
+import { MailboxQueue } from "../mailbox-queue.js";
+
+const LEAD_ID = "flywheel-eng-lead";
+const NOW = "2026-07-24T00:01:00.000Z";
 
 describe("FLY-1448 terminal receipt settlement primitives", () => {
 	let dir: string;
@@ -20,7 +23,7 @@ describe("FLY-1448 terminal receipt settlement primitives", () => {
 			"session",
 			"flywheel",
 			"FLY-1448",
-			"flywheel-eng-lead",
+			LEAD_ID,
 			"codex",
 		);
 	});
@@ -30,185 +33,146 @@ describe("FLY-1448 terminal receipt settlement primitives", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	function enqueueRoot(refMessageId: string, id = "receipt-root") {
-		const queue = new LeadInboxQueue(dbPath);
-		try {
-			return queue.enqueue({
-				id,
-				toLead: "flywheel-eng-lead",
-				source: "runner",
-				type: "runner_question",
-				msgClass: "protocol",
-				content: "needs attention",
-				refMessageId,
-				createdAt: "2026-07-24T00:00:00.000Z",
-			});
-		} finally {
-			queue.close();
-		}
-	}
+	const receiptId = (questionId: string) => `question:${LEAD_ID}:${questionId}`;
 
-	it("supersedes an unanswered ship gate and its exact receipt family in one transaction", () => {
-		const questionId = db.insertQuestion(
-			"exec-1",
-			"flywheel-eng-lead",
-			"ship?",
-			{
-				checkpoint: "approve_to_ship",
-			},
-		);
-		enqueueRoot(questionId);
-
-		const result = db.supersedeShipGateAndReceiptFamily({
-			questionId,
-			reason: "superseded_session_terminal",
-			now: "2026-07-24T00:01:00.000Z",
+	it("supersedes an unanswered ship gate and its unified receipt in one transaction", () => {
+		const questionId = db.insertQuestion("exec-1", LEAD_ID, "ship?", {
+			checkpoint: "approve_to_ship",
 		});
-
-		expect(result).toMatchObject({
-			kind: "settled",
-			receiptIds: ["receipt-root"],
-		});
-		expect(db.getPendingQuestions("exec-1")).toEqual([]);
-		const queue = new LeadInboxQueue(dbPath);
-		try {
-			expect(queue.getById("receipt-root")).toMatchObject({
-				disposed_at: "2026-07-24T00:01:00.000Z",
-				processed_at: null,
-			});
-		} finally {
-			queue.close();
-		}
-	});
-
-	it("lets a concurrent response win without mutating the gate or root", () => {
-		const questionId = db.insertQuestion(
-			"exec-1",
-			"flywheel-eng-lead",
-			"ship?",
-			{
-				checkpoint: "approve_to_ship",
-			},
-		);
-		enqueueRoot(questionId);
-		db.insertResponse(questionId, "flywheel-eng-lead", "approved");
 
 		expect(
 			db.supersedeShipGateAndReceiptFamily({
 				questionId,
 				reason: "superseded_session_terminal",
-				now: "2026-07-24T00:01:00.000Z",
+				now: NOW,
 			}),
-		).toEqual({ kind: "response_won", receiptIds: [] });
-		const queue = new LeadInboxQueue(dbPath);
+		).toEqual({ kind: "settled", receiptIds: [receiptId(questionId)] });
+		expect(db.getPendingQuestions(LEAD_ID)).toEqual([]);
+
+		const queue = new MailboxQueue(dbPath);
 		try {
-			expect(queue.getById("receipt-root")?.disposed_at).toBeNull();
+			expect(queue.getSettlement(receiptId(questionId))).toMatchObject({
+				event: "disposed",
+				at: NOW,
+			});
 		} finally {
 			queue.close();
 		}
 	});
 
-	it("disposes a delivered generic root, closes its family, and preserves an already-delivered alert", () => {
-		const questionId = db.insertQuestion("exec-1", "flywheel-eng-lead", "help");
-		enqueueRoot(questionId);
+	it("lets a concurrent response win without settling the receipt", () => {
+		const questionId = db.insertQuestion("exec-1", LEAD_ID, "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		db.insertResponse(questionId, LEAD_ID, "approved");
+
+		expect(
+			db.supersedeShipGateAndReceiptFamily({
+				questionId,
+				reason: "superseded_session_terminal",
+				now: NOW,
+			}),
+		).toEqual({ kind: "response_won", receiptIds: [] });
+		const queue = new MailboxQueue(dbPath);
+		try {
+			expect(queue.getSettlement(receiptId(questionId))).toBeUndefined();
+		} finally {
+			queue.close();
+		}
+	});
+
+	it("settles a leased receipt and preserves an already-delivered alert", () => {
+		const questionId = db.insertQuestion("exec-1", LEAD_ID, "help");
 		const raw = new Database(dbPath);
 		try {
 			raw
-				.prepare(
-					"UPDATE lead_inbox SET delivered_at = ? WHERE id = 'receipt-root'",
-				)
-				.run("2026-07-24T00:00:10.000Z");
+				.prepare("UPDATE mailbox SET state = 'LEASED' WHERE id = ?")
+				.run(questionId);
 			raw
 				.prepare(
 					`INSERT INTO receipt_alert_outbox
 				   (id, kind, payload, created_at, delivered_at)
-				 VALUES ('unprocessed:receipt-root', 'receipt_unprocessed', '{}', ?, ?)`,
+				 VALUES (?, 'receipt_unprocessed', '{}', ?, ?)`,
 				)
-				.run("2026-07-24T00:00:20.000Z", "2026-07-24T00:00:30.000Z");
+				.run(
+					`unprocessed:${receiptId(questionId)}`,
+					"2026-07-24T00:00:20.000Z",
+					"2026-07-24T00:00:30.000Z",
+				);
 		} finally {
 			raw.close();
 		}
 
-		const result = db.settleReceiptFamilyForTerminalSubject({
-			receiptId: "receipt-root",
-			expectedExecutionId: "exec-1",
-			reason: "session_terminal",
-			now: "2026-07-24T00:01:00.000Z",
-		});
-
-		expect(result).toEqual({ kind: "disposed", receiptId: "receipt-root" });
-		const queue = new LeadInboxQueue(dbPath);
-		try {
-			expect(queue.getById("receipt-root")).toMatchObject({
-				delivered_at: "2026-07-24T00:00:10.000Z",
-				disposed_at: "2026-07-24T00:01:00.000Z",
-			});
-		} finally {
-			queue.close();
-		}
-		expect(db.getReceiptAlertOutbox("unprocessed:receipt-root")).toMatchObject({
+		expect(
+			db.settleReceiptFamilyForTerminalSubject({
+				receiptId: receiptId(questionId),
+				expectedExecutionId: "exec-1",
+				reason: "session_terminal",
+				now: NOW,
+			}),
+		).toEqual({ kind: "disposed", receiptId: receiptId(questionId) });
+		expect(
+			db.getReceiptAlertOutbox(`unprocessed:${receiptId(questionId)}`),
+		).toMatchObject({
 			delivered_at: "2026-07-24T00:00:30.000Z",
 			canceled_at: null,
 		});
 	});
 
 	it("treats a second terminal authority as the same idempotent settlement", () => {
-		const questionId = db.insertQuestion("exec-1", "flywheel-eng-lead", "help");
-		enqueueRoot(questionId);
-
+		const questionId = db.insertQuestion("exec-1", LEAD_ID, "help");
+		const id = receiptId(questionId);
 		expect(
 			db.settleReceiptFamilyForTerminalSubject({
-				receiptId: "receipt-root",
+				receiptId: id,
 				expectedExecutionId: "exec-1",
 				reason: "session_terminal",
-				now: "2026-07-24T00:01:00.000Z",
+				now: NOW,
 			}),
-		).toEqual({ kind: "disposed", receiptId: "receipt-root" });
+		).toEqual({ kind: "disposed", receiptId: id });
 		expect(
 			db.settleReceiptFamilyForTerminalSubject({
-				receiptId: "receipt-root",
+				receiptId: id,
 				expectedExecutionId: "exec-1",
 				reason: "issue_done",
 				now: "2026-07-24T00:02:00.000Z",
 			}),
-		).toEqual({ kind: "already_disposed", receiptId: "receipt-root" });
+		).toEqual({ kind: "already_disposed", receiptId: id });
 	});
 
-	it("recognizes an exact ship-family terminal disposal from another authority", () => {
-		const questionId = db.insertQuestion(
-			"exec-1",
-			"flywheel-eng-lead",
-			"ship?",
-			{ checkpoint: "approve_to_ship" },
-		);
-		enqueueRoot(questionId);
-
+	it("recognizes an exact ship settlement from another terminal authority", () => {
+		const questionId = db.insertQuestion("exec-1", LEAD_ID, "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const id = receiptId(questionId);
 		db.supersedeShipGateAndReceiptFamily({
 			questionId,
 			reason: "superseded_session_terminal",
-			now: "2026-07-24T00:01:00.000Z",
+			now: NOW,
 		});
 		expect(
 			db.settleReceiptFamilyForTerminalSubject({
-				receiptId: "receipt-root",
+				receiptId: id,
 				expectedExecutionId: "exec-1",
 				reason: "pr_merged",
 				now: "2026-07-24T00:02:00.000Z",
 			}),
-		).toEqual({ kind: "already_disposed", receiptId: "receipt-root" });
+		).toEqual({ kind: "already_disposed", receiptId: id });
 	});
 
-	it("still rejects disposal evidence from a different authority family", () => {
-		const questionId = db.insertQuestion("exec-1", "flywheel-eng-lead", "help");
-		enqueueRoot(questionId);
-		const queue = new LeadInboxQueue(dbPath);
+	it("rejects disposal evidence from a different authority family", () => {
+		const questionId = db.insertQuestion("exec-1", LEAD_ID, "help");
+		const id = receiptId(questionId);
+		const queue = new MailboxQueue(dbPath);
 		try {
-			queue.markDisposed("receipt-root", {
-				now: "2026-07-24T00:01:00.000Z",
+			queue.settle({
+				messageOrDeliveryId: id,
+				event: "disposed",
+				now: NOW,
 				evidence: {
 					v: 1,
 					kind: "manual_operator_disposal",
-					ref: "receipt-root",
+					ref: id,
 					actor: "operator",
 					actor_kind: "lead",
 					fence: { question_id: questionId },
@@ -220,7 +184,7 @@ describe("FLY-1448 terminal receipt settlement primitives", () => {
 
 		expect(() =>
 			db.settleReceiptFamilyForTerminalSubject({
-				receiptId: "receipt-root",
+				receiptId: id,
 				expectedExecutionId: "exec-1",
 				reason: "session_terminal",
 				now: "2026-07-24T00:02:00.000Z",
@@ -229,15 +193,56 @@ describe("FLY-1448 terminal receipt settlement primitives", () => {
 	});
 
 	it("rejects lineage that belongs to a different execution", () => {
-		const questionId = db.insertQuestion("exec-1", "flywheel-eng-lead", "help");
-		enqueueRoot(questionId);
+		const questionId = db.insertQuestion("exec-1", LEAD_ID, "help");
 		expect(() =>
 			db.settleReceiptFamilyForTerminalSubject({
-				receiptId: "receipt-root",
+				receiptId: receiptId(questionId),
 				expectedExecutionId: "other-exec",
 				reason: "session_terminal",
-				now: "2026-07-24T00:01:00.000Z",
+				now: NOW,
 			}),
 		).toThrow(/lineage/i);
+	});
+
+	it("resolves permanent lineage after the live mailbox row was archived", () => {
+		const questionId = db.insertQuestion("exec-1", LEAD_ID, "help");
+		const id = receiptId(questionId);
+		const queue = new MailboxQueue(dbPath);
+		try {
+			queue.ack(questionId, NOW);
+			const raw = new Database(dbPath);
+			try {
+				raw
+					.prepare(
+						"UPDATE mailbox SET relay_state = 'terminal_disposed' WHERE id = ?",
+					)
+					.run(questionId);
+			} finally {
+				raw.close();
+			}
+			expect(
+				queue.archiveFamily({
+					id: questionId,
+					now: "2026-07-28T00:02:00.000Z",
+				}),
+			).toBe("archived");
+		} finally {
+			queue.close();
+		}
+
+		expect(db.listReceiptRootsForExecution("exec-1")).toEqual([id]);
+		expect(db.getReceiptSettlementLineage(id)).toMatchObject({
+			receiptId: id,
+			executionId: "exec-1",
+			questionId,
+		});
+		expect(
+			db.settleReceiptFamilyForTerminalSubject({
+				receiptId: id,
+				expectedExecutionId: "exec-1",
+				reason: "session_terminal",
+				now: "2026-07-28T00:03:00.000Z",
+			}),
+		).toEqual({ kind: "disposed", receiptId: id });
 	});
 });

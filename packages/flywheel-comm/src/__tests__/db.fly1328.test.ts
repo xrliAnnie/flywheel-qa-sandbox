@@ -23,7 +23,9 @@ const HOUR_MS = 60 * 60 * 1000;
 function backdate(dbPath: string, questionId: string, sqlOffset: string): void {
 	const raw = new Database(dbPath);
 	raw
-		.prepare(`UPDATE messages SET created_at = datetime('now', ?) WHERE id = ?`)
+		.prepare(
+			`UPDATE mailbox SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', ?) WHERE id = ?`,
+		)
 		.run(sqlOffset, questionId);
 	raw.close();
 }
@@ -34,7 +36,7 @@ function readRow(
 ): Record<string, unknown> | undefined {
 	const raw = new Database(dbPath, { readonly: true });
 	const row = raw
-		.prepare("SELECT * FROM messages WHERE id = ?")
+		.prepare("SELECT * FROM mailbox_message_projection WHERE id = ?")
 		.get(questionId) as Record<string, unknown> | undefined;
 	raw.close();
 	return row;
@@ -42,8 +44,7 @@ function readRow(
 
 function expiresAtMs(dbPath: string, questionId: string): number {
 	const row = readRow(dbPath, questionId);
-	// SQLite datetime() is UTC without a zone suffix — pin it explicitly.
-	return Date.parse(`${String(row?.expires_at).replace(" ", "T")}Z`);
+	return Date.parse(String(row?.expires_at));
 }
 
 describe("FLY-1328 CommDB ask cascade on finalizeSession", () => {
@@ -80,7 +81,7 @@ describe("FLY-1328 CommDB ask cascade on finalizeSession", () => {
 	});
 
 	// ── T1: migration ────────────────────────────────────────────────────────
-	it("T1a: adds resolved_via to a pre-FLY-1279 database without losing the rebuild or its data", () => {
+	it("T1a: rejects a pre-cutover messages database until FLY-1572 migration runs", () => {
 		const legacyPath = join(tmpDir, "legacy.db");
 		const raw = new Database(legacyPath);
 		// Pre-FLY-1279 shape: no 'ack_receipt' in the type CHECK, no resolved_via.
@@ -102,30 +103,7 @@ describe("FLY-1328 CommDB ask cascade on finalizeSession", () => {
 		`);
 		raw.close();
 
-		const upgraded = new CommDB(legacyPath);
-		try {
-			const check = new Database(legacyPath, { readonly: true });
-			const columns = check
-				.prepare("PRAGMA table_info(messages)")
-				.all() as Array<{ name: string }>;
-			const schema = check
-				.prepare(
-					"SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'",
-				)
-				.get() as { sql: string };
-			const survived = check
-				.prepare("SELECT content FROM messages WHERE id = 'legacy-q'")
-				.get() as { content: string } | undefined;
-			check.close();
-
-			// The rebuild must not drop the new column, and the new column must not
-			// cost us the rebuild's CHECK constraint or the historic rows.
-			expect(columns.map((c) => c.name)).toContain("resolved_via");
-			expect(schema.sql).toContain("ack_receipt");
-			expect(survived?.content).toBe("historic ask");
-		} finally {
-			upgraded.close();
-		}
+		expect(() => new CommDB(legacyPath)).toThrow(/FLY-1572 mailbox migration/);
 	});
 
 	it("T1b: re-opening an already-migrated database is idempotent", () => {
@@ -133,7 +111,7 @@ describe("FLY-1328 CommDB ask cascade on finalizeSession", () => {
 		reopened.close();
 		const check = new Database(dbPath, { readonly: true });
 		const resolvedVia = (
-			check.prepare("PRAGMA table_info(messages)").all() as Array<{
+			check.prepare("PRAGMA table_info(mailbox)").all() as Array<{
 				name: string;
 			}>
 		).filter((c) => c.name === "resolved_via");
@@ -197,11 +175,13 @@ describe("FLY-1328 CommDB ask cascade on finalizeSession", () => {
 		reopened.close();
 		expect(readRow(dbPath, ask)?.resolved_via).toBe("owner_closed");
 
-		// Once the forensic TTL lapses, the row purges like any other expiry.
+		// Once the forensic TTL lapses, the terminal row remains until the common
+		// mailbox retention window also lapses.
 		const raw = new Database(dbPath);
 		raw
 			.prepare(
-				"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+				`UPDATE mailbox SET expires_at = datetime('now', '-1 hour'),
+				 acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours') WHERE id = ?`,
 			)
 			.run(ask);
 		raw.close();

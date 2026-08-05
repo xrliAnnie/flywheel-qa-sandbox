@@ -39,9 +39,11 @@ function runWorker(
 }
 
 function seedBlockedEraSchema(dbPath: string): void {
+	new CommDB(dbPath).close();
 	const raw = new Database(dbPath);
 	raw.pragma("journal_mode = WAL");
 	raw.exec(`
+		DROP TABLE sessions;
 		CREATE TABLE sessions (
 			execution_id TEXT PRIMARY KEY,
 			tmux_window TEXT NOT NULL,

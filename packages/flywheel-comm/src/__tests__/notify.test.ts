@@ -324,23 +324,26 @@ describe("notify command — AC6 + ordering (GEO-151 A5)", () => {
 		try {
 			const rows = raw
 				.prepare(
-					"SELECT from_agent, to_agent, type, content_type, content, attachments FROM messages WHERE to_agent = ? AND type = 'progress'",
+					"SELECT row_json FROM mailbox_log WHERE event = 'progress' ORDER BY log_seq",
 				)
-				.all("exec-1") as Array<{
+				.all() as Array<{
+				row_json: string;
+			}>;
+			expect(rows).toHaveLength(1);
+			const audit = JSON.parse(rows[0]!.row_json) as {
 				from_agent: string;
 				to_agent: string;
 				type: string;
 				content_type: string;
 				content: string;
-				attachments: string;
-			}>;
-			expect(rows).toHaveLength(1);
-			expect(rows[0]?.from_agent).toBe("runner");
-			expect(rows[0]?.type).toBe("progress");
-			expect(rows[0]?.content_type).toBe("artifact");
-			expect(rows[0]?.content).toBe("artifact_emitted: 2 file(s)");
-			const attachments = JSON.parse(rows[0]!.attachments) as string[];
-			expect(attachments).toEqual([
+				attachments: string[];
+			};
+			expect(audit.from_agent).toBe("runner");
+			expect(audit.to_agent).toBe("exec-1");
+			expect(audit.type).toBe("progress");
+			expect(audit.content_type).toBe("artifact");
+			expect(audit.content).toBe("artifact_emitted: 2 file(s)");
+			expect(audit.attachments).toEqual([
 				realpathSync(summaryPath),
 				realpathSync(pngPath),
 			]);

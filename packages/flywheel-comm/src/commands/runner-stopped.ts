@@ -565,7 +565,7 @@ export async function runnerStopped(
 						`deterministic question identity conflict: ${questionId}`) ||
 				((error as { code?: string }).code?.startsWith("SQLITE_CONSTRAINT") &&
 					error instanceof Error &&
-					error.message.includes("UNIQUE constraint failed: messages.id"));
+					error.message.includes("UNIQUE constraint failed: mailbox.id"));
 			if (!expectedConflict || !existing || existing.kind !== "report")
 				throw error;
 			contentMatched =

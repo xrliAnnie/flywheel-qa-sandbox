@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import {
@@ -11,22 +11,24 @@ import {
 } from "../lead-event-delivery.js";
 import { ProtocolIngress } from "../protocol-ingress.js";
 
-describe("FLY-1373 ProtocolIngress", () => {
+describe("ProtocolIngress mailbox ACK", () => {
 	let dir: string;
 	let dbPath: string;
 	let store: StateStore;
-	let queue: LeadInboxQueue;
+	let queue: MailboxQueue;
 	const secret: DeliverySecret = {
 		secretId: "secret-1",
 		key: Buffer.from("01234567890123456789012345678901"),
 	};
-	const now = "2026-07-19T20:00:00.000Z";
+	const now = "2026-08-05T20:00:00.000Z";
 
 	beforeEach(async () => {
-		dir = mkdtempSync(join(tmpdir(), "fly1373-protocol-"));
+		dir = mkdtempSync(join(tmpdir(), "fly1572-protocol-"));
 		dbPath = join(dir, "comm.db");
+		const db = new CommDB(dbPath);
+		db.close();
 		store = await StateStore.create(":memory:");
-		queue = new LeadInboxQueue(dbPath);
+		queue = new MailboxQueue(dbPath);
 		queue.acquireOrRenewOwner({
 			ownerEpoch: "epoch-1",
 			now,
@@ -63,90 +65,72 @@ describe("FLY-1373 ProtocolIngress", () => {
 		return seq;
 	}
 
-	it("materializes, verifies, applies, then allows the loop to consume a receipt", async () => {
-		const seq = appendAckEvent();
-		const row = store.getLeadEventBySeq(seq)!;
-		const token = deriveLeadEventAckToken(secret, {
-			eventSeq: seq,
-			ackOwnerLeadId: row.ack_owner_lead_id!,
-			ownerEpoch: row.ack_owner_epoch!,
-		});
-		const db = new CommDB(dbPath);
-		const receiptId = db.insertAckReceipt("lead-1", seq, token);
-		db.close();
-
-		const ingress = new ProtocolIngress({
-			queue,
-			dbPath,
-			store,
-			secretProvider: { getActive: () => secret },
-		});
-		expect(ingress.materializePending("lead-1")).toBe(1);
-		const protocol = queue.claimProtocol({
-			toLead: "lead-1",
+	function claim() {
+		return queue.claimBridgeProtocol({
+			fromAgent: "lead-1",
 			ownerEpoch: "epoch-1",
 			now,
 			claimTtlMs: 60_000,
 		})!;
-		expect(protocol.id).toBe(`ack:lead-1:${receiptId}`);
-		expect(await ingress.handle(protocol)).toEqual({
+	}
+
+	it("verifies and applies the canonical ACK row without a mirror", async () => {
+		const seq = appendAckEvent();
+		const event = store.getLeadEventBySeq(seq)!;
+		const token = deriveLeadEventAckToken(secret, {
+			eventSeq: seq,
+			ackOwnerLeadId: event.ack_owner_lead_id!,
+			ownerEpoch: event.ack_owner_epoch!,
+		});
+		const db = new CommDB(dbPath);
+		const id = db.insertAckReceipt("lead-1", seq, token);
+		db.close();
+		const ingress = new ProtocolIngress({
+			store,
+			secretProvider: { getActive: () => secret },
+		});
+		expect(await ingress.handle(claim())).toEqual({
 			disposition: "legacy_ack_applied",
 		});
 		expect(store.getLeadEventBySeq(seq)?.acked_at).toBeTruthy();
-		const verifyDb = new CommDB(dbPath);
-		try {
-			expect(verifyDb.getPendingAckReceipts()).toEqual([]);
-		} finally {
-			verifyDb.close();
-		}
+		expect(queue.getById(id)).toMatchObject({
+			state: "LEASED",
+			delivery_id: `ack:lead-1:${id}`,
+		});
 	});
 
-	it("consumes a late receipt as an idempotent no-op after cutover retirement", async () => {
+	it("accepts a late receipt as an idempotent retirement no-op", async () => {
 		const seq = appendAckEvent();
-		store.retireOpenLeadEventAcks(now, "fly1373_cutover");
+		store.retireOpenLeadEventAcks(now, "fly1572_cutover");
 		const db = new CommDB(dbPath);
 		db.insertAckReceipt("lead-1", seq, "late-token");
 		db.close();
 		const ingress = new ProtocolIngress({
-			queue,
-			dbPath,
 			store,
 			secretProvider: { getActive: () => secret },
 		});
-		ingress.materializePending("lead-1");
-		const protocol = queue.claimProtocol({
-			toLead: "lead-1",
-			ownerEpoch: "epoch-1",
-			now,
-			claimTtlMs: 60_000,
-		})!;
-		expect(await ingress.handle(protocol)).toEqual({
+		expect(await ingress.handle(claim())).toEqual({
 			disposition: "legacy_ack_retired_noop",
 		});
-		expect(store.getLeadEventBySeq(seq)?.acked_at).toBeUndefined();
 	});
 
-	it("rejects an ACK sent by a different Lead", async () => {
+	it("rejects a receipt from a non-owner Lead", async () => {
 		const seq = appendAckEvent();
 		const db = new CommDB(dbPath);
 		db.insertAckReceipt("lead-2", seq, "forged");
 		db.close();
-		const ingress = new ProtocolIngress({
-			queue,
-			dbPath,
-			store,
-			secretProvider: { getActive: () => secret },
-		});
-		ingress.materializePending("lead-1");
-		const protocol = queue.claimProtocol({
-			toLead: "lead-1",
+		const forged = queue.claimBridgeProtocol({
+			fromAgent: "lead-2",
 			ownerEpoch: "epoch-1",
 			now,
 			claimTtlMs: 60_000,
 		})!;
-		await expect(ingress.handle(protocol)).rejects.toThrow(
+		const ingress = new ProtocolIngress({
+			store,
+			secretProvider: { getActive: () => secret },
+		});
+		await expect(ingress.handle(forged)).rejects.toThrow(
 			"ACK sender does not own the event",
 		);
-		expect(store.getLeadEventBySeq(seq)?.acked_at).toBeUndefined();
 	});
 });

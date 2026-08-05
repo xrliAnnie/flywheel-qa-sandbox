@@ -6,10 +6,7 @@
 
 import type { Message } from "flywheel-comm/db";
 import { CommDB } from "flywheel-comm/db";
-import type {
-	LeadInboxQueue,
-	LeadInboxRow,
-} from "flywheel-comm/lead-inbox-queue";
+import type { MailboxQueue, MailboxRow } from "flywheel-comm/mailbox-queue";
 import { readContentRef } from "flywheel-comm/utils";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
@@ -27,23 +24,19 @@ const ACTIVE_GATE_SESSION_STATUSES = new Set([
 ]);
 
 export interface QuestionAdmissionOptions {
-	queue: LeadInboxQueue;
+	queue: MailboxQueue;
 	dbPath: string;
 	lead: LeadConfig;
 	projects: ProjectEntry[];
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
 	chatThreadsEnabled?: boolean;
-	now?: () => Date;
 }
 
 export class QuestionAdmission {
-	private readonly now: () => Date;
 	private db?: CommDB;
 
-	constructor(private readonly opts: QuestionAdmissionOptions) {
-		this.now = opts.now ?? (() => new Date());
-	}
+	constructor(private readonly opts: QuestionAdmissionOptions) {}
 
 	/**
 	 * FLY-1601: one cached connection for this admission's lifetime. The old
@@ -68,32 +61,26 @@ export class QuestionAdmission {
 		this.db = undefined;
 	}
 
-	async materializePending(): Promise<number> {
-		const db = this.commDb();
-		let admitted = 0;
-		for (const question of db.getPendingQuestions(this.opts.lead.agentId)) {
-			if (this.admitQuestion(db, question)) admitted++;
-		}
-		return admitted;
-	}
-
 	async revalidate(
-		row: LeadInboxRow,
-	): Promise<{ deliver: true } | { deliver: false; disposition: string }> {
-		// Only QuestionAdmission owns question revalidation. Other model lanes also
-		// carry stable external references (for example a founder Discord message
-		// id); interpreting those as CommDB question ids revokes a real delivery.
+		row: MailboxRow,
+	): Promise<
+		{ deliver: true } | { deliver: false; disposition: string; retry?: boolean }
+	> {
 		if (
-			!row.ref_message_id ||
-			!row.source.startsWith("question:") ||
-			(row.type !== "runner_question" && row.type !== "gate_question")
+			row.type !== "question" ||
+			row.recipient_kind !== "lead" ||
+			row.delivery_id !== `question:${row.to_agent}:${row.id}`
 		) {
 			return { deliver: true };
 		}
 		const db = this.commDb();
-		const question = db.getMessageById(row.ref_message_id);
+		const question = db.getMessageById(row.id);
 		if (!question) {
-			return { deliver: false, disposition: "revoked_missing" };
+			return {
+				deliver: false,
+				disposition: "revoked_missing",
+				retry: row.source_kind !== "question_orphan" && row.source_ref === null,
+			};
 		}
 		if (question.superseded_at) {
 			return { deliver: false, disposition: "revoked_superseded" };
@@ -106,21 +93,26 @@ export class QuestionAdmission {
 			return { deliver: false, disposition: "revoked_answered" };
 		}
 		const eligible = this.eligibility(question);
-		return eligible.ok
-			? { deliver: true }
-			: { deliver: false, disposition: eligible.disposition };
+		if (!eligible.ok) {
+			return {
+				deliver: false,
+				disposition: eligible.disposition,
+				retry: row.source_ref === null,
+			};
+		}
+		if (row.source_ref !== null) return { deliver: true };
+		this.materialize(row, question, eligible.session);
+		return { deliver: true };
 	}
 
-	private admitQuestion(db: CommDB, question: Message): boolean {
-		const eligible = this.eligibility(question);
-		if (!eligible.ok) return false;
-		const session = eligible.session;
+	private materialize(
+		row: MailboxRow,
+		question: Message,
+		session: Session,
+	): void {
 		const isGate = question.checkpoint != null;
 		const eventId = isGate ? `gate_${question.id}` : `runner_q_${question.id}`;
 		const eventType = isGate ? "gate_question" : "runner_question";
-		if (this.opts.store.isLeadEventDelivered(this.opts.lead.agentId, eventId)) {
-			return false;
-		}
 		const fullContent =
 			question.content_type === "ref" && question.content_ref
 				? (readContentRef(question.content_ref) ?? question.content)
@@ -159,30 +151,21 @@ export class QuestionAdmission {
 			event: payload,
 			sessionKey: session.execution_id,
 			leadId: this.opts.lead.agentId,
-			timestamp: this.now().toISOString(),
+			timestamp: row.created_at,
 		};
 		const runtime = this.opts.runtimeRegistry.getRawForLead(
 			this.opts.lead.agentId,
 		);
 		const content =
 			runtime?.renderEnvelope?.(envelope) ?? JSON.stringify(payload);
-		this.opts.queue.enqueue({
-			id: `question:${this.opts.lead.agentId}:${question.id}`,
-			toLead: this.opts.lead.agentId,
-			source: `question:${seq}`,
-			type: eventType,
-			msgClass: "model",
-			priority: question.kind === "report" ? 2 : 1,
-			content,
-			refMessageId: question.id,
-			legacyAlias: `${this.opts.lead.agentId}-${seq}-${session.execution_id}`,
-			deadlineAt: question.deadline_at,
-			createdAt: commTimestampToUtcIso(question.created_at),
+		this.opts.queue.materializeForDelivery({
+			id: row.id,
+			ownerEpoch: row.claimed_by!,
+			batchId: row.batch_id!,
+			sourceKind: "question",
+			sourceRef: String(seq),
+			deliveryContent: content,
 		});
-		if (!db.markQuestionProtected(question.id, String(seq))) {
-			throw new Error(`question ${question.id} could not be protected`);
-		}
-		return true;
 	}
 
 	private eligibility(
@@ -227,15 +210,4 @@ export class QuestionAdmission {
 		}
 		return { ok: true, session };
 	}
-}
-
-function commTimestampToUtcIso(value: string): string {
-	const normalized = value.includes("T")
-		? value
-		: `${value.replace(" ", "T")}Z`;
-	const timestamp = new Date(normalized);
-	if (!Number.isFinite(timestamp.getTime())) {
-		throw new Error(`invalid CommDB created_at timestamp: ${value}`);
-	}
-	return timestamp.toISOString();
 }

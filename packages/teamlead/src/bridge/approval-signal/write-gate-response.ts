@@ -80,14 +80,6 @@ export interface GateResponseDb {
 		rootId: string;
 		msgId: string;
 		now: string;
-		intentKey: string;
-		envelope: {
-			id: string;
-			to: string;
-			content: string;
-			metadata?: Record<string, unknown>;
-		};
-		queuedAtMs: number;
 		approvalSource?: {
 			project: string;
 			sourceEventId: string;
@@ -100,14 +92,6 @@ export interface FounderGateReceiptContext {
 	rootId: string;
 	msgId: string;
 	now: string;
-	intentKey: string;
-	queuedAtMs: number;
-	envelope: {
-		id: string;
-		to: string;
-		content: string;
-		metadata?: Record<string, unknown>;
-	};
 }
 
 /** Preserved caller identity, independent from the final founder attribution. */
@@ -545,9 +529,6 @@ export async function writeGateResponseAndRunPostWrite(
 			rootId: receipt.rootId,
 			msgId: receipt.msgId,
 			now: receipt.now,
-			intentKey: receipt.intentKey,
-			envelope: receipt.envelope,
-			queuedAtMs: receipt.queuedAtMs,
 			...(trustedFounderSourceDecision && source
 				? {
 						approvalSource: {

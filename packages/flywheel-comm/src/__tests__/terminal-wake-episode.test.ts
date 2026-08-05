@@ -30,20 +30,32 @@ describe("FLY-1448 terminal wake-failure episodes", () => {
 
 	function admit(ordinal: number, metadata: Record<string, unknown> = {}) {
 		const instructionId = `instruction-${ordinal}`;
-		return db.instructionAndIntent({
+		db.insertInstructionWithId(
 			instructionId,
-			fromAgent: "flywheel-eng-lead",
-			executionId: "exec-terminal",
-			content: `work ${ordinal}`,
-			intentKey: `instruction:${instructionId}`,
-			envelope: {
-				id: `wake-${ordinal}`,
+			"flywheel-eng-lead",
+			"exec-terminal",
+			`work ${ordinal}`,
+		);
+		const wake = db.enqueueRunnerPhaseWake(
+			"exec-terminal",
+			{
+				id: `instruction:${instructionId}`,
 				to: "exec-terminal",
 				content: `wake ${ordinal}`,
-				metadata,
+				metadata: {
+					...metadata,
+					flywheelId: instructionId,
+					execId: "exec-terminal",
+				},
 			},
-			queuedAtMs: 1_000 + ordinal,
-		}).wake;
+			1_000 + ordinal,
+		).wake;
+		(db as any).db
+			.prepare(
+				"UPDATE runner_phase_wakes SET admission_state = 'queued', envelope_json = ? WHERE execution_id = ? AND message_id = ?",
+			)
+			.run(JSON.stringify({ metadata }), wake.execution_id, wake.message_id);
+		return db.listRunnerPhaseWakes("exec-terminal").at(-1)!;
 	}
 
 	it("finishes repeated terminal wakes atomically under one lifecycle episode", () => {

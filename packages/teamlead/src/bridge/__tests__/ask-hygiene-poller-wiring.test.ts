@@ -116,7 +116,7 @@ describe("FLY-1328 A2 sweep — real GatePoller wiring", () => {
 		};
 		raw.db
 			.prepare(
-				"UPDATE messages SET created_at = datetime('now','-45 minutes') WHERE id = ?",
+				"UPDATE mailbox SET created_at = datetime('now','-45 minutes') WHERE id = ?",
 			)
 			.run(qid);
 		raw.close();
@@ -240,7 +240,7 @@ describe("FLY-1328 A2 sweep — real GatePoller wiring", () => {
 		};
 		raw.db
 			.prepare(
-				"UPDATE messages SET created_at = datetime('now','-45 minutes') WHERE id = ?",
+				"UPDATE mailbox SET created_at = datetime('now','-45 minutes') WHERE id = ?",
 			)
 			.run(qid);
 		raw.close();

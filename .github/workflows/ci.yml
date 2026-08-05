@@ -144,6 +144,9 @@ jobs:
       - name: Install tmux/lsof/sqlite3/ripgrep for hermetic test scripts
         run: sudo apt-get update && sudo apt-get install -y tmux lsof sqlite3 ripgrep
 
+      - name: Test — FLY-1572 mailbox migration CLI
+        run: bash scripts/__tests__/migrate-fly1572-mailbox.test.sh
+
       # FLY-1327: deterministic cycle-time analytics use real WAL backup +
       # immutable-snapshot reads against fixture DBs. Keep the sqlite preflight
       # adjacent so a missing CLI fails with an explicit environment diagnosis.

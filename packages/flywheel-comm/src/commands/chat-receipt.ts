@@ -2,9 +2,9 @@ import { CommDB } from "../db.js";
 import {
 	assertUtcIsoTimestamp,
 	CHAT_DELIVERY_UNCONFIRMED_REASON,
-	LeadInboxQueue,
-	receiptPriorityWindowsMs,
-} from "../lead-inbox-queue.js";
+	MailboxQueue,
+} from "../mailbox-queue.js";
+import { encodeSenderRef } from "../sender-ref.js";
 
 const ENVELOPE_PREFIX = "[discord-chat-receipt v1] ";
 const DISCORD_SNOWFLAKE = /^\d+$/;
@@ -179,21 +179,30 @@ export function beginChatReceipt(args: BeginChatReceiptArgs): {
 		attachments: args.attachments,
 		text: args.text,
 	});
-	const queue = new LeadInboxQueue(args.dbPath);
+	const queue = new MailboxQueue(args.dbPath);
 	try {
 		const row = queue.enqueue({
 			id: envelope.receiptId,
-			toLead: envelope.leadId,
-			source: "discord_chat",
+			fromAgent: "founder",
+			toAgent: envelope.leadId,
+			recipientKind: "lead",
+			sourceKind: "discord_chat",
+			sourceRef: envelope.receiptId,
 			type: "external_delivery",
 			msgClass: "model",
 			priority: envelope.priority,
 			content: `${ENVELOPE_PREFIX}${JSON.stringify(envelope)}\n${envelope.authorName}: ${envelope.text}`,
-			refMessageId: null,
+			refId: null,
 			createdAt: envelope.ts,
 			carrier: "external",
+			senderRef: encodeSenderRef(),
 		});
-		return { receiptId: row.id, seq: row.seq };
+		if (row.outcome === "archived") {
+			throw new Error(
+				`chat receipt was already archived: ${envelope.receiptId}`,
+			);
+		}
+		return { receiptId: row.row.id, seq: row.row.seq };
 	} finally {
 		queue.close();
 	}
@@ -207,14 +216,9 @@ export function completeChatReceipt(args: {
 	env?: Record<string, string | undefined>;
 }): { receiptId: string; delivered: true } {
 	const receiptId = chatReceiptId(args.leadId, args.messageId);
-	const queue = new LeadInboxQueue(args.dbPath);
+	const queue = new MailboxQueue(args.dbPath);
 	try {
-		if (
-			!queue.markExternalDelivered(receiptId, {
-				now: args.now,
-				receiptWindowsMs: receiptPriorityWindowsMs(args.env),
-			})
-		) {
+		if (!queue.markExternalDelivered(receiptId, args.now)) {
 			throw new Error(`chat receipt not found or not external: ${receiptId}`);
 		}
 		return { receiptId, delivered: true };
@@ -232,27 +236,25 @@ export function settleChatReceipt(args: {
 }): { receiptId: string; processed: true } {
 	const receiptId = chatReceiptId(args.leadId, args.messageId);
 	const replyId = snowflake(args.replyId, "replyId");
-	const queue = new LeadInboxQueue(args.dbPath);
+	const queue = new MailboxQueue(args.dbPath);
 	try {
-		if (
-			!queue.markProcessed(receiptId, {
-				now: args.now,
-				evidence: {
-					v: 1,
-					kind: "discord_explicit_reply",
-					ref: replyId,
-					actor: requiredText(args.leadId, "leadId"),
-					actor_kind: "lead",
-					fence: {
-						leadId: requiredText(args.leadId, "leadId"),
-						chatReplyTo: snowflake(args.messageId, "messageId"),
-					},
-					basis: ["discord_reply_reference"],
+		queue.settle({
+			messageOrDeliveryId: receiptId,
+			event: "processed",
+			now: args.now,
+			evidence: {
+				v: 1,
+				kind: "discord_explicit_reply",
+				ref: replyId,
+				actor: requiredText(args.leadId, "leadId"),
+				actor_kind: "lead",
+				fence: {
+					leadId: requiredText(args.leadId, "leadId"),
+					chatReplyTo: snowflake(args.messageId, "messageId"),
 				},
-			})
-		) {
-			throw new Error(`chat receipt not found: ${receiptId}`);
-		}
+				basis: ["discord_reply_reference"],
+			},
+		});
 		return { receiptId, processed: true };
 	} finally {
 		queue.close();

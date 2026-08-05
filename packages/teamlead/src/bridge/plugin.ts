@@ -7466,51 +7466,6 @@ export async function startBridge(
 					executionId,
 				);
 			},
-			wakeRunner: async (
-				executionId,
-				sessionInfo,
-				_questionId,
-				_summary,
-				responseId,
-			) => {
-				const db = new CommDB(
-					join(commRoot, sessionInfo.project_name, "comm.db"),
-					false,
-				);
-				try {
-					const vendor = db.getSession(executionId)?.vendor;
-					if (vendor === "none") return; // no-transport backend (FLY-493)
-					const claim = db.claimRunnerReceiptWakePush(
-						executionId,
-						responseId,
-						Date.now(),
-						{ t1Ms: 90_000, claimTtlMs: 30_000 },
-					);
-					if (!claim) return;
-					const wake = await wakeRunnerMailbox({
-						db,
-						execId: executionId,
-						fromAgent: "bridge",
-						content: claim.envelope.content,
-						metadata: claim.envelope.metadata,
-						...(vendor ? { backend: vendor } : {}),
-					});
-					db.completeRunnerReceiptWakePush({
-						executionId,
-						messageId: responseId,
-						claimToken: claim.claimToken,
-						attempt: claim.attempt,
-						result: wake.ok
-							? "delivered"
-							: wake.skippedReason
-								? `skipped:${wake.skippedReason}`
-								: `failed:${wake.error ?? "unknown"}`,
-						nowMs: Date.now(),
-					});
-				} finally {
-					db.close();
-				}
-			},
 		});
 		const redriven = reviewCoordinatorHolder.current.redriveOnBoot();
 		if (redriven > 0) {

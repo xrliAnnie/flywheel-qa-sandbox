@@ -29,13 +29,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
-	LeadInboxQueue,
-	receiptPriorityWindowsMs,
-} from "flywheel-comm/lead-inbox-queue";
-import {
 	getProcessStart,
 	publishCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import {
 	CodexDiscordGateway,
 	type DiscordInboundMessage,
@@ -548,12 +545,11 @@ function buildTuiGeneration(
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
-						const externalReceiptQueue = new LeadInboxQueue(config.commDbPath);
+						const externalReceiptQueue = new MailboxQueue(config.commDbPath);
 						const externalReceiptSaga = new ExternalReceiptSaga({
 							leadId: config.leadId,
 							queue: externalReceiptQueue,
 							journal,
-							receiptWindowsMs: receiptPriorityWindowsMs(),
 						});
 						// The full-access tool-surface guarantee is enforced by the config
 						// gate in main() BEFORE the daemon
@@ -751,9 +747,7 @@ function buildTuiGeneration(
 							startGateway: async () => {
 								externalReceiptSaga.reconcile({
 									olderThan: new Date().toISOString(),
-									absenceProvenThroughMessageId:
-										externalReceiptQueue.getLatestReceiptActivation()
-											?.high_water_mark ?? "0",
+									absenceProvenThroughMessageId: "0",
 								});
 								// FLY-314 Phase 2 (Codex code review #1): gateway FIRST so the
 								// source.onMessage handler is installed before discovery's

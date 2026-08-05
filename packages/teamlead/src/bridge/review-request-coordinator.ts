@@ -70,17 +70,14 @@ export interface ReviewCommDb {
 		expectedOwner: string;
 		expectedCheckpoint: string;
 	}): boolean;
-	insertReviewResponseWithWakeIfGateOpen(input: {
+	insertReviewResponseIfGateOpen(input: {
 		questionId: string;
 		fromAgent: string;
 		content: string;
 		expectedOwner: string;
 		expectedCheckpoint: "review_design" | "review_code";
-		summary: string;
-		queuedAtMs: number;
 	}): {
 		responseId: string;
-		wake: { message_id: string; admission_state: string | null };
 	} | null;
 	close(): void;
 }
@@ -149,14 +146,6 @@ export interface ReviewCoordinatorDeps {
 	reviewRound?: typeof runClaudeReviewRound;
 	/** Trusted head derivation (test seam; default = rev-parse, no shell). */
 	deriveHead?: (worktreePath: string) => Promise<string>;
-	/** Best-effort mailbox wake after a gate response (test seam). */
-	wakeRunner?: (
-		executionId: string,
-		session: { issue_id: string; project_name: string },
-		questionId: string,
-		summary: string,
-		responseId: string,
-	) => Promise<void>;
 	/**
 	 * FLY-1257 defect ① × ④ (Codex code review HIGH-1): flip the answered review
 	 * gate's MARKER to answered so a resident codex `/goal` resumes at once. The
@@ -1475,19 +1464,15 @@ export class ReviewRequestCoordinator {
 		const db = this.deps.openCommDb(
 			this.deps.commDbPathFor(session.project_name),
 		);
-		let responseId: string;
 		try {
-			const delivery = db.insertReviewResponseWithWakeIfGateOpen({
+			const delivery = db.insertReviewResponseIfGateOpen({
 				questionId,
 				fromAgent: "bridge",
 				content: contentJson,
 				expectedOwner: binding.executionId,
 				expectedCheckpoint: `review_${binding.reviewType}`,
-				summary: reviewVerdictSummary(contentJson),
-				queuedAtMs: Date.now(),
 			});
 			if (!delivery) return false;
-			responseId = delivery.responseId;
 		} finally {
 			db.close();
 		}
@@ -1501,24 +1486,6 @@ export class ReviewRequestCoordinator {
 			this.log(
 				`gate marker mark failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
 			);
-		}
-		if (this.deps.wakeRunner) {
-			try {
-				await this.deps.wakeRunner(
-					session.execution_id,
-					{
-						issue_id: session.issue_id,
-						project_name: session.project_name,
-					},
-					questionId,
-					reviewVerdictSummary(contentJson),
-					responseId,
-				);
-			} catch (err) {
-				this.log(
-					`runner wake failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-				);
-			}
 		}
 		return true;
 	}
@@ -1651,17 +1618,6 @@ function buildLegacyVerdictPayload(
 		...(job.frozen_head_sha ? { reviewedHeadSha: job.frozen_head_sha } : {}),
 		...(job.delivery_nonce ? { deliveryNonce: job.delivery_nonce } : {}),
 	};
-}
-
-function reviewVerdictSummary(contentJson: string): string {
-	try {
-		const parsed = JSON.parse(contentJson) as { reviewVerdict?: unknown };
-		return typeof parsed.reviewVerdict === "string"
-			? parsed.reviewVerdict
-			: "answered";
-	} catch {
-		return "answered";
-	}
 }
 
 function safeParseArray(json: string | undefined): unknown[] {

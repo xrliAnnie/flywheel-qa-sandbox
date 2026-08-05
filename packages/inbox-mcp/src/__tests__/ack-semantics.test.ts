@@ -46,7 +46,9 @@ describe("inbox-mcp delivery + ack state machine", () => {
 		expect(result.delivered).toContain(id);
 
 		const row = (db as any).db
-			.prepare("SELECT delivered_at, read_at FROM messages WHERE id = ?")
+			.prepare(
+				"SELECT delivered_at, read_at FROM mailbox_message_projection WHERE id = ?",
+			)
 			.get(id) as { delivered_at: string | null; read_at: string | null };
 		expect(row.delivered_at).not.toBeNull();
 		expect(row.read_at).toBeNull();
@@ -72,7 +74,7 @@ describe("inbox-mcp delivery + ack state machine", () => {
 		// Simulate time passing past retry window
 		(db as any).db
 			.prepare(
-				"UPDATE messages SET delivered_at = datetime('now', '-60 seconds') WHERE id = ?",
+				"UPDATE mailbox SET claim_expires_at = datetime('now', '-60 seconds') WHERE id = ?",
 			)
 			.run(id);
 
@@ -92,7 +94,7 @@ describe("inbox-mcp delivery + ack state machine", () => {
 
 		(db as any).db
 			.prepare(
-				"UPDATE messages SET delivered_at = datetime('now', '-600 seconds') WHERE id = ?",
+				"UPDATE mailbox SET claim_expires_at = datetime('now', '-600 seconds') WHERE id = ?",
 			)
 			.run(id);
 
@@ -110,14 +112,14 @@ describe("inbox-mcp delivery + ack state machine", () => {
 		expect(r1.ok).toBe(true);
 
 		const firstReadAt = (db as any).db
-			.prepare("SELECT read_at FROM messages WHERE id = ?")
+			.prepare("SELECT read_at FROM mailbox_message_projection WHERE id = ?")
 			.get(id) as { read_at: string };
 
 		const r2 = handleAck(db, id, leadId);
 		expect(r2.ok).toBe(true);
 
 		const secondReadAt = (db as any).db
-			.prepare("SELECT read_at FROM messages WHERE id = ?")
+			.prepare("SELECT read_at FROM mailbox_message_projection WHERE id = ?")
 			.get(id) as { read_at: string };
 		expect(secondReadAt.read_at).toBe(firstReadAt.read_at);
 	});
@@ -140,7 +142,7 @@ describe("inbox-mcp delivery + ack state machine", () => {
 		expect(result.ok).toBe(false);
 
 		const row = (db as any).db
-			.prepare("SELECT read_at FROM messages WHERE id = ?")
+			.prepare("SELECT read_at FROM mailbox_message_projection WHERE id = ?")
 			.get(idForOther) as { read_at: string | null };
 		expect(row.read_at).toBeNull();
 	});
@@ -218,12 +220,16 @@ describe("inbox-mcp delivery + ack state machine", () => {
 		// redeliver id1 but SHOULD retry id2 and the untouched id3 on the next pass
 		// (since id2 was never marked delivered).
 		const id1Row = (db as any).db
-			.prepare("SELECT delivered_at FROM messages WHERE id = ?")
+			.prepare(
+				"SELECT delivered_at FROM mailbox_message_projection WHERE id = ?",
+			)
 			.get(id1) as { delivered_at: string | null };
 		expect(id1Row.delivered_at).not.toBeNull();
 
 		const id2Row = (db as any).db
-			.prepare("SELECT delivered_at FROM messages WHERE id = ?")
+			.prepare(
+				"SELECT delivered_at FROM mailbox_message_projection WHERE id = ?",
+			)
 			.get(id2) as { delivered_at: string | null };
 		expect(id2Row.delivered_at).toBeNull();
 	});
@@ -237,7 +243,7 @@ describe("inbox-mcp delivery + ack state machine", () => {
 		// Backdate by 6s → beyond 5s window
 		(db as any).db
 			.prepare(
-				"UPDATE messages SET delivered_at = datetime('now', '-6 seconds') WHERE id = ?",
+				"UPDATE mailbox SET claim_expires_at = datetime('now', '-6 seconds') WHERE id = ?",
 			)
 			.run(id);
 

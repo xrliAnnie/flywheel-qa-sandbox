@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommDB } from "../db.js";
 
@@ -642,7 +643,7 @@ globalThis.fetch = async () => {
 			db.markInstructionRead(instId);
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET created_at = datetime('now', '-25 hours') WHERE id = ?",
+					"UPDATE mailbox SET state = 'ACKED', acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours') WHERE id = ?",
 				)
 				.run(instId);
 			db.close();
@@ -659,31 +660,43 @@ globalThis.fetch = async () => {
 			expect(result.cleaned).toBe(0);
 		});
 
-		it("should respect --ttl flag", () => {
+		it("should respect --ttl above the 72-hour retention floor", () => {
 			const db = new CommDB(dbPath);
-			const instId = db.insertInstruction("lead", "exec-1", "3h old");
+			const instId = db.insertInstruction("lead", "exec-1", "96h old");
 			db.markInstructionRead(instId);
 			(db as any).db
 				.prepare(
-					"UPDATE messages SET created_at = datetime('now', '-3 hours') WHERE id = ?",
+					"UPDATE mailbox SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-96 hours') WHERE id = ?",
 				)
 				.run(instId);
 			db.close();
 
-			// Default 24h: should not clean
-			const result24 = runCli(["cleanup", "--db", dbPath, "--json"]);
-			expect(JSON.parse(result24).cleaned).toBe(0);
-
-			// 2h TTL: should clean
-			const result2 = runCli([
+			const retained = runCli([
 				"cleanup",
 				"--db",
 				dbPath,
 				"--ttl",
-				"2",
+				"120",
 				"--json",
 			]);
-			expect(JSON.parse(result2).cleaned).toBe(1);
+			expect(JSON.parse(retained).cleaned).toBe(0);
+
+			const raw = new Database(dbPath);
+			raw
+				.prepare(
+					"UPDATE mailbox SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-121 hours') WHERE id = ?",
+				)
+				.run(instId);
+			raw.close();
+			const cleaned = runCli([
+				"cleanup",
+				"--db",
+				dbPath,
+				"--ttl",
+				"120",
+				"--json",
+			]);
+			expect(JSON.parse(cleaned).cleaned).toBe(1);
 		});
 	});
 

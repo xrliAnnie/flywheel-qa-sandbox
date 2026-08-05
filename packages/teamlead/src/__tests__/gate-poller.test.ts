@@ -801,7 +801,7 @@ describe("GatePoller (FLY-161)", () => {
 					db: { prepare(sql: string): { run(...args: unknown[]): unknown } };
 				}
 			).db
-				.prepare("UPDATE messages SET created_at = ? WHERE id = ?")
+				.prepare("UPDATE mailbox SET created_at = ? WHERE id = ?")
 				.run("2000-01-01 00:00:00", qid);
 		} finally {
 			db.close();
@@ -851,7 +851,7 @@ describe("GatePoller (FLY-161)", () => {
 					db: { prepare(sql: string): { run(...args: unknown[]): unknown } };
 				}
 			).db
-				.prepare("UPDATE messages SET created_at = ? WHERE id = ?")
+				.prepare("UPDATE mailbox SET created_at = ? WHERE id = ?")
 				.run("2000-01-01 00:00:00", qid);
 		} finally {
 			db.close();

@@ -315,7 +315,7 @@ describe("cleanupStaleSessions", () => {
 		expect(result.cleaned).toBe(1);
 	});
 
-	it("records warning for legacy DB without sessions table", () => {
+	it("records an error for a database without the mailbox generation", () => {
 		const legacyDbPath = join(tmpDir, "legacy.db");
 		const legacyDb = new Database(legacyDbPath);
 		legacyDb.exec("CREATE TABLE messages (id TEXT PRIMARY KEY, content TEXT)");
@@ -325,9 +325,9 @@ describe("cleanupStaleSessions", () => {
 			dbPaths: [legacyDbPath],
 			timeoutMinutes: 30,
 		});
-		expect(result.warnings.length).toBe(1);
-		expect(result.warnings[0]).toContain("legacy");
-		expect(result.errors).toHaveLength(0);
+		expect(result.warnings).toHaveLength(0);
+		expect(result.errors).toHaveLength(1);
+		expect(result.errors[0]).toContain("FLY-1572 mailbox migration");
 	});
 
 	it("treats TOCTOU race (session/window disappears mid-cleanup) as skip, not error", () => {

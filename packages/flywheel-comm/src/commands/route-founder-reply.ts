@@ -39,31 +39,12 @@ export function routeFounderReply(
 	const db = new CommDB(args.dbPath, false);
 	try {
 		if (args.toQuestionId) {
-			const question = db.getMessageById(args.toQuestionId);
-			if (!question || question.type !== "question") {
-				throw new Error(`Question not found: ${args.toQuestionId}`);
-			}
-			const intentKey = `founder-route:${args.leadId}:${args.msgId}:${args.toQuestionId}`;
 			return db.routeFounderReply({
 				msgId: args.msgId,
 				leadId: args.leadId,
 				toQuestionId: args.toQuestionId,
 				now,
 				provenance: authorization.provenance,
-				intentKey,
-				envelope: {
-					id: `founder-route-wake:${args.leadId}:${args.msgId}:${args.toQuestionId}`,
-					to: question.from_agent,
-					content:
-						"A founder reply was routed to your pending question. Run flywheel-comm check for the durable response.",
-					metadata: {
-						kind: "founder_reply_routed",
-						origin: "founder",
-						msgId: args.msgId,
-						questionId: args.toQuestionId,
-					},
-				},
-				queuedAtMs: nowDate.getTime(),
 			});
 		}
 		return db.routeFounderReply({

@@ -22,6 +22,8 @@ import {
 	verifyApprovalWithBridgeHead,
 } from "../commands/verify-approval.js";
 import { CommDB } from "../db.js";
+import { MailboxQueue } from "../mailbox-queue.js";
+import { encodeSenderRef } from "../sender-ref.js";
 
 const EXEC = "exec-fly191";
 const LEAD = "product-lead";
@@ -233,15 +235,18 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		} finally {
 			db.close();
 		}
-		const raw = new Database(commDbPath);
+		const raw = new MailboxQueue(commDbPath);
 		try {
-			raw
-				.prepare(
-					`INSERT INTO messages
-				 (id, from_agent, to_agent, type, content, parent_id)
-				 VALUES ('forced-response', 'bridge', ?, 'response', ?, ?)`,
-				)
-				.run(EXEC, JSON.stringify({ approved: true }), qid);
+			raw.enqueue({
+				id: "forced-response",
+				fromAgent: "bridge",
+				toAgent: EXEC,
+				recipientKind: "runner",
+				type: "response",
+				content: JSON.stringify({ approved: true }),
+				refId: qid,
+				senderRef: encodeSenderRef(),
+			});
 		} finally {
 			raw.close();
 		}

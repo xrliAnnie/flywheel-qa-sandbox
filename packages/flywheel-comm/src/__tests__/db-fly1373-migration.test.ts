@@ -16,13 +16,11 @@ describe("FLY-1373 message deadline migration", () => {
 
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-	it("creates deadline_at on a fresh database", () => {
+	it("creates deadline_at on the unified mailbox", () => {
 		new CommDB(dbPath).close();
 		const raw = new Database(dbPath, { readonly: true });
 		try {
-			const columns = raw
-				.prepare("PRAGMA table_info(messages)")
-				.all() as Array<{
+			const columns = raw.prepare("PRAGMA table_info(mailbox)").all() as Array<{
 				name: string;
 			}>;
 			expect(columns.map(({ name }) => name)).toContain("deadline_at");
@@ -31,28 +29,13 @@ describe("FLY-1373 message deadline migration", () => {
 		}
 	});
 
-	it("preserves deadline_at and its data through the pre-ack rebuild", () => {
-		const legacy = new Database(dbPath);
-		legacy.exec(`
-			CREATE TABLE messages (
-			  id TEXT PRIMARY KEY,
-			  from_agent TEXT NOT NULL,
-			  to_agent TEXT NOT NULL,
-			  type TEXT NOT NULL CHECK(type IN ('question','response','instruction','progress')),
-			  content TEXT NOT NULL,
-			  parent_id TEXT,
-			  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			  expires_at DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
-			  deadline_at TEXT
-			);
-			INSERT INTO messages (id, from_agent, to_agent, type, content, deadline_at)
-			VALUES ('legacy-q', 'runner', 'lead-a', 'question', 'keep me', '2026-07-20T08:30:00.000Z');
-		`);
-		legacy.close();
-
+	it("round-trips deadline_at through the message projection", () => {
 		const migrated = new CommDB(dbPath);
 		try {
-			expect(migrated.getMessageById("legacy-q")).toMatchObject({
+			const id = migrated.insertQuestion("runner", "lead-a", "keep me", {
+				deadlineAt: "2026-07-20T08:30:00.000Z",
+			});
+			expect(migrated.getMessageById(id)).toMatchObject({
 				content: "keep me",
 				deadline_at: "2026-07-20T08:30:00.000Z",
 			});

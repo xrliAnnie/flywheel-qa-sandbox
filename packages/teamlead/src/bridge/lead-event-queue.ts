@@ -1,6 +1,7 @@
 /** FLY-1373 canonical StateStore lead-event → comm.db queue producer. */
 
-import type { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
+import type { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import type { DurableQueueReceipt } from "./runtime-registry.js";
 
@@ -12,26 +13,25 @@ export function canonicalLeadEventDeliveryId(
 }
 
 export function enqueueLeadEvent(args: {
-	queue: LeadInboxQueue;
+	queue: MailboxQueue;
 	envelope: LeadEventEnvelope;
 	content: string;
 }): DurableQueueReceipt {
 	const { envelope } = args;
 	const deliveryId = canonicalLeadEventDeliveryId(envelope);
-	const executionId = envelope.event.execution_id ?? "no-exec";
-	const row = args.queue.enqueue({
+	args.queue.enqueue({
 		id: deliveryId,
-		toLead: envelope.leadId,
-		source: `lead_event:${envelope.seq}`,
+		fromAgent: "bridge",
+		toAgent: envelope.leadId,
+		recipientKind: "lead",
+		sourceKind: "lead_event",
+		sourceRef: String(envelope.seq),
 		type: envelope.event.event_type,
 		msgClass: "model",
 		priority: envelope.priority ?? 2,
 		content: args.content,
-		legacyAlias:
-			envelope.deliveryAttemptId !== undefined
-				? `${envelope.leadId}-${envelope.deliveryAttemptId}`
-				: `${envelope.leadId}-${envelope.seq}-${executionId}`,
 		createdAt: envelope.timestamp,
+		senderRef: encodeSenderRef(),
 	});
-	return { queued: true, deliveryId: row.id, seq: envelope.seq };
+	return { queued: true, deliveryId, seq: envelope.seq };
 }

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { founderMessageRootId } from "flywheel-comm/founder-reply-routing";
-import { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryInboundCursorStore } from "../../lead-backends/codex/InboundCursorStore.js";
 import {
@@ -144,11 +144,11 @@ describe("FLY-1392 v2 founder ingress", () => {
 			answer: msg.content,
 			commDbPath: dbPath,
 		});
-		const queue = new LeadInboxQueue(dbPath);
+		const queue = new MailboxQueue(dbPath);
 		const row = queue.getById(founderMessageRootId("test-lead", msg.id));
 		expect(row).toMatchObject({
-			to_lead: "test-lead",
-			ref_message_id: msg.id,
+			to_agent: "test-lead",
+			ref_id: msg.id,
 			carrier: "inbox",
 		});
 		expect(JSON.parse(row?.content ?? "{}").answer).toBe(msg.content);
@@ -248,7 +248,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 			(await emitFounderReplyDeliveryForThread(ctx(dbPath), [], deps)).result,
 		).toBe("advanced");
 		expect(cursor.load("T1")).toBe(msg.id);
-		const queue = new LeadInboxQueue(dbPath);
+		const queue = new MailboxQueue(dbPath);
 		expect(
 			queue.getById(founderMessageRootId("test-lead", msg.id)),
 		).toBeDefined();
