@@ -218,4 +218,26 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 		});
 		expect(store.countWorkflowClaims("run-1")).toBe(1);
 	});
+
+	it("rejects a genuinely expired unconsumed credential without minting a claim", async () => {
+		const store = await storeWithRun();
+		const admission = admit(store);
+		if (!admission.ok) throw new Error(admission.reason);
+
+		expect(
+			store.submitWorkflowDecisionByCredential({
+				credential: admission.credential,
+				clientRequestId: "expired-request",
+				predicate: "qa_passed",
+				subjectDigest: H1,
+				issuerVendor: "claude",
+				issuerModel: "opus",
+				subjectProducerExecutionId: "impl-exec",
+				subjectProducerVendor: "codex",
+				claimExpiresAt: T2,
+				now: T2,
+			}),
+		).toEqual({ ok: false, reason: "credential_expired" });
+		expect(store.countWorkflowClaims("run-1")).toBe(0);
+	});
 });

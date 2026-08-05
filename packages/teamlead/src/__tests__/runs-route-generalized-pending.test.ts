@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { LaunchPrecommitFailure } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { IStartDispatcher } from "../bridge/retry-dispatcher.js";
@@ -110,7 +111,8 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 	let projectRoot: string;
 	let start: ReturnType<typeof vi.fn>;
 	let commitLaunch: (() => { ok: boolean; reason?: string }) | undefined;
-	let dispatchMode: "session_only" | "delivered" | "ghost";
+	let dispatchMode: "session_only" | "delivered" | "ghost" | "tmux_hold";
+	let precommitFailure: LaunchPrecommitFailure | undefined;
 	let savedFlags: Record<(typeof workflowFlags)[number], string | undefined>;
 	let savedLinearApiKey: string | undefined;
 
@@ -137,6 +139,7 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 			updatedBy: "test",
 		});
 		dispatchMode = "session_only";
+		precommitFailure = undefined;
 		commitLaunch = undefined;
 		waitMocks.waitForDelivery.mockReset().mockResolvedValue(undefined);
 		waitMocks.waitForSession
@@ -150,7 +153,7 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 				return { executionId: `classic-${req.issueId}`, issueId: req.issueId };
 			}
 			commitLaunch = generalized.commitWorkflowLaunch;
-			if (dispatchMode !== "ghost") {
+			if (dispatchMode !== "ghost" && dispatchMode !== "tmux_hold") {
 				store.upsertSession({
 					execution_id: generalized.executionId,
 					issue_id: req.issueId,
@@ -166,6 +169,16 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 			return {
 				executionId: generalized.executionId,
 				issueId: req.issueId,
+				...((dispatchMode === "tmux_hold" || precommitFailure) && {
+					launchOutcome: Promise.resolve({
+						status: "precommit_failed" as const,
+						failure: precommitFailure ?? {
+							code: "LAUNCH_TMUX_SESSION_HELD" as const,
+							reason: "saturated" as const,
+							physicalEvidence: "absent" as const,
+						},
+					}),
+				}),
 			};
 		});
 		const dispatcher: IStartDispatcher = {
@@ -264,7 +277,9 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 		expect(await response.json()).toMatchObject({
 			success: true,
 			pending: true,
-			code: "GENERALIZED_LAUNCH_PENDING",
+			code: "LAUNCH_PENDING",
+			reason: "launch delivery confirmation is pending",
+			retryable: false,
 			executionId: expect.any(String),
 			issueId: "FLY-PENDING",
 			workflowRunId: expect.any(String),
@@ -296,6 +311,67 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 			success: false,
 			code: "GENERALIZED_START_NOT_LIVE",
 		});
+	});
+
+	it("returns a structured tmux hold and releases that uncommitted generation immediately", async () => {
+		dispatchMode = "tmux_hold";
+		const response = await postStart("FLY-HOLD", "hold-key");
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			success: false,
+			code: "LAUNCH_TMUX_SESSION_HELD",
+			reason: "saturated",
+			executionId: expect.any(String),
+			retryable: false,
+		});
+		const run = store.getActiveWorkflowRunForIssue("FLY-HOLD")!;
+		const reservation = store.getWorkflowStartReservationForRun(run.run_id)!;
+		expect(
+			store.getWorkflowLaunchOwner(reservation.execution_id),
+		).toMatchObject({
+			owner_generation: 1,
+			released_generation: 1,
+			released_reason: "saturated",
+		});
+		expect(
+			start.mock.calls[0]?.[0].generalizedExecution?.launchGeneration,
+		).toBe(1);
+	});
+
+	it("maps a cleaned identity failure to retryable 409 after releasing the generation", async () => {
+		precommitFailure = {
+			code: "LAUNCH_WINDOW_IDENTITY_FAILED",
+			reason: "identity_publish_failed",
+			physicalEvidence: "cleaned",
+		};
+		const response = await postStart("FLY-IDENTITY", "identity-key");
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			success: false,
+			code: "LAUNCH_WINDOW_IDENTITY_FAILED",
+			reason: "identity_publish_failed",
+			executionId: expect.any(String),
+			retryable: true,
+		});
+	});
+
+	it("maps a precommit deadline to non-retryable 503 without exposing evidence", async () => {
+		precommitFailure = {
+			code: "LAUNCH_PRECOMMIT_TIMEOUT",
+			reason: "deadline_exhausted",
+			physicalEvidence: "unknown",
+		};
+		const response = await postStart("FLY-TIMEOUT", "timeout-key");
+		expect(response.status).toBe(503);
+		const body = await response.json();
+		expect(body).toMatchObject({
+			success: false,
+			code: "LAUNCH_PRECOMMIT_TIMEOUT",
+			reason: "deadline_exhausted",
+			executionId: expect.any(String),
+			retryable: false,
+		});
+		expect(body).not.toHaveProperty("physicalEvidence");
 	});
 
 	it("keeps classic pre-session ghosts on the existing 500 contract", async () => {

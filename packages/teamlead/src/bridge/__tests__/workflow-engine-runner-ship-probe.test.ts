@@ -502,7 +502,20 @@ describe("runner-ship merge probe production composition", () => {
 			status: "awaiting_review",
 			pr_number: 1624,
 		});
-		approve(store, holder);
+		// Reproduce an already-persisted pre-FLY-1638 approved holder. The current
+		// founder-decision API correctly refuses to create this unbound state, but
+		// an upgraded database can still contain it and must remain fail-closed.
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			`UPDATE workflow_gate_holder
+			    SET state = 'approved', materialization_stage = 'completed',
+			        card_message_id = 'legacy-card'
+			  WHERE question_id = ?`,
+			[holder.question_id],
+		);
 		const checkPrMerge = vi.fn(async () => ({
 			state: "merged" as const,
 			headRefOid: HEAD_A,

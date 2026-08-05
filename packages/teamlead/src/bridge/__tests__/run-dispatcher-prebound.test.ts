@@ -5,6 +5,7 @@
  * was durably bound BEFORE dispatch). Without a pre-bound id the behavior is
  * byte-identical (randomUUID).
  */
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -154,6 +155,9 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 				outputCredential: "output-ticket",
 				submissionCredential: "decision-ticket",
 				idempotencyKey: "retry:pred-1:succ-generalized",
+				launchGateToken: "launch-token",
+				launchGeneration: 7,
+				commitWorkflowLaunch: () => ({ ok: true }),
 			},
 		});
 		await d.drain();
@@ -173,6 +177,11 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 			workflowOutputCredential: "output-ticket",
 			workflowSubmissionCredential: "decision-ticket",
 			workflowSubmissionExpected: true,
+			launchGateToken: "launch-token",
+			launchGeneration: 7,
+			launchFingerprint: createHash("sha256")
+				.update("succ-generalized:7:launch-token")
+				.digest("hex"),
 		});
 	});
 

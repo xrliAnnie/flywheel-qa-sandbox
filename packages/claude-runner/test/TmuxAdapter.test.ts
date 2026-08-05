@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AsyncExecFileFn, ExecFileFn } from "../src/TmuxAdapter.js";
 import {
 	ensureRunnerSession,
+	LaunchPrecommitError,
 	pruneScaffoldWindow,
 	TmuxAdapter,
 	TmuxSessionHoldError,
@@ -399,6 +400,153 @@ describe("TmuxAdapter", () => {
 			windowId: "@42",
 			socketPath: "/tmp/tmux-test/default",
 			serverStartTime: "1722700000",
+			executionId: "test-exec-1",
+		});
+	});
+
+	it("prunes an authority-approved terminal same-name window by exact id before session capacity admission", async () => {
+		const base = makeMockExec({
+			paneDead: true,
+			hasSessionError: false,
+			listWindows: "@7|GEO-TEST|old-exec|1|old-fingerprint",
+		});
+		let staleKilled = false;
+		const fn: ExecFileFn = (cmd, args) => {
+			if (
+				cmd === "tmux" &&
+				args[0] === "kill-window" &&
+				args[2] === "=flywheel:@7"
+			) {
+				staleKilled = true;
+			}
+			if (
+				cmd === "tmux" &&
+				args[0] === "display-message" &&
+				args.includes("=flywheel:@7") &&
+				staleKilled
+			) {
+				throw new Error("window not found");
+			}
+			return base.fn(cmd, args);
+		};
+		const authority = vi.fn(() => "prune" as const);
+		await new TmuxAdapter("flywheel", fn, 10).execute(
+			makeCtx({
+				label: "GEO-TEST",
+				workflowTmuxWindowAuthority: authority,
+			}),
+		);
+
+		expect(authority).toHaveBeenCalledWith({
+			windowId: "@7",
+			windowName: "GEO-TEST",
+			executionId: "old-exec",
+			launchGeneration: 1,
+			launchFingerprint: "old-fingerprint",
+		});
+		expect(killWindowTargets(base.calls)).toContain("=flywheel:@7");
+		const newWindow = base.calls.find((call) => call.args[0] === "new-window")!;
+		expect(newWindow.args[newWindow.args.indexOf("-n") + 1]).toBe("GEO-TEST");
+	});
+
+	it("uses an execution suffix when a same-name window lacks prune authority", async () => {
+		const base = makeMockExec({
+			paneDead: true,
+			hasSessionError: false,
+			listWindows: "@7|GEO-TEST|live-exec|2|live-fingerprint",
+		});
+		await new TmuxAdapter("flywheel", base.fn, 10).execute(
+			makeCtx({
+				label: "GEO-TEST",
+				workflowTmuxWindowAuthority: () => "keep",
+			}),
+		);
+		const newWindow = base.calls.find((call) => call.args[0] === "new-window")!;
+		expect(newWindow.args[newWindow.args.indexOf("-n") + 1]).toBe(
+			"GEO-TEST-test-exe",
+		);
+		expect(killWindowTargets(base.calls)).not.toContain("=flywheel:@7");
+	});
+
+	it("reserves room for execution and owner-generation suffixes on long labels", async () => {
+		const canonical = "A".repeat(50);
+		const base = makeMockExec({
+			paneDead: true,
+			hasSessionError: false,
+			listWindows: `@7|${canonical}|live-exec|2|live-fingerprint`,
+		});
+		await new TmuxAdapter("flywheel", base.fn, 10).execute(
+			makeCtx({
+				label: canonical,
+				executionId: "test-execution-id",
+				launchGeneration: 3,
+				workflowTmuxWindowAuthority: () => "keep",
+			}),
+		);
+		const newWindow = base.calls.find((call) => call.args[0] === "new-window")!;
+		const selected = newWindow.args[newWindow.args.indexOf("-n") + 1]!;
+		expect(selected).toHaveLength(50);
+		expect(selected).toMatch(/-test-exe-g3$/);
+	});
+
+	it("preflights the suffixed fallback and selects a bounded unique retry name", async () => {
+		const base = makeMockExec({
+			paneDead: true,
+			hasSessionError: false,
+			listWindows:
+				"@7|GEO-TEST|live-exec|2|live-fingerprint\n" +
+				"@8|GEO-TEST-test-exe-g3|other-exec|1|other-fingerprint",
+		});
+		await new TmuxAdapter("flywheel", base.fn, 10).execute(
+			makeCtx({
+				label: "GEO-TEST",
+				executionId: "test-execution-id",
+				launchGeneration: 3,
+				workflowTmuxWindowAuthority: () => "keep",
+			}),
+		);
+		const newWindow = base.calls.find((call) => call.args[0] === "new-window")!;
+		expect(newWindow.args[newWindow.args.indexOf("-n") + 1]).toBe(
+			"GEO-TEST-test-exe-g3-r1",
+		);
+	});
+
+	it("fails a workflow launch closed with a typed result when exact window identity cannot be published", async () => {
+		const base = makeMockExec({ paneDead: true });
+		let killed = false;
+		const fn: ExecFileFn = (cmd, args) => {
+			if (
+				cmd === "tmux" &&
+				args[0] === "set-option" &&
+				args.includes("@flywheel_launch_generation")
+			) {
+				throw new Error("option write failed");
+			}
+			if (cmd === "tmux" && args[0] === "kill-window") killed = true;
+			if (cmd === "tmux" && args[0] === "display-message" && killed) {
+				throw new Error("window not found");
+			}
+			return base.fn(cmd, args);
+		};
+		let error: unknown;
+		try {
+			await new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({
+					launchCommitPath: "/tmp/fly1638-identity-commit",
+					launchGateToken: "launch-token",
+					launchGeneration: 3,
+					launchFingerprint: "launch-fingerprint",
+					commitWorkflowLaunch: () => ({ ok: true }),
+				}),
+			);
+		} catch (caught) {
+			error = caught;
+		}
+		expect(error).toBeInstanceOf(LaunchPrecommitError);
+		expect((error as LaunchPrecommitError).launchFailure).toEqual({
+			code: "LAUNCH_WINDOW_IDENTITY_FAILED",
+			reason: "identity_publish_failed",
+			physicalEvidence: "cleaned",
 		});
 	});
 
@@ -934,6 +1082,8 @@ describe("TmuxAdapter", () => {
 			makeCtx({
 				launchCommitPath: "/tmp/fly1272-launch-commit",
 				launchGateToken: "fly1272-token",
+				launchGeneration: 1,
+				launchFingerprint: "fly1272-fingerprint",
 				commitWorkflowLaunch: () => {
 					journal.push("commit-release");
 					return { ok: true };
@@ -988,6 +1138,8 @@ describe("TmuxAdapter", () => {
 				makeCtx({
 					launchCommitPath: "/tmp/fly1272-launch-commit-failure",
 					launchGateToken: "fly1272-token",
+					launchGeneration: 1,
+					launchFingerprint: "fly1272-fingerprint",
 					commitWorkflowLaunch,
 				}),
 			),

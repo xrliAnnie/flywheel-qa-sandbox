@@ -121,17 +121,25 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 		seed("launching", { generation: false });
 		store.setSessionParams("launching", { preserved: "yes" });
 		persistPaneLossGenerationCredential(store, "launching", {
+			windowId: "@42",
 			socketPath: GENERATION.socket_path,
 			serverStartTime: GENERATION.server_start_time,
+			executionId: "launching",
 		});
 		expect(store.getSessionParams("launching")).toEqual({
 			preserved: "yes",
-			pane_loss_generation: GENERATION,
+			pane_loss_generation: {
+				...GENERATION,
+				window_id: "@42",
+				execution_id: "launching",
+			},
 		});
 		expect(() =>
 			persistPaneLossGenerationCredential(store, "missing", {
+				windowId: "@43",
 				socketPath: GENERATION.socket_path,
 				serverStartTime: GENERATION.server_start_time,
+				executionId: "missing",
 			}),
 		).toThrow(/not registered/);
 		store.upsertSession({
@@ -142,8 +150,10 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 		});
 		expect(() =>
 			persistPaneLossGenerationCredential(store, "terminal", {
+				windowId: "@44",
 				socketPath: GENERATION.socket_path,
 				serverStartTime: GENERATION.server_start_time,
+				executionId: "terminal",
 			}),
 		).toThrow(/terminal/);
 	});

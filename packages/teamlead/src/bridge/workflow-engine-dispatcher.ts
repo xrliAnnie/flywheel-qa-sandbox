@@ -8,17 +8,18 @@ import {
 	isStateStoreIrreversibleTerminalForZombie,
 	MAX_BLIND_REPLACEMENTS,
 	type StateStore,
+	WORKFLOW_LAUNCH_SOFT_LEASE_MS,
 	type WorkflowDeadExecutionActivityBaseline,
 	type WorkflowDeadExecutionActivityEvidence,
 	type WorkflowDeadExecutionWatchRow,
 	type WorkflowEngineAlertIdentity,
+	type WorkflowLaunchWindowIdentity,
 	type WorkflowSideEffectRow,
 } from "../StateStore.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import {
 	parseWorkflowRunSnapshot,
 	resolveWorkflowDecisionContract,
-	type WorkflowRunSnapshot,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
 import {
@@ -28,7 +29,7 @@ import {
 	type WorkflowShipReadyNotice,
 	workflowShipReadyUid,
 } from "../workflow-ship-ready.js";
-import { computeSubmissionExpiry } from "../workflow-submission-expiry.js";
+import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import { workflowApprovalGate } from "../workflow-template.js";
 import {
 	isLandNodeEnabled,
@@ -50,7 +51,10 @@ import {
 	type MaterializedHeadAuthority,
 	unavailableMaterializedHeadAuthority,
 } from "./materialized-head-authority.js";
-import type { IStartDispatcher } from "./retry-dispatcher.js";
+import { parsePaneLossGenerationParams } from "./pane-loss-reconcile.js";
+import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
+import type { AdmissionDecision } from "./runner-admission.js";
+import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
 import type { WorkflowReworkCoordinatorOutcome } from "./workflow-rework-coordinator.js";
 
 interface WorkflowEngineDispatcherOptions {
@@ -74,6 +78,9 @@ interface WorkflowEngineDispatcherOptions {
 		executionId: string,
 		projectName: string,
 	) => Promise<"absent" | "present" | "unknown">;
+	cleanupUnlaunchedWorkflowWindow?: (
+		identity: WorkflowLaunchWindowIdentity,
+	) => Promise<"absent" | "cleaned" | "present" | "unknown">;
 	captureDeadExecutionActivityBaseline?: (
 		executionId: string,
 		projectName: string,
@@ -100,25 +107,8 @@ interface WorkflowEngineDispatcherOptions {
 	reconcileWorkflowRework?: (
 		requestId: string,
 	) => Promise<WorkflowReworkCoordinatorOutcome>;
-}
-
-function credentialExpiryForNode(
-	snapshot: WorkflowRunSnapshot,
-	nodeId: string,
-	now: Date,
-): { expiresAt: string; absoluteDeadlineAt: string } {
-	const absoluteDeadlineMs = now.getTime() + 24 * 60 * 60_000;
-	const decisionContract = resolveWorkflowDecisionContract(snapshot, nodeId);
-	const configuredWindow = snapshot.manifest.nodes.find(
-		(node) => node.id === nodeId,
-	)?.submissionWindowMinutes;
-	const windowMinutes = decisionContract ? (configuredWindow ?? 60) : 60;
-	return {
-		expiresAt: new Date(
-			computeSubmissionExpiry(now.getTime(), windowMinutes, absoluteDeadlineMs),
-		).toISOString(),
-		absoluteDeadlineAt: new Date(absoluteDeadlineMs).toISOString(),
-	};
+	/** FLY-1638: checked before durable execution admission/credential writes. */
+	admissionProbe?: () => AdmissionDecision;
 }
 
 export interface WorkflowEngineReconcileResult {
@@ -154,6 +144,9 @@ export class WorkflowEngineDispatcher {
 	) => Promise<GeneralizedLaunchLiveness>;
 	private readonly probeUnlaunchedExternalEvidence: NonNullable<
 		WorkflowEngineDispatcherOptions["probeUnlaunchedExternalEvidence"]
+	>;
+	private readonly cleanupUnlaunchedWorkflowWindow: NonNullable<
+		WorkflowEngineDispatcherOptions["cleanupUnlaunchedWorkflowWindow"]
 	>;
 	private readonly captureDeadExecutionActivityBaseline: NonNullable<
 		WorkflowEngineDispatcherOptions["captureDeadExecutionActivityBaseline"]
@@ -199,6 +192,16 @@ export class WorkflowEngineDispatcher {
 			: fallback;
 	}
 
+	private reworkThresholdMs(
+		name: "FLYWHEEL_ENGINE_REWORK_ALERT_MS" | "FLYWHEEL_ENGINE_REWORK_HOLD_MS",
+		fallback: number,
+	): number {
+		const configured = Number(this.env[name]);
+		return Number.isFinite(configured) && configured > 0
+			? configured
+			: fallback;
+	}
+
 	private probeTerminalLaunchLiveness(
 		executionId: string,
 		projectName: string,
@@ -230,6 +233,8 @@ export class WorkflowEngineDispatcher {
 			options.probeLaunchLiveness ?? probeGeneralizedLaunchLiveness;
 		this.probeUnlaunchedExternalEvidence =
 			options.probeUnlaunchedExternalEvidence ?? (async () => "unknown");
+		this.cleanupUnlaunchedWorkflowWindow =
+			options.cleanupUnlaunchedWorkflowWindow ?? (async () => "unknown");
 		this.captureDeadExecutionActivityBaseline =
 			options.captureDeadExecutionActivityBaseline ??
 			((executionId, projectName, sessionCommitCount) =>
@@ -285,6 +290,7 @@ export class WorkflowEngineDispatcher {
 		const result = { started: 0, held: 0 };
 		try {
 			await this.reconcileWorkflowEngineAlerts();
+			await this.reconcileAdmissionPauseAlert();
 			this.reconcileWorkflowDivergence();
 			await this.reconcileDeadExecutionTripwires();
 			if (this.deadExecutionSweepEnabled()) {
@@ -345,6 +351,40 @@ export class WorkflowEngineDispatcher {
 		} finally {
 			this.reconciling = false;
 		}
+	}
+
+	private async reconcileAdmissionPauseAlert(): Promise<void> {
+		const sink = this.alertSink?.current;
+		if (!sink) return;
+		const now = this.now();
+		const claim = this.options.store.claimAdmissionPauseAlert({
+			now: now.toISOString(),
+			minAgeMs: 5 * 60_000,
+		});
+		if (!claim) return;
+		let sent = false;
+		try {
+			const result = await sink.alert({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				eventId: `admission-pause:${claim.set_at}`,
+				eventType: "workflow_engine_escalation",
+				severity: "severe",
+				sessionKey: `admission-pause:${claim.set_at}`,
+				title: "Runner admission pause has remained active for 5 minutes",
+				body: `The operator admission brake set by ${claim.set_by} is still active. It expires at ${claim.paused_until}. Check the restart/deploy before resuming it.`,
+			});
+			sent = result.sent === true || result.queued === true;
+		} catch (error) {
+			this.log(
+				`admission pause alert held: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		this.options.store.finishAdmissionPauseAlert({
+			setAt: claim.set_at,
+			outcome: sent ? "sent" : "failed",
+			now: this.now().toISOString(),
+		});
 	}
 
 	private async reconcileWorkflowShipReady(): Promise<void> {
@@ -706,6 +746,7 @@ export class WorkflowEngineDispatcher {
 		try {
 			deliveries = this.options.store.listWorkflowReworkDeliveries({
 				states: ["pending", "turn_granted", "held"],
+				now: this.now().toISOString(),
 			});
 		} catch (error) {
 			result.held += 1;
@@ -880,12 +921,12 @@ export class WorkflowEngineDispatcher {
 	private reconcileWorkflowReworkStalls(): void {
 		const now = this.now();
 		const nowMs = now.getTime();
-		const alertMs = this.unlaunchedThresholdMs(
-			"FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS",
-			10 * 60_000,
+		const alertMs = this.reworkThresholdMs(
+			"FLYWHEEL_ENGINE_REWORK_ALERT_MS",
+			30 * 60_000,
 		);
-		const holdMs = this.unlaunchedThresholdMs(
-			"FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS",
+		const holdMs = this.reworkThresholdMs(
+			"FLYWHEEL_ENGINE_REWORK_HOLD_MS",
 			60 * 60_000,
 		);
 		let deliveries: ReturnType<
@@ -900,6 +941,9 @@ export class WorkflowEngineDispatcher {
 			return;
 		}
 		for (const delivery of deliveries) {
+			// Retryable failures have their own 1/2/4/8-minute budget and terminal
+			// fifth strike. The legacy stall clock must not race that owner.
+			if (delivery.hold_count > 0) continue;
 			const request = this.options.store.getWorkflowReworkRequest(
 				delivery.request_id,
 			);
@@ -1087,16 +1131,54 @@ export class WorkflowEngineDispatcher {
 		}
 	}
 
+	private persistedUnlaunchedWindow(
+		executionId: string,
+	):
+		| { status: "none" }
+		| { status: "incomplete" }
+		| { status: "exact"; identity: WorkflowLaunchWindowIdentity } {
+		const rawParams =
+			this.options.store.getSession(executionId)?.session_params;
+		if (!rawParams) return { status: "none" };
+		try {
+			const params = JSON.parse(rawParams) as Record<string, unknown>;
+			if (!("pane_loss_generation" in params)) return { status: "none" };
+		} catch {
+			return { status: "incomplete" };
+		}
+		const parsed = parsePaneLossGenerationParams(rawParams);
+		if (
+			!parsed?.window_id ||
+			parsed.execution_id !== executionId ||
+			parsed.launch_generation === undefined ||
+			!parsed.launch_fingerprint ||
+			!/^([a-f0-9]{64})$/i.test(parsed.launch_fingerprint)
+		) {
+			return { status: "incomplete" };
+		}
+		return {
+			status: "exact",
+			identity: {
+				socketPath: parsed.socket_path,
+				serverStartTime: parsed.server_start_time,
+				windowId: parsed.window_id,
+				executionId,
+				launchGeneration: parsed.launch_generation,
+				launchFingerprint: parsed.launch_fingerprint,
+			},
+		};
+	}
+
 	private async reconcileUnlaunchedWorkflowStalls(): Promise<void> {
 		const store = this.options.store;
 		const nowMs = this.now().getTime();
 		const alertMs = this.unlaunchedThresholdMs(
 			"FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS",
-			10 * 60_000,
+			5 * 60_000,
 		);
 		const rollbackMs = this.unlaunchedThresholdMs(
 			"FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS",
-			60 * 60_000,
+			10 * 60_000,
 		);
 		for (const intent of store.listNonTerminalWorkflowSideEffects()) {
 			if (intent.kind !== "dispatch" || intent.state !== "intent_recorded") {
@@ -1183,11 +1265,23 @@ export class WorkflowEngineDispatcher {
 				});
 				continue;
 			}
+			const preciseWindow = this.persistedUnlaunchedWindow(intent.execution_id);
+			if (preciseWindow.status === "incomplete") {
+				this.escalateUnlaunchedStall({
+					intent,
+					action: "hold",
+					sourceAt,
+					reason: "precise_window_identity_incomplete",
+					projectName: run.project_name,
+					issueId: run.issue_id,
+				});
+				continue;
+			}
 			const externalBeforeFence = await this.probeUnlaunchedEvidence(
 				intent.execution_id,
 				run.project_name,
 			);
-			if (externalBeforeFence !== "absent") {
+			if (preciseWindow.status === "none" && externalBeforeFence !== "absent") {
 				this.escalateUnlaunchedStall({
 					intent,
 					action: "hold",
@@ -1221,12 +1315,39 @@ export class WorkflowEngineDispatcher {
 				}
 				continue;
 			}
+			let preciseWindowEvidence:
+				| (WorkflowLaunchWindowIdentity & {
+						physicalEvidence: "absent" | "cleaned";
+				  })
+				| undefined;
+			if (preciseWindow.status === "exact") {
+				const cleanup = await this.cleanupUnlaunchedWorkflowWindow(
+					preciseWindow.identity,
+				);
+				if (cleanup !== "absent" && cleanup !== "cleaned") {
+					this.escalateUnlaunchedStall({
+						intent,
+						action: "hold",
+						sourceAt,
+						reason: `precise_window_cleanup_${cleanup}`,
+						projectName: run.project_name,
+						issueId: run.issue_id,
+					});
+					continue;
+				}
+				preciseWindowEvidence = {
+					...preciseWindow.identity,
+					physicalEvidence: cleanup,
+				};
+			}
 			const externalAfterFence = existsSync(markerPath)
 				? "present"
-				: await this.probeUnlaunchedEvidence(
-						intent.execution_id,
-						run.project_name,
-					);
+				: preciseWindowEvidence
+					? "absent"
+					: await this.probeUnlaunchedEvidence(
+							intent.execution_id,
+							run.project_name,
+						);
 			if (externalAfterFence !== "absent") {
 				this.escalateUnlaunchedStall({
 					intent,
@@ -1247,6 +1368,7 @@ export class WorkflowEngineDispatcher {
 				fenceGeneration: cancellation.generation,
 				markerPath,
 				now: this.now().toISOString(),
+				...(preciseWindowEvidence && { preciseWindowEvidence }),
 				alertIdentity: this.resolveRunAlertIdentity(
 					run.project_name,
 					run.issue_id,
@@ -1378,6 +1500,26 @@ export class WorkflowEngineDispatcher {
 							node.attempt,
 						)
 					) {
+						continue;
+					}
+					if (session?.status === "completed") {
+						const held = store.holdCompletedWorkflowExecutionWithoutReceipt({
+							runId: run.run_id,
+							nodeId: workflowNode.id,
+							attempt: node.attempt,
+							executionId: node.execution_id,
+							alertIdentity: this.resolveRunAlertIdentity(
+								run.project_name,
+								run.issue_id,
+								run.run_id,
+							),
+							now: this.now().toISOString(),
+						});
+						if (!held.ok) {
+							this.log(
+								`workflow engine completion-receipt hold refused for ${node.execution_id}: ${held.reason}`,
+							);
+						}
 						continue;
 					}
 					const launches = store
@@ -1773,11 +1915,16 @@ export class WorkflowEngineDispatcher {
 		const startReservation = store.getWorkflowStartReservationForRun(
 			intent.run_id,
 		);
+		const isRootDesignFirstAttempt =
+			node.type === "design" &&
+			intent.attempt === 1 &&
+			!snapshot.manifest.edges.some((edge) => edge.to === node.id);
 		const startRetryExecutionId =
 			!transition &&
 			startReservation?.node_id === intent.node_id &&
 			startReservation.attempt === intent.attempt &&
-			startReservation.execution_id === transitionExecutionId
+			startReservation.execution_id === transitionExecutionId &&
+			transitionExecutionId !== intent.execution_id
 				? transitionExecutionId
 				: undefined;
 		const predecessorExecutionId =
@@ -1812,19 +1959,24 @@ export class WorkflowEngineDispatcher {
 			: agentContent;
 		let startPoint: string | undefined;
 		if (isThreeStagePhaseRole(node.type)) {
-			if (!predecessorExecutionId || !predecessor) {
+			if (
+				!isRootDesignFirstAttempt &&
+				(!predecessorExecutionId || !predecessor)
+			) {
 				throw new Error("engine_predecessor_unavailable");
 			}
-			startPoint = (
-				await this.resolvePredecessorHead(
-					predecessorExecutionId,
-					run.project_name,
+			if (predecessorExecutionId) {
+				startPoint = (
+					await this.resolvePredecessorHead(
+						predecessorExecutionId,
+						run.project_name,
+					)
 				)
-			)
-				.trim()
-				.toLowerCase();
-			if (!/^[0-9a-f]{40}$/.test(startPoint)) {
-				throw new Error("engine_predecessor_head_invalid");
+					.trim()
+					.toLowerCase();
+				if (!/^[0-9a-f]{40}$/.test(startPoint)) {
+					throw new Error("engine_predecessor_head_invalid");
+				}
 			}
 		} else if (node.type === "review") {
 			const predecessorIds = new Set(
@@ -1854,7 +2006,7 @@ export class WorkflowEngineDispatcher {
 			}
 		}
 		const now = this.now();
-		const credentialExpiry = credentialExpiryForNode(snapshot, node.id, now);
+		const credentialExpiry = credentialWindowForNode(snapshot, node.id, now);
 		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 			runId: intent.run_id,
 			nodeId: intent.node_id,
@@ -1865,6 +2017,10 @@ export class WorkflowEngineDispatcher {
 		)
 			? intent.reason.slice("rework_replacement:".length)
 			: undefined;
+		const admission = this.options.admissionProbe?.();
+		if (admission && !admission.admit) {
+			throw new Error(`engine_admission_${admission.reason}`);
+		}
 		const admitted = store.admitGeneralizedWorkflowExecution({
 			runId: intent.run_id,
 			nodeId: intent.node_id,
@@ -1908,7 +2064,9 @@ export class WorkflowEngineDispatcher {
 			executionId: intent.execution_id,
 			ownerId,
 			now: now.toISOString(),
-			leaseExpiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+			leaseExpiresAt: new Date(
+				now.getTime() + WORKFLOW_LAUNCH_SOFT_LEASE_MS,
+			).toISOString(),
 			markerPath,
 		});
 		if (
@@ -1918,7 +2076,11 @@ export class WorkflowEngineDispatcher {
 		)
 			return false;
 		let launchGateToken: string;
+		let launchGeneration: number;
 		let commitWorkflowLaunch: () => { ok: boolean; reason?: string };
+		let launchReleaseFence:
+			| { ownerId: string; generation: number; markerPath: string }
+			| undefined;
 		let deliveryRepair:
 			| { generation: number; attempt: number; ownerId: string }
 			| undefined;
@@ -1946,6 +2108,7 @@ export class WorkflowEngineDispatcher {
 				ownerId,
 			};
 			launchGateToken = repair.token;
+			launchGeneration = repair.generation;
 			commitWorkflowLaunch = () =>
 				store.commitWorkflowLaunchDeliveryRepair({
 					executionId: intent.execution_id,
@@ -1957,6 +2120,12 @@ export class WorkflowEngineDispatcher {
 				});
 		} else {
 			launchGateToken = launch.token;
+			launchGeneration = launch.generation;
+			launchReleaseFence = {
+				ownerId,
+				generation: launch.generation,
+				markerPath,
+			};
 			commitWorkflowLaunch = () =>
 				store.fencedCommitWorkflowLaunch({
 					executionId: intent.execution_id,
@@ -1971,7 +2140,7 @@ export class WorkflowEngineDispatcher {
 		let submissionCredential = admitted.submissionCredential;
 		const decisionContract = resolveWorkflowDecisionContract(snapshot, node.id);
 		if (admitted.idempotentReplay && launch.status === "acquired") {
-			const { expiresAt, absoluteDeadlineAt } = credentialExpiryForNode(
+			const { expiresAt, absoluteDeadlineAt } = credentialWindowForNode(
 				snapshot,
 				node.id,
 				now,
@@ -2005,7 +2174,7 @@ export class WorkflowEngineDispatcher {
 				submissionCredential = rotated.submissionCredential;
 			}
 		} else if (deliveryRepair) {
-			const { expiresAt, absoluteDeadlineAt } = credentialExpiryForNode(
+			const { expiresAt, absoluteDeadlineAt } = credentialWindowForNode(
 				snapshot,
 				node.id,
 				now,
@@ -2046,57 +2215,110 @@ export class WorkflowEngineDispatcher {
 			}
 		}
 		const role = isThreeStagePhaseRole(node.type) ? node.type : "main";
-		await this.options.startDispatcher.start({
-			issueId: run.issue_id,
-			issueIdentifier: run.issue_id,
-			projectName: run.project_name,
-			successorExecutionId: intent.execution_id,
-			...(leadId && { leadId }),
-			sessionRole: role,
-			shareParentBranch: isThreeStagePhaseRole(node.type) ? true : undefined,
-			...(startPoint && { startPoint }),
-			ignoreRunnerLabelSelection: true,
-			...(predecessor?.issue_identifier && {
-				issueIdentifier: predecessor.issue_identifier,
-			}),
-			...(predecessor?.issue_title && { issueTitle: predecessor.issue_title }),
-			...(predecessor?.design_backend && {
-				designBackend: predecessor.design_backend,
-			}),
-			...(predecessor?.doc_tier === "full" ||
-			predecessor?.doc_tier === "plan_only" ||
-			predecessor?.doc_tier === "none"
-				? { docTier: predecessor.doc_tier }
-				: {}),
-			...(predecessor?.issue_url && { issueUrl: predecessor.issue_url }),
-			...(phaseFixContext && { phaseFixContext }),
-			...(predecessor?.codex_skip !== undefined && {
-				codexSkip: predecessor.codex_skip,
-			}),
-			// FLY-1372 §2.5: propagate the founder-ux snapshot hop-by-hop — the
-			// successor session row must carry it (via the emitStarted seam) or
-			// hop-2 would copy nothing and the gate would misread the run.
-			...(predecessor?.founder_facing_ux !== undefined && {
-				founderFacingUx: !!predecessor.founder_facing_ux,
-			}),
-			generalizedExecution: {
-				engineOwned: true,
-				executionId: intent.execution_id,
-				runId: intent.run_id,
-				nodeId: intent.node_id,
-				attempt: intent.attempt,
-				snapshotDigest: snapshot.snapshot_digest,
-				gateCarrierEpoch: run.gate_carrier_epoch,
-				dispatch: runtimeDispatch,
-				capabilities: { ...node.capabilities },
-				agentContent: contextualAgentContent,
-				outputCredential,
-				submissionCredential,
-				idempotencyKey: `engine:${intent.run_id}:${intent.node_id}:${intent.attempt}`,
-				launchGateToken,
-				commitWorkflowLaunch,
-			},
-		});
+		let startResult: StartResult;
+		try {
+			startResult = await this.options.startDispatcher.start({
+				issueId: run.issue_id,
+				issueIdentifier: run.issue_id,
+				projectName: run.project_name,
+				successorExecutionId: intent.execution_id,
+				...(leadId && { leadId }),
+				sessionRole: role,
+				shareParentBranch: isThreeStagePhaseRole(node.type) ? true : undefined,
+				...(startPoint && { startPoint }),
+				ignoreRunnerLabelSelection: true,
+				...(predecessor?.issue_identifier && {
+					issueIdentifier: predecessor.issue_identifier,
+				}),
+				...(predecessor?.issue_title && {
+					issueTitle: predecessor.issue_title,
+				}),
+				...(predecessor?.design_backend && {
+					designBackend: predecessor.design_backend,
+				}),
+				...(predecessor?.doc_tier === "full" ||
+				predecessor?.doc_tier === "plan_only" ||
+				predecessor?.doc_tier === "none"
+					? { docTier: predecessor.doc_tier }
+					: {}),
+				...(predecessor?.issue_url && { issueUrl: predecessor.issue_url }),
+				...(phaseFixContext && { phaseFixContext }),
+				...(predecessor?.codex_skip !== undefined && {
+					codexSkip: predecessor.codex_skip,
+				}),
+				// FLY-1372 §2.5: propagate the founder-ux snapshot hop-by-hop — the
+				// successor session row must carry it (via the emitStarted seam) or
+				// hop-2 would copy nothing and the gate would misread the run.
+				...(predecessor?.founder_facing_ux !== undefined && {
+					founderFacingUx: !!predecessor.founder_facing_ux,
+				}),
+				generalizedExecution: {
+					engineOwned: true,
+					executionId: intent.execution_id,
+					runId: intent.run_id,
+					nodeId: intent.node_id,
+					attempt: intent.attempt,
+					snapshotDigest: snapshot.snapshot_digest,
+					gateCarrierEpoch: run.gate_carrier_epoch,
+					dispatch: runtimeDispatch,
+					capabilities: { ...node.capabilities },
+					agentContent: contextualAgentContent,
+					outputCredential,
+					submissionCredential,
+					idempotencyKey: `engine:${intent.run_id}:${intent.node_id}:${intent.attempt}`,
+					launchGateToken,
+					launchGeneration,
+					commitWorkflowLaunch,
+				},
+			});
+		} catch (error) {
+			if (launchReleaseFence) {
+				store.releaseFailedWorkflowLaunch({
+					executionId: intent.execution_id,
+					ownerId: launchReleaseFence.ownerId,
+					generation: launchReleaseFence.generation,
+					markerPath: launchReleaseFence.markerPath,
+					now: this.now().toISOString(),
+					reason: `dispatcher_start_failed:${error instanceof Error ? error.message : String(error)}`,
+					physicalEvidence: "absent",
+				});
+			}
+			return false;
+		}
+		if (startResult.launchOutcome && launchReleaseFence) {
+			const outcome = await waitForWorkflowLaunchOutcome({
+				outcome: startResult.launchOutcome,
+				heartbeat: () => {
+					const heartbeatNow = this.now();
+					store.renewWorkflowLaunchOwner({
+						executionId: intent.execution_id,
+						ownerId: launchReleaseFence!.ownerId,
+						generation: launchReleaseFence!.generation,
+						now: heartbeatNow.toISOString(),
+						leaseExpiresAt: new Date(
+							heartbeatNow.getTime() + WORKFLOW_LAUNCH_SOFT_LEASE_MS,
+						).toISOString(),
+					});
+				},
+			});
+			if (!outcome || outcome.status === "precommit_failed") {
+				if (
+					outcome?.status === "precommit_failed" &&
+					outcome.failure.physicalEvidence !== "unknown"
+				) {
+					store.releaseFailedWorkflowLaunch({
+						executionId: intent.execution_id,
+						ownerId: launchReleaseFence.ownerId,
+						generation: launchReleaseFence.generation,
+						markerPath: launchReleaseFence.markerPath,
+						now: this.now().toISOString(),
+						reason: outcome.failure.reason,
+						physicalEvidence: outcome.failure.physicalEvidence,
+					});
+				}
+				return false;
+			}
+		}
 		let delivered = await waitForGeneralizedLaunchDelivery(
 			store,
 			intent.execution_id,

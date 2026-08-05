@@ -94,6 +94,9 @@ export interface EventEnvelope {
 export interface WorktreeBindingInfo {
 	branch: string;
 	generation: string;
+	/** Bridge-local immutable no-artifact baseline; HTTP emitters discard it. */
+	repoBaselineSetJson?: string;
+	repoBaselineSetDigest?: string;
 }
 
 export interface ExecutionEventEmitter {

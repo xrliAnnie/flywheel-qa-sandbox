@@ -16,7 +16,10 @@ import {
 	resolveMenuOverrides,
 	WorkflowMenuValidationError,
 } from "../workflow-menu.js";
-import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
+import {
+	buildWorkflowRunSnapshotV2,
+	resolveWorkflowGateAuthority,
+} from "../workflow-run-snapshot.js";
 import { importBundledWorkflowSeeds } from "../workflow-template.js";
 import { resolveWorkflowTemplateSelection } from "../workflow-template-selection.js";
 
@@ -237,6 +240,22 @@ describe("founder-approved workflow menu source", () => {
 				expect(node.role).toBeTruthy();
 				expect(node.agent_file).toBeUndefined();
 			}
+		}
+	});
+
+	it("resolves coherent gate authority for every compiled menu snapshot", () => {
+		for (const menu of loadWorkflowMenuLibrary()) {
+			const seed = compileWorkflowMenuSeed(menu);
+			const snapshot = buildWorkflowRunSnapshotV2({
+				template: { id: seed.templateId, revision: 1 },
+				manifest: seed.manifest,
+				canonicalRoot: REPO_ROOT,
+			});
+
+			expect(
+				() => resolveWorkflowGateAuthority(snapshot),
+				menu.shape,
+			).not.toThrow();
 		}
 	});
 

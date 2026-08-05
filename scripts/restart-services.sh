@@ -90,6 +90,7 @@ LEADS_RESTART_STATUS_FILE="${HOME}/.flywheel/leads-restart-status.json"
 MAX_WAIT_SECONDS="${RESTART_MAX_WAIT:-300}"   # 5 minutes default (env override: RESTART_MAX_WAIT)
 POLL_INTERVAL=30        # seconds between idle checks
 BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
+ADMISSION_PAUSE_SECONDS="${FLYWHEEL_RESTART_ADMISSION_PAUSE_SECONDS:-1800}"
 LEAD_STOP_WAIT_SECONDS="${RESTART_LEAD_STOP_WAIT_SECONDS:-60}"
 LEAD_QUIESCENCE_ATTEMPTS="${RESTART_LEAD_QUIESCENCE_ATTEMPTS:-30}"
 LEAD_QUIESCENCE_INTERVAL="${RESTART_LEAD_QUIESCENCE_INTERVAL:-1}"
@@ -115,6 +116,10 @@ if [[ ! "$LEAD_VERIFY_INTERVAL" =~ ^[0-9]+$ ]]; then
     echo "[restart] WARNING: invalid RESTART_LEAD_VERIFY_INTERVAL; using 2" >&2
     LEAD_VERIFY_INTERVAL=2
 fi
+if [[ ! "$ADMISSION_PAUSE_SECONDS" =~ ^[1-9][0-9]*$ ]] || (( ADMISSION_PAUSE_SECONDS > 3600 )); then
+    echo "[restart] WARNING: invalid FLYWHEEL_RESTART_ADMISSION_PAUSE_SECONDS; using 1800" >&2
+    ADMISSION_PAUSE_SECONDS=1800
+fi
 
 # ════════════════════════════════════════════════════════════════
 # Env loading
@@ -137,6 +142,43 @@ fi
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart] $*"
+}
+
+# FLY-1638: authenticated Bridge admission brake. The token rides curl's
+# stdin config and therefore never appears in argv/process listings.
+bridge_admission_request() {
+    local action="$1" payload="$2" token="${TEAMLEAD_API_TOKEN:-}"
+    [[ -n "$token" ]] || return 1
+    curl -sf -X POST "${BRIDGE_URL}/api/admission/${action}" \
+        -H "Content-Type: application/json" \
+        -d "$payload" --max-time 5 -K - >/dev/null <<CURLCFG
+header = "Authorization: Bearer ${token}"
+CURLCFG
+}
+
+pause_admission_best_effort() {
+    local payload
+    payload=$(jq -n \
+        --argjson durationSeconds "$ADMISSION_PAUSE_SECONDS" \
+        --arg reason "restart-services:${RESTART_REASON}" \
+        '{durationSeconds: $durationSeconds, reason: $reason}')
+    if bridge_admission_request pause "$payload"; then
+        log "Bridge admission paused for ${ADMISSION_PAUSE_SECONDS}s"
+    else
+        # Bootstrap compatibility: the pre-feature Bridge answers 404. Phase 1
+        # is intentionally best-effort; TTL protects pause-aware versions.
+        log "WARNING: admission pause unavailable (pre-feature Bridge or control API failure), proceeding without brake"
+    fi
+    return 0
+}
+
+resume_admission_best_effort() {
+    if bridge_admission_request resume '{}'; then
+        log "Bridge admission resumed"
+    else
+        log "WARNING: admission resume unavailable; TTL will release the brake"
+    fi
+    return 0
 }
 
 file_mtime_epoch() {
@@ -1616,6 +1658,7 @@ rollback_and_restart() {
     if pnpm -C "$FLYWHEEL_DIR" install --frozen-lockfile && \
        pnpm -C "$FLYWHEEL_DIR" build; then
         if [[ "$restart_bridge" == "true" ]]; then
+            pause_admission_best_effort
             # FLY-516 (Codex R1 HIGH): stop_bridge is now fail-closed (returns 1 on
             # a stuck port). Guard the bare call — under `set -e` an unguarded
             # non-zero would abort the rollback silently. If the port can't be
@@ -1628,6 +1671,7 @@ rollback_and_restart() {
                 return 1
             fi
             start_bridge
+            resume_admission_best_effort
         fi
         local rb_leads_failed=0
         if [[ "$restart_all_leads" == "true" ]]; then
@@ -1670,6 +1714,12 @@ deploy_and_verify() {
     RESTART_NOTICE_STARTED=true
     notify_routine "🔄 开始全量重启 Flywheel (reason=${RESTART_REASON}): \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`"
 
+    # Step 0: reject new admissions before the Bridge begins draining. This runs
+    # inside the detached deploy body, never in the self-detaching parent.
+    if [[ "$restart_bridge" == "true" ]]; then
+        pause_admission_best_effort
+    fi
+
     # Step 1: Stop Bridge FIRST (triggers stopAccepting + drain)
     # FLY-516 (Codex R1 HIGH): fail-closed — if the old Bridge's port can't be
     # freed, abort BEFORE start_bridge + the /health check (which would otherwise
@@ -1677,6 +1727,7 @@ deploy_and_verify() {
     # alerted; do NOT advance deployed-sha.
     if [[ "$restart_bridge" == "true" ]]; then
         if ! stop_bridge; then
+            resume_admission_best_effort
             log "ERROR: stop_bridge failed to free the port — aborting deploy (deployed-sha NOT advanced)."
             alert_severe "deploy-port-stuck" "Flywheel deploy aborted" \
                 "Flywheel 部署中止: Bridge 端口未能释放,新 Bridge 无法 bind。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
@@ -1730,6 +1781,7 @@ deploy_and_verify() {
             return 1
         fi
         log "Bridge health check: OK"
+        resume_admission_best_effort
     fi
 
     # Step 4: Restart Leads (after Bridge is confirmed healthy)

@@ -376,6 +376,104 @@ export async function probeTmuxServerStartTime(
 	}
 }
 
+export interface WorkflowTmuxWindowIdentity {
+	socketPath: string;
+	serverStartTime: string;
+	windowId: string;
+	executionId: string;
+	launchGeneration: number;
+	launchFingerprint: string;
+}
+
+export type WorkflowTmuxWindowCleanupResult =
+	| "absent"
+	| "cleaned"
+	| "present"
+	| "unknown";
+
+/**
+ * Fence-time cleanup for an uncommitted workflow launch. Every persisted and
+ * window-published identity component must agree before the exact window id is
+ * killed. A superseded tmux server generation proves the old window absent;
+ * every malformed or operationally indeterminate observation fails closed.
+ */
+export async function cleanupExactWorkflowTmuxWindow(
+	identity: WorkflowTmuxWindowIdentity,
+	runTmux: TmuxRunner = defaultTmuxRunner,
+): Promise<WorkflowTmuxWindowCleanupResult> {
+	if (
+		!identity.socketPath ||
+		/[\0\r\n]/.test(identity.socketPath) ||
+		!/^[0-9]+$/.test(identity.serverStartTime) ||
+		!/^@\d+$/.test(identity.windowId) ||
+		!identity.executionId ||
+		/[\t\r\n]/.test(identity.executionId) ||
+		!Number.isInteger(identity.launchGeneration) ||
+		identity.launchGeneration < 1 ||
+		!/^([a-f0-9]{64})$/i.test(identity.launchFingerprint)
+	) {
+		return "unknown";
+	}
+	const run = async (args: string[]) => {
+		try {
+			return { ok: true as const, ...(await runTmux(args)) };
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return {
+				ok: false as const,
+				message,
+				absent: isTmuxAbsenceMessage(message),
+			};
+		}
+	};
+	const server = await run([
+		"-S",
+		identity.socketPath,
+		"display-message",
+		"-p",
+		"#{start_time}",
+	]);
+	if (!server.ok) return server.absent ? "absent" : "unknown";
+	const currentStartTime = server.stdout.trim();
+	if (!/^[0-9]+$/.test(currentStartTime)) return "unknown";
+	if (currentStartTime !== identity.serverStartTime) return "absent";
+
+	const inspectArgs = [
+		"-S",
+		identity.socketPath,
+		"display-message",
+		"-p",
+		"-t",
+		identity.windowId,
+		"#{window_id}\t#{@flywheel_exec_id}\t#{@flywheel_launch_generation}\t#{@flywheel_launch_fingerprint}",
+	];
+	const before = await run(inspectArgs);
+	if (!before.ok) return before.absent ? "absent" : "unknown";
+	const [windowId, executionId, rawGeneration, fingerprint, ...extra] =
+		before.stdout.trim().split("\t");
+	if (
+		extra.length > 0 ||
+		windowId !== identity.windowId ||
+		executionId !== identity.executionId ||
+		rawGeneration !== String(identity.launchGeneration) ||
+		fingerprint !== identity.launchFingerprint
+	) {
+		return "present";
+	}
+
+	const killed = await run([
+		"-S",
+		identity.socketPath,
+		"kill-window",
+		"-t",
+		identity.windowId,
+	]);
+	if (!killed.ok && !killed.absent) return "unknown";
+	const after = await run(inspectArgs);
+	if (!after.ok) return after.absent ? "cleaned" : "unknown";
+	return "present";
+}
+
 /**
  * Tri-state per-window liveness (FLY-245 D2, Codex code-review R1 HIGH-4):
  *   - `alive`         — `list-panes` succeeded;

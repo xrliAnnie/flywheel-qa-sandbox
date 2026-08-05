@@ -14,6 +14,7 @@ import {
 	resolveCompletionSessionRole,
 	type SkillFrameworkMode,
 	type SkillFrameworkVia,
+	verifyRepositoryBaselineSet,
 } from "flywheel-config";
 import type { TerminalFailureInfo } from "flywheel-core";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
@@ -730,7 +731,15 @@ export function createEventRouter(
 							workflowActivation.activationId,
 						)
 					: store.getGeneralizedWorkflowNodeForExecution(event.execution_id);
+				const completionRoute = asString(decision?.route) ?? "";
 				let completionHead = callerCompletionHead;
+				let noCodeAttestation:
+					| {
+							worktreeBindingGeneration: string;
+							baselineDigest: string;
+							currentDigest: string;
+					  }
+					| undefined;
 				let prBinding:
 					| {
 							prNumber: number;
@@ -767,6 +776,28 @@ export function createEventRouter(
 						return;
 					}
 					const worktreeBinding = store.getWorktreeBinding(event.execution_id);
+					if (
+						completionRoute === "no_code" &&
+						worktreeBinding?.repoBaselineSetJson &&
+						worktreeBinding.repoBaselineSetDigest
+					) {
+						const verified = verifyRepositoryBaselineSet({
+							authorityRoot: worktreeBinding.path,
+							baselineJson: worktreeBinding.repoBaselineSetJson,
+							baselineDigest: worktreeBinding.repoBaselineSetDigest,
+						});
+						if (verified.ok) {
+							noCodeAttestation = {
+								worktreeBindingGeneration: worktreeBinding.generation,
+								baselineDigest: worktreeBinding.repoBaselineSetDigest,
+								currentDigest: verified.currentDigest,
+							};
+						} else {
+							console.warn(
+								`[event-route] no_code repository proof refused for ${event.execution_id}: ${verified.reason}`,
+							);
+						}
+					}
 					if (worktreeBinding) {
 						try {
 							const authority = await resolveBoundRepositoryAuthority({
@@ -860,12 +891,13 @@ export function createEventRouter(
 				}
 				const completion = store.commitEnrolledCompletion({
 					executionId: event.execution_id,
-					route: asString(decision?.route) ?? "",
+					route: completionRoute,
 					sourceEventId: event.event_id,
 					completionSubmission: event.payload ?? {},
 					...(completionHead ? { subjectDigest: completionHead } : {}),
 					...(workflowActivation ? { workflowActivation } : {}),
 					...(prBinding ? { prBinding } : {}),
+					...(noCodeAttestation ? { noCodeAttestation } : {}),
 					alertIdentity,
 				});
 				if (

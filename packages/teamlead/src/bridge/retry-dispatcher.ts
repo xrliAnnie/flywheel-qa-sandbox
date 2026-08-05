@@ -11,6 +11,7 @@ import type {
 	RoleEffort,
 	SkillFrameworkMode,
 } from "flywheel-config";
+import type { LaunchPrecommitOutcome } from "flywheel-core";
 import type { QaContext } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { WorkflowShadowContext } from "./workflow-shadow-writer.js";
 
@@ -37,6 +38,8 @@ export interface GeneralizedExecutionDispatch {
 	idempotencyKey: string;
 	launchGateToken?: string;
 	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
+	/** Current launch-owner generation, used to bind physical tmux identity. */
+	launchGeneration?: number;
 }
 
 export interface RetryRequest {
@@ -325,6 +328,8 @@ export interface StartRequest {
 export interface StartResult {
 	executionId: string;
 	issueId: string;
+	/** Resolves at launch commit or a proven pre-commit failure; never rejects. */
+	launchOutcome?: Promise<LaunchPrecommitOutcome>;
 }
 
 export interface IStartDispatcher {

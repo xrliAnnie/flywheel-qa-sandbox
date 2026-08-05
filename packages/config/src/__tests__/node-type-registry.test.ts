@@ -60,9 +60,10 @@ describe("generalized workflow node-type registry", () => {
 		// completion_route is "needs_review" because creates_pr makes this node a
 		// ship-bundle carrier, and resolveWorkflowGateAuthority rejects a carrier
 		// on any other route (incoherent_ship_bundle).
-		expect(getNodeTypeRegistryEntry("generic").capabilities).toEqual(
-			getNodeTypeRegistryEntry("implement").capabilities,
-		);
+		expect(getNodeTypeRegistryEntry("generic").capabilities).toEqual({
+			...getNodeTypeRegistryEntry("implement").capabilities,
+			allow_no_code_completion: true,
+		});
 		expect(getNodeTypeRegistryEntry("generic").capabilities).toMatchObject({
 			shared_branch_writer: true,
 			creates_pr: true,
@@ -79,6 +80,10 @@ describe("generalized workflow node-type registry", () => {
 		expect(
 			getNodeTypeRegistryEntry("review").capabilities.needs_review_evidence,
 		).toBe(true);
+		expect(getNodeTypeRegistryEntry("qa").submissionWindowMinutes).toBe(360);
+		expect(
+			getNodeTypeRegistryEntry("review").submissionWindowMinutes,
+		).toBeUndefined();
 	});
 
 	it("fails closed for an unknown node type", () => {

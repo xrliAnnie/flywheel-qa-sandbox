@@ -142,21 +142,22 @@ export function resolveWorkflowDecisionContract(
 export function resolveWorkflowGateAuthority(
 	snapshot: WorkflowRunSnapshot,
 ): WorkflowGateAuthority {
-	const subjectKind: WorkflowGateSubjectKind =
+	const claimSubjectKind: WorkflowGateSubjectKind =
 		snapshot.manifest.ship_claims.some((claim) => claim !== "founder_approved")
 			? "git_head"
 			: "snapshot_digest";
 	if (isWorkflowManifestV1Land(snapshot.manifest)) {
 		return { mode: "land", subjectKind: "git_head" };
 	}
-	const candidates = snapshot.resolved.nodes.filter((node) => {
+	const shipCapable = snapshot.resolved.nodes.filter((node) => {
 		const capabilities = node.capabilities;
 		return (
 			capabilities.creates_pr || capabilities.can_ship || capabilities.can_land
 		);
 	});
+	const candidates = shipCapable;
 	if (candidates.length === 0) {
-		return { mode: "engine_terminal", subjectKind };
+		return { mode: "engine_terminal", subjectKind: claimSubjectKind };
 	}
 	if (candidates.length !== 1) {
 		throw new Error("incoherent_ship_bundle");
@@ -173,12 +174,9 @@ export function resolveWorkflowGateAuthority(
 	) {
 		throw new Error("incoherent_ship_bundle");
 	}
-	if (subjectKind !== "git_head") {
-		throw new Error("incoherent_ship_bundle");
-	}
 	return {
 		mode: "runner_ship",
-		subjectKind,
+		subjectKind: "git_head",
 		carrierNodeId: carrier.id,
 	};
 }
@@ -356,10 +354,27 @@ export function buildWorkflowRunSnapshotV2(input: {
 	if (validated.schema_version !== 2) {
 		throw new Error("typed generalized snapshot requires schema_version 2");
 	}
+	const hasArtifactProducingGeneric = validated.nodes.some(
+		(node) => node.type === "generic" && node.produces_output === true,
+	);
 	const resolved: ResolvedWorkflowNode[] = validated.nodes.map((node) => {
 		const registry = getNodeTypeRegistryEntry(node.type);
+		const isAuxiliaryGeneric =
+			node.type === "generic" &&
+			node.produces_output !== true &&
+			hasArtifactProducingGeneric;
 		const capabilities: WorkflowNodeCapabilities = {
 			...registry.capabilities,
+			...(isAuxiliaryGeneric
+				? {
+						creates_pr: false,
+						can_ship: false,
+						can_land: false,
+						approval_gate_holder: false,
+						needs_review_evidence: false,
+						completion_route: "no_code" as const,
+					}
+				: {}),
 			...(node.type === "generic" && node.produces_output
 				? { produces_output: true, output_mode: "json_v1" as const }
 				: {}),
@@ -438,6 +453,7 @@ const CAPABILITY_KEYS = [
 	"produces_output",
 	"completion_route",
 	"output_mode",
+	"allow_no_code_completion",
 ] as const;
 
 const LAND_CAPABILITY_KEY = "can_request_ship_approval" as const;
@@ -458,6 +474,12 @@ function parseCapabilities(
 		if (typeof raw[key] !== "boolean") {
 			throw new Error(`${path}.${key} must be boolean`);
 		}
+	}
+	if (
+		raw.allow_no_code_completion !== undefined &&
+		typeof raw.allow_no_code_completion !== "boolean"
+	) {
+		throw new Error(`${path}.allow_no_code_completion must be boolean`);
 	}
 	if (
 		landVariant &&

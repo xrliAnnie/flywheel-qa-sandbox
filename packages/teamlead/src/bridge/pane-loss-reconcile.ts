@@ -32,6 +32,10 @@ export type PaneLossNotificationClass =
 export interface PaneLossGeneration {
 	socket_path: string;
 	server_start_time: string;
+	window_id?: string;
+	execution_id?: string;
+	launch_generation?: number;
+	launch_fingerprint?: string;
 }
 
 export function parsePaneLossGenerationParams(
@@ -50,6 +54,18 @@ export function parsePaneLossGenerationParams(
 			? {
 					socket_path: record.socket_path,
 					server_start_time: record.server_start_time,
+					...(typeof record.window_id === "string" && {
+						window_id: record.window_id,
+					}),
+					...(typeof record.execution_id === "string" && {
+						execution_id: record.execution_id,
+					}),
+					...(Number.isInteger(record.launch_generation) && {
+						launch_generation: Number(record.launch_generation),
+					}),
+					...(typeof record.launch_fingerprint === "string" && {
+						launch_fingerprint: record.launch_fingerprint,
+					}),
 				}
 			: undefined;
 	} catch {
@@ -61,12 +77,32 @@ export function parsePaneLossGenerationParams(
 export function persistPaneLossGenerationCredential(
 	store: StateStore,
 	executionId: string,
-	info: { socketPath: string; serverStartTime: string },
+	info: {
+		windowId: string;
+		socketPath: string;
+		serverStartTime: string;
+		executionId: string;
+		launchGeneration?: number;
+		launchFingerprint?: string;
+	},
 ): void {
 	const before = store.getSession(executionId);
 	if (!before) throw new Error(`session ${executionId} is not registered`);
 	if (isWakeTerminalStatus(before.status)) {
 		throw new Error(`session ${executionId} is terminal (${before.status})`);
+	}
+	if (info.executionId !== executionId) {
+		throw new Error(`tmux execution identity mismatch for ${executionId}`);
+	}
+	if (info.launchGeneration !== undefined) {
+		const owner = store.getWorkflowLaunchOwner(executionId);
+		if (
+			!owner ||
+			owner.owner_generation !== info.launchGeneration ||
+			(owner.released_generation ?? 0) >= info.launchGeneration
+		) {
+			throw new Error(`workflow launch generation is stale for ${executionId}`);
+		}
 	}
 	let params: Record<string, unknown>;
 	try {
@@ -77,6 +113,14 @@ export function persistPaneLossGenerationCredential(
 	const expected: PaneLossGeneration = {
 		socket_path: info.socketPath,
 		server_start_time: info.serverStartTime,
+		window_id: info.windowId,
+		execution_id: executionId,
+		...(info.launchGeneration !== undefined && {
+			launch_generation: info.launchGeneration,
+		}),
+		...(info.launchFingerprint && {
+			launch_fingerprint: info.launchFingerprint,
+		}),
 	};
 	store.setSessionParams(executionId, {
 		...params,
@@ -202,6 +246,18 @@ function readGeneration(
 			? {
 					socket_path: record.socket_path,
 					server_start_time: record.server_start_time,
+					...(typeof record.window_id === "string" && {
+						window_id: record.window_id,
+					}),
+					...(typeof record.execution_id === "string" && {
+						execution_id: record.execution_id,
+					}),
+					...(Number.isInteger(record.launch_generation) && {
+						launch_generation: Number(record.launch_generation),
+					}),
+					...(typeof record.launch_fingerprint === "string" && {
+						launch_fingerprint: record.launch_fingerprint,
+					}),
 				}
 			: undefined;
 	} catch {
@@ -215,7 +271,13 @@ function sameGeneration(
 ): boolean {
 	return (
 		left?.socket_path === right?.socket_path &&
-		left?.server_start_time === right?.server_start_time
+		left?.server_start_time === right?.server_start_time &&
+		(left?.window_id === undefined ||
+			right?.window_id === undefined ||
+			left.window_id === right.window_id) &&
+		(left?.launch_generation === undefined ||
+			right?.launch_generation === undefined ||
+			left.launch_generation === right.launch_generation)
 	);
 }
 

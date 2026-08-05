@@ -19,6 +19,7 @@ import type {
 } from "flywheel-config";
 import {
 	BACKEND_SKILL_ASSEMBLY,
+	captureRepositoryBaselineSet,
 	DEFAULT_GATE_TIMEOUT_MS,
 	defaultAgentsSkillsDir,
 	isFounderUxGateEnabled,
@@ -42,6 +43,7 @@ import type {
 	DecisionResult,
 	ExecutionContext,
 	IAdapter,
+	LaunchPrecommitFailure,
 	TerminalFailureInfo,
 } from "flywheel-core";
 import { buildWindowLabel, cleanIssueTitle } from "flywheel-core";
@@ -111,6 +113,8 @@ export interface BlueprintResult {
 	tmuxWindow?: string;
 	durationMs?: number;
 	error?: string;
+	/** FLY-1638: typed, pre-commit-only launch failure for Bridge recovery. */
+	launchFailure?: LaunchPrecommitFailure;
 	/**
 	 * FLY-123 (Codex design review R1 #4): adapter session-resume params
 	 * (e.g. Codex `threadId`). Previously `runInner()` dropped
@@ -136,6 +140,43 @@ export interface BlueprintResult {
 	consecutiveFailures?: number;
 	/** Machine-readable failure propagated unchanged to both Bridge sinks. */
 	failure?: TerminalFailureInfo;
+}
+
+const TMUX_HOLD_KINDS = new Set([
+	"saturated",
+	"split_brain",
+	"ambiguous",
+	"unknown",
+	"rescue_failed",
+	"lock_unavailable",
+]);
+
+function isTmuxHoldKind(
+	value: unknown,
+): value is Extract<
+	LaunchPrecommitFailure,
+	{ code: "LAUNCH_TMUX_SESSION_HELD" }
+>["reason"] {
+	return typeof value === "string" && TMUX_HOLD_KINDS.has(value);
+}
+
+function isLaunchPrecommitFailure(
+	value: unknown,
+): value is LaunchPrecommitFailure {
+	if (!value || typeof value !== "object") return false;
+	const candidate = value as {
+		code?: unknown;
+		reason?: unknown;
+		physicalEvidence?: unknown;
+	};
+	return (
+		typeof candidate.code === "string" &&
+		candidate.code.startsWith("LAUNCH_") &&
+		typeof candidate.reason === "string" &&
+		(candidate.physicalEvidence === "absent" ||
+			candidate.physicalEvidence === "cleaned" ||
+			candidate.physicalEvidence === "unknown")
+	);
 }
 
 /**
@@ -440,12 +481,24 @@ export interface BlueprintContext {
 		windowId: string;
 		socketPath: string;
 		serverStartTime: string;
+		executionId: string;
+		launchGeneration?: number;
+		launchFingerprint?: string;
 	}) => void;
 	// FLY-245 R5 HIGH — durable "Runner committed to start" record (gateway-retry
 	// path only). The adapter gates the Runner on this file + writes it at the
 	// commit point; the dispatcher adopts a replay ONLY if it exists.
 	launchCommitPath?: string;
 	launchGateToken?: string;
+	launchGeneration?: number;
+	launchFingerprint?: string;
+	workflowTmuxWindowAuthority?: (candidate: {
+		windowId: string;
+		windowName: string;
+		executionId?: string;
+		launchGeneration?: number;
+		launchFingerprint?: string;
+	}) => "prune" | "keep";
 	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
 	// FLY-137 v1.27.2 — Lead override: explicit agent name; bypasses label-match dispatch
 	agentName?: string;
@@ -1338,6 +1391,24 @@ export class Blueprint {
 			// gate hangs until timeout.
 			if (this.eventEmitter && worktreeInfo) {
 				try {
+					let repositoryBaseline: { json: string; digest: string } | undefined;
+					if (
+						worktreeInfo.generation &&
+						ctx.workflowCapabilities?.allow_no_code_completion === true
+					) {
+						try {
+							repositoryBaseline = captureRepositoryBaselineSet(
+								worktreeInfo.worktreePath,
+							);
+						} catch (error) {
+							// Baseline proof is optional for launch but mandatory for no_code.
+							// A probe failure therefore preserves the core worktree binding and
+							// makes only the no-artifact exit fail closed.
+							console.warn(
+								`[Blueprint] repository baseline unavailable for ${hydrated.issueId}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					}
 					// FLY-1185 §2.1: carry the create-time binding (branch + generation).
 					// Only the bridge-local DirectEventSink turns this into StateStore
 					// authority; the HTTP client never transmits it. Empty generation
@@ -1350,6 +1421,10 @@ export class Blueprint {
 							{
 								branch: worktreeInfo.branch,
 								generation: worktreeInfo.generation,
+								...(repositoryBaseline && {
+									repoBaselineSetJson: repositoryBaseline.json,
+									repoBaselineSetDigest: repositoryBaseline.digest,
+								}),
 							},
 						);
 					} else {
@@ -1646,9 +1721,18 @@ export class Blueprint {
 					"Preserve FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL in the qa-result process exactly as injected: never use env -u and never reopen a shell that drops the runner environment. If the server reports replay_payload_mismatch, stop retrying and report both possible verdicts to your Lead; stripping the credential is forbidden.",
 				);
 			} else if (ctx.workflowCapabilities.produces_output === true) {
-				systemPromptLines.push(
-					`Before completion, write the required JSON artifact and submit it with \`node ${commCliPath} workflow-output --payload-file <absolute-json-path>\`; only after that succeeds run \`node ${commCliPath} complete --route ${completionRoute}\`.`,
-				);
+				if (
+					ctx.workflowCapabilities.creates_pr === true &&
+					completionRoute === "needs_review"
+				) {
+					systemPromptLines.push(
+						`For work that produces a PR: write the required JSON artifact, submit it with \`node ${commCliPath} workflow-output --payload-file <absolute-json-path>\`, open the PR, then run \`node ${commCliPath} complete --route needs_review --pr <NUMBER>\`. For a cancelled task or a result with no durable code/PR output, use the legal clean exit \`node ${commCliPath} complete --route no_code\` without inventing a PR number.`,
+					);
+				} else {
+					systemPromptLines.push(
+						`Before completion, write the required JSON artifact and submit it with \`node ${commCliPath} workflow-output --payload-file <absolute-json-path>\`; only after that succeeds run \`node ${commCliPath} complete --route ${completionRoute}\`.`,
+					);
+				}
 			} else if (completionRoute !== "phase_design_complete") {
 				systemPromptLines.push(
 					ctx.workflowCapabilities.creates_pr === true &&
@@ -2686,6 +2770,9 @@ export class Blueprint {
 				// FLY-245 R5: durable commit record (gates the Runner start).
 				launchCommitPath: ctx.launchCommitPath,
 				launchGateToken: ctx.launchGateToken,
+				launchGeneration: ctx.launchGeneration,
+				launchFingerprint: ctx.launchFingerprint,
+				workflowTmuxWindowAuthority: ctx.workflowTmuxWindowAuthority,
 				commitWorkflowLaunch: ctx.commitWorkflowLaunch,
 				// FLY-142 PR 1.4: forward Agent Team transport identity so
 				// TmuxAdapter.tryBuildTransportSpawnConfig() actually fires
@@ -2703,6 +2790,20 @@ export class Blueprint {
 			});
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
+			const held = err as {
+				name?: unknown;
+				kind?: unknown;
+				launchFailure?: unknown;
+			};
+			const launchFailure = isLaunchPrecommitFailure(held.launchFailure)
+				? held.launchFailure
+				: held.name === "TmuxSessionHoldError" && isTmuxHoldKind(held.kind)
+					? ({
+							code: "LAUNCH_TMUX_SESSION_HELD",
+							reason: held.kind,
+							physicalEvidence: "absent",
+						} satisfies LaunchPrecommitFailure)
+					: undefined;
 			console.error(
 				`[Blueprint] Adapter failed for ${hydrated.issueId}: ${errorMsg}`,
 			);
@@ -2710,6 +2811,7 @@ export class Blueprint {
 				success: false,
 				durationMs: Date.now() - startTime,
 				error: errorMsg,
+				...(launchFailure && { launchFailure }),
 				worktreePath: worktreeInfo?.worktreePath,
 			};
 		}

@@ -103,6 +103,18 @@ async function openRunnerShipGate(
 			sourceEventId: "complete-implement-for-helper",
 			completionSubmission: { decision: { route: "needs_review" } },
 			subjectDigest: "a".repeat(40),
+			...(options.forceUnbound
+				? {}
+				: {
+						prBinding: {
+							prNumber: 1624,
+							headSha: "a".repeat(40),
+							targetRepoIdentity: "__main__",
+							probeRepoSlug: "xrliAnnie/flywheel",
+							targetRepoPath: "/tmp/flywheel",
+							worktreeBindingGeneration: "generation-1",
+						},
+					}),
 			now: "2026-07-16T01:10:00.000Z",
 		}),
 	).toMatchObject({ ok: true });
@@ -399,6 +411,14 @@ describe("engine-owned snapshot transition transaction", () => {
 				sourceEventId: "complete-implement-1",
 				completionSubmission: { decision: { route: "needs_review" } },
 				subjectDigest: "a".repeat(40),
+				prBinding: {
+					prNumber: 1624,
+					headSha: "a".repeat(40),
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					targetRepoPath: "/tmp/flywheel",
+					worktreeBindingGeneration: "generation-1",
+				},
 				now: "2026-07-16T01:10:00.000Z",
 			}),
 		).toMatchObject({ ok: true });
@@ -454,9 +474,28 @@ describe("engine-owned snapshot transition transaction", () => {
 				sourceEventId: "complete-implement-for-gate",
 				completionSubmission: { decision: { route: "needs_review" } },
 				subjectDigest: "a".repeat(40),
+				prBinding: {
+					prNumber: 1624,
+					headSha: "a".repeat(40),
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					targetRepoPath: "/tmp/flywheel",
+					worktreeBindingGeneration: "generation-1",
+				},
 				now: "2026-07-16T01:10:00.000Z",
 			}),
 		).toMatchObject({ ok: true });
+		expect(
+			store.getCurrentWorkflowNodePrBindingForHead("run-1", "a".repeat(40)),
+		).toMatchObject({
+			node_id: "implement",
+			attempt: 1,
+			head_sha: "a".repeat(40),
+		});
+		expect(store.getSession("implement-1")).toMatchObject({
+			status: "ship_parked",
+			pr_head_sha: "a".repeat(40),
+		});
 		const qaIntent = store
 			.listWorkflowSideEffects("run-1")
 			.find((effect) => effect.node_id === "qa");
@@ -508,6 +547,14 @@ describe("engine-owned snapshot transition transaction", () => {
 			review_question_id: holder!.question_id,
 			pr_head_sha: "a".repeat(40),
 			awaiting_review_entered_at: "2026-07-16T01:15:00.000Z",
+		});
+		expect(
+			store.getWorkflowShipTargetBinding(holder!.question_id),
+		).toMatchObject({
+			run_id: "run-1",
+			frozen_head_sha: "a".repeat(40),
+			target_repo_identity: "__main__",
+			probe_repo_slug: "xrliAnnie/flywheel",
 		});
 		expect(store.listWorkflowGateHolderEvidence(holder!)).toMatchObject([
 			{
@@ -792,6 +839,27 @@ describe("engine-owned snapshot transition transaction", () => {
 			project_name: "flywheel",
 			status: "ship_parked",
 		});
+		expect(
+			store.resolveWorkflowGateCarrierRebindCanonical(
+				holder.question_id,
+				"implement-1",
+			),
+		).toBeUndefined();
+		const rebindDb = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		rebindDb.run(
+			`INSERT INTO workflow_node_pr_binding
+			   (run_id, node_id, attempt, pr_number, head_sha,
+			    target_repo_identity, probe_repo_slug, target_repo_path,
+			    worktree_binding_generation, receipt_id, bound_at)
+			 VALUES ('run-1', 'implement', 1, 1624, ?, '__main__',
+			         'xrliAnnie/flywheel', '/tmp/flywheel', 'generation-1',
+			         'late-pr-binding', '2026-07-16T01:19:00.000Z')`,
+			["a".repeat(40)],
+		);
 		const canonical = store.resolveWorkflowGateCarrierRebindCanonical(
 			holder.question_id,
 			"implement-1",
@@ -835,6 +903,14 @@ describe("engine-owned snapshot transition transaction", () => {
 			status: "awaiting_review",
 			review_question_id: holder.question_id,
 			awaiting_review_entered_at: request.now,
+		});
+		expect(
+			store.getWorkflowShipTargetBinding(holder.question_id),
+		).toMatchObject({
+			run_id: "run-1",
+			frozen_head_sha: "a".repeat(40),
+			target_repo_identity: "__main__",
+			probe_repo_slug: "xrliAnnie/flywheel",
 		});
 		expect(store.listWorkflowGateHoldersForMaterialization()).toHaveLength(1);
 		expect(
@@ -978,7 +1054,20 @@ describe("engine-owned snapshot transition transaction", () => {
 
 	it("distinguishes legacy, unavailable, and conflicting runner-ship repository authority", async () => {
 		const store = await engineRun({ gateCarrier: true });
-		const holder = await openRunnerShipGate(store);
+		const holder = await openRunnerShipGate(store, { forceUnbound: true });
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			`UPDATE workflow_gate_holder
+			    SET source_execution_id = 'implement-1',
+			        carrier_binding_state = 'bound'
+			  WHERE question_id = ?`,
+			[holder.question_id],
+		);
+		db.run("DELETE FROM workflow_alert_outbox");
 		store.upsertSession({
 			execution_id: "implement-1",
 			issue_id: "FLY-1307",
@@ -1001,11 +1090,6 @@ describe("engine-owned snapshot transition transaction", () => {
 			pr_number: 1625,
 			pr_head_sha: "a".repeat(40),
 		});
-		const db = (
-			store as unknown as {
-				db: { run(sql: string, params?: unknown[]): void };
-			}
-		).db;
 		db.run(
 			"UPDATE sessions SET pr_head_sha = ? WHERE execution_id = 'another-pr'",
 			["a".repeat(40)],
@@ -1326,7 +1410,20 @@ describe("engine-owned snapshot transition transaction", () => {
 
 	it("records legacy merge anomalies once and refuses them after a durable binding appears", async () => {
 		const store = await engineRun({ gateCarrier: true });
-		const holder = await openRunnerShipGate(store);
+		const holder = await openRunnerShipGate(store, { forceUnbound: true });
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			`UPDATE workflow_gate_holder
+			    SET source_execution_id = 'implement-1',
+			        carrier_binding_state = 'bound'
+			  WHERE question_id = ?`,
+			[holder.question_id],
+		);
+		db.run("DELETE FROM workflow_alert_outbox");
 		store.upsertSession({
 			execution_id: "implement-1",
 			issue_id: "FLY-1307",

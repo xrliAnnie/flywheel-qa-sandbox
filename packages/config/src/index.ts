@@ -183,6 +183,15 @@ export {
 	DEFAULT_PROOFSHOT_PATH_ALLOWLIST,
 	DEFAULT_PROOFSHOT_VISION_TOKEN_BUDGET,
 } from "./proofshot-defaults.js";
+export type {
+	RepositoryBaselineEntry,
+	RepositoryBaselineSeal,
+	RepositoryBaselineSet,
+} from "./repository-baseline.js";
+export {
+	captureRepositoryBaselineSet,
+	verifyRepositoryBaselineSet,
+} from "./repository-baseline.js";
 // FLY-1188 §7.3: family-aware review authority (reviewer-inversion invariant)
 export {
 	adapterTypeToFamily,

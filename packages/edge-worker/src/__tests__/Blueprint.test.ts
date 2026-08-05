@@ -828,6 +828,21 @@ describe("Blueprint", () => {
 			);
 			mkdirSync(realWorktreePath, { recursive: true });
 			execFileSync("git", ["init", "-q"], { cwd: realWorktreePath });
+			execFileSync(
+				"git",
+				[
+					"-c",
+					"user.name=Flywheel Test",
+					"-c",
+					"user.email=flywheel@example.test",
+					"commit",
+					"--allow-empty",
+					"-m",
+					"baseline",
+					"-q",
+				],
+				{ cwd: realWorktreePath },
+			);
 
 			const stubWorktreeManager = {
 				removeIfExists: vi.fn(async () => {
@@ -838,6 +853,7 @@ describe("Blueprint", () => {
 					return {
 						worktreePath: realWorktreePath,
 						branch: "feat/bp-wt-test",
+						generation: "generation-1",
 					};
 				}),
 			} as unknown as WorktreeManager;
@@ -878,7 +894,13 @@ describe("Blueprint", () => {
 			);
 
 			try {
-				await blueprint.run(makeNode(), "/project", makeContext());
+				await blueprint.run(
+					makeNode(),
+					"/project",
+					makeContext({
+						workflowCapabilities: { allow_no_code_completion: true },
+					}),
+				);
 				// Order: removeIfExists → create → emitWorktreeReady → execute
 				const createIdx = order.indexOf("worktree.create");
 				const emitIdx = order.findIndex((s) =>
@@ -893,6 +915,12 @@ describe("Blueprint", () => {
 				expect(emitter.emitWorktreeReady).toHaveBeenCalledWith(
 					expect.objectContaining({ executionId: "test-exec-id" }),
 					realWorktreePath,
+					expect.objectContaining({
+						branch: "feat/bp-wt-test",
+						generation: "generation-1",
+						repoBaselineSetJson: expect.any(String),
+						repoBaselineSetDigest: expect.any(String),
+					}),
 				);
 			} finally {
 				rmSync(realWorktreePath, { recursive: true, force: true });

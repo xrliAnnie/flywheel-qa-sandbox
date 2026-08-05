@@ -1,0 +1,18 @@
+flowchart LR
+    subgraph 链路["一条 issue 的自动化旅程"]
+        A["派活<br/>(admission)"] --> B["干活<br/>(runner 写码)"]
+        B --> C["QA 检验"]
+        C --> D["founder 批准<br/>(approve gate)"]
+        D --> E["自动合入<br/>(ship/merge)"]
+        E --> F["收尾级联<br/>(关单/归档)"]
+    end
+    F1["修复⑥ 重启前暂停接活"] -.堵住.-> A
+    F2["修复⑤ 僵尸重派根除"] -.堵住.-> B
+    F3["修复④ QA 凭证 6 小时窗"] -.堵住.-> C
+    F4["修复② 重试封顶 + ③ 防空转"] -.堵住.-> C
+    F5["修复① ship 绑定修复"] -.堵住.-> E
+    style F1 fill:#fff3e0,stroke:#ff9500
+    style F2 fill:#ffebee,stroke:#ff3b30
+    style F3 fill:#e3f2fd,stroke:#007aff
+    style F4 fill:#f3e5f5,stroke:#af52de
+    style F5 fill:#e8f5e9,stroke:#34c759

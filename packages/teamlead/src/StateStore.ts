@@ -11,9 +11,11 @@ import { dirname } from "node:path";
 import BetterSqlite3, { type Database as BetterDb } from "better-sqlite3";
 import { askHygieneEnabled } from "flywheel-comm/db";
 import {
+	canonicalJsonString,
 	canonicalSubmissionDigest,
 	crossFamilyReviewSatisfied,
 	type DesignBackend,
+	getNodeTypeRegistryEntry,
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
@@ -86,6 +88,74 @@ import { isOperationalTerminalStatus } from "./operational-terminal-status.js";
 
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
+
+/** FLY-1638: uncommitted launch owners heartbeat in short, bounded windows. */
+export const WORKFLOW_LAUNCH_SOFT_LEASE_MS = 5 * 60_000;
+export const WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS = 10 * 60_000;
+export const WORKFLOW_LAUNCH_HEARTBEAT_MS = 60_000;
+
+type StoredWorkflowLaunchWindow =
+	| { status: "none" }
+	| { status: "incomplete" }
+	| { status: "exact"; identity: WorkflowLaunchWindowIdentity };
+
+function parseStoredWorkflowLaunchWindow(
+	rawParams: string | null | undefined,
+): StoredWorkflowLaunchWindow {
+	if (!rawParams) return { status: "none" };
+	try {
+		const params = JSON.parse(rawParams) as Record<string, unknown>;
+		if (!("pane_loss_generation" in params)) return { status: "none" };
+		const raw = params.pane_loss_generation;
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+			return { status: "incomplete" };
+		}
+		const record = raw as Record<string, unknown>;
+		if (
+			typeof record.socket_path !== "string" ||
+			!record.socket_path ||
+			typeof record.server_start_time !== "string" ||
+			!/^[0-9]+$/.test(record.server_start_time) ||
+			typeof record.window_id !== "string" ||
+			!/^@\d+$/.test(record.window_id) ||
+			typeof record.execution_id !== "string" ||
+			!record.execution_id ||
+			!Number.isInteger(record.launch_generation) ||
+			Number(record.launch_generation) < 1 ||
+			typeof record.launch_fingerprint !== "string" ||
+			!/^([a-f0-9]{64})$/i.test(record.launch_fingerprint)
+		) {
+			return { status: "incomplete" };
+		}
+		return {
+			status: "exact",
+			identity: {
+				socketPath: record.socket_path,
+				serverStartTime: record.server_start_time,
+				windowId: record.window_id,
+				executionId: record.execution_id,
+				launchGeneration: Number(record.launch_generation),
+				launchFingerprint: record.launch_fingerprint,
+			},
+		};
+	} catch {
+		return { status: "incomplete" };
+	}
+}
+
+function sameWorkflowLaunchWindow(
+	left: WorkflowLaunchWindowIdentity,
+	right: WorkflowLaunchWindowIdentity,
+): boolean {
+	return (
+		left.socketPath === right.socketPath &&
+		left.serverStartTime === right.serverStartTime &&
+		left.windowId === right.windowId &&
+		left.executionId === right.executionId &&
+		left.launchGeneration === right.launchGeneration &&
+		left.launchFingerprint === right.launchFingerprint
+	);
+}
 
 type RunnerShipObservationProjection =
 	| { status: "none" }
@@ -1437,6 +1507,111 @@ export class StateStore {
 		this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 	}
 
+	private migrateWorkflowReworkDeliveryBudget(): void {
+		const table = this.db.raw
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_rework_delivery'",
+			)
+			.get() as { sql?: string } | undefined;
+		if (!table?.sql) return;
+		const columns = this.workflowTableColumns("workflow_rework_delivery");
+		if (
+			columns.has("hold_count") &&
+			columns.has("next_retry_at") &&
+			columns.has("grant_started_at") &&
+			table.sql.includes("needs_lead")
+		) {
+			return;
+		}
+		const holdCount = columns.has("hold_count") ? "hold_count" : "0";
+		const nextRetryAt = columns.has("next_retry_at")
+			? "next_retry_at"
+			: "NULL";
+		const grantStartedAt = columns.has("grant_started_at")
+			? "grant_started_at"
+			: "NULL";
+		const foreignKeys = Number(
+			this.db.raw.pragma("foreign_keys", { simple: true }),
+		);
+		this.db.raw.pragma("foreign_keys = OFF");
+		try {
+			this.db.raw.transaction(() => {
+				this.db.raw.exec(`
+					DROP TABLE IF EXISTS workflow_rework_delivery_next;
+					CREATE TABLE workflow_rework_delivery_next (
+						request_id TEXT PRIMARY KEY,
+						owner_id TEXT,
+						generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+						lease_expires_at TEXT,
+						route_revision INTEGER NOT NULL CHECK (route_revision > 0),
+						state TEXT NOT NULL CHECK (state IN
+						 ('pending','turn_granted','wake_delivered','replacement_pending','completed','held','needs_lead')),
+						hold_count INTEGER NOT NULL DEFAULT 0 CHECK (hold_count >= 0),
+						next_retry_at TEXT,
+						grant_started_at TEXT,
+						last_error TEXT,
+						updated_at TEXT NOT NULL,
+						FOREIGN KEY (request_id, route_revision)
+							REFERENCES workflow_rework_route_revision(request_id, revision)
+					);
+					INSERT INTO workflow_rework_delivery_next
+						(request_id, owner_id, generation, lease_expires_at, route_revision,
+						 state, hold_count, next_retry_at, grant_started_at, last_error, updated_at)
+					SELECT request_id, owner_id, generation, lease_expires_at, route_revision,
+					       state, ${holdCount}, ${nextRetryAt}, ${grantStartedAt}, last_error, updated_at
+					  FROM workflow_rework_delivery;
+					DROP TABLE workflow_rework_delivery;
+					ALTER TABLE workflow_rework_delivery_next RENAME TO workflow_rework_delivery;
+				`);
+			})();
+		} finally {
+			if (foreignKeys === 1) this.db.raw.pragma("foreign_keys = ON");
+		}
+	}
+
+	private migrateWorkflowReworkVerificationPathState(): void {
+		const table = this.db.raw
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_rework_verification_path'",
+			)
+			.get() as { sql?: string } | undefined;
+		if (!table?.sql || table.sql.includes("needs_lead")) return;
+		const foreignKeys = Number(
+			this.db.raw.pragma("foreign_keys", { simple: true }),
+		);
+		this.db.raw.pragma("foreign_keys = OFF");
+		try {
+			this.db.raw.transaction(() => {
+				this.db.raw.exec(`
+					DROP TABLE IF EXISTS workflow_rework_verification_path_next;
+					CREATE TABLE workflow_rework_verification_path_next (
+						request_id TEXT PRIMARY KEY,
+						run_id TEXT NOT NULL,
+						route_revision INTEGER NOT NULL CHECK (route_revision > 0),
+						state TEXT NOT NULL CHECK (state IN ('pending','active','completed','needs_lead')),
+						current_node_id TEXT NOT NULL,
+						current_attempt INTEGER NOT NULL CHECK (current_attempt > 0),
+						updated_at TEXT NOT NULL,
+						FOREIGN KEY (request_id, route_revision)
+							REFERENCES workflow_rework_route_revision(request_id, revision),
+						FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+					);
+					INSERT INTO workflow_rework_verification_path_next
+						(request_id, run_id, route_revision, state, current_node_id,
+						 current_attempt, updated_at)
+					SELECT request_id, run_id, route_revision, state, current_node_id,
+					       current_attempt, updated_at
+					  FROM workflow_rework_verification_path;
+					DROP TABLE workflow_rework_verification_path;
+					ALTER TABLE workflow_rework_verification_path_next
+						RENAME TO workflow_rework_verification_path;
+				`);
+			})();
+		} finally {
+			if (foreignKeys === 1) this.db.raw.pragma("foreign_keys = ON");
+		}
+	}
+
 	private createWorkflowActorAndActivationTables(): void {
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_actor (
@@ -1782,11 +1957,22 @@ export class StateStore {
 							delivery_lease_expires_at TEXT,
 							delivery_state TEXT NOT NULL DEFAULT 'pending'
 							  CHECK (delivery_state IN ('pending','repairing','delivered')),
+							released_generation INTEGER,
+							released_at TEXT,
+							released_reason TEXT,
 							CHECK (committed_generation IS NULL OR committed_generation = owner_generation),
 							FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
 						);
 						INSERT INTO workflow_launch_owner_next
-						SELECT * FROM workflow_launch_owner;
+							(execution_id, owner_generation, owner_id, acquired_at,
+							 lease_expires_at, committed_generation, delivery_attempt,
+							 delivery_owner, delivery_lease_expires_at, delivery_state,
+							 released_generation, released_at, released_reason)
+						SELECT execution_id, owner_generation, owner_id, acquired_at,
+						       lease_expires_at, committed_generation, delivery_attempt,
+						       delivery_owner, delivery_lease_expires_at, delivery_state,
+						       released_generation, released_at, released_reason
+						  FROM workflow_launch_owner;
 						DROP TABLE workflow_launch_owner;
 						ALTER TABLE workflow_launch_owner_next RENAME TO workflow_launch_owner;
 					`);
@@ -2247,6 +2433,8 @@ export class StateStore {
 			"worktree_binding_branch",
 			"worktree_binding_generation",
 			"worktree_binding_locked_at",
+			"repo_baseline_set_json",
+			"repo_baseline_set_digest",
 		]) {
 			try {
 				this.db.run(`ALTER TABLE sessions ADD COLUMN ${col} TEXT`);
@@ -2641,6 +2829,24 @@ export class StateStore {
 				set_by TEXT NOT NULL,
 				set_at TEXT NOT NULL DEFAULT (datetime('now')),
 				watermark TEXT
+			)
+		`);
+
+		// FLY-1638: operator/deploy admission brake. Unlike the sensor-owned
+		// fleet pressure hold this lease has a hard expiry, so a crashed restart
+		// script cannot freeze the fleet indefinitely. The row is retained after
+		// expiry for attribution; readers derive active state from their clock.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS admission_pause (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				paused_until TEXT NOT NULL,
+				set_by TEXT NOT NULL,
+				reason TEXT NOT NULL,
+				set_at TEXT NOT NULL,
+				alert_state TEXT NOT NULL DEFAULT 'pending'
+					CHECK (alert_state IN ('pending', 'claimed', 'sent')),
+				alert_attempt_at TEXT,
+				alerted_at TEXT
 			)
 		`);
 
@@ -5819,6 +6025,26 @@ export class StateStore {
 				});
 				if (binding.shipTarget.runId) {
 					this.db.run(
+						`UPDATE workflow_gate_holder
+						    SET carrier_binding_state = 'bound', source_execution_id = ?,
+						        updated_at = datetime('now')
+						  WHERE question_id = ? AND run_id = ?
+						    AND authority_mode = 'runner_ship'
+						    AND lower(head_sha) = lower(?)
+						    AND state IN ('materializing','awaiting_review','approved')`,
+						[
+							executionId,
+							binding.questionId,
+							binding.shipTarget.runId,
+							binding.prHeadSha,
+						],
+					);
+					this.db.run(
+						`DELETE FROM workflow_alert_outbox
+						  WHERE escalation_uid = ? AND state = 'pending'`,
+						[`gate_carrier_unbound:${binding.questionId}`],
+					);
+					this.db.run(
 						`UPDATE workflow_ship_target_binding
 						    SET superseded_at = datetime('now')
 						  WHERE run_id = ?
@@ -8955,6 +9181,169 @@ export class StateStore {
 		const changed = this.db.getRowsModified();
 		if (changed > 0) this.save();
 		return changed > 0;
+	}
+
+	// ── FLY-1638: bounded operator admission pause (single durable row) ──
+
+	setAdmissionPause(input: {
+		durationSeconds: number;
+		setBy: string;
+		reason: string;
+		now?: string;
+	}): {
+		active: true;
+		remainingSeconds: number;
+		paused_until: string;
+		set_by: string;
+		reason: string;
+		set_at: string;
+	} {
+		if (
+			!Number.isSafeInteger(input.durationSeconds) ||
+			input.durationSeconds < 1 ||
+			input.durationSeconds > 3_600
+		) {
+			throw new Error("durationSeconds must be an integer between 1 and 3600");
+		}
+		const setBy = input.setBy.trim();
+		const reason = input.reason.trim();
+		if (!setBy || !reason) {
+			throw new Error("admission pause setBy and reason are required");
+		}
+		const setAt = input.now ?? new Date().toISOString();
+		const setAtMs = Date.parse(setAt);
+		if (!Number.isFinite(setAtMs)) {
+			throw new Error("admission pause now must be an ISO timestamp");
+		}
+		const pausedUntil = new Date(
+			setAtMs + input.durationSeconds * 1_000,
+		).toISOString();
+		this.db.run(
+			`INSERT INTO admission_pause
+				(id, paused_until, set_by, reason, set_at)
+			 VALUES (1, ?, ?, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET
+				paused_until = excluded.paused_until,
+				set_by = excluded.set_by,
+				reason = excluded.reason,
+				set_at = excluded.set_at,
+				alert_state = 'pending',
+				alert_attempt_at = NULL,
+				alerted_at = NULL`,
+			[pausedUntil, setBy, reason, setAt],
+		);
+		this.save();
+		return {
+			active: true,
+			remainingSeconds: input.durationSeconds,
+			paused_until: pausedUntil,
+			set_by: setBy,
+			reason,
+			set_at: setAt,
+		};
+	}
+
+	getAdmissionPause(now = new Date().toISOString()):
+		| {
+				active: boolean;
+				remainingSeconds: number;
+				paused_until: string;
+				set_by: string;
+				reason: string;
+				set_at: string;
+		  }
+		| undefined {
+		const stmt = this.db.prepare(
+			"SELECT paused_until, set_by, reason, set_at FROM admission_pause WHERE id = 1",
+		);
+		let row: Record<string, unknown> | undefined;
+		if (stmt.step()) row = stmt.getAsObject() as Record<string, unknown>;
+		stmt.free();
+		if (!row) return undefined;
+		const remainingSeconds = Math.max(
+			0,
+			Math.ceil((Date.parse(row.paused_until as string) - Date.parse(now)) / 1_000),
+		);
+		return {
+			active: remainingSeconds > 0,
+			remainingSeconds,
+			paused_until: row.paused_until as string,
+			set_by: row.set_by as string,
+			reason: row.reason as string,
+			set_at: row.set_at as string,
+		};
+	}
+
+	clearAdmissionPause(): boolean {
+		this.db.run("DELETE FROM admission_pause WHERE id = 1", []);
+		const changed = this.db.getRowsModified();
+		if (changed > 0) this.save();
+		return changed > 0;
+	}
+
+	claimAdmissionPauseAlert(input: {
+		now: string;
+		minAgeMs: number;
+	}):
+		| {
+				paused_until: string;
+				set_by: string;
+				reason: string;
+				set_at: string;
+		  }
+		| undefined {
+		const pause = this.getAdmissionPause(input.now);
+		if (
+			!pause?.active ||
+			!Number.isFinite(input.minAgeMs) ||
+			input.minAgeMs < 0 ||
+			Date.parse(input.now) - Date.parse(pause.set_at) < input.minAgeMs
+		) {
+			return undefined;
+		}
+		const staleClaimBefore = new Date(
+			Date.parse(input.now) - 60_000,
+		).toISOString();
+		this.db.run(
+			`UPDATE admission_pause
+			    SET alert_state = 'claimed', alert_attempt_at = ?
+			  WHERE id = 1 AND set_at = ? AND paused_until > ?
+			    AND (alert_state = 'pending'
+			      OR (alert_state = 'claimed' AND alert_attempt_at < ?))`,
+			[input.now, pause.set_at, input.now, staleClaimBefore],
+		);
+		if (this.db.getRowsModified() !== 1) return undefined;
+		this.save();
+		return {
+			paused_until: pause.paused_until,
+			set_by: pause.set_by,
+			reason: pause.reason,
+			set_at: pause.set_at,
+		};
+	}
+
+	finishAdmissionPauseAlert(input: {
+		setAt: string;
+		outcome: "sent" | "failed";
+		now?: string;
+	}): boolean {
+		const now = input.now ?? new Date().toISOString();
+		this.db.run(
+			`UPDATE admission_pause
+			    SET alert_state = ?,
+			        alert_attempt_at = NULL,
+			        alerted_at = CASE WHEN ? = 'sent' THEN ? ELSE alerted_at END
+			  WHERE id = 1 AND set_at = ? AND alert_state = 'claimed'`,
+			[
+				input.outcome === "sent" ? "sent" : "pending",
+				input.outcome,
+				now,
+				input.setAt,
+			],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
 	}
 
 	// ── FLY-1082 (Task 3.2): runbook-gap ledger ──
@@ -13582,7 +13971,13 @@ export class StateStore {
 	 */
 	bindWorktreeOnce(
 		executionId: string,
-		binding: { path: string; branch: string; generation: string },
+		binding: {
+			path: string;
+			branch: string;
+			generation: string;
+			repoBaselineSetJson?: string;
+			repoBaselineSetDigest?: string;
+		},
 		context?: { issueId?: string; projectName?: string },
 	): { bound: boolean; reason?: "already_bound" } {
 		let bound = false;
@@ -13593,8 +13988,9 @@ export class StateStore {
 				this.db.run(
 					`INSERT INTO sessions (execution_id, issue_id, project_name, status,
 						worktree_binding_path, worktree_binding_branch,
-						worktree_binding_generation, worktree_binding_locked_at)
-					 VALUES (?, ?, ?, 'pending', ?, ?, ?, datetime('now'))`,
+						worktree_binding_generation, worktree_binding_locked_at,
+						repo_baseline_set_json, repo_baseline_set_digest)
+					 VALUES (?, ?, ?, 'pending', ?, ?, ?, datetime('now'), ?, ?)`,
 					[
 						executionId,
 						context?.issueId ?? "",
@@ -13602,6 +13998,8 @@ export class StateStore {
 						binding.path,
 						binding.branch,
 						binding.generation,
+						binding.repoBaselineSetJson ?? null,
+						binding.repoBaselineSetDigest ?? null,
 					],
 				);
 				bound = true;
@@ -13612,9 +14010,18 @@ export class StateStore {
 					worktree_binding_path = ?,
 					worktree_binding_branch = ?,
 					worktree_binding_generation = ?,
-					worktree_binding_locked_at = datetime('now')
+					worktree_binding_locked_at = datetime('now'),
+					repo_baseline_set_json = ?,
+					repo_baseline_set_digest = ?
 				 WHERE execution_id = ? AND worktree_binding_generation IS NULL`,
-				[binding.path, binding.branch, binding.generation, executionId],
+				[
+					binding.path,
+					binding.branch,
+					binding.generation,
+					binding.repoBaselineSetJson ?? null,
+					binding.repoBaselineSetDigest ?? null,
+					executionId,
+				],
 			);
 			if (this.db.getRowsModified() > 0) {
 				bound = true;
@@ -13634,11 +14041,14 @@ export class StateStore {
 				branch: string;
 				generation: string;
 				lockedAt: string | null;
+				repoBaselineSetJson?: string;
+				repoBaselineSetDigest?: string;
 		  }
 		| undefined {
 		const stmt = this.db.prepare(
 			`SELECT worktree_binding_path AS p, worktree_binding_branch AS b,
-			        worktree_binding_generation AS g, worktree_binding_locked_at AS l
+			        worktree_binding_generation AS g, worktree_binding_locked_at AS l,
+			        repo_baseline_set_json AS bj, repo_baseline_set_digest AS bd
 			 FROM sessions WHERE execution_id = ?`,
 		);
 		stmt.bind([executionId]);
@@ -13648,6 +14058,8 @@ export class StateStore {
 					branch: string;
 					generation: string;
 					lockedAt: string | null;
+					repoBaselineSetJson?: string;
+					repoBaselineSetDigest?: string;
 			  }
 			| undefined;
 		if (stmt.step()) {
@@ -13658,6 +14070,8 @@ export class StateStore {
 					branch: row.b as string,
 					generation: row.g as string,
 					lockedAt: (row.l as string) ?? null,
+					...(row.bj ? { repoBaselineSetJson: row.bj as string } : {}),
+					...(row.bd ? { repoBaselineSetDigest: row.bd as string } : {}),
 				};
 			}
 		}
@@ -15178,19 +15592,23 @@ export class StateStore {
 				lease_expires_at TEXT,
 				route_revision INTEGER NOT NULL CHECK (route_revision > 0),
 				state TEXT NOT NULL CHECK (state IN
-				 ('pending','turn_granted','wake_delivered','replacement_pending','completed','held')),
+				 ('pending','turn_granted','wake_delivered','replacement_pending','completed','held','needs_lead')),
+				hold_count INTEGER NOT NULL DEFAULT 0 CHECK (hold_count >= 0),
+				next_retry_at TEXT,
+				grant_started_at TEXT,
 				last_error TEXT,
 				updated_at TEXT NOT NULL,
 				FOREIGN KEY (request_id, route_revision)
 					REFERENCES workflow_rework_route_revision(request_id, revision)
 			)
 		`);
+		this.migrateWorkflowReworkDeliveryBudget();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_rework_verification_path (
 				request_id TEXT PRIMARY KEY,
 				run_id TEXT NOT NULL,
 				route_revision INTEGER NOT NULL CHECK (route_revision > 0),
-				state TEXT NOT NULL CHECK (state IN ('pending','active','completed')),
+				state TEXT NOT NULL CHECK (state IN ('pending','active','completed','needs_lead')),
 				current_node_id TEXT NOT NULL,
 				current_attempt INTEGER NOT NULL CHECK (current_attempt > 0),
 				updated_at TEXT NOT NULL,
@@ -15199,6 +15617,7 @@ export class StateStore {
 				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
 			)
 		`);
+		this.migrateWorkflowReworkVerificationPathState();
 		for (const table of [
 			"workflow_rework_request",
 			"workflow_rework_route_revision",
@@ -15452,10 +15871,20 @@ export class StateStore {
 				delivery_lease_expires_at TEXT,
 				delivery_state TEXT NOT NULL DEFAULT 'pending'
 				  CHECK (delivery_state IN ('pending','repairing','delivered')),
+				released_generation INTEGER,
+				released_at TEXT,
+				released_reason TEXT,
 				CHECK (committed_generation IS NULL OR committed_generation = owner_generation),
 				FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
 			)
 		`);
+		this.addColumnIfMissing(
+			"workflow_launch_owner",
+			"released_generation",
+			"INTEGER",
+		);
+		this.addColumnIfMissing("workflow_launch_owner", "released_at", "TEXT");
+		this.addColumnIfMissing("workflow_launch_owner", "released_reason", "TEXT");
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_launch_cancellation (
 				execution_id TEXT PRIMARY KEY,
@@ -17433,6 +17862,12 @@ export class StateStore {
 				(row.delivery_lease_expires_at as string) ?? null,
 			delivery_state:
 				row.delivery_state as WorkflowLaunchOwnerRow["delivery_state"],
+			released_generation:
+				row.released_generation == null
+					? null
+					: Number(row.released_generation),
+			released_at: (row.released_at as string) ?? null,
+			released_reason: (row.released_reason as string) ?? null,
 		};
 	}
 
@@ -17543,16 +17978,23 @@ export class StateStore {
 				result = { ok: false, reason: "launch_intent_mismatch" };
 				return;
 			}
-			const claim = this.getLaunchClaim(input.executionId);
-			if (claim?.state === "starting" || claim?.state === "active") {
-				result = { ok: false, reason: "lifecycle_claim_present" };
-				return;
-			}
-			if (this.getSession(input.executionId)) {
-				result = { ok: false, reason: "session_present" };
-				return;
-			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			const storedWindow = parseStoredWorkflowLaunchWindow(
+				this.getSession(input.executionId)?.session_params,
+			);
+			if (storedWindow.status === "incomplete") {
+				result = { ok: false, reason: "precise_window_identity_incomplete" };
+				return;
+			}
+			if (
+				storedWindow.status === "exact" &&
+				(!owner ||
+					storedWindow.identity.executionId !== input.executionId ||
+					storedWindow.identity.launchGeneration !== owner.owner_generation)
+			) {
+				result = { ok: false, reason: "precise_window_identity_mismatch" };
+				return;
+			}
 			if (owner?.committed_generation != null) {
 				result = { ok: false, reason: "launch_committed" };
 				return;
@@ -17608,6 +18050,7 @@ export class StateStore {
 		markerPath: string;
 		now: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
+		preciseWindowEvidence?: WorkflowLaunchWindowEvidence;
 	}): UnlaunchedWorkflowRollbackResult {
 		if (
 			!input.markerPath ||
@@ -17675,15 +18118,6 @@ export class StateStore {
 				result = { ok: false, reason: "execution_binding_mismatch" };
 				return;
 			}
-			const claim = this.getLaunchClaim(input.executionId);
-			if (claim?.state === "starting" || claim?.state === "active") {
-				result = { ok: false, reason: "lifecycle_claim_present" };
-				return;
-			}
-			if (this.getSession(input.executionId)) {
-				result = { ok: false, reason: "session_present" };
-				return;
-			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
 			if (owner?.committed_generation != null) {
 				result = { ok: false, reason: "launch_committed" };
@@ -17691,6 +18125,28 @@ export class StateStore {
 			}
 			if (existsSync(input.markerPath)) {
 				result = { ok: false, reason: "launch_marker_present" };
+				return;
+			}
+			const storedWindow = parseStoredWorkflowLaunchWindow(
+				this.getSession(input.executionId)?.session_params,
+			);
+			if (storedWindow.status === "incomplete") {
+				result = { ok: false, reason: "precise_window_identity_incomplete" };
+				return;
+			}
+			if (
+				storedWindow.status === "exact" &&
+				(!input.preciseWindowEvidence ||
+					!sameWorkflowLaunchWindow(
+						storedWindow.identity,
+						input.preciseWindowEvidence,
+					) ||
+					!(
+						input.preciseWindowEvidence.physicalEvidence === "absent" ||
+						input.preciseWindowEvidence.physicalEvidence === "cleaned"
+					))
+			) {
+				result = { ok: false, reason: "precise_window_evidence_present" };
 				return;
 			}
 			const latest = this.workflowSelectAll(
@@ -17720,6 +18176,19 @@ export class StateStore {
 					[input.executionId],
 				);
 			}
+			this.db.run(
+				`UPDATE lifecycle_launch_claims
+				    SET state = 'closed', updated_at = datetime('now')
+				  WHERE execution_id = ? AND state IN ('starting','active')`,
+				[input.executionId],
+			);
+			this.db.run(
+				`UPDATE sessions
+				    SET status = 'failed', terminal_at = COALESCE(terminal_at, ?)
+				  WHERE execution_id = ?
+				    AND status NOT IN ('completed','cancelled','merged','superseded')`,
+				[input.now, input.executionId],
+			);
 			this.db.run(
 				`UPDATE workflow_side_effect_ledger
 				    SET state = 'abandoned', reason = 'unlaunched_admission_rolled_back',
@@ -18223,11 +18692,17 @@ export class StateStore {
 				return;
 			}
 			if (!owner) {
+				const leaseExpiresAt = new Date(
+					Math.min(
+						Date.parse(input.leaseExpiresAt),
+						Date.parse(input.now) + WORKFLOW_LAUNCH_SOFT_LEASE_MS,
+					),
+				).toISOString();
 				this.db.run(
 					`INSERT INTO workflow_launch_owner
 					   (execution_id, owner_generation, owner_id, acquired_at, lease_expires_at)
 					 VALUES (?, 1, ?, ?, ?)`,
-					[input.executionId, input.ownerId, input.now, input.leaseExpiresAt],
+					[input.executionId, input.ownerId, input.now, leaseExpiresAt],
 				);
 				result = {
 					status: "acquired",
@@ -18237,17 +18712,33 @@ export class StateStore {
 				};
 				return;
 			}
-			if (
-				owner.owner_id !== input.ownerId &&
-				Date.parse(input.now) < Date.parse(owner.lease_expires_at)
-			) {
+			const ownerIsLive =
+				Date.parse(input.now) < Date.parse(owner.lease_expires_at);
+			if (owner.owner_id !== input.ownerId && ownerIsLive) {
 				result = { status: "busy", generation: owner.owner_generation };
 				return;
 			}
+			if (owner.owner_id === input.ownerId && ownerIsLive) {
+				result = {
+					status: "acquired",
+					generation: owner.owner_generation,
+					deliveryAttempt: owner.delivery_attempt,
+					token: StateStore.workflowLaunchToken(
+						input.executionId,
+						owner.owner_generation,
+						owner.delivery_attempt,
+					),
+				};
+				return;
+			}
 			const generation =
-				owner.owner_id === input.ownerId
-					? owner.owner_generation
-					: owner.owner_generation + 1;
+				Math.max(owner.owner_generation, owner.released_generation ?? 0) + 1;
+			const leaseExpiresAt = new Date(
+				Math.min(
+					Date.parse(input.leaseExpiresAt),
+					Date.parse(input.now) + WORKFLOW_LAUNCH_SOFT_LEASE_MS,
+				),
+			).toISOString();
 			this.db.run(
 				`UPDATE workflow_launch_owner
 				    SET owner_generation = ?, owner_id = ?, acquired_at = ?,
@@ -18260,7 +18751,7 @@ export class StateStore {
 					generation,
 					input.ownerId,
 					input.now,
-					input.leaseExpiresAt,
+					leaseExpiresAt,
 					input.executionId,
 					owner.owner_generation,
 				],
@@ -18269,6 +18760,12 @@ export class StateStore {
 				result = { status: "busy", generation: owner.owner_generation };
 				return;
 			}
+			this.db.run(
+				`UPDATE lifecycle_launch_claims
+				    SET state = 'starting', updated_at = datetime('now')
+				  WHERE execution_id = ? AND state = 'closed'`,
+				[input.executionId],
+			);
 			result = {
 				status: "acquired",
 				generation,
@@ -18296,27 +18793,42 @@ export class StateStore {
 		}
 		let renewed = false;
 		let cancelled = false;
+		let horizonExhausted = false;
 		this.db.transaction(() => {
 			if (this.getWorkflowLaunchCancellation(input.executionId)) {
 				cancelled = true;
 				return;
 			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			const horizonAt = owner
+				? Date.parse(owner.acquired_at) + WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS
+				: Number.NaN;
 			if (
 				!owner ||
 				owner.owner_id !== input.ownerId ||
 				owner.owner_generation !== input.generation ||
 				owner.committed_generation != null ||
-				Date.parse(input.now) >= Date.parse(owner.lease_expires_at)
+				(owner.released_generation ?? 0) >= input.generation
 			) {
 				return;
 			}
+			if (Date.parse(input.now) >= horizonAt) {
+				horizonExhausted = true;
+				return;
+			}
+			const effectiveLeaseExpiresAt = new Date(
+				Math.min(
+					Date.parse(input.leaseExpiresAt),
+					Date.parse(input.now) + WORKFLOW_LAUNCH_SOFT_LEASE_MS,
+					horizonAt,
+				),
+			).toISOString();
 			this.db.run(
 				`UPDATE workflow_launch_owner SET lease_expires_at = ?
 				  WHERE execution_id = ? AND owner_id = ? AND owner_generation = ?
 				    AND committed_generation IS NULL AND lease_expires_at > ?`,
 				[
-					input.leaseExpiresAt,
+					effectiveLeaseExpiresAt,
 					input.executionId,
 					input.ownerId,
 					input.generation,
@@ -18327,7 +18839,102 @@ export class StateStore {
 		});
 		this.save();
 		if (cancelled) return { ok: false, reason: "launch_cancelled" };
+		if (horizonExhausted)
+			return { ok: false, reason: "launch_horizon_exhausted" };
 		return renewed ? { ok: true } : { ok: false, reason: "stale_launch_owner" };
+	}
+
+	releaseFailedWorkflowLaunch(input: {
+		executionId: string;
+		ownerId: string;
+		generation: number;
+		markerPath: string;
+		now: string;
+		reason: string;
+		physicalEvidence: "absent" | "cleaned";
+	}): { ok: true; generation: number } | { ok: false; reason: string } {
+		if (
+			!input.executionId ||
+			!input.ownerId ||
+			!input.markerPath ||
+			!input.reason ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!(["absent", "cleaned"] as const).includes(input.physicalEvidence)
+		) {
+			return { ok: false, reason: "invalid_launch_release" };
+		}
+		if (existsSync(input.markerPath)) {
+			return { ok: false, reason: "launch_marker_present" };
+		}
+		let result:
+			| { ok: true; generation: number }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_launch_owner",
+		};
+		this.db.transaction(() => {
+			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if (!owner) return;
+			if ((owner.released_generation ?? 0) >= input.generation) {
+				result = { ok: true, generation: input.generation };
+				return;
+			}
+			if (
+				owner.owner_id !== input.ownerId ||
+				owner.owner_generation !== input.generation ||
+				owner.committed_generation != null
+			) {
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_launch_owner
+				    SET lease_expires_at = ?, released_generation = ?,
+				        released_at = ?, released_reason = ?
+				  WHERE execution_id = ? AND owner_id = ? AND owner_generation = ?
+				    AND committed_generation IS NULL
+				    AND (released_generation IS NULL OR released_generation < ?)`,
+				[
+					input.now,
+					input.generation,
+					input.now,
+					input.reason,
+					input.executionId,
+					input.ownerId,
+					input.generation,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			for (const table of [
+				"workflow_output_credential",
+				"workflow_submission_credential",
+			] as const) {
+				this.db.run(
+					`UPDATE ${table}
+					    SET revoked = 1, revoked_reason = ?
+					  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+					[`launch_release:${input.reason}`, input.executionId],
+				);
+			}
+			this.db.run(
+				`UPDATE lifecycle_launch_claims
+				    SET state = 'closed', updated_at = datetime('now')
+				  WHERE execution_id = ? AND state IN ('starting','active')`,
+				[input.executionId],
+			);
+			this.db.run(
+				`UPDATE sessions
+				    SET status = 'failed', terminal_at = COALESCE(terminal_at, ?)
+				  WHERE execution_id = ?
+				    AND status NOT IN ('completed','cancelled','merged','superseded')`,
+				[input.now, input.executionId],
+			);
+			result = { ok: true, generation: input.generation };
+		});
+		this.save();
+		return result;
 	}
 
 	/**
@@ -18512,6 +19119,10 @@ export class StateStore {
 		};
 		this.db.transaction(() => {
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if ((owner?.released_generation ?? 0) >= input.generation) {
+				result = { ok: false, reason: "launch_generation_released" };
+				return;
+			}
 			if (
 				!owner ||
 				owner.committed_generation !== input.generation ||
@@ -18748,6 +19359,10 @@ export class StateStore {
 		};
 		this.db.transaction(() => {
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if ((owner?.released_generation ?? 0) >= input.generation) {
+				result = { ok: false, reason: "launch_generation_released" };
+				return;
+			}
 			if (
 				!owner ||
 				owner.committed_generation !== input.generation ||
@@ -19013,6 +19628,10 @@ export class StateStore {
 				return;
 			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if ((owner?.released_generation ?? 0) >= input.generation) {
+				result = { ok: false, reason: "launch_generation_released" };
+				return;
+			}
 			if (
 				!owner ||
 				owner.owner_id !== input.ownerId ||
@@ -19516,6 +20135,9 @@ export class StateStore {
 			lease_expires_at: (row.lease_expires_at as string | null) ?? null,
 			route_revision: Number(row.route_revision),
 			state: row.state as WorkflowReworkDeliveryRow["state"],
+			hold_count: Number(row.hold_count),
+			next_retry_at: (row.next_retry_at as string | null) ?? null,
+			grant_started_at: (row.grant_started_at as string | null) ?? null,
 			last_error: (row.last_error as string | null) ?? null,
 			updated_at: row.updated_at as string,
 		};
@@ -19523,6 +20145,7 @@ export class StateStore {
 
 	listWorkflowReworkDeliveries(input?: {
 		states?: WorkflowReworkDeliveryRow["state"][];
+		now?: string;
 	}): WorkflowReworkDeliveryRow[] {
 		const states = input?.states ?? [
 			"pending",
@@ -19531,11 +20154,13 @@ export class StateStore {
 		];
 		if (states.length === 0) return [];
 		const placeholders = states.map(() => "?").join(", ");
+		const now = input?.now ?? new Date().toISOString();
 		return this.workflowSelectAll(
 			`SELECT request_id FROM workflow_rework_delivery
 			  WHERE state IN (${placeholders})
+			    AND (next_retry_at IS NULL OR next_retry_at <= ?)
 			  ORDER BY updated_at, request_id`,
-			states,
+			[...states, now],
 		)
 			.map((row) => this.getWorkflowReworkDelivery(row.request_id as string))
 			.filter((row): row is WorkflowReworkDeliveryRow => row !== undefined);
@@ -19990,6 +20615,13 @@ export class StateStore {
 				};
 				return;
 			}
+			if (
+				delivery.next_retry_at !== null &&
+				Date.parse(delivery.next_retry_at) > Date.parse(input.now)
+			) {
+				result = { ok: false, reason: "delivery_backoff" };
+				return;
+			}
 			const leaseLive =
 				delivery.lease_expires_at !== null &&
 				Date.parse(delivery.lease_expires_at) > Date.parse(input.now);
@@ -20013,7 +20645,7 @@ export class StateStore {
 			this.db.run(
 				`UPDATE workflow_rework_delivery
 				    SET owner_id = ?, generation = ?, lease_expires_at = ?,
-				        last_error = NULL, updated_at = ?
+				        next_retry_at = NULL, last_error = NULL, updated_at = ?
 				  WHERE request_id = ? AND generation = ? AND state = ?`,
 				[
 					input.ownerId,
@@ -20098,6 +20730,276 @@ export class StateStore {
 			});
 		});
 		if (!released) return { ok: false, reason: "stale_delivery_owner" };
+		this.save();
+		return { ok: true };
+	}
+
+	settleWorkflowReworkFailure(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		reason: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| {
+				ok: true;
+				holdCount: number;
+				state: "pending" | "turn_granted" | "needs_lead";
+				nextRetryAt: string | null;
+		  }
+		| { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!input.reason.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_rework_failure" };
+		}
+		let result:
+			| {
+					ok: true;
+					holdCount: number;
+					state: "pending" | "turn_granted" | "needs_lead";
+					nextRetryAt: string | null;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "rework_failure_not_settled",
+		};
+		this.db.transaction(() => {
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			const route = this.getLatestWorkflowReworkRoute(input.requestId);
+			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+			if (!delivery || !request || !route || !run) {
+				result = { ok: false, reason: "rework_context_unavailable" };
+				return;
+			}
+			if (run.engine_owned !== 1 || run.status !== "active") {
+				result = { ok: false, reason: "engine_run_not_active" };
+				return;
+			}
+			if (
+				delivery.owner_id !== input.ownerId ||
+				delivery.generation !== input.generation ||
+				!(delivery.state === "pending" || delivery.state === "turn_granted")
+			) {
+				result = { ok: false, reason: "stale_delivery_owner" };
+				return;
+			}
+			const holdCount = delivery.hold_count + 1;
+			const exhausted = holdCount >= 5;
+			const nextRetryAt = exhausted
+				? null
+				: new Date(
+						Date.parse(input.now) + 60_000 * 2 ** (holdCount - 1),
+					).toISOString();
+			const nextState = exhausted ? "needs_lead" : delivery.state;
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET state = ?, owner_id = NULL, lease_expires_at = NULL,
+				        hold_count = ?, next_retry_at = ?, last_error = ?, updated_at = ?
+				  WHERE request_id = ? AND owner_id = ? AND generation = ? AND state = ?`,
+				[
+					nextState,
+					holdCount,
+					nextRetryAt,
+					input.reason,
+					input.now,
+					input.requestId,
+					input.ownerId,
+					input.generation,
+					delivery.state,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "stale_delivery_owner" };
+				return;
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `rework_delivery_failure:${input.requestId}:${input.generation}`,
+				kind: "rework_delivery_failure",
+				nodeId: route.target_node_id,
+				executionId: route.preferred_actor_execution_id,
+				payload: {
+					requestId: input.requestId,
+					generation: input.generation,
+					holdCount,
+					reason: input.reason,
+					nextRetryAt,
+				},
+			});
+			if (exhausted) {
+				const target = this.getWorkflowRunNode(
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+				);
+				const activation = this.getWorkflowActivationForAttempt({
+					executionId: route.preferred_actor_execution_id,
+					runId: request.run_id,
+					nodeId: route.target_node_id,
+					attempt: route.target_attempt,
+				});
+				const turn = activation
+					? this.getWorkflowActivationTurn(activation.activation_id)
+					: undefined;
+				const cleanupDisposition =
+					delivery.grant_started_at !== null || turn
+						? "retain_ambiguous_grant"
+						: !activation &&
+								target?.state === "pending" &&
+								target.execution_id === route.preferred_actor_execution_id
+							? "rollback_pre_admission"
+							: activation &&
+								(target?.state === "admitted" || target?.state === "pending") &&
+								target.execution_id === route.preferred_actor_execution_id
+								? "abandon_ungranted_activation"
+								: "retain_ambiguous_grant";
+				if (cleanupDisposition !== "retain_ambiguous_grant") {
+					if (activation) {
+						for (const table of [
+							"workflow_output_credential",
+							"workflow_submission_credential",
+						]) {
+							this.db.run(
+								`UPDATE ${table}
+								    SET revoked = 1, revoked_reason = 'rework_retry_exhausted_before_grant'
+								  WHERE activation_id = ? AND consumed_at IS NULL AND revoked = 0`,
+								[activation.activation_id],
+							);
+						}
+					}
+					this.db.run(
+						`UPDATE workflow_run_node
+						    SET state = 'superseded', ended_at = COALESCE(ended_at, ?)
+						  WHERE run_id = ? AND node_id = ? AND attempt = ?
+						    AND execution_id = ? AND state IN ('pending','admitted')`,
+						[
+							input.now,
+							request.run_id,
+							route.target_node_id,
+							route.target_attempt,
+							route.preferred_actor_execution_id,
+						],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new Error("workflow_rework_budget_reservation_cleanup_cas_failed");
+					}
+					this.db.run(
+						`UPDATE workflow_rework_verification_path
+						    SET state = 'needs_lead', updated_at = ?
+						  WHERE request_id = ? AND route_revision = ?
+						    AND state IN ('pending','active')`,
+						[input.now, input.requestId, route.revision],
+					);
+					this.appendWorkflowRunEventCheckedTx({
+						runId: request.run_id,
+						eventUid: `rework_retry_cleanup:${input.requestId}`,
+						kind: "rework_retry_cleanup",
+						nodeId: route.target_node_id,
+						executionId: route.preferred_actor_execution_id,
+						payload: {
+							requestId: input.requestId,
+							activationId: activation?.activation_id ?? null,
+							disposition: cleanupDisposition,
+						},
+					});
+				}
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+					[request.run_id],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_rework_budget_run_hold_cas_failed");
+				}
+				const escalationUid = `rework_retry_exhausted:${input.requestId}`;
+				this.appendWorkflowRunEventCheckedTx({
+					runId: request.run_id,
+					eventUid: escalationUid,
+					kind: "rework_retry_exhausted",
+					nodeId: route.target_node_id,
+					executionId: route.preferred_actor_execution_id,
+					payload: {
+						requestId: input.requestId,
+						holdCount,
+						reason: input.reason,
+						cleanupDisposition,
+					},
+				});
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: request.run_id,
+					now: input.now,
+					payload: {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: escalationUid,
+						eventType: "workflow_engine_escalation",
+						severity: "severe",
+						sessionKey: `wf:${request.run_id}`,
+						title: `Rework retry budget exhausted for ${run.issue_id}`,
+						body: `Run ${request.run_id} rework ${input.requestId} failed five retryable deliveries (${input.reason}). It is now needs_lead and no further automatic retry will run.`,
+						metadata: {
+							workflowEngine: {
+								runId: request.run_id,
+								issueId: run.issue_id,
+								nodeId: route.target_node_id,
+								executionId: route.preferred_actor_execution_id,
+								disposition: "rework_retry_exhausted",
+								leadResolution: input.alertIdentity.leadResolution,
+							},
+						},
+					},
+				});
+			}
+			result = {
+				ok: true,
+				holdCount,
+				state: nextState,
+				nextRetryAt,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	markWorkflowReworkGrantStarted(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_grant_start" };
+		}
+		this.db.run(
+			`UPDATE workflow_rework_delivery
+			    SET grant_started_at = COALESCE(grant_started_at, ?), updated_at = ?
+			  WHERE request_id = ? AND owner_id = ? AND generation = ?
+			    AND state IN ('pending','turn_granted')`,
+			[
+				input.now,
+				input.now,
+				input.requestId,
+				input.ownerId,
+				input.generation,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "stale_delivery_owner" };
+		}
 		this.save();
 		return { ok: true };
 	}
@@ -21421,6 +22323,58 @@ export class StateStore {
 		return { ok: true };
 	}
 
+	/** Strict proof used only before replacing a fenced needs_lead activation. */
+	private validateNeedsLeadReworkQuiescenceTx(
+		runId: string,
+		evidence: RunQuiescenceEvidence[],
+		now: string,
+	): { ok: true } | { ok: false; executionIds: string[] } {
+		const attributed = this.listRunAttributedExecutions(runId);
+		const byExecution = new Map(
+			evidence.map((item) => [item.executionId, item]),
+		);
+		const live = new Set<string>();
+		for (const executionId of attributed) {
+			const observed = byExecution.get(executionId);
+			const observedMs = observed ? Date.parse(observed.observedAt) : NaN;
+			const ageMs = Date.parse(now) - observedMs;
+			if (
+				!observed ||
+				!Number.isFinite(observedMs) ||
+				ageMs < 0 ||
+				ageMs > 30_000
+			) {
+				live.add(executionId);
+				continue;
+			}
+			const session = this.getSession(executionId);
+			if (!session) {
+				if (
+					observed.sessionStatus !== null ||
+					observed.lifecycleRevision !== null ||
+					observed.liveness !== "dead"
+				) {
+					live.add(executionId);
+				}
+				continue;
+			}
+			if (
+				observed.sessionStatus !== session.status ||
+				observed.lifecycleRevision !== session.lifecycle_revision ||
+				!isStateStoreIrreversibleTerminalForZombie(session.status) ||
+				observed.liveness !== "dead"
+			) {
+				live.add(executionId);
+			}
+		}
+		for (const executionId of byExecution.keys()) {
+			if (!attributed.includes(executionId)) live.add(executionId);
+		}
+		return live.size === 0
+			? { ok: true }
+			: { ok: false, executionIds: [...live].sort() };
+	}
+
 	private changeWorkflowRunStateByOperator(input: {
 		runId: string;
 		reason: string;
@@ -21769,10 +22723,26 @@ export class StateStore {
 			}
 
 			const run = this.getWorkflowRun(input.runId);
+			const needsLeadRow = this.workflowSelectAll(
+				`SELECT d.request_id
+				   FROM workflow_rework_delivery d
+				   JOIN workflow_rework_request r ON r.request_id = d.request_id
+				  WHERE r.run_id = ? AND d.state = 'needs_lead'
+				  ORDER BY d.updated_at DESC, d.request_id DESC LIMIT 1`,
+				[input.runId],
+			)[0];
+			const needsLeadRequestId = needsLeadRow?.request_id as string | undefined;
+			const needsLeadRoute = needsLeadRequestId
+				? this.getLatestWorkflowReworkRoute(needsLeadRequestId)
+				: undefined;
+			const heldNeedsLead =
+				run?.status === "held" && needsLeadRequestId && needsLeadRoute;
 			if (
 				!run?.snapshot ||
 				run.engine_owned !== 1 ||
-				(run.status !== "active" && run.status !== "completed")
+				(run.status !== "active" &&
+					run.status !== "completed" &&
+					!heldNeedsLead)
 			) {
 				result = { ok: false, reason: "run_not_reworkable" };
 				return;
@@ -21785,11 +22755,17 @@ export class StateStore {
 				result = { ok: false, reason: "issue_has_active_run" };
 				return;
 			}
-			const quiescence = this.validateRunQuiescenceEvidenceTx(
-				input.runId,
-				input.evidence,
-				input.now,
-			);
+			const quiescence = heldNeedsLead
+				? this.validateNeedsLeadReworkQuiescenceTx(
+						input.runId,
+						input.evidence,
+						input.now,
+					)
+				: this.validateRunQuiescenceEvidenceTx(
+						input.runId,
+						input.evidence,
+						input.now,
+					);
 			if (!quiescence.ok) {
 				result = {
 					ok: false,
@@ -21797,6 +22773,74 @@ export class StateStore {
 					executionIds: quiescence.executionIds,
 				};
 				return;
+			}
+			if (heldNeedsLead && needsLeadRequestId && needsLeadRoute) {
+				const activation = this.getWorkflowActivationForAttempt({
+					executionId: needsLeadRoute.preferred_actor_execution_id,
+					runId: input.runId,
+					nodeId: needsLeadRoute.target_node_id,
+					attempt: needsLeadRoute.target_attempt,
+				});
+				if (activation) {
+					const consumed = this.workflowSelectAll(
+						`SELECT 1 AS present FROM (
+						   SELECT consumed_at FROM workflow_output_credential WHERE activation_id = ?
+						   UNION ALL
+						   SELECT consumed_at FROM workflow_submission_credential WHERE activation_id = ?
+						 ) WHERE consumed_at IS NOT NULL LIMIT 1`,
+						[activation.activation_id, activation.activation_id],
+					)[0];
+					if (consumed) {
+						result = {
+							ok: false,
+							reason: "needs_lead_activation_already_consumed",
+						};
+						return;
+					}
+					for (const table of [
+						"workflow_output_credential",
+						"workflow_submission_credential",
+					]) {
+						this.db.run(
+							`UPDATE ${table}
+							    SET revoked = 1, revoked_reason = 'operator_replaced_needs_lead_activation'
+							  WHERE activation_id = ? AND consumed_at IS NULL AND revoked = 0`,
+							[activation.activation_id],
+						);
+					}
+				}
+				this.db.run(
+					`UPDATE workflow_run_node
+					    SET state = 'superseded', ended_at = COALESCE(ended_at, ?)
+					  WHERE run_id = ? AND node_id = ? AND attempt = ?
+					    AND execution_id = ? AND state IN ('pending','admitted','running')`,
+					[
+						input.now,
+						input.runId,
+						needsLeadRoute.target_node_id,
+						needsLeadRoute.target_attempt,
+						needsLeadRoute.preferred_actor_execution_id,
+					],
+				);
+				this.db.run(
+					`UPDATE workflow_rework_verification_path
+					    SET state = 'needs_lead', updated_at = ?
+					  WHERE request_id = ? AND route_revision = ?
+					    AND state IN ('pending','active')`,
+					[input.now, needsLeadRequestId, needsLeadRoute.revision],
+				);
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `rework_needs_lead_cleaned:${needsLeadRequestId}:${input.clientRequestId}`,
+					kind: "rework_needs_lead_cleaned",
+					nodeId: needsLeadRoute.target_node_id,
+					executionId: needsLeadRoute.preferred_actor_execution_id,
+					payload: {
+						requestId: needsLeadRequestId,
+						activationId: activation?.activation_id ?? null,
+						principal: input.principal,
+					},
+				});
 			}
 			let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
 			try {
@@ -22752,6 +23796,126 @@ export class StateStore {
 	}
 
 	/**
+	 * A completed lifecycle session is positive evidence that the runner already
+	 * finished its work. When its engine node is still running only because the
+	 * completion receipt is missing, replaying the work is never safe: freeze the
+	 * run and alert the Lead instead of entering blind dead-execution recovery.
+	 */
+	holdCompletedWorkflowExecutionWithoutReceipt(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now?: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		const now = input.now ?? new Date().toISOString();
+		if (
+			!input.runId ||
+			!input.nodeId ||
+			!input.executionId ||
+			!Number.isInteger(input.attempt) ||
+			input.attempt < 1 ||
+			!StateStore.workflowFiniteTimestamp(now)
+		) {
+			return { ok: false, reason: "invalid_completion_receipt_hold" };
+		}
+		const eventUid = `completion_receipt_missing:${input.runId}:${input.nodeId}:${input.attempt}:${input.executionId}`;
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "completion_receipt_hold_not_committed",
+		};
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				"SELECT kind FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			)[0];
+			if (prior) {
+				result =
+					prior.kind === "completion_receipt_missing"
+						? { ok: true, idempotentReplay: true }
+						: { ok: false, reason: "completion_receipt_hold_conflict" };
+				return;
+			}
+			const run = this.getWorkflowRun(input.runId);
+			if (!run || run.engine_owned !== 1 || run.status !== "active") {
+				result = { ok: false, reason: "engine_run_not_active" };
+				return;
+			}
+			const node = this.getWorkflowRunNode(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+			);
+			if (
+				node?.state !== "running" ||
+				node.execution_id !== input.executionId
+			) {
+				result = { ok: false, reason: "node_execution_not_current" };
+				return;
+			}
+			if (this.getSession(input.executionId)?.status !== "completed") {
+				result = { ok: false, reason: "session_not_completed" };
+				return;
+			}
+			if (
+				this.getWorkflowNodeCompletion(input.runId, input.nodeId, input.attempt)
+			) {
+				result = { ok: false, reason: "receipt_exists" };
+				return;
+			}
+			this.db.run(
+				"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+				[input.runId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "completion_receipt_hold_race" };
+				return;
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid,
+				kind: "completion_receipt_missing",
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload: { attempt: input.attempt, at: now },
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: input.runId,
+				now,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: eventUid,
+					eventType: "workflow_engine_escalation",
+					severity: "severe",
+					sessionKey: `wf:${input.runId}`,
+					title: `Completion receipt missing for ${run.issue_id}`,
+					body: `Execution ${input.executionId} completed, but run ${input.runId} node ${input.nodeId} attempt ${input.attempt} has no completion receipt. The run was held and no replacement was spawned.`,
+					metadata: {
+						workflowEngine: {
+							runId: input.runId,
+							issueId: run.issue_id,
+							nodeId: input.nodeId,
+							executionId: input.executionId,
+							disposition: "completion_receipt_missing",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	/**
 	 * Replace one proven-dead physical launch without rewriting its immutable
 	 * launch history. The node attempt stays the same; only its execution owner
 	 * and the appended launch ordinal advance.
@@ -23260,12 +24424,16 @@ export class StateStore {
 			run.gate_carrier_epoch === 1
 				? resolveWorkflowGateAuthority(input.context.snapshot)
 				: undefined;
-		const projectedStatus =
-			gateAuthority?.mode === "runner_ship" &&
-			gateAuthority.carrierNodeId === binding.node_id
-				? "ship_parked"
-				: "completed";
 		const previousStatus = this.getSession(binding.execution_id)?.status;
+		const projectedStatus =
+			input.route === "no_code"
+				? "completed"
+				: gateAuthority?.mode === "runner_ship" &&
+			gateAuthority.carrierNodeId === binding.node_id
+				? previousStatus === "awaiting_review"
+					? "awaiting_review"
+					: "ship_parked"
+				: "completed";
 		this.db.run(
 			`UPDATE workflow_run_node SET state = 'done', ended_at = ?
 			  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
@@ -23346,8 +24514,9 @@ export class StateStore {
 		try {
 			const snapshot = parseWorkflowRunSnapshot(run.snapshot);
 			return (
-				snapshot.schema_version === 1 &&
-				isWorkflowManifestV1Land(snapshot.manifest)
+				(snapshot.schema_version === 1 &&
+					isWorkflowManifestV1Land(snapshot.manifest)) ||
+				resolveWorkflowGateAuthority(snapshot).mode === "runner_ship"
 			);
 		} catch {
 			return false;
@@ -24695,6 +25864,12 @@ export class StateStore {
 			targetRepoPath: string;
 			worktreeBindingGeneration: string;
 		};
+		/** Bridge-derived proof; runner-visible completion payloads cannot set it. */
+		noCodeAttestation?: {
+			worktreeBindingGeneration: string;
+			baselineDigest: string;
+			currentDigest: string;
+		};
 		now?: string;
 	}): WorkflowCompletionResult {
 		const now = input.now ?? new Date().toISOString();
@@ -24754,7 +25929,108 @@ export class StateStore {
 			context = this.generalizedExecutionContext(input.executionId);
 		}
 		if (!context) return { ok: false, reason: "not_enrolled" };
-		if (input.route !== context.node.capabilities.completion_route) {
+		const completionRecord =
+			input.completionSubmission &&
+			typeof input.completionSubmission === "object" &&
+			!Array.isArray(input.completionSubmission)
+				? (input.completionSubmission as Record<string, unknown>)
+				: undefined;
+		const evidence =
+			completionRecord?.evidence &&
+			typeof completionRecord.evidence === "object" &&
+			!Array.isArray(completionRecord.evidence)
+				? (completionRecord.evidence as Record<string, unknown>)
+				: undefined;
+		const genericNoCodeRequested =
+			input.route === "no_code" &&
+			context.node.type === "generic" &&
+			context.node.capabilities.completion_route === "needs_review";
+		let genericNoCodeExit = false;
+		if (genericNoCodeRequested) {
+			const liveNoCodeEnabled = (() => {
+				try {
+					return (
+						(context.snapshot.template.id === "tpl_generic" ||
+							context.snapshot.template.id === "tpl_generic_menu") &&
+						getNodeTypeRegistryEntry("generic").capabilities
+							.allow_no_code_completion === true
+					);
+				} catch {
+					return false;
+				}
+			})();
+			if (!liveNoCodeEnabled) {
+				return { ok: false, reason: "no_code_not_allowed" };
+			}
+			const persistedOutput = this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_node_output_current
+				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND execution_id = ?`,
+				[
+					context.binding.run_id,
+					context.binding.node_id,
+					context.binding.attempt,
+					context.binding.execution_id,
+				],
+			)[0];
+			const persistedPr = this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_node_pr_binding
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+				[
+					context.binding.run_id,
+					context.binding.node_id,
+					context.binding.attempt,
+				],
+			)[0];
+			const session = this.getSession(input.executionId);
+			if (
+				input.prBinding !== undefined ||
+				Number.isInteger(evidence?.prNumber) ||
+				(evidence?.landingStatus !== undefined &&
+					evidence.landingStatus !== null) ||
+				persistedOutput ||
+				persistedPr ||
+				Number.isInteger(session?.pr_number) ||
+				/^[0-9a-f]{40}$/i.test(session?.pr_head_sha ?? "")
+			) {
+				return { ok: false, reason: "no_code_artifact_present" };
+			}
+			const binding = this.getWorktreeBinding(input.executionId);
+			const attestation = input.noCodeAttestation;
+			if (
+				!binding?.repoBaselineSetJson ||
+				!binding.repoBaselineSetDigest ||
+				!attestation
+			) {
+				return { ok: false, reason: "no_code_attestation_missing" };
+			}
+			const sealedBaselineValid = (() => {
+				try {
+					const parsed = JSON.parse(binding.repoBaselineSetJson);
+					return (
+						canonicalJsonString(parsed) === binding.repoBaselineSetJson &&
+						canonicalSubmissionDigest(parsed) ===
+							binding.repoBaselineSetDigest
+					);
+				} catch {
+					return false;
+				}
+			})();
+			if (!sealedBaselineValid) {
+				return { ok: false, reason: "no_code_attestation_missing" };
+			}
+			if (
+				attestation.worktreeBindingGeneration !== binding.generation ||
+				attestation.baselineDigest !== binding.repoBaselineSetDigest ||
+				attestation.currentDigest !== binding.repoBaselineSetDigest
+			) {
+				return { ok: false, reason: "no_code_attestation_stale" };
+			}
+			genericNoCodeExit = true;
+		}
+		if (
+			input.route !== context.node.capabilities.completion_route &&
+			!genericNoCodeExit
+		) {
 			return { ok: false, reason: "route_mismatch" };
 		}
 		const digest = canonicalSubmissionDigest(input.completionSubmission);
@@ -24896,7 +26172,7 @@ export class StateStore {
 		if (currentNode?.execution_id !== context.binding.execution_id) {
 			return { ok: false, reason: "stale_execution_superseded" };
 		}
-		if (context.node.capabilities.produces_output) {
+		if (context.node.capabilities.produces_output && !genericNoCodeExit) {
 			const current = this.workflowSelectAll(
 				`SELECT * FROM workflow_node_output_current
 				  WHERE run_id = ? AND node_id = ?`,
@@ -24926,11 +26202,13 @@ export class StateStore {
 					? declaredCompletionEdges[0]!.condition
 					: undefined;
 		const sessionHead = this.getSession(input.executionId)?.pr_head_sha;
-		const completionSubjectDigest = input.subjectDigest
-			? input.subjectDigest.toLowerCase()
-			: /^[0-9a-f]{40}$/i.test(sessionHead ?? "")
-				? sessionHead!.toLowerCase()
-				: undefined;
+		const completionSubjectDigest = genericNoCodeExit
+			? undefined
+			: input.subjectDigest
+				? input.subjectDigest.toLowerCase()
+				: /^[0-9a-f]{40}$/i.test(sessionHead ?? "")
+					? sessionHead!.toLowerCase()
+					: undefined;
 		let transitionRefusal: string | undefined;
 		let terminalImmuneRefusal = false;
 		try {
@@ -24986,26 +26264,63 @@ export class StateStore {
 					],
 				);
 				if (context.run.engine_owned === 1) {
-					if (!engineOutcome) {
+					if (genericNoCodeExit) {
+						this.upsertWorkflowRunNodeTx({
+							runId: context.binding.run_id,
+							nodeId: context.binding.node_id,
+							attempt: context.binding.attempt,
+							state: "done",
+							executionId: context.binding.execution_id,
+							endedAt: now,
+						});
+						this.db.run(
+							`UPDATE workflow_run SET status = 'completed'
+							  WHERE run_id = ? AND status = 'active' AND current_node_id = ?`,
+							[context.binding.run_id, context.binding.node_id],
+						);
+						if (this.db.getRowsModified() !== 1) {
+							transitionRefusal = "no_code_run_state_conflict";
+							throw new Error("engine_completion_transition_refused");
+						}
+						this.db.run(
+							`UPDATE workflow_output_credential
+							    SET revoked = 1, revoked_reason = 'completed_no_artifact'
+							  WHERE activation_id = ? AND consumed_at IS NULL AND revoked = 0`,
+							[context.binding.activation_id],
+						);
+						this.appendWorkflowRunEventTx({
+							runId: context.binding.run_id,
+							eventUid: `completed_no_artifact:${context.binding.run_id}:${context.binding.node_id}:${context.binding.attempt}`,
+							kind: "completed_no_artifact",
+							nodeId: context.binding.node_id,
+							executionId: context.binding.execution_id,
+							payload: {
+								attempt: context.binding.attempt,
+								baselineDigest: input.noCodeAttestation!.baselineDigest,
+							},
+						});
+					} else if (!engineOutcome) {
 						transitionRefusal = "decision_required";
 						throw new Error("engine_completion_transition_refused");
 					}
-					const transition = this.commitWorkflowTransitionTx({
-						runId: context.binding.run_id,
-						nodeId: context.binding.node_id,
-						attempt: context.binding.attempt,
-						executionId: context.binding.execution_id,
-						outcome: engineOutcome,
-						nodeCompletionEventUid: eventUid,
-						...(completionSubjectDigest
-							? { subjectDigest: completionSubjectDigest }
-							: {}),
-						alertIdentity: input.alertIdentity,
-						now,
-					});
-					if (!transition.ok) {
-						transitionRefusal = transition.reason;
-						throw new Error("engine_completion_transition_refused");
+					if (!genericNoCodeExit) {
+						const transition = this.commitWorkflowTransitionTx({
+							runId: context.binding.run_id,
+							nodeId: context.binding.node_id,
+							attempt: context.binding.attempt,
+							executionId: context.binding.execution_id,
+							outcome: engineOutcome!,
+							nodeCompletionEventUid: eventUid,
+							...(completionSubjectDigest
+								? { subjectDigest: completionSubjectDigest }
+								: {}),
+							alertIdentity: input.alertIdentity,
+							now,
+						});
+						if (!transition.ok) {
+							transitionRefusal = transition.reason;
+							throw new Error("engine_completion_transition_refused");
+						}
 					}
 				}
 				this.projectGeneralizedCompletionTx({
@@ -25895,6 +27210,25 @@ export class StateStore {
 				result = { ok: false, reason: "transition_target_missing" };
 				return;
 			}
+			if (target.type === "gate" && run.gate_carrier_epoch === 1) {
+				let gateAuthority: ReturnType<typeof resolveWorkflowGateAuthority>;
+				try {
+					gateAuthority = resolveWorkflowGateAuthority(snapshot);
+				} catch {
+					result = { ok: false, reason: "gate_authority_incoherent" };
+					return;
+				}
+				if (
+					gateAuthority.mode === "runner_ship" &&
+					!/^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "")
+				) {
+					// A runner-ship gate is always bound to an immutable git head. Refuse
+					// the transition before mutating the source attempt; a missing head is
+					// a held/evidence state, never an exception that escapes as HTTP 500.
+					result = { ok: false, reason: "runner_ship_head_unavailable" };
+					return;
+				}
+			}
 			const activePathRow = this.workflowSelectAll(
 				`SELECT * FROM workflow_rework_verification_path
 				  WHERE run_id = ? AND state = 'active'
@@ -26015,6 +27349,120 @@ export class StateStore {
 					targetNodeId: target.id,
 					targetAttempt,
 					loopIteration,
+					escalated: true,
+				};
+				return;
+			}
+			const qaDecisionProducers = snapshot.resolved.nodes.flatMap((node) => {
+				const contract = resolveWorkflowDecisionContract(snapshot, node.id);
+				return contract?.family === "qa_verdict" &&
+					contract.passPredicate === "qa_passed"
+					? [{ nodeId: node.id }]
+					: [];
+			});
+			const qaDecisionNodeId =
+				qaDecisionProducers.length === 1
+					? qaDecisionProducers[0]!.nodeId
+					: undefined;
+			const qaDecisionAttempt = qaDecisionNodeId
+				? this.listWorkflowRunNodes(input.runId, qaDecisionNodeId).at(-1)
+						?.attempt
+				: undefined;
+			const suppressQaIdleSpin =
+				authorityKickback === "qa" &&
+				!supersedingRework &&
+				qaDecisionNodeId !== undefined &&
+				qaDecisionAttempt !== undefined &&
+				/^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "") &&
+				this.resolveWorkflowDecisionClaim({
+					runId: input.runId,
+					nodeId: qaDecisionNodeId,
+					decisionKind: "qa_verdict",
+					predicate: "qa_passed",
+					requiredAttempt: qaDecisionAttempt,
+					subjectKind: "git_head",
+					subjectDigest: input.subjectDigest!.toLowerCase(),
+					now,
+				}).valid;
+			if (suppressQaIdleSpin) {
+				this.upsertWorkflowRunNodeTx({
+					runId: input.runId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+					state: "done",
+					executionId: input.executionId,
+					endedAt: now,
+				});
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid:
+						input.nodeCompletionEventUid ??
+						`engine_node_completed:${input.runId}:${input.nodeId}:${input.attempt}`,
+					kind: "node_completed",
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					payload: { attempt: input.attempt, outcome: input.outcome },
+				});
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+					[input.runId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_rework_idle_spin_run_cas_failed");
+				}
+				const receipt = {
+					edgeId: selectedId,
+					targetNodeId: target.id,
+					targetAttempt,
+					sourceAttempt: input.attempt,
+					outcome: input.outcome,
+					loopIteration,
+					escalated: true,
+					reason: "current_qa_pass_already_exists",
+				};
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid: transitionUid,
+					kind: "rework_suppressed_idle_spin",
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					payload: receipt,
+				});
+				if (input.alertIdentity) {
+					this.enqueueWorkflowEngineAlertTx({
+						escalationUid: transitionUid,
+						runId: input.runId,
+						now,
+						payload: {
+							leadId: input.alertIdentity.leadId,
+							projectName: input.alertIdentity.projectName,
+							eventId: transitionUid,
+							eventType: "workflow_engine_escalation",
+							severity: "severe",
+							sessionKey: `wf:${input.runId}`,
+							title: `QA rework idle spin suppressed for ${run.issue_id}`,
+							body: `Run ${input.runId} already has a valid QA PASS for head ${input.subjectDigest!.toLowerCase()}, so the duplicate ${input.outcome} rework was suppressed and the run was held for Lead review.`,
+							metadata: {
+								workflowEngine: {
+									runId: input.runId,
+									issueId: run.issue_id,
+									nodeId: input.nodeId,
+									executionId: input.executionId,
+									disposition: "rework_suppressed_idle_spin",
+									subjectDigest: input.subjectDigest!.toLowerCase(),
+									leadResolution: input.alertIdentity.leadResolution,
+								},
+							},
+						},
+					});
+				}
+				result = {
+					ok: true,
+					idempotentReplay: false,
+					edgeId: selectedId,
+					targetNodeId: target.id,
+					targetAttempt,
+					...(loopIteration ? { loopIteration } : {}),
 					escalated: true,
 				};
 				return;
@@ -26309,6 +27757,9 @@ export class StateStore {
 						attempt: targetAttempt,
 						sourceExecutionId: input.executionId,
 						snapshot,
+						...(input.subjectDigest
+							? { runnerShipHeadSha: input.subjectDigest }
+							: {}),
 						alertIdentity: input.alertIdentity,
 						now,
 					});
@@ -28013,6 +29464,7 @@ export class StateStore {
 	private resolveWorkflowGateEvidenceTx(input: {
 		runId: string;
 		snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+		runnerShipHeadSha?: string;
 		now: string;
 	}): {
 		subjectKind: WorkflowGateSubjectKind;
@@ -28029,6 +29481,17 @@ export class StateStore {
 		const required = input.snapshot.manifest.ship_claims.filter(
 			(predicate) => predicate !== "founder_approved",
 		);
+		if (authority.mode === "runner_ship" && required.length === 0) {
+			const headSha = input.runnerShipHeadSha?.trim().toLowerCase();
+			if (!headSha || !/^[0-9a-f]{40}$/.test(headSha)) {
+				throw new Error("workflow_gate_runner_ship_head_unavailable");
+			}
+			return {
+				subjectKind: "git_head",
+				subjectDigest: headSha,
+				evidence: [],
+			};
+		}
 		if (required.length === 0) {
 			return {
 				subjectKind: "snapshot_digest",
@@ -28139,6 +29602,7 @@ export class StateStore {
 		attempt: number;
 		sourceExecutionId: string;
 		snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+		runnerShipHeadSha?: string;
 		alertIdentity?: WorkflowEngineAlertIdentity;
 		now: string;
 	}): WorkflowGateHolderRow {
@@ -28146,6 +29610,9 @@ export class StateStore {
 		const proof = this.resolveWorkflowGateEvidenceTx({
 			runId: input.runId,
 			snapshot: input.snapshot,
+			...(input.runnerShipHeadSha
+				? { runnerShipHeadSha: input.runnerShipHeadSha }
+				: {}),
 			now: input.now,
 		});
 		if (proof.subjectKind !== authority.subjectKind) {
@@ -28179,10 +29646,16 @@ export class StateStore {
 				candidate?.execution_id == null
 					? undefined
 					: this.getSession(candidate.execution_id);
+			const prBinding = this.getCurrentWorkflowNodePrBindingForHead(
+				input.runId,
+				proof.subjectDigest,
+			);
 			if (
 				candidate?.execution_id &&
 				activation &&
-				session?.status === "ship_parked" &&
+				(session?.status === "running" || session?.status === "ship_parked") &&
+				prBinding?.node_id === authority.carrierNodeId &&
+				prBinding.attempt === candidate.attempt &&
 				session.pr_head_sha?.toLowerCase() === proof.subjectDigest.toLowerCase()
 			) {
 				this.db.run(
@@ -28194,9 +29667,9 @@ export class StateStore {
 					        gate_timeout_notified_at = NULL,
 					        last_activity_at = ?,
 					        terminal_at = NULL
-					  WHERE execution_id = ?
-					    AND status = 'ship_parked'
-					    AND review_question_id IS NULL
+				  WHERE execution_id = ?
+				    AND status IN ('running','ship_parked')
+				    AND review_question_id IS NULL
 					    AND lower(pr_head_sha) = lower(?)`,
 					[
 						questionId,
@@ -28214,6 +29687,11 @@ export class StateStore {
 				}
 			}
 		}
+		this.supersedeWorkflowShipTargetsForCurrentGateTx({
+			runId: input.runId,
+			gateNodeId: input.gateNodeId,
+			now: input.now,
+		});
 		this.db.run(
 			`UPDATE workflow_gate_holder
 			    SET state = 'superseded',
@@ -28266,6 +29744,13 @@ export class StateStore {
 					input.now,
 				],
 			);
+		}
+		if (carrierBindingState === "bound") {
+			this.bindWorkflowShipTargetForGateTx({
+				runId: input.runId,
+				questionId,
+				headSha: proof.subjectDigest,
+			});
 		}
 		this.appendWorkflowRunEventTx({
 			runId: input.runId,
@@ -30387,9 +31872,15 @@ export class StateStore {
 			return undefined;
 		}
 		const session = this.getSession(candidateExecutionId);
+		const prBinding = this.getCurrentWorkflowNodePrBindingForHead(
+			String(holder.run_id),
+			String(holder.head_sha),
+		);
 		if (
 			session?.status !== "ship_parked" ||
 			session.review_question_id != null ||
+			prBinding?.node_id !== authority.carrierNodeId ||
+			prBinding.attempt !== candidate.attempt ||
 			session.pr_head_sha?.toLowerCase() !==
 				String(holder.head_sha).toLowerCase()
 		) {
@@ -30556,9 +32047,16 @@ export class StateStore {
 				return;
 			}
 			const session = this.getSession(input.candidateExecutionId);
+			const prBinding = this.getCurrentWorkflowNodePrBindingForHead(
+				String(holder.run_id),
+				String(holder.head_sha),
+			);
 			if (
 				session?.status !== "ship_parked" ||
 				session.review_question_id != null ||
+				prBinding == null ||
+				prBinding.node_id !== authority.carrierNodeId ||
+				prBinding.attempt !== candidate.attempt ||
 				session.pr_head_sha?.toLowerCase() !==
 					String(holder.head_sha).toLowerCase()
 			) {
@@ -30601,6 +32099,12 @@ export class StateStore {
 			if (this.db.getRowsModified() !== 1) {
 				throw new Error("workflow_gate_carrier_rebind_session_raced");
 			}
+			this.bindWorkflowShipTargetForGateTx({
+				runId: String(holder.run_id),
+				questionId: input.questionId,
+				headSha: String(holder.head_sha),
+				sourceRequestId: input.requestId,
+			});
 			this.db.run(
 				`INSERT INTO workflow_gate_carrier_rebind_receipt
 				   (request_id, canonical_digest, question_id, run_id, gate_node_id,
@@ -33819,7 +35323,11 @@ export interface WorkflowReworkDeliveryRow {
 		| "wake_delivered"
 		| "replacement_pending"
 		| "completed"
-		| "held";
+		| "held"
+		| "needs_lead";
+	hold_count: number;
+	next_retry_at: string | null;
+	grant_started_at: string | null;
 	last_error: string | null;
 	updated_at: string;
 }
@@ -33828,7 +35336,7 @@ export interface WorkflowReworkVerificationPathRow {
 	request_id: string;
 	run_id: string;
 	route_revision: number;
-	state: "pending" | "active" | "completed";
+	state: "pending" | "active" | "completed" | "needs_lead";
 	current_node_id: string;
 	current_attempt: number;
 	updated_at: string;
@@ -33842,6 +35350,7 @@ export type WorkflowReworkDeliveryClaimResult =
 				| "invalid_delivery_claim"
 				| "rework_delivery_not_found"
 				| "delivery_busy"
+				| "delivery_backoff"
 				| "delivery_settled";
 			state?: WorkflowReworkDeliveryRow["state"];
 	  };
@@ -33928,6 +35437,9 @@ export interface WorkflowLaunchOwnerRow {
 	delivery_owner: string | null;
 	delivery_lease_expires_at: string | null;
 	delivery_state: "pending" | "repairing" | "delivered";
+	released_generation: number | null;
+	released_at: string | null;
+	released_reason: string | null;
 }
 
 export interface WorkflowLaunchCancellationRow {
@@ -33935,6 +35447,20 @@ export interface WorkflowLaunchCancellationRow {
 	generation: number;
 	reason: string;
 	created_at: string;
+}
+
+export interface WorkflowLaunchWindowIdentity {
+	socketPath: string;
+	serverStartTime: string;
+	windowId: string;
+	executionId: string;
+	launchGeneration: number;
+	launchFingerprint: string;
+}
+
+export interface WorkflowLaunchWindowEvidence
+	extends WorkflowLaunchWindowIdentity {
+	physicalEvidence: "absent" | "cleaned";
 }
 
 export type UnlaunchedWorkflowCancellationResult =
@@ -34039,6 +35565,10 @@ export type WorkflowCompletionResult =
 				| "not_enrolled"
 				| "route_mismatch"
 				| "completion_conflict"
+				| "no_code_not_allowed"
+				| "no_code_artifact_present"
+				| "no_code_attestation_missing"
+				| "no_code_attestation_stale"
 				| "terminal_status_immune"
 				| "stale_resubmission_identity_missing"
 				| "transition_refused";
@@ -34137,6 +35667,9 @@ export interface WorkflowEngineAlertPayload {
 			disposition:
 				| "held"
 				| "partial"
+				| "completion_receipt_missing"
+				| "rework_suppressed_idle_spin"
+				| "rework_retry_exhausted"
 				| "probe_unknown"
 				| "stale_resubmission"
 				| "dead_execution_activity_after_replacement"

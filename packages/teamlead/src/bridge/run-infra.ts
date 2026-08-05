@@ -53,14 +53,20 @@ import { Blueprint } from "flywheel-edge-worker/dist/Blueprint.js";
 import { PreHydrator } from "flywheel-edge-worker/dist/PreHydrator.js";
 import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import type { StateStore } from "../StateStore.js";
+import {
+	isStateStoreIrreversibleTerminalForZombie,
+	type StateStore,
+} from "../StateStore.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { EventFilter } from "./EventFilter.js";
 import type { IssueDisplayRefreshHolder } from "./issue-display-refresher.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
 import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
-import { persistPaneLossGenerationCredential } from "./pane-loss-reconcile.js";
+import {
+	parsePaneLossGenerationParams,
+	persistPaneLossGenerationCredential,
+} from "./pane-loss-reconcile.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import type { LifecycleShipInfra } from "./post-ship-finalization.js";
 import {
@@ -645,6 +651,62 @@ export function createRunInfraWorkflowClaimsAdmission(
 	};
 }
 
+export function resolveWorkflowTmuxWindowAuthority(
+	store: Pick<
+		StateStore,
+		| "getSession"
+		| "getWorkflowExecutionBinding"
+		| "getWorkflowLaunchOwner"
+		| "getWorkflowNodeCompletion"
+	>,
+	launchExecutionId: string,
+	candidate: {
+		windowId: string;
+		windowName: string;
+		executionId?: string;
+		launchGeneration?: number;
+		launchFingerprint?: string;
+	},
+): "prune" | "keep" {
+	if (!candidate.executionId) return "keep";
+	if (candidate.executionId === launchExecutionId) {
+		if (
+			candidate.launchGeneration === undefined ||
+			!candidate.launchFingerprint
+		) {
+			return "keep";
+		}
+		const persisted = parsePaneLossGenerationParams(
+			store.getSession(launchExecutionId)?.session_params,
+		);
+		if (
+			persisted?.window_id !== candidate.windowId ||
+			persisted.execution_id !== launchExecutionId ||
+			persisted.launch_generation !== candidate.launchGeneration ||
+			persisted.launch_fingerprint !== candidate.launchFingerprint
+		) {
+			return "keep";
+		}
+		const owner = store.getWorkflowLaunchOwner(launchExecutionId);
+		return (owner?.released_generation ?? 0) >= candidate.launchGeneration
+			? "prune"
+			: "keep";
+	}
+	const session = store.getSession(candidate.executionId);
+	if (!isStateStoreIrreversibleTerminalForZombie(session?.status)) {
+		return "keep";
+	}
+	if (session?.status !== "completed") return "prune";
+	const binding = store.getWorkflowExecutionBinding(candidate.executionId);
+	if (!binding) return "prune";
+	const completion = store.getWorkflowNodeCompletion(
+		binding.run_id,
+		binding.node_id,
+		binding.attempt,
+	);
+	return completion?.execution_id === candidate.executionId ? "prune" : "keep";
+}
+
 /**
  * Single production constructor call for RunDispatcher. Keeping the positional
  * wiring here makes the hot runtime + always-available admission capability
@@ -681,6 +743,12 @@ export function createRunInfraDispatcher(input: {
 		(issueId) => input.store.getSkillFrameworkStamp(issueId),
 		(executionId, info) =>
 			persistPaneLossGenerationCredential(input.store, executionId, info),
+		(launchExecutionId, candidate) =>
+			resolveWorkflowTmuxWindowAuthority(
+				input.store,
+				launchExecutionId,
+				candidate,
+			),
 	);
 }
 

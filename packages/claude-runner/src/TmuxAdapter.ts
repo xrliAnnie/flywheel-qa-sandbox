@@ -25,6 +25,7 @@ import type {
 	AdapterHealthCheck,
 	IAdapter,
 	IHookCallbackServer,
+	LaunchPrecommitFailure,
 } from "flywheel-core";
 import { FLYWHEEL_MARKER_DIR, sanitizeTmuxName } from "flywheel-core";
 
@@ -81,6 +82,17 @@ export class TmuxSessionHoldError extends Error {
 	) {
 		super(message);
 		this.name = "TmuxSessionHoldError";
+	}
+}
+
+export class LaunchPrecommitError extends Error {
+	readonly name = "LaunchPrecommitError";
+
+	constructor(
+		readonly launchFailure: LaunchPrecommitFailure,
+		message: string,
+	) {
+		super(message);
 	}
 }
 
@@ -263,7 +275,7 @@ export class TmuxAdapter implements IAdapter {
 			this.preflightDone = true;
 		}
 
-		const windowName = this.sanitizeWindowName(
+		let windowName = this.sanitizeWindowName(
 			ctx.label ?? `issue-${Date.now()}`,
 		);
 		const claudeSessionId = randomUUID();
@@ -272,6 +284,11 @@ export class TmuxAdapter implements IAdapter {
 
 		// Generate per-run callback token if hookServer available
 		const callbackToken = this.hookServer ? randomUUID() : undefined;
+
+		// FLY-1638: a completed generation can leave a same-name window behind.
+		// Resolve those exact identities before the capacity guard runs; otherwise
+		// ensureSession reports saturation and a fresh launch never gets a chance.
+		windowName = this.purgeTerminalSameNameWorkflowWindows(ctx, windowName);
 
 		// Ensure session exists (idempotent)
 		await this.ensureSession();
@@ -638,15 +655,40 @@ export class TmuxAdapter implements IAdapter {
 		// CommDB row is later lost, the event-driven WAKE path can rediscover this
 		// one live holder without guessing from StateStore metadata.
 		try {
-			this.execFileFn("tmux", [
-				"set-option",
-				"-w",
-				"-t",
-				exactWindowTarget,
-				"@flywheel_exec_id",
-				ctx.executionId,
-			]);
+			const identityOptions: Array<[string, string]> = [
+				["@flywheel_exec_id", ctx.executionId],
+			];
+			if (ctx.commitWorkflowLaunch) {
+				if (ctx.launchGeneration === undefined || !ctx.launchFingerprint) {
+					throw new Error("workflow launch generation identity is missing");
+				}
+				identityOptions.push(
+					["@flywheel_launch_generation", String(ctx.launchGeneration)],
+					["@flywheel_launch_fingerprint", ctx.launchFingerprint],
+				);
+			}
+			for (const [option, value] of identityOptions) {
+				this.execFileFn("tmux", [
+					"set-option",
+					"-w",
+					"-t",
+					exactWindowTarget,
+					option,
+					value,
+				]);
+			}
 		} catch (err) {
+			if (ctx.commitWorkflowLaunch) {
+				const physicalEvidence = this.cleanupExactWindow(exactWindowTarget);
+				throw new LaunchPrecommitError(
+					{
+						code: "LAUNCH_WINDOW_IDENTITY_FAILED",
+						reason: "identity_publish_failed",
+						physicalEvidence,
+					},
+					`[TmuxAdapter] workflow identity publish failed for ${exactWindowTarget}: ${(err as Error).message}`,
+				);
+			}
 			console.warn(
 				`[TmuxAdapter] execution identity publish failed for ${exactWindowTarget}: ${(err as Error).message}`,
 			);
@@ -693,13 +735,12 @@ export class TmuxAdapter implements IAdapter {
 					windowId,
 					socketPath,
 					serverStartTime,
+					executionId: ctx.executionId,
+					launchGeneration: ctx.launchGeneration,
+					launchFingerprint: ctx.launchFingerprint,
 				});
 			} catch (err) {
-				try {
-					this.execFileFn("tmux", ["kill-window", "-t", exactWindowTarget]);
-				} catch {
-					// best-effort cleanup; the gate is still closed.
-				}
+				const physicalEvidence = this.cleanupExactWindow(exactWindowTarget);
 				if (directGateFile) {
 					try {
 						unlinkSync(directGateFile);
@@ -707,7 +748,12 @@ export class TmuxAdapter implements IAdapter {
 						// file normally does not exist yet
 					}
 				}
-				throw new Error(
+				throw new LaunchPrecommitError(
+					{
+						code: "LAUNCH_WINDOW_IDENTITY_FAILED",
+						reason: "generation_record_failed",
+						physicalEvidence,
+					},
 					`[TmuxAdapter] launch aborted before generation commit for ${ctx.executionId}: ${(err as Error).message}`,
 				);
 			}
@@ -735,15 +781,7 @@ export class TmuxAdapter implements IAdapter {
 					chmodSync(gateFile, 0o600);
 				}
 			} catch (err) {
-				try {
-					this.execFileFn("tmux", [
-						"kill-window",
-						"-t",
-						`${this.sessionName}:${windowId}`,
-					]);
-				} catch {
-					// best-effort; the gated shell self-exits on its bounded timeout.
-				}
+				const physicalEvidence = this.cleanupExactWindow(exactWindowTarget);
 				if (directGateFile) {
 					try {
 						unlinkSync(directGateFile);
@@ -751,7 +789,12 @@ export class TmuxAdapter implements IAdapter {
 						// best-effort; the killed gated shell cannot start.
 					}
 				}
-				throw new Error(
+				throw new LaunchPrecommitError(
+					{
+						code: "LAUNCH_PRECOMMIT_FAILED",
+						reason: `launch_commit_failed:${(err as Error).message}`,
+						physicalEvidence,
+					},
 					`[TmuxAdapter] launch aborted: could not write durable commit for ${ctx.executionId} ` +
 						`(Claude never started; gated shell self-reaps): ${(err as Error).message}`,
 				);
@@ -1327,6 +1370,100 @@ export class TmuxAdapter implements IAdapter {
 				}, this.pollIntervalMs);
 			}
 		});
+	}
+
+	private cleanupExactWindow(exactWindowTarget: string): "cleaned" | "unknown" {
+		try {
+			this.execFileFn("tmux", ["kill-window", "-t", exactWindowTarget]);
+		} catch {
+			// Verification below is authoritative; the window may already be absent.
+		}
+		try {
+			this.execFileFn("tmux", [
+				"display-message",
+				"-p",
+				"-t",
+				exactWindowTarget,
+				"#{window_id}",
+			]);
+			return "unknown";
+		} catch {
+			return "cleaned";
+		}
+	}
+
+	private purgeTerminalSameNameWorkflowWindows(
+		ctx: AdapterExecutionContext,
+		windowName: string,
+	): string {
+		if (!ctx.workflowTmuxWindowAuthority) return windowName;
+		let listed: string;
+		try {
+			listed = this.execFileFn("tmux", [
+				"list-windows",
+				"-t",
+				`=${this.sessionName}`,
+				"-F",
+				"#{window_id}|#{window_name}|#{@flywheel_exec_id}|#{@flywheel_launch_generation}|#{@flywheel_launch_fingerprint}",
+			]).stdout;
+		} catch {
+			// A missing base session is the normal first-launch shape; ensureSession
+			// below creates it. Other lookup failures stay fail-closed there.
+			return windowName;
+		}
+		let collisionRemains = false;
+		const occupiedNames = new Set<string>();
+		for (const line of listed.split("\n")) {
+			if (!line.trim()) continue;
+			const [windowId, candidateName, executionId, rawGeneration, fingerprint] =
+				line.split("|");
+			if (candidateName) occupiedNames.add(candidateName);
+			if (candidateName !== windowName) continue;
+			if (!windowId || !/^@\d+$/.test(windowId)) {
+				collisionRemains = true;
+				continue;
+			}
+			const launchGeneration = /^\d+$/.test(rawGeneration ?? "")
+				? Number(rawGeneration)
+				: undefined;
+			const authority = ctx.workflowTmuxWindowAuthority({
+				windowId,
+				windowName: candidateName,
+				...(executionId && { executionId }),
+				...(launchGeneration !== undefined && { launchGeneration }),
+				...(fingerprint && { launchFingerprint: fingerprint }),
+			});
+			if (authority !== "prune") {
+				collisionRemains = true;
+				continue;
+			}
+			if (
+				this.cleanupExactWindow(`=${this.sessionName}:${windowId}`) !==
+				"cleaned"
+			) {
+				collisionRemains = true;
+			}
+		}
+		if (!collisionRemains) return windowName;
+		const identitySuffix = `-${ctx.executionId.slice(0, 8)}${
+			ctx.launchGeneration === undefined ? "" : `-g${ctx.launchGeneration}`
+		}`;
+		// tmux permits duplicate display names, so the fallback must itself be
+		// preflighted. A session cannot hold this many windows under our admission
+		// cap; the bound still makes a corrupt inventory fail closed.
+		for (let retry = 0; retry <= 100; retry += 1) {
+			const suffix = `${identitySuffix}${retry === 0 ? "" : `-r${retry}`}`;
+			const availableBaseLength = Math.max(1, 50 - suffix.length);
+			const selected = this.sanitizeWindowName(
+				`${windowName.slice(0, availableBaseLength)}${suffix}`,
+			);
+			if (!occupiedNames.has(selected)) return selected;
+		}
+		throw new TmuxSessionHoldError(
+			"ambiguous",
+			{ windowName, executionId: ctx.executionId },
+			"tmux session ensure held: no unique workflow window name",
+		);
 	}
 
 	private async ensureSession(): Promise<void> {

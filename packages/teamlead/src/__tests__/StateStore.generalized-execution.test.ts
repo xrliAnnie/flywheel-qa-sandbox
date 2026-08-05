@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalSubmissionDigest } from "flywheel-config";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
@@ -21,7 +22,10 @@ afterEach(() => {
 		rmSync(root, { recursive: true, force: true });
 });
 
-function createRun(store: StateStore, options: { output?: boolean } = {}) {
+function createRun(
+	store: StateStore,
+	options: { output?: boolean; templateId?: string } = {},
+) {
 	const root = mkdtempSync(join(tmpdir(), "flywheel-generalized-"));
 	cleanups.push(root);
 	mkdirSync(join(root, "agents"));
@@ -41,7 +45,7 @@ function createRun(store: StateStore, options: { output?: boolean } = {}) {
 			: {}),
 	};
 	const snapshot = buildWorkflowRunSnapshotV2({
-		template: { id: "tpl-test", revision: 1 },
+		template: { id: options.templateId ?? "tpl-test", revision: 1 },
 		canonicalRoot: root,
 		manifest: {
 			schema_version: 2,
@@ -71,7 +75,7 @@ function createRun(store: StateStore, options: { output?: boolean } = {}) {
 
 function createAdmittedEngineRun(
 	store: StateStore,
-	options: { output?: boolean } = {},
+	options: { output?: boolean; templateId?: string } = {},
 ): { markerPath: string; outputCredential?: string } {
 	createRun(store, options);
 	const db = (
@@ -365,7 +369,7 @@ describe("generalized execution admission and terminal contracts", () => {
 				nodeId: "review",
 				executionId: "review",
 				attempt: 1,
-				now: "2026-07-15T00:10:00.000Z",
+				now: "2026-07-15T00:04:00.000Z",
 				expiresAt: "2026-07-15T01:10:00.000Z",
 				absoluteDeadlineAt: "2026-07-16T00:10:00.000Z",
 				env: enabled,
@@ -609,7 +613,7 @@ describe("generalized execution admission and terminal contracts", () => {
 				launchOrdinal: 1,
 				cancellationOwner: "tripwire-a",
 				reason: "unlaunched_admission_ttl",
-				now: "2026-07-15T00:10:00.000Z",
+				now: "2026-07-15T00:04:00.000Z",
 			}),
 		).toEqual({ ok: false, reason: "launch_owner_live" });
 		expect(liveStore.getWorkflowLaunchCancellation("exec-1")).toBeUndefined();
@@ -622,7 +626,7 @@ describe("generalized execution admission and terminal contracts", () => {
 			launchOrdinal: 1,
 			cancellationOwner: "tripwire-a",
 			reason: "unlaunched_admission_ttl",
-			now: "2026-07-15T00:31:00.000Z",
+			now: "2026-07-15T00:06:00.000Z",
 		});
 		expect(expired).toMatchObject({ ok: true, generation: 2 });
 		expect(liveStore.getWorkflowLaunchOwner("exec-1")).toMatchObject({
@@ -637,7 +641,7 @@ describe("generalized execution admission and terminal contracts", () => {
 				generation: 1,
 				deliveryAttempt: 0,
 				markerPath: live.markerPath,
-				now: "2026-07-15T00:32:00.000Z",
+				now: "2026-07-15T00:07:00.000Z",
 			}),
 		).toEqual({ ok: false, reason: "launch_cancelled" });
 		liveStore.close();
@@ -758,84 +762,194 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
-	it("refuses rollback when any positive never-launched evidence surface is missing", async () => {
-		const cases: Array<{
-			name: string;
-			arrange: (store: StateStore, markerPath: string) => void;
-			reason: string;
-		}> = [
-			{
-				name: "lifecycle claim",
-				arrange: (store) =>
-					store.insertLaunchClaim({
-						executionId: "exec-1",
-						rootUuid: "FLY-X",
-						project: "flywheel",
-						role: "main",
-					}),
-				reason: "lifecycle_claim_present",
-			},
-			{
-				name: "session row",
-				arrange: (store) =>
-					store.upsertSession({
-						execution_id: "exec-1",
-						issue_id: "FLY-X",
-						project_name: "flywheel",
-						status: "running",
-					}),
-				reason: "session_present",
-			},
-			{
-				name: "launch marker",
-				arrange: (_store, markerPath) => writeFileSync(markerPath, "late"),
-				reason: "launch_marker_present",
-			},
-		];
+	it("treats early logical rows as precommit state but still refuses a durable launch marker", async () => {
+		const store = await StateStore.create(":memory:");
+		const { markerPath } = createAdmittedEngineRun(store);
+		store.insertLaunchClaim({
+			executionId: "exec-1",
+			rootUuid: "FLY-X",
+			project: "flywheel",
+			role: "main",
+		});
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		const fenced = store.beginUnlaunchedWorkflowCancellation({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 1,
+			executionId: "exec-1",
+			launchOrdinal: 1,
+			cancellationOwner: "tripwire-a",
+			reason: "unlaunched_admission_ttl",
+			now: "2026-07-15T02:00:00.000Z",
+		});
+		expect(fenced).toMatchObject({ ok: true });
+		if (!fenced.ok) throw new Error(fenced.reason);
 
-		for (const testCase of cases) {
-			const store = await StateStore.create(":memory:");
-			const { markerPath } = createAdmittedEngineRun(store);
-			if (testCase.name !== "launch marker")
-				testCase.arrange(store, markerPath);
-			const fenced = store.beginUnlaunchedWorkflowCancellation({
+		writeFileSync(markerPath, "late");
+		expect(
+			store.rollbackUnlaunchedWorkflowAdmission({
 				runId: "run-1",
 				nodeId: "execute",
 				attempt: 1,
 				executionId: "exec-1",
 				launchOrdinal: 1,
-				cancellationOwner: "tripwire-a",
-				reason: "unlaunched_admission_ttl",
-				now: "2026-07-15T02:00:00.000Z",
+				fenceGeneration: fenced.generation,
+				markerPath,
+				now: "2026-07-15T02:01:00.000Z",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			}),
+		).toEqual({ ok: false, reason: "launch_marker_present" });
+		expect(store.listWorkflowSideEffects("run-1")[0]?.state).toBe(
+			"intent_recorded",
+		);
+		store.close();
+	});
+
+	it("closes early logical session evidence when the fenced launch stays physically absent", async () => {
+		const store = await StateStore.create(":memory:");
+		const { markerPath } = createAdmittedEngineRun(store);
+		store.insertLaunchClaim({
+			executionId: "exec-1",
+			rootUuid: "FLY-X",
+			project: "flywheel",
+			role: "main",
+		});
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		const fenced = store.beginUnlaunchedWorkflowCancellation({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 1,
+			executionId: "exec-1",
+			launchOrdinal: 1,
+			cancellationOwner: "tripwire-a",
+			reason: "unlaunched_admission_ttl",
+			now: "2026-07-15T02:00:00.000Z",
+		});
+		if (!fenced.ok) throw new Error(fenced.reason);
+		expect(
+			store.rollbackUnlaunchedWorkflowAdmission({
+				runId: "run-1",
+				nodeId: "execute",
+				attempt: 1,
+				executionId: "exec-1",
+				launchOrdinal: 1,
+				fenceGeneration: fenced.generation,
+				markerPath,
+				now: "2026-07-15T02:01:00.000Z",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			}),
+		).toMatchObject({ ok: true });
+		expect(store.getLaunchClaim("exec-1")?.state).toBe("closed");
+		expect(store.getSession("exec-1")?.status).toBe("failed");
+		store.close();
+	});
+
+	it("requires exact verified window cleanup before rolling back a persisted precommit window", async () => {
+		const store = await StateStore.create(":memory:");
+		const { markerPath } = createAdmittedEngineRun(store);
+		const owner = store.recoverOrAcquireWorkflowLaunch({
+			executionId: "exec-1",
+			ownerId: "dispatcher-a",
+			now: "2026-07-15T00:01:00.000Z",
+			leaseExpiresAt: "2026-07-15T00:06:00.000Z",
+			markerPath,
+		});
+		if (owner.status !== "acquired") throw new Error("owner not acquired");
+		const identity = {
+			socketPath: "/tmp/flywheel.sock",
+			serverStartTime: "123",
+			windowId: "@7",
+			executionId: "exec-1",
+			launchGeneration: owner.generation,
+			launchFingerprint: "a".repeat(64),
+		};
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			session_params: JSON.stringify({
+				pane_loss_generation: {
+					socket_path: identity.socketPath,
+					server_start_time: identity.serverStartTime,
+					window_id: identity.windowId,
+					execution_id: identity.executionId,
+					launch_generation: identity.launchGeneration,
+					launch_fingerprint: identity.launchFingerprint,
+				},
+			}),
+		});
+		const fenced = store.beginUnlaunchedWorkflowCancellation({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 1,
+			executionId: "exec-1",
+			launchOrdinal: 1,
+			cancellationOwner: "tripwire-a",
+			reason: "unlaunched_admission_ttl",
+			now: "2026-07-15T00:07:00.000Z",
+		});
+		if (!fenced.ok) throw new Error(fenced.reason);
+		const rollback = (preciseWindowEvidence?: {
+			physicalEvidence: "absent" | "cleaned";
+			launchFingerprint: string;
+		}) =>
+			store.rollbackUnlaunchedWorkflowAdmission({
+				runId: "run-1",
+				nodeId: "execute",
+				attempt: 1,
+				executionId: "exec-1",
+				launchOrdinal: 1,
+				fenceGeneration: fenced.generation,
+				markerPath,
+				now: "2026-07-15T00:08:00.000Z",
+				...(preciseWindowEvidence && {
+					preciseWindowEvidence: {
+						...identity,
+						...preciseWindowEvidence,
+					},
+				}),
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
 			});
-			if (testCase.name === "launch marker") {
-				expect(fenced).toMatchObject({ ok: true });
-				testCase.arrange(store, markerPath);
-				expect(
-					store.rollbackUnlaunchedWorkflowAdmission({
-						runId: "run-1",
-						nodeId: "execute",
-						attempt: 1,
-						executionId: "exec-1",
-						launchOrdinal: 1,
-						fenceGeneration: fenced.ok ? fenced.generation : -1,
-						markerPath,
-						now: "2026-07-15T02:01:00.000Z",
-						alertIdentity: {
-							leadId: "flywheel-eng-lead",
-							projectName: "flywheel",
-							leadResolution: "resolved",
-						},
-					}),
-				).toEqual({ ok: false, reason: testCase.reason });
-			} else {
-				expect(fenced).toEqual({ ok: false, reason: testCase.reason });
-			}
-			expect(store.listWorkflowSideEffects("run-1")[0]?.state).toBe(
-				"intent_recorded",
-			);
-			store.close();
-		}
+		expect(rollback()).toEqual({
+			ok: false,
+			reason: "precise_window_evidence_present",
+		});
+		expect(
+			rollback({
+				physicalEvidence: "cleaned",
+				launchFingerprint: "b".repeat(64),
+			}),
+		).toEqual({ ok: false, reason: "precise_window_evidence_present" });
+		expect(
+			rollback({
+				physicalEvidence: "cleaned",
+				launchFingerprint: identity.launchFingerprint,
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		store.close();
 	});
 
 	it("repairs marker-after/DB-before crashes before lease takeover", async () => {
@@ -952,6 +1066,102 @@ describe("generalized execution admission and terminal contracts", () => {
 				now: "2026-07-15T00:16:00.000Z",
 			}),
 		).toEqual({ ok: false, reason: "stale_delivery_owner" });
+		store.close();
+	});
+
+	it("bounds an uncommitted launch to a 10-minute horizon and advances an expired same-owner generation", async () => {
+		const store = await StateStore.create(":memory:");
+		const { markerPath } = createAdmittedEngineRun(store);
+		const first = store.recoverOrAcquireWorkflowLaunch({
+			executionId: "exec-1",
+			ownerId: "stable-dispatcher",
+			now: "2026-07-15T00:00:00.000Z",
+			leaseExpiresAt: "2026-07-15T00:05:00.000Z",
+			markerPath,
+		});
+		expect(first).toMatchObject({ status: "acquired", generation: 1 });
+		if (first.status !== "acquired") throw new Error("owner not acquired");
+
+		expect(
+			store.renewWorkflowLaunchOwner({
+				executionId: "exec-1",
+				ownerId: "stable-dispatcher",
+				generation: 1,
+				now: "2026-07-15T00:04:00.000Z",
+				leaseExpiresAt: "2026-07-15T01:04:00.000Z",
+			}),
+		).toEqual({ ok: true });
+		expect(store.getWorkflowLaunchOwner("exec-1")?.lease_expires_at).toBe(
+			"2026-07-15T00:09:00.000Z",
+		);
+		expect(
+			store.renewWorkflowLaunchOwner({
+				executionId: "exec-1",
+				ownerId: "stable-dispatcher",
+				generation: 1,
+				now: "2026-07-15T00:10:00.000Z",
+				leaseExpiresAt: "2026-07-15T00:15:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "launch_horizon_exhausted" });
+
+		expect(
+			store.recoverOrAcquireWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "stable-dispatcher",
+				now: "2026-07-15T00:10:00.000Z",
+				leaseExpiresAt: "2026-07-15T00:15:00.000Z",
+				markerPath,
+			}),
+		).toMatchObject({ status: "acquired", generation: 2 });
+		store.close();
+	});
+
+	it("releases only the current uncommitted generation and permanently fences its late callbacks", async () => {
+		const store = await StateStore.create(":memory:");
+		const { markerPath } = createAdmittedEngineRun(store);
+		const first = store.recoverOrAcquireWorkflowLaunch({
+			executionId: "exec-1",
+			ownerId: "dispatcher-a",
+			now: "2026-07-15T00:00:00.000Z",
+			leaseExpiresAt: "2026-07-15T00:05:00.000Z",
+			markerPath,
+		});
+		if (first.status !== "acquired") throw new Error("owner not acquired");
+
+		expect(
+			store.releaseFailedWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				generation: first.generation,
+				markerPath,
+				now: "2026-07-15T00:01:00.000Z",
+				reason: "tmux_session_held",
+				physicalEvidence: "absent",
+			}),
+		).toEqual({ ok: true, generation: 1 });
+		expect(store.getWorkflowLaunchOwner("exec-1")).toMatchObject({
+			released_generation: 1,
+			released_reason: "tmux_session_held",
+		});
+		expect(
+			store.fencedCommitWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				generation: 1,
+				deliveryAttempt: 0,
+				markerPath,
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "launch_generation_released" });
+		expect(
+			store.recoverOrAcquireWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-b",
+				now: "2026-07-15T00:02:00.000Z",
+				leaseExpiresAt: "2026-07-15T00:07:00.000Z",
+				markerPath,
+			}),
+		).toMatchObject({ status: "acquired", generation: 2 });
 		store.close();
 	});
 
@@ -1092,6 +1302,170 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
+	it("lets a PR-capable generic node close a cancelled or no-output task through no_code without a fake PR", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store, {
+			output: true,
+			templateId: "tpl_generic",
+		});
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		const baselineJson = '{"repositories":[],"version":1}';
+		const baselineDigest = canonicalSubmissionDigest(JSON.parse(baselineJson));
+		store.bindWorktreeOnce("exec-1", {
+			path: "/tmp/fly1638-no-code",
+			branch: "flywheel-FLY-X",
+			generation: "generation-1",
+			repoBaselineSetJson: baselineJson,
+			repoBaselineSetDigest: baselineDigest,
+		});
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "stale-no-output",
+				completionSubmission: { decision: { route: "no_code" } },
+				noCodeAttestation: {
+					worktreeBindingGeneration: "generation-2",
+					baselineDigest,
+					currentDigest: baselineDigest,
+				},
+			}),
+		).toEqual({ ok: false, reason: "no_code_attestation_stale" });
+
+		const completion = store.commitEnrolledCompletion({
+			executionId: "exec-1",
+			route: "no_code",
+			sourceEventId: "cancelled-no-output",
+			completionSubmission: {
+				decision: { route: "no_code" },
+				summary: "Cancelled; no durable output or PR was produced.",
+			},
+			noCodeAttestation: {
+				worktreeBindingGeneration: "generation-1",
+				baselineDigest,
+				currentDigest: baselineDigest,
+			},
+			now: "2026-07-15T00:10:00.000Z",
+		});
+		expect(completion).toMatchObject({ ok: true, idempotentReplay: false });
+		expect(
+			store.getWorkflowNodeCompletion("run-1", "execute", 1),
+		).toMatchObject({ route: "no_code", execution_id: "exec-1" });
+		expect(store.getSession("exec-1")).toMatchObject({
+			status: "completed",
+			pr_head_sha: undefined,
+		});
+		expect(store.getWorkflowRun("run-1")?.status).toBe("completed");
+		expect(store.getCurrentWorkflowGateHolder("run-1")).toBeUndefined();
+		expect(store.listWorkflowRunNodes("run-1", "founder_gate")).toHaveLength(0);
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: admitted.outputCredential!,
+				clientRequestId: "late-output",
+				payload: '{"late":true}',
+				now: "2026-07-15T00:11:00.000Z",
+			}),
+		).toMatchObject({ ok: false, reason: "credential_revoked" });
+		store.close();
+	});
+
+	it("fails no_code closed for custom templates, missing proof, and persisted output", async () => {
+		const custom = await StateStore.create(":memory:");
+		createAdmittedEngineRun(custom, { output: true });
+		custom.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		expect(
+			custom.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "custom-no-code",
+				completionSubmission: { decision: { route: "no_code" } },
+			}),
+		).toEqual({ ok: false, reason: "no_code_not_allowed" });
+		custom.close();
+
+		const generic = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(generic, {
+			output: true,
+			templateId: "tpl_generic",
+		});
+		generic.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		expect(
+			generic.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "missing-proof",
+				completionSubmission: { decision: { route: "no_code" } },
+			}),
+		).toEqual({ ok: false, reason: "no_code_attestation_missing" });
+		expect(
+			generic.submitWorkflowNodeOutput({
+				token: admitted.outputCredential!,
+				clientRequestId: "output-present",
+				payload: '{"present":true}',
+				now: "2026-07-15T00:05:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			generic.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "output-bypass",
+				completionSubmission: { decision: { route: "no_code" } },
+			}),
+		).toEqual({ ok: false, reason: "no_code_artifact_present" });
+		generic.close();
+	});
+
+	it("holds an engine-owned runner-ship transition without a git head instead of throwing a 500", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store);
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run SET gate_carrier_epoch = 1 WHERE run_id = 'run-1'",
+		);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+
+		let completion:
+			| ReturnType<typeof store.commitEnrolledCompletion>
+			| undefined;
+		expect(() => {
+			completion = store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "missing-runner-ship-head",
+				completionSubmission: { decision: { route: "needs_review" } },
+				now: "2026-07-15T00:10:00.000Z",
+			});
+		}).not.toThrow();
+		expect(completion).toEqual({ ok: false, reason: "transition_refused" });
+		expect(store.getCurrentWorkflowGateHolder("run-1")).toBeUndefined();
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+		store.close();
+	});
+
 	it("FLY-1434: atomically binds current generalized PR evidence and projects session display fields", async () => {
 		const store = await StateStore.create(":memory:");
 		createRun(store);
@@ -1164,6 +1538,161 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(
 			store.getCurrentWorkflowNodePrBindingForHead("run-1", "b".repeat(40)),
 		).toBeUndefined();
+		store.close();
+	});
+
+	it("materializes a founder-only generic gate as unbound when PR evidence is missing", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store, { output: true });
+		const db = (
+			store as unknown as { db: { run(sql: string, params?: unknown[]): void } }
+		).db;
+		db.run(
+			"UPDATE workflow_run SET gate_carrier_epoch = 1 WHERE run_id = 'run-1'",
+		);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
+		expect(admitted.outputCredential).toBeTypeOf("string");
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: admitted.outputCredential!,
+				clientRequestId: "generic-output-1",
+				payload: '{"ok":true}',
+				now: "2026-07-15T00:01:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		const headSha = "a".repeat(40);
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "generic-complete-without-pr",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: headSha,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		const holder = store.getCurrentWorkflowGateHolder("run-1", "founder_gate");
+		expect(holder).toMatchObject({
+			authority_mode: "runner_ship",
+			subject_kind: "git_head",
+			head_sha: headSha,
+			carrier_binding_state: "unbound",
+		});
+		expect(store.getSession("exec-1")?.status).toBe("ship_parked");
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "awaiting_review",
+			workflow_node_id: "execute",
+		});
+		store.setReviewBinding("exec-1", {
+			questionId: holder!.question_id,
+			prHeadSha: headSha,
+			shipTarget: {
+				runId: "run-1",
+				targetRepoPath: "/tmp/flywheel-FLY-1638",
+				targetRepoIdentity: "__main__",
+				probeRepoSlug: "xrliAnnie/flywheel",
+				worktreeBindingGeneration: "generation-late",
+			},
+		});
+		expect(
+			store.getCurrentWorkflowGateHolder("run-1", "founder_gate"),
+		).toMatchObject({
+			carrier_binding_state: "bound",
+			source_execution_id: "exec-1",
+		});
+		expect(
+			store.getWorkflowShipTargetBinding(holder!.question_id),
+		).toMatchObject({
+			run_id: "run-1",
+			frozen_head_sha: headSha,
+			worktree_binding_generation: "generation-late",
+		});
+		store.close();
+	});
+
+	it("binds a running generic carrier and freezes its ship target at gate creation", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store, { output: true });
+		const db = (
+			store as unknown as { db: { run(sql: string, params?: unknown[]): void } }
+		).db;
+		db.run(
+			"UPDATE workflow_run SET gate_carrier_epoch = 1 WHERE run_id = 'run-1'",
+		);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
+		expect(admitted.outputCredential).toBeTypeOf("string");
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: admitted.outputCredential!,
+				clientRequestId: "generic-output-with-pr",
+				payload: '{"ok":true}',
+				now: "2026-07-15T00:01:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		const headSha = "b".repeat(40);
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "generic-complete-with-pr",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: headSha,
+				prBinding: {
+					prNumber: 1638,
+					headSha,
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					targetRepoPath: "/tmp/flywheel-FLY-1638",
+					worktreeBindingGeneration: "generation-1",
+				},
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		const holder = store.getCurrentWorkflowGateHolder("run-1", "founder_gate");
+		expect(holder).toMatchObject({
+			authority_mode: "runner_ship",
+			subject_kind: "git_head",
+			head_sha: headSha,
+			carrier_binding_state: "bound",
+			source_execution_id: "exec-1",
+		});
+		expect(store.getSession("exec-1")).toMatchObject({
+			status: "awaiting_review",
+			review_question_id: holder!.question_id,
+			pr_head_sha: headSha,
+		});
+		expect(
+			store.getWorkflowShipTargetBinding(holder!.question_id),
+		).toMatchObject({
+			run_id: "run-1",
+			frozen_head_sha: headSha,
+			target_repo_identity: "__main__",
+			probe_repo_slug: "xrliAnnie/flywheel",
+		});
+		expect(store.listWorkflowAlertOutbox()).toEqual([]);
 		store.close();
 	});
 

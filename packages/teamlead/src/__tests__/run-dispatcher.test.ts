@@ -126,6 +126,54 @@ class CleanupObservingRunDispatcher extends RunDispatcher {
 }
 
 describe("RunDispatcher", () => {
+	it("returns a non-rejecting typed precommit outcome for a generalized tmux hold", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		vi.mocked(runtime.blueprint.run).mockResolvedValue({
+			success: false,
+			error: "tmux session ensure held: saturated",
+			launchFailure: {
+				code: "LAUNCH_TMUX_SESSION_HELD",
+				reason: "saturated",
+				physicalEvidence: "absent",
+			},
+		});
+		const dispatcher = new CleanupObservingRunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+
+		const result = await dispatcher.start({
+			issueId: "FLY-1638",
+			projectName: "TestProject",
+			leadId: "flywheel-eng-lead",
+			generalizedExecution: {
+				engineOwned: true,
+				executionId: "launch-exec",
+				runId: "launch-run",
+				nodeId: "execute",
+				attempt: 1,
+				snapshotDigest: "digest",
+				gateCarrierEpoch: 0,
+				dispatch: { vendor: "claude", model: "claude-opus-5" },
+				capabilities: {},
+				agentContent: "Execute.",
+				idempotencyKey: "launch-key",
+				launchGateToken: "launch-token",
+				commitWorkflowLaunch: vi.fn(() => ({ ok: true })),
+			},
+		});
+
+		await expect(result.launchOutcome).resolves.toEqual({
+			status: "precommit_failed",
+			failure: {
+				code: "LAUNCH_TMUX_SESSION_HELD",
+				reason: "saturated",
+				physicalEvidence: "absent",
+			},
+		});
+	});
+
 	it("fails closed before launch when a design node has no resolved Lead", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
 		const dispatcher = new RunDispatcher(
@@ -450,6 +498,25 @@ describe("RunDispatcher", () => {
 		).rejects.toThrow("shutting down");
 	});
 
+	it("admission pause returns its typed retry contract before shutdown", async () => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const admission = RunnerAdmissionController.alwaysAdmit();
+		admission.setAdmissionPauseProbe(() => ({
+			detail: "deployment pause",
+			retryAfterSeconds: 90,
+		}));
+		const dispatcher = new RunDispatcher(runtimes, [], admission);
+		dispatcher.stopAccepting();
+
+		await expect(
+			dispatcher.start({ issueId: "FLY-1638", projectName: "TestProject" }),
+		).rejects.toMatchObject({
+			name: "AdmissionDeferredError",
+			reason: "admission_paused",
+			retryAfterSeconds: 90,
+		});
+	});
+
 	it("FLY-123 WS-D (P4): start() defers under resource pressure (not a count cap)", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		// Admission controller under load → defers regardless of count.
@@ -559,6 +626,41 @@ describe("RunDispatcher", () => {
 });
 
 describe("RetryDispatcher", () => {
+	it("routes retry/dead-replacement dispatch through the admission pause", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const admission = RunnerAdmissionController.alwaysAdmit();
+		admission.setAdmissionPauseProbe(() => ({
+			detail: "deployment pause",
+			retryAfterSeconds: 120,
+		}));
+		const dispatcher = new RetryDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			admission,
+		);
+
+		await expect(
+			dispatcher.dispatch({
+				oldExecutionId: "old-exec",
+				issueId: "FLY-1638",
+				projectName: "TestProject",
+				runAttempt: 2,
+			}),
+		).rejects.toMatchObject({
+			name: "AdmissionDeferredError",
+			reason: "admission_paused",
+			retryAfterSeconds: 120,
+		});
+		expect(runtime.blueprint.run).not.toHaveBeenCalled();
+	});
+
 	it("fails closed before retry launch when a design node has no resolved Lead", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
 		const dispatcher = new RetryDispatcher(new Map([[name, runtime]]), []);

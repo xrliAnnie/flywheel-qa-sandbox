@@ -368,6 +368,9 @@ export interface AdapterExecutionContext {
 		windowId: string;
 		socketPath: string;
 		serverStartTime: string;
+		executionId: string;
+		launchGeneration?: number;
+		launchFingerprint?: string;
 	}) => void;
 	/**
 	 * FLY-245 R5 HIGH — the DURABLE "this Runner is committed to start" record.
@@ -382,6 +385,15 @@ export interface AdapterExecutionContext {
 	launchCommitPath?: string;
 	/** FLY-1281: deterministic fenced token for the generalized launch gate. */
 	launchGateToken?: string;
+	launchGeneration?: number;
+	launchFingerprint?: string;
+	workflowTmuxWindowAuthority?: (candidate: {
+		windowId: string;
+		windowName: string;
+		executionId?: string;
+		launchGeneration?: number;
+		launchFingerprint?: string;
+	}) => "prune" | "keep";
 	/** Bridge-owned marker-first commit; adapters must not write the marker directly. */
 	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
 }
@@ -401,6 +413,39 @@ export interface TerminalFailureInfo {
 	failureKind: TerminalFailureKind;
 	failureReason: string;
 }
+
+/** FLY-1638: machine-readable failure before the workflow launch fence commits. */
+export type LaunchPrecommitFailure =
+	| {
+			code: "LAUNCH_TMUX_SESSION_HELD";
+			reason:
+				| "saturated"
+				| "split_brain"
+				| "ambiguous"
+				| "unknown"
+				| "rescue_failed"
+				| "lock_unavailable";
+			physicalEvidence: "absent";
+	  }
+	| {
+			code: "LAUNCH_WINDOW_IDENTITY_FAILED";
+			reason: "identity_publish_failed" | "generation_record_failed";
+			physicalEvidence: "cleaned" | "unknown";
+	  }
+	| {
+			code: "LAUNCH_PRECOMMIT_TIMEOUT";
+			reason: "deadline_exhausted";
+			physicalEvidence: "unknown";
+	  }
+	| {
+			code: "LAUNCH_PRECOMMIT_FAILED";
+			reason: string;
+			physicalEvidence: "cleaned" | "unknown";
+	  };
+
+export type LaunchPrecommitOutcome =
+	| { status: "committed" }
+	| { status: "precommit_failed"; failure: LaunchPrecommitFailure };
 
 /**
  * Result returned by `IAdapter.execute()`.

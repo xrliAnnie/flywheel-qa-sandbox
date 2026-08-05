@@ -1,6 +1,7 @@
 import type { CommDB } from "flywheel-comm/db";
 import type {
 	GeneralizedWorkflowAdmissionResult,
+	WorkflowEngineAlertIdentity,
 	WorkflowReworkDeliveryClaimResult,
 	WorkflowReworkDeliveryRow,
 	WorkflowReworkRequestRow,
@@ -8,6 +9,8 @@ import type {
 	WorkflowRunNodeRow,
 	WorkflowRunRow,
 } from "../StateStore.js";
+import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
+import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import {
 	classifyPhaseActorReentry,
 	type PhaseLiveness,
@@ -111,6 +114,27 @@ export interface WorkflowReworkCoordinatorStore {
 		error: string;
 		now: string;
 	}): { ok: true } | { ok: false; reason: string };
+	settleWorkflowReworkFailure(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		reason: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| {
+				ok: true;
+				holdCount: number;
+				state: "pending" | "turn_granted" | "needs_lead";
+				nextRetryAt: string | null;
+		  }
+		| { ok: false; reason: string };
+	markWorkflowReworkGrantStarted(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string };
 	advanceWorkflowReworkDelivery(input: {
 		requestId: string;
 		ownerId: string;
@@ -166,11 +190,6 @@ export interface WorkflowReworkCoordinatorEffects {
 		epoch: number;
 		context: unknown;
 	}): Promise<{ ok: boolean; error?: string }>;
-	alertHold(input: {
-		session: PhaseSession;
-		requestId: string;
-		reason: string;
-	}): Promise<void>;
 }
 
 export type WorkflowReworkCoordinatorOutcome =
@@ -197,6 +216,14 @@ export class WorkflowReworkCoordinator {
 			now?: () => Date;
 			leaseMs?: number;
 			effects: WorkflowReworkCoordinatorEffects;
+			resolveAlertIdentity: (
+				run: WorkflowRunRow,
+			) => WorkflowEngineAlertIdentity;
+			resolveCredentialWindow?: (
+				run: WorkflowRunRow,
+				nodeId: string,
+				now: Date,
+			) => { expiresAt: string; absoluteDeadlineAt: string };
 			env?: Record<string, string | undefined>;
 		},
 	) {
@@ -220,15 +247,6 @@ export class WorkflowReworkCoordinator {
 			error: input.reason,
 			now: this.now().toISOString(),
 		});
-		try {
-			await this.deps.effects.alertHold({
-				session: input.session,
-				requestId: input.requestId,
-				reason: input.reason,
-			});
-		} catch {
-			// The durable delivery error is the authority. Alert transport is best-effort.
-		}
 		return { kind: "held", reason: input.reason };
 	}
 
@@ -237,6 +255,25 @@ export class WorkflowReworkCoordinator {
 		generation: number;
 		reason: string;
 	}): WorkflowReworkCoordinatorOutcome {
+		const request = this.deps.store.getWorkflowReworkRequest(input.requestId);
+		const run = request
+			? this.deps.store.getWorkflowRun(request.run_id)
+			: undefined;
+		if (run?.status === "active") {
+			const settled = this.deps.store.settleWorkflowReworkFailure({
+				requestId: input.requestId,
+				ownerId: this.deps.ownerId,
+				generation: input.generation,
+				reason: input.reason,
+				alertIdentity: this.deps.resolveAlertIdentity(run),
+				now: this.now().toISOString(),
+			});
+			if (settled.ok) {
+				return settled.state === "needs_lead"
+					? { kind: "settled", state: "needs_lead" }
+					: { kind: "retryable", reason: input.reason };
+			}
+		}
 		this.deps.store.releaseWorkflowReworkDelivery({
 			requestId: input.requestId,
 			ownerId: this.deps.ownerId,
@@ -378,12 +415,25 @@ export class WorkflowReworkCoordinator {
 		}
 
 		const activationId = `activation:${requestId}`;
-		const credentialExpiresAt = new Date(
-			now.getTime() + 60 * 60_000,
-		).toISOString();
-		const absoluteDeadlineAt = new Date(
-			now.getTime() + 24 * 60 * 60_000,
-		).toISOString();
+		let credentialWindow: {
+			expiresAt: string;
+			absoluteDeadlineAt: string;
+		};
+		try {
+			credentialWindow = this.deps.resolveCredentialWindow
+				? this.deps.resolveCredentialWindow(run, route.target_node_id, now)
+				: credentialWindowForNode(
+						parseWorkflowRunSnapshot(run.snapshot!),
+						route.target_node_id,
+						now,
+					);
+		} catch (error) {
+			return this.releaseRetryable({
+				requestId,
+				generation: claim.generation,
+				reason: `credential_window_unavailable:${(error as Error).message}`,
+			});
+		}
 		const admission = this.deps.store.admitGeneralizedWorkflowExecution({
 			runId: request.run_id,
 			nodeId: route.target_node_id,
@@ -392,8 +442,8 @@ export class WorkflowReworkCoordinator {
 			activationId,
 			activationMode: "wake",
 			reworkRequestId: requestId,
-			expiresAt: credentialExpiresAt,
-			absoluteDeadlineAt,
+			expiresAt: credentialWindow.expiresAt,
+			absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
 			now: now.toISOString(),
 			env: this.deps.env,
 		});
@@ -426,6 +476,19 @@ export class WorkflowReworkCoordinator {
 			},
 		};
 		const sourceEventId = `rework-turn:${requestId}:${activationId}`;
+		const grantStarted = this.deps.store.markWorkflowReworkGrantStarted({
+			requestId,
+			ownerId: this.deps.ownerId,
+			generation: claim.generation,
+			now: this.now().toISOString(),
+		});
+		if (!grantStarted.ok) {
+			return this.releaseRetryable({
+				requestId,
+				generation: claim.generation,
+				reason: `grant_intent_failed:${grantStarted.reason}`,
+			});
+		}
 		let turn: { epoch: number; grantedAt: string };
 		try {
 			turn = await this.deps.effects.grantTurn({

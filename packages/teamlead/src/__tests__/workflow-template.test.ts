@@ -3,7 +3,11 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { WORK_KIND_CATEGORIES } from "../work-kind.js";
-import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
+import {
+	buildWorkflowRunSnapshotV1,
+	buildWorkflowRunSnapshotV2,
+	resolveWorkflowGateAuthority,
+} from "../workflow-run-snapshot.js";
 import {
 	applyWorkflowOverride,
 	DEFAULT_ENGINEERING_WORKFLOW_BINDINGS,
@@ -880,6 +884,29 @@ describe("workflow template manifest v2", () => {
 			)) {
 				expect(node.agent?.content.trim()).not.toBe("");
 			}
+		}
+	});
+
+	it("resolves coherent gate authority for every bundled seed snapshot", () => {
+		const canonicalRoot = resolve(process.cwd(), "../..");
+		for (const seed of loadBundledWorkflowSeeds()) {
+			const template = { id: seed.templateId, revision: 1 };
+			const snapshot =
+				seed.manifest.schema_version === 1
+					? buildWorkflowRunSnapshotV1({
+							template,
+							manifest: seed.manifest,
+						})
+					: buildWorkflowRunSnapshotV2({
+							template,
+							manifest: seed.manifest,
+							canonicalRoot,
+						});
+
+			expect(
+				() => resolveWorkflowGateAuthority(snapshot),
+				seed.templateId,
+			).not.toThrow();
 		}
 	});
 

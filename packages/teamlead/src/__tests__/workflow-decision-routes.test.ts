@@ -102,15 +102,16 @@ async function reviewFixture(options: {
 	if (!researchAdmission.ok) {
 		throw new Error(`research admission failed: ${researchAdmission.reason}`);
 	}
-	expect(
-		store.commitEnrolledCompletion({
-			executionId: "research-1",
-			route: "needs_review",
-			sourceEventId: "research-complete",
-			completionSubmission: { decision: { route: "needs_review" } },
-			now: T0,
-		}).ok,
-	).toBe(true);
+	const researchCompletion = store.commitEnrolledCompletion({
+		executionId: "research-1",
+		route: "no_code",
+		sourceEventId: "research-complete",
+		completionSubmission: { decision: { route: "no_code" } },
+		now: T0,
+	});
+	if (!researchCompletion.ok) {
+		throw new Error(`research completion failed: ${researchCompletion.reason}`);
+	}
 	const produceExecution = store.getWorkflowRunNode(
 		"run-review",
 		"produce",
@@ -128,15 +129,16 @@ async function reviewFixture(options: {
 		now: T0,
 	});
 	if (!output.ok) throw new Error(output.reason);
-	expect(
-		store.commitEnrolledCompletion({
-			executionId: produceExecution,
-			route: "needs_review",
-			sourceEventId: "produce-complete",
-			completionSubmission: { decision: { route: "needs_review" } },
-			now: T0,
-		}).ok,
-	).toBe(true);
+	const produceCompletion = store.commitEnrolledCompletion({
+		executionId: produceExecution,
+		route: "needs_review",
+		sourceEventId: "produce-complete",
+		completionSubmission: { decision: { route: "needs_review" } },
+		now: T0,
+	});
+	if (!produceCompletion.ok) {
+		throw new Error(`produce completion failed: ${produceCompletion.reason}`);
+	}
 	const reviewExecution = store.getWorkflowRunNode(
 		"run-review",
 		"review",
