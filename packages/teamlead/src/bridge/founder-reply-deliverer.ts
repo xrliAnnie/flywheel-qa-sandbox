@@ -202,14 +202,6 @@ export interface FounderReplyDeliverDeps {
 			rootId: string;
 			msgId: string;
 			now: string;
-			intentKey: string;
-			queuedAtMs: number;
-			envelope: {
-				id: string;
-				to: string;
-				content: string;
-				metadata?: Record<string, unknown>;
-			};
 		};
 		recordDecisionClassification?: (decision: "approve" | "reject") => void;
 	}) => Promise<ShipApprovalOutcome | null>;
@@ -585,7 +577,7 @@ async function processFounderMessage(
 			isReply: msg.type === DISCORD_MESSAGE_TYPE_REPLY,
 		}),
 		refMessageId: msg.id,
-		now,
+		now: new Date(snowflakeToMs(msg.id) ?? nowDate.getTime()).toISOString(),
 		routingState: "hub_recorded",
 	});
 	let cardGate: PendingQuestionForThread | undefined;
@@ -615,7 +607,6 @@ async function processFounderMessage(
 	const receiptGate =
 		cardGate ?? (shipGates.length === 1 ? shipGates[0] : undefined);
 	if (deps.tryFounderShipApproval && receiptGate) {
-		const intentKey = `founder-route:${ctx.leadId}:${msg.id}:${receiptGate.questionId}`;
 		const handled = await deps.tryFounderShipApproval({
 			msg: { id: msg.id, content: msg.content, authorId: msg.author?.id },
 			shipGates: cardGate ? [cardGate] : shipGates,
@@ -626,19 +617,6 @@ async function processFounderMessage(
 				rootId,
 				msgId: msg.id,
 				now,
-				intentKey,
-				queuedAtMs: nowDate.getTime(),
-				envelope: {
-					id: `founder-route-wake:${ctx.leadId}:${msg.id}:${receiptGate.questionId}`,
-					to: receiptGate.executionId,
-					content: rawAnswer,
-					metadata: {
-						origin: "founder",
-						kind: "ship_thread_reply",
-						msgId: msg.id,
-						questionId: receiptGate.questionId,
-					},
-				},
 			},
 			recordDecisionClassification: deps.classifyDecisionConvergence
 				? (decision) =>

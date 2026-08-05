@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	decodeSenderRef,
 	encodeSenderRef,
+	messageProvenanceFromSenderRef,
 	processedFenceFromSenderRef,
 } from "../sender-ref.js";
 
@@ -35,6 +36,20 @@ describe("FLY-1572 sender_ref v1", () => {
 			writer_pid: 456,
 			writer_start: "proc-start",
 		});
+	});
+
+	it("reconstructs the transport metadata provenance shape", () => {
+		const provenance = {
+			senderLeaseKey: "flywheel:lead-a",
+			senderGeneration: 7,
+			senderHolderPid: 123,
+			senderHolderStart: "holder-start",
+			writerPid: 456,
+			writerStart: "writer-start",
+		};
+		expect(messageProvenanceFromSenderRef(encodeSenderRef(provenance))).toEqual(
+			provenance,
+		);
 	});
 
 	it("preserves the lease then writer then unprotected fence ladder", () => {

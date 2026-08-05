@@ -23,6 +23,11 @@ import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import { ProtocolIngress } from "./protocol-ingress.js";
 import { QuestionAdmission } from "./question-admission.js";
+import {
+	ProductionRunnerMailboxDeliveryAdapter,
+	type RunnerMailboxDeliveryAdapter,
+	RunnerMailboxLane,
+} from "./runner-mailbox-lane.js";
 import type {
 	DurableQueueReceipt,
 	RuntimeRegistry,
@@ -40,6 +45,10 @@ export interface LeadInboxRuntimeOptions {
 		project: ProjectEntry,
 		lead: LeadConfig,
 	) => LeadDeliveryAdapter;
+	runnerAdapterForProject?: (
+		project: ProjectEntry,
+		dbPath: string,
+	) => RunnerMailboxDeliveryAdapter;
 	/** Test seam for the one-shot boot cutover. */
 	runLegacyCutover?: () => void | Promise<void>;
 	afterTickStartedForLead?: (
@@ -70,6 +79,7 @@ export class LeadInboxRuntime {
 	private readonly loops = new Map<string, LeadInboxLoop>();
 	private readonly queues = new Map<string, MailboxQueue>();
 	private readonly admissions: QuestionAdmission[] = [];
+	private readonly runnerAdapters: RunnerMailboxDeliveryAdapter[] = [];
 	private readonly projectByLead = new Map<string, ProjectEntry>();
 	private readonly ownerEpoch: string;
 	private cutoverPromise?: Promise<void>;
@@ -77,6 +87,10 @@ export class LeadInboxRuntime {
 	constructor(private readonly opts: LeadInboxRuntimeOptions) {
 		this.ownerEpoch = opts.ownerEpoch ?? randomUUID();
 		const adapterForLead = opts.adapterForLead ?? createProductionAdapter;
+		const runnerAdapterForProject =
+			opts.runnerAdapterForProject ??
+			((_project, dbPath) =>
+				new ProductionRunnerMailboxDeliveryAdapter(dbPath));
 		const secretProvider =
 			opts.secretProvider ??
 			({
@@ -90,7 +104,16 @@ export class LeadInboxRuntime {
 			commDb.close();
 			const queue = new MailboxQueue(dbPath);
 			this.queues.set(project.projectName, queue);
-			for (const lead of project.leads) {
+			const runnerAdapter = runnerAdapterForProject(project, dbPath);
+			this.runnerAdapters.push(runnerAdapter);
+			const runnerLane = new RunnerMailboxLane({
+				queue,
+				ownerEpoch: this.ownerEpoch,
+				deliver: (envelope) => runnerAdapter.deliver(envelope),
+				resolveQuestion: (questionId) =>
+					runnerAdapter.resolveQuestion(questionId),
+			});
+			for (const [leadIndex, lead] of project.leads.entries()) {
 				if (this.projectByLead.has(lead.agentId)) {
 					throw new Error(`duplicate Lead id across projects: ${lead.agentId}`);
 				}
@@ -122,8 +145,13 @@ export class LeadInboxRuntime {
 								return false;
 							}
 						}),
+					hasAdditionalWork:
+						leadIndex === 0
+							? () => queue.countRunnerDeliverable() > 0
+							: undefined,
 					admit: async () => {
 						await this.ensureCutover();
+						if (leadIndex === 0) await runnerLane.tick();
 					},
 					handleProtocol: (row) => protocol.handle(row),
 					onProtocolQuarantine: (row, error) => {
@@ -176,10 +204,12 @@ export class LeadInboxRuntime {
 	close(): void {
 		for (const loop of this.loops.values()) loop.stop();
 		for (const admission of this.admissions) admission.close();
+		for (const adapter of this.runnerAdapters) adapter.close();
 		for (const queue of this.queues.values()) queue.close();
 		this.loops.clear();
 		this.queues.clear();
 		this.admissions.length = 0;
+		this.runnerAdapters.length = 0;
 	}
 
 	enqueueLeadEvent(

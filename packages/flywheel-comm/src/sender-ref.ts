@@ -165,3 +165,35 @@ export function processedFenceFromSenderRef(
 	if (sender.writer_pid !== undefined) return { writer_pid: sender.writer_pid };
 	return { authority: "lead_write_unprotected" };
 }
+
+export function messageProvenanceFromSenderRef(
+	encoded: string | null,
+): MessageProvenance | undefined {
+	if (encoded === null) return undefined;
+	const sender = decodeSenderRef(encoded);
+	if ("lease_key" in sender) {
+		return {
+			senderLeaseKey: sender.lease_key,
+			senderGeneration: sender.generation,
+			...(sender.holder_pid === undefined
+				? {}
+				: { senderHolderPid: sender.holder_pid }),
+			...(sender.holder_start === undefined
+				? {}
+				: { senderHolderStart: sender.holder_start }),
+			...(sender.writer_pid === undefined
+				? {}
+				: { writerPid: sender.writer_pid }),
+			...(sender.writer_start === undefined
+				? {}
+				: { writerStart: sender.writer_start }),
+		};
+	}
+	if (sender.writer_pid === undefined) return undefined;
+	return {
+		writerPid: sender.writer_pid,
+		...(sender.writer_start === undefined
+			? {}
+			: { writerStart: sender.writer_start }),
+	};
+}

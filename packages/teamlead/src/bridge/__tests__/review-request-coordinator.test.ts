@@ -71,14 +71,12 @@ class FakeCommDb implements ReviewCommDb {
 		});
 		return true;
 	}
-	insertReviewResponseWithWakeIfGateOpen(input: {
+	insertReviewResponseIfGateOpen(input: {
 		questionId: string;
 		fromAgent: string;
 		content: string;
 		expectedOwner: string;
 		expectedCheckpoint: "review_design" | "review_code";
-		summary: string;
-		queuedAtMs: number;
 	}) {
 		const existing = this.responses.get(input.questionId);
 		if (existing) {
@@ -90,14 +88,12 @@ class FakeCommDb implements ReviewCommDb {
 			}
 			return {
 				responseId: existing.id,
-				wake: { message_id: existing.id, admission_state: "queued" },
 			};
 		}
 		if (!this.insertResponseIfGateOpen(input)) return null;
 		const response = this.responses.get(input.questionId)!;
 		return {
 			responseId: response.id,
-			wake: { message_id: response.id, admission_state: "queued" },
 		};
 	}
 	close() {}
@@ -114,7 +110,6 @@ interface Harness {
 		prompt: string;
 		effort?: string;
 	}>;
-	wakes: Array<{ executionId: string; questionId: string; summary: string }>;
 	/** FLY-1257 HIGH-1: capture of markGateAnswered(questionId, executionId). */
 	gateAnswers: Array<{ questionId: string; executionId: string }>;
 	alerts: string[];
@@ -143,7 +138,6 @@ async function makeHarness(
 	const comm = new FakeCommDb();
 	const outcomes: ClaudeReviewOutcome[] = [];
 	const invocations: Harness["invocations"] = [];
-	const wakes: Harness["wakes"] = [];
 	const gateAnswers: Harness["gateAnswers"] = [];
 	const alerts: string[] = [];
 	const reviewAlerts: Array<Record<string, unknown>> = [];
@@ -183,15 +177,6 @@ async function makeHarness(
 			store
 				.listActiveReviewFindingRulings(projectName, issueId)
 				.map(toReviewFindingRulingSnapshot),
-		wakeRunner: async (
-			executionId,
-			_session,
-			questionId,
-			summary,
-			_responseId,
-		) => {
-			wakes.push({ executionId, questionId, summary });
-		},
 		markGateAnswered: (questionId, executionId) => {
 			gateAnswers.push({ questionId, executionId });
 		},
@@ -211,7 +196,6 @@ async function makeHarness(
 		coordinator,
 		outcomes,
 		invocations,
-		wakes,
 		gateAnswers,
 		alerts,
 		reviewAlerts,
@@ -1313,10 +1297,9 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		expect(rec?.reviewer_family).toBe("claude");
 		expect(rec?.request_id).toBe("r1");
 		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(true);
-		// bound question answered + runner woken
+		// The bound question is answered; the mailbox delivery loop owns transport.
 		const resp = h.comm.getResponse("q1");
 		expect(resp && JSON.parse(resp.content).reviewVerdict).toBe("APPROVED");
-		expect(h.wakes).toHaveLength(1);
 		// FLY-1257 HIGH-1: answering the review gate also flips its MARKER answered
 		// so a resident codex `/goal` resumes at once (isWaiting → false) instead
 		// of waiting ~72h for the deadline watcher.
@@ -2219,10 +2202,8 @@ describe("R13 — terminal-state and delivery invariants", () => {
 			raw: "",
 		});
 		// make the CommDB write blow up AFTER the verdict lands
-		const realInsert = h.comm.insertReviewResponseWithWakeIfGateOpen.bind(
-			h.comm,
-		);
-		h.comm.insertReviewResponseWithWakeIfGateOpen = () => {
+		const realInsert = h.comm.insertReviewResponseIfGateOpen.bind(h.comm);
+		h.comm.insertReviewResponseIfGateOpen = () => {
 			throw new Error("disk full");
 		};
 		await h.coordinator.accept({
@@ -2236,7 +2217,7 @@ describe("R13 — terminal-state and delivery invariants", () => {
 		expect(job?.status).toBe("done"); // NOT downgraded to failed
 		expect(job?.responded_at).toBeUndefined();
 		// recovery: CommDB healthy again → boot outbox delivers
-		h.comm.insertReviewResponseWithWakeIfGateOpen = realInsert;
+		h.comm.insertReviewResponseIfGateOpen = realInsert;
 		h.coordinator.redriveOnBoot();
 		await settle();
 		expect(h.comm.getResponse("q1")).toBeDefined();

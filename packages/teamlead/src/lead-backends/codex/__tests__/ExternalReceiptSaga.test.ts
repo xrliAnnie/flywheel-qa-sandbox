@@ -1,24 +1,23 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { afterEach, describe, expect, it } from "vitest";
 import { ExternalReceiptSaga } from "../ExternalReceiptSaga.js";
 
-const queues: LeadInboxQueue[] = [];
+const queues: MailboxQueue[] = [];
 afterEach(() => {
 	for (const queue of queues.splice(0)) queue.close();
 });
 
-function queue(): LeadInboxQueue {
-	const value = new LeadInboxQueue(
+function queue(): MailboxQueue {
+	const value = new MailboxQueue(
 		join(mkdtempSync(join(tmpdir(), "fly1392-xdept-")), "comm.db"),
 	);
 	queues.push(value);
 	return value;
 }
-
-const WINDOWS = [1_800_000, 1_800_000, 14_400_000, 86_400_000] as const;
 
 describe("ExternalReceiptSaga", () => {
 	it("creates one external delivery_pending row and completes accepted replays", () => {
@@ -28,7 +27,6 @@ describe("ExternalReceiptSaga", () => {
 			leadId: "lead-a",
 			queue: receipts,
 			journal: { getByIdempotencyKey: () => undefined },
-			receiptWindowsMs: WINDOWS,
 			now: () => now,
 		});
 		const message = {
@@ -43,15 +41,16 @@ describe("ExternalReceiptSaga", () => {
 		expect(receipts.getById("xdept:lead-a:discord-1")).toMatchObject({
 			carrier: "external",
 			priority: 1,
-			delivered_at: null,
-			ref_message_id: "discord-1",
+			state: "QUEUED",
+			acked_at: null,
+			ref_id: "discord-1",
 		});
 		saga.complete("discord-1");
 		now = "2026-07-21T12:05:00.000Z";
 		saga.complete("discord-1");
 		expect(receipts.getById("xdept:lead-a:discord-1")).toMatchObject({
-			delivered_at: "2026-07-21T12:00:00.000Z",
-			next_unprocessed_at: "2026-07-21T12:30:00.000Z",
+			state: "ACKED",
+			acked_at: "2026-07-21T12:00:00.000Z",
 		});
 	});
 
@@ -64,7 +63,6 @@ describe("ExternalReceiptSaga", () => {
 			journal: {
 				getByIdempotencyKey: (key) => mappings.get(key),
 			},
-			receiptWindowsMs: WINDOWS,
 			now: () => "2026-07-21T12:00:00.000Z",
 		});
 		saga.begin({
@@ -78,26 +76,23 @@ describe("ExternalReceiptSaga", () => {
 		expect(() => saga.handle("discord-2", "journal-entry-2")).toThrow(
 			/journal mapping is unavailable/,
 		);
-		expect(receipts.getById("xdept:lead-a:discord-2")?.processed_at).toBeNull();
+		expect(receipts.getSettlement("xdept:lead-a:discord-2")).toBeUndefined();
 		mappings.set("discord-2", { id: "journal-entry-other" });
 		expect(() => saga.handle("discord-2", "journal-entry-2")).toThrow(
 			/journal mapping mismatch/,
 		);
-		expect(receipts.getById("xdept:lead-a:discord-2")?.processed_at).toBeNull();
+		expect(receipts.getSettlement("xdept:lead-a:discord-2")).toBeUndefined();
 
 		mappings.set("discord-2", { id: "journal-entry-2" });
 		saga.handle("discord-2", "journal-entry-2");
-		expect(receipts.getById("xdept:lead-a:discord-2")).toMatchObject({
-			processed_at: "2026-07-21T12:00:00.000Z",
-		});
-		expect(
-			JSON.parse(
-				receipts.getById("xdept:lead-a:discord-2")?.processed_evidence ?? "{}",
-			),
-		).toMatchObject({
-			kind: "journal_outbound",
-			actor: "lead-a",
-			ref: "journal-entry-2",
+		expect(receipts.getSettlement("xdept:lead-a:discord-2")).toMatchObject({
+			event: "processed",
+			at: "2026-07-21T12:00:00.000Z",
+			evidence: {
+				kind: "journal_outbound",
+				actor: "lead-a",
+				ref: "journal-entry-2",
+			},
 		});
 	});
 
@@ -114,7 +109,6 @@ describe("ExternalReceiptSaga", () => {
 			leadId: "lead-a",
 			queue: receipts,
 			journal,
-			receiptWindowsMs: WINDOWS,
 			now: () => "2026-07-21T12:00:00.000Z",
 		});
 		for (const messageId of ["100", "101", "102"]) {
@@ -132,36 +126,40 @@ describe("ExternalReceiptSaga", () => {
 				absenceProvenThroughMessageId: "102",
 			}),
 		).toEqual({ delivered: 1, aborted: 1, quarantined: 1, deferred: 0 });
-		expect(receipts.getById("xdept:lead-a:100")?.delivered_at).toBe(
+		expect(receipts.getById("xdept:lead-a:100")?.acked_at).toBe(
 			"2026-07-21T12:00:00.000Z",
 		);
-		expect(receipts.getById("xdept:lead-a:101")?.disposition).toBe(
-			"delivery_aborted",
-		);
-		expect(receipts.getById("xdept:lead-a:102")?.disposition).toBe(
-			"delivery_quarantined",
-		);
+		expect(receipts.getById("xdept:lead-a:101")).toMatchObject({
+			state: "DEAD",
+			dead_reason: "journal_absent_after_watermark",
+		});
+		expect(receipts.getById("xdept:lead-a:102")).toMatchObject({
+			state: "DEAD",
+			dead_reason: "journal unavailable: journal unavailable",
+		});
 	});
 
 	it("never reconciles another external producer lane", () => {
 		const receipts = queue();
 		receipts.enqueue({
 			id: "chat:lead-a:100000000000000001",
-			toLead: "lead-a",
-			source: "discord_chat",
+			fromAgent: "founder",
+			toAgent: "lead-a",
+			recipientKind: "lead",
+			sourceKind: "discord_chat",
 			type: "external_delivery",
 			msgClass: "model",
 			priority: 0,
 			content: "founder task",
-			refMessageId: null,
+			refId: null,
 			createdAt: "2026-07-21T10:00:00.000Z",
 			carrier: "external",
+			senderRef: encodeSenderRef(),
 		});
 		const saga = new ExternalReceiptSaga({
 			leadId: "lead-a",
 			queue: receipts,
 			journal: { getByIdempotencyKey: () => undefined },
-			receiptWindowsMs: WINDOWS,
 			now: () => "2026-07-21T12:00:00.000Z",
 		});
 
@@ -172,7 +170,7 @@ describe("ExternalReceiptSaga", () => {
 			}),
 		).toEqual({ delivered: 0, aborted: 0, quarantined: 0, deferred: 0 });
 		expect(receipts.getById("chat:lead-a:100000000000000001")).toMatchObject({
-			disposition: null,
+			state: "QUEUED",
 			last_error: null,
 		});
 	});

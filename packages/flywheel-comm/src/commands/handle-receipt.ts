@@ -47,41 +47,11 @@ export function handleReceipt(args: HandleReceiptArgs): HandleReceiptResult {
 	const nowDate = args.now?.() ?? new Date();
 	const db = new CommDB(args.dbPath, false);
 	try {
-		let wake:
-			| {
-					intentKey: string;
-					envelope: {
-						id: string;
-						to: string;
-						content: string;
-						metadata: Record<string, unknown>;
-					};
-					queuedAtMs: number;
-			  }
-			| undefined;
 		if (args.action === "relay" || args.action === "respond") {
 			const questionId = args.targetQuestionId?.trim();
 			if (!questionId) {
 				throw new Error(`${args.action} requires --to-question`);
 			}
-			const question = db.getMessageById(questionId);
-			if (!question || question.type !== "question") {
-				throw new Error(`Question not found: ${questionId}`);
-			}
-			wake = {
-				intentKey: `receipt-handle:${args.requestId}:${questionId}`,
-				envelope: {
-					id: `receipt-handle-wake:${args.requestId}:${questionId}`,
-					to: question.from_agent,
-					content: `Lead handled receipt ${args.receiptId}. Read the durable response.`,
-					metadata: {
-						kind: "receipt_handled",
-						receiptId: args.receiptId,
-						questionId,
-					},
-				},
-				queuedAtMs: nowDate.getTime(),
-			};
 		}
 		return db.handleReceipt({
 			requestId: args.requestId,
@@ -95,7 +65,6 @@ export function handleReceipt(args: HandleReceiptArgs): HandleReceiptResult {
 				: {}),
 			...(args.content ? { content: args.content } : {}),
 			...(args.reason ? { reason: args.reason } : {}),
-			...wake,
 		});
 	} finally {
 		db.close();

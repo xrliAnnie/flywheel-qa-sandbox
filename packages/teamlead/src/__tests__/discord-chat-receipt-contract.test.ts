@@ -3,8 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
 import { LeadLeaseStore } from "flywheel-comm/lead-lease";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { afterEach, describe, expect, it } from "vitest";
 
 const RULE_PATH = fileURLToPath(
@@ -55,22 +56,22 @@ describe("Discord chat durable-receipt Lead contract", () => {
 			]),
 		);
 
-		const queue = new LeadInboxQueue(dbPath);
+		const queue = new MailboxQueue(dbPath);
 		queue.enqueue({
 			id: receiptId,
-			toLead: leadId,
-			source: "discord_chat",
+			fromAgent: "founder",
+			toAgent: leadId,
+			recipientKind: "lead",
+			sourceKind: "discord_chat",
 			type: "external_delivery",
 			msgClass: "model",
 			priority: 0,
 			content: "founder: ship the report",
 			carrier: "external",
 			createdAt: "2026-07-22T12:00:00.000Z",
+			senderRef: encodeSenderRef(),
 		});
-		queue.markExternalDelivered(receiptId, {
-			now: "2026-07-22T12:00:01.000Z",
-			receiptWindowsMs: [1_800_000, 1_800_000, 14_400_000, 86_400_000],
-		});
+		queue.markExternalDelivered(receiptId, "2026-07-22T12:00:01.000Z");
 
 		const holderStart = "test-holder-start";
 		const lease = new LeadLeaseStore(leaseDbPath);
@@ -114,7 +115,7 @@ describe("Discord chat durable-receipt Lead contract", () => {
 		});
 
 		expect(output).toContain(`Handled ${receiptId} with ack`);
-		expect(queue.getById(receiptId)?.processed_at).not.toBeNull();
+		expect(queue.getSettlement(receiptId)?.event).toBe("processed");
 		queue.close();
 	});
 });

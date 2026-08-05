@@ -15,6 +15,25 @@ export type MailboxRecipientKind = "lead" | "runner" | "bridge";
 export type MailboxMessageClass = "protocol" | "model";
 export type MailboxPriority = 0 | 1 | 2 | 3;
 
+export const CHAT_DELIVERY_UNCONFIRMED_REASON =
+	"chat_delivery_unconfirmed" as const;
+
+export type ProcessedActorKind =
+	| "lead"
+	| "bridge-protocol"
+	| "founder-writer"
+	| "runner";
+
+export interface ProcessedEvidenceV1 {
+	v: 1;
+	kind: string;
+	ref: string;
+	actor: string;
+	actor_kind: ProcessedActorKind;
+	fence: Record<string, string | number>;
+	basis?: string[];
+}
+
 export interface MailboxRow {
 	seq: number;
 	id: string;
@@ -109,6 +128,57 @@ function requiredText(value: string, field: string): string {
 	const trimmed = value.trim();
 	if (!trimmed) throw new Error(`${field} is required`);
 	return assertNoLoneSurrogate(field, trimmed);
+}
+
+const UTC_ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+
+export function assertUtcIsoTimestamp(value: string, field: string): void {
+	if (!UTC_ISO_PATTERN.test(value) || !Number.isFinite(Date.parse(value))) {
+		throw new Error(`${field} must be a valid UTC ISO timestamp ending in Z`);
+	}
+}
+
+export function assertProcessedEvidence(evidence: ProcessedEvidenceV1): void {
+	if (!evidence || typeof evidence !== "object" || evidence.v !== 1) {
+		throw new Error("processed evidence must use schema version 1");
+	}
+	requiredText(evidence.kind, "evidence.kind");
+	requiredText(evidence.ref, "evidence.ref");
+	requiredText(evidence.actor, "evidence.actor");
+	if (
+		!["lead", "bridge-protocol", "founder-writer", "runner"].includes(
+			evidence.actor_kind,
+		)
+	) {
+		throw new Error("processed evidence actor_kind is invalid");
+	}
+	if (
+		!evidence.fence ||
+		typeof evidence.fence !== "object" ||
+		Array.isArray(evidence.fence) ||
+		Object.keys(evidence.fence).length === 0
+	) {
+		throw new Error("processed evidence fence must be non-empty");
+	}
+	for (const [key, value] of Object.entries(evidence.fence)) {
+		requiredText(key, "evidence fence key");
+		if (
+			(typeof value === "string" && value.trim().length > 0) ||
+			(typeof value === "number" && Number.isSafeInteger(value))
+		) {
+			continue;
+		}
+		throw new Error(`processed evidence fence ${key} is invalid`);
+	}
+	if (
+		evidence.basis !== undefined &&
+		(!Array.isArray(evidence.basis) ||
+			evidence.basis.some(
+				(value) => typeof value !== "string" || !value.trim(),
+			))
+	) {
+		throw new Error("processed evidence basis must contain non-empty strings");
+	}
 }
 
 function timestamp(value: string | undefined, field: string): string {
@@ -280,6 +350,18 @@ export class MailboxQueue {
 				    AND (? IS NULL OR to_agent = ?)`,
 			)
 			.get(toAgent ?? null, toAgent ?? null) as { count: number };
+		return row.count;
+	}
+
+	countRunnerDeliverable(): number {
+		const row = this.db
+			.prepare(
+				`SELECT COUNT(*) AS count FROM mailbox
+				  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
+				    AND state = 'QUEUED'
+				    AND (next_retry_at IS NULL OR next_retry_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+			)
+			.get() as { count: number };
 		return row.count;
 	}
 
@@ -588,6 +670,85 @@ export class MailboxQueue {
 				return updated.changes === 1 ? this.getById(row.id) : undefined;
 			})
 			.immediate();
+	}
+
+	claimRunner(input: {
+		ownerEpoch: string;
+		now: string;
+		claimTtlMs: number;
+	}): MailboxRow | undefined {
+		const claimExpiresAt = addMilliseconds(input.now, input.claimTtlMs);
+		return this.db
+			.transaction(() => {
+				if (!this.isCurrentOwner(input.ownerEpoch, input.now)) return undefined;
+				const row = this.db
+					.prepare(
+						`SELECT * FROM mailbox
+						  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
+						    AND state = 'QUEUED'
+						    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+						  ORDER BY priority, seq LIMIT 1`,
+					)
+					.get(input.now) as MailboxRow | undefined;
+				if (!row) return undefined;
+				const updated = this.db
+					.prepare(
+						`UPDATE mailbox SET state = 'LEASED', claimed_by = ?, claim_expires_at = ?
+						 WHERE id = ? AND state = 'QUEUED'`,
+					)
+					.run(input.ownerEpoch, claimExpiresAt, row.id);
+				return updated.changes === 1 ? this.getById(row.id) : undefined;
+			})
+			.immediate();
+	}
+
+	recordRunnerDeliverySuccess(input: {
+		id: string;
+		ownerEpoch: string;
+	}): boolean {
+		return (
+			this.db
+				.prepare(
+					`UPDATE mailbox SET last_error = NULL, next_retry_at = NULL
+					 WHERE id = ? AND recipient_kind = 'runner'
+					   AND state = 'LEASED' AND claimed_by = ?`,
+				)
+				.run(input.id, input.ownerEpoch).changes === 1
+		);
+	}
+
+	recordRunnerDeliveryFailure(input: {
+		id: string;
+		ownerEpoch: string;
+		now: string;
+		nextRetryAt: string;
+		error: string;
+		maxAttempts: number;
+	}): { deadLettered: boolean } {
+		const updated = this.db
+			.prepare(
+				`UPDATE mailbox SET retry_count = retry_count + 1, last_error = ?,
+				   next_retry_at = CASE WHEN retry_count + 1 >= ? THEN NULL ELSE ? END,
+				   state = CASE WHEN retry_count + 1 >= ? THEN 'DEAD' ELSE 'QUEUED' END,
+				   dead_at = CASE WHEN retry_count + 1 >= ? THEN ? ELSE dead_at END,
+				   dead_reason = CASE WHEN retry_count + 1 >= ? THEN 'delivery_attempts_exhausted' ELSE dead_reason END,
+				   claimed_by = NULL, claim_expires_at = NULL
+				 WHERE id = ? AND recipient_kind = 'runner'
+				   AND state = 'LEASED' AND claimed_by = ?`,
+			)
+			.run(
+				input.error,
+				input.maxAttempts,
+				input.nextRetryAt,
+				input.maxAttempts,
+				input.maxAttempts,
+				input.now,
+				input.maxAttempts,
+				input.id,
+				input.ownerEpoch,
+			);
+		if (updated.changes !== 1) throw new Error("runner claim fence lost");
+		return { deadLettered: this.getById(input.id)?.state === "DEAD" };
 	}
 
 	recordBridgeDeliveryFailure(input: {

@@ -7,29 +7,22 @@ import {
 	canonicalSubmissionDigest,
 } from "flywheel-config";
 import { founderMessageRootId } from "./founder-reply-routing.js";
-import type {
-	EnqueueFounderHubRootInput,
-	LeadInboxRow,
-	ProcessedEvidenceV1,
-	ReceiptPriorityWindowsMs,
-} from "./lead-inbox-queue.js";
 import {
 	assertProcessedEvidence,
 	assertUtcIsoTimestamp,
 	CHAT_DELIVERY_UNCONFIRMED_REASON,
-	LeadInboxQueue,
-} from "./lead-inbox-queue.js";
-import { MailboxQueue, type MailboxRow } from "./mailbox-queue.js";
+	MailboxQueue,
+	type MailboxRow,
+	type ProcessedEvidenceV1,
+} from "./mailbox-queue.js";
 import { MAILBOX_SCHEMA, MAILBOX_SCHEMA_GENERATION } from "./mailbox-schema.js";
 import { encodeSenderRef } from "./sender-ref.js";
-import { truncateCodePoints } from "./text-truncate.js";
 import type {
 	Message,
 	MessageProvenance,
 	ResponseWriteResult,
 	Session,
 } from "./types.js";
-import { deleteContentRef as deleteContentRefFile } from "./utils/content-ref.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -390,9 +383,19 @@ export interface RunnerWakeFailureEpisode {
 
 export interface TerminalWakeCompletion {
 	wake: RunnerPhaseWake;
-	alert: import("./lead-inbox-queue.js").ReceiptAlertOutboxRow;
+	alert: ReceiptAlertOutboxRow;
 	identityKind: "terminal_episode" | "founder_message";
 	episodeFingerprint: string;
+}
+
+export interface ReceiptAlertOutboxRow {
+	id: string;
+	kind: string;
+	payload: string;
+	created_at: string;
+	delivered_at: string | null;
+	canceled_at: string | null;
+	cancel_reason: string | null;
 }
 
 function runnerWakeMetadata(wake: RunnerPhaseWake): Record<string, unknown> {
@@ -428,45 +431,11 @@ function runnerWakeMetadata(wake: RunnerPhaseWake): Record<string, unknown> {
 	return stored;
 }
 
-function founderWakeEnvelope(envelope: PhaseWakeInput): PhaseWakeInput {
-	return {
-		...envelope,
-		metadata: {
-			...(envelope.metadata ?? {}),
-			origin: "founder",
-		},
-	};
-}
-
-export interface ReceiptWakePolicy {
-	transportAvailable?: boolean;
-	execPushCap?: number;
-	execPushWindowMs?: number;
-}
-
 export interface RunnerReceiptWakePushClaim {
 	wake: RunnerPhaseWake;
 	claimToken: string;
 	attempt: number;
 	envelope: PhaseWakeInput;
-}
-
-export interface InstructionAndIntentInput {
-	instructionId: string;
-	fromAgent: string;
-	executionId: string;
-	content: string;
-	intentKey: string;
-	envelope: PhaseWakeInput;
-	queuedAtMs: number;
-	provenance?: MessageProvenance;
-	wakePolicy?: ReceiptWakePolicy;
-}
-
-export interface InstructionAndIntentResult {
-	kind: "queued" | "duplicate";
-	instructionId: string;
-	wake: RunnerPhaseWake;
 }
 
 export interface RespondAndReceiptInput {
@@ -476,37 +445,19 @@ export interface RespondAndReceiptInput {
 	rootId: string;
 	evidence: Omit<ProcessedEvidenceV1, "ref">;
 	now: string;
-	intentKey: string;
-	envelope: PhaseWakeInput;
-	queuedAtMs: number;
 	provenance?: MessageProvenance;
-}
-
-export interface ResponseAndIntentInput {
-	questionId: string;
-	fromAgent: string;
-	content: string;
-	intentKey: string;
-	envelope: PhaseWakeInput;
-	queuedAtMs: number;
-	provenance?: MessageProvenance;
-	wakePolicy?: ReceiptWakePolicy;
 }
 
 export interface RespondAndReceiptResult {
 	responseId: string;
-	wake: RunnerPhaseWake;
 }
 
-export interface ReviewResponseAndWakeInput {
+export interface ReviewResponseInput {
 	questionId: string;
 	fromAgent: string;
 	content: string;
 	expectedOwner: string;
 	expectedCheckpoint: "review_design" | "review_code";
-	summary: string;
-	queuedAtMs: number;
-	wakePolicy?: ReceiptWakePolicy;
 }
 
 export type ReceiptHandleAction = "relay" | "respond" | "no-route" | "ack";
@@ -521,11 +472,8 @@ export interface HandleReceiptInput {
 	targetQuestionId?: string;
 	content?: string;
 	reason?: string;
-	intentKey?: string;
-	envelope?: PhaseWakeInput;
-	queuedAtMs?: number;
 	/** Test-only transaction seam injection. */
-	testCrashAfter?: "effect" | "terminal" | "wake";
+	testCrashAfter?: "effect" | "terminal";
 }
 
 export interface HandleReceiptResult {
@@ -533,7 +481,6 @@ export interface HandleReceiptResult {
 	receiptId: string;
 	action: ReceiptHandleAction;
 	responseId?: string;
-	wake?: RunnerPhaseWake;
 }
 
 export interface TrustedFounderApprovalAndReceiptInput {
@@ -547,9 +494,6 @@ export interface TrustedFounderApprovalAndReceiptInput {
 	rootId: string;
 	evidence: Omit<ProcessedEvidenceV1, "ref">;
 	now: string;
-	intentKey: string;
-	envelope: PhaseWakeInput;
-	queuedAtMs: number;
 	provenance?: MessageProvenance;
 }
 
@@ -561,9 +505,6 @@ export interface TrustedFounderGateResponseAndReceiptInput {
 	rootId: string;
 	msgId: string;
 	now: string;
-	intentKey: string;
-	envelope: PhaseWakeInput;
-	queuedAtMs: number;
 	approvalSource?: {
 		project: string;
 		sourceEventId: string;
@@ -578,9 +519,16 @@ export interface RouteFounderReplyInput {
 	noRouteReason?: string;
 	now: string;
 	provenance?: MessageProvenance;
-	intentKey?: string;
-	envelope?: PhaseWakeInput;
-	queuedAtMs?: number;
+}
+
+export interface EnqueueFounderHubRootInput {
+	id: string;
+	toLead: string;
+	content: string;
+	refMessageId: string;
+	now: string;
+	nextUnprocessedAt?: string | null;
+	routingState?: string | null;
 }
 
 export type RouteFounderReplyResult =
@@ -588,7 +536,6 @@ export type RouteFounderReplyResult =
 			kind: "routed";
 			questionId: string;
 			responseId: string;
-			wake: RunnerPhaseWake;
 	  }
 	| {
 			kind: "stale_candidate";
@@ -596,27 +543,6 @@ export type RouteFounderReplyResult =
 			winningResponseId: string;
 	  }
 	| { kind: "no_route"; winningResponseId?: string };
-
-export type UnprocessedReceiptAdvance =
-	| { kind: "resent"; rootId: string; round: number; resendId: string }
-	| { kind: "escalation_queued"; rootId: string; outboxId: string };
-
-export interface UnprocessedReceiptAlertPayload {
-	rootId: string;
-	episodeId: string;
-	targetKey: string;
-	toLead: string;
-	type: string;
-	projectName: string;
-	issueId: string;
-	issueIdentifier?: string;
-	executionId: string;
-	questionId?: string;
-	threadId?: string;
-	firstDeliveredAt: string;
-	resendRound: number;
-	contentSummary: string;
-}
 
 export interface RunnerShutdownControl {
 	execution_id: string;
@@ -697,16 +623,6 @@ function isMissingTableError(error: unknown, table: string): boolean {
 		error instanceof Error &&
 		new RegExp(`no such table: (?:main\\.)?${table}`, "i").test(error.message)
 	);
-}
-
-function positiveReceiptEnv(name: string, fallback: number): number {
-	const raw = process.env[name];
-	if (raw === undefined || !raw.trim()) return fallback;
-	const value = Number(raw);
-	if (!Number.isSafeInteger(value) || value <= 0) {
-		throw new Error(`invalid positive receipt configuration ${name}=${raw}`);
-	}
-	return value;
 }
 
 function assertMailboxGeneration(db: Database.Database, dbPath: string): void {
@@ -953,52 +869,8 @@ export class CommDB {
 	}
 
 	cleanupReadMessagesWithRefs(ttlHours = 24): number {
-		const cleanupCondition = (alias: string) => `${alias}.read_at IS NOT NULL
-			AND ${alias}.created_at < datetime('now', '-' || ? || ' hours')
-			${
-				commDbProtectionEnabled()
-					? `AND NOT (
-						${alias}.type = 'question'
-						AND ${alias}.relay_state != 'terminal_disposed'
-						AND NOT EXISTS (
-							SELECT 1 FROM mailbox_message_projection response
-							 WHERE response.parent_id = ${alias}.id AND response.type = 'response'
-						)
-					)`
-					: ""
-			}`;
-		const refs = this.db
-			.prepare(
-				`SELECT message.content_ref FROM mailbox_message_projection message
-			 WHERE (${cleanupCondition("message")}
-			    OR message.parent_id IN (
-			      SELECT parent.id FROM mailbox_message_projection parent
-			       WHERE ${cleanupCondition("parent")}
-			    ))
-			 AND message.content_ref IS NOT NULL`,
-			)
-			.all(ttlHours, ttlHours) as Array<{ content_ref: string }>;
-		for (const { content_ref } of refs) {
-			deleteContentRefFile(content_ref);
-		}
-		// FLY-80: Delete child mailbox_message_projection before parents to satisfy FK constraint
-		const childResult = this.db
-			.prepare(
-				`DELETE FROM mailbox_message_projection WHERE parent_id IN (
-				   SELECT parent.id FROM mailbox_message_projection parent
-				    WHERE ${cleanupCondition("parent")}
-				 )`,
-			)
-			.run(ttlHours);
-		const parentResult = this.db
-			.prepare(
-				`DELETE FROM mailbox_message_projection WHERE id IN (
-				   SELECT message.id FROM mailbox_message_projection message
-				    WHERE ${cleanupCondition("message")}
-				 )`,
-			)
-			.run(ttlHours);
-		return childResult.changes + parentResult.changes;
+		void ttlHours;
+		return 0;
 	}
 
 	insertQuestion(
@@ -2448,7 +2320,7 @@ export class CommDB {
 	 * eligible pending runner question, or close it explicitly as no-route.
 	 * New FLY-1392 roots carry no Bridge-generated candidates; legacy promoted
 	 * families retain their frozen-candidate checks. The business write,
-	 * processed receipt(s), and wake intent share this transaction.
+	 * response and processed receipt(s) share this transaction.
 	 */
 	routeFounderReply(input: RouteFounderReplyInput): RouteFounderReplyResult {
 		assertUtcIsoTimestamp(input.now, "now");
@@ -2494,15 +2366,10 @@ export class CommDB {
 						evidence.actor === leadId &&
 						evidence.basis?.includes(`question:${toQuestionId}`)
 					) {
-						const wake = this.db
-							.prepare("SELECT * FROM runner_phase_wakes WHERE message_id = ?")
-							.get(input.intentKey ?? "") as RunnerPhaseWake | undefined;
-						if (!wake) throw new Error("routed founder reply wake is missing");
 						return {
 							kind: "routed",
 							questionId: toQuestionId,
 							responseId: evidence.ref,
-							wake,
 						};
 					}
 					if (
@@ -2596,13 +2463,6 @@ export class CommDB {
 				) {
 					throw new Error(`question ${questionId} is no longer pending`);
 				}
-				if (
-					!input.intentKey ||
-					!input.envelope ||
-					input.queuedAtMs === undefined
-				) {
-					throw new Error("question route requires a wake intent");
-				}
 				const responseId = randomUUID();
 				new MailboxQueue(this.db).enqueue({
 					id: responseId,
@@ -2634,14 +2494,7 @@ export class CommDB {
 					now: input.now,
 					evidence,
 				});
-				const wake = this.admitReceiptWakeIntent({
-					executionId: question.from_agent,
-					intentKey: input.intentKey,
-					envelope: founderWakeEnvelope(input.envelope),
-					queuedAtMs: input.queuedAtMs,
-					purpose: "park_wake",
-				});
-				return { kind: "routed", questionId, responseId, wake };
+				return { kind: "routed", questionId, responseId };
 			})
 			.immediate();
 	}
@@ -2701,114 +2554,6 @@ export class CommDB {
 	}
 
 	/**
-	 * FLY-1392: one CommDB unit of work for a Lead instruction and the wake
-	 * intent that must make that instruction observable to the target runner.
-	 * Transport I/O deliberately happens after this durable commit.
-	 */
-	instructionAndIntent(
-		input: InstructionAndIntentInput,
-	): InstructionAndIntentResult {
-		for (const [field, value] of [
-			["instructionId", input.instructionId],
-			["fromAgent", input.fromAgent],
-			["executionId", input.executionId],
-			["content", input.content],
-			["intentKey", input.intentKey],
-			["envelope.id", input.envelope.id],
-			["envelope.content", input.envelope.content],
-		] as const) {
-			if (!value.trim()) throw new Error(`${field} is required`);
-		}
-		if (input.envelope.to !== input.executionId) {
-			throw new Error(
-				`wake envelope target mismatch: expected ${input.executionId}, got ${input.envelope.to}`,
-			);
-		}
-		if (!Number.isSafeInteger(input.queuedAtMs) || input.queuedAtMs < 0) {
-			throw new Error("queuedAtMs must be a non-negative safe integer");
-		}
-		const envelopeJson = JSON.stringify(input.envelope);
-
-		return this.db
-			.transaction((): InstructionAndIntentResult => {
-				this.insertInstructionWithId(
-					input.instructionId,
-					input.fromAgent,
-					input.executionId,
-					input.content,
-					input.provenance,
-				);
-				const instruction = this.db
-					.prepare(
-						"SELECT id, from_agent, to_agent, type, content FROM mailbox_message_projection WHERE id = ?",
-					)
-					.get(input.instructionId) as
-					| {
-							id: string;
-							from_agent: string;
-							to_agent: string;
-							type: string;
-							content: string;
-					  }
-					| undefined;
-				if (
-					!instruction ||
-					instruction.from_agent !== input.fromAgent ||
-					instruction.to_agent !== input.executionId ||
-					instruction.type !== "instruction" ||
-					instruction.content !== input.content
-				) {
-					throw new Error(
-						`instruction id ${input.instructionId} was reused with different content`,
-					);
-				}
-
-				const existing = this.db
-					.prepare(
-						`SELECT * FROM runner_phase_wakes
-					 WHERE execution_id = ?
-					   AND (message_id = ? OR source_instruction_id = ?)
-					 ORDER BY queue_seq LIMIT 1`,
-					)
-					.get(input.executionId, input.intentKey, input.instructionId) as
-					| RunnerPhaseWake
-					| undefined;
-				if (existing) {
-					if (
-						existing.message_id !== input.intentKey ||
-						existing.source_instruction_id !== input.instructionId ||
-						existing.envelope_json !== envelopeJson
-					) {
-						throw new Error(
-							`wake intent ${input.intentKey} was reused with different content`,
-						);
-					}
-					return {
-						kind: "duplicate",
-						instructionId: input.instructionId,
-						wake: existing,
-					};
-				}
-
-				const wake = this.admitReceiptWakeIntent({
-					executionId: input.executionId,
-					intentKey: input.intentKey,
-					envelope: input.envelope,
-					queuedAtMs: input.queuedAtMs,
-					sourceInstructionId: input.instructionId,
-					wakePolicy: input.wakePolicy,
-					purpose: "message_traffic",
-				});
-				return {
-					kind: "queued",
-					instructionId: input.instructionId,
-					wake,
-				};
-			})
-			.immediate();
-	}
-
-	/**
 	 * Category-agnostic Lead handle action. The optional business effect, receipt
 	 * terminal write, and runner wake share one SQLite transaction; request id +
 	 * canonical payload digest makes retries deterministic.
@@ -2836,23 +2581,12 @@ export class CommDB {
 		) {
 			throw new Error(`${input.action} requires targetQuestionId and content`);
 		}
-		if (
-			(input.action === "relay" || input.action === "respond") &&
-			(!input.intentKey?.trim() ||
-				!input.envelope ||
-				input.queuedAtMs === undefined)
-		) {
-			throw new Error(`${input.action} requires a wake intent`);
-		}
-
 		const payloadDigest = canonicalSubmissionDigest({
 			receiptId,
 			action: input.action,
 			targetQuestionId: input.targetQuestionId?.trim(),
 			content: input.content?.trim(),
 			reason: input.reason?.trim(),
-			intentKey: input.intentKey?.trim(),
-			envelope: input.envelope,
 		});
 
 		return this.db
@@ -2901,7 +2635,6 @@ export class CommDB {
 				}
 
 				let responseId: string | undefined;
-				let wake: RunnerPhaseWake | undefined;
 				if (input.action === "relay" || input.action === "respond") {
 					const questionId = input.targetQuestionId?.trim() as string;
 					const question = this.db
@@ -2926,9 +2659,6 @@ export class CommDB {
 						this.getResponse(questionId)
 					) {
 						throw new Error(`business_object_not_pending: ${questionId}`);
-					}
-					if (input.envelope?.to !== question.from_agent) {
-						throw new Error("wake target must match the question owner");
 					}
 					responseId = randomUUID();
 					new MailboxQueue(this.db).enqueue({
@@ -2970,25 +2700,11 @@ export class CommDB {
 					throw new Error("injected receipt handle crash after terminal");
 				}
 
-				if (input.action === "relay" || input.action === "respond") {
-					wake = this.admitReceiptWakeIntent({
-						executionId: input.envelope?.to as string,
-						intentKey: input.intentKey as string,
-						envelope: input.envelope as PhaseWakeInput,
-						queuedAtMs: input.queuedAtMs as number,
-						purpose: "park_wake",
-					});
-				}
-				if (input.testCrashAfter === "wake") {
-					throw new Error("injected receipt handle crash after wake");
-				}
-
 				const result: HandleReceiptResult = {
 					kind: "handled",
 					receiptId,
 					action: input.action,
 					...(responseId ? { responseId } : {}),
-					...(wake ? { wake } : {}),
 				};
 				this.db
 					.prepare(
@@ -3012,7 +2728,7 @@ export class CommDB {
 
 	/**
 	 * FLY-1392 composite response UOW: the business response, its processed
-	 * evidence, and the runner wake intent either all commit or all roll back.
+	 * evidence commit or roll back together; Runner delivery reads the response.
 	 */
 	respondAndReceipt(input: RespondAndReceiptInput): RespondAndReceiptResult {
 		for (const [field, value] of [
@@ -3020,7 +2736,6 @@ export class CommDB {
 			["fromAgent", input.fromAgent],
 			["content", input.content],
 			["rootId", input.rootId],
-			["intentKey", input.intentKey],
 		] as const) {
 			if (!value.trim()) throw new Error(`${field} is required`);
 		}
@@ -3107,85 +2822,8 @@ export class CommDB {
 				now: input.now,
 				evidence,
 			});
-			const wake = this.admitReceiptWakeIntent({
-				executionId: question.from_agent,
-				intentKey: input.intentKey,
-				envelope: input.envelope,
-				queuedAtMs: input.queuedAtMs,
-				purpose: "park_wake",
-			});
-			return { responseId: response.id, wake };
+			return { responseId: response.id };
 		})();
-	}
-
-	/** Response + wake intent in one transaction for gate/ask answers. */
-	responseAndIntent(input: ResponseAndIntentInput): RespondAndReceiptResult {
-		return this.db
-			.transaction(() => {
-				const question = this.db
-					.prepare(
-						`SELECT id, from_agent, resolved_at, superseded_at, relay_state
-					 FROM mailbox_message_projection WHERE id = ? AND type = 'question'`,
-					)
-					.get(input.questionId) as
-					| {
-							id: string;
-							from_agent: string;
-							resolved_at: string | null;
-							superseded_at: string | null;
-							relay_state: string;
-					  }
-					| undefined;
-				if (!question)
-					throw new Error(`Question ${input.questionId} not found`);
-				let response = this.getResponse(input.questionId);
-				if (!response) {
-					const responseId = randomUUID();
-					const createdAt = new Date().toISOString();
-					if (
-						question.resolved_at !== null ||
-						question.superseded_at !== null ||
-						question.relay_state === "terminal_disposed"
-					) {
-						throw new Error(`question ${input.questionId} is no longer open`);
-					}
-					new MailboxQueue(this.db).enqueue({
-						id: responseId,
-						fromAgent: input.fromAgent,
-						toAgent: question.from_agent,
-						recipientKind: "runner",
-						type: "response",
-						content: input.content,
-						refId: input.questionId,
-						createdAt,
-						expiresAt: new Date(
-							Date.parse(createdAt) + 72 * 60 * 60 * 1000,
-						).toISOString(),
-						senderRef: encodeSenderRef(input.provenance),
-					});
-					this.markQuestionTerminalDisposed(input.questionId);
-					response = this.getResponse(input.questionId);
-				}
-				if (
-					!response ||
-					response.from_agent !== input.fromAgent ||
-					response.content !== input.content
-				) {
-					throw new Error(
-						`question ${input.questionId} was answered by another actor`,
-					);
-				}
-				const wake = this.admitReceiptWakeIntent({
-					executionId: question.from_agent,
-					intentKey: input.intentKey,
-					envelope: input.envelope,
-					queuedAtMs: input.queuedAtMs,
-					wakePolicy: input.wakePolicy,
-					purpose: "park_wake",
-				});
-				return { responseId: response.id, wake };
-			})
-			.immediate();
 	}
 
 	trustedFounderApprovalAndReceipt(
@@ -3256,14 +2894,7 @@ export class CommDB {
 				now: input.now,
 				evidence,
 			});
-			const wake = this.admitReceiptWakeIntent({
-				executionId: input.expectedOwner,
-				intentKey: input.intentKey,
-				envelope: founderWakeEnvelope(input.envelope),
-				queuedAtMs: input.queuedAtMs,
-				purpose: "park_wake",
-			});
-			return { responseId: response.id, wake };
+			return { responseId: response.id };
 		})();
 	}
 
@@ -3352,229 +2983,53 @@ export class CommDB {
 					now: input.now,
 					evidence,
 				});
-				const wake = this.admitReceiptWakeIntent({
-					executionId: input.expectedOwner,
-					intentKey: input.intentKey,
-					envelope: founderWakeEnvelope(input.envelope),
-					queuedAtMs: input.queuedAtMs,
-					purpose: "park_wake",
-				});
-				return { responseId: response.id, wake };
+				return { responseId: response.id };
 			})
 			.immediate();
 	}
 
-	private admitReceiptWakeIntent(input: {
-		executionId: string;
-		intentKey: string;
-		envelope: PhaseWakeInput;
-		queuedAtMs: number;
-		sourceInstructionId?: string | null;
-		wakePolicy?: ReceiptWakePolicy;
-		purpose: NonNullable<RunnerPhaseWake["purpose"]>;
-	}): RunnerPhaseWake {
-		if (input.envelope.to !== input.executionId) {
-			throw new Error(
-				`wake envelope target mismatch: expected ${input.executionId}, got ${input.envelope.to}`,
-			);
-		}
-		if (!Number.isSafeInteger(input.queuedAtMs) || input.queuedAtMs < 0) {
-			throw new Error("queuedAtMs must be a non-negative safe integer");
-		}
-		const envelopeJson = JSON.stringify(input.envelope);
-		const metadataJson = input.envelope.metadata
-			? JSON.stringify(input.envelope.metadata)
-			: null;
-		const existing = this.db
-			.prepare(
-				`SELECT * FROM runner_phase_wakes
-				 WHERE execution_id = ?
-				   AND (message_id = ? OR (? IS NOT NULL AND source_instruction_id = ?))
-				 ORDER BY queue_seq LIMIT 1`,
-			)
-			.get(
-				input.executionId,
-				input.intentKey,
-				input.sourceInstructionId ?? null,
-				input.sourceInstructionId ?? null,
-			) as RunnerPhaseWake | undefined;
-		if (existing) {
-			if (
-				existing.message_id !== input.intentKey ||
-				existing.source_instruction_id !==
-					(input.sourceInstructionId ?? existing.source_instruction_id) ||
-				existing.envelope_json !== envelopeJson ||
-				existing.purpose !== input.purpose
-			) {
-				throw new Error(
-					`wake intent ${input.intentKey} was reused with different content`,
-				);
-			}
-			return existing;
-		}
-
-		const policy = input.wakePolicy ?? {};
-		const registeredVendor = (
-			this.db
-				.prepare("SELECT vendor FROM sessions WHERE execution_id = ?")
-				.get(input.executionId) as { vendor: string | null } | undefined
-		)?.vendor;
-		const transportAvailable =
-			policy.transportAvailable ?? registeredVendor !== "none";
-		const execPushCap =
-			policy.execPushCap ??
-			positiveReceiptEnv("FLYWHEEL_RECEIPT_EXEC_PUSH_CAP", 6);
-		const execPushWindowMs =
-			policy.execPushWindowMs ??
-			positiveReceiptEnv("FLYWHEEL_RECEIPT_EXEC_PUSH_WINDOW_MIN", 10) * 60_000;
-		if (!Number.isSafeInteger(execPushCap) || execPushCap < 1) {
-			throw new Error("execPushCap must be a positive safe integer");
-		}
-		if (!Number.isSafeInteger(execPushWindowMs) || execPushWindowMs < 1) {
-			throw new Error("execPushWindowMs must be a positive safe integer");
-		}
-		const windowStart =
-			Math.floor(input.queuedAtMs / execPushWindowMs) * execPushWindowMs;
-		const admittedInWindow = (
-			this.db
-				.prepare(
-					`SELECT COUNT(*) AS count FROM runner_phase_wakes
-					 WHERE execution_id = ? AND admission_state = 'queued'
-					   AND purpose != 'gate_response'
-					   AND queued_at > ? AND queued_at <= ?`,
-				)
-				.get(
-					input.executionId,
-					input.queuedAtMs - execPushWindowMs,
-					input.queuedAtMs,
-				) as { count: number }
-		).count;
-		const admissionState: NonNullable<RunnerPhaseWake["admission_state"]> =
-			!transportAvailable
-				? "skipped_no_transport"
-				: input.purpose !== "gate_response" && admittedInWindow >= execPushCap
-					? "suppressed_cap"
-					: "queued";
-		this.db
-			.prepare(
-				`INSERT INTO runner_phase_wakes (
-				  execution_id, message_id, content, metadata_json,
-				  source_instruction_id, state, queued_at, admission_state,
-				  envelope_json, push_attempts, purpose
-				) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 0, ?)`,
-			)
-			.run(
-				input.executionId,
-				input.intentKey,
-				input.envelope.content,
-				metadataJson,
-				input.sourceInstructionId ?? null,
-				input.queuedAtMs,
-				admissionState,
-				envelopeJson,
-				input.purpose,
-			);
-		if (admissionState === "suppressed_cap") {
-			const outboxId = `wake_cap:${input.executionId}:${windowStart}`;
-			this.db
-				.prepare(
-					`INSERT OR IGNORE INTO receipt_alert_outbox
-					 (id, kind, payload, created_at)
-					 VALUES (?, 'wake_cap', ?, ?)`,
-				)
-				.run(
-					outboxId,
-					JSON.stringify({
-						executionId: input.executionId,
-						windowStart,
-						windowMs: execPushWindowMs,
-						cap: execPushCap,
-					}),
-					new Date(input.queuedAtMs).toISOString(),
-				);
-		}
-		return this.db
-			.prepare(
-				"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
-			)
-			.get(input.executionId, input.intentKey) as RunnerPhaseWake;
-	}
-
 	/**
-	 * FLY-1434 ⑧: atomically persist a Bridge-owned review response and the
-	 * purpose-bound wake that makes it observable. An exact replay repairs an
-	 * older owned response that committed before the wake existed. Foreign
-	 * answers and non-queued admissions fail closed.
+	 * Atomically persist an owned review response. Runner delivery consumes the
+	 * response row directly, so no second wake record is created.
 	 */
-	insertReviewResponseWithWakeIfGateOpen(
-		input: ReviewResponseAndWakeInput,
+	insertReviewResponseIfGateOpen(
+		input: ReviewResponseInput,
 	): RespondAndReceiptResult | null {
-		class ReviewWakeAdmissionError extends Error {}
-		try {
-			return this.db
-				.transaction((): RespondAndReceiptResult | null => {
-					let response = this.getResponse(input.questionId);
-					if (response) {
+		return this.db
+			.transaction((): RespondAndReceiptResult | null => {
+				let response = this.getResponse(input.questionId);
+				if (response) {
+					if (
+						response.from_agent !== input.fromAgent ||
+						response.content !== input.content
+					) {
+						return null;
+					}
+				} else {
+					const inserted = this.insertResponseIfGateOpen({
+						questionId: input.questionId,
+						fromAgent: input.fromAgent,
+						content: input.content,
+						expectedOwner: input.expectedOwner,
+						expectedCheckpoint: input.expectedCheckpoint,
+					});
+					if (!inserted) {
+						response = this.getResponse(input.questionId);
 						if (
+							!response ||
 							response.from_agent !== input.fromAgent ||
 							response.content !== input.content
 						) {
 							return null;
 						}
 					} else {
-						const inserted = this.insertResponseIfGateOpen({
-							questionId: input.questionId,
-							fromAgent: input.fromAgent,
-							content: input.content,
-							expectedOwner: input.expectedOwner,
-							expectedCheckpoint: input.expectedCheckpoint,
-						});
-						if (!inserted) {
-							response = this.getResponse(input.questionId);
-							if (
-								!response ||
-								response.from_agent !== input.fromAgent ||
-								response.content !== input.content
-							) {
-								return null;
-							}
-						} else {
-							response = this.getResponse(input.questionId);
-						}
+						response = this.getResponse(input.questionId);
 					}
-					if (!response) return null;
-					const wake = this.admitReceiptWakeIntent({
-						executionId: input.expectedOwner,
-						intentKey: response.id,
-						envelope: {
-							id: response.id,
-							to: input.expectedOwner,
-							content:
-								`Your review request has been answered: ${input.summary} ` +
-								`(question ${input.questionId}). Read the durable answer with ` +
-								`flywheel-comm check ${input.questionId}. This wake carries NO authority.`,
-							metadata: {
-								kind: "review_response",
-								questionId: input.questionId,
-								responseId: response.id,
-							},
-						},
-						queuedAtMs: input.queuedAtMs,
-						wakePolicy: input.wakePolicy,
-						purpose: "gate_response",
-					});
-					if (wake.admission_state !== "queued") {
-						throw new ReviewWakeAdmissionError(
-							`review response wake admission failed: ${wake.admission_state}`,
-						);
-					}
-					return { responseId: response.id, wake };
-				})
-				.immediate();
-		} catch (error) {
-			if (error instanceof ReviewWakeAdmissionError) return null;
-			throw error;
-		}
+				}
+				if (!response) return null;
+				return { responseId: response.id };
+			})
+			.immediate();
 	}
 
 	private assertCurrentProtocolOwner(
@@ -3774,738 +3229,6 @@ export class CommDB {
 	 * Derive authorized Lead handling or an objective business-terminal disposal
 	 * before any reminder is admitted. Receipt category never participates.
 	 */
-	deriveProcessedReceipts(now: string): number {
-		assertUtcIsoTimestamp(now, "now");
-		const derive = this.db.transaction(() => {
-			const candidates = this.db
-				.prepare(
-					`SELECT receipt.id AS receipt_id, receipt.to_lead AS expected_lead,
-						        question.id AS question_id,
-						        response.id AS response_id, response.from_agent,
-						        response.sender_lease_key, response.sender_generation,
-						        question.resolved_at, question.superseded_at,
-						        question.relay_state
-					   FROM lead_inbox receipt
-					   JOIN mailbox_message_projection question
-					     ON question.id = receipt.ref_message_id
-					    AND question.type = 'question'
-						   LEFT JOIN mailbox_message_projection response
-					     ON response.parent_id = question.id
-					    AND response.type = 'response'
-					  WHERE receipt.resend_of IS NULL
-						    AND receipt.processed_at IS NULL
-						    AND receipt.processed_evidence IS NULL
-						    AND receipt.disposed_at IS NULL
-						    AND receipt.disposed_evidence IS NULL
-						    AND (response.id IS NOT NULL OR question.resolved_at IS NOT NULL
-						      OR question.superseded_at IS NOT NULL
-						      OR question.relay_state = 'terminal_disposed')
-					  ORDER BY receipt.seq`,
-				)
-				.all() as Array<{
-				receipt_id: string;
-				expected_lead: string;
-				question_id: string;
-				response_id: string | null;
-				from_agent: string | null;
-				sender_lease_key: string | null;
-				sender_generation: number | null;
-				resolved_at: string | null;
-				superseded_at: string | null;
-				relay_state: string;
-			}>;
-			const copiedEvidence = new Map<string, ProcessedEvidenceV1>();
-			for (const row of this.db
-				.prepare(
-					`SELECT processed_evidence FROM lead_inbox
-					  WHERE processed_evidence IS NOT NULL`,
-				)
-				.all() as Array<{ processed_evidence: string }>) {
-				try {
-					const evidence = JSON.parse(
-						row.processed_evidence,
-					) as ProcessedEvidenceV1;
-					assertProcessedEvidence(evidence);
-					copiedEvidence.set(evidence.ref, evidence);
-				} catch {
-					// Invalid legacy evidence is not authority and cannot be copied.
-				}
-			}
-
-			const queue = new LeadInboxQueue(this.db);
-			let derived = 0;
-			for (const candidate of candidates) {
-				let evidence: ProcessedEvidenceV1 | null = null;
-				if (
-					candidate.from_agent === candidate.expected_lead &&
-					candidate.response_id !== null &&
-					candidate.sender_generation !== null
-				) {
-					evidence = {
-						v: 1,
-						kind: "response_observed",
-						ref: candidate.response_id,
-						actor: candidate.from_agent,
-						actor_kind: "lead",
-						fence: {
-							...(candidate.sender_lease_key
-								? { lease_key: candidate.sender_lease_key }
-								: {}),
-							lease_generation: candidate.sender_generation,
-						},
-						basis: [`question:${candidate.question_id}`],
-					};
-				} else if (candidate.response_id !== null) {
-					const source = copiedEvidence.get(candidate.response_id);
-					if (
-						source?.actor === candidate.expected_lead &&
-						source.actor_kind === "lead"
-					) {
-						evidence = {
-							v: 1,
-							kind: "response_observed",
-							ref: candidate.response_id,
-							actor: source.actor,
-							actor_kind: source.actor_kind,
-							fence: { ...source.fence },
-							basis: [
-								`question:${candidate.question_id}`,
-								`source_evidence:${source.kind}`,
-							],
-						};
-					}
-				}
-				if (evidence) {
-					if (queue.markProcessed(candidate.receipt_id, { now, evidence })) {
-						derived++;
-					}
-					continue;
-				}
-				const disposalEvidence: ProcessedEvidenceV1 = {
-					v: 1,
-					kind: "business_object_terminal",
-					ref: candidate.response_id ?? candidate.question_id,
-					actor: candidate.from_agent ?? "commdb",
-					actor_kind: candidate.from_agent?.startsWith("founder")
-						? "founder-writer"
-						: candidate.from_agent
-							? "runner"
-							: "bridge-protocol",
-					fence:
-						candidate.sender_generation !== null
-							? {
-									...(candidate.sender_lease_key
-										? { lease_key: candidate.sender_lease_key }
-										: {}),
-									lease_generation: candidate.sender_generation,
-								}
-							: { authority: "commdb_business_terminal" },
-					basis: [`question:${candidate.question_id}`],
-				};
-				queue.markDisposed(candidate.receipt_id, {
-					now,
-					evidence: disposalEvidence,
-				});
-			}
-			return derived;
-		});
-		return derive.immediate();
-	}
-
-	reconcileReceiptActivation(input: {
-		enabled: boolean;
-		now: string;
-		receiptWindowsMs: ReceiptPriorityWindowsMs;
-		highWaterMark: string;
-		dryRun?: boolean;
-	}): {
-		episodeId: string;
-		status: "disabled" | "dry_run" | "active";
-		activatedAt: string | null;
-		derived: number;
-		initialized: number;
-		dryRunCounts: Record<string, unknown>;
-		commitCounts: Record<string, unknown> | null;
-	} {
-		assertUtcIsoTimestamp(input.now, "now");
-		if (
-			input.receiptWindowsMs.some(
-				(window) => !Number.isSafeInteger(window) || window <= 0,
-			)
-		) {
-			throw new Error("receiptWindowsMs must contain four positive integers");
-		}
-		if (!/^\d+$/.test(input.highWaterMark)) {
-			throw new Error("highWaterMark must be a Discord snowflake lower bound");
-		}
-		type EpisodeRow = {
-			episode_id: string;
-			disabled_at: string | null;
-			enabled_at: string | null;
-			activation_at: string | null;
-			status: "disabled" | "dry_run" | "active";
-			dry_run_counts: string;
-			commit_counts: string | null;
-			high_water_mark: string | null;
-		};
-		const reconcile = this.db.transaction(() => {
-			const latest = (): EpisodeRow | undefined =>
-				this.db
-					.prepare(
-						`SELECT * FROM receipt_activation_episodes
-						  ORDER BY rowid DESC LIMIT 1`,
-					)
-					.get() as EpisodeRow | undefined;
-			const parseCounts = (
-				encoded: string | null,
-			): Record<string, unknown> | null =>
-				encoded ? (JSON.parse(encoded) as Record<string, unknown>) : null;
-			const emptyCounts = (): Record<string, unknown> => ({
-				eligible: 0,
-				pending: 0,
-				exempt: 0,
-				autoSettled: 0,
-				disposed: 0,
-				byPriority: { 0: 0, 1: 0, 2: 0, 3: 0 },
-				estimated: { t1: 0, t2: 0, t3: 0, outboxPeak: 0 },
-			});
-			const activationCounts = (): Record<string, unknown> => {
-				const rows = this.db
-					.prepare(
-						`SELECT priority,
-						        SUM(CASE WHEN delivered_at IS NOT NULL
-						          AND processed_at IS NULL AND disposed_at IS NULL
-						          AND receipt_exempt_reason IS NULL THEN 1 ELSE 0 END) eligible,
-						        SUM(CASE WHEN processed_at IS NULL AND disposed_at IS NULL
-						          AND receipt_exempt_reason IS NULL THEN 1 ELSE 0 END) pending,
-						        SUM(CASE WHEN receipt_exempt_reason IS NOT NULL THEN 1 ELSE 0 END) exempt,
-						        SUM(CASE WHEN processed_at IS NOT NULL THEN 1 ELSE 0 END) settled,
-						        SUM(CASE WHEN disposed_at IS NOT NULL THEN 1 ELSE 0 END) disposed
-						   FROM lead_inbox WHERE resend_of IS NULL GROUP BY priority`,
-					)
-					.all() as Array<{
-					priority: 0 | 1 | 2 | 3;
-					eligible: number;
-					pending: number;
-					exempt: number;
-					settled: number;
-					disposed: number;
-				}>;
-				const counts = emptyCounts();
-				const byPriority = counts.byPriority as Record<string, number>;
-				for (const row of rows) {
-					counts.eligible = Number(counts.eligible) + row.eligible;
-					counts.pending = Number(counts.pending) + row.pending;
-					counts.exempt = Number(counts.exempt) + row.exempt;
-					counts.autoSettled = Number(counts.autoSettled) + row.settled;
-					counts.disposed = Number(counts.disposed) + row.disposed;
-					byPriority[String(row.priority)] = row.eligible;
-				}
-				const eligible = Number(counts.eligible);
-				counts.estimated = {
-					t1: eligible,
-					t2: eligible,
-					t3: eligible,
-					outboxPeak: eligible,
-				};
-				return counts;
-			};
-
-			let current = latest();
-			if (!input.enabled) {
-				if (!current) {
-					const episodeId = `receipt:${Date.parse(input.now)}:1`;
-					const counts = emptyCounts();
-					this.db
-						.prepare(
-							`INSERT INTO receipt_activation_episodes
-							 (episode_id, disabled_at, enabled_at, activation_at, status,
-							  dry_run_counts, commit_counts, high_water_mark)
-							 VALUES (?, ?, NULL, NULL, 'disabled', ?, NULL, ?)`,
-						)
-						.run(
-							episodeId,
-							input.now,
-							JSON.stringify(counts),
-							input.highWaterMark,
-						);
-					current = latest();
-				} else if (current.status !== "disabled") {
-					this.db
-						.prepare(
-							`UPDATE receipt_activation_episodes
-							 SET disabled_at = ?, status = 'disabled'
-							 WHERE episode_id = ? AND status != 'disabled'`,
-						)
-						.run(input.now, current.episode_id);
-					this.db
-						.prepare(
-							`UPDATE lead_inbox SET consumed_at = ?, disposition = 'superseded',
-							   claimed_by = NULL, claim_expires_at = NULL
-							 WHERE resend_of IS NOT NULL AND consumed_at IS NULL`,
-						)
-						.run(input.now);
-					this.db
-						.prepare(
-							`UPDATE receipt_alert_outbox SET canceled_at = ?,
-							   cancel_reason = 'receipt_foundation_disabled'
-							 WHERE kind = 'receipt_unprocessed' AND delivered_at IS NULL
-							   AND canceled_at IS NULL`,
-						)
-						.run(input.now);
-					current = latest();
-				}
-				if (!current) throw new Error("receipt disable episode is unavailable");
-				return {
-					episodeId: current.episode_id,
-					status: "disabled" as const,
-					activatedAt: current.activation_at,
-					derived: 0,
-					initialized: 0,
-					dryRunCounts: parseCounts(current.dry_run_counts) ?? emptyCounts(),
-					commitCounts: parseCounts(current.commit_counts),
-				};
-			}
-
-			const derived = this.deriveProcessedReceipts(input.now);
-			if (!current || current.status === "disabled") {
-				const count = (
-					this.db
-						.prepare("SELECT COUNT(*) count FROM receipt_activation_episodes")
-						.get() as { count: number }
-				).count;
-				const episodeId = `receipt:${Date.parse(input.now)}:${count + 1}`;
-				const counts = activationCounts();
-				this.db
-					.prepare(
-						`INSERT INTO receipt_activation_episodes
-						 (episode_id, disabled_at, enabled_at, activation_at, status,
-						  dry_run_counts, commit_counts, high_water_mark)
-						 VALUES (?, NULL, ?, NULL, 'dry_run', ?, NULL, ?)`,
-					)
-					.run(
-						episodeId,
-						input.now,
-						JSON.stringify(counts),
-						input.highWaterMark,
-					);
-				current = latest();
-			}
-			if (!current)
-				throw new Error("receipt activation episode is unavailable");
-			const dryRunCounts = activationCounts();
-			this.db
-				.prepare(
-					`UPDATE receipt_activation_episodes
-					 SET dry_run_counts = ? WHERE episode_id = ?`,
-				)
-				.run(JSON.stringify(dryRunCounts), current.episode_id);
-			if (input.dryRun) {
-				return {
-					episodeId: current.episode_id,
-					status: "dry_run" as const,
-					activatedAt: null,
-					derived,
-					initialized: 0,
-					dryRunCounts,
-					commitCounts: null,
-				};
-			}
-			if (current.status === "active" && current.activation_at) {
-				const newlyDelivered = this.db
-					.prepare(
-						`SELECT id, priority FROM lead_inbox
-						 WHERE resend_of IS NULL AND delivered_at IS NOT NULL
-						   AND receipt_episode_id IS NULL AND processed_at IS NULL
-						   AND disposed_at IS NULL AND receipt_exempt_reason IS NULL
-						   -- FLY-1586 R2 BLOCKER: never re-arm a fenced pre-watermark root
-						   AND NOT EXISTS (SELECT 1 FROM lead_inbox_fenced_root fr
-						                    WHERE fr.inbox_id = lead_inbox.id)`,
-					)
-					.all() as Array<{ id: string; priority: 0 | 1 | 2 | 3 }>;
-				let initialized = 0;
-				for (const row of newlyDelivered) {
-					initialized += this.db
-						.prepare(
-							`UPDATE lead_inbox SET receipt_episode_id = ?,
-							   next_unprocessed_at = COALESCE(next_unprocessed_at, ?)
-							 WHERE id = ? AND receipt_episode_id IS NULL
-							   AND processed_at IS NULL AND disposed_at IS NULL`,
-						)
-						.run(
-							current.episode_id,
-							new Date(
-								Date.parse(input.now) + input.receiptWindowsMs[row.priority],
-							).toISOString(),
-							row.id,
-						).changes;
-				}
-				return {
-					episodeId: current.episode_id,
-					status: "active" as const,
-					activatedAt: current.activation_at,
-					derived,
-					initialized,
-					dryRunCounts,
-					commitCounts: parseCounts(current.commit_counts),
-				};
-			}
-
-			// One-time legacy accounting: only durably delivered reminder effects
-			// consume a logical round. Merely materialized v1 children are superseded.
-			const legacyRounds = this.db
-				.prepare(
-					`SELECT resend_of root_id, COUNT(DISTINCT resend_round) rounds
-					   FROM lead_inbox
-					  WHERE resend_of IS NOT NULL AND delivered_at IS NOT NULL
-					    AND resend_round IS NOT NULL
-					  GROUP BY resend_of`,
-				)
-				.all() as Array<{ root_id: string; rounds: number }>;
-			for (const row of legacyRounds) {
-				this.db
-					.prepare(
-						`UPDATE lead_inbox SET delivered_rounds = ?
-						 WHERE id = ? AND delivered_rounds < ?`,
-					)
-					.run(row.rounds, row.root_id, row.rounds);
-			}
-			this.db
-				.prepare(
-					`UPDATE lead_inbox SET consumed_at = ?, disposition = 'superseded'
-					 WHERE resend_of IS NOT NULL AND delivered_at IS NULL
-					   AND consumed_at IS NULL AND receipt_episode_id IS NULL`,
-				)
-				.run(input.now);
-			this.db
-				.prepare(
-					`UPDATE receipt_alert_outbox SET canceled_at = ?,
-					   cancel_reason = 'legacy_generation_superseded'
-					 WHERE kind IN ('unprocessed','receipt_unprocessed')
-					   AND delivered_at IS NULL AND canceled_at IS NULL`,
-				)
-				.run(input.now);
-
-			const eligible = this.db
-				.prepare(
-					`SELECT id, priority FROM lead_inbox
-					 WHERE resend_of IS NULL AND delivered_at IS NOT NULL
-					   AND processed_at IS NULL AND disposed_at IS NULL
-					   AND receipt_exempt_reason IS NULL
-					   -- FLY-1586 R2 BLOCKER: never re-arm a fenced pre-watermark root
-					   AND NOT EXISTS (SELECT 1 FROM lead_inbox_fenced_root fr
-					                    WHERE fr.inbox_id = lead_inbox.id)`,
-				)
-				.all() as Array<{ id: string; priority: 0 | 1 | 2 | 3 }>;
-			let initialized = 0;
-			const initialize = this.db.prepare(
-				`UPDATE lead_inbox SET next_unprocessed_at = ?, receipt_episode_id = ?
-				 WHERE id = ? AND processed_at IS NULL AND disposed_at IS NULL
-				   AND receipt_exempt_reason IS NULL AND delivered_at IS NOT NULL`,
-			);
-			for (const row of eligible) {
-				initialized += initialize.run(
-					new Date(
-						Date.parse(input.now) + input.receiptWindowsMs[row.priority],
-					).toISOString(),
-					current.episode_id,
-					row.id,
-				).changes;
-			}
-			const commitCounts = activationCounts();
-			this.db
-				.prepare(
-					`UPDATE receipt_activation_episodes SET activation_at = ?,
-					   status = 'active', commit_counts = ? WHERE episode_id = ?`,
-				)
-				.run(input.now, JSON.stringify(commitCounts), current.episode_id);
-			return {
-				episodeId: current.episode_id,
-				status: "active" as const,
-				activatedAt: input.now,
-				derived,
-				initialized,
-				dryRunCounts,
-				commitCounts,
-			};
-		});
-		return reconcile.immediate();
-	}
-
-	/** Compatibility wrapper; v2 activation authority is receipt_activation_episodes. */
-	bootstrapUnprocessedReceipts(input: {
-		now: string;
-		windowMs: number;
-		receiptWindowsMs?: ReceiptPriorityWindowsMs;
-	}): { activationAt: string; derived: number; initialized: number } {
-		assertUtcIsoTimestamp(input.now, "now");
-		if (!Number.isSafeInteger(input.windowMs) || input.windowMs <= 0) {
-			throw new Error("windowMs must be a positive safe integer");
-		}
-		const receiptWindows =
-			input.receiptWindowsMs ??
-			([
-				input.windowMs,
-				input.windowMs,
-				input.windowMs,
-				input.windowMs,
-			] as const);
-		const activation = this.reconcileReceiptActivation({
-			enabled: true,
-			now: input.now,
-			receiptWindowsMs: receiptWindows,
-			highWaterMark: String(Date.parse(input.now)),
-		});
-		return {
-			activationAt: activation.activatedAt ?? input.now,
-			derived: activation.derived,
-			initialized: activation.initialized,
-		};
-	}
-
-	advanceDueUnprocessedReceipts(input: {
-		now: string;
-		windowMs: number;
-		receiptWindowsMs?: ReceiptPriorityWindowsMs;
-		resendCap: number;
-		limit?: number;
-	}): UnprocessedReceiptAdvance[] {
-		assertUtcIsoTimestamp(input.now, "now");
-		for (const [field, value] of [
-			["windowMs", input.windowMs],
-			["resendCap", input.resendCap],
-			["limit", input.limit ?? 100],
-		] as const) {
-			if (!Number.isSafeInteger(value) || value <= 0) {
-				throw new Error(`${field} must be a positive safe integer`);
-			}
-		}
-		const limit = input.limit ?? 100;
-		const receiptWindows =
-			input.receiptWindowsMs ??
-			([
-				input.windowMs,
-				input.windowMs,
-				input.windowMs,
-				input.windowMs,
-			] as const);
-		if (
-			receiptWindows.some(
-				(window) => !Number.isSafeInteger(window) || window <= 0,
-			)
-		) {
-			throw new Error("receiptWindowsMs must contain four positive integers");
-		}
-		const advance = this.db.transaction(() => {
-			const episode = this.db
-				.prepare(
-					`SELECT episode_id FROM receipt_activation_episodes
-					 WHERE status = 'active' AND activation_at IS NOT NULL
-					 ORDER BY rowid DESC LIMIT 1`,
-				)
-				.get() as { episode_id: string } | undefined;
-			if (!episode) return [];
-			const roots = this.db
-				.prepare(
-					`SELECT receipt.* FROM lead_inbox receipt
-					  WHERE receipt.resend_of IS NULL
-					    AND receipt.processed_at IS NULL
-					    AND receipt.processed_evidence IS NULL
-					    AND receipt.delivered_at IS NOT NULL
-					    AND receipt.escalated_at IS NULL
-					    AND receipt.next_unprocessed_at IS NOT NULL
-					    AND receipt.next_unprocessed_at <= ?
-					    AND receipt.receipt_episode_id = ?
-					    AND receipt.receipt_exempt_reason IS NULL
-					    AND receipt.disposed_at IS NULL
-					    -- FLY-1586 R2 BLOCKER: a fenced pre-watermark root must never
-					    -- mint a post-watermark child carrying the old founder payload
-					    AND NOT EXISTS (SELECT 1 FROM lead_inbox_fenced_root fr
-					                     WHERE fr.inbox_id = receipt.id)
-					  ORDER BY receipt.next_unprocessed_at, receipt.seq
-					  LIMIT ?`,
-				)
-				.all(input.now, episode.episode_id, limit) as LeadInboxRow[];
-			const outcomes: UnprocessedReceiptAdvance[] = [];
-			for (const root of roots) {
-				const round = root.delivered_rounds;
-				if (round < input.resendCap) {
-					const nextRound = round + 1;
-					const resendId = `${root.id}#r${nextRound}@${episode.episode_id}`;
-					const updated = this.db
-						.prepare(
-							`UPDATE lead_inbox SET next_unprocessed_at = NULL
-							  WHERE id = ? AND processed_at IS NULL AND disposed_at IS NULL
-							    AND receipt_exempt_reason IS NULL
-							    AND delivered_rounds = ? AND receipt_episode_id = ?
-							    AND next_unprocessed_at <= ?`,
-						)
-						.run(root.id, round, episode.episode_id, input.now);
-					if (updated.changes !== 1) continue;
-					const content = `${root.content}\n\n⚠️ 第 ${nextRound} 次重发,首投 ${root.delivered_at},仍无处理收据。`;
-					const resendClass =
-						root.type === "founder_reply" ? "model" : root.msg_class;
-					this.db
-						.prepare(
-							`INSERT OR IGNORE INTO lead_inbox (
-							   id, to_lead, source, type, msg_class, priority, content,
-							   ref_message_id, created_at, resend_of, resend_round,
-							   receipt_episode_id
-							 ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
-						)
-						.run(
-							resendId,
-							root.to_lead,
-							`receipt_resend:${root.id}`,
-							root.type,
-							resendClass,
-							root.priority,
-							content,
-							input.now,
-							root.id,
-							nextRound,
-							episode.episode_id,
-						);
-					const resend = new LeadInboxQueue(this.db).getById(resendId);
-					if (
-						!resend ||
-						resend.resend_of !== root.id ||
-						resend.resend_round !== nextRound ||
-						resend.ref_message_id !== null ||
-						resend.msg_class !== resendClass ||
-						resend.content !== content ||
-						resend.receipt_episode_id !== episode.episode_id
-					) {
-						throw new Error(`receipt resend id ${resendId} was reused`);
-					}
-					outcomes.push({
-						kind: "resent",
-						rootId: root.id,
-						round: nextRound,
-						resendId,
-					});
-					continue;
-				}
-
-				const outboxId = `unprocessed:${root.id}@${episode.episode_id}`;
-				const payload = this.buildUnprocessedReceiptAlertPayload(root);
-				const inserted = this.db
-					.prepare(
-						`INSERT OR IGNORE INTO receipt_alert_outbox
-						 (id, kind, payload, created_at)
-						 VALUES (?, 'receipt_unprocessed', ?, ?)`,
-					)
-					.run(outboxId, JSON.stringify(payload), input.now);
-				this.db
-					.prepare(
-						`UPDATE lead_inbox SET next_unprocessed_at = NULL
-						  WHERE id = ? AND processed_at IS NULL AND disposed_at IS NULL`,
-					)
-					.run(root.id);
-				if (inserted.changes !== 1) continue;
-				outcomes.push({
-					kind: "escalation_queued",
-					rootId: root.id,
-					outboxId,
-				});
-			}
-			return outcomes;
-		});
-		return advance.immediate();
-	}
-
-	/** v2 retires Bridge attribution/rebind promotion; Lead handles the canonical row. */
-	promoteDueFounderRebinds(input: {
-		ownerEpoch: string;
-		now: string;
-		limit?: number;
-	}): LeadInboxRow[] {
-		assertUtcIsoTimestamp(input.now, "now");
-		void input.ownerEpoch;
-		void input.limit;
-		return [];
-	}
-
-	listPendingReceiptAlerts(
-		kinds: readonly string[],
-		limit = 100,
-	): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow[] {
-		if (kinds.length === 0) return [];
-		if (!Number.isSafeInteger(limit) || limit <= 0) {
-			throw new Error("alert limit must be a positive safe integer");
-		}
-		const placeholders = kinds.map(() => "?").join(",");
-		return this.db
-			.prepare(
-				`SELECT * FROM receipt_alert_outbox
-				  WHERE delivered_at IS NULL AND canceled_at IS NULL
-				    AND kind IN (${placeholders})
-				  ORDER BY created_at, id LIMIT ?`,
-			)
-			.all(
-				...kinds,
-				limit,
-			) as import("./lead-inbox-queue.js").ReceiptAlertOutboxRow[];
-	}
-
-	private buildUnprocessedReceiptAlertPayload(
-		root: LeadInboxRow,
-	): UnprocessedReceiptAlertPayload {
-		let projectName = "unknown";
-		let issueId = "unknown";
-		let executionId = `${root.to_lead}:receipt`;
-		let threadId: string | undefined;
-		if (root.ref_message_id) {
-			const question = this.getMessageById(root.ref_message_id);
-			const session = question
-				? this.getSession(question.from_agent)
-				: undefined;
-			if (session) {
-				projectName = session.project_name;
-				issueId = session.issue_id ?? issueId;
-				executionId = session.execution_id;
-			}
-		}
-		const familyRoot = root.family_root_id
-			? new LeadInboxQueue(this.db).getById(root.family_root_id)
-			: root.type === "founder_reply"
-				? root
-				: undefined;
-		if (familyRoot) {
-			try {
-				const payload = this.parseFounderRootPayload(familyRoot.content);
-				projectName = payload.projectName;
-				issueId = payload.issueId;
-				threadId = payload.threadId;
-				executionId = `${projectName}:${root.to_lead}`;
-			} catch {
-				// Preserve an honest, routable fallback; delivery will retry/no-owner.
-			}
-		}
-		return {
-			rootId: root.id,
-			episodeId: root.receipt_episode_id ?? "legacy/v1",
-			targetKey: `${projectName}:${root.to_lead}`,
-			toLead: root.to_lead,
-			type: root.type,
-			projectName,
-			issueId,
-			executionId,
-			...(root.ref_message_id ? { questionId: root.ref_message_id } : {}),
-			...(threadId ? { threadId } : {}),
-			firstDeliveredAt: root.delivered_at ?? root.created_at,
-			resendRound: root.delivered_rounds,
-			// FLY-1586 C: this exact line minted lead_events seq 56649. `.slice(0,500)`
-			// cut a 🏆 in half; the lone high surrogate became U+FFFD in SQLite, so
-			// the reconciler's read-back no longer matched its own write, threw, and
-			// rolled back every boot-time cutover hop for 61 hours.
-			contentSummary: truncateCodePoints(
-				root.content.replaceAll(/\s+/g, " "),
-				500,
-			).text,
-		};
-	}
-
 	listPendingRunnerReceiptWakes(limit = 100): RunnerPhaseWake[] {
 		if (!Number.isSafeInteger(limit) || limit < 1) {
 			throw new Error("wake list limit must be a positive safe integer");
@@ -4518,6 +3241,25 @@ export class CommDB {
 				 ORDER BY queued_at ASC, queue_seq ASC LIMIT ?`,
 			)
 			.all(limit) as RunnerPhaseWake[];
+	}
+
+	listPendingReceiptAlerts(
+		kinds: readonly string[],
+		limit = 100,
+	): ReceiptAlertOutboxRow[] {
+		if (kinds.length === 0) return [];
+		if (!Number.isSafeInteger(limit) || limit <= 0) {
+			throw new Error("alert limit must be a positive safe integer");
+		}
+		const placeholders = kinds.map(() => "?").join(",");
+		return this.db
+			.prepare(
+				`SELECT * FROM receipt_alert_outbox
+				  WHERE delivered_at IS NULL AND canceled_at IS NULL
+				    AND kind IN (${placeholders})
+				  ORDER BY created_at, id LIMIT ?`,
+			)
+			.all(...kinds, limit) as ReceiptAlertOutboxRow[];
 	}
 
 	findPendingRunnerReceiptWakeForQuestion(
@@ -5017,7 +3759,7 @@ export class CommDB {
 		reason: string;
 		firstDetectedAtMs: number;
 		nowMs: number;
-	}): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | null {
+	}): ReceiptAlertOutboxRow | null {
 		if (!input.reason.trim())
 			throw new Error("wake escalation reason is required");
 		if (
@@ -5081,85 +3823,20 @@ export class CommDB {
 		return row.started_at;
 	}
 
-	getReceiptAlertOutbox(
-		id: string,
-	): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | undefined {
+	getReceiptAlertOutbox(id: string): ReceiptAlertOutboxRow | undefined {
 		return this.db
 			.prepare("SELECT * FROM receipt_alert_outbox WHERE id = ?")
-			.get(id) as
-			| import("./lead-inbox-queue.js").ReceiptAlertOutboxRow
-			| undefined;
+			.get(id) as ReceiptAlertOutboxRow | undefined;
 	}
 
 	/** Revalidate immediately before any external receipt notification effect. */
 	revalidateReceiptAlert(
 		outboxId: string,
 		nowMs: number,
-	): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | null {
+	): ReceiptAlertOutboxRow | null {
 		const check = this.db.transaction(() => {
 			const alert = this.getReceiptAlertOutbox(outboxId);
 			if (!alert || alert.delivered_at || alert.canceled_at) return null;
-			if (
-				alert.kind === "receipt_unprocessed" ||
-				alert.kind === "unprocessed"
-			) {
-				let payload: { rootId?: string; episodeId?: string };
-				try {
-					payload = JSON.parse(alert.payload) as typeof payload;
-				} catch {
-					payload = {};
-				}
-				const activeEpisode = this.db
-					.prepare(
-						`SELECT episode_id FROM receipt_activation_episodes
-						 WHERE status = 'active' AND activation_at IS NOT NULL
-						 ORDER BY rowid DESC LIMIT 1`,
-					)
-					.get() as { episode_id: string } | undefined;
-				const live =
-					typeof payload.rootId === "string"
-						? (this.db
-								.prepare(
-									`SELECT 1 FROM lead_inbox receipt
-									  WHERE receipt.id = ? AND receipt.resend_of IS NULL
-									    AND receipt.processed_at IS NULL
-									    AND receipt.processed_evidence IS NULL
-									    AND receipt.delivered_at IS NOT NULL
-										    AND receipt.disposed_at IS NULL
-										    AND receipt.disposed_evidence IS NULL
-										    AND receipt.receipt_exempt_reason IS NULL
-										    -- FLY-1586 R2 BLOCKER: an outbox created BEFORE the
-										    -- freeze stays live otherwise, and its notification
-										    -- embeds contentSummary + asks the Lead to complete
-										    -- the routing side effect — i.e. an old ship answer
-										    -- reaching the Lead a second time.
-										    AND NOT EXISTS (SELECT 1 FROM lead_inbox_fenced_root fr
-										                     WHERE fr.inbox_id = receipt.id)`,
-								)
-								.get(payload.rootId) as { 1: number } | undefined)
-						: undefined;
-				if (
-					!live ||
-					alert.created_at > new Date(nowMs).toISOString() ||
-					payload.episodeId !== activeEpisode?.episode_id
-				) {
-					this.db
-						.prepare(
-							`UPDATE receipt_alert_outbox
-							 SET canceled_at = ?, cancel_reason = ?
-							 WHERE id = ? AND delivered_at IS NULL AND canceled_at IS NULL`,
-						)
-						.run(
-							new Date(nowMs).toISOString(),
-							payload.episodeId !== activeEpisode?.episode_id
-								? "stale_activation_episode"
-								: "source_no_longer_unprocessed",
-							outboxId,
-						);
-					return null;
-				}
-				return alert;
-			}
 			if (alert.kind !== "wake_failed") return alert;
 			let payload: {
 				executionId?: string;
@@ -5243,7 +3920,7 @@ export class CommDB {
 	revalidateRunnerReceiptWakeAlert(
 		outboxId: string,
 		nowMs: number,
-	): import("./lead-inbox-queue.js").ReceiptAlertOutboxRow | null {
+	): ReceiptAlertOutboxRow | null {
 		return this.revalidateReceiptAlert(outboxId, nowMs);
 	}
 
@@ -5256,43 +3933,6 @@ export class CommDB {
 				)
 				.run(new Date(nowMs).toISOString(), outboxId).changes === 1
 		);
-	}
-
-	markUnprocessedReceiptEscalated(outboxId: string, nowMs: number): boolean {
-		const now = new Date(nowMs).toISOString();
-		const mark = this.db.transaction(() => {
-			const alert = this.getReceiptAlertOutbox(outboxId);
-			if (
-				!alert ||
-				(alert.kind !== "receipt_unprocessed" &&
-					alert.kind !== "unprocessed") ||
-				alert.canceled_at
-			) {
-				return false;
-			}
-			let payload: { rootId?: string };
-			try {
-				payload = JSON.parse(alert.payload) as typeof payload;
-			} catch {
-				return false;
-			}
-			if (typeof payload.rootId !== "string") return false;
-			this.db
-				.prepare(
-					`UPDATE receipt_alert_outbox SET delivered_at = COALESCE(delivered_at, ?)
-					  WHERE id = ? AND canceled_at IS NULL`,
-				)
-				.run(now, outboxId);
-			this.db
-				.prepare(
-					`UPDATE lead_inbox SET escalated_at = COALESCE(escalated_at, ?),
-					   next_unprocessed_at = NULL
-					 WHERE id = ?`,
-				)
-				.run(now, payload.rootId);
-			return this.getReceiptAlertOutbox(outboxId)?.delivered_at !== null;
-		});
-		return mark.immediate();
 	}
 
 	markRunnerPhaseWakeStarted(
@@ -5437,8 +4077,8 @@ export class CommDB {
 
 	/**
 	 * The only consuming read for a gate response. Internal probes continue to
-	 * use getResponse(), which is intentionally pure. Consumption stamps the
-	 * response and finishes only its exact purpose-bound wake.
+	 * use getResponse(), which is intentionally pure. Consumption ACKs the
+	 * canonical mailbox response; there is no secondary wake record.
 	 */
 	consumeGateResponse(
 		questionId: string,
@@ -5456,18 +4096,7 @@ export class CommDB {
 				)
 				.get(questionId, executionId) as Message | undefined;
 			if (!response) return undefined;
-			const nowMs = Date.now();
-			new MailboxQueue(this.db).ack(response.id, new Date(nowMs).toISOString());
-			this.db
-				.prepare(
-					`UPDATE runner_phase_wakes
-					    SET state = 'finished', finished_at = ?,
-					        claim_token = NULL, claim_expires_at = NULL
-					  WHERE execution_id = ? AND message_id = ?
-					    AND purpose = 'gate_response'
-					    AND state IN ('pending','started')`,
-				)
-				.run(nowMs, executionId, response.id);
+			new MailboxQueue(this.db).ack(response.id, new Date().toISOString());
 			return this.db
 				.prepare("SELECT * FROM mailbox_message_projection WHERE id = ?")
 				.get(response.id) as Message;

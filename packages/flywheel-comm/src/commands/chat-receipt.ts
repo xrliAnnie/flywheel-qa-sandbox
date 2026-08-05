@@ -2,8 +2,8 @@ import { CommDB } from "../db.js";
 import {
 	assertUtcIsoTimestamp,
 	CHAT_DELIVERY_UNCONFIRMED_REASON,
-} from "../lead-inbox-queue.js";
-import { MailboxQueue } from "../mailbox-queue.js";
+	MailboxQueue,
+} from "../mailbox-queue.js";
 import { encodeSenderRef } from "../sender-ref.js";
 
 const ENVELOPE_PREFIX = "[discord-chat-receipt v1] ";

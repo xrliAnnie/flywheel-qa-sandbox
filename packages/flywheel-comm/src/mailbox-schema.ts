@@ -206,6 +206,14 @@ CREATE TABLE IF NOT EXISTS receipt_alert_outbox (
   canceled_at TEXT,
   cancel_reason TEXT
 );
+CREATE TABLE IF NOT EXISTS receipt_handle_requests (
+  request_id TEXT PRIMARY KEY,
+  receipt_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  payload_digest TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS loop_owner (
   singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
   owner_epoch TEXT NOT NULL,

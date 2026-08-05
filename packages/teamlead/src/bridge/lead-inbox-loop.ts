@@ -7,7 +7,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { ReceiptPriorityWindowsMs } from "flywheel-comm/lead-inbox-queue";
 import type { MailboxQueue, MailboxRow } from "flywheel-comm/mailbox-queue";
 import type {
 	LeadDeliveryAdapter,
@@ -30,6 +29,7 @@ export interface LeadInboxLoopOptions {
 	ownerEpoch: string;
 	adapter: LeadDeliveryAdapter;
 	hasLiveSession: () => boolean;
+	hasAdditionalWork?: () => boolean;
 	/** Materialize newly-arrived CommDB questions/protocol rows before claiming. */
 	admit?: () => Promise<void>;
 	/** Idempotent typed protocol effect. It must durably finish before returning. */
@@ -39,7 +39,6 @@ export interface LeadInboxLoopOptions {
 	retryBackoffBaseMs?: number;
 	retryBackoffCapMs?: number;
 	unprocessedWindowMs?: number;
-	receiptWindowsMs?: ReceiptPriorityWindowsMs;
 	receiptFoundationEnabled?: () => boolean;
 	onProtocolQuarantine?: (
 		row: MailboxRow,
@@ -146,6 +145,7 @@ export class LeadInboxLoop {
 		// (idle) delay is recoverable; a dead Bridge is not.
 		try {
 			return this.opts.hasLiveSession() ||
+				this.opts.hasAdditionalWork?.() ||
 				this.opts.queue.countDeliverable(this.opts.leadId) > 0
 				? this.activeIntervalMs
 				: this.idleIntervalMs;

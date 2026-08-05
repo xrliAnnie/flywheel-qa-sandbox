@@ -1,7 +1,5 @@
-import type {
-	LeadInboxQueue,
-	ReceiptPriorityWindowsMs,
-} from "flywheel-comm/lead-inbox-queue";
+import type { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import { encodeSenderRef } from "flywheel-comm/sender-ref";
 
 export interface ExternalReceiptMessage {
 	messageId: string;
@@ -16,9 +14,8 @@ export interface ExternalReceiptJournalLookup {
 
 export interface ExternalReceiptSagaOptions {
 	leadId: string;
-	queue: LeadInboxQueue;
+	queue: MailboxQueue;
 	journal: ExternalReceiptJournalLookup;
-	receiptWindowsMs: ReceiptPriorityWindowsMs;
 	now?: () => string;
 }
 
@@ -44,24 +41,28 @@ export class ExternalReceiptSaga {
 	begin(message: ExternalReceiptMessage): void {
 		this.options.queue.enqueue({
 			id: this.receiptId(message.messageId),
-			toLead: this.options.leadId,
-			source: "discord_cross_department",
+			fromAgent: "discord-cross-department",
+			toAgent: this.options.leadId,
+			recipientKind: "lead",
+			sourceKind: "discord_cross_department",
+			sourceRef: message.messageId,
 			type: "external_delivery",
 			msgClass: "model",
 			priority: 1,
 			content: message.content,
-			refMessageId: message.messageId,
+			refId: message.messageId,
 			createdAt: message.createdAt,
 			carrier: "external",
+			senderRef: encodeSenderRef(),
 		});
 	}
 
 	complete(messageId: string): void {
 		if (
-			!this.options.queue.markExternalDelivered(this.receiptId(messageId), {
-				now: this.now(),
-				receiptWindowsMs: this.options.receiptWindowsMs,
-			})
+			!this.options.queue.markExternalDelivered(
+				this.receiptId(messageId),
+				this.now(),
+			)
 		) {
 			throw new Error(`external receipt completion failed for ${messageId}`);
 		}
@@ -80,22 +81,20 @@ export class ExternalReceiptSaga {
 				`external receipt journal mapping mismatch for ${messageId}: ${accepted.id}`,
 			);
 		}
-		if (
-			!this.options.queue.markProcessed(receiptId, {
-				now: this.now(),
-				evidence: {
-					v: 1,
-					kind: "journal_outbound",
-					ref: journalEntryId,
-					actor: this.options.leadId,
-					actor_kind: "lead",
-					fence: { leadId: this.options.leadId },
-					basis: ["journal_inbound_turn_outbound"],
-				},
-			})
-		) {
-			throw new Error(`external receipt handling failed for ${messageId}`);
-		}
+		this.options.queue.settle({
+			messageOrDeliveryId: receiptId,
+			event: "processed",
+			now: this.now(),
+			evidence: {
+				v: 1,
+				kind: "journal_outbound",
+				ref: journalEntryId,
+				actor: this.options.leadId,
+				actor_kind: "lead",
+				fence: { leadId: this.options.leadId },
+				basis: ["journal_inbound_turn_outbound"],
+			},
+		});
 	}
 
 	reconcile(input: {
@@ -109,19 +108,20 @@ export class ExternalReceiptSaga {
 			quarantined: 0,
 			deferred: 0,
 		};
-		const rows = this.options.queue.listExternalPendingForLane({
-			toLead: this.options.leadId,
+		const rows = this.options.queue.listExternalPending({
+			toAgent: this.options.leadId,
 			idPrefix: `xdept:${this.options.leadId}:`,
 			createdBefore: input.olderThan,
 			...(input.limit === undefined ? {} : { limit: input.limit }),
 		});
 		for (const row of rows) {
-			const messageId = row.ref_message_id;
+			const messageId = row.ref_id;
 			if (!messageId) {
-				this.options.queue.quarantineExternalDelivery(row.id, {
-					now: this.now(),
-					reason: "external receipt is missing the journal idempotency key",
-				});
+				this.options.queue.markDead(
+					row.id,
+					this.now(),
+					"external receipt is missing the journal idempotency key",
+				);
 				result.quarantined += 1;
 				continue;
 			}
@@ -129,10 +129,11 @@ export class ExternalReceiptSaga {
 			try {
 				accepted = this.options.journal.getByIdempotencyKey(messageId);
 			} catch (error) {
-				this.options.queue.quarantineExternalDelivery(row.id, {
-					now: this.now(),
-					reason: `journal unavailable: ${(error as Error).message}`,
-				});
+				this.options.queue.markDead(
+					row.id,
+					this.now(),
+					`journal unavailable: ${(error as Error).message}`,
+				);
 				result.quarantined += 1;
 				continue;
 			}
@@ -149,10 +150,11 @@ export class ExternalReceiptSaga {
 				provenAbsent = false;
 			}
 			if (provenAbsent) {
-				this.options.queue.markExternalAborted(row.id, {
-					now: this.now(),
-					reason: "journal_absent_after_watermark",
-				});
+				this.options.queue.markDead(
+					row.id,
+					this.now(),
+					"journal_absent_after_watermark",
+				);
 				result.aborted += 1;
 				continue;
 			}

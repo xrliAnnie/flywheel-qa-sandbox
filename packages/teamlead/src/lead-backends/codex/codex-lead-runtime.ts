@@ -24,13 +24,10 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-	LeadInboxQueue,
-	receiptPriorityWindowsMs,
-} from "flywheel-comm/lead-inbox-queue";
-import {
 	getProcessStart,
 	publishCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import {
 	assertGatewayOnlyToolSurface,
 	GATEWAY_ACTION_TOOL_NAMES,
@@ -1560,12 +1557,11 @@ export function buildCodexLeadRuntime(
 			return id;
 		},
 		wire: async (threadId: string): Promise<RuntimeWiring> => {
-			const externalReceiptQueue = new LeadInboxQueue(config.commDbPath);
+			const externalReceiptQueue = new MailboxQueue(config.commDbPath);
 			const externalReceiptSaga = new ExternalReceiptSaga({
 				leadId: config.leadId,
 				queue: externalReceiptQueue,
 				journal,
-				receiptWindowsMs: receiptPriorityWindowsMs(),
 			});
 			const executor = new CodexTurnExecutor({ process: proc, threadId });
 			// FLY-404: Discord typing indicator (default ON; FLYWHEEL_CODEX_LEAD_TYPING=0
@@ -1671,11 +1667,9 @@ export function buildCodexLeadRuntime(
 				startGateway: async () => {
 					externalReceiptSaga.reconcile({
 						olderThan: new Date().toISOString(),
-						// S3 activation persists the real absence watermark. Until then,
-						// startup may repair accepted rows but never guesses an abort.
-						absenceProvenThroughMessageId:
-							externalReceiptQueue.getLatestReceiptActivation()
-								?.high_water_mark ?? "0",
+						// Without an authoritative Discord watermark, startup may repair
+						// accepted rows but never guesses that a message is absent.
+						absenceProvenThroughMessageId: "0",
 					});
 					// FLY-314 Phase 2 (Codex code review #1): START THE GATEWAY FIRST so
 					// `source.onMessage(handler)` is installed BEFORE discovery's
