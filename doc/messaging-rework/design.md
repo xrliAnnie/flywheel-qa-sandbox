@@ -95,7 +95,7 @@ lead_inbox 总行数              44,567
 | `ACKED` | **agent** | 它 ack —— **队列对这封信的职责到此结束,永不再管** |
 | `DEAD` | 系统 | 收件人已 terminal,或重投 3 次仍未 ack |
 
-> **批次口径注记(FLY-1572 修订,2026-08-04):** 「ACKED 由 agent 改」的完整形态(ack 才有下一批 + 租约到期整批重投)随 **D 单(FLY-1573)** 落地。**批次 C 期间**:Runner 行的 ACK 已是真 agent 动作(拉取即 ack);**Lead 行的 ACK 暂以适配器 durable-accept receipt 代**(与 C 之前的 markConsumed 位点行为等价,不引入新语义),C 单同时把 agent-ack 所需的关联数据(source_ref / batch_id / delivery_id)备好,D 单切换为 agent-ack。此为显式过渡口径,非永久偏离。(状态:**pending** —— FLY-1569 issue 评论同步与 Lead 确认是 FLY-1572 实施 Step 0 的前置;完成后在此补稳定的确认指针。)
+> **批次口径注记(FLY-1572 修订,2026-08-04):** 「ACKED 由 agent 改」的完整形态(ack 才有下一批 + 租约到期整批重投)随 **D 单(FLY-1573)** 落地。**批次 C 期间**:Runner 行的 ACK 已是真 agent 动作(拉取即 ack);**Lead 行的 ACK 暂以适配器 durable-accept receipt 代**(与 C 之前的 markConsumed 位点行为等价,不引入新语义),C 单同时把 agent-ack 所需的关联数据(source_ref / batch_id / delivery_id)备好,D 单切换为 agent-ack。此为显式过渡口径,非永久偏离。(状态:**confirmed** —— Flywheel Engineering Lead 已把修订同步到 FLY-1569 issue 评论并确认实施口径;耐久确认记录:CommDB messages `332dd4e9-b99f-4fab-832d-33fed9c0b80a`、`5f79409e-b299-43a9-8b61-61c6e53db62b`。)
 
 ### 📋 task —— 只答「办没办」
 
