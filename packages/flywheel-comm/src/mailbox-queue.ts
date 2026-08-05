@@ -98,6 +98,13 @@ export interface MailboxSettlement {
 	evidence: unknown;
 }
 
+export interface MailboxLoopHeartbeat {
+	lead_id: string;
+	last_started_at: string | null;
+	last_success_at: string | null;
+	stall_episode_at: string | null;
+}
+
 function requiredText(value: string, field: string): string {
 	const trimmed = value.trim();
 	if (!trimmed) throw new Error(`${field} is required`);
@@ -276,6 +283,153 @@ export class MailboxQueue {
 		return row.count;
 	}
 
+	markExternalDelivered(id: string, now: string): boolean {
+		const result = this.db
+			.prepare(
+				`UPDATE mailbox SET state = 'ACKED', acked_at = COALESCE(acked_at, ?),
+				   claimed_by = NULL, claim_expires_at = NULL
+				 WHERE id = ? AND carrier = 'external' AND state = 'QUEUED'`,
+			)
+			.run(now, id);
+		return (
+			result.changes === 1 ||
+			(this.getById(id)?.carrier === "external" &&
+				this.getById(id)?.state === "ACKED")
+		);
+	}
+
+	listExternalPending(input: {
+		toAgent: string;
+		idPrefix: string;
+		cursorSeq?: number;
+		limit?: number;
+		createdBefore?: string;
+	}): MailboxRow[] {
+		return this.db
+			.prepare(
+				`SELECT mailbox.* FROM mailbox
+				  WHERE to_agent = ? AND carrier = 'external'
+				    AND id LIKE ? ESCAPE '\\'
+				    AND seq > ?
+				    AND (? IS NULL OR datetime(created_at) <= datetime(?))
+				    AND NOT EXISTS (
+				      SELECT 1 FROM mailbox_log settlement
+				       WHERE settlement.subject_id = mailbox.id
+				         AND settlement.event IN ('processed','disposed')
+				    )
+				  ORDER BY seq LIMIT ?`,
+			)
+			.all(
+				input.toAgent,
+				`${input.idPrefix.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`,
+				input.cursorSeq ?? 0,
+				input.createdBefore ?? null,
+				input.createdBefore ?? null,
+				input.limit ?? 100,
+			) as MailboxRow[];
+	}
+
+	markDead(id: string, now: string, reason: string): boolean {
+		const result = this.db
+			.prepare(
+				`UPDATE mailbox SET state = 'DEAD', dead_at = COALESCE(dead_at, ?),
+				   dead_reason = COALESCE(dead_reason, ?), last_error = COALESCE(last_error, ?),
+				   claimed_by = NULL, claim_expires_at = NULL, next_retry_at = NULL,
+				   batch_id = NULL
+				 WHERE id = ? AND state IN ('QUEUED','LEASED')`,
+			)
+			.run(now, reason, reason, id);
+		if (result.changes === 1) return true;
+		const row = this.getById(id);
+		return row?.state === "DEAD" && row.dead_reason === reason;
+	}
+
+	releaseClaimForRetry(input: {
+		id: string;
+		ownerEpoch: string;
+		batchId: string;
+		nextRetryAt: string;
+		reason: string;
+	}): boolean {
+		return (
+			this.db
+				.prepare(
+					`UPDATE mailbox SET state = 'QUEUED', claimed_by = NULL,
+					   claim_expires_at = NULL, batch_id = NULL, next_retry_at = ?,
+					   last_error = ?
+					 WHERE id = ? AND state = 'LEASED' AND claimed_by = ? AND batch_id = ?`,
+				)
+				.run(
+					input.nextRetryAt,
+					input.reason,
+					input.id,
+					input.ownerEpoch,
+					input.batchId,
+				).changes === 1
+		);
+	}
+
+	recordTickStarted(leadId: string, now: string): void {
+		this.db
+			.prepare(
+				`INSERT INTO loop_heartbeat (lead_id, last_started_at)
+				 VALUES (?, ?) ON CONFLICT(lead_id) DO UPDATE SET last_started_at = excluded.last_started_at`,
+			)
+			.run(leadId, now);
+	}
+
+	recordTickSuccess(leadId: string, now: string): void {
+		this.db
+			.prepare(
+				`INSERT INTO loop_heartbeat (lead_id, last_started_at, last_success_at)
+				 VALUES (?, ?, ?) ON CONFLICT(lead_id) DO UPDATE SET
+				 last_success_at = excluded.last_success_at, stall_episode_at = NULL`,
+			)
+			.run(leadId, now, now);
+	}
+
+	getHeartbeat(leadId: string): MailboxLoopHeartbeat | undefined {
+		return this.db
+			.prepare("SELECT * FROM loop_heartbeat WHERE lead_id = ?")
+			.get(leadId) as MailboxLoopHeartbeat | undefined;
+	}
+
+	materializeForDelivery(input: {
+		id: string;
+		ownerEpoch: string;
+		batchId: string;
+		sourceKind: string;
+		sourceRef: string;
+		deliveryContent: string;
+	}): MailboxRow {
+		const result = this.db
+			.prepare(
+				`UPDATE mailbox SET source_kind = ?, source_ref = ?, delivery_content = ?,
+				   relay_state = CASE WHEN type = 'question' THEN 'protected' ELSE relay_state END
+				 WHERE id = ? AND state = 'LEASED' AND claimed_by = ? AND batch_id = ?
+				   AND source_ref IS NULL AND delivery_content IS NULL`,
+			)
+			.run(
+				input.sourceKind,
+				input.sourceRef,
+				input.deliveryContent,
+				input.id,
+				input.ownerEpoch,
+				input.batchId,
+			);
+		const row = this.getById(input.id);
+		if (!row) throw new Error(`mailbox row not found: ${input.id}`);
+		if (
+			result.changes !== 1 &&
+			(row.source_kind !== input.sourceKind ||
+				row.source_ref !== input.sourceRef ||
+				row.delivery_content !== input.deliveryContent)
+		) {
+			throw new Error(`mailbox materialization conflict: ${input.id}`);
+		}
+		return row;
+	}
+
 	acquireOrRenewOwner(input: {
 		ownerEpoch: string;
 		now: string;
@@ -391,6 +545,82 @@ export class MailboxQueue {
 					.all(input.batchId) as MailboxRow[];
 			})
 			.immediate();
+	}
+
+	claimBridgeProtocol(input: {
+		fromAgent: string;
+		ownerEpoch: string;
+		now: string;
+		claimTtlMs: number;
+	}): MailboxRow | undefined {
+		const claimExpiresAt = addMilliseconds(input.now, input.claimTtlMs);
+		return this.db
+			.transaction(() => {
+				if (!this.isCurrentOwner(input.ownerEpoch, input.now)) return undefined;
+				const row = this.db
+					.prepare(
+						`SELECT * FROM mailbox
+						  WHERE recipient_kind = 'bridge' AND carrier = 'inbox'
+						    AND from_agent = ? AND msg_class = 'protocol'
+						    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+						    AND (state = 'QUEUED' OR
+						      (state = 'LEASED' AND
+						       (claimed_by IS NULL OR claimed_by = ? OR claim_expires_at < ?)))
+						  ORDER BY priority, seq LIMIT 1`,
+					)
+					.get(input.fromAgent, input.now, input.ownerEpoch, input.now) as
+					| MailboxRow
+					| undefined;
+				if (!row) return undefined;
+				const updated = this.db
+					.prepare(
+						`UPDATE mailbox SET state = 'LEASED', claimed_by = ?, claim_expires_at = ?
+						 WHERE id = ? AND state IN ('QUEUED','LEASED')
+						   AND (claimed_by IS NULL OR claimed_by = ? OR claim_expires_at < ?)`,
+					)
+					.run(
+						input.ownerEpoch,
+						claimExpiresAt,
+						row.id,
+						input.ownerEpoch,
+						input.now,
+					);
+				return updated.changes === 1 ? this.getById(row.id) : undefined;
+			})
+			.immediate();
+	}
+
+	recordBridgeDeliveryFailure(input: {
+		id: string;
+		ownerEpoch: string;
+		now: string;
+		nextRetryAt: string;
+		error: string;
+		maxAttempts: number;
+	}): { deadLettered: boolean } {
+		const updated = this.db
+			.prepare(
+				`UPDATE mailbox SET retry_count = retry_count + 1, last_error = ?,
+				   next_retry_at = CASE WHEN retry_count + 1 >= ? THEN NULL ELSE ? END,
+				   state = CASE WHEN retry_count + 1 >= ? THEN 'DEAD' ELSE 'LEASED' END,
+				   dead_at = CASE WHEN retry_count + 1 >= ? THEN ? ELSE dead_at END,
+				   dead_reason = CASE WHEN retry_count + 1 >= ? THEN 'delivery_attempts_exhausted' ELSE dead_reason END,
+				   claimed_by = NULL, claim_expires_at = NULL
+				 WHERE id = ? AND state = 'LEASED' AND claimed_by = ?`,
+			)
+			.run(
+				input.error,
+				input.maxAttempts,
+				input.nextRetryAt,
+				input.maxAttempts,
+				input.maxAttempts,
+				input.now,
+				input.maxAttempts,
+				input.id,
+				input.ownerEpoch,
+			);
+		if (updated.changes !== 1) throw new Error("bridge claim fence lost");
+		return { deadLettered: this.getById(input.id)?.state === "DEAD" };
 	}
 
 	ack(idOrDeliveryId: string, now: string): boolean {

@@ -4,11 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { routeFounderReply as routeFounderReplyCommand } from "../commands/route-founder-reply.js";
 import { CommDB } from "../db.js";
-import {
-	founderMessageRootId,
-	founderRouteRowId,
-} from "../founder-reply-routing.js";
-import { LeadInboxQueue } from "../lead-inbox-queue.js";
+import { founderMessageRootId } from "../founder-reply-routing.js";
+import { MailboxQueue } from "../mailbox-queue.js";
 
 const T0 = "2026-07-21T12:00:00.000Z";
 const T1 = "2026-07-21T12:01:00.000Z";
@@ -17,13 +14,13 @@ describe("FLY-1392 v2 Lead founder relay compatibility wrapper", () => {
 	let dir: string;
 	let dbPath: string;
 	let db: CommDB;
-	let queue: LeadInboxQueue;
+	let queue: MailboxQueue;
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1392-founder-route-v2-"));
 		dbPath = join(dir, "comm.db");
 		db = new CommDB(dbPath);
-		queue = new LeadInboxQueue(dbPath);
+		queue = new MailboxQueue(dbPath);
 		db.registerSession("exec-a", "runner", "flywheel", "FLY-1392", "lead-a");
 	});
 
@@ -52,12 +49,10 @@ describe("FLY-1392 v2 Lead founder relay compatibility wrapper", () => {
 		return rootId;
 	}
 
-	it("keeps stable ids while retiring Bridge-side attribution", () => {
+	it("keeps the stable canonical root id without a route sibling", () => {
 		expect(founderMessageRootId("lead-a", "123")).toBe(
 			"founder_msg:lead-a:123",
 		);
-		// This id remains only so in-flight v1 siblings can be read by the wrapper.
-		expect(founderRouteRowId("lead-a", "123")).toBe("founder_route:lead-a:123");
 	});
 
 	it("atomically relays one canonical root, records the Lead evidence, and admits one wake", () => {
@@ -90,23 +85,17 @@ describe("FLY-1392 v2 Lead founder relay compatibility wrapper", () => {
 			to_agent: "exec-a",
 			content: "use option A",
 		});
-		const root = queue.getById(rootId);
-		expect(root).toMatchObject({
-			processed_at: T1,
-			disposed_at: null,
-			routing_state: "bound",
-			next_unprocessed_at: null,
+		expect(queue.getSettlement(rootId)).toMatchObject({
+			event: "processed",
+			at: T1,
+			evidence: {
+				kind: "lead_routed",
+				actor: "lead-a",
+				actor_kind: "lead",
+				fence: { lease_generation: 17 },
+				basis: [`question:${questionId}`],
+			},
 		});
-		expect(JSON.parse(root?.processed_evidence ?? "null")).toMatchObject({
-			kind: "lead_routed",
-			actor: "lead-a",
-			actor_kind: "lead",
-			fence: { lease_generation: 17 },
-			basis: [`question:${questionId}`],
-		});
-		expect(
-			queue.getById(founderRouteRowId("lead-a", "discord-1")),
-		).toBeUndefined();
 		const wakes = db.listRunnerPhaseWakes("exec-a");
 		expect(wakes).toHaveLength(1);
 		expect(JSON.parse(wakes[0]?.envelope_json ?? "{}")).toMatchObject({
@@ -128,16 +117,14 @@ describe("FLY-1392 v2 Lead founder relay compatibility wrapper", () => {
 				},
 			}),
 		).toEqual({ kind: "no_route" });
-		const root = queue.getById(rootId);
-		expect(root).toMatchObject({
-			processed_at: T1,
-			disposed_at: null,
-			routing_state: "no_route",
-		});
-		expect(JSON.parse(root?.processed_evidence ?? "null")).toMatchObject({
-			kind: "lead_no_route",
-			actor: "lead-a",
-			basis: ["lead_handled"],
+		expect(queue.getSettlement(rootId)).toMatchObject({
+			event: "processed",
+			at: T1,
+			evidence: {
+				kind: "lead_no_route",
+				actor: "lead-a",
+				basis: ["lead_handled"],
+			},
 		});
 	});
 
@@ -170,11 +157,8 @@ describe("FLY-1392 v2 Lead founder relay compatibility wrapper", () => {
 			}),
 		).toThrow(/reserved founder-side attribution/);
 		expect(
-			queue.getById(founderMessageRootId("lead-a", "discord-1")),
-		).toMatchObject({
-			processed_at: null,
-			disposed_at: null,
-		});
+			queue.getSettlement(founderMessageRootId("lead-a", "discord-1")),
+		).toBeUndefined();
 	});
 
 	it("the CLI executes the same single-row Lead relay path", () => {
@@ -194,7 +178,7 @@ describe("FLY-1392 v2 Lead founder relay compatibility wrapper", () => {
 			content: "use option A",
 		});
 		expect(
-			queue.getById(founderRouteRowId("lead-a", "discord-1")),
-		).toBeUndefined();
+			queue.getSettlement(founderMessageRootId("lead-a", "discord-1")),
+		).toMatchObject({ event: "processed" });
 	});
 });

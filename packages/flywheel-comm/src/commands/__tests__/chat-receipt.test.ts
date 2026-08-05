@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { CommDB } from "../../db.js";
-import { LeadInboxQueue } from "../../lead-inbox-queue.js";
+import { MailboxQueue } from "../../mailbox-queue.js";
+import { encodeSenderRef } from "../../sender-ref.js";
 import {
 	beginChatReceipt,
 	completeChatReceipt,
@@ -60,18 +61,19 @@ describe("FLY-1426 chat-receipt command", () => {
 		const replay = begin(dbPath);
 		expect(replay).toEqual(first);
 
-		const queue = new LeadInboxQueue(dbPath);
+		const queue = new MailboxQueue(dbPath);
 		try {
 			const row = queue.getById("chat:flywheel-eng-lead:100000000000000003");
 			expect(row).toMatchObject({
-				to_lead: "flywheel-eng-lead",
-				source: "discord_chat",
+				from_agent: "founder",
+				to_agent: "flywheel-eng-lead",
+				source_kind: "discord_chat",
 				type: "external_delivery",
 				msg_class: "model",
 				priority: 0,
-				ref_message_id: null,
+				ref_id: null,
 				carrier: "external",
-				delivered_at: null,
+				state: "QUEUED",
 			});
 			const parsed = parseChatReceiptEnvelope(row?.content ?? "");
 			expect(parsed).toMatchObject({
@@ -102,29 +104,33 @@ describe("FLY-1426 chat-receipt command", () => {
 		const dbPath = freshDb();
 		begin(dbPath);
 		expect(() => begin(dbPath, { authorName: "Someone else" })).toThrow(
-			/reused with different content/,
+			/identity conflict/,
 		);
 	});
 
 	it("coexists with the founder lane for the same Discord message id", () => {
 		const dbPath = freshDb();
-		const queue = new LeadInboxQueue(dbPath);
+		const queue = new MailboxQueue(dbPath);
 		try {
 			queue.enqueue({
 				id: "founder_msg:100000000000000003",
-				toLead: "flywheel-eng-lead",
-				source: "founder_reply",
+				fromAgent: "founder",
+				toAgent: "flywheel-eng-lead",
+				recipientKind: "lead",
+				sourceKind: "founder_reply",
 				type: "founder_reply",
 				msgClass: "model",
 				priority: 0,
 				content: "founder lane",
-				refMessageId: "100000000000000003",
+				refId: "100000000000000003",
+				createdAt: "2026-07-22T12:00:00.000Z",
+				senderRef: encodeSenderRef(),
 			});
 		} finally {
 			queue.close();
 		}
 		begin(dbPath);
-		const verify = new LeadInboxQueue(dbPath);
+		const verify = new MailboxQueue(dbPath);
 		try {
 			expect(
 				verify.getById("chat:flywheel-eng-lead:100000000000000003"),
@@ -173,25 +179,28 @@ describe("FLY-1426 chat-receipt command", () => {
 			now: "2026-07-22T12:04:00.000Z",
 		});
 
-		const queue = new LeadInboxQueue(dbPath);
+		const queue = new MailboxQueue(dbPath);
 		try {
 			const row = queue.getById("chat:flywheel-eng-lead:100000000000000003");
 			expect(row).toMatchObject({
-				delivered_at: "2026-07-22T12:01:00.000Z",
-				next_unprocessed_at: null,
-				processed_at: "2026-07-22T12:03:00.000Z",
+				state: "ACKED",
+				acked_at: "2026-07-22T12:01:00.000Z",
 			});
-			expect(JSON.parse(row?.processed_evidence ?? "{}")).toEqual({
-				v: 1,
-				kind: "discord_explicit_reply",
-				ref: "100000000000000099",
-				actor: "flywheel-eng-lead",
-				actor_kind: "lead",
-				fence: {
-					leadId: "flywheel-eng-lead",
-					chatReplyTo: "100000000000000003",
+			expect(queue.getSettlement(row?.id ?? "")).toEqual({
+				event: "processed",
+				at: "2026-07-22T12:03:00.000Z",
+				evidence: {
+					v: 1,
+					kind: "discord_explicit_reply",
+					ref: "100000000000000099",
+					actor: "flywheel-eng-lead",
+					actor_kind: "lead",
+					fence: {
+						leadId: "flywheel-eng-lead",
+						chatReplyTo: "100000000000000003",
+					},
+					basis: ["discord_reply_reference"],
 				},
-				basis: ["discord_reply_reference"],
 			});
 		} finally {
 			queue.close();
@@ -213,18 +222,24 @@ describe("FLY-1426 chat-receipt command", () => {
 			text: "other lead",
 			attachments: [],
 		});
-		const queue = new LeadInboxQueue(dbPath);
+		const queue = new MailboxQueue(dbPath);
 		try {
 			queue.enqueue({
 				id: "xdept:flywheel-eng-lead:100000000000000030",
-				toLead: "flywheel-eng-lead",
-				source: "discord",
+				fromAgent: "flywheel-product-lead",
+				toAgent: "flywheel-eng-lead",
+				recipientKind: "lead",
+				sourceKind: "discord_cross_department",
 				type: "external_delivery",
 				msgClass: "model",
 				content: "not chat lane",
 				carrier: "external",
+				createdAt: "2026-07-22T10:00:00.000Z",
+				senderRef: encodeSenderRef(),
 			});
-			queue.markProcessed("chat:flywheel-eng-lead:100000000000000011", {
+			queue.settle({
+				messageOrDeliveryId: "chat:flywheel-eng-lead:100000000000000011",
+				event: "processed",
 				now: "2026-07-22T10:03:00.000Z",
 				evidence: {
 					v: 1,
@@ -261,16 +276,20 @@ describe("FLY-1426 chat-receipt command", () => {
 
 	it("surfaces malformed envelopes instead of swallowing the row", () => {
 		const dbPath = freshDb();
-		const queue = new LeadInboxQueue(dbPath);
+		const queue = new MailboxQueue(dbPath);
 		try {
 			queue.enqueue({
 				id: "chat:flywheel-eng-lead:100000000000000050",
-				toLead: "flywheel-eng-lead",
-				source: "discord_chat",
+				fromAgent: "founder",
+				toAgent: "flywheel-eng-lead",
+				recipientKind: "lead",
+				sourceKind: "discord_chat",
 				type: "external_delivery",
 				msgClass: "model",
 				content: "broken",
 				carrier: "external",
+				createdAt: "2026-07-22T10:00:00.000Z",
+				senderRef: encodeSenderRef(),
 			});
 		} finally {
 			queue.close();
@@ -288,7 +307,7 @@ describe("FLY-1426 chat-receipt command", () => {
 		]);
 	});
 
-	it("quarantines with one stable alert and still permits later completion", () => {
+	it("quarantines to a stable DEAD state that cannot later complete", () => {
 		const dbPath = freshDb();
 		begin(dbPath);
 		expect(
@@ -307,25 +326,22 @@ describe("FLY-1426 chat-receipt command", () => {
 				now: "2026-07-22T13:05:00.000Z",
 			}),
 		).toMatchObject({ quarantined: true });
-		completeChatReceipt({
-			dbPath,
-			leadId: "flywheel-eng-lead",
-			messageId: "100000000000000003",
-			now: "2026-07-22T13:06:00.000Z",
-			env: {},
-		});
-		const queue = new LeadInboxQueue(dbPath);
+		expect(() =>
+			completeChatReceipt({
+				dbPath,
+				leadId: "flywheel-eng-lead",
+				messageId: "100000000000000003",
+				now: "2026-07-22T13:06:00.000Z",
+				env: {},
+			}),
+		).toThrow(/not found or not external/);
+		const queue = new MailboxQueue(dbPath);
 		try {
-			expect(
-				queue.getReceiptAlertOutbox(
-					"external_saga_unknown:chat:flywheel-eng-lead:100000000000000003",
-				),
-			).toMatchObject({ kind: "external_saga_unknown" });
 			expect(
 				queue.getById("chat:flywheel-eng-lead:100000000000000003"),
 			).toMatchObject({
-				disposition: "external_delivered",
-				delivered_at: "2026-07-22T13:06:00.000Z",
+				state: "DEAD",
+				dead_reason: "chat_delivery_unconfirmed",
 			});
 		} finally {
 			queue.close();
@@ -425,13 +441,18 @@ describe("FLY-1426 chat-receipt command", () => {
 			"100000000000000099",
 			"--json",
 		]);
-		const queue = new LeadInboxQueue(dbPath);
+		const queue = new MailboxQueue(dbPath);
 		try {
 			expect(
 				queue.getById("chat:flywheel-eng-lead:100000000000000003"),
 			).toMatchObject({
-				disposition: "external_delivered",
-				processed_evidence: expect.stringContaining("discord_explicit_reply"),
+				state: "ACKED",
+			});
+			expect(
+				queue.getSettlement("chat:flywheel-eng-lead:100000000000000003"),
+			).toMatchObject({
+				event: "processed",
+				evidence: { kind: "discord_explicit_reply" },
 			});
 		} finally {
 			queue.close();

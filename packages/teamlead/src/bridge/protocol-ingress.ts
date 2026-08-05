@@ -1,10 +1,6 @@
-/** FLY-1373 legacy ACK receipt materialization and typed protocol effect. */
+/** FLY-1373 typed ACK receipt protocol effect. */
 
-import { CommDB } from "flywheel-comm/db";
-import type {
-	LeadInboxQueue,
-	LeadInboxRow,
-} from "flywheel-comm/lead-inbox-queue";
+import type { MailboxRow } from "flywheel-comm/mailbox-queue";
 import type { StateStore } from "../StateStore.js";
 import {
 	type DeliverySecretProvider,
@@ -17,14 +13,7 @@ interface AckReceiptPayload {
 	ack_token: string;
 }
 
-interface MaterializedAckReceipt extends AckReceiptPayload {
-	receipt_id: string;
-	from_agent: string;
-}
-
 export interface ProtocolIngressOptions {
-	queue: LeadInboxQueue;
-	dbPath: string;
 	store: StateStore;
 	secretProvider: DeliverySecretProvider;
 }
@@ -47,79 +36,24 @@ function parseReceipt(content: string): AckReceiptPayload | null {
 }
 
 export class ProtocolIngress {
-	private db?: CommDB;
-
 	constructor(private readonly opts: ProtocolIngressOptions) {}
 
-	/**
-	 * FLY-1601 second site (founder-terminal profile, 2026-08-02 04:25): after
-	 * the QuestionAdmission fix landed, a fresh CPU profile showed 97.4% of CPU
-	 * in THIS class's per-tick `new CommDB` — same migration-replay-per-tick
-	 * disease, same fix: one cached connection for the instance lifetime.
-	 */
-	private commDb(): CommDB {
-		this.db ??= new CommDB(this.opts.dbPath, false);
-		return this.db;
-	}
-
-	/** Release the cached connection (tests / runtime teardown). */
-	close(): void {
-		this.db?.close();
-		this.db = undefined;
-	}
-
-	materializePending(leadId: string): number {
-		const db = this.commDb();
-		let count = 0;
-		for (const receipt of db.getPendingAckReceipts()) {
-			const payload = parseReceipt(receipt.content);
-			if (!payload) continue;
-			const event = this.opts.store.getLeadEventBySeq(payload.event_seq);
-			if (!event) continue;
-			const owner = event.ack_owner_lead_id ?? event.lead_id;
-			if (owner !== leadId) continue;
-			this.opts.queue.enqueue({
-				id: `ack:${leadId}:${receipt.id}`,
-				toLead: leadId,
-				source: `ack_receipt:${receipt.id}`,
-				type: "ack_receipt",
-				msgClass: "protocol",
-				priority: 1,
-				content: JSON.stringify({
-					...payload,
-					receipt_id: receipt.id,
-					from_agent: receipt.from_agent,
-				} satisfies MaterializedAckReceipt),
-				refMessageId: receipt.id,
-			});
-			count++;
-		}
-		return count;
-	}
-
-	async handle(row: LeadInboxRow): Promise<{ disposition: string }> {
+	async handle(row: MailboxRow): Promise<{ disposition: string }> {
 		if (row.msg_class !== "protocol" || row.type !== "ack_receipt") {
 			throw new Error(`unsupported protocol message type: ${row.type}`);
 		}
-		const payload = JSON.parse(row.content) as Partial<MaterializedAckReceipt>;
-		if (
-			!Number.isSafeInteger(payload.event_seq) ||
-			(payload.event_seq ?? 0) <= 0 ||
-			typeof payload.ack_token !== "string" ||
-			typeof payload.receipt_id !== "string" ||
-			typeof payload.from_agent !== "string"
-		) {
+		const payload = parseReceipt(row.content);
+		if (!payload) {
 			throw new Error("malformed ACK receipt protocol row");
 		}
-		const event = this.opts.store.getLeadEventBySeq(payload.event_seq!);
+		const event = this.opts.store.getLeadEventBySeq(payload.event_seq);
 		if (!event) throw new Error("ACK receipt references a missing event");
 		const owner = event.ack_owner_lead_id ?? event.lead_id;
-		if (owner !== row.to_lead || payload.from_agent !== owner) {
+		if (row.to_agent !== "bridge" || row.from_agent !== owner) {
 			throw new Error("ACK sender does not own the event");
 		}
 
 		if (event.ack_retired_at || event.acked_at) {
-			this.consumeReceipt(payload.receipt_id);
 			return {
 				disposition: event.ack_retired_at
 					? "legacy_ack_retired_noop"
@@ -148,11 +82,6 @@ export class ProtocolIngress {
 				throw new Error("ACK effect lost its state fence");
 			}
 		}
-		this.consumeReceipt(payload.receipt_id);
 		return { disposition: "legacy_ack_applied" };
-	}
-
-	private consumeReceipt(receiptId: string): void {
-		this.commDb().markAckReceiptConsumed(receiptId);
 	}
 }

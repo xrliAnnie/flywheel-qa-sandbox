@@ -59,6 +59,18 @@ export {
 	LeadInboxQueue,
 } from "./lead-inbox-queue.js";
 export type {
+	EnqueueMailboxInput,
+	EnqueueMailboxResult,
+	MailboxLoopHeartbeat,
+	MailboxMessageClass,
+	MailboxPriority,
+	MailboxRecipientKind,
+	MailboxRow,
+	MailboxSettlement,
+	MailboxState,
+} from "./mailbox-queue.js";
+export { MailboxQueue } from "./mailbox-queue.js";
+export type {
 	ArtifactFile,
 	SelectionResult,
 } from "./select-vision-artifacts.js";

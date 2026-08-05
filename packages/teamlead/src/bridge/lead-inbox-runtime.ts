@@ -4,12 +4,10 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
-	ClaudeCodeAdapter,
-	probeLegacyMailboxDelivery,
-} from "flywheel-agent-team-transport";
-import { InboxWriteValidationError } from "flywheel-comm/inbox-write-normalize";
-import { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
+import { ClaudeCodeAdapter } from "flywheel-agent-team-transport";
+import { CommDB } from "flywheel-comm/db";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
@@ -23,9 +21,6 @@ import { enqueueLeadEvent as enqueueEvent } from "./lead-event-queue.js";
 import { LeadInboxLoop } from "./lead-inbox-loop.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
-import { LegacyAckDrain } from "./legacy-ack-drain.js";
-import { LegacyLeadEventReconciler } from "./legacy-lead-event-reconciler.js";
-import { LegacyRowPoisonError } from "./legacy-row-errors.js";
 import { ProtocolIngress } from "./protocol-ingress.js";
 import { QuestionAdmission } from "./question-admission.js";
 import type {
@@ -73,7 +68,8 @@ export interface LeadInboxRuntimeOptions {
 
 export class LeadInboxRuntime {
 	private readonly loops = new Map<string, LeadInboxLoop>();
-	private readonly queues = new Map<string, LeadInboxQueue>();
+	private readonly queues = new Map<string, MailboxQueue>();
+	private readonly admissions: QuestionAdmission[] = [];
 	private readonly projectByLead = new Map<string, ProjectEntry>();
 	private readonly ownerEpoch: string;
 	private cutoverPromise?: Promise<void>;
@@ -89,9 +85,10 @@ export class LeadInboxRuntime {
 				},
 			} satisfies DeliverySecretProvider);
 		for (const project of opts.projects) {
-			const queue = new LeadInboxQueue(
-				opts.commDbPathForProject(project.projectName),
-			);
+			const dbPath = opts.commDbPathForProject(project.projectName);
+			const commDb = new CommDB(dbPath);
+			commDb.close();
+			const queue = new MailboxQueue(dbPath);
 			this.queues.set(project.projectName, queue);
 			for (const lead of project.leads) {
 				if (this.projectByLead.has(lead.agentId)) {
@@ -107,9 +104,8 @@ export class LeadInboxRuntime {
 					runtimeRegistry: opts.registry,
 					chatThreadsEnabled: opts.chatThreadsEnabled,
 				});
+				this.admissions.push(admission);
 				const protocol = new ProtocolIngress({
-					queue,
-					dbPath: opts.commDbPathForProject(project.projectName),
 					store: opts.store,
 					secretProvider,
 				});
@@ -127,29 +123,37 @@ export class LeadInboxRuntime {
 							}
 						}),
 					admit: async () => {
-						await this.ensureCutover(secretProvider);
-						await admission.materializePending();
-						protocol.materializePending(lead.agentId);
+						await this.ensureCutover();
 					},
 					handleProtocol: (row) => protocol.handle(row),
 					onProtocolQuarantine: (row, error) => {
 						queue.enqueue({
 							id: `protocol_alert:${lead.agentId}:${row.id}`,
-							toLead: lead.agentId,
-							source: `protocol_quarantine:${row.id}`,
+							fromAgent: "bridge",
+							toAgent: lead.agentId,
+							recipientKind: "lead",
+							sourceKind: "protocol_quarantine",
+							sourceRef: row.id,
 							type: "protocol_quarantined",
 							msgClass: "model",
 							priority: 2,
 							content:
 								`[protocol_quarantined] ${row.type} (${row.id}) was rejected after repeated failures: ` +
 								error.message,
+							senderRef: encodeSenderRef(),
 						});
 					},
 					revalidateModel: (row) => admission.revalidate(row),
 					markAuditDelivered: (row) => {
-						const match = /^(?:lead_event|question):(\d+)$/.exec(row.source);
-						if (!match) return;
-						opts.store.markLeadEventDelivered(Number(match[1]));
+						if (
+							(row.source_kind !== "lead_event" &&
+								row.source_kind !== "question") ||
+							!row.source_ref
+						)
+							return;
+						const seq = Number(row.source_ref);
+						if (Number.isSafeInteger(seq) && seq > 0)
+							opts.store.markLeadEventDelivered(seq);
 					},
 					logger: console,
 					afterTickStarted: opts.afterTickStartedForLead
@@ -171,9 +175,11 @@ export class LeadInboxRuntime {
 
 	close(): void {
 		for (const loop of this.loops.values()) loop.stop();
+		for (const admission of this.admissions) admission.close();
 		for (const queue of this.queues.values()) queue.close();
 		this.loops.clear();
 		this.queues.clear();
+		this.admissions.length = 0;
 	}
 
 	enqueueLeadEvent(
@@ -204,7 +210,7 @@ export class LeadInboxRuntime {
 	healthTargets(): Array<{
 		projectName: string;
 		leadId: string;
-		queue: LeadInboxQueue;
+		queue: MailboxQueue;
 	}> {
 		return [...this.projectByLead.entries()].map(([leadId, project]) => {
 			const queue = this.queues.get(project.projectName);
@@ -260,110 +266,9 @@ export class LeadInboxRuntime {
 		}
 	}
 
-	private ensureCutover(secretProvider: DeliverySecretProvider): Promise<void> {
+	private ensureCutover(): Promise<void> {
 		if (this.cutoverPromise) return this.cutoverPromise;
-		const attempt = Promise.resolve().then(async () => {
-			if (this.opts.runLegacyCutover) {
-				await this.opts.runLegacyCutover();
-				return;
-			}
-			const now = new Date().toISOString();
-			for (const queue of this.queues.values()) {
-				if (
-					!queue.acquireOrRenewOwner({
-						ownerEpoch: this.ownerEpoch,
-						now,
-						leaseTtlMs: 10_000,
-					})
-				) {
-					throw new Error("owner lease unavailable during inbox cutover");
-				}
-			}
-			// FLY-1586 F — park the pre-existing backlog BEFORE anything can
-			// deliver from it. Order is the point: A and B are about to make the
-			// cutover succeed again, and the moment it does the loop would flush
-			// 255 rows including 40 already-executed founder instructions (one of
-			// them a `ship` whose PR merged two minutes later).
-			//
-			// Durable one-shot: the first install's watermark is stored and reused
-			// forever. Recomputing MAX(seq) on each boot would freeze whatever
-			// legitimately arrived since the last one — a one-time cleanup turned
-			// into a permanent message shredder.
-			//
-			// Runs inside the same failure envelope as the rest of cutover: if it
-			// throws, ensureCutover fails and nothing is delivered this tick. That
-			// is the correct direction — better to stay wedged than to replay.
-			for (const queue of this.queues.values()) {
-				queue.freezeStockBelowWatermark({ now });
-			}
-			new LegacyAckDrain({
-				store: this.opts.store,
-				commDbPaths: this.opts.projects.map(({ projectName }) =>
-					this.opts.commDbPathForProject(projectName),
-				),
-				secretProvider,
-			}).run();
-			await new LegacyLeadEventReconciler({
-				store: this.opts.store,
-				registry: this.opts.registry,
-				ownerEpoch: this.ownerEpoch,
-				queueForLead: (leadId) => {
-					const project = this.projectByLead.get(leadId);
-					return project ? this.queues.get(project.projectName) : undefined;
-				},
-				probeLegacyDelivery: async ({ row, aliases, content }) => {
-					const project = this.projectByLead.get(row.lead_id);
-					const lead = project?.leads.find(
-						(candidate) => candidate.agentId === row.lead_id,
-					);
-					if (!project || !lead) return { status: "none" };
-					const backend = effectiveLeadBackend(
-						lead.backend,
-						process.env.FLYWHEEL_LEAD_BACKEND,
-					).backend;
-					if (backend === "codex-app-server") return { status: "none" };
-					const transport = new ClaudeCodeAdapter();
-					const inboxPath = transport.getInboxPath(lead.agentId, lead.agentId);
-					return probeLegacyMailboxDelivery({
-						inboxPath,
-						sidecarPath: `${inboxPath}.flywheel.jsonl`,
-						aliases,
-						to: lead.agentId,
-						content,
-					});
-				},
-				// FLY-1586 B: durable sink for a deterministically-bad legacy row.
-				// The marker IS the per-row commit point — once it commits, the row
-				// is settled and the cutover carries on, so one poison row can no
-				// longer hold the whole fleet. Alert delivery is deliberately NOT a
-				// precondition: making Discord availability gate boot admission
-				// would just relocate the fleet-wide wedge.
-				//
-				// Any failure in here throws, which fails the row closed rather than
-				// skipping it silently — see LegacyLeadEventReconcilerOptions.
-				onRowQuarantine: (row, error) => {
-					this.opts.store.quarantineLegacyCutoverRow({
-						seq: row.seq,
-						leadId: row.lead_id,
-						reason:
-							error instanceof LegacyRowPoisonError
-								? error.reason
-								: error instanceof InboxWriteValidationError
-									? error.reason
-									: "unclassified",
-						...(error instanceof InboxWriteValidationError
-							? { field: error.field }
-							: {}),
-						now: new Date().toISOString(),
-					});
-				},
-			}).run();
-			// R3 HIGH — drain AFTER the reconciler, because the reconciler is what
-			// CREATES the markers. My first attempt anchored on `}).run();` and
-			// silently matched LegacyAckDrain instead, so it drained before any
-			// marker existed and a same-boot quarantine was never alerted at all.
-			await this.drainQuarantineAlerts();
-		});
+		const attempt = Promise.resolve(this.opts.runLegacyCutover?.());
 		this.cutoverPromise = attempt;
 		void attempt.catch(() => {
 			if (this.cutoverPromise === attempt) this.cutoverPromise = undefined;

@@ -6,11 +6,7 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
-import type { FrozenFounderRouteCandidatesV1 } from "./founder-reply-routing.js";
-import {
-	founderMessageRootId,
-	founderRouteRowId,
-} from "./founder-reply-routing.js";
+import { founderMessageRootId } from "./founder-reply-routing.js";
 import type {
 	EnqueueFounderHubRootInput,
 	LeadInboxRow,
@@ -23,7 +19,7 @@ import {
 	CHAT_DELIVERY_UNCONFIRMED_REASON,
 	LeadInboxQueue,
 } from "./lead-inbox-queue.js";
-import { MailboxQueue } from "./mailbox-queue.js";
+import { MailboxQueue, type MailboxRow } from "./mailbox-queue.js";
 import { MAILBOX_SCHEMA, MAILBOX_SCHEMA_GENERATION } from "./mailbox-schema.js";
 import { encodeSenderRef } from "./sender-ref.js";
 import { truncateCodePoints } from "./text-truncate.js";
@@ -711,26 +707,6 @@ function positiveReceiptEnv(name: string, fallback: number): number {
 		throw new Error(`invalid positive receipt configuration ${name}=${raw}`);
 	}
 	return value;
-}
-
-function provenanceValues(
-	provenance: MessageProvenance | undefined,
-): [
-	string | null,
-	number | null,
-	number | null,
-	string | null,
-	number | null,
-	string | null,
-] {
-	return [
-		provenance?.senderLeaseKey ?? null,
-		provenance?.senderGeneration ?? null,
-		provenance?.senderHolderPid ?? null,
-		provenance?.senderHolderStart ?? null,
-		provenance?.writerPid ?? null,
-		provenance?.writerStart ?? null,
-	];
 }
 
 function assertMailboxGeneration(db: Database.Database, dbPath: string): void {
@@ -1464,29 +1440,30 @@ export class CommDB {
 		const protection = commDbProtectionEnabled();
 		const answerable = protection
 			? "relay_state != 'terminal_disposed'"
-			: "expires_at > datetime('now')";
+			: "datetime(expires_at) > datetime('now')";
 		// Legacy pending filters on expires_at, so the forensic window only applies
 		// where relay_state does the filtering — otherwise the row would linger in
 		// the very queue this is clearing.
 		const expiry =
 			opts.retention === "ask_forensic" && protection
-				? `datetime('now', '${ASK_FORENSIC_TTL_SQL}')`
-				: "datetime('now')";
+				? `strftime('%Y-%m-%dT%H:%M:%fZ','now', '${ASK_FORENSIC_TTL_SQL}')`
+				: "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 		const info = this.db
 			.prepare(
-				`UPDATE mailbox_message_projection SET
-				 resolved_at = datetime('now'),
-				 read_at = COALESCE(read_at, datetime('now')),
+				`UPDATE mailbox SET
+				 resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+				 state = 'ACKED',
+				 acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 				 expires_at = ${expiry},
 				 relay_state = 'terminal_disposed',
-				 superseded_at = CASE WHEN ? IS NULL THEN superseded_at ELSE datetime('now') END,
+				 superseded_at = CASE WHEN ? IS NULL THEN superseded_at ELSE strftime('%Y-%m-%dT%H:%M:%fZ','now') END,
 				 superseded_by = COALESCE(?, superseded_by)
 				 ${opts.resolvedVia ? ", resolved_via = ?" : ""}
 				 WHERE id = ? AND type = 'question'
 				 AND from_agent = ?
 				 AND ${answerable}
 				 AND NOT EXISTS (
-				   SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = mailbox_message_projection.id AND r.type = 'response'
+				   SELECT 1 FROM mailbox r WHERE r.ref_id = mailbox.id AND r.type = 'response'
 				 )`,
 			)
 			.run(
@@ -1696,7 +1673,16 @@ export class CommDB {
 	}
 
 	markAckReceiptConsumed(id: string): boolean {
-		return new MailboxQueue(this.db).ack(id, new Date().toISOString());
+		return (
+			this.db
+				.prepare(
+					`UPDATE mailbox SET state = 'ACKED',
+					   acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+					 WHERE id = ? AND type = 'ack_receipt'
+					   AND state IN ('QUEUED','LEASED')`,
+				)
+				.run(id).changes === 1
+		);
 	}
 
 	markQuestionProtected(questionId: string, logicalEventId: string): boolean {
@@ -1804,18 +1790,12 @@ export class CommDB {
 		const at = new Date().toISOString();
 		const answerable = commDbProtectionEnabled()
 			? "q.relay_state != 'terminal_disposed'"
-			: "q.expires_at > datetime('now')";
-		return this.db.transaction(() => {
-			const responseId = randomUUID();
-			const result = this.db
-				.prepare(
-					`INSERT INTO mailbox_message_projection (
-					  id, from_agent, to_agent, type, content, parent_id,
-					  sender_lease_key, sender_generation, sender_holder_pid,
-					  sender_holder_start, writer_pid, writer_start
-					)
-					 SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-					   FROM mailbox_message_projection q
+			: "datetime(q.expires_at) > datetime('now')";
+		return this.db
+			.transaction(() => {
+				const question = this.db
+					.prepare(
+						`SELECT q.* FROM mailbox_message_projection q
 					  WHERE q.id = ?
 					    AND q.type = 'question'
 					    AND q.from_agent = ?
@@ -1827,40 +1807,48 @@ export class CommDB {
 					      SELECT 1 FROM mailbox_message_projection r
 					       WHERE r.parent_id = q.id AND r.type = 'response'
 					    )`,
-				)
-				.run(
-					responseId,
-					input.fromAgent,
-					input.content,
-					...provenanceValues(input.provenance),
-					input.questionId,
-					input.expectedOwner,
-				);
-			if (result.changes !== 1) return false;
-			this.markQuestionTerminalDisposed(input.questionId);
-			const response = input.payload as
-				| { approved?: unknown; response?: { approved?: unknown } }
-				| undefined;
-			const kind =
-				response?.response?.approved === true || response?.approved === true
-					? "founder_approval"
-					: "founder_feedback";
-			this.db
-				.prepare(
-					`INSERT INTO workflow_source_event
+					)
+					.get(input.questionId, input.expectedOwner) as Message | undefined;
+				if (!question) return false;
+				new MailboxQueue(this.db).enqueue({
+					id: randomUUID(),
+					fromAgent: input.fromAgent,
+					toAgent: question.from_agent,
+					recipientKind: "runner",
+					type: "response",
+					content: input.content,
+					refId: input.questionId,
+					createdAt: at,
+					expiresAt: new Date(
+						Date.parse(at) + 72 * 60 * 60 * 1000,
+					).toISOString(),
+					senderRef: encodeSenderRef(input.provenance),
+				});
+				this.markQuestionTerminalDisposed(input.questionId);
+				const response = input.payload as
+					| { approved?: unknown; response?: { approved?: unknown } }
+					| undefined;
+				const kind =
+					response?.response?.approved === true || response?.approved === true
+						? "founder_approval"
+						: "founder_feedback";
+				this.db
+					.prepare(
+						`INSERT INTO workflow_source_event
 					   (project, source_event_id, kind, payload, payload_digest, schema_version, at)
 					 VALUES (?, ?, ?, ?, ?, 1, ?)`,
-				)
-				.run(
-					input.project,
-					input.sourceEventId,
-					kind,
-					payload,
-					payloadDigest,
-					at,
-				);
-			return true;
-		})();
+					)
+					.run(
+						input.project,
+						input.sourceEventId,
+						kind,
+						payload,
+						payloadDigest,
+						at,
+					);
+				return true;
+			})
+			.immediate();
 	}
 
 	listWorkflowSourceEvents(): WorkflowSourceEvent[] {
@@ -2179,21 +2167,35 @@ export class CommDB {
 		// same primary key and is ignored instead of duplicated (FLY-1082,
 		// Codex R6). Without it, behavior is byte-identical to before.
 		const id = opts?.dedupeId ?? randomUUID();
-		this.db
-			.prepare(
-				`INSERT ${opts?.dedupeId ? "OR IGNORE " : ""}INTO mailbox_message_projection (
-				  id, from_agent, to_agent, type, content,
-				  sender_lease_key, sender_generation, sender_holder_pid,
-				  sender_holder_start, writer_pid, writer_start
-				) VALUES (?, ?, ?, 'instruction', ?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.run(
-				id,
-				fromAgent,
-				toAgent,
-				content,
-				...provenanceValues(opts?.provenance),
-			);
+		if (opts?.dedupeId) {
+			const existing = new MailboxQueue(this.db).getById(id);
+			if (existing) {
+				if (
+					existing.from_agent !== fromAgent ||
+					existing.to_agent !== toAgent ||
+					existing.type !== "instruction" ||
+					existing.content !== content ||
+					existing.sender_ref !== encodeSenderRef(opts.provenance)
+				) {
+					throw new Error(
+						`instruction id ${id} was reused with different content`,
+					);
+				}
+				return id;
+			}
+		}
+		new MailboxQueue(this.db).enqueue({
+			id,
+			fromAgent,
+			toAgent,
+			recipientKind:
+				toAgent === "lead" || toAgent.endsWith("-lead") ? "lead" : "runner",
+			type: "instruction",
+			content,
+			createdAt: new Date().toISOString(),
+			expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+			senderRef: encodeSenderRef(opts?.provenance),
+		});
 		return id;
 	}
 
@@ -2211,20 +2213,57 @@ export class CommDB {
 		content: string,
 		provenance?: MessageProvenance,
 	): boolean {
-		const info = this.db
-			.prepare(
-				`INSERT OR IGNORE INTO mailbox_message_projection (
-				  id, from_agent, to_agent, type, content,
-				  sender_lease_key, sender_generation, sender_holder_pid,
-				  sender_holder_start, writer_pid, writer_start
-				) VALUES (?, ?, ?, 'instruction', ?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.run(id, fromAgent, toAgent, content, ...provenanceValues(provenance));
-		return info.changes > 0;
+		const existing = new MailboxQueue(this.db).getById(id);
+		if (existing) {
+			if (
+				existing.from_agent !== fromAgent ||
+				existing.to_agent !== toAgent ||
+				existing.type !== "instruction" ||
+				existing.content !== content ||
+				existing.sender_ref !== encodeSenderRef(provenance)
+			) {
+				throw new Error(
+					`instruction id ${id} was reused with different content`,
+				);
+			}
+			return false;
+		}
+		return (
+			new MailboxQueue(this.db).enqueue({
+				id,
+				fromAgent,
+				toAgent,
+				recipientKind:
+					toAgent === "lead" || toAgent.endsWith("-lead") ? "lead" : "runner",
+				type: "instruction",
+				content,
+				createdAt: new Date().toISOString(),
+				expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+				senderRef: encodeSenderRef(provenance),
+			}).outcome === "inserted"
+		);
 	}
 
-	enqueueFounderHubRoot(input: EnqueueFounderHubRootInput): LeadInboxRow {
-		return new LeadInboxQueue(this.db).enqueueHubRoot(input);
+	enqueueFounderHubRoot(input: EnqueueFounderHubRootInput): MailboxRow {
+		const result = new MailboxQueue(this.db).enqueue({
+			id: input.id,
+			fromAgent: "founder",
+			toAgent: input.toLead,
+			recipientKind: "lead",
+			sourceKind: "founder_reply",
+			sourceRef: input.refMessageId,
+			type: "founder_reply",
+			msgClass: "model",
+			priority: 0,
+			content: input.content,
+			refId: input.refMessageId,
+			createdAt: input.now,
+			senderRef: encodeSenderRef(),
+		});
+		if (result.outcome === "archived") {
+			throw new Error(`founder hub root was already archived: ${input.id}`);
+		}
+		return result.row;
 	}
 
 	/**
@@ -2246,14 +2285,11 @@ export class CommDB {
 		const accepted = new Set(input.acceptedProcessedKinds);
 		return this.db
 			.transaction(() => {
-				const queue = new LeadInboxQueue(this.db);
+				const queue = new MailboxQueue(this.db);
 				const root = queue.getById(input.rootId);
 				if (!root) return { kind: "missing" as const };
-				if (
-					root.disposed_at !== null ||
-					root.disposed_evidence !== null ||
-					(root.processed_at === null) !== (root.processed_evidence === null)
-				) {
+				const settlement = queue.getSettlement(input.rootId);
+				if (settlement?.event === "disposed") {
 					return { kind: "conflict" as const };
 				}
 				let rootPayload: ReturnType<CommDB["parseFounderRootPayload"]>;
@@ -2263,7 +2299,7 @@ export class CommDB {
 					return { kind: "conflict" as const };
 				}
 				if (
-					root.ref_message_id !== rootPayload.msgId ||
+					root.ref_id !== rootPayload.msgId ||
 					input.evidence.actor_kind !== "founder-writer" ||
 					input.evidence.fence.discord_message_id !== rootPayload.msgId
 				) {
@@ -2279,12 +2315,10 @@ export class CommDB {
 				const inputQuestionBasis = inputQuestionBasisEntries[0];
 				let result: "marked" | "verified";
 				let evidenceKind: string;
-				if (root.processed_at !== null && root.processed_evidence !== null) {
+				if (settlement?.event === "processed") {
 					let existingEvidence: ProcessedEvidenceV1;
 					try {
-						existingEvidence = JSON.parse(
-							root.processed_evidence,
-						) as ProcessedEvidenceV1;
+						existingEvidence = settlement.evidence as ProcessedEvidenceV1;
 						assertProcessedEvidence(existingEvidence);
 					} catch {
 						return { kind: "conflict" as const };
@@ -2361,24 +2395,14 @@ export class CommDB {
 					}
 					result = "verified";
 				} else {
-					queue.markProcessed(input.rootId, {
+					queue.settle({
+						messageOrDeliveryId: input.rootId,
+						event: "processed",
 						now: input.now,
 						evidence: input.evidence,
 					});
 					evidenceKind = input.evidence.kind;
 					result = "marked";
-				}
-				const updated = this.db
-					.prepare(
-						`UPDATE lead_inbox SET routing_state = 'bound',
-						   next_unprocessed_at = NULL
-						 WHERE id = ? AND processed_at IS NOT NULL
-						   AND processed_evidence IS NOT NULL
-						   AND disposed_at IS NULL`,
-					)
-					.run(input.rootId);
-				if (updated.changes !== 1) {
-					return { kind: "conflict" as const, evidenceKind };
 				}
 				return { kind: result, evidenceKind };
 			})
@@ -2392,9 +2416,10 @@ export class CommDB {
 		limit?: number;
 		createdBefore?: string;
 		excludeQuarantined?: boolean;
-	}): LeadInboxRow[] {
-		return new LeadInboxQueue(this.db).listExternalPendingForLane({
+	}): MailboxRow[] {
+		return new MailboxQueue(this.db).listExternalPending({
 			...input,
+			toAgent: input.toLead,
 			idPrefix: `chat:${input.toLead}:`,
 		});
 	}
@@ -2404,22 +2429,17 @@ export class CommDB {
 	 * the same external row delivered. The fixed reason keeps retries idempotent.
 	 */
 	quarantineChatReceipt(input: { receiptId: string; now: string }): boolean {
-		const queue = new LeadInboxQueue(this.db);
-		queue.quarantineExternalDelivery(input.receiptId, {
-			now: input.now,
-			reason: CHAT_DELIVERY_UNCONFIRMED_REASON,
-		});
-		const row = queue.getById(input.receiptId);
-		const alert = queue.getReceiptAlertOutbox(
-			`external_saga_unknown:${input.receiptId}`,
+		const queue = new MailboxQueue(this.db);
+		queue.markDead(
+			input.receiptId,
+			input.now,
+			CHAT_DELIVERY_UNCONFIRMED_REASON,
 		);
+		const row = queue.getById(input.receiptId);
 		return Boolean(
 			row?.carrier === "external" &&
-				row.delivered_at === null &&
-				row.disposed_at === null &&
-				row.disposition === "delivery_quarantined" &&
-				row.last_error === CHAT_DELIVERY_UNCONFIRMED_REASON &&
-				alert?.kind === "external_saga_unknown",
+				row.state === "DEAD" &&
+				row.dead_reason === CHAT_DELIVERY_UNCONFIRMED_REASON,
 		);
 	}
 
@@ -2444,59 +2464,30 @@ export class CommDB {
 			);
 		}
 		const rootId = founderMessageRootId(leadId, msgId);
-		const routeId = founderRouteRowId(leadId, msgId);
 		const fence = this.processedFenceFromProvenance(input.provenance);
 
 		return this.db
 			.transaction((): RouteFounderReplyResult => {
-				const queue = new LeadInboxQueue(this.db);
+				const queue = new MailboxQueue(this.db);
 				const root = queue.getById(rootId);
-				const route = queue.getById(routeId);
 				if (
 					!root ||
-					root.to_lead !== leadId ||
-					root.source !== "founder_reply" ||
+					root.to_agent !== leadId ||
+					root.source_kind !== "founder_reply" ||
 					root.type !== "founder_reply" ||
-					root.ref_message_id !== msgId
+					root.ref_id !== msgId
 				) {
 					throw new Error(
 						`founder receipt root ${leadId}:${msgId} is unavailable`,
 					);
 				}
-				if (
-					route &&
-					(route.to_lead !== leadId ||
-						route.family_root_id !== rootId ||
-						!route.candidates_json)
-				) {
-					throw new Error(
-						`founder route family ${leadId}:${msgId} is unavailable`,
-					);
-				}
 				const rootPayload = this.parseFounderRootPayload(root.content);
-				const candidates = route
-					? this.parseFounderRouteCandidates(route.candidates_json as string)
-					: null;
-				if (candidates && candidates.leadId !== leadId) {
-					throw new Error("founder route lead scope mismatch");
-				}
-
-				if (
-					root.processed_at !== null ||
-					(route !== undefined && route.processed_at !== null)
-				) {
-					if (
-						root.processed_at === null ||
-						!root.processed_evidence ||
-						(route !== undefined &&
-							(route.processed_at === null ||
-								root.processed_evidence !== route.processed_evidence))
-					) {
-						throw new Error("founder route family has split processed state");
+				const settlement = queue.getSettlement(rootId);
+				if (settlement) {
+					if (settlement.event !== "processed") {
+						throw new Error("founder route was disposed by another action");
 					}
-					const evidence = JSON.parse(
-						root.processed_evidence,
-					) as ProcessedEvidenceV1;
+					const evidence = settlement.evidence as ProcessedEvidenceV1;
 					if (
 						toQuestionId &&
 						evidence.kind === "lead_routed" &&
@@ -2535,13 +2526,10 @@ export class CommDB {
 				if (noRouteReason) {
 					let winningResponseId: string | undefined;
 					if (noRouteReason === "already_answered") {
-						for (const questionId of candidates?.questionIds ?? []) {
-							const response = this.getResponse(questionId);
-							if (response) {
-								winningResponseId = response.id;
-								break;
-							}
-						}
+						const response = toQuestionId
+							? this.getResponse(toQuestionId)
+							: undefined;
+						winningResponseId = response?.id;
 						if (!winningResponseId) {
 							throw new Error(
 								"already_answered requires a winning frozen-candidate response",
@@ -2551,31 +2539,18 @@ export class CommDB {
 					const evidence: ProcessedEvidenceV1 = {
 						v: 1,
 						kind: "lead_no_route",
-						ref: winningResponseId ?? route?.id ?? rootId,
+						ref: winningResponseId ?? rootId,
 						actor: leadId,
 						actor_kind: "lead",
 						fence,
 						basis: [noRouteReason],
 					};
-					queue.markProcessed(rootId, { now: input.now, evidence });
-					if (route) {
-						queue.markProcessed(routeId, { now: input.now, evidence });
-					}
-					const familyIds = route ? [rootId, routeId] : [rootId];
-					const closed = this.db
-						.prepare(
-							`UPDATE lead_inbox SET routing_state = 'no_route',
-						   next_unprocessed_at = NULL,
-						   consumed_at = COALESCE(consumed_at, ?),
-						   disposition = CASE WHEN id = ? THEN 'lead_no_route'
-						                      ELSE disposition END
-						 WHERE id IN (${familyIds.map(() => "?").join(",")})
-						   AND processed_at IS NOT NULL`,
-						)
-						.run(input.now, route?.id ?? rootId, ...familyIds);
-					if (closed.changes !== familyIds.length) {
-						throw new Error("founder no-route family closure failed");
-					}
+					queue.settle({
+						messageOrDeliveryId: rootId,
+						event: "processed",
+						now: input.now,
+						evidence,
+					});
 					return {
 						kind: "no_route",
 						...(winningResponseId ? { winningResponseId } : {}),
@@ -2583,9 +2558,6 @@ export class CommDB {
 				}
 
 				const questionId = toQuestionId as string;
-				if (candidates && !candidates.questionIds.includes(questionId)) {
-					throw new Error(`question ${questionId} is not a frozen candidate`);
-				}
 				const question = this.getMessageById(questionId);
 				if (!question || question.type !== "question") {
 					throw new Error(`founder route question ${questionId} was not found`);
@@ -2603,11 +2575,7 @@ export class CommDB {
 					!session ||
 					session.lead_id !== leadId ||
 					session.project_name !== rootPayload.projectName ||
-					session.issue_id !== rootPayload.issueId ||
-					(candidates !== null &&
-						(candidates.projectName !== rootPayload.projectName ||
-							candidates.issueId !== rootPayload.issueId ||
-							candidates.threadId !== rootPayload.threadId))
+					session.issue_id !== rootPayload.issueId
 				) {
 					throw new Error(
 						`question ${questionId} founder route scope mismatch`,
@@ -2636,22 +2604,20 @@ export class CommDB {
 					throw new Error("question route requires a wake intent");
 				}
 				const responseId = randomUUID();
-				this.db
-					.prepare(
-						`INSERT INTO mailbox_message_projection (
-					  id, from_agent, to_agent, type, content, parent_id,
-					  sender_lease_key, sender_generation, sender_holder_pid,
-					  sender_holder_start, writer_pid, writer_start
-					) VALUES (?, ?, ?, 'response', ?, ?, ?, ?, ?, ?, ?, ?)`,
-					)
-					.run(
-						responseId,
-						leadId,
-						question.from_agent,
-						rootPayload.answer,
-						questionId,
-						...provenanceValues(input.provenance),
-					);
+				new MailboxQueue(this.db).enqueue({
+					id: responseId,
+					fromAgent: leadId,
+					toAgent: question.from_agent,
+					recipientKind: "runner",
+					type: "response",
+					content: rootPayload.answer,
+					refId: questionId,
+					createdAt: input.now,
+					expiresAt: new Date(
+						Date.parse(input.now) + 72 * 60 * 60 * 1000,
+					).toISOString(),
+					senderRef: encodeSenderRef(input.provenance),
+				});
 				this.markQuestionTerminalDisposed(questionId);
 				const evidence: ProcessedEvidenceV1 = {
 					v: 1,
@@ -2662,25 +2628,12 @@ export class CommDB {
 					fence,
 					basis: [`question:${questionId}`],
 				};
-				queue.markProcessed(rootId, { now: input.now, evidence });
-				if (route) {
-					queue.markProcessed(routeId, { now: input.now, evidence });
-				}
-				const familyIds = route ? [rootId, routeId] : [rootId];
-				const closed = this.db
-					.prepare(
-						`UPDATE lead_inbox SET routing_state = 'bound',
-					   next_unprocessed_at = NULL,
-					   consumed_at = COALESCE(consumed_at, ?),
-					   disposition = CASE WHEN id = ? THEN 'routed_question'
-					                      ELSE disposition END
-					 WHERE id IN (${familyIds.map(() => "?").join(",")})
-					   AND processed_at IS NOT NULL`,
-					)
-					.run(input.now, route?.id ?? rootId, ...familyIds);
-				if (closed.changes !== familyIds.length) {
-					throw new Error("founder route family closure failed");
-				}
+				queue.settle({
+					messageOrDeliveryId: rootId,
+					event: "processed",
+					now: input.now,
+					evidence,
+				});
 				const wake = this.admitReceiptWakeIntent({
 					executionId: question.from_agent,
 					intentKey: input.intentKey,
@@ -2711,30 +2664,6 @@ export class CommDB {
 			return { writer_pid: provenance.writerPid };
 		}
 		return { authority: "lead_write_unprotected" };
-	}
-
-	private parseFounderRouteCandidates(
-		encoded: string,
-	): FrozenFounderRouteCandidatesV1 {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(encoded);
-		} catch {
-			throw new Error("founder route candidates_json is invalid JSON");
-		}
-		const value = parsed as Partial<FrozenFounderRouteCandidatesV1>;
-		if (
-			value?.v !== 1 ||
-			!Array.isArray(value.questionIds) ||
-			value.questionIds.some((id) => typeof id !== "string" || !id.trim()) ||
-			typeof value.leadId !== "string" ||
-			typeof value.projectName !== "string" ||
-			typeof value.issueId !== "string" ||
-			typeof value.threadId !== "string"
-		) {
-			throw new Error("founder route candidates_json has invalid shape");
-		}
-		return value as FrozenFounderRouteCandidatesV1;
 	}
 
 	private parseFounderRootPayload(encoded: string): {
@@ -2802,21 +2731,13 @@ export class CommDB {
 
 		return this.db
 			.transaction((): InstructionAndIntentResult => {
-				this.db
-					.prepare(
-						`INSERT OR IGNORE INTO mailbox_message_projection (
-					  id, from_agent, to_agent, type, content,
-					  sender_lease_key, sender_generation, sender_holder_pid,
-					  sender_holder_start, writer_pid, writer_start
-					) VALUES (?, ?, ?, 'instruction', ?, ?, ?, ?, ?, ?, ?)`,
-					)
-					.run(
-						input.instructionId,
-						input.fromAgent,
-						input.executionId,
-						input.content,
-						...provenanceValues(input.provenance),
-					);
+				this.insertInstructionWithId(
+					input.instructionId,
+					input.fromAgent,
+					input.executionId,
+					input.content,
+					input.provenance,
+				);
 				const instruction = this.db
 					.prepare(
 						"SELECT id, from_agent, to_agent, type, content FROM mailbox_message_projection WHERE id = ?",
@@ -2960,21 +2881,22 @@ export class CommDB {
 					return JSON.parse(existingRequest.result_json) as HandleReceiptResult;
 				}
 
-				const queue = new LeadInboxQueue(this.db);
+				const queue = new MailboxQueue(this.db);
 				const receipt = queue.getById(receiptId);
 				if (!receipt) throw new Error(`receipt_not_found: ${receiptId}`);
-				if (receipt.to_lead !== authenticatedLead) {
+				if (receipt.to_agent !== authenticatedLead) {
 					throw new Error(
-						`not_authorized: receipt belongs to ${receipt.to_lead}`,
+						`not_authorized: receipt belongs to ${receipt.to_agent}`,
 					);
 				}
-				if (receipt.delivered_at === null) {
+				if (receipt.state !== "ACKED") {
 					throw new Error(`receipt_not_delivered: ${receiptId}`);
 				}
-				if (receipt.processed_at !== null) {
+				const settlement = queue.getSettlement(receiptId);
+				if (settlement?.event === "processed") {
 					throw new Error(`already_processed: ${receiptId}`);
 				}
-				if (receipt.disposed_at !== null) {
+				if (settlement?.event === "disposed") {
 					throw new Error(`already_disposed: ${receiptId}`);
 				}
 
@@ -3009,22 +2931,20 @@ export class CommDB {
 						throw new Error("wake target must match the question owner");
 					}
 					responseId = randomUUID();
-					this.db
-						.prepare(
-							`INSERT INTO mailbox_message_projection (
-							   id, from_agent, to_agent, type, content, parent_id,
-							   sender_lease_key, sender_generation, sender_holder_pid,
-							   sender_holder_start, writer_pid, writer_start
-							 ) VALUES (?, ?, ?, 'response', ?, ?, ?, ?, ?, ?, ?, ?)`,
-						)
-						.run(
-							responseId,
-							authenticatedLead,
-							question.from_agent,
-							input.content?.trim(),
-							questionId,
-							...provenanceValues(input.provenance),
-						);
+					new MailboxQueue(this.db).enqueue({
+						id: responseId,
+						fromAgent: authenticatedLead,
+						toAgent: question.from_agent,
+						recipientKind: "runner",
+						type: "response",
+						content: input.content?.trim() as string,
+						refId: questionId,
+						createdAt: input.now,
+						expiresAt: new Date(
+							Date.parse(input.now) + 72 * 60 * 60 * 1000,
+						).toISOString(),
+						senderRef: encodeSenderRef(input.provenance),
+					});
 					this.markQuestionTerminalDisposed(questionId);
 				}
 				if (input.testCrashAfter === "effect") {
@@ -3040,7 +2960,12 @@ export class CommDB {
 					fence: this.processedFenceFromProvenance(input.provenance),
 					...(input.reason?.trim() ? { basis: [input.reason.trim()] } : {}),
 				};
-				queue.markProcessed(receiptId, { now: input.now, evidence });
+				queue.settle({
+					messageOrDeliveryId: receiptId,
+					event: "processed",
+					now: input.now,
+					evidence,
+				});
 				if (input.testCrashAfter === "terminal") {
 					throw new Error("injected receipt handle crash after terminal");
 				}
@@ -3134,33 +3059,27 @@ export class CommDB {
 			let response = this.getResponse(input.questionId);
 			if (!response) {
 				const responseId = randomUUID();
-				const inserted = this.db
-					.prepare(
-						`INSERT INTO mailbox_message_projection (
-						  id, from_agent, to_agent, type, content, parent_id,
-						  sender_lease_key, sender_generation, sender_holder_pid,
-						  sender_holder_start, writer_pid, writer_start
-						)
-						SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-						  FROM mailbox_message_projection q
-						 WHERE q.id = ? AND q.type = 'question'
-						   AND q.resolved_at IS NULL AND q.superseded_at IS NULL
-						   AND q.relay_state != 'terminal_disposed'
-						   AND NOT EXISTS (
-						     SELECT 1 FROM mailbox_message_projection r
-						      WHERE r.parent_id = q.id AND r.type = 'response'
-						   )`,
-					)
-					.run(
-						responseId,
-						input.fromAgent,
-						input.content,
-						...provenanceValues(input.provenance),
-						input.questionId,
-					);
-				if (inserted.changes !== 1) {
+				if (
+					question.resolved_at !== null ||
+					question.superseded_at !== null ||
+					question.relay_state === "terminal_disposed"
+				) {
 					throw new Error(`question ${input.questionId} is no longer open`);
 				}
+				new MailboxQueue(this.db).enqueue({
+					id: responseId,
+					fromAgent: input.fromAgent,
+					toAgent: question.from_agent,
+					recipientKind: "runner",
+					type: "response",
+					content: input.content,
+					refId: input.questionId,
+					createdAt: input.now,
+					expiresAt: new Date(
+						Date.parse(input.now) + 72 * 60 * 60 * 1000,
+					).toISOString(),
+					senderRef: encodeSenderRef(input.provenance),
+				});
 				this.markQuestionTerminalDisposed(input.questionId);
 				response = this.getResponse(input.questionId);
 			}
@@ -3178,19 +3097,16 @@ export class CommDB {
 				...input.evidence,
 				ref: response.id,
 			};
-			const queue = new LeadInboxQueue(this.db);
-			queue.markProcessed(input.rootId, { now: input.now, evidence });
-			const rootUpdated = this.db
-				.prepare(
-					`UPDATE lead_inbox SET routing_state = 'bound',
-					   next_unprocessed_at = NULL
-					 WHERE id = ? AND processed_at IS NOT NULL
-					   AND processed_evidence IS NOT NULL`,
-				)
-				.run(input.rootId);
-			if (rootUpdated.changes !== 1) {
+			const queue = new MailboxQueue(this.db);
+			if (!queue.getById(input.rootId)) {
 				throw new Error(`founder receipt root ${input.rootId} is unavailable`);
 			}
+			queue.settle({
+				messageOrDeliveryId: input.rootId,
+				event: "processed",
+				now: input.now,
+				evidence,
+			});
 			const wake = this.admitReceiptWakeIntent({
 				executionId: question.from_agent,
 				intentKey: input.intentKey,
@@ -3225,33 +3141,28 @@ export class CommDB {
 				let response = this.getResponse(input.questionId);
 				if (!response) {
 					const responseId = randomUUID();
-					const inserted = this.db
-						.prepare(
-							`INSERT INTO mailbox_message_projection (
-						  id, from_agent, to_agent, type, content, parent_id,
-						  sender_lease_key, sender_generation, sender_holder_pid,
-						  sender_holder_start, writer_pid, writer_start
-						)
-						SELECT ?, ?, q.from_agent, 'response', ?, q.id, ?, ?, ?, ?, ?, ?
-						  FROM mailbox_message_projection q
-						 WHERE q.id = ? AND q.type = 'question'
-						   AND q.resolved_at IS NULL AND q.superseded_at IS NULL
-						   AND q.relay_state != 'terminal_disposed'
-						   AND NOT EXISTS (
-						     SELECT 1 FROM mailbox_message_projection r
-						      WHERE r.parent_id = q.id AND r.type = 'response'
-						   )`,
-						)
-						.run(
-							responseId,
-							input.fromAgent,
-							input.content,
-							...provenanceValues(input.provenance),
-							input.questionId,
-						);
-					if (inserted.changes !== 1) {
+					const createdAt = new Date().toISOString();
+					if (
+						question.resolved_at !== null ||
+						question.superseded_at !== null ||
+						question.relay_state === "terminal_disposed"
+					) {
 						throw new Error(`question ${input.questionId} is no longer open`);
 					}
+					new MailboxQueue(this.db).enqueue({
+						id: responseId,
+						fromAgent: input.fromAgent,
+						toAgent: question.from_agent,
+						recipientKind: "runner",
+						type: "response",
+						content: input.content,
+						refId: input.questionId,
+						createdAt,
+						expiresAt: new Date(
+							Date.parse(createdAt) + 72 * 60 * 60 * 1000,
+						).toISOString(),
+						senderRef: encodeSenderRef(input.provenance),
+					});
 					this.markQuestionTerminalDisposed(input.questionId);
 					response = this.getResponse(input.questionId);
 				}
@@ -3335,19 +3246,16 @@ export class CommDB {
 				...input.evidence,
 				ref: response.id,
 			};
-			const queue = new LeadInboxQueue(this.db);
-			queue.markProcessed(input.rootId, { now: input.now, evidence });
-			const rootUpdated = this.db
-				.prepare(
-					`UPDATE lead_inbox SET routing_state = 'bound',
-					   next_unprocessed_at = NULL
-					 WHERE id = ? AND processed_at IS NOT NULL
-					   AND processed_evidence IS NOT NULL`,
-				)
-				.run(input.rootId);
-			if (rootUpdated.changes !== 1) {
+			const queue = new MailboxQueue(this.db);
+			if (!queue.getById(input.rootId)) {
 				throw new Error(`founder receipt root ${input.rootId} is unavailable`);
 			}
+			queue.settle({
+				messageOrDeliveryId: input.rootId,
+				event: "processed",
+				now: input.now,
+				evidence,
+			});
 			const wake = this.admitReceiptWakeIntent({
 				executionId: input.expectedOwner,
 				intentKey: input.intentKey,
@@ -3417,7 +3325,7 @@ export class CommDB {
 						`founder ship gate ${input.questionId} was answered by another action`,
 					);
 				}
-				const queue = new LeadInboxQueue(this.db);
+				const queue = new MailboxQueue(this.db);
 				const root = queue.getById(input.rootId);
 				if (!root)
 					throw new Error(
@@ -3438,19 +3346,12 @@ export class CommDB {
 						: { discord_message_id: input.msgId },
 					basis: [`question:${input.questionId}`],
 				};
-				queue.markProcessed(input.rootId, { now: input.now, evidence });
-				const updated = this.db
-					.prepare(
-						`UPDATE lead_inbox SET routing_state = 'bound',
-					   next_unprocessed_at = NULL
-					 WHERE id = ? AND processed_at IS NOT NULL`,
-					)
-					.run(input.rootId);
-				if (updated.changes !== 1) {
-					throw new Error(
-						`founder receipt root ${input.rootId} is unavailable`,
-					);
-				}
+				queue.settle({
+					messageOrDeliveryId: input.rootId,
+					event: "processed",
+					now: input.now,
+					evidence,
+				});
 				const wake = this.admitReceiptWakeIntent({
 					executionId: input.expectedOwner,
 					intentKey: input.intentKey,
@@ -3717,10 +3618,22 @@ export class CommDB {
 		const summary = `artifact_emitted: ${paths.length} file(s)`;
 		this.db
 			.prepare(
-				`INSERT INTO mailbox_message_projection (id, from_agent, to_agent, type, content, content_type, attachments)
-         VALUES (?, ?, ?, 'progress', ?, 'artifact', ?)`,
+				`INSERT INTO mailbox_log
+				 (event_id, message_id, event, at, row_json)
+				 VALUES (?, ?, 'progress', strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?)`,
 			)
-			.run(id, fromAgent, toAgent, summary, JSON.stringify(paths));
+			.run(
+				id,
+				id,
+				canonicalJsonString({
+					from_agent: fromAgent,
+					to_agent: toAgent,
+					type: "progress",
+					content: summary,
+					content_type: "artifact",
+					attachments: paths,
+				}),
+			);
 		return id;
 	}
 
@@ -3736,11 +3649,7 @@ export class CommDB {
 	}
 
 	markInstructionRead(id: string): void {
-		this.db
-			.prepare(
-				"UPDATE mailbox_message_projection SET read_at = datetime('now') WHERE id = ?",
-			)
-			.run(id);
+		new MailboxQueue(this.db).ack(id, new Date().toISOString());
 	}
 
 	/**
@@ -3830,8 +3739,10 @@ export class CommDB {
 			if (sourceInstructionId) {
 				this.db
 					.prepare(
-						`UPDATE mailbox_message_projection SET read_at = COALESCE(read_at, datetime('now'))
-						 WHERE id = ? AND to_agent = ? AND type = 'instruction'`,
+						`UPDATE mailbox SET state = 'ACKED',
+						   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+						 WHERE id = ? AND to_agent = ? AND type = 'instruction'
+						   AND state IN ('QUEUED','LEASED','ACKED')`,
 					)
 					.run(sourceInstructionId, executionId);
 			}
@@ -5517,7 +5428,9 @@ export class CommDB {
 	markInstructionDelivered(id: string): void {
 		this.db
 			.prepare(
-				"UPDATE mailbox_message_projection SET delivered_at = datetime('now') WHERE id = ?",
+				`UPDATE mailbox SET state = 'LEASED', claimed_by = 'legacy-push',
+				 claim_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+				 WHERE id = ? AND type = 'instruction' AND state = 'QUEUED'`,
 			)
 			.run(id);
 	}
@@ -5544,13 +5457,7 @@ export class CommDB {
 				.get(questionId, executionId) as Message | undefined;
 			if (!response) return undefined;
 			const nowMs = Date.now();
-			this.db
-				.prepare(
-					`UPDATE mailbox_message_projection
-					    SET delivered_at = COALESCE(delivered_at, datetime('now'))
-					  WHERE id = ? AND type = 'response'`,
-				)
-				.run(response.id);
+			new MailboxQueue(this.db).ack(response.id, new Date(nowMs).toISOString());
 			this.db
 				.prepare(
 					`UPDATE runner_phase_wakes
@@ -5574,11 +5481,7 @@ export class CommDB {
 	 * confirms it has processed a message. No-op for unknown ids.
 	 */
 	ackInstructionRead(id: string): void {
-		this.db
-			.prepare(
-				"UPDATE mailbox_message_projection SET read_at = datetime('now') WHERE id = ? AND read_at IS NULL",
-			)
-			.run(id);
+		new MailboxQueue(this.db).ack(id, new Date().toISOString());
 	}
 
 	// ── Dynamic Timeout (Phase 2) ──
@@ -6463,10 +6366,11 @@ export class CommDB {
 			// protection prevents TTL/hygiene loss, not intentional lifecycle closeout.
 			const retired = this.db
 				.prepare(
-					`UPDATE mailbox_message_projection AS q SET
-					   resolved_at = datetime('now'),
-					   read_at = COALESCE(read_at, datetime('now')),
-					   expires_at = datetime('now'),
+					`UPDATE mailbox AS q SET
+					   resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+					   state = 'ACKED',
+					   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+					   expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 					   relay_state = 'terminal_disposed'
 					   ${askHygiene ? ", resolved_via = 'owner_closed'" : ""}
 					 WHERE q.from_agent = ?
@@ -6499,10 +6403,11 @@ export class CommDB {
 						"+0 seconds";
 				retiredAsks = this.db
 					.prepare(
-						`UPDATE mailbox_message_projection AS q SET
-						   resolved_at = datetime('now'),
-						   read_at = COALESCE(read_at, datetime('now')),
-						   expires_at = datetime('now', '${forensicTtl}'),
+						`UPDATE mailbox AS q SET
+						   resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+						   state = 'ACKED',
+						   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+						   expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '${forensicTtl}'),
 						   relay_state = 'terminal_disposed',
 						   resolved_via = 'owner_closed'
 						 WHERE q.from_agent = ?

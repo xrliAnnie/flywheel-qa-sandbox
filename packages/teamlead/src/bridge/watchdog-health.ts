@@ -1,9 +1,9 @@
-import type { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
+import type { MailboxQueue } from "flywheel-comm/mailbox-queue";
 
 export interface InboxLoopHealthTarget {
 	projectName: string;
 	leadId: string;
-	queue: LeadInboxQueue;
+	queue: MailboxQueue;
 }
 
 const DEFAULT_INBOX_LOOP_STALL_MS = 10 * 60_000;

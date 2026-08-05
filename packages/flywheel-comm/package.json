@@ -26,6 +26,8 @@
 		"./text-truncate": "./dist/text-truncate.js",
 		"./inbox-write-normalize": "./dist/inbox-write-normalize.js",
 		"./lead-inbox-queue": "./dist/lead-inbox-queue.js",
+		"./mailbox-queue": "./dist/mailbox-queue.js",
+		"./sender-ref": "./dist/sender-ref.js",
 		"./lead-inbox-nudge": "./dist/lead-inbox-nudge.js",
 		"./founder-reply-routing": "./dist/founder-reply-routing.js",
 		"./approval-intent": "./dist/approval-intent.js",

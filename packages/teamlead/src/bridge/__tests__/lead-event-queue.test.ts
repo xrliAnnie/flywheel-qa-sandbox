@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LeadInboxQueue } from "flywheel-comm/lead-inbox-queue";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	canonicalLeadEventDeliveryId,
@@ -9,13 +9,13 @@ import {
 } from "../lead-event-queue.js";
 import type { LeadEventEnvelope } from "../lead-runtime.js";
 
-const queues: LeadInboxQueue[] = [];
+const queues: MailboxQueue[] = [];
 afterEach(() => {
 	for (const queue of queues.splice(0)) queue.close();
 });
 
 function queue() {
-	const value = new LeadInboxQueue(
+	const value = new MailboxQueue(
 		join(mkdtempSync(join(tmpdir(), "fly1373-event-queue-")), "comm.db"),
 	);
 	queues.push(value);
@@ -51,7 +51,7 @@ describe("lead-event queue producer", () => {
 		});
 		expect(a.deliveryId).toBe("lead_event:lead-a:shared-event");
 		expect(b.deliveryId).toBe("lead_event:lead-b:shared-event");
-		expect(q.countPending()).toBe(2);
+		expect(q.countDeliverable()).toBe(2);
 		expect(
 			enqueueLeadEvent({
 				queue: q,

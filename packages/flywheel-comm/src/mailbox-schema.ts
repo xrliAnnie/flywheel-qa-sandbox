@@ -86,7 +86,7 @@ SELECT
   deadline_at,
   relay_state,
   resolved_via,
-  NULL AS logical_event_id,
+  source_ref AS logical_event_id,
   superseded_at,
   superseded_by,
   json_extract(sender_ref, '$.lease_key') AS sender_lease_key,

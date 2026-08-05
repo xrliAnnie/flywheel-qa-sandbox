@@ -7,13 +7,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type {
-	LeadInboxQueue,
-	LeadInboxRow,
-	ReceiptPriorityWindowsMs,
-} from "flywheel-comm/lead-inbox-queue";
-import { receiptPriorityWindowsMs } from "flywheel-comm/lead-inbox-queue";
-import { receiptFoundationEnabled as receiptFoundationFlagEnabled } from "flywheel-config";
+import type { ReceiptPriorityWindowsMs } from "flywheel-comm/lead-inbox-queue";
+import type { MailboxQueue, MailboxRow } from "flywheel-comm/mailbox-queue";
 import type {
 	LeadDeliveryAdapter,
 	LeadDeliveryBatch,
@@ -30,7 +25,7 @@ export interface LeadInboxTickResult {
 }
 
 export interface LeadInboxLoopOptions {
-	queue: LeadInboxQueue;
+	queue: MailboxQueue;
 	leadId: string;
 	ownerEpoch: string;
 	adapter: LeadDeliveryAdapter;
@@ -38,7 +33,7 @@ export interface LeadInboxLoopOptions {
 	/** Materialize newly-arrived CommDB questions/protocol rows before claiming. */
 	admit?: () => Promise<void>;
 	/** Idempotent typed protocol effect. It must durably finish before returning. */
-	handleProtocol: (row: LeadInboxRow) => Promise<{ disposition: string }>;
+	handleProtocol: (row: MailboxRow) => Promise<{ disposition: string }>;
 	maxProtocolAttempts?: number;
 	maxModelAttempts?: number;
 	retryBackoffBaseMs?: number;
@@ -47,16 +42,18 @@ export interface LeadInboxLoopOptions {
 	receiptWindowsMs?: ReceiptPriorityWindowsMs;
 	receiptFoundationEnabled?: () => boolean;
 	onProtocolQuarantine?: (
-		row: LeadInboxRow,
+		row: MailboxRow,
 		error: Error,
 	) => Promise<void> | void;
 	/** Fail-closed question/event dispatch revalidation. */
 	revalidateModel?: (
-		row: LeadInboxRow,
-	) => Promise<{ deliver: true } | { deliver: false; disposition: string }>;
+		row: MailboxRow,
+	) => Promise<
+		{ deliver: true } | { deliver: false; disposition: string; retry?: boolean }
+	>;
 	/** Durable audit mirror update, called only after the adapter receipt. */
-	markAuditDelivered?: (row: LeadInboxRow) => Promise<void> | void;
-	renderModelBatch?: (rows: readonly LeadInboxRow[]) => string;
+	markAuditDelivered?: (row: MailboxRow) => Promise<void> | void;
+	renderModelBatch?: (rows: readonly MailboxRow[]) => string;
 	now?: () => Date;
 	batchIdFactory?: () => string;
 	leaseTtlMs?: number;
@@ -91,8 +88,6 @@ export class LeadInboxLoop {
 	private readonly maxModelAttempts: number;
 	private readonly retryBackoffBaseMs: number;
 	private readonly retryBackoffCapMs: number;
-	private readonly receiptWindowsMs: ReceiptPriorityWindowsMs;
-	private readonly receiptFoundationEnabled: () => boolean;
 	private readonly now: () => Date;
 	private readonly batchIdFactory: () => string;
 	private readonly setTimer: NonNullable<LeadInboxLoopOptions["setTimer"]>;
@@ -113,18 +108,6 @@ export class LeadInboxLoop {
 		this.maxModelAttempts = opts.maxModelAttempts ?? 5;
 		this.retryBackoffBaseMs = opts.retryBackoffBaseMs ?? 5_000;
 		this.retryBackoffCapMs = opts.retryBackoffCapMs ?? 10 * 60_000;
-		this.receiptWindowsMs =
-			opts.receiptWindowsMs ??
-			(opts.unprocessedWindowMs !== undefined
-				? [
-						opts.unprocessedWindowMs,
-						opts.unprocessedWindowMs,
-						opts.unprocessedWindowMs,
-						opts.unprocessedWindowMs,
-					]
-				: receiptPriorityWindowsMs());
-		this.receiptFoundationEnabled =
-			opts.receiptFoundationEnabled ?? (() => receiptFoundationFlagEnabled());
 		this.now = opts.now ?? (() => new Date());
 		this.batchIdFactory = opts.batchIdFactory ?? randomUUID;
 		this.setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
@@ -163,7 +146,7 @@ export class LeadInboxLoop {
 		// (idle) delay is recoverable; a dead Bridge is not.
 		try {
 			return this.opts.hasLiveSession() ||
-				this.opts.queue.countPending(this.opts.leadId) > 0
+				this.opts.queue.countDeliverable(this.opts.leadId) > 0
 				? this.activeIntervalMs
 				: this.idleIntervalMs;
 		} catch (error) {
@@ -192,7 +175,6 @@ export class LeadInboxLoop {
 			// bookkeeping — must stay inside the tick boundary.
 			this.opts.queue.recordTickStarted(this.opts.leadId, startedAt);
 			await this.opts.afterTickStarted?.();
-			const receiptsEnabled = this.receiptFoundationEnabled();
 			if (
 				!this.opts.queue.acquireOrRenewOwner({
 					ownerEpoch: this.opts.ownerEpoch,
@@ -206,12 +188,11 @@ export class LeadInboxLoop {
 
 			for (;;) {
 				const now = this.isoNow();
-				const row = this.opts.queue.claimProtocol({
-					toLead: this.opts.leadId,
+				const row = this.opts.queue.claimBridgeProtocol({
+					fromAgent: this.opts.leadId,
 					ownerEpoch: this.opts.ownerEpoch,
 					now,
 					claimTtlMs: this.claimTtlMs,
-					respectRetryAt: true,
 				});
 				if (!row) break;
 				if (
@@ -220,27 +201,19 @@ export class LeadInboxLoop {
 					throw new Error("owner fence lost before protocol effect");
 				}
 				try {
-					const result = await this.opts.handleProtocol(row);
-					const consumed = this.opts.queue.markConsumed([row.id], {
-						ownerEpoch: this.opts.ownerEpoch,
-						disposition: result.disposition,
-						now: this.isoNow(),
-					});
-					if (consumed !== 1)
+					await this.opts.handleProtocol(row);
+					if (!this.opts.queue.ack(row.id, this.isoNow()))
 						throw new Error("owner fence lost after protocol effect");
 					protocolConsumed++;
 				} catch (error) {
-					const failure = this.opts.queue.recordProtocolDeliveryFailure(
-						row.id,
-						{
-							ownerEpoch: this.opts.ownerEpoch,
-							error: (error as Error).message,
-							now: this.isoNow(),
-							maxAttempts: this.maxProtocolAttempts,
-							backoffBaseMs: this.retryBackoffBaseMs,
-							backoffCapMs: this.retryBackoffCapMs,
-						},
-					);
+					const failure = this.opts.queue.recordBridgeDeliveryFailure({
+						id: row.id,
+						ownerEpoch: this.opts.ownerEpoch,
+						error: describeError(error),
+						now: this.isoNow(),
+						nextRetryAt: this.nextRetryAt(row.retry_count),
+						maxAttempts: this.maxProtocolAttempts,
+					});
 					const terminal = failure.deadLettered;
 					if (terminal) {
 						await this.opts.onProtocolQuarantine?.(row, error as Error);
@@ -251,40 +224,53 @@ export class LeadInboxLoop {
 				}
 			}
 
-			const claimed = this.opts.queue.claimModelBatch({
-				toLead: this.opts.leadId,
+			const claimed = this.opts.queue.claimLeadBatch({
+				toAgent: this.opts.leadId,
+				msgClass: "model",
 				ownerEpoch: this.opts.ownerEpoch,
 				batchId: this.batchIdFactory(),
 				now: this.isoNow(),
 				claimTtlMs: this.claimTtlMs,
-				limit: this.maxBatchSize,
-				respectRetryAt: true,
+				maxBatchSize: this.maxBatchSize,
 			});
 			if (claimed.length > 0) {
-				const deliverable: LeadInboxRow[] = [];
+				const deliverable: MailboxRow[] = [];
 				for (const row of claimed) {
 					// attempts>0 means this immutable membership may already exist at the
 					// adapter; never mutate it during a retry.
 					const verdict =
-						row.attempts === 0 && this.opts.revalidateModel
+						row.retry_count === 0 && this.opts.revalidateModel
 							? await this.opts.revalidateModel(row)
 							: ({ deliver: true } as const);
 					if (!verdict.deliver) {
-						const consumed = this.opts.queue.markConsumed([row.id], {
-							ownerEpoch: this.opts.ownerEpoch,
-							disposition: verdict.disposition,
-							now: this.isoNow(),
-						});
-						if (consumed !== 1) {
+						const changed = verdict.retry
+							? this.opts.queue.releaseClaimForRetry({
+									id: row.id,
+									ownerEpoch: this.opts.ownerEpoch,
+									batchId: row.batch_id!,
+									nextRetryAt: new Date(
+										this.now().getTime() + 30_000,
+									).toISOString(),
+									reason: verdict.disposition,
+								})
+							: this.opts.queue.markDead(
+									row.id,
+									this.isoNow(),
+									verdict.disposition,
+								);
+						if (!changed) {
 							throw new Error("owner fence lost while revoking model row");
 						}
 						continue;
 					}
-					deliverable.push(row);
+					const materialized = this.opts.queue.getById(row.id);
+					if (!materialized)
+						throw new Error(`mailbox row disappeared: ${row.id}`);
+					deliverable.push(materialized);
 				}
 
 				if (deliverable.length > 0) {
-					await this.deliverModelBatch(deliverable, receiptsEnabled);
+					await this.deliverModelBatch(deliverable);
 					modelConsumed = deliverable.length;
 				}
 			}
@@ -305,10 +291,7 @@ export class LeadInboxLoop {
 		}
 	}
 
-	private async deliverModelBatch(
-		rows: LeadInboxRow[],
-		receiptsEnabled: boolean,
-	): Promise<void> {
+	private async deliverModelBatch(rows: MailboxRow[]): Promise<void> {
 		const batchId = rows[0]?.batch_id;
 		if (!batchId || rows.some((row) => row.batch_id !== batchId)) {
 			throw new Error("claimed model batch has invalid membership");
@@ -321,30 +304,30 @@ export class LeadInboxLoop {
 			leadId: this.opts.leadId,
 			ownerEpoch: this.opts.ownerEpoch,
 			members: rows.map((row) => ({
-				deliveryId: row.id,
-				content: row.content,
+				deliveryId: row.delivery_id,
+				content: row.delivery_content ?? row.content,
 				priority: row.priority,
 				seq: row.seq,
 			})),
 			modelPayload:
 				this.opts.renderModelBatch?.(rows) ??
 				rows
-					.map(({ id, content }) => `[receipt:${id}]\n${content}`)
+					.map(
+						(row) =>
+							`[receipt:${row.delivery_id}]\n${row.delivery_content ?? row.content}`,
+					)
 					.join("\n\n"),
 		};
 		try {
 			const receipt = await this.opts.adapter.deliverBatch(batch);
 			if (receipt.status === "membership_conflict") {
-				const quarantined = this.opts.queue.quarantineModelBatch(
-					rows.map(({ id }) => id),
-					{
-						ownerEpoch: this.opts.ownerEpoch,
-						batchId,
-						toLead: this.opts.leadId,
-						error: `adapter reported membership_conflict for ${batchId}`,
-						now: this.isoNow(),
-					},
-				);
+				const quarantined = rows.filter((row) =>
+					this.opts.queue.markDead(
+						row.id,
+						this.isoNow(),
+						`membership_conflict:${batchId}`,
+					),
+				).length;
 				if (quarantined !== rows.length) {
 					throw new Error("owner fence lost while quarantining conflict");
 				}
@@ -353,7 +336,7 @@ export class LeadInboxLoop {
 			if (
 				receipt.batchId !== batchId ||
 				receipt.memberIds.length !== rows.length ||
-				receipt.memberIds.some((id, index) => id !== rows[index]?.id)
+				receipt.memberIds.some((id, index) => id !== rows[index]?.delivery_id)
 			) {
 				throw new Error("adapter receipt does not match frozen membership");
 			}
@@ -365,34 +348,25 @@ export class LeadInboxLoop {
 			// Cross-store order is deliberate: adapter receipt → audit mirror → queue
 			// consume. Any crash before the last step retries through adapter dedupe.
 			for (const row of rows) await this.opts.markAuditDelivered?.(row);
-			const consumed = this.opts.queue.markConsumed(
-				rows.map(({ id }) => id),
-				{
+			if (
+				!this.opts.queue.ackBatch({
+					batchId,
 					ownerEpoch: this.opts.ownerEpoch,
-					disposition: "delivered",
+					memberIds: rows.map(({ delivery_id }) => delivery_id),
 					now: this.isoNow(),
-					...(receiptsEnabled
-						? { receiptWindowsMs: this.receiptWindowsMs }
-						: {}),
-				},
-			);
-			if (consumed !== rows.length) {
+				})
+			) {
 				throw new Error("owner fence lost before queue consume");
 			}
 		} catch (error) {
-			this.opts.queue.recordModelDeliveryFailure(
-				rows.map(({ id }) => id),
-				{
-					ownerEpoch: this.opts.ownerEpoch,
-					batchId,
-					toLead: this.opts.leadId,
-					error: (error as Error).message,
-					now: this.isoNow(),
-					maxAttempts: this.maxModelAttempts,
-					backoffBaseMs: this.retryBackoffBaseMs,
-					backoffCapMs: this.retryBackoffCapMs,
-				},
-			);
+			this.opts.queue.recordLeadDeliveryFailure({
+				ownerEpoch: this.opts.ownerEpoch,
+				batchId,
+				error: describeError(error),
+				now: this.isoNow(),
+				nextRetryAt: this.nextRetryAt(rows[0]?.retry_count ?? 0),
+				maxAttempts: this.maxModelAttempts,
+			});
 			throw error;
 		}
 	}
@@ -428,5 +402,13 @@ export class LeadInboxLoop {
 
 	private isoNow(): string {
 		return this.now().toISOString();
+	}
+
+	private nextRetryAt(retryCount: number): string {
+		const delay = Math.min(
+			this.retryBackoffCapMs,
+			this.retryBackoffBaseMs * 2 ** retryCount,
+		);
+		return new Date(this.now().getTime() + delay).toISOString();
 	}
 }
