@@ -1,3 +1,0 @@
-1. 2026-08-05 16:40:03 UTC
-2. 576b14ac262621f0d6618f807b6b4b5de68dced2
-3. FLY-1638 529 real-machine E2E fixture
