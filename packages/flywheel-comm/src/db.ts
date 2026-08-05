@@ -4083,7 +4083,7 @@ export class CommDB {
 				`SELECT * FROM mailbox_message_projection
          WHERE to_agent = ? AND type = 'instruction' AND read_at IS NULL
          AND (delivered_at IS NULL
-              OR delivered_at < datetime('now', '-' || ? || ' seconds'))
+              OR datetime(delivered_at) < datetime('now', '-' || ? || ' seconds'))
 		 AND datetime(expires_at) > datetime('now')
          ORDER BY created_at ASC`,
 			)
@@ -4189,9 +4189,8 @@ export class CommDB {
 	 * detector — a runner that recently messaged its Lead (DONE report,
 	 * instruction receipt, question) is alive, however static its pane looks.
 	 *
-	 * The comparison stays entirely in SQLite's UTC clock domain
-	 * (`created_at` DEFAULT CURRENT_TIMESTAMP vs `datetime('now', ...)`) —
-	 * no JS date parsing of timezone-less strings. Strict `>`: a message
+	 * The comparison stays entirely in SQLite's UTC clock domain by normalizing
+	 * the ISO-Z mailbox timestamp with `datetime(created_at)`. Strict `>`: a message
 	 * exactly at the window edge is outside.
 	 */
 	hasRecentMessagesFrom(execId: string, windowSeconds: number): boolean {
@@ -4200,7 +4199,7 @@ export class CommDB {
 			.prepare(
 				`SELECT 1 as hit FROM mailbox_message_projection
          WHERE from_agent = ?
-         AND created_at > datetime('now', '-' || ? || ' seconds')
+         AND datetime(created_at) > datetime('now', '-' || ? || ' seconds')
          LIMIT 1`,
 			)
 			.get(execId, seconds) as { hit: number } | undefined;
@@ -5069,7 +5068,7 @@ export class CommDB {
 						   AND q.checkpoint IS NULL
 						   AND q.resolved_at IS NULL
 						   AND q.relay_state != 'terminal_disposed'
-						   AND q.created_at <= datetime('now', ?)
+						   AND datetime(q.created_at) <= datetime('now', ?)
 						   AND NOT EXISTS (
 						     SELECT 1 FROM mailbox_message_projection r
 						      WHERE r.parent_id = q.id AND r.type = 'response'

@@ -23,7 +23,9 @@ const HOUR_MS = 60 * 60 * 1000;
 function backdate(dbPath: string, questionId: string, sqlOffset: string): void {
 	const raw = new Database(dbPath);
 	raw
-		.prepare(`UPDATE mailbox SET created_at = datetime('now', ?) WHERE id = ?`)
+		.prepare(
+			`UPDATE mailbox SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', ?) WHERE id = ?`,
+		)
 		.run(sqlOffset, questionId);
 	raw.close();
 }

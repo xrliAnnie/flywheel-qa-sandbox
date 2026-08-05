@@ -239,9 +239,15 @@ export class LeadInboxLoop {
 				const deliverable: MailboxRow[] = [];
 				for (const row of claimed) {
 					// A frozen membership may already exist at the adapter even when a
-					// crash left retry_count at zero. Revalidate only a new batch.
+					// crash left retry_count at zero. Revalidate only a new batch, unless
+					// a question proves the crash happened before materialization and
+					// therefore before the adapter handoff.
+					const needsQuestionMaterialization =
+						row.type === "question" &&
+						row.source_ref === null &&
+						row.delivery_content === null;
 					const verdict =
-						freshBatch &&
+						(freshBatch || needsQuestionMaterialization) &&
 						row.state === "LEASED" &&
 						row.retry_count === 0 &&
 						this.opts.revalidateModel

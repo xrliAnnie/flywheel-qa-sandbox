@@ -219,6 +219,65 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(queue.getById("B")?.state).toBe("ACKED");
 	});
 
+	it("re-materializes a frozen question after pre-delivery revalidation fails", async () => {
+		const queue = makeQueue();
+		queue.enqueue({
+			id: "q1",
+			deliveryId: "question:lead-a:q1",
+			fromAgent: "runner-a",
+			toAgent: "lead-a",
+			recipientKind: "lead",
+			type: "question",
+			content: "raw question",
+			senderRef: encodeSenderRef(),
+		});
+		let batchNumber = 0;
+		const adapter = { deliverBatch: vi.fn(async (batch) => receipt(batch)) };
+		const revalidateModel = vi
+			.fn<(row: MailboxRow) => Promise<{ deliver: true }>>()
+			.mockRejectedValueOnce(new Error("materialization failed"))
+			.mockImplementationOnce(async (row) => {
+				queue.materializeForDelivery({
+					id: row.id,
+					ownerEpoch: row.claimed_by!,
+					batchId: row.batch_id!,
+					sourceKind: "question",
+					sourceRef: "41",
+					deliveryContent: "rendered question",
+				});
+				return { deliver: true };
+			});
+		const consumer = loop(queue, adapter, {
+			revalidateModel,
+			batchIdFactory: () => `batch-${++batchNumber}`,
+		});
+
+		expect(await consumer.tick()).toMatchObject({
+			ok: false,
+			modelConsumed: 0,
+		});
+		expect(queue.getById("q1")).toMatchObject({
+			state: "LEASED",
+			batch_id: "batch-1",
+			source_ref: null,
+			delivery_content: null,
+		});
+		expect(await consumer.tick()).toMatchObject({ ok: true, modelConsumed: 1 });
+		expect(revalidateModel).toHaveBeenCalledTimes(2);
+		expect(adapter.deliverBatch.mock.calls[0]?.[0].members).toEqual([
+			expect.objectContaining({
+				deliveryId: "question:lead-a:q1",
+				content: "rendered question",
+			}),
+		]);
+		expect(queue.getById("q1")).toMatchObject({
+			state: "ACKED",
+			source_kind: "question",
+			source_ref: "41",
+			delivery_content: "rendered question",
+		});
+	});
+
 	it("releases a transiently-held question for 30 seconds without hot-looping", async () => {
 		const queue = makeQueue();
 		enqueueModel(queue, "question-1");

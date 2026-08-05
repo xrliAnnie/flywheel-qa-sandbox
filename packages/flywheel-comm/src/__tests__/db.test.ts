@@ -415,7 +415,7 @@ describe("CommDB", () => {
 			const raw = new Database(join(tmpDir, "comm.db"));
 			raw
 				.prepare(
-					`UPDATE mailbox SET created_at = datetime('now', '-' || ? || ' seconds')
+					`UPDATE mailbox SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '-' || ? || ' seconds')
 					 WHERE from_agent = ?`,
 				)
 				.run(seconds, execId);
@@ -991,7 +991,7 @@ describe("CommDB", () => {
 			// Backdate delivered_at 60s ago
 			(db as any).db
 				.prepare(
-					"UPDATE mailbox SET claim_expires_at = datetime('now', '-60 seconds') WHERE id = ?",
+					"UPDATE mailbox SET claim_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-60 seconds') WHERE id = ?",
 				)
 				.run(id);
 
@@ -1008,7 +1008,7 @@ describe("CommDB", () => {
 			// Backdate delivered_at far past retry window
 			(db as any).db
 				.prepare(
-					"UPDATE mailbox SET claim_expires_at = datetime('now', '-600 seconds') WHERE id = ?",
+					"UPDATE mailbox SET claim_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-600 seconds') WHERE id = ?",
 				)
 				.run(id);
 
