@@ -1,13 +1,13 @@
 ---
 issue: FLY-1572
 phase: implement
-phaseCursor: 0/8
-updated: 2026-08-05T07:39:12.411Z
-nextStep: audit implementation surfaces and write RED schema/state/open-contract tests
+phaseCursor: 1/8
+updated: 2026-08-05T07:42:29.304Z
+nextStep: write RED sender_ref validation/fence tests, then implement canonical v1 codec
 chunks: []
 pointers: {}
 ---
 
 # FLY-1572 progress
-**phase**: implement (0/8)
-**next**: audit implementation surfaces and write RED schema/state/open-contract tests
+**phase**: implement (1/8)
+**next**: write RED sender_ref validation/fence tests, then implement canonical v1 codec
