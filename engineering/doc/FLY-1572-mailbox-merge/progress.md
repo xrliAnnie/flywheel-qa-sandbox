@@ -1,14 +1,14 @@
 ---
 issue: FLY-1572
 phase: implement
-phaseCursor: 5/5
-updated: 2026-08-05T17:59:54.253Z
-nextStep: RC-6 committed at 9528c2b5; run full repo gates, push, and request
-  code re-review
+phaseCursor: 0/4
+updated: 2026-08-05T18:44:45.300Z
+nextStep: "R2: add four regression tests, fix blocking findings, rerun gates,
+  and re-request code review"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1572 progress
-**phase**: implement (5/5)
-**next**: RC-6 committed at 9528c2b5; run full repo gates, push, and request code re-review
+**phase**: implement (0/4)
+**next**: R2: add four regression tests, fix blocking findings, rerun gates, and re-request code review
