@@ -326,7 +326,7 @@ inbox-mcp 写 ack_receipt 单行(to_agent='bridge', recipient_kind='bridge', msg
      c. §8.1 online backup API **只读**跑在冻结 canonical 上(**backup API 天然含 WAL 帧**)→ integrity/FK/schema 校验 → 备份 durable 后、换入前把 canonical sidecars quarantine(其内容已入备份);
      d. staging = 备份快照的私有拷贝,cutover 单事务在 **staging** 上做(§8.2 下条)→ 对账通过 = `staging_verified`;
      e. **同文件系统原子换入(R16 MEDIUM)**:staging 目录 0700、**紧邻 canonical 且断言同 `st_dev`**(跨设备 `EXDEV` fail-closed,**绝不**降级 copy-overwrite),staging 文件 0600;rename + 父目录 fsync 换入 canonical(rename 只需父目录写权,文件级写闸不挡它);换入后的迁移库由毒药 VIEW + schema_generation 接防(chmod 恢复常规),legacy 内容自 b 起到换入落盘**连续**不可写;迟到旧 CLI 两态挨打:换入前撞 0444 `SQLITE_READONLY`/`CANTOPEN`,换入后撞毒药 VIEW —— 无窗口;
-     f. **forward `migration-swap-intent-<ts>.json`(R16 HIGH:§8.4 是回滚方向 ledger,两个世界相反、无 refs 换相,不可逐字借用)**:写在被换 DB 之外,含 canonical/staging/backup hash、原文件 mode、sidecar 状态;相序 **`fenced → backed_up → staging_verified → canonical_swapped → dir_fsynced → verified → done`**;重入先核对实际 schema/hash/世界态再推进 ledger;**abort-all(放弃本窗)必须给每个未换入的 verified-legacy 库复原原始 mode**(0444 不是可遗留态)—— 步 3(b) 的「复验 inventory 全 legacy」含 mode 复原;逐相位 fault-inject 且 recovery 连跑两遍证幂等。
+     f. **forward `migration-swap-intent-<ts>.json`(R16 HIGH:§8.4 是回滚方向 ledger,两个世界相反、无 refs 换相,不可逐字借用)**:写在被换 DB 之外,含 canonical/staging/backup hash、原文件 mode、**sidecar quarantine/restoration 状态(R17 HIGH)**;相序 **`fenced → backed_up → sidecars_quarantined → staging_verified → canonical_swapped → dir_fsynced → verified → done`**;重入先核对实际 schema/hash/世界态再推进 ledger。**abort-all(放弃本窗)的未换入库复原 = 内容 + mode 双复原(R17 HIGH:快照权威含 WAL 帧,sidecar 已 quarantine 后光复原 mode 会让 canonical 主文件独缺 pre-fence 合法提交 —— 实测裸主文件 `no such table` 而备份含该行)**:优先路径 = 用已验证的 durable online backup 拷贝**原子替换** canonical(backup 已物化 WAL 帧)→ 复原原始 mode → fsync;备选 = 按 intent 记录的 hash 复原被 quarantine 的 WAL 态后再开;**步 3(b) 的 all-legacy 出口门比对「复原后 canonical 投影/hash/行数 vs 权威备份」,不只 schema 分类 + mode**。逐相位 fault-inject 且 recovery 连跑两遍证幂等;专属 fault fixture:a→b 缝隙提交仅入 WAL 的行 → 备份完成 → sidecar quarantine → staging 失败 → abort-all → recovery ×2 → **真旧 build 重启后能读到该行**。
      race 测试语义分层:pre-fence(a→b 缝)注入的合法提交 → **检出并纳入权威备份**;post-fence 三个 seam(备份中 / staging 迁移中 / 换入后)注入 → fail-loud 零行变更。**全部库迁完前舰队保持 quiesced**;fault-injected 证明**不存在 post-backup legacy write**(备份后旧写会让回滚丢数据 —— 这是围栏要挡死的事故形态);
   3. 任一库失败 → 舰队继续 quiesced,二选一**显式**恢复,禁止第三种:(a)修复后续跑剩余库(优先;已迁库的 completed marker 幂等跳过);(b)放弃本窗 —— 已迁库**全部**按 §8.4 回滚,复验 inventory 全为 legacy 态后,才允许重启旧 binary;
   4. 全部目标库 completed marker + inventory 对账通过 → 部署新 binary → 重启舰队 → 冒烟。
@@ -469,3 +469,8 @@ R15(R14 折入核验全确认 + 新查)返回 2 HIGH + 2 MEDIUM,全采纳:
 R16(R15 折入核验全确认)返回 2 HIGH + 1 MEDIUM,全采纳:
 - **HIGH**:删掉 checkpoint→fence 收敛环(与「永不解除」自相矛盾)—— checkpoint 降级为可选优化,**冻结快照权威 = DB + 已提交 WAL 帧**,§8.1 online backup 只读含 WAL;pre-fence 缝隙合法提交改「检出并纳入备份」,post-fence 三 seam 才要求 fail-loud 零变更;forward **`migration-swap-intent` 独立 ledger**(§8.4 是回滚方向不可逐字借用):七相序 + 重入核实际世界态 + abort-all 复原每个未换入库的原始 mode + 逐相位 fault-inject 双跑。
 - **MEDIUM**:staging 目录 0700 紧邻 canonical、断言同 `st_dev`、`EXDEV` fail-closed 绝不 copy-overwrite,staging 文件 0600,fsync 纳入 forward intent。
+
+### 12.I 继任 exec Codex 复审 R17 折入(2026-08-05)
+
+R17(R16 折入核验全确认,并本地实测验证了「0444 下只读 online backup 含 WAL 帧」的核心原语)返回 1 HIGH,采纳:
+- **HIGH**:abort-all 的未换入库复原从「只复原 mode」升级为**内容 + mode 双复原** —— sidecar 已 quarantine 后裸主文件独缺 WAL-only 提交(Codex 实测:备份含该行、裸主文件 `no such table`)。intent 增 `sidecars_quarantined` 相位与 sidecar restoration 状态;优先用已验证 durable backup 原子替换 canonical(WAL 帧已物化)再复原 mode;all-legacy 出口门比对复原后投影/hash/行数 vs 权威备份;专属 fault fixture 证真旧 build 重启后读到 WAL-only 行。
