@@ -62,16 +62,19 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 
 - **单事务 CAS**:新 store 方法(如 `settleWorkflowReworkFailure`)一次事务内:验 owner/generation/state → `hold_count+1` → 若 `< 5`:release + 写 `next_retry_at = now + backoff(hold_count)`(指数:1m/2m/4m/8m,总窗 ~15m —— 1s tick 下裸计数 5 次=5 秒即枯竭,必须退避才配叫「重试 5 次」);若 `>= 5`:state → `needs_lead` + 同事务 `enqueueWorkflowEngineAlertTx`(`workflow_engine_escalation`,携带既有 `WorkflowEngineAlertIdentity` 载荷)**恰一次**。coordinator 的 `releaseAndHold` / `releaseRetryable` 改为都走此方法 —— **retryable 类失败(missing context/actor、corrupt authority、admission、turn grant、projection failure)同样消耗预算**(否则那几类照样无限转,R1#6);claim/list 查询排除 `next_retry_at > now`。
 - **止血刷屏**:删除每迭代 `effects.alertHold`;`three_stage_stuck` 发射点随之移除(dead code 清单给 review)。告警只在转 needs_lead 时发一次,走 ticket lane(`workflow_engine_escalation` 不在 `ISSUE_PROGRESS_KINDS` → Lead alert channel,不进 founder thread)。
-- **Lead 复活路径:stage-aware 终局(R1#6 + R2#3)**:`openOperatorRework` 现会被 reserved target 的 `target_attempt_already_reserved` 拒;但第 5 次失败发生的阶段不同,预约「从未成功投递」并不总成立 —— 可能已 `admitGeneralizedWorkflowExecution`(activation + live credential)、已 grant/record turn、或 `wakeActor` 结果 ambiguous。单一「回滚预约」会留下老 credential/turn/wake 与新 attempt **并发行动**的窗口。终局按阶段分派:
-  - **可证明 pre-delivery 的失败**(未 admit / admit 前失败):原子 revoke 未用 credential + abandon activation/target 预约 + settle verification path + `needs_lead` → operator rework 天然可开新单。
-  - **post-delivery 或 ambiguous**(turn 已 grant / wake 结果不明):`needs_lead` + **fence 后续重试**,但**保留预约** —— 由既有 operator 路径证明 quiescence 并显式清理后才铸后继。
+- **Lead 复活路径:stage-aware 终局(R1#6 + R2#3 + R3#2 crash-safe 三态)**:`openOperatorRework` 现会被 reserved target 的 `target_attempt_already_reserved` 拒;且第 5 次失败发生的阶段不同,预约「从未成功投递」并不总成立。coordinator 实际序:admit(activation+credential)→ 解析 authority context → 外呼 `grantTurn` → 本地记 turn → 外呼 `wakeActor`。终局按**三个显式 disposition** 分派(R3#2:「admitted 但尚未 dispatch」是独立区间,`authority_context_corrupt` 即现例;`grantTurn`/`wakeActor` 抛错即便本地行未推进也是 ambiguous):
+  1. **pre-admission**(admit 未发生):直接 settle:target 预约回滚 + verification path settle + `needs_lead`。
+  2. **admitted 且可证明未发起 grant**(如 authority context 解析失败):原子 revoke 未用 credential + abandon activation + 预约回滚 + settle + `needs_lead`。
+  3. **grant/wake 已投递或 ambiguous**(外呼已发出/抛错/结果不明):`needs_lead` + **fence 后续重试**,**保留预约**。
+  - **disposition 从 durable facts 推导**:终局 CAS 复查 activation / credential / turn / delivery / reservation 持久行,**不信 coordinator 本地 stage flag**;crash 后证据不足 → 一律取 disposition 3(ambiguous/retain)。
+  - **operator 清理事务具名(R3#2)**:扩展 `openOperatorRework` 的 quiescence-authorized 事务(或其调用的既有 operator cleanup 事务):revoke/fence 旧 activation 与 credentials → settle 旧 target/预约 → **然后才**铸后继 attempt。
   预算仍是同一个 hold_count,不加第二计数。
 
 ### 2.3 测试
 
 - 连续失败 → hold_count 递进 + backoff 生效(claim 被 `next_retry_at` 挡住)→ 第 5 次转 needs_lead,outbox 恰 1 条,founder thread 0 条。
 - crash/race:第 5 次失败与另一 tick 并发 claim → CAS 单赢家。
-- **stage-aware 终局(R2#3)**:第 5 次失败分别发生在 admission / turn grant/projection / wake / post-wake projection 各阶段的终局断言;**迟到的 credential 提交或延迟 wake 不得复活被取代的 attempt;任何测试不得观察到两个可行动 attempt**。
+- **stage-aware 终局(R2#3 + R3#2)**:第 5 次失败分别发生在 admission / turn grant/projection / wake / post-wake projection 各阶段的终局断言;**crash 边界三组**:admit 后 grant 前崩、grant 可能成功后 projection 前崩、wake 可能成功后 delivery projection 前崩 → 重启后 disposition 从 durable facts 复推、证据不足取 retain;**迟到的 credential 提交或延迟 wake 不得复活被取代的 attempt;任何测试不得观察到两个可行动 attempt**。
 - needs_lead 后 dispatcher 不再扫描;pre-delivery 形 → `openOperatorRework` 可开新单;post-delivery 形 → operator 路径先证 quiescence。
 - retryable 类失败同预算断言。
 
@@ -116,14 +119,19 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 - **能力面(R2#4 DTO 适配)**:`GeneralizedExecutionDispatch.capabilities` 与 `BlueprintContext.workflowCapabilities` 现型为 `Record<string, boolean | string>` —— 数组装不进。改用 **boolean capability** `allow_no_code_completion: true`(registry generic entry;现 DTO 零类型改动)。快照 capability exact parser、物化器同步接受可选新字段;digest 哨兵 = 无该字段的旧快照 digest 不变。
 - **prompt 贯通(R2#4)**:Blueprint 现只渲染 primary route(`needs_review` + `produces_output: true` → 指示 runner 提交 output 走 needs_review),新出口 runner 根本看不见。渲染显式 no-artifact 完成指令(「确无产出/取消时用 `complete --route no_code`,禁伪造 PR」)。
 - **`produces_output` 修正**:no_code 分支放行「无 output credential 提交」的完成形,needs_review 分支维持现约束;**同事务 revoke 未用 output credential**(R2#4 —— 否则 run 完结后旧 credential 仍可被消费)。
-- **⚠️ 缺失证据的信任规则(R2#4 安全洞)**:**不能只信 runner 选的 route** —— 否则产出了 PR 的 runner 可省略 PR 证据、选 no_code、绕过 founder gate。no_code 分支 fail-closed 校验:(i) 存在当前 output / PR binding / PR 证据 → **拒**(`no_code_artifact_present`);(ii) server-authoritative baseline/head 规则证明 worktree 无 shippable delta(如 worktree HEAD == 派发基线且无未合入分支提交)→ 才放行。
+- **⚠️ 缺失证据的信任规则(R2#4 安全洞 + R3#1 权威源具体化)**:**不能只信 runner 选的 route** —— 否则产出了 PR 的 runner 可省略 PR 证据、选 no_code、绕过 founder gate。no_code 分支 fail-closed 校验:
+  1. 存在当前 output / PR binding / PR 证据 → **拒**(`no_code_artifact_present`)。
+  2. **权威源(R3#1:现源码没有可用的 admitted baseline —— worktree binding 只存 path/branch/generation,generic 节点无 startPoint)**:admission 时扩展**不可变 activation/execution binding**,写入 server-resolved 的 admitted baseline SHA + repository identity + worktree generation(引擎派发时本就解析 base,只是没落盘 —— 既有机制加列,非新机制)。
+  3. **完成时 fenced attestation**:no_code 完成前做仓库探测(HEAD、clean/dirty、未合入提交),closeout 事务内**复查 activation/worktree generation** —— generation 不符/证明缺失/过期 → 拒(探针 freshness 边界)。
+  4. **仓库范围**:证明覆盖 bound worktree 内**全部已配置仓库**;嵌套仓库 scope 不明 → **fail-closed 拒**,绝不静默只查 root(嵌套仓库可藏 shippable delta)。
+  5. 若实施中发现证据链无法在本单范围内补齐 → **`allow_no_code_completion` 保持关闭、出口拆 follow-up**,绝不弱化 founder-gate 边界(R3#1 兜底指令)。
 - **窄事务闭环**(enrollment/transition 边界,不进 DAG 引擎核心):`generic + no_code` 完成 → 单事务:验 route/no-artifact 契约(上述规则)→ 写 completion receipt → source attempt 置 done → session 投影 `completed` + `terminal_at` → run 置 terminal `completed` → revoke 未用 credential → 幂等 `completed_no_artifact` 事件 → **不遍历、不物化 gate**。
   **理由**:founder gate 的意义是授权 ship;经证明无产物则无可授权。
 - **外部收尾权威(R2#5)**:原子事务**只管** receipt/node/session/run —— `completed_no_artifact` 没有(也不该有)Linear 变更消费者;lifecycle closeout allowlist(`ship_complete | linear_reconcile | founder_park`)里 runner verdict 制造不了权威。1623 形(Linear 已 cancel)依赖**既有** terminal-Linear reconcile closeout 收尾并测试;活 issue 的外部 closeout 留待既有可信 disposition。若产品语义要 runner no-code verdict 推 Linear Done → **新权威机制,单独立项**,不藏在 run event 后面(→ honest boundary)。
 - `needs_review` 完成(有 PR)→ 照走 gate → §1 打通的 runner_ship ship 链。
 - **诊断步**:实施时读一个 pre-#748 generic run 的 event ledger,确认 engine_terminal 历史停滞点;若属独立断裂,如实报 Lead 拆 follow-up,不静默扩科。
 
-测试:no_code 完成 → run completed、无 gate holder、无 node 预约、replay 幂等;**PR/output 在场 → 拒**;**干净 vs 脏 worktree 对照**;未用 credential 事务后不可消费;prompt 渲染断言(DTO/build);已 cancel Linear issue 经既有 reconcile 收尾;`produces_output` 两分支;needs_review + PR → gate → binding(接 §1);两 template id 过 5② 断言。
+测试:no_code 完成 → run completed、无 gate holder、无 node 预约、replay 幂等;**PR/output 在场 → 拒**;**R3#1 七组**:root 未变 / untracked+dirty / 已提交 delta / 仅嵌套仓库 delta / run 期间目标分支推进 / worktree generation 过期 / 完成-探针竞态;未用 credential 事务后不可消费;prompt 渲染断言(DTO/build);已 cancel Linear issue 经既有 reconcile 收尾;`produces_output` 两分支;needs_review + PR → gate → binding(接 §1);两 template id 过 5② 断言。
 
 ## 6. 修复面 6:admission pause(R1#10 补 bootstrap/覆盖/时长)
 
