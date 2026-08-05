@@ -1,15 +1,14 @@
 ---
 issue: FLY-1638
 phase: implement
-phaseCursor: 12/16
-updated: 2026-08-05T13:55:26.505Z
-nextStep: Prove QA retest with a fresh submission credential through the
-  credential-gated verdict API, then implement item 10 once Lead supplies exact
-  anchor
+phaseCursor: 13/16
+updated: 2026-08-05T13:57:36.167Z
+nextStep: Implement the shared <10 minute launch precommit wait budget with
+  heartbeat coverage while awaiting Lead's exact item 10 anchor
 chunks: []
 pointers: {}
 ---
 
 # FLY-1638 progress
-**phase**: implement (12/16)
-**next**: Prove QA retest with a fresh submission credential through the credential-gated verdict API, then implement item 10 once Lead supplies exact anchor
+**phase**: implement (13/16)
+**next**: Implement the shared <10 minute launch precommit wait budget with heartbeat coverage while awaiting Lead's exact item 10 anchor
