@@ -1,13 +1,13 @@
 ---
 issue: FLY-1572
 phase: implement
-phaseCursor: 8/8
-updated: 2026-08-05T10:10:42.057Z
-nextStep: request Codex code review; fix any blocking findings; open PR
+phaseCursor: 9/9
+updated: 2026-08-05T15:42:33.296Z
+nextStep: commit verified HIGH fixes; request a new code review; open PR after approval
 chunks: []
 pointers: {}
 ---
 
 # FLY-1572 progress
-**phase**: implement (8/8)
-**next**: request Codex code review; fix any blocking findings; open PR
+**phase**: implement (9/9)
+**next**: commit verified HIGH fixes; request a new code review; open PR after approval
