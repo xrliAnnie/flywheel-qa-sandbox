@@ -20,7 +20,6 @@ The sandbox is therefore disposable infrastructure for integration testing, not 
 | `docs/` | Contributor and operational runbooks for the repository. |
 | `engineering/` | Issue-scoped engineering documents, investigations, evidence, and spikes. |
 | `fleet/` | Fleet configuration and tooling for managed Flywheel installations. |
-| `menus/` | Menu definitions used by interactive workflows and operator tooling. |
 | `packages/` | TypeScript workspace packages, including the core Runner, Bridge, and QA framework. |
 | `patches/` | Version-controlled patches applied to external or generated dependencies. |
 | `product/` | Product research, specifications, prototypes, and issue-scoped documentation. |
@@ -28,7 +27,6 @@ The sandbox is therefore disposable infrastructure for integration testing, not 
 | `qa-fly310/` | Checked-in artifacts and fixtures for the FLY-310 QA effort. |
 | `scripts/` | Repository development, deployment, QA, and maintenance scripts. |
 | `supabase/` | Supabase database migrations and related backend configuration. |
-| `vendor/` | Vendored third-party code and locally maintained external assets. |
 
 ## QA framework README summary
 
@@ -51,7 +49,6 @@ Command: `ls -R doc/ | head -50`
 VERSION
 architecture
 engineer
-messaging-rework
 plan
 qa
 reference
@@ -98,4 +95,5 @@ multi-agent-architecture-best-practices.md
 doc/engineer/exploration:
 archive
 backlog
+new
 ```
