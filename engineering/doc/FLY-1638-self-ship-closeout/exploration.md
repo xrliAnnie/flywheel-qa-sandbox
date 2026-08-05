@@ -49,6 +49,18 @@ FLY-1625 病理报告 + 业界 DeepResearch(判词:**小而保守的对账层 + 
 
 > **注**:代码审计对子缺陷 ①③ 的前提有实质修正(① 真 throw 点在 `workflow-run-snapshot.ts:176-177` 非 workflow-menu.ts;③ terminated run 本就进不了通道,真缺陷是死亡谓词把「complete 吃 500 的诚实 runner」判成真死)—— 详见 research.md §4。
 
+### 2.6a 第 7 项:launch 点火孤儿自锁(2026-08-05 06:16-06:31 实证,FLY-1572 三连挂;issue 06:27/06:33 追加)
+
+**现象链**(全部当晚活体):
+1. `/api/runs/start` 内联点火半路 500 —— **真因(06:31 破案)**:上一代已 completed 的 design tmux 窗口残留未收(@341),新点火同名 tmux 目标撞名 → `tmux session ensure held` → 500。人工收掉残留窗后第 4 次点火一发即中(run 171ec0ec)。
+2. 点火失败留孤儿:run + launch owner 已建,session 永不降生。
+3. 重试同 execution → `GENERALIZED_LAUNCH_HELD: owner generation 1 is active`(60min 租约自锁)。
+4. 判终 run 重开新 execution → 引擎 tick 侧 `engine_predecessor_unavailable` 无限重试(`workflow-engine-dispatcher.ts:1816`:startRetryExecutionId 指向自身、getSession 无行 → throw)。
+
+**修复方向(issue 原文)**:① launch 前置检查同名残留窗(completed 代)自动收或换名,不得 500;内联点火失败同事务回滚 launch owner(不留孤儿);② `engine_predecessor_unavailable` 对 attempt=1 的 design 节点不应抛(首次无前任是合法态);③ tripwire 60min 降到分钟级或支持 operator 触发;④ start 500 必须带结构化错误码+日志栈。
+
+**验收锚**:同场景(判终旧 run 后立即重派)零手工干预进 design;launch 孤儿存活期 ≤ 5min。
+
 ### 2.6 重启前暂停接活(admission pause)
 
 **现象**:1634 部署期间派发 → 乱账。DeepResearch 控制面四步模型(pause → drain → swap → resume)中我们唯一缺 pause 这一步。

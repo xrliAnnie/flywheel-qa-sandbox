@@ -3,7 +3,7 @@
 Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动化收尾1625-修复合一单-ship-绑定修复-重试封顶-防空转-qa-ttl-预配-重启前暂停接活)
 日期: 2026-08-04
 基于: research.md
-状态: **Codex design review 6 轮 APPROVED**(R1 11 项 / R2 6 项 / R3 2 项 / R4 2 项 / R5 1 项全折入;R6 APPROVED)
+状态: **Codex design review 6 轮 APPROVED**(R1 11 项 / R2 6 项 / R3 2 项 / R4 2 项 / R5 1 项全折入;R6 APPROVED);2026-08-05 新增修复面 7 待复审
 
 > **R6 非阻塞实施守则**(不改结论,实施节点必读):
 > 1. 仓库枚举失败**不得**丢弃既有 lifecycle worktree binding —— `Blueprint` 现对 `emitWorktreeReady()` 异常是 log+继续 launch;path/branch/generation 照常绑定,baseline 字段落 null(=不合格 no_code),核心 binding 落盘前不抛。
@@ -154,7 +154,42 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
    - **回滚边界措辞(R2#6 修正)**:回滚到前置版 Bridge 后,该 Bridge 在其运行期间**立即且无限期**无视 pause row —— TTL 只防「pause-aware 版本回来后的陈旧刹车」,**不防**回滚期间的 admission。如实记为已知边界。
 5. 测试:pause → `/api/runs/start` 429 + Retry-After;retry lane 同拒;六 lane 覆盖证明;TTL 过期放行;mid-boot 持久;resume 即时;无 token → 503;`test-restart-services.sh` 补 Step 0 时序、secret 不进 argv、expiry>health-timeout、确认失败放行、rollback 行为。
 
-## 7. 验收锚映射(全部活体)
+## 7. 修复面 7:launch(点火)孤儿自锁
+
+本节是 2026-08-05 06:27 后追加范围,来自 FLY-1572 三连挂。边界仍是既有 generalized launch owner + tmux launch gate,不另造第二套点火状态机。
+
+### 7.1 completed 代同名 tmux 窗口冲突
+
+- 在 adapter 的真实 launch seam(`ensureSession()` 后、`tmux new-window` 前)做**精确窗口名 preflight**。命中同名窗口时读取该窗口已发布的 `@flywheel_exec_id` 与不可变 window id,再由 Bridge 注入的只读判定确认旧 execution 已 terminal。
+- **仅 terminal + identity 对齐**时按 window id 自动关闭旧窗口并复查同名目标已消失;活跃、无 execution identity、多个候选或探针异常都不得猜杀。不能证明可安全关闭时,为新 generation 使用带 execution 短后缀的确定性窗口名,避免同名 target 再把启动打成 500;该实际窗口名照常进入 CommDB / StateStore 映射。
+- 不按模糊名字批量 `kill-window`,不关闭共享 tmux session,不把一个窗口冲突升级成 server rescue。
+
+### 7.2 内联点火失败释放未提交 owner(≤5min)
+
+- 把 generalized launch owner lease 从散落的 60min 字面值收口成共享常量,初始 acquire / renew 的默认窗口设为 **5min**;已 committed generation 与 delivery repair 的既有终态语义不变。
+- 新增 StateStore 原子原语(如 `releaseFailedWorkflowLaunch`):同一事务复查 execution + owner id + generation、`committed_generation IS NULL`、无 durable session/marker,然后把当前 generation 标成不可再 commit 且 lease 立即到期,并 revoke 本 generation 未消费的 submission/output credential。保留 immutable execution/admission/reservation,让同 idempotency key 立即以 generation+1 恢复;绝不 DELETE owner 后复用 generation 1 token。
+- `/api/runs/start` 在同步 launch throw 或 bounded `waitForSession` 确认 session 未出生时调用该原语。若 CAS 发现 marker/session/commit 已出现,说明 launch 已越过回滚边界,转回既有 `GENERALIZED_LAUNCH_PENDING` 收敛路径,不得误回滚一个真实 runner。
+- generation 1 的迟到 fenced commit 必须被拒;generation 2 的 token 不会释放 generation 1 的 gated shell。Bridge crash 未走显式 release 时也由 5min lease 封顶,满足 launch 孤儿存活期 ≤5min。
+
+### 7.3 attempt=1 design 的 predecessor 合法空态
+
+- `workflow-engine-dispatcher` predecessor resolver 先排除 `startRetryExecutionId === intent.execution_id` 的自指。`node.type === "design" && attempt === 1` 且 snapshot 无入边时是 root launch:不查 predecessor、不填 `startPoint`,直接走项目默认 base。
+- implement / qa、design attempt>1、或 manifest 声明有 predecessor 的 design 仍 fail-closed `engine_predecessor_unavailable`;不把缺失证据普遍放宽。
+
+### 7.4 start 错误合同与诊断
+
+- generalized start 边界统一返回 machine-readable body:`code`(稳定顶层错误码)、`reason`(稳定分类)、`executionId`、`retryable`;已知 tmux hold/窗口冲突/launch timeout 映射到 typed 409/503。未分类异常可保留 500,但不得再是裸 `internal error`。
+- server log 用 `console.error` 记录 issue/run/node/execution/owner generation + 原始 error stack;HTTP body 不回传 stack、路径或 secret。
+- 结构化失败只有在 7.2 原子 release 成功后才声明 retryable;release 竞态失败而 durable launch 可能已前进时返回 pending,避免客户端重试制造双 launch。
+
+### 7.5 测试
+
+- adapter/dispatcher seam:terminal 同名窗口按 immutable id 被关闭后正常 launch;活窗口不被关闭且新窗使用确定性后缀;identity 缺失/多候选不误杀。
+- route + StateStore:launch throw 与 session-never-born 各一例 → generation 1 立即 fenced/released、同 key 取得 generation 2;generation 1 迟到 commit 失败;显式 release 与 commit/session race 只有一个赢家;Bridge crash 无 release 时 store clock +5min 可接管。
+- engine root:attempt=1 无入边 design 可 dispatch 且 `startPoint` 缺省;implement、qa、design retry 缺 predecessor 仍拒绝;start reservation 自指回归。
+- HTTP:每个已知失败的 status + `code/reason/executionId/retryable` 精确断言,未知异常有结构化 500 且日志含 stack、响应不含 stack。
+
+## 8. 验收锚映射(全部活体)
 
 | 锚 | 修复面 | 验证方式 |
 |---|---|---|
@@ -167,9 +202,10 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 | tpl_generic_menu completed > 0 | 5④ | 真机 generic 单 no_code 收尾 → run completed |
 | 取消单(1623 形)正常关闭 | 5④ | no_code 完成,无伪造 PR |
 | 96 快照普查 6 例 incoherent_ship_bundle 归零 | 5① | 普查重跑 → 0 |
+| FLY-1572 旧 run 判终后立即重派 | 7 | terminal 同名窗自动清理/换名;attempt=1 design 零前任可点火;失败 owner ≤5min 或立即 release;start 返回 typed error |
 | 真机 E2E:完整 DAG run QA PASS → 自 ship → 收尾级联 | 全部 | 一条真 issue 走全链 |
 
-## 8. 实施切分与顺序(R1#11 重排)
+## 9. 实施切分与顺序(R1#11 重排)
 
 单 PR,提交按依赖序,每步测试先行:
 
@@ -181,14 +217,15 @@ Issue: FLY-1638 (https://linear.app/geoforge3d/issue/FLY-1638/self-ship-自动�
 6. **rework 迁移**(2.1)→ **原子封顶 + backoff + 预约回滚**(2.2)。
 7. **防空转谓词**(3,在 latest-claim 规则确立后)。
 8. **TTL**(4)。
-9. **pause API/probe → 脚本 Step 0**(6,API 先于脚本依赖)。
-10. docs/milestone 尾提交。
+9. **launch 孤儿闭环**(7):root predecessor → terminal-window preflight → owner release/5min cap → typed route errors。
+10. **pause API/probe → 脚本 Step 0**(6,API 先于脚本依赖)。
+11. docs/milestone 尾提交。
 
 专项测试组(R1#11):boot/migration 组、crash 边界/幂等组、旧 pin 快照组、restart/rollback 组;全过后才跑活体锚 + 96 快照普查。
 全仓门:`pnpm lint` + `pnpm -r build` + `pnpm test:packages:run` + `scripts/test-restart-services.sh`。
 Codex code review(`codex:rescue`)循环至 APPROVED;真机 E2E 由独立 QA 节点承接(本设计节点不 ship)。
 
-## 9. Honest boundary
+## 10. Honest boundary
 
 - 消息层展示形态(通知折叠、held 告警措辞)→ FLY-1569 D/E。
 - runner no-code verdict 推动**活** Linear issue 到 Done = 新权威/effect 机制 → 单独立项(R2#5);本单只做 DB 侧原子闭环 + 已终态 issue 的既有 reconcile 收尾。
