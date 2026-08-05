@@ -36,6 +36,17 @@ import { encodeSenderRef } from "./sender-ref.js";
 
 type LegacyRow = Record<string, unknown> & { __rowid: number; id: string };
 
+type LegacyLeadSourceFamily =
+	| "question"
+	| "ack_receipt"
+	| "discord_chat"
+	| "founder_reply"
+	| "discord_cross_department"
+	| "lead_event"
+	| "protocol_quarantine"
+	| "receipt_resend"
+	| "model_quarantine";
+
 export type MailboxMigrationFault =
 	| "after_source_load"
 	| "after_schema"
@@ -163,6 +174,66 @@ function recipientKind(
 function isMirror(row: LegacyRow): boolean {
 	const source = text(row, "source") ?? "";
 	return source.startsWith("question:") || source.startsWith("ack_receipt:");
+}
+
+function leadSourceFamily(source: string): LegacyLeadSourceFamily | undefined {
+	if (source.startsWith("question:")) return "question";
+	if (source.startsWith("ack_receipt:")) return "ack_receipt";
+	if (source.startsWith("lead_event:")) return "lead_event";
+	if (source.startsWith("protocol_quarantine")) return "protocol_quarantine";
+	if (source.startsWith("receipt_resend:")) return "receipt_resend";
+	if (source.startsWith("model_quarantine:")) return "model_quarantine";
+	if (
+		source === "discord_chat" ||
+		source === "founder_reply" ||
+		source === "discord_cross_department"
+	) {
+		return source;
+	}
+	return undefined;
+}
+
+function assertKnownLeadSourceFamilies(
+	db: Database.Database,
+	now: string,
+): void {
+	const unknown = (
+		db
+			.prepare(
+				"SELECT source, COUNT(*) AS count FROM lead_inbox GROUP BY source ORDER BY source",
+			)
+			.all() as Array<{ source: string; count: number }>
+	).filter((row) => !leadSourceFamily(row.source));
+	if (unknown.length > 0) {
+		throw new Error(
+			`unknown lead_inbox source families: ${unknown
+				.map((row) => `${row.source || "<empty>"} (${row.count})`)
+				.join(", ")}`,
+		);
+	}
+	const blockedCrossDepartment = (
+		db
+			.prepare(
+				"SELECT rowid AS __rowid, * FROM lead_inbox WHERE source = 'discord_cross_department' ORDER BY id",
+			)
+			.all() as LegacyRow[]
+	).flatMap((row) => {
+		if (crossDepartmentSender(row)) return [];
+		const classified = classifyLead(row, now);
+		const endedAt = classified.ackedAt ?? classified.deadAt;
+		const retentionExpiresAt = endedAt
+			? new Date(Date.parse(endedAt) + RETENTION_MS).toISOString()
+			: "none_nonterminal";
+		if (endedAt && Date.parse(retentionExpiresAt) <= Date.parse(now)) {
+			return [];
+		}
+		return [`${row.id} [retention_expires_at=${retentionExpiresAt}]`];
+	});
+	if (blockedCrossDepartment.length > 0) {
+		throw new Error(
+			`cross-department sender is missing on live rows: ${blockedCrossDepartment.join(", ")}`,
+		);
+	}
 }
 
 function isTrueUnread(row: LegacyRow): boolean {
@@ -373,28 +444,37 @@ function mapMessage(
 	};
 }
 
+function crossDepartmentSender(row: LegacyRow): string | undefined {
+	try {
+		const payload = JSON.parse(text(row, "content") ?? "{}") as Record<
+			string,
+			unknown
+		>;
+		for (const key of ["fromAgent", "from_agent", "fromLead", "from_lead"]) {
+			if (typeof payload[key] === "string" && payload[key])
+				return payload[key] as string;
+		}
+	} catch {
+		// A malformed legacy payload is handled by the fail-closed caller.
+	}
+	return undefined;
+}
+
 function leadFromAgent(row: LegacyRow): string {
 	const source = text(row, "source") ?? "";
-	if (source === "discord_chat" || source === "founder_reply") return "founder";
+	const family = leadSourceFamily(source);
+	if (family === "discord_chat" || family === "founder_reply") return "founder";
 	if (
-		source.startsWith("lead_event:") ||
-		source.startsWith("protocol_quarantine")
+		family === "lead_event" ||
+		family === "protocol_quarantine" ||
+		family === "receipt_resend" ||
+		family === "model_quarantine"
 	) {
 		return "bridge";
 	}
-	if (source === "discord_cross_department") {
-		try {
-			const payload = JSON.parse(text(row, "content") ?? "{}") as Record<
-				string,
-				unknown
-			>;
-			for (const key of ["fromAgent", "from_agent", "fromLead", "from_lead"]) {
-				if (typeof payload[key] === "string" && payload[key])
-					return payload[key] as string;
-			}
-		} catch {
-			// The fail-closed error below includes the row id.
-		}
+	if (family === "discord_cross_department") {
+		const sender = crossDepartmentSender(row);
+		if (sender) return sender;
 		throw new Error(`cross-department sender is missing: ${row.id}`);
 	}
 	throw new Error(`unknown lead_inbox source family ${source}: ${row.id}`);
@@ -403,6 +483,7 @@ function leadFromAgent(row: LegacyRow): string {
 function mapStandaloneLead(row: LegacyRow, now: string): MappedMessage {
 	const classified = classifyLead(row, now);
 	const source = text(row, "source") ?? "";
+	const family = leadSourceFamily(source);
 	const toAgent = text(row, "to_lead") ?? "";
 	return {
 		input: {
@@ -411,10 +492,18 @@ function mapStandaloneLead(row: LegacyRow, now: string): MappedMessage {
 			fromAgent: leadFromAgent(row),
 			toAgent,
 			recipientKind: "lead",
-			sourceKind: source.startsWith("lead_event:") ? null : source,
-			sourceRef: source.startsWith("lead_event:")
-				? source.slice("lead_event:".length)
-				: (text(row, "ref_message_id") ?? null),
+			sourceKind:
+				family === "lead_event"
+					? null
+					: family === "receipt_resend" || family === "model_quarantine"
+						? family
+						: source,
+			sourceRef:
+				family === "lead_event" ||
+				family === "receipt_resend" ||
+				family === "model_quarantine"
+					? source.slice(`${family}:`.length)
+					: (text(row, "ref_message_id") ?? null),
 			type: text(row, "type") ?? "message",
 			msgClass: (text(row, "msg_class") as "protocol" | "model") ?? "model",
 			content: text(row, "content") ?? "",
@@ -549,8 +638,11 @@ function persistHistoricalLeadWithoutProjection(
 		!endedAt ||
 		Date.parse(endedAt) + RETENTION_MS > Date.parse(now)
 	) {
+		const retentionExpiresAt = endedAt
+			? new Date(Date.parse(endedAt) + RETENTION_MS).toISOString()
+			: "none_nonterminal";
 		throw new Error(
-			`cross-department sender is missing on a live row: ${row.id}`,
+			`cross-department sender is missing on live rows: ${row.id} [retention_expires_at=${retentionExpiresAt}]`,
 		);
 	}
 	const projectionHash = createHash("sha256")
@@ -702,6 +794,7 @@ export function migrateLegacyDatabaseFile(
 				`legacy CommDB must contain messages and lead_inbox tables: ${dbPath}`,
 			);
 		}
+		assertKnownLeadSourceFamilies(db, now);
 		return db
 			.transaction((): MailboxMigrationResult => {
 				const messages = db
@@ -807,7 +900,22 @@ export function migrateLegacyDatabaseFile(
 							continue;
 						}
 					}
-					persistMapped(db, queue, mapped, keepFamily([mapped], now), now);
+					const family = leadSourceFamily(text(row, "source") ?? "");
+					if (
+						family === "receipt_resend" &&
+						(mapped.state === "QUEUED" || mapped.state === "LEASED")
+					) {
+						throw new Error(
+							`live receipt_resend copy requires manual disposition: ${row.id}`,
+						);
+					}
+					persistMapped(
+						db,
+						queue,
+						mapped,
+						family === "receipt_resend" ? false : keepFamily([mapped], now),
+						now,
+					);
 				}
 				fault(options.faultAt, "after_lead_inbox");
 
@@ -845,15 +953,21 @@ export function migrateLegacyDatabaseFile(
 				`);
 
 				const expectedUnread = [...trueUnread.map((row) => row.id)].sort();
-				const actualUnread = expectedUnread.filter((deliveryId) =>
-					Boolean(
-						db
-							.prepare(
-								"SELECT 1 FROM mailbox WHERE delivery_id = ? AND state='QUEUED' AND carrier='inbox'",
-							)
-							.get(deliveryId),
-					),
-				);
+				const actualUnread = (
+					db
+						.prepare(
+							`SELECT DISTINCT mailbox.delivery_id
+							   FROM mailbox
+							   JOIN mailbox_log
+							     ON mailbox_log.message_id = mailbox.id
+							    AND mailbox_log.source_table = 'lead_inbox'
+							    AND mailbox_log.event = 'migration_snapshot'
+							  WHERE mailbox.state = 'QUEUED' AND mailbox.carrier = 'inbox'
+							  ORDER BY mailbox.delivery_id`,
+						)
+						.pluck()
+						.all() as string[]
+				).sort();
 				if (
 					canonicalJsonString(actualUnread) !==
 					canonicalJsonString(expectedUnread)
@@ -1023,6 +1137,20 @@ export async function backupCommDb(
 	dbPath: string,
 	backupPath = `${dbPath}.pre-fly1572-${Date.now()}`,
 ): Promise<string> {
+	const stalePrefix = `${basename(backupPath)}.tmp-`;
+	for (const entry of readdirSync(dirname(backupPath), {
+		withFileTypes: true,
+	})) {
+		if (!entry.isFile() || !entry.name.startsWith(stalePrefix)) continue;
+		const suffix = entry.name.slice(stalePrefix.length);
+		if (
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:-journal|-wal|-shm)?$/i.test(
+				suffix,
+			)
+		) {
+			rmSync(join(dirname(backupPath), entry.name), { force: true });
+		}
+	}
 	if (existsSync(backupPath)) {
 		verifySqlite(backupPath);
 		if (!existsSync(`${backupPath}.refs-manifest.json`)) {
@@ -1156,7 +1284,7 @@ export async function migrateCommDbWithSwap(
 			quarantinedSidecars: [],
 		};
 		durableJson(intentPath, intent);
-		for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+		for (const path of [dbPath, `${dbPath}-wal`]) {
 			if (existsSync(path)) chmodSync(path, 0o444);
 		}
 		durableJson(intentPath, intent);
@@ -1191,7 +1319,7 @@ export async function migrateCommDbWithSwap(
 			verifyMigratedDatabase(dbPath);
 			advance("canonical_swapped");
 		} catch {
-			for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+			for (const path of [dbPath, `${dbPath}-wal`]) {
 				if (existsSync(path)) chmodSync(path, 0o444);
 			}
 		}

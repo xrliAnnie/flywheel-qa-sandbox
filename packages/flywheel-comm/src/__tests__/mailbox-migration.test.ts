@@ -1,9 +1,12 @@
 import {
+	chmodSync,
 	existsSync,
 	mkdtempSync,
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -320,7 +323,7 @@ describe("FLY-1572 legacy mailbox migration", () => {
 		);
 	});
 
-	it("logs sender-less historical xdept evidence but rejects a live row", () => {
+	it("logs sender-less historical xdept evidence and lists every retained row", () => {
 		const legacy = new Database(dbPath);
 		insertLead(legacy, {
 			id: "xdept:flywheel-eng-lead:old",
@@ -355,10 +358,20 @@ describe("FLY-1572 legacy mailbox migration", () => {
 			type: "external_delivery",
 			carrier: "external",
 			content: "legacy payload without sender identity",
+			consumed_at: "2026-08-05T10:00:00.000Z",
+		});
+		insertLead(live, {
+			id: "xdept:flywheel-eng-lead:live-2",
+			to_lead: "flywheel-eng-lead",
+			source: "discord_cross_department",
+			type: "external_delivery",
+			carrier: "external",
+			content: "another legacy payload without sender identity",
+			consumed_at: "2026-08-05T11:00:00.000Z",
 		});
 		live.close();
 		expect(() => migrateLegacyDatabaseFile(livePath, { now: NOW })).toThrow(
-			/sender is missing on a live row/,
+			/sender is missing on live rows:.*xdept:flywheel-eng-lead:live.*retention_expires_at=2026-08-08T10:00:00.000Z.*xdept:flywheel-eng-lead:live-2.*retention_expires_at=2026-08-08T11:00:00.000Z/,
 		);
 	});
 
@@ -432,6 +445,139 @@ describe("FLY-1572 legacy mailbox migration", () => {
 			).toEqual({ event: "migrated_history" });
 		} finally {
 			migrated.close();
+		}
+	});
+
+	it("rejects an extra queued lead-inbox projection, not only missing unread rows", () => {
+		const legacy = new Database(dbPath);
+		insertMessage(legacy, {
+			id: "question-anchor",
+			from_agent: "exec-1",
+			to_agent: "flywheel-eng-lead",
+			type: "question",
+		});
+		insertLead(legacy, {
+			id: "question:flywheel-eng-lead:question-anchor",
+			to_lead: "flywheel-eng-lead",
+			source: "question:1",
+			ref_message_id: "question-anchor",
+			legacy_alias: "flywheel-eng-lead-1-exec-1",
+		});
+		insertLead(legacy, {
+			id: "consumed-not-unread",
+			to_lead: "flywheel-eng-lead",
+			source: "founder_reply",
+			type: "founder_reply",
+			consumed_at: "2026-08-05T10:30:00.000Z",
+		});
+		legacy.exec(`
+			CREATE TRIGGER qa_inject_extra_queued_projection
+			AFTER INSERT ON receipt_root_lineage
+			WHEN NEW.question_id = 'question-anchor'
+			BEGIN
+			  UPDATE mailbox
+			     SET state = 'QUEUED', acked_at = NULL
+			   WHERE id = 'consumed-not-unread';
+			END;
+		`);
+		legacy.close();
+
+		expect(() => migrateLegacyDatabaseFile(dbPath, { now: NOW })).toThrow(
+			/true-unread migration mismatch.*consumed-not-unread/,
+		);
+	});
+
+	it("classifies retired resend copies as history and quarantine alerts as bridge messages", () => {
+		const legacy = new Database(dbPath);
+		insertLead(legacy, {
+			id: "resend-copy",
+			to_lead: "flywheel-eng-lead",
+			source: "receipt_resend:lead_event:flywheel-eng-lead:original",
+			type: "stage_changed",
+			consumed_at: "2026-08-05T11:00:00.000Z",
+			resend_of: "lead_event:flywheel-eng-lead:original",
+			resend_round: 1,
+		});
+		insertLead(legacy, {
+			id: "model-alert",
+			to_lead: "flywheel-eng-lead",
+			source: "model_quarantine:batch-1",
+			type: "model_batch_quarantined",
+			consumed_at: "2026-08-05T11:00:00.000Z",
+		});
+		legacy.close();
+
+		migrateLegacyDatabaseFile(dbPath, { now: NOW });
+		const migrated = new Database(dbPath);
+		try {
+			expect(
+				migrated.prepare("SELECT 1 FROM mailbox WHERE id='resend-copy'").get(),
+			).toBeUndefined();
+			expect(
+				migrated
+					.prepare(
+						"SELECT event FROM mailbox_log WHERE event_id='migrated:lead_inbox:resend-copy'",
+					)
+					.get(),
+			).toEqual({ event: "migrated_history" });
+			expect(
+				migrated
+					.prepare(
+						"SELECT from_agent, source_kind, source_ref, state FROM mailbox WHERE id='model-alert'",
+					)
+					.get(),
+			).toEqual({
+				from_agent: "bridge",
+				source_kind: "model_quarantine",
+				source_ref: "batch-1",
+				state: "ACKED",
+			});
+		} finally {
+			migrated.close();
+		}
+	});
+
+	it("fails closed instead of reviving a nonterminal legacy resend copy", () => {
+		const legacy = new Database(dbPath);
+		insertLead(legacy, {
+			id: "live-resend-copy",
+			to_lead: "flywheel-eng-lead",
+			source: "receipt_resend:lead_event:flywheel-eng-lead:original",
+			type: "stage_changed",
+		});
+		legacy.close();
+
+		expect(() => migrateLegacyDatabaseFile(dbPath, { now: NOW })).toThrow(
+			/live receipt_resend copy requires manual disposition/,
+		);
+	});
+
+	it("lists every unknown legacy source family before starting cutover", () => {
+		const legacy = new Database(dbPath);
+		insertLead(legacy, {
+			id: "unknown-a",
+			to_lead: "flywheel-eng-lead",
+			source: "mystery_alpha",
+		});
+		insertLead(legacy, {
+			id: "unknown-b",
+			to_lead: "flywheel-eng-lead",
+			source: "mystery_beta:detail",
+		});
+		legacy.close();
+
+		expect(() => migrateLegacyDatabaseFile(dbPath, { now: NOW })).toThrow(
+			/unknown lead_inbox source families:.*mystery_alpha.*mystery_beta:detail/,
+		);
+		const verify = new Database(dbPath, { readonly: true });
+		try {
+			expect(
+				verify
+					.prepare("SELECT 1 FROM sqlite_master WHERE name='mailbox'")
+					.get(),
+			).toBeUndefined();
+		} finally {
+			verify.close();
 		}
 	});
 
@@ -608,6 +754,47 @@ describe("FLY-1572 legacy mailbox migration", () => {
 		} finally {
 			writer.close();
 		}
+	});
+
+	it("leaves WAL shared memory writable while the canonical database and WAL are fenced", async () => {
+		const path = join(dir, "fence.db");
+		const writer = new Database(path);
+		writer.pragma("journal_mode = WAL");
+		writer.exec(LEGACY_SCHEMA);
+		insertMessage(writer, {
+			id: "fenced-question",
+			from_agent: "exec-1",
+			to_agent: "flywheel-eng-lead",
+			type: "question",
+		});
+		const walPath = `${path}-wal`;
+		const shmPath = `${path}-shm`;
+		try {
+			await expect(
+				migrateCommDbWithSwap(path, { now: NOW, faultAfter: "fenced" }),
+			).rejects.toThrow(/fault injection/);
+			expect(statSync(path).mode & 0o222).toBe(0);
+			expect(statSync(walPath).mode & 0o222).toBe(0);
+			expect(statSync(shmPath).mode & 0o200).toBe(0o200);
+		} finally {
+			for (const file of [path, walPath, shmPath]) {
+				if (existsSync(file)) chmodSync(file, 0o600);
+			}
+			writer.close();
+		}
+	});
+
+	it("removes abandoned backup temp databases and journals before retrying", async () => {
+		const backupPath = join(dir, "retry.backup");
+		const stale = `${backupPath}.tmp-00000000-0000-4000-8000-000000000000`;
+		writeFileSync(stale, "partial backup");
+		writeFileSync(`${stale}-journal`, "partial journal");
+
+		await backupCommDb(dbPath, backupPath);
+
+		expect(existsSync(stale)).toBe(false);
+		expect(existsSync(`${stale}-journal`)).toBe(false);
+		expect(existsSync(backupPath)).toBe(true);
 	});
 
 	it("resumes idempotently after every durable forward-swap phase", async () => {

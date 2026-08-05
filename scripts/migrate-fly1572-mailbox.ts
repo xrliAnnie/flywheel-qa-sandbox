@@ -1,13 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import {
-	closeSync,
-	existsSync,
-	openSync,
-	readdirSync,
-	readSync,
-	statSync,
-} from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -17,38 +10,6 @@ import {
 } from "../packages/flywheel-comm/src/mailbox-migration.js";
 
 type DbState = "legacy" | "migrated" | "unknown";
-
-function sqliteFile(path: string): boolean {
-	let fd: number | undefined;
-	try {
-		fd = openSync(path, "r");
-		const header = Buffer.alloc(16);
-		return (
-			readSync(fd, header, 0, 16, 0) === 16 &&
-			header.toString() === "SQLite format 3\0"
-		);
-	} catch {
-		return false;
-	} finally {
-		if (fd !== undefined) closeSync(fd);
-	}
-}
-
-function scan(root: string): string[] {
-	if (!existsSync(root)) return [];
-	const found: string[] = [];
-	for (const entry of readdirSync(root, { withFileTypes: true })) {
-		const path = join(root, entry.name);
-		if (
-			entry.name.includes(".fly1572-") ||
-			entry.name.includes(".pre-fly1572-")
-		)
-			continue;
-		if (entry.isDirectory()) found.push(...scan(path));
-		else if (entry.isFile() && sqliteFile(path)) found.push(path);
-	}
-	return found;
-}
 
 function classify(path: string): DbState {
 	const db = new Database(path, { readonly: true, fileMustExist: true });
@@ -96,13 +57,21 @@ function explicitDbs(argv: string[]): string[] {
 function discover(): string[] {
 	const flywheelHome =
 		process.env.FLYWHEEL_HOME ?? join(homedir(), ".flywheel");
-	const candidates = new Set(scan(flywheelHome));
+	const candidates = new Set<string>();
+	const rootDb = join(flywheelHome, "comm.db");
+	if (existsSync(rootDb)) candidates.add(rootDb);
+	const commRoot = join(flywheelHome, "comm");
+	if (existsSync(commRoot)) {
+		for (const entry of readdirSync(commRoot, { withFileTypes: true })) {
+			if (!entry.isDirectory()) continue;
+			const path = join(commRoot, entry.name, "comm.db");
+			if (existsSync(path)) candidates.add(path);
+		}
+	}
 	if (process.env.FLYWHEEL_COMM_DB) {
 		candidates.add(resolve(process.env.FLYWHEEL_COMM_DB));
 	}
-	return [...candidates]
-		.filter((path) => existsSync(path) && classify(path) !== "unknown")
-		.sort();
+	return [...candidates].sort();
 }
 
 function assertUniqueFiles(paths: string[]): void {
