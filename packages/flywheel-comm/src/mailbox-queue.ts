@@ -609,9 +609,9 @@ export class MailboxQueue {
 					if (updated.changes !== ids.length) return [];
 					return this.db
 						.prepare(
-							"SELECT * FROM mailbox WHERE batch_id = ? AND state = 'LEASED' AND claimed_by = ? ORDER BY priority, seq",
+							"SELECT * FROM mailbox WHERE batch_id = ? ORDER BY priority, seq",
 						)
-						.all(frozen.batch_id, input.ownerEpoch) as MailboxRow[];
+						.all(frozen.batch_id) as MailboxRow[];
 				}
 
 				const limit = input.maxBatchSize ?? 10_000;

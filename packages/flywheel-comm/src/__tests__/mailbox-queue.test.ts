@@ -253,7 +253,7 @@ describe("FLY-1572 MailboxQueue", () => {
 		}
 	});
 
-	it("excludes terminal members when reclaiming a frozen Lead batch", () => {
+	it("preserves frozen membership when a member becomes terminal", () => {
 		const queue = new MailboxQueue(":memory:");
 		try {
 			enqueueLead(queue, "q1");
@@ -293,7 +293,16 @@ describe("FLY-1572 MailboxQueue", () => {
 				now: "2026-08-05T12:05:00.000Z",
 				claimTtlMs: 30_000,
 			});
-			expect(reclaimed.map((row) => row.id)).toEqual(["q2"]);
+			expect(reclaimed.map((row) => row.id)).toEqual(["q1", "q2"]);
+			expect(
+				queue.ackBatch({
+					batchId: "batch-1",
+					ownerEpoch: "epoch-1",
+					memberIds: reclaimed.map((row) => row.delivery_id),
+					now: "2026-08-05T12:05:01.000Z",
+				}),
+			).toBe(true);
+			expect(queue.getById("q2")?.state).toBe("ACKED");
 		} finally {
 			queue.close();
 		}
