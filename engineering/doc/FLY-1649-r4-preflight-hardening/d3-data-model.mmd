@@ -1,0 +1,18 @@
+flowchart LR
+    subgraph SHARD["每个项目一个通信库(共 7 个)"]
+        DB["comm.db 主库文件"]
+        WAL["comm.db-wal / -shm<br/>(写入时的临时副本文件)"]
+        REFS["refs/ 附件目录<br/>(大内容单独存放)"]
+    end
+    subgraph STATES["库的三种状态(迁移脚本会先分类)"]
+        L["legacy 旧格式<br/>→ 正常搬家"]
+        G["migrated 已迁移<br/>→ 跳过,但要检查权限"]
+        X["mixed 新旧混杂<br/>→ 大声报错,人来决定<br/>(按备份整套恢复)"]
+    end
+    subgraph SNAP["r4 快照合同"]
+        MAN["一份清单 manifest:<br/>每个文件的大小+校验码"]
+        MAN --- DB2["主库+临时副本"]
+        MAN --- REFS2["附件目录整棵树"]
+    end
+    SHARD --> STATES
+    SHARD --> SNAP
