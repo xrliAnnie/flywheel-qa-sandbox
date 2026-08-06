@@ -1700,6 +1700,7 @@ mkdir -p \
   "$BO_SHIMS" "$BO_CALLS"
 cp "$REAL_REPO_ROOT/scripts/restart-services.sh" "$BO_FLYWHEEL/scripts/"
 cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/bridge-process-tree.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-candidate.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-notify.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-cmux-watcher.sh" \
@@ -2688,6 +2689,206 @@ if (
     pass "non-empty hold evidence reaches Bridge as an object without raw fallback"
 else
     fail "non-empty hold evidence was corrupted before Bridge serialization"
+fi
+
+# ════════════════════════════════════════════════════════════════
+# FLY-1649: rollback callers can opt into bounded restart-lock waiting
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-1649 restart lock wait is bounded and fail-loud"
+FLY1649_VALIDATE_FUNC="$TMPDIR_ROOT/fly1649-validate.sh"
+FLY1649_LOCK_FUNC="$TMPDIR_ROOT/fly1649-lock.sh"
+sed -n '/^validate_restart_contract()/,/^}/p' \
+  "$SCRIPT_DIR/restart-services.sh" > "$FLY1649_VALIDATE_FUNC"
+sed -n '/^acquire_lock()/,/^}/p' \
+  "$SCRIPT_DIR/restart-services.sh" > "$FLY1649_LOCK_FUNC"
+
+set +e
+valid_out=$(env FLYWHEEL_RESTART_LOCK_WAIT_SECS=7200 \
+  FLYWHEEL_RESTART_DISABLE_CODE_ROLLBACK=1 \
+  bash -c '
+    source "$1"
+    log() { printf "%s\n" "$*"; }
+    validate_restart_contract
+    printf "wait=%s disable=%s\n" \
+      "$RESTART_LOCK_WAIT_SECS_EFFECTIVE" "$RESTART_CODE_ROLLBACK_DISABLED"
+  ' _ "$FLY1649_VALIDATE_FUNC" 2>&1)
+valid_rc=$?
+empty_out=$(env FLYWHEEL_RESTART_LOCK_WAIT_SECS= \
+  bash -c 'source "$1"; log() { printf "%s\n" "$*"; }; validate_restart_contract' \
+  _ "$FLY1649_VALIDATE_FUNC" 2>&1)
+empty_rc=$?
+bool_out=$(env FLYWHEEL_RESTART_DISABLE_CODE_ROLLBACK=2 \
+  bash -c 'source "$1"; log() { printf "%s\n" "$*"; }; validate_restart_contract' \
+  _ "$FLY1649_VALIDATE_FUNC" 2>&1)
+bool_rc=$?
+set -e
+if (( valid_rc == 0 )) \
+  && [[ "$valid_out" == *"wait=7200 disable=1"* ]] \
+  && (( empty_rc != 0 )) \
+  && [[ "$empty_out" == *"FLYWHEEL_RESTART_LOCK_WAIT_SECS"* ]] \
+  && (( bool_rc != 0 )) \
+  && [[ "$bool_out" == *"FLYWHEEL_RESTART_DISABLE_CODE_ROLLBACK"* ]]; then
+    pass "FLY-1649 restart env contracts accept only bounded integer/boolean values"
+else
+    fail "FLY-1649 restart env validation mismatch: valid=[$valid_rc $valid_out] empty=[$empty_rc $empty_out] bool=[$bool_rc $bool_out]"
+fi
+
+fly1649_run_lock_case() {
+    local mode="$1" wait_secs="$2" case_root="$TMPDIR_ROOT/fly1649-lock-$1"
+    local lock_dir="$case_root/restart.lock.d" alert_file="$case_root/alerts"
+    local release_pid="" output rc
+    mkdir -p "$case_root" "$lock_dir"
+    : > "$alert_file"
+    if [[ "$mode" == "release" ]]; then
+        ( sleep 0.2; rmdir "$lock_dir" ) &
+        release_pid=$!
+    fi
+    set +e
+    output=$(bash -c '
+      source "$1"
+      LOCK_DIR="$2"
+      ALERT_FILE="$3"
+      RESTART_LOCK_WAIT_SECS_EFFECTIVE="$4"
+      SCHEDULER_REPAIR_LOCK_DIR="$2.scheduler"
+      LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON=fixture
+      log() { printf "%s\n" "$*"; }
+      alert_severe() { printf "%s\n" "$1" >> "$ALERT_FILE"; }
+      restart_on_exit() { :; }
+      lead_restart_wait_scheduler_mutation() { return 0; }
+      file_mtime_epoch() {
+        stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+      }
+      acquire_lock
+      printf "ACQUIRED\n"
+    ' _ "$FLY1649_LOCK_FUNC" "$lock_dir" "$alert_file" "$wait_secs" 2>&1)
+    rc=$?
+    set -e
+    [[ -n "$release_pid" ]] && wait "$release_pid" 2>/dev/null || true
+    printf '%s\t%s\t%s\t%s\n' "$rc" "$output" "$(cat "$alert_file")" "$lock_dir"
+}
+
+default_result=$(fly1649_run_lock_case default 0)
+release_result=$(fly1649_run_lock_case release 2)
+timeout_result=$(fly1649_run_lock_case timeout 1)
+default_rc=${default_result%%$'\t'*}
+release_rc=${release_result%%$'\t'*}
+timeout_rc=${timeout_result%%$'\t'*}
+if [[ "$default_rc" == "0" && "$default_result" == *"Another restart in progress"* \
+  && "$default_result" != *"ACQUIRED"* ]]; then
+    pass "FLY-1649 wait=0 preserves the existing lock-contention exit-0 contract"
+else
+    fail "FLY-1649 default lock contract drifted: $default_result"
+fi
+if [[ "$release_rc" == "0" && "$release_result" == *"ACQUIRED"* ]]; then
+    pass "FLY-1649 opt-in wait acquires a lock released inside the deadline"
+else
+    fail "FLY-1649 released lock was not retried successfully: $release_result"
+fi
+if [[ "$timeout_rc" == "1" \
+  && "$timeout_result" == *"restart-lock-wait-timeout"* \
+  && "$timeout_result" != *"ACQUIRED"* ]]; then
+    pass "FLY-1649 lock wait timeout exits 1 and emits the severe alert signature"
+else
+    fail "FLY-1649 lock timeout was not fail-loud: $timeout_result"
+fi
+
+stale_root="$TMPDIR_ROOT/fly1649-lock-stale"
+stale_lock="$stale_root/restart.lock.d"
+mkdir -p "$stale_lock"
+set +e
+stale_result=$(bash -c '
+  source "$1"
+  LOCK_DIR="$2"
+  RESTART_LOCK_WAIT_SECS_EFFECTIVE=2
+  SCHEDULER_REPAIR_LOCK_DIR="$2.scheduler"
+  LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON=fixture
+  calls=0
+  log() { printf "%s\n" "$*"; }
+  alert_severe() { printf "ALERT %s\n" "$1"; }
+  restart_on_exit() { :; }
+  lead_restart_wait_scheduler_mutation() { return 0; }
+  file_mtime_epoch() { printf "%s\n" "$(($(date +%s) - 8001))"; }
+  mkdir() {
+    calls=$((calls + 1))
+    if (( calls == 1 )); then return 1; fi
+    if (( calls == 2 )); then command mkdir "$1"; return 1; fi
+    command mkdir "$@"
+  }
+  sleep() { command rmdir "$LOCK_DIR"; }
+  acquire_lock
+  printf "ACQUIRED calls=%s\n" "$calls"
+' _ "$FLY1649_LOCK_FUNC" "$stale_lock" 2>&1)
+stale_rc=$?
+set -e
+if (( stale_rc == 0 )) && [[ "$stale_result" == *"ACQUIRED calls=3"* ]]; then
+    pass "FLY-1649 stale-break re-contention returns to the wait loop and acquires"
+else
+    fail "FLY-1649 stale-break re-contention exited instead of retrying: rc=$stale_rc $stale_result"
+fi
+
+echo "Test: FLY-1649 migration windows can disable code-only rollback"
+FLY1649_DEPLOY_FUNC="$TMPDIR_ROOT/fly1649-deploy.sh"
+sed -n '/^deploy_and_verify()/,/^}/p' \
+  "$SCRIPT_DIR/restart-services.sh" > "$FLY1649_DEPLOY_FUNC"
+fly1649_run_deploy_case() {
+    local mode="$1" case_root="$TMPDIR_ROOT/fly1649-deploy-$1"
+    local rollback_file="$case_root/rollback" alert_file="$case_root/alerts"
+    local output rc
+    mkdir -p "$case_root"
+    : > "$rollback_file"
+    : > "$alert_file"
+    set +e
+    output=$(bash -c '
+      source "$1"
+      MODE="$2"
+      ROLLBACK_FILE="$3"
+      ALERT_FILE="$4"
+      RESTART_CODE_ROLLBACK_DISABLED=1
+      RESTART_NOTICE_STARTED=false
+      RESTART_TERMINAL_REPORTED=false
+      RESTART_REASON=fly1649-test
+      DEPLOYED_SHA=1111111111111111111111111111111111111111
+      CURRENT_HEAD=2222222222222222222222222222222222222222
+      BRIDGE_URL=http://bridge.invalid
+      SKIP_BUILD=false
+      restart_bridge=false
+      [[ "$MODE" == "health" ]] && restart_bridge=true
+      restart_all_leads=false
+      notify_routine() { :; }
+      log() { printf "%s\n" "$*"; }
+      alert_severe() { printf "%s\n" "$1" >> "$ALERT_FILE"; }
+      rollback_and_restart() { printf "rollback\n" >> "$ROLLBACK_FILE"; }
+      build_project() { [[ "$MODE" != "build" ]]; }
+      pause_admission_best_effort() { :; }
+      resume_admission_best_effort() { :; }
+      stop_bridge() { return 0; }
+      start_bridge() { :; }
+      curl() { return 1; }
+      jq() { return 1; }
+      sleep() { :; }
+      FLYWHEEL_BRIDGE_HEALTH_TRIES=1
+      deploy_and_verify
+    ' _ "$FLY1649_DEPLOY_FUNC" "$mode" "$rollback_file" "$alert_file" 2>&1)
+    rc=$?
+    set -e
+    printf '%s\t%s\t%s\t%s\n' "$rc" "$output" \
+      "$(cat "$rollback_file")" "$(cat "$alert_file")"
+}
+build_disabled=$(fly1649_run_deploy_case build)
+health_disabled=$(fly1649_run_deploy_case health)
+if [[ "$build_disabled" == 1$'\t'* \
+  && "$build_disabled" != *$'\trollback\t'* \
+  && "$build_disabled" == *"deploy-build-failed-code-rollback-disabled"* ]]; then
+    pass "FLY-1649 build failure is fail-loud without git-only rollback when disabled"
+else
+    fail "FLY-1649 build failure still entered code-only rollback: $build_disabled"
+fi
+if [[ "$health_disabled" == 1$'\t'* \
+  && "$health_disabled" != *$'\trollback\t'* \
+  && "$health_disabled" == *"deploy-health-failed-code-rollback-disabled"* ]]; then
+    pass "FLY-1649 health failure is fail-loud without git-only rollback when disabled"
+else
+    fail "FLY-1649 health failure still entered code-only rollback: $health_disabled"
 fi
 
 # ════════════════════════════════════════════════════════════════

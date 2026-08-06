@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import {
@@ -629,6 +629,65 @@ function isMissingTableError(error: unknown, table: string): boolean {
 	);
 }
 
+class MailboxGenerationError extends Error {}
+
+type CommDbOpenPhase =
+	| "mkdir"
+	| "database-open"
+	| "pragma"
+	| "virgin-probe"
+	| "generation-assert"
+	| "schema"
+	| "migrations"
+	| "purge";
+
+function permissionDiagnostics(error: Error, dbPath: string): string {
+	const code = (error as Error & { code?: unknown }).code;
+	if (code !== "SQLITE_READONLY" && !/readonly|EACCES/i.test(error.message)) {
+		return "";
+	}
+	try {
+		const details: string[] = [];
+		const remediation: string[] = [];
+		for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+			if (!existsSync(path)) {
+				details.push(`${path} missing`);
+				continue;
+			}
+			const mode = statSync(path).mode & 0o777;
+			details.push(`${path} mode=${mode.toString(8).padStart(4, "0")}`);
+			if ((mode & 0o200) === 0) remediation.push(`chmod 0600 ${path}`);
+		}
+		const fix =
+			remediation.length > 0 ? `; remediation: ${remediation.join("; ")}` : "";
+		return `; permissions: ${details.join(", ")}${fix}`;
+	} catch {
+		return "";
+	}
+}
+
+function augmentCommDbOpenError(
+	error: unknown,
+	dbPath: string,
+	phase: CommDbOpenPhase,
+): never {
+	if (error instanceof MailboxGenerationError) throw error;
+	if (error instanceof Error) {
+		const originalMessage = error.message;
+		error.message = `CommDB open failed at ${dbPath} (phase: ${phase}): ${originalMessage}${permissionDiagnostics(error, dbPath)}`;
+	}
+	throw error;
+}
+
+function closeAfterOpenFailure(db: Database.Database | undefined): void {
+	if (!db) return;
+	try {
+		db.close();
+	} catch {
+		// Preserve the open failure; a close failure cannot make it more actionable.
+	}
+}
+
 function assertMailboxGeneration(db: Database.Database, dbPath: string): void {
 	const metaTable = db
 		.prepare(
@@ -636,7 +695,7 @@ function assertMailboxGeneration(db: Database.Database, dbPath: string): void {
 		)
 		.get();
 	if (!metaTable) {
-		throw new Error(
+		throw new MailboxGenerationError(
 			`Legacy or partial CommDB at ${dbPath}; run the FLY-1572 mailbox migration before opening it`,
 		);
 	}
@@ -646,7 +705,7 @@ function assertMailboxGeneration(db: Database.Database, dbPath: string): void {
 		)
 		.get() as { schema_generation?: string } | undefined;
 	if (meta?.schema_generation !== MAILBOX_SCHEMA_GENERATION) {
-		throw new Error(
+		throw new MailboxGenerationError(
 			`Unsupported CommDB schema generation at ${dbPath}: ${meta?.schema_generation ?? "missing"}`,
 		);
 	}
@@ -657,7 +716,7 @@ function assertMailboxGeneration(db: Database.Database, dbPath: string): void {
 			)
 			.get()
 	) {
-		throw new Error(
+		throw new MailboxGenerationError(
 			`Partial mailbox schema at ${dbPath}: mailbox table missing`,
 		);
 	}
@@ -682,31 +741,46 @@ export class CommDB {
 				`Database not found: ${dbPath}. Has a question been asked yet?`,
 			);
 		}
-		mkdirSync(dirname(dbPath), { recursive: true });
-		this.db = new Database(dbPath);
-		this.db.pragma("journal_mode = WAL");
-		this.db.pragma("busy_timeout = 5000");
-		const isVirgin =
-			!existed ||
-			(
-				this.db
-					.prepare(
-						"SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
-					)
-					.get() as { count: number }
-			).count === 0;
-		if (!isVirgin) assertMailboxGeneration(this.db, dbPath);
-		this.db.exec(SCHEMA);
-		this.db
-			.transaction(() => {
-				this.db.exec(
-					"DROP VIEW IF EXISTS messages; DROP VIEW IF EXISTS lead_inbox;",
-				);
-				this.applyMigrations();
-				this.db.exec(MAILBOX_POISON_VIEWS);
-			})
-			.immediate();
-		if (archiveOnOpen) this.purgeExpired();
+		let phase: CommDbOpenPhase = "mkdir";
+		let opened: Database.Database | undefined;
+		try {
+			mkdirSync(dirname(dbPath), { recursive: true });
+			phase = "database-open";
+			opened = new Database(dbPath);
+			this.db = opened;
+			phase = "pragma";
+			this.db.pragma("journal_mode = WAL");
+			this.db.pragma("busy_timeout = 5000");
+			phase = "virgin-probe";
+			const isVirgin =
+				!existed ||
+				(
+					this.db
+						.prepare(
+							"SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+						)
+						.get() as { count: number }
+				).count === 0;
+			phase = "generation-assert";
+			if (!isVirgin) assertMailboxGeneration(this.db, dbPath);
+			phase = "schema";
+			this.db.exec(SCHEMA);
+			phase = "migrations";
+			this.db
+				.transaction(() => {
+					this.db.exec(
+						"DROP VIEW IF EXISTS messages; DROP VIEW IF EXISTS lead_inbox;",
+					);
+					this.applyMigrations();
+					this.db.exec(MAILBOX_POISON_VIEWS);
+				})
+				.immediate();
+			phase = "purge";
+			if (archiveOnOpen) this.purgeExpired();
+		} catch (error) {
+			closeAfterOpenFailure(opened);
+			augmentCommDbOpenError(error, dbPath, phase);
+		}
 	}
 
 	/**
@@ -716,13 +790,18 @@ export class CommDB {
 	 */
 	static openReadonly(dbPath: string): CommDB {
 		const instance = Object.create(CommDB.prototype) as CommDB;
-		instance.db = new Database(dbPath, { readonly: true });
-		instance.db.pragma("busy_timeout = 5000");
+		let phase: CommDbOpenPhase = "database-open";
+		let opened: Database.Database | undefined;
 		try {
+			opened = new Database(dbPath, { readonly: true });
+			instance.db = opened;
+			phase = "pragma";
+			instance.db.pragma("busy_timeout = 5000");
+			phase = "generation-assert";
 			assertMailboxGeneration(instance.db, dbPath);
 		} catch (error) {
-			instance.db.close();
-			throw error;
+			closeAfterOpenFailure(opened);
+			augmentCommDbOpenError(error, dbPath, phase);
 		}
 		return instance;
 	}

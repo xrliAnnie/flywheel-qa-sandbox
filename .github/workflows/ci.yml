@@ -456,6 +456,13 @@ jobs:
           bash scripts/__tests__/setup-quota-monitor.test.sh
           bash scripts/test-restart-services.sh
 
+      # FLY-1649: hermetic r4 whole-state rollback and forward-window lifecycle
+      # contracts. Explicitly registered because script-tests does not glob.
+      - name: Test — FLY-1649 r4 migration-window hardening
+        run: |
+          bash scripts/__tests__/rollback-r4.test.sh
+          bash scripts/__tests__/r4-window.test.sh
+
       # FLY-927: infra-alert shell path (lead-alert.sh unified-channel/sender/
       # rate/schema alignment, external-kind hygiene, bridge-wrapper fail-loud
       # re-route). Hermetic — stub curl via PATH, isolated FLYWHEEL_* dirs, no

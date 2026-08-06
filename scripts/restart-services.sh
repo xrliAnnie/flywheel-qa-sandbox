@@ -609,6 +609,39 @@ lead_restart_wave_error() {
     return 0
 }
 
+validate_restart_contract() {
+    local raw normalized
+    if [[ "${FLYWHEEL_RESTART_LOCK_WAIT_SECS+x}" == "x" ]]; then
+        raw="$FLYWHEEL_RESTART_LOCK_WAIT_SECS"
+        if [[ ! "$raw" =~ ^[0-9]+$ ]]; then
+            log "ERROR: FLYWHEEL_RESTART_LOCK_WAIT_SECS must be an integer from 0 to 7200"
+            return 1
+        fi
+        normalized="$raw"
+        while [[ ${#normalized} -gt 1 && "$normalized" == 0* ]]; do
+            normalized="${normalized#0}"
+        done
+        if (( ${#normalized} > 4 )) || (( 10#$normalized > 7200 )); then
+            log "ERROR: FLYWHEEL_RESTART_LOCK_WAIT_SECS must be an integer from 0 to 7200"
+            return 1
+        fi
+        RESTART_LOCK_WAIT_SECS_EFFECTIVE="$((10#$normalized))"
+    else
+        RESTART_LOCK_WAIT_SECS_EFFECTIVE=0
+    fi
+
+    if [[ "${FLYWHEEL_RESTART_DISABLE_CODE_ROLLBACK+x}" == "x" ]]; then
+        raw="$FLYWHEEL_RESTART_DISABLE_CODE_ROLLBACK"
+        if [[ "$raw" != "0" && "$raw" != "1" ]]; then
+            log "ERROR: FLYWHEEL_RESTART_DISABLE_CODE_ROLLBACK must be exactly 0 or 1"
+            return 1
+        fi
+        RESTART_CODE_ROLLBACK_DISABLED="$raw"
+    else
+        RESTART_CODE_ROLLBACK_DISABLED=0
+    fi
+}
+
 # ════════════════════════════════════════════════════════════════
 # Parse arguments
 # ════════════════════════════════════════════════════════════════
@@ -648,6 +681,8 @@ if [[ "$FORCE" == "true" && "$WAIT_IDLE" == "true" ]]; then
     WAIT_IDLE=false
 fi
 
+validate_restart_contract || exit 1
+
 # Direct invocation is safe even from a Lead that this run will replace. The
 # child gets its own process group before any lock, build, or service mutation.
 if [[ "${FLYWHEEL_RESTART_FOREGROUND:-0}" != "1" && "$DRY_RUN" != "true" ]]; then
@@ -677,17 +712,53 @@ SKIP_BUILD=false
 
 acquire_lock() {
     if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-        # Check if lock is stale (>2 hours)
+        # wait=0 is the historical byte-compatible path: contention is a
+        # successful no-op. Rollback/automation callers may opt into bounded
+        # waiting so a transient restart owner cannot strand the fleet.
         local lock_age lock_mtime
-        lock_mtime=$(file_mtime_epoch "$LOCK_DIR" 2>/dev/null || echo 0)
-        lock_age=$(( $(date +%s) - lock_mtime ))
-        if (( lock_age > 7200 )); then
-            log "Stale lock detected (${lock_age}s), breaking."
-            rmdir "$LOCK_DIR" 2>/dev/null || true
-            mkdir "$LOCK_DIR" 2>/dev/null || { log "Lock contention, exiting."; exit 0; }
+        if (( RESTART_LOCK_WAIT_SECS_EFFECTIVE == 0 )); then
+            lock_mtime=$(file_mtime_epoch "$LOCK_DIR" 2>/dev/null || echo 0)
+            lock_age=$(( $(date +%s) - lock_mtime ))
+            if (( lock_age > 7200 )); then
+                log "Stale lock detected (${lock_age}s), breaking."
+                rmdir "$LOCK_DIR" 2>/dev/null || true
+                mkdir "$LOCK_DIR" 2>/dev/null || { log "Lock contention, exiting."; exit 0; }
+            else
+                log "Another restart in progress (${lock_age}s old), exiting."
+                exit 0
+            fi
         else
-            log "Another restart in progress (${lock_age}s old), exiting."
-            exit 0
+            local start deadline now remaining sleep_secs
+            start=$(date +%s)
+            deadline=$(( start + RESTART_LOCK_WAIT_SECS_EFFECTIVE ))
+            while true; do
+                lock_mtime=$(file_mtime_epoch "$LOCK_DIR" 2>/dev/null || echo 0)
+                now=$(date +%s)
+                lock_age=$(( now - lock_mtime ))
+                if (( lock_age > 7200 )); then
+                    log "Stale lock detected (${lock_age}s), breaking."
+                    if rmdir "$LOCK_DIR" 2>/dev/null && mkdir "$LOCK_DIR" 2>/dev/null; then
+                        break
+                    fi
+                    log "Lock contention after stale-lock break; waiting."
+                fi
+                now=$(date +%s)
+                if (( now >= deadline )); then
+                    log "ERROR: restart lock was not acquired within ${RESTART_LOCK_WAIT_SECS_EFFECTIVE}s"
+                    alert_severe "restart-lock-wait-timeout" \
+                        "Flywheel restart lock wait timed out" \
+                        "restart-services waited ${RESTART_LOCK_WAIT_SECS_EFFECTIVE}s for the current restart owner, then failed without starting another restart."
+                    exit 1
+                fi
+                remaining=$(( deadline - now ))
+                sleep_secs=5
+                (( remaining < sleep_secs )) && sleep_secs="$remaining"
+                log "Another restart in progress (${lock_age}s old); waiting (${remaining}s remaining)."
+                sleep "$sleep_secs"
+                if mkdir "$LOCK_DIR" 2>/dev/null; then
+                    break
+                fi
+            done
         fi
     fi
     trap 'restart_on_exit "$?"' EXIT
@@ -921,6 +992,8 @@ fi
 # plus the Bridge-independent meta-alert.
 # shellcheck source=lib/bridge-port.sh
 source "${FLYWHEEL_DIR}/scripts/lib/bridge-port.sh"
+# shellcheck source=lib/bridge-process-tree.sh
+source "${FLYWHEEL_DIR}/scripts/lib/bridge-process-tree.sh"
 bp_fail_loud() {
     local reason="$1" title="$2" body="$3"
     # >&2: never write to stdout — bp_confirm_port_released's verdict is captured
@@ -944,52 +1017,6 @@ bp_fail_loud() {
 # port it LISTENS on (authoritative, one process), then walk up its own
 # run-bridge ancestor tree (listener → tsx → npm wrapper) so launchd KeepAlive
 # re-spawns cleanly. A `worktrees/` path is never targeted, belt-and-suspenders.
-
-# Bridge TCP port, parsed from BRIDGE_URL (default 9876).
-bridge_port() {
-    local p
-    p="$(printf '%s' "$BRIDGE_URL" | sed -E 's#^.*:([0-9]+).*$#\1#')"
-    if [[ "$p" =~ ^[0-9]+$ ]]; then printf '%s\n' "$p"; else printf '9876\n'; fi
-}
-
-# Seams (overridable in tests): port listeners + process introspection.
-_listeners_on_port() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true; }
-_ppid_of()           { ps -o ppid= -p "$1" 2>/dev/null | tr -dc '0-9'; }
-_args_of()           { ps -o command= -p "$1" 2>/dev/null; }
-
-# Given a port-listener PID, emit that PID plus the ancestor PIDs that belong to
-# the SAME run-bridge invocation, stopping at launchd (ppid 0/1) or the first
-# ancestor that is not part of this run-bridge tree. Never emits a worktree PID.
-collect_bridge_tree() {
-    local pid="$1" cur ppid args
-    [[ -z "$pid" ]] && return 0
-    args="$(_args_of "$pid")"
-    case "$args" in *worktrees/*) return 0 ;; esac   # not a production Bridge
-    printf '%s\n' "$pid"
-    cur="$pid"
-    while :; do
-        ppid="$(_ppid_of "$cur")"
-        [[ -z "$ppid" || "$ppid" == 0 || "$ppid" == 1 ]] && break
-        args="$(_args_of "$ppid")"
-        case "$args" in
-            *worktrees/*)   break ;;                 # don't climb into a worktree wrapper
-            *run-bridge.ts*) printf '%s\n' "$ppid"; cur="$ppid" ;;
-            *)              break ;;
-        esac
-    done
-}
-
-# Resolve the full set of production-Bridge PIDs to stop (deduped).
-bridge_target_pids() {
-    local port listener
-    port="$(bridge_port)"
-    {
-        while IFS= read -r listener; do
-            [[ -z "$listener" ]] && continue
-            collect_bridge_tree "$listener"
-        done < <(_listeners_on_port "$port")
-    } | awk 'NF && !seen[$0]++'
-}
 
 stop_bridge() {
     local port pids
@@ -1739,8 +1766,16 @@ deploy_and_verify() {
     # Step 2: Build (Bridge is stopped, no race possible)
     if [[ "$SKIP_BUILD" != "true" ]]; then
         if ! build_project; then
-            log "Build failed, attempting rollback"
-            rollback_and_restart "$DEPLOYED_SHA"
+            if [[ "$RESTART_CODE_ROLLBACK_DISABLED" == "1" ]]; then
+                log "ERROR: Build failed; code-only rollback is disabled for this restart"
+                alert_severe "deploy-build-failed-code-rollback-disabled" \
+                    "Flywheel build failed; code-only rollback disabled" \
+                    "The migration-safe restart stopped after its build failed. It did not reset code without the matching database snapshot; use the window rollback procedure."
+                RESTART_TERMINAL_REPORTED=true
+            else
+                log "Build failed, attempting rollback"
+                rollback_and_restart "$DEPLOYED_SHA"
+            fi
             # rollback_and_restart already handles stop+start of Bridge/Leads
             return 1
         fi
@@ -1776,8 +1811,16 @@ deploy_and_verify() {
             sleep 2
         done
         if [[ "$hc_ok" != "true" ]]; then
-            log "ERROR: Bridge health check failed after restart. Attempting rollback."
-            rollback_and_restart "$DEPLOYED_SHA"
+            if [[ "$RESTART_CODE_ROLLBACK_DISABLED" == "1" ]]; then
+                log "ERROR: Bridge health check failed; code-only rollback is disabled for this restart"
+                alert_severe "deploy-health-failed-code-rollback-disabled" \
+                    "Flywheel health check failed; code-only rollback disabled" \
+                    "The migration-safe restart stopped after Bridge health failed. It did not reset code without the matching database snapshot; use the window rollback procedure."
+                RESTART_TERMINAL_REPORTED=true
+            else
+                log "ERROR: Bridge health check failed after restart. Attempting rollback."
+                rollback_and_restart "$DEPLOYED_SHA"
+            fi
             return 1
         fi
         log "Bridge health check: OK"

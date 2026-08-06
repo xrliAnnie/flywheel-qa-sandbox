@@ -3,8 +3,10 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { CommDB } from "../packages/flywheel-comm/src/db.js";
 import {
 	Database,
+	ensureCanonicalDbWritable,
 	migrateCommDbWithSwap,
 	rollbackMailboxMigration,
 } from "../packages/flywheel-comm/src/mailbox-migration.js";
@@ -96,6 +98,37 @@ function assertUniqueFiles(paths: string[]): void {
 	}
 }
 
+function assertFilesOwnerWritable(paths: string[]): void {
+	for (const path of paths) {
+		if (!existsSync(path)) continue;
+		const mode = statSync(path).mode & 0o777;
+		if ((mode & 0o200) === 0) {
+			throw new Error(
+				`canonical CommDB file is not owner-writable: ${path} mode=${mode.toString(8).padStart(4, "0")}; remediation: chmod 0600 ${path}`,
+			);
+		}
+	}
+}
+
+function assertCanonicalSidecarsOwnerWritable(dbPath: string): void {
+	assertFilesOwnerWritable([`${dbPath}-wal`, `${dbPath}-shm`]);
+}
+
+function assertCanonicalFilesOwnerWritable(dbPath: string): void {
+	assertFilesOwnerWritable([dbPath, `${dbPath}-wal`, `${dbPath}-shm`]);
+}
+
+function verifyCommDbOpen(dbPath: string): void {
+	assertCanonicalFilesOwnerWritable(dbPath);
+	let db: CommDB | undefined;
+	try {
+		db = new CommDB(dbPath, false, false);
+	} finally {
+		db?.close();
+	}
+	assertCanonicalFilesOwnerWritable(dbPath);
+}
+
 async function main(): Promise<void> {
 	const args = process.argv.slice(2);
 	const paths = explicitDbs(args);
@@ -103,6 +136,7 @@ async function main(): Promise<void> {
 	if (dbs.length === 0)
 		throw new Error("no legacy or migrated CommDB files found");
 	assertUniqueFiles(dbs);
+	for (const path of dbs) assertCanonicalSidecarsOwnerWritable(path);
 	const inventory = dbs.map((path) => ({ path, state: classify(path) }));
 	console.log(JSON.stringify({ inventory }, null, 2));
 	if (args.includes("--inventory")) return;
@@ -140,13 +174,17 @@ async function main(): Promise<void> {
 		);
 	}
 	for (const item of inventory) {
-		if (item.state === "migrated") continue;
+		if (item.state === "migrated") {
+			ensureCanonicalDbWritable(item.path);
+			continue;
+		}
 		const result = await migrateCommDbWithSwap(item.path);
 		console.log(JSON.stringify(result));
 		console.log(
 			`rollback: npx tsx scripts/migrate-fly1572-mailbox.ts --rollback --db ${JSON.stringify(item.path)}`,
 		);
 	}
+	for (const item of inventory) verifyCommDbOpen(item.path);
 }
 
 main().catch((error) => {
