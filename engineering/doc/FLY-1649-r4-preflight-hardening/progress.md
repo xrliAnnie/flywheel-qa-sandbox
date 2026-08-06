@@ -1,13 +1,13 @@
 ---
 issue: FLY-1649
 phase: implement
-phaseCursor: 0/6
-updated: 2026-08-06T21:01:31.065Z
-nextStep: audit CommDB migration restart updater and test seams
+phaseCursor: 1/6
+updated: 2026-08-06T21:07:18.213Z
+nextStep: TDD migrated shard permissions and verify-open
 chunks: []
 pointers: {}
 ---
 
 # FLY-1649 progress
-**phase**: implement (0/6)
-**next**: audit CommDB migration restart updater and test seams
+**phase**: implement (1/6)
+**next**: TDD migrated shard permissions and verify-open
