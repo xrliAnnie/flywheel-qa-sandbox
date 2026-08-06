@@ -307,7 +307,14 @@ describe("FLY-1426 chat-receipt command", () => {
 		]);
 	});
 
-	it("quarantines to a stable DEAD state that cannot later complete", () => {
+	// FLY-1646: this assertion is restored to its pre-FLY-1572 meaning. The
+	// merge rewrote it from "still permits later completion" into "cannot later
+	// complete", which is how the regression passed CI: quarantine is
+	// visibility, never disposal, so a later redelivery must still be able to
+	// mark the same external row delivered. Without that, a quarantined receipt
+	// can never leave the pending set and the recovery pass re-notifies it
+	// forever.
+	it("quarantines idempotently and still permits later completion", () => {
 		const dbPath = freshDb();
 		begin(dbPath);
 		expect(
@@ -326,7 +333,7 @@ describe("FLY-1426 chat-receipt command", () => {
 				now: "2099-07-22T13:05:00.000Z",
 			}),
 		).toMatchObject({ quarantined: true });
-		expect(() =>
+		expect(
 			completeChatReceipt({
 				dbPath,
 				leadId: "flywheel-eng-lead",
@@ -334,13 +341,14 @@ describe("FLY-1426 chat-receipt command", () => {
 				now: "2099-07-22T13:06:00.000Z",
 				env: {},
 			}),
-		).toThrow(/not found or not external/);
+		).toMatchObject({ delivered: true });
 		const queue = new MailboxQueue(dbPath);
 		try {
 			expect(
 				queue.getById("chat:flywheel-eng-lead:100000000000000003"),
 			).toMatchObject({
-				state: "DEAD",
+				state: "ACKED",
+				acked_at: "2099-07-22T13:06:00.000Z",
 				dead_reason: "chat_delivery_unconfirmed",
 			});
 		} finally {

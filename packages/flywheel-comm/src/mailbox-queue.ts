@@ -19,6 +19,18 @@ export type MailboxPriority = 0 | 1 | 2 | 3;
 export const CHAT_DELIVERY_UNCONFIRMED_REASON =
 	"chat_delivery_unconfirmed" as const;
 
+/**
+ * FLY-1646: every `dead_reason` that means "quarantined for visibility", which
+ * `excludeQuarantined` filters on. Migrated rows carry the legacy
+ * `lead_inbox.disposition` value verbatim (see `classifyLead` in
+ * mailbox-migration.ts), so the pre-merge spelling must be matched too or the
+ * opt-in silently misses every pre-cutover receipt.
+ */
+export const QUARANTINE_DEAD_REASONS = [
+	CHAT_DELIVERY_UNCONFIRMED_REASON,
+	"delivery_quarantined",
+] as const;
+
 export type ProcessedActorKind =
 	| "lead"
 	| "bridge-protocol"
@@ -381,12 +393,24 @@ export class MailboxQueue {
 		return row.count;
 	}
 
+	/**
+	 * FLY-1646: the state guard here is the exact dual of
+	 * `listExternalPending`'s — anything that predicate can hand out for
+	 * redelivery, this must be able to retire. Restricting it to QUEUED left
+	 * quarantined (DEAD) receipts unable to converge: the recovery pass would
+	 * re-notify them forever because delivery could never be recorded, and
+	 * `ExternalReceiptSaga.complete()` throws outright on a recovered xdept
+	 * receipt. It also contradicted `CommDB.quarantineChatReceipt`'s contract,
+	 * which states that a later redelivery may still mark the same external row
+	 * delivered. Keeping the two guards symmetric is what guarantees the loop
+	 * terminates.
+	 */
 	markExternalDelivered(id: string, now: string): boolean {
 		const result = this.db
 			.prepare(
 				`UPDATE mailbox SET state = 'ACKED', acked_at = COALESCE(acked_at, ?),
 				   claimed_by = NULL, claim_expires_at = NULL
-				 WHERE id = ? AND carrier = 'external' AND state = 'QUEUED'`,
+				 WHERE id = ? AND carrier = 'external' AND state <> 'ACKED'`,
 			)
 			.run(now, id);
 		return (
@@ -396,20 +420,56 @@ export class MailboxQueue {
 		);
 	}
 
+	/**
+	 * External receipts that are still AWAITING DELIVERY.
+	 *
+	 * FLY-1646: `state <> 'ACKED'` is load-bearing, not decoration. It is the
+	 * mailbox-schema translation of the pre-FLY-1572 guard `delivered_at IS
+	 * NULL` — `markExternalDelivered` is the only writer that moves an external
+	 * row to ACKED, so a delivered receipt leaves this set exactly as it used
+	 * to. Dropping that guard in the merge is what caused the FLY-1646 storm:
+	 * the Discord plugin's ChatReceiptRuntime recovery pass re-emits every
+	 * returned row with a `[redelivery]` prefix and then calls `complete`, so
+	 * once `complete` could no longer retire a row the pass kept seeing work
+	 * (`workRemains`) while `complete` kept reporting success (`progress`) and
+	 * neither break in `workerLoop()` could ever fire.
+	 *
+	 * Do NOT widen this to "delivered but not yet answered". Whether a Lead
+	 * actually replied is tracked by the mailbox_log settlement ledger and must
+	 * never drive redelivery — that is what turned an unanswered-message
+	 * backlog into a fleet-wide Discord storm.
+	 *
+	 * Equally, do NOT narrow this to `state IN ('QUEUED','LEASED')`. DEAD is
+	 * NOT terminal for external receipts: quarantine is visibility only (see
+	 * `CommDB.quarantineChatReceipt`), and `ExternalReceiptSaga` marks rows dead
+	 * for recoverable reasons such as a temporarily unavailable journal. The
+	 * legacy lane kept those rows redeliverable — `quarantineExternalDelivery`
+	 * set only `disposition`, never `delivered_at`/`disposed_at` — and excluding
+	 * them here would trade the storm for silent message loss. Genuine disposal
+	 * is a `disposed` settlement row, which the NOT EXISTS clause already
+	 * excludes.
+	 *
+	 * `excludeQuarantined` is the caller's opt-in to drop quarantined rows,
+	 * mirroring the legacy `disposition <> 'delivery_quarantined'` filter.
+	 */
 	listExternalPending(input: {
 		toAgent: string;
 		idPrefix: string;
 		cursorSeq?: number;
 		limit?: number;
 		createdBefore?: string;
+		excludeQuarantined?: boolean;
 	}): MailboxRow[] {
 		return this.db
 			.prepare(
 				`SELECT mailbox.* FROM mailbox
 				  WHERE to_agent = ? AND carrier = 'external'
+				    AND state <> 'ACKED'
 				    AND id LIKE ? ESCAPE '\\'
 				    AND seq > ?
 				    AND (? IS NULL OR datetime(created_at) <= datetime(?))
+				    AND (? = 0 OR dead_reason IS NULL
+				         OR dead_reason NOT IN (${placeholders(QUARANTINE_DEAD_REASONS.length)}))
 				    AND NOT EXISTS (
 				      SELECT 1 FROM mailbox_log settlement
 				       WHERE settlement.subject_id = mailbox.id
@@ -423,6 +483,8 @@ export class MailboxQueue {
 				input.cursorSeq ?? 0,
 				input.createdBefore ?? null,
 				input.createdBefore ?? null,
+				input.excludeQuarantined ? 1 : 0,
+				...QUARANTINE_DEAD_REASONS,
 				input.limit ?? 100,
 			) as MailboxRow[];
 	}

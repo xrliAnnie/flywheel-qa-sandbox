@@ -9,7 +9,7 @@ import {
 	rollbackMailboxMigration,
 } from "../packages/flywheel-comm/src/mailbox-migration.js";
 
-type DbState = "legacy" | "migrated" | "unknown";
+type DbState = "legacy" | "migrated" | "mixed" | "unknown";
 
 function classify(path: string): DbState {
 	const db = new Database(path, { readonly: true, fileMustExist: true });
@@ -23,15 +23,23 @@ function classify(path: string): DbState {
 					.all() as Array<{ name: string; type: string }>
 			).map((row) => [row.name, row.type]),
 		);
+		const hasLegacyTables =
+			objects.get("messages") === "table" ||
+			objects.get("lead_inbox") === "table";
 		if (objects.get("mailbox_migration_meta") === "table") {
 			const generation = db
 				.prepare(
 					"SELECT schema_generation FROM mailbox_migration_meta WHERE singleton=1",
 				)
 				.get() as { schema_generation?: string } | undefined;
-			return generation?.schema_generation === "mailbox_v1"
-				? "migrated"
-				: "unknown";
+			if (generation?.schema_generation !== "mailbox_v1") return "unknown";
+			// FLY-1646: a completed cutover DROPS the legacy tables, so finding
+			// them next to a mailbox_v1 marker proves the swap never finished.
+			// Reporting that as "migrated" made `main()` silently `continue` past
+			// the shard — production `growth` was left in exactly this shape by
+			// the aborted rollout and would have been skipped on redeploy while
+			// still serving from stale legacy tables.
+			return hasLegacyTables ? "mixed" : "migrated";
 		}
 		if (
 			objects.get("messages") === "table" &&
@@ -108,12 +116,28 @@ async function main(): Promise<void> {
 			"inventory contains an unknown schema; refusing partial cutover",
 		);
 	}
+	// --rollback is the recovery path FOR a half-migrated shard, so it must run
+	// before the `mixed` guard below — that guard exists to stop a *cutover*
+	// from silently skipping such a shard, not to strand it.
 	if (args.includes("--rollback")) {
 		for (const item of inventory) {
 			if (!existsSync(`${item.path}.migration-swap-intent.json`)) continue;
 			console.log(JSON.stringify(rollbackMailboxMigration(item.path)));
 		}
 		return;
+	}
+	// FLY-1646: fail loud, never skip. A completed cutover drops the legacy
+	// tables, so legacy tables next to a mailbox_v1 marker prove the swap never
+	// finished. Classifying that as "migrated" made the cutover loop `continue`
+	// past the shard, leaving it serving from stale legacy tables. It needs an
+	// explicit operator decision (--rollback, or finish the cutover) first.
+	const halfMigrated = inventory.filter((item) => item.state === "mixed");
+	if (halfMigrated.length > 0) {
+		throw new Error(
+			`half-migrated CommDB detected (legacy tables coexist with a mailbox_v1 marker); resolve it explicitly (--rollback restores the pre-fly1572 backup) before any cutover: ${halfMigrated
+				.map((item) => item.path)
+				.join(", ")}`,
+		);
 	}
 	for (const item of inventory) {
 		if (item.state === "migrated") continue;
