@@ -1,13 +1,13 @@
 ---
 issue: FLY-1649
 phase: implement
-phaseCursor: 4/6
-updated: 2026-08-06T21:59:33.417Z
-nextStep: run formatting, full repo gates, code review, and PR
+phaseCursor: 5/6
+updated: 2026-08-06T22:29:01.671Z
+nextStep: commit implementation, request code review, then open PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-1649 progress
-**phase**: implement (4/6)
-**next**: run formatting, full repo gates, code review, and PR
+**phase**: implement (5/6)
+**next**: commit implementation, request code review, then open PR
