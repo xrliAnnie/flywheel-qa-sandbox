@@ -1,13 +1,13 @@
 ---
 issue: FLY-1649
 phase: design
-phaseCursor: 2/4
-updated: 2026-08-06T19:50:46.566Z
-nextStep: design_review gate → founder HTML → publish → report → complete
+phaseCursor: 3/4
+updated: 2026-08-06T20:57:44.607Z
+nextStep: publish design HTML → report Lead → complete phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1649 progress
-**phase**: design (2/4)
-**next**: design_review gate → founder HTML → publish → report → complete
+**phase**: design (3/4)
+**next**: publish design HTML → report Lead → complete phase_design_complete
