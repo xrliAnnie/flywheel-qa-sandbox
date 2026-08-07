@@ -1264,6 +1264,13 @@ function verifyMigratedDatabase(dbPath: string): MailboxMigrationResult {
 	}
 }
 
+export function ensureCanonicalDbWritable(dbPath: string): boolean {
+	const mode = statSync(dbPath).mode & 0o777;
+	if ((mode & 0o200) !== 0) return false;
+	chmodSync(dbPath, 0o600);
+	return true;
+}
+
 function afterSwapPhase(
 	faultAfter: MailboxSwapPhase | undefined,
 	phase: MailboxSwapPhase,
@@ -1284,6 +1291,7 @@ export async function migrateCommDbWithSwap(
 		const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 		try {
 			if (tableType(db, "mailbox_migration_meta") === "table") {
+				ensureCanonicalDbWritable(dbPath);
 				const migrated = verifyMigratedDatabase(dbPath);
 				return {
 					...migrated,
@@ -1394,6 +1402,7 @@ export async function migrateCommDbWithSwap(
 		advance("dir_fsynced");
 	}
 	const migrated = verifyMigratedDatabase(dbPath);
+	ensureCanonicalDbWritable(dbPath);
 	if (!reached("verified")) advance("verified");
 	if (!reached("done")) advance("done");
 	for (const path of intent.quarantinedSidecars) {
@@ -1424,6 +1433,7 @@ export function rollbackMailboxMigration(
 	if (!existsSync(intent.backupPath)) {
 		if (intent.phase === "fenced") {
 			chmodSync(dbPath, intent.originalMode);
+			ensureCanonicalDbWritable(dbPath);
 			intent = { ...intent, phase: "aborted" };
 			durableJson(intentPath, intent);
 			return {
@@ -1543,6 +1553,7 @@ export function rollbackMailboxMigration(
 			renameSync(restoreIntent.dbStage, dbPath);
 		}
 		chmodSync(dbPath, intent.originalMode);
+		ensureCanonicalDbWritable(dbPath);
 		fsyncDirectory(dirname(dbPath));
 		if (sha256File(dbPath) !== sha256File(intent.backupPath)) {
 			throw new Error("rollback database hash verification failed");

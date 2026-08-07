@@ -92,6 +92,123 @@ ROLLBACK_ERR="$({
 		pnpm exec tsx scripts/migrate-fly1572-mailbox.ts --confirm-quiesced --rollback 2>&1
 } )" || ROLLBACK_RC=$?
 test "$ROLLBACK_RC" -eq 0
-grep -qv "half-migrated" <<<"$ROLLBACK_ERR"
+if grep -q "half-migrated" <<<"$ROLLBACK_ERR"; then
+	echo "rollback incorrectly rejected mixed-state recovery" >&2
+	exit 1
+fi
+
+# FLY-1649 G2/G3: exercise the no-intent recovery path with the real
+# backupCommDb artifact shape (standalone DB + refs tree + manifest). Replacing
+# the whole shard removes mixed-state debris without ever dropping live legacy
+# tables in place.
+RECOVERY_DIR="$TEST_ROOT/growth-recovery"
+RECOVERY_DB="$RECOVERY_DIR/comm.db"
+RECOVERY_BACKUP="$RECOVERY_DB.pre-fly1572-verified"
+mkdir -p "$RECOVERY_DIR/refs"
+sqlite3 "$RECOVERY_DB" "
+	CREATE TABLE messages (id TEXT PRIMARY KEY, content BLOB, attempts INTEGER);
+	CREATE TABLE lead_inbox (seq INTEGER PRIMARY KEY, id TEXT UNIQUE, content TEXT);
+	INSERT INTO messages VALUES ('m-1', X'00ff10', 2), ('m-2', NULL, 0);
+	INSERT INTO lead_inbox VALUES (7, 'lead-7', 'keep legacy alive');"
+printf 'content-ref-bytes' > "$RECOVERY_DIR/refs/m-1.bin"
+(
+	cd "$REPO_ROOT"
+	DB_PATH="$RECOVERY_DB" BACKUP_PATH="$RECOVERY_BACKUP" pnpm exec tsx -e \
+		'import { backupCommDb } from "./packages/flywheel-comm/src/mailbox-migration.ts"; backupCommDb(process.env.DB_PATH!, process.env.BACKUP_PATH!).catch((error) => { console.error(error); process.exitCode = 1; });'
+)
+test "$(sqlite3 "$RECOVERY_BACKUP" "PRAGMA quick_check;")" = "ok"
+test -f "$RECOVERY_BACKUP.refs-manifest.json"
+test "$(cat "$RECOVERY_BACKUP.refs/m-1.bin")" = "content-ref-bytes"
+BACKUP_STATE="$({
+	cd "$REPO_ROOT"
+	pnpm exec tsx scripts/migrate-fly1572-mailbox.ts --inventory --db "$RECOVERY_BACKUP"
+})"
+jq -e '.inventory == [{"path": $path, "state": "legacy"}]' \
+	--arg path "$RECOVERY_BACKUP" <<<"$BACKUP_STATE" >/dev/null
+
+DIGEST_FIXTURE="$REPO_ROOT/scripts/__tests__/fixtures/fly1649-legacy-mailbox-digest.ts"
+BEFORE_DIGEST="$({ cd "$REPO_ROOT"; pnpm exec tsx "$DIGEST_FIXTURE" "$RECOVERY_DB"; })"
+sqlite3 "$RECOVERY_DB" "
+	CREATE TABLE mailbox (id TEXT PRIMARY KEY);
+	CREATE TABLE mailbox_log (event_id TEXT PRIMARY KEY);
+	CREATE TABLE mailbox_migration_meta (singleton INTEGER PRIMARY KEY, schema_generation TEXT);
+	INSERT INTO mailbox_migration_meta VALUES (1, 'mailbox_v1');"
+RECOVERY_MIXED="$({
+	cd "$REPO_ROOT"
+	pnpm exec tsx scripts/migrate-fly1572-mailbox.ts --inventory --db "$RECOVERY_DB"
+})"
+jq -e '.inventory == [{"path": $path, "state": "mixed"}]' \
+	--arg path "$RECOVERY_DB" <<<"$RECOVERY_MIXED" >/dev/null
+
+mv "$RECOVERY_DB" "$RECOVERY_DB.mixed-evidence"
+mv "$RECOVERY_DIR/refs" "$RECOVERY_DIR/refs.mixed-evidence"
+cp "$RECOVERY_BACKUP" "$RECOVERY_DB"
+cp -R "$RECOVERY_BACKUP.refs" "$RECOVERY_DIR/refs"
+AFTER_DIGEST="$({ cd "$REPO_ROOT"; pnpm exec tsx "$DIGEST_FIXTURE" "$RECOVERY_DB"; })"
+test "$AFTER_DIGEST" = "$BEFORE_DIGEST"
+test "$(cat "$RECOVERY_DIR/refs/m-1.bin")" = "content-ref-bytes"
+test -z "$(sqlite3 "$RECOVERY_DB" "SELECT name FROM sqlite_master WHERE name IN ('mailbox','mailbox_log','mailbox_migration_meta');")"
+RECOVERED_STATE="$({
+	cd "$REPO_ROOT"
+	pnpm exec tsx scripts/migrate-fly1572-mailbox.ts --inventory --db "$RECOVERY_DB"
+})"
+jq -e '.inventory == [{"path": $path, "state": "legacy"}]' \
+	--arg path "$RECOVERY_DB" <<<"$RECOVERED_STATE" >/dev/null
+
+sqlite3 "$RECOVERY_DB" "UPDATE messages SET attempts = attempts + 1 WHERE id = 'm-1';"
+NEGATIVE_DIGEST="$({ cd "$REPO_ROOT"; pnpm exec tsx "$DIGEST_FIXTURE" "$RECOVERY_DB"; })"
+test "$NEGATIVE_DIGEST" != "$BEFORE_DIGEST"
+
+# FLY-1649: already-migrated shards still pass through canonical permission
+# repair plus a real CommDB open. Suffixed forensic artifacts are deliberately
+# outside that boundary and must remain untouched.
+MIGRATED_DIR="$TEST_ROOT/flywheel-migrated/comm/test"
+MIGRATED_DB="$MIGRATED_DIR/comm.db"
+mkdir -p "$MIGRATED_DIR"
+(
+	cd "$REPO_ROOT"
+	DB_PATH="$MIGRATED_DB" pnpm exec tsx -e \
+		'import { CommDB } from "./packages/flywheel-comm/src/db.ts"; const db = new CommDB(process.env.DB_PATH!); db.close();'
+)
+rm -f "$MIGRATED_DB-wal" "$MIGRATED_DB-shm"
+sqlite3 "$MIGRATED_DB" "PRAGMA journal_mode=DELETE;" >/dev/null
+chmod 0400 "$MIGRATED_DB"
+FORENSIC_SHM="$MIGRATED_DB-shm.migrated-r2-failed-20260806"
+: > "$FORENSIC_SHM"
+chmod 0444 "$FORENSIC_SHM"
+
+MIGRATED_RC=0
+MIGRATED_OUTPUT="$({
+	cd "$REPO_ROOT"
+	pnpm exec tsx scripts/migrate-fly1572-mailbox.ts \
+		--confirm-quiesced --db "$MIGRATED_DB" 2>&1
+})" || MIGRATED_RC=$?
+test "$MIGRATED_RC" -eq 0
+if stat -f %Lp "$MIGRATED_DB" >/dev/null 2>&1; then
+	test "$(stat -f %Lp "$MIGRATED_DB")" = "600"
+	test "$(stat -f %Lp "$FORENSIC_SHM")" = "444"
+else
+	test "$(stat -c %a "$MIGRATED_DB")" = "600"
+	test "$(stat -c %a "$FORENSIC_SHM")" = "444"
+fi
+
+# A canonical sidecar is part of the shard and must fail loud before open;
+# unlike the suffixed evidence above, it can reproduce the exact r2 hazard.
+: > "$MIGRATED_DB-shm"
+chmod 0444 "$MIGRATED_DB-shm"
+SIDE_RC=0
+SIDE_ERR="$({
+	cd "$REPO_ROOT"
+	pnpm exec tsx scripts/migrate-fly1572-mailbox.ts \
+		--confirm-quiesced --db "$MIGRATED_DB" 2>&1
+})" || SIDE_RC=$?
+test "$SIDE_RC" -ne 0
+grep -Fq "$MIGRATED_DB-shm" <<<"$SIDE_ERR"
+grep -q "mode=0444" <<<"$SIDE_ERR"
+grep -q "chmod 0600" <<<"$SIDE_ERR"
+if grep -Fq "$FORENSIC_SHM" <<<"$SIDE_ERR"; then
+	echo "canonical sidecar diagnostic named the unrelated forensic suffix" >&2
+	exit 1
+fi
 
 echo "migrate-fly1572-mailbox: PASS"

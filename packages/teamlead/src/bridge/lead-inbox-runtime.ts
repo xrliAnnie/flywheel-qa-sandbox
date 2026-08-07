@@ -100,9 +100,17 @@ export class LeadInboxRuntime {
 			} satisfies DeliverySecretProvider);
 		for (const project of opts.projects) {
 			const dbPath = opts.commDbPathForProject(project.projectName);
-			const commDb = new CommDB(dbPath);
-			commDb.close();
-			const queue = new MailboxQueue(dbPath);
+			let queue: MailboxQueue;
+			try {
+				const commDb = new CommDB(dbPath);
+				commDb.close();
+				queue = new MailboxQueue(dbPath);
+			} catch (error) {
+				if (error instanceof Error) {
+					error.message = `LeadInboxRuntime init failed for project=${project.projectName} db=${dbPath}: ${error.message}`;
+				}
+				throw error;
+			}
 			this.queues.set(project.projectName, queue);
 			const runnerAdapter = runnerAdapterForProject(project, dbPath);
 			this.runnerAdapters.push(runnerAdapter);

@@ -764,6 +764,16 @@ describe("FLY-1572 legacy mailbox migration", () => {
 		expect(() => rollbackMailboxMigration(dbPath)).not.toThrow();
 	});
 
+	it("repairs the canonical mode before returning already_migrated", async () => {
+		migrateLegacyDatabaseFile(dbPath, { now: NOW });
+		chmodSync(dbPath, 0o400);
+
+		await expect(
+			migrateCommDbWithSwap(dbPath, { now: NOW }),
+		).resolves.toMatchObject({ status: "already_migrated" });
+		expect(statSync(dbPath).mode & 0o777).toBe(0o600);
+	});
+
 	it("materializes committed WAL frames and content refs into the backup authority", async () => {
 		const path = join(dir, "wal.db");
 		const writer = new Database(path);

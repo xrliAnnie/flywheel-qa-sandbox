@@ -13,6 +13,10 @@ fail() { FAIL=$((FAIL + 1)); printf '[TEST] FAIL - %s\n' "$1" >&2; }
 HARNESS="$TEST_ROOT/restart-detach-harness.sh"
 {
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'log() { :; }'
+  # FLY-1649 validates rollback/lock env contracts immediately before the
+  # detach seam. Keep the extracted harness behaviorally complete.
+  sed -n '/^validate_restart_contract()/,/^}/p' \
+    "$ROOT/scripts/restart-services.sh"
   awk '
     /^FORCE=false$/ { capture=1 }
     capture && /^# FLY-1434:/ { exit }
@@ -26,7 +30,8 @@ chmod +x "$HARNESS"
 
 parent_pgid="$(python3 -c 'import os; print(os.getpgrp())')"
 RESULT="$TEST_ROOT/default.result"
-output="$(FLY1634_DETACH_RESULT="$RESULT" bash "$HARNESS" --reason test)"
+output="$(env -u FLYWHEEL_RESTART_FOREGROUND \
+  FLY1634_DETACH_RESULT="$RESULT" bash "$HARNESS" --reason test)"
 for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   [ -s "$RESULT" ] && break
   sleep 0.1
@@ -41,7 +46,8 @@ else
 fi
 
 RESULT="$TEST_ROOT/bash32-zero-args.result"
-output="$(FLY1634_DETACH_RESULT="$RESULT" /bin/bash "$HARNESS" 2>&1)"
+output="$(env -u FLYWHEEL_RESTART_FOREGROUND \
+  FLY1634_DETACH_RESULT="$RESULT" /bin/bash "$HARNESS" 2>&1)"
 zero_args_rc=$?
 for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   [ -s "$RESULT" ] && break
@@ -55,7 +61,8 @@ else
 fi
 
 RESULT="$TEST_ROOT/dry-run.result"
-output="$(FLY1634_DETACH_RESULT="$RESULT" bash "$HARNESS" --dry-run)"
+output="$(env -u FLYWHEEL_RESTART_FOREGROUND \
+  FLY1634_DETACH_RESULT="$RESULT" bash "$HARNESS" --dry-run)"
 dry_pgid="$(awk -F '\t' 'NF == 2 { print $2 }' "$RESULT" 2>/dev/null || true)"
 if [ -s "$RESULT" ] && ! printf '%s\n' "$output" | grep -q 'detached' \
   && [ "$dry_pgid" = "$parent_pgid" ]; then

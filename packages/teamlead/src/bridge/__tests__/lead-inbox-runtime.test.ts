@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
@@ -31,6 +32,26 @@ const projects: ProjectEntry[] = [
 ];
 
 describe("LeadInboxRuntime", () => {
+	it("names the project and CommDB when project initialization fails", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1649-runtime-open-"));
+		const dbPath = join(root, "project-a.db");
+		const legacy = new Database(dbPath);
+		legacy.exec("CREATE TABLE legacy_only (id TEXT PRIMARY KEY)");
+		legacy.close();
+
+		expect(
+			() =>
+				new LeadInboxRuntime({
+					projects,
+					store: { getActiveSessions: () => [] } as never,
+					registry: new RuntimeRegistry(),
+					commDbPathForProject: () => dbPath,
+				}),
+		).toThrowError(
+			`LeadInboxRuntime init failed for project=project-a db=${dbPath}: Legacy or partial CommDB at ${dbPath}; run the FLY-1572 mailbox migration before opening it`,
+		);
+	});
+
 	it("connects the registry producer seam to a live per-Lead loop", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1373-runtime-"));
 		const registry = new RuntimeRegistry();
