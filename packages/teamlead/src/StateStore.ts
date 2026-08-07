@@ -1285,7 +1285,11 @@ export class StateStore {
 		process.exit(1);
 	};
 
-	private constructor(db: CompatDb, dbPath: string) {
+	private constructor(
+		db: CompatDb,
+		dbPath: string,
+		private readonly maintenance?: { readonly: boolean },
+	) {
 		this.db = db;
 		this.dbPath = dbPath;
 	}
@@ -1316,6 +1320,270 @@ export class StateStore {
 		return store;
 	}
 
+	/**
+	 * FLY-1648: maintenance-only access for the bounded hot-loop closeout.
+	 * It never creates a database, never runs migrations, and never changes
+	 * persistent journal/schema settings. Both modes set only connection-local
+	 * lock waiting; apply mode additionally enables connection-local FK safety.
+	 */
+	static async openForMaintenance(
+		dbPath: string,
+		options: { readonly: boolean },
+	): Promise<StateStore> {
+		if (dbPath === ":memory:" || !existsSync(dbPath)) {
+			throw new Error(`maintenance_database_missing:${dbPath}`);
+		}
+		const raw = new BetterSqlite3(dbPath, {
+			readonly: options.readonly,
+			fileMustExist: true,
+		});
+		try {
+			raw.pragma("busy_timeout = 5000");
+			if (!options.readonly) {
+				const journalMode = String(
+					raw.pragma("journal_mode", { simple: true }),
+				).toLowerCase();
+				if (journalMode !== "wal") {
+					throw new Error(`maintenance_journal_mode_mismatch:${journalMode}`);
+				}
+				raw.pragma("foreign_keys = ON");
+			}
+			StateStore.assertMaintenanceSchema(raw);
+			return new StateStore(new CompatDb(raw), dbPath, {
+				readonly: options.readonly,
+			});
+		} catch (error) {
+			raw.close();
+			throw error;
+		}
+	}
+
+	private static assertMaintenanceSchema(raw: BetterDb): void {
+		const required: Record<string, readonly string[]> = {
+			sessions: [
+				"execution_id",
+				"issue_id",
+				"project_name",
+				"status",
+				"pr_number",
+				"review_question_id",
+				"pr_head_sha",
+				"lifecycle_revision",
+				"terminal_at",
+				"last_activity_at",
+			],
+			workflow_run: [
+				"run_id",
+				"issue_id",
+				"project_name",
+				"status",
+				"current_node_id",
+				"snapshot",
+				"engine_owned",
+				"gate_carrier_epoch",
+			],
+			workflow_run_node: [
+				"run_id",
+				"node_id",
+				"attempt",
+				"state",
+				"execution_id",
+				"started_at",
+				"ended_at",
+			],
+			workflow_run_event: [
+				"run_id",
+				"seq",
+				"event_uid",
+				"kind",
+				"node_id",
+				"edge_id",
+				"execution_id",
+				"payload",
+				"at",
+			],
+			workflow_rework_request: ["request_id", "run_id"],
+			workflow_rework_route_revision: [
+				"request_id",
+				"revision",
+				"target_node_id",
+				"target_attempt",
+				"preferred_actor_execution_id",
+			],
+			workflow_rework_delivery: [
+				"request_id",
+				"owner_id",
+				"lease_expires_at",
+				"route_revision",
+				"state",
+				"hold_count",
+				"next_retry_at",
+				"last_error",
+				"updated_at",
+			],
+			workflow_rework_verification_path: [
+				"request_id",
+				"run_id",
+				"route_revision",
+				"state",
+				"current_node_id",
+				"current_attempt",
+				"updated_at",
+			],
+			workflow_gate_holder: [
+				"question_id",
+				"run_id",
+				"gate_node_id",
+				"attempt",
+				"state",
+				"head_sha",
+				"source_execution_id",
+				"authority_mode",
+				"subject_kind",
+				"carrier_binding_state",
+				"created_at",
+			],
+			workflow_gate_holder_evidence: [
+				"run_id",
+				"gate_node_id",
+				"holder_attempt",
+				"holder_subject_digest",
+				"claim_id",
+				"predicate",
+				"decision_kind",
+				"node_id",
+				"node_attempt",
+				"subject_kind",
+				"subject_digest",
+			],
+			workflow_claims: [
+				"id",
+				"server_seq",
+				"issued_at",
+				"workflow_run_id",
+				"node_id",
+				"decision_kind",
+				"attempt",
+				"predicate",
+				"subject_kind",
+				"subject_digest",
+				"expires_at",
+				"permanent",
+			],
+			workflow_claim_revocation: ["claim_id"],
+			workflow_ship_target_binding: [
+				"approve_question_id",
+				"run_id",
+				"frozen_head_sha",
+				"target_repo_identity",
+				"probe_repo_slug",
+				"target_repo_path",
+				"worktree_binding_generation",
+				"superseded_at",
+			],
+			workflow_node_pr_binding: [
+				"run_id",
+				"node_id",
+				"attempt",
+				"pr_number",
+				"head_sha",
+				"target_repo_identity",
+				"probe_repo_slug",
+				"target_repo_path",
+				"worktree_binding_generation",
+				"receipt_id",
+				"bound_at",
+			],
+			workflow_alert_outbox: [
+				"escalation_uid",
+				"run_id",
+				"payload_json",
+				"state",
+				"attempt",
+				"lease_owner",
+				"lease_expires_at",
+				"generation",
+				"last_error",
+				"created_at",
+				"updated_at",
+			],
+		};
+		const mismatches: string[] = [];
+		for (const [table, columns] of Object.entries(required)) {
+			const tableRow = raw
+				.prepare(
+					"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+				)
+				.get(table) as { sql?: string } | undefined;
+			if (!tableRow) {
+				mismatches.push(`${table}:missing`);
+				continue;
+			}
+			const actual = new Set(
+				(raw.pragma(`table_info(${table})`) as Array<{ name: string }>).map(
+					(column) => column.name,
+				),
+			);
+			for (const column of columns) {
+				if (!actual.has(column)) mismatches.push(`${table}.${column}:missing`);
+			}
+			if (
+				table === "workflow_rework_delivery" &&
+				!String(tableRow.sql).includes("'needs_lead'")
+			) {
+				mismatches.push("workflow_rework_delivery.state:needs_lead_missing");
+			}
+		}
+		if (mismatches.length > 0) {
+			throw new Error(`maintenance_schema_mismatch:${mismatches.join(",")}`);
+		}
+	}
+
+	maintenanceDiagnostics(): {
+		readonly: boolean;
+		journalMode: string;
+		foreignKeys: number;
+		busyTimeoutMs: number;
+	} {
+		if (!this.maintenance) throw new Error("maintenance_mode_required");
+		return {
+			readonly: this.maintenance.readonly,
+			journalMode: String(
+				this.db.raw.pragma("journal_mode", { simple: true }),
+			).toLowerCase(),
+			foreignKeys: Number(
+				this.db.raw.pragma("foreign_keys", { simple: true }),
+			),
+			busyTimeoutMs: Number(
+				this.db.raw.pragma("busy_timeout", { simple: true }),
+			),
+		};
+	}
+
+	async backupTo(destination: string): Promise<void> {
+		if (!this.maintenance || this.maintenance.readonly) {
+			throw new Error("maintenance_writable_mode_required");
+		}
+		if (!destination.trim() || existsSync(destination)) {
+			throw new Error("maintenance_backup_destination_invalid");
+		}
+		mkdirSync(dirname(destination), { recursive: true });
+		await this.db.raw.backup(destination);
+	}
+
+	maintenanceIntegrityCheck(): {
+		quickCheck: unknown[];
+		foreignKeyViolations: unknown[];
+	} {
+		if (!this.maintenance) throw new Error("maintenance_mode_required");
+		return {
+			quickCheck: this.db.raw.pragma("quick_check") as unknown[],
+			foreignKeyViolations: this.db.raw.pragma(
+				"foreign_key_check",
+			) as unknown[],
+		};
+	}
+
 	/** FLY-663: open a better-sqlite3 connection with the StateStore pragmas. */
 	private static openDatabase(dbPath: string): CompatDb {
 		if (dbPath !== ":memory:") {
@@ -1340,6 +1608,10 @@ export class StateStore {
 	 * now (writes are already durable), so no pre-close flush is needed.
 	 */
 	close(): void {
+		if (this.maintenance) {
+			this.db.close();
+			return;
+		}
 		try {
 			// wal_checkpoint can return a NON-throwing busy result (busy=1) if another
 			// connection holds a read txn — then the WAL is NOT fully truncated. Log it
@@ -20289,7 +20561,8 @@ export class StateStore {
 				}
 				this.db.run(
 					`UPDATE workflow_rework_delivery
-					    SET state = 'replacement_pending', last_error = ?, updated_at = ?
+					    SET state = 'replacement_pending', hold_count = 0,
+					        next_retry_at = NULL, last_error = ?, updated_at = ?
 					  WHERE request_id = ? AND route_revision = ? AND state = 'held'
 					    AND last_error = 'persisted_target_missing'`,
 					[
@@ -20732,6 +21005,221 @@ export class StateStore {
 		if (!released) return { ok: false, reason: "stale_delivery_owner" };
 		this.save();
 		return { ok: true };
+	}
+
+	settleHeldReworkRecoveryFailure(input: {
+		requestId: string;
+		reason: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+		forceTerminal?: {
+			expectedRunId: string;
+			expectedRouteRevision: number;
+			expectedTargetNodeId: string;
+			expectedTargetAttempt: number;
+			expectedTargetExecutionId: string;
+			operator: string;
+		};
+	}):
+		| {
+				ok: true;
+				state: "held" | "needs_lead";
+				holdCount: number;
+				nextRetryAt: string | null;
+		  }
+		| { ok: false; reason: string } {
+		if (
+			!input.requestId.trim() ||
+			!input.reason.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			(input.forceTerminal !== undefined &&
+				(!input.forceTerminal.expectedRunId.trim() ||
+					!Number.isSafeInteger(input.forceTerminal.expectedRouteRevision) ||
+					input.forceTerminal.expectedRouteRevision < 1 ||
+					!input.forceTerminal.expectedTargetNodeId.trim() ||
+					!Number.isSafeInteger(input.forceTerminal.expectedTargetAttempt) ||
+					input.forceTerminal.expectedTargetAttempt < 1 ||
+					!input.forceTerminal.expectedTargetExecutionId.trim() ||
+					!input.forceTerminal.operator.trim()))
+		) {
+			return { ok: false, reason: "invalid_held_recovery_failure" };
+		}
+		let result:
+			| {
+					ok: true;
+					state: "held" | "needs_lead";
+					holdCount: number;
+					nextRetryAt: string | null;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "held_recovery_failure_not_settled",
+		};
+		this.db.transaction(() => {
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			const route = this.getLatestWorkflowReworkRoute(input.requestId);
+			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+			if (
+				!delivery ||
+				!request ||
+				!route ||
+				!run ||
+				delivery.state !== "held" ||
+				delivery.last_error !== "persisted_target_missing" ||
+				delivery.route_revision !== route.revision ||
+				run.engine_owned !== 1 ||
+				run.status !== "held"
+			) {
+				result = { ok: false, reason: "held_recovery_context_changed" };
+				return;
+			}
+			if (input.forceTerminal) {
+				const expected = input.forceTerminal;
+				if (
+					request.run_id !== expected.expectedRunId ||
+					route.revision !== expected.expectedRouteRevision ||
+					route.target_node_id !== expected.expectedTargetNodeId ||
+					route.target_attempt !== expected.expectedTargetAttempt ||
+					route.preferred_actor_execution_id !==
+						expected.expectedTargetExecutionId
+				) {
+					result = { ok: false, reason: "force_terminal_context_changed" };
+					return;
+				}
+				const target = this.getWorkflowRunNode(
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+				);
+				if (
+					target &&
+					(target.state === "pending" || target.state === "admitted") &&
+					target.execution_id === expected.expectedTargetExecutionId
+				) {
+					result = {
+						ok: false,
+						reason: "force_terminal_target_still_recoverable",
+					};
+					return;
+				}
+			}
+
+			const holdCount = delivery.hold_count + 1;
+			const exhausted = input.forceTerminal !== undefined || holdCount >= 5;
+			const nextRetryAt = exhausted
+				? null
+				: new Date(
+						Date.parse(input.now) + 60_000 * 2 ** (holdCount - 1),
+					).toISOString();
+			if (!exhausted) {
+				this.db.run(
+					`UPDATE workflow_rework_delivery
+					    SET hold_count = ?, next_retry_at = ?, updated_at = ?
+					  WHERE request_id = ? AND state = 'held'
+					    AND last_error = 'persisted_target_missing'
+					    AND hold_count = ? AND route_revision = ?`,
+					[
+						holdCount,
+						nextRetryAt,
+						input.now,
+						input.requestId,
+						delivery.hold_count,
+						route.revision,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					result = { ok: false, reason: "held_recovery_settle_raced" };
+					return;
+				}
+				this.appendWorkflowRunEventCheckedTx({
+					runId: request.run_id,
+					eventUid: `rework_held_recovery_failure:${input.requestId}:${holdCount}`,
+					kind: "rework_held_recovery_failure",
+					nodeId: route.target_node_id,
+					executionId: route.preferred_actor_execution_id,
+					payload: {
+						requestId: input.requestId,
+						holdCount,
+						reason: input.reason,
+						nextRetryAt,
+					},
+				});
+				result = { ok: true, state: "held", holdCount, nextRetryAt };
+				return;
+			}
+
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET state = 'needs_lead', owner_id = NULL,
+				        lease_expires_at = NULL, hold_count = ?, next_retry_at = NULL,
+				        last_error = ?, updated_at = ?
+				  WHERE request_id = ? AND state = 'held'
+				    AND last_error = 'persisted_target_missing'
+				    AND hold_count = ? AND route_revision = ?`,
+				[
+					holdCount,
+					input.reason,
+					input.now,
+					input.requestId,
+					delivery.hold_count,
+					route.revision,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "held_recovery_settle_raced" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_rework_verification_path
+				    SET state = 'needs_lead', updated_at = ?
+				  WHERE request_id = ? AND route_revision = ?
+				    AND state IN ('pending','active')`,
+				[input.now, input.requestId, route.revision],
+			);
+			const escalationUid = `rework_held_recovery_exhausted:${input.requestId}`;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: escalationUid,
+				kind: "rework_held_recovery_exhausted",
+				nodeId: route.target_node_id,
+				executionId: route.preferred_actor_execution_id,
+				payload: {
+					requestId: input.requestId,
+					holdCount,
+					reason: input.reason,
+					forceTerminal: input.forceTerminal ?? null,
+				},
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid,
+				runId: request.run_id,
+				now: input.now,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: escalationUid,
+					eventType: "workflow_engine_escalation",
+					severity: "severe",
+					sessionKey: `wf:${request.run_id}`,
+					title: `Held rework recovery exhausted for ${run.issue_id}`,
+					body: `Run ${request.run_id} rework ${input.requestId} could not recover after ${holdCount} attempts (${input.reason}). It is now needs_lead, automatic retries have stopped, and recovery must use operator rework.`,
+					metadata: {
+						workflowEngine: {
+							runId: request.run_id,
+							issueId: run.issue_id,
+							nodeId: route.target_node_id,
+							executionId: route.preferred_actor_execution_id,
+							disposition: "rework_held_recovery_exhausted",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+			});
+			result = { ok: true, state: "needs_lead", holdCount, nextRetryAt: null };
+		});
+		if (result.ok) this.save();
+		return result;
 	}
 
 	settleWorkflowReworkFailure(input: {
@@ -32471,7 +32959,191 @@ export class StateStore {
 	 * merge observation. This intentionally includes pre-approval states so a
 	 * merge that bypassed the founder gate is visible and alertable.
 	 */
-	listRunnerShipHoldersForMergeProbe(): WorkflowRunnerShipMergeCandidate[] {
+	private runnerShipCompletionContext(
+		holder: Record<string, unknown>,
+		now: string,
+		projection?: RunnerShipObservationProjection,
+	): {
+		digest: string;
+		authority: WorkflowRunnerShipAuthorityResolution;
+		projection: RunnerShipObservationProjection;
+		claims: WorkflowShipClaimsResolution;
+	} {
+		const holderHead = String(holder.head_sha).trim().toLowerCase();
+		const authority = this.resolveRunnerShipAuthority(holder);
+		const fingerprint =
+			authority.status === "resolved"
+				? StateStore.runnerShipFingerprint(authority)
+				: null;
+		const resolvedProjection =
+			projection ??
+			(fingerprint
+				? this.loadRunnerShipObservationProjections().get(fingerprint) ?? {
+						status: "none" as const,
+					}
+				: { status: "none" as const });
+		const carrier = this.getSession(String(holder.source_execution_id));
+		const claims = this.resolveEngineWorkflowShipClaims({
+			runId: String(holder.run_id),
+			subjectKind: "git_head",
+			subjectDigest: holderHead,
+			now,
+		});
+		const authorityIdentity =
+			authority.status === "resolved"
+				? {
+						status: authority.status,
+						fingerprint,
+					}
+				: authority.status === "authority_conflict"
+					? { status: authority.status, digest: authority.digest }
+					: authority.status === "legacy_missing"
+						? { status: authority.status, prNumber: authority.prNumber }
+						: { status: authority.status };
+		const projectionIdentity =
+			resolvedProjection.status === "valid"
+				? {
+						status: resolvedProjection.status,
+						headSha: resolvedProjection.headSha.toLowerCase(),
+					}
+				: resolvedProjection.status === "corrupt"
+					? {
+							status: resolvedProjection.status,
+							digest: resolvedProjection.digest,
+							conflictingHeads: [...resolvedProjection.conflictingHeads]
+								.map((head) => head.toLowerCase())
+								.sort(),
+						}
+					: resolvedProjection.status === "quarantined"
+						? {
+								status: resolvedProjection.status,
+								digest: resolvedProjection.digest,
+							}
+						: { status: resolvedProjection.status };
+		const digest = canonicalSubmissionDigest({
+			questionId: String(holder.question_id),
+			holderState: String(holder.state),
+			holderHead,
+			authority: authorityIdentity,
+			observationProjection: projectionIdentity,
+			sourceExecutionId: String(holder.source_execution_id),
+			carrier: {
+				exists: carrier !== undefined,
+				status: carrier?.status ?? null,
+				reviewQuestionId: carrier?.review_question_id ?? null,
+				prHeadSha: carrier?.pr_head_sha?.trim().toLowerCase() ?? null,
+			},
+			claims: claims.valid
+				? { valid: true, reason: null }
+				: { valid: false, reason: claims.reason },
+		});
+		return { digest, authority, projection: resolvedProjection, claims };
+	}
+
+	private runnerShipCompletionRetryState(
+		runId: string,
+		digest: string,
+	): {
+		attemptCount: number;
+		nextRetryAt: string | null;
+		deadEnded: boolean;
+		ledgerCorrupt: boolean;
+	} {
+		const deadEnded =
+			this.workflowSelectAll(
+				"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+				[`runner_ship_completion_deadend:${digest}`],
+			).length > 0;
+		const prefix = `runner_ship_completion_attempt:${digest}:`;
+		const prefixUpperBound = `${prefix.slice(0, -1)};`;
+		const latest = this.workflowSelectAll(
+			`SELECT payload FROM workflow_run_event
+			  WHERE run_id = ? AND kind = 'runner_ship_completion_attempt'
+			    AND event_uid >= ? AND event_uid < ?
+			  ORDER BY seq DESC LIMIT 1`,
+			[runId, prefix, prefixUpperBound],
+		)[0];
+		if (!latest) {
+			return {
+				attemptCount: 0,
+				nextRetryAt: null,
+				deadEnded,
+				ledgerCorrupt: false,
+			};
+		}
+		try {
+			const payload = JSON.parse(String(latest.payload)) as {
+				attempt?: number;
+				nextRetryAt?: string;
+			};
+			if (
+				!Number.isSafeInteger(payload.attempt) ||
+				Number(payload.attempt) < 1 ||
+				typeof payload.nextRetryAt !== "string" ||
+				!StateStore.workflowFiniteTimestamp(payload.nextRetryAt)
+			) {
+				return {
+					attemptCount: 5,
+					nextRetryAt: null,
+					deadEnded: true,
+					ledgerCorrupt: true,
+				};
+			}
+			return {
+				attemptCount: Number(payload.attempt),
+				nextRetryAt: payload.nextRetryAt,
+				deadEnded,
+				ledgerCorrupt: false,
+			};
+		} catch {
+			// The retry ledger is append-only. A malformed latest attempt cannot be
+			// repaired automatically, so fail closed instead of retrying it every tick.
+			return {
+				attemptCount: 5,
+				nextRetryAt: null,
+				deadEnded: true,
+				ledgerCorrupt: true,
+			};
+		}
+	}
+
+	private recordRunnerShipCompletionLedgerCorruptTx(
+		holder: Record<string, unknown>,
+		digest: string,
+	): void {
+		const eventUid = `runner_ship_completion_ledger_corrupt:${digest}`;
+		if (
+			this.workflowSelectAll(
+				"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			).length > 0
+		) {
+			return;
+		}
+		this.appendWorkflowRunEventCheckedTx({
+			runId: String(holder.run_id),
+			eventUid,
+			kind: "runner_ship_completion_ledger_corrupt",
+			nodeId: String(holder.gate_node_id),
+			executionId: String(holder.source_execution_id),
+			payload: { digest, reason: "malformed_attempt_payload" },
+		});
+		console.error(
+			`[StateStore] ${JSON.stringify({
+				event: "runner_ship_completion_ledger_corrupt",
+				runId: String(holder.run_id),
+				questionId: String(holder.question_id),
+				digest,
+			})}`,
+		);
+	}
+
+	listRunnerShipHoldersForMergeProbe(
+		now = new Date().toISOString(),
+	): WorkflowRunnerShipMergeCandidate[] {
+		if (!StateStore.workflowFiniteTimestamp(now)) {
+			throw new Error("runner_ship_merge_probe_timestamp_invalid");
+		}
 		const holders = this.workflowSelectAll(
 			`SELECT h.*, r.issue_id, r.project_name, r.snapshot
 			   FROM workflow_gate_holder h
@@ -32506,6 +33178,17 @@ export class StateStore {
 				: { status: "none" as const };
 			if (projection.status === "quarantined") continue;
 			if (
+				authority.status === "authority_conflict" &&
+				this.workflowSelectAll(
+					"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+					[
+						`runner_ship_authority_conflict:${row.question_id}:${authority.digest}`,
+					],
+				).length > 0
+			) {
+				continue;
+			}
+			if (
 				fingerprint &&
 				this.workflowSelectAll(
 					"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
@@ -32520,6 +33203,46 @@ export class StateStore {
 				authority.status === "resolved" || authority.status === "legacy_missing"
 					? authority.prNumber
 					: undefined;
+			if (authority.status === "legacy_missing") {
+				const prefix = `runner_ship_legacy_merge_anomaly:${row.question_id}:${row.state}:${head}:${authority.prNumber}:`;
+				const prefixUpperBound = `${prefix.slice(0, -1)};`;
+				if (
+					this.workflowSelectAll(
+						`SELECT 1 AS x FROM workflow_run_event
+						  WHERE run_id = ? AND event_uid >= ? AND event_uid < ?
+						  LIMIT 1`,
+						[String(row.run_id), prefix, prefixUpperBound],
+					).length > 0
+				) {
+					continue;
+				}
+			}
+			const completionContext = this.runnerShipCompletionContext(
+				row,
+				now,
+				projection,
+			);
+			const retryState = this.runnerShipCompletionRetryState(
+				String(row.run_id),
+				completionContext.digest,
+			);
+			if (retryState.ledgerCorrupt) {
+				this.db.transaction(() => {
+					this.recordRunnerShipCompletionLedgerCorruptTx(
+						row,
+						completionContext.digest,
+					);
+				});
+				this.save();
+				continue;
+			}
+			if (
+				retryState.deadEnded ||
+				(retryState.nextRetryAt !== null &&
+					Date.parse(retryState.nextRetryAt) > Date.parse(now))
+			) {
+				continue;
+			}
 			candidates.push({
 				runId: String(row.run_id),
 				issueId: String(row.issue_id),
@@ -32536,6 +33259,7 @@ export class StateStore {
 				subjectDigest: head,
 				sourceExecutionId: String(row.source_execution_id),
 				gateOpenedAt: String(row.created_at),
+				completionContextDigest: completionContext.digest,
 				authority,
 				...(fingerprint ? { fingerprint } : {}),
 				...(projection.status === "valid"
@@ -32560,6 +33284,70 @@ export class StateStore {
 			});
 		}
 		return candidates;
+	}
+
+	runnerShipCompletionDigestAfterObservedMerge(input: {
+		questionId: string;
+		expectedHolderState: string;
+		expectedHolderHead: string;
+		expectedAuthority: Pick<
+			WorkflowRunnerShipResolvedAuthority,
+			"repoIdentity" | "probeRepoSlug" | "prNumber"
+		>;
+		mergedHead: string;
+		now: string;
+	}): string | undefined {
+		const holderHead = input.expectedHolderHead.trim().toLowerCase();
+		const mergedHead = input.mergedHead.trim().toLowerCase();
+		if (
+			!input.questionId.trim() ||
+			!/^[0-9a-f]{40}$/.test(holderHead) ||
+			!/^[0-9a-f]{40}$/.test(mergedHead) ||
+			mergedHead !== holderHead ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return undefined;
+		}
+		const holder = this.runnerShipMutationHolder(input.questionId);
+		if (
+			!holder ||
+			!this.runnerShipHolderMembershipValid(holder) ||
+			holder.state !== input.expectedHolderState ||
+			String(holder.head_sha).toLowerCase() !== holderHead
+		) {
+			return undefined;
+		}
+		const authority = this.resolveRunnerShipAuthority(holder);
+		if (
+			!StateStore.runnerShipAuthorityMatches(authority, input.expectedAuthority)
+		) {
+			return undefined;
+		}
+		const fingerprint = StateStore.runnerShipFingerprint(authority);
+		const context = this.runnerShipCompletionContext(holder, input.now, {
+			status: "valid",
+			fingerprint,
+			headSha: mergedHead,
+		});
+		const retryState = this.runnerShipCompletionRetryState(
+			String(holder.run_id),
+			context.digest,
+		);
+		if (retryState.ledgerCorrupt) {
+			this.db.transaction(() => {
+				this.recordRunnerShipCompletionLedgerCorruptTx(holder, context.digest);
+			});
+			this.save();
+			return undefined;
+		}
+		if (
+			retryState.deadEnded ||
+			(retryState.nextRetryAt !== null &&
+				Date.parse(retryState.nextRetryAt) > Date.parse(input.now))
+		) {
+			return undefined;
+		}
+		return context.digest;
 	}
 
 	private runnerShipMutationHolder(
@@ -32601,6 +33389,80 @@ export class StateStore {
 			Number(holder.gate_carrier_epoch) === 1 &&
 			holder.current_node_id === holder.gate_node_id
 		);
+	}
+
+	inspectRunnerShipGateCloseout(questionId: string, now: string):
+		| {
+				ok: true;
+				holder: {
+					questionId: string;
+					runId: string;
+					state: string;
+					headSha: string;
+					sourceExecutionId: string;
+					carrierBindingState: string;
+				};
+				run: WorkflowRunRow | undefined;
+				carrier: Session | undefined;
+				authority: WorkflowRunnerShipAuthorityResolution;
+				observationProjection: RunnerShipObservationProjection;
+				claims: WorkflowShipClaimsResolution;
+				completionContextDigest: string;
+		  }
+		| { ok: false; reason: "invalid_input" | "holder_unavailable" } {
+		if (!questionId.trim() || !StateStore.workflowFiniteTimestamp(now)) {
+			return { ok: false, reason: "invalid_input" };
+		}
+		const holder = this.runnerShipMutationHolder(questionId);
+		if (!holder) return { ok: false, reason: "holder_unavailable" };
+		const context = this.runnerShipCompletionContext(holder, now);
+		return {
+			ok: true,
+			holder: {
+				questionId: String(holder.question_id),
+				runId: String(holder.run_id),
+				state: String(holder.state),
+				headSha: String(holder.head_sha).toLowerCase(),
+				sourceExecutionId: String(holder.source_execution_id),
+				carrierBindingState: String(holder.carrier_binding_state),
+			},
+			run: this.getWorkflowRun(String(holder.run_id)),
+			carrier: this.getSession(String(holder.source_execution_id)),
+			authority: context.authority,
+			observationProjection: context.projection,
+			claims: context.claims,
+			completionContextDigest: context.digest,
+		};
+	}
+
+	completeRunnerShipGateFromPersistedObservation(input: {
+		questionId: string;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		const inspection = this.inspectRunnerShipGateCloseout(
+			input.questionId,
+			input.now,
+		);
+		if (!inspection.ok) return inspection;
+		if (inspection.authority.status !== "resolved") {
+			return { ok: false, reason: "authority_unresolved" };
+		}
+		if (inspection.observationProjection.status !== "valid") {
+			return { ok: false, reason: "persisted_observation_invalid" };
+		}
+		return this.completeWorkflowGateRunAfterShip({
+			questionId: input.questionId,
+			mergedHead: inspection.observationProjection.headSha,
+			expectedHolderState: inspection.holder.state,
+			expectedHolderHead: inspection.holder.headSha,
+			expectedObservationHead: inspection.observationProjection.headSha,
+			observedAuthority: inspection.authority,
+			alertIdentity: input.alertIdentity,
+			now: input.now,
+		});
 	}
 
 	recordRunnerShipMergedObserved(input: {
@@ -33318,16 +34180,30 @@ export class StateStore {
 					mergedHead,
 				],
 			);
+			let carrierDisposition: string | undefined;
 			if (this.db.getRowsModified() !== 1) {
-				this.recordRunnerShipCompletionFailureTx({
-					holder,
-					reason: "carrier_session_mismatch",
-					mergedHead,
-					alertIdentity: input.alertIdentity,
-					now: input.now,
-				});
-				result = { ok: false, reason: "carrier_session_mismatch" };
-				return;
+				const carrier = this.getSession(String(holder.source_execution_id));
+				const carrierHead = carrier?.pr_head_sha?.trim().toLowerCase();
+				if (
+					carrier?.review_question_id === input.questionId &&
+					carrierHead === mergedHead &&
+					isStateStoreIrreversibleTerminalForZombie(carrier.status)
+				) {
+					// The merge is fully proven, while the carrier has independently
+					// reached a monotonic terminal state. Complete the workflow run but
+					// preserve the carrier row byte-for-byte and record that disposition.
+					carrierDisposition = `carrier_already_terminal:${carrier.status}`;
+				} else {
+					this.recordRunnerShipCompletionFailureTx({
+						holder,
+						reason: "carrier_session_mismatch",
+						mergedHead,
+						alertIdentity: input.alertIdentity,
+						now: input.now,
+					});
+					result = { ok: false, reason: "carrier_session_mismatch" };
+					return;
+				}
 			}
 			this.db.run(
 				`UPDATE workflow_run SET status = 'completed'
@@ -33355,9 +34231,12 @@ export class StateStore {
 					questionId: input.questionId,
 					mergedHead,
 					fingerprint,
+					...(carrierDisposition ? { carrierDisposition } : {}),
 				},
 			});
-			this.bumpLifecycleRevision(String(holder.source_execution_id));
+			if (!carrierDisposition) {
+				this.bumpLifecycleRevision(String(holder.source_execution_id));
+			}
 			result = { ok: true, idempotentReplay: false };
 		});
 		this.save();
@@ -33366,49 +34245,169 @@ export class StateStore {
 
 	private recordRunnerShipCompletionFailureTx(input: {
 		holder: Record<string, unknown>;
-		reason: "ship_claims_invalid" | "carrier_session_mismatch";
+		reason: string;
+		boundedDetail?: string;
 		mergedHead: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
 		now: string;
-	}): void {
-		const eventUid = `runner_ship_completion_failure:${input.holder.question_id}:${input.reason}:${input.mergedHead}`;
+	}):
+		| { status: "recorded"; attempt: number; nextRetryAt: string }
+		| { status: "not_due" }
+		| { status: "dead_ended"; attempt: number } {
+		const context = this.runnerShipCompletionContext(input.holder, input.now);
+		const runId = String(input.holder.run_id);
+		const prior = this.runnerShipCompletionRetryState(runId, context.digest);
+		if (prior.ledgerCorrupt) {
+			this.recordRunnerShipCompletionLedgerCorruptTx(
+				input.holder,
+				context.digest,
+			);
+			return { status: "dead_ended", attempt: prior.attemptCount };
+		}
+		if (prior.deadEnded) {
+			return { status: "dead_ended", attempt: prior.attemptCount };
+		}
+		if (
+			prior.nextRetryAt !== null &&
+			Date.parse(prior.nextRetryAt) > Date.parse(input.now)
+		) {
+			return { status: "not_due" };
+		}
+
+		// One transaction owns the complete episode write order: gate, derive n,
+		// append attempt, append the episode's one receipt+alert, then dead-end.
+		// Keeping this order prevents concurrent writers from burning the budget.
+		const attempt = prior.attemptCount + 1;
+		const nextRetryAt = new Date(
+			Date.parse(input.now) + 60_000 * 2 ** (attempt - 1),
+		).toISOString();
 		this.appendWorkflowRunEventCheckedTx({
-			runId: String(input.holder.run_id),
-			eventUid,
-			kind: "runner_ship_completion_failure",
+			runId,
+			eventUid: `runner_ship_completion_attempt:${context.digest}:${attempt}`,
+			kind: "runner_ship_completion_attempt",
 			nodeId: String(input.holder.gate_node_id),
 			executionId: String(input.holder.source_execution_id),
 			payload: {
 				questionId: String(input.holder.question_id),
-				reason: input.reason,
+				errorCode: input.reason,
+				boundedDetail: (input.boundedDetail ?? input.reason).slice(0, 240),
 				mergedHead: input.mergedHead,
+				digest: context.digest,
+				attempt,
+				nextRetryAt,
 			},
 		});
-		this.enqueueWorkflowEngineAlertTx({
-			escalationUid: eventUid,
-			runId: String(input.holder.run_id),
-			payload: {
-				leadId: input.alertIdentity.leadId,
-				projectName: input.alertIdentity.projectName,
-				eventId: eventUid,
-				eventType: "workflow_engine_issue_alert",
-				title: `Runner-ship completion held for ${input.holder.issue_id}`,
-				body: `The merged PR was verified at ${input.mergedHead}, but completion failed closed (${input.reason}). The run remains active until the local authority is repaired.`,
-				severity: "severe",
-				sessionKey: `wf:${input.holder.run_id}`,
-				metadata: {
-					workflowEngine: {
-						runId: String(input.holder.run_id),
-						issueId: String(input.holder.issue_id),
-						nodeId: String(input.holder.gate_node_id),
-						executionId: String(input.holder.source_execution_id),
-						disposition: "runner_ship_completion_failure",
-						leadResolution: input.alertIdentity.leadResolution,
+		if (attempt === 1) {
+			const eventUid = `runner_ship_completion_failure:${context.digest}`;
+			this.appendWorkflowRunEventCheckedTx({
+				runId,
+				eventUid,
+				kind: "runner_ship_completion_failure",
+				nodeId: String(input.holder.gate_node_id),
+				executionId: String(input.holder.source_execution_id),
+				payload: {
+					questionId: String(input.holder.question_id),
+					mergedHead: input.mergedHead,
+					digest: context.digest,
+				},
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: eventUid,
+					eventType: "workflow_engine_issue_alert",
+					title: `Runner-ship completion held for ${input.holder.issue_id}`,
+					body: `The merged PR was verified at ${input.mergedHead}, but the local completion context could not be settled. Automatic retries are durably backed off and will stop after five attempts unless the context is repaired.`,
+					severity: "severe",
+					sessionKey: `wf:${input.holder.run_id}`,
+					metadata: {
+						workflowEngine: {
+							runId,
+							issueId: String(input.holder.issue_id),
+							nodeId: String(input.holder.gate_node_id),
+							executionId: String(input.holder.source_execution_id),
+							disposition: "runner_ship_completion_failure",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
 					},
 				},
-			},
-			now: input.now,
+				now: input.now,
+			});
+		}
+		if (attempt >= 5) {
+			this.appendWorkflowRunEventCheckedTx({
+				runId,
+				eventUid: `runner_ship_completion_deadend:${context.digest}`,
+				kind: "runner_ship_completion_deadend",
+				nodeId: String(input.holder.gate_node_id),
+				executionId: String(input.holder.source_execution_id),
+				payload: {
+					questionId: String(input.holder.question_id),
+					mergedHead: input.mergedHead,
+					digest: context.digest,
+					attempt,
+				},
+			});
+			return { status: "dead_ended", attempt };
+		}
+		return { status: "recorded", attempt, nextRetryAt };
+	}
+
+	recordRunnerShipCompletionException(input: {
+		questionId: string;
+		expectedContextDigest: string;
+		errorCode: string;
+		boundedDetail: string;
+		mergedHead: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| { status: "recorded"; attempt: number; nextRetryAt: string }
+		| { status: "not_due" }
+		| { status: "dead_ended"; attempt: number }
+		| { status: "candidate_changed" } {
+		if (
+			!input.questionId.trim() ||
+			!/^[0-9a-f]{64}$/.test(input.expectedContextDigest) ||
+			!input.errorCode.trim() ||
+			!/^[0-9a-f]{40}$/.test(input.mergedHead) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			throw new Error("runner_ship_completion_exception_invalid");
+		}
+		let result:
+			| { status: "recorded"; attempt: number; nextRetryAt: string }
+			| { status: "not_due" }
+			| { status: "dead_ended"; attempt: number }
+			| { status: "candidate_changed" } = {
+			status: "candidate_changed",
+		};
+		this.db.transaction(() => {
+			const holder = this.runnerShipMutationHolder(input.questionId);
+			if (!holder || !this.runnerShipHolderMembershipValid(holder)) return;
+			const context = this.runnerShipCompletionContext(holder, input.now);
+			if (context.digest !== input.expectedContextDigest) return;
+			result = this.recordRunnerShipCompletionFailureTx({
+				holder,
+				reason: input.errorCode,
+				boundedDetail: input.boundedDetail,
+				mergedHead: input.mergedHead,
+				alertIdentity: input.alertIdentity,
+				now: input.now,
+			});
 		});
+		const settled = result as
+			| { status: "recorded"; attempt: number; nextRetryAt: string }
+			| { status: "not_due" }
+			| { status: "dead_ended"; attempt: number }
+			| { status: "candidate_changed" };
+		if (settled.status !== "candidate_changed" && settled.status !== "not_due") {
+			this.save();
+		}
+		return settled;
 	}
 
 	recordRunnerShipLegacyMergeAnomaly(input: {
@@ -35670,6 +36669,7 @@ export interface WorkflowEngineAlertPayload {
 				| "completion_receipt_missing"
 				| "rework_suppressed_idle_spin"
 				| "rework_retry_exhausted"
+				| "rework_held_recovery_exhausted"
 				| "probe_unknown"
 				| "stale_resubmission"
 				| "dead_execution_activity_after_replacement"

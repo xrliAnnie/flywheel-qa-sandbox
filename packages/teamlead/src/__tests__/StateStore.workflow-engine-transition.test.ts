@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalSubmissionDigest } from "flywheel-config";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { loadBundledWorkflowSeeds } from "../workflow-template.js";
 
@@ -1366,6 +1366,278 @@ describe("engine-owned snapshot transition transaction", () => {
 		store.close();
 	});
 
+	it("completes an approved run without mutating an already-terminal carrier", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const holder = await openRunnerShipGate(store);
+		const authority = bindRunnerShipAuthority(store, holder);
+		expect(
+			store.recordRunnerShipMergedObserved({
+				questionId: holder.question_id,
+				expectedHolderState: "materializing",
+				expectedHolderHead: "a".repeat(40),
+				expectedAuthority: authority,
+				mergedHead: "a".repeat(40),
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-16T01:20:00.000Z",
+			}),
+		).toEqual({ status: "persisted" });
+		approveRunnerShipGate(store, holder);
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			`UPDATE sessions
+			    SET status = 'blocked', terminal_at = '2026-07-16T02:00:00.000Z',
+			        last_activity_at = '2026-07-16T02:00:00.000Z'
+			  WHERE execution_id = 'implement-1'`,
+		);
+		const carrierBefore = store.getSession("implement-1");
+
+		expect(
+			store.completeWorkflowGateRunAfterShip({
+				questionId: holder.question_id,
+				mergedHead: "a".repeat(40),
+				now: "2026-07-18T01:16:00.000Z",
+				expectedHolderState: "approved",
+				expectedHolderHead: "a".repeat(40),
+				expectedObservationHead: "a".repeat(40),
+				observedAuthority: authority,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		expect(store.getWorkflowRun("run-1")?.status).toBe("completed");
+		expect(store.getWorkflowRunNode("run-1", "founder_gate", 1)?.state).toBe(
+			"done",
+		);
+		expect(store.getSession("implement-1")).toEqual(carrierBefore);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.find((event) => event.kind === "run_completed")?.payload,
+		).toMatchObject({ carrierDisposition: "carrier_already_terminal:blocked" });
+		store.close();
+	});
+
+	it("durably backs off a failing completion episode and dead-ends it after five attempts", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1648-completion-backoff-"));
+		const dbPath = join(dir, "teamlead.db");
+		let store: StateStore | undefined;
+		try {
+			store = await engineRun({ dbPath, gateCarrier: true });
+			const holder = await openRunnerShipGate(store);
+			const authority = bindRunnerShipAuthority(store, holder);
+			expect(
+				store.recordRunnerShipMergedObserved({
+					questionId: holder.question_id,
+					expectedHolderState: "materializing",
+					expectedHolderHead: "a".repeat(40),
+					expectedAuthority: authority,
+					mergedHead: "a".repeat(40),
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now: "2026-07-16T01:20:00.000Z",
+				}),
+			).toEqual({ status: "persisted" });
+			approveRunnerShipGate(store, holder);
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run(
+				"UPDATE sessions SET status = 'running' WHERE execution_id = 'implement-1'",
+			);
+			const alertIdentity = {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved" as const,
+			};
+			const firstAt = Date.parse("2026-07-18T01:16:00.000Z");
+			const dueOffsets = [0, 60_000, 180_000, 420_000, 900_000];
+			const firstCandidate = store.listRunnerShipHoldersForMergeProbe(
+				new Date(firstAt).toISOString(),
+			)[0]!;
+			expect(firstCandidate.completionContextDigest).toMatch(/^[0-9a-f]{64}$/);
+
+			for (let index = 0; index < dueOffsets.length; index += 1) {
+				const now = new Date(firstAt + dueOffsets[index]!).toISOString();
+				if (index === 1 || index === 2) {
+					expect(
+						store.recordRunnerShipCompletionException({
+							questionId: holder.question_id,
+							expectedContextDigest: firstCandidate.completionContextDigest,
+							errorCode: "completion_exception",
+							boundedDetail: `synthetic exception ${index}`,
+							mergedHead: "a".repeat(40),
+							alertIdentity,
+							now,
+						}),
+					).toMatchObject({ status: "recorded", attempt: index + 1 });
+				} else {
+					expect(
+						store.completeWorkflowGateRunAfterShip({
+							questionId: holder.question_id,
+							mergedHead: "a".repeat(40),
+							now,
+							expectedHolderState: "approved",
+							expectedHolderHead: "a".repeat(40),
+							expectedObservationHead: "a".repeat(40),
+							observedAuthority: authority,
+							alertIdentity,
+						}),
+					).toEqual({ ok: false, reason: "carrier_session_mismatch" });
+				}
+
+				if (index === 0) {
+					store.close();
+					store = await StateStore.create(dbPath);
+					expect(
+						store.recordRunnerShipCompletionException({
+							questionId: holder.question_id,
+							expectedContextDigest: firstCandidate.completionContextDigest,
+							errorCode: "completion_exception",
+							boundedDetail: "concurrent duplicate",
+							mergedHead: "a".repeat(40),
+							alertIdentity,
+							now: new Date(firstAt + 1).toISOString(),
+						}),
+					).toEqual({ status: "not_due" });
+				}
+				if (index < dueOffsets.length - 1) {
+					const nextDue = firstAt + dueOffsets[index + 1]!;
+					expect(
+						store.listRunnerShipHoldersForMergeProbe(
+							new Date(nextDue - 1).toISOString(),
+						),
+					).toEqual([]);
+					expect(
+						store.listRunnerShipHoldersForMergeProbe(
+							new Date(nextDue).toISOString(),
+						)[0]?.completionContextDigest,
+					).toBe(firstCandidate.completionContextDigest);
+				}
+			}
+
+			expect(
+				store.listRunnerShipHoldersForMergeProbe(
+					new Date(firstAt + 86_400_000).toISOString(),
+				),
+			).toEqual([]);
+			const completionEvents = store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind.startsWith("runner_ship_completion_"));
+			expect(
+				completionEvents.filter(
+					(event) => event.kind === "runner_ship_completion_attempt",
+				),
+			).toHaveLength(5);
+			expect(
+				completionEvents.filter(
+					(event) => event.kind === "runner_ship_completion_failure",
+				),
+			).toHaveLength(1);
+			expect(
+				completionEvents.filter(
+					(event) => event.kind === "runner_ship_completion_deadend",
+				),
+			).toHaveLength(1);
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+
+			const repairedDb = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			repairedDb.run(
+				"UPDATE sessions SET status = 'approved_to_ship' WHERE execution_id = 'implement-1'",
+			);
+			const repaired = store.listRunnerShipHoldersForMergeProbe(
+				new Date(firstAt + 86_400_000).toISOString(),
+			)[0];
+			expect(repaired?.completionContextDigest).toMatch(/^[0-9a-f]{64}$/);
+			expect(repaired?.completionContextDigest).not.toBe(
+				firstCandidate.completionContextDigest,
+			);
+			expect(
+				store.recordRunnerShipCompletionException({
+					questionId: holder.question_id,
+					expectedContextDigest: firstCandidate.completionContextDigest,
+					errorCode: "completion_exception",
+					boundedDetail: "stale exception after repair",
+					mergedHead: "a".repeat(40),
+					alertIdentity,
+					now: new Date(firstAt + 86_400_000).toISOString(),
+				}),
+			).toEqual({ status: "candidate_changed" });
+
+			store.appendWorkflowRunEvent({
+				runId: "run-1",
+				eventUid: `runner_ship_completion_attempt:${repaired!.completionContextDigest}:1`,
+				kind: "runner_ship_completion_attempt",
+				payload: "malformed-attempt-ledger",
+			});
+			const alertsBeforeCorruptMarker = store.listWorkflowAlertOutbox().length;
+			const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+			expect(
+				store.listRunnerShipHoldersForMergeProbe(
+					new Date(firstAt + 86_400_001).toISOString(),
+				),
+			).toEqual([]);
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter(
+						(event) => event.kind === "runner_ship_completion_ledger_corrupt",
+					),
+			).toEqual([
+				expect.objectContaining({
+					event_uid: `runner_ship_completion_ledger_corrupt:${repaired!.completionContextDigest}`,
+					payload: {
+						digest: repaired!.completionContextDigest,
+						reason: "malformed_attempt_payload",
+					},
+				}),
+			]);
+			expect(errorLog).toHaveBeenCalledWith(
+				expect.stringContaining(
+					'"event":"runner_ship_completion_ledger_corrupt"',
+				),
+			);
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(
+				alertsBeforeCorruptMarker,
+			);
+			expect(
+				store.recordRunnerShipCompletionException({
+					questionId: holder.question_id,
+					expectedContextDigest: repaired!.completionContextDigest,
+					errorCode: "completion_exception",
+					boundedDetail: "malformed ledger must fail closed",
+					mergedHead: "a".repeat(40),
+					alertIdentity,
+					now: new Date(firstAt + 86_400_001).toISOString(),
+				}),
+			).toEqual({ status: "dead_ended", attempt: 5 });
+			expect(errorLog).toHaveBeenCalledTimes(1);
+			errorLog.mockRestore();
+		} finally {
+			store?.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("refuses completion when the merged head differs from the founder-frozen Gate head", async () => {
 		const store = await engineRun({ gateCarrier: true });
 		const holder = await openRunnerShipGate(store);
@@ -1633,6 +1905,41 @@ describe("engine-owned snapshot transition transaction", () => {
 						.join("\n");
 		expect(details).toContain("USING INDEX");
 		expect(details).not.toContain("SCAN workflow_run_event");
+		const anomalyPlan = db.exec(
+			`EXPLAIN QUERY PLAN
+			 SELECT 1 AS x FROM workflow_run_event
+			  WHERE run_id = 'run-1'
+			    AND event_uid >= 'runner_ship_legacy_merge_anomaly:q:approved:head:12:'
+			    AND event_uid < 'runner_ship_legacy_merge_anomaly:q:approved:head:12;'
+			  LIMIT 1`,
+		)[0];
+		const anomalyDetailIndex = anomalyPlan?.columns.indexOf("detail") ?? -1;
+		const anomalyDetails =
+			anomalyDetailIndex < 0
+				? ""
+				: (anomalyPlan?.values ?? [])
+						.map((row) => String(row[anomalyDetailIndex]))
+						.join("\n");
+		expect(anomalyDetails).toContain("USING INDEX");
+		expect(anomalyDetails).not.toContain("SCAN workflow_run_event");
+		const retryPlan = db.exec(
+			`EXPLAIN QUERY PLAN
+			 SELECT payload FROM workflow_run_event
+			  WHERE run_id = 'run-1'
+			    AND kind = 'runner_ship_completion_attempt'
+			    AND event_uid >= 'runner_ship_completion_attempt:digest:'
+			    AND event_uid < 'runner_ship_completion_attempt:digest;'
+			  ORDER BY seq DESC LIMIT 1`,
+		)[0];
+		const retryDetailIndex = retryPlan?.columns.indexOf("detail") ?? -1;
+		const retryDetails =
+			retryDetailIndex < 0
+				? ""
+				: (retryPlan?.values ?? [])
+						.map((row) => String(row[retryDetailIndex]))
+						.join("\n");
+		expect(retryDetails).toContain("USING INDEX");
+		expect(retryDetails).not.toContain("SCAN workflow_run_event");
 		store.close();
 	});
 

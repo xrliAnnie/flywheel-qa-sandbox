@@ -1382,7 +1382,8 @@ describe("WorkflowEngineDispatcher", () => {
 		db.run("UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'");
 		db.run(
 			`UPDATE workflow_rework_delivery
-			    SET state = 'held', last_error = 'persisted_target_missing'
+			    SET state = 'held', last_error = 'persisted_target_missing',
+			        hold_count = 4, next_retry_at = '2026-07-16T00:29:00.000Z'
 			  WHERE request_id = ?`,
 			[requestId],
 		);
@@ -1413,6 +1414,8 @@ describe("WorkflowEngineDispatcher", () => {
 		});
 		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
 			state: "wake_delivered",
+			hold_count: 0,
+			next_retry_at: null,
 		});
 		store.close();
 	});
@@ -1489,6 +1492,65 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(log).toHaveBeenCalledWith(
 			expect.stringContaining("synthetic pane-loss CAS failure"),
 		);
+		store.close();
+	});
+
+	it("stops probing and materializing a permanently failing held rework after five due attempts", async () => {
+		const store = await storeWithQaFailKickback();
+		const fake = fakeStartDispatcher(store);
+		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run("UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'");
+		db.run(
+			`UPDATE workflow_rework_delivery
+			    SET state = 'held', last_error = 'persisted_target_missing'
+			  WHERE request_id = ?`,
+			[requestId],
+		);
+		db.run(
+			`UPDATE workflow_run_node SET state = 'failed', ended_at = ?
+			  WHERE run_id = 'run-1' AND node_id = 'implement' AND attempt = 2`,
+			["2026-07-16T00:20:00.000Z"],
+		);
+		let now = "2026-07-16T00:30:00.000Z";
+		const probeLaunchLiveness = vi.fn(async () => "dead" as const);
+		const materialize = vi.spyOn(store, "materializeWorkflowReworkReplacement");
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date(now),
+			probeLaunchLiveness,
+			reconcileWorkflowRework: async () => ({ kind: "busy" }),
+		});
+
+		for (const minute of [30, 31, 33, 37, 45]) {
+			now = `2026-07-16T00:${minute}:00.000Z`;
+			await expect(dispatcher.reconcile()).resolves.toEqual({
+				started: 0,
+				held: 1,
+			});
+		}
+		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+			state: "needs_lead",
+			hold_count: 5,
+			next_retry_at: null,
+			last_error: "rework_replacement_target_changed",
+		});
+		expect(probeLaunchLiveness).toHaveBeenCalledTimes(5);
+		expect(materialize).toHaveBeenCalledTimes(5);
+
+		now = "2026-07-17T00:45:00.000Z";
+		await expect(dispatcher.reconcile()).resolves.toEqual({
+			started: 0,
+			held: 0,
+		});
+		expect(probeLaunchLiveness).toHaveBeenCalledTimes(5);
+		expect(materialize).toHaveBeenCalledTimes(5);
 		store.close();
 	});
 

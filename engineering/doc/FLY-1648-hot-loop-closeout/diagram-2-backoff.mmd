@@ -1,0 +1,19 @@
+flowchart TB
+    A["恢复尝试失败<br/>(必败账每次都会到这)"]
+    B{"第几次失败?"}
+    C["第 1-4 次:退避<br/>等 1m / 2m / 4m / 8m 再试<br/>(写进数据库,重启不清零)"]
+    D["第 5 次:转 needs_lead 终态<br/>= 交给人来决定<br/>发一次 severe 通知,之后永久静默"]
+    E["循环彻底不再碰这条账<br/>探针 0 次 / 事务 0 次 / 日志 0 行"]
+    F["Lead 若要重启这条账:<br/>走既有 operator rework 复活路径<br/>(FLY-1434,现成工具)"]
+    G["若账的上下文被修好<br/>(换 head / 修 carrier / 重批)"]
+    H["识别键 digest 自动变化<br/>→ 账自动回到扫描队列<br/>不误伤未来的修复"]
+    A --> B
+    B -->|"1-4"| C
+    C -->|"到期后再试"| A
+    B -->|"5"| D
+    D --> E
+    E --> F
+    G --> H
+    style D fill:#fff3e0,stroke:#ff9500
+    style E fill:#e6f9ed,stroke:#34c759
+    style H fill:#e6f9ed,stroke:#34c759

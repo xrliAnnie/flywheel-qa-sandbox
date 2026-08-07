@@ -383,6 +383,7 @@ export interface AlertMetadata {
 			| "completion_receipt_missing"
 			| "rework_suppressed_idle_spin"
 			| "rework_retry_exhausted"
+			| "rework_held_recovery_exhausted"
 			| "probe_unknown"
 			| "stale_resubmission"
 			| "dead_execution_activity_after_replacement"

@@ -813,6 +813,202 @@ describe("FLY-1423 durable unified rework request", () => {
 		}
 	});
 
+	it("backs off held pane-loss recovery failures and moves the delivery to needs_lead", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			advanceHeavy(store, {
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-exec",
+				outcome: "design_done",
+				successorExecutionId: "implement-exec",
+			});
+			advanceHeavy(store, {
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "implement-exec",
+				outcome: "implement_done",
+				successorExecutionId: "qa-exec",
+			});
+			const failed = advanceHeavy(store, {
+				nodeId: "qa",
+				attempt: 1,
+				executionId: "qa-exec",
+				outcome: "qa_fail",
+				subjectDigest: "a".repeat(40),
+			});
+			if (!failed.ok || !failed.reworkRequestId) {
+				throw new Error("rework request not returned");
+			}
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			raw
+				.prepare("UPDATE workflow_run SET status = 'held' WHERE run_id = ?")
+				.run("run-heavy");
+			raw
+				.prepare(
+					`UPDATE workflow_rework_delivery
+					    SET state = 'held', last_error = 'persisted_target_missing'
+					  WHERE request_id = ?`,
+				)
+				.run(failed.reworkRequestId);
+
+			const times = [11, 12, 14, 18, 26].map(
+				(minute) => `2026-07-23T00:${minute}:00.000Z`,
+			);
+			const expectedNext = [12, 14, 18, 26].map(
+				(minute) => `2026-07-23T00:${minute}:00.000Z`,
+			);
+			for (const [index, now] of times.entries()) {
+				const settled = store.settleHeldReworkRecoveryFailure({
+					requestId: failed.reworkRequestId,
+					reason: "rework_replacement_target_changed",
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now,
+				});
+				expect(settled).toMatchObject({
+					ok: true,
+					holdCount: index + 1,
+					state: index === 4 ? "needs_lead" : "held",
+					nextRetryAt: index === 4 ? null : expectedNext[index],
+				});
+				const delivery = store.getWorkflowReworkDelivery(
+					failed.reworkRequestId,
+				);
+				expect(delivery?.last_error).toBe(
+					index === 4
+						? "rework_replacement_target_changed"
+						: "persisted_target_missing",
+				);
+				if (index < 4) {
+					expect(
+						store.listWorkflowReworkDeliveries({
+							states: ["held"],
+							now: new Date(Date.parse(expectedNext[index]!) - 1).toISOString(),
+						}),
+					).toEqual([]);
+				}
+			}
+
+			expect(store.getWorkflowRun("run-heavy")?.status).toBe("held");
+			expect(
+				store.getWorkflowReworkVerificationPath(failed.reworkRequestId),
+			).toMatchObject({ state: "needs_lead" });
+			expect(store.listWorkflowReworkDeliveries({ states: ["held"] })).toEqual(
+				[],
+			);
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+			expect(
+				store.listWorkflowAlertOutbox()[0]?.payload.metadata.workflowEngine,
+			).toMatchObject({ disposition: "rework_held_recovery_exhausted" });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("force-terminalizes only an exact held rework whose target is already unrecoverable", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			advanceHeavy(store, {
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-exec",
+				outcome: "design_done",
+				successorExecutionId: "implement-exec",
+			});
+			advanceHeavy(store, {
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "implement-exec",
+				outcome: "implement_done",
+				successorExecutionId: "qa-exec",
+			});
+			const failed = advanceHeavy(store, {
+				nodeId: "qa",
+				attempt: 1,
+				executionId: "qa-exec",
+				outcome: "qa_fail",
+				subjectDigest: "a".repeat(40),
+			});
+			if (!failed.ok || !failed.reworkRequestId) {
+				throw new Error("rework request not returned");
+			}
+			const route = store.getLatestWorkflowReworkRoute(failed.reworkRequestId)!;
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			raw
+				.prepare("UPDATE workflow_run SET status = 'held' WHERE run_id = ?")
+				.run("run-heavy");
+			raw
+				.prepare(
+					`UPDATE workflow_rework_delivery
+					    SET state = 'held', last_error = 'persisted_target_missing'
+					  WHERE request_id = ?`,
+				)
+				.run(failed.reworkRequestId);
+			const base = {
+				requestId: failed.reworkRequestId,
+				reason: "rework_replacement_target_changed",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved" as const,
+				},
+				now: "2026-07-23T00:11:00.000Z",
+				forceTerminal: {
+					expectedRunId: "run-heavy",
+					expectedRouteRevision: route.revision,
+					expectedTargetNodeId: route.target_node_id,
+					expectedTargetAttempt: route.target_attempt,
+					expectedTargetExecutionId: route.preferred_actor_execution_id,
+					operator: "fly1648-surgical-closeout",
+				},
+			};
+
+			expect(store.settleHeldReworkRecoveryFailure(base)).toEqual({
+				ok: false,
+				reason: "force_terminal_target_still_recoverable",
+			});
+			expect(
+				store.getWorkflowReworkDelivery(failed.reworkRequestId),
+			).toMatchObject({ state: "held", hold_count: 0 });
+			raw
+				.prepare(
+					`UPDATE workflow_run_node SET state = 'failed', ended_at = ?
+					  WHERE run_id = 'run-heavy' AND node_id = ? AND attempt = ?`,
+				)
+				.run(
+					"2026-07-23T00:10:30.000Z",
+					route.target_node_id,
+					route.target_attempt,
+				);
+			expect(
+				store.settleHeldReworkRecoveryFailure({
+					...base,
+					forceTerminal: {
+						...base.forceTerminal,
+						expectedTargetAttempt: route.target_attempt + 1,
+					},
+				}),
+			).toEqual({ ok: false, reason: "force_terminal_context_changed" });
+			expect(store.settleHeldReworkRecoveryFailure(base)).toEqual({
+				ok: true,
+				state: "needs_lead",
+				holdCount: 1,
+				nextRetryAt: null,
+			});
+			expect(
+				store.getWorkflowReworkDelivery(failed.reworkRequestId),
+			).toMatchObject({ state: "needs_lead", hold_count: 1 });
+		} finally {
+			store.close();
+		}
+	});
+
 	it("revokes an admitted activation before grant, but retains ambiguous grant-started work", async () => {
 		for (const grantStarted of [false, true]) {
 			const store = await createHeavyEngineRun();

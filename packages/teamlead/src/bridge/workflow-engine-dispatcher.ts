@@ -163,6 +163,8 @@ export class WorkflowEngineDispatcher {
 		string,
 		{ attempts: number; nextAttemptAtMs: number }
 	>();
+	private readonly heldReworkRecoveryProbeAt = new Map<string, number>();
+	private readonly completionExceptionProbeAt = new Map<string, number>();
 	private deadExecutionWatchCursor:
 		| { observedAt: string; deadExecutionId: string }
 		| undefined;
@@ -561,25 +563,40 @@ export class WorkflowEngineDispatcher {
 		const store = this.options.store;
 		let candidates: ReturnType<typeof store.listRunnerShipHoldersForMergeProbe>;
 		try {
-			candidates = store.listRunnerShipHoldersForMergeProbe();
+			candidates = store.listRunnerShipHoldersForMergeProbe(now);
 		} catch (error) {
 			this.log(
 				`runner-ship merge candidate scan held: ${error instanceof Error ? error.message : String(error)}`,
 			);
 			return;
 		}
+		const activeCompletionDigests = new Set(
+			candidates.map((candidate) => candidate.completionContextDigest),
+		);
+		for (const digest of this.completionExceptionProbeAt.keys()) {
+			if (!activeCompletionDigests.has(digest)) {
+				this.completionExceptionProbeAt.delete(digest);
+			}
+		}
+		const nowMs = Date.parse(now);
+		const eligibleCandidates = candidates.filter((candidate) => {
+			const nextProbeAt = this.completionExceptionProbeAt.get(
+				candidate.completionContextDigest,
+			);
+			return nextProbeAt === undefined || nowMs >= nextProbeAt;
+		});
 		let probes: Awaited<
 			ReturnType<NonNullable<WorkflowShipReadyArm["classifyRunnerShipMerged"]>>
 		>;
 		try {
-			probes = await arm.classifyRunnerShipMerged(candidates);
+			probes = await arm.classifyRunnerShipMerged(eligibleCandidates);
 		} catch (error) {
 			this.log(
 				`runner-ship merge probe held: ${error instanceof Error ? error.message : String(error)}`,
 			);
 			return;
 		}
-		for (const candidate of candidates) {
+		for (const candidate of eligibleCandidates) {
 			try {
 				const alertIdentity = this.resolveRunAlertIdentity(
 					candidate.projectName,
@@ -712,16 +729,63 @@ export class WorkflowEngineDispatcher {
 					});
 					continue;
 				}
-				const completed = store.completeWorkflowGateRunAfterShip({
-					questionId: candidate.questionId,
-					mergedHead,
-					expectedHolderState: candidate.holderState,
-					expectedHolderHead: candidate.subjectDigest,
-					expectedObservationHead: mergedHead,
-					observedAuthority: candidate.authority,
-					alertIdentity,
-					now,
-				});
+				const completionContextDigest =
+					store.runnerShipCompletionDigestAfterObservedMerge({
+						questionId: candidate.questionId,
+						expectedHolderState: candidate.holderState,
+						expectedHolderHead: candidate.subjectDigest,
+						expectedAuthority: candidate.authority,
+						mergedHead,
+						now,
+					});
+				if (!completionContextDigest) continue;
+				activeCompletionDigests.add(completionContextDigest);
+				let completed: ReturnType<
+					typeof store.completeWorkflowGateRunAfterShip
+				>;
+				try {
+					completed = store.completeWorkflowGateRunAfterShip({
+						questionId: candidate.questionId,
+						mergedHead,
+						expectedHolderState: candidate.holderState,
+						expectedHolderHead: candidate.subjectDigest,
+						expectedObservationHead: mergedHead,
+						observedAuthority: candidate.authority,
+						alertIdentity,
+						now,
+					});
+				} catch (error) {
+					const detail = (
+						error instanceof Error ? error.message : String(error)
+					).slice(0, 240);
+					this.log(
+						`runner-ship merge completion held for ${candidate.questionId}: ${detail}`,
+					);
+					try {
+						store.recordRunnerShipCompletionException({
+							questionId: candidate.questionId,
+							expectedContextDigest: completionContextDigest,
+							errorCode: "completion_exception",
+							boundedDetail: detail,
+							mergedHead,
+							alertIdentity,
+							now,
+						});
+						this.completionExceptionProbeAt.delete(completionContextDigest);
+					} catch (ledgerError) {
+						// This Map is only a process-local storm brake when even the durable
+						// failure ledger cannot write; it never carries retry correctness.
+						this.completionExceptionProbeAt.set(
+							completionContextDigest,
+							nowMs + 60_000,
+						);
+						this.log(
+							`runner-ship completion failure ledger held for ${candidate.questionId}: ${ledgerError instanceof Error ? ledgerError.message : String(ledgerError)}`,
+						);
+					}
+					continue;
+				}
+				this.completionExceptionProbeAt.delete(completionContextDigest);
 				if (!completed.ok) {
 					this.log(
 						`runner-ship merge completion held for ${candidate.questionId}: ${completed.reason}`,
@@ -755,6 +819,7 @@ export class WorkflowEngineDispatcher {
 			);
 			return;
 		}
+		const heldRecoveryCandidates = new Set<string>();
 		for (const delivery of deliveries) {
 			const request = this.options.store.getWorkflowReworkRequest(
 				delivery.request_id,
@@ -769,6 +834,7 @@ export class WorkflowEngineDispatcher {
 				run.status === "held" &&
 				delivery.last_error === "persisted_target_missing"
 			) {
+				heldRecoveryCandidates.add(delivery.request_id);
 				const route = this.options.store.getLatestWorkflowReworkRoute(
 					delivery.request_id,
 				);
@@ -776,6 +842,19 @@ export class WorkflowEngineDispatcher {
 					result.held += 1;
 					continue;
 				}
+				const probeNow = this.now();
+				const nextProbeAt = this.heldReworkRecoveryProbeAt.get(
+					delivery.request_id,
+				);
+				if (nextProbeAt !== undefined && probeNow.getTime() < nextProbeAt) {
+					continue;
+				}
+				// Pace every real probe, including thrown/unknown/alive outcomes. The
+				// durable delivery backoff remains authoritative across restarts.
+				this.heldReworkRecoveryProbeAt.set(
+					delivery.request_id,
+					probeNow.getTime() + 60_000,
+				);
 				let liveness: GeneralizedLaunchLiveness;
 				try {
 					liveness = await this.probeTerminalLaunchLiveness(
@@ -794,6 +873,7 @@ export class WorkflowEngineDispatcher {
 					continue;
 				}
 				let materialized: { ok: boolean; reason?: string };
+				const attemptedAt = this.now().toISOString();
 				try {
 					materialized =
 						this.options.store.materializeWorkflowReworkReplacement({
@@ -801,21 +881,42 @@ export class WorkflowEngineDispatcher {
 							deadExecutionId: route.preferred_actor_execution_id,
 							newExecutionId: randomUUID(),
 							reason: "persisted_target_missing_and_dead_probe",
-							observedAt: this.now().toISOString(),
+							observedAt: attemptedAt,
 							recoverHeldPaneLoss: true,
 						});
 				} catch (error) {
 					result.held += 1;
+					const reason = (
+						error instanceof Error ? error.message : String(error)
+					).slice(0, 240);
 					this.log(
-						`workflow held rework recovery failed for ${delivery.request_id}: ${error instanceof Error ? error.message : String(error)}`,
+						`workflow held rework recovery failed for ${delivery.request_id}: ${reason}`,
 					);
+					this.settleHeldReworkRecoveryFailure({
+						requestId: delivery.request_id,
+						run,
+						reason,
+						now: attemptedAt,
+					});
 					continue;
 				}
 				if (!materialized.ok) {
 					result.held += 1;
-					this.log(
-						`workflow held rework recovery failed for ${delivery.request_id}: ${materialized.reason}`,
+					const reason = (materialized.reason ?? "unknown_failure").slice(
+						0,
+						240,
 					);
+					this.log(
+						`workflow held rework recovery failed for ${delivery.request_id}: ${reason}`,
+					);
+					this.settleHeldReworkRecoveryFailure({
+						requestId: delivery.request_id,
+						run,
+						reason,
+						now: attemptedAt,
+					});
+				} else {
+					this.heldReworkRecoveryProbeAt.delete(delivery.request_id);
 				}
 				continue;
 			}
@@ -861,6 +962,35 @@ export class WorkflowEngineDispatcher {
 			) {
 				result.held += 1;
 			}
+		}
+		for (const requestId of this.heldReworkRecoveryProbeAt.keys()) {
+			if (!heldRecoveryCandidates.has(requestId)) {
+				this.heldReworkRecoveryProbeAt.delete(requestId);
+			}
+		}
+	}
+
+	private settleHeldReworkRecoveryFailure(input: {
+		requestId: string;
+		run: NonNullable<ReturnType<StateStore["getWorkflowRun"]>>;
+		reason: string;
+		now: string;
+	}): void {
+		try {
+			this.options.store.settleHeldReworkRecoveryFailure({
+				requestId: input.requestId,
+				reason: input.reason,
+				alertIdentity: this.resolveRunAlertIdentity(
+					input.run.project_name,
+					input.run.issue_id,
+					input.run.run_id,
+				),
+				now: input.now,
+			});
+		} catch (error) {
+			this.log(
+				`workflow held rework failure ledger held for ${input.requestId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 	}
 

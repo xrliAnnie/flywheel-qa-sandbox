@@ -1,0 +1,16 @@
+flowchart LR
+    A["merge 后从 main<br/>新鲜构建手术脚本"]
+    B["dry-run(默认)<br/>物理只读连接<br/>打印 3 条账现状核对"]
+    C["在线备份<br/>teamlead.db 先存一份"]
+    D["逐账走合法出口<br/>(每账独立事务,全 CAS 防竞态)"]
+    E1["2 条 held rework<br/>→ needs_lead 终态"]
+    E2["1 条 ship gate<br/>→ run 按 merge 事实收账 completed"]
+    F["旧栈 Bridge 不重启:<br/>下一秒起两类刷屏归零"]
+    G["独立 QA:30 分钟<br/>日志零刷屏才算数"]
+    A --> B --> C --> D
+    D --> E1 --> F
+    D --> E2 --> F
+    F --> G
+    style B fill:#e8f0fe,stroke:#007aff
+    style F fill:#e6f9ed,stroke:#34c759
+    style G fill:#f3e8fd,stroke:#af52de

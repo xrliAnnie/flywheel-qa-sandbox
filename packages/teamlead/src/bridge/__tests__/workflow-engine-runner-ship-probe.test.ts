@@ -307,12 +307,17 @@ describe("runner-ship merge probe production composition", () => {
 			headRefOid: HEAD_A,
 			rawHeadRefOid: HEAD_A,
 		}));
+		const listCandidates = vi.spyOn(
+			store,
+			"listRunnerShipHoldersForMergeProbe",
+		);
 		await dispatcher(
 			store,
 			arm({ checkPrMerge, enrichPrHead: vi.fn() }),
 		).reconcile();
 
 		expect(checkPrMerge).toHaveBeenCalledOnce();
+		expect(listCandidates).toHaveBeenCalledOnce();
 		expect(store.getWorkflowRun("run-1")?.status).toBe("completed");
 		expect(store.listWorkflowRunEvents("run-1")).toEqual(
 			expect.arrayContaining([
@@ -320,6 +325,66 @@ describe("runner-ship merge probe production composition", () => {
 				expect.objectContaining({ kind: "run_completed" }),
 			]),
 		);
+		store.close();
+	});
+
+	it("records and backs off a thrown completion transaction instead of retrying every tick", async () => {
+		const store = await engineRun();
+		const holder = await openRunnerShipGate(store);
+		bindAuthority(store, holder);
+		approve(store, holder);
+		const candidate = store.listRunnerShipHoldersForMergeProbe(NOW)[0]!;
+		if (candidate.authority.status !== "resolved") {
+			throw new Error("authority");
+		}
+		expect(
+			store.recordRunnerShipMergedObserved({
+				questionId: holder.question_id,
+				expectedHolderState: "approved",
+				expectedHolderHead: HEAD_A,
+				expectedAuthority: candidate.authority,
+				mergedHead: HEAD_A,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-08-03T11:00:00.000Z",
+			}),
+		).toEqual({ status: "persisted" });
+		const original = store.completeWorkflowGateRunAfterShip.bind(store);
+		const complete = vi
+			.spyOn(store, "completeWorkflowGateRunAfterShip")
+			.mockImplementationOnce(() => {
+				throw new Error("synthetic completion transaction crash");
+			})
+			.mockImplementation(original);
+		const recordException = vi.spyOn(
+			store,
+			"recordRunnerShipCompletionException",
+		);
+		const enrichPrHead = vi.fn(async () => ({
+			ok: true as const,
+			headSha: HEAD_A,
+			mergedAt: NOW,
+		}));
+		const runner = dispatcher(
+			store,
+			arm({ checkPrMerge: vi.fn(), enrichPrHead }),
+		);
+
+		await runner.reconcile();
+		await runner.reconcile();
+
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+		expect(complete).toHaveBeenCalledOnce();
+		expect(recordException).toHaveBeenCalledOnce();
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "runner_ship_completion_attempt"),
+		).toHaveLength(1);
+		expect(enrichPrHead).toHaveBeenCalledOnce();
 		store.close();
 	});
 

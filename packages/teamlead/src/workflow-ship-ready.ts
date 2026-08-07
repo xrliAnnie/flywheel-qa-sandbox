@@ -45,6 +45,8 @@ export type WorkflowRunnerShipMergeCandidate = {
 	subjectDigest: string;
 	sourceExecutionId: string;
 	gateOpenedAt: string;
+	/** Stable pre-attempt identity for durable completion retry/backoff state. */
+	completionContextDigest: string;
 	authority: WorkflowRunnerShipAuthorityResolution;
 	fingerprint?: string;
 	mergedObserved?:

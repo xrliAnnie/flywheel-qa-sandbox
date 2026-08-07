@@ -1,0 +1,22 @@
+flowchart TB
+    T["引擎心跳 tick<br/>每 1 秒扫一遍全部账本"]
+    subgraph L1["死循环 ①:held rework 恢复(每秒 2 次)"]
+        B["发现 2 条 held rework 账<br/>(等着『换人重做』的停摆账)"]
+        C["探活:问 tmux<br/>原工人还活着吗?→ 死了"]
+        D["尝试换人重做<br/>materialize"]
+        E["失败:账指向的目标步骤<br/>早已是终态 failed<br/>(target_changed)"]
+        B --> C --> D --> E
+    end
+    subgraph L2["死循环 ②:ship gate 收账(每秒 1 次)"]
+        F["发现已批准的 ship gate 账<br/>(PR 其实真的合并了)"]
+        G["尝试收账 complete"]
+        H["失败:对应的工人会话<br/>已是终态 blocked<br/>(carrier_session_mismatch)"]
+        F --> G --> H
+    end
+    T --> B
+    T --> F
+    E -.->|"零退避、零上限<br/>下一秒原样再来"| T
+    H -.->|"零退避、零上限<br/>下一秒原样再来"| T
+    style E fill:#ffe5e3,stroke:#ff3b30
+    style H fill:#ffe5e3,stroke:#ff3b30
+    style T fill:#e8f0fe,stroke:#007aff
