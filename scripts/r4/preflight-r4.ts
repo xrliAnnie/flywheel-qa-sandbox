@@ -22,9 +22,11 @@ let failed = false;
 for (const shard of shards) {
 	const dbPath = join(root, shard, "comm.db");
 	try {
-		// Verification is deliberately non-creating and non-archiving: migration
-		// must have produced every canonical shard before this process starts.
-		const db = new CommDB(dbPath, false, false);
+		// flywheel survives Phase M-reset, so a missing canonical DB there is data
+		// loss and must fail closed. The six reset shards are intentionally absent
+		// and become virgin mailbox DBs here. Verification never archives/purges.
+		const createIfMissing = shard !== "flywheel";
+		const db = new CommDB(dbPath, createIfMissing, false);
 		db.close();
 		for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
 			if (!existsSync(path)) continue;

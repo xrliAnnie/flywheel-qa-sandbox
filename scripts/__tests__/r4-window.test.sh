@@ -203,6 +203,25 @@ fi
 	exit 1
 }
 
+# The flywheel shard survives Phase M-reset and must already exist. The other
+# six shards are deliberately retired, so preflight recreates them as virgin
+# mailbox DBs before the Bridge-only trial.
+POST_RESET_ROOT="$TMP_ROOT/post-reset"
+mkdir -p "$POST_RESET_ROOT/flywheel"
+(
+	cd "$REPO_ROOT"
+	DB_PATH="$POST_RESET_ROOT/flywheel/comm.db" pnpm exec tsx -e \
+		'import { CommDB } from "./packages/flywheel-comm/src/db.ts"; const db = new CommDB(process.env.DB_PATH!); db.close();'
+)
+FLYWHEEL_COMM_ROOT="$POST_RESET_ROOT" pnpm -C "$REPO_ROOT" exec tsx \
+	"$REPO_ROOT/scripts/r4/preflight-r4.ts" >/dev/null
+for shard in geoforge3d growth joycon-typeless personal-assistant sub tidal-echo; do
+	[[ -f "$POST_RESET_ROOT/$shard/comm.db" ]] || {
+		echo "FAIL: preflight did not recreate reset shard: $shard" >&2
+		exit 1
+	}
+done
+
 PREFLIGHT_MISSING_ROOT="$TMP_ROOT/preflight-missing"
 set +e
 FLYWHEEL_COMM_ROOT="$PREFLIGHT_MISSING_ROOT" pnpm -C "$REPO_ROOT" exec tsx \
@@ -210,14 +229,103 @@ FLYWHEEL_COMM_ROOT="$PREFLIGHT_MISSING_ROOT" pnpm -C "$REPO_ROOT" exec tsx \
 preflight_missing_rc=$?
 set -e
 [[ "$preflight_missing_rc" -ne 0 ]] || {
-	echo "FAIL: preflight accepted a wholly missing canonical shard set" >&2
+	echo "FAIL: preflight accepted a missing persistent flywheel shard" >&2
 	exit 1
 }
-[[ ! -e "$PREFLIGHT_MISSING_ROOT" ]] || {
-	echo "FAIL: preflight created missing canonical shard files" >&2
+[[ ! -e "$PREFLIGHT_MISSING_ROOT/flywheel/comm.db" ]] || {
+	echo "FAIL: preflight recreated the persistent flywheel shard" >&2
 	exit 1
 }
 echo "r4-window: destructive phase failures and missing DBs fail closed PASS"
+
+MANIFEST_HOME="$TMP_ROOT/manifest-home"
+mkdir -p "$MANIFEST_HOME/.flywheel/manifests" "$MANIFEST_HOME/Library/LaunchAgents"
+printf '%s\n' '{"projectName":"aaa","leadId":"aaa-lead"}' > \
+	"$MANIFEST_HOME/.flywheel/manifests/a-good.json"
+printf '%s\n' '{"projectName":"broken"}' > \
+	"$MANIFEST_HOME/.flywheel/manifests/b-broken.json"
+printf '%s\n' '{"projectName":"zzz","leadId":"zzz-lead"}' > \
+	"$MANIFEST_HOME/.flywheel/manifests/c-good.json"
+: > "$MANIFEST_HOME/Library/LaunchAgents/com.flywheel.lead.aaa-aaa-lead.plist"
+: > "$MANIFEST_HOME/Library/LaunchAgents/com.flywheel.lead.zzz-zzz-lead.plist"
+if (
+	HOME="$MANIFEST_HOME"
+	R4_LEAD_LABELS_FILE="$TMP_ROOT/malformed-manifest-labels"
+	r4_launch_state() { printf 'loaded\n'; }
+	r4_assert_all_manifest_leads_loaded
+); then
+	echo "FAIL: malformed manifest silently truncated the production Lead ledger" >&2
+	exit 1
+fi
+echo "r4-window: malformed manifest fails the Phase-Q Lead census closed PASS"
+
+RESTORE_EVENTS="$TMP_ROOT/restore-pre-window.events"
+: > "$RESTORE_EVENTS"
+set +e
+(
+	R4_QUIESCE_STARTED=1
+	R4_BRIDGE_ORIGINAL_STATE=loaded
+	r4_launch_state() { printf 'unloaded\n'; }
+	launchctl() { return 1; }
+	r4_restore_lead_authority() { printf 'leads-attempted\n' >> "$RESTORE_EVENTS"; }
+	r4_restore_pre_window
+)
+restore_pre_window_rc=$?
+set -e
+[[ "$restore_pre_window_rc" -ne 0 ]] || {
+	echo "FAIL: partial pre-window restoration did not report failure" >&2
+	exit 1
+}
+assert_contains "$RESTORE_EVENTS" "leads-attempted"
+echo "r4-window: pre-window recovery attempts Leads after Bridge failure PASS"
+
+ROLLBACK_AFTER_LOG_MARKER="$TMP_ROOT/rollback-after-log-failure"
+set +e
+R4_WINDOW_SOURCE_ONLY=1 bash -c '
+	set -euo pipefail
+	source "$1"
+	R4_MUTATED=1
+	R4_COMMITTED=0
+	R4_PHASE=M-test
+	ROLLBACK_MARKER="$2"
+	r4_log() { return 1; }
+	r4_run_rollback() { printf "rollback-ran\n" > "$ROLLBACK_MARKER"; }
+	r4_write_state() { :; }
+	r4_fail injected
+' _ "$WINDOW_SCRIPT" "$ROLLBACK_AFTER_LOG_MARKER" >/dev/null 2>&1
+rollback_after_log_rc=$?
+set -e
+[[ "$rollback_after_log_rc" -ne 0 && -f "$ROLLBACK_AFTER_LOG_MARKER" ]] || {
+	echo "FAIL: log failure aborted the whole-state rollback handler" >&2
+	exit 1
+}
+echo "r4-window: logging failure cannot suppress whole-state rollback PASS"
+
+STALE_LEDGER_ROOT="$TMP_ROOT/stale-ledger"
+STALE_LEDGER="$STALE_LEDGER_ROOT/loaded-lead-labels.txt"
+STALE_LEDGER_MARKER="$STALE_LEDGER_ROOT/stale-used"
+mkdir -p "$STALE_LEDGER_ROOT"
+printf 'com.flywheel.lead.retired-old\n' > "$STALE_LEDGER"
+(
+	R4_ROOT="$STALE_LEDGER_ROOT"
+	R4_PROGRESS_LOG="$STALE_LEDGER_ROOT/progress.log"
+	R4_STATE_FILE="$STALE_LEDGER_ROOT/state"
+	R4_LOADED_LEAD_LABELS_FILE="$STALE_LEDGER"
+	r4_validate_config() { :; }
+	r4_write_state() { :; }
+	r4_assert_all_manifest_leads_loaded() { :; }
+	r4_quiesce() { return 1; }
+	r4_fail() {
+		[[ ! -s "$R4_LOADED_LEAD_LABELS_FILE" ]] || : > "$STALE_LEDGER_MARKER"
+		return 1
+	}
+	r4_window_main
+) >/dev/null 2>&1 || true
+[[ ! -e "$STALE_LEDGER_MARKER" ]] || {
+	echo "FAIL: current window recovery consumed a stale Lead ledger" >&2
+	exit 1
+}
+echo "r4-window: each window invalidates the prior loaded-Lead ledger PASS"
 
 # The real activation call must cross the restart script's top-level detach
 # seam in FOREGROUND mode. A fake restart prints detached only when the env is

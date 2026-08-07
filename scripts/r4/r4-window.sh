@@ -101,24 +101,35 @@ r4_launch_state() {
 }
 
 r4_manifest_lead_labels() {
-    local manifest project lead_id
-    shopt -s nullglob
-    for manifest in "${HOME}/.flywheel/manifests"/*.json; do
+    local manifest project lead_id had_nullglob=0
+    local manifests=() labels=()
+    if shopt -q nullglob; then had_nullglob=1; fi
+    shopt -s nullglob || return 1
+    manifests=("${HOME}/.flywheel/manifests"/*.json)
+    (( had_nullglob == 1 )) || shopt -u nullglob || return 1
+    for manifest in "${manifests[@]}"; do
         project="$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest")" || return 1
         lead_id="$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest")" || return 1
         case "$lead_id" in flywheel-test-*) continue ;; esac
-        printf 'com.flywheel.lead.%s-%s\n' "$project" "$lead_id"
-    done | LC_ALL=C sort -u
-    shopt -u nullglob
+        labels+=("com.flywheel.lead.$project-$lead_id")
+    done
+    (( ${#labels[@]} > 0 )) || return 0
+    printf '%s\n' "${labels[@]}" | LC_ALL=C sort -u || return 1
 }
 
 r4_installed_lead_labels() {
-    local plist
-    shopt -s nullglob
-    for plist in "${HOME}/Library/LaunchAgents"/com.flywheel.lead.*.plist; do
-        printf '%s\n' "$(basename "$plist" .plist)"
-    done | LC_ALL=C sort -u
-    shopt -u nullglob
+    local plist label had_nullglob=0
+    local plists=() labels=()
+    if shopt -q nullglob; then had_nullglob=1; fi
+    shopt -s nullglob || return 1
+    plists=("${HOME}/Library/LaunchAgents"/com.flywheel.lead.*.plist)
+    (( had_nullglob == 1 )) || shopt -u nullglob || return 1
+    for plist in "${plists[@]}"; do
+        label="$(basename "$plist" .plist)" || return 1
+        labels+=("$label")
+    done
+    (( ${#labels[@]} > 0 )) || return 0
+    printf '%s\n' "${labels[@]}" | LC_ALL=C sort -u || return 1
 }
 
 r4_assert_all_manifest_leads_loaded() {
@@ -563,48 +574,66 @@ r4_run_rollback() {
 }
 
 r4_restore_pre_window() {
-    local bridge_state
+    local bridge_state listeners port rc=0
     (( R4_QUIESCE_STARTED == 1 )) || return 0
     case "$R4_BRIDGE_ORIGINAL_STATE" in
         loaded)
-            bridge_state="$(r4_launch_state com.flywheel.bridge)" || return 1
-            if [[ "$bridge_state" == unloaded ]]; then
-                launchctl bootstrap "gui/$(id -u)" \
-                    "${HOME}/Library/LaunchAgents/com.flywheel.bridge.plist" || return 1
+            bridge_state="$(r4_launch_state com.flywheel.bridge)" || rc=1
+            if [[ "$bridge_state" == unloaded ]] && \
+                ! launchctl bootstrap "gui/$(id -u)" \
+                    "${HOME}/Library/LaunchAgents/com.flywheel.bridge.plist"; then
+                rc=1
             fi
             ;;
         unloaded)
-            if [[ -z "$(_listeners_on_port "$(bridge_port)")" ]]; then
-                r4_start_trial || return 1
+            port="$(bridge_port)" || rc=1
+            if (( rc == 0 )); then
+                listeners="$(_listeners_on_port "$port")" || rc=1
+            fi
+            if (( rc == 0 )) && [[ -z "$listeners" ]]; then
+                r4_start_trial || rc=1
             fi
             ;;
+        *)
+            r4_log "ERROR: original Bridge authority state was not recorded" || true
+            rc=1
+            ;;
     esac
-    r4_restore_lead_authority || return 1
+    r4_restore_lead_authority || rc=1
+    return "$rc"
 }
 
 r4_fail() {
     local reason="$1" cleanup_rc=0 rollback_rc=0
-    r4_log "FAILED: $reason"
+    r4_log "FAILED: $reason" || true
     if [[ "$R4_PHASE" == B* ]]; then
         r4_reap_trial_bridge || cleanup_rc=$?
     fi
     if (( R4_MUTATED == 1 && R4_COMMITTED == 0 )); then
         (( cleanup_rc == 0 )) || {
-            r4_log "ERROR: refusing rollback until the Bridge trial tree is fully reaped"
-            r4_write_state "FAILED cleanup-before-rollback" || r4_log "ERROR: failed to persist cleanup failure state"
+            r4_log "ERROR: refusing rollback until the Bridge trial tree is fully reaped" || true
+            r4_write_state "FAILED cleanup-before-rollback" || {
+                r4_log "ERROR: failed to persist cleanup failure state" || true
+            }
             return 1
         }
         r4_run_rollback || rollback_rc=$?
         (( rollback_rc == 0 )) || {
-            r4_write_state "FAILED rollback rc=$rollback_rc" || r4_log "ERROR: failed to persist rollback failure state"
+            r4_write_state "FAILED rollback rc=$rollback_rc" || {
+                r4_log "ERROR: failed to persist rollback failure state" || true
+            }
             return "$rollback_rc"
         }
     elif (( R4_MUTATED == 0 )); then
-        r4_restore_pre_window || r4_log "ERROR: pre-window authority restoration failed"
+        r4_restore_pre_window || {
+            r4_log "ERROR: pre-window authority restoration failed" || true
+        }
     else
-        r4_log "COMMIT boundary crossed: automatic whole-state rollback is forbidden; re-quiesce and escalate"
+        r4_log "COMMIT boundary crossed: automatic whole-state rollback is forbidden; re-quiesce and escalate" || true
     fi
-    r4_write_state "FAILED $R4_PHASE $reason" || r4_log "ERROR: failed to persist failure state"
+    r4_write_state "FAILED $R4_PHASE $reason" || {
+        r4_log "ERROR: failed to persist failure state" || true
+    }
     return 1
 }
 
@@ -612,6 +641,9 @@ r4_window_main() {
     r4_validate_config || return 1
     mkdir -p "$R4_ROOT" || return 1
     : > "$R4_PROGRESS_LOG" || return 1
+    # Recovery may only use Lead labels captured by this exact window. Clear a
+    # prior run's ledger before R4_QUIESCE_STARTED can become true.
+    : > "$R4_LOADED_LEAD_LABELS_FILE" || return 1
     r4_write_state RUNNING || return 1
 
     R4_PHASE=Q-preflight

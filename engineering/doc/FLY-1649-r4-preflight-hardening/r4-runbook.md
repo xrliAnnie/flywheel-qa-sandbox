@@ -184,7 +184,7 @@ controller 顺序:
 1. 6 个 non-flywheel 分片的 canonical main/wal/shm 精确移动进 `retired-r4-<timestamp>/`;不碰后缀物证。
 2. main `--ff-only` 到 rendered target,要求 HEAD exact 相等;`pnpm install --frozen-lockfile && pnpm build`。
 3. `unset FLYWHEEL_COMM_DB`;迁移 flywheel legacy shard。CLI 对全部发现的 canonical 路径执行权限检查与真实 CommDB verify-open。
-4. `preflight-r4.ts` 用与 Bridge boot 相同的 `new CommDB(path)` 打开 7 分片;这一步创建 6 个 virgin mailbox DB并复查 canonical 权限。
+4. `preflight-r4.ts` 用与 Bridge boot 相同的 `CommDB` 打开 7 分片:`flywheel` 必须已存在(`createIfMissing=false`),缺失即 fail-closed;6 个刚 reset 的 non-flywheel 分片允许 `createIfMissing=true`,在此创建 virgin mailbox DB。全部使用 `archiveOnOpen=false`,随后复查 canonical 权限。
 5. 运行 FLY-1646 迁移前后未读 identity 对账。`7,036 / 1,102 / 389` 是已知口径,但通过条件是**集合逐条相等**,不是硬凑总数。
 
 Phase M 任意失败自动走整态 rollback。
