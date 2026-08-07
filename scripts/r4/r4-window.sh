@@ -107,7 +107,7 @@ r4_manifest_lead_labels() {
     shopt -s nullglob || return 1
     manifests=("${HOME}/.flywheel/manifests"/*.json)
     (( had_nullglob == 1 )) || shopt -u nullglob || return 1
-    for manifest in "${manifests[@]}"; do
+    for manifest in "${manifests[@]+"${manifests[@]}"}"; do
         project="$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest")" || return 1
         lead_id="$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest")" || return 1
         case "$lead_id" in flywheel-test-*) continue ;; esac
@@ -124,7 +124,7 @@ r4_installed_lead_labels() {
     shopt -s nullglob || return 1
     plists=("${HOME}/Library/LaunchAgents"/com.flywheel.lead.*.plist)
     (( had_nullglob == 1 )) || shopt -u nullglob || return 1
-    for plist in "${plists[@]}"; do
+    for plist in "${plists[@]+"${plists[@]}"}"; do
         label="$(basename "$plist" .plist)" || return 1
         labels+=("$label")
     done

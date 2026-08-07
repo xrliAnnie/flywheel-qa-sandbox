@@ -259,6 +259,29 @@ if (
 fi
 echo "r4-window: malformed manifest fails the Phase-Q Lead census closed PASS"
 
+# Production macOS ships Bash 3.2, where nounset treats an empty `arr[@]`
+# expansion as an unbound variable. Exercise the real system Bash so a zero-Lead
+# recovery host remains a valid authority-empty state.
+ZERO_LEAD_HOME="$TMP_ROOT/zero-lead-home"
+mkdir -p "$ZERO_LEAD_HOME/.flywheel/manifests" "$ZERO_LEAD_HOME/Library/LaunchAgents"
+set +e
+zero_lead_output="$(HOME="$ZERO_LEAD_HOME" R4_WINDOW_SOURCE_ONLY=1 /bin/bash -c '
+	set -euo pipefail
+	source "$1"
+	[[ -z "$(r4_manifest_lead_labels)" ]]
+	[[ -z "$(r4_installed_lead_labels)" ]]
+	r4_launch_state() { printf "unloaded\n"; }
+	r4_assert_authority_empty
+	printf "bash=%s.%s zero-lead-ok\n" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"
+' _ "$WINDOW_SCRIPT" 2>&1)"
+zero_lead_rc=$?
+set -e
+[[ "$zero_lead_rc" -eq 0 && "$zero_lead_output" == *"zero-lead-ok"* ]] || {
+	echo "FAIL: zero-Lead authority census failed under /bin/bash: $zero_lead_output" >&2
+	exit 1
+}
+echo "r4-window: $zero_lead_output PASS"
+
 RESTORE_EVENTS="$TMP_ROOT/restore-pre-window.events"
 : > "$RESTORE_EVENTS"
 set +e
