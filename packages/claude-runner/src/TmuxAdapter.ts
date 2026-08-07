@@ -17,6 +17,7 @@ import { CommDB } from "flywheel-comm/db";
 import {
 	PONYTAIL_PLUGIN,
 	resolveAllowedCanonicalModel,
+	resolveAllowedEffort,
 	resolveCommBackend,
 } from "flywheel-config";
 import type {
@@ -986,18 +987,25 @@ export class TmuxAdapter implements IAdapter {
 		// or the CLI's own alias table — not our registry — picks the version.
 		// Absent stays absent: no model means inherit the account default, which
 		// is what FLYWHEEL_RUNNER_DEFAULT_MODEL=off asks for.
+		let canonicalModel: string | undefined;
 		if (ctx.model) {
-			args.push(
-				"--model",
-				resolveAllowedCanonicalModel(ctx.model, {
-					surface: "runner",
-					runtimeVendor: "claude",
-				}),
-			);
+			canonicalModel = resolveAllowedCanonicalModel(ctx.model, {
+				surface: "runner",
+				runtimeVendor: "claude",
+			});
+			args.push("--model", canonicalModel);
 		}
 		// FLY-671: reasoning-effort override (roles.runner.effort). Absent ⇒ no
 		// flag (byte-compat). claude-tmux only; codex/agy/kimi adapters ignore it.
-		if (ctx.effort) args.push("--effort", ctx.effort);
+		// FLY-1650: the model and the effort come from different config keys, so
+		// this is the first point that sees the resolved pair. A model that does
+		// not support the requested effort (Opus 4.6 has no `xhigh`) would
+		// otherwise carry a flag the CLI passes straight upstream for a 400.
+		// Narrowing only — an unknown model keeps its effort verbatim.
+		const effort = resolveAllowedEffort(canonicalModel, ctx.effort, {
+			surface: "runner",
+		});
+		if (effort) args.push("--effort", effort);
 		if (ctx.allowedTools?.length)
 			args.push("--allowed-tools", ...ctx.allowedTools);
 		// FLY-615 + FLY-751: per-launch inline settings (highest non-managed

@@ -31,6 +31,8 @@ export const MODEL_IDS = {
 	OPUS_5_1M: "claude-opus-5[1m]",
 	OPUS_48: "claude-opus-4-8",
 	OPUS_48_1M: "claude-opus-4-8[1m]",
+	OPUS_46: "claude-opus-4-6",
+	OPUS_46_1M: "claude-opus-4-6[1m]",
 	SONNET_46: "claude-sonnet-4-6",
 	SONNET_5: "claude-sonnet-5",
 	HAIKU: "claude-haiku-4-5-20251001",
@@ -60,16 +62,50 @@ const DISPATCH_AND_MANAGED_SURFACES: readonly ModelSurface[] = Object.freeze([
 	...ALL_MANAGED_SURFACES,
 ]);
 
+/**
+ * FLY-1650: 模型自身不支持的 reasoning 档位。`xhigh` 是 Opus 4.7 才引入的,
+ * Opus 4.6 只认 low/medium/high/max —— 把 xhigh 放进它的档位面会让派工带着
+ * 上游不认的参数出去,换回一个 400。
+ *
+ * 收窄按 **模型 id** 而不是按某个构造点,因为同一个 id 有三条进 registry 的
+ * 路径(内建条目、被 DEFAULT_OPUS_BINDINGS 接管后的 bound 条目、models.json
+ * 的 models overlay)。挂在 id 上,三条路径拿到的是同一张表。
+ */
+const UNSUPPORTED_EFFORTS_BY_MODEL: Readonly<
+	Record<string, readonly RoleEffort[]>
+> = Object.freeze({
+	[MODEL_IDS.OPUS_46]: ["xhigh"],
+	[MODEL_IDS.OPUS_46_1M]: ["xhigh"],
+});
+
+/** 某模型在可选档位面上真正支持的 effort 列表。未登记的模型 = 全档位。 */
+export function supportedRoleEfforts(modelId: string): readonly RoleEffort[] {
+	const unsupported =
+		UNSUPPORTED_EFFORTS_BY_MODEL[modelId.trim().toLowerCase()];
+	if (!unsupported || unsupported.length === 0) return ROLE_EFFORT_LEVELS;
+	return ROLE_EFFORT_LEVELS.filter((effort) => !unsupported.includes(effort));
+}
+
 function claudeEntry(input: {
 	id: string;
 	label: string;
 	aliases?: readonly string[];
 	dispatch?: boolean;
+	surfaces?: readonly ModelSurface[];
 	selectableSurfaces?: readonly ModelSurface[];
 }): ModelRegistryEntry {
-	const surfaces = input.dispatch
-		? DISPATCH_AND_MANAGED_SURFACES
-		: ALL_MANAGED_SURFACES;
+	const surfaces =
+		input.surfaces ??
+		(input.dispatch ? DISPATCH_AND_MANAGED_SURFACES : ALL_MANAGED_SURFACES);
+	const efforts = supportedRoleEfforts(input.id);
+	// 档位面按实际启用的 surface 派生 —— assertValidModelRegistry 要求
+	// effortsBySurface 的每个键都在 surfaces 里,写死四个键会让缩面条目非法。
+	const effortsBySurface: Partial<Record<ModelSurface, readonly RoleEffort[]>> =
+		{};
+	for (const surface of surfaces) {
+		if (surface === "dispatch") continue;
+		effortsBySurface[surface] = surface === "cron" ? [] : efforts;
+	}
 	return {
 		id: input.id,
 		provider: "anthropic",
@@ -78,12 +114,7 @@ function claudeEntry(input: {
 		aliases: input.aliases ?? [],
 		surfaces,
 		selectableSurfaces: input.selectableSurfaces ?? surfaces,
-		effortsBySurface: {
-			lead: ROLE_EFFORT_LEVELS,
-			runner: ROLE_EFFORT_LEVELS,
-			workflow: ROLE_EFFORT_LEVELS,
-			cron: [],
-		},
+		effortsBySurface,
 	};
 }
 
@@ -99,7 +130,42 @@ const OPUS_LABELS: Readonly<Record<string, string>> = Object.freeze({
 	[MODEL_IDS.OPUS_5_1M]: "Opus 5 (1M)",
 	[MODEL_IDS.OPUS_48]: "Opus 4.8",
 	[MODEL_IDS.OPUS_48_1M]: "Opus 4.8 (1M)",
+	[MODEL_IDS.OPUS_46]: "Opus 4.6",
+	[MODEL_IDS.OPUS_46_1M]: "Opus 4.6 (1M)",
 });
+
+/**
+ * FLY-1650: runner 侧 Opus 4.6 试点条目。与 OPUS_IDENTITIES 里的 legacy 身份
+ * 不同 —— legacy 是「退役后仍要能派工的旧载体」,不可被新选;4.6 是受控菜单里
+ * **新增的一个可选项**,所以走完整 claudeEntry。
+ *
+ * 仍然按 bindings 过滤:万一将来把 opus 档绑到 4.6,bound() 会接管这两个 id,
+ * 这里必须让位,否则 registry 撞重复 id、assertValidModelRegistry 在 import
+ * 时直接抛。
+ */
+const PILOT_OPUS_ALIASES: Readonly<Record<string, readonly string[]>> =
+	Object.freeze({
+		[MODEL_IDS.OPUS_46]: ["opus-4-6"],
+		[MODEL_IDS.OPUS_46_1M]: ["opus-4-6-1m", "opus-4-6[1m]"],
+	});
+
+const PILOT_OPUS_IDENTITIES: readonly string[] = Object.freeze([
+	MODEL_IDS.OPUS_46,
+	MODEL_IDS.OPUS_46_1M,
+]);
+
+/**
+ * 试点是 **runner 侧** 的:founder 明确 Lead 这一轮不换模型。所以 4.6 不挂
+ * `lead` 面 —— fleet console 的 Lead 模型下拉不会多出这两项,把 Lead 设成 4.6
+ * 也会 fail-loud 而不是被静默接受。真要给 Lead 用,是另一个决定(把 opus 档
+ * 绑到 4.6),走 DEFAULT_OPUS_BINDINGS 那条路。
+ */
+const PILOT_OPUS_SURFACES: readonly ModelSurface[] = Object.freeze([
+	"dispatch",
+	"runner",
+	"workflow",
+	"cron",
+]);
 
 export function buildModelRegistry(
 	bindings: DefaultOpusBindings,
@@ -116,6 +182,13 @@ export function buildModelRegistry(
 			label: OPUS_LABELS[id] ?? id,
 			aliases,
 			dispatch: true,
+		});
+	const pilot = (id: string): ModelRegistryEntry =>
+		claudeEntry({
+			id,
+			label: OPUS_LABELS[id] ?? id,
+			aliases: PILOT_OPUS_ALIASES[id] ?? [],
+			surfaces: PILOT_OPUS_SURFACES,
 		});
 
 	return [
@@ -161,6 +234,9 @@ export function buildModelRegistry(
 		...OPUS_IDENTITIES.filter(
 			(id) => id !== bindings.opus && id !== bindings.opus1m,
 		).map(legacy),
+		...PILOT_OPUS_IDENTITIES.filter(
+			(id) => id !== bindings.opus && id !== bindings.opus1m,
+		).map(pilot),
 	];
 }
 

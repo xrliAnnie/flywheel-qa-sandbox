@@ -2,14 +2,35 @@ import {
 	getModelConfigSnapshot,
 	type LeadLaunchSelection,
 	type ModelConfigSnapshot,
+	resolveAllowedEffort,
 	resolveLeadLaunchSelection,
 } from "flywheel-config";
 import { loadProjects } from "./ProjectConfig.js";
+
+/**
+ * FLY-583's companion-role fallback effort. The launcher applies it when
+ * projects.json carries no effort override for a companion Lead.
+ */
+const COMPANION_FALLBACK_EFFORT = "xhigh";
 
 export interface LeadModelLaunchDecision extends LeadLaunchSelection {
 	rawModel: string | null;
 	rawEffort: string | null;
 	configRevision: string;
+	/**
+	 * FLY-1650: the FLY-583 companion fallback, narrowed to what the RESOLVED
+	 * model actually accepts on the lead surface — `null` when it accepts none.
+	 *
+	 * The launcher used to hardcode `xhigh` here, which meant the shell could
+	 * re-add the exact effort this resolver had just rejected. It cannot
+	 * validate the pair itself (it has no registry), so the resolver reports
+	 * the answer and the shell keeps only the policy decision of *when* to
+	 * apply a fallback.
+	 *
+	 * Narrowing only: for every model that accepts `xhigh` this is the string
+	 * `"xhigh"`, byte-identical to the previous hardcoded value.
+	 */
+	companionDefaultEffort: string | null;
 }
 
 export class LeadModelSourceError extends Error {
@@ -56,14 +77,20 @@ export function resolveLeadModelLaunch(
 	}
 	const rawModel = lead.model?.trim() || null;
 	const rawEffort = lead.effort?.trim() || null;
+	const selection = resolveLeadLaunchSelection(
+		rawModel ?? undefined,
+		rawEffort ?? undefined,
+		snapshot,
+	);
 	return {
-		...resolveLeadLaunchSelection(
-			rawModel ?? undefined,
-			rawEffort ?? undefined,
-			snapshot,
-		),
+		...selection,
 		rawModel,
 		rawEffort,
 		configRevision: snapshot.revision,
+		companionDefaultEffort: resolveAllowedEffort(
+			selection.model,
+			COMPANION_FALLBACK_EFFORT,
+			{ surface: "lead", snapshot },
+		),
 	};
 }

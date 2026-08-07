@@ -1,4 +1,8 @@
-import { resolvePhaseDispatch } from "flywheel-config";
+import {
+	getModelRegistryEntry,
+	resolveAllowedEffort,
+	resolvePhaseDispatch,
+} from "flywheel-config";
 import type { StateStore } from "./StateStore.js";
 import { parseWorkflowRunSnapshot } from "./workflow-run-snapshot.js";
 import {
@@ -15,6 +19,41 @@ export interface WorkflowDispatchResolution {
 	};
 	source: "current_config" | "live_template" | "snapshot_fallback";
 	audit: boolean;
+}
+
+/**
+ * FLY-1650 (Codex R2): drop an effort the resolved model does not support,
+ * HERE — at admission — rather than only at the launch seam. The row admission
+ * writes is immutable and is what the audit trail reports, so a narrowing that
+ * happened later would leave the ledger claiming an effort the run never used.
+ *
+ * This is also the one place that can MANUFACTURE a bad pair: the `max` → `xhigh`
+ * remap below turns a phase configured as `max` — which Opus 4.6 does support —
+ * into `xhigh`, which it does not.
+ *
+ * Surface is `workflow`, matching what these nodes are. That keeps every Codex
+ * node byte-identical (its workflow surface carries the full effort ladder,
+ * unlike its runner surface) and narrows only models with a declared gap.
+ */
+/** Warn-free registry probe — the remap below is a preference, not a rejection. */
+function workflowSurfaceHasXhigh(model: string): boolean {
+	const allowed =
+		getModelRegistryEntry(model)?.effortsBySurface.workflow ?? undefined;
+	return allowed === undefined || allowed.includes("xhigh");
+}
+
+function narrowEffort(dispatch: {
+	vendor: WorkflowVendor;
+	model: string;
+	effort?: WorkflowEffort;
+}): { vendor: WorkflowVendor; model: string; effort?: WorkflowEffort } {
+	if (!dispatch.effort) return dispatch;
+	const allowed = resolveAllowedEffort(dispatch.model, dispatch.effort, {
+		surface: "workflow",
+	});
+	if (allowed === dispatch.effort) return dispatch;
+	const { effort: _dropped, ...rest } = dispatch;
+	return rest;
 }
 
 /**
@@ -41,10 +80,18 @@ export function resolveNodeDispatchAtLaunch(
 	const env = input.env ?? process.env;
 
 	if (env.FLYWHEEL_VENDOR_AT_DISPATCH === "0") {
-		return { dispatch: pinned, source: "snapshot_fallback", audit: false };
+		return {
+			dispatch: narrowEffort(pinned),
+			source: "snapshot_fallback",
+			audit: false,
+		};
 	}
 	if (node.dispatchPinned) {
-		return { dispatch: pinned, source: "snapshot_fallback", audit: true };
+		return {
+			dispatch: narrowEffort(pinned),
+			source: "snapshot_fallback",
+			audit: true,
+		};
 	}
 
 	if (
@@ -52,13 +99,23 @@ export function resolveNodeDispatchAtLaunch(
 		(node.type === "design" || node.type === "implement" || node.type === "qa")
 	) {
 		const configured = resolvePhaseDispatch(node.type, env);
-		const effort = configured.effort === "max" ? "xhigh" : configured.effort;
+		// FLY-1650 (Codex R3): this remap is a POLICY preference, not a type
+		// coercion — `WorkflowEffort` has `max`. Applying it blindly to a model
+		// without `xhigh` converts a perfectly valid `max` into an unsupported
+		// tier that narrowEffort then drops, silently downgrading a run the
+		// config asked to be maximal. Only prefer `xhigh` where it exists.
+		// Narrowing-only: an unknown model, or one declaring no workflow list,
+		// keeps the original remap.
+		const effort =
+			configured.effort === "max" && workflowSurfaceHasXhigh(configured.model)
+				? "xhigh"
+				: configured.effort;
 		return {
-			dispatch: {
+			dispatch: narrowEffort({
 				vendor: configured.vendor,
 				model: configured.model,
 				...(effort ? { effort } : {}),
-			},
+			}),
 			source: "current_config",
 			audit: true,
 		};
@@ -78,15 +135,19 @@ export function resolveNodeDispatchAtLaunch(
 		);
 		if (!live?.vendor || !live.model) throw new Error("node_dispatch_missing");
 		return {
-			dispatch: {
+			dispatch: narrowEffort({
 				vendor: live.vendor,
 				model: live.model,
 				...(live.effort ? { effort: live.effort } : {}),
-			},
+			}),
 			source: "live_template",
 			audit: true,
 		};
 	} catch {
-		return { dispatch: pinned, source: "snapshot_fallback", audit: true };
+		return {
+			dispatch: narrowEffort(pinned),
+			source: "snapshot_fallback",
+			audit: true,
+		};
 	}
 }

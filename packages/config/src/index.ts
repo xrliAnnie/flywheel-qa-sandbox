@@ -76,6 +76,7 @@ export {
 	ModelPolicyError,
 	resetModelConfigCacheForTests,
 	resolveAllowedCanonicalModel,
+	resolveAllowedEffort,
 	resolveLeadLaunchSelection,
 	validateModelWrite,
 } from "./model-config.js";

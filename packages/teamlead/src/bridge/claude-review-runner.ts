@@ -25,6 +25,7 @@ import {
 	getModelConfigSnapshot,
 	type RoleEffort,
 	resolveAllowedCanonicalModel,
+	resolveAllowedEffort,
 } from "flywheel-config";
 
 const washReviewEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
@@ -125,6 +126,17 @@ export function buildClaudeReviewArgv(
 			snapshot,
 		},
 	);
+	// FLY-1224: reviewer effort (FLY-671 claude CLI flag), default xhigh.
+	// FLY-1650 (Codex R2): this is a third launch path that appends --effort
+	// independently of the model, and the model can be Opus 4.6 — either named
+	// directly (it carries the runner surface) or inherited from a rebound
+	// `bindings.opus`. Opus 4.6 has no `xhigh`, so the default alone would send
+	// a flag the API rejects. Same narrowing seam as the tmux and Lead paths.
+	const effort = resolveAllowedEffort(
+		canonicalModel,
+		inv.effort ?? DEFAULT_REVIEW_EFFORT,
+		{ surface: "runner", snapshot },
+	);
 	return [
 		"-p",
 		inv.prompt,
@@ -134,9 +146,7 @@ export function buildClaudeReviewArgv(
 		"json",
 		"--model",
 		canonicalModel,
-		// FLY-1224: reviewer effort (FLY-671 claude CLI flag), default xhigh.
-		"--effort",
-		inv.effort ?? DEFAULT_REVIEW_EFFORT,
+		...(effort ? (["--effort", effort] as const) : []),
 	];
 }
 

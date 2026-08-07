@@ -20,8 +20,9 @@ import {
 	type ModelTier,
 	type ModelTierSpec,
 	modelFamilyCode,
+	supportedRoleEfforts,
 } from "./model-builtins.js";
-import { ROLE_EFFORT_LEVELS, type RoleEffort } from "./types.js";
+import type { RoleEffort } from "./types.js";
 
 const CONFIG_VERSION = 1;
 const CONFIG_ENV = "FLYWHEEL_MODELS_CONFIG";
@@ -159,6 +160,7 @@ function normalizedStrings(value: unknown): string[] | null {
 }
 
 function defaultEfforts(
+	id: string,
 	runtimeVendor: ModelRuntimeVendor,
 	surfaces: readonly ModelSurface[],
 ): ModelRegistryEntry["effortsBySurface"] {
@@ -168,9 +170,15 @@ function defaultEfforts(
 		if (surface === "cron") {
 			efforts[surface] = [];
 		} else if (runtimeVendor === "codex" && surface === "runner") {
-			efforts[surface] = ["xhigh"];
+			// Codex R1 MEDIUM: 这条特例原来直接写死 ["xhigh"],绕过按 id 的收窄
+			// —— 一个把 4.6 声明成 codex vendor 的 overlay 就能把 xhigh 拿回来。
+			// 与该模型真正支持的档位取交集后再落表。
+			const supported = supportedRoleEfforts(id);
+			efforts[surface] = supported.includes("xhigh") ? ["xhigh"] : [];
 		} else {
-			efforts[surface] = ROLE_EFFORT_LEVELS;
+			// FLY-1650: overlay 走的是与内建条目同一张按 id 收窄的档位表,
+			// 否则在 models.json 里重新声明一个模型就能把它不支持的档位拿回来。
+			efforts[surface] = supportedRoleEfforts(id);
 		}
 	}
 	return efforts;
@@ -233,6 +241,7 @@ function parseConfiguredModel(value: unknown): ModelRegistryEntry {
 		surfaces,
 		...(selectableSurfaces ? { selectableSurfaces } : {}),
 		effortsBySurface: defaultEfforts(
+			id,
 			runtimeVendor as ModelRuntimeVendor,
 			surfaces,
 		),
@@ -642,6 +651,50 @@ export function resolveAllowedCanonicalModel(
 }
 
 /**
+ * FLY-1650 final effort seam — the counterpart to resolveAllowedCanonicalModel.
+ *
+ * The model is settled by that function after all precedence; the effort
+ * arrives from a SEPARATE source (`roles.<role>.effort`, a workflow node, a
+ * Lead launch argument) and used to be appended raw. A model whose registry
+ * entry does not list the requested effort would then carry a parameter the
+ * upstream API rejects — a 400 at spawn instead of a configuration error.
+ * Validating the pair only at the writers is not enough: label, tier, and
+ * workflow routes all reach the launch seam without passing a writer.
+ *
+ * NARROWING ONLY. An unknown model, or a surface the entry declares no effort
+ * list for, is returned exactly as before — this must never become a new gate
+ * on models it knows nothing about. A declared-but-empty list DOES mean "none
+ * allowed" (that is what `cron: []` has always meant) and is honored.
+ *
+ * An unusable effort is DROPPED, loudly, rather than thrown: it must not cost
+ * the fleet a Runner or a Lead. The model then runs at its own default — the
+ * same availability stance resolveLeadLaunchSelection already takes when the
+ * authoritative model itself is unresolvable.
+ */
+export function resolveAllowedEffort(
+	model: string | undefined | null,
+	effort: string | undefined | null,
+	input: {
+		surface: ModelSurface;
+		snapshot?: ModelConfigSnapshot;
+	},
+): string | null {
+	const wanted = effort?.trim();
+	if (!wanted) return null;
+	if (!model?.trim()) return wanted;
+	const snapshot = input.snapshot ?? getModelConfigSnapshot();
+	const entry = snapshot.getModelRegistryEntry(model);
+	if (!entry) return wanted;
+	const allowed = entry.effortsBySurface[input.surface];
+	if (allowed === undefined) return wanted;
+	if (allowed.includes(wanted as RoleEffort)) return wanted;
+	console.warn(
+		`[model_config] effort ${wanted} is unavailable for ${entry.id} on ${input.surface}; dropping it (supported: ${allowed.join(", ") || "none"})`,
+	);
+	return null;
+}
+
+/**
  * Writer boundary including the account-default sentinel. Null means "inherit
  * the account default" and is written through untouched; a spelled model is
  * canonicalized so persisted carriers never hold a bare alias.
@@ -678,19 +731,31 @@ export function resolveLeadLaunchSelection(
 	if (!rawModel?.trim()) {
 		return {
 			model: MODEL_IDS.FABLE,
-			effort: rawEffort?.trim() || null,
+			// FLY-1650: every branch resolves the effort against the model it
+			// actually returns, so no exit from this function can emit a pair
+			// the returned model does not support.
+			effort: resolveAllowedEffort(MODEL_IDS.FABLE, rawEffort, {
+				surface: "lead",
+				snapshot,
+			}),
 			substituted: false,
 			reason: "authoritative_absence",
 		};
 	}
 	try {
+		const model = resolveAllowedCanonicalModel(rawModel, {
+			surface: "lead",
+			runtimeVendor: "claude",
+			snapshot,
+		});
 		return {
-			model: resolveAllowedCanonicalModel(rawModel, {
+			model,
+			// FLY-1650: the effort comes from a different key than the model, so
+			// the pair is only knowable here — after the model is settled.
+			effort: resolveAllowedEffort(model, rawEffort, {
 				surface: "lead",
-				runtimeVendor: "claude",
 				snapshot,
 			}),
-			effort: rawEffort?.trim() || null,
 			substituted: false,
 			reason: "configured",
 		};
@@ -702,7 +767,13 @@ export function resolveLeadLaunchSelection(
 		);
 		return {
 			model: MODEL_IDS.FABLE,
-			effort: rawEffort?.trim() || null,
+			// FLY-1650 (Codex R2): the substitute is a different model, so the
+			// pair must be re-checked against it — not carried over from the
+			// model that failed to resolve.
+			effort: resolveAllowedEffort(MODEL_IDS.FABLE, rawEffort, {
+				surface: "lead",
+				snapshot,
+			}),
 			substituted: true,
 			reason: "model_invalid",
 		};

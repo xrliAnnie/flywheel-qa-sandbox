@@ -60,6 +60,32 @@ describe("buildClaudeReviewArgv", () => {
 		).toThrow(/unknown model/i);
 	});
 
+	// FLY-1650 (Codex R2 HIGH): this is a third launch path that appends
+	// --effort independently of the model, and its default is the very tier
+	// Opus 4.6 lacks. Naming 4.6 here is reachable today — it carries the
+	// runner surface — so the default alone would emit an upstream 400.
+	it("FLY-1650: drops the xhigh default for a model that does not support it", () => {
+		const argv = buildClaudeReviewArgv({
+			prompt: "p",
+			sessionId: "u",
+			resume: false,
+			model: "opus-4-6",
+		});
+		expect(argv).toContain("claude-opus-4-6");
+		expect(argv).not.toContain("--effort");
+	});
+
+	it("FLY-1650: keeps a supported effort for the same model", () => {
+		const argv = buildClaudeReviewArgv({
+			prompt: "p",
+			sessionId: "u",
+			resume: false,
+			model: "opus-4-6",
+			effort: "high",
+		});
+		expect(argv[argv.indexOf("--effort") + 1]).toBe("high");
+	});
+
 	it("FLY-1224: an explicit effort overrides the xhigh default", () => {
 		const argv = buildClaudeReviewArgv({
 			prompt: "p",

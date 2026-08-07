@@ -939,6 +939,48 @@ describe("TmuxAdapter", () => {
 		expect(args[args.indexOf("--model") + 1]).toMatch(/^claude-opus-5/);
 	});
 
+	// FLY-1650 (Codex R1 HIGH): the model and the effort arrive from different
+	// config keys — `roles.runner.model` vs `roles.runner.effort` — so the pair
+	// is only knowable at this seam. Opus 4.6 predates the `xhigh` tier; without
+	// a check here the flag rides straight to the CLI and comes back a 400.
+	it("drops an --effort the resolved model does not support (Opus 4.6 has no xhigh)", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+		await adapter.execute(
+			makeCtx({ model: "claude-opus-4-6[1m]", effort: "xhigh" }),
+		);
+
+		const args = calls.find((c) => c.args[0] === "new-window")!.args;
+		expect(args[args.indexOf("--model") + 1]).toBe("claude-opus-4-6[1m]");
+		expect(args).not.toContain("--effort");
+		expect(warn.mock.calls.flat().join(" ")).toMatch(/xhigh/);
+		warn.mockRestore();
+	});
+
+	it("keeps an --effort the resolved model does support", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+		await adapter.execute(
+			makeCtx({ model: "claude-opus-4-6[1m]", effort: "high" }),
+		);
+
+		const args = calls.find((c) => c.args[0] === "new-window")!.args;
+		expect(args[args.indexOf("--effort") + 1]).toBe("high");
+	});
+
+	it("leaves every other model's --effort byte-unchanged, xhigh included", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+		await adapter.execute(makeCtx({ model: "opus", effort: "xhigh" }));
+
+		const args = calls.find((c) => c.args[0] === "new-window")!.args;
+		expect(args[args.indexOf("--effort") + 1]).toBe("xhigh");
+	});
+
 	it("omits --model entirely when no model is specified", async () => {
 		// Absent stays absent: the account default is inherited, which is what
 		// FLYWHEEL_RUNNER_DEFAULT_MODEL=off asks for. RoleAdapterResolver is the

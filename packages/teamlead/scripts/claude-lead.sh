@@ -1586,6 +1586,11 @@ _launch_claude() {
   local _fly1496_raw_model=""
   local _fly1496_effort=""
   local _fly1496_raw_effort=""
+  # FLY-1650: FLY-583's companion fallback, narrowed by the resolver to what the
+  # RESOLVED model accepts. Seeded with the historical literal for the
+  # resolver-unavailable path below, which launches literal Fable — a model
+  # that accepts xhigh, so that path is provably byte-identical.
+  local _fly1496_companion_effort=xhigh
   local _fly1496_reason="resolver_unavailable"
   local _fly1496_substituted=true
   local _fly1496_arg _fly1496_skip
@@ -1624,6 +1629,33 @@ _launch_claude() {
     _fly1496_effort=$(jq -r '.decision.effort // ""' <<<"$_fly1496_result")
     _fly1496_raw_effort=$(jq -r '.decision.rawEffort // ""' <<<"$_fly1496_result")
     _fly1496_reason=$(jq -r '.decision.reason' <<<"$_fly1496_result")
+    # FLY-1650 (Codex R4/R5): ABSENT and explicit null are opposite signals and
+    # jq's `//` collapses them, so branch on has() first.
+    #
+    # present ⇒ this resolver vetted the pair; use its answer verbatim (a null
+    # means the resolved model accepts no fallback tier).
+    #
+    # absent ⇒ the dist predates this field while the launcher does not: a
+    # build/deploy SKEW. The shell has no registry, so any literal it picks here
+    # is a guess — and the guess is unsafe in both directions (keeping xhigh can
+    # emit a pair the API rejects; dropping it silently downgrades a companion).
+    # Refuse to guess: say so loudly and take the branch that cannot produce an
+    # invalid launch. A companion then runs at its model's own default effort
+    # until the dist is rebuilt, instead of failing to start.
+    if jq -e '.decision | has("companionDefaultEffort")' >/dev/null 2>&1 <<<"$_fly1496_result"; then
+      _fly1496_companion_effort=$(jq -r '.decision.companionDefaultEffort // ""' <<<"$_fly1496_result")
+    else
+      # Codex R6: the fallback is not the only unvalidated value here. A dist
+      # this old also predates the effort narrowing itself, so `decision.effort`
+      # — the projects.json override — reached us WITHOUT ever being checked
+      # against the model. Keeping it emits exactly the pair this seam exists to
+      # prevent (reproduced under bash 3.2 as `--model claude-opus-4-6 --effort
+      # xhigh`). The refusal has to cover every effort this resolver produced,
+      # not just the fallback, or it is not a refusal at all.
+      _fly1496_companion_effort=""
+      _fly1496_effort=""
+      log "model_config WARNING: dist predates the FLY-1650 effort narrowing (build/deploy skew); dropping BOTH the configured effort (${_fly1496_raw_effort:-<absent>}) and the companion fallback rather than launching ${_fly1496_model} with an unvalidated tier"
+    fi
     _fly1496_substituted=$(jq -r '.decision.substituted' <<<"$_fly1496_result")
   elif [ -n "$_fly1496_result" ] && jq -e '.sourceFailure == true' >/dev/null 2>&1 <<<"$_fly1496_result"; then
     log "FATAL: $(jq -r '.error // "projects.json model source failure"' <<<"$_fly1496_result")"
@@ -1648,10 +1680,16 @@ _launch_claude() {
   launch_args=("${_fly1496_filtered[@]}" --model "$_fly1496_model")
   if [ -n "$_fly1496_effort" ]; then
     launch_args+=(--effort "$_fly1496_effort")
+  elif [ "${IS_COMPANION_ROLE:-false}" = true ] && [ -n "$_fly1496_companion_effort" ]; then
+    # FLY-1650: use the resolver's narrowed value, never a hardcoded tier — the
+    # shell has no registry and would otherwise re-add the very effort the
+    # resolver just rejected for this model. Empty ⇒ the model accepts none of
+    # it; omit the flag and let the model run at its own default.
+    _fly1496_effort="$_fly1496_companion_effort"
+    launch_args+=(--effort "$_fly1496_companion_effort")
+    log "Companion: --effort ${_fly1496_companion_effort} (FLY-583; no projects.json effort override)"
   elif [ "${IS_COMPANION_ROLE:-false}" = true ]; then
-    _fly1496_effort=xhigh
-    launch_args+=(--effort xhigh)
-    log "Companion: --effort xhigh (FLY-583; no projects.json effort override)"
+    log "Companion: no --effort (FLY-1650; ${_fly1496_model} accepts no companion fallback tier)"
   fi
 
   if [ "$_fly1496_reason" = "resolver_unavailable" ]; then
