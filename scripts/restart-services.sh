@@ -732,6 +732,13 @@ acquire_lock() {
             start=$(date +%s)
             deadline=$(( start + RESTART_LOCK_WAIT_SECS_EFFECTIVE ))
             while true; do
+                # The incumbent may release between the initial failed mkdir
+                # and this loop (or between iterations). Claim ownership before
+                # reading metadata so a missing lock cannot look stale and burn
+                # the bounded deadline.
+                if mkdir "$LOCK_DIR" 2>/dev/null; then
+                    break
+                fi
                 lock_mtime=$(file_mtime_epoch "$LOCK_DIR" 2>/dev/null || echo 0)
                 now=$(date +%s)
                 lock_age=$(( now - lock_mtime ))
@@ -755,9 +762,6 @@ acquire_lock() {
                 (( remaining < sleep_secs )) && sleep_secs="$remaining"
                 log "Another restart in progress (${lock_age}s old); waiting (${remaining}s remaining)."
                 sleep "$sleep_secs"
-                if mkdir "$LOCK_DIR" 2>/dev/null; then
-                    break
-                fi
             done
         fi
     fi

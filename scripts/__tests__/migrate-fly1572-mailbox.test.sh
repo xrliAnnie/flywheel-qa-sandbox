@@ -92,7 +92,10 @@ ROLLBACK_ERR="$({
 		pnpm exec tsx scripts/migrate-fly1572-mailbox.ts --confirm-quiesced --rollback 2>&1
 } )" || ROLLBACK_RC=$?
 test "$ROLLBACK_RC" -eq 0
-grep -qv "half-migrated" <<<"$ROLLBACK_ERR"
+if grep -q "half-migrated" <<<"$ROLLBACK_ERR"; then
+	echo "rollback incorrectly rejected mixed-state recovery" >&2
+	exit 1
+fi
 
 # FLY-1649 G2/G3: exercise the no-intent recovery path with the real
 # backupCommDb artifact shape (standalone DB + refs tree + manifest). Replacing
@@ -203,6 +206,9 @@ test "$SIDE_RC" -ne 0
 grep -Fq "$MIGRATED_DB-shm" <<<"$SIDE_ERR"
 grep -q "mode=0444" <<<"$SIDE_ERR"
 grep -q "chmod 0600" <<<"$SIDE_ERR"
-grep -Fqv "$FORENSIC_SHM" <<<"$SIDE_ERR"
+if grep -Fq "$FORENSIC_SHM" <<<"$SIDE_ERR"; then
+	echo "canonical sidecar diagnostic named the unrelated forensic suffix" >&2
+	exit 1
+fi
 
 echo "migrate-fly1572-mailbox: PASS"

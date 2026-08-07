@@ -5,7 +5,22 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WINDOW_SCRIPT="$REPO_ROOT/scripts/r4/r4-window.sh"
 TREE_LIB="$REPO_ROOT/scripts/lib/bridge-process-tree.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fly1649-window.XXXXXX")"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+cleanup_r4_window_test() {
+	local pid_file pid
+	for pid_file in "${PY_PID_FILE:-}" "${TSX_PID_FILE:-}" "${NPX_PID_FILE:-}"; do
+		[[ -n "$pid_file" && -f "$pid_file" ]] || continue
+		pid="$(cat "$pid_file" 2>/dev/null || true)"
+		[[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+		kill -TERM "$pid" 2>/dev/null || true
+	done
+	pid="${R4_TRIAL_PID:-}"
+	if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+		kill -TERM "$pid" 2>/dev/null || true
+		wait "$pid" 2>/dev/null || true
+	fi
+	rm -rf "$TMP_ROOT"
+}
+trap cleanup_r4_window_test EXIT
 
 [[ -f "$WINDOW_SCRIPT" ]] || { echo "FAIL: missing $WINDOW_SCRIPT" >&2; exit 1; }
 # shellcheck disable=SC1090
@@ -126,6 +141,84 @@ assert_not_contains "$events" "M:reset"
 
 echo "r4-window: eight lifecycle/failure cases PASS"
 
+# Bash disables errexit throughout a function invoked from an `if`/`||`
+# condition. Every destructive phase therefore has to propagate each safety
+# failure explicitly rather than depend on the script-level `set -e`.
+if (
+	R4_LOADED_LEAD_LABELS_FILE="$TMP_ROOT/quiesce-loaded"
+	r4_assert_updater_quiet() { return 7; }
+	r4_launch_state() { printf 'unloaded\n'; }
+	r4_installed_lead_labels() { :; }
+	r4_reap_trial_bridge() { :; }
+	r4_assert_authority_empty() { :; }
+	r4_assert_no_db_holders() { :; }
+	r4_quiesce
+); then
+	echo "FAIL: quiesce swallowed updater-quiet failure" >&2
+	exit 1
+fi
+
+FAIL_SNAPSHOT="$TMP_ROOT/fail-snapshot.sh"
+cat > "$FAIL_SNAPSHOT" <<'SH'
+#!/usr/bin/env bash
+exit 23
+SH
+chmod +x "$FAIL_SNAPSHOT"
+if (
+	R4_SNAPSHOT_SCRIPT="$FAIL_SNAPSHOT"
+	R4_SNAPSHOT_DIR="$TMP_ROOT/never-created-snapshot"
+	R4_COMM_ROOT="$TMP_ROOT/comm"
+	R4_REPO="$REPO_ROOT"
+	R4_ROOT="$TMP_ROOT/snapshot-failure"
+	mkdir -p "$R4_ROOT"
+	r4_assert_authority_empty() { :; }
+	r4_assert_no_db_holders() { :; }
+	r4_snapshot_dist() { :; }
+	r4_render_rollback() { :; }
+	r4_snapshot
+); then
+	echo "FAIL: snapshot phase swallowed snapshot producer failure" >&2
+	exit 1
+fi
+
+if (
+	_listeners_on_port() { printf '42\n'; }
+	bridge_port() { printf '9876\n'; }
+	r4_health_ok() { return 8; }
+	r4_verify_fleet() { :; }
+	r4_launch_state() { printf 'loaded\n'; }
+	r4_verify_final
+); then
+	echo "FAIL: final verification swallowed health failure" >&2
+	exit 1
+fi
+
+MISSING_CANONICAL="$TMP_ROOT/missing-canonical/comm.db"
+if r4_classify_db "$MISSING_CANONICAL" >/dev/null 2>&1; then
+	echo "FAIL: classification accepted a missing canonical DB" >&2
+	exit 1
+fi
+[[ ! -e "$MISSING_CANONICAL" ]] || {
+	echo "FAIL: classification created a missing canonical DB" >&2
+	exit 1
+}
+
+PREFLIGHT_MISSING_ROOT="$TMP_ROOT/preflight-missing"
+set +e
+FLYWHEEL_COMM_ROOT="$PREFLIGHT_MISSING_ROOT" pnpm -C "$REPO_ROOT" exec tsx \
+	"$REPO_ROOT/scripts/r4/preflight-r4.ts" >/dev/null 2>&1
+preflight_missing_rc=$?
+set -e
+[[ "$preflight_missing_rc" -ne 0 ]] || {
+	echo "FAIL: preflight accepted a wholly missing canonical shard set" >&2
+	exit 1
+}
+[[ ! -e "$PREFLIGHT_MISSING_ROOT" ]] || {
+	echo "FAIL: preflight created missing canonical shard files" >&2
+	exit 1
+}
+echo "r4-window: destructive phase failures and missing DBs fail closed PASS"
+
 # The real activation call must cross the restart script's top-level detach
 # seam in FOREGROUND mode. A fake restart prints detached only when the env is
 # absent; Phase R may never follow a detached marker.
@@ -180,14 +273,14 @@ while True:
 PY
 cat > "$TSX_WRAPPER" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$BASHPID" > "$1"
+printf '%s\n' "$$" > "$1"
 shift
 python3 "$1" "$2" "$3" &
 wait
 SH
 cat > "$NPX_WRAPPER" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$BASHPID" > "$1"
+printf '%s\n' "$$" > "$1"
 shift
 bash "$1" "$2" "$3" "$4" "$5" &
 wait
@@ -204,6 +297,13 @@ done
     echo "FAIL: real trial process tree did not start" >&2
     exit 1
 }
+for pid_file in "$PY_PID_FILE" "$TSX_PID_FILE" "$NPX_PID_FILE"; do
+	pid="$(cat "$pid_file")"
+	[[ "$pid" =~ ^[1-9][0-9]*$ ]] || {
+		echo "FAIL: fixture emitted a nonnumeric PID in $pid_file: $pid" >&2
+		exit 1
+	}
+done
 BRIDGE_URL="http://127.0.0.1:$(cat "$PORT_FILE")"
 # shellcheck disable=SC1090
 source "$TREE_LIB"

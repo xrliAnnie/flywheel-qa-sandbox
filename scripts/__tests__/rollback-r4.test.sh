@@ -12,10 +12,22 @@ declare -F acquire_restart_lock >/dev/null
 declare -F release_restart_lock >/dev/null
 declare -F assert_launch_authority_empty >/dev/null
 declare -F assert_commdb_holders_empty >/dev/null
+declare -F rollback_bridge_port >/dev/null
 declare -F restore_snapshot >/dev/null
 declare -F rollback_r4_main >/dev/null
 
 echo "rollback-r4: contract functions present"
+
+ROLLBACK_R4_BRIDGE_URL=http://127.0.0.1:9988
+test "$(rollback_bridge_port)" = 9988
+ROLLBACK_R4_BRIDGE_URL=http://localhost
+set +e
+rollback_bridge_port >/dev/null 2>&1
+missing_port_rc=$?
+set -e
+test "$missing_port_rc" -ne 0
+ROLLBACK_R4_BRIDGE_URL=http://127.0.0.1:9876
+echo "rollback-r4: listener port follows the configured Bridge URL"
 
 SHARDS=(flywheel geoforge3d growth joycon-typeless personal-assistant sub tidal-echo)
 

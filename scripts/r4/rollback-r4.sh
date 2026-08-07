@@ -274,10 +274,27 @@ assert_commdb_holders_empty() {
     done
 }
 
+rollback_bridge_port() {
+    local authority port
+    authority="${ROLLBACK_R4_BRIDGE_URL#*://}"
+    authority="${authority%%/*}"
+    port="${authority##*:}"
+    [[ "$authority" != "$port" && "$port" =~ ^[1-9][0-9]{0,4}$ ]] || {
+        r4_log "ERROR: Bridge URL must contain an explicit numeric port: $ROLLBACK_R4_BRIDGE_URL"
+        return 1
+    }
+    (( 10#$port <= 65535 )) || {
+        r4_log "ERROR: Bridge URL port is out of range: $ROLLBACK_R4_BRIDGE_URL"
+        return 1
+    }
+    printf '%s\n' "$((10#$port))"
+}
+
 stop_bridge_listener() {
-    local pids pid deadline alive
+    local port pids pid deadline alive
+    port="$(rollback_bridge_port)" || return 1
     set +e
-    pids=$(lsof -nP -tiTCP:9876 -sTCP:LISTEN 2>/dev/null)
+    pids=$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null)
     local rc=$?
     set -e
     (( rc == 0 || rc == 1 )) || {
@@ -302,9 +319,9 @@ stop_bridge_listener() {
     for pid in $pids; do
         kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
     done
-    pids=$(lsof -nP -tiTCP:9876 -sTCP:LISTEN 2>/dev/null || true)
+    pids=$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
     [[ -z "$pids" ]] || {
-        r4_log "ERROR: Bridge port :9876 is still held after TERM/KILL"
+        r4_log "ERROR: Bridge port :$port is still held after TERM/KILL"
         return 1
     }
 }

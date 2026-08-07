@@ -22,7 +22,9 @@ let failed = false;
 for (const shard of shards) {
 	const dbPath = join(root, shard, "comm.db");
 	try {
-		const db = new CommDB(dbPath);
+		// Verification is deliberately non-creating and non-archiving: migration
+		// must have produced every canonical shard before this process starts.
+		const db = new CommDB(dbPath, false, false);
 		db.close();
 		for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
 			if (!existsSync(path)) continue;

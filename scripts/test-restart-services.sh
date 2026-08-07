@@ -2826,6 +2826,48 @@ else
     fail "FLY-1649 stale-break re-contention exited instead of retrying: rc=$stale_rc $stale_result"
 fi
 
+# If the incumbent releases between the initial mkdir and the wait loop, the
+# waiter must retry ownership before consulting mtime or sleeping. Otherwise a
+# missing lock can look ancient and consume the entire bounded deadline.
+released_before_loop_root="$TMPDIR_ROOT/fly1649-lock-released-before-loop"
+released_before_loop_lock="$released_before_loop_root/restart.lock.d"
+mkdir -p "$released_before_loop_lock"
+set +e
+released_before_loop_result=$(bash -c '
+  source "$1"
+  LOCK_DIR="$2"
+  RESTART_LOCK_WAIT_SECS_EFFECTIVE=2
+  SCHEDULER_REPAIR_LOCK_DIR="$2.scheduler"
+  LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON=fixture
+  calls=0
+  log() { printf "LOG %s\n" "$*"; }
+  alert_severe() { printf "ALERT %s\n" "$1"; }
+  restart_on_exit() { :; }
+  lead_restart_wait_scheduler_mutation() { return 0; }
+  file_mtime_epoch() { printf "0\n"; }
+  mkdir() {
+    calls=$((calls + 1))
+    if (( calls == 1 )); then
+      command rmdir "$LOCK_DIR"
+      return 1
+    fi
+    command mkdir "$@"
+  }
+  sleep() { printf "SLEPT\n"; }
+  acquire_lock
+  printf "ACQUIRED calls=%s\n" "$calls"
+' _ "$FLY1649_LOCK_FUNC" "$released_before_loop_lock" 2>&1)
+released_before_loop_rc=$?
+set -e
+if (( released_before_loop_rc == 0 )) \
+  && [[ "$released_before_loop_result" == *"ACQUIRED calls=2"* ]] \
+  && [[ "$released_before_loop_result" != *"SLEPT"* ]] \
+  && [[ "$released_before_loop_result" != *"Stale lock detected"* ]]; then
+    pass "FLY-1649 waiter retries ownership before inspecting a released lock"
+else
+    fail "FLY-1649 released lock incurred a false stale wait: rc=$released_before_loop_rc $released_before_loop_result"
+fi
+
 echo "Test: FLY-1649 migration windows can disable code-only rollback"
 FLY1649_DEPLOY_FUNC="$TMPDIR_ROOT/fly1649-deploy.sh"
 sed -n '/^deploy_and_verify()/,/^}/p' \

@@ -65,9 +65,9 @@ r4_log() {
 
 r4_write_state() {
     local value="$1" temp="${R4_STATE_FILE}.tmp.$$"
-    mkdir -p "$(dirname "$R4_STATE_FILE")"
-    printf '%s\n' "$value" > "$temp"
-    mv "$temp" "$R4_STATE_FILE"
+    mkdir -p "$(dirname "$R4_STATE_FILE")" || return 1
+    printf '%s\n' "$value" > "$temp" || return 1
+    mv "$temp" "$R4_STATE_FILE" || return 1
 }
 
 r4_validate_config() {
@@ -128,7 +128,7 @@ r4_assert_all_manifest_leads_loaded() {
         r4_log "ERROR: no production Lead manifests found"
         return 1
     }
-    : > "$R4_LEAD_LABELS_FILE"
+    : > "$R4_LEAD_LABELS_FILE" || return 1
     while IFS= read -r label; do
         [[ -n "$label" ]] || continue
         count=$((count + 1))
@@ -141,32 +141,35 @@ r4_assert_all_manifest_leads_loaded() {
             r4_log "ERROR: production Lead plist missing: $label"
             return 1
         }
-        printf '%s\n' "$label" >> "$R4_LEAD_LABELS_FILE"
+        printf '%s\n' "$label" >> "$R4_LEAD_LABELS_FILE" || return 1
     done <<< "$labels"
     (( count > 0 ))
 }
 
 r4_assert_updater_quiet() {
+    local queued
     [[ "$(r4_launch_state com.flywheel.updater)" == unloaded ]] || {
         r4_log "ERROR: updater must be unloaded throughout Q-S-M-B-C"
         return 1
     }
-    mkdir -p "${HOME}/.flywheel/self-ship-pending.d"
-    [[ -z "$(find "${HOME}/.flywheel/self-ship-pending.d" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
+    mkdir -p "${HOME}/.flywheel/self-ship-pending.d" || return 1
+    queued="$(find "${HOME}/.flywheel/self-ship-pending.d" -mindepth 1 -maxdepth 1 -print -quit)" || return 1
+    [[ -z "$queued" ]] || {
         r4_log "ERROR: self-ship queue is not empty"
         return 1
     }
 }
 
 r4_assert_authority_empty() {
-    local label
+    local label labels
     for label in com.flywheel.bridge com.flywheel.updater; do
         [[ "$(r4_launch_state "$label")" == unloaded ]] || return 1
     done
+    labels="$(r4_installed_lead_labels)" || return 1
     while IFS= read -r label; do
         [[ -n "$label" ]] || continue
         [[ "$(r4_launch_state "$label")" == unloaded ]] || return 1
-    done < <(r4_installed_lead_labels)
+    done <<< "$labels"
 }
 
 r4_assert_no_db_holders() {
@@ -195,7 +198,7 @@ r4_assert_canonical_modes() {
         for suffix in "" -wal -shm; do
             path="$R4_COMM_ROOT/$shard/comm.db$suffix"
             [[ -e "$path" ]] || continue
-            mode="$(stat -f %Lp "$path" 2>/dev/null || stat -c %a "$path")"
+            mode="$(stat -f %Lp "$path" 2>/dev/null || stat -c %a "$path")" || return 1
             (( (8#$mode & 8#200) != 0 )) || {
                 r4_log "ERROR: canonical file is not owner-writable: $path mode=$mode"
                 return 1
@@ -206,6 +209,10 @@ r4_assert_canonical_modes() {
 
 r4_classify_db() {
     local db="$1" legacy_count meta_type generation
+    [[ -f "$db" ]] || {
+        r4_log "ERROR: canonical DB is missing during classification: $db"
+        return 1
+    }
     legacy_count="$(sqlite3 "$db" \
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('messages','lead_inbox');")" || return 1
     meta_type="$(sqlite3 "$db" \
@@ -225,14 +232,14 @@ r4_classify_db() {
 r4_inventory() {
     local output="$R4_ROOT/inventory-before.json" rows="$R4_ROOT/inventory-before.tsv"
     local shard path state
-    : > "$rows"
+    : > "$rows" || return 1
     for shard in "${R4_SHARDS[@]}"; do
         path="$R4_COMM_ROOT/$shard/comm.db"
         state="$(r4_classify_db "$path")" || return 1
-        printf '%s\t%s\n' "$path" "$state" >> "$rows"
+        printf '%s\t%s\n' "$path" "$state" >> "$rows" || return 1
     done
     jq -Rn '[inputs | split("\t") | {path: .[0], state: .[1]}] | {inventory: .}' \
-        < "$rows" > "$output"
+        < "$rows" > "$output" || return 1
     jq -e '
         (.inventory | length) == 7 and
         ([.inventory[].state] | all(. == "legacy" or . == "migrated")) and
@@ -290,39 +297,42 @@ r4_reap_trial_bridge() {
 }
 
 r4_quiesce() {
-    r4_assert_updater_quiet
+    r4_assert_updater_quiet || return 1
     R4_BRIDGE_ORIGINAL_STATE="$(r4_launch_state com.flywheel.bridge)" || return 1
-    local label state
-    : > "$R4_LOADED_LEAD_LABELS_FILE"
+    local label labels state
+    : > "$R4_LOADED_LEAD_LABELS_FILE" || return 1
+    labels="$(r4_installed_lead_labels)" || return 1
     while IFS= read -r label; do
         [[ -n "$label" ]] || continue
         state="$(r4_launch_state "$label")" || return 1
         [[ "$state" == loaded ]] || continue
-        printf '%s\n' "$label" >> "$R4_LOADED_LEAD_LABELS_FILE"
-        launchctl bootout "gui/$(id -u)/$label"
-    done < <(r4_installed_lead_labels)
+        printf '%s\n' "$label" >> "$R4_LOADED_LEAD_LABELS_FILE" || return 1
+        launchctl bootout "gui/$(id -u)/$label" || return 1
+    done <<< "$labels"
     if [[ "$R4_BRIDGE_ORIGINAL_STATE" == loaded ]]; then
-        launchctl bootout "gui/$(id -u)/com.flywheel.bridge"
+        launchctl bootout "gui/$(id -u)/com.flywheel.bridge" || return 1
     fi
-    r4_reap_trial_bridge
-    r4_assert_authority_empty
-    r4_assert_no_db_holders
+    r4_reap_trial_bridge || return 1
+    r4_assert_authority_empty || return 1
+    r4_assert_no_db_holders || return 1
 }
 
 r4_snapshot_dist() {
-    local list="$R4_ROOT/dist-members.txt" member
-    : > "$list"
+    local list="$R4_ROOT/dist-members.txt" member members
+    : > "$list" || return 1
+    members="$(find "$R4_REPO/packages" -type d -name dist -prune | LC_ALL=C sort)" || return 1
     while IFS= read -r member; do
-        printf '%s\n' "${member#"$R4_REPO/"}" >> "$list"
-    done < <(find "$R4_REPO/packages" -type d -name dist -prune | LC_ALL=C sort)
+        [[ -n "$member" ]] || continue
+        printf '%s\n' "${member#"$R4_REPO/"}" >> "$list" || return 1
+    done <<< "$members"
     [[ -s "$list" ]] || { r4_log "ERROR: no known-good dist directories found"; return 1; }
-    tar -cpf "$R4_ROOT/known-good-dist.tar" -C "$R4_REPO" -T "$list"
+    tar -cpf "$R4_ROOT/known-good-dist.tar" -C "$R4_REPO" -T "$list" || return 1
 }
 
 r4_render_rollback() {
     local known_good="$1" output="$R4_ROLLBACK_SCRIPT" template="$R4_ROLLBACK_TEMPLATE"
-    cp "$template" "$output"
-    python3 - "$output" "$R4_REPO" "$known_good" "$R4_ROOT/known-good-dist.tar" "$R4_SNAPSHOT_DIR" <<'PY'
+    cp "$template" "$output" || return 1
+    python3 - "$output" "$R4_REPO" "$known_good" "$R4_ROOT/known-good-dist.tar" "$R4_SNAPSHOT_DIR" <<'PY' || return 1
 from pathlib import Path
 import sys
 
@@ -337,60 +347,65 @@ for marker, value in zip(
     text = text.replace(marker, value)
 path.write_text(text)
 PY
-    chmod 0500 "$output"
-    ! grep -q '__FLY1649_' "$output"
+    chmod 0500 "$output" || return 1
+    if grep -q '__FLY1649_' "$output"; then
+        r4_log "ERROR: rendered rollback artifact still contains a placeholder"
+        return 1
+    fi
 }
 
 r4_snapshot() {
-    r4_assert_authority_empty
-    r4_assert_no_db_holders
+    r4_assert_authority_empty || return 1
+    r4_assert_no_db_holders || return 1
     [[ ! -e "$R4_SNAPSHOT_DIR" ]] || {
         r4_log "ERROR: snapshot destination already exists"
         return 1
     }
     R4_SNAPSHOT_COMM_ROOT="$R4_COMM_ROOT" R4_SNAPSHOT_OUTPUT="$R4_SNAPSHOT_DIR" \
-        bash "$R4_SNAPSHOT_SCRIPT"
+        bash "$R4_SNAPSHOT_SCRIPT" || return 1
     local known_good
-    known_good="$(git -C "$R4_REPO" rev-parse HEAD)"
+    known_good="$(git -C "$R4_REPO" rev-parse HEAD)" || return 1
     [[ "$known_good" =~ ^[0-9a-f]{40}$ ]] || return 1
-    printf '%s\n' "$known_good" > "$R4_ROOT/known-good.sha"
-    r4_snapshot_dist
-    r4_render_rollback "$known_good"
+    printf '%s\n' "$known_good" > "$R4_ROOT/known-good.sha" || return 1
+    r4_snapshot_dist || return 1
+    r4_render_rollback "$known_good" || return 1
 }
 
 r4_reset_nonfly() {
     local stamp shard dir retired suffix
-    stamp="$(date +%Y%m%dT%H%M%S)"
+    stamp="$(date +%Y%m%dT%H%M%S)" || return 1
     for shard in "${R4_NONFLY_SHARDS[@]}"; do
         dir="$R4_COMM_ROOT/$shard"
         retired="$dir/retired-r4-$stamp"
-        mkdir -p "$retired"
+        mkdir -p "$retired" || return 1
         for suffix in "" -wal -shm; do
-            [[ -e "$dir/comm.db$suffix" ]] && mv "$dir/comm.db$suffix" "$retired/comm.db$suffix"
+            if [[ -e "$dir/comm.db$suffix" ]]; then
+                mv "$dir/comm.db$suffix" "$retired/comm.db$suffix" || return 1
+            fi
         done
         [[ ! -e "$dir/comm.db" ]] || return 1
     done
 }
 
 r4_deploy_target() {
-    git -C "$R4_REPO" checkout -f main
-    git -C "$R4_REPO" merge --ff-only origin/main
+    git -C "$R4_REPO" checkout -f main || return 1
+    git -C "$R4_REPO" merge --ff-only origin/main || return 1
     [[ "$(git -C "$R4_REPO" rev-parse HEAD)" == "$R4_TARGET_SHA" ]] || {
         r4_log "ERROR: checked-out target does not match rendered SHA"
         return 1
     }
-    pnpm -C "$R4_REPO" install --frozen-lockfile
-    pnpm -C "$R4_REPO" build
+    pnpm -C "$R4_REPO" install --frozen-lockfile || return 1
+    pnpm -C "$R4_REPO" build || return 1
 }
 
 r4_migrate() {
     cd "$R4_REPO" || return 1
-    FLYWHEEL_HOME="${HOME}/.flywheel" npx tsx scripts/migrate-fly1572-mailbox.ts --confirm-quiesced
+    FLYWHEEL_HOME="${HOME}/.flywheel" npx tsx scripts/migrate-fly1572-mailbox.ts --confirm-quiesced || return 1
 }
 
 r4_preflight() {
     cd "$R4_REPO" || return 1
-    FLYWHEEL_COMM_ROOT="$R4_COMM_ROOT" npx tsx scripts/r4/preflight-r4.ts
+    FLYWHEEL_COMM_ROOT="$R4_COMM_ROOT" npx tsx scripts/r4/preflight-r4.ts || return 1
 }
 
 r4_start_trial() {
@@ -398,7 +413,8 @@ r4_start_trial() {
     R4_BRIDGE_LOG_START_LINES="$(wc -l < /tmp/flywheel-bridge.log 2>/dev/null || printf '0')"
     nohup npx tsx scripts/run-bridge.ts >> /tmp/flywheel-bridge.log 2>&1 < /dev/null &
     R4_TRIAL_PID=$!
-    r4_log "Bridge-only trial root PID=$R4_TRIAL_PID"
+    [[ "$R4_TRIAL_PID" =~ ^[1-9][0-9]*$ ]] || return 1
+    r4_log "Bridge-only trial root PID=$R4_TRIAL_PID" || return 1
 }
 
 r4_health_ok() {
@@ -408,7 +424,7 @@ r4_health_ok() {
 r4_assert_trial_authority() {
     local holder bridge_pids shard db
     r4_assert_authority_empty || return 1
-    bridge_pids="$(bridge_target_pids)"
+    bridge_pids="$(bridge_target_pids)" || return 1
     [[ -n "$bridge_pids" ]] || return 1
     for shard in "${R4_SHARDS[@]}"; do
         db="$R4_COMM_ROOT/$shard/comm.db"
@@ -423,21 +439,22 @@ r4_assert_trial_authority() {
 }
 
 r4_wait_trial_health() {
-    for _ in $(seq 1 "$R4_TRIAL_HEALTH_TRIES"); do
+    local attempt
+    for (( attempt=1; attempt<=R4_TRIAL_HEALTH_TRIES; attempt++ )); do
         if r4_health_ok; then
-            r4_assert_trial_authority
-            return
+            r4_assert_trial_authority || return 1
+            return 0
         fi
         kill -0 "$R4_TRIAL_PID" 2>/dev/null || return 1
-        sleep "$R4_TRIAL_HEALTH_INTERVAL_SECS"
+        sleep "$R4_TRIAL_HEALTH_INTERVAL_SECS" || return 1
     done
     return 1
 }
 
 r4_stormwatch() {
-    local sample shard pending total
-    for sample in $(seq 1 "$R4_STORMWATCH_SAMPLES"); do
-        sleep "$R4_STORMWATCH_INTERVAL_SECS"
+    local sample shard pending total new_logs
+    for (( sample=1; sample<=R4_STORMWATCH_SAMPLES; sample++ )); do
+        sleep "$R4_STORMWATCH_INTERVAL_SECS" || return 1
         r4_health_ok || return 1
         r4_assert_trial_authority || return 1
         total=0
@@ -447,27 +464,30 @@ r4_stormwatch() {
             [[ "$pending" =~ ^[0-9]+$ ]] || return 1
             total=$((total + pending))
         done
-        tail -n "+$((R4_BRIDGE_LOG_START_LINES + 1))" /tmp/flywheel-bridge.log 2>/dev/null | \
-            grep -q 'Fatal' && return 1
-        r4_log "stormwatch sample $sample/$R4_STORMWATCH_SAMPLES fleet-pending=$total"
+        new_logs="$(tail -n "+$((R4_BRIDGE_LOG_START_LINES + 1))" /tmp/flywheel-bridge.log 2>/dev/null)" || return 1
+        if grep -q 'Fatal' <<< "$new_logs"; then
+            return 1
+        fi
+        r4_log "stormwatch sample $sample/$R4_STORMWATCH_SAMPLES fleet-pending=$total" || return 1
     done
 }
 
 r4_restore_lead_authority() {
     local label plist state
+    [[ -f "$R4_LOADED_LEAD_LABELS_FILE" ]] || return 1
     while IFS= read -r label; do
         [[ -n "$label" ]] || continue
         state="$(r4_launch_state "$label")" || return 1
         [[ "$state" == loaded ]] && continue
         plist="${HOME}/Library/LaunchAgents/$label.plist"
-        launchctl bootstrap "gui/$(id -u)" "$plist"
+        launchctl bootstrap "gui/$(id -u)" "$plist" || return 1
         [[ "$(r4_launch_state "$label")" == loaded ]] || return 1
     done < "$R4_LOADED_LEAD_LABELS_FILE"
 }
 
 r4_restore_bridge_authority() {
-    r4_reap_trial_bridge
-    launchctl bootstrap "gui/$(id -u)" "${HOME}/Library/LaunchAgents/com.flywheel.bridge.plist"
+    r4_reap_trial_bridge || return 1
+    launchctl bootstrap "gui/$(id -u)" "${HOME}/Library/LaunchAgents/com.flywheel.bridge.plist" || return 1
     [[ "$(r4_launch_state com.flywheel.bridge)" == loaded ]]
 }
 
@@ -495,66 +515,71 @@ r4_verify_fleet() {
 
 r4_validate_updater_plist() {
     local plist="$1"
-    plutil -lint "$plist" >/dev/null
+    plutil -lint "$plist" >/dev/null || return 1
     plutil -convert json -o - "$plist" | jq -e '
         .QueueDirectories == [($ENV.HOME + "/.flywheel/self-ship-pending.d")] and
         ([.StartCalendarInterval[] | [.Hour, .Minute]] | sort) == [[0,0],[12,0]]
-    ' >/dev/null
+    ' >/dev/null || return 1
 }
 
 r4_restore_updater() {
     local source="$R4_REPO/scripts/com.flywheel.updater.plist"
     local target="${HOME}/Library/LaunchAgents/com.flywheel.updater.plist"
-    local stage mode uid
-    r4_validate_updater_plist "$source"
-    stage="$(mktemp "$(dirname "$target")/.com.flywheel.updater.plist.r4.XXXXXX")"
-    cp "$source" "$stage"
-    chmod 0644 "$stage"
-    mode="$(stat -f %Lp "$stage" 2>/dev/null || stat -c %a "$stage")"
-    uid="$(stat -f %u "$stage" 2>/dev/null || stat -c %u "$stage")"
+    local stage mode uid queued
+    r4_validate_updater_plist "$source" || return 1
+    stage="$(mktemp "$(dirname "$target")/.com.flywheel.updater.plist.r4.XXXXXX")" || return 1
+    cp "$source" "$stage" || return 1
+    chmod 0644 "$stage" || return 1
+    mode="$(stat -f %Lp "$stage" 2>/dev/null || stat -c %a "$stage")" || return 1
+    uid="$(stat -f %u "$stage" 2>/dev/null || stat -c %u "$stage")" || return 1
     [[ "$mode" == 644 && "$uid" == "$(id -u)" ]] || return 1
-    r4_validate_updater_plist "$stage"
-    mv "$stage" "$target"
-    r4_validate_updater_plist "$target"
-    [[ -z "$(find "${HOME}/.flywheel/self-ship-pending.d" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
+    r4_validate_updater_plist "$stage" || return 1
+    mv "$stage" "$target" || return 1
+    r4_validate_updater_plist "$target" || return 1
+    queued="$(find "${HOME}/.flywheel/self-ship-pending.d" -mindepth 1 -maxdepth 1 -print -quit)" || return 1
+    [[ -z "$queued" ]] || {
         r4_log "ERROR: updater queue became nonempty immediately before bootstrap"
         return 1
     }
-    launchctl bootstrap "gui/$(id -u)" "$target"
+    launchctl bootstrap "gui/$(id -u)" "$target" || return 1
     [[ "$(r4_launch_state com.flywheel.updater)" == loaded ]]
 }
 
 r4_verify_final() {
     local listeners count
     listeners="$(_listeners_on_port "$(bridge_port)")" || return 1
-    count="$(printf '%s\n' "$listeners" | awk 'NF {n++} END {print n+0}')"
+    count="$(printf '%s\n' "$listeners" | awk 'NF {n++} END {print n+0}')" || return 1
     [[ "$count" == 1 ]] || {
         r4_log "ERROR: expected exactly one Bridge listener, found $count"
         return 1
     }
-    r4_health_ok
-    r4_verify_fleet
+    r4_health_ok || return 1
+    r4_verify_fleet || return 1
     [[ "$(r4_launch_state com.flywheel.updater)" == loaded ]]
 }
 
 r4_run_rollback() {
-    bash "$R4_ROLLBACK_SCRIPT"
+    bash "$R4_ROLLBACK_SCRIPT" || return 1
 }
 
 r4_restore_pre_window() {
+    local bridge_state
     (( R4_QUIESCE_STARTED == 1 )) || return 0
     case "$R4_BRIDGE_ORIGINAL_STATE" in
         loaded)
-            if [[ "$(r4_launch_state com.flywheel.bridge)" == unloaded ]]; then
+            bridge_state="$(r4_launch_state com.flywheel.bridge)" || return 1
+            if [[ "$bridge_state" == unloaded ]]; then
                 launchctl bootstrap "gui/$(id -u)" \
-                    "${HOME}/Library/LaunchAgents/com.flywheel.bridge.plist" || true
+                    "${HOME}/Library/LaunchAgents/com.flywheel.bridge.plist" || return 1
             fi
             ;;
         unloaded)
-            [[ -n "$(_listeners_on_port "$(bridge_port)")" ]] || r4_start_trial || true
+            if [[ -z "$(_listeners_on_port "$(bridge_port)")" ]]; then
+                r4_start_trial || return 1
+            fi
             ;;
     esac
-    r4_restore_lead_authority || true
+    r4_restore_lead_authority || return 1
 }
 
 r4_fail() {
@@ -566,28 +591,28 @@ r4_fail() {
     if (( R4_MUTATED == 1 && R4_COMMITTED == 0 )); then
         (( cleanup_rc == 0 )) || {
             r4_log "ERROR: refusing rollback until the Bridge trial tree is fully reaped"
-            r4_write_state "FAILED cleanup-before-rollback"
+            r4_write_state "FAILED cleanup-before-rollback" || r4_log "ERROR: failed to persist cleanup failure state"
             return 1
         }
         r4_run_rollback || rollback_rc=$?
         (( rollback_rc == 0 )) || {
-            r4_write_state "FAILED rollback rc=$rollback_rc"
+            r4_write_state "FAILED rollback rc=$rollback_rc" || r4_log "ERROR: failed to persist rollback failure state"
             return "$rollback_rc"
         }
     elif (( R4_MUTATED == 0 )); then
-        r4_restore_pre_window
+        r4_restore_pre_window || r4_log "ERROR: pre-window authority restoration failed"
     else
         r4_log "COMMIT boundary crossed: automatic whole-state rollback is forbidden; re-quiesce and escalate"
     fi
-    r4_write_state "FAILED $R4_PHASE $reason"
+    r4_write_state "FAILED $R4_PHASE $reason" || r4_log "ERROR: failed to persist failure state"
     return 1
 }
 
 r4_window_main() {
     r4_validate_config || return 1
-    mkdir -p "$R4_ROOT"
-    : > "$R4_PROGRESS_LOG"
-    r4_write_state RUNNING
+    mkdir -p "$R4_ROOT" || return 1
+    : > "$R4_PROGRESS_LOG" || return 1
+    r4_write_state RUNNING || return 1
 
     R4_PHASE=Q-preflight
     r4_assert_all_manifest_leads_loaded || { r4_fail "production Lead manifest is unloaded"; return 1; }
@@ -630,8 +655,8 @@ r4_window_main() {
     r4_restore_updater || { r4_fail "updater staged restore failed"; return 1; }
     R4_PHASE=R-final
     r4_verify_final || { r4_fail "final authority/health census failed"; return 1; }
-    r4_write_state "DONE target=$R4_TARGET_SHA"
-    r4_log "r4 window complete"
+    r4_write_state "DONE target=$R4_TARGET_SHA" || return 1
+    r4_log "r4 window complete" || return 1
 }
 
 if [[ "${R4_WINDOW_SOURCE_ONLY:-0}" != "1" ]]; then
