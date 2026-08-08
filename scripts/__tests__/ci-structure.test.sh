@@ -333,6 +333,8 @@ for required_command in (
     "bash scripts/__tests__/lead-body-hard-clear.test.sh",
     "bash scripts/__tests__/lead-restart-controlled-wave.test.sh",
     "bash packages/teamlead/scripts/__tests__/test-lead-identity-preflight.sh",
+    "bash scripts/__tests__/supervisor-adoption.test.sh",
+    "bash scripts/__tests__/supervisor-storm-regression.test.sh",
     "bash scripts/__tests__/restart-self-detach.test.sh",
 ):
     require(

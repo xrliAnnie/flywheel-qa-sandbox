@@ -214,6 +214,23 @@ fi
 # sampler must opt out explicitly.
 export FLYWHEEL_TMUX_RESCUE_LOAD_FACTOR=1
 
+echo "[TEST] operation-scoped probes get a fresh budget without mutating the caller"
+_TMUX_RESCUE_BUDGET_ANCHOR=$((SECONDS - 61))
+_TMUX_RESCUE_TOTAL_BUDGET=60
+_TMUX_RESCUE_CACHED_LOAD_FACTOR=1
+PROBE_OUT="$(tmux_rescue_probe 1 /bin/sh -c 'printf fresh-probe')"
+PROBE_RC=$?
+if [ "$PROBE_RC" -eq 0 ] \
+  && [ "$PROBE_OUT" = "fresh-probe" ] \
+  && [ "$_TMUX_RESCUE_BUDGET_ANCHOR" -eq $((SECONDS - 61)) ] \
+  && [ "$_TMUX_RESCUE_TOTAL_BUDGET" = 60 ] \
+  && [ "$_TMUX_RESCUE_CACHED_LOAD_FACTOR" = 1 ]; then
+  pass "fresh read probes do not inherit or pollute the enclosing rescue budget"
+else
+  fail "probe budget leaked or stayed exhausted: rc=$PROBE_RC out=$PROBE_OUT anchor=$_TMUX_RESCUE_BUDGET_ANCHOR total=$_TMUX_RESCUE_TOTAL_BUDGET factor=$_TMUX_RESCUE_CACHED_LOAD_FACTOR"
+fi
+unset _TMUX_RESCUE_BUDGET_ANCHOR _TMUX_RESCUE_TOTAL_BUDGET _TMUX_RESCUE_CACHED_LOAD_FACTOR
+
 echo "[TEST] load factor parses macOS/Linux fixtures, clamps, and rejects malformed overrides"
 # GNU awk reserves `load` as a builtin name. Model that parser rule on macOS
 # too, so this portability contract fails before reaching Linux CI.

@@ -1230,6 +1230,7 @@ SHOULD_EXIT=0
 # FLY-80 restored: expect auto-confirms --dangerously-load-development-channels prompt.
 # tmux provides the window; expect provides PTY + prompt detection inside the window.
 LEAD_WINDOW_ID=""
+LEAD_BODY_PROVENANCE=""
 
 # FLY-109: Dev-channels dialog auto-confirm via tmux capture-pane.
 #
@@ -1261,6 +1262,15 @@ TMUX_HOLD_FALLBACK_SENT=0
 TMUX_RELAUNCH_PROVEN=0
 ENSURE_HOLD_KIND=""
 ENSURE_HOLD_EVIDENCE=""
+
+_hold_sleep_and_advance() {
+  local delay
+  delay=$((TMUX_HOLD_BACKOFF / 2 + RANDOM % (TMUX_HOLD_BACKOFF + 1)))
+  interruptible_sleep "$delay"
+  [ "$TMUX_HOLD_BACKOFF" -ge 30 ] \
+    || TMUX_HOLD_BACKOFF=$((TMUX_HOLD_BACKOFF * 2))
+  [ "$TMUX_HOLD_BACKOFF" -le 30 ] || TMUX_HOLD_BACKOFF=30
+}
 
 _log_startup() {
   echo "$(date -u '+%Y-%m-%dT%H:%M:%S') $*" >> "$FLYWHEEL_STARTUP_LOG"
@@ -1299,6 +1309,38 @@ _tmux_generation_is_current() {
     && [ "$(_tmux_rescue_json_field "$inspection" reachablePid)" = "$expected_pid" ]
 }
 
+# Cheap, operation-scoped read probe. rc 0 proves the expected generation is
+# answering; rc 1 proves a different numeric generation; rc 2 is transport or
+# format uncertainty. It performs no process-table scan and takes no lock.
+_tmux_generation_probe() {
+  local expected_pid="$1" socket_path timeout reported_pid="" rc=0
+  case "$expected_pid" in ''|*[!0-9]*) return 2 ;; esac
+  socket_path="$(_tmux_socket_path)" || return 2
+  timeout="$(_tmux_rescue_effective_timeout command)" || return 2
+  reported_pid="$(tmux_rescue_probe "$timeout" \
+    tmux -S "$socket_path" display-message -p '#{pid}' 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || return 2
+  case "$reported_pid" in ''|*[!0-9]*) return 2 ;; esac
+  [ "$reported_pid" = "$expected_pid" ] && return 0
+  return 1
+}
+
+# Typed generation state for crash-durable launch ledgers. A different server
+# generation, or an expected server PID that is positively gone after bounded
+# IPC fails, proves every window in that frozen generation is absent. A live
+# PID plus IPC noise remains indeterminate and must hold fail-closed.
+_lead_tmux_generation_state() {
+  local expected_pid="$1" generation_rc=0 presence_rc=0
+  _tmux_generation_probe "$expected_pid" || generation_rc=$?
+  case "$generation_rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+  esac
+  _tmux_supervisor_process_presence_state "$expected_pid" || presence_rc=$?
+  [ "$presence_rc" -eq 1 ] && return 1
+  return 2
+}
+
 _tmux_target_matches_archive() {
   local target="$1" require_live="${2:-false}" pane_pid
   tmux_supervisor_archive_read "$TMUX_ARCHIVE_FILE" || return 1
@@ -1307,8 +1349,34 @@ _tmux_target_matches_archive() {
   pane_pid="$(_tmux list-panes -t "$target" -F '#{pane_pid}' 2>/dev/null | head -1)" || return 1
   [ "$pane_pid" = "$TMUX_ARCHIVE_PANE_PID" ] || return 1
   if [ "$require_live" = true ]; then
-    tmux_supervisor_archived_process_alive "$TMUX_ARCHIVE_FILE" || return 1
+    tmux_supervisor_archived_process_state "$TMUX_ARCHIVE_FILE" "$LEAD_ID" \
+      || return 1
   fi
+}
+
+# Read-only matcher for steady monitoring. A positive generation change fails
+# immediately; transport uncertainty falls back to the full forensic matcher.
+# The healthy path uses only bounded tmux IPC and never scans ps/lsof.
+_tmux_target_matches_archive_fast() {
+  local target="$1" require_live="${2:-false}" generation_rc=0
+  local socket_path timeout pane_row pane_pid pane_dead
+  tmux_supervisor_archive_read "$TMUX_ARCHIVE_FILE" || return 1
+  [ "$TMUX_ARCHIVE_WINDOW_ID" = "$target" ] || return 1
+  _tmux_generation_probe "$TMUX_ARCHIVE_SERVER_PID" || generation_rc=$?
+  case "$generation_rc" in
+    0) ;;
+    1) return 1 ;;
+    *) _tmux_target_matches_archive "$target" "$require_live"; return $? ;;
+  esac
+  socket_path="$(_tmux_socket_path)" || return 1
+  timeout="$(_tmux_rescue_effective_timeout command)" || return 1
+  pane_row="$(tmux_rescue_probe "$timeout" \
+    tmux -S "$socket_path" list-panes -t "$target" \
+      -F '#{pane_pid}	#{pane_dead}' 2>/dev/null | head -1)" || return 1
+  pane_pid="${pane_row%%$'\t'*}"
+  pane_dead="${pane_row#*$'\t'}"
+  [ "$pane_pid" = "$TMUX_ARCHIVE_PANE_PID" ] || return 1
+  [ "$require_live" != true ] || [ "$pane_dead" = 0 ]
 }
 
 _tmux_normalize_hold_kind() {
@@ -1393,7 +1461,7 @@ _poll_dev_channels_dialog() {
 
   while [ "$elapsed" -lt "$timeout_sec" ]; do
     # Check window still exists
-    if ! _tmux_target_matches_archive "$window_id" true; then
+    if ! _tmux_target_matches_archive_fast "$window_id" true; then
       _log_startup "dialog-poller: window gone, exiting"
       return 0
     fi
@@ -1402,11 +1470,11 @@ _poll_dev_channels_dialog() {
     pane_text=$(_tmux capture-pane -t "$window_id" -p 2>/dev/null || echo "")
 
     if echo "$pane_text" | grep -qE "Loading development channels|am using this for local development|development channels"; then
-      _tmux_target_matches_archive "$window_id" true || return 0
+      _tmux_target_matches_archive_fast "$window_id" true || return 0
       _log_startup "dialog-poller: matched dev-channels dialog, sending '1' Enter"
       _tmux send-keys -t "$window_id" "1" 2>/dev/null || true
       sleep 0.3
-      _tmux_target_matches_archive "$window_id" true || return 0
+      _tmux_target_matches_archive_fast "$window_id" true || return 0
       _tmux send-keys -t "$window_id" Enter 2>/dev/null || true
       _log_startup "dialog-poller: confirmed=1"
       return 0
@@ -1423,7 +1491,7 @@ _poll_dev_channels_dialog() {
 # Ensure the shared flywheel tmux session exists (race-safe, idempotent).
 # Called before every launch — handles session being killed externally.
 ensure_tmux_session() {
-  local socket_path result rc action
+  local socket_path result rc action timeout fast_pid="" fast_rc=0 option=""
   ENSURE_HOLD_KIND=""
   ENSURE_HOLD_EVIDENCE=""
   socket_path="$(_tmux_socket_path)" || {
@@ -1431,6 +1499,32 @@ ensure_tmux_session() {
     ENSURE_HOLD_EVIDENCE='{"reason":"socket_path_unavailable"}'
     return 4
   }
+
+  # Healthy shared-server path: mirror the locked ensure postconditions with
+  # bounded read-only probes. Any drift or uncertainty falls through to the
+  # existing socket-locked repair primitive.
+  timeout="$(_tmux_rescue_effective_timeout command)" || timeout=5
+  fast_pid="$(tmux_rescue_probe "$timeout" \
+    tmux -S "$socket_path" display-message -p '#{pid}' 2>/dev/null)" || fast_rc=$?
+  case "$fast_pid" in ''|*[!0-9]*) fast_rc=2 ;; esac
+  if [ "$fast_rc" -eq 0 ] \
+    && tmux_rescue_probe "$timeout" \
+      tmux -S "$socket_path" has-session -t =flywheel >/dev/null 2>&1; then
+    if _tmux_rescue_keepalive_enabled; then
+      option="$(tmux_rescue_probe "$timeout" \
+        tmux -S "$socket_path" show-options -sv exit-empty 2>/dev/null)" || option=""
+      if [ "$option" = off ] \
+        && tmux_rescue_probe "$timeout" \
+          tmux -S "$socket_path" has-session -t =flywheel-keepalive >/dev/null 2>&1 \
+        && _tmux_generation_probe "$fast_pid"; then
+        TMUX_SERVER_PID="$fast_pid"
+        return 0
+      fi
+    elif _tmux_generation_probe "$fast_pid"; then
+      TMUX_SERVER_PID="$fast_pid"
+      return 0
+    fi
+  fi
   if result="$(tmux_socket_ensure "$socket_path" \
     --verify tmux -S "$socket_path" has-session -t =flywheel \
     --create tmux -S "$socket_path" new-session -Ad -s flywheel -x 200 -y 50)"; then
@@ -1448,31 +1542,46 @@ ensure_tmux_session() {
 
 _prepare_lead_launch() {
   local window_name="${PROJECT_NAME}-${LEAD_ID}" target pane_row pane_dead
+  local archived_state_rc=0 reap_rc=0
   target="=flywheel:=${window_name}"
   ENSURE_HOLD_KIND=""
   ENSURE_HOLD_EVIDENCE=""
 
   if [ -f "$TMUX_ARCHIVE_FILE" ]; then
-    if ! tmux_supervisor_archive_read "$TMUX_ARCHIVE_FILE"; then
-      rm -f "$TMUX_ARCHIVE_FILE" 2>/dev/null || true
-    elif tmux_supervisor_archived_process_alive "$TMUX_ARCHIVE_FILE"; then
-      if [ "$TMUX_RELAUNCH_PROVEN" -eq 1 ]; then
-        tmux_supervisor_reap_archived_process "$TMUX_ARCHIVE_FILE" "$LEAD_ID" || return 1
-      else
-        if [ "$TMUX_ARCHIVE_SERVER_PID" = "$TMUX_SERVER_PID" ]; then
-          ENSURE_HOLD_KIND="ambiguous"
-          ENSURE_HOLD_EVIDENCE="{\"reason\":\"existing_archived_lead_alive\",\"originalServerPid\":${TMUX_ARCHIVE_SERVER_PID}}"
+    tmux_supervisor_archived_process_state "$TMUX_ARCHIVE_FILE" "$LEAD_ID" \
+      || archived_state_rc=$?
+    case "$archived_state_rc" in
+      0)
+        if [ "$TMUX_RELAUNCH_PROVEN" -eq 1 ] || [ "${LEAD_LEASE_FRESH:-0}" -eq 1 ]; then
+          tmux_supervisor_reap_archived_process "$TMUX_ARCHIVE_FILE" "$LEAD_ID" \
+            || reap_rc=$?
+          if [ "$reap_rc" -ne 0 ]; then
+            ENSURE_HOLD_KIND="unknown"
+            ENSURE_HOLD_EVIDENCE='{"reason":"archived_process_reap_indeterminate"}'
+            return 3
+          fi
         else
-          ENSURE_HOLD_KIND="split_brain"
-          ENSURE_HOLD_EVIDENCE="{\"reason\":\"archived_lead_on_other_generation\",\"originalServerPid\":${TMUX_ARCHIVE_SERVER_PID},\"reachablePid\":${TMUX_SERVER_PID}}"
+          if [ "$TMUX_ARCHIVE_SERVER_PID" = "$TMUX_SERVER_PID" ]; then
+            ENSURE_HOLD_KIND="ambiguous"
+            ENSURE_HOLD_EVIDENCE="{\"reason\":\"existing_archived_lead_alive\",\"originalServerPid\":${TMUX_ARCHIVE_SERVER_PID}}"
+          else
+            ENSURE_HOLD_KIND="split_brain"
+            ENSURE_HOLD_EVIDENCE="{\"reason\":\"archived_lead_on_other_generation\",\"originalServerPid\":${TMUX_ARCHIVE_SERVER_PID},\"reachablePid\":${TMUX_SERVER_PID}}"
+          fi
+          return 3
         fi
+        ;;
+      1)
+        # Positive absence, zombie, PID reuse, or identity drift retires only
+        # stale metadata. No live exact Lead body is signalled on this branch.
+        rm -f "$TMUX_ARCHIVE_FILE" 2>/dev/null || true
+        ;;
+      *)
+        ENSURE_HOLD_KIND="unknown"
+        ENSURE_HOLD_EVIDENCE='{"reason":"archived_process_sensor_indeterminate"}'
         return 3
-      fi
-    else
-      # The archived process is positively gone (or its PID identity changed).
-      # Clearing metadata cannot affect a live process.
-      rm -f "$TMUX_ARCHIVE_FILE" 2>/dev/null || true
-    fi
+        ;;
+    esac
   fi
   TMUX_RELAUNCH_PROVEN=0
 
@@ -1519,6 +1628,59 @@ _lead_clear_orphan_body() {
     "$LEAD_LEASE_ORPHAN_HOLDER_PID" "$LEAD_LEASE_ORPHAN_HOLDER_START"
 }
 
+# Return 0 when another exact Lead body exists, 1 when the archived body is the
+# only exact match, and 2 when the process table cannot be read. The exclusion
+# is a frozen pane pid already proven by the archive tuple.
+_lead_identity_conflict_excluding() {
+  local lead_id="$1" excluded_pid="$2" snapshot="" rc=0 pid="" command=""
+  snapshot="$(LC_ALL=C ps -axo pid=,command= 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || return 2
+  while read -r pid command; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    [ "$pid" = "$excluded_pid" ] && continue
+    if lead_identity_command_matches "$command" "$lead_id"; then
+      _lead_identity_conflict="${pid}"$'\t'"${command}"
+      return 0
+    fi
+  done <<EOF
+$snapshot
+EOF
+  return 1
+}
+
+# Store-authorized takeover of an already-bound body.
+# rc 0 adopted; rc 1 positive tuple/identity mismatch; rc 2 positive second
+# exact body; rc 3 sensor or TOCTOU indeterminate. Only rc 1 may flow to the
+# existing evidence-gated replacement path.
+_lead_try_adopt_body() {
+  local holder_pid="$1" holder_start="$2"
+  local a_server a_pane a_start a_window state_rc=0 conflict_rc=0
+  tmux_supervisor_archive_read "$TMUX_ARCHIVE_FILE" || return 3
+  a_server="$TMUX_ARCHIVE_SERVER_PID"
+  a_pane="$TMUX_ARCHIVE_PANE_PID"
+  a_start="$TMUX_ARCHIVE_PANE_START"
+  a_window="$TMUX_ARCHIVE_WINDOW_ID"
+  [ "$holder_pid" = "$a_pane" ] && [ "$holder_start" = "$a_start" ] || return 1
+
+  tmux_supervisor_archived_process_state "$TMUX_ARCHIVE_FILE" "$LEAD_ID" || state_rc=$?
+  case "$state_rc" in 1) return 1 ;; 2) return 3 ;; esac
+  _tmux_target_matches_archive "$a_window" true || return 3
+  [ "$TMUX_ARCHIVE_SERVER_PID" = "$a_server" ] \
+    && [ "$TMUX_ARCHIVE_PANE_PID" = "$a_pane" ] \
+    && [ "$TMUX_ARCHIVE_PANE_START" = "$a_start" ] \
+    && [ "$TMUX_ARCHIVE_WINDOW_ID" = "$a_window" ] \
+    || return 3
+
+  _lead_identity_conflict_excluding "$LEAD_ID" "$a_pane" || conflict_rc=$?
+  case "$conflict_rc" in 0) return 2 ;; 1) ;; *) return 3 ;; esac
+
+  LEAD_WINDOW_ID="$a_window"
+  TMUX_SERVER_PID="$a_server"
+  LEAD_BODY_PROVENANCE=adopted
+  log "Adopted existing Lead body PID ${a_pane} (window ${LEAD_WINDOW_ID}); resuming KeepAlive monitoring"
+  return 0
+}
+
 # rc 0: this supervisor's bound body and archived tmux window are the same
 # executable tuple. rc 1: holder is dead/zombie. rc 2: process sensor failed.
 # rc 3: a live holder exists, but its window/archive identity is not closed.
@@ -1528,11 +1690,751 @@ _lead_bound_body_ready() {
     "$LEAD_LEASE_ORPHAN_HOLDER_PID" "$LEAD_LEASE_ORPHAN_HOLDER_START" \
     || tuple_rc=$?
   [ "$tuple_rc" -eq 0 ] || return "$tuple_rc"
-  [ -n "$LEAD_WINDOW_ID" ] || return 3
+  if [ -z "$LEAD_WINDOW_ID" ]; then
+    tmux_supervisor_archive_read "$TMUX_ARCHIVE_FILE" || return 3
+    LEAD_WINDOW_ID="$TMUX_ARCHIVE_WINDOW_ID"
+  fi
   _tmux_target_matches_archive "$LEAD_WINDOW_ID" true || return 3
   [ "$TMUX_ARCHIVE_PANE_PID" = "$LEAD_LEASE_ORPHAN_HOLDER_PID" ] \
     && [ "$TMUX_ARCHIVE_PANE_START" = "$LEAD_LEASE_ORPHAN_HOLDER_START" ] \
     || return 3
+  [ -n "${LEAD_BODY_PROVENANCE:-}" ] || LEAD_BODY_PROVENANCE=adopted
+}
+
+_lead_pending_file() {
+  printf '%s.pending\n' "${TMUX_ARCHIVE_FILE%.tmux}"
+}
+
+_lead_fence_path() {
+  local nonce="$1"
+  case "$nonce" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  printf '%s.client.%s\n' "${TMUX_ARCHIVE_FILE%.tmux}" "$nonce"
+}
+
+_lead_record_field_safe() {
+  [ -n "$1" ] && [ "$1" != - ] || return 1
+  case "$1" in *$'\t'*|*$'\n'*) return 1 ;; esac
+}
+
+# state, nonce, intent_ts, expected_server, creator tuple, client tuple,
+# normalized socket, and optional completed window tuple. Missing fields use
+# a literal '-' so Bash 3.2 IFS parsing cannot collapse evidence columns.
+_lead_pending_write() {
+  [ "$#" -eq 13 ] || return 1
+  local state="$1" nonce="$2" intent_ts="$3" expected="$4"
+  local creator_pid="$5" creator_start="$6" client_pid="$7" client_start="$8"
+  local socket_path="$9" created_pid="${10}" window_id="${11}"
+  local pane_pid="${12}" pane_start="${13}" file tmp
+  case "$state" in prepared|client-recorded|complete) ;; *) return 1 ;; esac
+  case "$nonce" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  case "$intent_ts:$expected:$creator_pid" in *[!0-9:]*|:*|*:) return 1 ;; esac
+  _lead_record_field_safe "$creator_start" && _lead_record_field_safe "$socket_path" \
+    || return 1
+  case "$state" in
+    prepared)
+      [ "$client_pid:$client_start:$created_pid:$window_id:$pane_pid:$pane_start" = '-:-:-:-:-:-' ] \
+        || return 1
+      ;;
+    client-recorded)
+      case "$client_pid" in ''|*[!0-9]*) return 1 ;; esac
+      _lead_record_field_safe "$client_start" || return 1
+      [ "$created_pid:$window_id:$pane_pid:$pane_start" = '-:-:-:-' ] || return 1
+      ;;
+    complete)
+      case "$client_pid:$created_pid:$pane_pid" in *[!0-9:]*|:*|*:) return 1 ;; esac
+      _lead_record_field_safe "$client_start" \
+        && _lead_record_field_safe "$window_id" \
+        && _lead_record_field_safe "$pane_start" || return 1
+      ;;
+  esac
+  file="$(_lead_pending_file)" || return 1
+  tmp="${file}.tmp.$$"
+  (umask 077
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$state" "$nonce" "$intent_ts" "$expected" "$creator_pid" "$creator_start" \
+      "$client_pid" "$client_start" "$socket_path" "$created_pid" "$window_id" \
+      "$pane_pid" "$pane_start" > "$tmp" \
+      && chmod 600 "$tmp" \
+      && mv "$tmp" "$file")
+}
+
+_lead_pending_read() {
+  local file extra=""
+  file="$(_lead_pending_file)" || return 1
+  LEAD_PENDING_STATE=""; LEAD_PENDING_NONCE=""; LEAD_PENDING_INTENT_TS=""
+  LEAD_PENDING_EXPECTED_SERVER_PID=""; LEAD_PENDING_CREATOR_PID=""
+  LEAD_PENDING_CREATOR_START=""; LEAD_PENDING_CLIENT_PID=""
+  LEAD_PENDING_CLIENT_START=""; LEAD_PENDING_SOCKET=""
+  LEAD_PENDING_CREATED_SERVER_PID=""; LEAD_PENDING_WINDOW_ID=""
+  LEAD_PENDING_PANE_PID=""; LEAD_PENDING_PANE_START=""
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  IFS=$'\t' read -r LEAD_PENDING_STATE LEAD_PENDING_NONCE LEAD_PENDING_INTENT_TS \
+    LEAD_PENDING_EXPECTED_SERVER_PID LEAD_PENDING_CREATOR_PID LEAD_PENDING_CREATOR_START \
+    LEAD_PENDING_CLIENT_PID LEAD_PENDING_CLIENT_START LEAD_PENDING_SOCKET \
+    LEAD_PENDING_CREATED_SERVER_PID LEAD_PENDING_WINDOW_ID LEAD_PENDING_PANE_PID \
+    LEAD_PENDING_PANE_START extra < "$file" || return 1
+  [ -z "$extra" ] || return 1
+  case "$LEAD_PENDING_STATE" in prepared|client-recorded|complete) ;; *) return 1 ;; esac
+  case "$LEAD_PENDING_NONCE" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  case "$LEAD_PENDING_INTENT_TS:$LEAD_PENDING_EXPECTED_SERVER_PID:$LEAD_PENDING_CREATOR_PID" in
+    *[!0-9:]*|:*|*:) return 1 ;;
+  esac
+  _lead_record_field_safe "$LEAD_PENDING_CREATOR_START" \
+    && _lead_record_field_safe "$LEAD_PENDING_SOCKET" || return 1
+  case "$LEAD_PENDING_STATE" in
+    prepared)
+      [ "$LEAD_PENDING_CLIENT_PID:$LEAD_PENDING_CLIENT_START:$LEAD_PENDING_CREATED_SERVER_PID:$LEAD_PENDING_WINDOW_ID:$LEAD_PENDING_PANE_PID:$LEAD_PENDING_PANE_START" = '-:-:-:-:-:-' ]
+      ;;
+    client-recorded)
+      case "$LEAD_PENDING_CLIENT_PID" in ''|*[!0-9]*) return 1 ;; esac
+      _lead_record_field_safe "$LEAD_PENDING_CLIENT_START" \
+        && [ "$LEAD_PENDING_CREATED_SERVER_PID:$LEAD_PENDING_WINDOW_ID:$LEAD_PENDING_PANE_PID:$LEAD_PENDING_PANE_START" = '-:-:-:-' ]
+      ;;
+    complete)
+      case "$LEAD_PENDING_CLIENT_PID:$LEAD_PENDING_CREATED_SERVER_PID:$LEAD_PENDING_PANE_PID" in
+        *[!0-9:]*|:*|*:) return 1 ;;
+      esac
+      _lead_record_field_safe "$LEAD_PENDING_CLIENT_START" \
+        && _lead_record_field_safe "$LEAD_PENDING_WINDOW_ID" \
+        && _lead_record_field_safe "$LEAD_PENDING_PANE_START"
+      ;;
+  esac
+}
+
+_lead_fence_write() {
+  [ "$#" -eq 8 ] || return 1
+  local nonce="$1" intent_ts="$2" expected="$3" creator_pid="$4"
+  local creator_start="$5" client_pid="$6" client_start="$7" socket_path="$8"
+  local file tmp
+  case "$nonce" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  case "$intent_ts:$expected:$creator_pid:$client_pid" in *[!0-9:]*|:*|*:) return 1 ;; esac
+  _lead_record_field_safe "$creator_start" \
+    && _lead_record_field_safe "$client_start" \
+    && _lead_record_field_safe "$socket_path" || return 1
+  file="$(_lead_fence_path "$nonce")" || return 1
+  # Keep the publication temp outside `${base}.client.*`: a crash between the
+  # write and mv must not leave a malformed file that the independent fence
+  # census mistakes for durable in-flight ownership evidence.
+  tmp="${TMUX_ARCHIVE_FILE%.tmux}.tmp.client.${nonce}.$$"
+  (umask 077
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$nonce" "$intent_ts" "$expected" "$creator_pid" "$creator_start" \
+      "$client_pid" "$client_start" "$socket_path" > "$tmp" \
+      && chmod 600 "$tmp" \
+      && mv "$tmp" "$file")
+}
+
+_lead_fence_read() {
+  local file="$1" extra=""
+  LEAD_FENCE_NONCE=""; LEAD_FENCE_INTENT_TS=""; LEAD_FENCE_EXPECTED_SERVER_PID=""
+  LEAD_FENCE_CREATOR_PID=""; LEAD_FENCE_CREATOR_START=""
+  LEAD_FENCE_CLIENT_PID=""; LEAD_FENCE_CLIENT_START=""; LEAD_FENCE_SOCKET=""
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  IFS=$'\t' read -r LEAD_FENCE_NONCE LEAD_FENCE_INTENT_TS \
+    LEAD_FENCE_EXPECTED_SERVER_PID LEAD_FENCE_CREATOR_PID LEAD_FENCE_CREATOR_START \
+    LEAD_FENCE_CLIENT_PID LEAD_FENCE_CLIENT_START LEAD_FENCE_SOCKET extra \
+    < "$file" || return 1
+  [ -z "$extra" ] || return 1
+  case "$LEAD_FENCE_NONCE" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  case "$LEAD_FENCE_INTENT_TS:$LEAD_FENCE_EXPECTED_SERVER_PID:$LEAD_FENCE_CREATOR_PID:$LEAD_FENCE_CLIENT_PID" in
+    *[!0-9:]*|:*|*:) return 1 ;;
+  esac
+  _lead_record_field_safe "$LEAD_FENCE_CREATOR_START" \
+    && _lead_record_field_safe "$LEAD_FENCE_CLIENT_START" \
+    && _lead_record_field_safe "$LEAD_FENCE_SOCKET"
+}
+
+_lead_pending_matches_archive() {
+  [ "$LEAD_PENDING_STATE" = complete ] \
+    && [ "$TMUX_ARCHIVE_SERVER_PID" = "$LEAD_PENDING_CREATED_SERVER_PID" ] \
+    && [ "$TMUX_ARCHIVE_WINDOW_ID" = "$LEAD_PENDING_WINDOW_ID" ] \
+    && [ "$TMUX_ARCHIVE_PANE_PID" = "$LEAD_PENDING_PANE_PID" ] \
+    && [ "$TMUX_ARCHIVE_PANE_START" = "$LEAD_PENDING_PANE_START" ]
+}
+
+_lead_pending_fence_consistent() {
+  [ "$LEAD_FENCE_NONCE" = "$LEAD_PENDING_NONCE" ] \
+    && [ "$LEAD_FENCE_INTENT_TS" = "$LEAD_PENDING_INTENT_TS" ] \
+    && [ "$LEAD_FENCE_EXPECTED_SERVER_PID" = "$LEAD_PENDING_EXPECTED_SERVER_PID" ] \
+    && [ "$LEAD_FENCE_CREATOR_PID" = "$LEAD_PENDING_CREATOR_PID" ] \
+    && [ "$LEAD_FENCE_CREATOR_START" = "$LEAD_PENDING_CREATOR_START" ] \
+    && [ "$LEAD_FENCE_CLIENT_PID" = "$LEAD_PENDING_CLIENT_PID" ] \
+    && [ "$LEAD_FENCE_CLIENT_START" = "$LEAD_PENDING_CLIENT_START" ] \
+    && [ "$LEAD_FENCE_SOCKET" = "$LEAD_PENDING_SOCKET" ]
+}
+
+_lead_retire_pending_and_fence() {
+  local pending_file fence_file
+  pending_file="$(_lead_pending_file)" || return 3
+  fence_file="$(_lead_fence_path "$LEAD_PENDING_NONCE")" || return 3
+  rm -f "$fence_file" 2>/dev/null || return 3
+  if ! rm -f "$pending_file" 2>/dev/null; then
+    _lead_fence_write "$LEAD_PENDING_NONCE" "$LEAD_PENDING_INTENT_TS" \
+      "$LEAD_PENDING_EXPECTED_SERVER_PID" "$LEAD_PENDING_CREATOR_PID" \
+      "$LEAD_PENDING_CREATOR_START" "$LEAD_PENDING_CLIENT_PID" \
+      "$LEAD_PENDING_CLIENT_START" "$LEAD_PENDING_SOCKET" || true
+    return 3
+  fi
+  return 0
+}
+
+_lead_exact_process_state() {
+  local pid="$1" expected_start="$2" lead_id="$3" rc=0 actual_start="" command=""
+  _tmux_supervisor_process_presence_state "$pid" || rc=$?
+  case "$rc" in 1) return 1 ;; 2) return 2 ;; esac
+  actual_start="$(tmux_supervisor_process_start_identity "$pid")" || rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$actual_start" ]; then
+    _tmux_supervisor_process_presence_state "$pid"
+    rc=$?
+    [ "$rc" -eq 1 ] && return 1
+    return 2
+  fi
+  [ "$actual_start" = "$expected_start" ] || return 1
+  rc=0
+  command="$(_tmux_supervisor_process_command "$pid")" || rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$command" ]; then
+    _tmux_supervisor_process_presence_state "$pid"
+    rc=$?
+    [ "$rc" -eq 1 ] && return 1
+    return 2
+  fi
+  lead_identity_command_matches "$command" "$lead_id" || return 1
+  return 0
+}
+
+_lead_process_tuple_state() {
+  # rc 0 exact live tuple; rc 1 positive absence/PID reuse; rc 2 sensor error.
+  local pid="$1" expected_start="$2" rc=0 actual_start=""
+  _tmux_supervisor_process_presence_state "$pid" || rc=$?
+  case "$rc" in 1) return 1 ;; 2) return 2 ;; esac
+  actual_start="$(tmux_supervisor_process_start_identity "$pid")" || rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$actual_start" ]; then
+    _tmux_supervisor_process_presence_state "$pid"
+    rc=$?
+    [ "$rc" -eq 1 ] && return 1
+    return 2
+  fi
+  [ "$actual_start" = "$expected_start" ] && return 0
+  return 1
+}
+
+_lead_reserved_snapshot() {
+  local expected_pid="$1" socket_path timeout rc=0
+  _lead_tmux_generation_state "$expected_pid" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+  socket_path="$(_tmux_socket_path)" || return 2
+  timeout="$(_tmux_rescue_effective_timeout command)" || return 2
+  tmux_rescue_probe "$timeout" tmux -S "$socket_path" \
+    list-windows -t =flywheel \
+    -F '#{window_id}	#{window_name}	#{pane_pid}	#{pid}' 2>/dev/null
+}
+
+_lead_reserved_window_probe() {
+  # rc 0 exactly one matching reserved window; rc 1 none; rc 2 conflict/error.
+  local nonce="$1" snapshot="" rc=0 extra window_id name pane_pid server_pid count=0
+  LEAD_RESERVED_WINDOW_ID=""; LEAD_RESERVED_PANE_PID=""; LEAD_RESERVED_SERVER_PID=""
+  snapshot="$(_lead_reserved_snapshot "$LEAD_PENDING_EXPECTED_SERVER_PID")" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+  while IFS=$'\t' read -r window_id name pane_pid server_pid extra; do
+    [ -z "$extra" ] || return 2
+    [ "$name" = "${PROJECT_NAME}-${LEAD_ID}.p-${nonce}" ] || continue
+    case "$server_pid:$pane_pid" in *[!0-9:]*|:*|*:) return 2 ;; esac
+    _lead_record_field_safe "$window_id" || return 2
+    count=$((count + 1))
+    LEAD_RESERVED_WINDOW_ID="$window_id"
+    LEAD_RESERVED_PANE_PID="$pane_pid"
+    LEAD_RESERVED_SERVER_PID="$server_pid"
+  done <<EOF
+$snapshot
+EOF
+  [ "$count" -eq 0 ] && return 1
+  [ "$count" -eq 1 ] && return 0
+  return 2
+}
+
+_lead_reserved_any_probe() {
+  # rc 0 one-or-more reserved windows; rc 1 none; rc 2 sensor/error.
+  local expected_pid="$1" snapshot="" rc=0 extra window_id name pane_pid server_pid
+  snapshot="$(_lead_reserved_snapshot "$expected_pid")" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+  while IFS=$'\t' read -r window_id name pane_pid server_pid extra; do
+    [ -z "$extra" ] || return 2
+    case "$name" in "${PROJECT_NAME}-${LEAD_ID}.p-"*) return 0 ;; esac
+  done <<EOF
+$snapshot
+EOF
+  return 1
+}
+
+_lead_pending_tuple_live_exact() {
+  local pane_pid rc=0 generation_rc=0
+  [ "$LEAD_PENDING_STATE" = complete ] || return 2
+  _lead_exact_process_state "$LEAD_PENDING_PANE_PID" \
+    "$LEAD_PENDING_PANE_START" "$LEAD_ID" || return $?
+  _lead_tmux_generation_state "$LEAD_PENDING_CREATED_SERVER_PID" \
+    || generation_rc=$?
+  case "$generation_rc" in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+  pane_pid="$(_tmux list-panes -t "$LEAD_PENDING_WINDOW_ID" \
+    -F '#{pane_pid}' 2>/dev/null | head -1)" || return 2
+  [ "$pane_pid" = "$LEAD_PENDING_PANE_PID" ] || return 1
+  _lead_exact_process_state "$LEAD_PENDING_PANE_PID" \
+    "$LEAD_PENDING_PANE_START" "$LEAD_ID" || rc=$?
+  return "$rc"
+}
+
+# Kill only a fully frozen server/window/pane/start tuple. Success means either
+# the window is positively absent or the exact pane process is positively gone;
+# uncertainty preserves every caller-owned evidence file.
+_lead_cleanup_exact_tuple() {
+  local server_pid="$1" window_id="$2" pane_pid="$3" pane_start="$4"
+  local observed_pid process_rc=0 generation_rc=0 probe_err
+  _lead_tmux_generation_state "$server_pid" || generation_rc=$?
+  case "$generation_rc" in
+    0) ;;
+    1) return 0 ;;
+    *) return 3 ;;
+  esac
+  observed_pid="$(_tmux list-panes -t "$window_id" -F '#{pane_pid}' 2>/dev/null | head -1)" \
+    || return 3
+  [ "$observed_pid" = "$pane_pid" ] || return 3
+  _lead_exact_process_state "$pane_pid" "$pane_start" "$LEAD_ID" || process_rc=$?
+  [ "$process_rc" -ne 2 ] || return 3
+  generation_rc=0
+  _lead_tmux_generation_state "$server_pid" || generation_rc=$?
+  case "$generation_rc" in
+    0) ;;
+    1) return 0 ;;
+    *) return 3 ;;
+  esac
+  _tmux kill-window -t "$window_id" 2>/dev/null || return 3
+  probe_err="$(mktemp -t fly1659-cleanup.XXXXXX)" || return 3
+  if _tmux list-panes -t "$window_id" >/dev/null 2> "$probe_err"; then
+    rm -f "$probe_err"
+    return 3
+  fi
+  if _tmux_window_absence_proven "$(cat "$probe_err" 2>/dev/null)"; then
+    rm -f "$probe_err"
+    return 0
+  fi
+  rm -f "$probe_err"
+  process_rc=0
+  _lead_exact_process_state "$pane_pid" "$pane_start" "$LEAD_ID" || process_rc=$?
+  [ "$process_rc" -eq 1 ] && return 0
+  return 3
+}
+
+# Cleanup after create produced a full tuple but archive or lease commit failed.
+# Evidence is retired only after the exact window is positively absent. A
+# matching archive is removed last among body evidence and before the transient
+# ledgers; any malformed/conflicting record remains fail-closed for recovery.
+_lead_cleanup_failed_create() {
+  local server_pid="$1" window_id="$2" pane_pid="$3" pane_start="$4"
+  local fence_file
+  _lead_cleanup_exact_tuple "$server_pid" "$window_id" "$pane_pid" "$pane_start" \
+    || return 3
+
+  if [ -e "$TMUX_ARCHIVE_FILE" ]; then
+    tmux_supervisor_archive_read "$TMUX_ARCHIVE_FILE" || return 3
+    [ "$TMUX_ARCHIVE_SERVER_PID" = "$server_pid" ] \
+      && [ "$TMUX_ARCHIVE_WINDOW_ID" = "$window_id" ] \
+      && [ "$TMUX_ARCHIVE_PANE_PID" = "$pane_pid" ] \
+      && [ "$TMUX_ARCHIVE_PANE_START" = "$pane_start" ] \
+      || return 3
+    rm -f "$TMUX_ARCHIVE_FILE" 2>/dev/null || return 3
+  fi
+
+  _lead_pending_read || return 3
+  [ "$LEAD_PENDING_STATE" = complete ] \
+    && [ "$LEAD_PENDING_CREATED_SERVER_PID" = "$server_pid" ] \
+    && [ "$LEAD_PENDING_WINDOW_ID" = "$window_id" ] \
+    && [ "$LEAD_PENDING_PANE_PID" = "$pane_pid" ] \
+    && [ "$LEAD_PENDING_PANE_START" = "$pane_start" ] \
+    || return 3
+  fence_file="$(_lead_fence_path "$LEAD_PENDING_NONCE")" || return 3
+  _lead_fence_read "$fence_file" || return 3
+  _lead_pending_fence_consistent || return 3
+  _lead_retire_pending_and_fence
+}
+
+# Reconcile one crash-durable create record after lease acquisition has
+# produced a typed disposition. Malformed or conflicting evidence holds intact;
+# degraded identity state may retire only on positive tuple absence, or rebuild
+# the archive from a still-live exact tuple without killing it.
+_lead_reconcile_pending_launch() {
+  local lease_rc="$1" pending_file fence_file socket_path tuple_rc=0
+  pending_file="$(_lead_pending_file)" || return 3
+  [ -e "$pending_file" ] || return 0
+  _lead_pending_read || return 3
+  socket_path="$(_tmux_socket_path)" || return 3
+  [ "$LEAD_PENDING_SOCKET" = "$socket_path" ] || return 3
+
+  case "$LEAD_PENDING_STATE" in
+    client-recorded|complete)
+      fence_file="$(_lead_fence_path "$LEAD_PENDING_NONCE")" || return 3
+      if [ -e "$fence_file" ]; then
+        _lead_fence_read "$fence_file" || return 3
+        _lead_pending_fence_consistent || return 3
+      fi
+      ;;
+  esac
+
+  if [ "$LEAD_PENDING_STATE" = complete ] && [ -e "$TMUX_ARCHIVE_FILE" ]; then
+    tmux_supervisor_archive_read "$TMUX_ARCHIVE_FILE" || return 3
+    _lead_pending_matches_archive || return 3
+    case "$lease_rc" in
+      4)
+        [ "$LEAD_LEASE_ORPHAN_HOLDER_PID" = "$LEAD_PENDING_PANE_PID" ] \
+          && [ "$LEAD_LEASE_ORPHAN_HOLDER_START" = "$LEAD_PENDING_PANE_START" ] \
+          || return 3
+        ;;
+      5|6) ;;
+      0) [ "${LEAD_LEASE_FRESH:-0}" -eq 1 ] || return 3 ;;
+      *) return 3 ;;
+    esac
+    _lead_retire_pending_and_fence
+    return $?
+  fi
+  if [ "$LEAD_PENDING_STATE" = complete ] && [ ! -e "$TMUX_ARCHIVE_FILE" ]; then
+    case "$lease_rc" in
+      4|5)
+        [ "$LEAD_LEASE_ORPHAN_HOLDER_PID" = "$LEAD_PENDING_PANE_PID" ] \
+          && [ "$LEAD_LEASE_ORPHAN_HOLDER_START" = "$LEAD_PENDING_PANE_START" ] \
+          || return 3
+        _lead_pending_tuple_live_exact || return 3
+        tmux_supervisor_archive_write "$TMUX_ARCHIVE_FILE" \
+          "$LEAD_PENDING_CREATED_SERVER_PID" "$LEAD_PENDING_PANE_PID" \
+          "$LEAD_PENDING_PANE_START" "$LEAD_PENDING_WINDOW_ID" || return 3
+        _lead_retire_pending_and_fence
+        return $?
+        ;;
+      0)
+        if [ "${LEAD_LEASE_FRESH:-0}" -eq 1 ]; then
+          _lead_cleanup_exact_tuple "$LEAD_PENDING_CREATED_SERVER_PID" \
+            "$LEAD_PENDING_WINDOW_ID" "$LEAD_PENDING_PANE_PID" \
+            "$LEAD_PENDING_PANE_START" || return 3
+        elif [ "${LEAD_LEASE_DEGRADED:-}" = store_error ]; then
+          _lead_pending_tuple_live_exact || tuple_rc=$?
+          case "$tuple_rc" in
+            0)
+              tmux_supervisor_archive_write "$TMUX_ARCHIVE_FILE" \
+                "$LEAD_PENDING_CREATED_SERVER_PID" "$LEAD_PENDING_PANE_PID" \
+                "$LEAD_PENDING_PANE_START" "$LEAD_PENDING_WINDOW_ID" || return 3
+              ;;
+            1) ;;
+            *) return 3 ;;
+          esac
+        else
+          return 3
+        fi
+        _lead_retire_pending_and_fence
+        return $?
+        ;;
+      6)
+        _lead_pending_tuple_live_exact || tuple_rc=$?
+        case "$tuple_rc" in
+          0)
+            tmux_supervisor_archive_write "$TMUX_ARCHIVE_FILE" \
+              "$LEAD_PENDING_CREATED_SERVER_PID" "$LEAD_PENDING_PANE_PID" \
+              "$LEAD_PENDING_PANE_START" "$LEAD_PENDING_WINDOW_ID" || return 3
+            ;;
+          1) ;;
+          *) return 3 ;;
+        esac
+        _lead_retire_pending_and_fence
+        return $?
+        ;;
+    esac
+  fi
+  case "$LEAD_PENDING_STATE" in
+    prepared|client-recorded)
+      case "$lease_rc" in 0|4|5|6) ;; *) return 3 ;; esac
+      local reserved_rc=0 creator_rc=0 client_rc=1 pane_start=""
+      _lead_reserved_window_probe "$LEAD_PENDING_NONCE" || reserved_rc=$?
+      case "$reserved_rc" in
+        0)
+          pane_start="$(tmux_supervisor_process_start_identity "$LEAD_RESERVED_PANE_PID")" \
+            || return 3
+          [ -n "$pane_start" ] || return 3
+          _lead_pending_write complete "$LEAD_PENDING_NONCE" "$LEAD_PENDING_INTENT_TS" \
+            "$LEAD_PENDING_EXPECTED_SERVER_PID" "$LEAD_PENDING_CREATOR_PID" \
+            "$LEAD_PENDING_CREATOR_START" "$LEAD_PENDING_CLIENT_PID" \
+            "$LEAD_PENDING_CLIENT_START" "$LEAD_PENDING_SOCKET" \
+            "$LEAD_RESERVED_SERVER_PID" "$LEAD_RESERVED_WINDOW_ID" \
+            "$LEAD_RESERVED_PANE_PID" "$pane_start" || return 3
+          _lead_reconcile_pending_launch "$lease_rc"
+          return $?
+          ;;
+        2) return 3 ;;
+      esac
+
+      if [ "$LEAD_PENDING_STATE" = client-recorded ]; then
+        _lead_process_tuple_state "$LEAD_PENDING_CLIENT_PID" \
+          "$LEAD_PENDING_CLIENT_START" || client_rc=$?
+        [ "$client_rc" -eq 1 ] || return 3
+      fi
+      if [ "$LEAD_PENDING_CREATOR_PID" = "$$" ] \
+        && [ "$LEAD_PENDING_CREATOR_START" = "${LEAD_LEASE_SUPERVISOR_START:-}" ]; then
+        _lead_retire_pending_and_fence
+        return $?
+      fi
+      _lead_process_tuple_state "$LEAD_PENDING_CREATOR_PID" \
+        "$LEAD_PENDING_CREATOR_START" || creator_rc=$?
+      [ "$creator_rc" -eq 1 ] || return 3
+      sleep 0.1
+      reserved_rc=0
+      _lead_reserved_window_probe "$LEAD_PENDING_NONCE" || reserved_rc=$?
+      [ "$reserved_rc" -eq 1 ] || return 3
+      _lead_retire_pending_and_fence
+      return $?
+      ;;
+  esac
+  return 3
+}
+
+_lead_prelaunch_isolation_gate() {
+  local pending_file base fence socket_path client_rc creator_rc reserved_rc
+  pending_file="$(_lead_pending_file)" || return 3
+  [ ! -e "$pending_file" ] || return 3
+  socket_path="$(_tmux_socket_path)" || return 3
+  base="${TMUX_ARCHIVE_FILE%.tmux}"
+  for fence in "${base}.client."*; do
+    [ -e "$fence" ] || continue
+    _lead_fence_read "$fence" || return 3
+    [ "$LEAD_FENCE_SOCKET" = "$socket_path" ] || return 3
+    client_rc=0
+    _lead_process_tuple_state "$LEAD_FENCE_CLIENT_PID" "$LEAD_FENCE_CLIENT_START" \
+      || client_rc=$?
+    [ "$client_rc" -eq 1 ] || return 3
+    creator_rc=0
+    _lead_process_tuple_state "$LEAD_FENCE_CREATOR_PID" "$LEAD_FENCE_CREATOR_START" \
+      || creator_rc=$?
+    [ "$creator_rc" -eq 1 ] || return 3
+    LEAD_PENDING_EXPECTED_SERVER_PID="$LEAD_FENCE_EXPECTED_SERVER_PID"
+    reserved_rc=0
+    _lead_reserved_window_probe "$LEAD_FENCE_NONCE" || reserved_rc=$?
+    [ "$reserved_rc" -eq 1 ] || return 3
+    sleep 0.1
+    reserved_rc=0
+    _lead_reserved_window_probe "$LEAD_FENCE_NONCE" || reserved_rc=$?
+    [ "$reserved_rc" -eq 1 ] || return 3
+    rm -f "$fence" 2>/dev/null || return 3
+  done
+
+  reserved_rc=0
+  _lead_reserved_any_probe "$TMUX_SERVER_PID" || reserved_rc=$?
+  [ "$reserved_rc" -eq 1 ] || return 3
+  sleep 0.1
+  reserved_rc=0
+  _lead_reserved_any_probe "$TMUX_SERVER_PID" || reserved_rc=$?
+  [ "$reserved_rc" -eq 1 ] || return 3
+  return 0
+}
+
+# Create one Lead window through a two-phase FIFO gate. The parent persists the
+# exact tmux-client tuple in both the pending intent and an independent fence
+# before releasing the client. The tmux format result is the acceptance
+# evidence; forensic socket inspection is deliberately absent from this path.
+# `env_args` is the caller-local array exposed through Bash dynamic scope.
+_lead_create_tmux_window() {
+  local window_name="$1"
+  shift
+  local -a launch_args=("$@")
+  local nonce intent_ts expected_pid creator_start socket_path pending_file fence_file
+  local gate_file out_file err_file client_pid client_start="" client_i=0 create_rc=0
+  local result window_id pane_pid created_pid extra="" pane_start="" pane_i=0
+
+  expected_pid="$TMUX_SERVER_PID"
+  case "$expected_pid" in ''|*[!0-9]*) return 3 ;; esac
+  socket_path="$(_tmux_socket_path)" || return 3
+  creator_start="${LEAD_LEASE_SUPERVISOR_START:-}"
+  [ -n "$creator_start" ] \
+    || creator_start="$(tmux_supervisor_process_start_identity "$$")" \
+    || return 3
+  intent_ts="$(date +%s)" || return 3
+  nonce="${intent_ts}-$$-${RANDOM}-${RANDOM}"
+  pending_file="$(_lead_pending_file)" || return 3
+  fence_file="$(_lead_fence_path "$nonce")" || return 3
+  gate_file="${pending_file}.gate.${nonce}"
+  out_file="${pending_file}.out.${nonce}"
+  err_file="${pending_file}.err.${nonce}"
+
+  _lead_pending_write prepared "$nonce" "$intent_ts" "$expected_pid" \
+    "$$" "$creator_start" - - "$socket_path" - - - - || return 3
+  (umask 077; : > "$out_file" && : > "$err_file") || return 3
+  mkfifo "$gate_file" 2>/dev/null || return 3
+  chmod 600 "$gate_file" 2>/dev/null || return 3
+  exec 9<> "$gate_file" || return 3
+
+  (
+    exec 9>&-
+    local gate_token=""
+    IFS= read -r gate_token < "$gate_file" || exit 125
+    [ "$gate_token" = go ] || exit 125
+    exec tmux -S "$socket_path" -N new-window -d -P \
+      -F '#{window_id}	#{pane_pid}	#{pid}' \
+      -t =flywheel \
+      "${env_args[@]}" \
+      -n "${window_name}.p-${nonce}" \
+      -c "$LEAD_WORKSPACE" \
+      claude "${launch_args[@]}"
+  ) > "$out_file" 2> "$err_file" &
+  client_pid=$!
+
+  while [ "$client_i" -lt 20 ] && [ -z "$client_start" ]; do
+    client_start="$(tmux_supervisor_process_start_identity "$client_pid" || true)"
+    [ -n "$client_start" ] || sleep 0.05
+    client_i=$((client_i + 1))
+  done
+  if [ -z "$client_start" ] \
+    || ! _lead_pending_write client-recorded "$nonce" "$intent_ts" "$expected_pid" \
+      "$$" "$creator_start" "$client_pid" "$client_start" "$socket_path" - - - - \
+    || ! _lead_fence_write "$nonce" "$intent_ts" "$expected_pid" \
+      "$$" "$creator_start" "$client_pid" "$client_start" "$socket_path"; then
+    # The child was never authorized to create. Keep our FIFO writer open
+    # until it consumes an explicit stop token; closing first can race a child
+    # that has not opened the FIFO yet and lose the only wakeup.
+    if ! printf 'stop\n' >&9; then
+      kill "$client_pid" 2>/dev/null || true
+    fi
+    wait "$client_pid" 2>/dev/null || true
+    exec 9>&-
+    if _lead_pending_read \
+      && [ "$LEAD_PENDING_NONCE" = "$nonce" ] \
+      && [ "$LEAD_PENDING_CREATOR_PID" = "$$" ] \
+      && [ "$LEAD_PENDING_CREATOR_START" = "$creator_start" ]; then
+      _lead_retire_pending_and_fence || true
+    fi
+    rm -f "$gate_file" "$out_file" "$err_file" 2>/dev/null || true
+    return 3
+  fi
+
+  if ! printf 'go\n' >&9; then
+    kill "$client_pid" 2>/dev/null || true
+    wait "$client_pid" 2>/dev/null || true
+    exec 9>&-
+    if _lead_pending_read \
+      && [ "$LEAD_PENDING_NONCE" = "$nonce" ] \
+      && [ "$LEAD_PENDING_CREATOR_PID" = "$$" ] \
+      && [ "$LEAD_PENDING_CREATOR_START" = "$creator_start" ]; then
+      _lead_retire_pending_and_fence || true
+    fi
+    rm -f "$gate_file" "$out_file" "$err_file" 2>/dev/null || true
+    return 3
+  fi
+  wait "$client_pid" || create_rc=$?
+  exec 9>&-
+  rm -f "$gate_file" 2>/dev/null || true
+  result="$(cat "$out_file" 2>/dev/null || true)"
+  if [ "$create_rc" -ne 0 ] \
+    || ! IFS=$'\t' read -r window_id pane_pid created_pid extra <<EOF
+$result
+EOF
+  then
+    ENSURE_HOLD_KIND="unknown"
+    ENSURE_HOLD_EVIDENCE="{\"reason\":\"tmux_create_result_indeterminate\",\"exitCode\":${create_rc}}"
+    rm -f "$out_file" "$err_file" 2>/dev/null || true
+    return 3
+  fi
+  case "$created_pid:$pane_pid" in
+    *[!0-9:]*|:*|*:)
+      rm -f "$out_file" "$err_file" 2>/dev/null || true
+      return 3
+      ;;
+  esac
+  if ! _lead_record_field_safe "$window_id" || [ -n "$extra" ]; then
+    rm -f "$out_file" "$err_file" 2>/dev/null || true
+    return 3
+  fi
+
+  while [ "$pane_i" -lt 20 ] && [ -z "$pane_start" ]; do
+    pane_start="$(tmux_supervisor_process_start_identity "$pane_pid" || true)"
+    [ -n "$pane_start" ] || sleep 0.05
+    pane_i=$((pane_i + 1))
+  done
+  if [ -z "$pane_start" ]; then
+    rm -f "$out_file" "$err_file" 2>/dev/null || true
+    return 3
+  fi
+  if ! _lead_pending_write complete "$nonce" "$intent_ts" "$expected_pid" \
+    "$$" "$creator_start" "$client_pid" "$client_start" "$socket_path" \
+    "$created_pid" "$window_id" "$pane_pid" "$pane_start"; then
+    rm -f "$out_file" "$err_file" 2>/dev/null || true
+    return 3
+  fi
+
+  LEAD_WINDOW_ID="$window_id"
+  if [ "$created_pid" != "$expected_pid" ]; then
+    ENSURE_HOLD_KIND="split_brain"
+    ENSURE_HOLD_EVIDENCE="{\"reason\":\"created_generation_changed\",\"expectedPid\":${expected_pid},\"createdPid\":${created_pid}}"
+    rm -f "$out_file" "$err_file" 2>/dev/null || true
+    return 3
+  fi
+  if ! tmux_supervisor_archive_write "$TMUX_ARCHIVE_FILE" "$created_pid" \
+    "$pane_pid" "$pane_start" "$window_id"; then
+    ENSURE_HOLD_KIND="unknown"
+    ENSURE_HOLD_EVIDENCE='{"reason":"archive_commit_failed"}'
+    rm -f "$out_file" "$err_file" 2>/dev/null || true
+    if _lead_cleanup_failed_create \
+      "$created_pid" "$window_id" "$pane_pid" "$pane_start"; then
+      return 1
+    fi
+    return 3
+  fi
+  if [ -n "${LEAD_LEASE_KEY:-}" ] && [ -n "${LEAD_LEASE_GENERATION:-}" ]; then
+    if ! lead_identity_bind_lease \
+      "$LEAD_LEASE_KEY" "$LEAD_LEASE_GENERATION" \
+      "$$" "$creator_start" "$pane_pid" "$pane_start"; then
+      ENSURE_HOLD_KIND="ambiguous"
+      ENSURE_HOLD_EVIDENCE="{\"reason\":\"lead_lease_bind_failed\",\"generation\":${LEAD_LEASE_GENERATION}}"
+      rm -f "$out_file" "$err_file" 2>/dev/null || true
+      if _lead_cleanup_failed_create \
+        "$created_pid" "$window_id" "$pane_pid" "$pane_start"; then
+        return 1
+      fi
+      return 3
+    fi
+  fi
+
+  # Rename is cosmetic and guarded by the complete archive tuple. A failed or
+  # indeterminate rename leaves the reserved name but monitoring continues by id.
+  if _tmux_target_matches_archive "$window_id" true; then
+    _tmux rename-window -t "$window_id" "$window_name" 2>/dev/null || true
+  fi
+
+  if ! rm -f "$fence_file" 2>/dev/null; then
+    rm -f "$out_file" "$err_file" 2>/dev/null || true
+    ENSURE_HOLD_KIND="unknown"
+    ENSURE_HOLD_EVIDENCE='{"reason":"client_fence_retire_failed"}'
+    return 3
+  fi
+  if ! rm -f "$pending_file" 2>/dev/null; then
+    _lead_fence_write "$nonce" "$intent_ts" "$expected_pid" \
+      "$$" "$creator_start" "$client_pid" "$client_start" "$socket_path" || true
+    rm -f "$out_file" "$err_file" 2>/dev/null || true
+    ENSURE_HOLD_KIND="unknown"
+    ENSURE_HOLD_EVIDENCE='{"reason":"pending_retire_failed"}'
+    return 3
+  fi
+  rm -f "$out_file" "$err_file" 2>/dev/null || true
+  TMUX_SERVER_PID="$created_pid"
+  LEAD_BODY_PROVENANCE=launched
+  return 0
 }
 
 # FLY-231: structured dry-run launch plan (FLYWHEEL_LEAD_DRY_RUN=1). Emits the
@@ -1930,6 +2832,47 @@ _launch_claude() {
     fi
   fi
 
+  # FLY-231 dry-run: env_args is now fully assembled (incl. MCP-required-env
+  # propagation). Emit the structured launch-plan and return WITHOUT entering
+  # any real-launch isolation/identity/authority gate. Those gates consume the
+  # supervisor archive and lease state, which intentionally do not exist on
+  # the dry-run path.
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
+    _emit_launch_plan "${launch_args[@]}"
+    return 0
+  fi
+
+  # FLY-1659: close the create-client crash window after launch-plan
+  # materialization. A pending intent, live client fence, or reserved
+  # temporary window is launch ownership evidence; none may be bypassed by a
+  # second create attempt.
+  if ! _lead_prelaunch_isolation_gate; then
+    ENSURE_HOLD_KIND="ambiguous"
+    ENSURE_HOLD_EVIDENCE='{"reason":"prelaunch_isolation_conflict"}'
+    return 3
+  fi
+
+  # Re-read the exact process identity at the final boundary. The earlier main
+  # loop preflight protects expensive preparation; this second read closes the
+  # gap between that check and the fork. Sensor failure remains fail-closed.
+  local _fly1659_identity_conflict="" _fly1659_identity_rc=0
+  _fly1659_identity_conflict="$(lead_identity_preflight_first_conflict "$LEAD_ID")" \
+    || _fly1659_identity_rc=$?
+  case "$_fly1659_identity_rc" in
+    0)
+      local _fly1659_identity_pid="${_fly1659_identity_conflict%%$'\t'*}"
+      ENSURE_HOLD_KIND="ambiguous"
+      ENSURE_HOLD_EVIDENCE="{\"reason\":\"prelaunch_identity_conflict\",\"pid\":${_fly1659_identity_pid}}"
+      return 3
+      ;;
+    1) ;;
+    *)
+      ENSURE_HOLD_KIND="unknown"
+      ENSURE_HOLD_EVIDENCE='{"reason":"prelaunch_identity_sensor_degraded"}'
+      return 3
+      ;;
+  esac
+
   # FLY-1602: close the disk/launchd TOCTOU window after all launch-plan
   # materialization and immediately before a child could be created.
   if ! lead_launch_authority_recheck; then
@@ -1938,72 +2881,13 @@ _launch_claude() {
     return 3
   fi
 
-  # FLY-231 dry-run: env_args is now fully assembled (incl. MCP-required-env
-  # propagation). Emit the structured launch-plan and return WITHOUT launching.
-  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
-    _emit_launch_plan "${launch_args[@]}"
-    return 0
-  fi
-
-  # FLY-109: Launch claude directly (no expect wrapper). Dev-channels dialog
-  # is handled by background capture-pane poller started below.
-  LEAD_WINDOW_ID=$(_tmux -N new-window -d -P -F '#{window_id}' \
-    -t =flywheel \
-    "${env_args[@]}" \
-    -n "$window_name" \
-    -c "$LEAD_WORKSPACE" \
-    claude "${launch_args[@]}")
-
-  # Enable remain-on-exit on this specific window so we can read exit code
-  # (must be set-window-option on the window, not session-level, for tmux 3.5+)
-  local _fly1285_inspection _fly1285_verdict _fly1285_server_pid
-  local _fly1285_pane_pid _fly1285_pane_start="" _fly1285_i=0
-  _fly1285_inspection="$(tmux_socket_inspect "$(_tmux_socket_path)")"
-  _fly1285_verdict="$(_tmux_rescue_json_field "$_fly1285_inspection" verdict)"
-  _fly1285_server_pid="$(_tmux_rescue_json_field "$_fly1285_inspection" reachablePid)"
-  if [ "$_fly1285_verdict" != "reachable" ]; then
-    # The create itself was -N, so it did not replace a server. Remove only the
-    # window we just created on the still-addressable generation, then hold.
-    if _tmux display-message -p '#{pid}' 2>/dev/null | grep -Fxq "$_fly1285_server_pid"; then
-      _tmux kill-window -t "$LEAD_WINDOW_ID" 2>/dev/null || true
-    fi
-    ENSURE_HOLD_KIND="${_fly1285_verdict:-unknown}"
-    ENSURE_HOLD_EVIDENCE="$_fly1285_inspection"
-    return 3
-  fi
-  TMUX_SERVER_PID="$_fly1285_server_pid"
-  _fly1285_pane_pid="$(_tmux list-panes -t "$LEAD_WINDOW_ID" -F '#{pane_pid}' 2>/dev/null | head -1)"
-  case "$_fly1285_pane_pid" in ''|*[!0-9]*) return 1 ;; esac
-  while [ "$_fly1285_i" -lt 20 ] && [ -z "$_fly1285_pane_start" ]; do
-    _fly1285_pane_start="$(tmux_supervisor_process_start_identity "$_fly1285_pane_pid" || true)"
-    [ -n "$_fly1285_pane_start" ] || sleep 0.05
-    _fly1285_i=$((_fly1285_i + 1))
-  done
-  if [ -z "$_fly1285_pane_start" ] \
-    || ! tmux_supervisor_archive_write "$TMUX_ARCHIVE_FILE" "$TMUX_SERVER_PID" \
-      "$_fly1285_pane_pid" "$_fly1285_pane_start" "$LEAD_WINDOW_ID"; then
-    _tmux_generation_is_current "$TMUX_SERVER_PID" \
-      && _tmux kill-window -t "$LEAD_WINDOW_ID" 2>/dev/null || true
-    return 1
-  fi
-
-  # FLY-1309: bind is the authorization commit point. On failure, remove only
-  # the exact window+pane generation we just archived; an indeterminate target
-  # is preserved and held for investigation rather than killed by name.
-  if [ -n "${LEAD_LEASE_KEY:-}" ] && [ -n "${LEAD_LEASE_GENERATION:-}" ]; then
-    if ! lead_identity_bind_lease \
-      "$LEAD_LEASE_KEY" "$LEAD_LEASE_GENERATION" \
-      "$$" "$LEAD_LEASE_SUPERVISOR_START" \
-      "$_fly1285_pane_pid" "$_fly1285_pane_start"; then
-      ENSURE_HOLD_KIND="ambiguous"
-      ENSURE_HOLD_EVIDENCE="{\"reason\":\"lead_lease_bind_failed\",\"generation\":${LEAD_LEASE_GENERATION}}"
-      if _tmux_target_matches_archive "$LEAD_WINDOW_ID" true; then
-        _tmux kill-window -t "$LEAD_WINDOW_ID" 2>/dev/null || true
-        rm -f "$TMUX_ARCHIVE_FILE" 2>/dev/null || true
-      fi
-      return 3
-    fi
-  fi
+  # FLY-1659: the gated client persists crash evidence before create and returns
+  # the window/pane/server tuple directly. Load-driven forensic verdict noise is
+  # never an acceptance signal and can no longer kill a newly-created body.
+  local _fly1659_create_rc=0
+  _lead_create_tmux_window "$window_name" "${launch_args[@]}" \
+    || _fly1659_create_rc=$?
+  [ "$_fly1659_create_rc" -eq 0 ] || return "$_fly1659_create_rc"
 
   _tmux set-window-option -t "$LEAD_WINDOW_ID" remain-on-exit on 2>/dev/null || true
 
@@ -2021,12 +2905,14 @@ _wait_tmux_window() {
   CLAUDE_EXIT=0
   local target="${LEAD_WINDOW_ID}"
   local pane_row pane_pid dead status recovery recovery_rc action recovered_pid
-  local probe_err hold_backoff=3
+  local archived_state_rc generation_rc
+  local probe_err
+  TMUX_HOLD_BACKOFF=3
 
   while true; do
     if [ "$SHOULD_EXIT" -ne 0 ]; then return 0; fi
 
-    if _tmux_target_matches_archive "$target" false; then
+    if _tmux_target_matches_archive_fast "$target" false; then
       pane_row="$(_tmux list-panes -t "$target" \
         -F '#{pane_pid}	#{pane_dead}	#{pane_dead_status}' 2>/dev/null | head -1 || true)"
       pane_pid="${pane_row%%$'\t'*}"
@@ -2034,7 +2920,7 @@ _wait_tmux_window() {
       dead="${pane_row%%$'\t'*}"
       status="${pane_row#*$'\t'}"
       if [ "$pane_pid" = "$TMUX_ARCHIVE_PANE_PID" ] \
-        && _tmux_target_matches_archive "$target" false; then
+        && _tmux_target_matches_archive_fast "$target" false; then
         if [ "$dead" = "1" ]; then
           CLAUDE_EXIT="${status:-1}"
           _tmux_target_matches_archive "$target" false \
@@ -2044,7 +2930,7 @@ _wait_tmux_window() {
           return 0
         fi
         _tmux_report_hold_resolved || true
-        hold_backoff=3
+        TMUX_HOLD_BACKOFF=3
         interruptible_sleep 3
         continue
       fi
@@ -2053,10 +2939,34 @@ _wait_tmux_window() {
     # The target could not be trusted. If the archived OS process is already
     # gone, that is positive process-level death evidence and no tmux action is
     # needed. Otherwise classify/recover the server without ever creating one.
-    if ! tmux_supervisor_archived_process_alive "$TMUX_ARCHIVE_FILE"; then
-      CLAUDE_EXIT=1
-      TMUX_RELAUNCH_PROVEN=1
-      return 0
+    archived_state_rc=0
+    tmux_supervisor_archived_process_state "$TMUX_ARCHIVE_FILE" "$LEAD_ID" \
+      || archived_state_rc=$?
+    case "$archived_state_rc" in
+      1)
+        CLAUDE_EXIT=1
+        TMUX_RELAUNCH_PROVEN=1
+        return 0
+        ;;
+      2)
+        ENSURE_HOLD_KIND="unknown"
+        ENSURE_HOLD_EVIDENCE='{"reason":"archived_process_sensor_indeterminate"}'
+        _tmux_report_hold "$ENSURE_HOLD_KIND" "$ENSURE_HOLD_EVIDENCE" || true
+        log "tmux hold (${ENSURE_HOLD_KIND}) while archived process state is indeterminate; retry base ${TMUX_HOLD_BACKOFF}s"
+        _hold_sleep_and_advance
+        continue
+        ;;
+    esac
+
+    generation_rc=0
+    _tmux_generation_probe "$TMUX_ARCHIVE_SERVER_PID" || generation_rc=$?
+    if [ "$generation_rc" -eq 0 ]; then
+      ENSURE_HOLD_KIND="unknown"
+      ENSURE_HOLD_EVIDENCE='{"reason":"window_probe_indeterminate_server_reachable"}'
+      _tmux_report_hold "$ENSURE_HOLD_KIND" "$ENSURE_HOLD_EVIDENCE" || true
+      log "tmux hold (${ENSURE_HOLD_KIND}) while expected server remains reachable; retry base ${TMUX_HOLD_BACKOFF}s"
+      _hold_sleep_and_advance
+      continue
     fi
 
     if recovery="$(tmux_socket_recover "$(_tmux_socket_path)")"; then
@@ -2096,10 +3006,8 @@ _wait_tmux_window() {
       case "$recovery_rc" in 2|3|4|5) ;; *) ENSURE_HOLD_KIND="unknown" ;; esac
     fi
     _tmux_report_hold "$ENSURE_HOLD_KIND" "$ENSURE_HOLD_EVIDENCE" || true
-    log "tmux hold (${ENSURE_HOLD_KIND}) while waiting for ${target}; retrying in ${hold_backoff}s"
-    interruptible_sleep "$hold_backoff"
-    [ "$hold_backoff" -ge 30 ] || hold_backoff=$((hold_backoff * 2))
-    [ "$hold_backoff" -le 30 ] || hold_backoff=30
+    log "tmux hold (${ENSURE_HOLD_KIND}) while waiting for ${target}; retry base ${TMUX_HOLD_BACKOFF}s"
+    _hold_sleep_and_advance
   done
 }
 
@@ -2112,7 +3020,7 @@ cleanup() {
   # Graceful shutdown is generation-bound. If the archived generation cannot be
   # proven current, preserve the archive and never touch a same-numbered window
   # on a replacement server.
-  if [ -n "${LEAD_WINDOW_ID:-}" ]; then
+  if [ -n "${LEAD_WINDOW_ID:-}" ] && [ "$LEAD_BODY_PROVENANCE" = launched ]; then
     if _tmux_target_matches_archive "$LEAD_WINDOW_ID" true; then
       _tmux send-keys -t "$LEAD_WINDOW_ID" C-c 2>/dev/null || true
       local i=0
@@ -2132,6 +3040,8 @@ cleanup() {
     else
       log "tmux generation indeterminate during cleanup; preserving ${TMUX_ARCHIVE_FILE:-archive}"
     fi
+  elif [ -n "${LEAD_WINDOW_ID:-}" ]; then
+    log "Preserving adopted Lead body ${LEAD_WINDOW_ID}; this supervisor has no graceful teardown authority"
   fi
 
   # FLY-183: best-effort reap of this Lead's adapter on graceful shutdown.
@@ -3237,9 +4147,7 @@ while true; do
 
   if [ "$LEAD_LAUNCH_MANAGED" = true ] && ! lead_launch_authority_refresh; then
     log "Managed launch authority HOLD (${LEAD_LAUNCH_AUTHORITY_REASON}); retrying in ${TMUX_HOLD_BACKOFF}s"
-    interruptible_sleep "$TMUX_HOLD_BACKOFF"
-    [ "$TMUX_HOLD_BACKOFF" -ge 30 ] || TMUX_HOLD_BACKOFF=$((TMUX_HOLD_BACKOFF * 2))
-    [ "$TMUX_HOLD_BACKOFF" -le 30 ] || TMUX_HOLD_BACKOFF=30
+    _hold_sleep_and_advance
     continue
   fi
 
@@ -3252,14 +4160,28 @@ while true; do
     LEAD_LEASE_KEY=""
     LEAD_LEASE_GENERATION=""
     LEAD_LEASE_DEGRADED="store_error"
+    LEAD_LEASE_FRESH=0
     _lead_identity_alert lead_lease_store_broken \
       "Lead lease start identity unavailable" \
       "${PROJECT_NAME}/${LEAD_ID} could not prove its supervisor pid+lstart; launching degraded while write boundaries remain protected."
-    _lead_identity_ready=1
+    _lead_pending_reconcile_rc=0
+    _lead_reconcile_pending_launch 6 || _lead_pending_reconcile_rc=$?
+    if [ "$_lead_pending_reconcile_rc" -eq 0 ]; then
+      _lead_identity_ready=1
+    else
+      LEAD_LEASE_HOLD_REASON="denied_sensor_degraded"
+    fi
   else
     lead_identity_prepare_lease \
       "$LEAD_ID" "$PROJECT_NAME" "$$" "$LEAD_LEASE_SUPERVISOR_START" \
       || _lead_lease_prepare_rc=$?
+    _lead_pending_reconcile_rc=0
+    _lead_reconcile_pending_launch "$_lead_lease_prepare_rc" \
+      || _lead_pending_reconcile_rc=$?
+    if [ "$_lead_pending_reconcile_rc" -ne 0 ]; then
+      LEAD_LEASE_HOLD_REASON="denied_sensor_degraded"
+      _lead_lease_prepare_rc=3
+    fi
     case "$_lead_lease_prepare_rc" in
       0)
         _lead_identity_ready=1
@@ -3271,12 +4193,34 @@ while true; do
         fi
         ;;
       4)
-        if _lead_clear_orphan_body; then
-          log "Cleared orphan Lead body; reacquiring a fresh lease generation"
-          TMUX_HOLD_BACKOFF=3
-          continue
-        fi
-        LEAD_LEASE_HOLD_REASON="denied_sensor_degraded"
+        _lead_adopt_rc=0
+        _lead_try_adopt_body \
+          "$LEAD_LEASE_ORPHAN_HOLDER_PID" "$LEAD_LEASE_ORPHAN_HOLDER_START" \
+          || _lead_adopt_rc=$?
+        case "$_lead_adopt_rc" in
+          0)
+            if ! _lead_restore_orphan_session; then
+              log "WARNING: adopted Lead body session identity was unavailable; monitoring continues without rewriting the resume file"
+            fi
+            TMUX_HOLD_BACKOFF=3
+            _wait_tmux_window
+            continue
+            ;;
+          1)
+            if _lead_clear_orphan_body; then
+              log "Cleared positively mismatched orphan Lead body; reacquiring a fresh lease generation"
+              TMUX_HOLD_BACKOFF=3
+              continue
+            fi
+            LEAD_LEASE_HOLD_REASON="denied_sensor_degraded"
+            ;;
+          2)
+            LEAD_LEASE_HOLD_REASON="denied_holder_alive"
+            ;;
+          *)
+            LEAD_LEASE_HOLD_REASON="denied_sensor_degraded"
+            ;;
+        esac
         ;;
       5)
         _lead_bound_body_rc=0
@@ -3315,9 +4259,7 @@ while true; do
           "${PROJECT_NAME}/${LEAD_ID} could not safely classify the current supervisor/body tuple and is held before launch."
         ;;
     esac
-    interruptible_sleep "$TMUX_HOLD_BACKOFF"
-    [ "$TMUX_HOLD_BACKOFF" -ge 30 ] || TMUX_HOLD_BACKOFF=$((TMUX_HOLD_BACKOFF * 2))
-    [ "$TMUX_HOLD_BACKOFF" -le 30 ] || TMUX_HOLD_BACKOFF=30
+    _hold_sleep_and_advance
     continue
   fi
 
@@ -3329,9 +4271,7 @@ while true; do
     [ -n "$ENSURE_HOLD_EVIDENCE" ] || ENSURE_HOLD_EVIDENCE="{\"reason\":\"ensure_failed\",\"exitCode\":${_fly1285_hold_rc}}"
     _tmux_report_hold "$ENSURE_HOLD_KIND" "$ENSURE_HOLD_EVIDENCE" || true
     log "tmux ensure hold (${ENSURE_HOLD_KIND}); retrying in ${TMUX_HOLD_BACKOFF}s"
-    interruptible_sleep "$TMUX_HOLD_BACKOFF"
-    [ "$TMUX_HOLD_BACKOFF" -ge 30 ] || TMUX_HOLD_BACKOFF=$((TMUX_HOLD_BACKOFF * 2))
-    [ "$TMUX_HOLD_BACKOFF" -le 30 ] || TMUX_HOLD_BACKOFF=30
+    _hold_sleep_and_advance
     continue
   fi
 
@@ -3343,9 +4283,7 @@ while true; do
     [ -n "$ENSURE_HOLD_EVIDENCE" ] || ENSURE_HOLD_EVIDENCE="{\"reason\":\"takeover_guard_failed\",\"exitCode\":${_fly1285_hold_rc}}"
     _tmux_report_hold "$ENSURE_HOLD_KIND" "$ENSURE_HOLD_EVIDENCE" || true
     log "Lead takeover hold (${ENSURE_HOLD_KIND}); retrying in ${TMUX_HOLD_BACKOFF}s"
-    interruptible_sleep "$TMUX_HOLD_BACKOFF"
-    [ "$TMUX_HOLD_BACKOFF" -ge 30 ] || TMUX_HOLD_BACKOFF=$((TMUX_HOLD_BACKOFF * 2))
-    [ "$TMUX_HOLD_BACKOFF" -le 30 ] || TMUX_HOLD_BACKOFF=30
+    _hold_sleep_and_advance
     continue
   fi
 
@@ -3359,14 +4297,14 @@ while true; do
     _lead_identity_alert lead_dual_active \
       "Lead identity preflight found a duplicate" \
       "${PROJECT_NAME}/${LEAD_ID} refused launch because exact process PID ${_lead_identity_conflict_pid} already carries this identity."
-    interruptible_sleep "$TMUX_HOLD_BACKOFF"
+    _hold_sleep_and_advance
     continue
   elif [ "$_lead_identity_preflight_rc" -ne 1 ]; then
     log "Lead identity preflight sensor failed; holding before launch"
     _lead_identity_alert lead_dual_active_sensor_degraded \
       "Lead identity preflight sensor failed" \
       "${PROJECT_NAME}/${LEAD_ID} could not read the process table and is held before launch."
-    interruptible_sleep "$TMUX_HOLD_BACKOFF"
+    _hold_sleep_and_advance
     continue
   fi
 
@@ -3405,7 +4343,7 @@ while true; do
       [ -n "$ENSURE_HOLD_KIND" ] || ENSURE_HOLD_KIND="unknown"
       [ -n "$ENSURE_HOLD_EVIDENCE" ] || ENSURE_HOLD_EVIDENCE="{\"reason\":\"launch_guard_failed\",\"exitCode\":${_fly1285_launch_rc}}"
       _tmux_report_hold "$ENSURE_HOLD_KIND" "$ENSURE_HOLD_EVIDENCE" || true
-      interruptible_sleep "$TMUX_HOLD_BACKOFF"
+      _hold_sleep_and_advance
       continue
     fi
   else
@@ -3445,7 +4383,7 @@ while true; do
       [ -n "$ENSURE_HOLD_KIND" ] || ENSURE_HOLD_KIND="unknown"
       [ -n "$ENSURE_HOLD_EVIDENCE" ] || ENSURE_HOLD_EVIDENCE="{\"reason\":\"launch_guard_failed\",\"exitCode\":${_fly1285_launch_rc}}"
       _tmux_report_hold "$ENSURE_HOLD_KIND" "$ENSURE_HOLD_EVIDENCE" || true
-      interruptible_sleep "$TMUX_HOLD_BACKOFF"
+      _hold_sleep_and_advance
       continue
     fi
     # Write session file only after successful launch — no orphan on SIGTERM

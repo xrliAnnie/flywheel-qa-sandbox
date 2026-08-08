@@ -95,17 +95,19 @@ lead_identity_cli() {
 if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" \
   && [ "$LEAD_LEASE_KEY" = flywheel-eng-lead ] \
   && [ "$LEAD_LEASE_GENERATION" = 1 ] \
+  && [ "${LEAD_LEASE_FRESH:-missing}" = 1 ] \
   && [ -z "$LEAD_LEASE_DEGRADED" ]; then
-  ok "canonical acquire exports an unbound generation"
+  ok "canonical acquire exports a fresh unbound generation"
 else
-  bad "canonical acquire did not produce the generation claim"
+  bad "canonical acquire did not produce the fresh generation claim"
 fi
 
 FAKE_ACQUIRE_STATUS=idempotent
 lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null
 [ "$LEAD_LEASE_GENERATION" = 1 ] \
-  && ok "HOLD/retry acquire is generation-idempotent" \
-  || bad "idempotent acquire changed generation"
+  && [ "${LEAD_LEASE_FRESH:-missing}" = 1 ] \
+  && ok "HOLD/retry acquire is a fresh generation-idempotent claim" \
+  || bad "idempotent acquire changed generation freshness"
 
 FAKE_RESOLVE_STATUS=valid_but_lead_absent
 FAKE_ACQUIRE_STATUS=acquired
@@ -131,6 +133,7 @@ FAKE_ACQUIRE_STATUS=error
 FAKE_ACQUIRE_RC=2
 if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1 \
   && [ "$LEAD_LEASE_DEGRADED" = store_error ] \
+  && [ "${LEAD_LEASE_FRESH:-missing}" = 0 ] \
   && [ -z "$LEAD_LEASE_KEY" ] \
   && [ -z "$LEAD_LEASE_GENERATION" ]; then
   ok "lease store failure is explicit fail-open degradation"
@@ -143,7 +146,11 @@ FAKE_ACQUIRE_RC=3
 if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
   bad "live holder did not HOLD"
 elif [ "$LEAD_LEASE_HOLD_REASON" = denied_holder_alive ]; then
-  ok "live holder HOLDs without takeover"
+  if [ "${LEAD_LEASE_FRESH:-missing}" = 0 ]; then
+    ok "live holder HOLDs without retaining stale freshness"
+  else
+    bad "live holder retained stale freshness '${LEAD_LEASE_FRESH:-missing}'"
+  fi
 else
   bad "live holder reason was '$LEAD_LEASE_HOLD_REASON'"
 fi
@@ -154,6 +161,7 @@ FAKE_GENERATION=1
 if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
   bad "orphan classification returned normal-launch success"
 elif [ "$?" -eq 4 ] \
+  && [ "${LEAD_LEASE_FRESH:-missing}" = 0 ] \
   && [ "$LEAD_LEASE_KEY" = flywheel-eng-lead ] \
   && [ "$LEAD_LEASE_GENERATION" = 1 ] \
   && [ "$LEAD_LEASE_ORPHAN_HOLDER_PID" = 800 ] \
@@ -182,7 +190,11 @@ FAKE_ACQUIRE_RC=3
 if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
   bad "sensor-degraded tuple did not HOLD"
 elif [ "$LEAD_LEASE_HOLD_REASON" = denied_sensor_degraded ]; then
-  ok "sensor-degraded tuple keeps a distinct HOLD reason"
+  if [ "${LEAD_LEASE_FRESH:-missing}" = 0 ]; then
+    ok "sensor-degraded tuple keeps a distinct HOLD reason and clears freshness"
+  else
+    bad "sensor-degraded tuple retained stale freshness '${LEAD_LEASE_FRESH:-missing}'"
+  fi
 else
   bad "sensor-degraded HOLD reason was '$LEAD_LEASE_HOLD_REASON'"
 fi

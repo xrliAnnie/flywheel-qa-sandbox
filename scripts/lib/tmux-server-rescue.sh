@@ -250,6 +250,16 @@ raise SystemExit(code if code >= 0 else 128 + (-code))
 PY
 }
 
+# Run one read-only probe with an operation-local timeout budget. Long-lived
+# supervisors source this library once, so inheriting the enclosing rescue
+# anchor would make every probe time out after the first 60 seconds of uptime.
+# A subshell both refreshes that budget and preserves the caller's rescue state.
+tmux_rescue_probe() (
+  unset _TMUX_RESCUE_BUDGET_ANCHOR _TMUX_RESCUE_TOTAL_BUDGET
+  unset _TMUX_RESCUE_CACHED_LOAD_FACTOR
+  _tmux_rescue_bounded_exec "$@"
+)
+
 _tmux_rescue_normalize_socket() {
   local socket_path="$1" parent base
   case "$socket_path" in

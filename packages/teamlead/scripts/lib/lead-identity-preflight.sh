@@ -36,6 +36,7 @@ lead_identity_prepare_lease() {
   LEAD_LEASE_GENERATION=""
   LEAD_LEASE_DEGRADED=""
   LEAD_LEASE_HOLD_REASON=""
+  LEAD_LEASE_FRESH=0
   LEAD_LEASE_ORPHAN_HOLDER_PID=""
   LEAD_LEASE_ORPHAN_HOLDER_START=""
   LEAD_LEASE_ORPHAN_OLD_SUP_PID=""
@@ -134,6 +135,9 @@ lead_identity_prepare_lease() {
   fi
   LEAD_LEASE_KEY="$expected_key"
   LEAD_LEASE_GENERATION="$generation"
+  case "$status" in
+    acquired|idempotent) LEAD_LEASE_FRESH=1 ;;
+  esac
   case "$status" in
     holder_orphaned|idempotent_adopted)
       holder_pid="$(printf '%s' "$acquisition" | lead_identity_json_field holderPid 2>/dev/null || true)"

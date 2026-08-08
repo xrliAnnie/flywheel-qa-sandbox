@@ -42,6 +42,11 @@ TypeScript types: `import { QaConfig } from 'flywheel-qa-framework'`
 
 The slot-based E2E framework (FLY-96 + FLY-115) spawns parallel isolated test environments, each running a **real Runner** against `xrliAnnie/flywheel-qa-sandbox`. No synthetic / fixture mode is supported — every slot is a real Runner end-to-end.
 
+QA tmux session names MUST use the `qa-` prefix (for example,
+`qa-fly1659-storm`). Never use the production-reserved `flywheel` session name
+on an isolated QA socket. Teardown remains lifecycle-owned by the creating QA
+driver; `restart-services.sh` only audits and alerts on detached residue.
+
 ### Scripts
 
 | Script | Purpose |

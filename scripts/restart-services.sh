@@ -47,6 +47,10 @@ source "${FLYWHEEL_DIR}/scripts/lib/lead-restart-lifecycle.sh"
 source "${FLYWHEEL_DIR}/scripts/lib/restart-notify.sh"
 # shellcheck source=lib/restart-cmux-watcher.sh
 source "${FLYWHEEL_DIR}/scripts/lib/restart-cmux-watcher.sh"
+# shellcheck source=lib/tmux-server-rescue.sh
+if [[ -f "${FLYWHEEL_DIR}/scripts/lib/tmux-server-rescue.sh" ]]; then
+    source "${FLYWHEEL_DIR}/scripts/lib/tmux-server-rescue.sh"
+fi
 
 # FLY-727 (Codex design review R2#4): mandatory markerless deployment fallback.
 # Whenever deployed-sha advances OLD→NEW, report a deployment event per merged
@@ -233,6 +237,105 @@ fire_meta_alert() {
     # $1 = reason, $2 = title, $3 = body
     [[ -x "${FLYWHEEL_DIR}/scripts/meta-alert.sh" ]] && \
         "${FLYWHEEL_DIR}/scripts/meta-alert.sh" "$1" "$2" "$3" || true
+}
+
+# FLY-1659: audit detached same-uid tmux servers before a fleet restart. This
+# is intentionally observation-only: ppid=1 is shared by abandoned QA servers
+# and legitimate daemons, so it is not deletion authority. The production
+# default socket and the operator-owned atlas socket are allowlisted; every
+# other socket is logged with its session census. A foreign socket using the
+# production-reserved `flywheel` session name additionally raises a severe
+# alert, but never receives a signal or tmux mutation.
+audit_tmux_qa_residue_read_only() {
+    local current_uid timeout rows uid pid ppid command argv0 socket_rows line
+    local socket normalized_socket session_rows session_csv session_name has_reserved allowlist
+    local default_root default_socket seen_sockets="" normalized_allowlist=""
+    local allow normalized_allow old_ifs
+    if ! type tmux_rescue_probe >/dev/null 2>&1 \
+        || ! type _tmux_rescue_normalize_socket >/dev/null 2>&1; then
+        log "WARNING: tmux QA residue audit unavailable (bounded probe library missing)"
+        return 0
+    fi
+    current_uid="$(id -u 2>/dev/null)" || {
+        log "WARNING: tmux QA residue audit could not read the current uid"
+        return 0
+    }
+    timeout="${FLYWHEEL_TMUX_AUDIT_TIMEOUT_SEC:-3}"
+    [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || timeout=3
+    default_root="${TMUX_TMPDIR:-/tmp}/tmux-${current_uid}"
+    default_socket="${FLYWHEEL_TMUX_AUDIT_DEFAULT_SOCKET:-${default_root}/default}"
+    allowlist="${default_socket}:${default_root}/atlas"
+    [[ -z "${FLYWHEEL_TMUX_AUDIT_ALLOWLIST:-}" ]] \
+        || allowlist="${allowlist}:${FLYWHEEL_TMUX_AUDIT_ALLOWLIST}"
+    old_ifs="$IFS"
+    IFS=:
+    for allow in $allowlist; do
+        if normalized_allow="$(_tmux_rescue_normalize_socket "$allow" 2>/dev/null)"; then
+            normalized_allowlist="${normalized_allowlist}${normalized_allowlist:+$'\n'}${normalized_allow}"
+        else
+            log "WARNING: tmux QA residue audit could not normalize allowlisted socket ${allow}"
+        fi
+    done
+    IFS="$old_ifs"
+
+    rows="$(tmux_rescue_probe "$timeout" \
+        ps axww -o uid= -o pid= -o ppid= -o command= 2>/dev/null)" || {
+        log "WARNING: tmux QA residue audit process census was unavailable"
+        return 0
+    }
+    while read -r uid pid ppid command; do
+        [[ "$uid" == "$current_uid" && "$ppid" == 1 && "$pid" =~ ^[1-9][0-9]*$ ]] \
+            || continue
+        argv0="${command%% *}"
+        case "$argv0" in
+            tmux|*/tmux) ;;
+            *) [[ "$command" == *"tmux: server"* || "$command" == *"tmux server"* ]] \
+                || continue ;;
+        esac
+
+        socket_rows="$(tmux_rescue_probe "$timeout" \
+            lsof -a -p "$pid" -U -Fn 2>/dev/null)" || {
+            log "WARNING: tmux QA residue audit socket census failed for pid=$pid"
+            continue
+        }
+        while IFS= read -r line; do
+            [[ "$line" == n/* ]] || continue
+            socket="${line#n}"
+            [[ "$socket" == *' type=STREAM' ]] && socket="${socket% type=STREAM}"
+            [[ "$socket" == /* ]] || continue
+            if ! normalized_socket="$(_tmux_rescue_normalize_socket "$socket" 2>/dev/null)"; then
+                log "WARNING: tmux QA residue audit could not normalize socket for pid=$pid"
+                continue
+            fi
+            if printf '%s\n' "$seen_sockets" | grep -Fqx -- "$normalized_socket"; then
+                continue
+            fi
+            seen_sockets="${seen_sockets}${seen_sockets:+$'\n'}${normalized_socket}"
+
+            if printf '%s\n' "$normalized_allowlist" | grep -Fqx -- "$normalized_socket"; then
+                continue
+            fi
+
+            session_rows="$(tmux_rescue_probe "$timeout" \
+                tmux -S "$socket" -N list-sessions -F '#{session_name}' 2>/dev/null)" \
+                || session_rows="<unreadable>"
+            session_csv="$(printf '%s\n' "$session_rows" \
+                | awk 'NF { if (out != "") out=out ","; out=out $0 } END { print out }')"
+            [[ -n "$session_csv" ]] || session_csv="<none>"
+            log "WARNING: non-production tmux server audit pid=${pid} socket=${socket} sessions=${session_csv}"
+
+            has_reserved=false
+            while IFS= read -r session_name; do
+                [[ "$session_name" == flywheel ]] && has_reserved=true
+            done <<< "$session_rows"
+            if [[ "$has_reserved" == true ]]; then
+                alert_severe "tmux-qa-residue-flywheel-session" \
+                    "QA tmux server uses the production session name" \
+                    "检测到非生产 tmux socket ${socket} (PID ${pid}) 使用保留 session 名 flywheel。restart 只读审计未做清理；请按 operator 手册核实并移除残留。"
+            fi
+        done <<< "$socket_rows"
+    done <<< "$rows"
+    return 0
 }
 
 # FLY-1081 (FLY-915 pain #3): ⚠️/🚨 deploy notices route through lead-alert.sh
@@ -1744,6 +1847,12 @@ rollback_and_restart() {
 deploy_and_verify() {
     RESTART_NOTICE_STARTED=true
     notify_routine "🔄 开始全量重启 Flywheel (reason=${RESTART_REASON}): \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`"
+
+    # Read-only preflight: surface detached QA tmux noise before the Lead wave
+    # without treating daemon shape as cleanup authority.
+    if type audit_tmux_qa_residue_read_only >/dev/null 2>&1; then
+        audit_tmux_qa_residue_read_only
+    fi
 
     # Step 0: reject new admissions before the Bridge begins draining. This runs
     # inside the detached deploy body, never in the self-detaching parent.

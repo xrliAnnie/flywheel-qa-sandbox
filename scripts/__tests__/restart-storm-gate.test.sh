@@ -478,6 +478,89 @@ else
   fail "append crash replay" "crash_exit=$APPEND_EXIT replay_exit=$APPEND_REPLAY_EXIT"
 fi
 
+RESTART_SCRIPT="$REPO_DIR/scripts/restart-services.sh"
+QA_README="$REPO_DIR/packages/qa-framework/README.md"
+AUDIT_SRC="$(sed -n '/^audit_tmux_qa_residue_read_only()/,/^}/p' "$RESTART_SCRIPT")"
+if [[ -z "$AUDIT_SRC" ]]; then
+  fail "tmux QA residue audit" "restart-services is missing the read-only preflight"
+else
+  eval "$AUDIT_SRC"
+  AUDIT_LOG="$TEST_ROOT/tmux-audit.log"
+  AUDIT_ALERT="$TEST_ROOT/tmux-audit-alert.log"
+  AUDIT_MUTATIONS=0
+  tmux_rescue_probe() { local _timeout="$1"; shift; "$@"; }
+  id() { printf '501\n'; }
+  ps() {
+    printf '%s\n' \
+      '501 6000 1 tmux: server' \
+      '501 6001 1 /opt/homebrew/bin/tmux -L atlas new-session -Ad -s atlas' \
+      '501 6100 1 tmux: server' \
+      '501 6200 1 tmux: server' \
+      '501 6300 2 tmux: server' \
+      '502 6400 1 tmux: server'
+  }
+  lsof() {
+    local pid="" previous=""
+    for previous in "$@"; do
+      [[ "$pid" == want ]] && { pid="$previous"; break; }
+      [[ "$previous" == -p ]] && pid=want
+    done
+    case "$pid" in
+      # macOS resolves /tmp through /private/tmp before lsof reports the
+      # descriptor path. Keep the configured production paths in /tmp form
+      # below so this fixture catches literal-string allowlist regressions.
+      6000) printf 'p6000\nn/private/tmp/tmux-501/default\n' ;;
+      6001) printf 'p6001\nn/private/tmp/tmux-501/atlas\n' ;;
+      6100) printf 'p6100\nn/tmp/q96/tmux.sock\n' ;;
+      6200) printf 'p6200\nn/tmp/q97/tmux.sock\n' ;;
+      6300) printf 'p6300\nn/tmp/q98/tmux.sock\n' ;;
+    esac
+  }
+  _tmux_rescue_normalize_socket() {
+    case "$1" in
+      /tmp/tmux-501/*) printf '/private%s' "$1" ;;
+      /tmp/q96/tmux.sock)
+        printf '/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-1659/0fa8692e-159c-4a48-b5ab-32292a6f63ff/scratchpad/rig/tmux.sock'
+        ;;
+      /*) printf '%s' "$1" ;;
+      *) return 1 ;;
+    esac
+  }
+  tmux() {
+    local socket=""
+    [[ "${1:-}" == -S ]] && socket="${2:-}"
+    case "$socket" in
+      /private/tmp/tmux-501/default) printf 'flywheel\nflywheel-keepalive\n' ;;
+      /private/tmp/tmux-501/atlas) printf 'atlas-growth\n' ;;
+      /tmp/q96/tmux.sock) printf 'flywheel\nqa-fly1659-noise\n' ;;
+      /tmp/q97/tmux.sock) printf 'qa-fly1659-storm\n' ;;
+      *) AUDIT_MUTATIONS=$((AUDIT_MUTATIONS + 1)); return 2 ;;
+    esac
+  }
+  kill() { AUDIT_MUTATIONS=$((AUDIT_MUTATIONS + 1)); }
+  log() { printf '%s\n' "$*" >> "$AUDIT_LOG"; }
+  alert_severe() { printf '%s\n' "$*" >> "$AUDIT_ALERT"; }
+  TMUX_TMPDIR=/tmp
+  FLYWHEEL_TMUX_AUDIT_ALLOWLIST=/tmp/tmux-501/atlas
+  audit_tmux_qa_residue_read_only
+  if grep -q 'pid=6100.*socket=/tmp/q96/tmux.sock.*sessions=flywheel,qa-fly1659-noise' "$AUDIT_LOG" \
+    && grep -q 'pid=6200.*socket=/tmp/q97/tmux.sock.*sessions=qa-fly1659-storm' "$AUDIT_LOG" \
+    && ! grep -q 'pid=6000\|pid=6001\|pid=6300\|pid=6400' "$AUDIT_LOG" \
+    && grep -q 'tmux-qa-residue-flywheel-session' "$AUDIT_ALERT" \
+    && [[ "$(grep -c 'tmux-qa-residue-flywheel-session' "$AUDIT_ALERT")" -eq 1 ]] \
+    && [[ "$AUDIT_MUTATIONS" -eq 0 ]]; then
+    pass "restart preflight audits foreign QA sockets and alerts on reserved session names without mutation"
+  else
+    fail "tmux QA residue audit" "log=$(cat "$AUDIT_LOG" 2>/dev/null || echo missing) alert=$(cat "$AUDIT_ALERT" 2>/dev/null || echo missing) mutations=$AUDIT_MUTATIONS"
+  fi
+fi
+
+if grep -q 'QA tmux session names MUST use the `qa-` prefix' "$QA_README"; then
+  pass "QA framework reserves the qa- tmux session namespace"
+else
+  fail "QA tmux naming rule" "$QA_README does not reserve the qa- prefix"
+fi
+
 echo
 echo "[restart-storm-gate.test] passed=$PASSED failed=$FAILED"
 [[ "$FAILED" -eq 0 ]]

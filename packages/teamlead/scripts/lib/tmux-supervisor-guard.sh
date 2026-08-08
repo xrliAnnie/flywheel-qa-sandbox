@@ -49,21 +49,78 @@ tmux_supervisor_archive_read() {
     && [ -z "$extra" ]
 }
 
-tmux_supervisor_archived_process_matches() {
-  local archive="$1" lead_id="$2" actual_start command
-  tmux_supervisor_archive_read "$archive" || return 1
-  kill -0 "$TMUX_ARCHIVE_PANE_PID" 2>/dev/null || return 1
-  actual_start="$(tmux_supervisor_process_start_identity "$TMUX_ARCHIVE_PANE_PID")" || return 1
-  [ -n "$actual_start" ] && [ "$actual_start" = "$TMUX_ARCHIVE_PANE_START" ] || return 1
-  command="$(_tmux_supervisor_process_command "$TMUX_ARCHIVE_PANE_PID")" || return 1
-  if type lead_identity_command_matches >/dev/null 2>&1; then
-    lead_identity_command_matches "$command" "$lead_id"
-    return $?
+_tmux_supervisor_process_presence_state() {
+  # rc 0: positively live and non-zombie; rc 1: positively absent/zombie;
+  # rc 2: the process sensor could not classify the tuple.
+  local pid="$1" stat="" rc=0
+  stat="$(LC_ALL=C ps -p "$pid" -o stat= 2>/dev/null)" || rc=$?
+  stat="$(printf '%s' "$stat" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  if [ "$rc" -eq 0 ] && [ -n "$stat" ]; then
+    case "$stat" in Z*) return 1 ;; *) return 0 ;; esac
   fi
-  case "$command" in
-    *claude*"--agent ${lead_id}"*|*claude*"--agent=${lead_id}"*) return 0 ;;
+  [ "$rc" -eq 1 ] && [ -z "$stat" ] && return 1
+  return 2
+}
+
+# Typed archive/body identity probe.
+# rc 0 / live_exact: the pid+lstart+argv tuple is the archived Lead body.
+# rc 1 / positive_dead_or_mismatch: absence, zombie, PID reuse, or argv drift.
+# rc 2 / indeterminate: archive/process sensors could not produce hard evidence.
+tmux_supervisor_archived_process_state() {
+  local archive="$1" lead_id="$2" actual_start="" command="" rc=0
+  TMUX_SUPERVISOR_ARCHIVED_STATE=indeterminate
+  tmux_supervisor_archive_read "$archive" || return 2
+
+  _tmux_supervisor_process_presence_state "$TMUX_ARCHIVE_PANE_PID" || rc=$?
+  case "$rc" in
+    1) TMUX_SUPERVISOR_ARCHIVED_STATE=positive_dead_or_mismatch; return 1 ;;
+    2) return 2 ;;
   esac
-  return 1
+
+  actual_start="$(tmux_supervisor_process_start_identity "$TMUX_ARCHIVE_PANE_PID")" || rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$actual_start" ]; then
+    _tmux_supervisor_process_presence_state "$TMUX_ARCHIVE_PANE_PID"
+    rc=$?
+    if [ "$rc" -eq 1 ]; then
+      TMUX_SUPERVISOR_ARCHIVED_STATE=positive_dead_or_mismatch
+      return 1
+    fi
+    return 2
+  fi
+  if [ "$actual_start" != "$TMUX_ARCHIVE_PANE_START" ]; then
+    TMUX_SUPERVISOR_ARCHIVED_STATE=positive_dead_or_mismatch
+    return 1
+  fi
+
+  rc=0
+  command="$(_tmux_supervisor_process_command "$TMUX_ARCHIVE_PANE_PID")" || rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$command" ]; then
+    _tmux_supervisor_process_presence_state "$TMUX_ARCHIVE_PANE_PID"
+    rc=$?
+    if [ "$rc" -eq 1 ]; then
+      TMUX_SUPERVISOR_ARCHIVED_STATE=positive_dead_or_mismatch
+      return 1
+    fi
+    return 2
+  fi
+  if type lead_identity_command_matches >/dev/null 2>&1; then
+    if ! lead_identity_command_matches "$command" "$lead_id"; then
+      TMUX_SUPERVISOR_ARCHIVED_STATE=positive_dead_or_mismatch
+      return 1
+    fi
+  else
+    case "$command" in
+      *claude*"--agent ${lead_id}"*|*claude*"--agent=${lead_id}"*) ;;
+      *) TMUX_SUPERVISOR_ARCHIVED_STATE=positive_dead_or_mismatch; return 1 ;;
+    esac
+  fi
+
+  TMUX_SUPERVISOR_ARCHIVED_STATE=live_exact
+  return 0
+}
+
+tmux_supervisor_archived_process_matches() {
+  tmux_supervisor_archived_process_state "$@"
 }
 
 tmux_supervisor_archived_process_alive() {
@@ -75,33 +132,47 @@ tmux_supervisor_archived_process_alive() {
 }
 
 tmux_supervisor_reap_archived_process() {
-  local archive="$1" lead_id="$2" attempt=0
+  local archive="$1" lead_id="$2" attempt=0 state_rc=0
   local attempts="${FLYWHEEL_TMUX_TAKEOVER_WAIT_ATTEMPTS:-20}"
   local wait_sec="${FLYWHEEL_TMUX_TAKEOVER_WAIT_SEC:-0.5}"
 
-  tmux_supervisor_archive_read "$archive" || {
-    rm -f "$archive" 2>/dev/null || true
-    return 0
-  }
-  if ! tmux_supervisor_archived_process_matches "$archive" "$lead_id"; then
-    # Dead process, PID reuse, corrupt command, or identity drift: never signal.
-    # The caller reached this helper only after positive window-death evidence,
-    # so the stale archive itself may be cleared.
-    rm -f "$archive" 2>/dev/null || true
-    return 0
-  fi
+  tmux_supervisor_archived_process_state "$archive" "$lead_id" || state_rc=$?
+  case "$state_rc" in
+    1) rm -f "$archive" 2>/dev/null || return 2; return 0 ;;
+    2) return 2 ;;
+  esac
 
   kill -TERM "$TMUX_ARCHIVE_PANE_PID" 2>/dev/null || true
   while [ "$attempt" -lt "$attempts" ]; do
-    tmux_supervisor_archived_process_matches "$archive" "$lead_id" || break
+    state_rc=0
+    tmux_supervisor_archived_process_state "$archive" "$lead_id" || state_rc=$?
+    case "$state_rc" in
+      1) rm -f "$archive" 2>/dev/null || return 2; return 0 ;;
+      2) return 2 ;;
+    esac
     sleep "$wait_sec"
     attempt=$((attempt + 1))
   done
 
   # Re-run the full PID + start identity + argv proof immediately before KILL.
-  if tmux_supervisor_archived_process_matches "$archive" "$lead_id"; then
-    kill -KILL "$TMUX_ARCHIVE_PANE_PID" 2>/dev/null || return 1
-  fi
-  rm -f "$archive" 2>/dev/null || true
-  return 0
+  state_rc=0
+  tmux_supervisor_archived_process_state "$archive" "$lead_id" || state_rc=$?
+  case "$state_rc" in
+    1) rm -f "$archive" 2>/dev/null || return 2; return 0 ;;
+    2) return 2 ;;
+  esac
+  kill -KILL "$TMUX_ARCHIVE_PANE_PID" 2>/dev/null || return 2
+
+  attempt=0
+  while [ "$attempt" -lt "$attempts" ]; do
+    state_rc=0
+    tmux_supervisor_archived_process_state "$archive" "$lead_id" || state_rc=$?
+    case "$state_rc" in
+      1) rm -f "$archive" 2>/dev/null || return 2; return 0 ;;
+      2) return 2 ;;
+    esac
+    sleep "$wait_sec"
+    attempt=$((attempt + 1))
+  done
+  return 2
 }

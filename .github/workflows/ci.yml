@@ -371,6 +371,15 @@ jobs:
           bash packages/teamlead/scripts/__tests__/test-lead-identity-preflight.sh
           bash scripts/__tests__/restart-self-detach.test.sh
 
+      # FLY-1659: cold-supervisor adoption and lock-storm regression contracts.
+      # These are separate from the rescue mechanism tests: they prove the Lead
+      # launcher stays lock-free in steady state and that crash evidence fences
+      # every create before acceptance.
+      - name: Test — FLY-1659 supervisor convergence contracts
+        run: |
+          bash scripts/__tests__/supervisor-adoption.test.sh
+          bash scripts/__tests__/supervisor-storm-regression.test.sh
+
       # FLY-1062: the REAL npm full chain on the real repo — pack (gated) →
       # npm install --prefix (registry fetch for the dependency union) →
       # compat mirror → bare-import matrix → better-sqlite3 native load →
