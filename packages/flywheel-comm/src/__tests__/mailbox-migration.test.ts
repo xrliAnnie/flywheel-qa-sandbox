@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import {
 	chmodSync,
+	copyFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -11,16 +13,19 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	backupCommDb,
+	classifyMailboxDatabase,
+	inspectMailboxSwapIntent,
 	type MailboxRestorePhase,
 	type MailboxSwapPhase,
 	migrateCommDbWithSwap,
 	migrateLegacyDatabaseFile,
 	rollbackMailboxMigration,
+	verifyMigratedDatabase,
 } from "../mailbox-migration.js";
 import { writeContentRef } from "../utils/content-ref.js";
 
@@ -57,6 +62,34 @@ CREATE TABLE receipt_root_lineage (
  question_id TEXT NOT NULL, root_lead_id TEXT NOT NULL
 );
 `;
+
+function sha256(path: string): string {
+	return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function writeSwapIntent(
+	dbPath: string,
+	overrides: Record<string, unknown> = {},
+): string {
+	const intentPath = `${dbPath}.migration-swap-intent.json`;
+	writeFileSync(
+		intentPath,
+		JSON.stringify({
+			v: 1,
+			dbPath,
+			backupPath: `${dbPath}.pre-fly1572-2026-08-04T12-00-00.000Z`,
+			stagingPath: join(dirname(dbPath), ".fly1572-stale", "comm.db"),
+			phase: "done",
+			originalMode: 0o600,
+			createdAt: "2026-08-04T12:00:00.000Z",
+			sourceMessages: 0,
+			sourceLeadInbox: 0,
+			quarantinedSidecars: [],
+			...overrides,
+		}),
+	);
+	return intentPath;
+}
 
 function insertMessage(
 	db: Database.Database,
@@ -764,6 +797,750 @@ describe("FLY-1572 legacy mailbox migration", () => {
 		expect(() => rollbackMailboxMigration(dbPath)).not.toThrow();
 	});
 
+	it("archives a stale completed intent and remigrates the current legacy canonical", async () => {
+		const oldBackupPath = `${dbPath}.pre-fly1572-2026-08-04T12-00-00.000Z`;
+		await backupCommDb(dbPath, oldBackupPath);
+		const oldBackupBytes = readFileSync(oldBackupPath);
+		const intentPath = `${dbPath}.migration-swap-intent.json`;
+		writeFileSync(
+			intentPath,
+			JSON.stringify({
+				v: 1,
+				dbPath,
+				backupPath: oldBackupPath,
+				stagingPath: join(dir, ".fly1572-stale", "comm.db"),
+				phase: "done",
+				originalMode: 0o600,
+				createdAt: "2026-08-04T12:00:00.000Z",
+				sourceMessages: 0,
+				sourceLeadInbox: 0,
+				quarantinedSidecars: [],
+			}),
+		);
+		const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const result = await migrateCommDbWithSwap(dbPath, { now: NOW });
+
+		expect(result).toMatchObject({ status: "migrated" });
+		expect(result.backupPath).not.toBe(oldBackupPath);
+		expect(readFileSync(oldBackupPath)).toEqual(oldBackupBytes);
+		const archived = readdirSync(dir).filter((name) =>
+			name.startsWith("comm.db.migration-swap-intent.json.stale-"),
+		);
+		expect(archived).toHaveLength(1);
+		expect(JSON.parse(readFileSync(intentPath, "utf8"))).toMatchObject({
+			v: 2,
+			phase: "done",
+			sourceBinding: {
+				mainSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+			},
+		});
+		expect(errorLog).toHaveBeenCalledWith(
+			expect.stringContaining('"reason":"stale_post_swap_intent"'),
+		);
+		errorLog.mockRestore();
+	});
+
+	it.each(["staging", "quarantine"] as const)(
+		"refuses a stale completed intent when its %s artifact still exists",
+		async (artifact) => {
+			const stagingPath = join(dir, ".fly1572-stale", "comm.db");
+			const quarantinePath = `${dbPath}-wal.fly1572-quarantine`;
+			if (artifact === "staging") {
+				mkdirSync(dirname(stagingPath), { recursive: true });
+				writeFileSync(stagingPath, "stale staging evidence");
+			} else {
+				writeFileSync(quarantinePath, "stale WAL evidence");
+			}
+			writeSwapIntent(dbPath, {
+				stagingPath,
+				quarantinedSidecars: artifact === "quarantine" ? [quarantinePath] : [],
+			});
+			const before = sha256(dbPath);
+
+			await expect(migrateCommDbWithSwap(dbPath, { now: NOW })).rejects.toThrow(
+				/stale mailbox swap intent.*artifact/i,
+			);
+
+			expect(sha256(dbPath)).toBe(before);
+			expect(
+				existsSync(artifact === "staging" ? stagingPath : quarantinePath),
+			).toBe(true);
+		},
+	);
+
+	it("binds a swap intent to its canonical database path", async () => {
+		const otherPath = join(dir, "other", "comm.db");
+		writeSwapIntent(dbPath, {
+			dbPath: otherPath,
+			backupPath: `${otherPath}.pre-fly1572-old`,
+			stagingPath: join(dirname(otherPath), ".fly1572-old", "comm.db"),
+		});
+		const before = sha256(dbPath);
+
+		await expect(migrateCommDbWithSwap(dbPath, { now: NOW })).rejects.toThrow(
+			/intent belongs to a different database/i,
+		);
+		expect(sha256(dbPath)).toBe(before);
+	});
+
+	it("rejects a fenced resume when bytes changed through an already-open writer", async () => {
+		const sourceHash = sha256(dbPath);
+		const writer = new Database(dbPath);
+		writeSwapIntent(dbPath, {
+			v: 2,
+			phase: "fenced",
+			sourceBinding: { mainSha256: sourceHash, walSha256: null },
+		});
+		chmodSync(dbPath, 0o444);
+		insertMessage(writer, {
+			id: "written-after-fence",
+			from_agent: "exec-new",
+			to_agent: "flywheel-eng-lead",
+			type: "question",
+		});
+		writer.close();
+		const changedHash = sha256(dbPath);
+		expect(changedHash).not.toBe(sourceHash);
+
+		await expect(migrateCommDbWithSwap(dbPath, { now: NOW })).rejects.toThrow(
+			/diverged from the fenced source\/artifacts/i,
+		);
+
+		expect(sha256(dbPath)).toBe(changedHash);
+		const verify = new Database(dbPath, { readonly: true });
+		try {
+			expect(verify.prepare("SELECT id FROM messages").pluck().all()).toContain(
+				"written-after-fence",
+			);
+		} finally {
+			verify.close();
+		}
+	});
+
+	it("refuses to adopt an unbound backup published before the phase ledger advanced", async () => {
+		const backupPath = `${dbPath}.pre-fly1572-unbound`;
+		await backupCommDb(dbPath, backupPath);
+		writeSwapIntent(dbPath, {
+			v: 2,
+			backupPath,
+			phase: "fenced",
+			sourceBinding: { mainSha256: sha256(dbPath), walSha256: null },
+		});
+		chmodSync(dbPath, 0o444);
+		const before = sha256(dbPath);
+
+		await expect(migrateCommDbWithSwap(dbPath, { now: NOW })).rejects.toThrow(
+			/unbound backup/i,
+		);
+
+		expect(sha256(dbPath)).toBe(before);
+		expect(existsSync(backupPath)).toBe(true);
+	});
+
+	it("rejects a structurally valid backup whose bytes do not match the intent binding", async () => {
+		const backupPath = `${dbPath}.pre-fly1572-bound`;
+		await backupCommDb(dbPath, backupPath);
+		const backupSha256 = sha256(backupPath);
+		const refsManifestSha256 = sha256(`${backupPath}.refs-manifest.json`);
+		const foreignPath = join(dir, "foreign-backup.db");
+		const foreign = new Database(foreignPath);
+		foreign.exec(LEGACY_SCHEMA);
+		insertMessage(foreign, {
+			id: "foreign-row",
+			from_agent: "foreign-exec",
+			to_agent: "flywheel-eng-lead",
+			type: "question",
+		});
+		foreign.close();
+		copyFileSync(foreignPath, backupPath);
+		writeSwapIntent(dbPath, {
+			v: 2,
+			backupPath,
+			phase: "backed_up",
+			sourceBinding: { mainSha256: sha256(dbPath), walSha256: null },
+			backupSha256,
+			refsManifestSha256,
+		});
+		chmodSync(dbPath, 0o444);
+		const before = sha256(dbPath);
+
+		await expect(migrateCommDbWithSwap(dbPath, { now: NOW })).rejects.toThrow(
+			/diverged from the fenced source\/artifacts/i,
+		);
+		expect(sha256(dbPath)).toBe(before);
+	});
+
+	it("rejects a structurally valid staging database whose bytes do not match the intent binding", async () => {
+		const backupPath = `${dbPath}.pre-fly1572-staging-bound`;
+		await backupCommDb(dbPath, backupPath);
+		const stagingPath = join(dir, ".fly1572-staging-bound", "comm.db");
+		mkdirSync(dirname(stagingPath), { recursive: true });
+		copyFileSync(backupPath, stagingPath);
+		migrateLegacyDatabaseFile(stagingPath, { now: NOW });
+		const stagingSha256 = sha256(stagingPath);
+		const foreignPath = join(dir, "foreign-staging.db");
+		copyFileSync(backupPath, foreignPath);
+		const foreign = new Database(foreignPath);
+		insertMessage(foreign, {
+			id: "foreign-staging-row",
+			from_agent: "foreign-exec",
+			to_agent: "flywheel-eng-lead",
+			type: "question",
+		});
+		foreign.close();
+		migrateLegacyDatabaseFile(foreignPath, { now: NOW });
+		copyFileSync(foreignPath, stagingPath);
+		writeSwapIntent(dbPath, {
+			v: 2,
+			backupPath,
+			stagingPath,
+			phase: "staging_verified",
+			sourceBinding: { mainSha256: sha256(dbPath), walSha256: null },
+			backupSha256: sha256(backupPath),
+			refsManifestSha256: sha256(`${backupPath}.refs-manifest.json`),
+			stagingSha256,
+		});
+		chmodSync(dbPath, 0o444);
+		const before = sha256(dbPath);
+
+		await expect(migrateCommDbWithSwap(dbPath, { now: NOW })).rejects.toThrow(
+			/diverged from the fenced source\/artifacts/i,
+		);
+		expect(sha256(dbPath)).toBe(before);
+	});
+
+	it("reports a missing migration marker with the database path", () => {
+		expect(() => verifyMigratedDatabase(dbPath)).toThrow(
+			`mailbox migration marker missing: ${dbPath}`,
+		);
+	});
+
+	it("classifies legacy, migrated, mixed, and unknown schemas through the shared library helper", () => {
+		expect(classifyMailboxDatabase(dbPath)).toBe("legacy");
+		const unknownPath = join(dir, "unknown.db");
+		new Database(unknownPath).close();
+		expect(classifyMailboxDatabase(unknownPath)).toBe("unknown");
+		const migratedPath = join(dir, "migrated.db");
+		copyFileSync(dbPath, migratedPath);
+		migrateLegacyDatabaseFile(migratedPath, { now: NOW });
+		expect(classifyMailboxDatabase(migratedPath)).toBe("migrated");
+		const mixed = new Database(migratedPath);
+		mixed.exec("DROP VIEW messages; CREATE TABLE messages (id TEXT);");
+		mixed.close();
+		expect(classifyMailboxDatabase(migratedPath)).toBe("mixed");
+	});
+
+	it.each([
+		["malformed JSON", "{"],
+		[
+			"unknown phase",
+			JSON.stringify({
+				v: 1,
+				dbPath: "/tmp/comm.db",
+				backupPath: "/tmp/comm.db.pre-fly1572-old",
+				stagingPath: "/tmp/.fly1572-old/comm.db",
+				phase: "invented",
+				originalMode: 0o600,
+				createdAt: NOW,
+				sourceMessages: 0,
+				sourceLeadInbox: 0,
+				quarantinedSidecars: [],
+			}),
+		],
+		[
+			"relative artifact path",
+			JSON.stringify({
+				v: 1,
+				dbPath: "/tmp/comm.db",
+				backupPath: "relative.db",
+				stagingPath: "/tmp/.fly1572-old/comm.db",
+				phase: "done",
+				originalMode: 0o600,
+				createdAt: NOW,
+				sourceMessages: 0,
+				sourceLeadInbox: 0,
+				quarantinedSidecars: [],
+			}),
+		],
+		[
+			"v2 missing binding",
+			JSON.stringify({
+				v: 2,
+				dbPath: "/tmp/comm.db",
+				backupPath: "/tmp/comm.db.pre-fly1572-old",
+				stagingPath: "/tmp/.fly1572-old/comm.db",
+				phase: "fenced",
+				originalMode: 0o600,
+				createdAt: NOW,
+				sourceMessages: 0,
+				sourceLeadInbox: 0,
+				quarantinedSidecars: [],
+			}),
+		],
+		[
+			"unsupported version",
+			JSON.stringify({
+				v: 3,
+				dbPath: "/tmp/comm.db",
+				backupPath: "/tmp/comm.db.pre-fly1572-old",
+				stagingPath: "/tmp/.fly1572-old/comm.db",
+				phase: "done",
+				originalMode: 0o600,
+				createdAt: NOW,
+				sourceMessages: 0,
+				sourceLeadInbox: 0,
+				quarantinedSidecars: [],
+			}),
+		],
+		[
+			"backup outside canonical directory",
+			JSON.stringify({
+				v: 1,
+				dbPath: "/tmp/comm.db",
+				backupPath: "/var/tmp/comm.db.pre-fly1572-old",
+				stagingPath: "/tmp/.fly1572-old/comm.db",
+				phase: "done",
+				originalMode: 0o600,
+				createdAt: NOW,
+				sourceMessages: 0,
+				sourceLeadInbox: 0,
+				quarantinedSidecars: [],
+			}),
+		],
+		[
+			"staging outside canonical directory",
+			JSON.stringify({
+				v: 1,
+				dbPath: "/tmp/comm.db",
+				backupPath: "/tmp/comm.db.pre-fly1572-old",
+				stagingPath: "/var/tmp/.fly1572-old/comm.db",
+				phase: "done",
+				originalMode: 0o600,
+				createdAt: NOW,
+				sourceMessages: 0,
+				sourceLeadInbox: 0,
+				quarantinedSidecars: [],
+			}),
+		],
+		[
+			"quarantine outside canonical layout",
+			JSON.stringify({
+				v: 1,
+				dbPath: "/tmp/comm.db",
+				backupPath: "/tmp/comm.db.pre-fly1572-old",
+				stagingPath: "/tmp/.fly1572-old/comm.db",
+				phase: "done",
+				originalMode: 0o600,
+				createdAt: NOW,
+				sourceMessages: 0,
+				sourceLeadInbox: 0,
+				quarantinedSidecars: ["/tmp/other-wal.fly1572-quarantine"],
+			}),
+		],
+		[
+			"v2 backed-up missing artifact bindings",
+			JSON.stringify({
+				v: 2,
+				dbPath: "/tmp/comm.db",
+				backupPath: "/tmp/comm.db.pre-fly1572-old",
+				stagingPath: "/tmp/.fly1572-old/comm.db",
+				phase: "backed_up",
+				originalMode: 0o600,
+				createdAt: NOW,
+				sourceMessages: 0,
+				sourceLeadInbox: 0,
+				quarantinedSidecars: [],
+				sourceBinding: {
+					mainSha256: "a".repeat(64),
+					walSha256: null,
+				},
+			}),
+		],
+		[
+			"v2 staging missing staging binding",
+			JSON.stringify({
+				v: 2,
+				dbPath: "/tmp/comm.db",
+				backupPath: "/tmp/comm.db.pre-fly1572-old",
+				stagingPath: "/tmp/.fly1572-old/comm.db",
+				phase: "staging_verified",
+				originalMode: 0o600,
+				createdAt: NOW,
+				sourceMessages: 0,
+				sourceLeadInbox: 0,
+				quarantinedSidecars: [],
+				sourceBinding: {
+					mainSha256: "a".repeat(64),
+					walSha256: null,
+				},
+				backupSha256: "b".repeat(64),
+				refsManifestSha256: "c".repeat(64),
+			}),
+		],
+	] as const)("normalizes invalid intent errors for %s", (_name, contents) => {
+		const intentPath = `${dbPath}.migration-swap-intent.json`;
+		writeFileSync(intentPath, contents);
+		expect(() => inspectMailboxSwapIntent(intentPath)).toThrow(
+			`invalid mailbox swap intent: ${intentPath}:`,
+		);
+	});
+
+	it("keeps a migrated canonical idempotent when its completed v1 intent remains", async () => {
+		migrateLegacyDatabaseFile(dbPath, { now: NOW });
+		writeSwapIntent(dbPath);
+		const before = sha256(dbPath);
+
+		await expect(
+			migrateCommDbWithSwap(dbPath, { now: NOW }),
+		).resolves.toMatchObject({ status: "migrated" });
+		expect(sha256(dbPath)).toBe(before);
+		expect(
+			JSON.parse(readFileSync(`${dbPath}.migration-swap-intent.json`, "utf8")),
+		).toMatchObject({ v: 1, phase: "done" });
+	});
+
+	it("refuses rollback when a completed intent points at a newly active legacy canonical", async () => {
+		const backupPath = `${dbPath}.pre-fly1572-stale-rollback`;
+		await backupCommDb(dbPath, backupPath);
+		const legacy = new Database(dbPath);
+		insertMessage(legacy, {
+			id: "new-since-stale-backup",
+			from_agent: "exec-new",
+			to_agent: "flywheel-eng-lead",
+			type: "question",
+		});
+		legacy.close();
+		writeSwapIntent(dbPath, { backupPath, phase: "done" });
+		const before = sha256(dbPath);
+		const backupBefore = sha256(backupPath);
+
+		expect(() => rollbackMailboxMigration(dbPath)).toThrow(/rollback refused/i);
+
+		expect(sha256(dbPath)).toBe(before);
+		expect(sha256(backupPath)).toBe(backupBefore);
+		const verify = new Database(dbPath, { readonly: true });
+		try {
+			expect(verify.prepare("SELECT id FROM messages").pluck().all()).toContain(
+				"new-since-stale-backup",
+			);
+		} finally {
+			verify.close();
+		}
+	});
+
+	it("rejects v1 pre-swap resumes because they cannot bind the fenced source", async () => {
+		const backupPath = `${dbPath}.pre-fly1572-v1-pre-swap`;
+		await backupCommDb(dbPath, backupPath);
+		writeSwapIntent(dbPath, { backupPath, phase: "backed_up" });
+		chmodSync(dbPath, 0o444);
+		const before = sha256(dbPath);
+
+		await expect(migrateCommDbWithSwap(dbPath, { now: NOW })).rejects.toThrow(
+			/v1 pre-swap intent has no source binding/i,
+		);
+		expect(sha256(dbPath)).toBe(before);
+	});
+
+	it.each(["fenced", "backed_up", "sidecars_quarantined"] as const)(
+		"rejects an impossible migrated canonical in the pre-swap %s phase",
+		async (phase) => {
+			const phaseDir = join(dir, `impossible-migrated-${phase}`);
+			mkdirSync(phaseDir);
+			const path = join(phaseDir, "comm.db");
+			const legacy = new Database(path);
+			legacy.exec(LEGACY_SCHEMA);
+			legacy.close();
+			migrateLegacyDatabaseFile(path, { now: NOW });
+			const migratedHash = sha256(path);
+			const backupPath = `${path}.pre-fly1572-impossible-${phase}`;
+			await backupCommDb(path, backupPath);
+			writeSwapIntent(path, {
+				v: 2,
+				backupPath,
+				phase,
+				sourceBinding: { mainSha256: migratedHash, walSha256: null },
+				backupSha256: sha256(backupPath),
+				refsManifestSha256: sha256(`${backupPath}.refs-manifest.json`),
+			});
+
+			await expect(migrateCommDbWithSwap(path, { now: NOW })).rejects.toThrow(
+				new RegExp(
+					`pre-swap phase ${phase} cannot own a migrated canonical`,
+					"i",
+				),
+			);
+			expect(sha256(path)).toBe(migratedHash);
+		},
+	);
+
+	it("rejects a rename-landed canonical that does not match the bound staging image", async () => {
+		await expect(
+			migrateCommDbWithSwap(dbPath, {
+				now: NOW,
+				faultAfter: "staging_verified",
+			}),
+		).rejects.toThrow(/fault injection/);
+		const foreignPath = join(dir, "foreign-rename-landed.db");
+		const foreign = new Database(foreignPath);
+		foreign.exec(LEGACY_SCHEMA);
+		insertMessage(foreign, {
+			id: "foreign-rename-landed",
+			from_agent: "foreign-exec",
+			to_agent: "flywheel-eng-lead",
+			type: "question",
+		});
+		foreign.close();
+		migrateLegacyDatabaseFile(foreignPath, { now: NOW });
+		chmodSync(dbPath, 0o600);
+		copyFileSync(foreignPath, dbPath);
+		const before = sha256(dbPath);
+
+		await expect(migrateCommDbWithSwap(dbPath, { now: NOW })).rejects.toThrow(
+			/pre-swap phase staging_verified cannot own a migrated canonical/i,
+		);
+		expect(sha256(dbPath)).toBe(before);
+	});
+
+	it("refuses a sidecar quarantine rename when source and target both exist", async () => {
+		writeFileSync(`${dbPath}-wal`, "bound WAL");
+		await expect(
+			migrateCommDbWithSwap(dbPath, { now: NOW, faultAfter: "backed_up" }),
+		).rejects.toThrow(/fault injection/);
+		writeFileSync(`${dbPath}-wal.fly1572-quarantine`, "older evidence");
+		const before = sha256(dbPath);
+
+		await expect(migrateCommDbWithSwap(dbPath, { now: NOW })).rejects.toThrow(
+			/WAL source\/quarantine state is contradictory|source and quarantine both exist/i,
+		);
+		expect(sha256(dbPath)).toBe(before);
+		expect(readFileSync(`${dbPath}-wal.fly1572-quarantine`, "utf8")).toBe(
+			"older evidence",
+		);
+	});
+
+	it("resumes a backed-up phase when the bound WAL quarantine rename landed first", async () => {
+		writeFileSync(`${dbPath}-wal`, "bound WAL");
+		await expect(
+			migrateCommDbWithSwap(dbPath, { now: NOW, faultAfter: "backed_up" }),
+		).rejects.toThrow(/fault injection/);
+		renameSync(`${dbPath}-wal`, `${dbPath}-wal.fly1572-quarantine`);
+
+		await expect(
+			migrateCommDbWithSwap(dbPath, { now: NOW }),
+		).resolves.toMatchObject({ status: "migrated" });
+		expect(existsSync(`${dbPath}-wal.fly1572-quarantine`)).toBe(false);
+		const migrated = new Database(dbPath, { readonly: true });
+		try {
+			expect(
+				migrated
+					.prepare(
+						"SELECT schema_generation FROM mailbox_migration_meta WHERE singleton=1",
+					)
+					.get(),
+			).toEqual({ schema_generation: "mailbox_v1" });
+		} finally {
+			migrated.close();
+		}
+	});
+
+	it("preserves committed WAL-only rows across every durable forward phase", async () => {
+		const phases: MailboxSwapPhase[] = [
+			"fenced",
+			"backed_up",
+			"sidecars_quarantined",
+			"staging_verified",
+			"canonical_swapped",
+			"dir_fsynced",
+			"verified",
+			"done",
+		];
+		const seedPath = join(dir, "wal-authority-seed.db");
+		const seed = new Database(seedPath);
+		seed.pragma("journal_mode = WAL");
+		seed.pragma("wal_autocheckpoint = 0");
+		seed.exec(LEGACY_SCHEMA);
+		seed.pragma("wal_checkpoint(TRUNCATE)");
+		insertMessage(seed, {
+			id: "wal-only-authority",
+			from_agent: "exec-wal",
+			to_agent: "flywheel-eng-lead",
+			type: "question",
+		});
+		for (const phase of phases) {
+			const path = join(dir, `wal-authority-${phase}.db`);
+			copyFileSync(seedPath, path);
+			copyFileSync(`${seedPath}-wal`, `${path}-wal`);
+		}
+		seed.close();
+
+		for (const phase of phases) {
+			const path = join(dir, `wal-authority-${phase}.db`);
+			await expect(
+				migrateCommDbWithSwap(path, { now: NOW, faultAfter: phase }),
+			).rejects.toThrow(/fault injection/);
+			await expect(
+				migrateCommDbWithSwap(path, { now: NOW }),
+			).resolves.toMatchObject({ status: "migrated" });
+			const migrated = new Database(path, { readonly: true });
+			try {
+				expect(
+					migrated.prepare("SELECT id FROM mailbox").pluck().all(),
+				).toContain("wal-only-authority");
+			} finally {
+				migrated.close();
+			}
+		}
+	}, 30_000);
+
+	it.each([
+		"after_fresh_intent_durable",
+		"after_main_fenced",
+		"after_wal_fenced",
+	] as const)("resumes safely after the %s fence seam", async (faultAfter) => {
+		await expect(
+			migrateCommDbWithSwap(dbPath, { now: NOW, faultAfter }),
+		).rejects.toThrow(/fault injection/);
+
+		await expect(
+			migrateCommDbWithSwap(dbPath, { now: NOW }),
+		).resolves.toMatchObject({ status: "migrated" });
+	});
+
+	it.each([
+		"after_stale_intent_archived",
+		"after_stale_intent_dir_fsynced",
+	] as const)(
+		"resumes safely after the %s stale-archive seam",
+		async (faultAfter) => {
+			writeSwapIntent(dbPath);
+			await expect(
+				migrateCommDbWithSwap(dbPath, { now: NOW, faultAfter }),
+			).rejects.toThrow(/fault injection/);
+
+			await expect(
+				migrateCommDbWithSwap(dbPath, { now: NOW }),
+			).resolves.toMatchObject({ status: "migrated" });
+			expect(
+				readdirSync(dir).filter((name) =>
+					name.startsWith("comm.db.migration-swap-intent.json.stale-"),
+				),
+			).toHaveLength(1);
+		},
+	);
+
+	it("accepts an aborted v2 intent without inventing post-backup hash requirements", () => {
+		const intentPath = writeSwapIntent(dbPath, {
+			v: 2,
+			phase: "aborted",
+			sourceBinding: { mainSha256: sha256(dbPath), walSha256: null },
+		});
+		expect(inspectMailboxSwapIntent(intentPath)).toMatchObject({
+			v: 2,
+			phase: "aborted",
+		});
+	});
+
+	it("rejects rollback when a bound backup is replaced by a valid foreign bundle", async () => {
+		await migrateCommDbWithSwap(dbPath, { now: NOW });
+		const intentPath = `${dbPath}.migration-swap-intent.json`;
+		const intent = JSON.parse(readFileSync(intentPath, "utf8")) as {
+			backupPath: string;
+		};
+		const foreignPath = join(dir, "foreign-rollback.db");
+		const foreign = new Database(foreignPath);
+		foreign.exec(LEGACY_SCHEMA);
+		insertMessage(foreign, {
+			id: "foreign-rollback-row",
+			from_agent: "foreign-exec",
+			to_agent: "flywheel-eng-lead",
+			type: "question",
+		});
+		foreign.close();
+		copyFileSync(foreignPath, intent.backupPath);
+		const before = sha256(dbPath);
+
+		expect(() => rollbackMailboxMigration(dbPath)).toThrow(
+			/diverged from the fenced source\/artifacts/i,
+		);
+		expect(sha256(dbPath)).toBe(before);
+	});
+
+	it.each(["wal", "refs"] as const)(
+		"refuses an already-restored shortcut when new %s state exists",
+		async (extra) => {
+			await migrateCommDbWithSwap(dbPath, { now: NOW });
+			const intent = JSON.parse(
+				readFileSync(`${dbPath}.migration-swap-intent.json`, "utf8"),
+			) as { backupPath: string };
+			copyFileSync(intent.backupPath, dbPath);
+			if (extra === "wal") {
+				writeFileSync(`${dbPath}-wal`, "new committed evidence");
+			} else {
+				mkdirSync(join(dir, "refs"), { recursive: true });
+				writeFileSync(join(dir, "refs", "new.txt"), "new ref evidence");
+			}
+			const before = sha256(dbPath);
+
+			expect(() => rollbackMailboxMigration(dbPath)).toThrow(
+				/rollback refused/i,
+			);
+			expect(sha256(dbPath)).toBe(before);
+			expect(
+				existsSync(
+					extra === "wal" ? `${dbPath}-wal` : join(dir, "refs", "new.txt"),
+				),
+			).toBe(true);
+		},
+	);
+
+	it("rolls back safely from every pre-swap phase and cleans forward quarantines", async () => {
+		const phases: MailboxSwapPhase[] = [
+			"fenced",
+			"backed_up",
+			"sidecars_quarantined",
+			"staging_verified",
+		];
+		const seedPath = join(dir, "pre-swap-rollback-seed.db");
+		const seed = new Database(seedPath);
+		seed.pragma("journal_mode = WAL");
+		seed.pragma("wal_autocheckpoint = 0");
+		seed.exec(LEGACY_SCHEMA);
+		seed.pragma("wal_checkpoint(TRUNCATE)");
+		insertMessage(seed, {
+			id: "wal-only-rollback-authority",
+			from_agent: "exec-rollback",
+			to_agent: "flywheel-eng-lead",
+			type: "question",
+		});
+		for (const phase of phases) {
+			const path = join(dir, `pre-swap-rollback-${phase}.db`);
+			copyFileSync(seedPath, path);
+			copyFileSync(`${seedPath}-wal`, `${path}-wal`);
+		}
+		seed.close();
+
+		for (const phase of phases) {
+			const path = join(dir, `pre-swap-rollback-${phase}.db`);
+			await expect(
+				migrateCommDbWithSwap(path, { now: NOW, faultAfter: phase }),
+			).rejects.toThrow(/fault injection/);
+
+			expect(() => rollbackMailboxMigration(path)).not.toThrow();
+			expect(() => rollbackMailboxMigration(path)).not.toThrow();
+			const restored = new Database(path, { readonly: true });
+			try {
+				expect(
+					restored.prepare("SELECT id FROM messages").pluck().all(),
+				).toContain("wal-only-rollback-authority");
+			} finally {
+				restored.close();
+			}
+			expect(existsSync(`${path}-wal.fly1572-quarantine`)).toBe(false);
+			expect(existsSync(`${path}-shm.fly1572-quarantine`)).toBe(false);
+		}
+	}, 30_000);
+
 	it("repairs the canonical mode before returning already_migrated", async () => {
 		migrateLegacyDatabaseFile(dbPath, { now: NOW });
 		chmodSync(dbPath, 0o400);
@@ -862,11 +1639,11 @@ describe("FLY-1572 legacy mailbox migration", () => {
 			type: "question",
 		});
 		legacy.close();
+		writeFileSync(`${path}-wal`, "");
+		writeFileSync(`${path}-shm`, "");
 		await expect(
 			migrateCommDbWithSwap(path, { now: NOW, faultAfter: "backed_up" }),
 		).rejects.toThrow(/fault injection/);
-		writeFileSync(`${path}-wal`, "");
-		writeFileSync(`${path}-shm`, "");
 
 		await expect(
 			migrateCommDbWithSwap(path, { now: NOW }),

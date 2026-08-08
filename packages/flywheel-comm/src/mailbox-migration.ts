@@ -16,7 +16,14 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, relative } from "node:path";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+} from "node:path";
 import Database from "better-sqlite3";
 
 export { Database };
@@ -72,8 +79,15 @@ export type MailboxSwapPhase =
 	| "verified"
 	| "done";
 
-interface MailboxSwapIntent {
-	v: 1;
+export type MailboxSwapFault =
+	| MailboxSwapPhase
+	| "after_stale_intent_archived"
+	| "after_stale_intent_dir_fsynced"
+	| "after_fresh_intent_durable"
+	| "after_main_fenced"
+	| "after_wal_fenced";
+
+interface MailboxSwapIntentBase {
 	dbPath: string;
 	backupPath: string;
 	stagingPath: string;
@@ -84,6 +98,25 @@ interface MailboxSwapIntent {
 	sourceLeadInbox: number;
 	quarantinedSidecars: string[];
 }
+
+interface MailboxSwapIntentV1 extends MailboxSwapIntentBase {
+	v: 1;
+}
+
+interface MailboxSwapIntentV2 extends MailboxSwapIntentBase {
+	v: 2;
+	sourceBinding: {
+		mainSha256: string;
+		walSha256: string | null;
+	};
+	backupSha256?: string;
+	refsManifestSha256?: string;
+	stagingSha256?: string;
+}
+
+export type MailboxSwapIntent = MailboxSwapIntentV1 | MailboxSwapIntentV2;
+
+export type MailboxDbState = "legacy" | "migrated" | "mixed" | "unknown";
 
 export interface MailboxSwapResult extends MailboxMigrationResult {
 	backupPath: string;
@@ -126,6 +159,26 @@ interface MappedMessage {
 }
 
 const RETENTION_MS = 72 * 60 * 60_000;
+const SWAP_PHASES: MailboxSwapPhase[] = [
+	"fenced",
+	"backed_up",
+	"sidecars_quarantined",
+	"staging_verified",
+	"canonical_swapped",
+	"dir_fsynced",
+	"verified",
+	"done",
+];
+const SWAP_PHASE_VALUES = new Set<string>([...SWAP_PHASES, "aborted"]);
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+function swapPhaseAtLeast(
+	phase: MailboxSwapIntent["phase"],
+	minimum: MailboxSwapPhase,
+): boolean {
+	if (phase === "aborted") return false;
+	return SWAP_PHASES.indexOf(phase) >= SWAP_PHASES.indexOf(minimum);
+}
 
 function tableType(db: Database.Database, name: string): string | undefined {
 	return (
@@ -133,6 +186,43 @@ function tableType(db: Database.Database, name: string): string | undefined {
 			| { type?: string }
 			| undefined
 	)?.type;
+}
+
+export function classifyMailboxDatabase(dbPath: string): MailboxDbState {
+	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+	try {
+		const messages = tableType(db, "messages");
+		const leadInbox = tableType(db, "lead_inbox");
+		const hasLegacyTables = messages === "table" || leadInbox === "table";
+		if (tableType(db, "mailbox_migration_meta") === "table") {
+			const generation = db
+				.prepare(
+					"SELECT schema_generation FROM mailbox_migration_meta WHERE singleton=1",
+				)
+				.get() as { schema_generation?: string } | undefined;
+			if (generation?.schema_generation !== MAILBOX_SCHEMA_GENERATION) {
+				return "unknown";
+			}
+			return hasLegacyTables ? "mixed" : "migrated";
+		}
+		if (messages === "table" && leadInbox === "table") return "legacy";
+		return "unknown";
+	} finally {
+		db.close();
+	}
+}
+
+function classifyCanonicalMainImage(dbPath: string): MailboxDbState {
+	const scratch = join(dirname(dbPath), `.fly1572-classify-${randomUUID()}`);
+	const snapshot = join(scratch, basename(dbPath));
+	mkdirSync(scratch, { mode: 0o700 });
+	try {
+		copyFileSync(dbPath, snapshot);
+		chmodSync(snapshot, 0o600);
+		return classifyMailboxDatabase(snapshot);
+	} finally {
+		rmSync(scratch, { recursive: true, force: true });
+	}
 }
 
 function text(row: LegacyRow, key: string): string | undefined {
@@ -1207,10 +1297,431 @@ function cleanupBackupTemps(backupPath: string): void {
 	}
 }
 
-function readIntent(path: string): MailboxSwapIntent | undefined {
-	return existsSync(path)
-		? (JSON.parse(readFileSync(path, "utf8")) as MailboxSwapIntent)
-		: undefined;
+function invalidSwapIntent(path: string, reason: string): never {
+	throw new Error(`invalid mailbox swap intent: ${path}: ${reason}`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requiredIntentString(
+	intentPath: string,
+	value: unknown,
+	field: string,
+): string {
+	if (typeof value !== "string" || value.length === 0) {
+		invalidSwapIntent(intentPath, `${field} must be a non-empty string`);
+	}
+	return value;
+}
+
+function requiredIntentCount(
+	intentPath: string,
+	value: unknown,
+	field: string,
+): number {
+	if (!Number.isSafeInteger(value) || (value as number) < 0) {
+		invalidSwapIntent(intentPath, `${field} must be a non-negative integer`);
+	}
+	return value as number;
+}
+
+function validateSha256(
+	intentPath: string,
+	value: unknown,
+	field: string,
+): string {
+	if (typeof value !== "string" || !SHA256_PATTERN.test(value)) {
+		invalidSwapIntent(intentPath, `${field} must be a lowercase sha256`);
+	}
+	return value;
+}
+
+export function inspectMailboxSwapIntent(
+	intentPath: string,
+): MailboxSwapIntent | undefined {
+	if (!existsSync(intentPath)) return undefined;
+	let value: unknown;
+	try {
+		value = JSON.parse(readFileSync(intentPath, "utf8"));
+	} catch (error) {
+		invalidSwapIntent(
+			intentPath,
+			`JSON parse failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	if (!isRecord(value)) invalidSwapIntent(intentPath, "root must be an object");
+	if (value.v !== 1 && value.v !== 2) {
+		invalidSwapIntent(intentPath, "v must be 1 or 2");
+	}
+	const phase = requiredIntentString(intentPath, value.phase, "phase");
+	if (!SWAP_PHASE_VALUES.has(phase)) {
+		invalidSwapIntent(intentPath, `unknown phase ${phase}`);
+	}
+	const dbPath = requiredIntentString(intentPath, value.dbPath, "dbPath");
+	const backupPath = requiredIntentString(
+		intentPath,
+		value.backupPath,
+		"backupPath",
+	);
+	const stagingPath = requiredIntentString(
+		intentPath,
+		value.stagingPath,
+		"stagingPath",
+	);
+	for (const [field, path] of [
+		["dbPath", dbPath],
+		["backupPath", backupPath],
+		["stagingPath", stagingPath],
+	] as const) {
+		if (!isAbsolute(path)) {
+			invalidSwapIntent(intentPath, `${field} must be absolute`);
+		}
+	}
+	if (
+		resolve(dirname(backupPath)) !== resolve(dirname(dbPath)) ||
+		!backupPath.startsWith(`${dbPath}.pre-fly1572-`) ||
+		backupPath === `${dbPath}.pre-fly1572-`
+	) {
+		invalidSwapIntent(
+			intentPath,
+			"backupPath must be a pre-fly1572 neighbor of dbPath",
+		);
+	}
+	const stagingDirectory = dirname(stagingPath);
+	if (
+		resolve(dirname(stagingDirectory)) !== resolve(dirname(dbPath)) ||
+		!basename(stagingDirectory).startsWith(".fly1572-") ||
+		basename(stagingDirectory) === ".fly1572-" ||
+		basename(stagingPath) !== basename(dbPath)
+	) {
+		invalidSwapIntent(
+			intentPath,
+			"stagingPath must be inside a neighboring .fly1572-* directory",
+		);
+	}
+	const originalMode = requiredIntentCount(
+		intentPath,
+		value.originalMode,
+		"originalMode",
+	);
+	const createdAt = requiredIntentString(
+		intentPath,
+		value.createdAt,
+		"createdAt",
+	);
+	const sourceMessages = requiredIntentCount(
+		intentPath,
+		value.sourceMessages,
+		"sourceMessages",
+	);
+	const sourceLeadInbox = requiredIntentCount(
+		intentPath,
+		value.sourceLeadInbox,
+		"sourceLeadInbox",
+	);
+	if (!Array.isArray(value.quarantinedSidecars)) {
+		invalidSwapIntent(intentPath, "quarantinedSidecars must be an array");
+	}
+	const allowedQuarantines = new Set([
+		`${dbPath}-wal.fly1572-quarantine`,
+		`${dbPath}-shm.fly1572-quarantine`,
+	]);
+	const quarantinedSidecars = value.quarantinedSidecars.map(
+		(sidecar, index) => {
+			const path = requiredIntentString(
+				intentPath,
+				sidecar,
+				`quarantinedSidecars[${index}]`,
+			);
+			if (!allowedQuarantines.has(path)) {
+				invalidSwapIntent(
+					intentPath,
+					`quarantinedSidecars[${index}] is outside the canonical sidecar layout`,
+				);
+			}
+			return path;
+		},
+	);
+	const base: MailboxSwapIntentBase = {
+		dbPath,
+		backupPath,
+		stagingPath,
+		phase: phase as MailboxSwapIntent["phase"],
+		originalMode,
+		createdAt,
+		sourceMessages,
+		sourceLeadInbox,
+		quarantinedSidecars,
+	};
+	if (value.v === 1) return { ...base, v: 1 };
+	if (!isRecord(value.sourceBinding)) {
+		invalidSwapIntent(intentPath, "sourceBinding is required for v2");
+	}
+	const sourceBinding = {
+		mainSha256: validateSha256(
+			intentPath,
+			value.sourceBinding.mainSha256,
+			"sourceBinding.mainSha256",
+		),
+		walSha256:
+			value.sourceBinding.walSha256 === null
+				? null
+				: validateSha256(
+						intentPath,
+						value.sourceBinding.walSha256,
+						"sourceBinding.walSha256",
+					),
+	};
+	const intent: MailboxSwapIntentV2 = { ...base, v: 2, sourceBinding };
+	if (value.backupSha256 !== undefined) {
+		intent.backupSha256 = validateSha256(
+			intentPath,
+			value.backupSha256,
+			"backupSha256",
+		);
+	}
+	if (value.refsManifestSha256 !== undefined) {
+		intent.refsManifestSha256 = validateSha256(
+			intentPath,
+			value.refsManifestSha256,
+			"refsManifestSha256",
+		);
+	}
+	if (value.stagingSha256 !== undefined) {
+		intent.stagingSha256 = validateSha256(
+			intentPath,
+			value.stagingSha256,
+			"stagingSha256",
+		);
+	}
+	const typedPhase = phase as MailboxSwapIntent["phase"];
+	if (typedPhase !== "aborted" && swapPhaseAtLeast(typedPhase, "backed_up")) {
+		if (!intent.backupSha256 || !intent.refsManifestSha256) {
+			invalidSwapIntent(
+				intentPath,
+				"backupSha256 and refsManifestSha256 are required after backup",
+			);
+		}
+	}
+	if (
+		typedPhase !== "aborted" &&
+		swapPhaseAtLeast(typedPhase, "staging_verified")
+	) {
+		if (!intent.stagingSha256) {
+			invalidSwapIntent(
+				intentPath,
+				"stagingSha256 is required after staging verification",
+			);
+		}
+	}
+	return intent;
+}
+
+function staleSwapIntent(intentPath: string, detail: string): never {
+	throw new Error(
+		`mailbox swap intent is stale: ${detail}; canonical or artifacts diverged from the fenced source/artifacts; resuming would replay an old backup/staging over newer data; archive ${intentPath} (and any .fly1572-* staging/backup) explicitly before retrying`,
+	);
+}
+
+function assertBoundHash(
+	intentPath: string,
+	path: string,
+	expected: string,
+	label: string,
+): void {
+	if (!existsSync(path) || sha256File(path) !== expected) {
+		staleSwapIntent(intentPath, `${label} hash mismatch at ${path}`);
+	}
+}
+
+function assertNoWriteBits(intentPath: string, path: string): void {
+	if (!existsSync(path)) return;
+	const mode = statSync(path).mode & 0o777;
+	if ((mode & 0o222) !== 0) {
+		staleSwapIntent(
+			intentPath,
+			`${path} regained write permission (mode ${mode.toString(8)}) after fencing`,
+		);
+	}
+}
+
+function verifyBoundBackup(
+	intentPath: string,
+	intent: MailboxSwapIntentV2,
+): void {
+	if (!intent.backupSha256 || !intent.refsManifestSha256) {
+		staleSwapIntent(intentPath, "backup artifacts are not bound");
+	}
+	assertBoundHash(intentPath, intent.backupPath, intent.backupSha256, "backup");
+	assertBoundHash(
+		intentPath,
+		`${intent.backupPath}.refs-manifest.json`,
+		intent.refsManifestSha256,
+		"refs manifest",
+	);
+	try {
+		verifyRefsBackup(intent.backupPath);
+	} catch (error) {
+		staleSwapIntent(
+			intentPath,
+			`refs backup verification failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+function verifyLegacyPreSwapResume(
+	dbPath: string,
+	intentPath: string,
+	intent: MailboxSwapIntent,
+): { walAlreadyQuarantined: boolean } {
+	if (intent.v !== 2) {
+		staleSwapIntent(intentPath, "a v1 pre-swap intent has no source binding");
+	}
+	assertBoundHash(
+		intentPath,
+		dbPath,
+		intent.sourceBinding.mainSha256,
+		"canonical database",
+	);
+	const walPath = `${dbPath}-wal`;
+	const walQuarantine = `${walPath}.fly1572-quarantine`;
+	const expectedWal = intent.sourceBinding.walSha256;
+	let walAlreadyQuarantined = false;
+	if (intent.phase === "fenced") {
+		if (existsSync(walQuarantine)) {
+			staleSwapIntent(
+				intentPath,
+				"WAL quarantine exists while phase is fenced",
+			);
+		}
+		if (expectedWal === null) {
+			if (existsSync(walPath)) {
+				staleSwapIntent(intentPath, "an unbound WAL appeared after fencing");
+			}
+		} else {
+			assertBoundHash(intentPath, walPath, expectedWal, "canonical WAL");
+		}
+	} else if (intent.phase === "backed_up") {
+		if (expectedWal === null) {
+			if (existsSync(walPath) || existsSync(walQuarantine)) {
+				staleSwapIntent(intentPath, "an unbound WAL appeared after backup");
+			}
+		} else if (existsSync(walPath) && !existsSync(walQuarantine)) {
+			assertBoundHash(intentPath, walPath, expectedWal, "canonical WAL");
+		} else if (!existsSync(walPath) && existsSync(walQuarantine)) {
+			assertBoundHash(
+				intentPath,
+				walQuarantine,
+				expectedWal,
+				"quarantined WAL",
+			);
+			walAlreadyQuarantined = true;
+		} else {
+			staleSwapIntent(
+				intentPath,
+				"WAL source/quarantine state is contradictory after backup",
+			);
+		}
+	} else {
+		if (existsSync(walPath)) {
+			staleSwapIntent(intentPath, "a canonical WAL appeared after quarantine");
+		}
+		if (expectedWal === null) {
+			if (existsSync(walQuarantine)) {
+				staleSwapIntent(intentPath, "an unbound WAL quarantine exists");
+			}
+		} else {
+			assertBoundHash(
+				intentPath,
+				walQuarantine,
+				expectedWal,
+				"quarantined WAL",
+			);
+			walAlreadyQuarantined = true;
+		}
+	}
+	if (intent.phase !== "fenced") {
+		assertNoWriteBits(intentPath, dbPath);
+		assertNoWriteBits(intentPath, walPath);
+	}
+	if (swapPhaseAtLeast(intent.phase, "backed_up")) {
+		verifyBoundBackup(intentPath, intent);
+	}
+	if (intent.phase === "staging_verified") {
+		assertBoundHash(
+			intentPath,
+			intent.stagingPath,
+			intent.stagingSha256 as string,
+			"staging database",
+		);
+	}
+	return { walAlreadyQuarantined };
+}
+
+function assertNoUnboundBackupAdoption(
+	intentPath: string,
+	intent: MailboxSwapIntent,
+): void {
+	if (
+		intent.phase === "fenced" &&
+		existsSync(intent.backupPath) &&
+		(intent.v !== 2 || !intent.backupSha256)
+	) {
+		staleSwapIntent(
+			intentPath,
+			`unbound backup already exists at ${intent.backupPath}`,
+		);
+	}
+}
+
+function afterSwapFault(
+	faultAfter: MailboxSwapFault | undefined,
+	point: MailboxSwapFault,
+): void {
+	if (faultAfter === point) {
+		throw new Error(`FLY-1572 swap fault injection after ${point}`);
+	}
+}
+
+function archiveConclusiveStaleIntent(
+	dbPath: string,
+	intentPath: string,
+	intent: MailboxSwapIntent,
+	faultAfter: MailboxSwapFault | undefined,
+): void {
+	const contradictory = [
+		intent.stagingPath,
+		...intent.quarantinedSidecars,
+	].find((path) => existsSync(path));
+	if (contradictory) {
+		throw new Error(
+			`stale mailbox swap intent has contradictory artifact ${contradictory}; refusing automatic recovery`,
+		);
+	}
+	const archivePath = `${intentPath}.stale-${new Date()
+		.toISOString()
+		.replaceAll(":", "-")}-${randomUUID()}`;
+	if (existsSync(archivePath)) {
+		throw new Error(
+			`stale mailbox intent archive already exists: ${archivePath}`,
+		);
+	}
+	renameSync(intentPath, archivePath);
+	afterSwapFault(faultAfter, "after_stale_intent_archived");
+	fsyncDirectory(dirname(intentPath));
+	afterSwapFault(faultAfter, "after_stale_intent_dir_fsynced");
+	console.error(
+		canonicalJsonString({
+			event: "mailbox_swap_intent_reconciled",
+			reason: "stale_post_swap_intent",
+			dbPath,
+			oldPhase: intent.phase,
+			oldCreatedAt: intent.createdAt,
+			archivePath,
+		}),
+	);
 }
 
 function countLegacyRows(dbPath: string): {
@@ -1236,10 +1747,13 @@ function countLegacyRows(dbPath: string): {
 	}
 }
 
-function verifyMigratedDatabase(dbPath: string): MailboxMigrationResult {
+export function verifyMigratedDatabase(dbPath: string): MailboxMigrationResult {
 	verifySqlite(dbPath);
 	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 	try {
+		if (tableType(db, "mailbox_migration_meta") !== "table") {
+			throw new Error(`mailbox migration marker missing: ${dbPath}`);
+		}
 		const meta = db
 			.prepare("SELECT * FROM mailbox_migration_meta WHERE singleton=1")
 			.get() as
@@ -1272,42 +1786,99 @@ export function ensureCanonicalDbWritable(dbPath: string): boolean {
 }
 
 function afterSwapPhase(
-	faultAfter: MailboxSwapPhase | undefined,
+	faultAfter: MailboxSwapFault | undefined,
 	phase: MailboxSwapPhase,
 ): void {
-	if (faultAfter === phase) {
-		throw new Error(`FLY-1572 swap fault injection after ${phase}`);
-	}
+	afterSwapFault(faultAfter, phase);
 }
 
 export async function migrateCommDbWithSwap(
 	dbPath: string,
-	options: { now?: string; faultAfter?: MailboxSwapPhase } = {},
+	options: { now?: string; faultAfter?: MailboxSwapFault } = {},
 ): Promise<MailboxSwapResult> {
 	const now = options.now ?? new Date().toISOString();
 	const intentPath = `${dbPath}.migration-swap-intent.json`;
-	let intent = readIntent(intentPath);
-	if (!intent) {
-		const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-		try {
-			if (tableType(db, "mailbox_migration_meta") === "table") {
-				ensureCanonicalDbWritable(dbPath);
-				const migrated = verifyMigratedDatabase(dbPath);
-				return {
-					...migrated,
-					status: "already_migrated",
-					backupPath: "",
+	let intent = inspectMailboxSwapIntent(intentPath);
+	let renameAlreadyLanded = false;
+	if (intent && resolve(intent.dbPath) !== resolve(dbPath)) {
+		throw new Error(
+			`mailbox migration intent belongs to a different database: ${intent.dbPath} (requested ${dbPath})`,
+		);
+	}
+	if (intent?.phase === "aborted") {
+		throw new Error(
+			`mailbox migration was aborted; archive ${intentPath} before retrying`,
+		);
+	}
+	if (intent) {
+		const postSwap = swapPhaseAtLeast(intent.phase, "canonical_swapped");
+		const reality = postSwap
+			? classifyMailboxDatabase(dbPath)
+			: classifyCanonicalMainImage(dbPath);
+		if (postSwap) {
+			if (reality === "legacy") {
+				archiveConclusiveStaleIntent(
+					dbPath,
 					intentPath,
-				};
+					intent,
+					options.faultAfter,
+				);
+				intent = undefined;
+			} else if (reality !== "migrated") {
+				staleSwapIntent(
+					intentPath,
+					`post-swap phase ${intent.phase} contradicts canonical state ${reality}`,
+				);
 			}
-		} finally {
-			db.close();
+		} else if (reality === "legacy") {
+			verifyLegacyPreSwapResume(dbPath, intentPath, intent);
+			if (intent.phase === "fenced") {
+				chmodSync(dbPath, 0o444);
+				if (existsSync(`${dbPath}-wal`)) chmodSync(`${dbPath}-wal`, 0o444);
+			}
+		} else if (reality === "migrated") {
+			if (
+				intent.v !== 2 ||
+				intent.phase !== "staging_verified" ||
+				!intent.stagingSha256 ||
+				sha256File(dbPath) !== intent.stagingSha256
+			) {
+				staleSwapIntent(
+					intentPath,
+					`pre-swap phase ${intent.phase} cannot own a migrated canonical`,
+				);
+			}
+			verifyBoundBackup(intentPath, intent);
+			renameAlreadyLanded = true;
+		} else {
+			staleSwapIntent(
+				intentPath,
+				`pre-swap phase ${intent.phase} contradicts canonical state ${reality}`,
+			);
+		}
+	}
+	if (!intent) {
+		const reality = classifyMailboxDatabase(dbPath);
+		if (reality === "migrated") {
+			ensureCanonicalDbWritable(dbPath);
+			const migrated = verifyMigratedDatabase(dbPath);
+			return {
+				...migrated,
+				status: "already_migrated",
+				backupPath: "",
+				intentPath,
+			};
+		}
+		if (reality !== "legacy") {
+			throw new Error(
+				`legacy CommDB has unsupported schema state ${reality}: ${dbPath}`,
+			);
 		}
 		assertMigrationDiskCapacity(dbPath);
 		const counts = countLegacyRows(dbPath);
 		const stagingDir = join(dirname(dbPath), `.fly1572-${randomUUID()}`);
 		intent = {
-			v: 1,
+			v: 2,
 			dbPath,
 			backupPath: `${dbPath}.pre-fly1572-${now.replaceAll(":", "-")}`,
 			stagingPath: join(stagingDir, basename(dbPath)),
@@ -1317,43 +1888,43 @@ export async function migrateCommDbWithSwap(
 			sourceMessages: counts.messages,
 			sourceLeadInbox: counts.leadInbox,
 			quarantinedSidecars: [],
+			sourceBinding: {
+				mainSha256: sha256File(dbPath),
+				walSha256: existsSync(`${dbPath}-wal`)
+					? sha256File(`${dbPath}-wal`)
+					: null,
+			},
 		};
 		durableJson(intentPath, intent);
-		for (const path of [dbPath, `${dbPath}-wal`]) {
-			if (existsSync(path)) chmodSync(path, 0o444);
-		}
+		afterSwapFault(options.faultAfter, "after_fresh_intent_durable");
+		chmodSync(dbPath, 0o444);
+		afterSwapFault(options.faultAfter, "after_main_fenced");
+		if (existsSync(`${dbPath}-wal`)) chmodSync(`${dbPath}-wal`, 0o444);
+		afterSwapFault(options.faultAfter, "after_wal_fenced");
 		durableJson(intentPath, intent);
 		afterSwapPhase(options.faultAfter, "fenced");
 	}
-	if (intent.phase === "aborted") {
-		throw new Error(
-			`mailbox migration was aborted; archive ${intentPath} before retrying`,
-		);
-	}
-
-	const phases: MailboxSwapPhase[] = [
-		"fenced",
-		"backed_up",
-		"sidecars_quarantined",
-		"staging_verified",
-		"canonical_swapped",
-		"dir_fsynced",
-		"verified",
-		"done",
-	];
 	const reached = (phase: MailboxSwapPhase): boolean =>
-		phases.indexOf((intent as MailboxSwapIntent).phase as MailboxSwapPhase) >=
-		phases.indexOf(phase);
-	const advance = (phase: MailboxSwapPhase): void => {
-		intent = { ...(intent as MailboxSwapIntent), phase };
+		SWAP_PHASES.indexOf(
+			(intent as MailboxSwapIntent).phase as MailboxSwapPhase,
+		) >= SWAP_PHASES.indexOf(phase);
+	const advance = (
+		phase: MailboxSwapPhase,
+		updates: Partial<MailboxSwapIntentV2> = {},
+	): void => {
+		const current = intent as MailboxSwapIntent;
+		intent =
+			current.v === 2
+				? { ...current, ...updates, phase }
+				: { ...current, phase };
 		durableJson(intentPath, intent);
 		afterSwapPhase(options.faultAfter, phase);
 	};
 	if (!reached("canonical_swapped")) {
-		try {
+		if (renameAlreadyLanded) {
 			verifyMigratedDatabase(dbPath);
 			advance("canonical_swapped");
-		} catch {
+		} else {
 			for (const path of [dbPath, `${dbPath}-wal`]) {
 				if (existsSync(path)) chmodSync(path, 0o444);
 			}
@@ -1361,13 +1932,23 @@ export async function migrateCommDbWithSwap(
 	}
 
 	if (!reached("backed_up")) {
+		assertNoUnboundBackupAdoption(intentPath, intent);
 		await backupCommDb(dbPath, intent.backupPath);
-		advance("backed_up");
+		advance("backed_up", {
+			backupSha256: sha256File(intent.backupPath),
+			refsManifestSha256: sha256File(`${intent.backupPath}.refs-manifest.json`),
+		});
 	}
 	if (!reached("sidecars_quarantined")) {
 		const quarantined = [...intent.quarantinedSidecars];
 		for (const sidecar of [`${dbPath}-wal`, `${dbPath}-shm`]) {
 			const target = `${sidecar}.fly1572-quarantine`;
+			if (existsSync(sidecar) && existsSync(target)) {
+				staleSwapIntent(
+					intentPath,
+					`sidecar source and quarantine both exist for ${sidecar}`,
+				);
+			}
 			if (existsSync(sidecar)) renameSync(sidecar, target);
 			if (existsSync(target) && !quarantined.includes(target)) {
 				quarantined.push(target);
@@ -1386,11 +1967,19 @@ export async function migrateCommDbWithSwap(
 				"mailbox staging path must be on the canonical filesystem",
 			);
 		}
+		if (existsSync(intent.stagingPath)) {
+			staleSwapIntent(
+				intentPath,
+				`unbound staging database already exists at ${intent.stagingPath}`,
+			);
+		}
 		copyFileSync(intent.backupPath, intent.stagingPath);
 		chmodSync(intent.stagingPath, 0o600);
 		migrateLegacyDatabaseFile(intent.stagingPath, { now });
 		verifyMigratedDatabase(intent.stagingPath);
-		advance("staging_verified");
+		advance("staging_verified", {
+			stagingSha256: sha256File(intent.stagingPath),
+		});
 	}
 	if (!reached("canonical_swapped")) {
 		renameSync(intent.stagingPath, dbPath);
@@ -1427,15 +2016,51 @@ export function rollbackMailboxMigration(
 	options: { faultAfter?: MailboxRestorePhase } = {},
 ): MailboxSwapResult {
 	const intentPath = `${dbPath}.migration-swap-intent.json`;
-	let intent = readIntent(intentPath);
+	let intent = inspectMailboxSwapIntent(intentPath);
 	if (!intent)
 		throw new Error(`mailbox migration intent not found: ${intentPath}`);
+	const initialIntent = intent;
+	if (resolve(intent.dbPath) !== resolve(dbPath)) {
+		throw new Error(
+			`mailbox migration intent belongs to a different database: ${intent.dbPath} (requested ${dbPath})`,
+		);
+	}
+	const rollbackRefused = (detail: string): never => {
+		throw new Error(
+			`rollback refused: canonical ${dbPath} does not match the migration intent (${detail}); resolve manually`,
+		);
+	};
+	const canonicalRefs = join(dirname(dbPath), "refs");
+	const refsMatchBackup = (): boolean => {
+		try {
+			verifyRefsTree(canonicalRefs, refsManifest(initialIntent.backupPath));
+			return true;
+		} catch {
+			return false;
+		}
+	};
 	if (!existsSync(intent.backupPath)) {
 		if (intent.phase === "fenced") {
+			if (intent.v === 2) {
+				if (classifyCanonicalMainImage(dbPath) !== "legacy") {
+					rollbackRefused("fenced canonical is not legacy");
+				}
+				verifyLegacyPreSwapResume(dbPath, intentPath, intent);
+			}
 			chmodSync(dbPath, intent.originalMode);
 			ensureCanonicalDbWritable(dbPath);
 			intent = { ...intent, phase: "aborted" };
 			durableJson(intentPath, intent);
+			return {
+				status: "already_migrated",
+				sourceMessages: intent.sourceMessages,
+				sourceLeadInbox: intent.sourceLeadInbox,
+				sourceTrueUnread: 0,
+				backupPath: intent.backupPath,
+				intentPath,
+			};
+		}
+		if (intent.phase === "aborted") {
 			return {
 				status: "already_migrated",
 				sourceMessages: intent.sourceMessages,
@@ -1451,6 +2076,46 @@ export function rollbackMailboxMigration(
 	}
 	verifySqlite(intent.backupPath);
 	verifyRefsBackup(intent.backupPath);
+	if (intent.v === 2) verifyBoundBackup(intentPath, intent);
+	const preSwap = !swapPhaseAtLeast(intent.phase, "canonical_swapped");
+	const walHasCommittedBytes =
+		existsSync(`${dbPath}-wal`) && statSync(`${dbPath}-wal`).size > 0;
+	const restoredBytesAndRefs =
+		!walHasCommittedBytes &&
+		sha256File(dbPath) === sha256File(intent.backupPath) &&
+		refsMatchBackup();
+	const reality = restoredBytesAndRefs
+		? "legacy"
+		: preSwap
+			? classifyCanonicalMainImage(dbPath)
+			: classifyMailboxDatabase(dbPath);
+	const alreadyRestored = reality === "legacy" && restoredBytesAndRefs;
+	if (intent.phase === "aborted") {
+		if (!alreadyRestored) rollbackRefused("aborted intent has diverged");
+		return {
+			status: "already_migrated",
+			sourceMessages: intent.sourceMessages,
+			sourceLeadInbox: intent.sourceLeadInbox,
+			sourceTrueUnread: 0,
+			backupPath: intent.backupPath,
+			intentPath,
+		};
+	}
+	if (alreadyRestored) {
+		// A previous restore rename landed before its restore-intent phase.
+	} else if (reality === "migrated") {
+		// Explicit rollback of a canonical that is still on the migrated side.
+	} else if (reality === "legacy" && preSwap && intent.v === 2) {
+		verifyLegacyPreSwapResume(dbPath, intentPath, intent);
+		assertNoUnboundBackupAdoption(intentPath, intent);
+		if (!refsMatchBackup()) {
+			rollbackRefused("canonical refs differ from the bound backup manifest");
+		}
+	} else {
+		rollbackRefused(
+			`phase ${intent.phase} contradicts canonical state ${reality}`,
+		);
+	}
 	const restoreIntentPath = `${dbPath}.restore-intent.json`;
 	let restoreIntent = existsSync(restoreIntentPath)
 		? (JSON.parse(
@@ -1499,7 +2164,6 @@ export function rollbackMailboxMigration(
 		durableJson(restoreIntentPath, restoreIntent);
 		afterRestorePhase(options.faultAfter, phase);
 	};
-	const canonicalRefs = join(dirname(dbPath), "refs");
 	if (!restoreReached("refs_swapped")) {
 		try {
 			verifyRefsTree(canonicalRefs, refsManifest(intent.backupPath));
@@ -1576,6 +2240,7 @@ export function rollbackMailboxMigration(
 	for (const path of [
 		restoreIntent.refsQuarantine,
 		...(restoreIntent.quarantinedSidecars ?? []),
+		...intent.quarantinedSidecars,
 	]) {
 		rmSync(path, { recursive: true, force: true });
 	}

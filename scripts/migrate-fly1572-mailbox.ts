@@ -5,55 +5,12 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { CommDB } from "../packages/flywheel-comm/src/db.js";
 import {
-	Database,
+	classifyMailboxDatabase,
 	ensureCanonicalDbWritable,
+	inspectMailboxSwapIntent,
 	migrateCommDbWithSwap,
 	rollbackMailboxMigration,
 } from "../packages/flywheel-comm/src/mailbox-migration.js";
-
-type DbState = "legacy" | "migrated" | "mixed" | "unknown";
-
-function classify(path: string): DbState {
-	const db = new Database(path, { readonly: true, fileMustExist: true });
-	try {
-		const objects = new Map(
-			(
-				db
-					.prepare(
-						"SELECT name, type FROM sqlite_master WHERE name IN ('messages','lead_inbox','mailbox_migration_meta')",
-					)
-					.all() as Array<{ name: string; type: string }>
-			).map((row) => [row.name, row.type]),
-		);
-		const hasLegacyTables =
-			objects.get("messages") === "table" ||
-			objects.get("lead_inbox") === "table";
-		if (objects.get("mailbox_migration_meta") === "table") {
-			const generation = db
-				.prepare(
-					"SELECT schema_generation FROM mailbox_migration_meta WHERE singleton=1",
-				)
-				.get() as { schema_generation?: string } | undefined;
-			if (generation?.schema_generation !== "mailbox_v1") return "unknown";
-			// FLY-1646: a completed cutover DROPS the legacy tables, so finding
-			// them next to a mailbox_v1 marker proves the swap never finished.
-			// Reporting that as "migrated" made `main()` silently `continue` past
-			// the shard — production `growth` was left in exactly this shape by
-			// the aborted rollout and would have been skipped on redeploy while
-			// still serving from stale legacy tables.
-			return hasLegacyTables ? "mixed" : "migrated";
-		}
-		if (
-			objects.get("messages") === "table" &&
-			objects.get("lead_inbox") === "table"
-		) {
-			return "legacy";
-		}
-		return "unknown";
-	} finally {
-		db.close();
-	}
-}
 
 function explicitDbs(argv: string[]): string[] {
 	const paths: string[] = [];
@@ -137,7 +94,26 @@ async function main(): Promise<void> {
 		throw new Error("no legacy or migrated CommDB files found");
 	assertUniqueFiles(dbs);
 	for (const path of dbs) assertCanonicalSidecarsOwnerWritable(path);
-	const inventory = dbs.map((path) => ({ path, state: classify(path) }));
+	const inventory = dbs.map((path) => {
+		const intentPath = `${path}.migration-swap-intent.json`;
+		if (!existsSync(intentPath)) {
+			return { path, state: classifyMailboxDatabase(path) };
+		}
+		try {
+			const intent = inspectMailboxSwapIntent(intentPath);
+			return {
+				path,
+				state: classifyMailboxDatabase(path),
+				intent: { phase: intent?.phase ?? "unreadable" },
+			};
+		} catch {
+			return {
+				path,
+				state: classifyMailboxDatabase(path),
+				intent: { phase: "unreadable" },
+			};
+		}
+	});
 	console.log(JSON.stringify({ inventory }, null, 2));
 	if (args.includes("--inventory")) return;
 	if (!args.includes("--confirm-quiesced")) {

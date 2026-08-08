@@ -1,0 +1,12 @@
+flowchart TD
+    A["8月6日 迁移窗<br/>comm/flywheel 完整迁移成功<br/>便签写下 phase=done"] --> B["窗口整体判 FAILED"]
+    B --> C["文件级恢复:把旧数据快照拷回<br/>⚠️ 便签留在原地没清掉"]
+    C --> D["8月7日 run4 重跑"]
+    D --> E{"工具读到便签:<br/>phase=done"}
+    E -->|"信了便签"| F["跳过备份、跳过迁移、<br/>跳过换库 —— 什么都不做"]
+    F --> G["最后一步检查:<br/>库里找不到迁移完成标记"]
+    G --> H["💥 no such table:<br/>mailbox_migration_meta<br/>整窗 FAILED 自动回滚"]
+    I["root 库:没有残留便签"] -->|"全新迁移"| J["✅ 迁移成功"]
+    style H fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style J fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style C fill:#fff4e5,stroke:#ff9500,stroke-width:2px

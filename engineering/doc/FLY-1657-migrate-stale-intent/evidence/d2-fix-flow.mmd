@@ -1,0 +1,21 @@
+flowchart TD
+    S["开始处理一个库"] --> R{"有便签<br/>(swap-intent)吗?"}
+    R -->|没有| N["✅ 正常全新迁移<br/>(新便签带内容指纹)"]
+    R -->|有| V{"便签格式/路径<br/>严格校验通过?"}
+    V -->|不通过| X1["🛑 大声报错停下"]
+    V -->|通过| P{"便签说换库<br/>已完成过?"}
+    P -->|是| M{"库现在真的是<br/>已迁移状态?"}
+    M -->|是| OK["✅ 正常收尾"]
+    M -->|"否:还是旧格式"| E{"证据链闭合?<br/>① 暂存副本已消费<br/>② 隔离区无残留"}
+    E -->|全满足| H["🔧 自愈:归档旧便签<br/>从当前数据全新迁移"]
+    E -->|有疑点| X2["🛑 大声报错停下"]
+    P -->|否| B{"内容指纹全链核对:<br/>库本体+流水账+备份+暂存副本<br/>全部对得上?"}
+    B -->|全对| C["✅ 断点续跑"]
+    B -->|任何一环不对| X3["🛑 大声报错停下<br/>(防止旧备份盖掉新数据)"]
+    style H fill:#e8f0fe,stroke:#007aff,stroke-width:2px
+    style X1 fill:#ffebe9,stroke:#ff3b30
+    style X2 fill:#ffebe9,stroke:#ff3b30
+    style X3 fill:#ffebe9,stroke:#ff3b30
+    style N fill:#e8f8ee,stroke:#34c759
+    style OK fill:#e8f8ee,stroke:#34c759
+    style C fill:#e8f8ee,stroke:#34c759

@@ -1,0 +1,17 @@
+flowchart LR
+    subgraph INTENT["便签 v2 (swap-intent JSON)"]
+        SB["sourceBinding<br/>库本体指纹 + 流水账指纹"]
+        BK["backupSha256<br/>+ refsManifestSha256"]
+        ST["stagingSha256"]
+        PH["phase 进度<br/>(fenced → … → done)"]
+    end
+    SB -.->|钉死| DB["正式库 comm.db<br/>+ 它的 WAL 流水账"]
+    BK -.->|钉死| BAK["备份文件<br/>comm.db.pre-fly1572-*"]
+    ST -.->|钉死| STG["暂存副本<br/>.fly1572-*/comm.db"]
+    DB ==>|备份| BAK
+    BAK ==>|拷贝+迁移| STG
+    STG ==>|原子换入| DB
+    style INTENT fill:#f5f5f7,stroke:#86868b
+    style DB fill:#e8f0fe,stroke:#007aff,stroke-width:2px
+    style BAK fill:#fff4e5,stroke:#ff9500
+    style STG fill:#f3e8fd,stroke:#af52de

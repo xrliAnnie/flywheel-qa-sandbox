@@ -36,6 +36,46 @@ jq -e --arg root "$FLYWHEEL_HOME" '
 		(startswith($root + "/db-backups/") | not))
 ' <<<"$OUTPUT" >/dev/null
 
+# FLY-1657: inventory exposes durable swap-intent state without trusting a
+# second schema implementation. A malformed intent remains visible as
+# "unreadable" so run5 cannot silently overlook it.
+COMM_INTENT="$COMM_DB.migration-swap-intent.json"
+DB_PATH="$COMM_DB" INTENT_PATH="$COMM_INTENT" pnpm exec tsx -e '
+	import { writeFileSync } from "node:fs";
+	import { dirname, join } from "node:path";
+	const dbPath = process.env.DB_PATH!;
+	writeFileSync(process.env.INTENT_PATH!, JSON.stringify({
+		v: 1,
+		dbPath,
+		backupPath: `${dbPath}.pre-fly1572-old`,
+		stagingPath: join(dirname(dbPath), ".fly1572-old", "comm.db"),
+		phase: "done",
+		originalMode: 384,
+		createdAt: "2026-08-04T00:00:00.000Z",
+		sourceMessages: 0,
+		sourceLeadInbox: 0,
+		quarantinedSidecars: [],
+	}));
+'
+INTENT_OUTPUT="$({
+	cd "$REPO_ROOT"
+	FLYWHEEL_HOME="$FLYWHEEL_HOME" FLYWHEEL_COMM_DB="$COMM_DB" \
+		pnpm exec tsx scripts/migrate-fly1572-mailbox.ts --inventory
+})"
+jq -e --arg path "$COMM_DB" \
+	'.inventory[] | select(.path == $path and .intent.phase == "done")' \
+	<<<"$INTENT_OUTPUT" >/dev/null
+printf '{' >"$COMM_INTENT"
+UNREADABLE_OUTPUT="$({
+	cd "$REPO_ROOT"
+	FLYWHEEL_HOME="$FLYWHEEL_HOME" FLYWHEEL_COMM_DB="$COMM_DB" \
+		pnpm exec tsx scripts/migrate-fly1572-mailbox.ts --inventory
+})"
+jq -e --arg path "$COMM_DB" \
+	'.inventory[] | select(.path == $path and .intent.phase == "unreadable")' \
+	<<<"$UNREADABLE_OUTPUT" >/dev/null
+rm -f "$COMM_INTENT"
+
 # FLY-1646: a half-migrated shard (legacy tables AND mailbox tables coexisting)
 # must be reported as a distinct `mixed` state and must never be silently
 # skipped as "already migrated". Production `growth` was left in exactly this
@@ -177,6 +217,25 @@ FORENSIC_SHM="$MIGRATED_DB-shm.migrated-r2-failed-20260806"
 : > "$FORENSIC_SHM"
 chmod 0444 "$FORENSIC_SHM"
 
+MIGRATED_INTENT="$MIGRATED_DB.migration-swap-intent.json"
+DB_PATH="$MIGRATED_DB" INTENT_PATH="$MIGRATED_INTENT" pnpm exec tsx -e '
+	import { writeFileSync } from "node:fs";
+	import { dirname, join } from "node:path";
+	const dbPath = process.env.DB_PATH!;
+	writeFileSync(process.env.INTENT_PATH!, JSON.stringify({
+		v: 1,
+		dbPath,
+		backupPath: `${dbPath}.pre-fly1572-old`,
+		stagingPath: join(dirname(dbPath), ".fly1572-old", "comm.db"),
+		phase: "done",
+		originalMode: 384,
+		createdAt: "2026-08-04T00:00:00.000Z",
+		sourceMessages: 0,
+		sourceLeadInbox: 0,
+		quarantinedSidecars: [],
+	}));
+'
+
 MIGRATED_RC=0
 MIGRATED_OUTPUT="$({
 	cd "$REPO_ROOT"
@@ -184,6 +243,9 @@ MIGRATED_OUTPUT="$({
 		--confirm-quiesced --db "$MIGRATED_DB" 2>&1
 })" || MIGRATED_RC=$?
 test "$MIGRATED_RC" -eq 0
+jq -e --arg path "$MIGRATED_DB" \
+	'.inventory[] | select(.path == $path and .state == "migrated" and .intent.phase == "done")' \
+	<<<"$MIGRATED_OUTPUT" >/dev/null
 if stat -f %Lp "$MIGRATED_DB" >/dev/null 2>&1; then
 	test "$(stat -f %Lp "$MIGRATED_DB")" = "600"
 	test "$(stat -f %Lp "$FORENSIC_SHM")" = "444"
