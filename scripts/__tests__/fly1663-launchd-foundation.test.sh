@@ -33,6 +33,25 @@ assert_sandbox_write_path() {
 # shellcheck source=../lib/lead-address.sh
 source "$REPO_ROOT/scripts/lib/lead-address.sh"
 
+# GNU stat accepts -f as a filesystem-report flag and exits zero, so a
+# Darwin-first fallback silently returns prose instead of uid/mode on Linux.
+stat() {
+  case "${1:-}:${2:-}" in
+    -c:%u) printf '1234\n' ;;
+    -c:%a) printf '700\n' ;;
+    -f:*) printf 'GNU filesystem report that must not be parsed\n' ;;
+    *) return 1 ;;
+  esac
+}
+gnu_uid="$(_lead_socket_stat_uid /unused)"
+gnu_mode="$(_lead_socket_stat_mode /unused)"
+unset -f stat
+if [ "$gnu_uid" = 1234 ] && [ "$gnu_mode" = 700 ]; then
+  pass "S0 GNU stat uses explicit field output instead of filesystem prose"
+else
+  fail "S0 GNU stat parsing failed: uid=[$gnu_uid] mode=[$gnu_mode]"
+fi
+
 # S1: one exact key always resolves to one bounded absolute socket path.
 socket_a="$(derive_lead_socket "flywheel-eng-lead" "$SHORT_STATE")"
 socket_a_again="$(derive_lead_socket "flywheel-eng-lead" "$SHORT_STATE")"
@@ -73,7 +92,7 @@ fi
 # S4: secure socket directory is created 0700 and symlinks are rejected.
 state_dir="$SANDBOX/state"
 if ensure_lead_socket_dir "$state_dir" \
-  && [ "$(stat -f '%Lp' "$state_dir/sock" 2>/dev/null || stat -c '%a' "$state_dir/sock")" = "700" ]; then
+  && [ "$(_lead_socket_stat_mode "$state_dir/sock")" = "700" ]; then
   pass "S4a secure socket directory created with mode 0700"
 else
   fail "S4a secure socket directory contract failed"

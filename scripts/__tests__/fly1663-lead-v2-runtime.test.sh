@@ -52,19 +52,16 @@ fi
 
 conf="$(sed -n 's/^V2_CONF=//p' <<<"$out" | tail -1)"
 default_shell_line="$(grep -nF 'set -g default-shell /bin/bash' "$conf" 2>/dev/null | cut -d: -f1 || true)"
-new_session_line="$(grep -nF 'new-session -d -s main -n main' "$conf" 2>/dev/null | cut -d: -f1 || true)"
 if [ -f "$conf" ] \
   && [[ "$conf" == */run/leads/demo-ops-lead/tmux.conf ]] \
   && grep -qF 'set -g exit-empty on' "$conf" \
   && [[ "$default_shell_line" =~ ^[1-9][0-9]*$ ]] \
-  && [[ "$new_session_line" =~ ^[1-9][0-9]*$ ]] \
-  && [ "$default_shell_line" -lt "$new_session_line" ] \
   && grep -qF '#{hook_pane}' "$conf" \
   && grep -qF '= %0' "$conf" \
   && grep -qF 'tmux -S ' "$conf" \
-  && grep -qF 'new-session -d -s main -n main' "$conf" \
-  && grep -qF 'packages/teamlead/scripts/lead-body.sh' "$conf"; then
-  pass "wrapper emits the body-pane-bound three-layer shutdown config"
+  && ! grep -qF 'new-session' "$conf" \
+  && ! grep -qF 'packages/teamlead/scripts/lead-body.sh' "$conf"; then
+  pass "wrapper emits policy-only config without a lazy body command"
 else
   fail "wrapper tmux config contract"
 fi
@@ -100,9 +97,13 @@ fi
 # If the foreground exec cannot start, the launch attempt never owns a live
 # server. It must leave the previous PID untouched so fleet classification is true.
 failing_tmux="$TMP/home/.local/bin/tmux"
-cat > "$failing_tmux" <<'TMUX_FAILS'
+cat > "$failing_tmux" <<TMUX_FAILS
 #!/bin/bash
-if [[ "$*" == *"has-session"* ]]; then exit 1; fi
+if [[ "\$*" == *"has-session"* ]]; then exit 1; fi
+if [[ "\$*" == *"new-session"* ]] && [[ " \$* " != *" -N "* ]]; then
+  : > "$TMP/helper-daemonized-server"
+  exit 0
+fi
 exit 42
 TMUX_FAILS
 chmod +x "$failing_tmux"
@@ -117,8 +118,9 @@ HOME="$TMP/home" \
 exec_fail_rc=$?
 set -e
 if [ "$exec_fail_rc" -eq 42 ] \
-    && [ "$(jq -r '.pid' "$TMP/manifest.json")" = 4242 ]; then
-  pass "failed tmux exec preserves the previous manifest PID"
+    && [ "$(jq -r '.pid' "$TMP/manifest.json")" = 4242 ] \
+    && [ ! -e "$TMP/helper-daemonized-server" ]; then
+  pass "failed tmux exec preserves manifest PID and the bootstrap client cannot daemonize"
 else
   fail "wrapper failed-exec manifest PID rollback: rc=$exec_fail_rc pid=$(jq -r '.pid' "$TMP/manifest.json")"
   cat "$TMP/exec-fail.out" 2>/dev/null || true
@@ -131,6 +133,7 @@ fi
 cat > "$TMP/home/.local/bin/tmux" <<TMUX_STUB
 #!/bin/bash
 if [[ "\$*" == *"has-session"* ]]; then exit 1; fi
+if [[ " \$* " == *" -N "* ]]; then exit 1; fi
 env | sort > "$TMP/server.env"
 TMUX_STUB
 chmod +x "$TMP/home/.local/bin/tmux"
@@ -338,6 +341,24 @@ JSON
     bash "$WRAPPER" "$TMP/live-manifest.json" >"$TMP/live-wrapper.log" 2>&1 &
   wrapper_pid=$!
   live_socket="$(derive_lead_socket demo/ops-lead "$TMP/home/.flywheel")"
+  # This is the production launchd shape: observe only the manifest and the
+  # wrapper PID. No tmux client may touch the private socket to wake the body.
+  manifest_pid=""
+  manifest_socket=""
+  for _ in {1..100}; do
+    manifest_pid="$(jq -r '.pid // ""' "$TMP/live-manifest.json" 2>/dev/null)"
+    manifest_socket="$(jq -r '.socketPath // ""' "$TMP/live-manifest.json" 2>/dev/null)"
+    [ "$manifest_pid" = "$wrapper_pid" ] && [ "$manifest_socket" = "$live_socket" ] && break
+    sleep 0.1
+  done
+  if kill -0 "$wrapper_pid" 2>/dev/null \
+      && [ "$manifest_pid" = "$wrapper_pid" ] \
+      && [ "$manifest_socket" = "$live_socket" ]; then
+    pass "private Lead body self-starts without any external socket client"
+  else
+    fail "unattended private body start: wrapper=$wrapper_pid manifest=$manifest_pid socket=$manifest_socket"
+    cat "$TMP/live-wrapper.log" 2>/dev/null || true
+  fi
   for _ in {1..50}; do
     tmux -S "$live_socket" has-session -t '=main' 2>/dev/null && break
     sleep 0.1

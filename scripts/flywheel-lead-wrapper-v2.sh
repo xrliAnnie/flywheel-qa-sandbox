@@ -160,11 +160,6 @@ if {
     printf 'set -g default-shell /bin/bash\n'
     printf 'set -g exit-empty on\n'
     printf 'set-hook -g pane-exited '\''run-shell "if [ #{hook_pane} = %%0 ]; then tmux -S %q kill-server; fi"'\''\n' "$SOCKET_PATH"
-    # A successful exec preserves this process PID into the foreground tmux
-    # server. The first body-pane command publishes that proven-live PID before
-    # it execs the Lead body; a failed carrier exec never reaches this command.
-    printf 'new-session -d -s main -n main -x 220 -y 50 "exec /bin/bash %q --publish-and-start %q %q %q %q %q"\n' \
-      "$SELF_PATH" "$MANIFEST" "$SOCKET_PATH" "$$" "$TMUX_BIN" "$BODY_SCRIPT"
   } > "$TMUX_CONF_TMP" \
     && chmod 600 "$TMUX_CONF_TMP" \
     && mv "$TMUX_CONF_TMP" "$TMUX_CONF"; then
@@ -211,5 +206,33 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 
+# tmux -D starts the server in the foreground but accepts no command. It also
+# defers the commands in -f until the first client connects, so putting the
+# body new-session in tmux.conf leaves an unattended launchd job permanently
+# empty. A bounded one-shot client explicitly creates the body session after
+# the foreground server owns the socket. -N is the critical fail-closed flag:
+# an early retry may connect to an existing server, but may never daemonize a
+# replacement server of its own.
+printf -v BODY_COMMAND \
+  'exec /bin/bash %q --publish-and-start %q %q %q %q %q' \
+  "$SELF_PATH" "$MANIFEST" "$SOCKET_PATH" "$$" "$TMUX_BIN" "$BODY_SCRIPT"
+
+bootstrap_main_session() {
+  local server_pid="$1" attempts_remaining=100 bootstrap_error=""
+  while [ "$attempts_remaining" -gt 0 ]; do
+    if bootstrap_error=$(env -i "${SERVER_ENV[@]}" "$TMUX_BIN" -N -S "$SOCKET_PATH" \
+        new-session -d -s main -n main -x 220 -y 50 "$BODY_COMMAND" 2>&1); then
+      return 0
+    fi
+    kill -0 "$server_pid" 2>/dev/null || return 1
+    attempts_remaining=$((attempts_remaining - 1))
+    sleep 0.1
+  done
+  log "ERROR: foreground tmux server did not accept main session: $bootstrap_error" >&2
+  kill "$server_pid" 2>/dev/null || true
+  return 1
+}
+
 log "Starting ${PROJECT_NAME}/${LEAD_ID} as a private foreground tmux server"
+bootstrap_main_session "$$" &
 exec env -i "${SERVER_ENV[@]}" "$TMUX_BIN" -D -S "$SOCKET_PATH" -f "$TMUX_CONF"

@@ -42,11 +42,13 @@ derive_lead_socket() {
 }
 
 _lead_socket_stat_uid() {
-  stat -f '%u' "$1" 2>/dev/null || stat -c '%u' "$1" 2>/dev/null
+  # GNU stat accepts -f with different semantics and exits zero, so try its
+  # explicit field form first. Darwin stat rejects -c and falls through.
+  stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1" 2>/dev/null
 }
 
 _lead_socket_stat_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
 
 # ensure_lead_socket_dir [state-dir]
