@@ -1,13 +1,13 @@
 ---
 issue: FLY-1663
 phase: design
-phaseCursor: 4/6
-updated: 2026-08-09T01:29:05.747Z
-nextStep: writing plan.md (9 must-answer design doc)
+phaseCursor: 5/6
+updated: 2026-08-09T01:32:07.608Z
+nextStep: codex-design-review loop on plan.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-1663 progress
-**phase**: design (4/6)
-**next**: writing plan.md (9 must-answer design doc)
+**phase**: design (5/6)
+**next**: codex-design-review loop on plan.md
