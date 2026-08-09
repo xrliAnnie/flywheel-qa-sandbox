@@ -30,6 +30,8 @@ SANDBOX="$(mktemp -d -t fly247-plist-XXXXXX)"
 trap 'rm -rf "$SANDBOX"' EXIT
 
 export HOME="$SANDBOX"
+export FLYWHEEL_STATE_DIR="$HOME/.flywheel"
+export FLYWHEEL_DIR="$HOME/Dev/flywheel"
 mkdir -p "$SANDBOX/.flywheel/manifests" "$SANDBOX/Library/LaunchAgents" "$SANDBOX/.flywheel/bin"
 
 # Source the daemon script (functions only; dispatch skipped).

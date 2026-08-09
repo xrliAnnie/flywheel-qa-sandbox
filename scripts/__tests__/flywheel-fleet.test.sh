@@ -58,6 +58,8 @@ cleanup() {
 trap cleanup EXIT
 
 export HOME="$SANDBOX"
+export FLYWHEEL_STATE_DIR="$HOME/.flywheel"
+export FLYWHEEL_DIR="$HOME/Dev/flywheel"
 CTL="$SANDBOX/ctl"
 mkdir -p "$CTL" "$SANDBOX/.flywheel/manifests" "$SANDBOX/Library/LaunchAgents" \
   "$SANDBOX/.flywheel/bin" "$SANDBOX/Dev/flywheel/scripts" "$SANDBOX/proj/geo" "$SANDBOX/proj/joy"

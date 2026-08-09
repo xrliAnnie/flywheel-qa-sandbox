@@ -17,6 +17,8 @@ ROOT="$(mktemp -d -t fly1496-policy-XXXXXX)"
 trap 'rm -rf "$ROOT"' EXIT
 
 export HOME="$ROOT"
+export FLYWHEEL_STATE_DIR="$HOME/.flywheel"
+export FLYWHEEL_DIR="$HOME/Dev/flywheel"
 mkdir -p "$HOME/.flywheel/fleet-backups/txn-badmodel" "$HOME/.flywheel/manifests"
 jq -n '{changes: [{key: "geo-lead", to: {model: null}}]}' > "$ROOT/safe-clear.json"
 

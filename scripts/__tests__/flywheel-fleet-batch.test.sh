@@ -22,6 +22,8 @@ fail() { FAILED=$((FAILED + 1)); echo "[TEST] ✗ $1"; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/fleetbatch.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+export FLYWHEEL_STATE_DIR="$TMP/.flywheel"
+export FLYWHEEL_DIR="$TMP/Dev/flywheel"
 PJ="${TMP}/projects.json"
 
 # Production-ish config: peter on Fable, oliver on account default (no model).
