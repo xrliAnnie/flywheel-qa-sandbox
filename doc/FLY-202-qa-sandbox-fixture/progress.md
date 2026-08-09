@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 3/4
-updated: 2026-08-09T23:09:23.428Z
-nextStep: commit and open sandbox pull request
+phaseCursor: 4/4
+updated: 2026-08-09T23:12:29.707Z
+nextStep: complete needs_review handoff for PR 84
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (3/4)
-**next**: commit and open sandbox pull request
+**phase**: implement (4/4)
+**next**: complete needs_review handoff for PR 84
