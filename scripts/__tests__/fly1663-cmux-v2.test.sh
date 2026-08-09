@@ -4,7 +4,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SUT="$ROOT/scripts/flywheel-cmux-sync.sh"
 ATTACH="$ROOT/scripts/flywheel-lead-attach.sh"
-TMP="$(mktemp -d /tmp/fly1663-cmux.XXXXXX)"
+TMP="$(mktemp -d /tmp/f1663-c.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 passed=0
@@ -13,6 +13,8 @@ pass() { printf 'PASS: %s\n' "$1"; passed=$((passed + 1)); }
 fail() { printf 'FAIL: %s\n' "$1"; failed=$((failed + 1)); }
 
 export HOME="$TMP/home"
+export FLYWHEEL_STATE_DIR="$HOME/.flywheel"
+export FLYWHEEL_DIR="$ROOT"
 export VIEW_WAL_DIR="$TMP/view-wal"
 export VIEW_LEDGER="$TMP/view-ledger"
 export KEEPER_INVENTORY="$TMP/keeper"
@@ -24,6 +26,16 @@ export FLYWHEEL_ENV_FILE="$TMP/home/.flywheel/.env"
 export FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMP/maintenance"
 export FLYWHEEL_CMUX_ALERT_BIN="/usr/bin/true"
 mkdir -p "$HOME/.flywheel/manifests" "$HOME/Library/LaunchAgents"
+
+for writable_path in \
+  "$HOME" "$FLYWHEEL_STATE_DIR" "$VIEW_WAL_DIR" "$VIEW_LEDGER" \
+  "$KEEPER_INVENTORY" "$VIEW_ABSENT_STATE" "$CMUX_FLAG_STATE" \
+  "$LEDGER_CONFLICT_STATE" "$ROSTER_EPISODE_STATE"; do
+  case "$writable_path" in
+    "$TMP"|"$TMP"/*) ;;
+    *) echo "FATAL: writable test path escaped sandbox: $writable_path" >&2; exit 99 ;;
+  esac
+done
 
 # shellcheck source=../flywheel-cmux-sync.sh
 source "$SUT"

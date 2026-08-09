@@ -134,6 +134,29 @@ else
   fail "reconcile opt-in override" "$RECON_OVERRIDE"
 fi
 
+# FLY-1663: 529 Room is the real-machine proof path for the new carrier. Both
+# the Lead and Bridge must be isolated from resident lifecycle/secret state.
+if grep -qF 'qa_launchd_lead_start' "$TD_SRC" \
+  && grep -qF 'qa_launchd_lead_verify' "$TD_SRC" \
+  && grep -qF 'flywheel-lead-wrapper-v2.sh' "$TD_SRC" \
+  && ! grep -qF 'bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh"' "$TD_SRC"; then
+  pass "launchd carrier: every 529 Room Lead enters through isolated launchd v2"
+else
+  fail "launchd carrier missing" "test-deploy still exposes the direct claude-lead path"
+fi
+DELIVERY_LINE='BRIDGE_EXTRA_ENV+=("FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret")'
+if grep -qF "$DELIVERY_LINE" "$TD_SRC"; then
+  pass "delivery secret: slot Bridge cannot read or rotate the resident fleet secret"
+else
+  fail "delivery secret isolation missing" "$DELIVERY_LINE"
+fi
+TEARDOWN_SRC="${SCRIPT_DIR}/../test-teardown.sh"
+if grep -qF 'qa_launchd_stop_registry "${SLOT_DIR}/launchd-leads.json"' "$TEARDOWN_SRC"; then
+  pass "launchd teardown: registry bootout precedes PID/socket cleanup"
+else
+  fail "launchd teardown authority missing" "test-teardown must bootout the slot registry"
+fi
+
 # ── roundtable wiring: host slot gets manager env; non-host gets none ────────
 RT_CH=$(jq -r '.roundtableChannel.channelId' "${ROOT}/slots.json")
 RT_HOST=$(jq -r '.roundtableChannel.hostSlot' "${ROOT}/slots.json")

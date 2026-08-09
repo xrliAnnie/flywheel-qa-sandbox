@@ -5,11 +5,44 @@
 # restart loop, or pre-emptive socket destruction in this wrapper.
 set -euo pipefail
 
-MANIFEST="${1:?Usage: flywheel-lead-wrapper-v2.sh <manifest-path>}"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF_PATH="${SELF_DIR}/$(basename "${BASH_SOURCE[0]}")"
 
 log() { printf '[wrapper-v2] %s %s\n' "$(date '+%H:%M:%S')" "$*"; }
 fatal() { log "ERROR: $*" >&2; exit 1; }
+
+# Publish runtime identity from inside the tmux server, after exec succeeded.
+# Keeping this helper in the immutable wrapper avoids a second installed tool.
+publish_runtime_fields() {
+  local manifest="$1" socket_path="$2" server_pid="$3"
+  local manifest_tmp="${manifest}.tmp.${server_pid}"
+  [[ "$server_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [ -f "$manifest" ] || return 1
+  umask 077
+  if jq --arg socketPath "$socket_path" --argjson pid "$server_pid" \
+      '. + {pid: $pid, socketPath: $socketPath}' "$manifest" > "$manifest_tmp" \
+      && jq empty "$manifest_tmp" >/dev/null 2>&1 \
+      && chmod 600 "$manifest_tmp" \
+      && mv "$manifest_tmp" "$manifest"; then
+    return 0
+  fi
+  rm -f "$manifest_tmp"
+  return 1
+}
+
+if [ "${1:-}" = --publish-and-start ]; then
+  [ "$#" -eq 6 ] || exit 64
+  if publish_runtime_fields "$2" "$3" "$4"; then
+    exec /bin/bash "$6" "$2"
+  else
+    publish_rc=$?
+    printf '[wrapper-v2] ERROR: failed to publish tmux runtime identity (rc=%s)\n' "$publish_rc" >&2
+    "$5" -S "$3" kill-server >/dev/null 2>&1 || true
+    exit 1
+  fi
+fi
+
+MANIFEST="${1:?Usage: flywheel-lead-wrapper-v2.sh <manifest-path>}"
 
 if [ -f "$SELF_DIR/lib/host-config.sh" ]; then
   # shellcheck source=lib/host-config.sh
@@ -79,15 +112,26 @@ SOCKET_KEY="${PROJECT_NAME}/${LEAD_ID}"
 SOCKET_PATH="$(derive_lead_socket "$SOCKET_KEY" "$FLYWHEEL_STATE_DIR")" \
   || fatal "Unable to derive a safe socket path"
 
-# Runtime fields are wrapper-owned. Preserve every static and future field.
-manifest_tmp="${MANIFEST}.tmp.$$"
-umask 077
-jq --arg socketPath "$SOCKET_PATH" --argjson pid "$$" \
-  '. + {pid: $pid, socketPath: $socketPath}' "$MANIFEST" > "$manifest_tmp" \
-  && jq empty "$manifest_tmp" >/dev/null 2>&1 \
-  && chmod 600 "$manifest_tmp" \
-  && mv "$manifest_tmp" "$MANIFEST" \
-  || { rm -f "$manifest_tmp"; fatal "Atomic manifest update failed"; }
+DRY_RUN="${FLYWHEEL_LEAD_V2_DRY_RUN:-0}"
+TMUX_BIN="${FLYWHEEL_LEAD_V2_TMUX_BIN:-tmux}"
+if [ "$DRY_RUN" != 1 ]; then
+  if [[ "$TMUX_BIN" == */* ]]; then
+    [ -x "$TMUX_BIN" ] || fatal "tmux binary is not executable: $TMUX_BIN"
+  else
+    resolved_tmux="$(command -v "$TMUX_BIN" 2>/dev/null)" \
+      || fatal "tmux binary not found: $TMUX_BIN"
+    TMUX_BIN="$resolved_tmux"
+  fi
+
+  socket_probe=""
+  if socket_probe=$("$TMUX_BIN" -S "$SOCKET_PATH" has-session 2>&1); then
+    fatal "private socket already has a live tmux server; refusing a second carrier body"
+  else
+    socket_probe_rc=$?
+    [ "$socket_probe_rc" -eq 1 ] \
+      || fatal "private socket occupancy probe failed (rc=$socket_probe_rc): $socket_probe"
+  fi
+fi
 
 RUN_DIR="${FLYWHEEL_STATE_DIR}/run/leads/${LEAD_KEY}"
 if [ -L "$RUN_DIR" ]; then fatal "Runtime directory must not be a symlink: $RUN_DIR"; fi
@@ -104,14 +148,22 @@ TMUX_CONF_TMP="${TMUX_CONF}.tmp.$$"
 
 # hook_pane is expanded by the hook event. run-shell must address the private
 # socket explicitly because the server's global environment has no TMUX value.
-{
-  printf 'set -g exit-empty on\n'
-  printf 'set-hook -g pane-exited '\''run-shell "if [ #{hook_pane} = %%0 ]; then tmux -S %q kill-server; fi"'\''\n' "$SOCKET_PATH"
-  printf 'new-session -d -s main -n main -x 220 -y 50 "exec bash %q %q"\n' "$BODY_SCRIPT" "$MANIFEST"
-} > "$TMUX_CONF_TMP" \
-  && chmod 600 "$TMUX_CONF_TMP" \
-  && mv "$TMUX_CONF_TMP" "$TMUX_CONF" \
-  || { rm -f "$TMUX_CONF_TMP"; fatal "Atomic tmux config update failed"; }
+if {
+    printf 'set -g exit-empty on\n'
+    printf 'set-hook -g pane-exited '\''run-shell "if [ #{hook_pane} = %%0 ]; then tmux -S %q kill-server; fi"'\''\n' "$SOCKET_PATH"
+    # A successful exec preserves this process PID into the foreground tmux
+    # server. The first body-pane command publishes that proven-live PID before
+    # it execs the Lead body; a failed carrier exec never reaches this command.
+    printf 'new-session -d -s main -n main -x 220 -y 50 "exec /bin/bash %q --publish-and-start %q %q %q %q %q"\n' \
+      "$SELF_PATH" "$MANIFEST" "$SOCKET_PATH" "$$" "$TMUX_BIN" "$BODY_SCRIPT"
+  } > "$TMUX_CONF_TMP" \
+    && chmod 600 "$TMUX_CONF_TMP" \
+    && mv "$TMUX_CONF_TMP" "$TMUX_CONF"; then
+  :
+else
+  rm -f "$TMUX_CONF_TMP"
+  fatal "Atomic tmux config update failed"
+fi
 
 SERVER_ENV=()
 while IFS= read -r name; do
@@ -134,12 +186,16 @@ done
 # The server gets the Lead's own Discord credential, but no Bridge/OpenAI/MCP
 # secrets. lead-body.sh reads .env locally and projects its second allowlist.
 SERVER_ENV+=("DISCORD_BOT_TOKEN=${!BOT_TOKEN_ENV:-}")
-SERVER_ENV+=("DISCORD_STATE_DIR=${HOME}/.claude/channels/discord-${LEAD_ID}")
+if ! jq -e 'has("DISCORD_STATE_DIR")' <<<"$LAUNCH_ENVIRONMENT" >/dev/null; then
+  SERVER_ENV+=("DISCORD_STATE_DIR=${HOME}/.claude/channels/discord-${LEAD_ID}")
+fi
 
-if [ "${FLYWHEEL_LEAD_V2_DRY_RUN:-0}" = 1 ]; then
+if [ "$DRY_RUN" = 1 ]; then
+  publish_runtime_fields "$MANIFEST" "$SOCKET_PATH" "$$" \
+    || fatal "Atomic manifest update failed"
   printf 'V2_SOCKET=%s\nV2_CONF=%s\n' "$SOCKET_PATH" "$TMUX_CONF"
   exit 0
 fi
 
 log "Starting ${PROJECT_NAME}/${LEAD_ID} as a private foreground tmux server"
-exec env -i "${SERVER_ENV[@]}" tmux -D -S "$SOCKET_PATH" -f "$TMUX_CONF"
+exec env -i "${SERVER_ENV[@]}" "$TMUX_BIN" -D -S "$SOCKET_PATH" -f "$TMUX_CONF"

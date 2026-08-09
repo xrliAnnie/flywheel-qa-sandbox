@@ -9,12 +9,26 @@ pass() { PASSED=$((PASSED + 1)); echo "[TEST] ✓ $1"; }
 fail() { FAILED=$((FAILED + 1)); echo "[TEST] ✗ $1"; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/fly1663-foundation.XXXXXX")"
-SHORT_STATE="$(mktemp -d /tmp/fly1663-sock.XXXXXX)"
-trap 'rm -rf "$SANDBOX" "$SHORT_STATE"' EXIT
+SANDBOX="$(mktemp -d /tmp/f1663-f.XXXXXX)"
+SHORT_STATE="$SANDBOX/s"
+trap 'rm -rf "$SANDBOX"' EXIT
 
 export HOME="$SANDBOX/home"
-mkdir -p "$HOME/.flywheel/manifests" "$HOME/.flywheel/bin" "$HOME/Library/LaunchAgents"
+export FLYWHEEL_STATE_DIR="$HOME/.flywheel"
+export FLYWHEEL_DIR="$REPO_ROOT"
+mkdir -p "$FLYWHEEL_STATE_DIR/manifests" "$FLYWHEEL_STATE_DIR/bin" \
+  "$HOME/Library/LaunchAgents" "$SHORT_STATE"
+
+assert_sandbox_write_path() {
+  local path="$1"
+  case "$path" in
+    "$SANDBOX"|"$SANDBOX"/*) return 0 ;;
+    *)
+      echo "[TEST] FATAL: writable test path escaped sandbox: $path" >&2
+      exit 99
+      ;;
+  esac
+}
 
 # shellcheck source=../lib/lead-address.sh
 source "$REPO_ROOT/scripts/lib/lead-address.sh"
@@ -82,6 +96,13 @@ chmod +x "$PLUTIL_STUB"
 export FLYWHEEL_DAEMON_PLUTIL="$PLUTIL_STUB"
 # shellcheck source=../flywheel-daemon.sh
 source "$REPO_ROOT/scripts/flywheel-daemon.sh"
+
+# Fail before any fixture or generated artifact can touch the resident fleet.
+for writable_path in \
+  "$HOME" "$FLYWHEEL_STATE_DIR" "$MANIFEST_DIR" "$PLIST_DIR" \
+  "$FLYWHEEL_BIN" "$PID_DIR" "$SHORT_STATE"; do
+  assert_sandbox_write_path "$writable_path"
+done
 
 manifest="$MANIFEST_DIR/flywheel-eng-lead.json"
 mkdir -p "$(dirname "$manifest")"
@@ -242,7 +263,7 @@ fi
 ci="$REPO_ROOT/.github/workflows/ci.yml"
 ci_ok=true
 for suite in fly1663-launchd-foundation.test.sh fly1663-lead-v2-runtime.test.sh \
-  fly1663-cmux-v2.test.sh fly1663-bridge-launchd.test.sh; do
+  fly1663-cmux-v2.test.sh fly1663-bridge-launchd.test.sh fly1663-qa-launchd.test.sh; do
   grep -qF "scripts/__tests__/$suite" "$ci" || ci_ok=false
 done
 if [ "$ci_ok" = true ]; then

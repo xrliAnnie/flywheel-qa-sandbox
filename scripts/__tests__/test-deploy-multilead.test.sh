@@ -56,6 +56,7 @@ done
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/qa1189ml.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+export FLYWHEEL_CMUX_WATCHER_LOCK_DIR="${TMP}/cmux-watcher.lock"
 
 # ── Fixture: slots file (schema mirrors ~/.flywheel/test-slots.json) ──
 SLOTS="${TMP}/test-slots.json"

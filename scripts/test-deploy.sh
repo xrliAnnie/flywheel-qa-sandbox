@@ -24,6 +24,12 @@ source "${SCRIPT_DIR}/lib/qa-room.sh"
 # shellcheck source=lib/qa-multilead.sh
 source "${SCRIPT_DIR}/lib/qa-multilead.sh"
 
+# FLY-1663: 529 Room Leads use the same launchd-native v2 topology as the
+# target fleet, with labels and state scoped to the ephemeral QA slot.
+# shellcheck source=lib/qa-launchd-lead.sh
+source "${SCRIPT_DIR}/lib/qa-launchd-lead.sh"
+QA_LEAD_REGISTRY=""
+
 # ── Load environment ──────────────────────────────────
 ENV_FILE="${HOME}/.flywheel/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -456,6 +462,9 @@ fi
 cleanup_on_failure() {
   local lock="/tmp/flywheel-test-slot-${SLOT}.lock"
   local lock_pid
+  if [[ -n "${QA_LEAD_REGISTRY:-}" && -f "$QA_LEAD_REGISTRY" ]]; then
+    qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true
+  fi
   lock_pid=$(cat "$lock/pid" 2>/dev/null || echo "")
   # Only clean up if still in "claiming" state (Bridge PID not yet written)
   if [[ "$lock_pid" == "claiming" ]]; then
@@ -597,6 +606,7 @@ fi
 # ── Create temp directories ───────────────────────────
 SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
 mkdir -p "${SLOT_DIR}/discord-state"
+QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"
 
 # ── FLY-529: QA Room roundtable + alert mirror config + env arrays ─────────
 # Resolved here (after SLOT/SLOT_DIR, before access.json / FLYWHEEL_PROJECTS /
@@ -613,6 +623,8 @@ BRIDGE_EXTRA_ENV=()
 COMPLETE_MARKER_DIR="${SLOT_DIR}/state/complete-failed"
 LEAD_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
+# FLY-1663 QA must never read, create, or rotate the resident Bridge secret.
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret")
 # FLY-1439: opt-in isolated Claude config for pinned-plugin real-machine QA.
 # The dedicated knob is appended after the Lead launcher's `env -u
 # CLAUDE_CONFIG_DIR`, so inherited production values remain scrubbed while an
@@ -1103,6 +1115,81 @@ FLYWHEEL_PROJECTS_FILE="${SLOT_DIR}/flywheel-projects.json"
 echo "$FLYWHEEL_PROJECTS" > "$FLYWHEEL_PROJECTS_FILE"
 log "Wrote ${FLYWHEEL_PROJECTS_FILE}"
 
+# Build the launch environment captured in a v2 manifest from NAME=value
+# arguments. Values stay data (jq --arg), never shell syntax.
+qa_slot_launch_env_json() {
+  local json='{}' assignment name value
+  for assignment in "$@"; do
+    name="${assignment%%=*}"
+    value="${assignment#*=}"
+    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+      || { log "ERROR: invalid QA Lead environment key: ${name}"; return 1; }
+    json=$(jq -c --arg name "$name" --arg value "$value" \
+      '. + {($name): $value}' <<<"$json") || return 1
+  done
+  printf '%s\n' "$json"
+}
+
+# Start one slot-scoped Lead as launchd -> wrapper-v2 -> private tmux -> body.
+# stdout: launchdPid<TAB>socket<TAB>label<TAB>manifest<TAB>pidFile
+qa_slot_start_lead() {
+  local carrier_slot="$1" agent="$2" token_env="$3" token_value="$4"
+  local role="$5" discord_state="$6" identity="$7" workspace="$8" lead_log="$9"
+  shift 9
+  local runtime="${SLOT_DIR}/launchd/${agent}" state="${SLOT_DIR}/q/${carrier_slot}"
+  local projects="${state}/projects.json" env_file="${state}/.env"
+  local manifest="${runtime}/manifest.json" plist="${runtime}/lead.plist"
+  local pid_file="${runtime}/pid" label wrapper launch_env topology launch_pid socket
+  local lead_row mcp_exclude chrome_enabled
+  label=$(qa_launchd_label "$carrier_slot" "$agent") || return 1
+  wrapper="${FLYWHEEL_QA_LEAD_WRAPPER:-${REPO_ROOT}/scripts/flywheel-lead-wrapper-v2.sh}"
+  mkdir -p "$runtime" "$state" "$workspace" || return 1
+  chmod 700 "$runtime" "$state"
+  printf '%s\n' "$FLYWHEEL_PROJECTS" > "$projects"
+  printf '%s=%q\n' "$token_env" "$token_value" > "$env_file"
+  chmod 600 "$projects" "$env_file"
+
+  lead_row=$(jq -cer --arg agent "$agent" \
+    '[.[].leads[]? | select(.agentId == $agent)] | if length == 1 then .[0] else error("expected one Lead") end' \
+    <<<"$FLYWHEEL_PROJECTS") || return 1
+  mcp_exclude=$(jq -r '.mcpExclude // ""' <<<"$lead_row")
+  chrome_enabled=$(jq -r '.chromeEnabled // false' <<<"$lead_row")
+  launch_env=$(qa_slot_launch_env_json \
+    "DISCORD_GUILD_ID=${GUILD_ID}" \
+    "BRIDGE_URL=http://localhost:${SLOT_PORT}" \
+    "DISCORD_STATE_DIR=${discord_state}" \
+    "AGENT_SOURCE=${identity}" \
+    "FLYWHEEL_LEAD_ROLE=${role}" \
+    "TEAMLEAD_API_TOKEN=${TEST_TEAMLEAD_API_TOKEN}" \
+    "FLYWHEEL_PROJECTS=$(jq -c . <<<"$FLYWHEEL_PROJECTS")" \
+    "FLYWHEEL_PROJECTS_FILE=${projects}" \
+    "FLYWHEEL_WRAPPER_ENV_FILE=${env_file}" \
+    "FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret" \
+    "LEAD_WORKSPACE=${workspace}" \
+    "$@") || return 1
+  jq -n \
+    --arg leadId "$agent" --arg projectDir "$HOST_REPO" \
+    --arg projectName "$TEST_PROJECT_NAME" --arg botTokenEnv "$token_env" \
+    --arg workspace "$workspace" --arg mcpExclude "$mcp_exclude" \
+    --argjson chromeEnabled "$chrome_enabled" --argjson launchEnvironment "$launch_env" \
+    '{leadId:$leadId,projectDir:$projectDir,projectName:$projectName,
+      botTokenEnv:$botTokenEnv,workspace:$workspace,mcpExclude:$mcpExclude,
+      chromeEnabled:$chromeEnabled,launchEnvironment:$launchEnvironment}' \
+    > "$manifest" || return 1
+  chmod 600 "$manifest"
+  FLYWHEEL_DIR="$REPO_ROOT" qa_launchd_render_plist \
+    "$plist" "$label" "$wrapper" "$manifest" "$HOME" "$state" \
+    "$projects" "$env_file" "$lead_log" || return 1
+  qa_launchd_register "$QA_LEAD_REGISTRY" "$label" "$plist" "$manifest" || return 1
+  launch_pid=$(qa_launchd_lead_start "$label" "$plist") || return 1
+  topology=$(qa_launchd_lead_verify "$label" "$manifest") \
+    || { qa_launchd_lead_stop "$label" || true; return 1; }
+  IFS=$'\t' read -r launch_pid socket <<<"$topology"
+  printf '%s\n' "$launch_pid" > "$pid_file"
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$launch_pid" "$socket" "$label" "$manifest" "$pid_file"
+}
+
 # ── FLY-1389 P0-d: test slots are FRESH by definition — unconditionally drop
 # any stale session-id left by a prior round. A stale id makes every
 # `claude --resume` fail deterministically (transcript for the old workspace
@@ -1115,6 +1202,9 @@ rm -f "${HOME}/.flywheel/claude-sessions/${TEST_PROJECT_NAME}-${AGENT_ID}.sessio
 # path too — Bridge failure handling + the output JSON reference them.
 LEAD_BG_PID=""
 LEAD_LOG=""
+LEAD_SOCKET=""
+LEAD_LAUNCHD_LABEL=""
+LEAD_PID_FILE=""
 
 if [[ "$NO_LEAD" == "1" ]]; then
   log "--no-lead: skipping Lead startup + dev-channels confirm + lease wait (Bridge-only deploy)"
@@ -1122,96 +1212,43 @@ else
 
 log "Starting test Lead: ${AGENT_ID} (project: ${TEST_PROJECT_NAME}, mode=${MODE}, channel=${EFFECTIVE_CHANNEL_LABEL}=${CHAT_CHANNEL_ID})"
 
-# ── Step 1: Start test Lead (background) ─────────────
-# env -u clears inherited production token, then sets test token explicitly (D8)
-# FLY-1389 P0-a: also clear the caller-shell leak set. LEAD_WORKSPACE is the
-# highest-priority escape hatch in claude-lead.sh (GEO-285/286) — inherited
-# from a production shell it put the test Lead INSIDE a production Lead's
-# workspace (Belle's personal-assistant, 529 Room incident) and mis-slugged
-# its transcripts. CLAUDE_CONFIG_DIR / FLYWHEEL_LEAD_MODEL / _EFFORT are the
-# same leak class. LEAD_WORKSPACE is then pinned to a slot-local dir.
-# FLY-115 fix: redirect Lead stdout/stderr to a per-slot log so the caller's
-# `| tail -40` doesn't stay attached to the backgrounded Lead's stdout — that
-# kept the pipe open and made the caller hang forever.
-LEAD_LOG="${SLOT_DIR}/lead.log"
-(
-  cd "${REPO_ROOT}/packages/teamlead" || exit 1
-  exec env -u DISCORD_BOT_TOKEN \
-    -u LEAD_WORKSPACE \
-    -u CLAUDE_CONFIG_DIR \
-    -u TEST_SKIP_PLUGIN_FORK_CHECK \
-    -u TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR \
-    -u FLYWHEEL_LEAD_MODEL \
-    -u FLYWHEEL_LEAD_EFFORT \
-    DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
-    DISCORD_GUILD_ID="${GUILD_ID}" \
-    BRIDGE_URL="http://localhost:${SLOT_PORT}" \
-    DISCORD_STATE_DIR="${SLOT_DIR}/discord-state" \
-    AGENT_SOURCE="${SLOT_DIR}/test-identity.md" \
-    FLYWHEEL_LEAD_ROLE="${SLOT_ROLE}" \
-    TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
-    FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
-    LEAD_WORKSPACE="${SLOT_DIR}/lead-workspace" \
-    ${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"} \
-    bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
-      "${AGENT_ID}" "${HOST_REPO}" "${TEST_PROJECT_NAME}"
-) > "${LEAD_LOG}" 2>&1 &
-LEAD_BG_PID=$!
-log "Lead background PID: ${LEAD_BG_PID}"
-
-# ── Step 1b: Auto-confirm dev-channels interactive prompt ─────
-# FLY-96 QA bug fix: fresh slot has no acknowledged dev-channels state, so
-# Claude Code shows "Loading development channels / 1. I am using this for
-# local development / 2. Exit" prompt on startup. claude-lead.sh only sends
-# Enter (at 8s), which selects the UI default (Exit on fresh installs and
-# hangs the Lead). Poll the tmux window and send "1" + Enter explicitly.
-#
-# FLY-109: expect-dev-channels.exp now handles this inside the tmux child —
-# the send-keys workaround is redundant when the .exp file is active. Set
-# SKIP_DEV_CHANNELS_WORKAROUND=1 to skip this block and validate that the
-# .exp file alone is sufficient (Class A expect tests rely on this path).
-LEAD_WINDOW_NAME="${TEST_PROJECT_NAME}-${AGENT_ID}"
-if [[ "${SKIP_DEV_CHANNELS_WORKAROUND:-0}" == "1" ]]; then
-  log "SKIP_DEV_CHANNELS_WORKAROUND=1 — relying on expect-dev-channels.exp for dialog confirmation"
-  LEAD_WINDOW_ID=""
-  for i in $(seq 1 30); do
-    LEAD_WINDOW_ID=$(tmux list-windows -t flywheel -F '#{window_id} #{window_name}' 2>/dev/null \
-      | awk -v n="$LEAD_WINDOW_NAME" '$2==n {print $1; exit}')
-    [[ -n "$LEAD_WINDOW_ID" ]] && break
-    sleep 1
-  done
-  [[ -n "$LEAD_WINDOW_ID" ]] && log "Lead tmux window: ${LEAD_WINDOW_ID} (expect script handles dialog)" \
-    || log "WARN: Lead tmux window '${LEAD_WINDOW_NAME}' not found after 30s"
-else
-  log "Polling tmux window '${LEAD_WINDOW_NAME}' for dev-channels prompt"
-  LEAD_WINDOW_ID=""
-  for i in $(seq 1 30); do
-    LEAD_WINDOW_ID=$(tmux list-windows -t flywheel -F '#{window_id} #{window_name}' 2>/dev/null \
-      | awk -v n="$LEAD_WINDOW_NAME" '$2==n {print $1; exit}')
-    [[ -n "$LEAD_WINDOW_ID" ]] && break
-    sleep 1
-  done
-
-  if [[ -n "$LEAD_WINDOW_ID" ]]; then
-    log "Lead tmux window: ${LEAD_WINDOW_ID}"
-    PROMPT_HIT=false
-    for i in $(seq 1 30); do
-      PANE=$(tmux capture-pane -t "$LEAD_WINDOW_ID" -p 2>/dev/null || echo "")
-      if echo "$PANE" | grep -qE "Loading development channels|am using this for local|development channels"; then
-        log "Detected dev-channels prompt on slot ${SLOT}, sending '1' Enter"
-        tmux send-keys -t "$LEAD_WINDOW_ID" "1" 2>/dev/null || true
-        sleep 0.3
-        tmux send-keys -t "$LEAD_WINDOW_ID" Enter 2>/dev/null || true
-        PROMPT_HIT=true
-        break
-      fi
-      sleep 1
-    done
-    [[ "$PROMPT_HIT" == "false" ]] && log "No dev-channels prompt observed (already acknowledged or startup bypassed it)"
-  else
-    log "WARN: Lead tmux window '${LEAD_WINDOW_NAME}' not found after 30s"
+# Private-socket equivalent of the old shared-window dev-channels workaround.
+confirm_dev_channels_prompt() {
+  local socket="$1" lead_name="$2" pane="" i hit=false
+  if [[ "${SKIP_DEV_CHANNELS_WORKAROUND:-0}" == "1" ]]; then
+    log "SKIP_DEV_CHANNELS_WORKAROUND=1 — ${lead_name} relies on expect-dev-channels.exp"
+    return 0
   fi
-fi
+  log "Polling private Lead socket for ${lead_name} dev-channels prompt"
+  for i in $(seq 1 30); do
+    pane=$(tmux -S "$socket" capture-pane -t '=main:main.%0' -p 2>/dev/null || echo "")
+    if echo "$pane" | grep -qE "Loading development channels|am using this for local|development channels"; then
+      tmux -S "$socket" send-keys -t '=main:main.%0' "1" 2>/dev/null || true
+      sleep 0.3
+      tmux -S "$socket" send-keys -t '=main:main.%0' Enter 2>/dev/null || true
+      hit=true
+      break
+    fi
+    sleep 1
+  done
+  [[ "$hit" == "true" ]] \
+    && log "Confirmed dev-channels prompt for ${lead_name}" \
+    || log "No dev-channels prompt observed for ${lead_name}"
+}
+
+# ── Step 1: bootstrap isolated launchd-v2 Lead ─────────────
+LEAD_LOG="${SLOT_DIR}/lead.log"
+LEAD_LAUNCH_RECORD=$(qa_slot_start_lead \
+  "$SLOT" "$AGENT_ID" "$BOT_TOKEN_ENV" "$TEST_BOT_TOKEN" "$SLOT_ROLE" \
+  "${SLOT_DIR}/discord-state" "${SLOT_DIR}/test-identity.md" \
+  "${SLOT_DIR}/lead-workspace" "$LEAD_LOG" \
+  ${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"}) \
+  || { log "ERROR: launchd-v2 Lead bootstrap failed"; exit 1; }
+IFS=$'\t' read -r LEAD_BG_PID LEAD_SOCKET LEAD_LAUNCHD_LABEL _lead_manifest LEAD_PID_FILE \
+  <<<"$LEAD_LAUNCH_RECORD"
+log "Lead background PID: ${LEAD_BG_PID}"
+log "Lead launchd label: ${LEAD_LAUNCHD_LABEL}; private socket: ${LEAD_SOCKET}"
+confirm_dev_channels_prompt "$LEAD_SOCKET" "$AGENT_ID"
 
 # ── Step 2: Wait for Lead inbox-ready lease ───────────
 # FLY-1389 P2-a: budget is LEAD_READY_TIMEOUT_SEC (default 120s; flag/env
@@ -1230,18 +1267,13 @@ for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
       break
     fi
   fi
-  # Check if Lead process died
-  if ! kill -0 "$LEAD_BG_PID" 2>/dev/null; then
-    log "ERROR: Lead process died before becoming ready"
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
-    exit 1
-  fi
+  LEAD_BG_PID=$(qa_launchd_lead_pid "$LEAD_LAUNCHD_LABEL" || true)
   sleep 2
 done
 
 if [[ "$LEAD_READY" != "true" ]]; then
   log "ERROR: Lead did not become ready within ${LEAD_READY_TIMEOUT_SEC} seconds"
-  kill "$LEAD_BG_PID" 2>/dev/null || true
+  qa_launchd_lead_stop "$LEAD_LAUNCHD_LABEL" || true
   rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
   exit 1
 fi
@@ -1257,40 +1289,6 @@ fi  # end --no-lead skip (Lead startup + dev-channels confirm + lease wait)
 CAMPAIGN_ID=""
 CAMPAIGN_MANIFEST_FILE=""
 
-# Dev-channels prompt confirmation for a named tmux window (same logic as the
-# main Lead's inline Step 1b block; extracted for the extra Leads only so the
-# main path stays verbatim).
-confirm_dev_channels_prompt() {
-  local win_name="$1"
-  local win_id=""
-  local i pane hit=false
-  for i in $(seq 1 30); do
-    win_id=$(tmux list-windows -t flywheel -F '#{window_id} #{window_name}' 2>/dev/null \
-      | awk -v n="$win_name" '$2==n {print $1; exit}')
-    [[ -n "$win_id" ]] && break
-    sleep 1
-  done
-  if [[ -z "$win_id" ]]; then
-    log "WARN: tmux window '${win_name}' not found after 30s"
-    return 0
-  fi
-  log "tmux window for ${win_name}: ${win_id}"
-  for i in $(seq 1 30); do
-    pane=$(tmux capture-pane -t "$win_id" -p 2>/dev/null || echo "")
-    if echo "$pane" | grep -qE "Loading development channels|am using this for local|development channels"; then
-      log "Detected dev-channels prompt on ${win_name}, sending '1' Enter"
-      tmux send-keys -t "$win_id" "1" 2>/dev/null || true
-      sleep 0.3
-      tmux send-keys -t "$win_id" Enter 2>/dev/null || true
-      hit=true
-      break
-    fi
-    sleep 1
-  done
-  [[ "$hit" == "false" ]] && log "No dev-channels prompt observed on ${win_name}"
-  return 0
-}
-
 if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
   CAMPAIGN_ID="fly1189-$(date +%s)-slot${SLOT}"
   CAMPAIGN_MANIFEST_FILE="${SLOT_DIR}/campaign-manifest.json"
@@ -1298,11 +1296,7 @@ if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
 
   campaign_abort() {
     log "ERROR: $1 — aborting campaign deploy"
-    local p
-    for p in ${EXTRA_LEAD_BG_PIDS[@]+"${EXTRA_LEAD_BG_PIDS[@]}"}; do
-      kill "$p" 2>/dev/null || true
-    done
-    kill "$LEAD_BG_PID" 2>/dev/null || true
+    qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true
     if [[ -f "$CAMPAIGN_MANIFEST_FILE" ]]; then
       qa_multilead_teardown_extra_leads "$CAMPAIGN_MANIFEST_FILE" || true
     fi
@@ -1322,11 +1316,12 @@ if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
       slotId, agentId, deptLabel,
       chatChannelId: .chatChannel,
       botTokenEnv: .tokenEnvVar,
-      tmuxWindow: ($pn + "-" + .agentId),
+      tmuxWindow: "",
+      launchdLabel: ("com.flywheel.qa.lead.slot-" + (.slotId | tostring) + "." + .agentId),
       stateDir: ($slotdir + "/extra-leads/slot-" + (.slotId | tostring)),
-      pidFile: ($home + "/.flywheel/pids/" + $pn + "-" + .agentId + ".pid"),
+      pidFile: ($slotdir + "/launchd/" + .agentId + "/pid"),
       sessionIdFile: ($home + "/.flywheel/claude-sessions/" + $pn + "-" + .agentId + ".session-id"),
-      leadManifest: ($home + "/.flywheel/manifests/" + $pn + "-" + .agentId + ".json"),
+      leadManifest: ($slotdir + "/launchd/" + .agentId + "/manifest.json"),
       leadWorkspace: ($slotdir + "/extra-leads/slot-" + (.slotId | tostring) + "/lead-workspace")
     })' <<<"$EXTRA_LEADS_JSON")
   jq -n \
@@ -1425,36 +1420,17 @@ EOF
     log "Starting extra test Lead: ${XAGENT} (slot ${XSID} bot, label ${XLABEL}, channel ${XCHANNEL})"
     # FLY-1389 P0-d: extra Leads are fresh too — drop any stale session-id.
     rm -f "${HOME}/.flywheel/claude-sessions/${TEST_PROJECT_NAME}-${XAGENT}.session-id"
-    # FLY-1389 P0-a: same caller-shell leak clearing as the main Lead;
-    # LEAD_WORKSPACE pinned under XDIR so the campaign manifest's
-    # leadWorkspace field (teardown consumer) and reality never fork.
-    (
-      cd "${REPO_ROOT}/packages/teamlead" || exit 1
-      exec env -u DISCORD_BOT_TOKEN \
-        -u LEAD_WORKSPACE \
-        -u CLAUDE_CONFIG_DIR \
-        -u TEST_SKIP_PLUGIN_FORK_CHECK \
-        -u TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR \
-        -u FLYWHEEL_LEAD_MODEL \
-        -u FLYWHEEL_LEAD_EFFORT \
-        DISCORD_BOT_TOKEN="${XTOKEN}" \
-        DISCORD_GUILD_ID="${GUILD_ID}" \
-        BRIDGE_URL="http://localhost:${SLOT_PORT}" \
-        DISCORD_STATE_DIR="${XDIR}/discord-state" \
-        AGENT_SOURCE="${XDIR}/test-identity.md" \
-        FLYWHEEL_LEAD_ROLE="${XROLE}" \
-        TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
-        FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
-        LEAD_WORKSPACE="${XDIR}/lead-workspace" \
-        "${XLEAD_ENV[@]}" \
-        bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
-          "${XAGENT}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" < /dev/null
-    ) > "${XLEAD_LOG}" 2>&1 &
-    XLEAD_BG_PID=$!
+    XLEAD_LAUNCH_RECORD=$(qa_slot_start_lead \
+      "$XSID" "$XAGENT" "$XTOKEN_ENV_NAME" "$XTOKEN" "$XROLE" \
+      "${XDIR}/discord-state" "${XDIR}/test-identity.md" \
+      "${XDIR}/lead-workspace" "$XLEAD_LOG" "${XLEAD_ENV[@]}") \
+      || campaign_abort "extra Lead ${XAGENT} launchd-v2 bootstrap failed"
+    IFS=$'\t' read -r XLEAD_BG_PID XLEAD_SOCKET _xlead_label _xlead_manifest _xlead_pid_file \
+      <<<"$XLEAD_LAUNCH_RECORD"
     EXTRA_LEAD_BG_PIDS+=("$XLEAD_BG_PID")
     log "Extra Lead ${XAGENT} background PID: ${XLEAD_BG_PID}"
 
-    confirm_dev_channels_prompt "${TEST_PROJECT_NAME}-${XAGENT}"
+    confirm_dev_channels_prompt "$XLEAD_SOCKET" "$XAGENT"
 
     XLEASE_FILE="${LEASE_DIR}/.inbox-ready-${XAGENT}"
     XLEAD_READY=false
@@ -1587,7 +1563,7 @@ for i in $(seq 1 120); do
   fi
   if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
     log "ERROR: Bridge process died"
-    kill "$LEAD_BG_PID" 2>/dev/null || true
+    qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true
     rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
     exit 1
   fi
@@ -1597,7 +1573,7 @@ done
 if [[ "$BRIDGE_READY" != "true" ]]; then
   log "ERROR: Bridge did not become ready within 120 seconds"
   kill "$BRIDGE_PID" 2>/dev/null || true
-  kill "$LEAD_BG_PID" 2>/dev/null || true
+  qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true
   rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
   exit 1
 fi
@@ -1621,22 +1597,25 @@ trap - EXIT
 
 # FLY-1189: launch manifest — deploy-time ground truth and dist SHA.
 # No secrets: token env NAMES only.
+if [[ "$NO_LEAD" == "1" ]]; then LEAD_CARRIER="none"; else LEAD_CARRIER="launchd-v2"; fi
 qa_multilead_launch_manifest "$BRIDGE_PID" "$BRANCH_SHA" "$FROM_BRANCH" "$MODE" \
   "${CAMPAIGN_ID}" "${LEAD_LABEL}" "$EXTRA_LEADS_JSON" \
   > "${SLOT_DIR}/launch-manifest.json"
+jq --arg carrier "$LEAD_CARRIER" --arg registry "$QA_LEAD_REGISTRY" \
+  --arg label "$LEAD_LAUNCHD_LABEL" --arg socket "$LEAD_SOCKET" \
+  '. + {leadCarrier:$carrier,launchdRegistry:$registry,mainLeadLabel:$label,mainLeadSocket:$socket}' \
+  "${SLOT_DIR}/launch-manifest.json" > "${SLOT_DIR}/launch-manifest.json.tmp" \
+  && mv "${SLOT_DIR}/launch-manifest.json.tmp" "${SLOT_DIR}/launch-manifest.json"
 log "Wrote ${SLOT_DIR}/launch-manifest.json"
 
 # ── Step 5: Record PIDs ──────────────────────────────
-# Lead supervisor PID is written by claude-lead.sh to:
-#   ~/.flywheel/pids/<project-name>-<lead-id>.pid
-# We also record Bridge PID locally.
+# The launchd PID file is slot-local and written only after topology proof.
 # FLY-1389 P2-b: no-lead deploys have no Lead artifacts — empty strings in
 # the output JSON (guarded consumers; schema keys stay present).
 if [[ "$NO_LEAD" == "1" ]]; then
   LEAD_PID_FILE=""
   NO_LEAD_JSON=true
 else
-  LEAD_PID_FILE="${HOME}/.flywheel/pids/${TEST_PROJECT_NAME}-${AGENT_ID}.pid"
   NO_LEAD_JSON=false
 fi
 
@@ -1664,6 +1643,10 @@ cat <<EOF
   "botTokenEnv": "${BOT_TOKEN_ENV}",
   "bridgePid": ${BRIDGE_PID},
   "leadPidFile": "${LEAD_PID_FILE}",
+  "leadCarrier": "${LEAD_CARRIER}",
+  "leadLaunchdLabel": "${LEAD_LAUNCHD_LABEL}",
+  "leadSocket": "${LEAD_SOCKET}",
+  "launchdRegistry": "${QA_LEAD_REGISTRY}",
   "slotDir": "${SLOT_DIR}",
   "bridgeUrl": "http://localhost:${SLOT_PORT}",
   "fromBranch": "${FROM_BRANCH}",

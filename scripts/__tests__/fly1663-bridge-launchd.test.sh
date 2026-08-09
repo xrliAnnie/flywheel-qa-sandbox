@@ -8,6 +8,17 @@ RESTART="$ROOT/scripts/restart-services.sh"
 TMP="$(mktemp -d /tmp/fly1663-bridge.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
+export HOME="$TMP/home"
+export FLYWHEEL_STATE_DIR="$HOME/.flywheel"
+export FLYWHEEL_DIR="$ROOT"
+export FLYWHEEL_LAUNCHD_DIR="$HOME/Library/LaunchAgents"
+for writable_path in "$HOME" "$FLYWHEEL_STATE_DIR" "$FLYWHEEL_LAUNCHD_DIR"; do
+  case "$writable_path" in
+    "$TMP"|"$TMP"/*) ;;
+    *) echo "FATAL: writable test path escaped sandbox: $writable_path" >&2; exit 99 ;;
+  esac
+done
+
 passed=0
 failed=0
 pass() { printf 'PASS: %s\n' "$1"; passed=$((passed + 1)); }
@@ -21,7 +32,7 @@ else
   fail "canonical Bridge service spec: [$spec]"
 fi
 
-mkdir -p "$TMP/bin" "$TMP/home/.flywheel/bin" "$TMP/home/Library/LaunchAgents"
+mkdir -p "$TMP/bin" "$FLYWHEEL_STATE_DIR/bin" "$FLYWHEEL_LAUNCHD_DIR"
 cp "$ROOT/scripts/flywheel-bridge-wrapper.sh" "$TMP/home/.flywheel/bin/flywheel-bridge-wrapper.sh"
 chmod 755 "$TMP/home/.flywheel/bin/flywheel-bridge-wrapper.sh"
 cat > "$TMP/bin/launchctl" <<'EOF'
