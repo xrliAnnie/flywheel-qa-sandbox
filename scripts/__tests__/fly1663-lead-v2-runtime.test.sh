@@ -132,9 +132,9 @@ FLYWHEEL_LEAD_ROLE=lead
 FLYWHEEL_LEAD_RULES_BUNDLE=bundle
 ENV
 if HOME="$TMP/home" \
+  PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
   FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
   FLYWHEEL_DIR="$ROOT" \
-  FLYWHEEL_LEAD_V2_TMUX_BIN="$TMP/home/.local/bin/tmux" \
   FLYWHEEL_WRAPPER_ENV_FILE="$TMP/body.env" \
   bash "$WRAPPER" "$TMP/manifest.json" >"$TMP/wrapper.out" 2>&1 \
   && grep -qF "FLYWHEEL_WRAPPER_ENV_FILE=$TMP/body.env" "$TMP/server.env" \
@@ -146,7 +146,7 @@ if HOME="$TMP/home" \
   && grep -qF "DISCORD_STATE_DIR=$TMP/discord-state" "$TMP/server.env" \
   && grep -qF 'FLYWHEEL_LEAD_ID=ops-lead' "$TMP/server.env" \
   && ! grep -qF 'TEAMLEAD_API_TOKEN=bridge-secret' "$TMP/server.env"; then
-  pass "wrapper preserves the plist launch environment without leaking the sourced secret set"
+  pass "wrapper expands launchd's minimal PATH and preserves the plist environment"
 else
   fail "wrapper plist environment projection"
   cat "$TMP/wrapper.out" 2>/dev/null || true

@@ -54,6 +54,10 @@ FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
 FLYWHEEL_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
 ENV_FILE="${FLYWHEEL_WRAPPER_ENV_FILE:-${FLYWHEEL_STATE_DIR}/.env}"
 PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${FLYWHEEL_STATE_DIR}/projects.json}"
+# launchd's default PATH omits Homebrew and user-local binaries. Expand the
+# wrapper's own environment before resolving tmux, then pass that same proven
+# search path through the env -i carrier boundary.
+export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
 ADDRESS_LIB="$SELF_DIR/lib/lead-address.sh"
 [ -f "$ADDRESS_LIB" ] || fatal "Lead address helper missing: $ADDRESS_LIB"
 # shellcheck source=lib/lead-address.sh
@@ -171,7 +175,7 @@ while IFS= read -r name; do
 done < <(jq -r 'keys[]' <<<"$LAUNCH_ENVIRONMENT")
 SERVER_ENV+=(
   "HOME=$HOME"
-  "PATH=${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+  "PATH=$PATH"
   "TERM=${TERM:-xterm-256color}"
   "FLYWHEEL_DIR=$FLYWHEEL_DIR"
   "FLYWHEEL_STATE_DIR=$FLYWHEEL_STATE_DIR"
