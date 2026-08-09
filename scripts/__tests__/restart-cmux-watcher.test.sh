@@ -111,6 +111,7 @@ for consumer in sync restart teardown; do
     teardown)
       cp "$REPO_ROOT/scripts/test-teardown.sh" "$consumer_root/test-teardown.sh"
       cp "$REPO_ROOT/scripts/lib/qa-multilead.sh" "$consumer_root/lib/qa-multilead.sh"
+      cp "$REPO_ROOT/scripts/lib/qa-launchd-lead.sh" "$consumer_root/lib/qa-launchd-lead.sh"
       /bin/bash "$consumer_root/test-teardown.sh" 99 \
         >/dev/null 2>"$consumer_err" || consumer_rc=$?
       ;;

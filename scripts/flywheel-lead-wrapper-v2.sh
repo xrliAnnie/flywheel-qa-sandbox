@@ -153,6 +153,11 @@ TMUX_CONF_TMP="${TMUX_CONF}.tmp.$$"
 # hook_pane is expanded by the hook event. run-shell must address the private
 # socket explicitly because the server's global environment has no TMUX value.
 if {
+    # A Lead boot must not depend on the user's login shell or rc files. tmux
+    # otherwise resolves default-shell from passwd and runs this command via
+    # e.g. zsh -c, which puts ~/.zshenv (and arbitrary user tooling) on every
+    # launchd/KeepAlive restart's critical path.
+    printf 'set -g default-shell /bin/bash\n'
     printf 'set -g exit-empty on\n'
     printf 'set-hook -g pane-exited '\''run-shell "if [ #{hook_pane} = %%0 ]; then tmux -S %q kill-server; fi"'\''\n' "$SOCKET_PATH"
     # A successful exec preserves this process PID into the foreground tmux

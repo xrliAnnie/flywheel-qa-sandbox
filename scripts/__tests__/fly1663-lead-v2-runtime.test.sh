@@ -49,9 +49,14 @@ else
 fi
 
 conf="$(sed -n 's/^V2_CONF=//p' <<<"$out" | tail -1)"
+default_shell_line="$(grep -nF 'set -g default-shell /bin/bash' "$conf" 2>/dev/null | cut -d: -f1 || true)"
+new_session_line="$(grep -nF 'new-session -d -s main -n main' "$conf" 2>/dev/null | cut -d: -f1 || true)"
 if [ -f "$conf" ] \
   && [[ "$conf" == */run/leads/demo-ops-lead/tmux.conf ]] \
   && grep -qF 'set -g exit-empty on' "$conf" \
+  && [[ "$default_shell_line" =~ ^[1-9][0-9]*$ ]] \
+  && [[ "$new_session_line" =~ ^[1-9][0-9]*$ ]] \
+  && [ "$default_shell_line" -lt "$new_session_line" ] \
   && grep -qF '#{hook_pane}' "$conf" \
   && grep -qF '= %0' "$conf" \
   && grep -qF 'tmux -S ' "$conf" \
@@ -274,10 +279,12 @@ JSON
   done
   live_pane="$(tmux -S "$live_socket" list-panes -t '%0' \
     -F '#{pane_id}|#{session_name}|#{window_name}|#{pane_start_command}' 2>/dev/null || true)"
-  if [[ "$live_pane" == '%0|main|main|'*lead-body.sh* ]]; then
-    pass "real private server exposes immutable main/main/%0 body identity"
+  live_default_shell="$(tmux -S "$live_socket" show-options -gv default-shell 2>/dev/null || true)"
+  if [[ "$live_pane" == '%0|main|main|'*lead-body.sh* ]] \
+      && [ "$live_default_shell" = /bin/bash ]; then
+    pass "real private server exposes immutable main/main/%0 body identity without user shell startup"
   else
-    fail "real private body pane identity: [$live_pane]"
+    fail "real private body pane identity: [$live_pane] default-shell=[$live_default_shell]"
     cat "$TMP/live-wrapper.log" 2>/dev/null || true
     cat "$TMP/home/.flywheel/run/leads/demo-ops-lead/tmux.conf" 2>/dev/null || true
   fi

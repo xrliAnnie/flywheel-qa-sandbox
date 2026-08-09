@@ -18,6 +18,12 @@ fail() { printf 'FAIL: %s\n' "$1"; failed=$((failed + 1)); }
 # shellcheck source=../lib/qa-launchd-lead.sh
 source "$ROOT/scripts/lib/qa-launchd-lead.sh"
 
+if [ "${QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT:-0}" -ge 600 ]; then
+  pass "default topology verification budget covers at least 60 seconds"
+else
+  fail "default topology verification budget is below the measured cold-start envelope"
+fi
+
 mkdir -p "$HOME" "$FLYWHEEL_STATE_DIR" "$TMP/bin" "$TMP/runtime"
 manifest="$TMP/runtime/manifest.json"
 projects="$TMP/runtime/projects.json"

@@ -5,6 +5,11 @@
 
 qa_launchd_err() { printf '[qa-launchd] ERROR: %s\n' "$*" >&2; }
 
+# Cold real-Lead starts measured about 20 seconds in the 529 room. Preserve a
+# 3x observation envelope so the topology gate tests the carrier instead of a
+# 10-second harness race; callers can still shorten or extend it explicitly.
+QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT=600
+
 qa_launchd_domain() {
   printf '%s\n' "${FLYWHEEL_QA_LAUNCHD_DOMAIN:-gui/$(id -u)}"
 }
@@ -134,7 +139,7 @@ qa_launchd_lead_stop() {
 qa_launchd_lead_verify() {
   local label="$1" manifest="$2" tmux_bin="${FLYWHEEL_QA_TMUX:-tmux}"
   local launch_pid manifest_pid socket
-  for _ in $(seq 1 "${FLYWHEEL_QA_LEAD_VERIFY_POLLS:-100}"); do
+  for _ in $(seq 1 "${FLYWHEEL_QA_LEAD_VERIFY_POLLS:-$QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT}"); do
     launch_pid=$(qa_launchd_lead_pid "$label" || true)
     manifest_pid=$(jq -r '.pid // empty' "$manifest" 2>/dev/null || true)
     socket=$(jq -r '.socketPath // empty' "$manifest" 2>/dev/null || true)

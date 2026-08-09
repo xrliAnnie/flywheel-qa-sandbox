@@ -43,6 +43,7 @@ pass() { PASSED=$((PASSED + 1)); log_test "✓ $1"; }
 fail() { FAILED=$((FAILED + 1)); log_test "✗ $1"; }
 
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "ERROR: node required"; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FLEET="${REPO_ROOT}/scripts/flywheel-fleet.sh"
@@ -119,6 +120,50 @@ cat "$CTL/tmux_out" 2>/dev/null || true
 EOF
 chmod +x "$SANDBOX/tmux-stub"
 
+# Linux CI's `plutil` cannot convert Apple's XML plist to JSON. Fleet delegates
+# that conversion to flywheel-daemon.sh, so keep this suite hermetic just like
+# launchctl/tmux: lint succeeds and conversion parses the generated fixture
+# without depending on the host implementation.
+cat > "$SANDBOX/plutil-stub" <<'EOF'
+#!/bin/bash
+case "${1:-}" in
+  -lint)
+    exit 0
+    ;;
+  -convert)
+    [ "${2:-}" = json ] && [ "${3:-}" = -o ] && [ "${4:-}" = - ] \
+      && [ -f "${5:-}" ] || exit 64
+    "${FLY247_NODE_BIN:?}" - "$5" <<'NODE'
+const fs = require("node:fs");
+
+const xml = fs.readFileSync(process.argv[2], "utf8");
+const decode = (value) =>
+  value
+    .replaceAll("&apos;", "'")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&gt;", ">")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&amp;", "&");
+const block = xml.match(
+  /<key>\s*EnvironmentVariables\s*<\/key>\s*<dict>([\s\S]*?)<\/dict>/,
+);
+const environment = {};
+if (block) {
+  const pair = /<key>([\s\S]*?)<\/key>\s*<string>([\s\S]*?)<\/string>/g;
+  for (const match of block[1].matchAll(pair)) {
+    environment[decode(match[1])] = decode(match[2]);
+  }
+}
+process.stdout.write(`${JSON.stringify({ EnvironmentVariables: environment })}\n`);
+NODE
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+EOF
+chmod +x "$SANDBOX/plutil-stub"
+
 # Enhanced stub for SUCCESS-path scenarios: bootout kills the recorded old
 # process (like real launchd) and bootstrap brings up next_pid (the "new
 # Lead"). The basic stub above keeps processes alive → exercises stop-timeout.
@@ -170,6 +215,9 @@ chmod +x "$SANDBOX/launchctl-stub2"
 export LAUNCHCTL_STUB_CTL="$CTL"
 export FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub"
 export FLYWHEEL_DAEMON_TMUX="$SANDBOX/tmux-stub"
+FLY247_NODE_BIN="$(command -v node)"
+export FLY247_NODE_BIN
+export FLYWHEEL_DAEMON_PLUTIL="$SANDBOX/plutil-stub"
 export FLYWHEEL_DAEMON_STOP_TIMEOUT=1
 export FLYWHEEL_DAEMON_VERIFY_TIMEOUT=2
 export FLYWHEEL_DAEMON_POLL_INTERVAL=1
