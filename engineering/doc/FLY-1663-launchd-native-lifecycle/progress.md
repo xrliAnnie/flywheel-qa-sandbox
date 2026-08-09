@@ -1,13 +1,13 @@
 ---
 issue: FLY-1663
 phase: design
-phaseCursor: 3/6
-updated: 2026-08-09T01:25:28.750Z
-nextStep: writing research.md from 4 agent reports + tmux spikes
+phaseCursor: 4/6
+updated: 2026-08-09T01:29:05.747Z
+nextStep: writing plan.md (9 must-answer design doc)
 chunks: []
 pointers: {}
 ---
 
 # FLY-1663 progress
-**phase**: design (3/6)
-**next**: writing research.md from 4 agent reports + tmux spikes
+**phase**: design (4/6)
+**next**: writing plan.md (9 must-answer design doc)
