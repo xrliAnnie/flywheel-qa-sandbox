@@ -1,0 +1,8 @@
+flowchart TD
+    S1["步骤 1 — 创建文档<br/>doc/qa/sandbox-notes.md<br/>写 2-3 段仓库用途说明"]
+    S2["步骤 2 — 目录表<br/>仓库根每个顶层目录<br/>一行描述"]
+    S3["步骤 3 — README 摘要<br/>qa-framework README<br/>约 10 条要点"]
+    S4["步骤 4 — 目录树快照<br/>运行 ls -R doc/ 取前 50 行<br/>贴进代码块"]
+    S5["步骤 5 — 提交与 PR<br/>commit 到 feature 分支<br/>对 sandbox main 开 PR"]
+    S1 --> S2 --> S3 --> S4 --> S5
+    S5 --> DONE(["approve gate → 终态<br/>merge 由 founder 决定"])
