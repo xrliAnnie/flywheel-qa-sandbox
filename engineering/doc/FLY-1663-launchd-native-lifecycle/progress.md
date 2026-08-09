@@ -1,13 +1,14 @@
 ---
 issue: FLY-1663
 phase: implement
-phaseCursor: 1/5
-updated: 2026-08-09T09:29:40.836Z
-nextStep: Fix v2 carrier socket occupancy and manifest PID rollback
+phaseCursor: 2/5
+updated: 2026-08-09T09:46:10.494Z
+nextStep: Convert 529 QA room Lead path to isolated launchd v2 carrier with
+  secret isolation
 chunks: []
 pointers: {}
 ---
 
 # FLY-1663 progress
-**phase**: implement (1/5)
-**next**: Fix v2 carrier socket occupancy and manifest PID rollback
+**phase**: implement (2/5)
+**next**: Convert 529 QA room Lead path to isolated launchd v2 carrier with secret isolation
