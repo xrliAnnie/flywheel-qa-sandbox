@@ -1,14 +1,13 @@
 ---
 issue: FLY-1663
 phase: implement
-phaseCursor: 2/5
-updated: 2026-08-09T09:46:10.494Z
-nextStep: Convert 529 QA room Lead path to isolated launchd v2 carrier with
-  secret isolation
+phaseCursor: 3/5
+updated: 2026-08-09T09:59:23.226Z
+nextStep: Run FLY-1663 suites and full repository gates
 chunks: []
 pointers: {}
 ---
 
 # FLY-1663 progress
-**phase**: implement (2/5)
-**next**: Convert 529 QA room Lead path to isolated launchd v2 carrier with secret isolation
+**phase**: implement (3/5)
+**next**: Run FLY-1663 suites and full repository gates
