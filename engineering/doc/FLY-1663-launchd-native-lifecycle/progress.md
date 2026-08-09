@@ -1,13 +1,13 @@
 ---
 issue: FLY-1663
 phase: implement
-phaseCursor: 2/5
-updated: 2026-08-09T13:02:39.173Z
-nextStep: focused regression matrix and full gates
+phaseCursor: 3/5
+updated: 2026-08-09T13:03:27.228Z
+nextStep: full repo lint build test gates
 chunks: []
 pointers: {}
 ---
 
 # FLY-1663 progress
-**phase**: implement (2/5)
-**next**: focused regression matrix and full gates
+**phase**: implement (3/5)
+**next**: full repo lint build test gates
