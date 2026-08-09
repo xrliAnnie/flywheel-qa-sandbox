@@ -1,13 +1,14 @@
 ---
 issue: FLY-1663
 phase: implement
-phaseCursor: 0/8
-updated: 2026-08-09T05:13:25.534Z
-nextStep: RED tests for carrier schema, socket resolver, and v2 wrapper primitives
+phaseCursor: 2/8
+updated: 2026-08-09T05:25:01.166Z
+nextStep: RED tests for carrier composite write, observed wrapper
+  classification, and crash recovery
 chunks: []
 pointers: {}
 ---
 
 # FLY-1663 progress
-**phase**: implement (0/8)
-**next**: RED tests for carrier schema, socket resolver, and v2 wrapper primitives
+**phase**: implement (2/8)
+**next**: RED tests for carrier composite write, observed wrapper classification, and crash recovery
