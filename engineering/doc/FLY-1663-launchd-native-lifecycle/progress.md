@@ -1,13 +1,13 @@
 ---
 issue: FLY-1663
 phase: implement
-phaseCursor: 4/5
-updated: 2026-08-09T13:15:11.258Z
-nextStep: review diff, commit, push, code review
+phaseCursor: 5/5
+updated: 2026-08-09T13:19:45.723Z
+nextStep: QA retest on reviewed head 31239b8e
 chunks: []
 pointers: {}
 ---
 
 # FLY-1663 progress
-**phase**: implement (4/5)
-**next**: review diff, commit, push, code review
+**phase**: implement (5/5)
+**next**: QA retest on reviewed head 31239b8e
