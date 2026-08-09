@@ -18,10 +18,11 @@ fail() { printf 'FAIL: %s\n' "$1"; failed=$((failed + 1)); }
 # shellcheck source=../lib/qa-launchd-lead.sh
 source "$ROOT/scripts/lib/qa-launchd-lead.sh"
 
-if [ "${QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT:-0}" -ge 600 ]; then
-  pass "default topology verification budget covers at least 60 seconds"
+if [ "${QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT:-0}" = 60 ] \
+    && [ "${QA_LAUNCHD_LEAD_VERIFY_INTERVAL_DEFAULT:-0}" = 1 ]; then
+  pass "default topology verification uses a 60-second low-frequency budget"
 else
-  fail "default topology verification budget is below the measured cold-start envelope"
+  fail "default topology verification must avoid the 10 Hz probe storm"
 fi
 
 mkdir -p "$HOME" "$FLYWHEEL_STATE_DIR" "$TMP/bin" "$TMP/runtime"
@@ -102,6 +103,29 @@ if [ "$(qa_launchd_lead_verify "$label" "$manifest")" = $'4242\t/tmp/private-qa.
   pass "topology gate requires launchd PID = manifest PID plus live private socket"
 else
   fail "QA launchd topology verification"
+fi
+
+# A pending cold start must not inherit the 100ms PID-discovery cadence. The
+# old verifier ran launchctl + two jq processes ten times per second and could
+# starve the Lead that was trying to publish this manifest in the 529 room.
+jq 'del(.pid, .socketPath)' "$manifest" > "$TMP/manifest.pending" \
+  && mv "$TMP/manifest.pending" "$manifest"
+verify_sleeps="$TMP/verify-sleeps"
+: > "$verify_sleeps"
+prints_before=$(grep -c '^print ' "$launchctl_calls" || true)
+sleep() { printf '%s\n' "$1" >> "$verify_sleeps"; }
+export FLYWHEEL_QA_LEAD_VERIFY_POLLS=2
+unset FLYWHEEL_QA_LEAD_VERIFY_INTERVAL
+qa_launchd_lead_verify "$label" "$manifest" >/dev/null 2>&1 || true
+unset -f sleep
+export FLYWHEEL_QA_LEAD_VERIFY_POLLS=1
+prints_after=$(grep -c '^print ' "$launchctl_calls" || true)
+if [ -s "$verify_sleeps" ] \
+    && ! grep -Ev '^1$' "$verify_sleeps" >/dev/null \
+    && [ "$prints_after" = "$prints_before" ]; then
+  pass "pending topology probes are paced and defer launchctl until publication"
+else
+  fail "pending topology verifier still creates a process probe storm"
 fi
 
 if qa_launchd_register "$registry" "$label" "$plist" "$manifest" \

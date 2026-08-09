@@ -5,10 +5,12 @@
 
 qa_launchd_err() { printf '[qa-launchd] ERROR: %s\n' "$*" >&2; }
 
-# Cold real-Lead starts measured about 20 seconds in the 529 room. Preserve a
-# 3x observation envelope so the topology gate tests the carrier instead of a
-# 10-second harness race; callers can still shorten or extend it explicitly.
-QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT=600
+# Cold real-Lead starts measured about 20-30 seconds in the 529 room. Preserve
+# a 60-second observation envelope without hammering the machine that is also
+# trying to start the Lead. PID discovery keeps its faster cadence below;
+# topology verification deliberately probes only once per second.
+QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT=60
+QA_LAUNCHD_LEAD_VERIFY_INTERVAL_DEFAULT=1
 
 qa_launchd_domain() {
   printf '%s\n' "${FLYWHEEL_QA_LAUNCHD_DOMAIN:-gui/$(id -u)}"
@@ -138,17 +140,24 @@ qa_launchd_lead_stop() {
 # Args: label manifest
 qa_launchd_lead_verify() {
   local label="$1" manifest="$2" tmux_bin="${FLYWHEEL_QA_TMUX:-tmux}"
-  local launch_pid manifest_pid socket
+  local launch_pid="" manifest_pid="" socket="" manifest_topology=""
   for _ in $(seq 1 "${FLYWHEEL_QA_LEAD_VERIFY_POLLS:-$QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT}"); do
-    launch_pid=$(qa_launchd_lead_pid "$label" || true)
-    manifest_pid=$(jq -r '.pid // empty' "$manifest" 2>/dev/null || true)
-    socket=$(jq -r '.socketPath // empty' "$manifest" 2>/dev/null || true)
-    if [[ -n "$launch_pid" && "$manifest_pid" == "$launch_pid" && -n "$socket" ]] \
-        && "$tmux_bin" -S "$socket" has-session -t '=main' >/dev/null 2>&1; then
-      printf '%s\t%s\n' "$launch_pid" "$socket"
-      return 0
+    manifest_topology=$(jq -er '
+      select((.pid | type) == "number" and .pid > 0)
+      | select((.socketPath | type) == "string" and (.socketPath | length) > 0)
+      | [(.pid | tostring), .socketPath]
+      | @tsv
+    ' "$manifest" 2>/dev/null || true)
+    if [[ -n "$manifest_topology" ]]; then
+      IFS=$'\t' read -r manifest_pid socket <<<"$manifest_topology"
+      launch_pid=$(qa_launchd_lead_pid "$label" || true)
+      if [[ -n "$launch_pid" && "$manifest_pid" == "$launch_pid" ]] \
+          && "$tmux_bin" -S "$socket" has-session -t '=main' >/dev/null 2>&1; then
+        printf '%s\t%s\n' "$launch_pid" "$socket"
+        return 0
+      fi
     fi
-    sleep "${FLYWHEEL_QA_LAUNCHD_POLL_INTERVAL:-0.1}"
+    sleep "${FLYWHEEL_QA_LEAD_VERIFY_INTERVAL:-$QA_LAUNCHD_LEAD_VERIFY_INTERVAL_DEFAULT}"
   done
   qa_launchd_err "topology verification failed: label=$label launchPid=${launch_pid:-} manifestPid=${manifest_pid:-} socket=${socket:-}"
   return 1
