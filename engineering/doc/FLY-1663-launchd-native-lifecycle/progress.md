@@ -1,14 +1,13 @@
 ---
 issue: FLY-1663
 phase: implement
-phaseCursor: 2/8
-updated: 2026-08-09T05:25:01.166Z
-nextStep: RED tests for carrier composite write, observed wrapper
-  classification, and crash recovery
+phaseCursor: 3/8
+updated: 2026-08-09T05:44:50.869Z
+nextStep: RED cmux mixed-carrier roster and direct private-socket attach tests
 chunks: []
 pointers: {}
 ---
 
 # FLY-1663 progress
-**phase**: implement (2/8)
-**next**: RED tests for carrier composite write, observed wrapper classification, and crash recovery
+**phase**: implement (3/8)
+**next**: RED cmux mixed-carrier roster and direct private-socket attach tests
