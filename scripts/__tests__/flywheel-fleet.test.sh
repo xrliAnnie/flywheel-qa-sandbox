@@ -844,6 +844,20 @@ kill "$LIVE" 2>/dev/null || true
 reset_world
 write_projects '"claude-fable-5"'
 LIVE=$(setup_running_lead '"claude-fable-5"')
+# Hand-edited launchd controls exist on the live fleet and must survive the
+# transactional v1 -> v2 plist re-render. Insert them into the canonical
+# pre-image exactly where launchd expects its EnvironmentVariables dict.
+awk -v env_file="$SANDBOX/.flywheel/env-claude-infra-bot.env" '
+  /<key>EnvironmentVariables<\/key>/ { in_launch_env=1 }
+  in_launch_env && !inserted && /<\/dict>/ {
+    print "        <key>FLYWHEEL_WRAPPER_ENV_FILE</key><string>" env_file "</string>"
+    print "        <key>FLYWHEEL_LEAD_ROLE</key><string>cos</string>"
+    print "        <key>FLYWHEEL_LEAD_RULES_BUNDLE</key><string>legacy</string>"
+    inserted=1
+    in_launch_env=0
+  }
+  { print }
+' "$PLIST" > "$PLIST.custom" && mv "$PLIST.custom" "$PLIST"
 NEXT=$(spawn_live)
 echo "$LIVE" > "$CTL/kill_on_bootout"
 echo "$NEXT" > "$CTL/next_pid"
@@ -854,7 +868,12 @@ derive_lead_socket "geo/product-lead" "$SANDBOX/.flywheel" > "$CTL/socket_path"
 OUT=$(FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub2" bash "$FLEET" apply --lead "$KEY" --carrier v2 --yes 2>&1); RC=$?
 if [ "$RC" -eq 0 ] \
   && [ "$(jq -r '.[0].leads[0].carrier' "$PROJECTS")" = v2 ] \
-  && grep -qF "$SANDBOX/.flywheel/bin/flywheel-lead-wrapper-v2.sh" "$PLIST"; then
+  && grep -qF "$SANDBOX/.flywheel/bin/flywheel-lead-wrapper-v2.sh" "$PLIST" \
+  && grep -qF '<key>FLYWHEEL_WRAPPER_ENV_FILE</key>' "$PLIST" \
+  && grep -qF '<key>FLYWHEEL_LEAD_ROLE</key>' "$PLIST" \
+  && grep -qF '<key>FLYWHEEL_LEAD_RULES_BUNDLE</key>' "$PLIST" \
+  && [ "$(jq -r '.launchEnvironment.FLYWHEEL_LEAD_ROLE // ""' "$MANIFEST")" = cos ] \
+  && [ "$(jq -r '.launchEnvironment.FLYWHEEL_LEAD_RULES_BUNDLE // ""' "$MANIFEST")" = legacy ]; then
   NEXT_RB=$(spawn_live)
   echo "$NEXT" > "$CTL/kill_on_bootout"
   echo "$NEXT_RB" > "$CTL/next_pid"
@@ -862,7 +881,7 @@ if [ "$RC" -eq 0 ] \
   if [ "$RC_RB" -eq 0 ] \
     && ! jq -e '.[0].leads[0] | has("carrier")' "$PROJECTS" >/dev/null \
     && grep -qF "$SANDBOX/.flywheel/bin/flywheel-lead-wrapper.sh" "$PLIST"; then
-    pass "T24: v1(absent) → v2 cutover and exact v1/absence rollback"
+    pass "T24: v1(absent) → v2 preserves launch env and exact v1/absence rollback"
   else
     fail "T24 rollback: rc=$RC_RB $OUT_RB"
   fi

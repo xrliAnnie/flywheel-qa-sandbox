@@ -62,6 +62,16 @@ LEAD_ROW="$(jq -cer \
 BACKEND="$(jq -r '.backend // "claude-code"' <<<"$LEAD_ROW")"
 [ "$BACKEND" = claude-code ] \
   || fatal "v2 carrier supports claude-code only (got $BACKEND)"
+LAUNCH_ENVIRONMENT="$(jq -cer '
+  (.launchEnvironment // {})
+  | if type != "object" then error("launchEnvironment must be an object")
+    elif all(to_entries[];
+      (.key | test("^[A-Za-z_][A-Za-z0-9_]*$"))
+      and (.value | type == "string")
+      and ([.value | explode[] | select(. < 32 or . == 127)] | length == 0))
+    then .
+    else error("invalid launchEnvironment entry")
+    end' "$MANIFEST")" || fatal "Manifest launchEnvironment is invalid"
 
 ensure_lead_socket_dir "$FLYWHEEL_STATE_DIR" || fatal "Unsafe Lead socket directory"
 LEAD_KEY="${PROJECT_NAME}-${LEAD_ID}"
@@ -103,13 +113,18 @@ TMUX_CONF_TMP="${TMUX_CONF}.tmp.$$"
   && mv "$TMUX_CONF_TMP" "$TMUX_CONF" \
   || { rm -f "$TMUX_CONF_TMP"; fatal "Atomic tmux config update failed"; }
 
-SERVER_ENV=(
+SERVER_ENV=()
+while IFS= read -r name; do
+  SERVER_ENV+=("$name=$(jq -r --arg name "$name" '.[$name]' <<<"$LAUNCH_ENVIRONMENT")")
+done < <(jq -r 'keys[]' <<<"$LAUNCH_ENVIRONMENT")
+SERVER_ENV+=(
   "HOME=$HOME"
   "PATH=${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
   "TERM=${TERM:-xterm-256color}"
   "FLYWHEEL_DIR=$FLYWHEEL_DIR"
   "FLYWHEEL_STATE_DIR=$FLYWHEEL_STATE_DIR"
   "FLYWHEEL_PROJECTS_FILE=$PROJECTS_FILE"
+  "FLYWHEEL_LEAD_ID=$LEAD_ID"
   "FLYWHEEL_LEAD_CARRIER=v2"
 )
 for name in TMPDIR LANG LC_ALL LC_CTYPE CLAUDE_CONFIG_DIR; do

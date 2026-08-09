@@ -22,7 +22,7 @@ TEAMLEAD_API_TOKEN=bridge-secret
 FLYWHEEL_COMM_BACKEND=mailbox
 ENV
 cat > "$TMP/manifest.json" <<JSON
-{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo","botTokenEnv":"OPS_TOKEN","workspace":"$TMP/custom-workspace","mcpExclude":"dangerous-mcp,chrome","chromeEnabled":true,"unknown":{"keep":true}}
+{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo","botTokenEnv":"OPS_TOKEN","workspace":"$TMP/custom-workspace","mcpExclude":"dangerous-mcp,chrome","chromeEnabled":true,"launchEnvironment":{"FLYWHEEL_WRAPPER_ENV_FILE":"$TMP/body.env","FLYWHEEL_LEAD_ROLE":"cos","FLYWHEEL_LEAD_RULES_BUNDLE":"legacy","FLYWHEEL_LEAD_MODEL":"claude-fable-5","FLYWHEEL_LEAD_EFFORT":"max","FLYWHEEL_TEST_PLIST_ONLY":"preserved"},"unknown":{"keep":true}}
 JSON
 mkdir -p "$TMP/custom-workspace"
 
@@ -57,6 +57,41 @@ if [ -f "$conf" ] \
 else
   fail "wrapper tmux config contract"
 fi
+
+# A carrier cutover must preserve the existing plist EnvironmentVariables
+# contract across the wrapper's env -i boundary. The manifest carries the
+# transactionally captured dict, so values remain authoritative even when the
+# selected .env contains conflicting assignments.
+mkdir -p "$TMP/home/.local/bin"
+cat > "$TMP/home/.local/bin/tmux" <<TMUX_STUB
+#!/bin/bash
+env | sort > "$TMP/server.env"
+TMUX_STUB
+chmod +x "$TMP/home/.local/bin/tmux"
+cat >> "$TMP/body.env" <<'ENV'
+FLYWHEEL_LEAD_ROLE=lead
+FLYWHEEL_LEAD_RULES_BUNDLE=bundle
+ENV
+if HOME="$TMP/home" \
+  FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
+  FLYWHEEL_DIR="$ROOT" \
+  FLYWHEEL_WRAPPER_ENV_FILE="$TMP/body.env" \
+  bash "$WRAPPER" "$TMP/manifest.json" >"$TMP/wrapper.out" 2>&1 \
+  && grep -qF "FLYWHEEL_WRAPPER_ENV_FILE=$TMP/body.env" "$TMP/server.env" \
+  && grep -qF 'FLYWHEEL_LEAD_ROLE=cos' "$TMP/server.env" \
+  && grep -qF 'FLYWHEEL_LEAD_RULES_BUNDLE=legacy' "$TMP/server.env" \
+  && grep -qF 'FLYWHEEL_LEAD_MODEL=claude-fable-5' "$TMP/server.env" \
+  && grep -qF 'FLYWHEEL_LEAD_EFFORT=max' "$TMP/server.env" \
+  && grep -qF 'FLYWHEEL_TEST_PLIST_ONLY=preserved' "$TMP/server.env" \
+  && grep -qF 'FLYWHEEL_LEAD_ID=ops-lead' "$TMP/server.env" \
+  && ! grep -qF 'TEAMLEAD_API_TOKEN=bridge-secret' "$TMP/server.env"; then
+  pass "wrapper preserves the plist launch environment without leaking the sourced secret set"
+else
+  fail "wrapper plist environment projection"
+  cat "$TMP/wrapper.out" 2>/dev/null || true
+  cat "$TMP/server.env" 2>/dev/null || true
+fi
+rm -f "$TMP/home/.local/bin/tmux"
 
 cat > "$TMP/unsafe-manifest.json" <<JSON
 {"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"../demo","botTokenEnv":"OPS_TOKEN"}

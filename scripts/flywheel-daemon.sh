@@ -25,6 +25,16 @@
 # automatically on first install.
 set -euo pipefail
 
+DAEMON_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$DAEMON_SCRIPT_DIR/lib/host-config.sh" ]; then
+  # shellcheck source=lib/host-config.sh
+  source "$DAEMON_SCRIPT_DIR/lib/host-config.sh"
+  if ! host_config_load >/dev/null; then
+    echo "[daemon] ERROR: host.json invalid (fail-closed)" >&2
+    if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 1; else exit 1; fi
+  fi
+fi
+
 FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
 FLYWHEEL_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
 MANIFEST_DIR="${FLYWHEEL_STATE_DIR}/manifests"
@@ -263,6 +273,34 @@ xml_escape() {
     -e "s/'/\&apos;/g"
 }
 
+# Return a canonical JSON object for a launchd EnvironmentVariables dict.
+# Values cross an exec boundary, so fail closed on invalid names, non-strings,
+# or control characters instead of silently rendering a different environment.
+normalize_launch_environment_json() {
+  jq -ce '
+    if type != "object" then error("launch environment must be an object")
+    elif all(to_entries[];
+      (.key | test("^[A-Za-z_][A-Za-z0-9_]*$"))
+      and (.value | type == "string")
+      and ([.value | explode[] | select(. < 32 or . == 127)] | length == 0))
+    then .
+    else error("invalid launch environment entry")
+    end'
+}
+
+read_plist_environment_json() {
+  local plist="$1"
+  if [ ! -f "$plist" ]; then
+    printf '{}\n'
+    return 0
+  fi
+  command -v "$PLUTIL" >/dev/null 2>&1 || return 1
+  local plist_json
+  plist_json="$("$PLUTIL" -convert json -o - "$plist" 2>/dev/null)" || return 1
+  jq -c '.EnvironmentVariables // {}' <<<"$plist_json" \
+    | normalize_launch_environment_json
+}
+
 # FLY-247 R5#4: plist generation takes TWO manifest paths —
 #   manifest_source_path:  where to READ the model from (staged manifest in
 #                          staged mode; canonical manifest in legacy mode)
@@ -318,22 +356,35 @@ generate_plist_to() {
     esac
   fi
 
-  # Emit the EnvironmentVariables dict when model OR effort is set; each key is
-  # conditional. byte-compat: model-set/effort-unset yields the exact pre-FLY-671
-  # single-MODEL-line block. Key order is fixed model→effort.
+  # The fleet transaction captures the current plist EnvironmentVariables in
+  # the staged manifest. Preserve that entire explicit launch contract while
+  # model/effort remain projections of their canonical top-level fields.
+  local launch_environment
+  launch_environment="$(jq -c '.launchEnvironment // {}' "$manifest_source_path" 2>/dev/null \
+    | normalize_launch_environment_json)" || {
+      log "ERROR: manifest launchEnvironment is invalid; refusing to generate plist"
+      return 1
+    }
+  local updated_launch_environment
+  updated_launch_environment="$(jq -c --arg model "$model" --arg effort "$effort" '
+    (if $model != "" then .FLYWHEEL_LEAD_MODEL = $model else del(.FLYWHEEL_LEAD_MODEL) end)
+    | (if $effort != "" then .FLYWHEEL_LEAD_EFFORT = $effort else del(.FLYWHEEL_LEAD_EFFORT) end)' \
+    <<<"$launch_environment")" || return 1
+  launch_environment="$updated_launch_environment"
+
+  # Byte compatibility remains exact when the object is empty. Otherwise use
+  # deterministic key order so hashes do not depend on plist insertion order.
   local env_block=""
-  if [ -n "$model" ] || [ -n "$effort" ]; then
+  if [ "$(jq -r 'length' <<<"$launch_environment")" -gt 0 ]; then
     env_block="    <key>EnvironmentVariables</key>
     <dict>
 "
-    if [ -n "$model" ]; then
-      env_block="${env_block}        <key>FLYWHEEL_LEAD_MODEL</key><string>$(xml_escape "$model")</string>
+    local env_name env_value
+    while IFS= read -r env_name; do
+      env_value="$(jq -r --arg name "$env_name" '.[$name]' <<<"$launch_environment")"
+      env_block="${env_block}        <key>$(xml_escape "$env_name")</key><string>$(xml_escape "$env_value")</string>
 "
-    fi
-    if [ -n "$effort" ]; then
-      env_block="${env_block}        <key>FLYWHEEL_LEAD_EFFORT</key><string>$(xml_escape "$effort")</string>
-"
-    fi
+    done < <(jq -r 'keys[]' <<<"$launch_environment")
     env_block="${env_block}    </dict>
 "
   fi
@@ -689,7 +740,7 @@ install_one_staged() {
     fail_staged "prepared" "prep_failed_txn_incomplete" "" "" false "unknown" "$EXIT_PREP_FAILED"
     return $?
   fi
-  if [ "$(file_sha "${HOME}/.flywheel/projects.json")" != "$txn_config_sha" ]; then
+  if [ "$(file_sha "${FLYWHEEL_STATE_DIR}/projects.json")" != "$txn_config_sha" ]; then
     fail_staged "prepared" "prep_failed_config_changed" "" "" false "unknown" "$EXIT_PREP_FAILED"
     return $?
   fi

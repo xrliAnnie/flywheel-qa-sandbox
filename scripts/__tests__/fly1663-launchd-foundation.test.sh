@@ -115,6 +115,23 @@ else
   fail "C3 mixed-carrier install closure is incomplete"
 fi
 
+relocated_state="$SANDBOX/relocated-state"
+jq -n --arg state "$relocated_state" '{stateDir:$state}' > "$HOME/.flywheel/host.json"
+fleet_paths="$(
+  env -u FLYWHEEL_STATE_DIR -u FLYWHEEL_DIR \
+    HOME="$HOME" FLYWHEEL_FLEET_SOURCED=1 \
+    bash -c 'source "$1"; printf "%s\n%s\n%s\n" "$PROJECTS_JSON" "$FLEET_BACKUPS" "$LOCK_DIR"' \
+    _ "$REPO_ROOT/scripts/flywheel-fleet.sh"
+)"
+if grep -qxF "$relocated_state/projects.json" <<<"$fleet_paths" \
+  && grep -qxF "$relocated_state/fleet-backups" <<<"$fleet_paths" \
+  && grep -qxF "$relocated_state/restart.lock.d" <<<"$fleet_paths" \
+  && ! grep -qF '${HOME}/.flywheel/projects.json' "$REPO_ROOT/scripts/flywheel-daemon.sh"; then
+  pass "C3b fleet and daemon share the relocated state root"
+else
+  fail "C3b split state-root paths: $fleet_paths"
+fi
+
 # restart-services must recognize v2 authority and use only launchd's native
 # replacement path; an unowned manifest can never spawn an orphan body.
 # shellcheck source=../lib/lead-restart-lifecycle.sh

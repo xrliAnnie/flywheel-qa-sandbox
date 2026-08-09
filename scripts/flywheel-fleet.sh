@@ -50,9 +50,9 @@ source "${SCRIPT_DIR}/flywheel-fleet-journal.sh"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/flywheel-fleet-batch.sh"
 
-PROJECTS_JSON="${HOME}/.flywheel/projects.json"
-FLEET_BACKUPS="${HOME}/.flywheel/fleet-backups"
-LOCK_DIR="${HOME}/.flywheel/restart.lock.d"
+PROJECTS_JSON="${FLYWHEEL_STATE_DIR}/projects.json"
+FLEET_BACKUPS="${FLYWHEEL_STATE_DIR}/fleet-backups"
+LOCK_DIR="${FLYWHEEL_STATE_DIR}/restart.lock.d"
 DAEMON_BIN="${FLYWHEEL_FLEET_DAEMON_BIN:-${SCRIPT_DIR}/flywheel-daemon.sh}"
 WRAPPER_DST="${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh"
 WRAPPER_V2_DST="${FLYWHEEL_BIN}/flywheel-lead-wrapper-v2.sh"
@@ -1073,10 +1073,27 @@ cmd_apply() {
     d_carrier=$(jq -r '.leads[$key].desired.carrier // "v1"' --arg key "$key" "$txn")
     local staged_m="${txn_dir}/staged/${key}.manifest.json"
     local staged_p="${txn_dir}/staged/${key}.plist"
+    local launch_environment
+    launch_environment="$(read_plist_environment_json "$cpl")" || {
+      ferr "${key}: existing plist EnvironmentVariables are unreadable or invalid — lead untouched, stopping."
+      txn_update "$txn" '.leads[$key].phase = "unapplied"' --arg key "$key"
+      stop_remaining=true; overall_rc=1; continue
+    }
+    local updated_launch_environment
+    updated_launch_environment="$(jq -c --arg model "$d_model" --arg effort "$d_effort" '
+      (if $model != "" then .FLYWHEEL_LEAD_MODEL = $model else del(.FLYWHEEL_LEAD_MODEL) end)
+      | (if $effort != "" then .FLYWHEEL_LEAD_EFFORT = $effort else del(.FLYWHEEL_LEAD_EFFORT) end)' \
+      <<<"$launch_environment")" || {
+      ferr "${key}: launch environment staging failed — lead untouched, stopping."
+      txn_update "$txn" '.leads[$key].phase = "unapplied"' --arg key "$key"
+      stop_remaining=true; overall_rc=1; continue
+    }
+    launch_environment="$updated_launch_environment"
     if ! jq --arg model "$d_model" --arg effort "$d_effort" \
+      --argjson launchEnvironment "$launch_environment" \
       '(if $model != "" then . + {model: $model} else del(.model) end)
        | (if $effort != "" then . + {effort: $effort} else del(.effort) end)
-       | . + {leadBackend: {backendId: "claude-code"}}' \
+       | . + {leadBackend: {backendId: "claude-code"}, launchEnvironment: $launchEnvironment}' \
       "$cm" > "$staged_m" 2>/dev/null || ! jq empty "$staged_m" 2>/dev/null; then
       ferr "${key}: staging manifest failed — lead untouched, stopping."
       txn_update "$txn" '.leads[$key].phase = "unapplied"' --arg key "$key"
